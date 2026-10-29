@@ -4222,7 +4222,12 @@ little differently (docs/review_cutstream.md), so it is the maintainer's call */
 
 /* build 37: CPU time in the renderer's entry points, by kind, for the log */
 #define GE_ENTRIES 9
-static unsigned long ge_entry_us[GE_ENTRIES];
+/* each CPU's own counters on lines of their own: the ME times the entries and
+parts it replays (mechunk), and a write-back of its lines must never land on
+the main CPU's words beside them (psp_pass_mode, the texture levels), nor
+the other way. The log reports the main CPU's */
+static unsigned long ge_entry_us_by[2][16] __attribute__((aligned(64)));
+#define ge_entry_us (ge_entry_us_by[PSP_ME_WORK() ? 1 : 0])
 /* build 47: inside the two biggest entries (level draws and model parts,
 5 ms a frame each in b46), and decals per call. Each mark is a
 sceKernelGetSystemTimeLow call; their own cost is measured once at the
@@ -4241,12 +4246,16 @@ static int tex_level_mode = GU_TEXTURE_AUTO;
 static float tex_bias = 0.0f;
 #define SHOWCASE_BIAS_DEFAULT 8 /* quarter levels: two levels coarser, judged right on a PSP-1000 by hand (sharper levels shimmer on the hull); a bias smears the ring and the sky some, so 4 is still to be tried by hand; showcasebias0 as before */
 static int in_sky;
-static unsigned long ge_part_us[GE_PARTS], ge_part_calls[GE_PARTS];
+static unsigned long ge_part_us_by[2][16] __attribute__((aligned(64)));
+static unsigned long ge_part_calls_by[2][16] __attribute__((aligned(64)));
+#define ge_part_us (ge_part_us_by[PSP_ME_WORK() ? 1 : 0])
+#define ge_part_calls (ge_part_calls_by[PSP_ME_WORK() ? 1 : 0])
 static const char *const ge_part_names[GE_PARTS] = {
 	"level: stream + index range", "level: classify corners", "level: cut up", "level: passes (binds, lists)",
 	"model: convert", "model: node matrix", "model: near-plane filter", "model: bind + state + lighting",
 	"model: geometry", "model: two-sided + change/glow passes", "decal calls" };
-static unsigned int part_mark;
+static unsigned int part_mark_by[2][16] __attribute__((aligned(64)));
+#define part_mark (part_mark_by[PSP_ME_WORK() ? 1 : 0][0])
 static inline void part_start(void)
 {
 	part_mark = ge_clock();
