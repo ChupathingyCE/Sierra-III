@@ -36320,11 +36320,11 @@ void render_objects("""),
 # object marks and the particle loop, so a default build runs w142's code.
 WALKAPART = os.environ.get("PSP_WALKAPART", "") == "1"
 FIXES_WALKAPART = {}
-# PSP_MEVISLAND=1 (psp_build.py): the landing of mevis's copies, the frame's
-# visibility made on the ME and used (keep word mevisland;
+# Built in unless PSP_MEVISLAND=0 (psp_build.py): the landing of mevis's
+# copies, the frame's visibility made on the ME and used (keep word mevisland, on by default;
 # docs/mevis_landing.md). A walkapart build has mevis's own hooks in the same
 # places, so it leaves these out
-MEVISLAND = os.environ.get("PSP_MEVISLAND", "") == "1"
+MEVISLAND = os.environ.get("PSP_MEVISLAND", "") != "0"
 FIXES_MEVISLAND = {}
 FIXES_MEVISLAND["source/render/render.c#mevisland"] = [
 ("""	parameters.fog = render.fog;

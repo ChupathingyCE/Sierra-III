@@ -94,6 +94,20 @@ So step 2 goes ahead: build `mevisland`.
 - **Its memory:** mevis's copies took 144 KB of state and a 160 KB stack from the heap. In the emulator that pushed the level's material copies into the level carve and shrank the texture cache. Play stayed exact (mevl1 40834378117: five maps, every tick), but c20's pictures differed at 591 of 899 frames, and the main CPU's own walk run beside it (`mevislandcheck`) differed the same way (mevl3 40835407293), so the cause was the memory, not the answer. The state now ends before the render globals' unused surface index list (64 KB less). The walk is capped at 16 clusters deep (the deepest measured is 12) on a 96 KB stack. A deeper walk, or one that ran past its stack (checked with a canary), has the main CPU make that frame's visibility.
 - **Proof:** exactness in the emulator (play and seeds every tick, `framecrc`, five maps, off vs on). Then `mevislandcheck` with the cache model (`mecohere`) on b30 and c20. Then the PSP-3000 pair, `- | mevisland`, in one `PSP_MEVISLAND=1` build.
 
+## Step 2's result: b30 on the PSP-3000 [M]
+
+sierra-hw 40845560977 (329e167, `PSP_MEVISLAND=1`, b30's route to game time 90 s, `- | mevisland`, 2 runs a side, no PGO):
+
+| Stretch | Frame by the clock | Drawing | Tick |
+|---|---|---|---|
+| cinematic (150–570) | -1.5 ms (-1.2%), noise | **-0.6 ms (-2.3%)** | noise |
+| flight (300–2000) | **-2.1 ms (-1.3%)** | **-2.2 ms (-4.7%)** | noise |
+| landing (2000–2700) | **-4.6 ms (-2.8%)** | **-4.4 ms (-7.6%)** | noise |
+
+- The ME's answer was used at every view (none refused, late, cut or failed; the deepest walk 12 clusters).
+- **The main CPU still waits 2.8–3.8 ms a view at the first reader** (at most 7–20 ms). That's the ME's visibility outlasting the span. The next gain is the ME's own speed: its working set (mevis reads 45–93 KB a call against a 16 KB cache) and the gathered-spheres copy.
+- So `mevisland` is on by default, and built in unless `PSP_MEVISLAND=0`.
+
 ## The steps
 
 1. **Measure the wait's split.** Per frame on b30 (route) and c20 (hands off), split the main CPU's time from `structure_visibility_compute`'s start to `lights_preprocess_scene` into:
