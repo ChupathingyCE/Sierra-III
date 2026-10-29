@@ -49,6 +49,7 @@ VRAM (16-bit color, 512 pixels a row); the on-screen log lives above them
 #include <stdarg.h>
 #include "psp_me.h" /* build 118: psp_on_me, PSP_ME_WORK, the submit/finish jobs */
 #include "psp_lanetrace.h"
+#include "psp_sleep.h" /* B41: the quiet points and the waits the stall reporter watches */
 
 void platform_log(const char *format, ...);
 /* build 112: the GE layer logs through ge_log (defined with the deferral's
@@ -276,7 +277,7 @@ newest one is kept here (the call is a system call; the stall wrapper, below)
 and the main CPU passes it on when the run of waiting calls ends */
 static int stall_me_qid = 0;
 static void *stall_me_address = NULL;
-static unsigned long stall_forwarded; /* (defined with the stall wrapper) */
+static PSP_MAIN_SIDE unsigned long stall_forwarded; /* (defined with the stall wrapper) */
 int __real_sceGeListUpdateStallAddr(int qid, void *stall);
 /* gebusy2 (with the stall wrapper): the Media Engine's chunks given to the
 GE, and the main CPU's waits, for the GE's own busy time */
@@ -556,13 +557,13 @@ int psp_display_release(void);
 extern volatile int psp_ge_enqueued;
 int sceGuFinishId(unsigned int id); /* pspgu: sceGuFinish with the FINISH's id */
 static PSP_MAIN_SIDE void *shot_buffer = NULL; /* the buffer screenshot() reads (the shown frame's) */
-static int stall_force; /* (defined with the stall wrapper) */
+static PSP_MAIN_SIDE int stall_force; /* (defined with the stall wrapper) */
 static int inflight_finish_left = 0; /* geinflight: the list's finish waits for the main CPU */
 /* set by the frame's job itself (its args), so the ME never reads the main
 CPU's words for it: publish each stall address, and serve the ring's jobs
 between records (geinflight) */
 static int replay_inflight = 0;
-static int replay_kinds_on = 0; /* "mekinds" (see defer_replay) */
+static PSP_MAIN_SIDE int replay_kinds_on = 0; /* "mekinds" (see defer_replay) */
 static PSP_MAIN_SIDE unsigned long inflight_frames = 0, inflight_words = 0, inflight_words_most = 0;
 /* the whole frame's words, the parts carried out when the buffer filled
 included (inflight_words counts only what is left at the sync) */
@@ -598,8 +599,9 @@ psp_ge_frame_window, psp_ge_budget, psp_ge_setting) never drains */
 /* build 118: the calls are written down only on the main CPU, never while
 carrying out. On the Media Engine (gemeoverlap) the main CPU's own words
 (defer_used, defer_replaying) say what the main CPU is doing meanwhile, not
-the ME: there the test is psp_on_me(), its own stack */
-#define DEFER_RECORDING() (defer_on && !defer_replaying && !psp_on_me())
+the ME: there the test is psp_on_me(), its own stack, made first, so the ME
+never reads those words' lines at all */
+#define DEFER_RECORDING() (!psp_on_me() && defer_on && !defer_replaying)
 #define GE_DEFER_DRAIN() do { if (!psp_on_me() && defer_used && !defer_replaying) defer_drain_for(__func__); } while (0)
 /* a deferred call's own test: deferring this frame, not already carrying
 out, not inside a model too big to defer, and written down */
@@ -2127,11 +2129,17 @@ static void chunk_publish(int mode)
 			inflight_me_out = 1;
 			psp_me_window[0] = 1;
 		}
+		/* as the PSP's path does: the records written back before the piece
+		(the emulator's cache model then sees what the ME would), and the
+		piece's own words written inside its mark as the ME's */
+		sceKernelDcacheWritebackAll();
 		defer_replaying = 1;
 		psp_me_context = defer_me_thread ? defer_me_thread : 1;
+		__asm__ __volatile__("" ::: "memory");
 		replay_inflight = 1;
 		defer_replay(defer_buffer + chunk_published, defer_used - chunk_published, 0);
 		replay_inflight = 0;
+		__asm__ __volatile__("" ::: "memory");
 		psp_me_context = 0;
 		defer_replaying = 0;
 		chunk_published = defer_used;
@@ -2485,7 +2493,9 @@ static void show2_settle(int why)
 		return;
 	show2_owed = 0;
 	start = sceKernelGetSystemTimeLow();
+	PSP_WAIT_BEGIN(PSP_WAIT_SHOW_SETTLE);
 	sceKernelWaitSema(show2_sema, 1, NULL);
+	PSP_WAIT_END(PSP_WAIT_SHOW_SETTLE);
 	show2_waited[why]++;
 	show2_wait_us[why] += sceKernelGetSystemTimeLow() - start;
 	if (show3_on)
@@ -2537,7 +2547,9 @@ static void show2_list_drop(void)
 	show2_list_started = 0;
 	stall_force = 1;
 	sceGuFinish();
+	PSP_WAIT_BEGIN(PSP_WAIT_LIST_DROP);
 	sceGuSync(0, 0);
+	PSP_WAIT_END(PSP_WAIT_LIST_DROP);
 	stall_force = 0;
 }
 
@@ -3670,8 +3682,12 @@ always goes through (stall_force, psp_ge_frame_end). Keep word "stalleach":
 every update passed on, as before */
 #define STALL_BATCH 16
 int __real_sceGeListUpdateStallAddr(int qid, void *stall);
-static int stall_batch = -1, stall_force = 0, stall_pending = 0;
-static unsigned long stall_calls = 0, stall_forwarded = 0, stall_timed = 0, stall_timed_us = 0;
+static int stall_batch = -1, stall_pending = 0;
+static PSP_MAIN_SIDE int stall_force = 0;
+static unsigned long stall_calls = 0;
+/* the main CPU's alone: kept off the line of the ME's stall_me_address, which
+its write-back could otherwise put back to an older address (mechunk) */
+static PSP_MAIN_SIDE unsigned long stall_forwarded = 0, stall_timed = 0, stall_timed_us = 0;
 
 /* build 79: "geserial" (and the debug menu): no stall update reaches the GE
 until the frame's list is finished, so the GE starts when the CPU is done
@@ -4212,7 +4228,12 @@ little differently (docs/review_cutstream.md), so it is the maintainer's call */
 
 /* build 37: CPU time in the renderer's entry points, by kind, for the log */
 #define GE_ENTRIES 9
-static unsigned long ge_entry_us[GE_ENTRIES];
+/* each CPU's own counters on lines of their own: the ME times the entries and
+parts it replays (mechunk), and a write-back of its lines must never land on
+the main CPU's words beside them (psp_pass_mode, the texture levels), nor
+the other way. The log reports the main CPU's */
+static unsigned long ge_entry_us_by[2][16] __attribute__((aligned(64)));
+#define ge_entry_us (ge_entry_us_by[PSP_ME_WORK() ? 1 : 0])
 /* build 47: inside the two biggest entries (level draws and model parts,
 5 ms a frame each in b46), and decals per call. Each mark is a
 sceKernelGetSystemTimeLow call; their own cost is measured once at the
@@ -4231,12 +4252,16 @@ static int tex_level_mode = GU_TEXTURE_AUTO;
 static float tex_bias = 0.0f;
 #define SHOWCASE_BIAS_DEFAULT 8 /* quarter levels: two levels coarser, judged right on a PSP-1000 by hand (sharper levels shimmer on the hull); a bias smears the ring and the sky some, so 4 is still to be tried by hand; showcasebias0 as before */
 static int in_sky;
-static unsigned long ge_part_us[GE_PARTS], ge_part_calls[GE_PARTS];
+static unsigned long ge_part_us_by[2][16] __attribute__((aligned(64)));
+static unsigned long ge_part_calls_by[2][16] __attribute__((aligned(64)));
+#define ge_part_us (ge_part_us_by[PSP_ME_WORK() ? 1 : 0])
+#define ge_part_calls (ge_part_calls_by[PSP_ME_WORK() ? 1 : 0])
 static const char *const ge_part_names[GE_PARTS] = {
 	"level: stream + index range", "level: classify corners", "level: cut up", "level: passes (binds, lists)",
 	"model: convert", "model: node matrix", "model: near-plane filter", "model: bind + state + lighting",
 	"model: geometry", "model: two-sided + change/glow passes", "decal calls" };
-static unsigned int part_mark;
+static unsigned int part_mark_by[2][16] __attribute__((aligned(64)));
+#define part_mark (part_mark_by[PSP_ME_WORK() ? 1 : 0][0])
 static inline void part_start(void)
 {
 	part_mark = ge_clock();
@@ -6167,6 +6192,10 @@ void psp_ge_window_begin(const float *position, const float *forward, const floa
 	float vertical_field_of_view, float z_near, float z_far)
 {
 	rso_window();
+	/* B41: a sleep asked is carried out at a frame's first window, before
+	anything of the frame reaches the GE layer (psp_sleep.c) */
+	if (!window_main_done && !PSP_ME_WORK())
+		psp_sleep_check();
 	if (!(z_near > 0.01f))
 		z_near = 0.05f;
 	if (!(z_far > z_near))
@@ -7101,6 +7130,23 @@ static unsigned long carve_steps = 0, carve_returns = 0;
 /* "heaproom256": the bytes the carve keeps from the map's open to its end (0:
 none), the arena's share it stands in for */
 static unsigned int carve_floor = 0;
+/* "carveshare" (B34): the carve's free steps lent back to the textures while
+the copies don't need them, rather than only once it is empty. The copies'
+pieces sit at the carve's top (placed there, and compacted upward), so its
+free bytes gather at its bottom, next to the texture RAM cache; a bottom
+step free for CARVE_SHARE_FRAMES frame ends in a row, in a frame that wanted
+no growth, goes back to the textures, one a frame. The copies take it back
+as before (carve_grow) when they find no room. On a10 the section loads
+empty the carve and the copies then use a third of it, while the textures
+of the boarding craft are refused room for want of an 86 KB run [M, PSP-3000
+census]. On by default ("carveshareoff" off). Read once a map
+(psp_ge_level_carve), as the copies' pieces may be placed from the Media
+Engine's work */
+#define CARVE_SHARE_FRAMES 8
+#define CARVE_RETAKE_FRAMES 300
+static int carve_share = 0;
+static unsigned int carve_bottom_free = 0, carve_shared_frame = 0;
+static unsigned long carve_shares = 0, carve_retakes = 0, carve_share_compactions = 0;
 unsigned int psp_tex_ram_textures(void);
 static void carve_release(void);
 static int carve_grow(unsigned int deficit);
@@ -7223,13 +7269,25 @@ the rest is worth keeping; NULL: none */
 static void *arena_take(struct copy_room *room, unsigned int size, void **owner)
 {
 	struct arena_block *block, *best = NULL;
+	int top = room == CARVE_ROOM && carve_share > 0; /* carveshare: the highest best fit, the piece at its top */
 
 	for (block = (struct arena_block *)room->start; block; block = arena_next(room, block))
-		if (!block->used && block->size >= size && (!best || block->size < best->size))
+		if (!block->used && block->size >= size && (!best || block->size < best->size || (top && block->size == best->size)))
 			best = block;
 	if (!best)
 		return NULL;
-	if (best->size - size >= ARENA_SPLIT_LEAST)
+	if (top && best->size - size >= ARENA_SPLIT_LEAST)
+	{
+		struct arena_block *piece = (struct arena_block *)((char *)best + best->size - size), *after = arena_next(room, best);
+
+		piece->size = size;
+		piece->previous = best->size - size;
+		best->size -= size;
+		if (after)
+			after->previous = size;
+		best = piece;
+	}
+	else if (best->size - size >= ARENA_SPLIT_LEAST)
 	{
 		struct arena_block *rest = (struct arena_block *)((char *)best + size), *after;
 
@@ -7439,6 +7497,58 @@ static void __attribute__((cold)) arena_compact(struct copy_room *room)
 	if (first_moved)
 		ge_writeback(first_moved, (unsigned int)(to - first_moved));
 	arena_compactions++;
+	arena_moved_kb += moved / 1024;
+}
+
+/* carveshare: the carve's used blocks moved to its top, in order, so its
+free bytes lie in one block at its bottom. Walked from the top down, each
+block moves up past free space only, never over a block not yet moved */
+static void __attribute__((cold)) carve_compact_up(struct copy_room *room)
+{
+	struct arena_block *block, *last = NULL, *placed = NULL, *below;
+	char *to = room->start + room->bytes, *end = to;
+	unsigned long moved = 0;
+
+	for (block = (struct arena_block *)room->start; block; block = arena_next(room, block))
+		last = block;
+	for (block = last; block; block = below)
+	{
+		unsigned int size = block->size;
+
+		below = block->previous ? (struct arena_block *)((char *)block - block->previous) : NULL;
+		if (!block->used)
+			continue;
+		if ((char *)block != to - size)
+		{
+			void *was = block + 1;
+
+			memmove(to - size, block, size);
+			moved += size;
+			vm_level_move(was, (struct arena_block *)(to - size) + 1);
+		}
+		block = (struct arena_block *)(to - size);
+		if (block->owner)
+			*block->owner = block + 1;
+		if (placed)
+			placed->previous = size;
+		placed = block;
+		to -= size;
+	}
+	if (to > room->start)
+	{
+		block = (struct arena_block *)room->start;
+		block->size = (unsigned int)(to - room->start);
+		block->previous = 0;
+		block->used = 0;
+		block->owner = NULL;
+		if (placed)
+			placed->previous = block->size;
+	}
+	else if (placed)
+		placed->previous = 0;
+	if (moved)
+		ge_writeback(to, (unsigned int)(end - to));
+	carve_share_compactions++;
 	arena_moved_kb += moved / 1024;
 }
 
@@ -7883,6 +7993,9 @@ void psp_ge_level_carve(int carve_from_textures)
 	carve_floor = 0;
 	carve_largest = 0;
 	carve_peak = carve_pieces = carve_pieces_peak = carve_steps = carve_returns = 0;
+	carve_share = psp_keep("carveshare") != 0;
+	carve_bottom_free = carve_shared_frame = 0;
+	carve_shares = carve_retakes = carve_share_compactions = 0;
 	if (!carve_from_textures)
 		return; /* the geometry cache from the heap: the textures keep the whole block */
 	if (kb <= 0 || psp_showcase_map || psp_keep("noarena") || psp_keep_number("streamsqueeze", 0) > 0)
@@ -8004,10 +8117,67 @@ static int __attribute__((cold)) carve_grow(unsigned int deficit)
 	carve_given += step;
 	carve_steps++;
 	carve_idle = 0;
+	if (carve_shares && ge_hot.stream_frame - carve_shared_frame < CARVE_RETAKE_FRAMES)
+		carve_retakes++;
 	if (carve_steps <= 16)
 		platform_log("GE: the level carve grew %u KB to %u of %u KB at %08x (the copies wanted %u KB more); the texture RAM cache keeps %u KB",
 			step / 1024, carve_given / 1024, carve_most / 1024, (unsigned int)at, deficit / 1024, psp_tex_ram_textures() / 1024);
 	return 1;
+}
+
+/* carveshare: the carve's bottom step given back to the texture RAM cache
+once it has been free for CARVE_SHARE_FRAMES frame ends in a row, in frames
+that wanted no growth; never below the heaproom floor, and only while the
+carve still lies right below the other caches' shares. The GE is let finish
+first, as for a compaction: a copy let go a few frames ago may still be in a
+list in flight, and textures will be read into the step */
+static void __attribute__((cold)) carve_share_frame_end(unsigned int deficit)
+{
+	struct arena_block *first, *next;
+
+	if (!room_open(CARVE_ROOM) || deficit)
+	{
+		carve_bottom_free = 0;
+		return;
+	}
+	first = (struct arena_block *)CARVE_ROOM->start;
+	if (first->used || first->size < LEVEL_CARVE_STEP || carve_given < carve_floor + LEVEL_CARVE_STEP)
+	{
+		carve_bottom_free = 0;
+		return;
+	}
+	if (++carve_bottom_free < CARVE_SHARE_FRAMES || psp_tex_carved() != carve_below + carve_given)
+		return;
+	show2_settle(SHOW2_COMPACT);
+	if (CARVE_ROOM->bytes == LEVEL_CARVE_STEP)
+		carve_release(); /* the last step, free: the carve given back whole */
+	else
+	{
+		next = arena_next(CARVE_ROOM, first);
+		if (first->size > LEVEL_CARVE_STEP)
+		{
+			struct arena_block *rest = (struct arena_block *)((char *)first + LEVEL_CARVE_STEP);
+
+			rest->size = first->size - LEVEL_CARVE_STEP;
+			rest->previous = 0;
+			rest->used = 0;
+			rest->owner = NULL;
+			if (next)
+				next->previous = rest->size;
+		}
+		else if (next)
+			next->previous = 0;
+		CARVE_ROOM->start += LEVEL_CARVE_STEP;
+		CARVE_ROOM->bytes -= LEVEL_CARVE_STEP;
+		carve_given -= LEVEL_CARVE_STEP;
+		psp_tex_carve(carve_below + carve_given);
+	}
+	carve_shares++;
+	carve_shared_frame = ge_hot.stream_frame;
+	carve_bottom_free = 0;
+	if (carve_shares <= 16)
+		platform_log("GE: carveshare: a free %u KB step of the level carve lent to the texture RAM cache (the carve %u KB, the textures %u KB)",
+			LEVEL_CARVE_STEP / 1024, carve_given / 1024, psp_tex_ram_textures() / 1024);
 }
 
 /* at a frame's end, after the arena's housekeeping: what the copies lacked
@@ -8053,6 +8223,8 @@ static void __attribute__((cold)) carve_frame_grow(void)
 	if (deficit && carve_grow(deficit))
 		for (k = 0; k < stream_waiting_count; k++)
 			stream_waiting[k].arena_after = ge_hot.stream_frame;
+	if (carve_share > 0)
+		carve_share_frame_end(deficit);
 	if (CARVE_ROOM->start && !carve_lost)
 	{
 		if (CARVE_ROOM->used || carve_floor)
@@ -8081,6 +8253,9 @@ static void __attribute__((cold)) carve_report(void)
 		carve_given / 1024, carve_most / 1024, carve_steps, carve_returns, psp_tex_ram_textures() / 1024, copies, carve_pieces,
 		CARVE_ROOM->start ? CARVE_ROOM->used / 1024 : 0, carve_largest / 1024, carve_peak / 1024, carve_pieces_peak,
 		carve_sleeps, carve_lost ? " (lost now)" : "");
+	if (carve_share > 0)
+		platform_log("GE: carveshare: %lu steps lent to the textures, %lu taken back within %d frames of a lending; %lu upward compactions",
+			carve_shares, carve_retakes, CARVE_RETAKE_FRAMES, carve_share_compactions);
 }
 
 /* the power callback's thread, before the PSP sleeps: the carve goes back to
@@ -8110,7 +8285,21 @@ static void __attribute__((cold)) arena_frame_end(void)
 		overflowed = arena_from_heap != arena_seen_from_heap;
 		arena_seen_from_heap = arena_from_heap;
 		for (k = 0; k < 2; k++)
-			if (free_total[k] >= 64 * 1024 && largest[k] < free_total[k] / 2 &&
+			if (k == 1 && carve_share > 0)
+			{
+				/* carveshare: upward, when that frees a bottom step to lend */
+				const struct arena_block *first = (const struct arena_block *)CARVE_ROOM->start;
+
+				if (room_open(CARVE_ROOM) && free_total[k] >= LEVEL_CARVE_STEP && carve_given >= carve_floor + LEVEL_CARVE_STEP &&
+					(first->used || first->size < LEVEL_CARVE_STEP) &&
+					ge_hot.stream_frame - arena_last_compact >= ARENA_COMPACT_EVERY)
+				{
+					show2_settle(SHOW2_COMPACT);
+					carve_compact_up(CARVE_ROOM);
+					compacted = 1;
+				}
+			}
+			else if (free_total[k] >= 64 * 1024 && largest[k] < free_total[k] / 2 &&
 				(overflowed || ge_hot.stream_frame - arena_last_compact >= ARENA_COMPACT_EVERY))
 			{
 				show2_settle(SHOW2_COMPACT); /* geshow2: it moves copies the GE may be drawing from */
@@ -10726,7 +10915,7 @@ static const void *converted[CONVERTED_BUFFERS];
 /* build 68: the geometry cache's generation of the block when it was
 converted; the block can hold other vertices after an eviction */
 static unsigned int converted_generation[CONVERTED_BUFFERS];
-static unsigned long converted_count = 0, reconverted_count = 0;
+static PSP_MAIN_SIDE unsigned long converted_count = 0, reconverted_count = 0; /* the main CPU's: only it converts */
 static unsigned long multi_node_rigid = 0, transparent_placed = 0;
 /* multi_node_rigid by why: see-through, no triangles given, the skinning plan
 failed (the log names only the first 12 buffers, which see-through parts
@@ -10748,7 +10937,12 @@ static unsigned char converted_step[CONVERTED_BUFFERS];
 static int convert_float_only = 0;
 /* the step of the block model_convert last answered for (0: floats), and of
 the part being drawn */
-static float convert_k = 0.0f, part_k14 = 0.0f;
+static float part_k14 = 0.0f;
+/* model_convert's step for its caller, one per CPU: the main CPU converts as
+it writes a frame down while the Media Engine's draws read their parts'
+steps (mechunk), so one word written by both would lose one CPU's value */
+static float convert_k_by[2][16] __attribute__((aligned(64)));
+#define convert_k (convert_k_by[PSP_ME_WORK() ? 1 : 0][0])
 static unsigned long model14_parts = 0, model14_vertices = 0, model14_refused = 0;
 /* skinned parts left at 28/32 bytes: what step 3b would take 10 bytes a vertex off */
 static unsigned long model14_skinned_parts = 0, model14_skinned_vertices = 0;
@@ -11608,7 +11802,7 @@ entries it checks, so smaller sweeps cost less each. "sweeplate": at three
 quarters only, as before */
 #define CONVERTED_SWEEP_STEP 256
 static int converted_sweep_mark = CONVERTED_BUFFERS / 4;
-static int converted_sweep_late = -1;
+static PSP_MAIN_SIDE int converted_sweep_late = -1;
 unsigned int psp_geo_generation(const void *ptr);
 
 static void converted_sweep(void)
@@ -11739,7 +11933,7 @@ struct vm_entry
 };
 static struct vm_entry *vm = NULL;
 static unsigned short *vm_hash = NULL, *vm_order = NULL;
-static int vm_count = 0;
+static PSP_MAIN_SIDE int vm_count = 0; /* the main CPU's (vm_find, at the record's writing) */
 static unsigned int vm_base = 0, vm_size = 0, vm_frame = 0;
 static unsigned long vm_draws = 0, vm_redirects = 0, vm_copied = 0, vm_dropped = 0, vm_full = 0;
 
@@ -11755,8 +11949,8 @@ it is good, nothing is released or moved. The reads the ranking needs go in
 a tally only the ME's side writes (an entry's index; the last two words its
 draws and redirects), folded in at the frame's end once the ME is done. The
 same bytes: the same pixels */
-static int vm_me_on = 0, vm_me_dry = 0;
-static unsigned int *vm_me_tally = NULL;
+static PSP_MAIN_SIDE int vm_me_on = 0, vm_me_dry = 0;
+static PSP_MAIN_SIDE unsigned int *vm_me_tally = NULL;
 /* "mevramdry" (a test, off): the ME's reads go in the tally and the
 ranking as with mevram, so the frame's end uploads and evicts the same, but
 the ME's draws keep reading main RAM. Set against mevram it tells the
@@ -11900,7 +12094,7 @@ models leave 226-365 KB of the room idle. A stream is valid until it is
 written again (its origin moved), freed, or moved by the arena; each of
 those releases its copy (the quarantine covers a list the GE is still
 drawing), so a stale copy is never drawn. The same bytes: the same pixels */
-static int vm_level_on = -1;
+static PSP_MAIN_SIDE int vm_level_on = -1;
 
 /* a level stream just written (built, or its origin moved): its copy, if
 any, no longer holds its bytes */
@@ -12129,6 +12323,232 @@ struct skin_batch;
 static void batch_sphere(struct skin_batch *b, const struct skin_part *skin, const void *vertices);
 static PSP_MAIN_SIDE int batch_sphere_old = -1;
 
+/* ---------- PRECONVERT (docs/plan_preconvert.md): the buffers the bake
+converted (tools/modelconvert.py), read as blocks into the geometry cache
+(psp_geo.c, psp_vertex_lock): a 64-byte header, then the records exactly as
+model_convert writes them, then a skinned part's plan as model_convert makes
+it (struct skin_part, its batches with their spheres, their triangles, their
+runs' spheres), offsets from the block until psp_ge_pcv_relocate makes them
+addresses. Such a buffer is drawn as it is read, on either CPU: nothing to
+convert, nothing on the heap, nothing for the Media Engine's work to leave
+out. Its plan lives and dies with its block, so it is never in converted[]
+or skinned[]. A buffer the bake didn't take (see-through draws, buffers two
+parts draw with different triangles) converts at run time as before */
+#define PCV_MAGIC 0x31564350u /* 'PCV1' */
+#define PCV_SKINNED 1u
+#define PCV_BAD 0x80000000u
+struct pcv_header
+{
+	unsigned int magic, flags, count, stride, index_count, strip, uncompressed, raw;
+	struct skin_part part;
+	unsigned int checked, raw_indices, spare;
+};
+typedef char verify_pcv_header[sizeof(struct pcv_header) == 64 ? 1 : -1];
+typedef char verify_pcv_batch[sizeof(struct skin_batch) == 40 && offsetof(struct skin_batch, indices) == 8 &&
+	offsetof(struct skin_batch, center) == 16 && offsetof(struct skin_batch, clusters) == 32 ? 1 : -1];
+extern int psp_pcv_on; /* psp_geo.c: this map's pack has baked buffers, in use */
+const void *psp_geo_baked(const void *vertices);
+static PSP_MAIN_SIDE unsigned long pcv_answers = 0, pcv_refused = 0, pcv_bad_blocks = 0, pcv_relocated = 0;
+
+/* a block just read (main CPU, before its write-back): its plan's offsets
+made addresses, each checked to lie inside the block; a block that fails is
+marked and never drawn (model_convert refuses it) */
+int psp_ge_pcv_relocate(void *block, unsigned int size)
+{
+	struct pcv_header *h = block;
+	unsigned int at = (unsigned int)block, b;
+
+	if (h->magic != PCV_MAGIC || h->stride > 32 || 64u + h->count * h->stride > size)
+		goto bad;
+	if (h->flags & PCV_SKINNED)
+	{
+		unsigned int batches = (unsigned int)h->part.batches;
+
+		if (h->part.batch_count <= 0 || h->part.batch_count > 64 || batches % 4 ||
+			batches + 40u * (unsigned int)h->part.batch_count > size || h->part.stride != (int)h->stride)
+			goto bad;
+		h->part.batches = (struct skin_batch *)(at + batches);
+		for (b = 0; b < (unsigned int)h->part.batch_count; b++)
+		{
+			struct skin_batch *batch = &h->part.batches[b];
+			unsigned int list = (unsigned int)batch->indices, runs = (unsigned int)batch->clusters;
+
+			if (list % 2 || batch->index_count < 0 || list + 2u * (unsigned int)batch->index_count > size ||
+				batch->cluster_count < 0 || runs % 4 || runs + 16u * (unsigned int)batch->cluster_count > size)
+				goto bad;
+			batch->indices = (unsigned short *)(at + list);
+			batch->clusters = batch->cluster_count ? (float (*)[4])(at + runs) : NULL;
+		}
+	}
+	pcv_relocated++;
+	return 1;
+bad:
+	h->flags = PCV_BAD;
+	pcv_bad_blocks++;
+	return 0;
+}
+
+/* model_convert's answer for a baked buffer: its plan, or rigid; 0 when the
+draw doesn't match what the bake converted for (never, unless map and pack
+disagree) or when a see-through draw asks for it (it locks the raw buffer) */
+static int pcv_answer(const struct pcv_header *h, int count, int uncompressed, int index_count, int strip,
+	struct skin_part **skin)
+{
+	int me = PSP_ME_WORK();
+
+	if ((h->flags & PCV_BAD) || !skin || h->count != (unsigned int)count || h->uncompressed != (unsigned int)uncompressed ||
+		h->index_count != (unsigned int)index_count || h->strip != (unsigned int)(strip != 0))
+	{
+		if (!me)
+			pcv_refused++;
+		return 0;
+	}
+	*skin = (h->flags & PCV_SKINNED) ? (struct skin_part *)&h->part : NULL;
+	if (!me)
+		pcv_answers++;
+	return 1;
+}
+
+/* a baked block locked for a draw (psp_vertex_lock, main CPU, as the draw is
+written down): the first lock after each read stands for the conversion a
+raw buffer would have had there, so the block is known to vrammodels as a
+converted buffer is (vm_note), once a load. Without it no baked buffer ever
+got a VRAM copy: the ME's replay answers baked draws, and only main-CPU
+conversions reached vm_note, so the GE read every baked vertex from main
+RAM and the bus it shares with the main CPU */
+void psp_ge_pcv_locked(void *block)
+{
+	struct pcv_header *h = block;
+
+	if (h->spare || (h->flags & PCV_BAD))
+		return;
+	h->spare = 1;
+	vm_note((unsigned char *)block + 64, h->count * h->stride);
+	/* the header's line is one the ME's replay reads (the plan) */
+	sceKernelDcacheWritebackRange(block, 64);
+}
+
+/* the records model_convert writes in place, from the vertices there and the
+part's plan (NULL: rigid), and each batch's sphere; also the run-time side
+of preconvertcheck */
+static void convert_records(void *vertices, int count, int uncompressed, struct skin_part *part,
+	const signed char *node0, const signed char *node1, const unsigned char *weight0)
+{
+	int index;
+
+	for (index = 0; index < count; index++)
+	{
+		unsigned char *vertex = (unsigned char *)vertices + 32 * index;
+		float position[3], uv[2];
+		unsigned int nodes, packed_normal = 0;
+		short texcoord[2] = { 0, 0 };
+
+		if (uncompressed)
+		{
+			/* 68-byte vertices (the sky, and models too big for 16 bits): packed
+			down into the same records, in place; record i ends before vertex i
+			starts, and vertices before it are already read */
+			const unsigned char *source = (const unsigned char *)vertices + 68 * index;
+			short node_indices[2];
+
+			memcpy(position, source, 12);
+			memcpy(uv, source + 48, 8);
+			memcpy(node_indices, source + 56, 4);
+			{
+				float n[3];
+
+				memcpy(n, source + 12, 12);
+				packed_normal = pack_normal(n);
+			}
+			nodes = (unsigned int)(node_indices[0] >= 0 && node_indices[0] < 85 ? node_indices[0] * 3 : 0);
+		}
+		else
+		{
+			memcpy(position, vertex, 12);
+			memcpy(&packed_normal, vertex + 12, 4);
+			memcpy(texcoord, vertex + 24, 4);
+			memcpy(&nodes, vertex + 28, 4);
+			uv[0] = texcoord[0] * (1.0f / 32767.0f);
+			uv[1] = texcoord[1] * (1.0f / 32767.0f);
+		}
+		{
+			float normal[3];
+			int k;
+
+			unpack_normal(packed_normal, normal);
+			if (part)
+			{
+				/* skinned: weights by slot, then as the rigid record */
+				unsigned char *record = (unsigned char *)vertices + part->stride * index;
+				int uv_at = part->stride - 24;
+
+				memset(record, 0, uv_at);
+				if (node1[index] >= 0)
+				{
+					record[(int)skin_slot[(int)node0[index]]] = weight0[index];
+					record[(int)skin_slot[(int)node1[index]]] = (unsigned char)(128 - weight0[index]);
+				}
+				else
+					record[(int)skin_slot[(int)node0[index]]] = 128;
+				memcpy(record + uv_at, uv, 8);
+				for (k = 0; k < 3; k++)
+					record[uv_at + 8 + k] = (unsigned char)(signed char)(normal[k] * 127.0f);
+				record[uv_at + 11] = 0;
+				memcpy(record + uv_at + 12, position, 12);
+			}
+			else if (convert_k != 0.0f)
+			{
+				/* the 14-byte record; record i ends before vertex i + 1 starts */
+				unsigned char *record = (unsigned char *)vertices + 14 * index;
+				unsigned short u16[2];
+				short q[3];
+				float inverse = 1.0f / convert_k;
+
+				u16[0] = (unsigned short)(texcoord[0] + 32768);
+				u16[1] = (unsigned short)(texcoord[1] + 32768);
+				for (k = 0; k < 3; k++)
+				{
+					float v = position[k] * inverse;
+					int r = (int)(v < 0.0f ? v - 0.5f : v + 0.5f);
+
+					q[k] = (short)(r < -32767 ? -32767 : r > 32767 ? 32767 : r);
+				}
+				memcpy(record, u16, 4);
+				for (k = 0; k < 3; k++)
+					record[4 + k] = (unsigned char)(signed char)(normal[k] * 127.0f);
+				record[7] = (unsigned char)(nodes & 0xFF);
+				memcpy(record + 8, q, 6);
+			}
+			else
+			{
+				/* 24 bytes: texture coordinate, an 8-bit normal and the first
+				node (in the padding byte the GE skips), position (build 22) */
+				unsigned char *record = (unsigned char *)vertices + 24 * index;
+
+				memcpy(record, uv, 8);
+				for (k = 0; k < 3; k++)
+					record[8 + k] = (unsigned char)(signed char)(normal[k] * 127.0f);
+				record[11] = (unsigned char)(nodes & 0xFF);
+				memcpy(record + 12, position, 12);
+			}
+		}
+	}
+	/* each batch's sphere now, on the main CPU, from the records just
+	written: the plan is a plain heap block, and the Media Engine's replay,
+	which draws the batch near the eye, must write none of it (a line it
+	writes back carries a neighbouring chunk's header as it was).
+	"batchsphereold": worked out the first time it is drawn near the eye */
+	if (batch_sphere_old < 0)
+		batch_sphere_old = psp_keep("batchsphereold") != 0;
+	if (part && !batch_sphere_old)
+	{
+		int b;
+
+		for (b = 0; b < part->batch_count; b++)
+			batch_sphere(&part->batches[b], part, vertices);
+	}
+}
+
 static int model_convert(void *vertices, int count, int uncompressed, const unsigned short *indices, int index_count,
 	int strip, struct skin_part **skin)
 {
@@ -12141,6 +12561,13 @@ static int model_convert(void *vertices, int count, int uncompressed, const unsi
 	if (skin)
 		*skin = NULL;
 	convert_k = 0.0f;
+	if (psp_pcv_on)
+	{
+		const struct pcv_header *baked = psp_geo_baked(vertices);
+
+		if (baked)
+			return pcv_answer(baked, count, uncompressed, index_count, strip, skin);
+	}
 	/* read on the main CPU (psp_ge_model_begin); the ME only reads it */
 	if (model14 < 0 && !psp_on_me())
 		model14 = psp_keep("model14");
@@ -12303,117 +12730,7 @@ static int model_convert(void *vertices, int count, int uncompressed, const unsi
 			model14_vertices += (unsigned long)count;
 		}
 	}
-	for (index = 0; index < count; index++)
-	{
-		unsigned char *vertex = (unsigned char *)vertices + 32 * index;
-		float position[3], uv[2];
-		unsigned int nodes, packed_normal = 0;
-		short texcoord[2] = { 0, 0 };
-
-		if (uncompressed)
-		{
-			/* 68-byte vertices (the sky, and models too big for 16 bits): packed
-			down into the same records, in place; record i ends before vertex i
-			starts, and vertices before it are already read */
-			const unsigned char *source = (const unsigned char *)vertices + 68 * index;
-			short node_indices[2];
-
-			memcpy(position, source, 12);
-			memcpy(uv, source + 48, 8);
-			memcpy(node_indices, source + 56, 4);
-			{
-				float n[3];
-
-				memcpy(n, source + 12, 12);
-				packed_normal = pack_normal(n);
-			}
-			nodes = (unsigned int)(node_indices[0] >= 0 && node_indices[0] < 85 ? node_indices[0] * 3 : 0);
-		}
-		else
-		{
-			memcpy(position, vertex, 12);
-			memcpy(&packed_normal, vertex + 12, 4);
-			memcpy(texcoord, vertex + 24, 4);
-			memcpy(&nodes, vertex + 28, 4);
-			uv[0] = texcoord[0] * (1.0f / 32767.0f);
-			uv[1] = texcoord[1] * (1.0f / 32767.0f);
-		}
-		{
-			float normal[3];
-			int k;
-
-			unpack_normal(packed_normal, normal);
-			if (part)
-			{
-				/* skinned: weights by slot, then as the rigid record */
-				unsigned char *record = (unsigned char *)vertices + part->stride * index;
-				int uv_at = part->stride - 24;
-
-				memset(record, 0, uv_at);
-				if (node1[index] >= 0)
-				{
-					record[(int)skin_slot[(int)node0[index]]] = weight0[index];
-					record[(int)skin_slot[(int)node1[index]]] = (unsigned char)(128 - weight0[index]);
-				}
-				else
-					record[(int)skin_slot[(int)node0[index]]] = 128;
-				memcpy(record + uv_at, uv, 8);
-				for (k = 0; k < 3; k++)
-					record[uv_at + 8 + k] = (unsigned char)(signed char)(normal[k] * 127.0f);
-				record[uv_at + 11] = 0;
-				memcpy(record + uv_at + 12, position, 12);
-			}
-			else if (convert_k != 0.0f)
-			{
-				/* the 14-byte record; record i ends before vertex i + 1 starts */
-				unsigned char *record = (unsigned char *)vertices + 14 * index;
-				unsigned short u16[2];
-				short q[3];
-				float inverse = 1.0f / convert_k;
-
-				u16[0] = (unsigned short)(texcoord[0] + 32768);
-				u16[1] = (unsigned short)(texcoord[1] + 32768);
-				for (k = 0; k < 3; k++)
-				{
-					float v = position[k] * inverse;
-					int r = (int)(v < 0.0f ? v - 0.5f : v + 0.5f);
-
-					q[k] = (short)(r < -32767 ? -32767 : r > 32767 ? 32767 : r);
-				}
-				memcpy(record, u16, 4);
-				for (k = 0; k < 3; k++)
-					record[4 + k] = (unsigned char)(signed char)(normal[k] * 127.0f);
-				record[7] = (unsigned char)(nodes & 0xFF);
-				memcpy(record + 8, q, 6);
-			}
-			else
-			{
-				/* 24 bytes: texture coordinate, an 8-bit normal and the first
-				node (in the padding byte the GE skips), position (build 22) */
-				unsigned char *record = (unsigned char *)vertices + 24 * index;
-
-				memcpy(record, uv, 8);
-				for (k = 0; k < 3; k++)
-					record[8 + k] = (unsigned char)(signed char)(normal[k] * 127.0f);
-				record[11] = (unsigned char)(nodes & 0xFF);
-				memcpy(record + 12, position, 12);
-			}
-		}
-	}
-	/* each batch's sphere now, on the main CPU, from the records just
-	written: the plan is a plain heap block, and the Media Engine's replay,
-	which draws the batch near the eye, must write none of it (a line it
-	writes back carries a neighbouring chunk's header as it was).
-	"batchsphereold": worked out the first time it is drawn near the eye */
-	if (batch_sphere_old < 0)
-		batch_sphere_old = psp_keep("batchsphereold") != 0;
-	if (part && !batch_sphere_old)
-	{
-		int b;
-
-		for (b = 0; b < part->batch_count; b++)
-			batch_sphere(&part->batches[b], part, vertices);
-	}
+	convert_records(vertices, count, uncompressed, part, node0, node1, weight0);
 	free(node0);
 	{
 		int stride = part ? part->stride : convert_k != 0.0f ? 14 : 24;
@@ -12422,6 +12739,99 @@ static int model_convert(void *vertices, int count, int uncompressed, const unsi
 		vm_note(vertices, (unsigned int)(count * stride)); /* vrammodels: a copy may go to VRAM */
 	}
 	return 1;
+}
+
+/* "preconvertcheck": a baked block against the run-time conversion of its
+raw buffer (a copy, converted as model_convert would for an opaque draw),
+record for record and plan for plan, sphere bits included; 1 when they agree.
+Main CPU, once a load (psp_geo.c); the heap's counts are put back after */
+static void near_clusters_make(struct skin_batch *b, const struct skin_part *skin, const void *vertices);
+static unsigned long pcv_differ_records = 0, pcv_differ_plans = 0, pcv_differ_spheres = 0, pcv_differ_runs = 0;
+
+int psp_ge_pcv_check(void *block, const void *raw, unsigned int raw_bytes, const unsigned short *indices)
+{
+	struct pcv_header *h = block;
+	unsigned long saved[7] = { skinned_parts, skin_batches, skin_failures, skin_bytes, skin_live_bytes, skin_live_peak,
+		near_cluster_bytes };
+	unsigned char *copy = malloc(raw_bytes + 3 * h->count);
+	signed char *node0, *node1;
+	unsigned char *weight0;
+	struct skin_part *part;
+	int same = 1, b, stride;
+	float saved_k = convert_k;
+
+	if (!copy || (h->flags & PCV_BAD))
+	{
+		free(copy);
+		return copy ? 0 : 1;
+	}
+	memcpy(copy, raw, raw_bytes);
+	node0 = (signed char *)copy + raw_bytes;
+	node1 = node0 + h->count;
+	weight0 = (unsigned char *)(node1 + h->count);
+	convert_k = 0.0f;
+	part = skin_plan(copy, (int)h->count, (int)h->uncompressed, indices, (int)h->index_count, (int)h->strip, node0, node1,
+		weight0);
+	convert_records(copy, (int)h->count, (int)h->uncompressed, part, node0, node1, weight0);
+	stride = part ? part->stride : 24;
+	if (stride != (int)h->stride || memcmp(copy, (unsigned char *)block + 64, h->count * stride))
+	{
+		same = 0;
+		pcv_differ_records++;
+	}
+	else if (!part != !(h->flags & PCV_SKINNED) ||
+		(part && (part->weights != h->part.weights || part->batch_count != h->part.batch_count)))
+	{
+		same = 0;
+		pcv_differ_plans++;
+	}
+	else if (part)
+		for (b = 0; b < part->batch_count && same; b++)
+		{
+			struct skin_batch *mine = &part->batches[b];
+			const struct skin_batch *baked = &h->part.batches[b];
+
+			near_clusters_make(mine, part, copy);
+			if (memcmp(mine->node, baked->node, SKIN_SLOTS) || mine->index_count != baked->index_count ||
+				memcmp(mine->indices, baked->indices, 2 * mine->index_count))
+			{
+				same = 0;
+				pcv_differ_plans++;
+			}
+			else if (memcmp(mine->center, baked->center, sizeof(mine->center)) || memcmp(&mine->radius, &baked->radius, 4))
+			{
+				same = 0;
+				pcv_differ_spheres++;
+			}
+			else if (mine->cluster_count != baked->cluster_count ||
+				(mine->cluster_count > 0 && memcmp(mine->clusters, baked->clusters, 16 * mine->cluster_count)))
+			{
+				same = 0;
+				pcv_differ_runs++;
+			}
+		}
+	if (!same && pcv_differ_records + pcv_differ_plans + pcv_differ_spheres + pcv_differ_runs <= 8)
+		platform_log("GE: preconvertcheck: the buffer at %08x (%u vertices, %s) differs from its run-time conversion",
+			h->raw, h->count, h->flags & PCV_SKINNED ? "skinned" : "rigid");
+	skin_free(part);
+	free(copy);
+	convert_k = saved_k;
+	skinned_parts = saved[0];
+	skin_batches = saved[1];
+	skin_failures = saved[2];
+	skin_bytes = saved[3];
+	skin_live_bytes = saved[4];
+	skin_live_peak = saved[5];
+	near_cluster_bytes = saved[6];
+	return same;
+}
+
+/* the 300-frame report's line (psp_geo.c) */
+void psp_ge_pcv_report(void)
+{
+	platform_log("GE: preconvert: %lu draws took a baked buffer as it was read, %lu refused (not as baked), %lu blocks relocated, %lu malformed; preconvertcheck differences: records %lu, plans %lu, spheres %lu, runs %lu",
+		pcv_answers, pcv_refused, pcv_relocated, pcv_bad_blocks, pcv_differ_records, pcv_differ_plans, pcv_differ_spheres,
+		pcv_differ_runs);
 }
 
 /* the change colour (build 31): on the Xbox the lit base map is multiplied
@@ -12476,7 +12886,7 @@ list, in every pass). Their floats are staged in the scratchpad: written and
 read back for every model part cut at the near plane, and the emulator's
 cache model counted 0.8 M misses on them over b30's beach fight when they
 were in main memory */
-static float (*model_cut)[CORNER_FLOATS];
+static PSP_MAIN_SIDE float (*model_cut)[CORNER_FLOATS];
 
 void *psp_scratch_take(unsigned int bytes, const char *what); /* psp_scratch.c */
 /* at start, with keep.txt read: the cutting's words, and the scratchpad's buffer */
@@ -12607,14 +13017,14 @@ void *psp_vertex_lock(const struct vertex_buffer *buffer);
 void *psp_index_lock(const struct triangle_buffer *buffer);
 /* read by the fixups: whether to offer objects, every type or scenery only,
 the object offered (NONE, -1, none), and the walk's marks */
-int psp_rso_on = 0, psp_rso_all = 0;
-long psp_rso_object = -1;
-int psp_rso_volatile = 0, psp_rso_capturing = 0;
+PSP_MAIN_SIDE int psp_rso_on = 0, psp_rso_all = 0;
+PSP_MAIN_SIDE long psp_rso_object = -1;
+PSP_MAIN_SIDE int psp_rso_volatile = 0, psp_rso_capturing = 0;
 /* models.c: the key's field where a compare found the inputs changed (0 the
 header, 1 regions, 2 ambient, 3 distant lights, 4 reflection tint, 5 centroid,
 6 radius, 7 change colours, 8 node matrices, 9 the length; 10, here: a
 camera-faded reflection's fraction) */
-int psp_rso_field = 0;
+PSP_MAIN_SIDE int psp_rso_field = 0;
 static PSP_MAIN_SIDE int rso_check = 0, rso_room_tried = 0;
 static PSP_MAIN_SIDE unsigned int *rso_pool = NULL, rso_pool_words = 0, rso_end = 0, rso_entries = 0;
 static PSP_MAIN_SIDE unsigned int rso_slot_entry[RSO_SLOTS]; /* an entry's offset + 1; 0 none */
@@ -15341,7 +15751,7 @@ flight is settled first, as pretouch does, since the replay reads the table
 a conversion may change; most frames convert nothing here */
 static int model_pretouch = -1;
 static unsigned long model_pretouches = 0, model_pretouch_missed = 0;
-static unsigned long pretouch_chunk_skips = 0;
+static PSP_MAIN_SIDE unsigned long pretouch_chunk_skips = 0;
 
 /* the Media Engine still drawing from this frame's records or the last's
 (mechunk's pieces handed to it while the frame is being written, or a
@@ -15365,6 +15775,8 @@ static int model_converted_now(const void *vertices)
 {
 	unsigned int slot = ((unsigned int)vertices >> 4) % CONVERTED_BUFFERS, tries = 0;
 
+	if (psp_pcv_on && psp_geo_baked(vertices))
+		return 1;
 	while (converted[slot] && converted[slot] != vertices)
 	{
 		slot = (slot + 1) % CONVERTED_BUFFERS;
@@ -15672,7 +16084,7 @@ test over the front face beside it: a dashed one-pixel line along a pillar's
 edge (b30's interior). Keep word "overlaysnocull": both sides, as before */
 #define SEETHROUGH_ONE_SIDED 512
 static unsigned short seethrough_next_depth = 0;
-static int seethrough_map_clamp = 0; /* the engine side's, for the next psp_ge_seethrough_shader */
+static PSP_MAIN_SIDE int seethrough_map_clamp = 0; /* the engine side's, for the next psp_ge_seethrough_shader */
 static unsigned long seethrough_exact_draws = 0, seethrough_clamped_draws = 0, seethrough_fog_faded_draws = 0;
 static unsigned long level_culled_draws = 0;
 /* build 116 (b113 #16): a meter shader's parameters, for the next queue
@@ -18977,7 +19389,7 @@ static void hud_quad_dump(void const *vertices, unsigned int key, short blend, f
 		hdump = psp_keep("hdump");
 	/* not again when the defer queue replays the quad (gedefer), which may
 	run on the Media Engine (gemeon) */
-	if (!hdump || defer_replaying || psp_on_me() || !psp_screenshot_requested || !vertices || !key)
+	if (!hdump || psp_on_me() || defer_replaying || !psp_screenshot_requested || !vertices || !key)
 		return;
 	x0 = x1 = in[0].x;
 	y0 = y1 = in[0].y;
@@ -19035,7 +19447,7 @@ void psp_ge_screen_quad(void const *vertices, unsigned int key, short blend, flo
 {
 	hud_quad_dump(vertices, key, blend, red, green, blue, fade, meter_parameters, wrapped);
 	/* the mark is the game thread's: not read again when the queue replays */
-	if (glyph_next >= 0 && !defer_replaying && !psp_on_me())
+	if (glyph_next >= 0 && !psp_on_me() && !defer_replaying)
 	{
 		key = GLYPH_KEY_BASE + (unsigned int)glyph_next;
 		glyph_next = -1;
@@ -19046,7 +19458,7 @@ void psp_ge_screen_quad(void const *vertices, unsigned int key, short blend, flo
 	queued, outside pretouch's guards. Off by default: on the PSP it left the
 	bars as empty as before and lost model palettes (Chief's change colours),
 	so the bars' fault lies upstream of the map. Kept for the bars' A/B */
-	if (meter_parameters && !defer_replaying && !psp_on_me())
+	if (meter_parameters && !psp_on_me() && !defer_replaying)
 	{
 		static int meter_load = -1;
 
@@ -23238,6 +23650,9 @@ void psp_ge_loading_frame(const struct psp_loading_view *view)
 {
 	if ((!ge_ready && !boot_up) || frame_open || !view || boot_frozen)
 		return;
+	/* B41: a load's frame is a quiet point too (no game frame open) */
+	if (ge_ready)
+		psp_sleep_check();
 	show2_list_drop();
 	sceGuStart(GU_DIRECT, ge_ready ? (void *)display_list : (void *)(0x04000000 + BOOT_LIST_AT));
 	/* no picture to start from (a cold start): from black */
@@ -23245,7 +23660,9 @@ void psp_ge_loading_frame(const struct psp_loading_view *view)
 	loading_overlay(view);
 	stall_force = 1;
 	sceGuFinish();
+	PSP_WAIT_BEGIN(PSP_WAIT_LOADING_SYNC);
 	sceGuSync(0, 0);
+	PSP_WAIT_END(PSP_WAIT_LOADING_SYNC);
 	stall_force = 0;
 	if (boot_frozen)
 		return;
@@ -23647,7 +24064,11 @@ static void show_picture(int show3)
 	if (show3)
 		show3_wait_finish(show3_asked & 0xFFFF);
 	else
+	{
+		PSP_WAIT_BEGIN(PSP_WAIT_SHOW_SYNC);
 		sceGuSync(0, 0);
+		PSP_WAIT_END(PSP_WAIT_SHOW_SYNC);
+	}
 	gebusy_wait(0, 1);
 	waited = sceKernelGetSystemTimeLow() - mark;
 	ge_wait_us += waited;
@@ -24697,3 +25118,106 @@ void psp_ge_exit_drain(void)
 	platform_log("GE: exit: the frame out waited for, the list ended, the GE %s (%u ms)",
 		waited < 200 ? "done" : "still busy", waited);
 }
+
+/* B41's sleepready and sleepdryN (psp_sleep.c), on the game thread with no
+frame of its own open (a frame's first window, a load's frame): everything
+the GE layer has out finished, so nothing of it runs while the PSP sleeps.
+The frame out with the Media Engine collected and shown (its end is the
+next record's otherwise), the show asked of the forwarding thread taken, the
+list it started for the next frame ended empty (as a load's frame does), and
+the GE given up to 200 ms to reach the end of its queue, then stopped. The
+window that follows starts its list afresh, so nothing waits on a list from
+before the sleep */
+void psp_ge_sleep_quiet(char *line, int size)
+{
+	unsigned int start = sceKernelGetSystemTimeLow(), out_us, waited = 0;
+	int had_out = inflight_pending || inflight_me_out, stopped = 0;
+
+	if (!ge_ready)
+	{
+		snprintf(line, size, "GE: not started");
+		return;
+	}
+	if (inflight_pending)
+		inflight_sync();
+	GE_DEFER_DRAIN();
+	out_us = sceKernelGetSystemTimeLow() - start;
+	show2_settle(SHOW2_OTHER);
+	show2_list_drop();
+	while (sceGeDrawSync(1) != 0 && waited < 200)
+	{
+		sceKernelDelayThread(1000);
+		waited++;
+	}
+	if (waited >= 200)
+	{
+		PspGeBreakParam unused;
+
+		stopped = sceGeBreak(1, &unused);
+	}
+	show3_out = 0;
+	snprintf(line, size, "GE: %s in %u us, its queue %s %u ms%s", had_out ? "the frame out collected" : "no frame out",
+		out_us, waited < 200 ? "empty after" : "stopped after", waited, stopped < 0 ? " (the stop failed)" : "");
+}
+
+#ifdef PSP_RECON
+/* The GE layer's 300-frame reports zero these counters, sometimes inside the
+span: then only the part after the zero is counted, rather than a wrapped difference */
+static unsigned long visspan_since(unsigned long now, unsigned long then)
+{
+	return now >= then ? now - then : now;
+}
+
+/* "visspan" (recon; docs/mevis_landing.md, step 1): the main CPU's time from
+the frame's visibility to its first reader (render.c: 0 before
+structure_visibility_compute, 1 after it, 2 before lights_preprocess_scene),
+split into visibility itself, the waits this layer times inside the span
+(the ME's frame out, the forwarding thread's show, the GE's end of a frame
+shown by this thread: under geshow2 the forwarding thread waits for it, and
+those waits aren't this thread's) and the rest. Visibility on the ME would
+overlap the span's waits on the GE and its work, not its wait on the ME */
+void psp_ge_visspan(int phase)
+{
+	static int on = -1;
+	static unsigned int mark, frames;
+	static unsigned long me0, show0, ge0, span_us, vis_us, me_us, show_us, ge_us;
+	unsigned int now;
+	unsigned long show = 0;
+	int k;
+
+	if (on < 0)
+		on = psp_keep("visspan") != 0;
+	if (!on || PSP_ME_WORK())
+		return;
+	now = sceKernelGetSystemTimeLow();
+	for (k = 0; k < SHOW2_WHYS; k++)
+		show += show2_wait_us[k];
+	if (phase == 0)
+	{
+		mark = now;
+		me0 = me_overlap_wait_us;
+		show0 = show;
+		ge0 = ge_wait_us;
+		return;
+	}
+	if (phase == 1)
+	{
+		vis_us += now - mark;
+		return;
+	}
+	span_us += now - mark;
+	me_us += visspan_since(me_overlap_wait_us, me0);
+	show_us += visspan_since(show, show0);
+	if (show2_on <= 0 || inflight_thread < 0)
+		ge_us += visspan_since(ge_wait_us, ge0);
+	if (++frames < 150)
+		return;
+	platform_log("GE: visspan: %u frames: visibility to its first reader %.2f ms a frame: visibility %.2f, waiting on the ME's frame %.2f, "
+		"on the show %.2f, on the GE's end %.2f, the rest %.2f",
+		frames, span_us / 1000.0f / frames, vis_us / 1000.0f / frames, me_us / 1000.0f / frames, show_us / 1000.0f / frames,
+		ge_us / 1000.0f / frames,
+		((long)span_us - (long)(vis_us + me_us + show_us + ge_us)) / 1000.0f / frames);
+	frames = 0;
+	span_us = vis_us = me_us = show_us = ge_us = 0;
+}
+#endif

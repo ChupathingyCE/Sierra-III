@@ -1032,6 +1032,9 @@ static void object_report(SceUID file, unsigned long ticks)
 /* build 106: rasterizer.c's model part draws (object_report) */
 unsigned long psp_model_draw_us[3];
 
+void psp_sleepguard_start(void);
+#include "psp_sleep.h" /* B41: the sleep the game thread is ready for */
+
 /* ---------- what the null path keeps (build 19). With the GE drawing, the
 old Direct3D path's shadows, see-through parts, particles, decals, HUD and
 texture loads cost CPU time and draw nothing, and render interpolation
@@ -1109,7 +1112,12 @@ static const struct
 	ME the replay runs beside the writing (a30 7.7 -> 12.7 fps, d20 11.4 ->
 	13.7 on the PSP-3000's ladder120); where it doesn't, the gate leaves the
 	frame whole (b30 6.5 -> 6.6) */
-	{ "mechunk", "mechunkoff" }, { "flipwait", "flipwaitoff" }, PSP_RELEASE_DEFAULTS
+	{ "mechunk", "mechunkoff" }, { "flipwait", "flipwaitoff" }, { "carveshare", "carveshareoff" }, { "sleepready", "sleepreadyoff" },
+	/* the frame's visibility made on the ME while the main CPU goes on to its
+	first reader (structure_visibility.c, mevisland): exact; b30's drawing
+	-2.2 ms in the flight, -4.4 ms landing on the PSP-3000 (sierra-hw
+	40845560977) */
+	{ "mevisland", "mevislandoff" }, PSP_RELEASE_DEFAULTS
 };
 static char keep_defaults_added[KEEP_DEFAULTS_ROOM] = "";
 
@@ -1203,6 +1211,10 @@ static void keep_load(void)
 		keep_cache_lock = sceKernelCreateSema("halo keep cache", 0, 1, 1, NULL);
 	platform_log("null path keeps:%s(keep.txt; skipped otherwise: transparent particles textures interpolation; also: noshadows nodecals nodetail nocull cullflip nooverlays fullparticles novfpu hwprofile hud100 hud115 hud130 hud145 hud160 hudnopush vehiclesawake flaresexact nohud noparticles fulllod awake sleepdebug audiodump savetest menutest ...)",
 		strlen(keep_words) > 2 ? keep_words : " nothing ");
+	/* B41's stopgap (psp_sleepguard.c): the sleep switch held off, once
+	the keep words can say otherwise */
+	psp_sleepguard_start();
+	psp_sleep_start();
 	/* build 89: in two lines (the one line passed the log's 512 characters) */
 	platform_log("keep words, continued: vramlargest clearmagenta nomip listuncached stalleach near2 near4 mipbias1 mipbias2 decaloffset passes overlayoffset decalbig detailbias15 detailbias2 decalall detailnear mipauto detailauto noangle visdump modeldrop overlaynoslope overlaynowall overlayslope1 overlayslope4 overlayfreefar skydump flatshade tdump");
 	platform_log("keep words, continued: nearauto walldump decalnoslope vblankthrottle noboxtest detailallfar verifytags texsqueeze texvramonly colltest geoasync nudgewide decalbatch menushot geserial vramcold uvwide nooverlay meaudio nomeaudio benchrun levelcompact meclassify noskincut novblankthrottle");
@@ -1232,7 +1244,7 @@ static void keep_load(void)
 	platform_log("keep words, build 122's behaviour calls (opt-in, for an A/B): aihalf aihalfdistN aihalfview; campaign only: machinesfar posehalf");
 	platform_log("keep words, compromises: lodpspoff (models' detail picked at the PSP's size, not 1.76x nearer; on by default, lodpsp still accepted), lodpspall (the nearer pick with no floor for models whose lower levels lose a part); recon: lodpspscan (every model's floor logged as a map's first model is drawn)");
 	platform_log("keep words, compromises (opt-in, for an A/B): campaign only: aicad2 (each actor thinks on every other tick, staggered), aicad3 (the same, the timeslice at full rate); recon: aioutcome");
-	platform_log("keep words, the Media Engine's wake: opt-in: mewake (the ME started again after a sleep; mewakeoff wins over it); fix off: meresetwhole (the reset register written whole); recon: mewaketest; test: mebcc1 (the ME unit word m-cid finds fastest)");
+	platform_log("keep words, the Media Engine's wake: opt-in: mewake (the ME started again after a sleep; mewakeoff wins over it), mewakeearly (with mewake: released in the kernel's wake handler, not at a frame end), mewakeprobe (with mewake: at the restart the ME tries each kind of job work before its loop, marked step by step), mewakefw (with mewake: the restart lets go of the AVC and AW resets launch found let go); fix off: meresetwhole (the reset register written whole); recon: mewaketest; test: mebcc1 (the ME unit word m-cid finds fastest)");
 	platform_log("keep words, the level given from an origin near the eye: restoration off: levellocaloff (the level's copies from the world's origin, as before); instrument (opt-in): geprecision (the GE's precision measured as the first frame begins: the log's geprecision lines)");
 	platform_log("keep words, see-through as the Xbox draws it: restorations off: nolevelglow (the level's self-illumination pass), seethroughpush (the port's depth nudges for surfaces that aren't decals), seethroughwrap (every map repeated), waterunfogged (added water unfogged); look call (opt-in): ditherhalf, ditherlift on by default (offsets +4; noditherlift turns it off), dithershift (detail and sky passes dithered, the pattern moved each pass) dithershiftall (every blend); recon: noglowpass nobackpass ditherprobe (the GE's rounding, logged at start-up)");
 	platform_log("keep words, build 126's: speed off: pathclearfull (a path search's whole state cleared before it, RV2), deletedwalkall (a deleted object's fix-up walks every object, RV1), aipathold (the nearby firing positions test searches first, smoothing scans from the first, RV4); checks: pathclearpoison deletedcheck aipathcheck; restorations off: weaponstateold (the HUD's weapon state left as the stack held it, RB1), aimchangeold (a still unit with no aiming limit at full aiming change, RH1)");
@@ -2072,6 +2084,7 @@ how far the HOME exit got. It answered its question (b90: ARK-4 Kommander's
 Exit, the usual way to quit, never calls the exit callback at all), and
 build 105 gives its descriptor back: b104 run 1 showed the PSP lets the
 game hold only about ten files at once */
+void psp_sleepguard_end(void);
 static int exit_callbacks_registered[3] = { 1, 1, 1 };
 
 /* back to the XMB (or ARK-4's menu), saying why in the log */
@@ -2092,6 +2105,8 @@ static void exit_game(const char *why)
 	PSP_METRICS_ME_EXIT(why);
 	platform_log("%s: exiting", why);
 	log_flush();
+	/* the XMB gets its sleep switch back (psp_sleepguard.c) */
+	psp_sleepguard_end();
 	/* build 89: no texture save here any more. The learned binds are saved
 	during play (psp_tex.c, b88); a save here that half worked (the file
 	truncated, the data never written) would wipe the one saved in play */
@@ -2149,6 +2164,13 @@ void psp_ge_inflight_room_resume(void);
 static int power_callback(int unknown, int flags, void *argument)
 {
 	(void)unknown; (void)argument;
+	psp_sleep_power_flags(flags);
+	/* B41 ("sleepready"): the game thread stops itself and takes everything
+	back at the wake (psp_sleep.c); if it can't in time, the old way below */
+	if ((flags & PSP_POWER_CB_SUSPENDING) && psp_sleep_suspending())
+		flags &= ~PSP_POWER_CB_SUSPENDING;
+	if ((flags & PSP_POWER_CB_RESUME_COMPLETE) && psp_sleep_resumed())
+		flags &= ~PSP_POWER_CB_RESUME_COMPLETE;
 	if (flags & PSP_POWER_CB_SUSPENDING)
 	{
 		/* the Media Engine stopped before the sleep: the main CPU runs its
@@ -3138,14 +3160,14 @@ steps in order: the console has no way to wait */
 	if ((ticks_seen == 450 || ticks_seen == 540) && psp_keep("mewaketest"))
 	{
 		void psp_me_wake_test_sleep(void);
-		void psp_me_wake_request(void);
+		void psp_me_wake_test_wake(void);
 
 		if (ticks_seen == 450)
 			psp_me_wake_test_sleep();
 		else
 		{
 			platform_log("mewaketest: the wake");
-			psp_me_wake_request();
+			psp_me_wake_test_wake();
 		}
 	}
 	/* keep.txt's "exitatN": back to the menu at N seconds of game time, so
@@ -3159,6 +3181,7 @@ steps in order: the console has no way to wait */
 		if (exit_tick > 0 && (long)ticks_seen == exit_tick)
 			exit_game("exitat");
 	}
+	psp_sleep_tick((long)ticks_seen); /* sleepdryN's moment */
 #ifdef PSP_PGO_GENERATE
 	{
 		/* PSP_PGO=generate (psp_build.py): the hot units' counts written to
@@ -3673,6 +3696,9 @@ static int heartbeat_thread(SceSize args, void *argp)
 			}
 		}
 		beat++;
+		/* B41's stall reporter, on the 5 s beats (psp_sleep.c) */
+		if (beat > 20)
+			psp_sleep_stall_check();
 		phase_cut_beat = psp_phase_cut;
 		psp_phase_cut = 0;
 		heartbeat_work_start = psp_heartbeat_clock();

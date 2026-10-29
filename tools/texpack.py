@@ -1309,7 +1309,7 @@ FAST_PALETTES = False     # --fast-palettes: bitmap_bake.fast_kmeans()
 # what the cache's keys hold besides the pixels: the code that makes the
 # palettes, so a changed bitmap_bake.py never reads an older one's
 with open(bitmap_bake.__file__, 'rb') as _f:
-    PALETTE_CODE = hashlib.sha256(_f.read()).hexdigest()
+    PALETTE_CODE = hashlib.sha256(_f.read() + np.__version__.encode()).hexdigest()
 del _f
 
 

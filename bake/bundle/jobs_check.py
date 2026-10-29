@@ -82,6 +82,10 @@ elif TOOL == 'stencilbake':
     with open(args[2], 'wb') as f:
         f.write(digest(read(args[0]), read(args[1])))
     print('compare: ' + os.path.basename(args[2]))
+elif TOOL == 'modelconvert':
+    # the baked conversions ride past the geometry pack's data (bake.py's PRECONVERT)
+    with open(args[1], 'ab') as f:
+        f.write(digest(read(args[0]))[:32])
 '''
 CHANT = 'def write(xbe, out):\n    return False\n'
 MAPS = ['a10', 'a30', 'b30', 'bloodgulch', 'putput', 'ui']
@@ -93,7 +97,7 @@ def make_bundle(source, folder):
     for name in ('bake.py', 'xiso.py', 'hashes.json'):
         shutil.copy(os.path.join(source, name), folder)
     stubs = [(os.path.join(folder, 'invader', 'bin', t), t) for t in ('invader-extract', 'invader-info', 'invader-build')]
-    stubs += [(os.path.join(folder, 'lib', t + '.py'), t) for t in ('tagindex', 'dez', 'texpack', 'stencilbake', 'soundpack')]
+    stubs += [(os.path.join(folder, 'lib', t + '.py'), t) for t in ('tagindex', 'dez', 'texpack', 'stencilbake', 'soundpack', 'modelconvert')]
     for path, tool in stubs:
         with open(path, 'w') as f:
             f.write(STUB % {'python': sys.executable, 'tool': tool})

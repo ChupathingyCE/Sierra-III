@@ -208,6 +208,38 @@ tangent, which the port never reads (tools/levelslim.py): 24 bytes each, the
 uv right after the normal */
 #define PGEO_LEVEL_SLIM 0x10u
 
+/* ---------- PRECONVERT (tools/modelconvert.py, docs/plan_preconvert.md):
+the models' vertex buffers in the GE's form, past the pack's data. Header
+words 11-15: the region's start (from the data's start), its bytes, its
+table's offset, its entries, and 'PCV1'. A part's vertex_buffer pad (in the
+map) holds its buffer's table index + 1; the table, one block address each
+and one more that ends the last, is read at the map's open into the heap.
+An older build reads only up to word 3 and never sees the region; this build
+reads the region only for the version it knows */
+#define PCV_VERSION 0x31564350u /* 'PCV1' */
+static unsigned int *pcv_table = NULL;
+static unsigned int pcv_entries = 0, pcv_start = 0, pcv_end = 0;
+/* read by the renderer on either CPU: set at a map's open only */
+int psp_pcv_on = 0;
+static int pcv_check = 0;
+static PSP_MAIN_SIDE unsigned long pcv_locks = 0, pcv_loads = 0, pcv_load_bytes = 0, pcv_fallbacks = 0;
+int psp_ge_pcv_relocate(void *block, unsigned int size);
+int psp_ge_pcv_check(void *block, const void *raw, unsigned int raw_bytes, const unsigned short *indices);
+void psp_ge_pcv_report(void);
+void psp_ge_pcv_locked(void *block);
+static unsigned long pcv_checked = 0, pcv_check_differed = 0;
+
+/* a block just read: its plan's offsets made addresses (main CPU, before the
+completion's write-back, which then covers what this writes) */
+static void pcv_loaded(struct geo_entry *e)
+{
+	if (!pcv_table || e->address < pcv_start || e->address >= pcv_end)
+		return;
+	psp_ge_pcv_relocate((void *)e->at, e->size);
+	pcv_loads++;
+	pcv_load_bytes += e->size;
+}
+
 /* the bytes of one of the level's rendered vertices in the pack */
 unsigned int psp_geo_level_stride(void) { return map_formats & PGEO_LEVEL_SLIM ? 24u : 32u; }
 
@@ -480,6 +512,7 @@ static void complete(SceInt64 result)
 	{
 		/* whichever way the kernel filled the block (the card's DMA, or a copy
 		through the cache), the CPU's view is made to agree with memory */
+		pcv_loaded(e);
 		sceKernelDcacheWritebackInvalidateRange((void *)e->at, e->size);
 		e->state = 3;
 		e->generation = ++generation_counter;
@@ -618,8 +651,9 @@ static int read_entry_now(struct geo_entry *e)
 		e->state = 0;
 		return -1;
 	}
-	sceKernelDcacheWritebackInvalidateRange((void *)at, e->size);
 	e->at = at;
+	pcv_loaded(e);
+	sceKernelDcacheWritebackInvalidateRange((void *)at, e->size);
 	e->state = 3;
 	e->generation = ++generation_counter;
 	e->last_frame = frame;
@@ -948,6 +982,29 @@ static int by_place_find(unsigned int at)
 	return entry_holds(index, at) ? index : -1;
 }
 
+/* mechunk: the Media Engine looks blocks up while the main CPU still loads
+for the frame it replays, rewriting the entries of blocks it evicts. A block
+any published record uses is protected (used in the last RECENT_FRAMES
+frames, so never evicted meanwhile), and an entry being reused belonged to
+an unprotected one; so the ME takes only protected entries, and a half
+rewritten entry it reads can't pass for the block it wants */
+/* the ME's own count of the entries it refused for that (its line, apart
+from the main CPU's words; read at the frame's end, after its work) */
+static unsigned long me_unprotected[16] __attribute__((aligned(64)));
+static unsigned long me_unprotected_logged = 0;
+
+static int entry_holds_for(int index, unsigned int at, int me)
+{
+	if (!entry_holds(index, at))
+		return 0;
+	if (me && entries[index].last_frame + RECENT_FRAMES <= frame)
+	{
+		me_unprotected[0]++;
+		return 0;
+	}
+	return 1;
+}
+
 static int resident_entry(const void *ptr)
 {
 	unsigned int at = (unsigned int)ptr, slot = (at >> 6) % AT_SLOTS;
@@ -957,9 +1014,9 @@ static int resident_entry(const void *ptr)
 
 	if (!in_cache(at))
 		return -1;
-	if (last_locked >= 0 && entry_holds(last_locked, at))
+	if (last_locked >= 0 && entry_holds_for(last_locked, at, me))
 		return last_locked;
-	if (at_slot[slot] && entry_holds(at_slot[slot] - 1, at))
+	if (at_slot[slot] && entry_holds_for(at_slot[slot] - 1, at, me))
 	{
 		if (!me)
 			place_slot_answers++;
@@ -986,7 +1043,7 @@ static int resident_entry(const void *ptr)
 	if (!me)
 		place_scans++;
 	for (index = 0; index < entry_count; index++)
-		if (entry_holds(index, at))
+		if (entry_holds_for(index, at, me))
 		{
 			if (found >= 0)
 			{
@@ -1054,6 +1111,12 @@ static void __attribute__((noinline, cold)) census_report(void)
 
 void psp_geo_frame_end(void)
 {
+	if (me_unprotected[0] != me_unprotected_logged && frame % 300 == 0)
+	{
+		platform_log("geometry: the Media Engine's lookups refused %lu blocks that weren't protected (mechunk; %lu in all)",
+			me_unprotected[0] - me_unprotected_logged, me_unprotected[0]);
+		me_unprotected_logged = me_unprotected[0];
+	}
 	if (async_reads)
 		poll();
 	frame_read_bytes = 0;
@@ -1095,6 +1158,15 @@ void psp_geo_frame_end(void)
 #endif
 		platform_log("geometry: the ring passed %lu blocks drawn in the last %d frames, and %lu times found none older",
 			skips, geo_keep_frames, skip_fallbacks);
+		if (pcv_table)
+		{
+			platform_log("geometry: preconvert: %lu draws locked a baked buffer, %lu blocks read (%lu KB), %lu fell back to the raw buffer",
+				pcv_locks, pcv_loads, pcv_load_bytes / 1024, pcv_fallbacks);
+			if (pcv_check)
+				platform_log("geometry: preconvertcheck: %lu blocks checked against the run-time conversion, %lu differed",
+					pcv_checked, pcv_check_differed);
+			psp_ge_pcv_report();
+		}
 		psp_anim_report();
 	}
 	frame++;
@@ -1138,6 +1210,11 @@ void psp_geo_close(void)
 	pack_size = 0;
 	arena_start = arena_end = arena_next = 0;
 	extra_start = extra_end = 0;
+	free(pcv_table);
+	pcv_table = NULL;
+	pcv_entries = pcv_start = pcv_end = 0;
+	psp_pcv_on = 0;
+	sceKernelDcacheWritebackRange(&psp_pcv_on, sizeof(psp_pcv_on));
 }
 
 /* the tag window's part the map never uses, past what the animation cache
@@ -1222,6 +1299,47 @@ void psp_geo_map_opened(const char *name, unsigned int map_crc, const void *firs
 	blocks invader-build -Z made slim (psp_tag_layouts.c) */
 	map_formats = header[10];
 	platform_log("geometry: %s: bake formats %lx", path, map_formats);
+	if (header[15])
+	{
+		extern int psp_showcase_map;
+		const char *why = header[15] != PCV_VERSION ? "a version this build doesn't know" :
+			psp_keep("preconvertoff") ? "preconvertoff" : psp_keep("model14") ? "model14 converts at run time" :
+			psp_showcase_map ? "the main menu converts at run time" : NULL;
+		unsigned int start = header[11], bytes = header[12], table_at = header[13], entries = header[14];
+		SceOff file_bytes = sceIoLseek(pack, 0, PSP_SEEK_END);
+
+		if (!why && (start < pack_size || start % 64 || table_at < start || !entries || entries > 65535 ||
+			table_at + 4 * (entries + 1) > start + bytes || (SceOff)(HEADER_BYTES + start + bytes) > file_bytes))
+			why = "its region doesn't fit the pack";
+		if (!why)
+		{
+			pcv_table = malloc(4 * (entries + 1));
+			if (!pcv_table)
+				why = "no heap for its table";
+		}
+		if (!why && (sceIoLseek32(pack, HEADER_BYTES + table_at, PSP_SEEK_SET) < 0 ||
+			sceIoRead(pack, pcv_table, 4 * (entries + 1)) != (int)(4 * (entries + 1))))
+			why = "its table couldn't be read";
+		if (why)
+		{
+			free(pcv_table);
+			pcv_table = NULL;
+			platform_log("geometry: preconvert: the pack's baked model buffers (%u) not used: %s", entries, why);
+		}
+		else
+		{
+			pcv_entries = entries;
+			pcv_start = EXTERNAL_BASE + start;
+			pcv_end = EXTERNAL_BASE + table_at;
+			pack_size = start + bytes;
+			pcv_check = psp_keep("preconvertcheck");
+			pcv_locks = pcv_loads = pcv_load_bytes = pcv_fallbacks = pcv_checked = pcv_check_differed = 0;
+			psp_pcv_on = 1;
+			platform_log("geometry: preconvert: %u model buffers baked in the GE's form, %u KB (table %u KB on the heap)%s",
+				entries, (table_at - start) / 1024, (4 * (entries + 1) + 1023) / 1024, pcv_check ? "; preconvertcheck" : "");
+		}
+		sceKernelDcacheWritebackRange(&psp_pcv_on, sizeof(psp_pcv_on));
+	}
 	snprintf(pack_name, sizeof(pack_name), "%s", name);
 	async_reads = psp_keep("geoasync");
 	if (async_reads)
@@ -1444,7 +1562,9 @@ long rasterizer_geometry_get_vertex_size(short type);
 /* a vertex buffer's bytes: the cache's copy when the map keeps them outside,
 the tag data otherwise (the D3D shim's lock is Data itself: physical and
 virtual addresses are the same on the PSP). NULL: not there this frame */
-void *psp_vertex_lock(const struct vertex_buffer *buffer)
+/* the raw buffer, as the map gives it: for the see-through queue, which
+converts its own rigid copy (and for every buffer when nothing is baked) */
+void *psp_vertex_lock_raw(const struct vertex_buffer *buffer)
 {
 	unsigned int address;
 
@@ -1456,6 +1576,79 @@ void *psp_vertex_lock(const struct vertex_buffer *buffer)
 	if (psp_geo_external(address))
 		return psp_geo_lock(address, (unsigned int)buffer->count * (unsigned int)rasterizer_geometry_get_vertex_size(buffer->type));
 	return (void *)address;
+}
+
+/* the block header's words the lock checks (psp_ge.c, struct pcv_header) */
+#define PCV_MAGIC 0x31564350u
+#define PCV_HEADER_BYTES 64
+
+/* a model's vertex buffer: its baked block's records when the pack has one
+(the opaque draws, and rso's re-lock of them), else the raw buffer. A block
+whose header names another buffer (a map and pack from different bakes) is
+left for the raw buffer */
+void *psp_vertex_lock(const struct vertex_buffer *buffer)
+{
+	unsigned int index, address;
+	unsigned int *block;
+
+	if (!pcv_table || !buffer || !buffer->hardware_format || !buffer->pad || buffer->pad > pcv_entries ||
+		(buffer->type != 4 && buffer->type != 5) /* the model's two forms */)
+		return psp_vertex_lock_raw(buffer);
+	index = buffer->pad - 1u;
+	address = ((const unsigned int *)buffer->hardware_format)[1];
+	/* a skinned block carries its plan too: one the cache can't hold at all
+	is drawn from the raw buffer, which may fit */
+	if (alignment(pcv_table[index + 1] - pcv_table[index]) > largest_stretch())
+	{
+		pcv_fallbacks++;
+		return psp_vertex_lock_raw(buffer);
+	}
+	block = psp_geo_lock(pcv_table[index], pcv_table[index + 1] - pcv_table[index]);
+	if (!block)
+		return NULL;
+	if (block[0] != PCV_MAGIC || block[7] != address)
+	{
+		pcv_fallbacks++;
+		return psp_vertex_lock_raw(buffer);
+	}
+	pcv_locks++;
+	psp_ge_pcv_locked(block);
+	if (pcv_check && !block[13])
+	{
+		/* the run-time conversion of the same bytes, once a load: the raw
+		buffer and its triangles are read here, beside the block */
+		unsigned int raw_bytes = (unsigned int)buffer->count * (unsigned int)rasterizer_geometry_get_vertex_size(buffer->type);
+		unsigned int index_count = block[4];
+		const void *raw = psp_geo_lock(address, raw_bytes);
+		const unsigned short *indices = raw && block[14] ? psp_geo_lock(block[14], 2 * index_count) : NULL;
+
+		/* (either may have taken the other's room: both are checked again) */
+		if (raw && indices && psp_geo_lock(address, raw_bytes) == raw &&
+			psp_geo_lock(pcv_table[index], pcv_table[index + 1] - pcv_table[index]) == block)
+		{
+			pcv_checked++;
+			if (!psp_ge_pcv_check(block, raw, raw_bytes, indices))
+				pcv_check_differed++;
+			block[13] = 1;
+			sceKernelDcacheWritebackRange(block, PCV_HEADER_BYTES);
+		}
+	}
+	return (unsigned char *)block + PCV_HEADER_BYTES;
+}
+
+/* a baked block's header when vertices are its records, NULL otherwise; on
+either CPU */
+const void *psp_geo_baked(const void *vertices)
+{
+	int index;
+
+	if (!psp_pcv_on)
+		return NULL;
+	index = resident_entry(vertices);
+	if (index < 0 || entries[index].address < pcv_start || entries[index].address >= pcv_end ||
+		(unsigned int)vertices != entries[index].at + PCV_HEADER_BYTES)
+		return NULL;
+	return (const void *)entries[index].at;
 }
 
 /* a level vertex buffer's address as the map gives it, in the tags or in the

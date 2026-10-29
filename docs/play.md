@@ -4,7 +4,7 @@ This guide takes you from a PSP and your own Halo: Combat Evolved disc for the o
 
 Sierra-III contains nothing from the game. You bake the maps yourself, from your own disc, on your own PC. Never download game files, and never share the ones you bake.
 
-These steps are for **release b147h**. It is the campaign only: multiplayer isn't part of it (step 7).
+These steps are for **release b149**. It is the campaign only: multiplayer isn't part of it (step 7).
 
 ## The short version
 
@@ -30,9 +30,9 @@ These steps are for **release b147h**. It is the campaign only: multiplayer isn'
 4. **Your Halo disc** for the original Xbox, **NTSC, version 01.10.12.2276**, as a disc image (step 3). Other versions and languages aren't supported yet: the bake refuses them rather than guess (step 3).
 5. **A PC to bake on**, any one of:
    - Windows 10 or 11 (x86-64);
-   - Linux (x86-64) with **glibc 2.39 or later**: Ubuntu 24.04, Debian 13, Fedora 40, or a current rolling release such as Arch. Older systems can't run b147h's Linux bake tool; a build for older ones is planned.
+   - Linux (x86-64) with **glibc 2.39 or later**: Ubuntu 24.04, Debian 13, Fedora 40, or a current rolling release such as Arch. Older systems can't run b149's Linux bake tool; a build for older ones is planned.
 
-   b147h has no macOS bake tool. Bake on a Windows or Linux PC (a virtual machine will do), then copy the result to the stick from your Mac (step 5).
+   b149 has no macOS bake tool. Bake on a Windows or Linux PC (a virtual machine will do), then copy the result to the stick from your Mac (step 5).
 
    The bake uses the computer's own **Python** if it is 3.9 to 3.14; if there is none, it asks to download a portable one into its own folder. It needs the internet the first time.
 6. **About 8 GB free on the PC** while the bake runs. The result is about 2.2 GB (the campaign and the menus); the rest is the bake's working files, which it deletes as it goes. The 8 GB is a safe estimate: the bake says how much it needs before it starts, and stops if the drive hasn't that much free.
@@ -78,14 +78,16 @@ The bake reads your disc's files out of an image you made. It takes any of these
 
 The bake turns your disc's maps into the files the PSP reads: each map rebuilt for the PSP's memory, plus its texture, geometry and wall-decal packs. It reads the loading screen's chant out of the disc's `default.xbe`, adds a clip of your disc's music to the game as the sound the PSP's menu plays on its entry, and puts the game and the maps together in one folder, ready for the stick.
 
-**Use the bake bundle from the same release as the build zip.** A release says when its bundle changed and the maps must be baked again (b147h does: its maps carry more than b143's, so the game says to bake again, and stops, if it finds maps from b143's tool; `bake_changes.md`).
+**Use the bake bundle from the same release as the build zip.** A release says when its bundle changed and the maps must be baked again (b147h did: its maps carry more than b143's, so the game says to bake again, and stops, if it finds maps from b143's tool; `bake_changes.md`). b149 plays a bake made with b147h's or b148's bundle, but **bake again with b149's bundle**: it converts the models into the PSP's own form as it bakes, which ends a dropped frame at b30's start and gives the game more memory (the maps grow by about 40 MB in all).
 
-1. **Download** from the release page, **[Sierra-III-Release's releases](https://github.com/Sheepdog-01/Sierra-III-Release/releases)**, the build zip, `halo_psp_b147h.zip`, and the bake bundle for your system:
+**A second bake is faster.** The bake keeps the work it can reuse (the textures' palettes and the converted sounds, about 420 MB) in your user cache folder: `%LOCALAPPDATA%\halo-psp-bake` on Windows, `~/.cache/halo-psp-bake` on Linux. A bake that finds them takes about a third of the time. The first time, the guided bake asks whether to keep them. Deleting the folder is always safe; the next bake just makes them again.
+
+1. **Download** from the release page, **[Sierra-III-Release's releases](https://github.com/Sheepdog-01/Sierra-III-Release/releases)**, the build zip, `halo_psp_b149.zip`, and the bake bundle for your system:
 
    | System | Bundle |
    |---|---|
-   | Windows 10 or 11 | `halo-psp-bake-windows-b147h.zip` |
-   | Linux, glibc 2.39 or later | `halo-psp-bake-linux-b147h.tar.gz` |
+   | Windows 10 or 11 | `halo-psp-bake-windows-b149.zip` |
+   | Linux, glibc 2.39 or later | `halo-psp-bake-linux-b149.tar.gz` |
 
    Each has a `.sha256` beside it, which the bundle's SHA-256 must equal (Windows PowerShell: `Get-FileHash <file>`; macOS: `shasum -a 256 <file>`; Linux: `sha256sum <file>`).
 2. **Unpack the bundle.** It makes one folder, `halo-psp-bake`. On Windows (right-click, *Extract All*), keep its path short: `C:\halo-psp-bake` always works, and the bake says if the path is too long.
@@ -157,6 +159,7 @@ You copy one folder's contents: `COPY-TO-MEMORY-STICK` holds the **game** (the b
 | `halo/maps/` | each map's `.map` and its packs (`.ptex`, `_track.ptex`, `.pgeo`, `.pstn`) | your bake |
 | `halo/chant.adp` | the loading screen's chant | your bake |
 | `halo/log/`, `halo/shots/`, `halo/save/`, `halo/crash.txt`, `halo/stderr.txt` | what the game writes | the game |
+| `halo/log/bake/bake-log.txt` | a copy of your last bake's log, so it travels with the game's logs | your bake |
 | `halo/keep.txt`, `halo/init.txt` | the launch menu's choices (step 6) | the launch menu |
 
 **The stick rules:**
@@ -203,7 +206,7 @@ prints `the build is on the stick` and lists the three files. On Windows, check 
 
 ## What to expect
 
-**Speed.** The port's aim is 30 frames a second everywhere; it isn't there yet. Measured on a PSP-1000 at its standard clock, over the second half of the first two minutes of each level (the stretch includes fights, so it is not a best case), on the build just before b143's final profile (b147h measures the same or faster):
+**Speed.** The port's aim is 30 frames a second everywhere; it isn't there yet. Measured on a PSP-1000 at its standard clock, over the second half of the first two minutes of each level (the stretch includes fights, so it is not a best case), on the build just before b143's final profile (b149 measures the same or faster):
 
 | Level | Frames a second |
 |---|---|
@@ -228,7 +231,7 @@ A PSP-3000 measures within 3% of these. On the lighter levels the game's own log
 
 **What it is:** a work in progress, tested by one person on his own PSPs. Reports of crashes and visual faults are welcome (step 8).
 
-**Quit before you put the PSP to sleep** (the power switch). Sleep during play is still being tested; if the game doesn't come back from a sleep, hold POWER until the PSP turns off.
+**The power switch doesn't put the PSP to sleep while the game runs.** A sleep during play could crash the PSP, so the game holds sleep off until it's made safe. Quit to the XMB (HOME, then exit) first; sleep works there as usual. Holding the switch up for about 8 seconds still turns the PSP off, but quit first when you can.
 
 **The launch menu** (optional; the game calls it the development menu). **Hold L as the game starts**, or put an empty file `halo/menu.txt` on the stick, and the game opens a plain text menu before it starts:
 - **MAPS:** every map on the stick, and whether its texture pack is beside it (`NO TEXTURE PACK` means the bake of that map is incomplete). The chosen map starts straight away.
@@ -260,7 +263,7 @@ It writes your choices to `halo/keep.txt` (keep words, separated by spaces) and 
 2. **Open an issue** on **[Sierra-III-Release's issues page](https://github.com/Sheepdog-01/Sierra-III-Release/issues)** with:
    - the build number (the log's first line) and which zip you installed;
    - your PSP model (1000, 2000 or 3000) and your ARK-4 version;
-   - your PC's system (Windows, macOS or Linux), whether you baked with that release's bundle, and the bake's log (`bake-log.txt`, in the bundle's folder);
+   - your PC's system (Windows, macOS or Linux), whether you baked with that release's bundle, and the bake's log (`bake-log.txt`, in the bundle's folder; a copy rides in the log archive as `log/bake/bake-log.txt`);
    - what you did, what you saw, and what you expected;
    - the log archive from step 1, the crash screen's photo if there was one, and a screenshot from `halo/shots/` if it shows the problem.
 3. **Never attach game files:** nothing from `halo/maps/`, no `chant.adp`, nothing from your disc image or `COPY-TO-MEMORY-STICK`. `bake-log.txt` holds none.
