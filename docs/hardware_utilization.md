@@ -116,6 +116,43 @@ The split was set at build 108 by the cache model's misses per byte (`psp_scratc
 - **The room is spoken for** (the master's 12:55 note; levers.tsv M6B, CTNG, VRSP, VRBTEX). The dashboard's `vram_plan` is b115's and stale.
 - **What's left is choosing what earns the room,** not finding more of it. The copies into the model buffers are bus traffic of their own: a lead for phase 2 is to price their churn against what they save the GE.
 
+### The bus census: no cheap room left
+
+The emulator's bus census (`buscensus`, the halo-local patch's item 23; read with the lab's `bus.py`) counts the bytes each frame pulls from main RAM, by source and by who reads them: the main CPU's and the ME's cache fills and write-backs, and the GE's lists, vertices and textures [E].
+
+**b30, 90 s on its route** (lab bus7 40884427736, bus8 40894428250): about 12.9 MB a frame.
+- By reader: the main CPU fills 5.6 MB and writes back 1.2; the ME fills 2.0 and writes back 0.75; the GE reads 1.4 of vertices, 1.4 of texels and 0.25 of lists.
+- By source:
+  - the program's `.bss`, 2.5 MB: a long tail; its largest symbol is the geometry cache's entry table, which the ME's scans read at 148 KB a frame;
+  - the heap, 2.2 MB: mostly the GE's level copies (their arena ~0.9 MB, with the level carve ~1.4 MB, ~1.0 of it the GE's vertex reads) and gedefer's buffer (~0.34);
+  - the texture cache, 1.4 MB;
+  - the objects' game state, 1.05 MB;
+  - tag data, 1.0 MB, the level collision BSP 0.42 of it;
+  - the display list, 0.9 MB.
+- c10 is the same kinds at about half the size (6.5 MB a frame).
+
+**Three cuts, each priced on the PSP:**
+
+| Cut | Bytes saved [E] | PSP |
+|---|---|---|
+| BSPDFS: the collision BSP renumbered depth-first | 59 KB a frame on b30 (420 to 361) | even on b30 (40862518281) and a10 (40875906608): shelved |
+| MEPLACE: the ME's geometry lookups through the place keys | ~260 KB a frame on b30 (2.1%; the ME's entry-table fills 148 to 33) | null on b30, PSP-3000 (40894645109: flight 158.2 to 158.0 ms, tick 53.1 to 53.0): rejected |
+| levelcompact (b87): the level's vertices 20 to 10 bytes | about half of the GE's ~1 MB a frame of level vertex reads | no gain three times (b87, b93, b102) and ground cracks: settled |
+
+**What it says** [M for the prices, U for the reason]:
+- Cuts of 0.5-4% of the bus, on any reader, don't move the frame or the tick.
+- What the tick pays for is contention: the GE reading main RAM while the tick misses (the bus subsection above: 55-94% of the tick's rise under overlap). That depends on when the GE reads, not only on how many bytes it reads [U]; levelcompact halved the bytes and gained nothing.
+- What's left of the census are things already priced or spread thin:
+  - the GE's texels and vertices (mevram and the texture cache already hold what VRAM has room for);
+  - the main CPU's own misses (no symbol over ~0.25 MB a frame);
+  - the ME's traffic (cheap to the tick: mewalk, `tick_change_me_busload`).
+- So "after the bus has room" can't be C step 3's gate: no cheap cut makes room.
+
+**C step 3's gate, proposed instead:** price the snapshot itself, since its copy is the bus traffic C adds.
+1. **[E] Count it:** the snapshot's bytes a frame on b30, a10 and c10: the objects' render state, node matrices, lights, effects and decals (walkwrites lists what the walk writes). One emulator run with a counting keep word.
+2. **[M] Price it:** one PSP pair on c10 (`keepsets "- | snapdry"`, repeat=2). `snapdry` writes that snapshot at each frame's end, and nothing reads it. The pair prices the copy's own cost, the tick's contention included.
+3. **Go** if snapdry costs the frame less than a third of what C takes off the main CPU on the same map. The engine's whole walk is 12-56 ms a frame (b30 55.8 at b138, levers_next_b138.md); its visibility part alone is 8.4 on b30 (visspan, PSP-1000) [M]. Otherwise the copy eats C's gain, and C stays parked.
+
 ## 5. The placement map
 
 Each unit's strengths, measured:
