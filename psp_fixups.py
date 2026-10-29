@@ -38624,9 +38624,9 @@ FIXES_FX15["source/game/game_time.c#fx15"] = [
 # holder, which in the walk ran after the holder's compute (the holder, then
 # its children): it makes the holder's first. Objects made during the walk
 # are updated after the pass, in place, as before. Keep words: "fvpass" (the
-# pass), "fvpasscheck" (made in place as before; the pass checks each
-# object's inputs are what they were at its update, and counts the reads that
-# would have made one early). The log line every 30 s: "fvpass:".
+# pass), "fvpasscheck" (made in place as before; each object's inputs
+# are checked against what they were at its update, where the pass would have
+# made its values: at an early read, or else at the pass). The log line every 30 s: "fvpass:".
 FIXES_FISSION = {}
 FIXES_FISSION["source/objects/objects.c#fvpass"] = [
 ("""static void object_connect_lights_with(long object_index, struct object_datum *object, struct object_definition *object_definition, boolean disconnect, boolean reconnect);
@@ -38710,9 +38710,19 @@ void psp_fvp_settle(long object_index)
 	if (k < 0)
 		return;
 	psp_fvp_early++;
-	if (psp_fvp_open == 2)
-		return;
 	psp_fvp_pending[absolute >> 5] &= ~PSP_FVP_BIT(absolute);
+	if (psp_fvp_open == 2)
+	{
+		/* the pass would have made them here, from the inputs as they are now */
+		struct object_datum *object = object_get(object_index);
+
+		psp_fvp_checked++;
+		if (csmemcmp(psp_fvp_inputs[k], object->object.incoming_function_values, sizeof(psp_fvp_inputs[0])) &&
+			psp_fvp_differ++ < 16)
+			platform_psp_log("fvpasscheck: tick %ld, object %08lx (type %d): inputs changed before an early read",
+				(long)game_time_get(), (unsigned long)object_index, (int)object->object.type);
+		return;
+	}
 	psp_fvp_make(object_index, object_get(object_index));
 }
 
