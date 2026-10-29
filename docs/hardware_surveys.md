@@ -1,6 +1,6 @@
 # The tick, system by system: what eight surveys found (directions 1 and 2)
 
-2026-10-29, hardware session. Sheepdog01's directions (16:57, via the master): (1) the tick system by system, (2) compact hot data; the API credit spent on surveys (Sheepdog01 17:26). Eight read-only surveys of Sierra-III at w142 (4a38b79) and the engine at the pin ran as lab `api-job`s in agent mode: seven on Opus, and the needless-work sweep on Sonnet, with an Opus check of its top ten still to come.
+2026-10-29, hardware session. Sheepdog01's directions (16:57, via the master): (1) the tick system by system, (2) compact hot data; the API credit spent on surveys (Sheepdog01 17:26). Eight read-only surveys of Sierra-III at w142 (4a38b79) and the engine at the pin ran as lab `api-job`s in agent mode: seven on Opus, and the needless-work sweep on Sonnet, with an Opus check of its top ten after it (api-job 40975475479).
 
 Labels: [M] measured on a PSP, [E] emulator, [D] read in code or data, [U] inference. Nothing in this doc was built or run for it. Every ms figure is main-CPU time.
 
@@ -15,7 +15,7 @@ Labels: [M] measured on a PSP, [E] emulator, [D] read in code or data, [U] infer
 | fxpass | effects, particles, contrails and weather: passes or ME jobs | 40966627960 |
 | collbake | a cache-friendly collision BSP made at bake time | 40966677405 |
 | mecensus | tick and frame work that could be self-contained ME jobs | 40966682398 |
-| needless | per-frame or per-tick work that a cache, a bake or a skip removes, all ten maps | 40966715304 (Sonnet); its top ten checked on Opus next |
+| needless | per-frame or per-tick work that a cache, a bake or a skip removes, all ten maps | 40966715304 (Sonnet); its top ten checked on Opus, 40975475479 |
 
 ## The ranked table
 
@@ -35,8 +35,8 @@ Worth in ms a frame on the heavy stretches. A per-tick figure counts twice (two 
 | 10 | **V1: each vehicle's mass points split into sub-passes** in its own slot | small, only where vehicles are | U | yes | a cache-model run, then a pair | physpass |
 | 11 | **The AI's control half as five passes on top of AIME** | <= ~2% of the tick's I-misses | E bound | no: only the control steps' draws reorder | after AIME on the ME | aipass |
 | 12 | **The lights relink as a pass** on link ticks | small | U | yes (LD1's own argument) | none planned | passmap |
-| - | **SM**: the blob-shadow receivers kept across frames | a10/a30 1-3.3; b30 CAN'T TELL | U on E | yes, if the key holds | the Opus check, then a PSP pair | needless |
-| - | **Nine exact crumbs** (HUD quads, LOD repeats, the third header walk, settled aim, audible clusters, empty decal layers, hand IK, script GC, fog lookups) | b30 ~0.6-1.6 together | U | yes, each on a bitwise key | the Opus check | needless |
+| - | **SM**: the blob-shadow receivers kept across frames | a10 up to ~1.4 at 100% hits; the hit rate unknown | U on E x M | yes (the BSP is static; keyed on the shadow matrix, radius and BSP) | `shadowrecvstat`, its hit count, on a10 and a30 in the emulator; then a PSP pair | needless, checked on Opus |
+| - | **Four exact riders**: hs_node_gc behind a dirty flag (d20's lift <=0.5, one frame in 16), settled aim and look skipped under three conditions, idle headers skipped in the third walk (~0.04 a tick), audible clusters only on a change | each <=0.1 a frame but the gc's spike | U | yes | folded into the next fixup that touches each spot | needless, checked on Opus |
 
 ## What each survey settled
 
@@ -83,7 +83,11 @@ Worth in ms a frame on the heavy stretches. A per-tick figure counts twice (two 
   - the hand IK's marker inverse baked (0.05-0.1);
   - the script node scan every 16 ticks skipped (~0.02 on b30, ~0.08 on a10);
   - the camera's fog-region lookup done once instead of three times (0.01-0.03).
-- An Opus job checks the top ten (real or not, exact or not, the change) before any of them is built.
+- **The Opus check of the top ten** (api-job 40975475479; three quotes checked):
+  - SM is real and exact, but its ceiling after SR is ~1.4 ms on a10 at 100% hits. A hit still allocates and copies the triangles, and moving bipeds miss, so its hit count comes first.
+  - Four exact riders kept: the script gc, settled aim, idle headers, audible clusters.
+  - The LOD repeats are under 0.05; the HUD was already dropped (HUDX); the hand IK's inverse is trivial.
+  - **Two leads aren't needless at all:** each decal layer already reads its own per-cluster list, and the fog lookup runs twice, not three times, and costs a few loads.
 
 ## AIME step 2a, as the surveys shape it
 1. At the record's start, after the main CPU's whole-cache write-back, push `psp_aime_think` for the pass after the frame's last tick. Tick 1's pass stays inline.
