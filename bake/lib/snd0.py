@@ -7,6 +7,7 @@ the same way the maps themselves are made.
 
     snd0.py list MAP.map ...                     the map's music, with lengths
     snd0.py make MAP.map SPEC OUT.at3 [options]  cut, encode, and optionally pack
+    snd0.py previews OUT_DIR MAP.map ...         each music tag's opening as .wav
 
 SPEC names the clip: TAG[@START][+LENGTH], in seconds, e.g.
     levels\\a10\\music\\a10_01@12+30
@@ -34,7 +35,7 @@ Options:
     --eboot IN       the release EBOOT.PBP
     --eboot-out OUT  where the EBOOT with sound goes (needs --eboot)
 """
-import argparse, os, struct, subprocess, sys, wave
+import argparse, atexit, os, struct, subprocess, sys, tempfile, wave, zlib
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -95,11 +96,30 @@ def decode_xbox_adpcm(data, channels, frames_wanted=None):
     return out
 
 
+def plain_map(path):
+    """A retail Xbox map is zlib-compressed after its 2 KB header (dez.py),
+    which CacheMap can't read: a decompressed copy in a temporary file,
+    removed at exit; a map already plain is read where it is"""
+    with open(path, 'rb') as f:
+        head = f.read(2048)
+    length, = struct.unpack_from('<I', head, 8)
+    if os.path.getsize(path) == length:
+        return path
+    with open(path, 'rb') as f:
+        d = f.read()
+    tmp = tempfile.NamedTemporaryFile(suffix='.map', delete=False)
+    with tmp:
+        tmp.write(d[:2048])
+        tmp.write(zlib.decompressobj().decompress(d[2048:]))
+    atexit.register(lambda: os.path.exists(tmp.name) and os.remove(tmp.name))
+    return tmp.name
+
+
 class Music:
     """The sound and sound_looping tags of one retail (Xbox) map."""
 
     def __init__(self, path):
-        self.map, self.defs = CacheMap(path), Defs()
+        self.map, self.defs = CacheMap(plain_map(path)), Defs()
         self.by_name = {}
         for t in self.map.tags:
             if t.group in ('snd!', 'lsnd') and t.address:
@@ -300,10 +320,35 @@ def make(a):
         print('snd0: %s, with the clip as its SND0' % a.eboot_out)
 
 
+def previews(paths, out_dir, seconds):
+    """The first SECONDS of each music tag's first track, as .wav files to
+    listen to while choosing the menu's clip (they hold the disc's music:
+    they stay on the machine that baked)"""
+    os.makedirs(out_dir, exist_ok=True)
+    for path in paths:
+        m = Music(path)
+        for (group, _), tag in sorted(m.by_name.items(), key=lambda kv: kv[1].name):
+            if group != 'lsnd':
+                continue
+            try:
+                audio = m.source(tag, int(seconds * 44100) + 1)
+            except Exception as e:
+                print('snd0 previews: %s: %s' % (tag.name, e))
+                continue
+            clip = cut(audio, 0.0, min(seconds, len(audio) / 44100), 0.02, 1.0, -3.0)
+            name = '%s__%s.wav' % (os.path.splitext(os.path.basename(path))[0], tag.name.replace('\\', '_'))
+            write_wav(os.path.join(out_dir, name), clip)
+            print('snd0 previews: %s (%.1f s)' % (name, len(clip) / 44100))
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest='command', required=True)
     sub.add_parser('list').add_argument('maps', nargs='+')
+    pv = sub.add_parser('previews')
+    pv.add_argument('out_dir')
+    pv.add_argument('maps', nargs='+')
+    pv.add_argument('--seconds', type=float, default=30.0)
     mk = sub.add_parser('make')
     mk.add_argument('map')
     mk.add_argument('spec')
@@ -318,6 +363,8 @@ def main():
     a = ap.parse_args()
     if a.command == 'list':
         list_music(a.maps)
+    elif a.command == 'previews':
+        previews(a.maps, a.out_dir, a.seconds)
     else:
         if a.eboot and not a.eboot_out:
             ap.error('--eboot needs --eboot-out')

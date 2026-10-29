@@ -56,6 +56,9 @@ Options:
     --music [MAP:]TAG[@START][+LENGTH]
                                 which clip (default MUSIC below; MAP: ui)
     --list-music                list the maps' music tags and lengths, and stop
+    --music-previews            with --list-music: each tag's first 30 s as a
+                                .wav in <output>/music-previews, to listen to
+                                (the disc's music: keep it on this computer)
     --tints-from-means          the see-through shaders' tints from every
                                 map's mean, on the runtime's own map, as
                                 the packs were before (lib/seethrough.py)
@@ -695,6 +698,7 @@ def main():
     ap.add_argument('--eboot', default='')
     ap.add_argument('--music', default=MUSIC)
     ap.add_argument('--list-music', action='store_true')
+    ap.add_argument('--music-previews', action='store_true')
     ap.add_argument('--tints-from-means', action='store_true')
     # --no-clut-look: the same, for option checks that take letters only
     ap.add_argument('--no-clut4-look', '--no-clut-look', dest='no_clut4_look', action='store_true',
@@ -804,6 +808,10 @@ def main():
     if a.list_music:
         r = subprocess.run([sys.executable, os.path.join(LIB, 'snd0.py'), 'list'] + [found[m] for m in wanted if m in found],
                            env=tool_env())
+        if a.music_previews and r.returncode == 0:
+            r = subprocess.run([sys.executable, os.path.join(LIB, 'snd0.py'), 'previews',
+                                os.path.join(a.output, 'music-previews')] + [found[m] for m in wanted if m in found],
+                               env=tool_env())
         if not a.keep_work:
             shutil.rmtree(os.path.join(work, 'retail'), ignore_errors=True)
         sys.exit(r.returncode)
