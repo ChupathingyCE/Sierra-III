@@ -1,5 +1,7 @@
 /* B41's proper fix: the game thread puts itself to sleep (keep word
-"sleepready"; docs/b41_sleep_design.md).
+"sleepready", on by default; "sleepreadyoff" takes the old way;
+docs/b41_sleep_design.md). The stopgap (psp_sleepguard.c) still holds the
+switch off unless "sleepallowed", until a real sleep has passed by hand.
 
 Without it, the power callback's thread stops the Media Engine and gives the
 volatile partition back while the game thread and the GE's forwarding thread
