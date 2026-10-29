@@ -1566,6 +1566,13 @@ void *psp_vertex_lock(const struct vertex_buffer *buffer)
 		return psp_vertex_lock_raw(buffer);
 	index = buffer->pad - 1u;
 	address = ((const unsigned int *)buffer->hardware_format)[1];
+	/* a skinned block carries its plan too: one the cache can't hold at all
+	is drawn from the raw buffer, which may fit */
+	if (alignment(pcv_table[index + 1] - pcv_table[index]) > largest_stretch())
+	{
+		pcv_fallbacks++;
+		return psp_vertex_lock_raw(buffer);
+	}
 	block = psp_geo_lock(pcv_table[index], pcv_table[index + 1] - pcv_table[index]);
 	if (!block)
 		return NULL;
