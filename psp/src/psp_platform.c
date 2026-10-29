@@ -1112,7 +1112,12 @@ static const struct
 	ME the replay runs beside the writing (a30 7.7 -> 12.7 fps, d20 11.4 ->
 	13.7 on the PSP-3000's ladder120); where it doesn't, the gate leaves the
 	frame whole (b30 6.5 -> 6.6) */
-	{ "mechunk", "mechunkoff" }, { "flipwait", "flipwaitoff" }, { "carveshare", "carveshareoff" }, { "sleepready", "sleepreadyoff" }, PSP_RELEASE_DEFAULTS
+	{ "mechunk", "mechunkoff" }, { "flipwait", "flipwaitoff" }, { "carveshare", "carveshareoff" }, { "sleepready", "sleepreadyoff" },
+	/* the frame's visibility made on the ME while the main CPU goes on to its
+	first reader (structure_visibility.c, mevisland): exact; b30's drawing
+	-2.2 ms in the flight, -4.4 ms landing on the PSP-3000 (sierra-hw
+	40845560977) */
+	{ "mevisland", "mevislandoff" }, PSP_RELEASE_DEFAULTS
 };
 static char keep_defaults_added[KEEP_DEFAULTS_ROOM] = "";
 
