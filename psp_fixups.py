@@ -38626,9 +38626,12 @@ FIXES_FX15["source/game/game_time.c#fx15"] = [
 # the root is made as before. A local matrix is used only when nothing
 # changed the children's orientations after the decode: no overlays in the
 # graph, no interpolation, and scenery's type has no preprocessing.
-# The Media Engine's pose job (poseahead) made most of these poses ahead; it
-# now leaves out a pose the table holds, and the table keeps the first pose it
-# hands over. Main RAM, in 16 KB pieces as the map uses them, up to 128 KB
+# The Media Engine's pose job (poseahead) makes most of these poses ahead and
+# is left as it is: the table serves the poses this CPU would decode, and is
+# filled only by this CPU's decodes, because the ME's can differ from them in
+# the last bit (c10 in the emulator: poseaheadcheck). A pose poseahead hands
+# over takes the table's local matrices only when it is the table's pose bit
+# for bit. Main RAM, in 16 KB pieces as the map uses them, up to 128 KB
 # ("psckbN" sets it); full, a pose is refused and made as before. Dropped at
 # each map's load. "pscexact": the decoded orientations alone; "pscoff": as
 # before; "psccheck": every pose and local matrix the table hands over is made
@@ -38650,8 +38653,7 @@ struct psp_psc_entry
 	short node_count;
 	real_orientation *pose;
 	real_matrix4x3 *locals; /* the children's local matrices (node 1 first), or NULL */
-	short source; /* for psccheck's report: 1 poseahead's, 2 made here */
-	long made_at; /* game time */
+	long made_at; /* game time, for psccheck's report */
 };
 static struct psp_psc_entry *psp_psc_entries;
 static unsigned char *psp_psc_pieces[PSP_PSC_PIECES];
@@ -38665,8 +38667,8 @@ static long psp_psc_logged;
 static long psp_psc_locals_object = NONE;
 static real_matrix4x3 const *psp_psc_locals;
 static short psp_psc_locals_count;
-static unsigned long psp_psc_hits, psp_psc_fills, psp_psc_from_ahead, psp_psc_refused, psp_psc_unwritten,
-	psp_psc_checked, psp_psc_differed, psp_psc_unlisted, psp_psc_local_used, psp_psc_local_checked, psp_psc_local_differed;
+static unsigned long psp_psc_hits, psp_psc_fills, psp_psc_refused, psp_psc_unwritten,
+	psp_psc_checked, psp_psc_differed, psp_psc_ahead_same, psp_psc_ahead_other, psp_psc_local_used, psp_psc_local_checked, psp_psc_local_differed;
 static real psp_psc_local_largest;
 int psp_keep_number(const char *prefix, int fallback);
 
@@ -38687,10 +38689,10 @@ static int psp_psc_on(void)
 
 static void psp_psc_report(const char *what)
 {
-	platform_psp_log("psc: %s %d poses (%d KB used of %d in %d pieces, cap %d KB%s); %lu handed over, %lu kept (%lu from poseahead), %lu refused, %lu unwritten, %lu left out of poseahead; local matrices %lu used; checked: %lu poses (%lu differed), %lu matrices (%lu differed, largest %g)",
+	platform_psp_log("psc: %s %d poses (%d KB used of %d in %d pieces, cap %d KB%s); %lu handed over, %lu kept, %lu refused, %lu unwritten; poseahead's poses against the table: %lu the same, %lu different; local matrices %lu used; checked: %lu poses (%lu differed), %lu matrices (%lu differed, largest %g)",
 		what, psp_psc_count, psp_psc_used / 1024, (psp_psc_piece_count * PSP_PSC_PIECE) / 1024, psp_psc_piece_count,
 		(psp_psc_piece_cap * PSP_PSC_PIECE) / 1024, psp_psc_matrices ? "" : ", pscexact",
-		psp_psc_hits, psp_psc_fills, psp_psc_from_ahead, psp_psc_refused, psp_psc_unwritten, psp_psc_unlisted,
+		psp_psc_hits, psp_psc_fills, psp_psc_refused, psp_psc_unwritten, psp_psc_ahead_same, psp_psc_ahead_other,
 		psp_psc_local_used, psp_psc_checked, psp_psc_differed, psp_psc_local_checked, psp_psc_local_differed,
 		(double)psp_psc_local_largest);
 }
@@ -38711,8 +38713,8 @@ static void psp_psc_drop(void)
 		(free)(psp_psc_entries);
 	psp_psc_entries = NULL;
 	psp_psc_piece_count = psp_psc_used = psp_psc_count = psp_psc_no_room = 0;
-	psp_psc_hits = psp_psc_fills = psp_psc_from_ahead = psp_psc_refused = psp_psc_unwritten = 0;
-	psp_psc_checked = psp_psc_differed = psp_psc_unlisted = 0;
+	psp_psc_hits = psp_psc_fills = psp_psc_refused = psp_psc_unwritten = 0;
+	psp_psc_checked = psp_psc_differed = psp_psc_ahead_same = psp_psc_ahead_other = 0;
 	psp_psc_local_used = psp_psc_local_checked = psp_psc_local_differed = 0;
 	psp_psc_local_largest = 0.f;
 	psp_psc_logged = 0;
@@ -38804,10 +38806,10 @@ static boolean psp_psc_take(long object_index, struct object_datum const *object
 				for (k = 0; k < entry->node_count * 8; k++)
 					if (*(unsigned long const *)&a[k] != *(unsigned long const *)&b[k])
 						break;
-				platform_psp_log("psc: check: object %08lx frame %d of %d, nodes %d, %s, made %s at %ld (now %ld): word %d of node %d: live %08lx (%g), kept %08lx (%g)",
+				platform_psp_log("psc: check: object %08lx frame %d of %d, nodes %d, %s, made at %ld (now %ld): word %d of node %d: live %08lx (%g), kept %08lx (%g)",
 					(unsigned long)object_index, frame, animation->frame_count, entry->node_count,
 					TEST_FLAG(animation->flags, _animation_compressed_bit) ? "compressed" : "plain",
-					entry->source == 1 ? "by poseahead" : "here", entry->made_at, game_time_get(), k % 8, k / 8,
+					entry->made_at, game_time_get(), k % 8, k / 8,
 					*(unsigned long const *)&a[k], (double)a[k], *(unsigned long const *)&b[k], (double)b[k]);
 			}
 		}
@@ -38878,23 +38880,23 @@ static void psp_psc_kept(struct psp_psc_entry *entry, struct animation const *an
 	psp_psc_fills++;
 }
 
-/* a pose poseahead handed over (made by the same decode, checked written):
-kept as it is */
-static void psp_psc_keep(long object_index, struct object_datum const *object, struct model const *model,
+/* a pose poseahead handed over: the table's local matrices go with it only
+when it is the table's pose bit for bit (the Media Engine's decodes can differ
+from this CPU's in the last bit: c10 in the emulator) */
+static void psp_psc_match(long object_index, struct object_datum const *object, struct model const *model,
 	struct animation const *animation, short frame, real_orientation const *pose)
 {
-	struct psp_psc_entry *entry = psp_psc_room(object, model, animation, frame);
+	struct psp_psc_entry *entry = psp_psc_find(model, animation, frame);
 
-	if (!entry)
+	psp_psc_log();
+	if (!entry || !entry->animation)
+		return;
+	if (csmemcmp(pose, entry->pose, entry->node_count * sizeof(real_orientation)))
 	{
-		psp_psc_refused++;
+		psp_psc_ahead_other++;
 		return;
 	}
-	csmemcpy(entry->pose, pose, entry->node_count * sizeof(real_orientation));
-	entry->source = 1;
-	entry->made_at = game_time_get();
-	psp_psc_kept(entry, animation);
-	psp_psc_from_ahead++;
+	psp_psc_ahead_same++;
 	psp_psc_use(object_index, object, entry);
 }
 
@@ -38917,7 +38919,6 @@ static boolean psp_psc_make(long object_index, struct object_datum const *object
 		psp_psc_unwritten++;
 		return FALSE;
 	}
-	entry->source = 2;
 	entry->made_at = game_time_get();
 	psp_psc_kept(entry, animation);
 	csmemcpy(out, entry->pose, entry->node_count * sizeof(real_orientation));
@@ -38966,30 +38967,19 @@ static void psp_pose_ahead_list("""),
  """	if (!psp_pose_ahead_mode || animation->frame_count <= 0 || animation->node_count <= 0 ||
 		animation->node_count > MAXIMUM_NODES_PER_MODEL)
 		return;
-	/* psp_fixups.py (FIXES_PSC): a pose the table holds isn't made ahead */
-	if (psp_psc_listing)
-	{
-		struct psp_psc_entry *entry = psp_psc_find(model, animation, (short)((frame + 1) % animation->frame_count));
-
-		if (entry && entry->animation)
-		{
-			psp_psc_unlisted++;
-			return;
-		}
-	}
 	slot = &psp_pose_ahead_slots[(unsigned long)object_index & (PSP_POSE_SLOTS - 1)];"""),
 ("""				if (psp_pose_ahead_take(object_index, model, animation, frame_index, node_orientations))
 					;
 				else if (psp_pose_predict)""",
  """				/* psp_fixups.py (FIXES_PSC): a looping animation's pose from the table, or kept in it */
 				psp_psc_listing = psp_psc_eligible(object, animation);
-				if (psp_psc_listing && psp_psc_take(object_index, object, model, animation, frame_index, node_orientations))
-					;
-				else if (psp_pose_ahead_take(object_index, model, animation, frame_index, node_orientations))
+				if (psp_pose_ahead_take(object_index, model, animation, frame_index, node_orientations))
 				{
 					if (psp_psc_listing)
-						psp_psc_keep(object_index, object, model, animation, frame_index, node_orientations);
+						psp_psc_match(object_index, object, model, animation, frame_index, node_orientations);
 				}
+				else if (psp_psc_listing && psp_psc_take(object_index, object, model, animation, frame_index, node_orientations))
+					;
 				else if (psp_psc_listing && psp_psc_make(object_index, object, model, animation, frame_index, node_orientations))
 					;
 				else if (psp_pose_predict)"""),
