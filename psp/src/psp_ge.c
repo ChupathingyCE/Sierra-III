@@ -12299,6 +12299,217 @@ struct skin_batch;
 static void batch_sphere(struct skin_batch *b, const struct skin_part *skin, const void *vertices);
 static PSP_MAIN_SIDE int batch_sphere_old = -1;
 
+/* ---------- PRECONVERT (docs/plan_preconvert.md): the buffers the bake
+converted (tools/modelconvert.py), read as blocks into the geometry cache
+(psp_geo.c, psp_vertex_lock): a 64-byte header, then the records exactly as
+model_convert writes them, then a skinned part's plan as model_convert makes
+it (struct skin_part, its batches with their spheres, their triangles, their
+runs' spheres), offsets from the block until psp_ge_pcv_relocate makes them
+addresses. Such a buffer is drawn as it is read, on either CPU: nothing to
+convert, nothing on the heap, nothing for the Media Engine's work to leave
+out. Its plan lives and dies with its block, so it is never in converted[]
+or skinned[]. A buffer the bake didn't take (see-through draws, buffers two
+parts draw with different triangles) converts at run time as before */
+#define PCV_MAGIC 0x31564350u /* 'PCV1' */
+#define PCV_SKINNED 1u
+#define PCV_BAD 0x80000000u
+struct pcv_header
+{
+	unsigned int magic, flags, count, stride, index_count, strip, uncompressed, raw;
+	struct skin_part part;
+	unsigned int checked, raw_indices, spare;
+};
+typedef char verify_pcv_header[sizeof(struct pcv_header) == 64 ? 1 : -1];
+typedef char verify_pcv_batch[sizeof(struct skin_batch) == 40 && offsetof(struct skin_batch, indices) == 8 &&
+	offsetof(struct skin_batch, center) == 16 && offsetof(struct skin_batch, clusters) == 32 ? 1 : -1];
+extern int psp_pcv_on; /* psp_geo.c: this map's pack has baked buffers, in use */
+const void *psp_geo_baked(const void *vertices);
+static PSP_MAIN_SIDE unsigned long pcv_answers = 0, pcv_refused = 0, pcv_bad_blocks = 0, pcv_relocated = 0;
+
+/* a block just read (main CPU, before its write-back): its plan's offsets
+made addresses, each checked to lie inside the block; a block that fails is
+marked and never drawn (model_convert refuses it) */
+int psp_ge_pcv_relocate(void *block, unsigned int size)
+{
+	struct pcv_header *h = block;
+	unsigned int at = (unsigned int)block, b;
+
+	if (h->magic != PCV_MAGIC || h->stride > 32 || 64u + h->count * h->stride > size)
+		goto bad;
+	if (h->flags & PCV_SKINNED)
+	{
+		unsigned int batches = (unsigned int)h->part.batches;
+
+		if (h->part.batch_count <= 0 || h->part.batch_count > 64 || batches % 4 ||
+			batches + 40u * (unsigned int)h->part.batch_count > size || h->part.stride != (int)h->stride)
+			goto bad;
+		h->part.batches = (struct skin_batch *)(at + batches);
+		for (b = 0; b < (unsigned int)h->part.batch_count; b++)
+		{
+			struct skin_batch *batch = &h->part.batches[b];
+			unsigned int list = (unsigned int)batch->indices, runs = (unsigned int)batch->clusters;
+
+			if (list % 2 || batch->index_count < 0 || list + 2u * (unsigned int)batch->index_count > size ||
+				batch->cluster_count < 0 || runs % 4 || runs + 16u * (unsigned int)batch->cluster_count > size)
+				goto bad;
+			batch->indices = (unsigned short *)(at + list);
+			batch->clusters = batch->cluster_count ? (float (*)[4])(at + runs) : NULL;
+		}
+	}
+	pcv_relocated++;
+	return 1;
+bad:
+	h->flags = PCV_BAD;
+	pcv_bad_blocks++;
+	return 0;
+}
+
+/* model_convert's answer for a baked buffer: its plan, or rigid; 0 when the
+draw doesn't match what the bake converted for (never, unless map and pack
+disagree) or when a see-through draw asks for it (it locks the raw buffer) */
+static int pcv_answer(const struct pcv_header *h, int count, int uncompressed, int index_count, int strip,
+	struct skin_part **skin)
+{
+	int me = PSP_ME_WORK();
+
+	if ((h->flags & PCV_BAD) || !skin || h->count != (unsigned int)count || h->uncompressed != (unsigned int)uncompressed ||
+		h->index_count != (unsigned int)index_count || h->strip != (unsigned int)(strip != 0))
+	{
+		if (!me)
+			pcv_refused++;
+		return 0;
+	}
+	*skin = (h->flags & PCV_SKINNED) ? (struct skin_part *)&h->part : NULL;
+	if (!me)
+	{
+		pcv_answers++;
+		if (vm_on > 0)
+			vm_note((unsigned char *)h + 64, h->count * h->stride); /* vrammodels: a copy may go to VRAM */
+	}
+	return 1;
+}
+
+/* the records model_convert writes in place, from the vertices there and the
+part's plan (NULL: rigid), and each batch's sphere; also the run-time side
+of preconvertcheck */
+static void convert_records(void *vertices, int count, int uncompressed, struct skin_part *part,
+	const signed char *node0, const signed char *node1, const unsigned char *weight0)
+{
+	int index;
+
+	for (index = 0; index < count; index++)
+	{
+		unsigned char *vertex = (unsigned char *)vertices + 32 * index;
+		float position[3], uv[2];
+		unsigned int nodes, packed_normal = 0;
+		short texcoord[2] = { 0, 0 };
+
+		if (uncompressed)
+		{
+			/* 68-byte vertices (the sky, and models too big for 16 bits): packed
+			down into the same records, in place; record i ends before vertex i
+			starts, and vertices before it are already read */
+			const unsigned char *source = (const unsigned char *)vertices + 68 * index;
+			short node_indices[2];
+
+			memcpy(position, source, 12);
+			memcpy(uv, source + 48, 8);
+			memcpy(node_indices, source + 56, 4);
+			{
+				float n[3];
+
+				memcpy(n, source + 12, 12);
+				packed_normal = pack_normal(n);
+			}
+			nodes = (unsigned int)(node_indices[0] >= 0 && node_indices[0] < 85 ? node_indices[0] * 3 : 0);
+		}
+		else
+		{
+			memcpy(position, vertex, 12);
+			memcpy(&packed_normal, vertex + 12, 4);
+			memcpy(texcoord, vertex + 24, 4);
+			memcpy(&nodes, vertex + 28, 4);
+			uv[0] = texcoord[0] * (1.0f / 32767.0f);
+			uv[1] = texcoord[1] * (1.0f / 32767.0f);
+		}
+		{
+			float normal[3];
+			int k;
+
+			unpack_normal(packed_normal, normal);
+			if (part)
+			{
+				/* skinned: weights by slot, then as the rigid record */
+				unsigned char *record = (unsigned char *)vertices + part->stride * index;
+				int uv_at = part->stride - 24;
+
+				memset(record, 0, uv_at);
+				if (node1[index] >= 0)
+				{
+					record[(int)skin_slot[(int)node0[index]]] = weight0[index];
+					record[(int)skin_slot[(int)node1[index]]] = (unsigned char)(128 - weight0[index]);
+				}
+				else
+					record[(int)skin_slot[(int)node0[index]]] = 128;
+				memcpy(record + uv_at, uv, 8);
+				for (k = 0; k < 3; k++)
+					record[uv_at + 8 + k] = (unsigned char)(signed char)(normal[k] * 127.0f);
+				record[uv_at + 11] = 0;
+				memcpy(record + uv_at + 12, position, 12);
+			}
+			else if (convert_k != 0.0f)
+			{
+				/* the 14-byte record; record i ends before vertex i + 1 starts */
+				unsigned char *record = (unsigned char *)vertices + 14 * index;
+				unsigned short u16[2];
+				short q[3];
+				float inverse = 1.0f / convert_k;
+
+				u16[0] = (unsigned short)(texcoord[0] + 32768);
+				u16[1] = (unsigned short)(texcoord[1] + 32768);
+				for (k = 0; k < 3; k++)
+				{
+					float v = position[k] * inverse;
+					int r = (int)(v < 0.0f ? v - 0.5f : v + 0.5f);
+
+					q[k] = (short)(r < -32767 ? -32767 : r > 32767 ? 32767 : r);
+				}
+				memcpy(record, u16, 4);
+				for (k = 0; k < 3; k++)
+					record[4 + k] = (unsigned char)(signed char)(normal[k] * 127.0f);
+				record[7] = (unsigned char)(nodes & 0xFF);
+				memcpy(record + 8, q, 6);
+			}
+			else
+			{
+				/* 24 bytes: texture coordinate, an 8-bit normal and the first
+				node (in the padding byte the GE skips), position (build 22) */
+				unsigned char *record = (unsigned char *)vertices + 24 * index;
+
+				memcpy(record, uv, 8);
+				for (k = 0; k < 3; k++)
+					record[8 + k] = (unsigned char)(signed char)(normal[k] * 127.0f);
+				record[11] = (unsigned char)(nodes & 0xFF);
+				memcpy(record + 12, position, 12);
+			}
+		}
+	}
+	/* each batch's sphere now, on the main CPU, from the records just
+	written: the plan is a plain heap block, and the Media Engine's replay,
+	which draws the batch near the eye, must write none of it (a line it
+	writes back carries a neighbouring chunk's header as it was).
+	"batchsphereold": worked out the first time it is drawn near the eye */
+	if (batch_sphere_old < 0)
+		batch_sphere_old = psp_keep("batchsphereold") != 0;
+	if (part && !batch_sphere_old)
+	{
+		int b;
+
+		for (b = 0; b < part->batch_count; b++)
+			batch_sphere(&part->batches[b], part, vertices);
+	}
+}
+
 static int model_convert(void *vertices, int count, int uncompressed, const unsigned short *indices, int index_count,
 	int strip, struct skin_part **skin)
 {
@@ -12311,6 +12522,13 @@ static int model_convert(void *vertices, int count, int uncompressed, const unsi
 	if (skin)
 		*skin = NULL;
 	convert_k = 0.0f;
+	if (psp_pcv_on)
+	{
+		const struct pcv_header *baked = psp_geo_baked(vertices);
+
+		if (baked)
+			return pcv_answer(baked, count, uncompressed, index_count, strip, skin);
+	}
 	/* read on the main CPU (psp_ge_model_begin); the ME only reads it */
 	if (model14 < 0 && !psp_on_me())
 		model14 = psp_keep("model14");
@@ -12473,117 +12691,7 @@ static int model_convert(void *vertices, int count, int uncompressed, const unsi
 			model14_vertices += (unsigned long)count;
 		}
 	}
-	for (index = 0; index < count; index++)
-	{
-		unsigned char *vertex = (unsigned char *)vertices + 32 * index;
-		float position[3], uv[2];
-		unsigned int nodes, packed_normal = 0;
-		short texcoord[2] = { 0, 0 };
-
-		if (uncompressed)
-		{
-			/* 68-byte vertices (the sky, and models too big for 16 bits): packed
-			down into the same records, in place; record i ends before vertex i
-			starts, and vertices before it are already read */
-			const unsigned char *source = (const unsigned char *)vertices + 68 * index;
-			short node_indices[2];
-
-			memcpy(position, source, 12);
-			memcpy(uv, source + 48, 8);
-			memcpy(node_indices, source + 56, 4);
-			{
-				float n[3];
-
-				memcpy(n, source + 12, 12);
-				packed_normal = pack_normal(n);
-			}
-			nodes = (unsigned int)(node_indices[0] >= 0 && node_indices[0] < 85 ? node_indices[0] * 3 : 0);
-		}
-		else
-		{
-			memcpy(position, vertex, 12);
-			memcpy(&packed_normal, vertex + 12, 4);
-			memcpy(texcoord, vertex + 24, 4);
-			memcpy(&nodes, vertex + 28, 4);
-			uv[0] = texcoord[0] * (1.0f / 32767.0f);
-			uv[1] = texcoord[1] * (1.0f / 32767.0f);
-		}
-		{
-			float normal[3];
-			int k;
-
-			unpack_normal(packed_normal, normal);
-			if (part)
-			{
-				/* skinned: weights by slot, then as the rigid record */
-				unsigned char *record = (unsigned char *)vertices + part->stride * index;
-				int uv_at = part->stride - 24;
-
-				memset(record, 0, uv_at);
-				if (node1[index] >= 0)
-				{
-					record[(int)skin_slot[(int)node0[index]]] = weight0[index];
-					record[(int)skin_slot[(int)node1[index]]] = (unsigned char)(128 - weight0[index]);
-				}
-				else
-					record[(int)skin_slot[(int)node0[index]]] = 128;
-				memcpy(record + uv_at, uv, 8);
-				for (k = 0; k < 3; k++)
-					record[uv_at + 8 + k] = (unsigned char)(signed char)(normal[k] * 127.0f);
-				record[uv_at + 11] = 0;
-				memcpy(record + uv_at + 12, position, 12);
-			}
-			else if (convert_k != 0.0f)
-			{
-				/* the 14-byte record; record i ends before vertex i + 1 starts */
-				unsigned char *record = (unsigned char *)vertices + 14 * index;
-				unsigned short u16[2];
-				short q[3];
-				float inverse = 1.0f / convert_k;
-
-				u16[0] = (unsigned short)(texcoord[0] + 32768);
-				u16[1] = (unsigned short)(texcoord[1] + 32768);
-				for (k = 0; k < 3; k++)
-				{
-					float v = position[k] * inverse;
-					int r = (int)(v < 0.0f ? v - 0.5f : v + 0.5f);
-
-					q[k] = (short)(r < -32767 ? -32767 : r > 32767 ? 32767 : r);
-				}
-				memcpy(record, u16, 4);
-				for (k = 0; k < 3; k++)
-					record[4 + k] = (unsigned char)(signed char)(normal[k] * 127.0f);
-				record[7] = (unsigned char)(nodes & 0xFF);
-				memcpy(record + 8, q, 6);
-			}
-			else
-			{
-				/* 24 bytes: texture coordinate, an 8-bit normal and the first
-				node (in the padding byte the GE skips), position (build 22) */
-				unsigned char *record = (unsigned char *)vertices + 24 * index;
-
-				memcpy(record, uv, 8);
-				for (k = 0; k < 3; k++)
-					record[8 + k] = (unsigned char)(signed char)(normal[k] * 127.0f);
-				record[11] = (unsigned char)(nodes & 0xFF);
-				memcpy(record + 12, position, 12);
-			}
-		}
-	}
-	/* each batch's sphere now, on the main CPU, from the records just
-	written: the plan is a plain heap block, and the Media Engine's replay,
-	which draws the batch near the eye, must write none of it (a line it
-	writes back carries a neighbouring chunk's header as it was).
-	"batchsphereold": worked out the first time it is drawn near the eye */
-	if (batch_sphere_old < 0)
-		batch_sphere_old = psp_keep("batchsphereold") != 0;
-	if (part && !batch_sphere_old)
-	{
-		int b;
-
-		for (b = 0; b < part->batch_count; b++)
-			batch_sphere(&part->batches[b], part, vertices);
-	}
+	convert_records(vertices, count, uncompressed, part, node0, node1, weight0);
 	free(node0);
 	{
 		int stride = part ? part->stride : convert_k != 0.0f ? 14 : 24;
@@ -12592,6 +12700,99 @@ static int model_convert(void *vertices, int count, int uncompressed, const unsi
 		vm_note(vertices, (unsigned int)(count * stride)); /* vrammodels: a copy may go to VRAM */
 	}
 	return 1;
+}
+
+/* "preconvertcheck": a baked block against the run-time conversion of its
+raw buffer (a copy, converted as model_convert would for an opaque draw),
+record for record and plan for plan, sphere bits included; 1 when they agree.
+Main CPU, once a load (psp_geo.c); the heap's counts are put back after */
+static void near_clusters_make(struct skin_batch *b, const struct skin_part *skin, const void *vertices);
+static unsigned long pcv_differ_records = 0, pcv_differ_plans = 0, pcv_differ_spheres = 0, pcv_differ_runs = 0;
+
+int psp_ge_pcv_check(void *block, const void *raw, unsigned int raw_bytes, const unsigned short *indices)
+{
+	struct pcv_header *h = block;
+	unsigned long saved[7] = { skinned_parts, skin_batches, skin_failures, skin_bytes, skin_live_bytes, skin_live_peak,
+		near_cluster_bytes };
+	unsigned char *copy = malloc(raw_bytes + 3 * h->count);
+	signed char *node0, *node1;
+	unsigned char *weight0;
+	struct skin_part *part;
+	int same = 1, b, stride;
+	float saved_k = convert_k;
+
+	if (!copy || (h->flags & PCV_BAD))
+	{
+		free(copy);
+		return copy ? 0 : 1;
+	}
+	memcpy(copy, raw, raw_bytes);
+	node0 = (signed char *)copy + raw_bytes;
+	node1 = node0 + h->count;
+	weight0 = (unsigned char *)(node1 + h->count);
+	convert_k = 0.0f;
+	part = skin_plan(copy, (int)h->count, (int)h->uncompressed, indices, (int)h->index_count, (int)h->strip, node0, node1,
+		weight0);
+	convert_records(copy, (int)h->count, (int)h->uncompressed, part, node0, node1, weight0);
+	stride = part ? part->stride : 24;
+	if (stride != (int)h->stride || memcmp(copy, (unsigned char *)block + 64, h->count * stride))
+	{
+		same = 0;
+		pcv_differ_records++;
+	}
+	else if (!part != !(h->flags & PCV_SKINNED) ||
+		(part && (part->weights != h->part.weights || part->batch_count != h->part.batch_count)))
+	{
+		same = 0;
+		pcv_differ_plans++;
+	}
+	else if (part)
+		for (b = 0; b < part->batch_count && same; b++)
+		{
+			struct skin_batch *mine = &part->batches[b];
+			const struct skin_batch *baked = &h->part.batches[b];
+
+			near_clusters_make(mine, part, copy);
+			if (memcmp(mine->node, baked->node, SKIN_SLOTS) || mine->index_count != baked->index_count ||
+				memcmp(mine->indices, baked->indices, 2 * mine->index_count))
+			{
+				same = 0;
+				pcv_differ_plans++;
+			}
+			else if (memcmp(mine->center, baked->center, sizeof(mine->center)) || memcmp(&mine->radius, &baked->radius, 4))
+			{
+				same = 0;
+				pcv_differ_spheres++;
+			}
+			else if (mine->cluster_count != baked->cluster_count ||
+				(mine->cluster_count > 0 && memcmp(mine->clusters, baked->clusters, 16 * mine->cluster_count)))
+			{
+				same = 0;
+				pcv_differ_runs++;
+			}
+		}
+	if (!same && pcv_differ_records + pcv_differ_plans + pcv_differ_spheres + pcv_differ_runs <= 8)
+		platform_log("GE: preconvertcheck: the buffer at %08x (%u vertices, %s) differs from its run-time conversion",
+			h->raw, h->count, h->flags & PCV_SKINNED ? "skinned" : "rigid");
+	skin_free(part);
+	free(copy);
+	convert_k = saved_k;
+	skinned_parts = saved[0];
+	skin_batches = saved[1];
+	skin_failures = saved[2];
+	skin_bytes = saved[3];
+	skin_live_bytes = saved[4];
+	skin_live_peak = saved[5];
+	near_cluster_bytes = saved[6];
+	return same;
+}
+
+/* the 300-frame report's line (psp_geo.c) */
+void psp_ge_pcv_report(void)
+{
+	platform_log("GE: preconvert: %lu draws took a baked buffer as it was read, %lu refused (not as baked), %lu blocks relocated, %lu malformed; preconvertcheck differences: records %lu, plans %lu, spheres %lu, runs %lu",
+		pcv_answers, pcv_refused, pcv_relocated, pcv_bad_blocks, pcv_differ_records, pcv_differ_plans, pcv_differ_spheres,
+		pcv_differ_runs);
 }
 
 /* the change colour (build 31): on the Xbox the lit base map is multiplied
@@ -15535,6 +15736,8 @@ static int model_converted_now(const void *vertices)
 {
 	unsigned int slot = ((unsigned int)vertices >> 4) % CONVERTED_BUFFERS, tries = 0;
 
+	if (psp_pcv_on && psp_geo_baked(vertices))
+		return 1;
 	while (converted[slot] && converted[slot] != vertices)
 	{
 		slot = (slot + 1) % CONVERTED_BUFFERS;
