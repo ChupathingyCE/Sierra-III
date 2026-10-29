@@ -38610,7 +38610,153 @@ FIXES_FX15["source/game/game_time.c#fx15"] = [
 """),
 ]
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_FX15.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items()))):
+# ---------- FIXES_POSEFPU: a pose made ahead takes one form, whoever makes it
+# The Media Engine has no VFPU, so its pose job normalizes with the FPU, while
+# the main CPU normalizes with the VFPU's forms (VFPUQD, on by default): the
+# same pose differs in its last bits by the unit that made it (c10's scenery:
+# 367,576 of 404,520 on the PSP-1000; none with novfpuquatd). Which unit makes
+# a pose listed for the ME can turn on timing: the job failing or a page not
+# resident, the ring not ready, the frame data not resident when the list is
+# made. So every pose listed ahead, wherever it is made, is decoded in the
+# ME's form (the FPU's: psp_vfpuquat_mode 0 for that one decode): the main
+# CPU's stand-ins in the list's making, and a pose the job left unmade, made
+# at the tick that wanted it. Poses never listed (an object's first, a guess
+# that missed) keep the VFPU's form. "posefpuoff": as before. "posefpulate"
+# (a test): every fourth pose the ME made is treated as late, so the main CPU
+# stands in, and poseaheadcheck then compares the stand-in with the ME's pose
+FIXES_POSEFPU = {}
+FIXES_POSEFPU["source/objects/objects.c#posefpu"] = [
+("""static void psp_pose_ahead_collect(void);
+""",
+ """static void psp_pose_ahead_collect(void);
+
+/* psp_fixups.py (FIXES_POSEFPU): the ME's form of a decode on this CPU */
+extern int psp_vfpuquat_mode;
+static int psp_posefpu_mode = -1; /* 0 off, 1 on, 2 on with a quarter of the ME's poses taken as late */
+static unsigned long psp_posefpu_standins, psp_posefpu_late_checked, psp_posefpu_late_differed, psp_posefpu_job_poses;
+
+static int psp_posefpu_on(void)
+{
+	if (psp_posefpu_mode < 0 && psp_keep_loaded())
+		psp_posefpu_mode = psp_keep("posefpuoff") ? 0 : psp_keep("posefpulate") ? 2 : 1;
+	return psp_posefpu_mode > 0;
+}
+
+static void psp_posefpu_decode(struct model const *model, struct animation const *animation, short frame,
+	real_orientation *out)
+{
+	int mode = psp_vfpuquat_mode;
+
+	psp_vfpuquat_mode = 0;
+	animation_get_node_orientations(model, animation, frame, out);
+	psp_vfpuquat_mode = mode;
+}
+
+/* a pose listed for the ME made on this CPU: in the ME's form */
+static void psp_posefpu_make(struct model const *model, struct animation const *animation, short frame,
+	real_orientation *out)
+{
+	if (psp_pose_ahead_me && psp_posefpu_on())
+	{
+		psp_posefpu_decode(model, animation, frame, out);
+		psp_posefpu_standins++;
+	}
+	else
+		animation_get_node_orientations(model, animation, frame, out);
+}
+"""),
+# a pose the ME was asked for and didn't make stays listed (state 4), so the
+# tick that wants it makes it in the ME's form; posefpulate's late ones keep
+# the ME's pose to compare (state 5)
+("""		if (ok && *(unsigned long *)slot->pose != PSP_POSE_UNWRITTEN)
+		{
+			slot->state = 2;
+			psp_pose_ahead_made++;
+			psp_pose_job_poses++;
+		}
+		else
+		{
+			slot->state = 0;
+			if (ok)
+				psp_pose_ahead_unwritten++;
+		}""",
+ """		if (ok && *(unsigned long *)slot->pose != PSP_POSE_UNWRITTEN)
+		{
+			/* psp_fixups.py (FIXES_POSEFPU): posefpulate takes a quarter as late */
+			if (psp_posefpu_mode == 2 && (++psp_posefpu_job_poses & 3) == 0)
+			{
+				slot->state = 5;
+				continue;
+			}
+			slot->state = 2;
+			psp_pose_ahead_made++;
+			psp_pose_job_poses++;
+		}
+		else
+		{
+			slot->state = psp_posefpu_on() ? 4 : 0; /* psp_fixups.py (FIXES_POSEFPU) */
+			if (ok)
+				psp_pose_ahead_unwritten++;
+		}"""),
+("""		if (psp_pose_ahead_slots[k].state == 2)
+			psp_pose_ahead_slots[k].state = 0;""",
+ """		if (psp_pose_ahead_slots[k].state == 2 || psp_pose_ahead_slots[k].state >= 4) /* (FIXES_POSEFPU) */
+			psp_pose_ahead_slots[k].state = 0;"""),
+("""			continue;
+		}
+		animation_get_node_orientations(slot->model, slot->animation, slot->frame, slot->pose);
+		if (*(unsigned long *)slot->pose == PSP_POSE_UNWRITTEN)""",
+ """			continue;
+		}
+		psp_posefpu_make(slot->model, slot->animation, slot->frame, slot->pose); /* psp_fixups.py (FIXES_POSEFPU) */
+		if (*(unsigned long *)slot->pose == PSP_POSE_UNWRITTEN)"""),
+("""				animation_get_node_orientations(slot->model, slot->animation, slot->frame, slot->pose);
+				slot->state = *(unsigned long *)slot->pose == PSP_POSE_UNWRITTEN ? 0 : 2;""",
+ """				psp_posefpu_make(slot->model, slot->animation, slot->frame, slot->pose); /* psp_fixups.py (FIXES_POSEFPU) */
+				slot->state = *(unsigned long *)slot->pose == PSP_POSE_UNWRITTEN ? 0 : 2;"""),
+("""	slot = &psp_pose_ahead_slots[(unsigned long)object_index & (PSP_POSE_SLOTS - 1)];
+	if (slot->state != 2 || slot->object_index != object_index || slot->model != model ||
+		slot->animation != animation || slot->frame != frame)
+		return FALSE;
+	if (psp_pose_ahead_mode == 2)
+	{
+		animation_get_node_orientations(model, animation, frame, out);""",
+ """	slot = &psp_pose_ahead_slots[(unsigned long)object_index & (PSP_POSE_SLOTS - 1)];
+	/* psp_fixups.py (FIXES_POSEFPU): a pose listed for the ME and not made by
+	it is made here in the ME's form (with posefpulate, against the ME's own) */
+	if ((slot->state == 4 || slot->state == 5) && slot->object_index == object_index && slot->model == model &&
+		slot->animation == animation && slot->frame == frame)
+	{
+		psp_posefpu_decode(model, animation, frame, out);
+		psp_posefpu_standins++;
+		if (slot->state == 5)
+		{
+			psp_posefpu_late_checked++;
+			if (csmemcmp(out, slot->pose, slot->node_count * sizeof(real_orientation)))
+				psp_posefpu_late_differed++;
+		}
+		slot->state = 0;
+		return TRUE;
+	}
+	if (slot->state != 2 || slot->object_index != object_index || slot->model != model ||
+		slot->animation != animation || slot->frame != frame)
+		return FALSE;
+	if (psp_pose_ahead_mode == 2)
+	{
+		/* (FIXES_POSEFPU) checked against what a stand-in would make */
+		if (psp_pose_ahead_me && psp_posefpu_on())
+			psp_posefpu_decode(model, animation, frame, out);
+		else
+		animation_get_node_orientations(model, animation, frame, out);"""),
+("""		platform_psp_log("poseahead: %lu poses made ahead (%lu by the ME in %lu jobs, %lu jobs failed), %lu used (%lu checked, %lu differed); %lu unwritten, %lu past the arena's %u KB",""",
+ """		platform_psp_log("posefpu: %s; %lu poses made on this CPU in the ME's form; posefpulate: %lu compared with the ME's, %lu differed",
+			psp_posefpu_on() ? psp_posefpu_mode == 2 ? "on, a quarter of the ME's poses taken as late" : "on" : "off",
+			psp_posefpu_standins, psp_posefpu_late_checked, psp_posefpu_late_differed);
+	if (psp_pose_ahead_ticks % 900 == 0)
+		platform_psp_log("poseahead: %lu poses made ahead (%lu by the ME in %lu jobs, %lu jobs failed), %lu used (%lu checked, %lu differed); %lu unwritten, %lu past the arena's %u KB","""),
+]
+
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_FX15.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items()))):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
