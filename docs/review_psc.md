@@ -13,11 +13,13 @@ PSC is an exact speed-up and is **on by default**. `pscexact` keeps the decoded 
 
 **What it leaves alone.** The Media Engine's pose job (poseahead) still makes its poses ahead, unchanged. The table serves only the poses this CPU would decode, and only this CPU's decodes fill it. A pose the ME hands over takes the table's local matrices only when it is the table's pose bit for bit (`csmemcmp`). The reason is that the ME's decodes can differ from this CPU's in the last bit. In the emulator on c10, poseaheadcheck finds 186,323 of 204,726 ME poses differing from the live decode: a quaternion's w is 0x3f800000 on one side and 0x3f7fffff on the other. An earlier version kept the ME's poses in the table, and that changed this CPU's ticks: a30's and b30's play parted against `pscoff`. That difference already lives in the default build: which side makes a pose decides its last bit (section 5).
 
-**Memory.** Main RAM only, never eDRAM. The table takes:
-- a 1,024-entry directory (`calloc`, 20 KB);
-- 16 KB pieces (`memalign`) as the map uses them, up to the cap.
-
-Past the cap, or past 3/4 of the directory, a pose is refused and made as before (counted). Everything is dropped at each map's load (`objects_initialize_for_new_map`), or if `hs_model_animation_compression_enabled` turns. It's freed with newlib's own `free` (`(free)(p)`), because the engine's `free` macro is its debug allocator's. The first build called that one at map load and crashed the emulator.
+**Memory, and when the table holds any.** Main RAM only, never eDRAM. The heap comes first:
+- **A pose is kept only at its second decode within 16 ticks.** Its first decode is only noted in the directory. A pose decoded again soon is one the table will serve: c10's swamp plants come back every few ticks. One that isn't would hold memory for little, like a single long animation or poses the ME's job makes nearly all of.
+- **Local matrices only where the chain can use them:** scenery whose definition's graph has no overlays.
+- **Headroom floors.** No new 16 KB piece (or the 20 KB directory) unless the heap's largest free block stays above 256 KB (`pscfloorN`) and its free total above 320 KB (`psp_heap_survey`, now built in every build). The cap is 112 KB (`psckbN`), c10's use.
+- **Giving the memory back.** Every tick (from `psp_pose_ahead_make_work`), every 150 ticks of game time, the heap is surveyed while the table holds memory. The table is released for the rest of the map when the heap falls under those floors, or when it served under 2 poses a tick over the last 900 ticks.
+- Past the cap, the floors or 3/4 of the directory, a pose is refused and made as before.
+- Everything is dropped at each map's load (`objects_initialize_for_new_map`), or if `hs_model_animation_compression_enabled` turns. It's freed with newlib's own `free` (`(free)(p)`), because the engine's `free` macro is its debug allocator's. The first build called that one at map load and crashed the emulator.
 
 **Log.** A `psc:` line every 900 ticks and at each drop, giving:
 - poses kept, KB used, pieces and the cap;
@@ -61,49 +63,45 @@ Both forms give the same bits as `pscoff`, so no reader can see a difference. Co
 
 ## 4. Evidence [E]
 
-Emulator, bake w148a, no PGO, Sierra-III psc 82fa8bec.
+Emulator, bake w148a, no PGO, Sierra-III psc 1d05237a.
 
-- **Exactness** (fixedticks fixedseed nomouth statecrc, game time 3,600). Default against `pscoff`, and `pscexact` against `pscoff`: play and both random seeds identical at every tick on c10 hands off and on the a30, b30, c20 and d20 routes.
-  - The whole-state hash differs, in the allocations that follow the clock: object looping sounds, the HUD's unit interface, objects. Two runs of `pscoff` are identical (c10, a30), so this is the timing difference between builds seen on other exact levers, not this change's maths: the check word below compares every pose and matrix the table hands over.
-- **psccheck:** every pose handed over compared with a live decode, and every local matrix with a live `matrix4x3_from_orientation`.
+- **Exactness** (fixedticks fixedseed nomouth statecrc, game time 3,600). Default against `pscoff`: play and both random seeds identical at every tick on c10 hands off and on the a30, b30, c20 and d20 routes. `pscexact` against `pscoff` gave the same on the build before the heap fix (82fa8bec). The whole-state hash differs in the allocations that follow the clock (object looping sounds, objects; the HUD's unit interface). Two runs of `pscoff` are identical, so this is the timing difference between builds seen on other exact levers, not this change's maths.
+- **psccheck:** every pose handed over compared with a live decode, every local matrix with a live `matrix4x3_from_orientation`. c10: 123,306 poses and 223,926 matrices, 0 differed. b30 (before its release): 3,913 and 9,695, 0. The other maps served too little to matter.
+- **The heap at each run's end** (metrics heap: the low over the run, on against `pscoff`; requests failed 0 everywhere):
 
-| Map | Poses checked | Local matrices checked | Differed |
+| Map | Free low on / off (KB) | Largest block low on / off (KB) | The table |
 |---|---|---|---|
-| c10 | 128,929 | 224,688 | 0 |
-| b30 | 23,302 | 56,271 | 0 |
-| a30 | 5,336 | 0 (its scenery has overlays) | 0 |
-| c20 | 1 | 143 | 0 |
-| d20 | 3 | 418 | 0 |
+| c10 | 333 / 454 | 259 / 389 | kept: 556 poses, 96 KB in pieces, ~34 a tick served |
+| a30 | 193 / 193 | 153 / 146 | released: the heap under its floors |
+| b30 | 283 / 283 | 219 / 225 | released: the heap under its floors |
+| c20 | 325 / 325 | 279 / 290 | released: under 2 a tick served |
+| d20 | 355 / 297 | 297 / 275 | released: under 2 a tick served |
+| a10 | 294 / 294 | 248 / 250 | released: under 2 a tick served |
+| d40 | 572 / 572 | 559 / 559 | never used |
 
-  The largest difference was 0 everywhere.
-- **Use (c10, 3,600 ticks):**
-  - 650 poses kept, 107 KB;
-  - ~36 poses a tick from the table (the main CPU's decodes);
-  - ~62 local matrices a tick;
-  - the ME still makes ~115 a tick; of those, 27,577 matched the table bit for bit and 268,138 didn't (the emulator's ME difference).
-- **Use on the other maps:**
-  - a30: fills to the cap (634 poses, 127 KB, 115 refused) and serves 1.5 a tick. Its scenery has overlays, so the local matrices kept there are never used; keeping them only for graphs without overlays would roughly halve that, a follow-up.
-  - b30: 320 poses, 79 KB, 6.5 a tick;
-  - c20 and d20: almost nothing.
+  The few KB left on c20, b30 and a10 are the holes the released pieces leave. On c10 the table holds its ~130 KB above the 256 KB floor; if c10's heap falls under the floor later in a full play, the table gives it back.
+- **Strict:** the default on the five maps (82fa8bec) and on c10 and a30 (cf8d9b4f): 0 distinct sites, no crash.
 
-## 5. What else it found
+## 5. The price
 
-**The ME's poses aren't this CPU's bits in the emulator.** With `poseaheadcheck` on c10, the Media Engine's poses differ from the main CPU's decodes in the last bit: 186,323 of 204,726. MP's exactness was proved on b30 and a10, and on the PSP on b30 (0 of 164,981). c10's compressed scenery animations weren't in that proof. Whether the PSP's ME differs there too needs a `poseaheadcheck` run on c10 on the PSP. If the two agree on the PSP, the table could also take the ME's poses and let the pose job leave them out (the ~115 a tick on c10). That is the ME side this build leaves out.
-
-## 6. Strict, and the price
-
-- **Strict** (the default form, c10 hands off and the a30, b30, c20, d20 routes to game time ~1,600): 0 distinct sites and no crash on all five.
-- **The cache model's tick** (c10 hands off and a30's route to game time ~3,250, no PGO; heartbeat ticks from game time 1,200):
+Cache model (c10 hands off and a30's route to game time ~3,200, no PGO; heartbeat ticks from game time 1,200; cf8d9b4f, which differs from the head only in when the checks run):
 
 | Map | Side | Tick (ms) | Change | Scenery (per-type line, ms a tick) | Tick fetches a tick |
 |---|---|---|---|---|---|
-| c10 | `pscoff` | 4.77 | | 2.28 | 1.710 M |
-| c10 | `pscexact` | 4.54 | -4.9% | 2.08 | 1.640 M (-4.1%) |
-| c10 | default | 4.52 | -5.2% | 2.08 | 1.635 M (-4.4%) |
-| a30 | `pscoff` | 6.33 | | | 1.735 M |
-| a30 | `pscexact` | 6.33 | 0% | | |
-| a30 | default | 6.24 | -1.3% | | 1.734 M (-0.05%) |
+| c10 | `pscoff` | 4.77 | | 2.29 | 1.712 M |
+| c10 | `pscexact` | 4.54 | -4.9% | 2.07 | 1.642 M |
+| c10 | default | 4.54 | -4.8% | 2.04 (-11%) | 1.643 M (-4.0%) |
+| a30 | `pscoff` | 6.32 | | | 1.790 M |
+| a30 | default | 6.33 | flat (the table released) | | 1.796 M |
 
-  c10's tick instruction misses also fall 6%. a30 is flat: its table serves 1.5 poses a tick.
-- **On the PSP [U on M x E]:** c10's scenery is 7.0-7.5 ms a tick [M]. The emulator's -9% of scenery comes to ~0.65 ms a tick there, ~1.1 ms a frame at 1.65 ticks a frame; the tick's -5% on c10's 13-18 ms of tick a frame gives about the same, 0.7-0.9 ms. If the PSP's ME agrees with the main CPU on c10 (it does on b30), the local matrices also serve the ME's ~115 poses a tick, which the emulator can't show: the matrix form would then be worth more there than its 0.3% here.
-- **The other matrix form,** the whole product from the root baked, was not built (section 3).
+On the PSP [U on M x E]: c10's scenery is 7.0-7.5 ms a tick [M], and -11% of it is ~0.8 ms a tick, ~1.1-1.3 ms a frame at 1.65 ticks a frame. Elsewhere the table gives its memory back and costs nothing.
+
+## 6. What else it found
+
+**The ME's poses aren't this CPU's bits in the emulator.** With `poseaheadcheck` on c10, the Media Engine's poses differ from the main CPU's decodes in the last bit: 186,323 of 204,726. MP's exactness was proved on b30 and a10, and on the PSP on b30 (0 of 164,981). c10's compressed scenery animations weren't in that proof. Whether the PSP's ME differs there too needs a `poseaheadcheck` run on c10 on the PSP. If the two agree on the PSP, the table could also take the ME's poses and let the pose job leave them out (the ~115 a tick on c10). That is the ME side this build leaves out.
+
+The fix for that (B44) is on its own branch, `posefpu`: every pose listed for the ME is made in the ME's FPU form wherever it is made, so a pose no longer depends on which unit finished in time.
+
+## 7. The other matrix form
+
+The whole product from the root baked was not built (section 3).
