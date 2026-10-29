@@ -1032,6 +1032,8 @@ static void object_report(SceUID file, unsigned long ticks)
 /* build 106: rasterizer.c's model part draws (object_report) */
 unsigned long psp_model_draw_us[3];
 
+void psp_sleepguard_start(void);
+
 /* ---------- what the null path keeps (build 19). With the GE drawing, the
 old Direct3D path's shadows, see-through parts, particles, decals, HUD and
 texture loads cost CPU time and draw nothing, and render interpolation
@@ -1203,6 +1205,9 @@ static void keep_load(void)
 		keep_cache_lock = sceKernelCreateSema("halo keep cache", 0, 1, 1, NULL);
 	platform_log("null path keeps:%s(keep.txt; skipped otherwise: transparent particles textures interpolation; also: noshadows nodecals nodetail nocull cullflip nooverlays fullparticles novfpu hwprofile hud100 hud115 hud130 hud145 hud160 hudnopush vehiclesawake flaresexact nohud noparticles fulllod awake sleepdebug audiodump savetest menutest ...)",
 		strlen(keep_words) > 2 ? keep_words : " nothing ");
+	/* B41's stopgap (psp_sleepguard.c): the sleep switch held off, once
+	the keep words can say otherwise */
+	psp_sleepguard_start();
 	/* build 89: in two lines (the one line passed the log's 512 characters) */
 	platform_log("keep words, continued: vramlargest clearmagenta nomip listuncached stalleach near2 near4 mipbias1 mipbias2 decaloffset passes overlayoffset decalbig detailbias15 detailbias2 decalall detailnear mipauto detailauto noangle visdump modeldrop overlaynoslope overlaynowall overlayslope1 overlayslope4 overlayfreefar skydump flatshade tdump");
 	platform_log("keep words, continued: nearauto walldump decalnoslope vblankthrottle noboxtest detailallfar verifytags texsqueeze texvramonly colltest geoasync nudgewide decalbatch menushot geserial vramcold uvwide nooverlay meaudio nomeaudio benchrun levelcompact meclassify noskincut novblankthrottle");
@@ -2072,6 +2077,7 @@ how far the HOME exit got. It answered its question (b90: ARK-4 Kommander's
 Exit, the usual way to quit, never calls the exit callback at all), and
 build 105 gives its descriptor back: b104 run 1 showed the PSP lets the
 game hold only about ten files at once */
+void psp_sleepguard_end(void);
 static int exit_callbacks_registered[3] = { 1, 1, 1 };
 
 /* back to the XMB (or ARK-4's menu), saying why in the log */
@@ -2092,6 +2098,8 @@ static void exit_game(const char *why)
 	PSP_METRICS_ME_EXIT(why);
 	platform_log("%s: exiting", why);
 	log_flush();
+	/* the XMB gets its sleep switch back (psp_sleepguard.c) */
+	psp_sleepguard_end();
 	/* build 89: no texture save here any more. The learned binds are saved
 	during play (psp_tex.c, b88); a save here that half worked (the file
 	truncated, the data never written) would wipe the one saved in play */
