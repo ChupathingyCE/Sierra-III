@@ -335,6 +335,54 @@ def loops(a):
         print('snd0 loops: %s' % line)
 
 
+def inspect(a):
+    """a looping sound's structure, in numbers only (no audio): each track's
+    start, loop and end sounds, their pitch ranges and permutations (the
+    variations the game picks among, and the chunks chained after each),
+    and where the loop's audio repeats its own first seconds"""
+    m = Music(a.map)
+    tag = m.find(a.tag)
+    if tag is None:
+        raise SystemExit('snd0: no tag %s in %s' % (a.tag, a.map))
+    d, cm = m.map.data, m.map
+    size = m.defs.structs['SoundPermutation']['size']
+    rsize = m.defs.structs['SoundPitchRange']['size']
+    for t, track in enumerate(m.tracks(tag) if tag.group == 'lsnd' else [(tag, None, None)]):
+        for role, sound in zip(('start', 'loop', 'end'), track):
+            if sound is None:
+                continue
+            o = cm.off(sound.address)
+            n, p = struct.unpack_from('<iI', d, o + m.f_sound['pitch ranges'])
+            rate, channels, fmt = m.sound_info(sound)
+            print('snd0 inspect: track %d %s: %s, %d Hz, %d channel(s), format %d, %d pitch range(s)'
+                  % (t, role, sound.name, rate, channels, fmt, n))
+            for r in range(max(n, 0)):
+                ro = cm.off(p) + rsize * r
+                pn, pp = struct.unpack_from('<iI', d, ro + m.f_range['permutations'])
+                actual = struct.unpack_from('<h', d, ro + m.f_range['actual permutation count'])[0] \
+                    if 'actual permutation count' in m.f_range else -1
+                print('snd0 inspect:   range %d: %d permutations, actual (the variations) %d' % (r, pn, actual))
+                for i in range(max(pn, 0)):
+                    q = cm.off(pp) + size * i
+                    length = struct.unpack_from('<i', d, q + m.f_perm['samples'])[0]
+                    nxt = struct.unpack_from('<h', d, q + m.f_perm['next permutation index'])[0]
+                    blocks = length // (BLOCK_BYTES * channels) if fmt == FORMAT_XBOX_ADPCM else 0
+                    print('snd0 inspect:     perm %d: %d bytes (%.2f s), next %d' % (
+                        i, length, blocks * BLOCK_SAMPLES / rate if blocks else length / (2 * channels) / rate, nxt))
+        if track[1] is not None:
+            loop = m.pcm(track[1], None).astype(np.float32).mean(axis=1)[::4]
+            w = int(2.0 * 11025)
+            head = loop[:w]
+            scores = []
+            for off in range(int(0.3 * 11025), min(len(loop) - w, int(30 * 11025)), 110):
+                seg = loop[off:off + w]
+                den = np.sqrt((seg ** 2).sum() * (head ** 2).sum())
+                scores.append((float((seg * head).sum() / den) if den else 0.0, off / 11025))
+            scores.sort(reverse=True)
+            print('snd0 inspect: the loop\'s first 2 s recur at: %s' % ', '.join(
+                '%.2f s (%.2f)' % (t_, c) for c, t_ in scores[:6]))
+
+
 def parse_spec(spec):
     """TAG[@START][+LENGTH] -> (tag, start, length)"""
     tag, length = (spec.rsplit('+', 1) + [None])[:2] if '+' in spec else (spec, None)
@@ -472,6 +520,9 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest='command', required=True)
     sub.add_parser('list').add_argument('maps', nargs='+')
+    ip = sub.add_parser('inspect')
+    ip.add_argument('map')
+    ip.add_argument('tag')
     lp = sub.add_parser('loops')
     lp.add_argument('map')
     lp.add_argument('tag')
@@ -497,6 +548,8 @@ def main():
     a = ap.parse_args()
     if a.command == 'list':
         list_music(a.maps)
+    elif a.command == 'inspect':
+        inspect(a)
     elif a.command == 'loops':
         loops(a)
     elif a.command == 'previews':

@@ -818,6 +818,8 @@ def main():
         if a.music_loop_previews and r.returncode == 0:
             music_map, clip = music_spec(a.music or MUSIC)
             if music_map in found:
+                subprocess.run([sys.executable, os.path.join(LIB, 'snd0.py'), 'inspect', found[music_map],
+                                clip.partition('#')[0].partition('@')[0].partition('+')[0]], env=tool_env())
                 r = subprocess.run([sys.executable, os.path.join(LIB, 'snd0.py'), 'loops', found[music_map],
                                     clip.partition('#')[0].partition('@')[0].partition('+')[0],
                                     os.path.join(a.output, 'music-previews')], env=tool_env())
