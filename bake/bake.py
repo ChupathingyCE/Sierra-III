@@ -56,6 +56,10 @@ Options:
     --music [MAP:]TAG[@START][+LENGTH]
                                 which clip (default MUSIC below; MAP: ui)
     --list-music                list the maps' music tags and lengths, and stop
+    --music-loop-previews       with --list-music: the menu sound's loops
+                                (the game's own loop and the best 30 s cuts,
+                                each looped three times) in
+                                <output>/music-previews
     --music-previews            with --list-music: each tag's first 30 s as a
                                 .wav in <output>/music-previews, to listen to
                                 (the disc's music: keep it on this computer)
@@ -129,9 +133,11 @@ DEFAULT = CAMPAIGN + ['ui']
 # subtitle data, AI squads' unused fields, firing positions' padding: ~0.5 MiB
 # a campaign map, and what lets b40 fit). Maps built with -Z need build 108 or
 # later; build 108 still loads older ones (psp_tag_layouts.c)
-# The XMB menu's sound: [MAP:]TAG[@START][+LENGTH] (snd0.py). Not chosen yet;
-# `--list-music` shows the candidates.
-MUSIC = ''
+# The XMB menu's sound: [MAP:]TAG[@START][+LENGTH][#loop[X]] (snd0.py).
+# "A Walk in the Woods" (Sheepdog01, 2026-10-28), from Two Betrayals' ending
+# cutscene, as the game's own loop, which the XMB repeats seamlessly.
+# `--list-music` shows the candidates
+MUSIC = 'c40:sound\\sinomatixx_music\\c40_extraction_music#loop'
 BUILD_FLAGS = ['-g', 'xbox-ntsc', '-X', '0x09600000', '-U', '-l', '0', '-H', '-K', '0.25,0.003',
                '-M', '-Y', '512', '-D', '-Z']
 # the tag window a map is built for (-T; psp_capacity.h's PSP_TAG_CACHE_SIZE):
@@ -699,6 +705,7 @@ def main():
     ap.add_argument('--music', default=MUSIC)
     ap.add_argument('--list-music', action='store_true')
     ap.add_argument('--music-previews', action='store_true')
+    ap.add_argument('--music-loop-previews', action='store_true')
     ap.add_argument('--tints-from-means', action='store_true')
     # --no-clut-look: the same, for option checks that take letters only
     ap.add_argument('--no-clut4-look', '--no-clut-look', dest='no_clut4_look', action='store_true',
@@ -808,6 +815,12 @@ def main():
     if a.list_music:
         r = subprocess.run([sys.executable, os.path.join(LIB, 'snd0.py'), 'list'] + [found[m] for m in wanted if m in found],
                            env=tool_env())
+        if a.music_loop_previews and r.returncode == 0:
+            music_map, clip = music_spec(a.music or MUSIC)
+            if music_map in found:
+                r = subprocess.run([sys.executable, os.path.join(LIB, 'snd0.py'), 'loops', found[music_map],
+                                    clip.partition('#')[0].partition('@')[0].partition('+')[0],
+                                    os.path.join(a.output, 'music-previews')], env=tool_env())
         if a.music_previews and r.returncode == 0:
             r = subprocess.run([sys.executable, os.path.join(LIB, 'snd0.py'), 'previews',
                                 os.path.join(a.output, 'music-previews')] + [found[m] for m in wanted if m in found],

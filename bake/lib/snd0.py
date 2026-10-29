@@ -9,8 +9,12 @@ the same way the maps themselves are made.
     snd0.py make MAP.map SPEC OUT.at3 [options]  cut, encode, and optionally pack
     snd0.py previews OUT_DIR MAP.map ...         each music tag's opening as .wav
 
-SPEC names the clip: TAG[@START][+LENGTH], in seconds, e.g.
+SPEC names the clip: TAG[@START][+LENGTH][#loop[X]], in seconds, e.g.
     levels\\a10\\music\\a10_01@12+30
+TAG#loop is the looping sound's own loop as it is (whole ATRAC3 frames, no
+fades), and @START+LENGTH#loopX that cut with its wrap crossfaded over X
+seconds (default 0.75): both repeat seamlessly where the XMB loops them.
+`snd0.py loops MAP TAG OUT_DIR` writes previews of both, each three times.
 TAG is a sound_looping (music) tag, by path. Its first track's start and loop
 sounds are joined (the intro, then one pass of the loop), and the clip is cut
 from that. A plain sound (snd!) tag works too.
@@ -220,6 +224,117 @@ class Music:
         return np.concatenate(parts)
 
 
+LOOP_FRAME = 1024   # ATRAC3 codes 1,024 samples a frame: a loop of whole frames wraps without padding
+
+
+def loop_part(m, tag):
+    """a looping sound's first track's loop sound alone: the part the game
+    repeats, composed to wrap seamlessly"""
+    if tag.group != 'lsnd':
+        raise ValueError('%s is a plain sound, not a looping one' % tag.name)
+    tracks = m.tracks(tag)
+    if not tracks or tracks[0][1] is None:
+        raise ValueError('%s has no loop sound' % tag.name)
+    return m.pcm(tracks[0][1], None)
+
+
+def frames_of(n):
+    return max(LOOP_FRAME, n // LOOP_FRAME * LOOP_FRAME)
+
+
+def find_loops(audio, seconds, count=3, window=2.0, slack=4.0, starts=8):
+    """[(start, length, score)]: cut points where the music just after the
+    clip's end sounds most like its start, so the wrap continues naturally.
+    Scored by the normalised correlation of WINDOW seconds after the end
+    with the WINDOW seconds at the start, lengths SECONDS +/- SLACK, at a few
+    starts through the first half of the audio"""
+    rate = 11025
+    mono = audio.astype(np.float32).mean(axis=1)[::4]
+    w, n = int(window * rate), len(mono)
+    best = []
+    for s in np.linspace(0, max(0, n // 2 - w), starts).astype(int):
+        head = mono[s:s + w]
+        if len(head) < w or not np.any(head):
+            continue
+        lo, hi = s + int((seconds - slack) * rate), s + int((seconds + slack) * rate)
+        if hi + w > n:
+            continue
+        region = mono[lo:hi + w]
+        size = 1 << int(np.ceil(np.log2(len(region) + w)))
+        corr = np.fft.irfft(np.fft.rfft(region, size) * np.conj(np.fft.rfft(head, size)), size)[:hi - lo]
+        energy = np.sqrt(np.convolve(region ** 2, np.ones(w), 'valid')[:hi - lo]) * np.sqrt((head ** 2).sum())
+        score = corr / np.maximum(energy, 1e-9)
+        for k in np.argsort(score)[::-1][:count]:
+            best.append((s * 4 / 44100, (lo + k - s) * 4 / 44100, float(score[k])))
+    best.sort(key=lambda b: -b[2])
+    picked = []
+    for b in best:   # distinct cuts, not the same one a few samples apart
+        if all(abs(b[0] - p[0]) > 1 or abs(b[1] - p[1]) > 1 for p in picked):
+            picked.append(b)
+        if len(picked) == count:
+            break
+    return picked
+
+
+def loop_clip(audio, start, length, crossfade, peak_db):
+    """START..START+LENGTH, whole ATRAC3 frames, with its first CROSSFADE
+    seconds blended (equal power) from what follows its end into its own
+    start: the wrap from the last sample to the first plays on as the music
+    did, then becomes the clip's start"""
+    s, n = int(start * 44100), frames_of(int(length * 44100))
+    x = min(int(crossfade * 44100), n // 2)
+    if s + n + x > len(audio):
+        raise ValueError('the loop runs past the end of the music (%.1f s long)' % (len(audio) / 44100))
+    a = audio[s:s + n].astype(np.float32).copy()
+    if x:
+        t = np.linspace(0, np.pi / 2, x, dtype=np.float32)[:, None]
+        a[:x] = a[:x] * np.sin(t) + audio[s + n:s + n + x].astype(np.float32) * np.cos(t)
+    top = np.abs(a).max()
+    if top > 0:
+        a *= 32767 * 10 ** (peak_db / 20) / top
+    return np.clip(np.round(a), -32768, 32767).astype(np.int16)
+
+
+def own_loop(audio_loop, peak_db):
+    """the game's loop as it is, trimmed to whole ATRAC3 frames (the last
+    few ms of a frame's padding would be a gap at the wrap), no fades"""
+    a = audio_loop[:frames_of(len(audio_loop))].astype(np.float32)
+    top = np.abs(a).max()
+    if top > 0:
+        a *= 32767 * 10 ** (peak_db / 20) / top
+    return np.clip(np.round(a), -32768, 32767).astype(np.int16)
+
+
+def loops(a):
+    """previews for choosing a looping menu sound: the tag's own loop, and
+    the best cuts of about --seconds with a crossfade, each written looped
+    three times so the wrap can be heard"""
+    m = Music(a.map)
+    tag = m.find(a.tag)
+    if tag is None:
+        raise SystemExit('snd0: no sound or sound_looping tag %s in %s' % (a.tag, a.map))
+    os.makedirs(a.out_dir, exist_ok=True)
+    base = tag.name.replace('\\', '_')
+    done = []
+    try:
+        part = loop_part(m, tag)
+        clip = own_loop(part, a.peak)
+        write_wav(os.path.join(a.out_dir, base + '__own_loop_x3.wav'), np.concatenate([clip] * 3))
+        done.append('own loop: %.2f s (spec %s#loop)' % (len(clip) / 44100, tag.name))
+        audio = np.concatenate([m.source(tag, None), part, part])
+    except ValueError as e:
+        done.append('own loop: none (%s)' % e)
+        audio = m.source(tag, None)
+    for i, (start, length, score) in enumerate(find_loops(audio, a.seconds), 1):
+        clip = loop_clip(audio, start, length, a.crossfade, a.peak)
+        name = '%s__cut%d_%.2fs_from_%.2fs_x3.wav' % (base, i, len(clip) / 44100, start)
+        write_wav(os.path.join(a.out_dir, name), np.concatenate([clip] * 3))
+        done.append('cut %d: %.2f s from %.2f s, match %.3f (spec %s@%.2f+%.2f#loop%.2f)' % (
+            i, len(clip) / 44100, start, score, tag.name, start, length, a.crossfade))
+    for line in done:
+        print('snd0 loops: %s' % line)
+
+
 def parse_spec(spec):
     """TAG[@START][+LENGTH] -> (tag, start, length)"""
     tag, length = (spec.rsplit('+', 1) + [None])[:2] if '+' in spec else (spec, None)
@@ -299,13 +414,25 @@ def list_music(paths):
 
 
 def make(a):
-    tag_path, start, length = parse_spec(a.spec)
+    spec, _, loop = a.spec.partition('#')
+    tag_path, start, length = parse_spec(spec)
     m = Music(a.map)
     tag = m.find(tag_path)
     if tag is None:
         raise SystemExit('snd0: no sound or sound_looping tag %s in %s (`snd0.py list` shows them)' % (tag_path, a.map))
-    audio = m.source(tag, int((start + length) * 44100) + 1)
-    clip = cut(audio, start, length, a.fade_in, a.fade_out, a.peak)
+    if loop == 'loop' and '@' not in spec and '+' not in spec:
+        # TAG#loop: the game's own loop, which wraps as the game plays it
+        clip = own_loop(loop_part(m, tag), a.peak)
+    elif loop.startswith('loop'):
+        # TAG@START+LENGTH#loopX: that cut, its wrap crossfaded over X s
+        audio = m.source(tag, None)
+        if tag.group == 'lsnd':
+            part = loop_part(m, tag)
+            audio = np.concatenate([audio, part, part])
+        clip = loop_clip(audio, start, length, float(loop[4:] or 0.75), a.peak)
+    else:
+        audio = m.source(tag, int((start + length) * 44100) + 1)
+        clip = cut(audio, start, length, a.fade_in, a.fade_out, a.peak)
     wav = a.wav or a.out + '.wav'
     write_wav(wav, clip)
     try:
@@ -345,6 +472,13 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest='command', required=True)
     sub.add_parser('list').add_argument('maps', nargs='+')
+    lp = sub.add_parser('loops')
+    lp.add_argument('map')
+    lp.add_argument('tag')
+    lp.add_argument('out_dir')
+    lp.add_argument('--seconds', type=float, default=30.0)
+    lp.add_argument('--crossfade', type=float, default=0.75)
+    lp.add_argument('--peak', type=float, default=-3.0)
     pv = sub.add_parser('previews')
     pv.add_argument('out_dir')
     pv.add_argument('maps', nargs='+')
@@ -363,6 +497,8 @@ def main():
     a = ap.parse_args()
     if a.command == 'list':
         list_music(a.maps)
+    elif a.command == 'loops':
+        loops(a)
     elif a.command == 'previews':
         previews(a.maps, a.out_dir, a.seconds)
     else:
