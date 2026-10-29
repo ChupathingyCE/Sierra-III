@@ -213,6 +213,9 @@ def check_output(bundle, maps, files, sound):
     assert len(made) == len(maps) * 5, made
     assert open(os.path.join(stick, 'halo', 'chant.adp'), 'rb').read() == b'chant from XBEH mad'
     assert sorted(os.listdir(stick)) == ['PSP', 'halo'], os.listdir(stick)
+    # the finished log rides to the stick with the maps, a copy of the bundle folder's
+    copied = open(os.path.join(stick, 'halo', 'log', 'bake', 'bake-log.txt'), encoding='utf-8').read()
+    assert 'finished in' in copied and copied == open(os.path.join(bundle, 'bake-log.txt'), encoding='utf-8').read()
     assert not os.path.exists(os.path.join(bundle, 'temp')), 'temp/ left behind'
     return len(made)
 
