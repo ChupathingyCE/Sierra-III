@@ -140,7 +140,7 @@ DEFAULT = CAMPAIGN + ['ui']
 # a campaign map, and what lets b40 fit). Maps built with -Z need build 108 or
 # later; build 108 still loads older ones (psp_tag_layouts.c)
 # The XMB menu's sound: [MAP:]TAG[@START][+LENGTH][#loop[X]] (snd0.py).
-# "A Walk in the Woods" (Sheepdog01, 2026-10-28: b30's first cue, by ear): its
+# "A Walk in the Woods" (the maintainer's pick, 2026-10-28, by ear): its
 # loop's variation 1 (the chain from permutation 1, 38.4 s), which the XMB
 # repeats seamlessly. `--list-music` shows the candidates
 MUSIC = 'b30:levels\\b30\\music\\b30_01#loopc1'
@@ -837,8 +837,8 @@ def main():
     # one cache for every map of every bake: palettes (texpack.py) and
     # re-encoded sounds (soundpack.py), each kept by a hash of its exact
     # input and of the code that makes it, so what a later bake reads back
-    # is what it would have made (the same bytes: sierra-bake 40808618781
-    # against 40738181007)
+    # is what it would have made (the same bytes: a warm bake checked
+    # against a cold one, file for file)
     global SOUND_CACHE
     if not a.no_cache and not a.list_music:
         root = os.path.abspath(a.cache_dir or default_cache_root())

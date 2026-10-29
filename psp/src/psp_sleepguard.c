@@ -1,5 +1,5 @@
-/* The sleep switch held off while the game runs: a stopgap, with Sheepdog01's OK
-(2026-10-28 23:01), until the proper fix for B41 (the lab's coord/bugs.md).
+/* The sleep switch held off while the game runs: a stopgap, with the
+maintainer's OK (2026-10-28), until the proper fix for B41 is in.
 
 B41: on b148, a plain sleep from the power switch crashed the PSP-1000 as
 it went to sleep, and the crash landed while the firmware was writing its

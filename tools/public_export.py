@@ -103,6 +103,7 @@ RULES = [
     ('docs/psp_hardware_reference.md', True, 'the PSP-1000\'s measured costs'),
     ('docs/release_notes_b143.md', True, 'the release\'s notes'),
     ('docs/release_notes_b147h.md', True, 'the release\'s notes'),
+    ('docs/release_notes_b148.md', True, 'the release\'s notes'),
     ('docs/research/research_vita.md', True, 'provenance: halo-ce-vita\'s grant (README Credits)'),
     ('docs/research/research_halo64.md', True, 'provenance: Halo 64 (README Credits)'),
     ('docs/research/chant_provenance.md', True, 'provenance: the loading chant'),
