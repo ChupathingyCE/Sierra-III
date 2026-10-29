@@ -18342,6 +18342,13 @@ static void psp_merays_hand_over(void)
 		first = end;
 		psp_merays_first = first;
 	}
+	if (end < psp_perc_ray_count)
+	{
+		/* the owed computes as they are now, for the ME's rays (objects.c) */
+		void psp_nms_pending_for_me(void);
+
+		psp_nms_pending_for_me();
+	}
 	while (end < psp_perc_ray_count && psp_merays_jobs < PSP_MERAYS_JOBS)
 	{
 		short count = (short)MIN(psp_perc_ray_count - end, PSP_MERAYS_JOB_RAYS);
@@ -29425,11 +29432,12 @@ FIXES_NMSKIP["source/physics/collisions.c#vislazy"] = [
 				{
 					/* psp_fixups.py (FIXES_NMSKIP, vislazy): an object whose node
 					matrices are owed is made only by the main CPU, so its ray is
-					the main CPU's (objects.c) */
-					extern int psp_nms_count;
-					extern unsigned long psp_nms_pending[];
+					the main CPU's (objects.c). Owed as the hand-over found it: the
+					main CPU's own rays may make an owed compute while these are
+					out, and the bits it changes then aren't this CPU's to read */
+					extern unsigned long psp_nms_me[]; /* [0] the count, the bits from [16] */
 
-					if (psp_nms_count && ((psp_nms_pending[(unsigned short)absolute_index >> 5] >> (absolute_index & 31)) & 1))
+					if (psp_nms_me[0] && ((psp_nms_me[16 + ((unsigned short)absolute_index >> 5)] >> (absolute_index & 31)) & 1))
 						return -1;
 				}
 				if (psp_object_test_vector_quiet(object_index, bsp_flags, flags, point, vector,"""),
@@ -29537,6 +29545,18 @@ long psp_nms_settle_time = NONE;
 /* read in line by the accessors: no left-out computes, no test */
 int psp_nms_count = 0;
 unsigned long psp_nms_pending[(MAXIMUM_OBJECTS_PER_MAP + 31) / 32];
+/* the Media Engine's rays' copy of the two (collisions.c, vislazy), made at
+each hand-over (psp_nms_pending_for_me): the count in [0], the bits from
+[16], on whole lines of their own. The main CPU writes it only then, before
+the hand-over writes its cache back */
+unsigned long psp_nms_me[16 + ((((MAXIMUM_OBJECTS_PER_MAP + 31) / 32) + 15) & ~15)] __attribute__((aligned(64)));
+
+void psp_nms_pending_for_me(void)
+{
+	psp_nms_me[0] = (unsigned long)psp_nms_count;
+	if (psp_nms_count)
+		csmemcpy(&psp_nms_me[16], psp_nms_pending, sizeof(psp_nms_pending));
+}
 static int psp_nms_on = -1, psp_nms_check = 0, psp_nms_open = 0;
 /* vislazy: the skip on every tick for what the last frame didn't draw */
 static int psp_vl_on = 0, psp_vl_ticked = 0;

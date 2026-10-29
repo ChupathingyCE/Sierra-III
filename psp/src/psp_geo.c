@@ -948,6 +948,29 @@ static int by_place_find(unsigned int at)
 	return entry_holds(index, at) ? index : -1;
 }
 
+/* mechunk: the Media Engine looks blocks up while the main CPU still loads
+for the frame it replays, rewriting the entries of blocks it evicts. A block
+any published record uses is protected (used in the last RECENT_FRAMES
+frames, so never evicted meanwhile), and an entry being reused belonged to
+an unprotected one; so the ME takes only protected entries, and a half
+rewritten entry it reads can't pass for the block it wants */
+/* the ME's own count of the entries it refused for that (its line, apart
+from the main CPU's words; read at the frame's end, after its work) */
+static unsigned long me_unprotected[16] __attribute__((aligned(64)));
+static unsigned long me_unprotected_logged = 0;
+
+static int entry_holds_for(int index, unsigned int at, int me)
+{
+	if (!entry_holds(index, at))
+		return 0;
+	if (me && entries[index].last_frame + RECENT_FRAMES <= frame)
+	{
+		me_unprotected[0]++;
+		return 0;
+	}
+	return 1;
+}
+
 static int resident_entry(const void *ptr)
 {
 	unsigned int at = (unsigned int)ptr, slot = (at >> 6) % AT_SLOTS;
@@ -957,9 +980,9 @@ static int resident_entry(const void *ptr)
 
 	if (!in_cache(at))
 		return -1;
-	if (last_locked >= 0 && entry_holds(last_locked, at))
+	if (last_locked >= 0 && entry_holds_for(last_locked, at, me))
 		return last_locked;
-	if (at_slot[slot] && entry_holds(at_slot[slot] - 1, at))
+	if (at_slot[slot] && entry_holds_for(at_slot[slot] - 1, at, me))
 	{
 		if (!me)
 			place_slot_answers++;
@@ -986,7 +1009,7 @@ static int resident_entry(const void *ptr)
 	if (!me)
 		place_scans++;
 	for (index = 0; index < entry_count; index++)
-		if (entry_holds(index, at))
+		if (entry_holds_for(index, at, me))
 		{
 			if (found >= 0)
 			{
@@ -1054,6 +1077,12 @@ static void __attribute__((noinline, cold)) census_report(void)
 
 void psp_geo_frame_end(void)
 {
+	if (me_unprotected[0] != me_unprotected_logged && frame % 300 == 0)
+	{
+		platform_log("geometry: the Media Engine's lookups refused %lu blocks that weren't protected (mechunk; %lu in all)",
+			me_unprotected[0] - me_unprotected_logged, me_unprotected[0]);
+		me_unprotected_logged = me_unprotected[0];
+	}
 	if (async_reads)
 		poll();
 	frame_read_bytes = 0;
