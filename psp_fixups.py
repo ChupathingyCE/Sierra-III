@@ -38557,7 +38557,9 @@ static int psp_mv_start(void)
 	csmemset(psp_mv_record, 0, sizeof(*psp_mv_record));
 	psp_mv_stack_top = (char *)stack + PSP_MV_STACK;
 	psp_mv_stack_bottom = (unsigned int *)stack;
-	for (k = 0; k < PSP_MV_CANARY_WORDS; k++)
+	/* the whole stack, so the report can say how deep the walks reached
+	(the lowest word changed); the walk's check reads only the bottom */
+	for (k = 0; k < PSP_MV_STACK / 4; k++)
 		psp_mv_stack_bottom[k] = PSP_MV_CANARY;
 	platform_psp_log("mevis: the frame's visibility again on the ME, timed and checked (%u KB state, %u KB stack, %d clusters deep at most)",
 		state_bytes / 1024, PSP_MV_STACK / 1024, PSP_MV_DEPTH);
@@ -38887,9 +38889,20 @@ void psp_mevisland_settle(void)
 	psp_ml_objects_ready = 0;
 	if (psp_ml_views >= 300)
 	{
-		platform_psp_log("mevisland: %lu views: the ME's answer used %lu; made here instead: refused by the ring %lu, the ME still on an earlier one %lu, late %lu, failed %lu (%lu cut at %d clusters deep); waited at the first reader %.2f ms a view (%lu views waited, the most %.2f ms); the deepest walk %lu clusters (last 300 views)",
+		unsigned int low = 0;
+
+		/* the stack's lowest changed word (the ME wrote it; this CPU never
+		does, so its lines are dropped before the look) */
+		if (!psp_ml_out)
+		{
+			psp_ml_drop(psp_mv_stack_bottom, PSP_MV_STACK);
+			while (low < PSP_MV_STACK / 4 && psp_mv_stack_bottom[low] == PSP_MV_CANARY)
+				low++;
+		}
+		platform_psp_log("mevisland: %lu views: the ME's answer used %lu; made here instead: refused by the ring %lu, the ME still on an earlier one %lu, late %lu, failed %lu (%lu cut at %d clusters deep); waited at the first reader %.2f ms a view (%lu views waited, the most %.2f ms); the deepest walk %lu clusters; the stack used %u of %u KB at most (since the start; last 300 views)",
 			psp_ml_views, psp_ml_used, psp_ml_refused, psp_ml_busy, psp_ml_late, psp_ml_failed, psp_ml_too_deep, PSP_MV_DEPTH,
-			psp_ml_wait_us / 1000.0 / psp_ml_views, psp_ml_waited, psp_ml_wait_worst / 1000.0, psp_ml_depth_most);
+			psp_ml_wait_us / 1000.0 / psp_ml_views, psp_ml_waited, psp_ml_wait_worst / 1000.0, psp_ml_depth_most,
+			low ? (PSP_MV_STACK - low * 4) / 1024 : 0, PSP_MV_STACK / 1024);
 		if (psp_ml_check)
 			platform_psp_log("mevislandcheck: differing from the main CPU's own: clusters %lu, objects %lu (last 300 views)",
 				psp_ml_differ_clusters, psp_ml_differ_objects);
