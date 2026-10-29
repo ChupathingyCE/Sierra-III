@@ -2861,6 +2861,11 @@ some light on the farthest surfaces in the fullest frames. Keep word
 "nolightreserve": as before */
 #define LIGHT_RESERVE 0x10000 /* 64 KB */
 static int light_reserve_on = -1;
+/* "pdcmark" (a test for the emulator's pdccensus, prebuilt drawing
+commands): each change of kind leaves a NOP carrying the kind in the list,
+so the census can say whose words it counts. The GE ignores a NOP's
+argument: only the list's length changes */
+static int pdc_mark = -1;
 static unsigned long light_reserve_held = 0;
 static int ge_kind_now = KIND_OTHER, level_reserve_on = -1, level_begun = 0;
 static unsigned int kind_mark = 0, kind_seen = 0;
@@ -2920,6 +2925,8 @@ static void ge_kind(int kind)
 	unsigned int now;
 
 	gebusy_kind_cut(kind); /* build 115 */
+	if (__builtin_expect(pdc_mark > 0, 0))
+		sceGuSendCommandi(0, 0xC0DE00 | kind);
 	/* (the see-through flush is counted where it has something to draw, and
 	the frame's end marks its kind as OTHER without drawing) */
 	if (__builtin_expect(blip_depth_live, 0) && kind != KIND_HUD && kind != KIND_SCREEN && kind != KIND_OTHER &&
@@ -2970,6 +2977,8 @@ static void ge_kinds_frame_begin(void)
 		level_reserve_on = !psp_keep("nolevelreserve");
 	if (light_reserve_on < 0)
 		light_reserve_on = !psp_keep("nolightreserve");
+	if (pdc_mark < 0)
+		pdc_mark = psp_keep("pdcmark");
 }
 
 /* build 107: when the list is full, the smallest models on the screen go
