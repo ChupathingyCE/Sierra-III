@@ -134,10 +134,10 @@ DEFAULT = CAMPAIGN + ['ui']
 # a campaign map, and what lets b40 fit). Maps built with -Z need build 108 or
 # later; build 108 still loads older ones (psp_tag_layouts.c)
 # The XMB menu's sound: [MAP:]TAG[@START][+LENGTH][#loop[X]] (snd0.py).
-# "A Walk in the Woods" (Sheepdog01, 2026-10-28), from Two Betrayals' ending
-# cutscene, as the game's own loop, which the XMB repeats seamlessly.
-# `--list-music` shows the candidates
-MUSIC = 'c40:sound\\sinomatixx_music\\c40_extraction_music#loop'
+# "A Walk in the Woods" (Sheepdog01, 2026-10-28: b30's first cue, by ear), as the
+# game's own loop, which the XMB repeats seamlessly. `--list-music` shows
+# the candidates
+MUSIC = 'b30:levels\\b30\\music\\b30_01#loop'
 BUILD_FLAGS = ['-g', 'xbox-ntsc', '-X', '0x09600000', '-U', '-l', '0', '-H', '-K', '0.25,0.003',
                '-M', '-Y', '512', '-D', '-Z']
 # the tag window a map is built for (-T; psp_capacity.h's PSP_TAG_CACHE_SIZE):
