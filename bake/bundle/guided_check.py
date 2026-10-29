@@ -108,7 +108,7 @@ def stand_in(bundle, folder):
             with open(path, 'w') as f:
                 f.write(text)
             os.chmod(path, os.stat(path).st_mode | stat.S_IXUSR)
-    for tool in ('tagindex', 'dez', 'texpack', 'stencilbake'):
+    for tool in ('tagindex', 'dez', 'texpack', 'stencilbake', 'modelconvert'):
         with open(os.path.join(folder, 'lib', tool + '.py'), 'w') as f:
             f.write(STUB % {'python': sys.executable, 'tool': tool})
     for name, text in (('soundpack', SOUNDPACK), ('snd0', SND0), ('chant', CHANT)):
