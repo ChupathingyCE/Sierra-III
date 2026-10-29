@@ -211,11 +211,10 @@ The emulator's bus census (`buscensus`, the halo-local patch's item 23; read wit
 - **Cutting the copy** [E, U]: the node matrices are 53% of it (c10 76 of 144 KB, b30 49-68 of 93-129).
   - c10's are mostly its animated scenery, which moves every tick, so copying only what changed wouldn't cut them.
   - PSC would: a looping scenery's matrices are its table's frame times its transform. The snapshot could carry those (~60 B) instead of the node block, and the ME's walk rebuild the matrices (a VFPU multiply a node).
-  - How much of c10's 76 KB is PSC's 156 looping scenery is one emulator count (snapfield split by PSC's test).
-- **It waits on three things:**
+  - Counted (lab snapf6 40959834148 [E]; objects that animate by themselves with no parent, an upper bound on PSC's): c10 230 objects, 35 of the 76 KB; b30 4-8 KB of 50-68; a10 none. With ~60 B each in their place, the copy falls ~15% on c10 (144 to ~122 KB) and ~3% on b30. PSC is worth having, but it isn't what C waits on.
+- **It waits on two things:**
   1. the one-pass copy's pair, which places the copy (under the bar on the main CPU: it stays there, its buffer in the heap);
-  2. PDC stage B's measured ME saving, since C adds the walk to the lane c10 is bound by;
-  3. PSC, which cuts the copy's largest share.
+  2. PDC stage B's measured ME saving, since C adds the walk to the lane c10 is bound by.
 
   Then build C, b30 first.
 
