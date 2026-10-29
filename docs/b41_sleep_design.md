@@ -1,6 +1,6 @@
 # B41: a sleep the game is ready for (design)
 
-**Status:** built on the tock (`psp_sleep.c`, keep words `sleepready`, `sleepdryN`, `powerflags`; the stall reporter on unless `stallreportoff`), being proven. b148 ships the stopgap (`psp_sleepguard.c`: the firmware's power lock held while the game runs; keep word `sleepallowed` lets the switch work again). This document is the proper fix that replaces it.
+**Status:** built on the tock (`psp_sleep.c`, keep words `sleepready`, `sleepdryN`, `powerflags`; the stall reporter on unless `stallreportoff`), proven in the emulator (sleepdry1: play and seeds identical on three maps, 21 stops, the partition untouched) and on the PSP-3000 (sierra-hw 40822061362: 10 stops with the real ME halted and restarted, the partition untouched); `sleepready` on by default. Left: step 0 (`powerflags`, Sheepdog01's slide of the switch) and Sheepdog01's one real sleep, until which b148 ships the stopgap (`psp_sleepguard.c`: the firmware's power lock held while the game runs; keep word `sleepallowed` lets the switch work again). This document is the proper fix that replaces it.
 
 Evidence labels: [M] measured on the PSP, [E] emulator, [D] read in code, [U] inference.
 
