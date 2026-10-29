@@ -38750,7 +38750,7 @@ static void psp_posefpu_make(struct model const *model, struct animation const *
 		animation_get_node_orientations(model, animation, frame, out);"""),
 ("""		platform_psp_log("poseahead: %lu poses made ahead (%lu by the ME in %lu jobs, %lu jobs failed), %lu used (%lu checked, %lu differed); %lu unwritten, %lu past the arena's %u KB",""",
  """		platform_psp_log("posefpu: %s; %lu poses made on this CPU in the ME's form; posefpulate: %lu compared with the ME's, %lu differed",
-			psp_posefpu_mode > 0 ? psp_posefpu_mode == 2 ? "on, a quarter of the ME's poses taken as late" : "on" : "off",
+			psp_posefpu_on() ? psp_posefpu_mode == 2 ? "on, a quarter of the ME's poses taken as late" : "on" : "off",
 			psp_posefpu_standins, psp_posefpu_late_checked, psp_posefpu_late_differed);
 	if (psp_pose_ahead_ticks % 900 == 0)
 		platform_psp_log("poseahead: %lu poses made ahead (%lu by the ME in %lu jobs, %lu jobs failed), %lu used (%lu checked, %lu differed); %lu unwritten, %lu past the arena's %u KB","""),
