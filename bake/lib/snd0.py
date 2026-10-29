@@ -143,8 +143,30 @@ class Music:
         channels, fmt = struct.unpack_from('<hh', d, o + self.f_sound['channel count'])
         return RATES.get(rate, rate), (1, 2)[channels] if channels in (0, 1) else channels, fmt
 
-    def chain(self, tag):
-        """the sample data of a sound's first permutation and every chunk
+    def chain_starts(self, tag):
+        """the permutations a chain can start from: the variations the game
+        picks among (the first 'actual permutation count'), then any chunk no
+        other chunk names as its next (b30_01's loop has one: 3..39, about
+        49 s, while variation 0 runs 0 -> 1, into variation 1's chain)"""
+        d, m = self.map.data, self.map
+        o = m.off(tag.address)
+        n, p = struct.unpack_from('<iI', d, o + self.f_sound['pitch ranges'])
+        if n <= 0:
+            return []
+        r = m.off(p)
+        pn, pp = struct.unpack_from('<iI', d, r + self.f_range['permutations'])
+        actual = struct.unpack_from('<h', d, r + self.f_range['actual permutation count'])[0] \
+            if 'actual permutation count' in self.f_range else 1
+        size = self.defs.structs['SoundPermutation']['size']
+        named = set()
+        for i in range(max(pn, 0)):
+            nxt = struct.unpack_from('<h', d, m.off(pp) + size * i + self.f_perm['next permutation index'])[0]
+            named.add(nxt)
+        bases = list(range(max(1, min(actual, pn))))
+        return bases + [i for i in range(len(bases), pn) if i not in named]
+
+    def chain(self, tag, first=0):
+        """the sample data of a sound's permutation FIRST and every chunk
         chained after it (music is split into ~1.3 s chunks, each naming
         the next with 'next permutation index'), joined"""
         d, m = self.map.data, self.map
@@ -155,7 +177,7 @@ class Music:
         r = m.off(p)
         pn, pp = struct.unpack_from('<iI', d, r + self.f_range['permutations'])
         size = self.defs.structs['SoundPermutation']['size']
-        parts, fmt, index, seen = [], None, 0, set()
+        parts, fmt, index, seen = [], None, first, set()
         while 0 <= index < pn and index not in seen:
             seen.add(index)
             q = m.off(pp) + size * index
@@ -169,10 +191,10 @@ class Music:
             index = struct.unpack_from('<h', d, q + self.f_perm['next permutation index'])[0]
         return b''.join(parts), fmt
 
-    def pcm(self, tag, frames_wanted=None):
-        """a sound -> (int16 (frames, 2) at 44.1 kHz)"""
+    def pcm(self, tag, frames_wanted=None, first=0):
+        """a sound (from its permutation FIRST) -> (int16 (frames, 2) at 44.1 kHz)"""
         rate, channels, _ = self.sound_info(tag)
-        data, fmt = self.chain(tag)
+        data, fmt = self.chain(tag, first)
         if fmt == FORMAT_XBOX_ADPCM:
             want = None if frames_wanted is None else -(-frames_wanted * rate // 44100)
             a = decode_xbox_adpcm(data, channels, want)
@@ -227,15 +249,19 @@ class Music:
 LOOP_FRAME = 1024   # ATRAC3 codes 1,024 samples a frame: a loop of whole frames wraps without padding
 
 
-def loop_part(m, tag):
-    """a looping sound's first track's loop sound alone: the part the game
-    repeats, composed to wrap seamlessly"""
+def loop_sound(m, tag):
     if tag.group != 'lsnd':
         raise ValueError('%s is a plain sound, not a looping one' % tag.name)
     tracks = m.tracks(tag)
     if not tracks or tracks[0][1] is None:
         raise ValueError('%s has no loop sound' % tag.name)
-    return m.pcm(tracks[0][1], None)
+    return tracks[0][1]
+
+
+def loop_part(m, tag, start=0):
+    """a looping sound's first track's loop sound alone, the chain from its
+    permutation START: one pass of the part the game repeats"""
+    return m.pcm(loop_sound(m, tag), None, start)
 
 
 def frames_of(n):
@@ -318,9 +344,12 @@ def loops(a):
     done = []
     try:
         part = loop_part(m, tag)
-        clip = own_loop(part, a.peak)
-        write_wav(os.path.join(a.out_dir, base + '__own_loop_x3.wav'), np.concatenate([clip] * 3))
-        done.append('own loop: %.2f s (spec %s#loop)' % (len(clip) / 44100, tag.name))
+        for start in m.chain_starts(loop_sound(m, tag)):
+            clip = own_loop(loop_part(m, tag, start), a.peak)
+            write_wav(os.path.join(a.out_dir, '%s__chain%d_%.1fs_x3.wav' % (base, start, len(clip) / 44100)),
+                      np.concatenate([clip] * 3))
+            done.append('the loop from permutation %d: %.2f s (spec %s#loopc%d)' % (start, len(clip) / 44100,
+                                                                                tag.name, start))
         audio = np.concatenate([m.source(tag, None), part, part])
     except ValueError as e:
         done.append('own loop: none (%s)' % e)
@@ -468,9 +497,10 @@ def make(a):
     tag = m.find(tag_path)
     if tag is None:
         raise SystemExit('snd0: no sound or sound_looping tag %s in %s (`snd0.py list` shows them)' % (tag_path, a.map))
-    if loop == 'loop' and '@' not in spec and '+' not in spec:
-        # TAG#loop: the game's own loop, which wraps as the game plays it
-        clip = own_loop(loop_part(m, tag), a.peak)
+    if (loop == 'loop' or loop.startswith('loopc')) and '@' not in spec and '+' not in spec:
+        # TAG#loop: the game's own loop as variation 0 plays it; TAG#loopcN:
+        # the chain from permutation N (a variation, or a chunk nothing names)
+        clip = own_loop(loop_part(m, tag, int(loop[5:] or 0) if loop.startswith('loopc') else 0), a.peak)
     elif loop.startswith('loop'):
         # TAG@START+LENGTH#loopX: that cut, its wrap crossfaded over X s
         audio = m.source(tag, None)
