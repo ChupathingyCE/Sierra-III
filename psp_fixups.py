@@ -18345,6 +18345,13 @@ static void psp_merays_hand_over(void)
 		first = end;
 		psp_merays_first = first;
 	}
+	if (end < psp_perc_ray_count)
+	{
+		/* the owed computes as they are now, for the ME's rays (objects.c) */
+		void psp_nms_pending_for_me(void);
+
+		psp_nms_pending_for_me();
+	}
 	while (end < psp_perc_ray_count && psp_merays_jobs < PSP_MERAYS_JOBS)
 	{
 		short count = (short)MIN(psp_perc_ray_count - end, PSP_MERAYS_JOB_RAYS);
@@ -26947,6 +26954,47 @@ r"""		/* psp_fixups.py (FIXES_ASSERTSEVAL): counted outside the assert */
 # uses, so play is the same with it on.
 FIXES_RECON = {}
 
+# "visspan" (docs/mevis_landing.md, step 1): the main CPU's span from the
+# frame's visibility to its first reader, timed and split (psp_ge.c)
+FIXES_RECON["source/render/render.c#visspan"] = [
+("""	render.frustum = *frustum;
+	parameters.camera = *rasterizer_camera;
+""", """	render.frustum = *frustum;
+#ifdef HALO_PSP
+	{
+		void psp_ge_visspan(int phase); /* psp_fixups.py (FIXES_RECON #visspan) */
+
+		psp_ge_visspan(0);
+	}
+#endif
+	parameters.camera = *rasterizer_camera;
+"""),
+("""	player_effect_get_screen_flash(local_player_index, &parameters.screen_flash);
+	rasterizer_window_begin(&parameters);
+""", """	player_effect_get_screen_flash(local_player_index, &parameters.screen_flash);
+#ifdef HALO_PSP
+	{
+		void psp_ge_visspan(int phase); /* psp_fixups.py (FIXES_RECON #visspan) */
+
+		psp_ge_visspan(1);
+	}
+#endif
+	rasterizer_window_begin(&parameters);
+"""),
+("""		first_person_weapon_render_update();
+		lights_preprocess_scene();
+""", """		first_person_weapon_render_update();
+#ifdef HALO_PSP
+		{
+			void psp_ge_visspan(int phase); /* psp_fixups.py (FIXES_RECON #visspan) */
+
+			psp_ge_visspan(2);
+		}
+#endif
+		lights_preprocess_scene();
+"""),
+]
+
 # "modelcensus" (keep.txt): every 5 s of game time, a log line of the models
 # drawn: a frame's count by object type and by size on screen (the level of
 # detail's pixels), and the definitions drawn most. b30's Pelican ride draws
@@ -29428,11 +29476,12 @@ FIXES_NMSKIP["source/physics/collisions.c#vislazy"] = [
 				{
 					/* psp_fixups.py (FIXES_NMSKIP, vislazy): an object whose node
 					matrices are owed is made only by the main CPU, so its ray is
-					the main CPU's (objects.c) */
-					extern int psp_nms_count;
-					extern unsigned long psp_nms_pending[];
+					the main CPU's (objects.c). Owed as the hand-over found it: the
+					main CPU's own rays may make an owed compute while these are
+					out, and the bits it changes then aren't this CPU's to read */
+					extern unsigned long psp_nms_me[]; /* [0] the count, the bits from [16] */
 
-					if (psp_nms_count && ((psp_nms_pending[(unsigned short)absolute_index >> 5] >> (absolute_index & 31)) & 1))
+					if (psp_nms_me[0] && ((psp_nms_me[16 + ((unsigned short)absolute_index >> 5)] >> (absolute_index & 31)) & 1))
 						return -1;
 				}
 				if (psp_object_test_vector_quiet(object_index, bsp_flags, flags, point, vector,"""),
@@ -29540,6 +29589,18 @@ long psp_nms_settle_time = NONE;
 /* read in line by the accessors: no left-out computes, no test */
 int psp_nms_count = 0;
 unsigned long psp_nms_pending[(MAXIMUM_OBJECTS_PER_MAP + 31) / 32];
+/* the Media Engine's rays' copy of the two (collisions.c, vislazy), made at
+each hand-over (psp_nms_pending_for_me): the count in [0], the bits from
+[16], on whole lines of their own. The main CPU writes it only then, before
+the hand-over writes its cache back */
+unsigned long psp_nms_me[16 + ((((MAXIMUM_OBJECTS_PER_MAP + 31) / 32) + 15) & ~15)] __attribute__((aligned(64)));
+
+void psp_nms_pending_for_me(void)
+{
+	psp_nms_me[0] = (unsigned long)psp_nms_count;
+	if (psp_nms_count)
+		csmemcpy(&psp_nms_me[16], psp_nms_pending, sizeof(psp_nms_pending));
+}
 static int psp_nms_on = -1, psp_nms_check = 0, psp_nms_open = 0;
 /* vislazy: the skip on every tick for what the last frame didn't draw */
 static int psp_vl_on = 0, psp_vl_ticked = 0;
@@ -30504,6 +30565,171 @@ void objects_update(
  "#ifdef HALO_PSP\n\tpsp_object_scale = psp_object_sample();\n\tpsp_ws_tick_begin(); /* psp_fixups.py (FIXES_WS) */\n"),
 ("\t\t\t\t\tpsp_nmr_tops++;\n\t\t\t\t\tif (psp_object_scale)\n",
  "\t\t\t\t\tpsp_nmr_tops++;\n\t\t\t\t\tif (psp_ws_asleep(i, object_header)) /* psp_fixups.py (FIXES_WS) */\n\t\t\t\t\t\tpsp_object_count(object_header->type);\n\t\t\t\t\telse if (psp_object_scale)\n"),
+]
+
+
+# ---------- FIXES_OBJPLACE: the object walk's reads and writes kept off the
+# object pool's lines (lever OBJPLACE)
+# The bus census puts the object pool among the heaviest regions of main RAM
+# a frame, and the object trace shows where much of it goes: every settled
+# piece of scenery the walk passes over (FIXES_WS) costs two of its datum's
+# lines a tick, one for first_child_object_index and one for the garbage
+# bit, each a miss since the pool is many times the data cache. Both answers
+# now sit in a bit beside the sleep tables, set where the full path leaves
+# the object (its datum just read there) and cleared as that path starts.
+# Wake-on-write keeps the bit true while it is set: attaching or detaching a
+# child and object_set_garbage all mark the object, a marked sleeper takes
+# the full path, and the tables are forgotten when a game state loads.
+# "wsmirroroff" (keep.txt): the datum read each tick, as before;
+# "wsmirrorcheck": read as before, and compared with the bit.
+# The walk's last loop also stored the do-not-update bit's clear into every
+# header every tick, dirtying the whole header array for a bit set only by a
+# rare attach; it now stores only where the bit is set (the same bytes
+# result). "hdrclearall": the store on every header, as before.
+FIXES_OBJPLACE = {}
+
+FIXES_OBJPLACE["source/objects/objects.c#objplace"] = [
+("""/* psp_fixups.py (FIXES_WAKE): what the tables say of a slot stops being
+about its object's bytes once a game state loads or a map starts */
+void psp_sleep_forget(void)
+{
+""",
+"""/* psp_fixups.py (FIXES_OBJPLACE): a set bit says the scenery had no child
+and wasn't garbage when its full path last left it; anything that changes
+either marks the object, and a marked one takes the full path, which clears
+the bit first */
+static unsigned long psp_ws_clear[(MAXIMUM_OBJECTS_PER_MAP + 31) / 32];
+static int psp_ws_mirror_keep = -1, psp_ws_mirror = 0, psp_ws_mirror_check = 0, psp_hdr_clear_all = 0;
+long psp_ws_mirror_checks, psp_ws_mirror_misses;
+
+static inline void psp_ws_unnote(short absolute_index)
+{
+	if (absolute_index < MAXIMUM_OBJECTS_PER_MAP)
+		psp_ws_clear[absolute_index >> 5] &= ~(1UL << (absolute_index & 31));
+}
+
+/* where the full path leaves an object, with its datum's lines just read */
+static inline void psp_ws_note(short absolute_index, struct object_header_datum const *header)
+{
+	struct object_datum const *object = header->datum;
+
+	if (psp_ws_mirror && header->type == _object_type_scenery && absolute_index < MAXIMUM_OBJECTS_PER_MAP &&
+		object->object.first_child_object_index == NONE && !TEST_FLAG(object->object.flags, _object_garbage_bit))
+		psp_ws_clear[absolute_index >> 5] |= 1UL << (absolute_index & 31);
+}
+
+/* psp_fixups.py (FIXES_WAKE): what the tables say of a slot stops being
+about its object's bytes once a game state loads or a map starts */
+void psp_sleep_forget(void)
+{
+	/* FIXES_OBJPLACE: whatever sleepforgetoff keeps, the bits describe the
+	bytes that were there */
+	csmemset(psp_ws_clear, 0, sizeof(psp_ws_clear));
+"""),
+("""	int unchecked = psp_scenery_skips_check(header, absolute_index, may_sleep);
+""",
+"""	int unchecked = psp_scenery_skips_check(header, absolute_index, may_sleep);
+
+	psp_ws_unnote(absolute_index); /* psp_fixups.py (FIXES_OBJPLACE) */
+"""),
+("""			!psp_lights_defer(object_index)) /* psp_fixups.py (FIXES_LD1) */
+			object_connect_lights(object_index, TRUE, TRUE);
+		return;
+	}
+	/* sceneryhalf: sleeping scenery that something changed (and that may
+""",
+"""			!psp_lights_defer(object_index)) /* psp_fixups.py (FIXES_LD1) */
+			object_connect_lights(object_index, TRUE, TRUE);
+		psp_ws_note(absolute_index, header); /* psp_fixups.py (FIXES_OBJPLACE) */
+		return;
+	}
+	/* sceneryhalf: sleeping scenery that something changed (and that may
+"""),
+("""	psp_sleep[absolute_index].checksum = before;
+""",
+"""	psp_sleep[absolute_index].checksum = before;
+	psp_ws_note(absolute_index, header); /* psp_fixups.py (FIXES_OBJPLACE) */
+"""),
+("""	if (psp_ws_keep < 0)
+		psp_ws_keep = !psp_keep("sleeperwalk");
+""",
+"""	if (psp_ws_keep < 0)
+		psp_ws_keep = !psp_keep("sleeperwalk");
+	/* psp_fixups.py (FIXES_OBJPLACE) */
+	if (psp_ws_mirror_keep < 0)
+	{
+		psp_ws_mirror_keep = !psp_keep("wsmirroroff");
+		psp_ws_mirror_check = psp_ws_mirror_keep && psp_keep("wsmirrorcheck");
+		psp_hdr_clear_all = psp_keep("hdrclearall");
+	}
+	psp_ws_mirror = psp_ws_mirror_keep;
+	if (psp_ws_mirror_check && game_time_get() % 900 == 0 && psp_ws_mirror_checks)
+		platform_psp_log("wsmirrorcheck: t=%ld, %ld sleepers' bits checked, %ld wrong", game_time_get(),
+			psp_ws_mirror_checks, psp_ws_mirror_misses);
+"""),
+("""/* 1: the object is settled scenery the full path would leave asleep, and its
+counters have been moved as that path moves them */
+static inline int psp_ws_asleep(""",
+"""/* psp_fixups.py (FIXES_OBJPLACE): 1 when the bit answers for the datum; the
+check mode reads the datum too, and answers from it */
+static inline int psp_ws_said_clear(short absolute_index, struct object_header_datum const *header)
+{
+	struct object_datum const *object;
+	int said = psp_ws_mirror && (psp_ws_clear[absolute_index >> 5] >> (absolute_index & 31) & 1);
+
+	if (!said || !psp_ws_mirror_check)
+		return said;
+	object = header->datum;
+	psp_ws_mirror_checks++;
+	if (object->object.first_child_object_index != NONE || TEST_FLAG(object->object.flags, _object_garbage_bit))
+	{
+		if (psp_ws_mirror_misses++ < 16)
+			platform_psp_log("wsmirrorcheck: %s has a child or is garbage, its bit set, at tick %ld",
+				tag_get_name(object->definition_index), game_time_get());
+	}
+	return 0;
+}
+
+/* 1: the object is settled scenery the full path would leave asleep, and its
+counters have been moved as that path moves them */
+static inline int psp_ws_asleep("""),
+("""	object = header->datum;
+	if (object->object.first_child_object_index != NONE)
+		return 0;
+	psp_wake_skipped++;
+	psp_objects_sleep_checked++;
+	psp_objects_asleep++;
+	if (TEST_FLAG(object->object.flags, _object_garbage_bit))
+		++object_globals->active_garbage_object_count;
+	psp_ws_passed++;
+	return 1;
+""",
+"""	if (!psp_ws_said_clear(absolute_index, header))
+	{
+		object = header->datum;
+		if (object->object.first_child_object_index != NONE)
+			return 0;
+		if (TEST_FLAG(object->object.flags, _object_garbage_bit))
+			++object_globals->active_garbage_object_count;
+	}
+	psp_wake_skipped++;
+	psp_objects_sleep_checked++;
+	psp_objects_asleep++;
+	psp_ws_passed++;
+	return 1;
+"""),
+("""		if (object_header->identifier)
+		{
+			SET_FLAG(object_header->flags, _object_header_do_not_update_bit, FALSE);
+""",
+"""		if (object_header->identifier)
+		{
+#ifdef HALO_PSP
+			/* psp_fixups.py (FIXES_OBJPLACE): a header whose bit is clear stays clean */
+			if (psp_hdr_clear_all || TEST_FLAG(object_header->flags, _object_header_do_not_update_bit))
+#endif
+			SET_FLAG(object_header->flags, _object_header_do_not_update_bit, FALSE);
+"""),
 ]
 
 
@@ -36282,6 +36508,76 @@ void render_objects("""),
 # object marks and the particle loop, so a default build runs w142's code.
 WALKAPART = os.environ.get("PSP_WALKAPART", "") == "1"
 FIXES_WALKAPART = {}
+# Built in unless PSP_MEVISLAND=0 (psp_build.py): the landing of mevis's
+# copies, the frame's visibility made on the ME and used (keep word mevisland, on by default;
+# docs/mevis_landing.md). A walkapart build has mevis's own hooks in the same
+# places, so it leaves these out
+MEVISLAND = os.environ.get("PSP_MEVISLAND", "") != "0"
+FIXES_MEVISLAND = {}
+FIXES_MEVISLAND["source/render/render.c#mevisland"] = [
+("""	parameters.fog = render.fog;
+
+	structure_visibility_compute();
+""", """	parameters.fog = render.fog;
+
+#ifdef HALO_PSP
+	{
+		int psp_mevisland_push(void); /* structure_visibility.c (psp_fixups.py, mevisland) */
+
+		if (!psp_mevisland_push())
+			structure_visibility_compute();
+	}
+#else
+	structure_visibility_compute();
+#endif
+"""),
+("""		lights_preprocess_scene();
+""", """#ifdef HALO_PSP
+		{
+			/* mevisland: visibility's first reader */
+			void psp_mevisland_collect(void); /* structure_visibility.c (psp_fixups.py, mevisland) */
+
+			psp_mevisland_collect();
+		}
+#endif
+		lights_preprocess_scene();
+"""),
+("""	bink_playback_render();
+	render_camera_debug_frustum(""", """#ifdef HALO_PSP
+	{
+		/* mevisland: a view that never reached its first reader (a film
+		playing) still takes its answer before the next tick */
+		void psp_mevisland_settle(void); /* structure_visibility.c (psp_fixups.py, mevisland) */
+
+		psp_mevisland_settle();
+	}
+#endif
+	bink_playback_render();
+	render_camera_debug_frustum("""),
+]
+FIXES_MEVISLAND["source/render/render_objects.c#mevisland"] = [
+("""	object_marker_begin();
+
+	render_object_globals.rendered_object_count = structure_visibility_find_objects(
+""", """#ifdef HALO_PSP
+	int psp_mevisland_objects(long *indices, short *count); /* structure_visibility.c (psp_fixups.py, mevisland) */
+
+	if (!psp_mevisland_objects(render_object_globals.rendered_object_indices, &render_object_globals.rendered_object_count))
+#endif
+	{
+	object_marker_begin();
+
+	render_object_globals.rendered_object_count = structure_visibility_find_objects(
+"""),
+("""		object_mark_function);
+
+	object_marker_end();
+""", """		object_mark_function);
+
+	object_marker_end();
+	}
+"""),
+]
 FIXES_WALKAPART["source/objects/objects.c#walkapart"] = [
 ("""void object_marker_begin(
 	void)
@@ -37842,7 +38138,35 @@ void game_tick(
 ]
 
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + list(FIXES_GSCHECK.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
+# ---------- FIXES_ACCLEAF: the hottest lookups without their keep tests (lever ACCLEAF)
+# object_get (OBJALL), object_header_block_get (HDRBLK), object_get_and_verify_type
+# (typehdr) and datum_get's found path (DGFAST) each asked a keep word on every
+# call, for the old side of an A/B long settled: a byte load, a branch and, the
+# first time, the keep lookup, on calls made millions of times a second (api-job
+# 40158154165). With the asserts compiled out, typehdr's type is read by nothing,
+# but its keep test still ran. These are the same pointers as before; only the
+# tests go. A build switch, as the tests are what it removes: PSP_ACCLEAF_OLD=1
+# builds without the group, and objallold, hdrblkold, notypehdr and dgfastold
+# work again there
+ACCLEAF_OLD = os.environ.get("PSP_ACCLEAF_OLD", "") == "1"
+FIXES_ACCLEAF = {}
+FIXES_ACCLEAF["source/objects/objects.c#accleaf"] = [
+("""	if (PSP_KEEP_ONCE("objallold"))
+		return object_get_and_verify_type(object_index, _object_mask_all);
+	return object_header_get(object_index)->datum;""",
+ """	return object_header_get(object_index)->datum;"""),
+("""PSP_KEEP_ONCE("hdrblkold") ? object_get(object_index) : object_header->datum;""",
+ """object_header->datum;"""),
+("""const int psp_type = PSP_KEEP_ONCE("notypehdr") ? result->object.type : psp_header->type;""",
+ """const int psp_type = psp_header->type;"""),
+]
+FIXES_ACCLEAF["source/memory/data.c#accleaf"] = [
+("""absolute_index<data->count && !PSP_KEEP_ONCE("dgfastold"))""",
+ """absolute_index<data->count)"""),
+]
+
+
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items()))):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
@@ -37963,17 +38287,24 @@ MEVIS_HEAD = r"""
 #define PSP_MV_NOPROFILE(meter) ((void)0)
 #define psp_mv_debug_line(...) ((void)0)
 #define psp_mv_debug_cluster(...) 0 /* (ai_debug_highlight_cluster: never, here) */
-/* the most clusters deep the ME's portal walk goes (each level ~4.3 KB of
-the copy's stack, PSP_MV_STACK); deeper, the walk stops there, counted */
-#define PSP_MV_DEPTH 32
-#define PSP_MV_STACK (160 * 1024)
+/* the most clusters deep the ME's portal walk goes; deeper, the walk stops
+there, counted, and mevisland makes that frame's visibility on the main CPU
+instead. Measured (mevl6, six maps): ~18 KB of stack plus ~3.5 KB a cluster
+level, the deepest walk 12 clusters (b30, 60 KB; c20 5, a10 3). 14 holds it
+with room on 72 KB (the heap is what the level's copies and the textures
+live on) */
+#define PSP_MV_DEPTH 14
+#define PSP_MV_STACK (72 * 1024)
+/* the stack's lowest words, set at its allocation and checked after each
+walk: a walk that ran past its stack is reported, and its answer not used */
+#define PSP_MV_CANARY_WORDS 64
+#define PSP_MV_CANARY 0x5A5AA5A5u
 void psp_me_ring_step(unsigned int step); /* psp_me.c: an audio block waiting is mixed */
 
 /* the copies' state: written only by the ME (the main CPU clears it once, at
 its allocation), on 64-byte lines of its own */
 struct psp_mv_state
 {
-	struct render_globals render;
 	struct structure_visibility_globals svg;
 	__typeof__(psp_hull_cache) hull_cache;
 	unsigned long walk_id, counter, too_deep;
@@ -37983,10 +38314,16 @@ struct psp_mv_state
 	short depth, depth_most;
 	unsigned long object_marks[(MAXIMUM_OBJECTS_PER_MAP + 31) / 32];
 	long objects[MAXIMUM_RENDERED_OBJECTS];
+	/* last, so the block can end before the render globals' surface index
+	list (64 KB), which the PSP's walk never writes and nothing here reads */
+	struct render_globals render;
 } __attribute__((aligned(64)));
+#define PSP_MV_RENDER_BYTES offsetof(struct render_globals, environment_surface_indices)
+#define PSP_MV_STATE_BYTES ((offsetof(struct psp_mv_state, render) + PSP_MV_RENDER_BYTES + 63) & ~63u)
 /* set once by the main CPU before the first job; the ME only reads them */
 static struct psp_mv_state *psp_mv;
 static void *psp_mv_stack_top;
+static unsigned int *psp_mv_stack_bottom;
 
 static void psp_mv_error(long priority, char const *format, ...)
 {
@@ -38165,10 +38502,19 @@ void psp_mevis_me_job(const unsigned int *args, unsigned int *results)
 	struct psp_mv_record *record = (struct psp_mv_record *)args[0];
 	unsigned int control = record->fpu_control, saved;
 
+	unsigned int k;
+
 	__asm__ __volatile__("cfc1 %0, $31" : "=r"(saved));
 	__asm__ __volatile__("ctc1 %0, $31" : : "r"(control));
 	psp_mv_call_on(psp_mv_run, record, psp_mv_stack_top);
 	__asm__ __volatile__("ctc1 %0, $31" : : "r"(saved));
+	for (k = 0; k < PSP_MV_CANARY_WORDS; k++)
+		if (psp_mv_stack_bottom[k] != PSP_MV_CANARY)
+		{
+			record->done = 0;
+			record->pad_out[0] = 1;
+			break;
+		}
 	results[0] = 1;
 }
 
@@ -38198,7 +38544,7 @@ static unsigned long psp_mv_differ_parts[4], psp_mv_differ_lines;
 
 static int psp_mv_start(void)
 {
-	unsigned int state_bytes = (sizeof(struct psp_mv_state) + 63) & ~63u;
+	unsigned int state_bytes = PSP_MV_STATE_BYTES, k;
 	void *stack;
 
 	psp_mv = (struct psp_mv_state *)memalign(64, state_bytes);
@@ -38213,6 +38559,11 @@ static int psp_mv_start(void)
 	csmemset(psp_mv, 0, state_bytes);
 	csmemset(psp_mv_record, 0, sizeof(*psp_mv_record));
 	psp_mv_stack_top = (char *)stack + PSP_MV_STACK;
+	psp_mv_stack_bottom = (unsigned int *)stack;
+	/* the whole stack, so the report can say how deep the walks reached
+	(the lowest word changed); the walk's check reads only the bottom */
+	for (k = 0; k < PSP_MV_STACK / 4; k++)
+		psp_mv_stack_bottom[k] = PSP_MV_CANARY;
 	platform_psp_log("mevis: the frame's visibility again on the ME, timed and checked (%u KB state, %u KB stack, %d clusters deep at most)",
 		state_bytes / 1024, PSP_MV_STACK / 1024, PSP_MV_DEPTH);
 	return 1;
@@ -38350,6 +38701,219 @@ void psp_mevis_frame_end(void)
 		psp_mv_cycles_clusters = psp_mv_cycles_objects = psp_mv_cycles_most = 0;
 	}
 }
+/* ---------- "mevisland" (docs/mevis_landing.md): the frame's visibility made
+on the ME and used. It is pushed where the main CPU's own would run
+(structure_visibility_compute) and collected at its first reader
+(lights_preprocess_scene). No tick runs between, and nothing the main CPU does
+in that span writes what visibility reads, so the answer is the main CPU's, bit
+for bit. A push the ring refuses, or an answer later than PSP_ML_LATE_US,
+has the main CPU make its own visibility there: the safety net, as before */
+#define PSP_ML_LATE_US 50000
+int psp_me_push_visibility_into(void *record, void *answer, unsigned int answer_bytes, unsigned int *ticket); /* psp_me.c */
+
+static int psp_ml_on = -1, psp_ml_check = 0, psp_ml_out = 0, psp_ml_waiting = 0, psp_ml_objects_ready = 0, psp_ml_overran = 0;
+static unsigned long psp_ml_depth_most = 0, psp_ml_too_deep = 0;
+static unsigned int psp_ml_ticket, psp_ml_state_bytes;
+static unsigned long psp_ml_views, psp_ml_used, psp_ml_refused, psp_ml_busy, psp_ml_late, psp_ml_failed, psp_ml_wait_us,
+	psp_ml_wait_worst, psp_ml_waited, psp_ml_differ_clusters, psp_ml_differ_objects;
+
+/* this CPU's copies of lines the ME wrote, dropped before they are read. It
+never writes the copies' state or the record after the push (the push writes
+its whole cache back first), so dropping loses nothing of its own */
+static void psp_ml_drop(void const *p, unsigned int bytes)
+{
+	unsigned int start = (unsigned int)p & ~63u, end = ((unsigned int)p + bytes + 63u) & ~63u;
+
+	sceKernelDcacheInvalidateRange((void const *)start, end - start);
+}
+
+/* render.c's render_window, in place of structure_visibility_compute: 1 when
+the ME makes it, 0 when the main CPU should, now */
+int psp_mevisland_push(void)
+{
+	unsigned int control;
+
+	if (psp_ml_on < 0)
+	{
+		psp_ml_on = psp_keep("mevisland") ? (psp_mv != NULL || psp_mv_start()) : 0;
+		psp_ml_check = psp_ml_on && psp_keep("mevislandcheck");
+		psp_ml_state_bytes = PSP_MV_STATE_BYTES;
+		if (psp_ml_on)
+			platform_psp_log("mevisland: the frame's visibility made on the ME and used%s",
+				psp_ml_check ? "; mevislandcheck: the main CPU makes its own too, and the two are compared" : "");
+	}
+	if (!psp_ml_on || psp_ml_overran)
+		return 0;
+	psp_ml_views++;
+	if (psp_ml_out)
+	{
+		/* an earlier answer, too late to be used, still being made: the
+		copies' state is the ME's until it ends */
+		if (!psp_me_ring_done(psp_ml_ticket))
+		{
+			psp_ml_busy++;
+			return 0;
+		}
+		psp_ml_out = 0;
+	}
+	/* (a structure the port can't hold: the main CPU's own path, which
+	clears what it can) */
+	if (!structure_bsp_port_verify(global_structure_bsp_get()))
+		return 0;
+	csmemcpy(psp_mv_record->head, &render, PSP_MV_HEAD_BYTES);
+	psp_mv_record->visrect_mode = psp_keep("visrectcheck") ? 2 : psp_keep("visrectold") || psp_keep("smallwins2old") ? 0 : 1;
+	__asm__ __volatile__("cfc1 %0, $31" : "=r"(control));
+	psp_mv_record->fpu_control = control;
+	psp_mv_record->done = 0;
+	if (!psp_me_push_visibility_into(psp_mv_record, psp_mv, psp_ml_state_bytes, &psp_ml_ticket))
+	{
+		psp_ml_refused++;
+		return 0;
+	}
+	psp_ml_out = psp_ml_waiting = 1;
+	return 1;
+}
+
+/* render.c, before lights_preprocess_scene (and at the window's end, for a
+view that never reached it): the ME's clusters and surfaces copied in, the
+fields structure_visibility_compute writes, or the main CPU's own made now */
+void psp_mevisland_collect(void)
+{
+	struct structure_bsp *structure;
+	unsigned int start, waited;
+	int done;
+
+	if (!psp_ml_waiting)
+		return;
+	psp_ml_waiting = 0;
+	start = sceKernelGetSystemTimeLow();
+	done = psp_me_ring_done(psp_ml_ticket);
+	while (!done && sceKernelGetSystemTimeLow() - start < PSP_ML_LATE_US)
+		done = psp_me_ring_done(psp_ml_ticket);
+	waited = sceKernelGetSystemTimeLow() - start;
+	psp_ml_wait_us += waited;
+	if (waited > psp_ml_wait_worst)
+		psp_ml_wait_worst = waited;
+	psp_ml_waited += waited > 0;
+	if (!done)
+	{
+		psp_ml_late++;
+		structure_visibility_compute();
+		return;
+	}
+	psp_ml_out = 0;
+	psp_ml_drop(psp_mv_record, sizeof(*psp_mv_record));
+	if (psp_mv_record->depth_most > psp_ml_depth_most)
+		psp_ml_depth_most = psp_mv_record->depth_most;
+	if (!psp_mv_record->done || psp_mv_record->too_deep)
+	{
+		/* a walk cut at PSP_MV_DEPTH, or one that ran past its stack: not
+		the main CPU's answer */
+		psp_ml_failed++;
+		psp_ml_too_deep += psp_mv_record->too_deep != 0;
+		if (psp_mv_record->pad_out[0] && !psp_ml_overran)
+		{
+			psp_ml_overran = 1;
+			platform_psp_log("mevisland: the ME's walk ran past its %u KB stack; its answers are made here from now on",
+				PSP_MV_STACK / 1024);
+		}
+		structure_visibility_compute();
+		return;
+	}
+	structure = global_structure_bsp_get();
+	psp_ml_drop(&psp_mv->render, PSP_MV_RENDER_BYTES);
+	psp_ml_drop(psp_mv->objects, sizeof(psp_mv->objects));
+	if (psp_ml_check)
+	{
+		unsigned int clusters, cluster_hash, surfaces, surface_hash;
+
+		structure_visibility_compute();
+		psp_mv_answer(&render, &clusters, &cluster_hash, &surfaces, &surface_hash);
+		psp_ml_differ_clusters += clusters != psp_mv_record->clusters || cluster_hash != psp_mv_record->cluster_hash ||
+			surfaces != psp_mv_record->surfaces || surface_hash != psp_mv_record->surface_hash;
+	}
+	csmemcpy(render.visible_cluster_flags, psp_mv->render.visible_cluster_flags,
+		BIT_VECTOR_SIZE_IN_BYTES(structure->clusters.count));
+	render.rendered_cluster_count = psp_mv->render.rendered_cluster_count;
+	csmemcpy(render.rendered_clusters, psp_mv->render.rendered_clusters,
+		render.rendered_cluster_count * sizeof(render.rendered_clusters[0]));
+	csmemcpy(render.environment_surface_flags, psp_mv->render.environment_surface_flags,
+		BIT_VECTOR_SIZE_IN_BYTES(structure->surfaces.count));
+	render.environment_surface_count = psp_mv->render.environment_surface_count;
+	psp_pvs_fallback = (boolean)psp_mv_record->pvs_fallback;
+	psp_ml_objects_ready = 1;
+	psp_ml_used++;
+}
+
+/* render_objects.c's find_rendered_objects: the ME's list, and the marks the
+main CPU's walk would have left on the objects it listed (only those: an
+object is marked as it is listed) */
+int psp_mevisland_objects(long *indices, short *count)
+{
+	short k, n;
+
+	if (!psp_ml_objects_ready)
+		return 0;
+	psp_ml_objects_ready = 0;
+	n = (short)psp_mv_record->objects;
+	if (psp_ml_check)
+	{
+		/* the main CPU's own walk, which leaves its marks */
+		short mine;
+
+		object_marker_begin();
+		mine = structure_visibility_find_objects(indices, MAXIMUM_RENDERED_OBJECTS, cluster_get_first_collideable_object,
+			cluster_get_next_collideable_object, object_get_render_bounding_sphere, object_unmarked_function, object_mark_function);
+		mine += structure_visibility_find_objects(&indices[mine], MAXIMUM_RENDERED_OBJECTS - mine,
+			cluster_get_first_noncollideable_object, cluster_get_next_noncollideable_object, object_get_render_bounding_sphere,
+			object_unmarked_function, object_mark_function);
+		object_marker_end();
+		psp_ml_differ_objects += mine != n || psp_mv_hash(2166136261u, indices, (unsigned int)mine * sizeof(long)) !=
+			psp_mv_record->object_hash;
+		csmemcpy(indices, psp_mv->objects, (unsigned int)n * sizeof(long));
+		*count = n;
+		return 1;
+	}
+	csmemcpy(indices, psp_mv->objects, (unsigned int)n * sizeof(long));
+	object_marker_begin();
+	for (k = 0; k < n; k++)
+		object_mark_function(indices[k]);
+	object_marker_end();
+	*count = n;
+	return 1;
+}
+
+/* render.c, at the window's end */
+void psp_mevisland_settle(void)
+{
+	if (psp_ml_on <= 0)
+		return;
+	psp_mevisland_collect();
+	psp_ml_objects_ready = 0;
+	if (psp_ml_views >= 300)
+	{
+		unsigned int low = 0;
+
+		/* the stack's lowest changed word (the ME wrote it; this CPU never
+		does, so its lines are dropped before the look) */
+		if (!psp_ml_out)
+		{
+			psp_ml_drop(psp_mv_stack_bottom, PSP_MV_STACK);
+			while (low < PSP_MV_STACK / 4 && psp_mv_stack_bottom[low] == PSP_MV_CANARY)
+				low++;
+		}
+		platform_psp_log("mevisland: %lu views: the ME's answer used %lu; made here instead: refused by the ring %lu, the ME still on an earlier one %lu, late %lu, failed %lu (%lu cut at %d clusters deep); waited at the first reader %.2f ms a view (%lu views waited, the most %.2f ms); the deepest walk %lu clusters; the stack used %u of %u KB at most (since the start; last 300 views)",
+			psp_ml_views, psp_ml_used, psp_ml_refused, psp_ml_busy, psp_ml_late, psp_ml_failed, psp_ml_too_deep, PSP_MV_DEPTH,
+			psp_ml_wait_us / 1000.0 / psp_ml_views, psp_ml_waited, psp_ml_wait_worst / 1000.0, psp_ml_depth_most,
+			low ? (PSP_MV_STACK - low * 4) / 1024 : 0, PSP_MV_STACK / 1024);
+		if (psp_ml_check)
+			platform_psp_log("mevislandcheck: differing from the main CPU's own: clusters %lu, objects %lu (last 300 views)",
+				psp_ml_differ_clusters, psp_ml_differ_objects);
+		psp_ml_views = psp_ml_used = psp_ml_refused = psp_ml_busy = psp_ml_late = psp_ml_failed = 0;
+		psp_ml_wait_us = psp_ml_wait_worst = psp_ml_waited = psp_ml_differ_clusters = psp_ml_differ_objects = 0;
+		psp_ml_depth_most = psp_ml_too_deep = 0;
+	}
+}
 """
 
 
@@ -38385,7 +38949,7 @@ if CHECK_ONLY:
     sys.exit("psp_fixups: %d anchors don't match once" % len(failures) if failures else 0)
 # (before the passes below, which label and append: the copies are made from
 # the fixed text alone)
-if WALKAPART:
+if WALKAPART or MEVISLAND:
     print("psp_fixups: mevis's copies of %d visibility functions" % mevis_copies(TREE))
 print("psp_fixups: %d files changed, AI debug records shared in %d, unaligned accesses fixed in %d, breadcrumbs in %d, code appended to %d, passes skipped in %d, packed designators %d"
       % (len(FIXES), ai_debug_records(TREE), unaligned_accesses(TREE), breadcrumbs(TREE) + step_labels(TREE), appended(TREE), skipped_passes(TREE), packed_designators(TREE)))

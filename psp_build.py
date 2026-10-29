@@ -171,11 +171,18 @@ DITHERSHIFT = os.environ.get("PSP_DITHERSHIFT", "") == "1"
 # check and the collision usage log's empty calls kept, as before
 # psp_fixups.py's FIXES_DEADCHK: the old side of that layout's A/B (read by
 # psp_fixups.py, which builds without the group)
+# PSP_ACCLEAF_OLD=1: the hottest lookups keep their keep tests (objallold,
+# hdrblkold, notypehdr, dgfastold): the old side of ACCLEAF's A/B (read by
+# psp_fixups.py, which builds without FIXES_ACCLEAF)
 # PSP_WALKAPART=1: option C's groundwork, the drawing walk kept from the tick's
 # state (keep word walkapart) and its tests (mevis, walkwrites; psp_fixups.py
 # FIXES_WALKAPART). Its hooks sit in the tick's object marks and the particle
 # loop, so a default build leaves all of it out
 WALKAPART = os.environ.get("PSP_WALKAPART", "") == "1"
+# PSP_MEVISLAND=0: leaves out the frame's visibility made on the ME (mevis's
+# copies of the visibility code, 23 KB, and the landing's hooks; keep word
+# mevisland, on by default; docs/mevis_landing.md). Built in otherwise
+MEVISLAND = os.environ.get("PSP_MEVISLAND", "") != "0"
 # build 110: PSP_MAP_CHECKS=1 keeps ChupathingyCE's checks of a map's data as
 # the tick reads it (animations, collision walks). Off by default: the PSP's
 # maps are its own bake, trusted as the Xbox game trusts its own (psp_fixups.py,
@@ -484,6 +491,7 @@ def compile_one(item):
                ["-DPSP_DITHERSHIFT=1"] if DITHERSHIFT and src.endswith("psp_ge.c") else []) + (
                ["-DPSP_RECON=1"] if RECON else []) + (
                ["-DPSP_WALKAPART=1"] if WALKAPART else []) + (
+               ["-DPSP_MEVISLAND=1"] if MEVISLAND else []) + (
                ["-DPSP_METRICS=1"] if METRICS else []) + (
                # the switches their #if blocks test (psp_ge.c's debug tools)
                ["-DPSP_DEBUG_TOOLS=1"] if DEBUG_TOOLS else []) + (

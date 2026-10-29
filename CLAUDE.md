@@ -79,10 +79,12 @@ PSPDEV=<pspdev> tools/build_release.sh <out>
 | `PSP_ASSERTS_ON=1` | Keeps the fatal asserts (cold, logged to `debug.txt` when they fail); by default they're compiled out (X10, Sheepdog01 2026-10-27) |
 | `PSP_SHELF=1` | Builds the shelved experiments back in (`docs/shelf.md`) |
 | `PSP_WALKAPART=1` | Builds in option C's groundwork, the drawing walk kept from the tick's state (keep word `walkapart`; the tests `mevis`, `walkwrites`): its hooks sit in the tick's object marks and the particle loop, so a default build leaves it out |
+| `PSP_MEVISLAND=0` | Leaves out the frame's visibility made on the ME (mevis's copies of the visibility code and the landing's hooks; keep words `mevisland`, on by default, and `mevislandcheck`; `docs/mevis_landing.md`) |
 | `PSP_DITHERSHIFT=1` | Builds in the GE's dither moved each pass (keep words `dithershift`, `dithershiftall`; `docs/review_dithershift.md`): its tests sit in hot draw paths, so a default build leaves them out |
 | `PSP_PGO_STRICT=1` | Refuses to link when the profile doesn't match the code (any function compiled without its counts): set it for every release build and its release check. Every PGO build lists them in `pgo_mismatch.txt` |
 | `PSP_FIXUPS_CHECK=1` | Lists every fixup anchor that no longer matches, and builds nothing |
 | `PSP_DEADCODE_INLINE=1` | The sleep's debug reports inline in psp_sleepy_update and psp_object_checksum, and the collision usage log's empty calls kept: the old layout, the other side of SLEEPDBG's A/B (by default they're cold functions and no calls) |
+| `PSP_ACCLEAF_OLD=1` | The hottest lookups (object_get, object_header_block_get, object_get_and_verify_type, datum_get) keep their keep tests, so `objallold`, `hdrblkold`, `notypehdr` and `dgfastold` work: the other side of ACCLEAF's A/B (by default the tests are gone) |
 | `PSP_GU_PLACE=sdk` | pspgu's and pspgum's small variables left where the SDK's link script puts them: the other side of their placement's A/B (by default they sit on the line below the ME's `.bss` block) |
 | `PSP_XMB_SND0=<file.AT3>` | Packs a local menu sound into the EBOOT (never commit it; see `psp/xmb/README.md`) |
 

@@ -277,7 +277,7 @@ newest one is kept here (the call is a system call; the stall wrapper, below)
 and the main CPU passes it on when the run of waiting calls ends */
 static int stall_me_qid = 0;
 static void *stall_me_address = NULL;
-static unsigned long stall_forwarded; /* (defined with the stall wrapper) */
+static PSP_MAIN_SIDE unsigned long stall_forwarded; /* (defined with the stall wrapper) */
 int __real_sceGeListUpdateStallAddr(int qid, void *stall);
 /* gebusy2 (with the stall wrapper): the Media Engine's chunks given to the
 GE, and the main CPU's waits, for the GE's own busy time */
@@ -599,8 +599,9 @@ psp_ge_frame_window, psp_ge_budget, psp_ge_setting) never drains */
 /* build 118: the calls are written down only on the main CPU, never while
 carrying out. On the Media Engine (gemeoverlap) the main CPU's own words
 (defer_used, defer_replaying) say what the main CPU is doing meanwhile, not
-the ME: there the test is psp_on_me(), its own stack */
-#define DEFER_RECORDING() (defer_on && !defer_replaying && !psp_on_me())
+the ME: there the test is psp_on_me(), its own stack, made first, so the ME
+never reads those words' lines at all */
+#define DEFER_RECORDING() (!psp_on_me() && defer_on && !defer_replaying)
 #define GE_DEFER_DRAIN() do { if (!psp_on_me() && defer_used && !defer_replaying) defer_drain_for(__func__); } while (0)
 /* a deferred call's own test: deferring this frame, not already carrying
 out, not inside a model too big to defer, and written down */
@@ -2128,11 +2129,17 @@ static void chunk_publish(int mode)
 			inflight_me_out = 1;
 			psp_me_window[0] = 1;
 		}
+		/* as the PSP's path does: the records written back before the piece
+		(the emulator's cache model then sees what the ME would), and the
+		piece's own words written inside its mark as the ME's */
+		sceKernelDcacheWritebackAll();
 		defer_replaying = 1;
 		psp_me_context = defer_me_thread ? defer_me_thread : 1;
+		__asm__ __volatile__("" ::: "memory");
 		replay_inflight = 1;
 		defer_replay(defer_buffer + chunk_published, defer_used - chunk_published, 0);
 		replay_inflight = 0;
+		__asm__ __volatile__("" ::: "memory");
 		psp_me_context = 0;
 		defer_replaying = 0;
 		chunk_published = defer_used;
@@ -3677,7 +3684,10 @@ every update passed on, as before */
 int __real_sceGeListUpdateStallAddr(int qid, void *stall);
 static int stall_batch = -1, stall_pending = 0;
 static PSP_MAIN_SIDE int stall_force = 0;
-static unsigned long stall_calls = 0, stall_forwarded = 0, stall_timed = 0, stall_timed_us = 0;
+static unsigned long stall_calls = 0;
+/* the main CPU's alone: kept off the line of the ME's stall_me_address, which
+its write-back could otherwise put back to an older address (mechunk) */
+static PSP_MAIN_SIDE unsigned long stall_forwarded = 0, stall_timed = 0, stall_timed_us = 0;
 
 /* build 79: "geserial" (and the debug menu): no stall update reaches the GE
 until the frame's list is finished, so the GE starts when the CPU is done
@@ -4218,7 +4228,12 @@ little differently (docs/review_cutstream.md), so it is the maintainer's call */
 
 /* build 37: CPU time in the renderer's entry points, by kind, for the log */
 #define GE_ENTRIES 9
-static unsigned long ge_entry_us[GE_ENTRIES];
+/* each CPU's own counters on lines of their own: the ME times the entries and
+parts it replays (mechunk), and a write-back of its lines must never land on
+the main CPU's words beside them (psp_pass_mode, the texture levels), nor
+the other way. The log reports the main CPU's */
+static unsigned long ge_entry_us_by[2][16] __attribute__((aligned(64)));
+#define ge_entry_us (ge_entry_us_by[PSP_ME_WORK() ? 1 : 0])
 /* build 47: inside the two biggest entries (level draws and model parts,
 5 ms a frame each in b46), and decals per call. Each mark is a
 sceKernelGetSystemTimeLow call; their own cost is measured once at the
@@ -4237,12 +4252,16 @@ static int tex_level_mode = GU_TEXTURE_AUTO;
 static float tex_bias = 0.0f;
 #define SHOWCASE_BIAS_DEFAULT 8 /* quarter levels: two levels coarser, judged right on a PSP-1000 by hand (sharper levels shimmer on the hull); a bias smears the ring and the sky some, so 4 is still to be tried by hand; showcasebias0 as before */
 static int in_sky;
-static unsigned long ge_part_us[GE_PARTS], ge_part_calls[GE_PARTS];
+static unsigned long ge_part_us_by[2][16] __attribute__((aligned(64)));
+static unsigned long ge_part_calls_by[2][16] __attribute__((aligned(64)));
+#define ge_part_us (ge_part_us_by[PSP_ME_WORK() ? 1 : 0])
+#define ge_part_calls (ge_part_calls_by[PSP_ME_WORK() ? 1 : 0])
 static const char *const ge_part_names[GE_PARTS] = {
 	"level: stream + index range", "level: classify corners", "level: cut up", "level: passes (binds, lists)",
 	"model: convert", "model: node matrix", "model: near-plane filter", "model: bind + state + lighting",
 	"model: geometry", "model: two-sided + change/glow passes", "decal calls" };
-static unsigned int part_mark;
+static unsigned int part_mark_by[2][16] __attribute__((aligned(64)));
+#define part_mark (part_mark_by[PSP_ME_WORK() ? 1 : 0][0])
 static inline void part_start(void)
 {
 	part_mark = ge_clock();
@@ -10896,7 +10915,7 @@ static const void *converted[CONVERTED_BUFFERS];
 /* build 68: the geometry cache's generation of the block when it was
 converted; the block can hold other vertices after an eviction */
 static unsigned int converted_generation[CONVERTED_BUFFERS];
-static unsigned long converted_count = 0, reconverted_count = 0;
+static PSP_MAIN_SIDE unsigned long converted_count = 0, reconverted_count = 0; /* the main CPU's: only it converts */
 static unsigned long multi_node_rigid = 0, transparent_placed = 0;
 /* multi_node_rigid by why: see-through, no triangles given, the skinning plan
 failed (the log names only the first 12 buffers, which see-through parts
@@ -10918,7 +10937,12 @@ static unsigned char converted_step[CONVERTED_BUFFERS];
 static int convert_float_only = 0;
 /* the step of the block model_convert last answered for (0: floats), and of
 the part being drawn */
-static float convert_k = 0.0f, part_k14 = 0.0f;
+static float part_k14 = 0.0f;
+/* model_convert's step for its caller, one per CPU: the main CPU converts as
+it writes a frame down while the Media Engine's draws read their parts'
+steps (mechunk), so one word written by both would lose one CPU's value */
+static float convert_k_by[2][16] __attribute__((aligned(64)));
+#define convert_k (convert_k_by[PSP_ME_WORK() ? 1 : 0][0])
 static unsigned long model14_parts = 0, model14_vertices = 0, model14_refused = 0;
 /* skinned parts left at 28/32 bytes: what step 3b would take 10 bytes a vertex off */
 static unsigned long model14_skinned_parts = 0, model14_skinned_vertices = 0;
@@ -11909,7 +11933,7 @@ struct vm_entry
 };
 static struct vm_entry *vm = NULL;
 static unsigned short *vm_hash = NULL, *vm_order = NULL;
-static int vm_count = 0;
+static PSP_MAIN_SIDE int vm_count = 0; /* the main CPU's (vm_find, at the record's writing) */
 static unsigned int vm_base = 0, vm_size = 0, vm_frame = 0;
 static unsigned long vm_draws = 0, vm_redirects = 0, vm_copied = 0, vm_dropped = 0, vm_full = 0;
 
@@ -15727,7 +15751,7 @@ flight is settled first, as pretouch does, since the replay reads the table
 a conversion may change; most frames convert nothing here */
 static int model_pretouch = -1;
 static unsigned long model_pretouches = 0, model_pretouch_missed = 0;
-static unsigned long pretouch_chunk_skips = 0;
+static PSP_MAIN_SIDE unsigned long pretouch_chunk_skips = 0;
 
 /* the Media Engine still drawing from this frame's records or the last's
 (mechunk's pieces handed to it while the frame is being written, or a
@@ -16060,7 +16084,7 @@ test over the front face beside it: a dashed one-pixel line along a pillar's
 edge (b30's interior). Keep word "overlaysnocull": both sides, as before */
 #define SEETHROUGH_ONE_SIDED 512
 static unsigned short seethrough_next_depth = 0;
-static int seethrough_map_clamp = 0; /* the engine side's, for the next psp_ge_seethrough_shader */
+static PSP_MAIN_SIDE int seethrough_map_clamp = 0; /* the engine side's, for the next psp_ge_seethrough_shader */
 static unsigned long seethrough_exact_draws = 0, seethrough_clamped_draws = 0, seethrough_fog_faded_draws = 0;
 static unsigned long level_culled_draws = 0;
 /* build 116 (b113 #16): a meter shader's parameters, for the next queue
@@ -19365,7 +19389,7 @@ static void hud_quad_dump(void const *vertices, unsigned int key, short blend, f
 		hdump = psp_keep("hdump");
 	/* not again when the defer queue replays the quad (gedefer), which may
 	run on the Media Engine (gemeon) */
-	if (!hdump || defer_replaying || psp_on_me() || !psp_screenshot_requested || !vertices || !key)
+	if (!hdump || psp_on_me() || defer_replaying || !psp_screenshot_requested || !vertices || !key)
 		return;
 	x0 = x1 = in[0].x;
 	y0 = y1 = in[0].y;
@@ -19423,7 +19447,7 @@ void psp_ge_screen_quad(void const *vertices, unsigned int key, short blend, flo
 {
 	hud_quad_dump(vertices, key, blend, red, green, blue, fade, meter_parameters, wrapped);
 	/* the mark is the game thread's: not read again when the queue replays */
-	if (glyph_next >= 0 && !defer_replaying && !psp_on_me())
+	if (glyph_next >= 0 && !psp_on_me() && !defer_replaying)
 	{
 		key = GLYPH_KEY_BASE + (unsigned int)glyph_next;
 		glyph_next = -1;
@@ -19434,7 +19458,7 @@ void psp_ge_screen_quad(void const *vertices, unsigned int key, short blend, flo
 	queued, outside pretouch's guards. Off by default: on the PSP it left the
 	bars as empty as before and lost model palettes (Chief's change colours),
 	so the bars' fault lies upstream of the map. Kept for the bars' A/B */
-	if (meter_parameters && !defer_replaying && !psp_on_me())
+	if (meter_parameters && !psp_on_me() && !defer_replaying)
 	{
 		static int meter_load = -1;
 
@@ -25135,3 +25159,65 @@ void psp_ge_sleep_quiet(char *line, int size)
 	snprintf(line, size, "GE: %s in %u us, its queue %s %u ms%s", had_out ? "the frame out collected" : "no frame out",
 		out_us, waited < 200 ? "empty after" : "stopped after", waited, stopped < 0 ? " (the stop failed)" : "");
 }
+
+#ifdef PSP_RECON
+/* The GE layer's 300-frame reports zero these counters, sometimes inside the
+span: then only the part after the zero is counted, rather than a wrapped difference */
+static unsigned long visspan_since(unsigned long now, unsigned long then)
+{
+	return now >= then ? now - then : now;
+}
+
+/* "visspan" (recon; docs/mevis_landing.md, step 1): the main CPU's time from
+the frame's visibility to its first reader (render.c: 0 before
+structure_visibility_compute, 1 after it, 2 before lights_preprocess_scene),
+split into visibility itself, the waits this layer times inside the span
+(the ME's frame out, the forwarding thread's show, the GE's end of a frame
+shown by this thread: under geshow2 the forwarding thread waits for it, and
+those waits aren't this thread's) and the rest. Visibility on the ME would
+overlap the span's waits on the GE and its work, not its wait on the ME */
+void psp_ge_visspan(int phase)
+{
+	static int on = -1;
+	static unsigned int mark, frames;
+	static unsigned long me0, show0, ge0, span_us, vis_us, me_us, show_us, ge_us;
+	unsigned int now;
+	unsigned long show = 0;
+	int k;
+
+	if (on < 0)
+		on = psp_keep("visspan") != 0;
+	if (!on || PSP_ME_WORK())
+		return;
+	now = sceKernelGetSystemTimeLow();
+	for (k = 0; k < SHOW2_WHYS; k++)
+		show += show2_wait_us[k];
+	if (phase == 0)
+	{
+		mark = now;
+		me0 = me_overlap_wait_us;
+		show0 = show;
+		ge0 = ge_wait_us;
+		return;
+	}
+	if (phase == 1)
+	{
+		vis_us += now - mark;
+		return;
+	}
+	span_us += now - mark;
+	me_us += visspan_since(me_overlap_wait_us, me0);
+	show_us += visspan_since(show, show0);
+	if (show2_on <= 0 || inflight_thread < 0)
+		ge_us += visspan_since(ge_wait_us, ge0);
+	if (++frames < 150)
+		return;
+	platform_log("GE: visspan: %u frames: visibility to its first reader %.2f ms a frame: visibility %.2f, waiting on the ME's frame %.2f, "
+		"on the show %.2f, on the GE's end %.2f, the rest %.2f",
+		frames, span_us / 1000.0f / frames, vis_us / 1000.0f / frames, me_us / 1000.0f / frames, show_us / 1000.0f / frames,
+		ge_us / 1000.0f / frames,
+		((long)span_us - (long)(vis_us + me_us + show_us + ge_us)) / 1000.0f / frames);
+	frames = 0;
+	span_us = vis_us = me_us = show_us = ge_us = 0;
+}
+#endif

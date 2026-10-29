@@ -219,6 +219,54 @@ read it in time (the surface drew untextured that frame), and the longest run
 of such frames in a row */
 static unsigned long untextured_frames = 0, untextured_run = 0, untextured_run_worst = 0;
 static int frame_untextured = 0;
+/* mechunk: the Media Engine replays a frame while the main CPU still writes
+it down and loads textures for it, so the ME's binds keep their bookkeeping
+here, on lines of their own, rather than in the words above and last_frame,
+which the main CPU writes meanwhile (a write-back from either CPU could undo
+the other's, and a lost mark lets a texture in use be evicted). The main
+CPU merges it at the frame's end, once the ME's work is collected */
+#define ME_MARKS 256
+static struct
+{
+	unsigned long misses, marks_dropped;
+	int untextured, mark_count;
+	unsigned short marks[ME_MARKS];
+} me_book __attribute__((aligned(64)));
+
+static int alignment(unsigned int size);
+
+/* a bind's or a resident check's count of this frame's set (one per texture) */
+static void frame_set_mark(int index)
+{
+	if (last_frame[index] == frame)
+		return;
+	if (PSP_ME_WORK())
+	{
+		if (me_book.mark_count < ME_MARKS)
+			me_book.marks[me_book.mark_count++] = (unsigned short)index;
+		else
+			me_book.marks_dropped++;
+		return;
+	}
+	frame_set_bytes += alignment(entries[index].size);
+	frame_set_count++;
+	last_frame[index] = frame;
+}
+
+/* the ME's bookkeeping into the main CPU's (psp_tex_frame_end) */
+static void me_book_merge(void)
+{
+	int k;
+
+	misses += me_book.misses;
+	if (me_book.untextured)
+		frame_untextured = 1;
+	for (k = 0; k < me_book.mark_count; k++)
+		frame_set_mark(me_book.marks[k]);
+	me_book.misses = 0;
+	me_book.untextured = 0;
+	me_book.mark_count = 0;
+}
 static unsigned char staging[STAGING_BYTES] __attribute__((aligned(64)));
 
 static int alignment(unsigned int size)
@@ -1738,7 +1786,9 @@ static unsigned int allocate(int which, unsigned int size, unsigned int recent)
 	return start;
 }
 
-static unsigned long read_us = 0, frame_read_us = 0, frame_read_worst = 0;
+/* the main CPU's alone (only it reads the Memory Stick): kept off the lines
+the Media Engine's binds write (mechunk) */
+static PSP_MAIN_SIDE unsigned long read_us = 0, frame_read_us = 0, frame_read_worst = 0;
 extern volatile unsigned long psp_stick_read_us; /* build 126: every blocking Memory Stick read's time (psp_frametrace.c) */
 /* build 73: this heartbeat window's reads, for the log's io: line */
 static PSP_MAIN_SIDE unsigned long window_reads = 0, window_us = 0, window_worst_us = 0; /* build 118: the heartbeat resets them */
@@ -2110,13 +2160,14 @@ int psp_tex_bind(unsigned int key, int *has_alpha)
 	{
 		int screen = psp_tex_screen_pass, past_budget = screen && hud_pin_on > 0;
 
-		misses++;
 		if (PSP_ME_WORK())
 		{
+			me_book.misses++;
 			want(index); /* build 112 */
-			frame_untextured = 1;
+			me_book.untextured = 1;
 			return 0;
 		}
+		misses++;
 		if (screen)
 		{
 			hud_misses++;
@@ -2134,15 +2185,7 @@ int psp_tex_bind(unsigned int key, int *has_alpha)
 	}
 	if (psp_tex_screen_pass && hud_pin_on > 0 && hud_pinned && !PSP_ME_WORK())
 		hud_pinned[index] = 1;
-	/* stored only when it changes: a texture marked before the Media Engine
-	binds it (mechunk) leaves the line holding its word unwritten by the ME,
-	while the main CPU may write the words beside it */
-	if (last_frame[index] != frame)
-	{
-		frame_set_bytes += alignment(entry->size);
-		frame_set_count++;
-		last_frame[index] = frame;
-	}
+	frame_set_mark(index);
 	if (bind_counts && bind_counts[index] < 65535)
 		bind_counts[index]++;
 	if (texline_me && PSP_ME_WORK())
@@ -2254,21 +2297,17 @@ int psp_tex_resident(unsigned int key)
 		return 0;
 	if (!resident_at[index])
 	{
-		misses++;
 		if (PSP_ME_WORK())
 		{
+			me_book.misses++;
 			want(index);
 			return 0;
 		}
+		misses++;
 		if (frame_loaded >= LOAD_BUDGET_BYTES || !load(index))
 			return 0;
 	}
-	if (last_frame[index] != frame)
-	{
-		frame_set_bytes += alignment(entries[index].size);
-		frame_set_count++;
-	}
-	last_frame[index] = frame;
+	frame_set_mark(index);
 	return 1;
 }
 
@@ -3071,6 +3110,7 @@ void psp_tex_screen_free(void)
 
 void psp_tex_frame_end(void)
 {
+	me_book_merge();
 	/* build 112: what the Media Engine's work wanted, read now */
 	if (wanted_count && entries)
 	{

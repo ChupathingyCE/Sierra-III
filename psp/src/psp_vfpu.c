@@ -540,12 +540,16 @@ static void fpu_quat_multiply(const struct quat *q0, const struct quat *q1, stru
 	*result = product;
 }
 
+extern volatile unsigned int psp_me_context;
+
 int psp_vfpu_quaternions_multiply(const void *q0, const void *q1, void *result)
 {
 	unsigned int stack;
 
 	__asm__ volatile("move %0, $sp" : "=r"(stack));
-	if ((stack >> 27) != 1) /* not 0x08000000-0x0fffffff: the ME */
+	/* not 0x08000000-0x0fffffff: the ME; psp_me_context: the ME's work run
+	here, which keeps the ME's FPU product */
+	if ((stack >> 27) != 1 || psp_me_context)
 		return 0;
 	if (vfpupose_check)
 	{

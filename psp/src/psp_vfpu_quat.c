@@ -503,13 +503,17 @@ static unsigned long calls[2], differ[2], not_finite = 0, report_frame = 0;
 static unsigned int worst[2];
 
 /* the Media Engine's stack is in its eDRAM: only 0x08000000-0x0fffffff (main
-RAM) is the main CPU's */
+RAM) is the main CPU's. The ME's work run here (gemesim's stand-in in the
+emulator, a job taken back by its fallback) is marked by psp_me_context, and
+poses as the ME does, so its bits don't depend on which CPU ran it */
+extern volatile unsigned int psp_me_context;
+
 static int on_main_cpu(void)
 {
 	unsigned int stack;
 
 	__asm__ volatile("move %0, $sp" : "=r"(stack));
-	return (stack >> 27) == 1;
+	return (stack >> 27) == 1 && !psp_me_context;
 }
 
 /* the main CPU's calls a frame (and with the check word, those that differed)
