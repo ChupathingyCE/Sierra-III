@@ -98,7 +98,7 @@ On the PSP [U on M x E]: c10's scenery is 7.0-7.5 ms a tick [M], and -11% of it 
 
 ## 6. What else it found
 
-**The ME's poses aren't this CPU's bits in the emulator.** With `poseaheadcheck` on c10, the Media Engine's poses differ from the main CPU's decodes in the last bit: 186,323 of 204,726. MP's exactness was proved on b30 and a10, and on the PSP on b30 (0 of 164,981). c10's compressed scenery animations weren't in that proof. Whether the PSP's ME differs there too needs a `poseaheadcheck` run on c10 on the PSP. If the two agree on the PSP, the table could also take the ME's poses and let the pose job leave them out (the ~115 a tick on c10). That is the ME side this build leaves out.
+**The ME's poses aren't this CPU's bits.** With `poseaheadcheck` on c10, the Media Engine's poses differ from the main CPU's decodes in the last bit: 186,323 of 204,726 in the emulator, and the same share on the PSP-1000. The cause is VFPUQD: this CPU normalizes with the VFPU's forms, and the ME, which has no VFPU, with the FPU's. With `novfpuquatd`, none differ. That is why the table takes only this CPU's decodes. If the two units agreed, the table could also take the ME's poses and let the pose job leave them out (the ~115 a tick on c10). That is the ME side this build leaves out.
 
 The fix for that (B44) is on its own branch, `posefpu`: every pose listed for the ME is made in the ME's FPU form wherever it is made, so a pose no longer depends on which unit finished in time.
 
