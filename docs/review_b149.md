@@ -46,7 +46,7 @@ Labels: [M] measured on a PSP, [E] emulator, [D] read in the code, [U] inference
 
 **Not in this review:**
 - Docs-only commits (the hardware survey, `docs/b41_sleep_design.md`) and the `bake.py` comment rewording (98d64ea).
-- The profiles `campaign-w149a` and `w149b` (§10).
+- The profiles `campaign-w149a` and `w149b` (§7).
 
 ## 1. Sleep and power: B41's proper fix
 
@@ -56,7 +56,7 @@ Labels: [M] measured on a PSP, [E] emulator, [D] read in the code, [U] inference
 - The callback only asks. The game thread stops itself at its next quiet point, which is a frame's first window or a load's frame. It finishes what the GE layer has out, halts the ME, gives the partition back, parks until the wake, then retakes everything and restarts the ME.
 
 **Key lines:**
-- The callback asks and waits at most a second:
+- The callback asks and waits a second, or two if the game thread had already begun to stop:
   - `psp_sleep.c:82` `#define ASK_MS 1000`
   - `psp_sleep.c:138` `psp_sleep_due |= DUE_SLEEP;`
   - `psp_sleep.c:139` `for (waited = 0; sleep_state != SLEEP_PARKED && waited < ASK_MS; waited++)`
@@ -106,7 +106,7 @@ Labels: [M] measured on a PSP, [E] emulator, [D] read in the code, [U] inference
 ## 2. The bake
 
 **B8 closed: the model conversions baked (PRECONVERT; a35868f).** Each model vertex buffer an opaque draw converts at run time is converted by the bake instead.
-- **Bake side:** `bake.py --preconvert` runs `tools/modelconvert.py` last for each map but `ui` (`bake/bake.py:555-558`):
+- **Bake side:** `bake.py --preconvert` runs `tools/modelconvert.py` last for each map but `ui` (`bake/bake.py:557-559`):
   - `if PRECONVERT and name != 'ui':`
   - `run([sys.executable, os.path.join(LIB, 'modelconvert.py'), final, pgeo], log_path, cwd=LIB, env=env)`
   - The bundle carries the tool (`bake/bundle/assemble.py:24`).
@@ -119,7 +119,7 @@ Labels: [M] measured on a PSP, [E] emulator, [D] read in the code, [U] inference
   - A skinned block's offsets become addresses after each read and are range-checked against the block (`psp_ge.c:12356` `psp_ge_pcv_relocate`).
   - `model_convert` answers a baked buffer at once on either CPU (`psp_ge.c:12564` `if (psp_pcv_on)`), and `model_converted_now` tells modelpretouch there is nothing to do (`psp_ge.c:15778`).
 - **Why a second round:** the first PSP pair lost badly on b30's flight (frame +36%). A baked buffer never got a VRAM copy, because only main-CPU conversions called `vm_note`. `psp_ge_pcv_locked` (`psp_ge.c:12419`) now notes it at the block's first lock after a read (`docs/plan_preconvert.md`, "Round 2").
-- **Compatibility:** BAKE_FORMAT is unchanged [D] (no diff in `bake/bake.py`), so old bakes load as before. Older builds read only up to header word 3 and never see the region (`psp_geo.c` comment above `PCV_VERSION`).
+- **Compatibility:** BAKE_FORMAT is still 2 (`bake/bake.py:171`) [D]: the region rides past the pack's data, so old bakes load as before. Older builds read only up to header word 3 and never see the region (`psp_geo.c` comment above `PCV_VERSION`).
 - **Check word:** `preconvertcheck` converts each block's raw buffer at run time once a load and compares records, plans and sphere bits (`psp_ge.c:12751`).
 - **Proof named:**
   - preconv6 40876831542 [E]: play and seeds identical on the new bake (b30 3,600 ticks, c10 7,200), `preconvertcheck` 0 of 262 differ, strict 0.
@@ -128,18 +128,16 @@ Labels: [M] measured on a PSP, [E] emulator, [D] read in the code, [U] inference
   - Pack cost: +2.5-5 MB a campaign map.
 - **To question:**
   - Its PSP rows are "even", so what it buys is heap and fewer run-time conversions. It costs 42 MB over ten maps on the stick.
-  - Players don't get it unless the guided bake passes `--preconvert`. If Sheepdog01 wants it in the release, that is a one-line change, and the bundle and the EBOOT must then ship together, as b148's did.
-  - The release-check batch (`rc149a`) is on bake `preconv1` (`psp/sierra/batches/rc149a.toml:6`, `maps = "/bake/preconv1/halo/maps"`). The PSP pairs I read (c10, b30 vs b148) name bake w148a. The configuration a player runs (a bake without preconvert) has no strict batch in what I could read.
 
 **The bake's log on the stick (c3c9d55, 0d462b0).**
-- `bake/guided.py:589-598` `copy_log_to_stick`: it writes `halo/log/bake/bake-log.txt` after the log is closed, only on success (`:659-660` `if code == 0:`), best-effort (`except OSError: pass`).
+- `bake/guided.py:589-600` `copy_log_to_stick`: it writes `halo/log/bake/bake-log.txt` after the log is closed, only on success (`:659-660` `if code == 0:`), best-effort (`except OSError: pass`).
 - `guided_check.py` asserts the copy equals the bundle's log and contains `finished in`.
 - Why: the usual pull of `halo/log` brings the bake's story back with the game's. The game's rotation touches only `log/NNN_*`.
-- `docs/play.md:160` lists the file.
+- `docs/play.md:162` lists the file.
 
 **`bake-bundle` by hand only (82c6fe4).** `.github/workflows/bake-bundle.yml` loses its `push: tags: ['b*']` trigger and keeps `workflow_dispatch` (`:23`). Release bundles are now built by hand.
 
-**Forwarded from b148, not reviewed again:** the kept cache, the menu's music, the snd0 retail fix (ab8f28b). The only `bake.py` change since is the comment's wording (98d64ea).
+**Forwarded from b148, not reviewed again:** the kept cache, the menu's music, the snd0 retail fix (ab8f28b). `bake.py` changed since for preconvert (§2) and the menu sound's comment (98d64ea).
 
 ## 3. The ME and visibility
 
@@ -171,7 +169,7 @@ Labels: [M] measured on a PSP, [E] emulator, [D] read in the code, [U] inference
   - `psp_fixups.py:29484` reads it: `if (psp_nms_me[0] && ((psp_nms_me[16 + ((unsigned short)absolute_index >> 5)] >> (absolute_index & 31)) & 1))`
 - The emulator's chunk publish now writes back first, as the PSP path does (`psp_ge.c:2135` `sceKernelDcacheWritebackAll();`).
 
-**Proof named:** c1safe1-3 exact (play and seeds identical); the mechunkall trace's lost lines 9 -> 0 [E]. No PSP pair was named for c1safe itself. The profile campaign (§10) and the PSP rows for the candidate (§11) run with it. This is placement of words, so by the Sheepdog01 2026-10-27 08:18 rule its price belongs to a PSP pair; the candidate pairs in §11 are that.
+**Proof named:** c1safe1-3 exact (play and seeds identical); the mechunkall trace's lost lines 9 -> 0 [E]. No PSP pair was named for c1safe itself. The profile (§7) and the candidate's PSP rows (§8) run with it. This is placement of words, so by the Sheepdog01 2026-10-27 08:18 rule its price belongs to a PSP pair; the candidate pairs in §8 are that.
 
 ### 3.2 mevisland (60db1e9)
 
@@ -202,7 +200,6 @@ Labels: [M] measured on a PSP, [E] emulator, [D] read in the code, [U] inference
 - The landing holds 152 KB of heap. The 144 KB state and 160 KB stack of mevis were cut (72 KB stack, depth 14) because they pushed the level's material copies into the carve (`docs/mevis_landing.md`, "Its memory").
 
 **To question:**
-- `docs/mevis_landing.md:94` still says "16 clusters deep (the deepest measured is 12) on a 96 KB stack". The code says 14 and 72 KB. One of them is stale. [D]
 - On b30 the main CPU still waits 2.8-3.8 ms a view at the first reader (`docs/mevis_landing.md`, "Step 2's result"). The win is the overlap, not the ME's speed.
 
 ### 3.3 mevauto: where the walk runs, by measurement (be46097)
@@ -212,16 +209,16 @@ Labels: [M] measured on a PSP, [E] emulator, [D] read in the code, [U] inference
 **Key lines** (`psp_fixups.py`):
 - `:38726-38731` the constants: `PSP_ML_MARGIN_US 500`, `PSP_ML_MIN_WALK_US 1500`, `PSP_ML_CHECK 32`, `PSP_ML_REST 240`, `PSP_ML_PUSHES_BEFORE_REFRESH 600`, `PSP_ML_REFRESH 16`.
 - A view made on the main CPU is timed (`:38783-38792`). `if (!psp_ml_always && psp_ml_rest > 0)` ... `psp_ml_main_avg = psp_ml_main_avg ? (psp_ml_main_avg * 7 + took * 8) / 8 : took * 8;`
-- Each wait for the ME's answer is timed, and the decision is taken every 32 views (`:38878-38888`): `if (psp_ml_wait_avg / 8 + PSP_ML_MARGIN_US >= psp_ml_main_avg / 8 || psp_ml_main_avg / 8 < PSP_ML_MIN_WALK_US)` sets `psp_ml_rest = PSP_ML_REST;`.
+- Each wait for the ME's answer is timed, and the decision is taken every 32 used answers (`:38878-38888`): `if (psp_ml_wait_avg / 8 + PSP_ML_MARGIN_US >= psp_ml_main_avg / 8 || psp_ml_main_avg / 8 < PSP_ML_MIN_WALK_US)` sets `psp_ml_rest = PSP_ML_REST;`.
 - `mevislandalways` (or `mevislandcheck`) pushes every view (`:38759`), the A/B's other side.
 
 **Default:** on with mevisland. Both paths are exact, so the choice changes no answer.
 
-**Proof named:** PSP-1000 c10 40879669115 [M] (off | default | always, 2 runs each): tick -0.6 ms (-2.8%, real) to even; frame -1.1 to -4.1 ms; drawing -0.7 to -3.9 ms; the placement beats always-push. Exact: mevl8 on b30, a10, c20 [E]. The merge message adds that the c10 tick cost in the tock-vs-b148 pricing came from the two tocks' profiles, not mevisland.
+**Proof named:** PSP-1000 c10 40879669115 [M] (off | default | always, 2 runs each): tick -0.6 ms (-2.8%, real) to even; frame -1.1 to -4.1 ms; drawing -0.7 to -3.9 ms; the placement beats always-push. PSP-3000 b30 40887002037 [M] (default | always, 2 runs each): the cinematic frame -2.5%, drawing -6.4%, tick -2.2% (real); the flight's drawing +0.5 ms (+1.1%, real), its frame and tick even. Exact: mevl8 on b30, a10, c20 [E]. The merge message adds that the c10 tick cost in the tock-vs-b148 pricing came from the two tocks' profiles, not mevisland.
 
 **To question:**
 - The numbers are two runs of one build. The first 32 views are on the main CPU (`psp_ml_rest = PSP_ML_CHECK` at `:38732`), then it decides.
-- On b30, the candidate's own pair puts the tock ~1% behind w149b on the flight's frame (§11).
+- On b30, the candidate's own pair puts the tock ~1% behind w149b on the flight's frame (§8; mevauto's own b30 pair, 40887002037, prices that drawing at +0.5 ms).
 
 ### 3.4 mectx (3d77078)
 
@@ -250,7 +247,7 @@ Each is priced in the lab's findings. PSP figures say which PSP.
 
 ### 4.2 VFPUQD: the VFPU's own normalize and interpolate (d8bc529)
 
-- **What:** `quaternion_normalize` and `quaternions_interpolate_and_normalize` use vdot.q and vrsq.s (`psp/src/psp_vfpu_quat.c`, new, 662 lines). **Not bit-exact:** the file header says the D forms "round their own way (within 12 last bits on silicon)" (`psp_vfpu_quat.c:13-14`).
+- **What:** `quaternion_normalize` and `quaternions_interpolate_and_normalize` use vdot.q and vrsq.s (`psp/src/psp_vfpu_quat.c`, new, 666 lines). **Not bit-exact:** the file header says the D forms "round their own way (within 12 last bits on silicon)" (`psp_vfpu_quat.c:14`).
 - **Key lines:**
   - `psp_fixups.py:37340` `if (psp_vfpuquat_mode == 2 && psp_vfpu_quaternion_normalize(q))`
   - `psp_vfpu_quat.c:619` `mode = !psp_keep("novfpuquatd") ? 2 : psp_keep("vfpuquat") ? 1 : 0;`
@@ -261,7 +258,7 @@ Each is priced in the lab's findings. PSP figures say which PSP.
 - **Proof named:** census nothing broken (b30 40771077761, c20 40771289569 [E]); PSP-3000 pair 40775475465 [M]: b30 tick -0.8 ms in the flight, -0.3 ms in the cinematic. Sheepdog01 16:13 chose it on.
 - **To question:**
   - The start-up gate accepts 64 ulp; the bench said 12. A change that isn't bit-exact is acceptable only for local-only state, by the Sheepdog01 2026-10-28 12:27 rule. In the campaign the player's PSP is also the server, so "local" holds for multiplayer and not for campaign play. The proof named is a census and a pair, not statecrc, as the rule allows.
-  - `psp_vfpu_quat.c:3-4` still says "keep word vfpupose"; the off word is `novfpupose`. Comment only.
+  - `psp_vfpu_quat.c:5` still says "keep word vfpupose"; the off word is `novfpupose`. Comment only.
 
 ### 4.3 SCRATCHBSP (1999aa4)
 
@@ -294,7 +291,7 @@ Each is priced in the lab's findings. PSP figures say which PSP.
   - `psp_fixups.py:37534` `DEADCODE_INLINE = os.environ.get("PSP_DEADCODE_INLINE", "") == "1"` builds the old layout.
 - **Default:** the new layout.
 - **Proof:** deadchk1 40807412345 [E] exact. PSP-3000 c10 without PGO (40812138009 vs 40812168360) [M]: tick -0.3 to -0.5 ms (-1.2 to -2.5%).
-- **Caveat from the commit:** with the stale campaign-w142g profile the new side measured +5 to +8%, because 8 functions lost their counts. "Its next PGO build wants a profile counted on this code" (that is §10).
+- **Caveat from the commit:** with the stale campaign-w142g profile the new side measured +5 to +8%, because 8 functions lost their counts. "Its next PGO build wants a profile counted on this code" (that is §7).
 
 ### 4.6 GSCHECK (4a589fd)
 
@@ -312,7 +309,7 @@ Each is priced in the lab's findings. PSP figures say which PSP.
   - `psp_fixups.py:38151` `ACCLEAF_OLD = os.environ.get("PSP_ACCLEAF_OLD", "") == "1"` builds the old side.
 - **Default:** tests out. `objallold`, `hdrblkold`, `notypehdr` and `dgfastold` work only in a `PSP_ACCLEAF_OLD=1` build.
 - **Proof:** accleaf1 40831782100 [E], play and both seeds identical, b30 and c10, strict 0.
-- **To question:** the lab's lever row: PSP-1000 c10 no PGO, tick -1.0 ms (-3 to -6%), **drawing +1.1-1.2 ms ("layout, being tested")**, frame -0.4 to -1.4% [M]. The candidate's c10 rows in §11 are net positive with this in, but nothing in the repo says the drawing rise was explained.
+- **To question:** the lab's lever row: PSP-1000 c10 no PGO, tick -1.0 ms (-3 to -6%), **drawing +1.1-1.2 ms ("layout, being tested")**, frame -0.4 to -1.4% [M]. The candidate's c10 rows in §8 are net positive with this in, but nothing in the repo says the drawing rise was explained.
 
 ### 4.8 OBJPLACE (4b62976)
 
@@ -364,14 +361,14 @@ Each is priced in the lab's findings. PSP figures say which PSP.
 | lanetrace's release hooks and `*_off` stubs | a93cc32, 5d983e5 | b148 section 7 |
 | The ME's wake words (`mewakefw`, `mewakeearly`, `mewakeprobe`), opt-in | a657956 | b148 section 3 |
 | The kept cache, menu music, snd0 retail fix | ab8f28b | b148 section 6 |
-| b148's public export | 50d3962 | n/a |
+| b148's public export | 50d3962 | n/a (`public/README.md` went back to b147h's in the tock; the cut brings b148's back) |
 
-Evidence [D]: `git diff --stat 5462c996 HEAD` has none of `psp_sleepguard.c`, `psp_lanetrace.c`, `texpack.py` or `snd0.py`. The only `bake.py` change since is `--preconvert` and the comment's wording.
+Evidence [D]: `git diff --stat 5462c996 HEAD` has none of `psp_sleepguard.c`, `psp_lanetrace.c`, `texpack.py` or `snd0.py`. `bake.py` changed for preconvert (§2) and a comment's wording.
 
 ## 6. Under the hood
 
 - `visspan` (recon build only, `psp_ge.c`) times the span from visibility to its first reader. It is the step-1 instrument for mevisland and is compiled out otherwise.
-- The campaign `CLAUDE.md` gains `PSP_MEVISLAND=0` in the build-switches table. `docs/optimization_ranking.md` gains NRCHK, SLEEPDBG, GSCHECK, ACCLEAF and OBJPLACE.
+- The campaign `CLAUDE.md` gains `PSP_MEVISLAND=0`, `PSP_DEADCODE_INLINE=1` and `PSP_ACCLEAF_OLD=1` in the build-switches table. `docs/optimization_ranking.md` gains NRCHK, SLEEPDBG, GSCHECK, ACCLEAF and OBJPLACE.
 - `tools/cachemap.py` gained scratchpad naming for the cache map's census.
 
 ## 7. The profile
@@ -404,7 +401,7 @@ Evidence [D]: `git diff --stat 5462c996 HEAD` has none of `psp_sleepguard.c`, `p
 | texrecent, PSP-1000 | (one run; census 40770268439 is the emulator side) | waits 609 -> 154 |
 | The candidate against b148, PSP-3000 b30 | 40888171017 vs 40847119413 | frame -0.7 to -3.0%, tick -3.3% on the flight |
 | The candidate against b148, PSP-1000 c10 | 40889089669 vs 40846990494 | frame -3.8 to -7.8%, real in every stretch |
-| Release check on HEAD | `rc149a` (written, not run as far as I could read) | none given |
+| Release check | `rc149a` at 98d64ea4: the cut commit (73b4dca) changes only the bake, docs and a comment, and builds the same EBOOT (581c423dbc4a89ba, strict, 0 functions without counts) | sierra-batch 40893224278 |
 
 Notes:
 - The candidate pairs ran on bake w148a, not a preconvert bake [D, the lab's rows name it]. So they say nothing about preconvert's effect.
@@ -419,10 +416,10 @@ Notes:
 - **mevisland's doc** had the walk's depth and stack wrong; fixed at the cut (14 deep, 72 KB: `PSP_MV_DEPTH`, `PSP_MV_STACK`).
 - **The stall reporter acts in play.** It stops the GE's queue on a third look. Off word `stallreportoff`.
 - **`psp_sleep.c:67`'s comment** carried a date and a name; reworded at the cut, no line moved (the profile still fits).
-- **`docs/play.md`** still says b147h (`:7`) and "Sleep during play is still being tested" (`:232`), and it needs the b149 numbers, bundle names and the stopgap text. b148's release docs lived on b148's own branch; the cut brings them into the tock.
-- **A hand test of b149 itself has not happened.** The candidate's own PSP pairs name bake w148a, and the release check on HEAD was not given.
+- **A hand test of b149 itself has not happened.** The candidate's own PSP pairs name bake w148a, and only the release check runs on the preconvert bake players will make.
 
 ## Sheepdog01's hand test (PSP-1000)
+- **b148's release docs** lived on b148's own branch; the cut brings them into the tock, with `play.md` and `public/README.md` from b148, brought to b149.
 
 Suggested order; none of it has been run.
 1. Re-bake with b149's bundle (the conversions are now baked: B8), then play b149 on it as usual (a10 for 18 min as b148's test did). Look for: no flicker (B38), no untextured boarding craft (texrecent, carveshare), heap failures 0, ME failures 0.
