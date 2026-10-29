@@ -37215,6 +37215,587 @@ static int psp_nrchk_mode; /* psp_fixups.py (FIXES_NRCHK) */
 ]
 
 
+# ---------- FIXES_DEADCHK: the sleep's debug reports and the collision usage
+# calls out of the hot code (levers SLEEPDBG and COLLUSAGE)
+# psp_sleepy_update runs for every awake object every tick, and most of its
+# 9-10 KB is reports that only keep words turn on (sleepdebug, itemsleepcheck,
+# flipwatch, checksumcheck): never run in play, but inline they share the 16
+# KB instruction cache with the code that does. GCC can't move them itself:
+# a PGO build keeps code its profile never reached as it is
+# (PSP_PGO_PARTIAL), and a build without a profile can't tell they're cold.
+# Each report is now a cold, never-inlined function, called under the same
+# test, with the same statements in the same order, so with its keep word on
+# it reports as before and with it off nothing runs that didn't. The
+# collision usage log's functions are empty without the debug tools
+# (FIXES_106); their calls go too, as macros that expand to nothing and
+# evaluate nothing (their arguments are constants and plain variables, and
+# the times start_time stored were read only by end_time).
+# A layout change can't be a keep word: PSP_DEADCODE_INLINE=1 builds without
+# this group, the code as it was, for the A/B and the PSP pair (psp_build.py)
+DEADCODE_INLINE = os.environ.get("PSP_DEADCODE_INLINE", "") == "1"
+FIXES_DEADCHK = {}
+FIXES_DEADCHK["source/objects/objects.c#sleepdbg"] = [
+("""static unsigned long psp_object_checksum(struct object_header_datum const *header)
+{
+	static int psp_checksum_check = -1;
+	static unsigned long psp_checksum_checked = 0, psp_checksum_wrong = 0;
+""", """/* psp_fixups.py (FIXES_DEADCHK): "checksumcheck", each sum compared with
+the reference's, out of line (see there) */
+static void __attribute__((noinline, cold)) psp_checksum_check_sum(struct object_header_datum const *header, unsigned long sum)
+{
+	static unsigned long psp_checksum_checked = 0, psp_checksum_wrong = 0;
+
+	psp_checksum_checked++;
+	if (psp_object_checksum_reference(header) != sum && psp_checksum_wrong++ < 8)
+		platform_psp_log("sleep: the fast checksum differs from the reference for %s (type %d)",
+			tag_get_name(((struct object_datum const *)header->datum)->definition_index), header->type);
+	if (psp_checksum_checked % 100000 == 0)
+		platform_psp_log("sleep: checksumcheck: %lu sums compared, %lu differed", psp_checksum_checked, psp_checksum_wrong);
+}
+
+static unsigned long psp_object_checksum(struct object_header_datum const *header)
+{
+	static int psp_checksum_check = -1;
+"""),
+("""	if (psp_checksum_check)
+	{
+		psp_checksum_checked++;
+		if (psp_object_checksum_reference(header) != sum && psp_checksum_wrong++ < 8)
+			platform_psp_log("sleep: the fast checksum differs from the reference for %s (type %d)",
+				tag_get_name(((struct object_datum const *)header->datum)->definition_index), header->type);
+		if (psp_checksum_checked % 100000 == 0)
+			platform_psp_log("sleep: checksumcheck: %lu sums compared, %lu differed", psp_checksum_checked, psp_checksum_wrong);
+	}
+	return sum;
+""", """	if (psp_checksum_check)
+		psp_checksum_check_sum(header, sum);
+	return sum;
+"""),
+("""/* an object and what it carries (a parked vehicle's own gun, build 41),""", """/* psp_fixups.py (FIXES_DEADCHK): sleepdebug's word on a vehicle that
+carries what keeps it awake, out of line */
+static void __attribute__((noinline, cold)) psp_sleep_debug_carries(struct object_header_datum const *header,
+	struct object_header_datum const *child_header)
+{
+	struct object_datum const *object = header->datum;
+	struct object_datum const *child_object = child_header->datum;
+
+	platform_psp_log("sleep: %s can't sleep: it carries %s (type %d, which itself carries %s)",
+		tag_get_name(object->definition_index), tag_get_name(child_object->definition_index), child_header->type,
+		child_object->object.first_child_object_index != NONE ?
+			tag_get_name(object_get(child_object->object.first_child_object_index)->definition_index) : "nothing");
+}
+
+/* an object and what it carries (a parked vehicle's own gun, build 41),"""),
+("""			if (psp_sleep_debug > 0 && header->type == _object_type_vehicle && game_time_get() > 150 && psp_vehicle_sleep_reports++ < 24)
+				platform_psp_log("sleep: %s can't sleep: it carries %s (type %d, which itself carries %s)",
+					tag_get_name(object->definition_index), tag_get_name(child_object->definition_index), child_header->type,
+					child_object->object.first_child_object_index != NONE ?
+						tag_get_name(object_get(child_object->object.first_child_object_index)->definition_index) : "nothing");
+""", """			if (psp_sleep_debug > 0 && header->type == _object_type_vehicle && game_time_get() > 150 && psp_vehicle_sleep_reports++ < 24)
+				psp_sleep_debug_carries(header, child_header);
+"""),
+("""static void psp_sleepy_update(long object_index, short absolute_index, struct object_header_datum *header, int may_sleep)
+{
+	struct object_datum const *object = header->datum;
+	unsigned long before = 0;
+	int corpse_reported = 0;
+""", """/* psp_fixups.py (FIXES_DEADCHK): psp_sleepy_update's reports, each out of
+line and cold (see there). "flipwatch": the sleep's numbers for a vehicle
+just flipped */
+extern long psp_flipwatch_watched(void); /* psp_watch.c */
+
+static void __attribute__((noinline, cold)) psp_flipwatch_sleep_log(long object_index, short absolute_index,
+	struct object_header_datum *header, int may_sleep, unsigned long before, int unchecked)
+{
+	platform_psp_log("flipwatch: t=%ld sleep check #%08lx: may sleep %d, checksum now %08lx, kept %08lx, quiet %d, "
+		"same object %d -> %s", game_time_get(), (unsigned long)object_index, may_sleep, before,
+		psp_sleep[absolute_index].checksum, psp_sleep[absolute_index].quiet,
+		psp_sleep[absolute_index].identifier == header->identifier ? 1 : 0,
+		unchecked || (psp_sleep[absolute_index].identifier == header->identifier &&
+			psp_sleep[absolute_index].quiet >= 2 && psp_sleep[absolute_index].checksum == before) ? "ASLEEP" : "updates");
+}
+
+/* sleepdebug: the watched vehicle's words between its ticks */
+static void __attribute__((noinline, cold)) psp_sleep_debug_between(short absolute_index, struct object_header_datum *header,
+	unsigned long before)
+{
+	struct object_datum const *object = header->datum;
+
+	/* what changed since the last tick's end, outside the update */
+	long count = (header->data_size < 2560 ? header->data_size : 2560) / 4, w;
+
+	if (between_index == absolute_index && between_identifier == header->identifier)
+	{
+		for (w = 0; w < count; w++)
+			if (between[w] != ((unsigned long const *)header->datum)[w] && w != 2 && psp_vehicle_sleep_reports++ < 40)
+				platform_psp_log("sleep: %s changed between ticks: word %ld (byte %ld) %08lx -> %08lx (quiet %d, checksum %s)",
+					tag_get_name(object->definition_index), w, w * 4, between[w], ((unsigned long const *)header->datum)[w],
+					psp_sleep[absolute_index].quiet, psp_sleep[absolute_index].checksum == before ? "same" : "differs");
+	}
+	else if (between_index < 0)
+	{
+		between_index = absolute_index;
+		between_identifier = header->identifier;
+	}
+}
+
+/* itemsleepcheck: a sleeping weapon or item updated as if awake, and a change
+the sleep would have missed logged */
+static void __attribute__((noinline, cold)) psp_item_sleep_check_update(long object_index, struct object_header_datum *header,
+	unsigned long before)
+{
+	struct object_datum *sleeper = (struct object_datum *)header->datum;
+
+	/* itemsleepcheck: the update runs as if awake (so the run
+	plays as "itemsawake" would, garbage counted by the update
+	itself), and a sleeper it changed is logged */
+	unsigned long after;
+	/* the whole datum (but the render mark and a carried weapon's
+	stamp, which the rule never compares) as sleeping would leave
+	it, functions included, against what the update makes of it
+	(psp_fixups.py FIXES_123L) */
+	static unsigned long copy[512], asleep[512];
+	long count = (header->data_size < 2048 ? header->data_size : 2048) / 4, word, first = -1;
+
+	csmemcpy(copy, header->datum, count * 4);
+	if (psp_sleeper_computes_functions(header))
+	{
+		psp_sleeper_functions(object_index);
+		csmemcpy(asleep, header->datum, count * 4);
+		csmemcpy(header->datum, copy, count * 4);
+	}
+	else
+		csmemcpy(asleep, copy, count * 4);
+	object_update(object_index);
+	after = psp_family_checksum(header);
+	psp_items_sleep_checked++;
+	for (word = 0; word < count && first < 0; word++)
+		if (word != 2 && word != 0x1B4 / 4 && asleep[word] != ((unsigned long const *)header->datum)[word])
+			first = word;
+	/* a checksum that moved while sleeping would leave the datum
+	as the update makes it is a wake, not a change: the sleeping
+	path's own functions (functions_active_flags, which the
+	checksum compares, flips as a function crosses its bound), or
+	its tracked object or what it carries. Only a datum that
+	sleeping would leave otherwise counts as changed */
+	static unsigned long woken_functions = 0, woken_outside = 0;
+
+	if (first >= 0)
+	{
+		if (psp_items_sleep_wrong++ < 8)
+		{
+			long shown = 0;
+
+			platform_psp_log("sleep: itemsleepcheck: %s changed while asleep (t=%ld, checksum %08lx -> %08lx)",
+				tag_get_name(sleeper->definition_index), game_time_get(), before, after);
+			for (word = 0; word < count && shown < 12; word++)
+				if (word != 2 && word != 0x1B4 / 4 && asleep[word] != ((unsigned long const *)header->datum)[word])
+				{
+					platform_psp_log("sleep: itemsleepcheck:   word %ld (byte 0x%lx) asleep %08lx, updated %08lx",
+						word, word * 4, asleep[word], ((unsigned long const *)header->datum)[word]);
+					shown++;
+				}
+		}
+	}
+	else if (after != before)
+	{
+		struct psp_checksum_rules rules;
+		long moved = -1;
+
+		psp_checksum_rules_for(header, &rules);
+		for (word = 0; word < count && moved < 0; word++)
+			if (psp_checksum_word(&rules, word, copy[word]) !=
+				psp_checksum_word(&rules, word, ((unsigned long const *)header->datum)[word]))
+				moved = word;
+		if (moved >= 0)
+			woken_functions++;
+		else
+			woken_outside++;
+		if (woken_functions + woken_outside <= 4)
+			platform_psp_log("sleep: itemsleepcheck: %s woken, not changed (t=%ld): %s%s", tag_get_name(sleeper->definition_index),
+				game_time_get(), moved >= 0 ? "a compared word its sleeping functions also make, word " : "its tracked object or what it carries",
+				moved >= 0 ? (moved == (long)(offsetof(struct object_datum, object.functions_active_flags) / 4) ? "functions_active_flags" : "other") : "");
+	}
+	if (psp_items_sleep_checked % 30000 == 0)
+		platform_psp_log("sleep: itemsleepcheck: %lu sleeper updates, %lu changed one; woken, not changed: %lu by its own functions, %lu by its tracked object or what it carries",
+			psp_items_sleep_checked, psp_items_sleep_wrong, woken_functions, woken_outside);
+}
+
+/* sleepdebug: an awake object updated with what its update changed reported
+(a corpse's compared words, a vehicle's or what it carries) */
+static void __attribute__((noinline, cold)) psp_sleep_debug_update(long object_index, short absolute_index,
+	struct object_header_datum *header, int may_sleep, unsigned long before)
+{
+	struct object_datum const *object = header->datum;
+	int corpse_reported = 0;
+
+	if (psp_sleep_debug && header->type == _object_type_biped && may_sleep && game_time_get() > 150)
+	{
+		/* a corpse that stays awake: every word its update
+		changed that the checksum compares (one try in 300, 12 at most) */
+		static int biped_reports = 0;
+		static long biped_tries = 0;
+
+		if (biped_reports < 12 && biped_tries++ % 300 == 0)
+		{
+			static unsigned long copy[512];
+			long count = (header->data_size < 2048 ? header->data_size : 2048) / 4, word, shown = 0;
+			unsigned long after_sum;
+
+			struct psp_checksum_rules rules;
+
+			csmemcpy(copy, header->datum, count * 4);
+			object_update(object_index);
+			after_sum = psp_object_checksum(header);
+			psp_checksum_rules_for(header, &rules);
+			biped_reports++;
+			for (word = 0; word < count && shown < 24; word++)
+				if (psp_checksum_word(&rules, word, copy[word]) != psp_checksum_word(&rules, word, ((unsigned long const *)header->datum)[word]))
+				{
+					platform_psp_log("sleep: corpse %s word %ld (byte %ld) of %d changed, %08lx -> %08lx",
+						tag_get_name(object->definition_index), word, word * 4, header->data_size,
+						copy[word], ((unsigned long const *)header->datum)[word]);
+					shown++;
+				}
+			platform_psp_log("sleep: corpse %s: %ld changed words shown, checksum %s (quiet %d)", tag_get_name(object->definition_index),
+				shown, after_sum == before ? "same" : "differs", psp_sleep[absolute_index].quiet);
+			corpse_reported = 1;
+		}
+	}
+	if (corpse_reported)
+		; /* updated above */
+	else if (psp_sleep_debug && (header->type == _object_type_vehicle ? (game_time_get() > 150 && psp_vehicle_sleep_reports++ < 24) : psp_sleep_reports < 12))
+	{
+		static unsigned long copy[512];
+		long count = (header->data_size < 2048 ? header->data_size : 2048) / 4, word;
+
+		static unsigned long child_copy[512];
+		long child_count = 0, child_index = object->object.first_child_object_index;
+
+		if (header->type == _object_type_vehicle && child_index != NONE)
+		{
+			struct object_header_datum const *child_header = object_header_get(child_index);
+
+			child_count = (child_header->data_size < 2048 ? child_header->data_size : 2048) / 4;
+			csmemcpy(child_copy, child_header->datum, child_count * 4);
+		}
+		csmemcpy(copy, header->datum, count * 4);
+		object_update(object_index);
+		if (child_count)
+		{
+			struct object_header_datum const *child_header = object_header_get(child_index);
+			long w;
+
+			for (w = 0; w < child_count; w++)
+				if (child_copy[w] != ((unsigned long const *)child_header->datum)[w] &&
+					!(child_header->type == _object_type_weapon && w == 0x1B4 / 4))
+				{
+					platform_psp_log("sleep: %s's child word %ld (byte %ld) of %d changed, %08lx -> %08lx",
+						tag_get_name(object->definition_index), w, w * 4, child_header->data_size, child_copy[w],
+						((unsigned long const *)child_header->datum)[w]);
+					break;
+				}
+		}
+		for (word = 0; word < count; word++)
+		{
+			if (copy[word] != ((unsigned long const *)header->datum)[word] && word != 2 && word != (header->type == _object_type_vehicle ? 0x1BC / 4 : -1))
+			{
+				if (game_time_get() > 150 && (psp_sleep_reports++ & 0) == 0)
+					platform_psp_log("sleep: %s stays awake: word %ld (byte %ld) of %d changed, %08lx -> %08lx",
+						tag_get_name(object->definition_index), word, word * 4, header->data_size,
+						copy[word], ((unsigned long const *)header->datum)[word]);
+				break;
+			}
+		}
+		if (word == count && header->type == _object_type_vehicle)
+		{
+			/* the vehicle itself held still: what it carries moved */
+			long child = object->object.first_child_object_index;
+
+			while (child != NONE)
+			{
+				struct object_header_datum const *child_header = object_header_get(child);
+				struct object_datum const *child_object = child_header->datum;
+				static unsigned long child_sum[64];
+				int slot = child & 63;
+				unsigned long sum = psp_object_checksum(child_header);
+
+				if (child_sum[slot] && child_sum[slot] != sum)
+					platform_psp_log("sleep: %s stays awake: its %s (type %d) changed", tag_get_name(object->definition_index),
+						tag_get_name(child_object->definition_index), child_header->type);
+				child_sum[slot] = sum;
+				child = child_object->object.next_object_index;
+			}
+		}
+	}
+	else
+		object_update(object_index);
+}
+
+static void psp_sleepy_update(long object_index, short absolute_index, struct object_header_datum *header, int may_sleep)
+{
+	struct object_datum const *object = header->datum;
+	unsigned long before = 0;
+"""),
+("""	{
+		/* build 113: flipwatch, the sleep's own numbers for a vehicle just
+		flipped (psp_watch.c): why b113's first fixture runs saw it stay
+		asleep after its upending flag was set */
+		extern long psp_flipwatch_watched(void);
+
+		if (object_index == psp_flipwatch_watched())
+			platform_psp_log("flipwatch: t=%ld sleep check #%08lx: may sleep %d, checksum now %08lx, kept %08lx, quiet %d, "
+				"same object %d -> %s", game_time_get(), (unsigned long)object_index, may_sleep, before,
+				psp_sleep[absolute_index].checksum, psp_sleep[absolute_index].quiet,
+				psp_sleep[absolute_index].identifier == header->identifier ? 1 : 0,
+				unchecked || (psp_sleep[absolute_index].identifier == header->identifier &&
+					psp_sleep[absolute_index].quiet >= 2 && psp_sleep[absolute_index].checksum == before) ? "ASLEEP" : "updates");
+	}
+""", """	if (object_index == psp_flipwatch_watched())
+		psp_flipwatch_sleep_log(object_index, absolute_index, header, may_sleep, before, unchecked);
+"""),
+("""	{
+		/* what changed since the last tick's end, outside the update */
+		long count = (header->data_size < 2560 ? header->data_size : 2560) / 4, w;
+
+		if (between_index == absolute_index && between_identifier == header->identifier)
+		{
+			for (w = 0; w < count; w++)
+				if (between[w] != ((unsigned long const *)header->datum)[w] && w != 2 && psp_vehicle_sleep_reports++ < 40)
+					platform_psp_log("sleep: %s changed between ticks: word %ld (byte %ld) %08lx -> %08lx (quiet %d, checksum %s)",
+						tag_get_name(object->definition_index), w, w * 4, between[w], ((unsigned long const *)header->datum)[w],
+						psp_sleep[absolute_index].quiet, psp_sleep[absolute_index].checksum == before ? "same" : "differs");
+		}
+		else if (between_index < 0)
+		{
+			between_index = absolute_index;
+			between_identifier = header->identifier;
+		}
+	}
+	if (unchecked || (psp_sleep""", """		psp_sleep_debug_between(absolute_index, header, before);
+	if (unchecked || (psp_sleep"""),
+("""			if (psp_item_sleep_check > 0)
+			{
+				/* itemsleepcheck: the update runs as if awake (so the run
+				plays as "itemsawake" would, garbage counted by the update
+				itself), and a sleeper it changed is logged */
+				unsigned long after;
+				/* the whole datum (but the render mark and a carried weapon's
+				stamp, which the rule never compares) as sleeping would leave
+				it, functions included, against what the update makes of it
+				(psp_fixups.py FIXES_123L) */
+				static unsigned long copy[512], asleep[512];
+				long count = (header->data_size < 2048 ? header->data_size : 2048) / 4, word, first = -1;
+
+				csmemcpy(copy, header->datum, count * 4);
+				if (psp_sleeper_computes_functions(header))
+				{
+					psp_sleeper_functions(object_index);
+					csmemcpy(asleep, header->datum, count * 4);
+					csmemcpy(header->datum, copy, count * 4);
+				}
+				else
+					csmemcpy(asleep, copy, count * 4);
+				object_update(object_index);
+				after = psp_family_checksum(header);
+				psp_items_sleep_checked++;
+				for (word = 0; word < count && first < 0; word++)
+					if (word != 2 && word != 0x1B4 / 4 && asleep[word] != ((unsigned long const *)header->datum)[word])
+						first = word;
+				/* a checksum that moved while sleeping would leave the datum
+				as the update makes it is a wake, not a change: the sleeping
+				path's own functions (functions_active_flags, which the
+				checksum compares, flips as a function crosses its bound), or
+				its tracked object or what it carries. Only a datum that
+				sleeping would leave otherwise counts as changed */
+				static unsigned long woken_functions = 0, woken_outside = 0;
+
+				if (first >= 0)
+				{
+					if (psp_items_sleep_wrong++ < 8)
+					{
+						long shown = 0;
+
+						platform_psp_log("sleep: itemsleepcheck: %s changed while asleep (t=%ld, checksum %08lx -> %08lx)",
+							tag_get_name(sleeper->definition_index), game_time_get(), before, after);
+						for (word = 0; word < count && shown < 12; word++)
+							if (word != 2 && word != 0x1B4 / 4 && asleep[word] != ((unsigned long const *)header->datum)[word])
+							{
+								platform_psp_log("sleep: itemsleepcheck:   word %ld (byte 0x%lx) asleep %08lx, updated %08lx",
+									word, word * 4, asleep[word], ((unsigned long const *)header->datum)[word]);
+								shown++;
+							}
+					}
+				}
+				else if (after != before)
+				{
+					struct psp_checksum_rules rules;
+					long moved = -1;
+
+					psp_checksum_rules_for(header, &rules);
+					for (word = 0; word < count && moved < 0; word++)
+						if (psp_checksum_word(&rules, word, copy[word]) !=
+							psp_checksum_word(&rules, word, ((unsigned long const *)header->datum)[word]))
+							moved = word;
+					if (moved >= 0)
+						woken_functions++;
+					else
+						woken_outside++;
+					if (woken_functions + woken_outside <= 4)
+						platform_psp_log("sleep: itemsleepcheck: %s woken, not changed (t=%ld): %s%s", tag_get_name(sleeper->definition_index),
+							game_time_get(), moved >= 0 ? "a compared word its sleeping functions also make, word " : "its tracked object or what it carries",
+							moved >= 0 ? (moved == (long)(offsetof(struct object_datum, object.functions_active_flags) / 4) ? "functions_active_flags" : "other") : "");
+				}
+				if (psp_items_sleep_checked % 30000 == 0)
+					platform_psp_log("sleep: itemsleepcheck: %lu sleeper updates, %lu changed one; woken, not changed: %lu by its own functions, %lu by its tracked object or what it carries",
+						psp_items_sleep_checked, psp_items_sleep_wrong, woken_functions, woken_outside);
+				return;
+			}
+""", """			if (psp_item_sleep_check > 0)
+			{
+				psp_item_sleep_check_update(object_index, header, before);
+				return;
+			}
+"""),
+("""	if (psp_sleep_debug < 0)
+		psp_sleep_debug = psp_keep("sleepdebug");
+	if (psp_sleep_debug && header->type == _object_type_biped && may_sleep && game_time_get() > 150)
+	{
+		/* build 106: a corpse that stays awake: every word its update
+		changed that the checksum compares (one try in 300, 12 at most) */
+		static int biped_reports = 0;
+		static long biped_tries = 0;
+
+		if (biped_reports < 12 && biped_tries++ % 300 == 0)
+		{
+			static unsigned long copy[512];
+			long count = (header->data_size < 2048 ? header->data_size : 2048) / 4, word, shown = 0;
+			unsigned long after_sum;
+
+			struct psp_checksum_rules rules;
+
+			csmemcpy(copy, header->datum, count * 4);
+			object_update(object_index);
+			after_sum = psp_object_checksum(header);
+			psp_checksum_rules_for(header, &rules);
+			biped_reports++;
+			for (word = 0; word < count && shown < 24; word++)
+				if (psp_checksum_word(&rules, word, copy[word]) != psp_checksum_word(&rules, word, ((unsigned long const *)header->datum)[word]))
+				{
+					platform_psp_log("sleep: corpse %s word %ld (byte %ld) of %d changed, %08lx -> %08lx",
+						tag_get_name(object->definition_index), word, word * 4, header->data_size,
+						copy[word], ((unsigned long const *)header->datum)[word]);
+					shown++;
+				}
+			platform_psp_log("sleep: corpse %s: %ld changed words shown, checksum %s (quiet %d)", tag_get_name(object->definition_index),
+				shown, after_sum == before ? "same" : "differs", psp_sleep[absolute_index].quiet);
+			corpse_reported = 1;
+		}
+	}
+	if (corpse_reported)
+		; /* updated above */
+	else if (psp_sleep_debug && (header->type == _object_type_vehicle ? (game_time_get() > 150 && psp_vehicle_sleep_reports++ < 24) : psp_sleep_reports < 12))
+	{
+		static unsigned long copy[512];
+		long count = (header->data_size < 2048 ? header->data_size : 2048) / 4, word;
+
+		static unsigned long child_copy[512];
+		long child_count = 0, child_index = object->object.first_child_object_index;
+
+		if (header->type == _object_type_vehicle && child_index != NONE)
+		{
+			struct object_header_datum const *child_header = object_header_get(child_index);
+
+			child_count = (child_header->data_size < 2048 ? child_header->data_size : 2048) / 4;
+			csmemcpy(child_copy, child_header->datum, child_count * 4);
+		}
+		csmemcpy(copy, header->datum, count * 4);
+		object_update(object_index);
+		if (child_count)
+		{
+			struct object_header_datum const *child_header = object_header_get(child_index);
+			long w;
+
+			for (w = 0; w < child_count; w++)
+				if (child_copy[w] != ((unsigned long const *)child_header->datum)[w] &&
+					!(child_header->type == _object_type_weapon && w == 0x1B4 / 4))
+				{
+					platform_psp_log("sleep: %s's child word %ld (byte %ld) of %d changed, %08lx -> %08lx",
+						tag_get_name(object->definition_index), w, w * 4, child_header->data_size, child_copy[w],
+						((unsigned long const *)child_header->datum)[w]);
+					break;
+				}
+		}
+		for (word = 0; word < count; word++)
+		{
+			if (copy[word] != ((unsigned long const *)header->datum)[word] && word != 2 && word != (header->type == _object_type_vehicle ? 0x1BC / 4 : -1))
+			{
+				if (game_time_get() > 150 && (psp_sleep_reports++ & 0) == 0)
+					platform_psp_log("sleep: %s stays awake: word %ld (byte %ld) of %d changed, %08lx -> %08lx",
+						tag_get_name(object->definition_index), word, word * 4, header->data_size,
+						copy[word], ((unsigned long const *)header->datum)[word]);
+				break;
+			}
+		}
+		if (word == count && header->type == _object_type_vehicle)
+		{
+			/* the vehicle itself held still: what it carries moved */
+			long child = object->object.first_child_object_index;
+
+			while (child != NONE)
+			{
+				struct object_header_datum const *child_header = object_header_get(child);
+				struct object_datum const *child_object = child_header->datum;
+				static unsigned long child_sum[64];
+				int slot = child & 63;
+				unsigned long sum = psp_object_checksum(child_header);
+
+				if (child_sum[slot] && child_sum[slot] != sum)
+					platform_psp_log("sleep: %s stays awake: its %s (type %d) changed", tag_get_name(object->definition_index),
+						tag_get_name(child_object->definition_index), child_header->type);
+				child_sum[slot] = sum;
+				child = child_object->object.next_object_index;
+			}
+		}
+	}
+	else
+		object_update(object_index);
+""", """	if (psp_sleep_debug < 0)
+		psp_sleep_debug = psp_keep("sleepdebug");
+	if (psp_sleep_debug)
+		psp_sleep_debug_update(object_index, absolute_index, header, may_sleep, before);
+	else
+		object_update(object_index);
+"""),
+]
+FIXES_DEADCHK["source/physics/collision_usage.h#collusage"] = [
+("""void collision_log_end_period(
+	void);
+""", """void collision_log_end_period(
+	void);
+
+/* psp_fixups.py (FIXES_DEADCHK): without the debug tools these three are
+empty (FIXES_106), so their calls in the collision tests go too, arguments
+unevaluated; collision_usage.c still defines them */
+#if defined(HALO_PSP) && !defined(PSP_DEBUG_TOOLS) && !defined(PSP_COLLISION_USAGE_DEFINES)
+#define collision_log_start_time(start_time) ((void)0)
+#define collision_log_end_time(collision_function, start_time) ((void)0)
+#define collision_log_usage(collision_function) ((void)0)
+#endif
+"""),
+]
+FIXES_DEADCHK["source/physics/collision_usage.c#collusage"] = [
+("""#include "collision_debug.h"
+#include "collision_usage.h"
+""", """#include "collision_debug.h"
+/* psp_fixups.py (FIXES_DEADCHK): the functions themselves, not the header's
+empty macros */
+#define PSP_COLLISION_USAGE_DEFINES 1
+#include "collision_usage.h"
+"""),
+]
+
+
 # ---------- FIXES_GSCHECK: the tick's two game-state checks, off by default (lever GSCHECK)
 # game_state_check_data_arrays walks every game-state allocation twice a tick
 # to report a data array gone out of order (NATIVE-7's corruption): on a
@@ -37258,7 +37839,7 @@ void game_tick(
 ]
 
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + list(FIXES_GSCHECK.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + list(FIXES_GSCHECK.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
