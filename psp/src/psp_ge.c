@@ -24865,8 +24865,9 @@ the frame's visibility to its first reader (render.c: 0 before
 structure_visibility_compute, 1 after it, 2 before lights_preprocess_scene),
 split into visibility itself, the waits this layer times inside the span
 (the ME's frame out, the forwarding thread's show, the GE's end of a frame
-shown here) and the rest. Visibility on the ME would overlap the span's
-waits on the GE and its work, not its wait on the ME */
+shown by this thread: under geshow2 the forwarding thread waits for it, and
+those waits aren't this thread's) and the rest. Visibility on the ME would
+overlap the span's waits on the GE and its work, not its wait on the ME */
 void psp_ge_visspan(int phase)
 {
 	static int on = -1;
@@ -24899,7 +24900,8 @@ void psp_ge_visspan(int phase)
 	span_us += now - mark;
 	me_us += me_overlap_wait_us - me0;
 	show_us += show - show0;
-	ge_us += ge_wait_us - ge0;
+	if (show2_on <= 0 || inflight_thread < 0)
+		ge_us += ge_wait_us - ge0;
 	if (++frames < 150)
 		return;
 	platform_log("GE: visspan: %u frames: visibility to its first reader %.2f ms a frame: visibility %.2f, waiting on the ME's frame %.2f, "
