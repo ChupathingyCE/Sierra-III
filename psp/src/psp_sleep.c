@@ -64,7 +64,7 @@ enum { SLEEP_IDLE, SLEEP_ASKED, SLEEP_TAKEN, SLEEP_PARKED };
 static PSP_MAIN_SIDE volatile int sleep_state = SLEEP_IDLE;
 /* set by the game thread for as long as it waits for the wake, whatever the
 handshake's state: a wake releases it even after a second ask or the old
-way (Sheepdog01's fourth sleep, 2026-10-29: a second slide while it waited) */
+way (a second slide of the switch while the first sleep was still waiting) */
 static PSP_MAIN_SIDE volatile int game_parked = 0;
 static PSP_MAIN_SIDE int dry_double = 0;
 static PSP_MAIN_SIDE int ready = 0, flags_logged = 0, stall_report = 1;

@@ -119,9 +119,11 @@ TEXPACK_OPTIONS = []
 # --slim-level: the level's rendered vertices without the binormal and tangent
 # the port never reads (tools/levelslim.py)
 LEVEL_SLIM = False
-# --preconvert: the models' vertex buffers also in the GE's form, past the
-# pack's data, so the port converts none at run time (tools/modelconvert.py)
-PRECONVERT = False
+# the models' vertex buffers also in the GE's form, past the pack's data, so
+# the port converts none at run time (tools/modelconvert.py): on by default,
+# since converting while drawing dropped a frame at b30's start (B8);
+# --no-preconvert leaves it out
+PRECONVERT = True
 ATRACDENC = os.path.join(HERE, 'atracdenc')    # the bundled encoder (else atracdenc on PATH)
 sys.path.insert(0, HERE)
 from xiso import XIso
@@ -765,9 +767,11 @@ def main():
     # --no-exact-clut: the same, for option checks that take letters only
     ap.add_argument('--no-clut4-exact', '--no-exact-clut', dest='no_clut4_exact', action='store_true',
                     help='leave at 8 bits the textures of 16 colours or fewer that 4 bits would draw the same')
-    ap.add_argument('--preconvert', action='store_true',
+    ap.add_argument('--preconvert', dest='preconvert', action='store_true', default=True,
                     help="the models' vertex buffers also in the GE's own form, so the port converts none as it "
-                         'draws (exact; the geometry pack grows by about the model vertices)')
+                         'draws (exact; the geometry pack grows by about the model vertices); the default')
+    ap.add_argument('--no-preconvert', dest='preconvert', action='store_false',
+                    help='leave the conversions to the port at run time (smaller packs; b30 drops a frame at its start)')
     ap.add_argument('--slim-level', action='store_true',
                     help="the level's rendered vertices without the binormal and tangent the port never reads "
                          '(24 bytes a vertex in the geometry pack instead of 32; exact)')
