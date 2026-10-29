@@ -38072,16 +38072,23 @@ MEVIS_HEAD = r"""
 #define psp_mv_debug_line(...) ((void)0)
 #define psp_mv_debug_cluster(...) 0 /* (ai_debug_highlight_cluster: never, here) */
 /* the most clusters deep the ME's portal walk goes (each level ~4.3 KB of
-the copy's stack, PSP_MV_STACK); deeper, the walk stops there, counted */
-#define PSP_MV_DEPTH 32
-#define PSP_MV_STACK (160 * 1024)
+the copy's stack, PSP_MV_STACK); deeper, the walk stops there, counted, and
+mevisland makes that frame's visibility on the main CPU instead. The deepest
+walk measured is 12 clusters (b30; c20 5: mevis on the PSP), so 16 holds it
+with room, on a stack half the size 32 needed (the heap is what the level's
+copies and the textures live on) */
+#define PSP_MV_DEPTH 16
+#define PSP_MV_STACK (96 * 1024)
+/* the stack's lowest words, set at its allocation and checked after each
+walk: a walk that ran past its stack is reported, and its answer not used */
+#define PSP_MV_CANARY_WORDS 64
+#define PSP_MV_CANARY 0x5A5AA5A5u
 void psp_me_ring_step(unsigned int step); /* psp_me.c: an audio block waiting is mixed */
 
 /* the copies' state: written only by the ME (the main CPU clears it once, at
 its allocation), on 64-byte lines of its own */
 struct psp_mv_state
 {
-	struct render_globals render;
 	struct structure_visibility_globals svg;
 	__typeof__(psp_hull_cache) hull_cache;
 	unsigned long walk_id, counter, too_deep;
@@ -38091,10 +38098,16 @@ struct psp_mv_state
 	short depth, depth_most;
 	unsigned long object_marks[(MAXIMUM_OBJECTS_PER_MAP + 31) / 32];
 	long objects[MAXIMUM_RENDERED_OBJECTS];
+	/* last, so the block can end before the render globals' surface index
+	list (64 KB), which the PSP's walk never writes and nothing here reads */
+	struct render_globals render;
 } __attribute__((aligned(64)));
+#define PSP_MV_RENDER_BYTES offsetof(struct render_globals, environment_surface_indices)
+#define PSP_MV_STATE_BYTES ((offsetof(struct psp_mv_state, render) + PSP_MV_RENDER_BYTES + 63) & ~63u)
 /* set once by the main CPU before the first job; the ME only reads them */
 static struct psp_mv_state *psp_mv;
 static void *psp_mv_stack_top;
+static unsigned int *psp_mv_stack_bottom;
 
 static void psp_mv_error(long priority, char const *format, ...)
 {
@@ -38273,10 +38286,19 @@ void psp_mevis_me_job(const unsigned int *args, unsigned int *results)
 	struct psp_mv_record *record = (struct psp_mv_record *)args[0];
 	unsigned int control = record->fpu_control, saved;
 
+	unsigned int k;
+
 	__asm__ __volatile__("cfc1 %0, $31" : "=r"(saved));
 	__asm__ __volatile__("ctc1 %0, $31" : : "r"(control));
 	psp_mv_call_on(psp_mv_run, record, psp_mv_stack_top);
 	__asm__ __volatile__("ctc1 %0, $31" : : "r"(saved));
+	for (k = 0; k < PSP_MV_CANARY_WORDS; k++)
+		if (psp_mv_stack_bottom[k] != PSP_MV_CANARY)
+		{
+			record->done = 0;
+			record->pad_out[0] = 1;
+			break;
+		}
 	results[0] = 1;
 }
 
@@ -38306,7 +38328,7 @@ static unsigned long psp_mv_differ_parts[4], psp_mv_differ_lines;
 
 static int psp_mv_start(void)
 {
-	unsigned int state_bytes = (sizeof(struct psp_mv_state) + 63) & ~63u;
+	unsigned int state_bytes = PSP_MV_STATE_BYTES, k;
 	void *stack;
 
 	psp_mv = (struct psp_mv_state *)memalign(64, state_bytes);
@@ -38321,6 +38343,9 @@ static int psp_mv_start(void)
 	csmemset(psp_mv, 0, state_bytes);
 	csmemset(psp_mv_record, 0, sizeof(*psp_mv_record));
 	psp_mv_stack_top = (char *)stack + PSP_MV_STACK;
+	psp_mv_stack_bottom = (unsigned int *)stack;
+	for (k = 0; k < PSP_MV_CANARY_WORDS; k++)
+		psp_mv_stack_bottom[k] = PSP_MV_CANARY;
 	platform_psp_log("mevis: the frame's visibility again on the ME, timed and checked (%u KB state, %u KB stack, %d clusters deep at most)",
 		state_bytes / 1024, PSP_MV_STACK / 1024, PSP_MV_DEPTH);
 	return 1;
@@ -38468,7 +38493,8 @@ has the main CPU make its own visibility there: the safety net, as before */
 #define PSP_ML_LATE_US 50000
 int psp_me_push_visibility_into(void *record, void *answer, unsigned int answer_bytes, unsigned int *ticket); /* psp_me.c */
 
-static int psp_ml_on = -1, psp_ml_check = 0, psp_ml_out = 0, psp_ml_waiting = 0, psp_ml_objects_ready = 0;
+static int psp_ml_on = -1, psp_ml_check = 0, psp_ml_out = 0, psp_ml_waiting = 0, psp_ml_objects_ready = 0, psp_ml_overran = 0;
+static unsigned long psp_ml_depth_most = 0, psp_ml_too_deep = 0;
 static unsigned int psp_ml_ticket, psp_ml_state_bytes;
 static unsigned long psp_ml_views, psp_ml_used, psp_ml_refused, psp_ml_busy, psp_ml_late, psp_ml_failed, psp_ml_wait_us,
 	psp_ml_wait_worst, psp_ml_waited, psp_ml_differ_clusters, psp_ml_differ_objects;
@@ -38493,12 +38519,12 @@ int psp_mevisland_push(void)
 	{
 		psp_ml_on = psp_keep("mevisland") ? (psp_mv != NULL || psp_mv_start()) : 0;
 		psp_ml_check = psp_ml_on && psp_keep("mevislandcheck");
-		psp_ml_state_bytes = (sizeof(struct psp_mv_state) + 63) & ~63u;
+		psp_ml_state_bytes = PSP_MV_STATE_BYTES;
 		if (psp_ml_on)
 			platform_psp_log("mevisland: the frame's visibility made on the ME and used%s",
 				psp_ml_check ? "; mevislandcheck: the main CPU makes its own too, and the two are compared" : "");
 	}
-	if (!psp_ml_on)
+	if (!psp_ml_on || psp_ml_overran)
 		return 0;
 	psp_ml_views++;
 	if (psp_ml_out)
@@ -38559,14 +38585,25 @@ void psp_mevisland_collect(void)
 	}
 	psp_ml_out = 0;
 	psp_ml_drop(psp_mv_record, sizeof(*psp_mv_record));
-	if (!psp_mv_record->done)
+	if (psp_mv_record->depth_most > psp_ml_depth_most)
+		psp_ml_depth_most = psp_mv_record->depth_most;
+	if (!psp_mv_record->done || psp_mv_record->too_deep)
 	{
+		/* a walk cut at PSP_MV_DEPTH, or one that ran past its stack: not
+		the main CPU's answer */
 		psp_ml_failed++;
+		psp_ml_too_deep += psp_mv_record->too_deep != 0;
+		if (psp_mv_record->pad_out[0] && !psp_ml_overran)
+		{
+			psp_ml_overran = 1;
+			platform_psp_log("mevisland: the ME's walk ran past its %u KB stack; its answers are made here from now on",
+				PSP_MV_STACK / 1024);
+		}
 		structure_visibility_compute();
 		return;
 	}
 	structure = global_structure_bsp_get();
-	psp_ml_drop(&psp_mv->render, sizeof(psp_mv->render));
+	psp_ml_drop(&psp_mv->render, PSP_MV_RENDER_BYTES);
 	psp_ml_drop(psp_mv->objects, sizeof(psp_mv->objects));
 	if (psp_ml_check)
 	{
@@ -38637,14 +38674,15 @@ void psp_mevisland_settle(void)
 	psp_ml_objects_ready = 0;
 	if (psp_ml_views >= 300)
 	{
-		platform_psp_log("mevisland: %lu views: the ME's answer used %lu; made here instead: refused by the ring %lu, the ME still on an earlier one %lu, late %lu, failed %lu; waited at the first reader %.2f ms a view (%lu views waited, the most %.2f ms) (last 300 views)",
-			psp_ml_views, psp_ml_used, psp_ml_refused, psp_ml_busy, psp_ml_late, psp_ml_failed,
-			psp_ml_wait_us / 1000.0 / psp_ml_views, psp_ml_waited, psp_ml_wait_worst / 1000.0);
+		platform_psp_log("mevisland: %lu views: the ME's answer used %lu; made here instead: refused by the ring %lu, the ME still on an earlier one %lu, late %lu, failed %lu (%lu cut at %d clusters deep); waited at the first reader %.2f ms a view (%lu views waited, the most %.2f ms); the deepest walk %lu clusters (last 300 views)",
+			psp_ml_views, psp_ml_used, psp_ml_refused, psp_ml_busy, psp_ml_late, psp_ml_failed, psp_ml_too_deep, PSP_MV_DEPTH,
+			psp_ml_wait_us / 1000.0 / psp_ml_views, psp_ml_waited, psp_ml_wait_worst / 1000.0, psp_ml_depth_most);
 		if (psp_ml_check)
 			platform_psp_log("mevislandcheck: differing from the main CPU's own: clusters %lu, objects %lu (last 300 views)",
 				psp_ml_differ_clusters, psp_ml_differ_objects);
 		psp_ml_views = psp_ml_used = psp_ml_refused = psp_ml_busy = psp_ml_late = psp_ml_failed = 0;
 		psp_ml_wait_us = psp_ml_wait_worst = psp_ml_waited = psp_ml_differ_clusters = psp_ml_differ_objects = 0;
+		psp_ml_depth_most = psp_ml_too_deep = 0;
 	}
 }
 """
