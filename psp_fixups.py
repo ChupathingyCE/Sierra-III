@@ -38171,12 +38171,12 @@ FIXES_ACCLEAF["source/memory/data.c#accleaf"] = [
 # On the busy stretches a frame runs two ticks and draws only the second.
 # effects_update runs every tick, and most of its work there is each effect's
 # fixed cost (the object's pose and function values, the visibility test, the
-# walk of its particle blocks) while it sits inside an event's duration making
-# particles. With "fx15", on the first tick of a frame's pair such an effect
-# leaves its step to the second, which steps it by both ticks: the event's
-# clock and its particle counts come out the same (the count is an integral of
-# the event's fraction), only the first tick's particles are made a tick later,
-# at the second tick's place. Whatever the simulation or the AI can see steps
+# walk of its particle blocks), whether it is waiting out an event's delay or
+# inside the event's duration making particles. With "fx15", on the first tick
+# of a frame's pair such an effect leaves its step to the second, which steps
+# it by both ticks: the event's clock and its particle counts come out the
+# same (the count is an integral of the event's fraction), only the first
+# tick's particles are made a tick later, at the second tick's place. Whatever the simulation or the AI can see steps
 # every tick: an event that ends on the first tick (its parts: sounds, lights,
 # damage, objects, and the next event's start), a stopped effect (it restarts
 # or goes), effects that make objects, lights or damage (the "must be
@@ -38265,7 +38265,7 @@ static int psp_fx15_reason(
 		return 4;
 	if (effect->local_player_index != NONE)
 		return 5;
-	if (!TEST_FLAG(flags, _effect_in_duration_bit) || TEST_FLAG(flags, _effect_stopped_bit))
+	if (TEST_FLAG(flags, _effect_stopped_bit))
 		return 2;
 	if (effect->event_duration - effect->event_time <= dt)
 		return 1;
@@ -38345,7 +38345,7 @@ static void psp_fx15_account(
 		if (psp_fx15_logged != NONE)
 			platform_psp_log("fx15: game time %ld | ticks: a pair's first %lu, others %lu | effects_update us a tick: a pair's first %lu, others %lu"
 				" | a pair's first tick: effect updates %lu, waited %lu, could wait %lu (%lu us a tick of theirs)"
-				"; kept: event ends %lu, stopped or between events %lu, makes objects/lights/damage %lu, danger radius %lu, a player's view %lu, moving %lu"
+				"; kept: delay or event ends %lu, stopped %lu, makes objects/lights/damage %lu, danger radius %lu, a player's view %lu, moving %lu"
 				" | doubled %lu | live: effects %d, particles %d",
 				now, psp_fx15_stats.ticks_first, psp_fx15_stats.ticks_other,
 				psp_fx15_stats.ticks_first ? psp_fx15_stats.us_first/psp_fx15_stats.ticks_first : 0,
