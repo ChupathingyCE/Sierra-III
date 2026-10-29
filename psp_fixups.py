@@ -34145,6 +34145,212 @@ FIXES_AICAD["source/ai/actor_perception.c#aicad"] = [
 	if (psp_aihalf_on < 0)"""),
 ]
 
+# ---------- FIXES_AIFAR: far actors out of the fight think 1 tick in 4 (a compromise)
+# On top of aicad3 (FIXES_AICAD: each actor thinks on alternate ticks, the
+# timeslice whole), "aifar" rests an actor on the second of its two thinking
+# ticks too when it is far from every player (20 world units from each
+# player's unit) and out of the fight, so it thinks on one tick in four,
+# staggered by actor so each tick carries a quarter of them. Out of the fight
+# means none of: an action with its own timing or a fight in it (fight, flee,
+# uncover, charge, avoid, search, vehicle, obey, converse), a scripted
+# command list, a combat status of "definite" or higher, known or visible
+# enemies, a target, a target seen in the last 10 s, a danger zone, damage
+# taken lately. aicad3's own exemptions hold too (the timeslice holder,
+# swarms, dormant and charging actors, an actor's first update), and
+# everything aicad3 runs every tick still does (input, perception's decays,
+# emotion, the action, moving, looking, firing). A far actor out of the fight
+# reacts up to 4 ticks (133 ms) late instead of 2; Halo's perception delays
+# are hundreds of milliseconds. Only with aicad3: with aicad2 or aicad3off
+# the word does nothing (the log says so). Off by default: it plays
+# differently, so it ships only after an A/B shows it breaks nothing.
+# Campaign only, as aicad3: never in the multiplayer build or a networked game
+FIXES_AIFAR = {}
+FIXES_AIFAR["source/ai/actors.c#aifar"] = [
+("""/* TRUE on an actor's resting tick. No side effects: perception's ray queue
+asks it too, before the actor updates */
+boolean psp_aicad_rest(
+	long actor_index)
+{
+	struct actor_datum *actor;
+	short absolute_index = DATUM_INDEX_TO_ABSOLUTE_INDEX(actor_index);
+
+	if (!psp_aicad_active() ||
+		absolute_index < 0 || absolute_index >= MAXIMUM_ACTORS ||
+		((game_time_get() + absolute_index) & 1) == 0)
+		return FALSE;
+	actor = actor_get(actor_index);
+	/* aicad3: the slot's holder thinks whole. The ray queue asks before the
+	slot is given and sees last tick's holder: a ray at most goes unused */
+	if (psp_aicad_on == 3 && actor->meta.timeslice)
+		return FALSE;
+	return !actor->meta.swarm && !actor->meta.dormant && actor->state.action != _actor_action_charge &&
+		psp_aicad_identifier[absolute_index] == actor->identifier;
+}""",
+ """/* psp_fixups.py (FIXES_AIFAR): "aifar" (see there) */
+#define PSP_AIFAR_DISTANCE 20.0f
+#define PSP_AIFAR_MAXIMUM_PLAYERS 4
+/* actor_looking.c's levels: "definite" and above is a fight */
+#define PSP_AIFAR_COMBAT_STATUS_DEFINITE 3
+/* 10 s since a target was last seen */
+#define PSP_AIFAR_TARGET_SEEN_TICKS 300
+
+static int psp_aifar_on = -1;
+/* each slot's answer for one tick: the ray queue asks before the actor's
+update refreshes its position and the update asks again, and both must agree */
+static long psp_aifar_time[MAXIMUM_ACTORS];
+static short psp_aifar_identifier[MAXIMUM_ACTORS];
+static boolean psp_aifar_answer[MAXIMUM_ACTORS];
+static long psp_aifar_last_time = NONE;
+static long psp_aifar_heads_time = NONE;
+static short psp_aifar_head_count;
+static real_point3d psp_aifar_heads[PSP_AIFAR_MAXIMUM_PLAYERS];
+static struct
+{
+	unsigned long asked, near, engaged, rested;
+} psp_aifar_stats;
+static long psp_aifar_logged = NONE;
+
+static boolean psp_aifar_enabled(
+	void)
+{
+	if (psp_aifar_on < 0)
+	{
+#ifdef PSP_MULTIPLAYER
+		psp_aifar_on = 0;
+#else
+		psp_aifar_on = psp_keep("aifar") ? 1 : 0;
+#endif
+		if (psp_aifar_on && psp_aicad_on != 3)
+			platform_psp_log("ai: aifar does nothing without aicad3 (aicad%d)", psp_aicad_on);
+		else if (psp_aifar_on)
+			platform_psp_log("ai: actors %.0f units from every player and out of the fight think on one tick in four (aifar)",
+				PSP_AIFAR_DISTANCE);
+	}
+	return psp_aifar_on && psp_aicad_on == 3;
+}
+
+static boolean psp_aifar_engaged(
+	struct actor_datum *actor)
+{
+	switch (actor->state.action)
+	{
+	case _actor_action_fight:
+	case _actor_action_flee:
+	case _actor_action_uncover:
+	case _actor_action_charge:
+	case _actor_action_avoid:
+	case _actor_action_search:
+	case _actor_action_vehicle:
+	case _actor_action_obey:
+	case _actor_action_converse:
+		return TRUE;
+	default:
+		break;
+	}
+	return actor->state.command_list_index != NONE ||
+		actor->state.combat_status >= PSP_AIFAR_COMBAT_STATUS_DEFINITE ||
+		actor->situation.known_enemies > 0 || actor->situation.visible_reachable_enemies > 0 ||
+		actor->target.target_prop_index != NONE ||
+		(actor->target.since_any_target_visible_timer != NONE &&
+			actor->target.since_any_target_visible_timer < PSP_AIFAR_TARGET_SEEN_TICKS) ||
+		actor->danger_zone.danger_type != _actor_danger_zone_none ||
+		actor->input.recent_body_damage > 0.0f || actor->input.recent_shield_damage > 0.0f;
+}
+
+/* TRUE when the actor is far from every player's unit and out of the fight.
+With no player unit (dead, between lives) nobody counts as far */
+static boolean psp_aifar_resting(
+	struct actor_datum *actor,
+	short absolute_index)
+{
+	long now = game_time_get();
+	boolean far;
+	short k;
+
+	if (psp_aifar_last_time != NONE && now < psp_aifar_last_time)
+	{
+		/* a revert or a new map: the answers kept are another game's */
+		csmemset(psp_aifar_time, 0, sizeof(psp_aifar_time));
+		psp_aifar_heads_time = NONE;
+	}
+	psp_aifar_last_time = now;
+	if (psp_aifar_time[absolute_index] == now + 1 && psp_aifar_identifier[absolute_index] == actor->identifier)
+		return psp_aifar_answer[absolute_index];
+	if (psp_aifar_heads_time != now)
+	{
+		struct data_iterator iterator;
+		struct player_datum *player;
+
+		psp_aifar_head_count = 0;
+		data_iterator_new(&iterator, player_data);
+		while ((player = data_iterator_next(&iterator)) != NULL && psp_aifar_head_count < PSP_AIFAR_MAXIMUM_PLAYERS)
+		{
+			if (player->unit_index != NONE && object_try_and_get(player->unit_index))
+				psp_aifar_heads[psp_aifar_head_count++] = unit_get(player->unit_index)->object.bounding_sphere_center;
+		}
+		psp_aifar_heads_time = now;
+	}
+	psp_aifar_stats.asked++;
+	far = psp_aifar_head_count > 0;
+	for (k = 0; k < psp_aifar_head_count && far; k++)
+	{
+		if (distance_squared3d(&psp_aifar_heads[k], &actor->input.position.body_position) < PSP_AIFAR_DISTANCE * PSP_AIFAR_DISTANCE)
+			far = FALSE;
+	}
+	if (!far)
+		psp_aifar_stats.near++;
+	else if (psp_aifar_engaged(actor))
+	{
+		far = FALSE;
+		psp_aifar_stats.engaged++;
+	}
+	else
+		psp_aifar_stats.rested++;
+	psp_aifar_time[absolute_index] = now + 1;
+	psp_aifar_identifier[absolute_index] = actor->identifier;
+	psp_aifar_answer[absolute_index] = far;
+	/* the census: of the actors asked on their second thinking tick, how many
+	were near a player, kept by the fight, or rested (every 30 s of game
+	time, cumulative) */
+	if (psp_aifar_logged == NONE || now < psp_aifar_logged || now - psp_aifar_logged >= 900)
+	{
+		if (psp_aifar_logged != NONE)
+			platform_psp_log("aifar: game time %ld | asked %lu: near %lu, in the fight %lu, rested far %lu",
+				now, psp_aifar_stats.asked, psp_aifar_stats.near, psp_aifar_stats.engaged, psp_aifar_stats.rested);
+		psp_aifar_logged = now;
+	}
+	return far;
+}
+
+/* TRUE on an actor's resting tick. No side effects but aifar's answer kept
+for the tick: perception's ray queue asks it too, before the actor updates */
+boolean psp_aicad_rest(
+	long actor_index)
+{
+	struct actor_datum *actor;
+	short absolute_index = DATUM_INDEX_TO_ABSOLUTE_INDEX(actor_index);
+	long phase;
+
+	if (!psp_aicad_active() ||
+		absolute_index < 0 || absolute_index >= MAXIMUM_ACTORS)
+		return FALSE;
+	/* an actor thinks on the even ticks of its four; with aifar, a far actor
+	out of the fight on the first of them only */
+	phase = (game_time_get() + absolute_index) & 3;
+	if ((phase & 1) == 0 && !(phase == 2 && psp_aifar_enabled()))
+		return FALSE;
+	actor = actor_get(actor_index);
+	/* aicad3: the slot's holder thinks whole. The ray queue asks before the
+	slot is given and sees last tick's holder: a ray at most goes unused */
+	if (psp_aicad_on == 3 && actor->meta.timeslice)
+		return FALSE;
+	if (actor->meta.swarm || actor->meta.dormant || actor->state.action == _actor_action_charge ||
+		psp_aicad_identifier[absolute_index] != actor->identifier)
+		return FALSE;
+	return (phase & 1) || psp_aifar_resting(actor, absolute_index);
+}"""),
+]
+
 # ---------- FIXES_LODPSP: models' level of detail picked nearer (a compromise)
 # Models already pick their level of detail at the size they appear on the
 # PSP's 272 lines (FIXES_19; "fulllod" for the game's 480). This picks it as
@@ -38166,7 +38372,7 @@ FIXES_ACCLEAF["source/memory/data.c#accleaf"] = [
 ]
 
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items()))):
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items()))):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
