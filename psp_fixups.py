@@ -2077,6 +2077,7 @@ when the map keeps them outside the tags (psp_geo.c), from the tags
 otherwise; NULL when the cache hasn't read them yet, and the draw is left
 for a frame */
 void *psp_vertex_lock(const struct vertex_buffer *buffer);
+void *psp_vertex_lock_raw(const struct vertex_buffer *buffer);
 void *psp_index_lock(const struct triangle_buffer *buffer);
 /* psp_ge.c (rso): a kept walk's buffers, as its parts are locked */
 extern int psp_rso_capturing;
@@ -2276,7 +2277,9 @@ void psp_ge_transparent(
 			vertex_buffer->type != _rasterizer_vertex_type_model_uncompressed))
 		return;
 	strip = triangle_buffer->type == _triangle_buffer_type_precompiled_strip;
-	vertices = psp_vertex_lock(vertex_buffer);
+	/* the raw buffer: the see-through queue converts its own rigid records
+	(a baked block holds the opaque draw's) */
+	vertices = psp_vertex_lock_raw(vertex_buffer);
 	if (!vertices)
 		{ psp_geometry_missing(); return; }
 	indices = psp_index_lock(triangle_buffer);
