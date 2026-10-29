@@ -2127,11 +2127,17 @@ static void chunk_publish(int mode)
 			inflight_me_out = 1;
 			psp_me_window[0] = 1;
 		}
+		/* as the PSP's path does: the records written back before the piece
+		(the emulator's cache model then sees what the ME would), and the
+		piece's own words written inside its mark as the ME's */
+		sceKernelDcacheWritebackAll();
 		defer_replaying = 1;
 		psp_me_context = defer_me_thread ? defer_me_thread : 1;
+		__asm__ __volatile__("" ::: "memory");
 		replay_inflight = 1;
 		defer_replay(defer_buffer + chunk_published, defer_used - chunk_published, 0);
 		replay_inflight = 0;
+		__asm__ __volatile__("" ::: "memory");
 		psp_me_context = 0;
 		defer_replaying = 0;
 		chunk_published = defer_used;
@@ -10887,7 +10893,7 @@ static const void *converted[CONVERTED_BUFFERS];
 /* build 68: the geometry cache's generation of the block when it was
 converted; the block can hold other vertices after an eviction */
 static unsigned int converted_generation[CONVERTED_BUFFERS];
-static unsigned long converted_count = 0, reconverted_count = 0;
+static PSP_MAIN_SIDE unsigned long converted_count = 0, reconverted_count = 0; /* the main CPU's: only it converts */
 static unsigned long multi_node_rigid = 0, transparent_placed = 0;
 /* multi_node_rigid by why: see-through, no triangles given, the skinning plan
 failed (the log names only the first 12 buffers, which see-through parts
@@ -10909,7 +10915,12 @@ static unsigned char converted_step[CONVERTED_BUFFERS];
 static int convert_float_only = 0;
 /* the step of the block model_convert last answered for (0: floats), and of
 the part being drawn */
-static float convert_k = 0.0f, part_k14 = 0.0f;
+static float part_k14 = 0.0f;
+/* model_convert's step for its caller, one per CPU: the main CPU converts as
+it writes a frame down while the Media Engine's draws read their parts'
+steps (mechunk), so one word written by both would lose one CPU's value */
+static float convert_k_by[2][16] __attribute__((aligned(64)));
+#define convert_k (convert_k_by[PSP_ME_WORK() ? 1 : 0][0])
 static unsigned long model14_parts = 0, model14_vertices = 0, model14_refused = 0;
 /* skinned parts left at 28/32 bytes: what step 3b would take 10 bytes a vertex off */
 static unsigned long model14_skinned_parts = 0, model14_skinned_vertices = 0;
@@ -11900,7 +11911,7 @@ struct vm_entry
 };
 static struct vm_entry *vm = NULL;
 static unsigned short *vm_hash = NULL, *vm_order = NULL;
-static int vm_count = 0;
+static PSP_MAIN_SIDE int vm_count = 0; /* the main CPU's (vm_find, at the record's writing) */
 static unsigned int vm_base = 0, vm_size = 0, vm_frame = 0;
 static unsigned long vm_draws = 0, vm_redirects = 0, vm_copied = 0, vm_dropped = 0, vm_full = 0;
 
@@ -15502,7 +15513,7 @@ flight is settled first, as pretouch does, since the replay reads the table
 a conversion may change; most frames convert nothing here */
 static int model_pretouch = -1;
 static unsigned long model_pretouches = 0, model_pretouch_missed = 0;
-static unsigned long pretouch_chunk_skips = 0;
+static PSP_MAIN_SIDE unsigned long pretouch_chunk_skips = 0;
 
 /* the Media Engine still drawing from this frame's records or the last's
 (mechunk's pieces handed to it while the frame is being written, or a
@@ -15833,7 +15844,7 @@ test over the front face beside it: a dashed one-pixel line along a pillar's
 edge (b30's interior). Keep word "overlaysnocull": both sides, as before */
 #define SEETHROUGH_ONE_SIDED 512
 static unsigned short seethrough_next_depth = 0;
-static int seethrough_map_clamp = 0; /* the engine side's, for the next psp_ge_seethrough_shader */
+static PSP_MAIN_SIDE int seethrough_map_clamp = 0; /* the engine side's, for the next psp_ge_seethrough_shader */
 static unsigned long seethrough_exact_draws = 0, seethrough_clamped_draws = 0, seethrough_fog_faded_draws = 0;
 static unsigned long level_culled_draws = 0;
 /* build 116 (b113 #16): a meter shader's parameters, for the next queue
