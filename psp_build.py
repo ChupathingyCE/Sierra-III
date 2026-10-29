@@ -696,6 +696,8 @@ def link(objs, stubs):
         block = "    __psp_hot_data_start = .;\n"
         for l in (l for l in lines if l):
             m = re.match(r"^(\S+)\((.+)\)$", l)
+            if not m and "(" in l:
+                sys.exit("psp_build: PSP_DATA_LAYOUT: not a placement (a file pattern has no spaces): %s" % l)
             files, sections = (m.group(1), m.group(2)) if m else ("*", l)
             if files == "*":
                 sections = "EXCLUDE_FILE(%s) %s" % (" ".join(me_objects), sections)
