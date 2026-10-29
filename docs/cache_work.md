@@ -74,7 +74,18 @@ Still to score: the cluster reference walk (`cluster_partition_get_next_datum`, 
 
 ## 4. Loop phasing itself
 
-Not started. Section 1: the code of the big updates doesn't fit the cache, and the model's phasing score failed its check, so a candidate needs the restructuring's cost counted before it is built.
+Section 1: the code of the big updates doesn't fit the cache, and the model's phasing score failed its check, so a candidate needs the restructuring's cost counted before it is built. A pass pays only when its own code, callees included, fits the cache: running the AI as two passes over the actors saved no instruction misses, as each pass is still far past 16 KB [E].
+
+**Sizing objects_update's steps as passes** [E] (cache model, b30 route and c20 hands off to game time 2,100; each step's whole calls on a second 16 KB pair, the main CPU's instruction-miss drop less what the step still misses on its own pair, less the data misses of walking the objects again, all phases summed):
+
+| Step as a pass | calls a tick (b30 / c20) | I-misses removed a tick | model ms a tick | exact as a pass |
+|---|---|---|---|---|
+| function values + change colours | 152 / 130 | 3,978 / 5,431 | 0.73 / 0.99 | yes, with the readers below |
+| node matrices | 96 / 79 | 7,748 / 6,455 (5,285 / 1,837 left on its own pair) | 1.38 / 1.19 | no: later objects' collision tests read them (NB, LEAF) |
+| attached lights' links | 20 / 8 | 1,643 / 769 | 0.40 / 0.15 | no: IK and later movers change their inputs |
+| postprocess (IK), damage | 93, 76 / 68, 31 | under 900 | ~0 (the re-walk's data misses cancel it) | no |
+
+The function values miss on nearly every call in the walk and not at all on their own pair, so they are the pass: **FVP** (`fvpass`, check `fvpasscheck`; FIXES_FISSION). The compute reads only the object's own inputs, flags and outputs, its definition and the game time [D]; in the walk the only readers of what it makes are `object_get_function_value` and an attached particle system's colour at its creation, which make a waiting object's values first, and the only writer of another object's inputs, a hidden weapon's export into its holder, makes the holder's first [D]. Play and both seeds are identical on vs off on b30, c20, c10, a30 and d20 for 3,600 ticks, strict clean [E]. In the model, b30's tick is 0.52 ms (1.5%) faster and c20's 0.77 ms (4.2%), with 1.7% and 5.1% fewer instruction misses across all phases [E]. Its price comes from a PSP pair; it is off until then.
 
 ## The model's own fix
 
