@@ -168,20 +168,27 @@ int psp_sleep_suspending(void)
 
 /* PSP_POWER_CB_RESUME_COMPLETE: 1 if the game thread is parked for this
 sleep (it takes everything back itself); 0 for the old way */
-int psp_sleep_resumed(void)
+static int release_parked(int reopen)
 {
 	char line[160];
 
 	if (!game_parked && sleep_state != SLEEP_PARKED)
 		return 0;
-	/* first, as before: a thread may already be waiting to read */
-	if (!psp_keep("noreopen"))
+	/* first, as before: a thread may already be waiting to read. Only after
+	a real sleep, which kills the descriptors: in a dry stop they are live,
+	and another thread's read may be in flight on one */
+	if (reopen && !psp_keep("noreopen"))
 	{
 		psp_io_reopen_all(0, line, sizeof(line));
 		platform_log("sleep: awake; %s", line);
 	}
 	sceKernelSetEventFlag(wake_flag, 1);
 	return 1;
+}
+
+int psp_sleep_resumed(void)
+{
+	return release_parked(1);
 }
 
 /* sleepdryN: the partition filled for the stop and checked after it. The
@@ -204,7 +211,7 @@ static int dry_double_thread(SceSize args, void *argp)
 	kept = psp_sleep_suspending();
 	platform_log("sleepdrydouble: a second ask while stopped: %s", kept ? "the stop held" : "the old way (the bug)");
 	sceKernelDelayThread(DRY_PARK_US / 4);
-	if (!psp_sleep_resumed())
+	if (!release_parked(0))
 		platform_log("sleepdrydouble: the wake found no stop to release (the bug)");
 	return 0;
 }
