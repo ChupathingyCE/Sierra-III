@@ -23,8 +23,8 @@
 | **UNSEENPOSE**: undrawn units posed at the root only | nothing drawn changes; AI aims from a pose up to 0.1-0.2 wu off; a30's marines ended differently | landing up to ~-10, flight ~0, beach worse (+4%) | E | built, shelved (fights lose the saving) |
 | **RA** (far actors skip their AI), gated to the flight and landing | none expected in the dropship | ~-1 to -2 | U | built; ungated it lost the beach |
 | **FX15**: effects and particles updated once for the frame's two ticks | a few sparks and puffs spawn a tick late | ~-1.5 | U on M | idea; needs a census by effect |
-| **RENDERTICK**: the HUD, first-person weapon and antennae once a frame | none on screen (they're drawn once a frame anyway) | -0.4 to -1.2 | U | catalogued |
-| **AIFAR**: far actors not fighting think 1 tick in 4 | far fights react a little later | up to -0.7 | U on E | catalogued, not built |
+| **RENDERTICK**: the HUD, first-person weapon and antennae once a frame | none on screen (they're drawn once a frame anyway) | under -0.1 (counted: the three are ~0.2% of b30's tick, ~0.4% of c20's, and only one tick a frame of it could go) | E | counted, not built: under the bar (review_aifar.md) |
+| **AIFAR**: far actors not fighting think 1 tick in 4 | far actors out of the fight react up to 4 ticks late instead of 2 | up to -0.7 | U on E | built, off by default (`aifar`; review_aifar.md) |
 | **STILLSWEEP**: a standing biped skips its collision sweep | a still biped nudged by something moving reacts a tick late | -0.2 to -0.7 | U | parked |
 | **ANIM2**: far bipeds posed only on the drawn tick | nothing drawn | -0.2 to -0.4 | U | under the bar |
 
