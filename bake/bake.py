@@ -143,7 +143,7 @@ DEFAULT = CAMPAIGN + ['ui']
 # a campaign map, and what lets b40 fit). Maps built with -Z need build 108 or
 # later; build 108 still loads older ones (psp_tag_layouts.c)
 # The XMB menu's sound: [MAP:]TAG[@START][+LENGTH][#loop[X]] (snd0.py).
-# "A Walk in the Woods" (the maintainer's pick, 2026-10-28, by ear): its
+# "A Walk in the Woods" (chosen by ear): its
 # loop's variation 1 (the chain from permutation 1, 38.4 s), which the XMB
 # repeats seamlessly. `--list-music` shows the candidates
 MUSIC = 'b30:levels\\b30\\music\\b30_01#loopc1'
