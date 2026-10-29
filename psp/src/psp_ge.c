@@ -7110,8 +7110,9 @@ no growth, goes back to the textures, one a frame. The copies take it back
 as before (carve_grow) when they find no room. On a10 the section loads
 empty the carve and the copies then use a third of it, while the textures
 of the boarding craft are refused room for want of an 86 KB run [M, PSP-3000
-census]. Read once a map (psp_ge_level_carve), as the copies' pieces may be
-placed from the Media Engine's work */
+census]. On by default ("carveshareoff" off). Read once a map
+(psp_ge_level_carve), as the copies' pieces may be placed from the Media
+Engine's work */
 #define CARVE_SHARE_FRAMES 8
 #define CARVE_RETAKE_FRAMES 300
 static int carve_share = 0;
