@@ -162,6 +162,8 @@ SHELL_TOOLS = ['uname', 'dirname', 'sed', 'cut', 'tar', 'gzip', 'mkdir', 'rm', '
 def env(hide_python=False, tools=None):
     e = dict(os.environ)
     e['HALO_PSP_BAKE_YES'] = '1'
+    # the bake's cache in the check's own folder, not the user's
+    e['HALO_PSP_BAKE_CACHE'] = os.path.join(tempfile.gettempdir(), 'halo-psp-bake-check-cache-%d' % os.getpid())
     e.pop('PYTHONPATH', None)
     if hide_python:
         if WINDOWS:
