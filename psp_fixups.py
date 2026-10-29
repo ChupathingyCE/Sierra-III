@@ -30504,6 +30504,171 @@ void objects_update(
 ]
 
 
+# ---------- FIXES_OBJPLACE: the object walk's reads and writes kept off the
+# object pool's lines (lever OBJPLACE)
+# The bus census puts the object pool among the heaviest regions of main RAM
+# a frame, and the object trace shows where much of it goes: every settled
+# piece of scenery the walk passes over (FIXES_WS) costs two of its datum's
+# lines a tick, one for first_child_object_index and one for the garbage
+# bit, each a miss since the pool is many times the data cache. Both answers
+# now sit in a bit beside the sleep tables, set where the full path leaves
+# the object (its datum just read there) and cleared as that path starts.
+# Wake-on-write keeps the bit true while it is set: attaching or detaching a
+# child and object_set_garbage all mark the object, a marked sleeper takes
+# the full path, and the tables are forgotten when a game state loads.
+# "wsmirroroff" (keep.txt): the datum read each tick, as before;
+# "wsmirrorcheck": read as before, and compared with the bit.
+# The walk's last loop also stored the do-not-update bit's clear into every
+# header every tick, dirtying the whole header array for a bit set only by a
+# rare attach; it now stores only where the bit is set (the same bytes
+# result). "hdrclearall": the store on every header, as before.
+FIXES_OBJPLACE = {}
+
+FIXES_OBJPLACE["source/objects/objects.c#objplace"] = [
+("""/* psp_fixups.py (FIXES_WAKE): what the tables say of a slot stops being
+about its object's bytes once a game state loads or a map starts */
+void psp_sleep_forget(void)
+{
+""",
+"""/* psp_fixups.py (FIXES_OBJPLACE): a set bit says the scenery had no child
+and wasn't garbage when its full path last left it; anything that changes
+either marks the object, and a marked one takes the full path, which clears
+the bit first */
+static unsigned long psp_ws_clear[(MAXIMUM_OBJECTS_PER_MAP + 31) / 32];
+static int psp_ws_mirror_keep = -1, psp_ws_mirror = 0, psp_ws_mirror_check = 0, psp_hdr_clear_all = 0;
+long psp_ws_mirror_checks, psp_ws_mirror_misses;
+
+static inline void psp_ws_unnote(short absolute_index)
+{
+	if (absolute_index < MAXIMUM_OBJECTS_PER_MAP)
+		psp_ws_clear[absolute_index >> 5] &= ~(1UL << (absolute_index & 31));
+}
+
+/* where the full path leaves an object, with its datum's lines just read */
+static inline void psp_ws_note(short absolute_index, struct object_header_datum const *header)
+{
+	struct object_datum const *object = header->datum;
+
+	if (psp_ws_mirror && header->type == _object_type_scenery && absolute_index < MAXIMUM_OBJECTS_PER_MAP &&
+		object->object.first_child_object_index == NONE && !TEST_FLAG(object->object.flags, _object_garbage_bit))
+		psp_ws_clear[absolute_index >> 5] |= 1UL << (absolute_index & 31);
+}
+
+/* psp_fixups.py (FIXES_WAKE): what the tables say of a slot stops being
+about its object's bytes once a game state loads or a map starts */
+void psp_sleep_forget(void)
+{
+	/* FIXES_OBJPLACE: whatever sleepforgetoff keeps, the bits describe the
+	bytes that were there */
+	csmemset(psp_ws_clear, 0, sizeof(psp_ws_clear));
+"""),
+("""	int unchecked = psp_scenery_skips_check(header, absolute_index, may_sleep);
+""",
+"""	int unchecked = psp_scenery_skips_check(header, absolute_index, may_sleep);
+
+	psp_ws_unnote(absolute_index); /* psp_fixups.py (FIXES_OBJPLACE) */
+"""),
+("""			!psp_lights_defer(object_index)) /* psp_fixups.py (FIXES_LD1) */
+			object_connect_lights(object_index, TRUE, TRUE);
+		return;
+	}
+	/* sceneryhalf: sleeping scenery that something changed (and that may
+""",
+"""			!psp_lights_defer(object_index)) /* psp_fixups.py (FIXES_LD1) */
+			object_connect_lights(object_index, TRUE, TRUE);
+		psp_ws_note(absolute_index, header); /* psp_fixups.py (FIXES_OBJPLACE) */
+		return;
+	}
+	/* sceneryhalf: sleeping scenery that something changed (and that may
+"""),
+("""	psp_sleep[absolute_index].checksum = before;
+""",
+"""	psp_sleep[absolute_index].checksum = before;
+	psp_ws_note(absolute_index, header); /* psp_fixups.py (FIXES_OBJPLACE) */
+"""),
+("""	if (psp_ws_keep < 0)
+		psp_ws_keep = !psp_keep("sleeperwalk");
+""",
+"""	if (psp_ws_keep < 0)
+		psp_ws_keep = !psp_keep("sleeperwalk");
+	/* psp_fixups.py (FIXES_OBJPLACE) */
+	if (psp_ws_mirror_keep < 0)
+	{
+		psp_ws_mirror_keep = !psp_keep("wsmirroroff");
+		psp_ws_mirror_check = psp_ws_mirror_keep && psp_keep("wsmirrorcheck");
+		psp_hdr_clear_all = psp_keep("hdrclearall");
+	}
+	psp_ws_mirror = psp_ws_mirror_keep;
+	if (psp_ws_mirror_check && game_time_get() % 900 == 0 && psp_ws_mirror_checks)
+		platform_psp_log("wsmirrorcheck: t=%ld, %ld sleepers' bits checked, %ld wrong", game_time_get(),
+			psp_ws_mirror_checks, psp_ws_mirror_misses);
+"""),
+("""/* 1: the object is settled scenery the full path would leave asleep, and its
+counters have been moved as that path moves them */
+static inline int psp_ws_asleep(""",
+"""/* psp_fixups.py (FIXES_OBJPLACE): 1 when the bit answers for the datum; the
+check mode reads the datum too, and answers from it */
+static inline int psp_ws_said_clear(short absolute_index, struct object_header_datum const *header)
+{
+	struct object_datum const *object;
+	int said = psp_ws_mirror && (psp_ws_clear[absolute_index >> 5] >> (absolute_index & 31) & 1);
+
+	if (!said || !psp_ws_mirror_check)
+		return said;
+	object = header->datum;
+	psp_ws_mirror_checks++;
+	if (object->object.first_child_object_index != NONE || TEST_FLAG(object->object.flags, _object_garbage_bit))
+	{
+		if (psp_ws_mirror_misses++ < 16)
+			platform_psp_log("wsmirrorcheck: %s has a child or is garbage, its bit set, at tick %ld",
+				tag_get_name(object->definition_index), game_time_get());
+	}
+	return 0;
+}
+
+/* 1: the object is settled scenery the full path would leave asleep, and its
+counters have been moved as that path moves them */
+static inline int psp_ws_asleep("""),
+("""	object = header->datum;
+	if (object->object.first_child_object_index != NONE)
+		return 0;
+	psp_wake_skipped++;
+	psp_objects_sleep_checked++;
+	psp_objects_asleep++;
+	if (TEST_FLAG(object->object.flags, _object_garbage_bit))
+		++object_globals->active_garbage_object_count;
+	psp_ws_passed++;
+	return 1;
+""",
+"""	if (!psp_ws_said_clear(absolute_index, header))
+	{
+		object = header->datum;
+		if (object->object.first_child_object_index != NONE)
+			return 0;
+		if (TEST_FLAG(object->object.flags, _object_garbage_bit))
+			++object_globals->active_garbage_object_count;
+	}
+	psp_wake_skipped++;
+	psp_objects_sleep_checked++;
+	psp_objects_asleep++;
+	psp_ws_passed++;
+	return 1;
+"""),
+("""		if (object_header->identifier)
+		{
+			SET_FLAG(object_header->flags, _object_header_do_not_update_bit, FALSE);
+""",
+"""		if (object_header->identifier)
+		{
+#ifdef HALO_PSP
+			/* psp_fixups.py (FIXES_OBJPLACE): a header whose bit is clear stays clean */
+			if (psp_hdr_clear_all || TEST_FLAG(object_header->flags, _object_header_do_not_update_bit))
+#endif
+			SET_FLAG(object_header->flags, _object_header_do_not_update_bit, FALSE);
+"""),
+]
+
+
 # ---------- FIXES_MEJOBS: point physics on the Media Engine ("mepoints")
 # The frame's free particles and contrail points each run point_physics_update
 # (the wind where the point is, then up to three collision rays against the
@@ -37839,7 +38004,7 @@ void game_tick(
 ]
 
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + list(FIXES_GSCHECK.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + list(FIXES_GSCHECK.items()) + list(FIXES_OBJPLACE.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
