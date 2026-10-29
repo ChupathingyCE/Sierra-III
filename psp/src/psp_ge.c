@@ -24860,6 +24860,13 @@ void psp_ge_exit_drain(void)
 }
 
 #ifdef PSP_RECON
+/* The GE layer's 300-frame reports zero these counters, sometimes inside the
+span: then only the part after the zero is counted, rather than a wrapped difference */
+static unsigned long visspan_since(unsigned long now, unsigned long then)
+{
+	return now >= then ? now - then : now;
+}
+
 /* "visspan" (recon; docs/mevis_landing.md, step 1): the main CPU's time from
 the frame's visibility to its first reader (render.c: 0 before
 structure_visibility_compute, 1 after it, 2 before lights_preprocess_scene),
@@ -24898,10 +24905,10 @@ void psp_ge_visspan(int phase)
 		return;
 	}
 	span_us += now - mark;
-	me_us += me_overlap_wait_us - me0;
-	show_us += show - show0;
+	me_us += visspan_since(me_overlap_wait_us, me0);
+	show_us += visspan_since(show, show0);
 	if (show2_on <= 0 || inflight_thread < 0)
-		ge_us += ge_wait_us - ge0;
+		ge_us += visspan_since(ge_wait_us, ge0);
 	if (++frames < 150)
 		return;
 	platform_log("GE: visspan: %u frames: visibility to its first reader %.2f ms a frame: visibility %.2f, waiting on the ME's frame %.2f, "
