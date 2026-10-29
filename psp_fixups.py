@@ -38679,9 +38679,12 @@ static void psp_psc_drop(void)
 			psp_psc_count, (psp_psc_piece_count * PSP_PSC_PIECE) / 1024, psp_psc_piece_count, psp_psc_piece_cap,
 			psp_psc_hits, psp_psc_fills, psp_psc_from_ahead, psp_psc_refused, psp_psc_unwritten, psp_psc_unlisted,
 			psp_psc_checked, psp_psc_differed);
+	/* newlib's own free, as the pieces came from memalign and calloc (the
+	engine's free is its debug allocator's) */
 	for (k = 0; k < psp_psc_piece_count; k++)
-		free(psp_psc_pieces[k]);
-	free(psp_psc_entries);
+		(free)(psp_psc_pieces[k]);
+	if (psp_psc_entries)
+		(free)(psp_psc_entries);
 	psp_psc_entries = NULL;
 	psp_psc_piece_count = psp_psc_used = psp_psc_count = psp_psc_no_room = 0;
 	psp_psc_hits = psp_psc_fills = psp_psc_from_ahead = psp_psc_refused = psp_psc_unwritten = 0;
@@ -38784,7 +38787,7 @@ static struct psp_psc_entry *psp_psc_room(struct model const *model, struct anim
 	if (!psp_psc_piece_count || psp_psc_used + bytes > (unsigned int)psp_psc_piece_count * PSP_PSC_PIECE)
 	{
 		if (psp_psc_piece_count >= psp_psc_piece_cap ||
-			!(psp_psc_pieces[psp_psc_piece_count] = (unsigned char *)malloc(PSP_PSC_PIECE)))
+			!(psp_psc_pieces[psp_psc_piece_count] = (unsigned char *)memalign(64, PSP_PSC_PIECE)))
 		{
 			psp_psc_no_room = 1;
 			return NULL;
