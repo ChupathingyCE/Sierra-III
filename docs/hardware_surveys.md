@@ -1,10 +1,10 @@
 # The tick, system by system: what eight surveys found (directions 1 and 2)
 
-2026-10-29, hardware session. Sheepdog01's directions (16:57, via the master): (1) the tick system by system, (2) compact hot data; the API credit spent on surveys (Sheepdog01 17:26). Seven read-only surveys of Sierra-III at w142 (4a38b79) and the engine at the pin ran as lab `api-job`s (Opus, agent mode); the eighth (needless work, a Sonnet sweep with Opus on its top ten) is still running and gets its own section when it lands.
+2026-10-29, hardware session. Sheepdog01's directions (16:57, via the master): (1) the tick system by system, (2) compact hot data; the API credit spent on surveys (Sheepdog01 17:26). Eight read-only surveys of Sierra-III at w142 (4a38b79) and the engine at the pin ran as lab `api-job`s in agent mode: seven on Opus, and the needless-work sweep on Sonnet, with an Opus check of its top ten still to come.
 
 Labels: [M] measured on a PSP, [E] emulator, [D] read in code or data, [U] inference. Nothing in this doc was built or run for it. Every ms figure is main-CPU time.
 
-**Checking the surveys.** Two or more quoted lines from each answer were looked up at the pin and in w142's `psp_fixups.py` (18 in all: objects.c 2577, 3866, 4524; physics.c 1354; bipeds.c 4007; actors.c 4210; actor_looking.c 551; actor_perception.c 5901; ai_communication.c 3078; props.c 406; game.c 342; weather_particle_systems.c 93, 763; render.c 391; particles.c 681; collision_bsp.c 2191; bsp3d.h 45; scenery.h 33; damage.c 310; psp_fixups.py 4015, 4221, 8981, 25799-25802). All match.
+**Checking the surveys.** Two or more quoted lines from each answer were looked up at the pin and in w142's `psp_fixups.py` (22 in all: hs_runtime.c 1236; render.c 345; objects.c 4538; game_sound.c 834; objects.c 2577, 3866, 4524; physics.c 1354; bipeds.c 4007; actors.c 4210; actor_looking.c 551; actor_perception.c 5901; ai_communication.c 3078; props.c 406; game.c 342; weather_particle_systems.c 93, 763; render.c 391; particles.c 681; collision_bsp.c 2191; bsp3d.h 45; scenery.h 33; damage.c 310; psp_fixups.py 4015, 4221, 8981, 25799-25802). All match.
 
 | Survey | Its question | Lab run |
 |---|---|---|
@@ -15,7 +15,7 @@ Labels: [M] measured on a PSP, [E] emulator, [D] read in code or data, [U] infer
 | fxpass | effects, particles, contrails and weather: passes or ME jobs | 40966627960 |
 | collbake | a cache-friendly collision BSP made at bake time | 40966677405 |
 | mecensus | tick and frame work that could be self-contained ME jobs | 40966682398 |
-| needless | work the tick does that nothing reads | 40966715304 (running) |
+| needless | per-frame or per-tick work that a cache, a bake or a skip removes, all ten maps | 40966715304 (Sonnet); its top ten checked on Opus next |
 
 ## The ranked table
 
@@ -35,6 +35,8 @@ Worth in ms a frame on the heavy stretches. A per-tick figure counts twice (two 
 | 10 | **V1: each vehicle's mass points split into sub-passes** in its own slot | small, only where vehicles are | U | yes | a cache-model run, then a pair | physpass |
 | 11 | **The AI's control half as five passes on top of AIME** | <= ~2% of the tick's I-misses | E bound | no: only the control steps' draws reorder | after AIME on the ME | aipass |
 | 12 | **The lights relink as a pass** on link ticks | small | U | yes (LD1's own argument) | none planned | passmap |
+| - | **SM**: the blob-shadow receivers kept across frames | a10/a30 1-3.3; b30 CAN'T TELL | U on E | yes, if the key holds | the Opus check, then a PSP pair | needless |
+| - | **Nine exact crumbs** (HUD quads, LOD repeats, the third header walk, settled aim, audible clusters, empty decal layers, hand IK, script GC, fog lookups) | b30 ~0.6-1.6 together | U | yes, each on a bitwise key | the Opus check | needless |
 
 ## What each survey settled
 
@@ -67,6 +69,21 @@ Worth in ms a frame on the heavy stretches. A per-tick figure counts twice (two 
 - **Three hazards AIME's ME job must clear** that the plan didn't list: perception creates props with `datum_new` (props.c:406, an allocation); it calls libc `qsort` (actor_perception.c:5901); emotion raises communication events, and that module calls `unit_speak` and `csprintf` [D]. The fixes: a prop pool reserved by the main CPU before the push (or props queued and made at the hand-back), a port-own sort, and an event queue drained at the hand-back. Perception's rays run inline on the ME instead of being pushed to it.
 - **A rule to settle:** media_engine.md says job code makes no library calls, while levers.tsv's ME row lists libm among the shared code the ME runs. `mewalk.py` decides which is true; weather's `fmodf` and the sprites' `sine`/`cosine` need the answer.
 - **The ME's room is the record window, not its idle time:** b30 ~38-40 ms (45 less mevisland's 5-7), c20 ~25, d20's fly-through ~24; c10 and d20's swamp ~0 (the main CPU already waits for the ME) [D + M -> U]. So c10's weather fits only with PDC's ~8-9 ms off the replay.
+
+**Needless work (the Sonnet sweep).**
+- It found 19 leads, not the 30 asked for. Past 19, every candidate it checked was already done in the port or couldn't be verified.
+- **Only one is over 1 ms**, and it's already catalogued: SM, the blob-shadow receivers' triangles rebuilt every frame for each caster. The lab's row puts it at 1-3.3 ms on a10/a30 [U on E]; on b30 and c10: CAN'T TELL.
+- **The exact crumbs together come to about 0.6-1.6 ms a frame on b30** [U]:
+  - the HUD's static quads rebuilt every frame (0.2-0.5);
+  - an object's LOD size computed up to 5 times a frame (0.1-0.25);
+  - objects_update's third header walk, which only handles the rare being-created and being-deleted bits (~0.1);
+  - settled units' aim and look acceleration, skipped on a bitwise match (0.05-0.2);
+  - the audible-cluster set, rebuilt only when the camera's cluster changes (0.03-0.1);
+  - empty decal layers skipped (0.05-0.2);
+  - the hand IK's marker inverse baked (0.05-0.1);
+  - the script node scan every 16 ticks skipped (~0.02 on b30, ~0.08 on a10);
+  - the camera's fog-region lookup done once instead of three times (0.01-0.03).
+- An Opus job checks the top ten (real or not, exact or not, the change) before any of them is built.
 
 ## AIME step 2a, as the surveys shape it
 1. At the record's start, after the main CPU's whole-cache write-back, push `psp_aime_think` for the pass after the frame's last tick. Tick 1's pass stays inline.
