@@ -37141,24 +37141,24 @@ FIXES_SCRATCHBSP["source/cache/cache_files.c#scratchbsp"] = [
 # and runs ocnm_root_matrix_custom, whose asserts are compiled out by
 # default: nothing the game reads afterwards depends on it, so leaving it
 # out can't change play. Its only reader is a person reading debug.txt.
-# "nrchk" (keep.txt): the test left out. "nrchknan": only the finite tests,
+# On by default: the test left out ("nonrchk" puts it back). "nrchknan": only the finite tests,
 # 13 exponent checks against the six products, which still catch the NaN
 # or infinity a broken matrix carries on into the drawing and collision; a
 # matrix they fail always fails the full test too, and the branch then runs
 # as before. Either way the root's second test below (the same matrix) is
-# left out with it, as it is after a pass. Off by default.
+# left out with it, as it is after a pass.
 FIXES_NRCHK = {}
 FIXES_NRCHK["source/objects/objects.c#nrchk"] = [
 ("""static int psp_pose_enabled(void)
 {
-""", """/* psp_fixups.py (FIXES_NRCHK): 0 the full root test, 1 its finite tests
-only ("nrchknan"), 2 none ("nrchk"); read again for each map */
+""", """/* psp_fixups.py (FIXES_NRCHK): 0 the full root test ("nonrchk"), 1 its finite
+tests only ("nrchknan"), 2 none (the default); read again for each map */
 static int psp_nrchk_mode = -1;
 
 static int psp_nrchk(void)
 {
 	if (psp_nrchk_mode < 0)
-		psp_nrchk_mode = psp_keep("nrchk") ? 2 : psp_keep("nrchknan") ? 1 : 0;
+		psp_nrchk_mode = psp_keep("nrchknan") ? 1 : psp_keep("nonrchk") ? 0 : 2;
 	return psp_nrchk_mode;
 }
 
