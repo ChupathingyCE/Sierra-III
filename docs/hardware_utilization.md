@@ -164,6 +164,37 @@ The emulator's bus census (`buscensus`, the halo-local patch's item 23; read wit
   - (a) a field-level snapshot: only what the drawing reads and the ticks change (~110-170 KB on b30). It needs the walk's read set first, a "walkreads" census in the cache model.
   - (b) the snapshot in the ME's eDRAM (~1.6 MB claimable), filled by DMA and read by the ME's walk. It conflicts with CPA's claim (1,089 KB).
 
+### C's field-level snapshot: the design (2026-10-29; not built)
+
+**The read set, measured** [E] (lab walkr1 40926317411, walkr2 40931322249; the halo-local patch's item 24, `walkreads`). It counts the 64-byte lines the drawing loads that the ticks stored since the last drawing, 120 s a map, strict:
+
+| Map | Drawings | KB a drawing, average | Drawings by KB | The most | Heap's largest free block, lowest |
+|---|---|---|---|---|---|
+| b30 | 2,444 | 88 (objects 38, lights 12, program globals 11, particles 11, heap 8, contrails 2) | under 128: 2,147; 128-192: 296; over 192: 1 | 990 KB, drawing 1 | 315 KB |
+| c10 | 3,281 | 38 (objects 15, program globals 12, heap 4, lights 3) | under 128: 3,280; over: 1 | 701 KB, drawing 1 | 346 KB |
+| a10 | 3,488 | 25 (objects 10, program globals 9, heap 3) | under 128: 3,487; over: 1 | 495 KB, drawing 1 | 247 KB |
+
+- Every drawing but the first after a load reads under 192 KB of what the ticks changed. The first reads everything, because the load wrote everything. Whether a cutscene cut is a second over-size case these routes don't settle [U].
+- **It's a gather, not a block** [E]: the lines changed in at least 10% of b30's drawings come to 166 KB in 686 runs, with a median run of one line (64 B); runs of 1 KB or more hold only 60 KB. c10 and a10 are the same (65 KB in 351-417 runs). So a DMA block copy doesn't fit it: the copy walks a field list.
+
+**The shape:**
+- **Copied by structure, not by line.** The ticks don't mark what they change, so the copy takes, from each object the drawing will walk, the fields the drawing reads and a tick may write (render state, node matrices, the lights' and particles' live fields), whether they changed or not. That's more than walkreads' average and less than snapdry's per-object copy (448-672 KB). Its size waits on the field list (below).
+- **Its home: one buffer of ~192 KB, in the ME's eDRAM** (`edram.md`'s row; the big-moves budget already holds 192 KB for it beside CPA, AIME, L1 and CSTPOOL, and that budget fits only just). Two buffers (384 KB) don't fit beside the others, so it's single: the frame's copy waits for the ME's walk of the frame before to end. That wait is bounded by the walk's own deadline (on b30 the walk is ~20 ms, the frame's two ticks ~100), so it should almost never happen [U]. The main CPU can't store into eDRAM directly, so the fill is the ME's own gather, from main RAM, while the main CPU waits at the frame's end. The heap is the fallback home: 192 KB fits its largest block on all three maps, but takes most of a10's (247 KB).
+- **The copy's price** [U]: 100-200 KB a frame on b30 at the main CPU's memcpy rate (76 MB/s) is 1.3-2.6 ms; the ME's gather beside an idle main CPU should be near that. Against the objects pass it moves (b30 ~20 ms), that's well under the gate's third. Only a PSP pair says.
+
+**The over-size frame** (the first after a load; any frame whose structure outgrows the buffer): that frame isn't snapshotted. The ME walks the live state while the main CPU waits for it, so the frame is drawn exactly, on the ME, without overlapping the ticks. That loses one frame's overlap per load, and isn't a band-aid: the job stays on the ME, and the wait is bounded by the walk. Each such frame is counted and logged.
+
+**The ME replay's gap, closed** [D, E]. gedefer's records keep four kinds of pointer instead of copies (its comment in `psp_ge.c`). Under C, the replay reads them beside the next ticks, so each must be something the ticks don't write:
+- the geometry cache's blocks: written by the drawing, kept for RECENT_FRAMES; not the ticks;
+- the level's vertices: written at the load only;
+- the frame's dynamic triangle lists: written by the drawing;
+- **the decals' vertices: written in the tick.** These are the gap. walkreads measures them at ~0.06 KB a drawing on b30 (new decals only), so the snapshot carries them like any other field, and the gap closes.
+
+**Next, in order:**
+1. **[E] The field list:** map walkreads' lines to (object type, field offset), with the object table's addresses dumped at the window's opening, to give the copy's fields and its bytes a frame per map.
+2. **[E] snapdry with that copy:** the field copy made at each frame's end, nothing reading it; exactness and the copy's count.
+3. **[M] A c10 PSP pair** `"- | snapdry"` x2: the copy's own cost. Go by the gate above (under a third of what C takes off the main CPU).
+
 ## 5. The placement map
 
 Each unit's strengths, measured:
@@ -195,7 +226,7 @@ Per-pass figures are research's (lab `coord/handoff/render_ownership_2026-10-27.
 - Full C, where the ME owns all drawing, gives up the VFPU on exactly the pass that uses it (models). It also keeps the GE's main-RAM reads beside the tick.
 - What the hardware argues for is a split: the ME takes visibility, the level pass and the small passes; the main CPU keeps the model walk and does more of its maths on the VFPU.
 - That is B plus mevis, the order research and the master's second opinion already reached.
-- C's snapshot doesn't fit the heap as a per-object copy (section 4, the gate's outcome): C is parked, and B is next. The VFPU findings add a reason to keep models on the main CPU, rather than a reason to revisit C.
+- C's snapshot doesn't fit the heap as a per-object copy (section 4, the gate's outcome): C is parked, and B is next. Its way back is the field-level snapshot (section 4, its design). The VFPU findings add a reason to keep models on the main CPU, rather than a reason to revisit C.
 
 **Posing on the ME (MEPOSE, PNC) against the VFPU** (the master's 13:35 list):
 - **The VFPU took the main CPU's share first.** VFPUP and VFPUQD, now in the tock, take ~1 ms off b30's flight tick [M].
