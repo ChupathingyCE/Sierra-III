@@ -34,6 +34,7 @@ two looks running is named; on the third its queue is stopped
 #include <pspkernel.h>
 #include <pspge.h>
 #include <pspthreadman.h>
+#include <psppower.h>
 #include <pspsuspend.h>
 #include <stdio.h>
 #include <string.h>
@@ -61,6 +62,11 @@ callback's timeout); asked (the callback waits); taken (the game thread is
 stopping); parked (stopped: the callback may let the sleep go on) */
 enum { SLEEP_IDLE, SLEEP_ASKED, SLEEP_TAKEN, SLEEP_PARKED };
 static PSP_MAIN_SIDE volatile int sleep_state = SLEEP_IDLE;
+/* set by the game thread for as long as it waits for the wake, whatever the
+handshake's state: a wake releases it even after a second ask or the old
+way (Sheepdog01's fourth sleep, 2026-10-29: a second slide while it waited) */
+static PSP_MAIN_SIDE volatile int game_parked = 0;
+static PSP_MAIN_SIDE int dry_double = 0;
 static PSP_MAIN_SIDE int ready = 0, flags_logged = 0, stall_report = 1;
 static PSP_MAIN_SIDE long dry_every = 0;
 static PSP_MAIN_SIDE SceUID wake_flag = -1;
@@ -80,12 +86,13 @@ void psp_sleep_start(void)
 	ready = psp_keep("sleepready") != 0;
 	dry_every = (long)psp_keep_number("sleepdry", 0) * 30;
 	flags_logged = psp_keep("powerflags") != 0;
+	dry_double = dry_every && psp_keep("sleepdrydouble");
 	stall_report = !psp_keep("stallreportoff");
 	if (ready || dry_every)
 		wake_flag = sceKernelCreateEventFlag("halo wake", 0, 0, NULL);
 	if (ready || dry_every || flags_logged)
-		platform_log("sleep: %s%s%s (B41's fix; the stopgap's switch hold %s)", ready ? "sleepready " : "",
-			dry_every ? "sleepdry " : "", flags_logged ? "powerflags" : "",
+		platform_log("sleep: %s%s%s%s (B41's fix; the stopgap's switch hold %s)", ready ? "sleepready " : "",
+			dry_every ? "sleepdry " : "", dry_double ? "sleepdrydouble " : "", flags_logged ? "powerflags" : "",
 			psp_keep("sleepallowed") ? "off: sleepallowed" : "still on unless sleepallowed");
 }
 
@@ -99,9 +106,10 @@ void psp_sleep_tick(long ticks)
 void psp_sleep_power_flags(int flags)
 {
 	if (flags_logged)
-		platform_log("power: callback flags %08x (switch %d, hold %d, suspending %d, resuming %d, resume complete %d)",
-			(unsigned int)flags, !!(flags & 0x80000000), !!(flags & 0x40000000), !!(flags & 0x00020000),
-			!!(flags & 0x00040000), !!(flags & 0x00080000));
+		platform_log("power: callback flags %08x (switch %d, hold %d, standby %d, resume complete %d, resuming %d, suspending %d)",
+			(unsigned int)flags, !!(flags & PSP_POWER_CB_POWER_SWITCH), !!(flags & PSP_POWER_CB_HOLD_SWITCH),
+			!!(flags & PSP_POWER_CB_STANDBY), !!(flags & PSP_POWER_CB_RESUME_COMPLETE), !!(flags & PSP_POWER_CB_RESUMING),
+			!!(flags & PSP_POWER_CB_SUSPENDING));
 }
 
 /* the power callback's thread, PSP_POWER_CB_SUSPENDING: 1 when the game
@@ -113,8 +121,20 @@ int psp_sleep_suspending(void)
 
 	if (!ready || wake_flag < 0)
 		return 0;
-	sceKernelClearEventFlag(wake_flag, 0);
-	sleep_state = SLEEP_ASKED;
+	/* asked again while stopped (a second slide of the switch): the stop
+	holds, and the wake already owed releases it */
+	if (game_parked || sleep_state == SLEEP_PARKED)
+	{
+		platform_log("sleep: asked again while stopped; the stop holds");
+		return 1;
+	}
+	interrupts = sceKernelCpuSuspendIntr();
+	if (sleep_state == SLEEP_IDLE)
+	{
+		sceKernelClearEventFlag(wake_flag, 0);
+		sleep_state = SLEEP_ASKED;
+	}
+	sceKernelCpuResumeIntr(interrupts);
 	psp_sleep_due |= DUE_SLEEP;
 	for (waited = 0; sleep_state != SLEEP_PARKED && waited < ASK_MS; waited++)
 		sceKernelDelayThread(1000);
@@ -148,14 +168,16 @@ int psp_sleep_suspending(void)
 
 /* PSP_POWER_CB_RESUME_COMPLETE: 1 if the game thread is parked for this
 sleep (it takes everything back itself); 0 for the old way */
-int psp_sleep_resumed(void)
+static int release_parked(int reopen)
 {
 	char line[160];
 
-	if (sleep_state != SLEEP_PARKED)
+	if (!game_parked && sleep_state != SLEEP_PARKED)
 		return 0;
-	/* first, as before: a thread may already be waiting to read */
-	if (!psp_keep("noreopen"))
+	/* first, as before: a thread may already be waiting to read. Only after
+	a real sleep, which kills the descriptors: in a dry stop they are live,
+	and another thread's read may be in flight on one */
+	if (reopen && !psp_keep("noreopen"))
 	{
 		psp_io_reopen_all(0, line, sizeof(line));
 		platform_log("sleep: awake; %s", line);
@@ -164,12 +186,64 @@ int psp_sleep_resumed(void)
 	return 1;
 }
 
+int psp_sleep_resumed(void)
+{
+	return release_parked(1);
+}
+
 /* sleepdryN: the partition filled for the stop and checked after it. The
 firmware would use it while the PSP sleeps, so any word the game's side
 changes meanwhile would have broken what the firmware kept there */
 static unsigned int scribble_word(unsigned int k)
 {
 	return 0xB4100000u ^ (k * 2654435761u);
+}
+
+/* "sleepdrydouble" (with sleepdryN): the dry stop parked as a real sleep's
+is, and a thread standing in for the power callback asks again while it is
+parked (a second slide of the switch), then sends the wake */
+static int dry_double_thread(SceSize args, void *argp)
+{
+	int kept;
+
+	(void)args; (void)argp;
+	sceKernelDelayThread(DRY_PARK_US / 4);
+	kept = psp_sleep_suspending();
+	platform_log("sleepdrydouble: a second ask while stopped: %s", kept ? "the stop held" : "the old way (the bug)");
+	sceKernelDelayThread(DRY_PARK_US / 4);
+	if (!release_parked(0))
+		platform_log("sleepdrydouble: the wake found no stop to release (the bug)");
+	return 0;
+}
+
+static void dry_wait(void)
+{
+	SceUInt timeout = 10000000;
+	SceUID thread;
+	int result;
+
+	if (!dry_double)
+	{
+		sceKernelDelayThread(DRY_PARK_US);
+		return;
+	}
+	sceKernelClearEventFlag(wake_flag, 0);
+	game_parked = 1;
+	sleep_state = SLEEP_PARKED;
+	thread = sceKernelCreateThread("halo sleepdrydouble", dry_double_thread, 0x11, 0x2000, 0, NULL);
+	if (thread >= 0)
+		sceKernelStartThread(thread, 0, NULL);
+	result = sceKernelWaitEventFlag(wake_flag, 1, PSP_EVENT_WAITOR | PSP_EVENT_WAITCLEAR, NULL, &timeout);
+	game_parked = 0;
+	if (result < 0)
+		platform_log("sleepdrydouble: no wake released the stop within 10 s (%08x)", (unsigned int)result);
+	if (thread >= 0)
+	{
+		SceUInt join = 2000000;
+
+		sceKernelWaitThreadEnd(thread, &join);
+		sceKernelDeleteThread(thread);
+	}
 }
 
 static void dry_park(void)
@@ -192,7 +266,7 @@ static void dry_park(void)
 	for (k = 0; k < words; k++)
 		cached[k] = scribble_word(k);
 	sceKernelDcacheWritebackInvalidateAll();
-	sceKernelDelayThread(DRY_PARK_US);
+	dry_wait();
 	/* what any thread of the main CPU wrote meanwhile reaches RAM first */
 	sceKernelDcacheWritebackInvalidateAll();
 	for (k = 0; k < words; k++)
@@ -261,8 +335,10 @@ void psp_sleep_point(void)
 		SceUInt timeout = 60000000;
 		int result;
 
+		game_parked = 1;
 		sleep_state = SLEEP_PARKED;
 		result = sceKernelWaitEventFlag(wake_flag, 1, PSP_EVENT_WAITOR | PSP_EVENT_WAITCLEAR, NULL, &timeout);
+		game_parked = 0;
 		if (result < 0)
 			platform_log("sleep: no wake within a minute of stopping (%08x): going on as after one", (unsigned int)result);
 	}
