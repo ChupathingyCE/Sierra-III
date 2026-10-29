@@ -38,9 +38,10 @@ Labels: [M] measured on a PSP, [E] emulator, [D] code, [U] inference.
 | # | Move | b30 flight | c20 swarm | d20 fly-through | c10 | Label | State |
 |---|---|---|---|---|---|---|---|
 | 1 | **L15**: the campaign at 15 ticks a second, frames interpolated (the hybrid: physics at 30 Hz as two steps) | **measured: -30 ms (-21.5%) flight, -28 ms (-15%) landing** (PSP-3000); game speed 0.50 -> 0.64 / 0.37 -> 0.44 | ~-20% [U, scaled from b30] | ~-20% [U] | ~-15% [U] | **M** on b30 | step 2b built (keep `l15` in a PSP_L15=1 build, off); step 3 (interpolation) next |
-| 2 | **AIME**: the AI's thinking for the next tick run on the ME while the main CPU records this frame | ~-8 to -12 (the ME's room caps it; up to ~-20 with room) | ~-8 to -10 | ~-12 to -15 | ~-1 | U on M x E | to prototype after L15 step 1 |
+| 2 | **AIME**: the AI's thinking for the next tick run on the ME while the main CPU records this frame | ~-8 to -12 (the ME's room caps it; up to ~-20 with room); **~-10 to -12 before L15** (the pass after the frame's last tick) | ~-8 to -10 (~-4 to -5 before L15) | ~-12 to -15 (~-6 to -7) | ~-1 | U on M x E | step 1 proven (main CPU, behaviour); step 2a (the ME, before L15) next |
 | 3 | **The record on the ME** (option C's next step: the objects pass, 20 ms of b30's 45 ms record) | up to -20, if the ME has room | ~-10 | ~-10 | **the c10 lever**: up to ~-15 | U on M | research's thread (C step 3, held); here only the ME's room under L15 |
-| 4 | **Particles and effects' local motion on the ME during the record** (after FX15 halves them) | ~-1.5 | ~-2 | ~-4 to -5 | small | U on M | after AIME |
+| 4 | **c10's weather on the ME** (the update and box tests; then the sprites) | 0 (no weather) | ? | ? | **~-2.8 to -3.1; ~-3.9 to -4.3 with the sprites** | U on M x E | census of its dead BSP walk first; fits c10's ME only with PDC |
+| 5 | **Particles and effects' local motion on the ME during the record** (after FX15 halves them) | ~-1.5 | ~-2 | ~-4 to -5 | small | U on M | after AIME |
 
 ### 1. L15
 The only multi-x lever: it takes one of the two ticks out of every heavy frame. Design: docs/l15_design.md (merged). Built through step 2b (Sierra-III `l15` c39ce11d).
@@ -68,12 +69,13 @@ That's less than the sizing's -37%, for two reasons:
 - **What moves:** each actor's thinking for the next tick (perception's servicing, situation, emotion, the decision loop and the cover search) moves to the ME while the main CPU records this frame. That's ~78% of ai_update [E aitick2], 20-24 ms a frame on b30's flight, about the same under L15: today each actor thinks once a frame across two ticks (aicad3), and under L15 once in one tick.
 - **The window:** the tick runs `ai_update` early, before effects, scripts and objects_update (game.c). So the next tick's thinking reads the state the last tick left, which holds still while the main CPU records (the record only reads it).
 - **Why it pays where NW2 didn't:** the AI is branchy integer code with its own rays, which run as fast on the ME as on the main CPU. Its output (orders, actions, the actor's own memory) is read only at the next tick's control steps (move, look, fire, unit_control), which stay on the main CPU. And its code (ai/ is among the largest bodies of the tick) leaves the main CPU's instruction cache, which also relieves objects_update [U, as NW's model showed I-misses -16% with work moved].
-- **Why it needs L15:** a frame of two 30 Hz ticks has no record between its ticks, so there's no window for the second tick's thinking. Under L15 every tick follows a record.
+- **Before L15, half of it** (corrected 2026-10-29, the ME census `docs/hardware_surveys.md`): a frame of two 30 Hz ticks has no record between its ticks, so the first tick's thinking has no window. But aicad3 rests half the actors on each tick, so the pass after the frame's last tick, which the record follows, is about half the frame's thinking: b30 ~10-12 ms movable today. Under L15 every tick follows a record.
 - **What it costs in behaviour:** the thinking reads the world before the next tick's units_update and player input (a few ms earlier in game terms; Halo's own perception delays are hundreds of ms). It's an AI-timing change, the class Sheepdog01 opened to experiment, proven by the outcome census as aicad3 was. Campaign only.
 - **Hazards, all known from mevisland and pose-ahead:**
   - the main CPU writes the world back before the hand-over;
   - the ME writes only actor and prop datums, which the main CPU drops before the next tick;
-  - no allocation on the ME;
+  - no allocation on the ME: perception makes props with `datum_new` (props.c:406), so a prop pool is reserved by the main CPU before the push;
+  - no library calls: perception's `qsort` (actor_perception.c:5901) needs a port-own sort; emotion's communication events (`unit_speak`, `csprintf`) go into a queue drained at the hand-back;
   - the AI's random numbers from a seed of its own, so the main CPU's draws during the record can't race it;
   - the cover search's 82 KB path state in an arena;
   - rays against a world that holds still.
@@ -88,8 +90,11 @@ That's less than the sizing's -37%, for two reasons:
 - **What this plan adds:** under L15 the ME's room is what limits both #2 and #3 on b30, so they're priced together. On c10 (drawing-bound, little AI) #3 is the only big move.
 - Research owns it; hardware gives it the ME-room figures under L15 from #1's runs.
 
-### 4. Particles and effects on the ME
-- **What moves:** particles_update and particle_systems_update move nothing the simulation reads (local, drawn only), and mepoints already put their point physics on the ME [M: exact, safe, small].
+### 4. c10's weather on the ME
+The only system that's self-contained end to end (a plain array, read only by its own render, inside the record) [D]. c10's weather is 4.66-5.05 ms a frame on the PSP-1000 [M]. Design and the dead BSP walk: `docs/hardware_surveys.md`.
+
+### 5. Particles and effects on the ME
+- **What moves:** particles_update and particle_systems_update move little the simulation reads, and mepoints already put their point physics on the ME [M: exact, safe, small]. Not quite local (corrected 2026-10-29): particles_update can spawn an effect on a structure collision (particles.c:681), so it stays a pass, and particle_systems_update's own point physics isn't on mepoints yet.
 - **The rest:** the systems' own motion and ageing during the record. d20's effects and particles are 8-11 ms a frame [M], halved by FX15 first.
 - **Effects that spawn, damage or play sounds** stay on the main CPU.
 
@@ -136,9 +141,13 @@ The sound cache in eDRAM (R2) takes all of it and was rejected on the PSP (frame
 - **MP (next tick's base poses on the ME):** that's pose-ahead, already on.
 - **The VFPU's float inventory:** under 1% of the cycles. Its work is done (VFPUP, VFPUQD).
 
+## The tick system by system (directions 1 and 2, Sheepdog01 16:57)
+Eight surveys (`docs/hardware_surveys.md`) placed every system of the tick. Passes across objects mostly don't fit the cache or keep play (the type updates are each over 12 KB; physics and the AI read each other across objects). What's left, ranked there: AIME step 2a, c10's weather, the sleep after-checksum on the ME, a bake-time start grid for the collision walks, the function values as a pass, and the shared hot fields packed into 3 lines.
+
 ## Order
-1. L15 step 1 (building).
-2. AIME prototype step 1 (main CPU, behaviour only) beside L15's step 2.
-3. AIME on the ME, on L15's build.
-4. #3's ME-room figures to research.
-5. #4 after FX15.
+1. L15: parked as a finished option (step 3 and the full form wait for Sheepdog01).
+2. AIME step 2a: the ME job before L15 (step 1 proven).
+3. #3's ME-room figures to research.
+4. c10's weather: the dead walk's census, then step A, priced with PDC.
+5. The censuses for the sleep after-checksum and the start grid.
+6. #5 after FX15.
