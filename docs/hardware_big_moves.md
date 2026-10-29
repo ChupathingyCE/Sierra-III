@@ -37,13 +37,30 @@ Labels: [M] measured on a PSP, [E] emulator, [D] code, [U] inference.
 
 | # | Move | b30 flight | c20 swarm | d20 fly-through | c10 | Label | State |
 |---|---|---|---|---|---|---|---|
-| 1 | **L15**: the campaign at 15 ticks a second, frames interpolated | **-48 to -53** | **-46** | **-26 to -37** | -13 to -25 | U on M | building (helper l15, step 1) |
+| 1 | **L15**: the campaign at 15 ticks a second, frames interpolated (the hybrid: physics at 30 Hz as two steps) | **measured: -30 ms (-21.5%) flight, -28 ms (-15%) landing** (PSP-3000); game speed 0.50 -> 0.64 / 0.37 -> 0.44 | ~-20% [U, scaled from b30] | ~-20% [U] | ~-15% [U] | **M** on b30 | step 2b built (keep `l15` in a PSP_L15=1 build, off); step 3 (interpolation) next |
 | 2 | **AIME**: the AI's thinking for the next tick run on the ME while the main CPU records this frame | ~-8 to -12 (the ME's room caps it; up to ~-20 with room) | ~-8 to -10 | ~-12 to -15 | ~-1 | U on M x E | to prototype after L15 step 1 |
 | 3 | **The record on the ME** (option C's next step: the objects pass, 20 ms of b30's 45 ms record) | up to -20, if the ME has room | ~-10 | ~-10 | **the c10 lever**: up to ~-15 | U on M | research's thread (C step 3, held); here only the ME's room under L15 |
 | 4 | **Particles and effects' local motion on the ME during the record** (after FX15 halves them) | ~-1.5 | ~-2 | ~-4 to -5 | small | U on M | after AIME |
 
 ### 1. L15
-The only multi-x lever. It takes one of the two ticks out of every heavy frame. Design: docs/l15_design.md (merged). Step 1 is building: the PSP_L15 switch, the `l15` keep word, the hybrid's physics substeps, two animation advances, a 30 Hz script clock.
+The only multi-x lever: it takes one of the two ticks out of every heavy frame. Design: docs/l15_design.md (merged). Built through step 2b (Sierra-III `l15` c39ce11d).
+
+**Measured on b30** (sierra-hw 40961005993, PSP-3000, one build, read by game seconds):
+
+| Stretch | Frame | Ticks a frame | Drawing | Game speed |
+|---|---|---|---|---|
+| Flight | 139.9 -> 110.0 ms (-21.5%) | 98.7 -> 67.8 ms | +2.3 ms | 0.50 -> 0.64 |
+| Landing | 181.4 -> 153.4 ms (-15.4%) | 118.4 -> 83.2 ms | +6.7 ms | 0.37 -> 0.44 |
+
+That's less than the sizing's -37%, for two reasons:
+- **A 15 Hz tick costs 1.38-1.40x a 30 Hz one, not 1x:** the hybrid keeps physics at 30 Hz. The extra is the bipeds' physics steps (48%), the vehicles' (22%), per-tick work that grows with the step (25%: lights, discards) and the rest (~5%) [E l15k1 40956814514].
+- **Drawing rose 6-12%:** the same models a frame. The suspect [U] is the ME's replay overlapping the record more when the tick is shorter (bench12: the ME streaming slows CPU misses x1.14).
+
+**What's left in it:**
+- **The full form, behind its own keep word, off** (Sheepdog01 16:55: a feel change): the bipeds' and vehicles' physics at 15 Hz. Up to ~9 ms a frame on the flight; jumps and falls change shape, and the vehicles' springs need a rewrite.
+- **Projectiles at 15 Hz:** clean, ~0.3 ms; they go with L15 itself.
+- **The drawing rise, if it's the ME's overlap:** ~2-7 ms.
+- **Step 3, the interpolation**, which light maps need when frames outrun ticks.
 
 **After L15 the pipeline is nearly balanced on b30's flight:** main CPU ~100 ms, GE ~80, ME ~75. Every later gain there needs room on all three, which is why #2 and #3 are priced against the ME's room.
 
