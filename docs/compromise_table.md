@@ -22,7 +22,7 @@
 | **aicad2**: `aicad3` plus the timeslice (cover search, re-plan) at half rate | marines take twice as long to be sent to cover | ~-5 | U on E (aicnt1: -4.7% of the tick's work past aicad3) | built, off; **lost the beach** in the emulator (never cleared, save_beach_1 never written) |
 | **UNSEENPOSE**: undrawn units posed at the root only | nothing drawn changes; AI aims from a pose up to 0.1-0.2 wu off; a30's marines ended differently | landing up to ~-10, flight ~0, beach worse (+4%) | E | built, shelved (fights lose the saving) |
 | **RA** (far actors skip their AI), gated to the flight and landing | none expected in the dropship | ~-1 to -2 | U | built; ungated it lost the beach |
-| **FX15**: effects and particles updated once for the frame's two ticks | a few sparks and puffs spawn a tick late | ~-1.5 | U on M | idea; needs a census by effect |
+| **FX15** (`fx15`): effects' steps paired on the frame's two ticks (particles, contrails and particle systems already run once a frame) | an effect's particles from the undrawn tick come out on the drawn one, at its place; play is unchanged (play and game seed identical every tick) | ~0 (b30 has 0-3 live effects) | E | built, off; play exact, strict 0 |
 | **RENDERTICK**: the HUD, first-person weapon and antennae once a frame | none on screen (they're drawn once a frame anyway) | -0.4 to -1.2 | U | catalogued |
 | **AIFAR**: far actors not fighting think 1 tick in 4 | far fights react a little later | up to -0.7 | U on E | catalogued, not built |
 | **STILLSWEEP**: a standing biped skips its collision sweep | a still biped nudged by something moving reacts a tick late | -0.2 to -0.7 | U | parked |
@@ -37,7 +37,7 @@
 |---|---|---|---|---|
 | **L15** | as on b30 | opening -22, swarm **-46** | U on M | declined |
 | **UNSEENPOSE** | as on b30; c20's outcome differed a little | swarm up to ~-5 (the runs drift); before play parts -11% of the tick | E | shelved |
-| **FX15** | as on b30 | swarm ~-2.1 | U on M | idea |
+| **FX15** | as on b30 | swarm ~-0.4 (effects_update -25% in the cache model) | U on E x M | built, off |
 | **aicad2** | as on b30 (c20's swarms keep the full rate anyway) | ~-0.6 | U on E | built, off |
 | **AIFAR** | as on b30 | up to -0.3 | U on E | not built |
 
@@ -50,7 +50,7 @@ d20 is the effects map: effects and particles are 13-22% of its tick.
 | Compromise | What a player would notice | Worth (ms a frame) | Label | Where it stands |
 |---|---|---|---|---|
 | **L15** | as on b30 | fly-through -26 to -37, swamp ~-19 | U on M | declined |
-| **FX15** | as on b30 | fly-through ~-5.4, swamp ~-4.2 | U on M | idea |
+| **FX15** | as on b30 | fly-through ~-0.9, swamp ~-0.1 to -0.4 (effects_update -23% / -1 to -7% net in the cache model) | U on E x M | built, off; PSP pair on the fly-through to price it |
 | **aicad2** | as on b30 | fly-through ~-4, swamp ~-0.7 | U on E x M | built, off |
 | **PRIO** (`particleprio60`) | far smoke and debris thinner in busy fights (22% fewer particles) | ~-1.5 | M (PSP-1000, one run a side) | merged, off |
 | **UNSEENPOSE** | as on b30 | fly-through **worse** (+6% of the tick) | E | shelved |
