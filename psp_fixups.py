@@ -38284,14 +38284,14 @@ MEVIS_HEAD = r"""
 #define PSP_MV_NOPROFILE(meter) ((void)0)
 #define psp_mv_debug_line(...) ((void)0)
 #define psp_mv_debug_cluster(...) 0 /* (ai_debug_highlight_cluster: never, here) */
-/* the most clusters deep the ME's portal walk goes (each level ~4.3 KB of
-the copy's stack, PSP_MV_STACK); deeper, the walk stops there, counted, and
-mevisland makes that frame's visibility on the main CPU instead. The deepest
-walk measured is 12 clusters (b30; c20 5: mevis on the PSP), so 16 holds it
-with room, on a stack half the size 32 needed (the heap is what the level's
-copies and the textures live on) */
-#define PSP_MV_DEPTH 16
-#define PSP_MV_STACK (96 * 1024)
+/* the most clusters deep the ME's portal walk goes; deeper, the walk stops
+there, counted, and mevisland makes that frame's visibility on the main CPU
+instead. Measured (mevl6, six maps): ~18 KB of stack plus ~3.5 KB a cluster
+level, the deepest walk 12 clusters (b30, 60 KB; c20 5, a10 3). 14 holds it
+with room on 72 KB (the heap is what the level's copies and the textures
+live on) */
+#define PSP_MV_DEPTH 14
+#define PSP_MV_STACK (72 * 1024)
 /* the stack's lowest words, set at its allocation and checked after each
 walk: a walk that ran past its stack is reported, and its answer not used */
 #define PSP_MV_CANARY_WORDS 64
