@@ -62,6 +62,26 @@ So visibility reads tick state (the cluster lists and the spheres). That state h
   - But the walk of frame N would then run after tick N+1 and draw N+1's state with N's visibility. That isn't exact: the camera has moved a tick, so clusters can be missed when turning. It is a compromise: catalogued (levers.tsv, kind `compromise`), not built.
 - **The passes that don't need visibility, recorded first** (HUD, decals, the first-person weapon): about 0.6 ms [M]. They change the draw order, so this wouldn't be exact. Not worth it.
 
+## Step 1's result: b30 [M]
+
+`visspan` on the PSP-1000, b30's route, two runs (sierra-hw 40829107756, commit 528462d3, `PSP_RECON=1`). The six clean 150-frame windows past the load in each run (the other windows read a wrapped counter, fixed in 927aeef) give, in ms a frame:
+
+| | Run 1 | Run 2 |
+|---|---|---|
+| The span, visibility to its first reader | 8.45 | 8.31 |
+| Visibility | 5.56 | 5.38 |
+| Waiting on the ME's frame out | 0.01 | 0.01 |
+| Waiting on the show (the forwarding thread) | 1.46 | 1.51 |
+| Waiting on the GE's end (this thread) | 0.00 | 0.00 |
+| The rest: work | 1.41 | 1.41 |
+
+- **The catch isn't there.** Under geshow3 the window-begin wait is no longer the ME's replay: 0.01 ms a frame.
+- **The overlap** is the show wait plus the work, 1.5–5.0 ms a window; `min(visibility on the ME, that)` averages **2.9 ms a frame** in both runs. That clears step 2's 2 ms. The show wait alone (1.5) doesn't: the work in the span carries the rest.
+- **The ME has room:** 56–57% busy (median of the 1-second lines, 68–69 of them a run).
+- **Not yet measured:** c20, hands off. The pair on b30's route is the proof either way.
+
+So step 2 goes ahead: build `mevisland`.
+
 ## The steps
 
 1. **Measure the wait's split.** Per frame on b30 (route) and c20 (hands off), split the main CPU's time from `structure_visibility_compute`'s start to `lights_preprocess_scene` into:
