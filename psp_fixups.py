@@ -38610,7 +38610,298 @@ FIXES_FX15["source/game/game_time.c#fx15"] = [
 """),
 ]
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_FX15.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items()))):
+# ---------- FIXES_PSC: a looping animation's base poses kept, made once a map
+# An object that animates by itself (scenery's looping animations: c10's
+# swamp plants, 156 computes a tick hands off) takes its frame from game time,
+# so every tick decodes animation_get_node_orientations(model, animation,
+# frame) again, and each instance runs the same frames at its own offset. The
+# decode reads only the model, the animation (tag data, fixed within a map)
+# and the frame, so its answer is kept the first time it's made, in a table
+# by (model, animation, frame), and copied after that: the same function on
+# the same inputs, the same bits. Only the base pose is kept; what goes on top
+# of it (overlays, the scale, a parent, interpolation) is made from the copy
+# as from a decode. The Media Engine's pose job (poseahead) made most of
+# these poses ahead; it now leaves out a pose the table holds, and the
+# table keeps the first pose it hands over. Main RAM, in 16 KB pieces as the
+# map uses them, up to 96 KB ("psckbN" sets it); full, a pose is refused and
+# decoded as before. Dropped at each map's load. "pscoff": as before;
+# "psccheck": every pose the table hands over is decoded too and compared
+# bit for bit, and the decode is the one used
+FIXES_PSC = {}
+FIXES_PSC["source/objects/objects.c#psc"] = [
+("""/* the guess for this object's next tick: the frame after this one */
+static void psp_pose_ahead_list(""",
+ """/* psp_fixups.py (FIXES_PSC): the base poses of looping animations */
+#define PSP_PSC_ENTRIES 1024
+#define PSP_PSC_PIECE (16 * 1024)
+#define PSP_PSC_PIECES 32
+struct psp_psc_entry
+{
+	struct animation const *animation;
+	struct model const *model;
+	short frame;
+	short node_count;
+	real_orientation *pose;
+};
+static struct psp_psc_entry *psp_psc_entries;
+static unsigned char *psp_psc_pieces[PSP_PSC_PIECES];
+static int psp_psc_mode = -1; /* 0 off, 1 on, 2 on and checked */
+static int psp_psc_piece_count, psp_psc_piece_cap, psp_psc_used, psp_psc_count, psp_psc_no_room;
+static int psp_psc_listing; /* the object being posed takes its pose from the table */
+static boolean psp_psc_compression;
+static long psp_psc_logged;
+int psp_keep_number(const char *prefix, int fallback);
+static unsigned long psp_psc_hits, psp_psc_fills, psp_psc_from_ahead, psp_psc_refused, psp_psc_unwritten,
+	psp_psc_checked, psp_psc_differed, psp_psc_unlisted;
+
+static int psp_psc_on(void)
+{
+	if (psp_psc_mode < 0)
+	{
+		if (!psp_keep_loaded())
+			return 0;
+		psp_psc_mode = psp_keep("pscoff") ? 0 : psp_keep("psccheck") ? 2 : 1;
+		psp_psc_piece_cap = psp_keep_number("psckb", 96) * 1024 / PSP_PSC_PIECE;
+		if (psp_psc_piece_cap > PSP_PSC_PIECES)
+			psp_psc_piece_cap = PSP_PSC_PIECES;
+	}
+	return psp_psc_mode;
+}
+
+/* a new map (its tags may sit where the last map's did), or the decode's
+compression switch turned: everything kept goes */
+static void psp_psc_drop(void)
+{
+	int k;
+
+	if (psp_psc_fills || psp_psc_refused)
+		platform_psp_log("psc: dropped %d poses (%d KB in %d pieces of %d); %lu handed over, %lu kept (%lu from poseahead), %lu refused, %lu unwritten, %lu left out of poseahead; %lu checked, %lu differed",
+			psp_psc_count, (psp_psc_piece_count * PSP_PSC_PIECE) / 1024, psp_psc_piece_count, psp_psc_piece_cap,
+			psp_psc_hits, psp_psc_fills, psp_psc_from_ahead, psp_psc_refused, psp_psc_unwritten, psp_psc_unlisted,
+			psp_psc_checked, psp_psc_differed);
+	for (k = 0; k < psp_psc_piece_count; k++)
+		free(psp_psc_pieces[k]);
+	free(psp_psc_entries);
+	psp_psc_entries = NULL;
+	psp_psc_piece_count = psp_psc_used = psp_psc_count = psp_psc_no_room = 0;
+	psp_psc_hits = psp_psc_fills = psp_psc_from_ahead = psp_psc_refused = psp_psc_unwritten = 0;
+	psp_psc_checked = psp_psc_differed = psp_psc_unlisted = 0;
+	psp_psc_logged = 0;
+	psp_psc_listing = 0;
+}
+
+/* an object whose base pose the table may hold: its frame comes from game
+time (the decode's own inputs are all the key holds) */
+static int psp_psc_eligible(struct object_datum const *object, struct animation const *animation)
+{
+	extern boolean hs_model_animation_compression_enabled;
+
+	if (!TEST_FLAG(object->object.flags, _object_animates_automatically_bit) || animation->frame_count <= 0 ||
+		animation->node_count <= 0 || animation->node_count > MAXIMUM_NODES_PER_MODEL || psp_psc_on() <= 0)
+		return 0;
+	if (psp_psc_entries && psp_psc_compression != hs_model_animation_compression_enabled)
+		psp_psc_drop();
+	return 1;
+}
+
+static struct psp_psc_entry *psp_psc_find(struct model const *model, struct animation const *animation, short frame)
+{
+	unsigned long k = ((((unsigned long)animation >> 4) ^ ((unsigned long)model >> 6)) * 2654435761u + (unsigned long)frame * 40503u) %
+		PSP_PSC_ENTRIES;
+	int n;
+
+	if (!psp_psc_entries)
+		return NULL;
+	for (n = 0; n < PSP_PSC_ENTRIES; n++, k = (k + 1) % PSP_PSC_ENTRIES)
+	{
+		struct psp_psc_entry *entry = &psp_psc_entries[k];
+
+		if (!entry->animation)
+			return entry;
+		if (entry->animation == animation && entry->model == model && entry->frame == frame)
+			return entry;
+	}
+	return NULL;
+}
+
+static void psp_psc_log(void)
+{
+	long now = game_time_get();
+
+	if (now - psp_psc_logged >= 900 || now < psp_psc_logged)
+	{
+		if (psp_psc_logged)
+			platform_psp_log("psc: %d poses kept (%d KB used of %d in %d pieces); %lu handed over, %lu kept (%lu from poseahead), %lu refused, %lu unwritten, %lu left out of poseahead; %lu checked, %lu differed",
+				psp_psc_count, psp_psc_used / 1024, (psp_psc_piece_count * PSP_PSC_PIECE) / 1024, psp_psc_piece_count,
+				psp_psc_hits, psp_psc_fills, psp_psc_from_ahead, psp_psc_refused, psp_psc_unwritten, psp_psc_unlisted,
+				psp_psc_checked, psp_psc_differed);
+		psp_psc_logged = now ? now : 1;
+	}
+}
+
+/* the pose, if the table holds it: copied into out (or, checked, decoded
+and compared); FALSE: made as before */
+static boolean psp_psc_take(struct model const *model, struct animation const *animation, short frame,
+	real_orientation *out)
+{
+	struct psp_psc_entry *entry = psp_psc_find(model, animation, frame);
+
+	psp_psc_log();
+	if (!entry || !entry->animation)
+		return FALSE;
+	if (psp_psc_mode == 2)
+	{
+		animation_get_node_orientations(model, animation, frame, out);
+		psp_psc_checked++;
+		if (csmemcmp(out, entry->pose, entry->node_count * sizeof(real_orientation)))
+			psp_psc_differed++;
+	}
+	else
+		csmemcpy(out, entry->pose, entry->node_count * sizeof(real_orientation));
+	psp_psc_hits++;
+	return TRUE;
+}
+
+/* room for a pose: an entry and its bytes, or NULL (refused) */
+static struct psp_psc_entry *psp_psc_room(struct model const *model, struct animation const *animation, short frame)
+{
+	extern boolean hs_model_animation_compression_enabled;
+	unsigned int bytes = (unsigned int)animation->node_count * sizeof(real_orientation);
+	struct psp_psc_entry *entry;
+
+	if (psp_psc_no_room || psp_psc_count >= PSP_PSC_ENTRIES * 3 / 4)
+		return NULL;
+	if (!psp_psc_entries)
+	{
+		psp_psc_entries = (struct psp_psc_entry *)calloc(PSP_PSC_ENTRIES, sizeof(*psp_psc_entries));
+		if (!psp_psc_entries)
+		{
+			psp_psc_no_room = 1;
+			return NULL;
+		}
+		psp_psc_compression = hs_model_animation_compression_enabled;
+	}
+	if (!psp_psc_piece_count || psp_psc_used + bytes > (unsigned int)psp_psc_piece_count * PSP_PSC_PIECE)
+	{
+		if (psp_psc_piece_count >= psp_psc_piece_cap ||
+			!(psp_psc_pieces[psp_psc_piece_count] = (unsigned char *)malloc(PSP_PSC_PIECE)))
+		{
+			psp_psc_no_room = 1;
+			return NULL;
+		}
+		psp_psc_used = psp_psc_piece_count * PSP_PSC_PIECE;
+		psp_psc_piece_count++;
+	}
+	entry = psp_psc_find(model, animation, frame);
+	if (!entry || entry->animation)
+		return NULL;
+	entry->pose = (real_orientation *)(psp_psc_pieces[psp_psc_piece_count - 1] + (psp_psc_used - (psp_psc_piece_count - 1) * PSP_PSC_PIECE));
+	entry->model = model;
+	entry->frame = frame;
+	entry->node_count = animation->node_count;
+	return entry;
+}
+
+/* a pose poseahead handed over (made by the same decode, checked written):
+kept as it is */
+static void psp_psc_keep(struct model const *model, struct animation const *animation, short frame,
+	real_orientation const *pose)
+{
+	struct psp_psc_entry *entry = psp_psc_room(model, animation, frame);
+
+	if (!entry)
+	{
+		psp_psc_refused++;
+		return;
+	}
+	csmemcpy(entry->pose, pose, entry->node_count * sizeof(real_orientation));
+	entry->animation = animation;
+	psp_psc_used += entry->node_count * sizeof(real_orientation);
+	psp_psc_count++;
+	psp_psc_fills++;
+	psp_psc_from_ahead++;
+}
+
+/* a pose made here: decoded into the table, then copied into out. FALSE: no
+room, or the decode wrote nothing (out is made as before) */
+static boolean psp_psc_make(struct model const *model, struct animation const *animation, short frame,
+	real_orientation *out)
+{
+	struct psp_psc_entry *entry = psp_psc_room(model, animation, frame);
+
+	if (!entry)
+	{
+		psp_psc_refused++;
+		return FALSE;
+	}
+	*(unsigned long *)entry->pose = PSP_POSE_UNWRITTEN;
+	animation_get_node_orientations(model, animation, frame, entry->pose);
+	if (*(unsigned long *)entry->pose == PSP_POSE_UNWRITTEN)
+	{
+		psp_psc_unwritten++;
+		return FALSE;
+	}
+	entry->animation = animation;
+	psp_psc_used += entry->node_count * sizeof(real_orientation);
+	psp_psc_count++;
+	psp_psc_fills++;
+	csmemcpy(out, entry->pose, entry->node_count * sizeof(real_orientation));
+	return TRUE;
+}
+
+/* the guess for this object's next tick: the frame after this one */
+static void psp_pose_ahead_list("""),
+("""	if (!psp_pose_ahead_mode || animation->frame_count <= 0 || animation->node_count <= 0 ||
+		animation->node_count > MAXIMUM_NODES_PER_MODEL)
+		return;
+	slot = &psp_pose_ahead_slots[(unsigned long)object_index & (PSP_POSE_SLOTS - 1)];""",
+ """	if (!psp_pose_ahead_mode || animation->frame_count <= 0 || animation->node_count <= 0 ||
+		animation->node_count > MAXIMUM_NODES_PER_MODEL)
+		return;
+	/* psp_fixups.py (FIXES_PSC): a pose the table holds isn't made ahead */
+	if (psp_psc_listing)
+	{
+		struct psp_psc_entry *entry = psp_psc_find(model, animation, (short)((frame + 1) % animation->frame_count));
+
+		if (entry && entry->animation)
+		{
+			psp_psc_unlisted++;
+			return;
+		}
+	}
+	slot = &psp_pose_ahead_slots[(unsigned long)object_index & (PSP_POSE_SLOTS - 1)];"""),
+("""				if (psp_pose_ahead_take(object_index, model, animation, frame_index, node_orientations))
+					;
+				else if (psp_pose_predict)""",
+ """				/* psp_fixups.py (FIXES_PSC): a looping animation's pose from the table, or kept in it */
+				psp_psc_listing = psp_psc_eligible(object, animation);
+				if (psp_psc_listing && psp_psc_take(model, animation, frame_index, node_orientations))
+					;
+				else if (psp_pose_ahead_take(object_index, model, animation, frame_index, node_orientations))
+				{
+					if (psp_psc_listing)
+						psp_psc_keep(model, animation, frame_index, node_orientations);
+				}
+				else if (psp_psc_listing && psp_psc_make(model, animation, frame_index, node_orientations))
+					;
+				else if (psp_pose_predict)"""),
+("""	psp_pose_on = -1;
+	psp_pose_ahead_forget();
+""", """	psp_pose_on = -1;
+	psp_pose_ahead_forget();
+	psp_psc_drop(); /* psp_fixups.py (FIXES_PSC) */
+"""),
+("""#ifdef HALO_PSP
+static int psp_pose_on;
+static void psp_pose_ahead_forget(void);
+""", """#ifdef HALO_PSP
+static int psp_pose_on;
+static void psp_pose_ahead_forget(void);
+static void psp_psc_drop(void); /* psp_fixups.py (FIXES_PSC) */
+"""),
+]
+
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items()))):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
