@@ -6,6 +6,23 @@
 #define ME_SLOT_AUDIO 0
 #define ME_SLOT_RENDER 1
 #define ME_SLOT_PROBE 2 /* build 115: the heartbeat's eDRAM probe (edramcheck) */
+#if PSP_MUSIC
+/* the music path's decode (psp_music.c), the ME's lowest: served only when no
+other slot job and no ring job waits, never inside another job. 3 is left for
+the AI's slot ("aime2a"), which comes before it */
+#undef ME_SLOTS
+#define ME_SLOTS 5
+#define ME_SLOT_MUSIC 4
+#define ME_JOB_MUSIC 16
+/* the music job's pool (Tremor's setup and decoders) in the ME's eDRAM,
+1,184-1,456 KB, just under the AI job's room; the pool must end by its end
+(psp_music.c checks it when it compiles). Moving it is these two lines */
+#define ME_EDRAM_MUSIC 0x128000u
+#define ME_EDRAM_MUSIC_END 0x16C000u
+/* inside the music job, between two packets: the audio slot and the ring
+served; 1 when another slot's job waits and the music job should end now */
+int psp_me_music_yield(void);
+#endif
 
 #define ME_JOB_ARGS 12
 #define ME_JOB_RESULTS 8

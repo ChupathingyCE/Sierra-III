@@ -564,6 +564,15 @@ static void run_job(volatile struct me_slot *slot, int *sums, int on_me)
 			slot->results[2 + k] = split[k];
 		break;
 	}
+#if PSP_MUSIC
+	case ME_JOB_MUSIC:
+	{
+		extern void psp_music_job(volatile unsigned int *args, volatile unsigned int *results, int on_me);
+
+		psp_music_job(slot->args, slot->results, on_me);
+		break;
+	}
+#endif
 	case ME_JOB_CLASSIFY:
 	case ME_JOB_ANGLE:
 	case ME_JOB_GE:
@@ -771,6 +780,21 @@ void psp_me_serve_audio(void)
 {
 	psp_me_yield();
 }
+
+#if PSP_MUSIC
+int psp_me_music_yield(void)
+{
+	int k;
+
+	if (!psp_on_me())
+		return 0;
+	psp_me_yield();
+	for (k = 0; k < ME_SLOTS; k++)
+		if (k != ME_SLOT_AUDIO && k != ME_SLOT_MUSIC && SLOT(k)->request != SLOT(k)->done)
+			return 1;
+	return 0;
+}
+#endif
 
 void psp_me_yield(void)
 {
@@ -1341,6 +1365,19 @@ void meLibOnProcess(void)
 		{
 			volatile struct me_slot *slot = SLOT(k);
 
+#if PSP_MUSIC
+			/* the music job only in the ME's idle time: every other slot
+			and the ring empty (it yields to them once started) */
+			if (k == ME_SLOT_MUSIC && slot->request != slot->done)
+			{
+				int j, other = ring_ready && RING_PUSHED != ring_popped;
+
+				for (j = 0; j < ME_SLOTS && !other; j++)
+					other = j != ME_SLOT_MUSIC && SLOT(j)->request != SLOT(j)->done;
+				if (other)
+					continue;
+			}
+#endif
 			if (slot->request != slot->done)
 			{
 				volatile struct me_private *p = ME_PRIVATE;
@@ -2061,7 +2098,11 @@ int psp_me_submit(int which, unsigned int type, const unsigned int *args, int ar
 	slot->type = type;
 	for (k = 0; k < arg_count; k++)
 		slot->args[k] = args[k];
-	slot_yields[which] = type == ME_JOB_GE && !me_yield_off;
+	slot_yields[which] = (type == ME_JOB_GE
+#if PSP_MUSIC
+		|| type == ME_JOB_MUSIC
+#endif
+		) && !me_yield_off;
 	submit_mark[which] = sceKernelGetSystemTimeWide();
 	if (me_state == 2)
 	{
@@ -3740,7 +3781,11 @@ void psp_me_edram_probe(void)
 
 void psp_me_report(void)
 {
+#if PSP_MUSIC
+	static const char *const names[ME_SLOTS] = { "audio", "render", "probe", "ai", "music" };
+#else
 	static const char *const names[ME_SLOTS] = { "audio", "render", "probe" };
+#endif
 	unsigned long long now = sceKernelGetSystemTimeWide(), window = now - report_mark, busy_us_all = 0;
 	char line[900], ring_line[400];
 	int length = 0, k;

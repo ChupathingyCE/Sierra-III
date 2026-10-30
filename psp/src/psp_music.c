@@ -33,6 +33,7 @@ is counted, and the voice comes back with a short fade */
 #include <stdio.h>
 #include <tremor/ivorbiscodec.h>
 #include "psp_paths.h"
+#include "psp_me.h"
 
 void platform_log(const char *format, ...);
 int psp_keep(const char *word);
@@ -55,6 +56,17 @@ voices), 157 on b30 and a10; a packet wants 48 KB free above that */
 pack needs ~25 KB of tables (940 entries, 70 chains) */
 #define TABLE_BYTES (48 * 1024)
 #define FADE_FRAMES 220        /* 5 ms */
+/* the mixer's blocks queue for the music job: their marks and their output.
+The output plays MUSIC_LEAD silent blocks first (again after it ran dry),
+so the music trails the mix by MUSIC_LEAD blocks of 1,024 frames at 44.1 kHz
+(46 ms), the room the job has to wait for the ME's idle time */
+#define MUSIC_SETS 4
+#define MUSIC_LEAD 2
+#define MUSIC_MARKS_MAX 4
+/* the pool on the real ME: its eDRAM, apart from main RAM's bus (the room
+psp_me.h names); in the emulator, or with the sound cache in the eDRAM, the
+block's part of main RAM */
+typedef char music_pool_fits_its_edram[(ME_EDRAM_MUSIC + POOL_BYTES <= ME_EDRAM_MUSIC_END) ? 1 : -1];
 
 struct pmus_header
 {
@@ -137,8 +149,8 @@ static struct
 	struct pmus_chain *chains;
 	/* each entry's first packet's bytes into its chain, once walked (the reader's) */
 	unsigned int *first_offsets;
-	vorbis_info info;
-	vorbis_comment comment;
+	const unsigned char *setup;   /* the map's codec setup bytes, in the tables */
+	unsigned int setup_bytes;
 	struct stub stubs[STUBS];
 	struct voice *voices[VOICES];
 	struct prefetch *prefetch[PREFETCH];
@@ -149,12 +161,13 @@ static struct
 	int nodecode;
 	SceUID reader_wake, out_ready, out_free, io_lock, state_lock;
 	int out_channel;
-	unsigned char *pool;
+	unsigned char *pool_ram;     /* the pool's room in main RAM */
 	/* the path's RAM: its part of the sound cache's start-up block (psp_dsound.c) */
 	unsigned char *block;
 	unsigned char *tables;
 	/* counts, for the heartbeat */
 	unsigned long prefetched, walks, index_reads;
+	unsigned long sets_full, out_waited, jobs, jobs_here;
 	unsigned long out_late, pieces, piece_worst_us, stubs_made, not_in_pack, decode_us, decode_worst_us;
 } music;
 
@@ -163,14 +176,24 @@ runs it, so it sits on lines of its own (the main CPU drops the head and the
 output after each job, and never writes any of it while one is out) */
 static struct __attribute__((aligned(64)))
 {
+	unsigned char *pool;        /* where the pool is: the ME's eDRAM, or main RAM */
+	unsigned char *dec.pool_end;
+	int pool_in_edram;
+	/* the codec setup, made in the pool by the job's CPU (the main CPU can't
+	reach the ME's eDRAM): 0 not yet, 1 made, -1 refused, -2 lost (the ME
+	stopped with it in its eDRAM) */
+	int setup_state;
+	vorbis_info info;
+	vorbis_comment comment;
+	unsigned long stops;
+	int yielding;               /* the job runs on the ME: it yields between packets */
 	unsigned char *pool_next;   /* the top of the pool's blocks */
 	unsigned char *pool_last;   /* the block just below the top, NULL when none */
 	unsigned char *pool_peak;
 	unsigned long pool_failed;
 	int wake;                   /* the reader is wanted: signalled after the block */
-	int out_which;
 	unsigned long blocks, late_blocks, restarts, playing_worst, prefetch_hits;
-	short out[2][OUT_FRAMES * 2] __attribute__((aligned(64)));
+	short out[MUSIC_SETS][OUT_FRAMES * 2] __attribute__((aligned(64)));
 	/* the decode's scratch: only the CPU that decodes reads it */
 	int sums[OUT_FRAMES * 2] __attribute__((aligned(64)));
 	unsigned char joined[PIECE_BYTES];
@@ -180,7 +203,6 @@ static struct __attribute__((aligned(64)))
 
 /* ---------- the pool (Tremor's malloc family, renamed at link) */
 
-static unsigned char *pool_end;
 
 /* ---------- the path's RAM
 
@@ -228,7 +250,7 @@ void *mu_malloc(unsigned int bytes)
 	if (!top)
 		return NULL;
 	bytes = bytes ? (bytes + 15) & ~15u : 16;
-	for (p = music.pool; p < top; p = BLOCK_NEXT(p))
+	for (p = dec.pool; p < top; p = BLOCK_NEXT(p))
 	{
 		struct pool_block *b = BLOCK_AT(p);
 
@@ -250,7 +272,7 @@ void *mu_malloc(unsigned int bytes)
 		b->free = 0;
 		return p + 16;
 	}
-	if (top + 16 + bytes > pool_end)
+	if (top + 16 + bytes > dec.pool_end)
 	{
 		dec.pool_failed++;
 		return NULL;
@@ -283,7 +305,7 @@ void mu_free(void *pointer)
 		if (next < dec.pool_next)
 			BLOCK_AT(next)->prev = BLOCK_AT(p)->size;
 	}
-	if (p > music.pool && BLOCK_AT(p - 16 - BLOCK_AT(p)->prev)->free)
+	if (p > dec.pool && BLOCK_AT(p - 16 - BLOCK_AT(p)->prev)->free)
 	{
 		unsigned char *before = p - 16 - BLOCK_AT(p)->prev;
 
@@ -299,7 +321,7 @@ void mu_free(void *pointer)
 	{
 		/* the top block: the pool shrinks back to it (the one below is in use) */
 		dec.pool_next = p;
-		dec.pool_last = p > music.pool ? p - 16 - BLOCK_AT(p)->prev : NULL;
+		dec.pool_last = p > dec.pool ? p - 16 - BLOCK_AT(p)->prev : NULL;
 	}
 }
 
@@ -339,7 +361,7 @@ free at the top, and is otherwise late (counted as the pool full) */
 
 static int pool_has_room(void)
 {
-	return dec.pool_next && dec.pool_next + PACKET_POOL_BYTES <= pool_end;
+	return dec.pool_next && dec.pool_next + PACKET_POOL_BYTES <= dec.pool_end;
 }
 
 /* ---------- the pack */
@@ -414,11 +436,7 @@ static void start_once(void)
 	if (started || !at)
 		return;
 	started = 1;
-	music.pool = at;
-	dec.pool_next = at;
-	dec.pool_last = NULL;
-	dec.pool_peak = at;
-	pool_end = at + POOL_BYTES;
+	music.pool_ram = at;
 	at += POOL_BYTES;
 	/* the voices' windows and queues apart from the codec's pool */
 	for (k = 0; k < VOICES; k++)
@@ -441,8 +459,8 @@ static void start_once(void)
 	music.state_lock = sceKernelCreateSema("music state", 0, 1, 1, NULL);
 	music.reader_wake = sceKernelCreateSema("music reader", 0, 0, 64, NULL);
 	music.io_lock = sceKernelCreateSema("music io", 0, 1, 1, NULL);
-	music.out_ready = sceKernelCreateSema("music out", 0, 0, 2, NULL);
-	music.out_free = sceKernelCreateSema("music free", 0, 2, 2, NULL);
+	music.out_ready = sceKernelCreateSema("music out", 0, 0, MUSIC_SETS, NULL);
+	music.out_free = sceKernelCreateSema("music free", 0, MUSIC_SETS, MUSIC_SETS, NULL);
 	music.out_channel = sceAudioChReserve(PSP_AUDIO_NEXT_CHANNEL, OUT_FRAMES, PSP_AUDIO_FORMAT_STEREO);
 	/* below the mixer, which feeds it; the reader above the game, just below
 	the cache file thread (psp_platform.c's PSP_READER_PRIORITY): below the
@@ -470,7 +488,16 @@ void psp_music_map_opened(const char *name)
 	(before the first map there is no lock, and no job) */
 	locked = music.state_lock > 0;
 	if (locked)
-		sceKernelWaitSema(music.state_lock, 1, NULL);
+	{
+		/* bounded: a music job out with the ME holds it until it's collected */
+		SceUInt wait = 500000;
+
+		if (sceKernelWaitSema(music.state_lock, 1, &wait) < 0)
+		{
+			pack_close("wasn't opened: the music job kept the state for 500 ms");
+			return;
+		}
+	}
 	psp_music_map_open(name, wanted);
 	if (locked)
 		sceKernelSignalSema(music.state_lock, 1);
@@ -575,39 +602,11 @@ static void psp_music_map_open(const char *name, int wanted)
 			return;
 		}
 	}
-	/* the codec setup once per run (every pack has the same one: stereo,
-	44.1 kHz, one quality) */
-	if (!music.info.codec_setup)
-	{
-		unsigned int at = 4;
-
-		vorbis_info_init(&music.info);
-		vorbis_comment_init(&music.comment);
-		for (k = 0; k < 3; k++)
-		{
-			ogg_packet op;
-			unsigned int size;
-
-			memcpy(&size, setup + at, 4);
-			memset(&op, 0, sizeof(op));
-			op.packet = setup + at + 4;
-			op.bytes = size;
-			op.b_o_s = k == 0;
-			op.packetno = k;
-			if (vorbis_synthesis_headerin(&music.info, &music.comment, &op))
-				break;
-			at += 4 + size;
-		}
-		if (k < 3)
-		{
-			vorbis_info_clear(&music.info);
-			memset(&music.info, 0, sizeof(music.info));
-			pack_close("has a codec setup Tremor refused");
-			return;
-		}
-	}
-	platform_log("music: %s.pmus: %u permutations in %u chains; pool %u KB used", name, music.header.entries,
-		music.header.chains, (unsigned)(dec.pool_next - (pool_end - POOL_BYTES)) / 1024);
+	/* the codec setup is made by the music job, on its own CPU, from these
+	bytes (every pack has the same one: stereo, 44.1 kHz, one quality) */
+	music.setup = setup;
+	music.setup_bytes = bytes;
+	platform_log("music: %s.pmus: %u permutations in %u chains", name, music.header.entries, music.header.chains);
 }
 
 /* ---------- the cache's side (xbox_sound_cache.c, the stub path) */
@@ -773,6 +772,16 @@ static unsigned int entry_first_offset(int entry)
 	return offset;
 }
 
+/* the reader's turn at the state the music job reads: bounded, since a job
+out with the ME holds it until the audio thread collects it (a block or
+two); a miss leaves that piece or window for the reader's next round */
+static int state_take(void)
+{
+	SceUInt wait = 100000;
+
+	return sceKernelWaitSema(music.state_lock, 1, &wait) >= 0;
+}
+
 /* the entry's first index window and piece into the next slot (the
 reader): its flag changes only under the lock, as a voice's pieces' do */
 static void prefetch_read(const struct pmus_entry *e, unsigned int first_offset)
@@ -787,7 +796,8 @@ static void prefetch_read(const struct pmus_entry *e, unsigned int first_offset)
 	if (n > INDEX_PACKETS)
 		n = INDEX_PACKETS;
 	bytes = c->body - at < PIECE_BYTES ? c->body - at : PIECE_BYTES;
-	sceKernelWaitSema(music.state_lock, 1, NULL);
+	if (!state_take())
+		return;
 	f->ok = 0;
 	sceKernelSignalSema(music.state_lock, 1);
 	if (!read_at(c->index_at + first * 8, f->index, n * 8) || !read_at(c->packets_at + at, f->piece, bytes))
@@ -797,7 +807,8 @@ static void prefetch_read(const struct pmus_entry *e, unsigned int first_offset)
 	f->index_count = n;
 	f->piece_at = at;
 	sceKernelDcacheWritebackRange(f, sizeof(struct prefetch));
-	sceKernelWaitSema(music.state_lock, 1, NULL);
+	if (!state_take())
+		return;
 	f->ok = 1;
 	sceKernelSignalSema(music.state_lock, 1);
 	music.prefetched++;
@@ -851,9 +862,8 @@ static int reader_thread(SceSize arguments, void *argument)
 					n = INDEX_PACKETS;
 				static unsigned int spare[INDEX_PACKETS][2];
 
-				if (read_at(c->index_at + first * 8, spare, n * 8))
+				if (read_at(c->index_at + first * 8, spare, n * 8) && state_take())
 				{
-					sceKernelWaitSema(music.state_lock, 1, NULL);
 					if (v->index_wanted == first)
 					{
 						memcpy(v->index, spare, n * 8);
@@ -871,20 +881,23 @@ static int reader_thread(SceSize arguments, void *argument)
 					continue;
 				n = c->body - at < PIECE_BYTES ? c->body - at : PIECE_BYTES;
 				/* a slot's flags change only under the lock, which the audio
-				thread holds while a job decodes: no job sees a slot ready
+				thread holds while a music job is out: no job sees a slot ready
 				while its bytes are being read, and they are in RAM before
 				it says so */
-				sceKernelWaitSema(music.state_lock, 1, NULL);
+				if (!state_take())
+					continue;
 				v->piece_ok[slot] = 0;
 				sceKernelSignalSema(music.state_lock, 1);
 				if (read_at(c->packets_at + at, v->piece[slot], n))
 				{
 					sceKernelDcacheWritebackRange(v->piece[slot], n);
-					sceKernelWaitSema(music.state_lock, 1, NULL);
-					v->piece_at[slot] = at;
-					v->piece_ok[slot] = 1;
-					sceKernelSignalSema(music.state_lock, 1);
-					music.pieces++;
+					if (state_take())
+					{
+						v->piece_at[slot] = at;
+						v->piece_ok[slot] = 1;
+						sceKernelSignalSema(music.state_lock, 1);
+						music.pieces++;
+					}
 				}
 			}
 			t = sceKernelGetSystemTimeWide() - t;
@@ -946,7 +959,7 @@ static short clip16(int value)
 }
 
 /* decode until the queue holds frames up to `until` (in the chain); 0 when
-a packet or the index isn't in RAM yet. No kernel call: it runs in the ME's
+a packet or the index isn't in RAM yet, 2 when the job gives way. No kernel call: it runs in the ME's
 audio job (the reader is woken after the block, by dec.wake) */
 static int decode_to(struct voice *v, unsigned int until)
 {
@@ -1051,6 +1064,10 @@ static int decode_to(struct voice *v, unsigned int until)
 			v->index_wanted = v->next_packet;
 			dec.wake = 1;
 		}
+		/* between two packets: audio and the ring served, and the job ends
+		here if another slot's job waits (it goes on from here next time) */
+		if (dec.yielding && psp_me_music_yield())
+			return 2;
 	}
 	return 1;
 }
@@ -1099,7 +1116,7 @@ static void voice_seek(struct voice *v, int chain, unsigned int position)
 		return;
 	if (!v->dsp_ready)
 	{
-		vorbis_synthesis_init(&v->dsp, &music.info);
+		vorbis_synthesis_init(&v->dsp, &dec.info);
 		vorbis_block_init(&v->dsp, &v->block);
 		v->dsp_ready = 1;
 	}
@@ -1144,31 +1161,80 @@ static struct voice *voice_for(const void *owner)
 	return music.voices[spare];
 }
 
-/* a block with music, before the mixer's job (the audio thread): an output
-buffer is free, and the state lock is taken until psp_music_finish, so the
-reader changes nothing the job reads. 0: no music this block */
+/* ---------- the music job and its feed
+
+A block's marks (psp_dsound.c, in the mixer's job on either CPU): its music
+voices, their chains, their frames at 44.1 kHz and their gains. Each set is
+the mixer's job's own lines; the music job reads the sets it is handed */
+struct mark_set
+{
+	int count;
+	const void *owners[MUSIC_MARKS_MAX];
+	int chains[MUSIC_MARKS_MAX], left[MUSIC_MARKS_MAX], right[MUSIC_MARKS_MAX];
+	unsigned int from[MUSIC_MARKS_MAX], to[MUSIC_MARKS_MAX];
+} __attribute__((aligned(64)));
+static struct mark_set marks[MUSIC_SETS];
+
+/* the audio thread's own: the sets marked, handed out and collected, and
+the music job out (1 with the ME, 2 run here) */
+static struct __attribute__((aligned(64)))
+{
+	unsigned int head, finished, job_first, job_count, done_here;
+	int current, out;
+	SceUInt64 submitted_at;
+} feed = { 0, 0, 0, 0, 0, -1, 0, 0 };
+
+/* before the mixer's job (the audio thread): a set and its output buffer
+are free for this block's marks. 0: no music this block (all four still
+queued or playing: counted) */
 int psp_music_prepare(void)
 {
-	if (!music.on)
+	if (!music.on || dec.setup_state < 0)
 		return 0;
 	if (sceKernelPollSema(music.out_free, 1) < 0)
 	{
-		music.out_late++;
+		music.sets_full++;
 		return 0;
 	}
-	sceKernelWaitSema(music.state_lock, 1, NULL);
+	feed.current = (int)(feed.head % MUSIC_SETS);
 	return 1;
 }
 
-/* the main CPU decodes a block itself after the ME was handed blocks: its
-copies of what the ME wrote are dropped first, and the voices start again
-from their positions (a job the ME stopped in may have left them half done) */
+/* in the mixer's job, after its mix: the block's marks into its set */
+void psp_music_queue(const void *const *owners, const int *chains, const unsigned long *from, const unsigned long *to,
+	const int *left, const int *right, int count)
+{
+	struct mark_set *m;
+	int k;
+
+	if (feed.current < 0)
+		return;
+	m = &marks[feed.current];
+	if (count > MUSIC_MARKS_MAX)
+		count = MUSIC_MARKS_MAX;
+	m->count = count;
+	for (k = 0; k < count; k++)
+	{
+		m->owners[k] = owners[k];
+		m->chains[k] = chains[k];
+		m->from[k] = (unsigned int)from[k];
+		m->to[k] = (unsigned int)to[k];
+		m->left[k] = left[k];
+		m->right[k] = right[k];
+	}
+}
+
+/* the main CPU decodes after the ME was handed music jobs: its copies of
+what the ME wrote are dropped, and the voices start again from their
+positions (a job the ME stopped in may have left them half done) */
 void psp_music_own(void)
 {
 	int k;
 
-	sceKernelDcacheWritebackInvalidateRange(music.pool, POOL_BYTES);
+	if (!dec.pool_in_edram)
+		sceKernelDcacheWritebackInvalidateRange(music.pool_ram, POOL_BYTES);
 	sceKernelDcacheWritebackInvalidateRange(&dec, sizeof(dec));
+	sceKernelDcacheWritebackInvalidateRange(marks, sizeof(marks));
 	for (k = 0; k < VOICES; k++)
 		if (music.voices[k])
 		{
@@ -1177,37 +1243,91 @@ void psp_music_own(void)
 		}
 }
 
-/* one mixer block's music, after its 22,050 Hz mix, inside the mixer's job
-(the ME's, or this CPU's when the ME doesn't take it): each mark is a music
-voice's chain, its frames [from, to) at 44.1 kHz and its gains (14 bits) at
-the block's end. No kernel call reachable from here */
-void psp_music_decode(const void *const *owners, const int *chains, const unsigned long *from, const unsigned long *to,
-	const int *left, const int *right, int count)
+/* the pool and the codec setup, on the job's CPU the first time: the ME's
+eDRAM on the real ME, main RAM in the emulator or with the sound cache in
+the eDRAM. 1 when the setup is there */
+static int setup_here(int on_me, int edram_free)
+{
+	unsigned int at = 4, k;
+
+	if (dec.setup_state)
+		return dec.setup_state > 0;
+	dec.pool_in_edram = on_me && edram_free;
+	dec.pool = dec.pool_in_edram ? (unsigned char *)(ME_EDRAM + ME_EDRAM_MUSIC) : music.pool_ram;
+	dec.pool_end = dec.pool + POOL_BYTES;
+	dec.pool_next = dec.pool_peak = dec.pool;
+	dec.pool_last = NULL;
+	vorbis_info_init(&dec.info);
+	vorbis_comment_init(&dec.comment);
+	for (k = 0; k < 3 && music.setup; k++)
+	{
+		ogg_packet op;
+		unsigned int size;
+
+		memcpy(&size, music.setup + at, 4);
+		if (at + 4 + size > music.setup_bytes)
+			break;
+		memset(&op, 0, sizeof(op));
+		op.packet = (unsigned char *)music.setup + at + 4;
+		op.bytes = size;
+		op.b_o_s = k == 0;
+		op.packetno = k;
+		if (vorbis_synthesis_headerin(&dec.info, &dec.comment, &op))
+			break;
+		at += 4 + size;
+	}
+	dec.setup_state = k == 3 ? 1 : -1;
+	return dec.setup_state > 0;
+}
+
+/* a set's first half: each marked voice decoded up to its block's end,
+resumable (nothing played yet). ok[k]: 1 ready, 0 late. 2: the job gives way */
+static int set_decode(const struct mark_set *m, int *ok)
+{
+	int k, count = music.nodecode ? 0 : m->count;
+
+	for (k = 0; k < count; k++)
+	{
+		struct voice *v = voice_for(m->owners[k]);
+		int r;
+
+		ok[k] = 0;
+		if (!v || m->to[k] <= m->from[k])
+			continue;
+		/* a gap the queue can hold is decoded through and dropped below, so
+		the decoder keeps its step: after a late block, or a skip the game made */
+		if (v->chain != m->chains[k] || m->from[k] < v->position || m->to[k] - v->position > PCM_FRAMES / 2)
+			voice_seek(v, m->chains[k], m->from[k]);
+		if (v->chain != m->chains[k])
+			continue;
+		r = decode_to(v, m->to[k]);
+		if (r == 2)
+			return 2;
+		ok[k] = r;
+	}
+	return 1;
+}
+
+/* its second half, never interrupted: the ready voices summed into its output */
+static void set_mix(const struct mark_set *m, const int *ok, short *out)
 {
 	int *sums = dec.sums;
-	short *out;
-	int k, playing = 0;
+	int k, playing = 0, count = music.nodecode ? 0 : m->count;
 
 	memset(sums, 0, sizeof(dec.sums));
-	if (music.nodecode)
-		count = 0;
 	for (k = 0; k < VOICES; k++)
 		if (music.voices[k])
 			music.voices[k]->used++;
 	for (k = 0; k < count; k++)
 	{
-		struct voice *v = voice_for(owners[k]);
-		unsigned long frames = to[k] - from[k], i, step;
+		struct voice *v = voice_for(m->owners[k]);
+		unsigned long frames = m->to[k] - m->from[k], i, step;
 		int gain_left, gain_right, ramp_left, ramp_right;
 
-		if (!v || to[k] <= from[k])
+		if (!v || m->to[k] <= m->from[k])
 			continue;
 		v->used = 0;
-		/* a gap the queue can hold is decoded through and dropped below, so
-		the decoder keeps its step: after a late block, or a skip the game made */
-		if (v->chain != chains[k] || from[k] < v->position || to[k] - v->position > PCM_FRAMES / 2)
-			voice_seek(v, chains[k], (unsigned int)from[k]);
-		if (v->chain != chains[k] || !decode_to(v, (unsigned int)to[k]))
+		if (!ok[k])
 		{
 			/* late: silent this block, its place kept, so the bytes the
 			reader is fetching are the ones the next block decodes; it fades
@@ -1218,9 +1338,9 @@ void psp_music_decode(const void *const *owners, const int *chains, const unsign
 		}
 		playing++;
 		/* drop what lies before the block (a skip the game made) */
-		if (from[k] > v->position)
+		if (m->from[k] > v->position)
 		{
-			unsigned int drop = (unsigned int)(from[k] - v->position);
+			unsigned int drop = m->from[k] - v->position;
 
 			memmove(v->pcm, v->pcm + drop * 2, (v->pcm_frames - drop) * 2 * sizeof(short));
 			v->pcm_frames -= drop;
@@ -1230,8 +1350,8 @@ void psp_music_decode(const void *const *owners, const int *chains, const unsign
 		step = (frames << 16) / OUT_FRAMES;
 		gain_left = v->left << 8;
 		gain_right = v->right << 8;
-		ramp_left = ((left[k] - v->left) << 8) / OUT_FRAMES;
-		ramp_right = ((right[k] - v->right) << 8) / OUT_FRAMES;
+		ramp_left = ((m->left[k] - v->left) << 8) / OUT_FRAMES;
+		ramp_right = ((m->right[k] - v->right) << 8) / OUT_FRAMES;
 		for (i = 0; i < OUT_FRAMES; i++)
 		{
 			unsigned long f = (i * step) >> 16;
@@ -1242,8 +1362,8 @@ void psp_music_decode(const void *const *owners, const int *chains, const unsign
 			gain_left += ramp_left;
 			gain_right += ramp_right;
 		}
-		v->left = left[k];
-		v->right = right[k];
+		v->left = m->left[k];
+		v->right = m->right[k];
 		memmove(v->pcm, v->pcm + frames * 2, (v->pcm_frames - frames) * 2 * sizeof(short));
 		v->pcm_frames -= (unsigned int)frames;
 		v->position += (unsigned int)frames;
@@ -1251,54 +1371,188 @@ void psp_music_decode(const void *const *owners, const int *chains, const unsign
 	for (k = 0; k < VOICES; k++)
 		if (music.voices[k] && music.voices[k]->used > 8)
 			music.voices[k]->owner = NULL;
-	out = dec.out[dec.out_which];
 	for (k = 0; k < OUT_FRAMES * 2; k++)
 		out[k] = clip16(sums[k]);
-	dec.out_which ^= 1;
 	dec.blocks++;
 	if ((unsigned long)playing > dec.playing_worst)
 		dec.playing_worst = playing;
 }
 
-/* after the job (the audio thread): what the ME wrote that this CPU reads is
-dropped from its cache (on_me), the reader woken if the decode wants it, the
-lock let go and the block played */
-void psp_music_finish(int on_me)
+/* the music job (ME_JOB_MUSIC, psp_me.c; or here when the ME isn't up):
+args[0] the first set, args[1] how many, args[2] 1 when the eDRAM's room
+is free for the pool (the sound cache isn't there). results[0]: the sets finished, in
+order; the rest wait for the next job. No kernel call reachable from here */
+void psp_music_job(volatile unsigned int *args, volatile unsigned int *results, int on_me)
 {
-	SceUInt64 t0 = sceKernelGetSystemTimeWide();
-	int k;
+	unsigned int first = args[0], count = args[1], k;
+	int ok[MUSIC_MARKS_MAX];
 
-	if (on_me)
+	dec.yielding = on_me;
+	results[0] = 0;
+	if (!setup_here(on_me, (int)args[2]))
 	{
+		/* no codec: the sets play silent */
+		for (k = 0; k < count; k++)
+			memset(dec.out[(first + k) % MUSIC_SETS], 0, sizeof(dec.out[0]));
+		results[0] = count;
+		dec.yielding = 0;
+		return;
+	}
+	for (k = 0; k < count; k++)
+	{
+		const struct mark_set *m = &marks[(first + k) % MUSIC_SETS];
+
+		if (set_decode(m, ok) == 2)
+		{
+			dec.stops++;
+			break;
+		}
+		set_mix(m, ok, dec.out[(first + k) % MUSIC_SETS]);
+		results[0] = k + 1;
+	}
+	dec.yielding = 0;
+}
+
+/* the job collected (the audio thread): the finished sets to the output,
+what the ME wrote dropped from this cache, the reader woken, the state let go */
+static void music_collect(void)
+{
+	unsigned int results[ME_JOB_RESULTS], done, k;
+	int finished;
+
+	if (!feed.out)
+		return;
+	if (feed.out == 1)
+	{
+		/* the ME's own watchdog stops it if a job is out 500 ms */
+		if (!psp_me_submitted_done(ME_SLOT_MUSIC) && sceKernelGetSystemTimeWide() - feed.submitted_at < 500000)
+			return;
+		finished = psp_me_finish(ME_SLOT_MUSIC, results);
 		sceKernelDcacheInvalidateRange(&dec, DEC_READ_BYTES);
+		sceKernelDcacheInvalidateRange(dec.out, sizeof(dec.out));
 		for (k = 0; k < VOICES; k++)
 			if (music.voices[k])
 				sceKernelDcacheInvalidateRange(music.voices[k], (VOICE_DECODE_BYTES + 63) & ~63u);
+		if (!finished)
+		{
+			/* the ME stopped: its eDRAM is taken as lost with the setup in
+			it, and the sets it held play silent */
+			psp_music_own();
+			if (dec.pool_in_edram)
+				dec.setup_state = -2;
+			for (k = 0; k < feed.job_count; k++)
+				memset(dec.out[(feed.job_first + k) % MUSIC_SETS], 0, sizeof(dec.out[0]));
+			sceKernelDcacheWritebackRange(dec.out, sizeof(dec.out));
+			results[0] = feed.job_count;
+		}
 	}
+	else
+	{
+		results[0] = feed.done_here;
+		sceKernelDcacheWritebackRange(dec.out, sizeof(dec.out));
+	}
+	done = results[0] <= feed.job_count ? results[0] : feed.job_count;
+	feed.finished += done;
+	for (k = 0; k < done; k++)
+		sceKernelSignalSema(music.out_ready, 1);
+	feed.out = 0;
 	if (dec.wake)
 	{
 		dec.wake = 0;
 		sceKernelSignalSema(music.reader_wake, 1);
 	}
 	sceKernelSignalSema(music.state_lock, 1);
-	sceKernelSignalSema(music.out_ready, 1);
+}
+
+/* the sets marked and not yet finished, handed to a music job: the ME's
+when it runs (its idle time; the audio thread doesn't wait), else run here.
+Not at all this block if the reader holds the state (next block) */
+int psp_sound_edram_mode(void);
+
+static void music_submit(void)
+{
+	unsigned int args[3];
+
+	if (feed.out || feed.head == feed.finished || sceKernelPollSema(music.state_lock, 1) < 0)
+		return;
+	feed.job_first = feed.finished % MUSIC_SETS;
+	feed.job_count = feed.head - feed.finished;
+	args[0] = feed.job_first;
+	args[1] = feed.job_count;
+	args[2] = psp_sound_edram_mode() == 0;
+	/* what the job reads: the marks, the voices and pieces, the stubs */
+	sceKernelDcacheWritebackAll();
+	feed.submitted_at = sceKernelGetSystemTimeWide();
+	music.jobs++;
+	if (psp_me_submit(ME_SLOT_MUSIC, ME_JOB_MUSIC, args, 3))
+		feed.out = 1;
+	else if (dec.setup_state != -2 && !dec.pool_in_edram)
+	{
+		/* no ME: the job here, on this CPU */
+		unsigned int results[ME_JOB_RESULTS];
+
+		music.jobs_here++;
+		psp_music_job(args, results, 0);
+		feed.done_here = results[0];
+		feed.out = 2;
+	}
+	else
+	{
+		/* the pool was in the ME's eDRAM, which this CPU can't reach: silent */
+		unsigned int k;
+
+		for (k = 0; k < feed.job_count; k++)
+			memset(dec.out[(feed.job_first + k) % MUSIC_SETS], 0, sizeof(dec.out[0]));
+		feed.done_here = feed.job_count;
+		feed.out = 2;
+	}
+}
+
+/* after the mixer's job and its lock (the audio thread), every block:
+marked counts this block's set; the job out collected if it's done, and
+the queue handed on */
+void psp_music_after_block(int marked)
+{
+	SceUInt64 t0;
+
+	if (!marked && !feed.out && feed.head == feed.finished)
+		return;
+	t0 = sceKernelGetSystemTimeWide();
+	if (marked)
+		feed.head++;
+	feed.current = -1;
+	music_collect();
+	music_submit();
+	music_collect();
 	t0 = sceKernelGetSystemTimeWide() - t0;
 	music.decode_us += (unsigned long)t0;
 	if (t0 > music.decode_worst_us)
 		music.decode_worst_us = (unsigned long)t0;
 }
 
+/* the 44.1 kHz channel: the sets in order, MUSIC_LEAD silent blocks first
+and again after it ran dry, so the job has that many blocks of room */
 static int output_thread(SceSize arguments, void *argument)
 {
-	int which = 0;
+	static short silence[OUT_FRAMES * 2] __attribute__((aligned(64)));
+	unsigned int which = 0;
+	int lead = MUSIC_LEAD;
 
 	(void)arguments;
 	(void)argument;
+	sceKernelDcacheWritebackRange(silence, sizeof(silence));
 	for (;;)
 	{
-		sceKernelWaitSema(music.out_ready, 1, NULL);
+		if (sceKernelPollSema(music.out_ready, 1) < 0)
+		{
+			music.out_waited++;
+			sceKernelWaitSema(music.out_ready, 1, NULL);
+			lead = MUSIC_LEAD;
+		}
+		for (; lead > 0; lead--)
+			sceAudioOutputBlocking(music.out_channel, PSP_AUDIO_VOLUME_MAX, silence);
 		sceAudioOutputBlocking(music.out_channel, PSP_AUDIO_VOLUME_MAX, dec.out[which]);
-		which ^= 1;
+		which = (which + 1) % MUSIC_SETS;
 		sceKernelSignalSema(music.out_free, 1);
 	}
 	return 0;
@@ -1310,10 +1564,15 @@ void psp_music_report(void)
 #if PSP_METRICS
 	if (!music.on)
 		return;
-	platform_log("music: %lu blocks, late %lu, output full %lu; voices at most %lu; restarts %lu; pieces %lu (worst %lu us); "
+	platform_log("music: %lu blocks, late %lu, no set free %lu; voices at most %lu; restarts %lu; pieces %lu (worst %lu us); "
 		"stubs %lu (started ahead %lu, used %lu times; %lu walks, %lu index reads), not in the pack %lu; main CPU after the job %lu us a block (worst %lu); pool peak %lu KB%s",
-		dec.blocks, dec.late_blocks, music.out_late, dec.playing_worst, dec.restarts, music.pieces,
+		dec.blocks, dec.late_blocks, music.sets_full, dec.playing_worst, dec.restarts, music.pieces,
 		music.piece_worst_us, music.stubs_made, music.prefetched, dec.prefetch_hits, music.walks, music.index_reads, music.not_in_pack, dec.blocks ? music.decode_us / dec.blocks : 0,
-		music.decode_worst_us, (unsigned long)(dec.pool_peak - music.pool) / 1024, dec.pool_failed ? ", full" : "");
+		music.decode_worst_us, (unsigned long)(dec.pool_peak - dec.pool) / 1024, dec.pool_failed ? ", full" : "");
+	platform_log("music job: %lu jobs (%lu on this CPU), %lu gave way to another slot's job; the output waited %lu times "
+		"(each then %d blocks of silence: the music trails the mix by %d ms); the pool in %s; the codec setup %s",
+		music.jobs, music.jobs_here, dec.stops, music.out_waited, MUSIC_LEAD, MUSIC_LEAD * OUT_FRAMES * 1000 / 44100,
+		dec.pool_in_edram ? "the ME's eDRAM" : "main RAM",
+		dec.setup_state > 0 ? "made" : dec.setup_state == -1 ? "refused" : dec.setup_state == -2 ? "lost (the ME stopped)" : "not yet made");
 #endif
 }

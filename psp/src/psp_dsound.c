@@ -1887,10 +1887,9 @@ int psp_audio_setting(int set, int value)
 at 44.1 kHz and the gains */
 #define MUSIC_MARKS 4
 int psp_music_prepare(void);
-void psp_music_own(void);
-void psp_music_decode(const void *const *owners, const int *chains, const unsigned long *from, const unsigned long *to,
+void psp_music_queue(const void *const *owners, const int *chains, const unsigned long *from, const unsigned long *to,
 	const int *left, const int *right, int count);
-void psp_music_finish(int on_me);
+void psp_music_after_block(int marked);
 void psp_me_audio_music(int on);
 static const void *music_owner[MUSIC_MARKS];
 static int music_chain[MUSIC_MARKS], music_left[MUSIC_MARKS], music_right[MUSIC_MARKS];
@@ -1900,7 +1899,8 @@ static unsigned long music_to[64 / sizeof(unsigned long)] __attribute__((aligned
 
 /* the block's music, after its mix, in the mixer's job (either CPU): where
 each marked voice's frames end, from where the mix left it (on to the next
-packet of the same chain, or as far as the step went), then the decode */
+packet of the same chain, or as far as the step went), into the block's
+set for the music job (psp_music.c), which decodes it in the ME's idle time */
 void psp_dsound_music_job(unsigned long frames)
 {
 	unsigned long k;
@@ -1913,7 +1913,7 @@ void psp_dsound_music_job(unsigned long frames)
 		music_to[k] = head && head->music - 1 == music_chain[k] ? head->music_start + voice->frame * head->music_scale :
 			music_from[k] + ((voice->step * frames) >> 16) * music_scale_of[k];
 	}
-	psp_music_decode(music_owner, music_chain, music_from, music_to, music_left, music_right, (int)music_marks);
+	psp_music_queue(music_owner, music_chain, music_from, music_to, music_left, music_right, (int)music_marks);
 }
 #endif
 
@@ -2042,8 +2042,8 @@ static void mix(short *output, unsigned long frames)
 			music_marks++;
 		}
 	}
-	/* the decode rides the mixer's job: the ME then takes its whole cache
-	hand-over (the codec's state is far past the ranges' reach) */
+	/* the marks ride the mixer's job: the ME then takes its whole cache
+	hand-over (the sets are past the ranges' reach) */
 	music_job = music_marks && psp_music_prepare();
 #endif
 	if (on_me && edram_unreachable(1))
@@ -2122,11 +2122,7 @@ static void mix(short *output, unsigned long frames)
 			voices = psp_dsound_mix_list((void *const *)list, count, sums, output, frames, &clipped);
 #if PSP_MUSIC
 		if (music_job)
-		{
-			if (on_me)
-				psp_music_own();
 			psp_dsound_music_job(frames);
-		}
 #endif
 	}
 #if PSP_MUSIC
@@ -2143,8 +2139,7 @@ static void mix(short *output, unsigned long frames)
 	if (mixlock_old)
 		pthread_mutex_unlock(&mixer_lock);
 #if PSP_MUSIC
-	if (music_job)
-		psp_music_finish(mixed);
+	psp_music_after_block(music_job);
 #endif
 	clipped_blocks += clipped != 0;
 	mix_blocks++;
