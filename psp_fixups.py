@@ -41137,7 +41137,7 @@ static void psp_aime_formats_log(
 	int k;
 
 	for (k = 0; k < PSP_AIME_FORMATS && psp_aime_formats[k].format; k++)
-		platform_psp_log("aime: game time %ld | formatting stop %d: %lu from %p, format \"%.60s\"",
+		platform_psp_log("aime: game time %ld | formatting stop %d: %lu from %p, format [%.60s]",
 			now, k, psp_aime_formats[k].count, psp_aime_formats[k].caller, psp_aime_formats[k].format);
 }
 

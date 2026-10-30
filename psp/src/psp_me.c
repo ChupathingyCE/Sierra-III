@@ -2328,6 +2328,7 @@ has used the room; the job hands its actor back and ends, and the collection
 logs it. The fill's scan starts above them */
 #define AIME_GUARD_WORD 0xA1E5D00Du
 static volatile unsigned int *aime_guard = NULL;
+extern unsigned int psp_aime_sp_low, psp_aime_sp_high;
 
 static void aime_guard_set(
 	volatile unsigned int *guard)
@@ -2338,6 +2339,9 @@ static void aime_guard_set(
 		guard[k] = AIME_GUARD_WORD;
 	aime_guard = guard;
 }
+
+/* the AI pass's context (actors.c; psp_post.h's psp_aime_here) */
+extern unsigned int psp_aime_sp_low, psp_aime_sp_high;
 
 /* a pass on the main CPU: its thread's stack is the pass's context
 (psp_aime_here), found once a thread */
