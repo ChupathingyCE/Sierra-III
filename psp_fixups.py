@@ -41663,16 +41663,21 @@ FIXES_AIME2A["source/cseries/errors.c#aime2a"] = [
 		fatal one hands the actor back to the tick (stop 32), where it is
 		reported and a release build carries on past it as it does without
 		the job; any other is left out on the ME (counted with the refused
-		formats, psp_libc.c) and the thinking goes on, as it does past the
-		report on the main CPU */
+		formats, psp_libc.c) and the thinking goes on. aimefpu's pass does
+		the same, so the two sides match; a stop inside the report's body
+		would also leave its recursion lock held */
 		extern int psp_aime_arm, psp_aime_job_now[16], psp_aime_fpu_main;
 		extern void psp_aime_handback(int which);
 		int psp_format_refused(const char *format);
 
-		if (priority <= _error_delayed && psp_aime_arm && psp_aime_here() && (psp_aime_job_now[0] || psp_aime_fpu_main))
-			psp_aime_handback(32);
-		if (psp_aime_job_now[0] && psp_aime_here() && psp_format_refused(format))
+		if (psp_aime_here() && (psp_aime_job_now[0] || psp_aime_fpu_main))
+		{
+			if (priority <= _error_delayed && psp_aime_arm)
+				psp_aime_handback(32);
+			/* (counted on the ME) */
+			psp_format_refused(format);
 			return;
+		}
 	}
 #endif
 """),
@@ -41699,16 +41704,21 @@ FIXES_AIME2A["source/cseries/cseries.c#aime2a"] = [
 		fatal one hands the actor back to the tick (stop 32), where it is
 		reported and a release build carries on past it as it does without
 		the job; any other is left out on the ME (counted with the refused
-		formats, psp_libc.c) and the thinking goes on, as it does past the
-		report on the main CPU */
+		formats, psp_libc.c) and the thinking goes on. aimefpu's pass does
+		the same, so the two sides match; a stop inside the report's body
+		would also leave its recursion lock held */
 		extern int psp_aime_arm, psp_aime_job_now[16], psp_aime_fpu_main;
 		extern void psp_aime_handback(int which);
 		int psp_format_refused(const char *format);
 
-		if (fatal && psp_aime_arm && psp_aime_here() && (psp_aime_job_now[0] || psp_aime_fpu_main))
-			psp_aime_handback(32);
-		if (psp_aime_job_now[0] && psp_aime_here() && psp_format_refused(information))
+		if (psp_aime_here() && (psp_aime_job_now[0] || psp_aime_fpu_main))
+		{
+			if (fatal && psp_aime_arm)
+				psp_aime_handback(32);
+			/* (counted on the ME) */
+			psp_format_refused(information);
 			return;
+		}
 	}
 #endif
 """),
@@ -41733,16 +41743,21 @@ FIXES_AIME2A["source/cseries/cseries.c#aime2a"] = [
 		fatal one hands the actor back to the tick (stop 32), where it is
 		reported and a release build carries on past it as it does without
 		the job; any other is left out on the ME (counted with the refused
-		formats, psp_libc.c) and the thinking goes on, as it does past the
-		report on the main CPU */
+		formats, psp_libc.c) and the thinking goes on. aimefpu's pass does
+		the same, so the two sides match; a stop inside the report's body
+		would also leave its recursion lock held */
 		extern int psp_aime_arm, psp_aime_job_now[16], psp_aime_fpu_main;
 		extern void psp_aime_handback(int which);
 		int psp_format_refused(const char *format);
 
-		if (fatal && psp_aime_arm && psp_aime_here() && (psp_aime_job_now[0] || psp_aime_fpu_main))
-			psp_aime_handback(32);
-		if (psp_aime_job_now[0] && psp_aime_here() && psp_format_refused(information))
+		if (psp_aime_here() && (psp_aime_job_now[0] || psp_aime_fpu_main))
+		{
+			if (fatal && psp_aime_arm)
+				psp_aime_handback(32);
+			/* (counted on the ME) */
+			psp_format_refused(information);
 			return;
+		}
 	}
 #endif
 """),
