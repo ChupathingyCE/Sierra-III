@@ -536,6 +536,7 @@ static void me_halt_idle(volatile struct me_control *control, int ring_ready, un
 
 /* one job (either CPU; on_me: this is the ME) */
 static void aime_simulated(volatile struct me_slot *slot);
+static void aime_on_me(volatile struct me_slot *slot);
 
 static void run_job(volatile struct me_slot *slot, int *sums, int on_me)
 {
@@ -543,7 +544,7 @@ static void run_job(volatile struct me_slot *slot, int *sums, int on_me)
 	{
 	case ME_JOB_AIME:
 		if (on_me)
-			psp_aime_me_job(slot->args, slot->results);
+			aime_on_me(slot);
 		else
 			aime_simulated(slot);
 		break;
@@ -2315,8 +2316,45 @@ ME-strict check, the write trace, the code's PSP_ME_WORK paths), on a stack
 of its own. The thinking keeps 82 KB path searches on its stack and reaches
 past 192 KB, more than the ME's eDRAM stack has, so the stack's deepest reach
 is measured (a fill pattern) and reported: it sizes the job's stack */
-#define AIME_SIM_STACK_BYTES (512 * 1024)
+#define AIME_SIM_STACK_BYTES (ME_EDRAM_STACK_TOP - ME_EDRAM_AIME_STACK)
 #define AIME_SIM_FILL 0x5AA5C33Cu
+
+/* the job on the ME, on the ME's own stack in its eDRAM. Its deepest reach
+is measured the same way, every nested job included (audio, the ring and a
+render job run inside its yields, on the same stack): the room below the
+first job's stack pointer is filled once, and when the main CPU asks
+(args[0]) the fill is read from the bottom up to the lowest word written so
+far. The figure is the stack's depth from the eDRAM's top, the ME's own
+frames included */
+static unsigned int aime_me_lowest = 0, aime_me_filled = 0;
+
+static void aime_on_me(volatile struct me_slot *slot)
+{
+	unsigned int *bottom = (unsigned int *)(ME_EDRAM + ME_EDRAM_AIME_STACK);
+	unsigned int *word;
+	unsigned int sp;
+
+	__asm__ __volatile__("move %0, $sp" : "=r"(sp));
+	if (!aime_me_lowest)
+	{
+		aime_me_lowest = sp;
+		if (sp > (unsigned int)bottom + 256 && sp <= ME_EDRAM + ME_EDRAM_STACK_TOP)
+		{
+			for (word = bottom; (unsigned int)word < sp - 256; word++)
+				*word = AIME_SIM_FILL;
+			aime_me_filled = 1;
+		}
+	}
+	psp_aime_me_job(slot->args, slot->results);
+	if (slot->args[0] && aime_me_filled)
+	{
+		for (word = bottom; (unsigned int)word < aime_me_lowest && *word == AIME_SIM_FILL; word++)
+			;
+		if ((unsigned int)word < aime_me_lowest)
+			aime_me_lowest = (unsigned int)word;
+	}
+	slot->results[ME_JOB_RESULTS - 1] = ME_EDRAM + ME_EDRAM_STACK_TOP - aime_me_lowest;
+}
 static unsigned char *aime_sim_stack = NULL;
 static unsigned int aime_sim_deepest = 0;
 

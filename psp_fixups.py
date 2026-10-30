@@ -40918,6 +40918,13 @@ static boolean psp_aime2a_active(
 	{
 		psp_aime2a_check_on = psp_keep("aime2acheck") != 0;
 		psp_aime2a_on = (psp_aime2a_check_on || psp_keep("aime2a") != 0) && psp_aime1b_active();
+		if (psp_aime2a_on && psp_keep("soundedram"))
+		{
+			/* the sound cache in the eDRAM reaches into the room the job's
+			stack grows into (psp_me.h's map) */
+			psp_aime2a_on = 0;
+			platform_psp_log("aime2a: off, as soundedram's sound cache takes the eDRAM the job's stack needs");
+		}
 		if (psp_aime2a_on)
 		{
 			psp_aime2a_abort = psp_me_abort_word(ME_SLOT_AI);
@@ -40988,6 +40995,12 @@ void psp_aime2a_frame_end(
 	psp_aime2a_owed = FALSE;
 	if (!psp_aime2a_active() || !psp_aime_update_allowed())
 		return;
+	/* the node blocks still owed are made here: the ME can't make one (node
+	matrices, the animation pack), and each is what a reader would have had
+	made, from the inputs kept when it was left out */
+	psp_aime2a_stats.settled += psp_nms_settle_owed();
+	/* every 32nd job the ME also measures its stack's deepest reach (psp_me.c) */
+	args[0] = (psp_aime2a_stats.pushed & 31) == 0;
 	/* everything the pass reads, out of the main CPU's cache; the ME drops
 	its own before the job */
 	sceKernelDcacheWritebackAll();
@@ -41079,11 +41092,12 @@ static void psp_aime2a_log(
 {
 	if (psp_aime2a_on <= 0)
 		return;
-	platform_psp_log("aime2a: game time %ld | jobs %lu (refused %lu), collected %lu, late %lu, no answer %lu, failed %lu | passes inline %lu | actors on the ME %lu, ended by the word %lu, props over the copy %lu | pathfinding log %lu, applied %lu (woken %lu), full %lu | stack %lu bytes%s",
+	platform_psp_log("aime2a: game time %ld | jobs %lu (refused %lu), collected %lu, late %lu, no answer %lu, failed %lu | passes inline %lu | actors on the ME %lu, ended by the word %lu, props over the copy %lu | pathfinding log %lu, applied %lu (woken %lu), full %lu | node blocks made before the job %lu | stack %lu bytes%s",
 		now, psp_aime2a_stats.pushed, psp_aime2a_stats.refused, psp_aime2a_stats.collected, psp_aime2a_stats.late,
 		psp_aime2a_stats.no_answer, psp_aime2a_stats.failed, psp_aime2a_stats.inline_passes, psp_aime2a_stats.on_me,
 		psp_aime2a_stats.aborted, psp_aime2a_stats.many_props, psp_aime_pf_stats[0], psp_aime_pf_stats[1],
-		psp_aime_pf_stats[2], psp_aime_pf_stats[3], psp_aime2a_stats.stack_deepest, "");
+		psp_aime_pf_stats[2], psp_aime_pf_stats[3], psp_aime2a_stats.settled, psp_aime2a_stats.stack_deepest,
+		psp_aime2a_stats.stack_deepest >= 393216 ? " (the whole room: it overflowed)" : "");
 	if (psp_aime2a_check_on)
 		platform_psp_log("aime2acheck: game time %ld | jobs checked %lu, the AI's state changed between the job's end and the collection %lu",
 			now, psp_aime2a_stats.checked, psp_aime2a_stats.check_changed);
@@ -41166,8 +41180,10 @@ static volatile unsigned int *psp_aime2a_abort = NULL;
 static struct
 {
 	unsigned long pushed, refused, collected, late, no_answer, failed, inline_passes;
-	unsigned long on_me, aborted, many_props, checked, check_changed, stack_deepest;
+	unsigned long on_me, aborted, many_props, checked, check_changed, stack_deepest, settled;
 } psp_aime2a_stats;
+/* objects.c (FIXES_AIME2A): the node blocks still owed, made now */
+unsigned long psp_nms_settle_owed(void);
 /* "aimefpu": 1b's pass on the main CPU in the ME's FPU forms (matrix_math.c,
 real_math.c read psp_aime_fpu_main) */
 static int psp_aime_fpu_main_on = -1;
@@ -41426,6 +41442,32 @@ void object_marker_begin(
 	}
 """),
 ]
+FIXES_AIME2A["source/objects/objects.c#aime2a"].append((
+"""/* a map's objects go: nothing of theirs is owed */
+static void psp_nms_forget(void)
+{""",
+ """/* psp_fixups.py (FIXES_AIME2A, "aime2a"): every compute still owed made
+now, as the frame's end makes them without vislazy: the thinking job reads
+the world on the ME, which can't make one */
+unsigned long psp_nms_settle_owed(void)
+{
+	unsigned long made = 0;
+	long word;
+
+	if (psp_nms_on <= 0 || !psp_nms_count)
+		return 0;
+	for (word = 0; word < (MAXIMUM_OBJECTS_PER_MAP + 31) / 32; word++)
+		while (psp_nms_pending[word])
+		{
+			psp_nms_settle_absolute(word * 32 + __builtin_ctz(psp_nms_pending[word]), 1);
+			made++;
+		}
+	return made;
+}
+
+/* a map's objects go: nothing of theirs is owed */
+static void psp_nms_forget(void)
+{"""))
 FIXES_AIME2A["source/models/model_animation_definitions.c#aime2a"] = [
 ("""byte *animation_get_frame_data(struct animation const *animation, short frame_index)
 {
@@ -41736,6 +41778,39 @@ FIXES_AIME2A["port/linux/src/msvc_crt.c#aime2a"] = [
 
 #ifdef HALO_PSP
 """ + _PSP_AIME2A_STOP_HOOK + """#endif
+"""),
+]
+FIXES_AIME2A["port/linux/src/msvc_crt.c#aime2a"].append((
+"""int halo_linux_vsnprintf(char *buffer, size_t count, const char *format, va_list arguments)
+{
+	char translated_format[1024];
+
+""",
+ """int halo_linux_vsnprintf(char *buffer, size_t count, const char *format, va_list arguments)
+{
+	char translated_format[1024];
+
+#ifdef HALO_PSP
+""" + _PSP_AIME2A_STOP_HOOK + """#endif
+"""))
+# the speaker's team name is read only by the debug printing: on the ME it
+# isn't formatted, so play's speech never reaches the formatting stop
+FIXES_AIME2A["source/ai/ai_communication.c#aime2a"] = [
+("""
+							sprintf(
+								team_string,
+								"%s-%c%c%c%s",
+""",
+ """
+#ifdef HALO_PSP
+							/* psp_fixups.py (FIXES_AIME2A, "aime2a"): only the debug
+							printing reads it, and on the ME the C library's formatting
+							is firmware */
+							if (ai_debug.print_communication || !psp_work_on_me())
+#endif
+							sprintf(
+								team_string,
+								"%s-%c%c%c%s",
 """),
 ]
 FIXES_AIME2A["source/memory/data.c#aime2a"] = [
