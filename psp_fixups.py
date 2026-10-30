@@ -39991,7 +39991,736 @@ FIXES_AIME["source/math/random_math.c#aime"] = [
 ]
 
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items())):
+# ---------- FIXES_AIME1B: AIME step 1b, the hand-back (keep word "aime1b", with "aime"; off)
+# With aime, the thinking done ahead may reach a world writer. Those whose
+# results the thinking ignores (speech, screams, activation) wait in a queue
+# applied at the start of the next ai_update, where the thinking's results
+# land. At any other, the actor is stopped where it stands (a long jump back
+# to the pass's loop) and goes back to copies taken before it started: its
+# datum, its props (those it made freed, those it deleted put back), its
+# swarm, the timeslice's round, the object marks' flag and the thinking's
+# seed; its queued calls are dropped, and it thinks in the tick instead, at
+# its turn, as without aime. What a stopped actor wrote to records it shares
+# (its encounter, squad, the AI globals' other fields, another actor's
+# datum or props) stays: "aime1bcheck" stops every fourth actor at the end of
+# its thinking and counts, by pool, what its stop left changed. This is the
+# Media Engine job's mechanism, proven on the main CPU before the job exists
+# (docs/aime_me.md). Campaign only, as aime is
+FIXES_AIME1B = {}
+# the world writers the thinking reaches, in aimewho's order; 0, 1, 16 and 17
+# are queued, the rest hand the actor back
+PSP_AIME1B_WRITERS = ["unit_speak", "unit_scream", "unit_try_and_exit_seat", "unit_enter_seat", "unit_start_user_animation", "unit_start_animation_impulse", "unit_start_running_blindly", "unit_melee_attack_begin", "unit_leap_begin", "unit_detach_from_parent", "unit_add_weapon_to_inventory", "unit_add_grenade_type_to_inventory", "unit_set_actively_controlled", "unit_exit_seat_end", "object_new", "object_delete", "object_activate", "object_deactivate", "object_set_automatic_deactivation", "weapon_set_total_rounds", "game_allegiance_provoke", "game_allegiance_incident", "hs_wake_by_name", "biped_accelerate"]
+FIXES_AIME1B["source/ai/actors.c#aime1b"] = [
+("""static void psp_aime_mark(
+	long actor_index)
+{
+""",
+ """/* FIXES_AIME1B: "aime1b" (see there) */
+#define PSP_AIME_WRITERS 25
+#define PSP_AIME_FORCED (PSP_AIME_WRITERS - 1)
+/* TRUE while this actor's thinking is to end in a stop (aime1bcheck) */
+static boolean psp_aime1b_checking = FALSE;
+void psp_aime_handback(int which);
+
+static void psp_aime_mark(
+	long actor_index)
+{
+	if (psp_aime1b_checking)
+		psp_aime_handback(PSP_AIME_FORCED);
+"""),
+("""#ifdef HALO_PSP
+/* FIXES_AIME: the next tick's thinking, every actor actors_update would
+update, at the end of this tick (game_time.c), the game time already the
+next tick's */
+""",
+ """#ifdef HALO_PSP
+/* FIXES_AIME1B: "aime1b" (see there) */
+static const char *const psp_aime_writer_names[PSP_AIME_WRITERS] = { "unit_speak", "unit_scream", "unit_try_and_exit_seat", "unit_enter_seat",
+	"unit_start_user_animation", "unit_start_animation_impulse", "unit_start_running_blindly", "unit_melee_attack_begin", "unit_leap_begin",
+	"unit_detach_from_parent", "unit_add_weapon_to_inventory", "unit_add_grenade_type_to_inventory", "unit_set_actively_controlled",
+	"unit_exit_seat_end", "object_new", "object_delete", "object_activate", "object_deactivate", "object_set_automatic_deactivation",
+	"weapon_set_total_rounds", "game_allegiance_provoke", "game_allegiance_incident", "hs_wake_by_name", "biped_accelerate", "forced" };
+#define PSP_AIME_WRITER_SPEAK 0
+#define PSP_AIME_WRITER_SCREAM 1
+#define PSP_AIME_WRITER_ACTIVATE 16
+#define PSP_AIME_WRITER_DEACTIVATE 17
+/* an actor with more props than its copy holds is thought ahead as by aime
+alone (a stop could not put it back) */
+#define PSP_AIME_PROPS_MOST 48
+#define PSP_AIME_PROP_LOG_MOST 32
+#define PSP_AIME_QUEUE_MOST 96
+
+/* the writers' hooks read it: 0 outside the thinking done ahead; 1 queue and
+stop; 2 queue, but let a writer run (this actor can't be put back) */
+int psp_aime_arm = 0;
+static int psp_aime1b_on = -1, psp_aime1b_check_on = 0;
+static void *psp_aime_jump[5];
+static long psp_aime_current = NONE;
+static int psp_aime_stop_which = NONE;
+static boolean psp_aime_stopped = FALSE;
+
+static struct psp_aime_copy
+{
+	struct actor_datum actor;
+	struct data_array prop_header, swarm_header, component_header;
+	struct swarm_datum swarm;
+	long swarm_index;
+	short prop_count, log_count, queue_mark;
+	boolean time_given, marker;
+	short highest_timer;
+	unsigned long seed;
+	long prop_index[PSP_AIME_PROPS_MOST];
+	long log_index[PSP_AIME_PROP_LOG_MOST];
+	boolean log_deleted[PSP_AIME_PROP_LOG_MOST];
+} *psp_aime_copy;
+static byte *psp_aime_prop_bytes, *psp_aime_log_bytes;
+
+static struct psp_aime_queued
+{
+	short writer, value;
+	long index;
+	struct unit_speech_item speech;
+} *psp_aime_queue;
+static short psp_aime_queue_count = 0;
+static long psp_aime_queue_time = NONE;
+
+static struct
+{
+	unsigned long actors, handed_back, no_stop, many_props, log_full, others_props, swarm_pool;
+	unsigned long props_made_undone, props_deleted_undone;
+	unsigned long queued_total, queue_dropped, applied, gone, stale, queue_full;
+	unsigned long back[PSP_AIME_WRITERS], queued[PSP_AIME_WRITERS], written_ahead[PSP_AIME_WRITERS];
+	unsigned long checked, own_actor, own_props, prop_header, own_swarm, prop_live;
+	unsigned long other_actors, other_actor_stops, other_props, other_prop_stops, other_swarms;
+} psp_aime1b_stats;
+
+/* aime1bcheck: each datum's identifier and a hash of its bytes, by pool,
+before a checked actor thinks */
+#define PSP_AIME_POOLS 3
+static unsigned long *psp_aime_check_hash[PSP_AIME_POOLS];
+static short *psp_aime_check_identifier[PSP_AIME_POOLS];
+static short psp_aime_check_count[PSP_AIME_POOLS];
+
+boolean *psp_object_marker_flag(void);
+
+static struct data_array *psp_aime_pool(
+	int pool)
+{
+	return pool == 0 ? actor_data : pool == 1 ? prop_data : swarm_data;
+}
+
+static struct datum_header *psp_aime_datum_address(
+	struct data_array *data,
+	long index)
+{
+	return (struct datum_header *)((byte *)xbox_pointer(data->data) + data->size * DATUM_INDEX_TO_ABSOLUTE_INDEX(index));
+}
+
+static boolean psp_aime1b_active(
+	void)
+{
+	int pool;
+
+	if (psp_aime1b_on < 0)
+	{
+		psp_aime1b_check_on = psp_keep("aime1bcheck") != 0;
+		psp_aime1b_on = psp_aime1b_check_on || psp_keep("aime1b") != 0;
+		if (psp_aime1b_on)
+		{
+			psp_aime_copy = malloc(sizeof(*psp_aime_copy));
+			psp_aime_prop_bytes = malloc(PSP_AIME_PROPS_MOST * sizeof(struct prop_datum));
+			psp_aime_log_bytes = malloc(PSP_AIME_PROP_LOG_MOST * sizeof(struct prop_datum));
+			psp_aime_queue = malloc(PSP_AIME_QUEUE_MOST * sizeof(*psp_aime_queue));
+			for (pool = 0; pool < PSP_AIME_POOLS && psp_aime1b_check_on; pool++)
+			{
+				psp_aime_check_hash[pool] = malloc(psp_aime_pool(pool)->maximum_count * sizeof(unsigned long));
+				psp_aime_check_identifier[pool] = malloc(psp_aime_pool(pool)->maximum_count * sizeof(short));
+				if (!psp_aime_check_hash[pool] || !psp_aime_check_identifier[pool])
+					psp_aime1b_check_on = 0;
+			}
+			if (!psp_aime_copy || !psp_aime_prop_bytes || !psp_aime_log_bytes || !psp_aime_queue)
+			{
+				psp_aime1b_on = 0;
+				platform_psp_log("aime1b: no room for its copies, so it's off");
+			}
+			else
+				platform_psp_log("ai: a thinking done ahead that reaches a world writer is stopped and thought in the tick; speech, screams and activations wait for the next ai_update (aime1b%s)",
+					psp_aime1b_check_on ? "; aime1bcheck: every fourth actor stopped at its thinking's end, what the stop leaves changed counted" : "");
+		}
+	}
+	return psp_aime1b_on > 0;
+}
+
+/* at the entry of a world writer the thinking ahead may not run: the stop */
+void psp_aime_handback(
+	int which)
+{
+	if (which < 0 || which >= PSP_AIME_WRITERS)
+		which = PSP_AIME_FORCED;
+	if (psp_aime_arm == 1)
+	{
+		psp_aime_arm = 0;
+		psp_aime_stop_which = which;
+		__builtin_longjmp(psp_aime_jump, 1);
+	}
+	psp_aime1b_stats.written_ahead[which]++;
+}
+
+static boolean psp_aime_queue_add(
+	int writer,
+	long index,
+	short value,
+	struct unit_speech_item const *speech)
+{
+	struct psp_aime_queued *queued;
+
+	if (psp_aime_queue_count >= PSP_AIME_QUEUE_MOST)
+	{
+		psp_aime1b_stats.queue_full++;
+		psp_aime_handback(writer);
+		return FALSE;
+	}
+	queued = &psp_aime_queue[psp_aime_queue_count++];
+	queued->writer = (short)writer;
+	queued->value = value;
+	queued->index = index;
+	if (speech)
+		queued->speech = *speech;
+	psp_aime1b_stats.queued[writer]++;
+	psp_aime1b_stats.queued_total++;
+	return TRUE;
+}
+
+/* the queued writers' hooks: TRUE when the call waits in the queue */
+boolean psp_aime_queue_speak(
+	long unit_index,
+	short play_type,
+	struct unit_speech_item const *speech_item)
+{
+	return psp_aime_queue_add(PSP_AIME_WRITER_SPEAK, unit_index, play_type, speech_item);
+}
+
+boolean psp_aime_queue_scream(
+	long unit_index,
+	short scream_type)
+{
+	return psp_aime_queue_add(PSP_AIME_WRITER_SCREAM, unit_index, scream_type, NULL);
+}
+
+boolean psp_aime_queue_activation(
+	long object_index,
+	boolean active)
+{
+	return psp_aime_queue_add(active ? PSP_AIME_WRITER_ACTIVATE : PSP_AIME_WRITER_DEACTIVATE, object_index, 0, NULL);
+}
+
+/* the start of ai_update: the queue made for this tick, in the order made */
+void psp_aime_collect(
+	void)
+{
+	short count = psp_aime_queue_count, k;
+
+	if (!count)
+		return;
+	psp_aime_queue_count = 0;
+	if (psp_aime_queue_time == NONE || psp_aime_queue_time != game_time_get())
+	{
+		psp_aime1b_stats.stale += count;
+		return;
+	}
+	for (k = 0; k < count; k++)
+	{
+		struct psp_aime_queued *queued = &psp_aime_queue[k];
+
+		if (!object_try_and_get_and_verify_type(queued->index,
+			queued->writer <= PSP_AIME_WRITER_SCREAM ? _object_mask_unit : _object_mask_all))
+		{
+			psp_aime1b_stats.gone++;
+			continue;
+		}
+		switch (queued->writer)
+		{
+		case PSP_AIME_WRITER_SPEAK:
+			unit_speak(queued->index, queued->value, &queued->speech);
+			break;
+		case PSP_AIME_WRITER_SCREAM:
+			unit_scream(queued->index, queued->value);
+			break;
+		case PSP_AIME_WRITER_ACTIVATE:
+			object_activate(queued->index);
+			break;
+		default:
+			object_deactivate(queued->index);
+			break;
+		}
+		psp_aime1b_stats.applied++;
+	}
+}
+
+/* props.c: a prop made or about to be deleted while the actor thinks ahead.
+A prop of another actor's can't be put back, so it ends the actor's stops */
+void psp_aime_prop_change(
+	long actor_index,
+	long prop_index,
+	boolean deleting)
+{
+	struct psp_aime_copy *copy = psp_aime_copy;
+
+	if (psp_aime_arm != 1 || prop_index == NONE)
+		return;
+	if (actor_index != psp_aime_current)
+	{
+		psp_aime1b_stats.others_props++;
+		psp_aime_arm = 2;
+		return;
+	}
+	if (copy->log_count >= PSP_AIME_PROP_LOG_MOST)
+	{
+		psp_aime1b_stats.log_full++;
+		psp_aime_arm = 2;
+		return;
+	}
+	copy->log_index[copy->log_count] = prop_index;
+	copy->log_deleted[copy->log_count] = deleting;
+	if (deleting)
+		csmemcpy(psp_aime_log_bytes + copy->log_count * sizeof(struct prop_datum), prop_get(prop_index), sizeof(struct prop_datum));
+	copy->log_count++;
+}
+
+static unsigned long psp_aime_hash(
+	void const *bytes,
+	long size)
+{
+	unsigned long const *words = (unsigned long const *)bytes;
+	unsigned long hash = 2166136261u;
+	long k;
+
+	for (k = 0; k < size / 4; k++)
+		hash = (hash ^ words[k]) * 16777619u;
+	for (k = size & ~3; k < size; k++)
+		hash = (hash ^ ((byte const *)bytes)[k]) * 16777619u;
+	return hash;
+}
+
+static void psp_aime_check_before(
+	void)
+{
+	int pool;
+	short k;
+
+	for (pool = 0; pool < PSP_AIME_POOLS; pool++)
+	{
+		struct data_array *data = psp_aime_pool(pool);
+
+		psp_aime_check_count[pool] = data->count;
+		for (k = 0; k < data->count; k++)
+		{
+			struct datum_header *header = (struct datum_header *)((byte *)xbox_pointer(data->data) + data->size * k);
+
+			psp_aime_check_identifier[pool][k] = header->identifier;
+			psp_aime_check_hash[pool][k] = header->identifier ? psp_aime_hash(header, data->size) : 0;
+		}
+	}
+}
+
+static boolean psp_aime_copy_has_prop(
+	long prop_index)
+{
+	short k;
+
+	for (k = 0; k < psp_aime_copy->prop_count; k++)
+	{
+		if (psp_aime_copy->prop_index[k] == prop_index)
+			return TRUE;
+	}
+	for (k = 0; k < psp_aime_copy->log_count; k++)
+	{
+		if (psp_aime_copy->log_index[k] == prop_index)
+			return TRUE;
+	}
+	return FALSE;
+}
+
+/* after a checked actor's stop: what the stop left changed, by pool. The
+actor's own must all be back; the rest is what it wrote to others */
+static void psp_aime_check_after(
+	void)
+{
+	short own_actor = DATUM_INDEX_TO_ABSOLUTE_INDEX(psp_aime_current);
+	short own_swarm = psp_aime_copy->swarm_index == NONE ? NONE : DATUM_INDEX_TO_ABSOLUTE_INDEX(psp_aime_copy->swarm_index);
+	unsigned long others_before = psp_aime1b_stats.other_actors, props_before = psp_aime1b_stats.other_props;
+	int pool;
+	short k;
+
+	psp_aime1b_stats.checked++;
+	if (csmemcmp(prop_data, &psp_aime_copy->prop_header, sizeof(struct data_array)))
+		psp_aime1b_stats.prop_header++;
+	for (pool = 0; pool < PSP_AIME_POOLS; pool++)
+	{
+		struct data_array *data = psp_aime_pool(pool);
+		short count = MAX(data->count, psp_aime_check_count[pool]);
+
+		for (k = 0; k < count; k++)
+		{
+			struct datum_header *header = (struct datum_header *)((byte *)xbox_pointer(data->data) + data->size * k);
+			short identifier_before = k < psp_aime_check_count[pool] ? psp_aime_check_identifier[pool][k] : 0;
+			unsigned long hash_before = k < psp_aime_check_count[pool] ? psp_aime_check_hash[pool][k] : 0;
+			short identifier = k < data->count ? header->identifier : 0;
+			unsigned long hash = identifier ? psp_aime_hash(header, data->size) : 0;
+
+			if (identifier == identifier_before && hash == hash_before)
+				continue;
+			if (pool == 1 && identifier != identifier_before)
+				psp_aime1b_stats.prop_live++;
+			if (pool == 0)
+			{
+				if (k == own_actor)
+					psp_aime1b_stats.own_actor++;
+				else
+					psp_aime1b_stats.other_actors++;
+			}
+			else if (pool == 1)
+			{
+				if (psp_aime_copy_has_prop((long)(((unsigned long)(unsigned short)(identifier ? identifier : identifier_before) << 16) | (unsigned long)k)))
+					psp_aime1b_stats.own_props++;
+				else
+					psp_aime1b_stats.other_props++;
+			}
+			else
+			{
+				if (k == own_swarm)
+					psp_aime1b_stats.own_swarm++;
+				else
+					psp_aime1b_stats.other_swarms++;
+			}
+		}
+	}
+	if (psp_aime1b_stats.other_actors != others_before)
+		psp_aime1b_stats.other_actor_stops++;
+	if (psp_aime1b_stats.other_props != props_before)
+		psp_aime1b_stats.other_prop_stops++;
+}
+
+static void psp_aime_save(
+	long actor_index)
+{
+	struct psp_aime_copy *copy = psp_aime_copy;
+	struct actor_datum *actor = actor_get(actor_index);
+	boolean many = FALSE;
+	long prop_index;
+
+	psp_aime_current = actor_index;
+	psp_aime_stopped = FALSE;
+	csmemcpy(&copy->actor, actor, sizeof(copy->actor));
+	csmemcpy(&copy->prop_header, prop_data, sizeof(struct data_array));
+	csmemcpy(&copy->swarm_header, swarm_data, sizeof(struct data_array));
+	csmemcpy(&copy->component_header, swarm_component_data, sizeof(struct data_array));
+	copy->prop_count = 0;
+	for (prop_index = actor->meta.first_prop_index; prop_index != NONE; prop_index = prop_get(prop_index)->next_prop_index)
+	{
+		if (copy->prop_count >= PSP_AIME_PROPS_MOST)
+		{
+			many = TRUE;
+			break;
+		}
+		copy->prop_index[copy->prop_count] = prop_index;
+		csmemcpy(psp_aime_prop_bytes + copy->prop_count * sizeof(struct prop_datum), prop_get(prop_index), sizeof(struct prop_datum));
+		copy->prop_count++;
+	}
+	copy->swarm_index = NONE;
+	if (actor->meta.swarm && actor->meta.swarm_cache_index != NONE)
+	{
+		copy->swarm_index = actor->meta.swarm_cache_index;
+		csmemcpy(&copy->swarm, swarm_get(copy->swarm_index), sizeof(copy->swarm));
+	}
+	copy->time_given = ai_globals->time_given_this_frame;
+	copy->highest_timer = ai_globals->current_highest_service_timer;
+	copy->marker = *psp_object_marker_flag();
+	copy->seed = psp_aime_seed;
+	copy->log_count = 0;
+	copy->queue_mark = psp_aime_queue_count;
+	psp_aime1b_checking = psp_aime1b_check_on && !many &&
+		((psp_aime_pass + DATUM_INDEX_TO_ABSOLUTE_INDEX(actor_index)) & 3) == 0;
+	if (psp_aime1b_checking)
+		psp_aime_check_before();
+	if (many)
+		psp_aime1b_stats.many_props++;
+	psp_aime_arm = many ? 2 : 1;
+}
+
+/* the stop: everything the actor keeps back as it was, its queued calls
+dropped; it is thought in the tick */
+static void psp_aime_restore(
+	void)
+{
+	struct psp_aime_copy *copy = psp_aime_copy;
+	long size = prop_data->size;
+	short k;
+
+	actor_update_end();
+	for (k = copy->log_count - 1; k >= 0; k--)
+	{
+		struct datum_header *header = psp_aime_datum_address(prop_data, copy->log_index[k]);
+
+		if (copy->log_deleted[k])
+		{
+			csmemcpy(header, psp_aime_log_bytes + k * sizeof(struct prop_datum), size);
+			psp_aime1b_stats.props_deleted_undone++;
+		}
+		else
+		{
+			header->identifier = 0;
+			psp_aime1b_stats.props_made_undone++;
+		}
+	}
+	csmemcpy(prop_data, &copy->prop_header, sizeof(struct data_array));
+	for (k = 0; k < copy->prop_count; k++)
+		csmemcpy(psp_aime_datum_address(prop_data, copy->prop_index[k]), psp_aime_prop_bytes + k * sizeof(struct prop_datum), size);
+	csmemcpy(actor_get(psp_aime_current), &copy->actor, sizeof(copy->actor));
+	if (csmemcmp(swarm_data, &copy->swarm_header, sizeof(struct data_array)) ||
+		csmemcmp(swarm_component_data, &copy->component_header, sizeof(struct data_array)))
+		psp_aime1b_stats.swarm_pool++;
+	else if (copy->swarm_index != NONE)
+		csmemcpy(psp_aime_datum_address(swarm_data, copy->swarm_index), &copy->swarm, sizeof(copy->swarm));
+	ai_globals->time_given_this_frame = copy->time_given;
+	ai_globals->current_highest_service_timer = copy->highest_timer;
+	*psp_object_marker_flag() = copy->marker;
+	psp_aime_seed = copy->seed;
+	psp_aime1b_stats.queue_dropped += psp_aime_queue_count - copy->queue_mark;
+	psp_aime_queue_count = copy->queue_mark;
+	psp_aime1b_stats.handed_back++;
+	psp_aime1b_stats.back[psp_aime_stop_which]++;
+	psp_aime_stopped = TRUE;
+}
+
+/* the pass's loop: one actor thought ahead, or stopped and left to the tick.
+Nothing the stop needs may live in this frame's registers, so it's all in
+the copies */
+static void __attribute__((noinline)) psp_aime_think_actor(
+	long actor_index)
+{
+	if (!psp_aime1b_active())
+	{
+		actor_update(actor_index);
+		return;
+	}
+	psp_aime_save(actor_index);
+	psp_aime1b_stats.actors++;
+	if (__builtin_setjmp(psp_aime_jump) == 0)
+	{
+		actor_update(actor_index);
+		if (psp_aime_arm == 2)
+			psp_aime1b_stats.no_stop++;
+		psp_aime_arm = 0;
+	}
+	else
+		psp_aime_restore();
+	if (psp_aime1b_checking && psp_aime_stopped)
+		psp_aime_check_after();
+	psp_aime1b_checking = FALSE;
+	psp_aime_current = NONE;
+}
+
+static void psp_aime1b_pass_begin(
+	void)
+{
+	if (psp_aime_queue_count)
+	{
+		/* the last pass's queue never reached an ai_update */
+		psp_aime1b_stats.stale += psp_aime_queue_count;
+		psp_aime_queue_count = 0;
+	}
+}
+
+static void psp_aime1b_names(
+	char *line,
+	int room,
+	unsigned long const *counts)
+{
+	int k, length = 0;
+
+	line[0] = 0;
+	for (k = 0; k < PSP_AIME_WRITERS && length < room - 48; k++)
+	{
+		if (counts[k])
+			length += snprintf(line + length, room - length, " %s %lu", psp_aime_writer_names[k], counts[k]);
+	}
+	if (!length)
+		snprintf(line, room, " none");
+}
+
+static void psp_aime1b_log(
+	long now)
+{
+	char back[200], queued[160], ahead[160];
+
+	if (psp_aime1b_on <= 0)
+		return;
+	psp_aime1b_names(back, sizeof(back), psp_aime1b_stats.back);
+	psp_aime1b_names(queued, sizeof(queued), psp_aime1b_stats.queued);
+	psp_aime1b_names(ahead, sizeof(ahead), psp_aime1b_stats.written_ahead);
+	platform_psp_log("aime1b: game time %ld | actors %lu, handed back %lu:%s | queued %lu:%s; applied %lu, dropped by a stop %lu, gone %lu, stale %lu, full %lu",
+		now, psp_aime1b_stats.actors, psp_aime1b_stats.handed_back, back, psp_aime1b_stats.queued_total, queued,
+		psp_aime1b_stats.applied, psp_aime1b_stats.queue_dropped, psp_aime1b_stats.gone, psp_aime1b_stats.stale, psp_aime1b_stats.queue_full);
+	platform_psp_log("aime1b: game time %ld | undone: props made %lu, props deleted %lu | no stop possible %lu (props over the copy %lu, another's prop %lu, log full %lu), written ahead:%s; swarm pools changed %lu",
+		now, psp_aime1b_stats.props_made_undone, psp_aime1b_stats.props_deleted_undone, psp_aime1b_stats.no_stop,
+		psp_aime1b_stats.many_props, psp_aime1b_stats.others_props, psp_aime1b_stats.log_full, ahead, psp_aime1b_stats.swarm_pool);
+	if (psp_aime1b_check_on)
+		platform_psp_log("aime1bcheck: game time %ld | stops checked %lu; left changed, the actor's own: datum %lu, props %lu, prop pool header %lu, swarm %lu; props made or freed %lu | others': actors %lu (in %lu stops), props %lu (in %lu stops), swarms %lu",
+			now, psp_aime1b_stats.checked, psp_aime1b_stats.own_actor, psp_aime1b_stats.own_props, psp_aime1b_stats.prop_header,
+			psp_aime1b_stats.own_swarm, psp_aime1b_stats.prop_live, psp_aime1b_stats.other_actors, psp_aime1b_stats.other_actor_stops,
+			psp_aime1b_stats.other_props, psp_aime1b_stats.other_prop_stops, psp_aime1b_stats.other_swarms);
+}
+
+/* FIXES_AIME: the next tick's thinking, every actor actors_update would
+update, at the end of this tick (game_time.c), the game time already the
+next tick's */
+"""),
+("""	psp_aime_stats.passes++;
+	psp_aime_think_only = TRUE;
+""",
+ """	psp_aime_stats.passes++;
+	psp_aime1b_pass_begin();
+	psp_aime_think_only = TRUE;
+"""),
+("""			(actor->meta.swarm && actor->meta.swarm_cache_index == NONE))
+			continue;
+		actor_update(iterator.index);
+	}
+	psp_perception_end();
+	psp_aime_think_only = FALSE;
+	psp_aime_pass_time = now;
+""",
+ """			(actor->meta.swarm && actor->meta.swarm_cache_index == NONE))
+			continue;
+		psp_aime_think_actor(iterator.index);
+	}
+	psp_perception_end();
+	psp_aime_think_only = FALSE;
+	psp_aime_pass_time = now;
+	psp_aime_queue_time = now;
+"""),
+("""				now, psp_aime_stats.passes, psp_aime_stats.ahead, psp_aime_stats.inline_whole);
+""",
+ """				now, psp_aime_stats.passes, psp_aime_stats.ahead, psp_aime_stats.inline_whole);
+		if (psp_aime_logged != NONE)
+			psp_aime1b_log(now);
+"""),
+]
+FIXES_AIME1B["source/ai/ai.c#aime1b"] = [
+("""	profile_enter(ai_update_section);
+""",
+ """	profile_enter(ai_update_section);
+#if defined(HALO_PSP) && !defined(PSP_MULTIPLAYER)
+	{
+		/* psp_fixups.py (FIXES_AIME1B, "aime1b"): the world writes the
+		thinking done ahead queued, where its results land (actors.c) */
+		extern void psp_aime_collect(void);
+
+		psp_aime_collect();
+	}
+#endif
+"""),
+]
+FIXES_AIME1B["source/ai/props.c#aime1b"] = [
+("""	long prop_index = datum_new(prop_data);
+
+	prop_add(actor_index, NONE, prop_index);
+""",
+ """	long prop_index = datum_new(prop_data);
+
+#ifdef HALO_PSP
+	{ extern int psp_aime_arm; extern void psp_aime_prop_change(long, long, boolean); if (psp_aime_arm) psp_aime_prop_change(actor_index, prop_index, FALSE); }
+#endif
+	prop_add(actor_index, NONE, prop_index);
+"""),
+("""	if (prop_index == NONE)
+	{
+		prop_index = datum_new(prop_data);
+	}
+""",
+ """	if (prop_index == NONE)
+	{
+		prop_index = datum_new(prop_data);
+#ifdef HALO_PSP
+		{ extern int psp_aime_arm; extern void psp_aime_prop_change(long, long, boolean); if (psp_aime_arm) psp_aime_prop_change(actor_index, prop_index, FALSE); }
+#endif
+	}
+"""),
+("""	prop_remove(actor_index, prop_index);
+	datum_delete(prop_data, prop_index);
+""",
+ """#ifdef HALO_PSP
+	{ extern int psp_aime_arm; extern void psp_aime_prop_change(long, long, boolean); if (psp_aime_arm) psp_aime_prop_change(actor_index, prop_index, TRUE); }
+#endif
+	prop_remove(actor_index, prop_index);
+	datum_delete(prop_data, prop_index);
+"""),
+]
+FIXES_AIME1B["source/objects/objects.c#aime1b"] = [
+("""void object_marker_end(
+	void)
+{
+""",
+ """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_AIME1B): a stopped actor's marks flag goes back */
+boolean *psp_object_marker_flag(
+	void)
+{
+	return &object_globals->object_marker_initialized;
+}
+#endif
+
+void object_marker_end(
+	void)
+{
+"""),
+]
+
+def _psp_aime1b_hooks():
+    # the anchors: each writer's definition as the tree has it, its body's
+    # opening brace included
+    signatures = {
+        "unit_speak": ("source/units/unit_dialogue.c", "void unit_speak(\n\tlong unit_index,\n\tshort play_type,\n\tstruct unit_speech_item const *speech_item)\n{",
+            "{ extern int psp_aime_arm; extern boolean psp_aime_queue_speak(long, short, struct unit_speech_item const *); if (psp_aime_arm && psp_aime_queue_speak(unit_index, play_type, speech_item)) return; }"),
+        "unit_scream": ("source/units/unit_dialogue.c", "boolean unit_scream(\n\tlong unit_index,\n\tshort scream_type)\n{",
+            "{ extern int psp_aime_arm; extern boolean psp_aime_queue_scream(long, short); if (psp_aime_arm && psp_aime_queue_scream(unit_index, scream_type)) return FALSE; }"),
+        "unit_try_and_exit_seat": ("source/units/units.c", "boolean unit_try_and_exit_seat(\n\tlong unit_index)\n{", None),
+        "unit_enter_seat": ("source/units/units.c", "boolean unit_enter_seat(\n\tlong unit_index,\n\tlong target_unit_index,\n\tshort seat_index)\n{", None),
+        "unit_start_user_animation": ("source/units/units.c", "boolean unit_start_user_animation(\n\tlong unit_index,\n\tlong animation_graph_index,\n\tchar const *animation_name,\n\tboolean interpolate)\n{", None),
+        "unit_start_animation_impulse": ("source/units/units.c", "boolean unit_start_animation_impulse(\n\tlong unit_index,\n\tshort animation_impulse,\n\treal_vector2d *alignment_vector)\n{", None),
+        "unit_start_running_blindly": ("source/units/units.c", "void unit_start_running_blindly(\n\tlong unit_index)\n{", None),
+        "unit_melee_attack_begin": ("source/units/units.c", "boolean unit_melee_attack_begin(\n\tlong unit_index,\n\tboolean continuous,\n\treal_vector2d const *alignment_vector)\n{", None),
+        "unit_leap_begin": ("source/units/units.c", "boolean unit_leap_begin(\n\tlong unit_index,\n\treal_vector2d const *alignment_vector)\n{", None),
+        "unit_detach_from_parent": ("source/units/units.c", "void unit_detach_from_parent(\n\tlong unit_index)\n{", None),
+        "unit_add_weapon_to_inventory": ("source/units/units.c", "boolean unit_add_weapon_to_inventory(\n\tlong unit_index,\n\tlong weapon_index,\n\tlong is_starting_weapon)\n{", None),
+        "unit_add_grenade_type_to_inventory": ("source/units/units.c", "short unit_add_grenade_type_to_inventory(\n\tlong unit_index,\n\tshort grenade_type,\n\tshort grenade_count)\n{", None),
+        "unit_set_actively_controlled": ("source/units/units.c", "void unit_set_actively_controlled(\n\tlong unit_index,\n\tboolean actively_controlled)\n{", None),
+        "unit_exit_seat_end": ("source/units/units.c", "void unit_exit_seat_end(\n\tlong unit_index)\n{", None),
+        "object_new": ("source/objects/objects.c", "long object_new(\n\tstruct object_placement_data *data)\n{", None),
+        "object_delete": ("source/objects/objects.c", "void object_delete(\n\tlong object_index)\n{", None),
+        "object_activate": ("source/objects/objects.c", "void object_activate(\n\tlong object_index)\n{",
+            "{ extern int psp_aime_arm; extern boolean psp_aime_queue_activation(long, boolean); if (psp_aime_arm && psp_aime_queue_activation(object_index, TRUE)) return; }"),
+        "object_deactivate": ("source/objects/objects.c", "void object_deactivate(\n\tlong object_index)\n{",
+            "{ extern int psp_aime_arm; extern boolean psp_aime_queue_activation(long, boolean); if (psp_aime_arm && psp_aime_queue_activation(object_index, FALSE)) return; }"),
+        "object_set_automatic_deactivation": ("source/objects/objects.c", "void object_set_automatic_deactivation(\n\tlong object_index,\n\tboolean automatic_deactivation)\n{", None),
+        "weapon_set_total_rounds": ("source/items/weapons.c", "void weapon_set_total_rounds(\n\tlong weapon_index,\n\tshort *rounds_array)\n{", None),
+        "game_allegiance_provoke": ("source/game/game_allegiance.c", "void game_allegiance_provoke(\n\tshort aggressor_team_index,\n\tshort victim_team_index)\n{", None),
+        "game_allegiance_incident": ("source/game/game_allegiance.c", "boolean game_allegiance_incident(\n\tshort aggressor_team_index,\n\tshort victim_team_index,\n\tshort incident_type,\n\tboolean *notify_immediately)\n{", None),
+        "hs_wake_by_name": ("source/hs/hs_runtime.c", "boolean hs_wake_by_name(\n\tchar const *name)\n{", None),
+        "biped_accelerate": ("source/units/bipeds.c", "void biped_accelerate(\n\tlong biped_index,\n\treal_vector3d *acceleration)\n{", None),
+    }
+    for which, name in enumerate(PSP_AIME1B_WRITERS):
+        rel, anchor, hook = signatures[name]
+        if hook is None:
+            hook = "{ extern int psp_aime_arm; extern void psp_aime_handback(int); if (psp_aime_arm) psp_aime_handback(%d); }" % which
+        FIXES_AIME1B.setdefault(rel + "#aime1b", []).append(
+            (anchor, anchor + "\n#ifdef HALO_PSP\n\t/* psp_fixups.py (FIXES_AIME1B, \"aime1b\"): the thinking done ahead stops or queues here (actors.c) */\n\t" + hook + "\n#endif"))
+
+_psp_aime1b_hooks()
+
+
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items())):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
