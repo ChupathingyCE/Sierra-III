@@ -37,6 +37,7 @@ Sierra-III is a native PSP-1000 port of Halo: Combat Evolved, built on a decompi
   - Write the CPU's cache back before the GE, the Media Engine or DMA reads what it wrote.
   - Unaligned word loads fault on hardware (the emulator forgives them).
   - `double` is software: keep it out of hot paths.
+  - The Media Engine has no VFPU and no kernel (Sheepdog01, 2026-10-30): code that can run on the ME must not reach a VFPU instruction or a system call, and a path newly moved onto the ME is proven on a PSP, because the emulator lets the ME run both. A stack-pointer test doesn't tell the ME from the main CPU: the ME's stack can sit in main RAM (the lab's sierra-hw 41132036291 and 41142311296 faulted past one).
 - **How AI is used here** (Sheepdog01, 2026-10-13, measured against ChupathingyCE's generative-AI policy): Sheepdog01 decides what to build, tests every build on hardware, and is responsible for it; Claude writes the code, and every commit says so (the identity above). So that a person reviews every change:
   - **Each build ships with a review walk-through** (`docs/review_bNNN.md`): every change merged since the last build, its key lines and why they're there, short enough for Sheepdog01 to read and question before testing.
   - **Comments say why, not what, and not when.** No comment restates the code. Build history ("build 112: …") belongs in commit messages and build notes, not in the code: when a comment is touched, move the history out and keep the reason.
