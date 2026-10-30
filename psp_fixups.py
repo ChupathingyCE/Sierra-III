@@ -40986,7 +40986,7 @@ FIXES_AIME2A = {}
 FIXES_AIME2A["source/ai/actors.c#aime2a"] = [
 ("""#define PSP_AIME_WRITERS 25
 """,
- """#define PSP_AIME_WRITERS 33
+ """#define PSP_AIME_WRITERS 34
 /* FIXES_AIME2A: the ME's own stops (aimes2a, see there) */
 #define PSP_AIME_STOP_ANIMATION 24
 #define PSP_AIME_STOP_DECISION_REPORT 25
@@ -40996,12 +40996,13 @@ FIXES_AIME2A["source/ai/actors.c#aime2a"] = [
 #define PSP_AIME_STOP_FORMATTING 29
 #define PSP_AIME_STOP_POOL_REPORT 30
 #define PSP_AIME_STOP_STACK 31
+#define PSP_AIME_STOP_ERROR 32
 """),
 ("""	"weapon_set_total_rounds", "game_allegiance_provoke", "game_allegiance_incident", "hs_wake_by_name", "biped_accelerate", "forced" };
 """,
  """	"weapon_set_total_rounds", "game_allegiance_provoke", "game_allegiance_incident", "hs_wake_by_name", "biped_accelerate",
 	"animation_get_frame_data", "decision_loop_report", "owed_node_block", "anothers_prop", "prop_log_full", "formatting",
-	"pool_report", "stack_guard", "forced" };
+	"pool_report", "stack_guard", "error_report", "forced" };
 """),
 # on the ME, an actor's copy goes out to main RAM before it thinks, so an
 # ME stopped mid-actor can be undone from it
@@ -41629,6 +41630,107 @@ static void psp_aime2a_log(
 				psp_aime_pf_read(actor->meta.unit_index, &psp_surface, &actor->input.pathfinding_point);
 				actor->input.pathfinding_surface_index = psp_surface;
 			}
+#endif
+"""),
+]
+# the error and assert reports (debug.txt, the clock, the log) hand the
+# actor back on the ME, as the formatting does; the census had stopped there
+FIXES_AIME2A["source/cseries/errors.c#aime2a"] = [
+("""void error(
+	short priority,
+	const char *format,
+	...)
+{
+	char string[1024];
+	char *newline;
+	long new_size;
+""",
+ """void error(
+	short priority,
+	const char *format,
+	...)
+{
+	char string[1024];
+	char *newline;
+	long new_size;
+
+#ifdef HALO_PSP
+	{
+		/* psp_fixups.py (FIXES_AIME2A, "aime2a"; "aimefpu" makes 1b stop
+		alike): the report reads the clock and writes debug.txt and the log,
+		which the ME can't, so an actor thinking on the ME goes back to the
+		tick at it (stop 32), where it reports; the ME's pass between actors
+		reports nothing */
+		extern int psp_aime_arm, psp_aime_job_now[16], psp_aime_fpu_main;
+		extern void psp_aime_handback(int which);
+
+		if (psp_aime_arm && psp_aime_here() && (psp_aime_job_now[0] || psp_aime_fpu_main))
+			psp_aime_handback(32);
+		if (psp_aime_job_now[0] && psp_aime_here() && psp_work_on_me())
+			return;
+	}
+#endif
+"""),
+]
+FIXES_AIME2A["source/cseries/cseries.c#aime2a"] = [
+("""void release_assert_failed(
+	char const *information,
+	char const *file,
+	long line,
+	boolean fatal)
+{
+""",
+ """void release_assert_failed(
+	char const *information,
+	char const *file,
+	long line,
+	boolean fatal)
+{
+#ifdef HALO_PSP
+	{
+		/* psp_fixups.py (FIXES_AIME2A, "aime2a"; "aimefpu" makes 1b stop
+		alike): the report reads the clock and writes debug.txt and the log,
+		which the ME can't, so an actor thinking on the ME goes back to the
+		tick at it (stop 32), where it reports; the ME's pass between actors
+		reports nothing */
+		extern int psp_aime_arm, psp_aime_job_now[16], psp_aime_fpu_main;
+		extern void psp_aime_handback(int which);
+
+		if (psp_aime_arm && psp_aime_here() && (psp_aime_job_now[0] || psp_aime_fpu_main))
+			psp_aime_handback(32);
+		if (psp_aime_job_now[0] && psp_aime_here() && psp_work_on_me())
+			return;
+	}
+#endif
+"""),
+("""void display_assert(
+	char *information,
+	char *file,
+	long line,
+	boolean fatal)
+{
+""",
+ """void display_assert(
+	char *information,
+	char *file,
+	long line,
+	boolean fatal)
+{
+#ifdef HALO_PSP
+	{
+		/* psp_fixups.py (FIXES_AIME2A, "aime2a"; "aimefpu" makes 1b stop
+		alike): the report reads the clock and writes debug.txt and the log,
+		which the ME can't, so an actor thinking on the ME goes back to the
+		tick at it (stop 32), where it reports; the ME's pass between actors
+		reports nothing */
+		extern int psp_aime_arm, psp_aime_job_now[16], psp_aime_fpu_main;
+		extern void psp_aime_handback(int which);
+
+		if (psp_aime_arm && psp_aime_here() && (psp_aime_job_now[0] || psp_aime_fpu_main))
+			psp_aime_handback(32);
+		if (psp_aime_job_now[0] && psp_aime_here() && psp_work_on_me())
+			return;
+	}
 #endif
 """),
 ]
