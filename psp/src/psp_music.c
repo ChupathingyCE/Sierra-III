@@ -139,7 +139,9 @@ runs it, so it sits on lines of its own (the main CPU drops the head and the
 output after each job, and never writes any of it while one is out) */
 static struct __attribute__((aligned(64)))
 {
-	unsigned char *pool_next;
+	unsigned char *pool_next;   /* the top of the pool's blocks */
+	unsigned char *pool_last;   /* the block just below the top, NULL when none */
+	unsigned char *pool_peak;
 	unsigned long pool_failed;
 	int wake;                   /* the reader is wanted: signalled after the block */
 	int out_which;
@@ -180,20 +182,101 @@ void psp_music_block_place(void *at)
 	music.block = (unsigned char *)at;
 }
 
+/* Tremor frees: each packet's block store is grown by realloc and its
+overflow links are freed (_vorbis_block_ripcord), so the pool takes frees
+back, or it runs out over a map and Tremor writes through the NULL it gets.
+Blocks lie end to end below the top, each with a 16-byte header (its size
+and the size of the one before), first fit, joined with free neighbours */
+struct pool_block
+{
+	unsigned int size;          /* bytes after the header, a multiple of 16 */
+	unsigned int prev;          /* the size of the block before, 0 for the first */
+	unsigned int free;
+	unsigned int pad;
+};
+#define BLOCK_AT(p) ((struct pool_block *)(p))
+#define BLOCK_NEXT(p) ((p) + 16 + BLOCK_AT(p)->size)
+
 void *mu_malloc(unsigned int bytes)
 {
-	unsigned char *p;
+	unsigned char *p, *top = dec.pool_next;
 
-	bytes = (bytes + 15) & ~15u;
-	if (!dec.pool_next || dec.pool_next + bytes + 16 > pool_end)
+	if (!top)
+		return NULL;
+	bytes = bytes ? (bytes + 15) & ~15u : 16;
+	for (p = music.pool; p < top; p = BLOCK_NEXT(p))
+	{
+		struct pool_block *b = BLOCK_AT(p);
+
+		if (!b->free || b->size < bytes)
+			continue;
+		if (b->size - bytes >= 64)
+		{
+			unsigned char *rest = p + 16 + bytes;
+
+			BLOCK_AT(rest)->size = b->size - bytes - 16;
+			BLOCK_AT(rest)->prev = bytes;
+			BLOCK_AT(rest)->free = 1;
+			if (BLOCK_NEXT(rest) < top)
+				BLOCK_AT(BLOCK_NEXT(rest))->prev = BLOCK_AT(rest)->size;
+			else
+				dec.pool_last = rest;
+			b->size = bytes;
+		}
+		b->free = 0;
+		return p + 16;
+	}
+	if (top + 16 + bytes > pool_end)
 	{
 		dec.pool_failed++;
 		return NULL;
 	}
-	p = dec.pool_next;
-	*(unsigned int *)p = bytes;
-	dec.pool_next += bytes + 16;
-	return p + 16;
+	BLOCK_AT(top)->size = bytes;
+	BLOCK_AT(top)->prev = dec.pool_last ? BLOCK_AT(dec.pool_last)->size : 0;
+	BLOCK_AT(top)->free = 0;
+	dec.pool_last = top;
+	dec.pool_next = top + 16 + bytes;
+	if (dec.pool_next > dec.pool_peak)
+		dec.pool_peak = dec.pool_next;
+	return top + 16;
+}
+
+void mu_free(void *pointer)
+{
+	unsigned char *p, *next;
+
+	if (!pointer)
+		return;
+	p = (unsigned char *)pointer - 16;
+	BLOCK_AT(p)->free = 1;
+	next = BLOCK_NEXT(p);
+	if (next < dec.pool_next && BLOCK_AT(next)->free)
+	{
+		BLOCK_AT(p)->size += 16 + BLOCK_AT(next)->size;
+		if (dec.pool_last == next)
+			dec.pool_last = p;
+		next = BLOCK_NEXT(p);
+		if (next < dec.pool_next)
+			BLOCK_AT(next)->prev = BLOCK_AT(p)->size;
+	}
+	if (p > music.pool && BLOCK_AT(p - 16 - BLOCK_AT(p)->prev)->free)
+	{
+		unsigned char *before = p - 16 - BLOCK_AT(p)->prev;
+
+		BLOCK_AT(before)->size += 16 + BLOCK_AT(p)->size;
+		if (dec.pool_last == p)
+			dec.pool_last = before;
+		p = before;
+		next = BLOCK_NEXT(p);
+		if (next < dec.pool_next)
+			BLOCK_AT(next)->prev = BLOCK_AT(p)->size;
+	}
+	if (BLOCK_NEXT(p) == dec.pool_next)
+	{
+		/* the top block: the pool shrinks back to it (the one below is in use) */
+		dec.pool_next = p;
+		dec.pool_last = p > music.pool ? p - 16 - BLOCK_AT(p)->prev : NULL;
+	}
 }
 
 void *mu_calloc(unsigned int count, unsigned int size)
@@ -212,20 +295,27 @@ void *mu_realloc(void *old, unsigned int bytes)
 
 	if (!old)
 		return mu_malloc(bytes);
-	had = *(unsigned int *)((unsigned char *)old - 16);
+	had = BLOCK_AT((unsigned char *)old - 16)->size;
 	if (bytes <= had)
 		return old;
 	p = mu_malloc(bytes);
 	if (p)
+	{
 		memcpy(p, old, had);
+		mu_free(old);
+	}
 	return p;
 }
 
-/* Tremor frees only blocks it replaces with larger ones, and a voice's
-decoder is set up once and restarted, never freed: the pool levels off */
-void mu_free(void *p)
+/* the most a packet's decode asks of the pool: its PCM (the long block,
+both channels) and the store's growth, with room to spare. Tremor doesn't
+check what its allocator gives, so a packet is decoded only with this much
+free at the top, and is otherwise late (counted as the pool full) */
+#define PACKET_POOL_BYTES (48 * 1024)
+
+static int pool_has_room(void)
 {
-	(void)p;
+	return dec.pool_next && dec.pool_next + PACKET_POOL_BYTES <= pool_end;
 }
 
 /* ---------- the pack */
@@ -302,6 +392,8 @@ static void start_once(void)
 	started = 1;
 	music.pool = at;
 	dec.pool_next = at;
+	dec.pool_last = NULL;
+	dec.pool_peak = at;
 	pool_end = at + POOL_BYTES;
 	at += POOL_BYTES;
 	/* the voices' windows and queues apart from the codec's pool */
@@ -320,11 +412,13 @@ static void start_once(void)
 	music.out_ready = sceKernelCreateSema("music out", 0, 0, 2, NULL);
 	music.out_free = sceKernelCreateSema("music free", 0, 2, 2, NULL);
 	music.out_channel = sceAudioChReserve(PSP_AUDIO_NEXT_CHANNEL, OUT_FRAMES, PSP_AUDIO_FORMAT_STEREO);
-	/* below the mixer, which feeds it; the reader below the game */
+	/* below the mixer, which feeds it; the reader above the game, just below
+	the cache file thread (psp_platform.c's PSP_READER_PRIORITY): below the
+	game it waited seconds for a 16 KB read while the game ran on */
 	k = sceKernelCreateThread("music out", output_thread, 0x13, 0x2000, 0, NULL);
 	if (k >= 0)
 		sceKernelStartThread(k, 0, NULL);
-	k = sceKernelCreateThread("music reader", reader_thread, 0x30, 0x2000, 0, NULL);
+	k = sceKernelCreateThread("music reader", reader_thread, 0x1d, 0x2000, 0, NULL);
 	if (k >= 0)
 		sceKernelStartThread(k, 0, NULL);
 	platform_log("music: on: pool %u KB, 44.1 kHz channel %d", POOL_BYTES / 1024, music.out_channel);
@@ -759,6 +853,11 @@ static int decode_to(struct voice *v, unsigned int until)
 			memcpy(joined + first, b, size - first);
 			data = joined;
 		}
+		if (!pool_has_room())
+		{
+			dec.pool_failed++;
+			return 0;
+		}
 		memset(&op, 0, sizeof(op));
 		op.packet = (unsigned char *)data;
 		op.bytes = size;
@@ -1061,9 +1160,9 @@ void psp_music_report(void)
 	if (!music.on)
 		return;
 	platform_log("music: %lu blocks, late %lu, output full %lu; voices at most %lu; restarts %lu; pieces %lu (worst %lu us); "
-		"stubs %lu, not in the pack %lu; main CPU after the job %lu us a block (worst %lu); pool %lu KB%s",
+		"stubs %lu, not in the pack %lu; main CPU after the job %lu us a block (worst %lu); pool peak %lu KB%s",
 		dec.blocks, dec.late_blocks, music.out_late, dec.playing_worst, dec.restarts, music.pieces,
 		music.piece_worst_us, music.stubs_made, music.not_in_pack, dec.blocks ? music.decode_us / dec.blocks : 0,
-		music.decode_worst_us, (unsigned long)(dec.pool_next - (pool_end - POOL_BYTES)) / 1024, dec.pool_failed ? ", full" : "");
+		music.decode_worst_us, (unsigned long)(dec.pool_peak - music.pool) / 1024, dec.pool_failed ? ", full" : "");
 #endif
 }
