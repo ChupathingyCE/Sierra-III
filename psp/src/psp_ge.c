@@ -566,6 +566,7 @@ static int replay_inflight = 0;
 static PSP_MAIN_SIDE int replay_kinds_on = 0; /* "mekinds" (see defer_replay) */
 static PSP_MAIN_SIDE int widget_sprites_off = 0; /* "nowidgetsprites" (defer_frame_begin) */
 static PSP_MAIN_SIDE int shadow_indexed = 1; /* "shadowindexoff" (defer_frame_begin; psp_ge_shadow_draw_body) */
+static PSP_MAIN_SIDE int shadow_rim_cull = 1; /* "shadowrimoff" (the same) */
 static PSP_MAIN_SIDE unsigned long inflight_frames = 0, inflight_words = 0, inflight_words_most = 0;
 /* the whole frame's words, the parts carried out when the buffer filled
 included (inflight_words counts only what is left at the sync) */
@@ -762,6 +763,7 @@ static void defer_frame_begin(void)
 		or write a main-side variable */
 		widget_sprites_off = psp_keep("nowidgetsprites") != 0;
 		shadow_indexed = !psp_keep("shadowindexoff");
+		shadow_rim_cull = !psp_keep("shadowrimoff");
 		/* build 118: mebench takes gedefer and gemeon with it */
 		me_bench = psp_keep("mebench");
 		defer_asked = psp_keep("gedefer") || me_bench;
@@ -19996,7 +19998,7 @@ static unsigned int shadow_slot_key[SHADOW_SLOTS]; /* generation << 16 | vertex 
 static unsigned short shadow_slot_out[SHADOW_SLOTS];
 static unsigned short shadow_indices[3 * SCRATCH_TRIANGLES];
 static unsigned int shadow_slot_generation = 0;
-static unsigned long shadow_index_corners = 0, shadow_index_vertices = 0;
+static unsigned long shadow_index_corners = 0, shadow_index_vertices = 0, shadow_rim_culled = 0;
 
 /* the slot of a receiving vertex in this draw's array; *fresh when it's new */
 static inline unsigned short shadow_slot(unsigned short vertex, unsigned short *count, int *fresh)
@@ -20295,6 +20297,20 @@ static inline void shadow_memo_shade(struct shadow_memo *m, const struct ge_vert
 	}
 }
 
+/* A receiving triangle that leaves every pixel as it was: wholly past one
+side of the blob, whose rim texels are all 0 (so under GU_CLAMP and the
+linear filter every sample there is 0), or faded to nothing at all three
+corners. The frame is multiplied by 1 - blob x colour, so 0 changes nothing,
+and the pass neither writes depth nor tests anything but equal depth.
+"shadowrimoff": every receiver drawn, as before */
+static inline int shadow_beyond_rim(const struct shadow_memo *a, const struct shadow_memo *b, const struct shadow_memo *c)
+{
+	if ((a->u < 0.0f && b->u < 0.0f && c->u < 0.0f) || (a->u > 1.0f && b->u > 1.0f && c->u > 1.0f) ||
+		(a->v < 0.0f && b->v < 0.0f && c->v < 0.0f) || (a->v > 1.0f && b->v > 1.0f && c->v > 1.0f))
+		return 1;
+	return !((a->color | b->color | c->color) & 0xFFFFFF);
+}
+
 static void shadow_memo_verify(const struct shadow_memo *m, const struct ge_vertex *base, unsigned short index, int shaded)
 {
 	const struct ge_vertex *b = &base[index];
@@ -20411,6 +20427,11 @@ static void psp_ge_shadow_draw_body(const void *vertices, int vertex_count, cons
 			continue;
 		for (corner = 0; corner < 3; corner++)
 			shadow_memo_shade(m[corner], &stream->base[triangle[corner]]);
+		if (shadow_rim_cull && shadow_beyond_rim(m[0], m[1], m[2]))
+		{
+			shadow_rim_culled++;
+			continue;
+		}
 		if (!(m[0]->bits | m[1]->bits | m[2]->bits))
 		{
 			for (corner = 0; corner < 3; corner++)
@@ -24405,9 +24426,9 @@ static void frame_end_show(void)
 			sky_draws, sky_parts, transparent_drawn, transparent_dropped, sprites_queued, hud_quads, text_characters,
 			blips_drawn, skinned_parts, skin_batches, skin_bytes / 1024, skin_failures, level_transparent_draws, decals_drawn, flashes_drawn, shadow_begins, shadow_requests, shadows_drawn, lights_drawn, light_cone_draws, light_cone_skipped, light_split_triangles, light_split_pieces, skin_cut_triangles, skin_cut_pieces, two_sided_draws, near_models, near_triangles_dropped);
 		platform_log("GE: cut pieces lost to a full cut buffer %lu (since the start)", cut_pieces_lost);
-		if (shadow_index_corners)
-			platform_log("GE: shadowindexed: %lu receiving corners written as %lu vertices and their indices (since the start)",
-				shadow_index_corners, shadow_index_vertices);
+		if (shadow_index_corners || shadow_rim_culled)
+			platform_log("GE: shadowindexed: %lu receiving corners written as %lu vertices and their indices; shadowrim: %lu receiving triangles left out past the blob's rim or faded to nothing (since the start)",
+				shadow_index_corners, shadow_index_vertices, shadow_rim_culled);
 		if (blip_target != BLIP_TARGET)
 		{
 			char kinds[KINDS * 12 + 1];
