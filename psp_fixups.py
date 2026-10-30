@@ -39671,7 +39671,327 @@ FIXES_FISSION["source/items/weapons.c#fvpass"] = [
 ]
 
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items()))):
+# ---------- FIXES_AIME: the AI's thinking done ahead, at the end of the tick before (keep word "aime", off)
+# The tick runs ai_update early, before effects, the scripts and
+# objects_update, so an actor's thinking (the timeslice, input, perception,
+# situation, emotion and the decision loop) reads the world as the last tick
+# left it. "aime" does that thinking for the next tick as soon as the last
+# one ends, with the game time already the next tick's; the next tick's
+# ai_update then runs only each actor's general update, its action and its
+# control from the thinking done ahead. On the PSP the main CPU records the
+# frame while the world holds still, so this is the step that lets the Media
+# Engine do the thinking there; here it all runs on the main CPU, to prove the
+# behaviour first. Thinking draws its random numbers from a seed of its own,
+# as it must on the ME, where the main CPU may draw from the global one at the
+# same time. It plays differently (thinking comes before the next tick's units,
+# allegiance and encounter updates, and its random numbers differ), so it's a
+# behaviour change: off by default, campaign only, never in a networked game,
+# and proven by the outcome census. aicad's rests still apply, by the next
+# tick's parity, which is the game time the thinking sees
+FIXES_AIME = {}
+FIXES_AIME["source/ai/actors.c#aime"] = [
+("""static boolean actor_general_update(
+	long actor_index)
+{
+""",
+ """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_AIME): "aime" (see there) */
+static int psp_aime_on = -1;
+/* TRUE while actor_update runs only the thinking, for the next tick */
+static boolean psp_aime_think_only = FALSE;
+/* the game time the last pass thought for, its number, and each slot's */
+static long psp_aime_pass_time = NONE;
+static unsigned long psp_aime_pass = 0;
+static unsigned long psp_aime_slot_pass[MAXIMUM_ACTORS];
+static short psp_aime_slot_identifier[MAXIMUM_ACTORS];
+static unsigned long psp_aime_seed;
+static long psp_aime_seed_time = NONE;
+static struct
+{
+	unsigned long passes, ahead, inline_whole;
+} psp_aime_stats;
+static long psp_aime_logged = NONE;
+
+static boolean psp_aime_active(
+	void)
+{
+	if (psp_aime_on < 0)
+	{
+#ifdef PSP_MULTIPLAYER
+		psp_aime_on = 0;
+#else
+		psp_aime_on = psp_keep("aime") != 0;
+#endif
+		if (psp_aime_on)
+			platform_psp_log("ai: each actor's thinking done ahead, at the end of the tick before, with a seed of its own (aime)");
+	}
+	return psp_aime_on && game_connection() == _game_connection_local && !network_coop_active();
+}
+
+/* TRUE when this tick's thinking for the actor was done ahead */
+static boolean psp_aime_fresh(
+	long actor_index)
+{
+	short absolute_index = DATUM_INDEX_TO_ABSOLUTE_INDEX(actor_index);
+
+	return !psp_aime_think_only && psp_aime_pass_time != NONE && psp_aime_pass_time == game_time_get() &&
+		absolute_index >= 0 && absolute_index < MAXIMUM_ACTORS &&
+		psp_aime_slot_pass[absolute_index] == psp_aime_pass &&
+		psp_aime_slot_identifier[absolute_index] == actor_get(actor_index)->identifier;
+}
+
+static void psp_aime_mark(
+	long actor_index)
+{
+	short absolute_index = DATUM_INDEX_TO_ABSOLUTE_INDEX(actor_index);
+
+	if (absolute_index < 0 || absolute_index >= MAXIMUM_ACTORS)
+		return;
+	psp_aime_slot_pass[absolute_index] = psp_aime_pass;
+	psp_aime_slot_identifier[absolute_index] = actor_get(actor_index)->identifier;
+	psp_aime_stats.ahead++;
+}
+
+/* random_math.c: the thinking's own seed while it runs */
+unsigned long *psp_aime_seed_address(
+	void)
+{
+	return psp_aime_think_only ? &psp_aime_seed : NULL;
+}
+#endif
+
+static boolean actor_general_update(
+	long actor_index)
+{
+"""),
+("""		actor->control.path.refreshed_this_tick = FALSE;
+""",
+ """#ifdef HALO_PSP
+		/* (the path refreshed by the thinking done ahead counts for this tick) */
+		if (!psp_aime_fresh(actor_index))
+#endif
+		actor->control.path.refreshed_this_tick = FALSE;
+"""),
+("""	actor_update_begin(actor_index);
+	if (actor_general_update(actor_index))
+	{
+#ifdef HALO_PSP
+		/* FIXES_AICAD""",
+ """	actor_update_begin(actor_index);
+#ifdef HALO_PSP
+	/* FIXES_AIME: the thinking done ahead skips the general update, which
+	the tick itself runs; a thinking done ahead for this tick isn't done
+	again */
+	if (psp_aime_think_only)
+		actor->control.path.refreshed_this_tick = FALSE;
+	else if (psp_aime_active() && !psp_aime_fresh(actor_index))
+		psp_aime_stats.inline_whole++;
+	if (psp_aime_think_only || actor_general_update(actor_index))
+#else
+	if (actor_general_update(actor_index))
+#endif
+	{
+#ifdef HALO_PSP
+		if (!psp_aime_fresh(actor_index))
+		{
+		/* FIXES_AICAD"""),
+("""		psp_aicad_seen(actor_index);
+#else
+""",
+ """		psp_aicad_seen(actor_index);
+		}
+#else
+"""),
+("""		actor_action_update(actor_index);
+
+		if (!actor->meta.dormant)
+""",
+ """#ifdef HALO_PSP
+		if (psp_aime_think_only)
+			psp_aime_mark(actor_index);
+		else
+#endif
+		{
+		actor_action_update(actor_index);
+
+		if (!actor->meta.dormant)
+"""),
+("""		}
+	}
+	actor_update_end();
+""",
+ """		}
+		}
+	}
+	actor_update_end();
+"""),
+("""	struct actor_iterator iterator;
+	struct actor_datum *actor;
+
+	ai_globals->last_highest_service_timer = ai_globals->current_highest_service_timer;""",
+ """	struct actor_iterator iterator;
+	struct actor_datum *actor;
+#ifdef HALO_PSP
+	/* FIXES_AIME: the pass done ahead set the timeslice's round and cast
+	perception's rays already */
+	boolean psp_ahead = psp_aime_active() && psp_aime_pass_time != NONE && psp_aime_pass_time == game_time_get();
+
+	if (!psp_ahead)
+	{
+#endif
+
+	ai_globals->last_highest_service_timer = ai_globals->current_highest_service_timer;"""),
+("""		psp_perception_queue_done();
+	}
+#endif
+	actor_iterator_new(&iterator, TRUE);""",
+ """		psp_perception_queue_done();
+	}
+#endif
+#ifdef HALO_PSP
+	}
+#endif
+	actor_iterator_new(&iterator, TRUE);"""),
+("""#ifdef HALO_PSP
+	psp_perception_end();
+#endif
+
+	return;
+}
+""",
+ """#ifdef HALO_PSP
+	if (!psp_ahead)
+		psp_perception_end();
+	psp_aime_pass_time = NONE;
+#endif
+
+	return;
+}
+
+#ifdef HALO_PSP
+/* FIXES_AIME: the next tick's thinking, every actor actors_update would
+update, at the end of this tick (game_time.c), the game time already the
+next tick's */
+void psp_aime_think(
+	void)
+{
+	struct actor_iterator iterator;
+	struct actor_datum *actor;
+	long now;
+
+	if (!psp_aime_active())
+		return;
+	now = game_time_get();
+	/* a new map or a reverted game: the seed again from the game's */
+	if (psp_aime_seed_time == NONE || now <= psp_aime_seed_time)
+		psp_aime_seed = *get_global_random_seed_address() ^ 0x9E3779B9u;
+	psp_aime_seed_time = now;
+	psp_aime_pass++;
+	psp_aime_stats.passes++;
+	psp_aime_think_only = TRUE;
+
+	ai_globals->last_highest_service_timer = ai_globals->current_highest_service_timer;
+	ai_globals->current_highest_service_timer = 0;
+	ai_globals->time_given_this_frame = FALSE;
+	if (psp_aicad_active() && psp_aicad_on == 2 && (now & 2))
+		ai_globals->time_given_this_frame = TRUE;
+	if (psp_perception_begin())
+	{
+		actor_iterator_new(&iterator, TRUE);
+		while ((actor = actor_iterator_next(&iterator)) != NULL)
+		{
+			if (!actor->meta.erase_next_tick && actor->state.mode > _actor_mode_braindead)
+				psp_perception_queue(iterator.index);
+		}
+		psp_perception_queue_done();
+	}
+	actor_iterator_new(&iterator, TRUE);
+	while ((actor = actor_iterator_next(&iterator)) != NULL)
+	{
+		/* (an actor the general update would erase is left to it) */
+		if (actor->meta.erase_next_tick || actor->state.mode <= _actor_mode_braindead ||
+			(actor->meta.swarm && actor->meta.swarm_cache_index == NONE))
+			continue;
+		actor_update(iterator.index);
+	}
+	psp_perception_end();
+	psp_aime_think_only = FALSE;
+	psp_aime_pass_time = now;
+
+	if (psp_aime_logged == NONE || now < psp_aime_logged || now - psp_aime_logged >= 900)
+	{
+		if (psp_aime_logged != NONE)
+			platform_psp_log("aime: game time %ld | passes %lu, actors thought ahead %lu, updated whole in the tick %lu",
+				now, psp_aime_stats.passes, psp_aime_stats.ahead, psp_aime_stats.inline_whole);
+		psp_aime_logged = now;
+	}
+}
+#endif
+"""),
+]
+FIXES_AIME["source/ai/ai.c#aime"] = [
+("""	profile_exit(ai_update_section);
+
+	return;
+}
+""",
+ """	profile_exit(ai_update_section);
+
+	return;
+}
+
+#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_AIME): after each tick (game_time.c), the next
+tick's thinking, wherever the next ai_update would update the actors */
+void psp_aime_think(void);
+boolean network_game_distributed_client(void);
+
+void psp_aime_update(
+	void)
+{
+	if (!ai_globals || !ai_globals->ai_initialized_for_map || ai_profile.disabled ||
+		ai_profile.move_actors_randomly || !ai_globals->ai_active || network_game_distributed_client())
+		return;
+	psp_aime_think();
+}
+#endif
+"""),
+]
+FIXES_AIME["source/game/game_time.c#aime"] = [
+("""						network_distributed_tick();
+""",
+ """						network_distributed_tick();
+#if defined(HALO_PSP) && !defined(PSP_MULTIPLAYER)
+						{
+							/* psp_fixups.py (FIXES_AIME, "aime"): the next
+							tick's thinking, done ahead (ai.c) */
+							extern void psp_aime_update(void);
+
+							psp_aime_update();
+						}
+#endif
+"""),
+]
+FIXES_AIME["source/math/random_math.c#aime"] = [
+("""	return &random_math_globals.global_random_seed;
+""",
+ """#if defined(HALO_PSP) && !defined(PSP_MULTIPLAYER)
+	{
+		/* psp_fixups.py (FIXES_AIME, "aime"): the thinking done ahead draws
+		from a seed of its own (actors.c) */
+		extern unsigned long *psp_aime_seed_address(void);
+		unsigned long *psp_seed = psp_aime_seed_address();
+
+		if (psp_seed)
+			return psp_seed;
+	}
+#endif
+	return &random_math_globals.global_random_seed;
+"""),
+]
+
+
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items())):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
