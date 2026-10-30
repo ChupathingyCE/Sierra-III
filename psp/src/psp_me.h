@@ -111,6 +111,10 @@ kept for the job's own data. Nothing else may use 1,616 KB and up then (the
 sound cache in the eDRAM is refused with the job) */
 #define ME_EDRAM_AIME_DATA 0x194000u
 #define ME_EDRAM_AIME_STACK 0x1A0000u
+/* the stack room's bottom 256 bytes: its guard (psp_me.c) */
+#define ME_EDRAM_AIME_GUARD_BYTES 256u
+int psp_me_aime_guard_touched(void);
+unsigned int psp_me_aime_room_bytes(void);
 /* "soundedram" (R2): the sound cache takes 256 KB to 1,920 KB instead, the
 resident room and the top of the stack's half MB with it. On both PSPs the
 ME's stack never reached below 1,984 KB (edramcheck over the ten-map ladder),

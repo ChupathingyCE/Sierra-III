@@ -40747,7 +40747,7 @@ FIXES_AIME2A = {}
 FIXES_AIME2A["source/ai/actors.c#aime2a"] = [
 ("""#define PSP_AIME_WRITERS 25
 """,
- """#define PSP_AIME_WRITERS 32
+ """#define PSP_AIME_WRITERS 33
 /* FIXES_AIME2A: the ME's own stops (aimes2a, see there) */
 #define PSP_AIME_STOP_ANIMATION 24
 #define PSP_AIME_STOP_DECISION_REPORT 25
@@ -40756,12 +40756,13 @@ FIXES_AIME2A["source/ai/actors.c#aime2a"] = [
 #define PSP_AIME_STOP_LOG_FULL 28
 #define PSP_AIME_STOP_FORMATTING 29
 #define PSP_AIME_STOP_POOL_REPORT 30
+#define PSP_AIME_STOP_STACK 31
 """),
 ("""	"weapon_set_total_rounds", "game_allegiance_provoke", "game_allegiance_incident", "hs_wake_by_name", "biped_accelerate", "forced" };
 """,
  """	"weapon_set_total_rounds", "game_allegiance_provoke", "game_allegiance_incident", "hs_wake_by_name", "biped_accelerate",
 	"animation_get_frame_data", "decision_loop_report", "owed_node_block", "anothers_prop", "prop_log_full", "formatting",
-	"pool_report", "forced" };
+	"pool_report", "stack_guard", "forced" };
 """),
 # on the ME, an actor's copy goes out to main RAM before it thinks, so an
 # ME stopped mid-actor can be undone from it
@@ -40824,6 +40825,32 @@ FIXES_AIME2A["source/ai/actors.c#aime2a"] = [
 	psp_aime_think_only = TRUE;
 	if (psp_aime_fpu_main_on > 0 && psp_aime2a_alike && !psp_work_on_me())
 		psp_aime_fpu_main = 1;
+	if (psp_aime_chain_on > 0)
+		psp_aime_chain_check(0, NONE);
+"""),
+# after each actor: the job's stack guard (on the ME), and aimechain
+("""	else
+		psp_aime_restore();
+	if (psp_aime1b_checking && psp_aime_stopped)
+""",
+ """	else
+		psp_aime_restore();
+	if (psp_work_on_me() && psp_aime_job_now[0] && psp_me_aime_guard_touched())
+	{
+		/* the job's stack reached its guard: the actor handed back from its
+		copies (in main RAM), as at the collection's word; it thinks in the
+		tick, and the pass's rest with it */
+		if (!psp_aime_stopped)
+		{
+			psp_aime_stop_which = PSP_AIME_STOP_STACK;
+			psp_aime_restore();
+		}
+		psp_aime2a_guard_actor = actor_index;
+		psp_aime2a_guard_hit = 1;
+	}
+	if (psp_aime_chain_on > 0)
+		psp_aime_chain_check(1, actor_index);
+	if (psp_aime1b_checking && psp_aime_stopped)
 """),
 # the ME's pass casts no queued rays (the queue is the ME's own ring): each
 # line of sight is walked in place
@@ -40871,6 +40898,13 @@ FIXES_AIME2A["source/ai/actors.c#aime2a"] = [
 			/* between actors: audio, the ring, a waiting render job; and
 			the collection's word to end here (the rest think in the tick) */
 			psp_me_yield_slots();
+			if (psp_aime2a_guard_hit || psp_me_aime_guard_touched())
+			{
+				/* the stack's guard reached, by the actor before or a job run
+				in the yield: the rest think in the tick */
+				psp_aime2a_guard_hit = 1;
+				break;
+			}
 			if (psp_aime2a_abort && *psp_aime2a_abort)
 			{
 				psp_aime2a_stats.aborted++;
@@ -40898,6 +40932,107 @@ FIXES_AIME2A["source/ai/actors.c#aime2a"] = [
 """,
  """	if (!psp_work_on_me())
 		psp_aime_log_due(now);
+}
+
+/* "aimechain": the walk. Reads only; on the ME the first break is kept for
+the main CPU to log */
+static struct
+{
+	unsigned long checks, broken;
+	int where, stopped, which, reason;
+	long time, last_actor, actor, prop, position, owner;
+	short identifier, log_count;
+	long log_index[8];
+	boolean log_deleted[8], logged;
+} psp_aime_chain;
+
+static void psp_aime_chain_check(
+	int where,
+	long last_actor)
+{
+	struct data_array *actors = actor_data;
+	short k;
+
+	psp_aime_chain.checks++;
+	for (k = 0; k < actors->count; k++)
+	{
+		struct actor_datum *actor = (struct actor_datum *)((byte *)xbox_pointer(actors->data) + actors->size * k);
+		short identifier = ((struct datum_header *)actor)->identifier;
+		long actor_index = (long)(((unsigned long)(unsigned short)identifier << 16) | (unsigned long)k);
+		long prop_index;
+		short position = 0;
+		int reason = 0;
+		struct prop_datum *prop = NULL;
+
+		if (!identifier)
+			continue;
+		for (prop_index = actor->meta.first_prop_index; prop_index != NONE; prop_index = prop->next_prop_index, position++)
+		{
+			short absolute = DATUM_INDEX_TO_ABSOLUTE_INDEX(prop_index);
+
+			if (position >= 512)
+				reason = 4;
+			else if (absolute < 0 || absolute >= prop_data->count)
+				reason = 1;
+			else
+			{
+				prop = (struct prop_datum *)psp_aime_datum_address(prop_data, prop_index);
+				if (prop->identifier != (short)((unsigned long)prop_index >> 16))
+					reason = 2;
+				else if (prop->owner_actor_index != actor_index)
+					reason = 3;
+			}
+			if (reason)
+				break;
+		}
+		if (!reason)
+			continue;
+		psp_aime_chain.broken++;
+		if (psp_aime_chain.broken == 1)
+		{
+			short n;
+
+			psp_aime_chain.where = where;
+			psp_aime_chain.reason = reason;
+			psp_aime_chain.time = game_time_get();
+			psp_aime_chain.last_actor = last_actor;
+			psp_aime_chain.stopped = last_actor != NONE && psp_aime_stopped;
+			psp_aime_chain.which = psp_aime_stop_which;
+			psp_aime_chain.actor = actor_index;
+			psp_aime_chain.prop = prop_index;
+			psp_aime_chain.position = position;
+			psp_aime_chain.identifier = reason >= 2 ? prop->identifier : 0;
+			psp_aime_chain.owner = reason >= 2 ? prop->owner_actor_index : NONE;
+			psp_aime_chain.log_count = psp_aime_copy ? psp_aime_copy->log_count : 0;
+			for (n = 0; n < 8 && n < psp_aime_chain.log_count; n++)
+			{
+				psp_aime_chain.log_index[n] = psp_aime_copy->log_index[n];
+				psp_aime_chain.log_deleted[n] = psp_aime_copy->log_deleted[n];
+			}
+		}
+		/* one break a walk: the walks after find it again */
+		break;
+	}
+}
+
+static void psp_aime_chain_log(
+	void)
+{
+	static const char *const wheres[4] = { "a pass's start", "an actor's thinking", "?", "the collection" };
+	static const char *const reasons[5] = { "", "past the pool's end", "a prop that isn't there (its slot freed or reused)", "another actor's prop", "a loop" };
+	short n;
+
+	if (psp_aime_chain.broken == 0 || psp_aime_chain.logged)
+		return;
+	psp_aime_chain.logged = TRUE;
+	platform_psp_log("aimechain: game time %ld | first break after %s: actor 0x%lx's prop 0x%lx (%ld into its chain) is %s (slot identifier 0x%x, owner 0x%lx) | the last actor 0x%lx, %s%s, its prop log %d",
+		psp_aime_chain.time, wheres[psp_aime_chain.where & 3], psp_aime_chain.actor, psp_aime_chain.prop,
+		psp_aime_chain.position, reasons[psp_aime_chain.reason], (unsigned)(unsigned short)psp_aime_chain.identifier,
+		psp_aime_chain.owner, psp_aime_chain.last_actor, psp_aime_chain.stopped ? "stopped at " : "kept",
+		psp_aime_chain.stopped && psp_aime_chain.which >= 0 && psp_aime_chain.which < PSP_AIME_WRITERS ? psp_aime_writer_names[psp_aime_chain.which] : "",
+		(int)psp_aime_chain.log_count);
+	for (n = 0; n < 8 && n < psp_aime_chain.log_count; n++)
+		platform_psp_log("aimechain:   log %d: prop 0x%lx %s", (int)n, psp_aime_chain.log_index[n], psp_aime_chain.log_deleted[n] ? "deleted" : "made");
 }
 
 /* FIXES_AIME2A: "aime2a" (see there) */
@@ -40982,12 +41117,18 @@ void psp_aime_me_job(
 	unsigned long on_me = psp_aime2a_stats.on_me, aborted = psp_aime2a_stats.aborted;
 
 	(void)args;
+	psp_aime2a_guard_hit = 0;
+	psp_aime2a_guard_actor = NONE;
 	psp_aime_job_now[0] = 1;
 	psp_aime_think();
 	psp_aime_job_now[0] = 0;
+	if (psp_me_aime_guard_touched())
+		psp_aime2a_guard_hit = 1;
 	results[0] = (unsigned int)(psp_aime2a_stats.on_me - on_me);
 	results[1] = (unsigned int)(psp_aime2a_stats.aborted - aborted);
 	results[2] = psp_aime2a_check_on ? (unsigned int)psp_aime2a_hash_state() : 0;
+	results[3] = (unsigned int)psp_aime2a_guard_hit;
+	results[4] = (unsigned int)psp_aime2a_guard_actor;
 }
 
 /* game_time.c, before game_frame: the frame's last pass to the ME */
@@ -40996,6 +41137,8 @@ void psp_aime2a_frame_end(
 {
 	unsigned int args[1] = { 0 };
 
+	if (psp_aime_chain_on > 0)
+		psp_aime_chain_log();
 	if (!psp_aime2a_owed || psp_aime2a_out)
 		return;
 	psp_aime2a_owed = FALSE;
@@ -41079,6 +41222,14 @@ void psp_aime2a_tick_begin(
 			psp_aime2a_stats.collected++;
 			if (results[ME_JOB_RESULTS - 1] > psp_aime2a_stats.stack_deepest)
 				psp_aime2a_stats.stack_deepest = results[ME_JOB_RESULTS - 1];
+			if (results[3])
+			{
+				psp_aime2a_stats.guard++;
+				platform_psp_log("aime2a: game time %ld | the job's stack reached its guard (the room %u KB)%s; the pass's rest thought in the tick (%lu so far)",
+					game_time_get(), psp_me_aime_room_bytes() / 1024,
+					(long)results[4] != NONE ? ", the actor in hand handed back" : " in a yield, between actors",
+					psp_aime2a_stats.guard);
+			}
 			if (psp_aime2a_check_on)
 			{
 				psp_aime2a_stats.checked++;
@@ -41087,6 +41238,11 @@ void psp_aime2a_tick_begin(
 			}
 		}
 		psp_aime_pf_apply();
+		if (psp_aime_chain_on > 0)
+		{
+			psp_aime_chain_check(3, NONE);
+			psp_aime_chain_log();
+		}
 		psp_aime_log_due(psp_aime_pass_time != NONE ? psp_aime_pass_time : game_time_get());
 	}
 	if (psp_aime2a_owed)
@@ -41105,12 +41261,17 @@ static void psp_aime2a_log(
 {
 	if (psp_aime2a_on <= 0)
 		return;
-	platform_psp_log("aime2a: game time %ld | jobs %lu (refused %lu), collected %lu, late %lu, no answer %lu, failed %lu | passes inline %lu | actors on the ME %lu, ended by the word %lu, props over the copy %lu | pathfinding log %lu, applied %lu (woken %lu), full %lu | stack %lu bytes%s",
+	platform_psp_log("aime2a: game time %ld | jobs %lu (refused %lu), collected %lu, late %lu, no answer %lu, failed %lu | passes inline %lu | actors on the ME %lu, ended by the word %lu, props over the copy %lu | pathfinding log %lu, applied %lu (woken %lu), full %lu | stack %lu bytes%s, the guard reached %lu",
 		now, psp_aime2a_stats.pushed, psp_aime2a_stats.refused, psp_aime2a_stats.collected, psp_aime2a_stats.late,
 		psp_aime2a_stats.no_answer, psp_aime2a_stats.failed, psp_aime2a_stats.inline_passes, psp_aime2a_stats.on_me,
 		psp_aime2a_stats.aborted, psp_aime2a_stats.many_props, psp_aime_pf_stats[0], psp_aime_pf_stats[1],
 		psp_aime_pf_stats[2], psp_aime_pf_stats[3], psp_aime2a_stats.stack_deepest,
-		psp_aime2a_stats.stack_deepest >= 393216 ? " (the whole room: it overflowed)" : "");
+		psp_aime2a_stats.stack_deepest > psp_me_aime_room_bytes() ? " (past the PSP's room)" : "", psp_aime2a_stats.guard);
+	if (psp_aime_chain_on > 0)
+	{
+		psp_aime_chain_log();
+		platform_psp_log("aimechain: game time %ld | walks %lu, broken %lu", now, psp_aime_chain.checks, psp_aime_chain.broken);
+	}
 	if (psp_aime2a_check_on)
 		platform_psp_log("aime2acheck: game time %ld | jobs checked %lu, the AI's state changed between the job's end and the collection %lu",
 			now, psp_aime2a_stats.checked, psp_aime2a_stats.check_changed);
@@ -41196,7 +41357,7 @@ static volatile unsigned int *psp_aime2a_abort = NULL;
 static struct
 {
 	unsigned long pushed, refused, collected, late, no_answer, failed, inline_passes;
-	unsigned long on_me, aborted, many_props, checked, check_changed, stack_deepest;
+	unsigned long on_me, aborted, many_props, checked, check_changed, stack_deepest, guard;
 } psp_aime2a_stats;
 /* "aimefpu": 1b's pass on the main CPU in the ME's FPU forms (matrix_math.c,
 real_math.c read psp_aime_fpu_main) */
@@ -41222,6 +41383,20 @@ boolean psp_aime_update_allowed(void);
 static void psp_aime_log_due(long now);
 static void psp_aime2a_log(long now);
 static void psp_aime_think_actor(long actor_index);
+/* the job's stack guard (psp_me.c): set on the ME when the guard was reached,
+by an actor's thinking (handed back) or by a job run in a yield; the pass's
+rest thinks in the tick, and the collection logs it */
+int psp_me_aime_guard_touched(void);
+unsigned int psp_me_aime_room_bytes(void);
+static int psp_aime2a_guard_hit = 0;
+static long psp_aime2a_guard_actor = NONE;
+/* "aimechain" (a test): every actor's chain of props walked at each pass's
+start, after each actor's thinking and after the collection; the first link
+to a prop that isn't there (or is another actor's) kept with what the last
+actor's thinking did, and logged on the main CPU */
+static int psp_aime_chain_on = 0;
+static void psp_aime_chain_check(int where, long last_actor);
+static void psp_aime_chain_log(void);
 
 /* FIXES_AIME1B: "aime1b" (see there) */
 #define PSP_AIME_WRITERS 25
@@ -41232,6 +41407,7 @@ FIXES_AIME2A["source/ai/actors.c#aime2a"].append((
 """,
 """		psp_aime1b_check_on = psp_keep("aime1bcheck") != 0;
 		psp_aime_fpu_main_on = psp_keep("aimefpu") != 0;
+		psp_aime_chain_on = psp_keep("aimechain") != 0;
 """))
 FIXES_AIME2A["source/ai/ai.c#aime2a"] = [
 ("""void psp_aime_update(

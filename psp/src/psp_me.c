@@ -2318,6 +2318,45 @@ past 192 KB, more than the ME's eDRAM stack has, so the stack's deepest reach
 is measured (a fill pattern) and reported: it sizes the job's stack */
 #define AIME_SIM_STACK_BYTES (ME_EDRAM_STACK_TOP - ME_EDRAM_AIME_STACK)
 #define AIME_SIM_FILL 0x5AA5C33Cu
+/* below the room in the emulator: what a deeper reach lands on, so it's
+measured instead of written over the heap's next block (the PSP's room stops
+at its guard) */
+#define AIME_SIM_SLACK_BYTES (640 * 1024)
+/* the guard: words at the room's bottom, written before each job and read by
+the job between actors (psp_me_aime_guard_touched). A frame that reaches them
+has used the room; the job hands its actor back and ends, and the collection
+logs it. The fill's scan starts above them */
+#define AIME_GUARD_WORD 0xA1E5D00Du
+static volatile unsigned int *aime_guard = NULL;
+
+static void aime_guard_set(
+	volatile unsigned int *guard)
+{
+	unsigned int k;
+
+	for (k = 0; k < ME_EDRAM_AIME_GUARD_BYTES / 4; k++)
+		guard[k] = AIME_GUARD_WORD;
+	aime_guard = guard;
+}
+
+unsigned int psp_me_aime_room_bytes(void)
+{
+	return ME_EDRAM_STACK_TOP - ME_EDRAM_AIME_STACK;
+}
+
+int psp_me_aime_guard_touched(void)
+{
+	unsigned int k;
+
+	if (!aime_guard)
+		return 0;
+	for (k = 0; k < ME_EDRAM_AIME_GUARD_BYTES / 4; k++)
+	{
+		if (aime_guard[k] != AIME_GUARD_WORD)
+			return 1;
+	}
+	return 0;
+}
 
 /* the job on the ME, on the ME's own stack in its eDRAM. Its deepest reach
 is measured the same way, every nested job included (audio, the ring and a
@@ -2330,11 +2369,12 @@ static unsigned int aime_me_lowest = 0, aime_me_filled = 0;
 
 static void aime_on_me(volatile struct me_slot *slot)
 {
-	unsigned int *bottom = (unsigned int *)(ME_EDRAM + ME_EDRAM_AIME_STACK);
+	unsigned int *bottom = (unsigned int *)(ME_EDRAM + ME_EDRAM_AIME_STACK + ME_EDRAM_AIME_GUARD_BYTES);
 	unsigned int *word;
 	unsigned int sp;
 
 	__asm__ __volatile__("move %0, $sp" : "=r"(sp));
+	aime_guard_set((volatile unsigned int *)(ME_EDRAM + ME_EDRAM_AIME_STACK));
 	if (!aime_me_lowest)
 	{
 		aime_me_lowest = sp;
@@ -2346,6 +2386,7 @@ static void aime_on_me(volatile struct me_slot *slot)
 		}
 	}
 	psp_aime_me_job(slot->args, slot->results);
+	aime_guard = NULL;
 	if (slot->args[0] && aime_me_filled)
 	{
 		for (word = bottom; (unsigned int)word < aime_me_lowest && *word == AIME_SIM_FILL; word++)
@@ -2373,9 +2414,13 @@ static __attribute__((noinline, cold)) void aime_simulated(volatile struct me_sl
 	if (!tried)
 	{
 		tried = 1;
-		aime_sim_stack = (unsigned char *)memalign(64, AIME_SIM_STACK_BYTES);
+		aime_sim_stack = (unsigned char *)memalign(64, AIME_SIM_SLACK_BYTES + AIME_SIM_STACK_BYTES);
 		if (!aime_sim_stack)
 			platform_log("ME (simulated): no room for the AI job's stack; it runs on the caller's");
+		else
+			platform_log("ME (simulated): the AI job's stack %u KB (the PSP's room) and %u KB below it, %p-%p, its guard at %p",
+				AIME_SIM_STACK_BYTES / 1024, AIME_SIM_SLACK_BYTES / 1024, aime_sim_stack,
+				aime_sim_stack + AIME_SIM_SLACK_BYTES + AIME_SIM_STACK_BYTES, aime_sim_stack + AIME_SIM_SLACK_BYTES);
 	}
 	psp_me_window[0] = 1;
 	psp_me_window_hold = 1;
@@ -2383,13 +2428,17 @@ static __attribute__((noinline, cold)) void aime_simulated(volatile struct me_sl
 	if (aime_sim_stack)
 	{
 		unsigned int *words = (unsigned int *)aime_sim_stack;
+		unsigned int guard_first = AIME_SIM_SLACK_BYTES / 4, guard_end = guard_first + ME_EDRAM_AIME_GUARD_BYTES / 4;
 
-		for (k = 0; k < AIME_SIM_STACK_BYTES / 4; k++)
+		for (k = 0; k < (AIME_SIM_SLACK_BYTES + AIME_SIM_STACK_BYTES) / 4; k++)
 			words[k] = AIME_SIM_FILL;
-		psp_me_sim_call((unsigned int)slot, aime_sim_stack + AIME_SIM_STACK_BYTES, aime_run_simulated);
-		for (k = 0; k < AIME_SIM_STACK_BYTES / 4 && words[k] == AIME_SIM_FILL; k++)
+		aime_guard_set((volatile unsigned int *)(words + guard_first));
+		psp_me_sim_call((unsigned int)slot, aime_sim_stack + AIME_SIM_SLACK_BYTES + AIME_SIM_STACK_BYTES, aime_run_simulated);
+		aime_guard = NULL;
+		for (k = 0; k < (AIME_SIM_SLACK_BYTES + AIME_SIM_STACK_BYTES) / 4 &&
+			(words[k] == AIME_SIM_FILL || (k >= guard_first && k < guard_end && words[k] == AIME_GUARD_WORD)); k++)
 			;
-		deepest = AIME_SIM_STACK_BYTES - k * 4;
+		deepest = AIME_SIM_SLACK_BYTES + AIME_SIM_STACK_BYTES - k * 4;
 		if (deepest > aime_sim_deepest)
 			aime_sim_deepest = deepest;
 		slot->results[ME_JOB_RESULTS - 1] = aime_sim_deepest;
