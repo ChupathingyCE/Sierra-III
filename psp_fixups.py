@@ -38816,7 +38816,7 @@ animation, or poses the ME's job makes nearly all of) */
 its free total above these (the level copies and the record buffers ask for
 large blocks later); "pscfloorN" sets the first, in KB */
 #define PSP_PSC_FREE_FLOOR (320 * 1024)
-#define PSP_PSC_KEEP_MARGIN (64 * 1024)
+#define PSP_PSC_KEEP_MARGIN (32 * 1024)
 static int psp_psc_release_old;
 static struct psp_psc_entry *psp_psc_entries;
 static unsigned char *psp_psc_pieces[PSP_PSC_PIECES];
@@ -38959,7 +38959,7 @@ static void psp_psc_log(void)
 
 		checked = now;
 		psp_heap_survey(&free_bytes, &largest, &used);
-		/* kept down to 64 KB under the floors it grows to: a table that
+		/* kept down to 32 KB under the floors it grows to: a table that
 		grew with room to spare isn't given back for a dip the size of a
 		small allocation (c10's table went when an 8 KB allocation took its
 		largest block to 244 KB and its free total to 317, and nothing
