@@ -106,11 +106,14 @@ the main CPU can't reach it). docs/me_programme.md, stage 1 */
 #define ME_EDRAM_RESIDENT_END 0x180000u
 #define ME_EDRAM_STACK_TOP 0x200000u   /* a PSP-1000's: the stack grows down from it */
 /* "aime2a": the thinking job keeps its path searches on the ME's stack, so the
-stack has 1,664-2,048 KB (384 KB) while the job runs, and 1,616-1,664 KB is
-kept for the job's own data. Nothing else may use 1,616 KB and up then (the
-sound cache in the eDRAM is refused with the job) */
-#define ME_EDRAM_AIME_DATA 0x194000u
-#define ME_EDRAM_AIME_STACK 0x1A0000u
+stack has 1,504-2,048 KB (544 KB) while the job runs, and 1,456-1,504 KB is
+kept for the job's own data. Nothing else may use 1,456 KB and up then (the
+sound cache in the eDRAM is refused with the job). The room: the job's
+deepest reach (c10 369 KB in the emulator, its own frames), the deepest the
+jobs run in its yields can add (the ME's stack never below 1,984 KB on both
+PSPs, edramcheck: 64 KB), and a quarter more */
+#define ME_EDRAM_AIME_DATA 0x16C000u
+#define ME_EDRAM_AIME_STACK 0x178000u
 /* the stack room's bottom 256 bytes: its guard (psp_me.c) */
 #define ME_EDRAM_AIME_GUARD_BYTES 256u
 int psp_me_aime_guard_touched(void);
