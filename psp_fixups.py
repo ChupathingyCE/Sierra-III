@@ -41804,6 +41804,182 @@ FIXES_AIME2A["source/ai/ai_communication.c#aime2a"] = [
 								"%s-%c%c%c%s",
 """),
 ]
+# What the ME job shares with the main CPU's frame (the write trace, aime2a3):
+# the BSP walks' kept answers, the marker memo and the collision log's
+# periods. The main CPU uses them while the job is out (the observer's and
+# the sound's rays, the markers drawn), and with no coherence between the two
+# caches either side's line can undo the other's: on the ME each is passed by
+# (all three are exact: the answer is the same without them). Only the AI
+# job's: the other ME work keeps its own rules
+FIXES_AIME2A["source/physics/collision_bsp.c#aime2a"] = [
+("""	struct collision_bsp_test_vector_result *result, boolean *return_value)
+{
+	struct psp_bspr_ray_slot *key = &psp_bspr_ray_pending, *w;
+	struct psp_bspr_state *state;
+	unsigned long generation;
+	long k;
+
+""",
+ """	struct collision_bsp_test_vector_result *result, boolean *return_value)
+{
+	struct psp_bspr_ray_slot *key = &psp_bspr_ray_pending, *w;
+	struct psp_bspr_state *state;
+	unsigned long generation;
+	long k;
+
+""" + """#ifdef HALO_PSP
+	extern int psp_aime_job_now[16];
+
+	/* psp_fixups.py (FIXES_AIME2A, "aime2a"): the kept answers are shared with
+	the main CPU, which may be walking at the same time; the ME walks without them */
+	if (psp_aime_job_now[0] && psp_work_on_me())
+		return FALSE;
+#endif
+"""),
+("""static void psp_bspr_ray_keep(struct collision_bsp_test_vector_result const *result, boolean return_value)
+{
+	struct psp_bspr_ray_slot *w = psp_bspr_ray_checking;
+	long k;
+
+""",
+ """static void psp_bspr_ray_keep(struct collision_bsp_test_vector_result const *result, boolean return_value)
+{
+	struct psp_bspr_ray_slot *w = psp_bspr_ray_checking;
+	long k;
+
+#ifdef HALO_PSP
+	extern int psp_aime_job_now[16];
+
+	/* psp_fixups.py (FIXES_AIME2A, "aime2a"): as psp_bspr_ray_take */
+	if (psp_aime_job_now[0] && psp_work_on_me())
+		return;
+#endif
+"""),
+("""	struct collision_bsp_test_sphere_result *result)
+{
+	struct psp_bspr_sphere_slot *key = &psp_bspr_sphere_pending, *w;
+	struct psp_bspr_state *state;
+	unsigned long generation;
+	long k, n;
+
+""",
+ """	struct collision_bsp_test_sphere_result *result)
+{
+	struct psp_bspr_sphere_slot *key = &psp_bspr_sphere_pending, *w;
+	struct psp_bspr_state *state;
+	unsigned long generation;
+	long k, n;
+
+#ifdef HALO_PSP
+	extern int psp_aime_job_now[16];
+
+	/* psp_fixups.py (FIXES_AIME2A, "aime2a"): as psp_bspr_ray_take */
+	if (psp_aime_job_now[0] && psp_work_on_me())
+		return FALSE;
+#endif
+"""),
+("""static void psp_bspr_sphere_keep(struct collision_bsp_test_sphere_result const *result)
+{
+	struct psp_bspr_sphere_slot *w = psp_bspr_sphere_checking;
+	long k, n;
+
+""",
+ """static void psp_bspr_sphere_keep(struct collision_bsp_test_sphere_result const *result)
+{
+	struct psp_bspr_sphere_slot *w = psp_bspr_sphere_checking;
+	long k, n;
+
+#ifdef HALO_PSP
+	extern int psp_aime_job_now[16];
+
+	/* psp_fixups.py (FIXES_AIME2A, "aime2a"): as psp_bspr_ray_take */
+	if (psp_aime_job_now[0] && psp_work_on_me())
+		return;
+#endif
+"""),
+]
+FIXES_AIME2A["source/models/models.c#aime2a"] = [
+("""	if (psp_marker_search < 0)
+		psp_marker_search = psp_keep("markersearch");
+""",
+ """#ifdef HALO_PSP
+	extern int psp_aime_job_now[16];
+
+	/* psp_fixups.py (FIXES_AIME2A, "aime2a"): the memo is the main CPU's too, filled while
+	it draws; the ME searches */
+	if (psp_aime_job_now[0] && psp_work_on_me())
+		return psp_model_find_marker_search(model_index, name);
+#endif
+	if (psp_marker_search < 0)
+		psp_marker_search = psp_keep("markersearch");
+"""),
+]
+FIXES_AIME2A["source/physics/collision_usage.c#aime2a"] = [
+("""void collision_log_begin_period(
+	short time_period)
+{
+""",
+ """void collision_log_begin_period(
+	short time_period)
+{
+#ifdef HALO_PSP
+	extern int psp_aime_job_now[16];
+
+	/* psp_fixups.py (FIXES_AIME2A, "aime2a"): the log's periods are the main CPU's */
+	if (psp_aime_job_now[0] && psp_work_on_me())
+		return;
+#endif
+"""),
+("""void collision_log_continue_period(
+	short time_period)
+{
+""",
+ """void collision_log_continue_period(
+	short time_period)
+{
+#ifdef HALO_PSP
+	extern int psp_aime_job_now[16];
+
+	/* psp_fixups.py (FIXES_AIME2A, "aime2a"): as begin_period */
+	if (psp_aime_job_now[0] && psp_work_on_me())
+		return;
+#endif
+"""),
+("""void collision_log_end_period(
+	void)
+{
+""",
+ """void collision_log_end_period(
+	void)
+{
+#ifdef HALO_PSP
+	extern int psp_aime_job_now[16];
+
+	/* psp_fixups.py (FIXES_AIME2A, "aime2a"): as begin_period */
+	if (psp_aime_job_now[0] && psp_work_on_me())
+		return;
+#endif
+"""),
+("""void collision_log_usage(
+	short collision_function)
+{
+	short user;
+
+""",
+ """void collision_log_usage(
+	short collision_function)
+{
+	short user;
+
+#ifdef HALO_PSP
+	extern int psp_aime_job_now[16];
+
+	/* psp_fixups.py (FIXES_AIME2A, "aime2a"): as begin_period */
+	if (psp_aime_job_now[0] && psp_work_on_me())
+		return;
+#endif
+"""),
+]
 FIXES_AIME2A["source/memory/data.c#aime2a"] = [
 ("""	if (data->signature == 'd@t@' && data->data && data->valid && data->next_identifier)
 		return TRUE;
