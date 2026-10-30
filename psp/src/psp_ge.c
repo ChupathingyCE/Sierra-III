@@ -11928,6 +11928,25 @@ entries it checks, so smaller sweeps cost less each. "sweeplate": at three
 quarters only, as before */
 #define CONVERTED_SWEEP_STEP 256
 static int converted_sweep_mark = CONVERTED_BUFFERS / 4;
+/* "skinbound": the plans' bytes as a sweep's second trigger. The table
+sweeps by its entries' count, and a scene that keeps reading new geometry
+into the cache can leave hundreds of KB of plans for blocks long since
+reloaded (dead entries) before the count reaches its mark: on a30 they fill
+the heap and plans fail. Past SKIN_BOUND_KB of plans the same sweep runs,
+freeing the dead entries' plans, which nothing can draw again: a block read
+back makes a new generation and a fresh conversion either way. Plans of
+live entries stay, since their vertices are converted in place. The next
+bound comes SKIN_BOUND_STEP past what a sweep kept, so a live set above the
+bound doesn't sweep on every part. "skinboundN" sets it to N KB,
+"skinboundoff" leaves the count as the only trigger */
+#define SKIN_BOUND_KB 160
+#define SKIN_BOUND_STEP (32ul * 1024)
+#define SKIN_GONE 256
+static int skin_bound_kb = -1, skin_bound_sweeping = 0;
+static unsigned long skin_bound_next = 0, skin_bound_sweeps = 0, skin_bound_freed = 0, skin_rebuilt = 0;
+/* the last plans a bound's sweep let go, to count those made again */
+static const void *skin_gone[SKIN_GONE];
+static unsigned int skin_gone_next = 0;
 static PSP_MAIN_SIDE int converted_sweep_late = -1;
 unsigned int psp_geo_generation(const void *ptr);
 
@@ -11951,6 +11970,11 @@ static void converted_sweep(void)
 		}
 		else
 		{
+			if (skin_bound_sweeping && skinned[index])
+			{
+				skin_gone[skin_gone_next] = converted[index];
+				skin_gone_next = (skin_gone_next + 1) % SKIN_GONE;
+			}
 			skin_free(skinned[index]);
 			converted_forgotten++;
 		}
@@ -12699,6 +12723,25 @@ static int model_convert(void *vertices, int count, int uncompressed, const unsi
 		model14 = psp_keep("model14");
 	if (converted_sweep_late < 0)
 		converted_sweep_late = psp_keep("sweeplate");
+	if (skin_bound_kb < 0 && psp_keep_loaded())
+		skin_bound_kb = psp_keep("skinboundoff") ? 0 : psp_keep_number("skinbound", SKIN_BOUND_KB);
+	if (skin_bound_kb > 0 && !PSP_ME_WORK() && skin_live_bytes >= (unsigned long)skin_bound_kb * 1024 &&
+		skin_live_bytes >= skin_bound_next)
+	{
+		unsigned long before = skin_live_bytes;
+
+		skin_bound_sweeping = 1;
+		converted_sweep();
+		skin_bound_sweeping = 0;
+		skin_bound_sweeps++;
+		skin_bound_freed += before - skin_live_bytes;
+		skin_bound_next = skin_live_bytes + SKIN_BOUND_STEP;
+		converted_sweep_mark = converted_used + CONVERTED_SWEEP_STEP;
+		if (converted_sweep_mark < CONVERTED_BUFFERS / 4)
+			converted_sweep_mark = CONVERTED_BUFFERS / 4;
+		if (converted_sweep_mark > CONVERTED_BUFFERS * 3 / 4)
+			converted_sweep_mark = CONVERTED_BUFFERS * 3 / 4;
+	}
 	if (converted_used >= (converted_sweep_late ? CONVERTED_BUFFERS * 3 / 4 : converted_sweep_mark) &&
 		!PSP_ME_WORK()) /* build 112: the sweep frees plans: the main CPU's */
 	{
@@ -12775,6 +12818,19 @@ static int model_convert(void *vertices, int count, int uncompressed, const unsi
 	{
 		struct skin_part *room = NULL;
 		int room_bytes = 0;
+
+		if (skin_bound_sweeps)
+		{
+			unsigned int k;
+
+			for (k = 0; k < SKIN_GONE; k++)
+				if (skin_gone[k] == vertices)
+				{
+					skin_gone[k] = NULL;
+					skin_rebuilt++;
+					break;
+				}
+		}
 
 		if (skinpack_on < 0 && psp_keep_loaded())
 		{
@@ -24853,6 +24909,22 @@ static void frame_end_show(void)
 				converted_sweeps, converted_forgotten, converted_used, CONVERTED_BUFFERS,
 				converted_sweep_late > 0 ? CONVERTED_BUFFERS * 3 / 4 : converted_sweep_mark,
 				skin_live_bytes / 1024, skin_live_peak / 1024);
+			{
+				unsigned long live_bytes = 0, dead_bytes = 0;
+				int index, live = 0, dead = 0;
+
+				for (index = 0; index < CONVERTED_BUFFERS; index++)
+					if (converted[index] && skinned[index])
+					{
+						if (psp_geo_generation(converted[index]) == converted_generation[index])
+							live++, live_bytes += (unsigned long)skinned[index]->bytes;
+						else
+							dead++, dead_bytes += (unsigned long)skinned[index]->bytes;
+					}
+				platform_log("GE: skinbound: plans of live entries %lu KB (%d), of dead ones %lu KB (%d); bound %d KB; %lu sweeps by "
+					"the plans' bytes, %lu KB freed; %lu plans made again after one", live_bytes / 1024, live, dead_bytes / 1024, dead,
+					skin_bound_kb, skin_bound_sweeps, skin_bound_freed / 1024, skin_rebuilt);
+			}
 			if (skinpack_on > 0)
 				platform_log("GE: skinpack: %lu parts built in a room asked for before their scratch, %lu rooms refused (the old order); "
 					"skinpackcheck %lu parts against the old order, %lu differed", skinpack_packed, skinpack_refused, skinpack_checked,
