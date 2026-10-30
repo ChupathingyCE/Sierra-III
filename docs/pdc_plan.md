@@ -73,6 +73,65 @@ The saving is the ME's replay, times the models' share of it, times the share of
 
 Only a prototype measures it. The PSP's frames move more objects between frames than the census's, so the saving today is smaller than at the target. It grows as the frame rate rises.
 
+## Stage A on the PSP, and the route it sets (2026-10-29)
+
+**The share holds on the PSP** [M]. Lab sierra-hw 40954191918, 40956643111 and 40961270594 (pdcprobe; c10, PSP-1000; the ME's own cycle counter):
+- 143-155 model parts a frame, of which 62-71% hit (keyed as last frame);
+- the hits' build is 8.4-11.6 ms of the models' 13.6-18.9 on the ME, settling at 8.8 of 14.2.
+
+**Where the ME's model time goes** [M] (meparts, 40961270594), ms a frame on c10:
+
+| Step | ms a frame |
+|---|---|
+| bind + state + lighting | 5.0 |
+| geometry | 3.8 |
+| two-sided and change/glow passes | 3.1 |
+| convert | 0.9 |
+| node matrix | 0.4 |
+
+The emulator's split of the same steps matches the PSP's proportions (mepf2 40966334820: 41/25/23/7/3% against 38/29/24/6.5/3%), so its finer split is taken as where the time goes [E]. Of bind + state + lighting:
+- texture bind 27%;
+- lighting 22%;
+- reflection and ambient 18%;
+- material state 14%;
+- the rest 19%.
+
+**What that rules out** [D, U]:
+- **A memo of the decisions alone** (the same words re-sent through pspgu) takes ~0.5-1 ms. Only reflection and ambient is pure decision; the rest is pspgu calls writing words.
+- **A plain copy through the list.** The command words are uncached stores, on the ME too: pspgu's sceGuStart sets bit 30, and `listcachedall` is off with gemeon. A copy of a hit's ~140 words is still ~140 bus stores, unless they go into a region taken through `list_take`'s cached path (lines made with `cache 0x18`, written back at the stall update).
+- **The CALL form, for now.** Lab api-job pdcdesign 40973501562 (Opus; quotes spot-checked) found:
+  - the bone sub-lists' CALLs change each frame inside a part (one a batch);
+  - a rigid part's matrix is written into the part's own words (`sceGumLoadMatrix`);
+  - light, fog and dither words change inside the block;
+  - a block the ME wrote would need a write-back of its own, which the emulator can't check.
+
+**The route: the copy form, into cached takes, rigid parts first** [U]. A hit's words are kept in a store of their own (not last frame's list, which geshow3 may reuse), and copied into a cached take. For the frame to stay bit-identical, a hit must also:
+- re-take each sub-region and rewrite its addresses at recorded positions. A take of 256 bytes or more is aligned to a line, so one delta can't relocate a part;
+- patch the matrix words, the point lights' places (0x63-0x6E) and the visor pass's lights;
+- set the statics a build leaves: `dither_now`, `blend_now`, `lit_points_maybe_on`, `model_ambient`, `world_model()`, `model_draws_this_frame`;
+- replay the texture marks (`me_book`), the bind counts and the VRAM copies' tallies (`vm_me_tally`), or a texture in use can be evicted;
+- replay the stall updates, so gebusy's SIGNALs and the GE's feed stay as built;
+- check the list's room for the whole part first, and build as now when it doesn't fit;
+- hit only on the ME (`psp_on_me()`): the main CPU's replay has the lit_ and texture memos live.
+
+The key gains the dither and blend state a part starts from, and fog.
+
+**Steps:**
+1. **`pdcreusecheck`:** each hit's copy is built into scratch and compared word by word with what the build made, BASE and the view and projection words included (`pdcprobecheck` skips both), plus the marks and tallies. The gate is 0 differences on b30, c10, c20 and d20. b30 and d20 still show 3-23% of hits differing in palette and index data.
+2. **Rigid parts** (about 60 of c10's 143): gestream frames identical with and without the keep word, play and seeds. About 2.5-3 ms of c10's ME [U].
+3. **Skinned parts:** the bone sub-lists rebuilt into fresh takes and their CALLs rewritten.
+4. **The point lights patched.**
+5. **The c10 pair on the PSP-1000:** `"- | pdcreuse"` x2, reading the ME's replay, the main CPU's wait and the key's own cost (logged since research/pdcreuse bc3513e5).
+
+In full, about 5.5-6.5 ms a frame of c10's ME [U]: the hits' 8.8, less the matrices, the bone rebuild, the copy, the replays and the key.
+
+**The bind step has a cheaper first lever** (survey texgeoperf, `docs/frame_side_surveys.md`): the bind blocks and the bind memo are both off on the ME (`psp_tex.c` `if (bind_blocks_on && !PSP_ME_WORK())`). Blocks made by the main CPU at pretouch and only CALLed by the ME would take part of the texture bind's ~1.4 ms on every part, hit or not. The GE allows two levels of call: the frame's list calls the block.
+
+The plan below is stage A's, kept for its reasoning. Where it differs from this route, this route holds:
+- its key is narrower than the code's;
+- it has one bone sub-list a part, where the code has one a batch;
+- it says the matrices sit in sub-lists, which holds only for skinned parts.
+
 ## The build plan
 
 **Step 1 [E]: retained part blocks on the ME (keep word `pdcreuse`, off by default).** In the replay, each model-part record keeps a block in a retained arena.
