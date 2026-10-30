@@ -564,6 +564,7 @@ CPU's words for it: publish each stall address, and serve the ring's jobs
 between records (geinflight) */
 static int replay_inflight = 0;
 static PSP_MAIN_SIDE int replay_kinds_on = 0; /* "mekinds" (see defer_replay) */
+static PSP_MAIN_SIDE int widget_sprites_off = 0; /* "nowidgetsprites" (defer_frame_begin) */
 static PSP_MAIN_SIDE unsigned long inflight_frames = 0, inflight_words = 0, inflight_words_most = 0;
 /* the whole frame's words, the parts carried out when the buffer filled
 included (inflight_words counts only what is left at the sync) */
@@ -755,6 +756,10 @@ static void defer_frame_begin(void)
 {
 	if (defer_asked < 0)
 	{
+		/* settled here, on the main CPU before any replay: the ME may carry
+		out a widget sprite's first call, and must not search the keep list
+		or write a main-side variable */
+		widget_sprites_off = psp_keep("nowidgetsprites") != 0;
 		/* build 118: mebench takes gedefer and gemeon with it */
 		me_bench = psp_keep("mebench");
 		defer_asked = psp_keep("gedefer") || me_bench;
@@ -16534,12 +16539,8 @@ void psp_ge_widget_sprite(float const *point, float radius, float scale_x, float
 {
 	GE_DEFER(defer_widget_sprite(point, radius, scale_x, scale_y, rotation, color)); /* build 112: gedefer */
 	GE_BENCH_SKIP();
-	static int sprites_off = -1;
-
 	/* "nowidgetsprites": lens flares and glows left out, for A/Bs */
-	if (sprites_off < 0)
-		sprites_off = psp_keep("nowidgetsprites");
-	if (sprites_off)
+	if (widget_sprites_off)
 		return;
 	ge_kind(KIND_WIDGET); /* build 103 */
 	static const float corner_uv[4][2] = { { 0, 0 }, { 1, 0 }, { 1, 1 }, { 0, 1 } };

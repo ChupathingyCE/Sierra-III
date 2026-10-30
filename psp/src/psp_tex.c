@@ -111,6 +111,7 @@ low frame rates the budget was spent before the HUD's turn. 1: pinned.
 "hudpinoff": as before */
 static unsigned char *hud_pinned = NULL;
 static int hud_pin_on = -1;
+static void tex_keeps_settle(void);
 static void hud_pin_list_forget(void); /* hudpinme, below */
 static unsigned long hud_misses = 0, hud_reads_past_budget = 0, hud_untextured = 0;
 int psp_tex_screen_pass = 0; /* psp_ge.c: set while the screen-space draws are made */
@@ -1268,6 +1269,7 @@ void psp_tex_map_opened(const char *name)
 	pack = file;
 	entry_count = header[1];
 	pack_generation++;
+	tex_keeps_settle();
 	{
 		/* the tints, right after the directory when the pack has them
 		('TNT1', a count, the pairs), then the drawn maps ('TND1', a count,
@@ -2046,6 +2048,21 @@ struct bind_block
 };
 static int bind_blocks_on = -1;
 static unsigned int (*bind_block_words)[BIND_BLOCK_WORDS] = NULL;
+
+/* the keep words a bind reads, settled on the main CPU as a pack opens: a
+replay on the ME may make a pack's first bind, and must not search the keep
+list or allocate */
+static void tex_keeps_settle(void)
+{
+	if (hud_pin_on < 0)
+		hud_pin_on = !psp_keep("hudpinoff");
+	if (bind_blocks_on < 0)
+	{
+		bind_blocks_on = psp_keep("bindblocks");
+		if (bind_blocks_on && !(bind_block_words = memalign(64, BIND_BLOCKS * sizeof(*bind_block_words))))
+			bind_blocks_on = 0;
+	}
+}
 static struct bind_block bind_block_meta[BIND_BLOCKS];
 static short *bind_block_of = NULL; /* per entry: its block, or -1 */
 static int bind_block_entries = 0;
