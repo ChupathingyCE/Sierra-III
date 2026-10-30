@@ -46,7 +46,11 @@ int psp_keep(const char *word);
 #define PIECE_BYTES 16384
 #define INDEX_PACKETS 512      /* a 4 KB window of a chain's packet table */
 #define PCM_FRAMES 4096        /* a voice's decoded frames not yet played */
-#define POOL_BYTES (320 * 1024)
+/* the codec's setup and three decoders peaked at 199 KB (the menu, three
+voices), 157 on b30 and a10; a packet wants 48 KB free above that */
+#define POOL_BYTES (256 * 1024)
+/* a started stub's first index window and piece, read ahead of its voice */
+#define PREFETCH 3
 /* a map's entries and chains, and its codec setup while it is read: a10's
 pack needs ~25 KB of tables (940 entries, 70 chains) */
 #define TABLE_BYTES (48 * 1024)
@@ -110,6 +114,17 @@ struct voice
 	unsigned int index[INDEX_PACKETS][2];
 	unsigned char piece[2][PIECE_BYTES] __attribute__((aligned(64)));
 };
+/* a stub's start, read by the reader when the game asks for the stub, so a
+voice's first block finds its packets: the decode only reads it */
+struct prefetch
+{
+	int ok, chain;
+	unsigned int index_first, index_count, piece_at;
+	unsigned int index[INDEX_PACKETS][2];
+	unsigned char piece[PIECE_BYTES] __attribute__((aligned(64)));
+};
+#define PREFETCH_BYTES ((sizeof(struct prefetch) + 63) & ~(size_t)63)
+
 /* what the decode writes in a voice */
 #define VOICE_DECODE_BYTES offsetof(struct voice, index_first)
 
@@ -124,6 +139,8 @@ static struct
 	vorbis_comment comment;
 	struct stub stubs[STUBS];
 	struct voice *voices[VOICES];
+	struct prefetch *prefetch[PREFETCH];
+	int prefetch_next;
 	SceUID reader_wake, out_ready, out_free, io_lock, state_lock;
 	int out_channel;
 	unsigned char *pool;
@@ -131,6 +148,7 @@ static struct
 	unsigned char *block;
 	unsigned char *tables;
 	/* counts, for the heartbeat */
+	unsigned long prefetched;
 	unsigned long out_late, pieces, piece_worst_us, stubs_made, not_in_pack, decode_us, decode_worst_us;
 } music;
 
@@ -145,7 +163,7 @@ static struct __attribute__((aligned(64)))
 	unsigned long pool_failed;
 	int wake;                   /* the reader is wanted: signalled after the block */
 	int out_which;
-	unsigned long blocks, late_blocks, restarts, playing_worst;
+	unsigned long blocks, late_blocks, restarts, playing_worst, prefetch_hits;
 	short out[2][OUT_FRAMES * 2] __attribute__((aligned(64)));
 	/* the decode's scratch: only the CPU that decodes reads it */
 	int sums[OUT_FRAMES * 2] __attribute__((aligned(64)));
@@ -173,7 +191,7 @@ unsigned long psp_music_block_bytes(void)
 
 	if (wanted < 0)
 		wanted = psp_keep("musicstream") != 0;
-	return wanted ? POOL_BYTES + VOICES * VOICE_BYTES + TABLE_BYTES : 0;
+	return wanted ? POOL_BYTES + VOICES * VOICE_BYTES + PREFETCH * PREFETCH_BYTES + TABLE_BYTES : 0;
 }
 
 /* the block's part for the path (64-byte aligned), or NULL if it got none */
@@ -405,6 +423,13 @@ static void start_once(void)
 		sceKernelDcacheWritebackRange(music.voices[k], sizeof(struct voice));
 		at += VOICE_BYTES;
 	}
+	for (k = 0; k < PREFETCH; k++)
+	{
+		music.prefetch[k] = (struct prefetch *)at;
+		memset(music.prefetch[k], 0, sizeof(struct prefetch));
+		sceKernelDcacheWritebackRange(music.prefetch[k], sizeof(struct prefetch));
+		at += PREFETCH_BYTES;
+	}
 	music.tables = at;
 	music.state_lock = sceKernelCreateSema("music state", 0, 1, 1, NULL);
 	music.reader_wake = sceKernelCreateSema("music reader", 0, 0, 64, NULL);
@@ -452,6 +477,19 @@ static void psp_music_map_open(const char *name, int wanted)
 
 	pack_close(NULL);
 	memset(music.stubs, 0, sizeof(music.stubs));
+	/* chain numbers are the pack's own: nothing a voice or a slot holds
+	carries over to another map's */
+	for (k = 0; k < VOICES; k++)
+		if (music.voices[k])
+		{
+			music.voices[k]->owner = NULL;
+			music.voices[k]->chain = music.voices[k]->data_chain = -1;
+			music.voices[k]->index_count = 0;
+			music.voices[k]->piece_ok[0] = music.voices[k]->piece_ok[1] = 0;
+		}
+	for (k = 0; k < PREFETCH; k++)
+		if (music.prefetch[k])
+			music.prefetch[k]->ok = 0;
 	music.entries = NULL;
 	music.chains = NULL;
 	if (!wanted)
@@ -694,6 +732,36 @@ static unsigned int index_offset_walk(int chain, unsigned int from_packet, unsig
 	return from_offset;
 }
 
+/* the entry's first index window and piece into the next slot (the
+reader): its flag changes only under the lock, as a voice's pieces' do */
+static void prefetch_read(const struct pmus_entry *e, unsigned int first_offset)
+{
+	struct prefetch *f = music.prefetch[music.prefetch_next];
+	const struct pmus_chain *c = &music.chains[e->chain];
+	unsigned int first = e->first ? e->first - 1 : 0, n = c->packets - first, at = first_offset & ~(PIECE_BYTES - 1), bytes;
+
+	music.prefetch_next = (music.prefetch_next + 1) % PREFETCH;
+	if (!f || first >= c->packets || at >= c->body)
+		return;
+	if (n > INDEX_PACKETS)
+		n = INDEX_PACKETS;
+	bytes = c->body - at < PIECE_BYTES ? c->body - at : PIECE_BYTES;
+	sceKernelWaitSema(music.state_lock, 1, NULL);
+	f->ok = 0;
+	sceKernelSignalSema(music.state_lock, 1);
+	if (!read_at(c->index_at + first * 8, f->index, n * 8) || !read_at(c->packets_at + at, f->piece, bytes))
+		return;
+	f->chain = (int)e->chain;
+	f->index_first = first;
+	f->index_count = n;
+	f->piece_at = at;
+	sceKernelDcacheWritebackRange(f, sizeof(struct prefetch));
+	sceKernelWaitSema(music.state_lock, 1, NULL);
+	f->ok = 1;
+	sceKernelSignalSema(music.state_lock, 1);
+	music.prefetched++;
+}
+
 static int reader_thread(SceSize arguments, void *argument)
 {
 	(void)arguments;
@@ -718,6 +786,7 @@ static int reader_thread(SceSize arguments, void *argument)
 				s->state = 2;
 				if (s->loaded)
 					*s->loaded = 1;
+				prefetch_read(e, s->first_offset);
 			}
 		}
 		for (k = 0; k < VOICES; k++)
@@ -787,12 +856,44 @@ static int reader_thread(SceSize arguments, void *argument)
 
 /* ---------- decoding */
 
+/* a packet's index entry (its size, and where its frames end): the voice's
+window, else a prefetched start of its chain */
+static const unsigned int *index_of(struct voice *v, unsigned int packet)
+{
+	int k;
+
+	if (v->index_count && packet >= v->index_first && packet < v->index_first + v->index_count)
+		return v->index[packet - v->index_first];
+	for (k = 0; k < PREFETCH; k++)
+	{
+		const struct prefetch *f = music.prefetch[k];
+
+		if (f && f->ok && f->chain == v->data_chain && packet >= f->index_first && packet < f->index_first + f->index_count)
+		{
+			dec.prefetch_hits++;
+			return f->index[packet - f->index_first];
+		}
+	}
+	return NULL;
+}
+
 static const unsigned char *packet_bytes(struct voice *v, unsigned int offset, unsigned int bytes)
 {
 	unsigned int at = offset & ~(PIECE_BYTES - 1), slot = (at / PIECE_BYTES) & 1;
 
 	if (!v->piece_ok[slot] || v->piece_at[slot] != at)
+	{
+		int k;
+
+		for (k = 0; k < PREFETCH; k++)
+		{
+			const struct prefetch *f = music.prefetch[k];
+
+			if (f && f->ok && f->chain == v->data_chain && f->piece_at == at)
+				return offset + bytes > at + PIECE_BYTES ? NULL : f->piece + (offset - at);
+		}
 		return NULL;
+	}
 	if (offset + bytes > at + PIECE_BYTES)
 		return NULL; /* across two pieces: copied below */
 	return v->piece[slot] + (offset - at);
@@ -818,15 +919,22 @@ static int decode_to(struct voice *v, unsigned int until)
 		unsigned int size, end, k;
 		int n;
 
-		if (v->next_packet < v->index_first || v->next_packet >= v->index_first + v->index_count)
+		const unsigned int *entry = index_of(v, v->next_packet), *after;
+
+		if (!v->index_count || v->next_packet < v->index_first || v->next_packet >= v->index_first + v->index_count)
 		{
+			/* not in the voice's own window: the reader fetches it, and a
+			prefetched start serves meanwhile */
+			if (v->index_wanted != v->next_packet || !v->index_count)
+				dec.wake = 1;
 			v->index_wanted = v->next_packet;
-			return 0;
 		}
-		size = v->index[v->next_packet - v->index_first][0];
-		end = v->index[v->next_packet - v->index_first][1];
-		if (v->primed && v->next_packet + 1 < v->index_first + v->index_count &&
-			v->index[v->next_packet + 1 - v->index_first][1] <= v->position)
+		if (!entry)
+			return 0;
+		size = entry[0];
+		end = entry[1];
+		after = index_of(v, v->next_packet + 1);
+		if (v->primed && after && after[1] <= v->position)
 		{
 			/* the packet after this one ends before the position: this one
 			isn't the overlap the position needs */
@@ -913,14 +1021,14 @@ static void voice_seek(struct voice *v, int chain, unsigned int position)
 	unsigned int e, offset;
 
 	if (v->dsp_ready && v->data_chain == chain && v->chain == chain && position >= v->position &&
-		v->next_packet > v->index_first && v->next_packet <= v->index_first + v->index_count)
+		v->next_packet > 0 && index_of(v, v->next_packet - 1))
 	{
 		/* on in the same chain: the decoder starts again a packet back (the
 		overlap the position needs), and the index and pieces it has stay */
 		if (!v->primed)
 		{
 			v->next_packet--;
-			v->next_offset -= v->index[v->next_packet - v->index_first][0];
+			v->next_offset -= index_of(v, v->next_packet)[0];
 		}
 		vorbis_synthesis_restart(&v->dsp);
 		v->position = position;
@@ -1160,9 +1268,9 @@ void psp_music_report(void)
 	if (!music.on)
 		return;
 	platform_log("music: %lu blocks, late %lu, output full %lu; voices at most %lu; restarts %lu; pieces %lu (worst %lu us); "
-		"stubs %lu, not in the pack %lu; main CPU after the job %lu us a block (worst %lu); pool peak %lu KB%s",
+		"stubs %lu (started ahead %lu, used %lu times), not in the pack %lu; main CPU after the job %lu us a block (worst %lu); pool peak %lu KB%s",
 		dec.blocks, dec.late_blocks, music.out_late, dec.playing_worst, dec.restarts, music.pieces,
-		music.piece_worst_us, music.stubs_made, music.not_in_pack, dec.blocks ? music.decode_us / dec.blocks : 0,
+		music.piece_worst_us, music.stubs_made, music.prefetched, dec.prefetch_hits, music.not_in_pack, dec.blocks ? music.decode_us / dec.blocks : 0,
 		music.decode_worst_us, (unsigned long)(dec.pool_peak - music.pool) / 1024, dec.pool_failed ? ", full" : "");
 #endif
 }
