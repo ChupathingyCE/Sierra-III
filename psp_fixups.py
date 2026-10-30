@@ -42251,6 +42251,40 @@ FIXES_AIME2A["port/linux/src/msvc_crt.c#aime2a"].append((
 #ifdef HALO_PSP
 """ + _psp_aime2a_stop_hook(29) + """#endif
 """))
+# consider_speech's note of why a unit won't speak ("nospch-...", "spk..."):
+# read only by the debug printing too (its callers' strings go into the
+# print_communication lines). On b30 it was nearly every formatting stop (the
+# formatting record, aime2a14 41093786587: 252-757 a run, all "nospch-%s")
+FIXES_AIME2A["source/ai/ai_communication.c#aime2a_note"] = [
+("""	if (play_type == _unit_play_speech_none)
+	{
+		if (debug_string)
+		{""",
+ """	if (play_type == _unit_play_speech_none)
+	{
+#ifdef HALO_PSP
+		/* psp_fixups.py (FIXES_AIME2A): not formatted on the ME, nor in
+		aimefpu's like-for-like pass */
+		extern int psp_aime_fpu_main;
+
+		if (debug_string && (ai_debug.print_communication || (!psp_work_on_me() && !psp_aime_fpu_main)))
+#else
+		if (debug_string)
+#endif
+		{"""),
+("""			*weight = 0.0f;
+			if (debug_string)
+			{""",
+ """			*weight = 0.0f;
+#ifdef HALO_PSP
+			extern int psp_aime_fpu_main;
+
+			if (debug_string && (ai_debug.print_communication || (!psp_work_on_me() && !psp_aime_fpu_main)))
+#else
+			if (debug_string)
+#endif
+			{"""),
+]
 # the speaker's team name is read only by the debug printing: on the ME it
 # isn't formatted, so play's speech never reaches the formatting stop
 FIXES_AIME2A["source/ai/ai_communication.c#aime2a"] = [
