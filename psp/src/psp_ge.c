@@ -11937,8 +11937,11 @@ freeing the dead entries' plans, which nothing can draw again: a block read
 back makes a new generation and a fresh conversion either way. Plans of
 live entries stay, since their vertices are converted in place. The next
 bound comes SKIN_BOUND_STEP past what a sweep kept, so a live set above the
-bound doesn't sweep on every part. "skinboundN" sets it to N KB,
-"skinboundoff" leaves the count as the only trigger */
+bound doesn't sweep on every part. The bound sits above the live plans of
+the heaviest scene measured (b30's, 188 KB), so it frees dead plans only; a
+plan made again for vertices a sweep let go is a conversion the count's
+order makes too. "skinboundN" sets it to N KB, "skinboundoff" leaves the
+count as the only trigger */
 #define SKIN_BOUND_KB 224
 #define SKIN_BOUND_STEP (32ul * 1024)
 #define SKIN_GONE 256
