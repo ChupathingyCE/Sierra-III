@@ -1682,7 +1682,7 @@ def interpolation_players(tree):
 
 # ---------- COLLUSERS: the collision user stack, one per CPU (lever COLLUSERS; docs/aime_me.md)
 # Bungie's collision code keeps a stack of who is asking (the AI's lines of
-# sight, bipeds, the HUD, ...): 67 pushes and pops open-coded in 25 files,
+# sight, bipeds, the HUD, ...): 68 pushes and pops open-coded in 25 files,
 # read only by the collision log by user. With "aime2a" the ME's thinking
 # pushes and pops it while the main CPU's frame does too (aime2a3's write
 # trace), and a stop of 1b or 2a taken inside a push (an owed node block in a
@@ -1822,8 +1822,8 @@ def collision_users(tree):
             open(path, "w", errors="surrogateescape").write(new)
             changed += 1
             sites += n1 + n2 + n3
-    if sites != 67:
-        sys.exit("psp_fixups: COLLUSERS: expected 67 pushes and pops, found %d" % sites)
+    if sites != 68:
+        sys.exit("psp_fixups: COLLUSERS: expected 68 pushes and pops, found %d" % sites)
     return changed
 
 # ---------- b125: the PC renderer's GL path out of the link
