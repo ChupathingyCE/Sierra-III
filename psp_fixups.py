@@ -38629,7 +38629,8 @@ FIXES_FX15["source/game/game_time.c#fx15"] = [
 # from: on b30 two weapons' change between their update and the pass, by no
 # export (fvpasscheck counts how often). The sleep check's checksum after an update
 # holds the function values and colours of most types: a family it checks
-# has its values made before it. Objects made during the walk
+# has its values made before it. An object deactivated or deleted in the walk
+# has them made first too. Objects made during the walk
 # are updated after the pass, in place, as before. Keep words: "fvpass" (the
 # pass), "fvpasscheck" (made in place as before; each object's inputs
 # are checked against what they were at its update, where the pass would have
@@ -38833,6 +38834,18 @@ FIXES_FISSION["source/objects/objects.c#fvpasssleep"] = [
 	if (psp_family_checksum(header) == before)
 	{
 		if (psp_sleep[absolute_index].identifier == header->identifier)"""),
+]
+FIXES_FISSION["source/objects/objects.c#fvpassgone"] = [
+("""	psp_lights_flush(object_index); /* psp_fixups.py (FIXES_LD1) */
+""", """	psp_lights_flush(object_index); /* psp_fixups.py (FIXES_LD1) */
+	{
+		/* psp_fixups.py (FIXES_FISSION): an object leaving the walk (or
+		deleted) has its values made first, as its update made them */
+		void psp_fvp_settle(long object_index);
+
+		psp_fvp_settle(object_index);
+	}
+"""),
 ]
 FIXES_FISSION["source/objects/objects.c#fvpassread"] = [
 ("""		if (VALID_INDEX(function_index, NUMBER_OF_OUTGOING_OBJECT_FUNCTIONS))
