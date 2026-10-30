@@ -2334,7 +2334,7 @@ the job between actors (psp_me_aime_guard_touched). A frame that reaches them
 has used the room; the job hands its actor back and ends, and the collection
 logs it. The fill's scan starts above them */
 #define AIME_GUARD_WORD 0xA1E5D00Du
-static volatile unsigned int *aime_guard = NULL;
+static PSP_AIME_ME_SIDE volatile unsigned int *aime_guard = NULL;
 extern unsigned int psp_aime_sp_low, psp_aime_sp_high;
 
 static void aime_guard_set(
@@ -2408,7 +2408,7 @@ first job's stack pointer is filled once, and when the main CPU asks
 (args[0]) the fill is read from the bottom up to the lowest word written so
 far. The figure is the stack's depth from the eDRAM's top, the ME's own
 frames included */
-static unsigned int aime_me_lowest = 0, aime_me_filled = 0;
+static PSP_AIME_ME_SIDE unsigned int aime_me_lowest = 0, aime_me_filled = 0;
 
 static void aime_on_me(volatile struct me_slot *slot)
 {
@@ -2440,7 +2440,8 @@ static void aime_on_me(volatile struct me_slot *slot)
 	slot->results[ME_JOB_RESULTS - 1] = ME_EDRAM + ME_EDRAM_STACK_TOP - aime_me_lowest;
 }
 static unsigned char *aime_sim_stack = NULL;
-static unsigned int aime_sim_deepest = 0;
+/* (written while the emulator marks the work as the ME's) */
+static PSP_AIME_ME_SIDE unsigned int aime_sim_deepest = 0;
 
 static void aime_run_simulated(unsigned int slot_address)
 {

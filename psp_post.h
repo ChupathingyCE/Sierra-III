@@ -85,6 +85,16 @@ on in the main CPU (its thread's, or the emulator's stand-in for the ME's,
 psp_aime_sp_low-high). Another thread's work during the pass, or the main
 CPU's own frame while the ME's pass is out, is never stopped or queued: a
 stop there would jump onto the pass's frames from another stack */
+/* a variable the Media Engine writes while its job runs ("aime2a"'s pass
+and what it reaches): psp_build.py's link script keeps these together on
+64-byte lines of their own, so no line holds both a word the ME writes and
+one the main CPU writes during the job (each CPU's write-back cache would
+put back its stale copy of the other's words). A static gets it before its
+type, a struct after its name */
+#ifndef PSP_AIME_ME_SIDE
+#define PSP_AIME_ME_SIDE __attribute__((section(".data.psp_aime_me")))
+#endif
+
 extern unsigned int psp_aime_sp_low, psp_aime_sp_high;
 static __inline__ __attribute__((always_inline)) int psp_aime_here(void)
 {

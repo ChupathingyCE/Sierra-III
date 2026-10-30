@@ -238,6 +238,16 @@ their own, away from the ME's variables of the same files. A static gets it
 before its type: static PSP_MAIN_SIDE int x = 0; */
 #define PSP_MAIN_SIDE __attribute__((section(".data.psp_main_side")))
 
+/* a variable the Media Engine writes while its job runs ("aime2a"'s pass
+and what it reaches): psp_build.py's link script keeps these together on
+64-byte lines of their own, so no line holds both a word the ME writes and
+one the main CPU writes during the job (each CPU's write-back cache would
+put back its stale copy of the other's words). A static gets it before its
+type, a struct after its name */
+#ifndef PSP_AIME_ME_SIDE
+#define PSP_AIME_ME_SIDE __attribute__((section(".data.psp_aime_me")))
+#endif
+
 /* work that is (or, in the emulator, stands for) the Media Engine's: on the
 ME, or marked as its by psp_me_context (gemesim: the main CPU runs it) */
 extern volatile unsigned int psp_me_context;

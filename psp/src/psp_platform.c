@@ -67,11 +67,16 @@ unsigned long psp_lfs_frames, psp_lfs_markers, psp_lfs_kept, psp_lfs_hits, psp_l
 
 /* ---------- logging (psp_fixups.py's changes call this) */
 
+int psp_format_refused(const char *format);
+
 void platform_psp_log(const char *format, ...)
 {
 	char line[512];
 	va_list arguments;
 
+	/* never on the Media Engine (psp_libc.c) */
+	if (psp_format_refused(format))
+		return;
 	va_start(arguments, format);
 	vsnprintf(line, sizeof(line), format, arguments);
 	va_end(arguments);
@@ -440,7 +445,12 @@ static char log_line_joined[640];
 void psp_log_write(const char *text)
 {
 	SceUID file;
-	int locked = log_lock_take();
+	int locked;
+
+	/* never on the Media Engine (psp_libc.c) */
+	if (psp_format_refused("(a line of the log)"))
+		return;
+	locked = log_lock_take();
 
 	screen_write(text);
 	if (log_batching)

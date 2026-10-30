@@ -34071,7 +34071,8 @@ static void __attribute__((noinline, cold)) psp_prs_check(long object_index, str
 	object_mark_function(object_index);
 	psp_prs_passed++;
 	psp_prs_differences += object->object.type != type;
-	if (now % 150 == 0 && now != psp_prs_logged)
+	/* (the ME never formats) */
+	if (now % 150 == 0 && now != psp_prs_logged && !psp_work_on_me())
 	{
 		psp_prs_logged = now;
 		platform_psp_log("prscheck: game time %ld | passed over %lu, differences %lu", now, psp_prs_passed,
@@ -34235,7 +34236,8 @@ static void psp_aicad_count(
 			psp_aicad_stats.first++;
 	}
 	now = game_time_get();
-	if (psp_aicad_logged == NONE || now < psp_aicad_logged || now - psp_aicad_logged >= 900)
+	/* (the ME never formats: the main CPU's next count logs it) */
+	if (!psp_work_on_me() && (psp_aicad_logged == NONE || now < psp_aicad_logged || now - psp_aicad_logged >= 900))
 	{
 		if (psp_aicad_logged != NONE)
 			platform_psp_log("aicad: game time %ld | actor updates %lu, rested %lu; resting turns kept: timeslice %lu swarm %lu dormant %lu charging %lu first %lu",
@@ -34519,7 +34521,8 @@ static boolean psp_aifar_resting(
 	/* the census: of the actors asked on their second thinking tick, how many
 	were near a player, kept by the fight, or rested (every 30 s of game
 	time, cumulative) */
-	if (psp_aifar_logged == NONE || now < psp_aifar_logged || now - psp_aifar_logged >= 900)
+	/* (the ME never formats: the main CPU's next answer logs it) */
+	if (!psp_work_on_me() && (psp_aifar_logged == NONE || now < psp_aifar_logged || now - psp_aifar_logged >= 900))
 	{
 		if (psp_aifar_logged != NONE)
 			platform_psp_log("aifar: game time %ld | asked %lu: near %lu, in the fight %lu, rested far %lu",
@@ -39904,19 +39907,21 @@ FIXES_AIME["source/ai/actors.c#aime"] = [
  """#ifdef HALO_PSP
 /* psp_fixups.py (FIXES_AIME): "aime" (see there) */
 static int psp_aime_on = -1;
+/* the pass's state below is the ME's to write while its job runs
+(aime2a): PSP_AIME_ME_SIDE keeps it on lines no main-CPU variable shares */
 /* TRUE while actor_update runs only the thinking, for the next tick */
-static boolean psp_aime_think_only = FALSE;
+static PSP_AIME_ME_SIDE boolean psp_aime_think_only = FALSE;
 /* the game time the last pass thought for, its number, and each slot's */
-static long psp_aime_pass_time = NONE;
-static unsigned long psp_aime_pass = 0;
-static unsigned long psp_aime_slot_pass[MAXIMUM_ACTORS];
-static short psp_aime_slot_identifier[MAXIMUM_ACTORS];
-static unsigned long psp_aime_seed;
-static long psp_aime_seed_time = NONE;
+static PSP_AIME_ME_SIDE long psp_aime_pass_time = NONE;
+static PSP_AIME_ME_SIDE unsigned long psp_aime_pass = 0;
+static PSP_AIME_ME_SIDE unsigned long psp_aime_slot_pass[MAXIMUM_ACTORS];
+static PSP_AIME_ME_SIDE short psp_aime_slot_identifier[MAXIMUM_ACTORS];
+static PSP_AIME_ME_SIDE unsigned long psp_aime_seed;
+static PSP_AIME_ME_SIDE long psp_aime_seed_time = NONE;
 static struct
 {
 	unsigned long passes, ahead, inline_whole;
-} psp_aime_stats;
+} psp_aime_stats PSP_AIME_ME_SIDE;
 static long psp_aime_logged = NONE;
 
 static boolean psp_aime_active(
@@ -39963,7 +39968,10 @@ static void psp_aime_mark(
 unsigned long *psp_aime_seed_address(
 	void)
 {
-	return psp_aime_think_only ? &psp_aime_seed : NULL;
+	/* only in the pass's own context (psp_post.h): while the ME's pass is
+	out, the main CPU's frame draws from the game's seed whatever it reads
+	of the ME's think_only */
+	return psp_aime_think_only && psp_aime_here() ? &psp_aime_seed : NULL;
 }
 #endif
 
@@ -40226,7 +40234,7 @@ FIXES_AIME1B["source/ai/actors.c#aime1b"] = [
 #define PSP_AIME_WRITERS 25
 #define PSP_AIME_FORCED (PSP_AIME_WRITERS - 1)
 /* TRUE while this actor's thinking is to end in a stop (aime1bcheck) */
-static boolean psp_aime1b_checking = FALSE;
+static PSP_AIME_ME_SIDE boolean psp_aime1b_checking = FALSE;
 void psp_aime_handback(int which);
 
 static void psp_aime_mark(
@@ -40259,12 +40267,12 @@ alone (a stop could not put it back) */
 
 /* the writers' hooks read it: 0 outside the thinking done ahead; 1 queue and
 stop; 2 queue, but let a writer run (this actor can't be put back) */
-int psp_aime_arm = 0;
+PSP_AIME_ME_SIDE int psp_aime_arm = 0;
 static int psp_aime1b_on = -1, psp_aime1b_check_on = 0;
-static void *psp_aime_jump[5];
-static long psp_aime_current = NONE;
-static int psp_aime_stop_which = NONE;
-static boolean psp_aime_stopped = FALSE;
+static PSP_AIME_ME_SIDE void *psp_aime_jump[5];
+static PSP_AIME_ME_SIDE long psp_aime_current = NONE;
+static PSP_AIME_ME_SIDE int psp_aime_stop_which = NONE;
+static PSP_AIME_ME_SIDE boolean psp_aime_stopped = FALSE;
 
 static struct psp_aime_copy
 {
@@ -40288,8 +40296,8 @@ static struct psp_aime_queued
 	long index;
 	struct unit_speech_item speech;
 } *psp_aime_queue;
-static short psp_aime_queue_count = 0;
-static long psp_aime_queue_time = NONE;
+static PSP_AIME_ME_SIDE short psp_aime_queue_count = 0;
+static PSP_AIME_ME_SIDE long psp_aime_queue_time = NONE;
 
 static struct
 {
@@ -40299,7 +40307,7 @@ static struct
 	unsigned long back[PSP_AIME_WRITERS], queued[PSP_AIME_WRITERS], written_ahead[PSP_AIME_WRITERS];
 	unsigned long checked, own_actor, own_props, prop_header, own_swarm, prop_live;
 	unsigned long other_actors, other_actor_stops, other_props, other_prop_stops, other_swarms;
-} psp_aime1b_stats;
+} psp_aime1b_stats PSP_AIME_ME_SIDE;
 
 /* aime1bcheck: each datum's identifier and a hash of its bytes, by pool,
 before a checked actor thinks */
@@ -40323,6 +40331,16 @@ static struct datum_header *psp_aime_datum_address(
 	return (struct datum_header *)((byte *)xbox_pointer(data->data) + data->size * DATUM_INDEX_TO_ABSOLUTE_INDEX(index));
 }
 
+/* what the ME writes on the heap during its job (aime2a): whole 64-byte
+lines, so no neighbour's line is shared with the main CPU */
+static void *psp_aime_lines(
+	unsigned long bytes)
+{
+	extern void *memalign(size_t alignment, size_t size);
+
+	return memalign(64, (bytes + 63) & ~63UL);
+}
+
 static boolean psp_aime1b_active(
 	void)
 {
@@ -40334,14 +40352,14 @@ static boolean psp_aime1b_active(
 		psp_aime1b_on = psp_aime1b_check_on || psp_keep("aime1b") != 0;
 		if (psp_aime1b_on)
 		{
-			psp_aime_copy = malloc(sizeof(*psp_aime_copy));
-			psp_aime_prop_bytes = malloc(PSP_AIME_PROPS_MOST * sizeof(struct prop_datum));
-			psp_aime_log_bytes = malloc(PSP_AIME_PROP_LOG_MOST * sizeof(struct prop_datum));
-			psp_aime_queue = malloc(PSP_AIME_QUEUE_MOST * sizeof(*psp_aime_queue));
+			psp_aime_copy = psp_aime_lines(sizeof(*psp_aime_copy));
+			psp_aime_prop_bytes = psp_aime_lines(PSP_AIME_PROPS_MOST * sizeof(struct prop_datum));
+			psp_aime_log_bytes = psp_aime_lines(PSP_AIME_PROP_LOG_MOST * sizeof(struct prop_datum));
+			psp_aime_queue = psp_aime_lines(PSP_AIME_QUEUE_MOST * sizeof(*psp_aime_queue));
 			for (pool = 0; pool < PSP_AIME_POOLS && psp_aime1b_check_on; pool++)
 			{
-				psp_aime_check_hash[pool] = malloc(psp_aime_pool(pool)->maximum_count * sizeof(unsigned long));
-				psp_aime_check_identifier[pool] = malloc(psp_aime_pool(pool)->maximum_count * sizeof(short));
+				psp_aime_check_hash[pool] = psp_aime_lines(psp_aime_pool(pool)->maximum_count * sizeof(unsigned long));
+				psp_aime_check_identifier[pool] = psp_aime_lines(psp_aime_pool(pool)->maximum_count * sizeof(short));
 				if (!psp_aime_check_hash[pool] || !psp_aime_check_identifier[pool])
 					psp_aime1b_check_on = 0;
 			}
@@ -41033,7 +41051,7 @@ FIXES_AIME2A["source/ai/actors.c#aime2a"] = [
 		psp_aime_arm = 0;
 		psp_aime1b_checking = FALSE;
 		psp_aime_current = NONE;
-		psp_aime2a_stats.many_props++;
+		psp_aime2a_me_stats.many_props++;
 		return;
 	}
 """),
@@ -41130,10 +41148,10 @@ FIXES_AIME2A["source/ai/actors.c#aime2a"] = [
 			}
 			if (psp_aime2a_abort && *psp_aime2a_abort)
 			{
-				psp_aime2a_stats.aborted++;
+				psp_aime2a_me_stats.aborted++;
 				break;
 			}
-			psp_aime2a_stats.on_me++;
+			psp_aime2a_me_stats.on_me++;
 		}
 		psp_aime_think_actor(iterator.index);
 	}
@@ -41141,7 +41159,9 @@ FIXES_AIME2A["source/ai/actors.c#aime2a"] = [
 		psp_perception_end();
 	if (!psp_work_on_me())
 		psp_aime_pass_here(0);
-	psp_aime_fpu_main = 0;
+	/* (set only by the main CPU's like-for-like pass: never written on the ME) */
+	if (psp_aime_fpu_main)
+		psp_aime_fpu_main = 0;
 """),
 ("""	if (psp_aime_logged == NONE || now < psp_aime_logged || now - psp_aime_logged >= 900)
 	{
@@ -41167,7 +41187,7 @@ static struct
 	const char *format;
 	void *caller;
 	unsigned long count;
-} psp_aime_formats[PSP_AIME_FORMATS];
+} psp_aime_formats[PSP_AIME_FORMATS] PSP_AIME_ME_SIDE;
 
 void psp_aime_format_seen(
 	const char *format,
@@ -41212,7 +41232,7 @@ static struct
 	short identifier, log_count;
 	long log_index[8];
 	boolean log_deleted[8], logged;
-} psp_aime_chain;
+} psp_aime_chain PSP_AIME_ME_SIDE;
 
 static void psp_aime_chain_check(
 	int where,
@@ -41384,7 +41404,7 @@ void psp_aime_me_job(
 	volatile unsigned int *args,
 	volatile unsigned int *results)
 {
-	unsigned long on_me = psp_aime2a_stats.on_me, aborted = psp_aime2a_stats.aborted;
+	unsigned long on_me = psp_aime2a_me_stats.on_me, aborted = psp_aime2a_me_stats.aborted;
 
 	(void)args;
 #ifdef PSP_DEBUG_TOOLS
@@ -41398,8 +41418,8 @@ void psp_aime_me_job(
 	psp_aime_job_now[0] = 0;
 	if (psp_me_aime_guard_touched())
 		psp_aime2a_guard_hit = 1;
-	results[0] = (unsigned int)(psp_aime2a_stats.on_me - on_me);
-	results[1] = (unsigned int)(psp_aime2a_stats.aborted - aborted);
+	results[0] = (unsigned int)(psp_aime2a_me_stats.on_me - on_me);
+	results[1] = (unsigned int)(psp_aime2a_me_stats.aborted - aborted);
 	results[2] = psp_aime2a_check_on ? (unsigned int)psp_aime2a_hash_state() : 0;
 	results[3] = (unsigned int)psp_aime2a_guard_hit;
 	results[4] = (unsigned int)psp_aime2a_guard_actor;
@@ -41431,17 +41451,22 @@ void psp_aime2a_frame_end(
 	/* the ME's copy of the owed computes as they are now: the collision walk
 	there reads the copy, which the last ray hand-over left (objects.c) */
 	psp_nms_pending_for_me();
+	/* counted and marked out before the write-back: while the job runs the
+	main CPU writes nothing of the AI's (a dirty line of it could hold the
+	ME's words, and the collection's write-back would put back stale ones) */
+	psp_aime2a_stats.pushed++;
+	psp_aime2a_out = TRUE;
 	/* everything the pass reads, out of the main CPU's cache; the ME drops
 	its own before the job */
 	sceKernelDcacheWritebackAll();
 	if (!psp_me_submit(ME_SLOT_AI, ME_JOB_AIME, args, 1))
 	{
+		psp_aime2a_stats.pushed--;
+		psp_aime2a_out = FALSE;
 		psp_aime2a_stats.refused++;
 		psp_aime_think();
 		return;
 	}
-	psp_aime2a_stats.pushed++;
-	psp_aime2a_out = TRUE;
 }
 
 /* game.c, at game_tick's start: the job collected before anything writes
@@ -41538,8 +41563,8 @@ static void psp_aime2a_log(
 		return;
 	platform_psp_log("aime2a: game time %ld | jobs %lu (refused %lu), collected %lu, late %lu, no answer %lu, failed %lu | passes inline %lu | actors on the ME %lu, ended by the word %lu, props over the copy %lu | pathfinding log %lu, applied %lu (woken %lu), full %lu | stack %lu bytes%s, the guard reached %lu",
 		now, psp_aime2a_stats.pushed, psp_aime2a_stats.refused, psp_aime2a_stats.collected, psp_aime2a_stats.late,
-		psp_aime2a_stats.no_answer, psp_aime2a_stats.failed, psp_aime2a_stats.inline_passes, psp_aime2a_stats.on_me,
-		psp_aime2a_stats.aborted, psp_aime2a_stats.many_props, psp_aime_pf_stats[0], psp_aime_pf_stats[1],
+		psp_aime2a_stats.no_answer, psp_aime2a_stats.failed, psp_aime2a_stats.inline_passes, psp_aime2a_me_stats.on_me,
+		psp_aime2a_me_stats.aborted, psp_aime2a_me_stats.many_props, psp_aime_pf_stats[0], psp_aime_pf_stats[1],
 		psp_aime_pf_stats[2], psp_aime_pf_stats[3], psp_aime2a_stats.stack_deepest,
 		psp_aime2a_stats.stack_deepest > psp_me_aime_room_bytes() ? " (past the PSP's room)" : "", psp_aime2a_stats.guard);
 	if (psp_aime_chain_on > 0)
@@ -41550,6 +41575,12 @@ static void psp_aime2a_log(
 	if (psp_aime2a_check_on)
 		platform_psp_log("aime2acheck: game time %ld | jobs checked %lu, the AI's state changed between the job's end and the collection %lu",
 			now, psp_aime2a_stats.checked, psp_aime2a_stats.check_changed);
+	{
+		/* what the job asked to format and was refused (psp_libc.c) */
+		extern void psp_format_refused_log(void);
+
+		psp_format_refused_log();
+	}
 }
 #endif
 """),
@@ -41630,11 +41661,17 @@ static boolean psp_aime2a_owed = FALSE, psp_aime2a_out = FALSE, psp_aime2a_faile
 static volatile unsigned int *psp_aime2a_abort = NULL;
 /* the collection's wait for the actor in hand, once the job is asked to end */
 #define PSP_AIME2A_BOUND_US 20000
+/* the main CPU's counts (pushed, among them, is written while the job runs) */
 static struct
 {
 	unsigned long pushed, refused, collected, late, no_answer, failed, inline_passes;
-	unsigned long on_me, aborted, many_props, checked, check_changed, stack_deepest, guard;
+	unsigned long checked, check_changed, stack_deepest, guard;
 } psp_aime2a_stats;
+/* the job's own */
+static struct
+{
+	unsigned long on_me, aborted, many_props;
+} psp_aime2a_me_stats PSP_AIME_ME_SIDE;
 /* "aimefpu": 1b's pass on the main CPU in the ME's FPU forms (matrix_math.c,
 real_math.c read psp_aime_fpu_main) */
 static int psp_aime_fpu_main_on = -1;
@@ -41664,8 +41701,8 @@ by an actor's thinking (handed back) or by a job run in a yield; the pass's
 rest thinks in the tick, and the collection logs it */
 int psp_me_aime_guard_touched(void);
 unsigned int psp_me_aime_room_bytes(void);
-static int psp_aime2a_guard_hit = 0;
-static long psp_aime2a_guard_actor = NONE;
+static PSP_AIME_ME_SIDE int psp_aime2a_guard_hit = 0;
+static PSP_AIME_ME_SIDE long psp_aime2a_guard_actor = NONE;
 /* "aimechain" (a test): every actor's chain of props walked at each pass's
 start, after each actor's thinking and after the collection; the first link
 to a prop that isn't there (or is another actor's) kept with what the last
@@ -41794,8 +41831,8 @@ a table of their own, so no object's line is written by the ME. Sized for
 the map's object pool, on the main CPU, before the first job */
 static long *psp_me_object_marks = NULL;
 static long psp_me_object_marks_count = 0;
-static long psp_me_object_marker = 0;
-static boolean psp_me_object_marker_on = FALSE;
+static PSP_AIME_ME_SIDE long psp_me_object_marker = 0;
+static PSP_AIME_ME_SIDE boolean psp_me_object_marker_on = FALSE;
 
 static boolean psp_me_marks_here(
 	void)
@@ -41812,7 +41849,10 @@ unsigned int psp_aime_marks_bytes(
 	{
 		long count = object_header_data->maximum_count;
 
-		psp_me_object_marks = (long *)malloc(count * sizeof(long));
+		extern void *memalign(size_t alignment, size_t size);
+
+		/* whole lines of their own: the ME writes them */
+		psp_me_object_marks = (long *)memalign(64, (count * sizeof(long) + 63) & ~63UL);
 		if (psp_me_object_marks)
 		{
 			csmemset(psp_me_object_marks, 0, count * sizeof(long));
@@ -41948,8 +41988,8 @@ FIXES_AIME2A["source/structures/structures.c#aime2a"] = [
 """,
  """#ifdef HALO_PSP
 /* psp_fixups.py (FIXES_AIME2A, "aime2a"): as the objects' marks (objects.c) */
-static long psp_me_cluster_marks[MAXIMUM_CLUSTERS_PER_STRUCTURE];
-static long psp_me_cluster_marker = 0;
+static PSP_AIME_ME_SIDE long psp_me_cluster_marks[MAXIMUM_CLUSTERS_PER_STRUCTURE];
+static PSP_AIME_ME_SIDE long psp_me_cluster_marker = 0;
 
 static boolean psp_me_cluster_marks_here(
 	void)
@@ -42108,10 +42148,11 @@ struct psp_pf_entry
 	__typeof__(((struct biped_datum *)0)->biped.last_pathfinding_attempt_time) time;
 	__typeof__(((struct biped_datum *)0)->biped.pathfinding_point) point;
 };
-static struct psp_pf_entry psp_pf_log[PSP_PF_LOG_MOST];
-static short psp_pf_log_count = 0;
+/* the log and its counts are the ME's to write during its job */
+static PSP_AIME_ME_SIDE struct psp_pf_entry psp_pf_log[PSP_PF_LOG_MOST];
+static PSP_AIME_ME_SIDE short psp_pf_log_count = 0;
 /* logged, applied, applied with a wake, full */
-unsigned long psp_aime_pf_stats[4];
+PSP_AIME_ME_SIDE unsigned long psp_aime_pf_stats[4];
 
 static struct psp_pf_entry *psp_aime_pf_find(
 	long biped_index)
