@@ -399,6 +399,16 @@ frame. While it is out, the ME publishes each stall address it reaches in an
 uncached pair (the address, the list's id) and a thread of the main CPU's
 passes it to the GE, so the GE draws behind the ME rather than after it */
 static PSP_MAIN_SIDE int inflight_me_out = 0;
+/* the emulator: a held window's end, at the AI job's collection. On the PSP
+the collection's whole-cache write-back and invalidate end that overlap, so
+the main CPU's writes after it (the tick's) are no longer the job's window;
+it stays open while a render or ring job is out */
+int psp_me_ring_sim_open(void);
+void psp_me_window_close(void)
+{
+	psp_me_window_hold = 0;
+	psp_me_window[0] = me_out || inflight_me_out || psp_me_ring_sim_open();
+}
 static PSP_MAIN_SIDE unsigned long inflight_handed = 0, inflight_me_failed = 0;
 static volatile unsigned int inflight_stall_word[16] __attribute__((aligned(64))); /* [0] address, [1] id: written uncached */
 #define INFLIGHT_STALL ((volatile unsigned int *)(0x40000000u | (unsigned int)inflight_stall_word))

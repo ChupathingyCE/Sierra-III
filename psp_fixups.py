@@ -41473,7 +41473,8 @@ void psp_aime2a_tick_begin(
 		done = psp_me_finish(ME_SLOT_AI, results);
 		if (!psp_me_simulated())
 			sceKernelDcacheWritebackInvalidateAll();
-		psp_me_window_hold = 0;
+		else
+			psp_me_window_close();
 		if (!done)
 		{
 			/* the ME stopped: the actor in hand back from its copies, and
@@ -41618,6 +41619,7 @@ volatile unsigned int *psp_me_abort_word(int which);
 void psp_me_yield_slots(void);
 void psp_me_lines_out(const void *start, unsigned int bytes);
 extern volatile unsigned int psp_me_window_hold;
+void psp_me_window_close(void);
 void sceKernelDcacheWritebackAll(void);
 void sceKernelDcacheWritebackInvalidateAll(void);
 unsigned long long sceKernelGetSystemTimeWide(void);

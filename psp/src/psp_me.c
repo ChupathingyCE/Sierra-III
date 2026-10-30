@@ -2246,6 +2246,13 @@ static unsigned int ring_epoch = 0;
 static int ring_restarted = 0;
 static unsigned int ring_push_mark[ME_RING_ENTRIES]; /* the push's time, a ticket's */
 static unsigned int ring_thread = 0;      /* simulated: the producer's thread, for psp_me_context */
+/* simulated: a ring job pushed and not yet waited for (the trace's window) */
+static int ring_sim_open = 0;
+
+int psp_me_ring_sim_open(void)
+{
+	return ring_sim_open;
+}
 static struct
 {
 	unsigned long jobs, at_once, failures, refused_busy, refused_full, refused_check;
@@ -2508,6 +2515,7 @@ static __attribute__((noinline, cold)) void ring_push_simulated(unsigned int ind
 			platform_log("ME (simulated): no room for the job stack; jobs run on the producer's");
 	}
 	psp_me_window[0] = 1;
+	ring_sim_open = 1;
 	job_start = sceKernelGetSystemTimeLow();
 	psp_me_context = ring_thread;
 	if (sim_stack)
@@ -2878,7 +2886,10 @@ int psp_me_wait(unsigned int ticket, unsigned int *results)
 		return 0;
 	/* simulated, the push opened the window, whatever has stopped since */
 	if (me_restartable == 2 || me_state == 2)
+	{
 		psp_me_window[0] = psp_me_window_hold;
+		ring_sim_open = 0;
+	}
 	/* without this, popped (moved past it by the restart) would say it was
 	done, and another job's answer would stop the ring for the session */
 	if (ring_restarted && ticket - ring_epoch >= ring_next - ring_epoch)
