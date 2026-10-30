@@ -1680,6 +1680,65 @@ def interpolation_players(tree):
     open(path, "w", errors="surrogateescape").write(text)
     return 1
 
+# ---------- AIMETERS: the AI's meters and the ballistic test's debug record, the main CPU's alone
+# The AI's meters (ai_profile.meters[].accumulator: 32 counts in 12 files)
+# and the last ballistic line of fire's record (ai_debug.ballistic_lineoffire_*)
+# are read only by the AI's debug display (ai_profile.c, ai_debug.c). With
+# "aime2a" the ME's thinking counted and recorded on lines the main CPU's own
+# AI writes too (aime2a10's write trace: ai_profile on all three maps, ai_debug
+# on b30 and a30): on the PSP, whose caches don't keep each other's lines,
+# one CPU's write-back undoes the other's. Without the debug tools the counts
+# compile to nothing, on both CPUs; with them the ME skips them. The record:
+# the ME's thinking leaves it alone. Exact: neither decides anything in play
+AIMETERS_HEADER = """
+/* psp_fixups.py (AIMETERS): the meters' counts, none without the debug tools,
+the main CPU's alone with them */
+#ifdef HALO_PSP
+#if defined(PSP_DEBUG_TOOLS)
+#define PSP_AI_METER_ADD(meter, amount) ((void)(psp_work_on_me() ? 0 : (ai_profile.meters[meter].accumulator += (amount))))
+#else
+#define PSP_AI_METER_ADD(meter, amount) ((void)0)
+#endif
+#else
+#define PSP_AI_METER_ADD(meter, amount) ((void)(ai_profile.meters[meter].accumulator += (amount)))
+#endif
+"""
+
+def ai_meters(tree):
+    """AIMETERS (see there)"""
+    header_path = os.path.join(tree, "source/ai/ai_profile.h")
+    header = open(header_path, errors="surrogateescape").read()
+    if "PSP_AI_METER_ADD" in header:
+        return 0
+    anchor = "extern struct ai_profile_globals ai_profile;\n"
+    if header.count(anchor) != 1:
+        sys.exit("psp_fixups: ai_profile.h: no extern of ai_profile")
+    open(header_path, "w", errors="surrogateescape").write(header.replace(anchor, anchor + AIMETERS_HEADER))
+    changed, sites = 1, 0
+    for root, _, files in os.walk(os.path.join(tree, "source")):
+        for name in sorted(files):
+            if not name.endswith(".c") or name == "ai_profile.c":
+                continue
+            path = os.path.join(root, name)
+            text = open(path, errors="surrogateescape").read()
+            if "ai_profile.meters[" not in text:
+                continue
+            new, n1 = re.subn(r"ai_profile\.meters\[(\w+)\]\.accumulator\+\+;", r"PSP_AI_METER_ADD(\1, 1);", text)
+            new, n2 = re.subn(r"ai_profile\.meters\[(\w+)\]\.accumulator \+= ([^;]+);", r"PSP_AI_METER_ADD(\1, \2);", new)
+            if re.search(r"ai_profile\.meters\[\w+\]\.accumulator\s*(\+\+|\+=|=)", new):
+                sys.exit("psp_fixups: %s: an AI meter written in a form AIMETERS doesn't know" % name)
+            if name == "ai.c":
+                new, n3 = re.subn(r"!ai_debug\.ballistic_lineoffire_freeze\b", "!ai_debug.ballistic_lineoffire_freeze && !psp_work_on_me()", new)
+                if n3 != 4:
+                    sys.exit("psp_fixups: ai.c: expected the ballistic record's 4 freeze tests, found %d" % n3)
+            if new != text:
+                open(path, "w", errors="surrogateescape").write(new)
+                changed += 1
+                sites += n1 + n2
+    if sites != 32:
+        sys.exit("psp_fixups: AIMETERS: expected 32 meter counts, found %d" % sites)
+    return changed
+
 # ---------- COLLUSERS: the collision user stack, one per CPU (lever COLLUSERS; docs/aime_me.md)
 # Bungie's collision code keeps a stack of who is asking (the AI's lines of
 # sight, bipeds, the HUD, ...): 68 pushes and pops open-coded in 25 files,
@@ -43241,3 +43300,4 @@ print("psp_fixups: colour conversions in single precision in %d files" % float_c
 print("psp_fixups: render interpolation for one local player in %d files" % interpolation_players(TREE))
 print("psp_fixups: the GL renderer compiled out in %d files" % gl_never(TREE))
 print("psp_fixups: the collision user stack %s in %d files (COLLUSERS)" % ("shared, as before," if COLLUSERS_SHARED else "one a CPU (debug tools) or none", collision_users(TREE)))
+print("psp_fixups: the AI's meters and ballistic record the main CPU's alone in %d files (AIMETERS)" % ai_meters(TREE))
