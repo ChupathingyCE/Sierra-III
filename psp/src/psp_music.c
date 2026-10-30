@@ -177,7 +177,7 @@ output after each job, and never writes any of it while one is out) */
 static struct __attribute__((aligned(64)))
 {
 	unsigned char *pool;        /* where the pool is: the ME's eDRAM, or main RAM */
-	unsigned char *dec.pool_end;
+	unsigned char *pool_end;
 	int pool_in_edram;
 	/* the codec setup, made in the pool by the job's CPU (the main CPU can't
 	reach the ME's eDRAM): 0 not yet, 1 made, -1 refused, -2 lost (the ME
