@@ -1993,6 +1993,15 @@ static void mix(short *output, unsigned long frames)
 	int on_me = me_wanted && psp_meaudio_running() && !memix_check, mixed = 0;
 	SceUInt64 start = sceKernelGetSystemTimeWide();
 #if PSP_MUSIC
+	/* while the music job makes the codec setup on the ME (no yield inside
+	Tremor's), a block given to the ME would wait past the audio job's 40 ms
+	and stop the ME: this CPU mixes those blocks */
+	extern int psp_music_holds_me(void);
+
+	if (on_me && psp_music_holds_me())
+		on_me = 0;
+#endif
+#if PSP_MUSIC
 	/* the music path runs this map (psp_music.c): off, no voice is marked */
 	extern int psp_music_active(void);
 	int music_on = psp_music_active(), music_job = 0;
