@@ -41002,7 +41002,7 @@ FIXES_AIME2A["source/ai/actors.c#aime2a"] = [
 """,
  """	"weapon_set_total_rounds", "game_allegiance_provoke", "game_allegiance_incident", "hs_wake_by_name", "biped_accelerate",
 	"animation_get_frame_data", "decision_loop_report", "owed_node_block", "anothers_prop", "prop_log_full", "formatting",
-	"pool_report", "stack_guard", "error_report", "forced" };
+	"pool_report", "stack_guard", "fatal_report", "forced" };
 """),
 # on the ME, an actor's copy goes out to main RAM before it thinks, so an
 # ME stopped mid-actor can be undone from it
@@ -41633,8 +41633,9 @@ static void psp_aime2a_log(
 #endif
 """),
 ]
-# the error and assert reports (debug.txt, the clock, the log) hand the
-# actor back on the ME, as the formatting does; the census had stopped there
+# the error and assert reports (debug.txt, the clock, the log): on the ME a
+# fatal one hands the actor back, any other is left out; the census had
+# stopped there
 FIXES_AIME2A["source/cseries/errors.c#aime2a"] = [
 ("""void error(
 	short priority,
@@ -41657,16 +41658,20 @@ FIXES_AIME2A["source/cseries/errors.c#aime2a"] = [
 #ifdef HALO_PSP
 	{
 		/* psp_fixups.py (FIXES_AIME2A, "aime2a"; "aimefpu" makes 1b stop
-		alike): the report reads the clock and writes debug.txt and the log,
-		which the ME can't, so an actor thinking on the ME goes back to the
-		tick at it (stop 32), where it reports; the ME's pass between actors
-		reports nothing */
+		alike): the report reads the clock, writes debug.txt and the log and
+		(a skipped assert) a thread's own word, none of which the ME can. A
+		fatal one hands the actor back to the tick (stop 32), where it is
+		reported and a release build carries on past it as it does without
+		the job; any other is left out on the ME (counted with the refused
+		formats, psp_libc.c) and the thinking goes on, as it does past the
+		report on the main CPU */
 		extern int psp_aime_arm, psp_aime_job_now[16], psp_aime_fpu_main;
 		extern void psp_aime_handback(int which);
+		int psp_format_refused(const char *format);
 
-		if (psp_aime_arm && psp_aime_here() && (psp_aime_job_now[0] || psp_aime_fpu_main))
+		if (priority <= _error_delayed && psp_aime_arm && psp_aime_here() && (psp_aime_job_now[0] || psp_aime_fpu_main))
 			psp_aime_handback(32);
-		if (psp_aime_job_now[0] && psp_aime_here() && psp_work_on_me())
+		if (psp_aime_job_now[0] && psp_aime_here() && psp_format_refused(format))
 			return;
 	}
 #endif
@@ -41689,16 +41694,20 @@ FIXES_AIME2A["source/cseries/cseries.c#aime2a"] = [
 #ifdef HALO_PSP
 	{
 		/* psp_fixups.py (FIXES_AIME2A, "aime2a"; "aimefpu" makes 1b stop
-		alike): the report reads the clock and writes debug.txt and the log,
-		which the ME can't, so an actor thinking on the ME goes back to the
-		tick at it (stop 32), where it reports; the ME's pass between actors
-		reports nothing */
+		alike): the report reads the clock, writes debug.txt and the log and
+		(a skipped assert) a thread's own word, none of which the ME can. A
+		fatal one hands the actor back to the tick (stop 32), where it is
+		reported and a release build carries on past it as it does without
+		the job; any other is left out on the ME (counted with the refused
+		formats, psp_libc.c) and the thinking goes on, as it does past the
+		report on the main CPU */
 		extern int psp_aime_arm, psp_aime_job_now[16], psp_aime_fpu_main;
 		extern void psp_aime_handback(int which);
+		int psp_format_refused(const char *format);
 
-		if (psp_aime_arm && psp_aime_here() && (psp_aime_job_now[0] || psp_aime_fpu_main))
+		if (fatal && psp_aime_arm && psp_aime_here() && (psp_aime_job_now[0] || psp_aime_fpu_main))
 			psp_aime_handback(32);
-		if (psp_aime_job_now[0] && psp_aime_here() && psp_work_on_me())
+		if (psp_aime_job_now[0] && psp_aime_here() && psp_format_refused(information))
 			return;
 	}
 #endif
@@ -41719,16 +41728,20 @@ FIXES_AIME2A["source/cseries/cseries.c#aime2a"] = [
 #ifdef HALO_PSP
 	{
 		/* psp_fixups.py (FIXES_AIME2A, "aime2a"; "aimefpu" makes 1b stop
-		alike): the report reads the clock and writes debug.txt and the log,
-		which the ME can't, so an actor thinking on the ME goes back to the
-		tick at it (stop 32), where it reports; the ME's pass between actors
-		reports nothing */
+		alike): the report reads the clock, writes debug.txt and the log and
+		(a skipped assert) a thread's own word, none of which the ME can. A
+		fatal one hands the actor back to the tick (stop 32), where it is
+		reported and a release build carries on past it as it does without
+		the job; any other is left out on the ME (counted with the refused
+		formats, psp_libc.c) and the thinking goes on, as it does past the
+		report on the main CPU */
 		extern int psp_aime_arm, psp_aime_job_now[16], psp_aime_fpu_main;
 		extern void psp_aime_handback(int which);
+		int psp_format_refused(const char *format);
 
-		if (psp_aime_arm && psp_aime_here() && (psp_aime_job_now[0] || psp_aime_fpu_main))
+		if (fatal && psp_aime_arm && psp_aime_here() && (psp_aime_job_now[0] || psp_aime_fpu_main))
 			psp_aime_handback(32);
-		if (psp_aime_job_now[0] && psp_aime_here() && psp_work_on_me())
+		if (psp_aime_job_now[0] && psp_aime_here() && psp_format_refused(information))
 			return;
 	}
 #endif
