@@ -4971,7 +4971,11 @@ static float near_plane_auto(const float *eye, float game_near)
 	}
 	scale = level_scale;
 	if (near_hold < 0)
+	{
+		extern int psp_keep_number(const char *prefix, int fallback);
+
 		near_hold = psp_keep("nearholdoff") ? 0 : psp_keep_number("nearhold", 15);
+	}
 	if (near_hold > 0)
 	{
 		if (scale <= near_held_scale)
