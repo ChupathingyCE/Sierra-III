@@ -38650,7 +38650,7 @@ void psp_fvp_settle(long object_index);
 #define PSP_FVP_MAX 512 /* past it an object's values are made in place */
 #define PSP_FVP_BIT(i) (1ul << ((i) & 31))
 static int psp_fvp_mode = -1; /* 0 off, 1 the pass, 2 the check */
-static int psp_fvp_open = 0;  /* the mode, inside the walk */
+int psp_fvp_open = 0;  /* the mode, inside the walk */
 static int psp_fvp_count = 0;
 static long psp_fvp_list[PSP_FVP_MAX]; /* in the walk's order */
 static unsigned long psp_fvp_pending[(MAXIMUM_OBJECTS_PER_MAP + 31) / 32];
@@ -38663,13 +38663,19 @@ static long psp_fvp_logged = -1;
 static void psp_fvp_make(int k, long object_index, struct object_datum *object)
 {
 	struct object_definition *object_definition = object_definition_get(object->definition_index);
+	real *incoming = object->object.incoming_function_values;
 	real now[NUMBER_OF_INCOMING_OBJECT_FUNCTIONS];
+	int i;
 
-	csmemcpy(now, object->object.incoming_function_values, sizeof(now));
-	csmemcpy(object->object.incoming_function_values, psp_fvp_inputs[k], sizeof(now));
+	for (i = 0; i < NUMBER_OF_INCOMING_OBJECT_FUNCTIONS; i++)
+	{
+		now[i] = incoming[i];
+		incoming[i] = psp_fvp_inputs[k][i];
+	}
 	object_compute_function_values_with(object_index, object, object_definition);
 	object_compute_change_colors_with(object_index, object, object_definition);
-	csmemcpy(object->object.incoming_function_values, now, sizeof(now));
+	for (i = 0; i < NUMBER_OF_INCOMING_OBJECT_FUNCTIONS; i++)
+		incoming[i] = now[i];
 	psp_fvp_made++;
 }
 
@@ -38702,7 +38708,12 @@ static int psp_fvp_put_off(long object_index, struct object_datum *object)
 	made before the second's inputs replace them */
 	psp_fvp_settle(object_index);
 	psp_fvp_pending[absolute >> 5] |= PSP_FVP_BIT(absolute);
-	csmemcpy(psp_fvp_inputs[psp_fvp_count], object->object.incoming_function_values, sizeof(psp_fvp_inputs[0]));
+	{
+		int i;
+
+		for (i = 0; i < NUMBER_OF_INCOMING_OBJECT_FUNCTIONS; i++)
+			psp_fvp_inputs[psp_fvp_count][i] = object->object.incoming_function_values[i];
+	}
 	psp_fvp_list[psp_fvp_count++] = object_index;
 	return psp_fvp_open == 1;
 }
@@ -38854,9 +38865,12 @@ FIXES_FISSION["source/objects/objects.c#fvpassread"] = [
  """		if (VALID_INDEX(function_index, NUMBER_OF_OUTGOING_OBJECT_FUNCTIONS))
 		{
 #ifdef HALO_PSP
+			/* tested here, as most reads come outside the walk */
+			extern int psp_fvp_open;
 			void psp_fvp_settle(long object_index);
 
-			psp_fvp_settle(object_index); /* psp_fixups.py (FIXES_FISSION) */
+			if (psp_fvp_open)
+				psp_fvp_settle(object_index); /* psp_fixups.py (FIXES_FISSION) */
 #endif
 			*value_reference = object->object.outgoing_function_values[function_index];"""),
 ]
