@@ -38627,7 +38627,9 @@ FIXES_FX15["source/game/game_time.c#fx15"] = [
 # first one's values first, as the walk did before the second export. And
 # each object's incoming values are kept as its update left them and made
 # from: on b30 two weapons' change between their update and the pass, by no
-# export (fvpasscheck counts how often). Objects made during the walk
+# export (fvpasscheck counts how often). The sleep check's checksum after an update
+# holds the function values and colours of most types: a family it checks
+# has its values made before it. Objects made during the walk
 # are updated after the pass, in place, as before. Keep words: "fvpass" (the
 # pass), "fvpasscheck" (made in place as before; each object's inputs
 # are checked against what they were at its update, where the pass would have
@@ -38811,6 +38813,26 @@ static void psp_fvp_pass(void)
 	psp_fvp_pass(); /* psp_fixups.py (FIXES_FISSION) */
 #endif
 """),
+]
+FIXES_FISSION["source/objects/objects.c#fvpasssleep"] = [
+("""	if (psp_family_checksum(header) == before)
+	{
+		if (psp_sleep[absolute_index].identifier == header->identifier)""",
+ """	/* psp_fixups.py (FIXES_FISSION): the checksum after the update holds
+	the family's function values and colours (but a dead biped's, a weapon's
+	or a machine's), so they're made first, as the update made them */
+	if (psp_fvp_open && !psp_sleeper_computes_functions(header) &&
+		!(header->type == _object_type_biped && TEST_FLAG(object->object.damage_flags, _object_dead_bit)))
+	{
+		long child;
+
+		psp_fvp_settle(object_index);
+		for (child = object->object.first_child_object_index; child != NONE; child = object_get(child)->object.next_object_index)
+			psp_fvp_settle(child);
+	}
+	if (psp_family_checksum(header) == before)
+	{
+		if (psp_sleep[absolute_index].identifier == header->identifier)"""),
 ]
 FIXES_FISSION["source/objects/objects.c#fvpassread"] = [
 ("""		if (VALID_INDEX(function_index, NUMBER_OF_OUTGOING_OBJECT_FUNCTIONS))
