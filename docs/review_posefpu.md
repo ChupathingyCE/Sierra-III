@@ -60,7 +60,8 @@ Emulator, bake w148a, no PGO, Sierra-III posefpu a57eabbc and 61c455d6 (the seco
 - **Default against `posefpuoff`:**
   - play and both seeds identical at every tick on c10, a30, b30 and c20;
   - c10's whole state identical (no stand-ins there);
-  - d20's play parts at tick 61. Its 134 stand-ins change form, from the VFPU's to the ME's: the change this fix makes on purpose.
+  - d20's play parts at tick 61. Its 134 stand-ins change form, from the VFPU's to the ME's: the change this fix makes on purpose. **So posefpu isn't bit-exact on d20**, and its proof there is a side-by-side, not statecrc.
+- **d20 side by side** (the tock efc8642f, bake w148s, swamp route, fixedticks and fixedseed; a run of 4 frames every 10 s, 44 frames a side, so a late texture's frames would show): the default against `posefpuoff`, pixel for pixel. The scene is identical in all 44 frames. Only the timing text differs (the top two rows and the bottom row's figures), which follows the clock. Both sides are strict 0. So d20 plays and looks the same [E].
 - **Strict:** c10 and a30, 0 distinct sites, no crash.
 
 ## 4. The price
