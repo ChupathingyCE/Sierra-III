@@ -40848,7 +40848,8 @@ FIXES_AIME2A["source/ai/actors.c#aime2a"] = [
 	}
 	psp_perception_end();
 """,
- """	if (!psp_work_on_me() && psp_perception_begin())
+ """	/* (and 1b's like-for-like pass: each line of sight walked in place) */
+	if (!psp_work_on_me() && !psp_aime2a_alike && psp_perception_begin())
 	{
 		actor_iterator_new(&iterator, TRUE);
 		while ((actor = actor_iterator_next(&iterator)) != NULL)
@@ -40879,7 +40880,7 @@ FIXES_AIME2A["source/ai/actors.c#aime2a"] = [
 		}
 		psp_aime_think_actor(iterator.index);
 	}
-	if (!psp_work_on_me())
+	if (!psp_work_on_me() && !psp_aime2a_alike)
 		psp_perception_end();
 	psp_aime_fpu_main = 0;
 """),
