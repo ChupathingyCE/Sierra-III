@@ -437,6 +437,16 @@ void *psp_anim_lock(unsigned long address, unsigned long size)
 	unsigned int first_page, last_page, count, k;
 	int slot;
 
+	{
+		/* "aime2a": the pack's reads are file I/O, which the ME can't do;
+		an actor thinking there stops and thinks in the tick instead (the
+		pose jobs the ME runs come here with no actor in hand) */
+		extern int psp_aime_arm, psp_aime_job_now[16];
+		extern void psp_aime_handback(int which);
+
+		if (psp_aime_arm && psp_aime_job_now[0] && psp_work_on_me())
+			psp_aime_handback(24);
+	}
 	if (address >= memo_start && address + size <= memo_end && !forget_pending && !trace)
 	{
 		repeats++;
