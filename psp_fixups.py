@@ -38631,8 +38631,8 @@ FIXES_FX15["source/game/game_time.c#fx15"] = [
 # holds the function values and colours of most types: a family it checks
 # has its values made before it. An object deactivated or deleted in the walk
 # has them made first too. Objects made during the walk
-# are updated after the pass, in place, as before. Keep words: "fvpass" (the
-# pass), "fvpasscheck" (made in place as before; each object's inputs
+# are updated after the pass, in place, as before. Keep words: on by default
+# (a PSP pair priced the tick faster); "fvpassoff" (made in place, as before), "fvpasscheck" (made in place as before; each object's inputs
 # are checked against what they were at its update, where the pass would have
 # made its values: at an early read, or else at the pass). The log line every 30 s: "fvpass:".
 FIXES_FISSION = {}
@@ -38683,7 +38683,7 @@ static void psp_fvp_begin(void)
 {
 	if (psp_fvp_mode < 0 && psp_keep_loaded())
 	{
-		psp_fvp_mode = psp_keep("fvpasscheck") ? 2 : psp_keep("fvpass") ? 1 : 0;
+		psp_fvp_mode = psp_keep("fvpasscheck") ? 2 : psp_keep("fvpassoff") ? 0 : 1;
 		if (psp_fvp_mode && !(psp_fvp_inputs = malloc(PSP_FVP_MAX * sizeof(psp_fvp_inputs[0]))))
 			psp_fvp_mode = 0;
 	}
