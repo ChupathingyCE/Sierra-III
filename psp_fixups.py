@@ -38816,6 +38816,12 @@ animation, or poses the ME's job makes nearly all of) */
 its free total above these (the level copies and the record buffers ask for
 large blocks later); "pscfloorN" sets the first, in KB */
 #define PSP_PSC_FREE_FLOOR (320 * 1024)
+#define PSP_PSC_KEEP_MARGIN (32 * 1024)
+/* the margin is for a table that earns it: at least this many poses served
+a tick since it began (c10's serves ~34, b30's ~1.5) */
+#define PSP_PSC_KEEP_RATE 8
+static int psp_psc_release_old;
+static long psp_psc_born;
 static struct psp_psc_entry *psp_psc_entries;
 static unsigned char *psp_psc_pieces[PSP_PSC_PIECES];
 static int psp_psc_mode = -1; /* 0 off, 1 on, 2 on and checked */
@@ -38847,6 +38853,7 @@ static int psp_psc_on(void)
 		psp_psc_matrices = !psp_keep("pscexact");
 		psp_psc_piece_cap = psp_keep_number("psckb", 112) * 1024 / PSP_PSC_PIECE;
 		psp_psc_largest_floor = (unsigned long)psp_keep_number("pscfloor", 256) * 1024;
+		psp_psc_release_old = psp_keep("pscreleaseold");
 		if (psp_psc_piece_cap > PSP_PSC_PIECES)
 			psp_psc_piece_cap = PSP_PSC_PIECES;
 	}
@@ -38956,7 +38963,16 @@ static void psp_psc_log(void)
 
 		checked = now;
 		psp_heap_survey(&free_bytes, &largest, &used);
-		if (largest < psp_psc_largest_floor || free_bytes < PSP_PSC_FREE_FLOOR)
+		/* a table that serves well is kept down to 32 KB under the floors
+		it grows to: one that grew with room to spare isn't given back for
+		a dip the size of a small allocation (c10's table went when an 8 KB allocation took its
+		largest block to 244 KB and its free total to 317, and nothing
+		failed). "pscreleaseold": given back at the growing
+		floors, as before */
+		unsigned long margin = !psp_psc_release_old && now > psp_psc_born &&
+			psp_psc_hits >= (unsigned long)(now - psp_psc_born) * PSP_PSC_KEEP_RATE ? PSP_PSC_KEEP_MARGIN : 0;
+
+		if (largest + margin < psp_psc_largest_floor || free_bytes + margin < PSP_PSC_FREE_FLOOR)
 		{
 			psp_psc_release("the heap under its floors");
 			return;
@@ -39088,6 +39104,7 @@ static struct psp_psc_entry *psp_psc_room(struct object_datum const *object, str
 			return NULL;
 		}
 		psp_psc_compression = hs_model_animation_compression_enabled;
+		psp_psc_born = now;
 	}
 	entry = psp_psc_find(model, animation, frame);
 	if (!entry || (entry->animation && entry->pose))
@@ -39236,7 +39253,9 @@ static void psp_pose_ahead_list("""),
 					;
 				else if (psp_pose_predict)""",
  """				/* psp_fixups.py (FIXES_PSC): a looping animation's pose from the table, or kept in it */
-				psp_psc_listing = psp_psc_eligible(object, model, animation);
+				/* a table given back (or never had room) serves nothing for
+				the rest of the map: the pose path doesn't call into it */
+				psp_psc_listing = (psp_psc_entries || !psp_psc_no_room) && psp_psc_eligible(object, model, animation);
 				if (psp_pose_ahead_take(object_index, model, animation, frame_index, node_orientations))
 				{
 					if (psp_psc_listing)
@@ -39342,9 +39361,22 @@ int psp_keep(const char *name);
 int psp_keep_loaded(void);
 void platform_psp_log(const char *format, ...);
 void psp_fvp_settle(long object_index);
-#define PSP_FVP_MAX 512 /* past it an object's values are made in place */
+/* past it an object's values are made in place. With units, items and
+projectiles alone, b30 lists ~46 a tick and never passed 512; the inputs
+array is on the heap, which PSC's floors and the map's large asks share */
+#define PSP_FVP_MAX 128
 #define PSP_FVP_BIT(i) (1ul << ((i) & 31))
 static int psp_fvp_mode = -1; /* 0 off, 1 the pass, 2 the check */
+/* the types whose values wait for the pass: those whose own update is large
+code (units, items, projectiles), which the values' code would otherwise
+evict. Scenery and devices update in little code, so for them the pass
+costs more (the bookkeeping, their datum lines read again) than it saves:
+c10, nearly all scenery, ran 88k fetches and 1,100 data misses a tick
+slower with them in the pass for 1,700 fewer instruction misses.
+"fvpassall": every type, as before */
+static int psp_fvp_all;
+#define PSP_FVP_TYPES (FLAG(_object_type_biped) | FLAG(_object_type_vehicle) | FLAG(_object_type_weapon) | \
+	FLAG(_object_type_equipment) | FLAG(_object_type_garbage) | FLAG(_object_type_projectile))
 int psp_fvp_open = 0;  /* the mode, inside the walk */
 static int psp_fvp_count = 0;
 static long psp_fvp_list[PSP_FVP_MAX]; /* in the walk's order */
@@ -39379,6 +39411,7 @@ static void psp_fvp_begin(void)
 	if (psp_fvp_mode < 0 && psp_keep_loaded())
 	{
 		psp_fvp_mode = psp_keep("fvpasscheck") ? 2 : psp_keep("fvpassoff") ? 0 : 1;
+		psp_fvp_all = psp_keep("fvpassall");
 		if (psp_fvp_mode && !(psp_fvp_inputs = malloc(PSP_FVP_MAX * sizeof(psp_fvp_inputs[0]))))
 			psp_fvp_mode = 0;
 	}
@@ -39393,6 +39426,8 @@ static int psp_fvp_put_off(long object_index, struct object_datum *object)
 	long absolute = DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index);
 
 	if (absolute < 0 || absolute >= MAXIMUM_OBJECTS_PER_MAP)
+		return 0;
+	if (!psp_fvp_all && !TEST_FLAG(PSP_FVP_TYPES, object->object.type))
 		return 0;
 	if (psp_fvp_count >= PSP_FVP_MAX)
 	{
