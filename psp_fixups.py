@@ -41010,6 +41010,9 @@ void psp_aime2a_frame_end(
 	}
 	/* every 32nd job the ME also measures its stack's deepest reach (psp_me.c) */
 	args[0] = (psp_aime2a_stats.pushed & 31) == 0;
+	/* the ME's copy of the owed computes as they are now: the collision walk
+	there reads the copy, which the last ray hand-over left (objects.c) */
+	psp_nms_pending_for_me();
 	/* everything the pass reads, out of the main CPU's cache; the ME drops
 	its own before the job */
 	sceKernelDcacheWritebackAll();
@@ -41183,6 +41186,7 @@ void sceKernelDcacheWritebackAll(void);
 void sceKernelDcacheWritebackInvalidateAll(void);
 unsigned long long sceKernelGetSystemTimeWide(void);
 int sceKernelDelayThread(unsigned int delay);
+void psp_nms_pending_for_me(void);
 static int psp_aime2a_on = -1, psp_aime2a_check_on = 0;
 static boolean psp_aime2a_owed = FALSE, psp_aime2a_out = FALSE, psp_aime2a_failed = FALSE;
 static volatile unsigned int *psp_aime2a_abort = NULL;
