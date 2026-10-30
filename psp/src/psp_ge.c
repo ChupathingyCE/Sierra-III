@@ -3562,8 +3562,8 @@ static int show3_room(unsigned int needed)
 		/* the cached regions taken in the part being left are written back
 		now: list_take's pending range only grows upward, so a region taken
 		after the jump, below them, would leave the range ending under its
-		start, and list_flush_pending would then write back neither (api-job
-		41050335139). Every one of them is filled: a caller fills its take
+		start, and list_flush_pending would then write back neither. Every
+		one of them is filled: a caller fills its take
 		before its next draw, and this is a take */
 		list_flush_pending();
 
