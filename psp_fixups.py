@@ -39305,7 +39305,338 @@ static void psp_psc_drop(void); /* psp_fixups.py (FIXES_PSC) */
 """),
 ]
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items()))):
+# ---------- FIXES_FISSION: the function values and change colours as a pass
+# after objects_update's walk (lever FVP, direction (1): the tick a system at a
+# time). In the walk, each object's update (far larger than the 16 KB
+# instruction cache) pushes the functions' code out before the next object
+# needs it; made one after another after the walk, their ~3 KB stays resident.
+# Exact: the compute is a pure function of the object's own incoming values,
+# active flags and outgoing values, its definition and the game time. In the
+# walk, the only readers of what it makes are object_get_function_value and a
+# particle system's colour at its creation: both make a waiting object's
+# values first, which is what its own update would have made by then. The
+# only writer of another object's inputs is a hidden weapon's export into its
+# holder, which in the walk ran after the holder's compute (the holder, then
+# its children): it makes the holder's first. An object's own export, when it runs a
+# second time in the walk (a second update, a sleeper's functions), makes the
+# first one's values first, as the walk did before the second export. And
+# each object's incoming values are kept as its update left them and made
+# from: on b30 two weapons' change between their update and the pass, by no
+# export (fvpasscheck counts how often). The sleep check's checksum after an update
+# holds the function values and colours of most types: a family it checks
+# has its values made before it. An object deactivated or deleted in the walk
+# has them made first too. Objects made during the walk
+# are updated after the pass, in place, as before. Keep words: on by default
+# (a PSP pair priced the tick faster); "fvpassoff" (made in place, as before), "fvpasscheck" (made in place as before; each object's inputs
+# are checked against what they were at its update, where the pass would have
+# made its values: at an early read, or else at the pass). The log line every 30 s: "fvpass:".
+FIXES_FISSION = {}
+FIXES_FISSION["source/objects/objects.c#fvpass"] = [
+("""static void object_connect_lights_with(long object_index, struct object_datum *object, struct object_definition *object_definition, boolean disconnect, boolean reconnect);
+""",
+ """static void object_connect_lights_with(long object_index, struct object_datum *object, struct object_definition *object_definition, boolean disconnect, boolean reconnect);
+#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_FISSION): "fvpass" and "fvpasscheck" (see there) */
+#include <stdlib.h>
+int psp_keep(const char *name);
+int psp_keep_loaded(void);
+void platform_psp_log(const char *format, ...);
+void psp_fvp_settle(long object_index);
+#define PSP_FVP_MAX 512 /* past it an object's values are made in place */
+#define PSP_FVP_BIT(i) (1ul << ((i) & 31))
+static int psp_fvp_mode = -1; /* 0 off, 1 the pass, 2 the check */
+int psp_fvp_open = 0;  /* the mode, inside the walk */
+static int psp_fvp_count = 0;
+static long psp_fvp_list[PSP_FVP_MAX]; /* in the walk's order */
+static unsigned long psp_fvp_pending[(MAXIMUM_OBJECTS_PER_MAP + 31) / 32];
+/* each listed object's incoming values as its update left them: what the
+walk made its values from, whatever writes them before the pass */
+static real (*psp_fvp_inputs)[NUMBER_OF_INCOMING_OBJECT_FUNCTIONS] = NULL;
+static unsigned long psp_fvp_made, psp_fvp_early, psp_fvp_full, psp_fvp_checked, psp_fvp_differ;
+static long psp_fvp_logged = -1;
+
+static void psp_fvp_make(int k, long object_index, struct object_datum *object)
+{
+	struct object_definition *object_definition = object_definition_get(object->definition_index);
+	real *incoming = object->object.incoming_function_values;
+	real now[NUMBER_OF_INCOMING_OBJECT_FUNCTIONS];
+	int i;
+
+	for (i = 0; i < NUMBER_OF_INCOMING_OBJECT_FUNCTIONS; i++)
+	{
+		now[i] = incoming[i];
+		incoming[i] = psp_fvp_inputs[k][i];
+	}
+	object_compute_function_values_with(object_index, object, object_definition);
+	object_compute_change_colors_with(object_index, object, object_definition);
+	for (i = 0; i < NUMBER_OF_INCOMING_OBJECT_FUNCTIONS; i++)
+		incoming[i] = now[i];
+	psp_fvp_made++;
+}
+
+static void psp_fvp_begin(void)
+{
+	if (psp_fvp_mode < 0 && psp_keep_loaded())
+	{
+		psp_fvp_mode = psp_keep("fvpasscheck") ? 2 : psp_keep("fvpassoff") ? 0 : 1;
+		if (psp_fvp_mode && !(psp_fvp_inputs = malloc(PSP_FVP_MAX * sizeof(psp_fvp_inputs[0]))))
+			psp_fvp_mode = 0;
+	}
+	psp_fvp_open = psp_fvp_mode > 0 ? psp_fvp_mode : 0;
+	psp_fvp_count = 0;
+}
+
+/* 1: the object's values wait for the pass, with the inputs they're made
+from. Checking, they're made in place, and the inputs kept to compare */
+static int psp_fvp_put_off(long object_index, struct object_datum *object)
+{
+	long absolute = DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index);
+
+	if (absolute < 0 || absolute >= MAXIMUM_OBJECTS_PER_MAP)
+		return 0;
+	if (psp_fvp_count >= PSP_FVP_MAX)
+	{
+		psp_fvp_full++;
+		return 0;
+	}
+	/* updated a second time in the walk: the first update's values are
+	made before the second's inputs replace them */
+	psp_fvp_settle(object_index);
+	psp_fvp_pending[absolute >> 5] |= PSP_FVP_BIT(absolute);
+	{
+		int i;
+
+		for (i = 0; i < NUMBER_OF_INCOMING_OBJECT_FUNCTIONS; i++)
+			psp_fvp_inputs[psp_fvp_count][i] = object->object.incoming_function_values[i];
+	}
+	psp_fvp_list[psp_fvp_count++] = object_index;
+	return psp_fvp_open == 1;
+}
+
+/* a waiting object's values made now, before something reads them or
+changes what they're made from. A slot whose object was deleted and made
+again in the walk isn't the one waiting: the list has the whole index */
+void psp_fvp_settle(long object_index)
+{
+	long absolute = DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index);
+	int k;
+
+	if (!psp_fvp_open || absolute < 0 || absolute >= MAXIMUM_OBJECTS_PER_MAP ||
+		!(psp_fvp_pending[absolute >> 5] & PSP_FVP_BIT(absolute)))
+		return;
+	for (k = psp_fvp_count - 1; k >= 0 && psp_fvp_list[k] != object_index; k--)
+		;
+	if (k < 0)
+		return;
+	psp_fvp_early++;
+	psp_fvp_pending[absolute >> 5] &= ~PSP_FVP_BIT(absolute);
+	if (psp_fvp_open == 2)
+	{
+		/* where the pass makes them: how often the kept inputs are needed */
+		struct object_datum *object = object_get(object_index);
+
+		psp_fvp_checked++;
+		if (csmemcmp(psp_fvp_inputs[k], object->object.incoming_function_values, sizeof(psp_fvp_inputs[0])) &&
+			psp_fvp_differ++ < 16)
+			platform_psp_log("fvpasscheck: tick %ld, object %08lx (type %d): inputs changed before an early read",
+				(long)game_time_get(), (unsigned long)object_index, (int)object->object.type);
+		return;
+	}
+	psp_fvp_make(k, object_index, object_get(object_index));
+}
+
+static void psp_fvp_pass(void)
+{
+	int mode = psp_fvp_open;
+	int k;
+
+	psp_fvp_open = 0;
+	for (k = 0; k < psp_fvp_count; k++)
+	{
+		long object_index = psp_fvp_list[k];
+		long absolute = DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index);
+		struct object_datum *object;
+
+		if (!(psp_fvp_pending[absolute >> 5] & PSP_FVP_BIT(absolute)))
+			continue;
+		psp_fvp_pending[absolute >> 5] &= ~PSP_FVP_BIT(absolute);
+		object = (struct object_datum *)object_try_and_get_and_verify_type(object_index, _object_mask_all);
+		if (!object)
+			continue;
+		if (mode == 2)
+		{
+			psp_fvp_checked++;
+			if (csmemcmp(psp_fvp_inputs[k], object->object.incoming_function_values, sizeof(psp_fvp_inputs[0])) &&
+				psp_fvp_differ++ < 16)
+				platform_psp_log("fvpasscheck: tick %ld, object %08lx (type %d): inputs changed after its update",
+					(long)game_time_get(), (unsigned long)object_index, (int)object->object.type);
+			continue;
+		}
+		psp_fvp_make(k, object_index, object);
+	}
+	psp_fvp_count = 0;
+	if (mode && game_time_get() / 900 != psp_fvp_logged)
+	{
+		psp_fvp_logged = game_time_get() / 900;
+		platform_psp_log("fvpass: mode %d, made %lu, made early %lu, past the list %lu, checked %lu, inputs changed %lu",
+			mode, psp_fvp_made, psp_fvp_early, psp_fvp_full, psp_fvp_checked, psp_fvp_differ);
+	}
+}
+#endif
+"""),
+("""		if (psp_hoist)
+		{
+			object_compute_function_values_with(object_index, object, object_definition);""",
+ """		if (psp_fvp_open && psp_fvp_put_off(object_index, object)) /* psp_fixups.py (FIXES_FISSION) */
+			;
+		else if (psp_hoist)
+		{
+			object_compute_function_values_with(object_index, object, object_definition);"""),
+("""	psp_nms_open = psp_nms_begin(); /* psp_fixups.py (FIXES_NMSKIP) */
+""",
+ """	psp_nms_open = psp_nms_begin(); /* psp_fixups.py (FIXES_NMSKIP) */
+	psp_fvp_begin(); /* psp_fixups.py (FIXES_FISSION) */
+"""),
+("""#else
+					object_update(object_index);
+#endif
+				}
+			}
+		}
+		++i;
+	}
+""",
+ """#else
+					object_update(object_index);
+#endif
+				}
+			}
+		}
+		++i;
+	}
+#ifdef HALO_PSP
+	/* before the objects made in the walk are updated, as their compute came
+	after every walked object's */
+	psp_fvp_pass(); /* psp_fixups.py (FIXES_FISSION) */
+#endif
+"""),
+]
+FIXES_FISSION["source/objects/objects.c#fvpasssleep"] = [
+("""	if (psp_family_checksum(header) == before)
+	{
+		if (psp_sleep[absolute_index].identifier == header->identifier)""",
+ """	/* psp_fixups.py (FIXES_FISSION): the checksum after the update holds
+	the family's function values and colours (but a dead biped's, a weapon's
+	or a machine's), so they're made first, as the update made them */
+	if (psp_fvp_open && !psp_sleeper_computes_functions(header) &&
+		!(header->type == _object_type_biped && TEST_FLAG(object->object.damage_flags, _object_dead_bit)))
+	{
+		long child;
+
+		psp_fvp_settle(object_index);
+		for (child = object->object.first_child_object_index; child != NONE; child = object_get(child)->object.next_object_index)
+			psp_fvp_settle(child);
+	}
+	if (psp_family_checksum(header) == before)
+	{
+		if (psp_sleep[absolute_index].identifier == header->identifier)"""),
+]
+FIXES_FISSION["source/objects/objects.c#fvpassgone"] = [
+("""	psp_lights_flush(object_index); /* psp_fixups.py (FIXES_LD1) */
+""", """	psp_lights_flush(object_index); /* psp_fixups.py (FIXES_LD1) */
+	{
+		/* psp_fixups.py (FIXES_FISSION): an object leaving the walk (or
+		deleted) has its values made first, as its update made them */
+		void psp_fvp_settle(long object_index);
+
+		psp_fvp_settle(object_index);
+	}
+"""),
+]
+FIXES_FISSION["source/objects/objects.c#fvpassread"] = [
+("""		if (VALID_INDEX(function_index, NUMBER_OF_OUTGOING_OBJECT_FUNCTIONS))
+		{
+			*value_reference = object->object.outgoing_function_values[function_index];""",
+ """		if (VALID_INDEX(function_index, NUMBER_OF_OUTGOING_OBJECT_FUNCTIONS))
+		{
+#ifdef HALO_PSP
+			/* tested here, as most reads come outside the walk */
+			extern int psp_fvp_open;
+			void psp_fvp_settle(long object_index);
+
+			if (psp_fvp_open)
+				psp_fvp_settle(object_index); /* psp_fixups.py (FIXES_FISSION) */
+#endif
+			*value_reference = object->object.outgoing_function_values[function_index];"""),
+]
+FIXES_FISSION["source/objects/object_types.c#fvpass"] = [
+("""	short i;
+	struct object_type_definition *definition = object_type_definition_get(type);
+
+	for (i = 0; definition->part_definitions[i]; i++)
+	{
+		struct object_type_definition *current_definition = definition->part_definitions[i];
+		if (current_definition->datum_export_function_values)""",
+ """	short i;
+	struct object_type_definition *definition = object_type_definition_get(type);
+#ifdef HALO_PSP
+	/* psp_fixups.py (FIXES_FISSION): an object exported a second time in the
+	walk (updated again, or as a sleeper) has its first values made from the
+	inputs they were made from */
+	void psp_fvp_settle(long object_index);
+
+	psp_fvp_settle(object_index);
+#endif
+
+	for (i = 0; definition->part_definitions[i]; i++)
+	{
+		struct object_type_definition *current_definition = definition->part_definitions[i];
+		if (current_definition->datum_export_function_values)"""),
+]
+FIXES_FISSION["source/effects/particle_systems.c#fvpass"] = [
+("""		struct particle_system_datum *system = particle_system_get(system_index);
+		struct object_datum *object = object_get(object_index);
+		struct object_attachment_definition *attachment = TAG_BLOCK_GET_ELEMENT(""",
+ """		struct particle_system_datum *system = particle_system_get(system_index);
+#ifdef HALO_PSP
+		/* psp_fixups.py (FIXES_FISSION): its colour is read from the object's below */
+		void psp_fvp_settle(long object_index);
+		struct object_datum *object = (psp_fvp_settle(object_index), object_get(object_index));
+#else
+		struct object_datum *object = object_get(object_index);
+#endif
+		struct object_attachment_definition *attachment = TAG_BLOCK_GET_ELEMENT("""),
+]
+FIXES_FISSION["source/items/weapons.c#fvpass"] = [
+("""	while (TEST_FLAG(object->object.flags, _object_invisible_bit) && object->object.parent_object_index!=NONE)
+	{
+		object= object_get(object->object.parent_object_index);
+	}
+
+	function_values= object->object.incoming_function_values;""",
+ """#ifdef HALO_PSP
+	/* psp_fixups.py (FIXES_FISSION): the holder's values were made before
+	this write in the walk's order */
+	void psp_fvp_settle(long object_index);
+	long psp_fvp_holder = NONE;
+#endif
+	while (TEST_FLAG(object->object.flags, _object_invisible_bit) && object->object.parent_object_index!=NONE)
+	{
+#ifdef HALO_PSP
+		psp_fvp_holder = object->object.parent_object_index;
+#endif
+		object= object_get(object->object.parent_object_index);
+	}
+#ifdef HALO_PSP
+	if (psp_fvp_holder != NONE)
+		psp_fvp_settle(psp_fvp_holder);
+#endif
+
+	function_values= object->object.incoming_function_values;"""),
+]
+
+
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items()))):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
