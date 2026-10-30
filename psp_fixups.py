@@ -1681,7 +1681,8 @@ def interpolation_players(tree):
     return 1
 
 # ---------- AIMETERS: the AI's meters and the ballistic test's debug record, the main CPU's alone
-# The AI's meters (ai_profile.meters[].accumulator: 32 counts in 12 files)
+# The AI's meters (ai_profile.meters[].accumulator: 32 counts in 12 files,
+# and the perception queue's 2)
 # and the last ballistic line of fire's record (ai_debug.ballistic_lineoffire_*)
 # are read only by the AI's debug display (ai_profile.c, ai_debug.c). With
 # "aime2a" the ME's thinking counted and recorded on lines the main CPU's own
@@ -1725,7 +1726,8 @@ def ai_meters(tree):
                 continue
             new, n1 = re.subn(r"ai_profile\.meters\[(\w+)\]\.accumulator\+\+;", r"PSP_AI_METER_ADD(\1, 1);", text)
             new, n2 = re.subn(r"ai_profile\.meters\[(\w+)\]\.accumulator \+= ([^;]+);", r"PSP_AI_METER_ADD(\1, \2);", new)
-            if re.search(r"ai_profile\.meters\[\w+\]\.accumulator\s*(\+\+|\+=|=)", new):
+            # (the perception queue's own reads and puts-back of a meter stay)
+            if re.search(r"ai_profile\.meters\[\w+\]\.accumulator\s*(\+\+|\+=)", new):
                 sys.exit("psp_fixups: %s: an AI meter written in a form AIMETERS doesn't know" % name)
             if name == "ai.c":
                 new, n3 = re.subn(r"!ai_debug\.ballistic_lineoffire_freeze\b", "!ai_debug.ballistic_lineoffire_freeze && !psp_work_on_me()", new)
@@ -1735,8 +1737,8 @@ def ai_meters(tree):
                 open(path, "w", errors="surrogateescape").write(new)
                 changed += 1
                 sites += n1 + n2
-    if sites != 32:
-        sys.exit("psp_fixups: AIMETERS: expected 32 meter counts, found %d" % sites)
+    if sites != 34:
+        sys.exit("psp_fixups: AIMETERS: expected 34 meter counts, found %d" % sites)
     return changed
 
 # ---------- COLLUSERS: the collision user stack, one per CPU (lever COLLUSERS; docs/aime_me.md)
