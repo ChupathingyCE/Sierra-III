@@ -406,16 +406,14 @@ it stays open while a render or ring job is out */
 int psp_me_ring_sim_open(void);
 /* "aime2acheck": the AI job's window its own, from its push to its
 collection, so the trace compares the job's writes with the main CPU's
-during the job alone (the GE's and the ring's jobs out across either end
-are then traced in two windows) */
+during the job alone: closed at the collection, the next job's push opens
+the next (the GE's and the ring's jobs out across the AI job's ends are
+then traced only in part) */
 volatile unsigned int psp_me_window_split = 0;
 void psp_me_window_close(void)
 {
 	psp_me_window_hold = 0;
-	/* a store of 0 before the next value: the trace starts a new window */
-	if (psp_me_window_split)
-		psp_me_window[0] = 0;
-	psp_me_window[0] = me_out || inflight_me_out || psp_me_ring_sim_open();
+	psp_me_window[0] = !psp_me_window_split && (me_out || inflight_me_out || psp_me_ring_sim_open());
 }
 static PSP_MAIN_SIDE unsigned long inflight_handed = 0, inflight_me_failed = 0;
 static volatile unsigned int inflight_stall_word[16] __attribute__((aligned(64))); /* [0] address, [1] id: written uncached */

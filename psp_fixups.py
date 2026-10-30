@@ -41734,6 +41734,40 @@ FIXES_AIME2A["source/cseries/cseries.c#aime2a"] = [
 #endif
 """),
 ]
+# the objects' sphere counts (the map's report) are counted by both CPUs
+# while the job runs (the frame tests collisions too): as the AI's meters
+# (AIMETERS), the main CPU's alone, and only with the debug tools
+FIXES_AIME2A["source/physics/collisions.c#aime2a_spheres"] = [
+("""unsigned long psp_sphere_tests = 0, psp_sphere_rejects = 0, psp_sphere_checked = 0, psp_sphere_wrong = 0;
+""",
+ """unsigned long psp_sphere_tests = 0, psp_sphere_rejects = 0, psp_sphere_checked = 0, psp_sphere_wrong = 0;
+/* psp_fixups.py (FIXES_AIME2A): the main CPU's counts alone, with the debug
+tools only: the ME's job tests spheres while the frame does */
+#ifdef PSP_DEBUG_TOOLS
+#define PSP_SPHERE_COUNT(counter) ((void)(psp_work_on_me() ? 0 : (counter)++))
+#else
+#define PSP_SPHERE_COUNT(counter) ((void)0)
+#endif
+"""),
+("""		psp_sphere_compare(object_index, sphere);
+	psp_sphere_tests++;
+	return sphere;""",
+ """		psp_sphere_compare(object_index, sphere);
+	PSP_SPHERE_COUNT(psp_sphere_tests);
+	return sphere;"""),
+("""		fast_vector_intersects_sphere(point, vector, &sphere->center, sphere->radius))
+		return TRUE;
+	psp_sphere_rejects++;""",
+ """		fast_vector_intersects_sphere(point, vector, &sphere->center, sphere->radius))
+		return TRUE;
+	PSP_SPHERE_COUNT(psp_sphere_rejects);"""),
+("""	if (point_in_sphere(center, &sphere->center, reach))
+		return TRUE;
+	psp_sphere_rejects++;""",
+ """	if (point_in_sphere(center, &sphere->center, reach))
+		return TRUE;
+	PSP_SPHERE_COUNT(psp_sphere_rejects);"""),
+]
 # the declarations the pairs above use, ahead of 1b's
 FIXES_AIME2A["source/ai/actors.c#aime2a"].insert(0, (
 """/* FIXES_AIME1B: "aime1b" (see there) */
