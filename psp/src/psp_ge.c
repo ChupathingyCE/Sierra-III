@@ -4892,6 +4892,16 @@ static float near_object_distance = 1e30f, near_object_distance_last = 1e30f;
 /* "neardump": the nearest model's sphere radius, for the screenshot frames' line */
 static float near_object_radius = 0.0f, near_object_radius_last = 0.0f;
 static unsigned long near_auto_us = 0, near_auto_frames = 0, near_auto_chosen[3], near_auto_by_objects = 0;
+/* The plane moves in at once when something near needs it, and back out only
+once the farther plane has been allowed for near_hold frames in a row. Each
+move changes the 16-bit depth's steps over the whole view, so surfaces close
+in depth far off can trade places from one frame to the next; a marine or a
+crewed Warthog at the edge of a threshold moved the plane back and forth
+(b149's hand test in b30's forest: x1 to x16 within 300 frames). Moving in
+at once keeps anything from being cut away. "nearholdoff": each frame's own
+choice, as before; "nearholdN": N frames (15) */
+static int near_hold = -1, near_held_scale = 16, near_held_frames = 0, near_auto_last_scale = 0;
+static unsigned long near_auto_switches = 0, near_auto_held = 0;
 static unsigned long near_auto_chosen_high[2]; /* build 84: x8, x16 */
 
 /* build 84: candidates x16, x8, x4, x2, x1 (b64: x4, x2, x1). Each
@@ -4960,6 +4970,29 @@ static float near_plane_auto(const float *eye, float game_near)
 		}
 	}
 	scale = level_scale;
+	if (near_hold < 0)
+		near_hold = psp_keep("nearholdoff") ? 0 : psp_keep_number("nearhold", 15);
+	if (near_hold > 0)
+	{
+		if (scale <= near_held_scale)
+		{
+			near_held_scale = scale;
+			near_held_frames = 0;
+		}
+		else if (++near_held_frames >= near_hold)
+		{
+			near_held_scale = scale;
+			near_held_frames = 0;
+		}
+		else
+		{
+			near_auto_held++;
+			scale = near_held_scale;
+		}
+	}
+	if (near_auto_last_scale && scale != near_auto_last_scale)
+		near_auto_switches++;
+	near_auto_last_scale = scale;
 	{
 		/* "neardump": on a screenshot's frame, what decided its near plane */
 		extern volatile int psp_screenshot_requested;
@@ -24868,6 +24901,8 @@ static void frame_end_show(void)
 					angle_loop_us = 0;
 					memset(near_auto_chosen, 0, sizeof(near_auto_chosen));
 					memset(near_auto_chosen_high, 0, sizeof(near_auto_chosen_high));
+					platform_log("GE: nearhold: the near plane moved %lu times, held in %lu frames (hold %d frames)", near_auto_switches, near_auto_held, near_hold);
+					near_auto_switches = near_auto_held = 0;
 					near_auto_by_objects = near_auto_us = near_auto_frames = 0;
 					level_draws_inside = level_draws_classified = angle_far_triangles = detail_passes_skipped_far = 0;
 				}
