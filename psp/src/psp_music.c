@@ -135,12 +135,18 @@ static struct
 	struct pmus_header header;
 	struct pmus_entry *entries;
 	struct pmus_chain *chains;
+	/* each entry's first packet's bytes into its chain, once walked (the reader's) */
+	unsigned int *first_offsets;
 	vorbis_info info;
 	vorbis_comment comment;
 	struct stub stubs[STUBS];
 	struct voice *voices[VOICES];
 	struct prefetch *prefetch[PREFETCH];
 	int prefetch_next;
+	/* "musicnodecode" (a measurement): the path runs but Tremor doesn't,
+	and the music is silent, so a pair prices the decode apart from the
+	rest (the reader, the stubs, the smaller cache) */
+	int nodecode;
 	SceUID reader_wake, out_ready, out_free, io_lock, state_lock;
 	int out_channel;
 	unsigned char *pool;
@@ -148,7 +154,7 @@ static struct
 	unsigned char *block;
 	unsigned char *tables;
 	/* counts, for the heartbeat */
-	unsigned long prefetched;
+	unsigned long prefetched, walks, index_reads;
 	unsigned long out_late, pieces, piece_worst_us, stubs_made, not_in_pack, decode_us, decode_worst_us;
 } music;
 
@@ -431,6 +437,7 @@ static void start_once(void)
 		at += PREFETCH_BYTES;
 	}
 	music.tables = at;
+	music.nodecode = psp_keep("musicnodecode") != 0;
 	music.state_lock = sceKernelCreateSema("music state", 0, 1, 1, NULL);
 	music.reader_wake = sceKernelCreateSema("music reader", 0, 0, 64, NULL);
 	music.io_lock = sceKernelCreateSema("music io", 0, 1, 1, NULL);
@@ -525,17 +532,20 @@ static void psp_music_map_open(const char *name, int wanted)
 		/* the tables stay for the map; the setup after them only while it is read */
 		unsigned int entries = (music.header.entries * sizeof(struct pmus_entry) + 63) & ~63u;
 		unsigned int chains = (music.header.chains * sizeof(struct pmus_chain) + 63) & ~63u;
+		unsigned int offsets = (music.header.entries * sizeof(unsigned int) + 63) & ~63u;
 
-		if (music.header.entries_at < 64 || entries + chains + bytes > TABLE_BYTES)
+		if (music.header.entries_at < 64 || entries + chains + offsets + bytes > TABLE_BYTES)
 		{
 			platform_log("music: %s.pmus needs %u KB of tables and setup, the path has %u", name,
-				(entries + chains + bytes) / 1024, TABLE_BYTES / 1024);
+				(entries + chains + offsets + bytes) / 1024, TABLE_BYTES / 1024);
 			pack_close("is larger than this build's tables");
 			return;
 		}
 		music.entries = (struct pmus_entry *)music.tables;
 		music.chains = (struct pmus_chain *)(music.tables + entries);
-		setup = music.tables + entries + chains;
+		music.first_offsets = (unsigned int *)(music.tables + entries + chains);
+		memset(music.first_offsets, 0xFF, offsets);
+		setup = music.tables + entries + chains + offsets;
 	}
 	if (!read_at(music.header.entries_at, music.entries, music.header.entries * sizeof(struct pmus_entry)) ||
 		!read_at(music.header.chains_at, music.chains, music.header.chains * sizeof(struct pmus_chain)) ||
@@ -725,11 +735,42 @@ static unsigned int index_offset_walk(int chain, unsigned int from_packet, unsig
 			n = INDEX_PACKETS;
 		if (!read_at(c->index_at + from_packet * 8, window, n * 8))
 			return 0xFFFFFFFFu;
+		music.index_reads++;
 		for (k = 0; k < n; k++)
 			from_offset += window[k][0];
 		from_packet += n;
 	}
 	return from_offset;
+}
+
+/* an entry's first packet's bytes into its chain: walked from the nearest
+entry of the chain already walked (else the chain's start), and kept, so a
+chain's index is read at most once a map. Walking each stub from the chain's
+start read ~10 windows of 4 KB a stub (5,016 stick calls in a b30 run for
+457 pieces), from a thread above the game's */
+static unsigned int entry_first_offset(int entry)
+{
+	const struct pmus_entry *e = &music.entries[entry];
+	unsigned int target = e->first ? e->first - 1 : 0, from_packet = 0, from_offset = 0, k, offset;
+
+	if (music.first_offsets[entry] != 0xFFFFFFFFu)
+		return music.first_offsets[entry];
+	for (k = 0; k < music.header.entries; k++)
+	{
+		const struct pmus_entry *x = &music.entries[k];
+		unsigned int at = x->first ? x->first - 1 : 0;
+
+		if (x->chain == e->chain && music.first_offsets[k] != 0xFFFFFFFFu && at <= target && at >= from_packet)
+		{
+			from_packet = at;
+			from_offset = music.first_offsets[k];
+		}
+	}
+	offset = index_offset_walk((int)e->chain, from_packet, from_offset, target);
+	if (offset != 0xFFFFFFFFu)
+		music.first_offsets[entry] = offset;
+	music.walks++;
+	return offset;
 }
 
 /* the entry's first index window and piece into the next slot (the
@@ -782,7 +823,7 @@ static int reader_thread(SceSize arguments, void *argument)
 			{
 				const struct pmus_entry *e = &music.entries[s->entry];
 
-				s->first_offset = index_offset_walk((int)e->chain, 0, 0, e->first ? e->first - 1 : 0);
+				s->first_offset = entry_first_offset(s->entry);
 				s->state = 2;
 				if (s->loaded)
 					*s->loaded = 1;
@@ -1148,6 +1189,8 @@ void psp_music_decode(const void *const *owners, const int *chains, const unsign
 	int k, playing = 0;
 
 	memset(sums, 0, sizeof(dec.sums));
+	if (music.nodecode)
+		count = 0;
 	for (k = 0; k < VOICES; k++)
 		if (music.voices[k])
 			music.voices[k]->used++;
@@ -1268,9 +1311,9 @@ void psp_music_report(void)
 	if (!music.on)
 		return;
 	platform_log("music: %lu blocks, late %lu, output full %lu; voices at most %lu; restarts %lu; pieces %lu (worst %lu us); "
-		"stubs %lu (started ahead %lu, used %lu times), not in the pack %lu; main CPU after the job %lu us a block (worst %lu); pool peak %lu KB%s",
+		"stubs %lu (started ahead %lu, used %lu times; %lu walks, %lu index reads), not in the pack %lu; main CPU after the job %lu us a block (worst %lu); pool peak %lu KB%s",
 		dec.blocks, dec.late_blocks, music.out_late, dec.playing_worst, dec.restarts, music.pieces,
-		music.piece_worst_us, music.stubs_made, music.prefetched, dec.prefetch_hits, music.not_in_pack, dec.blocks ? music.decode_us / dec.blocks : 0,
+		music.piece_worst_us, music.stubs_made, music.prefetched, dec.prefetch_hits, music.walks, music.index_reads, music.not_in_pack, dec.blocks ? music.decode_us / dec.blocks : 0,
 		music.decode_worst_us, (unsigned long)(dec.pool_peak - music.pool) / 1024, dec.pool_failed ? ", full" : "");
 #endif
 }
