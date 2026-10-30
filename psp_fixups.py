@@ -40822,7 +40822,7 @@ FIXES_AIME2A["source/ai/actors.c#aime2a"] = [
  """	psp_aime_stats.passes++;
 	psp_aime1b_pass_begin();
 	psp_aime_think_only = TRUE;
-	if (psp_aime_fpu_main_on > 0 && !psp_work_on_me())
+	if (psp_aime_fpu_main_on > 0 && psp_aime2a_alike && !psp_work_on_me())
 		psp_aime_fpu_main = 1;
 """),
 # the ME's pass casts no queued rays (the queue is the ME's own ring): each
@@ -40951,7 +40951,7 @@ tick's start runs it, or the frame's end hands it to the ME) */
 boolean psp_aime2a_defer(
 	void)
 {
-	if (!psp_aime2a_active())
+	if (!psp_aime2a_active() && !(psp_aime1b_active() && psp_aime_fpu_main_on > 0))
 		return FALSE;
 	psp_aime2a_owed = TRUE;
 	return TRUE;
@@ -40998,8 +40998,16 @@ void psp_aime2a_frame_end(
 	if (!psp_aime2a_owed || psp_aime2a_out)
 		return;
 	psp_aime2a_owed = FALSE;
-	if (!psp_aime2a_active() || !psp_aime_update_allowed())
+	if (!psp_aime_update_allowed())
 		return;
+	if (!psp_aime2a_active())
+	{
+		/* aimefpu: the job's pass, here on the main CPU */
+		psp_aime2a_alike = TRUE;
+		psp_aime_think();
+		psp_aime2a_alike = FALSE;
+		return;
+	}
 	/* every 32nd job the ME also measures its stack's deepest reach (psp_me.c) */
 	args[0] = (psp_aime2a_stats.pushed & 31) == 0;
 	/* everything the pass reads, out of the main CPU's cache; the ME drops
@@ -41189,6 +41197,11 @@ static struct
 real_math.c read psp_aime_fpu_main) */
 static int psp_aime_fpu_main_on = -1;
 int psp_aime_fpu_main = 0;
+/* "aimefpu" without "aime2a": 2a's schedule kept on the main CPU (each pass
+left for later; the one after a frame's last tick run at the frame's end in
+the ME's FPU forms and with its stops, psp_aime2a_alike set; the others at the
+next tick's start as 2a runs them), so the two sides match by construction */
+static boolean psp_aime2a_alike = FALSE;
 int psp_aime_pf_on = 0;
 /* 1 while the job runs, written by the job alone, on a line of its own:
 the ME's paths (marks, FPU forms, the memo's log) test it with where they
