@@ -2237,6 +2237,7 @@ bus little while the ME reads its inputs (code_review_b119_me.md, 1) */
 #define RING_WAIT_CLOCK_EVERY 16
 
 extern volatile unsigned int psp_me_window[16];
+extern volatile unsigned int psp_me_window_split;
 static unsigned int ring_next = 0;        /* the next ticket */
 static unsigned int ring_popped_seen = 0; /* popped, as last read */
 static int ring_dead = 0;                 /* a job failed: 1 the ring takes no more, 2 it rests (RING_REST_US) */
@@ -2466,6 +2467,9 @@ static __attribute__((noinline, cold)) void aime_simulated(volatile struct me_sl
 				AIME_SIM_STACK_BYTES / 1024, AIME_SIM_SLACK_BYTES / 1024, aime_sim_stack,
 				aime_sim_stack + AIME_SIM_SLACK_BYTES + AIME_SIM_STACK_BYTES, aime_sim_stack + AIME_SIM_SLACK_BYTES);
 	}
+	/* (psp_ge.c's psp_me_window_split: the job's window its own) */
+	if (psp_me_window_split)
+		psp_me_window[0] = 0;
 	psp_me_window[0] = 1;
 	psp_me_window_hold = 1;
 	psp_me_context = (unsigned int)sceKernelGetThreadId();

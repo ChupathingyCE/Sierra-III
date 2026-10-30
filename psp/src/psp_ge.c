@@ -404,9 +404,17 @@ the collection's whole-cache write-back and invalidate end that overlap, so
 the main CPU's writes after it (the tick's) are no longer the job's window;
 it stays open while a render or ring job is out */
 int psp_me_ring_sim_open(void);
+/* "aime2acheck": the AI job's window its own, from its push to its
+collection, so the trace compares the job's writes with the main CPU's
+during the job alone (the GE's and the ring's jobs out across either end
+are then traced in two windows) */
+volatile unsigned int psp_me_window_split = 0;
 void psp_me_window_close(void)
 {
 	psp_me_window_hold = 0;
+	/* a store of 0 before the next value: the trace starts a new window */
+	if (psp_me_window_split)
+		psp_me_window[0] = 0;
 	psp_me_window[0] = me_out || inflight_me_out || psp_me_ring_sim_open();
 }
 static PSP_MAIN_SIDE unsigned long inflight_handed = 0, inflight_me_failed = 0;

@@ -41348,6 +41348,8 @@ static boolean psp_aime2a_active(
 	if (psp_aime2a_on < 0)
 	{
 		psp_aime2a_check_on = psp_keep("aime2acheck") != 0;
+		/* the race check's write trace: the job's window its own (psp_ge.c) */
+		psp_me_window_split = psp_aime2a_check_on;
 		psp_aime2a_on = (psp_aime2a_check_on || psp_keep("aime2a") != 0) && psp_aime1b_active();
 		if (psp_aime2a_on && psp_keep("soundedram"))
 		{
@@ -41649,7 +41651,7 @@ int psp_me_simulated(void);
 volatile unsigned int *psp_me_abort_word(int which);
 void psp_me_yield_slots(void);
 void psp_me_lines_out(const void *start, unsigned int bytes);
-extern volatile unsigned int psp_me_window_hold;
+extern volatile unsigned int psp_me_window_hold, psp_me_window_split;
 void psp_me_window_close(void);
 void sceKernelDcacheWritebackAll(void);
 void sceKernelDcacheWritebackInvalidateAll(void);
