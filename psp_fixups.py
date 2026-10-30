@@ -38817,7 +38817,11 @@ its free total above these (the level copies and the record buffers ask for
 large blocks later); "pscfloorN" sets the first, in KB */
 #define PSP_PSC_FREE_FLOOR (320 * 1024)
 #define PSP_PSC_KEEP_MARGIN (32 * 1024)
+/* the margin is for a table that earns it: at least this many poses served
+a tick since it began (c10's serves ~34, b30's ~1.5) */
+#define PSP_PSC_KEEP_RATE 8
 static int psp_psc_release_old;
+static long psp_psc_born;
 static struct psp_psc_entry *psp_psc_entries;
 static unsigned char *psp_psc_pieces[PSP_PSC_PIECES];
 static int psp_psc_mode = -1; /* 0 off, 1 on, 2 on and checked */
@@ -38959,13 +38963,14 @@ static void psp_psc_log(void)
 
 		checked = now;
 		psp_heap_survey(&free_bytes, &largest, &used);
-		/* kept down to 32 KB under the floors it grows to: a table that
-		grew with room to spare isn't given back for a dip the size of a
-		small allocation (c10's table went when an 8 KB allocation took its
+		/* a table that serves well is kept down to 32 KB under the floors
+		it grows to: one that grew with room to spare isn't given back for
+		a dip the size of a small allocation (c10's table went when an 8 KB allocation took its
 		largest block to 244 KB and its free total to 317, and nothing
 		failed). "pscreleaseold": given back at the growing
 		floors, as before */
-		unsigned long margin = psp_psc_release_old ? 0 : PSP_PSC_KEEP_MARGIN;
+		unsigned long margin = !psp_psc_release_old && now > psp_psc_born &&
+			psp_psc_hits >= (unsigned long)(now - psp_psc_born) * PSP_PSC_KEEP_RATE ? PSP_PSC_KEEP_MARGIN : 0;
 
 		if (largest + margin < psp_psc_largest_floor || free_bytes + margin < PSP_PSC_FREE_FLOOR)
 		{
@@ -39099,6 +39104,7 @@ static struct psp_psc_entry *psp_psc_room(struct object_datum const *object, str
 			return NULL;
 		}
 		psp_psc_compression = hs_model_animation_compression_enabled;
+		psp_psc_born = now;
 	}
 	entry = psp_psc_find(model, animation, frame);
 	if (!entry || (entry->animation && entry->pose))
