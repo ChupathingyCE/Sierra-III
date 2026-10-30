@@ -1,0 +1,23 @@
+# Two writes off the Media Engine: the batch spheres and the glyph sheet (mealloc)
+
+## The bending batches' spheres (the heap hazard)
+
+**What it fixes.** The near path's quick test for a bending batch uses a sphere round its vertices (`batch_sphere`), worked out the first time the batch is drawn near the eye. Under gemeon that first draw is in the replay, on the Media Engine, and the sphere's centre and radius go into the skin plan: one plain `malloc` block (16-byte aligned) holding the part, its batches and their indices. The ME writes back whole 64-byte lines, so the line holding the first batches also carries this block's chunk header (its `prev_size` and the bit saying whether the block before is in use, both written by the main CPU's `free` of that neighbour). A free while the replay had the line dirty is undone when the ME writes the line back: the same corruption as the averages' table, in a table texlines didn't cover. [E] The emulator's ME write trace lists heap lines written both by the replay's `model_geometry` (the centre store) and by `_malloc_r` on the b30 route (texpretouch on and off alike), a10 and c20. [U] On hardware it needs a neighbour freed during the few frames a batch is first drawn near the eye, so it would strike rarely and at random.
+
+**The change** (`psp/src/psp_ge.c`): `model_convert` works out every batch's sphere from the records it has just written, on the main CPU, as the plan is made (the plan is made again whenever its vertices change, so the values are the ones the lazy path would have found). In the ME's work a batch without a sphere is never given one: it takes the corner loop, which draws what the sphere test would have. `batch_sphere_old` is `PSP_MAIN_SIDE`. Keep word `batchsphereold`: worked out at the first near draw, as before.
+
+## The glyph sheet
+
+**What it fixes.** Under the M6 #2 defaults (gedefer, geinflight, gemeon) the HUD's screen quads are recorded on the main CPU and replayed on the Media Engine. The first button glyph a launch draws (the main menu's prompts, a "hold X to pick up" in a level) unpacked the 32 KB glyph sheet inside that replay: `glyph_sheet_unpack` ends in `sceKernelDcacheWritebackRange`, a system call, and `psp_tex_glyph_room` asks for a missing RAM block with `ram_cache_acquire` (memalign and the volatile partition's lock). The ME makes no system calls and no library calls. [D] The emulator's ME-strict check (gemesim) lists the call from screen_quad's `glyph_sheet_unpack` on the b30 route and on a10; a PSP-1000 front-door run's log shows the menu's first glyphs drawn by the ME's work, and the run itself ended normally [M], so what the call does on the ME is unknown [U]. It breaks the ME's rule either way.
+
+**The change** (`psp/src/psp_ge.c`, `psp/src/psp_tex.c`):
+- `glyph_sheet_ready()`: as `psp_ge_screen_quad` records a glyph quad (main CPU), the sheet is unpacked there if the RAM block is new.
+- `glyph_sheet()` in the ME's work only reads: `psp_tex_glyph_room_held` (never asks for a block) and the generation; if the block changed since the recording (a sleep between), the quad is left out for that frame.
+- `glyph_generation` and `glyph_me_old` are `PSP_MAIN_SIDE`: only the main CPU writes them now.
+- Keep word `glyphmeold`: the sheet unpacked wherever it is first drawn, as before.
+
+**The heap check made exact** (`psp/src/psp_libc.c`, `heap_me_check`, gemesim only): it now logs only when the thread asking for the heap is the one doing the ME's work (`psp_me_context` holds its id). The cache file reader, which takes the CPU from the game thread, asked for 20 bytes in `platform_queue_apc` (ReadFileEx's completion) and was logged as the ME's.
+
+**Proof** [E]: play and both random seeds the same at every tick against the base with both changes (b30 route 3,750 ticks, a10 route 7,500, c20 4,500); the ME write trace finds no heap line written both by the replay and by `_malloc_r` from `model_geometry` or `batch_sphere` on b30 and a10, and eight on a10 with `batchsphereold`; the ME-strict glyph site gone, and back with `glyphmeold`; the 20-byte heap line gone; heapwalk finds no bad chunk header; the front door (menu, a10 and back) draws its glyphs. Only the near path's sphere (now worked out sooner, same values) and the HUD's glyph path change; nothing in play reads either.
+
+**Left open** [E]: one heap line a map is still written both by a `memcpy` in the ME's work and by `_malloc_r`, and one on a10 by `vm_redirect_me` (its tally is on whole lines of its own, so that one is likely the same memory reused across the run: the trace adds lines up over the whole run, not per job).

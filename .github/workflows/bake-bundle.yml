@@ -23,12 +23,10 @@ on:
   workflow_dispatch:
     inputs:
       platforms:
-        description: "linux: the Linux bundle only (what the lab's bakes use); all: Linux, Windows and macOS (as a release tag builds)"
+        description: "linux: the Linux bundle only (what the lab's bakes use); all: Linux, Windows and macOS"
         type: choice
         options: [linux, all]
         default: linux
-  push:
-    tags: ['b*']
 
 permissions:
   contents: read

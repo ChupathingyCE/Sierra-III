@@ -22,7 +22,11 @@ S10's 11 kHz isn't a rate the sound tag can say (22,050 or 44,100 only), so
 it isn't applied yet: the tag needs the rate per permutation, which the
 runtime doesn't read (audio.md 3b). s10 is accepted and reported as s9.
 
-    python3 soundpack.py TAGS_DIR PROFILE [--music-stream PACK MUSICENC]
+    python3 soundpack.py TAGS_DIR PROFILE [CACHE_DIR] [--music-stream PACK MUSICENC]
+
+With CACHE_DIR, each tag's re-encode is kept there by a hash of the tag's
+bytes, the profile, this file and numpy's version, and read back by a later
+bake instead of made again (the same bytes either way).
 
 --music-stream (the music path, docs/plan_music_stream.md) also writes PACK:
 every music chain at 44,100 Hz, before S9 halves it, encoded as Vorbis by the
@@ -30,12 +34,14 @@ bundle's musicenc, with where each permutation starts in its chain. The tags
 are rewritten exactly as without it, so the map is the same. PROFILE may then
 be "none": the tags are left as they are and only the pack is written. The
 pack is made from the disc's sounds: it stays in the bake's output folder
-like the map, and only its counts are printed.
+like the map, and only its counts are printed. The pack is gathered while
+each tag is read, so with it CACHE_DIR is not used.
 
 Reads Invader's tag definitions from HALO_PSP_INVADER_DEFINITIONS. Writes
 the sound tags in place and prints a summary (counts and bytes: no tag
 data)."""
 import glob
+import hashlib
 import json
 import os
 import struct
@@ -540,15 +546,61 @@ def bake_sound(d, data, profile, stats, music=None, name=''):
     return Rewriter(d, data).run(sound, replace, patch)
 
 
+with open(os.path.abspath(__file__), 'rb') as _f:
+    CODE = hashlib.sha256(_f.read() + np.__version__.encode()).hexdigest()
+del _f
+
+
+def cached_bake(d, data, profile, stats, cache):
+    """bake_sound(), or what an earlier bake kept for the same input: the
+    new bytes (or none) and what it added to the summary's counts"""
+    if not cache:
+        return bake_sound(d, data, profile, stats)
+    key = hashlib.sha256(CODE.encode() + profile.encode() + data).hexdigest()
+    path = os.path.join(cache, key)
+    try:
+        with open(path + '.json', encoding='utf-8') as f:
+            kept = json.load(f)
+        new = None
+        if kept['changed']:
+            with open(path + '.bin', 'rb') as f:
+                new = f.read()
+        for k, v in kept['stats'].items():
+            stats[k] = stats[k] + v
+        return new
+    except (OSError, ValueError, KeyError):
+        pass
+    before = {k: (list(v) if isinstance(v, list) else v) for k, v in stats.items()}
+    new = bake_sound(d, data, profile, stats)
+    delta = {k: (stats[k][len(before[k]):] if isinstance(v, list) else stats[k] - before[k])
+             for k, v in before.items()}
+    delta['snr'] = [float(x) for x in delta['snr']]
+    try:   # written whole, then renamed, so maps baking side by side read all or nothing
+        if new is not None:
+            with open(path + '.bin.tmp%d' % os.getpid(), 'wb') as f:
+                f.write(new)
+            os.replace(path + '.bin.tmp%d' % os.getpid(), path + '.bin')
+        with open(path + '.json.tmp%d' % os.getpid(), 'w', encoding='utf-8') as f:
+            json.dump({'changed': new is not None, 'stats': delta}, f)
+        os.replace(path + '.json.tmp%d' % os.getpid(), path + '.json')
+    except OSError:
+        pass
+    return new
+
+
 def main():
     args = sys.argv[1:]
     pack_path = encoder = None
-    if len(args) == 5 and args[2] == '--music-stream':
-        pack_path, encoder = args[3], args[4]
-        args = args[:2]
-    if len(args) != 2 or args[1] not in ('s9', 's10') + (('none',) if pack_path else ()):
+    if '--music-stream' in args:
+        i = args.index('--music-stream')
+        if len(args) < i + 3:
+            sys.exit(__doc__)
+        pack_path, encoder = args[i + 1], args[i + 2]
+        args = args[:i] + args[i + 3:]
+    if len(args) not in (2, 3) or args[1] not in ('s9', 's10') + (('none',) if pack_path else ()):
         sys.exit(__doc__)
-    folder, profile = args
+    folder, profile = args[0], args[1]
+    cache = args[2] if len(args) == 3 and not pack_path else ''
     work = tempfile.mkdtemp(prefix='music-', dir=os.path.dirname(os.path.abspath(folder))) if pack_path else None
     music = MusicPack(encoder, work) if pack_path else None
     d = Definitions(os.environ['HALO_PSP_INVADER_DEFINITIONS'])
@@ -558,8 +610,11 @@ def main():
     for path in paths:
         data = open(path, 'rb').read()
         try:
-            name = os.path.splitext(os.path.relpath(path, folder))[0].replace(os.sep, '\\')
-            new = bake_sound(d, data, profile, stats, music, name)
+            if music:
+                name = os.path.splitext(os.path.relpath(path, folder))[0].replace(os.sep, '\\')
+                new = bake_sound(d, data, profile, stats, music, name)
+            else:
+                new = cached_bake(d, data, profile, stats, cache)
         except Exception as e:  # a tag this can't read is left as it was
             stats['failed'] += 1
             print('soundpack: %s left as it was: %s' % (os.path.relpath(path, folder), e), file=sys.stderr)

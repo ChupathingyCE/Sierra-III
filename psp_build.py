@@ -121,7 +121,7 @@ ONLINE_GAMES_UNITS = ("source/interface/ui_widget.c", "source/interface/ui_widge
 def desktop_unit(rel):
     return rel.startswith(CHUPA_DESKTOP_UNITS) and not (MULTIPLAYER and rel in CHUPA_MULTIPLAYER_KEEPS)
 
-PSP_FILES = ["psp_memory", "psp_platform", "psp_sdl", "psp_libc", "psp_ge", "psp_tex", "psp_vfpu", "psp_menu", "psp_geo", "psp_anim", "psp_debug", "psp_me", "psp_trace", "psp_crash", "psp_scratch", "psp_watch", "psp_frametrace", "psp_loading", "psp_bakecheck", "psp_metrics"]
+PSP_FILES = ["psp_memory", "psp_platform", "psp_sdl", "psp_libc", "psp_ge", "psp_tex", "psp_vfpu", "psp_menu", "psp_geo", "psp_anim", "psp_debug", "psp_me", "psp_trace", "psp_crash", "psp_scratch", "psp_watch", "psp_frametrace", "psp_loading", "psp_bakecheck", "psp_metrics", "psp_lanetrace", "psp_vfpu_quat", "psp_sleepguard", "psp_sleep"]
 # the bake format this build reads (bake/bake.py's BAKE_FORMAT): one number
 # for the bake's stamp and the game's check (psp/src/psp_bakecheck.c)
 _bake_format = re.search(r"^BAKE_FORMAT = (\d+)$", open(os.path.join(HERE, "bake", "bake.py"), encoding="utf-8").read(), re.M)
@@ -175,6 +175,22 @@ DITHERSHIFT = os.environ.get("PSP_DITHERSHIFT", "") == "1"
 MUSIC = os.environ.get("PSP_MUSIC", "") == "1"
 if MUSIC:
     PSP_FILES.append("psp_music")
+# PSP_DEADCODE_INLINE=1: the sleep's debug reports inline in the hot sleep
+# check and the collision usage log's empty calls kept, as before
+# psp_fixups.py's FIXES_DEADCHK: the old side of that layout's A/B (read by
+# psp_fixups.py, which builds without the group)
+# PSP_ACCLEAF_OLD=1: the hottest lookups keep their keep tests (objallold,
+# hdrblkold, notypehdr, dgfastold): the old side of ACCLEAF's A/B (read by
+# psp_fixups.py, which builds without FIXES_ACCLEAF)
+# PSP_WALKAPART=1: option C's groundwork, the drawing walk kept from the tick's
+# state (keep word walkapart) and its tests (mevis, walkwrites; psp_fixups.py
+# FIXES_WALKAPART). Its hooks sit in the tick's object marks and the particle
+# loop, so a default build leaves all of it out
+WALKAPART = os.environ.get("PSP_WALKAPART", "") == "1"
+# PSP_MEVISLAND=0: leaves out the frame's visibility made on the ME (mevis's
+# copies of the visibility code, 23 KB, and the landing's hooks; keep word
+# mevisland, on by default; docs/mevis_landing.md). Built in otherwise
+MEVISLAND = os.environ.get("PSP_MEVISLAND", "") != "0"
 # build 110: PSP_MAP_CHECKS=1 keeps ChupathingyCE's checks of a map's data as
 # the tick reads it (animations, collision walks). Off by default: the PSP's
 # maps are its own bake, trusted as the Xbox game trusts its own (psp_fixups.py,
@@ -281,9 +297,14 @@ PSP = ["psp-gcc", "-G0", GAME_OPT, "-march=allegrex", "-ffp-contract=off", "-fsh
        "-ffunction-sections", "-fdata-sections", "-fno-math-errno", "-fsingle-precision-constant",
        "-DHALO_PSP=1", "-DHALO_RELEASE=1", "-DHALO_ANDROID=1",
        ] + (["-DPSP_MULTIPLAYER=1"] if MULTIPLAYER else []) + (["-DPSP_MUSIC=1"] if MUSIC else []) + (["-DPSP_MP_COOP=1"] if MULTIPLAYER and MP_COOP else []) + (["-DPSP_MP_HOST=1"] if MULTIPLAYER and MP_HOST else []) + (["-DPSP_MAP_CHECKS=1"] if MAP_CHECKS else []) + (["-DPSP_POOLS_XBOX=1"] if POOLS_XBOX else []) + (["-DPSP_RECON_64MB=1"] if BIG_RAM else []) + (["-DPSP_DEBUG_TOOLS=1"] if DEBUG_TOOLS else []) + (["-DPSP_TICK_STEPS=1"] if TICK_STEPS else []) + (["-DPSP_RECON=1"] if RECON else []) + (["-DPSP_METRICS=1"] if METRICS else []) + (["-DPSP_PGO_GENERATE=1"] if PGO == "generate" else []) + os.environ.get("PSP_CFLAGS", "").split() + [
-       # build 19: failed asserts are cold paths, laid out away from the hot
-       # code (the 16 KB instruction cache holds more of what runs)
+       # The fatal asserts are compiled out, unevaluated (X10): their checks
+       # and messages fill the 16 KB instruction cache, so with them gone b30's
+       # tick is 6.6% shorter on the PSP-3000 [M], and play is identical. The
+       # asserts that do the game's work are evaluated outside their checks
+       # (psp_fixups.py's FIXES_ASSERTSEVAL). PSP_ASSERTS_ON=1 keeps them,
+       # as cold paths laid out away from the hot code
        "-DPSP_ASSERTS_COLD=1", "-freorder-blocks-and-partition", "-mno-explicit-relocs",
+       ] + ([] if os.environ.get("PSP_ASSERTS_ON", "") == "1" else ["-DPSP_ASSERTS_OFF=1"]) + [
        # the port's own sources are compiled by full path, and __FILE__ (asserts)
        # would put that path in the EBOOT: written relative to the checkout, the
        # same commit builds the same bytes on any machine
@@ -418,6 +439,12 @@ def cold_code(rel):
 # than folding them into their caller. Slower; never for play
 NOINLINE_UNITS = [w for w in os.environ.get("PSP_NOINLINE", "").split(",") if w]
 
+# PSP_ASSERTS_OFF_UNITS=ai,objects (recon only): the units under a
+# directory of one of these names are compiled with PSP_ASSERTS_OFF (the fatal
+# asserts compiled out, unevaluated), the rest as usual: a bisection for the
+# assert whose expression does the game's work (X10, assertsoff1-4)
+ASSERTS_OFF_UNITS = [w for w in os.environ.get("PSP_ASSERTS_OFF_UNITS", "").split(",") if w]
+
 def compile_one(item):
     src, flags, extra = item
     rel = os.path.relpath(src, HERE) if src.startswith("/") else src
@@ -428,6 +455,8 @@ def compile_one(item):
         extra = extra + pgo_flags(rel)
     if any(word in rel for word in NOINLINE_UNITS):
         extra = extra + ["-fno-inline", "-fno-inline-small-functions", "-fno-inline-functions-called-once"]
+    if any(("/%s/" % word) in ("/" + rel.replace("\\", "/")) for word in ASSERTS_OFF_UNITS):
+        extra = extra + ["-DPSP_ASSERTS_OFF=1"]
     os.makedirs(os.path.dirname(obj), exist_ok=True)
     defines = ["-Dmain=halo_main"] if src.endswith("shell/shell_xbox.c") else []
     if src.endswith("psp_bakecheck.c"):
@@ -450,7 +479,7 @@ def compile_one(item):
     # path, nested in folders the PSP's libgcov can't make
     out = os.path.relpath(obj, TREE) if PGO else obj
     cmd = PSP + flags + extra + defines + ["-include", os.path.join(HERE, "psp_post.h"), "-c", src, "-o", out]
-    if src.endswith(("psp_sdl.c", "psp_libc.c", "psp_ge.c", "psp_tex.c", "psp_vfpu.c", "psp_menu.c", "psp_geo.c", "psp_anim.c",
+    if src.endswith(("psp_sdl.c", "psp_libc.c", "psp_ge.c", "psp_tex.c", "psp_vfpu.c", "psp_vfpu_quat.c", "psp_menu.c", "psp_geo.c", "psp_anim.c",
                      "psp_debug.c", "psp_me.c", "psp_trace.c", "psp_crash.c", "psp_watch.c", "psp_net.c", "psp_net_adhoc.c",
                      "psp_music.c")):
         # plain C against the SDL3 headers, none of the game's MSVC prefix
@@ -470,6 +499,8 @@ def compile_one(item):
                pgo_flags(rel) if opt == "-O2" else []) + (
                ["-DPSP_DITHERSHIFT=1"] if DITHERSHIFT and src.endswith("psp_ge.c") else []) + (
                ["-DPSP_RECON=1"] if RECON else []) + (
+               ["-DPSP_WALKAPART=1"] if WALKAPART else []) + (
+               ["-DPSP_MEVISLAND=1"] if MEVISLAND else []) + (
                ["-DPSP_METRICS=1"] if METRICS else []) + (
                ["-DPSP_MUSIC=1"] if MUSIC else []) + (
                # the switches their #if blocks test (psp_ge.c's debug tools)
@@ -634,6 +665,68 @@ def link(objs, stubs):
     #     and nothing first, each function's cold part placed beside it.
     # A linker script gives each input section to the first rule that
     # matches it, so the most specific placements come first.
+    # A function's main part is named by its profile: .text.hot.F when PGO's
+    # counts found it hot, .text.F when they didn't or the function changed
+    # since it was counted (a recon build, PSP_TICK_STEPS, debug tools), while
+    # its cold part stays .text.unlikely.F either way. A layout that placed
+    # the cold part by name and missed the main part under its other name put
+    # the two far apart, and the cold part's branches back into the main part
+    # (R_MIPS_PC16, +-128 KB) no longer reached: every placement of a main
+    # part matches both names, and a cold part the layout doesn't place
+    # itself (the function wasn't split when the layout was made) follows
+    # its main part, so the pair stays together in any build
+    def layout_placements(placements):
+        out, seen = [], set(placements)
+        for p in placements:
+            m = re.match(r"^(\S*)\((\.text\.(?:hot\.)?)(\S+)\)$", p)
+            more = []
+            if m and not m.group(3).startswith(("unlikely.", "startup.", "exit.")):
+                p = "%s(.text.hot.%s .text.%s)" % (m.group(1), m.group(3), m.group(3))
+                cold = "%s(.text.unlikely.%s)" % (m.group(1), m.group(3))
+                if cold not in seen:
+                    more = [cold]
+            for q in [p] + more:
+                if q not in out:
+                    out.append(q)
+        return out
+
+    # PSP_DATA_LAYOUT gathers the tick's hottest small variables, which the
+    # SDK's script leaves in input order, one or two warm words to a 64-byte
+    # line among cold ones, into one run of lines just after the ME's .data
+    # block: the same hot words on far fewer lines, so fewer lines to keep in
+    # the 16 KB data cache against the object stream (lever HOTG). Its .bss
+    # and COMMON inputs go into the .data output too (zeros in the file), so
+    # the hot set is one run; the first rule an input section matches wins,
+    # and .data's rules come before .bss's. A name is a file of
+    # psp/layout/data_<name>.txt: one placement a line, "<file>(<sections>)"
+    # (e.g. "*objects.o(.bss.psp_nms_check)", "*scenario.o(COMMON)": a file's
+    # COMMON is placed whole) or a bare section name, hottest first. The ME's
+    # objects are never matched, so their blocks stay as they are. Only
+    # addresses move: exact. PSP_DATA_SPREAD=1 (recon only) puts each
+    # placement on lines of its own instead, so the cache model's per-line
+    # counts name each one's misses
+    def hot_data_block(me_objects):
+        name = os.environ.get("PSP_DATA_LAYOUT", "")
+        if not name:
+            return ""
+        path = name if os.path.isfile(name) else os.path.join(HERE, "psp/layout", "data_%s.txt" % name)
+        if not os.path.isfile(path):
+            sys.exit("psp_build: PSP_DATA_LAYOUT=%s: no %s" % (name, path))
+        lines = [l.split("#")[0].strip() for l in open(path)]
+        sep = "    . = ALIGN(64);\n" if os.environ.get("PSP_DATA_SPREAD") == "1" else ""
+        block = "    __psp_hot_data_start = .;\n"
+        for l in (l for l in lines if l):
+            m = re.match(r"^(\S+)\((.+)\)$", l)
+            if not m and "(" in l:
+                sys.exit("psp_build: PSP_DATA_LAYOUT: not a placement (a file pattern has no spaces): %s" % l)
+            files, sections = (m.group(1), m.group(2)) if m else ("*", l)
+            if files == "*":
+                sections = "EXCLUDE_FILE(%s) %s" % (" ".join(me_objects), sections)
+            elif any(o.strip("*").split(":")[0] in files for o in me_objects):
+                sys.exit("psp_build: PSP_DATA_LAYOUT places the ME's own variables (%s): they keep their block" % l)
+            block += "%s    %s(%s)\n" % (sep, files, sections)
+        return block + "    . = ALIGN(64);\n    __psp_hot_data_end = .;\n"
+
     linkfile = SDK + "/lib/linkfile.prx"
     text = open(linkfile).read()
     layout = os.environ.get("PSP_TEXT_LAYOUT", "")
@@ -649,9 +742,9 @@ def link(objs, stubs):
                 layout = os.path.join(HERE, "psp/layout", layout + ".txt")
             lines = [l.strip() for l in open(layout) if l.strip() and not l.startswith("#")]
             if lines and all(l.startswith("*") for l in lines):
-                first = lines
+                first = layout_placements(lines)
             else:
-                first += ["*(%s)" % l for l in lines if l.startswith(".text.")]
+                first += layout_placements(["*(%s)" % l for l in lines if l.startswith(".text.")])
         old_text = "    _ftext = . ;\n    *(.text .stub .text.* .gnu.linkonce.t.*)\n"
         if old_text not in text:
             sys.exit("psp_build: the SDK's linkfile.prx has changed; PSP_TEXT_LAYOUT can't place the code")
@@ -683,12 +776,43 @@ def link(objs, stubs):
                         "    . = ALIGN(64);\n    __psp_main_side_start = .;\n    KEEP(*(.data.psp_main_side))\n"
                         "    . = ALIGN(64);\n    __psp_main_side_end = .;\n    __psp_me_data_start = .;\n" +
                         "".join("    %s(.data .data.*)\n" % o for o in me_objects) +
-                        "    . = ALIGN(64);\n    __psp_me_data_end = .;\n" + music_data +
+                        "    . = ALIGN(64);\n    __psp_me_data_end = .;\n" + music_data + hot_data_block(me_objects) +
                         "    *(.data .data.* .gnu.linkonce.d.*)\n")
     text = text.replace(old_bss, "   *(.dynbss)\n   . = ALIGN(64);\n   __psp_me_bss_start = .;\n" +
                         "".join("   %s(.bss .bss.* COMMON)\n" % o for o in me_objects) +
                         "   . = ALIGN(64);\n   __psp_me_bss_end = .;\n" + music_bss +
                         "   *(.bss .bss.* .gnu.linkonce.b.*)\n")
+    # pspgu's and pspgum's small variables (gu_list, gu_states,
+    # gu_curr_context, gum_vfpucontext, ...: the SDK builds them -G8, so they
+    # sit in .sbss, out of the block above) are the ME's too. Left where the
+    # linker puts them they share 64-byte lines with pspdebug's screen state
+    # and libgcc's emutls words, which the main CPU writes while the ME draws:
+    # the emulator's model of the two caches (mecohere) caught the ME's
+    # gu_list and gu_states write lost under the main CPU's dirty line. They
+    # go last in .sbss, on the one line just below the ME's .bss block, with
+    # pspdebug's and emutls' words moved below the other small variables: the
+    # ME's block starts 64-byte aligned, so as long as .sbss ends inside the
+    # same line as before nothing after it moves (padding them out instead
+    # moved all of .bss ~190 bytes, and the PSP's tick paid for the new cache
+    # sets), and they stay in $gp's reach. gum_current_matrix (.sdata) stays
+    # first in .sdata, its line shared only with libc's start-up words.
+    # PSP_GU_PLACE=sdk leaves them where the SDK's script puts them: the other
+    # side of the placement's A/B, from the same commit
+    me_small = ("*libpspgu.a:*", "*libpspgum.a:*")
+    main_busy = ("*libpspdebug.a:*", "*libgcc.a:emutls.o")
+    sbss = [] if os.environ.get("PSP_GU_PLACE") == "sdk" else re.findall(r"\n([ \t]*)\*\(\.sbss \.sbss\.\* \.gnu\.linkonce\.sb\.\*\)\n([ \t]*)\*\(\.scommon\)", text)
+    if len(sbss) != 1 and os.environ.get("PSP_GU_PLACE") != "sdk":
+        sys.exit("psp_build: the SDK's linkfile.prx has changed; pspgu's small variables can't be placed")
+    if sbss:
+        ind = sbss[0][0]
+        text = text.replace("\n%s*(.sbss .sbss.* .gnu.linkonce.sb.*)\n%s*(.scommon)" % sbss[0],
+                            "\n%s*(EXCLUDE_FILE(%s) .sbss .sbss.* .gnu.linkonce.sb.*)\n%s*(.scommon)\n" %
+                            (ind, " ".join(me_small + main_busy), sbss[0][1]) +
+                            "".join("%s%s(.sbss .sbss.*)\n" % (ind, o) for o in main_busy) +
+                            "%s. = ALIGN(64);\n%s__psp_me_small_start = .;\n" % (ind, ind) +
+                            "".join("%s%s(.sbss .sbss.*)\n" % (ind, o) for o in me_small) +
+                            "%s__psp_me_small_end = .;\n" % ind +
+                            "%sASSERT(__psp_me_small_end - __psp_me_small_start <= 64, \"pspgu's small variables outgrew their line\");" % ind)
     linkfile = os.path.join(OUT, "linkfile_layout.prx")
     open(linkfile, "w").write(text)
     # build 107: the link map (halo.map: each function's and variable's
@@ -885,7 +1009,9 @@ def seed_profile(items):
     obj = os.path.join(OUT, "seed", "all_levels.o")
     os.makedirs(os.path.dirname(obj), exist_ok=True)
     name_c = 'L"' + SEED_NAME + '"'
-    r = subprocess.run(PSP + flags + ["-DPSP_SEED_NAME=" + name_c, "-DPSP_SEED_LOOK_SENSITIVITY=%d" % look,
+    # -G0 last: the probe's tables are read back by section name, which small
+    # data (PSP_CFLAGS=-G8) would move out of .rodata
+    r = subprocess.run(PSP + flags + ["-G0", "-DPSP_SEED_NAME=" + name_c, "-DPSP_SEED_LOOK_SENSITIVITY=%d" % look,
                                       "-include", os.path.join(HERE, "psp_post.h"), "-c", probe, "-o", obj],
                        cwd=TREE, capture_output=True, text=True)
     if r.returncode:

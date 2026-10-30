@@ -47,6 +47,9 @@ int psp_keep(const char *word);
 #define INDEX_PACKETS 512      /* a 4 KB window of a chain's packet table */
 #define PCM_FRAMES 4096        /* a voice's decoded frames not yet played */
 #define POOL_BYTES (320 * 1024)
+/* a map's entries and chains, and its codec setup while it is read: a10's
+pack needs ~25 KB of tables (940 entries, 70 chains) */
+#define TABLE_BYTES (48 * 1024)
 #define FADE_FRAMES 220        /* 5 ms */
 
 struct pmus_header
@@ -80,7 +83,8 @@ struct stub
 struct voice
 {
 	const void *owner;          /* the mixer's stream */
-	int chain;
+	int chain;                  /* the chain the decoder is in step with; -1: start it again */
+	int data_chain;             /* the chain whose bytes the index window and the pieces hold (the reader's) */
 	unsigned int position;      /* the next frame the PCM queue gives, in the chain at 44.1 kHz */
 	int primed;                 /* decoding from a restart: the first packet gives nothing */
 	unsigned int next_packet;   /* the next packet to decode */
@@ -123,6 +127,9 @@ static struct
 	SceUID reader_wake, out_ready, out_free, io_lock, state_lock;
 	int out_channel;
 	unsigned char *pool;
+	/* the path's RAM: its part of the sound cache's start-up block (psp_dsound.c) */
+	unsigned char *block;
+	unsigned char *tables;
 	/* counts, for the heartbeat */
 	unsigned long out_late, pieces, piece_worst_us, stubs_made, not_in_pack, decode_us, decode_worst_us;
 } music;
@@ -148,6 +155,30 @@ static struct __attribute__((aligned(64)))
 /* ---------- the pool (Tremor's malloc family, renamed at link) */
 
 static unsigned char *pool_end;
+
+/* ---------- the path's RAM
+
+The pool, the voices and the tables come out of the sound cache's start-up
+block, and the cache is made smaller by as much (psp_platform.c), so the heap
+pays nothing for them: the room was music's in the cache, and with the path
+on, music no longer goes there. The block is made once, before any map, so
+the keep word alone decides it. */
+#define VOICE_BYTES ((sizeof(struct voice) + 63) & ~(size_t)63)
+
+unsigned long psp_music_block_bytes(void)
+{
+	static int wanted = -1;
+
+	if (wanted < 0)
+		wanted = psp_keep("musicstream") != 0;
+	return wanted ? POOL_BYTES + VOICES * VOICE_BYTES + TABLE_BYTES : 0;
+}
+
+/* the block's part for the path (64-byte aligned), or NULL if it got none */
+void psp_music_block_place(void *at)
+{
+	music.block = (unsigned char *)at;
+}
 
 void *mu_malloc(unsigned int bytes)
 {
@@ -263,25 +294,26 @@ static int output_thread(SceSize arguments, void *argument);
 static void start_once(void)
 {
 	static int started = 0;
-	unsigned char *pool;
+	unsigned char *at = music.block;
 	int k;
 
-	if (started)
+	if (started || !at)
 		return;
 	started = 1;
-	pool = memalign(64, POOL_BYTES);
-	if (!pool)
-		return;
-	music.pool = pool;
-	dec.pool_next = pool;
-	pool_end = pool + POOL_BYTES;
-	/* the voices' windows and queues off the heap, not the codec's pool */
+	music.pool = at;
+	dec.pool_next = at;
+	pool_end = at + POOL_BYTES;
+	at += POOL_BYTES;
+	/* the voices' windows and queues apart from the codec's pool */
 	for (k = 0; k < VOICES; k++)
 	{
-		music.voices[k] = memalign(64, sizeof(struct voice));
-		if (music.voices[k])
-			memset(music.voices[k], 0, sizeof(struct voice));
+		music.voices[k] = (struct voice *)at;
+		memset(music.voices[k], 0, sizeof(struct voice));
+		music.voices[k]->chain = music.voices[k]->data_chain = -1;
+		sceKernelDcacheWritebackRange(music.voices[k], sizeof(struct voice));
+		at += VOICE_BYTES;
 	}
+	music.tables = at;
 	music.state_lock = sceKernelCreateSema("music state", 0, 1, 1, NULL);
 	music.reader_wake = sceKernelCreateSema("music reader", 0, 0, 64, NULL);
 	music.io_lock = sceKernelCreateSema("music io", 0, 1, 1, NULL);
@@ -326,23 +358,27 @@ static void psp_music_map_open(const char *name, int wanted)
 
 	pack_close(NULL);
 	memset(music.stubs, 0, sizeof(music.stubs));
-	free(music.entries);
-	free(music.chains);
 	music.entries = NULL;
 	music.chains = NULL;
 	if (!wanted)
 		return;
-	start_once();
-	if (!dec.pool_next || music.out_channel < 0)
+	if (!music.block)
 	{
-		platform_log("music: no pool or no channel; off");
+		platform_log("music: the sound block had no room for the path; music plays from the cache");
 		return;
 	}
+	/* the pack first: a map without one starts nothing */
 	snprintf(path, sizeof(path), PSP_MAPS_ROOT "/%s.pmus", name);
 	music.file = sceIoOpen(path, PSP_O_RDONLY, 0);
 	if (music.file < 0)
 	{
 		platform_log("music: no %s.pmus; music plays from the cache this map", name);
+		return;
+	}
+	start_once();
+	if (!dec.pool_next || music.out_channel < 0)
+	{
+		pack_close("has no channel to play on");
 		return;
 	}
 	music.on = 1;
@@ -352,16 +388,27 @@ static void psp_music_map_open(const char *name, int wanted)
 		pack_close("isn't one this build reads (one setup, version 1, 44.1 kHz)");
 		return;
 	}
-	music.entries = malloc(music.header.entries * sizeof(struct pmus_entry));
-	music.chains = malloc(music.header.chains * sizeof(struct pmus_chain));
 	bytes = music.header.entries_at - 64;
-	setup = malloc(bytes);
-	if (!music.entries || !music.chains || !setup ||
-		!read_at(music.header.entries_at, music.entries, music.header.entries * sizeof(struct pmus_entry)) ||
+	{
+		/* the tables stay for the map; the setup after them only while it is read */
+		unsigned int entries = (music.header.entries * sizeof(struct pmus_entry) + 63) & ~63u;
+		unsigned int chains = (music.header.chains * sizeof(struct pmus_chain) + 63) & ~63u;
+
+		if (music.header.entries_at < 64 || entries + chains + bytes > TABLE_BYTES)
+		{
+			platform_log("music: %s.pmus needs %u KB of tables and setup, the path has %u", name,
+				(entries + chains + bytes) / 1024, TABLE_BYTES / 1024);
+			pack_close("is larger than this build's tables");
+			return;
+		}
+		music.entries = (struct pmus_entry *)music.tables;
+		music.chains = (struct pmus_chain *)(music.tables + entries);
+		setup = music.tables + entries + chains;
+	}
+	if (!read_at(music.header.entries_at, music.entries, music.header.entries * sizeof(struct pmus_entry)) ||
 		!read_at(music.header.chains_at, music.chains, music.header.chains * sizeof(struct pmus_chain)) ||
 		!read_at(64, setup, bytes))
 	{
-		free(setup);
 		pack_close("couldn't be read");
 		return;
 	}
@@ -382,7 +429,6 @@ static void psp_music_map_open(const char *name, int wanted)
 		}
 		if (keys != music.header.keys)
 		{
-			free(setup);
 			pack_close("doesn't match its own keys");
 			return;
 		}
@@ -412,14 +458,12 @@ static void psp_music_map_open(const char *name, int wanted)
 		}
 		if (k < 3)
 		{
-			free(setup);
 			vorbis_info_clear(&music.info);
 			memset(&music.info, 0, sizeof(music.info));
 			pack_close("has a codec setup Tremor refused");
 			return;
 		}
 	}
-	free(setup);
 	platform_log("music: %s.pmus: %u permutations in %u chains; pool %u KB used", name, music.header.entries,
 		music.header.chains, (unsigned)(dec.pool_next - (pool_end - POOL_BYTES)) / 1024);
 }
@@ -589,9 +633,11 @@ static int reader_thread(SceSize arguments, void *argument)
 			SceUInt64 t;
 			int p;
 
-			if (!v || !v->owner)
+			/* the chain its data is for: the decoder's own may be -1 while it
+			waits to start again, and its bytes are still wanted */
+			if (!v || !v->owner || v->data_chain < 0 || v->data_chain >= (int)music.header.chains)
 				continue;
-			c = &music.chains[v->chain];
+			c = &music.chains[v->data_chain];
 			t = sceKernelGetSystemTimeWide();
 			if (v->index_wanted != v->index_first || !v->index_count)
 			{
@@ -692,6 +738,12 @@ static int decode_to(struct voice *v, unsigned int until)
 			isn't the overlap the position needs */
 			v->next_offset += size;
 			v->next_packet++;
+			/* past both pieces: the reader moves to the one this packet is in */
+			if (v->next_offset >= v->piece_wanted + 2 * PIECE_BYTES)
+			{
+				v->piece_wanted = v->next_offset & ~(PIECE_BYTES - 1);
+				dec.wake = 1;
+			}
 			continue;
 		}
 		data = packet_bytes(v, v->next_offset, size);
@@ -761,6 +813,25 @@ static void voice_seek(struct voice *v, int chain, unsigned int position)
 	const struct pmus_entry *best = NULL;
 	unsigned int e, offset;
 
+	if (v->dsp_ready && v->data_chain == chain && v->chain == chain && position >= v->position &&
+		v->next_packet > v->index_first && v->next_packet <= v->index_first + v->index_count)
+	{
+		/* on in the same chain: the decoder starts again a packet back (the
+		overlap the position needs), and the index and pieces it has stay */
+		if (!v->primed)
+		{
+			v->next_packet--;
+			v->next_offset -= v->index[v->next_packet - v->index_first][0];
+		}
+		vorbis_synthesis_restart(&v->dsp);
+		v->position = position;
+		v->primed = 1;
+		v->pcm_frames = 0;
+		v->fade = 0;
+		dec.restarts++;
+		dec.wake = 1;
+		return;
+	}
 	/* the entry of this chain that holds the position: its first packet's
 	byte offset is the stub's, walked on through the index if need be */
 	for (e = 0; e < music.header.entries; e++)
@@ -793,9 +864,14 @@ static void voice_seek(struct voice *v, int chain, unsigned int position)
 	v->primed = 1;
 	v->pcm_frames = 0;
 	v->index_wanted = v->next_packet;
-	v->index_count = 0;
 	v->piece_wanted = offset & ~(PIECE_BYTES - 1);
-	v->piece_ok[0] = v->piece_ok[1] = 0;
+	if (v->data_chain != chain)
+	{
+		/* another chain's bytes: the reader reads this one's */
+		v->index_count = 0;
+		v->piece_ok[0] = v->piece_ok[1] = 0;
+		v->data_chain = chain;
+	}
 	v->fade = 0;
 	dec.restarts++;
 	dec.wake = 1;
@@ -849,7 +925,7 @@ void psp_music_own(void)
 		if (music.voices[k])
 		{
 			sceKernelDcacheWritebackInvalidateRange(music.voices[k], sizeof(struct voice));
-			music.voices[k]->chain = -1;
+			music.voices[k]->chain = music.voices[k]->data_chain = -1;
 		}
 }
 
@@ -877,14 +953,17 @@ void psp_music_decode(const void *const *owners, const int *chains, const unsign
 		if (!v || to[k] <= from[k])
 			continue;
 		v->used = 0;
-		if (v->chain != chains[k] || from[k] < v->position || from[k] > v->position + v->pcm_frames)
+		/* a gap the queue can hold is decoded through and dropped below, so
+		the decoder keeps its step: after a late block, or a skip the game made */
+		if (v->chain != chains[k] || from[k] < v->position || to[k] - v->position > PCM_FRAMES / 2)
 			voice_seek(v, chains[k], (unsigned int)from[k]);
 		if (v->chain != chains[k] || !decode_to(v, (unsigned int)to[k]))
 		{
-			/* late: silent this block; the next block starts it again from
-			the packet before its position, with the fade */
+			/* late: silent this block, its place kept, so the bytes the
+			reader is fetching are the ones the next block decodes; it fades
+			back in */
 			dec.late_blocks++;
-			v->chain = -1;
+			v->fade = 0;
 			continue;
 		}
 		playing++;

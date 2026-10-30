@@ -6,8 +6,10 @@ copy to the Memory Stick. Nothing from the game is included here.
 
 ## What you need
 
-- **A computer:** Windows 10 or 11 (x86-64), macOS 11 or later (Apple silicon
-  or Intel), or Linux (x86-64, any distribution from 2018 on).
+- **A computer:** Windows 10 or 11 (x86-64), or Linux (x86-64) with glibc 2.39
+  or later (Ubuntu 24.04, Debian 13, Fedora 40, a current rolling release). A
+  macOS bundle comes with a release only when its notes list one (b143 has
+  none).
 - **An image of your Halo disc:** NTSC (USA), version 01.10.12.2276, the one
   the build was made for (the bake checks every map). A bare game-partition
   image (what most Xbox dumping tools and extract-xiso make), a full Redump
@@ -17,13 +19,17 @@ copy to the Memory Stick. Nothing from the game is included here.
   bundle.
 - **Free disk space:** the bake says how much before it starts, and stops if
   there isn't enough (about 8 GB). The result is about 2.2 GB for the
-  campaign and the menus, 2.9 GB with the multiplayer maps. <!-- TODO(master): the 8 GB peak is still an estimate; no bake has measured it. Results measured: b139c 2.21 GB, b139e (24 maps) 2.88 GB -->
+  campaign and the menus, 2.9 GB with the multiplayer maps.
 - **The internet, the first time:** the bake fetches its Python libraries
   (numpy, Pillow, shapely, about 30 MB). Python itself it uses from your
   computer if it has 3.9 to 3.14; if not, it offers to download a portable
   Python 3.12 (python-build-standalone's official release, about 25 to 35 MB,
   checked against the SHA-256 the bake carries) into `.python` in this folder.
-  Nothing is installed anywhere else.
+  Nothing is installed anywhere else. The bake keeps what it makes (palettes
+  and re-encoded sounds) in your user cache folder, `halo-psp-bake` in
+  `%LOCALAPPDATA%` on Windows, `~/Library/Caches` on macOS, `~/.cache` on
+  Linux, so baking a new release takes minutes instead of the full time. It
+  says where and how big; deleting it is always safe.
 
 ## Bake in four steps
 
@@ -71,6 +77,25 @@ bakes the thirteen multiplayer maps too, and makes that build's menu sound.
 To bake again (a new release), put the new zip in step 2 and double-click
 again: `COPY-TO-MEMORY-STICK` is made afresh each time. On the stick, delete
 `halo/maps` before you copy the new one in, so no old pack is left behind.
+
+## Which disc image it was made from
+
+Every bake fingerprints what it reads and says so at the start of its log, then writes the same lines into `halo/bake.txt` beside the format stamp:
+
+- the disc image's name, size, and hashes of the whole file (SHA-1, MD5, CRC32, as the disc-preservation databases list them);
+- `default.xbe`'s SHA-256 and the title's own record in it: title id, name, version, regions and disc number;
+- how many of the maps are the retail ones this release knows (`hashes.json`);
+- whether the image is one the releases were tested with (`tested_images.json`).
+
+It never refuses an image for this. An image nobody has tested still bakes; the log and the stamp just say it isn't on the tested list. If something looks wrong in play, send those lines with your report: they tell us which image it came from, so problems can be traced to the images that cause them.
+
+**Tested with:** the images in `tested_images.json`, which each release fills in with the image it was baked from and tested on. So far one:
+
+| Image | default.xbe | Builds |
+|---|---|---|
+| Halo - Combat Evolved (USA) (Rev 2), as an xiso: SHA-1 `bf3e1071bf8b7f0080cae86adc32b44233dbe8aa`, 3,625,713,664 bytes | title 4D530004 version 9, North America; SHA-256 `4094e994…d95aae` | b146 |
+
+An xiso is the disc's file system repacked, so its whole-file hashes are its own; the `default.xbe` lines are what match another copy of the same disc. A bake counts an image as tested when either matches.
 
 ## When it stops
 

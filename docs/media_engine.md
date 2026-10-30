@@ -17,7 +17,21 @@
    - **Outputs are whole 64-byte lines** (`memalign(64, …)`). A written-back line carries all 64 bytes, so a shared line would overwrite a neighbour's newer data.
 4. **Idle:** the ME reads the uncached words once every ~25 µs (2,000 `nop`s in between), so an idle ME puts almost nothing on the bus.
 5. **Stop** before HOME, quit, or sleep: set the stop flag, wait ≤100 ms for the acknowledgement, else hold the ME in reset through the kernel. The library's sleep handler holds it in reset too. After a stop every job runs on the main CPU. HOME flushes the log before and after the stop.
-6. **What job code may do:** integer and FPU work only. The ME has no VFPU, and job code makes no system calls and no library calls; `mewalk.py` checks the reachable code from the job entry points (0 flagged in b87). The compiler is told not to turn loops into `memset`/`memcpy` calls (`no-tree-loop-distribute-patterns`).
+6. **What job code may do:** integer and FPU work only. The ME has no VFPU, and job code makes no system calls, no allocation and no I/O. `mewalk.py` checks the reachable code from the job entry points (0 flagged in b87). The compiler is told not to turn loops into `memset`/`memcpy` calls (`no-tree-loop-distribute-patterns`).
+   - **Pure library code is allowed** (settled 2026-10-30, hardware; sierra-build 41034892327, `mewalk.py --list` from `meLibOnProcess`). That means libm's float functions and newlib's `mem*`/`str*` functions: code like ours, with no system call and no state of its own. The ME's jobs run it today [D]:
+     - the GE replay: `sinf`/`cosf` (widget sprites), `tanf` (model shapes), `acosf` (TAA), `logf` (level transparents), `floorf`, `truncf` (`sceGuTexLevelMode`), `memcpy`/`memset`/`memcmp`;
+     - the pose job: `memmove`;
+     - the perception rays' node-matrix settles: `fmod` and `floor`, both `double`, so slow there.
+
+     The same code on the same FPU gives the main CPU's bits.
+   - **Library code that isn't pure stays out:** `malloc`/`free`, the `printf` family and the log, `qsort`'s comparator calls when they reach any of these, and anything that takes a lock. That walk still reaches some through rare paths, each a hazard to close at its site:
+     - `malloc` from `psp_tex_bind` in `psp_ge_screen_quad`;
+     - `free` from `overlay_on_a_wall`;
+     - `vsnprintf` and the log from `ge_log`;
+     - `qsort` from `ge_reads_report`;
+     - `psp_keep`'s string search from `psp_ge_widget_sprite` (its first call).
+
+     A job that reaches one at run time is broken, not merely slow.
 
 Once taken, the ME stays the game's until the PSP reboots, so XMB music and video are off until then. **Sleep/wake with the ME running is untested** (a separate pass, by Sheepdog01's decision).
 
@@ -56,7 +70,7 @@ Two jobs shaped like the renderer's costliest CPU steps:
 
 With `meclassify`, each level draw runs both jobs on the ME after the main CPU's own work. Then the **same function runs again on the main CPU**, with the data first flushed out of its cache, as the ME's is at the start of a job.
 - The log line `GE: ME measure (meclassify): …` gives, per job, the ME's code time per vertex or triangle against the main CPU's, both starting cold, and the answers that differ.
-- **That is the like-for-like number** that decides any offload. If the ME is about as fast as the main CPU, splitting a draw between them pays; if it is twice as slow (as b86's audio hinted), the ME can take about a third of the work.
+- **That is the like-for-like number** that decides any offload. If the ME is about as fast as the main CPU, splitting a draw between them pays; if it is twice as slow (as b86's audio hinted), the ME can take about a third of the work. (Answered below, b90 run 3: as fast as the main CPU [M].)
 - **It costs frame time while on**, because the main CPU waits and repeats the work. It is an instrument, not a speed-up.
 - [S: both jobs 0 differing answers over ~900,000 vertices and ~950,000 triangles. ]
 
@@ -88,7 +102,7 @@ Lower on the list:
 - Collision rays for sound obstruction and AI (the larger prize named in `audio.md` §6.4, but the collision code would have to run self-contained on the ME: a big port).
 - Particles.
 
-**Decision point:** `meclassify` on hardware gives the ME's speed on exactly these two jobs. If the ME's own time per triangle is near the main CPU's, build option 1 first, behind a switch, and measure it with benchrun.
+**Decision point (settled, next section):** `meclassify` on hardware gives the ME's speed on exactly these two jobs. If the ME's own time per triangle is near the main CPU's, build option 1 first, behind a switch, and measure it with benchrun.
 
 ## The ME's speed, measured (b90 run 3) [M]
 

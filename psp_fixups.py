@@ -38,6 +38,19 @@ static boolean psp_animation_valid = FALSE;
 along the view, for its parts' reflections (psp_ge.c, psp_ge_model_reflection) */
 static real_argb_color psp_reflection_tint;
 static real psp_model_camera_distance = 0.0f;
+/* which of Chief's parts the part being drawn is (1 his visor, 2 his armour
+or hands, 0 none): set with its reflection, read by its detail map */
+static int psp_chief_part = 0;
+/* a model's distance along the view: models.c's rso works it out the same way,
+to check a kept reflection's fade (psp_ge.c, rso) */
+real psp_model_distance_along_view(real const *point)
+{
+	real_point3d const *centroid = (real_point3d const *)point;
+
+	return (centroid->x - global_window_parameters.camera.position.x) * global_window_parameters.camera.forward.i +
+		(centroid->y - global_window_parameters.camera.position.y) * global_window_parameters.camera.forward.j +
+		(centroid->z - global_window_parameters.camera.position.z) * global_window_parameters.camera.forward.k;
+}
 unsigned int psp_tex_bitmap_key(long tag_index, int bitmap);
 int psp_tex_bitmap_count(long tag_index);
 
@@ -307,10 +320,7 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 		if (psp_animation_valid)
 			csmemcpy(psp_animation_values, parameters->animation.values, sizeof(psp_animation_values));
 		psp_reflection_tint = lighting->reflection_tint_color;
-		psp_model_camera_distance =
-			(parameters->centroid.x - global_window_parameters.camera.position.x) * global_window_parameters.camera.forward.i +
-			(parameters->centroid.y - global_window_parameters.camera.position.y) * global_window_parameters.camera.forward.j +
-			(parameters->centroid.z - global_window_parameters.camera.position.z) * global_window_parameters.camera.forward.k;
+		psp_model_camera_distance = psp_model_distance_along_view(&parameters->centroid.x);
 		psp_unique_identifier = parameters->unique_identifier;
 		psp_change_colors_valid = parameters->animation.colors != NULL;
 		if (psp_change_colors_valid)
@@ -332,6 +342,7 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 		/* once the GE draws, a model part's static geometry goes to it, in a
 		warm flat color per shader (psp_fixups.py) */
 		extern int psp_ge_active(void);
+		extern int psp_rso_volatile;
 		extern boolean psp_model_draw(struct triangle_buffer const *, long, struct vertex_buffer const *, unsigned int,
 			unsigned int, float, float, int);
 		extern unsigned int psp_tex_bitmap_key(long, int);
@@ -415,6 +426,10 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 				short glow_source = *(short const *)(definition + 112);
 				int channel;
 
+				/* the glow follows the time only where its two colours differ:
+				only then are the records not kept (psp_ge.c, rso) */
+				if (lower[0] != upper[0] || lower[1] != upper[1] || lower[2] != upper[2])
+					psp_rso_volatile |= 1;
 				for (channel = 0; channel < 3; channel++)
 					glow[channel] = lower[channel] + (upper[channel] - lower[channel]) * fraction;
 				if (glow_source >= 1 && glow_source <= 4 && psp_change_colors_valid)
@@ -439,7 +454,12 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 				and +344 */
 				extern void psp_ge_model_reflection(unsigned int cube_key, float const *rgb);
 				long cube = model_shader ? *(long const *)(definition + 368) : NONE;
-				float reflection[3] = { 0.0f, 0.0f, 0.0f };
+
+				psp_chief_part = 0;
+				/* the strength, then which of Chief's parts this shader is
+				(1 his visor, 2 his armour, 0 none): the centerpiece gets
+				passes of its own (psp_ge.c, chiefvisor) */
+				float reflection[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
 
 				if (cube != NONE)
 				{
@@ -450,8 +470,11 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 
 					if (cutoff != 0.0f && falloff != cutoff)
 					{
-						fraction = (psp_model_camera_distance - cutoff) / (falloff - cutoff);
-						fraction = fraction < 0.0f ? 0.0f : fraction > 1.0f ? 1.0f : fraction;
+						/* by the camera's distance: psp_ge.c works it out, and rso
+						checks it again before sending a kept walk */
+						extern float psp_rso_fade(float distance, float cutoff, float falloff);
+
+						fraction = psp_rso_fade(psp_model_camera_distance, cutoff, falloff);
 					}
 					brightness = fraction * 0.5f * (*(float const *)(definition + 324) + *(float const *)(definition + 340)) *
 						psp_reflection_tint.alpha;
@@ -459,14 +482,81 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 						reflection[channel] = brightness * 0.5f * (perpendicular[channel] + parallel[channel]) *
 							(&psp_reflection_tint.red)[channel];
 				}
+				if (cube != NONE)
+				{
+					/* Chief's parts by their shaders' names, once a shader a map:
+					the name is looked up through the shader tags */
+					extern int psp_map_generation;
+					extern char const *psp_shader_tag_name(void const *shader);
+					static void const *chief_shader[64];
+					static signed char chief_kind[64];
+					static int chief_count = 0, chief_generation = -1;
+					int k, kind = -1;
+
+					if (chief_generation != psp_map_generation)
+					{
+						chief_generation = psp_map_generation;
+						chief_count = 0;
+					}
+					for (k = 0; k < chief_count; k++)
+						if (chief_shader[k] == definition)
+						{
+							kind = chief_kind[k];
+							break;
+						}
+					if (kind < 0)
+					{
+						char const *name = psp_shader_tag_name(definition);
+
+						kind = !name ? 0 : !strcmp(name, "characters\\\\cyborg\\\\shaders\\\\visor") ? 1 :
+							!strncmp(name, "characters\\\\cyborg\\\\", 18) ? 2 : 0;
+						if (chief_count < 64)
+						{
+							chief_shader[chief_count] = definition;
+							chief_kind[chief_count++] = (signed char)kind;
+						}
+						if (kind > 0)
+							platform_log("chief: %s is Chief's %s (map load %d)", name, kind == 1 ? "visor" : "armour", psp_map_generation);
+					}
+					reflection[3] = (float)kind;
+					psp_chief_part = kind;
+				}
 				psp_ge_model_reflection(cube != NONE ? psp_tex_bitmap_key(cube, 0) : 0, reflection);
+				if (cube != NONE && PSP_KEEP_ONCE("refldump"))
+				{
+					/* each shiny shader once a map: which part is which (Chief's
+					visor against his armour), and the strengths that pick them */
+					extern char const *psp_shader_tag_name(void const *shader);
+					static void const *dumped[64];
+					static int dumped_count = 0;
+					int k;
+
+					for (k = 0; k < dumped_count && dumped[k] != definition; k++)
+						;
+					if (k == dumped_count && dumped_count < 64)
+					{
+						char const *name = psp_shader_tag_name(definition);
+
+						dumped[dumped_count++] = definition;
+						platform_log("refldump: %s reflection %.3f %.3f %.3f (brightness %.2f / %.2f, tint %.2f %.2f %.2f / %.2f %.2f %.2f, the lighting's %.2f %.2f %.2f x %.2f) multipurpose %s",
+							name ? name : "(no tag)", reflection[0], reflection[1], reflection[2],
+							*(float const *)(definition + 324), *(float const *)(definition + 340),
+							((float const *)(definition + 328))[0], ((float const *)(definition + 328))[1], ((float const *)(definition + 328))[2],
+							((float const *)(definition + 344))[0], ((float const *)(definition + 344))[1], ((float const *)(definition + 344))[2],
+							psp_reflection_tint.red, psp_reflection_tint.green, psp_reflection_tint.blue, psp_reflection_tint.alpha,
+							multipurpose != NONE ? "yes" : "none");
+					}
+				}
 			}
 			/* on the main menu, the detail map itself over the base that holds
 			its average (psp_ge.c, model_detail_pass): shaders with the double
 			multiply and no mask, whose folded base the pack has. Its scale is
 			on the base map's coordinates, v by the v scale too, as the Xbox's
 			vertex constants have it (rasterizer_xbox_models.c) */
-			if (psp_showcase_map)
+			/* "chiefdetail": Chief's armour too, the centerpiece in every
+			level, as the ring is on the menu; every other
+			part then sends none, so his detail map never carries over */
+			if (psp_showcase_map || PSP_KEEP_ONCE("chiefdetail"))
 			{
 				extern void psp_ge_model_detail(unsigned int, float, float);
 				long detail = model_shader ? *(long const *)(definition + 232) : NONE;
@@ -477,7 +567,8 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 					scale = 1.0f;
 				if (v_detail == 0.0f)
 					v_detail = 1.0f;
-				psp_ge_model_detail(detail != NONE && (base_key & 1) && *(short const *)(definition + 212) == 0 &&
+				psp_ge_model_detail((psp_showcase_map || psp_chief_part == 2) &&
+					detail != NONE && (base_key & 1) && *(short const *)(definition + 212) == 0 &&
 					*(short const *)(definition + 214) == 0 ? psp_tex_bitmap_key(detail, 0) : 0,
 					(u_scale ? u_scale : 1.0f) * scale, (v_scale ? v_scale : 1.0f) * scale * v_detail);
 			}
@@ -495,6 +586,7 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 			psp_model_draw_us[2]++;
 			if (drawn)
 				return;
+			psp_rso_volatile |= 2; /* the Xbox path: nothing the rso keeps (psp_ge.c) */
 		}
 	}
 #endif
@@ -578,6 +670,45 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 				}
 			psp_ge_level_detail(keys[0], scales[0][0], scales[0][1], keys[1], scales[1][0], scales[1][1]);
 		}
+		{
+			/* its self-illumination (shader_environment's properties at +384: the
+			colours at +412 and +424, the function at +436, the period and phase at
+			+440 and +444, the secondary's the same 60 bytes on; the map's index at
+			+608; texpack.py, level_glow_looks): the two colours its map's red and
+			green weigh, each between its off and on colour by a periodic function
+			of (time + phase) / period, as the Xbox works them out
+			(rasterizer_xbox_environment.c). The glow maps are under the shader's
+			address | 2 and | 3. A draw after a lit one clears them */
+			extern void psp_ge_level_glow(unsigned int, float const *, unsigned int, float const *);
+			extern real periodic_function_evaluate(short, real);
+			static int live = 0;
+			char const *definition = (char const *)shader;
+			float colours[2][3] = { { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f } };
+			int lit = shader && *(short const *)(definition + 36) == 3 && *(long const *)(definition + 608) != NONE;
+
+			if (lit)
+			{
+				int which, channel;
+
+				for (which = 0; which < 2; which++)
+				{
+					float const *on = (float const *)(definition + 412 + 60 * which), *off = on + 3;
+					float period = *(float const *)(definition + 440 + 60 * which);
+					float value;
+
+					if (period == 0.0f)
+						continue;
+					value = periodic_function_evaluate(*(short const *)(definition + 436 + 60 * which),
+						(global_frame_parameters.game_time_sec + *(float const *)(definition + 444 + 60 * which)) / period);
+					for (channel = 0; channel < 3; channel++)
+						colours[which][channel] = off[channel] + (on[channel] - off[channel]) * value;
+				}
+			}
+			if (lit || live)
+				psp_ge_level_glow(lit ? (unsigned int)definition | 2 : 0, colours[0],
+					lit ? (unsigned int)definition | 3 : 0, colours[1]);
+			live = lit;
+		}
 #ifdef PSP_DEBUG_TOOLS
 		{
 			/* "sdump" names the shader of what it lists (psp_ge.c) */
@@ -613,11 +744,13 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 
 		if (psp_ge_active())
 		{
+			extern int psp_rso_volatile;
 			float u_scale, v_scale, u_offset, v_offset;
 			short blend;
 			unsigned int key = psp_transparent_map(shader, shader_permutation_index, TRUE, &u_scale, &v_scale,
 				&u_offset, &v_offset, &blend);
 
+			psp_rso_volatile |= 4; /* a see-through part, drawn by the frame's time and order: not kept (psp_ge.c, rso) */
 			if (sort_filth)
 				*(short *)((char *)sort_filth + 8) = NONE;
 			if (key && dynamic_triangle_buffer_index == NONE && dynamic_vertex_buffer_index == NONE)
@@ -1020,6 +1153,12 @@ static void *allocate_resource_memory(unsigned long size)
 
 						psp_phase(2);
 						main_game_render((double)main_globals.seconds_elapsed);
+						{
+							/* the main menu's veil, before the frame's end (psp_loading.c) */
+							extern void psp_loading_boot_veil(void);
+
+							psp_loading_boot_veil();
+						}
 						psp_frame_account(psp_heartbeat_clock() - psp_start);
 					}
 #else
@@ -1682,11 +1821,23 @@ if os.environ.get("PSP_TICK_STEPS", "") == "1":
                                          # perception's own parts: which of them the line of sight is
                                          ("void prop_position_refresh(", None),
                                          ("static void actor_perception_refresh_danger_zone(", None)],
-        "source/objects/objects.c": [("static boolean object_update(", None)],
+        # objects_update too: object_update's last call for bipeds and vehicles
+        # is the accounting, so without markers in the loop that step held the
+        # loop's own work (on-demand node matrices, attachments, the next
+        # object's set-up) under the accounting's name
+        "source/objects/objects.c": [("static boolean object_update(", None), ("void objects_update(", None)],
     })
     # prop_status_refresh's calls are assignments, which the call pattern
     # can't see: labelled steps split it instead
     STEP_LABELS_TICK = {
+        # HOIST writes these calls as "psp_hoist ? f_with(...) : f(...)", which
+        # the per-call markers don't see, so their time went to the step before
+        # them (an accounting call): labelled here instead
+        "source/objects/objects.c": [
+            ("\t\t\t\tpsp_hoist ? object_compute_node_matrices_with(object_index, object, object_definition) : object_compute_node_matrices(object_index);\n",
+             "object_compute_node_matrices", "before"),
+            ("#ifdef HALO_PSP\n\t\t\tif (!psp_lights_defer(object_index))", "object_connect_lights", "before"),
+        ],
         "source/ai/actor_perception.c": [
             ("\t\tprop->ignore = TEST_FLAG(unit->unit.flags, _unit_ignored_by_actors_bit);\n",
              "prop_status_refresh: start", "before"),
@@ -1708,6 +1859,24 @@ if os.environ.get("PSP_TICK_STEPS", "") == "1":
              "prop_status_refresh: end", "before"),
             ("\t\tswitch (prop->state)\n\t\t{\n\t\tcase _prop_state_unacknowledged:\n",
              "actor_perception_update: prop state", "before"),
+        ],
+        # d20's particles_update step is 5.3-7.9 ms a frame on the PSP and
+        # 1.4-3.3 in the emulator (api-job 40104742872): which part holds it
+        "source/effects/particles.c": [
+            ("\t\tif (psp_points_begin())\n", "particles_update: points listed for the ME", "before"),
+            ("\t\t\tpsp_points_hand_over();\n\t\t}\n\t}\n#endif\n", "particles_update: the particle loop", "after"),
+            ("\tprofile_exit(particles_update_section);\n", "particles_update: end", "before"),
+        ],
+        "source/effects/contrails.c": [
+            ("\t\tpsp_points_end();\n", "contrails_update: the ME's points collected", "before"),
+        ],
+        "source/effects/effects.c": [
+            ("\tboolean visible;\n\tshort iteration_index;\n", "effect_update: its own work", "after"),
+            ("\t\t\t\tobject_impulse_sound_new(\n", "effect_update: object sound", "before"),
+            ("\t\t\t\tunattached_impulse_sound_new(\n", "effect_update: unattached sound", "before"),
+            ("\t\t\tdecal_new(\n", "effect_update: decal", "before"),
+            ("\t\t\tarea_of_effect_cause_damage(&damage, NONE);\n", "effect_update: area damage", "before"),
+            ("\t\t\t\t\tparticle_new(&data);\n", "effect_update: particle new", "before"),
         ],
     }
     # build 106: an object's lighting as it is drawn (b30's beach: 7-10 ms a
@@ -1841,6 +2010,25 @@ def step_call(match):
         return match.group(0)
     return '%s(PSP_STEP("%s"), %s(%s));' % (match.group(1), match.group(2), match.group(2), match.group(3))
 
+# A step runs from its marker to the next, and markers go before calls made
+# as statements: a call inside a conditional expression ("a ? f() : g()", as
+# HOIST writes its calls) gets none, so its time is booked to whatever step
+# came before it. Named in the build log so a split can be read with that in
+# mind, or the call given a label (STEP_LABELS). Short helpers are left out
+UNMARKED = re.compile(r"[?:]\s*\(?\s*([a-z_][a-z0-9_]{5,})\s*\(")
+UNMARKED_IGNORE = {"psp_microseconds", "object_get", "object_definition_get", "datum_get", "unit_get", "biped_get",
+                   "actor_get", "prop_get", "sizeof", "magnitude3d", "magnitude_squared3d", "normalize3d", "dot_product3d"}
+
+def unmarked_calls(body):
+    found = []
+    for line in body.split("\n"):
+        if "PSP_STEP(" in line or line.lstrip().startswith(("//", "/*", "*", "#")):
+            continue
+        for m in UNMARKED.finditer(line):
+            if m.group(1) not in UNMARKED_IGNORE and m.group(1) not in found:
+                found.append(m.group(1))
+    return found
+
 def breadcrumbs(tree):
     changed = 0
     for rel, functions in STEPS.items():
@@ -1852,7 +2040,12 @@ def breadcrumbs(tree):
             start, end = definition(text, function)
             if stop:
                 end = text.index(stop, start)
-            text = text[:start] + CALL.sub(step_call, text[start:end]) + text[end:]
+            body = CALL.sub(step_call, text[start:end])
+            unseen = unmarked_calls(body)
+            if unseen:
+                print("psp_fixups: steps: %s %s: calls the markers don't see (their time goes to the step before, unless STEP_LABELS gives them one): %s"
+                      % (rel, function.split("(")[0].split()[-1], ", ".join(unseen)))
+            text = text[:start] + body + text[end:]
         open(path, "w", errors="surrogateescape").write(declare_step(text))
         changed += 1
     for rel, lines in STEP_LINES.items():
@@ -1884,7 +2077,11 @@ when the map keeps them outside the tags (psp_geo.c), from the tags
 otherwise; NULL when the cache hasn't read them yet, and the draw is left
 for a frame */
 void *psp_vertex_lock(const struct vertex_buffer *buffer);
+void *psp_vertex_lock_raw(const struct vertex_buffer *buffer);
 void *psp_index_lock(const struct triangle_buffer *buffer);
+/* psp_ge.c (rso): a kept walk's buffers, as its parts are locked */
+extern int psp_rso_capturing;
+void psp_rso_geometry(const void *vertex_buffer, const void *triangle_buffer);
 void *psp_level_vertices(const struct vertex_buffer *buffer);
 void *psp_geo_lock(unsigned int address, unsigned int size);
 unsigned int psp_geo_level_stride(void);
@@ -2080,7 +2277,9 @@ void psp_ge_transparent(
 			vertex_buffer->type != _rasterizer_vertex_type_model_uncompressed))
 		return;
 	strip = triangle_buffer->type == _triangle_buffer_type_precompiled_strip;
-	vertices = psp_vertex_lock(vertex_buffer);
+	/* the raw buffer: the see-through queue converts its own rigid records
+	(a baked block holds the opaque draw's) */
+	vertices = psp_vertex_lock_raw(vertex_buffer);
 	if (!vertices)
 		{ psp_geometry_missing(); return; }
 	indices = psp_index_lock(triangle_buffer);
@@ -2115,6 +2314,8 @@ boolean psp_model_draw(
 	indices = psp_index_lock(triangle_buffer);
 	if (!indices)
 		return psp_geometry_missing();
+	if (psp_rso_capturing)
+		psp_rso_geometry(vertex_buffer, triangle_buffer);
 	psp_ge_draw_model(vertices, vertex_buffer->count, vertex_buffer->type == _rasterizer_vertex_type_model_uncompressed,
 		(const unsigned short *)indices, strip ? triangle_count + 2 : 3 * triangle_count, strip, color, base_key,
 		u_scale, v_scale, alpha_tested);
@@ -2197,6 +2398,21 @@ void psp_player_teleport(float x, float y, float z, float fx, float fy, float fz
 
 	if (unit_index == NONE)
 		return;
+	/* a seated unit's position is its seat's offset, so a spot written
+	there was read from the seat: a10's cryo pod held Chief 56 units off and
+	he vanished leaving it (B32, a route's spot at 228.5 s). The spot is
+	where the tester stood; seated, he stood nowhere */
+	if (object_get(unit_index)->object.parent_object_index != NONE)
+	{
+		static int psp_seated_logged = 0;
+
+		if (!psp_seated_logged)
+		{
+			psp_seated_logged = 1;
+			platform_psp_log("teleport: a spot passed over while the player is seated (game time %ld)", game_time_get());
+		}
+		return;
+	}
 	position.x = x; position.y = y; position.z = z;
 	facing.i = fx; facing.j = fy; facing.k = fz;
 	object_set_position(unit_index, &position, NULL, NULL);
@@ -2981,7 +3197,8 @@ def skipped_passes(tree):
     for rel, functions in SKIPPED_PASSES.items():
         path = os.path.join(tree, rel)
         text = open(path, errors="surrogateescape").read()
-        if "psp_ge_active()" in text:
+        # its own mark, not any psp_ge_active() call: a fixup may call it too
+        if "return; /* the GE draws the level (psp_fixups.py) */" in text:
             continue
         for function in functions:
             header = "\nvoid %s(\n\tvoid)\n{\n" % function
@@ -5239,7 +5456,17 @@ static boolean psp_state_read_words(HANDLE handle, byte *buffer, unsigned long s
 	byte const *map = (byte const *)&header[4], *in;
 	unsigned short const *counts;
 	byte *entry;
+	/* the entry's copy in the checkpoint stage, which no write is using
+	while a saved game is read: from the heap it failed whenever the heap
+	was full (as it is late in a level), and it was asked for after the
+	stream had been read over the game state's tail, so the refused read
+	left a broken game state that the map's restart then crashed on (a
+	data array's elements at a garbage address). "stateentrymalloc": from
+	the heap, as before */
+	static int entry_from_heap = -1;
 
+	if (entry_from_heap < 0)
+		entry_from_heap = psp_keep("stateentrymalloc");
 	csmemcpy(header, first, PSP_STATE_HEADER);
 	if (16 + PSP_STATE_MAP_BYTES(pages) + 2 * pages > PSP_STATE_WORDS_HEADER ||
 		!ReadFile(handle, (byte *)header + PSP_STATE_HEADER, PSP_STATE_WORDS_HEADER - PSP_STATE_HEADER, &read, NULL) ||
@@ -5249,7 +5476,8 @@ static boolean psp_state_read_words(HANDLE handle, byte *buffer, unsigned long s
 	counts = PSP_STATE_COUNTS(header, pages);
 	if (stream > size || (stream && (!ReadFile(handle, buffer + size - stream, stream, &read, NULL) || read != stream)))
 		return FALSE;
-	entry = (byte *)malloc(PSP_STATE_PAGE);
+	entry = entry_from_heap ? (byte *)malloc(PSP_STATE_PAGE) :
+		(byte *)(((unsigned long)psp_state_stage_reserved + 63) & ~63UL);
 	if (!entry)
 		return FALSE;
 	in = buffer + size - stream;
@@ -5266,7 +5494,8 @@ static boolean psp_state_read_words(HANDLE handle, byte *buffer, unsigned long s
 		bytes = psp_state_entry_bytes(counts[page]);
 		if (in + bytes > buffer + size || in < (byte const *)out)
 		{
-			free(entry);
+			if (entry_from_heap)
+				free(entry);
 			return FALSE;
 		}
 		if (counts[page] >= PSP_STATE_RAW_ABOVE)
@@ -5285,7 +5514,8 @@ static boolean psp_state_read_words(HANDLE handle, byte *buffer, unsigned long s
 				set += (unsigned long)__builtin_popcountl(((unsigned long const *)entry)[w]);
 			if (set != counts[page])
 			{
-				free(entry);
+				if (entry_from_heap)
+					free(entry);
 				return FALSE;
 			}
 			for (w = 0; w < PSP_STATE_PAGE_WORDS; w++)
@@ -5293,7 +5523,8 @@ static boolean psp_state_read_words(HANDLE handle, byte *buffer, unsigned long s
 		}
 		in += bytes;
 	}
-	free(entry);
+	if (entry_from_heap)
+		free(entry);
 	return in == buffer + size;
 }
 
@@ -6302,6 +6533,42 @@ void psp_dynamic_triangles_release(
 	if (dynamic_triangle_buffer_index == dynamic_triangles.buffer_count - 1)
 		dynamic_triangles.buffer_count--;
 }
+
+/* geshow2: the GE may still draw the last frame's triangles while this
+frame's walk asks for its own, so under geshow2 the frames take the index
+buffer from its two ends in turn (psp_ge_triangle_ring): one frame from the
+start up, as the engine lays it out, the next from the end down. A range that
+would reach the last frame's waits for its show. A frame never wraps, so its
+whole room is the engine's (a ring's tail left at a wrap overflowed a10's
+fullest frames), and dynamic_triangles.triangle_count stays the frame's own
+use for the engine's overflow test. One window a frame only: a second
+window's walk would rewrite the first's before its show, as the engine's
+reset does */
+extern int psp_ge_triangle_ring(void);
+extern void psp_ge_triangles_wait(void);
+static int psp_ring_on = 0, psp_ring_down = 0;
+static long psp_ring_kept = 0;
+
+static void psp_ring_begin(void)
+{
+	psp_ring_on = psp_ge_triangle_ring() && main_get_window_count() == 1;
+	psp_ring_kept = psp_ring_on ? dynamic_triangles.triangle_count : 0;
+	/* the last frame's end of the buffer is the other one: after a frame
+	the engine laid out, from the start, the next goes down from the end */
+	psp_ring_down = psp_ring_on && !psp_ring_down;
+}
+
+/* the range's first triangle; the caller has checked the frame's room
+(span + count within the buffer) */
+static long psp_ring_place(long count, long span)
+{
+	if (psp_ring_kept && span + count > RASTERIZER_MAXIMUM_DYNAMIC_TRIANGLES - psp_ring_kept)
+	{
+		psp_ge_triangles_wait();
+		psp_ring_kept = 0;
+	}
+	return psp_ring_down ? RASTERIZER_MAXIMUM_DYNAMIC_TRIANGLES - span - count : span;
+}
 #endif
 
 void rasterizer_dynamic_geometry_begin(
@@ -6318,7 +6585,24 @@ void rasterizer_dynamic_geometry_begin(
 		psp_dynamic_buffer_peak[0] = dynamic_vertices.buffer_count;
 	if (dynamic_triangles.buffer_count > psp_dynamic_buffer_peak[1])
 		psp_dynamic_buffer_peak[1] = dynamic_triangles.buffer_count;
+	psp_ring_begin();
 #endif
+"""),
+]
+FIXES_36["source/rasterizer/xbox/rasterizer_xbox_draw_primitives.c#ring"] = [
+("""				&dynamic_triangles.buffers[dynamic_triangle_buffer_index];
+			dynamic_triangle_buffer->triangle_start_index = dynamic_triangles.triangle_count;
+			dynamic_triangle_buffer->triangle_count = count;
+""",
+ """				&dynamic_triangles.buffers[dynamic_triangle_buffer_index];
+#ifdef HALO_PSP
+			/* the engine's own room test above; geshow2's two ends place the range */
+			dynamic_triangle_buffer->triangle_start_index = psp_ring_on ?
+				psp_ring_place(count, dynamic_triangles.triangle_count) : dynamic_triangles.triangle_count;
+#else
+			dynamic_triangle_buffer->triangle_start_index = dynamic_triangles.triangle_count;
+#endif
+			dynamic_triangle_buffer->triangle_count = count;
 """),
 ]
 # build 93: the debug-drawing vertex buffer (render_debug's lines and
@@ -7491,6 +7775,158 @@ static int psp_particle_kind(long definition_index)
 	}
 	return -1;
 }
+
+/* "particleprio" (a compromise, off by default): a new
+free particle's fate decided at the top of effect_generate_particles, before
+its position, velocity, BSP location, visibility, lighting and sequence are
+worked out, so one left out costs almost nothing (on d20 half the particles
+asked for were thinned after paying all of that). Kept by priority: a slow
+projectile's visuals, attached particles, anything within 3 world units of
+the eye and first-person effects always; tracers by their own rule;
+impacts, sparks and flashes all while the budget is under 3/8 full, then
+only nearer as it fills (the far edge from 40 world units down to 10 at 3/4);
+smoke, dust and debris by how full the budget is times how large they look
+(radius over distance), and none past 40 units once it is 3/8 full. A
+fraction keeps that share of a definition's particles in turn (a running
+sum, no random draw). Past the budget everything but the always-kept is
+refused. Kept particles skip particle_new's own thinning. Campaign only */
+#define PSP_PRIO_SLOTS 128
+static struct { long definition_index; float sum; } psp_prio[PSP_PRIO_SLOTS];
+static int psp_prio_on = -1, psp_prio_room = 100;
+static int psp_prio_admitted = 0;
+static unsigned long psp_prio_kept = 0, psp_prio_left = 0;
+
+static int psp_particle_rank_of(long definition_index)
+{
+	unsigned int k = ((unsigned long)definition_index * 2654435761u) >> 25, n;
+	int keep;
+
+	for (n = 0; n < PSP_RANK_SLOTS; n++, k = (k + 1) % PSP_RANK_SLOTS)
+		if (psp_ranks[k].rank && psp_ranks[k].definition_index == definition_index)
+			return psp_ranks[k].rank;
+	/* first seen: worked out (and its one-in-N count started) by the rank's own function */
+	return psp_particle_rank(definition_index, &keep);
+}
+
+static int psp_prio_take(long definition_index, float share)
+{
+	unsigned int k = ((unsigned long)definition_index * 2654435761u) >> 25, n;
+
+	if (share >= 1.0f)
+		return 1;
+	for (n = 0; n < PSP_PRIO_SLOTS; n++, k = (k + 1) % PSP_PRIO_SLOTS)
+		if (psp_prio[k].definition_index == definition_index || !psp_prio[k].definition_index)
+		{
+			psp_prio[k].definition_index = definition_index;
+			psp_prio[k].sum += share;
+			if (psp_prio[k].sum < 1.0f)
+				return 0;
+			psp_prio[k].sum -= 1.0f;
+			return 1;
+		}
+	return share >= 0.5f;
+}
+
+int psp_particle_admit(long definition_index, real_point3d const *at, int attached, int node_relative,
+	int first_person, real radius)
+{
+#ifdef PSP_MULTIPLAYER
+	return 1;
+#else
+	int rank;
+	float fill, distance = 0.0f, share;
+
+	if (psp_prio_on < 0)
+	{
+		/* particleprioN: the rules judge fullness against N% of the budget,
+		so a smaller N leaves out more (the first PSP A/B kept more than the
+		old thinning, as near particles are no longer thinned) */
+		psp_prio_room = psp_keep_number("particleprio", 0);
+		psp_prio_on = psp_keep("particleprio") || psp_prio_room > 0;
+		if (psp_prio_room < 10 || psp_prio_room > 100)
+			psp_prio_room = 100;
+		if (psp_prio_on)
+			platform_psp_log("particles: particleprio: free particles kept by priority (rank, distance, size) before they are built, judged against %d%% of the budget", psp_prio_room);
+	}
+	if (!psp_prio_on)
+		return 1;
+	if (psp_particle_budget < 0)
+		psp_particle_budget = psp_keep("fullparticles") ? 0x7FFF : PSP_PARTICLE_BUDGET;
+	if (psp_particle_budget == 0x7FFF || attached || first_person)
+		return 1;
+	rank = psp_particle_rank_of(definition_index);
+	if (rank == 1)
+	{
+		psp_prio_admitted = 1;
+		return 1;
+	}
+	if (rank == 2)
+	{
+		int keep;
+
+		(void)psp_particle_rank(definition_index, &keep);
+		if (!keep)
+		{
+			psp_particles_thinned++;
+			psp_prio_left++;
+			PSP_CENSUS(definition_index, thinned);
+			return 0;
+		}
+		psp_prio_admitted = 1;
+		return 1;
+	}
+	if (!node_relative)
+	{
+		struct observer_result const *eye = observer_get_camera(0);
+		real dx = at->x - eye->position.x, dy = at->y - eye->position.y, dz = at->z - eye->position.z;
+
+		distance = sqrtf(dx * dx + dy * dy + dz * dz);
+		if (distance < 3.0f)
+		{
+			psp_prio_admitted = 1;
+			return 1;
+		}
+	}
+	fill = (float)psp_free_particles * 100.0f / ((float)psp_particle_budget * (float)psp_prio_room);
+	if (fill >= 1.0f)
+	{
+		psp_particles_refused++;
+		psp_prio_left++;
+		PSP_CENSUS(definition_index, refused);
+		return 0;
+	}
+	if (rank == 4)
+	{
+		float size = node_relative ? 1.0f : radius / (distance > 1.0f ? distance : 1.0f) / 0.05f;
+
+		share = (1.0f - fill) / 0.8f;
+		share = (share > 1.0f ? 1.0f : share) * (size < 0.2f ? 0.2f : size > 1.0f ? 1.0f : size);
+		if (!node_relative && distance > 40.0f && fill > 0.375f)
+			share = 0.0f;
+	}
+	else if (fill < 0.375f)
+		share = 1.0f;
+	else if (node_relative)
+		share = 1.0f - (fill - 0.375f) / 0.625f;
+	else
+	{
+		float far = 40.0f - (fill - 0.375f) / 0.375f * 30.0f;
+
+		far = far < 10.0f ? 10.0f : far;
+		share = distance <= 6.0f ? 1.0f : distance >= far ? 0.0f : 1.0f - (distance - 6.0f) / (far - 6.0f);
+	}
+	if (!psp_prio_take(definition_index, share))
+	{
+		psp_particles_thinned++;
+		psp_prio_left++;
+		PSP_CENSUS(definition_index, thinned);
+		return 0;
+	}
+	psp_prio_kept++;
+	psp_prio_admitted = 1;
+	return 1;
+#endif
+}
 #endif
 
 void particle_new(
@@ -7509,15 +7945,19 @@ void particle_new(
 		psp_census_on = psp_keep("particlecensus");
 	if (data->object_index == NONE)
 	{
-		int psp_rank = 3, psp_keep_this = 1;
+		int psp_rank = 3, psp_keep_this = 1, psp_pre = psp_prio_admitted;
 		long psp_budget, psp_thin_from;
 
+		psp_prio_admitted = 0;
 		if (psp_particle_budget < 0)
 			psp_particle_budget = psp_keep("fullparticles") ? 0x7FFF : PSP_PARTICLE_BUDGET;
 		if (psp_ranks_on < 0)
 			psp_ranks_on = psp_keep("particleranks");
-		if (psp_ranks_on > 0 && psp_particle_budget != 0x7FFF)
+		if (psp_ranks_on > 0 && psp_particle_budget != 0x7FFF && !psp_pre)
 			psp_rank = psp_particle_rank(data->definition_index, &psp_keep_this);
+		/* kept by particleprio: only the pool's end refuses it (below) */
+		if (psp_pre)
+			psp_rank = 1;
 		if (psp_rank == 2 && !psp_keep_this)
 		{
 			psp_particles_thinned++;
@@ -7715,6 +8155,11 @@ void particle_new(
 			psp_particle_updates = 0;
 		psp_particles_live_total = psp_particles_peak = psp_particle_physics = psp_particle_us = 0;
 		psp_particles_refused = psp_particle_turns_skipped = psp_particles_thinned = 0;
+		if (psp_prio_on > 0)
+		{
+			platform_psp_log("particles: particleprio kept %lu and left out %lu before they were built", psp_prio_kept, psp_prio_left);
+			psp_prio_kept = psp_prio_left = 0;
+		}
 		{
 			char line[768];
 			int length, shown, k;
@@ -7778,6 +8223,32 @@ FIXES_36["source/effects/contrails.c#census"] = [
 		if (contrail_index != NONE)
 		{"""),
 ]
+FIXES_36["source/effects/effects.c#prio"] = [
+("""				real_point3d world_point;
+				real_vector3d world_direction;
+				real_vector3d world_velocity;
+				real emission_radius = effect_real_random_range(""",
+ """				real_point3d world_point;
+				real_vector3d world_direction;
+				real_vector3d world_velocity;
+				real emission_radius;
+
+#ifdef HALO_PSP
+				{
+					/* psp_fixups.py (particles.c, "particleprio"): kept or
+					left out before anything of it is worked out */
+					extern int psp_particle_admit(long, real_point3d const *, int, int, int, real);
+
+					if (!psp_particle_admit(particles->particle.index, &instance->matrix.position,
+						TEST_FLAG(particles->flags, _effect_particle_attached_bit), instance->node_designator != NONE,
+						instance->node_designator != NONE &&
+							TEST_FLAG(instance->node_designator, _effect_location_first_person_bit),
+						particles->radius_upper_bound))
+						continue;
+				}
+#endif
+				emission_radius = effect_real_random_range("""),
+]
 FIXES_36["source/effects/effects.c#census"] = [
 ("""			if (effect_index != NONE)
 			{
@@ -7821,6 +8292,13 @@ FIXES_36["source/objects/object_lights.c#geometry"] = [
 extern long psp_structure_vertex_stride; /* psp_geo.c; psp_fixups.py */
 int psp_ge_level_vertex_texcoords(unsigned long key, int vertex_index, float *uv, float *lightmap_uv); /* psp_ge.c */
 unsigned long psp_object_light_samples_missed = 0;
+/* B30: set by any read of this sample that had nothing real to go on (the
+copies or normals not there this frame, psp_tex.c's white or page's-last-colour
+answers); lights_distant_lighting_at_point then reports no sample */
+int psp_light_miss = 0;
+/* B30: set while an object is sampled when any of its points missed;
+render_objects.c samples it again until one doesn't (FIXES_B30) */
+int psp_light_object_missed = 0;
 
 /* the three vertices' coordinates from the renderer's copies when the data
 is in the geometry pack: 1 if they are there, 0 if not this frame */
@@ -7837,6 +8315,7 @@ static int psp_material_texcoords(struct structure_material const *material, str
 			surface->vertex_indices[k], uv, lightmap_uv))
 		{
 			psp_object_light_samples_missed++;
+			psp_light_miss = 1;
 			return 0;
 		}
 		texcoords[k].x = lightmap ? lightmap_uv[0] : uv[0];
@@ -7871,6 +8350,7 @@ static void psp_material_normals(struct structure_material const *material, stru
 			normals[k].j = 0.0f;
 			normals[k].k = 1.0f;
 			psp_object_light_samples_missed++;
+			psp_light_miss = 1;
 		}
 	}
 }
@@ -11614,6 +12094,72 @@ FIXES_CHUPA["source/rasterizer/rasterizer_text.c#atlas"] = [
 # halo-ce-universal does: these checks answer TRUE and the compiler drops
 # them. PSP_MAP_CHECKS=1 (psp_build.py) builds them in, for a map that isn't
 # the bake's or a comparison
+# bsp3d_test_point (the point-in-level walk: 1.2-2.5% of the tick's
+# fetches on b30, a30, c20 and d20 [E census141b]) has the same per-node
+# check in its own loop; a trusted map skips it as the walks above do
+FIXES_CHUPA["source/physics/bsp3d.c#trusted"] = [
+("""		if (node_index < 0 ||
+			node_index >= bsp->nodes.count ||
+			depth++ >= MAXIMUM_BSP3D_TRAVERSAL_DEPTH)
+		{""",
+ """#if !defined(HALO_PSP) || defined(PSP_MAP_CHECKS)
+		if (node_index < 0 ||
+			node_index >= bsp->nodes.count ||
+			depth++ >= MAXIMUM_BSP3D_TRAVERSAL_DEPTH)
+#else
+		/* psp_fixups.py (FIXES_CHUPA): a trusted map (see #trusted); a
+		caller may still start the walk at NONE (no tree), so only the
+		bounds and depth tests go */
+		(void)depth;
+		if (node_index < 0)
+#endif
+		{"""),
+]
+# The engine's console output (script prints, "true" and other messages) is
+# drawn over the game whenever there is any: ChupathingyCE since 0.8.0 draws it
+# only while the console is open ("terminal_render 2", Milenko, commits
+# 3a4dee17 and 827e688d). The PSP has no console to open, so it is drawn
+# only with "terminalon"; the log keeps every line either way
+FIXES_CHUPA["source/interface/terminal.c#render2"] = [
+("""		if (terminal_render_enable)
+		{
+			struct output_line_datum *line;""",
+ """#ifdef HALO_PSP
+		static int psp_terminal_on = -1;
+		int psp_keep(const char *name);
+
+		if (psp_terminal_on < 0)
+			psp_terminal_on = psp_keep("terminalon");
+		if (terminal_render_enable && (psp_terminal_on || terminal_globals.input_state))
+#else
+		if (terminal_render_enable)
+#endif
+		{
+			struct output_line_datum *line;"""),
+]
+# The main menu's music faded and started over every 75 s (B2): the attract
+# mode's countdown stops the music before its movie, the PSP has no attract
+# movie to play, so the countdown restarts and the music starts again from
+# its first track. The PSP's menu waits with no countdown and the music
+# runs through its tracks; "attractmode" keeps the countdown
+FIXES_CHUPA["source/interface/attract_mode.c#nomovie"] = [
+("""		time_since_last_event = MAX(attract_mode_countdown_timer, time_since_last_event);
+		time_elapsed = current_time-time_since_last_event;
+""", """		time_since_last_event = MAX(attract_mode_countdown_timer, time_since_last_event);
+		time_elapsed = current_time-time_since_last_event;
+#ifdef HALO_PSP
+		{
+			static int psp_attract = -1;
+			int psp_keep(const char *name);
+
+			if (psp_attract < 0)
+				psp_attract = psp_keep("attractmode");
+			if (!psp_attract)
+				time_elapsed = 0;
+		}
+#endif
+"""),
+]
 FIXES_CHUPA["source/physics/collision_bsp.c#trusted"] = [
 ("""	long *nodes_left)
 {
@@ -14348,8 +14894,12 @@ FIXES_118["source/units/units.c#verify"] = [
 # an entry (or with an index past 16 bits) isn't kept, and the table is
 # forgotten when the collision BSP is set (a map's load, a BSP switch: the
 # next BSP is read into the same tag window) and when a map's tags load.
-# "spherewalk" (keep.txt): every query walks, as before; "spherememocheck":
-# a hit walks too and compares, and the log counts any difference
+# Off by default: on b30 the table answers ~5% of the queries, and keying
+# and comparing every query costs more than the walks it saves (+1.56% of the
+# tick in the cache model; the PSP-1000's cinematic agrees). "spherememo"
+# (keep.txt): the table on; "spherememocheck": the table on, and a hit walks
+# too and compares, the log counting any difference; "spherewalk": off, as
+# the default
 FIXES_118["source/physics/collision_bsp.c#spherememo"] = [
 ("""boolean collision_bsp_test_sphere(
 	struct collision_bsp const *bsp,""",
@@ -14529,7 +15079,7 @@ boolean collision_bsp_test_sphere(
 
 		if (psp_sphere_memo_on < 0)
 		{
-			psp_sphere_memo_on = !psp_keep("spherewalk");
+			psp_sphere_memo_on = (psp_keep("spherememo") || psp_keep("spherememocheck")) && !psp_keep("spherewalk");
 			psp_sphere_memo_check = psp_keep("spherememocheck");
 		}
 		if (psp_sphere_memo_on)
@@ -14601,8 +15151,17 @@ FIXES_118["source/scenario/scenario.c#spherememo"] = [
 			{
 				/* psp_fixups.py (build 118): collision_bsp.c#spherememo */
 				extern void psp_sphere_memo_forget(void);
+				/* psp_scratch.c: the level's collision BSP named for the cache map ("scratchcensus") */
+				extern void psp_scratch_census_bsp(const void *collision_bsp);
 
 				psp_sphere_memo_forget();
+				psp_scratch_census_bsp(global_collision_bsp);
+				/* psp_scratch.c: the top nodes' copy ("noscratchbsp" off) */
+				{
+					extern void psp_scratch_bsp_fill(const void *collision_bsp);
+
+					psp_scratch_bsp_fill(global_collision_bsp);
+				}
 			}
 #endif"""),
 ]
@@ -15144,6 +15703,19 @@ static int psp_order_surface_indices_by_bits(
 	return 1;
 }
 
+/* each index above the one before it: the list is its own sort */
+static int psp_surface_indices_ascending(
+	long const *elements,
+	long element_count)
+{
+	long k;
+
+	for (k = 1; k < element_count; k++)
+		if (elements[k - 1] >= elements[k])
+			return 0;
+	return 1;
+}
+
 /* psp_fixups.py (build 119): qsort_4byte (cseries/sort.c) for
 compare_surface_indices, its comparison (a > b) written in */
 static void psp_sort_surface_indices(
@@ -15283,12 +15855,15 @@ static void structure_render_dynamic_triangles_from_indices(
 #ifdef HALO_PSP
 	{
 		extern int psp_keep(const char *name);
-		static int old = -1, check = 0;
+		static int old = -1, check = 0, in_order = 1;
 
 		if (old < 0)
 		{
 			old = psp_keep("surfaceqsort");
 			check = psp_keep("surfacesortcheck");
+			/* a list already ascending (lightplan's are) is left as it is:
+			its sort is itself; "surfaceinorderoff" sorts it anyway */
+			in_order = !psp_keep("surfaceinorderoff");
 		}
 		if (old)
 			qsort_4byte(surface_indices, surface_count, compare_surface_indices);
@@ -15311,6 +15886,8 @@ static void structure_render_dynamic_triangles_from_indices(
 				free(copy);
 			}
 		}
+		else if (in_order && psp_surface_indices_ascending(surface_indices, surface_count))
+			psp_surface_sorts_in_order++;
 		else if (psp_order_surface_indices_by_bits(surface_indices, surface_count, structure_bsp->surfaces.count))
 			psp_surface_sorts_by_bits++;
 		else
@@ -17767,6 +18344,13 @@ static void psp_merays_hand_over(void)
 		end = psp_perc_ray_count;
 		first = end;
 		psp_merays_first = first;
+	}
+	if (end < psp_perc_ray_count)
+	{
+		/* the owed computes as they are now, for the ME's rays (objects.c) */
+		void psp_nms_pending_for_me(void);
+
+		psp_nms_pending_for_me();
 	}
 	while (end < psp_perc_ray_count && psp_merays_jobs < PSP_MERAYS_JOBS)
 	{
@@ -22439,6 +23023,1351 @@ FIXES_136["source/items/weapons.c#nwbatch"] = [
 """),
 ]
 
+# lightplan (psp_fixups.py, FIXES_LIGHTPLAN): a dynamic light's candidate
+# surfaces, the visible filter left out, for the plan kept across frames
+APPEND["source/structures/structure_visibility.c"] = r"""
+#ifdef HALO_PSP
+/* lightplan: every surface in the subclusters of the light's clusters that
+its sphere's box meets (structure_visibility_build_surfaces_traverse_clusters
+without the visible test), once each, in ascending order. -1 when the light
+takes the node walk instead (a radius under structure_sphere_threshold), the
+BSP isn't verified, or more than maximum are found: the caller then walks
+as before */
+long psp_light_candidates(real_point3d const *center, real radius, short cluster_count, short const *cluster_indices,
+	long *out, long maximum)
+{
+	struct structure_bsp *structure = global_structure_bsp_get();
+	unsigned long flags[MAXIMUM_SURFACES_PER_STRUCTURE / LONG_BITS];
+	real_rectangle3d box;
+	long found = 0, words, word;
+	short list_index;
+
+	if (!structure_bsp_port_verify(structure) || radius < structure_sphere_threshold)
+		return -1;
+	words = (structure->surfaces.count + LONG_BITS - 1) / LONG_BITS;
+	csmemset(flags, 0, words * sizeof(unsigned long));
+	box.x0 = center->x - radius;
+	box.x1 = center->x + radius;
+	box.y0 = center->y - radius;
+	box.y1 = center->y + radius;
+	box.z0 = center->z - radius;
+	box.z1 = center->z + radius;
+	for (list_index = 0; list_index < cluster_count; list_index++)
+	{
+		struct structure_visibility_cluster *cluster;
+		short subcluster_index;
+
+		if (cluster_indices[list_index] < 0 || cluster_indices[list_index] >= structure->clusters.count)
+			continue;
+		cluster = TAG_BLOCK_GET_ELEMENT(&structure->clusters, cluster_indices[list_index],
+			struct structure_visibility_cluster);
+		for (subcluster_index = 0; subcluster_index < cluster->subclusters.count; subcluster_index++)
+		{
+			struct structure_visibility_subcluster *subcluster = TAG_BLOCK_GET_ELEMENT(&cluster->subclusters,
+				subcluster_index, struct structure_visibility_subcluster);
+			short rectangle_intersection = bounding_rectangles_intersect(&box, &subcluster->world_bounds);
+			short plane_intersection = rectangle_intersection
+				? planes_intersect_rectangle(&subcluster->world_bounds, 0, NULL)
+				: _intersection_out;
+			long k;
+
+			if (!plane_intersection)
+				continue;
+			for (k = 0; k < subcluster->surface_indices.count; k++)
+			{
+				long surface_index = PSP_SURFACE_INDEX(&subcluster->surface_indices, k);
+
+				if ((unsigned long)surface_index >= (unsigned long)structure->surfaces.count
+					|| BIT_VECTOR_TEST_FLAG(flags, surface_index))
+					continue;
+				if (found >= maximum)
+					return -1;
+				BIT_VECTOR_SET_FLAG(flags, surface_index, TRUE);
+				found++;
+			}
+		}
+	}
+	/* read back in order: the bits mark exactly the candidates */
+	found = 0;
+	for (word = 0; word < words; word++)
+	{
+		unsigned long bits = flags[word];
+		long bit = word * LONG_BITS;
+
+		for (; bits; bits >>= 1, bit++)
+			if (bits & 1)
+				out[found++] = bit;
+	}
+	return found;
+}
+#endif
+"""
+
+# ---------- lightplancensus (a count, off; for the light-plan lever): how
+# many dynamic lights a frame find their sphere, radius and cluster set as a
+# light had them the frame before, and how many of those then find the same
+# surface list, so a per-light surface plan kept across frames can be sized
+# before it is built (api-job 40130751164, lever L1)
+FIXES_LIGHTPLAN = {}
+FIXES_LIGHTPLAN["source/structures/structure_render.c#lightplancensus"] = [
+("""void structure_render_lightmaps(
+	void)
+{
+	profile_enter(render_structure_lightmaps_section);
+""",
+ """#ifdef HALO_PSP
+int psp_keep(const char *name); /* psp_platform.c */
+void platform_log(const char *format, ...);
+
+#define PSP_LP_SLOTS 64
+static struct { unsigned long in, out; } psp_lp_last[PSP_LP_SLOTS], psp_lp_now[PSP_LP_SLOTS];
+static int psp_lp_on = -1, psp_lp_last_count = 0, psp_lp_now_count = 0;
+static unsigned long psp_lp_frames = 0, psp_lp_calls = 0, psp_lp_whole = 0, psp_lp_same_in = 0, psp_lp_same_out = 0,
+	psp_lp_empty = 0, psp_lp_full = 0, psp_lp_surfaces = 0, psp_lp_most = 0;
+
+static unsigned long psp_lp_hash(const void *at, long bytes, unsigned long hash)
+{
+	const unsigned char *byte = at;
+
+	while (bytes-- > 0)
+		hash = (hash ^ *byte++) * 16777619u;
+	return hash;
+}
+
+/* once a frame, before the lights: this frame's lights become the last */
+static void psp_lp_frame(void)
+{
+	if (psp_lp_on < 0)
+	{
+		psp_lp_on = psp_keep("lightplancensus");
+		if (psp_lp_on)
+			platform_log("lights: lightplancensus: each dynamic light's sphere, clusters and surface list against the last frame's");
+	}
+	if (!psp_lp_on)
+		return;
+	memcpy(psp_lp_last, psp_lp_now, sizeof(psp_lp_now));
+	psp_lp_last_count = psp_lp_now_count;
+	psp_lp_now_count = 0;
+	psp_lp_frames++;
+}
+
+static void psp_lp_note(real_point3d const *center, real radius, short cluster_count, short const *cluster_indices,
+	long const *surface_indices, long surface_count)
+{
+	unsigned long in, out;
+	int k, count = psp_lp_now_count;
+
+	if (psp_lp_on <= 0)
+		return;
+	psp_lp_calls++;
+	if (!cluster_indices)
+	{
+		psp_lp_whole++;
+		return;
+	}
+	in = psp_lp_hash(center, sizeof(*center), 2166136261u);
+	in = psp_lp_hash(&radius, sizeof(radius), in);
+	in = psp_lp_hash(cluster_indices, cluster_count * sizeof(short), in);
+	out = psp_lp_hash(surface_indices, surface_count * sizeof(long), 2166136261u);
+	psp_lp_surfaces += surface_count;
+	if ((unsigned long)surface_count > psp_lp_most)
+		psp_lp_most = surface_count;
+	if (surface_count == 0)
+		psp_lp_empty++;
+	if (surface_count >= MAXIMUM_LOCALLY_RENDERED_SURFACES)
+		psp_lp_full++;
+	for (k = 0; k < psp_lp_last_count; k++)
+		if (psp_lp_last[k].in == in)
+		{
+			psp_lp_same_in++;
+			if (psp_lp_last[k].out == out)
+				psp_lp_same_out++;
+			break;
+		}
+	if (count < PSP_LP_SLOTS)
+	{
+		psp_lp_now[count].in = in;
+		psp_lp_now[count].out = out;
+		psp_lp_now_count = count + 1;
+	}
+}
+
+/* "lightplan" (off by default until proven): a dynamic light's candidate
+surfaces kept while its sphere, radius and clusters are bit for bit as a
+light had them before, in a pool of 16-bit indices; each frame only the
+visible filter runs over them. The visible candidates are the walk's own
+surfaces, and ascending: the triangle build sorts its list first, so what
+is drawn is the same. Not kept for a light that takes the node walk, finds
+more than the list holds, or doesn't fit the pool. "lightplancheck" walks
+as before too and counts lists that came out different. "lightplankbN": the
+pool's KB (24) */
+long psp_light_candidates(real_point3d const *center, real radius, short cluster_count, short const *cluster_indices,
+	long *out, long maximum); /* structure_visibility.c */
+extern unsigned long psp_tex_map_opens; /* psp_tex.c */
+int psp_keep_number(const char *prefix, int fallback);
+
+#define PSP_LPLAN_SLOTS 24
+#define PSP_LPLAN_CLUSTERS 16
+static struct
+{
+	int used;
+	real_point3d center;
+	real radius;
+	short cluster_count;
+	short clusters[PSP_LPLAN_CLUSTERS];
+	long first, count;
+} psp_lplan[PSP_LPLAN_SLOTS];
+static unsigned short *psp_lplan_pool = NULL;
+static long psp_lplan_pool_size = 0, psp_lplan_pool_used = 0, psp_lplan_pool_cap = 0;
+
+/* the pool grows in 8 KB steps as plans need it, never past its cap, and
+stays as it is when the heap has no room: a map whose lights move takes
+little or none of it (a30, the tight maps) */
+static int psp_lplan_grow(long need)
+{
+	long size = psp_lplan_pool_size;
+	unsigned short *more;
+
+	if (psp_lplan_pool_used + need <= size)
+		return 1;
+	while (size < psp_lplan_pool_used + need)
+		size += 4096;
+	if (size > psp_lplan_pool_cap)
+		return 0;
+	more = malloc(size * sizeof(unsigned short));
+	if (!more)
+		return 0;
+	/* (no free(NULL): this build's free reads the header before the pointer) */
+	if (psp_lplan_pool)
+	{
+		memcpy(more, psp_lplan_pool, psp_lplan_pool_used * sizeof(unsigned short));
+		free(psp_lplan_pool);
+	}
+	psp_lplan_pool = more;
+	psp_lplan_pool_size = size;
+	return 1;
+}
+static int psp_lplan_on = -1, psp_lplan_check = 0, psp_lplan_next = 0;
+static unsigned long psp_lplan_epoch = 0;
+static struct structure_bsp *psp_lplan_structure = NULL;
+static unsigned long psp_lplan_hits = 0, psp_lplan_kept = 0, psp_lplan_walked = 0, psp_lplan_mismatches = 0;
+
+/* the keys of lights seen once and not yet kept, oldest let go first */
+#define PSP_LPLAN_SEEN 32
+static unsigned long psp_lplan_seen[PSP_LPLAN_SEEN];
+static int psp_lplan_seen_next = 0;
+
+static int psp_lplan_seen_before(real_point3d const *center, real radius, short cluster_count, short const *cluster_indices)
+{
+	unsigned long key = 2166136261u;
+	unsigned char const *byte;
+	long k;
+
+	for (byte = (unsigned char const *)center, k = 0; k < (long)sizeof(*center); k++)
+		key = (key ^ byte[k]) * 16777619u;
+	for (byte = (unsigned char const *)&radius, k = 0; k < (long)sizeof(radius); k++)
+		key = (key ^ byte[k]) * 16777619u;
+	for (byte = (unsigned char const *)cluster_indices, k = 0; k < cluster_count * (long)sizeof(short); k++)
+		key = (key ^ byte[k]) * 16777619u;
+	key |= 1; /* 0 marks an empty entry */
+	for (k = 0; k < PSP_LPLAN_SEEN; k++)
+		if (psp_lplan_seen[k] == key)
+		{
+			psp_lplan_seen[k] = 0;
+			return 1;
+		}
+	psp_lplan_seen[psp_lplan_seen_next] = key;
+	psp_lplan_seen_next = (psp_lplan_seen_next + 1) % PSP_LPLAN_SEEN;
+	return 0;
+}
+
+static long psp_lplan_surfaces(real_point3d const *center, real radius, short cluster_count, short const *cluster_indices,
+	long *out, long maximum)
+{
+	struct structure_bsp *structure = global_structure_bsp_get();
+	long k, n, kept = 0;
+	int slot = -1;
+
+	if (psp_lplan_on < 0)
+	{
+		psp_lplan_on = psp_keep("lightplan");
+		psp_lplan_check = psp_lplan_on && psp_keep("lightplancheck");
+		if (psp_lplan_on)
+		{
+			long kb = psp_keep_number("lightplankb", 64);
+
+			psp_lplan_pool_cap = (kb < 8 ? 8 : kb > 128 ? 128 : kb) * 512;
+			platform_log("lights: lightplan: dynamic lights' surface plans kept across frames (the pool grows to %ld KB)%s",
+				psp_lplan_pool_cap / 512, psp_lplan_check ? "; lightplancheck" : "");
+		}
+	}
+	if (!psp_lplan_on || cluster_count > PSP_LPLAN_CLUSTERS)
+		return -1;
+	if (psp_lplan_epoch != psp_tex_map_opens || psp_lplan_structure != structure)
+	{
+		csmemset(psp_lplan, 0, sizeof(psp_lplan));
+		csmemset(psp_lplan_seen, 0, sizeof(psp_lplan_seen));
+		psp_lplan_pool_used = 0;
+		psp_lplan_epoch = psp_tex_map_opens;
+		psp_lplan_structure = structure;
+	}
+	for (k = 0; k < PSP_LPLAN_SLOTS; k++)
+		if (psp_lplan[k].used && psp_lplan[k].cluster_count == cluster_count
+			&& !memcmp(&psp_lplan[k].radius, &radius, sizeof(radius))
+			&& !memcmp(&psp_lplan[k].center, center, sizeof(*center))
+			&& !memcmp(psp_lplan[k].clusters, cluster_indices, cluster_count * sizeof(short)))
+		{
+			slot = (int)k;
+			break;
+		}
+	if (slot >= 0)
+	{
+		unsigned short const *candidate = psp_lplan_pool + psp_lplan[slot].first;
+
+		for (k = 0; k < psp_lplan[slot].count; k++)
+			if (BIT_VECTOR_TEST_FLAG(render.environment_surface_flags, candidate[k]))
+				out[kept++] = candidate[k];
+		psp_lplan_hits++;
+	}
+	else
+	{
+		n = psp_light_candidates(center, radius, cluster_count, cluster_indices, out, maximum);
+		if (n < 0)
+		{
+			psp_lplan_walked++;
+			return -1;
+		}
+		/* a plan is kept the second time its light is seen as it was: a light
+		that moves never takes pool room (c20, b30 and a30's mostly do) */
+		if (n <= psp_lplan_pool_cap && psp_lplan_seen_before(center, radius, cluster_count, cluster_indices))
+		{
+			int fits = 1;
+
+			for (k = 0; k < n; k++)
+				if ((unsigned long)out[k] > 0xFFFF)
+					fits = 0;
+			if (fits)
+			{
+				/* the pool grows as plans need it; when it can grow no more,
+				every plan is let go and it starts again */
+				if (!psp_lplan_grow(n))
+				{
+					csmemset(psp_lplan, 0, sizeof(psp_lplan));
+					psp_lplan_pool_used = 0;
+					psp_lplan_next = 0;
+					fits = psp_lplan_grow(n);
+				}
+			}
+			if (fits)
+			{
+				slot = psp_lplan_next;
+				psp_lplan_next = (psp_lplan_next + 1) % PSP_LPLAN_SLOTS;
+				psp_lplan[slot].used = 1;
+				psp_lplan[slot].center = *center;
+				psp_lplan[slot].radius = radius;
+				psp_lplan[slot].cluster_count = cluster_count;
+				memcpy(psp_lplan[slot].clusters, cluster_indices, cluster_count * sizeof(short));
+				psp_lplan[slot].first = psp_lplan_pool_used;
+				psp_lplan[slot].count = n;
+				for (k = 0; k < n; k++)
+					psp_lplan_pool[psp_lplan_pool_used + k] = (unsigned short)out[k];
+				psp_lplan_pool_used += n;
+				psp_lplan_kept++;
+			}
+		}
+		/* this frame's list from the candidates either way (in place: kept <= k) */
+		for (k = 0; k < n; k++)
+			if (BIT_VECTOR_TEST_FLAG(render.environment_surface_flags, out[k]))
+				out[kept++] = out[k];
+	}
+	if (psp_lplan_check)
+	{
+		/* (static: a test's 32 KB kept off the drawing thread's stack) */
+		static long walked[MAXIMUM_LOCALLY_RENDERED_SURFACES];
+		static unsigned long marks[MAXIMUM_SURFACES_PER_STRUCTURE / LONG_BITS];
+		long m;
+
+		m = structure_visibility_build_surfaces(walked, (short)maximum, center, radius, NULL, 0, NULL,
+			cluster_count, cluster_indices);
+		if (m != kept)
+			psp_lplan_mismatches++;
+		else
+		{
+			csmemset(marks, 0, ((structure->surfaces.count + LONG_BITS - 1) / LONG_BITS) * sizeof(unsigned long));
+			for (k = 0; k < m; k++)
+				BIT_VECTOR_SET_FLAG(marks, walked[k], TRUE);
+			for (k = 0; k < kept; k++)
+				if (!BIT_VECTOR_TEST_FLAG(marks, out[k]) || (k && out[k] <= out[k - 1]))
+				{
+					psp_lplan_mismatches++;
+					break;
+				}
+		}
+	}
+	return kept;
+}
+
+/* psp_ge.c's 300-frame report */
+void psp_light_plan_report(void)
+{
+	if (psp_lplan_on > 0)
+	{
+		platform_log("lights: lightplan: %lu plans used again, %lu kept, %lu walked as before (the node walk or too many); pool %ld of %ld%s",
+			psp_lplan_hits, psp_lplan_kept, psp_lplan_walked, psp_lplan_pool_used, psp_lplan_pool_size,
+			psp_lplan_check ? (psp_lplan_mismatches ? "; lightplancheck: SOME LISTS CAME OUT DIFFERENT" : "; lightplancheck: all the same") : "");
+		if (psp_lplan_mismatches)
+			platform_log("lights: lightplancheck: %lu lists came out different", psp_lplan_mismatches);
+		psp_lplan_hits = psp_lplan_kept = psp_lplan_walked = psp_lplan_mismatches = 0;
+	}
+	if (psp_lp_on <= 0 || !psp_lp_frames)
+		return;
+	platform_log("lights: lightplancensus: %lu frames, %lu dynamic light walks (%lu of the whole visible list); "
+		"%lu with the sphere and clusters of a light the frame before, %lu of those with the same surfaces; "
+		"%lu found none, %lu filled the list; %lu surfaces a walk (most %lu)",
+		psp_lp_frames, psp_lp_calls, psp_lp_whole, psp_lp_same_in, psp_lp_same_out, psp_lp_empty, psp_lp_full,
+		psp_lp_calls > psp_lp_whole ? psp_lp_surfaces / (psp_lp_calls - psp_lp_whole) : 0, psp_lp_most);
+	psp_lp_frames = psp_lp_calls = psp_lp_whole = psp_lp_same_in = psp_lp_same_out = psp_lp_empty = psp_lp_full =
+		psp_lp_surfaces = psp_lp_most = 0;
+}
+#endif
+
+void structure_render_lightmaps(
+	void)
+{
+	profile_enter(render_structure_lightmaps_section);
+#ifdef HALO_PSP
+	psp_lp_frame();
+#endif
+"""),
+("""	profile_enter(render_structure_diffuse_lights_section);
+
+	if (cluster_indices)
+	{
+		environment_surface_count = structure_visibility_build_surfaces(
+			surface_indices,
+			MAXIMUM_LOCALLY_RENDERED_SURFACES,
+			bounding_sphere_center,
+			bounding_sphere_radius,
+			NULL,
+			0,
+			NULL,
+			cluster_count,
+			cluster_indices);
+		environment_triangles_index = structure_render_build_dynamic_triangles(
+			surface_indices,
+			environment_surface_count,
+			NULL);
+	}
+	else
+	{
+		environment_triangles_index = structure_render_globals.environment_triangles_index;
+		environment_surface_count = render.environment_surface_count;
+		environment_surface_indices = render.environment_surface_indices;
+	}
+""",
+ """	profile_enter(render_structure_diffuse_lights_section);
+
+	if (cluster_indices)
+	{
+#ifdef HALO_PSP
+		environment_surface_count = psp_lplan_surfaces(bounding_sphere_center, bounding_sphere_radius, cluster_count,
+			cluster_indices, surface_indices, MAXIMUM_LOCALLY_RENDERED_SURFACES);
+		if (environment_surface_count < 0)
+#endif
+		environment_surface_count = structure_visibility_build_surfaces(
+			surface_indices,
+			MAXIMUM_LOCALLY_RENDERED_SURFACES,
+			bounding_sphere_center,
+			bounding_sphere_radius,
+			NULL,
+			0,
+			NULL,
+			cluster_count,
+			cluster_indices);
+#ifdef HALO_PSP
+		psp_lp_note(bounding_sphere_center, bounding_sphere_radius, cluster_count, cluster_indices,
+			surface_indices, environment_surface_count);
+#endif
+		environment_triangles_index = structure_render_build_dynamic_triangles(
+			surface_indices,
+			environment_surface_count,
+			NULL);
+	}
+	else
+	{
+#ifdef HALO_PSP
+		psp_lp_note(bounding_sphere_center, bounding_sphere_radius, 0, NULL, NULL, 0);
+#endif
+		environment_triangles_index = structure_render_globals.environment_triangles_index;
+		environment_surface_count = render.environment_surface_count;
+		environment_surface_indices = render.environment_surface_indices;
+	}
+"""),
+]
+
+# ---------- handle lookups (api-job 40135731866: object_get_and_verify_type,
+# datum_get and tag_get are 13-16% of the tick's instruction fetches; the
+# bodies were trimmed in b106, so these cut calls and checks, exactly)
+# OBJALL: object_get (the mask-all form) as the header's datum alone. Its type
+# test always passes (every type is in _object_mask_all), so the pointer is
+# the one object_get_and_verify_type returns, and an index that fails fails in
+# the same datum_get. "objallold": object_get_and_verify_type as before.
+# HDRBLK: object_header_block_get takes its object from the header it has
+# already looked up, not from a second lookup of the same index.
+# "hdrblkold": the second lookup as before
+FIXES_HANDLES = {}
+FIXES_HANDLES["source/objects/objects.h#objall"] = [
+("""#define object_get(index)			((struct object_datum*)object_get_and_verify_type(index, _object_mask_all))""",
+ """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_HANDLES: OBJALL) */
+void *psp_object_get_all(long object_index);
+#define object_get(index)			((struct object_datum*)psp_object_get_all(index))
+#else
+#define object_get(index)			((struct object_datum*)object_get_and_verify_type(index, _object_mask_all))
+#endif"""),
+]
+FIXES_HANDLES["source/objects/objects.c#hdrblk"] = [
+("""void *object_header_block_get(
+	long object_index,
+	struct object_header_block_reference *reference)
+{
+	struct object_header_datum *object_header = object_header_get(object_index);
+	struct object_datum *object = object_get(object_index);
+""",
+ """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_HANDLES: OBJALL): object_get's mask-all lookup */
+void *psp_object_get_all(long object_index) __attribute__((optimize("omit-frame-pointer")));
+void *psp_object_get_all(
+	long object_index)
+{
+	if (PSP_KEEP_ONCE("objallold"))
+		return object_get_and_verify_type(object_index, _object_mask_all);
+	return object_header_get(object_index)->datum;
+}
+#endif
+
+void *object_header_block_get(
+	long object_index,
+	struct object_header_block_reference *reference)
+{
+	struct object_header_datum *object_header = object_header_get(object_index);
+#ifdef HALO_PSP
+	/* psp_fixups.py (FIXES_HANDLES: HDRBLK): the header's own datum */
+	struct object_datum *object = PSP_KEEP_ONCE("hdrblkold") ? object_get(object_index) : object_header->datum;
+#else
+	struct object_datum *object = object_get(object_index);
+#endif
+"""),
+]
+
+# ---------- HOIST (api-job 40135731866, lever 1): the object update chain takes
+# the object and definition object_update already holds, not a lookup of each in
+# every callee (object_get is the header's datum since OBJALL; the definition is
+# a tag_get). Each callee's public body is now a wrapper that looks up and calls a
+# static _with body; object_update calls the _with bodies with its own pointers
+# and gives the object_type_* loops the type. Exact while the object pool moves
+# nothing between the hoist and the use (it moves blocks only at memory_pool_compact
+# and in the reallocate of an object being made) and the tags stay put.
+# "hoistold": the old calls. "hoistcheck" (PSP_RECON): each hoisted pointer looked
+# up again and counted, expected 0 differing
+FIXES_HOIST = {}
+FIXES_HOIST["source/objects/objects.c#hoist"] = [
+("""void object_compute_node_matrices(
+	long object_index)
+{
+""", """/* psp_fixups.py (FIXES_HOIST): the chain's _with bodies, declared ahead of their callers */
+static void object_compute_node_matrices_with(long object_index, struct object_datum *object, struct object_definition *object_definition);
+static void object_compute_function_values_with(long object_index, struct object_datum *object, struct object_definition *object_definition);
+static void object_compute_change_colors_with(long object_index, struct object_datum *object, struct object_definition *object_definition);
+static void object_connect_lights_with(long object_index, struct object_datum *object, struct object_definition *object_definition, boolean disconnect, boolean reconnect);
+boolean object_type_update_for_type(short type, long object_index);
+void object_type_export_function_values_for_type(short type, long object_index);
+void object_type_preprocess_node_orientations_for_type(short type, long object_index, struct real_orientation *node_orientations);
+void object_type_postprocess_node_matrices_for_type(short type, long object_index, struct real_matrix4x3 *node_matrices);
+/* objects_update's two asserts: the loop's own header holds the datum object_get returns */
+#define PSP_HOIST_OBJECT(header, index) (PSP_KEEP_ONCE("hoistold") ? object_get(index) : (header)->datum)
+
+#ifdef PSP_RECON
+/* "hoistcheck": a hoisted pointer against a fresh lookup (a NULL definition is the callee's own lookup) */
+static void psp_hoist_check(long object_index, struct object_datum *object, struct object_definition *object_definition)
+{
+	static int on = -1;
+	static unsigned long checked, differed;
+	int psp_keep(const char *name);
+	int psp_keep_loaded(void);
+	void platform_psp_log(const char *format, ...);
+
+	if (on < 0 && psp_keep_loaded())
+		on = psp_keep("hoistcheck");
+	if (on <= 0)
+		return;
+	checked++;
+	if (object_get_and_verify_type(object_index, _object_mask_all) != object ||
+		(object_definition && object_definition_get(object->definition_index) != object_definition) ||
+		object_header_get(object_index)->type != object->object.type)
+	{
+		if (differed++ < 8)
+			platform_psp_log("hoistcheck: a held pointer differs from its lookup (object %ld)", object_index);
+	}
+	if (checked % 100000 == 0)
+		platform_psp_log("hoistcheck: %lu pointers looked up again, %lu differed", checked, differed);
+}
+#endif
+
+void object_compute_node_matrices(
+	long object_index)
+{
+	struct object_datum *object = object_get(object_index);
+
+	object_compute_node_matrices_with(object_index, object, object_definition_get(object->definition_index));
+}
+
+static void object_compute_node_matrices_with(
+	long object_index,
+	struct object_datum *object,
+	struct object_definition *object_definition)
+{
+#ifdef PSP_RECON
+	psp_hoist_check(object_index, object, object_definition);
+#endif
+"""),
+("""	struct object_datum *object = object_get(object_index);
+	struct object_definition *object_definition = object_definition_get(object->definition_index);
+	
+	real_matrix4x3 *object_nodes""", """	struct model *psp_hoist_model = NULL;
+	struct animation_graph *psp_hoist_graph = NULL;
+	
+	real_matrix4x3 *object_nodes"""),
+("""model_definition_get(object_definition->object.model.index)->nodes.count>0)""",
+ """(psp_hoist_model = model_definition_get(object_definition->object.model.index))->nodes.count>0)"""),
+("""struct model *model = model_definition_get(object_definition->object.model.index);""",
+ """struct model *model = PSP_KEEP_ONCE("hoistold") ? model_definition_get(object_definition->object.model.index) : psp_hoist_model;"""),
+("""animation_graph_definition_get(
+					object->object.animation.animation_graph_index);""",
+ """animation_graph_definition_get(
+					object->object.animation.animation_graph_index);
+				psp_hoist_graph = animation_graph;"""),
+("""struct animation_graph *animation_graph= animation_graph_definition_get(object_definition->object.animation_graph.index);""",
+ """struct animation_graph *animation_graph= psp_hoist_graph && !PSP_KEEP_ONCE("hoistold") &&
+					object->object.animation.animation_graph_index == object_definition->object.animation_graph.index ?
+					psp_hoist_graph : animation_graph_definition_get(object_definition->object.animation_graph.index);"""),
+("""object_type_preprocess_node_orientations(object_index, node_orientations);""",
+ """if (PSP_KEEP_ONCE("hoistold"))
+				object_type_preprocess_node_orientations(object_index, node_orientations);
+			else
+				object_type_preprocess_node_orientations_for_type(object->object.type, object_index, node_orientations);"""),
+# object_update (shelved nwbatch or not, this call and its tail are the same)
+("""object_compute_node_matrices(object_index);
+			}
+			if (timed)
+				psp_object_account(timed + 2, psp_microseconds() - mark);
+""", """psp_hoist ? object_compute_node_matrices_with(object_index, object, object_definition) : object_compute_node_matrices(object_index);
+			}
+			if (timed)
+				psp_object_account(timed + 2, psp_microseconds() - mark);
+"""),
+("""	struct object_header_datum *header = object_header_get(object_index);
+	struct object_datum *object = object_get(object_index);
+	struct object_definition *object_definition = object_definition_get(object->definition_index);
+""", """	struct object_header_datum *header = object_header_get(object_index);
+	/* psp_fixups.py (FIXES_HOIST): the header's datum is what object_get returns; "hoistold" looks it up again */
+	const int psp_hoist = !PSP_KEEP_ONCE("hoistold");
+	struct object_datum *object = psp_hoist ? header->datum : object_get(object_index);
+	struct object_definition *object_definition = object_definition_get(object->definition_index);
+"""),
+("""object_type_update(object_index);
+			if (timed)
+""", """if (psp_hoist)
+				object_type_update_for_type(object->object.type, object_index);
+			else
+				object_type_update(object_index);
+			if (timed)
+"""),
+("""object_type_export_function_values(object_index);
+			if (timed)
+""", """if (psp_hoist)
+				object_type_export_function_values_for_type(object->object.type, object_index);
+			else
+				object_type_export_function_values(object_index);
+			if (timed)
+"""),
+("""		object_compute_function_values(object_index);
+		object_compute_change_colors(object_index);
+#ifdef HALO_PSP
+		if (psp_machine_mark)
+""", """		if (psp_hoist)
+		{
+			object_compute_function_values_with(object_index, object, object_definition);
+			object_compute_change_colors_with(object_index, object, object_definition);
+		}
+		else
+		{
+			object_compute_function_values(object_index);
+			object_compute_change_colors(object_index);
+		}
+#ifdef HALO_PSP
+		if (psp_machine_mark)
+"""),
+("""object_definition_get(object->definition_index)->object.model.index==NONE
+""", """(psp_hoist ? object_definition : object_definition_get(object->definition_index))->object.model.index==NONE
+"""),
+("""if (!psp_lights_defer(object_index)) /* psp_fixups.py (FIXES_LD1) */
+#endif
+			object_connect_lights(object_index, TRUE, TRUE);
+""", """if (!psp_lights_defer(object_index)) /* psp_fixups.py (FIXES_LD1) */
+#endif
+			psp_hoist ? object_connect_lights_with(object_index, object, object_definition, TRUE, TRUE) : object_connect_lights(object_index, TRUE, TRUE);
+"""),
+("""static void object_connect_lights(
+	long object_index,
+	boolean disconnect,
+	boolean reconnect)
+{
+	struct object_datum *object = object_get(object_index);
+
+	if (TEST_FLAG(object->object.flags, _object_has_attached_lights_bit))
+	{
+		short i;
+		struct object_definition *object_definition = object_definition_get(object->definition_index);
+""", """static void object_connect_lights(
+	long object_index,
+	boolean disconnect,
+	boolean reconnect)
+{
+	object_connect_lights_with(object_index, object_get(object_index), NULL, disconnect, reconnect);
+}
+
+static void object_connect_lights_with(
+	long object_index,
+	struct object_datum *object,
+	struct object_definition *object_definition,
+	boolean disconnect,
+	boolean reconnect)
+{
+#ifdef PSP_RECON
+	psp_hoist_check(object_index, object, object_definition);
+#endif
+
+	if (TEST_FLAG(object->object.flags, _object_has_attached_lights_bit))
+	{
+		short i;
+		/* the wrapper leaves this lookup to an object that has lights */
+		if (!object_definition)
+			object_definition = object_definition_get(object->definition_index);
+"""),
+("""static void object_compute_function_values(
+	long object_index)
+{
+	short function_index;
+
+	struct object_datum *object = object_get(object_index);
+	struct object_definition *object_definition = object_definition_get(object->definition_index);
+""", """static void object_compute_function_values(
+	long object_index)
+{
+	struct object_datum *object = object_get(object_index);
+
+	object_compute_function_values_with(object_index, object, object_definition_get(object->definition_index));
+}
+
+static void object_compute_function_values_with(
+	long object_index,
+	struct object_datum *object,
+	struct object_definition *object_definition)
+{
+	short function_index;
+#ifdef PSP_RECON
+	psp_hoist_check(object_index, object, object_definition);
+#endif
+
+"""),
+("""static void object_compute_change_colors(
+	long object_index)
+{
+	struct object_datum *object = object_get(object_index);
+	struct object_definition *object_definition = object_definition_get(object->definition_index);
+""", """static void object_compute_change_colors(
+	long object_index)
+{
+	struct object_datum *object = object_get(object_index);
+
+	object_compute_change_colors_with(object_index, object, object_definition_get(object->definition_index));
+}
+
+static void object_compute_change_colors_with(
+	long object_index,
+	struct object_datum *object,
+	struct object_definition *object_definition)
+{
+#ifdef PSP_RECON
+	psp_hoist_check(object_index, object, object_definition);
+#endif
+"""),
+("""object_type_postprocess_node_matrices(object_index, matrices);""",
+ """if (PSP_KEEP_ONCE("hoistold"))
+			object_type_postprocess_node_matrices(object_index, matrices);
+		else
+			object_type_postprocess_node_matrices_for_type(object->object.type, object_index, matrices);"""),
+("""416, object_get(object_index)->object.parent_object_index==NONE);""",
+ """416, PSP_HOIST_OBJECT(object_header, object_index)->object.parent_object_index==NONE);"""),
+("""417, object_get(object_index)->object.next_object_index==NONE);""",
+ """417, PSP_HOIST_OBJECT(object_header, object_index)->object.next_object_index==NONE);"""),
+]
+FIXES_HOIST["source/objects/object_types.c#hoist"] = [
+("""boolean object_type_update(
+	long object_index)
+{
+	short i;
+	boolean result;
+	struct object_type_definition *definition = object_type_definition_get(object_get(object_index)->object.type);
+	result = FALSE;
+""", """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_HOIST): the by-type bodies below, called from the
+wrappers before them and from objects.c's update */
+boolean object_type_update_for_type(short type, long object_index);
+void object_type_export_function_values_for_type(short type, long object_index);
+void object_type_preprocess_node_orientations_for_type(short type, long object_index, struct real_orientation *node_orientations);
+void object_type_postprocess_node_matrices_for_type(short type, long object_index, struct real_matrix4x3 *node_matrices);
+#endif
+
+boolean object_type_update(
+	long object_index)
+{
+	return object_type_update_for_type(object_get(object_index)->object.type, object_index);
+}
+
+boolean object_type_update_for_type(
+	short type,
+	long object_index)
+{
+	short i;
+	boolean result;
+	struct object_type_definition *definition = object_type_definition_get(type);
+	result = FALSE;
+"""),
+("""void object_type_export_function_values(
+	long object_index)
+{
+	short i;
+	struct object_type_definition *definition = object_type_definition_get(object_get(object_index)->object.type);
+""", """void object_type_export_function_values(
+	long object_index)
+{
+	object_type_export_function_values_for_type(object_get(object_index)->object.type, object_index);
+}
+
+void object_type_export_function_values_for_type(
+	short type,
+	long object_index)
+{
+	short i;
+	struct object_type_definition *definition = object_type_definition_get(type);
+"""),
+("""void object_type_preprocess_node_orientations(
+	long object_index,
+	struct real_orientation *node_orientations)
+{
+	short i;
+	struct object_type_definition *definition = object_type_definition_get(object_get(object_index)->object.type);
+""", """void object_type_preprocess_node_orientations(
+	long object_index,
+	struct real_orientation *node_orientations)
+{
+	object_type_preprocess_node_orientations_for_type(object_get(object_index)->object.type, object_index, node_orientations);
+}
+
+void object_type_preprocess_node_orientations_for_type(
+	short type,
+	long object_index,
+	struct real_orientation *node_orientations)
+{
+	short i;
+	struct object_type_definition *definition = object_type_definition_get(type);
+"""),
+("""void object_type_postprocess_node_matrices(
+	long object_index,
+	struct real_matrix4x3 *node_matrices)
+{
+	short i;
+	struct object_type_definition *definition = object_type_definition_get(object_get(object_index)->object.type);
+""", """void object_type_postprocess_node_matrices(
+	long object_index,
+	struct real_matrix4x3 *node_matrices)
+{
+	object_type_postprocess_node_matrices_for_type(object_get(object_index)->object.type, object_index, node_matrices);
+}
+
+void object_type_postprocess_node_matrices_for_type(
+	short type,
+	long object_index,
+	struct real_matrix4x3 *node_matrices)
+{
+	short i;
+	struct object_type_definition *definition = object_type_definition_get(type);
+"""),
+]
+
+# ---------- UNITHOIST (api-job 40135731866, lever 2): the biped update chain takes the
+# biped and definition biped_update already holds, not a lookup of each in every
+# helper (FIXES_HOIST's idea, one chain down). A helper is passed them, or NULL under
+# "unithoistold", and looks them up itself when it gets NULL. biped_snap_facing and
+# biped_get_physics_pill have other callers, so each keeps a wrapper over a static
+# _with body; objects.c's object_get_origin and object_mark_function get a public
+# _with body the same way (perception's refresh marks the object it just got).
+# biped_verify_object_vectors returned after its lookup when "verifyvectors" is off;
+# it now returns first. The two discarded biped_definition_get calls (a tag_get
+# whose result nothing reads) go with the hoist. Exact while the object pool moves
+# nothing between biped_update's lookup and the helper: only memory_pool_compact
+# moves a live object's block, and block_reallocate moves the one being made.
+# "unithoistold": the old calls. "unithoistcheck" (PSP_RECON): each held pointer
+# looked up again and counted, expected 0 differing
+FIXES_UNITHOIST = {}
+FIXES_UNITHOIST["source/units/bipeds.c#unithoist"] = [
+("""static void biped_snap_facing(
+	long biped_index);
+""", """static void biped_snap_facing(
+	long biped_index);
+/* psp_fixups.py (FIXES_UNITHOIST): bodies that take the biped and definition biped_update holds */
+static void biped_snap_facing_with(
+	long biped_index,
+	struct biped_datum *biped,
+	struct biped_definition *definition);
+static void biped_get_physics_pill_with(
+	long biped_index,
+	struct biped_datum *biped,
+	struct biped_definition *definition,
+	real_point3d *base,
+	real *height,
+	real *width);
+real_point3d *psp_object_get_origin_with(long object_index, struct object_datum *object, real_point3d *origin);
+
+#ifdef PSP_RECON
+/* "unithoistcheck": a held pointer against a fresh lookup (NULL: that helper looks up for itself) */
+static void psp_unithoist_check(long biped_index, struct biped_datum *biped, struct biped_definition *definition)
+{
+	static int on = -1;
+	static unsigned long checked, differed;
+	int psp_keep(const char *name);
+	int psp_keep_loaded(void);
+	void platform_psp_log(const char *format, ...);
+
+	if (!biped)
+		return;
+	if (on < 0 && psp_keep_loaded())
+		on = psp_keep("unithoistcheck");
+	if (on <= 0)
+		return;
+	checked++;
+	if (biped_get(biped_index) != biped ||
+		(definition && biped_definition_get(biped->definition_index) != definition))
+	{
+		if (differed++ < 8)
+			platform_psp_log("unithoistcheck: a held pointer differs from its lookup (biped %ld)", biped_index);
+	}
+	if (checked % 100000 == 0)
+		platform_psp_log("unithoistcheck: %lu pointers looked up again, %lu differed", checked, differed);
+}
+#endif
+"""),
+("""	struct biped_datum *biped = biped_get(biped_index);
+#ifdef HALO_PSP
+	{
+		/* (units.c's #verify, psp_fixups.py) */
+""", """	struct biped_datum *biped;
+#ifdef HALO_PSP
+	{
+		/* (units.c's #verify, psp_fixups.py) */
+"""),
+("""		if (!psp_verify)
+			return;
+	}
+#endif
+""", """		if (!psp_verify)
+		{
+			/* psp_fixups.py (FIXES_UNITHOIST): the lookup waits for a verify that runs */
+			if (PSP_KEEP_ONCE("unithoistold"))
+				(void)biped_get(biped_index);
+			return;
+		}
+	}
+#endif
+	biped = biped_get(biped_index);
+"""),
+("""	struct biped_datum *biped = biped_get(biped_index);
+	struct biped_definition *definition = biped_definition_get(biped->definition_index);
+
+	object_get_origin(biped_index, base);
+""", """	struct biped_datum *biped = biped_get(biped_index);
+
+	biped_get_physics_pill_with(biped_index, biped, biped_definition_get(biped->definition_index), base, height, width);
+}
+
+static void biped_get_physics_pill_with(
+	long biped_index,
+	struct biped_datum *biped,
+	struct biped_definition *definition,
+	real_point3d *base,
+	real *height,
+	real *width)
+{
+#ifdef PSP_RECON
+	psp_unithoist_check(biped_index, biped, definition);
+#endif
+	if (PSP_KEEP_ONCE("unithoistold"))
+		object_get_origin(biped_index, base);
+	else
+		psp_object_get_origin_with(biped_index, (struct object_datum *)biped, base);
+"""),
+("""static void biped_snap_facing(
+	long biped_index)
+{
+	struct biped_datum *biped = biped_get(biped_index);
+	struct biped_definition *definition = biped_definition_get(biped->definition_index);
+
+""", """static void biped_snap_facing(
+	long biped_index)
+{
+	struct biped_datum *biped = biped_get(biped_index);
+
+	biped_snap_facing_with(biped_index, biped, biped_definition_get(biped->definition_index));
+}
+
+static void biped_snap_facing_with(
+	long biped_index,
+	struct biped_datum *biped,
+	struct biped_definition *definition)
+{
+#ifdef PSP_RECON
+	psp_unithoist_check(biped_index, biped, definition);
+#endif
+
+"""),
+("""static void biped_update_dead(
+	long biped_index,
+	struct unit_animation_update_data *animation)
+{
+	struct biped_datum *biped = biped_get(biped_index);
+	struct biped_definition *definition = biped_definition_get(biped->definition_index);
+""", """static void biped_update_dead(
+	long biped_index,
+	struct unit_animation_update_data *animation,
+	struct biped_datum *held_biped,
+	struct biped_definition *held_definition)
+{
+	struct biped_datum *biped = held_biped ? held_biped : biped_get(biped_index);
+	struct biped_definition *definition = held_definition ? held_definition : biped_definition_get(biped->definition_index);
+#ifdef PSP_RECON
+	psp_unithoist_check(biped_index, held_biped, held_definition);
+#endif
+"""),
+("""static void biped_update_airborne(
+	long biped_index,
+	struct unit_animation_update_data *animation)
+{
+	struct biped_datum *biped = biped_get(biped_index);
+	struct biped_definition *definition = biped_definition_get(biped->definition_index);
+	boolean flying = FALSE;
+""", """static void biped_update_airborne(
+	long biped_index,
+	struct unit_animation_update_data *animation,
+	struct biped_datum *held_biped,
+	struct biped_definition *held_definition)
+{
+	struct biped_datum *biped = held_biped ? held_biped : biped_get(biped_index);
+	struct biped_definition *definition = held_definition ? held_definition : biped_definition_get(biped->definition_index);
+	boolean flying = FALSE;
+#ifdef PSP_RECON
+	psp_unithoist_check(biped_index, held_biped, held_definition);
+#endif
+"""),
+("""static void biped_update_landing(
+	long biped_index,
+	struct unit_animation_update_data *animation)
+{
+	struct biped_datum *biped = biped_get(biped_index);
+
+	biped_definition_get(biped->definition_index);
+""", """static void biped_update_landing(
+	long biped_index,
+	struct unit_animation_update_data *animation,
+	struct biped_datum *held_biped)
+{
+	struct biped_datum *biped = held_biped ? held_biped : biped_get(biped_index);
+
+#ifdef PSP_RECON
+	psp_unithoist_check(biped_index, held_biped, NULL);
+#endif
+	if (!held_biped)
+		biped_definition_get(biped->definition_index);
+"""),
+("""static void biped_update_slipping(
+	long biped_index,
+	struct unit_animation_update_data *animation)
+{
+	struct biped_datum *biped = biped_get(biped_index);
+
+	biped_definition_get(biped->definition_index);
+""", """static void biped_update_slipping(
+	long biped_index,
+	struct unit_animation_update_data *animation,
+	struct biped_datum *held_biped)
+{
+	struct biped_datum *biped = held_biped ? held_biped : biped_get(biped_index);
+
+#ifdef PSP_RECON
+	psp_unithoist_check(biped_index, held_biped, NULL);
+#endif
+	if (!held_biped)
+		biped_definition_get(biped->definition_index);
+"""),
+("""static void biped_try_to_make_footsteps(
+	long biped_index)
+{
+	struct biped_datum *biped = biped_get(biped_index);
+	boolean air_contact;
+	boolean moving;
+
+	biped_definition_get(biped->definition_index);
+""", """static void biped_try_to_make_footsteps(
+	long biped_index,
+	struct biped_datum *held_biped)
+{
+	struct biped_datum *biped = held_biped ? held_biped : biped_get(biped_index);
+	boolean air_contact;
+	boolean moving;
+
+#ifdef PSP_RECON
+	psp_unithoist_check(biped_index, held_biped, NULL);
+#endif
+	if (!held_biped)
+		biped_definition_get(biped->definition_index);
+"""),
+("""static void biped_falling_danger(
+	long biped_index)
+{
+	struct biped_datum *biped = biped_get(biped_index);
+	struct biped_definition *definition = biped_definition_get(biped->definition_index);
+""", """static void biped_falling_danger(
+	long biped_index,
+	struct biped_datum *held_biped,
+	struct biped_definition *held_definition)
+{
+	struct biped_datum *biped = held_biped ? held_biped : biped_get(biped_index);
+	struct biped_definition *definition = held_definition ? held_definition : biped_definition_get(biped->definition_index);
+#ifdef PSP_RECON
+	psp_unithoist_check(biped_index, held_biped, held_definition);
+#endif
+"""),
+("""static boolean biped_check_discard(
+	long biped_index)
+{
+	struct biped_datum *biped = biped_get(biped_index);
+
+""", """static boolean biped_check_discard(
+	long biped_index,
+	struct biped_datum *held_biped)
+{
+	struct biped_datum *biped = held_biped ? held_biped : biped_get(biped_index);
+
+#ifdef PSP_RECON
+	psp_unithoist_check(biped_index, held_biped, NULL);
+#endif
+
+"""),
+("""static void biped_update_turning(
+	long biped_index,
+	struct unit_animation_update_data *animation)
+{
+	struct biped_datum *biped = biped_get(biped_index);
+	struct biped_definition *definition = biped_definition_get(biped->definition_index);
+	unsigned long flags = definition->biped.flags;
+""", """static void biped_update_turning(
+	long biped_index,
+	struct unit_animation_update_data *animation,
+	struct biped_datum *held_biped,
+	struct biped_definition *held_definition)
+{
+	struct biped_datum *biped = held_biped ? held_biped : biped_get(biped_index);
+	struct biped_definition *definition = held_definition ? held_definition : biped_definition_get(biped->definition_index);
+	unsigned long flags = definition->biped.flags;
+#ifdef PSP_RECON
+	psp_unithoist_check(biped_index, held_biped, held_definition);
+#endif
+"""),
+("""static void biped_update_moving(
+	long biped_index,
+	struct unit_animation_update_data *animation)
+{
+	struct biped_physics physics;
+	struct biped_definition *definition;
+	struct biped_datum *biped;
+	real movement_scale;
+	word in_flags;
+
+	biped = biped_get(biped_index);
+""", """static void biped_update_moving(
+	long biped_index,
+	struct unit_animation_update_data *animation,
+	struct biped_datum *held_biped,
+	struct biped_definition *held_definition)
+{
+	struct biped_physics physics;
+	struct biped_definition *definition;
+	struct biped_datum *biped;
+	real movement_scale;
+	word in_flags;
+
+	biped = held_biped ? held_biped : biped_get(biped_index);
+#ifdef PSP_RECON
+	psp_unithoist_check(biped_index, held_biped, held_definition);
+#endif
+"""),
+("""	definition = biped_definition_get(biped->definition_index);
+	physics.biped_index = biped_index;
+""", """	definition = held_definition ? held_definition : biped_definition_get(biped->definition_index);
+	physics.biped_index = biped_index;
+"""),
+("""	biped_get_physics_pill(
+		biped_index,
+		&physics.position,
+		&physics.height,
+		&physics.width);
+""", """	if (held_biped)
+		biped_get_physics_pill_with(biped_index, biped, definition, &physics.position, &physics.height, &physics.width);
+	else
+		biped_get_physics_pill(
+			biped_index,
+			&physics.position,
+			&physics.height,
+			&physics.width);
+"""),
+("""boolean biped_update(
+	long biped_index)
+{
+	struct biped_datum *biped = biped_get(biped_index);
+	struct biped_definition *definition = biped_definition_get(biped->definition_index);
+	struct unit_animation_update_data animation;
+""", """boolean biped_update(
+	long biped_index)
+{
+	struct biped_datum *biped = biped_get(biped_index);
+	struct biped_definition *definition = biped_definition_get(biped->definition_index);
+	struct unit_animation_update_data animation;
+	/* psp_fixups.py (FIXES_UNITHOIST): handed to the helpers below, which look up when given NULL ("unithoistold") */
+	struct biped_datum *const psp_held_biped = PSP_KEEP_ONCE("unithoistold") ? NULL : biped;
+	struct biped_definition *const psp_held_definition = psp_held_biped ? definition : NULL;
+"""),
+("""		biped_snap_facing(biped_index);
+		if (TEST_FLAG(biped->object.damage_flags, _object_dead_bit) ||
+""", """		if (psp_held_biped)
+			biped_snap_facing_with(biped_index, biped, definition);
+		else
+			biped_snap_facing(biped_index);
+		if (TEST_FLAG(biped->object.damage_flags, _object_dead_bit) ||
+"""),
+("""biped_update_turning(biped_index, &animation);""",
+ """biped_update_turning(biped_index, &animation, psp_held_biped, psp_held_definition);"""),
+("""biped_update_moving(biped_index, &animation);""",
+ """biped_update_moving(biped_index, &animation, psp_held_biped, psp_held_definition);"""),
+("""biped_update_dead(biped_index, &animation);""",
+ """biped_update_dead(biped_index, &animation, psp_held_biped, psp_held_definition);"""),
+("""biped_update_airborne(biped_index, &animation);""",
+ """biped_update_airborne(biped_index, &animation, psp_held_biped, psp_held_definition);"""),
+("""biped_update_landing(biped_index, &animation);""",
+ """biped_update_landing(biped_index, &animation, psp_held_biped);"""),
+("""biped_update_slipping(biped_index, &animation);""",
+ """biped_update_slipping(biped_index, &animation, psp_held_biped);"""),
+("""biped_try_to_make_footsteps(biped_index);
+		biped_falling_danger(biped_index);
+		biped_check_discard(biped_index);""",
+ """biped_try_to_make_footsteps(biped_index, psp_held_biped);
+		biped_falling_danger(biped_index, psp_held_biped, psp_held_definition);
+		biped_check_discard(biped_index, psp_held_biped);"""),
+]
+FIXES_UNITHOIST["source/objects/objects.c#unithoist"] = [
+("""real_point3d *object_get_origin(
+	long object_index,
+	real_point3d *origin)
+{
+	struct object_datum *object = object_get(object_index);
+
+""", """/* psp_fixups.py (FIXES_UNITHOIST): the caller's object, when it holds it */
+real_point3d *psp_object_get_origin_with(long object_index, struct object_datum *object, real_point3d *origin);
+
+real_point3d *object_get_origin(
+	long object_index,
+	real_point3d *origin)
+{
+	return psp_object_get_origin_with(object_index, object_get(object_index), origin);
+}
+
+real_point3d *psp_object_get_origin_with(
+	long object_index,
+	struct object_datum *object,
+	real_point3d *origin)
+{
+
+"""),
+("""boolean object_mark_function(
+	long object_index)
+{
+	boolean result;
+	struct object_datum *object = object_get(object_index);
+""", """/* psp_fixups.py (FIXES_UNITHOIST): perception's refresh marks the object it just got */
+boolean psp_object_mark_function_with(struct object_datum *object);
+
+boolean object_mark_function(
+	long object_index)
+{
+	return psp_object_mark_function_with(object_get(object_index));
+}
+
+boolean psp_object_mark_function_with(
+	struct object_datum *object)
+{
+	boolean result;
+"""),
+]
+FIXES_UNITHOIST["source/ai/actor_perception.c#unithoist"] = [
+("""#define current_object pointers.current_object
+""", """#define current_object pointers.current_object
+	boolean psp_object_mark_function_with(struct object_datum *object); /* psp_fixups.py (FIXES_UNITHOIST) */
+"""),
+("""		if (object_mark_function(object_index))
+""", """		if (PSP_KEEP_ONCE("unithoistold") ? object_mark_function(object_index) : psp_object_mark_function_with(current_object))
+"""),
+]
+
+# ---------- the level's mirror pass: on the PSP the mirror window never
+# opens (FIXES_108 render.c#mirror), so has_mirror is always FALSE and
+# rasterizer_environment_reflection_mirror_draw draws nothing; the pass still
+# walked every visible material each frame. Skipped while the GE draws the
+# level; keep word mirrorpass walks it as before
+FIXES_MIRRORPASS = {}
+FIXES_MIRRORPASS["source/structures/structure_render.c#mirrorpass"] = [
+("""void structure_render_reflection_mirrors(
+	void)
+{
+	if (structure_render_globals.environment_geometry_valid)""",
+ """#ifdef HALO_PSP
+int psp_keep(const char *name); /* psp_platform.c */
+static int psp_mirror_pass = -1;
+#endif
+
+void structure_render_reflection_mirrors(
+	void)
+{
+#ifdef HALO_PSP
+	/* psp_fixups.py (FIXES_MIRRORPASS): has_mirror is never set on the PSP,
+	so the pass would draw nothing */
+	if (psp_mirror_pass < 0)
+		psp_mirror_pass = psp_keep("mirrorpass");
+	if (!psp_mirror_pass && psp_ge_active())
+		return;
+#endif
+	if (structure_render_globals.environment_geometry_valid)"""),
+]
+
 # ---------- FIXES_137: ChupathingyCE v0.7.5d (the engine pin moved for b135)
 FIXES_137 = {}
 
@@ -24663,6 +26592,360 @@ struct unit_control_data const *psp_drive_control(long unit_index, struct unit_c
 ]
 
 
+
+# ---------- FIXES_COMPACTSKIP: a compaction of a pool already compact (research, GCLATE)
+#
+# Late in b30 the object garbage collector runs every tick with active garbage
+# over its trigger, collects nothing (every body in view), and still compacts
+# the object pool: a walk of every block header (lab levers.tsv GCLATE). A
+# pool whose blocks already lie end to end (its contiguous free room equals
+# its free room) has nothing to move, and the walk would only rewrite links
+# that already hold, so it is skipped. Exact by construction: the pool's bytes
+# and links are what the walk would leave. Keep word "compactalways" walks as
+# before; "compactcheck" walks anyway and counts blocks the skip would have
+# left out of place (psp_compact_report, expected 0).
+
+FIXES_COMPACTSKIP = {}
+FIXES_COMPACTSKIP["source/memory/memory_pool.c#compactskip"] = [
+("""void memory_pool_compact(
+	struct memory_pool *pool)
+{
+	byte *destination;
+	struct memory_pool_block *block;
+	struct memory_pool_block *previous_block;
+
+	block = pool->first_block;
+	if (block)
+	{
+		destination = pool->base_address;
+		previous_block = NULL;
+		do
+		{
+			if ((byte *)block > destination)
+			{
+""",
+"""#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_COMPACTSKIP): 1 skip, 0 walk always, 2 walk and check */
+int psp_keep(const char *name);
+static int psp_compact_mode = -1;
+unsigned int psp_compact_skipped, psp_compact_walked, psp_compact_check_moved;
+#endif
+
+void memory_pool_compact(
+	struct memory_pool *pool)
+{
+	byte *destination;
+	struct memory_pool_block *block;
+	struct memory_pool_block *previous_block;
+#ifdef HALO_PSP
+	boolean psp_already_compact;
+
+	if (psp_compact_mode < 0)
+		psp_compact_mode = psp_keep("compactcheck") ? 2 : psp_keep("compactalways") || psp_keep("smallwins1old") ? 0 : 1;
+	psp_already_compact = pool->size - memory_pool_get_used_size(pool) == pool->free_size;
+	if (psp_already_compact && psp_compact_mode == 1)
+	{
+		psp_compact_skipped++;
+		return;
+	}
+	psp_compact_walked++;
+#endif
+
+	block = pool->first_block;
+	if (block)
+	{
+		destination = pool->base_address;
+		previous_block = NULL;
+		do
+		{
+			if ((byte *)block > destination)
+			{
+#ifdef HALO_PSP
+				if (psp_already_compact)
+					psp_compact_check_moved++;
+#endif
+"""),
+]
+
+
+# ---------- FIXES_GCHEAD: the garbage collector's player heads, once a collection (research, GCLATE)
+#
+# Late in b30 the collector tests ~200 garbage objects a tick against every
+# player's view (object_visible_to_any_player, its only caller), and each test
+# finds the player's head with object_get_marker_by_name: a search of the
+# model's markers by name and a node transform, the same answer every time
+# within one collection (it deletes garbage only, never the player's unit).
+# The head is found once a collection and kept for the rest of it. Exact by
+# construction in the emulator, but NOT on the PSP: there the on side removed
+# 7-9 garbage objects in the player's view in its first collection, as if the
+# kept head were not where it is (the PSP-3000 pair 40484028762; the off side
+# removed none in 192 collections). Until that is understood it is opt-in:
+# keep word "gchead"; "smallwins1old" turns the whole batch off
+
+FIXES_GCHEAD = {}
+FIXES_GCHEAD["source/objects/objects.c#gchead"] = [
+("""boolean object_visible_to_any_player(
+	long object_index)
+{""",
+"""#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_GCHEAD) */
+extern int psp_keep(const char *name);
+static int psp_gc_head_mode = -1; /* 1 kept for a collection, 0 as before */
+static int psp_gc_heads_live;
+static long psp_gc_head_unit[16];
+static real_point3d psp_gc_head_position[16];
+unsigned int psp_gc_head_found, psp_gc_head_kept;
+
+static void psp_gc_heads_begin(void)
+{
+	int k;
+
+	if (psp_gc_head_mode < 0)
+		psp_gc_head_mode = psp_keep("gchead") && !psp_keep("smallwins1old");
+	for (k = 0; k < 16; k++)
+		psp_gc_head_unit[k] = NONE;
+	psp_gc_heads_live = psp_gc_head_mode;
+}
+
+static void psp_gc_head(long player_index, long unit_index, real_point3d *position)
+{
+	int slot = DATUM_INDEX_TO_ABSOLUTE_INDEX(player_index) & 15;
+
+	if (psp_gc_heads_live && psp_gc_head_unit[slot] == unit_index)
+	{
+		*position = psp_gc_head_position[slot];
+		psp_gc_head_kept++;
+		return;
+	}
+	unit_get_head_position(unit_index, position);
+	psp_gc_head_found++;
+	if (psp_gc_heads_live)
+	{
+		psp_gc_head_unit[slot] = unit_index;
+		psp_gc_head_position[slot] = *position;
+	}
+}
+#endif
+
+boolean object_visible_to_any_player(
+	long object_index)
+{"""),
+("""					unit_get_head_position(player->unit_index, &player_position);
+""",
+"""#ifdef HALO_PSP
+					psp_gc_head(player_index, player->unit_index, &player_position);
+#else
+					unit_get_head_position(player->unit_index, &player_position);
+#endif
+"""),
+("""			garbage_collect_mode_wide = garbage_collect_mode;
+""",
+"""			garbage_collect_mode_wide = garbage_collect_mode;
+#ifdef HALO_PSP
+			psp_gc_heads_begin();
+#endif
+"""),
+("""		/* port: in network co-op, active garbage left above its target is
+""",
+"""#ifdef HALO_PSP
+		psp_gc_heads_live = 0;
+#endif
+		/* port: in network co-op, active garbage left above its target is
+"""),
+]
+
+# ---------- FIXES_SMALLWINS2: small wins batch 2
+#
+# Shelved small wins revived, each exact, each with its own off word, all off
+# with "smallwins2old".
+#
+# VIS ("visrectold"; check "visrectcheck"): the visibility walk clips each
+# portal's screen hull against the region seen so far (convex_hull2d_intersect,
+# a clip by every edge). When the two hulls' bounding rectangles lie apart by
+# more than the clip's tolerance, the clip can only come back empty, and the
+# walk skips it. A survey counted ~92-96 such clips a frame on
+# b30. The check runs the clip anyway for every one skipped and counts any
+# that wasn't empty (expected 0; the metrics line).
+FIXES_SMALLWINS2 = {}
+FIXES_SMALLWINS2["source/structures/structure_visibility.c#visrect"] = [
+("""#define PSP_PORTAL_STEPS 160
+""",
+"""/* psp_fixups.py (FIXES_SMALLWINS2 #visrect) */
+extern int psp_keep(const char *name);
+static int psp_visrect_mode = -1; /* 1 skip, 0 as before, 2 check */
+unsigned int psp_visrect_skipped, psp_visrect_check_kept;
+#define PSP_VISRECT_MARGIN 0.01f
+
+static int psp_visrect_apart(struct portal_hull const *a, struct portal_hull const *b)
+{
+	real ax0, ax1, ay0, ay1, bx0, bx1, by0, by1;
+	short k;
+
+	if (psp_visrect_mode < 0)
+		psp_visrect_mode = psp_keep("visrectcheck") ? 2 :
+			psp_keep("visrectold") || psp_keep("smallwins2old") ? 0 : 1;
+	if (!psp_visrect_mode || a->vertex_count <= 0 || b->vertex_count <= 0)
+		return 0;
+	ax0 = ax1 = a->vertices[0].x;
+	ay0 = ay1 = a->vertices[0].y;
+	for (k = 1; k < a->vertex_count; k++)
+	{
+		if (a->vertices[k].x < ax0) ax0 = a->vertices[k].x;
+		if (a->vertices[k].x > ax1) ax1 = a->vertices[k].x;
+		if (a->vertices[k].y < ay0) ay0 = a->vertices[k].y;
+		if (a->vertices[k].y > ay1) ay1 = a->vertices[k].y;
+	}
+	bx0 = bx1 = b->vertices[0].x;
+	by0 = by1 = b->vertices[0].y;
+	for (k = 1; k < b->vertex_count; k++)
+	{
+		if (b->vertices[k].x < bx0) bx0 = b->vertices[k].x;
+		if (b->vertices[k].x > bx1) bx1 = b->vertices[k].x;
+		if (b->vertices[k].y < by0) by0 = b->vertices[k].y;
+		if (b->vertices[k].y > by1) by1 = b->vertices[k].y;
+	}
+	if (bx0 > ax1 + PSP_VISRECT_MARGIN || bx1 < ax0 - PSP_VISRECT_MARGIN ||
+		by0 > ay1 + PSP_VISRECT_MARGIN || by1 < ay0 - PSP_VISRECT_MARGIN)
+	{
+		psp_visrect_skipped++;
+		return psp_visrect_mode == 1 ? 1 : 2;
+	}
+	return 0;
+}
+
+#define PSP_PORTAL_STEPS 160
+"""),
+("""				struct portal_hull clipped_hull;
+
+				clipped_hull.vertex_count = convex_hull2d_intersect(
+					visible_region->vertex_count,
+					visible_region->vertices,
+					portal_hull.vertex_count,
+					portal_hull.vertices,
+					MAXIMUM_PORTAL_HULL_VERTICES,
+					clipped_hull.vertices,
+					0.0001f);
+""",
+"""				struct portal_hull clipped_hull;
+#ifdef HALO_PSP
+				int psp_apart = psp_visrect_apart(visible_region, &portal_hull);
+
+				if (psp_apart == 1)
+					clipped_hull.vertex_count = 0;
+				else
+#endif
+				clipped_hull.vertex_count = convex_hull2d_intersect(
+					visible_region->vertex_count,
+					visible_region->vertices,
+					portal_hull.vertex_count,
+					portal_hull.vertices,
+					MAXIMUM_PORTAL_HULL_VERTICES,
+					clipped_hull.vertices,
+					0.0001f);
+#ifdef HALO_PSP
+				if (psp_apart == 2 && clipped_hull.vertex_count != 0)
+					psp_visrect_check_kept++;
+#endif
+"""),
+]
+
+def snd_eval(code):
+    old = ("\t\tmatch_assert(\n\t\t\t\"c:\\\\halo\\\\SOURCE\\\\sound\\\\sound_manager.c\",\n\t\t\t%s,\n"
+           "\t\t\tsound_cache_sound_loaded(permutation));\n") % code
+    new = ("\t\t{\n"
+           "\t\t\t/* psp_fixups.py (FIXES_ASSERTSEVAL): the request is the game's,\n"
+           "\t\t\tnot only the check's (an LRU touch, the sound's first-sight\n"
+           "\t\t\tset-up), so it's made even where asserts are compiled out */\n"
+           "\t\t\tboolean psp_sound_loaded = sound_cache_sound_loaded(permutation);\n\n"
+           "\t\t\tmatch_assert(\n\t\t\t\t\"c:\\\\halo\\\\SOURCE\\\\sound\\\\sound_manager.c\",\n\t\t\t\t%s,\n"
+           "\t\t\t\tpsp_sound_loaded);\n\t\t\t(void)psp_sound_loaded;\n\t\t}\n") % code
+    return (old, new)
+
+# ---------- FIXES_ASSERTSEVAL: asserts whose expressions do the game's work (research, X10)
+#
+# PSP_ASSERTS_OFF compiles the fatal asserts out without evaluating them. Two
+# kinds of assert expression do work the game needs: the sound manager's
+# check that a sound is loaded is itself the cache request (an LRU touch and
+# the sound's first-sight set-up, xbox_sound_cache.c), and the keyframe
+# search's loop guard counts inside its assert. Both now do their work
+# outside the assert, so compiling the checks out leaves it; with asserts kept
+# nothing changes (assertsoff1 40460818822, api-job 40473519163).
+FIXES_ASSERTSEVAL = {}
+# The asserts whose expression is the game's own work, which a later
+# ChupathingyCE marks match_vassert_evaluated (not at our pin): the obstacle
+# path's heap_insert and the script compiler's hs_parse_variable. With asserts
+# compiled out they were dropped: assertsoff5 (40490801164), compiling out
+# only ai/'s asserts, parted b30 at tick 82
+FIXES_ASSERTSEVAL["source/ai/path_obstacle_avoidance.c#heap"] = [
+("""		match_vassert("c:\\\\halo\\\\SOURCE\\\\ai\\\\path_obstacle_avoidance.c", 420, heap_insert(path, step_index), NULL);
+""",
+"""		{
+			/* psp_fixups.py (FIXES_ASSERTSEVAL): the insert is the game's */
+			boolean psp_inserted = heap_insert(path, step_index);
+
+			match_vassert("c:\\\\halo\\\\SOURCE\\\\ai\\\\path_obstacle_avoidance.c", 420, psp_inserted, NULL);
+			(void)psp_inserted;
+		}
+"""),
+]
+FIXES_ASSERTSEVAL["source/hs/hs_compile.c#variable"] = [
+("""						match_vassert(
+							"c:\\\\halo\\\\source\\\\hs\\\\hs_library_internal_compile.h",
+							0x126,
+							hs_parse_variable(variable_expression_index),
+							"asserted");
+""",
+"""						{
+							/* psp_fixups.py (FIXES_ASSERTSEVAL): the parse is the game's */
+							boolean psp_parsed = hs_parse_variable(variable_expression_index);
+
+							match_vassert(
+								"c:\\\\halo\\\\source\\\\hs\\\\hs_library_internal_compile.h",
+								0x126,
+								psp_parsed,
+								"asserted");
+							(void)psp_parsed;
+						}
+"""),
+]
+FIXES_ASSERTSEVAL["source/sound/sound_manager.c#loaded"] = [snd_eval("0x79A"), snd_eval("0x9DA")]
+# The frame data checks ask the animation cache for the frame again
+# (psp_anim.c keeps the last few ranges it hands out), and with asserts
+# compiled out that second request was gone: assertsoff3 (40489515548) saw
+# b30's objects and actors part at tick 82. Asked for outside the check
+FIXES_ASSERTSEVAL["source/models/model_animations.c#framedata"] = [
+('\t\tmatch_assert(\n\t\t\t"c:\\\\halo\\\\SOURCE\\\\models\\\\model_animations.c",\n\t\t\t321,\n\t\t\tcompressed || (byte *)data-(byte *)animation_get_frame_data(animation, frame_index)==animation->frame_size);\n',
+ '\t\t{\n\t\t\t/* psp_fixups.py (FIXES_ASSERTSEVAL): asked for again, as the check\n\t\t\talways did (the animation cache\'s handouts, psp_anim.c), even\n\t\t\twhere asserts are compiled out */\n\t\t\tbyte *psp_check_data = compressed ? NULL : animation_get_frame_data(animation, frame_index);\n\n\t\t\tmatch_assert(\n\t\t\t\t"c:\\\\halo\\\\SOURCE\\\\models\\\\model_animations.c",\n\t\t\t\t321,\n\t\t\t\tcompressed || (byte *)data-(byte *)psp_check_data==animation->frame_size);\n\t\t\t(void)psp_check_data;\n\t\t}\n'),
+('\t\tmatch_assert(\n\t\t\t"c:\\\\halo\\\\SOURCE\\\\models\\\\model_animations.c",\n\t\t\t391,\n\t\t\tcompressed || ((byte *)data-(byte *)animation_get_frame_data(animation, frame_index)==animation->frame_size));\n',
+ '\t\t{\n\t\t\t/* psp_fixups.py (FIXES_ASSERTSEVAL): asked for again, as the check\n\t\t\talways did (the animation cache\'s handouts, psp_anim.c), even\n\t\t\twhere asserts are compiled out */\n\t\t\tbyte *psp_check_data = compressed ? NULL : animation_get_frame_data(animation, frame_index);\n\n\t\t\tmatch_assert(\n\t\t\t\t"c:\\\\halo\\\\SOURCE\\\\models\\\\model_animations.c",\n\t\t\t\t391,\n\t\t\t\tcompressed || ((byte *)data-(byte *)psp_check_data==animation->frame_size));\n\t\t\t(void)psp_check_data;\n\t\t}\n'),
+('\t\tmatch_assert(\n\t\t\t"c:\\\\halo\\\\SOURCE\\\\models\\\\model_animations.c",\n\t\t\t470,\n\t\t\tcompressed || ((byte *)data-(byte *)animation_get_frame_data(animation, frame_index)==animation->frame_size));\n',
+ '\t\t{\n\t\t\t/* psp_fixups.py (FIXES_ASSERTSEVAL): asked for again, as the check\n\t\t\talways did (the animation cache\'s handouts, psp_anim.c), even\n\t\t\twhere asserts are compiled out */\n\t\t\tbyte *psp_check_data = compressed ? NULL : animation_get_frame_data(animation, frame_index);\n\n\t\t\tmatch_assert(\n\t\t\t\t"c:\\\\halo\\\\SOURCE\\\\models\\\\model_animations.c",\n\t\t\t\t470,\n\t\t\t\tcompressed || ((byte *)data-(byte *)psp_check_data==animation->frame_size));\n\t\t\t(void)psp_check_data;\n\t\t}\n'),
+('\t\tmatch_assert(\n\t\t\t"c:\\\\halo\\\\SOURCE\\\\models\\\\model_animations.c",\n\t\t\t554,\n\t\t\tcompressed || ((byte *)data-(byte *)animation_get_frame_data(animation, frame_index)==animation->frame_size));\n',
+ '\t\t{\n\t\t\t/* psp_fixups.py (FIXES_ASSERTSEVAL): asked for again, as the check\n\t\t\talways did (the animation cache\'s handouts, psp_anim.c), even\n\t\t\twhere asserts are compiled out */\n\t\t\tbyte *psp_check_data = compressed ? NULL : animation_get_frame_data(animation, frame_index);\n\n\t\t\tmatch_assert(\n\t\t\t\t"c:\\\\halo\\\\SOURCE\\\\models\\\\model_animations.c",\n\t\t\t\t554,\n\t\t\t\tcompressed || ((byte *)data-(byte *)psp_check_data==animation->frame_size));\n\t\t\t(void)psp_check_data;\n\t\t}\n'),
+('\t\tmatch_assert(\n\t\t\t"c:\\\\halo\\\\SOURCE\\\\models\\\\model_animations.c",\n\t\t\t693,\n\t\t\tcompressed || ((byte *)data-(byte *)animation_get_frame_data(animation, frame_index)==animation->frame_size));\n',
+ '\t\t{\n\t\t\t/* psp_fixups.py (FIXES_ASSERTSEVAL): asked for again, as the check\n\t\t\talways did (the animation cache\'s handouts, psp_anim.c), even\n\t\t\twhere asserts are compiled out */\n\t\t\tbyte *psp_check_data = compressed ? NULL : animation_get_frame_data(animation, frame_index);\n\n\t\t\tmatch_assert(\n\t\t\t\t"c:\\\\halo\\\\SOURCE\\\\models\\\\model_animations.c",\n\t\t\t\t693,\n\t\t\t\tcompressed || ((byte *)data-(byte *)psp_check_data==animation->frame_size));\n\t\t\t(void)psp_check_data;\n\t\t}\n'),
+('\t\tmatch_assert(\n\t\t\t"c:\\\\halo\\\\SOURCE\\\\models\\\\model_animations.c",\n\t\t\t694,\n\t\t\tcompressed || ((byte *)next_data-(byte *)animation_get_frame_data(animation, next_frame_index)==animation->frame_size));\n',
+ '\t\t{\n\t\t\t/* psp_fixups.py (FIXES_ASSERTSEVAL): asked for again, as the check\n\t\t\talways did (the animation cache\'s handouts, psp_anim.c), even\n\t\t\twhere asserts are compiled out */\n\t\t\tbyte *psp_check_data = compressed ? NULL : animation_get_frame_data(animation, next_frame_index);\n\n\t\t\tmatch_assert(\n\t\t\t\t"c:\\\\halo\\\\SOURCE\\\\models\\\\model_animations.c",\n\t\t\t\t694,\n\t\t\t\tcompressed || ((byte *)next_data-(byte *)psp_check_data==animation->frame_size));\n\t\t\t(void)psp_check_data;\n\t\t}\n'),
+('\t\tmatch_assert(\n\t\t\t"c:\\\\halo\\\\SOURCE\\\\models\\\\model_animations.c",\n\t\t\t820,\n\t\t\tcompressed || ((byte *)data-(byte *)animation_get_frame_data(animation, frame_index)==animation->frame_size));\n',
+ '\t\t{\n\t\t\t/* psp_fixups.py (FIXES_ASSERTSEVAL): asked for again, as the check\n\t\t\talways did (the animation cache\'s handouts, psp_anim.c), even\n\t\t\twhere asserts are compiled out */\n\t\t\tbyte *psp_check_data = compressed ? NULL : animation_get_frame_data(animation, frame_index);\n\n\t\t\tmatch_assert(\n\t\t\t\t"c:\\\\halo\\\\SOURCE\\\\models\\\\model_animations.c",\n\t\t\t\t820,\n\t\t\t\tcompressed || ((byte *)data-(byte *)psp_check_data==animation->frame_size));\n\t\t\t(void)psp_check_data;\n\t\t}\n'),
+('\t\tmatch_assert(\n\t\t\t"c:\\\\halo\\\\SOURCE\\\\models\\\\model_animations.c",\n\t\t\t821,\n\t\t\tcompressed || ((byte *)next_data-(byte *)animation_get_frame_data(animation, next_frame_index)==animation->frame_size));\n',
+ '\t\t{\n\t\t\t/* psp_fixups.py (FIXES_ASSERTSEVAL): asked for again, as the check\n\t\t\talways did (the animation cache\'s handouts, psp_anim.c), even\n\t\t\twhere asserts are compiled out */\n\t\t\tbyte *psp_check_data = compressed ? NULL : animation_get_frame_data(animation, next_frame_index);\n\n\t\t\tmatch_assert(\n\t\t\t\t"c:\\\\halo\\\\SOURCE\\\\models\\\\model_animations.c",\n\t\t\t\t821,\n\t\t\t\tcompressed || ((byte *)next_data-(byte *)psp_check_data==animation->frame_size));\n\t\t\t(void)psp_check_data;\n\t\t}\n'),
+]
+FIXES_ASSERTSEVAL["source/models/model_animations.c#killer"] = [
+(r"""		match_assert(
+			"c:\\halo\\SOURCE\\models\\model_animations.c",
+			1356,
+			++infinite_loop_killer<200);
+""",
+r"""		/* psp_fixups.py (FIXES_ASSERTSEVAL): counted outside the assert */
+		++infinite_loop_killer;
+		match_assert(
+			"c:\\halo\\SOURCE\\models\\model_animations.c",
+			1356,
+			infinite_loop_killer<200);
+"""),
+]
+
 # ---------- FIXES_RECON: recon censuses (docs/recon_134.md)
 #
 # Measuring instruments, built only with PSP_RECON=1 (psp_build.py): their
@@ -24670,6 +26953,47 @@ struct unit_control_data const *psp_drive_control(long unit_index, struct unit_c
 # so no release build carries them. Each reads and changes nothing the game
 # uses, so play is the same with it on.
 FIXES_RECON = {}
+
+# "visspan" (docs/mevis_landing.md, step 1): the main CPU's span from the
+# frame's visibility to its first reader, timed and split (psp_ge.c)
+FIXES_RECON["source/render/render.c#visspan"] = [
+("""	render.frustum = *frustum;
+	parameters.camera = *rasterizer_camera;
+""", """	render.frustum = *frustum;
+#ifdef HALO_PSP
+	{
+		void psp_ge_visspan(int phase); /* psp_fixups.py (FIXES_RECON #visspan) */
+
+		psp_ge_visspan(0);
+	}
+#endif
+	parameters.camera = *rasterizer_camera;
+"""),
+("""	player_effect_get_screen_flash(local_player_index, &parameters.screen_flash);
+	rasterizer_window_begin(&parameters);
+""", """	player_effect_get_screen_flash(local_player_index, &parameters.screen_flash);
+#ifdef HALO_PSP
+	{
+		void psp_ge_visspan(int phase); /* psp_fixups.py (FIXES_RECON #visspan) */
+
+		psp_ge_visspan(1);
+	}
+#endif
+	rasterizer_window_begin(&parameters);
+"""),
+("""		first_person_weapon_render_update();
+		lights_preprocess_scene();
+""", """		first_person_weapon_render_update();
+#ifdef HALO_PSP
+		{
+			void psp_ge_visspan(int phase); /* psp_fixups.py (FIXES_RECON #visspan) */
+
+			psp_ge_visspan(2);
+		}
+#endif
+		lights_preprocess_scene();
+"""),
+]
 
 # "modelcensus" (keep.txt): every 5 s of game time, a log line of the models
 # drawn: a frame's count by object type and by size on screen (the level of
@@ -24681,6 +27005,256 @@ FIXES_RECON = {}
 # being drawn for psp_ge.c's draw census (psp_census_definition)
 # "scriptsdump": the scenario's script names and types at load, so a run's
 # commands can wake one (a level's late cutscene reached without playing to it)
+# "soundclass" (keep.txt: the sound cache needed to miss no
+# load): with the 5 s "sound cache:" line, the sounds playing by class group
+# and size. an earlier run found "playing" (locked pages) at 1.0-1.8 MB
+# (d20 1,792 KB, the whole default cache): this says whether music, ambience,
+# dialogue or effects hold it, which decides what a smaller cache can shed. A
+# permutation two channels play counts once
+FIXES_RECON["source/sound/sound_manager.c#soundclass"] = [
+("static struct sound_manager_globals sound_manager_globals = { 0 };\n",
+ """static struct sound_manager_globals sound_manager_globals = { 0 };
+
+int psp_keep(const char *name);
+void platform_psp_log(const char *format, ...);
+
+void psp_sound_playing_census(void)
+{
+	enum { GROUPS = 7 };
+	static char const *const names[GROUPS] = { "music", "ambient", "devices", "dialogue", "weapons", "vehicles", "other" };
+	struct sound_permutation const *seen[MAXIMUM_SOUND_CHANNELS * 2];
+	unsigned long bytes[GROUPS] = { 0 }, largest = 0;
+	int counts[GROUPS] = { 0 }, seen_count = 0, largest_class = -1, k, j, slot;
+
+	if (!psp_keep("soundclass") || !sound_data)
+		return;
+	for (k = 0; k < sound_manager_globals.channel_count && k < MAXIMUM_SOUND_CHANNELS; k++)
+	{
+		struct sound_channel_datum const *channel = &sound_channels[k];
+		struct sound_permutation const *permutations[2];
+		struct sound_datum *sound;
+		short sound_class;
+		int group;
+
+		if (channel->sound_index == NONE)
+			continue;
+		sound = (struct sound_datum *)datum_try_and_get(sound_data, channel->sound_index);
+		if (!sound)
+			continue;
+		sound_class = sound_definition_get(sound->definition_index)->sound_class;
+		group = sound_class == 32 ? 0 : sound_class >= 33 && sound_class <= 35 ? 1 : sound_class >= 26 && sound_class <= 30 ? 2 :
+			sound_class == 19 || sound_class == 44 || sound_class == 46 || sound_class == 47 ? 3 :
+			sound_class >= 4 && sound_class <= 10 ? 4 : sound_class == 22 || sound_class == 23 ? 5 : 6;
+		permutations[0] = channel->playing_permutation;
+		permutations[1] = channel->queued_permutation;
+		for (slot = 0; slot < 2; slot++)
+		{
+			struct sound_permutation const *permutation = permutations[slot];
+
+			if (!permutation)
+				continue;
+			for (j = 0; j < seen_count && seen[j] != permutation; j++)
+				;
+			if (j < seen_count)
+				continue;
+			seen[seen_count++] = permutation;
+			bytes[group] += (unsigned long)permutation->samples.size;
+			counts[group]++;
+			if ((unsigned long)permutation->samples.size > largest)
+			{
+				largest = (unsigned long)permutation->samples.size;
+				largest_class = sound_class;
+			}
+		}
+	}
+	platform_psp_log("soundclass: playing (KB, permutations): %s %lu/%d, %s %lu/%d, %s %lu/%d, %s %lu/%d, %s %lu/%d, %s %lu/%d, %s %lu/%d; largest %lu KB (class %d)",
+		names[0], bytes[0] / 1024, counts[0], names[1], bytes[1] / 1024, counts[1], names[2], bytes[2] / 1024, counts[2],
+		names[3], bytes[3] / 1024, counts[3], names[4], bytes[4] / 1024, counts[4], names[5], bytes[5] / 1024, counts[5],
+		names[6], bytes[6] / 1024, counts[6], largest / 1024, largest_class);
+}
+"""),
+]
+FIXES_RECON["source/cache/xbox_sound_cache.c#soundclass"] = [
+("""		psp_sound_cache_load_bytes / 1024, psp_sound_cache_largest / 1024, psp_sound_cache_failures);
+""", """		psp_sound_cache_load_bytes / 1024, psp_sound_cache_largest / 1024, psp_sound_cache_failures);
+	{
+		extern void psp_sound_playing_census(void);
+
+		psp_sound_playing_census();
+	}
+"""),
+]
+# "workcensus" (keep.txt; master 2026-10-24): every 300 ticks, a count of the
+# tick's units of work: objects updated by type, actors updated and
+# perceiving, collision vector and sphere queries, partition relinks, node
+# matrix computes. The pairs name "workcensus", so the desktop hooks
+# (pc/chupa/sierra_hooks.py) carry them to ChupathingyCE's own build: the
+# same counts from the original on the same stretch, so any work the PSP
+# does that the PC doesn't stands out
+FIXES_RECON["source/objects/objects.c#workcensus"] = [
+("""void objects_update(
+	void)
+{
+	static struct profile_section section = {"objects_update", NONE, TRUE};
+""", """unsigned long psp_workcensus[24];
+
+void objects_update(
+	void)
+{
+	static struct profile_section section = {"objects_update", NONE, TRUE};
+	{
+		/* psp_fixups.py FIXES_RECON #workcensus */
+		static unsigned long ticks;
+		static int on = -1;
+		int psp_keep(const char *name);
+		void platform_psp_log(const char *format, ...);
+
+		if (on < 0)
+			on = psp_keep("workcensus");
+		if (on && ++ticks % 300 == 0)
+		{
+			unsigned long *w = psp_workcensus;
+
+			platform_psp_log("workcensus: 300 ticks to %lu: objects updated: biped %lu vehicle %lu weapon %lu equipment %lu garbage %lu projectile %lu scenery %lu machine %lu control %lu light %lu placeholder %lu sound %lu | actors updated %lu perceiving %lu | collision vectors %lu spheres %lu | relinks %lu | node matrices %lu",
+				ticks, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], w[8], w[9], w[10], w[11], w[12], w[13], w[14], w[15], w[16], w[17]);
+			{
+				int k;
+
+				for (k = 0; k < 24; k++)
+					w[k] = 0;
+			}
+		}
+	}
+"""),
+("""	struct object_definition *object_definition = object_definition_get(object->definition_index);
+
+	boolean result = TRUE;
+""", """	struct object_definition *object_definition = object_definition_get(object->definition_index);
+	{
+		extern unsigned long psp_workcensus[24];
+
+		/* psp_fixups.py FIXES_RECON #workcensus */
+		if ((unsigned)object->object.type < 12)
+			psp_workcensus[object->object.type]++;
+	}
+
+	boolean result = TRUE;
+"""),
+("""static void object_compute_node_matrices_with(
+	long object_index,
+	struct object_datum *object,
+	struct object_definition *object_definition)
+{
+""", """static void object_compute_node_matrices_with(
+	long object_index,
+	struct object_datum *object,
+	struct object_definition *object_definition)
+{
+	{
+		extern unsigned long psp_workcensus[24];
+
+		psp_workcensus[17]++;
+	}
+"""),
+]
+FIXES_RECON["source/ai/actors.c#workcensus"] = [
+("""static void actor_update(
+	long actor_index)
+{
+""", """static void actor_update(
+	long actor_index)
+{
+	{
+		extern unsigned long psp_workcensus[24];
+
+		psp_workcensus[12]++;
+	}
+"""),
+]
+FIXES_RECON["source/ai/actor_perception.c#workcensus"] = [
+("""void actor_perception_update(
+	long actor_index)
+{
+""", """void actor_perception_update(
+	long actor_index)
+{
+	{
+		extern unsigned long psp_workcensus[24];
+
+		psp_workcensus[13]++;
+	}
+"""),
+]
+FIXES_RECON["source/physics/collisions.c#workcensus"] = [
+("""boolean collision_test_vector(
+	unsigned long flags,
+	real_point3d const *point,
+	real_vector3d const *vector,
+	long ignore_object_index,
+	struct collision_result *collision)
+{
+""", """boolean collision_test_vector(
+	unsigned long flags,
+	real_point3d const *point,
+	real_vector3d const *vector,
+	long ignore_object_index,
+	struct collision_result *collision)
+{
+	{
+		extern unsigned long psp_workcensus[24];
+
+		psp_workcensus[14]++;
+	}
+"""),
+("""boolean collision_get_features_in_sphere(
+	unsigned long flags,
+	real_point3d const *center,
+	real radius,
+	real height,
+	real width,
+	long ignore_object_index,
+	struct collision_feature_list *features)
+{
+""", """boolean collision_get_features_in_sphere(
+	unsigned long flags,
+	real_point3d const *center,
+	real radius,
+	real height,
+	real width,
+	long ignore_object_index,
+	struct collision_feature_list *features)
+{
+	{
+		extern unsigned long psp_workcensus[24];
+
+		psp_workcensus[15]++;
+	}
+"""),
+]
+FIXES_RECON["source/structures/cluster_partitions.c#workcensus"] = [
+("""void cluster_partition_reconnect(
+	struct cluster_partition *partition,
+	long datum_index,
+	long *first_cluster_reference,
+	real_point3d const *position,
+	float radius,
+	struct location const *location)
+{
+""", """void cluster_partition_reconnect(
+	struct cluster_partition *partition,
+	long datum_index,
+	long *first_cluster_reference,
+	real_point3d const *position,
+	float radius,
+	struct location const *location)
+{
+	{
+		extern unsigned long psp_workcensus[24];
+
+		psp_workcensus[16]++;
+	}
+"""),
+]
 FIXES_RECON["source/hs/hs.c#scriptsdump"] = [
 ("""	csmemset(hs_syntax_nodes_marked, 0, sizeof(hs_syntax_nodes_marked));
 	for (script_index = 0; script_index<scenario->hs_scripts.count; script_index++)
@@ -25407,6 +27981,38 @@ FIXES_RECON["source/objects/objects.c#objcost"] = [
 \t\t\t\t\t\t}
 """),
 ]
+# "objsteps" (R1 builds: PSP_TICK_STEPS=1 too): each step's time charged to
+# the object being updated or drawn as well (psp_platform.c, objsteps). The
+# stack's push and pop around object_update, so a rider updated inside its
+# vehicle is its own; and around render_object, below
+FIXES_RECON["source/objects/objects.c#objsteps"] = [
+("""
+	boolean result = TRUE;
+	if (!TEST_FLAG(header->flags, _object_header_do_not_update_bit))
+	{""", """
+	boolean result = TRUE;
+#ifdef PSP_TICK_STEPS
+	/* psp_fixups.py (FIXES_RECON #objsteps) */
+	extern void psp_objsteps_push(long definition, int type, int drawing);
+	extern void psp_objsteps_pop(void);
+
+	psp_objsteps_push(object->definition_index, object->object.type, 0);
+#endif
+	if (!TEST_FLAG(header->flags, _object_header_do_not_update_bit))
+	{"""),
+("""
+	return result;
+}
+
+void object_compute_node_matrices_recursive(""", """
+#ifdef PSP_TICK_STEPS
+	psp_objsteps_pop();
+#endif
+	return result;
+}
+
+void object_compute_node_matrices_recursive("""),
+]
 FIXES_RECON["source/render/render_objects.c#objcost"] = [
 ("\t\t\trender_object_globals.rendered_object_indices[rendered_object_index];\n\t\trender_object(data);\n",
 """\t\t\trender_object_globals.rendered_object_indices[rendered_object_index];
@@ -25422,6 +28028,28 @@ FIXES_RECON["source/render/render_objects.c#objcost"] = [
 \t\t}
 #else
 \t\trender_object(data);
+#endif
+"""),
+]
+
+FIXES_RECON["source/render/render_objects.c#objsteps"] = [
+("""\t\t\tunsigned long psp_start = psp_microseconds();
+
+\t\t\trender_object(data);
+""", """\t\t\tunsigned long psp_start = psp_microseconds();
+
+#ifdef PSP_TICK_STEPS
+\t\t\t{
+\t\t\t\t/* psp_fixups.py (FIXES_RECON #objsteps) */
+\t\t\t\textern void psp_objsteps_push(long definition, int type, int drawing);
+\t\t\t\textern void psp_objsteps_pop(void);
+
+\t\t\t\tpsp_objsteps_push(object_get(data->object_index)->definition_index, object_get_type(data->object_index), 1);
+\t\t\t\trender_object(data);
+\t\t\t\tpsp_objsteps_pop();
+\t\t\t}
+#else
+\t\t\trender_object(data);
 #endif
 """),
 ]
@@ -25583,6 +28211,16 @@ void psp_main_settle(void)
 
 	if (game_engine_running() || debug_no_drawing || !psp_loading_settle_begin())
 		return;
+	/* one tick first, unseen, so the settle draws the view play begins with:
+	at game time 0 a level draws nothing (a10's settle drew 0 for its whole
+	cap) and so warms nothing, and the textures came in under play (B1, the
+	sky first). Play starts a tick later. "settletickoff": as before */
+	{
+		extern int psp_keep(const char *name);
+
+		if (!psp_keep("settletickoff"))
+			game_time_update(1.0f / TICKS_PER_SECOND);
+	}
 	do
 	{
 		unsigned long psp_start = psp_heartbeat_clock();
@@ -25741,6 +28379,133 @@ FIXES_LOADING["source/cache/cache_files.c#loading"] = [
 
 # ---------- sound (the sound session; docs/audio_fidelity.md)
 FIXES_SOUND = {}
+# The sound cache's map at its first two refusals (B33: a10's bridge music
+# refused for room while the cache held enough in pieces): each block's place,
+# size, whether it could be pushed out, and its sound, so the proper fix
+# (where the room goes) is chosen from what holds it
+FIXES_SOUND["source/memory/lruv_cache.c#soundmap"] = [
+("""	return best;
+}
+#endif
+
+long lruv_block_new(""",
+ """	return best;
+}
+
+/* each block in page order, with the free runs between them: the sound
+cache's log line at a refusal (xbox_sound_cache.c) */
+void psp_lruv_log_map(struct lruv_cache *cache, const char *(*name)(long block_index))
+{
+	extern void platform_psp_log(const char *format, ...);
+	long page = 0, block_index = cache->first_block_index;
+
+	while (block_index != NONE)
+	{
+		struct lruv_cache_block *block = datum_get(cache->blocks, block_index);
+		int held = (cache->locked_block_proc && cache->locked_block_proc(block_index)) ||
+			(unsigned long)block->last_used_tick == (unsigned long)cache->tick;
+
+		if (block->first_page_index > page)
+			platform_psp_log("sound cache map: free %ld KB at page %ld", (block->first_page_index - page) * 4, page);
+		platform_psp_log("sound cache map: %s %ld KB at page %ld (last used %ld, now %ld): %s", held ? "held" : "clearable",
+			(long)block->page_count * 4, (long)block->first_page_index, (long)block->last_used_tick, (long)cache->tick,
+			name ? name(block_index) : "?");
+		page = block->first_page_index + block->page_count;
+		block_index = block->next_block_index;
+	}
+	if (page < cache->page_count)
+		platform_psp_log("sound cache map: free %ld KB at page %ld (the end)", (cache->page_count - page) * 4, page);
+}
+#endif
+
+long lruv_block_new("""),
+]
+# B33 (a10's intro: Cortana's line and an ambience loop refused for room while
+# the cache held enough in pieces): b113's placement puts every sound of 32 KB
+# and more at the top, so the long ambient loops, held for as long as they
+# play, sit among the cutscene's music and dialogue, which come and go; the
+# room left between them is pieces. "soundloopstop": only the classes that
+# play as long loops (engines, machines, the devices' and the world's
+# ambience) take the top, so what is held long gathers there and the room
+# below heals as the short sounds end
+FIXES_SOUND["source/cache/xbox_sound_cache.c#soundloopstop"] = [
+("""	cache_block_index = lruv_block_new(
+		xbox_sound_cache_globals.cache,
+		sound->samples.size);
+#ifdef HALO_PSP
+	if (cache_block_index != NONE)
+	{
+		psp_sound_cache_loads++;""",
+ """#ifdef HALO_PSP
+	{
+		extern struct lruv_cache *psp_lruv_high_cache; /* lruv_cache.c */
+		extern int psp_keep(const char *name);
+		static int psp_loops_top = -1;
+		struct lruv_cache *psp_high_saved = psp_lruv_high_cache;
+
+		if (psp_loops_top < 0)
+			psp_loops_top = psp_keep("soundloopstop");
+		if (psp_loops_top && psp_high_saved)
+		{
+			short psp_class = sound_definition_get(sound->runtime_tag_index)->sound_class;
+
+			/* vehicle_engine 23; device_machinery, _nature, _computers 28-30;
+			ambient_nature, _machinery, _computers 33-35 (sound_classes.c) */
+			if (!(psp_class == 23 || (psp_class >= 28 && psp_class <= 30) || (psp_class >= 33 && psp_class <= 35)))
+				psp_lruv_high_cache = NULL;
+		}
+		cache_block_index = lruv_block_new(
+			xbox_sound_cache_globals.cache,
+			sound->samples.size);
+		psp_lruv_high_cache = psp_high_saved;
+	}
+#else
+	cache_block_index = lruv_block_new(
+		xbox_sound_cache_globals.cache,
+		sound->samples.size);
+#endif
+#ifdef HALO_PSP
+	if (cache_block_index != NONE)
+	{
+		psp_sound_cache_loads++;"""),
+]
+FIXES_SOUND["source/cache/xbox_sound_cache.c#soundmap"] = [
+("""	return xbox_sound_cache_globals.debug_block_name;
+}
+""",
+ """	return xbox_sound_cache_globals.debug_block_name;
+}
+
+#ifdef HALO_PSP
+/* the map's label (B33): the sound and why its block is held, the game's
+references to it (software: sounds that asked for it; hardware: packets
+queued) and whether it has loaded */
+static const char *psp_sound_block_label(long block_index)
+{
+	struct xbox_cache_sound_datum *cache_sound = datum_get(xbox_sound_cache_globals.cache_sounds, block_index);
+
+	sprintf(xbox_sound_cache_globals.debug_block_name, "%.80s (software %d, hardware %d%s)",
+		tag_get_name(cache_sound->sound->runtime_tag_index), cache_sound->software_reference_count,
+		cache_sound->hardware_reference_count, cache_sound->loaded ? "" : ", loading");
+	return xbox_sound_cache_globals.debug_block_name;
+}
+#endif
+"""),
+("""				"%ld KB held by sounds playing or loading", (long)(sound->samples.size / 1024), psp_game_time_peek(),
+				clearable * 4, locked_pages * 4);
+""",
+ """				"%ld KB held by sounds playing or loading", (long)(sound->samples.size / 1024), psp_game_time_peek(),
+				clearable * 4, locked_pages * 4);
+			if (psp_sound_cache_failures <= 2)
+			{
+				extern void psp_lruv_log_map(struct lruv_cache *cache, const char *(*name)(long block_index)); /* lruv_cache.c */
+
+				platform_psp_log("sound cache: the sound refused: %s", tag_get_name(sound->runtime_tag_index));
+				psp_lruv_log_map(xbox_sound_cache_globals.cache, psp_sound_block_label);
+			}
+"""),
+]
+
 # Where sound_render's time goes, for the sound work's budget: a step before
 # each part, so profile.txt names them ("sound_render: …"). The last step goes
 # back to "sound_render", which the time after it was charged to before
@@ -26645,6 +29410,24 @@ FIXES_STENCILS["source/game/game.c#stencilsfirst"] = [
 #   game time too), as nwbatch's list did; a later compute anywhere replaces
 #   it whole; the frame's last tick makes those still left.
 # "nmskip": on (shelved, opt-in: small and not exact, docs/review_perf-levers.md).
+#
+# VISLAZY, on by default ("vislazyoff" turns it off; "nmskip" or "nmskipcheck"
+# named wins over it): the same skip on every tick, not only a frame's first,
+# for the same objects when the last frame didn't draw them; their matrices are
+# made only when something reads them (docs/review_vislazy.md). An object
+# nobody draws or reads was having its node walk made every tick for nothing:
+# 17-54% of animation and node matrices' time on the heavy maps. Its
+# collision model doesn't keep it out, so two more readers are caught:
+# - The Media Engine's perception rays (collisions.c, FIXES_122) can't make a
+#   compute: a ray that reaches an object whose compute is owed is left to the
+#   main CPU (-1), whose test reads it through the accessor.
+# - A game state saved (a checkpoint) holds node matrices: every owed compute
+#   is made first, so a revert loads what it would have.
+# The left-out compute stays owed however long the object goes unread (the
+# 8-tick limit is the frame's-end form's), and the renderer's lists mark what
+# each frame draws. "vislazycheck" makes every compute as before and checks
+# each skip and each read's catch-up as nmskipcheck does, naming the reader;
+# the "vislazy:" line counts the catch-ups by reader.
 # "nmskipcheck": makes every compute
 # as before, but checks each would-be skip (the sphere and root unchanged) and
 # each read's catch-up (bit for bit against the compute it stands in for), and
@@ -26667,6 +29450,79 @@ static game_state_before_load_proc before_load_procs[] =
 	psp_nms_game_state_loading,
 #endif
 };"""),
+("""static game_state_before_save_proc before_save_procs[] =
+{
+	dummy,
+};""",
+ """#ifdef HALO_PSP
+void psp_nms_game_state_saving(void); /* objects.c (psp_fixups.py, FIXES_NMSKIP: vislazy) */
+#endif
+
+static game_state_before_save_proc before_save_procs[] =
+{
+	dummy,
+#ifdef HALO_PSP
+	psp_nms_game_state_saving,
+#endif
+};"""),
+]
+
+# vislazy: the Media Engine's rays leave an object whose compute is owed to
+# the main CPU, and the renderer's lists say what each frame draws
+FIXES_NMSKIP["source/physics/collisions.c#vislazy"] = [
+("""				marks.objects[absolute_index >> 5] |= 1ul << (absolute_index & 31);
+				if (psp_object_test_vector_quiet(object_index, bsp_flags, flags, point, vector,""",
+ """				marks.objects[absolute_index >> 5] |= 1ul << (absolute_index & 31);
+				{
+					/* psp_fixups.py (FIXES_NMSKIP, vislazy): an object whose node
+					matrices are owed is made only by the main CPU, so its ray is
+					the main CPU's (objects.c). Owed as the hand-over found it: the
+					main CPU's own rays may make an owed compute while these are
+					out, and the bits it changes then aren't this CPU's to read */
+					extern unsigned long psp_nms_me[]; /* [0] the count, the bits from [16] */
+
+					if (psp_nms_me[0] && ((psp_nms_me[16 + ((unsigned short)absolute_index >> 5)] >> (absolute_index & 31)) & 1))
+						return -1;
+				}
+				if (psp_object_test_vector_quiet(object_index, bsp_flags, flags, point, vector,"""),
+]
+# vislazy: an object whose compute was left out while its animation plays is
+# not still, though its datum is unchanged (objects.c, the sleep check)
+FIXES_NMSKIP["source/objects/objects.c#vislazy"] = [
+("""	else
+		object_update(object_index);
+	if (psp_family_checksum(header) == before)
+""", """	else
+		object_update(object_index);
+	{
+		/* psp_fixups.py (FIXES_NMSKIP, vislazy): a skipped compute of a
+		playing animation is a change the checksum can't see */
+		extern long psp_vl_moving;
+		int psp_vl_moved = psp_vl_moving == object_index;
+
+		psp_vl_moving = NONE;
+		if (psp_vl_moved)
+			before = ~psp_family_checksum(header);
+	}
+	if (psp_family_checksum(header) == before)
+"""),
+]
+FIXES_NMSKIP["source/render/render_objects.c#vislazy"] = [
+("""		if (render_object_globals.rendered_object_count == MAXIMUM_RENDERED_OBJECTS)
+			psp_rendered_full++;
+	}
+#endif""",
+ """		if (render_object_globals.rendered_object_count == MAXIMUM_RENDERED_OBJECTS)
+			psp_rendered_full++;
+	}
+	{
+		/* psp_fixups.py (FIXES_NMSKIP, vislazy): what the frame draws
+		(objects.c) */
+		extern void psp_vl_listed(long const *indices, short count);
+
+		psp_vl_listed(render_object_globals.rendered_object_indices, render_object_globals.rendered_object_count);
+	}
+#endif"""),
 ]
 
 FIXES_NMSKIP["source/objects/objects.c#nmskip"] = [
@@ -26680,13 +29536,13 @@ extern long psp_nms_settle_time;
 bit is tested in line, as readers are many and left-out computes few */
 extern int psp_nms_count;
 extern unsigned long psp_nms_pending[];
-void psp_nms_settle(long object_index);
+void psp_nms_settle(long object_index, void *site);
 static void psp_nms_forget(void);
 #define PSP_NMS_READ(index) do { \\
 		unsigned long psp_nms_absolute = (unsigned long)(index) & 0xFFFFUL; \\
 		if (psp_nms_count && psp_nms_absolute < MAXIMUM_OBJECTS_PER_MAP && \\
 			((psp_nms_pending[psp_nms_absolute >> 5] >> (psp_nms_absolute & 31)) & 1)) \\
-			psp_nms_settle(index); \\
+			psp_nms_settle(index, __builtin_return_address(0)); \\
 	} while (0)
 #else
 #define OBJECT_FRAME_INDEX_GET(object_index) ((object_index) + game_time_get())
@@ -26733,7 +29589,69 @@ long psp_nms_settle_time = NONE;
 /* read in line by the accessors: no left-out computes, no test */
 int psp_nms_count = 0;
 unsigned long psp_nms_pending[(MAXIMUM_OBJECTS_PER_MAP + 31) / 32];
+/* the Media Engine's rays' copy of the two (collisions.c, vislazy), made at
+each hand-over (psp_nms_pending_for_me): the count in [0], the bits from
+[16], on whole lines of their own. The main CPU writes it only then, before
+the hand-over writes its cache back */
+unsigned long psp_nms_me[16 + ((((MAXIMUM_OBJECTS_PER_MAP + 31) / 32) + 15) & ~15)] __attribute__((aligned(64)));
+
+void psp_nms_pending_for_me(void)
+{
+	psp_nms_me[0] = (unsigned long)psp_nms_count;
+	if (psp_nms_count)
+		csmemcpy(&psp_nms_me[16], psp_nms_pending, sizeof(psp_nms_pending));
+}
 static int psp_nms_on = -1, psp_nms_check = 0, psp_nms_open = 0;
+/* vislazy: the skip on every tick for what the last frame didn't draw */
+static int psp_vl_on = 0, psp_vl_ticked = 0;
+/* the object whose compute the skip just left out while its animation plays
+(the sleep check, psp_sleepy_update) */
+long psp_vl_moving = NONE;
+static unsigned long psp_vl_drawn[(MAXIMUM_OBJECTS_PER_MAP + 31) / 32];
+static unsigned long psp_vl_peak, psp_vl_frames, psp_vl_sites_other;
+#define PSP_VL_SITES 16
+static void *psp_vl_site[PSP_VL_SITES];
+static unsigned long psp_vl_site_n[PSP_VL_SITES];
+static void *psp_nms_reader;
+
+/* the renderer's list for a view (render_objects.c): the first list after a
+tick starts the frame's set afresh, and a frame's views add to it */
+void psp_vl_listed(long const *indices, short count)
+{
+	short k;
+
+	if (psp_vl_on <= 0)
+		return;
+	if (psp_vl_ticked)
+	{
+		csmemset(psp_vl_drawn, 0, sizeof(psp_vl_drawn));
+		psp_vl_ticked = 0;
+		psp_vl_frames++;
+	}
+	for (k = 0; k < count; k++)
+	{
+		unsigned long absolute = (unsigned long)indices[k] & 0xFFFFUL;
+
+		if (absolute < MAXIMUM_OBJECTS_PER_MAP)
+			psp_vl_drawn[absolute >> 5] |= 1ul << (absolute & 31);
+	}
+}
+
+/* which code read an object whose compute was owed */
+static void psp_vl_site_note(void)
+{
+	int s;
+
+	for (s = 0; s < PSP_VL_SITES && psp_vl_site[s] && psp_vl_site[s] != psp_nms_reader; s++)
+		;
+	if (s == PSP_VL_SITES)
+	{
+		psp_vl_sites_other++;
+		return;
+	}
+	psp_vl_site[s] = psp_nms_reader;
+	psp_vl_site_n[s]++;
+}
 static short *psp_nms_entry_of = NULL;
 static struct psp_nms_entry *psp_nms_entries = NULL;
 static short psp_nms_free[PSP_NMS_ENTRIES];
@@ -26741,7 +29659,7 @@ static int psp_nms_free_count = 0;
 static struct psp_nms_root *psp_nms_roots = NULL;
 static real_matrix4x3 *psp_nms_kept = NULL;
 static unsigned long psp_nms_ticks, psp_nms_last_ticks, psp_nms_seen, psp_nms_skipped, psp_nms_superseded,
-	psp_nms_read, psp_nms_frame_end, psp_nms_stale, psp_nms_refused[6], psp_nms_gate_wrong,
+	psp_nms_read, psp_nms_frame_end, psp_nms_stale, psp_nms_refused[7], psp_nms_gate_wrong,
 	psp_nms_made_differs, psp_nms_made_checked, psp_nms_skip_us, psp_nms_check_reports;
 static void psp_nms_settle_absolute(long absolute, int at_frame_end);
 
@@ -26846,6 +29764,12 @@ __attribute__((noinline)) static int psp_nms_begin(void)
 
 		psp_nms_check = psp_keep("nmskipcheck") != 0;
 		psp_nms_on = psp_nms_check || psp_keep("nmskip");
+		if (!psp_nms_on && !psp_keep("vislazyoff"))
+		{
+			psp_vl_on = 1;
+			psp_nms_check = psp_keep("vislazycheck") != 0;
+			psp_nms_on = 1;
+		}
 		if (psp_nms_on)
 		{
 			psp_nms_entry_of = (short *)malloc(MAXIMUM_OBJECTS_PER_MAP * sizeof(*psp_nms_entry_of));
@@ -26863,11 +29787,16 @@ __attribute__((noinline)) static int psp_nms_begin(void)
 		}
 	}
 	if (psp_nms_on <= 0)
+	{
+		psp_vl_on = 0;
 		return 0;
+	}
 	psp_nms_ticks++;
+	psp_vl_ticked = 1;
+	psp_vl_moving = NONE;
 	if (psp_lights_link_tick)
 		psp_nms_last_ticks++;
-	return !psp_lights_link_tick;
+	return psp_vl_on || !psp_lights_link_tick;
 }
 
 /* 1 when this compute (and the postprocess after it, which these types
@@ -26885,7 +29814,9 @@ __attribute__((noinline)) static int psp_nms_skip(long object_index, struct obje
 	psp_nms_seen++;
 	if (object->object.parent_object_index != NONE || object->object.first_child_object_index != NONE)
 		reason = 0;
-	else if (definition->object.collision_model.index != NONE)
+	else if (psp_vl_on && ((psp_vl_drawn[absolute >> 5] >> (absolute & 31)) & 1))
+		reason = 6;
+	else if (!psp_vl_on && definition->object.collision_model.index != NONE)
 		reason = 1;
 	else if (object->object.animation.interpolation_frame_count)
 		reason = 2;
@@ -26943,6 +29874,16 @@ __attribute__((noinline)) static int psp_nms_skip(long object_index, struct obje
 	psp_nms_pending[absolute >> 5] |= 1ul << (absolute & 31);
 	psp_nms_count++;
 	psp_nms_skipped++;
+	/* an animation playing moves the nodes the compute would have made, so
+	the eager compute changes the object's datum (its node matrices) though
+	the skip leaves it as it was: the sleep check (psp_sleepy_update) must
+	see it changed, or the object falls asleep, stops updating and keeps
+	its pose where the eager build would have kept it awake and moving */
+	if (psp_vl_on && object->object.animation.animation_graph_index != NONE &&
+		object->object.animation.state.index != NONE)
+		psp_vl_moving = object_index;
+	if ((unsigned long)psp_nms_count > psp_vl_peak)
+		psp_vl_peak = psp_nms_count;
 	return 1;
 }
 
@@ -26998,7 +29939,7 @@ __attribute__((noinline)) static void psp_nms_settle_absolute(long absolute, int
 
 	psp_nms_release(absolute);
 	/* its object gone, or a game state from another time (a revert) */
-	if (!object_header_try_and_get(entry.object_index) || entry.time > now || now - entry.time > 8)
+	if (!object_header_try_and_get(entry.object_index) || entry.time > now || (!psp_vl_on && now - entry.time > 8))
 	{
 		psp_nms_stale++;
 		return;
@@ -27006,7 +29947,11 @@ __attribute__((noinline)) static void psp_nms_settle_absolute(long absolute, int
 	if (at_frame_end)
 		psp_nms_frame_end++;
 	else
+	{
 		psp_nms_read++;
+		if (psp_vl_on)
+			psp_vl_site_note();
+	}
 	if (!psp_nms_check)
 	{
 		psp_nms_make(entry.object_index, &entry);
@@ -27027,8 +29972,10 @@ __attribute__((noinline)) static void psp_nms_settle_absolute(long absolute, int
 	{
 		psp_nms_made_differs++;
 		if (psp_nms_check_reports++ < 20)
-			platform_psp_log("nmskipcheck: t=%ld %s (#%08lx): the catch-up from tick %ld differs from the compute it stands in for",
-				now, tag_get_name(object->definition_index), (unsigned long)entry.object_index, entry.time);
+			platform_psp_log("%s: t=%ld %s (#%08lx): the catch-up from tick %ld differs from the compute it stands in for (reader %08lx)",
+				psp_vl_on ? "vislazycheck" : "nmskipcheck",
+				now, tag_get_name(object->definition_index), (unsigned long)entry.object_index, entry.time,
+				(unsigned long)psp_nms_reader);
 	}
 	csmemcpy(nodes, psp_nms_kept, size);
 	object->object.bounding_sphere_center = center;
@@ -27041,8 +29988,9 @@ __attribute__((noinline)) static void psp_nms_settle_absolute(long absolute, int
 }
 
 /* a reader of an object whose compute was left out: made first */
-__attribute__((noinline)) void psp_nms_settle(long object_index)
+__attribute__((noinline)) void psp_nms_settle(long object_index, void *site)
 {
+	psp_nms_reader = site;
 	long absolute = DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index);
 
 	if (absolute < MAXIMUM_OBJECTS_PER_MAP && psp_nms_waits(absolute))
@@ -27057,7 +30005,7 @@ __attribute__((noinline)) static void psp_nms_close(void)
 	psp_nms_open = 0;
 	if (psp_nms_on <= 0)
 		return;
-	if (psp_nms_count && psp_lights_link_tick)
+	if (psp_nms_count && psp_lights_link_tick && !psp_vl_on)
 	{
 		for (word = 0; word < (MAXIMUM_OBJECTS_PER_MAP + 31) / 32; word++)
 			while (psp_nms_pending[word])
@@ -27065,15 +30013,31 @@ __attribute__((noinline)) static void psp_nms_close(void)
 	}
 	if (psp_nms_ticks >= 900)
 	{
-		platform_psp_log("nmskip: %lu ticks (%lu a frame's last): %lu computes of scenery and its kin on the others, %lu left out "
+		platform_psp_log("%s: %lu ticks (%lu a frame's last): %lu computes of scenery and its kin on the others, %lu left out "
 			"(%lu replaced by a later compute, %lu made for a reader, %lu at the frame's end, %lu stale); kept: attached %lu, "
-			"collision model %lu, interpolating %lu, root animated %lu, root moved or unknown %lu, no room %lu",
+			"collision model %lu, interpolating %lu, root animated %lu, root moved or unknown %lu, no room %lu, drawn last frame %lu",
+			psp_vl_on ? "vislazy" : "nmskip",
 			psp_nms_ticks, psp_nms_last_ticks, psp_nms_seen, psp_nms_skipped, psp_nms_superseded, psp_nms_read,
 			psp_nms_frame_end, psp_nms_stale, psp_nms_refused[0], psp_nms_refused[1], psp_nms_refused[2],
-			psp_nms_refused[3], psp_nms_refused[4], psp_nms_refused[5]);
+			psp_nms_refused[3], psp_nms_refused[4], psp_nms_refused[5], psp_nms_refused[6]);
+		if (psp_vl_on)
+		{
+			char sites[PSP_VL_SITES * 20];
+			int at = 0, s;
+
+			sites[0] = 0;
+			for (s = 0; s < PSP_VL_SITES && psp_vl_site[s]; s++)
+				at += snprintf(sites + at, sizeof(sites) - at, " %08lx:%lu", (unsigned long)psp_vl_site[s], psp_vl_site_n[s]);
+			platform_psp_log("vislazy: %lu frames listed; computes owed now %d, peak %lu; catch-ups by reader (site:n):%s; other readers %lu",
+				psp_vl_frames, psp_nms_count, psp_vl_peak, sites, psp_vl_sites_other);
+			csmemset(psp_vl_site, 0, sizeof(psp_vl_site));
+			csmemset(psp_vl_site_n, 0, sizeof(psp_vl_site_n));
+			psp_vl_frames = psp_vl_peak = psp_vl_sites_other = 0;
+		}
 		if (psp_nms_check)
-			platform_psp_log("nmskipcheck: the skips' test wrong %lu of %lu; catch-ups differing %lu of %lu; "
+			platform_psp_log("%s: the skips' test wrong %lu of %lu; catch-ups differing %lu of %lu; "
 				"the computes it would leave out %.3f ms a tick",
+				psp_vl_on ? "vislazycheck" : "nmskipcheck",
 				psp_nms_gate_wrong, psp_nms_skipped, psp_nms_made_differs, psp_nms_made_checked,
 				(float)psp_nms_skip_us / (float)psp_nms_ticks / 1000.0f);
 		psp_nms_ticks = psp_nms_last_ticks = psp_nms_seen = psp_nms_skipped = psp_nms_superseded = 0;
@@ -27096,6 +30060,20 @@ static void psp_nms_forget(void)
 	psp_nms_free_count = PSP_NMS_ENTRIES;
 	for (k = 0; k < PSP_NMS_ROOTS; k++)
 		psp_nms_roots[k].object_index = NONE;
+}
+
+/* a game state is saved (a checkpoint): it holds the node matrices, so every
+owed compute is made first, and a revert loads what it would have */
+void psp_nms_game_state_saving(void)
+{
+	long word;
+
+	if (psp_nms_on <= 0 || !psp_nms_count)
+		return;
+	psp_nms_reader = (void *)psp_nms_game_state_saving;
+	for (word = 0; word < (MAXIMUM_OBJECTS_PER_MAP + 31) / 32; word++)
+		while (psp_nms_pending[word])
+			psp_nms_settle_absolute(word * 32 + __builtin_ctz(psp_nms_pending[word]), 0);
 }
 
 /* a game state is loaded (a revert): its objects' matrices are as it was
@@ -27590,6 +30568,171 @@ void objects_update(
 ]
 
 
+# ---------- FIXES_OBJPLACE: the object walk's reads and writes kept off the
+# object pool's lines (lever OBJPLACE)
+# The bus census puts the object pool among the heaviest regions of main RAM
+# a frame, and the object trace shows where much of it goes: every settled
+# piece of scenery the walk passes over (FIXES_WS) costs two of its datum's
+# lines a tick, one for first_child_object_index and one for the garbage
+# bit, each a miss since the pool is many times the data cache. Both answers
+# now sit in a bit beside the sleep tables, set where the full path leaves
+# the object (its datum just read there) and cleared as that path starts.
+# Wake-on-write keeps the bit true while it is set: attaching or detaching a
+# child and object_set_garbage all mark the object, a marked sleeper takes
+# the full path, and the tables are forgotten when a game state loads.
+# "wsmirroroff" (keep.txt): the datum read each tick, as before;
+# "wsmirrorcheck": read as before, and compared with the bit.
+# The walk's last loop also stored the do-not-update bit's clear into every
+# header every tick, dirtying the whole header array for a bit set only by a
+# rare attach; it now stores only where the bit is set (the same bytes
+# result). "hdrclearall": the store on every header, as before.
+FIXES_OBJPLACE = {}
+
+FIXES_OBJPLACE["source/objects/objects.c#objplace"] = [
+("""/* psp_fixups.py (FIXES_WAKE): what the tables say of a slot stops being
+about its object's bytes once a game state loads or a map starts */
+void psp_sleep_forget(void)
+{
+""",
+"""/* psp_fixups.py (FIXES_OBJPLACE): a set bit says the scenery had no child
+and wasn't garbage when its full path last left it; anything that changes
+either marks the object, and a marked one takes the full path, which clears
+the bit first */
+static unsigned long psp_ws_clear[(MAXIMUM_OBJECTS_PER_MAP + 31) / 32];
+static int psp_ws_mirror_keep = -1, psp_ws_mirror = 0, psp_ws_mirror_check = 0, psp_hdr_clear_all = 0;
+long psp_ws_mirror_checks, psp_ws_mirror_misses;
+
+static inline void psp_ws_unnote(short absolute_index)
+{
+	if (absolute_index < MAXIMUM_OBJECTS_PER_MAP)
+		psp_ws_clear[absolute_index >> 5] &= ~(1UL << (absolute_index & 31));
+}
+
+/* where the full path leaves an object, with its datum's lines just read */
+static inline void psp_ws_note(short absolute_index, struct object_header_datum const *header)
+{
+	struct object_datum const *object = header->datum;
+
+	if (psp_ws_mirror && header->type == _object_type_scenery && absolute_index < MAXIMUM_OBJECTS_PER_MAP &&
+		object->object.first_child_object_index == NONE && !TEST_FLAG(object->object.flags, _object_garbage_bit))
+		psp_ws_clear[absolute_index >> 5] |= 1UL << (absolute_index & 31);
+}
+
+/* psp_fixups.py (FIXES_WAKE): what the tables say of a slot stops being
+about its object's bytes once a game state loads or a map starts */
+void psp_sleep_forget(void)
+{
+	/* FIXES_OBJPLACE: whatever sleepforgetoff keeps, the bits describe the
+	bytes that were there */
+	csmemset(psp_ws_clear, 0, sizeof(psp_ws_clear));
+"""),
+("""	int unchecked = psp_scenery_skips_check(header, absolute_index, may_sleep);
+""",
+"""	int unchecked = psp_scenery_skips_check(header, absolute_index, may_sleep);
+
+	psp_ws_unnote(absolute_index); /* psp_fixups.py (FIXES_OBJPLACE) */
+"""),
+("""			!psp_lights_defer(object_index)) /* psp_fixups.py (FIXES_LD1) */
+			object_connect_lights(object_index, TRUE, TRUE);
+		return;
+	}
+	/* sceneryhalf: sleeping scenery that something changed (and that may
+""",
+"""			!psp_lights_defer(object_index)) /* psp_fixups.py (FIXES_LD1) */
+			object_connect_lights(object_index, TRUE, TRUE);
+		psp_ws_note(absolute_index, header); /* psp_fixups.py (FIXES_OBJPLACE) */
+		return;
+	}
+	/* sceneryhalf: sleeping scenery that something changed (and that may
+"""),
+("""	psp_sleep[absolute_index].checksum = before;
+""",
+"""	psp_sleep[absolute_index].checksum = before;
+	psp_ws_note(absolute_index, header); /* psp_fixups.py (FIXES_OBJPLACE) */
+"""),
+("""	if (psp_ws_keep < 0)
+		psp_ws_keep = !psp_keep("sleeperwalk");
+""",
+"""	if (psp_ws_keep < 0)
+		psp_ws_keep = !psp_keep("sleeperwalk");
+	/* psp_fixups.py (FIXES_OBJPLACE) */
+	if (psp_ws_mirror_keep < 0)
+	{
+		psp_ws_mirror_keep = !psp_keep("wsmirroroff");
+		psp_ws_mirror_check = psp_ws_mirror_keep && psp_keep("wsmirrorcheck");
+		psp_hdr_clear_all = psp_keep("hdrclearall");
+	}
+	psp_ws_mirror = psp_ws_mirror_keep;
+	if (psp_ws_mirror_check && game_time_get() % 900 == 0 && psp_ws_mirror_checks)
+		platform_psp_log("wsmirrorcheck: t=%ld, %ld sleepers' bits checked, %ld wrong", game_time_get(),
+			psp_ws_mirror_checks, psp_ws_mirror_misses);
+"""),
+("""/* 1: the object is settled scenery the full path would leave asleep, and its
+counters have been moved as that path moves them */
+static inline int psp_ws_asleep(""",
+"""/* psp_fixups.py (FIXES_OBJPLACE): 1 when the bit answers for the datum; the
+check mode reads the datum too, and answers from it */
+static inline int psp_ws_said_clear(short absolute_index, struct object_header_datum const *header)
+{
+	struct object_datum const *object;
+	int said = psp_ws_mirror && (psp_ws_clear[absolute_index >> 5] >> (absolute_index & 31) & 1);
+
+	if (!said || !psp_ws_mirror_check)
+		return said;
+	object = header->datum;
+	psp_ws_mirror_checks++;
+	if (object->object.first_child_object_index != NONE || TEST_FLAG(object->object.flags, _object_garbage_bit))
+	{
+		if (psp_ws_mirror_misses++ < 16)
+			platform_psp_log("wsmirrorcheck: %s has a child or is garbage, its bit set, at tick %ld",
+				tag_get_name(object->definition_index), game_time_get());
+	}
+	return 0;
+}
+
+/* 1: the object is settled scenery the full path would leave asleep, and its
+counters have been moved as that path moves them */
+static inline int psp_ws_asleep("""),
+("""	object = header->datum;
+	if (object->object.first_child_object_index != NONE)
+		return 0;
+	psp_wake_skipped++;
+	psp_objects_sleep_checked++;
+	psp_objects_asleep++;
+	if (TEST_FLAG(object->object.flags, _object_garbage_bit))
+		++object_globals->active_garbage_object_count;
+	psp_ws_passed++;
+	return 1;
+""",
+"""	if (!psp_ws_said_clear(absolute_index, header))
+	{
+		object = header->datum;
+		if (object->object.first_child_object_index != NONE)
+			return 0;
+		if (TEST_FLAG(object->object.flags, _object_garbage_bit))
+			++object_globals->active_garbage_object_count;
+	}
+	psp_wake_skipped++;
+	psp_objects_sleep_checked++;
+	psp_objects_asleep++;
+	psp_ws_passed++;
+	return 1;
+"""),
+("""		if (object_header->identifier)
+		{
+			SET_FLAG(object_header->flags, _object_header_do_not_update_bit, FALSE);
+""",
+"""		if (object_header->identifier)
+		{
+#ifdef HALO_PSP
+			/* psp_fixups.py (FIXES_OBJPLACE): a header whose bit is clear stays clean */
+			if (psp_hdr_clear_all || TEST_FLAG(object_header->flags, _object_header_do_not_update_bit))
+#endif
+			SET_FLAG(object_header->flags, _object_header_do_not_update_bit, FALSE);
+"""),
+]
+
+
 # ---------- FIXES_MEJOBS: point physics on the Media Engine ("mepoints")
 # The frame's free particles and contrail points each run point_physics_update
 # (the wind where the point is, then up to three collision rays against the
@@ -27968,7 +31111,7 @@ static struct psp_points_word psp_points_main_word;
 /* the ME's: the lowest index it has made, all above it made too */
 static struct psp_points_word psp_points_me_word;
 
-static int psp_points_on = -1, psp_points_check = 0, psp_points_min = 8;
+static int psp_points_on = -1, psp_points_check = 0, psp_points_min = 8, psp_points_slow_lines = 0, psp_points_clock_here = 0, psp_points_failed_lines = 0;
 static struct psp_point_input *psp_point_inputs; /* the list as it is made: PSP_POINTS_MAX, kept circular */
 static struct psp_point_answer *psp_point_answers;
 static unsigned char *psp_point_slots[2]; /* by kind, a slot's list index + 1, 0 none */
@@ -27980,7 +31123,42 @@ static struct
 {
 	unsigned long frames, jobs, listed, handed, taken, here, changed, unserved, compared, differed, refused, failed;
 	unsigned long me_made;
+	unsigned long slowest_us, slowest_kind, slowest_slot;
+	real longest_reach;
 } psp_points_stats;
+
+/* B31: a points job that held the ME past an audio block's 40 ms deadline
+stopped the ME for the session (three runs on the PSP). On the PSP a
+point takes at most ~80 us on the ME (measured there), so such a job
+was stuck, not slow: the job reports its slowest
+point and the failed job's point is logged, to catch it */
+static inline int psp_on_me(void)
+{
+	unsigned int sp;
+
+	__asm__ ("move %0, $sp" : "=r"(sp));
+	return (sp & 0x1FFFFFFFu) < 0x01000000u;
+}
+
+/* "mepointsclock" (the emulator): the simulated ME's points timed by the
+main CPU's clock, a system call inside the ME's work that gemesim's check
+would report, so only on asking */
+#define PSP_POINTS_CLOCK_HERE 0x40000u
+
+/* a point's time, for the slowest point's line: on the ME its cycle counter
+(which faults on the main CPU in user mode); elsewhere microseconds times
+333 with PSP_POINTS_CLOCK_HERE, else 0 */
+static inline unsigned int psp_points_clock(int on_me)
+{
+	unsigned int count;
+
+	if (on_me > 0)
+	{
+		__asm__ __volatile__("mfc0 %0, $9" : "=r"(count));
+		return count;
+	}
+	return on_me < 0 ? (unsigned int)psp_microseconds() * 333u : 0u;
+}
 
 /* point_physics_update as the ME runs it: the same arithmetic in the same
 order, with the collision rays through psp_collision_test_vector_points.
@@ -28128,7 +31306,10 @@ static long psp_point_physics_quiet(
 /* on the Media Engine (psp_me.c's ring, ME_JOB_POINTS): the list from its
 back, until the main CPU's word says it has got there. Writes only its
 answers' lines and its own word. args: the list, the answers, the count, the
-generation, the main CPU's FPU control, the two words */
+generation (PSP_POINTS_CLOCK_HERE above it), the main CPU's FPU control, the two
+words. results: made, left to the main CPU, the slowest point's time (about
+us, on the ME only) and its index, the index of the point with the longest
+first ray and that ray's length squared (a float's bits) */
 __attribute__((optimize("no-tree-loop-distribute-patterns")))
 void psp_points_me_make(const unsigned int *args, unsigned int *results)
 {
@@ -28137,7 +31318,10 @@ void psp_points_me_make(const unsigned int *args, unsigned int *results)
 	unsigned long count = args[2], generation = args[3] & 0xFFFFu, made = 0, unserved = 0;
 	struct psp_points_word *main_word = (struct psp_points_word *)args[5];
 	struct psp_points_word *me_word = (struct psp_points_word *)args[6];
-	unsigned int control;
+	int on_me = psp_on_me();
+	int clock = on_me ? 1 : (args[3] & PSP_POINTS_CLOCK_HERE) ? -1 : 0;
+	unsigned int control, slowest = 0, slowest_k = 0, longest_k = 0;
+	real longest = 0.0f;
 	long k;
 
 	__asm__ __volatile__("cfc1 %0, $31" : "=r"(control));
@@ -28158,8 +31342,25 @@ void psp_points_me_make(const unsigned int *args, unsigned int *results)
 		location.bonus = 0;
 		answer->position = in->position;
 		answer->velocity = in->velocity;
-		answer->result = psp_point_physics_quiet(in->definition, &location, &answer->position, &answer->velocity,
-			&answer->normal, &answer->material_type, &answer->collided, in->radius, in->dt);
+		{
+			real reach = (in->velocity.i * in->velocity.i + in->velocity.j * in->velocity.j +
+				in->velocity.k * in->velocity.k) * in->dt * in->dt;
+			unsigned int start = psp_points_clock(clock), took;
+
+			answer->result = psp_point_physics_quiet(in->definition, &location, &answer->position, &answer->velocity,
+				&answer->normal, &answer->material_type, &answer->collided, in->radius, in->dt);
+			took = psp_points_clock(clock) - start;
+			if (took > slowest)
+			{
+				slowest = took;
+				slowest_k = (unsigned int)k;
+			}
+			if (reach > longest)
+			{
+				longest = reach;
+				longest_k = (unsigned int)k;
+			}
+		}
 		answer->leaf_index = location.leaf_index;
 		answer->cluster_index = location.cluster_index;
 		if (answer->result < 0)
@@ -28174,6 +31375,15 @@ void psp_points_me_make(const unsigned int *args, unsigned int *results)
 	__asm__ __volatile__("ctc1 %0, $31" : : "r"(control));
 	results[0] = made;
 	results[1] = unserved;
+	results[2] = slowest / 333u;
+	results[3] = slowest_k;
+	results[4] = longest_k;
+	{
+		union { real value; unsigned int bits; } bits;
+
+		bits.value = longest;
+		results[5] = bits.bits;
+	}
 }
 
 /* 1: listing for this frame. The storage on first use; off for good if
@@ -28185,6 +31395,7 @@ int psp_points_begin(void)
 		psp_points_on = !psp_keep("nomepoints");
 		psp_points_check = psp_keep("mepointscheck");
 		psp_points_min = psp_keep_number("mepointsmin", 8);
+		psp_points_clock_here = psp_keep("mepointsclock");
 		if (psp_points_on)
 		{
 			psp_point_inputs = (struct psp_point_input *)memalign(64, PSP_POINTS_MAX * sizeof(struct psp_point_input));
@@ -28283,7 +31494,8 @@ void psp_points_hand_over(void)
 	PSP_POINTS_UNCACHED(&psp_points_main_word) = psp_points_cursor;
 	__asm__ __volatile__("sync");
 	if (psp_me_push_points(psp_point_inputs, (unsigned int)count, psp_point_answers,
-		(unsigned int)count * sizeof(struct psp_point_answer), psp_points_generation, &psp_points_main_word,
+		(unsigned int)count * sizeof(struct psp_point_answer), psp_points_generation |
+		(psp_points_clock_here ? PSP_POINTS_CLOCK_HERE : 0u), &psp_points_main_word,
 		&psp_points_me_word, &psp_points_ticket))
 	{
 		psp_points_out = 1;
@@ -28516,6 +31728,40 @@ unsigned long psp_point_physics(
 		translational_velocity, translational_force, collision_normal, collision_material_type, radius, dt);
 }
 
+/* B31: a job's slowest point on the ME and its longest first ray, kept for
+the stats line; a point slow enough to hold the ME past an audio block's
+deadline, or (on either CPU) one whose first ray is over 10 world units, is
+logged with what it was given */
+static void psp_points_note_slowest(unsigned int const *results)
+{
+	unsigned int us = results[2], slow_k = results[3], long_k = results[4];
+	union { unsigned int bits; real value; } reach;
+	struct psp_point_input const *in = NULL;
+
+	reach.bits = results[5];
+	if (slow_k < (unsigned int)psp_points_count && us > psp_points_stats.slowest_us)
+	{
+		psp_points_stats.slowest_us = us;
+		psp_points_stats.slowest_kind = (unsigned long)psp_point_inputs[slow_k].kind;
+		psp_points_stats.slowest_slot = (unsigned long)psp_point_inputs[slow_k].slot;
+	}
+	if (long_k < (unsigned int)psp_points_count && reach.value > psp_points_stats.longest_reach)
+		psp_points_stats.longest_reach = reach.value;
+	if (us >= 5000u && slow_k < (unsigned int)psp_points_count)
+		in = &psp_point_inputs[slow_k];
+	else if (reach.value > 100.0f && long_k < (unsigned int)psp_points_count)
+		in = &psp_point_inputs[long_k];
+	if (in && psp_points_slow_lines < 12)
+	{
+		psp_points_slow_lines++;
+		platform_psp_log("mepoints: a point %s (the job's slowest about %u us, its longest first ray %.2f world units): "
+			"kind %d slot %ld definition %p leaf %ld cluster %d position %.3f %.3f %.3f velocity %.3f %.3f %.3f radius %.4f dt %.4f",
+			us >= 5000u ? "slow" : "with a long ray", us, sqrt(reach.value), in->kind, in->slot,
+			(void const *)in->definition, in->leaf_index, in->cluster_index, in->position.x, in->position.y,
+			in->position.z, in->velocity.i, in->velocity.j, in->velocity.k, in->radius, in->dt);
+	}
+}
+
 /* the frame's points done: the ME stopped and its job collected, so the
 list may be written again */
 void psp_points_end(void)
@@ -28529,7 +31775,37 @@ void psp_points_end(void)
 		PSP_POINTS_UNCACHED(&psp_points_main_word) = ((unsigned long)psp_points_generation << 16) | 0xFFFFu;
 		__asm__ __volatile__("sync");
 		if (psp_me_wait(psp_points_ticket, results))
+		{
 			psp_points_stats.me_made += results[0];
+			if (results[0])
+				psp_points_note_slowest(results);
+		}
+		else if (psp_points_failed_lines < 4)
+		{
+			/* B31: the point the ME was on when the job failed (the one below
+			the last it made), with what it was given: replayed in the
+			emulator, it says whether that point is slow or the ME faulted */
+			unsigned long made = PSP_POINTS_UNCACHED(&psp_points_me_word);
+			long k = (made >> 16) == psp_points_generation ? (long)(made & 0xFFFFu) - 1 : psp_points_count - 1;
+
+			psp_points_failed_lines++;
+			psp_points_stats.failed++;
+			if (k >= 0 && k < psp_points_count)
+			{
+				struct psp_point_input const *in = &psp_point_inputs[k];
+
+				platform_psp_log("mepoints: the job failed %s point %ld of %d (the ME's word %08lx): kind %d slot %ld definition %p "
+					"leaf %ld cluster %d position %08lx %08lx %08lx velocity %08lx %08lx %08lx radius %08lx dt %08lx",
+					(made >> 16) == psp_points_generation ? "at" : "with none made, not begun or on its first,", k,
+					psp_points_count, made, in->kind, in->slot, (void const *)in->definition, in->leaf_index, in->cluster_index,
+					PSP_POINTS_BITS(in->position.x), PSP_POINTS_BITS(in->position.y), PSP_POINTS_BITS(in->position.z),
+					PSP_POINTS_BITS(in->velocity.i), PSP_POINTS_BITS(in->velocity.j), PSP_POINTS_BITS(in->velocity.k),
+					PSP_POINTS_BITS(in->radius), PSP_POINTS_BITS(in->dt));
+			}
+			else
+				platform_psp_log("mepoints: the job failed before its first point (the ME's word %08lx, %d points)", made,
+					psp_points_count);
+		}
 		else
 			psp_points_stats.failed++;
 		psp_points_out = 0;
@@ -28551,11 +31827,13 @@ void psp_points_end(void)
 			mark = now;
 			platform_psp_log("mepoints: over %lu frames, %lu points listed a frame; %lu hand-overs (%lu refused, %lu failed) of %lu points: "
 				"the ME made %lu, the loops took %lu of them, made %lu here first, %lu changed since listed, %lu left to this CPU; "
-				"checked %lu, %lu differed",
+				"checked %lu, %lu differed; the slowest point the ME made about %lu us (kind %lu slot %lu), the longest first ray "
+				"%.2f world units",
 				psp_points_stats.frames, psp_points_stats.listed / frames, psp_points_stats.jobs, psp_points_stats.refused,
 				psp_points_stats.failed, psp_points_stats.handed, psp_points_stats.me_made, psp_points_stats.taken,
 				psp_points_stats.here, psp_points_stats.changed, psp_points_stats.unserved, psp_points_stats.compared,
-				psp_points_stats.differed);
+				psp_points_stats.differed, psp_points_stats.slowest_us, psp_points_stats.slowest_kind,
+				psp_points_stats.slowest_slot, sqrt(psp_points_stats.longest_reach));
 			memset(&psp_points_stats, 0, sizeof(psp_points_stats));
 		}
 	}
@@ -28924,12 +32202,28 @@ FIXES_MODELS["source/rasterizer/rasterizer.c#lightgel"] = [
 				long gel = definition ? *(long const *)(definition + 0x70) : NONE;
 				unsigned int average = 0;
 				int gel_known = gel != NONE && psp_tex_average_known(psp_tex_bitmap_key(gel, 0), &average);
+				int gel_faced = 0;
+				unsigned int gel_cube_key = 0;
+				/* the six faces' colours, the gel's forward, left and up, then
+				its cube's key (0: none, the faces shape it) */
+				float gel_shape[28];
 
 				if (gel_known && *(float const *)(definition + 32) <= -0.99f && !PSP_KEEP_ONCE("nogel"))
 				{
-					colour.red *= (float)(average & 0xFF) / 255.0f;
-					colour.green *= (float)((average >> 8) & 0xFF) / 255.0f;
-					colour.blue *= (float)((average >> 16) & 0xFF) / 255.0f;
+					extern int psp_tex_gel_faces(unsigned int key, float *faces);
+
+					extern const void *psp_tex_gel_cube(unsigned int key);
+
+					if (PSP_KEEP_ONCE("gelfaces") && psp_tex_gel_faces(psp_tex_bitmap_key(gel, 0), gel_shape))
+						gel_faced = psp_light_gel_frame(light, gel_shape + 18);
+					if (gel_faced && !PSP_KEEP_ONCE("nogelcube") && psp_tex_gel_cube(psp_tex_bitmap_key(gel, 0)))
+						gel_cube_key = psp_tex_bitmap_key(gel, 0);
+					if (!gel_faced)
+					{
+						colour.red *= (float)(average & 0xFF) / 255.0f;
+						colour.green *= (float)((average >> 8) & 0xFF) / 255.0f;
+						colour.blue *= (float)((average >> 16) & 0xFF) / 255.0f;
+					}
 				}
 				if (psp_screenshot_requested && PSP_KEEP_ONCE("lightdump"))
 				{
@@ -28944,8 +32238,78 @@ FIXES_MODELS["source/rasterizer/rasterizer.c#lightgel"] = [
 						light->forward.i, light->forward.j, light->forward.k,
 						definition ? *(float const *)(definition + 28) : -1.0f,
 						definition ? *(float const *)(definition + 32) : -1.0f);
+					if (gel_faced)
+						platform_log("lightdump: light %ld's gel %s, faces %.2f %.2f %.2f / %.2f %.2f %.2f / %.2f %.2f %.2f / %.2f %.2f %.2f / %.2f %.2f %.2f / %.2f %.2f %.2f forward %.2f %.2f %.2f up %.2f %.2f %.2f",
+							light_index, gel_cube_key ? "sampled from its cube" : "by its faces' means",
+							gel_shape[0], gel_shape[1], gel_shape[2], gel_shape[3], gel_shape[4], gel_shape[5],
+							gel_shape[6], gel_shape[7], gel_shape[8], gel_shape[9], gel_shape[10], gel_shape[11],
+							gel_shape[12], gel_shape[13], gel_shape[14], gel_shape[15], gel_shape[16], gel_shape[17],
+							gel_shape[18], gel_shape[19], gel_shape[20], gel_shape[24], gel_shape[25], gel_shape[26]);
 				}
 				psp_ge_light_begin(&light->position.x, &light->forward.i, &colour.red, light->radius,"""),
+("""				psp_ge_light_begin(&light->position.x, &light->forward.i, &colour.red, light->radius,
+					definition ? *(float const *)(definition + 28) : -1.0f,
+					definition ? *(float const *)(definition + 32) : -1.0f);""",
+ """				psp_ge_light_begin(&light->position.x, &light->forward.i, &colour.red, light->radius,
+					definition ? *(float const *)(definition + 28) : -1.0f,
+					definition ? *(float const *)(definition + 32) : -1.0f);
+				{
+					extern void psp_ge_light_gel(const float *gel);
+
+					memcpy(gel_shape + 27, &gel_cube_key, sizeof(gel_cube_key));
+					psp_ge_light_gel(gel_faced ? gel_shape : NULL);
+				}"""),
+]
+
+# Keep word "gelfaces" (a restoration; off: the six faces' mean, as
+# before). The Xbox's light pass looks a light's gel
+# cube map up by the direction from the light to the surface in the gel's
+# frame, the light's forward and up turned by the gel's yaw, pitch and roll
+# over game time (the environment light vertex shader: +X forward, +Y left,
+# +Z up). One mean for the whole gel lit every wall around an alert light
+# alike; the bake now keeps each face's mean (texpack.py, gel_faces), and the
+# GE's light pass gives each vertex the faces its direction leans toward. The
+# gel's frame is worked out here as the Xbox's light begin does, with the
+# engine's own functions, so the beams turn as they do there
+FIXES_MODELS["source/rasterizer/rasterizer.c#gelframe"] = [
+("""static unsigned int psp_transparent_map(struct shader const *shader, short permutation, boolean object,""",
+ """/* a light's gel frame (forward, left, up) at this frame's game time, as
+_rasterizer_environment_diffuse_light_begin turns it: the gel's yaw, pitch
+and roll functions and periods at +0x8e/+0x90, +0x9e/+0xa0 and
++0x96/+0x98 of the light's definition. 0 when a period isn't set */
+static int psp_light_gel_frame(struct rasterizer_light_submit_parameters const *light, float *frame)
+{
+	extern real periodic_function_evaluate(short function_type, real time);
+	char const *definition = (char const *)light->definition;
+	real yaw_period, pitch_period, roll_period, yaw, pitch, roll;
+	real_matrix4x3 rotation;
+	real_vector3d forward, up, left;
+
+	if (!definition)
+		return 0;
+	yaw_period = *(real const *)(definition + 0x90);
+	roll_period = *(real const *)(definition + 0x98);
+	pitch_period = *(real const *)(definition + 0xa0);
+	if (!(yaw_period > 0.0f) || !(pitch_period > 0.0f) || !(roll_period > 0.0f))
+		return 0;
+	yaw = periodic_function_evaluate(*(short const *)(definition + 0x8e),
+		global_frame_parameters.game_time_sec / yaw_period) * (2.0f * _pi);
+	pitch = periodic_function_evaluate(*(short const *)(definition + 0x9e),
+		global_frame_parameters.game_time_sec / pitch_period) * (2.0f * _pi);
+	roll = periodic_function_evaluate(*(short const *)(definition + 0x96),
+		global_frame_parameters.game_time_sec / roll_period) * (2.0f * _pi);
+	matrix4x3_rotation_from_angles(&rotation, yaw, pitch, roll);
+	matrix4x3_transform_normal(&rotation, &light->forward, &forward);
+	matrix4x3_transform_normal(&rotation, &light->up, &up);
+	cross_product3d(&forward, &up, &left);
+	normalize3d(&left);
+	frame[0] = forward.i; frame[1] = forward.j; frame[2] = forward.k;
+	frame[3] = left.i; frame[4] = left.j; frame[5] = left.k;
+	frame[6] = up.i; frame[7] = up.j; frame[8] = up.k;
+	return 1;
+}
+
+static unsigned int psp_transparent_map(struct shader const *shader, short permutation, boolean object,"""),
 ]
 
 FIXES_MODELS["source/rasterizer/rasterizer.c#genericnoise"] = [
@@ -29085,6 +32449,226 @@ FIXES_OCEAN["source/rasterizer/rasterizer.c#oceanfog"] = [
 				(b << 16) | (g << 8) | r, settled->planar_mode == 1 ? settled->planar_maximum_density : 0.0f,
 				settled->planar_maximum_depth, settled->planar_maximum_distance);
 		}"""),
+]
+
+
+# ---------- FIXES_RSO: a still object's records sent again ("rso", psp_ge.c)
+# render_model's inputs for an object, byte for byte, are the key: when they
+# equal the ones its kept records were made from, psp_ge.c sends those
+# records and the walk (the relative node matrices, the parts, the shaders'
+# keys and colours) is skipped. render_objects.c offers the object
+# (scenery, or every type with "rsoall"); render_model makes the key only
+# where the walk depends on nothing else: no point lights (their list is the
+# frame's), no effect, no first-person, shadow or sky flag, no debug view,
+# no cortana hack, at most PSP_RSO_NODES nodes
+FIXES_RSO = {}
+FIXES_RSO["source/models/models.c#rso"] = [
+("""void render_model(
+	long model_index,""",
+"""#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_RSO) */
+#define PSP_RSO_NODES 16
+#define PSP_RSO_REGIONS 16
+extern long psp_rso_object;
+extern int psp_rso_field;
+int psp_rso_find(long object_index, unsigned int const **kept, unsigned int *kept_words);
+int psp_rso_reuse(long object_index, int same, float const *centroid);
+unsigned int *psp_rso_capture_end(unsigned int key_words);
+
+/* whether the walk reads only render_model's inputs, the model's tag data
+and the map's constants: no point lights (their list is the frame's), no
+effect, no first-person, shadow, sky or immediate flag, no debug view */
+static boolean psp_rso_keyable(real_matrix4x3 const *node_matrices, short node_count, short region_count,
+	struct render_lighting const *lighting, struct render_model_effect const *model_effect, unsigned long flags)
+{
+	return node_matrices && node_count > 0 && node_count <= PSP_RSO_NODES && region_count >= 0 &&
+		region_count <= PSP_RSO_REGIONS && !(flags & ~FLAG(_render_model_no_planar_fog_bit)) &&
+		lighting->point_light_count == 0 && model_effect->type == 0 /* none (render_objects.c's enum) */ &&
+		!rasterizer_model_cortana_hack && rasterizer_debug_options.debug_model_lod == NONE && !render_model_nodes &&
+		!render_model_markers && !render_model_vertex_counts && !render_model_index_counts && !render_model_no_geometry;
+}
+
+/* the key: the bytes of render_model's inputs that the walk reads, packed in
+words. The words before a field fix its length (the model index its region
+count, the node count its matrices), so two keys of different inputs differ
+before either is read past its end. Only what the walk's records are made
+from: the distant lights the count names, the reflection tint (the lighting's
+shadow vector and colour are read only by the shadow pass), no point light
+indices (none are read with no point lights), and nothing of the effect
+(none: its intensity is unset there and the record writes 0; the function
+values, read only by see-through parts, which are never kept). A
+reflection faded by the camera's distance is checked in psp_ge.c (rso).
+ With key NULL, only its words,
+counted by the same fields so the length can't drift from them; with
+fill, written there; else compared there in place, which stops at the first
+difference: 0 if they differ, else the words */
+static unsigned int psp_rso_key(
+	unsigned int *key,
+	unsigned int kept_words,
+	boolean fill,
+	long model_index,
+	struct model const *model,
+	real level_of_detail_pixels,
+	real_matrix4x3 const *node_matrices,
+	short node_count,
+	char const *region_permutation_indices,
+	short region_count,
+	real_rgb_color const *change_colors,
+	real const *function_values,
+	struct render_lighting const *lighting,
+	real_point3d const *centroid,
+	real radius,
+	struct render_model_effect const *model_effect,
+	short forced_shader_permutation_index,
+	unsigned long flags)
+{
+	unsigned int at = 0, head[5];
+	short level = NUMBER_OF_DETAIL_LEVELS_PER_MODEL - 1;
+	short lights = lighting->distant_light_count < 0 ? 0 : lighting->distant_light_count > 2 ? 2 :
+		lighting->distant_light_count;
+
+#define PSP_RSO_FIELD(field, pointer, bytes) \
+	do { \
+		unsigned int psp_rso_bytes = (unsigned int)(bytes); \
+		if (!key) \
+			; \
+		else if (fill) \
+		{ \
+			key[at + (psp_rso_bytes + 3) / 4 - 1] = 0; \
+			csmemcpy(key + at, (pointer), psp_rso_bytes); \
+		} \
+		else if (at + (psp_rso_bytes + 3) / 4 > kept_words || memcmp(key + at, (pointer), psp_rso_bytes)) \
+		{ \
+			psp_rso_field = (field); \
+			return 0; \
+		} \
+		at += (psp_rso_bytes + 3) / 4; \
+	} while (0)
+
+	while (level > 0 && level_of_detail_pixels < model->detail_cutoff_pixels[level])
+		level--;
+	head[0] = (unsigned int)model_index;
+	head[1] = ((unsigned int)(unsigned short)level << 16) | (unsigned short)forced_shader_permutation_index;
+	head[2] = (unsigned int)flags;
+	head[3] = ((unsigned int)(unsigned short)lighting->distant_light_count << 16) | (unsigned short)node_count;
+	head[4] = (unsigned int)region_count;
+	PSP_RSO_FIELD(0, head, sizeof(head));
+	if (region_count)
+		PSP_RSO_FIELD(1, region_permutation_indices, region_count);
+	PSP_RSO_FIELD(2, &lighting->ambient_color, sizeof(lighting->ambient_color));
+	if (lights)
+		PSP_RSO_FIELD(3, lighting->distant_lights, lights * sizeof(lighting->distant_lights[0]));
+	PSP_RSO_FIELD(4, &lighting->reflection_tint_color, sizeof(lighting->reflection_tint_color));
+	PSP_RSO_FIELD(5, centroid, sizeof(*centroid));
+	PSP_RSO_FIELD(6, &radius, sizeof(radius));
+	PSP_RSO_FIELD(7, change_colors, NUMBER_OF_OBJECT_CHANGE_COLORS * sizeof(real_rgb_color));
+	PSP_RSO_FIELD(8, node_matrices, node_count * sizeof(real_matrix4x3));
+#undef PSP_RSO_FIELD
+	if (key && !fill && at != kept_words)
+	{
+		psp_rso_field = 9;
+		return 0;
+	}
+	return at;
+}
+#endif
+
+void render_model(
+	long model_index,"""),
+("""		if (!centroid)
+		{
+			centroid = &node_matrices->position;
+		}
+""",
+"""		if (!centroid)
+		{
+			centroid = &node_matrices->position;
+		}
+#ifdef HALO_PSP
+		/* psp_fixups.py (FIXES_RSO): the records kept for these inputs, sent
+		again in place of the walk (psp_ge.c, rso) */
+		boolean psp_rso_walk = FALSE;
+		short psp_rso_regions = (short)MIN(model->regions.count, region_permutation_count);
+
+		if (psp_rso_object != NONE && psp_rso_object == unique_identifier)
+		{
+			unsigned int const *kept;
+			unsigned int kept_words;
+
+			psp_rso_object = NONE;
+			if (psp_rso_keyable(node_matrices, node_count, psp_rso_regions, lighting, model_effect, flags) &&
+				psp_rso_find(unique_identifier, &kept, &kept_words))
+			{
+				int same = kept && psp_rso_key((unsigned int *)kept, kept_words, FALSE, model_index, model,
+					level_of_detail_pixels, node_matrices, node_count, region_permutation_indices, psp_rso_regions,
+					change_colors, function_values, lighting, centroid, radius, model_effect,
+					forced_shader_permutation_index, flags) != 0;
+				int reuse = psp_rso_reuse(unique_identifier, same, &centroid->x);
+
+				if (reuse > 0)
+				{
+					rasterizer_model_cortana_hack = FALSE;
+					profile_exit(render_model_section);
+					return;
+				}
+				psp_rso_walk = reuse == 0;
+			}
+		}
+#endif
+"""),
+("""			rasterizer_model_end();
+		}
+	}
+
+	rasterizer_model_cortana_hack = FALSE;""",
+"""			rasterizer_model_end();
+		}
+#ifdef HALO_PSP
+		if (psp_rso_walk)
+		{
+			/* psp_fixups.py (FIXES_RSO): the walk kept, and its key written
+			into the entry (the inputs are as they were before the walk) */
+			unsigned int words = psp_rso_key(NULL, 0, FALSE, model_index, model, level_of_detail_pixels,
+				node_matrices, node_count, region_permutation_indices, psp_rso_regions, change_colors,
+				function_values, lighting, centroid, radius, model_effect, forced_shader_permutation_index, flags);
+			unsigned int *key = psp_rso_capture_end(words);
+
+			if (key)
+				(void)psp_rso_key(key, words, TRUE, model_index, model, level_of_detail_pixels, node_matrices,
+					node_count, region_permutation_indices, psp_rso_regions, change_colors, function_values,
+					lighting, centroid, radius, model_effect, forced_shader_permutation_index, flags);
+		}
+#endif
+	}
+
+	rasterizer_model_cortana_hack = FALSE;"""),
+]
+FIXES_RSO["source/render/render_objects.c#rso"] = [
+("""					render_model(
+						definition->object.model.index,
+						level_of_detail_pixels,
+""",
+"""					{
+						/* psp_fixups.py (FIXES_RSO): this object's records may be kept (psp_ge.c, rso) */
+						extern long psp_rso_object;
+						extern int psp_rso_on, psp_rso_all;
+
+						psp_rso_object = psp_rso_on && (psp_rso_all || object->object.type == _object_type_scenery) ?
+							object_index : NONE;
+					}
+					render_model(
+						definition->object.model.index,
+						level_of_detail_pixels,
+"""),
+("""					if (debug_objects)
+""",
+"""					{
+						extern long psp_rso_object;
+
+						psp_rso_object = NONE; /* psp_fixups.py (FIXES_RSO) */
+					}
+					if (debug_objects)
+"""),
 ]
 
 
@@ -29299,6 +32883,605 @@ static void psp_lfs_count_directions(
 """),
 ]
 
+# ---------- FIXES_BSPR: a biped's last answers kept in its own state ("bspsame" turns it off)
+# A standing biped, and a resting body, asks the collision BSPs the same
+# question tick after tick: its level sphere at the same centre and radius,
+# the same object's BSP in the object's own space, the same short rays from a
+# body's nodes. A walk's answer is a function of its arguments and of tag data
+# alone: the BSP (fixed while a map is loaded and its BSP set: every kept
+# answer is dropped at both, with the sphere memo, by moving the generation
+# all keys carry), the centre and radius (or the ray's ends, maximum t and
+# test flags), and, where the walk reads them, the breakable surfaces' count
+# and flags. Objects moving into the sphere change what the caller does with
+# the leaves (the cluster object lists are walked after this, every time),
+# not the BSP's answer. So each biped keeps its last few questions with their
+# answers in a tail of its own object datum (4 spheres, 2 rays: no table and
+# no heap; the tail moves with the datum when the object pool compacts, is
+# zeroed when a biped is made and whenever a game state is loaded). A
+# question is the key's 7 words (a ray's, 11) compared bit for bit, with the breakable flags as a generation that moves
+# whenever the flags read differ from the last ones seen: a match is the
+# walk's own answer, list for list, in order. Only inside biped_update (the
+# owner is the biped), and only on the main CPU. The early-out walk
+# (psp_sphere_any) stops at its first find, so it is neither asked nor kept.
+# It sits before the sphere memo: a kept answer never reaches that table.
+# "bspsame" (keep.txt): every question walks, as before; "bspsamecheck": a
+# match walks too, compares, uses the walk's answer, and the log counts any
+# difference
+FIXES_BSPR = {}
+# (the tail: the engine's biped datum is 0x480 bytes; 640 more hold the kept
+# answers, set at each map's start, so the word off costs the pool nothing)
+FIXES_BSPR["source/objects/object_types.c#bspsame"] = [
+("""	struct object_type_definition *definition = first_object_type_definition;
+	processed_bsp_flags = 0;
+""",
+ """	struct object_type_definition *definition = first_object_type_definition;
+	processed_bsp_flags = 0;
+#ifdef HALO_PSP
+	{
+		/* psp_fixups.py (FIXES_BSPR): with it on, each biped made from now
+		has its kept collision answers after its datum; off, the datum is
+		the engine's own size and nothing is kept */
+		int psp_keep(const char *name);
+
+		biped_data_definition.game_datum_size = psp_keep("bspsame") ? 0x480 : 0x480 + 640;
+	}
+#endif
+"""),
+]
+FIXES_BSPR["source/physics/collision_bsp.c#bspsame"] = [
+("""	csmemset(psp_sphere_memo, 0, sizeof(psp_sphere_memo));
+	psp_surface_bounds_stale = 1;
+}""",
+ """	csmemset(psp_sphere_memo, 0, sizeof(psp_sphere_memo));
+	psp_surface_bounds_stale = 1;
+	{
+		void psp_bspr_forget(void); /* psp_fixups.py (FIXES_BSPR) */
+
+		psp_bspr_forget();
+	}
+}"""),
+("""#endif
+
+boolean collision_bsp_test_sphere(
+	struct collision_bsp const *bsp,""",
+ """#endif
+
+#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_BSPR): see there */
+#include "objects/objects.h"
+#include "objects/object_types.h"
+extern int psp_sphere_any;
+#define PSP_BSPR_SPHERES 4
+#define PSP_BSPR_RAYS 2
+#define PSP_BSPR_SPHERE_LIST 36 /* surfaces, edges, vertices and leaves together */
+#define PSP_BSPR_RAY_LEAVES 16
+#define PSP_BSPR_FLAG_WORDS 8
+struct psp_bspr_sphere_slot
+{
+	/* the key: 7 words */
+	struct collision_bsp const *bsp;
+	unsigned long x, y, z, radius;
+	unsigned long generation;
+	long count;
+	/* the answer */
+	unsigned char surface_count, edge_count, vertex_count, leaf_count;
+	unsigned short list[PSP_BSPR_SPHERE_LIST];
+};
+struct psp_bspr_ray_slot
+{
+	/* the key: 11 words */
+	struct collision_bsp const *bsp;
+	unsigned long flags, px, py, pz, vx, vy, vz, maximum_t;
+	unsigned long generation;
+	long count;
+	/* the answer */
+	unsigned long t;
+	real_plane3d const *plane;
+	long surface_index, plane_designator;
+	byte flags_out, breakable_surface_index, hit, leaf_count;
+	short material_index;
+	unsigned short leaves[PSP_BSPR_RAY_LEAVES];
+};
+struct psp_bspr_state
+{
+	struct psp_bspr_sphere_slot spheres[PSP_BSPR_SPHERES];
+	struct psp_bspr_ray_slot rays[PSP_BSPR_RAYS];
+};
+/* the 640 bytes object_types.c adds to the biped datum */
+typedef char psp_bspr_state_fits[sizeof(struct psp_bspr_state) <= 640 ? 1 : -1];
+/* the biped being updated (bipeds.c): its header's datum pointer, NULL
+outside biped_update. Read through it at each question, so a datum moved by
+a compaction is still found; its tail starts 0x480 bytes in */
+void *const *psp_bspr_datum_at;
+static int psp_bspr_on = -1, psp_bspr_check = 0;
+/* the breakable flags last seen, and the generation every key carries
+(never 0, so a zeroed tail matches nothing) */
+static unsigned long psp_bspr_flags[PSP_BSPR_FLAG_WORDS], psp_bspr_generation = 1;
+static byte const *psp_bspr_flags_at;
+/* between a question and its answer: the slot to keep it in, or the match to check */
+static struct psp_bspr_sphere_slot psp_bspr_sphere_pending, *psp_bspr_sphere_into, *psp_bspr_sphere_checking;
+static struct psp_bspr_ray_slot psp_bspr_ray_pending, *psp_bspr_ray_into, *psp_bspr_ray_checking;
+static unsigned long psp_bspr_counts[8]; /* sphere asked, answered, kept, differed; the same for rays */
+static long psp_bspr_window = -1;
+
+static void psp_bspr_new_generation(void)
+{
+	if (++psp_bspr_generation == 0 || psp_bspr_generation == ~0UL)
+		psp_bspr_generation = 1;
+}
+
+/* a map's tags loaded or the BSP set: no biped's kept answer matches again */
+void psp_bspr_forget(void)
+{
+	psp_bspr_flags_at = NULL;
+	psp_bspr_new_generation();
+}
+
+/* a game state loaded (a revert, a saved game): its bipeds' tails were kept
+under generations of another run, so every one is cleared */
+void psp_bspr_forget_loaded(void)
+{
+	struct object_iterator iterator;
+	struct object_datum *object;
+
+	psp_bspr_forget();
+	object_iterator_new(&iterator, _object_mask_biped, 0);
+	while ((object = (struct object_datum *)object_iterator_next(&iterator)) != NULL)
+		if (object_header_get(iterator.index)->data_size >= 0x480 + 640)
+			csmemset((byte *)object + 0x480, 0, 640);
+}
+
+static unsigned long psp_bspr_bits(real value)
+{
+	union { real f; unsigned long u; } v;
+
+	v.f = value;
+	return v.u;
+}
+
+/* the generation for a walk that reads count breakable flags at flags (it
+moves when they differ from the last seen); ~0 when they don't fit (not kept) */
+static unsigned long psp_bspr_flags_generation(short count, byte const *flags)
+{
+	long words, k;
+	int same;
+
+	if (!flags || count <= 0)
+		return psp_bspr_generation;
+	words = (count + 31) / 32;
+	if (words > PSP_BSPR_FLAG_WORDS)
+		return ~0UL;
+	same = flags == psp_bspr_flags_at;
+	for (k = 0; k < words && same; k++)
+		same = psp_bspr_flags[k] == ((unsigned long const *)flags)[k];
+	if (!same)
+	{
+		for (k = 0; k < words; k++)
+			psp_bspr_flags[k] = ((unsigned long const *)flags)[k];
+		psp_bspr_flags_at = flags;
+		psp_bspr_new_generation();
+	}
+	return psp_bspr_generation;
+}
+
+static void psp_bspr_report(void)
+{
+	long tick = game_time_get();
+
+	if (psp_bspr_window < 0 || tick < psp_bspr_window)
+		psp_bspr_window = tick;
+	if (tick - psp_bspr_window < 300)
+		return;
+	platform_psp_log("bspsame: %ld ticks to %ld, spheres %lu asked %lu answered %lu kept, rays %lu asked %lu answered %lu kept%s%lu %lu",
+		tick - psp_bspr_window, tick, psp_bspr_counts[0], psp_bspr_counts[1], psp_bspr_counts[2],
+		psp_bspr_counts[4], psp_bspr_counts[5], psp_bspr_counts[6],
+		psp_bspr_check ? "; bspsamecheck: answers that differed (spheres, rays) " : "; ",
+		psp_bspr_counts[3], psp_bspr_counts[7]);
+	csmemset(psp_bspr_counts, 0, sizeof(psp_bspr_counts));
+	psp_bspr_window = tick;
+}
+
+/* the owner's tail, or NULL (word off, or nobody being updated) */
+static struct psp_bspr_state *psp_bspr_state_get(void)
+{
+	if (psp_bspr_on < 0)
+	{
+		psp_bspr_on = !psp_keep("bspsame");
+		psp_bspr_check = psp_keep("bspsamecheck");
+	}
+	return psp_bspr_on && psp_bspr_datum_at ? (struct psp_bspr_state *)((byte *)*psp_bspr_datum_at + 0x480) : NULL;
+}
+
+/* TRUE: result holds the kept answer and the walk is not made */
+static boolean psp_bspr_sphere_take(struct collision_bsp const *bsp, short breakable_surface_count,
+	byte const *breakable_surface_flags, real_point3d const *center, real radius,
+	struct collision_bsp_test_sphere_result *result)
+{
+	struct psp_bspr_sphere_slot *key = &psp_bspr_sphere_pending, *w;
+	struct psp_bspr_state *state;
+	unsigned long generation;
+	long k, n;
+
+	psp_bspr_sphere_into = NULL;
+	psp_bspr_sphere_checking = NULL;
+	state = psp_bspr_state_get();
+	if (!state)
+		return FALSE;
+	if ((psp_bspr_counts[0] & 63) == 0)
+		psp_bspr_report();
+	if (psp_sphere_any)
+		return FALSE;
+	generation = psp_bspr_flags_generation(breakable_surface_count, breakable_surface_flags);
+	if (generation == ~0UL)
+		return FALSE;
+	psp_bspr_counts[0]++;
+	key->bsp = bsp;
+	key->x = psp_bspr_bits(center->x);
+	key->y = psp_bspr_bits(center->y);
+	key->z = psp_bspr_bits(center->z);
+	key->radius = psp_bspr_bits(radius);
+	key->generation = generation;
+	key->count = breakable_surface_count;
+	/* the same question lands in the same one of the biped's slots each tick */
+	w = &state->spheres[((((unsigned long)bsp >> 4) ^ key->x ^ (key->y >> 7) ^ key->radius) * 0x9E3779B1UL) >> 30];
+	if (w->bsp == key->bsp && w->x == key->x && w->y == key->y && w->z == key->z &&
+		w->radius == key->radius && w->generation == key->generation && w->count == key->count)
+	{
+		psp_bspr_counts[1]++;
+		if (psp_bspr_check)
+		{
+			psp_bspr_sphere_checking = w;
+			return FALSE;
+		}
+		result->surface_count = w->surface_count;
+		result->edge_count = w->edge_count;
+		result->vertex_count = w->vertex_count;
+		result->leaf_count = w->leaf_count;
+		n = 0;
+		for (k = 0; k < w->surface_count; k++) result->surface_indices[k] = w->list[n++];
+		for (k = 0; k < w->edge_count; k++) result->edge_indices[k] = w->list[n++];
+		for (k = 0; k < w->vertex_count; k++) result->vertex_indices[k] = w->list[n++];
+		for (k = 0; k < w->leaf_count; k++) result->leaf_indices[k] = w->list[n++];
+		return TRUE;
+	}
+	psp_bspr_sphere_into = w;
+	return FALSE;
+}
+
+/* after a walk: its answer kept (or, checking, compared with the match) */
+static void psp_bspr_sphere_keep(struct collision_bsp_test_sphere_result const *result)
+{
+	struct psp_bspr_sphere_slot *w = psp_bspr_sphere_checking;
+	long k, n;
+
+	if (w)
+	{
+		boolean same = result->surface_count == w->surface_count && result->edge_count == w->edge_count &&
+			result->vertex_count == w->vertex_count && result->leaf_count == w->leaf_count;
+
+		n = 0;
+		for (k = 0; same && k < w->surface_count; k++) same = result->surface_indices[k] == w->list[n++];
+		for (k = 0; same && k < w->edge_count; k++) same = result->edge_indices[k] == w->list[n++];
+		for (k = 0; same && k < w->vertex_count; k++) same = result->vertex_indices[k] == w->list[n++];
+		for (k = 0; same && k < w->leaf_count; k++) same = result->leaf_indices[k] == w->list[n++];
+		if (!same)
+			psp_bspr_counts[3]++;
+		psp_bspr_sphere_checking = NULL;
+		return;
+	}
+	w = psp_bspr_sphere_into;
+	if (!w)
+		return;
+	psp_bspr_sphere_into = NULL;
+	w->bsp = NULL; /* not a key until the answer is whole */
+	if (result->surface_count < 0 || result->edge_count < 0 || result->vertex_count < 0 || result->leaf_count < 0 ||
+		result->surface_count + result->edge_count + result->vertex_count + result->leaf_count > PSP_BSPR_SPHERE_LIST)
+		return;
+	n = 0;
+#define PSP_BSPR_COPY(count, indices) \\
+	for (k = 0; k < result->count; k++) \\
+	{ \\
+		if ((unsigned long)result->indices[k] > 0xFFFFUL) \\
+			return; \\
+		w->list[n++] = (unsigned short)result->indices[k]; \\
+	}
+	PSP_BSPR_COPY(surface_count, surface_indices)
+	PSP_BSPR_COPY(edge_count, edge_indices)
+	PSP_BSPR_COPY(vertex_count, vertex_indices)
+	PSP_BSPR_COPY(leaf_count, leaf_indices)
+#undef PSP_BSPR_COPY
+	w->surface_count = (unsigned char)result->surface_count;
+	w->edge_count = (unsigned char)result->edge_count;
+	w->vertex_count = (unsigned char)result->vertex_count;
+	w->leaf_count = (unsigned char)result->leaf_count;
+	w->x = psp_bspr_sphere_pending.x;
+	w->y = psp_bspr_sphere_pending.y;
+	w->z = psp_bspr_sphere_pending.z;
+	w->radius = psp_bspr_sphere_pending.radius;
+	w->generation = psp_bspr_sphere_pending.generation;
+	w->count = psp_bspr_sphere_pending.count;
+	w->bsp = psp_bspr_sphere_pending.bsp;
+	psp_bspr_counts[2]++;
+}
+
+/* TRUE: result and *return_value hold the kept answer and the walk is not made */
+static boolean psp_bspr_ray_take(unsigned long flags, struct collision_bsp const *bsp, short breakable_surface_count,
+	byte const *breakable_surface_flags, real_point3d const *point, real_vector3d const *vector, real maximum_t,
+	struct collision_bsp_test_vector_result *result, boolean *return_value)
+{
+	struct psp_bspr_ray_slot *key = &psp_bspr_ray_pending, *w;
+	struct psp_bspr_state *state;
+	unsigned long generation;
+	long k;
+
+	psp_bspr_ray_into = NULL;
+	psp_bspr_ray_checking = NULL;
+	state = psp_bspr_state_get();
+	if (!state)
+		return FALSE;
+	generation = psp_bspr_flags_generation(breakable_surface_count, breakable_surface_flags);
+	if (generation == ~0UL)
+		return FALSE;
+	psp_bspr_counts[4]++;
+	key->bsp = bsp;
+	key->flags = flags;
+	key->px = psp_bspr_bits(point->x);
+	key->py = psp_bspr_bits(point->y);
+	key->pz = psp_bspr_bits(point->z);
+	key->vx = psp_bspr_bits(vector->i);
+	key->vy = psp_bspr_bits(vector->j);
+	key->vz = psp_bspr_bits(vector->k);
+	key->maximum_t = psp_bspr_bits(maximum_t);
+	key->generation = generation;
+	key->count = breakable_surface_count;
+	w = &state->rays[((((unsigned long)bsp >> 4) ^ key->px ^ key->vx ^ flags) * 0x9E3779B1UL) >> 31];
+	if (w->bsp == key->bsp && w->px == key->px && w->py == key->py && w->pz == key->pz &&
+		w->vx == key->vx && w->vy == key->vy && w->vz == key->vz && w->maximum_t == key->maximum_t &&
+		w->flags == key->flags && w->generation == key->generation && w->count == key->count)
+	{
+		union { real f; unsigned long u; } v;
+
+		psp_bspr_counts[5]++;
+		if (psp_bspr_check)
+		{
+			psp_bspr_ray_checking = w;
+			return FALSE;
+		}
+		v.u = w->t;
+		result->t = v.f;
+		if (w->hit)
+		{
+			result->plane = w->plane;
+			result->surface_index = w->surface_index;
+			result->plane_designator = w->plane_designator;
+			result->flags = w->flags_out;
+			result->breakable_surface_index = w->breakable_surface_index;
+			result->material_index = w->material_index;
+		}
+		result->leaf_count = w->leaf_count;
+		for (k = 0; k < w->leaf_count; k++) result->leaf_indices[k] = w->leaves[k];
+		*return_value = w->hit;
+		return TRUE;
+	}
+	psp_bspr_ray_into = w;
+	return FALSE;
+}
+
+static void psp_bspr_ray_keep(struct collision_bsp_test_vector_result const *result, boolean return_value)
+{
+	struct psp_bspr_ray_slot *w = psp_bspr_ray_checking;
+	long k;
+
+	if (w)
+	{
+		boolean same = (return_value ? 1 : 0) == w->hit && psp_bspr_bits(result->t) == w->t &&
+			result->leaf_count == w->leaf_count;
+
+		if (same && w->hit)
+			same = result->plane == w->plane && result->surface_index == w->surface_index &&
+				result->plane_designator == w->plane_designator && result->flags == w->flags_out &&
+				result->breakable_surface_index == w->breakable_surface_index &&
+				result->material_index == w->material_index;
+		for (k = 0; same && k < w->leaf_count; k++) same = result->leaf_indices[k] == w->leaves[k];
+		if (!same)
+			psp_bspr_counts[7]++;
+		psp_bspr_ray_checking = NULL;
+		return;
+	}
+	w = psp_bspr_ray_into;
+	if (!w)
+		return;
+	psp_bspr_ray_into = NULL;
+	w->bsp = NULL;
+	if (result->leaf_count < 0 || result->leaf_count > PSP_BSPR_RAY_LEAVES)
+		return;
+	for (k = 0; k < result->leaf_count; k++)
+	{
+		if ((unsigned long)result->leaf_indices[k] > 0xFFFFUL)
+			return;
+		w->leaves[k] = (unsigned short)result->leaf_indices[k];
+	}
+	w->leaf_count = (byte)result->leaf_count;
+	w->t = psp_bspr_bits(result->t);
+	w->hit = return_value ? 1 : 0;
+	if (return_value)
+	{
+		w->plane = result->plane;
+		w->surface_index = result->surface_index;
+		w->plane_designator = result->plane_designator;
+		w->flags_out = result->flags;
+		w->breakable_surface_index = result->breakable_surface_index;
+		w->material_index = result->material_index;
+	}
+	w->flags = psp_bspr_ray_pending.flags;
+	w->px = psp_bspr_ray_pending.px;
+	w->py = psp_bspr_ray_pending.py;
+	w->pz = psp_bspr_ray_pending.pz;
+	w->vx = psp_bspr_ray_pending.vx;
+	w->vy = psp_bspr_ray_pending.vy;
+	w->vz = psp_bspr_ray_pending.vz;
+	w->maximum_t = psp_bspr_ray_pending.maximum_t;
+	w->generation = psp_bspr_ray_pending.generation;
+	w->count = psp_bspr_ray_pending.count;
+	w->bsp = psp_bspr_ray_pending.bsp;
+	psp_bspr_counts[6]++;
+}
+#endif
+
+boolean collision_bsp_test_sphere(
+	struct collision_bsp const *bsp,"""),
+("""	result->vertex_count = 0;
+
+#ifdef HALO_PSP
+	{
+		/* psp_fixups.py (build 118): the answers remembered (#spherememo) */""",
+ """	result->vertex_count = 0;
+
+#ifdef HALO_PSP
+	/* psp_fixups.py (FIXES_BSPR): the biped's kept answer, or the walk */
+	if (!psp_bspr_sphere_take(bsp, breakable_surface_count, breakable_surface_flags, center, radius, result))
+#endif
+#ifdef HALO_PSP
+	{
+		/* psp_fixups.py (build 118): the answers remembered (#spherememo) */"""),
+("""#else
+	bsp3d_test_sphere_recursive(&context, 0, 0);
+#endif
+	collision_log_end_time(""",
+ """#else
+	bsp3d_test_sphere_recursive(&context, 0, 0);
+#endif
+#ifdef HALO_PSP
+	psp_bspr_sphere_keep(result); /* psp_fixups.py (FIXES_BSPR) */
+#endif
+	collision_log_end_time("""),
+("""	t = PIN(maximum_t, 0.f, 1.f);
+	return_value = collision_bsp_test_vector_recursive(&context, 0, 0.f, t, 0);""",
+ """	t = PIN(maximum_t, 0.f, 1.f);
+#ifdef HALO_PSP
+	/* psp_fixups.py (FIXES_BSPR): the biped's kept answer, or the walk */
+	if (!psp_bspr_ray_take(flags, bsp, breakable_surface_count, breakable_surface_flags, point, vector, maximum_t,
+		result, &return_value))
+#endif
+	return_value = collision_bsp_test_vector_recursive(&context, 0, 0.f, t, 0);
+#ifdef HALO_PSP
+	psp_bspr_ray_keep(result, return_value); /* psp_fixups.py (FIXES_BSPR) */
+#endif"""),
+]
+# (the owner: the biped being updated, its riders and its limp body included;
+# the one it interrupted comes back after it)
+FIXES_BSPR["source/units/bipeds.c#bspsame"] = [
+("""	profile_enter(biped_update_section);
+	biped_verify_object_vectors(biped_index, "pre-update");""",
+ """	profile_enter(biped_update_section);
+#ifdef HALO_PSP
+	/* psp_fixups.py (FIXES_BSPR): this biped's kept answers, after its datum */
+	extern void *const *psp_bspr_datum_at;
+	void *const *psp_bspr_outer = psp_bspr_datum_at;
+	typedef char psp_bspr_datum_fits[sizeof(struct biped_datum) <= 0x480 ? 1 : -1];
+
+	{
+		struct object_header_datum *psp_bspr_header = object_header_get(biped_index);
+
+		psp_bspr_datum_at = psp_bspr_header->data_size >= 0x480 + 640 ? (void *const *)&psp_bspr_header->datum : NULL;
+	}
+#endif
+	biped_verify_object_vectors(biped_index, "pre-update");"""),
+("""	biped_verify_object_vectors(biped_index, "post-update");
+	profile_exit(biped_update_section);
+
+	return TRUE;
+}""",
+ """	biped_verify_object_vectors(biped_index, "post-update");
+#ifdef HALO_PSP
+	psp_bspr_datum_at = psp_bspr_outer; /* psp_fixups.py (FIXES_BSPR) */
+#endif
+	profile_exit(biped_update_section);
+
+	return TRUE;
+}"""),
+]
+# (a game state loaded: the bipeds' tails it brings are cleared)
+FIXES_BSPR["source/saved games/game_state.c#bspsame"] = [
+("""	for (i =NUMBEROF(after_load_procs); i>0; i--, proc++)
+	{
+		(*proc)();
+	}
+""",
+ """	for (i =NUMBEROF(after_load_procs); i>0; i--, proc++)
+	{
+		(*proc)();
+	}
+#ifdef HALO_PSP
+	{
+		void psp_bspr_forget_loaded(void); /* collision_bsp.c (psp_fixups.py, FIXES_BSPR) */
+
+		psp_bspr_forget_loaded();
+	}
+#endif
+"""),
+]
+# (the sleepers' checksum: an awake biped's kept answers change without the
+# biped changing, so they are skipped, not stepped, and the words after them
+# are counted as far as before: a biped sleeps exactly when it did, and the
+# reference sum ("checksumcheck") skips them the same way)
+FIXES_BSPR["source/objects/objects.c#bspsame"] = [
+("""	long functions_first, functions_end, colours_first, colours_end; /* and what it recomputes asleep */
+};""",
+ """	long functions_first, functions_end, colours_first, colours_end; /* and what it recomputes asleep */
+	long tail_first, tail_end; /* a biped's kept collision answers (FIXES_BSPR) */
+};"""),
+("""	rules->count = (header->data_size < 2048 ? header->data_size : 2048) / 4;""",
+ """	rules->count = (header->data_size < 2048 ? header->data_size : 2048) / 4;
+	rules->tail_first = rules->tail_end = -1;
+	if (header->type == _object_type_biped && header->data_size >= 0x480 + 640)
+	{
+		rules->tail_first = 0x480 / 4;
+		rules->tail_end = (0x480 + 640) / 4;
+		rules->count = (header->data_size < 2048 + 640 ? header->data_size : 2048 + 640) / 4;
+	}"""),
+("""		(index >= rules->colours_first && index < rules->colours_end))
+		return 0;""",
+ """		(index >= rules->colours_first && index < rules->colours_end) ||
+		(index >= rules->tail_first && index < rules->tail_end))
+		return 0;"""),
+("""	long touched[7][2], count = 0, index = 0, k, j;""",
+ """	long touched[8][2], count = 0, index = 0, k, j;"""),
+("""	PSP_TOUCHED(rules.colours_first, rules.colours_end);
+#undef PSP_TOUCHED""",
+ """	PSP_TOUCHED(rules.colours_first, rules.colours_end);
+	PSP_TOUCHED(rules.tail_first, rules.tail_end);
+#undef PSP_TOUCHED"""),
+("""		for (index = 0; index < rules.count; index++)
+			sum = PSP_CHECKSUM_STEP(sum, psp_checksum_word(&rules, index, word[index]));
+		return sum;
+	}
+	psp_lanes_start(lane);
+	for (index = 0; index < rules.count; index++)
+		psp_lane_step(lane, kind, index, psp_checksum_word(&rules, index, word[index]));
+	return psp_lanes_end(lane);""",
+ """		for (index = 0; index < rules.count; index++)
+			if (index < rules.tail_first || index >= rules.tail_end)
+				sum = PSP_CHECKSUM_STEP(sum, psp_checksum_word(&rules, index, word[index]));
+		return sum;
+	}
+	psp_lanes_start(lane);
+	for (index = 0; index < rules.count; index++)
+		if (index < rules.tail_first || index >= rules.tail_end)
+			psp_lane_step(lane, kind, index, psp_checksum_word(&rules, index, word[index]));
+	return psp_lanes_end(lane);"""),
+("""		for (index = first; index < end; index++)
+		{
+			unsigned long value = psp_checksum_word(&rules, index, word[index]);
+""",
+ """		index = first;
+		if (first == rules.tail_first)
+			index = end;
+		for (; index < end; index++)
+		{
+			unsigned long value = psp_checksum_word(&rules, index, word[index]);
+""")
+]
 
 # ---------- FIXES_MUSIC: the music path (psp/src/psp_music.c, docs/plan_music_stream.md;
 # keep word musicstream, off by default). Applied only with PSP_MUSIC=1; there,
@@ -29306,10 +33489,11 @@ static void psp_lfs_count_directions(
 # the old code
 FIXES_MUSIC = {}
 FIXES_MUSIC["source/cache/xbox_sound_cache.c#musicstub"] = [
-("""	cache_block_index = lruv_block_new(
-		xbox_sound_cache_globals.cache,
-		sound->samples.size);
-#ifdef HALO_PSP""",
+# soundloopstop (FIXES_SOUND) wraps the block's allocation: the stub's size
+# is worked out before its block and given to the call inside it
+("""#ifdef HALO_PSP
+	{
+		extern struct lruv_cache *psp_lruv_high_cache; /* lruv_cache.c */""",
  """#ifdef HALO_PSP
 	/* a music permutation the map's music pack has: a one-page stub instead
 	of its samples, which the music path streams; every count and reference
@@ -29345,15 +33529,18 @@ FIXES_MUSIC["source/cache/xbox_sound_cache.c#musicstub"] = [
 			}
 		}
 	}
-	cache_block_index = lruv_block_new(
-		xbox_sound_cache_globals.cache,
-		psp_music_bytes ? psp_music_bytes : sound->samples.size);
-#else
-	cache_block_index = lruv_block_new(
-		xbox_sound_cache_globals.cache,
-		sound->samples.size);
 #endif
-#ifdef HALO_PSP"""),
+#ifdef HALO_PSP
+	{
+		extern struct lruv_cache *psp_lruv_high_cache; /* lruv_cache.c */"""),
+("""		cache_block_index = lruv_block_new(
+			xbox_sound_cache_globals.cache,
+			sound->samples.size);
+		psp_lruv_high_cache = psp_high_saved;""",
+ """		cache_block_index = lruv_block_new(
+			xbox_sound_cache_globals.cache,
+			psp_music_bytes ? psp_music_bytes : sound->samples.size);
+		psp_lruv_high_cache = psp_high_saved;"""),
 ("""#ifdef HALO_PSP
 		/* the cache in the ME's eDRAM: the read goes through main RAM */
 		if (psp_sound_edram_mode())""",
@@ -29542,6 +33729,48 @@ FIXES_SOUNDEDRAM["source/cache/physical_memory_map.c#soundedram"] = [
 #endif"""),
 ]
 FIXES_SOUNDEDRAM["source/cache/xbox_sound_cache.c#soundedram"] = [
+# "soundnoyield" (research, 2026-10-26: why SNDEDRAM cost d20's opening
+# +11-14% a frame): a request for a sound not yet loaded yields the thread
+# (SwitchToThread, sched_yield) even when the caller doesn't wait for it.
+# prioritize_sounds asks every sound that isn't playing, every frame, so a
+# load queue that drains slowly (the eDRAM path: two 60 KB pieces in flight,
+# moved on once a frame) means as many yields a frame as sounds waiting:
+# 'sound_render: prioritise' went 0.1-0.7 -> 3-30 ms a frame over d20's
+# opening (40096390859). Only a blocking request yields ("soundyieldold":
+# every one, as before); the answer is the same either way (not loaded yet),
+# and the yield costs ~1.36 ms on the PSP, ~950 times in d20's opening. The
+# counts are always
+# kept and logged with the sound cache's line
+("""			else
+			{
+				SwitchToThread();
+			}
+		}
+		while (!result && block);""",
+ """			else
+			{
+#ifdef HALO_PSP
+				extern int psp_sound_noyield(void);
+				extern unsigned long psp_sound_request_yields, psp_sound_request_yield_us, psp_sound_request_unyielded;
+				extern unsigned int sceKernelGetSystemTimeLow(void);
+
+				if (block || !psp_sound_noyield())
+				{
+					unsigned int psp_began = sceKernelGetSystemTimeLow();
+
+					SwitchToThread();
+					psp_sound_request_yields++;
+					psp_sound_request_yield_us += sceKernelGetSystemTimeLow() - psp_began;
+				}
+				else
+					psp_sound_request_unyielded++;
+#else
+				SwitchToThread();
+#endif
+			}
+		}
+		while (!result && block);"""),
+
 ("""		cache_sound->sound = sound;
 		cache_file_read(
 			sound->cache_tag_index,
@@ -29618,6 +33847,11 @@ void sound_cache_idle(
 		extern void psp_sound_upload_report(void);
 
 		psp_sound_upload_report();
+	}
+	{
+		extern void psp_sound_request_report(void);
+
+		psp_sound_request_report();
 	}
 }"""),
 ]
@@ -29807,8 +34041,6648 @@ static void decal_check("""),
 ]
 
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
+# PRS: perception's refresh tests every object in every cluster an actor
+# can see, ~350 visits a tick on b30's beach, and 88% of them are objects it
+# only stamps with the object marker: neither biped, vehicle nor projectile.
+# Within the refresh's marker epoch a stamp is read only by a later
+# object_mark_function on the same object, and that answer only gates the
+# biped, vehicle and projectile tests; children are walked either way. Later
+# epochs compare with a newer marker, and the sleep checksum and the play hash
+# leave magic_number out. So such an object is passed over from its header's
+# type (typehdr: the same type as its datum's), walking its children and
+# siblings as before, without its call to object_get, its stamp, or the two
+# datum lines they touch. After halo-ce-vita's perception count (BirchWoodGod).
+# "percall": every object tested and stamped as before. "prscheck": the skip
+# decides, but each passed-over object is stamped anyway (the stamp "percall"
+# would give it) and its datum's type is checked against the header's; every
+# 150 ticks a "prscheck:" line gives the objects passed over and the
+# differences (0 expected)
+FIXES_PRS = {}
+FIXES_PRS["source/ai/actor_perception.c#prs"] = [
+(r"""static void actor_perception_refresh_test_object(
+	long actor_index,
+	long object_index,
+	struct actor_perception_refresh_list *enemy_list,
+	struct actor_perception_refresh_list *friend_list)
+{
+""", r"""#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_PRS) */
+void platform_psp_log(const char *format, ...);
+static unsigned long psp_prs_passed, psp_prs_differences;
+static long psp_prs_logged = -1;
+
+static void __attribute__((noinline, cold)) psp_prs_check(long object_index, struct object_datum const *object, long type)
+{
+	long now = game_time_get();
+
+	object_mark_function(object_index);
+	psp_prs_passed++;
+	psp_prs_differences += object->object.type != type;
+	if (now % 150 == 0 && now != psp_prs_logged)
+	{
+		psp_prs_logged = now;
+		platform_psp_log("prscheck: game time %ld | passed over %lu, differences %lu", now, psp_prs_passed,
+			psp_prs_differences);
+	}
+}
+#endif
+
+static void actor_perception_refresh_test_object(
+	long actor_index,
+	long object_index,
+	struct actor_perception_refresh_list *enemy_list,
+	struct actor_perception_refresh_list *friend_list)
+{
+"""),
+(r"""	actor = actor_get(actor_index);
+
+	while (object_index != NONE)
+	{
+		current_object = actor_perception_object_get(object_index);
+""", r"""	actor = actor_get(actor_index);
+
+	while (object_index != NONE)
+	{
+#ifdef HALO_PSP
+		/* psp_fixups.py (FIXES_PRS): a type the tests below ignore is only
+		stamped, and no later reader in this refresh can tell */
+		struct object_header_datum const *psp_header = object_header_get(object_index);
+		long psp_type = psp_header->type;
+
+		if (psp_type != _object_type_biped && psp_type != _object_type_vehicle &&
+			psp_type != _object_type_projectile && !PSP_KEEP_ONCE("percall"))
+		{
+			struct object_datum const *psp_object = psp_header->datum;
+
+			if (PSP_KEEP_ONCE("prscheck"))
+				psp_prs_check(object_index, psp_object, psp_type);
+			if (psp_object->object.first_child_object_index != NONE)
+			{
+				actor_perception_refresh_test_object(
+					actor_index,
+					psp_object->object.first_child_object_index,
+					enemy_list,
+					friend_list);
+			}
+			object_index = psp_object->object.next_object_index;
+			continue;
+		}
+#endif
+		current_object = actor_perception_object_get(object_index);
+"""),
+]
+
+# ---------- FIXES_AICAD: AI thinking at half rate, staggered by actor (a compromise)
+# The AI's thinking (perception's prop servicing and the timeslice holder's
+# refresh, situation, the decision loop, and through the timeslice the
+# firing-position search and the path re-plan) is most of ai_update on the
+# fight maps. With "aicad2" each actor thinks on every other tick, half the
+# actors on even ticks and half on odd, so the tick's AI cost halves without
+# a spike. Every tick still runs what the player sees: the unit's input,
+# perception's decays and danger zone, emotion, the action's own timers,
+# moving, looking, firing and the unit's control, all from the last decision.
+# A reaction can come one tick (33 ms) later; Halo's own perception delays
+# are hundreds of milliseconds. Kept at full rate: swarms, charging actors
+# (melee and leaps are timed to the tick), dormant actors (they barely think)
+# and an actor's first update. The service timer counts thinking ticks, so the
+# timeslice holder (the costly search) comes round half as often too.
+# "aicad3" is the same rest with the timeslice kept at full rate: the timer
+# counts every tick and an actor that wins the slot thinks whole that tick, so
+# the firing-position search (cover) and the re-plan come round as often as
+# without the word. With aicad2 the marines lost b30's beach: a marine waits
+# twice as long to be sent to cover.
+# Off by default: it plays differently, so it ships only after an A/B shows it
+# breaks nothing. Campaign only: never in the multiplayer build or a networked
+# game, whose clients must simulate as the server does
+FIXES_AICAD = {}
+FIXES_AICAD["source/ai/actors.c#aicad"] = [
+("""static void actor_update_begin(
+	long actor_index)
+{""",
+ """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_AICAD): "aicad2" and "aicad3" (see there) */
+int psp_keep(const char *name);
+void platform_psp_log(const char *format, ...);
+boolean network_coop_active(void);
+
+static int psp_aicad_on = -1;
+/* the identifier each slot last thought as: a new actor in a reused slot
+thinks on its first update */
+static short psp_aicad_identifier[MAXIMUM_ACTORS];
+static struct
+{
+	unsigned long updates, rested, timeslice, swarm, charging, dormant, first;
+} psp_aicad_stats;
+static long psp_aicad_logged = NONE;
+
+static boolean psp_aicad_active(
+	void)
+{
+	if (psp_aicad_on < 0)
+	{
+#ifdef PSP_MULTIPLAYER
+		psp_aicad_on = 0;
+#else
+		psp_aicad_on = psp_keep("aicad2") ? 2 : psp_keep("aicad3") ? 3 : 0;
+#endif
+		if (psp_aicad_on)
+			platform_psp_log("ai: each actor thinks on every other tick, half on even ticks and half on odd (aicad%d)%s",
+				psp_aicad_on, psp_aicad_on == 3 ? "; the timeslice at full rate" : "");
+	}
+	return psp_aicad_on && game_connection() == _game_connection_local && !network_coop_active();
+}
+
+/* TRUE on an actor's resting tick. No side effects: perception's ray queue
+asks it too, before the actor updates */
+boolean psp_aicad_rest(
+	long actor_index)
+{
+	struct actor_datum *actor;
+	short absolute_index = DATUM_INDEX_TO_ABSOLUTE_INDEX(actor_index);
+
+	if (!psp_aicad_active() ||
+		absolute_index < 0 || absolute_index >= MAXIMUM_ACTORS ||
+		((game_time_get() + absolute_index) & 1) == 0)
+		return FALSE;
+	actor = actor_get(actor_index);
+	/* aicad3: the slot's holder thinks whole. The ray queue asks before the
+	slot is given and sees last tick's holder: a ray at most goes unused */
+	if (psp_aicad_on == 3 && actor->meta.timeslice)
+		return FALSE;
+	return !actor->meta.swarm && !actor->meta.dormant && actor->state.action != _actor_action_charge &&
+		psp_aicad_identifier[absolute_index] == actor->identifier;
+}
+
+/* the census: actor updates, how many rested, and why the rest kept the
+full rate on their resting tick (every 30 s of game time, cumulative) */
+static void psp_aicad_count(
+	long actor_index,
+	boolean rest)
+{
+	struct actor_datum *actor = actor_get(actor_index);
+	short absolute_index = DATUM_INDEX_TO_ABSOLUTE_INDEX(actor_index);
+	long now;
+
+	if (psp_aicad_on <= 0 || absolute_index < 0 || absolute_index >= MAXIMUM_ACTORS)
+		return;
+	psp_aicad_stats.updates++;
+	if (rest)
+		psp_aicad_stats.rested++;
+	else if ((game_time_get() + absolute_index) & 1)
+	{
+		if (psp_aicad_on == 3 && actor->meta.timeslice)
+			psp_aicad_stats.timeslice++;
+		else if (actor->meta.swarm)
+			psp_aicad_stats.swarm++;
+		else if (actor->meta.dormant)
+			psp_aicad_stats.dormant++;
+		else if (actor->state.action == _actor_action_charge)
+			psp_aicad_stats.charging++;
+		else
+			psp_aicad_stats.first++;
+	}
+	now = game_time_get();
+	if (psp_aicad_logged == NONE || now < psp_aicad_logged || now - psp_aicad_logged >= 900)
+	{
+		if (psp_aicad_logged != NONE)
+			platform_psp_log("aicad: game time %ld | actor updates %lu, rested %lu; resting turns kept: timeslice %lu swarm %lu dormant %lu charging %lu first %lu",
+				now, psp_aicad_stats.updates, psp_aicad_stats.rested, psp_aicad_stats.timeslice, psp_aicad_stats.swarm,
+				psp_aicad_stats.dormant, psp_aicad_stats.charging, psp_aicad_stats.first);
+		psp_aicad_logged = now;
+	}
+}
+
+/* after perception, which asks psp_aicad_rest again: an actor's first update
+is a whole one */
+static void psp_aicad_seen(
+	long actor_index)
+{
+	short absolute_index = DATUM_INDEX_TO_ABSOLUTE_INDEX(actor_index);
+
+	if (psp_aicad_on > 0 && absolute_index >= 0 && absolute_index < MAXIMUM_ACTORS)
+		psp_aicad_identifier[absolute_index] = actor_get(actor_index)->identifier;
+}
+#endif
+
+static void actor_update_begin(
+	long actor_index)
+{"""),
+("""	ai_globals->time_given_this_frame = FALSE;
+
+#ifdef HALO_PSP
+	/* perception's rays, one per actor""",
+ """	ai_globals->time_given_this_frame = FALSE;
+
+#ifdef HALO_PSP
+	/* FIXES_AICAD: the timeslice (the firing-position search, the re-plan)
+	comes round at half rate too: it is given on two ticks in four, one of
+	each parity, so both halves of the actors still compete for it */
+	if (psp_aicad_active() && psp_aicad_on == 2 && (game_time_get() & 2))
+		ai_globals->time_given_this_frame = TRUE;
+#endif
+#ifdef HALO_PSP
+	/* perception's rays, one per actor"""),
+("""	if (actor_general_update(actor_index))
+	{
+		actor_get_timeslice(actor_index);
+		actor_input_update(actor_index);
+		actor_perception_update(actor_index);
+		actor_situation_update(actor_index);
+		actor_emotion_update(actor_index);
+		actor_clear_orders(actor_index);
+		actor_decision_loop(actor_index);
+		actor_action_update(actor_index);
+""",
+ """	if (actor_general_update(actor_index))
+	{
+#ifdef HALO_PSP
+		/* FIXES_AICAD: a resting actor keeps its last situation and decision
+		and perception skips its prop service. aicad2: it can't hold the
+		timeslice either; aicad3: the slot is given first, and its holder
+		doesn't rest */
+		boolean psp_full_slot = psp_aicad_active() && psp_aicad_on == 3;
+		boolean psp_rest;
+
+		if (psp_full_slot)
+			actor_get_timeslice(actor_index);
+		psp_rest = psp_aicad_rest(actor_index);
+		psp_aicad_count(actor_index, psp_rest);
+		if (psp_rest)
+		{
+			if (!psp_full_slot)
+				actor->meta.timeslice = FALSE;
+			actor_input_update(actor_index);
+			actor_perception_update(actor_index);
+			actor_emotion_update(actor_index);
+			actor_clear_orders(actor_index);
+		}
+		else
+		{
+			if (!psp_full_slot)
+				actor_get_timeslice(actor_index);
+			actor_input_update(actor_index);
+			actor_perception_update(actor_index);
+			actor_situation_update(actor_index);
+			actor_emotion_update(actor_index);
+			actor_clear_orders(actor_index);
+			actor_decision_loop(actor_index);
+		}
+		psp_aicad_seen(actor_index);
+#else
+		actor_get_timeslice(actor_index);
+		actor_input_update(actor_index);
+		actor_perception_update(actor_index);
+		actor_situation_update(actor_index);
+		actor_emotion_update(actor_index);
+		actor_clear_orders(actor_index);
+		actor_decision_loop(actor_index);
+#endif
+		actor_action_update(actor_index);
+"""),
+]
+FIXES_AICAD["source/ai/actor_perception.c#aicad"] = [
+("""	struct object_datum *unit;
+	short index;
+
+	if (psp_aihalf_on < 0)""",
+ """	struct object_datum *unit;
+	short index;
+
+	/* FIXES_AICAD: an actor resting from thinking services no prop either,
+	and its ray isn't queued */
+	{
+		extern boolean psp_aicad_rest(long actor_index); /* actors.c */
+
+		if (psp_aicad_rest(actor_index))
+			return TRUE;
+	}
+	if (psp_aihalf_on < 0)"""),
+]
+
+# ---------- FIXES_AIFAR: far actors out of the fight think 1 tick in 4 (a compromise)
+# On top of aicad3 (FIXES_AICAD: each actor thinks on alternate ticks, the
+# timeslice whole), "aifar" rests an actor on the second of its two thinking
+# ticks too when it is far from every player (20 world units from each
+# player's unit) and out of the fight, so it thinks on one tick in four,
+# staggered by actor so each tick carries a quarter of them. Out of the fight
+# means none of: an action with its own timing or a fight in it (fight, flee,
+# uncover, charge, avoid, search, vehicle, obey, converse), a scripted
+# command list, a combat status of "definite" or higher, known or visible
+# enemies, a target, a target seen in the last 10 s, a danger zone, damage
+# taken lately. aicad3's own exemptions hold too (the timeslice holder,
+# swarms, dormant and charging actors, an actor's first update), and
+# everything aicad3 runs every tick still does (input, perception's decays,
+# emotion, the action, moving, looking, firing). A far actor out of the fight
+# reacts up to 4 ticks (133 ms) late instead of 2; Halo's perception delays
+# are hundreds of milliseconds. Only with aicad3: with aicad2 or aicad3off
+# the word does nothing (the log says so). Off by default: it plays
+# differently, so it ships only after an A/B shows it breaks nothing.
+# Campaign only, as aicad3: never in the multiplayer build or a networked game
+FIXES_AIFAR = {}
+FIXES_AIFAR["source/ai/actors.c#aifar"] = [
+("""/* TRUE on an actor's resting tick. No side effects: perception's ray queue
+asks it too, before the actor updates */
+boolean psp_aicad_rest(
+	long actor_index)
+{
+	struct actor_datum *actor;
+	short absolute_index = DATUM_INDEX_TO_ABSOLUTE_INDEX(actor_index);
+
+	if (!psp_aicad_active() ||
+		absolute_index < 0 || absolute_index >= MAXIMUM_ACTORS ||
+		((game_time_get() + absolute_index) & 1) == 0)
+		return FALSE;
+	actor = actor_get(actor_index);
+	/* aicad3: the slot's holder thinks whole. The ray queue asks before the
+	slot is given and sees last tick's holder: a ray at most goes unused */
+	if (psp_aicad_on == 3 && actor->meta.timeslice)
+		return FALSE;
+	return !actor->meta.swarm && !actor->meta.dormant && actor->state.action != _actor_action_charge &&
+		psp_aicad_identifier[absolute_index] == actor->identifier;
+}""",
+ """/* psp_fixups.py (FIXES_AIFAR): "aifar" (see there) */
+#define PSP_AIFAR_DISTANCE 20.0f
+#define PSP_AIFAR_MAXIMUM_PLAYERS 4
+/* actor_looking.c's levels: "definite" and above is a fight */
+#define PSP_AIFAR_COMBAT_STATUS_DEFINITE 3
+/* 10 s since a target was last seen */
+#define PSP_AIFAR_TARGET_SEEN_TICKS 300
+
+static int psp_aifar_on = -1;
+/* each slot's answer for one tick: the ray queue asks before the actor's
+update refreshes its position and the update asks again, and both must agree */
+static long psp_aifar_time[MAXIMUM_ACTORS];
+static short psp_aifar_identifier[MAXIMUM_ACTORS];
+static boolean psp_aifar_answer[MAXIMUM_ACTORS];
+static long psp_aifar_last_time = NONE;
+static long psp_aifar_heads_time = NONE;
+static short psp_aifar_head_count;
+static real_point3d psp_aifar_heads[PSP_AIFAR_MAXIMUM_PLAYERS];
+static struct
+{
+	unsigned long asked, near, engaged, rested;
+} psp_aifar_stats;
+static long psp_aifar_logged = NONE;
+
+static boolean psp_aifar_enabled(
+	void)
+{
+	if (psp_aifar_on < 0)
+	{
+#ifdef PSP_MULTIPLAYER
+		psp_aifar_on = 0;
+#else
+		psp_aifar_on = psp_keep("aifar") ? 1 : 0;
+#endif
+		if (psp_aifar_on && psp_aicad_on != 3)
+			platform_psp_log("ai: aifar does nothing without aicad3 (aicad%d)", psp_aicad_on);
+		else if (psp_aifar_on)
+			platform_psp_log("ai: actors %.0f units from every player and out of the fight think on one tick in four (aifar)",
+				PSP_AIFAR_DISTANCE);
+	}
+	return psp_aifar_on && psp_aicad_on == 3;
+}
+
+static boolean psp_aifar_engaged(
+	struct actor_datum *actor)
+{
+	switch (actor->state.action)
+	{
+	case _actor_action_fight:
+	case _actor_action_flee:
+	case _actor_action_uncover:
+	case _actor_action_charge:
+	case _actor_action_avoid:
+	case _actor_action_search:
+	case _actor_action_vehicle:
+	case _actor_action_obey:
+	case _actor_action_converse:
+		return TRUE;
+	default:
+		break;
+	}
+	return actor->state.command_list_index != NONE ||
+		actor->state.combat_status >= PSP_AIFAR_COMBAT_STATUS_DEFINITE ||
+		actor->situation.known_enemies > 0 || actor->situation.visible_reachable_enemies > 0 ||
+		actor->target.target_prop_index != NONE ||
+		(actor->target.since_any_target_visible_timer != NONE &&
+			actor->target.since_any_target_visible_timer < PSP_AIFAR_TARGET_SEEN_TICKS) ||
+		actor->danger_zone.danger_type != _actor_danger_zone_none ||
+		actor->input.recent_body_damage > 0.0f || actor->input.recent_shield_damage > 0.0f;
+}
+
+/* TRUE when the actor is far from every player's unit and out of the fight.
+With no player unit (dead, between lives) nobody counts as far */
+static boolean psp_aifar_resting(
+	struct actor_datum *actor,
+	short absolute_index)
+{
+	long now = game_time_get();
+	boolean far;
+	short k;
+
+	if (psp_aifar_last_time != NONE && now < psp_aifar_last_time)
+	{
+		/* a revert or a new map: the answers kept are another game's */
+		csmemset(psp_aifar_time, 0, sizeof(psp_aifar_time));
+		psp_aifar_heads_time = NONE;
+	}
+	psp_aifar_last_time = now;
+	if (psp_aifar_time[absolute_index] == now + 1 && psp_aifar_identifier[absolute_index] == actor->identifier)
+		return psp_aifar_answer[absolute_index];
+	if (psp_aifar_heads_time != now)
+	{
+		struct data_iterator iterator;
+		struct player_datum *player;
+
+		psp_aifar_head_count = 0;
+		data_iterator_new(&iterator, player_data);
+		while ((player = data_iterator_next(&iterator)) != NULL && psp_aifar_head_count < PSP_AIFAR_MAXIMUM_PLAYERS)
+		{
+			if (player->unit_index != NONE && object_try_and_get(player->unit_index))
+				psp_aifar_heads[psp_aifar_head_count++] = unit_get(player->unit_index)->object.bounding_sphere_center;
+		}
+		psp_aifar_heads_time = now;
+	}
+	psp_aifar_stats.asked++;
+	far = psp_aifar_head_count > 0;
+	for (k = 0; k < psp_aifar_head_count && far; k++)
+	{
+		if (distance_squared3d(&psp_aifar_heads[k], &actor->input.position.body_position) < PSP_AIFAR_DISTANCE * PSP_AIFAR_DISTANCE)
+			far = FALSE;
+	}
+	if (!far)
+		psp_aifar_stats.near++;
+	else if (psp_aifar_engaged(actor))
+	{
+		far = FALSE;
+		psp_aifar_stats.engaged++;
+	}
+	else
+		psp_aifar_stats.rested++;
+	psp_aifar_time[absolute_index] = now + 1;
+	psp_aifar_identifier[absolute_index] = actor->identifier;
+	psp_aifar_answer[absolute_index] = far;
+	/* the census: of the actors asked on their second thinking tick, how many
+	were near a player, kept by the fight, or rested (every 30 s of game
+	time, cumulative) */
+	if (psp_aifar_logged == NONE || now < psp_aifar_logged || now - psp_aifar_logged >= 900)
+	{
+		if (psp_aifar_logged != NONE)
+			platform_psp_log("aifar: game time %ld | asked %lu: near %lu, in the fight %lu, rested far %lu",
+				now, psp_aifar_stats.asked, psp_aifar_stats.near, psp_aifar_stats.engaged, psp_aifar_stats.rested);
+		psp_aifar_logged = now;
+	}
+	return far;
+}
+
+/* TRUE on an actor's resting tick. No side effects but aifar's answer kept
+for the tick: perception's ray queue asks it too, before the actor updates */
+boolean psp_aicad_rest(
+	long actor_index)
+{
+	struct actor_datum *actor;
+	short absolute_index = DATUM_INDEX_TO_ABSOLUTE_INDEX(actor_index);
+	long phase;
+
+	if (!psp_aicad_active() ||
+		absolute_index < 0 || absolute_index >= MAXIMUM_ACTORS)
+		return FALSE;
+	/* an actor thinks on the even ticks of its four; with aifar, a far actor
+	out of the fight on the first of them only */
+	phase = (game_time_get() + absolute_index) & 3;
+	if ((phase & 1) == 0 && !(phase == 2 && psp_aifar_enabled()))
+		return FALSE;
+	actor = actor_get(actor_index);
+	/* aicad3: the slot's holder thinks whole. The ray queue asks before the
+	slot is given and sees last tick's holder: a ray at most goes unused */
+	if (psp_aicad_on == 3 && actor->meta.timeslice)
+		return FALSE;
+	if (actor->meta.swarm || actor->meta.dormant || actor->state.action == _actor_action_charge ||
+		psp_aicad_identifier[absolute_index] != actor->identifier)
+		return FALSE;
+	return (phase & 1) || psp_aifar_resting(actor, absolute_index);
+}"""),
+]
+
+# ---------- FIXES_LODPSP: models' level of detail picked nearer (a compromise)
+# Models already pick their level of detail at the size they appear on the
+# PSP's 272 lines (FIXES_19; "fulllod" for the game's 480). This picks it as
+# if the screen were 272/480 as tall again, so lower levels come in 1.76x
+# nearer and the smallest objects drop out sooner: a compromise for the
+# GE-bound stretches, on by default ("lodpspoff" turns it off; "lodpsp" is
+# still accepted). Shadows follow the same pixels.
+# Some models' lower levels lose a part rather than simplify it: the
+# Pelican's cockpit window has no glass below its top level, so it went
+# black. So each model gets a floor, read from its own data the first time it
+# is drawn: the lowest level at which every region permutation still draws
+# every see-through shader its top level draws (opaque materials merged into
+# one at a lower level are the simplification itself, not a loss). The nearer pick never goes below a
+# model's floor; it goes there only where the game's own pick would.
+# "lodpspall": the nearer pick with no floor (for the A/B)
+FIXES_LODPSP = {}
+FIXES_LODPSP["source/render/render_objects.c#lodpsp"] = [
+("""static real object_get_level_of_detail_pixels(
+	long object_index)
+{
+	real_point3d center;""",
+"""#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_LODPSP) */
+#include "models/model_definitions.h"
+#include "cache/cache_files.h"
+#include <stdio.h>
+
+int psp_keep(const char *name);
+void platform_psp_log(const char *format, ...);
+
+/* render_models.c's part layout (models.c): the shader a part draws and
+whether it is drawn at all */
+struct psp_lod_part
+{
+	unsigned long flags;
+	short shader_index;
+};
+
+#define PSP_LOD_LEVELS 5
+#define PSP_LOD_FLOORS 1024 /* models a map draws: a few hundred */
+static unsigned long psp_lod_floors[PSP_LOD_FLOORS]; /* the model's datum index + 1, << 3 | its floor */
+static unsigned long psp_lod_floors_map = 0;
+
+/* each new map's tags (cache_files.c, psp_fixups.py FIXES_LODPSP): the
+floors were the last map's */
+unsigned long psp_lod_map_serial = 1;
+
+/* the shaders a geometry draws, as a mask of the model's shader indices */
+static unsigned long psp_lod_shaders(struct model const *model, short geometry_index)
+{
+	struct model_geometry_header { byte reserved[0x24]; struct tag_block parts; } const *geometry;
+	unsigned long mask = 0;
+	long part_index;
+
+	if (geometry_index < 0 || geometry_index >= model->geometries.count)
+		return 0;
+	geometry = tag_block_get_element_with_size(&model->geometries, geometry_index, 0x30);
+	for (part_index = 0; part_index < geometry->parts.count; part_index++)
+	{
+		struct psp_lod_part const *part = tag_block_get_element_with_size(&geometry->parts, part_index, 0x68);
+
+		if (!(part->flags & 1) /* stripped: never drawn */ && part->shader_index >= 0 &&
+			part->shader_index < model->shaders.count && part->shader_index < 32)
+		{
+			struct psp_lod_shader_reference { struct tag_reference shader; } const *reference =
+				tag_block_get_element_with_size(&model->shaders, part->shader_index, 0x20);
+
+			/* only see-through parts: a lower level that merges opaque
+			materials into one simplifies, where one without its glass or
+			glow loses a part */
+			if (reference->shader.index != NONE &&
+				shader_type_is_transparent(shader_definition_get(reference->shader.index)->base.type))
+				mask |= 1UL << part->shader_index;
+		}
+	}
+	return mask;
+}
+
+/* the lowest level at which every region permutation still draws every
+shader of its top level */
+static long psp_lod_floor_find(long model_index, struct model const *model)
+{
+	long floor = 0, region_index, lost = 0;
+
+	for (region_index = 0; region_index < model->regions.count; region_index++)
+	{
+		struct model_region const *region = TAG_BLOCK_GET_ELEMENT(&model->regions, region_index, struct model_region);
+		long permutation_index;
+
+		for (permutation_index = 0; permutation_index < region->permutations.count; permutation_index++)
+		{
+			struct model_region_permutation const *permutation = TAG_BLOCK_GET_ELEMENT(&region->permutations, permutation_index,
+				struct model_region_permutation);
+			unsigned long top = psp_lod_shaders(model, permutation->geometry_indices[PSP_LOD_LEVELS - 1]);
+			long level;
+
+			for (level = PSP_LOD_LEVELS - 2; level >= floor; level--)
+				if ((psp_lod_shaders(model, permutation->geometry_indices[level]) & top) != top)
+				{
+					floor = level + 1;
+					lost |= top & ~psp_lod_shaders(model, permutation->geometry_indices[level]);
+					break;
+				}
+		}
+	}
+	if (floor > 0)
+	{
+		char types[64];
+		int at = 0;
+		long shader_index;
+
+		types[0] = 0;
+		for (shader_index = 0; shader_index < 32 && at < (int)sizeof(types) - 4; shader_index++)
+			if (lost & (1UL << shader_index))
+			{
+				struct psp_lod_shader_reference { struct tag_reference shader; } const *reference =
+					tag_block_get_element_with_size(&model->shaders, shader_index, 0x20);
+				struct shader const *shader = reference->shader.index == NONE ? NULL :
+					shader_definition_get(reference->shader.index);
+
+				at += snprintf(types + at, sizeof(types) - at, " %d", shader ? (int)shader->base.type : -1);
+			}
+		platform_psp_log("lodpsp: %s keeps level %ld and above (its lower levels lose shaders of type%s)",
+			tag_get_name(model_index), floor, types);
+	}
+	return floor;
+}
+
+static long psp_lod_floor(long model_index, struct model const *model)
+{
+	unsigned long key = ((unsigned long)model_index + 1) << 3, slot, probe;
+
+	if (psp_lod_floors_map != psp_lod_map_serial)
+	{
+		csmemset(psp_lod_floors, 0, sizeof(psp_lod_floors));
+		psp_lod_floors_map = psp_lod_map_serial;
+		/* "lodpspscan": every model of the map at once, drawn or not, so the
+		log names each one whose lower levels lose a part */
+		if (psp_keep("lodpspscan"))
+		{
+			struct tag_iterator iterator;
+			long index, models = 0, floored = 0;
+
+			tag_iterator_new(&iterator, MODELS_GROUP_TAG);
+			while ((index = tag_iterator_next(&iterator)) != NONE)
+			{
+				models++;
+				floored += psp_lod_floor_find(index, model_definition_get(index)) > 0;
+			}
+			platform_psp_log("lodpsp: scan: %ld models, %ld keep a floor", models, floored);
+		}
+	}
+	slot = ((unsigned long)model_index * 2654435761UL) % PSP_LOD_FLOORS;
+	for (probe = 0; probe < PSP_LOD_FLOORS; probe++, slot = (slot + 1) % PSP_LOD_FLOORS)
+	{
+		if ((psp_lod_floors[slot] & ~7UL) == key)
+			return (long)(psp_lod_floors[slot] & 7);
+		if (!psp_lod_floors[slot])
+		{
+			long floor = psp_lod_floor_find(model_index, model);
+
+			psp_lod_floors[slot] = key | (unsigned long)floor;
+			return floor;
+		}
+	}
+	return psp_lod_floor_find(model_index, model);
+}
+
+/* the level render_model picks at these pixels; -1 when it draws nothing */
+static long psp_lod_level(struct model const *model, real pixels)
+{
+	long level = PSP_LOD_LEVELS - 1;
+
+	if (pixels < model->detail_cutoff_pixels[0])
+		return -1;
+	while (level > 0 && pixels < model->detail_cutoff_pixels[level])
+		level--;
+	return level;
+}
+
+/* the nearer pick: the PSP's pixels scaled by 272/480 again, but never a
+level below the model's floor unless the game's own pick (pixels) is there */
+static real psp_lod_nearer(long object_index, real pixels)
+{
+	static signed char all = -1;
+	long model_index = object_definition_get(object_get(object_index)->definition_index)->object.model.index;
+	real nearer = pixels * (272.0f / 480.0f);
+	struct model const *model;
+	long floor;
+
+	if (model_index == NONE)
+		return nearer;
+	if (all < 0)
+		all = (signed char)(psp_keep("lodpspall") != 0);
+	if (all)
+		return nearer;
+	model = model_definition_get(model_index);
+	floor = psp_lod_floor(model_index, model);
+	if (floor == 0 || psp_lod_level(model, nearer) >= floor)
+		return nearer;
+	if (psp_lod_level(model, pixels) < floor)
+		return pixels;
+	return model->detail_cutoff_pixels[floor] > nearer ? model->detail_cutoff_pixels[floor] : nearer;
+}
+#endif
+
+static real object_get_level_of_detail_pixels(
+	long object_index)
+{
+	real_point3d center;"""),
+("\t\treturn render_frustum_sphere_diameter_in_pixels(&render.frustum, &center, radius) * (272.0f / 480.0f);",
+ "\t{\n"
+ "\t\treal pixels = render_frustum_sphere_diameter_in_pixels(&render.frustum, &center, radius) * (272.0f / 480.0f);\n\n"
+ "\t\treturn PSP_KEEP_ONCE(\"lodpspoff\") ? pixels : psp_lod_nearer(object_index, pixels);\n"
+ "\t}"),
+]
+FIXES_LODPSP["source/cache/cache_files.c#lodpsp"] = [
+("\t\t\t\tpsp_ge_forget_map();\n",
+ "\t\t\t\tpsp_ge_forget_map();\n"
+ "\t\t\t\t{\n"
+ "\t\t\t\t\t/* the models' level of detail floors were the last map's (FIXES_LODPSP) */\n"
+ "\t\t\t\t\textern unsigned long psp_lod_map_serial;\n\n"
+ "\t\t\t\t\tpsp_lod_map_serial++;\n"
+ "\t\t\t\t}\n"),
+]
+
+
+# "aioutcome" (keep.txt; recon builds only): what the AI's fights came to, for
+# judging a behaviour A/B (farslice, aihalf) by outcomes where state hashes
+# can't serve (the two sides part at the first changed decision). It reads
+# and changes nothing the game uses. Each 5 s of game time a line: actors
+# alive by team; kills by the victim's team and the killer (a player, AI on
+# the player's side, AI against it, other); the hits the players took (count
+# and damage, the deathless cheat on) and dealt; active encounters and their
+# living count; far actors stuck (awake, 20+ units from every player, in
+# uncover or fight, the same firing position for 30 s). At each event a line:
+# an encounter's first active tick and the tick it is cleared, each script's
+# first run and end, each ai_place (with its name), game_save and
+# cinematic_start. A game time going backwards (a revert, a new map) starts
+# the counts over
+FIXES_RECON["source/ai/ai.c#aioutcome"] = [
+("""void ai_handle_death(
+	long unit_index,""",
+ """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_RECON #aioutcome): "aioutcome" (see there) */
+#include "hs/hs_scenario_definitions.h"
+int psp_keep(const char *name);
+void platform_psp_log(const char *format, ...);
+char const *hs_runtime_get_executing_thread_name(void);
+
+#define PSP_AIOUTCOME_TEAMS 16
+#define PSP_AIOUTCOME_ENCOUNTERS 128
+#define PSP_AIOUTCOME_SCRIPTS 512
+#define PSP_AIOUTCOME_STUCK_TICKS 900
+#define PSP_AIOUTCOME_FAR 20.0f
+
+enum
+{
+	_psp_aioutcome_by_player,
+	_psp_aioutcome_by_ally,
+	_psp_aioutcome_by_enemy,
+	_psp_aioutcome_by_other,
+	NUMBER_OF_PSP_AIOUTCOME_KILLERS
+};
+
+static int psp_aioutcome_on = -1;
+static long psp_aioutcome_time = NONE;
+static unsigned long psp_aioutcome_kills[PSP_AIOUTCOME_TEAMS][NUMBER_OF_PSP_AIOUTCOME_KILLERS];
+static unsigned long psp_aioutcome_player_hit, psp_aioutcome_player_hits;
+static real psp_aioutcome_player_damage;
+static byte psp_aioutcome_encounter_flags[PSP_AIOUTCOME_ENCOUNTERS]; /* 1 active seen, 2 had living, 4 cleared */
+static byte psp_aioutcome_script_flags[PSP_AIOUTCOME_SCRIPTS]; /* 1 started, 2 ended */
+static struct
+{
+	short identifier;
+	short position;
+	long since;
+} psp_aioutcome_actors[MAXIMUM_ACTORS];
+
+/* also ai_script.c's, so it names a placement only when the word is on */
+boolean psp_aioutcome_enabled(
+	void)
+{
+	long now;
+
+	if (psp_aioutcome_on < 0)
+		psp_aioutcome_on = psp_keep("aioutcome");
+	if (!psp_aioutcome_on)
+		return FALSE;
+	now = game_time_get();
+	if (psp_aioutcome_time != NONE && now < psp_aioutcome_time)
+	{
+		csmemset(psp_aioutcome_kills, 0, sizeof(psp_aioutcome_kills));
+		csmemset(psp_aioutcome_encounter_flags, 0, sizeof(psp_aioutcome_encounter_flags));
+		csmemset(psp_aioutcome_script_flags, 0, sizeof(psp_aioutcome_script_flags));
+		csmemset(psp_aioutcome_actors, 0, sizeof(psp_aioutcome_actors));
+		psp_aioutcome_player_hit = psp_aioutcome_player_hits = 0;
+		psp_aioutcome_player_damage = 0.0f;
+		platform_psp_log("aioutcome: game time %ld | counts started over (the game time went back)", now);
+	}
+	psp_aioutcome_time = now;
+	return TRUE;
+}
+
+static short psp_aioutcome_player_team(
+	void)
+{
+	struct data_iterator iterator;
+	struct player_datum *player;
+
+	data_iterator_new(&iterator, player_data);
+	while ((player = data_iterator_next(&iterator)) != NULL)
+	{
+		if (player->unit_index != NONE && object_try_and_get(player->unit_index))
+			return unit_get(player->unit_index)->object.owner_team_index;
+	}
+	return NONE;
+}
+
+static void psp_aioutcome_death(
+	long unit_index,
+	long responsible_unit_index)
+{
+	short team, killer = _psp_aioutcome_by_other;
+
+	if (!psp_aioutcome_enabled())
+		return;
+	team = unit_get(unit_index)->object.owner_team_index;
+	if (responsible_unit_index != NONE && responsible_unit_index != unit_index)
+	{
+		struct unit_datum *responsible = unit_get(responsible_unit_index);
+		short player_team = psp_aioutcome_player_team();
+
+		if (responsible->unit.player_index != NONE)
+			killer = _psp_aioutcome_by_player;
+		else if (player_team != NONE)
+			killer = game_team_is_enemy(player_team, responsible->object.owner_team_index) ?
+				_psp_aioutcome_by_enemy : _psp_aioutcome_by_ally;
+	}
+	if (team >= 0 && team < PSP_AIOUTCOME_TEAMS)
+		psp_aioutcome_kills[team][killer]++;
+}
+
+static void psp_aioutcome_damage(
+	long unit_index,
+	long responsible_unit_index,
+	real fraction)
+{
+	if (!psp_aioutcome_enabled())
+		return;
+	if (unit_get(unit_index)->unit.player_index != NONE)
+	{
+		psp_aioutcome_player_hit++;
+		psp_aioutcome_player_damage += fraction;
+	}
+	else if (responsible_unit_index != NONE && unit_get(responsible_unit_index)->unit.player_index != NONE)
+		psp_aioutcome_player_hits++;
+}
+
+/* hs_runtime.c: a script thread's first run and its end */
+void psp_aioutcome_script(
+	long script_index,
+	boolean ended)
+{
+	byte flag = ended ? 2 : 1;
+
+	if (!psp_aioutcome_enabled() || script_index < 0 || script_index >= PSP_AIOUTCOME_SCRIPTS ||
+		script_index >= global_scenario_get()->hs_scripts.count ||
+		(psp_aioutcome_script_flags[script_index] & flag))
+		return;
+	psp_aioutcome_script_flags[script_index] |= flag;
+	platform_psp_log("aioutcome: game time %ld | script %s %s", game_time_get(),
+		TAG_BLOCK_GET_ELEMENT(&global_scenario_get()->hs_scripts, script_index, struct hs_script)->name,
+		ended ? "ends" : "starts");
+}
+
+/* hs_runtime.c: a script's call, as it begins; only the calls that mark the
+mission's course are logged */
+void psp_aioutcome_call(
+	char const *name)
+{
+	if (!name || !psp_aioutcome_enabled() ||
+		(csstrncmp(name, "game_save", 9) != 0 && csstrcmp(name, "cinematic_start") != 0))
+		return;
+	platform_psp_log("aioutcome: game time %ld | %s calls %s", game_time_get(),
+		hs_runtime_get_executing_thread_name(), name);
+}
+
+/* ai_script.c: ai_place, by name */
+void psp_aioutcome_place(
+	char const *name)
+{
+	platform_psp_log("aioutcome: game time %ld | %s places %s", game_time_get(),
+		hs_runtime_get_executing_thread_name(), name);
+}
+
+static void psp_aioutcome_tick(
+	void)
+{
+	struct data_iterator iterator;
+	struct encounter_datum *encounter;
+	struct actor_datum *actor;
+	struct player_datum *player;
+	real_point3d heads[4];
+	short head_count = 0;
+	long now;
+	long active_encounters = 0, living = 0, stuck = 0;
+	long alive[PSP_AIOUTCOME_TEAMS] = {0};
+	char alive_line[160], kill_line[320];
+	int at;
+	short team;
+
+	if (!psp_aioutcome_enabled())
+		return;
+	now = game_time_get();
+
+	data_iterator_new(&iterator, encounter_data);
+	while ((encounter = data_iterator_next(&iterator)) != NULL)
+	{
+		short index = iterator.absolute_index;
+		short count = encounter->current_count + encounter->current_swarm_count;
+		char const *name;
+		byte *flags;
+
+		if (index < 0 || index >= PSP_AIOUTCOME_ENCOUNTERS || index >= global_scenario_get()->ai_encounters.count)
+			continue;
+		flags = &psp_aioutcome_encounter_flags[index];
+		name = TAG_BLOCK_GET_ELEMENT(&global_scenario_get()->ai_encounters, index, struct encounter_definition)->name;
+		if (encounter->active)
+		{
+			active_encounters++;
+			living += count;
+			if (!(*flags & 1))
+			{
+				*flags |= 1;
+				platform_psp_log("aioutcome: game time %ld | encounter %s active, %d living", now, name, (int)count);
+			}
+		}
+		if (count > 0)
+			*flags |= 2;
+		else if ((*flags & 2) && !(*flags & 4))
+		{
+			*flags |= 4;
+			platform_psp_log("aioutcome: game time %ld | encounter %s cleared", now, name);
+		}
+	}
+	if (now % 150 != 0)
+		return;
+
+	data_iterator_new(&iterator, player_data);
+	while ((player = data_iterator_next(&iterator)) != NULL && head_count < 4)
+	{
+		if (player->unit_index != NONE && object_try_and_get(player->unit_index))
+			heads[head_count++] = unit_get(player->unit_index)->object.bounding_sphere_center;
+	}
+	data_iterator_new(&iterator, actor_data);
+	while ((actor = data_iterator_next(&iterator)) != NULL)
+	{
+		short index = iterator.absolute_index;
+		long object_index = actor->meta.swarm ? actor->meta.swarm_unit_index : actor->meta.unit_index;
+		struct object_datum *unit = object_index == NONE ? NULL : object_try_and_get(object_index);
+		boolean far = head_count > 0;
+		short k;
+
+		if (!unit || TEST_FLAG(unit->object.damage_flags, _object_dead_bit))
+			continue;
+		if (actor->meta.team_index >= 0 && actor->meta.team_index < PSP_AIOUTCOME_TEAMS)
+			alive[actor->meta.team_index]++;
+		if (index < 0 || index >= MAXIMUM_ACTORS)
+			continue;
+		for (k = 0; k < head_count; k++)
+		{
+			if (distance_squared3d(&heads[k], &unit->object.bounding_sphere_center) < PSP_AIOUTCOME_FAR * PSP_AIOUTCOME_FAR)
+				far = FALSE;
+		}
+		if (!far || !actor->meta.active || actor->meta.dormant ||
+			(actor->state.action != _actor_action_uncover && actor->state.action != _actor_action_fight) ||
+			psp_aioutcome_actors[index].identifier != actor->identifier ||
+			psp_aioutcome_actors[index].position != actor->firing_positions.current_position_index)
+		{
+			psp_aioutcome_actors[index].identifier = actor->identifier;
+			psp_aioutcome_actors[index].position = actor->firing_positions.current_position_index;
+			psp_aioutcome_actors[index].since = now;
+		}
+		else if (now - psp_aioutcome_actors[index].since >= PSP_AIOUTCOME_STUCK_TICKS)
+			stuck++;
+	}
+
+	alive_line[0] = kill_line[0] = 0;
+	for (team = 0, at = 0; team < PSP_AIOUTCOME_TEAMS && at < (int)sizeof(alive_line) - 16; team++)
+	{
+		if (alive[team])
+			at += snprintf(alive_line + at, sizeof(alive_line) - at, " %d:%ld", (int)team, alive[team]);
+	}
+	for (team = 0, at = 0; team < PSP_AIOUTCOME_TEAMS && at < (int)sizeof(kill_line) - 40; team++)
+	{
+		unsigned long const *kills = psp_aioutcome_kills[team];
+
+		if (kills[0] || kills[1] || kills[2] || kills[3])
+			at += snprintf(kill_line + at, sizeof(kill_line) - at, " %d:%lu/%lu/%lu/%lu", (int)team,
+				kills[_psp_aioutcome_by_player], kills[_psp_aioutcome_by_ally],
+				kills[_psp_aioutcome_by_enemy], kills[_psp_aioutcome_by_other]);
+	}
+	platform_psp_log("aioutcome: game time %ld | alive by team:%s | killed by team (player/ally AI/enemy AI/other):%s | "
+		"players hit %lu (damage %.2f), hits %lu | encounters active %ld, living %ld | far actors stuck %ld",
+		now, alive_line, kill_line, psp_aioutcome_player_hit, (double)psp_aioutcome_player_damage,
+		psp_aioutcome_player_hits, active_encounters, living, stuck);
+}
+#endif
+
+void ai_handle_death(
+	long unit_index,"""),
+("""	long responsible_unit_index = ai_get_responsible_unit(
+		killer_object_index,
+		damage_category != _damage_category_vehicle);
+	short hostility = _comm_hostility_none;
+""",
+ """	long responsible_unit_index = ai_get_responsible_unit(
+		killer_object_index,
+		damage_category != _damage_category_vehicle);
+	short hostility = _comm_hostility_none;
+
+#ifdef HALO_PSP
+	psp_aioutcome_death(unit_index, responsible_unit_index); /* FIXES_RECON #aioutcome */
+#endif
+"""),
+("""	short hostility;
+
+	if (!delayed &&
+		damage_category != _damage_category_falling &&""",
+ """	short hostility;
+
+#ifdef HALO_PSP
+	/* FIXES_RECON #aioutcome: a delayed call repeats an earlier hit for the
+	AI's reaction, so it isn't counted again */
+	if (!delayed)
+		psp_aioutcome_damage(unit_index, responsible_unit_index, fraction);
+#endif
+	if (!delayed &&
+		damage_category != _damage_category_falling &&"""),
+("""	profile_exit(ai_update_section);
+""",
+ """#ifdef HALO_PSP
+	if (update_ai && ai_globals->ai_active)
+		psp_aioutcome_tick(); /* FIXES_RECON #aioutcome */
+#endif
+	profile_exit(ai_update_section);
+"""),
+]
+FIXES_RECON["source/hs/hs_runtime.c#aioutcome"] = [
+("""static void hs_thread_main(
+	long thread_index)
+{
+	struct hs_thread_datum *thread = hs_thread_get(thread_index);""",
+ """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_RECON #aioutcome): ai.c */
+void psp_aioutcome_script(long script_index, boolean ended);
+void psp_aioutcome_call(char const *name);
+#endif
+
+static void hs_thread_main(
+	long thread_index)
+{
+	struct hs_thread_datum *thread = hs_thread_get(thread_index);"""),
+("""		if (hs_scenario_script_disabled((short)thread->script_index))
+		{
+			thread->sleep_until = NONE;
+			hs_runtime_globals.executing_thread_index = NONE;
+
+			return;
+		}
+	}
+""",
+ """		if (hs_scenario_script_disabled((short)thread->script_index))
+		{
+			thread->sleep_until = NONE;
+			hs_runtime_globals.executing_thread_index = NONE;
+
+			return;
+		}
+#ifdef HALO_PSP
+		psp_aioutcome_script(thread->script_index, FALSE); /* FIXES_RECON #aioutcome */
+#endif
+	}
+"""),
+("""			function->evaluate(
+				expression->index,
+				thread_index,
+				initialize);""",
+ """#ifdef HALO_PSP
+			if (initialize)
+				psp_aioutcome_call(function->name); /* FIXES_RECON #aioutcome */
+#endif
+			function->evaluate(
+				expression->index,
+				thread_index,
+				initialize);"""),
+("""			if (script->script_type==_hs_script_startup ||
+				script->script_type==_hs_script_dormant)
+			{
+				thread->sleep_until = NONE;
+			}""",
+ """			if (script->script_type==_hs_script_startup ||
+				script->script_type==_hs_script_dormant)
+			{
+				thread->sleep_until = NONE;
+#ifdef HALO_PSP
+				psp_aioutcome_script(thread->script_index, TRUE); /* FIXES_RECON #aioutcome */
+#endif
+			}"""),
+]
+FIXES_RECON["source/ai/ai_script.c#aioutcome"] = [
+("""void ai_scripting_place(
+	long ai_reference)
+{""",
+ """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_RECON #aioutcome): ai.c */
+boolean psp_aioutcome_enabled(void);
+void psp_aioutcome_place(char const *name);
+#endif
+
+void ai_scripting_place(
+	long ai_reference)
+{
+#ifdef HALO_PSP
+	/* FIXES_RECON #aioutcome: the scripted placements' order */
+	if (ai_reference != NONE && psp_aioutcome_enabled())
+	{
+		char ai_name[256];
+
+		ai_index_to_string(ai_reference, global_scenario_get(), ai_name, sizeof(ai_name));
+		psp_aioutcome_place(ai_name);
+	}
+#endif"""),
+]
+
+
+# ---------- FIXES_VEHPROBE: a moving vehicle's empty surroundings asked once
+# Each tick a moving vehicle asks, for every mass point (22 on a banshee), a
+# ground query (collision_get_features_in_sphere about the point) and, in the
+# new physics, a swept ray from where the point is to where the move takes it;
+# a point with an antigravity probe casts one more ray straight down. In the
+# air nearly all of them find nothing (a30's banshees: 91% of updates have
+# nothing within one sphere about the whole vehicle). So one sphere is asked
+# first, about the centre of mass, reaching every point's query sphere, its
+# antigravity probe and the move's likely sweep. When it holds nothing, a
+# query whose sphere lies inside it, or a ray whose two ends lie inside it,
+# would find nothing too, and is not asked: its answer is the one it gives
+# when it finds nothing (the ground plane below the world, no material, no
+# ray hit), so the vehicle moves exactly as before. Each is checked where it
+# is asked, against the sphere actually walked, so a sweep longer than the
+# guess is simply cast. The sphere's test answers yes to more than the
+# queries could ever find, never to less: the level's any surface or edge
+# (the early-out walk), and every scenery or machine object (the types those
+# queries test) whose sphere reaches it, walked through children and
+# siblings without the gates the queries add (invisible, no collisions, the
+# parent's own type); a walk that fills its 256 leaves counts as yes. A
+# vehicle on the ground last tick is not asked about: the ground is in reach,
+# and asking would only cost. Only which work is done changes, never an
+# answer; the objects' marks (magic_number) differ, which the play hash and
+# the sleep checksum leave out. On by default in the campaign ("vehprobeoff"
+# turns it off; "vehprobe" still names it, both physics); "vehprobe1" (the new physics only: the banshee's, not the
+# radius physics of the dropship and the Pelican), "vehprobecheck" (the
+# sphere decides, every query is asked anyway, and any query it would have
+# skipped that found something is counted in the "vehprobe:" log line).
+# Campaign only: the multiplayer build compiles it off
+FIXES_VEHPROBE = {}
+FIXES_VEHPROBE["source/physics/collisions.c#vehprobe"] = [
+("""	return features->count[_collision_feature_sphere] != 0 ||
+		features->count[_collision_feature_cylinder] != 0 ||
+		features->count[_collision_feature_prism] != 0;
+}
+
+boolean collision_fix_pill(""", """	return features->count[_collision_feature_sphere] != 0 ||
+		features->count[_collision_feature_cylinder] != 0 ||
+		features->count[_collision_feature_prism] != 0;
+}
+
+#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_VEHPROBE): any object a vehicle's ground query or
+swept ray could test in this sphere: scenery or a machine whose sphere (the
+datum's or its copy) reaches it, through children and siblings, ignoring
+only the vehicle and what it carries, as both of those do */
+static boolean psp_vehprobe_object_reaches(
+	long object_index,
+	real_point3d const *center,
+	real radius,
+	long ignore_object_index)
+{
+	do
+	{
+		struct object_datum const *object = object_get(object_index);
+
+		if (object_index != ignore_object_index)
+		{
+			struct psp_object_sphere const *sphere = psp_sphere_of(object_index);
+
+			if (TEST_FLAG(_collision_test_for_vehicles_flags, object->object.type + _collision_test_objects_first_type_bit) &&
+				(point_in_sphere(center, &object->object.bounding_sphere_center, object->object.bounding_sphere_radius + radius) ||
+					point_in_sphere(center, &sphere->center, sphere->radius + radius)))
+			{
+				return TRUE;
+			}
+			if (object->object.first_child_object_index != NONE &&
+				psp_vehprobe_object_reaches(object->object.first_child_object_index, center, radius, ignore_object_index))
+			{
+				return TRUE;
+			}
+		}
+		object_index = object->object.next_object_index;
+	}
+	while (object_index != NONE);
+
+	return FALSE;
+}
+
+/* psp_fixups.py (FIXES_VEHPROBE): TRUE when nothing a vehicle's ground
+queries (_collision_test_for_bipeds_dead_flags) or swept rays
+(_collision_test_for_vehicles_flags, the same objects) could meet lies in
+the sphere. No marks are left: clusters are kept apart here, and an object
+in two clusters is simply looked at twice */
+boolean psp_vehprobe_reach_empty(
+	real_point3d const *center,
+	real radius,
+	long ignore_object_index)
+{
+	struct collision_bsp_test_sphere_result result;
+	unsigned long clusters[(MAXIMUM_CLUSTERS_PER_STRUCTURE + 31) / 32];
+	boolean found;
+	short leaf_reference_index;
+
+	psp_sphere_any = 1;
+	psp_sphere_any_found = 0;
+	found = collision_bsp_test_sphere(
+		global_collision_bsp_get(),
+		MAXIMUM_BREAKABLE_SURFACES_PER_MAP,
+		breakable_surface_flags_get(),
+		center,
+		radius,
+		&result);
+	psp_sphere_any = 0;
+	psp_sphere_any_found = 0;
+	if (found || result.leaf_count >= 256)
+	{
+		return FALSE;
+	}
+
+	memset(clusters, 0, sizeof(clusters));
+	for (leaf_reference_index = 0; leaf_reference_index < result.leaf_count; leaf_reference_index++)
+	{
+		long cluster_index = collision_cluster_index_from_leaf(result.leaf_indices[leaf_reference_index]);
+		long reference_index;
+		long object_index;
+
+		/* (structure_cluster_mark skips a cluster that fits no cluster) */
+		if (cluster_index < 0 || cluster_index >= MAXIMUM_CLUSTERS_PER_STRUCTURE ||
+			(clusters[cluster_index >> 5] & (1ul << (cluster_index & 31))))
+		{
+			continue;
+		}
+		clusters[cluster_index >> 5] |= 1ul << (cluster_index & 31);
+		for (object_index = cluster_get_first_collideable_object(&reference_index, (short)cluster_index);
+			object_index != NONE;
+			object_index = cluster_get_next_collideable_object(&reference_index))
+		{
+			if (psp_vehprobe_object_reaches(object_index, center, radius, ignore_object_index))
+			{
+				return FALSE;
+			}
+		}
+	}
+
+	return TRUE;
+}
+#endif
+
+boolean collision_fix_pill("""),
+]
+FIXES_VEHPROBE["source/physics/physics.c#vehprobe"] = [
+# the state, the sphere and its tests, ahead of compute_ground_plane
+("""static void compute_ground_plane(
+	long object_index,
+	struct mass_point_datum *mass_point,
+	struct mass_point_definition const *mass_point_definition)
+{""", """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_VEHPROBE): one sphere about a moving vehicle, asked
+before its mass points' ground queries and rays. Mode: bit 1 the new
+physics, bit 2 the radius physics, bit 4 "vehprobecheck" */
+int psp_keep(const char *name);
+boolean psp_vehprobe_reach_empty(real_point3d const *center, real radius, long ignore_object_index);
+static int psp_vp_mode = -1;
+static boolean psp_vp_active = FALSE, psp_vp_empty = FALSE, psp_vp_eligible = FALSE;
+static real_point3d psp_vp_center;
+static real psp_vp_radius;
+static unsigned long psp_vp_updates[2], psp_vp_probes[2], psp_vp_empties[2];
+static unsigned long psp_vp_ground[2], psp_vp_rays[2], psp_vp_wrong, psp_vp_total;
+/* kept between the sphere and what is tested inside it, against rounding */
+#define PSP_VP_SLACK (1.0f/64.0f)
+
+/* a sphere of this extra radius about the point lies inside the empty sphere */
+static boolean psp_vp_inside(
+	real_point3d const *point,
+	real extra)
+{
+	real limit = psp_vp_radius - extra - PSP_VP_SLACK;
+	real dx = point->x - psp_vp_center.x;
+	real dy = point->y - psp_vp_center.y;
+	real dz = point->z - psp_vp_center.z;
+
+	return psp_vp_active && psp_vp_empty && limit > 0.0f && dx*dx + dy*dy + dz*dz <= limit*limit;
+}
+
+/* FALSE when the ray need not be cast: both its ends lie in the empty
+sphere, so it does (a sphere is convex) */
+static boolean psp_vp_ray(
+	real_point3d const *point,
+	real_vector3d const *vector)
+{
+	real_point3d end;
+
+	psp_vp_eligible = FALSE;
+	if (!psp_vp_active)
+		return TRUE;
+	end.x = point->x + vector->i;
+	end.y = point->y + vector->j;
+	end.z = point->z + vector->k;
+	if (psp_vp_inside(point, 0.0f) && psp_vp_inside(&end, 0.0f))
+	{
+		psp_vp_rays[0]++;
+		psp_vp_eligible = TRUE;
+		return (psp_vp_mode & 4) != 0;
+	}
+	psp_vp_rays[1]++;
+	return TRUE;
+}
+
+/* a ray hit: always TRUE; "vehprobecheck" counts a hit the sphere ruled out */
+static boolean psp_vp_hit(
+	void)
+{
+	if (psp_vp_eligible)
+		psp_vp_wrong++;
+	return TRUE;
+}
+
+/* the sphere for this update: about the centre of mass, reaching each mass
+point's query sphere (its radius and the 1/16 the query adds) and its
+antigravity probe, and, in the new physics, this tick's sweep as velocity
+and spin would carry it, with room. How far it reaches only decides how much
+is skipped: each query and ray is checked against it where it is asked */
+static void psp_vp_begin(
+	long object_index,
+	struct physics_definition const *physics,
+	real_matrix4x3 const *matrix,
+	boolean radius_physics)
+{
+	struct object_datum const *object = object_get(object_index);
+	short mass_point_count = physics_mass_point_count(physics);
+	short mass_point_index;
+	real reach = 0.0f;
+	real arm = 0.0f;
+
+	psp_vp_active = FALSE;
+	psp_vp_empty = FALSE;
+	psp_vp_eligible = FALSE;
+	if (psp_vp_mode < 0)
+	{
+#ifdef PSP_MULTIPLAYER
+		/* (campaign only) */
+		psp_vp_mode = 0;
+#else
+		/* on by default in the campaign: "vehprobeoff" turns it off,
+		   "vehprobe1" keeps it to the new physics only */
+		psp_vp_mode = psp_keep("vehprobeoff") ? 0 : psp_keep("vehprobe1") ? 1 : 3;
+		if (psp_keep("vehprobecheck"))
+			psp_vp_mode = (psp_vp_mode ? psp_vp_mode : 3) | 4;
+#endif
+	}
+	if (!(psp_vp_mode & (radius_physics ? 2 : 1)))
+		return;
+	psp_vp_updates[radius_physics]++;
+	if (TEST_FLAG(object->object.flags, _object_on_ground_bit))
+		return;
+
+	psp_vp_center = matrix->position;
+	for (mass_point_index = 0; mass_point_index < mass_point_count; mass_point_index++)
+	{
+		struct mass_point_definition const *mass_point_definition = TAG_BLOCK_GET_ELEMENT(
+			&physics->mass_points,
+			mass_point_index,
+			struct mass_point_definition);
+		short powered_mass_point_index = physics_powered_mass_point_index(physics, mass_point_definition);
+		real_point3d local_position = mass_point_definition->position;
+		real_point3d position;
+		real extra = mass_point_definition->radius + 0.0625f;
+		real distance;
+
+		if (radius_physics)
+		{
+			local_position.x -= physics->center_of_mass.x;
+			local_position.y -= physics->center_of_mass.y;
+			local_position.z -= physics->center_of_mass.z;
+		}
+		matrix4x3_transform_point(matrix, &local_position, &position);
+		distance = distance3d(&position, &psp_vp_center);
+		if (powered_mass_point_index != NONE)
+		{
+			struct powered_mass_point_definition const *powered_mass_point_definition = TAG_BLOCK_GET_ELEMENT(
+				&physics->powered_mass_points,
+				powered_mass_point_index,
+				struct powered_mass_point_definition);
+
+			if (TEST_FLAG(powered_mass_point_definition->flags, _powered_mass_point_antigrav_bit) &&
+				mass_point_definition->radius + powered_mass_point_definition->antigrav_height > extra)
+				extra = mass_point_definition->radius + powered_mass_point_definition->antigrav_height;
+		}
+		if (distance + extra > reach)
+			reach = distance + extra;
+		if (distance > arm)
+			arm = distance;
+	}
+	if (!radius_physics)
+	{
+		reach += 1.25f*(magnitude3d(&object->object.translational_velocity) +
+			magnitude3d(&object->object.angular_velocity)*arm) + 0.0625f;
+	}
+	psp_vp_radius = reach + 2.0f*PSP_VP_SLACK;
+	psp_vp_empty = psp_vehprobe_reach_empty(&psp_vp_center, psp_vp_radius, object_index);
+	psp_vp_active = TRUE;
+	psp_vp_probes[radius_physics]++;
+	psp_vp_empties[radius_physics] += psp_vp_empty;
+}
+
+static void psp_vp_end(
+	void)
+{
+	if (!psp_vp_mode)
+		return;
+	psp_vp_active = FALSE;
+	psp_vp_empty = FALSE;
+	psp_vp_eligible = FALSE;
+	if (++psp_vp_total % 600 == 0)
+	{
+		platform_psp_log("vehprobe: %lu updates (new physics %lu, radius physics %lu); asked %lu / %lu, nothing in reach %lu / %lu; ground queries skipped %lu, asked %lu; rays skipped %lu, cast %lu; check: %lu skippable found something",
+			psp_vp_updates[0] + psp_vp_updates[1], psp_vp_updates[0], psp_vp_updates[1],
+			psp_vp_probes[0], psp_vp_probes[1], psp_vp_empties[0], psp_vp_empties[1],
+			psp_vp_ground[0], psp_vp_ground[1], psp_vp_rays[0], psp_vp_rays[1], psp_vp_wrong);
+		psp_vp_updates[0] = psp_vp_updates[1] = psp_vp_probes[0] = psp_vp_probes[1] = 0;
+		psp_vp_empties[0] = psp_vp_empties[1] = psp_vp_ground[0] = psp_vp_ground[1] = 0;
+		psp_vp_rays[0] = psp_vp_rays[1] = 0;
+	}
+}
+#endif
+
+static void compute_ground_plane(
+	long object_index,
+	struct mass_point_datum *mass_point,
+	struct mass_point_definition const *mass_point_definition)
+{"""),
+# the ground query: not asked when its sphere lies in the empty one
+("""	struct collision_feature_list features;
+	struct collision_plane collision;
+
+	mass_point->ground_plane = depths_of_hell;""", """	struct collision_feature_list features;
+	struct collision_plane collision;
+#ifdef HALO_PSP
+	/* psp_fixups.py (FIXES_VEHPROBE) */
+	boolean psp_skippable = FALSE;
+	boolean psp_found;
+#endif
+
+	mass_point->ground_plane = depths_of_hell;"""),
+("""	if (collision_get_features_in_sphere(
+			_collision_test_for_bipeds_dead_flags,
+			&mass_point->position,
+			mass_point_definition->radius,
+			0.0f,
+			mass_point_definition->radius,
+			object_index,
+			&features) &&
+		collision_features_test_point(&features, &mass_point->position, &collision))""",
+"""#ifdef HALO_PSP
+	/* psp_fixups.py (FIXES_VEHPROBE): its sphere (the query adds 1/16) lies
+	in the empty one, so it would find nothing: the answer is the one above */
+	if (psp_vp_active)
+	{
+		psp_skippable = psp_vp_inside(&mass_point->position, mass_point_definition->radius + 0.0625f);
+		psp_vp_ground[!psp_skippable]++;
+	}
+	psp_found = (!psp_skippable || (psp_vp_mode & 4)) &&
+		collision_get_features_in_sphere(
+			_collision_test_for_bipeds_dead_flags,
+			&mass_point->position,
+			mass_point_definition->radius,
+			0.0f,
+			mass_point_definition->radius,
+			object_index,
+			&features);
+	if (psp_found && psp_skippable)
+		psp_vp_wrong++;
+	if (psp_found &&
+		collision_features_test_point(&features, &mass_point->position, &collision))
+#else
+	if (collision_get_features_in_sphere(
+			_collision_test_for_bipeds_dead_flags,
+			&mass_point->position,
+			mass_point_definition->radius,
+			0.0f,
+			mass_point_definition->radius,
+			object_index,
+			&features) &&
+		collision_features_test_point(&features, &mass_point->position, &collision))
+#endif"""),
+# the new physics' antigravity probe
+("""				if (collision_test_vector(
+						_collision_test_for_bipeds_dead_flags,
+						&point,
+						&probe_vector,
+						instance->object_index,
+						&collision))""", """				if (
+#ifdef HALO_PSP
+					/* psp_fixups.py (FIXES_VEHPROBE) */
+					psp_vp_ray(&point, &probe_vector) &&
+#endif
+					collision_test_vector(
+						_collision_test_for_bipeds_dead_flags,
+						&point,
+						&probe_vector,
+						instance->object_index,
+						&collision)
+#ifdef HALO_PSP
+					&& psp_vp_hit()
+#endif
+					)"""),
+# the new physics' sweep (every pass: nothing else moves in between)
+("""				if (collision_test_vector(
+						_collision_test_for_vehicles_flags |
+							FLAG(_collision_test_front_facing_surfaces_bit),
+						&mass_point->position,
+						&delta,
+						instance->object_index,
+						&collision))""", """				if (
+#ifdef HALO_PSP
+					/* psp_fixups.py (FIXES_VEHPROBE) */
+					psp_vp_ray(&mass_point->position, &delta) &&
+#endif
+					collision_test_vector(
+						_collision_test_for_vehicles_flags |
+							FLAG(_collision_test_front_facing_surfaces_bit),
+						&mass_point->position,
+						&delta,
+						instance->object_index,
+						&collision)
+#ifdef HALO_PSP
+					&& psp_vp_hit()
+#endif
+					)"""),
+# the radius physics: its sphere once its frame is known, its antigravity probe
+("""	matrix4x3_from_point_and_vectors(
+		&world_matrix,
+		&object->object.position,
+		&object->object.forward,
+		&object->object.up);
+""", """	matrix4x3_from_point_and_vectors(
+		&world_matrix,
+		&object->object.position,
+		&object->object.forward,
+		&object->object.up);
+#ifdef HALO_PSP
+	/* psp_fixups.py (FIXES_VEHPROBE) */
+	psp_vp_begin(object_index, physics, &world_matrix, TRUE);
+#endif
+"""),
+("""				if (collision_test_vector(
+						_collision_test_for_bipeds_dead_flags,
+						&point,
+						&probe_vector,
+						object_index,
+						&collision))""", """				if (
+#ifdef HALO_PSP
+					/* psp_fixups.py (FIXES_VEHPROBE) */
+					psp_vp_ray(&point, &probe_vector) &&
+#endif
+					collision_test_vector(
+						_collision_test_for_bipeds_dead_flags,
+						&point,
+						&probe_vector,
+						object_index,
+						&collision)
+#ifdef HALO_PSP
+					&& psp_vp_hit()
+#endif
+					)"""),
+# physics_update: the sphere asked before the new physics' compute, and both
+# physics close it (unit collisions are not the mass points')
+("""			magic_torque);
+		return;""", """			magic_torque);
+#ifdef HALO_PSP
+		/* psp_fixups.py (FIXES_VEHPROBE) */
+		psp_vp_end();
+#endif
+		return;"""),
+("""#ifdef HALO_PSP
+	psp_mark = psp_microseconds();
+#endif
+	physics_compute_new(""", """#ifdef HALO_PSP
+	/* psp_fixups.py (FIXES_VEHPROBE) */
+	psp_vp_begin(object_index, physics, &instance.world_matrix, FALSE);
+	psp_mark = psp_microseconds();
+#endif
+	physics_compute_new("""),
+("""	physics_compute_unit_collisions(object_index);""", """#ifdef HALO_PSP
+	/* psp_fixups.py (FIXES_VEHPROBE) */
+	psp_vp_end();
+#endif
+	physics_compute_unit_collisions(object_index);"""),
+]
+
+# ---------- FIXES_AIMCACHE: the aim and look screens' deltas kept and applied again
+# A unit's aim and look screens (and a vehicle's aiming overlays) blend four
+# frames of an overlay animation a node: three normalised lerps of four
+# quaternions and a bilinear translation, then one quaternions_multiply into
+# the node's rotation and one add into its translation. The blended delta is a
+# pure function of the animation, the screen's bounds, and the yaw and pitch;
+# a unit that holds its aim makes the same delta tick after tick. The table
+# keeps each delta under its full key (both pointers and the angles' bits) and,
+# on the same key, applies it with the same multiply and add: the same bits.
+# The leaf's own delta is now held in a local before its add (x += E and
+# d = E; x += d round alike: fp-contract is off and floats are evaluated as
+# floats), so the miss path and the off path are the one code.
+# The table is per map (tag pointers are reused by the next map) and keyed
+# whole (no hash-only hits). Campaign only.
+# Keep words: "aimcacheoff" (as before); "aimcachecheck" (each hit also
+# computes the leaf on a copy of the nodes and compares the deltas and the
+# resulting nodes bit for bit, then applies the kept one: 'aimcache: check'
+# counts); "aimcachestat" (a line a second: calls, hits, misses, uncached, the
+# leaf's time by path, and the four corner frames' cells for PREDEC: fetched
+# already this tick, fetched last tick, new).
+FIXES_AIMCACHE = {}
+FIXES_AIMCACHE["source/models/model_animations.c#aimcache"] = [
+("""void aiming_screen_apply(
+""",
+"""#if defined(HALO_PSP) && !defined(PSP_MULTIPLAYER)
+/* psp_fixups.py (FIXES_AIMCACHE) */
+extern unsigned long psp_microseconds(void);
+void platform_psp_log(const char *format, ...);
+int psp_keep(const char *name);
+long game_time_get(void);
+
+#define PSP_AC_SETS 32
+#define PSP_AC_WAYS 4
+#define PSP_AC_FLOATS 128
+#define PSP_AC_CELLS 256
+struct psp_ac_entry
+{
+	struct animation const *animation;
+	struct animation_aiming_screen_bounds const *bounds;
+	unsigned long yaw, pitch;
+	unsigned long used;
+	short count; /* floats kept; 0: the leaf changes nothing */
+	short valid;
+	real delta[PSP_AC_FLOATS];
+};
+static struct psp_ac_entry *psp_ac_table = NULL;
+static struct real_orientation *psp_ac_scratch = NULL;
+static int psp_ac_on = -1, psp_ac_check = 0, psp_ac_stat = 0;
+static real *psp_ac_out = NULL, *psp_ac_out_end = NULL;
+static unsigned long psp_ac_clock = 0;
+/* counters ('aimcache:' lines, aimcachestat) */
+static unsigned long psp_ac_n[4]; /* calls, hits, misses, uncached */
+static unsigned long psp_ac_us[3]; /* hits, misses, uncached */
+static unsigned long psp_ac_checked, psp_ac_differed;
+static unsigned long psp_ac_cell[4]; /* computes with valid frames, cell this tick already, last tick, new */
+static long psp_ac_log_tick = -1;
+struct psp_ac_cell { struct animation const *animation; short f[4]; long tick; };
+static struct psp_ac_cell psp_ac_cells[PSP_AC_CELLS];
+
+union psp_ac_bits { real r; unsigned long u; };
+static unsigned long psp_ac_bits_of(real r)
+{
+	union psp_ac_bits b;
+
+	b.r = r;
+	return b.u;
+}
+
+static int psp_ac_ready(void)
+{
+	if (psp_ac_on < 0)
+	{
+		psp_ac_on = psp_keep("aimcacheoff") == 0;
+		psp_ac_stat = psp_keep("aimcachestat") != 0;
+		psp_ac_check = psp_ac_on && psp_keep("aimcachecheck") != 0;
+		if (psp_ac_on)
+		{
+			psp_ac_table = (struct psp_ac_entry *)calloc(PSP_AC_SETS * PSP_AC_WAYS, sizeof(*psp_ac_table));
+			if (psp_ac_check)
+				psp_ac_scratch = (struct real_orientation *)malloc(MAXIMUM_NODES_PER_MODEL * sizeof(*psp_ac_scratch));
+			if (!psp_ac_table || (psp_ac_check && !psp_ac_scratch))
+			{
+				platform_psp_log("aimcache: no room; off");
+				psp_ac_on = 0;
+			}
+			else
+				platform_psp_log("aimcache: on (%u KB)%s", (unsigned)(PSP_AC_SETS * PSP_AC_WAYS * sizeof(*psp_ac_table) / 1024),
+					psp_ac_check ? ", checking each hit" : "");
+		}
+		else
+			platform_psp_log("aimcache: off (aimcacheoff)");
+	}
+	return psp_ac_on;
+}
+
+/* game.c, game_initialize_for_new_map: the next map's tags may sit where
+this one's were */
+void psp_aimcache_new_map(void)
+{
+	int i;
+
+	if (psp_ac_table)
+		for (i = 0; i < PSP_AC_SETS * PSP_AC_WAYS; i++)
+			psp_ac_table[i].valid = 0;
+	for (i = 0; i < PSP_AC_CELLS; i++)
+		psp_ac_cells[i].animation = NULL;
+}
+
+static void psp_ac_log(void)
+{
+	long tick = game_time_get();
+
+	if (psp_ac_log_tick < 0 || tick < psp_ac_log_tick)
+		psp_ac_log_tick = tick;
+	if (tick - psp_ac_log_tick < 30)
+		return;
+	psp_ac_log_tick = tick;
+	platform_psp_log("aimcache: tick %ld: calls %lu hits %lu misses %lu uncached %lu; us %lu %lu %lu; check %lu compared %lu differed; cells %lu: tick %lu last %lu new %lu",
+		tick, psp_ac_n[0], psp_ac_n[1], psp_ac_n[2], psp_ac_n[3], psp_ac_us[0], psp_ac_us[1], psp_ac_us[2],
+		psp_ac_checked, psp_ac_differed, psp_ac_cell[0], psp_ac_cell[1], psp_ac_cell[2], psp_ac_cell[3]);
+	memset(psp_ac_n, 0, sizeof(psp_ac_n));
+	memset(psp_ac_us, 0, sizeof(psp_ac_us));
+	memset(psp_ac_cell, 0, sizeof(psp_ac_cell));
+}
+
+/* PREDEC's count: were this compute's four corner frames fetched already
+this tick, or last tick (a prediction from last tick would have had them)? */
+static void psp_ac_cell_seen(struct animation const *animation, short f00, short f10, short f01, short f11)
+{
+	long tick;
+	unsigned long h;
+	struct psp_ac_cell *c;
+
+	if (!psp_ac_stat)
+		return;
+	tick = game_time_get();
+	h = ((unsigned long)animation >> 4) * 2654435761UL ^ (unsigned long)(unsigned short)f00 * 40503UL ^ (unsigned long)(unsigned short)f11 * 9973UL;
+	c = &psp_ac_cells[(h ^ (h >> 13)) & (PSP_AC_CELLS - 1)];
+	psp_ac_cell[0]++;
+	if (c->animation == animation && c->f[0] == f00 && c->f[1] == f10 && c->f[2] == f01 && c->f[3] == f11)
+	{
+		if (c->tick == tick)
+			psp_ac_cell[1]++;
+		else if (c->tick == tick - 1)
+			psp_ac_cell[2]++;
+		else
+			psp_ac_cell[3]++;
+	}
+	else
+	{
+		psp_ac_cell[3]++;
+		c->animation = animation;
+		c->f[0] = f00; c->f[1] = f10; c->f[2] = f01; c->f[3] = f11;
+	}
+	c->tick = tick;
+}
+
+/* the kept delta, applied with the leaf's own tail */
+static void psp_ac_apply(struct animation const *animation, real const *delta, struct real_orientation *node_orientations)
+{
+	unsigned long rotation_flags = 0, translation_flags = 0;
+	short node_index;
+
+	for (node_index = 0; node_index < animation->node_count; node_index++)
+	{
+		struct real_orientation *orientation = &node_orientations[node_index];
+
+		if (!(node_index & (LONG_BITS - 1)))
+		{
+			short long_index = node_index >> LONG_BITS_BITS;
+
+			translation_flags = animation->nodes_with_translation_flags[long_index];
+			rotation_flags = animation->nodes_with_rotation_flags[long_index];
+		}
+		if (TEST_FLAG(rotation_flags, 0))
+		{
+			real_quaternion rotation;
+
+			memcpy(&rotation, delta, sizeof(rotation));
+			delta += 4;
+			quaternions_multiply(&rotation, &orientation->rotation, &orientation->rotation);
+		}
+		rotation_flags >>= 1;
+		if (TEST_FLAG(translation_flags, 0))
+		{
+			orientation->translation.x += delta[0];
+			orientation->translation.y += delta[1];
+			orientation->translation.z += delta[2];
+			delta += 3;
+		}
+		translation_flags >>= 1;
+	}
+}
+
+/* the floats a delta of this animation takes */
+static int psp_ac_floats(struct animation const *animation)
+{
+	int n = 0, i, words = (animation->node_count + LONG_BITS - 1) >> LONG_BITS_BITS;
+
+	for (i = 0; i < words; i++)
+	{
+		unsigned long mask = (i == words - 1 && (animation->node_count & (LONG_BITS - 1))) ?
+			((1UL << (animation->node_count & (LONG_BITS - 1))) - 1) : ~0UL;
+
+		n += 4 * __builtin_popcountl(animation->nodes_with_rotation_flags[i] & mask) +
+			3 * __builtin_popcountl(animation->nodes_with_translation_flags[i] & mask);
+	}
+	return n;
+}
+
+static void psp_ac_inner_aiming_screen_apply(struct animation const *animation, struct animation_aiming_screen_bounds const *aiming_screen_bounds, real yaw, real pitch, struct real_orientation *node_orientations);
+void aiming_screen_apply(struct animation const *animation, struct animation_aiming_screen_bounds const *aiming_screen_bounds, real yaw, real pitch, struct real_orientation *node_orientations)
+{
+	unsigned long yb, pb, h, t0 = 0;
+	struct psp_ac_entry *set, *e, *victim;
+	int w, floats;
+
+	if (psp_ac_ready() <= 0)
+	{
+		if (psp_ac_stat)
+		{
+			t0 = psp_microseconds();
+			psp_ac_inner_aiming_screen_apply(animation, aiming_screen_bounds, yaw, pitch, node_orientations);
+			psp_ac_us[2] += psp_microseconds() - t0;
+			psp_ac_n[0]++;
+			psp_ac_n[3]++;
+			psp_ac_log();
+		}
+		else
+			psp_ac_inner_aiming_screen_apply(animation, aiming_screen_bounds, yaw, pitch, node_orientations);
+		return;
+	}
+	if (psp_ac_stat)
+		t0 = psp_microseconds();
+	psp_ac_n[0]++;
+	yb = psp_ac_bits_of(yaw);
+	pb = psp_ac_bits_of(pitch);
+	h = ((unsigned long)animation >> 4) * 2654435761UL ^ ((unsigned long)aiming_screen_bounds >> 2) * 40503UL ^ yb * 2246822519UL ^ pb * 3266489917UL;
+	set = &psp_ac_table[((h ^ (h >> 15)) & (PSP_AC_SETS - 1)) * PSP_AC_WAYS];
+	psp_ac_clock++;
+	for (w = 0; w < PSP_AC_WAYS; w++)
+	{
+		e = &set[w];
+		if (e->valid && e->animation == animation && e->bounds == aiming_screen_bounds && e->yaw == yb && e->pitch == pb)
+		{
+			e->used = psp_ac_clock;
+			if (psp_ac_check)
+			{
+				/* the leaf made again on a copy of the nodes, beside the kept delta */
+				real fresh[PSP_AC_FLOATS];
+				int nodes = animation->node_count, differed;
+
+				memcpy(psp_ac_scratch, node_orientations, nodes * sizeof(*psp_ac_scratch));
+				psp_ac_out = fresh;
+				psp_ac_out_end = fresh + PSP_AC_FLOATS;
+				psp_ac_inner_aiming_screen_apply(animation, aiming_screen_bounds, yaw, pitch, psp_ac_scratch);
+				differed = (int)(psp_ac_out - fresh) != e->count || memcmp(fresh, e->delta, e->count * sizeof(real)) != 0;
+				psp_ac_out = psp_ac_out_end = NULL;
+				if (e->count)
+					psp_ac_apply(animation, e->delta, node_orientations);
+				differed |= memcmp(psp_ac_scratch, node_orientations, nodes * sizeof(*psp_ac_scratch)) != 0;
+				psp_ac_checked++;
+				if (differed)
+				{
+					if (psp_ac_differed < 8)
+						platform_psp_log("aimcache: check: differed at tick %ld (animation %08lx, yaw %08lx pitch %08lx)",
+							game_time_get(), (unsigned long)animation, yb, pb);
+					psp_ac_differed++;
+				}
+			}
+			else if (e->count) /* 0: the leaf changed nothing (frames out of the animation) */
+				psp_ac_apply(animation, e->delta, node_orientations);
+			psp_ac_n[1]++;
+			if (psp_ac_stat)
+			{
+				psp_ac_us[0] += psp_microseconds() - t0;
+				psp_ac_log();
+			}
+			return;
+		}
+	}
+	floats = psp_ac_floats(animation);
+	if (floats > PSP_AC_FLOATS)
+	{
+		psp_ac_inner_aiming_screen_apply(animation, aiming_screen_bounds, yaw, pitch, node_orientations);
+		psp_ac_n[3]++;
+		if (psp_ac_stat)
+		{
+			psp_ac_us[2] += psp_microseconds() - t0;
+			psp_ac_log();
+		}
+		return;
+	}
+	victim = &set[0];
+	for (w = 0; w < PSP_AC_WAYS; w++)
+	{
+		if (!set[w].valid)
+		{
+			victim = &set[w];
+			break;
+		}
+		if (set[w].used < victim->used)
+			victim = &set[w];
+	}
+	psp_ac_out = victim->delta;
+	psp_ac_out_end = victim->delta + PSP_AC_FLOATS;
+	psp_ac_inner_aiming_screen_apply(animation, aiming_screen_bounds, yaw, pitch, node_orientations);
+	victim->count = (short)(psp_ac_out - victim->delta);
+	victim->valid = victim->count == 0 || victim->count == floats;
+	psp_ac_out = psp_ac_out_end = NULL;
+	victim->animation = animation;
+	victim->bounds = aiming_screen_bounds;
+	victim->yaw = yb;
+	victim->pitch = pb;
+	victim->used = psp_ac_clock;
+	psp_ac_n[2]++;
+	if (psp_ac_stat)
+	{
+		psp_ac_us[1] += psp_microseconds() - t0;
+		psp_ac_log();
+	}
+}
+static void psp_ac_inner_aiming_screen_apply(
+#else
+void aiming_screen_apply(
+#endif
+"""),
+("""	data00 = animation_get_frame_data(animation, frame_index00);
+""",
+"""#if defined(HALO_PSP) && !defined(PSP_MULTIPLAYER)
+	psp_ac_cell_seen(animation, frame_index00, frame_index10, frame_index01, frame_index11); /* FIXES_AIMCACHE */
+#endif
+	data00 = animation_get_frame_data(animation, frame_index00);
+"""),
+("""			quaternions_interpolate_and_normalize(&yaw_rotation0, &yaw_rotation1, pitch_fraction, &rotation);
+			quaternions_multiply(&rotation, &orientation->rotation, &orientation->rotation);
+""",
+"""			quaternions_interpolate_and_normalize(&yaw_rotation0, &yaw_rotation1, pitch_fraction, &rotation);
+#if defined(HALO_PSP) && !defined(PSP_MULTIPLAYER)
+			if (psp_ac_out) /* FIXES_AIMCACHE: the delta kept */
+			{
+				if (psp_ac_out + 4 <= psp_ac_out_end)
+					memcpy(psp_ac_out, &rotation, sizeof(rotation));
+				psp_ac_out += 4;
+			}
+#endif
+			quaternions_multiply(&rotation, &orientation->rotation, &orientation->rotation);
+"""),
+("""			orientation->translation.x +=
+				(translation01.x*inverse_yaw_fraction+translation11.x*yaw_fraction)*pitch_fraction+
+				(translation00.x*inverse_yaw_fraction+translation10.x*yaw_fraction)*inverse_pitch_fraction;
+			orientation->translation.y +=
+				(translation01.y*inverse_yaw_fraction+translation11.y*yaw_fraction)*pitch_fraction+
+				(translation00.y*inverse_yaw_fraction+translation10.y*yaw_fraction)*inverse_pitch_fraction;
+			orientation->translation.z +=
+				(translation00.z*inverse_yaw_fraction+translation10.z*yaw_fraction)*inverse_pitch_fraction+
+				(translation01.z*inverse_yaw_fraction+translation11.z*yaw_fraction)*pitch_fraction;
+""",
+"""#if defined(HALO_PSP) && !defined(PSP_MULTIPLAYER)
+			{
+				/* FIXES_AIMCACHE: each delta held before its add (the same
+				rounding), so it can be kept */
+				real psp_ac_dx =
+					(translation01.x*inverse_yaw_fraction+translation11.x*yaw_fraction)*pitch_fraction+
+					(translation00.x*inverse_yaw_fraction+translation10.x*yaw_fraction)*inverse_pitch_fraction;
+				real psp_ac_dy =
+					(translation01.y*inverse_yaw_fraction+translation11.y*yaw_fraction)*pitch_fraction+
+					(translation00.y*inverse_yaw_fraction+translation10.y*yaw_fraction)*inverse_pitch_fraction;
+				real psp_ac_dz =
+					(translation00.z*inverse_yaw_fraction+translation10.z*yaw_fraction)*inverse_pitch_fraction+
+					(translation01.z*inverse_yaw_fraction+translation11.z*yaw_fraction)*pitch_fraction;
+
+				orientation->translation.x += psp_ac_dx;
+				orientation->translation.y += psp_ac_dy;
+				orientation->translation.z += psp_ac_dz;
+				if (psp_ac_out)
+				{
+					if (psp_ac_out + 3 <= psp_ac_out_end)
+					{
+						psp_ac_out[0] = psp_ac_dx;
+						psp_ac_out[1] = psp_ac_dy;
+						psp_ac_out[2] = psp_ac_dz;
+					}
+					psp_ac_out += 3;
+				}
+			}
+#else
+			orientation->translation.x +=
+				(translation01.x*inverse_yaw_fraction+translation11.x*yaw_fraction)*pitch_fraction+
+				(translation00.x*inverse_yaw_fraction+translation10.x*yaw_fraction)*inverse_pitch_fraction;
+			orientation->translation.y +=
+				(translation01.y*inverse_yaw_fraction+translation11.y*yaw_fraction)*pitch_fraction+
+				(translation00.y*inverse_yaw_fraction+translation10.y*yaw_fraction)*inverse_pitch_fraction;
+			orientation->translation.z +=
+				(translation00.z*inverse_yaw_fraction+translation10.z*yaw_fraction)*inverse_pitch_fraction+
+				(translation01.z*inverse_yaw_fraction+translation11.z*yaw_fraction)*pitch_fraction;
+#endif
+"""),
+]
+FIXES_AIMCACHE["source/game/game.c#aimcache"] = [
+("""		psp_fixed_seed_new_map();
+	}
+#endif
+""",
+"""		psp_fixed_seed_new_map();
+	}
+#endif
+#if defined(HALO_PSP) && !defined(PSP_MULTIPLAYER)
+	{
+		extern void psp_aimcache_new_map(void); /* model_animations.c (psp_fixups.py, FIXES_AIMCACHE) */
+
+		psp_aimcache_new_map();
+	}
+#endif
+"""),
+]
+
+
+# ---------- FIXES_PROFWAIT: a profile write waits for the last one by sleeping
+# player_profile_write (and the playlist profiles' reads and writes) wait for
+# the previous write's thread in an empty loop on thread_has_exited. On
+# Windows and the Xbox the scheduler shares the CPU, so the writer finishes
+# while the caller spins. The PSP runs only the highest-priority ready
+# thread, and the writer starts at pthreads' default (0x3c), below the game
+# thread (0x20): once the game thread spins, the writer never runs again
+# and the game stops for good, with HOME still answering (the callbacks
+# thread is above it). Any profile write made while the last one's thread
+# is still alive does it (a10's look inversion saves the profile). The
+# waits now sleep a millisecond a turn, so
+# the writer gets the CPU; a thread create_thread failed to make (no handle)
+# counts as done instead of being waited on for ever. "profwaitold" keeps
+# the empty loop, for the A/B.
+FIXES_PROFWAIT = {}
+FIXES_PROFWAIT["source/bungie_net/common/thread_win32.c#profwait"] = [
+("""void dispose_thread(
+	struct thread_reference *thread_reference)
+{""", """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_PROFWAIT): thread_has_exited for a loop that waits on
+it, which must block for the thread it waits for to run */
+boolean psp_thread_has_exited_waiting(
+	struct thread_reference *thread_reference)
+{
+	extern int psp_keep(const char *name);
+	extern void platform_log(const char *format, ...);
+	extern int sceKernelDelayThread(unsigned int delay);
+	static int said_waiting = 0;
+	static int said_missing = 0;
+
+	if (thread_reference->handle == NULL && !psp_keep("profwaitold"))
+	{
+		/* create_thread keeps the reference when the thread can't be made */
+		if (!said_missing)
+			platform_log("profile io: waited on a thread that was never made: taken as finished");
+		said_missing = 1;
+		return TRUE;
+	}
+	if (thread_has_exited(thread_reference))
+		return TRUE;
+	if (psp_keep("profwaitold"))
+		return FALSE;
+	if (!said_waiting)
+		platform_log("profile io: the last write's thread is still running: waiting for it, a millisecond at a time");
+	said_waiting = 1;
+	sceKernelDelayThread(1000);
+	return FALSE;
+}
+#endif
+
+void dispose_thread(
+	struct thread_reference *thread_reference)
+{"""),
+]
+for _rel in ("source/saved games/player_profile.c", "source/saved games/playlist_profile.c"):
+    FIXES_PROFWAIT[_rel + "#profwait"] = [
+("""#include "bungie_net/common/thread.h"
+""", """#include "bungie_net/common/thread.h"
+#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_PROFWAIT): this file's only use of thread_has_exited
+is the empty loop that waits for the last profile io thread; the loop has to
+sleep so that thread, below the game thread, can run and finish */
+boolean psp_thread_has_exited_waiting(struct thread_reference *thread_reference);
+#define thread_has_exited(thread_reference) psp_thread_has_exited_waiting(thread_reference)
+#endif
+"""),
+]
+
+
+# ---------- FIXES_LOOKREAL: the stick turns the view by real time
+# main.c caps a local frame's time at a fifteenth of a second, so below 15
+# frames a second the game world runs slow, as on the Xbox. The view was
+# turned by that capped time too, so the stick's turn rate in real terms fell
+# with the frame rate and stepped as it changed: at 10 fps a held stick turned
+# two thirds as fast as at 15. The stick's part of the turn now uses the
+# frame's real length (main_update_time keeps it before the cap), bounded at a
+# quarter second so a hitch or a checkpoint save doesn't spin the view.
+# Everything else keeps the capped time: magnetism follows its target's motion
+# in game time, and the pitch limits and autolevel step by game ticks. With
+# the stick at rest the turn is the old one bit for bit. Local games only (a
+# network client's frame time isn't capped, so nothing changes there).
+# Keep words: "lookrealoff" turns it off (a hand test preferred the real-time
+# turn to the capped one), and "fixedticks" does too (an exact run's turn
+# can't follow the wall clock); "lookstat" (a line a second of real
+# time: real and game seconds, frames, yaw turned); "frameslowN" (N ms more
+# each frame, tests only: slow frames on demand).
+FIXES_LOOKREAL = {}
+FIXES_LOOKREAL["source/game/player_control.c#lookreal"] = [
+("""static real player_control_autolevel_time[MAXIMUM_NUMBER_OF_LOCAL_PLAYERS];
+""",
+ """static real player_control_autolevel_time[MAXIMUM_NUMBER_OF_LOCAL_PLAYERS];
+#ifdef HALO_PSP
+/* the frame's real length, before main.c's cap (main_update_time sets it;
+psp_fixups.py, FIXES_LOOKREAL) */
+real psp_look_real_seconds = 0.f;
+static int psp_look_real = -1;
+static int psp_look_stat;
+static real psp_look_stat_real;
+static real psp_look_stat_game;
+static real psp_look_stat_yaw;
+static long psp_look_stat_frames;
+
+/* the time the stick turns the view by: the frame's real length, at most a
+quarter second, where the game's own time was capped */
+static real psp_look_time_delta(
+	real time_delta_sec)
+{
+	real seconds = psp_look_real_seconds;
+
+	if (psp_look_real < 0)
+	{
+		extern int psp_keep(const char *name);
+
+		psp_look_real = psp_keep("lookrealoff") == 0 && !psp_keep("fixedticks");
+		psp_look_stat = psp_keep("lookstat") != 0;
+		platform_psp_log("lookreal: %s", psp_look_real ? "on" : "off (lookrealoff)");
+	}
+	if (!psp_look_real || time_delta_sec <= 0.f || seconds <= 0.f ||
+		game_connection() != _game_connection_local)
+	{
+		return time_delta_sec;
+	}
+	return seconds < 0.25f ? seconds : 0.25f;
+}
+
+static void psp_look_stat_note(
+	real time_delta_sec,
+	real look_time_delta,
+	real yaw,
+	real stick_yaw)
+{
+	psp_look_stat_real += psp_look_real_seconds;
+	psp_look_stat_game += time_delta_sec;
+	psp_look_stat_yaw += yaw;
+	psp_look_stat_frames++;
+	if (psp_look_stat_real >= 1.f)
+	{
+		platform_psp_log("lookstat: tick %ld: real %.3f s, game %.3f s, %ld frames (%.1f fps), yaw %.4f rad (%.4f rad/s real), stick %.2f, last look time %.4f",
+			game_time_get(), (double)psp_look_stat_real, (double)psp_look_stat_game, psp_look_stat_frames,
+			(double)(psp_look_stat_frames / psp_look_stat_real), (double)psp_look_stat_yaw,
+			(double)(psp_look_stat_yaw / psp_look_stat_real), (double)stick_yaw, (double)look_time_delta);
+		psp_look_stat_real = psp_look_stat_game = psp_look_stat_yaw = 0.f;
+		psp_look_stat_frames = 0;
+	}
+}
+#endif
+"""),
+("""					real_euler_angles2d look_delta;
+""",
+ """					real_euler_angles2d look_delta;
+#ifdef HALO_PSP
+					real look_time_delta = psp_look_time_delta(time_delta_sec);
+					real_euler_angles2d look_magnetism;
+					real_euler_angles2d look_stick;
+					boolean look_magnetized = FALSE;
+#endif
+"""),
+("""						control->look_acceleration_time += time_delta_sec;""",
+ """#ifdef HALO_PSP
+						/* how long the stick has been held: real time, as the turn */
+						control->look_acceleration_time += look_time_delta;
+#else
+						control->look_acceleration_time += time_delta_sec;
+#endif"""),
+("""							look_delta.yaw = target_angular_velocity.yaw * magnetism_scale +""",
+ """#ifdef HALO_PSP
+							look_magnetism.yaw = target_angular_velocity.yaw * magnetism_scale;
+							look_magnetism.pitch = target_angular_velocity.pitch * magnetism_scale;
+							look_stick.yaw = look_delta.yaw * input_scale;
+							look_stick.pitch = look_delta.pitch * input_scale;
+							look_magnetized = TRUE;
+#endif
+							look_delta.yaw = target_angular_velocity.yaw * magnetism_scale +"""),
+("""						real facing_scale = time_delta_sec * TICKS_PER_SECOND;
+
+						input->facing_delta.yaw = facing_scale * look_delta.yaw;
+						input->facing_delta.pitch = facing_scale * look_delta.pitch;
+""",
+ """						real facing_scale = time_delta_sec * TICKS_PER_SECOND;
+
+#ifdef HALO_PSP
+						if (look_time_delta != time_delta_sec)
+						{
+							/* the stick's part by real time; magnetism's by game
+							time, as its target moves. Unmagnetised, the stick's
+							part alone, so a stick at rest turns by exactly what
+							it did */
+							real stick_scale = look_time_delta * TICKS_PER_SECOND;
+
+							if (look_magnetized)
+							{
+								input->facing_delta.yaw = facing_scale * look_magnetism.yaw + stick_scale * look_stick.yaw;
+								input->facing_delta.pitch = facing_scale * look_magnetism.pitch + stick_scale * look_stick.pitch;
+							}
+							else
+							{
+								input->facing_delta.yaw = stick_scale * look_delta.yaw;
+								input->facing_delta.pitch = stick_scale * look_delta.pitch;
+							}
+						}
+						else
+#endif
+						{
+						input->facing_delta.yaw = facing_scale * look_delta.yaw;
+						input->facing_delta.pitch = facing_scale * look_delta.pitch;
+						}
+#ifdef HALO_PSP
+						if (psp_look_stat && local_player_index == 0)
+							psp_look_stat_note(time_delta_sec, look_time_delta, input->facing_delta.yaw, clamped_yaw);
+#endif
+"""),
+]
+FIXES_LOOKREAL["source/main/main.c#lookreal"] = [
+("""static void main_update_time_unthrottled(
+""",
+ """#ifdef HALO_PSP
+/* the frame's real length before the cap, for the stick's turn
+(player_control.c; psp_fixups.py, FIXES_LOOKREAL) */
+extern real psp_look_real_seconds;
+#endif
+
+static void main_update_time_unthrottled(
+"""),
+("""	previous_counter = counter;
+
+	if (main_globals.movie)
+	{
+		seconds_elapsed = main_globals.recording_dt;
+	}
+	else
+	{
+		seconds_elapsed = PIN(seconds_elapsed, 0.0f, 1.0f);
+""",
+ """	previous_counter = counter;
+
+#ifdef HALO_PSP
+	psp_look_real_seconds = 0.f;
+#endif
+	if (main_globals.movie)
+	{
+		seconds_elapsed = main_globals.recording_dt;
+	}
+	else
+	{
+		seconds_elapsed = PIN(seconds_elapsed, 0.0f, 1.0f);
+#ifdef HALO_PSP
+		psp_look_real_seconds = seconds_elapsed;
+#endif
+"""),
+("""			0.001000000047497451f;
+	}
+
+	if (main_globals.movie)
+	{
+		seconds_elapsed = main_globals.recording_dt;
+	}
+	else
+	{
+		seconds_elapsed = PIN(seconds_elapsed, 0.0f, 1.0f);
+""",
+ """			0.001000000047497451f;
+	}
+
+#ifdef HALO_PSP
+	psp_look_real_seconds = 0.f;
+#endif
+	if (main_globals.movie)
+	{
+		seconds_elapsed = main_globals.recording_dt;
+	}
+	else
+	{
+		seconds_elapsed = PIN(seconds_elapsed, 0.0f, 1.0f);
+#ifdef HALO_PSP
+		psp_look_real_seconds = seconds_elapsed;
+#endif
+"""),
+("""	if (halo_interpolation_enabled())
+	{
+		main_update_time_unthrottled();
+		return;
+	}
+""",
+ """#ifdef HALO_PSP
+	{
+		/* "frameslowN": N ms more each frame, for tests that need slow
+		frames on demand (the look's: lookstat) */
+		extern int psp_keep_loaded(void);
+		extern int psp_keep_number(const char *prefix, int fallback);
+		static int frame_slow = -1;
+
+		if (frame_slow < 0 && psp_keep_loaded())
+			frame_slow = psp_keep_number("frameslow", 0);
+		if (frame_slow > 0)
+			Sleep(frame_slow);
+	}
+#endif
+	if (halo_interpolation_enabled())
+	{
+		main_update_time_unthrottled();
+		return;
+	}
+"""),
+]
+
+
+# ---------- FIXES_VITA: ideas from halo-ce-vita (BirchWoodGod), built our way
+# docs/research/research_vita_insider16.md, S1 and S2 (credited in the README)
+#
+# LVW (S1): lruv_cache_verify(cache, TRUE) walks every live block of an lruv
+# cache and only asserts its links and page order. lruv_block_new and
+# lruv_block_delete each call it (delete twice), so the decal vertex cache, a
+# block a decal and near full in a fight, was walked whole about three times
+# for each decal made; memory_pool_verify's walk was the same case
+# ("poolverify"). The walk changes nothing, so leaving it out is exact. Keep
+# word "lruvverify": the walk.
+# A hole's blocks were also found by a pass over every slot of the block
+# array; they are the blocks after the hole's block in the list, found there
+# and still deleted in the array's order (halo-ce-vita's list walk). Keep word
+# "lruvarraypass": the pass.
+# "lruvcensus" (PSP_RECON): every 5 s of game time, per cache and per tick,
+# the walks asked for, the blocks they cover, the array passes and slots, and
+# emulated microseconds in each.
+FIXES_VITA = {}
+FIXES_VITA["source/memory/lruv_cache.c#lvw"] = [
+(r"""static void lruv_cache_verify(
+	struct lruv_cache *cache,
+	boolean verify_blocks);
+""", r"""/* (the declarations at the prototype: lruv_block_new, before the definition, uses them) */
+#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_VITA #lvw): "lruvverify" (see there) */
+extern int psp_keep(const char *name);
+static int psp_lruv_walk = -1;
+#ifdef PSP_RECON
+extern unsigned int sceKernelGetSystemTimeLow(void);
+void platform_psp_log(const char *format, ...);
+long game_time_get(void);
+#define PSP_LRUV_CENSUS_CACHES 4
+static int psp_lruv_census_on = -1;
+static long psp_lruv_census_tick = -1;
+static unsigned long psp_lruv_census_ticks;
+static struct
+{
+	struct lruv_cache *cache;
+	unsigned long walks, blocks, walk_us, passes, slots, pass_us, listed, listed_blocks;
+} psp_lruv_census[PSP_LRUV_CENSUS_CACHES];
+
+static int psp_lruv_census_slot(struct lruv_cache *cache)
+{
+	long now;
+	int k;
+
+	if (psp_lruv_census_on < 0)
+		psp_lruv_census_on = psp_keep("lruvcensus");
+	if (!psp_lruv_census_on)
+		return -1;
+	now = game_time_get();
+	if (now != psp_lruv_census_tick)
+	{
+		if (now % 150 == 0 && psp_lruv_census_ticks)
+		{
+			float ticks = (float)psp_lruv_census_ticks;
+
+			for (k = 0; k < PSP_LRUV_CENSUS_CACHES; k++)
+				if (psp_lruv_census[k].cache)
+				{
+					platform_psp_log("lruvcensus: game time %ld | %s, per tick: walks %.2f over %.1f blocks, %.1f us; "
+						"array passes %.2f over %.1f slots, %.1f us; list finds %.2f, %.2f blocks | live %d of %d",
+						now, psp_lruv_census[k].cache->name,
+						psp_lruv_census[k].walks / ticks, psp_lruv_census[k].blocks / ticks, psp_lruv_census[k].walk_us / ticks,
+						psp_lruv_census[k].passes / ticks, psp_lruv_census[k].slots / ticks, psp_lruv_census[k].pass_us / ticks,
+						psp_lruv_census[k].listed / ticks, psp_lruv_census[k].listed_blocks / ticks,
+						(int)psp_lruv_census[k].cache->blocks->actual_count, (int)psp_lruv_census[k].cache->blocks->maximum_count);
+					psp_lruv_census[k].walks = psp_lruv_census[k].blocks = psp_lruv_census[k].walk_us = 0;
+					psp_lruv_census[k].passes = psp_lruv_census[k].slots = psp_lruv_census[k].pass_us = 0;
+					psp_lruv_census[k].listed = psp_lruv_census[k].listed_blocks = 0;
+				}
+			psp_lruv_census_ticks = 0;
+		}
+		psp_lruv_census_tick = now;
+		psp_lruv_census_ticks++;
+	}
+	for (k = 0; k < PSP_LRUV_CENSUS_CACHES; k++)
+		if (psp_lruv_census[k].cache == cache)
+			return k;
+	for (k = 0; k < PSP_LRUV_CENSUS_CACHES; k++)
+		if (!psp_lruv_census[k].cache)
+		{
+			psp_lruv_census[k].cache = cache;
+			return k;
+		}
+	return -1;
+}
+#endif
+#endif
+
+static void lruv_cache_verify(
+	struct lruv_cache *cache,
+	boolean verify_blocks);
+"""),
+(r"""static void lruv_cache_verify(
+	struct lruv_cache *cache,
+	boolean verify_blocks)
+{
+""", r"""static void lruv_cache_verify(
+	struct lruv_cache *cache,
+	boolean verify_blocks)
+{
+#if defined(HALO_PSP) && defined(PSP_RECON)
+	int psp_census = -1;
+	unsigned int psp_census_start = 0;
+#endif
+"""),
+(r"""	data_verify(cache->blocks);
+
+	if (verify_blocks)
+	{
+""", r"""	data_verify(cache->blocks);
+
+#ifdef HALO_PSP
+	if (verify_blocks)
+	{
+		if (psp_lruv_walk < 0)
+			psp_lruv_walk = psp_keep("lruvverify");
+#ifdef PSP_RECON
+		psp_census = psp_lruv_census_slot(cache);
+		if (psp_census >= 0)
+		{
+			psp_lruv_census[psp_census].walks++;
+			psp_lruv_census[psp_census].blocks += cache->blocks->actual_count;
+			psp_census_start = sceKernelGetSystemTimeLow();
+		}
+#endif
+		verify_blocks = psp_lruv_walk;
+	}
+#endif
+	if (verify_blocks)
+	{
+"""),
+(r"""			block_index = block->next_block_index;
+		}
+	}
+
+	return;
+}""", r"""			block_index = block->next_block_index;
+		}
+	}
+#if defined(HALO_PSP) && defined(PSP_RECON)
+	if (psp_census >= 0)
+		psp_lruv_census[psp_census].walk_us += sceKernelGetSystemTimeLow() - psp_census_start;
+#endif
+
+	return;
+}"""),
+(r"""	if (found_hole)
+	{
+		data_iterator_new(&iterator, cache->blocks);
+		while ((block = data_iterator_next(&iterator)) != NULL)
+		{
+			if (block->first_page_index < best_hole.first_page_index + desired_page_count &&
+				block->first_page_index + block->page_count > best_hole.first_page_index)
+			{
+				match_assert(
+					"c:\\halo\\SOURCE\\memory\\lruv_cache.c",
+					375,
+					!cache->locked_block_proc || !cache->locked_block_proc(iterator.index));
+				lruv_block_delete(cache, iterator.datum_index);
+			}
+		}
+""", r"""	if (found_hole)
+	{
+#ifdef HALO_PSP
+		/* psp_fixups.py (FIXES_VITA #lvw): the list keeps blocks in page
+		order and the hole starts where its block ends, so the blocks it
+		covers are the ones after that block, up to its last page. They are
+		gathered there, then deleted in slot order, the order the pass over
+		the array met them in (the delete procs and the free list see the same
+		sequence). More than the gather holds: the pass, as before */
+		static int psp_hole_list = -1;
+		long psp_covered[32];
+		int psp_covered_count = 0;
+		boolean psp_pass = TRUE;
+#ifdef PSP_RECON
+		int psp_census = psp_lruv_census_slot(cache);
+		unsigned int psp_census_start = sceKernelGetSystemTimeLow();
+#endif
+
+		if (psp_hole_list < 0)
+			psp_hole_list = !psp_keep("lruvarraypass");
+		if (psp_hole_list)
+		{
+			long at = best_hole.block_index == NONE ? cache->first_block_index :
+				((struct lruv_cache_block *)datum_get(cache->blocks, best_hole.block_index))->next_block_index;
+
+			psp_pass = FALSE;
+			while (at != NONE)
+			{
+				int k;
+
+				block = datum_get(cache->blocks, at);
+				if (block->first_page_index >= best_hole.first_page_index + desired_page_count)
+					break;
+				if (block->first_page_index + block->page_count > best_hole.first_page_index)
+				{
+					if (psp_covered_count == (int)(sizeof(psp_covered) / sizeof(psp_covered[0])))
+					{
+						psp_pass = TRUE;
+						break;
+					}
+					for (k = psp_covered_count++; k > 0 && (psp_covered[k - 1] & 0xFFFF) > (at & 0xFFFF); k--)
+						psp_covered[k] = psp_covered[k - 1];
+					psp_covered[k] = at;
+				}
+				at = block->next_block_index;
+			}
+			if (!psp_pass)
+			{
+				int k;
+
+				for (k = 0; k < psp_covered_count; k++)
+				{
+					match_assert(
+						"c:\\halo\\SOURCE\\memory\\lruv_cache.c",
+						375,
+						!cache->locked_block_proc || !cache->locked_block_proc(psp_covered[k]));
+					lruv_block_delete(cache, psp_covered[k]);
+				}
+			}
+#ifdef PSP_RECON
+			if (psp_census >= 0 && !psp_pass)
+			{
+				psp_lruv_census[psp_census].listed++;
+				psp_lruv_census[psp_census].listed_blocks += psp_covered_count;
+			}
+#endif
+		}
+#ifdef PSP_RECON
+		if (psp_census >= 0 && psp_pass)
+		{
+			psp_lruv_census[psp_census].passes++;
+			psp_lruv_census[psp_census].slots += cache->blocks->count;
+		}
+#endif
+		if (psp_pass)
+#endif
+		{
+		data_iterator_new(&iterator, cache->blocks);
+		while ((block = data_iterator_next(&iterator)) != NULL)
+		{
+			if (block->first_page_index < best_hole.first_page_index + desired_page_count &&
+				block->first_page_index + block->page_count > best_hole.first_page_index)
+			{
+				match_assert(
+					"c:\\halo\\SOURCE\\memory\\lruv_cache.c",
+					375,
+					!cache->locked_block_proc || !cache->locked_block_proc(iterator.index));
+				lruv_block_delete(cache, iterator.datum_index);
+			}
+		}
+		}
+#if defined(HALO_PSP) && defined(PSP_RECON)
+		if (psp_census >= 0)
+			psp_lruv_census[psp_census].pass_us += sceKernelGetSystemTimeLow() - psp_census_start;
+#endif
+"""),
+]
+
+# ---------- TAGSNAP (api-job 40135731866, lever 4): tag_get's found-it path read
+# four globals (tags_loaded, global_tag_instances, tag_header, its tag_count). It
+# reads one static pair {instances, count} now, refreshed at every place those
+# are set or cleared: scenario_tags_load's two loads (the Xbox path, and the
+# Custom Edition path the PSP build compiles out), scenario_tags_unload's clear,
+# and cache_files_set_tag_instances (the menus' tags grow the table). A NULL
+# instances is "not loaded". Exact while nothing else writes those globals.
+# "tagsnapold": the pair stays empty and tag_get reads the globals as before.
+# "tagsnapcheck" (PSP_RECON): every tag_get compares the pair with the globals
+# and counts the differences, expected 0
+FIXES_TAGSNAP = {}
+FIXES_TAGSNAP["source/cache/cache_files.c#tagsnap"] = [
+("""extern struct cache_file_tag_instance *global_tag_instances;""",
+ """extern struct cache_file_tag_instance *global_tag_instances;
+#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_TAGSNAP): tag_get's tags, as one pair kept in step with the globals */
+static struct { struct cache_file_tag_instance *instances; long count; } psp_tagsnap;
+
+static void psp_tagsnap_refresh(void)
+{
+	if (cache_file_globals.tags_loaded && global_tag_instances && cache_file_globals.tag_header &&
+		!PSP_KEEP_ONCE("tagsnapold"))
+	{
+		psp_tagsnap.instances = global_tag_instances;
+		psp_tagsnap.count = cache_file_globals.tag_header->tag_count;
+	}
+	else
+	{
+		psp_tagsnap.instances = NULL;
+		psp_tagsnap.count = 0;
+	}
+}
+
+#ifdef PSP_RECON
+/* "tagsnapcheck": the pair against the globals it stands for */
+static void psp_tagsnap_check(void)
+{
+	static int on = -1;
+	static unsigned long checked, differed;
+	int psp_keep(const char *name);
+	int psp_keep_loaded(void);
+	void platform_psp_log(const char *format, ...);
+	int loaded;
+
+	if (on < 0 && psp_keep_loaded())
+		on = psp_keep("tagsnapcheck");
+	if (on <= 0 || PSP_KEEP_ONCE("tagsnapold"))
+		return;
+	loaded = cache_file_globals.tags_loaded && global_tag_instances && cache_file_globals.tag_header;
+	checked++;
+	if (psp_tagsnap.instances != (loaded ? global_tag_instances : NULL) ||
+		psp_tagsnap.count != (loaded ? cache_file_globals.tag_header->tag_count : 0))
+	{
+		if (differed++ < 8)
+			platform_psp_log("tagsnapcheck: the pair differs from the globals (count %ld)", (long)psp_tagsnap.count);
+	}
+	if (checked % 1000000 == 0)
+		platform_psp_log("tagsnapcheck: %lu tag_gets compared, %lu differed", checked, differed);
+}
+#endif
+#endif"""),
+("""	cache_file_globals.tags_loaded = FALSE;
+	global_tag_instances = NULL;
+""",
+ """	cache_file_globals.tags_loaded = FALSE;
+	global_tag_instances = NULL;
+#ifdef HALO_PSP
+	psp_tagsnap_refresh();
+#endif
+"""),
+("""	cache_file_globals.tag_header->tag_count = count;
+	global_tag_instances = instances;
+""",
+ """	cache_file_globals.tag_header->tag_count = count;
+	global_tag_instances = instances;
+#ifdef HALO_PSP
+	psp_tagsnap_refresh();
+#endif
+"""),
+("""			tags_header_register_vertex_and_index_buffers(cache_file_globals.tag_header);
+			cache_file_globals.tags_loaded = TRUE;
+""",
+ """			tags_header_register_vertex_and_index_buffers(cache_file_globals.tag_header);
+			cache_file_globals.tags_loaded = TRUE;
+#ifdef HALO_PSP
+			psp_tagsnap_refresh();
+#endif
+"""),
+("""			global_tag_instances = xbox_pointer(ce_header->tag_instances);
+			cache_file_globals.tags_loaded = TRUE;
+""",
+ """			global_tag_instances = xbox_pointer(ce_header->tag_instances);
+			cache_file_globals.tags_loaded = TRUE;
+#ifdef HALO_PSP
+			psp_tagsnap_refresh();
+#endif
+"""),
+("""	if (cache_file_globals.tags_loaded && global_tag_instances && cache_file_globals.tag_header &&
+		absolute_index >= 0 && absolute_index < cache_file_globals.tag_header->tag_count)
+	{
+		struct cache_file_tag_instance *instance = &global_tag_instances[absolute_index];""",
+ """	struct cache_file_tag_instance *psp_tags = psp_tagsnap.instances;
+	long psp_count = psp_tagsnap.count;
+
+#ifdef PSP_RECON
+	psp_tagsnap_check();
+#endif
+	if (!psp_tags && PSP_KEEP_ONCE("tagsnapold") && cache_file_globals.tags_loaded && global_tag_instances &&
+		cache_file_globals.tag_header)
+	{
+		psp_tags = global_tag_instances;
+		psp_count = cache_file_globals.tag_header->tag_count;
+	}
+	if (psp_tags && absolute_index >= 0 && absolute_index < psp_count)
+	{
+		struct cache_file_tag_instance *instance = &psp_tags[absolute_index];"""),
+]
+
+# ---------- DGFAST (api-job 40135731866, lever 6): datum_get's found-it path ahead of
+# its two release asserts, which run on every call (cseries.h match_assert is a live
+# branch in a release build). A found datum returns at once; the asserts run when it
+# isn't found, so debug.txt still reports an invalid read. Left off the found path:
+# the "valid" assert (data.c:396) alone, whose failure the caller never saw (it got
+# the same pointer). An identifier of 0 on a zero-invalid array isn't found-it here,
+# so it reaches both asserts as before. The same pointer or NULL in every case.
+# "dgfastold": the asserts first, as before
+FIXES_DGFAST = {}
+FIXES_DGFAST["source/memory/data.c#dgfast"] = [
+("""	identifier = index>>16;
+	absolute_index = index;
+	match_assert("c:\\\\halo\\\\SOURCE\\\\memory\\\\data.c", 396, data->valid);
+""",
+ """	identifier = index>>16;
+	absolute_index = index;
+#if defined(HALO_PSP) && defined(HALO_RELEASE)
+	/* psp_fixups.py (FIXES_DGFAST): found-it first, the asserts below when it isn't ("dgfastold": as before) */
+	if (absolute_index>=0 && absolute_index<data->count && !PSP_KEEP_ONCE("dgfastold"))
+	{
+		header = (struct datum_header *)((byte *)xbox_pointer(data->data)+data->size*absolute_index);
+		if (header->identifier && (identifier ? identifier==header->identifier : !data->identifier_zero_invalid))
+			return header;
+	}
+#endif
+	match_assert("c:\\\\halo\\\\SOURCE\\\\memory\\\\data.c", 396, data->valid);
+"""),
+]
+
+# PRS (S2) count first: "perccensus" (PSP_RECON): every 5 s of game time, per
+# tick, the perception refreshes, the objects their cluster walk visits (with
+# children), those met already in the refresh, and those perception passes
+# over (childless, of a type it doesn't test: neither biped, vehicle nor
+# projectile), by type, with emulated microseconds in the cluster walk
+
+
+
+# B30 (a restoration): doors lit bright where the
+# level around them is black. An object's lighting is sampled from the
+# lightmap under it, and on the PSP that read uses the renderer's copies of
+# the floor, there only for floor already drawn: seen from a lit room, a door's
+# dark-side floor isn't, the sample answered white, and machines (unlike units
+# and items) never sample again, so the door stayed bright (api-job door-light
+# 40361599823). A sample with nothing real to go on now counts as no sample,
+# and an object with such a miss is sampled again at the engine's refresh
+# interval until a clean one lands. "lightoldmiss": as before.
+FIXES_B30 = {}
+FIXES_B30["source/objects/object_lights.c#b30"] = [
+("""						sample_diffuse_texture(
+							material,
+							diffuse_bitmap,""",
+"""#ifdef HALO_PSP
+						psp_light_miss = 0;
+#endif
+						sample_diffuse_texture(
+							material,
+							diffuse_bitmap,"""),
+("""						result = TRUE;""",
+"""#ifdef HALO_PSP
+						/* psp_fixups.py (FIXES_B30): a read with nothing real behind it isn't a sample */
+						if (psp_light_miss && !PSP_KEEP_ONCE("lightoldmiss"))
+							psp_light_object_missed = 1;
+						else
+#endif
+						result = TRUE;"""),
+]
+FIXES_B30["source/render/render_objects.c#b30"] = [
+("""	if (TEST_FLAG(object_get(object_index)->object.flags, _object_static_lighting_recompute_bit))
+	{
+		if (level_of_detail_pixels > OBJECT_RENDER_STATE_LARGE_PIXELS)""",
+"""#ifdef HALO_PSP
+	if (TEST_FLAG(object_get(object_index)->object.flags, _object_static_lighting_recompute_bit) ||
+		psp_light_pending(object_index))
+#else
+	if (TEST_FLAG(object_get(object_index)->object.flags, _object_static_lighting_recompute_bit))
+#endif
+	{
+		if (level_of_detail_pixels > OBJECT_RENDER_STATE_LARGE_PIXELS)"""),
+("""		lights_prepare_for_object_static(object_index, &state->desired_lighting);""",
+"""#ifdef HALO_PSP
+		psp_light_object_missed = 0;
+#endif
+		lights_prepare_for_object_static(object_index, &state->desired_lighting);
+#ifdef HALO_PSP
+		psp_light_pending_set(object_index, psp_light_object_missed);
+#endif"""),
+("""void render_objects(""",
+"""#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_B30): objects whose last lighting sample missed, by
+absolute index; sampled again at the recompute interval until clean */
+extern int psp_light_object_missed;
+static unsigned char psp_light_pending_bits[4096 / 8];
+unsigned long psp_light_retries = 0;
+
+static boolean psp_light_pending(long object_index)
+{
+	unsigned int index = (unsigned int)object_index & 4095;
+
+	return (psp_light_pending_bits[index >> 3] >> (index & 7)) & 1;
+}
+
+static void psp_light_pending_set(long object_index, int missed)
+{
+	unsigned int index = (unsigned int)object_index & 4095;
+
+	if (psp_light_pending(object_index))
+		psp_light_retries++;
+	if (missed)
+		psp_light_pending_bits[index >> 3] |= (unsigned char)(1 << (index & 7));
+	else
+		psp_light_pending_bits[index >> 3] &= (unsigned char)~(1 << (index & 7));
+}
+#endif
+
+void render_objects("""),
+]
+
+# "walkapart" (option C's first step: the ME owns the drawing): the frame's
+# drawing kept out of the state the tick owns, so the walk can move to
+# another CPU. The drawing walk's
+# marking passes (the collision tests the render makes: objects in a ray's
+# clusters, the features in a sphere) stamp every object they visit with
+# global_object_marker in its datum's magic_number, and the cluster marks in
+# structure_globals, the same words the tick's own passes use. With
+# walkapart, a pass begun while the frame is drawn keeps its marks in arrays
+# of its own, outside the game state, so a walk on another CPU (option C)
+# shares no words with the tick. The marks mean the same (a pass's marker is
+# new at its begin, so every object and cluster starts unmarked), so play
+# can't change. The walk's other writes the tick sees go the same way: which
+# render state an object's lighting is cached in (the datum's
+# cached_render_state_index, which the sleep checksum sums) is kept in an
+# array of the walk's own (the wake a new one gives a sleeper kept for the
+# frame's end), the particles it draws or drops are noted apart and handed
+# over at the frame's end, and the decals' fade and their vertex cache's clock
+# move from the frame's start into game_frame, beside the particles' update,
+# so the drawing only reads them. "walkwrites"
+# (a test): which game state words the frame writes at all, from a hash of
+# every 64-byte block before and after render_frame.
+# Built only with PSP_WALKAPART=1 (psp_build.py): its tests sit in the tick's
+# object marks and the particle loop, so a default build runs w142's code.
+WALKAPART = os.environ.get("PSP_WALKAPART", "") == "1"
+FIXES_WALKAPART = {}
+# Built in unless PSP_MEVISLAND=0 (psp_build.py): the landing of mevis's
+# copies, the frame's visibility made on the ME and used (keep word mevisland, on by default;
+# docs/mevis_landing.md). A walkapart build has mevis's own hooks in the same
+# places, so it leaves these out
+MEVISLAND = os.environ.get("PSP_MEVISLAND", "") != "0"
+FIXES_MEVISLAND = {}
+FIXES_MEVISLAND["source/render/render.c#mevisland"] = [
+("""	parameters.fog = render.fog;
+
+	structure_visibility_compute();
+""", """	parameters.fog = render.fog;
+
+#ifdef HALO_PSP
+	{
+		int psp_mevisland_push(void); /* structure_visibility.c (psp_fixups.py, mevisland) */
+
+		if (!psp_mevisland_push())
+			structure_visibility_compute();
+	}
+#else
+	structure_visibility_compute();
+#endif
+"""),
+("""		lights_preprocess_scene();
+""", """#ifdef HALO_PSP
+		{
+			/* mevisland: visibility's first reader */
+			void psp_mevisland_collect(void); /* structure_visibility.c (psp_fixups.py, mevisland) */
+
+			psp_mevisland_collect();
+		}
+#endif
+		lights_preprocess_scene();
+"""),
+("""	bink_playback_render();
+	render_camera_debug_frustum(""", """#ifdef HALO_PSP
+	{
+		/* mevisland: a view that never reached its first reader (a film
+		playing) still takes its answer before the next tick */
+		void psp_mevisland_settle(void); /* structure_visibility.c (psp_fixups.py, mevisland) */
+
+		psp_mevisland_settle();
+	}
+#endif
+	bink_playback_render();
+	render_camera_debug_frustum("""),
+]
+FIXES_MEVISLAND["source/render/render_objects.c#mevisland"] = [
+("""	object_marker_begin();
+
+	render_object_globals.rendered_object_count = structure_visibility_find_objects(
+""", """#ifdef HALO_PSP
+	int psp_mevisland_objects(long *indices, short *count); /* structure_visibility.c (psp_fixups.py, mevisland) */
+
+	if (!psp_mevisland_objects(render_object_globals.rendered_object_indices, &render_object_globals.rendered_object_count))
+#endif
+	{
+	object_marker_begin();
+
+	render_object_globals.rendered_object_count = structure_visibility_find_objects(
+"""),
+("""		object_mark_function);
+
+	object_marker_end();
+""", """		object_mark_function);
+
+	object_marker_end();
+	}
+"""),
+]
+FIXES_WALKAPART["source/objects/objects.c#walkapart"] = [
+("""void object_marker_begin(
+	void)
+{
+""", """#ifdef HALO_PSP
+/* walkapart (psp_fixups.py FIXES_WALKAPART): the drawing's marks apart */
+int psp_keep(const char *name);
+int psp_walk_side = 0; /* render.c: while render_frame runs */
+static int psp_walk_apart = -1;
+static boolean psp_walk_marking = FALSE;
+static long psp_walk_marker = 0, psp_walk_marks[MAXIMUM_OBJECTS_PER_MAP];
+unsigned long psp_walk_marks_unkeyed = 0; /* a mark by datum alone while the frame is drawn */
+
+int psp_walk_apart_keep(void)
+{
+	if (psp_walk_apart < 0)
+		psp_walk_apart = psp_keep("walkapart") != 0;
+	return psp_walk_apart;
+}
+
+/* while the frame is drawn, with walkapart */
+int psp_walk_own_marks(void)
+{
+	return psp_walk_side && psp_walk_apart_keep();
+}
+
+/* one of walkapart's cuts (1 the render states, 2 the decals, 3 the
+particles), on with walkapart unless a test leaves it out to find which one
+a difference comes from ("walkskipstates", "walkskipdecals",
+"walkskipparticles") */
+int psp_walk_cut(int which)
+{
+	static signed char skip[4] = { -1, -1, -1, -1 };
+	static const char *const words[4] = { "", "walkskipstates", "walkskipdecals", "walkskipparticles" };
+
+	if (!psp_walk_apart_keep() || which < 1 || which > 3)
+		return psp_walk_apart_keep();
+	if (skip[which] < 0)
+		skip[which] = psp_keep(words[which]) != 0;
+	return !skip[which];
+}
+#endif
+
+void object_marker_begin(
+	void)
+{
+#ifdef HALO_PSP
+	if (psp_walk_own_marks())
+	{
+		match_assert("c:\\\\halo\\\\SOURCE\\\\objects\\\\objects.c", 3503, !psp_walk_marking);
+		++psp_walk_marker;
+		psp_walk_marking = TRUE;
+		return;
+	}
+#endif
+"""),
+("""void object_marker_end(
+	void)
+{
+""", """void object_marker_end(
+	void)
+{
+#ifdef HALO_PSP
+	if (psp_walk_own_marks())
+	{
+		psp_walk_marking = FALSE;
+		return;
+	}
+#endif
+"""),
+("""	struct object_datum *object = object_get(object_index);
+	boolean result;
+
+	match_assert("c:\\\\halo\\\\SOURCE\\\\objects\\\\objects.c", 3526, object_globals->object_marker_initialized);
+""", """	struct object_datum *object;
+	boolean result;
+
+#ifdef HALO_PSP
+	if (psp_walk_own_marks())
+		return psp_walk_marks[DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index) % MAXIMUM_OBJECTS_PER_MAP] != psp_walk_marker;
+#endif
+	object = object_get(object_index);
+	match_assert("c:\\\\halo\\\\SOURCE\\\\objects\\\\objects.c", 3526, object_globals->object_marker_initialized);
+"""),
+("""boolean object_mark_function(
+	long object_index)
+{
+	return psp_object_mark_function_with(object_get(object_index));
+}
+""", """boolean object_mark_function(
+	long object_index)
+{
+#ifdef HALO_PSP
+	if (psp_walk_own_marks())
+	{
+		long *mark = &psp_walk_marks[DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index) % MAXIMUM_OBJECTS_PER_MAP];
+
+		if (*mark == psp_walk_marker)
+			return FALSE;
+		*mark = psp_walk_marker;
+		return TRUE;
+	}
+#endif
+	return psp_object_mark_function_with(object_get(object_index));
+}
+"""),
+("""	match_assert("c:\\\\halo\\\\SOURCE\\\\objects\\\\objects.c", 3543, object_globals->object_marker_initialized);
+""", """#ifdef HALO_PSP
+	/* (its one direct caller, perception, is the tick's: counted if not) */
+	if (psp_walk_own_marks())
+		psp_walk_marks_unkeyed++;
+#endif
+	match_assert("c:\\\\halo\\\\SOURCE\\\\objects\\\\objects.c", 3543, object_globals->object_marker_initialized);
+"""),
+]
+FIXES_WALKAPART["source/structures/structures.c#walkapart"] = [
+("""void structure_cluster_marker_begin(
+	void)
+{
+""", """#ifdef HALO_PSP
+/* walkapart (psp_fixups.py FIXES_WALKAPART, objects.c): the drawing's cluster
+marks apart, as its object marks */
+int psp_walk_own_marks(void);
+static boolean psp_walk_cluster_marking = FALSE;
+static long psp_walk_cluster_marker = 0, psp_walk_cluster_marks[MAXIMUM_CLUSTERS_PER_STRUCTURE];
+#endif
+
+void structure_cluster_marker_begin(
+	void)
+{
+#ifdef HALO_PSP
+	if (psp_walk_own_marks())
+	{
+		match_assert("c:\\\\halo\\\\SOURCE\\\\structures\\\\structures.c", 0x103, !psp_walk_cluster_marking);
+		psp_walk_cluster_marker++;
+		psp_walk_cluster_marking = TRUE;
+		return;
+	}
+#endif
+"""),
+("""void structure_cluster_marker_end(
+	void)
+{
+""", """void structure_cluster_marker_end(
+	void)
+{
+#ifdef HALO_PSP
+	if (psp_walk_own_marks())
+	{
+		psp_walk_cluster_marking = FALSE;
+		return;
+	}
+#endif
+"""),
+("""		return FALSE;
+	}
+
+	return (boolean)(structure_globals.cluster_magic_numbers[cluster_index]!=structure_globals.cluster_marker);
+""", """		return FALSE;
+	}
+
+#ifdef HALO_PSP
+	if (psp_walk_own_marks())
+		return (boolean)(psp_walk_cluster_marks[cluster_index] != psp_walk_cluster_marker);
+#endif
+	return (boolean)(structure_globals.cluster_magic_numbers[cluster_index]!=structure_globals.cluster_marker);
+"""),
+("""	if (structure_globals.cluster_magic_numbers[cluster_index]!=structure_globals.cluster_marker)
+	{
+		structure_globals.cluster_magic_numbers[cluster_index]= structure_globals.cluster_marker;
+		return TRUE;
+	}
+""", """#ifdef HALO_PSP
+	if (psp_walk_own_marks())
+	{
+		if (psp_walk_cluster_marks[cluster_index] == psp_walk_cluster_marker)
+			return FALSE;
+		psp_walk_cluster_marks[cluster_index] = psp_walk_cluster_marker;
+		return TRUE;
+	}
+#endif
+	if (structure_globals.cluster_magic_numbers[cluster_index]!=structure_globals.cluster_marker)
+	{
+		structure_globals.cluster_magic_numbers[cluster_index]= structure_globals.cluster_marker;
+		return TRUE;
+	}
+"""),
+]
+FIXES_WALKAPART["source/render/render.c#walkapart"] = [
+("""	render.frame_index++;
+	render.time_delta_since_tick_sec = time_delta_since_tick_sec;
+	memset(&parameters, 0, sizeof(parameters));
+""", """#ifdef HALO_PSP
+	extern int psp_walk_side; /* objects.c (walkapart) */
+	void psp_walk_writes(int after); /* game_state.c (walkwrites) */
+
+	psp_walk_writes(0);
+	psp_walk_side = 1;
+#endif
+	render.frame_index++;
+	render.time_delta_since_tick_sec = time_delta_since_tick_sec;
+	memset(&parameters, 0, sizeof(parameters));
+"""),
+("""	halo_screen_ui_offset(FALSE);
+	rasterizer_windows_end();
+	rasterizer_frame_end();
+
+	return;
+}
+""", """	halo_screen_ui_offset(FALSE);
+	rasterizer_windows_end();
+	rasterizer_frame_end();
+#ifdef HALO_PSP
+	psp_walk_side = 0;
+	{
+		void psp_walk_particles_frame_end(void); /* particles.c (walkapart) */
+		void psp_walk_render_states_frame_end(void); /* render_objects.c (walkapart) */
+
+		psp_walk_particles_frame_end();
+		psp_walk_render_states_frame_end();
+	}
+	psp_walk_writes(1);
+	{
+		void psp_mevis_frame_end(void); /* structure_visibility.c (mevis) */
+
+		psp_mevis_frame_end();
+	}
+#endif
+
+	return;
+}
+"""),
+]
+FIXES_WALKAPART["source/render/render.c#mevis"] = [
+("""	structure_visibility_compute();
+	player_effect_get_screen_flash(local_player_index, &parameters.screen_flash);
+""", """#ifdef HALO_PSP
+	{
+		/* mevis (psp_fixups.py mevis_copies): the ME's copy pushed first, the
+		main CPU's own walk timed */
+		void psp_mevis_view_begin(void);
+		void psp_mevis_main_clusters(unsigned long us);
+		unsigned long psp_microseconds(void);
+		unsigned long psp_mv_start;
+
+		psp_mevis_view_begin();
+		psp_mv_start = psp_microseconds();
+		structure_visibility_compute();
+		psp_mevis_main_clusters(psp_microseconds() - psp_mv_start);
+	}
+#else
+	structure_visibility_compute();
+#endif
+	player_effect_get_screen_flash(local_player_index, &parameters.screen_flash);
+"""),
+]
+FIXES_WALKAPART["source/render/render_objects.c#mevis"] = [
+("""	object_marker_begin();
+
+	render_object_globals.rendered_object_count = structure_visibility_find_objects(
+""", """#ifdef HALO_PSP
+	unsigned long psp_microseconds(void);
+	unsigned long psp_mv_start = psp_microseconds();
+#endif
+	object_marker_begin();
+
+	render_object_globals.rendered_object_count = structure_visibility_find_objects(
+"""),
+("""		psp_vl_listed(render_object_globals.rendered_object_indices, render_object_globals.rendered_object_count);
+	}
+#endif
+""", """		psp_vl_listed(render_object_globals.rendered_object_indices, render_object_globals.rendered_object_count);
+	}
+	{
+		/* mevis (psp_fixups.py mevis_copies): the main CPU's answer and time */
+		void psp_mevis_main_objects(long const *indices, short count, unsigned long us);
+
+		psp_mevis_main_objects(render_object_globals.rendered_object_indices, render_object_globals.rendered_object_count,
+			psp_microseconds() - psp_mv_start);
+	}
+#endif
+"""),
+]
+FIXES_WALKAPART["source/render/render_objects.c#walkapart"] = [
+("""void render_objects_initialize_for_new_map(
+	void)
+{
+	data_make_valid(cached_object_render_states);
+""", """#ifdef HALO_PSP
+/* walkapart (psp_fixups.py FIXES_WALKAPART): which render state each object's
+lighting is cached in, by the object's absolute index, so the walk leaves the
+datum alone. An entry is trusted only while its state still names the object,
+as the datum's field is, so one left from a reset object or an evicted state
+is passed over. */
+static long psp_walk_render_states[MAXIMUM_OBJECTS_PER_MAP];
+
+/* A new render state wakes its sleeping object (FIXES_WAKE), as the datum's
+changed field would; with walkapart the wakes are kept for the frame's end,
+where the tick's side applies them before its next sleep check. */
+static long psp_walk_wakes[256];
+static short psp_walk_wakes_count = 0;
+
+void psp_walk_render_states_frame_end(
+	void)
+{
+	void psp_wake(long object_index); /* psp_fixups.py (FIXES_WAKE) */
+	short index;
+
+	for (index = 0; index < psp_walk_wakes_count; index++)
+		psp_wake(psp_walk_wakes[index]);
+	psp_walk_wakes_count = 0;
+}
+#endif
+
+void render_objects_initialize_for_new_map(
+	void)
+{
+	data_make_valid(cached_object_render_states);
+#ifdef HALO_PSP
+	memset(psp_walk_render_states, 0xff, sizeof(psp_walk_render_states)); /* NONE */
+#endif
+"""),
+("""static long object_get_cached_render_state(
+	long object_index,
+	real level_of_detail_pixels)
+{
+	struct object_datum *object = object_get(object_index);
+	long render_state_index = NONE;
+
+	if (object->object.cached_render_state_index != NONE &&
+""", """static long object_get_cached_render_state(
+	long object_index,
+	real level_of_detail_pixels)
+{
+	struct object_datum *object = object_get(object_index);
+	long render_state_index = NONE;
+#ifdef HALO_PSP
+	int psp_walk_own_marks(void); /* objects.c (walkapart) */
+	int psp_walk_cut(int which); /* objects.c */
+	long *psp_state_of = psp_walk_own_marks() && psp_walk_cut(1) ?
+		&psp_walk_render_states[DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index) % MAXIMUM_OBJECTS_PER_MAP] : NULL;
+
+	if (psp_state_of)
+	{
+		struct object_render_state *cached = (struct object_render_state *)datum_try_and_get(
+			cached_object_render_states, *psp_state_of);
+
+		if (cached && cached->object_index == object_index)
+			render_state_index = *psp_state_of;
+	}
+	else
+#endif
+	if (object->object.cached_render_state_index != NONE &&
+"""),
+("""			psp_wake(object_index);
+		}
+""", """#ifdef HALO_PSP
+			if (psp_state_of && psp_walk_wakes_count < NUMBEROF(psp_walk_wakes))
+				psp_walk_wakes[psp_walk_wakes_count++] = object_index;
+			else
+#endif
+			psp_wake(object_index);
+		}
+"""),
+("""			object->object.cached_render_state_index = render_state_index;
+""", """#ifdef HALO_PSP
+			if (psp_state_of)
+				*psp_state_of = render_state_index;
+			else
+#endif
+			object->object.cached_render_state_index = render_state_index;
+"""),
+]
+# the decals' fade and the vertex cache's clock, run once a drawn frame from
+# the frame's start, move to the end of game_frame with walkapart: nothing runs
+# between the two but the window's setup, so the order of every decal's update
+# against the tick's decal_new is the same
+FIXES_WALKAPART["source/rasterizer/xbox/rasterizer_xbox.c#walkapart"] = [
+("""	if (rasterizer_debug_options.draw_environment_decals)
+	{
+		rasterizer_decal_vertices_begin_update();
+		decals_update();
+		rasterizer_decal_vertices_end_update();
+	}
+	return;
+}
+""", """#ifdef HALO_PSP
+	psp_walk_decals_update(0);
+#else
+	if (rasterizer_debug_options.draw_environment_decals)
+	{
+		rasterizer_decal_vertices_begin_update();
+		decals_update();
+		rasterizer_decal_vertices_end_update();
+	}
+#endif
+	return;
+}
+
+#ifdef HALO_PSP
+/* walkapart (psp_fixups.py FIXES_WALKAPART): from the frame's start (0) as
+before, or from game_frame (1) with walkapart */
+void psp_walk_decals_update(
+	int from_game_frame)
+{
+	int psp_walk_cut(int which); /* objects.c */
+
+	if (from_game_frame != psp_walk_cut(2))
+		return;
+	if (rasterizer_debug_options.draw_environment_decals)
+	{
+		rasterizer_decal_vertices_begin_update();
+		decals_update();
+		rasterizer_decal_vertices_end_update();
+	}
+}
+#endif
+"""),
+("""void _rasterizer_frame_begin(
+""", """#ifdef HALO_PSP
+void psp_walk_decals_update(int from_game_frame);
+#endif
+
+void _rasterizer_frame_begin(
+"""),
+]
+FIXES_WALKAPART["source/game/game.c#walkapart"] = [
+("""	numeric_countdown_timer_update();
+	collision_log_end_period();
+""", """	numeric_countdown_timer_update();
+#ifdef HALO_PSP
+	{
+		void psp_walk_decals_update(int from_game_frame); /* rasterizer_xbox.c (walkapart) */
+
+		psp_walk_decals_update(1);
+	}
+#endif
+	collision_log_end_period();
+"""),
+]
+# the particles the drawing walk draws (the frame it last drew each, which
+# particles_update reads to drop the long unseen) and the ones it drops because
+# the object they hang off is gone: with walkapart, noted in bit sets of the
+# walk's own and handed to the particles at the frame's end. Nothing reads the
+# frame index or makes a particle between the walk and the frame's end, and
+# datum_new takes the first free slot whatever order the slots were freed in,
+# so the particles end each frame as before.
+FIXES_WALKAPART["source/effects/particles.c#walkapart"] = [
+("""void particle_delete(
+	long particle_index)
+{
+""", """#ifdef HALO_PSP
+/* walkapart (psp_fixups.py FIXES_WALKAPART) */
+static unsigned long psp_walk_particles_drawn[HALO_PORT_MAXIMUM_PARTICLES / 32];
+static unsigned long psp_walk_particles_dropped[HALO_PORT_MAXIMUM_PARTICLES / 32];
+static long psp_walk_particles_frame;
+static boolean psp_walk_particles_noted = FALSE;
+
+void psp_walk_particle_drawn(
+	long particle_index,
+	long frame_index)
+{
+	short absolute_index = DATUM_INDEX_TO_ABSOLUTE_INDEX(particle_index);
+
+	psp_walk_particles_drawn[absolute_index >> 5] |= 1UL << (absolute_index & 31);
+	psp_walk_particles_frame = frame_index;
+	psp_walk_particles_noted = TRUE;
+}
+
+void psp_walk_particle_dropped(
+	long particle_index)
+{
+	short absolute_index = DATUM_INDEX_TO_ABSOLUTE_INDEX(particle_index);
+
+	psp_walk_particles_dropped[absolute_index >> 5] |= 1UL << (absolute_index & 31);
+	psp_walk_particles_noted = TRUE;
+}
+
+/* render_frame's end, the tick's side again: what the walk noted, applied */
+void psp_walk_particles_frame_end(
+	void)
+{
+	long word_index;
+
+	if (!psp_walk_particles_noted || !particle_data || !particle_data->valid)
+		return;
+	psp_walk_particles_noted = FALSE;
+	for (word_index = 0; word_index < HALO_PORT_MAXIMUM_PARTICLES / 32; word_index++)
+	{
+		unsigned long drawn = psp_walk_particles_drawn[word_index];
+		unsigned long dropped = psp_walk_particles_dropped[word_index];
+
+		psp_walk_particles_drawn[word_index] = 0;
+		psp_walk_particles_dropped[word_index] = 0;
+		while (drawn | dropped)
+		{
+			long bit = __builtin_ctz(drawn | dropped);
+			long absolute_index = word_index * 32 + bit;
+			struct datum_header *header = (struct datum_header *)((byte *)xbox_pointer(particle_data->data) +
+				particle_data->size * absolute_index);
+
+			if (absolute_index < particle_data->maximum_count && header->identifier)
+			{
+				if (drawn & (1UL << bit))
+					((struct particle_datum *)header)->last_rendered_frame_index = psp_walk_particles_frame;
+				if (dropped & (1UL << bit))
+					datum_delete(particle_data, header->identifier << 16 | absolute_index);
+			}
+			drawn &= ~(1UL << bit);
+			dropped &= ~(1UL << bit);
+		}
+	}
+}
+#endif
+
+void particle_delete(
+	long particle_index)
+{
+"""),
+]
+FIXES_WALKAPART["source/render/render_particles.c#walkapart"] = [
+("""void render_particles(
+""", """#ifdef HALO_PSP
+int psp_walk_own_marks(void); /* objects.c (walkapart) */
+int psp_walk_cut(int which);
+void psp_walk_particle_drawn(long particle_index, long frame_index); /* particles.c */
+void psp_walk_particle_dropped(long particle_index);
+#endif
+
+void render_particles(
+"""),
+("""								particle_delete(rendered_particle->particle_index);
+""", """#ifdef HALO_PSP
+								if (psp_walk_own_marks() && psp_walk_cut(3))
+									psp_walk_particle_dropped(rendered_particle->particle_index);
+								else
+#endif
+								particle_delete(rendered_particle->particle_index);
+"""),
+("""							/* January explicitly reasserts the detached sentinel here. */
+							particle->object_index = NONE;
+""", """							/* January explicitly reasserts the detached sentinel here. */
+#ifdef HALO_PSP
+							if (!(psp_walk_own_marks() && psp_walk_cut(3))) /* it is NONE already: the branch's test */
+#endif
+							particle->object_index = NONE;
+"""),
+("""								particle->last_rendered_frame_index =
+									render.frame_index;
+""", """#ifdef HALO_PSP
+								if (psp_walk_own_marks() && psp_walk_cut(3))
+									psp_walk_particle_drawn(rendered_particle->particle_index, render.frame_index);
+								else
+#endif
+								particle->last_rendered_frame_index =
+									render.frame_index;
+"""),
+]
+FIXES_WALKAPART["source/saved games/game_state.c#walkwrites"] = [
+("""	if (length)
+		platform_psp_log("state: records at tick %ld:%s", tick, line);
+}
+#endif
+""", """	if (length)
+		platform_psp_log("state: records at tick %ld:%s", tick, line);
+}
+
+/* "walkwrites" (a test; psp_fixups.py FIXES_WALKAPART): the game state the
+frame's drawing writes. Each 64-byte block's hash before render_frame and
+after it; a block that changed is counted against its allocation, and in a
+data array by its offset in the element (the field), so the frame's writes
+into the tick's state are listed by allocation and field, every 300 frames.
+Other threads that write the game state while the frame is drawn show too.
+Test only: ~5 MB hashed twice a frame, and a table of 4 bytes a block */
+#define PSP_WALK_FIELDS 6
+static unsigned long *psp_walk_block_hashes = NULL;
+static long psp_walk_block_count = 0;
+static unsigned long psp_walk_frames = 0, psp_walk_frames_written = 0;
+static unsigned long psp_walk_blocks[PSP_STATE_RECORDS];
+static long psp_walk_field[PSP_STATE_RECORDS][PSP_WALK_FIELDS];
+static unsigned long psp_walk_field_count[PSP_STATE_RECORDS][PSP_WALK_FIELDS];
+
+static unsigned long psp_walk_block_hash(const unsigned long *word)
+{
+	unsigned long hash = 2166136261UL;
+	int k;
+
+	for (k = 0; k < 16; k++)
+		hash = (hash ^ word[k]) * 16777619UL;
+	return hash;
+}
+
+static void psp_walk_count(int record, long offset)
+{
+	struct data_array *data = (struct data_array *)psp_state_records[record].pointer;
+	long field = offset;
+	int k;
+
+	psp_walk_blocks[record]++;
+	if (psp_state_records[record].type[0] == 'd' && data->valid && data->size > 0)
+	{
+		long first = (long)((char *)data->data - (char *)psp_state_records[record].pointer);
+
+		field = offset >= first ? (offset - first) % data->size : -1 - offset;
+	}
+	for (k = 0; k < PSP_WALK_FIELDS; k++)
+	{
+		if (psp_walk_field_count[record][k] && psp_walk_field[record][k] == field)
+		{
+			psp_walk_field_count[record][k]++;
+			return;
+		}
+		if (!psp_walk_field_count[record][k])
+		{
+			psp_walk_field[record][k] = field;
+			psp_walk_field_count[record][k] = 1;
+			return;
+		}
+	}
+}
+
+void psp_walk_writes(int after)
+{
+	static int asked = -1;
+	char *base = (char *)game_state_globals.base_address;
+	long blocks, block;
+	int record, written = 0;
+
+	if (asked < 0)
+		asked = psp_keep("walkwrites");
+	if (!asked || !base)
+		return;
+	blocks = game_state_globals.cpu_allocation_size / 64;
+	if (blocks > psp_walk_block_count)
+	{
+		if (psp_walk_block_hashes)
+			free(psp_walk_block_hashes); /* (the port's free reads the block's header: never NULL) */
+		psp_walk_block_hashes = (unsigned long *)malloc(blocks * sizeof(unsigned long));
+		psp_walk_block_count = psp_walk_block_hashes ? blocks : 0;
+		if (!psp_walk_block_hashes)
+			return;
+		after = 0;
+	}
+	if (((unsigned long)base & 3) != 0)
+		return;
+	if (!after)
+	{
+		for (block = 0; block < blocks; block++)
+			psp_walk_block_hashes[block] = psp_walk_block_hash((const unsigned long *)(base + block * 64));
+		return;
+	}
+	psp_walk_frames++;
+	record = 0;
+	for (block = 0; block < blocks; block++)
+	{
+		char *at = base + block * 64;
+
+		if (psp_walk_block_hash((const unsigned long *)at) == psp_walk_block_hashes[block])
+			continue;
+		written = 1;
+		while (record + 1 < psp_state_record_count && (char *)psp_state_records[record + 1].pointer <= at)
+			record++;
+		if (record < psp_state_record_count)
+			psp_walk_count(record, (long)(at - (char *)psp_state_records[record].pointer));
+	}
+	psp_walk_frames_written += written;
+	if (psp_walk_frames % 300 == 0)
+	{
+		extern unsigned long psp_walk_marks_unkeyed; /* objects.c */
+
+		platform_psp_log("walkwrites: %lu of %lu frames wrote the game state while drawn; marks by datum alone while drawn %lu (last 300 frames)",
+			psp_walk_frames_written, psp_walk_frames, psp_walk_marks_unkeyed);
+		for (record = 0; record < psp_state_record_count; record++)
+		{
+			char line[400];
+			int length = 0, k;
+
+			if (!psp_walk_blocks[record])
+				continue;
+			for (k = 0; k < PSP_WALK_FIELDS && psp_walk_field_count[record][k]; k++)
+				length += snprintf(line + length, sizeof(line) - length, " %s%ld x%lu",
+					psp_walk_field[record][k] < 0 ? "header+" : "+", psp_walk_field[record][k] < 0 ?
+					-1 - psp_walk_field[record][k] : psp_walk_field[record][k], psp_walk_field_count[record][k]);
+			platform_psp_log("walkwrites: %.32s: %lu blocks;%s", psp_state_records[record].name[0] ?
+				psp_state_records[record].name : "?", psp_walk_blocks[record], line);
+			psp_walk_blocks[record] = 0;
+			memset(psp_walk_field_count[record], 0, sizeof(psp_walk_field_count[record]));
+		}
+		psp_walk_frames = psp_walk_frames_written = 0;
+		psp_walk_marks_unkeyed = 0;
+	}
+}
+#endif
+"""),
+]
+
+# The quaternion product on the VFPU (lever VFPUP; Sierra-III
+# docs/hardware_utilization.md section 7). The element-wise form keeps each
+# lane's operations in the engine's order, so its bits are the FPU's (PSP-3000
+# vfpubench: 20,000 of 20,000 the same) at 3.3x the speed in a chain.
+# On by default (exact); "novfpupose" turns it off; "vfpuposecheck"
+# also makes each product the FPU's way, compares, and plays the FPU's bits.
+# Only the main CPU takes it: psp_vfpu_quaternions_multiply answers 0 on the
+# Media Engine (no VFPU), and the FPU's code below runs instead.
+FIXES_VFPUPOSE = {}
+FIXES_VFPUPOSE["source/math/real_math.c#vfpupose"] = [
+("""void quaternions_multiply(
+	real_quaternion const *q0,
+	real_quaternion const *q1,
+	real_quaternion *result)
+{
+	real_quaternion temporary;
+""", """#ifdef HALO_PSP
+extern int psp_vfpupose_on;
+int psp_vfpu_quaternions_multiply(const void *q0, const void *q1, void *result);
+#endif
+
+void quaternions_multiply(
+	real_quaternion const *q0,
+	real_quaternion const *q1,
+	real_quaternion *result)
+{
+	real_quaternion temporary;
+
+#ifdef HALO_PSP
+	/* psp_fixups.py (FIXES_VFPUPOSE): the VFPU's element-wise product, the FPU's bits; main CPU only */
+	if (psp_vfpupose_on && psp_vfpu_quaternions_multiply(q0, q1, result))
+		return;
+#endif
+"""),
+]
+
+# The rest of posing on the VFPU (levers VFPUQ, VFPUQD; Sierra-III
+# docs/hardware_utilization.md sections 3 and 7; psp/src/psp_vfpu_quat.c):
+# by default the VFPU's own forms (vdot.q, vrsq.s) of the interpolation and
+# the normalize, within a few last bits (posing is local to the client; off
+# word "novfpuquatd"); "vfpuquat" (with novfpuquatd) the interpolation's
+# element-wise form, the FPU's bits; "vfpuquatcheck" counts the calls that
+# differ. The rotation
+# matrix stays on the FPU: its VFPU form is slower. Main CPU only: each entry
+# answers 0 on the Media Engine (no VFPU; its pose job reaches
+# quaternion_normalize), and the FPU's code below runs instead.
+FIXES_VFPUQUAT = {}
+FIXES_VFPUQUAT["source/math/real_math.c#vfpuquat"] = [
+("""void quaternion_normalize(
+	real_quaternion *q)
+{
+	real magnitude_squared = q->v.i*q->v.i + q->v.j*q->v.j + q->v.k*q->v.k + q->w*q->w;
+	if (magnitude_squared > 0.f)""", """#ifdef HALO_PSP
+extern int psp_vfpuquat_mode;
+int psp_vfpu_quaternion_normalize(void *q);
+int psp_vfpu_quaternions_interpolate_and_normalize(const void *q0, const void *q1, float t, void *result);
+#endif
+
+void quaternion_normalize(
+	real_quaternion *q)
+{
+#ifdef HALO_PSP
+	/* psp_fixups.py (FIXES_VFPUQUAT): the VFPU's form on the main CPU (off word novfpuquatd) */
+	if (psp_vfpuquat_mode == 2 && psp_vfpu_quaternion_normalize(q))
+		return;
+#endif
+	{
+	real magnitude_squared = q->v.i*q->v.i + q->v.j*q->v.j + q->v.k*q->v.k + q->w*q->w;
+	if (magnitude_squared > 0.f)"""),
+("""	else
+	{
+		set_real_quaternion(q, 0.f, 0.f, 0.f, 1.f);
+	}
+	return;
+}
+
+void quaternion_from_angle_and_vector(""", """	else
+	{
+		set_real_quaternion(q, 0.f, 0.f, 0.f, 1.f);
+	}
+	}
+	return;
+}
+
+void quaternion_from_angle_and_vector("""),
+("""	real_quaternion *result)
+{
+	quaternions_interpolate(q0, q1, t, result);
+	quaternion_normalize(result);
+	return;
+}""", """	real_quaternion *result)
+{
+#ifdef HALO_PSP
+	/* psp_fixups.py (FIXES_VFPUQUAT) */
+	if (psp_vfpuquat_mode && psp_vfpu_quaternions_interpolate_and_normalize(q0, q1, t, result))
+		return;
+#endif
+	quaternions_interpolate(q0, q1, t, result);
+	quaternion_normalize(result);
+	return;
+}"""),
+]
+
+# ---------- FIXES_SCRATCHBSP: the level BSP's top nodes in the scratchpad
+# The scratchpad census (noscratch scratchcensus, cache model, b30 c20 d20
+# a10) ranks the level collision BSP's nodes nearest the root, with the
+# planes they test, first by misses per byte in the tick (and high in the
+# drawing): every walk of the level starts at the root, and the tag data
+# spreads those nodes and planes over hundreds of lines in two arrays.
+# On by default, "noscratchbsp" off (keep.txt; psp_scratch.c, psp_scratchbsp.h): a breadth-first
+# copy of the top nodes, each with its plane, packed two to a line in the
+# scratchpad, refilled as each collision BSP is set and dropped as a map's
+# tags load. The level walks (sphere, ray, pill, point) read a top node from
+# the copy on the main CPU; the ME's walks read the tag data. The same bits:
+# the answers don't change.
+FIXES_SCRATCHBSP = {}
+FIXES_SCRATCHBSP["source/physics/collision_bsp.c#scratchbsp"] = [
+("""#include "tag_files/tag_groups.h"
+""", """#include "tag_files/tag_groups.h"
+#ifdef HALO_PSP
+#include "psp_scratchbsp.h" /* psp_fixups.py (FIXES_SCRATCHBSP) */
+#endif
+"""),
+] + [
+('\t\tif (!collision_bsp3d_enter_node(data->bsp, node_index, depth++, &data->nodes_left))\n\t\t{\n\t\t\treturn FALSE;\n\t\t}\n\t\tnode = TAG_BLOCK_GET_ELEMENT(\n\t\t\t&data->bsp->bsp3d.nodes,\n\t\t\tnode_index,\n\t\t\tstruct bsp3d_node);\n\t\tplane = TAG_BLOCK_GET_ELEMENT(\n\t\t\t&data->bsp->bsp3d.planes,\n\t\t\tnode->plane_designator,\n\t\t\treal_plane3d);\n\t\tdistance = plane3d_distance_to_point(plane, data->point);\n\t\tdot',
+ "\t\tif (!collision_bsp3d_enter_node(data->bsp, node_index, depth++, &data->nodes_left))\n\t\t{\n\t\t\treturn FALSE;\n\t\t}\n#if defined(HALO_PSP) && !defined(PSP_MAP_CHECKS)\n\t\t/* psp_fixups.py (FIXES_SCRATCHBSP): a top node from the scratchpad's copy */\n\t\tif (PSP_SB_HERE(data->bsp, node_index))\n\t\t\tPSP_SB_GET(node_index, node, plane, struct bsp3d_node const *, real_plane3d const *);\n\t\telse\n#endif\n\t\t{\n\t\t\tnode = TAG_BLOCK_GET_ELEMENT(\n\t\t\t\t&data->bsp->bsp3d.nodes,\n\t\t\t\tnode_index,\n\t\t\t\tstruct bsp3d_node);\n\t\t\tplane = TAG_BLOCK_GET_ELEMENT(\n\t\t\t\t&data->bsp->bsp3d.planes,\n\t\t\t\tnode->plane_designator,\n\t\t\t\treal_plane3d);\n\t\t}\n\t\tdistance = plane3d_distance_to_point(plane, data->point);\n\t\tdot"),
+('\t\thits) */\n\t\tif (!collision_bsp3d_enter_node(data->bsp, node_index, depth, &data->nodes_left))\n\t\t{\n\t\t\treturn FALSE;\n\t\t}\n\t\tnode = TAG_BLOCK_GET_ELEMENT(\n\t\t\t&data->bsp->bsp3d.nodes,\n\t\t\tnode_index,\n\t\t\tstruct bsp3d_node);\n\t\tplane = TAG_BLOCK_GET_ELEMENT(\n\t\t\t&data->bsp->bsp3d.planes,\n\t\t\tnode->plane_designator,\n\t\t\treal_plane3d);\n',
+ "\t\thits) */\n\t\tif (!collision_bsp3d_enter_node(data->bsp, node_index, depth, &data->nodes_left))\n\t\t{\n\t\t\treturn FALSE;\n\t\t}\n#if defined(HALO_PSP) && !defined(PSP_MAP_CHECKS)\n\t\t/* psp_fixups.py (FIXES_SCRATCHBSP): a top node from the scratchpad's copy */\n\t\tif (PSP_SB_HERE(data->bsp, node_index))\n\t\t\tPSP_SB_GET(node_index, node, plane, struct bsp3d_node const *, real_plane3d const *);\n\t\telse\n#endif\n\t\t{\n\t\t\tnode = TAG_BLOCK_GET_ELEMENT(\n\t\t\t\t&data->bsp->bsp3d.nodes,\n\t\t\t\tnode_index,\n\t\t\t\tstruct bsp3d_node);\n\t\t\tplane = TAG_BLOCK_GET_ELEMENT(\n\t\t\t\t&data->bsp->bsp3d.planes,\n\t\t\t\tnode->plane_designator,\n\t\t\t\treal_plane3d);\n\t\t}\n"),
+('\t\tof each node above, so it is never full) */\n\t\tif (!collision_bsp3d_enter_node(data->bsp, node_index, depth++, &data->nodes_left))\n\t\t{\n\t\t\treturn;\n\t\t}\n\t\tnode = TAG_BLOCK_GET_ELEMENT(\n\t\t\t&data->bsp->bsp3d.nodes,\n\t\t\tnode_index,\n\t\t\tstruct bsp3d_node);\n\t\tplane = TAG_BLOCK_GET_ELEMENT(\n\t\t\t&data->bsp->bsp3d.planes,\n\t\t\tnode->plane_designator,\n\t\t\treal_plane3d);\n',
+ "\t\tof each node above, so it is never full) */\n\t\tif (!collision_bsp3d_enter_node(data->bsp, node_index, depth++, &data->nodes_left))\n\t\t{\n\t\t\treturn;\n\t\t}\n#if defined(HALO_PSP) && !defined(PSP_MAP_CHECKS)\n\t\t/* psp_fixups.py (FIXES_SCRATCHBSP): a top node from the scratchpad's copy */\n\t\tif (PSP_SB_HERE(data->bsp, node_index))\n\t\t\tPSP_SB_GET(node_index, node, plane, struct bsp3d_node const *, real_plane3d const *);\n\t\telse\n#endif\n\t\t{\n\t\t\tnode = TAG_BLOCK_GET_ELEMENT(\n\t\t\t\t&data->bsp->bsp3d.nodes,\n\t\t\t\tnode_index,\n\t\t\t\tstruct bsp3d_node);\n\t\t\tplane = TAG_BLOCK_GET_ELEMENT(\n\t\t\t\t&data->bsp->bsp3d.planes,\n\t\t\t\tnode->plane_designator,\n\t\t\t\treal_plane3d);\n\t\t}\n"),
+('\t\tlong designator;\n\n\t\tif (!collision_bsp3d_enter_node(data->bsp, node_index, depth++, &data->nodes_left))\n\t\t{\n\t\t\treturn;\n\t\t}\n\t\tnode = TAG_BLOCK_GET_ELEMENT(\n\t\t\t&data->bsp->bsp3d.nodes,\n\t\t\tnode_index,\n\t\t\tstruct bsp3d_node);\n\t\tplane = TAG_BLOCK_GET_ELEMENT(\n\t\t\t&data->bsp->bsp3d.planes,\n\t\t\tnode->plane_designator,\n\t\t\treal_plane3d);\n',
+ "\t\tlong designator;\n\n\t\tif (!collision_bsp3d_enter_node(data->bsp, node_index, depth++, &data->nodes_left))\n\t\t{\n\t\t\treturn;\n\t\t}\n#if defined(HALO_PSP) && !defined(PSP_MAP_CHECKS)\n\t\t/* psp_fixups.py (FIXES_SCRATCHBSP): a top node from the scratchpad's copy */\n\t\tif (PSP_SB_HERE(data->bsp, node_index))\n\t\t\tPSP_SB_GET(node_index, node, plane, struct bsp3d_node const *, real_plane3d const *);\n\t\telse\n#endif\n\t\t{\n\t\t\tnode = TAG_BLOCK_GET_ELEMENT(\n\t\t\t\t&data->bsp->bsp3d.nodes,\n\t\t\t\tnode_index,\n\t\t\t\tstruct bsp3d_node);\n\t\t\tplane = TAG_BLOCK_GET_ELEMENT(\n\t\t\t\t&data->bsp->bsp3d.planes,\n\t\t\t\tnode->plane_designator,\n\t\t\t\treal_plane3d);\n\t\t}\n"),
+]
+FIXES_SCRATCHBSP["source/physics/bsp3d.c#scratchbsp"] = [
+("""#include "math/geometry.h"
+""", """#include "math/geometry.h"
+#ifdef HALO_PSP
+#include "psp_scratchbsp.h" /* psp_fixups.py (FIXES_SCRATCHBSP) */
+#endif
+"""),
+('\t\tnode = TAG_BLOCK_GET_ELEMENT(\n\t\t\t&bsp->nodes,\n\t\t\tnode_index,\n\t\t\tstruct bsp3d_node);\n\t\tplane = TAG_BLOCK_GET_ELEMENT(\n\t\t\t&bsp->planes,\n\t\t\tnode->plane_designator,\n\t\t\treal_plane3d);\n\n\t\tnode_index = node->children[plane3d_distance_to_point(plane, point) >= 0.f];',
+ "#if defined(HALO_PSP) && !defined(PSP_MAP_CHECKS)\n\t\t/* psp_fixups.py (FIXES_SCRATCHBSP): a top node from the scratchpad's copy */\n\t\tif (PSP_SB_HERE(bsp, node_index))\n\t\t\tPSP_SB_GET(node_index, node, plane, struct bsp3d_node const *, real_plane3d const *);\n\t\telse\n#endif\n\t\t{\n\t\t\tnode = TAG_BLOCK_GET_ELEMENT(\n\t\t\t\t&bsp->nodes,\n\t\t\t\tnode_index,\n\t\t\t\tstruct bsp3d_node);\n\t\t\tplane = TAG_BLOCK_GET_ELEMENT(\n\t\t\t\t&bsp->planes,\n\t\t\t\tnode->plane_designator,\n\t\t\t\treal_plane3d);\n\t\t}\n\n\t\tnode_index = node->children[plane3d_distance_to_point(plane, point) >= 0.f];"),
+]
+# (dropped as a map's tags load: a new map's BSP may sit where the old one did)
+FIXES_SCRATCHBSP["source/cache/cache_files.c#scratchbsp"] = [
+("""				psp_sphere_memo_forget();
+			}""",
+ """				psp_sphere_memo_forget();
+			}
+			{
+				/* psp_fixups.py (FIXES_SCRATCHBSP) */
+				extern void psp_scratch_bsp_forget(void);
+
+				psp_scratch_bsp_forget();
+			}"""),
+]
+
+# ---------- FIXES_NRCHK: the root node's validity check, skippable (lever NRCHK)
+# object_compute_node_matrices tests every object's root matrix with
+# valid_real_matrix4x3 (scale and position finite; forward, left and up of
+# unit length and square to each other: three squared lengths and three dot
+# products) each time it is made. The test is pure, and its failing branch
+# only writes the matrix and its inputs to debug.txt (error, _error_silent)
+# and runs ocnm_root_matrix_custom, whose asserts are compiled out by
+# default: nothing the game reads afterwards depends on it, so leaving it
+# out can't change play. Its only reader is a person reading debug.txt.
+# On by default: the test left out ("nonrchk" puts it back). "nrchknan": only the finite tests,
+# 13 exponent checks against the six products, which still catch the NaN
+# or infinity a broken matrix carries on into the drawing and collision; a
+# matrix they fail always fails the full test too, and the branch then runs
+# as before. Either way the root's second test below (the same matrix) is
+# left out with it, as it is after a pass.
+FIXES_NRCHK = {}
+FIXES_NRCHK["source/objects/objects.c#nrchk"] = [
+("""static int psp_pose_enabled(void)
+{
+""", """/* psp_fixups.py (FIXES_NRCHK): 0 the full root test ("nonrchk"), 1 its finite
+tests only ("nrchknan"), 2 none (the default); read again for each map */
+static int psp_nrchk_mode = -1;
+
+static int psp_nrchk(void)
+{
+	if (psp_nrchk_mode < 0)
+		psp_nrchk_mode = psp_keep("nrchknan") ? 1 : psp_keep("nonrchk") ? 0 : 2;
+	return psp_nrchk_mode;
+}
+
+/* the finite half of valid_real_matrix4x3: no word of the scale, the axes
+or the position has an exponent of all ones */
+static boolean psp_matrix4x3_finite(
+	real_matrix4x3 const *matrix)
+{
+	unsigned long const *word = (unsigned long const *)matrix;
+	unsigned long bad = 0;
+	int i;
+
+	for (i = 0; i < 13; i++)
+		bad |= (word[i] & 0x7F800000UL) == 0x7F800000UL;
+	return !bad;
+}
+
+static int psp_pose_enabled(void)
+{
+"""),
+("""				psp_root_valid = valid_real_matrix4x3(&object_nodes[node_stack_index]);
+				if (!psp_root_valid)
+""", """				/* psp_fixups.py (FIXES_NRCHK): the test as the keep words choose */
+				switch (psp_nrchk())
+				{
+				case 2:
+					psp_root_valid = TRUE;
+					break;
+				case 1:
+					psp_root_valid = psp_matrix4x3_finite(&object_nodes[node_stack_index]);
+					break;
+				default:
+					psp_root_valid = valid_real_matrix4x3(&object_nodes[node_stack_index]);
+					break;
+				}
+				if (!psp_root_valid)
+"""),
+("""	psp_pose_on = -1;
+	psp_pose_ahead_forget();
+#endif
+""", """	psp_pose_on = -1;
+	psp_pose_ahead_forget();
+	psp_nrchk_mode = -1; /* psp_fixups.py (FIXES_NRCHK) */
+#endif
+"""),
+("""static int psp_pose_on;
+static void psp_pose_ahead_forget(void);
+#endif
+""", """static int psp_pose_on;
+static void psp_pose_ahead_forget(void);
+static int psp_nrchk_mode; /* psp_fixups.py (FIXES_NRCHK) */
+#endif
+"""),
+]
+
+
+# ---------- FIXES_DEADCHK: the sleep's debug reports and the collision usage
+# calls out of the hot code (levers SLEEPDBG and COLLUSAGE)
+# psp_sleepy_update runs for every awake object every tick, and most of its
+# 9-10 KB is reports that only keep words turn on (sleepdebug, itemsleepcheck,
+# flipwatch, checksumcheck): never run in play, but inline they share the 16
+# KB instruction cache with the code that does. GCC can't move them itself:
+# a PGO build keeps code its profile never reached as it is
+# (PSP_PGO_PARTIAL), and a build without a profile can't tell they're cold.
+# Each report is now a cold, never-inlined function, called under the same
+# test, with the same statements in the same order, so with its keep word on
+# it reports as before and with it off nothing runs that didn't. The
+# collision usage log's functions are empty without the debug tools
+# (FIXES_106); their calls go too, as macros that expand to nothing and
+# evaluate nothing (their arguments are constants and plain variables, and
+# the times start_time stored were read only by end_time).
+# A layout change can't be a keep word: PSP_DEADCODE_INLINE=1 builds without
+# this group, the code as it was, for the A/B and the PSP pair (psp_build.py)
+DEADCODE_INLINE = os.environ.get("PSP_DEADCODE_INLINE", "") == "1"
+FIXES_DEADCHK = {}
+FIXES_DEADCHK["source/objects/objects.c#sleepdbg"] = [
+("""static unsigned long psp_object_checksum(struct object_header_datum const *header)
+{
+	static int psp_checksum_check = -1;
+	static unsigned long psp_checksum_checked = 0, psp_checksum_wrong = 0;
+""", """/* psp_fixups.py (FIXES_DEADCHK): "checksumcheck", each sum compared with
+the reference's, out of line (see there) */
+static void __attribute__((noinline, cold)) psp_checksum_check_sum(struct object_header_datum const *header, unsigned long sum)
+{
+	static unsigned long psp_checksum_checked = 0, psp_checksum_wrong = 0;
+
+	psp_checksum_checked++;
+	if (psp_object_checksum_reference(header) != sum && psp_checksum_wrong++ < 8)
+		platform_psp_log("sleep: the fast checksum differs from the reference for %s (type %d)",
+			tag_get_name(((struct object_datum const *)header->datum)->definition_index), header->type);
+	if (psp_checksum_checked % 100000 == 0)
+		platform_psp_log("sleep: checksumcheck: %lu sums compared, %lu differed", psp_checksum_checked, psp_checksum_wrong);
+}
+
+static unsigned long psp_object_checksum(struct object_header_datum const *header)
+{
+	static int psp_checksum_check = -1;
+"""),
+("""	if (psp_checksum_check)
+	{
+		psp_checksum_checked++;
+		if (psp_object_checksum_reference(header) != sum && psp_checksum_wrong++ < 8)
+			platform_psp_log("sleep: the fast checksum differs from the reference for %s (type %d)",
+				tag_get_name(((struct object_datum const *)header->datum)->definition_index), header->type);
+		if (psp_checksum_checked % 100000 == 0)
+			platform_psp_log("sleep: checksumcheck: %lu sums compared, %lu differed", psp_checksum_checked, psp_checksum_wrong);
+	}
+	return sum;
+""", """	if (psp_checksum_check)
+		psp_checksum_check_sum(header, sum);
+	return sum;
+"""),
+("""/* an object and what it carries (a parked vehicle's own gun, build 41),""", """/* psp_fixups.py (FIXES_DEADCHK): sleepdebug's word on a vehicle that
+carries what keeps it awake, out of line */
+static void __attribute__((noinline, cold)) psp_sleep_debug_carries(struct object_header_datum const *header,
+	struct object_header_datum const *child_header)
+{
+	struct object_datum const *object = header->datum;
+	struct object_datum const *child_object = child_header->datum;
+
+	platform_psp_log("sleep: %s can't sleep: it carries %s (type %d, which itself carries %s)",
+		tag_get_name(object->definition_index), tag_get_name(child_object->definition_index), child_header->type,
+		child_object->object.first_child_object_index != NONE ?
+			tag_get_name(object_get(child_object->object.first_child_object_index)->definition_index) : "nothing");
+}
+
+/* an object and what it carries (a parked vehicle's own gun, build 41),"""),
+("""			if (psp_sleep_debug > 0 && header->type == _object_type_vehicle && game_time_get() > 150 && psp_vehicle_sleep_reports++ < 24)
+				platform_psp_log("sleep: %s can't sleep: it carries %s (type %d, which itself carries %s)",
+					tag_get_name(object->definition_index), tag_get_name(child_object->definition_index), child_header->type,
+					child_object->object.first_child_object_index != NONE ?
+						tag_get_name(object_get(child_object->object.first_child_object_index)->definition_index) : "nothing");
+""", """			if (psp_sleep_debug > 0 && header->type == _object_type_vehicle && game_time_get() > 150 && psp_vehicle_sleep_reports++ < 24)
+				psp_sleep_debug_carries(header, child_header);
+"""),
+("""static void psp_sleepy_update(long object_index, short absolute_index, struct object_header_datum *header, int may_sleep)
+{
+	struct object_datum const *object = header->datum;
+	unsigned long before = 0;
+	int corpse_reported = 0;
+""", """/* psp_fixups.py (FIXES_DEADCHK): psp_sleepy_update's reports, each out of
+line and cold (see there). "flipwatch": the sleep's numbers for a vehicle
+just flipped */
+extern long psp_flipwatch_watched(void); /* psp_watch.c */
+
+static void __attribute__((noinline, cold)) psp_flipwatch_sleep_log(long object_index, short absolute_index,
+	struct object_header_datum *header, int may_sleep, unsigned long before, int unchecked)
+{
+	platform_psp_log("flipwatch: t=%ld sleep check #%08lx: may sleep %d, checksum now %08lx, kept %08lx, quiet %d, "
+		"same object %d -> %s", game_time_get(), (unsigned long)object_index, may_sleep, before,
+		psp_sleep[absolute_index].checksum, psp_sleep[absolute_index].quiet,
+		psp_sleep[absolute_index].identifier == header->identifier ? 1 : 0,
+		unchecked || (psp_sleep[absolute_index].identifier == header->identifier &&
+			psp_sleep[absolute_index].quiet >= 2 && psp_sleep[absolute_index].checksum == before) ? "ASLEEP" : "updates");
+}
+
+/* sleepdebug: the watched vehicle's words between its ticks */
+static void __attribute__((noinline, cold)) psp_sleep_debug_between(short absolute_index, struct object_header_datum *header,
+	unsigned long before)
+{
+	struct object_datum const *object = header->datum;
+
+	/* what changed since the last tick's end, outside the update */
+	long count = (header->data_size < 2560 ? header->data_size : 2560) / 4, w;
+
+	if (between_index == absolute_index && between_identifier == header->identifier)
+	{
+		for (w = 0; w < count; w++)
+			if (between[w] != ((unsigned long const *)header->datum)[w] && w != 2 && psp_vehicle_sleep_reports++ < 40)
+				platform_psp_log("sleep: %s changed between ticks: word %ld (byte %ld) %08lx -> %08lx (quiet %d, checksum %s)",
+					tag_get_name(object->definition_index), w, w * 4, between[w], ((unsigned long const *)header->datum)[w],
+					psp_sleep[absolute_index].quiet, psp_sleep[absolute_index].checksum == before ? "same" : "differs");
+	}
+	else if (between_index < 0)
+	{
+		between_index = absolute_index;
+		between_identifier = header->identifier;
+	}
+}
+
+/* itemsleepcheck: a sleeping weapon or item updated as if awake, and a change
+the sleep would have missed logged */
+static void __attribute__((noinline, cold)) psp_item_sleep_check_update(long object_index, struct object_header_datum *header,
+	unsigned long before)
+{
+	struct object_datum *sleeper = (struct object_datum *)header->datum;
+
+	/* itemsleepcheck: the update runs as if awake (so the run
+	plays as "itemsawake" would, garbage counted by the update
+	itself), and a sleeper it changed is logged */
+	unsigned long after;
+	/* the whole datum (but the render mark and a carried weapon's
+	stamp, which the rule never compares) as sleeping would leave
+	it, functions included, against what the update makes of it
+	(psp_fixups.py FIXES_123L) */
+	static unsigned long copy[512], asleep[512];
+	long count = (header->data_size < 2048 ? header->data_size : 2048) / 4, word, first = -1;
+
+	csmemcpy(copy, header->datum, count * 4);
+	if (psp_sleeper_computes_functions(header))
+	{
+		psp_sleeper_functions(object_index);
+		csmemcpy(asleep, header->datum, count * 4);
+		csmemcpy(header->datum, copy, count * 4);
+	}
+	else
+		csmemcpy(asleep, copy, count * 4);
+	object_update(object_index);
+	after = psp_family_checksum(header);
+	psp_items_sleep_checked++;
+	for (word = 0; word < count && first < 0; word++)
+		if (word != 2 && word != 0x1B4 / 4 && asleep[word] != ((unsigned long const *)header->datum)[word])
+			first = word;
+	/* a checksum that moved while sleeping would leave the datum
+	as the update makes it is a wake, not a change: the sleeping
+	path's own functions (functions_active_flags, which the
+	checksum compares, flips as a function crosses its bound), or
+	its tracked object or what it carries. Only a datum that
+	sleeping would leave otherwise counts as changed */
+	static unsigned long woken_functions = 0, woken_outside = 0;
+
+	if (first >= 0)
+	{
+		if (psp_items_sleep_wrong++ < 8)
+		{
+			long shown = 0;
+
+			platform_psp_log("sleep: itemsleepcheck: %s changed while asleep (t=%ld, checksum %08lx -> %08lx)",
+				tag_get_name(sleeper->definition_index), game_time_get(), before, after);
+			for (word = 0; word < count && shown < 12; word++)
+				if (word != 2 && word != 0x1B4 / 4 && asleep[word] != ((unsigned long const *)header->datum)[word])
+				{
+					platform_psp_log("sleep: itemsleepcheck:   word %ld (byte 0x%lx) asleep %08lx, updated %08lx",
+						word, word * 4, asleep[word], ((unsigned long const *)header->datum)[word]);
+					shown++;
+				}
+		}
+	}
+	else if (after != before)
+	{
+		struct psp_checksum_rules rules;
+		long moved = -1;
+
+		psp_checksum_rules_for(header, &rules);
+		for (word = 0; word < count && moved < 0; word++)
+			if (psp_checksum_word(&rules, word, copy[word]) !=
+				psp_checksum_word(&rules, word, ((unsigned long const *)header->datum)[word]))
+				moved = word;
+		if (moved >= 0)
+			woken_functions++;
+		else
+			woken_outside++;
+		if (woken_functions + woken_outside <= 4)
+			platform_psp_log("sleep: itemsleepcheck: %s woken, not changed (t=%ld): %s%s", tag_get_name(sleeper->definition_index),
+				game_time_get(), moved >= 0 ? "a compared word its sleeping functions also make, word " : "its tracked object or what it carries",
+				moved >= 0 ? (moved == (long)(offsetof(struct object_datum, object.functions_active_flags) / 4) ? "functions_active_flags" : "other") : "");
+	}
+	if (psp_items_sleep_checked % 30000 == 0)
+		platform_psp_log("sleep: itemsleepcheck: %lu sleeper updates, %lu changed one; woken, not changed: %lu by its own functions, %lu by its tracked object or what it carries",
+			psp_items_sleep_checked, psp_items_sleep_wrong, woken_functions, woken_outside);
+}
+
+/* sleepdebug: an awake object updated with what its update changed reported
+(a corpse's compared words, a vehicle's or what it carries) */
+static void __attribute__((noinline, cold)) psp_sleep_debug_update(long object_index, short absolute_index,
+	struct object_header_datum *header, int may_sleep, unsigned long before)
+{
+	struct object_datum const *object = header->datum;
+	int corpse_reported = 0;
+
+	if (psp_sleep_debug && header->type == _object_type_biped && may_sleep && game_time_get() > 150)
+	{
+		/* a corpse that stays awake: every word its update
+		changed that the checksum compares (one try in 300, 12 at most) */
+		static int biped_reports = 0;
+		static long biped_tries = 0;
+
+		if (biped_reports < 12 && biped_tries++ % 300 == 0)
+		{
+			static unsigned long copy[512];
+			long count = (header->data_size < 2048 ? header->data_size : 2048) / 4, word, shown = 0;
+			unsigned long after_sum;
+
+			struct psp_checksum_rules rules;
+
+			csmemcpy(copy, header->datum, count * 4);
+			object_update(object_index);
+			after_sum = psp_object_checksum(header);
+			psp_checksum_rules_for(header, &rules);
+			biped_reports++;
+			for (word = 0; word < count && shown < 24; word++)
+				if (psp_checksum_word(&rules, word, copy[word]) != psp_checksum_word(&rules, word, ((unsigned long const *)header->datum)[word]))
+				{
+					platform_psp_log("sleep: corpse %s word %ld (byte %ld) of %d changed, %08lx -> %08lx",
+						tag_get_name(object->definition_index), word, word * 4, header->data_size,
+						copy[word], ((unsigned long const *)header->datum)[word]);
+					shown++;
+				}
+			platform_psp_log("sleep: corpse %s: %ld changed words shown, checksum %s (quiet %d)", tag_get_name(object->definition_index),
+				shown, after_sum == before ? "same" : "differs", psp_sleep[absolute_index].quiet);
+			corpse_reported = 1;
+		}
+	}
+	if (corpse_reported)
+		; /* updated above */
+	else if (psp_sleep_debug && (header->type == _object_type_vehicle ? (game_time_get() > 150 && psp_vehicle_sleep_reports++ < 24) : psp_sleep_reports < 12))
+	{
+		static unsigned long copy[512];
+		long count = (header->data_size < 2048 ? header->data_size : 2048) / 4, word;
+
+		static unsigned long child_copy[512];
+		long child_count = 0, child_index = object->object.first_child_object_index;
+
+		if (header->type == _object_type_vehicle && child_index != NONE)
+		{
+			struct object_header_datum const *child_header = object_header_get(child_index);
+
+			child_count = (child_header->data_size < 2048 ? child_header->data_size : 2048) / 4;
+			csmemcpy(child_copy, child_header->datum, child_count * 4);
+		}
+		csmemcpy(copy, header->datum, count * 4);
+		object_update(object_index);
+		if (child_count)
+		{
+			struct object_header_datum const *child_header = object_header_get(child_index);
+			long w;
+
+			for (w = 0; w < child_count; w++)
+				if (child_copy[w] != ((unsigned long const *)child_header->datum)[w] &&
+					!(child_header->type == _object_type_weapon && w == 0x1B4 / 4))
+				{
+					platform_psp_log("sleep: %s's child word %ld (byte %ld) of %d changed, %08lx -> %08lx",
+						tag_get_name(object->definition_index), w, w * 4, child_header->data_size, child_copy[w],
+						((unsigned long const *)child_header->datum)[w]);
+					break;
+				}
+		}
+		for (word = 0; word < count; word++)
+		{
+			if (copy[word] != ((unsigned long const *)header->datum)[word] && word != 2 && word != (header->type == _object_type_vehicle ? 0x1BC / 4 : -1))
+			{
+				if (game_time_get() > 150 && (psp_sleep_reports++ & 0) == 0)
+					platform_psp_log("sleep: %s stays awake: word %ld (byte %ld) of %d changed, %08lx -> %08lx",
+						tag_get_name(object->definition_index), word, word * 4, header->data_size,
+						copy[word], ((unsigned long const *)header->datum)[word]);
+				break;
+			}
+		}
+		if (word == count && header->type == _object_type_vehicle)
+		{
+			/* the vehicle itself held still: what it carries moved */
+			long child = object->object.first_child_object_index;
+
+			while (child != NONE)
+			{
+				struct object_header_datum const *child_header = object_header_get(child);
+				struct object_datum const *child_object = child_header->datum;
+				static unsigned long child_sum[64];
+				int slot = child & 63;
+				unsigned long sum = psp_object_checksum(child_header);
+
+				if (child_sum[slot] && child_sum[slot] != sum)
+					platform_psp_log("sleep: %s stays awake: its %s (type %d) changed", tag_get_name(object->definition_index),
+						tag_get_name(child_object->definition_index), child_header->type);
+				child_sum[slot] = sum;
+				child = child_object->object.next_object_index;
+			}
+		}
+	}
+	else
+		object_update(object_index);
+}
+
+static void psp_sleepy_update(long object_index, short absolute_index, struct object_header_datum *header, int may_sleep)
+{
+	struct object_datum const *object = header->datum;
+	unsigned long before = 0;
+"""),
+("""	{
+		/* build 113: flipwatch, the sleep's own numbers for a vehicle just
+		flipped (psp_watch.c): why b113's first fixture runs saw it stay
+		asleep after its upending flag was set */
+		extern long psp_flipwatch_watched(void);
+
+		if (object_index == psp_flipwatch_watched())
+			platform_psp_log("flipwatch: t=%ld sleep check #%08lx: may sleep %d, checksum now %08lx, kept %08lx, quiet %d, "
+				"same object %d -> %s", game_time_get(), (unsigned long)object_index, may_sleep, before,
+				psp_sleep[absolute_index].checksum, psp_sleep[absolute_index].quiet,
+				psp_sleep[absolute_index].identifier == header->identifier ? 1 : 0,
+				unchecked || (psp_sleep[absolute_index].identifier == header->identifier &&
+					psp_sleep[absolute_index].quiet >= 2 && psp_sleep[absolute_index].checksum == before) ? "ASLEEP" : "updates");
+	}
+""", """	if (object_index == psp_flipwatch_watched())
+		psp_flipwatch_sleep_log(object_index, absolute_index, header, may_sleep, before, unchecked);
+"""),
+("""	{
+		/* what changed since the last tick's end, outside the update */
+		long count = (header->data_size < 2560 ? header->data_size : 2560) / 4, w;
+
+		if (between_index == absolute_index && between_identifier == header->identifier)
+		{
+			for (w = 0; w < count; w++)
+				if (between[w] != ((unsigned long const *)header->datum)[w] && w != 2 && psp_vehicle_sleep_reports++ < 40)
+					platform_psp_log("sleep: %s changed between ticks: word %ld (byte %ld) %08lx -> %08lx (quiet %d, checksum %s)",
+						tag_get_name(object->definition_index), w, w * 4, between[w], ((unsigned long const *)header->datum)[w],
+						psp_sleep[absolute_index].quiet, psp_sleep[absolute_index].checksum == before ? "same" : "differs");
+		}
+		else if (between_index < 0)
+		{
+			between_index = absolute_index;
+			between_identifier = header->identifier;
+		}
+	}
+	if (unchecked || (psp_sleep""", """		psp_sleep_debug_between(absolute_index, header, before);
+	if (unchecked || (psp_sleep"""),
+("""			if (psp_item_sleep_check > 0)
+			{
+				/* itemsleepcheck: the update runs as if awake (so the run
+				plays as "itemsawake" would, garbage counted by the update
+				itself), and a sleeper it changed is logged */
+				unsigned long after;
+				/* the whole datum (but the render mark and a carried weapon's
+				stamp, which the rule never compares) as sleeping would leave
+				it, functions included, against what the update makes of it
+				(psp_fixups.py FIXES_123L) */
+				static unsigned long copy[512], asleep[512];
+				long count = (header->data_size < 2048 ? header->data_size : 2048) / 4, word, first = -1;
+
+				csmemcpy(copy, header->datum, count * 4);
+				if (psp_sleeper_computes_functions(header))
+				{
+					psp_sleeper_functions(object_index);
+					csmemcpy(asleep, header->datum, count * 4);
+					csmemcpy(header->datum, copy, count * 4);
+				}
+				else
+					csmemcpy(asleep, copy, count * 4);
+				object_update(object_index);
+				after = psp_family_checksum(header);
+				psp_items_sleep_checked++;
+				for (word = 0; word < count && first < 0; word++)
+					if (word != 2 && word != 0x1B4 / 4 && asleep[word] != ((unsigned long const *)header->datum)[word])
+						first = word;
+				/* a checksum that moved while sleeping would leave the datum
+				as the update makes it is a wake, not a change: the sleeping
+				path's own functions (functions_active_flags, which the
+				checksum compares, flips as a function crosses its bound), or
+				its tracked object or what it carries. Only a datum that
+				sleeping would leave otherwise counts as changed */
+				static unsigned long woken_functions = 0, woken_outside = 0;
+
+				if (first >= 0)
+				{
+					if (psp_items_sleep_wrong++ < 8)
+					{
+						long shown = 0;
+
+						platform_psp_log("sleep: itemsleepcheck: %s changed while asleep (t=%ld, checksum %08lx -> %08lx)",
+							tag_get_name(sleeper->definition_index), game_time_get(), before, after);
+						for (word = 0; word < count && shown < 12; word++)
+							if (word != 2 && word != 0x1B4 / 4 && asleep[word] != ((unsigned long const *)header->datum)[word])
+							{
+								platform_psp_log("sleep: itemsleepcheck:   word %ld (byte 0x%lx) asleep %08lx, updated %08lx",
+									word, word * 4, asleep[word], ((unsigned long const *)header->datum)[word]);
+								shown++;
+							}
+					}
+				}
+				else if (after != before)
+				{
+					struct psp_checksum_rules rules;
+					long moved = -1;
+
+					psp_checksum_rules_for(header, &rules);
+					for (word = 0; word < count && moved < 0; word++)
+						if (psp_checksum_word(&rules, word, copy[word]) !=
+							psp_checksum_word(&rules, word, ((unsigned long const *)header->datum)[word]))
+							moved = word;
+					if (moved >= 0)
+						woken_functions++;
+					else
+						woken_outside++;
+					if (woken_functions + woken_outside <= 4)
+						platform_psp_log("sleep: itemsleepcheck: %s woken, not changed (t=%ld): %s%s", tag_get_name(sleeper->definition_index),
+							game_time_get(), moved >= 0 ? "a compared word its sleeping functions also make, word " : "its tracked object or what it carries",
+							moved >= 0 ? (moved == (long)(offsetof(struct object_datum, object.functions_active_flags) / 4) ? "functions_active_flags" : "other") : "");
+				}
+				if (psp_items_sleep_checked % 30000 == 0)
+					platform_psp_log("sleep: itemsleepcheck: %lu sleeper updates, %lu changed one; woken, not changed: %lu by its own functions, %lu by its tracked object or what it carries",
+						psp_items_sleep_checked, psp_items_sleep_wrong, woken_functions, woken_outside);
+				return;
+			}
+""", """			if (psp_item_sleep_check > 0)
+			{
+				psp_item_sleep_check_update(object_index, header, before);
+				return;
+			}
+"""),
+("""	if (psp_sleep_debug < 0)
+		psp_sleep_debug = psp_keep("sleepdebug");
+	if (psp_sleep_debug && header->type == _object_type_biped && may_sleep && game_time_get() > 150)
+	{
+		/* build 106: a corpse that stays awake: every word its update
+		changed that the checksum compares (one try in 300, 12 at most) */
+		static int biped_reports = 0;
+		static long biped_tries = 0;
+
+		if (biped_reports < 12 && biped_tries++ % 300 == 0)
+		{
+			static unsigned long copy[512];
+			long count = (header->data_size < 2048 ? header->data_size : 2048) / 4, word, shown = 0;
+			unsigned long after_sum;
+
+			struct psp_checksum_rules rules;
+
+			csmemcpy(copy, header->datum, count * 4);
+			object_update(object_index);
+			after_sum = psp_object_checksum(header);
+			psp_checksum_rules_for(header, &rules);
+			biped_reports++;
+			for (word = 0; word < count && shown < 24; word++)
+				if (psp_checksum_word(&rules, word, copy[word]) != psp_checksum_word(&rules, word, ((unsigned long const *)header->datum)[word]))
+				{
+					platform_psp_log("sleep: corpse %s word %ld (byte %ld) of %d changed, %08lx -> %08lx",
+						tag_get_name(object->definition_index), word, word * 4, header->data_size,
+						copy[word], ((unsigned long const *)header->datum)[word]);
+					shown++;
+				}
+			platform_psp_log("sleep: corpse %s: %ld changed words shown, checksum %s (quiet %d)", tag_get_name(object->definition_index),
+				shown, after_sum == before ? "same" : "differs", psp_sleep[absolute_index].quiet);
+			corpse_reported = 1;
+		}
+	}
+	if (corpse_reported)
+		; /* updated above */
+	else if (psp_sleep_debug && (header->type == _object_type_vehicle ? (game_time_get() > 150 && psp_vehicle_sleep_reports++ < 24) : psp_sleep_reports < 12))
+	{
+		static unsigned long copy[512];
+		long count = (header->data_size < 2048 ? header->data_size : 2048) / 4, word;
+
+		static unsigned long child_copy[512];
+		long child_count = 0, child_index = object->object.first_child_object_index;
+
+		if (header->type == _object_type_vehicle && child_index != NONE)
+		{
+			struct object_header_datum const *child_header = object_header_get(child_index);
+
+			child_count = (child_header->data_size < 2048 ? child_header->data_size : 2048) / 4;
+			csmemcpy(child_copy, child_header->datum, child_count * 4);
+		}
+		csmemcpy(copy, header->datum, count * 4);
+		object_update(object_index);
+		if (child_count)
+		{
+			struct object_header_datum const *child_header = object_header_get(child_index);
+			long w;
+
+			for (w = 0; w < child_count; w++)
+				if (child_copy[w] != ((unsigned long const *)child_header->datum)[w] &&
+					!(child_header->type == _object_type_weapon && w == 0x1B4 / 4))
+				{
+					platform_psp_log("sleep: %s's child word %ld (byte %ld) of %d changed, %08lx -> %08lx",
+						tag_get_name(object->definition_index), w, w * 4, child_header->data_size, child_copy[w],
+						((unsigned long const *)child_header->datum)[w]);
+					break;
+				}
+		}
+		for (word = 0; word < count; word++)
+		{
+			if (copy[word] != ((unsigned long const *)header->datum)[word] && word != 2 && word != (header->type == _object_type_vehicle ? 0x1BC / 4 : -1))
+			{
+				if (game_time_get() > 150 && (psp_sleep_reports++ & 0) == 0)
+					platform_psp_log("sleep: %s stays awake: word %ld (byte %ld) of %d changed, %08lx -> %08lx",
+						tag_get_name(object->definition_index), word, word * 4, header->data_size,
+						copy[word], ((unsigned long const *)header->datum)[word]);
+				break;
+			}
+		}
+		if (word == count && header->type == _object_type_vehicle)
+		{
+			/* the vehicle itself held still: what it carries moved */
+			long child = object->object.first_child_object_index;
+
+			while (child != NONE)
+			{
+				struct object_header_datum const *child_header = object_header_get(child);
+				struct object_datum const *child_object = child_header->datum;
+				static unsigned long child_sum[64];
+				int slot = child & 63;
+				unsigned long sum = psp_object_checksum(child_header);
+
+				if (child_sum[slot] && child_sum[slot] != sum)
+					platform_psp_log("sleep: %s stays awake: its %s (type %d) changed", tag_get_name(object->definition_index),
+						tag_get_name(child_object->definition_index), child_header->type);
+				child_sum[slot] = sum;
+				child = child_object->object.next_object_index;
+			}
+		}
+	}
+	else
+		object_update(object_index);
+""", """	if (psp_sleep_debug < 0)
+		psp_sleep_debug = psp_keep("sleepdebug");
+	if (psp_sleep_debug)
+		psp_sleep_debug_update(object_index, absolute_index, header, may_sleep, before);
+	else
+		object_update(object_index);
+"""),
+]
+FIXES_DEADCHK["source/physics/collision_usage.h#collusage"] = [
+("""void collision_log_end_period(
+	void);
+""", """void collision_log_end_period(
+	void);
+
+/* psp_fixups.py (FIXES_DEADCHK): without the debug tools these three are
+empty (FIXES_106), so their calls in the collision tests go too, arguments
+unevaluated; collision_usage.c still defines them */
+#if defined(HALO_PSP) && !defined(PSP_DEBUG_TOOLS) && !defined(PSP_COLLISION_USAGE_DEFINES)
+#define collision_log_start_time(start_time) ((void)0)
+#define collision_log_end_time(collision_function, start_time) ((void)0)
+#define collision_log_usage(collision_function) ((void)0)
+#endif
+"""),
+]
+FIXES_DEADCHK["source/physics/collision_usage.c#collusage"] = [
+("""#include "collision_debug.h"
+#include "collision_usage.h"
+""", """#include "collision_debug.h"
+/* psp_fixups.py (FIXES_DEADCHK): the functions themselves, not the header's
+empty macros */
+#define PSP_COLLISION_USAGE_DEFINES 1
+#include "collision_usage.h"
+"""),
+]
+
+
+# ---------- FIXES_GSCHECK: the tick's two game-state checks, off by default (lever GSCHECK)
+# game_state_check_data_arrays walks every game-state allocation twice a tick
+# to report a data array gone out of order (NATIVE-7's corruption): on a
+# failure it only logs, and what it keeps (each array's last good tick, and
+# whether it was reported) is read by nothing but itself, so skipping both
+# tick calls can't change play. They cost the tick a walk of ~81 allocations
+# each; "gscheck" puts them back, for when NATIVE-7's corruption needs its
+# witness again. lights_port_recover's call, on its rare path, stays, though
+# without the tick's calls it can no longer say since when
+FIXES_GSCHECK = {}
+FIXES_GSCHECK["source/game/game.c#gscheck"] = [
+("""void game_tick(
+	void)
+{""", """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_GSCHECK): "gscheck" (see there) */
+int psp_keep(const char *name);
+static int psp_gscheck_on = -1;
+#endif
+
+void game_tick(
+	void)
+{"""),
+("""	actors, made the first light from it (Sentry NATIVE-7) */
+	game_state_check_data_arrays();
+""", """	actors, made the first light from it (Sentry NATIVE-7) */
+#ifdef HALO_PSP
+	if (psp_gscheck_on < 0)
+		psp_gscheck_on = psp_keep("gscheck");
+	if (psp_gscheck_on)
+#endif
+	game_state_check_data_arrays();
+"""),
+("""	/* port: and at its end, before the frame draws the lights */
+	game_state_check_data_arrays();
+""", """	/* port: and at its end, before the frame draws the lights */
+#ifdef HALO_PSP
+	if (psp_gscheck_on)
+#endif
+	game_state_check_data_arrays();
+"""),
+]
+
+
+# ---------- FIXES_ACCLEAF: the hottest lookups without their keep tests (lever ACCLEAF)
+# object_get (OBJALL), object_header_block_get (HDRBLK), object_get_and_verify_type
+# (typehdr) and datum_get's found path (DGFAST) each asked a keep word on every
+# call, for the old side of an A/B long settled: a byte load, a branch and, the
+# first time, the keep lookup, on calls made millions of times a second (api-job
+# 40158154165). With the asserts compiled out, typehdr's type is read by nothing,
+# but its keep test still ran. These are the same pointers as before; only the
+# tests go. A build switch, as the tests are what it removes: PSP_ACCLEAF_OLD=1
+# builds without the group, and objallold, hdrblkold, notypehdr and dgfastold
+# work again there
+ACCLEAF_OLD = os.environ.get("PSP_ACCLEAF_OLD", "") == "1"
+FIXES_ACCLEAF = {}
+FIXES_ACCLEAF["source/objects/objects.c#accleaf"] = [
+("""	if (PSP_KEEP_ONCE("objallold"))
+		return object_get_and_verify_type(object_index, _object_mask_all);
+	return object_header_get(object_index)->datum;""",
+ """	return object_header_get(object_index)->datum;"""),
+("""PSP_KEEP_ONCE("hdrblkold") ? object_get(object_index) : object_header->datum;""",
+ """object_header->datum;"""),
+("""const int psp_type = PSP_KEEP_ONCE("notypehdr") ? result->object.type : psp_header->type;""",
+ """const int psp_type = psp_header->type;"""),
+]
+FIXES_ACCLEAF["source/memory/data.c#accleaf"] = [
+("""absolute_index<data->count && !PSP_KEEP_ONCE("dgfastold"))""",
+ """absolute_index<data->count)"""),
+]
+
+
+
+# ---------- FIXES_FX15: effects' steps paired on a frame's two ticks (a compromise)
+# On the busy stretches a frame runs two ticks and draws only the second.
+# effects_update runs every tick, and most of its work there is each effect's
+# fixed cost (the object's pose and function values, the visibility test, the
+# walk of its particle blocks), whether it is waiting out an event's delay or
+# inside the event's duration making particles. With "fx15", on the first tick
+# of a frame's pair such an effect leaves its step to the second, which steps
+# it by both ticks: the event's clock and its particle counts come out the
+# same (the count is an integral of the event's fraction), only the first
+# tick's particles are made a tick later, at the second tick's place. Whatever the simulation or the AI can see steps
+# every tick: an event that ends on the first tick (its parts: sounds, lights,
+# damage, objects, and the next event's start), a stopped effect (it restarts
+# or goes), effects that make objects, lights or damage (the "must be
+# deterministic" ones), effects with a danger radius (the AI's grenades and
+# plasma), those on a player's view, and those on an object moving faster than
+# 0.02 world units a tick (their particles would come out in clumps a tick's
+# travel apart). The particles' own update (particles_update, contrails,
+# particle systems) already runs once a frame (game_frame), so it isn't
+# touched. "fx15census" counts what could wait and times it without waiting.
+# Off by default: it plays differently; campaign only, never in the
+# multiplayer build or a networked game. The census line: "fx15:" every 30 s
+FIXES_FX15 = {}
+FIXES_FX15["source/effects/effects.c#fx15"] = [
+("""void effects_update(
+	real dt)
+{
+	long effect_index;
+
+	profile_enter(effects_update_section);
+
+	for (effect_index = data_next_index(effect_data, NONE);
+		effect_index != NONE;
+		effect_index = data_next_index(effect_data, effect_index))
+	{
+		effect_update(effect_index, dt);
+	}
+
+	profile_exit(effects_update_section);
+""",
+ """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_FX15): "fx15" and "fx15census" (see there) */
+int psp_keep(const char *name);
+void platform_psp_log(const char *format, ...);
+unsigned long psp_heartbeat_clock(void);
+boolean network_coop_active(void);
+
+/* set by game_time_update's tick loop: TRUE on a tick another tick of the
+same frame follows, paired back from the frame's last (the drawn one) */
+int psp_fx15_tick_waits = 0;
+static int psp_fx15_on = -1; /* 0 off, 1 the census alone, 2 the waits */
+/* each slot's effect owing a tick, by its whole index: a slot deleted and
+used again in between owes nothing */
+static long psp_fx15_owed[HALO_PORT_MAXIMUM_EFFECTS];
+static struct
+{
+	unsigned long ticks_first, ticks_other, us_first, us_other;
+	unsigned long updates_first, waited, waitable, us_waitable, doubled;
+	unsigned long kept[7];
+} psp_fx15_stats;
+static long psp_fx15_logged = NONE;
+
+static int psp_fx15_mode(
+	void)
+{
+	if (psp_fx15_on < 0)
+	{
+		int index;
+
+#ifdef PSP_MULTIPLAYER
+		psp_fx15_on = 0;
+#else
+		psp_fx15_on = psp_keep("fx15") ? 2 : psp_keep("fx15census") ? 1 : 0;
+#endif
+		for (index = 0; index < HALO_PORT_MAXIMUM_EFFECTS; index++)
+			psp_fx15_owed[index] = NONE;
+		if (psp_fx15_on)
+			platform_psp_log("effects: %s",
+				psp_fx15_on == 2 ? "on a frame's pair of ticks, an effect only making particles steps once, on the drawn tick (fx15)"
+					: "counted, not paired (fx15census)");
+	}
+	return psp_fx15_on && game_connection() == _game_connection_local && !network_coop_active() ? psp_fx15_on : 0;
+}
+
+/* 0 when the effect's step may wait for the next tick, or what keeps it
+stepping this tick (psp_fx15_stats.kept) */
+static int psp_fx15_reason(
+	struct effect_datum *effect,
+	real dt)
+{
+	struct effect_definition *definition = effect_definition_get(effect->definition_index);
+	word flags = effect->header.flags;
+
+	if (TEST_FLAG(definition->flags, _effect_definition_must_be_deterministic_bit))
+		return 3;
+	if (definition->runtime_danger_radius != 0.0f)
+		return 4;
+	if (effect->local_player_index != NONE)
+		return 5;
+	if (TEST_FLAG(flags, _effect_stopped_bit))
+		return 2;
+	if (effect->event_duration - effect->event_time <= dt)
+		return 1;
+	if (effect->object_index != NONE &&
+		effect->velocity.i*effect->velocity.i + effect->velocity.j*effect->velocity.j +
+			effect->velocity.k*effect->velocity.k > 0.02f*0.02f)
+		return 6;
+	return 0;
+}
+
+static void psp_fx15_step(
+	long effect_index,
+	real dt,
+	int mode,
+	int waits)
+{
+	short absolute_index = DATUM_INDEX_TO_ABSOLUTE_INDEX(effect_index);
+	int reason;
+	unsigned long start;
+
+	if (absolute_index < 0 || absolute_index >= HALO_PORT_MAXIMUM_EFFECTS)
+	{
+		effect_update(effect_index, dt);
+		return;
+	}
+	if (psp_fx15_owed[absolute_index] == effect_index)
+	{
+		/* the tick it waited, then this one */
+		psp_fx15_owed[absolute_index] = NONE;
+		psp_fx15_stats.doubled++;
+		effect_update(effect_index, dt + dt);
+		return;
+	}
+	if (!waits)
+	{
+		effect_update(effect_index, dt);
+		return;
+	}
+	psp_fx15_stats.updates_first++;
+	reason = psp_fx15_reason(effect_get(effect_index), dt);
+	if (reason)
+	{
+		psp_fx15_stats.kept[reason]++;
+		effect_update(effect_index, dt);
+		return;
+	}
+	if (mode == 2)
+	{
+		psp_fx15_owed[absolute_index] = effect_index;
+		psp_fx15_stats.waited++;
+		return;
+	}
+	psp_fx15_stats.waitable++;
+	start = psp_heartbeat_clock();
+	effect_update(effect_index, dt);
+	psp_fx15_stats.us_waitable += psp_heartbeat_clock() - start;
+}
+
+static void psp_fx15_account(
+	int waits,
+	unsigned long us)
+{
+	long now = game_time_get();
+
+	if (waits)
+	{
+		psp_fx15_stats.ticks_first++;
+		psp_fx15_stats.us_first += us;
+	}
+	else
+	{
+		psp_fx15_stats.ticks_other++;
+		psp_fx15_stats.us_other += us;
+	}
+	if (psp_fx15_logged == NONE || now < psp_fx15_logged || now - psp_fx15_logged >= 900)
+	{
+		if (psp_fx15_logged != NONE)
+			platform_psp_log("fx15: game time %ld | ticks: a pair's first %lu, others %lu | effects_update us a tick: a pair's first %lu, others %lu"
+				" | a pair's first tick: effect updates %lu, waited %lu, could wait %lu (%lu us a tick of theirs)"
+				"; kept: delay or event ends %lu, stopped %lu, makes objects/lights/damage %lu, danger radius %lu, a player's view %lu, moving %lu"
+				" | doubled %lu | live: effects %d, particles %d",
+				now, psp_fx15_stats.ticks_first, psp_fx15_stats.ticks_other,
+				psp_fx15_stats.ticks_first ? psp_fx15_stats.us_first/psp_fx15_stats.ticks_first : 0,
+				psp_fx15_stats.ticks_other ? psp_fx15_stats.us_other/psp_fx15_stats.ticks_other : 0,
+				psp_fx15_stats.updates_first, psp_fx15_stats.waited, psp_fx15_stats.waitable,
+				psp_fx15_stats.ticks_first ? psp_fx15_stats.us_waitable/psp_fx15_stats.ticks_first : 0,
+				psp_fx15_stats.kept[1], psp_fx15_stats.kept[2], psp_fx15_stats.kept[3], psp_fx15_stats.kept[4],
+				psp_fx15_stats.kept[5], psp_fx15_stats.kept[6], psp_fx15_stats.doubled,
+				(int)effect_data->actual_count, particle_data ? (int)particle_data->actual_count : 0);
+		psp_fx15_logged = now;
+	}
+}
+#endif
+
+void effects_update(
+	real dt)
+{
+	long effect_index;
+#ifdef HALO_PSP
+	int psp_mode = psp_fx15_mode();
+	int psp_waits = psp_mode && psp_fx15_tick_waits;
+	unsigned long psp_start = psp_mode ? psp_heartbeat_clock() : 0;
+#endif
+
+	profile_enter(effects_update_section);
+
+	for (effect_index = data_next_index(effect_data, NONE);
+		effect_index != NONE;
+		effect_index = data_next_index(effect_data, effect_index))
+	{
+#ifdef HALO_PSP
+		if (psp_mode)
+		{
+			psp_fx15_step(effect_index, dt, psp_mode, psp_waits);
+			continue;
+		}
+#endif
+		effect_update(effect_index, dt);
+	}
+
+	profile_exit(effects_update_section);
+#ifdef HALO_PSP
+	if (psp_mode)
+		psp_fx15_account(psp_waits, psp_heartbeat_clock() - psp_start);
+#endif
+"""),
+]
+FIXES_FX15["source/game/game_time.c#fx15"] = [
+("""							psp_lights_link_tick = update_index + 1 == server_updates;
+""", """							psp_lights_link_tick = update_index + 1 == server_updates;
+							{
+								extern int psp_fx15_tick_waits; /* effects.c (FIXES_FX15) */
+
+								psp_fx15_tick_waits = ((server_updates - 1 - update_index) & 1) != 0;
+							}
+"""),
+]
+
+# ---------- FIXES_POSEFPU: a pose made ahead takes one form, whoever makes it
+# The Media Engine has no VFPU, so its pose job normalizes with the FPU, while
+# the main CPU normalizes with the VFPU's forms (VFPUQD, on by default): the
+# same pose differs in its last bits by the unit that made it (c10's scenery:
+# 367,576 of 404,520 on the PSP-1000; none with novfpuquatd). Which unit makes
+# a pose listed for the ME can turn on timing: the job failing or a page not
+# resident, the ring not ready, the frame data not resident when the list is
+# made. So every pose listed ahead, wherever it is made, is decoded in the
+# ME's form (the FPU's: psp_vfpuquat_mode 0 for that one decode): the main
+# CPU's stand-ins in the list's making, and a pose the job left unmade, made
+# at the tick that wanted it. Poses never listed (an object's first, a guess
+# that missed) keep the VFPU's form. "posefpuoff": as before. "posefpulate"
+# (a test): every fourth pose the ME made is treated as late, so the main CPU
+# stands in, and poseaheadcheck then compares the stand-in with the ME's pose
+FIXES_POSEFPU = {}
+FIXES_POSEFPU["source/objects/objects.c#posefpu"] = [
+("""static void psp_pose_ahead_collect(void);
+""",
+ """static void psp_pose_ahead_collect(void);
+
+/* psp_fixups.py (FIXES_POSEFPU): the ME's form of a decode on this CPU */
+extern int psp_vfpuquat_mode;
+static int psp_posefpu_mode = -1; /* 0 off, 1 on, 2 on with a quarter of the ME's poses taken as late */
+static unsigned long psp_posefpu_standins, psp_posefpu_late_checked, psp_posefpu_late_differed, psp_posefpu_job_poses;
+
+static int psp_posefpu_on(void)
+{
+	if (psp_posefpu_mode < 0 && psp_keep_loaded())
+		psp_posefpu_mode = psp_keep("posefpuoff") ? 0 : psp_keep("posefpulate") ? 2 : 1;
+	return psp_posefpu_mode > 0;
+}
+
+static void psp_posefpu_decode(struct model const *model, struct animation const *animation, short frame,
+	real_orientation *out)
+{
+	int mode = psp_vfpuquat_mode;
+
+	psp_vfpuquat_mode = 0;
+	animation_get_node_orientations(model, animation, frame, out);
+	psp_vfpuquat_mode = mode;
+}
+
+/* a pose listed for the ME made on this CPU: in the ME's form */
+static void psp_posefpu_make(struct model const *model, struct animation const *animation, short frame,
+	real_orientation *out)
+{
+	if (psp_pose_ahead_me && psp_posefpu_on())
+	{
+		psp_posefpu_decode(model, animation, frame, out);
+		psp_posefpu_standins++;
+	}
+	else
+		animation_get_node_orientations(model, animation, frame, out);
+}
+"""),
+# a pose the ME was asked for and didn't make stays listed (state 4), so the
+# tick that wants it makes it in the ME's form; posefpulate's late ones keep
+# the ME's pose to compare (state 5)
+("""		if (ok && *(unsigned long *)slot->pose != PSP_POSE_UNWRITTEN)
+		{
+			slot->state = 2;
+			psp_pose_ahead_made++;
+			psp_pose_job_poses++;
+		}
+		else
+		{
+			slot->state = 0;
+			if (ok)
+				psp_pose_ahead_unwritten++;
+		}""",
+ """		if (ok && *(unsigned long *)slot->pose != PSP_POSE_UNWRITTEN)
+		{
+			/* psp_fixups.py (FIXES_POSEFPU): posefpulate takes a quarter as late */
+			if (psp_posefpu_mode == 2 && (++psp_posefpu_job_poses & 3) == 0)
+			{
+				slot->state = 5;
+				continue;
+			}
+			slot->state = 2;
+			psp_pose_ahead_made++;
+			psp_pose_job_poses++;
+		}
+		else
+		{
+			slot->state = psp_posefpu_on() ? 4 : 0; /* psp_fixups.py (FIXES_POSEFPU) */
+			if (ok)
+				psp_pose_ahead_unwritten++;
+		}"""),
+("""		if (psp_pose_ahead_slots[k].state == 2)
+			psp_pose_ahead_slots[k].state = 0;""",
+ """		if (psp_pose_ahead_slots[k].state == 2 || psp_pose_ahead_slots[k].state >= 4) /* (FIXES_POSEFPU) */
+			psp_pose_ahead_slots[k].state = 0;"""),
+("""			continue;
+		}
+		animation_get_node_orientations(slot->model, slot->animation, slot->frame, slot->pose);
+		if (*(unsigned long *)slot->pose == PSP_POSE_UNWRITTEN)""",
+ """			continue;
+		}
+		psp_posefpu_make(slot->model, slot->animation, slot->frame, slot->pose); /* psp_fixups.py (FIXES_POSEFPU) */
+		if (*(unsigned long *)slot->pose == PSP_POSE_UNWRITTEN)"""),
+("""				animation_get_node_orientations(slot->model, slot->animation, slot->frame, slot->pose);
+				slot->state = *(unsigned long *)slot->pose == PSP_POSE_UNWRITTEN ? 0 : 2;""",
+ """				psp_posefpu_make(slot->model, slot->animation, slot->frame, slot->pose); /* psp_fixups.py (FIXES_POSEFPU) */
+				slot->state = *(unsigned long *)slot->pose == PSP_POSE_UNWRITTEN ? 0 : 2;"""),
+("""	slot = &psp_pose_ahead_slots[(unsigned long)object_index & (PSP_POSE_SLOTS - 1)];
+	if (slot->state != 2 || slot->object_index != object_index || slot->model != model ||
+		slot->animation != animation || slot->frame != frame)
+		return FALSE;
+	if (psp_pose_ahead_mode == 2)
+	{
+		animation_get_node_orientations(model, animation, frame, out);""",
+ """	slot = &psp_pose_ahead_slots[(unsigned long)object_index & (PSP_POSE_SLOTS - 1)];
+	/* psp_fixups.py (FIXES_POSEFPU): a pose listed for the ME and not made by
+	it is made here in the ME's form (with posefpulate, against the ME's own) */
+	if ((slot->state == 4 || slot->state == 5) && slot->object_index == object_index && slot->model == model &&
+		slot->animation == animation && slot->frame == frame)
+	{
+		psp_posefpu_decode(model, animation, frame, out);
+		psp_posefpu_standins++;
+		if (slot->state == 5)
+		{
+			psp_posefpu_late_checked++;
+			if (csmemcmp(out, slot->pose, slot->node_count * sizeof(real_orientation)))
+				psp_posefpu_late_differed++;
+		}
+		slot->state = 0;
+		return TRUE;
+	}
+	if (slot->state != 2 || slot->object_index != object_index || slot->model != model ||
+		slot->animation != animation || slot->frame != frame)
+		return FALSE;
+	if (psp_pose_ahead_mode == 2)
+	{
+		/* (FIXES_POSEFPU) checked against what a stand-in would make */
+		if (psp_pose_ahead_me && psp_posefpu_on())
+			psp_posefpu_decode(model, animation, frame, out);
+		else
+		animation_get_node_orientations(model, animation, frame, out);"""),
+("""		platform_psp_log("poseahead: %lu poses made ahead (%lu by the ME in %lu jobs, %lu jobs failed), %lu used (%lu checked, %lu differed); %lu unwritten, %lu past the arena's %u KB",""",
+ """		platform_psp_log("posefpu: %s; %lu poses made on this CPU in the ME's form; posefpulate: %lu compared with the ME's, %lu differed",
+			psp_posefpu_on() ? psp_posefpu_mode == 2 ? "on, a quarter of the ME's poses taken as late" : "on" : "off",
+			psp_posefpu_standins, psp_posefpu_late_checked, psp_posefpu_late_differed);
+	if (psp_pose_ahead_ticks % 900 == 0)
+		platform_psp_log("poseahead: %lu poses made ahead (%lu by the ME in %lu jobs, %lu jobs failed), %lu used (%lu checked, %lu differed); %lu unwritten, %lu past the arena's %u KB","""),
+]
+
+# ---------- FIXES_PSC: a looping animation's poses kept, made once a map
+# An object that animates by itself (scenery's looping animations: c10's
+# swamp plants, 156 computes a tick hands off) takes its frame from game time,
+# so every tick decodes animation_get_node_orientations(model, animation,
+# frame) again, and each instance runs the same frames at its own offset. The
+# decode reads only the model, the animation (tag data, fixed within a map)
+# and the frame, so its answer is kept the first time it's made, in a table
+# by (model, animation, frame), and copied after that: the same function on
+# the same inputs, the same bits. For scenery, the table also keeps each
+# child node's local matrix, matrix4x3_from_orientation of its decoded
+# orientation, which the node chain otherwise makes every compute; the chain
+# still multiplies each child onto its parent as before, so the node matrices
+# are the same bits too. The root's orientation takes the object's scale, so
+# the root is made as before. A local matrix is used only when nothing
+# changed the children's orientations after the decode: no overlays in the
+# graph, no interpolation, and scenery's type has no preprocessing.
+# The Media Engine's pose job (poseahead) makes most of these poses ahead and
+# is left as it is: the table serves the poses this CPU would decode, and is
+# filled only by this CPU's decodes, because the ME's can differ from them in
+# the last bit (c10 in the emulator: poseaheadcheck). A pose poseahead hands
+# over takes the table's local matrices only when it is the table's pose bit
+# for bit. A pose is kept only at its second decode within 16 ticks (a pose
+# soon decoded again is one the table will serve), and local matrices only
+# where the chain can use them (scenery whose graph has no overlays). Main
+# RAM, in 16 KB pieces as the map uses them, up to 112 KB (c10's use;
+# "psckbN" sets it), and no new piece unless the heap keeps its largest free
+# block above 256 KB ("pscfloorN") and its free total above 320 KB; full, a
+# pose is refused and made as before. It gives its memory back for the rest
+# of the map when the heap falls under those floors later (checked every 150
+# ticks) or when it serves under 2 poses a tick. Dropped at each map's load. "pscexact": the decoded orientations alone; "pscoff": as
+# before; "psccheck": every pose and local matrix the table hands over is made
+# live too and compared bit for bit (the largest difference logged), and the
+# live one is used
+FIXES_PSC = {}
+FIXES_PSC["source/objects/objects.c#psc"] = [
+("""/* the guess for this object's next tick: the frame after this one */
+static void psp_pose_ahead_list(""",
+ """/* psp_fixups.py (FIXES_PSC): the poses of looping animations */
+#define PSP_PSC_ENTRIES 1024
+#define PSP_PSC_PIECE (16 * 1024)
+#define PSP_PSC_PIECES 32
+struct psp_psc_entry
+{
+	struct animation const *animation;
+	struct model const *model;
+	short frame;
+	short node_count;
+	real_orientation *pose; /* NULL: seen once, not kept yet */
+	real_matrix4x3 *locals; /* the children's local matrices (node 1 first), or NULL */
+	long made_at; /* game time: when kept (psccheck's report), or when seen */
+};
+/* a pose is kept at its second decode within this many ticks: one decoded
+again soon is one the table will serve (c10's swamp plants, every few
+ticks), one that isn't would hold memory for little (a single long
+animation, or poses the ME's job makes nearly all of) */
+#define PSP_PSC_REUSE 16
+/* no new piece of the table unless the heap keeps its largest free block and
+its free total above these (the level copies and the record buffers ask for
+large blocks later); "pscfloorN" sets the first, in KB */
+#define PSP_PSC_FREE_FLOOR (320 * 1024)
+#define PSP_PSC_KEEP_MARGIN (32 * 1024)
+/* the margin is for a table that earns it: at least this many poses served
+a tick since it began (c10's serves ~34, b30's ~1.5) */
+#define PSP_PSC_KEEP_RATE 8
+static int psp_psc_release_old;
+static long psp_psc_born;
+static struct psp_psc_entry *psp_psc_entries;
+static unsigned char *psp_psc_pieces[PSP_PSC_PIECES];
+static int psp_psc_mode = -1; /* 0 off, 1 on, 2 on and checked */
+static int psp_psc_matrices; /* the local matrices kept too (not "pscexact") */
+static int psp_psc_piece_count, psp_psc_piece_cap, psp_psc_used, psp_psc_count, psp_psc_no_room, psp_psc_seen_count;
+static unsigned long psp_psc_largest_floor;
+static unsigned long psp_psc_guarded, psp_psc_seen, psp_psc_stale, psp_psc_guard_largest, psp_psc_guard_free;
+void psp_heap_survey(unsigned long *free_bytes, unsigned long *largest_bytes, unsigned long *used_bytes);
+static int psp_psc_listing; /* the object being posed takes its pose from the table */
+static boolean psp_psc_compression;
+static long psp_psc_logged;
+/* the compute in progress: its object and the local matrices it may use */
+static long psp_psc_locals_object = NONE;
+static real_matrix4x3 const *psp_psc_locals;
+static short psp_psc_locals_count;
+static unsigned long psp_psc_ineligible;
+static unsigned long psp_psc_hits, psp_psc_fills, psp_psc_refused, psp_psc_unwritten,
+	psp_psc_checked, psp_psc_differed, psp_psc_ahead_same, psp_psc_ahead_other, psp_psc_local_used, psp_psc_local_checked, psp_psc_local_differed;
+static real psp_psc_local_largest;
+int psp_keep_number(const char *prefix, int fallback);
+
+static int psp_psc_on(void)
+{
+	if (psp_psc_mode < 0)
+	{
+		if (!psp_keep_loaded())
+			return 0;
+		psp_psc_mode = psp_keep("pscoff") ? 0 : psp_keep("psccheck") ? 2 : 1;
+		psp_psc_matrices = !psp_keep("pscexact");
+		psp_psc_piece_cap = psp_keep_number("psckb", 112) * 1024 / PSP_PSC_PIECE;
+		psp_psc_largest_floor = (unsigned long)psp_keep_number("pscfloor", 256) * 1024;
+		psp_psc_release_old = psp_keep("pscreleaseold");
+		if (psp_psc_piece_cap > PSP_PSC_PIECES)
+			psp_psc_piece_cap = PSP_PSC_PIECES;
+	}
+	return psp_psc_mode;
+}
+
+static void psp_psc_report(const char *what)
+{
+	platform_psp_log("psc: %s %d poses (%d KB used of %d in %d pieces, cap %d KB%s); %lu handed over, %lu kept, %lu refused (%lu by the heap's floor: largest %lu KB, free %lu KB), %lu unwritten, %lu not the model's nodes; seen once %lu, again too late %lu; poseahead's poses against the table: %lu the same, %lu different; local matrices %lu used; checked: %lu poses (%lu differed), %lu matrices (%lu differed, largest %g)",
+		what, psp_psc_count, psp_psc_used / 1024, (psp_psc_piece_count * PSP_PSC_PIECE) / 1024, psp_psc_piece_count,
+		(psp_psc_piece_cap * PSP_PSC_PIECE) / 1024, psp_psc_matrices ? "" : ", pscexact",
+		psp_psc_hits, psp_psc_fills, psp_psc_refused, psp_psc_guarded, psp_psc_guard_largest / 1024, psp_psc_guard_free / 1024,
+		psp_psc_unwritten, psp_psc_ineligible, psp_psc_seen, psp_psc_stale, psp_psc_ahead_same, psp_psc_ahead_other,
+		psp_psc_local_used, psp_psc_checked, psp_psc_differed, psp_psc_local_checked, psp_psc_local_differed,
+		(double)psp_psc_local_largest);
+}
+
+/* a new map (its tags may sit where the last map's did), or the decode's
+compression switch turned: everything kept goes */
+static void psp_psc_drop(void)
+{
+	int k;
+
+	if (psp_psc_fills || psp_psc_refused)
+		psp_psc_report("dropped");
+	/* newlib's own free, as the pieces came from memalign and calloc (the
+	engine's free is its debug allocator's) */
+	for (k = 0; k < psp_psc_piece_count; k++)
+		(free)(psp_psc_pieces[k]);
+	if (psp_psc_entries)
+		(free)(psp_psc_entries);
+	psp_psc_entries = NULL;
+	psp_psc_piece_count = psp_psc_used = psp_psc_count = psp_psc_no_room = psp_psc_seen_count = 0;
+	psp_psc_guarded = psp_psc_seen = psp_psc_stale = psp_psc_guard_largest = psp_psc_guard_free = 0;
+	psp_psc_hits = psp_psc_fills = psp_psc_refused = psp_psc_unwritten = psp_psc_ineligible = 0;
+	psp_psc_checked = psp_psc_differed = psp_psc_ahead_same = psp_psc_ahead_other = 0;
+	psp_psc_local_used = psp_psc_local_checked = psp_psc_local_differed = 0;
+	psp_psc_local_largest = 0.f;
+	psp_psc_logged = 0;
+	psp_psc_listing = 0;
+	psp_psc_locals = NULL;
+	psp_psc_locals_object = NONE;
+}
+
+/* an object whose base pose the table may hold: its frame comes from game
+time (the decode's own inputs are all the key holds), and the decode writes
+the animation's nodes, which are the model's (when its checks refuse the
+pair, it writes the model's own pose, whose count may differ) */
+static int psp_psc_eligible(struct object_datum const *object, struct model const *model, struct animation const *animation)
+{
+	extern boolean hs_model_animation_compression_enabled;
+
+	if (!TEST_FLAG(object->object.flags, _object_animates_automatically_bit) || animation->frame_count <= 0 ||
+		animation->node_count <= 0 || animation->node_count > MAXIMUM_NODES_PER_MODEL || psp_psc_on() <= 0)
+		return 0;
+	if (!model || animation->type != _animation_base || model->nodes.count != animation->node_count ||
+		(animation->node_list_checksum && model->node_list_checksum && animation->node_list_checksum != model->node_list_checksum))
+	{
+		psp_psc_ineligible++;
+		return 0;
+	}
+	if (psp_psc_entries && psp_psc_compression != hs_model_animation_compression_enabled)
+		psp_psc_drop();
+	return 1;
+}
+
+static struct psp_psc_entry *psp_psc_find(struct model const *model, struct animation const *animation, short frame)
+{
+	unsigned long k = ((((unsigned long)animation >> 4) ^ ((unsigned long)model >> 6)) * 2654435761u + (unsigned long)frame * 40503u) %
+		PSP_PSC_ENTRIES;
+	int n;
+
+	if (!psp_psc_entries)
+		return NULL;
+	for (n = 0; n < PSP_PSC_ENTRIES; n++, k = (k + 1) % PSP_PSC_ENTRIES)
+	{
+		struct psp_psc_entry *entry = &psp_psc_entries[k];
+
+		if (!entry->animation)
+			return entry;
+		if (entry->animation == animation && entry->model == model && entry->frame == frame)
+			return entry;
+	}
+	return NULL;
+}
+
+/* the table gives its memory back for the rest of the map when the heap
+falls under its floors (the map's own later needs come first), or when it
+serves under 2 poses a tick over 900 ticks (too little for what it holds) */
+static void psp_psc_release(const char *why)
+{
+	platform_psp_log("psc: released (%s)", why);
+	psp_psc_report("released");
+	psp_psc_drop();
+	psp_psc_no_room = 1;
+}
+
+static void psp_psc_log(void)
+{
+	static long checked;
+	static unsigned long hits_then;
+	long now = game_time_get();
+
+	if (psp_psc_entries && (now - checked >= 150 || now < checked))
+	{
+		unsigned long free_bytes, largest, used;
+
+		checked = now;
+		psp_heap_survey(&free_bytes, &largest, &used);
+		/* a table that serves well is kept down to 32 KB under the floors
+		it grows to: one that grew with room to spare isn't given back for
+		a dip the size of a small allocation (c10's table went when an 8 KB allocation took its
+		largest block to 244 KB and its free total to 317, and nothing
+		failed). "pscreleaseold": given back at the growing
+		floors, as before */
+		unsigned long margin = !psp_psc_release_old && now > psp_psc_born &&
+			psp_psc_hits >= (unsigned long)(now - psp_psc_born) * PSP_PSC_KEEP_RATE ? PSP_PSC_KEEP_MARGIN : 0;
+
+		if (largest + margin < psp_psc_largest_floor || free_bytes + margin < PSP_PSC_FREE_FLOOR)
+		{
+			psp_psc_release("the heap under its floors");
+			return;
+		}
+	}
+	if (now - psp_psc_logged >= 900 || now < psp_psc_logged)
+	{
+		if (psp_psc_logged && psp_psc_entries)
+		{
+			psp_psc_report("kept");
+			if (psp_psc_entries && psp_psc_hits - hits_then < 2 * 900)
+			{
+				psp_psc_release("under 2 poses a tick served");
+				return;
+			}
+		}
+		hits_then = psp_psc_hits;
+		psp_psc_logged = now ? now : 1;
+	}
+}
+
+/* the compute that will use an entry's local matrices (scenery only: its type
+preprocesses nothing; NULL: the chain makes them as before) */
+static void psp_psc_use(long object_index, struct object_datum const *object, struct psp_psc_entry const *entry)
+{
+	if (entry && entry->locals && object->object.type == _object_type_scenery)
+	{
+		psp_psc_locals_object = object_index;
+		psp_psc_locals = entry->locals;
+		psp_psc_locals_count = entry->node_count;
+	}
+}
+
+/* the pose, if the table holds it: copied into out (or, checked, decoded
+and compared); FALSE: made as before */
+static boolean psp_psc_take(long object_index, struct object_datum const *object, struct model const *model,
+	struct animation const *animation, short frame, real_orientation *out)
+{
+	struct psp_psc_entry *entry = psp_psc_find(model, animation, frame);
+
+	psp_psc_log();
+	if (!entry || !entry->animation || !entry->pose)
+		return FALSE;
+	if (psp_psc_mode == 2)
+	{
+		animation_get_node_orientations(model, animation, frame, out);
+		psp_psc_checked++;
+		if (csmemcmp(out, entry->pose, entry->node_count * sizeof(real_orientation)))
+		{
+			psp_psc_differed++;
+			if (psp_psc_differed <= 12)
+			{
+				real const *a = (real const *)out, *b = (real const *)entry->pose;
+				int k;
+
+				for (k = 0; k < entry->node_count * 8; k++)
+					if (*(unsigned long const *)&a[k] != *(unsigned long const *)&b[k])
+						break;
+				platform_psp_log("psc: check: object %08lx frame %d of %d, nodes %d, %s, made at %ld (now %ld): word %d of node %d: live %08lx (%g), kept %08lx (%g)",
+					(unsigned long)object_index, frame, animation->frame_count, entry->node_count,
+					TEST_FLAG(animation->flags, _animation_compressed_bit) ? "compressed" : "plain",
+					entry->made_at, game_time_get(), k % 8, k / 8,
+					*(unsigned long const *)&a[k], (double)a[k], *(unsigned long const *)&b[k], (double)b[k]);
+			}
+		}
+	}
+	else
+		csmemcpy(out, entry->pose, entry->node_count * sizeof(real_orientation));
+	psp_psc_hits++;
+	psp_psc_use(object_index, object, entry);
+	return TRUE;
+}
+
+/* the heap keeps room above its floors for a new piece (or the directory) */
+static int psp_psc_headroom(unsigned long bytes)
+{
+	unsigned long free_bytes, largest, used;
+
+	psp_heap_survey(&free_bytes, &largest, &used);
+	if (largest < psp_psc_largest_floor + bytes || free_bytes < PSP_PSC_FREE_FLOOR + bytes)
+	{
+		if (!psp_psc_guarded)
+			platform_psp_log("psc: no more room: the heap's largest free block %lu KB, free %lu KB (floors %lu and %u KB); %d poses kept",
+				largest / 1024, free_bytes / 1024, psp_psc_largest_floor / 1024, PSP_PSC_FREE_FLOOR / 1024, psp_psc_count);
+		psp_psc_guard_largest = largest;
+		psp_psc_guard_free = free_bytes;
+		psp_psc_guarded++;
+		return 0;
+	}
+	return 1;
+}
+
+/* local matrices only where the chain can use them: scenery (its type
+preprocesses nothing) whose definition's graph has no overlays */
+static int psp_psc_plain(struct object_datum const *object, struct animation const *animation)
+{
+	struct object_definition *definition;
+
+	if (!psp_psc_matrices || object->object.type != _object_type_scenery || animation->node_count <= 1)
+		return 0;
+	definition = object_definition_get(object->definition_index);
+	return definition->object.animation_graph.index == NONE ||
+		animation_graph_definition_get(definition->object.animation_graph.index)->object_overlays.count == 0;
+}
+
+/* room for a pose decoded again within PSP_PSC_REUSE ticks: an entry and its
+bytes, or NULL (seen for the first time, or refused) */
+static struct psp_psc_entry *psp_psc_room(struct object_datum const *object, struct model const *model,
+	struct animation const *animation, short frame)
+{
+	extern boolean hs_model_animation_compression_enabled;
+	int locals = psp_psc_plain(object, animation);
+	unsigned int bytes = (unsigned int)animation->node_count * sizeof(real_orientation) +
+		(locals ? (unsigned int)(animation->node_count - 1) * sizeof(real_matrix4x3) : 0);
+	struct psp_psc_entry *entry;
+	long now = game_time_get();
+
+	if (psp_psc_no_room)
+	{
+		psp_psc_refused++;
+		return NULL;
+	}
+	if (!psp_psc_entries)
+	{
+		if (!psp_psc_headroom(PSP_PSC_ENTRIES * sizeof(*psp_psc_entries)) ||
+			!(psp_psc_entries = (struct psp_psc_entry *)calloc(PSP_PSC_ENTRIES, sizeof(*psp_psc_entries))))
+		{
+			psp_psc_no_room = 1;
+			return NULL;
+		}
+		psp_psc_compression = hs_model_animation_compression_enabled;
+		psp_psc_born = now;
+	}
+	entry = psp_psc_find(model, animation, frame);
+	if (!entry || (entry->animation && entry->pose))
+		return NULL;
+	if (!entry->animation || now - entry->made_at > PSP_PSC_REUSE || now < entry->made_at)
+	{
+		/* first seen (or seen too long ago): noted, decoded as before */
+		if (!entry->animation)
+		{
+			if (psp_psc_count + psp_psc_seen_count >= PSP_PSC_ENTRIES * 3 / 4)
+				return NULL;
+			entry->animation = animation;
+			entry->model = model;
+			entry->frame = frame;
+			entry->node_count = animation->node_count;
+			psp_psc_seen_count++;
+			psp_psc_seen++;
+		}
+		else
+			psp_psc_stale++;
+		entry->made_at = now;
+		return NULL;
+	}
+	if (!psp_psc_piece_count || psp_psc_used + bytes > (unsigned int)psp_psc_piece_count * PSP_PSC_PIECE)
+	{
+		if (psp_psc_piece_count >= psp_psc_piece_cap || !psp_psc_headroom(PSP_PSC_PIECE) ||
+			!(psp_psc_pieces[psp_psc_piece_count] = (unsigned char *)memalign(64, PSP_PSC_PIECE)))
+		{
+			psp_psc_no_room = 1;
+			psp_psc_refused++;
+			return NULL;
+		}
+		psp_psc_used = psp_psc_piece_count * PSP_PSC_PIECE;
+		psp_psc_piece_count++;
+	}
+	entry->pose = (real_orientation *)(psp_psc_pieces[psp_psc_piece_count - 1] + (psp_psc_used - (psp_psc_piece_count - 1) * PSP_PSC_PIECE));
+	entry->locals = locals ? (real_matrix4x3 *)(entry->pose + animation->node_count) : NULL;
+	return entry;
+}
+
+/* an entry's pose in place: its local matrices made from it, and it counted */
+static void psp_psc_kept(struct psp_psc_entry *entry, struct animation const *animation)
+{
+	short k;
+
+	if (entry->locals)
+		for (k = 1; k < entry->node_count; k++)
+			matrix4x3_from_orientation((real_matrix4x3 *)&entry->locals[k - 1], &entry->pose[k]);
+	(void)animation;
+	psp_psc_seen_count--;
+	psp_psc_used += entry->node_count * sizeof(real_orientation) +
+		(entry->locals ? (entry->node_count - 1) * sizeof(real_matrix4x3) : 0);
+	psp_psc_count++;
+	psp_psc_fills++;
+}
+
+/* a pose poseahead handed over: the table's local matrices go with it only
+when it is the table's pose bit for bit (the Media Engine's decodes can differ
+from this CPU's in the last bit: c10 in the emulator) */
+static void psp_psc_match(long object_index, struct object_datum const *object, struct model const *model,
+	struct animation const *animation, short frame, real_orientation const *pose)
+{
+	struct psp_psc_entry *entry = psp_psc_find(model, animation, frame);
+
+	psp_psc_log();
+	if (!entry || !entry->animation || !entry->pose)
+		return;
+	if (csmemcmp(pose, entry->pose, entry->node_count * sizeof(real_orientation)))
+	{
+		psp_psc_ahead_other++;
+		return;
+	}
+	psp_psc_ahead_same++;
+	psp_psc_use(object_index, object, entry);
+}
+
+/* a pose made here: decoded into the table, then copied into out. FALSE: no
+room, or the decode wrote nothing (out is made as before) */
+static boolean psp_psc_make(long object_index, struct object_datum const *object, struct model const *model,
+	struct animation const *animation, short frame, real_orientation *out)
+{
+	struct psp_psc_entry *entry = psp_psc_room(object, model, animation, frame);
+
+	if (!entry)
+		return FALSE;
+	*(unsigned long *)entry->pose = PSP_POSE_UNWRITTEN;
+	animation_get_node_orientations(model, animation, frame, entry->pose);
+	if (*(unsigned long *)entry->pose == PSP_POSE_UNWRITTEN)
+	{
+		/* the decode wrote nothing: the entry stays seen, its bytes unused */
+		entry->pose = NULL;
+		entry->locals = NULL;
+		psp_psc_unwritten++;
+		return FALSE;
+	}
+	entry->made_at = game_time_get();
+	psp_psc_kept(entry, animation);
+	csmemcpy(out, entry->pose, entry->node_count * sizeof(real_orientation));
+	psp_psc_use(object_index, object, entry);
+	return TRUE;
+}
+
+/* a child node's local matrix in the chain: the table's, or (checked) made
+and compared */
+static void psp_psc_local(real_matrix4x3 *out, real_orientation const *orientation, short node)
+{
+	real_matrix4x3 const *kept = &psp_psc_locals[node - 1];
+
+	if (psp_psc_mode == 2)
+	{
+		real const *a, *b;
+		int k;
+
+		matrix4x3_from_orientation(out, orientation);
+		psp_psc_local_checked++;
+		if (csmemcmp(out, kept, sizeof(real_matrix4x3)))
+		{
+			psp_psc_local_differed++;
+			a = (real const *)out;
+			b = (real const *)kept;
+			for (k = 0; k < (int)(sizeof(real_matrix4x3) / sizeof(real)); k++)
+			{
+				real d = a[k] > b[k] ? a[k] - b[k] : b[k] - a[k];
+
+				if (d > psp_psc_local_largest)
+					psp_psc_local_largest = d;
+			}
+		}
+	}
+	else
+		*out = *kept;
+	psp_psc_local_used++;
+}
+
+/* the guess for this object's next tick: the frame after this one */
+static void psp_pose_ahead_list("""),
+("""	if (!psp_pose_ahead_mode || animation->frame_count <= 0 || animation->node_count <= 0 ||
+		animation->node_count > MAXIMUM_NODES_PER_MODEL)
+		return;
+	slot = &psp_pose_ahead_slots[(unsigned long)object_index & (PSP_POSE_SLOTS - 1)];""",
+ """	if (!psp_pose_ahead_mode || animation->frame_count <= 0 || animation->node_count <= 0 ||
+		animation->node_count > MAXIMUM_NODES_PER_MODEL)
+		return;
+	slot = &psp_pose_ahead_slots[(unsigned long)object_index & (PSP_POSE_SLOTS - 1)];"""),
+("""				if (psp_pose_ahead_take(object_index, model, animation, frame_index, node_orientations))
+					;
+				else if (psp_pose_predict)""",
+ """				/* psp_fixups.py (FIXES_PSC): a looping animation's pose from the table, or kept in it */
+				/* a table given back (or never had room) serves nothing for
+				the rest of the map: the pose path doesn't call into it */
+				psp_psc_listing = (psp_psc_entries || !psp_psc_no_room) && psp_psc_eligible(object, model, animation);
+				if (psp_pose_ahead_take(object_index, model, animation, frame_index, node_orientations))
+				{
+					if (psp_psc_listing)
+						psp_psc_match(object_index, object, model, animation, frame_index, node_orientations);
+				}
+				else if (psp_psc_listing && psp_psc_take(object_index, object, model, animation, frame_index, node_orientations))
+					;
+				else if (psp_psc_listing && psp_psc_make(object_index, object, model, animation, frame_index, node_orientations))
+					;
+				else if (psp_pose_predict)"""),
+# each compute starts with no local matrices; overlays (which may change any
+# node's orientation) take them away
+("""		world_relative = FALSE;
+
+		if (object->object.animation.animation_graph_index!=NONE)""",
+ """		world_relative = FALSE;
+		psp_psc_locals = NULL; /* psp_fixups.py (FIXES_PSC) */
+
+		if (object->object.animation.animation_graph_index!=NONE)"""),
+("""			for (overlay_index = 0; overlay_index<animation_graph->object_overlays.count; ++overlay_index)
+			{""",
+ """			if (animation_graph->object_overlays.count > 0)
+				psp_psc_locals = NULL; /* psp_fixups.py (FIXES_PSC) */
+			for (overlay_index = 0; overlay_index<animation_graph->object_overlays.count; ++overlay_index)
+			{"""),
+("""				real_orientation *orientation = &node_orientations[node_stack_index];
+				short parent_node_index = node->parent_node_index;
+
+				matrix4x3_from_orientation(&object_nodes[node_stack_index], orientation);""",
+ """				real_orientation *orientation = &node_orientations[node_stack_index];
+				short parent_node_index = node->parent_node_index;
+
+				/* psp_fixups.py (FIXES_PSC): the table's local matrix, made from this same orientation */
+				if (psp_psc_locals && psp_psc_locals_object == object_index && node_stack_index < psp_psc_locals_count &&
+					object->object.animation.interpolation_frame_count == 0)
+					psp_psc_local(&object_nodes[node_stack_index], orientation, node_stack_index);
+				else
+				matrix4x3_from_orientation(&object_nodes[node_stack_index], orientation);"""),
+# the table's heap and yield checks every tick, whether or not an object it
+# serves is posed that tick
+("""static void psp_pose_ahead_make_work(void)
+{
+	unsigned int at = 0;
+	int k;
+
+""", """static void psp_pose_ahead_make_work(void)
+{
+	unsigned int at = 0;
+	int k;
+
+	psp_psc_log(); /* psp_fixups.py (FIXES_PSC) */
+"""),
+("""	psp_pose_on = -1;
+	psp_pose_ahead_forget();
+""", """	psp_pose_on = -1;
+	psp_pose_ahead_forget();
+	psp_psc_drop(); /* psp_fixups.py (FIXES_PSC) */
+"""),
+("""#ifdef HALO_PSP
+static int psp_pose_on;
+static void psp_pose_ahead_forget(void);
+""", """#ifdef HALO_PSP
+static int psp_pose_on;
+static void psp_pose_ahead_forget(void);
+static void psp_psc_drop(void); /* psp_fixups.py (FIXES_PSC) */
+"""),
+]
+
+# ---------- FIXES_FISSION: the function values and change colours as a pass
+# after objects_update's walk (lever FVP, direction (1): the tick a system at a
+# time). In the walk, each object's update (far larger than the 16 KB
+# instruction cache) pushes the functions' code out before the next object
+# needs it; made one after another after the walk, their ~3 KB stays resident.
+# Exact: the compute is a pure function of the object's own incoming values,
+# active flags and outgoing values, its definition and the game time. In the
+# walk, the only readers of what it makes are object_get_function_value and a
+# particle system's colour at its creation: both make a waiting object's
+# values first, which is what its own update would have made by then. The
+# only writer of another object's inputs is a hidden weapon's export into its
+# holder, which in the walk ran after the holder's compute (the holder, then
+# its children): it makes the holder's first. An object's own export, when it runs a
+# second time in the walk (a second update, a sleeper's functions), makes the
+# first one's values first, as the walk did before the second export. And
+# each object's incoming values are kept as its update left them and made
+# from: on b30 two weapons' change between their update and the pass, by no
+# export (fvpasscheck counts how often). The sleep check's checksum after an update
+# holds the function values and colours of most types: a family it checks
+# has its values made before it. An object deactivated or deleted in the walk
+# has them made first too. Objects made during the walk
+# are updated after the pass, in place, as before. Keep words: on by default
+# (a PSP pair priced the tick faster); "fvpassoff" (made in place, as before), "fvpasscheck" (made in place as before; each object's inputs
+# are checked against what they were at its update, where the pass would have
+# made its values: at an early read, or else at the pass). The log line every 30 s: "fvpass:".
+FIXES_FISSION = {}
+FIXES_FISSION["source/objects/objects.c#fvpass"] = [
+("""static void object_connect_lights_with(long object_index, struct object_datum *object, struct object_definition *object_definition, boolean disconnect, boolean reconnect);
+""",
+ """static void object_connect_lights_with(long object_index, struct object_datum *object, struct object_definition *object_definition, boolean disconnect, boolean reconnect);
+#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_FISSION): "fvpass" and "fvpasscheck" (see there) */
+#include <stdlib.h>
+int psp_keep(const char *name);
+int psp_keep_loaded(void);
+void platform_psp_log(const char *format, ...);
+void psp_fvp_settle(long object_index);
+/* past it an object's values are made in place. With units, items and
+projectiles alone, b30 lists ~46 a tick and never passed 512; the inputs
+array is on the heap, which PSC's floors and the map's large asks share */
+#define PSP_FVP_MAX 128
+#define PSP_FVP_BIT(i) (1ul << ((i) & 31))
+static int psp_fvp_mode = -1; /* 0 off, 1 the pass, 2 the check */
+/* the types whose values wait for the pass: those whose own update is large
+code (units, items, projectiles), which the values' code would otherwise
+evict. Scenery and devices update in little code, so for them the pass
+costs more (the bookkeeping, their datum lines read again) than it saves:
+c10, nearly all scenery, ran 88k fetches and 1,100 data misses a tick
+slower with them in the pass for 1,700 fewer instruction misses.
+"fvpassall": every type, as before */
+static int psp_fvp_all;
+#define PSP_FVP_TYPES (FLAG(_object_type_biped) | FLAG(_object_type_vehicle) | FLAG(_object_type_weapon) | \
+	FLAG(_object_type_equipment) | FLAG(_object_type_garbage) | FLAG(_object_type_projectile))
+int psp_fvp_open = 0;  /* the mode, inside the walk */
+static int psp_fvp_count = 0;
+static long psp_fvp_list[PSP_FVP_MAX]; /* in the walk's order */
+static unsigned long psp_fvp_pending[(MAXIMUM_OBJECTS_PER_MAP + 31) / 32];
+/* each listed object's incoming values as its update left them: what the
+walk made its values from, whatever writes them before the pass */
+static real (*psp_fvp_inputs)[NUMBER_OF_INCOMING_OBJECT_FUNCTIONS] = NULL;
+static unsigned long psp_fvp_made, psp_fvp_early, psp_fvp_full, psp_fvp_checked, psp_fvp_differ;
+static long psp_fvp_logged = -1;
+
+static void psp_fvp_make(int k, long object_index, struct object_datum *object)
+{
+	struct object_definition *object_definition = object_definition_get(object->definition_index);
+	real *incoming = object->object.incoming_function_values;
+	real now[NUMBER_OF_INCOMING_OBJECT_FUNCTIONS];
+	int i;
+
+	for (i = 0; i < NUMBER_OF_INCOMING_OBJECT_FUNCTIONS; i++)
+	{
+		now[i] = incoming[i];
+		incoming[i] = psp_fvp_inputs[k][i];
+	}
+	object_compute_function_values_with(object_index, object, object_definition);
+	object_compute_change_colors_with(object_index, object, object_definition);
+	for (i = 0; i < NUMBER_OF_INCOMING_OBJECT_FUNCTIONS; i++)
+		incoming[i] = now[i];
+	psp_fvp_made++;
+}
+
+static void psp_fvp_begin(void)
+{
+	if (psp_fvp_mode < 0 && psp_keep_loaded())
+	{
+		psp_fvp_mode = psp_keep("fvpasscheck") ? 2 : psp_keep("fvpassoff") ? 0 : 1;
+		psp_fvp_all = psp_keep("fvpassall");
+		if (psp_fvp_mode && !(psp_fvp_inputs = malloc(PSP_FVP_MAX * sizeof(psp_fvp_inputs[0]))))
+			psp_fvp_mode = 0;
+	}
+	psp_fvp_open = psp_fvp_mode > 0 ? psp_fvp_mode : 0;
+	psp_fvp_count = 0;
+}
+
+/* 1: the object's values wait for the pass, with the inputs they're made
+from. Checking, they're made in place, and the inputs kept to compare */
+static int psp_fvp_put_off(long object_index, struct object_datum *object)
+{
+	long absolute = DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index);
+
+	if (absolute < 0 || absolute >= MAXIMUM_OBJECTS_PER_MAP)
+		return 0;
+	if (!psp_fvp_all && !TEST_FLAG(PSP_FVP_TYPES, object->object.type))
+		return 0;
+	if (psp_fvp_count >= PSP_FVP_MAX)
+	{
+		psp_fvp_full++;
+		return 0;
+	}
+	/* updated a second time in the walk: the first update's values are
+	made before the second's inputs replace them */
+	psp_fvp_settle(object_index);
+	psp_fvp_pending[absolute >> 5] |= PSP_FVP_BIT(absolute);
+	{
+		int i;
+
+		for (i = 0; i < NUMBER_OF_INCOMING_OBJECT_FUNCTIONS; i++)
+			psp_fvp_inputs[psp_fvp_count][i] = object->object.incoming_function_values[i];
+	}
+	psp_fvp_list[psp_fvp_count++] = object_index;
+	return psp_fvp_open == 1;
+}
+
+/* a waiting object's values made now, before something reads them or
+changes what they're made from. A slot whose object was deleted and made
+again in the walk isn't the one waiting: the list has the whole index */
+void psp_fvp_settle(long object_index)
+{
+	long absolute = DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index);
+	int k;
+
+	if (!psp_fvp_open || absolute < 0 || absolute >= MAXIMUM_OBJECTS_PER_MAP ||
+		!(psp_fvp_pending[absolute >> 5] & PSP_FVP_BIT(absolute)))
+		return;
+	for (k = psp_fvp_count - 1; k >= 0 && psp_fvp_list[k] != object_index; k--)
+		;
+	if (k < 0)
+		return;
+	psp_fvp_early++;
+	psp_fvp_pending[absolute >> 5] &= ~PSP_FVP_BIT(absolute);
+	if (psp_fvp_open == 2)
+	{
+		/* where the pass makes them: how often the kept inputs are needed */
+		struct object_datum *object = object_get(object_index);
+
+		psp_fvp_checked++;
+		if (csmemcmp(psp_fvp_inputs[k], object->object.incoming_function_values, sizeof(psp_fvp_inputs[0])) &&
+			psp_fvp_differ++ < 16)
+			platform_psp_log("fvpasscheck: tick %ld, object %08lx (type %d): inputs changed before an early read",
+				(long)game_time_get(), (unsigned long)object_index, (int)object->object.type);
+		return;
+	}
+	psp_fvp_make(k, object_index, object_get(object_index));
+}
+
+static void psp_fvp_pass(void)
+{
+	int mode = psp_fvp_open;
+	int k;
+
+	psp_fvp_open = 0;
+	for (k = 0; k < psp_fvp_count; k++)
+	{
+		long object_index = psp_fvp_list[k];
+		long absolute = DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index);
+		struct object_datum *object;
+
+		if (!(psp_fvp_pending[absolute >> 5] & PSP_FVP_BIT(absolute)))
+			continue;
+		psp_fvp_pending[absolute >> 5] &= ~PSP_FVP_BIT(absolute);
+		object = (struct object_datum *)object_try_and_get_and_verify_type(object_index, _object_mask_all);
+		if (!object)
+			continue;
+		if (mode == 2)
+		{
+			psp_fvp_checked++;
+			if (csmemcmp(psp_fvp_inputs[k], object->object.incoming_function_values, sizeof(psp_fvp_inputs[0])) &&
+				psp_fvp_differ++ < 16)
+				platform_psp_log("fvpasscheck: tick %ld, object %08lx (type %d): inputs changed after its update",
+					(long)game_time_get(), (unsigned long)object_index, (int)object->object.type);
+			continue;
+		}
+		psp_fvp_make(k, object_index, object);
+	}
+	psp_fvp_count = 0;
+	if (mode && game_time_get() / 900 != psp_fvp_logged)
+	{
+		psp_fvp_logged = game_time_get() / 900;
+		platform_psp_log("fvpass: mode %d, made %lu, made early %lu, past the list %lu, checked %lu, inputs changed %lu",
+			mode, psp_fvp_made, psp_fvp_early, psp_fvp_full, psp_fvp_checked, psp_fvp_differ);
+	}
+}
+#endif
+"""),
+("""		if (psp_hoist)
+		{
+			object_compute_function_values_with(object_index, object, object_definition);""",
+ """		if (psp_fvp_open && psp_fvp_put_off(object_index, object)) /* psp_fixups.py (FIXES_FISSION) */
+			;
+		else if (psp_hoist)
+		{
+			object_compute_function_values_with(object_index, object, object_definition);"""),
+("""	psp_nms_open = psp_nms_begin(); /* psp_fixups.py (FIXES_NMSKIP) */
+""",
+ """	psp_nms_open = psp_nms_begin(); /* psp_fixups.py (FIXES_NMSKIP) */
+	psp_fvp_begin(); /* psp_fixups.py (FIXES_FISSION) */
+"""),
+("""#else
+					object_update(object_index);
+#endif
+				}
+			}
+		}
+		++i;
+	}
+""",
+ """#else
+					object_update(object_index);
+#endif
+				}
+			}
+		}
+		++i;
+	}
+#ifdef HALO_PSP
+	/* before the objects made in the walk are updated, as their compute came
+	after every walked object's */
+	psp_fvp_pass(); /* psp_fixups.py (FIXES_FISSION) */
+#endif
+"""),
+]
+FIXES_FISSION["source/objects/objects.c#fvpasssleep"] = [
+("""	if (psp_family_checksum(header) == before)
+	{
+		if (psp_sleep[absolute_index].identifier == header->identifier)""",
+ """	/* psp_fixups.py (FIXES_FISSION): the checksum after the update holds
+	the family's function values and colours (but a dead biped's, a weapon's
+	or a machine's), so they're made first, as the update made them */
+	if (psp_fvp_open && !psp_sleeper_computes_functions(header) &&
+		!(header->type == _object_type_biped && TEST_FLAG(object->object.damage_flags, _object_dead_bit)))
+	{
+		long child;
+
+		psp_fvp_settle(object_index);
+		for (child = object->object.first_child_object_index; child != NONE; child = object_get(child)->object.next_object_index)
+			psp_fvp_settle(child);
+	}
+	if (psp_family_checksum(header) == before)
+	{
+		if (psp_sleep[absolute_index].identifier == header->identifier)"""),
+]
+FIXES_FISSION["source/objects/objects.c#fvpassgone"] = [
+("""	psp_lights_flush(object_index); /* psp_fixups.py (FIXES_LD1) */
+""", """	psp_lights_flush(object_index); /* psp_fixups.py (FIXES_LD1) */
+	{
+		/* psp_fixups.py (FIXES_FISSION): an object leaving the walk (or
+		deleted) has its values made first, as its update made them */
+		void psp_fvp_settle(long object_index);
+
+		psp_fvp_settle(object_index);
+	}
+"""),
+]
+FIXES_FISSION["source/objects/objects.c#fvpassread"] = [
+("""		if (VALID_INDEX(function_index, NUMBER_OF_OUTGOING_OBJECT_FUNCTIONS))
+		{
+			*value_reference = object->object.outgoing_function_values[function_index];""",
+ """		if (VALID_INDEX(function_index, NUMBER_OF_OUTGOING_OBJECT_FUNCTIONS))
+		{
+#ifdef HALO_PSP
+			/* tested here, as most reads come outside the walk */
+			extern int psp_fvp_open;
+			void psp_fvp_settle(long object_index);
+
+			if (psp_fvp_open)
+				psp_fvp_settle(object_index); /* psp_fixups.py (FIXES_FISSION) */
+#endif
+			*value_reference = object->object.outgoing_function_values[function_index];"""),
+]
+FIXES_FISSION["source/objects/object_types.c#fvpass"] = [
+("""	short i;
+	struct object_type_definition *definition = object_type_definition_get(type);
+
+	for (i = 0; definition->part_definitions[i]; i++)
+	{
+		struct object_type_definition *current_definition = definition->part_definitions[i];
+		if (current_definition->datum_export_function_values)""",
+ """	short i;
+	struct object_type_definition *definition = object_type_definition_get(type);
+#ifdef HALO_PSP
+	/* psp_fixups.py (FIXES_FISSION): an object exported a second time in the
+	walk (updated again, or as a sleeper) has its first values made from the
+	inputs they were made from */
+	void psp_fvp_settle(long object_index);
+
+	psp_fvp_settle(object_index);
+#endif
+
+	for (i = 0; definition->part_definitions[i]; i++)
+	{
+		struct object_type_definition *current_definition = definition->part_definitions[i];
+		if (current_definition->datum_export_function_values)"""),
+]
+FIXES_FISSION["source/effects/particle_systems.c#fvpass"] = [
+("""		struct particle_system_datum *system = particle_system_get(system_index);
+		struct object_datum *object = object_get(object_index);
+		struct object_attachment_definition *attachment = TAG_BLOCK_GET_ELEMENT(""",
+ """		struct particle_system_datum *system = particle_system_get(system_index);
+#ifdef HALO_PSP
+		/* psp_fixups.py (FIXES_FISSION): its colour is read from the object's below */
+		void psp_fvp_settle(long object_index);
+		struct object_datum *object = (psp_fvp_settle(object_index), object_get(object_index));
+#else
+		struct object_datum *object = object_get(object_index);
+#endif
+		struct object_attachment_definition *attachment = TAG_BLOCK_GET_ELEMENT("""),
+]
+FIXES_FISSION["source/items/weapons.c#fvpass"] = [
+("""	while (TEST_FLAG(object->object.flags, _object_invisible_bit) && object->object.parent_object_index!=NONE)
+	{
+		object= object_get(object->object.parent_object_index);
+	}
+
+	function_values= object->object.incoming_function_values;""",
+ """#ifdef HALO_PSP
+	/* psp_fixups.py (FIXES_FISSION): the holder's values were made before
+	this write in the walk's order */
+	void psp_fvp_settle(long object_index);
+	long psp_fvp_holder = NONE;
+#endif
+	while (TEST_FLAG(object->object.flags, _object_invisible_bit) && object->object.parent_object_index!=NONE)
+	{
+#ifdef HALO_PSP
+		psp_fvp_holder = object->object.parent_object_index;
+#endif
+		object= object_get(object->object.parent_object_index);
+	}
+#ifdef HALO_PSP
+	if (psp_fvp_holder != NONE)
+		psp_fvp_settle(psp_fvp_holder);
+#endif
+
+	function_values= object->object.incoming_function_values;"""),
+]
+
+
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items()))):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
+
+
+# ---------- "mevis" (option C's second step): the frame's visibility made a
+# second time, on the Media Engine,
+# from the same camera, timed there and checked against the main CPU's
+# answer. A measurement of what C's walk would cost on the ME beside today's
+# drawing; the frame still draws from the main CPU's answer. The ME runs the
+# engine's own code: every function of structure_visibility.c that touches
+# state the frame or the tick writes (render, the portal walk's globals and
+# counters, the hull cache, the warnings) is copied here as psp_mv_<name>,
+# with that state moved into one block of its own (psp_mv_state, lines
+# nothing else uses), its logs, asserts' messages, profile meters and debug
+# drawing left out, and the copies calling each other. The functions that
+# touch none of it (the hull clipping, the rectangle tests) are shared. Made
+# from the fixed text at build time, so the copies follow every fixup.
+MEVIS_STATE = {
+    "render": "psp_mv->render", "structure_visibility_globals": "psp_mv->svg",
+    "psp_hull_cache": "psp_mv->hull_cache", "psp_hull_hits": "psp_mv->counter",
+    "psp_hull_misses": "psp_mv->counter", "psp_portal_walk_id": "psp_mv->walk_id",
+    "psp_portal_steps": "psp_mv->portal_steps", "psp_portal_walks": "psp_mv->counter",
+    "psp_portal_fallbacks": "psp_mv->counter", "psp_portal_step_total": "psp_mv->counter",
+    "psp_pvs_fallback": "psp_mv->pvs_fallback", "psp_visrect_mode": "psp_mv->visrect_mode",
+    "psp_visrect_skipped": "psp_mv->counter", "psp_visrect_check_kept": "psp_mv->counter",
+    "error": "psp_mv_error", "platform_psp_log": "psp_mv_log", "psp_keep": "psp_mv_keep",
+    "rendered_cluster_get": "psp_mv_rendered_cluster_get", "render_debug_line": "psp_mv_debug_line",
+    "ai_debug_highlight_cluster": "psp_mv_debug_cluster", "profile_enter": "PSP_MV_NOPROFILE",
+    "profile_exit": "PSP_MV_NOPROFILE", "psp_step": "PSP_MV_NOSTEP",
+}
+MEVIS_FUNCTION = re.compile(r"^((?:static\s+)?(?:__inline__\s+)?[A-Za-z_][\w \t\*]*?)\b([A-Za-z_]\w*)\((?:[^;{}\n]*\)\n|\n)", re.M)
+
+
+def mevis_functions(text):
+    """{name: (header, body)} for each function defined at the file's top
+    level (a prototype ends in ';' before any line that is a lone '{')"""
+    found = {}
+    for m in MEVIS_FUNCTION.finditer(text):
+        name = m.group(2)
+        open_at = text.find("\n{\n", m.end() - 1)
+        if open_at < 0:
+            continue
+        header = text[m.start():open_at + 1]
+        if re.search(r"\);\s*$", header, re.M) or name in ("if", "for", "while", "switch", "return"):
+            continue
+        close_at = text.find("\n}\n", open_at)
+        if close_at < 0:
+            continue
+        # a signature split by #ifdef (portal_hull_from_portal_uncached):
+        # the PSP's side, as the PSP compiles it
+        header = re.sub(r"\n#else\n.*?\n#endif\n", "\n", header, flags=re.S)
+        if "#" in header:
+            continue
+        found[name] = (header, text[open_at + 1:close_at + 3])
+    return found
+
+
+def mevis_copies(tree):
+    rel = "source/structures/structure_visibility.c"
+    path = os.path.join(tree, rel)
+    text = open(path, errors="surrogateescape").read()
+    if "psp_mv_state" in text:
+        return 0
+    functions = mevis_functions(text)
+    state = re.compile(r"\b(%s|warned_about_\w+)\b" % "|".join(sorted(MEVIS_STATE, key=len, reverse=True)))
+    copied = {name for name, (header, body) in functions.items() if state.search(body)}
+    while True:
+        calls = re.compile(r"\b(%s)\(" % "|".join(sorted(copied, key=len, reverse=True)))
+        more = {name for name, (header, body) in functions.items() if name not in copied and calls.search(body)}
+        if not more:
+            break
+        copied |= more
+    rename = re.compile(r"\b(%s)\b" % "|".join(sorted(copied, key=len, reverse=True)))
+
+    def convert(piece):
+        piece = rename.sub(lambda m: "psp_mv_" + m.group(1), piece)
+        piece = state.sub(lambda m: "psp_mv->warned" if m.group(1).startswith("warned_about_") else MEVIS_STATE[m.group(1)],
+                          piece)
+        # the function's own statics (visdump's) as plain locals
+        piece = re.sub(r"\bstatic (int|unsigned long) (\w+) = -?\d+;", r"\1 \2 = 0;", piece)
+        return piece
+
+    order = [name for name in functions if name in copied]
+    # the file's macros that name the state (PSP_PVS_FALLBACK), made again
+    # for the copies
+    macros, restore = "", ""
+    for m in re.finditer(r"^#define (\w+) ([^\n]*)$", text, re.M):
+        if state.search(m.group(2)) and "(" not in m.group(1):
+            macros += "#undef %s\n#define %s (%s)\n" % (m.group(1), m.group(1), convert(m.group(2)))
+            restore += "#undef %s\n#define %s %s\n" % (m.group(1), m.group(1), m.group(2))
+    out = ["\n#ifdef HALO_PSP\n/* mevis's copies (psp_fixups.py mevis_copies): %s */\n" % ", ".join(order)]
+    out.append(MEVIS_HEAD)
+    out.append(macros)
+    for name in order:
+        header, body = functions[name]
+        out.append(convert(header).replace("__inline__ ", "").rstrip("\n") + ";\n")
+    for name in order:
+        header, body = functions[name]
+        header = convert(header)
+        body = convert(body)
+        if name == "structure_visibility_traverse_cluster":
+            # (the copy's recursion goes through a depth check: psp_mv_deeper)
+            header = header.replace("psp_mv_structure_visibility_traverse_cluster(", "psp_mv_traverse_cluster_body(")
+        if name in ("structure_visibility_traverse_cluster", "structure_visibility_traverse_subclusters",
+                    "structure_visibility_find_objects"):
+            body = body.replace("{\n", "{\n\tpsp_me_ring_step(0x5649);\n", 1)
+        out.append("\n" + header.replace("__inline__ ", "") + body)
+    out.append(MEVIS_TAIL)
+    # (what follows in the file, appended later, as before)
+    out.append(restore + "#undef PSP_STEP\n#define PSP_STEP(name) psp_step(name)\n")
+    out.append("#endif\n")
+    open(path, "w", errors="surrogateescape").write(text + "".join(out))
+    return len(order)
+
+MEVIS_HEAD = r"""
+#undef PSP_STEP
+#define PSP_STEP(name) ((void)0)
+#define PSP_MV_NOSTEP(name) ((void)0)
+#define PSP_MV_NOPROFILE(meter) ((void)0)
+#define psp_mv_debug_line(...) ((void)0)
+#define psp_mv_debug_cluster(...) 0 /* (ai_debug_highlight_cluster: never, here) */
+/* the most clusters deep the ME's portal walk goes; deeper, the walk stops
+there, counted, and mevisland makes that frame's visibility on the main CPU
+instead. Measured (mevl6, six maps): ~18 KB of stack plus ~3.5 KB a cluster
+level, the deepest walk 12 clusters (b30, 60 KB; c20 5, a10 3). 14 holds it
+with room on 72 KB (the heap is what the level's copies and the textures
+live on) */
+#define PSP_MV_DEPTH 14
+#define PSP_MV_STACK (72 * 1024)
+/* the stack's lowest words, set at its allocation and checked after each
+walk: a walk that ran past its stack is reported, and its answer not used */
+#define PSP_MV_CANARY_WORDS 64
+#define PSP_MV_CANARY 0x5A5AA5A5u
+void psp_me_ring_step(unsigned int step); /* psp_me.c: an audio block waiting is mixed */
+
+/* the copies' state: written only by the ME (the main CPU clears it once, at
+its allocation), on 64-byte lines of its own */
+struct psp_mv_state
+{
+	struct structure_visibility_globals svg;
+	__typeof__(psp_hull_cache) hull_cache;
+	unsigned long walk_id, counter, too_deep;
+	long portal_steps;
+	boolean pvs_fallback, warned;
+	int visrect_mode;
+	short depth, depth_most;
+	unsigned long object_marks[(MAXIMUM_OBJECTS_PER_MAP + 31) / 32];
+	long objects[MAXIMUM_RENDERED_OBJECTS];
+	/* last, so the block can end before the render globals' surface index
+	list (64 KB), which the PSP's walk never writes and nothing here reads */
+	struct render_globals render;
+} __attribute__((aligned(64)));
+#define PSP_MV_RENDER_BYTES offsetof(struct render_globals, environment_surface_indices)
+#define PSP_MV_STATE_BYTES ((offsetof(struct psp_mv_state, render) + PSP_MV_RENDER_BYTES + 63) & ~63u)
+/* set once by the main CPU before the first job; the ME only reads them */
+static struct psp_mv_state *psp_mv;
+static void *psp_mv_stack_top;
+static unsigned int *psp_mv_stack_bottom;
+
+static void psp_mv_error(long priority, char const *format, ...)
+{
+	(void)priority;
+	(void)format;
+}
+
+static void psp_mv_log(char const *format, ...)
+{
+	(void)format;
+}
+
+static int psp_mv_keep(char const *name)
+{
+	(void)name;
+	return 0;
+}
+
+static struct rendered_cluster *psp_mv_rendered_cluster_get(short rendered_cluster_index)
+{
+	return &psp_mv->render.rendered_clusters[rendered_cluster_index];
+}
+"""
+
+MEVIS_TAIL = r"""
+static void psp_mv_structure_visibility_traverse_cluster(
+	short cluster_index,
+	struct portal_hull const *visible_region)
+{
+	if (psp_mv->depth >= PSP_MV_DEPTH)
+	{
+		psp_mv->too_deep++;
+		return;
+	}
+	if (++psp_mv->depth > psp_mv->depth_most)
+		psp_mv->depth_most = psp_mv->depth;
+	psp_mv_traverse_cluster_body(cluster_index, visible_region);
+	psp_mv->depth--;
+}
+
+static boolean psp_mv_unmarked(long object_index)
+{
+	unsigned long k = DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index) % MAXIMUM_OBJECTS_PER_MAP;
+
+	return !(psp_mv->object_marks[k >> 5] & (1UL << (k & 31)));
+}
+
+static boolean psp_mv_mark(long object_index)
+{
+	unsigned long k = DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index) % MAXIMUM_OBJECTS_PER_MAP;
+	boolean was = !(psp_mv->object_marks[k >> 5] & (1UL << (k & 31)));
+
+	psp_mv->object_marks[k >> 5] |= 1UL << (k & 31);
+	return was;
+}
+
+/* the job's record: the camera in, the answers out, each part on lines of
+its own (the main CPU writes the first, the ME the second) */
+#define PSP_MV_HEAD_BYTES offsetof(struct render_globals, visible_cluster_flags)
+struct psp_mv_record
+{
+	unsigned char head[(PSP_MV_HEAD_BYTES + 63) & ~63];
+	int visrect_mode;
+	unsigned int fpu_control, pad_in[14];
+	unsigned int done, clusters, cluster_hash, surfaces, surface_hash, objects, object_hash;
+	unsigned int cycles_clusters, cycles_objects, depth_most, too_deep, pvs_fallback, pad_out[4];
+} __attribute__((aligned(64)));
+
+static unsigned int psp_mv_hash(unsigned int hash, void const *data, unsigned int bytes)
+{
+	unsigned char const *byte = (unsigned char const *)data;
+
+	while (bytes--)
+		hash = (hash ^ *byte++) * 16777619u;
+	return hash;
+}
+
+/* an answer by its hashes: the visible clusters' bits, the rendered
+clusters (index and clip bounds, in order), the environment's surfaces'
+bits */
+static void psp_mv_answer(struct render_globals const *view, unsigned int *clusters, unsigned int *cluster_hash,
+	unsigned int *surfaces, unsigned int *surface_hash)
+{
+	struct structure_bsp *structure = global_structure_bsp_get();
+	unsigned int hash = 2166136261u;
+	short k;
+
+	hash = psp_mv_hash(hash, view->visible_cluster_flags, BIT_VECTOR_SIZE_IN_BYTES(structure->clusters.count));
+	for (k = 0; k < view->rendered_cluster_count; k++)
+	{
+		hash = psp_mv_hash(hash, &view->rendered_clusters[k].cluster_index, sizeof(view->rendered_clusters[k].cluster_index));
+		hash = psp_mv_hash(hash, &view->rendered_clusters[k].clip_bounds, sizeof(view->rendered_clusters[k].clip_bounds));
+	}
+	*clusters = (unsigned int)view->rendered_cluster_count;
+	*cluster_hash = hash;
+	*surfaces = (unsigned int)view->environment_surface_count;
+	/* (the PSP's subcluster walk marks the surfaces in the flags and counts
+	them; the index list isn't written) */
+	*surface_hash = psp_mv_hash(2166136261u, view->environment_surface_flags,
+		BIT_VECTOR_SIZE_IN_BYTES(structure->surfaces.count));
+}
+
+static __inline__ unsigned int psp_mv_cycles(void)
+{
+	unsigned int count;
+
+	__asm__ __volatile__("mfc0 %0, $9" : "=r"(count));
+	return count;
+}
+
+/* fn(argument) on the stack ending at top (the copy's walk is deeper than
+the ME's own stack in eDRAM has room for) */
+void psp_mv_call_on(void (*fn)(void *), void *argument, void *top);
+__asm__(
+	"	.text\n"
+	"	.globl psp_mv_call_on\n"
+	"	.type psp_mv_call_on, @function\n"
+	"	.set push\n"
+	"	.set noreorder\n"
+	"psp_mv_call_on:\n"
+	"	addiu $a2, $a2, -32\n"
+	"	sw $sp, 16($a2)\n"
+	"	sw $ra, 20($a2)\n"
+	"	move $sp, $a2\n"
+	"	move $t9, $a0\n"
+	"	jalr $t9\n"
+	"	move $a0, $a1\n"
+	"	lw $ra, 20($sp)\n"
+	"	lw $sp, 16($sp)\n"
+	"	jr $ra\n"
+	"	nop\n"
+	"	.set pop\n"
+	"	.size psp_mv_call_on, .-psp_mv_call_on\n");
+
+/* on the ME, on the copy's own stack */
+static void psp_mv_run(void *argument)
+{
+	struct psp_mv_record *record = (struct psp_mv_record *)argument;
+	unsigned int start, middle, end, clusters, cluster_hash, surfaces, surface_hash;
+	short count;
+
+	csmemcpy(&psp_mv->render, record->head, PSP_MV_HEAD_BYTES);
+	psp_mv->visrect_mode = record->visrect_mode;
+	psp_mv->depth = psp_mv->depth_most = 0;
+	psp_mv->too_deep = 0;
+	start = psp_mv_cycles();
+	psp_mv_structure_visibility_compute();
+	middle = psp_mv_cycles();
+	csmemset(psp_mv->object_marks, 0, sizeof(psp_mv->object_marks));
+	count = psp_mv_structure_visibility_find_objects(psp_mv->objects, MAXIMUM_RENDERED_OBJECTS,
+		cluster_get_first_collideable_object, cluster_get_next_collideable_object,
+		object_get_render_bounding_sphere, psp_mv_unmarked, psp_mv_mark);
+	count += psp_mv_structure_visibility_find_objects(&psp_mv->objects[count], MAXIMUM_RENDERED_OBJECTS - count,
+		cluster_get_first_noncollideable_object, cluster_get_next_noncollideable_object,
+		object_get_render_bounding_sphere, psp_mv_unmarked, psp_mv_mark);
+	end = psp_mv_cycles();
+	psp_mv_answer(&psp_mv->render, &clusters, &cluster_hash, &surfaces, &surface_hash);
+	record->clusters = clusters;
+	record->cluster_hash = cluster_hash;
+	record->surfaces = surfaces;
+	record->surface_hash = surface_hash;
+	record->objects = (unsigned int)count;
+	record->object_hash = psp_mv_hash(2166136261u, psp_mv->objects, (unsigned int)count * sizeof(long));
+	record->cycles_clusters = middle - start;
+	record->cycles_objects = end - middle;
+	record->depth_most = (unsigned int)psp_mv->depth_most;
+	record->too_deep = (unsigned int)psp_mv->too_deep;
+	record->pvs_fallback = psp_mv->pvs_fallback;
+	record->done = 1;
+}
+
+/* the ring job (psp_me.c, ME_JOB_VISIBILITY), on the ME: under the main
+CPU's FPU control, as its own walk ran */
+void psp_mevis_me_job(const unsigned int *args, unsigned int *results)
+{
+	struct psp_mv_record *record = (struct psp_mv_record *)args[0];
+	unsigned int control = record->fpu_control, saved;
+
+	unsigned int k;
+
+	__asm__ __volatile__("cfc1 %0, $31" : "=r"(saved));
+	__asm__ __volatile__("ctc1 %0, $31" : : "r"(control));
+	psp_mv_call_on(psp_mv_run, record, psp_mv_stack_top);
+	__asm__ __volatile__("ctc1 %0, $31" : : "r"(saved));
+	for (k = 0; k < PSP_MV_CANARY_WORDS; k++)
+		if (psp_mv_stack_bottom[k] != PSP_MV_CANARY)
+		{
+			record->done = 0;
+			record->pad_out[0] = 1;
+			break;
+		}
+	results[0] = 1;
+}
+
+/* ---------- the main CPU's side: the push before its own visibility, its
+answers, and the look at the frame's end */
+int psp_keep(const char *name);
+void platform_psp_log(const char *format, ...);
+unsigned long psp_microseconds(void);
+unsigned int sceKernelGetSystemTimeLow(void);
+void sceKernelDcacheInvalidateRange(const void *p, unsigned int size);
+void sceKernelDcacheWritebackRange(const void *p, unsigned int size);
+void *memalign(size_t alignment, size_t size);
+int psp_me_push_visibility(void *record, unsigned int record_bytes, unsigned int *ticket); /* psp_me.c */
+int psp_me_ring_done(unsigned int ticket);
+float psp_me_cycles_per_us(void);
+
+static int psp_mv_on = -1, psp_mv_out = 0, psp_mv_pushed = 0, psp_mv_stuck = 0, psp_mv_have_clusters = 0, psp_mv_have_objects = 0;
+static unsigned int psp_mv_ticket;
+static struct psp_mv_record *psp_mv_record;
+static unsigned int psp_mv_main_clusters, psp_mv_main_cluster_hash, psp_mv_main_surfaces, psp_mv_main_surface_hash;
+static unsigned int psp_mv_main_object_count, psp_mv_main_object_hash;
+static unsigned long psp_mv_frames, psp_mv_answers, psp_mv_late, psp_mv_wait_us, psp_mv_refused, psp_mv_differ_clusters,
+	psp_mv_differ_objects, psp_mv_main_us_clusters, psp_mv_main_us_objects, psp_mv_main_views, psp_mv_too_deep,
+	psp_mv_depth_most, psp_mv_pvs;
+static unsigned long long psp_mv_cycles_clusters, psp_mv_cycles_objects, psp_mv_cycles_most;
+static unsigned long psp_mv_differ_parts[4], psp_mv_differ_lines;
+
+static int psp_mv_start(void)
+{
+	unsigned int state_bytes = PSP_MV_STATE_BYTES, k;
+	void *stack;
+
+	psp_mv = (struct psp_mv_state *)memalign(64, state_bytes);
+	stack = memalign(64, PSP_MV_STACK);
+	psp_mv_record = (struct psp_mv_record *)memalign(64, sizeof(struct psp_mv_record));
+	if (!psp_mv || !stack || !psp_mv_record)
+	{
+		platform_psp_log("mevis: no room for the ME's copy (%u KB state, %u KB stack); off", state_bytes / 1024,
+			PSP_MV_STACK / 1024);
+		return 0;
+	}
+	csmemset(psp_mv, 0, state_bytes);
+	csmemset(psp_mv_record, 0, sizeof(*psp_mv_record));
+	psp_mv_stack_top = (char *)stack + PSP_MV_STACK;
+	psp_mv_stack_bottom = (unsigned int *)stack;
+	/* the whole stack, so the report can say how deep the walks reached
+	(the lowest word changed); the walk's check reads only the bottom */
+	for (k = 0; k < PSP_MV_STACK / 4; k++)
+		psp_mv_stack_bottom[k] = PSP_MV_CANARY;
+	platform_psp_log("mevis: the frame's visibility again on the ME, timed and checked (%u KB state, %u KB stack, %d clusters deep at most)",
+		state_bytes / 1024, PSP_MV_STACK / 1024, PSP_MV_DEPTH);
+	return 1;
+}
+
+/* render.c, before the frame's first structure_visibility_compute */
+void psp_mevis_view_begin(void)
+{
+	unsigned int control;
+
+	if (psp_mv_on < 0)
+		psp_mv_on = psp_keep("mevis") ? psp_mv_start() : 0;
+	if (!psp_mv_on || psp_mv_pushed || psp_mv_out || psp_mv_stuck)
+		return;
+	psp_mv_pushed = 1;
+	csmemcpy(psp_mv_record->head, &render, PSP_MV_HEAD_BYTES);
+	psp_mv_record->visrect_mode = psp_keep("visrectcheck") ? 2 : psp_keep("visrectold") || psp_keep("smallwins2old") ? 0 : 1;
+	__asm__ __volatile__("cfc1 %0, $31" : "=r"(control));
+	psp_mv_record->fpu_control = control;
+	psp_mv_record->done = 0;
+	if (psp_me_push_visibility(psp_mv_record, sizeof(*psp_mv_record), &psp_mv_ticket))
+		psp_mv_out = 1;
+	else
+		psp_mv_refused++;
+}
+
+/* render.c, after it: the main CPU's answer and its time */
+void psp_mevis_main_clusters(unsigned long us)
+{
+	if (!psp_mv_on || !psp_mv_pushed || psp_mv_have_clusters)
+		return;
+	psp_mv_have_clusters = 1;
+	psp_mv_main_us_clusters += us;
+	psp_mv_answer(&render, &psp_mv_main_clusters, &psp_mv_main_cluster_hash, &psp_mv_main_surfaces, &psp_mv_main_surface_hash);
+}
+
+/* render_objects.c's find_rendered_objects */
+void psp_mevis_main_objects(long const *indices, short count, unsigned long us)
+{
+	if (!psp_mv_on || !psp_mv_pushed || psp_mv_have_objects)
+		return;
+	psp_mv_have_objects = 1;
+	psp_mv_main_us_objects += us;
+	psp_mv_main_object_count = (unsigned int)count;
+	psp_mv_main_object_hash = psp_mv_hash(2166136261u, indices, (unsigned int)count * sizeof(long));
+}
+
+/* render.c, at render_frame's end: the ME's answer, waited for (at most
+100 ms: the tick that follows changes what the job reads), compared */
+void psp_mevis_frame_end(void)
+{
+	if (psp_mv_on <= 0)
+		return;
+	if (psp_mv_out)
+	{
+		unsigned int start = sceKernelGetSystemTimeLow();
+		int done = psp_me_ring_done(psp_mv_ticket);
+
+		if (!done)
+		{
+			psp_mv_late++;
+			while (!(done = psp_me_ring_done(psp_mv_ticket)) && sceKernelGetSystemTimeLow() - start < 100000)
+				;
+			psp_mv_wait_us += sceKernelGetSystemTimeLow() - start;
+		}
+		if (!done)
+		{
+			psp_mv_stuck = 1;
+			platform_psp_log("mevis: the ME's visibility not done 100 ms after the frame's end; no more pushed");
+		}
+		else
+		{
+			unsigned long long both;
+
+			sceKernelDcacheInvalidateRange(psp_mv_record, sizeof(*psp_mv_record));
+			psp_mv_out = 0;
+			if (psp_mv_record->done)
+			{
+				psp_mv_answers++;
+				psp_mv_cycles_clusters += psp_mv_record->cycles_clusters;
+				psp_mv_cycles_objects += psp_mv_record->cycles_objects;
+				both = (unsigned long long)psp_mv_record->cycles_clusters + psp_mv_record->cycles_objects;
+				if (both > psp_mv_cycles_most)
+					psp_mv_cycles_most = both;
+				psp_mv_too_deep += psp_mv_record->too_deep;
+				psp_mv_pvs += psp_mv_record->pvs_fallback;
+				if (psp_mv_record->depth_most > psp_mv_depth_most)
+					psp_mv_depth_most = psp_mv_record->depth_most;
+				if (psp_mv_have_clusters && (psp_mv_record->clusters != psp_mv_main_clusters ||
+					psp_mv_record->cluster_hash != psp_mv_main_cluster_hash || psp_mv_record->surfaces != psp_mv_main_surfaces ||
+					psp_mv_record->surface_hash != psp_mv_main_surface_hash))
+				{
+					psp_mv_differ_clusters++;
+					psp_mv_differ_parts[0] += psp_mv_record->clusters != psp_mv_main_clusters;
+					psp_mv_differ_parts[1] += psp_mv_record->cluster_hash != psp_mv_main_cluster_hash;
+					psp_mv_differ_parts[2] += psp_mv_record->surfaces != psp_mv_main_surfaces;
+					psp_mv_differ_parts[3] += psp_mv_record->surface_hash != psp_mv_main_surface_hash;
+					if (psp_mv_differ_lines < 8)
+					{
+						psp_mv_differ_lines++;
+						platform_psp_log("mevis: differs: clusters %u here, %u on the ME (bits and bounds %08x, %08x); surfaces %u, %u (%08x, %08x)",
+							psp_mv_main_clusters, psp_mv_record->clusters, psp_mv_main_cluster_hash, psp_mv_record->cluster_hash,
+							psp_mv_main_surfaces, psp_mv_record->surfaces, psp_mv_main_surface_hash, psp_mv_record->surface_hash);
+					}
+				}
+				if (psp_mv_have_objects && (psp_mv_record->objects != psp_mv_main_object_count ||
+					psp_mv_record->object_hash != psp_mv_main_object_hash))
+					psp_mv_differ_objects++;
+				if (psp_mv_have_clusters)
+					psp_mv_main_views++;
+			}
+		}
+	}
+	psp_mv_pushed = psp_mv_have_clusters = psp_mv_have_objects = 0;
+	if (++psp_mv_frames % 300 == 0)
+	{
+		float per_us = psp_me_cycles_per_us();
+		double answers = psp_mv_answers ? (double)psp_mv_answers : 1.0, views = psp_mv_main_views ? (double)psp_mv_main_views : 1.0;
+
+		platform_psp_log("mevis: %lu answers from the ME in %lu frames: on the ME %.2f ms a frame (clusters %.2f + objects %.2f, the most %.2f), here %.2f ms (clusters %.2f + objects %.2f); not done by the frame's end %lu (waited %.2f ms a frame); differing from here: clusters %lu, objects %lu; cut at %d clusters deep %lu times (the deepest %lu); portal walks over budget %lu; not taken by the ring %lu; of the clusters' differences: count %lu, bits and bounds %lu, surface count %lu, surfaces %lu; the ME's clock %.1f cycles a us (last 300 frames)",
+			psp_mv_answers, psp_mv_frames,
+			per_us > 0.0f ? (psp_mv_cycles_clusters + psp_mv_cycles_objects) / per_us / 1000.0 / answers : 0.0,
+			per_us > 0.0f ? psp_mv_cycles_clusters / per_us / 1000.0 / answers : 0.0,
+			per_us > 0.0f ? psp_mv_cycles_objects / per_us / 1000.0 / answers : 0.0,
+			per_us > 0.0f ? psp_mv_cycles_most / per_us / 1000.0 : 0.0,
+			(psp_mv_main_us_clusters + psp_mv_main_us_objects) / 1000.0 / views,
+			psp_mv_main_us_clusters / 1000.0 / views, psp_mv_main_us_objects / 1000.0 / views,
+			psp_mv_late, psp_mv_wait_us / 1000.0 / 300.0, psp_mv_differ_clusters, psp_mv_differ_objects,
+			PSP_MV_DEPTH, psp_mv_too_deep, psp_mv_depth_most, psp_mv_pvs, psp_mv_refused, psp_mv_differ_parts[0],
+			psp_mv_differ_parts[1], psp_mv_differ_parts[2], psp_mv_differ_parts[3], (double)per_us);
+		csmemset(psp_mv_differ_parts, 0, sizeof(psp_mv_differ_parts));
+		psp_mv_frames = psp_mv_answers = psp_mv_late = psp_mv_wait_us = psp_mv_refused = psp_mv_differ_clusters = 0;
+		psp_mv_differ_objects = psp_mv_main_us_clusters = psp_mv_main_us_objects = psp_mv_main_views = psp_mv_too_deep = 0;
+		psp_mv_depth_most = psp_mv_pvs = 0;
+		psp_mv_cycles_clusters = psp_mv_cycles_objects = psp_mv_cycles_most = 0;
+	}
+}
+/* ---------- "mevisland" (docs/mevis_landing.md): the frame's visibility made
+on the ME and used. It is pushed where the main CPU's own would run
+(structure_visibility_compute) and collected at its first reader
+(lights_preprocess_scene). No tick runs between, and nothing the main CPU does
+in that span writes what visibility reads, so the answer is the main CPU's, bit
+for bit. A push the ring refuses, or an answer later than PSP_ML_LATE_US,
+has the main CPU make its own visibility there: the safety net, as before */
+#define PSP_ML_LATE_US 50000
+int psp_me_push_visibility_into(void *record, void *answer, unsigned int answer_bytes, unsigned int *ticket); /* psp_me.c */
+
+static int psp_ml_on = -1, psp_ml_check = 0, psp_ml_out = 0, psp_ml_waiting = 0, psp_ml_objects_ready = 0, psp_ml_overran = 0;
+/* where the walk runs is decided by measurement (CLAUDE.md, placement): the
+ME's walk pays only while the main CPU has enough of its own to do before
+the first reader. Each view made here is timed (psp_ml_main_avg) and each
+answer's wait at the first reader too (psp_ml_wait_avg, eighths of a us,
+both moving averages). When the wait comes within PSP_ML_MARGIN_US of the
+walk itself, the next PSP_ML_REST views are made here, which also refreshes
+the walk's time, then the ME is tried again; a long run of pushes rests for
+PSP_ML_REFRESH views now and then to keep that time current. "mevislandalways"
+pushes every view (the A/B's other side). The ME's time isn't free either (its
+own frame's replay waits behind the walk, and the bus is shared with the
+tick), so a walk under PSP_ML_MIN_WALK_US stays here: there's little to win */
+#define PSP_ML_MARGIN_US 500
+#define PSP_ML_MIN_WALK_US 1500
+#define PSP_ML_CHECK 32
+#define PSP_ML_REST 240
+#define PSP_ML_PUSHES_BEFORE_REFRESH 600
+#define PSP_ML_REFRESH 16
+static int psp_ml_always = 0, psp_ml_rest = PSP_ML_CHECK, psp_ml_since_check = 0, psp_ml_since_refresh = 0;
+static unsigned long psp_ml_main_avg = 0, psp_ml_wait_avg = 0, psp_ml_here = 0, psp_ml_rests = 0;
+static unsigned long psp_ml_depth_most = 0, psp_ml_too_deep = 0;
+static unsigned int psp_ml_ticket, psp_ml_state_bytes;
+static unsigned long psp_ml_views, psp_ml_used, psp_ml_refused, psp_ml_busy, psp_ml_late, psp_ml_failed, psp_ml_wait_us,
+	psp_ml_wait_worst, psp_ml_waited, psp_ml_differ_clusters, psp_ml_differ_objects;
+
+/* this CPU's copies of lines the ME wrote, dropped before they are read. It
+never writes the copies' state or the record after the push (the push writes
+its whole cache back first), so dropping loses nothing of its own */
+static void psp_ml_drop(void const *p, unsigned int bytes)
+{
+	unsigned int start = (unsigned int)p & ~63u, end = ((unsigned int)p + bytes + 63u) & ~63u;
+
+	sceKernelDcacheInvalidateRange((void const *)start, end - start);
+}
+
+/* render.c's render_window, in place of structure_visibility_compute: 1 when
+the ME makes it, 0 when the main CPU should, now */
+int psp_mevisland_push(void)
+{
+	unsigned int control;
+
+	if (psp_ml_on < 0)
+	{
+		psp_ml_on = psp_keep("mevisland") ? (psp_mv != NULL || psp_mv_start()) : 0;
+		psp_ml_check = psp_ml_on && psp_keep("mevislandcheck");
+		psp_ml_always = psp_ml_on && (psp_keep("mevislandalways") || psp_ml_check);
+		psp_ml_state_bytes = PSP_MV_STATE_BYTES;
+		if (psp_ml_on)
+			platform_psp_log("mevisland: the frame's visibility made on the ME and used%s",
+				psp_ml_check ? "; mevislandcheck: the main CPU makes its own too, and the two are compared" : "");
+	}
+	if (!psp_ml_on || psp_ml_overran)
+		return 0;
+	psp_ml_views++;
+	if (psp_ml_out)
+	{
+		/* an earlier answer, too late to be used, still being made: the
+		copies' state is the ME's until it ends */
+		if (!psp_me_ring_done(psp_ml_ticket))
+		{
+			psp_ml_busy++;
+			return 0;
+		}
+		psp_ml_out = 0;
+	}
+	/* (a structure the port can't hold: the main CPU's own path, which
+	clears what it can) */
+	if (!structure_bsp_port_verify(global_structure_bsp_get()))
+		return 0;
+	if (!psp_ml_always && psp_ml_rest > 0)
+	{
+		unsigned int start = sceKernelGetSystemTimeLow(), took;
+
+		psp_ml_rest--;
+		psp_ml_here++;
+		structure_visibility_compute();
+		took = sceKernelGetSystemTimeLow() - start;
+		psp_ml_main_avg = psp_ml_main_avg ? (psp_ml_main_avg * 7 + took * 8) / 8 : took * 8;
+		return 1;
+	}
+	csmemcpy(psp_mv_record->head, &render, PSP_MV_HEAD_BYTES);
+	psp_mv_record->visrect_mode = psp_keep("visrectcheck") ? 2 : psp_keep("visrectold") || psp_keep("smallwins2old") ? 0 : 1;
+	__asm__ __volatile__("cfc1 %0, $31" : "=r"(control));
+	psp_mv_record->fpu_control = control;
+	psp_mv_record->done = 0;
+	if (!psp_me_push_visibility_into(psp_mv_record, psp_mv, psp_ml_state_bytes, &psp_ml_ticket))
+	{
+		psp_ml_refused++;
+		return 0;
+	}
+	psp_ml_out = psp_ml_waiting = 1;
+	return 1;
+}
+
+/* render.c, before lights_preprocess_scene (and at the window's end, for a
+view that never reached it): the ME's clusters and surfaces copied in, the
+fields structure_visibility_compute writes, or the main CPU's own made now */
+void psp_mevisland_collect(void)
+{
+	struct structure_bsp *structure;
+	unsigned int start, waited;
+	int done;
+
+	if (!psp_ml_waiting)
+		return;
+	psp_ml_waiting = 0;
+	start = sceKernelGetSystemTimeLow();
+	done = psp_me_ring_done(psp_ml_ticket);
+	while (!done && sceKernelGetSystemTimeLow() - start < PSP_ML_LATE_US)
+		done = psp_me_ring_done(psp_ml_ticket);
+	waited = sceKernelGetSystemTimeLow() - start;
+	psp_ml_wait_us += waited;
+	if (waited > psp_ml_wait_worst)
+		psp_ml_wait_worst = waited;
+	psp_ml_waited += waited > 0;
+	if (!done)
+	{
+		psp_ml_late++;
+		structure_visibility_compute();
+		return;
+	}
+	psp_ml_out = 0;
+	psp_ml_drop(psp_mv_record, sizeof(*psp_mv_record));
+	if (psp_mv_record->depth_most > psp_ml_depth_most)
+		psp_ml_depth_most = psp_mv_record->depth_most;
+	if (!psp_mv_record->done || psp_mv_record->too_deep)
+	{
+		/* a walk cut at PSP_MV_DEPTH, or one that ran past its stack: not
+		the main CPU's answer */
+		psp_ml_failed++;
+		psp_ml_too_deep += psp_mv_record->too_deep != 0;
+		if (psp_mv_record->pad_out[0] && !psp_ml_overran)
+		{
+			psp_ml_overran = 1;
+			platform_psp_log("mevisland: the ME's walk ran past its %u KB stack; its answers are made here from now on",
+				PSP_MV_STACK / 1024);
+		}
+		structure_visibility_compute();
+		return;
+	}
+	structure = global_structure_bsp_get();
+	psp_ml_drop(&psp_mv->render, PSP_MV_RENDER_BYTES);
+	psp_ml_drop(psp_mv->objects, sizeof(psp_mv->objects));
+	if (psp_ml_check)
+	{
+		unsigned int clusters, cluster_hash, surfaces, surface_hash;
+
+		structure_visibility_compute();
+		psp_mv_answer(&render, &clusters, &cluster_hash, &surfaces, &surface_hash);
+		psp_ml_differ_clusters += clusters != psp_mv_record->clusters || cluster_hash != psp_mv_record->cluster_hash ||
+			surfaces != psp_mv_record->surfaces || surface_hash != psp_mv_record->surface_hash;
+	}
+	csmemcpy(render.visible_cluster_flags, psp_mv->render.visible_cluster_flags,
+		BIT_VECTOR_SIZE_IN_BYTES(structure->clusters.count));
+	render.rendered_cluster_count = psp_mv->render.rendered_cluster_count;
+	csmemcpy(render.rendered_clusters, psp_mv->render.rendered_clusters,
+		render.rendered_cluster_count * sizeof(render.rendered_clusters[0]));
+	csmemcpy(render.environment_surface_flags, psp_mv->render.environment_surface_flags,
+		BIT_VECTOR_SIZE_IN_BYTES(structure->surfaces.count));
+	render.environment_surface_count = psp_mv->render.environment_surface_count;
+	psp_pvs_fallback = (boolean)psp_mv_record->pvs_fallback;
+	psp_ml_objects_ready = 1;
+	psp_ml_used++;
+	psp_ml_wait_avg = psp_ml_wait_avg ? (psp_ml_wait_avg * 7 + waited * 8) / 8 : waited * 8;
+	if (!psp_ml_always && ++psp_ml_since_check >= PSP_ML_CHECK)
+	{
+		psp_ml_since_check = 0;
+		if (psp_ml_wait_avg / 8 + PSP_ML_MARGIN_US >= psp_ml_main_avg / 8 || psp_ml_main_avg / 8 < PSP_ML_MIN_WALK_US)
+		{
+			psp_ml_rest = PSP_ML_REST;
+			psp_ml_rests++;
+			psp_ml_wait_avg = 0;
+			psp_ml_since_refresh = 0;
+		}
+	}
+	if (!psp_ml_always && ++psp_ml_since_refresh >= PSP_ML_PUSHES_BEFORE_REFRESH)
+	{
+		psp_ml_since_refresh = 0;
+		psp_ml_rest = PSP_ML_REFRESH;
+	}
+}
+
+/* render_objects.c's find_rendered_objects: the ME's list, and the marks the
+main CPU's walk would have left on the objects it listed (only those: an
+object is marked as it is listed) */
+int psp_mevisland_objects(long *indices, short *count)
+{
+	short k, n;
+
+	if (!psp_ml_objects_ready)
+		return 0;
+	psp_ml_objects_ready = 0;
+	n = (short)psp_mv_record->objects;
+	if (psp_ml_check)
+	{
+		/* the main CPU's own walk, which leaves its marks */
+		short mine;
+
+		object_marker_begin();
+		mine = structure_visibility_find_objects(indices, MAXIMUM_RENDERED_OBJECTS, cluster_get_first_collideable_object,
+			cluster_get_next_collideable_object, object_get_render_bounding_sphere, object_unmarked_function, object_mark_function);
+		mine += structure_visibility_find_objects(&indices[mine], MAXIMUM_RENDERED_OBJECTS - mine,
+			cluster_get_first_noncollideable_object, cluster_get_next_noncollideable_object, object_get_render_bounding_sphere,
+			object_unmarked_function, object_mark_function);
+		object_marker_end();
+		psp_ml_differ_objects += mine != n || psp_mv_hash(2166136261u, indices, (unsigned int)mine * sizeof(long)) !=
+			psp_mv_record->object_hash;
+		csmemcpy(indices, psp_mv->objects, (unsigned int)n * sizeof(long));
+		*count = n;
+		return 1;
+	}
+	csmemcpy(indices, psp_mv->objects, (unsigned int)n * sizeof(long));
+	object_marker_begin();
+	for (k = 0; k < n; k++)
+		object_mark_function(indices[k]);
+	object_marker_end();
+	*count = n;
+	return 1;
+}
+
+/* render.c, at the window's end */
+void psp_mevisland_settle(void)
+{
+	if (psp_ml_on <= 0)
+		return;
+	psp_mevisland_collect();
+	psp_ml_objects_ready = 0;
+	if (psp_ml_views >= 300)
+	{
+		unsigned int low = 0;
+
+		/* the stack's lowest changed word (the ME wrote it; this CPU never
+		does, so its lines are dropped before the look) */
+		if (!psp_ml_out)
+		{
+			psp_ml_drop(psp_mv_stack_bottom, PSP_MV_STACK);
+			while (low < PSP_MV_STACK / 4 && psp_mv_stack_bottom[low] == PSP_MV_CANARY)
+				low++;
+		}
+		platform_psp_log("mevisland: %lu views: the ME's answer used %lu; made here instead: refused by the ring %lu, the ME still on an earlier one %lu, late %lu, failed %lu (%lu cut at %d clusters deep); waited at the first reader %.2f ms a view (%lu views waited, the most %.2f ms); the deepest walk %lu clusters; the stack used %u of %u KB at most (since the start); made here by placement %lu (%lu rests; the walk here %.2f ms, the wait for the ME's %.2f ms, moving averages)%s (last 300 views)",
+			psp_ml_views, psp_ml_used, psp_ml_refused, psp_ml_busy, psp_ml_late, psp_ml_failed, psp_ml_too_deep, PSP_MV_DEPTH,
+			psp_ml_wait_us / 1000.0 / psp_ml_views, psp_ml_waited, psp_ml_wait_worst / 1000.0, psp_ml_depth_most,
+			low ? (PSP_MV_STACK - low * 4) / 1024 : 0, PSP_MV_STACK / 1024, psp_ml_here, psp_ml_rests,
+			psp_ml_main_avg / 8000.0, psp_ml_wait_avg / 8000.0, psp_ml_always ? "; mevislandalways: every view pushed" : "");
+		if (psp_ml_check)
+			platform_psp_log("mevislandcheck: differing from the main CPU's own: clusters %lu, objects %lu (last 300 views)",
+				psp_ml_differ_clusters, psp_ml_differ_objects);
+		psp_ml_views = psp_ml_used = psp_ml_refused = psp_ml_busy = psp_ml_late = psp_ml_failed = 0;
+		psp_ml_wait_us = psp_ml_wait_worst = psp_ml_waited = psp_ml_differ_clusters = psp_ml_differ_objects = 0;
+		psp_ml_depth_most = psp_ml_too_deep = psp_ml_here = psp_ml_rests = 0;
+	}
+}
+"""
 
 
 failures = []
@@ -29841,6 +40715,10 @@ for rel, changes in FIXES.items():
 if CHECK_ONLY:
     print("\n\n".join(failures))
     sys.exit("psp_fixups: %d anchors don't match once" % len(failures) if failures else 0)
+# (before the passes below, which label and append: the copies are made from
+# the fixed text alone)
+if WALKAPART or MEVISLAND:
+    print("psp_fixups: mevis's copies of %d visibility functions" % mevis_copies(TREE))
 print("psp_fixups: %d files changed, AI debug records shared in %d, unaligned accesses fixed in %d, breadcrumbs in %d, code appended to %d, passes skipped in %d, packed designators %d"
       % (len(FIXES), ai_debug_records(TREE), unaligned_accesses(TREE), breadcrumbs(TREE) + step_labels(TREE), appended(TREE), skipped_passes(TREE), packed_designators(TREE)))
 # build 102: after ai_debug_records, which skips a file once PSP_DEBUG_INDEX is in it

@@ -1,22 +1,36 @@
 # Sierra-III
 
-Native PlayStation Portable port of Halo: Combat Evolved, built for the original PSP-1000 (32 MB RAM, 333 MHz). Based on the community decompilation. Bring your own game files: no game data is included.
+Native PlayStation Portable port of Halo: Combat Evolved, built for the original PSP-1000 (32 MB RAM, 333 MHz). Based on Chupathingy by Milenko, also based on OpenCE. Bring your own game files: no game data is included.
 
 *Sierra-III ("Sierra Three") is the port's codename.*
 
 ## Where it stands
 
-The whole campaign loads and plays on a PSP-1000, all ten maps in one session. As of build 119 (2026-10-13, on a PSP-1000), *The Maw* (d40) runs at 19 fps; *The Pillar of Autumn*, *Assault on the Control Room* and *Two Betrayals* are within a few milliseconds of 15 fps at 30 ticks a second; the heaviest map, *The Silent Cartographer* (b30), runs at about 4 fps in its opening flight and 9 on the beach. The engine base is ChupathingyCE. Each release's notes are `docs/release_notes_bNNN.md`.
+**Build 148** is the current release. The whole campaign loads and plays on a PSP-1000, all ten maps in one session, and it is a work in progress. Measured on a PSP-1000 just before b143, the first release (b148 is the same or faster; the second half of each level's first two minutes, fights included): *The Maw* and *Assault on the Control Room* run at about 30 fps, *Two Betrayals* at 26, *The Pillar of Autumn* at 20, five more between 13 and 18, and the heaviest, *The Silent Cartographer*, at about 6. The engine base is ChupathingyCE. The release's notes are `docs/release_notes_b148.md`.
 
-The target is a steady 30 ticks a second at 30 fps everywhere in the campaign. 15/15 (15 fps at 15 ticks a second) is a milestone to bench against, not the floor or the ceiling.
+The target is a steady 30 ticks a second at 30 fps everywhere in the campaign. Most levels are still short of it.
+
+## Get it running
+
+You need a PSP with custom firmware (ARK-4) and a Memory Stick with 3.5 GB free; your own disc image of Halo for the original Xbox (Tested against NTSC version 01.10.12.2276); and a Windows 10 or 11 PC, or a Linux PC with glibc 2.39 or later, to bake the maps on.
+
+1. **Download** from the [releases page](https://github.com/Sheepdog-01/Sierra-III-Release/releases) the game zip (`halo_psp_b148.zip`) and the bake tool for your PC.
+2. **Unpack the bake tool**, then put your disc image and the game zip, unopened, in the two folders it names.
+3. **Double-click the bake** (`Bake Halo.cmd` on Windows, `bake-halo.sh` on Linux). It checks your disc, then bakes the maps in about 10 minutes on an 8-core PC.
+4. **Copy what it made** (`COPY-TO-MEMORY-STICK`) onto the Memory Stick's root, merging with what is there.
+5. **On the PSP:** Game, Memory Stick, *Sierra-III: Halo CE port*.
+
+`docs/play.md` is the same in full, with a check after every step and what to do when one fails. If your disc is another version or language, the bake will say so and stop; those aren't supported yet. Nothing you bake is ours to ship or yours to share: it is made from your disc.
+
+**What to expect:** a slow game. Only the lightest levels run near full speed, the heaviest runs at single-digit frame rates, and a few things differ from the Xbox (`docs/play.md`, "What to expect"). It has been hand-tested by one person on his own PSPs, so it will meet problems we haven't. Multiplayer isn't included.
 
 ## How it's made
 
 Sierra-III is written with an AI model, Claude, and every change says so. The division of work is fixed:
 
-- **The maintainer decides what to build** and in what order, and every change to how the game looks or plays is the maintainer's call, made after seeing both sides.
+- **The maintainer, Sheepdog-01 decides what to build** and in what order, and every change to how the game looks or plays is the maintainer's call, made after seeing both sides.
 - **Claude writes the code**, and each change carries its evidence: why it's there, what it was measured against, and whether the figure came from the PSP, the emulator, the code or inference (`[M]`, `[E]`, `[D]`, `[U]` in the docs).
-- **Every build is tested on a real PSP-1000** before the next one is made, and speed-ups that claim to leave the game unchanged are checked tick by tick against the game's state in an emulator first.
+- **Every build is tested on a real PSP** before the next one is made, and speed-ups that claim to leave the game unchanged are checked tick by tick against the game's state in an emulator first.
 - **The maintainer reviews every build's changes** through a walk-through of what changed and why.
 
 The decompilation this port is built on, and ChupathingyCE, were also made with heavy use of AI tools; ChupathingyCE's README says how it uses them, and Sierra-III follows the same principle: a person decides, reviews, tests and answers for every change.
@@ -46,13 +60,13 @@ On Linux with the pspdev toolchain, Python 3, ninja, cmake and git:
 PSPDEV=/opt/pspdev tools/build_release.sh <output folder>
 ```
 
-It fetches the engine and the Media Engine library at the commits `upstream/pins.env` pins (once, into a cache), builds the port and its two helper modules, and writes `halo_psp_<commit>.zip`. The same commit and switches build the same bytes on any machine, so the EBOOT's hash can be checked against the release notes, which name the switches the release was built with.
+It fetches the engine and the Media Engine library at the commits `upstream/pins.env` pins (once, into a cache), builds the port and its two helper modules, and writes `halo_psp_<commit>.zip`. The same commit and switches build the same bytes on any machine, so the EBOOT's hash can be checked against the release notes, which name the switches the release was built with. For b143 that is `184572c617a4f654`, built with the profile `pgo/campaign-b143.tgz` and the switches in `docs/release_notes_b143.md`: this repository holds the exact source of the release, so you can read it, change it and build your own.
 
 **`docs/toolchain.md`** is the whole setup from a clean machine: the packages, the toolchain, the build, baking maps from your own disc, installing, and the emulator.
 
 ## Maps
 
-The port reads maps baked for the PSP: the map itself, plus its texture, geometry and stencil packs. Make them from your own disc image with the bake bundle for your system (Windows, macOS or Linux), which comes with each release: put the disc image and the build zip in the bundle's two folders, double-click `Bake Halo` (`Bake Halo.cmd`, `Bake Halo.command` or `bake-halo.sh`), and copy what it puts in `COPY-TO-MEMORY-STICK` (the game, with its menu sound, and the maps) to the root of the Memory Stick. `bake/README.md` has the details and the command line; `bake/make_bundle.sh <out>` builds a bundle from source.
+The port reads maps baked for the PSP: the map itself, plus its texture, geometry and stencil packs. Make them from your own disc image with the bake bundle for your system, which comes with each release (b143: Windows and Linux): put the disc image and the build zip in the bundle's two folders, double-click `Bake Halo` (`Bake Halo.cmd` or `bake-halo.sh`), and copy what it puts in `COPY-TO-MEMORY-STICK` (the game, with its menu sound, and the maps) to the root of the Memory Stick. `bake/README.md` has the details and the command line; `bake/make_bundle.sh <out>` builds a bundle from source.
 
 ## Installing
 

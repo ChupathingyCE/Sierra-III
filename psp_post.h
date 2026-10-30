@@ -58,3 +58,12 @@ int psp_keep_loaded(void);
 	if (psp_keep_once_ < 0 && psp_keep_loaded()) \
 		psp_keep_once_ = (signed char)psp_keep(word); \
 	psp_keep_once_ > 0; })
+
+/* the release's extra keep defaults (psp_platform.c's keep_defaults): kept
+here so the table's line count, and every function's line after it, is the
+same in both builds and one profile fits them */
+#if defined(PSP_METRICS) && PSP_METRICS
+#define PSP_RELEASE_DEFAULTS
+#else
+#define PSP_RELEASE_DEFAULTS { "notimers", "timerson" }, { "nooverlay", "overlay" },
+#endif

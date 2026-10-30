@@ -1210,6 +1210,23 @@ int __wrap_sceDisplaySetFrameBuf(void *top, int width, int format, int sync)
 	psp_shown_buffer = (unsigned int)top;
 	result = __real_sceDisplaySetFrameBuf(top, width, format, sync);
 	psp_trace_line("display = %d", result);
+	/* "flipwait" (B21): a buffer set for the next frame is only shown at the
+	next vblank, but the caller went straight on and the next frame began
+	drawing into the buffer still being scanned out: its big level polygons
+	(the ocean, the shore) showed half drawn while the view moved. Waiting
+	for that vblank here keeps the old buffer off limits until it is off
+	the screen */
+	if (sync)
+	{
+		static int flip_wait = -1;
+		int psp_keep(const char *name);
+		int sceDisplayWaitVblankStart(void);
+
+		if (flip_wait < 0)
+			flip_wait = psp_keep("flipwait") != 0;
+		if (flip_wait)
+			sceDisplayWaitVblankStart();
+	}
 	return result;
 }
 

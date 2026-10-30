@@ -44,7 +44,8 @@ Options:
                                 <output>/work/<map>.log
     --force                     bake maps whose hashes don't match
     --detail fp,vehicles        also bake _detail.ptex with these classes at
-                                full size (fp, weapons, vehicles, characters):
+                                full size (fp, weapons, vehicles, characters,
+                                chief):
                                 the launch menu's "assetdetail" uses them
     --sound s9                  the sound bake (the default; streaming.md S9):
                                 every sound at 22,050 Hz at most, effects mono,
@@ -59,14 +60,27 @@ Options:
     --music [MAP:]TAG[@START][+LENGTH]
                                 which clip (default MUSIC below; MAP: ui)
     --list-music                list the maps' music tags and lengths, and stop
+    --music-loop-previews       with --list-music: the menu sound's loops
+                                (the game's own loop and the best 30 s cuts,
+                                each looped three times) in
+                                <output>/music-previews
+    --music-previews            with --list-music: each tag's first 30 s as a
+                                .wav in <output>/music-previews, to listen to
+                                (the disc's music: keep it on this computer)
     --tints-from-means          the see-through shaders' tints from every
                                 map's mean, on the runtime's own map, as
                                 the packs were before (lib/seethrough.py)
-    --no-cache                  make every palette afresh: by default a
-                                palette made once is kept (<output>/work/
-                                palettes) for the textures that repeat in
-                                the asset track's pack and in other maps.
-                                The maps come out the same either way
+    --cache-dir DIR             where palettes and re-encoded sounds are kept
+                                between bakes (default: your user cache
+                                folder, halo-psp-bake: %LOCALAPPDATA% on
+                                Windows, ~/Library/Caches on macOS,
+                                ~/.cache on Linux). A later bake reads back
+                                what it would make again, so a re-bake after
+                                a new release takes minutes; deleting the
+                                folder is always safe
+    --no-cache                  make every palette and sound afresh, and keep
+                                nothing between bakes. The maps come out the
+                                same either way
     --fast-palettes             palettes found sooner, not the same ones
                                 (texpack.py --fast-palettes; on trial)
     --profile                   log each texture's class, size and seconds
@@ -95,7 +109,7 @@ Options:
                                 shows (its mask), not only its colour
 
 Nothing from the game is in this tool; it only converts the copy you own."""
-import argparse, concurrent.futures, hashlib, json, os, re, shutil, subprocess, sys, threading, time
+import argparse, concurrent.futures, hashlib, json, os, re, shutil, struct, subprocess, sys, threading, time, zlib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 LIB = os.path.join(HERE, 'lib')
@@ -109,6 +123,11 @@ TEXPACK_OPTIONS = []
 # --slim-level: the level's rendered vertices without the binormal and tangent
 # the port never reads (tools/levelslim.py)
 LEVEL_SLIM = False
+# the models' vertex buffers also in the GE's form, past the pack's data, so
+# the port converts none at run time (tools/modelconvert.py): on by default,
+# since converting while drawing dropped a frame at b30's start (B8);
+# --no-preconvert leaves it out
+PRECONVERT = True
 ATRACDENC = os.path.join(HERE, 'atracdenc')    # the bundled encoder (else atracdenc on PATH)
 MUSICENC = os.path.join(HERE, 'musicenc')      # the music path's Vorbis encoder (bundle/musicenc.c)
 sys.path.insert(0, HERE)
@@ -130,9 +149,11 @@ DEFAULT = CAMPAIGN + ['ui']
 # subtitle data, AI squads' unused fields, firing positions' padding: ~0.5 MiB
 # a campaign map, and what lets b40 fit). Maps built with -Z need build 108 or
 # later; build 108 still loads older ones (psp_tag_layouts.c)
-# The XMB menu's sound: [MAP:]TAG[@START][+LENGTH] (snd0.py). Not chosen yet;
-# `--list-music` shows the candidates.
-MUSIC = ''
+# The XMB menu's sound: [MAP:]TAG[@START][+LENGTH][#loop[X]] (snd0.py).
+# "A Walk in the Woods" (chosen by ear): its
+# loop's variation 1 (the chain from permutation 1, 38.4 s), which the XMB
+# repeats seamlessly. `--list-music` shows the candidates
+MUSIC = 'b30:levels\\b30\\music\\b30_01#loopc1'
 BUILD_FLAGS = ['-g', 'xbox-ntsc', '-X', '0x09600000', '-U', '-l', '0', '-H', '-K', '0.25,0.003',
                '-M', '-Y', '512', '-D', '-Z']
 # the tag window a map is built for (-T; psp_capacity.h's PSP_TAG_CACHE_SIZE):
@@ -150,7 +171,9 @@ MULTIPLAYER_TAG_SPACE = '0x600000'
 # maps from the bundle before it wrongly: a pack's layout, Invader's flags or
 # tag space, or anything a release says needs a re-bake. Builds that read the
 # same format share a bake.
-BAKE_FORMAT = 1
+# 2 (b144): texture packs carry the change masks, the meters' RAM flag and
+# the averages (docs/design_b25_bake.md)
+BAKE_FORMAT = 2
 
 
 # maps bake side by side (--jobs): one line at a time, whole
@@ -259,6 +282,86 @@ def bake_chant(source, work, output):
         log('the chant: %s holds no chant this build knows; the loading screen will be silent' % xbe)
 
 
+TESTED_IMAGES = os.path.join(HERE, 'tested_images.json')
+XBE_REGIONS = {1: 'North America', 2: 'Japan', 4: 'Rest of the world', 0x80000000: 'Manufacturing'}
+
+
+def xbe_facts(path):
+    """the title's own record in default.xbe (its certificate): title id,
+    name, version, regions and disc number, or {} when it can't be read"""
+    try:
+        with open(path, 'rb') as f:
+            data = f.read()
+        if data[:4] != b'XBEH':
+            return {}
+        base, cert = struct.unpack_from('<I', data, 0x104)[0], struct.unpack_from('<I', data, 0x118)[0]
+        at = cert - base
+        title_id = struct.unpack_from('<I', data, at + 0x08)[0]
+        name = data[at + 0x0C:at + 0x0C + 80].decode('utf-16-le', 'replace').split('\0')[0]
+        regions = struct.unpack_from('<I', data, at + 0xA0)[0]
+        disc, version = struct.unpack_from('<II', data, at + 0xA8)
+        return dict(title_id='%08X' % title_id, title=name, version='%d' % version, disc='%d' % disc,
+                    regions=', '.join(v for k, v in XBE_REGIONS.items() if regions & k) or '0x%X' % regions)
+    except (OSError, struct.error):
+        return {}
+
+
+def fingerprint(source, work, map_digests, matched):
+    """what the bake was made from, logged and kept for the stamp: the disc
+    image's size and hashes (SHA-1, MD5 and CRC32 of the whole file, as the
+    disc-preservation databases list them), default.xbe's SHA-256 and its
+    title record, and how many of the maps were the retail ones this build
+    knows (hashes.json). It gates nothing: an image no one has tested still
+    bakes, and the stamp says so, so a player's report says which image it
+    came from. bake/tested_images.json lists the ones the releases were
+    tested with"""
+    fp = {}
+    if os.path.isdir(source):
+        fp['source'] = 'folder ' + os.path.basename(os.path.normpath(source))
+        xbe = next((c for c in (os.path.join(source, 'default.xbe'), os.path.join(source, '..', 'default.xbe'))
+                    if os.path.exists(c)), None)
+    else:
+        size = os.path.getsize(source)
+        fp['source'] = os.path.basename(source)
+        fp['image_size'] = '%d' % size
+        log('the disc image: fingerprinting %s (%d MB)' % (fp['source'], size >> 20))
+        sha1, md5, crc = hashlib.sha1(), hashlib.md5(), 0
+        with open(source, 'rb') as f:
+            for chunk in iter(lambda: f.read(1 << 22), b''):
+                sha1.update(chunk)
+                md5.update(chunk)
+                crc = zlib.crc32(chunk, crc)
+        fp['image_sha1'], fp['image_md5'], fp['image_crc32'] = sha1.hexdigest(), md5.hexdigest(), '%08x' % crc
+        xbe = None
+        with XIso(source) as iso:
+            listing = {p.lower(): p for p, n in iso.files()}
+            if 'default.xbe' in listing:
+                xbe = os.path.join(work, 'retail', 'default.xbe')
+                if not os.path.exists(xbe):
+                    iso.extract(listing['default.xbe'], xbe)
+    if xbe:
+        fp['xbe_sha256'] = sha256(xbe)
+        for key, value in xbe_facts(xbe).items():
+            fp['xbe_' + key] = value
+    fp['maps_retail'] = '%d of %d' % (matched, len(map_digests))
+    try:
+        tested = json.load(open(TESTED_IMAGES, encoding='utf-8')).get('images', [])
+    except (OSError, ValueError):
+        tested = []
+    known = next((t for t in tested if (fp.get('image_sha1') and t.get('image_sha1') == fp['image_sha1']) or
+                  (fp.get('xbe_sha256') and t.get('xbe_sha256') == fp['xbe_sha256'])), None)
+    fp['tested'] = ('yes: %s' % known.get('name', '?')) if known else 'no (not one the releases were tested with)'
+    log('the disc image: %s' % fp['source'])
+    for key in ('image_size', 'image_sha1', 'image_md5', 'image_crc32', 'xbe_sha256', 'xbe_title', 'xbe_title_id',
+                'xbe_version', 'xbe_regions', 'xbe_disc', 'maps_retail', 'tested'):
+        if key in fp:
+            log('  %-12s %s' % (key, fp[key]))
+    if not known:
+        log('  this image isn\'t one the releases were tested with: it still bakes; if anything looks wrong in play, '
+            'report the lines above with it')
+    return fp
+
+
 def bundle_label():
     """this bundle's short name for the stamp: the release's tag or the CI
     run's ref (bundle.txt, which assemble.py writes), else the commit of the
@@ -278,15 +381,18 @@ def bundle_label():
     return label or ('dev-' + commit[:7] if commit else 'unknown'), commit
 
 
-def write_stamp(output):
+def write_stamp(output, fp=None):
     """halo/bake.txt: the bake's format and the bundle that made it, which
-    the game checks at start (BAKE_FORMAT)"""
+    the game checks at start (BAKE_FORMAT), then what it was baked from
+    (fingerprint: the game reads only the format line)"""
     label, commit = bundle_label()
     path = os.path.join(output, 'halo', 'bake.txt')
     with open(path, 'w', encoding='utf-8', newline='\n') as f:
         f.write('# halo-psp-bake: the format of these maps, which the game checks at start\n'
                 'format: %d\nbundle: %s\ncommit: %s\nbaked: %s\n'
                 % (BAKE_FORMAT, label, commit or 'unknown', time.strftime('%Y-%m-%d %H:%M')))
+        for key, value in (fp or {}).items():
+            f.write('%s: %s\n' % (key, value))
     log('the stamp: %s (bake format %d, bundle %s)' % (path, BAKE_FORMAT, label))
 
 
@@ -297,6 +403,37 @@ def scenario_path(map_path, log_path):
     if r.returncode or not path:
         raise RuntimeError('invader-info could not read the scenario of %s: %s' % (map_path, r.stderr[-500:]))
     return path
+
+
+SOUND_CACHE = ''   # the cache's sounds folder, when there is one
+
+
+def default_cache_root():
+    """the user's own cache folder for this bake (HALO_PSP_BAKE_CACHE, the
+    checks' override, first)"""
+    if os.environ.get('HALO_PSP_BAKE_CACHE'):
+        return os.environ['HALO_PSP_BAKE_CACHE']
+    if os.name == 'nt':
+        base = os.environ.get('LOCALAPPDATA') or os.path.join(os.path.expanduser('~'), 'AppData', 'Local')
+    elif sys.platform == 'darwin':
+        base = os.path.join(os.path.expanduser('~'), 'Library', 'Caches')
+    else:
+        base = os.environ.get('XDG_CACHE_HOME') or os.path.join(os.path.expanduser('~'), '.cache')
+    return os.path.join(base, 'halo-psp-bake')
+
+
+def cache_summary(root):
+    counts, size = {}, 0
+    for kind in ('palettes', 'sounds'):
+        folder = os.path.join(root, kind)
+        names = os.listdir(folder) if os.path.isdir(folder) else []
+        counts[kind] = len(names)
+        for n in names:
+            try:
+                size += os.path.getsize(os.path.join(folder, n))
+            except OSError:
+                pass
+    return '%d palettes, %d sounds, %.0f MB' % (counts['palettes'], counts['sounds'], size / 2 ** 20)
 
 
 def tool_env():
@@ -353,8 +490,8 @@ def bake_map(name, retail, out_maps, work, track, keep_work, detail='', sound=''
             if not encoder:
                 raise RuntimeError('--music-stream: no musicenc in the bundle (musicenc/bin) or on PATH')
             stream = ['--music-stream', os.path.join(out_maps, name + '.pmus'), encoder]
-        run([sys.executable, os.path.join(LIB, 'soundpack.py'), os.path.join(folder, 'tags'), sound or 'none'] + stream,
-            log_path, env=env)
+        run([sys.executable, os.path.join(LIB, 'soundpack.py'), os.path.join(folder, 'tags'), sound or 'none']
+            + ([SOUND_CACHE] if SOUND_CACHE else []) + stream, log_path, env=env)
         summary = [line for line in open(log_path, errors='replace') if line.startswith('soundpack ')]
         for line in summary[-2:] if music_stream else summary[-1:]:
             log('%s: %s' % (name, line.strip()))
@@ -392,7 +529,7 @@ def bake_map(name, retail, out_maps, work, track, keep_work, detail='', sound=''
     start = os.path.getsize(log_path)
     run([sys.executable, os.path.join(LIB, 'texpack.py'), final, os.path.join(out_maps, name + '.ptex')] + TEXPACK_OPTIONS,
         log_path, cwd=LIB, env=env)
-    echo_from(name, log_path, start, ('tint ', 'see-through shaders tinted', 'meter shader maps', 'HUD sheets', 'glow ', 'detail mask', 'quality ',
+    echo_from(name, log_path, start, ('tint ', 'see-through shaders tinted', 'meter shader maps', 'runtime reads', 'HUD sheets', 'glow ', 'detail mask', 'quality ',
                                 'kmeans compare summary', 'kmeans compare worse', 'bump relief') + MEASURES + ALPHA_LINES)
     # the main menu is the hardware's showcase (CLAUDE.md): a pack of its own
     # at the most the GE can take, beside the usual one ("noshowcase")
@@ -427,6 +564,13 @@ def bake_map(name, retail, out_maps, work, track, keep_work, detail='', sound=''
         run([sys.executable, os.path.join(LIB, 'stencilbake.py'), final, pgeo, os.path.join(out_maps, name + '.pstn')],
             log_path, cwd=LIB, env=env)
         echo_from(name, log_path, start, ('compare:', 'triangulation failed', 'points added', 'slivers dropped'))
+    # last: it appends to the pack and marks the map's model parts, after
+    # every step that reads them (levelslim rebuilds the pack from its data
+    # and would drop what this adds). The main menu converts at run time
+    if PRECONVERT and name != 'ui':
+        start = os.path.getsize(log_path)
+        run([sys.executable, os.path.join(LIB, 'modelconvert.py'), final, pgeo], log_path, cwd=LIB, env=env)
+        echo_from(name, log_path, start, ('modelconvert:',))
     if not keep_work:
         shutil.rmtree(folder, ignore_errors=True)
     log('%s: done in %.0f s' % (name, time.time() - started))
@@ -609,8 +753,10 @@ def main():
     ap.add_argument('output', help='where the halo/maps folder is written')
     ap.add_argument('--maps', default='', help='comma-separated map names (default: the campaign\'s and ui)')
     ap.add_argument('--multiplayer', action='store_true', help='the multiplayer maps too')
+    ap.add_argument('--cache-dir', default='',
+                    help='where palettes and sounds are kept between bakes (default: the user cache folder)')
     ap.add_argument('--no-cache', action='store_true',
-                    help='make every palette afresh (the maps come out the same either way)')
+                    help='make every palette and sound afresh, and keep nothing (the maps come out the same either way)')
     ap.add_argument('--fast-palettes', action='store_true', help='palettes found sooner, not the same ones (on trial)')
     ap.add_argument('--profile', action='store_true', help="log each texture's class, size and seconds, and a summary")
     ap.add_argument('--compare-palettes', action='store_true',
@@ -624,6 +770,8 @@ def main():
     ap.add_argument('--eboot', default='')
     ap.add_argument('--music', default=MUSIC)
     ap.add_argument('--list-music', action='store_true')
+    ap.add_argument('--music-previews', action='store_true')
+    ap.add_argument('--music-loop-previews', action='store_true')
     ap.add_argument('--tints-from-means', action='store_true')
     # --no-clut-look: the same, for option checks that take letters only
     ap.add_argument('--no-clut4-look', '--no-clut-look', dest='no_clut4_look', action='store_true',
@@ -633,6 +781,11 @@ def main():
     # --no-exact-clut: the same, for option checks that take letters only
     ap.add_argument('--no-clut4-exact', '--no-exact-clut', dest='no_clut4_exact', action='store_true',
                     help='leave at 8 bits the textures of 16 colours or fewer that 4 bits would draw the same')
+    ap.add_argument('--preconvert', dest='preconvert', action='store_true', default=True,
+                    help="the models' vertex buffers also in the GE's own form, so the port converts none as it "
+                         'draws (exact; the geometry pack grows by about the model vertices); the default')
+    ap.add_argument('--no-preconvert', dest='preconvert', action='store_false',
+                    help='leave the conversions to the port at run time (smaller packs; b30 drops a frame at its start)')
     ap.add_argument('--slim-level', action='store_true',
                     help="the level's rendered vertices without the binormal and tangent the port never reads "
                          '(24 bytes a vertex in the geometry pack instead of 32; exact)')
@@ -672,8 +825,9 @@ def main():
     a = ap.parse_args()
     if a.sound == 'none':
         a.sound = ''
-    global COMPARE_OLD, PROFILE, COMPARE_PALETTES, LEVEL_SLIM, ALPHA_AUDIT
+    global COMPARE_OLD, PROFILE, COMPARE_PALETTES, LEVEL_SLIM, ALPHA_AUDIT, PRECONVERT
     LEVEL_SLIM = a.slim_level
+    PRECONVERT = a.preconvert
     COMPARE_OLD, PROFILE, COMPARE_PALETTES = a.compare_old, a.profile, a.compare_palettes
     ALPHA_AUDIT = a.alpha_audit
     if a.no_alpha_split:
@@ -712,13 +866,21 @@ def main():
     out_maps = os.path.join(a.output, 'halo', 'maps')
     work = os.path.join(a.output, 'work')
     os.makedirs(out_maps, exist_ok=True)
-    # one palette cache for every pack of every map in this bake, emptied
-    # first: a bake never reads palettes another bake left
-    palettes = os.path.abspath(os.path.join(work, 'palettes'))
-    shutil.rmtree(palettes, ignore_errors=True)
+    # one cache for every map of every bake: palettes (texpack.py) and
+    # re-encoded sounds (soundpack.py), each kept by a hash of its exact
+    # input and of the code that makes it, so what a later bake reads back
+    # is what it would have made (the same bytes: a warm bake checked
+    # against a cold one, file for file)
+    global SOUND_CACHE
     if not a.no_cache and not a.list_music:
-        os.makedirs(palettes)
+        root = os.path.abspath(a.cache_dir or default_cache_root())
+        palettes = os.path.join(root, 'palettes')
+        SOUND_CACHE = os.path.join(root, 'sounds')
+        os.makedirs(palettes, exist_ok=True)
+        os.makedirs(SOUND_CACHE, exist_ok=True)
         TEXPACK_OPTIONS.extend(['--palette-cache', palettes])
+        log('cache: %s (%s); a re-bake reads back what it would make again, and deleting the folder is safe'
+            % (root, cache_summary(root)))
     if a.eboot and not os.path.isfile(a.eboot):
         sys.exit('halo-psp-bake: --eboot %s: no such file' % a.eboot)
     # said at the start, so a long bake doesn't end in a surprise (and again
@@ -733,6 +895,18 @@ def main():
     if a.list_music:
         r = subprocess.run([sys.executable, os.path.join(LIB, 'snd0.py'), 'list'] + [found[m] for m in wanted if m in found],
                            env=tool_env())
+        if a.music_loop_previews and r.returncode == 0:
+            music_map, clip = music_spec(a.music or MUSIC)
+            if music_map in found:
+                subprocess.run([sys.executable, os.path.join(LIB, 'snd0.py'), 'inspect', found[music_map],
+                                clip.partition('#')[0].partition('@')[0].partition('+')[0]], env=tool_env())
+                r = subprocess.run([sys.executable, os.path.join(LIB, 'snd0.py'), 'loops', found[music_map],
+                                    clip.partition('#')[0].partition('@')[0].partition('+')[0],
+                                    os.path.join(a.output, 'music-previews')], env=tool_env())
+        if a.music_previews and r.returncode == 0:
+            r = subprocess.run([sys.executable, os.path.join(LIB, 'snd0.py'), 'previews',
+                                os.path.join(a.output, 'music-previews')] + [found[m] for m in wanted if m in found],
+                               env=tool_env())
         if not a.keep_work:
             shutil.rmtree(os.path.join(work, 'retail'), ignore_errors=True)
         sys.exit(r.returncode)
@@ -742,8 +916,10 @@ def main():
     if missing:
         log('not found in %s: %s' % (a.source, ', '.join(missing)))
     hashes = json.load(open(os.path.join(HERE, 'hashes.json')))
+    digests = {name: sha256(found[name]) for name in found}
+    fp = fingerprint(a.source, work, digests, sum(1 for n, d in digests.items() if hashes.get(n) == d))
     for name in list(found):
-        digest = sha256(found[name])
+        digest = digests[name]
         if hashes.get(name) and hashes[name] != digest:
             log('%s: not the retail map this build expects (sha256 %s...)%s' % (name, digest[:16],
                 '; baking anyway (--force)' if a.force else '; skipped (--force bakes it anyway)'))
@@ -751,12 +927,14 @@ def main():
                 del found[name]
     failures = bake_maps([m for m in wanted if m in found], found, out_maps, work, a)
     bake_chant(a.source, work, a.output)
-    write_stamp(a.output)
+    write_stamp(a.output, fp)
     if a.eboot:
         menu_eboot(a.eboot, a.music, music_source, a.output, work)
     if not a.keep_work:
         shutil.rmtree(os.path.join(work, 'retail'), ignore_errors=True)
-        shutil.rmtree(palettes, ignore_errors=True)
+    if SOUND_CACHE:
+        root = os.path.dirname(SOUND_CACHE)
+        log('cache: %s now holds %s' % (root, cache_summary(root)))
     log('baked %d of %d maps into %s%s' % (len(found) - len(failures), len(wanted), out_maps,
         '; failed: ' + ', '.join(failures) if failures else ''))
     log('copy %s to the root of the Memory Stick (it holds maps/)' % os.path.join(a.output, 'halo')

@@ -26,11 +26,16 @@ shortest showing, 6 s by default; "loadhold0" none); the boot screen's "bootlog"
 #include <pspiofilemgr.h>
 #include <pspkernel.h>
 
-extern unsigned long psp_microseconds(void);
+/* the loading screen's pacing, settle and input release run on a clock no
+keep word turns off (psp_microseconds answers 0 under notimers, lean and in
+a release) */
+extern unsigned long psp_heartbeat_clock(void);
 extern void platform_log(const char *format, ...);
 extern int psp_keep(const char *name);
 extern int psp_keep_number(const char *prefix, int fallback);
 extern unsigned long psp_tex_load_count(void);
+extern unsigned long psp_tex_untextured_frames(void);
+extern unsigned long psp_ge_draws_shown(void);
 /* "heapmap" (psp_libc.c) and "poolpeaks" (psp_fixups.py FIXES_RECON
 #poolpeaks, so linked weakly): measured where a level ends and begins */
 extern void psp_heap_map(const char *label);
@@ -52,6 +57,8 @@ static struct
 	unsigned long settle_cap_us;
 	unsigned long settle_loads; /* the texture cache's count at the last settle frame */
 	unsigned long settle_loads_first; /* and at the settle's start */
+	unsigned long settle_untextured;  /* frames that drew something untextured, at the last settle frame */
+	unsigned long settle_draws_first; /* draws shown, at the settle's start */
 	int settle_frames;
 	int settle_quiet;         /* settle frames in a row that read no texture */
 	unsigned long settle_not_before_us; /* the settle lasts at least to here (0: no such end) */
@@ -197,7 +204,7 @@ the boot screen's thread has the screen it draws, and eases, by itself */
 static void update(int phase)
 {
 	struct psp_loading_view view;
-	unsigned long now = psp_microseconds();
+	unsigned long now = psp_heartbeat_clock();
 	float target;
 
 	if (!loading.screen || boot.drawing)
@@ -242,7 +249,7 @@ static void loading_begin(const char *map_name, int with_chant)
 	loading.active = 1;
 	loading.screen = !psp_keep("loadingoff");
 	loading.boot = boot.active;
-	loading.begin_us = psp_microseconds();
+	loading.begin_us = psp_heartbeat_clock();
 	/* the screen's shortest showing (the Xbox's chant needs a few
 	seconds, and the PSP loads a level in one or two), the load and the
 	settle hidden behind it; not at boot, whose screen has its own pace.
@@ -302,13 +309,15 @@ static int settle_start(unsigned long not_before_us)
 	if (cap <= 0)
 		return 0;
 	loading.settle_cap_us = (unsigned long)cap * 1000000ul;
-	loading.settle_us = psp_microseconds();
+	loading.settle_us = psp_heartbeat_clock();
 	/* the cap stops a settle that never warms; a shortest showing (the boot's
 	hint) stretches it */
 	loading.settle_not_before_us = not_before_us;
 	if (not_before_us && (long)(not_before_us - (loading.settle_us + loading.settle_cap_us)) > 0)
 		loading.settle_cap_us = not_before_us - loading.settle_us;
 	loading.settle_loads = loading.settle_loads_first = psp_tex_load_count();
+	loading.settle_untextured = psp_tex_untextured_frames();
+	loading.settle_draws_first = psp_ge_draws_shown();
 	loading.settle_frames = 0;
 	loading.settle_quiet = 0;
 	return 1;
@@ -323,19 +332,34 @@ int psp_loading_settle_begin(void)
 
 int psp_loading_settle_frame(void)
 {
-	unsigned long count = psp_tex_load_count(), now = psp_microseconds();
+	static int warm = -1;
+	unsigned long count = psp_tex_load_count(), now = psp_heartbeat_clock();
+	unsigned long untextured = psp_tex_untextured_frames(), draws = psp_ge_draws_shown();
+	int still;
 
+	/* warm takes more than no reads (B1: at game time 0 a level settle read
+	none and handed over after 4 frames): no frame drawing something
+	untextured either, and something drawn at all. The counts are of the
+	frames shown, so they trail the frame just drawn by one.
+	"settlewarmoff": reads alone, as before */
+	if (warm < 0)
+		warm = !psp_keep("settlewarmoff");
 	loading.settle_frames++;
-	loading.settle_quiet = count == loading.settle_loads ? loading.settle_quiet + 1 : 0;
+	still = count == loading.settle_loads && (!warm || untextured == loading.settle_untextured);
+	loading.settle_quiet = still ? loading.settle_quiet + 1 : 0;
 	loading.settle_loads = count;
+	loading.settle_untextured = untextured;
 	/* warm, and the screen's progress (and the chant) played out to its end */
-	if ((loading.settle_frames >= 4 && loading.settle_quiet >= 3 && (!loading.screen || loading.shown >= 0.99f) &&
+	if ((loading.settle_frames >= 4 && loading.settle_quiet >= 3 && (!warm || draws != loading.settle_draws_first) &&
+		(!loading.screen || loading.shown >= 0.99f) &&
 		(!loading.settle_not_before_us || (long)(now - loading.settle_not_before_us) >= 0)) ||
 		now - loading.settle_us >= loading.settle_cap_us)
 	{
-		platform_log("loading: %s settled in %lu ms, %d frames, %lu texture reads and waits%s", loading.map,
+		platform_log("loading: %s settled in %lu ms, %d frames, %lu texture reads and waits, %lu draws shown%s", loading.map,
 			(now - loading.settle_us) / 1000, loading.settle_frames, count - loading.settle_loads_first,
-			loading.settle_quiet >= 3 ? "" : " (at the cap, still reading)");
+			draws - loading.settle_draws_first,
+			loading.settle_quiet < 3 ? " (at the cap, still reading)" :
+			draws == loading.settle_draws_first ? " (at the cap, nothing drawn)" : "");
 		return 0;
 	}
 	return 1;
@@ -353,7 +377,7 @@ void psp_loading_end(void)
 	if (!loading.active)
 		return;
 	platform_log("loading: %s took %lu ms (%lu of %lu bytes counted, %lu frames drawn)", loading.map,
-		(psp_microseconds() - loading.begin_us) / 1000, loading.done, loading.expected, loading.draws);
+		(psp_heartbeat_clock() - loading.begin_us) / 1000, loading.done, loading.expected, loading.draws);
 	loading.active = 0;
 	chant_stop();
 	captured = NULL;
@@ -437,7 +461,7 @@ static __attribute__((noinline)) void boot_frame_pause(void)
 static int boot_thread(SceSize args, void *argp)
 {
 	extern void psp_fpu_mask_traps(void);
-	unsigned long last = psp_microseconds();
+	unsigned long last = psp_heartbeat_clock();
 
 	(void)args;
 	(void)argp;
@@ -450,7 +474,7 @@ static int boot_thread(SceSize args, void *argp)
 	while (!boot.stop)
 	{
 		struct psp_loading_view view;
-		unsigned long now = psp_microseconds();
+		unsigned long now = psp_heartbeat_clock();
 		float target = boot.loaded ? 1.0f :
 			loading.active && loading.expected ? (float)loading.done / (float)loading.expected : 0.0f;
 
@@ -478,7 +502,7 @@ void psp_loading_boot_begin(void)
 
 	memset(&boot, 0, sizeof(boot));
 	boot.active = 1;
-	boot.start_us = psp_microseconds();
+	boot.start_us = psp_heartbeat_clock();
 	/* whoever came through the launch menu knows the way to it */
 	boot.hint_us = hint > 0 && !psp_front_door_launch_menu() ? (unsigned long)hint * 1000000ul : 0;
 	if (psp_keep("bootlog") || !psp_ge_boot_start || !psp_ge_loading_frame)
@@ -525,16 +549,37 @@ void psp_loading_boot_loaded(void)
 static void boot_settled(void)
 {
 	platform_log("boot: the main menu shown %lu ms after the boot screen's start (its input also waits for the saved-game check)",
-		(psp_microseconds() - boot.start_us) / 1000);
+		(psp_heartbeat_clock() - boot.start_us) / 1000);
 	psp_loading_end();
 }
 
 /* main_loop, each frame the game draws, before it is shown */
+/* the main menu's veil, in its own frame: main_loop calls this between the
+frame's render and its account (psp_fixups.py, FIXES_LOADING #bootscreen).
+After the frame's end the list is finished or the Media Engine's, so the
+veil drawn there found the frame shut and drew nothing (B1: the ring orange
+in the menu's first frames). "settleveiloff": after, as before */
+static int boot_veil_early(void)
+{
+	static int early = -1;
+
+	if (early < 0)
+		early = !psp_keep("settleveiloff");
+	return early;
+}
+
+void psp_loading_boot_veil(void)
+{
+	if (boot.settling && boot_veil_early())
+		update(1);
+}
+
 void psp_loading_boot_frame(void)
 {
 	if (!boot.settling)
 		return;
-	update(1);
+	if (!boot_veil_early())
+		update(1);
 	if (!psp_loading_settle_frame())
 		boot_settled();
 }
@@ -543,7 +588,7 @@ void psp_loading_boot_frame(void)
 int psp_loading_holds_input(void)
 {
 	/* a settle whose frames stopped coming lets go a second past its cap */
-	if (boot.settling && psp_microseconds() - loading.settle_us > loading.settle_cap_us + 1000000ul)
+	if (boot.settling && psp_heartbeat_clock() - loading.settle_us > loading.settle_cap_us + 1000000ul)
 	{
 		platform_log("boot: the main menu's settle drew no frames to its cap; its input let go");
 		boot_settled();
@@ -570,9 +615,9 @@ void psp_loading_boot_screen_stop(void)
 	if (loading.active)
 	{
 		loading.shown = boot.shown;
-		loading.last_draw_us = psp_microseconds();
+		loading.last_draw_us = psp_heartbeat_clock();
 		loading.draws += boot.frames;
 	}
 	platform_log("boot screen: %lu frames in %lu ms; the game's frames from here", boot.frames,
-		(psp_microseconds() - boot.start_us) / 1000);
+		(psp_heartbeat_clock() - boot.start_us) / 1000);
 }

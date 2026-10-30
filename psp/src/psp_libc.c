@@ -632,6 +632,11 @@ running count */
 volatile unsigned long psp_heap_failures = 0;
 #define HEAP_FAILURES_LOGGED 64
 
+/* requests asked through psp_heap_try_memalign whose callers have somewhere
+else to go (psp_ge.c's level copies wait for the carve): a refusal there is
+counted apart, so the overlay's HEAP FULL means a request nothing caught */
+volatile unsigned long psp_heap_refusals = 0;
+
 static void heap_map_tag(void *pointer, size_t size, const char *kind, void *caller); /* below */
 void psp_heap_map(const char *label); /* below */
 static struct heap_map_space *heap_map; /* below */
@@ -648,7 +653,7 @@ static void *heap_note(void *result, size_t size, const char *kind, void *caller
 	if (!result)
 	{
 		if (++psp_heap_failures <= HEAP_FAILURES_LOGGED)
-			platform_log("heap: %s of %u bytes FAILED (large requests so far %lu KB)%s", kind, (unsigned)size,
+			platform_log("heap: %s of %u bytes FAILED for %p (large requests so far %lu KB)%s", kind, (unsigned)size, caller,
 				heap_large_total / 1024, psp_heap_failures == HEAP_FAILURES_LOGGED ? "; further failures are only counted" : "");
 		/* the map at the moment a large request finds no room: what took the
 		space the level change left */
@@ -677,8 +682,8 @@ void psp_heap_line(char *line, int size)
 {
 	struct mallinfo info = mallinfo();
 
-	snprintf(line, size, "heap: %d KB in use, %d KB free inside in %d pieces, %d KB taken from the system; %lu requests failed",
-		info.uordblks / 1024, info.fordblks / 1024, info.ordblks, info.arena / 1024, psp_heap_failures);
+	snprintf(line, size, "heap: %d KB in use, %d KB free inside in %d pieces, %d KB taken from the system; %lu requests failed, %lu refused with a fallback",
+		info.uordblks / 1024, info.fordblks / 1024, info.ordblks, info.arena / 1024, psp_heap_failures, psp_heap_refusals);
 }
 
 /* work marked as the Media Engine's in the emulator (gemesim's psp_me_context)
@@ -696,6 +701,11 @@ static void heap_me_check(void *caller, size_t size, const char *how)
 
 	__asm__ ("move %0, $sp" : "=r"(sp));
 	if (!psp_me_context || (sp & 0x1FFFFFFFu) < 0x01000000u) /* not on the ME itself: no log from there */
+		return;
+	/* the context names the thread doing the ME's work on the main CPU; a
+	thread that took the CPU from it meanwhile (the cache file reader) asks
+	for the heap as its own */
+	if ((unsigned int)sceKernelGetThreadId() != psp_me_context)
 		return;
 	for (k = 0; k < HEAP_ME_CALLERS && heap_me_callers[k]; k++)
 		if (heap_me_callers[k] == caller)
@@ -715,6 +725,29 @@ void *__wrap_malloc(size_t size) { heap_me_check(__builtin_return_address(0), si
 void *__wrap_calloc(size_t count, size_t size) { heap_me_check(__builtin_return_address(0), count * size, "calloc"); return heap_note(__real_calloc(count, size), count * size, "calloc", __builtin_return_address(0)); }
 void *__wrap_realloc(void *pointer, size_t size) { heap_me_check(__builtin_return_address(0), size, "realloc"); return heap_note(__real_realloc(pointer, size), size, "realloc", __builtin_return_address(0)); }
 void *__wrap_memalign(size_t alignment, size_t size) { heap_me_check(__builtin_return_address(0), size, "memalign"); return heap_note(__real_memalign(alignment, size), size, "memalign", __builtin_return_address(0)); }
+
+/* memalign for a caller that copes with a refusal. A success is booked as
+memalign's (callers, the map, the large total); a refusal only adds to
+psp_heap_refusals. "heapcountall" books refusals as failures again, as
+before this existed */
+static int heap_count_all = -1;
+
+void *psp_heap_try_memalign(size_t alignment, size_t size)
+{
+	extern int psp_keep(const char *name);
+	extern int psp_keep_loaded(void);
+	void *caller = __builtin_return_address(0);
+	void *result;
+
+	heap_me_check(caller, size, "memalign");
+	result = __real_memalign(alignment, size);
+	if (heap_count_all < 0 && psp_keep_loaded())
+		heap_count_all = psp_keep("heapcountall");
+	if (result || heap_count_all > 0)
+		return heap_note(result, size, "memalign", caller);
+	psp_heap_refusals++;
+	return NULL;
+}
 
 /* ---------- the heap's map ("heapmap", keep.txt)
 
@@ -746,6 +779,25 @@ extern struct heap_chunk *__malloc_av_[]; /* [2]: the top chunk */
 void __malloc_lock(struct _reent *reent);
 void __malloc_unlock(struct _reent *reent);
 extern int sce_newlib_heap_kb_size; /* PSP_HEAP_SIZE_KB (psp_platform.c) */
+
+/* the heap's room in KB: free inside it plus what the system hasn't handed
+over yet. Walks newlib's free bins, so for rare callers only */
+unsigned long psp_heap_room_kb(void)
+{
+	struct mallinfo info = mallinfo();
+	unsigned long untaken = 0;
+	char *taken = sbrk(0);
+
+	if (__malloc_sbrk_base != (char *)-1 && taken != (char *)-1)
+	{
+		char *end = __malloc_sbrk_base + (unsigned long)sce_newlib_heap_kb_size * 1024;
+
+		if (taken < end)
+			untaken = end - taken;
+	}
+	return ((unsigned long)info.fordblks + untaken) / 1024;
+}
+
 
 #define HEAP_MAP_LARGE 0x4000
 #define HEAP_MAP_TAGS 256
@@ -1041,8 +1093,114 @@ void psp_heap_map(const char *label)
 	heap_map_lines(label, " between", space->between, between);
 }
 
-#if defined(PSP_METRICS) && PSP_METRICS
-/* for the per-map heap figures (psp_metrics.c): the heap's free space and
+/* "heapwalk": newlib's chunks walked at each game tick and as each frame
+comes back from the Media Engine, and the first header that can't be right
+logged with where it is and its 64-byte line, so a header put back stale is
+seen where it happens rather than at the _malloc_r that later follows it.
+Checked: each chunk's size (at least 16, a multiple of 8, inside the heap);
+for a free chunk (its next chunk's in-use bit clear), the next chunk's
+previous size equal to its own, and its two bin links each a chunk in the
+heap or one of newlib's bin heads. It only reads. Off: one test a call */
+#define HEAP_WALK_LINES 6
+#define HEAP_BIN_WORDS (2 * 128 + 2) /* newlib's av_[] (mallocr.c, NAV 128) */
+static int heap_walk_on = -1;
+static unsigned long heap_walks = 0, heap_walk_bad = 0, heap_walk_chunks = 0;
+static int heap_walk_logged = 0;
+static struct heap_chunk *heap_walk_last_bad = NULL;
+
+static int heap_link_ok(unsigned long link, char *base, char *top)
+{
+	unsigned long bins = (unsigned long)__malloc_av_;
+
+	if (link >= bins - 16 && link < bins + HEAP_BIN_WORDS * sizeof(void *))
+		return 1;
+	return link >= (unsigned long)base && link < (unsigned long)top && !(link & 7);
+}
+
+void psp_heap_walk(const char *where)
+{
+	extern int psp_keep(const char *name);
+	extern int psp_keep_loaded(void);
+	extern long psp_game_time_peek(void);
+	struct heap_chunk *chunk, *first, *top, *before = NULL;
+	char *base, *end;
+	const char *why = NULL;
+	unsigned long chunks = 0;
+
+	if (heap_walk_on < 0)
+	{
+		if (!psp_keep_loaded())
+			return;
+		heap_walk_on = psp_keep("heapwalk") != 0;
+		if (heap_walk_on)
+			platform_log("heapwalk: on (newlib's chunks walked each tick and as each frame comes back from the Media Engine)");
+	}
+	if (!heap_walk_on || __malloc_sbrk_base == (char *)-1)
+		return;
+	__malloc_lock(_REENT);
+	base = __malloc_sbrk_base;
+	top = __malloc_av_[2];
+	end = base + (unsigned long)sce_newlib_heap_kb_size * 1024;
+	first = (struct heap_chunk *)(base + ((16 - (((unsigned long)base + 8) & 15)) & 15));
+	if ((char *)top < base || (char *)top >= end)
+		why = "the top chunk outside the heap";
+	else
+		for (chunk = first; chunk != top; before = chunk, chunk = HEAP_CHUNK_AFTER(chunk))
+		{
+			unsigned long size = HEAP_CHUNK_SIZE(chunk);
+			struct heap_chunk *next;
+
+			chunks++;
+			if (size < 16 || (size & 7) || (char *)chunk + size > (char *)top)
+			{
+				why = "a size that isn't a chunk's";
+				break;
+			}
+			next = HEAP_CHUNK_AFTER(chunk);
+			if (!(next->size & 1))
+			{
+				const unsigned long *links = (const unsigned long *)(chunk + 1);
+
+				if (next != top && next->previous_size != size)
+				{
+					why = "a free chunk whose next chunk has another previous size";
+					break;
+				}
+				if (!heap_link_ok(links[0], base, (char *)top) || !heap_link_ok(links[1], base, (char *)top))
+				{
+					why = "a free chunk's bin link outside the heap and the bins";
+					break;
+				}
+			}
+		}
+	heap_walks++;
+	heap_walk_chunks += chunks;
+	if (why)
+	{
+		heap_walk_bad++;
+		if (chunk != heap_walk_last_bad && heap_walk_logged < HEAP_WALK_LINES)
+		{
+			const unsigned long *line = (const unsigned long *)((unsigned long)chunk & ~63ul);
+
+			heap_walk_logged++;
+			platform_log("heapwalk: BAD at %s, game time %ld, walk %lu: %s: chunk %p (heap +%lu) size %08lx previous %08lx links %08lx %08lx; the chunk before %p size %08lx",
+				where, psp_game_time_peek(), heap_walks, why, chunk, (unsigned long)((char *)chunk - base),
+				chunk->size, chunk->previous_size, ((const unsigned long *)(chunk + 1))[0],
+				((const unsigned long *)(chunk + 1))[1], before, before ? before->size : 0ul);
+			platform_log("heapwalk: its line %p: %08lx %08lx %08lx %08lx %08lx %08lx %08lx %08lx %08lx %08lx %08lx %08lx %08lx %08lx %08lx %08lx",
+				line, line[0], line[1], line[2], line[3], line[4], line[5], line[6], line[7], line[8], line[9],
+				line[10], line[11], line[12], line[13], line[14], line[15]);
+		}
+		heap_walk_last_bad = chunk;
+	}
+	__malloc_unlock(_REENT);
+	if (heap_walks % 1000 == 0)
+		platform_log("heapwalk: %lu walks, %lu chunks a walk, %lu found a bad header", heap_walks,
+			heap_walk_chunks / heap_walks, heap_walk_bad);
+}
+
+/* for the per-map heap figures (psp_metrics.c) and PSC's headroom guard
+(psp_fixups.py, FIXES_PSC), so in every build: the heap's free space and
 its largest free block, which a large request needs, by heapmap's walk
 above without its tables. The top chunk counts with what the system hasn't
 handed over yet, since a request can grow into both */
@@ -1097,4 +1255,3 @@ void psp_heap_survey(unsigned long *free_bytes, unsigned long *largest_bytes, un
 	*largest_bytes = largest;
 	*used_bytes = used_total;
 }
-#endif

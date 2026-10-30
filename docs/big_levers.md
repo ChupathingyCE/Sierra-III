@@ -76,7 +76,7 @@ What we know (`halo-psp-feasibility.md`, halo_bench v6–v7 and v10 [M]):
 - **Speed:** RAM to RAM at 181 MB/s against a CPU `memcpy`'s 76; into VRAM at 323 MB/s. 512 KB into VRAM takes 1.6 ms against 4.1–4.9 ms for the CPU.
 - **It doesn't work into the scratchpad:** it reports success, but the data doesn't arrive.
 - **The user call blocks the calling thread** until the copy is done (`sceDmacMemcpy`, `sceDmacTryMemcpy`). Run from another thread, it does go alongside the CPU.
-- **It isn't free alongside the CPU.** While it copies, a CPU miss takes 499 ns instead of 218, and the DMA itself drops to 64 MB/s. That's worse than the GE's effect (424 ns).
+- **It isn't free alongside the CPU** [M, halo_bench12: bench-hw 40938644493 PSP-1000, 40939355780 PSP-3000, three rounds a cell; the two PSPs agree within 1%]. Copying large blocks (256 KB-1 MB) flat out, it makes a CPU cache miss take ~470 ns instead of ~221 (x2.1; 64 KB blocks ~500, x2.26; into VRAM ~428, x1.9), and the CPU's streaming reads fall to 0.37x; busy half the time, misses take x1.2; a quarter of the time, nothing measurable. The DMA itself drops from 182-204 MB/s to 62-65 MB/s while the CPU misses. Cache hits stay at 24.2 ns, so this is the bus. Small blocks (4-16 KB) look worse (up to x4), but hits slow as much there: that's the copying thread taking the CPU, not the bus. For comparison on the same runs: the GE texturing from RAM x1.64 (362 ns; v9's single reading was 424), the ME streaming RAM x1.14, the ME copying RAM x1.04. The old reading (499 against 218, one halo_bench v7 run) matches 64 KB blocks at full duty exactly; it scales with how busy the DMA is, and smaller blocks cost more per byte.
 
 **What that means:** a background copy costs the CPU about what copying it itself would. A copy is worth doing by DMA in a short burst while the CPU would wait anyway, or in place of a CPU copy that blocks: 3× faster, and the CPU's cache isn't filled with the copied bytes. Its uses here:
 1. **Keeping VRAM stocked for the swap above:** the shared models, and refills of the visible clusters' vertices (256 KB in ~0.8 ms). It's already used for textures (`psp_tex.c`).
@@ -175,7 +175,7 @@ Keep word `ceilingbench` (b30, from 90 s of game time, standing still). Each hea
 | level not drawn | 256.9 | 45.0 | 157.0 | 70.5 | +17.7, +1.0, +16.9 |
 | GE layer skipped | 146.7 | 42.9 | 50.3 | 0.0 | +127.9, +3.1, +123.6 |
 
-- **L1's ceiling is bigger than the GE layer's own time.** Skipping it saves 123.6 ms of drawing against its own 90.0 ms of CPU: about 34 ms more comes back to the engine's own drawing (its code and data stay in the caches, and the GE stops reading main RAM). The ME's version keeps the GE's reading, so its saving lies between the two: **90–124 ms of a 275 ms frame (33–45%)**.
+- **L1's ceiling is bigger than the GE layer's own time.** Skipping it saves 123.6 ms of drawing against its own 90.0 ms of CPU: about 34 ms more comes back to the engine's own drawing (its code and data stay in the caches, and the GE stops reading main RAM). The ME's version keeps the GE's reading, so its saving lies between the two: **90–124 ms of a 275 ms frame (33–45%)**. (As built, frames in flight lost on the PSP-3000, frame +3 to +25%, to the shared bus: `frames_in_flight.md`.)
 - **Models are two thirds of drawing** (118 of 174 ms); the level 17 ms.
 - **The tick is objects** (34 of 46 ms; AI 12). Effects cost nothing measurable.
 - Each switch runs 10 s; the bench waited ~6 minutes of real time for its 90 s of game time (the game runs at about a quarter speed at 3.6 fps).
@@ -192,7 +192,7 @@ Keep word `ceilingbench` (b30, from 90 s of game time, standing still). Each hea
 | level not drawn | 66.9 | 12.9 | 39.6 | +10.0, +1.3, +5.7 |
 
 - In the emulator, objects are ~80% of a tick and models half of drawing. The GE layer ("rend", the renderer's CPU) is 25.5 of the 45.3 ms of drawing (56%).
-- **Drawing feeds back into the tick:** with models not drawn, a tick costs 1.3 ms less. Unseen objects skip work (their node matrices), so drawing and the tick are coupled. L3's audit must cover this.
+- **With models not drawn, a tick costs 1.3 ms less.** (Corrected 2026-10-28: this was read as drawing feeding back into the tick through unseen objects skipping their node matrices. They don't: play and both seeds stay identical across drawing changes on five maps, and the drawing walk's only store into object data is the marker stamp its collision tests leave [E, the lab's walk2 and objtrace census]. The tick's 1.3 ms is the shared bus: the tick slows 33–89% while the GE and ME read main RAM [M].)
 - The emulator's milliseconds aren't the PSP's (it runs ~2–3× faster); the shares are what transfer. The hardware run gives [M].
 
 **Blood Gulch benchrun, b112, 4 views (2026-10-10) [M]**, ms of drawing a frame saved against the baseline (43.8):
@@ -267,7 +267,7 @@ The AI (L3) by comparison reaches 969 functions and 389 KB, 69 calls through poi
    - the see-through level surfaces' wall test (heap for its answers, and the engine's collision rays, which read the game's data while the main CPU may move it): an unknown answer counts as "on a wall" for a frame and is asked at the frame's end.
 
    **Checked (lab run 38059850176):** with every gate in, the ME-strict run lists only its own test call, so the work marked as the ME's makes no system call on the paths b30's opening runs. The calls that force a run are down to 2 a frame (the frame's start and end) plus the rare font update.
-4. **Carried out on the ME**, streaming behind the recorder. The design (not built yet):
+4. **Carried out on the ME**, streaming behind the recorder. The design (since built and measured: `gemeon`, `gemeoverlap`, `geinflight`, `me_programme.md`):
    - **Two record buffers:** the main CPU fills one while the ME carries out the other, so no line is written by one CPU while the other reads it. A buffer is handed over when it's half full, at a call that runs at once, and at the frame's end.
    - **Hand-over** (psp_me.c's slots, `media_engine.md`): the main CPU writes back its whole data cache (the records, and what they point to that the engine wrote: dynamic triangles, decal vertices), then bumps the request number; the ME drops its cache, runs `defer_drain` on the buffer with `psp_me_context` set, writes its cache back and sets the done number. The main CPU **spins** on the done number (X3: no sleeps), and before touching the GE layer's state again it writes back and drops its own cache, so it reads what the ME wrote.
    - **What only the ME writes while it runs:** the GE layer's state (`psp_ge.c`'s statics, the converted-buffer table, the arenas), pspgu's list pointer, the list itself, the wanted lists. The main CPU writes none of them until the ME is done; its own counters (records, drains) stay apart from the ME's.
@@ -325,7 +325,7 @@ Engine calls into collision from the GE layer (`overlay_on_a_wall`'s rays for se
 - `unit_enter_seat` → weapon readying → the texture cache;
 - marker lookups → `psp_keep` (a keep-word read per lookup: a cost on the main CPU too, E19).
 
-So the AI needs a design where the rare paths (placing actors, dialogue, seats) either run on the main CPU or are deferred. And the ceiling bench shows drawing feeds back into the tick (unseen objects skip work), so the first test is the reorder on one CPU with a check of the whole game state every tick: if the state is identical with the AI moved before drawing, the data is independent.
+So the AI needs a design where the rare paths (placing actors, dialogue, seats) either run on the main CPU or are deferred. The first test is the reorder on one CPU with a check of the whole game state every tick (the ceiling bench's "drawing feeds back into the tick" was the bus, not a feedback: see the ceiling bench's corrected note): if the state is identical with the AI moved before drawing, the data is independent.
 
 `game_tick`'s prelude before `ai_update` (allegiance decay, unit timers, the data-array check) would move with it.
 
@@ -337,7 +337,7 @@ So the AI needs a design where the rare paths (placing actors, dialogue, seats) 
 - **Result (lab runs 38087279133 and 38087313399):** the two runs' **whole game state is identical at all 13,346 ticks** (445 s of game time): all 81 allocations at all 445 checkpoints ("first person weapons" and "object looping sounds" included), the play hash, and both seeds. Before, play parted at tick 1,326 or 1,459.
 - **What it opens:** a change meant to be exact can now be checked over a whole run, not 44 s. That is the test L3 (the AI's reorder) and L5 need.
 - **Its limit, across builds (b113's first uses) [E]:** two builds, or two sets of keep words that change the emulator's speed, still part, between ticks 1,326 and 1,357: b112 against b113 set back to b112's behaviour (`weaksum renderstates256`); b113's defaults against that; `gedefer` against none. Even the extra logging of `staterecords1316 stateobjects1316` moved one pair's first difference from 1,326 to 1,357 (lab runs 38092178378 and 38092205732). In that pair the first object to differ is a **plasma pistol bolt** at tick 1,357; every other object is the same through tick 1,363. So something b30's opening plays with still follows how fast the emulator runs, and the same binary agrees with itself only because the emulator times one binary the same way every run.
-- **The suspect [U]:** drawing feeding back into play. The bolt leaves from the Elite's gun marker, and an object's nodes may be worked out fully only when it's drawn; what is drawn depends on which geometry and textures have arrived (`psp_geo.c`, `psp_tex.c`: a frame's reads are capped), and with `fixedticks` the reads land at different game times when a build runs at a different speed. **Next (b114, `b113_candidates.md` #25):** a test word that makes every geometry and texture read complete in the frame that asks for it, then the same cross-build pair again.
+- **The suspect [U], since ruled out:** drawing feeding back into play. (Later traced to b30's dialogue, which plays in real time while its scripts wait on it (`review_b120.md`); drawing doesn't change play, identical across drawing changes on five maps [E, 2026-10-28].) The bolt leaves from the Elite's gun marker, and an object's nodes may be worked out fully only when it's drawn; what is drawn depends on which geometry and textures have arrived (`psp_geo.c`, `psp_tex.c`: a frame's reads are capped), and with `fixedticks` the reads land at different game times when a build runs at a different speed. **Next (b114, `b113_candidates.md` #25):** a test word that makes every geometry and texture read complete in the frame that asks for it, then the same cross-build pair again.
 - Until then, judge a change across builds over b30's first 44 s (tick 1,326), and within one build and one set of words over the whole run.
 
 ### The reach, mapped (b114, 2026-10-11) [D]
@@ -457,7 +457,7 @@ Lab run 38171832444: b114 along `b30_b113test1_timed`, keep words `nearauto asse
 
 - **It's part of the main CPU, not a third worker.** It makes the main CPU's arithmetic faster: matrix products 3.2× [M: 906 µs against 2,880 for 2,000]. It can't run alongside anything.
 - **It does nothing for memory waits,** which are ~58% of the main CPU's cycles [M].
-- **The Media Engine has no VFPU.** Once L1 moves the GE layer onto the ME, VFPU code in the drawing path stops mattering. So the VFPU's targets are the tick's.
+- **The Media Engine has no VFPU.** Where L1 moves the GE layer onto the ME, VFPU code in that path stops mattering; the drawing that stays on the main CPU keeps it. The node-matrix product runs on the ME's FPU exactly as fast as on the main CPU's (halo_mewalk [M]), so only VFPU-heavy work is slower there.
 
 | # | Work | Gain [U] | Exact? | Notes |
 |---|---|---|---|---|

@@ -21,7 +21,7 @@ import zipfile
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # the tools the bake runs from tools/ (the rest of tools/ is the port's own)
-TOOLS = ['texpack.py', 'stencilbake.py', 'dez.py', 'lightmap_masks.py', 'bspread.py', 'levelslim.py']
+TOOLS = ['texpack.py', 'stencilbake.py', 'dez.py', 'lightmap_masks.py', 'bspread.py', 'levelslim.py', 'modelconvert.py']
 # a tool in tools/ finds the bake's readers in bake/lib with this line; in the
 # bundle they sit side by side, so it goes
 READERS_LINE = "'bake', 'lib'))  # the bake's readers"
@@ -132,7 +132,7 @@ def assemble(tools, out, target):
         shutil.rmtree(out)
     os.makedirs(out)
     bake = os.path.join(REPO, 'bake')
-    for name in ('bake.py', 'guided.py', 'xiso.py', 'launcher.py', 'requirements.txt', 'hashes.json', 'README.md',
+    for name in ('bake.py', 'guided.py', 'xiso.py', 'launcher.py', 'requirements.txt', 'hashes.json', 'tested_images.json', 'README.md',
                  'INVADER.md'):
         copy(os.path.join(bake, name), os.path.join(out, name))
     # which bundle this is, for the stamp each bake writes (bake.py's bundle_label)

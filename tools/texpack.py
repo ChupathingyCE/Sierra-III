@@ -17,7 +17,9 @@ File layout (little endian):
     u16 width, u16 height, u8 levels, u8 psm (5 = T8, 4 = T4; in its own colours,
     --showcase: 3 = 8888, 0 = 5650), u8 clut (0 = 5650, 3 = 8888; 0xFF none),
     u8 flags (1 = has alpha; 2 = an exact CLUT4: 8-bit texels in 16
-    colours, its average sampled as its CLUT8 layout's), u32 offset, u32 size }
+    colours, its average sampled as its CLUT8 layout's; 8 = the change
+    mask's CLUT, 16 or 256 x u32, is the data's last bytes; 16 = the CPU reads
+    its palette, so it's kept in main RAM), u32 offset, u32 size }
   tints, right after the directory: 'TNT1', u32 count, then count x
     { u32 shader tag address, u32 tint (ABGR) }, sorted by address: the
     see-through shaders' tints for the one map the GE draws of each
@@ -45,11 +47,18 @@ File layout (little endian):
     shaders drawn from a texture of their own (seethrough.composite), whose
     directory entries are keyed by the shader's tag address | 1. Only when
     there are any, after a 'TNA1' (of count 0 when no shader is angled)
+  averages, right after the composites: 'TAV1', u32 count (the textures'),
+    then count x u32: each texture's average colour (ABGR; 0 for one in its
+    own colours), in directory order, as psp_tex_average used to sample it.
+    Since bake format 2 every table above is written, empty or not
   glow maps: directory entries keyed by a self-illuminated model shader's
     tag address | 2 (glow_looks), beside the bitmaps' keys; entries with the
     same texels share their data
   data: per texture, 16-byte aligned: the palette (256 x 2 or 4 bytes), then
-    each level swizzled, rows padded to 16 bytes and to 8 rows
+    each level swizzled, rows padded to 16 bytes and to 8 rows; then a
+    multipurpose map's change mask (flag 8), 64-byte aligned; Chief's
+    multipurpose maps also keep their reflection mask (flag 32) right before
+    it, so the change mask still ends the data
 """
 import sys, os, struct, argparse, hashlib, io, time
 import numpy as np
@@ -288,6 +297,45 @@ def glow_looks(m, B):
     return glows
 
 
+def level_glow_looks(m, d, B):
+    """senv shaders that light themselves: the shader's address | 2 (the
+    primary colour) or | 3 (the secondary) -> the base bitmap (None where the
+    shader has none) and the illumination map to bake a glow map from. On the
+    Xbox a level shader's self-illumination is added to the lightmap, and the
+    base map then multiplies the frame (rasterizer_xbox_environment.c: the
+    lightmap pass's final combiner adds the illumination; the base pass is the
+    product), so a lit-up area shows its own texture at full brightness, as a
+    model's does (glow_looks). The map's red weighs the primary colour and its
+    green the secondary, at the level's coordinates times the map scale; its
+    alpha (the plasma colour) isn't drawn. The self-illumination properties are
+    at +384 (the diffuse properties' 276 bytes after +108): the primary colours
+    at +412 (on) and +424 (off), its period at +440, the secondary's 60 bytes
+    on, the scale at +592 and the map's index at +608"""
+    by_tag = {}
+    for b in B:
+        by_tag.setdefault(b['tag'], []).append(b)
+    glows = {}
+    for t in m.tags:
+        if t.group != 'senv' or not t.address:
+            continue
+        o = m.off(t.address)
+        scale, = struct.unpack_from('<f', m.data, o + 592)
+        mask_id, = struct.unpack_from('<i', m.data, o + 608)
+        base_id, = struct.unpack_from('<i', m.data, o + 148)
+        mask, base = m.by_id.get(mask_id), m.by_id.get(base_id)
+        if not mask or mask.name not in by_tag:
+            continue
+        for which in range(2):
+            colours = struct.unpack_from('<6f', m.data, o + 412 + 60 * which)
+            period, = struct.unpack_from('<f', m.data, o + 440 + 60 * which)
+            if period == 0.0 or not any(colours):
+                continue
+            glows[t.address | (2 + which)] = dict(
+                shader=t.name, mask=by_tag[mask.name][0], channel=which, scale=scale or 1.0,
+                base=by_tag[base.name][0] if base and base.name in by_tag else None)
+    return glows
+
+
 def relief_looks(m, d, B):
     """senv shaders with a bump map: base bitmap address -> (the bump map's
     entry, its scale on the base's coordinates). shader_environment's diffuse
@@ -420,33 +468,192 @@ def gel_average(m, b):
     return [int(round(x)) for x in img[:, :, :3].reshape(-1, 3).astype(np.float64).mean(0)]
 
 
+def gel_face_images(m, b):
+    """a light's gel cube map's six faces' top levels as RGBA arrays, in the
+    cube's face order (+X, -X, +Y, -Y, +Z, -Z), or None. Each face's mip
+    chain is held in turn as gel_average reads the padded layout; unpadded
+    data is taken in that order too"""
+    fmt, w, h = b['fmt'], b['w'], b['h']
+    if b['type'] != 'cube' or fmt in (17,) or BPP[fmt] == 0:
+        return None
+    dxt = FORMATS[fmt].startswith('DXT')
+    block = 8 if FORMATS[fmt] == 'DXT1' else 16
+    chain, lw, lh = 0, w, h
+    for _ in range(b['mips'] + 1):
+        chain += max(1, (lw + 3) // 4) * max(1, (lh + 3) // 4) * block if dxt else lw * lh * BPP[fmt] // 8
+        lw, lh = max(1, lw // 2), max(1, lh // 2)
+    size = b['pixels_size']
+    if size < 6 * chain:
+        return None
+    stride = size // 6 if size > 6 * chain else chain
+    top = max(1, (w + 3) // 4) * max(1, (h + 3) // 4) * block if dxt else w * h * BPP[fmt] // 8
+    data = m.data[b['pixels_offset']:b['pixels_offset'] + size]
+    faces = []
+    for k in range(6):
+        face = data[k * stride:k * stride + top]
+        if dxt:
+            img = decode_dxt(face, w, h, FORMATS[fmt])
+        else:
+            img = decode_plain(face, w, h, fmt, bool(b['flags'] & 8))
+        if img is None:
+            return None
+        faces.append(img)
+    return faces
+
+
+def gel_faces(m, b):
+    """a light's gel cube map's six faces' mean colours, in the cube's face
+    order (+X, -X, +Y, -Y, +Z, -Z), or None. The light pass looks the gel up
+    by the direction from the light in the gel's frame, +X its forward, +Y
+    its left, +Z its up (the engine's environment light vertex shader), so a
+    wall above the light sees the +Z face and one ahead of it the +X face"""
+    images = gel_face_images(m, b)
+    if images is None:
+        return None
+    return [[int(round(x)) for x in img[:, :, :3].reshape(-1, 3).astype(np.float64).mean(0)] for img in images]
+
+
+GEL_CUBE_SIDE = 16             # texels a side of each face of a gel's kept cube (psp_tex.c, GEL_CUBE_SIDE)
+
+
+def gel_cube(m, b):
+    """a light's gel cube map at GEL_CUBE_SIDE texels a side, its six faces
+    stacked top to bottom in the cube's face order, as RGBA, or None. The
+    Xbox looks the gel up per pixel, so a beacon's narrow turning beam sweeps
+    the walls at full strength; a face's mean spreads it over the face at a
+    fraction of that. The PSP samples this at each lit vertex (psp_tex.c,
+    psp_tex_gel_cube_at)"""
+    images = gel_face_images(m, b)
+    if images is None:
+        return None
+    return np.concatenate([downscale(img, GEL_CUBE_SIDE, GEL_CUBE_SIDE) for img in images], 0)
+
+
 def gel_bitmaps(roles):
     """bitmap tag names lights use as their gel and nothing else uses"""
     return set(tag for tag, rs in roles.items()
                if rs and all(r.startswith('ligh:') and r.endswith('cube map') for r in rs))
 
 
-def cube_patch(m, b, rgb=None):
+GEL_FACES_MARK = 0xFACE        # palette entry 15 of a gel patch that carries its six faces (psp_tex.c)
+GEL_CUBE_MARK = 0xC0BE         # palette entry 255 of a gel patch that carries its cube as well (psp_tex.c)
+GEL_CUBE_FIRST = 7             # the cube's colours from this palette entry on (0 the mean, 1-6 the faces)
+
+
+def cube_patch(m, b, rgb=None, faces=None, cube=None, sphere=None, mean=None):
     """a cube map's average colour as an 8 x 8 patch of that one colour,
     under the cube map's own key: the GE draws no cube maps, and a model's
     reflection is folded into its lighting by this average (psp_ge.c,
-    psp_ge_model_reflection). The first face stands for the six (the bitmap's
-    data starts with it), unless rgb gives the colour (a light's gel)"""
+    psp_ge_model_reflection), and Chief's sheen is added by it. mean gives
+    it as the six faces' mean (a model reflection's cube, unless
+    --cube-first-face); without it the first face stands for the six (the
+    bitmap's data starts with it), unless rgb gives the colour (a light's
+    gel). A
+    gel's six face colours, when given, sit in palette entries 1-6 (every
+    texel is entry 0, so the patch still draws and averages as one colour),
+    entry 15 marking them. A gel's cube, when given, makes the patch CLUT8
+    instead: the six faces stacked (gel_cube), its texels indexing entries
+    7-254, entries 0-6 as above and entry 255 marking it; its average is
+    still entry 0's"""
     if rgb is not None:
         r, g, bl = rgb
+    elif mean is not None:
+        r, g, bl = mean
     else:
         img = decode(m, b)
         if img is None:
             return None
         r, g, bl = [int(round(x)) for x in img[:, :, :3].reshape(-1, 3).astype(np.float64).mean(0)]
-    entry = (r >> 3) | ((g >> 2) << 5) | ((bl >> 3) << 11)          # GU_PSM_5650, as the packed palettes
-    palette = np.array([entry] + [0] * 15, '<u2').tobytes()
+    def entry_of(r, g, bl):
+        return (r >> 3) | ((g >> 2) << 5) | ((bl >> 3) << 11)    # GU_PSM_5650, as the packed palettes
+    if cube is not None and faces is not None:
+        colours = 255 - GEL_CUBE_FIRST
+        opaque = cube.copy()
+        opaque[:, :, 3] = 255
+        idx, pal, _, _ = quantize(opaque, colours)
+        entries = [entry_of(r, g, bl)] + [entry_of(*face) for face in faces]
+        entries += [entry_of(int(p[0]), int(p[1]), int(p[2])) for p in pal[:colours]]
+        entries += [0] * (255 - len(entries)) + [GEL_CUBE_MARK]
+        palette = np.array(entries, '<u2').tobytes()
+        w, h = cube.shape[1], cube.shape[0]
+        row, rows = level_bytes(w, h, 8)
+        level = np.zeros((rows, row), np.uint8)
+        level[:h, :w] = idx + GEL_CUBE_FIRST
+        expanded = (entries[0] & 31) * 255 // 31, ((entries[0] >> 5) & 63) * 255 // 63, (entries[0] >> 11) * 255 // 31
+        return dict(w=w, h=h, levels=1, clut=0, alpha=False, psm=5, average=expanded,
+                    data=palette + swizzle_psp(level.tobytes(), row, rows))
+    if sphere is not None:
+        # a model reflection's sphere map, CLUT8; its average stays the
+        # patch's (entry 0 expanded), so the reflection folded into the
+        # part's ambient (psp_ge.c, ambient_with_reflection) is as before
+        mean = entry_of(r, g, bl)
+        idx, pal, _, _ = quantize(sphere, 256)
+        palette = np.array([entry_of(int(p[0]), int(p[1]), int(p[2])) for p in pal[:256]], '<u2').tobytes()
+        row, rows = level_bytes(SPHERE_SIDE, SPHERE_SIDE, 8)
+        level = np.zeros((rows, row), np.uint8)
+        level[:SPHERE_SIDE, :SPHERE_SIDE] = idx
+        expanded = (mean & 31) * 255 // 31, ((mean >> 5) & 63) * 255 // 63, (mean >> 11) * 255 // 31
+        return dict(w=SPHERE_SIDE, h=SPHERE_SIDE, levels=1, clut=0, alpha=False, psm=5, average=expanded,
+                    data=palette + swizzle_psp(level.tobytes(), row, rows))
+    entries = [entry_of(r, g, bl)] + [0] * 15
+    if faces is not None:
+        entries[1:7] = [entry_of(*face) for face in faces]
+        entries[15] = GEL_FACES_MARK
+    palette = np.array(entries, '<u2').tobytes()
     row, rows = level_bytes(8, 8, 4)
     level = swizzle_psp(bytes(row * rows), row, rows)                # every texel entry 0
     return dict(w=8, h=8, levels=1, clut=0, alpha=False, data=palette + level, psm=4)
 
 
+SPHERE_SIDE = 32               # texels a side of a model reflection's sphere map (psp_ge.c, reflection_env_pass)
+
+
+def sphere_map(m, b):
+    """a model reflection's cube map as a sphere map, SPHERE_SIDE a side, as
+    RGBA, or None: the colour reflected toward the eye by a surface whose
+    normal, seen from the eye, points at that texel (s right, t up, the
+    middle facing the eye), for an eye looking along +X with +Z up. The GE
+    has no cube maps; its environment mapping makes a texel from the
+    normal's two components along the camera's right and up
+    (sceGuTexMapMode GU_ENVIRONMENT_MAP), so a shiny part's reflection moves
+    as it turns, though not as the camera does. The cube is looked up as
+    Direct3D's faces (psp_tex.c, psp_tex_gel_cube_at)"""
+    faces = gel_face_images(m, b)
+    if faces is None:
+        return None
+    side = faces[0].shape[0]
+    n = SPHERE_SIDE
+    c = (np.arange(n) + 0.5) / n * 2.0 - 1.0
+    s, t = np.meshgrid(c, -c)                                         # row 0 is up
+    z = np.sqrt(np.clip(1.0 - s * s - t * t, 0.0, 1.0))
+    norm = np.sqrt(np.maximum(s * s + t * t + z * z, 1e-12))
+    s, t, z = s / norm, t / norm, z / norm
+    rx, ry, rz = 2.0 * z * s, 2.0 * z * t, 2.0 * z * z - 1.0          # the view reflected (view space)
+    x, y, zz = -rz, -rx, ry                                           # into the world: forward +X, left +Y, up +Z
+    ax, ay, az = np.abs(x), np.abs(y), np.abs(zz)
+    out = np.zeros((n, n, 4), np.float64)
+    major = np.maximum(np.maximum(ax, ay), az)
+    pick_x = (ax >= ay) & (ax >= az)
+    pick_y = ~pick_x & (ay >= az)
+    pick_z = ~pick_x & ~pick_y
+    face = np.where(pick_x, np.where(x >= 0, 0, 1), np.where(pick_y, np.where(y >= 0, 2, 3), np.where(zz >= 0, 4, 5)))
+    sc = np.where(pick_x, np.where(x >= 0, -zz, zz), np.where(pick_y, x, np.where(zz >= 0, x, -x)))
+    tc = np.where(pick_x, -y, np.where(pick_y, np.where(y >= 0, zz, -zz), -y))
+    u = np.clip(((sc / major + 1.0) * 0.5 * side).astype(int), 0, side - 1)
+    v = np.clip(((tc / major + 1.0) * 0.5 * side).astype(int), 0, side - 1)
+    for k in range(6):
+        where = face == k
+        out[where] = faces[k][v[where], u[where]]
+    out[:, :, 3] = 255
+    return np.clip(np.rint(out), 0, 255).astype(np.uint8)
+
+
+NO_SPHERE_MAPS = False         # --no-sphere-maps: a model reflection's cube as its 8 x 8 average patch only, as before
+CUBE_FIRST_FACE = False        # --cube-first-face: a model reflection's average from its first face, as before
+
 NO_CUBE_PATCHES = False        # --no-cube-patches: no cube map averages in the pack (as build 139)
+NO_GEL_FACES = False           # --no-gel-faces: a gel patch with the single gel average only, the behaviour before per-face averages
+NO_GEL_CUBE = False            # --no-gel-cube: a gel patch with its face means only, the behaviour before the kept cube
 CUBE_PATCHES = []
 
 
@@ -471,6 +678,21 @@ def apply_glow(img, multipurpose):
     h, w = img.shape[:2]
     green = channel_at(multipurpose, 1, w, h)
     rgb = np.clip(img[:, :, :3].astype(np.float32) * green + 0.5, 0, 255).astype(np.uint8)
+    return np.concatenate([rgb, np.full((h, w, 1), 255, np.uint8)], 2)
+
+
+def apply_level_glow(img, glow):
+    """what a level shader's self-illumination pass adds, at full colour: the
+    base x one channel of the illumination map, which the Xbox samples at the
+    level's coordinates times its scale, wrapped (here at each of the base's
+    texels); opaque"""
+    h, w = img.shape[:2]
+    mask = glow['mask']
+    mh, mw = mask.shape[:2]
+    u = np.floor((np.arange(w) + 0.5) / w * glow['scale'] * mw).astype(np.int64) % mw
+    v = np.floor((np.arange(h) + 0.5) / h * glow['scale'] * mh).astype(np.int64) % mh
+    one = mask[v[:, None], u[None, :], glow['channel']:glow['channel'] + 1].astype(np.float32) / 255.0
+    rgb = np.clip(img[:, :, :3].astype(np.float32) * one + 0.5, 0, 255).astype(np.uint8)
     return np.concatenate([rgb, np.full((h, w, 1), 255, np.uint8)], 2)
 
 
@@ -578,8 +800,59 @@ def grid_offset(img):
     return int(np.bincount((img[:, :, 2][a].astype(np.int32) & 3), minlength=4).argmax())
 
 
-def grid_palette(offset):
-    return np.array([[min(255, (i >> 2) * 4 + offset)] * 3 + [(i & 3) * 85] for i in range(256)], np.uint8)
+GRID_ALPHAS = (0, 85, 170, 255)
+METER_ALPHAS = True       # --no-meter-alphas: the fixed four, as before
+METER_LOG = []
+
+
+def grid_palette(offset, alphas=GRID_ALPHAS):
+    return np.array([[min(255, (i >> 2) * 4 + offset)] * 3 + [alphas[i & 3]] for i in range(256)], np.uint8)
+
+
+# B3: the grid kept four alpha levels, 0, 85, 170 and 255, and the GE
+# multiplies each meter colour by its entry's alpha (psp_ge.c, meter_palette),
+# so a shape drawn at 127 came out at 85 and the bars drew dimmer than the
+# PC's. The four levels are now the bitmap's own: 0 and 255 always, the other
+# two the centres of a two-way split of its partial alphas, weighted by pixel
+# count. The greys are untouched (the rifle's rounds need all 64)
+def meter_alphas(img):
+    a = img[:, :, 3].astype(np.int64).ravel()
+    inner = a[(a > 0) & (a < 255)]
+    if not inner.size:
+        return GRID_ALPHAS
+    v = np.arange(1, 255)
+    w = np.bincount(inner, minlength=256)[1:255].astype(np.float64)
+    c = np.array([85.0, 170.0])
+    for _ in range(32):
+        near = np.abs(v[:, None] - c[None, :]).argmin(1)
+        new = c.copy()
+        for k in (0, 1):
+            s = w[near == k].sum()
+            if s:
+                new[k] = (v[near == k] * w[near == k]).sum() / s
+        if np.allclose(new, c):
+            break
+        c = new
+    mid = sorted(min(254, max(1, int(round(x)))) for x in c)
+    if mid[0] == mid[1]:
+        return GRID_ALPHAS
+    return (0, mid[0], mid[1], 255)
+
+
+def meter_alpha_note(tag, img, alphas):
+    """one log line a meter: its commonest alphas, the levels chosen, and the
+    mean alpha error over drawn pixels with the old levels and the new"""
+    a = img[:, :, 3].astype(np.int64).ravel()
+    drawn = a[a > 0]
+    count = np.bincount(a, minlength=256)
+    top = np.argsort(-count)[:6]
+    old_err = np.abs(drawn - (drawn + 42) // 85 * 85)
+    new_err = np.abs(drawn[:, None] - np.array(alphas)[None, :]).min(1) if drawn.size else old_err
+    METER_LOG.append('%s: alphas %s; commonest alpha:pixels %s; %d of %d drawn pixels more than 8 off the old levels; '
+                     'mean error old %.2f new %.2f' % (
+                         tag, alphas, ' '.join('%d:%d' % (t, count[t]) for t in top if count[t]),
+                         int((old_err > 8).sum()), drawn.size,
+                         old_err.mean() if drawn.size else 0.0, new_err.mean() if drawn.size else 0.0))
 
 
 def grey_meter(img):
@@ -589,9 +862,12 @@ def grey_meter(img):
     return len(np.unique(rgba[:, [2, 3]], axis=0)) > 256
 
 
-def grid_index(img, offset=2):
+def grid_index(img, offset=2, alphas=None):
     y = np.clip((img[:, :, 2].astype(np.int32) - offset + 2) >> 2, 0, 63)
-    a = (img[:, :, 3].astype(np.int32) + 42) // 85
+    if alphas is None:
+        a = (img[:, :, 3].astype(np.int32) + 42) // 85
+    else:
+        a = np.abs(img[:, :, 3].astype(np.int32)[:, :, None] - np.array(alphas)[None, None, :]).argmin(2)
     return y * 4 + a
 
 
@@ -783,15 +1059,43 @@ def alpha_audit_summary():
               file=sys.stderr)
 # build 102: per-class detail (texpack.py --full-detail fp,vehicles,...):
 # these classes keep their top level (the bake otherwise halves every texture
-# of 64 px and more) and the 256 px cap rises to 512. A lever to try, not the
-# default: each doubles its textures' bytes four times over
+# of 64 px and more) and the 256 px cap rises to 512. Each quadruples its
+# textures' bytes; only Chief is the default (a restoration: his detail map
+# reads on his own textures), the rest are levers to try
 DETAIL_CLASSES = {
     'fp': lambda tag: '\\fp\\' in tag,
     'weapons': lambda tag: tag.startswith('weapons\\') and '\\fp\\' not in tag,
     'vehicles': lambda tag: tag.startswith('vehicles\\'),
     'characters': lambda tag: tag.startswith('characters\\') and '\\fp\\' not in tag,
+    # Chief, a centerpiece as the main menu's ring is: his
+    # armour, visor and first-person hands at their own size
+    'chief': lambda tag: tag.startswith('characters\\cyborg\\'),
+    # only the detail maps Chief's shaders draw (chief_detail_tags): his base,
+    # multipurpose and glow maps stay halved as every character's are, since
+    # at full size they crowd the level's textures out of the cache
+    'chiefdetail': lambda tag: tag in CHIEF_DETAIL_TAGS,
+    # the rest of Chief (base, multipurpose, glow) at up to 256 a side: twice
+    # the halved objects' 128, a quarter of his own 512's bytes
+    'chief256': lambda tag: tag.startswith('characters\\cyborg\\') and tag not in CHIEF_DETAIL_TAGS,
 }
+# the classes whose cap is below the full-detail 512
+DETAIL_LIMITS = {'chief256': 256}
 FULL_DETAIL = set()
+CHIEF_DETAIL_TAGS = set()
+
+
+def chief_detail_tags(m):
+    """the detail bitmaps of Chief's model shaders (soso, characters\\cyborg\\),
+    from the field the runtime's detail pass reads (psp_fixups.py, definition + 232)"""
+    tags = set()
+    for t in m.tags:
+        if t.group != 'soso' or not t.address or not t.name.startswith('characters\\cyborg\\'):
+            continue
+        detail, = struct.unpack_from('<i', m.data, m.off(t.address) + 232)
+        bitmap = m.by_id.get(detail)
+        if bitmap and bitmap.group == 'bitm':
+            tags.add(bitmap.name)
+    return tags
 
 
 def full_detail(tag):
@@ -1005,7 +1309,7 @@ FAST_PALETTES = False     # --fast-palettes: bitmap_bake.fast_kmeans()
 # what the cache's keys hold besides the pixels: the code that makes the
 # palettes, so a changed bitmap_bake.py never reads an older one's
 with open(bitmap_bake.__file__, 'rb') as _f:
-    PALETTE_CODE = hashlib.sha256(_f.read()).hexdigest()
+    PALETTE_CODE = hashlib.sha256(_f.read() + np.__version__.encode()).hexdigest()
 del _f
 
 
@@ -1568,7 +1872,7 @@ def seams_broken(m, b, cls):
 
 @profiled
 def bake_one(m, b, cls, look=None, model_look=None, full_hud=True, meter=False, glow=None, own_colours=True,
-             relief=None, image=None, whole=False):
+             relief=None, image=None, whole=False, level_glow=None):
     act, tw, th = target(b, cls)
     if cls == 'lightmap' and LIGHTMAP_SCALE > 1 and not whole:
         tw, th = max(8, tw // LIGHTMAP_SCALE), max(8, th // LIGHTMAP_SCALE)
@@ -1582,7 +1886,8 @@ def bake_one(m, b, cls, look=None, model_look=None, full_hud=True, meter=False, 
     if cls == 'objects (soso)' and '\\fp\\' not in b['tag']:
         limit = OBJECT_SIDE
     if FULL_DETAIL and act == 'clut' and full_detail(b['tag']):
-        tw, th, limit = b['w'], b['h'], 512
+        tw, th = b['w'], b['h']
+        limit = min([DETAIL_LIMITS.get(c, 512) for c in FULL_DETAIL if DETAIL_CLASSES[c](b['tag'])] or [512])
     # the showcase: every map at its own size, up to the GE's 512 a side
     if SHOWCASE and act == 'clut' and cls != 'lightmap':
         tw, th, limit = b['w'], b['h'], 512
@@ -1615,6 +1920,8 @@ def bake_one(m, b, cls, look=None, model_look=None, full_hud=True, meter=False, 
         img = apply_model_look(img, model_look)
     if glow is not None:
         img = apply_glow(img, glow)
+    if level_glow is not None:
+        img = apply_level_glow(img, level_glow)
     own_levels = None
     if cls == 'detail':
         # the Xbox's own mip chain belongs to the bitmap, not to an image given
@@ -1653,7 +1960,11 @@ def bake_one(m, b, cls, look=None, model_look=None, full_hud=True, meter=False, 
                     psm=3 if wide else 0)
     if grid:
         grid_off = grid_offset(small)
-        idx, pal, alpha = grid_index(small, grid_off), grid_palette(grid_off), True
+        grid_a = meter_alphas(small) if METER_ALPHAS else None
+        if grid_a is not None:
+            meter_alpha_note(b['tag'], small, grid_a)
+        idx = grid_index(small, grid_off, grid_a)
+        pal, alpha = grid_palette(grid_off, grid_a or GRID_ALPHAS), True
     elif own_levels:
         # one palette for every level: the faded levels' near-greys need
         # entries of their own, which the top level alone wouldn't earn
@@ -1732,7 +2043,7 @@ def bake_one(m, b, cls, look=None, model_look=None, full_hud=True, meter=False, 
     if ALPHA_AUDIT and alpha and not grid:
         alpha_audit(b, cls, small, pal[idx], bits, shape)
     while len(levels) < min(8, source_levels):
-        ix = idx if not levels else (grid_index(level_img, grid_off) if grid else
+        ix = idx if not levels else (grid_index(level_img, grid_off, grid_a) if grid else
                                      diffuse(level_img, pal, alpha, len(pal)) if diffusing else
                                      nearest(level_img, pal, alpha, split=shape is not None))
         levels.append(pack_level(ix, w, h, bits))
@@ -1768,6 +2079,70 @@ def bake_one(m, b, cls, look=None, model_look=None, full_hud=True, meter=False, 
     return made
 
 
+CHANGE_MASK_FLAG = 8  # the change mask's CLUT follows the levels
+CPU_READS_FLAG = 16   # the CPU reads this texture's palette: kept in main RAM
+REFL_MASK_FLAG = 32   # the reflection mask's CLUT comes right before the change mask's
+
+
+def change_mask(e):
+    """a multipurpose map's change mask, as the GE's CLUT for the change pass
+    (psp_ge.c, multipurpose_pass): the palette's blue (the Xbox's change
+    channel) as a grey 8888 word, alpha full. The Media Engine replays the
+    pass and can't read a texture in VRAM, so the bake works it out"""
+    _, words = read_levels(e)
+    w = words.astype(np.uint32)
+    blue = (w >> 16) & 0xFF if e['alpha'] else (w >> 11) * 255 // 31
+    return (0xFF000000 | (blue << 16) | (blue << 8) | blue).astype('<u4').tobytes()
+
+
+def reflection_mask(e):
+    """a multipurpose map's reflection mask, as the GE's CLUT for Chief's
+    sheen pass (psp_ge.c, sheen_pass): the palette's red (the Xbox's
+    reflection channel) as a grey 8888 word, alpha full"""
+    _, words = read_levels(e)
+    w = words.astype(np.uint32)
+    red = w & 0xFF if e['alpha'] else (w & 0x1F) * 255 // 31
+    return (0xFF000000 | (red << 16) | (red << 8) | red).astype('<u4').tobytes()
+
+
+def runtime_reads(entries):
+    """what the runtime would otherwise read out of the textures themselves,
+    made here (design_b25_bake.md): each multipurpose map's change mask after
+    its levels (64-byte aligned, the last bytes of its data), the meter maps
+    marked for main RAM, and every texture's average colour as the 'TAV1'
+    table's bytes, in directory order (0: none, a texture in its own colours)"""
+    masks = meters = 0
+    for e in entries:
+        reads = e.get('reads', '')
+        if 'multipurpose' in reads and e['psm'] in (4, 5):
+            mask = change_mask(e)
+            data = bytes(e['data'])
+            # Chief's maps (a centerpiece, as the menu's ring) keep their
+            # reflection mask too, for the sheen the Xbox adds over his armour
+            refl = reflection_mask(e) if e.get('name', '').startswith('characters\\cyborg\\') else b''
+            e['data'] = data + b'\0' * (-len(data) % 64) + refl + mask
+            e['flags'] = e.get('flags', 0) | CHANGE_MASK_FLAG | (REFL_MASK_FLAG if refl else 0)
+            masks += len(e['data']) - len(data)
+        if 'meter' in reads:
+            e['flags'] = e.get('flags', 0) | CPU_READS_FLAG
+            meters += len(e['data'])
+    averages = []
+    for e in entries:
+        if 'average' in e:
+            r, g, b = e['average']
+            averages.append(0xFF000000 | (b << 16) | (g << 8) | r)
+        elif e['psm'] in (4, 5):
+            r, g, b = runtime_average(e)
+            averages.append(0xFF000000 | (b << 16) | (g << 8) | r)
+        else:
+            averages.append(0)
+    print('runtime reads: %d change masks (+%d KB), %d meter maps kept in RAM (%d KB), averages for %d of %d textures'
+          % (sum(1 for e in entries if e.get('flags', 0) & CHANGE_MASK_FLAG), masks // 1024,
+             sum(1 for e in entries if e.get('flags', 0) & CPU_READS_FLAG), meters // 1024,
+             sum(1 for v in averages if v), len(entries)), file=sys.stderr)
+    return struct.pack('<4sI', b'TAV1', len(averages)) + struct.pack('<%dI' % len(averages), *averages)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('map')
@@ -1788,13 +2163,16 @@ def main():
                          'broken seam spots is treated (0: SEAM_SPOTS_BROKEN, CHART_SPOTS)')
     ap.add_argument('--pgeo', default=None, help='the map\'s geometry pack (default: beside the map) for the lightmap masks')
     ap.add_argument('--alpha-coverage', action='store_true', help='asset track: alpha-tested textures keep their coverage at every level')
-    ap.add_argument('--full-detail', default='', help='classes kept at full size: fp, weapons, vehicles, characters')
+    ap.add_argument('--full-detail', default='chiefdetail,chief256', help='classes kept at full size: fp, weapons, vehicles, characters, chief, chiefdetail, chief256 (the rest of Chief, to 256) '
+                    '(the default: the detail maps of Chief, the centerpiece in every level); none: no class')
     ap.add_argument('--hud-clut4', action='store_true', help='HUD sheets may take 16 colours again (as before build 120)')
     ap.add_argument('--no-clut4-look', action='store_true',
                     help='lightmaps and HUD sheets stay at 8 bits even where 16 colours pass the CLUT4W strict bar '
                          '(docs/review_clut4look.md)')
     ap.add_argument('--no-clut4-exact', action='store_true',
                     help='textures of 16 colours or fewer that the 16-colour rule leaves at 8 bits stay at 8 bits')
+    ap.add_argument('--no-meter-alphas', action='store_true',
+                    help="the meters' grid keeps the fixed alphas 0, 85, 170, 255 (as before)")
     ap.add_argument('--no-alpha-split', action='store_true',
                     help='alpha-tested maps\' palettes fitted as one 4-D k-means, the alpha test\'s sides '
                          'mixed in an entry (as before)')
@@ -1821,12 +2199,22 @@ def main():
                     help='see-through tints from every map\'s mean, drawn on the runtime\'s own map (as before build 121)')
     ap.add_argument('--no-glow-maps', action='store_true',
                     help='no glow maps: the self-illumination pass adds its colour by the mask alone')
+    ap.add_argument('--no-level-glow-maps', action='store_true',
+                    help='no level glow maps: a level shader\'s self-illumination isn\'t drawn (as before)')
     ap.add_argument('--premultiplied-masks', action='store_true',
                     help='detail masks read from the RGBA-resized multipurpose map, darkened under its alpha (as before)')
     ap.add_argument('--no-relief', action='store_true',
                     help="the level's base maps without their bump maps' relief (as before build 139)")
     ap.add_argument('--no-cube-patches', action='store_true',
                     help="no cube map averages in the pack (as build 139)")
+    ap.add_argument('--no-gel-faces', action='store_true',
+                    help="a light's gel patch with the single gel average only, the behaviour before per-face averages")
+    ap.add_argument('--cube-first-face', action='store_true',
+                    help="a model reflection cube's average from its first face only, as before (default: the six faces' mean)")
+    ap.add_argument('--no-sphere-maps', action='store_true',
+                    help="a model reflection's cube map as its average alone, without the sphere map the reflection pass draws")
+    ap.add_argument('--no-gel-cube', action='store_true',
+                    help="a light's gel patch with its face means only, without the cube the light pass samples per vertex")
     ap.add_argument('--relief-unfiltered', action='store_true',
                     help="the bump relief sampled at the base's texels without averaging (as build 139)")
     ap.add_argument('--showcase', action='store_true',
@@ -1863,7 +2251,12 @@ def main():
     QUALITY, QUALITY_REPORT = a.quality, a.quality_report
     PREMULTIPLIED_MASKS = a.premultiplied_masks
     SHOWCASE = a.showcase
-    global NO_RELIEF, OLD_RELIEF, NO_CUBE_PATCHES
+    global NO_RELIEF, OLD_RELIEF, NO_CUBE_PATCHES, NO_GEL_FACES, NO_GEL_CUBE, NO_SPHERE_MAPS
+    NO_GEL_FACES = a.no_gel_faces
+    NO_SPHERE_MAPS = a.no_sphere_maps
+    global CUBE_FIRST_FACE
+    CUBE_FIRST_FACE = a.cube_first_face
+    NO_GEL_CUBE = a.no_gel_cube
     NO_RELIEF = a.no_relief
     OLD_RELIEF = a.relief_unfiltered
     NO_CUBE_PATCHES = a.no_cube_patches
@@ -1871,10 +2264,12 @@ def main():
     HUD_CLUT4 = a.hud_clut4
     global CLUT4_EXACT
     CLUT4_EXACT = not a.no_clut4_exact
+    global METER_ALPHAS
+    METER_ALPHAS = not a.no_meter_alphas
     global CLUT4_LOOK
     # ui.map is the showcase (CLAUDE.md): its packs keep every colour
     CLUT4_LOOK = not a.no_clut4_look and os.path.splitext(os.path.basename(a.map))[0] != 'ui'
-    FULL_DETAIL = set(c for c in a.full_detail.split(',') if c)
+    FULL_DETAIL = set(c for c in a.full_detail.split(',') if c and c != 'none')
     if FULL_DETAIL - set(DETAIL_CLASSES):
         sys.exit('texpack: unknown --full-detail class(es): %s' % ', '.join(sorted(FULL_DETAIL - set(DETAIL_CLASSES))))
     d = Defs()
@@ -1925,6 +2320,10 @@ def main():
     skipped = {}
     looks = level_looks(m, d, B)
     mlooks = model_looks(m, d, B)
+    if FULL_DETAIL & {'chiefdetail', 'chief256'}:
+        CHIEF_DETAIL_TAGS.update(chief_detail_tags(m))
+        print('chiefdetail: %d detail maps kept at full size: %s' % (len(CHIEF_DETAIL_TAGS), ', '.join(sorted(CHIEF_DETAIL_TAGS))),
+              file=sys.stderr)
     reliefs = relief_looks(m, d, B)
     relief_count = 0
     gels = gel_bitmaps(roles)
@@ -1941,17 +2340,42 @@ def main():
         r = bake_one(m, b, cls, looks.get(b['address']), full_hud=full_hud, meter=meter, own_colours=own_colours)
         if r is None and b['type'] == 'cube' and b['index'] == 0 and not NO_CUBE_PATCHES:
             rgb = gel_average(m, b) if b['tag'] in gels else None
-            r = cube_patch(m, b, rgb)
+            faces = gel_faces(m, b) if rgb is not None and not NO_GEL_FACES else None
+            cube = gel_cube(m, b) if faces is not None and not NO_GEL_CUBE else None
+            sphere = sphere_map(m, b) if rgb is None and not NO_SPHERE_MAPS else None
+            # a model reflection's average over its six faces: its first face
+            # alone (the default before) is one side of the room, and Chief's
+            # cube is warmer and brighter there than the whole
+            mean = gel_average(m, b) if rgb is None and not CUBE_FIRST_FACE else None
+            if mean is not None:
+                first = decode(m, b)
+                if first is not None:
+                    f = [int(round(x)) for x in first[:, :, :3].reshape(-1, 3).astype(np.float64).mean(0)]
+                    print('  reflection cube %s: six faces\' mean %d %d %d (the first face %d %d %d)'
+                          % (b['tag'], mean[0], mean[1], mean[2], f[0], f[1], f[2]), file=sys.stderr)
+            r = cube_patch(m, b, rgb, faces, cube, sphere, mean)
             if r is not None:
                 CUBE_PATCHES.append(b['tag'])
                 if rgb is not None:
                     print('  light gel %s: six faces\' mean %d %d %d' % (b['tag'], rgb[0], rgb[1], rgb[2]),
                           file=sys.stderr)
+                if faces is not None:
+                    print('  light gel %s: faces %s' % (b['tag'], ' / '.join('%d %d %d' % tuple(f) for f in faces)),
+                          file=sys.stderr)
+                if cube is not None:
+                    print('  light gel %s: its cube kept at %d a side (%dx%d source, brightest texel %d)'
+                          % (b['tag'], GEL_CUBE_SIDE, b['w'], b['h'], int(cube[:, :, :3].max())), file=sys.stderr)
         if r is None:
             skipped[cls] = skipped.get(cls, 0) + 1
             continue
         r['key'] = b['address']
         r['name'] = b['tag']
+        # what the runtime reads out of this texture (design_b25_bake.md):
+        # the HUD's meters (a unit's shield and health panels, a weapon's
+        # ammunition: 'meter bitmap' fields) go through meter_palette as the
+        # meter shaders' maps do, without that shader's grid palette
+        hud_meter = any('meter bitmap' in role for role in tag_roles)
+        r['reads'] = ('multipurpose' if not own_colours else '') + (' meter' if meter or hud_meter else '')
         entries.append(r)
         if cls == 'lightmap' and LIGHTMAP_SCALE > 1 and LIGHTMAP_WHOLE:
             broken, worst = seams_broken(m, b, cls)
@@ -2053,6 +2477,46 @@ def main():
     print('glow maps: %d self-illuminated model shaders, %d maps, %d bytes%s' % (
         len(glows), sum(1 for v in made.values() if v is not None), glow_bytes,
         ' (--no-glow-maps)' if a.no_glow_maps else ''), file=sys.stderr)
+    # the self-illuminated level shaders' glow maps the same way, one a colour:
+    # the shader's address | 2 (the illumination map's red, the primary colour)
+    # and | 3 (its green, the secondary), at the base map's size; a shader with
+    # no base map takes the illumination map's own, tiled as many times as its
+    # scale tiles it (to 512), over white
+    lglows = level_glow_looks(m, d, B) if not a.no_level_glow_maps else {}
+    lmade = {}
+    lglow_bytes = 0
+    for key in sorted(lglows):
+        g = lglows[key]
+        base, mask = g['base'], g['mask']
+        pair = (base['address'] if base else None, mask['address'], g['channel'], g['scale'])
+        if pair not in lmade:
+            mask_img = decode(m, mask)
+            lmade[pair] = None
+            if mask_img is not None and mask_img[:, :, g['channel']].any():
+                glow = dict(mask=mask_img, channel=g['channel'], scale=g['scale'])
+                if base:
+                    cls = refs.classify(roles.get(base['tag'], ()), base)
+                    lmade[pair] = bake_one(m, base, cls, looks.get(base['address']), level_glow=glow)
+                else:
+                    tile = 1
+                    while tile < g['scale']:
+                        tile *= 2
+                    side = (min(512, mask['w'] * tile), min(512, mask['h'] * tile))
+                    lmade[pair] = bake_one(m, dict(mask, w=side[0], h=side[1]), 'level (senv)', level_glow=glow,
+                                           image=np.full((side[1], side[0], 4), 255, np.uint8))
+            if lmade[pair] is not None:
+                lglow_bytes += len(lmade[pair]['data'])
+        r = lmade[pair]
+        if r is None:
+            print('level glow map for %s: none (%s empty or not baked)' % (g['shader'], mask['tag']), file=sys.stderr)
+            continue
+        entries.append(dict(r, key=key, name='%s (level glow map, %s)' % (g['shader'], ('primary', 'secondary')[g['channel']])))
+        print('level glow map for %s: %s x the %s of %s, scale %g, %dx%d, %d bytes' % (
+            g['shader'], base['tag'] if base else 'white', ('red', 'green')[g['channel']], mask['tag'], g['scale'],
+            r['w'], r['h'], len(r['data'])), file=sys.stderr)
+    print('level glow maps: %d colours of self-illuminated level shaders, %d maps, %d bytes%s' % (
+        len(lglows), sum(1 for v in lmade.values() if v is not None), lglow_bytes,
+        ' (--no-level-glow-maps)' if a.no_level_glow_maps else ''), file=sys.stderr)
     print('alpha shapes: %s; %d alpha-tested bitmaps' % (
         'each side of the alpha test fitted apart' if ALPHA_SPLIT else 'one 4-D fit (--no-alpha-split)',
         len(ALPHA_TESTED)), file=sys.stderr)
@@ -2063,6 +2527,10 @@ def main():
         print('effects kept at 8 bits: %d maps the 16-colour test would have taken, %d bytes more at their top level' % (
             len(kept), sum(k[2] for k in kept)), file=sys.stderr)
     alpha_audit_summary()
+    print('meter alphas: %s' % ('fixed 0/85/170/255 (--no-meter-alphas)' if not METER_ALPHAS
+                                else '%d meter bitmaps' % len(METER_LOG)), file=sys.stderr)
+    for line in METER_LOG:
+        print('meter alphas: ' + line, file=sys.stderr)
     if HUD_CLUT4:
         print('HUD sheets: 16 colours allowed (--hud-clut4)', file=sys.stderr)
     else:
@@ -2141,21 +2609,18 @@ def main():
         face, edge = tints[key][2].angle
         print('  tints by angle for %s: face on %08x, edge on %08x' % (
             names[key & ~3], seethrough.abgr(face), seethrough.abgr(edge)), file=sys.stderr)
-    tint_bytes = b''
-    if tints or drawn or composites:
-        tint_bytes = struct.pack('<4sI', b'TNT1', len(tints)) + b''.join(
-            struct.pack('<II', key, tints[key][0]) for key in sorted(tints))
-        if drawn or angled or composites:
-            tint_bytes += struct.pack('<4sI', b'TND1', len(drawn)) + b''.join(
-                struct.pack('<III', address | drawn[address].alt.flags(), drawn[address].drawn,
-                            drawn[address].alt.word()) for address in sorted(drawn))
-        if angled or composites:
-            tint_bytes += struct.pack('<4sI', b'TNA1', len(angled)) + b''.join(
-                struct.pack('<III', key, seethrough.abgr(tints[key][2].angle[0]),
-                            seethrough.abgr(tints[key][2].angle[1])) for key in angled)
-        if composites:
-            tint_bytes += struct.pack('<4sI', b'TNC1', len(composites)) + b''.join(
-                struct.pack('<II', address, composites[address]) for address in sorted(composites))
+    # every table is written, empty or not, so the averages can follow them
+    tint_bytes = struct.pack('<4sI', b'TNT1', len(tints)) + b''.join(
+        struct.pack('<II', key, tints[key][0]) for key in sorted(tints))
+    tint_bytes += struct.pack('<4sI', b'TND1', len(drawn)) + b''.join(
+        struct.pack('<III', address | drawn[address].alt.flags(), drawn[address].drawn,
+                    drawn[address].alt.word()) for address in sorted(drawn))
+    tint_bytes += struct.pack('<4sI', b'TNA1', len(angled)) + b''.join(
+        struct.pack('<III', key, seethrough.abgr(tints[key][2].angle[0]),
+                    seethrough.abgr(tints[key][2].angle[1])) for key in angled)
+    tint_bytes += struct.pack('<4sI', b'TNC1', len(composites)) + b''.join(
+        struct.pack('<II', address, composites[address]) for address in sorted(composites))
+    tint_bytes += runtime_reads(entries)
     header = 12
     directory = 20 * len(entries)
     offset = (header + directory + len(tint_bytes) + 15) // 16 * 16

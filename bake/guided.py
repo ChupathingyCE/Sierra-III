@@ -495,6 +495,37 @@ def run_bake(screen, launcher, command, maps, temp):
 
 # --- the whole of it ----------------------------------------------------------
 
+def cache_choice(screen, named, extra):
+    """[] or ['--cache-dir', DIR]: the bake keeps palettes and sounds in the
+    user's cache folder (bake.py, default_cache_root), so a re-bake after a
+    new release takes minutes. When that folder holds nothing yet, ask once
+    whether there's a cache from another computer or folder to use instead;
+    never in a named run, with HALO_PSP_BAKE_YES, or without a console"""
+    if named or YES or not sys.stdin.isatty() or '--cache-dir' in extra or '--no-cache' in extra:
+        return []
+    sys.path.insert(0, HERE)
+    try:
+        import bake
+        root = bake.default_cache_root()
+    except Exception:
+        return []
+    if os.path.isdir(os.path.join(root, 'palettes')) and os.listdir(os.path.join(root, 'palettes')):
+        screen.say('Reusing earlier bakes\' results from %s: a re-bake takes minutes.' % root)
+        return []
+    screen.say('This bake keeps what it makes in %s, so the next one takes minutes.' % root)
+    try:
+        answer = input('Baked before on another computer or kept a cache elsewhere? Type its folder, '
+                       'or press Enter to go on: ').strip().strip('"')
+    except (EOFError, KeyboardInterrupt):
+        return []
+    if answer and os.path.isdir(os.path.join(answer, 'palettes')):
+        screen.say('Using the cache in %s.' % answer)
+        return ['--cache-dir', answer]
+    if answer:
+        screen.say('%s holds no bake cache (no palettes folder): going on with %s.' % (answer, root))
+    return []
+
+
 def wait_for_enter():
     if YES or not sys.stdin.isatty():
         return
@@ -555,6 +586,20 @@ def parse(args):
     return disc, output, game, maps, keep, rest
 
 
+def copy_log_to_stick(log_path, stick):
+    """A copy of the finished log goes with the maps, to halo/log/bake/ on the
+    stick, so the usual pull of halo/log brings the bake's story back with the
+    game's (Sheepdog01, 2026-10-29); the original stays beside the bundle. The game
+    rotates only log/NNN_* files, so the subfolder is left alone. Best-effort:
+    a copy that fails changes nothing about the bake"""
+    try:
+        folder = os.path.join(stick, 'halo', 'log', 'bake')
+        os.makedirs(folder, exist_ok=True)
+        shutil.copyfile(log_path, os.path.join(folder, LOG_NAME))
+    except OSError:
+        pass
+
+
 def main(args, launcher):
     # a file name the console's code page can't show mustn't stop the bake
     for stream in (sys.stdout, sys.stderr):
@@ -611,6 +656,8 @@ def main(args, launcher):
         screen.say('Please report it with %s, from this folder.' % LOG_NAME)
     log.line('finished in %s, exit %d' % (minutes(time.time() - begin), code))
     log.close()
+    if code == 0:
+        copy_log_to_stick(log_path, stick)
     held.close()
     try:
         os.remove(os.path.join(out, '.bake-lock'))
@@ -709,7 +756,7 @@ def bake_all(screen, launcher, named, disc_arg, zip_arg, maps_arg, keep, extra, 
         command += ['--sound', SOUND]
     if eboot:
         command += ['--eboot', eboot]
-    command += extra
+    command += extra + cache_choice(screen, named, extra)
     screen.say('[3/4] Baking %d maps: this is the long part. Leave this window open.' % len(maps))
     code, progress, notes, peak = run_bake(screen, launcher, command, maps, temp)
     screen.detail('the most disk the bake used: %s; per map: %s' % (size_text(peak), ', '.join(

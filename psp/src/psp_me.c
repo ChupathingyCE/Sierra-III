@@ -63,6 +63,8 @@ ships beside the EBOOT. */
 #include <unistd.h>
 #include <me-core-mapper/me-core.h>
 #include "psp_me.h"
+#include "psp_sleep.h"
+#include "psp_lanetrace.h"
 #include "psp_paths.h"   /* ms0:/halo or ms0:/halomp, and the maps */
 
 void platform_log(const char *format, ...);
@@ -74,6 +76,8 @@ int psp_keep_number(const char *prefix, int fallback);
 simulated or after a stop */
 unsigned long psp_dsound_mix_list(void *const *list, unsigned long count, int *sums, short *output,
 	unsigned long frames, unsigned long *clipped);
+unsigned long psp_dsound_mix_split(void *const *list, unsigned long count, int *sums, short *output,
+	unsigned long frames, unsigned long *clipped, unsigned int *split);
 unsigned int psp_ge_me_classify(const unsigned int *args, unsigned int *results);
 unsigned int psp_ge_me_angle(const unsigned int *args, unsigned int *results);
 unsigned int psp_ge_me_replay(const unsigned int *args, unsigned int *results);
@@ -81,6 +85,7 @@ unsigned int psp_ge_me_slant(const unsigned int *args, unsigned int *results);
 void psp_perception_me_rays(const unsigned int *args, unsigned int *results);
 void psp_pose_me_make(const unsigned int *args, unsigned int *results); /* objects.c (psp_fixups.py FIXES_131) */
 void psp_points_me_make(const unsigned int *args, unsigned int *results); /* point_physics.c (psp_fixups.py FIXES_MEJOBS) */
+void psp_mevis_me_job(const unsigned int *args, unsigned int *results); /* structure_visibility.c (psp_fixups.py mevis_copies) */
 
 #define AUDIO_LIST_MAX 256
 #define MIX_FRAMES_MAX 512
@@ -136,6 +141,23 @@ until a PSP run shows that stretch of the eDRAM is ours: edramcheck watches
 as before the stale-claim fix (batch_job says why that order holds the main
 CPU) */
 #define ME_FEATURE_CLAIM_OLD 128u
+/* "mebcc1": the ME's 0xBCC00000 unit's word 0x40 set to 1, as m-cid
+(mcidclan) found fastest for code on the ME (psp-media-engine-reload's
+README), where me-core's minimal VME set-up leaves it at 2. A test until a
+PSP-1000 A/B shows whether the ME's jobs run faster */
+#define ME_FEATURE_BCC 256u
+/* "mefaultoff": the ME's exception vector left as me-core leaves it, not
+pointed at psp_me_fault_vector */
+#define ME_FEATURE_FAULT_OFF 512u
+/* "mefaulttest": a test of the record, never for play: about 5 s after
+start the ME runs a break instruction (an exception on any MIPS: an odd
+address's load was let through on the ME, in a run on the PSP), so the
+main CPU's next deadline stops it and the log shows the record */
+#define ME_FEATURE_FAULT_TEST 1024u
+/* "mewakeprobe": at a restart the ME tries each kind of work a job does
+before its loop (me_wake_probe), marking each step, so after a real sleep
+the log says which kind hangs or reads wrong */
+#define ME_FEATURE_WAKE_PROBE 2048u
 
 /* The debug stash: where the ME is, in words of its own (two cache lines,
 only ever used through the uncached view), so a main CPU that gives up on a
@@ -167,6 +189,17 @@ static unsigned int stash_storage[STASH_WORDS] __attribute__((aligned(64)));
 
 /* whole cache lines of their own; only ever used through the uncached view */
 static struct me_control control_storage __attribute__((aligned(64)));
+
+/* B31: what the ME's exception vector saw, written by psp_me_fault_vector
+on the ME and read by the main CPU when it stops an ME that didn't answer:
+a fault in a job (a bad or unaligned address, a firmware call, a trap) stops
+the ME with nothing to say where, since me-core installs no vector unless
+mehalt asks. Uncached on both sides; a line of its own */
+struct me_fault
+{
+	unsigned int count, cause, epc, bad_address, sp, ra, status, pad[9];
+} __attribute__((aligned(64)));
+struct me_fault psp_me_fault_storage __attribute__((aligned(64)));
 static struct me_slot slot_storage[ME_SLOTS] __attribute__((aligned(64)));
 static void *audio_list_storage[AUDIO_LIST_MAX] __attribute__((aligned(64)));
 #define UNCACHED(p) ((volatile __typeof__(*(p)) *)(0x40000000u | (unsigned int)(p)))
@@ -310,7 +343,7 @@ around a restart's release and at exit, so the log shows what a sleep
 changes */
 struct me_sysregs
 {
-	unsigned int reset, bus_clock, clock, avc, marks[2];
+	unsigned int reset, bus_clock, clock, avc, marks[4]; /* 2-3: mewakeprobe's step and fails */
 };
 static struct me_sysregs regs_launch, regs_sleep, regs_wake, regs_exit;
 
@@ -355,6 +388,9 @@ are idle while the ME runs our code */
 #define ME_MARK_STUB_DONE   0x57a90002u
 #define ME_MARK_PROCESS_IN  0x57a90003u
 #define ME_MARK_PROCESS_RUN 0x57a90004u
+#define ME_MARK_PROBE      0xbfc006c8 /* me_wake_probe's step */
+#define ME_MARK_PROBE_FAIL 0xbfc006cc /* its steps that read back wrong, a bit each */
+#define ME_MARK_PROBE_BASE 0x57a90010u /* + the step begun; + 0xf when all are done */
 
 /* kernel mode only: the registers and the SRAM are out of a user thread's
 reach */
@@ -366,6 +402,8 @@ static inline void sysregs_read(struct me_sysregs *regs)
 	regs->avc = HW_SYS_AVC_POWER;
 	regs->marks[0] = hw(ME_MARK_START);
 	regs->marks[1] = hw(ME_MARK_PROCESS);
+	regs->marks[2] = hw(ME_MARK_PROBE);
+	regs->marks[3] = hw(ME_MARK_PROBE_FAIL);
 }
 
 /* 1 while a client thread is inside a slot's job (psp_me_run, or from
@@ -424,6 +462,52 @@ void meLibOnExternalInterrupt(void)
 		: "k0", "k1", "memory");
 }
 
+/* B31: the ME's exception vector, unless "mefaultoff": the exception's
+Cause, EPC, BadVAddr, $sp, $ra and Status, and a count, into
+psp_me_fault_storage through the uncached view, then a spin. Only k0 and k1
+are used, so the record holds the faulting code's own $sp and $ra. A fault
+is fatal either way: the main CPU's 40 ms deadline stops the ME and reports
+the record. Interrupts stay off on the ME without mehalt, so nothing else
+comes here; mehalt installs me-core's vector instead */
+void psp_me_fault_vector(void);
+__asm__(
+	".text\n"
+	".align 4\n"
+	".globl psp_me_fault_vector\n"
+	".ent psp_me_fault_vector\n"
+	"psp_me_fault_vector:\n"
+	".set push\n"
+	".set noreorder\n"
+	".set noat\n"
+	"	la $k0, psp_me_fault_storage\n"
+	"	li $k1, 0x40000000\n"
+	"	or $k0, $k0, $k1\n"
+	"	mfc0 $k1, $13\n"
+	"	sw $k1, 4($k0)\n"
+	"	mfc0 $k1, $14\n"
+	"	sw $k1, 8($k0)\n"
+	"	mfc0 $k1, $8\n"
+	"	sw $k1, 12($k0)\n"
+	"	sw $sp, 16($k0)\n"
+	"	sw $ra, 20($k0)\n"
+	"	mfc0 $k1, $12\n"
+	"	sw $k1, 24($k0)\n"
+	"	lw $k1, 0($k0)\n"
+	"	addiu $k1, $k1, 1\n"
+	"	sw $k1, 0($k0)\n"
+	"	sync\n"
+	"1:	b 1b\n"
+	"	nop\n"
+	".set pop\n"
+	".end psp_me_fault_vector\n");
+
+static void me_fault_vector_install(void)
+{
+	unsigned int vector = 0x80000000u | (unsigned int)psp_me_fault_vector;
+
+	__asm__ __volatile__("cache 0x8, 0(%0)\n\tsync\n\tmtc0 %0, $25\n\tsync" : : "r"(vector) : "memory");
+}
+
 /* "mehalt"'s idle. halted is raised before the slots are looked
 at once more, so a job asked for during this pass is served, not slept
 through. One window is left: a wake that lands between that look and the
@@ -458,10 +542,13 @@ static void run_job(volatile struct me_slot *slot, int *sums, int on_me)
 	case ME_JOB_AUDIO:
 	{
 		unsigned long clipped = 0, voices;
+		/* on the ME, where its cycles went (results 2-5); the main CPU
+		can't read the ME's counter, so it leaves them 0 */
+		unsigned int split[4] = { 0, 0, 0, 0 }, k;
 
 		/* args: count, frames, output */
-		voices = psp_dsound_mix_list((void *const *)AUDIO_LIST, slot->args[0], sums, (short *)slot->args[2],
-			slot->args[1], &clipped);
+		voices = psp_dsound_mix_split((void *const *)AUDIO_LIST, slot->args[0], sums, (short *)slot->args[2],
+			slot->args[1], &clipped, on_me ? split : NULL);
 #if PSP_MUSIC
 		/* args[3]: the block's music decodes here, after its mix */
 		if (slot->args[3])
@@ -473,6 +560,8 @@ static void run_job(volatile struct me_slot *slot, int *sums, int on_me)
 #endif
 		slot->results[0] = (unsigned int)voices;
 		slot->results[1] = (unsigned int)clipped;
+		for (k = 0; k < 4; k++)
+			slot->results[2 + k] = split[k];
 		break;
 	}
 	case ME_JOB_CLASSIFY:
@@ -980,6 +1069,11 @@ static __attribute__((noinline)) void ring_run(unsigned int index, int on_me, un
 	case ME_JOB_POINTS:
 		psp_points_me_make(args, results);
 		break;
+#if defined(PSP_WALKAPART) || defined(PSP_MEVISLAND)
+	case ME_JOB_VISIBILITY:
+		psp_mevis_me_job(args, results);
+		break;
+#endif
 #ifdef PSP_RECON
 	case ME_JOB_BUSLOAD:
 		bus_load_job(args, results);
@@ -1074,6 +1168,82 @@ static void me_ring_linger(unsigned int popped, unsigned int *last_look)
 	}
 }
 
+/* mewakeprobe's main-RAM buffers: the first written with a pattern by the
+main CPU before the release (psp_me_wake_poll), the second written by the ME */
+static unsigned int wake_probe_in[1024] __attribute__((aligned(64)));
+static unsigned int wake_probe_out[1024] __attribute__((aligned(64)));
+static volatile float wake_probe_sink;
+
+#define WAKE_PROBE_WORD(k) ((unsigned int)(k) * 2654435761u)
+
+static unsigned int wake_probe_deep(unsigned int depth) __attribute__((noinline));
+static unsigned int wake_probe_deep(unsigned int depth)
+{
+	volatile unsigned int frame[256]; /* 1 KB of stack a level */
+	unsigned int k, sum = 0;
+
+	for (k = 0; k < 256; k++)
+		frame[k] = depth + k;
+	if (depth)
+		sum = wake_probe_deep(depth - 1);
+	for (k = 0; k < 256; k++)
+		sum += frame[k];
+	return sum;
+}
+
+/* What a job does that the idle loop doesn't, a step at a time: the FPU, a
+cached read of main RAM, a cached write of main RAM written back, the
+eDRAM through the cache (mebusedram's scratch, free in play builds), and 24
+KB of stack. The mark names the step begun, so a hang names its step; a step
+that reads back wrong sets its bit and the probe goes on */
+static void me_wake_probe(void)
+{
+	volatile unsigned int *edram = (volatile unsigned int *)(ME_EDRAM + ME_EDRAM_SCRATCH);
+	unsigned int fails = 0, sum, k;
+
+	hw(ME_MARK_PROBE_FAIL) = 0;
+	hw(ME_MARK_PROBE) = ME_MARK_PROBE_BASE + 1;
+	meLibSync();
+	{
+		volatile float a = 1.5f, b = 2.25f;
+
+		wake_probe_sink = a * b + a / b;
+		if (wake_probe_sink < 4.0f || wake_probe_sink > 4.1f)
+			fails |= 1;
+	}
+	hw(ME_MARK_PROBE) = ME_MARK_PROBE_BASE + 2;
+	meLibSync();
+	for (k = 0, sum = 0; k < 1024; k++)
+		sum += wake_probe_in[k] ^ WAKE_PROBE_WORD(k);
+	if (sum)
+		fails |= 2;
+	hw(ME_MARK_PROBE) = ME_MARK_PROBE_BASE + 3;
+	meLibSync();
+	for (k = 0; k < 1024; k++)
+		wake_probe_out[k] = ~WAKE_PROBE_WORD(k);
+	meLibDcacheWritebackInvalidateRange((u32)wake_probe_out, sizeof(wake_probe_out));
+	for (k = 0, sum = 0; k < 1024; k++)
+		sum += UNCACHED(&wake_probe_out[k])[0] ^ ~WAKE_PROBE_WORD(k);
+	if (sum)
+		fails |= 4;
+	hw(ME_MARK_PROBE) = ME_MARK_PROBE_BASE + 4;
+	meLibSync();
+	for (k = 0; k < 2048; k++)
+		edram[k] = WAKE_PROBE_WORD(k + 7);
+	meLibDcacheWritebackInvalidateRange((u32)edram, 2048 * 4);
+	for (k = 0, sum = 0; k < 2048; k++)
+		sum += edram[k] ^ WAKE_PROBE_WORD(k + 7);
+	if (sum)
+		fails |= 8;
+	hw(ME_MARK_PROBE) = ME_MARK_PROBE_BASE + 5;
+	meLibSync();
+	if (wake_probe_deep(24) == 0)
+		fails |= 16;
+	hw(ME_MARK_PROBE_FAIL) = fails;
+	hw(ME_MARK_PROBE) = ME_MARK_PROBE_BASE + 0xf;
+	meLibSync();
+}
+
 __attribute__((noinline, aligned(4)))
 void meLibOnProcess(void)
 {
@@ -1082,6 +1252,8 @@ void meLibOnProcess(void)
 	int halt_ready = 0; /* mehalt: the exception handler is set up */
 	int ring_ready = 0; /* the main CPU has turned the ring on */
 	unsigned int ring_popped = 0, ring_last_look = 0, ring_quiet = RING_LINGER_PASSES;
+	int features_seen = 0; /* the features word has been written (mebcc1 applied) */
+	unsigned int fault_test_at = 0; /* mefaulttest: when, by the ME's cycle counter */
 
 	hw(ME_MARK_PROCESS) = ME_MARK_PROCESS_IN;
 	meLibSync();
@@ -1110,15 +1282,34 @@ void meLibOnProcess(void)
 	me_private_main.in_ring = 0;
 	hw(ME_MARK_PROCESS) = ME_MARK_PROCESS_RUN;
 	meLibSync();
+	if (control->features & ME_FEATURE_WAKE_PROBE)
+		me_wake_probe();
 	for (;;)
 	{
 		int k;
 
 		/* the features word is looked at every 256th pass (it is set once,
 		after start), so the polling idle costs what it would without it */
-		if ((control->alive & 255) == 0 && (!halt_ready || !ring_ready))
+		if ((control->alive & 255) == 0 && (!halt_ready || !ring_ready || !features_seen))
 		{
 			unsigned int features = control->features;
+
+			if (features && !features_seen)
+			{
+				features_seen = 1;
+				if (!(features & (ME_FEATURE_FAULT_OFF | ME_FEATURE_HALT)))
+					me_fault_vector_install();
+				if (features & ME_FEATURE_FAULT_TEST)
+				{
+					fault_test_at = me_cycles() + 333u * 1000000u * 5u;
+					UNCACHED(&psp_me_fault_storage)->pad[0] = 1; /* armed */
+				}
+				if (features & ME_FEATURE_BCC)
+				{
+					hw(0xBCC00040) = 1;
+					meLibSync();
+				}
+			}
 
 			if ((features & ME_FEATURE_HALT) && !halt_ready)
 			{
@@ -1136,6 +1327,11 @@ void meLibOnProcess(void)
 		}
 		control->alive++;
 		control->clock = me_cycles();
+		if (fault_test_at && (int)(control->clock - fault_test_at) > 0)
+		{
+			UNCACHED(&psp_me_fault_storage)->pad[0] = 2; /* about to break */
+			__asm__ __volatile__("break");
+		}
 		/* build 89: the stop word is looked at after the slots (below), so a
 		job asked for just before a stop is still served: b86-b88 halted with
 		it pending and its caller waited 40 ms holding the mixer's lock.
@@ -1206,12 +1402,15 @@ void meLibOnSleep(void)
 	me_sleeps++;
 }
 
+static void wake_early_restart(void);
+
 void meLibOnWake(void)
 {
 	sysregs_read(&regs_wake);
 	reset_hold();
 	me_state = -1;
 	me_sleeps++;
+	wake_early_restart();
 }
 
 /* ---------- the main CPU's side */
@@ -1296,6 +1495,25 @@ static int me_yield_off = 0;
 /* "megraceoff": the ring's and the batches' deadlines as they were, the
 first wait past one stopping the ME (see BATCH_RECORD_DEADLINE_US) */
 static int me_grace_off = 0;
+/* a late ring job's rest (RING_DEADLINE_US says what it is): the first
+RING_REST_US; again within RING_AGAIN_US of coming back, twice the last, up
+to RING_REST_MAX_US */
+#define RING_REST_US 1000000ull
+#define RING_REST_MAX_US 16000000ull
+#define RING_AGAIN_US 5000000ull
+static int ring_give_up = 0;              /* "ringgiveup" */
+static unsigned int ring_lates = 0, ring_revivals = 0;
+static unsigned long long ring_late_mark = 0, ring_revive_mark = 0, ring_rest_base_us = RING_REST_US, ring_rest_us = RING_REST_US;
+#ifdef PSP_RECON
+/* "ringlateN" (recon): ring jobs whose ticket is a multiple of N (N > 0)
+are taken as late by the wait, so the rest and the revival can be watched
+where no job is ever late (the emulator runs a job inside its push).
+Simulated, the ME is also behind from that job until the revival check
+lets it catch up, as a real late ME is. "ringhang" (with ringlateN): it
+never catches up, as a hung ME, and the ring must stay off */
+static unsigned int ring_late_every = 0;
+static int ring_hang_test = 0, ring_sim_behind = 0;
+#endif
 /* lines said about waits past a deadline, at most DEADLINE_LINES */
 static unsigned int deadline_lines = 0;
 #define DEADLINE_LINES 8
@@ -1390,6 +1608,29 @@ int psp_is_emulator(void)
 any other reason than a sleep (a job that timed out, HOME), since an ME that
 failed once is not trusted again by a wake */
 static int me_restartable = 0;
+/* the features word the ME reads at a restart: launch's, so a wake runs as
+launch does (before, meaudiofirst, meaudioranges and mestash were left out),
+with mewakeprobe's probe */
+static unsigned int wake_features = 0;
+/* "mewakeearly": the ME released in the kernel's wake handler (meLibOnWake,
+the firmware's resume phase 0x10005, where its own ME boot runs and where
+me-core's own sleep path releases it), not at a frame end after the resume;
+its jobs are still handed back at a frame end (psp_me_wake_poll) */
+static int wake_early = 0;
+/* "mewakefw": the restart lets go of the blocks around the ME that launch
+found running and the wake left in reset. b132 test 7's registers [M]:
+the reset register read 0 at launch, and 0x20 after the restart, the AVC
+block's reset (uOFW's sysreg driver: 0x08 AW, 0x10 VME, 0x20 AVC) still
+held, which the firmware's own ME boot lets go of last
+(sceSysregAvcResetDisable, me_wrapper's boot) and ours never did. The ME
+then made 91 idle polls and hung in its first job */
+static int wake_fw = 0;
+#define WAKE_FW_RESETS 0x28u /* AW and AVC; the VME's (0x10) goes with the ME's */
+static volatile int wake_released_early = 0;
+static unsigned long long wake_early_release;
+static void wake_prepare(void);
+static int me_restart_kernel(void *unused);
+
 /* 1 from a release of the ME's reset (launch, a restart) until it is seen
 halted or is held in reset again: while set, the ME may still be running
 our code, and the exit holds it before the firmware takes the PSP back */
@@ -1402,6 +1643,23 @@ volatile unsigned int psp_me_stops = 0;
 int psp_me_simulated(void)
 {
 	return me_state == 2;
+}
+
+/* psp_ge.c's mechunk: the frame's job reads its records as the main CPU
+publishes them. On the ME, before each piece, what it has cached written back
+and dropped (the line the last piece ended in held words written since);
+whether a stop is asked, so a job waiting for more ends; and, on the main
+CPU, the job's watchdog started again at each piece: a frame recorded slowly
+(a hitch, a load) is no ME late */
+void psp_me_cache_refresh(void)
+{
+	if (psp_on_me())
+		meLibDcacheWritebackInvalidateAll();
+}
+
+int psp_me_stop_asked(void)
+{
+	return CONTROL->stop != 0;
 }
 
 static void me_stop(const char *why, int for_sleep)
@@ -1430,8 +1688,21 @@ static void me_stop(const char *why, int for_sleep)
 			platform_log("ME: stopped (%s); halted itself after %d ms; the main CPU runs its jobs from here", why, k);
 		else
 		{
+			volatile struct me_fault *fault = UNCACHED(&psp_me_fault_storage);
+
 			kcall_2(me_hold_reset, 0);
 			platform_log("ME: stopped (%s): NO answer in 100 ms, held in reset; the main CPU runs its jobs from here", why);
+			/* B31: where it faulted (EPC is in kseg0: less 0x88804000, the
+			link map's address), or that it didn't */
+			if (fault->count)
+				platform_log("ME: fault: %u exceptions; Cause %08x (code %u), EPC %08x, BadVAddr %08x, sp %08x, ra %08x, Status %08x",
+					fault->count, fault->cause, (fault->cause >> 2) & 31, fault->epc, fault->bad_address, fault->sp,
+					fault->ra, fault->status);
+			else
+				platform_log("ME: fault: none recorded (%s): the ME was running, not faulted",
+					psp_keep("mefaultoff") ? "the vector off, mefaultoff" : "the vector in");
+			if (fault->pad[0])
+				platform_log("ME: fault: mefaulttest %s", fault->pad[0] == 2 ? "reached its break" : "armed, not reached");
 		}
 	}
 	else if (me_state == 2)
@@ -1458,8 +1729,8 @@ static void stop_at_exit(void)
 
 static void sysregs_line(char *line, int size, const char *name, const struct me_sysregs *regs)
 {
-	snprintf(line, size, "%s %08x %08x %08x %08x (marks %08x %08x)", name, regs->reset, regs->bus_clock, regs->clock,
-		regs->avc, regs->marks[0], regs->marks[1]);
+	snprintf(line, size, "%s %08x %08x %08x %08x (marks %08x %08x %08x %08x)", name, regs->reset, regs->bus_clock, regs->clock,
+		regs->avc, regs->marks[0], regs->marks[1], regs->marks[2], regs->marks[3]);
 }
 
 /* HOME, or the game's own exit: the firmware reboots into the XMB and boots
@@ -1505,6 +1776,8 @@ int psp_me_start(void)
 	/* no cached copy of them anywhere on this CPU; then the words that
 	matter (they are in zeroed memory already) */
 	sceKernelDcacheWritebackInvalidateRange(&control_storage, sizeof(control_storage));
+	sceKernelDcacheWritebackInvalidateRange(&psp_me_fault_storage, sizeof(psp_me_fault_storage));
+	memset((void *)UNCACHED(&psp_me_fault_storage), 0, sizeof(psp_me_fault_storage));
 	sceKernelDcacheWritebackInvalidateRange(slot_storage, sizeof(slot_storage));
 	sceKernelDcacheWritebackInvalidateRange(audio_list_storage, sizeof(audio_list_storage));
 	control->alive = control->stop = control->clock = control->jobs = 0;
@@ -1528,6 +1801,24 @@ int psp_me_start(void)
 	me_yield_off = psp_keep("meyieldoff");
 	me_grace_off = psp_keep("megraceoff");
 	me_claim_old = psp_keep("meclaimold");
+	ring_give_up = psp_keep("ringgiveup");
+	{
+		int rest = psp_keep_number("ringrest", -1);
+
+		if (rest >= 0)
+			ring_rest_base_us = ring_rest_us = (unsigned long long)rest * 1000ull;
+	}
+#ifdef PSP_RECON
+	{
+		int n = psp_keep_number("ringlate", 0);
+
+		ring_late_every = n > 0 ? (unsigned int)n : 0u;
+		ring_hang_test = ring_late_every && psp_keep("ringhang");
+		if (ring_late_every)
+			platform_log("ME: ringlate: every ring job whose ticket is a multiple of %u taken as late%s",
+				ring_late_every, ring_hang_test ? "; ringhang: the ME never catches up" : "");
+	}
+#endif
 	audio_look_start();
 	report_mark = sceKernelGetSystemTimeWide();
 	if (emulator())
@@ -1591,7 +1882,11 @@ int psp_me_start(void)
 		(psp_keep("meaudiofirst") ? ME_FEATURE_AUDIO_FIRST : 0u) |
 		(psp_keep("meaudioranges") ? ME_FEATURE_AUDIO_RANGES : 0u) | (psp_keep("mestash") ? ME_FEATURE_STASH : 0u) |
 		(me_yield_off ? ME_FEATURE_NO_YIELD : 0u) | (psp_keep("meedramstate") ? ME_FEATURE_EDRAM_STATE : 0u) |
-		(me_claim_old ? ME_FEATURE_CLAIM_OLD : 0u);
+		(me_claim_old ? ME_FEATURE_CLAIM_OLD : 0u) | (psp_keep("mebcc1") ? ME_FEATURE_BCC : 0u) |
+		(psp_keep("mefaultoff") ? ME_FEATURE_FAULT_OFF : 0u) | (psp_keep("mefaulttest") ? ME_FEATURE_FAULT_TEST : 0u);
+	wake_features = control->features | (psp_keep("mewakeprobe") ? ME_FEATURE_WAKE_PROBE : 0u);
+	wake_early = psp_keep("mewake") && !psp_keep("mewakeoff") && psp_keep("mewakeearly");
+	wake_fw = psp_keep("mewakefw");
 	platform_log("ME: the ME runs (firmware table %d; %u idle polls in 20 ms; its cycle counter runs at %.1f a microsecond%s; Cause %08x, after clearing DC %08x)",
 		table, control->alive - before, me_cycles_per_us, me_cycles_per_us < 1.0f ? ": ME times will read 0" : "",
 		control->cause_before, control->cause_after);
@@ -1711,6 +2006,9 @@ static int me_run_slot(int which, unsigned int type, const unsigned int *args, i
 		stats[which].wait_worst_us = waited;
 	if (me_us > stats[which].me_worst_us)
 		stats[which].me_worst_us = me_us;
+	/* "lanetrace" (psp_lanetrace.c): handed over, seen done, the ME's own time */
+	PSP_LANE(PSP_LANE_ME_SLOT, (unsigned int)start, sceKernelGetSystemTimeLow(), (unsigned int)which << 8 | (type & 0xFF),
+		last_job_us[which]);
 	return 1;
 }
 
@@ -1738,6 +2036,12 @@ static unsigned long long submit_mark[ME_SLOTS];
 /* the slot job out serves the ring between its steps (the GE layer's
 replay yields every 32 records): pushes go on while it runs */
 static int slot_yields[ME_SLOTS];
+
+void psp_me_touch(int which)
+{
+	if (which >= 0 && which < ME_SLOTS && submitted[which] == 1)
+		submit_mark[which] = sceKernelGetSystemTimeWide();
+}
 
 int psp_me_submit(int which, unsigned int type, const unsigned int *args, int arg_count)
 {
@@ -1860,6 +2164,9 @@ static int me_finish_slot(int which, unsigned int *results)
 	stats[which].wait_us += waited;
 	if (waited > stats[which].wait_worst_us)
 		stats[which].wait_worst_us = waited;
+	/* "lanetrace" (psp_lanetrace.c): handed over, seen done, the ME's own time */
+	PSP_LANE(PSP_LANE_ME_SLOT, (unsigned int)submit_mark[which], sceKernelGetSystemTimeLow(),
+		(unsigned int)which << 8 | (slot->type & 0xFF), last_job_us[which]);
 	return 1;
 }
 
@@ -1886,10 +2193,19 @@ int psp_me_finish(int which, unsigned int *results)
 /* ---------- the job ring, the main CPU's side */
 
 /* a job that isn't done this long after its push is reported, and the main
-CPU does its work instead (psp_me_wait returns 0). The ring is then off for
-the session: the ME may still finish the job late and write its output,
-which nobody reads again. A slant job is ~0.1-2 ms of work (~1 us a
-triangle, b90) and may wait behind one audio block (~0.6 ms) */
+CPU does its work instead (psp_me_wait returns 0). The ring then rests: the
+ME may still finish the job late and write its output, which nobody reads,
+so nothing more is pushed until the ME has popped every job pushed before
+(then none of its writes is still to come), and not before the rest's end
+(RING_REST_US; "ringrestN": N ms). It comes back at a frame end
+(ring_revive), where the ring's one producer is between frames. An ME that
+never catches up (hung) keeps it off. One late again within
+RING_AGAIN_US of coming back rests twice as long each time, up to
+RING_REST_MAX_US, so an ME that is late again and again costs the main CPU
+at most one deadline's wait a rest. "ringgiveup": the first late job turns
+the ring off for the session, as before. A slant job is ~0.1-2 ms of
+work (~1 us a triangle, b90) and may wait behind one audio block (~0.6 ms);
+a ray job can wait behind a whole render job's stretch between yields */
 #define RING_DEADLINE_US 10000
 /* between two looks at popped while waiting: ~1 us, so the look costs the
 bus little while the ME reads its inputs (code_review_b119_me.md, 1) */
@@ -1899,7 +2215,7 @@ bus little while the ME reads its inputs (code_review_b119_me.md, 1) */
 extern volatile unsigned int psp_me_window[16];
 static unsigned int ring_next = 0;        /* the next ticket */
 static unsigned int ring_popped_seen = 0; /* popped, as last read */
-static int ring_dead = 0;                 /* a job failed: the ring takes no more */
+static int ring_dead = 0;                 /* a job failed: 1 the ring takes no more, 2 it rests (RING_REST_US) */
 /* the first ticket after the wake's restart; tickets before it went to an ME
 that was reset, and their entries hold no answer for them */
 static unsigned int ring_epoch = 0;
@@ -1999,6 +2315,12 @@ static __attribute__((noinline, cold)) void ring_push_simulated(unsigned int ind
 		ring_run(index, 0, 0);
 	psp_me_context = 0;
 	ring_stats.simulated_us += sceKernelGetSystemTimeLow() - job_start;
+#ifdef PSP_RECON
+	if (ring_late_every && t && t % ring_late_every == 0)
+		ring_sim_behind = 1;
+	if (ring_sim_behind)
+		return;
+#endif
 	RING_POPPED = t + 1;
 }
 
@@ -2032,21 +2354,65 @@ static __attribute__((noinline, cold)) int ring_fail(int why, unsigned int ticke
 	const struct me_ring_request *request = &ring_requests[index];
 	const struct me_ring_result *result = &ring_results[index];
 
-	if (why == 1)
+	if (why == 1 && ring_dead == 0)
 	{
-		platform_log("ME: ring job %u (type %u) not done %u ms after its push (popped %u); the main CPU does it, and the ring is off from here",
-			ticket, request->type, RING_DEADLINE_US / 1000, RING_POPPED);
+		unsigned long long now = sceKernelGetSystemTimeWide();
+
+		/* the jobs pushed with it are late too: one late stretch, one rest */
+		ring_lates++;
+		if (ring_revivals && now - ring_revive_mark <= RING_AGAIN_US)
+			ring_rest_us = ring_rest_us * 2 > RING_REST_MAX_US ? RING_REST_MAX_US : ring_rest_us * 2;
+		else
+			ring_rest_us = ring_rest_base_us;
+		ring_late_mark = now;
+		ring_dead = ring_give_up ? 1 : 2;
+		if (ring_give_up)
+			platform_log("ME: ring job %u (type %u) not done %u ms after its push (popped %u); the main CPU does it, and the ring is off from here (ringgiveup)",
+				ticket, request->type, RING_DEADLINE_US / 1000, RING_POPPED);
+		else
+			platform_log("ME: ring job %u (type %u) not done %u ms after its push (popped %u); the main CPU does it, and the ring rests at least %lu ms, until the ME has caught up (late stretches %u)",
+				ticket, request->type, RING_DEADLINE_US / 1000, RING_POPPED, (unsigned long)(ring_rest_us / 1000), ring_lates);
 		if (me_state == 1)
 			me_stash_dump("a ring job late");
 	}
 	else if (why == 2)
+	{
 		platform_log("ME: ring job %u (type %u) came back %s (ticket %u); the main CPU does it, and the ring is off from here",
 			ticket, request->type, result->status == RING_STACK ? "past its stack allowance" :
 			result->status == RING_BAD_TYPE ? "as an unknown type" : "with another job's answer", result->ticket);
-	if (why)
 		ring_dead = 1;
+	}
 	ring_stats.failures++;
 	return 0;
+}
+
+/* the frame end's look at a resting ring (RING_DEADLINE_US says why it
+rests): back on once the ME runs, has popped every job pushed, and the rest
+is over. Pushes come only from the game thread, which is here, so none can
+land between the look at popped and the ring's return */
+static __attribute__((noinline, cold)) void ring_revive(void)
+{
+	unsigned long long now = sceKernelGetSystemTimeWide();
+
+	if (now - ring_late_mark < ring_rest_us || me_state <= 0 || CONTROL->stop)
+		return;
+#ifdef PSP_RECON
+	if (ring_hang_test)
+		return;
+	if (ring_sim_behind)
+	{
+		ring_sim_behind = 0;
+		RING_POPPED = ring_next;
+	}
+#endif
+	if (RING_POPPED != ring_next)
+		return;
+	ring_popped_seen = ring_next;
+	ring_dead = 0;
+	ring_revivals++;
+	ring_revive_mark = now;
+	platform_log("ME: the ring back on, %lu ms after its late job (late stretches %u, back on %u times)",
+		(unsigned long)((now - ring_late_mark) / 1000), ring_lates, ring_revivals);
 }
 
 /* a job collected later than the ring's next ME_RING_ENTRIES pushes would
@@ -2192,6 +2558,55 @@ int psp_me_push_perc_rays(const void *rays, unsigned int count, void *answers, u
 	return psp_me_push(&job, ticket);
 }
 
+/* "mevis" (psp_fixups.py mevis_copies, structure_visibility.c): the frame's
+visibility made again on the ME from the camera in the record, a measurement
+of what option C's walk would cost there. It reads the level and the objects
+anywhere in RAM (the whole cache handed over, as for the rays), and writes its
+record's answer lines and its own state, on lines nothing else uses. Never
+waited for with psp_me_wait: the frame's end looks at psp_me_ring_done, so a
+slow answer never makes the ring rest */
+#if defined(PSP_WALKAPART) || defined(PSP_MEVISLAND)
+int psp_me_push_visibility(void *record, unsigned int record_bytes, unsigned int *ticket)
+{
+	struct psp_me_job job;
+
+	memset(&job, 0, sizeof(job));
+	job.type = ME_JOB_VISIBILITY;
+	job.args[0] = (unsigned int)record;
+	job.input[0] = NULL;
+	job.input_bytes[0] = ME_RING_ALL_OF_RAM;
+	job.output = record;
+	job.output_bytes = record_bytes;
+	psp_me_writeback(NULL, ME_RING_ALL_OF_RAM);
+	return psp_me_push(&job, ticket);
+}
+
+/* "mevisland": the same job, whose answer the frame uses. Its output is the
+copies' whole state block (the clusters, the surfaces' bits, the objects),
+past the cache's size, so the ME writes back its whole cache as the job ends
+and the record's lines go with it */
+int psp_me_push_visibility_into(void *record, void *answer, unsigned int answer_bytes, unsigned int *ticket)
+{
+	struct psp_me_job job;
+
+	memset(&job, 0, sizeof(job));
+	job.type = ME_JOB_VISIBILITY;
+	job.args[0] = (unsigned int)record;
+	job.input[0] = NULL;
+	job.input_bytes[0] = ME_RING_ALL_OF_RAM;
+	job.output = answer;
+	job.output_bytes = answer_bytes;
+	psp_me_writeback(NULL, ME_RING_ALL_OF_RAM);
+	return psp_me_push(&job, ticket);
+}
+#endif
+
+/* a ring job done (its output written back), without waiting */
+int psp_me_ring_done(unsigned int ticket)
+{
+	return (int)(RING_POPPED - ticket) > 0;
+}
+
 /* next tick's base poses (psp_fixups.py FIXES_131, objects.c #poseahead): a
 decode reads only tag data (the model, the animation, both fixed within a
 map), so the whole cache is handed over as for the rays, and the job writes
@@ -2267,6 +2682,15 @@ int psp_me_wait(unsigned int ticket, unsigned int *results)
 	done, and another job's answer would stop the ring for the session */
 	if (ring_restarted && ticket - ring_epoch >= ring_next - ring_epoch)
 		return ring_fail(0, ticket, index);
+#ifdef PSP_RECON
+	if (ring_late_every && ticket && ticket % ring_late_every == 0)
+	{
+		while (sceKernelGetSystemTimeLow() - ring_push_mark[index] <= RING_DEADLINE_US)
+			for (k = 0; k < RING_WAIT_NOPS; k++)
+				__asm__ __volatile__("nop");
+		return ring_fail(1, ticket, index);
+	}
+#endif
 	if ((int)(RING_POPPED - ticket) > 0)
 		ring_stats.at_once++;
 	else
@@ -2324,6 +2748,9 @@ int psp_me_wait(unsigned int ticket, unsigned int *results)
 	ring_stats.look_cycles += result->look_cycles;
 	if (result->look_cycles > ring_stats.look_worst_cycles)
 		ring_stats.look_worst_cycles = result->look_cycles;
+	/* "lanetrace" (psp_lanetrace.c): pushed, collected, the ME's own time */
+	PSP_LANE(PSP_LANE_ME_RING, ring_push_mark[index], now, request->type,
+		me_cycles_per_us > 0.0f ? (unsigned int)((float)result->job_cycles / me_cycles_per_us) : 0);
 	return 1;
 }
 
@@ -2857,6 +3284,20 @@ static void wake_report(const char *format, ...)
 	wake_line_ready = 1;
 }
 
+/* in the kernel's wake handler, with mewakeearly: every client has handed
+its job back at the sleep's stop, and the game's threads don't run during
+the resume, so the words are ours */
+static void wake_early_restart(void)
+{
+	if (!wake_early || me_restartable != 1)
+		return;
+	wake_prepare();
+	wake_early_release = sceKernelGetSystemTimeWide();
+	me_maybe_running = 1;
+	me_restart_kernel(NULL);
+	wake_released_early = 1;
+}
+
 /* the power callback, the wake complete */
 void psp_me_wake_request(void)
 {
@@ -2888,11 +3329,26 @@ static int me_restart_kernel(void *unused)
 	meLibResumeCpuIntr(interrupts);
 	hw(ME_MARK_START) = 0;
 	hw(ME_MARK_PROCESS) = 0;
+	hw(ME_MARK_PROBE) = 0;
+	hw(ME_MARK_PROBE_FAIL) = 0;
 	memcpy((void *)ME_HANDLER_BASE, psp_me_wake_stub, stub);
 	memcpy((void *)(ME_HANDLER_BASE + stub), &__start__me_section, handler);
 	sceKernelDcacheWritebackInvalidateAll();
 	sceKernelIcacheInvalidateAll();
 	reset_release();
+	if (wake_fw)
+	{
+		/* only the blocks launch found running, a bit at a time as the
+		firmware's driver does */
+		unsigned int held = HW_SYS_RESET_ENABLE & WAKE_FW_RESETS & ~regs_launch.reset;
+
+		if (held)
+		{
+			meLibSuspendCpuIntr(interrupts);
+			HW_SYS_RESET_ENABLE &= ~held;
+			meLibResumeCpuIntr(interrupts);
+		}
+	}
 	sysregs_read(&regs_release_after);
 	return 0;
 }
@@ -2900,6 +3356,17 @@ static int me_restart_kernel(void *unused)
 /* how far the ME's start got, from its marks */
 static const char *wake_stage(const struct me_sysregs *regs)
 {
+	static const char *const probe_steps[] = { "", "the FPU", "a cached read of main RAM",
+		"a cached write of main RAM, written back", "the eDRAM through the cache", "24 KB of stack" };
+	static char probe_line[120];
+
+	if (regs->marks[1] == ME_MARK_PROCESS_RUN && regs->marks[2] > ME_MARK_PROBE_BASE &&
+		regs->marks[2] <= ME_MARK_PROBE_BASE + 5)
+	{
+		snprintf(probe_line, sizeof(probe_line), "into its loop's probe, stopped in step %u: %s",
+			regs->marks[2] - ME_MARK_PROBE_BASE, probe_steps[regs->marks[2] - ME_MARK_PROBE_BASE]);
+		return probe_line;
+	}
 	if (regs->marks[1] == ME_MARK_PROCESS_RUN)
 		return "into its loop (past its first cache write-back)";
 	if (regs->marks[1] == ME_MARK_PROCESS_IN)
@@ -2918,6 +3385,8 @@ void psp_me_wake_poll(void)
 	unsigned int sleeps;
 	int k;
 
+	if (ring_dead == 2)
+		ring_revive();
 	if (!wake_pending)
 		return;
 	if (me_state > 0)
@@ -2942,25 +3411,18 @@ void psp_me_wake_poll(void)
 		}
 	wake_pending = 0;
 	sleeps = me_sleeps;
-	/* every word the ME reads at its start, as at launch; the slots and the
-	ring carried on from where the main CPU's counters are, so a ticket or
-	request number handed out before the sleep can never be taken for one
-	of the new ME's */
-	control->stop = control->alive = control->clock = control->jobs = 0;
-	control->halted = 0;
-	for (k = 0; k < ME_SLOTS; k++)
-		SLOT(k)->request = SLOT(k)->done = slot_request[k];
-	ring_epoch = ring_next;
-	ring_restarted = 1;
-	ring_popped_seen = ring_next;
-	RING_PUSHED = RING_POPPED = ring_next;
-	/* before the release, where launch sets them after its start check: the
-	ME reads them on its first pass, so the ring is served from the first
-	frame (a ring job not done in 10 ms turns the ring off for the session) */
-	control->features = (me_halting ? ME_FEATURE_HALT : 0u) | (ring_on ? ME_FEATURE_RING : 0u) |
-		(me_yield_off ? ME_FEATURE_NO_YIELD : 0u) | (psp_keep("meedramstate") ? ME_FEATURE_EDRAM_STATE : 0u) |
-		(me_claim_old ? ME_FEATURE_CLAIM_OLD : 0u);
-	__asm__ __volatile__("sync");
+	if (wake_released_early)
+	{
+		/* released in the kernel's wake handler already */
+		wake_released_early = 0;
+		release = wake_early_release;
+		now = sceKernelGetSystemTimeWide();
+		while (control->alive == 0 && sceKernelGetSystemTimeWide() - now < WAKE_ANSWER_US)
+			sceKernelDelayThread(500);
+		now = sceKernelGetSystemTimeWide();
+		goto answered;
+	}
+	wake_prepare();
 	now = sceKernelGetSystemTimeWide();
 	if (me_restartable == 2)
 	{
@@ -2971,9 +3433,14 @@ void psp_me_wake_poll(void)
 	}
 	release = now;
 	me_maybe_running = 1;
+	/* B41: a release that never returns (the ME's bus unpowered) is named
+	by the heartbeat's stall reporter */
+	PSP_WAIT_BEGIN(PSP_WAIT_ME_RESTART);
 	kcall_3(me_restart_kernel, 0, 0);
+	PSP_WAIT_END(PSP_WAIT_ME_RESTART);
 	while (control->alive == 0 && (now = sceKernelGetSystemTimeWide()) - release < WAKE_ANSWER_US)
 		sceKernelDelayThread(500);
+answered:
 	kcall_3(me_sysregs_kernel, 0, &regs_answer);
 	if (control->alive == 0 || me_sleeps != sleeps)
 	{
@@ -2985,8 +3452,39 @@ void psp_me_wake_poll(void)
 		return;
 	}
 	me_state = 1;
-	wake_report("ME: restarted after wake in %lu ms (its first idle poll %lu us after the reset's release; %u frame ends waiting for its clients)",
-		(unsigned long)((now - wake_mark) / 1000), (unsigned long)(now - release), wake_frames);
+	wake_report("ME: restarted after wake in %lu ms (its first idle poll %lu us after the reset's release%s; %u frame ends waiting for its clients%s)",
+		(unsigned long)((now - wake_mark) / 1000), (unsigned long)(now - release),
+		release < wake_mark ? ", released in the kernel's wake handler" : "", wake_frames,
+		!(wake_features & ME_FEATURE_WAKE_PROBE) ? "" :
+		regs_answer.marks[2] != ME_MARK_PROBE_BASE + 0xf ? "; the probe didn't finish" :
+		regs_answer.marks[3] ? "; the probe finished, some steps read back wrong (marks)" : "; the probe's 5 steps all right");
+}
+
+/* every word the ME reads at its start, as at launch; the slots and the
+ring carried on from where the main CPU's counters are, so a ticket or
+request number handed out before the sleep can never be taken for one of
+the new ME's. The features before the release, where launch sets them after
+its start check: the ME reads them on its first pass, so the ring is served
+from the first frame (a ring job not done in 10 ms turns the ring off for
+the session). With mewakeprobe, the probe's input pattern too */
+static void wake_prepare(void)
+{
+	volatile struct me_control *control = CONTROL;
+	int k;
+
+	control->stop = control->alive = control->clock = control->jobs = 0;
+	control->halted = 0;
+	for (k = 0; k < ME_SLOTS; k++)
+		SLOT(k)->request = SLOT(k)->done = slot_request[k];
+	ring_epoch = ring_next;
+	ring_restarted = 1;
+	ring_popped_seen = ring_next;
+	RING_PUSHED = RING_POPPED = ring_next;
+	control->features = wake_features;
+	if (wake_features & ME_FEATURE_WAKE_PROBE)
+		for (k = 0; k < 1024; k++)
+			wake_probe_in[k] = WAKE_PROBE_WORD(k);
+	__asm__ __volatile__("sync");
 }
 
 static int me_sleep_kernel(void)
@@ -3016,6 +3514,21 @@ void psp_me_wake_test_sleep(void)
 	platform_log("mewaketest: the ME stopped and held as a sleep holds it");
 }
 
+static int me_wake_kernel(void)
+{
+	meLibOnWake();
+	return 0;
+}
+
+/* mewaketest's wake: the kernel's wake handler as a real wake runs it (with
+mewakeearly, the release is there), then the power callback's request */
+void psp_me_wake_test_wake(void)
+{
+	if (me_restartable == 1)
+		kcall_2(me_wake_kernel, 0);
+	psp_me_wake_request();
+}
+
 /* build 87: the last job's own code time on the ME, in microseconds (its
 cycle counter, without the cache hand-overs); simulated, the main CPU's time
 for the whole job */
@@ -3043,6 +3556,16 @@ void psp_me_audio_music(int on)
 #endif
 
 /* the audio job's list: up to 256 voices, written through the uncached view */
+/* where the ME's audio time went (its own counter, summed over the blocks
+it mixed): the 'ME: audio split' line takes the job apart into decoding,
+the voices' mixing loop and the sums' ends; the job's code less these is
+its entry and the voice list */
+static struct
+{
+	unsigned long long decode, voices, ends, voice_frames;
+	unsigned long blocks;
+} audio_split;
+
 int psp_me_audio(void *const *list, unsigned long count, short *output, unsigned long frames, unsigned long *voices,
 	unsigned long *clipped, unsigned long *waited_us)
 {
@@ -3072,6 +3595,14 @@ int psp_me_audio(void *const *list, unsigned long count, short *output, unsigned
 		return 0;
 	*voices = results[0];
 	*clipped = results[1];
+	if (results[3] || results[5])
+	{
+		audio_split.decode += results[2];
+		audio_split.voices += results[3];
+		audio_split.ends += results[4];
+		audio_split.voice_frames += results[5];
+		audio_split.blocks++;
+	}
 	*waited_us = (unsigned long)(sceKernelGetSystemTimeWide() - start);
 	if (me_state == 1)
 		audio_look_next(*waited_us);
@@ -3244,6 +3775,18 @@ void psp_me_report(void)
 			stats[k].jobs ? (unsigned long)(stats[k].wait_us / stats[k].jobs) : 0, stats[k].wait_worst_us, stats[k].failures);
 		if (length >= (int)sizeof(line))
 			length = (int)sizeof(line) - 1;
+	}
+	if (audio_split.blocks && me_cycles_per_us > 0.0f)
+	{
+		float per_block = me_cycles_per_us * (float)audio_split.blocks;
+
+		platform_log("ME: audio split over %lu blocks: decoding %lu us a block, the voices' mixing %lu (decoding included; %lu cycles a voice-frame, %lu without decoding), the sums' zeroing and output %lu",
+			audio_split.blocks, (unsigned long)((float)audio_split.decode / per_block),
+			(unsigned long)((float)audio_split.voices / per_block),
+			audio_split.voice_frames ? (unsigned long)(audio_split.voices / audio_split.voice_frames) : 0,
+			audio_split.voice_frames ? (unsigned long)((audio_split.voices - audio_split.decode) / audio_split.voice_frames) : 0,
+			(unsigned long)((float)audio_split.ends / per_block));
+		memset(&audio_split, 0, sizeof(audio_split));
 	}
 	ring_line[0] = 0;
 	if (ring_stats.jobs || ring_stats.failures || ring_stats.refused_busy || ring_stats.refused_full || ring_stats.refused_check)

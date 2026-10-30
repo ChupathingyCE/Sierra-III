@@ -103,6 +103,7 @@ static const struct item items[] =
 
 static int menu_open = 0, cursor = 0, overlay = -1, swallowing = 0, select_released = 0;
 int psp_keep(const char *name);
+int psp_keep_number(const char *prefix, int fallback);
 static unsigned int last_buttons = 0;
 static int screen_ready = 0;
 static unsigned long long fps_mark = 0, tps_mark = 0, launch_mark = 0;
@@ -247,12 +248,13 @@ void psp_debug_draw(void *vram)
 		}
 	}
 	{
-		/* build 105: a full heap shows on screen whether or not the overlay is
-		on (b104 run 1 failed allocations from the moment it loaded, and it
-		showed only when the controls died) */
+		/* a full heap shows with the overlay, which a test build starts with:
+		allocations that fail from the moment a map loads would otherwise
+		show only when the controls died. A release starts without the
+		overlay, and a player gets no warning to act on; the log has it */
 		extern volatile unsigned long psp_heap_failures;
 
-		heap_warning = psp_heap_failures > 0;
+		heap_warning = psp_heap_failures > 0 && overlay;
 	}
 	if (!menu_open && !overlay && !heap_warning)
 		return;
@@ -286,6 +288,22 @@ void psp_debug_draw(void *vram)
 		snprintf(line, sizeof(line), "TICK %4.1f MS   REND %4.1f MS   PORT %4.1f MS   WAIT %4.1f MS", psp_budget_last[2],
 			psp_budget_last[3], psp_budget_last[4], psp_budget_last[5]);
 		text(0, 1, 0xFF80FF80, line);
+		/* a test job's runs numbered ("rigrunN rigofM"), so whoever
+		watches the PSP knows which of a job's runs is playing */
+		{
+			static int run = -1, runs = 0;
+
+			if (run < 0)
+			{
+				run = psp_keep_number("rigrun", 0);
+				runs = psp_keep_number("rigof", 0);
+			}
+			if (run > 0)
+			{
+				snprintf(line, sizeof(line), "RUN %d/%d", run, runs);
+				text(0, 3, 0xFFFFFF80, line);
+			}
+		}
 	}
 	if (heap_warning)
 	{

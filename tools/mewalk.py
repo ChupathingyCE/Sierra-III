@@ -18,6 +18,10 @@ usage: python3 mewalk.py halo.dis [root ...] [--summary] [--each]
              the call chain that reached it
   --calls=   functions whose call lines (jal, j, bal, jalr) are printed as
              they are in the disassembly: to see why a walk stops early
+  --list=    name prefixes, comma-separated: every reached function whose
+             name starts with one is listed with one call chain (to see which
+             library code, libm's or libc's, a job reaches: the walk follows it
+             like our own, so nothing flags it)
   --syms=    the symbol table (psp-objdump -t halo.elf): objdump starts a new
              block at every symbol, and some fall inside a function (labels the
              link keeps), which cut the function short and hid its calls; with
@@ -50,6 +54,10 @@ for f in flags:
         stops |= {s for s in f[len('--stop='):].split(',') if s}
 roots = args[1:] or ['meLibOnProcess']
 show_calls = []
+list_prefixes = []
+for f in flags:
+    if f.startswith('--list='):
+        list_prefixes += [c for c in f[len('--list='):].split(',') if c]
 for f in flags:
     if f.startswith('--calls='):
         show_calls += [c for c in f[len('--calls='):].split(',') if c]
@@ -184,6 +192,11 @@ def report(walk_roots):
             print("  %-40s %4d   %s" % (f[:40], n, chain(parent, f)))
         if len(where) > 40:
             print("  ... and %d more functions" % (len(where) - 40))
+    if list_prefixes:
+        listed = sorted(f for f in ours if any(f.startswith(p) for p in list_prefixes))
+        print("\nlisted (%s): %d functions" % (','.join(list_prefixes), len(listed)))
+        for f in listed:
+            print("  %-40s %5d B   %s" % (f[:40], size_of(f), chain(parent, f)))
 
 CALL_LINE = re.compile(r'\t(jal|j|bal|jalr)\s')
 for f in show_calls:
