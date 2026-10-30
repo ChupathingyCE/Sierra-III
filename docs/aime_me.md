@@ -63,3 +63,24 @@ Built on the tock (w142 5a2db0ed + step 1 redone, `FIXES_AIME1B`), still at step
 8. **The rays inline** on the ME (perception's queue waits on the ME itself) and **the keep words** read once before the push.
 9. **Two new findings for it:** the one actor a b30 run whose thinking makes or deletes another actor's prop (counted, not yet named: which call) needs a name and a rule (queue or hand-back); and other actors' datums written by a stopped actor's thinking (26 in 35,506 b30 stops) stay as shared writes unless step 2a finds them cheap to copy.
 10. **The copies' cost** on the ME: an actor's datum and up to 48 props a time over the bus, priced by the job's first PSP pair (c20, `keepsets="- | aime"` on both sides of the ME switch), not the cache model.
+
+## Step 2a: the reach after 1b, and the job's shape (building)
+The same walk as the census above, on 1b rebased onto the tock, with 1b's 24 world writers and its hand-back as stops (1b never runs a writer's body ahead): **859 functions, 390 KB** (from 2,115 and 1,100 KB). What's left, every chain named [D]:
+
+| # | What the walk flags | Where | The rule for the job |
+|---|---|---|---|
+| 1 | firmware: `psp_me_wait`, its log, its cache calls | `prop_status_refresh` -> `psp_perception_line_of_sight` | rays inline on the ME: the quiet walk the ray job already runs (`psp_collision_bsp_test_vector_quiet`), called in place of the queue |
+| 2 | firmware (file reads), VFPU (quaternions), indirect (`forget_all`) | `actor_action_handle_vehicle_en*` -> `action_vehicle_setup_impromptu` -> `action_vehicle_evaluate_seat` -> `unit_get_seat_entrance_point` -> `animation_get_root_matrix` -> `animation_get_frame_data` -> `psp_anim_lock` (the pack) | **new**: not in the list above. Hand the actor back at `animation_get_frame_data` on the ME (a stop like the writers'; vehicle boarding is rare) |
+| 3 | firmware (malloc, locks) | `actor_decision_loop`'s infinite-loop report (`sprintf` x4, then `error`) | hand the actor back before the report; the main CPU reports it in the tick |
+| 4 | firmware (semaphores) | `tag_get` -> `psp_keep` | the keep word read before the push |
+| 5 | VFPU, 137 sites in 4 functions | `matrix4x3_multiply` (markers: `unit_get_center_of_mass`, head position); quaternions under `psp_nms_settle` (owed node blocks) and item 2 | FPU forms where `PSP_ME_WORK()`; owed node blocks settled before the push, one still owed on the ME hands the actor back |
+| 6 | indirect, 28 sites | `qsort` (perception's optional props, x2), `qsort_4byte` (firing positions) | a port sort, the same order for equal keys (the libc sorts aren't stable: the port sort must reproduce their order, or both sides use it) |
+| 7 | indirect | the firing-position evaluator tables (`pre_evaluator_*`, `post_evaluator_*`), `action_obey_individuals_iterate`'s callback, `ai_communication_finished` | roots for the walk (the tables are fixed), not hazards |
+
+**Not flagged by the walk, needed for one writer a line:** the collision walks' marks (`object_mark_function`, `object_unmarked_function`, `object_marker_begin`/`end`, and the structure's cluster marks in collisions.c) kept in the ME's own table where `PSP_ME_WORK()`, so every walk stays as it is; the bipeds' pathfinding memo (bipeds.c, `biped_find_pathfinding_surface_index`'s stores) logged and applied at collection. The prop pool needs no reservation: props are made and deleted only by AI code (props.c), and no AI code runs on the main CPU while the job is out [D; the write trace checks it].
+
+**The job's shape:**
+- **A slot job that yields** (a fourth slot), not a ring job: the ring runs its jobs in order, so a pass of milliseconds would make the record's ring jobs late. Between actors it mixes waiting audio, runs the record's ring jobs and the render slot's job, and reads an abort word.
+- **Pushed after the frame's last tick, before `game_frame`**, after the main CPU's whole-cache write-back: the job reads the world the last tick left, as step 1 does, so the emulator (which runs the job inside the push) should play as 1b.
+- **Collected at the next `game_tick`'s start**, before `game_allegiance_update` and `units_update` write what the thinking reads. Not done: the abort word, a bounded wait for the actor in hand to end; the actors not reached think whole in the tick, as 1b's handed-back ones do. No answer in the bound: the ME is stopped, the actor in hand goes back to its copies (written back before it starts thinking), and every later frame thinks on the main CPU.
+- **The emulator's checks:** the window word held open while the job is out, so the write trace covers the whole span to collection; a keep word that makes 1b's pass use the FPU forms too, so on-vs-1b compares like maths.
