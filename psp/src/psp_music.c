@@ -166,6 +166,10 @@ static struct
 	and the music is silent, so a pair prices the decode apart from the
 	rest (the reader, the stubs, the smaller cache) */
 	int nodecode;
+	/* "musicmestop" (a test): the ME stopped once the first music job is
+	collected, so a run takes the fallback (the decoders and setup made
+	again on this CPU, on the job's own stack) as after an ME failure */
+	int mestop_test;
 	SceUID reader_wake, out_ready, out_free, io_lock, state_lock;
 	int out_channel;
 	unsigned char *pool_ram;     /* the pool's room in main RAM */
@@ -468,6 +472,7 @@ static void start_once(void)
 	at += TABLE_BYTES;
 	music.stack = at;
 	music.nodecode = psp_keep("musicnodecode") != 0;
+	music.mestop_test = psp_keep("musicmestop") != 0;
 	music.state_lock = sceKernelCreateSema("music state", 0, 1, 1, NULL);
 	music.reader_wake = sceKernelCreateSema("music reader", 0, 0, 64, NULL);
 	music.io_lock = sceKernelCreateSema("music io", 0, 1, 1, NULL);
@@ -1529,6 +1534,12 @@ static void music_collect(void)
 		music_trail("music job: the first collected after %lu us; the codec setup %ld (1 made), the pool in the eDRAM %lu",
 			(unsigned long)(sceKernelGetSystemTimeWide() - feed.submitted_at), (unsigned long)dec.setup_state,
 			(unsigned long)dec.pool_in_edram);
+		if (music.mestop_test)
+		{
+			extern void psp_me_stop(const char *why);
+
+			psp_me_stop("musicmestop: the music job's fallback tested");
+		}
 	}
 	feed.finished += done;
 	for (k = 0; k < done; k++)
