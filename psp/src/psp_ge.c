@@ -11658,6 +11658,8 @@ after it, as before, each part sits above scratch freed a moment later: a
 hole under every part made in play, most of the heap's free space at its
 peak. The part's bytes are the same either way. A room the heap refuses
 leaves the conversion in the old order */
+int psp_keep(const char *name);
+int psp_keep_loaded(void);
 static int skinpack_on = -1, skinpack_check = 0;
 static unsigned long skinpack_packed = 0, skinpack_refused = 0, skinpack_checked = 0, skinpack_differed = 0;
 
