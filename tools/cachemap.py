@@ -329,6 +329,16 @@ def main():
                      if m and size <= 8192 and not key.startswith('(')]
             for per_kb, m, size, key in sorted(small, reverse=True)[:40]:
                 print('  %9d  %6d B  %9.0f/KB  %s' % (m, size, per_kb, key))
+        # every line of the program's constants and variables that missed, for a
+        # data layout by heat (psp_build.py's PSP_DATA_LAYOUT): the
+        # hottest-lines list above stops at 200 lines of all of RAM
+        data_start = min((s[0] for s in symbols if s[3] in 'rbdv'), default=program_end)
+        print('program data lines (address, accesses, misses, the variable at the line\'s start):')
+        for line in range((data_start - LO) >> 6, (program_end + 63 - LO) >> 6):
+            m = misses[p][line]
+            if m >= 100:
+                address = LO + (line << 6)
+                print('  %08x %10d %8d  %s' % (address, accesses[p][line], m, data_namer.name(address)[0] or '-'))
         # the code whose loads and stores missed (DCM3 dumps)
         if dmiss_pc is not None:
             by_code = defaultdict(int)

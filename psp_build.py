@@ -669,6 +669,43 @@ def link(objs, stubs):
                     out.append(q)
         return out
 
+    # PSP_DATA_LAYOUT gathers the tick's hottest small variables, which the
+    # SDK's script leaves in input order, one or two warm words to a 64-byte
+    # line among cold ones, into one run of lines just after the ME's .data
+    # block: the same hot words on far fewer lines, so fewer lines to keep in
+    # the 16 KB data cache against the object stream (lever HOTG). Its .bss
+    # and COMMON inputs go into the .data output too (zeros in the file), so
+    # the hot set is one run; the first rule an input section matches wins,
+    # and .data's rules come before .bss's. A name is a file of
+    # psp/layout/data_<name>.txt: one placement a line, "<file>(<sections>)"
+    # (e.g. "*objects.o(.bss.psp_nms_check)", "*scenario.o(COMMON)": a file's
+    # COMMON is placed whole) or a bare section name, hottest first. The ME's
+    # objects are never matched, so their blocks stay as they are. Only
+    # addresses move: exact. PSP_DATA_SPREAD=1 (recon only) puts each
+    # placement on lines of its own instead, so the cache model's per-line
+    # counts name each one's misses
+    def hot_data_block(me_objects):
+        name = os.environ.get("PSP_DATA_LAYOUT", "")
+        if not name:
+            return ""
+        path = name if os.path.isfile(name) else os.path.join(HERE, "psp/layout", "data_%s.txt" % name)
+        if not os.path.isfile(path):
+            sys.exit("psp_build: PSP_DATA_LAYOUT=%s: no %s" % (name, path))
+        lines = [l.split("#")[0].strip() for l in open(path)]
+        sep = "    . = ALIGN(64);\n" if os.environ.get("PSP_DATA_SPREAD") == "1" else ""
+        block = "    __psp_hot_data_start = .;\n"
+        for l in (l for l in lines if l):
+            m = re.match(r"^(\S+)\((.+)\)$", l)
+            if not m and "(" in l:
+                sys.exit("psp_build: PSP_DATA_LAYOUT: not a placement (a file pattern has no spaces): %s" % l)
+            files, sections = (m.group(1), m.group(2)) if m else ("*", l)
+            if files == "*":
+                sections = "EXCLUDE_FILE(%s) %s" % (" ".join(me_objects), sections)
+            elif any(o.strip("*").split(":")[0] in files for o in me_objects):
+                sys.exit("psp_build: PSP_DATA_LAYOUT places the ME's own variables (%s): they keep their block" % l)
+            block += "%s    %s(%s)\n" % (sep, files, sections)
+        return block + "    . = ALIGN(64);\n    __psp_hot_data_end = .;\n"
+
     linkfile = SDK + "/lib/linkfile.prx"
     text = open(linkfile).read()
     layout = os.environ.get("PSP_TEXT_LAYOUT", "")
@@ -708,7 +745,7 @@ def link(objs, stubs):
                         "    . = ALIGN(64);\n    __psp_main_side_start = .;\n    KEEP(*(.data.psp_main_side))\n"
                         "    . = ALIGN(64);\n    __psp_main_side_end = .;\n    __psp_me_data_start = .;\n" +
                         "".join("    %s(.data .data.*)\n" % o for o in me_objects) +
-                        "    . = ALIGN(64);\n    __psp_me_data_end = .;\n"
+                        "    . = ALIGN(64);\n    __psp_me_data_end = .;\n" + hot_data_block(me_objects) +
                         "    *(.data .data.* .gnu.linkonce.d.*)\n")
     text = text.replace(old_bss, "   *(.dynbss)\n   . = ALIGN(64);\n   __psp_me_bss_start = .;\n" +
                         "".join("   %s(.bss .bss.* COMMON)\n" % o for o in me_objects) +
