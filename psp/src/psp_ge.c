@@ -11939,7 +11939,7 @@ live entries stay, since their vertices are converted in place. The next
 bound comes SKIN_BOUND_STEP past what a sweep kept, so a live set above the
 bound doesn't sweep on every part. "skinboundN" sets it to N KB,
 "skinboundoff" leaves the count as the only trigger */
-#define SKIN_BOUND_KB 160
+#define SKIN_BOUND_KB 224
 #define SKIN_BOUND_STEP (32ul * 1024)
 #define SKIN_GONE 256
 static int skin_bound_kb = -1, skin_bound_sweeping = 0;
