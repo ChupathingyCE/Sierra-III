@@ -1409,6 +1409,23 @@ static int keep_search(const char *name)
 	return 0;
 }
 
+/* the last one asked for in a slot is the one remembered there (before
+keep.txt is read, nothing is remembered). Apart, so the ME's reach (mewalk)
+can stop here: the slot's lock is a system call, and psp_keep never comes
+here on the ME */
+static __attribute__((noinline)) void keep_remember(unsigned int slot, const char *name, int answer)
+{
+	if (keep_cache_lock >= 0 && sceKernelWaitSema(keep_cache_lock, 1, NULL) >= 0)
+	{
+		keep_cache[slot].sequence++;
+		keep_cache[slot].generation = keep_generation;
+		keep_cache[slot].answer = answer;
+		strcpy(keep_cache[slot].name, name);
+		keep_cache[slot].sequence++;
+		sceKernelSignalSema(keep_cache_lock, 1);
+	}
+}
+
 int psp_keep(const char *name)
 {
 	unsigned int hash = 2166136261u, slot;
@@ -1439,17 +1456,7 @@ int psp_keep(const char *name)
 		if (PSP_ME_WORK())
 			return answer;
 	}
-	/* the last one asked for in a slot is the one remembered there (before
-	keep.txt is read, nothing is remembered) */
-	if (keep_cache_lock >= 0 && sceKernelWaitSema(keep_cache_lock, 1, NULL) >= 0)
-	{
-		keep_cache[slot].sequence++;
-		keep_cache[slot].generation = keep_generation;
-		keep_cache[slot].answer = answer;
-		strcpy(keep_cache[slot].name, name);
-		keep_cache[slot].sequence++;
-		sceKernelSignalSema(keep_cache_lock, 1);
-	}
+	keep_remember(slot, name, answer);
 	return answer;
 }
 

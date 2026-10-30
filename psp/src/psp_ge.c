@@ -323,6 +323,9 @@ static PSP_MAIN_SIDE int me_wrote = 0;        /* the ME has carried a half out s
 static PSP_MAIN_SIDE unsigned long me_overlap_runs = 0, me_overlap_waits = 0, me_overlap_wait_us = 0, me_overlap_alone = 0;
 /* a line of its own: only the main CPU writes it */
 volatile unsigned int psp_me_window[16] __attribute__((aligned(64)));
+/* 1 while a slot job that spans the frame is out ("aime2a"): the window's
+closings below leave it open, so the trace covers it to its collection */
+volatile unsigned int psp_me_window_hold = 0;
 /* build 118: "mebench": the three ways of running the GE layer's work, in
 turns of ME_BENCH_FRAMES frames in one run, each frame's time (swap to swap,
 the frame pacing off) added to its way: on the main CPU as it comes (gedefer
@@ -1827,7 +1830,7 @@ static void defer_wait_me(void)
 		perhaps half carried out: the main CPU goes on alone from here,
 		and this frame may draw wrong */
 		gebusy_wait(0, 0);
-		psp_me_window[0] = 0;
+		psp_me_window[0] = psp_me_window_hold;
 		defer_me_failed++;
 		me_overlap = 0;
 		/* the half being written moves to the buffer's start, where the
@@ -1840,7 +1843,7 @@ static void defer_wait_me(void)
 		platform_log("GE: gemeoverlap: the Media Engine failed with half the buffer out; the main CPU carries the calls out from here");
 		return;
 	}
-	psp_me_window[0] = 0;
+	psp_me_window[0] = psp_me_window_hold;
 	me_overlap_waits++;
 	gebusy_wait(0, 0);
 	me_overlap_wait_us += sceKernelGetSystemTimeLow() - start;
@@ -1890,7 +1893,7 @@ static void defer_hand_over(void)
 			return;
 		}
 		defer_replaying = 0;
-		psp_me_window[0] = 0;
+		psp_me_window[0] = psp_me_window_hold;
 	}
 	/* the ME can't take it: carried out here, as gedefer alone, after
 	dropping the main CPU's stale copies of what the ME wrote */
@@ -2087,7 +2090,7 @@ static int inflight_hand_over_from(unsigned int from, unsigned int mode)
 	{
 		defer_replaying = 0;
 		inflight_me_out = 0;
-		psp_me_window[0] = 0;
+		psp_me_window[0] = psp_me_window_hold;
 		return 0;
 	}
 	defer_replaying = 0;
@@ -2248,7 +2251,7 @@ static void inflight_wait_me(void)
 	defer_wait_me(); /* the last stall address passed on with it */
 	if (!was_chunked)
 		chunk_wait_last_us = sceKernelGetSystemTimeLow() - wait_mark;
-	psp_me_window[0] = 0;
+	psp_me_window[0] = psp_me_window_hold;
 	sceKernelDcacheWritebackInvalidateAll();
 	{
 		/* texlinecheck and heapwalk: what the ME's frame left (psp_tex.c, psp_libc.c) */

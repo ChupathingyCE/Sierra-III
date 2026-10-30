@@ -67,3 +67,14 @@ same in both builds and one profile fits them */
 #else
 #define PSP_RELEASE_DEFAULTS { "notimers", "timerson" }, { "nooverlay", "overlay" },
 #endif
+
+/* TRUE on the Media Engine, or in work the emulator runs as the ME's
+(psp_me.h's PSP_ME_WORK, for engine units, which don't include it) */
+extern volatile unsigned int psp_me_context;
+static __inline__ __attribute__((always_inline)) int psp_work_on_me(void)
+{
+	unsigned int psp_sp_;
+
+	__asm__ ("move %0, $sp" : "=r"(psp_sp_));
+	return psp_me_context != 0 || (psp_sp_ & 0x1FFFFFFFu) < 0x01000000u;
+}

@@ -40720,7 +40720,990 @@ def _psp_aime1b_hooks():
 _psp_aime1b_hooks()
 
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items())):
+# ---------- FIXES_AIME2A: AIME step 2a, the pass ahead as a Media Engine job (keep word "aime2a", with "aime aime1b"; off)
+# With aime and aime1b, the thinking for the next tick runs right after each
+# tick on the main CPU. "aime2a" moves the pass after a frame's last tick to
+# the ME, as a slot job (ME_SLOT_AI) handed over before game_frame and the
+# record, collected at the next game_tick's start, before the units' and
+# allegiances' updates write what it read. The passes after the frame's other
+# ticks are run where they were due, at the next tick's start. On the ME:
+# perception's rays inline (its queue is the ME's own ring); the collision
+# walks' marks in tables of the ME's own, so no object or cluster is written;
+# the bipeds' pathfinding memo kept in a log applied at collection; the
+# shared maths in its FPU forms; and at a reach the ME can't run (the
+# animation pack, the decision loop's report, an owed node block, another
+# actor's prop, a full prop log) the actor is stopped as aime1b stops it and
+# thought in the tick. Between actors the job mixes audio, runs the ring and
+# a waiting render job, and reads an abort word: the collection asks it to
+# end, waits a bound, and stops the ME if it doesn't answer, putting the
+# actor in hand back from its copies (written out before it began).
+# "aimefpu" makes aime1b's pass on the main CPU use the same FPU forms, the
+# like-for-like side of 2a's comparison. "aime2acheck" hashes the AI's pools
+# at the job's end and again at collection: what changed between was written
+# by the main CPU while the job was out, a race on the PSP. Campaign only
+FIXES_AIME2A = {}
+FIXES_AIME2A["source/ai/actors.c#aime2a"] = [
+("""#define PSP_AIME_WRITERS 25
+""",
+ """#define PSP_AIME_WRITERS 30
+/* FIXES_AIME2A: the ME's own stops (aimes2a, see there) */
+#define PSP_AIME_STOP_ANIMATION 24
+#define PSP_AIME_STOP_DECISION_REPORT 25
+#define PSP_AIME_STOP_SETTLE 26
+#define PSP_AIME_STOP_OTHERS_PROP 27
+#define PSP_AIME_STOP_LOG_FULL 28
+"""),
+("""	"weapon_set_total_rounds", "game_allegiance_provoke", "game_allegiance_incident", "hs_wake_by_name", "biped_accelerate", "forced" };
+""",
+ """	"weapon_set_total_rounds", "game_allegiance_provoke", "game_allegiance_incident", "hs_wake_by_name", "biped_accelerate",
+	"animation_get_frame_data", "decision_loop_report", "owed_node_block", "anothers_prop", "prop_log_full", "forced" };
+"""),
+# on the ME, an actor's copy goes out to main RAM before it thinks, so an
+# ME stopped mid-actor can be undone from it
+("""	psp_aime_arm = many ? 2 : 1;
+}
+""",
+ """	psp_aime_arm = many ? 2 : 1;
+	if (psp_work_on_me())
+	{
+		psp_me_lines_out(copy, sizeof(*copy));
+		psp_me_lines_out(psp_aime_prop_bytes, copy->prop_count * sizeof(struct prop_datum));
+		psp_me_lines_out(&psp_aime_current, sizeof(psp_aime_current));
+	}
+}
+"""),
+# on the ME a stop must always be possible (a writer may never run there):
+# another actor's prop, or a full log, stops the actor with the change logged
+("""	if (psp_aime_arm != 1 || prop_index == NONE)
+		return;
+	if (actor_index != psp_aime_current)
+""",
+ """	if (psp_aime_arm != 1 || prop_index == NONE)
+		return;
+	if (psp_work_on_me() && (actor_index != psp_aime_current || copy->log_count >= PSP_AIME_PROP_LOG_MOST - 1))
+	{
+		int which = actor_index != psp_aime_current ? PSP_AIME_STOP_OTHERS_PROP : PSP_AIME_STOP_LOG_FULL;
+
+		copy->log_index[copy->log_count] = prop_index;
+		copy->log_deleted[copy->log_count] = deleting;
+		if (deleting)
+			csmemcpy(psp_aime_log_bytes + copy->log_count * sizeof(struct prop_datum), prop_get(prop_index), sizeof(struct prop_datum));
+		copy->log_count++;
+		psp_aime_handback(which);
+		return;
+	}
+	if (actor_index != psp_aime_current)
+"""),
+("""	psp_aime_save(actor_index);
+	psp_aime1b_stats.actors++;
+""",
+ """	psp_aime_save(actor_index);
+	psp_aime1b_stats.actors++;
+	if (psp_aime_arm == 2 && psp_work_on_me())
+	{
+		/* more props than the copy holds: the ME can't stop it, so it
+		thinks whole in the tick */
+		psp_aime_arm = 0;
+		psp_aime1b_checking = FALSE;
+		psp_aime_current = NONE;
+		psp_aime2a_stats.many_props++;
+		return;
+	}
+"""),
+("""	psp_aime_stats.passes++;
+	psp_aime1b_pass_begin();
+	psp_aime_think_only = TRUE;
+""",
+ """	psp_aime_stats.passes++;
+	psp_aime1b_pass_begin();
+	psp_aime_think_only = TRUE;
+	if (psp_aime_fpu_main_on > 0 && !psp_work_on_me())
+		psp_aime_fpu_main = 1;
+"""),
+# the ME's pass casts no queued rays (the queue is the ME's own ring): each
+# line of sight is walked in place
+("""	if (psp_perception_begin())
+	{
+		actor_iterator_new(&iterator, TRUE);
+		while ((actor = actor_iterator_next(&iterator)) != NULL)
+		{
+			if (!actor->meta.erase_next_tick && actor->state.mode > _actor_mode_braindead)
+				psp_perception_queue(iterator.index);
+		}
+		psp_perception_queue_done();
+	}
+	actor_iterator_new(&iterator, TRUE);
+	while ((actor = actor_iterator_next(&iterator)) != NULL)
+	{
+		/* (an actor the general update would erase is left to it) */
+		if (actor->meta.erase_next_tick || actor->state.mode <= _actor_mode_braindead ||
+			(actor->meta.swarm && actor->meta.swarm_cache_index == NONE))
+			continue;
+		psp_aime_think_actor(iterator.index);
+	}
+	psp_perception_end();
+""",
+ """	if (!psp_work_on_me() && psp_perception_begin())
+	{
+		actor_iterator_new(&iterator, TRUE);
+		while ((actor = actor_iterator_next(&iterator)) != NULL)
+		{
+			if (!actor->meta.erase_next_tick && actor->state.mode > _actor_mode_braindead)
+				psp_perception_queue(iterator.index);
+		}
+		psp_perception_queue_done();
+	}
+	actor_iterator_new(&iterator, TRUE);
+	while ((actor = actor_iterator_next(&iterator)) != NULL)
+	{
+		/* (an actor the general update would erase is left to it) */
+		if (actor->meta.erase_next_tick || actor->state.mode <= _actor_mode_braindead ||
+			(actor->meta.swarm && actor->meta.swarm_cache_index == NONE))
+			continue;
+		if (psp_work_on_me())
+		{
+			/* between actors: audio, the ring, a waiting render job; and
+			the collection's word to end here (the rest think in the tick) */
+			psp_me_yield_slots();
+			if (psp_aime2a_abort && *psp_aime2a_abort)
+			{
+				psp_aime2a_stats.aborted++;
+				break;
+			}
+			psp_aime2a_stats.on_me++;
+		}
+		psp_aime_think_actor(iterator.index);
+	}
+	if (!psp_work_on_me())
+		psp_perception_end();
+	psp_aime_fpu_main = 0;
+"""),
+("""	if (psp_aime_logged == NONE || now < psp_aime_logged || now - psp_aime_logged >= 900)
+	{
+		if (psp_aime_logged != NONE)
+			platform_psp_log("aime: game time %ld | passes %lu, actors thought ahead %lu, updated whole in the tick %lu",
+				now, psp_aime_stats.passes, psp_aime_stats.ahead, psp_aime_stats.inline_whole);
+		if (psp_aime_logged != NONE)
+			psp_aime1b_log(now);
+		psp_aime_logged = now;
+	}
+}
+#endif
+""",
+ """	if (!psp_work_on_me())
+		psp_aime_log_due(now);
+}
+
+/* FIXES_AIME2A: "aime2a" (see there) */
+static void psp_aime_log_due(
+	long now)
+{
+	if (psp_aime_logged == NONE || now < psp_aime_logged || now - psp_aime_logged >= 900)
+	{
+		if (psp_aime_logged != NONE)
+			platform_psp_log("aime: game time %ld | passes %lu, actors thought ahead %lu, updated whole in the tick %lu",
+				now, psp_aime_stats.passes, psp_aime_stats.ahead, psp_aime_stats.inline_whole);
+		if (psp_aime_logged != NONE)
+			psp_aime1b_log(now);
+		if (psp_aime_logged != NONE)
+			psp_aime2a_log(now);
+		psp_aime_logged = now;
+	}
+}
+
+static boolean psp_aime2a_active(
+	void)
+{
+	if (psp_aime2a_on < 0)
+	{
+		psp_aime2a_check_on = psp_keep("aime2acheck") != 0;
+		psp_aime2a_on = (psp_aime2a_check_on || psp_keep("aime2a") != 0) && psp_aime1b_active();
+		if (psp_aime2a_on)
+		{
+			psp_aime2a_abort = psp_me_abort_word(ME_SLOT_AI);
+			psp_aime_pf_on = 1;
+			platform_psp_log("ai: the thinking ahead after a frame's last tick done on the Media Engine during the record, collected at the next tick's start (aime2a%s)",
+				psp_aime2a_check_on ? "; aime2acheck: the AI's pools hashed at the job's end and at collection" : "");
+			/* the job's working set: what the eDRAM row is sized from */
+			platform_psp_log("aime2a: working set | copy %u, props %u, prop log %u, queue %u, marks %u, cluster marks %u, pathfinding log %u bytes",
+				(unsigned)sizeof(*psp_aime_copy), (unsigned)(PSP_AIME_PROPS_MOST * sizeof(struct prop_datum)),
+				(unsigned)(PSP_AIME_PROP_LOG_MOST * sizeof(struct prop_datum)), (unsigned)(PSP_AIME_QUEUE_MOST * sizeof(*psp_aime_queue)),
+				psp_aime_marks_bytes(), psp_aime_cluster_marks_bytes(), psp_aime_pf_bytes());
+		}
+	}
+	return psp_aime2a_on > 0 && !psp_aime2a_failed;
+}
+
+/* ai.c, after each tick: TRUE when the pass is left for later (the next
+tick's start runs it, or the frame's end hands it to the ME) */
+boolean psp_aime2a_defer(
+	void)
+{
+	if (!psp_aime2a_active())
+		return FALSE;
+	psp_aime2a_owed = TRUE;
+	return TRUE;
+}
+
+static unsigned long psp_aime2a_hash_state(
+	void)
+{
+	unsigned long hash = 0;
+	int pool;
+
+	for (pool = 0; pool < PSP_AIME_POOLS; pool++)
+	{
+		struct data_array *data = psp_aime_pool(pool);
+
+		hash = hash * 31 + psp_aime_hash(xbox_pointer(data->data), data->size * data->maximum_count);
+		hash = hash * 31 + psp_aime_hash(data, sizeof(*data));
+	}
+	return hash * 31 + psp_aime_hash(ai_globals, sizeof(*ai_globals));
+}
+
+/* the job (psp_me.c's ME_JOB_AIME): the pass, on the ME */
+void psp_aime_me_job(
+	volatile unsigned int *args,
+	volatile unsigned int *results)
+{
+	unsigned long on_me = psp_aime2a_stats.on_me, aborted = psp_aime2a_stats.aborted;
+
+	(void)args;
+	psp_aime_job_now[0] = 1;
+	psp_aime_think();
+	psp_aime_job_now[0] = 0;
+	results[0] = (unsigned int)(psp_aime2a_stats.on_me - on_me);
+	results[1] = (unsigned int)(psp_aime2a_stats.aborted - aborted);
+	results[2] = psp_aime2a_check_on ? (unsigned int)psp_aime2a_hash_state() : 0;
+}
+
+/* game_time.c, before game_frame: the frame's last pass to the ME */
+void psp_aime2a_frame_end(
+	void)
+{
+	unsigned int args[1] = { 0 };
+
+	if (!psp_aime2a_owed || psp_aime2a_out)
+		return;
+	psp_aime2a_owed = FALSE;
+	if (!psp_aime2a_active() || !psp_aime_update_allowed())
+		return;
+	/* everything the pass reads, out of the main CPU's cache; the ME drops
+	its own before the job */
+	sceKernelDcacheWritebackAll();
+	if (!psp_me_submit(ME_SLOT_AI, ME_JOB_AIME, args, 1))
+	{
+		psp_aime2a_stats.refused++;
+		psp_aime_think();
+		return;
+	}
+	psp_aime2a_stats.pushed++;
+	psp_aime2a_out = TRUE;
+}
+
+/* game.c, at game_tick's start: the job collected before anything writes
+what it read; a pass due from the tick before (not the frame's last) run */
+void psp_aime2a_tick_begin(
+	void)
+{
+	if (psp_aime2a_out)
+	{
+		unsigned int results[ME_JOB_RESULTS] = { 0 };
+		unsigned long long asked;
+		int done;
+
+		psp_aime2a_out = FALSE;
+		if (!psp_me_submitted_done(ME_SLOT_AI))
+		{
+			psp_aime2a_stats.late++;
+			if (psp_aime2a_abort)
+				*psp_aime2a_abort = 1;
+			asked = sceKernelGetSystemTimeWide();
+			while (!psp_me_submitted_done(ME_SLOT_AI) && sceKernelGetSystemTimeWide() - asked < PSP_AIME2A_BOUND_US)
+				sceKernelDelayThread(50);
+			if (!psp_me_submitted_done(ME_SLOT_AI))
+			{
+				psp_aime2a_stats.no_answer++;
+				psp_me_stop("aime2a: the thinking job didn't end at the collection's word");
+			}
+		}
+		done = psp_me_finish(ME_SLOT_AI, results);
+		if (!psp_me_simulated())
+			sceKernelDcacheWritebackInvalidateAll();
+		psp_me_window_hold = 0;
+		if (!done)
+		{
+			/* the ME stopped: the actor in hand back from its copies, and
+			every later pass on the main CPU */
+			psp_aime2a_stats.failed++;
+			psp_aime2a_failed = TRUE;
+			psp_aime_job_now[0] = 0;
+			if (psp_aime_current != NONE)
+			{
+				psp_aime_stop_which = PSP_AIME_FORCED;
+				psp_aime_restore();
+			}
+			psp_aime_arm = 0;
+			psp_aime_current = NONE;
+			psp_aime_think_only = FALSE;
+			platform_psp_log("aime2a: the ME failed during the thinking job; every later pass thinks on the main CPU");
+		}
+		else
+		{
+			psp_aime2a_stats.collected++;
+			if (results[ME_JOB_RESULTS - 1] > psp_aime2a_stats.stack_deepest)
+				psp_aime2a_stats.stack_deepest = results[ME_JOB_RESULTS - 1];
+			if (psp_aime2a_check_on)
+			{
+				psp_aime2a_stats.checked++;
+				if ((unsigned int)psp_aime2a_hash_state() != results[2])
+					psp_aime2a_stats.check_changed++;
+			}
+		}
+		psp_aime_pf_apply();
+		psp_aime_log_due(psp_aime_pass_time != NONE ? psp_aime_pass_time : game_time_get());
+	}
+	if (psp_aime2a_owed)
+	{
+		psp_aime2a_owed = FALSE;
+		if (psp_aime_update_allowed())
+		{
+			psp_aime2a_stats.inline_passes++;
+			psp_aime_think();
+		}
+	}
+}
+
+static void psp_aime2a_log(
+	long now)
+{
+	if (psp_aime2a_on <= 0)
+		return;
+	platform_psp_log("aime2a: game time %ld | jobs %lu (refused %lu), collected %lu, late %lu, no answer %lu, failed %lu | passes inline %lu | actors on the ME %lu, ended by the word %lu, props over the copy %lu | pathfinding log %lu, applied %lu (woken %lu), full %lu | stack %lu bytes%s",
+		now, psp_aime2a_stats.pushed, psp_aime2a_stats.refused, psp_aime2a_stats.collected, psp_aime2a_stats.late,
+		psp_aime2a_stats.no_answer, psp_aime2a_stats.failed, psp_aime2a_stats.inline_passes, psp_aime2a_stats.on_me,
+		psp_aime2a_stats.aborted, psp_aime2a_stats.many_props, psp_aime_pf_stats[0], psp_aime_pf_stats[1],
+		psp_aime_pf_stats[2], psp_aime_pf_stats[3], psp_aime2a_stats.stack_deepest, "");
+	if (psp_aime2a_check_on)
+		platform_psp_log("aime2acheck: game time %ld | jobs checked %lu, the AI's state changed between the job's end and the collection %lu",
+			now, psp_aime2a_stats.checked, psp_aime2a_stats.check_changed);
+}
+#endif
+"""),
+# the decision loop's report: sprintf, the error log: the main CPU's
+("""	if (actor->meta.encounter_index == NONE)
+	{
+		csstrcpy(encounter_name, "<no encounter>");
+""",
+ """#ifdef HALO_PSP
+	/* psp_fixups.py (FIXES_AIME2A): on the ME, the actor thinks in the tick
+	and reports there */
+	if (psp_aime_arm && psp_work_on_me())
+		psp_aime_handback(PSP_AIME_STOP_DECISION_REPORT);
+#endif
+	if (actor->meta.encounter_index == NONE)
+	{
+		csstrcpy(encounter_name, "<no encounter>");
+"""),
+# actor input reads a biped's pathfinding memo straight: on the ME, the log's
+("""			actor->input.pathfinding_surface_index =
+				biped->biped.pathfinding_surface_index;
+			actor->input.pathfinding_point = biped->biped.pathfinding_point;
+""",
+ """			actor->input.pathfinding_surface_index =
+				biped->biped.pathfinding_surface_index;
+			actor->input.pathfinding_point = biped->biped.pathfinding_point;
+#ifdef HALO_PSP
+			if (psp_aime_job_now[0] && psp_work_on_me())
+			{
+				long psp_surface = actor->input.pathfinding_surface_index;
+
+				/* psp_fixups.py (FIXES_AIME2A): the ME's log of the memo */
+				psp_aime_pf_read(actor->meta.unit_index, &psp_surface, &actor->input.pathfinding_point);
+				actor->input.pathfinding_surface_index = psp_surface;
+			}
+#endif
+"""),
+]
+# the declarations the pairs above use, ahead of 1b's
+FIXES_AIME2A["source/ai/actors.c#aime2a"].insert(0, (
+"""/* FIXES_AIME1B: "aime1b" (see there) */
+#define PSP_AIME_WRITERS 25
+""",
+"""/* FIXES_AIME2A: "aime2a" (see there) */
+#ifndef ME_SLOT_AI
+#define ME_SLOT_AI 3
+#define ME_JOB_AIME 15
+#define ME_JOB_RESULTS 8
+#endif
+int psp_me_submit(int which, unsigned int type, const unsigned int *args, int arg_count);
+int psp_me_finish(int which, unsigned int *results);
+int psp_me_submitted_done(int which);
+void psp_me_stop(const char *why);
+int psp_me_simulated(void);
+volatile unsigned int *psp_me_abort_word(int which);
+void psp_me_yield_slots(void);
+void psp_me_lines_out(const void *start, unsigned int bytes);
+extern volatile unsigned int psp_me_window_hold;
+void sceKernelDcacheWritebackAll(void);
+void sceKernelDcacheWritebackInvalidateAll(void);
+unsigned long long sceKernelGetSystemTimeWide(void);
+int sceKernelDelayThread(unsigned int delay);
+static int psp_aime2a_on = -1, psp_aime2a_check_on = 0;
+static boolean psp_aime2a_owed = FALSE, psp_aime2a_out = FALSE, psp_aime2a_failed = FALSE;
+static volatile unsigned int *psp_aime2a_abort = NULL;
+/* the collection's wait for the actor in hand, once the job is asked to end */
+#define PSP_AIME2A_BOUND_US 20000
+static struct
+{
+	unsigned long pushed, refused, collected, late, no_answer, failed, inline_passes;
+	unsigned long on_me, aborted, many_props, checked, check_changed, stack_deepest;
+} psp_aime2a_stats;
+/* "aimefpu": 1b's pass on the main CPU in the ME's FPU forms (matrix_math.c,
+real_math.c read psp_aime_fpu_main) */
+static int psp_aime_fpu_main_on = -1;
+int psp_aime_fpu_main = 0;
+int psp_aime_pf_on = 0;
+/* 1 while the job runs, written by the job alone, on a line of its own:
+the ME's paths (marks, FPU forms, the memo's log) test it with where they
+run, so the main CPU's own work during the record never takes them */
+int psp_aime_job_now[16] __attribute__((aligned(64)));
+extern unsigned long psp_aime_pf_stats[4];
+void psp_aime_pf_apply(void);
+void psp_aime_pf_read(long biped_index, long *surface_index, real_point3d *point);
+unsigned int psp_aime_pf_bytes(void);
+unsigned int psp_aime_marks_bytes(void);
+unsigned int psp_aime_cluster_marks_bytes(void);
+boolean psp_aime_update_allowed(void);
+static void psp_aime_log_due(long now);
+static void psp_aime2a_log(long now);
+static void psp_aime_think_actor(long actor_index);
+
+/* FIXES_AIME1B: "aime1b" (see there) */
+#define PSP_AIME_WRITERS 25
+"""))
+# aimefpu read once, on the main CPU, with aime1b's words
+FIXES_AIME2A["source/ai/actors.c#aime2a"].append((
+"""		psp_aime1b_check_on = psp_keep("aime1bcheck") != 0;
+""",
+"""		psp_aime1b_check_on = psp_keep("aime1bcheck") != 0;
+		psp_aime_fpu_main_on = psp_keep("aimefpu") != 0;
+"""))
+FIXES_AIME2A["source/ai/ai.c#aime2a"] = [
+("""void psp_aime_update(
+	void)
+{
+	if (!ai_globals || !ai_globals->ai_initialized_for_map || ai_profile.disabled ||
+		ai_profile.move_actors_randomly || !ai_globals->ai_active || network_game_distributed_client())
+		return;
+	psp_aime_think();
+}
+""",
+ """boolean psp_aime2a_defer(void);
+
+/* FIXES_AIME2A: whether a pass may run now (also asked again where a
+deferred one runs) */
+boolean psp_aime_update_allowed(
+	void)
+{
+	return ai_globals && ai_globals->ai_initialized_for_map && !ai_profile.disabled &&
+		!ai_profile.move_actors_randomly && ai_globals->ai_active && !network_game_distributed_client();
+}
+
+void psp_aime_update(
+	void)
+{
+	if (!psp_aime_update_allowed())
+		return;
+	/* FIXES_AIME2A: "aime2a" leaves it for later (actors.c) */
+	if (psp_aime2a_defer())
+		return;
+	psp_aime_think();
+}
+"""),
+]
+FIXES_AIME2A["source/game/game.c#aime2a"] = [
+("""	profile_enter(game_update_section);
+
+	match_assert(
+		"c:\\\\halo\\\\SOURCE\\\\game\\\\game.c",
+		0x28D,""",
+ """	profile_enter(game_update_section);
+#if defined(HALO_PSP) && !defined(PSP_MULTIPLAYER)
+	{
+		/* psp_fixups.py (FIXES_AIME2A, "aime2a"): the ME's thinking job
+		collected, before the updates below write what it read (actors.c) */
+		extern void psp_aime2a_tick_begin(void);
+
+		psp_aime2a_tick_begin();
+	}
+#endif
+
+	match_assert(
+		"c:\\\\halo\\\\SOURCE\\\\game\\\\game.c",
+		0x28D,"""),
+]
+FIXES_AIME2A["source/game/game_time.c#aime2a"] = [
+("""		render_interpolation_frame_begin();
+		game_frame(game_time_get_speed()*time_delta_sec);
+""",
+ """#if defined(HALO_PSP) && !defined(PSP_MULTIPLAYER)
+		{
+			/* psp_fixups.py (FIXES_AIME2A, "aime2a"): the frame's last
+			pass handed to the ME, to think during the record (actors.c) */
+			extern void psp_aime2a_frame_end(void);
+
+			psp_aime2a_frame_end();
+		}
+#endif
+		render_interpolation_frame_begin();
+		game_frame(game_time_get_speed()*time_delta_sec);
+"""),
+]
+# perception's queued answers are the main CPU's (the ME pass queues none):
+# the ME walks each line of sight in place
+FIXES_AIME2A["source/ai/actor_perception.c#aime2a"] = [
+("""	short index;
+
+	if (psp_perc_ray_count > 0 && psp_perc_ray_epoch != psp_object_epoch)
+""",
+ """	short index;
+
+	if (psp_work_on_me())
+		return ai_test_line_of_sight(p0, p0_cluster_index, p1, p1_cluster_index, mode,
+			test_line_of_fire, ignore_object_index, ignore_vehicles);
+	if (psp_perc_ray_count > 0 && psp_perc_ray_epoch != psp_object_epoch)
+"""),
+("""		if (PSP_KEEP_ONCE("unithoistold") ? object_mark_function(object_index) : psp_object_mark_function_with(current_object))
+""",
+ """		/* (FIXES_AIME2A: on the ME, by index, for the ME's own marks) */
+		if (PSP_KEEP_ONCE("unithoistold") || psp_work_on_me() ? object_mark_function(object_index) : psp_object_mark_function_with(current_object))
+"""),
+]
+# the objects' visit marks: on the ME, in a table of its own
+FIXES_AIME2A["source/objects/objects.c#aime2a"] = [
+("""void object_marker_begin(
+	void)
+{
+""",
+ """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_AIME2A, "aime2a"): the ME's walks mark objects in
+a table of their own, so no object's line is written by the ME. Sized for
+the map's object pool, on the main CPU, before the first job */
+static long *psp_me_object_marks = NULL;
+static long psp_me_object_marks_count = 0;
+static long psp_me_object_marker = 0;
+static boolean psp_me_object_marker_on = FALSE;
+
+static boolean psp_me_marks_here(
+	void)
+{
+	extern int psp_aime_job_now[16];
+
+	return psp_aime_job_now[0] && psp_me_object_marks && psp_work_on_me();
+}
+
+unsigned int psp_aime_marks_bytes(
+	void)
+{
+	if (!psp_me_object_marks && object_header_data)
+	{
+		long count = object_header_data->maximum_count;
+
+		psp_me_object_marks = (long *)malloc(count * sizeof(long));
+		if (psp_me_object_marks)
+		{
+			csmemset(psp_me_object_marks, 0, count * sizeof(long));
+			psp_me_object_marks_count = count;
+		}
+	}
+	return (unsigned int)(psp_me_object_marks_count * sizeof(long));
+}
+#endif
+
+void object_marker_begin(
+	void)
+{
+#ifdef HALO_PSP
+	if (psp_me_marks_here())
+	{
+		psp_me_object_marker++;
+		psp_me_object_marker_on = TRUE;
+		return;
+	}
+#endif
+"""),
+("""	return &object_globals->object_marker_initialized;
+""",
+ """	if (psp_me_marks_here())
+		return &psp_me_object_marker_on;
+	return &object_globals->object_marker_initialized;
+"""),
+("""void object_marker_end(
+	void)
+{
+""",
+ """void object_marker_end(
+	void)
+{
+#ifdef HALO_PSP
+	if (psp_me_marks_here())
+	{
+		psp_me_object_marker_on = FALSE;
+		return;
+	}
+#endif
+"""),
+("""	struct object_datum *object = object_get(object_index);
+	boolean result;
+
+	match_assert("c:\\\\halo\\\\SOURCE\\\\objects\\\\objects.c", 3526, object_globals->object_marker_initialized);
+""",
+ """	struct object_datum *object;
+	boolean result;
+
+#ifdef HALO_PSP
+	if (psp_me_marks_here())
+	{
+		long absolute_index = DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index);
+
+		object_get(object_index);
+		return absolute_index < 0 || absolute_index >= psp_me_object_marks_count ||
+			psp_me_object_marks[absolute_index] != psp_me_object_marker;
+	}
+#endif
+	object = object_get(object_index);
+	match_assert("c:\\\\halo\\\\SOURCE\\\\objects\\\\objects.c", 3526, object_globals->object_marker_initialized);
+"""),
+("""boolean object_mark_function(
+	long object_index)
+{
+	return psp_object_mark_function_with(object_get(object_index));
+}
+""",
+ """boolean object_mark_function(
+	long object_index)
+{
+#ifdef HALO_PSP
+	if (psp_me_marks_here())
+	{
+		long absolute_index = DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index);
+
+		object_get(object_index);
+		if (absolute_index < 0 || absolute_index >= psp_me_object_marks_count ||
+			psp_me_object_marks[absolute_index] == psp_me_object_marker)
+			return FALSE;
+		psp_me_object_marks[absolute_index] = psp_me_object_marker;
+		return TRUE;
+	}
+#endif
+	return psp_object_mark_function_with(object_get(object_index));
+}
+"""),
+# an owed node block computes node matrices (the VFPU) and may read the
+# animation pack: on the ME, the actor thinks in the tick instead
+("""__attribute__((noinline)) void psp_nms_settle(long object_index, void *site)
+{
+""",
+ """__attribute__((noinline)) void psp_nms_settle(long object_index, void *site)
+{
+	{
+		/* psp_fixups.py (FIXES_AIME2A, "aime2a") */
+		extern int psp_aime_arm;
+		extern void psp_aime_handback(int which);
+
+		if (psp_aime_arm && psp_work_on_me())
+			psp_aime_handback(26);
+	}
+"""),
+]
+FIXES_AIME2A["source/models/model_animation_definitions.c#aime2a"] = [
+("""byte *animation_get_frame_data(struct animation const *animation, short frame_index)
+{
+""",
+ """byte *animation_get_frame_data(struct animation const *animation, short frame_index)
+{
+#ifdef HALO_PSP
+	{
+		/* psp_fixups.py (FIXES_AIME2A, "aime2a"): the pack's reads are file
+		I/O; on the ME the thinking actor goes back to the tick */
+		extern int psp_aime_arm;
+		extern void psp_aime_handback(int which);
+
+		if (psp_aime_arm && psp_work_on_me())
+			psp_aime_handback(24);
+	}
+#endif
+"""),
+]
+# the structure's cluster marks: on the ME, a table of its own
+FIXES_AIME2A["source/structures/structures.c#aime2a"] = [
+("""void structure_cluster_marker_begin(
+	void)
+{
+""",
+ """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_AIME2A, "aime2a"): as the objects' marks (objects.c) */
+static long psp_me_cluster_marks[MAXIMUM_CLUSTERS_PER_STRUCTURE];
+static long psp_me_cluster_marker = 0;
+
+static boolean psp_me_cluster_marks_here(
+	void)
+{
+	extern int psp_aime_job_now[16];
+
+	return psp_aime_job_now[0] && psp_work_on_me();
+}
+
+unsigned int psp_aime_cluster_marks_bytes(
+	void)
+{
+	return (unsigned int)sizeof(psp_me_cluster_marks);
+}
+#endif
+
+void structure_cluster_marker_begin(
+	void)
+{
+#ifdef HALO_PSP
+	if (psp_me_cluster_marks_here())
+	{
+		psp_me_cluster_marker++;
+		return;
+	}
+#endif
+"""),
+("""void structure_cluster_marker_end(
+	void)
+{
+""",
+ """void structure_cluster_marker_end(
+	void)
+{
+#ifdef HALO_PSP
+	if (psp_me_cluster_marks_here())
+		return;
+#endif
+"""),
+("""	if (cluster_index < 0 || cluster_index >= MAXIMUM_CLUSTERS_PER_STRUCTURE)
+	{
+		return FALSE;
+	}
+
+	return (boolean)(structure_globals.cluster_magic_numbers[cluster_index]!=structure_globals.cluster_marker);
+""",
+ """	if (cluster_index < 0 || cluster_index >= MAXIMUM_CLUSTERS_PER_STRUCTURE)
+	{
+		return FALSE;
+	}
+
+#ifdef HALO_PSP
+	if (psp_me_cluster_marks_here())
+		return (boolean)(psp_me_cluster_marks[cluster_index] != psp_me_cluster_marker);
+#endif
+	return (boolean)(structure_globals.cluster_magic_numbers[cluster_index]!=structure_globals.cluster_marker);
+"""),
+("""	if (structure_globals.cluster_magic_numbers[cluster_index]!=structure_globals.cluster_marker)
+	{
+		structure_globals.cluster_magic_numbers[cluster_index]= structure_globals.cluster_marker;
+		return TRUE;
+	}
+""",
+ """#ifdef HALO_PSP
+	if (psp_me_cluster_marks_here())
+	{
+		if (psp_me_cluster_marks[cluster_index] == psp_me_cluster_marker)
+			return FALSE;
+		psp_me_cluster_marks[cluster_index] = psp_me_cluster_marker;
+		return TRUE;
+	}
+#endif
+	if (structure_globals.cluster_magic_numbers[cluster_index]!=structure_globals.cluster_marker)
+	{
+		structure_globals.cluster_magic_numbers[cluster_index]= structure_globals.cluster_marker;
+		return TRUE;
+	}
+"""),
+]
+# the shared maths in the FPU's form on the ME (it has no VFPU), and in
+# 1b's pass with "aimefpu"
+_PSP_AIME_FPU_TEST = "(psp_aime_fpu_main || (psp_aime_job_now[0] && psp_work_on_me()))"
+FIXES_AIME2A["source/math/matrix_math.c#aime2a"] = [
+("""	if (psp_vfpu_on)
+	{
+		psp_vfpu_matrix4x3_multiply(a, b, result);
+		return;
+	}
+""",
+ """	/* (FIXES_AIME2A: the FPU's form on the ME, and for "aimefpu") */
+	if (psp_vfpu_on && !""" + _PSP_AIME_FPU_TEST + """)
+	{
+		psp_vfpu_matrix4x3_multiply(a, b, result);
+		return;
+	}
+"""),
+("""extern int psp_vfpu_on;
+void psp_vfpu_matrix4x3_multiply(const void *a, const void *b, void *result);
+""",
+ """extern int psp_vfpu_on;
+void psp_vfpu_matrix4x3_multiply(const void *a, const void *b, void *result);
+extern int psp_aime_fpu_main, psp_aime_job_now[16];
+"""),
+]
+FIXES_AIME2A["source/math/real_math.c#aime2a"] = [
+("""	if (psp_vfpupose_on && psp_vfpu_quaternions_multiply(q0, q1, result))
+""",
+ """	if (psp_vfpupose_on && !""" + _PSP_AIME_FPU_TEST + """ && psp_vfpu_quaternions_multiply(q0, q1, result))
+"""),
+("""	if (psp_vfpuquat_mode == 2 && psp_vfpu_quaternion_normalize(q))
+""",
+ """	if (psp_vfpuquat_mode == 2 && !""" + _PSP_AIME_FPU_TEST + """ && psp_vfpu_quaternion_normalize(q))
+"""),
+("""	if (psp_vfpuquat_mode && psp_vfpu_quaternions_interpolate_and_normalize(q0, q1, t, result))
+""",
+ """	if (psp_vfpuquat_mode && !""" + _PSP_AIME_FPU_TEST + """ && psp_vfpu_quaternions_interpolate_and_normalize(q0, q1, t, result))
+"""),
+("""int psp_vfpu_quaternions_multiply(const void *q0, const void *q1, void *result);
+""",
+ """int psp_vfpu_quaternions_multiply(const void *q0, const void *q1, void *result);
+extern int psp_aime_fpu_main, psp_aime_job_now[16]; /* FIXES_AIME2A */
+"""),
+]
+
+# the bipeds' pathfinding memo, filled lazily by the thinking: on the ME, a
+# log of its own (read back by later reads in the same pass), applied at the
+# collection, where the memo's change wakes the biped as it did in the pass
+_PSP_PF_BODY = 'static long psp_biped_pathfinding_work(\n\tlong biped_index,\n\treal_point3d *pathfinding_point)\n{\n\tstruct biped_datum *biped = biped_get(biped_index);\n\tstruct biped_definition *definition = biped_definition_get(biped->definition_index);\n\n\tif (TEST_FLAG(definition->biped.flags, _biped_flying_bit) &&\n\t\t!TEST_FLAG(biped->object.damage_flags, _object_dead_bit))\n\t{\n\t\tbiped->biped.pathfinding_surface_index = NONE;\n\t\tobject_get_origin(biped_index, pathfinding_point);\n\t}\n\telse if (biped->biped.pathfinding_surface_index==NONE)\n\t{\n\t\tlong time = game_time_get();\n\n\t\tif (time>biped->biped.last_pathfinding_attempt_time)\n\t\t{\n\t\t\tstruct collision_bsp *collision_bsp = global_collision_bsp_get();\n\t\t\treal_point3d point = biped->biped.pathfinding_point;\n\n\t\t\tbiped->biped.last_pathfinding_attempt_time = time;\n\t\t\tif (biped->biped.support_surface_index!=NONE)\n\t\t\t{\n\t\t\t\treal_point2d closest_point;\n\n\t\t\t\tcollision_surface_find_closest_point2d(\n\t\t\t\t\tcollision_bsp,\n\t\t\t\t\tbiped->biped.support_surface_index,\n\t\t\t\t\t_z,\n\t\t\t\t\tTRUE,\n\t\t\t\t\t(real_point2d const *)&biped->biped.pathfinding_point,\n\t\t\t\t\t&closest_point);\n\t\t\t\tcollision_surface_project_point2d(\n\t\t\t\t\tcollision_bsp,\n\t\t\t\t\tbiped->biped.support_surface_index,\n\t\t\t\t\t_z,\n\t\t\t\t\tTRUE,\n\t\t\t\t\t&closest_point,\n\t\t\t\t\t&point);\n\t\t\t\tbiped->biped.pathfinding_surface_index = biped->biped.support_surface_index;\n\t\t\t}\n\t\t\telse if (biped->biped.last_pathfinding_surface_index!=NONE &&\n\t\t\t\tcollision_surface_test_point2d(\n\t\t\t\t\tcollision_bsp,\n\t\t\t\t\tbiped->biped.last_pathfinding_surface_index,\n\t\t\t\t\t_z,\n\t\t\t\t\tTRUE,\n\t\t\t\t\t(real_point2d const *)&biped->biped.pathfinding_point))\n\t\t\t{\n\t\t\t\tbiped->biped.pathfinding_surface_index = biped->biped.last_pathfinding_surface_index;\n\t\t\t\tcollision_surface_project_point2d(\n\t\t\t\t\tcollision_bsp,\n\t\t\t\t\tbiped->biped.last_pathfinding_surface_index,\n\t\t\t\t\t_z,\n\t\t\t\t\tTRUE,\n\t\t\t\t\t(real_point2d const *)&biped->biped.pathfinding_point,\n\t\t\t\t\t&point);\n\t\t\t\tbiped->biped.pathfinding_surface_index = biped->biped.last_pathfinding_surface_index;\n\t\t\t}\n\n\t\t\tif (biped->biped.pathfinding_surface_index==NONE)\n\t\t\t\tbiped->biped.pathfinding_surface_index = biped_find_ground_surface(biped_index, global_down3d, 2.f, &point, NULL);\n\n\t\t\tif (biped->biped.pathfinding_surface_index!=NONE)\n\t\t\t{\n\t\t\t\tbiped->biped.pathfinding_point = point;\n\t\t\t\tbiped->biped.last_pathfinding_surface_index = biped->biped.pathfinding_surface_index;\n\t\t\t}\n\t\t}\n\t}\n\n\tmatch_assert("c:\\\\halo\\\\SOURCE\\\\units\\\\bipeds.c", 1255, pathfinding_point);\n\t*pathfinding_point = biped->biped.pathfinding_point;\n\n\treturn biped->biped.pathfinding_surface_index;\n}\n'
+_PSP_PF_ME = 'static long psp_biped_pathfinding_work_me(\n\tlong biped_index,\n\treal_point3d *pathfinding_point)\n{\n\tstruct biped_datum *biped = biped_get(biped_index);\n\tstruct psp_pf_entry *psp_pf = psp_aime_pf_entry(biped_index, biped);\n\tstruct biped_definition *definition = biped_definition_get(biped->definition_index);\n\n\tif (TEST_FLAG(definition->biped.flags, _biped_flying_bit) &&\n\t\t!TEST_FLAG(biped->object.damage_flags, _object_dead_bit))\n\t{\n\t\tpsp_pf->surface = NONE;\n\t\tobject_get_origin(biped_index, pathfinding_point);\n\t}\n\telse if (psp_pf->surface==NONE)\n\t{\n\t\tlong time = game_time_get();\n\n\t\tif (time>psp_pf->time)\n\t\t{\n\t\t\tstruct collision_bsp *collision_bsp = global_collision_bsp_get();\n\t\t\treal_point3d point = psp_pf->point;\n\n\t\t\tpsp_pf->time = time;\n\t\t\tif (biped->biped.support_surface_index!=NONE)\n\t\t\t{\n\t\t\t\treal_point2d closest_point;\n\n\t\t\t\tcollision_surface_find_closest_point2d(\n\t\t\t\t\tcollision_bsp,\n\t\t\t\t\tbiped->biped.support_surface_index,\n\t\t\t\t\t_z,\n\t\t\t\t\tTRUE,\n\t\t\t\t\t(real_point2d const *)&psp_pf->point,\n\t\t\t\t\t&closest_point);\n\t\t\t\tcollision_surface_project_point2d(\n\t\t\t\t\tcollision_bsp,\n\t\t\t\t\tbiped->biped.support_surface_index,\n\t\t\t\t\t_z,\n\t\t\t\t\tTRUE,\n\t\t\t\t\t&closest_point,\n\t\t\t\t\t&point);\n\t\t\t\tpsp_pf->surface = biped->biped.support_surface_index;\n\t\t\t}\n\t\t\telse if (psp_pf->last!=NONE &&\n\t\t\t\tcollision_surface_test_point2d(\n\t\t\t\t\tcollision_bsp,\n\t\t\t\t\tpsp_pf->last,\n\t\t\t\t\t_z,\n\t\t\t\t\tTRUE,\n\t\t\t\t\t(real_point2d const *)&psp_pf->point))\n\t\t\t{\n\t\t\t\tpsp_pf->surface = psp_pf->last;\n\t\t\t\tcollision_surface_project_point2d(\n\t\t\t\t\tcollision_bsp,\n\t\t\t\t\tpsp_pf->last,\n\t\t\t\t\t_z,\n\t\t\t\t\tTRUE,\n\t\t\t\t\t(real_point2d const *)&psp_pf->point,\n\t\t\t\t\t&point);\n\t\t\t\tpsp_pf->surface = psp_pf->last;\n\t\t\t}\n\n\t\t\tif (psp_pf->surface==NONE)\n\t\t\t\tpsp_pf->surface = biped_find_ground_surface(biped_index, global_down3d, 2.f, &point, NULL);\n\n\t\t\tif (psp_pf->surface!=NONE)\n\t\t\t{\n\t\t\t\tpsp_pf->point = point;\n\t\t\t\tpsp_pf->last = psp_pf->surface;\n\t\t\t}\n\t\t}\n\t}\n\n\tmatch_assert("c:\\\\halo\\\\SOURCE\\\\units\\\\bipeds.c", 1255, pathfinding_point);\n\t*pathfinding_point = psp_pf->point;\n\n\treturn psp_pf->surface;\n}\n'
+FIXES_AIME2A["source/units/bipeds.c#aime2a"] = [
+("""/* psp_fixups.py (FIXES_WAKE) */
+static long psp_biped_pathfinding_work(long biped_index, real_point3d *pathfinding_point);
+""",
+ """/* psp_fixups.py (FIXES_WAKE) */
+static long psp_biped_pathfinding_work(long biped_index, real_point3d *pathfinding_point);
+static long psp_biped_pathfinding_work_me(long biped_index, real_point3d *pathfinding_point);
+extern int psp_aime_job_now[16];
+"""),
+("""	csmemcpy(held, (unsigned char *)&biped->biped + first, end - first);
+	result = psp_biped_pathfinding_work(biped_index, pathfinding_point);
+""",
+ """	/* (FIXES_AIME2A: on the ME, the memo's log; its wake at collection) */
+	if (psp_aime_job_now[0] && psp_work_on_me())
+		return psp_biped_pathfinding_work_me(biped_index, pathfinding_point);
+	csmemcpy(held, (unsigned char *)&biped->biped + first, end - first);
+	result = psp_biped_pathfinding_work(biped_index, pathfinding_point);
+"""),
+(_PSP_PF_BODY, _PSP_PF_BODY + """
+/* psp_fixups.py (FIXES_AIME2A, "aime2a"): the memo's log on the ME */
+#define PSP_PF_LOG_MOST 128
+struct psp_pf_entry
+{
+	long biped_index;
+	__typeof__(((struct biped_datum *)0)->biped.pathfinding_surface_index) surface;
+	__typeof__(((struct biped_datum *)0)->biped.last_pathfinding_surface_index) last;
+	__typeof__(((struct biped_datum *)0)->biped.last_pathfinding_attempt_time) time;
+	__typeof__(((struct biped_datum *)0)->biped.pathfinding_point) point;
+};
+static struct psp_pf_entry psp_pf_log[PSP_PF_LOG_MOST];
+static short psp_pf_log_count = 0;
+/* logged, applied, applied with a wake, full */
+unsigned long psp_aime_pf_stats[4];
+
+static struct psp_pf_entry *psp_aime_pf_find(
+	long biped_index)
+{
+	short k;
+
+	for (k = 0; k < psp_pf_log_count; k++)
+	{
+		if (psp_pf_log[k].biped_index == biped_index)
+			return &psp_pf_log[k];
+	}
+	return NULL;
+}
+
+static struct psp_pf_entry *psp_aime_pf_entry(
+	long biped_index,
+	struct biped_datum *biped)
+{
+	struct psp_pf_entry *entry = psp_aime_pf_find(biped_index);
+
+	if (entry)
+		return entry;
+	if (psp_pf_log_count >= PSP_PF_LOG_MOST)
+	{
+		extern void psp_aime_handback(int which);
+
+		/* (a stop: the actor thinks in the tick, where the memo is the biped's) */
+		psp_aime_pf_stats[3]++;
+		psp_aime_handback(29);
+		/* not stopped (no actor in hand): the last entry stands in */
+		entry = &psp_pf_log[PSP_PF_LOG_MOST - 1];
+	}
+	else
+		entry = &psp_pf_log[psp_pf_log_count++];
+	entry->biped_index = biped_index;
+	entry->surface = biped->biped.pathfinding_surface_index;
+	entry->last = biped->biped.last_pathfinding_surface_index;
+	entry->time = biped->biped.last_pathfinding_attempt_time;
+	entry->point = biped->biped.pathfinding_point;
+	psp_aime_pf_stats[0]++;
+	return entry;
+}
+
+unsigned int psp_aime_pf_bytes(
+	void)
+{
+	return (unsigned int)sizeof(psp_pf_log);
+}
+
+/* actors.c's input reads the memo straight: the log's, if it has one */
+void psp_aime_pf_read(
+	long biped_index,
+	long *surface_index,
+	real_point3d *point)
+{
+	struct psp_pf_entry *entry = psp_aime_pf_find(biped_index);
+
+	if (!entry)
+		return;
+	*surface_index = entry->surface;
+	*point = entry->point;
+}
+
+/* at collection, on the main CPU: the log into the bipeds */
+void psp_aime_pf_apply(
+	void)
+{
+	void psp_wake(long object_index);
+	short k, count = psp_pf_log_count;
+
+	psp_pf_log_count = 0;
+	for (k = 0; k < count; k++)
+	{
+		struct psp_pf_entry *entry = &psp_pf_log[k];
+		struct biped_datum *biped;
+
+		if (!object_try_and_get_and_verify_type(entry->biped_index, _object_mask_biped))
+			continue;
+		biped = biped_get(entry->biped_index);
+		psp_aime_pf_stats[1]++;
+		if (biped->biped.pathfinding_surface_index == entry->surface && biped->biped.last_pathfinding_surface_index == entry->last &&
+			biped->biped.last_pathfinding_attempt_time == entry->time && !memcmp(&biped->biped.pathfinding_point, &entry->point, sizeof(entry->point)))
+			continue;
+		biped->biped.pathfinding_surface_index = entry->surface;
+		biped->biped.last_pathfinding_surface_index = entry->last;
+		biped->biped.last_pathfinding_attempt_time = entry->time;
+		biped->biped.pathfinding_point = entry->point;
+		psp_aime_pf_stats[2]++;
+		psp_wake(entry->biped_index);
+	}
+}
+
+""" + _PSP_PF_ME),
+]
+
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items()) + list(FIXES_AIME2A.items())):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 

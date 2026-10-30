@@ -2,10 +2,11 @@
 #ifndef PSP_ME_H
 #define PSP_ME_H
 
-#define ME_SLOTS 3
+#define ME_SLOTS 4
 #define ME_SLOT_AUDIO 0
 #define ME_SLOT_RENDER 1
 #define ME_SLOT_PROBE 2 /* build 115: the heartbeat's eDRAM probe (edramcheck) */
+#define ME_SLOT_AI 3 /* "aime2a": the AI's thinking pass ahead, during the record (actors.c, psp_fixups.py FIXES_AIME2A) */
 
 #define ME_JOB_ARGS 12
 #define ME_JOB_RESULTS 8
@@ -63,6 +64,7 @@ The ring serves one producer thread, the main CPU's renderer. */
 #define ME_JOB_PERC_RAYS 8 /* "meraysperc": perception's queued rays (actor_perception.c, psp_fixups.py FIXES_122) */
 #define ME_JOB_POSES 9 /* next tick's base poses (objects.c, psp_fixups.py FIXES_131 #poseahead) */
 #define ME_JOB_POINTS 12 /* "mepoints": the frame's particles' and contrail points' physics (point_physics.c, psp_fixups.py FIXES_MEJOBS) */
+#define ME_JOB_AIME 15 /* "aime2a": a slot job (ME_SLOT_AI) that yields between actors */
 #define ME_JOB_VISIBILITY 14 /* "mevis": the frame's visibility again, on the ME, timed and checked (structure_visibility.c, psp_fixups.py mevis_copies; a measurement) */
 #ifdef PSP_RECON
 #define ME_JOB_BUSLOAD 10 /* "mebusN": a memory load on the ME through a tick (psp_me_bus_phase) */
@@ -115,6 +117,19 @@ from a slot job (not from inside a ring job), the ring's waiting jobs run.
 Each touches only its own inputs and outputs, so this is exact anywhere a
 job may call it. Elsewhere it does nothing */
 void psp_me_yield(void);
+/* the same from a long slot job that isn't the render slot's: a render job
+asked for meanwhile is run now too, so the record never waits behind it */
+void psp_me_yield_slots(void);
+/* a slot's abort word (uncached): the main CPU asks a yielding slot job to
+end at its next step; 0 again at each submit */
+volatile unsigned int *psp_me_abort_word(int which);
+void psp_me_lines_out(const void *start, unsigned int bytes);
+/* "aime2a"'s job, defined by actors.c: runs the pass on the ME, or here in
+the emulator (on a stack of its own, marked as the ME's) */
+void psp_aime_me_job(volatile unsigned int *args, volatile unsigned int *results);
+/* the write trace's window held open while a slot job is out (psp_ge.c's
+closings keep it) */
+extern volatile unsigned int psp_me_window_hold;
 
 int psp_me_ring_ready(void);
 void psp_me_writeback(const void *start, unsigned int bytes);
