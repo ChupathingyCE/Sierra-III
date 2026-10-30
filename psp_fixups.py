@@ -1680,6 +1680,152 @@ def interpolation_players(tree):
     open(path, "w", errors="surrogateescape").write(text)
     return 1
 
+# ---------- COLLUSERS: the collision user stack, one per CPU (lever COLLUSERS; docs/aime_me.md)
+# Bungie's collision code keeps a stack of who is asking (the AI's lines of
+# sight, bipeds, the HUD, ...): 67 pushes and pops open-coded in 25 files,
+# read only by the collision log by user. With "aime2a" the ME's thinking
+# pushes and pops it while the main CPU's frame does too (aime2a3's write
+# trace), and a stop of 1b or 2a taken inside a push (an owed node block in a
+# collision walk) never pops, so the depth leaks up a stop at a time and, past
+# 32, the pushes write on over the collision log's buffer toward `render`.
+# Here each site is a macro (collision_usage.h). A build without the debug
+# tools never reads the stack (collision_log_usage is empty, FIXES_DEADCHK),
+# so there they compile to nothing, on both CPUs. With the debug tools
+# (PSP_DEBUG_TOOLS=1, whose collision log is by user) each CPU has a stack of
+# its own, picked by psp_work_on_me(), and 1b's copies keep its depth, so a
+# stop puts it back. PSP_COLLUSERS_SHARED=1 builds the one shared stack, as
+# before: the other side of the A/B. Exact: the stack decides nothing in play
+COLLUSERS_SHARED = os.environ.get("PSP_COLLUSERS_SHARED", "") == "1"
+COLLUSERS_HEADER = """
+/* psp_fixups.py (COLLUSERS): the stack's pushes, pops and depth tests, one
+stack a CPU with the debug tools, none without (nothing reads it there) */
+#ifdef HALO_PSP
+short psp_collision_user_depth_get(void);
+void psp_collision_user_depth_set(short depth);
+#if defined(PSP_DEBUG_TOOLS)
+extern short psp_collision_user_depth[2];
+extern short psp_collision_users[2][MAXIMUM_COLLISION_USER_STACK_DEPTH];
+#define COLLISION_USER_CPU (psp_work_on_me() != 0)
+#define COLLISION_USER_DEPTH (psp_collision_user_depth[COLLISION_USER_CPU])
+#define COLLISION_USER_PUSH(user) ((void)(psp_collision_users[COLLISION_USER_CPU][psp_collision_user_depth[COLLISION_USER_CPU]++] = (short)(user)))
+#define COLLISION_USER_POP() ((void)psp_collision_user_depth[COLLISION_USER_CPU]--)
+#define COLLISION_USER_TOP (psp_collision_users[COLLISION_USER_CPU][psp_collision_user_depth[COLLISION_USER_CPU] - 1])
+#else
+/* a depth that passes both the pushes' and the pops' tests */
+#define COLLISION_USER_DEPTH 2
+#define COLLISION_USER_PUSH(user) ((void)0)
+#define COLLISION_USER_POP() ((void)0)
+#define COLLISION_USER_TOP 0
+#endif
+#endif
+"""
+COLLUSERS_DEFINES_SHARED = """
+#ifdef HALO_PSP
+/* psp_fixups.py (COLLUSERS, PSP_COLLUSERS_SHARED=1): the one stack's depth,
+for 1b's copies */
+short psp_collision_user_depth_get(void)
+{
+	return global_current_collision_user_depth;
+}
+
+void psp_collision_user_depth_set(short depth)
+{
+	global_current_collision_user_depth = depth;
+}
+#endif
+"""
+COLLUSERS_DEFINES = """
+#ifdef HALO_PSP
+/* psp_fixups.py (COLLUSERS): with the debug tools a stack a CPU, the main
+CPU's [0] (collision_log_initialize pushes its first user) and the ME's [1]
+(each thinking job starts it at 1) */
+#if defined(PSP_DEBUG_TOOLS)
+short psp_collision_user_depth[2] = { 0, 1 };
+short psp_collision_users[2][MAXIMUM_COLLISION_USER_STACK_DEPTH];
+#endif
+
+short psp_collision_user_depth_get(void)
+{
+	return COLLISION_USER_DEPTH;
+}
+
+void psp_collision_user_depth_set(short depth)
+{
+#if defined(PSP_DEBUG_TOOLS)
+	psp_collision_user_depth[COLLISION_USER_CPU] = depth;
+#else
+	(void)depth;
+#endif
+}
+#endif
+"""
+
+def collision_users(tree):
+    """COLLUSERS (see there): every site to collision_usage.h's macros"""
+    usage_c = os.path.join(tree, "source/physics/collision_usage.c")
+    usage_h = os.path.join(tree, "source/physics/collision_usage.h")
+    text = open(usage_c, errors="surrogateescape").read()
+    if "psp_collision_user_depth_get" in text:
+        return 0
+    anchor = "short global_current_collision_users[MAXIMUM_COLLISION_USER_STACK_DEPTH];\n"
+    if text.count(anchor) != 1:
+        sys.exit("psp_fixups: collision_usage.c: no definition of global_current_collision_users")
+    if COLLUSERS_SHARED:
+        open(usage_c, "w", errors="surrogateescape").write(text.replace(anchor, anchor + COLLUSERS_DEFINES_SHARED))
+        header = open(usage_h, errors="surrogateescape").read()
+        extern = "extern short global_current_collision_users[MAXIMUM_COLLISION_USER_STACK_DEPTH];\n"
+        header = header.replace(extern, extern + "\n#ifdef HALO_PSP\nshort psp_collision_user_depth_get(void);\nvoid psp_collision_user_depth_set(short depth);\n#endif\n")
+        open(usage_h, "w", errors="surrogateescape").write(header)
+        return 1
+    pairs = [
+        ("\tglobal_current_collision_users[global_current_collision_user_depth] = 0;\n\tglobal_current_collision_user_depth = global_current_collision_user_depth + 1;\n",
+         "\tCOLLISION_USER_PUSH(0);\n"),
+        ("\tuser = global_current_collision_users[global_current_collision_user_depth - 1];\n",
+         "\tuser = COLLISION_USER_TOP;\n"),
+        (anchor, anchor + COLLUSERS_DEFINES),
+    ]
+    for old, new in pairs:
+        if text.count(old) != 1:
+            sys.exit("psp_fixups: collision_usage.c: COLLUSERS anchor not found once: %r" % old[:60])
+        text = text.replace(old, new)
+    # the asserts' depth tests, outside the definitions
+    head, defs, tail = text.partition(anchor)
+    tail = re.sub(r"(match_assert\([^;]*?)\bglobal_current_collision_user_depth\b", r"\1COLLISION_USER_DEPTH", tail, flags=re.S)
+    tail = re.sub(r"(match_assert\([^;]*?)\bglobal_current_collision_user_depth\b", r"\1COLLISION_USER_DEPTH", tail, flags=re.S)
+    text = head + defs + tail
+    open(usage_c, "w", errors="surrogateescape").write(text)
+    header = open(usage_h, errors="surrogateescape").read()
+    extern = "extern short global_current_collision_users[MAXIMUM_COLLISION_USER_STACK_DEPTH];\n"
+    if header.count(extern) != 1:
+        sys.exit("psp_fixups: collision_usage.h: no extern of global_current_collision_users")
+    open(usage_h, "w", errors="surrogateescape").write(header.replace(extern, extern + COLLUSERS_HEADER))
+    changed, sites = 1, 0
+    for root, _, files in os.walk(os.path.join(tree, "source")):
+        for name in sorted(files):
+            if not name.endswith(".c") or name == "collision_usage.c":
+                continue
+            path = os.path.join(root, name)
+            text = open(path, errors="surrogateescape").read()
+            if "global_current_collision_user" not in text:
+                continue
+            new, n1 = re.subn(r"global_current_collision_users\[global_current_collision_user_depth\+\+\]\s*=\s*([^;]+);",
+                              lambda m: "COLLISION_USER_PUSH(%s);" % " ".join(m.group(1).split()), text)
+            new, n2 = re.subn(r"--global_current_collision_user_depth\s*;", "COLLISION_USER_POP();", new)
+            new, n3 = re.subn(r"\bglobal_current_collision_user_depth--\s*;", "COLLISION_USER_POP();", new)
+            new = re.sub(r"\bglobal_current_collision_user_depth\b", "COLLISION_USER_DEPTH", new)
+            # (the strings the asserts' messages became are names, not uses)
+            leftover = [l for l in new.splitlines() if re.search(r"\bglobal_current_collision_users?\b", l) and "??_C" not in l]
+            if leftover:
+                sys.exit("psp_fixups: %s: a collision user stack use COLLUSERS doesn't know: %s" % (name, leftover[0].strip()))
+            if n1 != n2 + n3:
+                sys.exit("psp_fixups: %s: %d pushes but %d pops of the collision user stack" % (name, n1, n2 + n3))
+            open(path, "w", errors="surrogateescape").write(new)
+            changed += 1
+            sites += n1 + n2 + n3
+    if sites != 67:
+        sys.exit("psp_fixups: COLLUSERS: expected 67 pushes and pops, found %d" % sites)
+    return changed
+
 # ---------- b125: the PC renderer's GL path out of the link
 # ChupathingyCE draws by translating the game's Direct3D 8 calls into OpenGL
 # (d3d8_gl.c; gl_functions.c loads the GL entry points; nv2a_*.c translate
@@ -40067,7 +40213,7 @@ static struct psp_aime_copy
 	long swarm_index;
 	short prop_count, log_count, queue_mark;
 	boolean time_given, marker;
-	short highest_timer;
+	short highest_timer, collision_user_depth;
 	unsigned long seed;
 	long prop_index[PSP_AIME_PROPS_MOST];
 	long log_index[PSP_AIME_PROP_LOG_MOST];
@@ -40439,6 +40585,10 @@ static void psp_aime_save(
 	copy->seed = psp_aime_seed;
 	copy->log_count = 0;
 	copy->queue_mark = psp_aime_queue_count;
+#ifdef PSP_DEBUG_TOOLS
+	/* the collision user stack's depth: a stop inside a push never pops */
+	copy->collision_user_depth = psp_collision_user_depth_get();
+#endif
 	psp_aime1b_checking = psp_aime1b_check_on && !many &&
 		((psp_aime_pass + DATUM_INDEX_TO_ABSOLUTE_INDEX(actor_index)) & 3) == 0;
 	if (psp_aime1b_checking)
@@ -40488,6 +40638,9 @@ static void psp_aime_restore(
 	psp_aime_seed = copy->seed;
 	psp_aime1b_stats.queue_dropped += psp_aime_queue_count - copy->queue_mark;
 	psp_aime_queue_count = copy->queue_mark;
+#ifdef PSP_DEBUG_TOOLS
+	psp_collision_user_depth_set(copy->collision_user_depth);
+#endif
 	psp_aime1b_stats.handed_back++;
 	psp_aime1b_stats.back[psp_aime_stop_which]++;
 	psp_aime_stopped = TRUE;
@@ -41117,6 +41270,10 @@ void psp_aime_me_job(
 	unsigned long on_me = psp_aime2a_stats.on_me, aborted = psp_aime2a_stats.aborted;
 
 	(void)args;
+#ifdef PSP_DEBUG_TOOLS
+	/* the ME's own collision user stack (COLLUSERS) */
+	psp_collision_user_depth_set(1);
+#endif
 	psp_aime2a_guard_hit = 0;
 	psp_aime2a_guard_actor = NONE;
 	psp_aime_job_now[0] = 1;
@@ -41397,6 +41554,9 @@ actor's thinking did, and logged on the main CPU */
 static int psp_aime_chain_on = 0;
 static void psp_aime_chain_check(int where, long last_actor);
 static void psp_aime_chain_log(void);
+/* COLLUSERS (collision_usage.c) */
+short psp_collision_user_depth_get(void);
+void psp_collision_user_depth_set(short depth);
 
 /* FIXES_AIME1B: "aime1b" (see there) */
 #define PSP_AIME_WRITERS 25
@@ -43015,3 +43175,4 @@ print("psp_fixups: AI debugger state on demand in %d files" % ai_debug_shrink(TR
 print("psp_fixups: colour conversions in single precision in %d files" % float_colours(TREE))
 print("psp_fixups: render interpolation for one local player in %d files" % interpolation_players(TREE))
 print("psp_fixups: the GL renderer compiled out in %d files" % gl_never(TREE))
+print("psp_fixups: the collision user stack %s in %d files (COLLUSERS)" % ("shared, as before," if COLLUSERS_SHARED else "one a CPU (debug tools) or none", collision_users(TREE)))
