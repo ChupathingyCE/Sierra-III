@@ -1489,10 +1489,10 @@ less: 1,720 loads, 882, 733.
 build 114: 1,792 KB ("sound1536" for b113's). b113's Test 2 on the PSP, with
 the placement too: no sound dropped by game time 4,000, against 108 */
 #if PSP_MUSIC
-/* the music path's code and fixed buffers (~112 KB: Tremor, libogg,
-psp_music.c) are paid off the cache's default, so its build has the heap the
-build without it has */
-#define SOUND_CACHE_DEFAULT_KB (1792 - 112)
+/* the music path's code and fixed buffers (124 KB at link: Tremor, libogg,
+psp_music.c, the marks) are paid off the cache's default, so its build has
+the heap the build without it has */
+#define SOUND_CACHE_DEFAULT_KB (1792 - 124)
 #else
 #define SOUND_CACHE_DEFAULT_KB 1792
 #endif
@@ -1520,9 +1520,11 @@ unsigned long psp_sound_cache_bytes(void)
 		if (!room)
 		{
 			extern unsigned long psp_music_block_bytes(void);
-			unsigned long music = (psp_music_block_bytes() + 64 + 0xFFF) & ~0xFFFul;
+			unsigned long music = psp_music_block_bytes();
 
-			bytes = bytes > music + 512 * 1024 ? bytes - music : 512 * 1024;
+			music = music ? (music + 64 + 0xFFF) & ~0xFFFul : 0;
+			if (music)
+				bytes = bytes > music + 512 * 1024 ? bytes - music : 512 * 1024;
 		}
 #endif
 		if (room && bytes > room)
