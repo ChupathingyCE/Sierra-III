@@ -6664,6 +6664,7 @@ FIXES_36["source/math/matrix_math.c"] = [
 	real const *a_elements = a->n[0];""",
  """#ifdef HALO_PSP
 extern int psp_vfpu_on;
+extern volatile unsigned int psp_me_context;
 void psp_vfpu_matrix4x3_multiply(const void *a, const void *b, void *result);
 #endif
 
@@ -6673,7 +6674,15 @@ void matrix4x3_multiply(
 	real_matrix4x3 *result)
 {
 #ifdef HALO_PSP
-	if (psp_vfpu_on)
+	/* the Media Engine has no VFPU (a VFPU instruction there faults, code 11)
+	and its jobs reach this, so the ME's work keeps
+	the FPU's form wherever it runs, as psp_vfpu_quaternions_multiply does:
+	a stack outside main RAM is the ME's, and psp_me_context is the ME's
+	work run on the main CPU */
+	unsigned int psp_sp;
+
+	__asm__ volatile ("move %0, $sp" : "=r"(psp_sp));
+	if (psp_vfpu_on && (psp_sp >> 27) == 1 && !psp_me_context)
 	{
 		psp_vfpu_matrix4x3_multiply(a, b, result);
 		return;
