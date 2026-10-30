@@ -3559,6 +3559,14 @@ static int show3_room(unsigned int needed)
 		unsigned int *word = gu_list->current;
 		unsigned int base = show3_part_base;
 
+		/* the cached regions taken in the part being left are written back
+		now: list_take's pending range only grows upward, so a region taken
+		after the jump, below them, would leave the range ending under its
+		start, and list_flush_pending would then write back neither (api-job
+		41050335139). Every one of them is filled: a caller fills its take
+		before its next draw, and this is a take */
+		list_flush_pending();
+
 		used = (unsigned int)sceGuCheckList() + 8;
 		word[0] = (16u << 24) | ((base >> 8) & 0xF0000u);
 		word[1] = (8u << 24) | (base & 0xFFFFFFu);
