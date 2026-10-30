@@ -542,7 +542,7 @@ static void psp_music_map_open(const char *name, int wanted)
 		return;
 	}
 	start_once();
-	if (!dec.pool_next || music.out_channel < 0)
+	if (!music.pool_ram || music.out_channel < 0)
 	{
 		pack_close("has no channel to play on");
 		return;
