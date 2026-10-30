@@ -41801,8 +41801,10 @@ FIXES_AIME2A["source/ai/ai_communication.c#aime2a"] = [
 #ifdef HALO_PSP
 							/* psp_fixups.py (FIXES_AIME2A, "aime2a"): only the debug
 							printing reads it, and on the ME the C library's formatting
-							is firmware */
-							if (ai_debug.print_communication || !psp_work_on_me())
+							is firmware (aimefpu's like-for-like pass skips it too) */
+							extern int psp_aime_fpu_main;
+
+							if (ai_debug.print_communication || (!psp_work_on_me() && !psp_aime_fpu_main))
 #endif
 							sprintf(
 								team_string,
