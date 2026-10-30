@@ -1,6 +1,6 @@
 # AIME step 2a: what the ME would have to run (reach census)
 
-2026-10-29, hardware session. AIME step 1 (`aime` f0f799e9: the AI's thinking done ahead at the end of the tick before, on the main CPU, with its own seed) is proven [E]. Step 2a moves the pass after a frame's last tick to the ME, during the record (`docs/hardware_surveys.md`: b30 ~10-12 ms a frame [U on M x E]). This note sizes what the ME job would have to run, from the lab's `mewalk.py` over f0f799e9's disassembly. Nothing is built.
+2026-10-29, hardware session. AIME step 1 (`aime` f0f799e9: the AI's thinking done ahead at the end of the tick before, on the main CPU, with its own seed) is proven [E]. Step 2a moves the pass after a frame's last tick to the ME, during the record (`docs/hardware_surveys.md`: b30 ~10-12 ms a frame [U on M x E]). This note sizes what the ME job would have to run, from the lab's `mewalk.py` over f0f799e9's disassembly. Nothing is built yet: the two censuses below are recon keep words on `aime`.
 
 **How it was read.** mewalk follows `jal`/`j`/`bal` from the roots and flags what the ME can't run: firmware calls, VFPU instructions, indirect calls. The walk is static: it counts every path the code has, including ones play never takes. The thinking's steps were the roots: `actor_input_update`, `actor_perception_update`, `actor_situation_update`, `actor_emotion_update`, `actor_decision_loop`, plus each actor type's `decide_action` and each action's `begin`, `end`, `perform`, `replace_prop` and `flush` handlers, which the decision loop reaches through tables the walk can't follow. The walks stopped at the fatal-error paths (`error`, `system_exit`, `halt_and_catch_fire`, `display_assert`, `__assert_func`, `release_assert_failed`, `psp_datum_get_failed`) and the log (`platform_psp_log`), since a job would hand those back to the main CPU.
 
@@ -26,9 +26,21 @@
 
 **What the AI writes in the world, by name** (calls in `ai/*.c`, any step, not only the thinking) [D]: unit_try_and_exit_seat, unit_enter_seat, unit_start_user_animation, unit_start_animation_impulse, unit_start_running_blindly, unit_speak, unit_scream, unit_melee_attack_begin, unit_leap_begin, unit_detach_from_parent, unit_add_weapon_to_inventory, unit_add_grenade_type_to_inventory, unit_set_actively_controlled, object_new, object_delete, object_activate, object_deactivate, object_set_automatic_deactivation, weapon_set_total_rounds, game_allegiance_provoke, game_allegiance_incident, hs_wake_by_name, biped_accelerate. Which of them the thinking steps reach in play is CAN'T TELL from the static walk.
 
-## Next: a census before any ME code
-Item 1 decides the design: a queue changes when a seat exit or a provocation lands (a few ms of game time), while a hand-back costs the actor its ME time. The step-1 build can count both cheaply:
-- **The census:** in a recon build of `aime`, a counter per world-writing call made while `psp_aime_think_only` is set, and per actor whether it made any. Run it in the emulator on b30's flight and landing, c20's swarm, d20 and a30 (the exactness batches' routes).
-- **If world writes are rare** (a few actors a minute): the ME thinks every actor, and an actor whose thinking reaches a world writer is handed back. Its own writes so far are undone from a copy of its actor and prop datums taken before it started.
-- **If they're common:** a write queue, with the census's list as its contents, and an outcome census like step 1's to show the timing change plays the same.
-- Items 2-9 are needed either way.
+## The census: what the pass ahead writes (aimew1, aimew2)
+Two emulator batches on `aime` with recon keep words: `aimewrites` hashes every game-state allocation before and after each pass ahead; `aimewritesobj` copies the objects pool before each pass and names every word changed after it, by object type and datum offset. Each ran b30, c20, d20 and a30's routes and c10 hands off, 8,100 passes a map [E].
+
+| Write | Where | How often (of 8,100 passes, or word-passes) | What it is | On the ME |
+|---|---|---|---|---|
+| the AI's own state | actor, prop, ai globals, swarm, encounter, squad, pursuit, dialogue | most passes | the thinking's output | the ME writes them; the main CPU drops its copies before the next tick |
+| **objects' `magic_number` (+0x8)** | every type: b30's bipeds 179k, scenery 128k word-passes | most passes | the collision walks' visit marks (`object_mark_function`) | **already solved:** the ME's ray walk keeps its marks as bit sets on its stack (FIXES_122); the whole walk does the same |
+| **bipeds' pathfinding fields (+0x434-0x448)** | `pathfinding_surface_index`, `pathfinding_point`, `last_pathfinding_attempt_time`, `last_pathfinding_surface_index` | b30 ~4.6k, c20 ~2.1k, d20 ~1.9k, a30 ~2.6k, c10 28 | `biped_find_pathfinding_surface_index`'s lazy fill: a memo of the world as it stands | a store log on the ME, applied at collection (nothing in the record reads those fields [U: to check]) |
+| **node blocks settled on read** | b30 scenery's node matrices 12.2k, bipeds' original orientations 4.6k; d20 13.1k | many passes | NMSKIP's deferred node matrices computed when the AI reads a position | settle every owed object before the push; a settle still owed on the ME fails the job (item 2 above) |
+| **world writes proper** | bipeds' speech fields (+0x338-0x3ac, `unit_speak`); facing (+0x24), animation (+0x80), unit flags (+0x1b4); new or deleted objects (the headers) | speech 45-53 passes on b30, 12-24 elsewhere; facing and animation 19 (c20) to 69 (d20); headers 0-17 | the decision handlers acting on units | **rare (under ~1% of passes a map): hand the actor back** to the main CPU, which thinks it in the tick |
+
+## The design this gives
+1. **Before the push** (the record's start, after the main CPU's whole-cache write-back): settle every owed node block; read the keep words the job needs; reserve a prop pool.
+2. **On the ME, per actor:** copy the actor's datum and its props' first, then think it with its own marks, a port-own sort, its rays inline, FPU maths (the same form as the main CPU's fallback, so both give the same bits), and stores to the pathfinding memo logged. At any world writer (the census's list: `unit_speak`, the seat calls, `unit_start_*`, `object_new`/`object_delete`, the allegiance calls), stop that actor: put its copy back, mark it "think in the tick", go on to the next.
+3. **At collection** (the next `ai_update`, with a bounded wait): apply the store log, drain the speech and event queue, and think the handed-back actors inline, in actor order.
+4. **What it changes:** a handed-back actor thinks at its turn in the tick, as without AIME; the rest think one record ahead, as AIME step 1 does. Behaviour: step 1's outcome census again, on the ME build. Speed: one c20 pair, `keepsets="- | aime"` on both sides of the ME switch.
+
+Items 2-9 in the first table are the job's other prerequisites. The next step is building step 1's hand-back on the main CPU first (the copy, the stop at a world writer, the redo in the tick), which proves the mechanism with no ME risk; then the job.
