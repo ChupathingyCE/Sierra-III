@@ -2312,10 +2312,10 @@ static void ring_run_simulated(unsigned int index)
 
 /* "aime2a" in the emulator: the pass here and now, marked as the ME's (the
 ME-strict check, the write trace, the code's PSP_ME_WORK paths), on a stack
-of its own as large as the ME's eDRAM gives it. The thinking keeps an 82 KB
-path search on its stack, so the stack's deepest reach is measured (a fill
-pattern) and reported: it is the eDRAM's stack claim */
-#define AIME_SIM_STACK_BYTES (192 * 1024)
+of its own. The thinking keeps 82 KB path searches on its stack and reaches
+past 192 KB, more than the ME's eDRAM stack has, so the stack's deepest reach
+is measured (a fill pattern) and reported: it sizes the job's stack */
+#define AIME_SIM_STACK_BYTES (512 * 1024)
 #define AIME_SIM_FILL 0x5AA5C33Cu
 static unsigned char *aime_sim_stack = NULL;
 static unsigned int aime_sim_deepest = 0;
