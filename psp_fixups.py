@@ -39361,7 +39361,10 @@ int psp_keep(const char *name);
 int psp_keep_loaded(void);
 void platform_psp_log(const char *format, ...);
 void psp_fvp_settle(long object_index);
-#define PSP_FVP_MAX 512 /* past it an object's values are made in place */
+/* past it an object's values are made in place. With units, items and
+projectiles alone, b30 lists ~46 a tick and never passed 512; the inputs
+array is on the heap, which PSC's floors and the map's large asks share */
+#define PSP_FVP_MAX 128
 #define PSP_FVP_BIT(i) (1ul << ((i) & 31))
 static int psp_fvp_mode = -1; /* 0 off, 1 the pass, 2 the check */
 /* the types whose values wait for the pass: those whose own update is large
