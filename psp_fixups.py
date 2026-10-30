@@ -41098,8 +41098,14 @@ static void psp_aime2a_log(
  """#ifdef HALO_PSP
 	/* psp_fixups.py (FIXES_AIME2A): on the ME, the actor thinks in the tick
 	and reports there */
-	if (psp_aime_arm && psp_work_on_me())
-		psp_aime_handback(PSP_AIME_STOP_DECISION_REPORT);
+	{
+		extern int psp_aime_arm;
+		extern void psp_aime_handback(int which);
+
+		/* (25: PSP_AIME_STOP_DECISION_REPORT, declared below) */
+		if (psp_aime_arm && psp_work_on_me())
+			psp_aime_handback(25);
+	}
 #endif
 	if (actor->meta.encounter_index == NONE)
 	{
@@ -41114,6 +41120,9 @@ static void psp_aime2a_log(
 				biped->biped.pathfinding_surface_index;
 			actor->input.pathfinding_point = biped->biped.pathfinding_point;
 #ifdef HALO_PSP
+			extern int psp_aime_job_now[16];
+			extern void psp_aime_pf_read(long biped_index, long *surface_index, real_point3d *point);
+
 			if (psp_aime_job_now[0] && psp_work_on_me())
 			{
 				long psp_surface = actor->input.pathfinding_surface_index;
