@@ -2339,6 +2339,38 @@ static void aime_guard_set(
 	aime_guard = guard;
 }
 
+/* a pass on the main CPU: its thread's stack is the pass's context
+(psp_aime_here), found once a thread */
+void psp_aime_pass_here(int on)
+{
+	static SceUID known = -1;
+	static unsigned int low = 0, high = 0;
+	SceUID thread;
+
+	if (!on)
+	{
+		psp_aime_sp_low = psp_aime_sp_high = 0;
+		return;
+	}
+	thread = sceKernelGetThreadId();
+	if (thread != known)
+	{
+		SceKernelThreadInfo info;
+
+		memset(&info, 0, sizeof(info));
+		info.size = sizeof(info);
+		low = high = 0;
+		if (sceKernelReferThreadStatus(thread, &info) == 0 && info.stack)
+		{
+			low = (unsigned int)info.stack;
+			high = low + (unsigned int)info.stackSize;
+		}
+		known = thread;
+	}
+	psp_aime_sp_low = low;
+	psp_aime_sp_high = high;
+}
+
 unsigned int psp_me_aime_room_bytes(void)
 {
 	return ME_EDRAM_STACK_TOP - ME_EDRAM_AIME_STACK;
@@ -2433,7 +2465,11 @@ static __attribute__((noinline, cold)) void aime_simulated(volatile struct me_sl
 		for (k = 0; k < (AIME_SIM_SLACK_BYTES + AIME_SIM_STACK_BYTES) / 4; k++)
 			words[k] = AIME_SIM_FILL;
 		aime_guard_set((volatile unsigned int *)(words + guard_first));
+		/* the pass's context (psp_post.h's psp_aime_here): this stack */
+		psp_aime_sp_low = (unsigned int)aime_sim_stack;
+		psp_aime_sp_high = (unsigned int)aime_sim_stack + AIME_SIM_SLACK_BYTES + AIME_SIM_STACK_BYTES;
 		psp_me_sim_call((unsigned int)slot, aime_sim_stack + AIME_SIM_SLACK_BYTES + AIME_SIM_STACK_BYTES, aime_run_simulated);
+		psp_aime_sp_low = psp_aime_sp_high = 0;
 		aime_guard = NULL;
 		for (k = 0; k < (AIME_SIM_SLACK_BYTES + AIME_SIM_STACK_BYTES) / 4 &&
 			(words[k] == AIME_SIM_FILL || (k >= guard_first && k < guard_end && words[k] == AIME_GUARD_WORD)); k++)

@@ -442,13 +442,10 @@ void *psp_anim_lock(unsigned long address, unsigned long size)
 		an actor thinking there stops and thinks in the tick instead (the
 		pose jobs the ME runs come here with no actor in hand) */
 		extern int psp_aime_arm, psp_aime_job_now[16], psp_aime_fpu_main;
-		extern volatile unsigned int psp_me_context;
 		extern void psp_aime_handback(int which);
-		unsigned int sp;
 
-		__asm__ ("move %0, $sp" : "=r"(sp));
 		/* ("aimefpu": 1b's pass on the main CPU stops alike) */
-		if (psp_aime_arm && ((psp_aime_job_now[0] && (psp_me_context != 0 || (sp & 0x1FFFFFFFu) < 0x01000000u)) || psp_aime_fpu_main))
+		if (psp_aime_arm && psp_aime_here() && (psp_aime_job_now[0] || psp_aime_fpu_main))
 			psp_aime_handback(24);
 	}
 	if (address >= memo_start && address + size <= memo_end && !forget_pending && !trace)

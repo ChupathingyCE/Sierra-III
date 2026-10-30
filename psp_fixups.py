@@ -40301,6 +40301,9 @@ static boolean psp_aime1b_active(
 void psp_aime_handback(
 	int which)
 {
+	/* only in the pass's own context (psp_post.h) */
+	if (!psp_aime_here())
+		return;
 	if (which < 0 || which >= PSP_AIME_WRITERS)
 		which = PSP_AIME_FORCED;
 	if (psp_aime_arm == 1)
@@ -40320,6 +40323,8 @@ static boolean psp_aime_queue_add(
 {
 	struct psp_aime_queued *queued;
 
+	if (!psp_aime_here())
+		return FALSE;
 	if (psp_aime_queue_count >= PSP_AIME_QUEUE_MOST)
 	{
 		psp_aime1b_stats.queue_full++;
@@ -40412,7 +40417,7 @@ void psp_aime_prop_change(
 {
 	struct psp_aime_copy *copy = psp_aime_copy;
 
-	if (psp_aime_arm != 1 || prop_index == NONE)
+	if (psp_aime_arm != 1 || prop_index == NONE || !psp_aime_here())
 		return;
 	if (actor_index != psp_aime_current)
 	{
@@ -40978,6 +40983,8 @@ FIXES_AIME2A["source/ai/actors.c#aime2a"] = [
 	psp_aime_think_only = TRUE;
 	if (psp_aime_fpu_main_on > 0 && psp_aime2a_alike && !psp_work_on_me())
 		psp_aime_fpu_main = 1;
+	if (!psp_work_on_me())
+		psp_aime_pass_here(1);
 	if (psp_aime_chain_on > 0)
 		psp_aime_chain_check(0, NONE);
 """),
@@ -41069,6 +41076,8 @@ FIXES_AIME2A["source/ai/actors.c#aime2a"] = [
 	}
 	if (!psp_work_on_me() && !psp_aime2a_alike)
 		psp_perception_end();
+	if (!psp_work_on_me())
+		psp_aime_pass_here(0);
 	psp_aime_fpu_main = 0;
 """),
 ("""	if (psp_aime_logged == NONE || now < psp_aime_logged || now - psp_aime_logged >= 900)
@@ -41085,6 +41094,49 @@ FIXES_AIME2A["source/ai/actors.c#aime2a"] = [
 """,
  """	if (!psp_work_on_me())
 		psp_aime_log_due(now);
+}
+
+/* which formatting the thinking reaches (the formatting stop, writer 29): by
+its format, which names the call, and the formatting's caller */
+#define PSP_AIME_FORMATS 12
+static struct
+{
+	const char *format;
+	void *caller;
+	unsigned long count;
+} psp_aime_formats[PSP_AIME_FORMATS];
+
+void psp_aime_format_seen(
+	const char *format,
+	void *caller)
+{
+	int k;
+
+	for (k = 0; k < PSP_AIME_FORMATS; k++)
+	{
+		if (!psp_aime_formats[k].format)
+		{
+			psp_aime_formats[k].format = format;
+			psp_aime_formats[k].caller = caller;
+		}
+		if (psp_aime_formats[k].format == format && psp_aime_formats[k].caller == caller)
+		{
+			psp_aime_formats[k].count++;
+			break;
+		}
+	}
+	if (psp_work_on_me())
+		psp_me_lines_out(psp_aime_formats, sizeof(psp_aime_formats));
+}
+
+static void psp_aime_formats_log(
+	long now)
+{
+	int k;
+
+	for (k = 0; k < PSP_AIME_FORMATS && psp_aime_formats[k].format; k++)
+		platform_psp_log("aime: game time %ld | formatting stop %d: %lu from %p, format \"%.60s\"",
+			now, k, psp_aime_formats[k].count, psp_aime_formats[k].caller, psp_aime_formats[k].format);
 }
 
 /* "aimechain": the walk. Reads only; on the ME the first break is kept for
@@ -41201,6 +41253,8 @@ static void psp_aime_log_due(
 			psp_aime1b_log(now);
 		if (psp_aime_logged != NONE)
 			psp_aime2a_log(now);
+		if (psp_aime_logged != NONE)
+			psp_aime_formats_log(now);
 		psp_aime_logged = now;
 	}
 }
@@ -41470,7 +41524,7 @@ static void psp_aime2a_log(
 			extern int psp_aime_job_now[16];
 			extern void psp_aime_pf_read(long biped_index, long *surface_index, real_point3d *point);
 
-			if (psp_aime_job_now[0] && psp_work_on_me())
+			if (psp_aime_job_now[0] && psp_aime_here())
 			{
 				long psp_surface = actor->input.pathfinding_surface_index;
 
@@ -41554,6 +41608,9 @@ actor's thinking did, and logged on the main CPU */
 static int psp_aime_chain_on = 0;
 static void psp_aime_chain_check(int where, long last_actor);
 static void psp_aime_chain_log(void);
+/* the pass's context on the main CPU (psp_me.c; psp_post.h's psp_aime_here) */
+void psp_aime_pass_here(int on);
+unsigned int psp_aime_sp_low = 0, psp_aime_sp_high = 0;
 /* COLLUSERS (collision_usage.c) */
 short psp_collision_user_depth_get(void);
 void psp_collision_user_depth_set(short depth);
@@ -41834,7 +41891,7 @@ static boolean psp_me_cluster_marks_here(
 {
 	extern int psp_aime_job_now[16];
 
-	return psp_aime_job_now[0] && psp_work_on_me();
+	return psp_aime_job_now[0] && psp_aime_here();
 }
 
 unsigned int psp_aime_cluster_marks_bytes(
@@ -41909,7 +41966,7 @@ void structure_cluster_marker_begin(
 ]
 # the shared maths in the FPU's form on the ME (it has no VFPU), and in
 # 1b's pass with "aimefpu"
-_PSP_AIME_FPU_TEST = "(psp_aime_fpu_main || (psp_aime_job_now[0] && psp_work_on_me()))"
+_PSP_AIME_FPU_TEST = "(psp_aime_fpu_main || (psp_aime_job_now[0] && psp_aime_here()))"
 FIXES_AIME2A["source/math/matrix_math.c#aime2a"] = [
 ("""	if (psp_vfpu_on)
 	{
@@ -41970,7 +42027,7 @@ extern int psp_aime_job_now[16];
 	result = psp_biped_pathfinding_work(biped_index, pathfinding_point);
 """,
  """	/* (FIXES_AIME2A: on the ME, the memo's log; its wake at collection) */
-	if (psp_aime_job_now[0] && psp_work_on_me())
+	if (psp_aime_job_now[0] && psp_aime_here())
 		return psp_biped_pathfinding_work_me(biped_index, pathfinding_point);
 	csmemcpy(held, (unsigned char *)&biped->biped + first, end - first);
 	result = psp_biped_pathfinding_work(biped_index, pathfinding_point);
@@ -42089,12 +42146,18 @@ void psp_aime_pf_apply(
 # either and thinks in the tick (the formatting the thinking reaches is its
 # debug printing, off in play)
 def _psp_aime2a_stop_hook(which):
+    record = ""
+    if which == 29:
+        record = """		if (psp_aime_arm && psp_aime_here() && (psp_aime_job_now[0] || psp_aime_fpu_main))
+			psp_aime_format_seen(format, __builtin_return_address(0));
+"""
     return """	{
 		/* psp_fixups.py (FIXES_AIME2A, "aime2a"; "aimefpu" makes 1b stop alike) */
 		extern int psp_aime_arm, psp_aime_job_now[16], psp_aime_fpu_main;
 		extern void psp_aime_handback(int which);
+		extern void psp_aime_format_seen(const char *format, void *caller);
 
-		if (psp_aime_arm && ((psp_aime_job_now[0] && psp_work_on_me()) || psp_aime_fpu_main))
+""" + record + """		if (psp_aime_arm && psp_aime_here() && (psp_aime_job_now[0] || psp_aime_fpu_main))
 			psp_aime_handback(%d);
 	}
 """ % which
@@ -42175,7 +42238,7 @@ FIXES_AIME2A["source/physics/collision_bsp.c#aime2a"] = [
 
 	/* psp_fixups.py (FIXES_AIME2A, "aime2a"): the kept answers are shared with
 	the main CPU, which may be walking at the same time; the ME walks without them */
-	if (psp_aime_job_now[0] && psp_work_on_me())
+	if (psp_aime_job_now[0] && psp_aime_here())
 		return FALSE;
 #endif
 """),
@@ -42194,7 +42257,7 @@ FIXES_AIME2A["source/physics/collision_bsp.c#aime2a"] = [
 	extern int psp_aime_job_now[16];
 
 	/* psp_fixups.py (FIXES_AIME2A, "aime2a"): as psp_bspr_ray_take */
-	if (psp_aime_job_now[0] && psp_work_on_me())
+	if (psp_aime_job_now[0] && psp_aime_here())
 		return;
 #endif
 """),
@@ -42217,7 +42280,7 @@ FIXES_AIME2A["source/physics/collision_bsp.c#aime2a"] = [
 	extern int psp_aime_job_now[16];
 
 	/* psp_fixups.py (FIXES_AIME2A, "aime2a"): as psp_bspr_ray_take */
-	if (psp_aime_job_now[0] && psp_work_on_me())
+	if (psp_aime_job_now[0] && psp_aime_here())
 		return FALSE;
 #endif
 """),
@@ -42236,7 +42299,7 @@ FIXES_AIME2A["source/physics/collision_bsp.c#aime2a"] = [
 	extern int psp_aime_job_now[16];
 
 	/* psp_fixups.py (FIXES_AIME2A, "aime2a"): as psp_bspr_ray_take */
-	if (psp_aime_job_now[0] && psp_work_on_me())
+	if (psp_aime_job_now[0] && psp_aime_here())
 		return;
 #endif
 """),
@@ -42250,7 +42313,7 @@ FIXES_AIME2A["source/models/models.c#aime2a"] = [
 
 	/* psp_fixups.py (FIXES_AIME2A, "aime2a"): the memo is the main CPU's too, filled while
 	it draws; the ME searches */
-	if (psp_aime_job_now[0] && psp_work_on_me())
+	if (psp_aime_job_now[0] && psp_aime_here())
 		return psp_model_find_marker_search(model_index, name);
 #endif
 	if (psp_marker_search < 0)
@@ -42269,7 +42332,7 @@ FIXES_AIME2A["source/physics/collision_usage.c#aime2a"] = [
 	extern int psp_aime_job_now[16];
 
 	/* psp_fixups.py (FIXES_AIME2A, "aime2a"): the log's periods are the main CPU's */
-	if (psp_aime_job_now[0] && psp_work_on_me())
+	if (psp_aime_job_now[0] && psp_aime_here())
 		return;
 #endif
 """),
@@ -42284,7 +42347,7 @@ FIXES_AIME2A["source/physics/collision_usage.c#aime2a"] = [
 	extern int psp_aime_job_now[16];
 
 	/* psp_fixups.py (FIXES_AIME2A, "aime2a"): as begin_period */
-	if (psp_aime_job_now[0] && psp_work_on_me())
+	if (psp_aime_job_now[0] && psp_aime_here())
 		return;
 #endif
 """),
@@ -42299,7 +42362,7 @@ FIXES_AIME2A["source/physics/collision_usage.c#aime2a"] = [
 	extern int psp_aime_job_now[16];
 
 	/* psp_fixups.py (FIXES_AIME2A, "aime2a"): as begin_period */
-	if (psp_aime_job_now[0] && psp_work_on_me())
+	if (psp_aime_job_now[0] && psp_aime_here())
 		return;
 #endif
 """),
@@ -42318,7 +42381,7 @@ FIXES_AIME2A["source/physics/collision_usage.c#aime2a"] = [
 	extern int psp_aime_job_now[16];
 
 	/* psp_fixups.py (FIXES_AIME2A, "aime2a"): as begin_period */
-	if (psp_aime_job_now[0] && psp_work_on_me())
+	if (psp_aime_job_now[0] && psp_aime_here())
 		return;
 #endif
 """),

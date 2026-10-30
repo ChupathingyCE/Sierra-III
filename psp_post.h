@@ -78,3 +78,18 @@ static __inline__ __attribute__((always_inline)) int psp_work_on_me(void)
 	__asm__ ("move %0, $sp" : "=r"(psp_sp_));
 	return psp_me_context != 0 || (psp_sp_ & 0x1FFFFFFFu) < 0x01000000u;
 }
+
+/* "aime"'s thinking pass ahead (actors.c): its stops, queues and prop log
+act only in the pass's own context, on the ME or on the stack the pass runs
+on in the main CPU (its thread's, or the emulator's stand-in for the ME's,
+psp_aime_sp_low-high). Another thread's work during the pass, or the main
+CPU's own frame while the ME's pass is out, is never stopped or queued: a
+stop there would jump onto the pass's frames from another stack */
+extern unsigned int psp_aime_sp_low, psp_aime_sp_high;
+static __inline__ __attribute__((always_inline)) int psp_aime_here(void)
+{
+	unsigned int psp_sp_;
+
+	__asm__ ("move %0, $sp" : "=r"(psp_sp_));
+	return (psp_sp_ & 0x1FFFFFFFu) < 0x01000000u || psp_sp_ - psp_aime_sp_low < psp_aime_sp_high - psp_aime_sp_low;
+}
