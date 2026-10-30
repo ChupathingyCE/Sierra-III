@@ -38624,7 +38624,10 @@ FIXES_FX15["source/game/game_time.c#fx15"] = [
 # holder, which in the walk ran after the holder's compute (the holder, then
 # its children): it makes the holder's first. An object's own export, when it runs a
 # second time in the walk (a second update, a sleeper's functions), makes the
-# first one's values first, as the walk did before the second export. Objects made during the walk
+# first one's values first, as the walk did before the second export. And
+# each object's incoming values are kept as its update left them and made
+# from: on b30 two weapons' change between their update and the pass, by no
+# export (fvpasscheck counts how often). Objects made during the walk
 # are updated after the pass, in place, as before. Keep words: "fvpass" (the
 # pass), "fvpasscheck" (made in place as before; each object's inputs
 # are checked against what they were at its update, where the pass would have
@@ -38648,16 +38651,22 @@ static int psp_fvp_open = 0;  /* the mode, inside the walk */
 static int psp_fvp_count = 0;
 static long psp_fvp_list[PSP_FVP_MAX]; /* in the walk's order */
 static unsigned long psp_fvp_pending[(MAXIMUM_OBJECTS_PER_MAP + 31) / 32];
-static real (*psp_fvp_inputs)[NUMBER_OF_INCOMING_OBJECT_FUNCTIONS] = NULL; /* the check's */
+/* each listed object's incoming values as its update left them: what the
+walk made its values from, whatever writes them before the pass */
+static real (*psp_fvp_inputs)[NUMBER_OF_INCOMING_OBJECT_FUNCTIONS] = NULL;
 static unsigned long psp_fvp_made, psp_fvp_early, psp_fvp_full, psp_fvp_checked, psp_fvp_differ;
 static long psp_fvp_logged = -1;
 
-static void psp_fvp_make(long object_index, struct object_datum *object)
+static void psp_fvp_make(int k, long object_index, struct object_datum *object)
 {
 	struct object_definition *object_definition = object_definition_get(object->definition_index);
+	real now[NUMBER_OF_INCOMING_OBJECT_FUNCTIONS];
 
+	csmemcpy(now, object->object.incoming_function_values, sizeof(now));
+	csmemcpy(object->object.incoming_function_values, psp_fvp_inputs[k], sizeof(now));
 	object_compute_function_values_with(object_index, object, object_definition);
 	object_compute_change_colors_with(object_index, object, object_definition);
+	csmemcpy(object->object.incoming_function_values, now, sizeof(now));
 	psp_fvp_made++;
 }
 
@@ -38666,15 +38675,15 @@ static void psp_fvp_begin(void)
 	if (psp_fvp_mode < 0 && psp_keep_loaded())
 	{
 		psp_fvp_mode = psp_keep("fvpasscheck") ? 2 : psp_keep("fvpass") ? 1 : 0;
-		if (psp_fvp_mode == 2 && !(psp_fvp_inputs = malloc(PSP_FVP_MAX * sizeof(psp_fvp_inputs[0]))))
+		if (psp_fvp_mode && !(psp_fvp_inputs = malloc(PSP_FVP_MAX * sizeof(psp_fvp_inputs[0]))))
 			psp_fvp_mode = 0;
 	}
 	psp_fvp_open = psp_fvp_mode > 0 ? psp_fvp_mode : 0;
 	psp_fvp_count = 0;
 }
 
-/* 1: the object's values wait for the pass. Checking, they're made in place
-and the inputs they were made from kept for the pass */
+/* 1: the object's values wait for the pass, with the inputs they're made
+from. Checking, they're made in place, and the inputs kept to compare */
 static int psp_fvp_put_off(long object_index, struct object_datum *object)
 {
 	long absolute = DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index);
@@ -38690,8 +38699,7 @@ static int psp_fvp_put_off(long object_index, struct object_datum *object)
 	made before the second's inputs replace them */
 	psp_fvp_settle(object_index);
 	psp_fvp_pending[absolute >> 5] |= PSP_FVP_BIT(absolute);
-	if (psp_fvp_open == 2)
-		csmemcpy(psp_fvp_inputs[psp_fvp_count], object->object.incoming_function_values, sizeof(psp_fvp_inputs[0]));
+	csmemcpy(psp_fvp_inputs[psp_fvp_count], object->object.incoming_function_values, sizeof(psp_fvp_inputs[0]));
 	psp_fvp_list[psp_fvp_count++] = object_index;
 	return psp_fvp_open == 1;
 }
@@ -38715,7 +38723,7 @@ void psp_fvp_settle(long object_index)
 	psp_fvp_pending[absolute >> 5] &= ~PSP_FVP_BIT(absolute);
 	if (psp_fvp_open == 2)
 	{
-		/* the pass would have made them here, from the inputs as they are now */
+		/* where the pass makes them: how often the kept inputs are needed */
 		struct object_datum *object = object_get(object_index);
 
 		psp_fvp_checked++;
@@ -38725,7 +38733,7 @@ void psp_fvp_settle(long object_index)
 				(long)game_time_get(), (unsigned long)object_index, (int)object->object.type);
 		return;
 	}
-	psp_fvp_make(object_index, object_get(object_index));
+	psp_fvp_make(k, object_index, object_get(object_index));
 }
 
 static void psp_fvp_pass(void)
@@ -38755,7 +38763,7 @@ static void psp_fvp_pass(void)
 					(long)game_time_get(), (unsigned long)object_index, (int)object->object.type);
 			continue;
 		}
-		psp_fvp_make(object_index, object);
+		psp_fvp_make(k, object_index, object);
 	}
 	psp_fvp_count = 0;
 	if (mode && game_time_get() / 900 != psp_fvp_logged)
