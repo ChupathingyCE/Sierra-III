@@ -11651,9 +11651,70 @@ static unsigned short *triangle_list(const unsigned short *indices, int index_co
 	return list;
 }
 
-/* works out the slots and batches; NULL leaves the part rigid */
+/* "skinpack": the part's room asked for before the conversion's scratch
+(node0, the triangle list, batch_of), at a size no plan of these indices can
+pass, then shrunk to the plan's bytes once the scratch is gone. Asked for
+after it, as before, each part sits above scratch freed a moment later: a
+hole under every part made in play, most of the heap's free space at its
+peak. The part's bytes are the same either way. A room the heap refuses
+leaves the conversion in the old order */
+int psp_keep(const char *name);
+int psp_keep_loaded(void);
+static int skinpack_on = -1, skinpack_check = 0;
+static unsigned long skinpack_packed = 0, skinpack_refused = 0, skinpack_checked = 0, skinpack_differed = 0;
+
+static int skin_room_bytes(int index_count, int strip)
+{
+	int triangles = strip ? index_count - 2 : index_count / 3;
+
+	return triangles > 0 ? (int)(sizeof(struct skin_part) + 64 * sizeof(struct skin_batch)) + triangles * 3 * 2 : 0;
+}
+
+/* newlib's realloc shrinks in place; should a part move, its own pointers
+follow it */
+static struct skin_part *skin_shrink(struct skin_part *part)
+{
+	struct skin_part *shrunk = realloc(part, part->bytes);
+	long by;
+	int b;
+
+	if (!shrunk || shrunk == part)
+		return part;
+	by = (char *)shrunk - (char *)part;
+	shrunk->batches = (struct skin_batch *)(shrunk + 1);
+	for (b = 0; b < shrunk->batch_count; b++)
+		shrunk->batches[b].indices = (unsigned short *)((char *)shrunk->batches[b].indices + by);
+	ge_writeback(shrunk, shrunk->bytes);
+	return shrunk;
+}
+
+/* "skinpackcheck": the part from its room against one made in the old
+order, field by field (the batches' spheres aren't made yet) */
+static int skin_same(const struct skin_part *a, const struct skin_part *b)
+{
+	const unsigned short *a_out = (const unsigned short *)(a->batches + a->batch_count);
+	const unsigned short *b_out = (const unsigned short *)(b->batches + b->batch_count);
+	int k;
+
+	if (a->weights != b->weights || a->stride != b->stride || a->batch_count != b->batch_count || a->bytes != b->bytes)
+		return 0;
+	for (k = 0; k < a->batch_count; k++)
+	{
+		const struct skin_batch *x = &a->batches[k], *y = &b->batches[k];
+
+		if (memcmp(x->node, y->node, SKIN_SLOTS) || x->index_count != y->index_count || x->radius != y->radius ||
+			x->clusters != y->clusters || x->cluster_count != y->cluster_count || x->indices - a_out != y->indices - b_out ||
+			memcmp(x->indices, y->indices, x->index_count * 2))
+			return 0;
+	}
+	return 1;
+}
+
+/* works out the slots and batches; NULL leaves the part rigid. With a room
+(skinpack), the part is built in it and shrunk; without, it's asked for here */
 static struct skin_part *skin_plan(const void *vertices, int count, int uncompressed, const unsigned short *indices,
-	int index_count, int strip, signed char *node0, signed char *node1, unsigned char *weight0)
+	int index_count, int strip, signed char *node0, signed char *node1, unsigned char *weight0, struct skin_part *room,
+	int room_bytes)
 {
 	static unsigned char conflict[SKIN_NODES][SKIN_NODES / 8];
 	signed char *slot_of = skin_slot;
@@ -11801,7 +11862,7 @@ static struct skin_part *skin_plan(const void *vertices, int count, int uncompre
 		unsigned short *out;
 		int b;
 
-		part = malloc(bytes);
+		part = room && bytes <= room_bytes ? room : malloc(bytes);
 		if (!part)
 		{
 			free(batch_of);
@@ -11838,6 +11899,8 @@ static struct skin_part *skin_plan(const void *vertices, int count, int uncompre
 	}
 	free(batch_of);
 	free(list);
+	if (part == room)
+		part = skin_shrink(part);
 	skinned_parts++;
 	skin_batches += batch_count;
 	return part;
@@ -11865,6 +11928,28 @@ entries it checks, so smaller sweeps cost less each. "sweeplate": at three
 quarters only, as before */
 #define CONVERTED_SWEEP_STEP 256
 static int converted_sweep_mark = CONVERTED_BUFFERS / 4;
+/* "skinbound": the plans' bytes as a sweep's second trigger. The table
+sweeps by its entries' count, and a scene that keeps reading new geometry
+into the cache can leave hundreds of KB of plans for blocks long since
+reloaded (dead entries) before the count reaches its mark: on a30 they fill
+the heap and plans fail. Past SKIN_BOUND_KB of plans the same sweep runs,
+freeing the dead entries' plans, which nothing can draw again: a block read
+back makes a new generation and a fresh conversion either way. Plans of
+live entries stay, since their vertices are converted in place. The next
+bound comes SKIN_BOUND_STEP past what a sweep kept, so a live set above the
+bound doesn't sweep on every part. The bound sits at the live plans of the
+heaviest scene measured (b30's, 188 KB) and under where a30's plans fill a
+tight heap; a sweep frees dead plans only, and a plan made again for
+vertices a sweep let go is a conversion the count's order makes too. "skinboundN" sets it to N KB, "skinboundoff" leaves the
+count as the only trigger */
+#define SKIN_BOUND_KB 192
+#define SKIN_BOUND_STEP (32ul * 1024)
+#define SKIN_GONE 256
+static int skin_bound_kb = -1, skin_bound_sweeping = 0;
+static unsigned long skin_bound_next = 0, skin_bound_sweeps = 0, skin_bound_freed = 0, skin_rebuilt = 0;
+/* the last plans a bound's sweep let go, to count those made again */
+static const void *skin_gone[SKIN_GONE];
+static unsigned int skin_gone_next = 0;
 static PSP_MAIN_SIDE int converted_sweep_late = -1;
 unsigned int psp_geo_generation(const void *ptr);
 
@@ -11888,6 +11973,11 @@ static void converted_sweep(void)
 		}
 		else
 		{
+			if (skin_bound_sweeping && skinned[index])
+			{
+				skin_gone[skin_gone_next] = converted[index];
+				skin_gone_next = (skin_gone_next + 1) % SKIN_GONE;
+			}
 			skin_free(skinned[index]);
 			converted_forgotten++;
 		}
@@ -12636,6 +12726,25 @@ static int model_convert(void *vertices, int count, int uncompressed, const unsi
 		model14 = psp_keep("model14");
 	if (converted_sweep_late < 0)
 		converted_sweep_late = psp_keep("sweeplate");
+	if (skin_bound_kb < 0 && psp_keep_loaded())
+		skin_bound_kb = psp_keep("skinboundoff") ? 0 : psp_keep_number("skinbound", SKIN_BOUND_KB);
+	if (skin_bound_kb > 0 && !PSP_ME_WORK() && skin_live_bytes >= (unsigned long)skin_bound_kb * 1024 &&
+		skin_live_bytes >= skin_bound_next)
+	{
+		unsigned long before = skin_live_bytes;
+
+		skin_bound_sweeping = 1;
+		converted_sweep();
+		skin_bound_sweeping = 0;
+		skin_bound_sweeps++;
+		skin_bound_freed += before - skin_live_bytes;
+		skin_bound_next = skin_live_bytes + SKIN_BOUND_STEP;
+		converted_sweep_mark = converted_used + CONVERTED_SWEEP_STEP;
+		if (converted_sweep_mark < CONVERTED_BUFFERS / 4)
+			converted_sweep_mark = CONVERTED_BUFFERS / 4;
+		if (converted_sweep_mark > CONVERTED_BUFFERS * 3 / 4)
+			converted_sweep_mark = CONVERTED_BUFFERS * 3 / 4;
+	}
 	if (converted_used >= (converted_sweep_late ? CONVERTED_BUFFERS * 3 / 4 : converted_sweep_mark) &&
 		!PSP_ME_WORK()) /* build 112: the sweep frees plans: the main CPU's */
 	{
@@ -12710,12 +12819,58 @@ static int model_convert(void *vertices, int count, int uncompressed, const unsi
 	}
 	if (skin && indices)
 	{
+		struct skin_part *room = NULL;
+		int room_bytes = 0;
+
+		if (skin_bound_sweeps)
+		{
+			unsigned int k;
+
+			for (k = 0; k < SKIN_GONE; k++)
+				if (skin_gone[k] == vertices)
+				{
+					skin_gone[k] = NULL;
+					skin_rebuilt++;
+					break;
+				}
+		}
+
+		if (skinpack_on < 0 && psp_keep_loaded())
+		{
+			skinpack_on = !psp_keep("skinpackoff");
+			skinpack_check = skinpack_on && psp_keep("skinpackcheck");
+		}
+		if (skinpack_on > 0 && (room_bytes = skin_room_bytes(index_count, strip)) > 0)
+		{
+			extern void *psp_heap_try_memalign(size_t alignment, size_t size);
+
+			room = psp_heap_try_memalign(8, (size_t)room_bytes);
+			if (!room)
+				skinpack_refused++;
+		}
 		node0 = malloc(count * 3);
 		if (node0)
 		{
 			node1 = node0 + count;
 			weight0 = (unsigned char *)(node1 + count);
-			part = skin_plan(vertices, count, uncompressed, indices, index_count, strip, node0, node1, weight0);
+			part = skin_plan(vertices, count, uncompressed, indices, index_count, strip, node0, node1, weight0, room,
+				room_bytes);
+		}
+		if (room && part != room)
+			free(room);
+		if (room && part)
+			skinpack_packed++;
+		if (skinpack_check && room && part)
+		{
+			unsigned long peak = skin_live_peak, bytes = skin_bytes, parts = skinned_parts, batches = skin_batches;
+			struct skin_part *old = skin_plan(vertices, count, uncompressed, indices, index_count, strip, node0, node1,
+				weight0, NULL, 0);
+
+			skinpack_checked++;
+			if (!old || !skin_same(part, old))
+				skinpack_differed++;
+			skin_free(old);
+			skin_live_peak = peak, skin_bytes = bytes, skinned_parts = parts, skin_batches = batches;
 		}
 	}
 	if (!converted[slot])
@@ -12834,7 +12989,7 @@ int psp_ge_pcv_check(void *block, const void *raw, unsigned int raw_bytes, const
 	weight0 = (unsigned char *)(node1 + h->count);
 	convert_k = 0.0f;
 	part = skin_plan(copy, (int)h->count, (int)h->uncompressed, indices, (int)h->index_count, (int)h->strip, node0, node1,
-		weight0);
+		weight0, NULL, 0);
 	convert_records(copy, (int)h->count, (int)h->uncompressed, part, node0, node1, weight0);
 	stride = part ? part->stride : 24;
 	if (stride != (int)h->stride || memcmp(copy, (unsigned char *)block + 64, h->count * stride))
@@ -24757,6 +24912,26 @@ static void frame_end_show(void)
 				converted_sweeps, converted_forgotten, converted_used, CONVERTED_BUFFERS,
 				converted_sweep_late > 0 ? CONVERTED_BUFFERS * 3 / 4 : converted_sweep_mark,
 				skin_live_bytes / 1024, skin_live_peak / 1024);
+			{
+				unsigned long live_bytes = 0, dead_bytes = 0;
+				int index, live = 0, dead = 0;
+
+				for (index = 0; index < CONVERTED_BUFFERS; index++)
+					if (converted[index] && skinned[index])
+					{
+						if (psp_geo_generation(converted[index]) == converted_generation[index])
+							live++, live_bytes += (unsigned long)skinned[index]->bytes;
+						else
+							dead++, dead_bytes += (unsigned long)skinned[index]->bytes;
+					}
+				platform_log("GE: skinbound: plans of live entries %lu KB (%d), of dead ones %lu KB (%d); bound %d KB; %lu sweeps by "
+					"the plans' bytes, %lu KB freed; %lu plans made again after one", live_bytes / 1024, live, dead_bytes / 1024, dead,
+					skin_bound_kb, skin_bound_sweeps, skin_bound_freed / 1024, skin_rebuilt);
+			}
+			if (skinpack_on > 0)
+				platform_log("GE: skinpack: %lu parts built in a room asked for before their scratch, %lu rooms refused (the old order); "
+					"skinpackcheck %lu parts against the old order, %lu differed", skinpack_packed, skinpack_refused, skinpack_checked,
+					skinpack_differed);
 			converted_sweeps = converted_forgotten = 0;
 			/* build 112: gedefer's 300 frames */
 			if (defer_on)
