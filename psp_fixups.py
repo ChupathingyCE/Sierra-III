@@ -42247,23 +42247,23 @@ void structure_cluster_marker_begin(
 # 1b's pass with "aimefpu"
 _PSP_AIME_FPU_TEST = "(psp_aime_fpu_main || (psp_aime_job_now[0] && psp_aime_here()))"
 FIXES_AIME2A["source/math/matrix_math.c#aime2a"] = [
-("""	if (psp_vfpu_on)
+("""	if (psp_vfpu_on && (psp_sp >> 27) == 1 && !psp_me_context)
 	{
 		psp_vfpu_matrix4x3_multiply(a, b, result);
 		return;
 	}
 """,
- """	/* (FIXES_AIME2A: the FPU's form on the ME, and for "aimefpu") */
-	if (psp_vfpu_on && !""" + _PSP_AIME_FPU_TEST + """)
+ """	/* (FIXES_AIME2A: also the FPU's form for "aimefpu") */
+	if (psp_vfpu_on && (psp_sp >> 27) == 1 && !psp_me_context && !""" + _PSP_AIME_FPU_TEST + """)
 	{
 		psp_vfpu_matrix4x3_multiply(a, b, result);
 		return;
 	}
 """),
-("""extern int psp_vfpu_on;
+("""extern volatile unsigned int psp_me_context;
 void psp_vfpu_matrix4x3_multiply(const void *a, const void *b, void *result);
 """,
- """extern int psp_vfpu_on;
+ """extern volatile unsigned int psp_me_context;
 void psp_vfpu_matrix4x3_multiply(const void *a, const void *b, void *result);
 extern int psp_aime_fpu_main, psp_aime_job_now[16];
 """),
