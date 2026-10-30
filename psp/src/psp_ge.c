@@ -565,6 +565,8 @@ between records (geinflight) */
 static int replay_inflight = 0;
 static PSP_MAIN_SIDE int replay_kinds_on = 0; /* "mekinds" (see defer_replay) */
 static PSP_MAIN_SIDE int widget_sprites_off = 0; /* "nowidgetsprites" (defer_frame_begin) */
+static PSP_MAIN_SIDE int shadow_indexed = 1; /* "shadowindexoff" (defer_frame_begin; psp_ge_shadow_draw_body) */
+static PSP_MAIN_SIDE int shadow_rim_cull = 1; /* "shadowrimoff" (the same) */
 static PSP_MAIN_SIDE unsigned long inflight_frames = 0, inflight_words = 0, inflight_words_most = 0;
 /* the whole frame's words, the parts carried out when the buffer filled
 included (inflight_words counts only what is left at the sync) */
@@ -760,6 +762,8 @@ static void defer_frame_begin(void)
 		out a widget sprite's first call, and must not search the keep list
 		or write a main-side variable */
 		widget_sprites_off = psp_keep("nowidgetsprites") != 0;
+		shadow_indexed = !psp_keep("shadowindexoff");
+		shadow_rim_cull = !psp_keep("shadowrimoff");
 		/* build 118: mebench takes gedefer and gemeon with it */
 		me_bench = psp_keep("mebench");
 		defer_asked = psp_keep("gedefer") || me_bench;
@@ -19982,6 +19986,43 @@ exact size (shadows and lights; build 29) */
 #define SCRATCH_TRIANGLES 480 /* build 36: 600, less 100 for the cone textures' room */
 static struct shadow_vertex scratch_vertices[3 * SCRATCH_TRIANGLES];
 
+/* A shadow's receivers written once per vertex, with an index list, instead
+of three corners per triangle: a10's cinematics drew ~120 shadows a frame in
+402 KB of a 768 KB display list (b45a), and what comes after them in a full
+list is left out (flares, then cut pieces: a hole). Each corner is the same
+vertex worked out the same way, so the same floats reach the GE, and the
+positions are the wall's own, as the equal depth test needs.
+"shadowindexoff": three corners a triangle, as before */
+#define SHADOW_SLOTS 2048 /* a power of two above 3 x SCRATCH_TRIANGLES */
+static unsigned int shadow_slot_key[SHADOW_SLOTS]; /* generation << 16 | vertex */
+static unsigned short shadow_slot_out[SHADOW_SLOTS];
+static unsigned short shadow_indices[3 * SCRATCH_TRIANGLES];
+static unsigned int shadow_slot_generation = 0;
+static unsigned long shadow_index_corners = 0, shadow_index_vertices = 0, shadow_rim_culled = 0;
+
+/* the slot of a receiving vertex in this draw's array; *fresh when it's new */
+static inline unsigned short shadow_slot(unsigned short vertex, unsigned short *count, int *fresh)
+{
+	unsigned int key = (shadow_slot_generation << 16) | vertex;
+	unsigned int at = (vertex * 2654435761u) >> 21;
+
+	for (;;)
+	{
+		if (shadow_slot_key[at] == key)
+		{
+			*fresh = 0;
+			return shadow_slot_out[at];
+		}
+		if ((shadow_slot_key[at] >> 16) != shadow_slot_generation)
+		{
+			shadow_slot_key[at] = key;
+			*fresh = 1;
+			return shadow_slot_out[at] = (*count)++;
+		}
+		at = (at + 1) & (SHADOW_SLOTS - 1);
+	}
+}
+
 /* the game's real_matrix4x3: scale, forward, left, up, position */
 void psp_ge_shadow_begin(const float *matrix, const float *color, float radius)
 {
@@ -20256,6 +20297,20 @@ static inline void shadow_memo_shade(struct shadow_memo *m, const struct ge_vert
 	}
 }
 
+/* A receiving triangle that leaves every pixel as it was: wholly past one
+side of the blob, whose rim texels are all 0 (so under GU_CLAMP and the
+linear filter every sample there is 0), or faded to nothing at all three
+corners. The frame is multiplied by 1 - blob x colour, so 0 changes nothing,
+and the pass neither writes depth nor tests anything but equal depth.
+"shadowrimoff": every receiver drawn, as before */
+static inline int shadow_beyond_rim(const struct shadow_memo *a, const struct shadow_memo *b, const struct shadow_memo *c)
+{
+	if ((a->u < 0.0f && b->u < 0.0f && c->u < 0.0f) || (a->u > 1.0f && b->u > 1.0f && c->u > 1.0f) ||
+		(a->v < 0.0f && b->v < 0.0f && c->v < 0.0f) || (a->v > 1.0f && b->v > 1.0f && c->v > 1.0f))
+		return 1;
+	return !((a->color | b->color | c->color) & 0xFFFFFF);
+}
+
 static void shadow_memo_verify(const struct shadow_memo *m, const struct ge_vertex *base, unsigned short index, int shaded)
 {
 	const struct ge_vertex *b = &base[index];
@@ -20284,7 +20339,8 @@ static void psp_ge_shadow_draw_body(const void *vertices, int vertex_count, cons
 	struct level_stream *stream;
 	struct shadow_vertex *out;
 	long index, kept_count = 0;
-	int cut_count = 0;
+	int cut_count = 0, indexed;
+	unsigned short vertex_count_out = 0;
 	struct cut_store pieces_store;
 
 	cut_store_begin(&pieces_store, cut_corners, MAXIMUM_CUT_CORNERS, CUT_OTHER);
@@ -20330,6 +20386,13 @@ static void psp_ge_shadow_draw_body(const void *vertices, int vertex_count, cons
 		for (k = 0; k < SHADOW_MEMO; k++)
 			memo[k].key = 0;
 	}
+	indexed = shadow_indexed && shadow_memo_on && shadow_mode == 0;
+	if (indexed && !(shadow_slot_generation = (shadow_slot_generation + 1) & 0xFFFF))
+	{
+		/* wrapped: the old keys could match again */
+		memset(shadow_slot_key, 0, sizeof(shadow_slot_key));
+		shadow_slot_generation = 1;
+	}
 	for (index = 0; shadow_memo_on && index < triangle_count && kept_count < SCRATCH_TRIANGLES; index++)
 	{
 		const unsigned short *triangle = indices + 3 * index;
@@ -20364,13 +20427,30 @@ static void psp_ge_shadow_draw_body(const void *vertices, int vertex_count, cons
 			continue;
 		for (corner = 0; corner < 3; corner++)
 			shadow_memo_shade(m[corner], &stream->base[triangle[corner]]);
+		if (shadow_rim_cull && shadow_beyond_rim(m[0], m[1], m[2]))
+		{
+			shadow_rim_culled++;
+			continue;
+		}
 		if (!(m[0]->bits | m[1]->bits | m[2]->bits))
 		{
 			for (corner = 0; corner < 3; corner++)
 			{
 				const struct ge_vertex *b = &stream->base[triangle[corner]];
-				struct shadow_vertex *o = &out[3 * kept_count + corner];
+				struct shadow_vertex *o;
+				int fresh = 1;
 
+				if (indexed)
+				{
+					unsigned short slot = shadow_slot(triangle[corner], &vertex_count_out, &fresh);
+
+					shadow_indices[3 * kept_count + corner] = slot;
+					o = &out[slot];
+				}
+				else
+					o = &out[3 * kept_count + corner];
+				if (!fresh)
+					continue;
 				o->u = m[corner]->u; o->v = m[corner]->v; o->color = m[corner]->color;
 				o->x = b->x; o->y = b->y; o->z = b->z;
 			}
@@ -20512,6 +20592,23 @@ static void psp_ge_shadow_draw_body(const void *vertices, int vertex_count, cons
 				(int)n * 3, copy, stream->base);
 			sceGuTexMapMode(GU_TEXTURE_COORDS, 0, 0);
 			sceGuColor(0xFFFFFFFF);
+		}
+	}
+	else if (kept_count && indexed)
+	{
+		int vertex_bytes = vertex_count_out * (int)sizeof(struct shadow_vertex);
+		struct shadow_vertex *copy = list_take(vertex_bytes + (int)kept_count * 3 * (int)sizeof(unsigned short));
+
+		if (copy)
+		{
+			unsigned short *copy_indices = (unsigned short *)((char *)copy + vertex_bytes);
+
+			memcpy(copy, out, vertex_bytes);
+			memcpy(copy_indices, shadow_indices, kept_count * 3 * sizeof(unsigned short));
+			sceGumDrawArray(GU_TRIANGLES, GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_32BITF | GU_INDEX_16BIT | GU_TRANSFORM_3D,
+				(int)kept_count * 3, copy_indices, copy);
+			shadow_index_corners += (unsigned long)kept_count * 3;
+			shadow_index_vertices += vertex_count_out;
 		}
 	}
 	else if (kept_count)
@@ -24329,6 +24426,9 @@ static void frame_end_show(void)
 			sky_draws, sky_parts, transparent_drawn, transparent_dropped, sprites_queued, hud_quads, text_characters,
 			blips_drawn, skinned_parts, skin_batches, skin_bytes / 1024, skin_failures, level_transparent_draws, decals_drawn, flashes_drawn, shadow_begins, shadow_requests, shadows_drawn, lights_drawn, light_cone_draws, light_cone_skipped, light_split_triangles, light_split_pieces, skin_cut_triangles, skin_cut_pieces, two_sided_draws, near_models, near_triangles_dropped);
 		platform_log("GE: cut pieces lost to a full cut buffer %lu (since the start)", cut_pieces_lost);
+		if (shadow_index_corners || shadow_rim_culled)
+			platform_log("GE: shadowindexed: %lu receiving corners written as %lu vertices and their indices; shadowrim: %lu receiving triangles left out past the blob's rim or faded to nothing (since the start)",
+				shadow_index_corners, shadow_index_vertices, shadow_rim_culled);
 		if (blip_target != BLIP_TARGET)
 		{
 			char kinds[KINDS * 12 + 1];
