@@ -41829,6 +41829,7 @@ FIXES_AIME2A["source/objects/objects.c#aime2a"] = [
 /* psp_fixups.py (FIXES_AIME2A, "aime2a"): the ME's walks mark objects in
 a table of their own, so no object's line is written by the ME. Sized for
 the map's object pool, on the main CPU, before the first job */
+void *memalign(size_t alignment, size_t size);
 static long *psp_me_object_marks = NULL;
 static long psp_me_object_marks_count = 0;
 static PSP_AIME_ME_SIDE long psp_me_object_marker = 0;
@@ -41848,8 +41849,6 @@ unsigned int psp_aime_marks_bytes(
 	if (!psp_me_object_marks && object_header_data)
 	{
 		long count = object_header_data->maximum_count;
-
-		extern void *memalign(size_t alignment, size_t size);
 
 		/* whole lines of their own: the ME writes them */
 		psp_me_object_marks = (long *)memalign(64, (count * sizeof(long) + 63) & ~63UL);
