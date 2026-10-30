@@ -40417,7 +40417,9 @@ void psp_aime_prop_change(
 {
 	struct psp_aime_copy *copy = psp_aime_copy;
 
-	if (psp_aime_arm != 1 || prop_index == NONE || !psp_aime_here())
+	if (!psp_aime_here())
+		return;
+	if (psp_aime_arm != 1 || prop_index == NONE)
 		return;
 	if (actor_index != psp_aime_current)
 	{
