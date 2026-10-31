@@ -2395,12 +2395,12 @@ static int audio_thread(SceSize arguments, void *argument)
 		up = psp_keep("audio44");
 		full_rate = psp_keep("musadpcm");
 		up |= full_rate;
-		/* "src44": the 44.1 kHz block on the sample-rate converter's own
-		channel set to 44,100 Hz (nothing to convert) instead of an ordinary
-		channel: audio44 alone cost b30's frame +7.8% on the PSP-3000
-		(sierra-hw 41211384661), far past its filter's work, so the
-		ordinary channel's own path is the suspect [U] */
-		src44 = up && psp_keep("src44");
+		/* the 44.1 kHz block on the sample-rate converter's own channel set
+		to 44,100 Hz (nothing to convert), not an ordinary channel: on the
+		ordinary one audio44 cost b30's frame +7.8% (sierra-hw
+		41211384661) and this one took back 6.3% of it (41213051173).
+		"audio44ordinary" keeps the ordinary channel */
+		src44 = up && !psp_keep("audio44ordinary");
 	}
 	channel = src44 ? sceAudioSRCChReserve(2 * MIX_FRAMES, 44100, 2) :
 		up ? sceAudioChReserve(PSP_AUDIO_NEXT_CHANNEL, 2 * MIX_FRAMES, PSP_AUDIO_FORMAT_STEREO) :
@@ -2409,7 +2409,7 @@ static int audio_thread(SceSize arguments, void *argument)
 		platform_log("audio: no output channel (%08x); sound runs silent", channel);
 	else
 		platform_log("audio: %d Hz stereo, %d samples a block (%d ms)%s", OUTPUT_RATE, MIX_FRAMES,
-			MIX_FRAMES * 1000 / OUTPUT_RATE, src44 ? "; the 44.1 kHz block on the converter's channel at 44,100 Hz (src44)" : "");
+			MIX_FRAMES * 1000 / OUTPUT_RATE, up ? (src44 ? "; the 44.1 kHz block on the converter's channel at 44,100 Hz" : "; the 44.1 kHz block on an ordinary channel (audio44ordinary)") : "");
 	if (channel >= 0 && up)
 		platform_log("audio: %s", full_rate ? "to 44,100 Hz by the half-band filter, stereo 44.1 kHz voices mixed at 44,100 Hz (musadpcm)" :
 			"to 44,100 Hz by the half-band filter (audio44)");
