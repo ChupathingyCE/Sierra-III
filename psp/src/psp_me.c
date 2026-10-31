@@ -583,6 +583,21 @@ static void run_job(volatile struct me_slot *slot, int *sums, int on_me)
 		slot->results[1] = (unsigned int)clipped;
 		for (k = 0; k < 4; k++)
 			slot->results[2 + k] = split[k];
+		/* args 4-6: the block's 44.1 kHz work after its mix (MUSADPCM step 3:
+		the full-rate voices and audio44's filter, off the main CPU) */
+		slot->results[7] = 0;
+		if (slot->args[5])
+		{
+			extern void psp_dsound_full_job(void *const *list, unsigned long count, unsigned long frames, short *output22,
+				short *out44, short *full, unsigned int *heard, unsigned int *clipped);
+			unsigned int heard = 0, over = 0;
+
+			psp_dsound_full_job((void *const *)AUDIO_LIST + slot->args[0], slot->args[4], slot->args[1],
+				(short *)slot->args[2], (short *)slot->args[5], (short *)slot->args[6], &heard, &over);
+			slot->results[1] |= over;
+			slot->results[6] = heard;
+			slot->results[7] = 1;
+		}
 		break;
 	}
 #if PSP_MUSIC
@@ -727,6 +742,7 @@ static void me_serve(volatile struct me_slot *slot, int *sums)
 #if PSP_MUSIC
 		!slot->args[3] &&
 #endif
+		!slot->args[5] && /* the 44.1 kHz work's buffers lie past the voices' ranges */
 		psp_dsound_me_lines((void *const *)AUDIO_LIST, slot->args[0], slot->args[1], 0);
 	if (!ranges)
 		meLibDcacheWritebackInvalidateAll();
@@ -3944,33 +3960,64 @@ static struct
 	unsigned long blocks;
 } audio_split;
 
+/* the next audio job's 44.1 kHz work (psp_dsound_full_job): the filter
+into out44, and with full the full-rate voices (their list after the
+block's own in AUDIO_LIST); set by the mixer before each job, out44 NULL for none */
+static void *const *audio_full_list = NULL;
+static unsigned long audio_full_count = 0, audio_full_heard = 0;
+static short *audio_out44 = NULL, *audio_full = NULL;
+static int audio_full_done = 0;
+
+void psp_me_audio_full(void *const *list, unsigned long count, short *out44, short *full)
+{
+	audio_full_list = list;
+	audio_full_count = count;
+	audio_out44 = out44;
+	audio_full = full;
+}
+
+/* 1 when the last job made out44 whole; heard: the full-rate voices heard */
+int psp_me_audio_full_done(unsigned long *heard)
+{
+	*heard = audio_full_heard;
+	return audio_full_done;
+}
+
 int psp_me_audio(void *const *list, unsigned long count, short *output, unsigned long frames, unsigned long *voices,
 	unsigned long *clipped, unsigned long *waited_us)
 {
-#if PSP_MUSIC
-	unsigned int args[4], results[ME_JOB_RESULTS];
-#else
-	unsigned int args[3], results[ME_JOB_RESULTS];
-#endif
+	unsigned int args[7], results[ME_JOB_RESULTS];
 	unsigned long long start = sceKernelGetSystemTimeWide();
-	unsigned long k;
+	unsigned long k, full_count = audio_out44 ? audio_full_count : 0;
 
-	if (me_state <= 0 || count > AUDIO_LIST_MAX || frames > MIX_FRAMES_MAX)
+	audio_full_done = 0;
+	audio_full_heard = 0;
+	if (me_state <= 0 || count + full_count > AUDIO_LIST_MAX || frames > MIX_FRAMES_MAX)
 		return 0;
 	for (k = 0; k < count; k++)
 		AUDIO_LIST[k] = list[k];
+	for (k = 0; k < full_count; k++)
+		AUDIO_LIST[count + k] = audio_full_list[k];
 	args[0] = (unsigned int)count;
 	args[1] = (unsigned int)frames;
 	args[2] = (unsigned int)output;
-	/* about 0.1-1 ms of work: a first look after 0.2 ms, or mepoll's
-	(audio_look_next) */
 #if PSP_MUSIC
 	args[3] = audio_music;
-	if (!psp_me_run(ME_SLOT_AUDIO, ME_JOB_AUDIO, args, 4, results, audio_first_look_us))
 #else
-	if (!psp_me_run(ME_SLOT_AUDIO, ME_JOB_AUDIO, args, 3, results, audio_first_look_us))
+	args[3] = 0;
 #endif
+	args[4] = (unsigned int)full_count;
+	args[5] = (unsigned int)audio_out44;
+	args[6] = (unsigned int)audio_full;
+	/* about 0.1-1 ms of work: a first look after 0.2 ms, or mepoll's
+	(audio_look_next) */
+	if (!psp_me_run(ME_SLOT_AUDIO, ME_JOB_AUDIO, args, 7, results, audio_first_look_us))
 		return 0;
+	if (audio_out44)
+	{
+		audio_full_heard = results[6];
+		audio_full_done = results[7] != 0;
+	}
 	*voices = results[0];
 	*clipped = results[1];
 	if (results[3] || results[5])
