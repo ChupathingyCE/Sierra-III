@@ -2609,6 +2609,7 @@ void psp_audio_report(void)
 	would_waits = game_calls = commands_queued = ring_fullest = ring_full_waits = 0;
 	me_blocks = me_wait_us = me_wait_worst_us = me_failures = me_overflows = ranges_blocks = 0;
 	mix_blocks = mix_microseconds = mix_voice_blocks = mix_peak_voices = 0;
+	full_blocks = full_voice_blocks = full_heard = full_on_me_blocks = 0; /* per report, as the mix line's */
 	mix_worst_us = lock_worst_us = late_blocks = clipped_blocks = gap_worst_us = cut_sounds = 0;
 }
 
