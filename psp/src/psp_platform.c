@@ -3433,7 +3433,16 @@ static struct
 	volatile unsigned int threads_wanted;
 	volatile unsigned int threads_tracked;
 	volatile unsigned long long phase_threads[HW_PHASES][4];
+	/* "pcsample" (psp/profile/main.c): the interrupted PC, binned by the
+	program's code, the tick's bins then the drawing's */
+	volatile unsigned int pc_wanted, pc_counts, pc_base, pc_bins, pc_shift, pc_period;
+	volatile unsigned int pc_samples, pc_binned, pc_other_phase, pc_kernel, pc_outside, pc_timer;
 } hwprofile __attribute__((aligned(64)));
+/* "pcsample": 512-byte bins over the program's code, the tick's and the
+drawing's (~54 KB for 3.5 MB of code); written to log/pcsample.txt every
+minute (psp/sierra/pcsample.py names the bins from the build's symbols) */
+#define PC_SHIFT 9
+static unsigned int pc_report_beats = 0;
 static unsigned long long hwprofile_threads_last[HW_PHASES][4];
 static unsigned long long hwprofile_phase_last[HW_PHASES][HW_COUNTERS];
 static int partitions_reported = 0;
@@ -3474,6 +3483,25 @@ static void hwprofile_start(const char *eboot_path)
 	slash = strrchr(path, '/');
 	snprintf(slash ? slash + 1 : path, sizeof(path) - (slash ? (size_t)(slash + 1 - path) : 0), "halo_profile.prx");
 	hwprofile.threads_wanted = psp_keep("hwthreads") != 0;
+	if (psp_keep("pcsample"))
+	{
+		extern char _ftext[], _etext[];
+		unsigned int bins = (((unsigned int)_etext - (unsigned int)_ftext) >> PC_SHIFT) + 1;
+		void *counts = memalign(64, bins * 2 * sizeof(unsigned int));
+
+		if (counts)
+		{
+			memset(counts, 0, bins * 2 * sizeof(unsigned int));
+			hwprofile.pc_counts = (unsigned int)counts;
+			hwprofile.pc_base = (unsigned int)_ftext;
+			hwprofile.pc_bins = bins;
+			hwprofile.pc_shift = PC_SHIFT;
+			hwprofile.pc_period = (unsigned int)psp_keep_number("pcperiod", 500);
+			hwprofile.pc_wanted = 1;
+		}
+		platform_log("pcsample: %s (%u bins of %u bytes from %08x, %u KB)", counts ? "on" : "no room",
+			bins, 1u << PC_SHIFT, (unsigned int)_ftext, bins * 2 * 4 / 1024);
+	}
 	module = sceKernelLoadModule(path, 0, NULL);
 	if (module >= 0)
 		module = sceKernelStartModule(module, sizeof(address), &address, &status, NULL);
@@ -3510,6 +3538,60 @@ static void bus_probe(const char *when)
 
 /* the counters since the last heartbeat, as shares of the CPU's cycles and
 counts a millisecond (counters in PspDebugProfilerRegs order, from systemck) */
+/* "pcsample": the sampler's counts each heartbeat, and its bins to
+log/pcsample.txt every twelfth (a minute): "pcsample <phase> <bin> <count>",
+phase 1 the tick, 2 the drawing, the bin's code at base + bin << shift, the
+header line naming base, shift and the totals */
+static void pc_report(void)
+{
+	static unsigned int last_samples = 0;
+	unsigned int samples, k, phase;
+	SceUID file;
+	char line[96];
+	const volatile unsigned int *counts;
+
+	if (!hwprofile_running || !hwprofile.pc_wanted)
+		return;
+	samples = hwprofile.pc_samples;
+	platform_log("pcsample: %u samples (%u since the last), binned %u, in other phases %u, in the kernel %u, elsewhere %u (timer %d, period %u)",
+		samples, samples - last_samples, hwprofile.pc_binned, hwprofile.pc_other_phase, hwprofile.pc_kernel,
+		hwprofile.pc_outside, (int)hwprofile.pc_timer, hwprofile.pc_period);
+	last_samples = samples;
+	if (++pc_report_beats % 12)
+		return;
+	file = sceIoOpen(LOG_FOLDER "/pcsample.txt", PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
+	if (file < 0)
+		return;
+	k = (unsigned int)snprintf(line, sizeof(line), "pcsample base %08x shift %u bins %u samples %u binned %u\n",
+		hwprofile.pc_base, hwprofile.pc_shift, hwprofile.pc_bins, samples, hwprofile.pc_binned);
+	sceIoWrite(file, line, k);
+	counts = (const volatile unsigned int *)hwprofile.pc_counts;
+	{
+		/* in 4 KB writes: thousands of small ones would hold the game's
+		thread on the stick */
+		static char chunk[4096];
+		unsigned int used = 0;
+
+		for (phase = 0; phase < 2; phase++)
+			for (k = 0; k < hwprofile.pc_bins; k++)
+			{
+				unsigned int count = counts[phase * hwprofile.pc_bins + k];
+
+				if (!count)
+					continue;
+				if (used + 40 > sizeof(chunk))
+				{
+					sceIoWrite(file, chunk, used);
+					used = 0;
+				}
+				used += (unsigned int)snprintf(chunk + used, sizeof(chunk) - used, "pcsample %u %u %u\n", phase + 1, k, count);
+			}
+		if (used)
+			sceIoWrite(file, chunk, used);
+	}
+	sceIoClose(file);
+}
+
 static void hwprofile_report(void)
 {
 	unsigned long long d[HW_COUNTERS];
@@ -3880,6 +3962,7 @@ static int heartbeat_thread(SceSize args, void *argp)
 			platform_log("heartbeat %d: game time %ld; step %s; free %d KB; log fd %d", beat, ticks, last_step,
 				sceKernelTotalFreeMemSize() / 1024, log_descriptor);
 		hwprofile_report();
+		pc_report();
 		psp_lock_report(); /* build 104 */
 		{
 			/* build 105: the reserve descriptor, given up when the kernel ran

@@ -13,6 +13,7 @@ the CPU count wraps in 13 s at 333 MHz), and the game logs the differences.
 #include <pspkernel.h>
 #include <pspsdk.h>
 #include <pspsysmem_kernel.h>
+#include <pspsystimer.h>
 #include <string.h>
 
 PSP_MODULE_INFO("halo_profile", PSP_MODULE_KERNEL, 1, 0);
@@ -55,6 +56,14 @@ struct totals
 	volatile unsigned int threads_wanted;
 	volatile unsigned int threads_tracked;
 	volatile unsigned long long phase_threads[PHASES][4]; /* clock, other threads, idle, switches */
+	/* "pcsample": where the CPU is, by the program's code. The game sets
+	pc_wanted, pc_counts (an array in its own memory: the tick's bins, then
+	the drawing's), pc_base, pc_bins and pc_shift before the module starts;
+	a system timer's interrupt here then reads the interrupted PC (cop0's
+	EPC) at each period and adds one to its bin, a bin being 1 << pc_shift
+	bytes of code from pc_base. PCs elsewhere are counted, not binned */
+	volatile unsigned int pc_wanted, pc_counts, pc_base, pc_bins, pc_shift, pc_period;
+	volatile unsigned int pc_samples, pc_binned, pc_other_phase, pc_kernel, pc_outside, pc_timer;
 };
 
 static struct totals *table = 0;
@@ -260,6 +269,33 @@ int halo_profile_phase(int phase)
 	return 0;
 }
 
+/* the PC sampler's interrupt: the interrupted PC is still in cop0's EPC
+while the handler runs (the dispatcher returns through it) [U: the first
+run's check is that the samples land in the game's hot code] */
+static int pc_handler(void)
+{
+	unsigned int epc, offset;
+
+	__asm__ volatile ("mfc0 %0, $14" : "=r"(epc));
+	table->pc_samples++;
+	offset = epc - table->pc_base;
+	if ((offset >> table->pc_shift) < table->pc_bins)
+	{
+		if (phase_current == 1 || phase_current == 2)
+		{
+			((volatile unsigned int *)table->pc_counts)[(phase_current - 1) * table->pc_bins + (offset >> table->pc_shift)]++;
+			table->pc_binned++;
+		}
+		else
+			table->pc_other_phase++;
+	}
+	else if (epc >= 0x80000000u)
+		table->pc_kernel++;
+	else
+		table->pc_outside++;
+	return -1;
+}
+
 static int sampler(SceSize args, void *argp)
 {
 	unsigned int last[COUNTERS], now[COUNTERS], k;
@@ -333,6 +369,18 @@ int module_start(SceSize args, void *argp)
 		clock_last = sceKernelGetSystemTimeWide();
 		system_clocks(&idle_last, &switches_last);
 	}
+	if (table->pc_wanted && table->pc_counts >= 0x08800000 && table->pc_bins && table->pc_shift < 16 &&
+		table->pc_counts + table->pc_bins * 8 <= 0x0A000000)
+	{
+		SceSysTimerId timer = sceSTimerAlloc();
+
+		table->pc_timer = (unsigned int)timer;
+		if (timer >= 0)
+		{
+			sceSTimerSetHandler(timer, table->pc_period ? (int)table->pc_period : 500, pc_handler, 0);
+			sceSTimerStartCount(timer);
+		}
+	}
 	thread = sceKernelCreateThread("halo profiler", sampler, 0x10, 0x800, 0, 0);
 	if (thread >= 0)
 		sceKernelStartThread(thread, 0, 0);
@@ -343,5 +391,10 @@ int module_stop(SceSize args, void *argp)
 {
 	(void)args; (void)argp;
 	PROFILER[0] = 0;
+	if (table && table->pc_wanted && (int)table->pc_timer >= 0 && table->pc_timer)
+	{
+		sceSTimerStopCount((SceSysTimerId)table->pc_timer);
+		sceSTimerFree((SceSysTimerId)table->pc_timer);
+	}
 	return 0;
 }
