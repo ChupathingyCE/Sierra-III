@@ -22,7 +22,7 @@ S10's 11 kHz isn't a rate the sound tag can say (22,050 or 44,100 only), so
 it isn't applied yet: the tag needs the rate per permutation, which the
 runtime doesn't read (audio.md 3b). s10 is accepted and reported as s9.
 
-    python3 soundpack.py TAGS_DIR PROFILE [CACHE_DIR] [--music-stream PACK MUSICENC]
+    python3 soundpack.py TAGS_DIR PROFILE [CACHE_DIR] [--music-stream PACK MUSICENC | --music-adpcm PACK]
 
 With CACHE_DIR, each tag's re-encode is kept there by a hash of the tag's
 bytes, the profile, this file and numpy's version, and read back by a later
@@ -332,6 +332,8 @@ MUSIC_RATE = 44100
 MUSIC_QUALITY = '0.3'      # libvorbis VBR quality 3: about 112 kbps for stereo music
 PACK_MAGIC = b'PMUS'
 PACK_VERSION = 1
+ADPCM_PACK_MAGIC = b'PMAD'
+ADPCM_PACK_VERSION = 1
 
 
 def tag_hash(name):
@@ -421,6 +423,74 @@ class MusicPack:
         return head + len(setups) + len(entry_bytes) + len(table) + len(data)
 
 
+class MusicAdpcmPack:
+    """MUSADPCM (Sheepdog01 2026-10-30 19:51): the music chains of one map's sound
+    tags as the disc has them, 44.1 kHz Xbox ADPCM, copied unchanged. An Xbox
+    ADPCM block carries its own predictor and step, so a stream may start at
+    any block: a chain is its permutations' blobs back to back, and a frame's
+    byte offset is (frame // 64) * 36 * channels. The entries and the key hash
+    are MusicPack's, so the game matches the pack to the map the same way"""
+    takes_blobs = True
+
+    def __init__(self):
+        self.setups = []           # none: kept so the summary reads as MusicPack's
+        self.chains = []           # (channels, body, frames)
+        self.entries = []          # (hash, pitch, permutation, chain, start, frames)
+        self.skipped = 0           # music the pack leaves to the cache: not 44,100 Hz on the disc
+        self.unaligned = 0         # chains whose blobs aren't whole blocks (left out)
+
+    def add_chain(self, name, pitch, chain, pcm, starts, blobs=None, channels=2):
+        """blobs: the chain's permutations' samples as the disc has them;
+        pcm: their decode joined (MusicPack's input), to check against"""
+        block = BLOCK_BYTES * channels
+        if not blobs or any(len(b) % block for b in blobs):
+            self.unaligned += 1
+            return
+        body = b''.join(blobs)
+        # the property the pack stands on: the body decoded whole is the
+        # permutations decoded one by one and joined
+        if len(decode(body, channels)) != len(pcm):
+            self.unaligned += 1
+            return
+        index = len(self.chains)
+        self.chains.append((channels, body, len(pcm)))
+        for permutation, start, length in starts:
+            self.entries.append((tag_hash(name), pitch, permutation, index, start, length))
+
+    def write(self, path):
+        """the pack, little-endian: a 64-byte header, the entries sorted by
+        (tag hash, pitch range, permutation), the chains' table, then each
+        chain's blocks, 64-byte aligned"""
+        entries = sorted(self.entries)
+        head = 64
+        entries_at = head
+        entry_bytes = b''.join(struct.pack('<IHHIII', *e) for e in entries)
+        chains_at = entries_at + len(entry_bytes)
+        data_at = chains_at + 16 * len(self.chains)
+        data_at += -data_at % 64
+        table, data = b'', b''
+        for channels, body, frames in self.chains:
+            table += struct.pack('<IIII', channels, frames, data_at + len(data), len(body))
+            data += body + b'\0' * (-len(body) % 64)
+        keys = 0x811C9DC5
+        for e in entries:
+            for byte in struct.pack('<IHH', *e[:3]):
+                keys = ((keys ^ byte) * 0x01000193) & 0xFFFFFFFF
+        header = struct.pack('<4sIIIIIII', ADPCM_PACK_MAGIC, ADPCM_PACK_VERSION, len(entries), len(self.chains),
+                             entries_at, chains_at, keys, MUSIC_RATE)
+        pad = data_at - chains_at - len(table)
+        with open(path, 'wb') as f:
+            f.write(header + b'\0' * (head - len(header)) + entry_bytes + table + b'\0' * pad + data)
+        return data_at + len(data)
+
+
+def music_blobs(music, blobs, pitch, chain, channels):
+    """the disc's samples of a chain, for a pack that keeps them (MUSADPCM)"""
+    if not getattr(music, 'takes_blobs', False):
+        return {}
+    return {'blobs': [blobs[(pitch, j)] for j in chain], 'channels': channels}
+
+
 def bake_sound(d, data, profile, stats, music=None, name=''):
     """the sound tag's new bytes, or None to leave it. music (a MusicPack)
     also takes the tag's music chains at 44.1 kHz"""
@@ -493,7 +563,8 @@ def bake_sound(d, data, profile, stats, music=None, name=''):
             if streamed and len(pcm):
                 starts = np.cumsum([0] + lengths)
                 music.add_chain(name, pitch, chain, full,
-                                [(j, int(starts[n]), int(lengths[n])) for n, j in enumerate(chain)])
+                                [(j, int(starts[n]), int(lengths[n])) for n, j in enumerate(chain)],
+                                **music_blobs(music, blobs, pitch, chain, channels))
             continue
         if to_mono:
             pcm = mono(pcm)
@@ -519,7 +590,7 @@ def bake_sound(d, data, profile, stats, music=None, name=''):
             starts.append((j, cut * BLOCK_SAMPLES * scale, (end_block - cut) * BLOCK_SAMPLES * scale))
             cut = end_block
         if streamed and len(full):
-            music.add_chain(name, pitch, chain, full, starts)
+            music.add_chain(name, pitch, chain, full, starts, **music_blobs(music, blobs, pitch, chain, channels))
         for j in chain:
             stats['bytes before'] += len(blobs[(pitch, j)])
             stats['bytes after'] += len(new_blobs[(pitch, j)])
@@ -591,18 +662,25 @@ def cached_bake(d, data, profile, stats, cache):
 def main():
     args = sys.argv[1:]
     pack_path = encoder = None
+    adpcm = False
     if '--music-stream' in args:
         i = args.index('--music-stream')
         if len(args) < i + 3:
             sys.exit(__doc__)
         pack_path, encoder = args[i + 1], args[i + 2]
         args = args[:i] + args[i + 3:]
+    elif '--music-adpcm' in args:
+        i = args.index('--music-adpcm')
+        if len(args) < i + 2:
+            sys.exit(__doc__)
+        pack_path, adpcm = args[i + 1], True
+        args = args[:i] + args[i + 2:]
     if len(args) not in (2, 3) or args[1] not in ('s9', 's10') + (('none',) if pack_path else ()):
         sys.exit(__doc__)
     folder, profile = args[0], args[1]
     cache = args[2] if len(args) == 3 and not pack_path else ''
-    work = tempfile.mkdtemp(prefix='music-', dir=os.path.dirname(os.path.abspath(folder))) if pack_path else None
-    music = MusicPack(encoder, work) if pack_path else None
+    work = tempfile.mkdtemp(prefix='music-', dir=os.path.dirname(os.path.abspath(folder))) if pack_path and not adpcm else None
+    music = MusicAdpcmPack() if adpcm else MusicPack(encoder, work) if pack_path else None
     d = Definitions(os.environ['HALO_PSP_INVADER_DEFINITIONS'])
     stats = {'changed': 0, 'kept': 0, 'other format': 0, 'mono': 0, 'half rate': 0, 'failed': 0,
              'bytes before': 0, 'bytes after': 0, 'snr': []}
@@ -636,9 +714,12 @@ def main():
               '%.2f MB (%.0f kbps); %d music tags not at 44.1 kHz left to the cache' % (
                   len(music.entries), len(music.chains), len(music.setups), frames / MUSIC_RATE / 60,
                   size / 1e6, size * 8 / (frames / MUSIC_RATE) / 1000 if frames else 0, music.skipped))
-        for leftover in glob.glob(os.path.join(work, '*')):
-            os.remove(leftover)
-        os.rmdir(work)
+        if adpcm:
+            print('soundpack music adpcm: the disc\'s own blocks, unchanged; %d chains left out (not whole blocks)' % music.unaligned)
+        if work:
+            for leftover in glob.glob(os.path.join(work, '*')):
+                os.remove(leftover)
+            os.rmdir(work)
 
 
 if __name__ == '__main__':
