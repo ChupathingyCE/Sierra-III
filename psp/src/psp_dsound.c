@@ -1993,7 +1993,7 @@ over twice the frames moves the voice exactly as far: the step must be even,
 and there's no muffling filter (its coefficient is set for 22,050 Hz; music
 has none). On the main CPU for now, after the ME's block; where it runs is
 for a PSP pair to settle. Bakes that halve all sound have no such voices */
-static unsigned long full_blocks = 0, full_voice_blocks = 0;
+static unsigned long full_blocks = 0, full_voice_blocks = 0, full_heard = 0;
 
 static int full_rate_voice(const struct psp_stream *stream)
 {
@@ -2006,7 +2006,7 @@ static void mix_full_rate(struct psp_stream **list, unsigned long count, short *
 {
 	static int sums[2 * MIX_FRAMES * OUTPUT_CHANNELS] __attribute__((aligned(64)));
 	static unsigned long mixed[VOICE_LIST_MAX], dry[VOICE_LIST_MAX];
-	unsigned long k, over = 0;
+	unsigned long k, over = 0, heard;
 
 	if (!count)
 	{
@@ -2022,7 +2022,9 @@ static void mix_full_rate(struct psp_stream **list, unsigned long count, short *
 	}
 	if (edram_unreachable(0))
 		mute_cache_voices(list, count);
-	*voices += psp_dsound_mix_list((void *const *)list, count, sums, full, 2 * frames, &over);
+	heard = psp_dsound_mix_list((void *const *)list, count, sums, full, 2 * frames, &over);
+	*voices += heard;
+	full_heard += heard;
 	/* the step back, and the voice's counts kept in 22,050 Hz frames, as
 	the reports read them */
 	for (k = 0; k < count; k++)
@@ -2454,8 +2456,8 @@ void psp_audio_report(void)
 		mix_voice_blocks / mix_blocks, mix_voice_blocks * 10 / mix_blocks % 10, mix_peak_voices,
 		mix_worst_us, lock_worst_us, late_blocks, mix_blocks, gap_worst_us, clipped_blocks, cut_sounds);
 	if (full_blocks)
-		platform_log("audio: musadpcm: %lu blocks mixed stereo 44.1 kHz voices at 44,100 Hz, %lu.%lu of them a block on average",
-			full_blocks, full_voice_blocks / full_blocks, full_voice_blocks * 10 / full_blocks % 10);
+		platform_log("audio: musadpcm: %lu blocks mixed stereo 44.1 kHz voices at 44,100 Hz, %lu.%lu of them a block on average, %lu voice-blocks heard",
+			full_blocks, full_voice_blocks / full_blocks, full_voice_blocks * 10 / full_blocks % 10, full_heard);
 	if (me_blocks || me_failures || psp_meaudio_running())
 		platform_log("audio: Media Engine mixed %lu of the blocks (menu: %s), waited for %lu us a block on average, %lu at most (main CPU asleep meanwhile); %lu failed; %lu over the voice list; %lu handed over by ranges (the rest by the whole cache)",
 			me_blocks, me_wanted ? "ME" : "main CPU", me_blocks ? me_wait_us / me_blocks : 0, me_wait_worst_us, me_failures,
