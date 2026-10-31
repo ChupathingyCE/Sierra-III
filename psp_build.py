@@ -167,6 +167,14 @@ METRICS = os.environ.get("PSP_METRICS", "1") != "0"
 # leaves them out. Passed to psp_ge.c's own compile, which takes none of the
 # engine's defines
 DITHERSHIFT = os.environ.get("PSP_DITHERSHIFT", "") == "1"
+# PSP_MUSIC=1 builds in the music path (psp/src/psp_music.c, Tremor and libogg,
+# FIXES_MUSIC, psp_dsound.c's music marks; keep word musicstream). The decoder
+# and its buffers take about 110 KB of program, which comes off the heap, and
+# a10 runs with only a few KB of heap to spare: until the path is on by
+# default, a build without the switch is exactly the build without the path
+MUSIC = os.environ.get("PSP_MUSIC", "") == "1"
+if MUSIC:
+    PSP_FILES.append("psp_music")
 # PSP_DEADCODE_INLINE=1: the sleep's debug reports inline in the hot sleep
 # check and the collision usage log's empty calls kept, as before
 # psp_fixups.py's FIXES_DEADCHK: the old side of that layout's A/B (read by
@@ -288,7 +296,7 @@ PSP = ["psp-gcc", "-G0", GAME_OPT, "-march=allegrex", "-ffp-contract=off", "-fsh
        "-fno-delete-null-pointer-checks", "-fno-omit-frame-pointer", "-w",
        "-ffunction-sections", "-fdata-sections", "-fno-math-errno", "-fsingle-precision-constant",
        "-DHALO_PSP=1", "-DHALO_RELEASE=1", "-DHALO_ANDROID=1",
-       ] + (["-DPSP_MULTIPLAYER=1"] if MULTIPLAYER else []) + (["-DPSP_MP_COOP=1"] if MULTIPLAYER and MP_COOP else []) + (["-DPSP_MP_HOST=1"] if MULTIPLAYER and MP_HOST else []) + (["-DPSP_MAP_CHECKS=1"] if MAP_CHECKS else []) + (["-DPSP_POOLS_XBOX=1"] if POOLS_XBOX else []) + (["-DPSP_RECON_64MB=1"] if BIG_RAM else []) + (["-DPSP_DEBUG_TOOLS=1"] if DEBUG_TOOLS else []) + (["-DPSP_TICK_STEPS=1"] if TICK_STEPS else []) + (["-DPSP_RECON=1"] if RECON else []) + (["-DPSP_METRICS=1"] if METRICS else []) + (["-DPSP_PGO_GENERATE=1"] if PGO == "generate" else []) + os.environ.get("PSP_CFLAGS", "").split() + [
+       ] + (["-DPSP_MULTIPLAYER=1"] if MULTIPLAYER else []) + (["-DPSP_MUSIC=1"] if MUSIC else []) + (["-DPSP_MP_COOP=1"] if MULTIPLAYER and MP_COOP else []) + (["-DPSP_MP_HOST=1"] if MULTIPLAYER and MP_HOST else []) + (["-DPSP_MAP_CHECKS=1"] if MAP_CHECKS else []) + (["-DPSP_POOLS_XBOX=1"] if POOLS_XBOX else []) + (["-DPSP_RECON_64MB=1"] if BIG_RAM else []) + (["-DPSP_DEBUG_TOOLS=1"] if DEBUG_TOOLS else []) + (["-DPSP_TICK_STEPS=1"] if TICK_STEPS else []) + (["-DPSP_RECON=1"] if RECON else []) + (["-DPSP_METRICS=1"] if METRICS else []) + (["-DPSP_PGO_GENERATE=1"] if PGO == "generate" else []) + os.environ.get("PSP_CFLAGS", "").split() + [
        # The fatal asserts are compiled out, unevaluated (X10): their checks
        # and messages fill the 16 KB instruction cache, so with them gone b30's
        # tick is 6.6% shorter on the PSP-3000 [M], and play is identical. The
@@ -472,7 +480,8 @@ def compile_one(item):
     out = os.path.relpath(obj, TREE) if PGO else obj
     cmd = PSP + flags + extra + defines + ["-include", os.path.join(HERE, "psp_post.h"), "-c", src, "-o", out]
     if src.endswith(("psp_sdl.c", "psp_libc.c", "psp_ge.c", "psp_tex.c", "psp_vfpu.c", "psp_vfpu_quat.c", "psp_menu.c", "psp_geo.c", "psp_anim.c",
-                     "psp_debug.c", "psp_me.c", "psp_trace.c", "psp_crash.c", "psp_watch.c", "psp_net.c", "psp_net_adhoc.c")):
+                     "psp_debug.c", "psp_me.c", "psp_trace.c", "psp_crash.c", "psp_watch.c", "psp_net.c", "psp_net_adhoc.c",
+                     "psp_music.c")):
         # plain C against the SDL3 headers, none of the game's MSVC prefix
         # (build 110: the launch menu, the crash handler's side, the overlay
         # and the load trace's wrappers for size; the rest for speed)
@@ -493,6 +502,7 @@ def compile_one(item):
                ["-DPSP_WALKAPART=1"] if WALKAPART else []) + (
                ["-DPSP_MEVISLAND=1"] if MEVISLAND else []) + (
                ["-DPSP_METRICS=1"] if METRICS else []) + (
+               ["-DPSP_MUSIC=1"] if MUSIC else []) + (
                # the switches their #if blocks test (psp_ge.c's debug tools)
                ["-DPSP_DEBUG_TOOLS=1"] if DEBUG_TOOLS else []) + (
                ["-DPSP_TICK_STEPS=1"] if TICK_STEPS else []) + [
@@ -592,6 +602,17 @@ def hot_pairs(objs):
                 if n[10:] in cold:
                     lines.append('"%s"(.text.unlikely.%s)' % (o, n[10:]))
     return lines
+
+def music_libs():
+    """Tremor (libvorbisidec) with its allocations renamed to the music
+    path's pool (psp_music.c's mu_malloc): the link wraps malloc for the
+    game's allocator, which the decode must never call (it is to run on the
+    Media Engine). Then libogg, its bit reader"""
+    lib = os.path.join(PSPDEV, "psp", "lib")
+    renamed = os.path.join(OUT, "libmu_vorbisidec.a")
+    subprocess.run(["psp-objcopy"] + ["--redefine-sym=%s=mu_%s" % (n, n) for n in ("malloc", "calloc", "realloc", "free")] +
+                   [os.path.join(lib, "libvorbisidec.a"), renamed], check=True)
+    return ["-L" + OUT, "-lmu_vorbisidec", "-logg"]
 
 def link(objs, stubs):
     with open(os.path.join(OUT, "stubs.c"), "w") as f:
@@ -741,6 +762,16 @@ def link(objs, stubs):
     if old_data not in text or old_bss not in text:
         sys.exit("psp_build: the SDK's linkfile.prx has changed; the Media Engine's variables can't be placed")
     me_objects = ("*psp_ge.o", "*psp_tex.o", "*libpspgu.a:*")
+    # PSP_MUSIC: the decoder's own variables (Tremor's, libogg's) on lines of
+    # their own, apart from the GE layer's block too. The decode runs in the
+    # ME's audio job and writes them (mapping0.o's counter), while the main
+    # CPU writes whatever the link would otherwise put beside them; the GE
+    # layer's variables are the main CPU's whenever its work isn't on the ME
+    music_data = music_bss = ""
+    if MUSIC:
+        music_objects = ("*libmu_vorbisidec.a:*", "*libogg.a:*")
+        music_data = "".join("    %s(.data .data.*)\n" % o for o in music_objects) + "    . = ALIGN(64);\n"
+        music_bss = "".join("   %s(.bss .bss.* COMMON)\n" % o for o in music_objects) + "   . = ALIGN(64);\n"
     text = text.replace(old_data, "    _fdata = . ;\n"
                         "    . = ALIGN(64);\n    __psp_main_side_start = .;\n    KEEP(*(.data.psp_main_side))\n"
                         "    . = ALIGN(64);\n    __psp_main_side_end = .;\n"
@@ -749,11 +780,11 @@ def link(objs, stubs):
                         "    __psp_aime_me_start = .;\n    KEEP(*(.data.psp_aime_me))\n"
                         "    . = ALIGN(64);\n    __psp_aime_me_end = .;\n    __psp_me_data_start = .;\n" +
                         "".join("    %s(.data .data.*)\n" % o for o in me_objects) +
-                        "    . = ALIGN(64);\n    __psp_me_data_end = .;\n" + hot_data_block(me_objects) +
+                        "    . = ALIGN(64);\n    __psp_me_data_end = .;\n" + music_data + hot_data_block(me_objects) +
                         "    *(.data .data.* .gnu.linkonce.d.*)\n")
     text = text.replace(old_bss, "   *(.dynbss)\n   . = ALIGN(64);\n   __psp_me_bss_start = .;\n" +
                         "".join("   %s(.bss .bss.* COMMON)\n" % o for o in me_objects) +
-                        "   . = ALIGN(64);\n   __psp_me_bss_end = .;\n"
+                        "   . = ALIGN(64);\n   __psp_me_bss_end = .;\n" + music_bss +
                         "   *(.bss .bss.* .gnu.linkonce.b.*)\n")
     # pspgu's and pspgum's small variables (gu_list, gu_states,
     # gu_curr_context, gum_vfpucontext, ...: the SDK builds them -G8, so they
@@ -809,7 +840,7 @@ def link(objs, stubs):
            "--wrap=sceGuTexImage,--wrap=sceGuTexMode,--wrap=sceGuClutLoad,--wrap=sceGuClutMode,--wrap=sceGuTexFilter,"
            # build 114: list regions join the pending range (psp_ge.c, listcachedall)
            "--wrap=sceGuGetMemory",
-           "@" + os.path.join(OUT, "objs.rsp"), SDK + "/lib/prxexports.o"] + LIBS + ["-o", os.path.join(OUT, "halo.elf")]
+           "@" + os.path.join(OUT, "objs.rsp"), SDK + "/lib/prxexports.o"] + (music_libs() if MUSIC else []) + LIBS + ["-o", os.path.join(OUT, "halo.elf")]
     return subprocess.run(cmd, capture_output=True, text=True)
 
 # ---------- the mirror: the engine as GCC can compile it

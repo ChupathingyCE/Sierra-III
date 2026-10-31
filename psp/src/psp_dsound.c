@@ -58,6 +58,12 @@ struct voice_packet
 	const unsigned char *data;
 	unsigned long frames;
 	BOOL finished;            /* played out by the mixer, not yet completed */
+#if PSP_MUSIC
+	/* a music stub's packet (psp_music.c): its chain + 1, where it starts in
+	the chain at 44.1 kHz, and 44.1 kHz frames per frame of the stream */
+	int music;
+	unsigned long music_start, music_scale;
+#endif
 };
 
 struct psp_stream
@@ -122,6 +128,15 @@ struct psp_stream
 	LONG lowpass_millibels;
 	int lowpass_coefficient;
 	int lowpass_left, lowpass_right;
+#if PSP_MUSIC
+	/* this block's head packet is a music stub's: the voice advances as a
+	silent one and reads no samples (its sound is psp_music.c's) */
+	int music_block;
+#define MUSIC_BLOCK(stream) ((stream)->music_block)
+#else
+	/* a build without the music path (PSP_MUSIC) has no music voices */
+#define MUSIC_BLOCK(stream) 0
+#endif
 
 	/* last, so a hand-over by ranges covers the fields above in a few whole
 	lines and only the queued packets' entries of this (psp_dsound_me_lines) */
@@ -260,6 +275,10 @@ struct mix_command
 	const unsigned char *data;
 	unsigned long type, frames;
 	long sound_class;
+#if PSP_MUSIC
+	int music;
+	unsigned long music_start, music_scale;
+#endif
 };
 static struct mix_command commands[MIX_COMMANDS];
 /* the game puts at the tail, the audio thread takes at the head */
@@ -288,6 +307,11 @@ static void mix_apply(const struct mix_command *command)
 		entry->data = command->data;
 		entry->frames = command->frames;
 		entry->finished = FALSE;
+#if PSP_MUSIC
+		entry->music = command->music;
+		entry->music_start = command->music_start;
+		entry->music_scale = command->music_scale;
+#endif
 		if (stream->packet_count && stream->dry_frames)
 		{
 			if (gap_record_count < GAP_RECORDS)
@@ -350,6 +374,9 @@ static void drain_commands(void)
 Otherwise queued, the tail moved with interrupts off (the audio thread preempts
 the game); the game waits for room only when 512 are out, which the audio
 thread empties every block */
+#if PSP_MUSIC
+static void mix_queue(const struct mix_command *made);
+#endif
 static void mix_command(struct psp_stream *stream, unsigned long type, const unsigned char *data, unsigned long frames,
 	long sound_class)
 {
@@ -360,6 +387,18 @@ static void mix_command(struct psp_stream *stream, unsigned long type, const uns
 	command.data = data;
 	command.frames = frames;
 	command.sound_class = sound_class;
+#if PSP_MUSIC
+	command.music = 0;
+	command.music_start = command.music_scale = 0;
+	mix_queue(&command);
+}
+
+/* a command made whole by the caller (a music stub's packet, psp_music.c) */
+static void mix_queue(const struct mix_command *made)
+{
+	struct mix_command command = *made;
+
+#endif
 	if (mixlock_old)
 	{
 		mix_apply(&command);
@@ -1018,7 +1057,7 @@ static int mix_voice(struct psp_stream *stream, int *output, unsigned long frame
 	ramp_right = ((target_right - stream->current_right) << 8) / (int)frames;
 	stream->current_left = target_left;
 	stream->current_right = target_right;
-	if (!target_left && !target_right && !left && !right)
+	if (MUSIC_BLOCK(stream) || (!target_left && !target_right && !left && !right))
 	{
 		/* silent: just advance, and never past the end of what's queued.
 		A voice that runs out inside the block stops at the end, as a heard
@@ -1293,7 +1332,8 @@ static unsigned long sample_lines(struct psp_stream *stream, unsigned long frame
 
 static unsigned long voice_lines(struct psp_stream *stream, unsigned long frames, int op)
 {
-	return cache_lines(stream, STREAM_HEAD_BYTES, op) + entry_lines(stream, op) + sample_lines(stream, frames, op);
+	return cache_lines(stream, STREAM_HEAD_BYTES, op) + entry_lines(stream, op) +
+		(MUSIC_BLOCK(stream) ? 0 : sample_lines(stream, frames, op));
 }
 
 /* the ME's side (psp_me.c's me_serve), before the job (after 0) and after it
@@ -1444,6 +1484,17 @@ unsigned long psp_sound_block_bytes(void)
 		want = geo && cache < SOUND_BLOCK_DEFAULT_BYTES ? SOUND_BLOCK_DEFAULT_BYTES : cache;
 		break;
 	}
+#if PSP_MUSIC
+	{
+		/* the music path's RAM, which psp_sound_cache_bytes took off the
+		cache (64 bytes over, to align it) */
+		extern unsigned long psp_music_block_bytes(void);
+		unsigned long music = psp_music_block_bytes();
+
+		if (music)
+			want += music + 64;
+	}
+#endif
 	return want;
 }
 
@@ -1480,6 +1531,20 @@ void *psp_sound_cache_place(void *block)
 		edram_hi = base + cache;
 		stops_at_start = psp_me_stops;
 	}
+#if PSP_MUSIC
+	{
+		extern unsigned long psp_music_block_bytes(void);
+		extern void psp_music_block_place(void *at);
+		unsigned long music = psp_music_block_bytes();
+
+		if (music && sound_block)
+		{
+			psp_music_block_place((void *)(((unsigned long)(sound_block + used) + 63) & ~63ul));
+			platform_log("sound block: %lu KB for the music path (musicstream)", music / 1024);
+			used += music + 64;
+		}
+	}
+#endif
 	if (psp_keep("soundgeo") && block_bytes >= used + 64 * 1024)
 	{
 		spare_start = sound_block + used;
@@ -1817,6 +1882,41 @@ int psp_audio_setting(int set, int value)
 	return me_wanted && psp_meaudio_running();
 }
 
+#if PSP_MUSIC
+/* the music voices of a block (psp_music.c): who, which chain, the frames
+at 44.1 kHz and the gains */
+#define MUSIC_MARKS 4
+int psp_music_prepare(void);
+void psp_music_queue(const void *const *owners, const int *chains, const unsigned long *from, const unsigned long *to,
+	const int *left, const int *right, int count);
+void psp_music_after_block(int marked);
+void psp_me_audio_music(int on);
+static const void *music_owner[MUSIC_MARKS];
+static int music_chain[MUSIC_MARKS], music_left[MUSIC_MARKS], music_right[MUSIC_MARKS];
+static unsigned long music_from[MUSIC_MARKS], music_scale_of[MUSIC_MARKS], music_marks;
+/* written by the job (the ME's, often): a line of its own */
+static unsigned long music_to[64 / sizeof(unsigned long)] __attribute__((aligned(64)));
+
+/* the block's music, after its mix, in the mixer's job (either CPU): where
+each marked voice's frames end, from where the mix left it (on to the next
+packet of the same chain, or as far as the step went), into the block's
+set for the music job (psp_music.c), which decodes it in the ME's idle time */
+void psp_dsound_music_job(unsigned long frames)
+{
+	unsigned long k;
+
+	for (k = 0; k < music_marks; k++)
+	{
+		struct psp_stream *voice = (struct psp_stream *)music_owner[k];
+		struct voice_packet *head = current_packet(voice);
+
+		music_to[k] = head && head->music - 1 == music_chain[k] ? head->music_start + voice->frame * head->music_scale :
+			music_from[k] + ((voice->step * frames) >> 16) * music_scale_of[k];
+	}
+	psp_music_queue(music_owner, music_chain, music_from, music_to, music_left, music_right, (int)music_marks);
+}
+#endif
+
 /* "memixcheck": each block mixed by mix_voice's old loop and by MEMIX from
 the same voices, the outputs and the voices after compared; the block plays
 MEMIX's. On the main CPU only (the check keeps the block off the ME), and
@@ -1884,14 +1984,90 @@ static unsigned long mix_checked(struct psp_stream **list, unsigned long count, 
 	return voices;
 }
 
-static void mix(short *output, unsigned long frames)
+/* MUSADPCM ("musadpcm", off by default): a stereo 44.1 kHz ADPCM voice (the
+disc's music, in a map baked with --music-full) mixed at 44,100 Hz into a
+block of its own, added to the rest of the mix once that is taken to 44.1 kHz
+(audio44's filter), instead of being read at every other frame into the
+22,050 Hz mix with nothing to take out what lies above 11 kHz. Half the step
+over twice the frames moves the voice exactly as far: the step must be even,
+and there's no muffling filter (its coefficient is set for 22,050 Hz; music
+has none). On the main CPU for now, after the ME's block; where it runs is
+for a PSP pair to settle. Bakes that halve all sound have no such voices */
+static unsigned long full_blocks = 0, full_voice_blocks = 0, full_heard = 0;
+
+static int full_rate_voice(const struct psp_stream *stream)
+{
+	return stream->adpcm && stream->channels == 2 && stream->sample_rate == 44100 && !(stream->step & 1) &&
+		stream->lowpass_coefficient >= GAIN_ONE;
+}
+
+static void mix_full_rate(struct psp_stream **list, unsigned long count, short *full, unsigned long frames,
+	unsigned long *voices, unsigned long *clipped)
+{
+	static int sums[2 * MIX_FRAMES * OUTPUT_CHANNELS] __attribute__((aligned(64)));
+	static unsigned long mixed[VOICE_LIST_MAX], dry[VOICE_LIST_MAX];
+	unsigned long k, over = 0, heard;
+
+	if (!count)
+	{
+		for (k = 0; k < 2 * frames * OUTPUT_CHANNELS; k++)
+			full[k] = 0;
+		return;
+	}
+	for (k = 0; k < count; k++)
+	{
+		mixed[k] = list[k]->mixed_frames;
+		dry[k] = list[k]->dry_frames;
+		list[k]->step >>= 1;
+	}
+	if (edram_unreachable(0))
+		mute_cache_voices(list, count);
+	heard = psp_dsound_mix_list((void *const *)list, count, sums, full, 2 * frames, &over);
+	*voices += heard;
+	full_heard += heard;
+	/* the step back, and the voice's counts kept in 22,050 Hz frames, as
+	the reports read them */
+	for (k = 0; k < count; k++)
+	{
+		list[k]->step <<= 1;
+		list[k]->mixed_frames = mixed[k] + (list[k]->mixed_frames - mixed[k]) / 2;
+		list[k]->dry_frames = dry[k] + (list[k]->dry_frames - dry[k]) / 2;
+	}
+	*clipped |= over;
+	full_blocks++;
+	full_voice_blocks += count;
+}
+
+/* full (NULL unless "musadpcm"): the full-rate voices' block, 2 x frames */
+static void mix(short *output, short *full, unsigned long frames)
 {
 	static int sums[MIX_FRAMES * OUTPUT_CHANNELS] __attribute__((aligned(64)));
-	static struct psp_stream *list[VOICE_LIST_MAX];
+	static struct psp_stream *list[VOICE_LIST_MAX], *full_list[VOICE_LIST_MAX];
 	struct psp_stream *stream;
-	unsigned long voices = 0, count = 0, clipped = 0, me_us = 0, sc_us;
+	unsigned long voices = 0, count = 0, full_count = 0, clipped = 0, me_us = 0, sc_us;
 	int on_me = me_wanted && psp_meaudio_running() && !memix_check, mixed = 0;
 	SceUInt64 start = sceKernelGetSystemTimeWide();
+#if PSP_MUSIC
+	/* while the music job makes the codec setup on the ME (no yield inside
+	Tremor's), a block given to the ME would wait past the audio job's 40 ms
+	and stop the ME: this CPU mixes those blocks */
+	extern int psp_music_holds_me(void);
+
+	if (on_me && psp_music_holds_me())
+		on_me = 0;
+#endif
+#if PSP_MUSIC
+	/* the music path runs this map (psp_music.c): off, no voice is marked */
+	extern int psp_music_active(void);
+	int music_on = psp_music_active(), music_job = 0;
+	unsigned long m;
+#endif
+	/* the music path's stubs carry no samples to mix at any rate */
+	int full_on = full != NULL;
+#if PSP_MUSIC
+	if (music_on)
+		full_on = 0;
+#endif
 
 	blocks_begun++;
 	if (mixlock_old)
@@ -1916,8 +2092,35 @@ static void mix(short *output, unsigned long frames)
 			me_overflows++;
 			break;
 		}
+		if (full_on && full_count < VOICE_LIST_MAX && full_rate_voice(stream))
+		{
+			full_list[full_count++] = stream;
+			continue;
+		}
 		list[count++] = stream;
 	}
+#if PSP_MUSIC
+	music_marks = 0;
+	for (m = 0; music_on && m < count; m++)
+	{
+		struct voice_packet *head = current_packet(list[m]);
+
+		list[m]->music_block = head && head->music;
+		if (list[m]->music_block && music_marks < MUSIC_MARKS)
+		{
+			music_owner[music_marks] = list[m];
+			music_chain[music_marks] = head->music - 1;
+			music_from[music_marks] = head->music_start + list[m]->frame * head->music_scale;
+			music_scale_of[music_marks] = head->music_scale;
+			music_left[music_marks] = list[m]->target_left;
+			music_right[music_marks] = list[m]->target_right;
+			music_marks++;
+		}
+	}
+	/* the marks ride the mixer's job: the ME then takes its whole cache
+	hand-over (the sets are past the ranges' reach) */
+	music_job = music_marks && psp_music_prepare();
+#endif
 	if (on_me && edram_unreachable(1))
 		mute_cache_voices(list, count);
 	if (on_me)
@@ -1937,6 +2140,9 @@ static void mix(short *output, unsigned long frames)
 		for (k = 0; ranges_on && k < count && bytes <= HANDOVER_WHOLE_BYTES; k++)
 			bytes += voice_lines(list[k], frames, LINES_COUNT);
 		ranges = ranges_on && bytes <= HANDOVER_WHOLE_BYTES;
+#if PSP_MUSIC
+		ranges = ranges && !music_job;
+#endif
 		if (ranges)
 		{
 			for (k = 0; k < count; k++)
@@ -1948,7 +2154,13 @@ static void mix(short *output, unsigned long frames)
 			sceKernelDcacheWritebackAll();
 		sceKernelDcacheWritebackInvalidateRange(output, frames * OUTPUT_CHANNELS * sizeof(short));
 		job_running = 1;
+#if PSP_MUSIC
+		psp_me_audio_music(music_job);
+#endif
 		mixed = psp_meaudio_run((void *const *)list, count, output, frames, &voices, &clipped, &me_us);
+#if PSP_MUSIC
+		psp_me_audio_music(0);
+#endif
 		job_running = 0;
 		/* what the ME changed, dropped from this cache (whole lines: see
 		STREAM_BYTES; nothing here wrote to them (the lock is held, or the game's side is on lines of its own): the
@@ -1983,16 +2195,31 @@ static void mix(short *output, unsigned long frames)
 			voices = mix_checked(list, count, sums, output, frames, &clipped);
 		else
 			voices = psp_dsound_mix_list((void *const *)list, count, sums, output, frames, &clipped);
+#if PSP_MUSIC
+		if (music_job)
+			psp_dsound_music_job(frames);
+#endif
 	}
+#if PSP_MUSIC
+	for (m = 0; m < music_marks; m++)
+		((struct psp_stream *)music_owner[m])->music_block = 0;
+#endif
+	if (full)
+		mix_full_rate(full_list, full_count, full, frames, &voices, &clipped);
 	{
 		unsigned long k;
 
 		for (k = 0; k < count; k++)
 			publish_finished(list[k]);
+		for (k = 0; k < full_count; k++)
+			publish_finished(full_list[k]);
 	}
 	blocks_ended++;
 	if (mixlock_old)
 		pthread_mutex_unlock(&mixer_lock);
+#if PSP_MUSIC
+	psp_music_after_block(music_job);
+#endif
 	clipped_blocks += clipped != 0;
 	mix_blocks++;
 	mix_voice_blocks += voices;
@@ -2032,6 +2259,20 @@ static const int up_taps[UP_TAPS] = { 20276, -5378, 2003, -659, 154, -12 }; /* Q
 static short up_history[2 * UP_TAPS * OUTPUT_CHANNELS];
 static short up_input[(2 * UP_TAPS + MIX_FRAMES) * OUTPUT_CHANNELS];
 static short output44[2][2 * MIX_FRAMES * OUTPUT_CHANNELS] __attribute__((aligned(64)));
+/* MUSADPCM's full-rate block, added to the upsampled mix */
+static short output_full[2][2 * MIX_FRAMES * OUTPUT_CHANNELS] __attribute__((aligned(64)));
+
+static void add_full(short *out, const short *full)
+{
+	int k;
+
+	for (k = 0; k < 2 * MIX_FRAMES * OUTPUT_CHANNELS; k++)
+	{
+		int value = out[k] + full[k];
+
+		out[k] = (short)(value > 32767 ? 32767 : value < -32768 ? -32768 : value);
+	}
+}
 
 static void upsample(const short *in, short *out)
 {
@@ -2056,7 +2297,7 @@ static void upsample(const short *in, short *out)
 
 static int audio_thread(SceSize arguments, void *argument)
 {
-	int channel = -1, which = 0, up = 0;
+	int channel = -1, which = 0, up = 0, full_rate = 0;
 	SceUID dump = -1;
 	unsigned long dumped = 0;
 
@@ -2073,6 +2314,8 @@ static int audio_thread(SceSize arguments, void *argument)
 		extern int psp_keep(const char *word);
 
 		up = psp_keep("audio44");
+		full_rate = psp_keep("musadpcm");
+		up |= full_rate;
 	}
 	channel = up ? sceAudioChReserve(PSP_AUDIO_NEXT_CHANNEL, 2 * MIX_FRAMES, PSP_AUDIO_FORMAT_STEREO) :
 		sceAudioSRCChReserve(MIX_FRAMES, OUTPUT_RATE, 2);
@@ -2080,19 +2323,38 @@ static int audio_thread(SceSize arguments, void *argument)
 		platform_log("audio: no output channel (%08x); sound runs silent", channel);
 	else
 		platform_log("audio: %d Hz stereo, %d samples a block (%d ms)%s", OUTPUT_RATE, MIX_FRAMES,
-			MIX_FRAMES * 1000 / OUTPUT_RATE, up ? "; to 44,100 Hz by the half-band filter (audio44)" : "");
+			MIX_FRAMES * 1000 / OUTPUT_RATE, full_rate ? "; to 44,100 Hz by the half-band filter, stereo 44.1 kHz voices mixed at 44,100 Hz (musadpcm)" :
+			up ? "; to 44,100 Hz by the half-band filter (audio44)" : "");
 	{
 		extern int psp_keep(const char *word);
 
 		/* keep.txt's "audiodump": the first 20 s of the mix into ms0:/halo/audio.raw
-		(22,050 Hz stereo 16-bit), to check the mixer off the PSP */
+		(22,050 Hz stereo 16-bit), to check the mixer off the PSP; with a
+		44.1 kHz output, what it plays into audio44.raw (44,100 Hz) */
 		if (psp_keep("audiodump"))
-			dump = sceIoOpen(PSP_DATA_ROOT "/audio.raw", PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
+			dump = sceIoOpen(up ? PSP_DATA_ROOT "/audio44.raw" : PSP_DATA_ROOT "/audio.raw",
+				PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
 	}
 	for (;;)
 	{
-		mix(output_buffers[which], MIX_FRAMES);
-		if (dump >= 0)
+		mix(output_buffers[which], full_rate ? output_full[which] : NULL, MIX_FRAMES);
+		if (up)
+		{
+			upsample(output_buffers[which], output44[which]);
+			if (full_rate)
+				add_full(output44[which], output_full[which]);
+		}
+		if (dump >= 0 && up)
+		{
+			sceIoWrite(dump, output44[which], sizeof(output44[which]));
+			dumped += MIX_FRAMES;
+			if (dumped >= 20 * OUTPUT_RATE)
+			{
+				sceIoClose(dump);
+				dump = -1;
+			}
+		}
+		else if (dump >= 0)
 		{
 			sceIoWrite(dump, output_buffers[which], sizeof(output_buffers[which]));
 			dumped += MIX_FRAMES;
@@ -2114,7 +2376,6 @@ static int audio_thread(SceSize arguments, void *argument)
 
 			if (up)
 			{
-				upsample(output_buffers[which], output44[which]);
 				sceKernelDcacheWritebackRange(output44[which], sizeof(output44[which]));
 				sceAudioOutputPannedBlocking(channel, PSP_AUDIO_VOLUME_MAX, PSP_AUDIO_VOLUME_MAX, output44[which]);
 			}
@@ -2178,6 +2439,13 @@ static void audio_start(void)
 /* the mixer's cost, for the heartbeat log */
 void psp_audio_report(void)
 {
+#if PSP_MUSIC
+	{
+		extern void psp_music_report(void);
+
+		psp_music_report();
+	}
+#endif
 	if (!mix_blocks)
 		return;
 	unsigned long block_us = MIX_FRAMES * 1000000 / OUTPUT_RATE, average = mix_microseconds / mix_blocks;
@@ -2187,6 +2455,9 @@ void psp_audio_report(void)
 		average, block_us, permille / 10, permille % 10,
 		mix_voice_blocks / mix_blocks, mix_voice_blocks * 10 / mix_blocks % 10, mix_peak_voices,
 		mix_worst_us, lock_worst_us, late_blocks, mix_blocks, gap_worst_us, clipped_blocks, cut_sounds);
+	if (full_blocks)
+		platform_log("audio: musadpcm: %lu blocks mixed stereo 44.1 kHz voices at 44,100 Hz, %lu.%lu of them a block on average, %lu voice-blocks heard",
+			full_blocks, full_voice_blocks / full_blocks, full_voice_blocks * 10 / full_blocks % 10, full_heard);
 	if (me_blocks || me_failures || psp_meaudio_running())
 		platform_log("audio: Media Engine mixed %lu of the blocks (menu: %s), waited for %lu us a block on average, %lu at most (main CPU asleep meanwhile); %lu failed; %lu over the voice list; %lu handed over by ranges (the rest by the whole cache)",
 			me_blocks, me_wanted ? "ME" : "main CPU", me_blocks ? me_wait_us / me_blocks : 0, me_wait_worst_us, me_failures,
@@ -2456,7 +2727,27 @@ static HRESULT STDMETHODCALLTYPE stream_process(IDirectSoundStream *object, LPCX
 	game->queued_context = input->pContext;
 	if (psp_sound_queueing_class >= 0)
 		game->sound_class = psp_sound_queueing_class;
+#if PSP_MUSIC
+	{
+		/* whether it is a music stub's is the game's side's to say: the stubs
+		are made and freed on the game's thread */
+		extern int psp_music_packet(const void *permutation, const unsigned char *data, unsigned long channels,
+			unsigned long *start, unsigned long *scale);
+		struct mix_command command;
+
+		memset(&command, 0, sizeof(command));
+		command.stream = stream;
+		command.type = CMD_PUSH;
+		command.data = data;
+		command.frames = data ? frames : 0;
+		command.sound_class = game->sound_class;
+		command.music = psp_music_packet(input->pContext, data, stream->channels, &command.music_start,
+			&command.music_scale);
+		mix_queue(&command);
+	}
+#else
 	mix_command(stream, CMD_PUSH, data, data ? frames : 0, game->sound_class);
+#endif
 	game->count++;
 	queue_leave();
 	return S_OK;
