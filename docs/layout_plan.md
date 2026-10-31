@@ -6,6 +6,8 @@ Labels: [M] measured on a PSP, [E] emulator or estimate, [D] read in code or dat
 
 ## 0. The short version
 
+**Sheepdog01 approved this plan as the working order (2026-10-30 19:51) with two changes, folded in below:** GEREADS goes to the very front, beside phase 1 (emulator only), with a VRAM re-cut as its follow-on if it names a kind the GE reads from main RAM during the ticks; and the music becomes **MUSADPCM: the disc's own 44.1 kHz stereo Xbox ADPCM, played untouched on its own output**, in place of MUSICSTREAM's Vorbis, which takes the decoder off the ME and out of the eDRAM and moves up into phases 1-2.
+
 The frame has three lanes that matter: the main CPU (ticks, plus whatever drawing it keeps), the ME (the drawing's command building, visibility, sound, rays) and the GE. **Option C's shape, two lanes in parallel (ticks on the main CPU, drawing off it), is the spine, but C's full form (the ME draws everything) can't be built yet, because the ME is already the contested lane.** At w142 the ME carries 18-61 ms a frame on the intros and 70-82 ms on b30's flight [M]. That already fills a 15/30 budget on a10, a30, b30 and d20, before AIME or C's walk asks for any of it. So the critical path is **making the ME's drawing cheap** (prebuilt lists CALLed, not copied; the level as baked lists), behind **a scheduler that keeps the ME's deadlines** (today's music hangs and the AIME fault are failures of the ME's lane, not of placement: a job with no deadline, a runtime CPU test that a stack can fool, and an ME stack found where the plan doesn't put it). Then the room it frees is spent per map and per role: on AIME where the AI is heavy (c20, d20, then b30), on C's walk where drawing binds (c10, a10, a30), and on C's walk alone for a co-op client, which runs no AI. Beside all of that, on the main CPU only, **the tick has to fall 30-40% on b30 and a few ms on c10 and d20** even if every frame's drawing left it. That work is code shape (the big updates split into passes that fit the instruction cache), hot data (the scratchpad, the object datum's hot fields) and posing batched on the VFPU. Collision, tag indices and object slots stay as the host has them in every role. With the compromises left off: a10, a30, a50 and c20's intros are already at or within a few ms of 15/30 [M]; c10 gets there with C's walk on the ME [U]; d20 needs its tick cut a few ms more than the plan sizes [U]; **b30's 15/30 has no sized route yet**: phase 4's sized tick cuts come to a few ms a tick against the -13 to -19 b30 needs, and the largest measured tick lever, the bus toll (the GE reading main RAM while the tick misses, §2), has no lever behind it until phase 0's census of what the GE reads says which bytes could move or shrink; and 30/30 isn't promised on any heavy map (it needs every phase, the ME's drawing ~3x cheaper and a GE cut on a30 and b30).
 
 ## 1. The goals as lane budgets
@@ -107,7 +109,7 @@ SP = single player, H = co-op host, Cl = co-op client. "Main" = the main CPU, wi
 | System | Unit | Memory | Rate | Why [label] |
 |---|---|---|---|---|
 | Mixer, ADPCM voices | ME (audio job, hard deadline) | sound cache in main RAM (1.5-1.8 MB) | per audio block | 2.6 ms a block [M]; the VME's best candidate once it computes (§9 RW7) |
-| Music decode (MUSICSTREAM, Tremor) | ME, in its own bounded slice (RW1) | Tremor's pool and tables in eDRAM, 1,184-1,456 KB | per block | +2.65 ms a block [M]; off by default until RW1 holds it; **or** music baked to the mixer's own ADPCM (MUSADPCM, a listening A/B), which removes the decoder from the ME |
+| Music (MUSADPCM, Sheepdog01 19:51) | off the ME: the disc's own 44.1 kHz stereo Xbox ADPCM played untouched on its own output | its stream buffers in main RAM; no eDRAM | per block | removes MUSICSTREAM's +2.65 ms a block on the ME [M] and its ~270 KB of eDRAM; MUSICSTREAM (Tremor on the ME) stays behind its keep word, off by default, until MUSADPCM replaces it |
 | Stick reads (sound, geometry, textures, animation pages) | Main (reader threads above the game's priority) | main RAM caches | on demand | the async-priority rule [M] |
 | Geometry cache scans | ME | entry table in `.bss` | every frame | MEPLACE (its bytes cut) was null [M] |
 
@@ -155,11 +157,11 @@ The ME's eDRAM runs to the full 2 MB on the PSP-1000 (the ME's stack began at 2,
 | 560-750 | L1, the level pass's positions (~190 KB) | the same | plan |
 | 750-800 | MEVGATHER, visibility's gathered spheres and references (~20-44 KB, double) [U] | the same | new |
 | 800-1,184 | free (~384 KB): RW2's key tables if they leave the heap | **C's snapshot (192 KB)**, filled by the ME's own gather | free |
-| 1,184-1,456 | MUSICSTREAM's decoder (~270 KB); free if MUSADPCM replaces it | the same | decided 2026-10-30 |
+| 1,184-1,456 | MUSICSTREAM's decoder (~270 KB) while musicstream stays behind its keep word; **freed when MUSADPCM replaces it** (Sheepdog01 19:51: the music off the ME and out of the eDRAM) | the same | decided 2026-10-30; to be freed |
 | 1,456-1,504 | AIME's job data (48 KB) | - (free) | decided 2026-10-30 |
 | 1,504-2,048 | the ME's stack, sized for AIME's job (544 KB) | the ME's stack, 128 KB at 1,920-2,048: **1,456-1,920 free (464 KB)** | decided 2026-10-30 |
 
-- **SP's claims come to ~1,450 KB** of the ~1,856 above 192 KB, with ~384 KB free (and 270 more if MUSADPCM wins).
+- **SP's claims come to ~1,450 KB** of the ~1,856 above 192 KB, with ~384 KB free, and 270 more once MUSADPCM replaces MUSICSTREAM.
 - **The client** keeps everything but AIME, so its walk's snapshot fits in eDRAM, read off the bus. In single player the snapshot stays in the heap (192 KB fits the heap's largest block on b30, c10 and a10 [E walkr2]) unless the 800-1,184 room is left free for it.
 - **CPA** (1,089 KB) stays out (Sheepdog01 2026-10-30 07:38). **R2/SNDEDRAM** stays rejected (frame +7-14% [M]).
 - The lab's `edram.md` is the register: each row here goes there before it's built.
@@ -195,8 +197,8 @@ A unified EBOOT follows from MODEMEM: the campaign stops paying for the netcode 
 | 9 | c10's weather on the ME (WXME) | Main -> ME | c10 -2.8 to -3.1 (-3.9 to -4.3 with the sprites) [U on M x E] | all | the dead walk's census, then a c10 pair |
 | 10 | The scratchpad for the tick (PROFHEAP) | profiler -> heap; 6.6 KB to the tick | -0.3 to -1 ms a tick [U, by SCRATCHBSP's -0.3 for 9.7 KB] | all | a one-build pair (a keep word) |
 | 11 | The datum's hot fields packed (OBJHOT) | 5 lines -> 3 | ~1.5-2% of b30's tick D-misses [U] | all | a cache-model count, then a pair |
-| 12 | Music out of Tremor (MUSADPCM) | ME decode -> the mixer's ADPCM | ME -2.65 ms a block [M x U] | all | a listening A/B (Sheepdog01), then a pair |
-| 13 | What the GE reads from main RAM, by kind and timing (GEREADS, phase 0) | a census, then at most one move into VRAM or a smaller form | the bus toll is 25-34% of b30's tick [M]; the share any one kind can win is unknown [U] | all | the census names a kind read while the ticks run |
+| 12 | Music as the disc's own Xbox ADPCM (MUSADPCM, Sheepdog01 19:51) | Tremor on the ME -> the disc's 44.1 kHz stereo Xbox ADPCM, untouched, on its own output | ME -2.65 ms a block [M x U] and ~270 KB of eDRAM | all | phases 1-2; stick reads counted in passing, not a gate (Sheepdog01: not a concern yet) |
+| 13 | What the GE reads from main RAM, by kind and timing (GEREADS, first, beside phase 1; Sheepdog01 19:51) | a census, then, if it names a kind read during the ticks, a VRAM re-cut (what earns VRAM; 4-bit palettes, CLUT4W) | the bus toll is 25-34% of b30's tick [M]; the share any one kind can win is unknown [U] | all | the census names a kind read while the ticks run |
 
 **What stays where it is, and why:**
 - **The model walk on the main CPU** in single player until §5's room is measured: the ME is the scarcer lane.
@@ -228,7 +230,7 @@ A unified EBOOT follows from MODEMEM: the campaign stops paying for the netcode 
 
 **RW6. Posing as a batched VFPU pass** (SKELBATCH, new). The quaternion and matrix chain for many bones at once in the VFPU's own forms (`vqmul.q`, `vdot.q`, `vrsq`), aligned temporaries (the engine's floats are 4-aligned and `ulv.q` corrupts on the 1000 [D]). Not bit-exact: plays the same, proven by side-by-sides and an outcome census. LOCAL to every role (hardware_utilization.md §6): the host checks only movement and hit reports, within units of tolerance.
 
-**RW7. Sound off the ME's CPU** (two options; neither is the first step). MUSADPCM (new): music baked to the mixer's own ADPCM, so the ME decodes it like any voice. And the VME, once it computes: the mix is fixed-point streaming work, the VME's kind. The VME is present and answers on the PSP-1000, but computes nothing yet (round 1, 41115505618; round 3's start failed, 41142248633 [M]). It gets **0 ms in every budget** until a sample computes on the 1000.
+**RW7. Sound off the ME's CPU.** **MUSADPCM** (Sheepdog01 19:51, phases 1-2): the music is the disc's own 44.1 kHz stereo Xbox ADPCM, played untouched on its own output, in place of MUSICSTREAM's Vorbis: the original data, the decoder off the ME and out of the eDRAM. Stick reads aren't a gate; they're counted in passing. MUSICSTREAM stays behind its keep word until MUSADPCM replaces it, and its hang is still found by RW1's counters, since the cause may be the scheduler's. The VME, once it computes, is the other route for the mix (fixed-point streaming work, the VME's kind): present and answering on the PSP-1000 but computing nothing yet (rounds 1 and 4, 41115505618, 41149071025 [M]), so it gets **0 ms in every budget** until a sample computes on the 1000.
 
 **RW8. Memory by mode** (MODEMEM, new). The netcode's buffers allocated at a network game's start and freed at its end; the tag window and the heap from one pool sized per mode; co-op planned as the worst case. On paper until multiplayer resumes.
 
@@ -253,7 +255,7 @@ Halo's netcode isn't lockstep (hardware_utilization.md §6 [D]): what must match
 
 Each step is gated on its proof. Steps in one phase can run side by side when they touch different lanes.
 
-**Phase 0, records and one census.**
+**Phase 0, records and one census: first, beside phase 1** (Sheepdog01 19:51: GEREADS at the very front, emulator only).
 - The stale rows below fixed (§13).
 - The ME's ms a frame per map read from runs already on the results branch (the intros' tm-plain, the b30 lane traces), so §5's "today" column is complete for the heavy stretches.
 - **The GE's main-RAM reads on b30's flight, by kind** (GEREADS, new). b30's tick falls 25-34% with nothing drawn, and 55-94% of that rise is the GE reading main RAM while the tick misses (§2 [M]): the largest measured tick lever, with nothing behind it once VRAM display lists are dropped. RW2 and RW3 cut what the ME writes, not what the GE reads. The bus census over b30's 90 s route already gives the totals: the GE reads ~1.4 MB of vertices, ~1.4 MB of texels and ~0.25 MB of lists a frame, the level copies ~1.0 MB of the vertices (bus7 40884427736, bus8 40894428250 [E]). What it doesn't give:
@@ -261,9 +263,9 @@ Each step is gated on its proof. Steps in one phase can run side by side when th
   - **by kind:** display lists, model vertices, level-copy vertices, indices, dynamic vertices (decals, particles, the HUD), textures, **CLUTs**, and anything else, each split by where it lives (heap, `.bss`, the texture RAM cache);
   - **when:** the bytes read while a tick runs against those read while the main CPU records or waits. Contention is about timing (levelcompact halved the level's bytes and gained nothing, three times [M]), so a kind read mostly outside the ticks is worth less than its bytes.
 
-  Spec: one emulator batch on the bus census (the halo-local patch's item 23, the lab's `bus.py`), b30's route to the flight's end, with the kind and tick-overlap splits added where `bus.py` lacks them [U: whether it splits CLUTs and indices today]. **At most one PSP pair, and only if needed:** if the census names one kind that VRAM could take by giving up something less used (the texture cache's best third holds 189-270 KB; the model buffers run full [M]), a b30 flight pair `"- | <that word>"` prices it; if no kind stands out, no pair. Its answer is what decides whether b30 has a tick route at all.
+  Spec: one emulator batch on the bus census (the halo-local patch's item 23, the lab's `bus.py`), b30's route to the flight's end, with the kind and tick-overlap splits added where `bus.py` lacks them [U: whether it splits CLUTs and indices today]. **At most one PSP pair, and only if needed:** if the census names one kind that VRAM could take by giving up something less used (the texture cache's best third holds 189-270 KB; the model buffers run full [M]), a b30 flight pair `"- | <that word>"` prices it; if no kind stands out, no pair. Its answer is what decides whether b30 has a tick route at all. **Its follow-on** (Sheepdog01 19:51), if it names a kind the GE reads from main RAM during the ticks: a VRAM re-cut, deciding what earns VRAM (4-bit palettes, CLUT4W, the texture cache's share against the model buffers).
 
-**Phase 1, the ME's floor.** RW1, in order: the ME's stack answered (where AIME's job gets its sp, and whether the music runs had the same), then the ME's own entry points with no runtime CPU test (both are the AIME helper's, in progress), then the job classes and the counters, then the music hang's cause. The classes go on only after the stack's answer. Proof: one c20 run on a PSP for the entry points (§12 ask 0); the emulator for exactness and the counters; one PSP pair under load (ask 1).
+**Phase 1, the ME's floor.** RW1, in order: the ME's stack answered (where AIME's job gets its sp, and whether the music runs had the same), then the ME's own entry points with no runtime CPU test (both are the AIME helper's, in progress), then the job classes and the counters, then the music hang's cause (found by RW1's counters, since the cause may be the scheduler's). **MUSADPCM** (RW7) is built here and in phase 2, independent of RW1 since it leaves the ME; MUSICSTREAM stays behind its keep word until it's replaced. The classes go on only after the stack's answer. Proof: one c20 run on a PSP for the entry points (§12 ask 0); the emulator for exactness and the counters; one PSP pair under load (ask 1).
 
 **Phase 2, ME room** (after phase 1's entry points and stack; beside phase 4). RW2, then RW3, then MEVGATHER. Each frees the ME's time; each is measured on the map where the ME binds (c10's cinematic, then b30).
 
@@ -273,7 +275,7 @@ Each step is gated on its proof. Steps in one phase can run side by side when th
 
 **Phase 5, Sheepdog01's A/Bs, off by default.** L15, FX15, AIFAR, PRIO60, RENDERTICK are built behind keep words (Sheepdog01 2026-10-29 11:59). In co-op the AI ones are host options; L15 stays campaign only.
 
-**Phase 6, research.** The VME (computing at all, then the mix); MUSADPCM's listening test; MODEMEM's sizes when multiplayer resumes.
+**Phase 6, research.** The VME (computing at all, then the mix); MODEMEM's sizes when multiplayer resumes.
 
 ## 12. The PSP asks
 
