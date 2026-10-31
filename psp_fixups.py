@@ -41171,6 +41171,7 @@ FIXES_AIME2A["source/ai/actors.c#aime2a"] = [
 		{
 			/* between actors: the collection's word first, then audio, the
 			ring and a waiting render job, then the word again */
+			psp_aime_step(0);
 			if (psp_aime2a_abort && *psp_aime2a_abort)
 				psp_aime_late_now = 1;
 			else
@@ -41189,9 +41190,12 @@ FIXES_AIME2A["source/ai/actors.c#aime2a"] = [
 				continue;
 			}
 			psp_aime2a_me_stats.on_me++;
+			psp_aime_step(1);
 		}
 		psp_aime_think_actor(iterator.index);
 	}
+	if (psp_work_on_me())
+		psp_aime_step(-1);
 	if (psp_aime_late_now)
 		psp_aime2a_me_stats.aborted++;
 	if (!psp_work_on_me() && !psp_aime2a_alike)
@@ -41476,6 +41480,30 @@ void psp_aime_me_job(
 	results[6] = nested_worst;
 }
 
+/* RW1's counters, the job's side: where its time goes between its looks at
+the collection's word. Steps: 0 the yield between actors (audio, the ring),
+1 an actor's input and perception, 2 its situation, 3 its emotion, orders,
+decision loop and the rest of its update; each step's longest run, in the
+ME's cycles, and the step in hand (read at a stop, when the word went
+unanswered). On the ME only: its cycle counter can't be read elsewhere */
+#define PSP_AIME_STEPS 4
+static PSP_AIME_ME_SIDE int psp_aime_step_now = -1;
+static PSP_AIME_ME_SIDE unsigned int psp_aime_step_at = 0, psp_aime_step_worst[PSP_AIME_STEPS];
+void psp_aime_step(
+	int step)
+{
+	unsigned int now;
+
+	if (!psp_cpu_is_me())
+		return;
+	__asm__ __volatile__("mfc0 %0, $9" : "=r"(now));
+	if (psp_aime_step_now >= 0 && psp_aime_step_now < PSP_AIME_STEPS &&
+		now - psp_aime_step_at > psp_aime_step_worst[psp_aime_step_now])
+		psp_aime_step_worst[psp_aime_step_now] = now - psp_aime_step_at;
+	psp_aime_step_now = step;
+	psp_aime_step_at = now;
+}
+
 /* between the steps of an actor's thinking in the frame's last pass (the
 ME's job, or aimefpu's pass alike): a look at the collection's word (the
 ME's job only) or aimelate's count; once either is up, the actor in hand
@@ -41566,9 +41594,9 @@ void psp_aime2a_tick_begin(
 			if (!psp_me_submitted_done(ME_SLOT_AI))
 			{
 				psp_aime2a_stats.no_answer++;
-				platform_psp_log("aime2a: game time %ld | the word unanswered after %u us; render jobs the job's yields had run before %lu, the longest %lu us",
+				platform_psp_log("aime2a: game time %ld | the word unanswered after %u us; render jobs the job's yields had run before %lu, the longest %lu us; the job's step in hand %d (0 yield, 1 perception, 2 situation, 3 decision and the rest)",
 					game_time_get(), (unsigned int)(sceKernelGetSystemTimeWide() - asked), psp_aime2a_stats.nested,
-					psp_aime2a_stats.nested_worst_us);
+					psp_aime2a_stats.nested_worst_us, *(volatile int *)((unsigned int)&psp_aime_step_now | 0x40000000u));
 				psp_me_stop("aime2a: the thinking job didn't end at the collection's word");
 			}
 			else
@@ -41662,6 +41690,14 @@ static void psp_aime2a_log(
 	platform_psp_log("aime2a: game time %ld | render jobs run in the job's yields %lu, the longest %lu us; left to the ME's loop %lu (menestrender runs them) | the word answered within %lu us at worst (the bound %u)",
 		now, psp_aime2a_stats.nested, psp_aime2a_stats.nested_worst_us, psp_aime2a_stats.nested_left, psp_aime2a_stats.word_worst_us,
 		(unsigned int)PSP_AIME2A_BOUND_US);
+	{
+		float per_us = psp_me_cycles_per_us();
+
+		if (per_us > 0.0f)
+			platform_psp_log("aime2a: game time %ld | the job's longest run between looks at the word, us: the yield %u, perception %u, situation %u, decision and the rest %u",
+				now, (unsigned int)(psp_aime_step_worst[0] / per_us), (unsigned int)(psp_aime_step_worst[1] / per_us),
+				(unsigned int)(psp_aime_step_worst[2] / per_us), (unsigned int)(psp_aime_step_worst[3] / per_us));
+	}
 	if (psp_aime_chain_on > 0)
 	{
 		psp_aime_chain_log();
@@ -41897,7 +41933,9 @@ FIXES_AIME2A["source/ai/actors.c#aime2a_late"] = [
 frame's last pass only */
 extern int psp_aime_arm, psp_aime_job_now[16], psp_aime_fpu_main;
 void psp_aime_late_check(void);
+void psp_aime_step(int step);
 #define PSP_AIME_LATE_LOOK() do { if (psp_aime_arm && (psp_aime_job_now[0] || psp_aime_fpu_main) && psp_aime_here()) psp_aime_late_check(); } while (0)
+#define PSP_AIME_LOOK_AT(step) do { if (psp_aime_job_now[0]) psp_aime_step(step); PSP_AIME_LATE_LOOK(); } while (0)
 
 static void actor_update(
 	long actor_index)
@@ -41909,7 +41947,7 @@ static void actor_update(
 		}""",
  """			actor_input_update(actor_index);
 			actor_perception_update(actor_index);
-			PSP_AIME_LATE_LOOK();
+			PSP_AIME_LOOK_AT(2);
 			actor_emotion_update(actor_index);
 			actor_clear_orders(actor_index);
 		}"""),
@@ -41923,9 +41961,9 @@ static void actor_update(
 		psp_aicad_seen(actor_index);""",
  """			actor_input_update(actor_index);
 			actor_perception_update(actor_index);
-			PSP_AIME_LATE_LOOK();
+			PSP_AIME_LOOK_AT(2);
 			actor_situation_update(actor_index);
-			PSP_AIME_LATE_LOOK();
+			PSP_AIME_LOOK_AT(3);
 			actor_emotion_update(actor_index);
 			actor_clear_orders(actor_index);
 			actor_decision_loop(actor_index);
@@ -41938,6 +41976,7 @@ FIXES_AIME2A["source/ai/actors.c#aime2a"].insert(0, (
 #define PSP_AIME_WRITERS 25
 """,
 """/* FIXES_AIME2A: "aime2a" (see there) */
+void psp_aime_step(int step);
 #ifndef ME_SLOT_AI
 #define ME_SLOT_AI 3
 #define ME_JOB_AIME 15
