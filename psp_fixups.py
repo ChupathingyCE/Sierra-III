@@ -41872,6 +41872,8 @@ FIXES_AIME2A["source/ai/actors.c#aime2a_late"] = [
 {""",
  """/* psp_fixups.py (FIXES_AIME2A): psp_aime_late_check's looks, in the
 frame's last pass only */
+extern int psp_aime_arm, psp_aime_job_now[16], psp_aime_fpu_main;
+void psp_aime_late_check(void);
 #define PSP_AIME_LATE_LOOK() do { if (psp_aime_arm && (psp_aime_job_now[0] || psp_aime_fpu_main) && psp_aime_here()) psp_aime_late_check(); } while (0)
 
 static void actor_update(
