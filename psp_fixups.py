@@ -6884,12 +6884,13 @@ void matrix4x3_multiply(
 	/* the Media Engine has no VFPU (a VFPU instruction there faults, code 11)
 	and its jobs reach this, so the ME's work keeps
 	the FPU's form wherever it runs, as psp_vfpu_quaternions_multiply does:
-	a stack outside main RAM is the ME's, and psp_me_context is the ME's
+	a stack outside main RAM is the ME's, so is the CPU psp_cpu_is_me names
+	(the ME on another stack: psp_post.h), and psp_me_context is the ME's
 	work run on the main CPU */
 	unsigned int psp_sp;
 
 	__asm__ volatile ("move %0, $sp" : "=r"(psp_sp));
-	if (psp_vfpu_on && (psp_sp >> 27) == 1 && !psp_me_context)
+	if (psp_vfpu_on && (psp_sp >> 27) == 1 && !psp_me_context && !psp_cpu_is_me())
 	{
 		psp_vfpu_matrix4x3_multiply(a, b, result);
 		return;
@@ -21299,8 +21300,9 @@ FIXES_131["source/models/model_animation_definitions.h#poseahead"] = [
 		void *psp_anim_on_me(unsigned long address, unsigned long size);
 		unsigned int psp_sp;
 
-		__asm__ ("move %0, $sp" : "=r"(psp_sp));
-		if (psp_me_context != 0 || (psp_sp & 0x1FFFFFFFu) < 0x01000000u)
+		(void)psp_sp;
+		/* (the CPU itself, not only its stack: psp_post.h) */
+		if (psp_me_context != 0 || psp_cpu_is_me())
 			return (byte *)psp_anim_on_me(address, (unsigned long)size);
 	}
 	{
@@ -31350,10 +31352,8 @@ was stuck, not slow: the job reports its slowest
 point and the failed job's point is logged, to catch it */
 static inline int psp_on_me(void)
 {
-	unsigned int sp;
-
-	__asm__ ("move %0, $sp" : "=r"(sp));
-	return (sp & 0x1FFFFFFFu) < 0x01000000u;
+	/* the CPU itself, not only its stack (psp_post.h) */
+	return psp_cpu_is_me();
 }
 
 /* "mepointsclock" (the emulator): the simulated ME's points timed by the
@@ -40279,6 +40279,8 @@ stop; 2 queue, but let a writer run (this actor can't be put back) */
 PSP_AIME_ME_SIDE int psp_aime_arm = 0;
 static int psp_aime1b_on = -1, psp_aime1b_check_on = 0;
 static PSP_AIME_ME_SIDE void *psp_aime_jump[5];
+/* the CPU that set the jump (psp_cpu_is_me): a stop jumps only on it */
+static PSP_AIME_ME_SIDE int psp_aime_jump_me = 0;
 static PSP_AIME_ME_SIDE long psp_aime_current = NONE;
 static PSP_AIME_ME_SIDE int psp_aime_stop_which = NONE;
 static PSP_AIME_ME_SIDE boolean psp_aime_stopped = FALSE;
@@ -40394,7 +40396,7 @@ void psp_aime_handback(
 		return;
 	if (which < 0 || which >= PSP_AIME_WRITERS)
 		which = PSP_AIME_FORCED;
-	if (psp_aime_arm == 1)
+	if (psp_aime_arm == 1 && psp_aime_jump_me == psp_cpu_is_me())
 	{
 		psp_aime_arm = 0;
 		psp_aime_stop_which = which;
@@ -40754,6 +40756,7 @@ static void __attribute__((noinline)) psp_aime_think_actor(
 	}
 	psp_aime_save(actor_index);
 	psp_aime1b_stats.actors++;
+	psp_aime_jump_me = psp_cpu_is_me();
 	if (__builtin_setjmp(psp_aime_jump) == 0)
 	{
 		actor_update(actor_index);
@@ -42247,14 +42250,14 @@ void structure_cluster_marker_begin(
 # 1b's pass with "aimefpu"
 _PSP_AIME_FPU_TEST = "(psp_aime_fpu_main || (psp_aime_job_now[0] && psp_aime_here()))"
 FIXES_AIME2A["source/math/matrix_math.c#aime2a"] = [
-("""	if (psp_vfpu_on && (psp_sp >> 27) == 1 && !psp_me_context)
+("""	if (psp_vfpu_on && (psp_sp >> 27) == 1 && !psp_me_context && !psp_cpu_is_me())
 	{
 		psp_vfpu_matrix4x3_multiply(a, b, result);
 		return;
 	}
 """,
  """	/* (FIXES_AIME2A: also the FPU's form for "aimefpu") */
-	if (psp_vfpu_on && (psp_sp >> 27) == 1 && !psp_me_context && !""" + _PSP_AIME_FPU_TEST + """)
+	if (psp_vfpu_on && (psp_sp >> 27) == 1 && !psp_me_context && !psp_cpu_is_me() && !""" + _PSP_AIME_FPU_TEST + """)
 	{
 		psp_vfpu_matrix4x3_multiply(a, b, result);
 		return;

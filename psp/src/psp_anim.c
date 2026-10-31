@@ -53,6 +53,7 @@ the tag window alone. */
 #include <malloc.h>
 #include "psp_paths.h"   /* ms0:/halo or ms0:/halomp, and the maps */
 #include "psp_metrics.h"
+#include "psp_me.h" /* psp_cpu_is_me */
 
 void platform_log(const char *format, ...);
 int psp_keep(const char *name);
@@ -448,8 +449,10 @@ void *psp_anim_lock(unsigned long address, unsigned long size)
 
 		/* only in the pass's own context (psp_post.h's psp_aime_here: the
 		ME, or the stack the pass runs on); "aimefpu": 1b's pass stops alike */
+		/* (psp_post.h's psp_aime_here, which units here don't include: on the
+		ME the AI job alone, not another job of its) */
 		__asm__ ("move %0, $sp" : "=r"(sp));
-		if (psp_aime_arm && ((sp & 0x1FFFFFFFu) < 0x01000000u || sp - psp_aime_sp_low < psp_aime_sp_high - psp_aime_sp_low) &&
+		if (psp_aime_arm && (psp_cpu_is_me() ? psp_aime_job_now[0] != 0 : sp - psp_aime_sp_low < psp_aime_sp_high - psp_aime_sp_low) &&
 			(psp_aime_job_now[0] || psp_aime_fpu_main))
 			psp_aime_handback(24);
 	}

@@ -70,13 +70,40 @@ same in both builds and one profile fits them */
 
 /* TRUE on the Media Engine, or in work the emulator runs as the ME's
 (psp_me.h's PSP_ME_WORK, for engine units, which don't include it) */
+#ifndef PSP_CPU_IS_ME_DEFINED
+#define PSP_CPU_IS_ME_DEFINED
+/* Which CPU is running this, the main CPU or the Media Engine: the ME has
+no VFPU and no kernel, so code both run takes its VFPU and system-call
+routes only on the main CPU. Two tests, either of which says "the ME":
+- its stack: the ME's is in its eDRAM (below 16 MB in any segment), the
+  main CPU's threads' in main RAM. Fast, but it only holds while the ME is
+  on its own stack;
+- the CPU itself: 0x00013ffc is the main CPU's scratchpad (SRAM private
+  to it, psp_scratch.c keeps its last line free) and, on the ME, memory of
+  its own at the same address (its eDRAM is its physical 0-2 MB). The
+  main CPU writes a mark there before it starts the ME, the ME reports
+  what it reads there at its start, and psp_cpu_mark holds the mark only
+  if the two differ (psp_me.c's me_cpu_check; 0 until then, and in the
+  emulator, where only the stack test applies). The coprocessor 0 CPU
+  number (register 22: 0 the main CPU, 1 the ME) would say it directly,
+  but the main CPU's user mode can't read it */
+#define PSP_CPU_MARK_ADDRESS 0x00013ffcu
+extern volatile unsigned int psp_cpu_mark;
+static __inline__ __attribute__((always_inline)) int psp_cpu_is_me(void)
+{
+	unsigned int psp_cpu_sp_;
+
+	__asm__ ("move %0, $sp" : "=r"(psp_cpu_sp_));
+	if ((psp_cpu_sp_ & 0x1FFFFFFFu) < 0x01000000u)
+		return 1;
+	return psp_cpu_mark != 0 && *(volatile unsigned int *)PSP_CPU_MARK_ADDRESS != psp_cpu_mark;
+}
+#endif
+
 extern volatile unsigned int psp_me_context;
 static __inline__ __attribute__((always_inline)) int psp_work_on_me(void)
 {
-	unsigned int psp_sp_;
-
-	__asm__ ("move %0, $sp" : "=r"(psp_sp_));
-	return psp_me_context != 0 || (psp_sp_ & 0x1FFFFFFFu) < 0x01000000u;
+	return psp_me_context != 0 || psp_cpu_is_me();
 }
 
 /* "aime"'s thinking pass ahead (actors.c): its stops, queues and prop log
@@ -95,11 +122,18 @@ type, a struct after its name */
 #define PSP_AIME_ME_SIDE __attribute__((section(".data.psp_aime_me")))
 #endif
 
+/* On the ME that is the AI job alone (psp_aime_job_now[0]: 0 in any other
+job, and in the jobs its yields run, psp_me.c): another ME job reaching a
+stop while the main CPU's pass is mid-actor would otherwise jump onto the
+main CPU's stack */
 extern unsigned int psp_aime_sp_low, psp_aime_sp_high;
+extern int psp_aime_job_now[16];
 static __inline__ __attribute__((always_inline)) int psp_aime_here(void)
 {
 	unsigned int psp_sp_;
 
+	if (psp_cpu_is_me())
+		return psp_aime_job_now[0] != 0;
 	__asm__ ("move %0, $sp" : "=r"(psp_sp_));
-	return (psp_sp_ & 0x1FFFFFFFu) < 0x01000000u || psp_sp_ - psp_aime_sp_low < psp_aime_sp_high - psp_aime_sp_low;
+	return psp_sp_ - psp_aime_sp_low < psp_aime_sp_high - psp_aime_sp_low;
 }

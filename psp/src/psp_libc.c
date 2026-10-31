@@ -25,6 +25,7 @@ compiled as plain C (no game prefix):
 #include <pspsysmem.h>
 #include <pspsdk.h>
 #include <time.h>
+#include "psp_me.h" /* psp_cpu_is_me */
 
 /* ---------- POSIX */
 
@@ -438,9 +439,8 @@ int psp_format_refused(const char *format)
 
 	if (!format)
 		format = "(no format)";
-	__asm__ ("move %0, $sp" : "=r"(sp));
-	if ((sp & 0x1FFFFFFFu) >= 0x01000000u &&
-		(!psp_me_context || psp_me_context != (unsigned int)sceKernelGetThreadId()))
+	(void)sp;
+	if (!psp_cpu_is_me() && (!psp_me_context || psp_me_context != (unsigned int)sceKernelGetThreadId()))
 		return 0;
 	for (k = 0; k < FORMAT_REFUSED_KINDS; k++)
 	{
@@ -794,8 +794,8 @@ static void heap_me_check(void *caller, size_t size, const char *how)
 
 	unsigned int sp;
 
-	__asm__ ("move %0, $sp" : "=r"(sp));
-	if (!psp_me_context || (sp & 0x1FFFFFFFu) < 0x01000000u) /* not on the ME itself: no log from there */
+	(void)sp;
+	if (!psp_me_context || psp_cpu_is_me()) /* not on the ME itself: no log from there */
 		return;
 	/* the context names the thread doing the ME's work on the main CPU; a
 	thread that took the CPU from it meanwhile (the cache file reader) asks

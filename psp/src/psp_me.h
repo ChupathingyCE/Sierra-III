@@ -222,12 +222,39 @@ eDRAM ($sp 0x80200000 or 0x80400000, me-core.h), and every thread of the main
 CPU runs on a stack in main RAM, from 0x08000000 up. So code both CPUs run
 (the GE layer's, psp_ge.c) can tell where it is without a shared word: a word
 both CPUs write would share a cache line between them */
+#ifndef PSP_CPU_IS_ME_DEFINED
+#define PSP_CPU_IS_ME_DEFINED
+/* Which CPU is running this, the main CPU or the Media Engine: the ME has
+no VFPU and no kernel, so code both run takes its VFPU and system-call
+routes only on the main CPU. Two tests, either of which says "the ME":
+- its stack: the ME's is in its eDRAM (below 16 MB in any segment), the
+  main CPU's threads' in main RAM. Fast, but it only holds while the ME is
+  on its own stack;
+- the CPU itself: 0x00013ffc is the main CPU's scratchpad (SRAM private
+  to it, psp_scratch.c keeps its last line free) and, on the ME, memory of
+  its own at the same address (its eDRAM is its physical 0-2 MB). The
+  main CPU writes a mark there before it starts the ME, the ME reports
+  what it reads there at its start, and psp_cpu_mark holds the mark only
+  if the two differ (psp_me.c's me_cpu_check; 0 until then, and in the
+  emulator, where only the stack test applies). The coprocessor 0 CPU
+  number (register 22: 0 the main CPU, 1 the ME) would say it directly,
+  but the main CPU's user mode can't read it */
+#define PSP_CPU_MARK_ADDRESS 0x00013ffcu
+extern volatile unsigned int psp_cpu_mark;
+static __inline__ __attribute__((always_inline)) int psp_cpu_is_me(void)
+{
+	unsigned int psp_cpu_sp_;
+
+	__asm__ ("move %0, $sp" : "=r"(psp_cpu_sp_));
+	if ((psp_cpu_sp_ & 0x1FFFFFFFu) < 0x01000000u)
+		return 1;
+	return psp_cpu_mark != 0 && *(volatile unsigned int *)PSP_CPU_MARK_ADDRESS != psp_cpu_mark;
+}
+#endif
+
 static inline int psp_on_me(void)
 {
-	unsigned int sp;
-
-	__asm__ ("move %0, $sp" : "=r"(sp));
-	return (sp & 0x1FFFFFFFu) < 0x01000000u;
+	return psp_cpu_is_me();
 }
 
 /* build 118: a variable of the GE layer's or the texture cache's files that

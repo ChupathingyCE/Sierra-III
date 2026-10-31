@@ -20,6 +20,7 @@ with --wrap).
 #include <pspthreadman.h>
 #include <string.h>
 #include <math.h>
+#include "psp_me.h" /* psp_cpu_is_me */
 
 void platform_log(const char *format, ...);
 int psp_keep(const char *name);
@@ -547,9 +548,10 @@ int psp_vfpu_quaternions_multiply(const void *q0, const void *q1, void *result)
 	unsigned int stack;
 
 	__asm__ volatile("move %0, $sp" : "=r"(stack));
-	/* not 0x08000000-0x0fffffff: the ME; psp_me_context: the ME's work run
-	here, which keeps the ME's FPU product */
-	if ((stack >> 27) != 1 || psp_me_context)
+	/* not 0x08000000-0x0fffffff: the ME; nor the CPU psp_cpu_is_me names
+	(the ME on another stack); psp_me_context: the ME's work run here, which
+	keeps the ME's FPU product */
+	if ((stack >> 27) != 1 || psp_me_context || psp_cpu_is_me())
 		return 0;
 	if (vfpupose_check)
 	{

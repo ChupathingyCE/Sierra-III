@@ -117,6 +117,9 @@ struct me_control
 	unsigned int halted;    /* the ME: 1 from just before a halt until it wakes */
 	unsigned int halts;     /* the ME: halts, counted */
 	unsigned int wakes;     /* the ME: wake interrupts taken (meLibOnExternalInterrupt) */
+	/* the ME at its start (psp_me.h's psp_cpu_is_me): what it reads at the
+	mark's address, its coprocessor 0 CPU number, and 1 once both are in */
+	unsigned int cpu_word, cpu_number, cpu_seen;
 } __attribute__((aligned(64)));
 #define ME_FEATURE_HALT 1u
 #define ME_FEATURE_RING 2u
@@ -189,6 +192,12 @@ static unsigned int stash_storage[STASH_WORDS] __attribute__((aligned(64)));
 
 /* whole cache lines of their own; only ever used through the uncached view */
 static struct me_control control_storage __attribute__((aligned(64)));
+
+/* psp_me.h's psp_cpu_is_me: the mark the main CPU writes in its scratchpad
+before it starts the ME, and the test's copy of it once the ME has shown it
+reads something else there (0 until then: the stack test alone) */
+#define PSP_CPU_MARK_MAIN 0x5a3c96e1u
+volatile unsigned int psp_cpu_mark = 0;
 
 /* B31: what the ME's exception vector saw, written by psp_me_fault_vector
 on the ME and read by the main CPU when it stops an ME that didn't answer:
@@ -769,12 +778,19 @@ void psp_me_serve_audio(void)
 	psp_me_yield();
 }
 
+/* the jobs a yield runs aren't the AI job, even inside it: its stops act
+only in its own work (psp_post.h's psp_aime_here) */
+extern int psp_aime_job_now[16];
+
 void psp_me_yield(void)
 {
 	volatile struct me_private *p;
+	int aime_now;
 
 	if (!psp_on_me())
 		return;
+	aime_now = psp_aime_job_now[0];
+	psp_aime_job_now[0] = 0;
 	me_audio_now();
 	p = ME_PRIVATE;
 	if (p->ring_ready && !p->in_ring && RING_PUSHED != p->ring_popped)
@@ -784,18 +800,23 @@ void psp_me_yield(void)
 		p->ring_popped = me_ring_drain(p->ring_popped, &last_look);
 		p->ring_last_look = last_look;
 	}
+	psp_aime_job_now[0] = aime_now;
 }
 
 void psp_me_yield_slots(void)
 {
 	volatile struct me_slot *slot;
+	int aime_now;
 
 	if (!psp_on_me())
 		return;
 	psp_me_yield();
+	aime_now = psp_aime_job_now[0];
+	psp_aime_job_now[0] = 0;
 	slot = SLOT(ME_SLOT_RENDER);
 	if (slot->request != slot->done)
 		me_serve(slot, ME_AUDIO_SUMS);
+	psp_aime_job_now[0] = aime_now;
 }
 
 /* on the ME: lines of main RAM it wrote, out to main RAM now (a copy it
@@ -1297,6 +1318,17 @@ void meLibOnProcess(void)
 		__asm__ __volatile__("mfc0 %0, $13" : "=r"(cause));
 		control->cause_after = cause;
 	}
+	{
+		/* for psp_cpu_is_me's test: what this CPU reads at the mark's address
+		(the main CPU's mark is in its own scratchpad by now), and the CPU
+		number, which the ME's kernel mode can read */
+		unsigned int number;
+
+		control->cpu_word = *(volatile unsigned int *)PSP_CPU_MARK_ADDRESS;
+		__asm__ __volatile__("sync\n\tmfc0 %0, $22\n\tsync" : "=r"(number));
+		control->cpu_number = number;
+		control->cpu_seen = 1;
+	}
 	meLibDcacheWritebackInvalidateAll();
 	/* the features aren't set yet: the main-RAM copy; the eDRAM copy is
 	written before each job that reads it */
@@ -1783,6 +1815,37 @@ void psp_me_exit(const char *why)
 /* launch (build 87: on unless the launch menu's "nomeaudio"): the ME started,
 its first signs of life checked, its clock measured. Non-zero when jobs can
 be handed over */
+/* the main CPU's coprocessor 0 CPU number, read in kernel mode (me-core's
+meLibGetCpuId reads it so, in its kernel functions) */
+static int me_cpu_number_kernel(void *out)
+{
+	unsigned int number;
+
+	__asm__ __volatile__("sync\n\tmfc0 %0, $22\n\tsync" : "=r"(number));
+	*(unsigned int *)out = number;
+	return 0;
+}
+
+/* psp_cpu_is_me's CPU test turned on once the ME has read something other
+than the main CPU's mark at its address; off (the stack test alone) when it
+read the mark (the address isn't each CPU's own) or reported nothing */
+static void me_cpu_check(volatile struct me_control *control, const char *when)
+{
+	static unsigned int main_number = 0xffffffffu;
+	unsigned int main_word = *(volatile unsigned int *)PSP_CPU_MARK_ADDRESS;
+
+	if (main_number == 0xffffffffu)
+		kcall_3(me_cpu_number_kernel, 0, &main_number);
+	psp_cpu_mark = 0;
+	if (control->cpu_seen && control->cpu_word != PSP_CPU_MARK_MAIN && main_word == PSP_CPU_MARK_MAIN)
+		psp_cpu_mark = PSP_CPU_MARK_MAIN;
+	sceKernelDcacheWritebackRange((void *)&psp_cpu_mark, sizeof(psp_cpu_mark));
+	platform_log("ME: the CPU's own test (%s): %s; at %08x the ME read %08x, the main CPU reads %08x; coprocessor 0 register 22: the ME %u, the main CPU %u",
+		when, psp_cpu_mark ? "on" : !control->cpu_seen ? "OFF, the ME reported nothing (the stack test alone)" :
+		"OFF, the two read the same (the stack test alone)", PSP_CPU_MARK_ADDRESS, control->cpu_seen ? control->cpu_word : 0u,
+		main_word, control->cpu_seen ? control->cpu_number : 0xffffffffu, main_number);
+}
+
 int psp_me_start(void)
 {
 	volatile struct me_control *control = CONTROL;
@@ -1859,6 +1922,9 @@ int psp_me_start(void)
 		int have = getcwd(folder, sizeof(folder)) != NULL;
 
 		me_reset_whole = psp_keep("meresetwhole");
+		/* the CPU test's mark, in the main CPU's own scratchpad before the
+		ME can look (psp_cpu_is_me) */
+		*(volatile unsigned int *)PSP_CPU_MARK_ADDRESS = PSP_CPU_MARK_MAIN;
 		platform_log("ME: starting the Media Engine (a hang here: hold the power switch up 10 s; launch with nomeaudio)");
 		psp_log_flush();
 		chdir(PSP_DATA_ROOT);
@@ -1912,6 +1978,7 @@ int psp_me_start(void)
 	platform_log("ME: the ME runs (firmware table %d; %u idle polls in 20 ms; its cycle counter runs at %.1f a microsecond%s; Cause %08x, after clearing DC %08x)",
 		table, control->alive - before, me_cycles_per_us, me_cycles_per_us < 1.0f ? ": ME times will read 0" : "",
 		control->cause_before, control->cause_after);
+	me_cpu_check(control, "launch");
 	kcall_3(psp_keep("memarksatlaunch") ? me_sysregs_kernel : me_sysregs_running_kernel, 0, &regs_launch);
 	{
 		char line[96];
@@ -3650,6 +3717,9 @@ void psp_me_wake_poll(void)
 	}
 	release = now;
 	me_maybe_running = 1;
+	/* the CPU test off until the restarted ME reports again */
+	psp_cpu_mark = 0;
+	control->cpu_seen = 0;
 	/* B41: a release that never returns (the ME's bus unpowered) is named
 	by the heartbeat's stall reporter */
 	PSP_WAIT_BEGIN(PSP_WAIT_ME_RESTART);
@@ -3669,6 +3739,7 @@ answered:
 		return;
 	}
 	me_state = 1;
+	me_cpu_check(control, "restart");
 	wake_report("ME: restarted after wake in %lu ms (its first idle poll %lu us after the reset's release%s; %u frame ends waiting for its clients%s)",
 		(unsigned long)((now - wake_mark) / 1000), (unsigned long)(now - release),
 		release < wake_mark ? ", released in the kernel's wake handler" : "", wake_frames,
