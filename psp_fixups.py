@@ -41687,9 +41687,9 @@ static void psp_aime2a_log(
 		psp_aime2a_me_stats.aborted, psp_aime2a_me_stats.many_props, psp_aime_pf_stats[0], psp_aime_pf_stats[1],
 		psp_aime_pf_stats[2], psp_aime_pf_stats[3], psp_aime2a_stats.stack_deepest,
 		psp_aime2a_stats.stack_deepest > psp_me_aime_room_bytes() ? " (past the PSP's room)" : "", psp_aime2a_stats.guard);
-	platform_psp_log("aime2a: game time %ld | render jobs run in the job's yields %lu, the longest %lu us; left to the ME's loop %lu (menestrender runs them) | the word answered within %lu us at worst (the bound %u)",
-		now, psp_aime2a_stats.nested, psp_aime2a_stats.nested_worst_us, psp_aime2a_stats.nested_left, psp_aime2a_stats.word_worst_us,
-		(unsigned int)PSP_AIME2A_BOUND_US);
+	platform_psp_log("aime2a: game time %ld | render jobs run in the job's yields %lu, the longest %lu us (the ME's features then %08x); left to the ME's loop %lu (menestrender runs them) | the word answered within %lu us at worst (the bound %u)",
+		now, psp_aime2a_stats.nested, psp_aime2a_stats.nested_worst_us, psp_me_nested_features(), psp_aime2a_stats.nested_left,
+		psp_aime2a_stats.word_worst_us, (unsigned int)PSP_AIME2A_BOUND_US);
 	{
 		float per_us = psp_me_cycles_per_us();
 
@@ -41990,6 +41990,7 @@ int psp_me_simulated(void);
 volatile unsigned int *psp_me_abort_word(int which);
 void psp_me_yield_slots(void);
 void psp_me_nested_take(unsigned int *count, unsigned int *worst_cycles);
+unsigned int psp_me_nested_features(void);
 float psp_me_cycles_per_us(void);
 void psp_me_lines_out(const void *start, unsigned int bytes);
 extern volatile unsigned int psp_me_window_hold, psp_me_window_split;

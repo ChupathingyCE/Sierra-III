@@ -768,7 +768,7 @@ static int me_audio_now(void)
 	return 1;
 }
 
-static unsigned int me_ring_drain(unsigned int popped, unsigned int *last_look);
+static unsigned int me_ring_drain(unsigned int popped, unsigned int *last_look, volatile const unsigned int *stop);
 
 /* called by a long job on the ME (the GE layer's replay, psp_ge.c's
 defer_replay) every few records: an audio block asked for meanwhile is mixed
@@ -800,7 +800,11 @@ void psp_me_yield(void)
 	{
 		unsigned int last_look = p->ring_last_look;
 
-		p->ring_popped = me_ring_drain(p->ring_popped, &last_look);
+		/* inside the AI job, the ring stops at its word (the rest wait for
+		the ME's loop): a burst of ring jobs drained here ran 23 ms on b30
+		(41178529227), past the bound the collection gives the word */
+		p->ring_popped = me_ring_drain(p->ring_popped, &last_look,
+			aime_now ? &SLOT(ME_SLOT_AI)->args[ME_JOB_ARGS - 1] : NULL);
 		p->ring_last_look = last_look;
 	}
 	psp_aime_job_now[0] = aime_now;
@@ -811,6 +815,9 @@ one runs, the slot job can't read its abort word, so the main CPU's wait for
 it is read against these (RW1's counters; the ME writes them, its job takes
 them into its results) */
 static PSP_AIME_ME_SIDE unsigned int nested_renders = 0, nested_worst = 0, nested_left = 0;
+/* the feature word the ME read when it served one (menestrender's bit is
+the only way in, yet b30 ran one with it off: 41178529227 run 2) */
+static PSP_AIME_ME_SIDE unsigned int nested_features = 0;
 
 void psp_me_yield_slots(void)
 {
@@ -829,6 +836,7 @@ void psp_me_yield_slots(void)
 	{
 		unsigned int begun = me_cycles(), ran;
 
+		nested_features = CONTROL->features | 0x80000000u;
 		me_serve(slot, ME_AUDIO_SUMS);
 		ran = me_cycles() - begun;
 		nested_renders++;
@@ -848,6 +856,11 @@ void psp_me_nested_take(
 	nested_renders = 0;
 	nested_worst = 0;
 	nested_left = 0;
+}
+
+unsigned int psp_me_nested_features(void)
+{
+	return *(volatile unsigned int *)((unsigned int)&nested_features | 0x40000000u);
 }
 
 /* on the ME: lines of main RAM it wrote, out to main RAM now (a copy it
@@ -1195,14 +1208,14 @@ static __attribute__((noinline)) void ring_run(unsigned int index, int on_me, un
 cycle count when the ring was last seen with nothing waiting past popped.
 Audio first: an audio block asked for meanwhile is mixed before each job,
 so it waits for one job at most, not for all eight the ring holds */
-static unsigned int me_ring_drain(unsigned int popped, unsigned int *last_look)
+static unsigned int me_ring_drain(unsigned int popped, unsigned int *last_look, volatile const unsigned int *stop)
 {
 	unsigned int looked = me_cycles(), pushed = RING_PUSHED;
 	int audio_first = (CONTROL->features & ME_FEATURE_AUDIO_FIRST) != 0;
 
 	if (CONTROL->features & ME_FEATURE_STASH)
 		STASH[STASH_PUSHED] = pushed;
-	while (popped != pushed)
+	while (popped != pushed && !(stop && *stop))
 	{
 		if (audio_first && me_audio_now())
 			me_count(STASH_AUDIO_INSIDE);
@@ -1449,7 +1462,7 @@ void meLibOnProcess(void)
 			{
 				unsigned int before = ring_popped;
 
-				ring_popped = me_ring_drain(ring_popped, &ring_last_look);
+				ring_popped = me_ring_drain(ring_popped, &ring_last_look, NULL);
 				if (ring_popped != before)
 					ring_quiet = 0;
 			}
