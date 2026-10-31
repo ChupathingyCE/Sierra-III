@@ -68,6 +68,10 @@ struct lane_note
 volatile int psp_lane_on = 0;          /* 1 while a window records, 2 while it prints */
 static int lane_word = -1;              /* -1: the keep word not read yet */
 static int lane_frames_wanted = 60;
+/* "lanekinds": a GE span joins the last only when their kinds match, so each
+span keeps its kind (what the GE is drawing while a tick runs: getick.py in
+the lab). Windows fill sooner, in fewer frames */
+static int lane_kinds = 0;
 static struct lane_note *lane_notes;
 static volatile unsigned int lane_count;
 static unsigned int lane_frames, lane_window_start, lane_last_end;
@@ -80,6 +84,7 @@ static int lane_ready(void)
 		int n = psp_keep_number("lanetrace", 0);
 
 		lane_word = psp_keep("lanetrace") != 0 || n > 0;
+		lane_kinds = psp_keep("lanekinds") != 0;
 		if (lane_word)
 		{
 			lane_frames_wanted = n > 0 ? n : 60;
@@ -114,7 +119,8 @@ void psp_lane_note(unsigned int kind, unsigned int from, unsigned int t, unsigne
 	frames on the PSP; joined, ~5-8 a frame */
 	if (kind == PSP_LANE_GE && index > 0 && index <= LANE_NOTES &&
 		LANE_KIND(&lane_notes[index - 1]) == PSP_LANE_GE &&
-		(int)(from - lane_notes[index - 1].t) <= LANE_GE_JOIN_US && (int)(t - lane_notes[index - 1].t) > 0)
+		(int)(from - lane_notes[index - 1].t) <= LANE_GE_JOIN_US && (int)(t - lane_notes[index - 1].t) > 0 &&
+		(!lane_kinds || LANE_B(&lane_notes[index - 1]) == (b & 0xFFF)))
 	{
 		lane_notes[index - 1].t = t;
 		if (LANE_B(&lane_notes[index - 1]) != (b & 0xFFF))
