@@ -40279,8 +40279,10 @@ stop; 2 queue, but let a writer run (this actor can't be put back) */
 PSP_AIME_ME_SIDE int psp_aime_arm = 0;
 static int psp_aime1b_on = -1, psp_aime1b_check_on = 0;
 static PSP_AIME_ME_SIDE void *psp_aime_jump[5];
-/* the CPU that set the jump (psp_cpu_is_me): a stop jumps only on it */
-static PSP_AIME_ME_SIDE int psp_aime_jump_me = 0;
+/* the stack the jump was set on: a stop jumps only on the CPU that set it,
+and on the ME never into a stack outside its eDRAM (a check: counted) */
+static PSP_AIME_ME_SIDE unsigned int psp_aime_jump_sp = 0;
+static PSP_AIME_ME_SIDE unsigned long psp_aime_foreign_jumps = 0;
 static PSP_AIME_ME_SIDE long psp_aime_current = NONE;
 static PSP_AIME_ME_SIDE int psp_aime_stop_which = NONE;
 static PSP_AIME_ME_SIDE boolean psp_aime_stopped = FALSE;
@@ -40396,7 +40398,12 @@ void psp_aime_handback(
 		return;
 	if (which < 0 || which >= PSP_AIME_WRITERS)
 		which = PSP_AIME_FORCED;
-	if (psp_aime_arm == 1 && psp_aime_jump_me == psp_cpu_is_me())
+	if (psp_aime_arm == 1 && ((psp_aime_jump_sp & 0x1FFFFFFFu) < 0x01000000u) != psp_cpu_is_me())
+	{
+		psp_aime_foreign_jumps++;
+		return;
+	}
+	if (psp_aime_arm == 1)
 	{
 		psp_aime_arm = 0;
 		psp_aime_stop_which = which;
@@ -40756,7 +40763,7 @@ static void __attribute__((noinline)) psp_aime_think_actor(
 	}
 	psp_aime_save(actor_index);
 	psp_aime1b_stats.actors++;
-	psp_aime_jump_me = psp_cpu_is_me();
+	__asm__ __volatile__("move %0, $sp" : "=r"(psp_aime_jump_sp));
 	if (__builtin_setjmp(psp_aime_jump) == 0)
 	{
 		actor_update(actor_index);
@@ -40816,6 +40823,8 @@ static void psp_aime1b_log(
 	platform_psp_log("aime1b: game time %ld | undone: props made %lu, props deleted %lu | no stop possible %lu (props over the copy %lu, another's prop %lu, log full %lu), written ahead:%s; swarm pools changed %lu",
 		now, psp_aime1b_stats.props_made_undone, psp_aime1b_stats.props_deleted_undone, psp_aime1b_stats.no_stop,
 		psp_aime1b_stats.many_props, psp_aime1b_stats.others_props, psp_aime1b_stats.log_full, ahead, psp_aime1b_stats.swarm_pool);
+	if (psp_aime_foreign_jumps)
+		platform_psp_log("aime1b: game time %ld | stops refused a jump onto another CPU's stack: %lu", now, psp_aime_foreign_jumps);
 	if (psp_aime1b_check_on)
 		platform_psp_log("aime1bcheck: game time %ld | stops checked %lu; left changed, the actor's own: datum %lu, props %lu, prop pool header %lu, swarm %lu; props made or freed %lu | others': actors %lu (in %lu stops), props %lu (in %lu stops), swarms %lu",
 			now, psp_aime1b_stats.checked, psp_aime1b_stats.own_actor, psp_aime1b_stats.own_props, psp_aime1b_stats.prop_header,

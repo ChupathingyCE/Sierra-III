@@ -226,29 +226,20 @@ both CPUs write would share a cache line between them */
 #define PSP_CPU_IS_ME_DEFINED
 /* Which CPU is running this, the main CPU or the Media Engine: the ME has
 no VFPU and no kernel, so code both run takes its VFPU and system-call
-routes only on the main CPU. Two tests, either of which says "the ME":
-- its stack: the ME's is in its eDRAM (below 16 MB in any segment), the
-  main CPU's threads' in main RAM. Fast, but it only holds while the ME is
-  on its own stack;
-- the CPU itself: 0x00013ffc is the main CPU's scratchpad (SRAM private
-  to it, psp_scratch.c keeps its last line free) and, on the ME, memory of
-  its own at the same address (its eDRAM is its physical 0-2 MB). The
-  main CPU writes a mark there before it starts the ME, the ME reports
-  what it reads there at its start, and psp_cpu_mark holds the mark only
-  if the two differ (psp_me.c's me_cpu_check; 0 until then, and in the
-  emulator, where only the stack test applies). The coprocessor 0 CPU
-  number (register 22: 0 the main CPU, 1 the ME) would say it directly,
-  but the main CPU's user mode can't read it */
-#define PSP_CPU_MARK_ADDRESS 0x00013ffcu
-extern volatile unsigned int psp_cpu_mark;
+routes only on the main CPU. The test is the stack: the ME's is in its
+eDRAM (below 16 MB in any segment), the main CPU's threads' in main RAM.
+It holds because nothing moves the ME onto another stack: the one jump the
+ME may take (1b's stop, actors.c) goes only to a jump its own CPU set and
+is refused on the ME into a stack outside its eDRAM (counted, logged). The
+CPU number itself (coprocessor 0 register 22) can't be the test: the main
+CPU runs in user mode, where reading it faults (code 11, as the VFPU does
+on the ME); the ME's is logged at its start */
 static __inline__ __attribute__((always_inline)) int psp_cpu_is_me(void)
 {
 	unsigned int psp_cpu_sp_;
 
 	__asm__ ("move %0, $sp" : "=r"(psp_cpu_sp_));
-	if ((psp_cpu_sp_ & 0x1FFFFFFFu) < 0x01000000u)
-		return 1;
-	return psp_cpu_mark != 0 && *(volatile unsigned int *)PSP_CPU_MARK_ADDRESS != psp_cpu_mark;
+	return (psp_cpu_sp_ & 0x1FFFFFFFu) < 0x01000000u;
 }
 #endif
 

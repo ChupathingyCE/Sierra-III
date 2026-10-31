@@ -35,8 +35,7 @@ void platform_log(const char *format, ...);
 int psp_keep(const char *name);
 
 #define SCRATCH_BASE 0x00010000u
-/* the last line is left out: psp_me.h's CPU test keeps its mark there */
-#define SCRATCH_BYTES 0x3fc0u
+#define SCRATCH_BYTES 0x4000u
 
 static unsigned int scratch_used = 0;
 static int scratch_off = -1;

@@ -117,9 +117,8 @@ struct me_control
 	unsigned int halted;    /* the ME: 1 from just before a halt until it wakes */
 	unsigned int halts;     /* the ME: halts, counted */
 	unsigned int wakes;     /* the ME: wake interrupts taken (meLibOnExternalInterrupt) */
-	/* the ME at its start (psp_me.h's psp_cpu_is_me): what it reads at the
-	mark's address, its coprocessor 0 CPU number, and 1 once both are in */
-	unsigned int cpu_word, cpu_number, cpu_seen;
+	/* the ME at its start: its coprocessor 0 CPU number, and 1 once it's in */
+	unsigned int cpu_number, cpu_seen;
 } __attribute__((aligned(64)));
 #define ME_FEATURE_HALT 1u
 #define ME_FEATURE_RING 2u
@@ -192,12 +191,6 @@ static unsigned int stash_storage[STASH_WORDS] __attribute__((aligned(64)));
 
 /* whole cache lines of their own; only ever used through the uncached view */
 static struct me_control control_storage __attribute__((aligned(64)));
-
-/* psp_me.h's psp_cpu_is_me: the mark the main CPU writes in its scratchpad
-before it starts the ME, and the test's copy of it once the ME has shown it
-reads something else there (0 until then: the stack test alone) */
-#define PSP_CPU_MARK_MAIN 0x5a3c96e1u
-volatile unsigned int psp_cpu_mark = 0;
 
 /* B31: what the ME's exception vector saw, written by psp_me_fault_vector
 on the ME and read by the main CPU when it stops an ME that didn't answer:
@@ -1319,12 +1312,10 @@ void meLibOnProcess(void)
 		control->cause_after = cause;
 	}
 	{
-		/* for psp_cpu_is_me's test: what this CPU reads at the mark's address
-		(the main CPU's mark is in its own scratchpad by now), and the CPU
-		number, which the ME's kernel mode can read */
+		/* the CPU number, which the ME's kernel mode can read: logged by the
+		main CPU, a check that this code runs where psp_me.h says */
 		unsigned int number;
 
-		control->cpu_word = *(volatile unsigned int *)PSP_CPU_MARK_ADDRESS;
 		__asm__ __volatile__("sync\n\tmfc0 %0, $22\n\tsync" : "=r"(number));
 		control->cpu_number = number;
 		control->cpu_seen = 1;
@@ -1826,37 +1817,18 @@ static int me_cpu_number_kernel(void *out)
 	return 0;
 }
 
-/* psp_cpu_is_me's CPU test turned on once the ME has read something other
-than the main CPU's mark at its address; off (the stack test alone) when it
-read the mark (the address isn't each CPU's own) or reported nothing */
+/* the two CPU numbers at the ME's start (and its restarts): the ME's as it
+reported it, the main CPU's read in kernel mode. A check of where the ME's
+code runs, not a test any route uses (psp_me.h's psp_cpu_is_me) */
 static void me_cpu_check(volatile struct me_control *control, const char *when)
 {
 	static unsigned int main_number = 0xffffffffu;
-	unsigned int main_word = *(volatile unsigned int *)PSP_CPU_MARK_ADDRESS;
 
 	if (main_number == 0xffffffffu)
 		kcall_3(me_cpu_number_kernel, 0, &main_number);
-	psp_cpu_mark = 0;
-	if (control->cpu_seen && control->cpu_word != PSP_CPU_MARK_MAIN && main_word == PSP_CPU_MARK_MAIN)
-		psp_cpu_mark = PSP_CPU_MARK_MAIN;
-	sceKernelDcacheWritebackRange((void *)&psp_cpu_mark, sizeof(psp_cpu_mark));
-	platform_log("ME: the CPU's own test (%s): %s; at %08x the ME read %08x, the main CPU reads %08x; coprocessor 0 register 22: the ME %u, the main CPU %u",
-		when, psp_cpu_mark ? "on" : !control->cpu_seen ? "OFF, the ME reported nothing (the stack test alone)" :
-		"OFF, the two read the same (the stack test alone)", PSP_CPU_MARK_ADDRESS, control->cpu_seen ? control->cpu_word : 0u,
-		main_word, control->cpu_seen ? control->cpu_number : 0xffffffffu, main_number);
-	/* "cpuiduser" (a probe for one PSP run, never for play): whether the main
-	CPU's user mode may read the CPU number itself. me-core reads it on the
-	main CPU only in kernel functions (kcall), so this may stop the game
-	here: the line before says so */
-	if (!strcmp(when, "launch") && psp_keep("cpuiduser"))
-	{
-		unsigned int number;
-
-		platform_log("ME: cpuiduser: the main CPU's user mode reads coprocessor 0 register 22 (a crash here: it can't)");
-		psp_log_flush();
-		__asm__ __volatile__("sync\n\tmfc0 %0, $22\n\tsync" : "=r"(number));
-		platform_log("ME: cpuiduser: the main CPU's user mode read it: %u", number);
-	}
+	platform_log("ME: CPU numbers (coprocessor 0 register 22) at the %s: the ME %s%u, the main CPU %u",
+		when, control->cpu_seen ? "" : "(nothing reported) ", control->cpu_seen ? control->cpu_number : 0xffffffffu,
+		main_number);
 }
 
 int psp_me_start(void)
@@ -1935,9 +1907,6 @@ int psp_me_start(void)
 		int have = getcwd(folder, sizeof(folder)) != NULL;
 
 		me_reset_whole = psp_keep("meresetwhole");
-		/* the CPU test's mark, in the main CPU's own scratchpad before the
-		ME can look (psp_cpu_is_me) */
-		*(volatile unsigned int *)PSP_CPU_MARK_ADDRESS = PSP_CPU_MARK_MAIN;
 		platform_log("ME: starting the Media Engine (a hang here: hold the power switch up 10 s; launch with nomeaudio)");
 		psp_log_flush();
 		chdir(PSP_DATA_ROOT);
@@ -3730,8 +3699,6 @@ void psp_me_wake_poll(void)
 	}
 	release = now;
 	me_maybe_running = 1;
-	/* the CPU test off until the restarted ME reports again */
-	psp_cpu_mark = 0;
 	control->cpu_seen = 0;
 	/* B41: a release that never returns (the ME's bus unpowered) is named
 	by the heartbeat's stall reporter */
