@@ -1844,6 +1844,19 @@ static void me_cpu_check(volatile struct me_control *control, const char *when)
 		when, psp_cpu_mark ? "on" : !control->cpu_seen ? "OFF, the ME reported nothing (the stack test alone)" :
 		"OFF, the two read the same (the stack test alone)", PSP_CPU_MARK_ADDRESS, control->cpu_seen ? control->cpu_word : 0u,
 		main_word, control->cpu_seen ? control->cpu_number : 0xffffffffu, main_number);
+	/* "cpuiduser" (a probe for one PSP run, never for play): whether the main
+	CPU's user mode may read the CPU number itself. me-core reads it on the
+	main CPU only in kernel functions (kcall), so this may stop the game
+	here: the line before says so */
+	if (!strcmp(when, "launch") && psp_keep("cpuiduser"))
+	{
+		unsigned int number;
+
+		platform_log("ME: cpuiduser: the main CPU's user mode reads coprocessor 0 register 22 (a crash here: it can't)");
+		psp_log_flush();
+		__asm__ __volatile__("sync\n\tmfc0 %0, $22\n\tsync" : "=r"(number));
+		platform_log("ME: cpuiduser: the main CPU's user mode read it: %u", number);
+	}
 }
 
 int psp_me_start(void)
