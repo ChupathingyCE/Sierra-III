@@ -6,7 +6,7 @@ Labels: [M] measured on a PSP, [E] emulator or estimate, [D] read in code or dat
 
 ## 0. The short version
 
-The frame has three lanes that matter: the main CPU (ticks, plus whatever drawing it keeps), the ME (the drawing's command building, visibility, sound, rays) and the GE. **Option C's shape, two lanes in parallel (ticks on the main CPU, drawing off it), is the spine, but C's full form (the ME draws everything) can't be built yet, because the ME is already the contested lane.** At w142 the ME carries 18-61 ms a frame on the intros and 70-82 ms on b30's flight [M]. That already fills a 15/30 budget on a10, a30, b30 and d20, before AIME or C's walk asks for any of it. So the critical path is **making the ME's drawing cheap** (prebuilt lists CALLed, not copied; the level as baked lists), behind **a scheduler that keeps the ME's deadlines** (today's music hangs and the AIME fault are both scheduler and identity failures, not placement ones). Then the room it frees is spent per map and per role: on AIME where the AI is heavy (c20, d20, then b30), on C's walk where drawing binds (c10, a10, a30), and on C's walk alone for a co-op client, which runs no AI. Beside all of that, on the main CPU only, **the tick has to fall 30-40% on b30 and a few ms on c10 and d20** even if every frame's drawing left it. That work is code shape (the big updates split into passes that fit the instruction cache), hot data (the scratchpad, the object datum's hot fields) and posing batched on the VFPU. Collision, tag indices and object slots stay as the host has them in every role. With the compromises left off: a10, a30, a50 and c20's intros are already at or within a few ms of 15/30 [M]; c10 gets there with C's walk on the ME [U]; d20 and b30 need their ticks cut further than this plan can size yet [U]; and 30/30 isn't promised on any heavy map (it needs every phase, the ME's drawing ~3x cheaper and a GE cut on a30 and b30).
+The frame has three lanes that matter: the main CPU (ticks, plus whatever drawing it keeps), the ME (the drawing's command building, visibility, sound, rays) and the GE. **Option C's shape, two lanes in parallel (ticks on the main CPU, drawing off it), is the spine, but C's full form (the ME draws everything) can't be built yet, because the ME is already the contested lane.** At w142 the ME carries 18-61 ms a frame on the intros and 70-82 ms on b30's flight [M]. That already fills a 15/30 budget on a10, a30, b30 and d20, before AIME or C's walk asks for any of it. So the critical path is **making the ME's drawing cheap** (prebuilt lists CALLed, not copied; the level as baked lists), behind **a scheduler that keeps the ME's deadlines** (today's music hangs and the AIME fault are failures of the ME's lane, not of placement: a job with no deadline, a runtime CPU test that a stack can fool, and an ME stack found where the plan doesn't put it). Then the room it frees is spent per map and per role: on AIME where the AI is heavy (c20, d20, then b30), on C's walk where drawing binds (c10, a10, a30), and on C's walk alone for a co-op client, which runs no AI. Beside all of that, on the main CPU only, **the tick has to fall 30-40% on b30 and a few ms on c10 and d20** even if every frame's drawing left it. That work is code shape (the big updates split into passes that fit the instruction cache), hot data (the scratchpad, the object datum's hot fields) and posing batched on the VFPU. Collision, tag indices and object slots stay as the host has them in every role. With the compromises left off: a10, a30, a50 and c20's intros are already at or within a few ms of 15/30 [M]; c10 gets there with C's walk on the ME [U]; d20 needs its tick cut a few ms more than the plan sizes [U]; **b30's 15/30 has no sized route yet**: phase 4's sized tick cuts come to a few ms a tick against the -13 to -19 b30 needs, and the largest measured tick lever, the bus toll (the GE reading main RAM while the tick misses, §2), has no lever behind it until phase 0's census of what the GE reads says which bytes could move or shrink; and 30/30 isn't promised on any heavy map (it needs every phase, the ME's drawing ~3x cheaper and a GE cut on a30 and b30).
 
 ## 1. The goals as lane budgets
 
@@ -150,7 +150,7 @@ The ME's eDRAM runs to the full 2 MB on the PSP-1000 (the ME's stack began at 2,
 | 0-192 | left as found | left as found | the same |
 | 192-208 | recon's bus scratch (recon builds only) | the same | the same |
 | 208-256 | the ME's private state (`meedramstate`, if its pair pays) | the same | opt-in |
-| 256-320 | **MIST's reserve** (the 1000's syscall table is in 256 KB+; pin its address before anything lands here) [U] | the same | reserved, unpinned |
+| 256-320 | **MIST's reserve** (the 1000's syscall table is in 256 KB+). **Its address is pinned before PDC lands at 320**: if the table sits higher, PDC's 240 KB moves above it, so the order is MIST's pin, then PDC's claim [U] | the same | reserved, unpinned |
 | 320-560 | PDC's tables and stores (~240 KB) [D] | the same | in the heap (research) |
 | 560-750 | L1, the level pass's positions (~190 KB) | the same | plan |
 | 750-800 | MEVGATHER, visibility's gathered spheres and references (~20-44 KB, double) [U] | the same | new |
@@ -184,10 +184,10 @@ A unified EBOOT follows from MODEMEM: the campaign stops paying for the netcode 
 
 | # | Move | From -> to | Worth [label] | Roles | Gate |
 |---|---|---|---|---|---|
-| 1 | The ME's scheduler (RW1) | - | 0 ms direct; it is what every ME placement below stands on, and it fixes two open failures (music, AIME's fault) | all | music and AIME jobs run on a PSP at ≥ 75% busy with no missed audio block |
+| 1 | The ME's scheduler, entry points and stack (RW1) | - | 0 ms direct; it is what every ME placement below stands on, and it fixes two open failures (music, AIME's fault) | all | music and AIME jobs run on a PSP at ≥ 75% busy with no missed audio block |
 | 2 | Prebuilt lists CALLed (RW2) | ME's building -> retained blocks | ME -6 to -9 ms (c10), -10 to -15 (b30, a10, a30) [U] | all | a c10 pair (§11) where the ME binds: the cinematic |
 | 3 | The big updates split into passes (RW5) | Main -> Main, fitted to the I-cache | unsized [U]: the I-cache is ~37% of the tick's cycles, ~86% of it capacity [E tg141]; FVP, the first split, gave -0.5 ms on b30's flight tick [M] | all | one sub-pass at a time, each a PSP pair (the cache rule) |
-| 4 | AIME 2a | Main -> ME | b30 -10 to -12, c20 -4 to -5, d20 -6 to -7 a frame before L15 [U] | SP, H | the CPU-identity fix (RW1), then c20's pair; b30 after #2 |
+| 4 | AIME 2a | Main -> ME | b30 -10 to -12, c20 -4 to -5, d20 -6 to -7 a frame before L15 [U] | SP, H | RW1's entry points and the ME's stack answered, then c20's pair; b30 after #2 |
 | 5 | Posing batched on the VFPU (RW6) | Main FPU -> Main VFPU, a pass of many bones | -1 to -3 ms a tick on b30 [U: ~21% of the tick x ~30% issuing x the VFPU's 2-2.6x] | all (plays the same; `co-op:` note) | emulator side-by-sides + outcome census, then a b30 flight pair |
 | 6 | The level as baked lists (RW3) | ME's replay -> CALLs | ME -2 to -7 [U] | all | gestream exact; then a c20 pair |
 | 7 | C's walk (SNAPC) | Main -> ME, per map | main CPU -14.5 (c10), -15 to -20 (a10) a frame [M x U] | Cl first; SP on c10 and c20, a10 if room | §3's order; the ME's room in §5 measured after #2 |
@@ -196,6 +196,7 @@ A unified EBOOT follows from MODEMEM: the campaign stops paying for the netcode 
 | 10 | The scratchpad for the tick (PROFHEAP) | profiler -> heap; 6.6 KB to the tick | -0.3 to -1 ms a tick [U, by SCRATCHBSP's -0.3 for 9.7 KB] | all | a one-build pair (a keep word) |
 | 11 | The datum's hot fields packed (OBJHOT) | 5 lines -> 3 | ~1.5-2% of b30's tick D-misses [U] | all | a cache-model count, then a pair |
 | 12 | Music out of Tremor (MUSADPCM) | ME decode -> the mixer's ADPCM | ME -2.65 ms a block [M x U] | all | a listening A/B (Sheepdog01), then a pair |
+| 13 | What the GE reads from main RAM, by kind and timing (GEREADS, phase 0) | a census, then at most one move into VRAM or a smaller form | the bus toll is 25-34% of b30's tick [M]; the share any one kind can win is unknown [U] | all | the census names a kind read while the ticks run |
 
 **What stays where it is, and why:**
 - **The model walk on the main CPU** in single player until §5's room is measured: the ME is the scarcer lane.
@@ -206,18 +207,22 @@ A unified EBOOT follows from MODEMEM: the campaign stops paying for the netcode 
 
 ## 9. What's rewritten
 
-**RW1. The ME's scheduler and its identity** (lever MESCHED, new). Today's failures are the ME's, so they're fixed where they run (the 10-27 rule):
+**RW1. The ME's scheduler, its entry points and its stack** (lever MESCHED, new). Today's failures are the ME's, so they're fixed where they run (the 10-27 rule):
 - **Job classes with deadlines:** audio (hard, per block), ring jobs and rays (soft, 10 ms), the drawing's replay (chunked, mechunk's gate), and background jobs (music decode, AIME) in bounded slices. A slice that would make the next audio block late yields first.
 - **Admission:** a background job starts only when the frame's expected load leaves the ceiling's room, and is counted (late, refused, starved) in the log.
 - **Preemption, if cooperative yields don't hold:** the ME's own timer interrupt exists and the port already uses it under `mehalt` (mcidclan's IP7 timer [D]). A timer that preempts a background slice for the audio job removes the "one long job makes audio late" class outright.
-- **The ME's identity from the CPU, not its stack.** AIME 2a's pairs faulted because the ME's sp was in main RAM, so every `sp >> 27` test took the ME for the main CPU and ran a VFPU instruction on it (41132036291, 41142311296 [M]). mcidclan's library reads the CPU's number from CP0 register 22 (`me-lib.h` 83-107 [D]): one `mfc0` gives an answer no stack can fool. Every "am I on the ME" test goes through it (psp_vfpu.c's routes, psp_work_on_me, psp_aime_here).
+- **No runtime CPU test on the hot paths (option a).** AIME 2a's pairs faulted because the ME's sp was in main RAM, so every `sp >> 27` test took the ME for the main CPU and ran a VFPU instruction on it (41132036291, 41142311296 [M]). The fix is not a better test. Every ME job enters through entry points of its own, and the shared maths it reaches (matrix4x3_multiply, the quaternion routes) is called in its FPU form there, explicitly, through those entry points or an ME build of the shared maths. So no code on either CPU asks which CPU it is on, and nothing costs a test at run time. The identity check survives only as a **debug check that runs on the ME** (in a debug-tools build), where reading CP0 is allowed. The AIME helper is building this now; this is its design, not its code.
+  - **Why not `mfc0 $22`:** mcidclan's library reads the CPU's number from CP0 register 22 (`me-lib.h` 83-107 [D]), but his samples run in kernel mode. The game's main CPU runs in user mode: the crash dumps' Status 60008613 has KSU = user and CU0 off (41142311296 runs 2 and 3 [M]), so a CP0 read there is code 11, the very fault being fixed. The ME is in kernel mode with CU0 on (Status 30000002 [M]). No one `mfc0` test serves both CPUs.
+  - **Rejected, option b: a word only the ME writes, read by both.** A shared word says what the ME is doing, not which CPU is reading it, so the main CPU reading it while a job runs gets the ME's answer: racy. A per-CPU word works only where each CPU sees its own memory, and here both see the same main RAM (the eDRAM is the ME's alone, but the main CPU can't load from it [D]). It also keeps a test on the hot paths, which (a) removes.
+  - **Its proof is on a PSP:** one c20 run, keep alone, the ME's jobs live (the emulator runs no ME code, so it can't fault there) [D]. A clean run with the ME never stopped is the proof; it's a fault test, not a timing, so one run is enough (§12).
+- **The ME's stack: an open hazard.** At the fault, the ME's sp was 0x09fbf860-888, in main RAM beside the main thread's own stack at 0x09fbe- (41142311296 [M]), not in the eDRAM room the plan gives it (1,504-2,048 KB). If the ME runs there, it writes over the main thread's oldest frames, and **the main CPU's bus errors after the ME stopped (runs 2 and 3) fit that** [U]. The AIME helper is finding where the job gets that sp. Until that's answered, RW1's job classes have nothing safe to stand on: the slices, the preemption and the 75% ceiling all assume each job's stack is where the eDRAM map says. Checked against it too: whether the ME's stack was where we thought on the music hangs' runs (41123795043, 41133871215), since a stack in main RAM would explain a hang whose first fix held once and failed once [U].
 - **The music hang's cause found first:** its first fix held once and failed once [M]. RW1's counters (each slot's longest run, each audio block's slack) are what name it.
 
 **RW2. Prebuilt lists, CALLed** (PDCCALL, a slice of PDC). PDC's own step 1 as designed, not step 3b's copy: a part whose record matches last frame's (key: the record's bytes less its node matrices) is CALLed from a retained block after a CALL to this frame's bone sub-list. Blocks live in a heap arena (~200 KB on b30 at most [E], the GE can't read eDRAM, VRAM is full), freed only once the GE has finished the last frame that called them (geinflight tracks it). The key and its tables can move to eDRAM (only the ME reads them). Exact by construction: identical records make identical words.
 
 **RW3. The level as baked lists** (BLEVEL, new; B's level pass, `b_level_pass.md` on its branch). Per-cluster lists made once at load (or at bake), CALLed per visible cluster, with the per-frame parts (fog, the near cut) patched. It takes the level's replay off the ME.
 
-**RW4. The snapshot contract** (SNAPC, a slice of L5). C's steps 0-4 (hardware_utilization.md §4): the walk reads through a snapshot accessor by absolute index, copy-on-wake, the field list completed until the serial check shows no live read, visibility collected before the hand-off, walkapart's side a property of the CPU (RW1's identity), and the ME's bounded wait with the main CPU walking the snapshot only if the ME is dead.
+**RW4. The snapshot contract** (SNAPC, a slice of L5). C's steps 0-4 (hardware_utilization.md §4): the walk reads through a snapshot accessor by absolute index, copy-on-wake, the field list completed until the serial check shows no live read, visibility collected before the hand-off, walkapart's side set by which entry point the walk came in through (RW1's entry points), not a global, and the ME's bounded wait with the main CPU walking the snapshot only if the ME is dead.
 
 **RW5. The big updates in passes that fit** (FISSB, new; LPH's real form). biped_update and unit_update split, inside each function, into sub-passes over every biped or unit, each under ~200 code lines so it stays in the I-cache across objects. One sub-pass is built and priced at a time, on the PSP (LPH's cache-model check failed: it scored +11.5% where the real batch lost 34% [E vs M]). Exact if the sub-passes keep each object's reads before writes in order: proven by play and both seeds.
 
@@ -248,15 +253,23 @@ Halo's netcode isn't lockstep (hardware_utilization.md §6 [D]): what must match
 
 Each step is gated on its proof. Steps in one phase can run side by side when they touch different lanes.
 
-**Phase 0, records (no runs).** The stale rows below fixed (§13). The ME's ms a frame per map read from runs already on the results branch (the intros' tm-plain, the b30 lane traces), so §5's "today" column is complete for the heavy stretches.
+**Phase 0, records and one census.**
+- The stale rows below fixed (§13).
+- The ME's ms a frame per map read from runs already on the results branch (the intros' tm-plain, the b30 lane traces), so §5's "today" column is complete for the heavy stretches.
+- **The GE's main-RAM reads on b30's flight, by kind** (GEREADS, new). b30's tick falls 25-34% with nothing drawn, and 55-94% of that rise is the GE reading main RAM while the tick misses (§2 [M]): the largest measured tick lever, with nothing behind it once VRAM display lists are dropped. RW2 and RW3 cut what the ME writes, not what the GE reads. The bus census over b30's 90 s route already gives the totals: the GE reads ~1.4 MB of vertices, ~1.4 MB of texels and ~0.25 MB of lists a frame, the level copies ~1.0 MB of the vertices (bus7 40884427736, bus8 40894428250 [E]). What it doesn't give:
+  - **the flight alone** (game time 300-2000), where b30's tick is ~50 ms;
+  - **by kind:** display lists, model vertices, level-copy vertices, indices, dynamic vertices (decals, particles, the HUD), textures, **CLUTs**, and anything else, each split by where it lives (heap, `.bss`, the texture RAM cache);
+  - **when:** the bytes read while a tick runs against those read while the main CPU records or waits. Contention is about timing (levelcompact halved the level's bytes and gained nothing, three times [M]), so a kind read mostly outside the ticks is worth less than its bytes.
 
-**Phase 1, the ME's floor.** RW1: the CPU identity first (it unblocks AIME 2a's pair, which another thread is already fixing), then the job classes and the counters, then the music hang's cause. Proof: the emulator for exactness and the counters; one PSP pair under load (§12 ask 1).
+  Spec: one emulator batch on the bus census (the halo-local patch's item 23, the lab's `bus.py`), b30's route to the flight's end, with the kind and tick-overlap splits added where `bus.py` lacks them [U: whether it splits CLUTs and indices today]. **At most one PSP pair, and only if needed:** if the census names one kind that VRAM could take by giving up something less used (the texture cache's best third holds 189-270 KB; the model buffers run full [M]), a b30 flight pair `"- | <that word>"` prices it; if no kind stands out, no pair. Its answer is what decides whether b30 has a tick route at all.
 
-**Phase 2, ME room** (after phase 1's identity fix; beside phase 4). RW2, then RW3, then MEVGATHER. Each frees the ME's time; each is measured on the map where the ME binds (c10's cinematic, then b30).
+**Phase 1, the ME's floor.** RW1, in order: the ME's stack answered (where AIME's job gets its sp, and whether the music runs had the same), then the ME's own entry points with no runtime CPU test (both are the AIME helper's, in progress), then the job classes and the counters, then the music hang's cause. The classes go on only after the stack's answer. Proof: one c20 run on a PSP for the entry points (§12 ask 0); the emulator for exactness and the counters; one PSP pair under load (ask 1).
+
+**Phase 2, ME room** (after phase 1's entry points and stack; beside phase 4). RW2, then RW3, then MEVGATHER. Each frees the ME's time; each is measured on the map where the ME binds (c10's cinematic, then b30).
 
 **Phase 3, spending the room, map by map** (after phase 2's pairs). AIME 2a on c20 and d20 (SP, host), then b30 if §5's measured room allows; WXME on c10; C's walk (RW4) on c10 first, then c20 and a10 where the measured room allows, behind its keep word, and for a client by design.
 
-**Phase 4, the tick** (main CPU only; starts now, beside phases 1-3). PROFHEAP, RW6 (emulator side-by-sides first), RW5 (one sub-pass at a time), OBJHOT; the collision start grid and 8-byte nodes after their censuses.
+**Phase 4, the tick** (main CPU only; independent of phase 1, so it starts now, beside phases 1-3, and its PSP asks 5 and 6 can run while RW1 is built). Its sized cuts don't close b30's gap (§0): GEREADS (phase 0) is what may. PROFHEAP, RW6 (emulator side-by-sides first), RW5 (one sub-pass at a time), OBJHOT; the collision start grid and 8-byte nodes after their censuses.
 
 **Phase 5, Sheepdog01's A/Bs, off by default.** L15, FX15, AIFAR, PRIO60, RENDERTICK are built behind keep words (Sheepdog01 2026-10-29 11:59). In co-op the AI ones are host options; L15 stays campaign only.
 
@@ -264,16 +277,18 @@ Each step is gated on its proof. Steps in one phase can run side by side when th
 
 ## 12. The PSP asks
 
-Each is one A/B pair (two sides, two runs a side: 4 runs) on the shortest stretch that holds the effect, unless a reason is given. None is queued: each waits for its build to pass its emulator proof and compile.
+Each is one A/B pair (two sides, two runs a side: 4 runs) on the shortest stretch that holds the effect, unless a reason is given. None is queued: each waits for its build to pass its emulator proof and compile. **Asks 5 and 6 don't depend on phase 1** (main CPU only): they can take the PSPs while RW1 is built.
 
 | # | Ask | Map, stretch | Keep sets | Why the PSP | Waits on |
 |---|---|---|---|---|---|
+| 0 | RW1's entry points (one run, not a pair: a fault test, not a timing) | c20's route | keep alone, the ME's jobs live | the emulator runs no ME code, so the fault can't show there | the AIME helper's fix; the ME's stack answered |
 | 1 | RW1 under load | b30's route to the flight (where the ME is busiest) | `"- | musicstream"` on the RW1 build | only the PSP runs the ME: deadlines, late blocks, the hang | RW1 built; exact in the emulator |
 | 2 | RW2 | c10, the cinematic (150-570) | `"- | pdccall"` | the ME binds there; the copy form lost there [M] | RW2 exact on four maps |
-| 3 | AIME 2a, after the identity fix | c20's route | `"aime aime1b | aime aime1b aime2a"` (another thread's spec) | the ME's value is unmeasured | RW1's identity |
+| 3 | AIME 2a, after the entry-point fix | c20's route | `"aime aime1b | aime aime1b aime2a"` (another thread's spec) | the ME's value is unmeasured | ask 0 clean |
 | 4 | RW6 | b30's flight | `"- | skelbatch"` | the VFPU's speed isn't in the emulator | side-by-sides + census |
-| 5 | PROFHEAP | b30's flight | `"- | profheap"` (one build) | a cache change: priced on the PSP | exact (it changes no state) |
-| 6 | RW5, first sub-pass | b30's flight | `"- | fissb1"` (one build) | a cache change | play + seeds |
+| 5 | PROFHEAP (**independent of phase 1**) | b30's flight | `"- | profheap"` (one build) | a cache change: priced on the PSP | exact (it changes no state) |
+| 6 | RW5, first sub-pass (**independent of phase 1**) | b30's flight | `"- | fissb1"` (one build) | a cache change | play + seeds |
+| 9 | GEREADS's one move, only if the census names a kind | b30's flight | `"- | <that kind's word>"` | the toll is contention, which the emulator doesn't time | phase 0's census |
 | 7 | RW3 | c20 hands off (its level keeps 70% and costs 8.4 ms of GE) | `"- | blevel"` | GE and ME time | gestream exact |
 | 8 | MEVGATHER | b30's route to the landing | `"- | mevgather"` | the ME's cache | exact |
 
@@ -291,6 +306,8 @@ Checked against w142 (d367e0a) [D]:
 
 ## 14. What this plan doesn't know
 
+- **Where the ME's stack really is** [M at the fault, U why]: 0x09fbf8xx in main RAM at AIME 2a's fault; RW1's classes wait on the answer.
+- **What the GE reads on b30's flight, by kind and by timing** [U]: GEREADS (phase 0); until then b30's 15/30 has no sized route.
 - The ME's value of AIME 2a, of RW2 and of C's walk [U]: every ME figure in §5 is a sum of shares, not a measurement.
 - The ceiling of 75% [U]: RW1's pair sets it.
 - RW5's worth [U]: one function's split, measured, before anything is planned on it.
