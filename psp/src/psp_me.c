@@ -160,6 +160,13 @@ main CPU's next deadline stops it and the log shows the record */
 before its loop (me_wake_probe), marking each step, so after a real sleep
 the log says which kind hangs or reads wrong */
 #define ME_FEATURE_WAKE_PROBE 2048u
+/* "menestrender": a slot job's yields also run a waiting render job whole
+(the old way). Off, the render job waits for the slot loop instead: a render
+job runs up to ~124 ms on b30 [M], and while one runs nested the slot job
+can't read its abort word, so the main CPU's bounded wait for it ran out and
+stopped the ME (the lab's sierra-hw 41164514273). The AI job it waits behind
+is short and ends at the word */
+#define ME_FEATURE_NEST_RENDER 4096u
 
 /* The debug stash: where the ME is, in words of its own (two cache lines,
 only ever used through the uncached view), so a main CPU that gives up on a
@@ -800,7 +807,7 @@ void psp_me_yield(void)
 one runs, the slot job can't read its abort word, so the main CPU's wait for
 it is read against these (RW1's counters; the ME writes them, its job takes
 them into its results) */
-static PSP_AIME_ME_SIDE unsigned int nested_renders = 0, nested_worst = 0;
+static PSP_AIME_ME_SIDE unsigned int nested_renders = 0, nested_worst = 0, nested_left = 0;
 
 void psp_me_yield_slots(void)
 {
@@ -813,7 +820,9 @@ void psp_me_yield_slots(void)
 	aime_now = psp_aime_job_now[0];
 	psp_aime_job_now[0] = 0;
 	slot = SLOT(ME_SLOT_RENDER);
-	if (slot->request != slot->done)
+	if (slot->request != slot->done && !(CONTROL->features & ME_FEATURE_NEST_RENDER))
+		nested_left++;
+	else if (slot->request != slot->done)
 	{
 		unsigned int begun = me_cycles(), ran;
 
@@ -830,10 +839,12 @@ void psp_me_nested_take(
 	unsigned int *count,
 	unsigned int *worst_cycles)
 {
-	*count = nested_renders;
+	/* the render jobs run, and (above 16 bits) those left to the slot loop */
+	*count = (nested_renders & 0xffffu) | (nested_left << 16);
 	*worst_cycles = nested_worst;
 	nested_renders = 0;
 	nested_worst = 0;
+	nested_left = 0;
 }
 
 /* on the ME: lines of main RAM it wrote, out to main RAM now (a copy it
@@ -1977,7 +1988,8 @@ int psp_me_start(void)
 		(psp_keep("meaudioranges") ? ME_FEATURE_AUDIO_RANGES : 0u) | (psp_keep("mestash") ? ME_FEATURE_STASH : 0u) |
 		(me_yield_off ? ME_FEATURE_NO_YIELD : 0u) | (psp_keep("meedramstate") ? ME_FEATURE_EDRAM_STATE : 0u) |
 		(me_claim_old ? ME_FEATURE_CLAIM_OLD : 0u) | (psp_keep("mebcc1") ? ME_FEATURE_BCC : 0u) |
-		(psp_keep("mefaultoff") ? ME_FEATURE_FAULT_OFF : 0u) | (psp_keep("mefaulttest") ? ME_FEATURE_FAULT_TEST : 0u);
+		(psp_keep("mefaultoff") ? ME_FEATURE_FAULT_OFF : 0u) | (psp_keep("mefaulttest") ? ME_FEATURE_FAULT_TEST : 0u) |
+		(psp_keep("menestrender") ? ME_FEATURE_NEST_RENDER : 0u);
 	wake_features = control->features | (psp_keep("mewakeprobe") ? ME_FEATURE_WAKE_PROBE : 0u);
 	wake_early = psp_keep("mewake") && !psp_keep("mewakeoff") && psp_keep("mewakeearly");
 	wake_fw = psp_keep("mewakefw");

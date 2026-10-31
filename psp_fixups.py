@@ -41604,7 +41604,8 @@ void psp_aime2a_tick_begin(
 		else
 		{
 			psp_aime2a_stats.collected++;
-			psp_aime2a_stats.nested += results[5];
+			psp_aime2a_stats.nested += results[5] & 0xffffu;
+			psp_aime2a_stats.nested_left += results[5] >> 16;
 			if (results[6] && psp_me_cycles_per_us() > 0.0f &&
 				(unsigned long)((float)results[6] / psp_me_cycles_per_us()) > psp_aime2a_stats.nested_worst_us)
 				psp_aime2a_stats.nested_worst_us = (unsigned long)((float)results[6] / psp_me_cycles_per_us());
@@ -41658,8 +41659,8 @@ static void psp_aime2a_log(
 		psp_aime2a_me_stats.aborted, psp_aime2a_me_stats.many_props, psp_aime_pf_stats[0], psp_aime_pf_stats[1],
 		psp_aime_pf_stats[2], psp_aime_pf_stats[3], psp_aime2a_stats.stack_deepest,
 		psp_aime2a_stats.stack_deepest > psp_me_aime_room_bytes() ? " (past the PSP's room)" : "", psp_aime2a_stats.guard);
-	platform_psp_log("aime2a: game time %ld | render jobs run in the job's yields %lu, the longest %lu us | the word answered within %lu us at worst (the bound %u)",
-		now, psp_aime2a_stats.nested, psp_aime2a_stats.nested_worst_us, psp_aime2a_stats.word_worst_us,
+	platform_psp_log("aime2a: game time %ld | render jobs run in the job's yields %lu, the longest %lu us; left to the ME's loop %lu (menestrender runs them) | the word answered within %lu us at worst (the bound %u)",
+		now, psp_aime2a_stats.nested, psp_aime2a_stats.nested_worst_us, psp_aime2a_stats.nested_left, psp_aime2a_stats.word_worst_us,
 		(unsigned int)PSP_AIME2A_BOUND_US);
 	if (psp_aime_chain_on > 0)
 	{
@@ -41971,7 +41972,7 @@ static struct
 	unsigned long checked, check_changed, stack_deepest, guard;
 	/* RW1's counters: the render jobs run inside the job's yields (the word
 	can't be read while one runs), and the late job's answer to the word */
-	unsigned long nested, nested_worst_us, word_worst_us;
+	unsigned long nested, nested_left, nested_worst_us, word_worst_us;
 } psp_aime2a_stats;
 /* the job's own */
 static struct
