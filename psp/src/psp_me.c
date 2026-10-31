@@ -425,6 +425,9 @@ static unsigned int slot_request[ME_SLOTS];
 static unsigned int last_job_us[ME_SLOTS]; /* build 87: psp_me_last_job_us */
 /* the ME's cycle counter, counts a microsecond (measured at start) */
 static float me_cycles_per_us = 0.0f;
+/* the ME's stack top in its eDRAM, set by the main CPU before the ME starts
+(ME_EDRAM_STACK_TOP is the 1000's) */
+static unsigned int me_stack_top = ME_EDRAM_STACK_TOP;
 
 /* ---------- the Media Engine's side: no system calls, no library calls, no
 VFPU; everything it touches is listed above */
@@ -1946,6 +1949,11 @@ int psp_me_start(void)
 		psp_log_flush();
 		chdir(PSP_DATA_ROOT);
 		table = meLibDefaultInit();
+		/* the Slim and 3000's image (table 2) starts the ME's stack at 4 MB, the
+		1000's at 2 MB (me-core.h): the AI job's room and its measure sit below
+		the real top, so its guard and its depth mean the same on both */
+		if (table == 2)
+			me_stack_top = 0x400000u;
 		if (have)
 			chdir(folder);
 	}
@@ -2495,19 +2503,20 @@ first job's stack pointer is filled once, and when the main CPU asks
 far. The figure is the stack's depth from the eDRAM's top, the ME's own
 frames included */
 static PSP_AIME_ME_SIDE unsigned int aime_me_lowest = 0, aime_me_filled = 0;
+#define AIME_STACK_AT (me_stack_top - (ME_EDRAM_STACK_TOP - ME_EDRAM_AIME_STACK))
 
 static void aime_on_me(volatile struct me_slot *slot)
 {
-	unsigned int *bottom = (unsigned int *)(ME_EDRAM + ME_EDRAM_AIME_STACK + ME_EDRAM_AIME_GUARD_BYTES);
+	unsigned int *bottom = (unsigned int *)(ME_EDRAM + AIME_STACK_AT + ME_EDRAM_AIME_GUARD_BYTES);
 	unsigned int *word;
 	unsigned int sp;
 
 	__asm__ __volatile__("move %0, $sp" : "=r"(sp));
-	aime_guard_set((volatile unsigned int *)(ME_EDRAM + ME_EDRAM_AIME_STACK));
+	aime_guard_set((volatile unsigned int *)(ME_EDRAM + AIME_STACK_AT));
 	if (!aime_me_lowest)
 	{
 		aime_me_lowest = sp;
-		if (sp > (unsigned int)bottom + 256 && sp <= ME_EDRAM + ME_EDRAM_STACK_TOP)
+		if (sp > (unsigned int)bottom + 256 && sp <= ME_EDRAM + me_stack_top)
 		{
 			for (word = bottom; (unsigned int)word < sp - 256; word++)
 				*word = AIME_SIM_FILL;
@@ -2523,7 +2532,7 @@ static void aime_on_me(volatile struct me_slot *slot)
 		if ((unsigned int)word < aime_me_lowest)
 			aime_me_lowest = (unsigned int)word;
 	}
-	slot->results[ME_JOB_RESULTS - 1] = ME_EDRAM + ME_EDRAM_STACK_TOP - aime_me_lowest;
+	slot->results[ME_JOB_RESULTS - 1] = ME_EDRAM + me_stack_top - aime_me_lowest;
 }
 static unsigned char *aime_sim_stack = NULL;
 /* (written while the emulator marks the work as the ME's) */
