@@ -41007,7 +41007,7 @@ FIXES_AIME2A = {}
 FIXES_AIME2A["source/ai/actors.c#aime2a"] = [
 ("""#define PSP_AIME_WRITERS 25
 """,
- """#define PSP_AIME_WRITERS 34
+ """#define PSP_AIME_WRITERS 35
 /* FIXES_AIME2A: the ME's own stops (aimes2a, see there) */
 #define PSP_AIME_STOP_ANIMATION 24
 #define PSP_AIME_STOP_DECISION_REPORT 25
@@ -41018,12 +41018,13 @@ FIXES_AIME2A["source/ai/actors.c#aime2a"] = [
 #define PSP_AIME_STOP_POOL_REPORT 30
 #define PSP_AIME_STOP_STACK 31
 #define PSP_AIME_STOP_ERROR 32
+#define PSP_AIME_STOP_LATE 33
 """),
 ("""	"weapon_set_total_rounds", "game_allegiance_provoke", "game_allegiance_incident", "hs_wake_by_name", "biped_accelerate", "forced" };
 """,
  """	"weapon_set_total_rounds", "game_allegiance_provoke", "game_allegiance_incident", "hs_wake_by_name", "biped_accelerate",
 	"animation_get_frame_data", "decision_loop_report", "owed_node_block", "anothers_prop", "prop_log_full", "formatting",
-	"pool_report", "stack_guard", "fatal_report", "forced" };
+	"pool_report", "stack_guard", "fatal_report", "late_word", "forced" };
 """),
 # on the ME, an actor's copy goes out to main RAM before it thinks, so an
 # ME stopped mid-actor can be undone from it
@@ -41084,6 +41085,10 @@ FIXES_AIME2A["source/ai/actors.c#aime2a"] = [
  """	psp_aime_stats.passes++;
 	psp_aime1b_pass_begin();
 	psp_aime_think_only = TRUE;
+	psp_aime_late_now = 0;
+	psp_aime_late_checks = 0;
+	psp_aime_late_due = psp_aime_late_every > 0 && (psp_aime_job_now[0] || psp_aime2a_alike) &&
+		psp_aime_late_pass % (unsigned long)psp_aime_late_every == 0;
 	if (psp_aime_fpu_main_on > 0 && psp_aime2a_alike && !psp_work_on_me())
 		psp_aime_fpu_main = 1;
 	if (!psp_work_on_me())
@@ -41156,11 +41161,20 @@ FIXES_AIME2A["source/ai/actors.c#aime2a"] = [
 		if (actor->meta.erase_next_tick || actor->state.mode <= _actor_mode_braindead ||
 			(actor->meta.swarm && actor->meta.swarm_cache_index == NONE))
 			continue;
+		/* the collection's word (or aimelate) seen: the rest think in the tick */
+		if (psp_aime_late_now)
+		{
+			psp_aime2a_me_stats.unreached++;
+			continue;
+		}
 		if (psp_work_on_me())
 		{
-			/* between actors: audio, the ring, a waiting render job; and
-			the collection's word to end here (the rest think in the tick) */
-			psp_me_yield_slots();
+			/* between actors: the collection's word first, then audio, the
+			ring and a waiting render job, then the word again */
+			if (psp_aime2a_abort && *psp_aime2a_abort)
+				psp_aime_late_now = 1;
+			else
+				psp_me_yield_slots();
 			if (psp_aime2a_guard_hit || psp_me_aime_guard_touched())
 			{
 				/* the stack's guard reached, by the actor before or a job run
@@ -41168,15 +41182,18 @@ FIXES_AIME2A["source/ai/actors.c#aime2a"] = [
 				psp_aime2a_guard_hit = 1;
 				break;
 			}
-			if (psp_aime2a_abort && *psp_aime2a_abort)
+			if (psp_aime_late_now || (psp_aime2a_abort && *psp_aime2a_abort))
 			{
-				psp_aime2a_me_stats.aborted++;
-				break;
+				psp_aime_late_now = 1;
+				psp_aime2a_me_stats.unreached++;
+				continue;
 			}
 			psp_aime2a_me_stats.on_me++;
 		}
 		psp_aime_think_actor(iterator.index);
 	}
+	if (psp_aime_late_now)
+		psp_aime2a_me_stats.aborted++;
 	if (!psp_work_on_me() && !psp_aime2a_alike)
 		psp_perception_end();
 	if (!psp_work_on_me())
@@ -41370,6 +41387,11 @@ static boolean psp_aime2a_active(
 	if (psp_aime2a_on < 0)
 	{
 		psp_aime2a_check_on = psp_keep("aime2acheck") != 0;
+		{
+			extern int psp_keep_number(const char *prefix, int fallback);
+
+			psp_aime_late_every = psp_keep_number("aimelate", 0);
+		}
 		/* the race check's write trace: the job's window its own (psp_ge.c) */
 		psp_me_window_split = psp_aime2a_check_on;
 		psp_aime2a_on = (psp_aime2a_check_on || psp_keep("aime2a") != 0) && psp_aime1b_active();
@@ -41449,6 +41471,27 @@ void psp_aime_me_job(
 	results[4] = (unsigned int)psp_aime2a_guard_actor;
 }
 
+/* objects.c's object_marker_begin, inside an actor's thinking in the frame's
+last pass (the ME's job, or aimefpu's pass alike): a look at the collection's
+word (the ME's job only) or aimelate's count; once either is up, the actor
+in hand goes back to its copies and the pass ends at its next actor */
+void psp_aime_late_check(
+	void)
+{
+	if (!psp_aime_late_now)
+	{
+		if (psp_aime_late_due && ++psp_aime_late_checks == PSP_AIME_LATE_AT)
+		{
+			psp_aime_late_now = 1;
+			psp_aime2a_me_stats.forced_late++;
+		}
+		else if (psp_aime_job_now[0] && psp_aime2a_abort && (++psp_aime_late_looks & 7) == 0 && *psp_aime2a_abort)
+			psp_aime_late_now = 1;
+	}
+	if (psp_aime_late_now && psp_aime_arm == 1)
+		psp_aime_handback(PSP_AIME_STOP_LATE);
+}
+
 /* game_time.c, before game_frame: the frame's last pass to the ME */
 void psp_aime2a_frame_end(
 	void)
@@ -41462,6 +41505,8 @@ void psp_aime2a_frame_end(
 	psp_aime2a_owed = FALSE;
 	if (!psp_aime_update_allowed())
 		return;
+	/* (aimelate's count: the frame's last passes, on either side) */
+	psp_aime_late_pass++;
 	if (!psp_aime2a_active())
 	{
 		/* aimefpu: the job's pass, here on the main CPU */
@@ -41585,6 +41630,9 @@ static void psp_aime2a_log(
 {
 	if (psp_aime2a_on <= 0)
 		return;
+	platform_psp_log("aime2a: game time %ld | late jobs: ended at the word %lu (aimelate %lu), the actor in hand handed back %lu, actors left to the tick %lu",
+		now, psp_aime2a_me_stats.aborted, psp_aime2a_me_stats.forced_late, psp_aime1b_stats.back[PSP_AIME_STOP_LATE],
+		psp_aime2a_me_stats.unreached);
 	platform_psp_log("aime2a: game time %ld | jobs %lu (refused %lu), collected %lu, late %lu, no answer %lu, failed %lu | passes inline %lu | actors on the ME %lu, ended by the word %lu, props over the copy %lu | pathfinding log %lu, applied %lu (woken %lu), full %lu | stack %lu bytes%s, the guard reached %lu",
 		now, psp_aime2a_stats.pushed, psp_aime2a_stats.refused, psp_aime2a_stats.collected, psp_aime2a_stats.late,
 		psp_aime2a_stats.no_answer, psp_aime2a_stats.failed, psp_aime2a_stats.inline_passes, psp_aime2a_me_stats.on_me,
@@ -41857,8 +41905,20 @@ static struct
 /* the job's own */
 static struct
 {
-	unsigned long on_me, aborted, many_props;
+	unsigned long on_me, aborted, many_props, forced_late, unreached;
 } psp_aime2a_me_stats PSP_AIME_ME_SIDE;
+/* a late job (the collection's word) or "aimelate N" (every Nth pass at a
+frame's end, on the ME and in aimefpu's pass alike, ends at its 40th look
+inside an actor): the actor in hand handed back at the word's next look
+(stop 33), the actors not reached left to the tick. The looks are between
+actors and at each collision walk's start (object_marker_begin), so a long
+actor ends promptly; the ME reads the word itself at one look in eight */
+#define PSP_AIME_LATE_AT 40
+static PSP_AIME_ME_SIDE int psp_aime_late_now = 0, psp_aime_late_due = 0;
+static PSP_AIME_ME_SIDE unsigned int psp_aime_late_checks = 0, psp_aime_late_looks = 0;
+static int psp_aime_late_every = 0;
+static unsigned long psp_aime_late_pass = 0;
+void psp_aime_late_check(void);
 /* "aimefpu": 1b's pass on the main CPU in the ME's FPU forms (matrix_math.c,
 real_math.c read psp_aime_fpu_main) */
 static int psp_aime_fpu_main_on = -1;
@@ -42053,6 +42113,14 @@ void object_marker_begin(
 	void)
 {
 #ifdef HALO_PSP
+	{
+		/* (FIXES_AIME2A: the collection's word, inside an actor's thinking) */
+		extern int psp_aime_arm, psp_aime_job_now[16], psp_aime_fpu_main;
+		extern void psp_aime_late_check(void);
+
+		if (psp_aime_arm && (psp_aime_job_now[0] || psp_aime_fpu_main) && psp_aime_here())
+			psp_aime_late_check();
+	}
 	if (psp_me_marks_here())
 	{
 		psp_me_object_marker++;
