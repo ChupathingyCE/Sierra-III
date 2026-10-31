@@ -2376,7 +2376,7 @@ static int audio_started = 0;
 
 static int audio_thread(SceSize arguments, void *argument)
 {
-	int channel = -1, which = 0, up = 0, full_rate = 0;
+	int channel = -1, which = 0, up = 0, full_rate = 0, src44 = 0;
 	SceUID dump = -1;
 	unsigned long dumped = 0;
 
@@ -2395,15 +2395,24 @@ static int audio_thread(SceSize arguments, void *argument)
 		up = psp_keep("audio44");
 		full_rate = psp_keep("musadpcm");
 		up |= full_rate;
+		/* "src44": the 44.1 kHz block on the sample-rate converter's own
+		channel set to 44,100 Hz (nothing to convert) instead of an ordinary
+		channel: audio44 alone cost b30's frame +7.8% on the PSP-3000
+		(sierra-hw 41211384661), far past its filter's work, so the
+		ordinary channel's own path is the suspect [U] */
+		src44 = up && psp_keep("src44");
 	}
-	channel = up ? sceAudioChReserve(PSP_AUDIO_NEXT_CHANNEL, 2 * MIX_FRAMES, PSP_AUDIO_FORMAT_STEREO) :
+	channel = src44 ? sceAudioSRCChReserve(2 * MIX_FRAMES, 44100, 2) :
+		up ? sceAudioChReserve(PSP_AUDIO_NEXT_CHANNEL, 2 * MIX_FRAMES, PSP_AUDIO_FORMAT_STEREO) :
 		sceAudioSRCChReserve(MIX_FRAMES, OUTPUT_RATE, 2);
 	if (channel < 0)
 		platform_log("audio: no output channel (%08x); sound runs silent", channel);
 	else
 		platform_log("audio: %d Hz stereo, %d samples a block (%d ms)%s", OUTPUT_RATE, MIX_FRAMES,
-			MIX_FRAMES * 1000 / OUTPUT_RATE, full_rate ? "; to 44,100 Hz by the half-band filter, stereo 44.1 kHz voices mixed at 44,100 Hz (musadpcm)" :
-			up ? "; to 44,100 Hz by the half-band filter (audio44)" : "");
+			MIX_FRAMES * 1000 / OUTPUT_RATE, src44 ? "; the 44.1 kHz block on the converter's channel at 44,100 Hz (src44)" : "");
+	if (channel >= 0 && up)
+		platform_log("audio: %s", full_rate ? "to 44,100 Hz by the half-band filter, stereo 44.1 kHz voices mixed at 44,100 Hz (musadpcm)" :
+			"to 44,100 Hz by the half-band filter (audio44)");
 	{
 		extern int psp_keep(const char *word);
 
@@ -2457,7 +2466,10 @@ static int audio_thread(SceSize arguments, void *argument)
 			if (up)
 			{
 				sceKernelDcacheWritebackRange(output44[which], sizeof(output44[which]));
-				sceAudioOutputPannedBlocking(channel, PSP_AUDIO_VOLUME_MAX, PSP_AUDIO_VOLUME_MAX, output44[which]);
+				if (src44)
+					sceAudioSRCOutputBlocking(PSP_AUDIO_VOLUME_MAX, output44[which]);
+				else
+					sceAudioOutputPannedBlocking(channel, PSP_AUDIO_VOLUME_MAX, PSP_AUDIO_VOLUME_MAX, output44[which]);
 			}
 			else
 				sceAudioSRCOutputBlocking(PSP_AUDIO_VOLUME_MAX, output_buffers[which]);
