@@ -41471,10 +41471,10 @@ void psp_aime_me_job(
 	results[4] = (unsigned int)psp_aime2a_guard_actor;
 }
 
-/* objects.c's object_marker_begin, inside an actor's thinking in the frame's
-last pass (the ME's job, or aimefpu's pass alike): a look at the collection's
-word (the ME's job only) or aimelate's count; once either is up, the actor
-in hand goes back to its copies and the pass ends at its next actor */
+/* between the steps of an actor's thinking in the frame's last pass (the
+ME's job, or aimefpu's pass alike): a look at the collection's word (the
+ME's job only) or aimelate's count; once either is up, the actor in hand
+goes back to its copies and the pass ends at its next actor */
 void psp_aime_late_check(
 	void)
 {
@@ -41485,7 +41485,7 @@ void psp_aime_late_check(
 			psp_aime_late_now = 1;
 			psp_aime2a_me_stats.forced_late++;
 		}
-		else if (psp_aime_job_now[0] && psp_aime2a_abort && (++psp_aime_late_looks & 7) == 0 && *psp_aime2a_abort)
+		else if (psp_aime_job_now[0] && psp_aime2a_abort && *psp_aime2a_abort)
 			psp_aime_late_now = 1;
 	}
 	if (psp_aime_late_now && psp_aime_arm == 1)
@@ -41865,6 +41865,48 @@ tools only: the ME's job tests spheres while the frame does */
 		return TRUE;
 	PSP_SPHERE_COUNT(psp_sphere_rejects);"""),
 ]
+# the collection's word looked at between the steps of an actor's thinking
+FIXES_AIME2A["source/ai/actors.c#aime2a_late"] = [
+("""static void actor_update(
+	long actor_index)
+{""",
+ """/* psp_fixups.py (FIXES_AIME2A): psp_aime_late_check's looks, in the
+frame's last pass only */
+#define PSP_AIME_LATE_LOOK() do { if (psp_aime_arm && (psp_aime_job_now[0] || psp_aime_fpu_main) && psp_aime_here()) psp_aime_late_check(); } while (0)
+
+static void actor_update(
+	long actor_index)
+{"""),
+("""			actor_input_update(actor_index);
+			actor_perception_update(actor_index);
+			actor_emotion_update(actor_index);
+			actor_clear_orders(actor_index);
+		}""",
+ """			actor_input_update(actor_index);
+			actor_perception_update(actor_index);
+			PSP_AIME_LATE_LOOK();
+			actor_emotion_update(actor_index);
+			actor_clear_orders(actor_index);
+		}"""),
+("""			actor_input_update(actor_index);
+			actor_perception_update(actor_index);
+			actor_situation_update(actor_index);
+			actor_emotion_update(actor_index);
+			actor_clear_orders(actor_index);
+			actor_decision_loop(actor_index);
+		}
+		psp_aicad_seen(actor_index);""",
+ """			actor_input_update(actor_index);
+			actor_perception_update(actor_index);
+			PSP_AIME_LATE_LOOK();
+			actor_situation_update(actor_index);
+			PSP_AIME_LATE_LOOK();
+			actor_emotion_update(actor_index);
+			actor_clear_orders(actor_index);
+			actor_decision_loop(actor_index);
+		}
+		psp_aicad_seen(actor_index);"""),
+]
 # the declarations the pairs above use, ahead of 1b's
 FIXES_AIME2A["source/ai/actors.c#aime2a"].insert(0, (
 """/* FIXES_AIME1B: "aime1b" (see there) */
@@ -41908,14 +41950,14 @@ static struct
 	unsigned long on_me, aborted, many_props, forced_late, unreached;
 } psp_aime2a_me_stats PSP_AIME_ME_SIDE;
 /* a late job (the collection's word) or "aimelate N" (every Nth pass at a
-frame's end, on the ME and in aimefpu's pass alike, ends at its 40th look
-inside an actor): the actor in hand handed back at the word's next look
-(stop 33), the actors not reached left to the tick. The looks are between
-actors and at each collision walk's start (object_marker_begin), so a long
-actor ends promptly; the ME reads the word itself at one look in eight */
-#define PSP_AIME_LATE_AT 40
+frame's end, on the ME and in aimefpu's pass alike, ends at its 5th look):
+the actor in hand handed back at the word's next look (stop 33), the actors
+not reached left to the tick. The looks are between actors and between the
+steps of an actor's thinking (after its perception and its situation, where
+no walk is open and its own state is whole), so a long actor ends promptly */
+#define PSP_AIME_LATE_AT 5
 static PSP_AIME_ME_SIDE int psp_aime_late_now = 0, psp_aime_late_due = 0;
-static PSP_AIME_ME_SIDE unsigned int psp_aime_late_checks = 0, psp_aime_late_looks = 0;
+static PSP_AIME_ME_SIDE unsigned int psp_aime_late_checks = 0;
 static int psp_aime_late_every = 0;
 static unsigned long psp_aime_late_pass = 0;
 void psp_aime_late_check(void);
@@ -42113,14 +42155,6 @@ void object_marker_begin(
 	void)
 {
 #ifdef HALO_PSP
-	{
-		/* (FIXES_AIME2A: the collection's word, inside an actor's thinking) */
-		extern int psp_aime_arm, psp_aime_job_now[16], psp_aime_fpu_main;
-		extern void psp_aime_late_check(void);
-
-		if (psp_aime_arm && (psp_aime_job_now[0] || psp_aime_fpu_main) && psp_aime_here())
-			psp_aime_late_check();
-	}
 	if (psp_me_marks_here())
 	{
 		psp_me_object_marker++;
