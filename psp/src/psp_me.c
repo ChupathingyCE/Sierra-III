@@ -117,6 +117,8 @@ struct me_control
 	unsigned int halted;    /* the ME: 1 from just before a halt until it wakes */
 	unsigned int halts;     /* the ME: halts, counted */
 	unsigned int wakes;     /* the ME: wake interrupts taken (meLibOnExternalInterrupt) */
+	/* the ME at its start: its coprocessor 0 CPU number, and 1 once it's in */
+	unsigned int cpu_number, cpu_seen;
 } __attribute__((aligned(64)));
 #define ME_FEATURE_HALT 1u
 #define ME_FEATURE_RING 2u
@@ -535,10 +537,19 @@ static void me_halt_idle(volatile struct me_control *control, int ring_ready, un
 }
 
 /* one job (either CPU; on_me: this is the ME) */
+static void aime_simulated(volatile struct me_slot *slot);
+static void aime_on_me(volatile struct me_slot *slot);
+
 static void run_job(volatile struct me_slot *slot, int *sums, int on_me)
 {
 	switch (slot->type)
 	{
+	case ME_JOB_AIME:
+		if (on_me)
+			aime_on_me(slot);
+		else
+			aime_simulated(slot);
+		break;
 	case ME_JOB_AUDIO:
 	{
 		unsigned long clipped = 0, voices;
@@ -760,12 +771,19 @@ void psp_me_serve_audio(void)
 	psp_me_yield();
 }
 
+/* the jobs a yield runs aren't the AI job, even inside it: its stops act
+only in its own work (psp_post.h's psp_aime_here) */
+extern int psp_aime_job_now[16];
+
 void psp_me_yield(void)
 {
 	volatile struct me_private *p;
+	int aime_now;
 
 	if (!psp_on_me())
 		return;
+	aime_now = psp_aime_job_now[0];
+	psp_aime_job_now[0] = 0;
 	me_audio_now();
 	p = ME_PRIVATE;
 	if (p->ring_ready && !p->in_ring && RING_PUSHED != p->ring_popped)
@@ -775,6 +793,36 @@ void psp_me_yield(void)
 		p->ring_popped = me_ring_drain(p->ring_popped, &last_look);
 		p->ring_last_look = last_look;
 	}
+	psp_aime_job_now[0] = aime_now;
+}
+
+void psp_me_yield_slots(void)
+{
+	volatile struct me_slot *slot;
+	int aime_now;
+
+	if (!psp_on_me())
+		return;
+	psp_me_yield();
+	aime_now = psp_aime_job_now[0];
+	psp_aime_job_now[0] = 0;
+	slot = SLOT(ME_SLOT_RENDER);
+	if (slot->request != slot->done)
+		me_serve(slot, ME_AUDIO_SUMS);
+	psp_aime_job_now[0] = aime_now;
+}
+
+/* on the ME: lines of main RAM it wrote, out to main RAM now (a copy it
+must be able to undo from if it is stopped). Nothing elsewhere */
+void psp_me_lines_out(const void *start, unsigned int bytes)
+{
+	if (psp_on_me())
+		lines_writeback((unsigned int)start, bytes);
+}
+
+volatile unsigned int *psp_me_abort_word(int which)
+{
+	return which >= 0 && which < ME_SLOTS ? &SLOT(which)->args[ME_JOB_ARGS - 1] : NULL;
 }
 
 /* a ring job's step (psp_me.h): the slant job every 64 triangles (~1 us
@@ -1263,6 +1311,15 @@ void meLibOnProcess(void)
 		__asm__ __volatile__("mfc0 %0, $13" : "=r"(cause));
 		control->cause_after = cause;
 	}
+	{
+		/* the CPU number, which the ME's kernel mode can read: logged by the
+		main CPU, a check that this code runs where psp_me.h says */
+		unsigned int number;
+
+		__asm__ __volatile__("sync\n\tmfc0 %0, $22\n\tsync" : "=r"(number));
+		control->cpu_number = number;
+		control->cpu_seen = 1;
+	}
 	meLibDcacheWritebackInvalidateAll();
 	/* the features aren't set yet: the main-RAM copy; the eDRAM copy is
 	written before each job that reads it */
@@ -1749,6 +1806,31 @@ void psp_me_exit(const char *why)
 /* launch (build 87: on unless the launch menu's "nomeaudio"): the ME started,
 its first signs of life checked, its clock measured. Non-zero when jobs can
 be handed over */
+/* the main CPU's coprocessor 0 CPU number, read in kernel mode (me-core's
+meLibGetCpuId reads it so, in its kernel functions) */
+static int me_cpu_number_kernel(void *out)
+{
+	unsigned int number;
+
+	__asm__ __volatile__("sync\n\tmfc0 %0, $22\n\tsync" : "=r"(number));
+	*(unsigned int *)out = number;
+	return 0;
+}
+
+/* the two CPU numbers at the ME's start (and its restarts): the ME's as it
+reported it, the main CPU's read in kernel mode. A check of where the ME's
+code runs, not a test any route uses (psp_me.h's psp_cpu_is_me) */
+static void me_cpu_check(volatile struct me_control *control, const char *when)
+{
+	static unsigned int main_number = 0xffffffffu;
+
+	if (main_number == 0xffffffffu)
+		kcall_3(me_cpu_number_kernel, 0, &main_number);
+	platform_log("ME: CPU numbers (coprocessor 0 register 22) at the %s: the ME %s%u, the main CPU %u",
+		when, control->cpu_seen ? "" : "(nothing reported) ", control->cpu_seen ? control->cpu_number : 0xffffffffu,
+		main_number);
+}
+
 int psp_me_start(void)
 {
 	volatile struct me_control *control = CONTROL;
@@ -1878,6 +1960,7 @@ int psp_me_start(void)
 	platform_log("ME: the ME runs (firmware table %d; %u idle polls in 20 ms; its cycle counter runs at %.1f a microsecond%s; Cause %08x, after clearing DC %08x)",
 		table, control->alive - before, me_cycles_per_us, me_cycles_per_us < 1.0f ? ": ME times will read 0" : "",
 		control->cause_before, control->cause_after);
+	me_cpu_check(control, "launch");
 	kcall_3(psp_keep("memarksatlaunch") ? me_sysregs_kernel : me_sysregs_running_kernel, 0, &regs_launch);
 	{
 		char line[96];
@@ -2049,7 +2132,9 @@ int psp_me_submit(int which, unsigned int type, const unsigned int *args, int ar
 	slot->type = type;
 	for (k = 0; k < arg_count; k++)
 		slot->args[k] = args[k];
-	slot_yields[which] = type == ME_JOB_GE && !me_yield_off;
+	slot_yields[which] = (type == ME_JOB_GE || type == ME_JOB_AIME) && !me_yield_off;
+	if (arg_count < ME_JOB_ARGS)
+		slot->args[ME_JOB_ARGS - 1] = 0;
 	submit_mark[which] = sceKernelGetSystemTimeWide();
 	if (me_state == 2)
 	{
@@ -2201,6 +2286,7 @@ bus little while the ME reads its inputs (code_review_b119_me.md, 1) */
 #define RING_WAIT_CLOCK_EVERY 16
 
 extern volatile unsigned int psp_me_window[16];
+extern volatile unsigned int psp_me_window_split;
 static unsigned int ring_next = 0;        /* the next ticket */
 static unsigned int ring_popped_seen = 0; /* popped, as last read */
 static int ring_dead = 0;                 /* a job failed: 1 the ring takes no more, 2 it rests (RING_REST_US) */
@@ -2210,6 +2296,13 @@ static unsigned int ring_epoch = 0;
 static int ring_restarted = 0;
 static unsigned int ring_push_mark[ME_RING_ENTRIES]; /* the push's time, a ticket's */
 static unsigned int ring_thread = 0;      /* simulated: the producer's thread, for psp_me_context */
+/* simulated: a ring job pushed and not yet waited for (the trace's window) */
+static int ring_sim_open = 0;
+
+int psp_me_ring_sim_open(void)
+{
+	return ring_sim_open;
+}
 static struct
 {
 	unsigned long jobs, at_once, failures, refused_busy, refused_full, refused_check;
@@ -2275,6 +2368,187 @@ static void ring_run_simulated(unsigned int index)
 	ring_run(index, 0, 0);
 }
 
+/* "aime2a" in the emulator: the pass here and now, marked as the ME's (the
+ME-strict check, the write trace, the code's PSP_ME_WORK paths), on a stack
+of its own. The thinking keeps 82 KB path searches on its stack and reaches
+past 192 KB, more than the ME's eDRAM stack has, so the stack's deepest reach
+is measured (a fill pattern) and reported: it sizes the job's stack */
+#define AIME_SIM_STACK_BYTES (ME_EDRAM_STACK_TOP - ME_EDRAM_AIME_STACK)
+#define AIME_SIM_FILL 0x5AA5C33Cu
+/* below the room in the emulator: what a deeper reach lands on, so it's
+measured instead of written over the heap's next block (the PSP's room stops
+at its guard) */
+#define AIME_SIM_SLACK_BYTES (640 * 1024)
+/* the guard: words at the room's bottom, written before each job and read by
+the job between actors (psp_me_aime_guard_touched). A frame that reaches them
+has used the room; the job hands its actor back and ends, and the collection
+logs it. The fill's scan starts above them */
+#define AIME_GUARD_WORD 0xA1E5D00Du
+static PSP_AIME_ME_SIDE volatile unsigned int *aime_guard = NULL;
+extern unsigned int psp_aime_sp_low, psp_aime_sp_high;
+
+static void aime_guard_set(
+	volatile unsigned int *guard)
+{
+	unsigned int k;
+
+	for (k = 0; k < ME_EDRAM_AIME_GUARD_BYTES / 4; k++)
+		guard[k] = AIME_GUARD_WORD;
+	aime_guard = guard;
+}
+
+/* the AI pass's context (actors.c; psp_post.h's psp_aime_here) */
+extern unsigned int psp_aime_sp_low, psp_aime_sp_high;
+
+/* a pass on the main CPU: its thread's stack is the pass's context
+(psp_aime_here), found once a thread */
+void psp_aime_pass_here(int on)
+{
+	static SceUID known = -1;
+	static unsigned int low = 0, high = 0;
+	SceUID thread;
+
+	if (!on)
+	{
+		psp_aime_sp_low = psp_aime_sp_high = 0;
+		return;
+	}
+	thread = sceKernelGetThreadId();
+	if (thread != known)
+	{
+		SceKernelThreadInfo info;
+
+		memset(&info, 0, sizeof(info));
+		info.size = sizeof(info);
+		low = high = 0;
+		if (sceKernelReferThreadStatus(thread, &info) == 0 && info.stack)
+		{
+			low = (unsigned int)info.stack;
+			high = low + (unsigned int)info.stackSize;
+		}
+		known = thread;
+	}
+	psp_aime_sp_low = low;
+	psp_aime_sp_high = high;
+}
+
+unsigned int psp_me_aime_room_bytes(void)
+{
+	return ME_EDRAM_STACK_TOP - ME_EDRAM_AIME_STACK;
+}
+
+int psp_me_aime_guard_touched(void)
+{
+	unsigned int k;
+
+	if (!aime_guard)
+		return 0;
+	for (k = 0; k < ME_EDRAM_AIME_GUARD_BYTES / 4; k++)
+	{
+		if (aime_guard[k] != AIME_GUARD_WORD)
+			return 1;
+	}
+	return 0;
+}
+
+/* the job on the ME, on the ME's own stack in its eDRAM. Its deepest reach
+is measured the same way, every nested job included (audio, the ring and a
+render job run inside its yields, on the same stack): the room below the
+first job's stack pointer is filled once, and when the main CPU asks
+(args[0]) the fill is read from the bottom up to the lowest word written so
+far. The figure is the stack's depth from the eDRAM's top, the ME's own
+frames included */
+static PSP_AIME_ME_SIDE unsigned int aime_me_lowest = 0, aime_me_filled = 0;
+
+static void aime_on_me(volatile struct me_slot *slot)
+{
+	unsigned int *bottom = (unsigned int *)(ME_EDRAM + ME_EDRAM_AIME_STACK + ME_EDRAM_AIME_GUARD_BYTES);
+	unsigned int *word;
+	unsigned int sp;
+
+	__asm__ __volatile__("move %0, $sp" : "=r"(sp));
+	aime_guard_set((volatile unsigned int *)(ME_EDRAM + ME_EDRAM_AIME_STACK));
+	if (!aime_me_lowest)
+	{
+		aime_me_lowest = sp;
+		if (sp > (unsigned int)bottom + 256 && sp <= ME_EDRAM + ME_EDRAM_STACK_TOP)
+		{
+			for (word = bottom; (unsigned int)word < sp - 256; word++)
+				*word = AIME_SIM_FILL;
+			aime_me_filled = 1;
+		}
+	}
+	psp_aime_me_job(slot->args, slot->results);
+	aime_guard = NULL;
+	if (slot->args[0] && aime_me_filled)
+	{
+		for (word = bottom; (unsigned int)word < aime_me_lowest && *word == AIME_SIM_FILL; word++)
+			;
+		if ((unsigned int)word < aime_me_lowest)
+			aime_me_lowest = (unsigned int)word;
+	}
+	slot->results[ME_JOB_RESULTS - 1] = ME_EDRAM + ME_EDRAM_STACK_TOP - aime_me_lowest;
+}
+static unsigned char *aime_sim_stack = NULL;
+/* (written while the emulator marks the work as the ME's) */
+static PSP_AIME_ME_SIDE unsigned int aime_sim_deepest = 0;
+
+static void aime_run_simulated(unsigned int slot_address)
+{
+	volatile struct me_slot *slot = (volatile struct me_slot *)slot_address;
+
+	psp_aime_me_job(slot->args, slot->results);
+}
+
+static __attribute__((noinline, cold)) void aime_simulated(volatile struct me_slot *slot)
+{
+	static int tried = 0;
+	unsigned int k, deepest;
+
+	if (!tried)
+	{
+		tried = 1;
+		aime_sim_stack = (unsigned char *)memalign(64, AIME_SIM_SLACK_BYTES + AIME_SIM_STACK_BYTES);
+		if (!aime_sim_stack)
+			platform_log("ME (simulated): no room for the AI job's stack; it runs on the caller's");
+		else
+			platform_log("ME (simulated): the AI job's stack %u KB (the PSP's room) and %u KB below it, %p-%p, its guard at %p",
+				AIME_SIM_STACK_BYTES / 1024, AIME_SIM_SLACK_BYTES / 1024, aime_sim_stack,
+				aime_sim_stack + AIME_SIM_SLACK_BYTES + AIME_SIM_STACK_BYTES, aime_sim_stack + AIME_SIM_SLACK_BYTES);
+	}
+	/* (psp_ge.c's psp_me_window_split: the job's window its own) */
+	if (psp_me_window_split)
+		psp_me_window[0] = 0;
+	psp_me_window[0] = 1;
+	psp_me_window_hold = 1;
+	psp_me_context = (unsigned int)sceKernelGetThreadId();
+	if (aime_sim_stack)
+	{
+		unsigned int *words = (unsigned int *)aime_sim_stack;
+		unsigned int guard_first = AIME_SIM_SLACK_BYTES / 4, guard_end = guard_first + ME_EDRAM_AIME_GUARD_BYTES / 4;
+
+		for (k = 0; k < (AIME_SIM_SLACK_BYTES + AIME_SIM_STACK_BYTES) / 4; k++)
+			words[k] = AIME_SIM_FILL;
+		aime_guard_set((volatile unsigned int *)(words + guard_first));
+		/* the pass's context (psp_post.h's psp_aime_here): this stack */
+		psp_aime_sp_low = (unsigned int)aime_sim_stack;
+		psp_aime_sp_high = (unsigned int)aime_sim_stack + AIME_SIM_SLACK_BYTES + AIME_SIM_STACK_BYTES;
+		psp_me_sim_call((unsigned int)slot, aime_sim_stack + AIME_SIM_SLACK_BYTES + AIME_SIM_STACK_BYTES, aime_run_simulated);
+		psp_aime_sp_low = psp_aime_sp_high = 0;
+		aime_guard = NULL;
+		for (k = 0; k < (AIME_SIM_SLACK_BYTES + AIME_SIM_STACK_BYTES) / 4 &&
+			(words[k] == AIME_SIM_FILL || (k >= guard_first && k < guard_end && words[k] == AIME_GUARD_WORD)); k++)
+			;
+		deepest = AIME_SIM_SLACK_BYTES + AIME_SIM_STACK_BYTES - k * 4;
+		if (deepest > aime_sim_deepest)
+			aime_sim_deepest = deepest;
+		slot->results[ME_JOB_RESULTS - 1] = aime_sim_deepest;
+	}
+	else
+		psp_aime_me_job(slot->args, slot->results);
+	psp_me_context = 0;
+}
+
 /* the emulator: the job's code here and now, marked as the ME's for the
 ME-strict check and the write trace (emu.sh's gemesim and mewrites), on a
 stack of its own as on the ME; the window stays open until the wait. Cold,
@@ -2295,6 +2569,7 @@ static __attribute__((noinline, cold)) void ring_push_simulated(unsigned int ind
 			platform_log("ME (simulated): no room for the job stack; jobs run on the producer's");
 	}
 	psp_me_window[0] = 1;
+	ring_sim_open = 1;
 	job_start = sceKernelGetSystemTimeLow();
 	psp_me_context = ring_thread;
 	if (sim_stack)
@@ -2665,7 +2940,10 @@ int psp_me_wait(unsigned int ticket, unsigned int *results)
 		return 0;
 	/* simulated, the push opened the window, whatever has stopped since */
 	if (me_restartable == 2 || me_state == 2)
-		psp_me_window[0] = 0;
+	{
+		psp_me_window[0] = psp_me_window_hold;
+		ring_sim_open = 0;
+	}
 	/* without this, popped (moved past it by the restart) would say it was
 	done, and another job's answer would stop the ring for the session */
 	if (ring_restarted && ticket - ring_epoch >= ring_next - ring_epoch)
@@ -3421,6 +3699,7 @@ void psp_me_wake_poll(void)
 	}
 	release = now;
 	me_maybe_running = 1;
+	control->cpu_seen = 0;
 	/* B41: a release that never returns (the ME's bus unpowered) is named
 	by the heartbeat's stall reporter */
 	PSP_WAIT_BEGIN(PSP_WAIT_ME_RESTART);
@@ -3440,6 +3719,7 @@ answered:
 		return;
 	}
 	me_state = 1;
+	me_cpu_check(control, "restart");
 	wake_report("ME: restarted after wake in %lu ms (its first idle poll %lu us after the reset's release%s; %u frame ends waiting for its clients%s)",
 		(unsigned long)((now - wake_mark) / 1000), (unsigned long)(now - release),
 		release < wake_mark ? ", released in the kernel's wake handler" : "", wake_frames,
@@ -3709,7 +3989,7 @@ void psp_me_edram_probe(void)
 
 void psp_me_report(void)
 {
-	static const char *const names[ME_SLOTS] = { "audio", "render", "probe" };
+	static const char *const names[ME_SLOTS] = { "audio", "render", "probe", "ai" };
 	unsigned long long now = sceKernelGetSystemTimeWide(), window = now - report_mark, busy_us_all = 0;
 	char line[900], ring_line[400];
 	int length = 0, k;

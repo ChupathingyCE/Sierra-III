@@ -323,6 +323,9 @@ static PSP_MAIN_SIDE int me_wrote = 0;        /* the ME has carried a half out s
 static PSP_MAIN_SIDE unsigned long me_overlap_runs = 0, me_overlap_waits = 0, me_overlap_wait_us = 0, me_overlap_alone = 0;
 /* a line of its own: only the main CPU writes it */
 volatile unsigned int psp_me_window[16] __attribute__((aligned(64)));
+/* 1 while a slot job that spans the frame is out ("aime2a"): the window's
+closings below leave it open, so the trace covers it to its collection */
+volatile unsigned int psp_me_window_hold = 0;
 /* build 118: "mebench": the three ways of running the GE layer's work, in
 turns of ME_BENCH_FRAMES frames in one run, each frame's time (swap to swap,
 the frame pacing off) added to its way: on the main CPU as it comes (gedefer
@@ -396,6 +399,22 @@ frame. While it is out, the ME publishes each stall address it reaches in an
 uncached pair (the address, the list's id) and a thread of the main CPU's
 passes it to the GE, so the GE draws behind the ME rather than after it */
 static PSP_MAIN_SIDE int inflight_me_out = 0;
+/* the emulator: a held window's end, at the AI job's collection. On the PSP
+the collection's whole-cache write-back and invalidate end that overlap, so
+the main CPU's writes after it (the tick's) are no longer the job's window;
+it stays open while a render or ring job is out */
+int psp_me_ring_sim_open(void);
+/* "aime2acheck": the AI job's window its own, from its push to its
+collection, so the trace compares the job's writes with the main CPU's
+during the job alone: closed at the collection, the next job's push opens
+the next (the GE's and the ring's jobs out across the AI job's ends are
+then traced only in part) */
+volatile unsigned int psp_me_window_split = 0;
+void psp_me_window_close(void)
+{
+	psp_me_window_hold = 0;
+	psp_me_window[0] = !psp_me_window_split && (me_out || inflight_me_out || psp_me_ring_sim_open());
+}
 static PSP_MAIN_SIDE unsigned long inflight_handed = 0, inflight_me_failed = 0;
 static volatile unsigned int inflight_stall_word[16] __attribute__((aligned(64))); /* [0] address, [1] id: written uncached */
 #define INFLIGHT_STALL ((volatile unsigned int *)(0x40000000u | (unsigned int)inflight_stall_word))
@@ -1827,7 +1846,7 @@ static void defer_wait_me(void)
 		perhaps half carried out: the main CPU goes on alone from here,
 		and this frame may draw wrong */
 		gebusy_wait(0, 0);
-		psp_me_window[0] = 0;
+		psp_me_window[0] = psp_me_window_hold;
 		defer_me_failed++;
 		me_overlap = 0;
 		/* the half being written moves to the buffer's start, where the
@@ -1840,7 +1859,7 @@ static void defer_wait_me(void)
 		platform_log("GE: gemeoverlap: the Media Engine failed with half the buffer out; the main CPU carries the calls out from here");
 		return;
 	}
-	psp_me_window[0] = 0;
+	psp_me_window[0] = psp_me_window_hold;
 	me_overlap_waits++;
 	gebusy_wait(0, 0);
 	me_overlap_wait_us += sceKernelGetSystemTimeLow() - start;
@@ -1890,7 +1909,7 @@ static void defer_hand_over(void)
 			return;
 		}
 		defer_replaying = 0;
-		psp_me_window[0] = 0;
+		psp_me_window[0] = psp_me_window_hold;
 	}
 	/* the ME can't take it: carried out here, as gedefer alone, after
 	dropping the main CPU's stale copies of what the ME wrote */
@@ -2087,7 +2106,7 @@ static int inflight_hand_over_from(unsigned int from, unsigned int mode)
 	{
 		defer_replaying = 0;
 		inflight_me_out = 0;
-		psp_me_window[0] = 0;
+		psp_me_window[0] = psp_me_window_hold;
 		return 0;
 	}
 	defer_replaying = 0;
@@ -2248,7 +2267,7 @@ static void inflight_wait_me(void)
 	defer_wait_me(); /* the last stall address passed on with it */
 	if (!was_chunked)
 		chunk_wait_last_us = sceKernelGetSystemTimeLow() - wait_mark;
-	psp_me_window[0] = 0;
+	psp_me_window[0] = psp_me_window_hold;
 	sceKernelDcacheWritebackInvalidateAll();
 	{
 		/* texlinecheck and heapwalk: what the ME's frame left (psp_tex.c, psp_libc.c) */

@@ -67,11 +67,16 @@ unsigned long psp_lfs_frames, psp_lfs_markers, psp_lfs_kept, psp_lfs_hits, psp_l
 
 /* ---------- logging (psp_fixups.py's changes call this) */
 
+int psp_format_refused(const char *format);
+
 void platform_psp_log(const char *format, ...)
 {
 	char line[512];
 	va_list arguments;
 
+	/* never on the Media Engine (psp_libc.c) */
+	if (psp_format_refused(format))
+		return;
 	va_start(arguments, format);
 	vsnprintf(line, sizeof(line), format, arguments);
 	va_end(arguments);
@@ -440,7 +445,12 @@ static char log_line_joined[640];
 void psp_log_write(const char *text)
 {
 	SceUID file;
-	int locked = log_lock_take();
+	int locked;
+
+	/* never on the Media Engine (psp_libc.c) */
+	if (psp_format_refused("(a line of the log)"))
+		return;
+	locked = log_lock_take();
 
 	screen_write(text);
 	if (log_batching)
@@ -1411,6 +1421,23 @@ static int keep_search(const char *name)
 	return 0;
 }
 
+/* the last one asked for in a slot is the one remembered there (before
+keep.txt is read, nothing is remembered). Apart, so the ME's reach (mewalk)
+can stop here: the slot's lock is a system call, and psp_keep never comes
+here on the ME */
+static __attribute__((noinline)) void keep_remember(unsigned int slot, const char *name, int answer)
+{
+	if (keep_cache_lock >= 0 && sceKernelWaitSema(keep_cache_lock, 1, NULL) >= 0)
+	{
+		keep_cache[slot].sequence++;
+		keep_cache[slot].generation = keep_generation;
+		keep_cache[slot].answer = answer;
+		strcpy(keep_cache[slot].name, name);
+		keep_cache[slot].sequence++;
+		sceKernelSignalSema(keep_cache_lock, 1);
+	}
+}
+
 int psp_keep(const char *name)
 {
 	unsigned int hash = 2166136261u, slot;
@@ -1441,17 +1468,7 @@ int psp_keep(const char *name)
 		if (PSP_ME_WORK())
 			return answer;
 	}
-	/* the last one asked for in a slot is the one remembered there (before
-	keep.txt is read, nothing is remembered) */
-	if (keep_cache_lock >= 0 && sceKernelWaitSema(keep_cache_lock, 1, NULL) >= 0)
-	{
-		keep_cache[slot].sequence++;
-		keep_cache[slot].generation = keep_generation;
-		keep_cache[slot].answer = answer;
-		strcpy(keep_cache[slot].name, name);
-		keep_cache[slot].sequence++;
-		sceKernelSignalSema(keep_cache_lock, 1);
-	}
+	keep_remember(slot, name, answer);
 	return answer;
 }
 

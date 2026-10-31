@@ -1680,6 +1680,213 @@ def interpolation_players(tree):
     open(path, "w", errors="surrogateescape").write(text)
     return 1
 
+# ---------- AIMETERS: the AI's meters and the ballistic test's debug record, the main CPU's alone
+# The AI's meters (ai_profile.meters[].accumulator: 32 counts in 12 files,
+# and the perception queue's 2)
+# and the last ballistic line of fire's record (ai_debug.ballistic_lineoffire_*)
+# are read only by the AI's debug display (ai_profile.c, ai_debug.c). With
+# "aime2a" the ME's thinking counted and recorded on lines the main CPU's own
+# AI writes too (aime2a10's write trace: ai_profile on all three maps, ai_debug
+# on b30 and a30): on the PSP, whose caches don't keep each other's lines,
+# one CPU's write-back undoes the other's. Without the debug tools the counts
+# compile to nothing, on both CPUs; with them the ME skips them. The record:
+# the ME's thinking leaves it alone. Exact: neither decides anything in play
+AIMETERS_HEADER = """
+/* psp_fixups.py (AIMETERS): the meters' counts, none without the debug tools,
+the main CPU's alone with them */
+#ifdef HALO_PSP
+#if defined(PSP_DEBUG_TOOLS)
+#define PSP_AI_METER_ADD(meter, amount) ((void)(psp_work_on_me() ? 0 : (ai_profile.meters[meter].accumulator += (amount))))
+#else
+#define PSP_AI_METER_ADD(meter, amount) ((void)0)
+#endif
+#else
+#define PSP_AI_METER_ADD(meter, amount) ((void)(ai_profile.meters[meter].accumulator += (amount)))
+#endif
+"""
+
+def ai_meters(tree):
+    """AIMETERS (see there)"""
+    header_path = os.path.join(tree, "source/ai/ai_profile.h")
+    header = open(header_path, errors="surrogateescape").read()
+    if "PSP_AI_METER_ADD" in header:
+        return 0
+    anchor = "extern struct ai_profile_globals ai_profile;\n"
+    if header.count(anchor) != 1:
+        sys.exit("psp_fixups: ai_profile.h: no extern of ai_profile")
+    open(header_path, "w", errors="surrogateescape").write(header.replace(anchor, anchor + AIMETERS_HEADER))
+    changed, sites = 1, 0
+    for root, _, files in os.walk(os.path.join(tree, "source")):
+        for name in sorted(files):
+            if not name.endswith(".c") or name == "ai_profile.c":
+                continue
+            path = os.path.join(root, name)
+            text = open(path, errors="surrogateescape").read()
+            if "ai_profile.meters[" not in text:
+                continue
+            new, n1 = re.subn(r"ai_profile\.meters\[(\w+)\]\.accumulator\+\+;", r"PSP_AI_METER_ADD(\1, 1);", text)
+            new, n2 = re.subn(r"ai_profile\.meters\[(\w+)\]\.accumulator \+= ([^;]+);", r"PSP_AI_METER_ADD(\1, \2);", new)
+            # (the perception queue's own reads and puts-back of a meter stay)
+            if re.search(r"ai_profile\.meters\[\w+\]\.accumulator\s*(\+\+|\+=)", new):
+                sys.exit("psp_fixups: %s: an AI meter written in a form AIMETERS doesn't know" % name)
+            if name == "ai.c":
+                new, n3 = re.subn(r"!ai_debug\.ballistic_lineoffire_freeze\b", "!ai_debug.ballistic_lineoffire_freeze && !psp_work_on_me()", new)
+                if n3 != 4:
+                    sys.exit("psp_fixups: ai.c: expected the ballistic record's 4 freeze tests, found %d" % n3)
+            if new != text:
+                open(path, "w", errors="surrogateescape").write(new)
+                changed += 1
+                sites += n1 + n2
+    if sites != 34:
+        sys.exit("psp_fixups: AIMETERS: expected 34 meter counts, found %d" % sites)
+    return changed
+
+# ---------- COLLUSERS: the collision user stack, one per CPU (lever COLLUSERS; docs/aime_me.md)
+# Bungie's collision code keeps a stack of who is asking (the AI's lines of
+# sight, bipeds, the HUD, ...): 68 pushes and pops open-coded in 25 files,
+# read only by the collision log by user. With "aime2a" the ME's thinking
+# pushes and pops it while the main CPU's frame does too (aime2a3's write
+# trace), and a stop of 1b or 2a taken inside a push (an owed node block in a
+# collision walk) never pops, so the depth leaks up a stop at a time and, past
+# 32, the pushes write on over the collision log's buffer toward `render`.
+# Here each site is a macro (collision_usage.h). A build without the debug
+# tools never reads the stack (collision_log_usage is empty, FIXES_DEADCHK),
+# so there they compile to nothing, on both CPUs. With the debug tools
+# (PSP_DEBUG_TOOLS=1, whose collision log is by user) each CPU has a stack of
+# its own, picked by psp_work_on_me(), and 1b's copies keep its depth, so a
+# stop puts it back. PSP_COLLUSERS_SHARED=1 builds the one shared stack, as
+# before: the other side of the A/B. Exact: the stack decides nothing in play
+COLLUSERS_SHARED = os.environ.get("PSP_COLLUSERS_SHARED", "") == "1"
+COLLUSERS_HEADER = """
+/* psp_fixups.py (COLLUSERS): the stack's pushes, pops and depth tests, one
+stack a CPU with the debug tools, none without (nothing reads it there) */
+#ifdef HALO_PSP
+short psp_collision_user_depth_get(void);
+void psp_collision_user_depth_set(short depth);
+#if defined(PSP_DEBUG_TOOLS)
+extern short psp_collision_user_depth[2];
+extern short psp_collision_users[2][MAXIMUM_COLLISION_USER_STACK_DEPTH];
+#define COLLISION_USER_CPU (psp_work_on_me() != 0)
+#define COLLISION_USER_DEPTH (psp_collision_user_depth[COLLISION_USER_CPU])
+#define COLLISION_USER_PUSH(user) ((void)(psp_collision_users[COLLISION_USER_CPU][psp_collision_user_depth[COLLISION_USER_CPU]++] = (short)(user)))
+#define COLLISION_USER_POP() ((void)psp_collision_user_depth[COLLISION_USER_CPU]--)
+#define COLLISION_USER_TOP (psp_collision_users[COLLISION_USER_CPU][psp_collision_user_depth[COLLISION_USER_CPU] - 1])
+#else
+/* a depth that passes both the pushes' and the pops' tests */
+#define COLLISION_USER_DEPTH 2
+#define COLLISION_USER_PUSH(user) ((void)0)
+#define COLLISION_USER_POP() ((void)0)
+#define COLLISION_USER_TOP 0
+#endif
+#endif
+"""
+COLLUSERS_DEFINES_SHARED = """
+#ifdef HALO_PSP
+/* psp_fixups.py (COLLUSERS, PSP_COLLUSERS_SHARED=1): the one stack's depth,
+for 1b's copies */
+short psp_collision_user_depth_get(void)
+{
+	return global_current_collision_user_depth;
+}
+
+void psp_collision_user_depth_set(short depth)
+{
+	global_current_collision_user_depth = depth;
+}
+#endif
+"""
+COLLUSERS_DEFINES = """
+#ifdef HALO_PSP
+/* psp_fixups.py (COLLUSERS): with the debug tools a stack a CPU, the main
+CPU's [0] (collision_log_initialize pushes its first user) and the ME's [1]
+(each thinking job starts it at 1) */
+#if defined(PSP_DEBUG_TOOLS)
+short psp_collision_user_depth[2] = { 0, 1 };
+short psp_collision_users[2][MAXIMUM_COLLISION_USER_STACK_DEPTH];
+#endif
+
+short psp_collision_user_depth_get(void)
+{
+	return COLLISION_USER_DEPTH;
+}
+
+void psp_collision_user_depth_set(short depth)
+{
+#if defined(PSP_DEBUG_TOOLS)
+	psp_collision_user_depth[COLLISION_USER_CPU] = depth;
+#else
+	(void)depth;
+#endif
+}
+#endif
+"""
+
+def collision_users(tree):
+    """COLLUSERS (see there): every site to collision_usage.h's macros"""
+    usage_c = os.path.join(tree, "source/physics/collision_usage.c")
+    usage_h = os.path.join(tree, "source/physics/collision_usage.h")
+    text = open(usage_c, errors="surrogateescape").read()
+    if "psp_collision_user_depth_get" in text:
+        return 0
+    anchor = "short global_current_collision_users[MAXIMUM_COLLISION_USER_STACK_DEPTH];\n"
+    if text.count(anchor) != 1:
+        sys.exit("psp_fixups: collision_usage.c: no definition of global_current_collision_users")
+    if COLLUSERS_SHARED:
+        open(usage_c, "w", errors="surrogateescape").write(text.replace(anchor, anchor + COLLUSERS_DEFINES_SHARED))
+        header = open(usage_h, errors="surrogateescape").read()
+        extern = "extern short global_current_collision_users[MAXIMUM_COLLISION_USER_STACK_DEPTH];\n"
+        header = header.replace(extern, extern + "\n#ifdef HALO_PSP\nshort psp_collision_user_depth_get(void);\nvoid psp_collision_user_depth_set(short depth);\n#endif\n")
+        open(usage_h, "w", errors="surrogateescape").write(header)
+        return 1
+    pairs = [
+        ("\tglobal_current_collision_users[global_current_collision_user_depth] = 0;\n\tglobal_current_collision_user_depth = global_current_collision_user_depth + 1;\n",
+         "\tCOLLISION_USER_PUSH(0);\n"),
+        ("\tuser = global_current_collision_users[global_current_collision_user_depth - 1];\n",
+         "\tuser = COLLISION_USER_TOP;\n"),
+        (anchor, anchor + COLLUSERS_DEFINES),
+    ]
+    for old, new in pairs:
+        if text.count(old) != 1:
+            sys.exit("psp_fixups: collision_usage.c: COLLUSERS anchor not found once: %r" % old[:60])
+        text = text.replace(old, new)
+    # the asserts' depth tests, outside the definitions
+    head, defs, tail = text.partition(anchor)
+    tail = re.sub(r"(match_assert\([^;]*?)\bglobal_current_collision_user_depth\b", r"\1COLLISION_USER_DEPTH", tail, flags=re.S)
+    tail = re.sub(r"(match_assert\([^;]*?)\bglobal_current_collision_user_depth\b", r"\1COLLISION_USER_DEPTH", tail, flags=re.S)
+    text = head + defs + tail
+    open(usage_c, "w", errors="surrogateescape").write(text)
+    header = open(usage_h, errors="surrogateescape").read()
+    extern = "extern short global_current_collision_users[MAXIMUM_COLLISION_USER_STACK_DEPTH];\n"
+    if header.count(extern) != 1:
+        sys.exit("psp_fixups: collision_usage.h: no extern of global_current_collision_users")
+    open(usage_h, "w", errors="surrogateescape").write(header.replace(extern, extern + COLLUSERS_HEADER))
+    changed, sites = 1, 0
+    for root, _, files in os.walk(os.path.join(tree, "source")):
+        for name in sorted(files):
+            if not name.endswith(".c") or name == "collision_usage.c":
+                continue
+            path = os.path.join(root, name)
+            text = open(path, errors="surrogateescape").read()
+            if "global_current_collision_user" not in text:
+                continue
+            new, n1 = re.subn(r"global_current_collision_users\[global_current_collision_user_depth\+\+\]\s*=\s*([^;]+);",
+                              lambda m: "COLLISION_USER_PUSH(%s);" % " ".join(m.group(1).split()), text)
+            new, n2 = re.subn(r"--global_current_collision_user_depth\s*;", "COLLISION_USER_POP();", new)
+            new, n3 = re.subn(r"\bglobal_current_collision_user_depth--\s*;", "COLLISION_USER_POP();", new)
+            new = re.sub(r"\bglobal_current_collision_user_depth\b", "COLLISION_USER_DEPTH", new)
+            # (the strings the asserts' messages became are names, not uses)
+            leftover = [l for l in new.splitlines() if re.search(r"\bglobal_current_collision_users?\b", l) and "??_C" not in l]
+            if leftover:
+                sys.exit("psp_fixups: %s: a collision user stack use COLLUSERS doesn't know: %s" % (name, leftover[0].strip()))
+            if n1 != n2 + n3:
+                sys.exit("psp_fixups: %s: %d pushes but %d pops of the collision user stack" % (name, n1, n2 + n3))
+            open(path, "w", errors="surrogateescape").write(new)
+            changed += 1
+            sites += n1 + n2 + n3
+    if sites != 68:
+        sys.exit("psp_fixups: COLLUSERS: expected 68 pushes and pops, found %d" % sites)
+    return changed
+
 # ---------- b125: the PC renderer's GL path out of the link
 # ChupathingyCE draws by translating the game's Direct3D 8 calls into OpenGL
 # (d3d8_gl.c; gl_functions.c loads the GL entry points; nv2a_*.c translate
@@ -6677,12 +6884,13 @@ void matrix4x3_multiply(
 	/* the Media Engine has no VFPU (a VFPU instruction there faults, code 11)
 	and its jobs reach this, so the ME's work keeps
 	the FPU's form wherever it runs, as psp_vfpu_quaternions_multiply does:
-	a stack outside main RAM is the ME's, and psp_me_context is the ME's
+	a stack outside main RAM is the ME's, so is the CPU psp_cpu_is_me names
+	(the ME on another stack: psp_post.h), and psp_me_context is the ME's
 	work run on the main CPU */
 	unsigned int psp_sp;
 
 	__asm__ volatile ("move %0, $sp" : "=r"(psp_sp));
-	if (psp_vfpu_on && (psp_sp >> 27) == 1 && !psp_me_context)
+	if (psp_vfpu_on && (psp_sp >> 27) == 1 && !psp_me_context && !psp_cpu_is_me())
 	{
 		psp_vfpu_matrix4x3_multiply(a, b, result);
 		return;
@@ -21092,8 +21300,9 @@ FIXES_131["source/models/model_animation_definitions.h#poseahead"] = [
 		void *psp_anim_on_me(unsigned long address, unsigned long size);
 		unsigned int psp_sp;
 
-		__asm__ ("move %0, $sp" : "=r"(psp_sp));
-		if (psp_me_context != 0 || (psp_sp & 0x1FFFFFFFu) < 0x01000000u)
+		(void)psp_sp;
+		/* (the CPU itself, not only its stack: psp_post.h) */
+		if (psp_me_context != 0 || psp_cpu_is_me())
 			return (byte *)psp_anim_on_me(address, (unsigned long)size);
 	}
 	{
@@ -31143,10 +31352,8 @@ was stuck, not slow: the job reports its slowest
 point and the failed job's point is logged, to catch it */
 static inline int psp_on_me(void)
 {
-	unsigned int sp;
-
-	__asm__ ("move %0, $sp" : "=r"(sp));
-	return (sp & 0x1FFFFFFFu) < 0x01000000u;
+	/* the CPU itself, not only its stack (psp_post.h) */
+	return psp_cpu_is_me();
 }
 
 /* "mepointsclock" (the emulator): the simulated ME's points timed by the
@@ -33873,7 +34080,8 @@ static void __attribute__((noinline, cold)) psp_prs_check(long object_index, str
 	object_mark_function(object_index);
 	psp_prs_passed++;
 	psp_prs_differences += object->object.type != type;
-	if (now % 150 == 0 && now != psp_prs_logged)
+	/* (the ME never formats) */
+	if (now % 150 == 0 && now != psp_prs_logged && !psp_work_on_me())
 	{
 		psp_prs_logged = now;
 		platform_psp_log("prscheck: game time %ld | passed over %lu, differences %lu", now, psp_prs_passed,
@@ -34037,7 +34245,8 @@ static void psp_aicad_count(
 			psp_aicad_stats.first++;
 	}
 	now = game_time_get();
-	if (psp_aicad_logged == NONE || now < psp_aicad_logged || now - psp_aicad_logged >= 900)
+	/* (the ME never formats: the main CPU's next count logs it) */
+	if (!psp_work_on_me() && (psp_aicad_logged == NONE || now < psp_aicad_logged || now - psp_aicad_logged >= 900))
 	{
 		if (psp_aicad_logged != NONE)
 			platform_psp_log("aicad: game time %ld | actor updates %lu, rested %lu; resting turns kept: timeslice %lu swarm %lu dormant %lu charging %lu first %lu",
@@ -34321,7 +34530,8 @@ static boolean psp_aifar_resting(
 	/* the census: of the actors asked on their second thinking tick, how many
 	were near a player, kept by the fight, or rested (every 30 s of game
 	time, cumulative) */
-	if (psp_aifar_logged == NONE || now < psp_aifar_logged || now - psp_aifar_logged >= 900)
+	/* (the ME never formats: the main CPU's next answer logs it) */
+	if (!psp_work_on_me() && (psp_aifar_logged == NONE || now < psp_aifar_logged || now - psp_aifar_logged >= 900))
 	{
 		if (psp_aifar_logged != NONE)
 			platform_psp_log("aifar: game time %ld | asked %lu: near %lu, in the fight %lu, rested far %lu",
@@ -39680,7 +39890,2840 @@ FIXES_FISSION["source/items/weapons.c#fvpass"] = [
 ]
 
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items()))):
+# ---------- FIXES_AIME: the AI's thinking done ahead, at the end of the tick before (keep word "aime", off)
+# The tick runs ai_update early, before effects, the scripts and
+# objects_update, so an actor's thinking (the timeslice, input, perception,
+# situation, emotion and the decision loop) reads the world as the last tick
+# left it. "aime" does that thinking for the next tick as soon as the last
+# one ends, with the game time already the next tick's; the next tick's
+# ai_update then runs only each actor's general update, its action and its
+# control from the thinking done ahead. On the PSP the main CPU records the
+# frame while the world holds still, so this is the step that lets the Media
+# Engine do the thinking there; here it all runs on the main CPU, to prove the
+# behaviour first. Thinking draws its random numbers from a seed of its own,
+# as it must on the ME, where the main CPU may draw from the global one at the
+# same time. It plays differently (thinking comes before the next tick's units,
+# allegiance and encounter updates, and its random numbers differ), so it's a
+# behaviour change: off by default, campaign only, never in a networked game,
+# and proven by the outcome census. aicad's rests still apply, by the next
+# tick's parity, which is the game time the thinking sees
+FIXES_AIME = {}
+FIXES_AIME["source/ai/actors.c#aime"] = [
+("""static boolean actor_general_update(
+	long actor_index)
+{
+""",
+ """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_AIME): "aime" (see there) */
+static int psp_aime_on = -1;
+/* the pass's state below is the ME's to write while its job runs
+(aime2a): PSP_AIME_ME_SIDE keeps it on lines no main-CPU variable shares */
+/* TRUE while actor_update runs only the thinking, for the next tick */
+static PSP_AIME_ME_SIDE boolean psp_aime_think_only = FALSE;
+/* the game time the last pass thought for, its number, and each slot's */
+static PSP_AIME_ME_SIDE long psp_aime_pass_time = NONE;
+static PSP_AIME_ME_SIDE unsigned long psp_aime_pass = 0;
+static PSP_AIME_ME_SIDE unsigned long psp_aime_slot_pass[MAXIMUM_ACTORS];
+static PSP_AIME_ME_SIDE short psp_aime_slot_identifier[MAXIMUM_ACTORS];
+static PSP_AIME_ME_SIDE unsigned long psp_aime_seed;
+static PSP_AIME_ME_SIDE long psp_aime_seed_time = NONE;
+static struct
+{
+	unsigned long passes, ahead, inline_whole;
+} psp_aime_stats PSP_AIME_ME_SIDE;
+static long psp_aime_logged = NONE;
+
+static boolean psp_aime_active(
+	void)
+{
+	if (psp_aime_on < 0)
+	{
+#ifdef PSP_MULTIPLAYER
+		psp_aime_on = 0;
+#else
+		psp_aime_on = psp_keep("aime") != 0;
+#endif
+		if (psp_aime_on)
+			platform_psp_log("ai: each actor's thinking done ahead, at the end of the tick before, with a seed of its own (aime)");
+	}
+	return psp_aime_on && game_connection() == _game_connection_local && !network_coop_active();
+}
+
+/* TRUE when this tick's thinking for the actor was done ahead */
+static boolean psp_aime_fresh(
+	long actor_index)
+{
+	short absolute_index = DATUM_INDEX_TO_ABSOLUTE_INDEX(actor_index);
+
+	return !psp_aime_think_only && psp_aime_pass_time != NONE && psp_aime_pass_time == game_time_get() &&
+		absolute_index >= 0 && absolute_index < MAXIMUM_ACTORS &&
+		psp_aime_slot_pass[absolute_index] == psp_aime_pass &&
+		psp_aime_slot_identifier[absolute_index] == actor_get(actor_index)->identifier;
+}
+
+static void psp_aime_mark(
+	long actor_index)
+{
+	short absolute_index = DATUM_INDEX_TO_ABSOLUTE_INDEX(actor_index);
+
+	if (absolute_index < 0 || absolute_index >= MAXIMUM_ACTORS)
+		return;
+	psp_aime_slot_pass[absolute_index] = psp_aime_pass;
+	psp_aime_slot_identifier[absolute_index] = actor_get(actor_index)->identifier;
+	psp_aime_stats.ahead++;
+}
+
+/* random_math.c: the thinking's own seed while it runs */
+unsigned long *psp_aime_seed_address(
+	void)
+{
+	/* only in the pass's own context (psp_post.h): while the ME's pass is
+	out, the main CPU's frame draws from the game's seed whatever it reads
+	of the ME's think_only */
+	return psp_aime_think_only && psp_aime_here() ? &psp_aime_seed : NULL;
+}
+#endif
+
+static boolean actor_general_update(
+	long actor_index)
+{
+"""),
+("""		actor->control.path.refreshed_this_tick = FALSE;
+""",
+ """#ifdef HALO_PSP
+		/* (the path refreshed by the thinking done ahead counts for this tick) */
+		if (!psp_aime_fresh(actor_index))
+#endif
+		actor->control.path.refreshed_this_tick = FALSE;
+"""),
+("""	actor_update_begin(actor_index);
+	if (actor_general_update(actor_index))
+	{
+#ifdef HALO_PSP
+		/* FIXES_AICAD""",
+ """	actor_update_begin(actor_index);
+#ifdef HALO_PSP
+	/* FIXES_AIME: the thinking done ahead skips the general update, which
+	the tick itself runs; a thinking done ahead for this tick isn't done
+	again */
+	if (psp_aime_think_only)
+		actor->control.path.refreshed_this_tick = FALSE;
+	else if (psp_aime_active() && !psp_aime_fresh(actor_index))
+		psp_aime_stats.inline_whole++;
+	if (psp_aime_think_only || actor_general_update(actor_index))
+#else
+	if (actor_general_update(actor_index))
+#endif
+	{
+#ifdef HALO_PSP
+		if (!psp_aime_fresh(actor_index))
+		{
+		/* FIXES_AICAD"""),
+("""		psp_aicad_seen(actor_index);
+#else
+""",
+ """		psp_aicad_seen(actor_index);
+		}
+#else
+"""),
+("""		actor_action_update(actor_index);
+
+		if (!actor->meta.dormant)
+""",
+ """#ifdef HALO_PSP
+		if (psp_aime_think_only)
+			psp_aime_mark(actor_index);
+		else
+#endif
+		{
+		actor_action_update(actor_index);
+
+		if (!actor->meta.dormant)
+"""),
+("""		}
+	}
+	actor_update_end();
+""",
+ """		}
+		}
+	}
+	actor_update_end();
+"""),
+("""	struct actor_iterator iterator;
+	struct actor_datum *actor;
+
+	ai_globals->last_highest_service_timer = ai_globals->current_highest_service_timer;""",
+ """	struct actor_iterator iterator;
+	struct actor_datum *actor;
+#ifdef HALO_PSP
+	/* FIXES_AIME: the pass done ahead set the timeslice's round and cast
+	perception's rays already */
+	boolean psp_ahead = psp_aime_active() && psp_aime_pass_time != NONE && psp_aime_pass_time == game_time_get();
+
+	if (!psp_ahead)
+	{
+#endif
+
+	ai_globals->last_highest_service_timer = ai_globals->current_highest_service_timer;"""),
+("""		psp_perception_queue_done();
+	}
+#endif
+	actor_iterator_new(&iterator, TRUE);""",
+ """		psp_perception_queue_done();
+	}
+#endif
+#ifdef HALO_PSP
+	}
+#endif
+	actor_iterator_new(&iterator, TRUE);"""),
+("""#ifdef HALO_PSP
+	psp_perception_end();
+#endif
+
+	return;
+}
+""",
+ """#ifdef HALO_PSP
+	if (!psp_ahead)
+		psp_perception_end();
+	psp_aime_pass_time = NONE;
+#endif
+
+	return;
+}
+
+#ifdef HALO_PSP
+/* FIXES_AIME: the next tick's thinking, every actor actors_update would
+update, at the end of this tick (game_time.c), the game time already the
+next tick's */
+void psp_aime_think(
+	void)
+{
+	struct actor_iterator iterator;
+	struct actor_datum *actor;
+	long now;
+
+	if (!psp_aime_active())
+		return;
+	now = game_time_get();
+	/* a new map or a reverted game: the seed again from the game's */
+	if (psp_aime_seed_time == NONE || now <= psp_aime_seed_time)
+		psp_aime_seed = *get_global_random_seed_address() ^ 0x9E3779B9u;
+	psp_aime_seed_time = now;
+	psp_aime_pass++;
+	psp_aime_stats.passes++;
+	psp_aime_think_only = TRUE;
+
+	ai_globals->last_highest_service_timer = ai_globals->current_highest_service_timer;
+	ai_globals->current_highest_service_timer = 0;
+	ai_globals->time_given_this_frame = FALSE;
+	if (psp_aicad_active() && psp_aicad_on == 2 && (now & 2))
+		ai_globals->time_given_this_frame = TRUE;
+	if (psp_perception_begin())
+	{
+		actor_iterator_new(&iterator, TRUE);
+		while ((actor = actor_iterator_next(&iterator)) != NULL)
+		{
+			if (!actor->meta.erase_next_tick && actor->state.mode > _actor_mode_braindead)
+				psp_perception_queue(iterator.index);
+		}
+		psp_perception_queue_done();
+	}
+	actor_iterator_new(&iterator, TRUE);
+	while ((actor = actor_iterator_next(&iterator)) != NULL)
+	{
+		/* (an actor the general update would erase is left to it) */
+		if (actor->meta.erase_next_tick || actor->state.mode <= _actor_mode_braindead ||
+			(actor->meta.swarm && actor->meta.swarm_cache_index == NONE))
+			continue;
+		actor_update(iterator.index);
+	}
+	psp_perception_end();
+	psp_aime_think_only = FALSE;
+	psp_aime_pass_time = now;
+
+	if (psp_aime_logged == NONE || now < psp_aime_logged || now - psp_aime_logged >= 900)
+	{
+		if (psp_aime_logged != NONE)
+			platform_psp_log("aime: game time %ld | passes %lu, actors thought ahead %lu, updated whole in the tick %lu",
+				now, psp_aime_stats.passes, psp_aime_stats.ahead, psp_aime_stats.inline_whole);
+		psp_aime_logged = now;
+	}
+}
+#endif
+"""),
+]
+FIXES_AIME["source/ai/ai.c#aime"] = [
+("""	profile_exit(ai_update_section);
+
+	return;
+}
+""",
+ """	profile_exit(ai_update_section);
+
+	return;
+}
+
+#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_AIME): after each tick (game_time.c), the next
+tick's thinking, wherever the next ai_update would update the actors */
+void psp_aime_think(void);
+boolean network_game_distributed_client(void);
+
+void psp_aime_update(
+	void)
+{
+	if (!ai_globals || !ai_globals->ai_initialized_for_map || ai_profile.disabled ||
+		ai_profile.move_actors_randomly || !ai_globals->ai_active || network_game_distributed_client())
+		return;
+	psp_aime_think();
+}
+#endif
+"""),
+]
+FIXES_AIME["source/game/game_time.c#aime"] = [
+("""						network_distributed_tick();
+""",
+ """						network_distributed_tick();
+#if defined(HALO_PSP) && !defined(PSP_MULTIPLAYER)
+						{
+							/* psp_fixups.py (FIXES_AIME, "aime"): the next
+							tick's thinking, done ahead (ai.c) */
+							extern void psp_aime_update(void);
+
+							psp_aime_update();
+						}
+#endif
+"""),
+]
+FIXES_AIME["source/math/random_math.c#aime"] = [
+("""	return &random_math_globals.global_random_seed;
+""",
+ """#if defined(HALO_PSP) && !defined(PSP_MULTIPLAYER)
+	{
+		/* psp_fixups.py (FIXES_AIME, "aime"): the thinking done ahead draws
+		from a seed of its own (actors.c) */
+		extern unsigned long *psp_aime_seed_address(void);
+		unsigned long *psp_seed = psp_aime_seed_address();
+
+		if (psp_seed)
+			return psp_seed;
+	}
+#endif
+	return &random_math_globals.global_random_seed;
+"""),
+]
+
+
+# ---------- FIXES_AIME1B: AIME step 1b, the hand-back (keep word "aime1b", with "aime"; off)
+# With aime, the thinking done ahead may reach a world writer. Those whose
+# results the thinking ignores (speech, screams, activation) wait in a queue
+# applied at the start of the next ai_update, where the thinking's results
+# land. At any other, the actor is stopped where it stands (a long jump back
+# to the pass's loop) and goes back to copies taken before it started: its
+# datum, its props (those it made freed, those it deleted put back), its
+# swarm, the timeslice's round, the object marks' flag and the thinking's
+# seed; its queued calls are dropped, and it thinks in the tick instead, at
+# its turn, as without aime. What a stopped actor wrote to records it shares
+# (its encounter, squad, the AI globals' other fields, another actor's
+# datum or props) stays: "aime1bcheck" stops every fourth actor at the end of
+# its thinking and counts, by pool, what its stop left changed. This is the
+# Media Engine job's mechanism, proven on the main CPU before the job exists
+# (docs/aime_me.md). Campaign only, as aime is
+FIXES_AIME1B = {}
+# the world writers the thinking reaches, in aimewho's order; 0, 1, 16 and 17
+# are queued, the rest hand the actor back
+PSP_AIME1B_WRITERS = ["unit_speak", "unit_scream", "unit_try_and_exit_seat", "unit_enter_seat", "unit_start_user_animation", "unit_start_animation_impulse", "unit_start_running_blindly", "unit_melee_attack_begin", "unit_leap_begin", "unit_detach_from_parent", "unit_add_weapon_to_inventory", "unit_add_grenade_type_to_inventory", "unit_set_actively_controlled", "unit_exit_seat_end", "object_new", "object_delete", "object_activate", "object_deactivate", "object_set_automatic_deactivation", "weapon_set_total_rounds", "game_allegiance_provoke", "game_allegiance_incident", "hs_wake_by_name", "biped_accelerate"]
+FIXES_AIME1B["source/ai/actors.c#aime1b"] = [
+("""static void psp_aime_mark(
+	long actor_index)
+{
+""",
+ """/* FIXES_AIME1B: "aime1b" (see there) */
+#define PSP_AIME_WRITERS 25
+#define PSP_AIME_FORCED (PSP_AIME_WRITERS - 1)
+/* TRUE while this actor's thinking is to end in a stop (aime1bcheck) */
+static PSP_AIME_ME_SIDE boolean psp_aime1b_checking = FALSE;
+void psp_aime_handback(int which);
+
+static void psp_aime_mark(
+	long actor_index)
+{
+	if (psp_aime1b_checking)
+		psp_aime_handback(PSP_AIME_FORCED);
+"""),
+("""#ifdef HALO_PSP
+/* FIXES_AIME: the next tick's thinking, every actor actors_update would
+update, at the end of this tick (game_time.c), the game time already the
+next tick's */
+""",
+ """#ifdef HALO_PSP
+/* FIXES_AIME1B: "aime1b" (see there) */
+static const char *const psp_aime_writer_names[PSP_AIME_WRITERS] = { "unit_speak", "unit_scream", "unit_try_and_exit_seat", "unit_enter_seat",
+	"unit_start_user_animation", "unit_start_animation_impulse", "unit_start_running_blindly", "unit_melee_attack_begin", "unit_leap_begin",
+	"unit_detach_from_parent", "unit_add_weapon_to_inventory", "unit_add_grenade_type_to_inventory", "unit_set_actively_controlled",
+	"unit_exit_seat_end", "object_new", "object_delete", "object_activate", "object_deactivate", "object_set_automatic_deactivation",
+	"weapon_set_total_rounds", "game_allegiance_provoke", "game_allegiance_incident", "hs_wake_by_name", "biped_accelerate", "forced" };
+#define PSP_AIME_WRITER_SPEAK 0
+#define PSP_AIME_WRITER_SCREAM 1
+#define PSP_AIME_WRITER_ACTIVATE 16
+#define PSP_AIME_WRITER_DEACTIVATE 17
+/* an actor with more props than its copy holds is thought ahead as by aime
+alone (a stop could not put it back) */
+#define PSP_AIME_PROPS_MOST 48
+#define PSP_AIME_PROP_LOG_MOST 32
+#define PSP_AIME_QUEUE_MOST 96
+
+/* the writers' hooks read it: 0 outside the thinking done ahead; 1 queue and
+stop; 2 queue, but let a writer run (this actor can't be put back) */
+PSP_AIME_ME_SIDE int psp_aime_arm = 0;
+static int psp_aime1b_on = -1, psp_aime1b_check_on = 0;
+static PSP_AIME_ME_SIDE void *psp_aime_jump[5];
+/* the stack the jump was set on: a stop jumps only on the CPU that set it,
+and on the ME never into a stack outside its eDRAM (a check: counted) */
+static PSP_AIME_ME_SIDE unsigned int psp_aime_jump_sp = 0;
+static PSP_AIME_ME_SIDE unsigned long psp_aime_foreign_jumps = 0;
+static PSP_AIME_ME_SIDE long psp_aime_current = NONE;
+static PSP_AIME_ME_SIDE int psp_aime_stop_which = NONE;
+static PSP_AIME_ME_SIDE boolean psp_aime_stopped = FALSE;
+
+static struct psp_aime_copy
+{
+	struct actor_datum actor;
+	struct data_array prop_header, swarm_header, component_header;
+	struct swarm_datum swarm;
+	long swarm_index;
+	short prop_count, log_count, queue_mark;
+	boolean time_given, marker;
+	short highest_timer, collision_user_depth;
+	unsigned long seed;
+	long prop_index[PSP_AIME_PROPS_MOST];
+	long log_index[PSP_AIME_PROP_LOG_MOST];
+	boolean log_deleted[PSP_AIME_PROP_LOG_MOST];
+} *psp_aime_copy;
+static byte *psp_aime_prop_bytes, *psp_aime_log_bytes;
+
+static struct psp_aime_queued
+{
+	short writer, value;
+	long index;
+	struct unit_speech_item speech;
+} *psp_aime_queue;
+static PSP_AIME_ME_SIDE short psp_aime_queue_count = 0;
+static PSP_AIME_ME_SIDE long psp_aime_queue_time = NONE;
+
+static struct
+{
+	unsigned long actors, handed_back, no_stop, many_props, log_full, others_props, swarm_pool;
+	unsigned long props_made_undone, props_deleted_undone;
+	unsigned long queued_total, queue_dropped, applied, gone, stale, queue_full;
+	unsigned long back[PSP_AIME_WRITERS], queued[PSP_AIME_WRITERS], written_ahead[PSP_AIME_WRITERS];
+	unsigned long checked, own_actor, own_props, prop_header, own_swarm, prop_live;
+	unsigned long other_actors, other_actor_stops, other_props, other_prop_stops, other_swarms;
+} psp_aime1b_stats PSP_AIME_ME_SIDE;
+
+/* aime1bcheck: each datum's identifier and a hash of its bytes, by pool,
+before a checked actor thinks */
+#define PSP_AIME_POOLS 3
+static unsigned long *psp_aime_check_hash[PSP_AIME_POOLS];
+static short *psp_aime_check_identifier[PSP_AIME_POOLS];
+static short psp_aime_check_count[PSP_AIME_POOLS];
+
+boolean *psp_object_marker_flag(void);
+
+static struct data_array *psp_aime_pool(
+	int pool)
+{
+	return pool == 0 ? actor_data : pool == 1 ? prop_data : swarm_data;
+}
+
+static struct datum_header *psp_aime_datum_address(
+	struct data_array *data,
+	long index)
+{
+	return (struct datum_header *)((byte *)xbox_pointer(data->data) + data->size * DATUM_INDEX_TO_ABSOLUTE_INDEX(index));
+}
+
+/* what the ME writes on the heap during its job (aime2a): whole 64-byte
+lines, so no neighbour's line is shared with the main CPU */
+static void *psp_aime_lines(
+	unsigned long bytes)
+{
+	extern void *memalign(size_t alignment, size_t size);
+
+	return memalign(64, (bytes + 63) & ~63UL);
+}
+
+static boolean psp_aime1b_active(
+	void)
+{
+	int pool;
+
+	if (psp_aime1b_on < 0)
+	{
+		psp_aime1b_check_on = psp_keep("aime1bcheck") != 0;
+		psp_aime1b_on = psp_aime1b_check_on || psp_keep("aime1b") != 0;
+		if (psp_aime1b_on)
+		{
+			psp_aime_copy = psp_aime_lines(sizeof(*psp_aime_copy));
+			psp_aime_prop_bytes = psp_aime_lines(PSP_AIME_PROPS_MOST * sizeof(struct prop_datum));
+			psp_aime_log_bytes = psp_aime_lines(PSP_AIME_PROP_LOG_MOST * sizeof(struct prop_datum));
+			psp_aime_queue = psp_aime_lines(PSP_AIME_QUEUE_MOST * sizeof(*psp_aime_queue));
+			for (pool = 0; pool < PSP_AIME_POOLS && psp_aime1b_check_on; pool++)
+			{
+				psp_aime_check_hash[pool] = psp_aime_lines(psp_aime_pool(pool)->maximum_count * sizeof(unsigned long));
+				psp_aime_check_identifier[pool] = psp_aime_lines(psp_aime_pool(pool)->maximum_count * sizeof(short));
+				if (!psp_aime_check_hash[pool] || !psp_aime_check_identifier[pool])
+					psp_aime1b_check_on = 0;
+			}
+			if (!psp_aime_copy || !psp_aime_prop_bytes || !psp_aime_log_bytes || !psp_aime_queue)
+			{
+				psp_aime1b_on = 0;
+				platform_psp_log("aime1b: no room for its copies, so it's off");
+			}
+			else
+				platform_psp_log("ai: a thinking done ahead that reaches a world writer is stopped and thought in the tick; speech, screams and activations wait for the next ai_update (aime1b%s)",
+					psp_aime1b_check_on ? "; aime1bcheck: every fourth actor stopped at its thinking's end, what the stop leaves changed counted" : "");
+		}
+	}
+	return psp_aime1b_on > 0;
+}
+
+/* at the entry of a world writer the thinking ahead may not run: the stop */
+void psp_aime_handback(
+	int which)
+{
+	/* only in the pass's own context (psp_post.h) */
+	if (!psp_aime_here())
+		return;
+	if (which < 0 || which >= PSP_AIME_WRITERS)
+		which = PSP_AIME_FORCED;
+	if (psp_aime_arm == 1 && ((psp_aime_jump_sp & 0x1FFFFFFFu) < 0x01000000u) != psp_cpu_is_me())
+	{
+		psp_aime_foreign_jumps++;
+		return;
+	}
+	if (psp_aime_arm == 1)
+	{
+		psp_aime_arm = 0;
+		psp_aime_stop_which = which;
+		__builtin_longjmp(psp_aime_jump, 1);
+	}
+	psp_aime1b_stats.written_ahead[which]++;
+}
+
+static boolean psp_aime_queue_add(
+	int writer,
+	long index,
+	short value,
+	struct unit_speech_item const *speech)
+{
+	struct psp_aime_queued *queued;
+
+	if (!psp_aime_here())
+		return FALSE;
+	if (psp_aime_queue_count >= PSP_AIME_QUEUE_MOST)
+	{
+		psp_aime1b_stats.queue_full++;
+		psp_aime_handback(writer);
+		return FALSE;
+	}
+	queued = &psp_aime_queue[psp_aime_queue_count++];
+	queued->writer = (short)writer;
+	queued->value = value;
+	queued->index = index;
+	if (speech)
+		queued->speech = *speech;
+	psp_aime1b_stats.queued[writer]++;
+	psp_aime1b_stats.queued_total++;
+	return TRUE;
+}
+
+/* the queued writers' hooks: TRUE when the call waits in the queue */
+boolean psp_aime_queue_speak(
+	long unit_index,
+	short play_type,
+	struct unit_speech_item const *speech_item)
+{
+	return psp_aime_queue_add(PSP_AIME_WRITER_SPEAK, unit_index, play_type, speech_item);
+}
+
+boolean psp_aime_queue_scream(
+	long unit_index,
+	short scream_type)
+{
+	return psp_aime_queue_add(PSP_AIME_WRITER_SCREAM, unit_index, scream_type, NULL);
+}
+
+boolean psp_aime_queue_activation(
+	long object_index,
+	boolean active)
+{
+	return psp_aime_queue_add(active ? PSP_AIME_WRITER_ACTIVATE : PSP_AIME_WRITER_DEACTIVATE, object_index, 0, NULL);
+}
+
+/* the start of ai_update: the queue made for this tick, in the order made */
+void psp_aime_collect(
+	void)
+{
+	short count = psp_aime_queue_count, k;
+
+	if (!count)
+		return;
+	psp_aime_queue_count = 0;
+	if (psp_aime_queue_time == NONE || psp_aime_queue_time != game_time_get())
+	{
+		psp_aime1b_stats.stale += count;
+		return;
+	}
+	for (k = 0; k < count; k++)
+	{
+		struct psp_aime_queued *queued = &psp_aime_queue[k];
+
+		if (!object_try_and_get_and_verify_type(queued->index,
+			queued->writer <= PSP_AIME_WRITER_SCREAM ? _object_mask_unit : _object_mask_all))
+		{
+			psp_aime1b_stats.gone++;
+			continue;
+		}
+		switch (queued->writer)
+		{
+		case PSP_AIME_WRITER_SPEAK:
+			unit_speak(queued->index, queued->value, &queued->speech);
+			break;
+		case PSP_AIME_WRITER_SCREAM:
+			unit_scream(queued->index, queued->value);
+			break;
+		case PSP_AIME_WRITER_ACTIVATE:
+			object_activate(queued->index);
+			break;
+		default:
+			object_deactivate(queued->index);
+			break;
+		}
+		psp_aime1b_stats.applied++;
+	}
+}
+
+/* props.c: a prop made or about to be deleted while the actor thinks ahead.
+A prop of another actor's can't be put back, so it ends the actor's stops */
+void psp_aime_prop_change(
+	long actor_index,
+	long prop_index,
+	boolean deleting)
+{
+	struct psp_aime_copy *copy = psp_aime_copy;
+
+	if (!psp_aime_here())
+		return;
+	if (psp_aime_arm != 1 || prop_index == NONE)
+		return;
+	if (actor_index != psp_aime_current)
+	{
+		psp_aime1b_stats.others_props++;
+		psp_aime_arm = 2;
+		return;
+	}
+	if (copy->log_count >= PSP_AIME_PROP_LOG_MOST)
+	{
+		psp_aime1b_stats.log_full++;
+		psp_aime_arm = 2;
+		return;
+	}
+	copy->log_index[copy->log_count] = prop_index;
+	copy->log_deleted[copy->log_count] = deleting;
+	if (deleting)
+		csmemcpy(psp_aime_log_bytes + copy->log_count * sizeof(struct prop_datum), prop_get(prop_index), sizeof(struct prop_datum));
+	copy->log_count++;
+}
+
+static unsigned long psp_aime_hash(
+	void const *bytes,
+	long size)
+{
+	unsigned long const *words = (unsigned long const *)bytes;
+	unsigned long hash = 2166136261u;
+	long k;
+
+	for (k = 0; k < size / 4; k++)
+		hash = (hash ^ words[k]) * 16777619u;
+	for (k = size & ~3; k < size; k++)
+		hash = (hash ^ ((byte const *)bytes)[k]) * 16777619u;
+	return hash;
+}
+
+static void psp_aime_check_before(
+	void)
+{
+	int pool;
+	short k;
+
+	for (pool = 0; pool < PSP_AIME_POOLS; pool++)
+	{
+		struct data_array *data = psp_aime_pool(pool);
+
+		psp_aime_check_count[pool] = data->count;
+		for (k = 0; k < data->count; k++)
+		{
+			struct datum_header *header = (struct datum_header *)((byte *)xbox_pointer(data->data) + data->size * k);
+
+			psp_aime_check_identifier[pool][k] = header->identifier;
+			psp_aime_check_hash[pool][k] = header->identifier ? psp_aime_hash(header, data->size) : 0;
+		}
+	}
+}
+
+static boolean psp_aime_copy_has_prop(
+	long prop_index)
+{
+	short k;
+
+	for (k = 0; k < psp_aime_copy->prop_count; k++)
+	{
+		if (psp_aime_copy->prop_index[k] == prop_index)
+			return TRUE;
+	}
+	for (k = 0; k < psp_aime_copy->log_count; k++)
+	{
+		if (psp_aime_copy->log_index[k] == prop_index)
+			return TRUE;
+	}
+	return FALSE;
+}
+
+/* after a checked actor's stop: what the stop left changed, by pool. The
+actor's own must all be back; the rest is what it wrote to others */
+static void psp_aime_check_after(
+	void)
+{
+	short own_actor = DATUM_INDEX_TO_ABSOLUTE_INDEX(psp_aime_current);
+	short own_swarm = psp_aime_copy->swarm_index == NONE ? NONE : DATUM_INDEX_TO_ABSOLUTE_INDEX(psp_aime_copy->swarm_index);
+	unsigned long others_before = psp_aime1b_stats.other_actors, props_before = psp_aime1b_stats.other_props;
+	int pool;
+	short k;
+
+	psp_aime1b_stats.checked++;
+	if (csmemcmp(prop_data, &psp_aime_copy->prop_header, sizeof(struct data_array)))
+		psp_aime1b_stats.prop_header++;
+	for (pool = 0; pool < PSP_AIME_POOLS; pool++)
+	{
+		struct data_array *data = psp_aime_pool(pool);
+		short count = MAX(data->count, psp_aime_check_count[pool]);
+
+		for (k = 0; k < count; k++)
+		{
+			struct datum_header *header = (struct datum_header *)((byte *)xbox_pointer(data->data) + data->size * k);
+			short identifier_before = k < psp_aime_check_count[pool] ? psp_aime_check_identifier[pool][k] : 0;
+			unsigned long hash_before = k < psp_aime_check_count[pool] ? psp_aime_check_hash[pool][k] : 0;
+			short identifier = k < data->count ? header->identifier : 0;
+			unsigned long hash = identifier ? psp_aime_hash(header, data->size) : 0;
+
+			if (identifier == identifier_before && hash == hash_before)
+				continue;
+			if (pool == 1 && identifier != identifier_before)
+				psp_aime1b_stats.prop_live++;
+			if (pool == 0)
+			{
+				if (k == own_actor)
+					psp_aime1b_stats.own_actor++;
+				else
+					psp_aime1b_stats.other_actors++;
+			}
+			else if (pool == 1)
+			{
+				if (psp_aime_copy_has_prop((long)(((unsigned long)(unsigned short)(identifier ? identifier : identifier_before) << 16) | (unsigned long)k)))
+					psp_aime1b_stats.own_props++;
+				else
+					psp_aime1b_stats.other_props++;
+			}
+			else
+			{
+				if (k == own_swarm)
+					psp_aime1b_stats.own_swarm++;
+				else
+					psp_aime1b_stats.other_swarms++;
+			}
+		}
+	}
+	if (psp_aime1b_stats.other_actors != others_before)
+		psp_aime1b_stats.other_actor_stops++;
+	if (psp_aime1b_stats.other_props != props_before)
+		psp_aime1b_stats.other_prop_stops++;
+}
+
+static void psp_aime_save(
+	long actor_index)
+{
+	struct psp_aime_copy *copy = psp_aime_copy;
+	struct actor_datum *actor = actor_get(actor_index);
+	boolean many = FALSE;
+	long prop_index;
+
+	psp_aime_current = actor_index;
+	psp_aime_stopped = FALSE;
+	csmemcpy(&copy->actor, actor, sizeof(copy->actor));
+	csmemcpy(&copy->prop_header, prop_data, sizeof(struct data_array));
+	csmemcpy(&copy->swarm_header, swarm_data, sizeof(struct data_array));
+	csmemcpy(&copy->component_header, swarm_component_data, sizeof(struct data_array));
+	copy->prop_count = 0;
+	for (prop_index = actor->meta.first_prop_index; prop_index != NONE; prop_index = prop_get(prop_index)->next_prop_index)
+	{
+		if (copy->prop_count >= PSP_AIME_PROPS_MOST)
+		{
+			many = TRUE;
+			break;
+		}
+		copy->prop_index[copy->prop_count] = prop_index;
+		csmemcpy(psp_aime_prop_bytes + copy->prop_count * sizeof(struct prop_datum), prop_get(prop_index), sizeof(struct prop_datum));
+		copy->prop_count++;
+	}
+	copy->swarm_index = NONE;
+	if (actor->meta.swarm && actor->meta.swarm_cache_index != NONE)
+	{
+		copy->swarm_index = actor->meta.swarm_cache_index;
+		csmemcpy(&copy->swarm, swarm_get(copy->swarm_index), sizeof(copy->swarm));
+	}
+	copy->time_given = ai_globals->time_given_this_frame;
+	copy->highest_timer = ai_globals->current_highest_service_timer;
+	copy->marker = *psp_object_marker_flag();
+	copy->seed = psp_aime_seed;
+	copy->log_count = 0;
+	copy->queue_mark = psp_aime_queue_count;
+#ifdef PSP_DEBUG_TOOLS
+	/* the collision user stack's depth: a stop inside a push never pops */
+	copy->collision_user_depth = psp_collision_user_depth_get();
+#endif
+	psp_aime1b_checking = psp_aime1b_check_on && !many &&
+		((psp_aime_pass + DATUM_INDEX_TO_ABSOLUTE_INDEX(actor_index)) & 3) == 0;
+	if (psp_aime1b_checking)
+		psp_aime_check_before();
+	if (many)
+		psp_aime1b_stats.many_props++;
+	psp_aime_arm = many ? 2 : 1;
+}
+
+/* the stop: everything the actor keeps back as it was, its queued calls
+dropped; it is thought in the tick */
+static void psp_aime_restore(
+	void)
+{
+	struct psp_aime_copy *copy = psp_aime_copy;
+	long size = prop_data->size;
+	short k;
+
+	actor_update_end();
+	for (k = copy->log_count - 1; k >= 0; k--)
+	{
+		struct datum_header *header = psp_aime_datum_address(prop_data, copy->log_index[k]);
+
+		if (copy->log_deleted[k])
+		{
+			csmemcpy(header, psp_aime_log_bytes + k * sizeof(struct prop_datum), size);
+			psp_aime1b_stats.props_deleted_undone++;
+		}
+		else
+		{
+			header->identifier = 0;
+			psp_aime1b_stats.props_made_undone++;
+		}
+	}
+	csmemcpy(prop_data, &copy->prop_header, sizeof(struct data_array));
+	for (k = 0; k < copy->prop_count; k++)
+		csmemcpy(psp_aime_datum_address(prop_data, copy->prop_index[k]), psp_aime_prop_bytes + k * sizeof(struct prop_datum), size);
+	csmemcpy(actor_get(psp_aime_current), &copy->actor, sizeof(copy->actor));
+	if (csmemcmp(swarm_data, &copy->swarm_header, sizeof(struct data_array)) ||
+		csmemcmp(swarm_component_data, &copy->component_header, sizeof(struct data_array)))
+		psp_aime1b_stats.swarm_pool++;
+	else if (copy->swarm_index != NONE)
+		csmemcpy(psp_aime_datum_address(swarm_data, copy->swarm_index), &copy->swarm, sizeof(copy->swarm));
+	ai_globals->time_given_this_frame = copy->time_given;
+	ai_globals->current_highest_service_timer = copy->highest_timer;
+	*psp_object_marker_flag() = copy->marker;
+	psp_aime_seed = copy->seed;
+	psp_aime1b_stats.queue_dropped += psp_aime_queue_count - copy->queue_mark;
+	psp_aime_queue_count = copy->queue_mark;
+#ifdef PSP_DEBUG_TOOLS
+	psp_collision_user_depth_set(copy->collision_user_depth);
+#endif
+	psp_aime1b_stats.handed_back++;
+	psp_aime1b_stats.back[psp_aime_stop_which]++;
+	psp_aime_stopped = TRUE;
+}
+
+/* the pass's loop: one actor thought ahead, or stopped and left to the tick.
+Nothing the stop needs may live in this frame's registers, so it's all in
+the copies */
+static void __attribute__((noinline)) psp_aime_think_actor(
+	long actor_index)
+{
+	if (!psp_aime1b_active())
+	{
+		actor_update(actor_index);
+		return;
+	}
+	psp_aime_save(actor_index);
+	psp_aime1b_stats.actors++;
+	__asm__ __volatile__("move %0, $sp" : "=r"(psp_aime_jump_sp));
+	if (__builtin_setjmp(psp_aime_jump) == 0)
+	{
+		actor_update(actor_index);
+		if (psp_aime_arm == 2)
+			psp_aime1b_stats.no_stop++;
+		psp_aime_arm = 0;
+	}
+	else
+		psp_aime_restore();
+	if (psp_aime1b_checking && psp_aime_stopped)
+		psp_aime_check_after();
+	psp_aime1b_checking = FALSE;
+	psp_aime_current = NONE;
+}
+
+static void psp_aime1b_pass_begin(
+	void)
+{
+	if (psp_aime_queue_count)
+	{
+		/* the last pass's queue never reached an ai_update */
+		psp_aime1b_stats.stale += psp_aime_queue_count;
+		psp_aime_queue_count = 0;
+	}
+}
+
+static void psp_aime1b_names(
+	char *line,
+	int room,
+	unsigned long const *counts)
+{
+	int k, length = 0;
+
+	line[0] = 0;
+	for (k = 0; k < PSP_AIME_WRITERS && length < room - 48; k++)
+	{
+		if (counts[k])
+			length += snprintf(line + length, room - length, " %s %lu", psp_aime_writer_names[k], counts[k]);
+	}
+	if (!length)
+		snprintf(line, room, " none");
+}
+
+static void psp_aime1b_log(
+	long now)
+{
+	char back[200], queued[160], ahead[160];
+
+	if (psp_aime1b_on <= 0)
+		return;
+	psp_aime1b_names(back, sizeof(back), psp_aime1b_stats.back);
+	psp_aime1b_names(queued, sizeof(queued), psp_aime1b_stats.queued);
+	psp_aime1b_names(ahead, sizeof(ahead), psp_aime1b_stats.written_ahead);
+	platform_psp_log("aime1b: game time %ld | actors %lu, handed back %lu:%s | queued %lu:%s; applied %lu, dropped by a stop %lu, gone %lu, stale %lu, full %lu",
+		now, psp_aime1b_stats.actors, psp_aime1b_stats.handed_back, back, psp_aime1b_stats.queued_total, queued,
+		psp_aime1b_stats.applied, psp_aime1b_stats.queue_dropped, psp_aime1b_stats.gone, psp_aime1b_stats.stale, psp_aime1b_stats.queue_full);
+	platform_psp_log("aime1b: game time %ld | undone: props made %lu, props deleted %lu | no stop possible %lu (props over the copy %lu, another's prop %lu, log full %lu), written ahead:%s; swarm pools changed %lu",
+		now, psp_aime1b_stats.props_made_undone, psp_aime1b_stats.props_deleted_undone, psp_aime1b_stats.no_stop,
+		psp_aime1b_stats.many_props, psp_aime1b_stats.others_props, psp_aime1b_stats.log_full, ahead, psp_aime1b_stats.swarm_pool);
+	if (psp_aime_foreign_jumps)
+		platform_psp_log("aime1b: game time %ld | stops refused a jump onto another CPU's stack: %lu", now, psp_aime_foreign_jumps);
+	if (psp_aime1b_check_on)
+		platform_psp_log("aime1bcheck: game time %ld | stops checked %lu; left changed, the actor's own: datum %lu, props %lu, prop pool header %lu, swarm %lu; props made or freed %lu | others': actors %lu (in %lu stops), props %lu (in %lu stops), swarms %lu",
+			now, psp_aime1b_stats.checked, psp_aime1b_stats.own_actor, psp_aime1b_stats.own_props, psp_aime1b_stats.prop_header,
+			psp_aime1b_stats.own_swarm, psp_aime1b_stats.prop_live, psp_aime1b_stats.other_actors, psp_aime1b_stats.other_actor_stops,
+			psp_aime1b_stats.other_props, psp_aime1b_stats.other_prop_stops, psp_aime1b_stats.other_swarms);
+}
+
+/* FIXES_AIME: the next tick's thinking, every actor actors_update would
+update, at the end of this tick (game_time.c), the game time already the
+next tick's */
+"""),
+("""	psp_aime_stats.passes++;
+	psp_aime_think_only = TRUE;
+""",
+ """	psp_aime_stats.passes++;
+	psp_aime1b_pass_begin();
+	psp_aime_think_only = TRUE;
+"""),
+("""			(actor->meta.swarm && actor->meta.swarm_cache_index == NONE))
+			continue;
+		actor_update(iterator.index);
+	}
+	psp_perception_end();
+	psp_aime_think_only = FALSE;
+	psp_aime_pass_time = now;
+""",
+ """			(actor->meta.swarm && actor->meta.swarm_cache_index == NONE))
+			continue;
+		psp_aime_think_actor(iterator.index);
+	}
+	psp_perception_end();
+	psp_aime_think_only = FALSE;
+	psp_aime_pass_time = now;
+	psp_aime_queue_time = now;
+"""),
+("""				now, psp_aime_stats.passes, psp_aime_stats.ahead, psp_aime_stats.inline_whole);
+""",
+ """				now, psp_aime_stats.passes, psp_aime_stats.ahead, psp_aime_stats.inline_whole);
+		if (psp_aime_logged != NONE)
+			psp_aime1b_log(now);
+"""),
+]
+FIXES_AIME1B["source/ai/ai.c#aime1b"] = [
+("""	profile_enter(ai_update_section);
+""",
+ """	profile_enter(ai_update_section);
+#if defined(HALO_PSP) && !defined(PSP_MULTIPLAYER)
+	{
+		/* psp_fixups.py (FIXES_AIME1B, "aime1b"): the world writes the
+		thinking done ahead queued, where its results land (actors.c) */
+		extern void psp_aime_collect(void);
+
+		psp_aime_collect();
+	}
+#endif
+"""),
+]
+FIXES_AIME1B["source/ai/props.c#aime1b"] = [
+("""	long prop_index = datum_new(prop_data);
+
+	prop_add(actor_index, NONE, prop_index);
+""",
+ """	long prop_index = datum_new(prop_data);
+
+#ifdef HALO_PSP
+	{ extern int psp_aime_arm; extern void psp_aime_prop_change(long, long, boolean); if (psp_aime_arm) psp_aime_prop_change(actor_index, prop_index, FALSE); }
+#endif
+	prop_add(actor_index, NONE, prop_index);
+"""),
+("""	if (prop_index == NONE)
+	{
+		prop_index = datum_new(prop_data);
+	}
+""",
+ """	if (prop_index == NONE)
+	{
+		prop_index = datum_new(prop_data);
+#ifdef HALO_PSP
+		{ extern int psp_aime_arm; extern void psp_aime_prop_change(long, long, boolean); if (psp_aime_arm) psp_aime_prop_change(actor_index, prop_index, FALSE); }
+#endif
+	}
+"""),
+("""	prop_remove(actor_index, prop_index);
+	datum_delete(prop_data, prop_index);
+""",
+ """#ifdef HALO_PSP
+	{ extern int psp_aime_arm; extern void psp_aime_prop_change(long, long, boolean); if (psp_aime_arm) psp_aime_prop_change(actor_index, prop_index, TRUE); }
+#endif
+	prop_remove(actor_index, prop_index);
+	datum_delete(prop_data, prop_index);
+"""),
+]
+FIXES_AIME1B["source/objects/objects.c#aime1b"] = [
+("""void object_marker_end(
+	void)
+{
+""",
+ """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_AIME1B): a stopped actor's marks flag goes back */
+boolean *psp_object_marker_flag(
+	void)
+{
+	return &object_globals->object_marker_initialized;
+}
+#endif
+
+void object_marker_end(
+	void)
+{
+"""),
+]
+
+def _psp_aime1b_hooks():
+    # the anchors: each writer's definition as the tree has it, its body's
+    # opening brace included
+    signatures = {
+        "unit_speak": ("source/units/unit_dialogue.c", "void unit_speak(\n\tlong unit_index,\n\tshort play_type,\n\tstruct unit_speech_item const *speech_item)\n{",
+            "{ extern int psp_aime_arm; extern boolean psp_aime_queue_speak(long, short, struct unit_speech_item const *); if (psp_aime_arm && psp_aime_queue_speak(unit_index, play_type, speech_item)) return; }"),
+        "unit_scream": ("source/units/unit_dialogue.c", "boolean unit_scream(\n\tlong unit_index,\n\tshort scream_type)\n{",
+            "{ extern int psp_aime_arm; extern boolean psp_aime_queue_scream(long, short); if (psp_aime_arm && psp_aime_queue_scream(unit_index, scream_type)) return FALSE; }"),
+        "unit_try_and_exit_seat": ("source/units/units.c", "boolean unit_try_and_exit_seat(\n\tlong unit_index)\n{", None),
+        "unit_enter_seat": ("source/units/units.c", "boolean unit_enter_seat(\n\tlong unit_index,\n\tlong target_unit_index,\n\tshort seat_index)\n{", None),
+        "unit_start_user_animation": ("source/units/units.c", "boolean unit_start_user_animation(\n\tlong unit_index,\n\tlong animation_graph_index,\n\tchar const *animation_name,\n\tboolean interpolate)\n{", None),
+        "unit_start_animation_impulse": ("source/units/units.c", "boolean unit_start_animation_impulse(\n\tlong unit_index,\n\tshort animation_impulse,\n\treal_vector2d *alignment_vector)\n{", None),
+        "unit_start_running_blindly": ("source/units/units.c", "void unit_start_running_blindly(\n\tlong unit_index)\n{", None),
+        "unit_melee_attack_begin": ("source/units/units.c", "boolean unit_melee_attack_begin(\n\tlong unit_index,\n\tboolean continuous,\n\treal_vector2d const *alignment_vector)\n{", None),
+        "unit_leap_begin": ("source/units/units.c", "boolean unit_leap_begin(\n\tlong unit_index,\n\treal_vector2d const *alignment_vector)\n{", None),
+        "unit_detach_from_parent": ("source/units/units.c", "void unit_detach_from_parent(\n\tlong unit_index)\n{", None),
+        "unit_add_weapon_to_inventory": ("source/units/units.c", "boolean unit_add_weapon_to_inventory(\n\tlong unit_index,\n\tlong weapon_index,\n\tlong is_starting_weapon)\n{", None),
+        "unit_add_grenade_type_to_inventory": ("source/units/units.c", "short unit_add_grenade_type_to_inventory(\n\tlong unit_index,\n\tshort grenade_type,\n\tshort grenade_count)\n{", None),
+        "unit_set_actively_controlled": ("source/units/units.c", "void unit_set_actively_controlled(\n\tlong unit_index,\n\tboolean actively_controlled)\n{", None),
+        "unit_exit_seat_end": ("source/units/units.c", "void unit_exit_seat_end(\n\tlong unit_index)\n{", None),
+        "object_new": ("source/objects/objects.c", "long object_new(\n\tstruct object_placement_data *data)\n{", None),
+        "object_delete": ("source/objects/objects.c", "void object_delete(\n\tlong object_index)\n{", None),
+        "object_activate": ("source/objects/objects.c", "void object_activate(\n\tlong object_index)\n{",
+            "{ extern int psp_aime_arm; extern boolean psp_aime_queue_activation(long, boolean); if (psp_aime_arm && psp_aime_queue_activation(object_index, TRUE)) return; }"),
+        "object_deactivate": ("source/objects/objects.c", "void object_deactivate(\n\tlong object_index)\n{",
+            "{ extern int psp_aime_arm; extern boolean psp_aime_queue_activation(long, boolean); if (psp_aime_arm && psp_aime_queue_activation(object_index, FALSE)) return; }"),
+        "object_set_automatic_deactivation": ("source/objects/objects.c", "void object_set_automatic_deactivation(\n\tlong object_index,\n\tboolean automatic_deactivation)\n{", None),
+        "weapon_set_total_rounds": ("source/items/weapons.c", "void weapon_set_total_rounds(\n\tlong weapon_index,\n\tshort *rounds_array)\n{", None),
+        "game_allegiance_provoke": ("source/game/game_allegiance.c", "void game_allegiance_provoke(\n\tshort aggressor_team_index,\n\tshort victim_team_index)\n{", None),
+        "game_allegiance_incident": ("source/game/game_allegiance.c", "boolean game_allegiance_incident(\n\tshort aggressor_team_index,\n\tshort victim_team_index,\n\tshort incident_type,\n\tboolean *notify_immediately)\n{", None),
+        "hs_wake_by_name": ("source/hs/hs_runtime.c", "boolean hs_wake_by_name(\n\tchar const *name)\n{", None),
+        "biped_accelerate": ("source/units/bipeds.c", "void biped_accelerate(\n\tlong biped_index,\n\treal_vector3d *acceleration)\n{", None),
+    }
+    for which, name in enumerate(PSP_AIME1B_WRITERS):
+        rel, anchor, hook = signatures[name]
+        if hook is None:
+            hook = "{ extern int psp_aime_arm; extern void psp_aime_handback(int); if (psp_aime_arm) psp_aime_handback(%d); }" % which
+        FIXES_AIME1B.setdefault(rel + "#aime1b", []).append(
+            (anchor, anchor + "\n#ifdef HALO_PSP\n\t/* psp_fixups.py (FIXES_AIME1B, \"aime1b\"): the thinking done ahead stops or queues here (actors.c) */\n\t" + hook + "\n#endif"))
+
+_psp_aime1b_hooks()
+
+
+# ---------- FIXES_AIME2A: AIME step 2a, the pass ahead as a Media Engine job (keep word "aime2a", with "aime aime1b"; off)
+# With aime and aime1b, the thinking for the next tick runs right after each
+# tick on the main CPU. "aime2a" moves the pass after a frame's last tick to
+# the ME, as a slot job (ME_SLOT_AI) handed over before game_frame and the
+# record, collected at the next game_tick's start, before the units' and
+# allegiances' updates write what it read. The passes after the frame's other
+# ticks are run where they were due, at the next tick's start. On the ME:
+# perception's rays inline (its queue is the ME's own ring); the collision
+# walks' marks in tables of the ME's own, so no object or cluster is written;
+# the bipeds' pathfinding memo kept in a log applied at collection; the
+# shared maths in its FPU forms; and at a reach the ME can't run (the
+# animation pack, the decision loop's report, an owed node block, another
+# actor's prop, a full prop log) the actor is stopped as aime1b stops it and
+# thought in the tick. Between actors the job mixes audio, runs the ring and
+# a waiting render job, and reads an abort word: the collection asks it to
+# end, waits a bound, and stops the ME if it doesn't answer, putting the
+# actor in hand back from its copies (written out before it began).
+# "aimefpu" makes aime1b's pass on the main CPU use the same FPU forms and
+# stop where the ME stops (the pack, the decision report, an owed node block,
+# the formatting, a broken pool's report), the like-for-like side of 2a's
+# comparison. "aime2acheck" hashes the AI's pools
+# at the job's end and again at collection: what changed between was written
+# by the main CPU while the job was out, a race on the PSP. Campaign only
+FIXES_AIME2A = {}
+FIXES_AIME2A["source/ai/actors.c#aime2a"] = [
+("""#define PSP_AIME_WRITERS 25
+""",
+ """#define PSP_AIME_WRITERS 34
+/* FIXES_AIME2A: the ME's own stops (aimes2a, see there) */
+#define PSP_AIME_STOP_ANIMATION 24
+#define PSP_AIME_STOP_DECISION_REPORT 25
+#define PSP_AIME_STOP_SETTLE 26
+#define PSP_AIME_STOP_OTHERS_PROP 27
+#define PSP_AIME_STOP_LOG_FULL 28
+#define PSP_AIME_STOP_FORMATTING 29
+#define PSP_AIME_STOP_POOL_REPORT 30
+#define PSP_AIME_STOP_STACK 31
+#define PSP_AIME_STOP_ERROR 32
+"""),
+("""	"weapon_set_total_rounds", "game_allegiance_provoke", "game_allegiance_incident", "hs_wake_by_name", "biped_accelerate", "forced" };
+""",
+ """	"weapon_set_total_rounds", "game_allegiance_provoke", "game_allegiance_incident", "hs_wake_by_name", "biped_accelerate",
+	"animation_get_frame_data", "decision_loop_report", "owed_node_block", "anothers_prop", "prop_log_full", "formatting",
+	"pool_report", "stack_guard", "fatal_report", "forced" };
+"""),
+# on the ME, an actor's copy goes out to main RAM before it thinks, so an
+# ME stopped mid-actor can be undone from it
+("""	psp_aime_arm = many ? 2 : 1;
+}
+""",
+ """	psp_aime_arm = many ? 2 : 1;
+	if (psp_work_on_me())
+	{
+		psp_me_lines_out(copy, sizeof(*copy));
+		psp_me_lines_out(psp_aime_prop_bytes, copy->prop_count * sizeof(struct prop_datum));
+		psp_me_lines_out(&psp_aime_current, sizeof(psp_aime_current));
+	}
+}
+"""),
+# on the ME a stop must always be possible (a writer may never run there):
+# another actor's prop, or a full log, stops the actor with the change logged
+("""	if (psp_aime_arm != 1 || prop_index == NONE)
+		return;
+	if (actor_index != psp_aime_current)
+""",
+ """	if (psp_aime_arm != 1 || prop_index == NONE)
+		return;
+	if (psp_work_on_me() && (actor_index != psp_aime_current || copy->log_count >= PSP_AIME_PROP_LOG_MOST - 1))
+	{
+		int which = actor_index != psp_aime_current ? PSP_AIME_STOP_OTHERS_PROP : PSP_AIME_STOP_LOG_FULL;
+
+		copy->log_index[copy->log_count] = prop_index;
+		copy->log_deleted[copy->log_count] = deleting;
+		if (deleting)
+			csmemcpy(psp_aime_log_bytes + copy->log_count * sizeof(struct prop_datum), prop_get(prop_index), sizeof(struct prop_datum));
+		copy->log_count++;
+		psp_aime_handback(which);
+		return;
+	}
+	if (actor_index != psp_aime_current)
+"""),
+("""	psp_aime_save(actor_index);
+	psp_aime1b_stats.actors++;
+""",
+ """	psp_aime_save(actor_index);
+	psp_aime1b_stats.actors++;
+	if (psp_aime_arm == 2 && psp_work_on_me())
+	{
+		/* more props than the copy holds: the ME can't stop it, so it
+		thinks whole in the tick */
+		psp_aime_arm = 0;
+		psp_aime1b_checking = FALSE;
+		psp_aime_current = NONE;
+		psp_aime2a_me_stats.many_props++;
+		return;
+	}
+"""),
+("""	psp_aime_stats.passes++;
+	psp_aime1b_pass_begin();
+	psp_aime_think_only = TRUE;
+""",
+ """	psp_aime_stats.passes++;
+	psp_aime1b_pass_begin();
+	psp_aime_think_only = TRUE;
+	if (psp_aime_fpu_main_on > 0 && psp_aime2a_alike && !psp_work_on_me())
+		psp_aime_fpu_main = 1;
+	if (!psp_work_on_me())
+		psp_aime_pass_here(1);
+	if (psp_aime_chain_on > 0)
+		psp_aime_chain_check(0, NONE);
+"""),
+# after each actor: the job's stack guard (on the ME), and aimechain
+("""	else
+		psp_aime_restore();
+	if (psp_aime1b_checking && psp_aime_stopped)
+""",
+ """	else
+		psp_aime_restore();
+	if (psp_work_on_me() && psp_aime_job_now[0] && psp_me_aime_guard_touched())
+	{
+		/* the job's stack reached its guard: the actor handed back from its
+		copies (in main RAM), as at the collection's word; it thinks in the
+		tick, and the pass's rest with it */
+		if (!psp_aime_stopped)
+		{
+			psp_aime_stop_which = PSP_AIME_STOP_STACK;
+			psp_aime_restore();
+		}
+		psp_aime2a_guard_actor = actor_index;
+		psp_aime2a_guard_hit = 1;
+	}
+	if (psp_aime_chain_on > 0)
+		psp_aime_chain_check(1, actor_index);
+	if (psp_aime1b_checking && psp_aime_stopped)
+"""),
+# the ME's pass casts no queued rays (the queue is the ME's own ring): each
+# line of sight is walked in place
+("""	if (psp_perception_begin())
+	{
+		actor_iterator_new(&iterator, TRUE);
+		while ((actor = actor_iterator_next(&iterator)) != NULL)
+		{
+			if (!actor->meta.erase_next_tick && actor->state.mode > _actor_mode_braindead)
+				psp_perception_queue(iterator.index);
+		}
+		psp_perception_queue_done();
+	}
+	actor_iterator_new(&iterator, TRUE);
+	while ((actor = actor_iterator_next(&iterator)) != NULL)
+	{
+		/* (an actor the general update would erase is left to it) */
+		if (actor->meta.erase_next_tick || actor->state.mode <= _actor_mode_braindead ||
+			(actor->meta.swarm && actor->meta.swarm_cache_index == NONE))
+			continue;
+		psp_aime_think_actor(iterator.index);
+	}
+	psp_perception_end();
+""",
+ """	/* (and 1b's like-for-like pass: each line of sight walked in place) */
+	if (!psp_work_on_me() && !psp_aime2a_alike && psp_perception_begin())
+	{
+		actor_iterator_new(&iterator, TRUE);
+		while ((actor = actor_iterator_next(&iterator)) != NULL)
+		{
+			if (!actor->meta.erase_next_tick && actor->state.mode > _actor_mode_braindead)
+				psp_perception_queue(iterator.index);
+		}
+		psp_perception_queue_done();
+	}
+	actor_iterator_new(&iterator, TRUE);
+	while ((actor = actor_iterator_next(&iterator)) != NULL)
+	{
+		/* (an actor the general update would erase is left to it) */
+		if (actor->meta.erase_next_tick || actor->state.mode <= _actor_mode_braindead ||
+			(actor->meta.swarm && actor->meta.swarm_cache_index == NONE))
+			continue;
+		if (psp_work_on_me())
+		{
+			/* between actors: audio, the ring, a waiting render job; and
+			the collection's word to end here (the rest think in the tick) */
+			psp_me_yield_slots();
+			if (psp_aime2a_guard_hit || psp_me_aime_guard_touched())
+			{
+				/* the stack's guard reached, by the actor before or a job run
+				in the yield: the rest think in the tick */
+				psp_aime2a_guard_hit = 1;
+				break;
+			}
+			if (psp_aime2a_abort && *psp_aime2a_abort)
+			{
+				psp_aime2a_me_stats.aborted++;
+				break;
+			}
+			psp_aime2a_me_stats.on_me++;
+		}
+		psp_aime_think_actor(iterator.index);
+	}
+	if (!psp_work_on_me() && !psp_aime2a_alike)
+		psp_perception_end();
+	if (!psp_work_on_me())
+		psp_aime_pass_here(0);
+	/* (set only by the main CPU's like-for-like pass: never written on the ME) */
+	if (psp_aime_fpu_main)
+		psp_aime_fpu_main = 0;
+"""),
+("""	if (psp_aime_logged == NONE || now < psp_aime_logged || now - psp_aime_logged >= 900)
+	{
+		if (psp_aime_logged != NONE)
+			platform_psp_log("aime: game time %ld | passes %lu, actors thought ahead %lu, updated whole in the tick %lu",
+				now, psp_aime_stats.passes, psp_aime_stats.ahead, psp_aime_stats.inline_whole);
+		if (psp_aime_logged != NONE)
+			psp_aime1b_log(now);
+		psp_aime_logged = now;
+	}
+}
+#endif
+""",
+ """	if (!psp_work_on_me())
+		psp_aime_log_due(now);
+}
+
+/* which formatting the thinking reaches (the formatting stop, writer 29): by
+its format, which names the call, and the formatting's caller */
+#define PSP_AIME_FORMATS 12
+static struct
+{
+	const char *format;
+	void *caller;
+	unsigned long count;
+} psp_aime_formats[PSP_AIME_FORMATS] PSP_AIME_ME_SIDE;
+
+void psp_aime_format_seen(
+	const char *format,
+	void *caller)
+{
+	int k;
+
+	for (k = 0; k < PSP_AIME_FORMATS; k++)
+	{
+		if (!psp_aime_formats[k].format)
+		{
+			psp_aime_formats[k].format = format;
+			psp_aime_formats[k].caller = caller;
+		}
+		if (psp_aime_formats[k].format == format && psp_aime_formats[k].caller == caller)
+		{
+			psp_aime_formats[k].count++;
+			break;
+		}
+	}
+	if (psp_work_on_me())
+		psp_me_lines_out(psp_aime_formats, sizeof(psp_aime_formats));
+}
+
+static void psp_aime_formats_log(
+	long now)
+{
+	int k;
+
+	for (k = 0; k < PSP_AIME_FORMATS && psp_aime_formats[k].format; k++)
+		platform_psp_log("aime: game time %ld | formatting stop %d: %lu from %p, format [%.60s]",
+			now, k, psp_aime_formats[k].count, psp_aime_formats[k].caller, psp_aime_formats[k].format);
+}
+
+/* "aimechain": the walk. Reads only; on the ME the first break is kept for
+the main CPU to log */
+static struct
+{
+	unsigned long checks, broken;
+	int where, stopped, which, reason;
+	long time, last_actor, actor, prop, position, owner;
+	short identifier, log_count;
+	long log_index[8];
+	boolean log_deleted[8], logged;
+} psp_aime_chain PSP_AIME_ME_SIDE;
+
+static void psp_aime_chain_check(
+	int where,
+	long last_actor)
+{
+	struct data_array *actors = actor_data;
+	short k;
+
+	psp_aime_chain.checks++;
+	for (k = 0; k < actors->count; k++)
+	{
+		struct actor_datum *actor = (struct actor_datum *)((byte *)xbox_pointer(actors->data) + actors->size * k);
+		short identifier = ((struct datum_header *)actor)->identifier;
+		long actor_index = (long)(((unsigned long)(unsigned short)identifier << 16) | (unsigned long)k);
+		long prop_index;
+		short position = 0;
+		int reason = 0;
+		struct prop_datum *prop = NULL;
+
+		if (!identifier)
+			continue;
+		for (prop_index = actor->meta.first_prop_index; prop_index != NONE; prop_index = prop->next_prop_index, position++)
+		{
+			short absolute = DATUM_INDEX_TO_ABSOLUTE_INDEX(prop_index);
+
+			if (position >= 512)
+				reason = 4;
+			else if (absolute < 0 || absolute >= prop_data->count)
+				reason = 1;
+			else
+			{
+				prop = (struct prop_datum *)psp_aime_datum_address(prop_data, prop_index);
+				if (prop->identifier != (short)((unsigned long)prop_index >> 16))
+					reason = 2;
+				else if (prop->owner_actor_index != actor_index)
+					reason = 3;
+			}
+			if (reason)
+				break;
+		}
+		if (!reason)
+			continue;
+		psp_aime_chain.broken++;
+		if (psp_aime_chain.broken == 1)
+		{
+			short n;
+
+			psp_aime_chain.where = where;
+			psp_aime_chain.reason = reason;
+			psp_aime_chain.time = game_time_get();
+			psp_aime_chain.last_actor = last_actor;
+			psp_aime_chain.stopped = last_actor != NONE && psp_aime_stopped;
+			psp_aime_chain.which = psp_aime_stop_which;
+			psp_aime_chain.actor = actor_index;
+			psp_aime_chain.prop = prop_index;
+			psp_aime_chain.position = position;
+			psp_aime_chain.identifier = reason >= 2 ? prop->identifier : 0;
+			psp_aime_chain.owner = reason >= 2 ? prop->owner_actor_index : NONE;
+			psp_aime_chain.log_count = psp_aime_copy ? psp_aime_copy->log_count : 0;
+			for (n = 0; n < 8 && n < psp_aime_chain.log_count; n++)
+			{
+				psp_aime_chain.log_index[n] = psp_aime_copy->log_index[n];
+				psp_aime_chain.log_deleted[n] = psp_aime_copy->log_deleted[n];
+			}
+		}
+		/* one break a walk: the walks after find it again */
+		break;
+	}
+}
+
+static void psp_aime_chain_log(
+	void)
+{
+	static const char *const wheres[4] = { "a pass's start", "an actor's thinking", "?", "the collection" };
+	static const char *const reasons[5] = { "", "past the pool's end", "a prop that isn't there (its slot freed or reused)", "another actor's prop", "a loop" };
+	short n;
+
+	if (psp_aime_chain.broken == 0 || psp_aime_chain.logged)
+		return;
+	psp_aime_chain.logged = TRUE;
+	platform_psp_log("aimechain: game time %ld | first break after %s: actor 0x%lx's prop 0x%lx (%ld into its chain) is %s (slot identifier 0x%x, owner 0x%lx) | the last actor 0x%lx, %s%s, its prop log %d",
+		psp_aime_chain.time, wheres[psp_aime_chain.where & 3], psp_aime_chain.actor, psp_aime_chain.prop,
+		psp_aime_chain.position, reasons[psp_aime_chain.reason], (unsigned)(unsigned short)psp_aime_chain.identifier,
+		psp_aime_chain.owner, psp_aime_chain.last_actor, psp_aime_chain.stopped ? "stopped at " : "kept",
+		psp_aime_chain.stopped && psp_aime_chain.which >= 0 && psp_aime_chain.which < PSP_AIME_WRITERS ? psp_aime_writer_names[psp_aime_chain.which] : "",
+		(int)psp_aime_chain.log_count);
+	for (n = 0; n < 8 && n < psp_aime_chain.log_count; n++)
+		platform_psp_log("aimechain:   log %d: prop 0x%lx %s", (int)n, psp_aime_chain.log_index[n], psp_aime_chain.log_deleted[n] ? "deleted" : "made");
+}
+
+/* FIXES_AIME2A: "aime2a" (see there) */
+static void psp_aime_log_due(
+	long now)
+{
+	if (psp_aime_logged == NONE || now < psp_aime_logged || now - psp_aime_logged >= 900)
+	{
+		if (psp_aime_logged != NONE)
+			platform_psp_log("aime: game time %ld | passes %lu, actors thought ahead %lu, updated whole in the tick %lu",
+				now, psp_aime_stats.passes, psp_aime_stats.ahead, psp_aime_stats.inline_whole);
+		if (psp_aime_logged != NONE)
+			psp_aime1b_log(now);
+		if (psp_aime_logged != NONE)
+			psp_aime2a_log(now);
+		if (psp_aime_logged != NONE)
+			psp_aime_formats_log(now);
+		psp_aime_logged = now;
+	}
+}
+
+static boolean psp_aime2a_active(
+	void)
+{
+	if (psp_aime2a_on < 0)
+	{
+		psp_aime2a_check_on = psp_keep("aime2acheck") != 0;
+		/* the race check's write trace: the job's window its own (psp_ge.c) */
+		psp_me_window_split = psp_aime2a_check_on;
+		psp_aime2a_on = (psp_aime2a_check_on || psp_keep("aime2a") != 0) && psp_aime1b_active();
+		if (psp_aime2a_on && psp_keep("soundedram"))
+		{
+			/* the sound cache in the eDRAM reaches into the room the job's
+			stack grows into (psp_me.h's map) */
+			psp_aime2a_on = 0;
+			platform_psp_log("aime2a: off, as soundedram's sound cache takes the eDRAM the job's stack needs");
+		}
+		if (psp_aime2a_on)
+		{
+			psp_aime2a_abort = psp_me_abort_word(ME_SLOT_AI);
+			psp_aime_pf_on = 1;
+			platform_psp_log("ai: the thinking ahead after a frame's last tick done on the Media Engine during the record, collected at the next tick's start (aime2a%s)",
+				psp_aime2a_check_on ? "; aime2acheck: the AI's pools hashed at the job's end and at collection" : "");
+			/* the job's working set: what the eDRAM row is sized from */
+			platform_psp_log("aime2a: working set | copy %u, props %u, prop log %u, queue %u, marks %u, cluster marks %u, pathfinding log %u bytes",
+				(unsigned)sizeof(*psp_aime_copy), (unsigned)(PSP_AIME_PROPS_MOST * sizeof(struct prop_datum)),
+				(unsigned)(PSP_AIME_PROP_LOG_MOST * sizeof(struct prop_datum)), (unsigned)(PSP_AIME_QUEUE_MOST * sizeof(*psp_aime_queue)),
+				psp_aime_marks_bytes(), psp_aime_cluster_marks_bytes(), psp_aime_pf_bytes());
+		}
+	}
+	return psp_aime2a_on > 0 && !psp_aime2a_failed;
+}
+
+/* ai.c, after each tick: TRUE when the pass is left for later (the next
+tick's start runs it, or the frame's end hands it to the ME) */
+boolean psp_aime2a_defer(
+	void)
+{
+	if (!psp_aime2a_active() && !(psp_aime1b_active() && psp_aime_fpu_main_on > 0))
+		return FALSE;
+	psp_aime2a_owed = TRUE;
+	return TRUE;
+}
+
+static unsigned long psp_aime2a_hash_state(
+	void)
+{
+	unsigned long hash = 0;
+	int pool;
+
+	for (pool = 0; pool < PSP_AIME_POOLS; pool++)
+	{
+		struct data_array *data = psp_aime_pool(pool);
+
+		hash = hash * 31 + psp_aime_hash(xbox_pointer(data->data), data->size * data->maximum_count);
+		hash = hash * 31 + psp_aime_hash(data, sizeof(*data));
+	}
+	return hash * 31 + psp_aime_hash(ai_globals, sizeof(*ai_globals));
+}
+
+/* the job (psp_me.c's ME_JOB_AIME): the pass, on the ME */
+void psp_aime_me_job(
+	volatile unsigned int *args,
+	volatile unsigned int *results)
+{
+	unsigned long on_me = psp_aime2a_me_stats.on_me, aborted = psp_aime2a_me_stats.aborted;
+
+	(void)args;
+#ifdef PSP_DEBUG_TOOLS
+	/* the ME's own collision user stack (COLLUSERS) */
+	psp_collision_user_depth_set(1);
+#endif
+	psp_aime2a_guard_hit = 0;
+	psp_aime2a_guard_actor = NONE;
+	psp_aime_job_now[0] = 1;
+	psp_aime_think();
+	psp_aime_job_now[0] = 0;
+	if (psp_me_aime_guard_touched())
+		psp_aime2a_guard_hit = 1;
+	results[0] = (unsigned int)(psp_aime2a_me_stats.on_me - on_me);
+	results[1] = (unsigned int)(psp_aime2a_me_stats.aborted - aborted);
+	results[2] = psp_aime2a_check_on ? (unsigned int)psp_aime2a_hash_state() : 0;
+	results[3] = (unsigned int)psp_aime2a_guard_hit;
+	results[4] = (unsigned int)psp_aime2a_guard_actor;
+}
+
+/* game_time.c, before game_frame: the frame's last pass to the ME */
+void psp_aime2a_frame_end(
+	void)
+{
+	unsigned int args[1] = { 0 };
+
+	if (psp_aime_chain_on > 0)
+		psp_aime_chain_log();
+	if (!psp_aime2a_owed || psp_aime2a_out)
+		return;
+	psp_aime2a_owed = FALSE;
+	if (!psp_aime_update_allowed())
+		return;
+	if (!psp_aime2a_active())
+	{
+		/* aimefpu: the job's pass, here on the main CPU */
+		psp_aime2a_alike = TRUE;
+		psp_aime_think();
+		psp_aime2a_alike = FALSE;
+		return;
+	}
+	/* every 32nd job the ME also measures its stack's deepest reach (psp_me.c) */
+	args[0] = (psp_aime2a_stats.pushed & 31) == 0;
+	/* the ME's copy of the owed computes as they are now: the collision walk
+	there reads the copy, which the last ray hand-over left (objects.c) */
+	psp_nms_pending_for_me();
+	/* counted and marked out before the write-back: while the job runs the
+	main CPU writes nothing of the AI's (a dirty line of it could hold the
+	ME's words, and the collection's write-back would put back stale ones) */
+	psp_aime2a_stats.pushed++;
+	psp_aime2a_out = TRUE;
+	/* everything the pass reads, out of the main CPU's cache; the ME drops
+	its own before the job */
+	sceKernelDcacheWritebackAll();
+	if (!psp_me_submit(ME_SLOT_AI, ME_JOB_AIME, args, 1))
+	{
+		psp_aime2a_stats.pushed--;
+		psp_aime2a_out = FALSE;
+		psp_aime2a_stats.refused++;
+		psp_aime_think();
+		return;
+	}
+}
+
+/* game.c, at game_tick's start: the job collected before anything writes
+what it read; a pass due from the tick before (not the frame's last) run */
+void psp_aime2a_tick_begin(
+	void)
+{
+	if (psp_aime2a_out)
+	{
+		unsigned int results[ME_JOB_RESULTS] = { 0 };
+		unsigned long long asked;
+		int done;
+
+		psp_aime2a_out = FALSE;
+		if (!psp_me_submitted_done(ME_SLOT_AI))
+		{
+			psp_aime2a_stats.late++;
+			if (psp_aime2a_abort)
+				*psp_aime2a_abort = 1;
+			asked = sceKernelGetSystemTimeWide();
+			while (!psp_me_submitted_done(ME_SLOT_AI) && sceKernelGetSystemTimeWide() - asked < PSP_AIME2A_BOUND_US)
+				sceKernelDelayThread(50);
+			if (!psp_me_submitted_done(ME_SLOT_AI))
+			{
+				psp_aime2a_stats.no_answer++;
+				psp_me_stop("aime2a: the thinking job didn't end at the collection's word");
+			}
+		}
+		done = psp_me_finish(ME_SLOT_AI, results);
+		if (!psp_me_simulated())
+			sceKernelDcacheWritebackInvalidateAll();
+		else
+			psp_me_window_close();
+		if (!done)
+		{
+			/* the ME stopped: the actor in hand back from its copies, and
+			every later pass on the main CPU */
+			psp_aime2a_stats.failed++;
+			psp_aime2a_failed = TRUE;
+			psp_aime_job_now[0] = 0;
+			if (psp_aime_current != NONE)
+			{
+				psp_aime_stop_which = PSP_AIME_FORCED;
+				psp_aime_restore();
+			}
+			psp_aime_arm = 0;
+			psp_aime_current = NONE;
+			psp_aime_think_only = FALSE;
+			platform_psp_log("aime2a: the ME failed during the thinking job; every later pass thinks on the main CPU");
+		}
+		else
+		{
+			psp_aime2a_stats.collected++;
+			if (results[ME_JOB_RESULTS - 1] > psp_aime2a_stats.stack_deepest)
+				psp_aime2a_stats.stack_deepest = results[ME_JOB_RESULTS - 1];
+			if (results[3])
+			{
+				psp_aime2a_stats.guard++;
+				platform_psp_log("aime2a: game time %ld | the job's stack reached its guard (the room %u KB)%s; the pass's rest thought in the tick (%lu so far)",
+					game_time_get(), psp_me_aime_room_bytes() / 1024,
+					(long)results[4] != NONE ? ", the actor in hand handed back" : " in a yield, between actors",
+					psp_aime2a_stats.guard);
+			}
+			if (psp_aime2a_check_on)
+			{
+				psp_aime2a_stats.checked++;
+				if ((unsigned int)psp_aime2a_hash_state() != results[2])
+					psp_aime2a_stats.check_changed++;
+			}
+		}
+		psp_aime_pf_apply();
+		if (psp_aime_chain_on > 0)
+		{
+			psp_aime_chain_check(3, NONE);
+			psp_aime_chain_log();
+		}
+		psp_aime_log_due(psp_aime_pass_time != NONE ? psp_aime_pass_time : game_time_get());
+	}
+	if (psp_aime2a_owed)
+	{
+		psp_aime2a_owed = FALSE;
+		if (psp_aime_update_allowed())
+		{
+			psp_aime2a_stats.inline_passes++;
+			psp_aime_think();
+		}
+	}
+}
+
+static void psp_aime2a_log(
+	long now)
+{
+	if (psp_aime2a_on <= 0)
+		return;
+	platform_psp_log("aime2a: game time %ld | jobs %lu (refused %lu), collected %lu, late %lu, no answer %lu, failed %lu | passes inline %lu | actors on the ME %lu, ended by the word %lu, props over the copy %lu | pathfinding log %lu, applied %lu (woken %lu), full %lu | stack %lu bytes%s, the guard reached %lu",
+		now, psp_aime2a_stats.pushed, psp_aime2a_stats.refused, psp_aime2a_stats.collected, psp_aime2a_stats.late,
+		psp_aime2a_stats.no_answer, psp_aime2a_stats.failed, psp_aime2a_stats.inline_passes, psp_aime2a_me_stats.on_me,
+		psp_aime2a_me_stats.aborted, psp_aime2a_me_stats.many_props, psp_aime_pf_stats[0], psp_aime_pf_stats[1],
+		psp_aime_pf_stats[2], psp_aime_pf_stats[3], psp_aime2a_stats.stack_deepest,
+		psp_aime2a_stats.stack_deepest > psp_me_aime_room_bytes() ? " (past the PSP's room)" : "", psp_aime2a_stats.guard);
+	if (psp_aime_chain_on > 0)
+	{
+		psp_aime_chain_log();
+		platform_psp_log("aimechain: game time %ld | walks %lu, broken %lu", now, psp_aime_chain.checks, psp_aime_chain.broken);
+	}
+	if (psp_aime2a_check_on)
+		platform_psp_log("aime2acheck: game time %ld | jobs checked %lu, the AI's state changed between the job's end and the collection %lu",
+			now, psp_aime2a_stats.checked, psp_aime2a_stats.check_changed);
+	{
+		/* what the job asked to format and was refused (psp_libc.c) */
+		extern void psp_format_refused_log(void);
+
+		psp_format_refused_log();
+	}
+}
+#endif
+"""),
+# the decision loop's report: sprintf, the error log: the main CPU's
+("""	if (actor->meta.encounter_index == NONE)
+	{
+		csstrcpy(encounter_name, "<no encounter>");
+""",
+ """#ifdef HALO_PSP
+	/* psp_fixups.py (FIXES_AIME2A): on the ME, the actor thinks in the tick
+	and reports there */
+	{
+		extern int psp_aime_arm;
+		extern void psp_aime_handback(int which);
+
+		extern int psp_aime_fpu_main;
+
+		/* (25: PSP_AIME_STOP_DECISION_REPORT, declared below; aimefpu: 1b alike) */
+		if (psp_aime_arm && (psp_work_on_me() || psp_aime_fpu_main))
+			psp_aime_handback(25);
+	}
+#endif
+	if (actor->meta.encounter_index == NONE)
+	{
+		csstrcpy(encounter_name, "<no encounter>");
+"""),
+# actor input reads a biped's pathfinding memo straight: on the ME, the log's
+("""			actor->input.pathfinding_surface_index =
+				biped->biped.pathfinding_surface_index;
+			actor->input.pathfinding_point = biped->biped.pathfinding_point;
+""",
+ """			actor->input.pathfinding_surface_index =
+				biped->biped.pathfinding_surface_index;
+			actor->input.pathfinding_point = biped->biped.pathfinding_point;
+#ifdef HALO_PSP
+			extern int psp_aime_job_now[16];
+			extern void psp_aime_pf_read(long biped_index, long *surface_index, real_point3d *point);
+
+			if (psp_aime_job_now[0] && psp_aime_here())
+			{
+				long psp_surface = actor->input.pathfinding_surface_index;
+
+				/* psp_fixups.py (FIXES_AIME2A): the ME's log of the memo */
+				psp_aime_pf_read(actor->meta.unit_index, &psp_surface, &actor->input.pathfinding_point);
+				actor->input.pathfinding_surface_index = psp_surface;
+			}
+#endif
+"""),
+]
+# the error and assert reports (debug.txt, the clock, the log): on the ME a
+# fatal one hands the actor back, any other is left out; the census had
+# stopped there
+FIXES_AIME2A["source/cseries/errors.c#aime2a"] = [
+("""void error(
+	short priority,
+	const char *format,
+	...)
+{
+	char string[1024];
+	char *newline;
+	long new_size;
+""",
+ """void error(
+	short priority,
+	const char *format,
+	...)
+{
+	char string[1024];
+	char *newline;
+	long new_size;
+
+#ifdef HALO_PSP
+	{
+		/* psp_fixups.py (FIXES_AIME2A, "aime2a"; "aimefpu" makes 1b stop
+		alike): the report reads the clock, writes debug.txt and the log and
+		(a skipped assert) a thread's own word, none of which the ME can. A
+		fatal one hands the actor back to the tick (stop 32), where it is
+		reported and a release build carries on past it as it does without
+		the job; any other is left out on the ME (counted with the refused
+		formats, psp_libc.c) and the thinking goes on. aimefpu's pass does
+		the same, so the two sides match; a stop inside the report's body
+		would also leave its recursion lock held */
+		extern int psp_aime_arm, psp_aime_job_now[16], psp_aime_fpu_main;
+		extern void psp_aime_handback(int which);
+		int psp_format_refused(const char *format);
+
+		if (psp_aime_here() && (psp_aime_job_now[0] || psp_aime_fpu_main))
+		{
+			if (priority <= _error_delayed && psp_aime_arm)
+				psp_aime_handback(32);
+			/* (counted on the ME) */
+			psp_format_refused(format);
+			return;
+		}
+	}
+#endif
+"""),
+]
+FIXES_AIME2A["source/cseries/cseries.c#aime2a"] = [
+("""void release_assert_failed(
+	char const *information,
+	char const *file,
+	long line,
+	boolean fatal)
+{
+""",
+ """void release_assert_failed(
+	char const *information,
+	char const *file,
+	long line,
+	boolean fatal)
+{
+#ifdef HALO_PSP
+	{
+		/* psp_fixups.py (FIXES_AIME2A, "aime2a"; "aimefpu" makes 1b stop
+		alike): the report reads the clock, writes debug.txt and the log and
+		(a skipped assert) a thread's own word, none of which the ME can. A
+		fatal one hands the actor back to the tick (stop 32), where it is
+		reported and a release build carries on past it as it does without
+		the job; any other is left out on the ME (counted with the refused
+		formats, psp_libc.c) and the thinking goes on. aimefpu's pass does
+		the same, so the two sides match; a stop inside the report's body
+		would also leave its recursion lock held */
+		extern int psp_aime_arm, psp_aime_job_now[16], psp_aime_fpu_main;
+		extern void psp_aime_handback(int which);
+		int psp_format_refused(const char *format);
+
+		if (psp_aime_here() && (psp_aime_job_now[0] || psp_aime_fpu_main))
+		{
+			if (fatal && psp_aime_arm)
+				psp_aime_handback(32);
+			/* (counted on the ME) */
+			psp_format_refused(information);
+			return;
+		}
+	}
+#endif
+"""),
+("""void display_assert(
+	char *information,
+	char *file,
+	long line,
+	boolean fatal)
+{
+""",
+ """void display_assert(
+	char *information,
+	char *file,
+	long line,
+	boolean fatal)
+{
+#ifdef HALO_PSP
+	{
+		/* psp_fixups.py (FIXES_AIME2A, "aime2a"; "aimefpu" makes 1b stop
+		alike): the report reads the clock, writes debug.txt and the log and
+		(a skipped assert) a thread's own word, none of which the ME can. A
+		fatal one hands the actor back to the tick (stop 32), where it is
+		reported and a release build carries on past it as it does without
+		the job; any other is left out on the ME (counted with the refused
+		formats, psp_libc.c) and the thinking goes on. aimefpu's pass does
+		the same, so the two sides match; a stop inside the report's body
+		would also leave its recursion lock held */
+		extern int psp_aime_arm, psp_aime_job_now[16], psp_aime_fpu_main;
+		extern void psp_aime_handback(int which);
+		int psp_format_refused(const char *format);
+
+		if (psp_aime_here() && (psp_aime_job_now[0] || psp_aime_fpu_main))
+		{
+			if (fatal && psp_aime_arm)
+				psp_aime_handback(32);
+			/* (counted on the ME) */
+			psp_format_refused(information);
+			return;
+		}
+	}
+#endif
+"""),
+]
+# the objects' sphere counts (the map's report) are counted by both CPUs
+# while the job runs (the frame tests collisions too): as the AI's meters
+# (AIMETERS), the main CPU's alone, and only with the debug tools
+FIXES_AIME2A["source/physics/collisions.c#aime2a_spheres"] = [
+("""unsigned long psp_sphere_tests = 0, psp_sphere_rejects = 0, psp_sphere_checked = 0, psp_sphere_wrong = 0;
+""",
+ """unsigned long psp_sphere_tests = 0, psp_sphere_rejects = 0, psp_sphere_checked = 0, psp_sphere_wrong = 0;
+/* psp_fixups.py (FIXES_AIME2A): the main CPU's counts alone, with the debug
+tools only: the ME's job tests spheres while the frame does */
+#ifdef PSP_DEBUG_TOOLS
+#define PSP_SPHERE_COUNT(counter) ((void)(psp_work_on_me() ? 0 : (counter)++))
+#else
+#define PSP_SPHERE_COUNT(counter) ((void)0)
+#endif
+"""),
+("""		psp_sphere_compare(object_index, sphere);
+	psp_sphere_tests++;
+	return sphere;""",
+ """		psp_sphere_compare(object_index, sphere);
+	PSP_SPHERE_COUNT(psp_sphere_tests);
+	return sphere;"""),
+("""		fast_vector_intersects_sphere(point, vector, &sphere->center, sphere->radius))
+		return TRUE;
+	psp_sphere_rejects++;""",
+ """		fast_vector_intersects_sphere(point, vector, &sphere->center, sphere->radius))
+		return TRUE;
+	PSP_SPHERE_COUNT(psp_sphere_rejects);"""),
+("""	if (point_in_sphere(center, &sphere->center, reach))
+		return TRUE;
+	psp_sphere_rejects++;""",
+ """	if (point_in_sphere(center, &sphere->center, reach))
+		return TRUE;
+	PSP_SPHERE_COUNT(psp_sphere_rejects);"""),
+]
+# the declarations the pairs above use, ahead of 1b's
+FIXES_AIME2A["source/ai/actors.c#aime2a"].insert(0, (
+"""/* FIXES_AIME1B: "aime1b" (see there) */
+#define PSP_AIME_WRITERS 25
+""",
+"""/* FIXES_AIME2A: "aime2a" (see there) */
+#ifndef ME_SLOT_AI
+#define ME_SLOT_AI 3
+#define ME_JOB_AIME 15
+#define ME_JOB_RESULTS 8
+#endif
+int psp_me_submit(int which, unsigned int type, const unsigned int *args, int arg_count);
+int psp_me_finish(int which, unsigned int *results);
+int psp_me_submitted_done(int which);
+void psp_me_stop(const char *why);
+int psp_me_simulated(void);
+volatile unsigned int *psp_me_abort_word(int which);
+void psp_me_yield_slots(void);
+void psp_me_lines_out(const void *start, unsigned int bytes);
+extern volatile unsigned int psp_me_window_hold, psp_me_window_split;
+void psp_me_window_close(void);
+void sceKernelDcacheWritebackAll(void);
+void sceKernelDcacheWritebackInvalidateAll(void);
+unsigned long long sceKernelGetSystemTimeWide(void);
+int sceKernelDelayThread(unsigned int delay);
+void psp_nms_pending_for_me(void);
+static int psp_aime2a_on = -1, psp_aime2a_check_on = 0;
+static boolean psp_aime2a_owed = FALSE, psp_aime2a_out = FALSE, psp_aime2a_failed = FALSE;
+static volatile unsigned int *psp_aime2a_abort = NULL;
+/* the collection's wait for the actor in hand, once the job is asked to end */
+#define PSP_AIME2A_BOUND_US 20000
+/* the main CPU's counts (pushed, among them, is written while the job runs) */
+static struct
+{
+	unsigned long pushed, refused, collected, late, no_answer, failed, inline_passes;
+	unsigned long checked, check_changed, stack_deepest, guard;
+} psp_aime2a_stats;
+/* the job's own */
+static struct
+{
+	unsigned long on_me, aborted, many_props;
+} psp_aime2a_me_stats PSP_AIME_ME_SIDE;
+/* "aimefpu": 1b's pass on the main CPU in the ME's FPU forms (matrix_math.c,
+real_math.c read psp_aime_fpu_main) */
+static int psp_aime_fpu_main_on = -1;
+int psp_aime_fpu_main = 0;
+/* "aimefpu" without "aime2a": 2a's schedule kept on the main CPU (each pass
+left for later; the one after a frame's last tick run at the frame's end in
+the ME's FPU forms and with its stops, psp_aime2a_alike set; the others at the
+next tick's start as 2a runs them), so the two sides match by construction */
+static boolean psp_aime2a_alike = FALSE;
+int psp_aime_pf_on = 0;
+/* 1 while the job runs, written by the job alone, on a line of its own:
+the ME's paths (marks, FPU forms, the memo's log) test it with where they
+run, so the main CPU's own work during the record never takes them */
+int psp_aime_job_now[16] __attribute__((aligned(64)));
+extern unsigned long psp_aime_pf_stats[4];
+void psp_aime_pf_apply(void);
+void psp_aime_pf_read(long biped_index, long *surface_index, real_point3d *point);
+unsigned int psp_aime_pf_bytes(void);
+unsigned int psp_aime_marks_bytes(void);
+unsigned int psp_aime_cluster_marks_bytes(void);
+boolean psp_aime_update_allowed(void);
+static void psp_aime_log_due(long now);
+static void psp_aime2a_log(long now);
+static void psp_aime_think_actor(long actor_index);
+/* the job's stack guard (psp_me.c): set on the ME when the guard was reached,
+by an actor's thinking (handed back) or by a job run in a yield; the pass's
+rest thinks in the tick, and the collection logs it */
+int psp_me_aime_guard_touched(void);
+unsigned int psp_me_aime_room_bytes(void);
+static PSP_AIME_ME_SIDE int psp_aime2a_guard_hit = 0;
+static PSP_AIME_ME_SIDE long psp_aime2a_guard_actor = NONE;
+/* "aimechain" (a test): every actor's chain of props walked at each pass's
+start, after each actor's thinking and after the collection; the first link
+to a prop that isn't there (or is another actor's) kept with what the last
+actor's thinking did, and logged on the main CPU */
+static int psp_aime_chain_on = 0;
+static void psp_aime_chain_check(int where, long last_actor);
+static void psp_aime_chain_log(void);
+/* the pass's context on the main CPU (psp_me.c; psp_post.h's psp_aime_here) */
+void psp_aime_pass_here(int on);
+unsigned int psp_aime_sp_low = 0, psp_aime_sp_high = 0;
+/* COLLUSERS (collision_usage.c) */
+short psp_collision_user_depth_get(void);
+void psp_collision_user_depth_set(short depth);
+
+/* FIXES_AIME1B: "aime1b" (see there) */
+#define PSP_AIME_WRITERS 25
+"""))
+# aimefpu read once, on the main CPU, with aime1b's words
+FIXES_AIME2A["source/ai/actors.c#aime2a"].append((
+"""		psp_aime1b_check_on = psp_keep("aime1bcheck") != 0;
+""",
+"""		psp_aime1b_check_on = psp_keep("aime1bcheck") != 0;
+		psp_aime_fpu_main_on = psp_keep("aimefpu") != 0;
+		psp_aime_chain_on = psp_keep("aimechain") != 0;
+"""))
+FIXES_AIME2A["source/ai/ai.c#aime2a"] = [
+("""void psp_aime_update(
+	void)
+{
+	if (!ai_globals || !ai_globals->ai_initialized_for_map || ai_profile.disabled ||
+		ai_profile.move_actors_randomly || !ai_globals->ai_active || network_game_distributed_client())
+		return;
+	psp_aime_think();
+}
+""",
+ """boolean psp_aime2a_defer(void);
+
+/* FIXES_AIME2A: whether a pass may run now (also asked again where a
+deferred one runs) */
+boolean psp_aime_update_allowed(
+	void)
+{
+	return ai_globals && ai_globals->ai_initialized_for_map && !ai_profile.disabled &&
+		!ai_profile.move_actors_randomly && ai_globals->ai_active && !network_game_distributed_client();
+}
+
+void psp_aime_update(
+	void)
+{
+	if (!psp_aime_update_allowed())
+		return;
+	/* FIXES_AIME2A: "aime2a" leaves it for later (actors.c) */
+	if (psp_aime2a_defer())
+		return;
+	psp_aime_think();
+}
+"""),
+]
+FIXES_AIME2A["source/game/game.c#aime2a"] = [
+("""	profile_enter(game_update_section);
+
+	match_assert(
+		"c:\\\\halo\\\\SOURCE\\\\game\\\\game.c",
+		0x28D,""",
+ """	profile_enter(game_update_section);
+#if defined(HALO_PSP) && !defined(PSP_MULTIPLAYER)
+	{
+		/* psp_fixups.py (FIXES_AIME2A, "aime2a"): the ME's thinking job
+		collected, before the updates below write what it read (actors.c) */
+		extern void psp_aime2a_tick_begin(void);
+
+		psp_aime2a_tick_begin();
+	}
+#endif
+
+	match_assert(
+		"c:\\\\halo\\\\SOURCE\\\\game\\\\game.c",
+		0x28D,"""),
+]
+FIXES_AIME2A["source/game/game_time.c#aime2a"] = [
+("""		render_interpolation_frame_begin();
+		game_frame(game_time_get_speed()*time_delta_sec);
+""",
+ """#if defined(HALO_PSP) && !defined(PSP_MULTIPLAYER)
+		{
+			/* psp_fixups.py (FIXES_AIME2A, "aime2a"): the frame's last
+			pass handed to the ME, to think during the record (actors.c) */
+			extern void psp_aime2a_frame_end(void);
+
+			psp_aime2a_frame_end();
+		}
+#endif
+		render_interpolation_frame_begin();
+		game_frame(game_time_get_speed()*time_delta_sec);
+"""),
+]
+# perception's queued answers are the main CPU's (the ME pass queues none):
+# the ME walks each line of sight in place
+FIXES_AIME2A["source/ai/actor_perception.c#aime2a"] = [
+("""	short index;
+
+	if (psp_perc_ray_count > 0 && psp_perc_ray_epoch != psp_object_epoch)
+""",
+ """	short index;
+
+	if (psp_work_on_me())
+		return ai_test_line_of_sight(p0, p0_cluster_index, p1, p1_cluster_index, mode,
+			test_line_of_fire, ignore_object_index, ignore_vehicles);
+	if (psp_perc_ray_count > 0 && psp_perc_ray_epoch != psp_object_epoch)
+"""),
+("""		if (PSP_KEEP_ONCE("unithoistold") ? object_mark_function(object_index) : psp_object_mark_function_with(current_object))
+""",
+ """		/* (FIXES_AIME2A: on the ME, by index, for the ME's own marks) */
+		if (PSP_KEEP_ONCE("unithoistold") || psp_work_on_me() ? object_mark_function(object_index) : psp_object_mark_function_with(current_object))
+"""),
+]
+# the objects' visit marks: on the ME, in a table of its own
+FIXES_AIME2A["source/objects/objects.c#aime2a"] = [
+("""void object_marker_begin(
+	void)
+{
+""",
+ """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_AIME2A, "aime2a"): the ME's walks mark objects in
+a table of their own, so no object's line is written by the ME. Sized for
+the map's object pool, on the main CPU, before the first job */
+void *memalign(size_t alignment, size_t size);
+static long *psp_me_object_marks = NULL;
+static long psp_me_object_marks_count = 0;
+static PSP_AIME_ME_SIDE long psp_me_object_marker = 0;
+static PSP_AIME_ME_SIDE boolean psp_me_object_marker_on = FALSE;
+
+static boolean psp_me_marks_here(
+	void)
+{
+	extern int psp_aime_job_now[16];
+
+	return psp_aime_job_now[0] && psp_me_object_marks && psp_work_on_me();
+}
+
+unsigned int psp_aime_marks_bytes(
+	void)
+{
+	if (!psp_me_object_marks && object_header_data)
+	{
+		long count = object_header_data->maximum_count;
+
+		/* whole lines of their own: the ME writes them */
+		psp_me_object_marks = (long *)memalign(64, (count * sizeof(long) + 63) & ~63UL);
+		if (psp_me_object_marks)
+		{
+			csmemset(psp_me_object_marks, 0, count * sizeof(long));
+			psp_me_object_marks_count = count;
+		}
+	}
+	return (unsigned int)(psp_me_object_marks_count * sizeof(long));
+}
+#endif
+
+void object_marker_begin(
+	void)
+{
+#ifdef HALO_PSP
+	if (psp_me_marks_here())
+	{
+		psp_me_object_marker++;
+		psp_me_object_marker_on = TRUE;
+		return;
+	}
+#endif
+"""),
+("""	return &object_globals->object_marker_initialized;
+""",
+ """	if (psp_me_marks_here())
+		return &psp_me_object_marker_on;
+	return &object_globals->object_marker_initialized;
+"""),
+("""void object_marker_end(
+	void)
+{
+""",
+ """void object_marker_end(
+	void)
+{
+#ifdef HALO_PSP
+	if (psp_me_marks_here())
+	{
+		psp_me_object_marker_on = FALSE;
+		return;
+	}
+#endif
+"""),
+("""	struct object_datum *object = object_get(object_index);
+	boolean result;
+
+	match_assert("c:\\\\halo\\\\SOURCE\\\\objects\\\\objects.c", 3526, object_globals->object_marker_initialized);
+""",
+ """	struct object_datum *object;
+	boolean result;
+
+#ifdef HALO_PSP
+	if (psp_me_marks_here())
+	{
+		long absolute_index = DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index);
+
+		object_get(object_index);
+		return absolute_index < 0 || absolute_index >= psp_me_object_marks_count ||
+			psp_me_object_marks[absolute_index] != psp_me_object_marker;
+	}
+#endif
+	object = object_get(object_index);
+	match_assert("c:\\\\halo\\\\SOURCE\\\\objects\\\\objects.c", 3526, object_globals->object_marker_initialized);
+"""),
+("""boolean object_mark_function(
+	long object_index)
+{
+	return psp_object_mark_function_with(object_get(object_index));
+}
+""",
+ """boolean object_mark_function(
+	long object_index)
+{
+#ifdef HALO_PSP
+	if (psp_me_marks_here())
+	{
+		long absolute_index = DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index);
+
+		object_get(object_index);
+		if (absolute_index < 0 || absolute_index >= psp_me_object_marks_count ||
+			psp_me_object_marks[absolute_index] == psp_me_object_marker)
+			return FALSE;
+		psp_me_object_marks[absolute_index] = psp_me_object_marker;
+		return TRUE;
+	}
+#endif
+	return psp_object_mark_function_with(object_get(object_index));
+}
+"""),
+# an owed node block computes node matrices (the VFPU) and may read the
+# animation pack: on the ME, the actor thinks in the tick instead
+("""__attribute__((noinline)) void psp_nms_settle(long object_index, void *site)
+{
+""",
+ """__attribute__((noinline)) void psp_nms_settle(long object_index, void *site)
+{
+	{
+		/* psp_fixups.py (FIXES_AIME2A, "aime2a") */
+		extern int psp_aime_arm, psp_aime_fpu_main;
+		extern void psp_aime_handback(int which);
+
+		/* (aimefpu: 1b's pass stops alike) */
+		if (psp_aime_arm && (psp_work_on_me() || psp_aime_fpu_main))
+			psp_aime_handback(26);
+	}
+"""),
+]
+FIXES_AIME2A["source/models/model_animation_definitions.c#aime2a"] = [
+("""byte *animation_get_frame_data(struct animation const *animation, short frame_index)
+{
+""",
+ """byte *animation_get_frame_data(struct animation const *animation, short frame_index)
+{
+#ifdef HALO_PSP
+	{
+		/* psp_fixups.py (FIXES_AIME2A, "aime2a"): the pack's reads are file
+		I/O; on the ME the thinking actor goes back to the tick */
+		extern int psp_aime_arm, psp_aime_fpu_main;
+		extern void psp_aime_handback(int which);
+
+		/* (aimefpu: 1b's pass stops alike) */
+		if (psp_aime_arm && (psp_work_on_me() || psp_aime_fpu_main))
+			psp_aime_handback(24);
+	}
+#endif
+"""),
+]
+# the structure's cluster marks: on the ME, a table of its own
+FIXES_AIME2A["source/structures/structures.c#aime2a"] = [
+("""void structure_cluster_marker_begin(
+	void)
+{
+""",
+ """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_AIME2A, "aime2a"): as the objects' marks (objects.c) */
+static PSP_AIME_ME_SIDE long psp_me_cluster_marks[MAXIMUM_CLUSTERS_PER_STRUCTURE];
+static PSP_AIME_ME_SIDE long psp_me_cluster_marker = 0;
+
+static boolean psp_me_cluster_marks_here(
+	void)
+{
+	extern int psp_aime_job_now[16];
+
+	return psp_aime_job_now[0] && psp_aime_here();
+}
+
+unsigned int psp_aime_cluster_marks_bytes(
+	void)
+{
+	return (unsigned int)sizeof(psp_me_cluster_marks);
+}
+#endif
+
+void structure_cluster_marker_begin(
+	void)
+{
+#ifdef HALO_PSP
+	if (psp_me_cluster_marks_here())
+	{
+		psp_me_cluster_marker++;
+		return;
+	}
+#endif
+"""),
+("""void structure_cluster_marker_end(
+	void)
+{
+""",
+ """void structure_cluster_marker_end(
+	void)
+{
+#ifdef HALO_PSP
+	if (psp_me_cluster_marks_here())
+		return;
+#endif
+"""),
+("""	if (cluster_index < 0 || cluster_index >= MAXIMUM_CLUSTERS_PER_STRUCTURE)
+	{
+		return FALSE;
+	}
+
+	return (boolean)(structure_globals.cluster_magic_numbers[cluster_index]!=structure_globals.cluster_marker);
+""",
+ """	if (cluster_index < 0 || cluster_index >= MAXIMUM_CLUSTERS_PER_STRUCTURE)
+	{
+		return FALSE;
+	}
+
+#ifdef HALO_PSP
+	if (psp_me_cluster_marks_here())
+		return (boolean)(psp_me_cluster_marks[cluster_index] != psp_me_cluster_marker);
+#endif
+	return (boolean)(structure_globals.cluster_magic_numbers[cluster_index]!=structure_globals.cluster_marker);
+"""),
+("""	if (structure_globals.cluster_magic_numbers[cluster_index]!=structure_globals.cluster_marker)
+	{
+		structure_globals.cluster_magic_numbers[cluster_index]= structure_globals.cluster_marker;
+		return TRUE;
+	}
+""",
+ """#ifdef HALO_PSP
+	if (psp_me_cluster_marks_here())
+	{
+		if (psp_me_cluster_marks[cluster_index] == psp_me_cluster_marker)
+			return FALSE;
+		psp_me_cluster_marks[cluster_index] = psp_me_cluster_marker;
+		return TRUE;
+	}
+#endif
+	if (structure_globals.cluster_magic_numbers[cluster_index]!=structure_globals.cluster_marker)
+	{
+		structure_globals.cluster_magic_numbers[cluster_index]= structure_globals.cluster_marker;
+		return TRUE;
+	}
+"""),
+]
+# the shared maths in the FPU's form on the ME (it has no VFPU), and in
+# 1b's pass with "aimefpu"
+_PSP_AIME_FPU_TEST = "(psp_aime_fpu_main || (psp_aime_job_now[0] && psp_aime_here()))"
+FIXES_AIME2A["source/math/matrix_math.c#aime2a"] = [
+("""	if (psp_vfpu_on && (psp_sp >> 27) == 1 && !psp_me_context && !psp_cpu_is_me())
+	{
+		psp_vfpu_matrix4x3_multiply(a, b, result);
+		return;
+	}
+""",
+ """	/* (FIXES_AIME2A: also the FPU's form for "aimefpu") */
+	if (psp_vfpu_on && (psp_sp >> 27) == 1 && !psp_me_context && !psp_cpu_is_me() && !""" + _PSP_AIME_FPU_TEST + """)
+	{
+		psp_vfpu_matrix4x3_multiply(a, b, result);
+		return;
+	}
+"""),
+("""extern volatile unsigned int psp_me_context;
+void psp_vfpu_matrix4x3_multiply(const void *a, const void *b, void *result);
+""",
+ """extern volatile unsigned int psp_me_context;
+void psp_vfpu_matrix4x3_multiply(const void *a, const void *b, void *result);
+extern int psp_aime_fpu_main, psp_aime_job_now[16];
+"""),
+]
+FIXES_AIME2A["source/math/real_math.c#aime2a"] = [
+("""	if (psp_vfpupose_on && psp_vfpu_quaternions_multiply(q0, q1, result))
+""",
+ """	if (psp_vfpupose_on && !""" + _PSP_AIME_FPU_TEST + """ && psp_vfpu_quaternions_multiply(q0, q1, result))
+"""),
+("""	if (psp_vfpuquat_mode == 2 && psp_vfpu_quaternion_normalize(q))
+""",
+ """	if (psp_vfpuquat_mode == 2 && !""" + _PSP_AIME_FPU_TEST + """ && psp_vfpu_quaternion_normalize(q))
+"""),
+("""	if (psp_vfpuquat_mode && psp_vfpu_quaternions_interpolate_and_normalize(q0, q1, t, result))
+""",
+ """	if (psp_vfpuquat_mode && !""" + _PSP_AIME_FPU_TEST + """ && psp_vfpu_quaternions_interpolate_and_normalize(q0, q1, t, result))
+"""),
+("""int psp_vfpu_quaternions_multiply(const void *q0, const void *q1, void *result);
+""",
+ """int psp_vfpu_quaternions_multiply(const void *q0, const void *q1, void *result);
+extern int psp_aime_fpu_main, psp_aime_job_now[16]; /* FIXES_AIME2A */
+"""),
+]
+
+# the bipeds' pathfinding memo, filled lazily by the thinking: on the ME, a
+# log of its own (read back by later reads in the same pass), applied at the
+# collection, where the memo's change wakes the biped as it did in the pass
+_PSP_PF_BODY = 'static long psp_biped_pathfinding_work(\n\tlong biped_index,\n\treal_point3d *pathfinding_point)\n{\n\tstruct biped_datum *biped = biped_get(biped_index);\n\tstruct biped_definition *definition = biped_definition_get(biped->definition_index);\n\n\tif (TEST_FLAG(definition->biped.flags, _biped_flying_bit) &&\n\t\t!TEST_FLAG(biped->object.damage_flags, _object_dead_bit))\n\t{\n\t\tbiped->biped.pathfinding_surface_index = NONE;\n\t\tobject_get_origin(biped_index, pathfinding_point);\n\t}\n\telse if (biped->biped.pathfinding_surface_index==NONE)\n\t{\n\t\tlong time = game_time_get();\n\n\t\tif (time>biped->biped.last_pathfinding_attempt_time)\n\t\t{\n\t\t\tstruct collision_bsp *collision_bsp = global_collision_bsp_get();\n\t\t\treal_point3d point = biped->biped.pathfinding_point;\n\n\t\t\tbiped->biped.last_pathfinding_attempt_time = time;\n\t\t\tif (biped->biped.support_surface_index!=NONE)\n\t\t\t{\n\t\t\t\treal_point2d closest_point;\n\n\t\t\t\tcollision_surface_find_closest_point2d(\n\t\t\t\t\tcollision_bsp,\n\t\t\t\t\tbiped->biped.support_surface_index,\n\t\t\t\t\t_z,\n\t\t\t\t\tTRUE,\n\t\t\t\t\t(real_point2d const *)&biped->biped.pathfinding_point,\n\t\t\t\t\t&closest_point);\n\t\t\t\tcollision_surface_project_point2d(\n\t\t\t\t\tcollision_bsp,\n\t\t\t\t\tbiped->biped.support_surface_index,\n\t\t\t\t\t_z,\n\t\t\t\t\tTRUE,\n\t\t\t\t\t&closest_point,\n\t\t\t\t\t&point);\n\t\t\t\tbiped->biped.pathfinding_surface_index = biped->biped.support_surface_index;\n\t\t\t}\n\t\t\telse if (biped->biped.last_pathfinding_surface_index!=NONE &&\n\t\t\t\tcollision_surface_test_point2d(\n\t\t\t\t\tcollision_bsp,\n\t\t\t\t\tbiped->biped.last_pathfinding_surface_index,\n\t\t\t\t\t_z,\n\t\t\t\t\tTRUE,\n\t\t\t\t\t(real_point2d const *)&biped->biped.pathfinding_point))\n\t\t\t{\n\t\t\t\tbiped->biped.pathfinding_surface_index = biped->biped.last_pathfinding_surface_index;\n\t\t\t\tcollision_surface_project_point2d(\n\t\t\t\t\tcollision_bsp,\n\t\t\t\t\tbiped->biped.last_pathfinding_surface_index,\n\t\t\t\t\t_z,\n\t\t\t\t\tTRUE,\n\t\t\t\t\t(real_point2d const *)&biped->biped.pathfinding_point,\n\t\t\t\t\t&point);\n\t\t\t\tbiped->biped.pathfinding_surface_index = biped->biped.last_pathfinding_surface_index;\n\t\t\t}\n\n\t\t\tif (biped->biped.pathfinding_surface_index==NONE)\n\t\t\t\tbiped->biped.pathfinding_surface_index = biped_find_ground_surface(biped_index, global_down3d, 2.f, &point, NULL);\n\n\t\t\tif (biped->biped.pathfinding_surface_index!=NONE)\n\t\t\t{\n\t\t\t\tbiped->biped.pathfinding_point = point;\n\t\t\t\tbiped->biped.last_pathfinding_surface_index = biped->biped.pathfinding_surface_index;\n\t\t\t}\n\t\t}\n\t}\n\n\tmatch_assert("c:\\\\halo\\\\SOURCE\\\\units\\\\bipeds.c", 1255, pathfinding_point);\n\t*pathfinding_point = biped->biped.pathfinding_point;\n\n\treturn biped->biped.pathfinding_surface_index;\n}\n'
+_PSP_PF_ME = 'static long psp_biped_pathfinding_work_me(\n\tlong biped_index,\n\treal_point3d *pathfinding_point)\n{\n\tstruct biped_datum *biped = biped_get(biped_index);\n\tstruct psp_pf_entry *psp_pf = psp_aime_pf_entry(biped_index, biped);\n\tstruct biped_definition *definition = biped_definition_get(biped->definition_index);\n\n\tif (TEST_FLAG(definition->biped.flags, _biped_flying_bit) &&\n\t\t!TEST_FLAG(biped->object.damage_flags, _object_dead_bit))\n\t{\n\t\tpsp_pf->surface = NONE;\n\t\tobject_get_origin(biped_index, pathfinding_point);\n\t}\n\telse if (psp_pf->surface==NONE)\n\t{\n\t\tlong time = game_time_get();\n\n\t\tif (time>psp_pf->time)\n\t\t{\n\t\t\tstruct collision_bsp *collision_bsp = global_collision_bsp_get();\n\t\t\treal_point3d point = psp_pf->point;\n\n\t\t\tpsp_pf->time = time;\n\t\t\tif (biped->biped.support_surface_index!=NONE)\n\t\t\t{\n\t\t\t\treal_point2d closest_point;\n\n\t\t\t\tcollision_surface_find_closest_point2d(\n\t\t\t\t\tcollision_bsp,\n\t\t\t\t\tbiped->biped.support_surface_index,\n\t\t\t\t\t_z,\n\t\t\t\t\tTRUE,\n\t\t\t\t\t(real_point2d const *)&psp_pf->point,\n\t\t\t\t\t&closest_point);\n\t\t\t\tcollision_surface_project_point2d(\n\t\t\t\t\tcollision_bsp,\n\t\t\t\t\tbiped->biped.support_surface_index,\n\t\t\t\t\t_z,\n\t\t\t\t\tTRUE,\n\t\t\t\t\t&closest_point,\n\t\t\t\t\t&point);\n\t\t\t\tpsp_pf->surface = biped->biped.support_surface_index;\n\t\t\t}\n\t\t\telse if (psp_pf->last!=NONE &&\n\t\t\t\tcollision_surface_test_point2d(\n\t\t\t\t\tcollision_bsp,\n\t\t\t\t\tpsp_pf->last,\n\t\t\t\t\t_z,\n\t\t\t\t\tTRUE,\n\t\t\t\t\t(real_point2d const *)&psp_pf->point))\n\t\t\t{\n\t\t\t\tpsp_pf->surface = psp_pf->last;\n\t\t\t\tcollision_surface_project_point2d(\n\t\t\t\t\tcollision_bsp,\n\t\t\t\t\tpsp_pf->last,\n\t\t\t\t\t_z,\n\t\t\t\t\tTRUE,\n\t\t\t\t\t(real_point2d const *)&psp_pf->point,\n\t\t\t\t\t&point);\n\t\t\t\tpsp_pf->surface = psp_pf->last;\n\t\t\t}\n\n\t\t\tif (psp_pf->surface==NONE)\n\t\t\t\tpsp_pf->surface = biped_find_ground_surface(biped_index, global_down3d, 2.f, &point, NULL);\n\n\t\t\tif (psp_pf->surface!=NONE)\n\t\t\t{\n\t\t\t\tpsp_pf->point = point;\n\t\t\t\tpsp_pf->last = psp_pf->surface;\n\t\t\t}\n\t\t}\n\t}\n\n\tmatch_assert("c:\\\\halo\\\\SOURCE\\\\units\\\\bipeds.c", 1255, pathfinding_point);\n\t*pathfinding_point = psp_pf->point;\n\n\treturn psp_pf->surface;\n}\n'
+FIXES_AIME2A["source/units/bipeds.c#aime2a"] = [
+("""/* psp_fixups.py (FIXES_WAKE) */
+static long psp_biped_pathfinding_work(long biped_index, real_point3d *pathfinding_point);
+""",
+ """/* psp_fixups.py (FIXES_WAKE) */
+static long psp_biped_pathfinding_work(long biped_index, real_point3d *pathfinding_point);
+static long psp_biped_pathfinding_work_me(long biped_index, real_point3d *pathfinding_point);
+extern int psp_aime_job_now[16];
+"""),
+("""	csmemcpy(held, (unsigned char *)&biped->biped + first, end - first);
+	result = psp_biped_pathfinding_work(biped_index, pathfinding_point);
+""",
+ """	/* (FIXES_AIME2A: on the ME, the memo's log; its wake at collection) */
+	if (psp_aime_job_now[0] && psp_aime_here())
+		return psp_biped_pathfinding_work_me(biped_index, pathfinding_point);
+	csmemcpy(held, (unsigned char *)&biped->biped + first, end - first);
+	result = psp_biped_pathfinding_work(biped_index, pathfinding_point);
+"""),
+(_PSP_PF_BODY, _PSP_PF_BODY + """
+/* psp_fixups.py (FIXES_AIME2A, "aime2a"): the memo's log on the ME */
+#define PSP_PF_LOG_MOST 128
+struct psp_pf_entry
+{
+	long biped_index;
+	__typeof__(((struct biped_datum *)0)->biped.pathfinding_surface_index) surface;
+	__typeof__(((struct biped_datum *)0)->biped.last_pathfinding_surface_index) last;
+	__typeof__(((struct biped_datum *)0)->biped.last_pathfinding_attempt_time) time;
+	__typeof__(((struct biped_datum *)0)->biped.pathfinding_point) point;
+};
+/* the log and its counts are the ME's to write during its job */
+static PSP_AIME_ME_SIDE struct psp_pf_entry psp_pf_log[PSP_PF_LOG_MOST];
+static PSP_AIME_ME_SIDE short psp_pf_log_count = 0;
+/* logged, applied, applied with a wake, full */
+PSP_AIME_ME_SIDE unsigned long psp_aime_pf_stats[4];
+
+static struct psp_pf_entry *psp_aime_pf_find(
+	long biped_index)
+{
+	short k;
+
+	for (k = 0; k < psp_pf_log_count; k++)
+	{
+		if (psp_pf_log[k].biped_index == biped_index)
+			return &psp_pf_log[k];
+	}
+	return NULL;
+}
+
+static struct psp_pf_entry *psp_aime_pf_entry(
+	long biped_index,
+	struct biped_datum *biped)
+{
+	struct psp_pf_entry *entry = psp_aime_pf_find(biped_index);
+
+	if (entry)
+		return entry;
+	if (psp_pf_log_count >= PSP_PF_LOG_MOST)
+	{
+		extern void psp_aime_handback(int which);
+
+		/* (a stop: the actor thinks in the tick, where the memo is the biped's) */
+		psp_aime_pf_stats[3]++;
+		psp_aime_handback(31);
+		/* not stopped (no actor in hand): the last entry stands in */
+		entry = &psp_pf_log[PSP_PF_LOG_MOST - 1];
+	}
+	else
+		entry = &psp_pf_log[psp_pf_log_count++];
+	entry->biped_index = biped_index;
+	entry->surface = biped->biped.pathfinding_surface_index;
+	entry->last = biped->biped.last_pathfinding_surface_index;
+	entry->time = biped->biped.last_pathfinding_attempt_time;
+	entry->point = biped->biped.pathfinding_point;
+	psp_aime_pf_stats[0]++;
+	return entry;
+}
+
+unsigned int psp_aime_pf_bytes(
+	void)
+{
+	return (unsigned int)sizeof(psp_pf_log);
+}
+
+/* actors.c's input reads the memo straight: the log's, if it has one */
+void psp_aime_pf_read(
+	long biped_index,
+	long *surface_index,
+	real_point3d *point)
+{
+	struct psp_pf_entry *entry = psp_aime_pf_find(biped_index);
+
+	if (!entry)
+		return;
+	*surface_index = entry->surface;
+	*point = entry->point;
+}
+
+/* at collection, on the main CPU: the log into the bipeds */
+void psp_aime_pf_apply(
+	void)
+{
+	void psp_wake(long object_index);
+	short k, count = psp_pf_log_count;
+
+	psp_pf_log_count = 0;
+	for (k = 0; k < count; k++)
+	{
+		struct psp_pf_entry *entry = &psp_pf_log[k];
+		struct biped_datum *biped;
+
+		if (!object_try_and_get_and_verify_type(entry->biped_index, _object_mask_biped))
+			continue;
+		biped = biped_get(entry->biped_index);
+		psp_aime_pf_stats[1]++;
+		if (biped->biped.pathfinding_surface_index == entry->surface && biped->biped.last_pathfinding_surface_index == entry->last &&
+			biped->biped.last_pathfinding_attempt_time == entry->time && !memcmp(&biped->biped.pathfinding_point, &entry->point, sizeof(entry->point)))
+			continue;
+		biped->biped.pathfinding_surface_index = entry->surface;
+		biped->biped.last_pathfinding_surface_index = entry->last;
+		biped->biped.last_pathfinding_attempt_time = entry->time;
+		biped->biped.pathfinding_point = entry->point;
+		psp_aime_pf_stats[2]++;
+		psp_wake(entry->biped_index);
+	}
+}
+
+""" + _PSP_PF_ME),
+]
+# the C library's formatting takes a lock and may allocate (firmware), and a
+# broken pool's report writes the log: on the ME, the thinking actor stops at
+# either and thinks in the tick (the formatting the thinking reaches is its
+# debug printing, off in play)
+def _psp_aime2a_stop_hook(which):
+    record = ""
+    if which == 29:
+        record = """		if (psp_aime_arm && psp_aime_here() && (psp_aime_job_now[0] || psp_aime_fpu_main))
+			psp_aime_format_seen(format, __builtin_return_address(0));
+"""
+    return """	{
+		/* psp_fixups.py (FIXES_AIME2A, "aime2a"; "aimefpu" makes 1b stop alike) */
+		extern int psp_aime_arm, psp_aime_job_now[16], psp_aime_fpu_main;
+		extern void psp_aime_handback(int which);
+		extern void psp_aime_format_seen(const char *format, void *caller);
+
+""" + record + """		if (psp_aime_arm && psp_aime_here() && (psp_aime_job_now[0] || psp_aime_fpu_main))
+			psp_aime_handback(%d);
+	}
+""" % which
+FIXES_AIME2A["port/linux/src/msvc_crt.c#aime2a"] = [
+("""int halo_linux_vsprintf(char *buffer, const char *format, va_list arguments)
+{
+	char translated_format[1024];
+
+""",
+ """int halo_linux_vsprintf(char *buffer, const char *format, va_list arguments)
+{
+	char translated_format[1024];
+
+#ifdef HALO_PSP
+""" + _psp_aime2a_stop_hook(29) + """#endif
+"""),
+]
+FIXES_AIME2A["port/linux/src/msvc_crt.c#aime2a"].append((
+"""int halo_linux_vsnprintf(char *buffer, size_t count, const char *format, va_list arguments)
+{
+	char translated_format[1024];
+
+""",
+ """int halo_linux_vsnprintf(char *buffer, size_t count, const char *format, va_list arguments)
+{
+	char translated_format[1024];
+
+#ifdef HALO_PSP
+""" + _psp_aime2a_stop_hook(29) + """#endif
+"""))
+# consider_speech's note of why a unit won't speak ("nospch-...", "spk..."):
+# read only by the debug printing too (its callers' strings go into the
+# print_communication lines). On b30 it was nearly every formatting stop (the
+# formatting record, aime2a14 41093786587: 252-757 a run, all "nospch-%s")
+FIXES_AIME2A["source/ai/ai_communication.c#aime2a_note"] = [
+("""	if (play_type == _unit_play_speech_none)
+	{
+		if (debug_string)
+		{""",
+ """	if (play_type == _unit_play_speech_none)
+	{
+#ifdef HALO_PSP
+		/* psp_fixups.py (FIXES_AIME2A): not formatted on the ME, nor in
+		aimefpu's like-for-like pass */
+		extern int psp_aime_fpu_main;
+
+		if (debug_string && (ai_debug.print_communication || (!psp_work_on_me() && !psp_aime_fpu_main)))
+#else
+		if (debug_string)
+#endif
+		{"""),
+("""			*weight = 0.0f;
+			if (debug_string)
+			{""",
+ """			*weight = 0.0f;
+#ifdef HALO_PSP
+			extern int psp_aime_fpu_main;
+
+			if (debug_string && (ai_debug.print_communication || (!psp_work_on_me() && !psp_aime_fpu_main)))
+#else
+			if (debug_string)
+#endif
+			{"""),
+]
+# the speaker's team name is read only by the debug printing: on the ME it
+# isn't formatted, so play's speech never reaches the formatting stop
+FIXES_AIME2A["source/ai/ai_communication.c#aime2a"] = [
+("""
+							sprintf(
+								team_string,
+								"%s-%c%c%c%s",
+""",
+ """
+#ifdef HALO_PSP
+							/* psp_fixups.py (FIXES_AIME2A, "aime2a"): only the debug
+							printing reads it, and on the ME the C library's formatting
+							is firmware (aimefpu's like-for-like pass skips it too) */
+							extern int psp_aime_fpu_main;
+
+							if (ai_debug.print_communication || (!psp_work_on_me() && !psp_aime_fpu_main))
+#endif
+							sprintf(
+								team_string,
+								"%s-%c%c%c%s",
+"""),
+]
+# What the ME job shares with the main CPU's frame (the write trace, aime2a3):
+# the BSP walks' kept answers, the marker memo and the collision log's
+# periods. The main CPU uses them while the job is out (the observer's and
+# the sound's rays, the markers drawn), and with no coherence between the two
+# caches either side's line can undo the other's: on the ME each is passed by
+# (all three are exact: the answer is the same without them). Only the AI
+# job's: the other ME work keeps its own rules
+FIXES_AIME2A["source/physics/collision_bsp.c#aime2a"] = [
+("""	struct collision_bsp_test_vector_result *result, boolean *return_value)
+{
+	struct psp_bspr_ray_slot *key = &psp_bspr_ray_pending, *w;
+	struct psp_bspr_state *state;
+	unsigned long generation;
+	long k;
+
+""",
+ """	struct collision_bsp_test_vector_result *result, boolean *return_value)
+{
+	struct psp_bspr_ray_slot *key = &psp_bspr_ray_pending, *w;
+	struct psp_bspr_state *state;
+	unsigned long generation;
+	long k;
+
+""" + """#ifdef HALO_PSP
+	extern int psp_aime_job_now[16];
+
+	/* psp_fixups.py (FIXES_AIME2A, "aime2a"): the kept answers are shared with
+	the main CPU, which may be walking at the same time; the ME walks without them */
+	if (psp_aime_job_now[0] && psp_aime_here())
+		return FALSE;
+#endif
+"""),
+("""static void psp_bspr_ray_keep(struct collision_bsp_test_vector_result const *result, boolean return_value)
+{
+	struct psp_bspr_ray_slot *w = psp_bspr_ray_checking;
+	long k;
+
+""",
+ """static void psp_bspr_ray_keep(struct collision_bsp_test_vector_result const *result, boolean return_value)
+{
+	struct psp_bspr_ray_slot *w = psp_bspr_ray_checking;
+	long k;
+
+#ifdef HALO_PSP
+	extern int psp_aime_job_now[16];
+
+	/* psp_fixups.py (FIXES_AIME2A, "aime2a"): as psp_bspr_ray_take */
+	if (psp_aime_job_now[0] && psp_aime_here())
+		return;
+#endif
+"""),
+("""	struct collision_bsp_test_sphere_result *result)
+{
+	struct psp_bspr_sphere_slot *key = &psp_bspr_sphere_pending, *w;
+	struct psp_bspr_state *state;
+	unsigned long generation;
+	long k, n;
+
+""",
+ """	struct collision_bsp_test_sphere_result *result)
+{
+	struct psp_bspr_sphere_slot *key = &psp_bspr_sphere_pending, *w;
+	struct psp_bspr_state *state;
+	unsigned long generation;
+	long k, n;
+
+#ifdef HALO_PSP
+	extern int psp_aime_job_now[16];
+
+	/* psp_fixups.py (FIXES_AIME2A, "aime2a"): as psp_bspr_ray_take */
+	if (psp_aime_job_now[0] && psp_aime_here())
+		return FALSE;
+#endif
+"""),
+("""static void psp_bspr_sphere_keep(struct collision_bsp_test_sphere_result const *result)
+{
+	struct psp_bspr_sphere_slot *w = psp_bspr_sphere_checking;
+	long k, n;
+
+""",
+ """static void psp_bspr_sphere_keep(struct collision_bsp_test_sphere_result const *result)
+{
+	struct psp_bspr_sphere_slot *w = psp_bspr_sphere_checking;
+	long k, n;
+
+#ifdef HALO_PSP
+	extern int psp_aime_job_now[16];
+
+	/* psp_fixups.py (FIXES_AIME2A, "aime2a"): as psp_bspr_ray_take */
+	if (psp_aime_job_now[0] && psp_aime_here())
+		return;
+#endif
+"""),
+]
+FIXES_AIME2A["source/models/models.c#aime2a"] = [
+("""	if (psp_marker_search < 0)
+		psp_marker_search = psp_keep("markersearch");
+""",
+ """#ifdef HALO_PSP
+	extern int psp_aime_job_now[16];
+
+	/* psp_fixups.py (FIXES_AIME2A, "aime2a"): the memo is the main CPU's too, filled while
+	it draws; the ME searches */
+	if (psp_aime_job_now[0] && psp_aime_here())
+		return psp_model_find_marker_search(model_index, name);
+#endif
+	if (psp_marker_search < 0)
+		psp_marker_search = psp_keep("markersearch");
+"""),
+]
+FIXES_AIME2A["source/physics/collision_usage.c#aime2a"] = [
+("""void collision_log_begin_period(
+	short time_period)
+{
+""",
+ """void collision_log_begin_period(
+	short time_period)
+{
+#ifdef HALO_PSP
+	extern int psp_aime_job_now[16];
+
+	/* psp_fixups.py (FIXES_AIME2A, "aime2a"): the log's periods are the main CPU's */
+	if (psp_aime_job_now[0] && psp_aime_here())
+		return;
+#endif
+"""),
+("""void collision_log_continue_period(
+	short time_period)
+{
+""",
+ """void collision_log_continue_period(
+	short time_period)
+{
+#ifdef HALO_PSP
+	extern int psp_aime_job_now[16];
+
+	/* psp_fixups.py (FIXES_AIME2A, "aime2a"): as begin_period */
+	if (psp_aime_job_now[0] && psp_aime_here())
+		return;
+#endif
+"""),
+("""void collision_log_end_period(
+	void)
+{
+""",
+ """void collision_log_end_period(
+	void)
+{
+#ifdef HALO_PSP
+	extern int psp_aime_job_now[16];
+
+	/* psp_fixups.py (FIXES_AIME2A, "aime2a"): as begin_period */
+	if (psp_aime_job_now[0] && psp_aime_here())
+		return;
+#endif
+"""),
+("""void collision_log_usage(
+	short collision_function)
+{
+	short user;
+
+""",
+ """void collision_log_usage(
+	short collision_function)
+{
+	short user;
+
+#ifdef HALO_PSP
+	extern int psp_aime_job_now[16];
+
+	/* psp_fixups.py (FIXES_AIME2A, "aime2a"): as begin_period */
+	if (psp_aime_job_now[0] && psp_aime_here())
+		return;
+#endif
+"""),
+]
+FIXES_AIME2A["source/memory/data.c#aime2a"] = [
+("""	if (data->signature == 'd@t@' && data->data && data->valid && data->next_identifier)
+		return TRUE;
+""",
+ """	if (data->signature == 'd@t@' && data->data && data->valid && data->next_identifier)
+		return TRUE;
+#ifdef HALO_PSP
+""" + _psp_aime2a_stop_hook(30) + """#endif
+"""),
+]
+
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items()) + list(FIXES_AIME2A.items())):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
@@ -40521,3 +43564,5 @@ print("psp_fixups: AI debugger state on demand in %d files" % ai_debug_shrink(TR
 print("psp_fixups: colour conversions in single precision in %d files" % float_colours(TREE))
 print("psp_fixups: render interpolation for one local player in %d files" % interpolation_players(TREE))
 print("psp_fixups: the GL renderer compiled out in %d files" % gl_never(TREE))
+print("psp_fixups: the collision user stack %s in %d files (COLLUSERS)" % ("shared, as before," if COLLUSERS_SHARED else "one a CPU (debug tools) or none", collision_users(TREE)))
+print("psp_fixups: the AI's meters and ballistic record the main CPU's alone in %d files (AIMETERS)" % ai_meters(TREE))

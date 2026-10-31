@@ -25,6 +25,7 @@ compiled as plain C (no game prefix):
 #include <pspsysmem.h>
 #include <pspsdk.h>
 #include <time.h>
+#include "psp_me.h" /* psp_cpu_is_me */
 
 /* ---------- POSIX */
 
@@ -416,6 +417,58 @@ static int format_take(void)
 	return 1;
 }
 
+/* The Media Engine never formats: its work can't take the lock above (a
+system call), and the engines' scratch memory is the main CPU's too. On the
+ME, or in the emulator in the work it stands in for there (the thread
+psp_me_context names), a format is refused: the caller's text is left
+empty, and the format counted, on lines only the ME writes, for the main
+CPU's log (psp_format_refused_log) */
+#define FORMAT_REFUSED_KINDS 15
+static struct
+{
+	const char *format[FORMAT_REFUSED_KINDS];
+	unsigned int count[FORMAT_REFUSED_KINDS];
+	unsigned int other;
+} format_refused __attribute__((aligned(64)));
+
+int psp_format_refused(const char *format)
+{
+	extern volatile unsigned int psp_me_context;
+	unsigned int sp;
+	int k;
+
+	if (!format)
+		format = "(no format)";
+	(void)sp;
+	if (!psp_cpu_is_me() && (!psp_me_context || psp_me_context != (unsigned int)sceKernelGetThreadId()))
+		return 0;
+	for (k = 0; k < FORMAT_REFUSED_KINDS; k++)
+	{
+		if (!format_refused.format[k])
+			format_refused.format[k] = format;
+		if (format_refused.format[k] == format)
+		{
+			format_refused.count[k]++;
+			return 1;
+		}
+	}
+	format_refused.other++;
+	return 1;
+}
+
+/* the main CPU, after the job's collection: what the ME's work asked to
+format (cumulative) */
+void psp_format_refused_log(void)
+{
+	extern void platform_log(const char *format, ...);
+	int k;
+
+	for (k = 0; k < FORMAT_REFUSED_KINDS && format_refused.format[k]; k++)
+		platform_log("ME: formatting refused %u times: [%.60s]", format_refused.count[k], format_refused.format[k]);
+	if (format_refused.other)
+		platform_log("ME: formatting refused %u more times, other formats", format_refused.other);
+}
+
 static void format_give(int taken)
 {
 	if (!taken)
@@ -494,7 +547,12 @@ void psp_printf_report(void)
 int __real__svfprintf_r(struct _reent *reent, FILE *file, const char *format, va_list arguments);
 int __wrap__svfprintf_r(struct _reent *reent, FILE *file, const char *format, va_list arguments)
 {
-	int taken = format_take(), result;
+	int taken, result;
+
+	/* (the string's end is written by the caller: it stays empty) */
+	if (psp_format_refused(format))
+		return 0;
+	taken = format_take();
 
 	printf_count(format);
 	result = __real__svfprintf_r(reent, file, format, arguments);
@@ -506,7 +564,12 @@ int __wrap__svfprintf_r(struct _reent *reent, FILE *file, const char *format, va
 int __real__vfprintf_r(struct _reent *reent, FILE *file, const char *format, va_list arguments);
 int __wrap__vfprintf_r(struct _reent *reent, FILE *file, const char *format, va_list arguments)
 {
-	int taken = format_take(), result = __real__vfprintf_r(reent, file, format, arguments);
+	int taken, result;
+
+	if (psp_format_refused(format))
+		return 0;
+	taken = format_take();
+	result = __real__vfprintf_r(reent, file, format, arguments);
 
 	format_give(taken);
 	return result;
@@ -519,7 +582,12 @@ from another object, and are covered) */
 int __real_vfprintf(FILE *file, const char *format, va_list arguments);
 int __wrap_vfprintf(FILE *file, const char *format, va_list arguments)
 {
-	int taken = format_take(), result = __real_vfprintf(file, format, arguments);
+	int taken, result;
+
+	if (psp_format_refused(format))
+		return 0;
+	taken = format_take();
+	result = __real_vfprintf(file, format, arguments);
 
 	format_give(taken);
 	return result;
@@ -528,8 +596,17 @@ int __wrap_vfprintf(FILE *file, const char *format, va_list arguments)
 double __real_strtod(const char *text, char **end);
 double __wrap_strtod(const char *text, char **end)
 {
-	int taken = format_take();
-	double result = __real_strtod(text, end);
+	int taken;
+	double result;
+
+	if (psp_format_refused(text))
+	{
+		if (end)
+			*end = (char *)text;
+		return 0.0;
+	}
+	taken = format_take();
+	result = __real_strtod(text, end);
 
 	format_give(taken);
 	return result;
@@ -538,8 +615,17 @@ double __wrap_strtod(const char *text, char **end)
 float __real_strtof(const char *text, char **end);
 float __wrap_strtof(const char *text, char **end)
 {
-	int taken = format_take();
-	float result = __real_strtof(text, end);
+	int taken;
+	float result;
+
+	if (psp_format_refused(text))
+	{
+		if (end)
+			*end = (char *)text;
+		return 0.0f;
+	}
+	taken = format_take();
+	result = __real_strtof(text, end);
 
 	format_give(taken);
 	return result;
@@ -548,8 +634,17 @@ float __wrap_strtof(const char *text, char **end)
 double __real__strtod_r(struct _reent *reent, const char *text, char **end);
 double __wrap__strtod_r(struct _reent *reent, const char *text, char **end)
 {
-	int taken = format_take();
-	double result = __real__strtod_r(reent, text, end);
+	int taken;
+	double result;
+
+	if (psp_format_refused(text))
+	{
+		if (end)
+			*end = (char *)text;
+		return 0.0;
+	}
+	taken = format_take();
+	result = __real__strtod_r(reent, text, end);
 
 	format_give(taken);
 	return result;
@@ -699,8 +794,8 @@ static void heap_me_check(void *caller, size_t size, const char *how)
 
 	unsigned int sp;
 
-	__asm__ ("move %0, $sp" : "=r"(sp));
-	if (!psp_me_context || (sp & 0x1FFFFFFFu) < 0x01000000u) /* not on the ME itself: no log from there */
+	(void)sp;
+	if (!psp_me_context || psp_cpu_is_me()) /* not on the ME itself: no log from there */
 		return;
 	/* the context names the thread doing the ME's work on the main CPU; a
 	thread that took the CPU from it meanwhile (the cache file reader) asks

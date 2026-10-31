@@ -2,10 +2,11 @@
 #ifndef PSP_ME_H
 #define PSP_ME_H
 
-#define ME_SLOTS 3
+#define ME_SLOTS 4
 #define ME_SLOT_AUDIO 0
 #define ME_SLOT_RENDER 1
 #define ME_SLOT_PROBE 2 /* build 115: the heartbeat's eDRAM probe (edramcheck) */
+#define ME_SLOT_AI 3 /* "aime2a": the AI's thinking pass ahead, during the record (actors.c, psp_fixups.py FIXES_AIME2A) */
 
 #define ME_JOB_ARGS 12
 #define ME_JOB_RESULTS 8
@@ -63,6 +64,7 @@ The ring serves one producer thread, the main CPU's renderer. */
 #define ME_JOB_PERC_RAYS 8 /* "meraysperc": perception's queued rays (actor_perception.c, psp_fixups.py FIXES_122) */
 #define ME_JOB_POSES 9 /* next tick's base poses (objects.c, psp_fixups.py FIXES_131 #poseahead) */
 #define ME_JOB_POINTS 12 /* "mepoints": the frame's particles' and contrail points' physics (point_physics.c, psp_fixups.py FIXES_MEJOBS) */
+#define ME_JOB_AIME 15 /* "aime2a": a slot job (ME_SLOT_AI) that yields between actors */
 #define ME_JOB_VISIBILITY 14 /* "mevis": the frame's visibility again, on the ME, timed and checked (structure_visibility.c, psp_fixups.py mevis_copies; a measurement) */
 #ifdef PSP_RECON
 #define ME_JOB_BUSLOAD 10 /* "mebusN": a memory load on the ME through a tick (psp_me_bus_phase) */
@@ -103,6 +105,19 @@ the main CPU can't reach it). docs/me_programme.md, stage 1 */
 #define ME_EDRAM_RESIDENT 0x40000u     /* to 1.5 MB: data jobs keep there */
 #define ME_EDRAM_RESIDENT_END 0x180000u
 #define ME_EDRAM_STACK_TOP 0x200000u   /* a PSP-1000's: the stack grows down from it */
+/* "aime2a": the thinking job keeps its path searches on the ME's stack, so the
+stack has 1,504-2,048 KB (544 KB) while the job runs, and 1,456-1,504 KB is
+kept for the job's own data. Nothing else may use 1,456 KB and up then (the
+sound cache in the eDRAM is refused with the job). The room: the job's
+deepest reach (c10 369 KB in the emulator, its own frames), the deepest the
+jobs run in its yields can add (the ME's stack never below 1,984 KB on both
+PSPs, edramcheck: 64 KB), and a quarter more */
+#define ME_EDRAM_AIME_DATA 0x16C000u
+#define ME_EDRAM_AIME_STACK 0x178000u
+/* the stack room's bottom 256 bytes: its guard (psp_me.c) */
+#define ME_EDRAM_AIME_GUARD_BYTES 256u
+int psp_me_aime_guard_touched(void);
+unsigned int psp_me_aime_room_bytes(void);
 /* "soundedram" (R2): the sound cache takes 256 KB to 1,920 KB instead, the
 resident room and the top of the stack's half MB with it. On both PSPs the
 ME's stack never reached below 1,984 KB (edramcheck over the ten-map ladder),
@@ -115,6 +130,19 @@ from a slot job (not from inside a ring job), the ring's waiting jobs run.
 Each touches only its own inputs and outputs, so this is exact anywhere a
 job may call it. Elsewhere it does nothing */
 void psp_me_yield(void);
+/* the same from a long slot job that isn't the render slot's: a render job
+asked for meanwhile is run now too, so the record never waits behind it */
+void psp_me_yield_slots(void);
+/* a slot's abort word (uncached): the main CPU asks a yielding slot job to
+end at its next step; 0 again at each submit */
+volatile unsigned int *psp_me_abort_word(int which);
+void psp_me_lines_out(const void *start, unsigned int bytes);
+/* "aime2a"'s job, defined by actors.c: runs the pass on the ME, or here in
+the emulator (on a stack of its own, marked as the ME's) */
+void psp_aime_me_job(volatile unsigned int *args, volatile unsigned int *results);
+/* the write trace's window held open while a slot job is out (psp_ge.c's
+closings keep it) */
+extern volatile unsigned int psp_me_window_hold;
 
 int psp_me_ring_ready(void);
 void psp_me_writeback(const void *start, unsigned int bytes);
@@ -194,12 +222,30 @@ eDRAM ($sp 0x80200000 or 0x80400000, me-core.h), and every thread of the main
 CPU runs on a stack in main RAM, from 0x08000000 up. So code both CPUs run
 (the GE layer's, psp_ge.c) can tell where it is without a shared word: a word
 both CPUs write would share a cache line between them */
+#ifndef PSP_CPU_IS_ME_DEFINED
+#define PSP_CPU_IS_ME_DEFINED
+/* Which CPU is running this, the main CPU or the Media Engine: the ME has
+no VFPU and no kernel, so code both run takes its VFPU and system-call
+routes only on the main CPU. The test is the stack: the ME's is in its
+eDRAM (below 16 MB in any segment), the main CPU's threads' in main RAM.
+It holds because nothing moves the ME onto another stack: the one jump the
+ME may take (1b's stop, actors.c) goes only to a jump its own CPU set and
+is refused on the ME into a stack outside its eDRAM (counted, logged). The
+CPU number itself (coprocessor 0 register 22) can't be the test: the main
+CPU runs in user mode, where reading it faults (code 11, as the VFPU does
+on the ME); the ME's is logged at its start */
+static __inline__ __attribute__((always_inline)) int psp_cpu_is_me(void)
+{
+	unsigned int psp_cpu_sp_;
+
+	__asm__ ("move %0, $sp" : "=r"(psp_cpu_sp_));
+	return (psp_cpu_sp_ & 0x1FFFFFFFu) < 0x01000000u;
+}
+#endif
+
 static inline int psp_on_me(void)
 {
-	unsigned int sp;
-
-	__asm__ ("move %0, $sp" : "=r"(sp));
-	return (sp & 0x1FFFFFFFu) < 0x01000000u;
+	return psp_cpu_is_me();
 }
 
 /* build 118: a variable of the GE layer's or the texture cache's files that
@@ -209,6 +255,16 @@ answers). psp_build.py's link script puts these together on cache lines of
 their own, away from the ME's variables of the same files. A static gets it
 before its type: static PSP_MAIN_SIDE int x = 0; */
 #define PSP_MAIN_SIDE __attribute__((section(".data.psp_main_side")))
+
+/* a variable the Media Engine writes while its job runs ("aime2a"'s pass
+and what it reaches): psp_build.py's link script keeps these together on
+64-byte lines of their own, so no line holds both a word the ME writes and
+one the main CPU writes during the job (each CPU's write-back cache would
+put back its stale copy of the other's words). A static gets it before its
+type, a struct after its name */
+#ifndef PSP_AIME_ME_SIDE
+#define PSP_AIME_ME_SIDE __attribute__((section(".data.psp_aime_me")))
+#endif
 
 /* work that is (or, in the emulator, stands for) the Media Engine's: on the
 ME, or marked as its by psp_me_context (gemesim: the main CPU runs it) */

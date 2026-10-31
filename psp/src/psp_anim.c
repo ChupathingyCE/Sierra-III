@@ -53,6 +53,7 @@ the tag window alone. */
 #include <malloc.h>
 #include "psp_paths.h"   /* ms0:/halo or ms0:/halomp, and the maps */
 #include "psp_metrics.h"
+#include "psp_me.h" /* psp_cpu_is_me */
 
 void platform_log(const char *format, ...);
 int psp_keep(const char *name);
@@ -437,6 +438,24 @@ void *psp_anim_lock(unsigned long address, unsigned long size)
 	unsigned int first_page, last_page, count, k;
 	int slot;
 
+	{
+		/* "aime2a": the pack's reads are file I/O, which the ME can't do;
+		an actor thinking there stops and thinks in the tick instead (the
+		pose jobs the ME runs come here with no actor in hand) */
+		extern int psp_aime_arm, psp_aime_job_now[16], psp_aime_fpu_main;
+		extern unsigned int psp_aime_sp_low, psp_aime_sp_high;
+		extern void psp_aime_handback(int which);
+		unsigned int sp;
+
+		/* only in the pass's own context (psp_post.h's psp_aime_here: the
+		ME, or the stack the pass runs on); "aimefpu": 1b's pass stops alike */
+		/* (psp_post.h's psp_aime_here, which units here don't include: on the
+		ME the AI job alone, not another job of its) */
+		__asm__ ("move %0, $sp" : "=r"(sp));
+		if (psp_aime_arm && (psp_cpu_is_me() ? psp_aime_job_now[0] != 0 : sp - psp_aime_sp_low < psp_aime_sp_high - psp_aime_sp_low) &&
+			(psp_aime_job_now[0] || psp_aime_fpu_main))
+			psp_aime_handback(24);
+	}
 	if (address >= memo_start && address + size <= memo_end && !forget_pending && !trace)
 	{
 		repeats++;

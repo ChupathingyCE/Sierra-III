@@ -743,7 +743,11 @@ def link(objs, stubs):
     me_objects = ("*psp_ge.o", "*psp_tex.o", "*libpspgu.a:*")
     text = text.replace(old_data, "    _fdata = . ;\n"
                         "    . = ALIGN(64);\n    __psp_main_side_start = .;\n    KEEP(*(.data.psp_main_side))\n"
-                        "    . = ALIGN(64);\n    __psp_main_side_end = .;\n    __psp_me_data_start = .;\n" +
+                        "    . = ALIGN(64);\n    __psp_main_side_end = .;\n"
+                        # the variables the ME writes during "aime2a"'s job
+                        # (PSP_AIME_ME_SIDE, psp_me.h) on lines of their own
+                        "    __psp_aime_me_start = .;\n    KEEP(*(.data.psp_aime_me))\n"
+                        "    . = ALIGN(64);\n    __psp_aime_me_end = .;\n    __psp_me_data_start = .;\n" +
                         "".join("    %s(.data .data.*)\n" % o for o in me_objects) +
                         "    . = ALIGN(64);\n    __psp_me_data_end = .;\n" + hot_data_block(me_objects) +
                         "    *(.data .data.* .gnu.linkonce.d.*)\n")

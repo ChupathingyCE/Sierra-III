@@ -28,6 +28,7 @@ The engine's quaternions and matrices are only 4-byte aligned, so every load
 and store is one float (lv.s, sv.s). */
 #include <pspkernel.h>
 #include <string.h>
+#include "psp_me.h" /* psp_cpu_is_me */
 
 void platform_log(const char *format, ...);
 int psp_keep(const char *name);
@@ -513,7 +514,8 @@ static int on_main_cpu(void)
 	unsigned int stack;
 
 	__asm__ volatile("move %0, $sp" : "=r"(stack));
-	return (stack >> 27) == 1 && !psp_me_context;
+	/* (and the CPU itself, psp_me.h: the ME on another stack is still the ME) */
+	return (stack >> 27) == 1 && !psp_me_context && !psp_cpu_is_me();
 }
 
 /* the main CPU's calls a frame (and with the check word, those that differed)
