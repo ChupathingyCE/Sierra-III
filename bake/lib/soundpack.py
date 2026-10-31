@@ -22,11 +22,20 @@ S10's 11 kHz isn't a rate the sound tag can say (22,050 or 44,100 only), so
 it isn't applied yet: the tag needs the rate per permutation, which the
 runtime doesn't read (audio.md 3b). s10 is accepted and reported as s9.
 
-    python3 soundpack.py TAGS_DIR PROFILE [CACHE_DIR]
+    python3 soundpack.py TAGS_DIR PROFILE [CACHE_DIR] [--music-stream PACK MUSICENC]
 
 With CACHE_DIR, each tag's re-encode is kept there by a hash of the tag's
 bytes, the profile, this file and numpy's version, and read back by a later
 bake instead of made again (the same bytes either way).
+
+--music-stream (the music path, docs/plan_music_stream.md) also writes PACK:
+every music chain at 44,100 Hz, before S9 halves it, encoded as Vorbis by the
+bundle's musicenc, with where each permutation starts in its chain. The tags
+are rewritten exactly as without it, so the map is the same. PROFILE may then
+be "none": the tags are left as they are and only the pack is written. The
+pack is made from the disc's sounds: it stays in the bake's output folder
+like the map, and only its counts are printed. The pack is gathered while
+each tag is read, so with it CACHE_DIR is not used.
 
 Reads Invader's tag definitions from HALO_PSP_INVADER_DEFINITIONS. Writes
 the sound tags in place and prints a summary (counts and bytes: no tag
@@ -36,7 +45,9 @@ import hashlib
 import json
 import os
 import struct
+import subprocess
 import sys
+import tempfile
 
 import numpy as np
 
@@ -315,8 +326,104 @@ class Rewriter:
 # ---------------------------------------------------------------- one sound
 
 
-def bake_sound(d, data, profile, stats):
-    """the sound tag's new bytes, or None to leave it"""
+# ------------------------------------------------------- the music stream
+
+MUSIC_RATE = 44100
+MUSIC_QUALITY = '0.3'      # libvorbis VBR quality 3: about 112 kbps for stereo music
+PACK_MAGIC = b'PMUS'
+PACK_VERSION = 1
+
+
+def tag_hash(name):
+    """FNV-1a over the tag's path as the game names it (lower case, back
+    slashes, no extension): the game hashes the same string for its lookup"""
+    h = 0x811C9DC5
+    for byte in name.lower().replace('/', '\\').encode('ascii', 'replace'):
+        h = ((h ^ byte) * 0x01000193) & 0xFFFFFFFF
+    return h
+
+
+class MusicPack:
+    """the music chains of one map's sound tags, and the pack made of them"""
+
+    def __init__(self, encoder, work):
+        self.encoder, self.work = encoder, work
+        self.setups = []           # distinct header blobs (all the same when every chain is stereo 44.1 kHz)
+        self.chains = []           # (setup, [(bytes, granule)], frames)
+        self.entries = []          # (hash, pitch, permutation, chain, start, frames, first packet)
+        self.skipped = 0           # music the pack leaves to the cache: not 44,100 Hz on the disc
+
+    def encode(self, pcm):
+        """int16 (frames, channels) at 44.1 kHz -> (setup index, packets, frames).
+        Mono music is encoded as two equal channels, so one decoder setup
+        serves every stream (an equal side costs Vorbis next to nothing)"""
+        if pcm.shape[1] == 1:
+            pcm = np.repeat(pcm, 2, 1)
+        raw = os.path.join(self.work, 'music.raw')
+        out = os.path.join(self.work, 'music.pkt')
+        pcm.astype('<i2').tofile(raw)
+        subprocess.run([self.encoder, str(MUSIC_RATE), '2', MUSIC_QUALITY, raw, out], check=True)
+        blob = open(out, 'rb').read()
+        records, at = [], 0
+        while at < len(blob):
+            size, granule = struct.unpack_from('<Iq', blob, at)
+            records.append((blob[at + 12:at + 12 + size], granule))
+            at += 12 + size
+        if len(records) < 3:
+            raise ValueError('musicenc wrote %d packets' % len(records))
+        headers = b''.join(struct.pack('<I', len(p)) + p for p, _ in records[:3])
+        if headers not in self.setups:
+            self.setups.append(headers)
+        return self.setups.index(headers), records[3:], len(pcm)
+
+    def add_chain(self, name, pitch, chain, pcm, starts):
+        """one chain's PCM at 44.1 kHz; starts: (permutation, first frame, frames) at 44.1 kHz"""
+        setup, packets, frames = self.encode(pcm)
+        index = len(self.chains)
+        self.chains.append((setup, packets, frames))
+        granules = [g for _, g in packets]
+        for permutation, start, length in starts:
+            # the packet whose decoded frames hold the start: decoded after
+            # the one before it (Vorbis overlaps each packet with the last)
+            first = next((k for k, g in enumerate(granules) if g > start), len(granules) - 1)
+            self.entries.append((tag_hash(name), pitch, permutation, index, start, length, first))
+
+    def write(self, path):
+        """the pack, little-endian: a 64-byte header, the setups, the entries
+        sorted by (tag hash, pitch range, permutation), the chains' table,
+        then each chain's packet index and packets, a chain's packets
+        contiguous so the stick reads a chain front to back"""
+        entries = sorted(self.entries)
+        head = 64
+        setups = b''.join(struct.pack('<I', len(s)) + s + b'\0' * (-len(s) % 4) for s in self.setups)
+        entries_at = head + len(setups)
+        entry_bytes = b''.join(struct.pack('<IHHIIII', *e) for e in entries)
+        chains_at = entries_at + len(entry_bytes)
+        data_at = chains_at + 24 * len(self.chains)
+        table, data = b'', b''
+        for setup, packets, frames in self.chains:
+            index = b''.join(struct.pack('<II', len(p), g) for p, g in packets)
+            body = b''.join(p for p, _ in packets)
+            index_at = data_at + len(data)
+            packets_at = index_at + len(index)
+            table += struct.pack('<IIIIII', setup, len(packets), frames, index_at, packets_at, len(body))
+            data += index + body + b'\0' * (-(len(index) + len(body)) % 64)
+        # the pack's match with the map: a hash over its keys, which the game
+        # works out again from the map's music tags before it trusts the pack
+        keys = 0x811C9DC5
+        for e in entries:
+            for byte in struct.pack('<IHH', *e[:3]):
+                keys = ((keys ^ byte) * 0x01000193) & 0xFFFFFFFF
+        header = struct.pack('<4sIIIIIIII', PACK_MAGIC, PACK_VERSION, len(self.setups), len(entries),
+                             len(self.chains), entries_at, chains_at, keys, MUSIC_RATE)
+        with open(path, 'wb') as f:
+            f.write(header + b'\0' * (head - len(header)) + setups + entry_bytes + table + data)
+        return head + len(setups) + len(entry_bytes) + len(table) + len(data)
+
+
+def bake_sound(d, data, profile, stats, music=None, name=''):
+    """the sound tag's new bytes, or None to leave it. music (a MusicPack)
+    also takes the tag's music chains at 44.1 kHz"""
     sound = 'Sound'
     o_class = 64 + d.offset(sound, 'sound class')
     o_rate = 64 + d.offset(sound, 'sample rate')
@@ -332,15 +439,20 @@ def bake_sound(d, data, profile, stats):
         return None
     channels = 2 if channels_enum == STEREO else 1
     keep_stereo = sound_class == CLASS_MUSIC
-    to_mono = channels == 2 and not keep_stereo
-    to_half = rate == RATE_44100
-    if not to_mono and not to_half:
+    rewrite = profile != 'none'
+    to_mono = rewrite and channels == 2 and not keep_stereo
+    to_half = rewrite and rate == RATE_44100
+    streamed = music is not None and sound_class == CLASS_MUSIC
+    if streamed and rate != RATE_44100:
+        music.skipped += 1
+        streamed = False
+    if not to_mono and not to_half and not streamed:
         stats['kept'] += 1
         return None
     p_format = d.offset('SoundPermutation', 'format')
     p_buffer = d.offset('SoundPermutation', 'buffer size')
     p_next = d.offset('SoundPermutation', 'next permutation index')
-    stats['changed'] += 1
+    stats['changed'] += rewrite
     stats['mono'] += to_mono
     stats['half rate'] += to_half
 
@@ -375,6 +487,14 @@ def bake_sound(d, data, profile, stats):
         pieces = [decode(blobs[(pitch, j)], channels) for j in chain]
         lengths = [len(piece) for piece in pieces]
         pcm = np.concatenate(pieces) if pieces else np.zeros((0, channels), np.int16)
+        full = pcm
+        if not rewrite:
+            # the pack only: each chunk as long as the disc's
+            if streamed and len(pcm):
+                starts = np.cumsum([0] + lengths)
+                music.add_chain(name, pitch, chain, full,
+                                [(j, int(starts[n]), int(lengths[n])) for n, j in enumerate(chain)])
+            continue
         if to_mono:
             pcm = mono(pcm)
         if to_half:
@@ -388,11 +508,18 @@ def bake_sound(d, data, profile, stats):
         # the chunks keep their share of the chain, in whole blocks
         whole = sum(lengths) or 1
         cut, done = 0, 0
+        starts = []
+        # a chunk's frames in the stream: S9 halves music, so frame f of the
+        # map's chain is frame 2f at 44.1 kHz (whole 64-frame blocks there)
+        scale = 2 if to_half else 1
         for n, (j, length) in enumerate(zip(chain, lengths)):
             done += length
             end_block = total_blocks if n == len(chain) - 1 else int(round(total_blocks * done / whole))
             new_blobs[(pitch, j)] = encoded[cut * block:end_block * block]
+            starts.append((j, cut * BLOCK_SAMPLES * scale, (end_block - cut) * BLOCK_SAMPLES * scale))
             cut = end_block
+        if streamed and len(full):
+            music.add_chain(name, pitch, chain, full, starts)
         for j in chain:
             stats['bytes before'] += len(blobs[(pitch, j)])
             stats['bytes after'] += len(new_blobs[(pitch, j)])
@@ -414,6 +541,8 @@ def bake_sound(d, data, profile, stats):
                 struct.pack_into('>H', out, o_channels, MONO)
             struct.pack_into('>I', out, o_longest, 0)            # invader-build works it out again
 
+    if not rewrite:
+        return None
     return Rewriter(d, data).run(sound, replace, patch)
 
 
@@ -460,10 +589,20 @@ def cached_bake(d, data, profile, stats, cache):
 
 
 def main():
-    if len(sys.argv) not in (3, 4) or sys.argv[2] not in ('s9', 's10'):
+    args = sys.argv[1:]
+    pack_path = encoder = None
+    if '--music-stream' in args:
+        i = args.index('--music-stream')
+        if len(args) < i + 3:
+            sys.exit(__doc__)
+        pack_path, encoder = args[i + 1], args[i + 2]
+        args = args[:i] + args[i + 3:]
+    if len(args) not in (2, 3) or args[1] not in ('s9', 's10') + (('none',) if pack_path else ()):
         sys.exit(__doc__)
-    folder, profile = sys.argv[1], sys.argv[2]
-    cache = sys.argv[3] if len(sys.argv) == 4 else ''
+    folder, profile = args[0], args[1]
+    cache = args[2] if len(args) == 3 and not pack_path else ''
+    work = tempfile.mkdtemp(prefix='music-', dir=os.path.dirname(os.path.abspath(folder))) if pack_path else None
+    music = MusicPack(encoder, work) if pack_path else None
     d = Definitions(os.environ['HALO_PSP_INVADER_DEFINITIONS'])
     stats = {'changed': 0, 'kept': 0, 'other format': 0, 'mono': 0, 'half rate': 0, 'failed': 0,
              'bytes before': 0, 'bytes after': 0, 'snr': []}
@@ -471,7 +610,11 @@ def main():
     for path in paths:
         data = open(path, 'rb').read()
         try:
-            new = cached_bake(d, data, profile, stats, cache)
+            if music:
+                name = os.path.splitext(os.path.relpath(path, folder))[0].replace(os.sep, '\\')
+                new = bake_sound(d, data, profile, stats, music, name)
+            else:
+                new = cached_bake(d, data, profile, stats, cache)
         except Exception as e:  # a tag this can't read is left as it was
             stats['failed'] += 1
             print('soundpack: %s left as it was: %s' % (os.path.relpath(path, folder), e), file=sys.stderr)
@@ -486,6 +629,16 @@ def main():
               stats['changed'], stats['mono'], stats['half rate'], stats['kept'], stats['other format'],
               stats['failed'], before / 1e6, after / 1e6, 100.0 * after / before if before else 100.0,
               len(finite), float(np.median(finite)) if finite else 0.0, min(finite) if finite else 0.0))
+    if music:
+        size = music.write(pack_path)
+        frames = sum(c[2] for c in music.chains)
+        print('soundpack music stream: %d permutations in %d chains (%d setups), %.1f min at 44.1 kHz, '
+              '%.2f MB (%.0f kbps); %d music tags not at 44.1 kHz left to the cache' % (
+                  len(music.entries), len(music.chains), len(music.setups), frames / MUSIC_RATE / 60,
+                  size / 1e6, size * 8 / (frames / MUSIC_RATE) / 1000 if frames else 0, music.skipped))
+        for leftover in glob.glob(os.path.join(work, '*')):
+            os.remove(leftover)
+        os.rmdir(work)
 
 
 if __name__ == '__main__':

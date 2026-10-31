@@ -83,6 +83,7 @@ PSPDEV=<pspdev> tools/build_release.sh <out>
 | `PSP_WALKAPART=1` | Builds in option C's groundwork, the drawing walk kept from the tick's state (keep word `walkapart`; the tests `mevis`, `walkwrites`): its hooks sit in the tick's object marks and the particle loop, so a default build leaves it out |
 | `PSP_MEVISLAND=0` | Leaves out the frame's visibility made on the ME (mevis's copies of the visibility code and the landing's hooks; keep words `mevisland`, on by default, and `mevislandcheck`; `docs/mevis_landing.md`) |
 | `PSP_DITHERSHIFT=1` | Builds in the GE's dither moved each pass (keep words `dithershift`, `dithershiftall`; `docs/review_dithershift.md`): its tests sit in hot draw paths, so a default build leaves them out |
+| `PSP_MUSIC=1` | Builds in the music path (keep word `musicstream`, bake `--music-stream`; `docs/plan_music_stream.md`): Tremor and its buffers cost ~110 KB of heap, so a default build leaves it out until it's on by default |
 | `PSP_PGO_STRICT=1` | Refuses to link when the profile doesn't match the code (any function compiled without its counts): set it for every release build and its release check. Every PGO build lists them in `pgo_mismatch.txt` |
 | `PSP_FIXUPS_CHECK=1` | Lists every fixup anchor that no longer matches, and builds nothing |
 | `PSP_DEADCODE_INLINE=1` | The sleep's debug reports inline in psp_sleepy_update and psp_object_checksum, and the collision usage log's empty calls kept: the old layout, the other side of SLEEPDBG's A/B (by default they're cold functions and no calls) |

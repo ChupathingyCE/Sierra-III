@@ -51,6 +51,10 @@ Options:
                                 every sound at 22,050 Hz at most, effects mono,
                                 music stereo, still Xbox ADPCM (lib/soundpack.py);
                                 --sound none keeps the disc's sounds as they are
+    --music-stream              also writes maps/<map>.pmus: the map's music at
+                                44.1 kHz as Vorbis, for the music path (keep word
+                                musicstream; docs/plan_music_stream.md). The map
+                                itself is the same as without it
     --eboot PATH                the release's EBOOT.PBP: a copy with the menu
                                 sound goes to <output>/PSP/GAME/<its folder>/
     --music [MAP:]TAG[@START][+LENGTH]
@@ -125,6 +129,7 @@ LEVEL_SLIM = False
 # --no-preconvert leaves it out
 PRECONVERT = True
 ATRACDENC = os.path.join(HERE, 'atracdenc')    # the bundled encoder (else atracdenc on PATH)
+MUSICENC = os.path.join(HERE, 'musicenc')      # the music path's Vorbis encoder (bundle/musicenc.c)
 sys.path.insert(0, HERE)
 from xiso import XIso
 
@@ -456,7 +461,7 @@ def tool_env():
     return env
 
 
-def bake_map(name, retail, out_maps, work, track, keep_work, detail='', sound=''):
+def bake_map(name, retail, out_maps, work, track, keep_work, detail='', sound='', music_stream=False):
     started = time.time()
     folder = os.path.join(work, name)
     shutil.rmtree(folder, ignore_errors=True)
@@ -475,13 +480,21 @@ def bake_map(name, retail, out_maps, work, track, keep_work, detail='', sound=''
     run([invader('invader-extract'), '-m', os.path.join(folder, 'maps_in'), '-t', os.path.join(folder, 'tags'), '-G']
         + ([] if name in MULTIPLAYER else ['-n']) + [os.path.join(folder, 'maps_in', name + '.map')], log_path, env=env)
     scenario = scenario_path(os.path.join(folder, 'maps_in', name + '.map'), log_path)
-    if sound:
-        log('%s: sounds re-encoded (%s)' % (name, sound))
-        run([sys.executable, os.path.join(LIB, 'soundpack.py'), os.path.join(folder, 'tags'), sound]
-            + ([SOUND_CACHE] if SOUND_CACHE else []), log_path, env=env)
+    if sound or music_stream:
+        log('%s: sounds re-encoded (%s)%s' % (name, sound or 'none', ', music streamed' if music_stream else ''))
+        stream = []
+        if music_stream:
+            encoder = os.path.join(MUSICENC, 'bin', 'musicenc' + EXE)
+            if not os.path.isfile(encoder):
+                encoder = shutil.which('musicenc')
+            if not encoder:
+                raise RuntimeError('--music-stream: no musicenc in the bundle (musicenc/bin) or on PATH')
+            stream = ['--music-stream', os.path.join(out_maps, name + '.pmus'), encoder]
+        run([sys.executable, os.path.join(LIB, 'soundpack.py'), os.path.join(folder, 'tags'), sound or 'none']
+            + ([SOUND_CACHE] if SOUND_CACHE else []) + stream, log_path, env=env)
         summary = [line for line in open(log_path, errors='replace') if line.startswith('soundpack ')]
-        if summary:
-            log('%s: %s' % (name, summary[-1].strip()))
+        for line in summary[-2:] if music_stream else summary[-1:]:
+            log('%s: %s' % (name, line.strip()))
     # a multiplayer map keeps the disc map's tag order (invader-build -w):
     # the netcode names objects' types by tag handle, so a PSP on a PC host
     # needs every tag where the host's map has it (docs/multiplayer_plan.md,
@@ -702,7 +715,7 @@ def bake_maps(names, found, out_maps, work, a):
     def one(name):
         try:
             results[name] = ('ok', bake_map(name, found[name], out_maps, work, not a.no_track, a.keep_work,
-                                            a.detail, a.sound))
+                                            a.detail, a.sound, a.music_stream))
         except Exception as e:
             results[name] = ('FAILED', None)
             log('%s: FAILED: %s' % (name, e))
@@ -753,6 +766,7 @@ def main():
     ap.add_argument('--force', action='store_true')
     ap.add_argument('--detail', default='')
     ap.add_argument('--sound', default='s9', choices=['none', 's9', 's10'])
+    ap.add_argument('--music-stream', action='store_true')
     ap.add_argument('--eboot', default='')
     ap.add_argument('--music', default=MUSIC)
     ap.add_argument('--list-music', action='store_true')

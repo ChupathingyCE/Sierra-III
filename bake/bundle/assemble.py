@@ -41,9 +41,9 @@ COMPONENTS = [
     ('Rat In a Tube (Invader\'s script compiler, linked into invader/bin)', 'GPL-3.0-only', 'riat',
      'source/invader-src.tar.gz (ext/riat); https://github.com/SnowyMouse/riat'),
     ('libFLAC (linked into invader/bin)', 'BSD-3-Clause (Xiph)', 'flac', 'https://github.com/xiph/flac (1.4.3)'),
-    ('libvorbis, libvorbisenc, libvorbisfile (linked into invader/bin)', 'BSD-3-Clause (Xiph)', 'libvorbis',
+    ('libvorbis, libvorbisenc, libvorbisfile (linked into invader/bin; libvorbis and libvorbisenc also into musicenc/bin)', 'BSD-3-Clause (Xiph)', 'libvorbis',
      'https://github.com/xiph/vorbis (1.3.7)'),
-    ('libogg (linked into invader/bin)', 'BSD-3-Clause (Xiph)', 'libogg', 'https://github.com/xiph/ogg (1.3.5)'),
+    ('libogg (linked into invader/bin and musicenc/bin)', 'BSD-3-Clause (Xiph)', 'libogg', 'https://github.com/xiph/ogg (1.3.5)'),
     ('libsamplerate (linked into invader/bin)', 'BSD-2-Clause', 'libsamplerate',
      'https://github.com/libsndfile/libsamplerate (0.2.2)'),
     ('libsquish (linked into invader/bin)', 'MIT', 'libsquish', 'https://sourceforge.net/projects/libsquish/ (1.15)'),
@@ -161,13 +161,14 @@ def assemble(tools, out, target):
             lines = [line for line in f if READERS_LINE not in line]
         with open(os.path.join(out, 'lib', os.path.basename(path)), 'w', encoding='utf-8', newline='\n') as f:
             f.writelines(lines)
-    for folder in ('invader', 'atracdenc', 'source'):
+    for folder in ('invader', 'atracdenc', 'musicenc', 'source'):
         shutil.copytree(os.path.join(tools, folder), os.path.join(out, folder))
     exe = TARGET_EXE[target]
-    for path in glob.glob(os.path.join(out, 'invader', 'bin', '*')) + glob.glob(os.path.join(out, 'atracdenc', 'bin', '*')):
+    for path in glob.glob(os.path.join(out, 'invader', 'bin', '*')) + glob.glob(os.path.join(out, 'atracdenc', 'bin', '*')) + \
+            glob.glob(os.path.join(out, 'musicenc', 'bin', '*')):
         executable(path)
     for tool in ('invader/bin/invader-build', 'invader/bin/invader-extract', 'invader/bin/invader-info',
-                 'atracdenc/bin/atracdenc'):
+                 'atracdenc/bin/atracdenc', 'musicenc/bin/musicenc'):
         if not os.path.exists(os.path.join(out, tool + exe)):
             sys.exit('assemble: %s%s is missing from %s' % (tool, exe, tools))
     licenses = os.path.join(out, 'LICENSES')

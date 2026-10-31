@@ -570,12 +570,30 @@ static void run_job(volatile struct me_slot *slot, int *sums, int on_me)
 		/* args: count, frames, output */
 		voices = psp_dsound_mix_split((void *const *)AUDIO_LIST, slot->args[0], sums, (short *)slot->args[2],
 			slot->args[1], &clipped, on_me ? split : NULL);
+#if PSP_MUSIC
+		/* args[3]: the block's music decodes here, after its mix */
+		if (slot->args[3])
+		{
+			extern void psp_dsound_music_job(unsigned long frames);
+
+			psp_dsound_music_job(slot->args[1]);
+		}
+#endif
 		slot->results[0] = (unsigned int)voices;
 		slot->results[1] = (unsigned int)clipped;
 		for (k = 0; k < 4; k++)
 			slot->results[2 + k] = split[k];
 		break;
 	}
+#if PSP_MUSIC
+	case ME_JOB_MUSIC:
+	{
+		extern void psp_music_job(volatile unsigned int *args, volatile unsigned int *results, int on_me);
+
+		psp_music_job(slot->args, slot->results, on_me);
+		break;
+	}
+#endif
 	case ME_JOB_CLASSIFY:
 	case ME_JOB_ANGLE:
 	case ME_JOB_GE:
@@ -706,6 +724,9 @@ static void me_serve(volatile struct me_slot *slot, int *sums)
 	what it has in the cache: the voices it reads (psp_dsound_me_lines says
 	why that is all of them), or the whole cache past 16 KB */
 	ranges = type == ME_JOB_AUDIO && (control->features & ME_FEATURE_AUDIO_RANGES) &&
+#if PSP_MUSIC
+		!slot->args[3] &&
+#endif
 		psp_dsound_me_lines((void *const *)AUDIO_LIST, slot->args[0], slot->args[1], 0);
 	if (!ranges)
 		meLibDcacheWritebackInvalidateAll();
@@ -784,6 +805,20 @@ void psp_me_serve_audio(void)
 /* the jobs a yield runs aren't the AI job, even inside it: its stops act
 only in its own work (psp_post.h's psp_aime_here) */
 extern int psp_aime_job_now[16];
+#if PSP_MUSIC
+int psp_me_music_yield(void)
+{
+	int k;
+
+	if (!psp_on_me())
+		return 0;
+	psp_me_yield();
+	for (k = 0; k < ME_SLOTS; k++)
+		if (k != ME_SLOT_AUDIO && k != ME_SLOT_MUSIC && SLOT(k)->request != SLOT(k)->done)
+			return 1;
+	return 0;
+}
+#endif
 
 void psp_me_yield(void)
 {
@@ -1424,6 +1459,19 @@ void meLibOnProcess(void)
 		{
 			volatile struct me_slot *slot = SLOT(k);
 
+#if PSP_MUSIC
+			/* the music job only in the ME's idle time: every other slot
+			and the ring empty (it yields to them once started) */
+			if (k == ME_SLOT_MUSIC && slot->request != slot->done)
+			{
+				int j, other = ring_ready && RING_PUSHED != ring_popped;
+
+				for (j = 0; j < ME_SLOTS && !other; j++)
+					other = j != ME_SLOT_MUSIC && SLOT(j)->request != SLOT(j)->done;
+				if (other)
+					continue;
+			}
+#endif
 			if (slot->request != slot->done)
 			{
 				volatile struct me_private *p = ME_PRIVATE;
@@ -2176,7 +2224,11 @@ int psp_me_submit(int which, unsigned int type, const unsigned int *args, int ar
 	slot->type = type;
 	for (k = 0; k < arg_count; k++)
 		slot->args[k] = args[k];
-	slot_yields[which] = (type == ME_JOB_GE || type == ME_JOB_AIME) && !me_yield_off;
+	slot_yields[which] = (type == ME_JOB_GE || type == ME_JOB_AIME
+#if PSP_MUSIC
+		|| type == ME_JOB_MUSIC
+#endif
+		) && !me_yield_off;
 	if (arg_count < ME_JOB_ARGS)
 		slot->args[ME_JOB_ARGS - 1] = 0;
 	submit_mark[which] = sceKernelGetSystemTimeWide();
@@ -3858,6 +3910,16 @@ float psp_me_cycles_per_us(void)
 	return me_cycles_per_us;
 }
 
+#if PSP_MUSIC
+/* the next audio job decodes the block's music too (psp_dsound.c) */
+static unsigned int audio_music;
+
+void psp_me_audio_music(int on)
+{
+	audio_music = on != 0;
+}
+#endif
+
 /* the audio job's list: up to 256 voices, written through the uncached view */
 /* where the ME's audio time went (its own counter, summed over the blocks
 it mixed): the 'ME: audio split' line takes the job apart into decoding,
@@ -3872,7 +3934,11 @@ static struct
 int psp_me_audio(void *const *list, unsigned long count, short *output, unsigned long frames, unsigned long *voices,
 	unsigned long *clipped, unsigned long *waited_us)
 {
+#if PSP_MUSIC
+	unsigned int args[4], results[ME_JOB_RESULTS];
+#else
 	unsigned int args[3], results[ME_JOB_RESULTS];
+#endif
 	unsigned long long start = sceKernelGetSystemTimeWide();
 	unsigned long k;
 
@@ -3885,7 +3951,12 @@ int psp_me_audio(void *const *list, unsigned long count, short *output, unsigned
 	args[2] = (unsigned int)output;
 	/* about 0.1-1 ms of work: a first look after 0.2 ms, or mepoll's
 	(audio_look_next) */
+#if PSP_MUSIC
+	args[3] = audio_music;
+	if (!psp_me_run(ME_SLOT_AUDIO, ME_JOB_AUDIO, args, 4, results, audio_first_look_us))
+#else
 	if (!psp_me_run(ME_SLOT_AUDIO, ME_JOB_AUDIO, args, 3, results, audio_first_look_us))
+#endif
 		return 0;
 	*voices = results[0];
 	*clipped = results[1];
@@ -4034,7 +4105,11 @@ void psp_me_edram_probe(void)
 
 void psp_me_report(void)
 {
+#if PSP_MUSIC
+	static const char *const names[ME_SLOTS] = { "audio", "render", "probe", "ai", "music" };
+#else
 	static const char *const names[ME_SLOTS] = { "audio", "render", "probe", "ai" };
+#endif
 	unsigned long long now = sceKernelGetSystemTimeWide(), window = now - report_mark, busy_us_all = 0;
 	char line[900], ring_line[400];
 	int length = 0, k;

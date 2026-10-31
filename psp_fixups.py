@@ -33699,6 +33699,220 @@ FIXES_BSPR["source/objects/objects.c#bspsame"] = [
 """)
 ]
 
+# ---------- FIXES_MUSIC: the music path (psp/src/psp_music.c, docs/plan_music_stream.md;
+# keep word musicstream, off by default). Applied only with PSP_MUSIC=1; there,
+# with the keep word off, psp_music_active() is 0 and every branch below is
+# the old code
+FIXES_MUSIC = {}
+FIXES_MUSIC["source/cache/xbox_sound_cache.c#musicstub"] = [
+# soundloopstop (FIXES_SOUND) wraps the block's allocation: the stub's size
+# is worked out before its block and given to the call inside it
+("""#ifdef HALO_PSP
+	{
+		extern struct lruv_cache *psp_lruv_high_cache; /* lruv_cache.c */""",
+ """#ifdef HALO_PSP
+	/* a music permutation the map's music pack has: a one-page stub instead
+	of its samples, which the music path streams; every count and reference
+	the cache keeps for it is as before */
+	long psp_music_bytes = 0;
+
+	{
+		extern int psp_music_active(void);
+		extern long psp_music_stub(const void *permutation, const char *tag_path, int pitch, int index, long size);
+
+		if (psp_music_active())
+		{
+			struct sound_definition *definition = sound_definition_get(sound->runtime_tag_index);
+
+			/* 32: _sound_class_music (sound_classes.h, not included here) */
+			if (definition && definition->sound_class == 32)
+			{
+				short pitch, index;
+
+				for (pitch = 0; pitch < definition->pitch_ranges.count && !psp_music_bytes; pitch++)
+				{
+					struct sound_pitch_range *range = TAG_BLOCK_GET_ELEMENT(&definition->pitch_ranges, pitch,
+						struct sound_pitch_range);
+
+					for (index = 0; index < range->permutations.count; index++)
+						if (TAG_BLOCK_GET_ELEMENT(&range->permutations, index, struct sound_permutation) == sound)
+						{
+							psp_music_bytes = psp_music_stub(sound, tag_get_name(sound->runtime_tag_index), pitch, index,
+								sound->samples.size);
+							break;
+						}
+				}
+			}
+		}
+	}
+#endif
+#ifdef HALO_PSP
+	{
+		extern struct lruv_cache *psp_lruv_high_cache; /* lruv_cache.c */"""),
+("""		cache_block_index = lruv_block_new(
+			xbox_sound_cache_globals.cache,
+			sound->samples.size);
+		psp_lruv_high_cache = psp_high_saved;""",
+ """		cache_block_index = lruv_block_new(
+			xbox_sound_cache_globals.cache,
+			psp_music_bytes ? psp_music_bytes : sound->samples.size);
+		psp_lruv_high_cache = psp_high_saved;"""),
+("""#ifdef HALO_PSP
+		/* the cache in the ME's eDRAM: the read goes through main RAM */
+		if (psp_sound_edram_mode())""",
+ """#ifdef HALO_PSP
+		if (psp_music_bytes)
+		{
+			extern void psp_music_request(const void *permutation, void *block, unsigned char *loaded);
+
+			psp_music_request(sound, cache_address, &cache_sound->loaded);
+		}
+		else
+		/* the cache in the ME's eDRAM: the read goes through main RAM */
+		if (psp_sound_edram_mode())"""),
+]
+FIXES_MUSIC["source/sound/sound_dsound_xbox.c#musicstub"] = [
+("""				(unsigned long)((byte *)xbox_pointer(channel->playing_permutation->cache_base_address)-
+					(byte *)physical_memory_get_sound_cache_base_address())<=
+					(unsigned long)(SOUND_CACHE_SIZE-channel->playing_permutation->samples.size) &&""",
+ """				/* a music stub holds a page, not the samples its size says:
+				its packets run past it, and nothing reads them (psp_music.c) */
+				(psp_music_is_stub(channel->playing_permutation) ||
+				(unsigned long)((byte *)xbox_pointer(channel->playing_permutation->cache_base_address)-
+					(byte *)physical_memory_get_sound_cache_base_address())<=
+					(unsigned long)(SOUND_CACHE_SIZE-channel->playing_permutation->samples.size)) &&"""),
+("""		if (channel->playing_permutation->cache_base_address)
+		{
+			/* port: the size is the map's""",
+ """		if (channel->playing_permutation->cache_base_address)
+		{
+			extern int psp_music_is_stub(const void *permutation);
+
+			/* port: the size is the map's"""),
+]
+FIXES_MUSIC["source/cache/cache_files.c#musicpack"] = [
+("""				psp_tex_map_opened(cache_file_globals.header.name);
+			}
+#endif""",
+ """				psp_tex_map_opened(cache_file_globals.header.name);
+				{
+					/* and the map's music pack, with "musicstream" */
+					extern void psp_music_map_opened(const char *name);
+
+					psp_music_map_opened(cache_file_globals.header.name);
+				}
+			}
+#endif"""),
+]
+
+# recon: music's share of the sound cache and of its Memory Stick reads
+# ("sound cache, music:" every 5 s beside "sound cache:"), to price the music
+# path: what music holds of the cache at the report and what its loads read
+# from the stick. With the path (PSP_MUSIC=1, keep word musicstream), a stub
+# holds one page and its load reads nothing, so the two sides of an A/B give
+# the room the path frees and the reads it moves to its own reader
+FIXES_RECON["source/cache/xbox_sound_cache.c#musiccount"] = [
+("""	psp_sound_cache_largest = 0, psp_sound_cache_peak_pages = 0;
+""",
+ """	psp_sound_cache_largest = 0, psp_sound_cache_peak_pages = 0;
+static unsigned long psp_sound_music_loads = 0, psp_sound_music_load_bytes = 0, psp_sound_music_stub_loads = 0,
+	psp_sound_music_peak_bytes = 0, psp_sound_other_peak_bytes = 0;
+
+/* sound_classes.h's _sound_class_music, which this unit doesn't include */
+#define PSP_SOUND_CLASS_MUSIC 32
+long game_time_get(void);
+#if PSP_MUSIC
+int psp_music_is_stub(const void *permutation);
+#endif
+
+static boolean psp_sound_is_music(
+	struct sound_permutation const *sound)
+{
+	struct sound_definition const *definition;
+
+	if (!sound || sound->runtime_tag_index == NONE)
+		return FALSE;
+	definition = sound_definition_get(sound->runtime_tag_index);
+	return definition && definition->sound_class == PSP_SOUND_CLASS_MUSIC;
+}
+
+/* the cache's sounds at the report: bytes held, music's (a stub's one page)
+and the rest's, and of them the bytes playing */
+static void psp_sound_music_report(
+	void)
+{
+	struct data_iterator iterator;
+	struct xbox_cache_sound_datum *cache_sound;
+	unsigned long music = 0, other = 0, music_playing = 0, other_playing = 0, music_sounds = 0, stubs = 0;
+
+	data_iterator_new(&iterator, xbox_sound_cache_globals.cache_sounds);
+	while ((cache_sound = data_iterator_next(&iterator)) != NULL)
+	{
+		unsigned long bytes;
+		boolean playing;
+
+		if (!cache_sound->sound)
+			continue;
+		bytes = (unsigned long)cache_sound->sound->samples.size;
+#if PSP_MUSIC
+		if (psp_music_is_stub(cache_sound->sound))
+		{
+			bytes = 4096;
+			stubs++;
+		}
+#endif
+		playing = cache_sound->software_reference_count != 0 || cache_sound->hardware_reference_count != 0;
+		if (psp_sound_is_music(cache_sound->sound))
+		{
+			music += bytes;
+			music_sounds++;
+			if (playing)
+				music_playing += bytes;
+		}
+		else
+		{
+			other += bytes;
+			if (playing)
+				other_playing += bytes;
+		}
+	}
+	if (music > psp_sound_music_peak_bytes)
+		psp_sound_music_peak_bytes = music;
+	if (other > psp_sound_other_peak_bytes)
+		psp_sound_other_peak_bytes = other;
+	platform_psp_log("sound cache, music: game time %ld; held %lu KB in %lu permutations, %lu of them stubs (peak %lu KB), playing %lu KB; the rest held %lu KB (peak %lu KB), playing %lu KB; "
+		"loads: music %lu (%lu KB of stick reads), stubs %lu, all %lu (%lu KB)",
+		game_time_get(), music / 1024, music_sounds, stubs, psp_sound_music_peak_bytes / 1024, music_playing / 1024,
+		other / 1024, psp_sound_other_peak_bytes / 1024, other_playing / 1024,
+		psp_sound_music_loads, psp_sound_music_load_bytes / 1024, psp_sound_music_stub_loads,
+		psp_sound_cache_loads, psp_sound_cache_load_bytes / 1024);
+}
+"""),
+("""		psp_sound_cache_load_bytes += sound->samples.size;
+""",
+ """#if PSP_MUSIC
+		/* a stub reads nothing from the stick: its samples are streamed */
+		if (psp_music_bytes)
+			psp_sound_music_stub_loads++;
+		else
+#endif
+		{
+			psp_sound_cache_load_bytes += sound->samples.size;
+			if (psp_sound_is_music(sound))
+			{
+				psp_sound_music_loads++;
+				psp_sound_music_load_bytes += sound->samples.size;
+			}
+		}
+"""),
+("""		psp_sound_cache_load_bytes / 1024, psp_sound_cache_largest / 1024, psp_sound_cache_failures);
+""",
+ """		psp_sound_cache_load_bytes / 1024, psp_sound_cache_largest / 1024, psp_sound_cache_failures);
+	psp_sound_music_report();
+"""),
+]
+
+
 # ---------- FIXES_SOUNDEDRAM: R2, the sound cache in the Media Engine's eDRAM
 # ("soundedram", psp_dsound.c; docs/me_programme.md section 5). With the word
 # off every change here does what the code did before: the start-up block is
@@ -42855,7 +43069,7 @@ FIXES_AIME2A["source/memory/data.c#aime2a"] = [
 """),
 ]
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items()) + list(FIXES_AIME2A.items())):
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items()) + list(FIXES_AIME2A.items())):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
