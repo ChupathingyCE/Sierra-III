@@ -3497,11 +3497,9 @@ static void hwprofile_start(const char *eboot_path)
 			hwprofile.pc_base = (unsigned int)_ftext;
 			hwprofile.pc_bins = bins;
 			hwprofile.pc_shift = PC_SHIFT;
-			/* the system timer's period is in its own counts, not microseconds:
-			pspsdk's header puts its maximum, 4194303, at about a tenth of a second,
-			so ~42 counts a microsecond [U]; 500 interrupted the game ~84,000
-			times a second and the PSP restarted (41223446455). ~1 ms by default;
-			the report's rate line says what it really is */
+			/* the system timer's period is in its own counts, ~48 a microsecond
+			(41943 gives ~1,144 samples a second), not microseconds: a period of
+			hundreds of counts interrupts the game so often that the PSP restarts */
 			hwprofile.pc_period = (unsigned int)psp_keep_number("pcperiod", 41943);
 			hwprofile.pc_wanted = 1;
 		}

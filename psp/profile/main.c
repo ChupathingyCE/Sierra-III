@@ -270,8 +270,8 @@ int halo_profile_phase(int phase)
 }
 
 /* the PC sampler's interrupt: the interrupted PC is still in cop0's EPC
-while the handler runs (the dispatcher returns through it) [U: the first
-run's check is that the samples land in the game's hot code] */
+while the handler runs (the dispatcher returns through it); on the PSP the
+samples land in the game's known hot code, the kernel's share small */
 static int pc_handler(void)
 {
 	unsigned int epc, offset;
@@ -377,8 +377,8 @@ int module_start(SceSize args, void *argp)
 		table->pc_timer = (unsigned int)timer;
 		if (timer >= 0)
 		{
-			/* at least ~0.1 ms between samples [U: ~42 counts a microsecond]:
-			a shorter period starves the game (41223446455 restarted the PSP) */
+			/* at least ~0.1 ms between samples (~48 counts a microsecond): a
+			shorter period starves the game and the PSP restarts */
 			sceSTimerSetHandler(timer, table->pc_period >= 4194 ? (int)table->pc_period : 41943, pc_handler, 0);
 			sceSTimerStartCount(timer);
 		}
