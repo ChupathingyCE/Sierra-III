@@ -133,6 +133,9 @@ void psp_me_yield(void);
 /* the same from a long slot job that isn't the render slot's: a render job
 asked for meanwhile is run now too, so the record never waits behind it */
 void psp_me_yield_slots(void);
+/* on the ME, from the slot job that yields: the render jobs served in its
+yields since the last take, and the longest in ME cycles; both back to 0 */
+void psp_me_nested_take(unsigned int *count, unsigned int *worst_cycles);
 /* a slot's abort word (uncached): the main CPU asks a yielding slot job to
 end at its next step; 0 again at each submit */
 volatile unsigned int *psp_me_abort_word(int which);

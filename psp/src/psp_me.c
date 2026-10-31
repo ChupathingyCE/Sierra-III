@@ -796,6 +796,12 @@ void psp_me_yield(void)
 	psp_aime_job_now[0] = aime_now;
 }
 
+/* the render jobs served inside a slot job's yields, and the longest: while
+one runs, the slot job can't read its abort word, so the main CPU's wait for
+it is read against these (RW1's counters; the ME writes them, its job takes
+them into its results) */
+static PSP_AIME_ME_SIDE unsigned int nested_renders = 0, nested_worst = 0;
+
 void psp_me_yield_slots(void)
 {
 	volatile struct me_slot *slot;
@@ -808,8 +814,26 @@ void psp_me_yield_slots(void)
 	psp_aime_job_now[0] = 0;
 	slot = SLOT(ME_SLOT_RENDER);
 	if (slot->request != slot->done)
+	{
+		unsigned int begun = me_cycles(), ran;
+
 		me_serve(slot, ME_AUDIO_SUMS);
+		ran = me_cycles() - begun;
+		nested_renders++;
+		if (ran > nested_worst)
+			nested_worst = ran;
+	}
 	psp_aime_job_now[0] = aime_now;
+}
+
+void psp_me_nested_take(
+	unsigned int *count,
+	unsigned int *worst_cycles)
+{
+	*count = nested_renders;
+	*worst_cycles = nested_worst;
+	nested_renders = 0;
+	nested_worst = 0;
 }
 
 /* on the ME: lines of main RAM it wrote, out to main RAM now (a copy it
