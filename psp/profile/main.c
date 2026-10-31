@@ -377,7 +377,9 @@ int module_start(SceSize args, void *argp)
 		table->pc_timer = (unsigned int)timer;
 		if (timer >= 0)
 		{
-			sceSTimerSetHandler(timer, table->pc_period ? (int)table->pc_period : 500, pc_handler, 0);
+			/* at least ~0.1 ms between samples [U: ~42 counts a microsecond]:
+			a shorter period starves the game (41223446455 restarted the PSP) */
+			sceSTimerSetHandler(timer, table->pc_period >= 4194 ? (int)table->pc_period : 41943, pc_handler, 0);
 			sceSTimerStartCount(timer);
 		}
 	}

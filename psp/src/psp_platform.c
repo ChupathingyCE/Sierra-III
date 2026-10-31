@@ -3497,7 +3497,12 @@ static void hwprofile_start(const char *eboot_path)
 			hwprofile.pc_base = (unsigned int)_ftext;
 			hwprofile.pc_bins = bins;
 			hwprofile.pc_shift = PC_SHIFT;
-			hwprofile.pc_period = (unsigned int)psp_keep_number("pcperiod", 500);
+			/* the system timer's period is in its own counts, not microseconds:
+			pspsdk's header puts its maximum, 4194303, at about a tenth of a second,
+			so ~42 counts a microsecond [U]; 500 interrupted the game ~84,000
+			times a second and the PSP restarted (41223446455). ~1 ms by default;
+			the report's rate line says what it really is */
+			hwprofile.pc_period = (unsigned int)psp_keep_number("pcperiod", 41943);
 			hwprofile.pc_wanted = 1;
 		}
 		platform_log("pcsample: %s (%u bins of %u bytes from %08x, %u KB)", counts ? "on" : "no room",
@@ -3545,8 +3550,8 @@ phase 1 the tick, 2 the drawing, the bin's code at base + bin << shift, the
 header line naming base, shift and the totals */
 static void pc_report(void)
 {
-	static unsigned int last_samples = 0;
-	unsigned int samples, k, phase;
+	static unsigned int last_samples = 0, last_us = 0;
+	unsigned int samples, k, phase, now_us, rate;
 	SceUID file;
 	char line[96];
 	const volatile unsigned int *counts;
@@ -3554,8 +3559,11 @@ static void pc_report(void)
 	if (!hwprofile_running || !hwprofile.pc_wanted)
 		return;
 	samples = hwprofile.pc_samples;
-	platform_log("pcsample: %u samples (%u since the last), binned %u, in other phases %u, in the kernel %u, elsewhere %u (timer %d, period %u)",
-		samples, samples - last_samples, hwprofile.pc_binned, hwprofile.pc_other_phase, hwprofile.pc_kernel,
+	now_us = sceKernelGetSystemTimeLow();
+	rate = last_us && now_us != last_us ? (unsigned int)((unsigned long long)(samples - last_samples) * 1000000u / (now_us - last_us)) : 0;
+	last_us = now_us;
+	platform_log("pcsample: %u a second; %u samples (%u since the last), binned %u, in other phases %u, in the kernel %u, elsewhere %u (timer %d, period %u)",
+		rate, samples, samples - last_samples, hwprofile.pc_binned, hwprofile.pc_other_phase, hwprofile.pc_kernel,
 		hwprofile.pc_outside, (int)hwprofile.pc_timer, hwprofile.pc_period);
 	last_samples = samples;
 	if (++pc_report_beats % 12)
