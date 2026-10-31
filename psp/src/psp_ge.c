@@ -2624,6 +2624,14 @@ static inline int ge_draw_skipped(void)
 after the copies' arena below); the arguments are taken once */
 static int ge_reads_on = 0;
 static void ge_reads_note(int vtype, int count, const void *indices, const void *vertices);
+/* "gereadskind" (with gereads): the GE's main-RAM bytes split by kind of draw,
+by what they are, by where they live and by where in the frame's list they
+come (gk_note, with the report below). The texture side is psp_tex.c's */
+enum { GK_VERTICES, GK_INDICES, GK_TEXTURES, GK_ONCE, GK_PALETTES, GK_LIST, GK_PARTS };
+static int gk_on = 0;
+static void gk_note(int part, unsigned int bytes, unsigned int address);
+static unsigned int gk_frame_ram = 0, gk_last_frame_ram = 0, gk_seen = 0;
+unsigned int psp_ge_reads_frame = 0; /* psp_tex.c: a texture's first bind in the frame being carried out */
 /* build 116: "vrammodelsN": a model buffer's VRAM copy, when it has one
 (vm_redirect, by the model buffers' copies below) */
 static int vm_on = -1; /* -1: decided at the next frame (vm_reset) */
@@ -2949,7 +2957,11 @@ static void ge_kind(int kind)
 	now = sceGuCheckList();
 
 	if (now > kind_mark)
+	{
 		kind_frame_bytes[ge_kind_now] += now - kind_mark;
+		if (gk_on)
+			gk_note(GK_LIST, now - kind_mark, 0);
+	}
 	kind_mark = now;
 	ge_kind_now = kind;
 	if (!PSP_ME_WORK())
@@ -2975,6 +2987,16 @@ static void ge_kinds_frame_begin(void)
 	kind_seen = 0;
 	kind_order_length = 0;
 	ge_kind_now = KIND_OTHER;
+	if (gk_on)
+	{
+		/* a frame's place in the list is read against the last frame's
+		total, which the next frame's is close to */
+		if (gk_frame_ram)
+			gk_last_frame_ram = gk_frame_ram;
+		gk_frame_ram = 0;
+		gk_seen = 0;
+		psp_ge_reads_frame++;
+	}
 	if (!PSP_ME_WORK())
 	{
 		extern int psp_tex_screen_pass;
@@ -3960,7 +3982,16 @@ int psp_ge_list_callback(int cbid)
 
 static void gebusy_start(void)
 {
-	ge_reads_on = psp_keep("gereads") ? 1 : 0; /* build 115 */
+	gk_on = psp_keep("gereadskind") ? 1 : 0;
+	ge_reads_on = gk_on || psp_keep("gereads") ? 1 : 0; /* build 115 */
+	if (gk_on)
+	{
+		extern void psp_tex_reads_start(void); /* psp_tex.c */
+
+		psp_tex_reads_start();
+	}
+	if (gk_on)
+		platform_log("GE: gereadskind on (the GE's main-RAM bytes by kind, part, place and quarter of the list)");
 	if (ge_reads_on)
 		platform_log("GE: gereads on (what each draw makes the GE read, by where it lives: a report every 300 frames)");
 	probes_on = psp_keep("probes") ? 1 : 0; /* build 119 */
@@ -7702,6 +7733,22 @@ static unsigned long long gr_place_bytes[GR_PLACES], gr_kind_bytes[KINDS], gr_in
 static unsigned long gr_draws = 0, gr_dropped = 0, gr_frames_mark = 0;
 void psp_geo_range(unsigned int *start, unsigned int *end); /* psp_geo.c */
 int psp_geo_holds(unsigned int address);
+/* gereadskind's tallies. Places: main RAM only, the program's image apart
+from the heap, so a kind's bytes say which memory would have to give room.
+Quarters: where in the frame's list the bytes come, by the main-RAM bytes
+before them against the last frame's whole. The GE takes the list in this
+order beside the next frame's ticks, so with the GE's lane on the PSP the
+quarters say which kinds meet the ticks. Textures count once a frame (the
+first bind of each, the bytes if every texel were read once) for the place
+and the quarters; their per-bind total is an upper bound kept apart. In the
+emulator only: the replay runs as the ME's work, whose writes on the PSP stay
+in the ME's cache */
+enum { GKP_LIST, GKP_LEVEL, GKP_GEOMETRY, GKP_VOLATILE, GKP_PROGRAM, GKP_HEAP, GK_PLACES };
+static const char *const gk_place_names[GK_PLACES] = { "list", "level copies", "geometry cache", "texture RAM cache and volatile",
+	"program data/bss", "heap and other" };
+static unsigned long long gk_bytes[KINDS][GK_PARTS], gk_before[KINDS], gk_place[KINDS][GK_PLACES], gk_quarter[KINDS][4];
+static unsigned long gk_frames[KINDS];
+static const char gk_part_letters[GK_PARTS] = { 'v', 'i', 't', 'o', 'p', 'l' };
 
 /* a GE vertex's size from its format word (the GE's own layout: weights,
 texture coordinates, colour, normal, position, each aligned to its size, the
@@ -7765,6 +7812,54 @@ static int gr_place(unsigned int address)
 	return GR_OTHER;
 }
 
+static int gr_place(unsigned int address);
+
+static void gk_note(int part, unsigned int bytes, unsigned int address)
+{
+	extern char _end[];
+	int kind = ge_kind_now, place, quarter;
+
+	if (!bytes)
+		return;
+	if (!(gk_seen & (1u << kind)))
+	{
+		gk_seen |= 1u << kind;
+		gk_before[kind] += gk_frame_ram;
+		gk_frames[kind]++;
+	}
+	gk_bytes[kind][part] += bytes;
+	/* each bind's whole size is an upper bound, kept out of the place and
+	the order */
+	if (part == GK_TEXTURES)
+		return;
+	switch (part == GK_LIST ? GR_LIST : gr_place(address))
+	{
+	case GR_LIST: place = GKP_LIST; break;
+	case GR_LEVEL: place = GKP_LEVEL; break;
+	case GR_GEOMETRY: place = GKP_GEOMETRY; break;
+	case GR_VOLATILE: place = GKP_VOLATILE; break;
+	default:
+		place = (address & 0x1FFFFFFFu) >= 0x08804000u && (address & 0x1FFFFFFFu) < ((unsigned int)_end & 0x1FFFFFFFu) ?
+			GKP_PROGRAM : GKP_HEAP;
+		break;
+	}
+	gk_place[kind][place] += bytes;
+	quarter = gk_last_frame_ram ? (int)((unsigned long long)gk_frame_ram * 4 / gk_last_frame_ram) : 0;
+	gk_quarter[kind][quarter > 3 ? 3 : quarter] += bytes;
+	gk_frame_ram += bytes;
+}
+
+/* psp_tex.c: a texture bound from main RAM */
+void psp_ge_reads_texture(unsigned int address, unsigned int bytes, unsigned int palette_bytes, int first_this_frame)
+{
+	if (!gk_on)
+		return;
+	gk_note(GK_TEXTURES, bytes, address);
+	if (first_this_frame)
+		gk_note(GK_ONCE, bytes, address);
+	gk_note(GK_PALETTES, palette_bytes, address);
+}
+
 static void ge_reads_note(int vtype, int count, const void *indices, const void *vertices)
 {
 	int vsize = gr_vertex_size(vtype), isize = ((vtype >> 11) & 3) == 1 ? 1 : ((vtype >> 11) & 3) == 2 ? 2 : 0;
@@ -7788,10 +7883,18 @@ static void ge_reads_note(int vtype, int count, const void *indices, const void 
 	place = gr_place((unsigned int)vertices);
 	gr_place_bytes[place] += bytes;
 	gr_kind_bytes[ge_kind_now] += bytes;
+	/* gereadskind: the list's own bytes, inline data with them, are counted
+	as the list grows (ge_kind) */
+	if (gk_on && place != GR_VRAM && place != GR_LIST)
+		gk_note(GK_VERTICES, bytes, (unsigned int)vertices);
 	if (indices && isize)
 	{
+		int index_place = gr_place((unsigned int)indices);
+
 		gr_index_bytes += (unsigned int)count * (unsigned int)isize;
-		gr_place_bytes[gr_place((unsigned int)indices)] += (unsigned int)count * (unsigned int)isize;
+		gr_place_bytes[index_place] += (unsigned int)count * (unsigned int)isize;
+		if (gk_on && index_place != GR_VRAM && index_place != GR_LIST)
+			gk_note(GK_INDICES, (unsigned int)count * (unsigned int)isize, (unsigned int)indices);
 	}
 	/* only buffers that could be held go in the table: this frame's data in
 	the list is new every frame (its addresses would fill the table), and
@@ -7844,6 +7947,48 @@ static int gr_by_value(const void *a, const void *b)
 	return l > r ? 1 : l < r ? -1 : 0;
 }
 
+/* a line a kind: KB a frame of each part (v vertices and i indices outside
+the list, t textures at every bind, o textures once a frame, p palettes, l the
+list's own bytes), then by place and by quarter of the list (o for the
+textures), and the main-RAM KB before the kind's first draw */
+static void __attribute__((noinline, cold)) gk_report(unsigned long span)
+{
+	char line[600];
+	int k, j, at;
+
+	for (k = 0; k < KINDS; k++)
+	{
+		unsigned long long all = 0;
+
+		for (j = 0; j < GK_PARTS; j++)
+			all += j == GK_TEXTURES ? 0 : gk_bytes[k][j];
+		if (!all && !gk_bytes[k][GK_TEXTURES])
+			continue;
+		at = snprintf(line, sizeof(line), "gereadskind: %s %.1f KB a frame (", kind_names[k], all / 1024.0 / span);
+		for (j = 0; j < GK_PARTS && at < (int)sizeof(line) - 1; j++)
+			at += snprintf(line + at, sizeof(line) - at, " %c %.1f", gk_part_letters[j], gk_bytes[k][j] / 1024.0 / span);
+		at += snprintf(line + at, sizeof(line) - at, " ); place");
+		for (j = 0; j < GK_PLACES && at < (int)sizeof(line) - 1; j++)
+			at += snprintf(line + at, sizeof(line) - at, " %.1f", gk_place[k][j] / 1024.0 / span);
+		at += snprintf(line + at, sizeof(line) - at, "; quarters");
+		for (j = 0; j < 4 && at < (int)sizeof(line) - 1; j++)
+			at += snprintf(line + at, sizeof(line) - at, " %.1f", gk_quarter[k][j] / 1024.0 / span);
+		if (at < (int)sizeof(line) - 1)
+			snprintf(line + at, sizeof(line) - at, "; in %lu of %lu frames, after %.1f KB", gk_frames[k], span,
+				gk_frames[k] ? gk_before[k] / 1024.0 / gk_frames[k] : 0.0);
+		platform_log("%s", line);
+	}
+	at = snprintf(line, sizeof(line), "gereadskind: places:");
+	for (j = 0; j < GK_PLACES && at < (int)sizeof(line) - 1; j++)
+		at += snprintf(line + at, sizeof(line) - at, " %s;", gk_place_names[j]);
+	platform_log("%s", line);
+	memset(gk_bytes, 0, sizeof(gk_bytes));
+	memset(gk_before, 0, sizeof(gk_before));
+	memset(gk_place, 0, sizeof(gk_place));
+	memset(gk_quarter, 0, sizeof(gk_quarter));
+	memset(gk_frames, 0, sizeof(gk_frames));
+}
+
 static void __attribute__((noinline, cold)) ge_reads_report(unsigned long frames_now)
 {
 	extern long psp_game_time_peek(void);
@@ -7861,6 +8006,8 @@ static void __attribute__((noinline, cold)) ge_reads_report(unsigned long frames
 	if (at < (int)sizeof(line) - 1)
 		snprintf(line + at, sizeof(line) - at, " (indices %.1f of it)", gr_index_bytes / 1024.0 / span);
 	platform_log("%s", line);
+	if (gk_on)
+		gk_report(span);
 	at = snprintf(line, sizeof(line), "gereads: vertex KB a frame by kind:");
 	for (k = 0; k < KINDS && at < (int)sizeof(line) - 1; k++)
 		if (gr_kind_bytes[k])

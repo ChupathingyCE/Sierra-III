@@ -1219,7 +1219,7 @@ static void keep_load(void)
 	platform_log("keep words, continued: vramlargest clearmagenta nomip listuncached stalleach near2 near4 mipbias1 mipbias2 decaloffset passes overlayoffset decalbig detailbias15 detailbias2 decalall detailnear mipauto detailauto noangle visdump modeldrop overlaynoslope overlaynowall overlayslope1 overlayslope4 overlayfreefar skydump flatshade tdump");
 	platform_log("keep words, continued: nearauto walldump decalnoslope vblankthrottle noboxtest detailallfar verifytags texsqueeze texvramonly colltest geoasync nudgewide decalbatch menushot geserial vramcold uvwide nooverlay meaudio nomeaudio benchrun levelcompact meclassify noskincut novblankthrottle");
 	/* build 115 */
-	platform_log("keep words, continued: iostats gereads vramtexN edramcheck overlayfreefar inflightkbN inflightroom inflighttextold");
+	platform_log("keep words, continued: iostats gereads gereadskind vramtexN edramcheck overlayfreefar inflightkbN inflightroom inflighttextold");
 	/* build 116: the restorations are on by default; these words turn each off */
 	platform_log("keep words, restorations off: overlayfreenear clearblue seethroughflat senvflat planarfogoff notint waterwhite flaresnobipeds nodither detailgrey80 flashnearest nearseatedfar nearseatcine nometers lognohold statepages");
 	/* build 117: its own restorations, each turned off by these; and the
