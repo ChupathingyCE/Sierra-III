@@ -3443,6 +3443,7 @@ drawing's (~54 KB for 3.5 MB of code); written to log/pcsample.txt every
 minute (psp/sierra/pcsample.py names the bins from the build's symbols) */
 #define PC_SHIFT 9
 static unsigned int pc_report_beats = 0;
+void *memalign(size_t alignment, size_t size); /* declared as psp_dsound.c does */
 static unsigned long long hwprofile_threads_last[HW_PHASES][4];
 static unsigned long long hwprofile_phase_last[HW_PHASES][HW_COUNTERS];
 static int partitions_reported = 0;
