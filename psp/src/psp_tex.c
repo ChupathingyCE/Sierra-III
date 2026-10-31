@@ -1994,6 +1994,38 @@ void __real_sceGuTexFilter(int min, int mag);
 static unsigned int memo_key = 0, memo_address = 0, memo_frame = 0;
 static int memo_on = -1;
 unsigned long psp_tex_binds_memo = 0, psp_tex_binds_sent = 0;
+/* "gereadskind" (psp_ge.c sets the switch and reports): each bind sent of a
+texture in main RAM, its texels and palette, and whether it's the texture's
+first bind in the frame the replay is carrying out. The frame's own marks
+(last_frame) wait for the ME's book to be merged, so they can't say that */
+int psp_tex_reads_on = 0;
+extern unsigned int psp_ge_reads_frame;
+void psp_ge_reads_texture(unsigned int address, unsigned int bytes, unsigned int palette_bytes, int first_this_frame);
+#define READS_INDICES 4096
+static unsigned int *reads_frame_of = NULL;
+
+/* at launch, on the main CPU: the replay's binds may be the ME's work, which
+allocates nothing */
+void psp_tex_reads_start(void)
+{
+	reads_frame_of = calloc(READS_INDICES, sizeof(unsigned int));
+	psp_tex_reads_on = 1;
+}
+
+static void __attribute__((noinline, cold)) tex_reads_note(int index, unsigned int address, unsigned int size,
+	unsigned int palette_bytes)
+{
+	int first = 1;
+
+	if ((address & 0x0F000000u) == 0x04000000u)
+		return; /* VRAM: not main RAM's */
+	if (reads_frame_of && index < READS_INDICES)
+	{
+		first = reads_frame_of[index] != psp_ge_reads_frame + 1;
+		reads_frame_of[index] = psp_ge_reads_frame + 1;
+	}
+	psp_ge_reads_texture(address, size - palette_bytes, palette_bytes, first);
+}
 
 void __wrap_sceGuTexImage(int mipmap, int width, int height, int tbw, const void *tbp)
 {
@@ -2226,6 +2258,8 @@ int psp_tex_bind(unsigned int key, int *has_alpha)
 		return 1;
 	}
 	psp_tex_binds_sent++;
+	if (__builtin_expect(psp_tex_reads_on, 0))
+		tex_reads_note(index, address, entry->size, palette_bytes);
 	if (bind_blocks_on < 0)
 	{
 		bind_blocks_on = psp_keep("bindblocks");
