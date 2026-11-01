@@ -1440,6 +1440,9 @@ static inline void replay_kinds_add(int side, int kind, unsigned int *mark)
 	*mark = now;
 }
 
+static void me_memo_keeps(void);
+static void me_memo_run_start(void);
+
 static void defer_replay(const defer_word *buffer, unsigned int used, int on_me)
 {
 	unsigned int at = 0, records = 0;
@@ -1450,6 +1453,9 @@ static void defer_replay(const defer_word *buffer, unsigned int used, int on_me)
 
 	if (timed)
 		replay_kinds.runs[side]++;
+	/* mememo: the GE's state as this run starts is whatever the list held
+	before it, which the ME didn't write */
+	me_memo_run_start();
 
 	while (at < used)
 	{
@@ -1893,6 +1899,7 @@ static void defer_hand_over(void)
 		args[2] = defer_me_thread;
 		args[3] = 0; /* (psp_me.c sets it: on the ME or not) */
 		args[4] = 1;
+		me_memo_keeps();
 		psp_me_window[0] = 1;
 		/* simulated, the job runs inside psp_me_submit, on this CPU */
 		defer_replaying = 1;
@@ -2098,6 +2105,7 @@ static int inflight_hand_over_from(unsigned int from, unsigned int mode)
 		__asm__ __volatile__("sync");
 		CHUNK_LINE[0] = defer_used;
 	}
+	me_memo_keeps();
 	psp_me_window[0] = 1;
 	inflight_me_out = 1;
 	/* simulated (the emulator), the job runs inside psp_me_submit, here */
@@ -11477,18 +11485,54 @@ parts of one object share their lighting. Only this file sets the GE's
 lighting: model_lighting, the start-up's "off" (lit_forget(0)), and the
 two-sided pass's flipped lights (lit_forget(1)). Forgotten at each frame's
 start, and never used in the Media Engine's work */
-static int lit_memo = -1, lit_enabled = -1, lit_params = 0, lit_on[2];
-static unsigned int lit_ambient, lit_color[2];
-static ScePspFVector3 lit_toward[2];
-/* build 117: the point lights' (lights 2 and 3) */
-static int lit_point_on[2];
-static unsigned int lit_point_color[2];
-static ScePspFVector3 lit_point_position[2];
+static int lit_memo = -1;
+struct lit_state
+{
+	int enabled, params, on[2];
+	unsigned int ambient, color[2];
+	ScePspFVector3 toward[2];
+	/* build 117: the point lights' (lights 2 and 3) */
+	int point_on[2];
+	unsigned int point_color[2];
+	ScePspFVector3 point_position[2];
+	/* the ME's (mememo): whether the GE may have light 2 or 3 on, as
+	lit_points_maybe_on below */
+	int points_maybe_on;
+};
+static struct lit_state lit_main = { -1, 0 };
+/* "mememo": the memo in the Media Engine's work. The ME keeps a copy of its
+own on lines only it writes (the main CPU's copy and the ME's write-back
+caches would otherwise put back each other's stale words), forgotten at the
+start of each run of records it replays, since the main CPU's words may
+come between two runs */
+static struct lit_state lit_me PSP_AIME_ME_SIDE = { -1, 0 };
 /* whether the GE may have light 2 or 3 on, memo or not, so a model without
 point lights sends no disables when they're already off (nopointlights
-then sends what b116 sent) */
+then sends what b116 sent): the ME's work with mememo keeps its own */
 static int lit_points_maybe_on = 0;
 static unsigned long lit_sets_sent = 0, lit_sets_memo = 0;
+/* the switch, read on the main CPU before any ME job reads it (me_memo_keeps) */
+int __attribute__((aligned(64))) psp_ge_me_memo[16] = { 0 };
+
+static void me_memo_keeps(void)
+{
+	if (psp_ge_me_memo[0] || psp_on_me())
+		return;
+	psp_ge_me_memo[1] = psp_keep("mememo");
+	if (psp_ge_me_memo[1])
+		platform_log("GE: mememo: lighting and binds the GE already has left out of the Media Engine's work");
+	psp_ge_me_memo[0] = 1;
+	sceKernelDcacheWritebackRange(psp_ge_me_memo, sizeof(psp_ge_me_memo));
+}
+
+/* the memo whose work this is: the ME's copy (with mememo) or the main CPU's
+(with statememo), or NULL when the memo is off for this side */
+static inline struct lit_state *lit_state_here(void)
+{
+	if (PSP_ME_WORK())
+		return psp_ge_me_memo[1] > 0 ? &lit_me : NULL;
+	return lit_memo > 0 ? &lit_main : NULL;
+}
 
 /* "modelspecular" (opt-in while it is priced): a shiny part's highlight from
 the GE's own specular lighting. The Xbox adds a part's reflection over its
@@ -11520,38 +11564,70 @@ static unsigned long specular_parts = 0;
 
 /* lighting changed outside model_lighting: 0 turned off; 1 the lights'
 parameters; 2 everything unknown (a frame's start) */
+static void lit_forget_state(struct lit_state *L, int what)
+{
+	L->enabled = what == 0 ? 0 : what == 2 ? -1 : L->enabled;
+	L->params = 0;
+}
+
+void psp_tex_me_memo_forget(void);
+
+static void me_memo_run_start(void)
+{
+	me_memo_keeps();
+	if (PSP_ME_WORK() && psp_ge_me_memo[1] > 0)
+	{
+		lit_forget_state(&lit_me, 2);
+		lit_me.points_maybe_on = 1;
+		psp_tex_me_memo_forget();
+	}
+}
+
 static void lit_forget(int what)
 {
-	lit_enabled = what == 0 ? 0 : what == 2 ? -1 : lit_enabled;
-	lit_params = 0;
+	if (PSP_ME_WORK())
+	{
+		/* the ME's copy is written only in the ME's work (without mememo
+		nothing reads it) */
+		if (psp_ge_me_memo[1] > 0)
+			lit_forget_state(&lit_me, what);
+		return;
+	}
+	lit_forget_state(&lit_main, what);
 }
 
 static void model_lighting(int on)
 {
 	int index, sent = 0;
+	struct lit_state *memo, unknown;
 
-	if (lit_memo < 0)
+	if (lit_memo < 0 && !psp_on_me())
 		lit_memo = psp_keep("statememo") || psp_keep("memolight"); /* memolight: this half alone */
-	if (!lit_memo || PSP_ME_WORK())
+	memo = lit_state_here();
+	/* without a memo, everything is sent: a state that knows nothing,
+	thrown away after */
+	struct lit_state *L = memo ? memo : &unknown;
+	if (!memo)
 	{
-		lit_enabled = -1;
-		lit_params = 0;
+		unknown.enabled = -1;
+		unknown.params = 0;
 	}
+	int *points_maybe_on = memo == &lit_me ? &lit_me.points_maybe_on : &lit_points_maybe_on;
 	if (!on || (!model_light_count && !model_point_count && model_ambient == 0xFF000000))
 	{
-		if (lit_enabled != 0)
+		if (L->enabled != 0)
 			sceGuDisable(GU_LIGHTING);
-		if (lit_memo && !PSP_ME_WORK())
-			lit_enabled = 0;
+		if (memo)
+			memo->enabled = 0;
 		return;
 	}
-	if (lit_enabled != 1)
+	if (L->enabled != 1)
 		sceGuEnable(GU_LIGHTING); /* (each part turns lighting off for its later passes: not counted) */
 	if (reflection_words.specular)
 	{
 		/* the part's own: sceGuColor set every material colour to the
 		part's, so this is sent for every part */
-		if (!lit_params)
+		if (!L->params)
 		{
 			sceGuLightMode(GU_SEPARATE_SPECULAR_COLOR);
 			sceGuSpecular(reflection_words.specular_power);
@@ -11560,7 +11636,7 @@ static void model_lighting(int on)
 		if (part_specular & 0xFFFFFF)
 			specular_parts++;
 	}
-	if (!lit_params || lit_ambient != model_ambient)
+	if (!L->params || L->ambient != model_ambient)
 	{
 		sceGuAmbient(model_ambient);
 		sent = 1;
@@ -11569,26 +11645,26 @@ static void model_lighting(int on)
 	{
 		if (index < model_light_count)
 		{
-			if (!lit_params || memcmp(&lit_toward[index], &model_light_toward[index], sizeof(ScePspFVector3)) != 0)
+			if (!L->params || memcmp(&L->toward[index], &model_light_toward[index], sizeof(ScePspFVector3)) != 0)
 			{
 				sceGuLight(index, GU_DIRECTIONAL, reflection_words.specular ? GU_DIFFUSE_AND_SPECULAR : GU_DIFFUSE,
 					&model_light_toward[index]);
 				sent = 1;
 			}
-			if (!lit_params || lit_color[index] != model_light_color[index])
+			if (!L->params || L->color[index] != model_light_color[index])
 			{
 				sceGuLightColor(index, GU_DIFFUSE, model_light_color[index]);
 				if (reflection_words.specular)
 					sceGuLightColor(index, GU_SPECULAR, model_light_color[index]);
 				sent = 1;
 			}
-			if (!lit_params || !lit_on[index])
+			if (!L->params || !L->on[index])
 			{
 				sceGuEnable(GU_LIGHT0 + index);
 				sent = 1;
 			}
 		}
-		else if (!lit_params || lit_on[index])
+		else if (!L->params || L->on[index])
 		{
 			sceGuDisable(GU_LIGHT0 + index);
 			sent = 1;
@@ -11601,55 +11677,55 @@ static void model_lighting(int on)
 	{
 		if (index < model_point_count)
 		{
-			if (!lit_params || !lit_point_on[index] ||
-				memcmp(&lit_point_position[index], &model_point_position[index], sizeof(ScePspFVector3)) != 0)
+			if (!L->params || !L->point_on[index] ||
+				memcmp(&L->point_position[index], &model_point_position[index], sizeof(ScePspFVector3)) != 0)
 			{
 				sceGuLight(2 + index, GU_POINTLIGHT, GU_DIFFUSE, &model_point_position[index]);
 				sceGuLightAtt(2 + index, 1.0f, 0.0f, 0.0f);
 				sent = 1;
 			}
-			if (!lit_params || !lit_point_on[index] || lit_point_color[index] != model_point_color[index])
+			if (!L->params || !L->point_on[index] || L->point_color[index] != model_point_color[index])
 			{
 				sceGuLightColor(2 + index, GU_DIFFUSE, model_point_color[index]);
 				sent = 1;
 			}
-			if (!lit_params || !lit_point_on[index])
+			if (!L->params || !L->point_on[index])
 			{
 				sceGuEnable(GU_LIGHT2 + index);
 				sent = 1;
 			}
 		}
-		else if (lit_points_maybe_on && (!lit_params || lit_point_on[index]))
+		else if (*points_maybe_on && (!L->params || L->point_on[index]))
 		{
 			sceGuDisable(GU_LIGHT2 + index);
 			sent = 1;
 		}
 	}
-	lit_points_maybe_on = model_point_count > 0;
+	*points_maybe_on = model_point_count > 0;
 	if (on && model_point_count)
 		model_point_parts++;
 	if (sent)
 		lit_sets_sent++;
 	else
 		lit_sets_memo++;
-	if (!lit_memo || PSP_ME_WORK())
+	if (!memo)
 		return;
-	lit_enabled = 1;
-	lit_params = 1;
-	lit_ambient = model_ambient;
+	L->enabled = 1;
+	L->params = 1;
+	L->ambient = model_ambient;
 	for (index = 0; index < 2; index++)
 	{
-		lit_on[index] = index < model_light_count;
-		if (lit_on[index])
+		L->on[index] = index < model_light_count;
+		if (L->on[index])
 		{
-			lit_toward[index] = model_light_toward[index];
-			lit_color[index] = model_light_color[index];
+			L->toward[index] = model_light_toward[index];
+			L->color[index] = model_light_color[index];
 		}
-		lit_point_on[index] = index < model_point_count;
-		if (lit_point_on[index])
+		L->point_on[index] = index < model_point_count;
+		if (L->point_on[index])
 		{
-			lit_point_position[index] = model_point_position[index];
-			lit_point_color[index] = model_point_color[index];
+			L->point_position[index] = model_point_position[index];
+			L->point_color[index] = model_point_color[index];
 		}
 	}
 }
@@ -16049,7 +16125,11 @@ static void psp_ge_draw_model_body(void *vertices, int vertex_count, int uncompr
 		by place): the back faces go without */
 		for (index = 0; index < model_point_count; index++)
 			sceGuDisable(GU_LIGHT2 + index);
-		lit_points_maybe_on = 0; /* light 3 was already off when only light 2 was used */
+		/* light 3 was already off when only light 2 was used */
+		if (lit_state_here() == &lit_me)
+			lit_me.points_maybe_on = 0;
+		else
+			lit_points_maybe_on = 0;
 		lit_forget(1); /* build 114: statememo */
 		model_geometry(vertices, indices, index_count, strip, skin, &model);
 		if (soft)
@@ -25303,9 +25383,9 @@ static void frame_end_show(void)
 					memset(decal_probe_us, 0, sizeof(decal_probe_us));
 					cached_takes = cached_bytes = cached_lines_flushed = stall_calls = stall_forwarded = 0;
 					list_lines_back = 0;
-					if (lit_memo > 0 || psp_keep("memotex"))
+					if (lit_memo > 0 || psp_keep("memotex") || psp_ge_me_memo[1] > 0)
 					{
-						/* build 114: statememo (or one half: memotex, memolight) */
+						/* build 114: statememo (or one half: memotex, memolight); mememo */
 						extern unsigned long psp_tex_binds_memo, psp_tex_binds_sent;
 
 						platform_log("GE: state memo: texture binds %lu a frame sent, %lu left out; model lighting (ambient and lights) %lu a frame set, %lu left out",

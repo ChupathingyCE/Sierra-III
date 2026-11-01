@@ -1993,6 +1993,17 @@ void __real_sceGuClutMode(unsigned int cpsm, unsigned int shift, unsigned int ma
 void __real_sceGuTexFilter(int min, int mag);
 static unsigned int memo_key = 0, memo_address = 0, memo_frame = 0;
 static int memo_on = -1;
+/* "mememo": the memo in the Media Engine's work, a copy on lines only the ME
+writes (psp_ge.c's lit_me says why), forgotten as each run of records it
+replays starts (psp_tex_me_memo_forget) */
+static struct tex_me_memo { unsigned int key, address, frame; } tex_me_memo PSP_AIME_ME_SIDE = { 0, 0, 0 };
+extern int psp_ge_me_memo[];
+#define ME_MEMO_HERE() (psp_ge_me_memo[1] > 0 && PSP_ME_WORK())
+
+void psp_tex_me_memo_forget(void)
+{
+	tex_me_memo.key = 0;
+}
 unsigned long psp_tex_binds_memo = 0, psp_tex_binds_sent = 0;
 /* "gereadskind" (psp_ge.c sets the switch and reports): each bind sent of a
 texture in main RAM, its texels and palette, and whether it's the texture's
@@ -2030,26 +2041,36 @@ static void __attribute__((noinline, cold)) tex_reads_note(int index, unsigned i
 void __wrap_sceGuTexImage(int mipmap, int width, int height, int tbw, const void *tbp)
 {
 	memo_key = 0;
+	if (ME_MEMO_HERE())
+		tex_me_memo.key = 0;
 	__real_sceGuTexImage(mipmap, width, height, tbw, tbp);
 }
 void __wrap_sceGuTexMode(int tpsm, int maxmips, int mc, int swizzle)
 {
 	memo_key = 0;
+	if (ME_MEMO_HERE())
+		tex_me_memo.key = 0;
 	__real_sceGuTexMode(tpsm, maxmips, mc, swizzle);
 }
 void __wrap_sceGuClutLoad(int num_blocks, const void *cbp)
 {
 	memo_key = 0;
+	if (ME_MEMO_HERE())
+		tex_me_memo.key = 0;
 	__real_sceGuClutLoad(num_blocks, cbp);
 }
 void __wrap_sceGuClutMode(unsigned int cpsm, unsigned int shift, unsigned int mask, unsigned int csa)
 {
 	memo_key = 0;
+	if (ME_MEMO_HERE())
+		tex_me_memo.key = 0;
 	__real_sceGuClutMode(cpsm, shift, mask, csa);
 }
 void __wrap_sceGuTexFilter(int min, int mag)
 {
 	memo_key = 0;
+	if (ME_MEMO_HERE())
+		tex_me_memo.key = 0;
 	__real_sceGuTexFilter(min, mag);
 }
 
@@ -2248,9 +2269,10 @@ int psp_tex_bind(unsigned int key, int *has_alpha)
 	palette_bytes = DIRECT(entry) ? 0 : (entry->clut == GU_PSM_8888 ? 4 : 2) * (entry->psm == GU_PSM_T4 ? 16 : 256);
 	address = resident_at[index];
 	/* build 114: statememo (above) */
-	if (memo_on < 0)
+	if (memo_on < 0 && !psp_on_me())
 		memo_on = psp_keep("statememo") || psp_keep("memotex"); /* memotex: this half alone */
-	if (memo_on > 0 && !PSP_ME_WORK() && key == memo_key && address == memo_address && frame == memo_frame)
+	if (ME_MEMO_HERE() ? key && key == tex_me_memo.key && address == tex_me_memo.address && frame == tex_me_memo.frame :
+		memo_on > 0 && !PSP_ME_WORK() && key == memo_key && address == memo_address && frame == memo_frame)
 	{
 		psp_tex_binds_memo++;
 		if (has_alpha)
@@ -2309,7 +2331,14 @@ int psp_tex_bind(unsigned int key, int *has_alpha)
 	__real_sceGuTexFilter(entry->levels > 1 ? GU_LINEAR_MIPMAP_LINEAR : GU_LINEAR, GU_LINEAR);
 	if (has_alpha)
 		*has_alpha = entry->flags & 1;
-	/* the GE now has this texture (never remembered from the ME's work) */
+	/* the GE now has this texture (remembered from the ME's work only in the
+	ME's own copy) */
+	if (ME_MEMO_HERE())
+	{
+		tex_me_memo.key = key;
+		tex_me_memo.address = start;
+		tex_me_memo.frame = frame;
+	}
 	if (PSP_ME_WORK())
 		memo_key = 0;
 	else
