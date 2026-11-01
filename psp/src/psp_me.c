@@ -885,6 +885,7 @@ static PSP_AIME_ME_SIDE unsigned int nested_features = 0;
 void psp_me_yield_slots(void)
 {
 	volatile struct me_slot *slot;
+	unsigned int request;
 	int aime_now;
 
 	if (!psp_on_me())
@@ -893,9 +894,13 @@ void psp_me_yield_slots(void)
 	aime_now = psp_aime_job_now[0];
 	psp_aime_job_now[0] = 0;
 	slot = SLOT(ME_SLOT_RENDER);
-	if (slot->request != slot->done && !(CONTROL->features & ME_FEATURE_NEST_RENDER))
+	/* one read of the request: read twice, a render job pushed between the
+	two reads ran here with menestrender off (the nested render R3's census
+	caught: 74 ms in the AI job's yield, 41281400407 run 2) */
+	request = slot->request;
+	if (request != slot->done && !(CONTROL->features & ME_FEATURE_NEST_RENDER))
 		nested_left++;
-	else if (slot->request != slot->done)
+	else if (request != slot->done)
 	{
 		unsigned int begun = me_cycles(), ran;
 
