@@ -826,6 +826,7 @@ void psp_me_serve_audio(void)
 /* the jobs a yield runs aren't the AI job, even inside it: its stops act
 only in its own work (psp_post.h's psp_aime_here) */
 extern int psp_aime_job_now[16];
+void psp_aime_step(int step); /* actors.c (psp_fixups.py FIXES_AIME2A) */
 #if PSP_MUSIC
 int psp_me_music_yield(void)
 {
@@ -856,12 +857,18 @@ void psp_me_yield(void)
 	{
 		unsigned int last_look = p->ring_last_look;
 
+		/* the AI job's census: its yield's ring jobs timed apart from its audio */
+		if (aime_now)
+			psp_aime_step(7);
+
 		/* inside the AI job, the ring stops at its word (the rest wait for
 		the ME's loop): a burst of ring jobs drained here ran 23 ms on b30
 		(41178529227), past the bound the collection gives the word */
 		p->ring_popped = me_ring_drain(p->ring_popped, &last_look,
 			aime_now ? &SLOT(ME_SLOT_AI)->args[ME_JOB_ARGS - 1] : NULL);
 		p->ring_last_look = last_look;
+		if (aime_now)
+			psp_aime_step(0);
 	}
 	psp_aime_job_now[0] = aime_now;
 }

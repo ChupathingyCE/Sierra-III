@@ -41700,11 +41700,14 @@ the collection's word. Steps: 0 the yield between actors (audio, the ring),
 decision loop and the rest of its update; each step's longest run, in the
 ME's cycles, and the step in hand (read at a stop, when the word went
 unanswered). On the ME only: its cycle counter can't be read elsewhere */
-#define PSP_AIME_STEPS 4
-static PSP_AIME_ME_SIDE int psp_aime_step_now = -1;
+#define PSP_AIME_STEPS 8
+static PSP_AIME_ME_SIDE int psp_aime_step_now = -1, psp_aime_step_tag_now = -1;
 static PSP_AIME_ME_SIDE unsigned int psp_aime_step_at = 0, psp_aime_step_worst[PSP_AIME_STEPS];
-void psp_aime_step(
-	int step)
+/* the longest run's tag: the actor's type (decide), its action (perform) */
+static PSP_AIME_ME_SIDE int psp_aime_step_worst_tag[PSP_AIME_STEPS];
+void psp_aime_step_tagged(
+	int step,
+	int tag)
 {
 	unsigned int now;
 
@@ -41713,9 +41716,19 @@ void psp_aime_step(
 	__asm__ __volatile__("mfc0 %0, $9" : "=r"(now));
 	if (psp_aime_step_now >= 0 && psp_aime_step_now < PSP_AIME_STEPS &&
 		now - psp_aime_step_at > psp_aime_step_worst[psp_aime_step_now])
+	{
 		psp_aime_step_worst[psp_aime_step_now] = now - psp_aime_step_at;
+		psp_aime_step_worst_tag[psp_aime_step_now] = psp_aime_step_tag_now;
+	}
 	psp_aime_step_now = step;
+	psp_aime_step_tag_now = tag;
 	psp_aime_step_at = now;
+}
+
+void psp_aime_step(
+	int step)
+{
+	psp_aime_step_tagged(step, -1);
 }
 
 /* between the steps of an actor's thinking in the frame's last pass (the
@@ -41908,9 +41921,12 @@ static void psp_aime2a_log(
 		float per_us = psp_me_cycles_per_us();
 
 		if (per_us > 0.0f)
-			platform_psp_log("aime2a: game time %ld | the job's longest run between looks at the word, us: the yield %u, perception %u, situation %u, decision and the rest %u",
-				now, (unsigned int)(psp_aime_step_worst[0] / per_us), (unsigned int)(psp_aime_step_worst[1] / per_us),
-				(unsigned int)(psp_aime_step_worst[2] / per_us), (unsigned int)(psp_aime_step_worst[3] / per_us));
+			platform_psp_log("aime2a: game time %ld | the job's longest run between looks at the word, us: the yield %u (its audio %u, its ring jobs %u), perception %u, situation %u, then without a look: emotion and orders %u, the decision loop's decide %u (actor type %d), its action %u (action %d), the rest %u",
+				now, (unsigned int)((psp_aime_step_worst[0] > psp_aime_step_worst[7] ? psp_aime_step_worst[0] : psp_aime_step_worst[7]) / per_us),
+				(unsigned int)(psp_aime_step_worst[0] / per_us), (unsigned int)(psp_aime_step_worst[7] / per_us),
+				(unsigned int)(psp_aime_step_worst[1] / per_us), (unsigned int)(psp_aime_step_worst[2] / per_us),
+				(unsigned int)(psp_aime_step_worst[3] / per_us), (unsigned int)(psp_aime_step_worst[4] / per_us), psp_aime_step_worst_tag[4],
+				(unsigned int)(psp_aime_step_worst[5] / per_us), psp_aime_step_worst_tag[5], (unsigned int)(psp_aime_step_worst[6] / per_us));
 	}
 	if (psp_aime_chain_on > 0)
 	{
@@ -42181,8 +42197,31 @@ static void actor_update(
 			actor_emotion_update(actor_index);
 			actor_clear_orders(actor_index);
 			actor_decision_loop(actor_index);
+			PSP_AIME_MARK(6, -1);
 		}
 		psp_aicad_seen(actor_index);"""),
+# the job's timing marks inside the decision loop (no look: a census of
+# where an actor's thinking runs long between the word's looks)
+("""static void actor_decision_loop(
+	long actor_index)
+{""",
+ """void psp_aime_step_tagged(int step, int tag);
+extern int psp_aime_job_now[16];
+#define PSP_AIME_MARK(step, tag) do { if (psp_aime_job_now[0]) psp_aime_step_tagged(step, tag); } while (0)
+
+static void actor_decision_loop(
+	long actor_index)
+{"""),
+("""		actor->state.action_changed = FALSE;
+		actor_type_decide_action(actor_index);
+		actor_stimulus_clear(actor_index);""",
+ """		actor->state.action_changed = FALSE;
+		PSP_AIME_MARK(4, actor->meta.type);
+		actor_type_decide_action(actor_index);
+		actor_stimulus_clear(actor_index);"""),
+("""		action_performed = actor_action_perform(actor_index);""",
+ """		PSP_AIME_MARK(5, actor->state.action);
+		action_performed = actor_action_perform(actor_index);"""),
 ]
 # the declarations the pairs above use, ahead of 1b's
 FIXES_AIME2A["source/ai/actors.c#aime2a"].insert(0, (
