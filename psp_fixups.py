@@ -42208,6 +42208,18 @@ static void actor_update(
  """void psp_aime_step_tagged(int step, int tag);
 extern int psp_aime_job_now[16];
 #define PSP_AIME_MARK(step, tag) do { if (psp_aime_job_now[0]) psp_aime_step_tagged(step, tag); } while (0)
+/* the collection's word looked at before each pass of the decision loop
+too: a pass is whole calls (no collision walk open between them), so 1b's
+copies put back everything an earlier pass wrote, as at the step looks.
+R3 (41277243875) found one actor's decision 18.8 ms without a look, past
+the collection's 20 ms bound. "aimedecisionold": the looks only after
+perception and situation, as before */
+extern int psp_aime_arm, psp_aime_fpu_main;
+int psp_aime_decision_looks = 1;
+void psp_aime_late_check(void);
+#define PSP_AIME_DECISION_LOOK(step, tag) do { PSP_AIME_MARK(step, tag); \
+	if (psp_aime_decision_looks && psp_aime_arm && (psp_aime_job_now[0] || psp_aime_fpu_main) && psp_aime_here()) \
+		psp_aime_late_check(); } while (0)
 
 static void actor_decision_loop(
 	long actor_index)
@@ -42216,11 +42228,11 @@ static void actor_decision_loop(
 		actor_type_decide_action(actor_index);
 		actor_stimulus_clear(actor_index);""",
  """		actor->state.action_changed = FALSE;
-		PSP_AIME_MARK(4, actor->meta.type);
+		PSP_AIME_DECISION_LOOK(4, actor->meta.type);
 		actor_type_decide_action(actor_index);
 		actor_stimulus_clear(actor_index);"""),
 ("""		action_performed = actor_action_perform(actor_index);""",
- """		PSP_AIME_MARK(5, actor->state.action);
+ """		PSP_AIME_DECISION_LOOK(5, actor->state.action);
 		action_performed = actor_action_perform(actor_index);"""),
 ]
 # the declarations the pairs above use, ahead of 1b's
@@ -42339,6 +42351,11 @@ FIXES_AIME2A["source/ai/actors.c#aime2a"].append((
 """		psp_aime1b_check_on = psp_keep("aime1bcheck") != 0;
 		psp_aime_fpu_main_on = psp_keep("aimefpu") != 0;
 		psp_aime_chain_on = psp_keep("aimechain") != 0;
+		{
+			extern int psp_aime_decision_looks;
+
+			psp_aime_decision_looks = !psp_keep("aimedecisionold");
+		}
 """))
 FIXES_AIME2A["source/ai/ai.c#aime2a"] = [
 ("""void psp_aime_update(
