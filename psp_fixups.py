@@ -41700,7 +41700,7 @@ the collection's word. Steps: 0 the yield between actors (audio, the ring),
 decision loop and the rest of its update; each step's longest run, in the
 ME's cycles, and the step in hand (read at a stop, when the word went
 unanswered). On the ME only: its cycle counter can't be read elsewhere */
-#define PSP_AIME_STEPS 8
+#define PSP_AIME_STEPS 10
 static PSP_AIME_ME_SIDE int psp_aime_step_now = -1, psp_aime_step_tag_now = -1;
 static PSP_AIME_ME_SIDE unsigned int psp_aime_step_at = 0, psp_aime_step_worst[PSP_AIME_STEPS];
 /* the longest run's tag: the actor's type (decide), its action (perform) */
@@ -41921,12 +41921,14 @@ static void psp_aime2a_log(
 		float per_us = psp_me_cycles_per_us();
 
 		if (per_us > 0.0f)
-			platform_psp_log("aime2a: game time %ld | the job's longest run between looks at the word, us: the yield %u (its audio %u, its ring jobs %u), perception %u, situation %u, then without a look: emotion and orders %u, the decision loop's decide %u (actor type %d), its action %u (action %d), the rest %u",
+			platform_psp_log("aime2a: game time %ld | the job's longest run between looks at the word, us: the yield %u (its audio %u, its ring jobs %u), perception %u, situation %u, then without a look: emotion and orders %u, the decision loop's decide %u (actor type %d), its action %u (action %d), the rest %u; inside a decision: a firing-position flood %u (%s), a candidate's rays %u",
 				now, (unsigned int)((psp_aime_step_worst[0] > psp_aime_step_worst[7] ? psp_aime_step_worst[0] : psp_aime_step_worst[7]) / per_us),
 				(unsigned int)(psp_aime_step_worst[0] / per_us), (unsigned int)(psp_aime_step_worst[7] / per_us),
 				(unsigned int)(psp_aime_step_worst[1] / per_us), (unsigned int)(psp_aime_step_worst[2] / per_us),
 				(unsigned int)(psp_aime_step_worst[3] / per_us), (unsigned int)(psp_aime_step_worst[4] / per_us), psp_aime_step_worst_tag[4],
-				(unsigned int)(psp_aime_step_worst[5] / per_us), psp_aime_step_worst_tag[5], (unsigned int)(psp_aime_step_worst[6] / per_us));
+				(unsigned int)(psp_aime_step_worst[5] / per_us), psp_aime_step_worst_tag[5], (unsigned int)(psp_aime_step_worst[6] / per_us),
+				(unsigned int)(psp_aime_step_worst[8] / per_us), psp_aime_step_worst_tag[8] == 1 ? "the actor's area" : "the target's",
+				(unsigned int)(psp_aime_step_worst[9] / per_us));
 	}
 	if (psp_aime_chain_on > 0)
 	{
@@ -42155,6 +42157,33 @@ tools only: the ME's job tests spheres while the frame does */
 	PSP_SPHERE_COUNT(psp_sphere_rejects);"""),
 ]
 # the collection's word looked at between the steps of an actor's thinking
+# the collection's word looked at inside the firing-position search too
+# (R3's longest passes: 'uncover', 31-38 ms on the PSP-1000, 41285298316):
+# before each path flood and each candidate's line-of-sight rays. The search
+# writes only its locals and the caller's workspace between them (the debug
+# records aside), and no collision walk is open there, so a stop is put
+# back by 1b's copies as at the decision loop's looks
+FIXES_AIME2A["source/ai/actor_firing_position.c#aimelook"] = [
+("""short actor_select_firing_position(
+	long actor_index,""",
+ """void psp_aime_decision_look(int step, int tag); /* actors.c (FIXES_AIME2A) */
+
+short actor_select_firing_position(
+	long actor_index,"""),
+("""path_input_set_search_bounds(&input, 20.0f);
+					path_state_new(&input, &state, NULL);
+					path_state_find(&state);""",
+ """path_input_set_search_bounds(&input, 20.0f);
+					path_state_new(&input, &state, NULL);
+					psp_aime_decision_look(8, 0);
+					path_state_find(&state);"""),
+("""if (path_state_find(area_path_state))""",
+ """psp_aime_decision_look(8, 1);
+				if (path_state_find(area_path_state))"""),
+("""firing_position_compute_line_of_sight(actor_index, evaluation_context, firing_position);""",
+ """psp_aime_decision_look(9, sorted_index);
+							firing_position_compute_line_of_sight(actor_index, evaluation_context, firing_position);"""),
+]
 FIXES_AIME2A["source/ai/actors.c#aime2a_late"] = [
 ("""static void actor_update(
 	long actor_index)
@@ -42220,6 +42249,16 @@ void psp_aime_late_check(void);
 #define PSP_AIME_DECISION_LOOK(step, tag) do { PSP_AIME_MARK(step, tag); \
 	if (psp_aime_decision_looks && psp_aime_arm && (psp_aime_job_now[0] || psp_aime_fpu_main) && psp_aime_here()) \
 		psp_aime_late_check(); } while (0)
+
+/* the same look from inside a decision's work (actor_firing_position.c):
+before each path flood and each candidate position's rays, where the
+search holds only its own locals */
+void psp_aime_decision_look(
+	int step,
+	int tag)
+{
+	PSP_AIME_DECISION_LOOK(step, tag);
+}
 
 static void actor_decision_loop(
 	long actor_index)
