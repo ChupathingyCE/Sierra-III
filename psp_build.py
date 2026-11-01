@@ -706,8 +706,11 @@ def link(objs, stubs):
     # placement on lines of its own instead, so the cache model's per-line
     # counts name each one's misses
     def hot_data_block(me_objects):
-        name = os.environ.get("PSP_DATA_LAYOUT", "")
-        if not name:
+        # hotg by default (measured on the PSP-3000: b30's tick -1.5 to -1.9%,
+        # the lab's sierra-hw 41308669112 vs 41308798525); "none" (or empty)
+        # leaves the SDK's order, the other side of its A/B
+        name = os.environ.get("PSP_DATA_LAYOUT", "hotg")
+        if name in ("", "none"):
             return ""
         path = name if os.path.isfile(name) else os.path.join(HERE, "psp/layout", "data_%s.txt" % name)
         if not os.path.isfile(path):

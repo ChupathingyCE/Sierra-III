@@ -26,3 +26,7 @@ The tick's program-data misses are mostly one or two warm words to a 64-byte lin
 - In the cache model, the tick's data misses fall 7.2% on b30, 11.5% on c20 and 13.1% on c10; over all phases they fall 4.1%, 6.5% and 5.8%.
 
 The price comes from a PSP pair.
+
+## On by default (2026-11-01)
+
+The tock builds with `hotg` unless `PSP_DATA_LAYOUT=none`. On the PSP-3000 against the same commit built without it (w142 4c909478, b30, two runs a side, lab sierra-hw 41308669112 off and 41308798525 on) [M]: the tick -1.5% cinematic (noise), -1.8% flight, -1.7% landing, -1.9% beach (real); the frame -0.9% flight and -1.4% beach (real), the landing's drawing +3.4% (real) with its frame unchanged. The file still fits the code: 185 of its 189 placements matched, a 3,392-byte block (sierra-build 41308152700).
