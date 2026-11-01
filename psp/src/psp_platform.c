@@ -38,7 +38,14 @@ float psp_budget_last[7];
 
 PSP_MODULE_INFO("halo", PSP_MODULE_USER, 0, 1);
 PSP_MAIN_THREAD_ATTR(THREAD_ATTR_USER | THREAD_ATTR_VFPU);
+#if PSP_STACKHOT == 2
+/* lever STACKHOT v2 (psp_fixups.py FIXES_STACKHOT2): the tick's collision
+feature lists, which this stack held, are two blocks taken at start
+(psp_stackhot_allocate), so the stack gives back what they take */
+PSP_MAIN_THREAD_STACK_SIZE_KB(512 - 88);
+#else
 PSP_MAIN_THREAD_STACK_SIZE_KB(512);
+#endif
 /* fixed, so the heap ends below the game state and tag window
 (psp_build.py sets it from the linked program's size) */
 PSP_HEAP_SIZE_KB(PSP_HEAP_KB);
@@ -4182,6 +4189,14 @@ int main(int argc, char **argv)
 	SceIoStat status;
 
 	psp_fpu_mask_traps();
+#if PSP_STACKHOT == 2
+	{
+		extern void psp_stackhot_allocate(void); /* collisions.c (FIXES_STACKHOT2) */
+
+		/* before anything sizes itself by the memory left */
+		psp_stackhot_allocate();
+	}
+#endif
 	heap_base = (char *)sbrk(0);
 	log_lock = sceKernelCreateSema("halo log", 0, 1, 1, NULL);
 	flush_lock = sceKernelCreateSema("halo log flush", 0, 1, 1, NULL);
