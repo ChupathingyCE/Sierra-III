@@ -1127,7 +1127,13 @@ static const struct
 	first reader (structure_visibility.c, mevisland): exact; b30's drawing
 	-2.2 ms in the flight, -4.4 ms landing on the PSP-3000 (sierra-hw
 	40845560977) */
-	{ "mevisland", "mevislandoff" }, PSP_RELEASE_DEFAULTS
+	{ "mevisland", "mevislandoff" },
+	/* the ME's model parts leave out the lighting and texture binds the GE
+	already has (psp_ge.c, mememo), and its geometry cache finds blocks in the
+	sorted index read-only (psp_geo.c, geoindexme): both exact; b30 on the
+	PSP-3000, beach frame -1.0% and flight drawing -0.8% (mememo), flight
+	drawing -1.3% (geoindexme) (sierra-hw 41272758085) */
+	{ "mememo", "mememooff" }, { "geoindexme", "geoindexmeoff" }, PSP_RELEASE_DEFAULTS
 };
 static char keep_defaults_added[KEEP_DEFAULTS_ROOM] = "";
 
