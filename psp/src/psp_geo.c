@@ -917,6 +917,8 @@ scan as before; "geoindexcheck": both, answers compared in the report */
 #define PLACE_INDEX_BITS 9 /* GEO_ENTRIES = 512 */
 static unsigned int by_place[GEO_ENTRIES];
 static int by_place_count = -1, place_index_on = -1, place_index_check = 0;
+/* "geoindexme": the Media Engine's lookups read the index too (by_place_find_me) */
+static int __attribute__((aligned(64))) place_index_me[16] = { -1 };
 static unsigned int by_place_stamp = 0, by_place_frame = 0;
 static unsigned long place_slot_answers = 0, place_index_answers = 0, place_scans = 0, place_builds = 0,
 	place_checked = 0, place_differed = 0;
@@ -982,6 +984,38 @@ static int by_place_find(unsigned int at)
 	return entry_holds(index, at) ? index : -1;
 }
 
+/* geoindexme: the Media Engine's search of the index, reading only. The
+main CPU may be making the index again meanwhile (in place: by_place_build)
+or the ME's cache may hold an older copy of it, so what it finds is a
+candidate: entry_holds_for (blocks a published record uses, which can't be
+evicted meanwhile) decides, and anything else is a miss, which scans as
+before. Live blocks don't overlap, so a candidate that holds the address is
+the entry the scan finds. It writes nothing of the index's */
+static int entry_holds_for(int index, unsigned int at, int me);
+
+static int by_place_find_me(unsigned int at)
+{
+	unsigned int units = (at - arena_start) >> 6;
+	int count = by_place_count, low = 0, high, index;
+
+	if (count <= 0 || count > GEO_ENTRIES)
+		return -1;
+	high = count - 1;
+	if ((by_place[0] >> PLACE_INDEX_BITS) > units)
+		return -1;
+	while (low < high)
+	{
+		int middle = (low + high + 1) >> 1;
+
+		if ((by_place[middle] >> PLACE_INDEX_BITS) <= units)
+			low = middle;
+		else
+			high = middle - 1;
+	}
+	index = (int)(by_place[low] & ((1u << PLACE_INDEX_BITS) - 1));
+	return index < entry_count && entry_holds_for(index, at, 1) ? index : -1;
+}
+
 /* mechunk: the Media Engine looks blocks up while the main CPU still loads
 for the frame it replays, rewriting the entries of blocks it evicts. A block
 any published record uses is protected (used in the last RECENT_FRAMES
@@ -989,7 +1023,9 @@ frames, so never evicted meanwhile), and an entry being reused belonged to
 an unprotected one; so the ME takes only protected entries, and a half
 rewritten entry it reads can't pass for the block it wants */
 /* the ME's own count of the entries it refused for that (its line, apart
-from the main CPU's words; read at the frame's end, after its work) */
+from the main CPU's words; read at the frame's end, after its work); with
+geoindexme, [1] its answers from the index, [2] its scans, [3] and [4]
+geoindexcheck's compared and differed */
 static unsigned long me_unprotected[16] __attribute__((aligned(64)));
 static unsigned long me_unprotected_logged = 0;
 
@@ -1022,10 +1058,27 @@ static int resident_entry(const void *ptr)
 			place_slot_answers++;
 		return at_slot[slot] - 1;
 	}
-	if (place_index_on < 0)
+	if (place_index_on < 0 && !me)
 	{
 		place_index_on = !psp_keep("geoscan") && arena_end - arena_start <= (65536u << 6);
 		place_index_check = psp_keep("geoindexcheck");
+		place_index_me[0] = place_index_on && psp_keep("geoindexme");
+		place_index_me[1] = place_index_check;
+		sceKernelDcacheWritebackRange(place_index_me, sizeof(place_index_me));
+	}
+	if (me && place_index_me[0] > 0)
+	{
+		found = by_place_find_me(at);
+		if (found >= 0)
+		{
+			me_unprotected[1]++;
+			if (!place_index_me[1])
+			{
+				at_slot[slot] = (short)(found + 1);
+				return found;
+			}
+		}
+		me_unprotected[2]++;
 	}
 	if (place_index_on && !me)
 	{
@@ -1045,7 +1098,13 @@ static int resident_entry(const void *ptr)
 	for (index = 0; index < entry_count; index++)
 		if (entry_holds_for(index, at, me))
 		{
-			if (found >= 0)
+			if (found >= 0 && me)
+			{
+				me_unprotected[3]++;
+				if (found != index)
+					me_unprotected[4]++;
+			}
+			else if (found >= 0)
 			{
 				place_checked++;
 				if (found != index)
@@ -1054,10 +1113,15 @@ static int resident_entry(const void *ptr)
 			at_slot[slot] = (short)(index + 1);
 			return index;
 		}
-	if (found >= 0)
+	if (found >= 0 && !me)
 	{
 		place_checked++;
 		place_differed++;
+	}
+	else if (found >= 0)
+	{
+		me_unprotected[3]++;
+		me_unprotected[4]++;
 	}
 	return -1;
 }
@@ -1116,6 +1180,16 @@ void psp_geo_frame_end(void)
 		platform_log("geometry: the Media Engine's lookups refused %lu blocks that weren't protected (mechunk; %lu in all)",
 			me_unprotected[0] - me_unprotected_logged, me_unprotected[0]);
 		me_unprotected_logged = me_unprotected[0];
+	}
+	if (place_index_me[0] > 0 && frame % 300 == 0)
+	{
+		/* (differences: the line is the ME's, never written here) */
+		static unsigned long logged[2];
+
+		platform_log("geometry: geoindexme: the Media Engine's lookups past its slot table: by the index %lu, scanned %lu; geoindexcheck: %lu compared, %lu differed (since the map began)",
+			me_unprotected[1] - logged[0], me_unprotected[2] - logged[1], me_unprotected[3], me_unprotected[4]);
+		logged[0] = me_unprotected[1];
+		logged[1] = me_unprotected[2];
 	}
 	if (async_reads)
 		poll();
