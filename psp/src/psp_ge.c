@@ -1441,7 +1441,10 @@ static inline void replay_kinds_add(int side, int kind, unsigned int *mark)
 }
 
 static void me_memo_keeps(void);
-static void me_memo_run_start(void);
+static void me_memo_run_start(int job);
+/* 1 while psp_ge_me_replay runs its job: a run outside one forgets the
+ME's memo by itself (on lines only the ME's work writes) */
+static PSP_AIME_ME_SIDE int me_memo_in_job = 0;
 
 static void defer_replay(const defer_word *buffer, unsigned int used, int on_me)
 {
@@ -1453,9 +1456,7 @@ static void defer_replay(const defer_word *buffer, unsigned int used, int on_me)
 
 	if (timed)
 		replay_kinds.runs[side]++;
-	/* mememo: the GE's state as this run starts is whatever the list held
-	before it, which the ME didn't write */
-	me_memo_run_start();
+	me_memo_run_start(0);
 
 	while (at < used)
 	{
@@ -1740,6 +1741,10 @@ unsigned int psp_ge_me_replay(const unsigned int *args, unsigned int *results)
 	if (!args[3])
 		psp_me_context = args[2] ? args[2] : 1;
 	replay_inflight = args[4] >= 2;
+	/* mememo: a job starts (simulated mechunk: a frame's first piece) */
+	if (args[4] != 3 || args[3] || args[5] == 0)
+		me_memo_run_start(1);
+	me_memo_in_job = 1;
 	if (args[4] == 3 && args[3])
 	{
 		/* mechunk: what the main CPU has published, as it publishes it,
@@ -1779,6 +1784,7 @@ unsigned int psp_ge_me_replay(const unsigned int *args, unsigned int *results)
 		results[0] = args[1];
 	}
 	replay_inflight = 0;
+	me_memo_in_job = 0;
 	/* build 118: gemeoverlap (args[4]): the newest stall address the run
 	kept goes back in the slot (uncached), for the main CPU to pass on, and
 	is forgotten here: only the ME writes stall_me_address meanwhile */
@@ -11518,7 +11524,8 @@ static void me_memo_keeps(void)
 {
 	if (psp_ge_me_memo[0] || psp_on_me())
 		return;
-	psp_ge_me_memo[1] = psp_keep("mememo");
+	psp_ge_me_memo[1] = psp_keep("mememo") || psp_keep("mememorun");
+	psp_ge_me_memo[2] = psp_keep("mememorun");
 	if (psp_ge_me_memo[1])
 		platform_log("GE: mememo: lighting and binds the GE already has left out of the Media Engine's work");
 	psp_ge_me_memo[0] = 1;
@@ -11572,10 +11579,17 @@ static void lit_forget_state(struct lit_state *L, int what)
 
 void psp_tex_me_memo_forget(void);
 
-static void me_memo_run_start(void)
+/* the GE's state as the ME's work starts is whatever the list held before
+it, which the ME didn't write: forgotten as each job starts (job 1). The
+pieces of one job (mechunk) go into its list one after another, with only
+audio and the ring's jobs between them, which send the GE nothing, and the
+cache refresh before each piece writes the ME's copy back before dropping
+it, so the copy holds across them. "mememorun": forgotten at each piece
+too (job 0), the cautious form, for the A/B */
+static void me_memo_run_start(int job)
 {
 	me_memo_keeps();
-	if (PSP_ME_WORK() && psp_ge_me_memo[1] > 0)
+	if (PSP_ME_WORK() && psp_ge_me_memo[1] > 0 && (job || !me_memo_in_job || psp_ge_me_memo[2] > 0))
 	{
 		lit_forget_state(&lit_me, 2);
 		lit_me.points_maybe_on = 1;
