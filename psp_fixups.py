@@ -41700,7 +41700,7 @@ the collection's word. Steps: 0 the yield between actors (audio, the ring),
 decision loop and the rest of its update; each step's longest run, in the
 ME's cycles, and the step in hand (read at a stop, when the word went
 unanswered). On the ME only: its cycle counter can't be read elsewhere */
-#define PSP_AIME_STEPS 10
+#define PSP_AIME_STEPS 11
 static PSP_AIME_ME_SIDE int psp_aime_step_now = -1, psp_aime_step_tag_now = -1;
 static PSP_AIME_ME_SIDE unsigned int psp_aime_step_at = 0, psp_aime_step_worst[PSP_AIME_STEPS];
 /* the longest run's tag: the actor's type (decide), its action (perform) */
@@ -41921,14 +41921,14 @@ static void psp_aime2a_log(
 		float per_us = psp_me_cycles_per_us();
 
 		if (per_us > 0.0f)
-			platform_psp_log("aime2a: game time %ld | the job's longest run between looks at the word, us: the yield %u (its audio %u, its ring jobs %u), perception %u, situation %u, then without a look: emotion and orders %u, the decision loop's decide %u (actor type %d), its action %u (action %d), the rest %u; inside a decision: a firing-position flood %u (%s), a candidate's rays %u",
+			platform_psp_log("aime2a: game time %ld | the job's longest run between looks at the word, us: the yield %u (its audio %u, its ring jobs %u), perception %u, situation %u, then without a look: emotion and orders %u, the decision loop's decide %u (actor type %d), its action %u (action %d), the rest %u; inside a decision: a firing-position flood %u (%s), a candidate's rays %u, a path search's node %u",
 				now, (unsigned int)((psp_aime_step_worst[0] > psp_aime_step_worst[7] ? psp_aime_step_worst[0] : psp_aime_step_worst[7]) / per_us),
 				(unsigned int)(psp_aime_step_worst[0] / per_us), (unsigned int)(psp_aime_step_worst[7] / per_us),
 				(unsigned int)(psp_aime_step_worst[1] / per_us), (unsigned int)(psp_aime_step_worst[2] / per_us),
 				(unsigned int)(psp_aime_step_worst[3] / per_us), (unsigned int)(psp_aime_step_worst[4] / per_us), psp_aime_step_worst_tag[4],
 				(unsigned int)(psp_aime_step_worst[5] / per_us), psp_aime_step_worst_tag[5], (unsigned int)(psp_aime_step_worst[6] / per_us),
 				(unsigned int)(psp_aime_step_worst[8] / per_us), psp_aime_step_worst_tag[8] == 1 ? "the actor's area" : "the target's",
-				(unsigned int)(psp_aime_step_worst[9] / per_us));
+				(unsigned int)(psp_aime_step_worst[9] / per_us), (unsigned int)(psp_aime_step_worst[10] / per_us));
 	}
 	if (psp_aime_chain_on > 0)
 	{
@@ -42183,6 +42183,27 @@ short actor_select_firing_position(
 ("""firing_position_compute_line_of_sight(actor_index, evaluation_context, firing_position);""",
  """psp_aime_decision_look(9, sorted_index);
 							firing_position_compute_line_of_sight(actor_index, evaluation_context, firing_position);"""),
+]
+# and between a path search's nodes (aimelook 524fe59c on the PSP-3000,
+# 41290635492: an area flood ran 33 ms without a look). A node's expansion
+# writes only the search's own state, which its caller made (a local or the
+# caller's workspace), and no collision walk is open between nodes
+FIXES_AIME2A["source/ai/path.c#aimelook"] = [
+("""static boolean path_state_traverse(
+	struct path_state *state)
+{""",
+ """void psp_aime_decision_look(int step, int tag); /* actors.c (FIXES_AIME2A) */
+
+static boolean path_state_traverse(
+	struct path_state *state)
+{"""),
+("""	while (TRUE)
+	{
+		short cheapest_node_index = path_heap_pop_cheapest_node(state);""",
+ """	while (TRUE)
+	{
+		/* (the look first, in the declaration, so the block's declarations stay ahead of its code) */
+		short cheapest_node_index = (psp_aime_decision_look(10, 0), path_heap_pop_cheapest_node(state));"""),
 ]
 FIXES_AIME2A["source/ai/actors.c#aime2a_late"] = [
 ("""static void actor_update(
