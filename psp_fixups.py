@@ -42193,6 +42193,8 @@ FIXES_AIME2A["source/ai/path.c#aimelook"] = [
 	struct path_state *state)
 {""",
  """void psp_aime_decision_look(int step, int tag); /* actors.c (FIXES_AIME2A) */
+/* set only while an actor thinks under aime1b: elsewhere a search pays one test a node */
+extern int psp_aime_arm;
 
 static boolean path_state_traverse(
 	struct path_state *state)
@@ -42203,7 +42205,8 @@ static boolean path_state_traverse(
  """	while (TRUE)
 	{
 		/* (the look first, in the declaration, so the block's declarations stay ahead of its code) */
-		short cheapest_node_index = (psp_aime_decision_look(10, 0), path_heap_pop_cheapest_node(state));"""),
+		short cheapest_node_index = ((psp_aime_arm ? psp_aime_decision_look(10, 0) : (void)0),
+			path_heap_pop_cheapest_node(state));"""),
 ]
 FIXES_AIME2A["source/ai/actors.c#aime2a_late"] = [
 ("""static void actor_update(
