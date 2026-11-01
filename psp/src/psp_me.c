@@ -184,6 +184,7 @@ main CPU only reads it */
 #define STASH_SLOT_ENDED 9
 #define STASH_PUSHED 10   /* the ring's pushed count as the ME last read it */
 #define STASH_AUDIO_RANGES 11 /* audio blocks the ME handed over by ranges */
+#define STASH_SLOTS_IN 12 /* the slot jobs in hand, a bit per type: nested ones show beside their host */
 #define STASH_WORDS 32
 #define STASH_IDLE 1
 #define STASH_SLOT_DROP 2 /* a slot job's cache work before it */
@@ -733,6 +734,8 @@ static void me_serve(volatile struct me_slot *slot, int *sums)
 
 	start = me_cycles();
 	me_count(STASH_SLOT_BEGUN);
+	if (control->features & ME_FEATURE_STASH)
+		STASH[STASH_SLOTS_IN] |= 1u << (type & 31);
 	me_note(STASH_SLOT_DROP);
 	/* what the main CPU wrote: drop any copy left from the last job. The
 	audio job by ranges, so a ring job it is mixed between or inside keeps
@@ -766,6 +769,8 @@ static void me_serve(volatile struct me_slot *slot, int *sums)
 	slot->job_cycles = job_end - job_start;
 	control->jobs++;
 	me_count(STASH_SLOT_ENDED);
+	if (control->features & ME_FEATURE_STASH)
+		STASH[STASH_SLOTS_IN] &= ~(1u << (type & 31));
 	me_note(STASH_IDLE);
 	__asm__ __volatile__("sync");
 	slot->done = request;
@@ -821,6 +826,7 @@ void psp_me_serve_audio(void)
 /* the jobs a yield runs aren't the AI job, even inside it: its stops act
 only in its own work (psp_post.h's psp_aime_here) */
 extern int psp_aime_job_now[16];
+void psp_aime_step(int step); /* actors.c (psp_fixups.py FIXES_AIME2A) */
 #if PSP_MUSIC
 int psp_me_music_yield(void)
 {
@@ -851,12 +857,18 @@ void psp_me_yield(void)
 	{
 		unsigned int last_look = p->ring_last_look;
 
+		/* the AI job's census: its yield's ring jobs timed apart from its audio */
+		if (aime_now)
+			psp_aime_step(7);
+
 		/* inside the AI job, the ring stops at its word (the rest wait for
 		the ME's loop): a burst of ring jobs drained here ran 23 ms on b30
 		(41178529227), past the bound the collection gives the word */
 		p->ring_popped = me_ring_drain(p->ring_popped, &last_look,
 			aime_now ? &SLOT(ME_SLOT_AI)->args[ME_JOB_ARGS - 1] : NULL);
 		p->ring_last_look = last_look;
+		if (aime_now)
+			psp_aime_step(0);
 	}
 	psp_aime_job_now[0] = aime_now;
 }
@@ -873,6 +885,7 @@ static PSP_AIME_ME_SIDE unsigned int nested_features = 0;
 void psp_me_yield_slots(void)
 {
 	volatile struct me_slot *slot;
+	unsigned int request;
 	int aime_now;
 
 	if (!psp_on_me())
@@ -881,9 +894,13 @@ void psp_me_yield_slots(void)
 	aime_now = psp_aime_job_now[0];
 	psp_aime_job_now[0] = 0;
 	slot = SLOT(ME_SLOT_RENDER);
-	if (slot->request != slot->done && !(CONTROL->features & ME_FEATURE_NEST_RENDER))
+	/* one read of the request: read twice, a render job pushed between the
+	two reads ran here with menestrender off (the nested render R3's census
+	caught: 74 ms in the AI job's yield, 41281400407 run 2) */
+	request = slot->request;
+	if (request != slot->done && !(CONTROL->features & ME_FEATURE_NEST_RENDER))
 		nested_left++;
-	else if (slot->request != slot->done)
+	else if (request != slot->done)
 	{
 		unsigned int begun = me_cycles(), ran;
 
@@ -1871,8 +1888,12 @@ static void me_stop(const char *why, int for_sleep)
 		me_state = -1;
 }
 
+static void me_stash_dump(const char *why);
 void psp_me_stop(const char *why)
 {
+	/* where the ME was when the main CPU gave up on it (mestash) */
+	if (me_state == 1)
+		me_stash_dump(why);
 	me_stop(why, 0);
 }
 
@@ -2434,6 +2455,9 @@ static struct
 	unsigned long long job_cycles, all_cycles, look_cycles, push_us, wait_us, round_us;
 	unsigned long long simulated_us; /* the emulator: the jobs' own time, run inside the push */
 	unsigned long look_worst_cycles, wait_worst_us;
+	/* by job type: how many, and the longest one's own code (a ring job
+	run inside the AI job's yield holds off its look at the word) */
+	unsigned long type_jobs[16], type_worst_cycles[16];
 } ring_stats;
 
 int psp_me_ring_ready(void)
@@ -2728,10 +2752,10 @@ static __attribute__((noinline, cold)) void me_stash_dump(const char *why)
 		return;
 
 	platform_log("ME: stash (%s): at %u; ring job %u (type %u), step %u; ring jobs begun %u, ended %u, pushed as last seen %u, popped %u; "
-		"slot jobs begun %u, ended %u; audio blocks mixed before or inside ring jobs %u; the ME's clock at the note %u, at its last idle pass %u (%d us after the note: below 0, it hasn't been back to its idle loop since), idle polls %u",
+		"slot jobs begun %u, ended %u, in hand by type %08x; audio blocks mixed before or inside ring jobs %u; the ME's clock at the note %u, at its last idle pass %u (%d us after the note: below 0, it hasn't been back to its idle loop since), idle polls %u",
 		why, stash[STASH_AT], stash[STASH_TICKET], stash[STASH_TYPE], stash[STASH_STEP], stash[STASH_RING_BEGUN],
 		stash[STASH_RING_ENDED], stash[STASH_PUSHED], RING_POPPED, stash[STASH_SLOT_BEGUN], stash[STASH_SLOT_ENDED],
-		stash[STASH_AUDIO_INSIDE], stash[STASH_CLOCK], now, (int)((float)(int)(now - stash[STASH_CLOCK]) / rate),
+		stash[STASH_SLOTS_IN], stash[STASH_AUDIO_INSIDE], stash[STASH_CLOCK], now, (int)((float)(int)(now - stash[STASH_CLOCK]) / rate),
 		CONTROL->alive);
 	psp_log_flush();
 }
@@ -3138,6 +3162,9 @@ int psp_me_wait(unsigned int ticket, unsigned int *results)
 	ring_stats.job_cycles += result->job_cycles;
 	ring_stats.all_cycles += result->all_cycles;
 	ring_stats.look_cycles += result->look_cycles;
+	ring_stats.type_jobs[request->type & 15]++;
+	if (result->job_cycles > ring_stats.type_worst_cycles[request->type & 15])
+		ring_stats.type_worst_cycles[request->type & 15] = result->job_cycles;
 	if (result->look_cycles > ring_stats.look_worst_cycles)
 		ring_stats.look_worst_cycles = result->look_cycles;
 	/* "lanetrace" (psp_lanetrace.c): pushed, collected, the ME's own time */
@@ -4171,7 +4198,7 @@ void psp_me_report(void)
 	static const char *const names[ME_SLOTS] = { "audio", "render", "probe", "ai" };
 #endif
 	unsigned long long now = sceKernelGetSystemTimeWide(), window = now - report_mark, busy_us_all = 0;
-	char line[900], ring_line[400];
+	char line[900], ring_line[640];
 	int length = 0, k;
 
 	if (!me_state)
@@ -4240,6 +4267,18 @@ void psp_me_report(void)
 				(unsigned long)(ring_stats.push_us / jobs), (unsigned long)(ring_stats.wait_us / jobs), ring_stats.wait_worst_us,
 				(unsigned long)(ring_stats.round_us / jobs), ring_stats.refused_busy, ring_stats.refused_full, ring_stats.refused_check,
 				ring_stats.failures);
+		{
+			int type, at = (int)strlen(ring_line);
+			const char *lead = "; by type:";
+
+			for (type = 0; type < 16 && at < (int)sizeof(ring_line) - 48; type++)
+				if (ring_stats.type_jobs[type])
+				{
+					at += snprintf(ring_line + at, sizeof(ring_line) - at, "%s %d: %lu, longest %lu us", lead, type,
+						ring_stats.type_jobs[type], (unsigned long)((float)ring_stats.type_worst_cycles[type] / rate));
+					lead = ";";
+				}
+		}
 		memset(&ring_stats, 0, sizeof(ring_stats));
 	}
 	busy_percent_last = window ? (float)(100.0 * (double)busy_us_all / (double)window) : 0.0f;
