@@ -43244,8 +43244,10 @@ FIXES_AIME2A["source/memory/data.c#aime2a"] = [
 # five lists in .bss (~115 KB off the heap). Cache work is priced on the PSP,
 # so this is a build switch for a pair of builds, not a keep word: a keep word
 # would leave the frames as deep
-STACKHOT = os.environ.get("PSP_STACKHOT", "") == "1"
-STACKHOT2 = os.environ.get("PSP_STACKHOT", "") == "2"
+# PSP_STACKHOT: 2 (the default) the two shared lists, 1 the five statics, 0 the
+# lists on the stack as the engine has them
+STACKHOT = os.environ.get("PSP_STACKHOT", "2") == "1"
+STACKHOT2 = os.environ.get("PSP_STACKHOT", "2") == "2"
 FIXES_STACKHOT = {}
 FIXES_STACKHOT["source/units/bipeds.c#stackhot"] = [
 ("""				real_point3d center = physics->new_position;
