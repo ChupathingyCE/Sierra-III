@@ -43920,8 +43920,10 @@ FIXES_SPHSL["source/structures/cluster_partitions.c#sphsl"] = [
 /* psp_fixups.py (FIXES_SPHSL): see there */
 void platform_psp_log(const char *format, ...);
 
-#define PSP_SPHSL_SLOTS 128
-#define PSP_SPHSL_CLUSTERS 14
+/* c20 reconnects ~100 data a tick and b30 ~60: 512 slots keep most of
+them apart (48 bytes each); a sphere over 8 clusters is walked as before */
+#define PSP_SPHSL_SLOTS 512
+#define PSP_SPHSL_CLUSTERS 8
 struct psp_sphsl_slot
 {
 	void const *partition; /* NULL: empty */
@@ -43969,7 +43971,8 @@ static short psp_sphsl_clusters_in_sphere(void const *partition, long datum_inde
 			psp_sphsl_slots[k].partition = NULL;
 	}
 	csmemcpy(&radius_bits, &radius, 4);
-	slot = &psp_sphsl_slots[((unsigned long)datum_index ^ ((unsigned long)partition >> 4)) & (PSP_SPHSL_SLOTS - 1)];
+	slot = &psp_sphsl_slots[(((unsigned long)DATUM_INDEX_TO_ABSOLUTE_INDEX(datum_index) + ((unsigned long)partition >> 4)) *
+		0x9E3779B1UL >> 23) & (PSP_SPHSL_SLOTS - 1)];
 	if (slot->partition == partition && slot->datum_index == datum_index && slot->cluster_index == cluster_index &&
 		slot->radius_bits == radius_bits)
 	{
