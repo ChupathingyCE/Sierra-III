@@ -2666,17 +2666,29 @@ static __attribute__((noinline, cold)) void aime_simulated(volatile struct me_sl
 		PSP. The kernel partition is mostly unused under the emulator's own
 		kernel. "aimesimheap" takes it from the heap, as before */
 		{
-			static SceUID kernel_block = -1;
+			/* the kernel partition refuses a user thread (simstack1
+			41736182516: 800200d6), so each partition the emulator might
+			give is asked in turn, and the log names the one that gave */
+			static const int partitions[6] = {1, 3, 4, 6, 8, 9};
+			SceUID block = -1;
+			int k, from = 0;
 
 			if (!psp_keep("aimesimheap"))
-			{
-				kernel_block = sceKernelAllocPartitionMemory(1, "aimesim", PSP_SMEM_Low,
-					AIME_SIM_SLACK_BYTES + AIME_SIM_STACK_BYTES + 64, NULL);
-				if (kernel_block >= 0)
-					aime_sim_stack = (unsigned char *)(((unsigned int)sceKernelGetBlockHeadAddr(kernel_block) + 63) & ~63u);
-			}
-			platform_log("ME (simulated): the AI job's stack from %s (%08x)",
-				aime_sim_stack ? "the kernel partition, off the game's heap" : "the game's heap", (unsigned int)kernel_block);
+				for (k = 0; k < 6 && !aime_sim_stack; k++)
+				{
+					block = sceKernelAllocPartitionMemory(partitions[k], "aimesim", PSP_SMEM_Low,
+						AIME_SIM_SLACK_BYTES + AIME_SIM_STACK_BYTES + 64, NULL);
+					platform_log("ME (simulated): partition %d for the AI job's stack: %08x", partitions[k], (unsigned int)block);
+					if (block >= 0)
+					{
+						aime_sim_stack = (unsigned char *)(((unsigned int)sceKernelGetBlockHeadAddr(block) + 63) & ~63u);
+						from = partitions[k];
+					}
+				}
+			if (aime_sim_stack)
+				platform_log("ME (simulated): the AI job's stack from partition %d, off the game's heap", from);
+			else
+				platform_log("ME (simulated): the AI job's stack from the game's heap");
 		}
 		if (!aime_sim_stack)
 			aime_sim_stack = (unsigned char *)memalign(64, AIME_SIM_SLACK_BYTES + AIME_SIM_STACK_BYTES);
