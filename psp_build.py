@@ -1102,6 +1102,12 @@ def main():
         missing = set(re.findall(r"undefined reference to `([^']+)'", r.stderr))
         if r.returncode == 0 or not (missing - stubs):
             break
+        # a name that isn't C (an LTO link's renamed static, "f.lto_priv.0")
+        # can't be stubbed, and something the link made is missing: say what
+        odd = sorted(n for n in missing if not re.fullmatch(r"[A-Za-z_]\w*", n))
+        if odd:
+            print("\n".join(l for l in r.stderr.splitlines() if any(n in l for n in odd))[-4000:])
+            sys.exit("not linking: undefined names that aren't C: " + ", ".join(odd[:20]))
         stubs |= missing
     if r.returncode:
         print(r.stderr[-3000:])
