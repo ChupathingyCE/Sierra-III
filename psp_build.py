@@ -449,12 +449,13 @@ ASSERTS_OFF_UNITS = [w for w in os.environ.get("PSP_ASSERTS_OFF_UNITS", "").spli
 # those not at -Os). The tick and the drawing are long chains of small
 # functions across units, and each unit compiled alone can't inline or prune
 # across them; with LTO, GCC does that at the link, by the profile's counts.
-# Also in: port/linux/game/msvc_comdat.c, the weak external copies of the
-# header inlines (the MSVC semantics header's #pragma weak). A unit that
-# sees one through a prototype makes a weak definition of its own, and with
-# the comdat copy outside LTO the link may keep that one while GCC has sent
-# calls to its LTO copy's local alias, which is never made (lab
-# sierra-build 41568663289: reference_list_new.localalias undefined). Left out:
+# Also in, whatever their level (LTO keeps each function's own): the units
+# that define a header inline's external copy, which the LTO units carry
+# copies of too. With the external copy outside LTO, the link keeps it, while
+# GCC has already sent the LTO units' calls to the local alias of an LTO copy
+# that the link then drops (lab sierra-build 41568663289:
+# reference_list_new.localalias undefined; the plain build's map has the
+# kept copy in hs/object_lists.o). LTO_COPY_UNITS lists them. Left out:
 # - the cold units (-Os): their size is the point, and leaving them out
 #   keeps one optimisation level inside the LTO link;
 # - psp/src and the port's units: the link script places the ME's variables
@@ -470,6 +471,7 @@ ASSERTS_OFF_UNITS = [w for w in os.environ.get("PSP_ASSERTS_OFF_UNITS", "").spli
 # that object (LTO_OBJECT). PSP_LTO_UNITS=ai,objects limits LTO to those
 # source/ directories (a bisection)
 LTO = os.environ.get("PSP_LTO", "") == "1"
+LTO_COPY_UNITS = ("port/linux/game/msvc_comdat.c", "source/hs/object_lists.c")
 LTO_DIRS = [w for w in os.environ.get("PSP_LTO_UNITS", "").split(",") if w]
 LTO_OBJECT = "*ltrans*.o"
 LTO_OBJS = set()   # the LTO units' objects, filled in by main()
@@ -481,7 +483,7 @@ if LTO and os.environ.get("PSP_TEXT_LAYOUT", "") == "hotgroup":
 
 def lto_unit(rel):
     r = rel.replace("\\", "/")
-    if r == "port/linux/game/msvc_comdat.c":
+    if r in LTO_COPY_UNITS:
         return LTO
     if not LTO or not r.startswith("source/") or cold_code(r) or any(w in r for w in NOINLINE_UNITS):
         return False
