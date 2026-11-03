@@ -469,7 +469,7 @@ void *psp_anim_lock(unsigned long address, unsigned long size)
 		forget_pending = 0;
 		forget_all();
 	}
-	if (sceKernelGetThreadId() != game_thread && other_threads++ < 4)
+	if ((!psp_timers_off || (lookups & 255) == 0) && sceKernelGetThreadId() != game_thread && other_threads++ < 4) /* notimers: one lookup in 256 checked (each check a system call) */
 		platform_log("animations: a lookup from thread %x, not the game's (%x)", (unsigned)sceKernelGetThreadId(), (unsigned)game_thread);
 	if (!slot_count)
 		return failed(address, size, "no animation cache (the map's geometry pack isn't open?)");

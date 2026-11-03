@@ -1140,7 +1140,7 @@ static const struct
 	sorted index read-only (psp_geo.c, geoindexme): both exact; b30 on the
 	PSP-3000, beach frame -1.0% and flight drawing -0.8% (mememo), flight
 	drawing -1.3% (geoindexme) (sierra-hw 41272758085) */
-	{ "mememo", "mememooff" }, { "geoindexme", "geoindexmeoff" }, PSP_RELEASE_DEFAULTS
+	{ "mememo", "mememooff" }, { "geoindexme", "geoindexmeoff" }, { "notimers", "timerson" }, PSP_RELEASE_DEFAULTS
 };
 static char keep_defaults_added[KEEP_DEFAULTS_ROOM] = "";
 
@@ -1221,14 +1221,14 @@ static void keep_load(void)
 	/* build 114: "lean" (E2, optimization_ranking.md): the play set-up with
 	the measuring off, notimers and nooverlay in one word */
 	psp_timers_off = keep_search("notimers") || keep_search("lean");
-	/* a release (PSP_METRICS=0) starts with notimers among its defaults
-	(PSP_RELEASE_DEFAULTS, psp_post.h, in keep_defaults above): the game's
-	instrument timers (a clock call per model part, per moving particle,
-	per physics update...) feed only statistics no release prints, and cost
-	b30 ~3% of its game speed on the PSP-3000. "timerson" keeps them. The
-	default rides in the table, not here, so this function's code is the
-	same in both builds and the profile counted on the measuring build fits
-	the release's too */
+	/* every build starts with notimers (keep_defaults above): the game's
+	instrument timers (a clock call per model part, per moving particle, per
+	physics update: ~240 system calls a tick in the tick on b30) feed only
+	the profile windows and per-type lines, and each call costs the cache
+	its firmware's lines. "timerson" keeps them, for a session that reads
+	those lines. The default rides in the table, not here, so this
+	function's code stays the same and the profile counted with the timers
+	on still fits */
 	steps_every = keep_search("stepsall") ? 1 : STEPS_TIMED_EVERY;
 	if (keep_cache_lock < 0)
 		keep_cache_lock = sceKernelCreateSema("halo keep cache", 0, 1, 1, NULL);

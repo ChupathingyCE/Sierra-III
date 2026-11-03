@@ -58,4 +58,8 @@ extern volatile int psp_metrics_events;
 #define PSP_METRICS_EVENT(event) ((void)0)
 #endif
 
+/* the instruments' system calls off: "notimers", a default ("timerson"
+keeps them); psp_platform.c */
+extern int psp_timers_off;
+
 #endif
