@@ -2658,7 +2658,28 @@ static __attribute__((noinline, cold)) void aime_simulated(volatile struct me_sl
 	if (!tried)
 	{
 		tried = 1;
-		aime_sim_stack = (unsigned char *)memalign(64, AIME_SIM_SLACK_BYTES + AIME_SIM_STACK_BYTES);
+		/* Outside the game's heap where the emulator gives it: on the PSP
+		this stack is the ME's eDRAM, so taken from the heap it left the
+		emulator ~1.2 MB short of the PSP (heapmap1 41700604943: the heap's
+		second-largest block), and every emulator census of the heap, the
+		texture caches or the sound cache read a tighter machine than the
+		PSP. The kernel partition is mostly unused under the emulator's own
+		kernel. "aimesimheap" takes it from the heap, as before */
+		{
+			static SceUID kernel_block = -1;
+
+			if (!psp_keep("aimesimheap"))
+			{
+				kernel_block = sceKernelAllocPartitionMemory(1, "aimesim", PSP_SMEM_Low,
+					AIME_SIM_SLACK_BYTES + AIME_SIM_STACK_BYTES + 64, NULL);
+				if (kernel_block >= 0)
+					aime_sim_stack = (unsigned char *)(((unsigned int)sceKernelGetBlockHeadAddr(kernel_block) + 63) & ~63u);
+			}
+			platform_log("ME (simulated): the AI job's stack from %s (%08x)",
+				aime_sim_stack ? "the kernel partition, off the game's heap" : "the game's heap", (unsigned int)kernel_block);
+		}
+		if (!aime_sim_stack)
+			aime_sim_stack = (unsigned char *)memalign(64, AIME_SIM_SLACK_BYTES + AIME_SIM_STACK_BYTES);
 		if (!aime_sim_stack)
 			platform_log("ME (simulated): no room for the AI job's stack; it runs on the caller's");
 		else
