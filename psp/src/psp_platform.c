@@ -1064,7 +1064,7 @@ no more): a preset with the menu's own words needs ~250, and words past the
 limit are lost silently. KEEP_DEFAULTS_ROOM more holds the campaign's
 default words (keep_defaults_add), however full the file is */
 #define KEEP_FILE_BYTES 509
-#define KEEP_DEFAULTS_ROOM 256
+#define KEEP_DEFAULTS_ROOM 320
 static char keep_words[KEEP_FILE_BYTES + 3 + KEEP_DEFAULTS_ROOM] = "";
 /* build 106: bumped whenever keep_words changes, so psp_keep's remembered
 answers are asked again */
@@ -1140,7 +1140,7 @@ static const struct
 	sorted index read-only (psp_geo.c, geoindexme): both exact; b30 on the
 	PSP-3000, beach frame -1.0% and flight drawing -0.8% (mememo), flight
 	drawing -1.3% (geoindexme) (sierra-hw 41272758085) */
-	{ "mememo", "mememooff" }, { "geoindexme", "geoindexmeoff" }, { "notimers", "timerson" }, PSP_RELEASE_DEFAULTS
+	{ "mememo", "mememooff" }, { "geoindexme", "geoindexmeoff" }, { "notimers", "timerson" }, /* the AI thinks on the ME during the record, a few ms early in game time, which no player can feel (FIXES_AIME*; b30 frame -3 to -10% on the PSP) */ { "aime", "aimeoff" }, { "aime1b", "aimeoff" }, { "aime2a", "aimeoff" }, PSP_RELEASE_DEFAULTS
 };
 static char keep_defaults_added[KEEP_DEFAULTS_ROOM] = "";
 
