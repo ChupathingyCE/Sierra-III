@@ -1018,13 +1018,19 @@ def lto_report(r):
     if bypass:
         sys.exit("psp_build: PSP_LTO=1: LTO code calls a --wrap'd function past its wrapper:\n  " + "\n  ".join(sorted(bypass)))
     print("lto: no call from the LTO code skips a --wrap (%d wrapped functions checked)" % len(real))
-    # the link's own object beside the units' objects, so a list of the
-    # objects' sections (their alignment, for a code layout) covers its code
-    kept = [f for f in os.listdir(OUT) if re.fullmatch(r"halo\.elf\.ltrans\d+\.ltrans\.o", f)]
-    for f in kept:
-        shutil.copy2(os.path.join(OUT, f), os.path.join(OBJ, f))
-    print("lto: the link's own object%s" % (" copied into obj/: " + ", ".join(kept) if kept else
-          " isn't kept beside halo.elf (%s)" % ", ".join(f for f in os.listdir(OUT) if "ltrans" in f)[:300]))
+    # the link's own object in obj/, so a list of the objects' sections (their
+    # alignment, for a code layout) covers its code. The link deletes the
+    # object and keeps its assembly (-save-temps=obj), so the copy in obj/ is
+    # that assembly assembled again: its sections and their alignment are the
+    # link's own
+    made = []
+    for f in sorted(os.listdir(OUT)):
+        if re.fullmatch(r"halo\.elf\.ltrans\d+\.ltrans\.s", f):
+            r2 = subprocess.run(["psp-gcc", "-G0", "-march=allegrex", "-c", os.path.join(OUT, f),
+                                 "-o", os.path.join(OBJ, f[:-2] + ".o")], capture_output=True, text=True)
+            if r2.returncode == 0:
+                made.append(f[:-2] + ".o")
+    print("lto: the link's own object in obj/ for its sections' list: %s" % (", ".join(made) or "none (no assembly kept)"))
 
 # ---------- the mirror: the engine as GCC can compile it
 # The engine's Linux build relies on clang's MSVC extensions in a few places
