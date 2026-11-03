@@ -44852,6 +44852,7 @@ struct data_array *weather_particle_data;
 #ifdef HALO_PSP
 /* psp_fixups.py (FIXES_WXDEAD): see the notes there */
 #include <string.h>
+#include "scenario/scenario_definitions.h"
 #include "tag_files/tag_files.h"
 void platform_log(const char *format, ...);
 int psp_keep(const char *name);
