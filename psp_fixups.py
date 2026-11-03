@@ -44861,7 +44861,10 @@ long game_time_get(void);
 static int psp_wx_keeps = 0, psp_wx_walk = 0;
 /* "wxdead": the flag the weather's point physics carries */
 static unsigned long psp_wx_dead_flag = 0;
+/* the level last described: its data, its index and the map's (a level may
+load where the last one was) */
 static void const *psp_wx_level_seen = NULL;
+static long psp_wx_level_index = NONE, psp_wx_level_map = NONE;
 static long psp_wx_report_time = -1;
 static struct
 {
@@ -45029,9 +45032,12 @@ static void psp_wx_report(long now)
 	{
 		long now = game_time_get();
 
-		if (psp_wx_level_seen != (void const *)global_structure_bsp_get())
+		if (psp_wx_level_seen != (void const *)global_structure_bsp_get() ||
+			psp_wx_level_index != global_structure_bsp_index_get() || psp_wx_level_map != global_scenario_index)
 		{
 			psp_wx_level_seen = global_structure_bsp_get();
+			psp_wx_level_index = global_structure_bsp_index_get();
+			psp_wx_level_map = global_scenario_index;
 			psp_wx_level();
 			memset(&psp_wx_stats, 0, sizeof(psp_wx_stats));
 			psp_wx_report_time = now;
