@@ -505,7 +505,24 @@ def lto_link_flags():
     if PGO == "use":
         flags += ["-fprofile-use=" + PGO_DIR, "-fprofile-correction", "-Wno-missing-profile"] + (
                  ["-fprofile-partial-training"] if PGO_PARTIAL else []) + PGO_EXTRA
-    return flags + ["-flto", "-flto-partition=one"]
+    # -save-temps=obj: the link's own assembly kept beside halo.elf, so an
+    # assembler error at the link can be read back (lto_asm_context)
+    return flags + ["-flto", "-flto-partition=one", "-save-temps=obj"]
+
+def lto_asm_context(stderr):
+    """the lines around each assembler error in the link's own assembly, and
+    the function each is in"""
+    for path, line in re.findall(r"^(\S+\.s):(\d+): Error", stderr, re.M)[:3]:
+        path = path if os.path.isabs(path) else os.path.join(OUT, path)
+        if not os.path.exists(path):
+            print("lto: %s isn't kept" % path)
+            continue
+        text = open(path, errors="replace").read().splitlines()
+        n = int(line) - 1
+        fn = next((m.group(1) for l in reversed(text[:n]) for m in [re.match(r"^\s*\.ent\s+(\S+)", l)] if m), "?")
+        print("lto: %s:%s, in %s:" % (os.path.basename(path), line, fn))
+        for l in text[max(0, n - 25):n + 5]:
+            print("    " + l)
 
 def compile_one(item):
     src, flags, extra = item
@@ -520,7 +537,10 @@ def compile_one(item):
     if any(("/%s/" % word) in ("/" + rel.replace("\\", "/")) for word in ASSERTS_OFF_UNITS):
         extra = extra + ["-DPSP_ASSERTS_OFF=1"]
     if lto_unit(rel):
-        extra = extra + ["-flto"]
+        # fat: the unit's own code is made too, so assembly the retry below
+        # must handle fails here, where the retry can drop LTO with the flags,
+        # and not at the link
+        extra = extra + ["-flto", "-ffat-lto-objects"]
     os.makedirs(os.path.dirname(obj), exist_ok=True)
     defines = ["-Dmain=halo_main"] if src.endswith("shell/shell_xbox.c") else []
     if src.endswith("psp_bakecheck.c"):
@@ -595,7 +615,7 @@ def compile_one(item):
         r = subprocess.run(cmd, cwd=TREE, capture_output=True, text=True)
     if r.returncode and "-mno-explicit-relocs" in cmd:
         # inline assembly that uses $at (".set noat") needs explicit relocations
-        r = subprocess.run([a for a in cmd if a not in ("-mno-explicit-relocs", "-freorder-blocks-and-partition")],
+        r = subprocess.run([a for a in cmd if a not in ("-mno-explicit-relocs", "-freorder-blocks-and-partition", "-flto", "-ffat-lto-objects")],
                            cwd=TREE, capture_output=True, text=True)
     return src, r.returncode, r.stderr, obj
 
@@ -1054,6 +1074,12 @@ def main():
             f.write("=== %s\n%s\n" % (s, e))
     print("compiled %d of %d%s" % (len(results) - len(bad), len(results),
           "; failures in compile_errors.txt: " + ", ".join(os.path.basename(s) for s, e in bad) if bad else ""))
+    if LTO_OBJS:
+        # a unit the retry built without LTO (its assembly) is a plain object
+        plain = {o for o in LTO_OBJS if os.path.exists(o) and not any(n.startswith(".gnu.lto_") for n in elf_section_names(o))}
+        LTO_OBJS.difference_update(plain)
+        print("lto: %d units under LTO%s" % (len(LTO_OBJS), "; built without it (their assembly): " +
+              ", ".join(sorted(os.path.relpath(o, OBJ) for o in plain)) if plain else ""))
     if bad:
         sys.exit("not linking: %d units failed to compile" % len(bad))
     if not MULTIPLAYER:
@@ -1078,7 +1104,10 @@ def main():
             break
         stubs |= missing
     if r.returncode:
-        print(r.stderr[-3000:]); sys.exit(1)
+        print(r.stderr[-3000:])
+        if LTO_OBJS:
+            lto_asm_context(r.stderr)
+        sys.exit(1)
     open(os.path.join(OUT, "stubbed_symbols.txt"), "w").write("\n".join(sorted(stubs)) + "\n")
     # size the heap: from the program's end up to the game state
     size = subprocess.run(["psp-size", os.path.join(OUT, "halo.elf")], capture_output=True, text=True).stdout.splitlines()[1].split()
