@@ -43541,7 +43541,353 @@ FIXES_PWSL["source/objects/objects.c#pwsl"] = [
 """),
 ]
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items()) + list(FIXES_AIME2A.items()) + (list(FIXES_STACKHOT.items()) if STACKHOT else []) + (list(FIXES_STACKHOT2.items()) if STACKHOT2 else []) + list(FIXES_PWSL.items())):
+
+# ---------- FIXES_TP1: the passes' gates in line (lever TP1, docs/tick_passes.md)
+# VISLAZY's skip and FVP's settle are calls that, almost every time, find
+# nothing to do: the skip refuses an attached or drawn object (on c10 ~300
+# light scenery computes a tick, 2.0% of the tick on the PSP-1000), and the
+# settle is called at the top of every export, where the object is not yet
+# waiting (0.3-0.8% of the tick). Each call fetches its whole function into
+# the instruction cache for that answer. Here the same first tests are made
+# in line before the call, so the call is made only when it has work; the
+# skip also fetches the definition only for the reasons that read it. The
+# same objects are refused and settled at the same points, with the same
+# counts. "tp1old": the calls made every time, as before.
+#
+# E1, "exportpass" (off by default): a held weapon's export is made in FVP's
+# pass, just before its values, with its update's other code out of the
+# instruction cache. A held weapon is in no cluster partition, its state is
+# written by its holder before it and by its own update, and only its export
+# writes its triggers' illumination; it is taken only when it isn't
+# invisible (an invisible one exports into its holder) and its object part
+# exports nothing (vitality, which others' damage writes, and the random
+# constant, which draws the global seed). A reader that settles it early, a
+# detach and a second update make the export first. "exportcheck": exports
+# made in place as before; in the pass each one is made again on a copy of
+# the datum and compared with the values the walk's export gave.
+FIXES_TP1 = {}
+
+# what each settle site tests before its call (the settle's own first test)
+TP1_SETTLE = """extern int psp_fvp_open, psp_tp1_old;
+	extern unsigned long psp_fvp_pending[];
+	void psp_fvp_settle(long object_index);
+#ifndef PSP_FVP_SETTLE
+	/* psp_fixups.py (FIXES_TP1): the call only when the object waits */
+#define PSP_FVP_SETTLE(i) ((void)(psp_fvp_open && (psp_tp1_old > 0 || \\
+	((unsigned long)DATUM_INDEX_TO_ABSOLUTE_INDEX(i) < MAXIMUM_OBJECTS_PER_MAP && \\
+	((psp_fvp_pending[DATUM_INDEX_TO_ABSOLUTE_INDEX(i) >> 5] >> (DATUM_INDEX_TO_ABSOLUTE_INDEX(i) & 31)) & 1))) && \\
+	(psp_fvp_settle(i), 1)))
+#endif
+"""
+
+def tp1_settle(indent):
+    return TP1_SETTLE.replace("\n\t", "\n" + indent)
+
+FIXES_TP1["source/objects/objects.c#tp1"] = [
+# VISLAZY's gate: reasons 0 and 6 in line, counted as the skip counts them
+("""__attribute__((noinline)) static int psp_nms_skip(long object_index, struct object_datum *object)
+{
+	long absolute = DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index);
+	struct object_definition const *definition = object_definition_get(object->definition_index);
+""", """extern int psp_tp1_old; /* psp_fixups.py (FIXES_TP1) */
+static int psp_ep_mode; /* defined with FVP's state; object_detach reads it */
+
+/* psp_fixups.py (FIXES_TP1): the skip's two refusals that need no
+definition, made before its call */
+static __inline__ __attribute__((always_inline)) int psp_nms_may(long object_index, struct object_datum const *object)
+{
+	long absolute;
+	int reason;
+
+	if (psp_tp1_old > 0)
+		return 1;
+	if (object->object.parent_object_index != NONE || object->object.first_child_object_index != NONE)
+		reason = 0;
+	else
+	{
+		absolute = DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index);
+		if (!(psp_vl_on && ((psp_vl_drawn[absolute >> 5] >> (absolute & 31)) & 1)))
+			return 1;
+		reason = 6;
+	}
+	psp_nms_seen++;
+	psp_nms_refused[reason]++;
+	return 0;
+}
+
+__attribute__((noinline)) static int psp_nms_skip(long object_index, struct object_datum *object)
+{
+	long absolute = DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index);
+	/* fetched for the reasons that read it (FIXES_TP1) */
+	struct object_definition const *definition = NULL;
+"""),
+("""	else if (!psp_vl_on && definition->object.collision_model.index != NONE)
+		reason = 1;""",
+ """	else if ((definition = object_definition_get(object->definition_index)),
+		!psp_vl_on && definition->object.collision_model.index != NONE)
+		reason = 1;"""),
+("""				!(psp_nms_open && TEST_FLAG(PSP_NMS_TYPES, object->object.type) &&
+					(psp_pose_skipped = psp_nms_skip(object_index, object)) != 0)) /* psp_fixups.py (FIXES_NMSKIP) */""",
+ """				!(psp_nms_open && TEST_FLAG(PSP_NMS_TYPES, object->object.type) && psp_nms_may(object_index, object) &&
+					(psp_pose_skipped = psp_nms_skip(object_index, object)) != 0)) /* psp_fixups.py (FIXES_NMSKIP; FIXES_TP1) */"""),
+# FVP's state seen by the other units' gates; E1's state
+("""static unsigned long psp_fvp_pending[(MAXIMUM_OBJECTS_PER_MAP + 31) / 32];
+""", """unsigned long psp_fvp_pending[(MAXIMUM_OBJECTS_PER_MAP + 31) / 32]; /* the settle gates read it (FIXES_TP1) */
+/* psp_fixups.py (FIXES_TP1) */
+int psp_tp1_old = -1;
+static int psp_ep_mode = -1; /* 0 off, 1 exportpass, 2 exportcheck */
+static unsigned long psp_ep_owed[(MAXIMUM_OBJECTS_PER_MAP + 31) / 32]; /* deferred, not yet listed */
+static unsigned char psp_fvp_export[PSP_FVP_MAX]; /* per list entry: 1 the export waits, 2 check it */
+static unsigned long psp_ep_put, psp_ep_early, psp_ep_inplace, psp_ep_checked, psp_ep_differ, psp_ep_skipped;
+"""),
+("""	psp_fvp_open = psp_fvp_mode > 0 ? psp_fvp_mode : 0;
+	psp_fvp_count = 0;
+}
+""", """	psp_fvp_open = psp_fvp_mode > 0 ? psp_fvp_mode : 0;
+	psp_fvp_count = 0;
+	/* psp_fixups.py (FIXES_TP1) */
+	if (psp_tp1_old < 0 && psp_keep_loaded())
+	{
+		psp_tp1_old = psp_keep("tp1old") != 0;
+		psp_ep_mode = psp_keep("exportcheck") ? 2 : psp_keep("exportpass") ? 1 : 0;
+	}
+}
+
+/* psp_fixups.py (FIXES_TP1, E1): a held weapon whose export reads only its
+own state, which nothing after its update writes before the pass */
+static int psp_ep_takes(struct object_datum const *object)
+{
+	struct object_definition const *definition;
+	int i;
+
+	if (object->object.type != _object_type_weapon || object->object.parent_object_index == NONE ||
+		TEST_FLAG(object->object.flags, _object_invisible_bit))
+		return 0;
+	definition = object_definition_get(object->definition_index);
+	for (i = 0; i < NUMBER_OF_INCOMING_OBJECT_FUNCTIONS; i++)
+		if (definition->object.function_modes[i])
+			return 0;
+	return 1;
+}
+
+/* 1: the export at the walk's place waits for the pass */
+static int psp_ep_defer(long object_index, struct object_datum *object)
+{
+	long absolute = DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index);
+
+	if (psp_ep_mode != 1 || psp_fvp_open != 1 || absolute >= MAXIMUM_OBJECTS_PER_MAP || !psp_ep_takes(object))
+		return 0;
+	/* updated a second time: the first update's export and values first */
+	psp_fvp_settle(object_index);
+	psp_ep_owed[absolute >> 5] |= PSP_FVP_BIT(absolute);
+	psp_ep_put++;
+	return 1;
+}
+
+/* the waiting export, made now; its values are made from what it gives */
+static void psp_ep_make(int k, long object_index, struct object_datum *object)
+{
+	int i;
+
+	object_type_export_function_values(object_index);
+	for (i = 0; i < NUMBER_OF_INCOMING_OBJECT_FUNCTIONS; i++)
+		psp_fvp_inputs[k][i] = object->object.incoming_function_values[i];
+	psp_fvp_export[k] = 0;
+}
+
+/* exportcheck: the export made again on a copy of the datum, against what
+the walk's export gave */
+static void psp_ep_check(int k, long object_index)
+{
+	static unsigned long kept[256];
+	struct object_header_datum *header = object_header_get(object_index);
+	struct object_datum *object = header->datum;
+	long size = header->data_size;
+
+	psp_fvp_export[k] = 0;
+	if (size > (long)sizeof(kept))
+	{
+		psp_ep_skipped++;
+		return;
+	}
+	csmemcpy(kept, object, size);
+	object_type_export_function_values(object_index);
+	psp_ep_checked++;
+	if (csmemcmp(psp_fvp_inputs[k], object->object.incoming_function_values, sizeof(psp_fvp_inputs[0])) &&
+		psp_ep_differ++ < 16)
+		platform_psp_log("exportcheck: tick %ld, %s (%08lx): the pass's export differs from the walk's",
+			(long)game_time_get(), tag_get_name(object->definition_index), (unsigned long)object_index);
+	csmemcpy(object, kept, size);
+}
+"""),
+# the list takes the waiting export with the object; refused, it's made now
+("""static int psp_fvp_put_off(long object_index, struct object_datum *object)
+{
+	long absolute = DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index);
+
+	if (absolute < 0 || absolute >= MAXIMUM_OBJECTS_PER_MAP)
+		return 0;
+	if (!psp_fvp_all && !TEST_FLAG(PSP_FVP_TYPES, object->object.type))
+		return 0;
+	if (psp_fvp_count >= PSP_FVP_MAX)
+	{
+		psp_fvp_full++;
+		return 0;
+	}
+	/* updated a second time in the walk: the first update's values are
+	made before the second's inputs replace them */
+	psp_fvp_settle(object_index);
+	psp_fvp_pending[absolute >> 5] |= PSP_FVP_BIT(absolute);
+""", """static int psp_fvp_put_off_listed(long object_index, struct object_datum *object, long absolute);
+
+static int psp_fvp_put_off(long object_index, struct object_datum *object)
+{
+	long absolute = DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index);
+	/* psp_fixups.py (FIXES_TP1, E1): an export waiting for the list */
+	int owed = absolute < MAXIMUM_OBJECTS_PER_MAP && ((psp_ep_owed[absolute >> 5] >> (absolute & 31)) & 1);
+	int listed;
+
+	if (owed)
+		psp_ep_owed[absolute >> 5] &= ~PSP_FVP_BIT(absolute);
+	listed = psp_fvp_put_off_listed(object_index, object, absolute);
+	if (owed && !listed)
+	{
+		/* not listed: made in place, before its values, as before */
+		object_type_export_function_values(object_index);
+		psp_ep_inplace++;
+	}
+	else if (listed)
+		psp_fvp_export[psp_fvp_count - 1] = owed ? 1 : (psp_ep_mode == 2 && psp_ep_takes(object)) ? 2 : 0;
+	return listed;
+}
+
+static int psp_fvp_put_off_listed(long object_index, struct object_datum *object, long absolute)
+{
+	if (absolute < 0 || absolute >= MAXIMUM_OBJECTS_PER_MAP)
+		return 0;
+	if (!psp_fvp_all && !TEST_FLAG(PSP_FVP_TYPES, object->object.type))
+		return 0;
+	if (psp_fvp_count >= PSP_FVP_MAX)
+	{
+		psp_fvp_full++;
+		return 0;
+	}
+	/* updated a second time in the walk: the first update's values are
+	made before the second's inputs replace them */
+	PSP_FVP_SETTLE(object_index);
+	psp_fvp_pending[absolute >> 5] |= PSP_FVP_BIT(absolute);
+"""),
+# an early settle and the pass make a waiting export first
+("""	psp_fvp_make(k, object_index, object_get(object_index));
+}
+""", """	if (psp_fvp_export[k] == 1)
+	{
+		psp_ep_make(k, object_index, object_get(object_index)); /* psp_fixups.py (FIXES_TP1) */
+		psp_ep_early++;
+	}
+	psp_fvp_make(k, object_index, object_get(object_index));
+}
+"""),
+("""		object = (struct object_datum *)object_try_and_get_and_verify_type(object_index, _object_mask_all);
+		if (!object)
+			continue;
+		if (mode == 2)
+		{
+			psp_fvp_checked++;""",
+ """		object = (struct object_datum *)object_try_and_get_and_verify_type(object_index, _object_mask_all);
+		if (!object)
+			continue;
+		/* psp_fixups.py (FIXES_TP1, E1) */
+		if (psp_fvp_export[k] == 1)
+			psp_ep_make(k, object_index, object);
+		else if (psp_fvp_export[k] == 2)
+			psp_ep_check(k, object_index);
+		if (mode == 2)
+		{
+			psp_fvp_checked++;"""),
+("""		platform_psp_log("fvpass: mode %d, made %lu, made early %lu, past the list %lu, checked %lu, inputs changed %lu",
+			mode, psp_fvp_made, psp_fvp_early, psp_fvp_full, psp_fvp_checked, psp_fvp_differ);""",
+ """		platform_psp_log("fvpass: mode %d, made %lu, made early %lu, past the list %lu, checked %lu, inputs changed %lu",
+			mode, psp_fvp_made, psp_fvp_early, psp_fvp_full, psp_fvp_checked, psp_fvp_differ);
+		if (psp_ep_mode > 0)
+			platform_psp_log("exportpass: mode %d, put off %lu, made early %lu, made in place %lu, checked %lu, differed %lu, too large %lu",
+				psp_ep_mode, psp_ep_put, psp_ep_early, psp_ep_inplace, psp_ep_checked, psp_ep_differ, psp_ep_skipped);"""),
+# the export's place in the walk
+("""			if (psp_hoist)
+				object_type_export_function_values_for_type(object->object.type, object_index);
+			else
+				object_type_export_function_values(object_index);""",
+ """			if (psp_ep_defer(object_index, object)) /* psp_fixups.py (FIXES_TP1, E1) */
+				;
+			else if (psp_hoist)
+				object_type_export_function_values_for_type(object->object.type, object_index);
+			else
+				object_type_export_function_values(object_index);"""),
+# a detach changes what a waiting export reads: it's made first
+("""void object_detach(
+	long child_object_index)
+{
+	{
+		void psp_wake(long object_index); /* psp_fixups.py (FIXES_WAKE) */
+""", """void object_detach(
+	long child_object_index)
+{
+	if (psp_ep_mode == 1)
+	{
+		""" + tp1_settle("\t\t") + """
+		PSP_FVP_SETTLE(child_object_index); /* psp_fixups.py (FIXES_TP1, E1) */
+	}
+	{
+		void psp_wake(long object_index); /* psp_fixups.py (FIXES_WAKE) */
+"""),
+# the settle sites
+("""		deleted) has its values made first, as its update made them */
+		void psp_fvp_settle(long object_index);
+
+		psp_fvp_settle(object_index);""",
+ """		deleted) has its values made first, as its update made them */
+		""" + tp1_settle("\t\t") + """
+		PSP_FVP_SETTLE(object_index); /* FIXES_TP1 */"""),
+("""			if (psp_fvp_open)
+				psp_fvp_settle(object_index); /* psp_fixups.py (FIXES_FISSION) */""",
+ """			""" + tp1_settle("\t\t\t") + """
+			PSP_FVP_SETTLE(object_index); /* psp_fixups.py (FIXES_FISSION; FIXES_TP1) */"""),
+("""		psp_fvp_settle(object_index);
+		for (child = object->object.first_child_object_index; child != NONE; child = object_get(child)->object.next_object_index)
+			psp_fvp_settle(child);""",
+ """		""" + tp1_settle("\t\t") + """
+		PSP_FVP_SETTLE(object_index); /* FIXES_TP1 */
+		for (child = object->object.first_child_object_index; child != NONE; child = object_get(child)->object.next_object_index)
+			PSP_FVP_SETTLE(child);"""),
+]
+FIXES_TP1["source/objects/object_types.c#tp1"] = [
+("""	inputs they were made from */
+	void psp_fvp_settle(long object_index);
+
+	psp_fvp_settle(object_index);
+#endif""",
+ """	inputs they were made from */
+	""" + tp1_settle("\t") + """
+	PSP_FVP_SETTLE(object_index); /* psp_fixups.py (FIXES_TP1) */
+#endif"""),
+]
+FIXES_TP1["source/effects/particle_systems.c#tp1"] = [
+("""		void psp_fvp_settle(long object_index);
+		struct object_datum *object = (psp_fvp_settle(object_index), object_get(object_index));""",
+ """		""" + tp1_settle("\t\t") + """
+		struct object_datum *object = (PSP_FVP_SETTLE(object_index), object_get(object_index)); /* FIXES_TP1 */"""),
+]
+FIXES_TP1["source/items/weapons.c#tp1"] = [
+("""	if (psp_fvp_holder != NONE)
+		psp_fvp_settle(psp_fvp_holder);""",
+ """	if (psp_fvp_holder != NONE)
+	{
+		""" + tp1_settle("\t\t") + """
+		PSP_FVP_SETTLE(psp_fvp_holder); /* psp_fixups.py (FIXES_TP1) */
+	}"""),
+]
+
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items()) + list(FIXES_AIME2A.items()) + (list(FIXES_STACKHOT.items()) if STACKHOT else []) + (list(FIXES_STACKHOT2.items()) if STACKHOT2 else []) + list(FIXES_PWSL.items()) + list(FIXES_TP1.items())):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
