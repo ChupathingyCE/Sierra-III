@@ -132,6 +132,10 @@ ones asked for while the texture was resident, so psp_tex_average_known
 answers after it has left; the ME's work writes it, on lines of its own */
 static unsigned int *averages = NULL, *baked_averages = NULL;
 static int averages_count = 0;
+/* "texavg": the pack's stand-ins ('TSI1', texpack.py standin), 16 colours
+of 16 bits a texture in directory order, read only when the keep word is
+on; NULL draws a missing texture untextured, as before */
+static unsigned short *standins = NULL;
 /* directory flags (texpack.py): the change mask's CLUT ends the texture's
 data; the CPU reads its palette (the meters), so it's kept in main RAM, which
 the Media Engine can reach */
@@ -195,6 +199,8 @@ another). "nocomposite": drawn as one map and a tint, as without them */
 static unsigned int *composites = NULL;
 static int composite_count = 0;
 static int drawn_map_scale(void);
+static void standin_texels_make(void);
+extern int psp_tex_standin;
 /* build 39: the textures waiting for VRAM until the first frame (preload) */
 static unsigned short vram_pending[512];
 static int vram_pending_count = 0;
@@ -220,6 +226,11 @@ read it in time (the surface drew untextured that frame), and the longest run
 of such frames in a row */
 static unsigned long untextured_frames = 0, untextured_run = 0, untextured_run_worst = 0;
 static int frame_untextured = 0;
+/* "texavg": the frames in which a bind found its texture missing and drew
+its 4 x 4 stand-in instead of nothing (tex_standin), the longest run of
+them, and the stand-ins drawn */
+static unsigned long standin_frames = 0, standin_run = 0, standin_run_worst = 0, standin_binds = 0;
+static int frame_standin = 0;
 /* mechunk: the Media Engine replays a frame while the main CPU still writes
 it down and loads textures for it, so the ME's binds keep their bookkeeping
 here, on lines of their own, rather than in the words above and last_frame,
@@ -229,7 +240,7 @@ CPU merges it at the frame's end, once the ME's work is collected */
 #define ME_MARKS 256
 static struct
 {
-	unsigned long misses, marks_dropped;
+	unsigned long misses, marks_dropped, standins;
 	int untextured, mark_count;
 	unsigned short marks[ME_MARKS];
 } me_book __attribute__((aligned(64)));
@@ -262,10 +273,14 @@ static void me_book_merge(void)
 	misses += me_book.misses;
 	if (me_book.untextured)
 		frame_untextured = 1;
+	if (me_book.standins)
+		frame_standin = 1;
+	standin_binds += me_book.standins;
 	for (k = 0; k < me_book.mark_count; k++)
 		frame_set_mark(me_book.marks[k]);
 	me_book.misses = 0;
 	me_book.untextured = 0;
+	me_book.standins = 0;
 	me_book.mark_count = 0;
 }
 static unsigned char staging[STAGING_BYTES] __attribute__((aligned(64)));
@@ -509,6 +524,8 @@ void psp_tex_close(void)
 	averages_count = 0;
 	free(baked_averages);
 	baked_averages = NULL;
+	free(standins);
+	standins = NULL;
 	memset(gel_faces_kept, 0, sizeof(gel_faces_kept));
 	memset(gel_cubes_kept, 0, sizeof(gel_cubes_kept));
 	free(tints);
@@ -1357,6 +1374,29 @@ void psp_tex_map_opened(const char *name)
 		}
 		if (!baked_averages)
 			platform_log("textures: no averages in this pack (baked before bake format 2): bake again with this build's tools");
+		/* the stand-ins ('TSI1') follow the averages in packs baked since
+		texavg; the GE reads them, so they're written back once read */
+		else if (psp_keep("texavg") || psp_keep("texavgall"))
+		{
+			unsigned int bytes = header[1] * 32;
+
+			if (sceIoRead(file, table, sizeof(table)) == (int)sizeof(table) && table[0] == 0x31495354 /* TSI1 */ &&
+				table[1] == header[1] && (standins = memalign(64, bytes)) != NULL &&
+				sceIoRead(file, standins, bytes) == (int)bytes)
+			{
+				standin_texels_make();
+				sceKernelDcacheWritebackRange(standins, bytes);
+				psp_tex_standin = psp_keep("texavgall") ? 3 : psp_tex_standin;
+			}
+			else
+			{
+				free(standins);
+				standins = NULL;
+			}
+			platform_log("textures: texavg: %s", standins ? psp_tex_standin == 3 ?
+				"every texture drawn as its 4x4 stand-in (texavgall)" : "a texture not in memory drawn as its 4x4 stand-in" :
+				"no stand-ins in this pack (baked before texavg): drawn untextured");
+		}
 		platform_log("textures: see-through tints for %d shaders%s; drawn maps chosen by the bake for %d%s", tint_count,
 			tint_count ? "" : " (a pack baked before build 116: none)", drawn_map_count,
 			drawn_map_count ? (drawn_map_scale() ? " (drawnmapscale: the smallest scale's instead)" : "") :
@@ -1949,7 +1989,9 @@ int psp_tex_bitmap_count(long bitmap_tag_index)
 /* build 102: benchrun's stand-in texture (psp_ge.c's setting 23): 1, every
 bind; 2, the lightmaps' only. A 16 x 16 8-bit texture and its palette at the
 start of benchrun's VRAM room (contents don't matter: the colours are
-whatever is there), so the GE reads no texels from main RAM */
+whatever is there), so the GE reads no texels from main RAM. 3 is
+"texavgall": every bind draws its texture's 4 x 4 stand-in (tex_standin),
+to see what the stand-ins look like */
 int psp_tex_standin = 0;
 static int binding_lightmap = 0;
 int psp_tex_bind(unsigned int key, int *has_alpha);
@@ -2209,7 +2251,53 @@ static unsigned int *txc_bound_at = NULL;
 #else
 #define TXC_BOUND(index) do { } while (0)
 #endif
-int psp_tex_bind(unsigned int key, int *has_alpha)
+/* "texavg": every stand-in's texels, the indices 0-15 in row order as a
+4 x 4 CLUT4 texture, so a stand-in is its 16 colours loaded as the palette.
+Unswizzled, at the GE's least buffer width of 16 bytes (32 texels) */
+static unsigned char standin_texels[64] __attribute__((aligned(64)));
+
+static void standin_texels_make(void)
+{
+	int row;
+
+	for (row = 0; row < 4; row++)
+	{
+		standin_texels[row * 16] = (unsigned char)((row * 4) | (row * 4 + 1) << 4);
+		standin_texels[row * 16 + 1] = (unsigned char)((row * 4 + 2) | (row * 4 + 3) << 4);
+	}
+	sceKernelDcacheWritebackRange(standin_texels, sizeof(standin_texels));
+}
+
+/* "texavg": a texture that isn't in memory drawn as its stand-in, a 4 x 4
+of its colours (texpack.py standin), instead of untextured. One level, so
+the caller's mip settings for the real size don't matter; the texture
+coordinates are 0-1 across it, as across the texture, so only a draw in
+the GE's 2D mode (texels) can't take one (psp_tex_bind_texels). The ME's
+replay makes these binds too: it writes only the list and its own book */
+static int __attribute__((noinline, cold)) tex_standin(int index, struct pack_entry const *entry, int *has_alpha)
+{
+	__real_sceGuClutMode((entry->flags & 1) ? GU_PSM_4444 : GU_PSM_5650, 0, 0xFF, 0);
+	__real_sceGuClutLoad(1, standins + index * 16);
+	__real_sceGuTexMode(GU_PSM_T4, 0, 0, 0);
+	__real_sceGuTexImage(0, 4, 4, 32, standin_texels);
+	__real_sceGuTexFilter(GU_LINEAR, GU_LINEAR);
+	if (has_alpha)
+		*has_alpha = entry->flags & 1;
+	/* the GE's texture is no longer the one either memo names */
+	if (ME_MEMO_HERE())
+		tex_me_memo.key = 0;
+	memo_key = 0;
+	if (PSP_ME_WORK())
+		me_book.standins++;
+	else
+	{
+		standin_binds++;
+		frame_standin = 1;
+	}
+	return 1;
+}
+
+static inline __attribute__((always_inline)) int tex_bind(unsigned int key, int *has_alpha, int standin_ok)
 {
 	int index, level;
 	struct pack_entry const *entry;
@@ -2222,8 +2310,16 @@ int psp_tex_bind(unsigned int key, int *has_alpha)
 		return 0;
 	TXC_BOUND(index);
 	entry = &entries[index];
-	if (psp_tex_standin == 1 || (psp_tex_standin == 2 && binding_lightmap))
-		return bind_standin(entry, has_alpha);
+	if (__builtin_expect(psp_tex_standin != 0, 0))
+	{
+		if (psp_tex_standin == 3)
+		{
+			if (standin_ok && standins && !DIRECT(entry))
+				return tex_standin(index, entry, has_alpha);
+		}
+		else if (psp_tex_standin == 1 || (psp_tex_standin == 2 && binding_lightmap))
+			return bind_standin(entry, has_alpha);
+	}
 	if (hud_pin_on < 0)
 		hud_pin_on = !psp_keep("hudpinoff");
 	if (!resident_at[index])
@@ -2234,6 +2330,8 @@ int psp_tex_bind(unsigned int key, int *has_alpha)
 		{
 			me_book.misses++;
 			want(index); /* build 112 */
+			if (standin_ok && standins && !DIRECT(entry))
+				return tex_standin(index, entry, has_alpha);
 			me_book.untextured = 1;
 			return 0;
 		}
@@ -2247,6 +2345,8 @@ int psp_tex_bind(unsigned int key, int *has_alpha)
 		if ((frame_loaded >= LOAD_BUDGET_BYTES && !past_budget) || !load(index))
 		{
 			census_without(index, frame_loaded >= LOAD_BUDGET_BYTES && !past_budget ? 2 : 0);
+			if (standin_ok && standins && !DIRECT(entry))
+				return tex_standin(index, entry, has_alpha);
 			if (screen)
 				hud_untextured++;
 			frame_untextured = 1;
@@ -2348,6 +2448,19 @@ int psp_tex_bind(unsigned int key, int *has_alpha)
 		memo_frame = frame;
 	}
 	return 1;
+}
+
+int psp_tex_bind(unsigned int key, int *has_alpha)
+{
+	return tex_bind(key, has_alpha, 1);
+}
+
+/* a bind for a draw in the GE's 2D mode, whose texture coordinates are in
+the texture's texels: a missing texture draws untextured, as a stand-in's
+4 texels would repeat across it */
+int psp_tex_bind_texels(unsigned int key, int *has_alpha)
+{
+	return tex_bind(key, has_alpha, 0);
 }
 
 /* the size a texture was baked at (texture coordinates in the GE's 2D mode
@@ -3224,6 +3337,18 @@ void psp_tex_frame_end(void)
 	else
 		untextured_run = 0;
 	frame_untextured = 0;
+	if (frame_standin)
+	{
+		standin_frames++;
+		if (++standin_run > standin_run_worst)
+			standin_run_worst = standin_run;
+	}
+	else
+		standin_run = 0;
+	frame_standin = 0;
+	if (standins && entries && frame % 300 == 0)
+		platform_log("textures: texavg: %lu frames drew a stand-in (longest run %lu), %lu stand-ins drawn",
+			standin_frames, standin_run_worst, standin_binds);
 	if (entries && frame % 300 == 0)
 		platform_log("textures: %lu loaded (%lu KB), %lu requests waited for the next frame, %lu for room; %lu evicted; largest frame %lu textures, %lu KB; %lu frames drew something untextured (longest run %lu)",
 			loads, load_bytes / 1024, misses - (loads - preloaded), waits, evictions, frame_set_peak_count, frame_set_peak / 1024,
