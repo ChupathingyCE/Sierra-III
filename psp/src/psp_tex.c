@@ -231,6 +231,34 @@ its 4 x 4 stand-in instead of nothing (tex_standin), the longest run of
 them, and the stand-ins drawn */
 static unsigned long standin_frames = 0, standin_run = 0, standin_run_worst = 0, standin_binds = 0;
 static int frame_standin = 0;
+/* "missshotN" (tests): a screenshot as each run of such frames begins, at
+most N, from "shotfrom"'s game time (called before the stand-ins' run is
+counted, after the untextured run is), so a texavg A/B can set the frames
+that draw a stand-in beside the same frames drawn untextured (emulator runs
+have no hands); -1 until the keep words are read */
+static int miss_shots = -1;
+static long miss_shot_from = 0;
+
+static void __attribute__((noinline, cold)) miss_shot(int untextured)
+{
+	extern volatile int psp_screenshot_requested;
+	extern long psp_game_time_peek(void);
+	long now = psp_game_time_peek();
+
+	if (miss_shots < 0)
+	{
+		miss_shots = psp_keep_number("missshot", 0);
+		miss_shot_from = (long)psp_keep_number("shotfrom", 0) * 30;
+		if (miss_shots > 24)
+			miss_shots = 24;
+	}
+	if (miss_shots <= 0 || now < miss_shot_from || (untextured ? untextured_run != 1 : standin_run != 0))
+		return;
+	psp_screenshot_requested = 1;
+	miss_shots--;
+	platform_log("textures: missshot at frame %u, game time %ld: the frame before drew %s", frame + 1, now,
+		untextured ? "something untextured" : "a stand-in");
+}
 /* mechunk: the Media Engine replays a frame while the main CPU still writes
 it down and loads textures for it, so the ME's binds keep their bookkeeping
 here, on lines of their own, rather than in the words above and last_frame,
@@ -3336,6 +3364,8 @@ void psp_tex_frame_end(void)
 	}
 	else
 		untextured_run = 0;
+	if (__builtin_expect(miss_shots != 0, 0) && (frame_untextured || frame_standin))
+		miss_shot(frame_untextured);
 	frame_untextured = 0;
 	if (frame_standin)
 	{
