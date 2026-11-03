@@ -43355,7 +43355,7 @@ struct psp_pwsl_slot
 {
 	long object_index; /* NONE: empty */
 	real_point3d point;
-	real slack; /* how far the point may move, times the largest normal, and keep its leaf */
+	real slack; /* the smallest |distance| on its last path */
 	long leaf_index;
 	short cluster_index;
 };
@@ -43364,7 +43364,7 @@ static int psp_pwsl_on = -1, psp_pwsl_check = 0;
 static struct bsp3d const *psp_pwsl_bsp = NULL;
 static void const *psp_pwsl_structure = NULL;
 static unsigned long psp_pwsl_generation = 0;
-static real psp_pwsl_normal_most = 1.f, psp_pwsl_d_most = 0.f;
+static real psp_pwsl_normal_most = 1.f;
 static unsigned long psp_pwsl_hits, psp_pwsl_walks, psp_pwsl_wrong;
 
 /* bsp3d_test_point's walk on a trusted map, then scenario_location_from_point's
@@ -43419,13 +43419,19 @@ static short psp_pwsl_walk(struct location *location, real_point3d const *point,
 	return 0;
 }
 
-/* a plane distance n.p - d in floats is off by at most a few roundings of
-|n|(|x|+|y|+|z|) + |d|, and both walks' distances are: the slack keeps several
-times that, and a fixed 0.001 world units, under it */
-static real psp_pwsl_margin(real_point3d const *point)
+/* n.p - d in floats (three products, three sums, no fused steps) is off by at
+most 4u (|n.x x| + |n.y y| + |n.z z| + |d|), u = 2^-24, and |d| is at most
+|n|(|x|+|y|+|z|) + |distance|: so under 2.4e-7 (2 |n| S + |distance|), S the
+point's |x|+|y|+|z|. Each node must keep its sign through both points' errors
+and the move: these figures are four times those bounds */
+static real psp_pwsl_reach(real slack, real s_old, real s_new)
 {
-	return 1e-6f * (psp_pwsl_normal_most * ((real)fabs(point->x) + (real)fabs(point->y) + (real)fabs(point->z)) +
-		psp_pwsl_d_most) + 0.001f;
+	return slack * (1.f - 2e-6f) - 4e-6f * psp_pwsl_normal_most * (s_old + s_new) - 1e-5f;
+}
+
+static real psp_pwsl_size(real_point3d const *point)
+{
+	return (real)fabs(point->x) + (real)fabs(point->y) + (real)fabs(point->z);
 }
 
 void psp_pwsl_location_from_point(long object_index, struct location *location, real_point3d const *point)
@@ -43448,7 +43454,7 @@ void psp_pwsl_location_from_point(long object_index, struct location *location, 
 		psp_relink_generation != psp_pwsl_generation)
 	{
 		/* another level, BSP or set of cluster lists: nothing kept answers */
-		real most = 0.f, d_most = 0.f;
+		real most = 0.f;
 		long p, k;
 
 		for (p = 0; p < bsp->planes.count; p++)
@@ -43458,11 +43464,8 @@ void psp_pwsl_location_from_point(long object_index, struct location *location, 
 
 			if (n > most)
 				most = n;
-			if ((real)fabs(plane->d) > d_most)
-				d_most = (real)fabs(plane->d);
 		}
 		psp_pwsl_normal_most = (real)sqrt(most) * 1.0001f;
-		psp_pwsl_d_most = d_most;
 		psp_pwsl_bsp = bsp;
 		psp_pwsl_structure = global_structure_bsp_get();
 		psp_pwsl_generation = psp_relink_generation;
@@ -43473,7 +43476,7 @@ void psp_pwsl_location_from_point(long object_index, struct location *location, 
 	if (slot->object_index == object_index)
 	{
 		real dx = point->x - slot->point.x, dy = point->y - slot->point.y, dz = point->z - slot->point.z;
-		real reach = slot->slack - psp_pwsl_margin(point);
+		real reach = psp_pwsl_reach(slot->slack, psp_pwsl_size(&slot->point), psp_pwsl_size(point));
 
 		/* moved times the largest normal under the slack, squared to spare the root */
 		if (reach > 0.f &&
@@ -43510,7 +43513,7 @@ void psp_pwsl_location_from_point(long object_index, struct location *location, 
 	}
 	slot->object_index = object_index;
 	slot->point = *point;
-	slot->slack = slack - psp_pwsl_margin(point);
+	slot->slack = slack;
 	slot->leaf_index = location->leaf_index;
 	slot->cluster_index = location->cluster_index;
 counted:
