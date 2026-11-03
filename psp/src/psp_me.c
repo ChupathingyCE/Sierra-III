@@ -2526,8 +2526,9 @@ is measured (a fill pattern) and reported: it sizes the job's stack */
 #define AIME_SIM_FILL 0x5AA5C33Cu
 /* below the room in the emulator: what a deeper reach lands on, so it's
 measured instead of written over the heap's next block (the PSP's room stops
-at its guard) */
-#define AIME_SIM_SLACK_BYTES (640 * 1024)
+at its guard, which the job reads between actors) */
+static unsigned int aime_sim_slack_bytes = 64 * 1024;
+#define AIME_SIM_SLACK_BYTES aime_sim_slack_bytes
 /* the guard: words at the room's bottom, written before each job and read by
 the job between actors (psp_me_aime_guard_touched). A frame that reaches them
 has used the room; the job hands its actor back and ends, and the collection
@@ -2658,40 +2659,17 @@ static __attribute__((noinline, cold)) void aime_simulated(volatile struct me_sl
 	if (!tried)
 	{
 		tried = 1;
-		/* Outside the game's heap where the emulator gives it: on the PSP
-		this stack is the ME's eDRAM, so taken from the heap it left the
-		emulator ~1.2 MB short of the PSP (heapmap1 41700604943: the heap's
-		second-largest block), and every emulator census of the heap, the
-		texture caches or the sound cache read a tighter machine than the
-		PSP. The kernel partition is mostly unused under the emulator's own
-		kernel. "aimesimheap" takes it from the heap, as before */
-		{
-			/* the kernel partition refuses a user thread (simstack1
-			41736182516: 800200d6), so each partition the emulator might
-			give is asked in turn, and the log names the one that gave */
-			static const int partitions[6] = {1, 3, 4, 6, 8, 9};
-			SceUID block = -1;
-			int k, from = 0;
-
-			if (!psp_keep("aimesimheap"))
-				for (k = 0; k < 6 && !aime_sim_stack; k++)
-				{
-					block = sceKernelAllocPartitionMemory(partitions[k], "aimesim", PSP_SMEM_Low,
-						AIME_SIM_SLACK_BYTES + AIME_SIM_STACK_BYTES + 64, NULL);
-					platform_log("ME (simulated): partition %d for the AI job's stack: %08x", partitions[k], (unsigned int)block);
-					if (block >= 0)
-					{
-						aime_sim_stack = (unsigned char *)(((unsigned int)sceKernelGetBlockHeadAddr(block) + 63) & ~63u);
-						from = partitions[k];
-					}
-				}
-			if (aime_sim_stack)
-				platform_log("ME (simulated): the AI job's stack from partition %d, off the game's heap", from);
-			else
-				platform_log("ME (simulated): the AI job's stack from the game's heap");
-		}
-		if (!aime_sim_stack)
-			aime_sim_stack = (unsigned char *)memalign(64, AIME_SIM_SLACK_BYTES + AIME_SIM_STACK_BYTES);
+		/* On the PSP this stack is the ME's eDRAM; here it is the game's
+		heap, so every emulator figure of the heap, the texture caches or
+		the sound cache reads a machine that much tighter than the PSP
+		(heapmap1 41700604943: 1,184 KB with the old slack, the heap's
+		second-largest block). No partition outside the heap gives it to a
+		user thread (simstack2 41736845256: 1, 3, 4, 6, 8 and 9 refused), so
+		the slack below the room is kept small unless a run measures the
+		job's reach: "aimesimslack" for the old 640 KB */
+		if (psp_keep("aimesimslack"))
+			aime_sim_slack_bytes = 640 * 1024;
+		aime_sim_stack = (unsigned char *)memalign(64, AIME_SIM_SLACK_BYTES + AIME_SIM_STACK_BYTES);
 		if (!aime_sim_stack)
 			platform_log("ME (simulated): no room for the AI job's stack; it runs on the caller's");
 		else
