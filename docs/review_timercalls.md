@@ -38,3 +38,18 @@ Every edit keeps its file's line count, so the profile counted with the timers o
   change. A session that reads the step profile adds `timerson`.
 - **Not done:** a cheaper clock. The main CPU runs in user mode with CU0 off, so `mfc0 $9` faults
   there (`docs/layout_plan.md` [M]); the clocks left are decisions or rare.
+
+## Proof [E]
+
+- **Exactness** (lab tcx1 41575761499, 4850a92, the default against `timerson`): play and both random
+  seeds identical on b30 (6,000 ticks), c10 (3,600), c20 (6,000), d20 (3,000), a30 (7,050). The whole
+  state differs, in the parts drawing and sound write (objects, object looping sounds, the HUD's unit
+  interface, first-person weapons), as the timers' calls move timing; play doesn't.
+- **System calls a tick** on b30 (lab tcc1 41575841769, to game time 5,400): other 207 -> 129, tick
+  282 -> 23, drawing 447 -> 80. What's left in the tick: `inflight_forwarder`'s delay, the engine's
+  `QueryPerformanceCounter`, the ME ring's bounded waits (1 a tick each); in drawing the sound
+  mixer's interrupt locks (`mix_command`, the DirectSound streams).
+- **Its price** comes from a PSP pair (default against `timerson`, b30 timed route, hwprofile):
+  the lab's per-call fit predicts ~3.7 ms a tick (the tick ~2.2, drawing ~1.3) [E x M, U]; the
+  release's notimers measured +0.9% game speed (PSP-3000, 40084340672) and b136's -0.7 to -1.2 ms
+  a tick (PSP-1000, 39030595621), so expect less: the pair settles it and tests the fit.
