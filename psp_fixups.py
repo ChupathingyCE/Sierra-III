@@ -44245,7 +44245,540 @@ short structure_clusters_in_sphere(
 	short cluster_index,"""),
 ]
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items()) + list(FIXES_AIME2A.items()) + (list(FIXES_STACKHOT.items()) if STACKHOT else []) + (list(FIXES_STACKHOT2.items()) if STACKHOT2 else []) + list(FIXES_PWSL.items()) + list(FIXES_SPHSL.items()) + list(FIXES_TP1.items())):
+# ---------- FIXES_RECONLIST: a reconnect to the same clusters made in place
+# (lever RECONLIST). An object that moves leaves every cluster's list (the
+# references deleted) and joins them again (new references, each put first
+# in its list). When the clusters are the same, in the same order, the end of
+# that is predictable: in each list the object's reference first; in each
+# reference pool the same slots, because the pool gives the lowest free slot
+# and none is free below the object's own (the case taken here), taken in the
+# clusters' order, so only when the object's slots already rise in that order;
+# each new reference the pool's next identifier, in that order; the pools'
+# counts as they were and their first free slot past the last one taken. All
+# of that is in the game state and the lists' order is what collision and
+# objects_in_sphere read, so this makes exactly it: each reference moved to
+# its list's head with its new identifier, and its bytes as a new reference's,
+# without the deletes, the searches and the clearing. An object partition's
+# disconnect is held until the next touch of a partition: its own reconnect
+# (made in place when the clusters and slots allow it), or any other
+# partition call or list read, which makes the held disconnect first, as it
+# would have been made. "reconlistoff": as before; "reconlistcheck": the held
+# reconnects that qualify are made as before and compared with the end the
+# shortcut predicts (the "reconlist:" line).
+FIXES_RECONLIST = {}
+FIXES_RECONLIST["source/structures/cluster_partitions.c#reconlist"] = [
+("""static void cluster_partition_port_forget(
+	struct cluster_partition *partition);
+""", """static void cluster_partition_port_forget(
+	struct cluster_partition *partition);
+#ifdef HALO_PSP
+static void psp_rl_flush(void); /* psp_fixups.py (FIXES_RECONLIST) */
+#endif
+"""),
+("""void cluster_partition_reconnect(
+	struct cluster_partition *partition,
+	long datum_index,
+	long *first_cluster_reference,
+	real_point3d const *position,
+	float radius,
+	struct location const *location)
+{""", """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_RECONLIST): see there */
+#define PSP_RL_CLUSTERS 16
+static struct psp_rl_state
+{
+	int on; /* -1 unread */
+	int check;
+	int held;
+	struct cluster_partition *partition;
+	long datum_index;
+	long chain; /* the object's cluster references, held */
+} psp_rl = { -1 };
+static unsigned long psp_rl_in_place_count, psp_rl_flushed, psp_rl_refused, psp_rl_refused_slots, psp_rl_checked, psp_rl_differ,
+	psp_rl_logged;
+static void cluster_partition_disconnect_now(struct cluster_partition *partition, long datum_index, long *first_cluster_reference);
+
+/* the held disconnect, made now */
+static void psp_rl_flush(void)
+{
+	long chain;
+
+	if (!psp_rl.held)
+		return;
+	psp_rl.held = 0;
+	chain = psp_rl.chain;
+	psp_rl_flushed++;
+	cluster_partition_disconnect_now(psp_rl.partition, psp_rl.datum_index, &chain);
+}
+
+void psp_rl_game_state_saving(void)
+{
+	psp_rl_flush();
+}
+
+static short psp_rl_next_identifier(short identifier)
+{
+	identifier++;
+	if (!identifier)
+		identifier = (short)0x8000;
+	return identifier;
+}
+
+struct psp_rl_plan
+{
+	short count;
+	long cluster_references[PSP_RL_CLUSTERS]; /* in the clusters' order */
+	long data_references[PSP_RL_CLUSTERS];
+};
+
+/* 1 when no slot below last is free: the pool's first free slot is a floor
+(none below it is free, as datum_new keeps it), so the slots from it to last
+are looked at, as datum_new's own search would; a long way: 0 */
+static int psp_rl_none_free_below(struct data_array *array, long last)
+{
+	long k = array->first_free_absolute_index;
+
+	if (last - k > 128)
+		return 0;
+	for (; k < last; k++)
+		if (!((struct data_reference *)((char *)array->data + k * array->size))->identifier)
+			return 0;
+	return 1;
+}
+
+/* 1 when the held object's references are the clusters' in their order,
+each found in its list where its links say, at slots that rise in that
+order with no free slot below them */
+static int psp_rl_plan(struct cluster_partition *partition, long datum_index, short const *clusters, short count,
+	struct psp_rl_plan *plan)
+{
+	struct data_array *cluster_array = partition->cluster_reference_data, *data_array = partition->data_reference_data;
+	long walk = psp_rl.chain;
+	short n = 0, j;
+
+	if (count <= 0 || count > PSP_RL_CLUSTERS)
+		return 0;
+	while (walk != NONE)
+	{
+		struct data_reference *cluster_reference, *data_reference;
+		long head, data_index;
+
+		if (n >= count)
+			return 0;
+		cluster_reference = psp_reference_at(cluster_array, DATUM_INDEX_TO_ABSOLUTE_INDEX(walk));
+		j = (short)(count - 1 - n);
+		if (!cluster_reference || DATUM_INDEX_NEW(DATUM_INDEX_TO_ABSOLUTE_INDEX(walk), cluster_reference->identifier) != walk ||
+			cluster_reference->datum_index != clusters[j])
+			return 0;
+		data_reference = psp_reference_at(data_array, cluster_reference->pad);
+		if (!data_reference || data_reference->datum_index != datum_index)
+			return 0;
+		data_index = DATUM_INDEX_NEW(cluster_reference->pad, data_reference->identifier);
+		head = *cluster_partition_get_first_reference(partition, clusters[j]);
+		if (data_reference->pad == PSP_REFERENCE_HEAD)
+		{
+			if (head != data_index)
+				return 0;
+		}
+		else
+		{
+			struct data_reference *before = psp_reference_at(data_array, data_reference->pad);
+
+			if (!before || before->next_reference_index != data_index)
+				return 0;
+		}
+		plan->cluster_references[j] = walk;
+		plan->data_references[j] = data_index;
+		n++;
+		walk = cluster_reference->next_reference_index;
+	}
+	if (n != count)
+		return 0;
+	/* the same clusters: the rest is the slots */
+	psp_rl_refused_slots++;
+	for (j = 1; j < count; j++)
+		if (DATUM_INDEX_TO_ABSOLUTE_INDEX(plan->cluster_references[j]) <= DATUM_INDEX_TO_ABSOLUTE_INDEX(plan->cluster_references[j - 1]) ||
+			DATUM_INDEX_TO_ABSOLUTE_INDEX(plan->data_references[j]) <= DATUM_INDEX_TO_ABSOLUTE_INDEX(plan->data_references[j - 1]))
+			return 0;
+	if (!psp_rl_none_free_below(cluster_array, DATUM_INDEX_TO_ABSOLUTE_INDEX(plan->cluster_references[count - 1])) ||
+		!psp_rl_none_free_below(data_array, DATUM_INDEX_TO_ABSOLUTE_INDEX(plan->data_references[count - 1])))
+		return 0;
+	psp_rl_refused_slots--;
+	plan->count = count;
+	return 1;
+}
+
+/* the index the pool would give a new datum at this slot with this identifier */
+static long psp_rl_index(short identifier, long absolute_index)
+{
+	/* datum_new's own expression, from a short identifier and slot */
+	short slot = (short)absolute_index;
+
+	return identifier<<16 | slot;
+}
+
+/* the end the plan predicts: the new indices, in the clusters' order */
+static void psp_rl_predict(struct cluster_partition *partition, struct psp_rl_plan const *plan,
+	long *cluster_indices_out, long *data_indices_out)
+{
+	short cluster_identifier = partition->cluster_reference_data->next_identifier;
+	short data_identifier = partition->data_reference_data->next_identifier;
+	short j;
+
+	for (j = 0; j < plan->count; j++)
+	{
+		cluster_indices_out[j] = psp_rl_index(cluster_identifier, DATUM_INDEX_TO_ABSOLUTE_INDEX(plan->cluster_references[j]));
+		data_indices_out[j] = psp_rl_index(data_identifier, DATUM_INDEX_TO_ABSOLUTE_INDEX(plan->data_references[j]));
+		cluster_identifier = psp_rl_next_identifier(cluster_identifier);
+		data_identifier = psp_rl_next_identifier(data_identifier);
+	}
+}
+
+/* the reconnect, made in place by the plan */
+static void psp_rl_make(struct cluster_partition *partition, long datum_index, long *first_cluster_reference,
+	short const *clusters, struct psp_rl_plan const *plan)
+{
+	struct data_array *cluster_array = partition->cluster_reference_data, *data_array = partition->data_reference_data;
+	long new_clusters[PSP_RL_CLUSTERS], new_data[PSP_RL_CLUSTERS];
+	short j;
+
+	psp_rl_predict(partition, plan, new_clusters, new_data);
+	for (j = 0; j < plan->count; j++)
+	{
+		long *head = cluster_partition_get_first_reference(partition, clusters[j]);
+		long data_absolute = DATUM_INDEX_TO_ABSOLUTE_INDEX(plan->data_references[j]);
+		struct data_reference *reference = psp_reference_at(data_array, data_absolute);
+		struct data_reference *cluster_reference = psp_reference_at(cluster_array,
+			DATUM_INDEX_TO_ABSOLUTE_INDEX(plan->cluster_references[j]));
+
+		/* out of its list, as the disconnect's unlink does */
+		if (reference->pad == PSP_REFERENCE_HEAD)
+			*head = reference->next_reference_index;
+		else
+			psp_reference_at(data_array, reference->pad)->next_reference_index = reference->next_reference_index;
+		if (reference->next_reference_index != NONE)
+			((struct data_reference *)datum_get(data_array, reference->next_reference_index))->pad = reference->pad;
+		/* in again first, a new reference's bytes (reference_list_add, psp_cluster_links) */
+		reference->identifier = (short)(new_data[j] >> 16);
+		reference->datum_index = datum_index;
+		reference->next_reference_index = *head;
+		reference->pad = PSP_REFERENCE_HEAD;
+		if (*head != NONE)
+			((struct data_reference *)datum_get(data_array, *head))->pad = (word)data_absolute;
+		*head = new_data[j];
+		cluster_reference->identifier = (short)(new_clusters[j] >> 16);
+		cluster_reference->datum_index = clusters[j];
+		cluster_reference->next_reference_index = j ? new_clusters[j - 1] : NONE;
+		cluster_reference->pad = (word)data_absolute;
+		/* the disconnect's count and the reconnect's */
+		partition->port_modification_count += 2;
+	}
+	*first_cluster_reference = new_clusters[plan->count - 1];
+	for (j = 0; j < plan->count; j++)
+	{
+		cluster_array->next_identifier = psp_rl_next_identifier(cluster_array->next_identifier);
+		data_array->next_identifier = psp_rl_next_identifier(data_array->next_identifier);
+	}
+	cluster_array->first_free_absolute_index = (short)(DATUM_INDEX_TO_ABSOLUTE_INDEX(plan->cluster_references[plan->count - 1]) + 1);
+	data_array->first_free_absolute_index = (short)(DATUM_INDEX_TO_ABSOLUTE_INDEX(plan->data_references[plan->count - 1]) + 1);
+	psp_unlinks_direct += plan->count;
+}
+
+/* reconlistcheck: the end the engine's way made, against the prediction */
+static struct
+{
+	int armed;
+	struct psp_rl_plan plan;
+	long clusters_expected[PSP_RL_CLUSTERS], data_expected[PSP_RL_CLUSTERS];
+	short cluster_count_before, data_count_before, cluster_actual_before, data_actual_before;
+	short cluster_identifier_after, data_identifier_after;
+} psp_rl_expect;
+
+static void psp_rl_compare(struct cluster_partition *partition, long datum_index, long *first_cluster_reference,
+	short const *clusters)
+{
+	struct data_array *cluster_array = partition->cluster_reference_data, *data_array = partition->data_reference_data;
+	short j, count = psp_rl_expect.plan.count;
+	int same = 1;
+
+	psp_rl_expect.armed = 0;
+	psp_rl_checked++;
+	same &= *first_cluster_reference == psp_rl_expect.clusters_expected[count - 1];
+	for (j = 0; j < count; j++)
+	{
+		struct data_reference *reference = psp_reference_at(data_array, DATUM_INDEX_TO_ABSOLUTE_INDEX(psp_rl_expect.data_expected[j]));
+		struct data_reference *cluster_reference = psp_reference_at(cluster_array, DATUM_INDEX_TO_ABSOLUTE_INDEX(psp_rl_expect.clusters_expected[j]));
+
+		same &= *cluster_partition_get_first_reference(partition, clusters[j]) == psp_rl_expect.data_expected[j];
+		same &= reference && reference->identifier == (short)(psp_rl_expect.data_expected[j] >> 16) &&
+			reference->datum_index == datum_index && reference->pad == PSP_REFERENCE_HEAD;
+		same &= cluster_reference && cluster_reference->identifier == (short)(psp_rl_expect.clusters_expected[j] >> 16) &&
+			cluster_reference->datum_index == clusters[j] &&
+			cluster_reference->next_reference_index == (j ? psp_rl_expect.clusters_expected[j - 1] : NONE) &&
+			cluster_reference->pad == (word)DATUM_INDEX_TO_ABSOLUTE_INDEX(psp_rl_expect.data_expected[j]);
+	}
+	same &= cluster_array->count == psp_rl_expect.cluster_count_before && data_array->count == psp_rl_expect.data_count_before;
+	same &= cluster_array->actual_count == psp_rl_expect.cluster_actual_before && data_array->actual_count == psp_rl_expect.data_actual_before;
+	same &= cluster_array->next_identifier == psp_rl_expect.cluster_identifier_after &&
+		data_array->next_identifier == psp_rl_expect.data_identifier_after;
+	same &= cluster_array->first_free_absolute_index ==
+		(short)(DATUM_INDEX_TO_ABSOLUTE_INDEX(psp_rl_expect.plan.cluster_references[count - 1]) + 1);
+	same &= data_array->first_free_absolute_index ==
+		(short)(DATUM_INDEX_TO_ABSOLUTE_INDEX(psp_rl_expect.plan.data_references[count - 1]) + 1);
+	if (!same)
+		psp_rl_differ++;
+}
+
+static void psp_rl_log(void)
+{
+	unsigned long total = psp_rl_in_place_count + psp_rl_flushed + psp_rl_checked;
+
+	if (total / 20000 != psp_rl_logged)
+	{
+		psp_rl_logged = total / 20000;
+		platform_psp_log("reconlist: %lu held disconnects: made in place %lu, made as before %lu (not the same clusters %lu, "
+			"the same but not the slots %lu), checked %lu, differing %lu",
+			total, psp_rl_in_place_count, psp_rl_flushed, psp_rl_refused - psp_rl_refused_slots, psp_rl_refused_slots,
+			psp_rl_checked, psp_rl_differ);
+	}
+}
+#endif
+
+void cluster_partition_reconnect(
+	struct cluster_partition *partition,
+	long datum_index,
+	long *first_cluster_reference,
+	real_point3d const *position,
+	float radius,
+	struct location const *location)
+{"""),
+("""	match_assert("c:\\\\halo\\\\SOURCE\\\\structures\\\\cluster_partitions.c", 0x73, location);
+""", """	match_assert("c:\\\\halo\\\\SOURCE\\\\structures\\\\cluster_partitions.c", 0x73, location);
+#ifdef HALO_PSP
+	/* psp_fixups.py (FIXES_RECONLIST): another datum's held disconnect first */
+	if (psp_rl.held && (psp_rl.partition != partition || psp_rl.datum_index != datum_index))
+		psp_rl_flush();
+#endif
+"""),
+("""	if (cluster_count > 64)
+	{
+		error(_error_silent, "an object or light spanned %d clusters.", cluster_count);
+		cluster_count = NUMBEROF(cluster_indices);
+	}
+""", """	if (cluster_count > 64)
+	{
+		error(_error_silent, "an object or light spanned %d clusters.", cluster_count);
+		cluster_count = NUMBEROF(cluster_indices);
+	}
+#ifdef HALO_PSP
+	/* psp_fixups.py (FIXES_RECONLIST): its own held disconnect, made in place
+	with this reconnect when the plan allows, else made now */
+	if (psp_rl.held)
+	{
+		struct psp_rl_plan plan;
+
+		if (psp_rl_plan(partition, datum_index, cluster_indices, cluster_count, &plan))
+		{
+			if (!psp_rl.check)
+			{
+				psp_rl.held = 0;
+				psp_rl_in_place_count++;
+				psp_rl_make(partition, datum_index, first_cluster_reference, cluster_indices, &plan);
+				psp_rl_log();
+				return;
+			}
+			psp_rl_expect.armed = 1;
+			psp_rl_expect.plan = plan;
+			psp_rl_predict(partition, &plan, psp_rl_expect.clusters_expected, psp_rl_expect.data_expected);
+			psp_rl_expect.cluster_count_before = partition->cluster_reference_data->count;
+			psp_rl_expect.data_count_before = partition->data_reference_data->count;
+			psp_rl_expect.cluster_actual_before = partition->cluster_reference_data->actual_count;
+			psp_rl_expect.data_actual_before = partition->data_reference_data->actual_count;
+			{
+				short k, c = partition->cluster_reference_data->next_identifier, d = partition->data_reference_data->next_identifier;
+
+				for (k = 0; k < plan.count; k++)
+				{
+					c = psp_rl_next_identifier(c);
+					d = psp_rl_next_identifier(d);
+				}
+				psp_rl_expect.cluster_identifier_after = c;
+				psp_rl_expect.data_identifier_after = d;
+			}
+			psp_rl_flushed--; /* counted as checked, not as made as before */
+		}
+		else
+			psp_rl_refused++;
+		psp_rl_flush();
+	}
+#endif
+"""),
+("""	return;
+}
+
+void cluster_partition_disconnect(
+	struct cluster_partition *partition,
+	long datum_index,
+	long *first_cluster_reference)
+{
+	long cluster_reference_index = *first_cluster_reference;
+""", """#ifdef HALO_PSP
+	if (psp_rl_expect.armed)
+		psp_rl_compare(partition, datum_index, first_cluster_reference, cluster_indices);
+	psp_rl_log();
+#endif
+	return;
+}
+
+#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_RECONLIST): an object partition's disconnect is held
+(the object's own pointer cleared, as the disconnect leaves it) until a
+partition is next touched */
+void cluster_partition_disconnect(
+	struct cluster_partition *partition,
+	long datum_index,
+	long *first_cluster_reference)
+{
+	psp_rl_flush();
+	if (psp_rl.on < 0)
+	{
+		psp_rl.on = !psp_keep("reconlistoff");
+		psp_rl.check = psp_keep("reconlistcheck");
+	}
+	if (psp_rl.on && *first_cluster_reference != NONE &&
+		(partition == &collideable_object_cluster_partition || partition == &noncollideable_object_cluster_partition))
+	{
+		psp_rl.held = 1;
+		psp_rl.partition = partition;
+		psp_rl.datum_index = datum_index;
+		psp_rl.chain = *first_cluster_reference;
+		*first_cluster_reference = NONE;
+		return;
+	}
+	cluster_partition_disconnect_now(partition, datum_index, first_cluster_reference);
+}
+
+static void cluster_partition_disconnect_now(
+	struct cluster_partition *partition,
+	long datum_index,
+	long *first_cluster_reference)
+#else
+void cluster_partition_disconnect(
+	struct cluster_partition *partition,
+	long datum_index,
+	long *first_cluster_reference)
+#endif
+{
+	long cluster_reference_index = *first_cluster_reference;
+"""),
+("""long cluster_partition_get_first_datum(
+	struct cluster_partition const *partition,
+	long *reference_index,
+	short cluster_index)
+{
+""", """long cluster_partition_get_first_datum(
+	struct cluster_partition const *partition,
+	long *reference_index,
+	short cluster_index)
+{
+#ifdef HALO_PSP
+	psp_rl_flush(); /* psp_fixups.py (FIXES_RECONLIST): a list read sees the held disconnect made */
+#endif
+"""),
+("""long cluster_partition_get_next_datum(
+	struct cluster_partition const *partition,
+	long *reference_index)
+{
+""", """long cluster_partition_get_next_datum(
+	struct cluster_partition const *partition,
+	long *reference_index)
+{
+#ifdef HALO_PSP
+	psp_rl_flush(); /* psp_fixups.py (FIXES_RECONLIST) */
+#endif
+"""),
+("""void cluster_partition_make_invalid(
+	struct cluster_partition *partition)
+{
+""", """void cluster_partition_make_invalid(
+	struct cluster_partition *partition)
+{
+#ifdef HALO_PSP
+	psp_rl_flush(); /* psp_fixups.py (FIXES_RECONLIST) */
+#endif
+"""),
+("""void cluster_partition_delete(
+	struct cluster_partition *partition)
+{
+""", """void cluster_partition_delete(
+	struct cluster_partition *partition)
+{
+#ifdef HALO_PSP
+	psp_rl_flush(); /* psp_fixups.py (FIXES_RECONLIST) */
+#endif
+"""),
+("""void cluster_partition_copy(
+	struct cluster_partition *result,
+	struct cluster_partition const *source)
+{
+""", """void cluster_partition_copy(
+	struct cluster_partition *result,
+	struct cluster_partition const *source)
+{
+#ifdef HALO_PSP
+	psp_rl_flush(); /* psp_fixups.py (FIXES_RECONLIST) */
+#endif
+"""),
+("""void cluster_partition_make_valid(
+	struct cluster_partition *partition)
+{
+""", """void cluster_partition_make_valid(
+	struct cluster_partition *partition)
+{
+#ifdef HALO_PSP
+	psp_rl_flush(); /* psp_fixups.py (FIXES_RECONLIST) */
+#endif
+"""),
+("""static void cluster_partition_port_forget(
+	struct cluster_partition *partition)
+{
+""", """static void cluster_partition_port_forget(
+	struct cluster_partition *partition)
+{
+#ifdef HALO_PSP
+	/* psp_fixups.py (FIXES_RECONLIST): the lists made anew or loaded: a held
+	disconnect belongs to the state they replace */
+	psp_rl.held = 0;
+#endif
+"""),
+]
+# a hold never crosses the tick's end, where statecrc hashes the state
+FIXES_RECONLIST["source/game/game.c#reconlist"] = [
+("""		extern void psp_game_state_hash_tick(long tick); /* game_state.c (psp_fixups.py, build 112) */
+
+		psp_game_state_hash_tick(game_time_get());""",
+ """		extern void psp_game_state_hash_tick(long tick); /* game_state.c (psp_fixups.py, build 112) */
+		extern void psp_rl_game_state_saving(void); /* cluster_partitions.c (psp_fixups.py, FIXES_RECONLIST) */
+
+		psp_rl_game_state_saving();
+		psp_game_state_hash_tick(game_time_get());"""),
+]
+FIXES_RECONLIST["source/saved games/game_state.c#reconlist"] = [
+("""#ifdef HALO_PSP
+	psp_nms_game_state_saving,
+#endif
+};""", """#ifdef HALO_PSP
+	psp_nms_game_state_saving,
+	psp_rl_game_state_saving, /* cluster_partitions.c (psp_fixups.py, FIXES_RECONLIST) */
+#endif
+};"""),
+("""void psp_nms_game_state_saving(void); /* objects.c (psp_fixups.py, FIXES_NMSKIP: vislazy) */
+""", """void psp_nms_game_state_saving(void); /* objects.c (psp_fixups.py, FIXES_NMSKIP: vislazy) */
+void psp_rl_game_state_saving(void); /* cluster_partitions.c (psp_fixups.py, FIXES_RECONLIST) */
+"""),
+]
+
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items()) + list(FIXES_AIME2A.items()) + (list(FIXES_STACKHOT.items()) if STACKHOT else []) + (list(FIXES_STACKHOT2.items()) if STACKHOT2 else []) + list(FIXES_PWSL.items()) + list(FIXES_SPHSL.items()) + list(FIXES_RECONLIST.items()) + list(FIXES_TP1.items())):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
