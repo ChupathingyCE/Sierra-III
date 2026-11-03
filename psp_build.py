@@ -449,9 +449,12 @@ ASSERTS_OFF_UNITS = [w for w in os.environ.get("PSP_ASSERTS_OFF_UNITS", "").spli
 # those not at -Os). The tick and the drawing are long chains of small
 # functions across units, and each unit compiled alone can't inline or prune
 # across them; with LTO, GCC does that at the link, by the profile's counts.
-# The engine's inline functions are weak (the MSVC semantics header's
-# #pragma weak), which GCC never inlines from a unit alone, since another
-# definition could win the link; LTO knows which one does. Left out:
+# Also in: port/linux/game/msvc_comdat.c, the weak external copies of the
+# header inlines (the MSVC semantics header's #pragma weak). A unit that
+# sees one through a prototype makes a weak definition of its own, and with
+# the comdat copy outside LTO the link may keep that one while GCC has sent
+# calls to its LTO copy's local alias, which is never made (lab
+# sierra-build 41568663289: reference_list_new.localalias undefined). Left out:
 # - the cold units (-Os): their size is the point, and leaving them out
 #   keeps one optimisation level inside the LTO link;
 # - psp/src and the port's units: the link script places the ME's variables
@@ -478,6 +481,8 @@ if LTO and os.environ.get("PSP_TEXT_LAYOUT", "") == "hotgroup":
 
 def lto_unit(rel):
     r = rel.replace("\\", "/")
+    if r == "port/linux/game/msvc_comdat.c":
+        return LTO
     if not LTO or not r.startswith("source/") or cold_code(r) or any(w in r for w in NOINLINE_UNITS):
         return False
     if LTO_DIRS and not any(r.startswith("source/%s/" % d) for d in LTO_DIRS):
