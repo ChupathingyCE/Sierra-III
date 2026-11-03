@@ -830,6 +830,34 @@ def link(objs, stubs):
             block += "%s    %s(%s)\n" % (sep, files, sections)
         return block + "    . = ALIGN(64);\n    __psp_hot_data_end = .;\n"
 
+    # PSP_ME_DATA_LAYOUT orders the ME's own variables (the GE layer's and the
+    # texture cache's, which the ME's jobs read and write) by the ME's heat at
+    # the start of the ME's .data block, its .bss ones with them (zeros in the
+    # file), so the ME's hot words sit on few lines of its 16 KB data cache
+    # instead of in each file's input order (lever MEHOTG). A name is a file of
+    # psp/layout/medata_<name>.txt, one placement a line, "<file>(<sections>)",
+    # hottest first; only the ME's objects may be placed, so the block keeps
+    # only the ME's variables and no line is shared with the main CPU's.
+    # PSP_ME_DATA_SPREAD=1 (recon only) puts each placement on lines of its own,
+    # so the cache model's ME counts (the lab's medcache) name each one's misses.
+    # Only addresses move: exact. Unset: the input order, as before
+    def me_hot_data_block(me_objects):
+        name = os.environ.get("PSP_ME_DATA_LAYOUT", "")
+        if name in ("", "none"):
+            return ""
+        path = name if os.path.isfile(name) else os.path.join(HERE, "psp/layout", "medata_%s.txt" % name)
+        if not os.path.isfile(path):
+            sys.exit("psp_build: PSP_ME_DATA_LAYOUT=%s: no %s" % (name, path))
+        lines = [l.split("#")[0].strip() for l in open(path)]
+        sep = "    . = ALIGN(64);\n" if os.environ.get("PSP_ME_DATA_SPREAD") == "1" else ""
+        block = ""
+        for l in (l for l in lines if l):
+            m = re.match(r"^(\S+)\((.+)\)$", l)
+            if not m or not any(o.strip("*").split(":")[0] in m.group(1) for o in me_objects):
+                sys.exit("psp_build: PSP_ME_DATA_LAYOUT places only the ME's own objects' sections: %s" % l)
+            block += "%s    %s(%s)\n" % (sep, m.group(1), m.group(2))
+        return block + sep
+
     linkfile = SDK + "/lib/linkfile.prx"
     text = open(linkfile).read()
     layout = os.environ.get("PSP_TEXT_LAYOUT", "")
@@ -892,6 +920,7 @@ def link(objs, stubs):
                         # (PSP_AIME_ME_SIDE, psp_me.h) on lines of their own
                         "    __psp_aime_me_start = .;\n    KEEP(*(.data.psp_aime_me))\n"
                         "    . = ALIGN(64);\n    __psp_aime_me_end = .;\n    __psp_me_data_start = .;\n" +
+                        me_hot_data_block(me_objects) +
                         "".join("    %s(.data .data.*)\n" % o for o in me_objects) +
                         "    . = ALIGN(64);\n    __psp_me_data_end = .;\n" + music_data + hot_data_block(me_objects) +
                         "    *(.data .data.* .gnu.linkonce.d.*)\n")
