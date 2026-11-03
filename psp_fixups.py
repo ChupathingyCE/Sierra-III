@@ -43918,8 +43918,6 @@ FIXES_SPHSL["source/structures/cluster_partitions.c#sphsl"] = [
 	struct location const *location)
 {""", """#ifdef HALO_PSP
 /* psp_fixups.py (FIXES_SPHSL): see there */
-#include "physics/collision_bsp_definitions.h"
-boolean sphere_intersects_cluster_portal(struct structure_bsp *structure, short portal_index, real_point3d const *point, real radius);
 void platform_psp_log(const char *format, ...);
 
 #define PSP_SPHSL_SLOTS 128
@@ -43942,6 +43940,132 @@ static unsigned long psp_sphsl_generation = 0;
 static unsigned long psp_sphsl_same, psp_sphsl_slacked, psp_sphsl_walks, psp_sphsl_moved, psp_sphsl_other,
 	psp_sphsl_unkept, psp_sphsl_wrong, psp_sphsl_walk_wrong;
 
+/* the walk, in structures.c (FIXES_SPHSL): 0 when it can't say */
+int psp_sphsl_walk(short cluster_index, real_point3d const *position, real radius, short maximum,
+	short *clusters, short *count, real *slack);
+
+static short psp_sphsl_clusters_in_sphere(void const *partition, long datum_index, short cluster_index,
+	real_point3d const *position, real radius, short maximum_count, short *cluster_indices)
+{
+	struct structure_bsp *structure = global_structure_bsp_get();
+	struct psp_sphsl_slot *slot;
+	unsigned long radius_bits;
+	short k, count;
+
+	if (psp_sphsl_on < 0)
+	{
+		psp_sphsl_on = psp_keep("sphsloff") == 0;
+		psp_sphsl_check = psp_keep("sphslcheck");
+	}
+	if (!psp_sphsl_on || maximum_count < PSP_SPHSL_CLUSTERS || radius <= 0.f || cluster_index < 0 ||
+		cluster_index >= structure->clusters.count || cluster_index >= MAXIMUM_CLUSTERS_PER_STRUCTURE)
+		return psp_relink_clusters_in_sphere(cluster_index, position, radius, maximum_count, cluster_indices);
+	if (structure != psp_sphsl_structure || psp_relink_generation != psp_sphsl_generation)
+	{
+		/* another level, BSP or set of cluster lists: nothing kept answers */
+		psp_sphsl_structure = structure;
+		psp_sphsl_generation = psp_relink_generation;
+		for (k = 0; k < PSP_SPHSL_SLOTS; k++)
+			psp_sphsl_slots[k].partition = NULL;
+	}
+	csmemcpy(&radius_bits, &radius, 4);
+	slot = &psp_sphsl_slots[((unsigned long)datum_index ^ ((unsigned long)partition >> 4)) & (PSP_SPHSL_SLOTS - 1)];
+	if (slot->partition == partition && slot->datum_index == datum_index && slot->cluster_index == cluster_index &&
+		slot->radius_bits == radius_bits)
+	{
+		real dx = position->x - slot->center.x, dy = position->y - slot->center.y, dz = position->z - slot->center.z;
+		int same = !csmemcmp(&slot->center, position, sizeof(slot->center));
+
+		if (same || dx * dx + dy * dy + dz * dz < slot->slack * slot->slack)
+		{
+			if (same)
+				psp_sphsl_same++;
+			else
+				psp_sphsl_slacked++;
+			for (k = 0; k < slot->count; k++)
+				cluster_indices[k] = slot->clusters[k];
+			if (psp_sphsl_check)
+			{
+				short fresh[64];
+				short fresh_count = structure_clusters_in_sphere(cluster_index, position, radius, NUMBEROF(fresh), fresh);
+				boolean equal = fresh_count == slot->count;
+
+				for (k = 0; equal && k < fresh_count; k++)
+					equal = fresh[k] == slot->clusters[k];
+				if (!equal)
+					psp_sphsl_wrong++;
+			}
+			count = slot->count;
+			goto counted;
+		}
+		psp_sphsl_moved++;
+	}
+	else if (slot->partition)
+		psp_sphsl_other++;
+	psp_sphsl_walks++;
+	{
+		real slack = 1e30f;
+		int kept;
+
+		count = 0;
+		kept = psp_sphsl_walk(cluster_index, position, radius, PSP_SPHSL_CLUSTERS, slot->clusters, &count, &slack);
+		if (!kept)
+		{
+			psp_sphsl_unkept++;
+			slot->partition = NULL;
+			count = structure_clusters_in_sphere(cluster_index, position, radius, maximum_count, cluster_indices);
+			goto counted;
+		}
+		for (k = 0; k < count; k++)
+			cluster_indices[k] = slot->clusters[k];
+		if (psp_sphsl_check)
+		{
+			short fresh[64];
+			short fresh_count = structure_clusters_in_sphere(cluster_index, position, radius, NUMBEROF(fresh), fresh);
+			boolean equal = fresh_count == count;
+
+			for (k = 0; equal && k < fresh_count; k++)
+				equal = fresh[k] == cluster_indices[k];
+			if (!equal)
+				psp_sphsl_walk_wrong++;
+		}
+		slot->partition = partition;
+		slot->datum_index = datum_index;
+		slot->center = *position;
+		slot->radius_bits = radius_bits;
+		slot->slack = slack;
+		slot->cluster_index = cluster_index;
+		slot->count = count;
+	}
+counted:
+	if ((psp_sphsl_same + psp_sphsl_slacked + psp_sphsl_walks) % 20000 == 0)
+		platform_psp_log("sphsl: %lu reconnects: the same sphere %lu, within the slack %lu, walked %lu (moved past the slack %lu, "
+			"another datum's slot %lu, not kept %lu); wrong %lu, walks unlike the engine's %lu",
+			psp_sphsl_same + psp_sphsl_slacked + psp_sphsl_walks, psp_sphsl_same, psp_sphsl_slacked, psp_sphsl_walks,
+			psp_sphsl_moved, psp_sphsl_other, psp_sphsl_unkept, psp_sphsl_wrong, psp_sphsl_walk_wrong);
+	return count;
+}
+#endif
+
+void cluster_partition_reconnect(
+	struct cluster_partition *partition,
+	long datum_index,
+	long *first_cluster_reference,
+	real_point3d const *position,
+	float radius,
+	struct location const *location)
+{"""),
+("""	/* psp_fixups.py (FIXES_121): remembered when the same sphere comes again */
+	cluster_count = psp_relink_clusters_in_sphere(
+#else""", """	/* psp_fixups.py (FIXES_121, FIXES_SPHSL): answered by the slack, or
+	remembered when the same sphere comes again */
+	cluster_count = psp_sphsl_clusters_in_sphere(partition, datum_index,
+#else"""),
+]
+FIXES_SPHSL["source/structures/structures.c#sphsl"] = [
+("""short structure_clusters_in_sphere(
+	short cluster_index,""", """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_SPHSL): the walk with its slack (see there) */
 /* the largest x in [0, high] with g(x) >= 0, g falling, kept on the safe side */
 static real psp_sphsl_bisect(int kind, real a, real b, real k, real m, real r, real eps, real high)
 {
@@ -44064,13 +44188,13 @@ static real psp_sphsl_portal(struct structure_bsp *structure, short portal_index
 order, keeping the smallest slack; 0: the walk outgrew the slot (or a portal
 this can't judge), and the engine's call answers */
 static int psp_sphsl_recursive(struct structure_bsp *structure, short cluster_index, real_point3d const *position,
-	real radius, real eps, short *clusters, short *count, real *slack)
+	real radius, real eps, short maximum, short *clusters, short *count, real *slack)
 {
 	struct structure_cluster_graph *cluster = TAG_BLOCK_GET_ELEMENT(&structure->clusters, cluster_index,
 		struct structure_cluster_graph);
 	short portal_list_index;
 
-	if (*count >= PSP_SPHSL_CLUSTERS)
+	if (*count >= maximum)
 		return 0;
 	clusters[(*count)++] = cluster_index;
 	structure_cluster_mark(cluster_index);
@@ -44093,132 +44217,29 @@ static int psp_sphsl_recursive(struct structure_bsp *structure, short cluster_in
 			return 0;
 		if (portal_slack < *slack)
 			*slack = portal_slack;
-		if (answer && !psp_sphsl_recursive(structure, adjacent_cluster_index, position, radius, eps, clusters, count, slack))
+		if (answer && !psp_sphsl_recursive(structure, adjacent_cluster_index, position, radius, eps, maximum, clusters, count, slack))
 			return 0;
 	}
 	return 1;
 }
 
-static short psp_sphsl_clusters_in_sphere(void const *partition, long datum_index, short cluster_index,
-	real_point3d const *position, real radius, short maximum_count, short *cluster_indices)
+/* the clusters structure_clusters_in_sphere gives, in its order, and the
+smallest slack of the decisions that made them */
+int psp_sphsl_walk(short cluster_index, real_point3d const *position, real radius, short maximum,
+	short *clusters, short *count, real *slack)
 {
-	struct structure_bsp *structure = global_structure_bsp_get();
-	struct psp_sphsl_slot *slot;
-	unsigned long radius_bits;
-	short k, count;
+	real eps = 1e-3f + 4e-6f * ((real)fabs(position->x) + (real)fabs(position->y) + (real)fabs(position->z) + radius);
+	int kept;
 
-	if (psp_sphsl_on < 0)
-	{
-		psp_sphsl_on = psp_keep("sphsloff") == 0;
-		psp_sphsl_check = psp_keep("sphslcheck");
-	}
-	if (!psp_sphsl_on || maximum_count < PSP_SPHSL_CLUSTERS || radius <= 0.f || cluster_index < 0 ||
-		cluster_index >= structure->clusters.count || cluster_index >= MAXIMUM_CLUSTERS_PER_STRUCTURE)
-		return psp_relink_clusters_in_sphere(cluster_index, position, radius, maximum_count, cluster_indices);
-	if (structure != psp_sphsl_structure || psp_relink_generation != psp_sphsl_generation)
-	{
-		/* another level, BSP or set of cluster lists: nothing kept answers */
-		psp_sphsl_structure = structure;
-		psp_sphsl_generation = psp_relink_generation;
-		for (k = 0; k < PSP_SPHSL_SLOTS; k++)
-			psp_sphsl_slots[k].partition = NULL;
-	}
-	csmemcpy(&radius_bits, &radius, 4);
-	slot = &psp_sphsl_slots[((unsigned long)datum_index ^ ((unsigned long)partition >> 4)) & (PSP_SPHSL_SLOTS - 1)];
-	if (slot->partition == partition && slot->datum_index == datum_index && slot->cluster_index == cluster_index &&
-		slot->radius_bits == radius_bits)
-	{
-		real dx = position->x - slot->center.x, dy = position->y - slot->center.y, dz = position->z - slot->center.z;
-		int same = !csmemcmp(&slot->center, position, sizeof(slot->center));
-
-		if (same || dx * dx + dy * dy + dz * dz < slot->slack * slot->slack)
-		{
-			if (same)
-				psp_sphsl_same++;
-			else
-				psp_sphsl_slacked++;
-			for (k = 0; k < slot->count; k++)
-				cluster_indices[k] = slot->clusters[k];
-			if (psp_sphsl_check)
-			{
-				short fresh[64];
-				short fresh_count = structure_clusters_in_sphere(cluster_index, position, radius, NUMBEROF(fresh), fresh);
-				boolean equal = fresh_count == slot->count;
-
-				for (k = 0; equal && k < fresh_count; k++)
-					equal = fresh[k] == slot->clusters[k];
-				if (!equal)
-					psp_sphsl_wrong++;
-			}
-			count = slot->count;
-			goto counted;
-		}
-		psp_sphsl_moved++;
-	}
-	else if (slot->partition)
-		psp_sphsl_other++;
-	psp_sphsl_walks++;
-	{
-		real eps = 1e-3f + 4e-6f * ((real)fabs(position->x) + (real)fabs(position->y) + (real)fabs(position->z) + radius);
-		real slack = 1e30f;
-		int kept;
-
-		count = 0;
-		structure_cluster_marker_begin();
-		kept = psp_sphsl_recursive(structure, cluster_index, position, radius, eps, slot->clusters, &count, &slack);
-		structure_cluster_marker_end();
-		if (!kept)
-		{
-			psp_sphsl_unkept++;
-			slot->partition = NULL;
-			count = structure_clusters_in_sphere(cluster_index, position, radius, maximum_count, cluster_indices);
-			goto counted;
-		}
-		for (k = 0; k < count; k++)
-			cluster_indices[k] = slot->clusters[k];
-		if (psp_sphsl_check)
-		{
-			short fresh[64];
-			short fresh_count = structure_clusters_in_sphere(cluster_index, position, radius, NUMBEROF(fresh), fresh);
-			boolean equal = fresh_count == count;
-
-			for (k = 0; equal && k < fresh_count; k++)
-				equal = fresh[k] == cluster_indices[k];
-			if (!equal)
-				psp_sphsl_walk_wrong++;
-		}
-		slot->partition = partition;
-		slot->datum_index = datum_index;
-		slot->center = *position;
-		slot->radius_bits = radius_bits;
-		slot->slack = slack;
-		slot->cluster_index = cluster_index;
-		slot->count = count;
-	}
-counted:
-	if ((psp_sphsl_same + psp_sphsl_slacked + psp_sphsl_walks) % 20000 == 0)
-		platform_psp_log("sphsl: %lu reconnects: the same sphere %lu, within the slack %lu, walked %lu (moved past the slack %lu, "
-			"another datum's slot %lu, not kept %lu); wrong %lu, walks unlike the engine's %lu",
-			psp_sphsl_same + psp_sphsl_slacked + psp_sphsl_walks, psp_sphsl_same, psp_sphsl_slacked, psp_sphsl_walks,
-			psp_sphsl_moved, psp_sphsl_other, psp_sphsl_unkept, psp_sphsl_wrong, psp_sphsl_walk_wrong);
-	return count;
+	structure_cluster_marker_begin();
+	kept = psp_sphsl_recursive(global_structure_bsp_get(), cluster_index, position, radius, eps, maximum, clusters, count, slack);
+	structure_cluster_marker_end();
+	return kept;
 }
 #endif
 
-void cluster_partition_reconnect(
-	struct cluster_partition *partition,
-	long datum_index,
-	long *first_cluster_reference,
-	real_point3d const *position,
-	float radius,
-	struct location const *location)
-{"""),
-("""	/* psp_fixups.py (FIXES_121): remembered when the same sphere comes again */
-	cluster_count = psp_relink_clusters_in_sphere(
-#else""", """	/* psp_fixups.py (FIXES_121, FIXES_SPHSL): answered by the slack, or
-	remembered when the same sphere comes again */
-	cluster_count = psp_sphsl_clusters_in_sphere(partition, datum_index,
-#else"""),
+short structure_clusters_in_sphere(
+	short cluster_index,"""),
 ]
 
 for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items()) + list(FIXES_AIME2A.items()) + (list(FIXES_STACKHOT.items()) if STACKHOT else []) + (list(FIXES_STACKHOT2.items()) if STACKHOT2 else []) + list(FIXES_PWSL.items()) + list(FIXES_SPHSL.items()) + list(FIXES_TP1.items())):
