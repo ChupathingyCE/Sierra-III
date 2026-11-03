@@ -984,8 +984,12 @@ def lto_report(r):
         print("  " + w)
     sections = map_sections(os.path.join(OUT, "halo.map"))
     lto_code = [(a, a + n, s) for s, a, n, f in sections if s.startswith(".text") and "ltrans" in f and n]
-    if not lto_code:
-        sys.exit("psp_build: PSP_LTO=1 but no code came out of an LTO object (halo.map has no ltrans input): the linker plugin didn't run")
+    # (an SDK library built with LTO makes an ltrans object of its own in any
+    # link, so it's the LTO units' own code that says LTO ran)
+    fat = sorted({f for s, a, n, f in sections if s.startswith(".text") and n and f in LTO_OBJS})
+    if not lto_code or fat:
+        sys.exit("psp_build: PSP_LTO=1 but the LTO units' code was linked as compiled (%s): the linker plugin didn't run"
+                 % ", ".join(os.path.relpath(f, OBJ) for f in fat[:5]))
     hot = sum(n for s, a, n, f in sections if s.startswith(".text.hot."))
     print("lto: %d units; their code %d bytes in %d sections; all .text.hot %d bytes" %
           (len(LTO_OBJS), sum(b - a for a, b, s in lto_code), len(lto_code), hot))
