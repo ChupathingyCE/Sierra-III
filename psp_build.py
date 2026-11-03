@@ -13,7 +13,7 @@
 
 usage: psp_build.py [--jobs N]
 environment: HALO_REPO (default /tmp/halo-sp), PSP_OUT (default /tmp/psp_halo)"""
-import os, re, shlex, shutil, struct, subprocess, sys
+import bisect, fnmatch, os, re, shlex, shutil, struct, subprocess, sys
 from concurrent.futures import ThreadPoolExecutor
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -445,6 +445,68 @@ NOINLINE_UNITS = [w for w in os.environ.get("PSP_NOINLINE", "").split(",") if w]
 # assert whose expression does the game's work (X10, assertsoff1-4)
 ASSERTS_OFF_UNITS = [w for w in os.environ.get("PSP_ASSERTS_OFF_UNITS", "").split(",") if w]
 
+# PSP_LTO=1: link-time optimisation for the engine's hot units (source/,
+# those not at -Os). The tick and the drawing are long chains of small
+# functions across units, and each unit compiled alone can't inline or prune
+# across them; with LTO, GCC does that at the link, by the profile's counts.
+# The engine's inline functions are weak (the MSVC semantics header's
+# #pragma weak), which GCC never inlines from a unit alone, since another
+# definition could win the link; LTO knows which one does. Left out:
+# - the cold units (-Os): their size is the point, and leaving them out
+#   keeps one optimisation level inside the LTO link;
+# - psp/src and the port's units: the link script places the ME's variables
+#   by object name (psp_ge.o, psp_tex.o), and the --wrap'd functions'
+#   wrappers live there, so those objects stay what the script and the
+#   wrapping expect;
+# - a unit with ".set noat" assembly: it needs compile_one's retry without
+#   -mno-explicit-relocs, and an LTO unit's assembly is only assembled at
+#   the link, where the retry can't reach.
+# All the LTO code comes out of the link as one object (-flto-partition=one:
+# one partition keeps every static's name, so the layouts' section names
+# still match), so the layouts' placements of an LTO unit's sections name
+# that object (LTO_OBJECT). PSP_LTO_UNITS=ai,objects limits LTO to those
+# source/ directories (a bisection)
+LTO = os.environ.get("PSP_LTO", "") == "1"
+LTO_DIRS = [w for w in os.environ.get("PSP_LTO_UNITS", "").split(",") if w]
+LTO_OBJECT = "*ltrans*.o"
+LTO_OBJS = set()   # the LTO units' objects, filled in by main()
+WRAPPED = []       # the link's --wrap'd names, for lto_report()
+if LTO and PGO == "generate":
+    sys.exit("psp_build: PSP_LTO=1 builds with PSP_PGO=use or without PGO: the counts are made without it")
+if LTO and os.environ.get("PSP_TEXT_LAYOUT", "") == "hotgroup":
+    sys.exit("psp_build: PSP_TEXT_LAYOUT=hotgroup reads the objects' sections, which an LTO unit's object doesn't have yet")
+
+def lto_unit(rel):
+    r = rel.replace("\\", "/")
+    if not LTO or not r.startswith("source/") or cold_code(r) or any(w in r for w in NOINLINE_UNITS):
+        return False
+    if LTO_DIRS and not any(r.startswith("source/%s/" % d) for d in LTO_DIRS):
+        return False
+    return ".set noat" not in open(os.path.join(TREE, r), errors="surrogateescape").read()
+
+def lto_placement(files, sections):
+    """a layout's placement as the LTO link has it: (files, sections), or
+    None when it can no longer be placed. An LTO unit's sections are in the
+    link's own object; a unit's COMMON is dropped, since after the link every
+    LTO unit's COMMON is in that one object, and placing it would move all of
+    it into the hot block"""
+    if not LTO_OBJS or files == "*" or not any(fnmatch.fnmatchcase(o, files) for o in LTO_OBJS):
+        return files, sections
+    if "COMMON" in sections.split():
+        return None
+    return LTO_OBJECT, sections
+
+def lto_link_flags():
+    """the hot units' code generation flags, for the link's own compile (GCC
+    asks for the compile's flags at the link too): the -O level, the target's,
+    the sections and the profile's. Front-end flags are left out"""
+    front_end = ("-fms-extensions", "-fshort-wchar", "-fsingle-precision-constant")
+    flags = [a for a in PSP[1:] if a.startswith(("-f", "-m", "-O", "-G")) and a not in front_end]
+    if PGO == "use":
+        flags += ["-fprofile-use=" + PGO_DIR, "-fprofile-correction", "-Wno-missing-profile"] + (
+                 ["-fprofile-partial-training"] if PGO_PARTIAL else []) + PGO_EXTRA
+    return flags + ["-flto", "-flto-partition=one"]
+
 def compile_one(item):
     src, flags, extra = item
     rel = os.path.relpath(src, HERE) if src.startswith("/") else src
@@ -457,6 +519,8 @@ def compile_one(item):
         extra = extra + ["-fno-inline", "-fno-inline-small-functions", "-fno-inline-functions-called-once"]
     if any(("/%s/" % word) in ("/" + rel.replace("\\", "/")) for word in ASSERTS_OFF_UNITS):
         extra = extra + ["-DPSP_ASSERTS_OFF=1"]
+    if lto_unit(rel):
+        extra = extra + ["-flto"]
     os.makedirs(os.path.dirname(obj), exist_ok=True)
     defines = ["-Dmain=halo_main"] if src.endswith("shell/shell_xbox.c") else []
     if src.endswith("psp_bakecheck.c"):
@@ -723,6 +787,10 @@ def link(objs, stubs):
             if not m and "(" in l:
                 sys.exit("psp_build: PSP_DATA_LAYOUT: not a placement (a file pattern has no spaces): %s" % l)
             files, sections = (m.group(1), m.group(2)) if m else ("*", l)
+            placed = lto_placement(files, sections)
+            if not placed:
+                continue
+            files, sections = placed
             if files == "*":
                 sections = "EXCLUDE_FILE(%s) %s" % (" ".join(me_objects), sections)
             elif any(o.strip("*").split(":")[0] in files for o in me_objects):
@@ -745,6 +813,16 @@ def link(objs, stubs):
                 layout = os.path.join(HERE, "psp/layout", layout + ".txt")
             lines = [l.strip() for l in open(layout) if l.strip() and not l.startswith("#")]
             if lines and all(l.startswith("*") for l in lines):
+                if LTO_OBJS:
+                    lto_lines = []
+                    for l in lines:
+                        m = re.match(r"^(\S+?)\((.+)\)$", l)
+                        placed = lto_placement(m.group(1), m.group(2)) if m else (None, l)
+                        if placed:
+                            l = l if placed[0] is None else "%s(%s)" % placed
+                            if l not in lto_lines:
+                                lto_lines.append(l)
+                    lines = lto_lines
                 first = layout_placements(lines)
             else:
                 first += layout_placements(["*(%s)" % l for l in lines if l.startswith(".text.")])
@@ -844,7 +922,66 @@ def link(objs, stubs):
            # build 114: list regions join the pending range (psp_ge.c, listcachedall)
            "--wrap=sceGuGetMemory",
            "@" + os.path.join(OUT, "objs.rsp"), SDK + "/lib/prxexports.o"] + (music_libs() if MUSIC else []) + LIBS + ["-o", os.path.join(OUT, "halo.elf")]
+    if LTO_OBJS:
+        cmd[1:1] = lto_link_flags()
+        WRAPPED[:] = re.findall(r"--wrap=(\w+)", " ".join(cmd))
     return subprocess.run(cmd, capture_output=True, text=True)
+
+def map_sections(path):
+    """the link map's input sections: (section, address, size, file) each"""
+    found, pending = [], None
+    for line in open(path, errors="replace"):
+        m = re.match(r"^ (\.\S+)\s*$", line)
+        if m:
+            pending = m.group(1)
+            continue
+        m = re.match(r"^ (\.\S+)?\s+0x([0-9a-f]+)\s+0x([0-9a-f]+)\s+(\S.*)$", line)
+        if m and (m.group(1) or pending):
+            found.append((m.group(1) or pending, int(m.group(2), 16), int(m.group(3), 16), m.group(4).strip()))
+        pending = None
+    return found
+
+def lto_report(r):
+    """checks that the link did what PSP_LTO asks, and reports its code.
+    1. The LTO units' code came out of the link's own object: without the
+       linker plugin GCC links slim objects into nothing, or (fat ones) as
+       they were compiled, without LTO.
+    2. No call from that code reaches a --wrap'd function's real definition:
+       a call the link resolves inside the LTO partition can skip its wrapper
+       (GNU ld and GCC have had that bug), and malloc or sceIoRead reached
+       unwrapped would leave the game's allocator or its file layer"""
+    open(os.path.join(OUT, "lto_link.txt"), "w").write(r.stderr)
+    warnings = [l for l in r.stderr.splitlines() if "warning:" in l]
+    print("lto: the link's warnings: %d (lto_link.txt)" % len(warnings))
+    for w in sorted(set(re.sub(r"^.*?warning: ", "", w) for w in warnings))[:10]:
+        print("  " + w)
+    sections = map_sections(os.path.join(OUT, "halo.map"))
+    lto_code = [(a, a + n, s) for s, a, n, f in sections if s.startswith(".text") and "ltrans" in f and n]
+    if not lto_code:
+        sys.exit("psp_build: PSP_LTO=1 but no code came out of an LTO object (halo.map has no ltrans input): the linker plugin didn't run")
+    hot = sum(n for s, a, n, f in sections if s.startswith(".text.hot."))
+    print("lto: %d units; their code %d bytes in %d sections; all .text.hot %d bytes" %
+          (len(LTO_OBJS), sum(b - a for a, b, s in lto_code), len(lto_code), hot))
+    lto_code.sort()
+    starts = [a for a, b, s in lto_code]
+    def in_lto(addr):
+        i = bisect.bisect_right(starts, addr) - 1
+        return i >= 0 and addr < lto_code[i][1]
+    dis = subprocess.run(["psp-objdump", "-d", "--no-show-raw-insn", os.path.join(OUT, "halo.elf")],
+                         capture_output=True, text=True, check=True).stdout
+    real = set(WRAPPED)
+    bypass, caller = set(), "?"
+    for line in dis.splitlines():
+        m = re.match(r"^[0-9a-f]+ <([^>]+)>:$", line)
+        if m:
+            caller = m.group(1)
+            continue
+        m = re.match(r"^\s*([0-9a-f]+):\s+(?:jal|j)\s+(?:0x)?[0-9a-f]+ <([^>+]+)>", line)
+        if m and m.group(2) in real and in_lto(int(m.group(1), 16)):
+            bypass.add("%s -> %s" % (caller, m.group(2)))
+    if bypass:
+        sys.exit("psp_build: PSP_LTO=1: LTO code calls a --wrap'd function past its wrapper:\n  " + "\n  ".join(sorted(bypass)))
+    print("lto: no call from the LTO code skips a --wrap (%d wrapped functions checked)" % len(real))
 
 # ---------- the mirror: the engine as GCC can compile it
 # The engine's Linux build relies on clang's MSVC extensions in a few places
@@ -906,6 +1043,10 @@ def main():
         print("pgo: %d count files from pgo/%s.tgz" % (len(members), PGO_PROFILE))
     HEAP_KB = int(os.environ.get("PSP_HEAP_KB", "4096"))
     items = units()
+    LTO_OBJS.update(os.path.join(OBJ, rel[:-2] + ".o") for rel in
+                    (os.path.relpath(s, HERE) if s.startswith("/") else s for s, f, e in items) if lto_unit(rel))
+    if LTO and not LTO_OBJS:
+        sys.exit("psp_build: PSP_LTO=1 but no unit is an LTO unit (PSP_LTO_UNITS?)")
     results = list(ThreadPoolExecutor(JOBS).map(compile_one, items))
     bad = [(s, e) for s, c, e, o in results if c]
     with open(os.path.join(OUT, "compile_errors.txt"), "w") as f:
@@ -957,6 +1098,8 @@ def main():
         assert c == 0, e
         r = link(objs, stubs)
         assert r.returncode == 0, r.stderr[-2000:]
+    if LTO_OBJS:
+        lto_report(r)
     subprocess.run(["psp-fixup-imports", os.path.join(OUT, "halo.elf")], check=True)
     subprocess.run(["psp-prxgen", os.path.join(OUT, "halo.elf"), os.path.join(OUT, "halo.prx")], check=True)
     # the title the XMB shows: the multiplayer build's is its own, so the two
