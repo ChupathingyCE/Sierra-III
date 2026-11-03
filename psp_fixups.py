@@ -43326,7 +43326,219 @@ FIXES_STACKHOT2["source/physics/collisions.c#stackhot2"] = [
  '}\n#undef features /* psp_fixups.py (FIXES_STACKHOT2) */\n\n#ifdef HALO_PSP\n#include <pspsysmem.h>\n\n/* psp_fixups.py (FIXES_STACKHOT2): the two levels\' lists, taken from the\ngame\'s partition at start (psp_platform.c\'s main, before anything sizes\nitself by the memory left) */\nstruct collision_feature_list *psp_stackhot_list[2];\nvoid platform_psp_log(const char *format, ...);\n\nvoid psp_stackhot_allocate(void)\n{\n\tint level;\n\n\tfor (level = 0; level < 2; level++)\n\t{\n\t\tSceUID block = sceKernelAllocPartitionMemory(2, "halo feature list", PSP_SMEM_High,\n\t\t\tsizeof(struct collision_feature_list) + 64, NULL);\n\n\t\tif (block < 0)\n\t\t{\n\t\t\tplatform_psp_log("stackhot: no room for feature list %d (%d)", level, (int)block);\n\t\t\tcontinue;\n\t\t}\n\t\tpsp_stackhot_list[level] = (struct collision_feature_list *)\n\t\t\t(((unsigned long)sceKernelGetBlockHeadAddr(block) + 63) & ~63UL);\n\t}\n}\n#endif\n\n/* ---------- private code */\n\nstatic boolean object_test_point('),
 ]
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items()) + list(FIXES_AIME2A.items()) + (list(FIXES_STACKHOT.items()) if STACKHOT else []) + (list(FIXES_STACKHOT2.items()) if STACKHOT2 else [])):
+# PWSL (lever PWSL, the lab's levers.tsv): point-walk slack. A reconnect's
+# location (object_reconnect_to_map: scenario_location_from_point at the
+# bounding sphere's centre, for most objects that move, every tick) is a walk
+# down the level's BSP that turns on the sign of each plane distance alone. A
+# point that has moved less than the smallest |distance| on its last path
+# (scaled by the BSP's largest normal, less a rounding margin) takes every turn
+# the same way, so it reaches the same leaf: the object's last answer is given
+# again. Exact by construction; pwslcheck makes every walk anyway and counts the
+# answers that differ (the census before it, pwscensus, saw none in ~700,000).
+# pwsloff: the walk every time, as the engine does
+FIXES_PWSL = {}
+FIXES_PWSL["source/structures/cluster_partitions.c#pwsl"] = [
+("""	slot->full = 1;
+}
+#endif
+
+void cluster_partition_reconnect(
+""", """	slot->full = 1;
+}
+
+/* psp_fixups.py (FIXES_PWSL): see psp_fixups.py */
+#include "physics/bsp3d.h"
+void platform_psp_log(const char *format, ...);
+
+#define PSP_PWSL_SLOTS 128 /* by the object's absolute index */
+struct psp_pwsl_slot
+{
+	long object_index; /* NONE: empty */
+	real_point3d point;
+	real slack; /* how far the point may move, times the largest normal, and keep its leaf */
+	long leaf_index;
+	short cluster_index;
+};
+static struct psp_pwsl_slot psp_pwsl_slots[PSP_PWSL_SLOTS];
+static int psp_pwsl_on = -1, psp_pwsl_check = 0;
+static struct bsp3d const *psp_pwsl_bsp = NULL;
+static void const *psp_pwsl_structure = NULL;
+static unsigned long psp_pwsl_generation = 0;
+static real psp_pwsl_normal_most = 1.f, psp_pwsl_d_most = 0.f;
+static unsigned long psp_pwsl_hits, psp_pwsl_walks, psp_pwsl_wrong;
+
+/* bsp3d_test_point's walk on a trusted map, then scenario_location_from_point's
+leaf-to-cluster step, keeping the smallest |distance| on the path. A node or
+plane the map doesn't have: -1, and the engine's own call answers */
+static short psp_pwsl_walk(struct location *location, real_point3d const *point, real *slack_out)
+{
+	struct bsp3d const *bsp = psp_pwsl_bsp;
+	struct structure_bsp *structure_bsp = global_structure_bsp_get();
+	long node_index = 0, leaf_index, cluster_index;
+	short depth = 0;
+	real slack = 1e30f;
+
+	do
+	{
+		struct bsp3d_node const *node;
+		real distance;
+
+		if (node_index < 0 || node_index >= bsp->nodes.count || depth++ >= MAXIMUM_BSP3D_TRAVERSAL_DEPTH)
+			return -1;
+		node = TAG_BLOCK_GET_ELEMENT(&bsp->nodes, node_index, struct bsp3d_node);
+		if ((unsigned long)node->plane_designator >= (unsigned long)bsp->planes.count)
+			return -1;
+		distance = plane3d_distance_to_point(
+			TAG_BLOCK_GET_ELEMENT(&bsp->planes, node->plane_designator, real_plane3d), point);
+		if ((real)fabs(distance) < slack)
+			slack = (real)fabs(distance);
+		node_index = node->children[distance >= 0.f];
+	}
+	while (!(node_index & LONG_MIN));
+
+	leaf_index = node_index != NONE ? node_index & LONG_MAX : NONE;
+	cluster_index = NONE;
+	if (leaf_index != NONE)
+	{
+		if ((leaf_index & LONG_MAX) >= structure_bsp->leaves.count)
+			leaf_index = NONE;
+		else
+		{
+			cluster_index = TAG_BLOCK_GET_ELEMENT(&structure_bsp->leaves, leaf_index & LONG_MAX,
+				struct structure_leaf)->cluster_index;
+			if (cluster_index != NONE && !VALID_INDEX(cluster_index, structure_bsp->clusters.count))
+			{
+				leaf_index = NONE;
+				cluster_index = NONE;
+			}
+		}
+	}
+	location->leaf_index = leaf_index;
+	location->cluster_index = (short)cluster_index;
+	*slack_out = slack;
+	return 0;
+}
+
+/* a plane distance n.p - d in floats is off by at most a few roundings of
+|n|(|x|+|y|+|z|) + |d|, and both walks' distances are: the slack keeps several
+times that, and a fixed 0.001 world units, under it */
+static real psp_pwsl_margin(real_point3d const *point)
+{
+	return 1e-6f * (psp_pwsl_normal_most * ((real)fabs(point->x) + (real)fabs(point->y) + (real)fabs(point->z)) +
+		psp_pwsl_d_most) + 0.001f;
+}
+
+void psp_pwsl_location_from_point(long object_index, struct location *location, real_point3d const *point)
+{
+	struct bsp3d const *bsp = global_bsp3d_get();
+	struct psp_pwsl_slot *slot;
+	real slack;
+
+	if (psp_pwsl_on < 0)
+	{
+		psp_pwsl_on = psp_keep("pwsloff") == 0;
+		psp_pwsl_check = psp_keep("pwslcheck");
+	}
+	if (!psp_pwsl_on || !bsp)
+	{
+		psp_relink_location_from_point(location, point);
+		return;
+	}
+	if (bsp != psp_pwsl_bsp || global_structure_bsp_get() != psp_pwsl_structure ||
+		psp_relink_generation != psp_pwsl_generation)
+	{
+		/* another level, BSP or set of cluster lists: nothing kept answers */
+		real most = 0.f, d_most = 0.f;
+		long p, k;
+
+		for (p = 0; p < bsp->planes.count; p++)
+		{
+			real_plane3d const *plane = TAG_BLOCK_GET_ELEMENT(&bsp->planes, p, real_plane3d);
+			real n = plane->n.i * plane->n.i + plane->n.j * plane->n.j + plane->n.k * plane->n.k;
+
+			if (n > most)
+				most = n;
+			if ((real)fabs(plane->d) > d_most)
+				d_most = (real)fabs(plane->d);
+		}
+		psp_pwsl_normal_most = (real)sqrt(most) * 1.0001f;
+		psp_pwsl_d_most = d_most;
+		psp_pwsl_bsp = bsp;
+		psp_pwsl_structure = global_structure_bsp_get();
+		psp_pwsl_generation = psp_relink_generation;
+		for (k = 0; k < PSP_PWSL_SLOTS; k++)
+			psp_pwsl_slots[k].object_index = NONE;
+	}
+	slot = &psp_pwsl_slots[(unsigned long)object_index & (PSP_PWSL_SLOTS - 1)];
+	if (slot->object_index == object_index)
+	{
+		real dx = point->x - slot->point.x, dy = point->y - slot->point.y, dz = point->z - slot->point.z;
+		real reach = slot->slack - psp_pwsl_margin(point);
+
+		/* moved times the largest normal under the slack, squared to spare the root */
+		if (reach > 0.f &&
+			(dx * dx + dy * dy + dz * dz) * psp_pwsl_normal_most * psp_pwsl_normal_most < reach * reach)
+		{
+			psp_pwsl_hits++;
+			location->leaf_index = slot->leaf_index;
+			location->cluster_index = slot->cluster_index;
+			if (psp_pwsl_check)
+			{
+				struct location fresh;
+
+				scenario_location_from_point(&fresh, point);
+				if (fresh.leaf_index != slot->leaf_index || fresh.cluster_index != slot->cluster_index)
+					psp_pwsl_wrong++;
+			}
+			goto counted;
+		}
+	}
+	psp_pwsl_walks++;
+	if (psp_pwsl_walk(location, point, &slack) < 0)
+	{
+		scenario_location_from_point(location, point);
+		slot->object_index = NONE;
+		goto counted;
+	}
+	if (psp_pwsl_check)
+	{
+		struct location fresh;
+
+		scenario_location_from_point(&fresh, point);
+		if (fresh.leaf_index != location->leaf_index || fresh.cluster_index != location->cluster_index)
+			psp_pwsl_wrong++;
+	}
+	slot->object_index = object_index;
+	slot->point = *point;
+	slot->slack = slack - psp_pwsl_margin(point);
+	slot->leaf_index = location->leaf_index;
+	slot->cluster_index = location->cluster_index;
+counted:
+	if (psp_pwsl_check && (psp_pwsl_hits + psp_pwsl_walks) % 20000 == 0)
+		platform_psp_log("pwslcheck: %lu lookups, %lu answered by the slack (%.1f%%), %lu walked; wrong %lu",
+			psp_pwsl_hits + psp_pwsl_walks, psp_pwsl_hits,
+			100.0f * psp_pwsl_hits / (psp_pwsl_hits + psp_pwsl_walks), psp_pwsl_walks, psp_pwsl_wrong);
+}
+#endif
+
+void cluster_partition_reconnect(
+"""),
+]
+FIXES_PWSL["source/objects/objects.c#pwsl"] = [
+("""			psp_relink_location_from_point(&bounding_sphere_location, &object->object.bounding_sphere_center);
+""", """			{
+				/* psp_fixups.py (FIXES_PWSL): the object's last answer while its
+				point stays within that walk's slack */
+				extern void psp_pwsl_location_from_point(long object_index, struct location *location,
+					real_point3d const *point);
+
+				psp_pwsl_location_from_point(object_index, &bounding_sphere_location,
+					&object->object.bounding_sphere_center);
+			}
+"""),
+]
+
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items()) + list(FIXES_AIME2A.items()) + (list(FIXES_STACKHOT.items()) if STACKHOT else []) + (list(FIXES_STACKHOT2.items()) if STACKHOT2 else []) + list(FIXES_PWSL.items())):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
