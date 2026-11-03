@@ -546,8 +546,13 @@ def compile_one(item):
     if lto_unit(rel):
         # fat: the unit's own code is made too, so assembly the retry below
         # must handle fails here, where the retry can drop LTO with the flags,
-        # and not at the link
-        extra = extra + ["-flto", "-ffat-lto-objects"]
+        # and not at the link.
+        # -fno-common: each tentative definition a definition in a section of
+        # its own (.bss.<name>), so a data layout can name it. With -fcommon
+        # every LTO unit's COMMON comes out of the link as one block in its
+        # own object (145 KB), which no placement can split; a unit outside
+        # LTO that defines the same name tentatively still joins this one
+        extra = extra + ["-flto", "-ffat-lto-objects", "-fno-common"]
     os.makedirs(os.path.dirname(obj), exist_ok=True)
     defines = ["-Dmain=halo_main"] if src.endswith("shell/shell_xbox.c") else []
     if src.endswith("psp_bakecheck.c"):
@@ -622,7 +627,7 @@ def compile_one(item):
         r = subprocess.run(cmd, cwd=TREE, capture_output=True, text=True)
     if r.returncode and "-mno-explicit-relocs" in cmd:
         # inline assembly that uses $at (".set noat") needs explicit relocations
-        r = subprocess.run([a for a in cmd if a not in ("-mno-explicit-relocs", "-freorder-blocks-and-partition", "-flto", "-ffat-lto-objects")],
+        r = subprocess.run([a for a in cmd if a not in ("-mno-explicit-relocs", "-freorder-blocks-and-partition", "-flto", "-ffat-lto-objects", "-fno-common")],
                            cwd=TREE, capture_output=True, text=True)
     return src, r.returncode, r.stderr, obj
 
