@@ -43699,7 +43699,9 @@ static void psp_ep_make(int k, long object_index, struct object_datum *object)
 the walk's export gave */
 static void psp_ep_check(int k, long object_index)
 {
-	static unsigned long kept[256];
+	/* a held weapon's datum with its blocks (nodes): tp1c found 1 KB too
+	small for most of them */
+	static unsigned long kept[1024];
 	struct object_header_datum *header = object_header_get(object_index);
 	struct object_datum *object = header->datum;
 	long size = header->data_size;
