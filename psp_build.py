@@ -1013,6 +1013,11 @@ def lto_report(r):
     if bypass:
         sys.exit("psp_build: PSP_LTO=1: LTO code calls a --wrap'd function past its wrapper:\n  " + "\n  ".join(sorted(bypass)))
     print("lto: no call from the LTO code skips a --wrap (%d wrapped functions checked)" % len(real))
+    # the link's own object beside the units' objects, so a list of the
+    # objects' sections (their alignment, for a code layout) covers its code
+    for f in os.listdir(OUT):
+        if re.fullmatch(r"halo\.elf\.ltrans\d+\.ltrans\.o", f):
+            shutil.copy2(os.path.join(OUT, f), os.path.join(OBJ, f))
 
 # ---------- the mirror: the engine as GCC can compile it
 # The engine's Linux build relies on clang's MSVC extensions in a few places
