@@ -177,6 +177,14 @@ void psp_me_yield(void);
 /* the same from a long slot job that isn't the render slot's: a render job
 asked for meanwhile is run now too, so the record never waits behind it */
 void psp_me_yield_slots(void);
+/* from the AI job's looks inside an actor's thinking ("aimeringlook"):
+psp_me_yield at most every ~1 ms of the ME's clock, and only with a ring
+job's stack room left above the job's guard */
+void psp_me_yield_inner(void);
+#ifdef PSP_RECON
+/* on the ME: where a long slot job is, for a late ring job's stash report */
+void psp_me_stash_place(unsigned int place);
+#endif
 /* on the ME, from the slot job that yields: the render jobs served in its
 yields since the last take, and the longest in ME cycles; both back to 0 */
 void psp_me_nested_take(unsigned int *count, unsigned int *worst_cycles);

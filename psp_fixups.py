@@ -41965,6 +41965,12 @@ ME's cycles, and the step in hand (read at a stop, when the word went
 unanswered). On the ME only: its cycle counter can't be read elsewhere */
 #define PSP_AIME_STEPS 11
 static PSP_AIME_ME_SIDE int psp_aime_step_now = -1, psp_aime_step_tag_now = -1;
+/* "aimeringlook" (psp_aime_late_check): read once, on the main CPU */
+int psp_aime_ring_looks = 0;
+void psp_me_yield_inner(void); /* psp_me.c */
+#ifdef PSP_RECON
+void psp_me_stash_place(unsigned int place); /* psp_me.c */
+#endif
 static PSP_AIME_ME_SIDE unsigned int psp_aime_step_at = 0, psp_aime_step_worst[PSP_AIME_STEPS];
 /* the longest run's tag: the actor's type (decide), its action (perform) */
 static PSP_AIME_ME_SIDE int psp_aime_step_worst_tag[PSP_AIME_STEPS];
@@ -41986,6 +41992,9 @@ void psp_aime_step_tagged(
 	psp_aime_step_now = step;
 	psp_aime_step_tag_now = tag;
 	psp_aime_step_at = now;
+#ifdef PSP_RECON
+	psp_me_stash_place(0x0F000000u | (((unsigned int)tag & 0xFFFFu) << 8) | ((unsigned int)step & 0xFFu));
+#endif
 }
 
 void psp_aime_step(
@@ -42001,6 +42010,16 @@ goes back to its copies and the pass ends at its next actor */
 void psp_aime_late_check(
 	void)
 {
+	/* aimeringlook (B50): audio and the ring served at this look too, the
+	census's step put back after it */
+	if (psp_aime_ring_looks && psp_aime_job_now[0] && !psp_aime_late_now)
+	{
+		int step = psp_aime_step_now, tag = psp_aime_step_tag_now;
+
+		psp_me_yield_inner();
+		if (psp_aime_step_now != step)
+			psp_aime_step_tagged(step, tag);
+	}
 	if (!psp_aime_late_now)
 	{
 		if (psp_aime_late_due && ++psp_aime_late_checks == PSP_AIME_LATE_AT)
@@ -42681,9 +42700,10 @@ FIXES_AIME2A["source/ai/actors.c#aime2a"].append((
 		psp_aime_fpu_main_on = psp_keep("aimefpu") != 0;
 		psp_aime_chain_on = psp_keep("aimechain") != 0;
 		{
-			extern int psp_aime_decision_looks;
+			extern int psp_aime_decision_looks, psp_aime_ring_looks;
 
 			psp_aime_decision_looks = !psp_keep("aimedecisionold");
+			psp_aime_ring_looks = psp_keep("aimeringlook") != 0;
 		}
 """))
 FIXES_AIME2A["source/ai/ai.c#aime2a"] = [

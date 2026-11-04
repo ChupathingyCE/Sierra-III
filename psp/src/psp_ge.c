@@ -1480,6 +1480,10 @@ static void defer_replay(const defer_word *buffer, unsigned int used, int on_me)
 
 		at += buffer[at].u >> 8;
 		psp_me_record_kind = kind;
+#ifdef PSP_RECON
+		if (on_me)
+			psp_me_stash_place(0x04000000u | (unsigned int)kind);
+#endif
 		if (timed)
 		{
 			kind_before = kind < REPLAY_KINDS - 1 ? kind : 0;
