@@ -21495,14 +21495,35 @@ static unsigned long light_exact_triangles = 0;
 
 /* one lit triangle (corners: camera space, texture coordinates, the light's
 reach at 5, the world position at 7): kept, cut up, or skipped by the view */
-static void light_emit(float corners[3][CORNER_FLOATS], struct shadow_vertex *out, long *kept_count, int *cut_count)
-{
-	int bits[3], corner;
+/* "lightcarrycheck": each split triangle split both ways first with the
+pieces only hashed (every float of every corner and its view bits), and the
+two hashes compared */
+static int light_split_hashing = 0;
+static unsigned int light_split_hash;
 
-	if (*kept_count >= SCRATCH_TRIANGLES)
+static void light_split_hash_add(float corners[3][CORNER_FLOATS], const int bits[3])
+{
+	const unsigned int *word = (const unsigned int *)corners;
+	unsigned int hash = light_split_hash;
+	int k;
+
+	for (k = 0; k < 3 * CORNER_FLOATS; k++)
+		hash = (hash ^ word[k]) * 16777619u;
+	for (k = 0; k < 3; k++)
+		hash = (hash ^ (unsigned int)bits[k]) * 16777619u;
+	light_split_hash = hash;
+}
+
+static void light_emit_known(float corners[3][CORNER_FLOATS], const int bits[3], struct shadow_vertex *out,
+	long *kept_count, int *cut_count)
+{
+	int corner;
+
+	if (light_split_hashing)
+	{
+		light_split_hash_add(corners, bits);
 		return;
-	for (corner = 0; corner < 3; corner++)
-		bits[corner] = outside(corners[corner]);
+	}
 	if (bits[0] & bits[1] & bits[2])
 		return;
 	if (!(bits[0] | bits[1] | bits[2]))
@@ -21523,6 +21544,17 @@ static void light_emit(float corners[3][CORNER_FLOATS], struct shadow_vertex *ou
 		return;
 	}
 	*cut_count += clip_triangle(corners, bits[0] | bits[1] | bits[2], &light_pieces);
+}
+
+static void light_emit(float corners[3][CORNER_FLOATS], struct shadow_vertex *out, long *kept_count, int *cut_count)
+{
+	int bits[3], corner;
+
+	if (*kept_count >= SCRATCH_TRIANGLES)
+		return;
+	for (corner = 0; corner < 3; corner++)
+		bits[corner] = outside(corners[corner]);
+	light_emit_known(corners, bits, out, kept_count, cut_count);
 }
 
 /* build 89: the light pass's nudge (mode 2), as b85's shadow test: a lift
@@ -21875,6 +21907,210 @@ static void light_split(float p[3][3], float uv[3][2], const unsigned int normal
 	}
 }
 
+/* light_split's work done once a corner, not once a piece. A halving makes
+one new corner and its two pieces share the other two, so down to nine
+levels each corner is in many pieces, and every piece worked out its
+corners' distance from the light (nine times: three edges, two ends each,
+and the three again), their side of the cone's pyramid, and at the end
+their reach and place from the camera. Each corner now carries what has been
+worked out for it, by the same functions on the same inputs, so the pieces
+and the picture are the same, bit for bit. Keep word "lightcarry" (off: the
+split as it was) */
+static int light_carry = -1;
+
+struct split_corner
+{
+	float p[3], uv[2];
+	/* its squared distance from the light, and that distance: the root of the
+	smaller of two squares is the smaller root, so a pair's nearest is the
+	same float either way */
+	float near2, near;
+	int cone_bits;
+	/* worked out the first time a piece that ends here needs them */
+	unsigned int reach_normal;
+	int reach_known, camera_known;
+	float reach, q, camera[3];
+	int view_bits;
+};
+
+/* outside_cone's test of one corner, the planes it is beyond, and four more
+across the pyramid's edges: an octagon round the cone instead of a square.
+The square's corners outside the round cone are a fifth of its section, and
+a piece there split all the way down to unlit pieces; the octagon leaves a
+twentieth. Each plane passes the light and touches the cone, so a piece
+wholly beyond one has every point outside the cone: nothing of it is lit */
+static int cone_side(const float *p, float tangent)
+{
+	ScePspFMatrix4 const *m = &light_basis;
+	float d[3] = { p[0] - light.position[0], p[1] - light.position[1], p[2] - light.position[2] };
+	float x = d[0] * m->x.x + d[1] * m->y.x + d[2] * m->z.x;
+	float y = d[0] * m->x.y + d[1] * m->y.y + d[2] * m->z.y;
+	float z = (d[0] * light.forward[0] + d[1] * light.forward[1] + d[2] * light.forward[2]) * tangent;
+	float across = 1.41421356f * z, sum = x + y, difference = x - y;
+	int b = 0;
+
+	if (x > z) b |= 1;
+	if (x < -z) b |= 2;
+	if (y > z) b |= 4;
+	if (y < -z) b |= 8;
+	if (z <= 0.0f) b |= 16;
+	if (sum > across) b |= 32;
+	if (sum < -across) b |= 64;
+	if (difference > across) b |= 128;
+	if (difference < -across) b |= 256;
+	return b;
+}
+
+static void split_corner_set(struct split_corner *c)
+{
+	c->near2 = distance_squared3(c->p, light.position);
+	c->near = sqrtf(c->near2);
+	c->cone_bits = cone_side(c->p, light_split_tangent);
+	c->reach_known = 0;
+	c->camera_known = 0;
+}
+
+/* light_edge_splits on carried distances (the B7 piece size) */
+static int split_edge_known(const struct split_corner *a, const struct split_corner *b, float edge)
+{
+	float nearest = a->near < b->near ? a->near : b->near, split, least;
+
+	split = 0.3f * nearest * (light_split_tangent > 0.05f ? light_split_tangent : 0.05f);
+	least = 0.03f * light.radius;
+	if (split < least)
+		split = least;
+	return edge > split * split;
+}
+
+static void light_split_carry(struct split_corner *c[3], const unsigned int normal[3], int depth,
+	struct shadow_vertex *out, long *kept_count, int *cut_count)
+{
+	float edge[3], longest, nearest;
+	int corner, pick = -1;
+
+	if (*kept_count >= SCRATCH_TRIANGLES)
+		return;
+	if (depth > 0 && (c[0]->cone_bits & c[1]->cone_bits & c[2]->cone_bits))
+		return;
+	for (corner = 0; corner < 3; corner++)
+		edge[corner] = distance_squared3(c[corner]->p, c[(corner + 1) % 3]->p);
+	longest = edge[0];
+	if (edge[1] > longest)
+		longest = edge[1];
+	if (edge[2] > longest)
+		longest = edge[2];
+	nearest = c[0]->near;
+	if (c[1]->near < nearest)
+		nearest = c[1]->near;
+	if (c[2]->near < nearest)
+		nearest = c[2]->near;
+	if (nearest - sqrtf(longest) > light.radius)
+		return;
+	if (depth < 9)
+	{
+		float pick_length = 0.0f;
+
+		for (corner = 0; corner < 3; corner++)
+			if (edge[corner] > pick_length && split_edge_known(c[corner], c[(corner + 1) % 3], edge[corner]))
+			{
+				pick = corner;
+				pick_length = edge[corner];
+			}
+	}
+	if (pick >= 0)
+	{
+		int next = (pick + 1) % 3, other = (pick + 2) % 3, k;
+		struct split_corner m, *half[3];
+		unsigned int half_normal[3];
+
+		for (k = 0; k < 3; k++)
+			m.p[k] = 0.5f * (c[pick]->p[k] + c[next]->p[k]);
+		m.uv[0] = 0.5f * (c[pick]->uv[0] + c[next]->uv[0]);
+		m.uv[1] = 0.5f * (c[pick]->uv[1] + c[next]->uv[1]);
+		split_corner_set(&m);
+		light_split_pieces++;
+		half_normal[0] = half_normal[1] = half_normal[2] = normal[pick];
+		half[0] = c[pick]; half[1] = &m; half[2] = c[other];
+		light_split_carry(half, half_normal, depth + 1, out, kept_count, cut_count);
+		half[0] = &m; half[1] = c[next]; half[2] = c[other];
+		light_split_carry(half, half_normal, depth + 1, out, kept_count, cut_count);
+		return;
+	}
+	{
+		float corners[3][CORNER_FLOATS];
+		int bits[3];
+
+		for (corner = 0; corner < 3; corner++)
+		{
+			struct split_corner *e = c[corner];
+
+			/* a corner's pieces may come from parents with other normals (the
+			first halving gives its pieces one corner's) */
+			if (!e->reach_known || e->reach_normal != normal[corner])
+			{
+				e->reach = light_reach(e->p, normal[corner], 1);
+				e->reach_normal = normal[corner];
+				e->reach_known = 1;
+			}
+		}
+		if (c[0]->reach <= 0.0f && c[1]->reach <= 0.0f && c[2]->reach <= 0.0f)
+			return;
+		for (corner = 0; corner < 3; corner++)
+		{
+			struct split_corner *e = c[corner];
+
+			if (!e->camera_known)
+			{
+				level_to_camera(e->p, e->camera);
+				e->q = (e->p[0] - light.position[0]) * light.forward[0] +
+					(e->p[1] - light.position[1]) * light.forward[1] +
+					(e->p[2] - light.position[2]) * light.forward[2] - 0.05f;
+				e->view_bits = outside(e->camera);
+				e->camera_known = 1;
+			}
+			corners[corner][0] = e->camera[0];
+			corners[corner][1] = e->camera[1];
+			corners[corner][2] = e->camera[2];
+			corners[corner][3] = e->uv[0];
+			corners[corner][4] = e->uv[1];
+			corners[corner][5] = e->reach;
+			corners[corner][6] = 0.0f;
+			corners[corner][7] = e->p[0];
+			corners[corner][8] = e->p[1];
+			corners[corner][9] = e->p[2];
+			corners[corner][10] = 0.0f;
+			bits[corner] = e->view_bits;
+		}
+		/* light_emit_spot: wholly in front of the light, the corners' own view
+		bits; partly behind it, its cut as before */
+		if (c[0]->q <= 0.0f && c[1]->q <= 0.0f && c[2]->q <= 0.0f)
+			return;
+		if (c[0]->q >= 0.0f && c[1]->q >= 0.0f && c[2]->q >= 0.0f)
+			light_emit_known(corners, bits, out, kept_count, cut_count);
+		else
+			light_emit_spot(corners, out, kept_count, cut_count);
+	}
+}
+
+static int light_carry_check = -1;
+static unsigned long light_carry_checks = 0, light_carry_mismatches = 0;
+
+static void light_split_carry_root(float p[3][3], float uv[3][2], const unsigned int normal[3],
+	struct shadow_vertex *out, long *kept_count, int *cut_count)
+{
+	struct split_corner root[3], *c[3];
+	int corner;
+
+	for (corner = 0; corner < 3; corner++)
+	{
+		memcpy(root[corner].p, p[corner], sizeof(root[0].p));
+		memcpy(root[corner].uv, uv[corner], sizeof(root[0].uv));
+		split_corner_set(&root[corner]);
+		c[corner] = &root[corner];
+	}
+	light_split_carry(c, normal, 0, out, kept_count, cut_count);
+}
+
 static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const unsigned short *indices, long triangle_count,
 	unsigned int base_key)
 {
@@ -22061,7 +22297,34 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 						continue;
 					light_split_triangles++;
 					light_split_tangent = tangent;
-					light_split(p, uv, normal, 0, out, &kept_count, &cut_count);
+					if (light_carry < 0)
+						light_carry = psp_keep("lightcarry");
+					if (light_split_edges < 0)
+						light_split_edges = !psp_keep("lightsplitold");
+					if (light_carry_check < 0)
+						light_carry_check = psp_keep("lightcarrycheck");
+					if (light_carry_check && light_split_edges && light_spot_base())
+					{
+						unsigned int before;
+
+						light_split_hashing = 1;
+						light_split_hash = 2166136261u;
+						light_split(p, uv, normal, 0, out, &kept_count, &cut_count);
+						before = light_split_hash;
+						light_split_hash = 2166136261u;
+						light_split_carry_root(p, uv, normal, out, &kept_count, &cut_count);
+						light_split_hashing = 0;
+						light_carry_checks++;
+						if (light_split_hash != before)
+							light_carry_mismatches++;
+						if (!(light_carry_checks & 4095))
+							platform_log("GE: light carry checked %lu split triangles, %lu mismatches", light_carry_checks,
+								light_carry_mismatches);
+					}
+					if (light_carry && light_split_edges && light_spot_base())
+						light_split_carry_root(p, uv, normal, out, &kept_count, &cut_count);
+					else
+						light_split(p, uv, normal, 0, out, &kept_count, &cut_count);
 					continue;
 				}
 			}
