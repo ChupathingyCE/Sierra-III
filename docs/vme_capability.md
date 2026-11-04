@@ -277,6 +277,15 @@ The question (the lab's master, 2026-11-04 14:55, item 5): could the VME take th
 - The VME would pay here only if the corners' light-relative data stayed resident across frames (a dynamic light over static geometry, with its data in eDRAM). The 48 KB of buffers holds ~2,700 corners at six words each, so that's one light's lit set at most.
 - **No bench is proposed.** If one is wanted to confirm the per-corner figure, it is one PSP-1000 run timing the kernel's pass chain over 2,048 elements fed from eDRAM.
 
+**Re-priced with round 3's fast DMAC (§9: config 0x310, the context double-buffered)** [U on M]:
+- **The VME side shrinks:** six words in at 2.96 cycles a word is ~18 cycles a corner, and out ~3–7. So ~50–55 cycles a lit corner, half the figure above, and the ~709-cycle context set-up now overlaps a pass.
+- **The ME side is unchanged:** the corners still need gathering by index, and neither DMA engine does that. So the net stays **about 1 ms of ME a frame** on d20's heavy view.
+- **Skipping the gather:** the VME's DMAC reads main RAM directly at 5.05 cycles a word. It could stream whole runs of the level's vertices instead of the lit corners, all ~25,000 a frame.
+  - That costs ~25,000 × (30 + 6 × 5.05 + ~3) ≈ 1.6 M cycles, ~4.8 ms of VME and DMAC a frame. That fits beside the ME's ~65 ms.
+  - It would free the whole ~2.3 ms of the ME's falloff, facing and colour.
+  - But the corners the pass needs aren't contiguous per light. The results would have to go back where the ME and the GE read them. And 262 MB/s from main RAM is a real share of the bus, whose cost to the main CPU's misses §9 hasn't measured.
+- **Verdict unchanged: LMC first.** It removes the static ~85% with no transfer at all. At best the VME is worth ~1–2.3 ms of ME a frame on the heaviest view, and only after the fast mode's bus cost is measured.
+
 ## 9. Round 3: who owns the buffers while a pass runs
 
 The question (Sheepdog01, 2026-11-04): a codec engine with 8 buffers normally ping-pongs, so is §7's serial result the hardware, or the way our set-up drives it? The bench is the same program with the keep words `vmeoverlap` and `vmeldl` (branch `recon/vme-overlap`). Everything here is [M] on both PSPs: bench-hw 41920673771 and 41921904314 on the PSP-1000 (the second also ran the vendor moves), and 41921919611 on the PSP-3000. The two models agree everywhere. Where they differ in cycles, the difference is named. Every run ended clean, with no wait reaching its bound and every guard intact.
@@ -370,7 +379,7 @@ These are mcidclan's ldl/sdl reused, where the base register's number names a ba
   - **From eDRAM:** 2 × 2.96 + 2.47 + 0.5 ≈ 8.9 cycles an element, against the ME's CPU's 16.6 [U, from the rates above]. So the VME now wins a one-pass stream, about 1.9× over the ME's CPU, with the ME's CPU free while the DMAC runs (§4).
   - **From main RAM:** 2 × 5.05 + 2.79 + 0.5 ≈ 13.4 cycles an element, with no staging step.
 - **§7's "about six or more passes a load" falls to about one.**
-- **Next:** VMEMIX's revive_if and the world light pass (§8) were priced with the slow DMAC and should be priced again with 0x310.
+- **Re-priced:** the world light pass (§8, the addendum) and VMEMIX's revive_if (the lab's grounds.tsv) now use 0x310. Neither verdict moves: the light pass is still behind LMC, and VMEMIX's ceiling (~3% of the ME) still parks it.
 
 **What's left:**
 - The fast mode's cost to the main CPU's misses.
