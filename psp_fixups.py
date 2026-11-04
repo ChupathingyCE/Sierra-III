@@ -18601,7 +18601,7 @@ psp_perception_line_of_sight looked at the epoch first) */
 static void psp_merays_collect(
 	short index)
 {
-	short job = (index - psp_merays_first) / PSP_MERAYS_JOB_RAYS;
+	short job = (index - psp_merays_first) / PSP_MERAYS_JOB_RAYS + PSP_MEPROBE_EXPR(7);
 
 	while (psp_merays_collected <= job && psp_merays_collected < psp_merays_jobs)
 	{
@@ -18641,7 +18641,7 @@ void psp_merays_settle(void)
 	unsigned int results[11];
 	short keep = psp_merays_first + psp_merays_collected * PSP_MERAYS_JOB_RAYS;
 
-	if (!psp_merays_out)
+	if (PSP_MEPROBE_EXPR(4) || !psp_merays_out)
 		return;
 	while (psp_merays_collected < psp_merays_jobs)
 		psp_me_wait(psp_merays_tickets[psp_merays_collected++], results);
@@ -21914,7 +21914,7 @@ static void psp_pose_ahead_collect(void)
 {
 	unsigned long start;
 
-	if (psp_pose_time <= 0 || !psp_pose_job_out)
+	if (PSP_MEPROBE_EXPR(5) || psp_pose_time <= 0 || !psp_pose_job_out)
 	{
 		psp_pose_ahead_collect_work();
 		return;
@@ -30131,7 +30131,7 @@ static void psp_nms_make(long object_index, struct psp_nms_entry const *entry)
 	unsigned char const *p = (unsigned char const *)&entry->inputs, *a = (unsigned char const *)&after;
 	unsigned int k;
 
-	psp_nms_inputs_get(object, &now);
+	psp_nms_inputs_get(object, &now + PSP_MEPROBE_EXPR(9));
 	psp_nms_inputs_put(object, &entry->inputs);
 	psp_nms_settle_time = entry->time;
 	object_compute_node_matrices(object_index);
@@ -30208,7 +30208,7 @@ __attribute__((noinline)) static void psp_nms_settle_absolute(long absolute, int
 /* a reader of an object whose compute was left out: made first */
 __attribute__((noinline)) void psp_nms_settle(long object_index, void *site)
 {
-	psp_nms_reader = site;
+	psp_nms_reader = (void *)((char *)site + PSP_MEPROBE_EXPR(6));
 	long absolute = DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index);
 
 	if (absolute < MAXIMUM_OBJECTS_PER_MAP && psp_nms_waits(absolute))
@@ -31984,7 +31984,7 @@ void psp_points_end(void)
 {
 	int k;
 
-	if (psp_points_out)
+	if (!PSP_MEPROBE_EXPR(8) && psp_points_out)
 	{
 		unsigned int results[11] = { 0 };
 
@@ -41221,7 +41221,7 @@ FIXES_AIME2A = {}
 FIXES_AIME2A["source/ai/actors.c#aime2a"] = [
 ("""#define PSP_AIME_WRITERS 25
 """,
- """#define PSP_AIME_WRITERS 35
+ """#define PSP_AIME_WRITERS 36
 /* FIXES_AIME2A: the ME's own stops (aimes2a, see there) */
 #define PSP_AIME_STOP_ANIMATION 24
 #define PSP_AIME_STOP_DECISION_REPORT 25
@@ -41233,12 +41233,13 @@ FIXES_AIME2A["source/ai/actors.c#aime2a"] = [
 #define PSP_AIME_STOP_STACK 31
 #define PSP_AIME_STOP_ERROR 32
 #define PSP_AIME_STOP_LATE 33
+#define PSP_AIME_STOP_MOVE 34
 """),
 ("""	"weapon_set_total_rounds", "game_allegiance_provoke", "game_allegiance_incident", "hs_wake_by_name", "biped_accelerate", "forced" };
 """,
  """	"weapon_set_total_rounds", "game_allegiance_provoke", "game_allegiance_incident", "hs_wake_by_name", "biped_accelerate",
 	"animation_get_frame_data", "decision_loop_report", "owed_node_block", "anothers_prop", "prop_log_full", "formatting",
-	"pool_report", "stack_guard", "fatal_report", "late_word", "forced" };
+	"pool_report", "stack_guard", "fatal_report", "late_word", "object_move", "forced" };
 """),
 # on the ME, an actor's copy goes out to main RAM before it thinks, so an
 # ME stopped mid-actor can be undone from it
@@ -41610,6 +41611,7 @@ static boolean psp_aime2a_active(
 
 			psp_aime_late_every = psp_keep_number("aimelate", 0);
 		}
+		psp_aime_move_stop = !psp_keep("aimemoveold");
 		/* the race check's write trace: the job's window its own (psp_ge.c) */
 		psp_me_window_split = psp_aime2a_check_on;
 		psp_aime2a_on = (psp_aime2a_check_on || psp_keep("aime2a") != 0) && psp_aime1b_active();
@@ -41803,7 +41805,7 @@ what it read; a pass due from the tick before (not the frame's last) run */
 void psp_aime2a_tick_begin(
 	void)
 {
-	if (psp_aime2a_out)
+	if (PSP_MEPROBE_REPORT() || psp_aime2a_out)
 	{
 		unsigned int results[ME_JOB_RESULTS] = { 0 };
 		unsigned long long asked;
@@ -42369,6 +42371,9 @@ the ME's FPU forms and with its stops, psp_aime2a_alike set; the others at the
 next tick's start as 2a runs them), so the two sides match by construction */
 static boolean psp_aime2a_alike = FALSE;
 int psp_aime_pf_on = 0;
+/* 0 with "aimemoveold": an object moved in the map, or its nodes computed,
+in the ME's pass runs there as it did, unstopped (objects.c) */
+int psp_aime_move_stop = 1;
 /* 1 while the job runs, written by the job alone, on a line of its own:
 the ME's paths (marks, FPU forms, the memo's log) test it with where they
 run, so the main CPU's own work during the record never takes them */
@@ -42650,6 +42655,68 @@ void object_marker_begin(
 			psp_aime_handback(26);
 	}
 """),
+]
+# what moves an object in the map or computes its nodes, on the ME: an
+# actor's command list may teleport its unit (action_obey.c's
+# object_set_position), which reached the pose collect's wait on the ME and
+# faulted it there. Each one's first statement, before the hooks that settle
+# the ME's ring jobs or mark the object: its own group, applied last
+FIXES_AIMEMOVE = {}
+FIXES_AIMEMOVE["source/objects/objects.c#aimemove"] = [
+    (head + "\n{\n", head + "\n{\n" + """#ifdef HALO_PSP
+	{
+		/* psp_fixups.py (FIXES_AIME2A, "aime2a"): moving an object in the
+		map, or computing its nodes, writes what the main CPU's frame reads
+		while the ME's pass is out, and settles the ring jobs that read the
+		objects (the rays, the poses), which the ME can't wait for: on the ME
+		the actor thinks in the tick (aimefpu: 1b's pass stops alike) */
+		extern int psp_aime_arm, psp_aime_fpu_main, psp_aime_move_stop;
+		extern void psp_aime_handback(int which);
+
+		if (psp_aime_arm && psp_aime_move_stop && (psp_work_on_me() || psp_aime_fpu_main))
+			psp_aime_handback(34);
+	}
+#endif
+""") for head in (
+    "void object_disconnect_from_map(\n\tlong object_index)",
+    "void object_reconnect_to_map(\n\tlong object_index,\n\tstruct location const *location)",
+    "void object_detach(\n\tlong child_object_index)",
+    "void object_attach_to_node(\n\tlong parent_object_index,\n\tlong child_object_index,\n\tshort parent_node_index)",
+    "static void object_compute_node_matrices_with(\n\tlong object_index,\n\tstruct object_datum *object,\n\tstruct object_definition *object_definition)",
+)]
+# the net under the stop: on the ME a pose job out is never collected (its
+# wait is the main CPU's); the pose is decoded in place, and none is listed
+FIXES_AIMEMOVE["source/objects/objects.c#aimemove"] += [
+("""	if (!psp_pose_ahead_on())
+		return FALSE;
+	if (psp_pose_job_out)
+		psp_pose_ahead_collect();""",
+ """	if (!psp_pose_ahead_on())
+		return FALSE;
+	if (psp_pose_job_out)
+	{
+		/* psp_fixups.py (FIXES_AIME2A, "aime2a") */
+		extern int psp_aime_move_stop;
+
+		if (psp_aime_move_stop && psp_work_on_me())
+			return FALSE;
+		psp_pose_ahead_collect();
+	}"""),
+("""	if (!psp_pose_ahead_mode || animation->frame_count <= 0 || animation->node_count <= 0 ||
+		animation->node_count > MAXIMUM_NODES_PER_MODEL)
+		return;
+	slot = &psp_pose_ahead_slots[(unsigned long)object_index & (PSP_POSE_SLOTS - 1)];""",
+ """	if (!psp_pose_ahead_mode || animation->frame_count <= 0 || animation->node_count <= 0 ||
+		animation->node_count > MAXIMUM_NODES_PER_MODEL)
+		return;
+	{
+		/* psp_fixups.py (FIXES_AIME2A, "aime2a"): the slots are the main CPU's */
+		extern int psp_aime_move_stop;
+
+		if (psp_aime_move_stop && psp_work_on_me())
+			return;
+	}
+	slot = &psp_pose_ahead_slots[(unsigned long)object_index & (PSP_POSE_SLOTS - 1)];"""),
 ]
 FIXES_AIME2A["source/models/model_animation_definitions.c#aime2a"] = [
 ("""byte *animation_get_frame_data(struct animation const *animation, short frame_index)
@@ -44778,7 +44845,7 @@ void psp_rl_game_state_saving(void); /* cluster_partitions.c (psp_fixups.py, FIX
 """),
 ]
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items()) + list(FIXES_AIME2A.items()) + (list(FIXES_STACKHOT.items()) if STACKHOT else []) + (list(FIXES_STACKHOT2.items()) if STACKHOT2 else []) + list(FIXES_PWSL.items()) + list(FIXES_SPHSL.items()) + list(FIXES_RECONLIST.items()) + list(FIXES_TP1.items())):
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items()) + list(FIXES_AIME2A.items()) + (list(FIXES_STACKHOT.items()) if STACKHOT else []) + (list(FIXES_STACKHOT2.items()) if STACKHOT2 else []) + list(FIXES_PWSL.items()) + list(FIXES_SPHSL.items()) + list(FIXES_RECONLIST.items()) + list(FIXES_TP1.items()) + list(FIXES_AIMEMOVE.items())):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 

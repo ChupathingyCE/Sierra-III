@@ -128,3 +128,20 @@ static __inline__ __attribute__((always_inline)) int psp_aime_here(void)
 	__asm__ ("move %0, $sp" : "=r"(psp_sp_));
 	return psp_sp_ - psp_aime_sp_low < psp_aime_sp_high - psp_aime_sp_low;
 }
+
+/* "meprobe" (PSP_MEPROBE=1, a recon build): the ring's main-CPU
+calls (psp_me_wait, psp_me_push, psp_me_hold) and the paths to them noted
+when the Media Engine's work reaches them: on the PSP the ME itself; in the
+emulator the AI job's simulated pass (its own stack, psp_me_context set).
+Each site with its caller's return address, so the chain can be named from
+the link map. Compiled out otherwise: the expression is a plain 0 */
+#ifdef PSP_MEPROBE
+void psp_meprobe_note(int site, void *ra);
+void psp_meprobe_report(void);
+#define PSP_MEPROBE_EXPR(site) ((psp_cpu_is_me() || (psp_me_context && psp_aime_here())) ? \
+	(psp_meprobe_note((site), __builtin_return_address(0)), 0) : 0)
+#define PSP_MEPROBE_REPORT() (psp_meprobe_report(), 0)
+#else
+#define PSP_MEPROBE_EXPR(site) 0
+#define PSP_MEPROBE_REPORT() 0
+#endif

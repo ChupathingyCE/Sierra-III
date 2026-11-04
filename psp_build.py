@@ -149,6 +149,9 @@ TICK_STEPS = os.environ.get("PSP_TICK_STEPS", "") == "1"
 # draw census, psp_me.c's bus load): measuring instruments whose hooks sit in
 # hot code, so a release build carries none of them (docs/recon_134.md)
 RECON = os.environ.get("PSP_RECON", "") == "1"
+# PSP_MEPROBE=1: the "meprobe" instrument (psp_post.h, psp_me.h): the ring's
+# main-CPU calls reached by the ME's work, noted; recon only
+MEPROBE = os.environ.get("PSP_MEPROBE", "") == "1"
 # build 105: PSP_DEBUG_TOOLS=1 keeps the developer instruments that cost
 # memory and that the game itself never needs (so far: the Media Engine
 # measure job "meclassify", 68 KB of buffers; the game's render-debug cache
@@ -296,7 +299,7 @@ PSP = ["psp-gcc", "-G0", GAME_OPT, "-march=allegrex", "-ffp-contract=off", "-fsh
        "-fno-delete-null-pointer-checks", "-fno-omit-frame-pointer", "-w",
        "-ffunction-sections", "-fdata-sections", "-fno-math-errno", "-fsingle-precision-constant",
        "-DHALO_PSP=1", "-DHALO_RELEASE=1", "-DHALO_ANDROID=1",
-       ] + (["-DPSP_MULTIPLAYER=1"] if MULTIPLAYER else []) + (["-DPSP_MUSIC=1"] if MUSIC else []) + (["-DPSP_MP_COOP=1"] if MULTIPLAYER and MP_COOP else []) + (["-DPSP_MP_HOST=1"] if MULTIPLAYER and MP_HOST else []) + (["-DPSP_MAP_CHECKS=1"] if MAP_CHECKS else []) + (["-DPSP_POOLS_XBOX=1"] if POOLS_XBOX else []) + (["-DPSP_RECON_64MB=1"] if BIG_RAM else []) + (["-DPSP_DEBUG_TOOLS=1"] if DEBUG_TOOLS else []) + (["-DPSP_TICK_STEPS=1"] if TICK_STEPS else []) + (["-DPSP_RECON=1"] if RECON else []) + (["-DPSP_METRICS=1"] if METRICS else []) + (["-DPSP_STACKHOT=2"] if os.environ.get("PSP_STACKHOT", "2") == "2" else []) + (["-DPSP_PGO_GENERATE=1"] if PGO == "generate" else []) + os.environ.get("PSP_CFLAGS", "").split() + [
+       ] + (["-DPSP_MULTIPLAYER=1"] if MULTIPLAYER else []) + (["-DPSP_MUSIC=1"] if MUSIC else []) + (["-DPSP_MP_COOP=1"] if MULTIPLAYER and MP_COOP else []) + (["-DPSP_MP_HOST=1"] if MULTIPLAYER and MP_HOST else []) + (["-DPSP_MAP_CHECKS=1"] if MAP_CHECKS else []) + (["-DPSP_POOLS_XBOX=1"] if POOLS_XBOX else []) + (["-DPSP_RECON_64MB=1"] if BIG_RAM else []) + (["-DPSP_DEBUG_TOOLS=1"] if DEBUG_TOOLS else []) + (["-DPSP_TICK_STEPS=1"] if TICK_STEPS else []) + (["-DPSP_RECON=1"] if RECON else []) + (["-DPSP_MEPROBE=1"] if MEPROBE else []) + (["-DPSP_METRICS=1"] if METRICS else []) + (["-DPSP_STACKHOT=2"] if os.environ.get("PSP_STACKHOT", "2") == "2" else []) + (["-DPSP_PGO_GENERATE=1"] if PGO == "generate" else []) + os.environ.get("PSP_CFLAGS", "").split() + [
        # The fatal asserts are compiled out, unevaluated (X10): their checks
        # and messages fill the 16 KB instruction cache, so with them gone b30's
        # tick is 6.6% shorter on the PSP-3000 [M], and play is identical. The
@@ -595,6 +598,7 @@ def compile_one(item):
                pgo_flags(rel) if opt == "-O2" else []) + (
                ["-DPSP_DITHERSHIFT=1"] if DITHERSHIFT and src.endswith("psp_ge.c") else []) + (
                ["-DPSP_RECON=1"] if RECON else []) + (
+               ["-DPSP_MEPROBE=1"] if MEPROBE else []) + (
                ["-DPSP_WALKAPART=1"] if WALKAPART else []) + (
                ["-DPSP_MEVISLAND=1"] if MEVISLAND else []) + (
                ["-DPSP_METRICS=1"] if METRICS else []) + (

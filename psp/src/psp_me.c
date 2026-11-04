@@ -1871,7 +1871,7 @@ static void me_stop(const char *why, int for_sleep)
 			platform_log("ME: stopped (%s): NO answer in 100 ms, held in reset; the main CPU runs its jobs from here", why);
 			/* B31: where it faulted (EPC is in kseg0: less 0x88804000, the
 			link map's address), or that it didn't */
-			if (fault->count)
+			if (PSP_MEPROBE_REPORT() || fault->count)
 				platform_log("ME: fault: %u exceptions; Cause %08x (code %u), EPC %08x, BadVAddr %08x, sp %08x, ra %08x, Status %08x",
 					fault->count, fault->cause, (fault->cause >> 2) & 31, fault->epc, fault->bad_address, fault->sp,
 					fault->ra, fault->status);
@@ -2837,7 +2837,7 @@ static void (*ring_held_collect)(void);
 
 void psp_me_hold(unsigned int ticket, void (*collect)(void))
 {
-	ring_held_ticket = ticket;
+	ring_held_ticket = ticket + PSP_MEPROBE_EXPR(3);
 	ring_held_collect = collect;
 }
 
@@ -2854,7 +2854,7 @@ int psp_me_push(const struct psp_me_job *job, unsigned int *ticket)
 	struct me_ring_request *request;
 	unsigned int start, t, index, k;
 
-	if (!psp_me_ring_ready())
+	if (PSP_MEPROBE_EXPR(2) || !psp_me_ring_ready())
 		return 0;
 #ifdef PSP_RECON
 	/* a real job goes first: "mebus"'s load stops and is collected */
@@ -3081,7 +3081,7 @@ on this CPU), 0 if the ME failed it (stopped, too late, or the job broke a
 rule): the caller does the work itself, and must not read the output */
 int psp_me_wait(unsigned int ticket, unsigned int *results)
 {
-	unsigned int index = ticket & RING_MASK, start = sceKernelGetSystemTimeLow(), now, looks = 0, k;
+	unsigned int index = ticket & RING_MASK, start = (PSP_MEPROBE_EXPR(1), sceKernelGetSystemTimeLow()), now, looks = 0, k;
 	struct me_ring_request *request = &ring_requests[index];
 	struct me_ring_result *result = &ring_results[index];
 	unsigned long waited;
@@ -4456,5 +4456,53 @@ void psp_me_bus_phase(int phase)
 		bus_loads = bus_load_cycles = 0;
 		bus_alone_loads[0] = bus_alone_loads[1] = bus_alone_cycles[0] = bus_alone_cycles[1] = 0;
 	}
+}
+#endif
+
+#ifdef PSP_MEPROBE
+/* "meprobe" (psp_post.h): written through the uncached view, so a record
+made on the ME survives the fault that may follow it */
+#define MEPROBE_SITES 24
+static struct
+{
+	unsigned int count, reported;
+	unsigned int site[MEPROBE_SITES], ra[MEPROBE_SITES], times[MEPROBE_SITES];
+} meprobe __attribute__((aligned(64)));
+
+void psp_meprobe_note(int site, void *ra)
+{
+	volatile typeof(meprobe) *p = (volatile typeof(meprobe) *)((unsigned int)&meprobe | 0x40000000u);
+	unsigned int k, n = p->count < MEPROBE_SITES ? p->count : MEPROBE_SITES;
+
+	for (k = 0; k < n; k++)
+		if (p->site[k] == (unsigned int)site && p->ra[k] == (unsigned int)ra)
+		{
+			p->times[k]++;
+			return;
+		}
+	if (n < MEPROBE_SITES)
+	{
+		p->site[n] = (unsigned int)site;
+		p->ra[n] = (unsigned int)ra;
+		p->times[n] = 1;
+		__asm__ __volatile__("sync");
+		p->count = n + 1;
+	}
+}
+
+/* the main CPU: each new site once, and every site's count each 900th call */
+void psp_meprobe_report(void)
+{
+	volatile typeof(meprobe) *p = (volatile typeof(meprobe) *)((unsigned int)&meprobe | 0x40000000u);
+	static unsigned int calls = 0, k;
+
+	if (psp_on_me())
+		return;
+	for (k = p->reported; k < p->count && k < MEPROBE_SITES; k++)
+		platform_log("meprobe: site %u reached on the ME's side from ra %08x (link map: less 0x08804000)", p->site[k], p->ra[k]);
+	p->reported = k;
+	if (++calls % 900 == 0)
+		for (k = 0; k < p->count && k < MEPROBE_SITES; k++)
+			platform_log("meprobe: site %u from %08x: %u times", p->site[k], p->ra[k], p->times[k]);
 }
 #endif
