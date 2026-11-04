@@ -137,7 +137,7 @@ The ME's own budget decides whether it's worth a context. The ME is ~9% busy wit
 
 ## 7. Round 2: the saturator, the secondary units, the sustained rate, the media blocks
 
-The bench is the same program with the keep words `vmeunits` and `csc` (branch `recon/vme-units`). Everything here is [M, PSP-1000] unless it says otherwise; the PSP-3000's run is pending.
+The bench is the same program with the keep words `vmeunits` and `csc` (branch `recon/vme-units`). Everything here is [M, PSP-1000] unless it says otherwise. **The PSP-3000 agrees** [M, bench-hw 41917312890]: all 32 unit tests (the saturator and the secondary, on and off) give the same words on both models, unlike round 1's 13 primary opcodes; every sustained case is the same to the cycle (the flow word's need and the write delay's 7 of 4,096 included); and the writes lost inside a pass match within 4 words (342, 332, 164 and 165).
 
 ### The saturator (`fu_sat(n)`, bits 11:7 of a unit's word)
 
@@ -216,7 +216,6 @@ Each PE has a second unit behind its primary. It is fed from the staging latch (
 - **The question behind this round** (the ME decodes H.264 at 480p 30 fps, so is there no headroom?): the headroom is in the decoder's own fixed blocks (VLD, transforms, prediction, deblocking) and the AVC DMA paths. Those are a fixed video pipeline, not a general engine. The VME's general part is measured above (4 ops a cycle when data is resident), with the moving serial. The video rate comes from fixed blocks reading the ME's eDRAM directly, not from the VME's buffers [U].
 
 **What's left:**
-- The PSP-3000's run of round 2.
 - The converter, timed with the AVC block powered by the firmware's own path. Opening the video codec before the bench takes the ME is one way. It is untested, and it needs its own small run and recon's word.
 - The interconnect's skew for the secondary's input.
 - The VME's clock, which needs a clock change.
