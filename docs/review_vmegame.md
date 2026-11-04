@@ -22,7 +22,7 @@ Credit: the sequence and the library code are mcidclan's (m-c/d): his me-core-ma
 ## Proof so far
 - Reach of `psp_vme_job` (sierra-build 41767604727): 3 functions, 1 KB; no firmware call, no system call, no VFPU, no indirect call [D].
 - Emulator (sierra-batch 41767969641, 41768289668): play and both seeds identical at every tick on b30, c10 and c20, tock vs vmetest off (ME off and ME on) and off vs on [E]. With vmetest on, the whole state's objects differ at some ticks outside play (the A/A doesn't), [U] the probe's job inside the heartbeat. Findings `vme_game_exact`.
-- PSP-3000 pair (sierra-hw 41769264100): pending.
+- PSP-3000 pair (sierra-hw 41769380808, b30's flight, `- | vmetest`, repeat 2): 40 of 40 passes exact in each on run (1 full set-up, 39 refreshes), no wait at its bound (longest 16,424 cycles; 42 of 45 never saw the busy bit), the ME's audio and render job times alike off and on, the VME job 148 us full and ~19 us refresh once a 5 s window; tick in the noise [M]. Findings `vme_game_hw`.
 
 ## For the merge
 `run_job`, `me_run_slot` and `heartbeat_thread` compile without their profile counts, so `PSP_PGO_STRICT=1` needs the next profile recount.
