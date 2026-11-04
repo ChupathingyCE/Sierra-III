@@ -377,3 +377,15 @@ Shelved because sound isn't limiting performance; this is the agreed shape for w
 - **High** (the default if the tests pass): music in the codec at 44.1 kHz, 96–128 kbps, on the 44.1 kHz output; effects as in Low. The Library ~22–25 MB, Xbox-quality music, Media Engine ~15–25% busy.
 
 **Before any of it:** (1) a hardware test playing a 22 kHz tone on the converter channel and a 44.1 kHz tone on an ordinary channel together; (2) a decode benchmark of one Vorbis/Opus stream on the Media Engine. Design question first: Halo's music is chains of ~1.3 s pieces with random loop picks, so each piece must decode on its own (or the joins be blended).
+
+## The audio hardware, from uofw's driver (2026-11-04) [D]
+
+Read in uofw's `src/kd/audio/audio.c` (https://github.com/uofw/uofw 28306bb, GPL; read only, no code taken). The summary and what it constrains are in `hw_capabilities.md` §6.1.
+
+- **One hardware sample-rate converter, one stereo channel** (`sceAudioSRCChReserve`):
+  - in at 8 to 48 kHz (44.1 passes straight through), out at 44.1 kHz;
+  - volume in hardware;
+  - DMA'd from the game's own buffer, a block of 17 to 4,111 samples.
+  - The port's 22,050 Hz mix uses it.
+- **No hardware voice mixer.** The ordinary channels are mixed by the kernel's `SceAudioMixer` thread (priority 5, the main CPU, every 64 samples). That is why `audio44` on an ordinary channel cost b30's frame +7.8% while the converter's channel at 44,100 took most of it back (sierra-hw 41211384661, 41213051173).
+- **"Two outputs instead of one mixing rate"** (above) does play both at once: the hardware sums the ordinary path and the converter's. But the second output is an ordinary channel, so it brings the kernel mixer back onto the main CPU. One mix on the ME into the converter's channel avoids that (MUSADPCM's route).

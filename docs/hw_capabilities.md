@@ -86,7 +86,7 @@ Labels: [M] measured on a PSP, [E] emulator or estimate, [D] read in code or doc
 | Main RAM, 24 MB user | yes | `memory_ledger.md` |
 | VRAM, 2 MB | frame and depth buffers 816 KB, the texture cache, the lists | Nearly full [D] |
 | The volatile 4 MB | the texture RAM cache | Settled in its current use (`memory_ledger.md`: short by 0.4–0.9 MB on a10 and b30 without it) [D] |
-| The bus | shared by the CPU, the ME, the GE and DMA | The GE's RAM reads cost the CPU 8–18 ms of a 29–69 ms frame (b102 [M]). A priority setting: none found among the registers read (b105 [M]). Two steps remain in `psp_hardware_reference.md` §9.1: disassemble `sceDdrWriteMaxAllocate` (Sony's code, kept on our machines), then a write test in halo_bench |
+| The bus | shared by the CPU, the ME, the GE and DMA | The GE's RAM reads cost the CPU 8–18 ms of a 29–69 ms frame (b102 [M]). A priority setting: none found among the registers read (b105 [M]), and none in any public source (§6.3 [D]). The disassembly route is closed (decision 2026-11-04 16:55); what's left is in `psp_hardware_reference.md` §9.1 |
 
 ### Input and output
 
@@ -94,6 +94,7 @@ Labels: [M] measured on a PSP, [E] emulator or estimate, [D] read in code or doc
 |---|---|---|
 | Memory Stick async reads | **off by default** (`psp_geo.c`) | With them on, the texture cache's synchronous reads waited behind them (2.5–5 s frames). The bench showed async reads work if the I/O priority sits above the game thread's [M, v10]. The geometry reads are synchronous now: up to 98 ms in one frame on the ladder [M, 41821725723]. A hitch source |
 | sceSas, the firmware's codecs | no | Superseded by the port's own ME mixer [D] |
+| The audio converter's channel (sceAudioSRC) | yes: the ME's mix at 22,050 Hz (or 44,100 with `audio44`/`musadpcm`) | The hardware's one sample-rate converter; fed by DMA straight from our buffer, so the main CPU pays only the call. There is no hardware mixer: the 8 ordinary channels are mixed by a kernel thread on the main CPU (§6.1 [D]) |
 
 ## 2. The gaps to chase, by what they could add
 
@@ -102,7 +103,7 @@ Labels: [M] measured on a PSP, [E] emulator or estimate, [D] read in code or doc
 | C1 | **The ME's capacity and scheduling.** On d20's heavy view the ME binds the frame and starves the GE | Frame time wherever the ME binds; capacity for more AI and effects | The frame timeline (ledger 3), then the scheduler's design | PSP runs (recon) |
 | C2 | **Lighting, split model and world** (recon's census, round 1): models already take all 4 GE lights, with no extra pass. The world pass is the cost where it's big (d20: 5,893 triangles a frame, machines' lights 3,244 and the flashlight 2,153; b30's bunker with the flashlight 1,533; the beach <300). Vehicles cost through the GE's vertex work (8,789 indices a frame each against a biped's 961), not lighting. ~92-95 of b30's ~100 attached-light relinks a frame are weapons whose lights never reach the pass | The world pass's share of the ME on d20 and in the bunker; the wasted relinks (DAL/LSAME ground); vehicles via their vertex counts | Round 2: the pass's counts and lc2's cache-model prices; then whether a projected-texture pass beats the ME's per-vertex work where the ME binds | Emulator, then a PSP pair |
 | C3 | **Memory Stick reads async, done right.** The design exists, never built: `streaming.md` §3, S1–S5 (one input stage owning the stick, prefetch by place, pack order, smallest mips first, pinned effects) | The streaming hitches (up to 98 ms a frame; the game thread waited for the stick 2.5 s a run, worst 767 ms [M, b114]); the caches sized to the working set | S1 first (one reader, its priority measured on the PSP), then S2–S3 with the bake | Code and the bake, then PSP pairs |
-| C4 | **The bus's priority** | If it exists, up to the GE's 8–18 ms cost to the CPU | §9.1's steps 2 and 3 | Local disassembly, then halo_bench |
+| C4 | **The bus's priority** | If it exists, up to the GE's 8–18 ms cost to the CPU | No public source has one (§6.3); disassembly closed. Left: the register snapshot (§6.4) and, only with Sheepdog01's OK, a call of `sceDdrWriteMaxAllocate` | halo_bench16_regsnap on the PSP |
 | C5 | **The VME's capability** | A third processor for fixed work | **Done 2026-11-04** (`vme_capability.md`): computes on both PSPs, 2 ops a cycle; candidates sized there (none ready: the mix's tail only, decode and palettes don't fit) | — |
 | C6 | **The VFPU's coverage:** the float inventory against tock161, and the approximation ops | Tick and drawing maths | Refresh `hardware_utilization.md` §3 | Code reading, emulator |
 | C7 | **DXT textures** | VRAM and RAM room (8 → 4 bits a texel on CLUT8 textures) | A bench of its sampling cost and look; Sheepdog01's call on the look | PSP bench |
@@ -134,3 +135,91 @@ Started 2026-11-04.
 - **The caches are smaller than their working sets:** geometry's 900-frame working set is 2.0–2.7 MB against a 1,792 KB carve [E, `memory_ledger.md`].
 - **Its priority choice is open:** the async reads at 0x10, the engine's reader at 0x1C, music at 0x1D, the heartbeat at 0x18, audio at 0x12, the game at 0x20. One reader takes one of these, and which one is best is unmeasured.
 
+
+## 6. Open sources, read for C1, C4 and the audio path (2026-11-04)
+
+Sources, all read only, no code taken: uofw (github.com/uofw/uofw 28306bb, GPL: `src/kd/audio`, `clockgen`, `codec`, `me_wrapper`, `lowio/sysreg_driver.c`, `include/common/hardware.h`); jpcsp's register models (github.com/jpcsp/jpcsp 00ac4d6, GPL: `memory/mmio/`, `HLE/modules/sceDdr.java`); mcidclan's psp-media-engine-custom-core (0197c99, MIT: `me-core.h`, `hw-registers.h`, `me-core-custom.c`); ARK-4's `contrib/nidmap.txt` (old-to-new NIDs only, no names); PPSSPP (a2f4ce2: nothing on these blocks). psdevwiki can't be reached from the cloud sessions.
+
+### 6.1 The audio hardware (uofw's `audio.c`, `codec.c`, `clockgen.c`) [D]
+
+- **The sample-rate converter is real and the port already uses it.** One stereo channel (`sceAudioSRCChReserve`, also `sceAudioOutput2*`):
+  - input at 8, 11.025, 12, 16, 22.05, 24, 32 or 48 kHz, or 44.1 passed straight through; out at the hardware's rate (44.1 kHz, or 48);
+  - its volume in hardware (0xBE000050, the call's volume >> 5);
+  - fed by the system DMAC straight from the caller's buffer (a linked pair of descriptors into the converter's FIFO at 0xBE000070). The main CPU only writes its cache back and makes the call;
+  - a block of 17 to 4,111 samples. There is only one such channel.
+- **There is no hardware mixer.** The 8 ordinary channels (`sceAudioChReserve`, `sceAudioOutput*`) are mixed in software by the kernel thread `SceAudioMixer`, at priority 5 on the main CPU. It wakes every 64 samples (~690 times a second at 44.1 kHz), scales each channel by its volume, sums in 32 bits, clamps to 16, and DMAs the block to the FIFO at 0xBE000060.
+  - The two paths, the ordinary mix and the converter's, play at once into separate FIFOs, so the hardware sums those two outputs. That sum is the only mixing the hardware does.
+  - **This explains a measured cost** [D explains M]: `audio44` on an ordinary channel cost b30's frame +7.8% (sierra-hw 41211384661), and moving it to the converter's channel at 44,100 Hz got 6.3% of that back (41213051173). An ordinary channel puts the kernel mixer on the main CPU.
+- **What it constrains:** any second output stream (music beside the effects, say) must use an ordinary channel. That brings the kernel mixer back, so a second stream is best mixed on the ME into the converter's one stream, which is what MUSADPCM does.
+- **`codec.c` is the audio DAC,** not a media codec: the WM8750 on I2C, for output, headphone and speaker volume and the sample rate. **`clockgen.c` is the CY27040 clock chip** on I2C: the audio clock (44.1 or 48 kHz family), the UMD DSP's clock and spread spectrum. Neither touches the CPU, ME or bus clocks.
+- **Audio DMA for anything else:** none that the game can reach without writing the audio block's registers itself.
+
+### 6.2 The clocks, the ME and the AVC block (C1) [D unless marked]
+
+- **The clock tree:**
+  - the PLL setting is 0xBC100068's low 4 bits (uofw `HW_SYS_PLL_FREQ`; jpcsp applies a write with bit 0x80);
+  - each clock is the PLL times a ratio of two 9-bit fields (numerator << 16 | denominator): 0xBC200000 for the CPU and 0xBC200004 for the bus (jpcsp).
+- **The ME has its own ratios, and runs at the full one.**
+  - Sony's ME firmware takes "set CPU granularity" and "set bus granularity" commands (390 and 391, `sceMePower_driver_1862B784`/`E9F69ACF`; uofw's comments), and the ME's boot seeds 511/511 (0x1ff01ff) for them.
+  - mcidclan's start, which the port uses, writes 511/511 into **0xBC200000, 0xBC200004 and 0xBC200008** from the ME.
+  - So **the ME and its bus already run at the full ratio of the PLL. The only ME clock headroom is the PLL itself, which is overclocking and ruled out.** C1 is a scheduling and placement question, not a clock one.
+  - The ME's counter reads 331.4 a µs at the "333 MHz" setting (`vme_capability.md`); the 0.5% gap is the PLL's real rate [U].
+- **0xBC200008, a third ratio word,** is named by no source except mcidclan's write. It may be the VME's clock or the AVC's [U]. Telling recon's two VME clock models apart (`vme_capability.md`, "The VME's clock") would take a write of a lower ratio there, or to 0xBC200000, around one VME pass. That is a write to a word his start already writes, at a lower rate, so not overclocking, but it's still a write: recon's lane, with the master's OK.
+- **The AVC block's power, in order** (uofw `sceMePowerControlAvcPower`):
+  1. syscon's `sceSysconCtrlTachyonAvcPower(1)` (the power rail);
+  2. 0xBC100070 |= 4;
+  3. ME command 8 (inside Sony's ME firmware, which our ME start replaces; what it does isn't public);
+  4. the AVC reset released (0xBC10004C bit 0x20).
+  - Off is the reverse.
+  - At the PLL's higher settings (≥ 266 MHz) the firmware also switches the AVC's clock source (ME command 7, `sceSysregMsifClkSelect(0, n)`).
+  - **So powering the converter from the game needs step 3's unknown ME-side set-up.** recon's cscrecon has the converter timed; this is for its notes.
+- **The reset and bus-clock maps** (uofw `sysreg_driver.c`; jpcsp `MMIOHandlerSystemControl`):
+
+  | Bit | 0xBC10004C (reset) | 0xBC100050 (bus clock) |
+  |---|---|---|
+  | 0 | top | ME |
+  | 1 | SC | AW A |
+  | 2 | ME | AW B |
+  | 3 | AW | eDRAM |
+  | 4 | VME | DMACplus |
+  | 5 | AVC | DMAC0 |
+  | 6 | USB | DMAC1 |
+  | 7 | ATA | KIRK |
+  | 8–9 | MSIF0–1 | ATA, USB |
+  | 10 | KIRK | MSIF0 |
+  | 11–15 | –, ATA HDD, USB host, two unknown | MSIF1, EMCDDR, EMCSM, APB, audio 0 |
+  | 16 | – | audio 1 |
+
+  - **Neither has a priority field.**
+  - **b105's reading is corrected by this map:** `bc10004c` 0x40 → 0 is the USB block's reset released, not the ME's. mcidclan's ME start writes 0x14 and then 0 to 0xBC10004C, which releases every reset at once. `bc100050` gaining 0x20 is DMAC0's bus clock (the system DMAC, for the texture uploads).
+  - The ME's start also writes 0xBC100050 = 0x0F from the ME. On the main CPU's register that would have stopped DMACplus, both DMACs and the DDR controller, and the PSP runs on. So the ME sees a system-control block of its own, or a masked one [U]; the snapshot's ME-side reads (§6.4) answer it.
+
+### 6.3 DMACplus, the DDR controller and the bus's priority (C4) [D]
+
+- **The DDR controller (0xBD000000): only offsets are public.**
+  - 0x04 flushes: `sceDdrFlush(n)`, n from 0 to 15. The audio driver flushes 4 after it rewrites its DMA lists. The ME's boot flushes 4 after copying its start code; `me_wrapper` flushes 5 before each signal to the ME and 8 around the ME's reset and start. So n names a master whose writes must be seen [U].
+  - 0x20, 0x24, 0x2C and 0x38 are used by the IPL; 0x30, 0x34, 0x40 and 0x44 during `sceDdrChangePllClock`.
+  - jpcsp names all 14 `sceDdr_driver` exports with both NIDs. `sceDdrWriteMaxAllocate` is 0x655A9AB0 (1.50) and 0x4F30BFE8 (6.60); the others are `Flush`, `ChangePllClock`, `Get`/`SetPowerDownCounter`, `ResetDevice`, `ExecSeqCmd`, `Setup` and five unnamed. **No public source implements or describes any of them.** uofw lists them as NIDs, jpcsp as empty stubs.
+- **DMACplus (0xBC800000)** (jpcsp's model, with `dma_engines.md` §3):
+  - 0x004 and 0x00C: the completed and error flags;
+  - 0x100–0x110: the LCD's scan-out (address, pixel format, width, stride, flags);
+  - 0x150–0x15C: four codes jpcsp calls the MPEG/AVC codes, inside the colour-space converter's span;
+  - three copy channels at 0x180, 0x1A0 and 0x1C0 (source, destination, next, control, status).
+  - No priority or arbitration field in any model.
+- **So, plainly: nothing public documents a bus arbiter or a per-master priority on the PSP.** Searched: uofw, jpcsp, PPSSPP, mcidclan's repositories, ARK-4's NID map, and the web for every function name. psdevwiki's register page was read earlier, from a saved copy (`psp_hardware_reference.md` §9.1).
+  - The one named candidate, `sceDdrWriteMaxAllocate`, can't be read (disassembly closed). It could be called, as an export through kcall, but its arguments are unknown and a wrong value may hang the bus until power-off. **Not proposed without Sheepdog01's call.**
+
+### 6.4 The register snapshot by our own bench (not yet read)
+
+- **The bench:** `bench/halo_bench16_regsnap` on branch `research/regsnap` (98a86766).
+  - It reads, in kernel mode and read-only, about 280 documented registers of the memory access, system control, clock ratio, profiler, DMACplus, DMAC0/1, DDR, GE, GE eDRAM and audio blocks.
+  - The states: before the ME starts, the ME idle, the ME streaming eDRAM, the ME streaming main RAM, the GE texturing from main RAM, from VRAM, the system DMAC, DMACplus into the eDRAM (with the ME idle), the converter's channel playing, and all of them together.
+  - The ME reads its own view of the same addresses.
+  - Blocks whose bus clock is off are skipped. The fuse ID (0xBC100090–98) is never read.
+- **The run hung the PSP-1000** [M, bench-hw 41923464223: no answer at the wall + 4 minutes, no log back]. Its log on the stick (`ms0:/halo/log/regsnap.txt`, flushed before each block of the first pass) names where it stopped. It will be read after Sheepdog01's power cycle.
+- **The likeliest suspects** are the reads that no firmware driver makes [U]:
+  - memory access 0x10–0x2C and 0x4C–0x7C (sysmem saves only 0x00–0x0C and 0x30–0x48);
+  - system control's 0x3C, 0x6C, 0x74, 0xB8–0x100;
+  - DMACplus 0x00–0x2C;
+  - the PL080 globals.
+  - A second run, if any, keeps to the offsets uofw's drivers read.

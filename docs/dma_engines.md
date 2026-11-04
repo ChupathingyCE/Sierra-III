@@ -135,6 +135,8 @@ The PSP-3000 is the same [M]: 227 ns alone, 226 beside 0x40, 220 beside 0x48.
 - **This bench:** in two runs on the PSP-1000 and one on the PSP-3000, the ME touched only its eDRAM and the VME during a transfer, and neither PSP hung.
 - **So the hazard is the pairing, not the engine:** DMACplus with the ME mastering main RAM [U].
 
+- **The rest of the block, from jpcsp's model** (`MMIOHandlerDmacplus`, GPL, read only) [D]: 0x004 completed flags, 0x00C error flags; 0x100–0x110 the LCD's scan-out; 0x150–0x15C four codes it calls the MPEG/AVC codes, inside the converter's span; three channels, at 0x180, 0x1A0 and 0x1C0. No priority field in it (`hw_capabilities.md` §6.3).
+
 ## 4. The system DMAC (0xBC900000, 0xBCA00000)
 
 **What it is** [D, uofw dmacman]: two PL080-style controllers with 8 channels each.
@@ -150,6 +152,10 @@ The PSP-3000 is the same [M]: 227 ns alone, 226 beside 0x40, 220 beside 0x48.
 
 - **Rate:** RAM → RAM 182–204 MB/s idle, 62–65 MB/s while the main CPU misses.
 - **Its cost to the main CPU's misses:** ×2.12 at full duty, ×1.2 at half, none at a quarter. RAM → VRAM costs ×1.93.
+
+**Its clocks and the audio's use** [D, uofw `audio.c` and `sysreg_driver.c`, jpcsp]:
+- DMAC0's and DMAC1's bus clocks are bits 5 and 6 of 0xBC100050, and DMACplus's is bit 4.
+- The audio driver's three paths (the ordinary mix, the sample-rate converter and the input) are DMAC descriptor lists into the audio block's FIFOs at 0xBE000060, 0xBE000070 and 0xBE000080. The converter's channel is read straight from the game's buffer.
 
 **It doesn't feed the VME:** the eDRAM is on the ME's bus, and the only path to it from the main side known here is DMACplus's ME master [U].
 
@@ -200,6 +206,7 @@ The PSP-3000 is the same [M]: 227 ns alone, 226 beside 0x40, 220 beside 0x48.
 
 - **The register maps and control codes** of the VME's DMAC and DMACplus, and every mode's settings tried here, are mcidclan's (m-c/d), MIT: https://github.com/mcidclan/psp-media-engine-cracking-the-unknown, https://github.com/mcidclan/psp-media-engine-reload, https://github.com/mcidclan/psp-media-engine-custom-core, https://github.com/mcidclan/psp-virtual-mobile-engine-ext, https://github.com/mcidclan/me-dmacplus-drawing-transfer.
 - **The system DMAC's layout** is from uofw (https://github.com/uofw/uofw, GPL; read only, no code taken).
+- **DMACplus's other registers and the bus-clock bits** are from jpcsp's register models (https://github.com/jpcsp/jpcsp, GPL; read only, no code taken).
 - **PPSSPP's timing** is from https://github.com/hrydgard/ppsspp (GPL; read only).
 
 His repositories accept no AI-attributed pull requests. The measurements above are ours, to share with him by hand.

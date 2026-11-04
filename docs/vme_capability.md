@@ -192,6 +192,10 @@ Each PE has a second unit behind its primary. It is fed from the staging latch (
 - Every pass is an exact whole number of them, and that number holds steady.
 - **An element takes 2 ME cycles a PE,** and the DMAC's fill takes 2.0 a word.
 - That fits a datapath at half the ME's clock (~166 MHz, the bus clock) handling one element a clock in each PE. A datapath at the ME's clock running at half rate fits equally. Telling them apart needs a clock change, which the bench doesn't make.
+- **What the open sources add** [D, `hw_capabilities.md` §6.2]:
+  - The ME has clock ratios of its own. mcidclan's start writes 511/511, the full ratio, into 0xBC200000 and 0xBC200004, and into a third word, 0xBC200008, that no other source names.
+  - So the clock change needn't touch the PLL. A lower ratio in 0xBC200008, then in 0xBC200000, around one pass would show which clock the VME's 2 cycles an element follow. If 0xBC200008 is the VME's own ratio, the VME's cycles per element rise with it.
+  - That is a register write, recon's lane with the master's OK. It isn't made here.
 
 ### The media blocks as general hardware (4)
 
