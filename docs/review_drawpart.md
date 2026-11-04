@@ -1,6 +1,6 @@
 # Review: DRAWPART slice 2 and LIGHTREUSE, the model walk in two stages
 
-The drawing rebuild's stage 3, second slice (`docs/draw_rebuild.md`; slice 1 is `docs/review_lightfirst.md`). Both are off by default: keep word `drawpart` (which turns `lightreuse` on too) and `lightreuse` alone.
+The drawing rebuild's stage 3, second slice (`docs/draw_rebuild.md`; slice 1 is `docs/review_lightfirst.md`). Keep word `drawpart` (which turns `lightreuse` on too) is **on by default from tock160** (`keep_levers`; off word `drawpartoff`); `lightreuse` alone stays a test word.
 
 ## What changed
 
