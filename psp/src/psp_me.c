@@ -685,6 +685,9 @@ static void run_job(volatile struct me_slot *slot, int *sums, int on_me)
 		slot->results[2] = found;
 		break;
 	}
+	case ME_JOB_VME:
+		psp_vme_job(slot->args, slot->results, on_me);
+		break;
 	case ME_JOB_SOUNDCOPY:
 	{
 		/* "soundedram": up to four pieces (source, destination, bytes in
@@ -2189,11 +2192,11 @@ static int me_run_slot(int which, unsigned int type, const unsigned int *args, i
 			/* build 113: a render job gets 500 ms. The 40 ms limit was set
 			for audio jobs (about 1 ms each); b112's render jobs ran up to
 			39.6 ms on the PSP, and the one past 40 ms stopped the ME [M] */
-			/* build 115: the eDRAM probe too, which may wait behind a render job */
-			if (sceKernelGetSystemTimeWide() - start > (type == ME_JOB_GE || type == ME_JOB_EDRAM ? 500000 : 40000))
+			/* build 115: the eDRAM probe too, which may wait behind a render job, and the VME probe on its slot */
+			if (sceKernelGetSystemTimeWide() - start > (type == ME_JOB_GE || type == ME_JOB_EDRAM || type == ME_JOB_VME ? 500000 : 40000))
 			{
 				platform_log("ME: a job (type %u) not finished in %u ms (job %u; the ME at job %u, %u idle polls)", type,
-					type == ME_JOB_GE || type == ME_JOB_EDRAM ? 500 : 40, slot_request[which], slot->done, CONTROL->alive);
+					type == ME_JOB_GE || type == ME_JOB_EDRAM || type == ME_JOB_VME ? 500 : 40, slot_request[which], slot->done, CONTROL->alive);
 				me_stash_dump("a slot job late");
 				stats[which].failures++;
 				psp_me_stop("a job timed out");
