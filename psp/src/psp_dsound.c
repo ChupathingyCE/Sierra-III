@@ -268,11 +268,13 @@ struct stream_game
 #define GAME_OF(stream) ((struct stream_game *)((unsigned char *)(stream) + STREAM_BYTES))
 
 #define MIX_COMMANDS 512 /* a power of two */
-enum { CMD_PUSH, CMD_POP, CMD_RESET };
+/* CMD_MOVE: a sound's bytes moved (sndtierback): every packet in data's
+frames bytes pointed at to */
+enum { CMD_PUSH, CMD_POP, CMD_RESET, CMD_MOVE };
 struct mix_command
 {
 	struct psp_stream *stream;
-	const unsigned char *data;
+	const unsigned char *data, *to;
 	unsigned long type, frames;
 	long sound_class;
 #if PSP_MUSIC
@@ -296,10 +298,33 @@ static struct psp_stream *zombies;
 
 /* one command applied to the mixer's record: by the audio thread before it prepares
 a block, or at once by the game under the lock (mixlockold); what the game did to these fields before */
+/* the packets that point into a moved sound, pointed at its new place: on
+the audio thread, in the commands' order, so a packet queued before the move
+is moved too */
+static void packets_move(const unsigned char *from, const unsigned char *to, unsigned long bytes)
+{
+	struct psp_stream *stream;
+	unsigned long position;
+
+	for (stream = streams; stream; stream = GAME_OF(stream)->next)
+		for (position = 0; position < stream->packet_count && position < MAXIMUM_STREAM_PACKETS; position++)
+		{
+			struct voice_packet *packet = &stream->packets[(stream->packet_head + position) % MAXIMUM_STREAM_PACKETS];
+
+			if (packet->data >= from && (unsigned long)(packet->data - from) < bytes)
+				packet->data = to + (packet->data - from);
+		}
+}
+
 static void mix_apply(const struct mix_command *command)
 {
 	struct psp_stream *stream = command->stream;
 
+	if (command->type == CMD_MOVE)
+	{
+		packets_move(command->data, command->to, command->frames);
+		return;
+	}
 	if (command->type == CMD_PUSH)
 	{
 		struct voice_packet *entry = &stream->packets[(stream->packet_head + stream->packet_count) % MAXIMUM_STREAM_PACKETS];
@@ -377,6 +402,8 @@ thread empties every block */
 #if PSP_MUSIC
 static void mix_queue(const struct mix_command *made);
 #endif
+/* CMD_MOVE's destination, set by its one caller (tier_back_moved) */
+static const unsigned char *move_to = NULL;
 static void mix_command(struct psp_stream *stream, unsigned long type, const unsigned char *data, unsigned long frames,
 	long sound_class)
 {
@@ -385,6 +412,7 @@ static void mix_command(struct psp_stream *stream, unsigned long type, const uns
 	command.stream = stream;
 	command.type = type;
 	command.data = data;
+	command.to = type == CMD_MOVE ? move_to : NULL;
 	command.frames = frames;
 	command.sound_class = sound_class;
 #if PSP_MUSIC
@@ -1898,22 +1926,31 @@ static int tier_back_copy(void *to, const void *from, unsigned long bytes)
 	return 1;
 }
 
-/* the voices' packets that point into a moved sound, pointed at its new place
-(the mixer held: nothing reads them meanwhile) */
+/* a moved sound: the game's own view of its queued packets moved here, and
+the mixer's packets by a command, which the audio thread applies in order
+after any packet queued before it (the old place is only ever mixed silent
+meanwhile, which reads no samples) */
 static void tier_back_moved(unsigned long from, unsigned long to, unsigned long bytes)
 {
 	struct psp_stream *stream;
-	unsigned long position;
+	unsigned long k;
 
 	for (stream = streams; stream; stream = GAME_OF(stream)->next)
-		for (position = 0; position < stream->packet_count && position < MAXIMUM_STREAM_PACKETS; position++)
+	{
+		struct stream_game *game = GAME_OF(stream);
+
+		for (k = 0; k < MAXIMUM_STREAM_PACKETS; k++)
 		{
-			struct voice_packet *packet = &stream->packets[(stream->packet_head + position) % MAXIMUM_STREAM_PACKETS];
-			unsigned long at = (unsigned long)packet->data;
+			unsigned long at = (unsigned long)game->packet[k].pvBuffer;
 
 			if (at >= from && at - from < bytes)
-				packet->data = (const unsigned char *)(to + (at - from));
+				game->packet[k].pvBuffer = (LPVOID)(to + (at - from));
 		}
+		if ((unsigned long)game->queued_end >= from && (unsigned long)game->queued_end - from <= bytes)
+			game->queued_end = (const unsigned char *)(to + ((unsigned long)game->queued_end - from));
+	}
+	move_to = (const unsigned char *)to;
+	mix_command(NULL, CMD_MOVE, (const unsigned char *)from, bytes, 0);
 }
 
 /* at the ME's stop, before the tier is closed: only once the ME halted itself
