@@ -101,7 +101,7 @@ Labels: [M] measured on a PSP, [E] emulator or estimate, [D] read in code or doc
 |---|---|---|---|---|
 | C1 | **The ME's capacity and scheduling.** On d20's heavy view the ME binds the frame and starves the GE | Frame time wherever the ME binds; capacity for more AI and effects | The frame timeline (ledger 3), then the scheduler's design | PSP runs (recon) |
 | C2 | **The GE's hardware lights, spotlights included,** for the flashlight, the dynamic lights and vehicles | Up to the extra passes' cost (14 ms of a b30 frame in b107; to re-measure) | A census of today's light passes and their cost per light; a bench of the GE's lighting cost per vertex | Emulator census, then a PSP bench |
-| C3 | **Memory Stick reads async, done right:** one reader at a priority above the game thread, serving the geometry and the textures | The streaming hitches (up to 98 ms a frame) | Design from v10's rule, then one PSP pair | Code, then the PSP |
+| C3 | **Memory Stick reads async, done right.** The design exists, never built: `streaming.md` §3, S1–S5 (one input stage owning the stick, prefetch by place, pack order, smallest mips first, pinned effects) | The streaming hitches (up to 98 ms a frame; the game thread waited for the stick 2.5 s a run, worst 767 ms [M, b114]); the caches sized to the working set | S1 first (one reader, its priority measured on the PSP), then S2–S3 with the bake | Code and the bake, then PSP pairs |
 | C4 | **The bus's priority** | If it exists, up to the GE's 8–18 ms cost to the CPU | §9.1's steps 2 and 3 | Local disassembly, then halo_bench |
 | C5 | **The VME on the PSP-1000, in a game build** | A third processor for fixed work, if it computes there | One run | PSP |
 | C6 | **The VFPU's coverage:** the float inventory against tock161, and the approximation ops | Tick and drawing maths | Refresh `hardware_utilization.md` §3 | Code reading, emulator |
@@ -124,3 +124,13 @@ Labels: [M] measured on a PSP, [E] emulator or estimate, [D] read in code or doc
 - The VFPU's full instruction set against the engine's hot maths.
 
 Started 2026-11-04.
+
+## 5. The stick, read for C3 (or-job 41901339013, checked: 124 of 162 citations confirmed, the key figures spot-checked)
+
+- **Six readers, no owner.** Geometry (192 KB a frame), textures (96 KB a frame) and animations (no budget; a miss always waits, since the pose must be right) read synchronously on the game thread. Sound goes through the engine's reader thread (priority 0x1C), the music through its own (0x1D), and the log is written by the heartbeat (0x18). All of them share one stick under one lock, so each waits behind the others [D].
+- **What the stick gives in play:** ~2 MB/s, against 16 MB/s for large reads. The reads are small (5–13 KB on average), and each pays ~2 ms of fixed cost [M, b114, `streaming.md` §2].
+- **Who uses it most:** sound reads ~7× the other three together (118 MB a b114 run); the log writer is the second user (15.9 s a run) [M].
+- **Nothing reads ahead.** The packs are in bake order, not first-use order, so a prefetch today would still be many small reads; S3 (pack order) is bake work.
+- **The caches are smaller than their working sets:** geometry's 900-frame working set is 2.0–2.7 MB against a 1,792 KB carve [E, `memory_ledger.md`].
+- **Its priority choice is open:** the async reads at 0x10, the engine's reader at 0x1C, music at 0x1D, the heartbeat at 0x18, audio at 0x12, the game at 0x20. One reader takes one of these, and which one is best is unmeasured.
+
