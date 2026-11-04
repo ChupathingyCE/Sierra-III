@@ -11,4 +11,4 @@
 
 **What it doesn't do.** The ME still doesn't take its share of that frame's points: the loops make them, as the design always did for points the ME doesn't reach. Getting the ME to the job sooner (the ring served inside a long actor, AIMERINGLOOK) is separate: v2 is built and off, and its yields ran ~0 ring jobs.
 
-**Proof.** Emulator [E]: the ME's code runs inside the push there, so the job is always begun and the new branch can't be taken. Play and both seeds match the base on b30 and d20, which proves the code around it changes nothing. PSP: d20's opening on the PSP-1000, failures and ring rests a run.
+**Proof.** Emulator [E]: the ME's code runs inside the push there, so the job is always begun and the new branch can't be taken. Play and both seeds match the base at every tick on b30's route (4,500 ticks) and d20 (2,700), which proves the code around it changes nothing. PSP-1000 [M], d20 to exitat120 (game time 3,488): 0 ring jobs late and no ring rest, against 3 failed points jobs, each followed by a rest, in the run before the fix. No ME stop before the exit. One run against one: the lates are rare, but every one of the 3 had this cause.

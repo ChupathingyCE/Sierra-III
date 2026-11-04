@@ -29,5 +29,6 @@ A look answers the collection's word. The ring is served at the looks only with 
 
 ## Proofs
 
-- Exact [E]: (pending) play and both seeds against the base on b30's route, c20 and d20, and d20 with `aimelate3` on both sides, which stops actors at the new looks.
-- PSP-1000 [M]: (pending) d20 to exitat120: the longest stretch, steps 13 and 14, the points jobs "not begun", ring lates.
+- Exact [E]: play and both seeds the same at every tick against the parent (mepointsclaim alone): b30's route (4,500 ticks), c20 (3,600), d20 with the flashlight (2,700), and d20 again with `aimelate3` on both builds (2,700; 182 jobs ended at the word a side), which ends jobs at the new looks too. The emulator's AI job runs on the simulated ME, so this proves the code around the looks and the stop path, not the PSP's timing.
+- Cost off the ME's pass: one load and a branch a place. The changed functions lose their profile counts (10 without counts against 4 before), so a strict build needs the profile counted again.
+- PSP-3000 [M] (the PSP-1000 was away): (pending) d20 to exitat120, `aimepathlookoff | aimeringlook`, two runs a side: the longest stretch, steps 13 and 14, the points jobs "not begun", ring lates.
