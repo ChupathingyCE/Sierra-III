@@ -34328,18 +34328,27 @@ long psp_sound_tier_rescue(
 	struct data_iterator iterator;
 	struct xbox_cache_sound_datum *cache_sound;
 	long blocks[PSP_TIER_RESCUE_MOST];
+	boolean by_packets[PSP_TIER_RESCUE_MOST];
 	int count = 0, k;
 
 	if (!xbox_sound_cache_globals.cache_sounds)
 		return 0;
-	/* the blocks first: the allocations below change the array */
+	/* the sounds to move first, each held by a count of its own while it
+	waits, so the allocations below (which push out what nothing holds, the
+	tier's sounds too) leave it */
 	data_iterator_new(&iterator, xbox_sound_cache_globals.cache_sounds);
 	while ((cache_sound = data_iterator_next(&iterator)) != NULL && count < PSP_TIER_RESCUE_MOST)
 	{
 		unsigned long at = cache_sound->sound ? (unsigned long)cache_sound->sound->cache_base_address : 0;
 
-		if (at >= low && at < high)
-			blocks[count++] = iterator.datum_index;
+		/* (still loading: the loss fails its pieces and the game asks again) */
+		if (at < low || at >= high || cache_sound->loaded != 1)
+			continue;
+		by_packets[count] = !sound_cache_locked_block_proc(iterator.datum_index);
+		if (by_packets[count] && !in_play(at, (unsigned long)cache_sound->sound->samples.size))
+			continue;
+		cache_sound->software_reference_count++;
+		blocks[count++] = iterator.datum_index;
 	}
 	for (k = 0; k < count; k++)
 	{
@@ -34348,17 +34357,10 @@ long psp_sound_tier_rescue(
 		unsigned long from = (unsigned long)sound->cache_base_address, to;
 		long size = sound->samples.size, index;
 
-		boolean by_packets;
-
-		/* still loading: the loss fails its pieces and the game asks again */
-		if (old->loaded != 1)
-			continue;
-		by_packets = !sound_cache_locked_block_proc(blocks[k]);
-		if (by_packets && !in_play(from, (unsigned long)size))
-			continue;
 		index = lruv_block_new(xbox_sound_cache_globals.cache, size);
 		if (index == NONE)
 		{
+			old->software_reference_count--;
 			counts[2]++;
 			continue;
 		}
@@ -34369,6 +34371,7 @@ long psp_sound_tier_rescue(
 		if (!copy((void *)to, (const void *)from, (unsigned long)size))
 		{
 			/* the new block given back as an unplayed sound of its own */
+			old->software_reference_count--;
 			counts[3]++;
 			moved_sound->sound = sound;
 			moved_sound->loaded = 1;
@@ -34385,6 +34388,7 @@ long psp_sound_tier_rescue(
 
 			*moved_sound = *old;
 			moved_sound->identifier = identifier;
+			moved_sound->software_reference_count--;
 		}
 		/* the old block let go as an unplayed one (its counts are the new one's now) */
 		old->software_reference_count = 0;
@@ -34395,7 +34399,7 @@ long psp_sound_tier_rescue(
 		moved(from, to, (unsigned long)size);
 		counts[0]++;
 		counts[1] += (unsigned long)size;
-		counts[4] += by_packets;
+		counts[4] += by_packets[k];
 	}
 	return psp_sound_tier_drain(low, high);
 }
