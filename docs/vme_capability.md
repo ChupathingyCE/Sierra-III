@@ -195,14 +195,11 @@ Each PE has a second unit behind its primary. It is fed from the staging latch (
 
 ### The media blocks as general hardware (4)
 
-- **The AVC block is unpowered in a game** [M, PSP-1000]: 0xbc100070 reads 0.
-  - The firmware powers it only when a video codec opens. Its sequence (uofw's `me_wrapper.c`, `sceMePowerControlAvcPower`, called from the video open `sceMeVideo_driver_E8CD3C75`) is three steps: syscon's `sceSysconCtrlTachyonAvcPower(1)`, then bit 2 of 0xbc100070, then the AVC reset released (sysreg bit 0x20) [D].
-  - The bench therefore made no access to the converter's registers. An unpowered block's registers might hang the bus.
-  - The only AVC registers the bench touches are mcidclan's transfer set-up at 0xBCC00000–0xBCC00070, at every ME start. They answer on both PSPs.
-- **The colour-space converter** (0xBC800120–0xBC800160, his `me-vme-hardware-csc`) [D]:
-  - What it does: a fixed 3×3 matrix with Q3.7 coefficients, from 4:2:0 YCbCr planes of bytes in the ME's eDRAM to 8888 or 565 RGB in VRAM, 480×272 in blocks of 16×8, started by one register.
-  - It is a per-pixel matrix: no lookup, no recursion. Outside video it could only recolour three byte planes into a framebuffer.
-  - Not measured: the run needs the AVC block powered (below).
+- **The AVC block is unpowered in a game** [M, both PSPs]: the main CPU's 0xbc100070 reads 3, with bit 2 (the power flag) clear.
+  - **The ME's 0xbc1000xx are its own registers.** The ME's 0xbc100070 reads 0 even with the block powered, and its 0xbc100050 holds its own clocks (0x0f at its start, where the main CPU's reads 0xd41d). So the power flag is read from the main CPU. Round 2's first "reads 0" was the ME's view.
+  - The firmware powers the block when a video codec opens. Its switch is `sceMePowerControlAvcPower` in the ME wrapper (uofw's `me_wrapper.c`, called from the video open `sceMeVideo_driver_E8CD3C75`) [D]. It runs four steps: syscon's `sceSysconCtrlTachyonAvcPower(1)`, then bit 2 of 0xbc100070, then an RPC to the ME firmware (command 8), then the AVC reset released (sysreg bit 0x20). Its power-off has no RPC.
+  - The only AVC registers the bench touches without the switch are mcidclan's transfer set-up at 0xBCC00000–0xBCC00070, at every ME start. They answer on both PSPs.
+- **The colour-space converter** (0xBC800120–0xBC800160, his `me-vme-hardware-csc`): timed below.
 - **The VLD and the decoder's transform and filter units** [D, U]:
   - No public source maps their registers. mcidclan's notes name a VLD and the ME's vendor move instructions (LDL/SDL reused, banks $8/$9 holding data). He reports their results unstable, possibly shared between the VME and the decoder.
   - uofw drives the decoder only through the ME firmware's RPC. PPSSPP replaces the codecs at a high level (sceVideocodec in HLE) and models none of the blocks.
@@ -215,8 +212,45 @@ Each PE has a second unit behind its primary. It is fed from the staging latch (
   - The decoder's blocks are undocumented and unpowered in a game.
 - **The question behind this round** (the ME decodes H.264 at 480p 30 fps, so is there no headroom?): the headroom is in the decoder's own fixed blocks (VLD, transforms, prediction, deblocking) and the AVC DMA paths. Those are a fixed video pipeline, not a general engine. The VME's general part is measured above (4 ops a cycle when data is resident), with the moving serial. The video rate comes from fixed blocks reading the ME's eDRAM directly, not from the VME's buffers [U].
 
+### The colour-space converter, timed (keep words `csc`, `cscload`)
+
+The bench is branch `recon/vme-csc` (ca189ff6). Everything here is [M]. It was measured on the PSP-1000 (bench-hw 41920041468, 41920606111, 41921292445) and on the PSP-3000 (41921285664), and the two agree within 2%.
+
+**Powering it, by the firmware's own switch:**
+- A small kernel module of the bench's (`avcpow`) imports `sceMePowerControlAvcPower` from `sceMePower_driver`, using uofw's 6.60 NID 0xB37562AA. The loader linked it on both PSPs. The module calls the switch only when the stub holds a jump.
+- **The switch's power-on must come before the bench takes the ME.** Its RPC waits on the ME firmware with no time limit. So the bench calls it from a thread of its own and waits at most 2 s. It returned 0 every time.
+- **Its cost:** power-on takes 21–36 ms (22.5 typical) and power-off 25–35 ms, through syscon. That is a load-time cost, never a per-frame one.
+- The power flag goes 3 → 7 and back to 3. The power-off re-asserts the AVC reset (0xbc10004c bit 0x20). **Bit 2 read clear after every run.**
+- **The ME's start is undisturbed.** With the switch before `meLibDefaultInit`, the start takes the image table as before (3 on the PSP-1000, 2 on the Slim). Its 100k nops take 600,021–600,115 cycles, against 600,020 without the switch, and its clock is 331.35 a µs.
+- The converter's registers keep their values across the block's power-off and a game's relaunch. A fresh PSP reads 0x140 = 0x001e2d00 (720×480 in 16×16 macroblocks) and BT.601's coefficients (luma 0x95 = 1.164, Cr→R 0x0CC). These are either the firmware's set-up or the block's defaults [U].
+
+**What it computes:**
+- Each output is clamp(0..255) of cY·max(Y − 16, 0) + cCb·(Cb − 128) + cCr·(Cr − 128). The coefficients are Q3.7, and the fields are Y in bits 0–9, Cb in 10–19 and Cr in 20–29.
+- Register 0x150 gives R, 0x154 gives G and 0x158 gives B. R is in the low byte and alpha is 0. 565 output has R in the low 5 bits.
+- The one-input-per-output matrix proved the fields exactly. With mcidclan's matrix, the checked pixels match the formula to ±1.
+- **0x160 is a busy flag:** it reads 1 just after the start and 0 once the frame is done.
+
+**Its speed** (480×272, 4:2:0 bytes in the ME's eDRAM → VRAM):
+
+| | One frame | Rate |
+|---|---|---|
+| 8888, alone (last pixel looked at every ≥ 10 µs) | **561–562 µs** | 232 Mpixel/s, **930 MB/s** into VRAM |
+| 565, alone | 561–562 µs | 465 MB/s |
+| 8888, with the main CPU polling VRAM without pause | 671–697 µs | |
+| 8888, beside the main CPU's dependent misses | 2,062–2,086 µs (×3.7) | |
+| 8888, beside the GE sampling 1 MB from main RAM | 1,657–1,669 µs (×3.0) | |
+
+- **It is bound by the pixel rate, not by its output:** 565 is no faster than 8888. It reads 348 MB/s from the eDRAM.
+
+**What it costs the others:**
+- **The main CPU's dependent misses** (4 MB chase): 232.5 ns → 255.0 ns beside the converter (×1.09–1.10).
+- **A GE list** (one 480×272 sprite of a 1 MB texture in main RAM): 47.3 ms → 59.7 ms (×1.26–1.27).
+- **The converter yields:** it slows ×3–3.7 while the others lose 9–27%.
+- The comparison point is the system DMAC, which costs the misses ×2.12 at full duty (§4 of `dma_engines.md`).
+
+**So:** with the ME's planes ready, the converter can write a full-screen 8888 frame in about 0.56 ms, under 2% of a 30 fps frame, for a small share of the bus. It is still only a matrix from three byte planes, and it needs the block powered (one ~23 ms call at load) and the planes in the ME's eDRAM. No current design needs it. The candidates would be video playback, or a full-screen recolour that the ME writes as planes [U].
+
 **What's left:**
-- The converter, timed with the AVC block powered by the firmware's own path. Opening the video codec before the bench takes the ME is one way. It is untested, and it needs its own small run and recon's word.
 - The interconnect's skew for the secondary's input.
 - The VME's clock, which needs a clock change.
 
@@ -245,6 +279,6 @@ The question (the lab's master, 2026-11-04 14:55, item 5): could the VME take th
 
 ## 9. Credits and terms
 
-The register map, the wipe and configuration sequence, the context layout and every opcode tried are mcidclan's (m-c/d), MIT, from https://github.com/mcidclan/psp-media-engine-custom-core and https://github.com/mcidclan/psp-virtual-mobile-engine-ext. The colour-space converter's registers are from https://github.com/mcidclan/me-vme-hardware-csc (MIT). The secondary unit's chain is his saturate-clamp-second-fu sample (psp-virtual-mobile-engine-ext 15884a0, MIT), and the saturator's field is from his datapath notes (https://github.com/mcidclan/psp-media-engine-cracking-the-unknown f921778, MIT). The AVC power sequence is read from uofw's me_wrapper (https://github.com/uofw/uofw 28306bb).
+The register map, the wipe and configuration sequence, the context layout and every opcode tried are mcidclan's (m-c/d), MIT, from https://github.com/mcidclan/psp-media-engine-custom-core and https://github.com/mcidclan/psp-virtual-mobile-engine-ext. The colour-space converter's registers are from https://github.com/mcidclan/me-vme-hardware-csc (MIT). The secondary unit's chain is his saturate-clamp-second-fu sample (psp-virtual-mobile-engine-ext 15884a0, MIT), and the saturator's field is from his datapath notes (https://github.com/mcidclan/psp-media-engine-cracking-the-unknown f921778, MIT). The AVC power sequence, and the power switch's NID the bench imports, are read from uofw's me_wrapper (https://github.com/uofw/uofw 28306bb).
 
 His repositories accept no AI-attributed pull requests, so nothing from this work goes upstream to them. The measurements and the Phat's differences above are ours, to share with him by hand if Sheepdog01 chooses.

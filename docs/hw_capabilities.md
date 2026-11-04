@@ -53,7 +53,7 @@ Labels: [M] measured on a PSP, [E] emulator or estimate, [D] read in code or doc
 
 | In use | Note |
 |---|---|
-| no | No doc tries them as general hardware. Taking the ME over gives up the firmware's own use of them [D, `psp_hardware_reference.md` §2]. Unknown whether any is usable for game work [U] |
+| no | **The colour-space converter is measured** [M, both PSPs, `vme_capability.md` §7]: powered by the firmware's own switch before the ME is taken (~23 ms at load, the ME's start undisturbed), it turns 4:2:0 byte planes in the ME's eDRAM into a 480×272 8888 or 565 frame in VRAM in **0.56 ms** (930 MB/s). It costs the CPU's misses ×1.09 and a GE texture list ×1.26, and it yields: ×3–3.7 slower itself beside them. It is a fixed matrix with no lookup, and no design needs it yet. The VLD and the transforms are undocumented [D]. Taking the ME over gives up the firmware's own use of them [D, `psp_hardware_reference.md` §2] |
 
 ### DMA
 
