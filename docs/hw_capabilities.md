@@ -172,7 +172,7 @@ Sources, all read only, no code taken: uofw (github.com/uofw/uofw 28306bb, GPL: 
   4. the AVC reset released (0xBC10004C bit 0x20).
   - Off is the reverse.
   - At the PLL's higher settings (≥ 266 MHz) the firmware also switches the AVC's clock source (ME command 7, `sceSysregMsifClkSelect(0, n)`).
-  - **So powering the converter from the game needs step 3's unknown ME-side set-up.** recon's cscrecon has the converter timed; this is for its notes.
+  - Step 3's ME-side work isn't public, so the way to power the block is the firmware's own switch, called as an export. recon's cscrecon did that on both PSPs and timed the converter [M, `vme_capability.md` §7].
 - **The reset and bus-clock maps** (uofw `sysreg_driver.c`; jpcsp `MMIOHandlerSystemControl`):
 
   | Bit | 0xBC10004C (reset) | 0xBC100050 (bus clock) |
@@ -192,7 +192,7 @@ Sources, all read only, no code taken: uofw (github.com/uofw/uofw 28306bb, GPL: 
 
   - **Neither has a priority field.**
   - **b105's reading is corrected by this map:** `bc10004c` 0x40 → 0 is the USB block's reset released, not the ME's. mcidclan's ME start writes 0x14 and then 0 to 0xBC10004C, which releases every reset at once. `bc100050` gaining 0x20 is DMAC0's bus clock (the system DMAC, for the texture uploads).
-  - The ME's start also writes 0xBC100050 = 0x0F from the ME. On the main CPU's register that would have stopped DMACplus, both DMACs and the DDR controller, and the PSP runs on. So the ME sees a system-control block of its own, or a masked one [U]; the snapshot's ME-side reads (§6.4) answer it.
+  - **The ME has a system-control block of its own** [M, recon, `vme_capability.md` §7]. Its 0xBC100050 holds 0x0F, the value its start writes, where the main CPU's holds 0xD41D. Read with this map, the main CPU's value is: ME, AW B, eDRAM, DMACplus, MSIF0, EMCDDR, APB and audio 0 on; DMAC0, DMAC1, AW A and KIRK off. So the system DMACs are clocked only while a copy runs.
 
 ### 6.3 DMACplus, the DDR controller and the bus's priority (C4) [D]
 
@@ -214,7 +214,7 @@ Sources, all read only, no code taken: uofw (github.com/uofw/uofw 28306bb, GPL: 
 - **The bench:** `bench/halo_bench16_regsnap` on branch `research/regsnap` (98a86766).
   - It reads, in kernel mode and read-only, about 280 documented registers of the memory access, system control, clock ratio, profiler, DMACplus, DMAC0/1, DDR, GE, GE eDRAM and audio blocks.
   - The states: before the ME starts, the ME idle, the ME streaming eDRAM, the ME streaming main RAM, the GE texturing from main RAM, from VRAM, the system DMAC, DMACplus into the eDRAM (with the ME idle), the converter's channel playing, and all of them together.
-  - The ME reads its own view of the same addresses.
+  - The ME reads its own view of the same addresses. recon has since shown that view is the ME's own block (§6.2), so the ME's side mainly adds the ratio words.
   - Blocks whose bus clock is off are skipped. The fuse ID (0xBC100090–98) is never read.
 - **The run hung the PSP-1000** [M, bench-hw 41923464223: no answer at the wall + 4 minutes, no log back]. Its log on the stick (`ms0:/halo/log/regsnap.txt`, flushed before each block of the first pass) names where it stopped. It will be read after Sheepdog01's power cycle.
 - **The likeliest suspects** are the reads that no firmware driver makes [U]:
