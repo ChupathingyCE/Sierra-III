@@ -48,8 +48,13 @@ AIME (the thinking a tick ahead) doesn't need to be on for this: it moves when t
 
 ## Keep words
 
-- `shoutnone`: the fix off. The shout is set up about NONE as before (and with `PSP_ASSERTS_ON=1` the engine's assert #90 fires there).
+- `shoutnone`: the fix off. The shout is set up about NONE as before.
+- `shoutcensus` (recon): at the end of each `ai_update` (main CPU, before `objects_update`), every found-body transition still waiting for its decision is logged, with whether the actor rested this tick under aicad3. The engine has none.
+- `shoutforce` (a test, with the census): each such body's unit is deleted there, as garbage collection may before the next `ai_update`, so the next decision meets the transition's prop gone. This is the crash's repro.
 
-## Proof
+The census and the test sit in `ai.c` (`psp_guard_tick_end`, one flag test a tick when off).
 
-See the lab's findings (crash_b30_prop_none and the propcrash rows): the census of the case on routes, and play and both seeds against the tock before the fix where it doesn't fire.
+## Proof [E]
+
+- Repro: on the hand run's path through b30, the asserts-on build's play makes a found body wait over a tick at game time ~3,790, on an aicad3 resting tick. With `shoutforce shoutnone` the game crashes at the next decision's control, at the instruction of the hand run's crash (the shout's load of `prop->unit_index`), every time. With `shoutforce` and the fix on, the log says the guard was set up without the shout and play goes on to the run's end. With `aicad3off` no found body waits and nothing crashes.
+- Exactness: play and both seeds the same at every tick as the tock before the fix, on the b30 route (4,500 ticks), c20 and c10 (3,600), where the fix doesn't fire.
