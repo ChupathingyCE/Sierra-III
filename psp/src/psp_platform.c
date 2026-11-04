@@ -1149,7 +1149,7 @@ static const struct
 	{ "wxdead", "wxdeadoff" }, { "texavg", "texavgoff" }, { "lightcarry", "lightcarryoff" }, { "sndedram", "sndedramoff" }, { "musadpcm", "musadpcmoff" },
 	{ "lightringlook", "lightringlookoff" }, { "aimeobslook", "aimeobslookoff" }, { "lightfirst", "lightfirstoff" },
 	{ "sndtierback", "sndtierbackoff" }, { "drawpart", "drawpartoff" }, { "p2pass", "p2passoff" },
-	{ "mepointsclaim", "mepointsclaimoff" }, { "aimepathlook", "aimepathlookoff" },
+	{ "mepointsclaim", "mepointsclaimoff" }, { "aimepathlook", "aimepathlookoff" }, { "aimeringlook", "aimeringlookoff" },
 };
 static char keep_defaults_added[KEEP_DEFAULTS_ROOM] = "";
 /* defaults that found no room: a lever silently off would be read as on */
