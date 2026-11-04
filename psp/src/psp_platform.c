@@ -3106,6 +3106,23 @@ steps in order: the console has no way to wait */
 				platform_log("commands.txt: tick %lu: %s", ticks_seen, timed[k].text);
 				hs_compile_and_evaluate(timed[k].text);
 			}
+		/* "flashlightatN": the player's flashlight asked on from game tick N,
+		and again every 5 s (it goes out when its charge runs down), so a PSP
+		A/B can price the flashlight by keep word in one build: commands.txt
+		is one job's for both sides */
+		{
+			static long flashlight_at = -2;
+
+			if (flashlight_at == -2)
+				flashlight_at = psp_keep_number("flashlightat", -1);
+			if (flashlight_at >= 0 && ticks_seen >= (unsigned long)flashlight_at &&
+				(ticks_seen - (unsigned long)flashlight_at) % 150 == 0)
+			{
+				if (ticks_seen == (unsigned long)flashlight_at)
+					platform_log("flashlightat: the flashlight asked on from tick %ld, every 150 ticks", flashlight_at);
+				hs_compile_and_evaluate("units_set_desired_flashlight_state (players) true");
+			}
+		}
 	}
 	/* build 59: ms0:/halo/teleport.txt, "x y z forward_x forward_y forward_z"
 	(the player's feet, as the heartbeat prints them, and a direction as a
