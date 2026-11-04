@@ -45132,7 +45132,227 @@ static void psp_wx_report(long now)
 ]
 
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items()) + list(FIXES_AIME2A.items()) + (list(FIXES_STACKHOT.items()) if STACKHOT else []) + (list(FIXES_STACKHOT2.items()) if STACKHOT2 else []) + list(FIXES_PWSL.items()) + list(FIXES_SPHSL.items()) + list(FIXES_RECONLIST.items()) + list(FIXES_TP1.items()) + list(FIXES_WXDEAD.items()) + list(FIXES_AIMEMOVE.items())):
+# ---------- FIXES_PROPCRASH: a found body's shout taken up only while its prop lives (a fix; keep word "shoutnone" turns it off)
+# Finding a dead friend (actor_perception.c) gives the actor a combat
+# transition that names the body's prop; the decision that takes it up
+# (action_guard_setup_from_combat_transition) sets the guard action to shout
+# about that prop once its path ends (action_guard_control). The engine holds
+# a stimulus only from perception to the decision of the same actor update,
+# where actor_stimulus_clear ends it, so the prop is always alive there (the
+# engine asserts it, action_guard.c #90). With aicad3 an actor on a resting
+# tick still perceives but makes no decision, so the stimulus waits a tick;
+# if the body is deleted meanwhile (its unit garbage collected:
+# ai_handle_unit_deleted), actor_switch_props sets the stimulus's prop to
+# NONE but leaves the transition, the decision sets up a shout about NONE,
+# and the shout reads prop_get(NONE): garbage on the PSP (a bus error, b30).
+# The fix does at the decision what action_guard_replace_prop does to a
+# guard that already has the shout when its prop goes: the guard is set up as
+# before (the transition, the point where the body lay), with no shout. Play
+# without it is unchanged: the branch is reached only with a prop of NONE,
+# which the engine never gives it. "shoutcensus" (recon) and "shoutforce" (a
+# test that deletes the waiting bodies) are its repro, in ai.c
+FIXES_PROPCRASH = {}
+FIXES_PROPCRASH["source/ai/action_guard.c#propcrash"] = [
+("""/* ---------- public code */
+
+boolean
+action_guard_setup_current_position(""",
+ """/* ---------- public code */
+
+#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_PROPCRASH): "shoutnone" (see there) */
+int psp_keep(const char *name);
+void platform_psp_log(const char *format, ...);
+long game_time_get(void);
+
+static boolean psp_guard_shoutnone = FALSE;
+/* decisions that met a found body's prop gone; the ME's pass counts too */
+PSP_AIME_ME_SIDE unsigned long psp_guard_shouts_gone = 0;
+static unsigned long psp_guard_shouts_logged = 0;
+
+/* the keep word read on the main CPU, before any pass ahead can reach the
+decision on the ME (ai_initialize_for_new_map) */
+void psp_guard_initialize_for_new_map(
+	void)
+{
+	static boolean read = FALSE;
+
+	if (!read)
+	{
+		read = TRUE;
+		psp_guard_shoutnone = psp_keep("shoutnone") != 0;
+		if (psp_guard_shoutnone)
+			platform_psp_log("ai: a found body's shout taken up even when its prop is gone, as before (shoutnone)");
+	}
+}
+
+/* the decision met the transition's prop gone: counted, and logged where a
+log may be written (not in the ME's pass); TRUE sets the shout up anyway */
+static boolean psp_guard_prop_gone(
+	long actor_index)
+{
+	psp_guard_shouts_gone++;
+	if (!psp_work_on_me())
+		platform_psp_log("ai: game time %ld | actor %08lx: a found body's prop gone before the decision took it up%s",
+			game_time_get(), actor_index,
+			psp_guard_shoutnone ? " (shoutnone: the shout set up about NONE)" : "; the guard set up without the shout");
+	return psp_guard_shoutnone;
+}
+
+/* each ai_update on the main CPU: a line when the count moves (rare) */
+void psp_guard_report(
+	void)
+{
+	if (psp_guard_shouts_gone != psp_guard_shouts_logged)
+	{
+		psp_guard_shouts_logged = psp_guard_shouts_gone;
+		platform_psp_log("ai: game time %ld | a found body's prop gone before the decision took it up: %lu so far%s",
+			game_time_get(), psp_guard_shouts_logged,
+			psp_guard_shoutnone ? " (shoutnone: the shout set up about NONE)" : "; the guard set up without the shout");
+	}
+}
+#endif
+
+boolean
+action_guard_setup_current_position("""),
+("""	if (actor->stimuli.combat_transition == 2)
+	{
+		match_assert(""",
+ """	if (actor->stimuli.combat_transition == 2
+#ifdef HALO_PSP
+		/* FIXES_PROPCRASH: the body's prop deleted while the stimulus
+		waited for this decision: no shout, as action_guard_replace_prop
+		leaves a guard whose prop goes */
+		&& (actor->stimuli.combat_transition_prop_index != NONE ||
+			psp_guard_prop_gone(actor_index))
+#endif
+		)
+	{
+		match_assert("""),
+]
+FIXES_PROPCRASH["source/ai/ai.c#propcrash"] = [
+("""	ai_debug_initialize_for_new_map();
+	ai_profile_initialize_for_new_map();
+""",
+ """	ai_debug_initialize_for_new_map();
+	ai_profile_initialize_for_new_map();
+#ifdef HALO_PSP
+	{
+		/* psp_fixups.py (FIXES_PROPCRASH, "shoutnone"): action_guard.c */
+		extern void psp_guard_initialize_for_new_map(void);
+		extern void psp_guard_census_initialize(void);
+
+		psp_guard_initialize_for_new_map();
+		psp_guard_census_initialize();
+	}
+#endif
+"""),
+("""void ai_update(
+	void)
+{""",
+ """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_PROPCRASH): "shoutcensus" (recon) counts the
+found-body transitions still waiting for their decision when a tick's
+ai_update ends, where the engine has none (actor_decision_loop clears every
+stimulus in the update that made it). "shoutforce" (a test, with the
+census) deletes each such body's unit there, as garbage collection may
+before the next ai_update, so the decision meets the transition's prop gone */
+int psp_keep(const char *name);
+void platform_psp_log(const char *format, ...);
+
+boolean psp_aicad_rest(long actor_index); /* actors.c */
+
+static boolean psp_guard_census = FALSE, psp_guard_force = FALSE;
+static unsigned long psp_guard_waiting = 0, psp_guard_forced = 0;
+static long psp_guard_census_logged = NONE;
+
+void psp_guard_census_initialize(
+	void)
+{
+	static boolean read = FALSE;
+
+	if (!read)
+	{
+		read = TRUE;
+		psp_guard_force = psp_keep("shoutforce") != 0;
+		psp_guard_census = psp_guard_force || psp_keep("shoutcensus") != 0;
+		if (psp_guard_census)
+			platform_psp_log("ai: found-body transitions waiting at a tick's end counted (shoutcensus)%s",
+				psp_guard_force ? "; their bodies deleted there (shoutforce, a test)" : "");
+	}
+}
+
+/* the end of ai_update, on the main CPU, before objects_update */
+static void psp_guard_tick_end(
+	void)
+{
+	struct actor_iterator iterator;
+	struct actor_datum *actor;
+	long now;
+
+	if (!psp_guard_census)
+		return;
+	actor_iterator_new(&iterator, TRUE);
+	while ((actor = actor_iterator_next(&iterator)) != NULL)
+	{
+		long prop_index = actor->stimuli.combat_transition_prop_index;
+		long unit_index = NONE;
+
+		if (actor->stimuli.combat_transition != 2)
+			continue;
+		psp_guard_waiting++;
+		if (prop_index != NONE)
+			unit_index = prop_get(prop_index)->unit_index;
+		platform_psp_log("ai: shoutcensus: game time %ld | actor %08lx waits with a found body (prop %08lx, unit %08lx); resting this tick %d (aicad)%s",
+			game_time_get(), iterator.index, prop_index, unit_index, (int)psp_aicad_rest(iterator.index),
+			psp_guard_force && unit_index != NONE ? "; its unit deleted (shoutforce)" : "");
+		if (psp_guard_force && unit_index != NONE)
+		{
+			psp_guard_forced++;
+			object_delete(unit_index);
+		}
+	}
+	now = game_time_get();
+	if (psp_guard_census_logged == NONE || now < psp_guard_census_logged || now - psp_guard_census_logged >= 900)
+	{
+		if (psp_guard_census_logged != NONE)
+			platform_psp_log("ai: shoutcensus: game time %ld | found-body transitions waiting at a tick's end %lu; bodies deleted there %lu",
+				now, psp_guard_waiting, psp_guard_forced);
+		psp_guard_census_logged = now;
+	}
+}
+#endif
+
+void ai_update(
+	void)
+{"""),
+("""	profile_enter(ai_update_section);
+""",
+ """	profile_enter(ai_update_section);
+#ifdef HALO_PSP
+	{
+		/* psp_fixups.py (FIXES_PROPCRASH): action_guard.c */
+		extern void psp_guard_report(void);
+
+		psp_guard_report();
+	}
+#endif
+"""),
+("""	profile_exit(ai_update_section);
+""",
+ """#ifdef HALO_PSP
+	if (update_ai)
+	{
+		/* psp_fixups.py (FIXES_PROPCRASH, "shoutcensus"): above */
+		psp_guard_tick_end();
+	}
+#endif
+	profile_exit(ai_update_section);
+"""),
+]
+
+
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items()) + list(FIXES_AIME2A.items()) + (list(FIXES_STACKHOT.items()) if STACKHOT else []) + (list(FIXES_STACKHOT2.items()) if STACKHOT2 else []) + list(FIXES_PWSL.items()) + list(FIXES_SPHSL.items()) + list(FIXES_RECONLIST.items()) + list(FIXES_TP1.items()) + list(FIXES_WXDEAD.items()) + list(FIXES_AIMEMOVE.items()) + list(FIXES_PROPCRASH.items())):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
