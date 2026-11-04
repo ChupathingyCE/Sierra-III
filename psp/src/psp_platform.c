@@ -1148,7 +1148,7 @@ static const struct
 } keep_levers[] = {
 	{ "wxdead", "wxdeadoff" }, { "texavg", "texavgoff" }, { "lightcarry", "lightcarryoff" }, { "sndedram", "sndedramoff" }, { "musadpcm", "musadpcmoff" },
 	{ "lightringlook", "lightringlookoff" }, { "aimeobslook", "aimeobslookoff" }, { "lightfirst", "lightfirstoff" },
-	{ "sndtierback", "sndtierbackoff" }, { "drawpart", "drawpartoff" },
+	{ "sndtierback", "sndtierbackoff" }, { "drawpart", "drawpartoff" }, { "p2pass", "p2passoff" },
 };
 static char keep_defaults_added[KEEP_DEFAULTS_ROOM] = "";
 

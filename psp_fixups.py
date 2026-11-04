@@ -46365,7 +46365,7 @@ static boolean psp_drawpart_wanted(
 """),
 ]
 
-# "p2pass" (keep word; off by default): tick pass P2. A non-collideable
+# "p2pass" (keep word; on by default, off word p2passoff): tick pass P2. A non-collideable
 # object's partition disconnect and reconnect made inside the object walk are
 # queued and made after it, in their order, each with the sphere and location
 # it had then; the rest of the move (the location lookup, the wake, the

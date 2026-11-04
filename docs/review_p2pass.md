@@ -1,4 +1,4 @@
-# Review: P2NC, tick pass P2 (keep word `p2pass`, off by default)
+# Review: P2NC, tick pass P2 (keep word `p2pass`, on by default; `p2passoff` turns it off)
 
 Labels: [M] measured on a PSP, [E] emulator or estimate, [D] read in code or data, [U] inference.
 
@@ -34,3 +34,19 @@ Why: c20's walk moves ~31 non-collideable machines a tick, interleaved with the 
 
 - Its `.bss` shifts the data after it by ~2.4 KB (SPHSL's 24 KB moved the drawing +2-3% on the PSP): the PSP pair shows whether this one does.
 - New functions have no PGO counts: a strict profile build refuses to link until the tock's profile is counted again.
+
+## The PSP pair, and the default flip
+
+**PSP-3000 [M]** (the lab's sierra-hw 41892618259; c20 hands off to exitat120; `- | p2pass`, two runs a side, one build). Gaps against the default:
+
+| Stretch | Frame | Tick | Drawing |
+|---|---:|---:|---:|
+| 150-570 | +0.5 ms (+0.9%), in the noise | -0.1 (-0.5%), in the noise | +0.2 (+1.0%), in the noise |
+| 300-2000 | **-1.1 (-2.2%)** | -0.5 (-2.4%) | +0.2 (+1.4%) |
+| 2000-2700 | **-1.3 (-2.0%)** | -1.0 (-4.6%) | +1.4 (+7.5%) |
+| 2700-6000 | **-1.4 (-2.1%)** | -1.0 (-4.7%) | +1.4 (+7.4%) |
+
+Every gap except the first stretch is real. The tick gains as the census predicted. Drawing loses 0.2-1.4 ms, which is a cache cost: the queue adds ~2.4 KB of `.bss`, and SPHSL's 24 KB once did the same. The frame still gains 1.1-1.4 ms. So `p2pass` is on by default (`keep_levers`), and `p2passoff` turns it off.
+
+**Before a strict build:** the tock's profile needs a recount, because six hot functions (objects_update among them) have no counts.
+
