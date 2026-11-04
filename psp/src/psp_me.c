@@ -169,6 +169,11 @@ can't read its abort word, so the main CPU's bounded wait for it ran out and
 stopped the ME (the lab's sierra-hw 41164514273). The AI job it waits behind
 is short and ends at the word */
 #define ME_FEATURE_NEST_RENDER 4096u
+/* "aimevisleft": inside the AI job a drain stops at a visibility job
+(ME_JOB_VISIBILITY) and leaves it, and the ring behind it, to the ME's loop:
+it can't be stopped once begun, and on b30 one ran ~17.8 ms with the AI job's
+word unanswerable (sierra-hw 41880162180) */
+#define ME_FEATURE_AIME_VIS_LEFT 8192u
 
 /* The debug stash: where the ME is, in words of its own (two cache lines,
 only ever used through the uncached view), so a main CPU that gives up on a
@@ -869,6 +874,7 @@ void psp_me_serve_audio(void)
 only in its own work (psp_post.h's psp_aime_here) */
 extern int psp_aime_job_now[16];
 void psp_aime_step(int step); /* actors.c (psp_fixups.py FIXES_AIME2A) */
+void psp_aime_answer_point(int step); /* actors.c: a place the word could be answered */
 #if PSP_MUSIC
 int psp_me_music_yield(void)
 {
@@ -1340,6 +1346,12 @@ static __attribute__((noinline)) void ring_run(unsigned int index, int on_me, un
 cycle count when the ring was last seen with nothing waiting past popped.
 Audio first: an audio block asked for meanwhile is mixed before each job,
 so it waits for one job at most, not for all eight the ring holds */
+/* the ring jobs run in the AI job's drains (stop set): the longest, its
+type, and the visibility jobs left to the ME's loop (aimevisleft); the ME
+writes them, the main CPU reads them uncached (psp_me_report) */
+static PSP_AIME_ME_SIDE unsigned int aime_drain_worst = 0, aime_drain_worst_type = 0, aime_drain_vis_left = 0,
+	aime_drain_vis_run = 0;
+
 static unsigned int me_ring_drain(unsigned int popped, unsigned int *last_look, volatile const unsigned int *stop)
 {
 	unsigned int looked = me_cycles(), pushed = RING_PUSHED;
@@ -1352,13 +1364,44 @@ static unsigned int me_ring_drain(unsigned int popped, unsigned int *last_look, 
 	}
 	while (popped != pushed && !(stop && *stop))
 	{
+		/* inside the AI job the word was just tested: a place it could be
+		answered, so the census's stretch is one ring job, not the drain */
+		unsigned int type = 0, began = 0;
+
+		if (stop)
+		{
+			struct me_ring_request *request = &ring_requests[popped & RING_MASK];
+
+			psp_aime_answer_point(7);
+			/* the request as the main CPU wrote it (ring_run drops it again) */
+			lines_drop((unsigned int)request, sizeof(*request));
+			type = request->type;
+			if (type == ME_JOB_VISIBILITY)
+			{
+				if (CONTROL->features & ME_FEATURE_AIME_VIS_LEFT)
+				{
+					aime_drain_vis_left++;
+					break;
+				}
+				aime_drain_vis_run++;
+			}
+		}
 		if (audio_first && me_audio_now())
 			me_count(STASH_AUDIO_INSIDE);
+		if (stop)
+			began = me_cycles();
 		ring_run(popped & RING_MASK, 1, me_cycles() - *last_look);
+		if (stop && me_cycles() - began > aime_drain_worst)
+		{
+			aime_drain_worst = me_cycles() - began;
+			aime_drain_worst_type = type;
+		}
 		popped++;
 		RING_POPPED = popped;
 		__asm__ __volatile__("sync");
 	}
+	if (stop)
+		psp_aime_answer_point(7);
 	/* anything pushed after the read above came after this moment */
 	*last_look = looked;
 	return popped;
@@ -2279,7 +2322,8 @@ int psp_me_start(void)
 		(me_yield_off ? ME_FEATURE_NO_YIELD : 0u) | (psp_keep("meedramstate") ? ME_FEATURE_EDRAM_STATE : 0u) |
 		(me_claim_old ? ME_FEATURE_CLAIM_OLD : 0u) | (psp_keep("mebcc1") ? ME_FEATURE_BCC : 0u) |
 		(psp_keep("mefaultoff") ? ME_FEATURE_FAULT_OFF : 0u) | (psp_keep("mefaulttest") ? ME_FEATURE_FAULT_TEST : 0u) |
-		(psp_keep("menestrender") ? ME_FEATURE_NEST_RENDER : 0u);
+		(psp_keep("menestrender") ? ME_FEATURE_NEST_RENDER : 0u) |
+		(psp_keep("aimevisleft") ? ME_FEATURE_AIME_VIS_LEFT : 0u);
 	wake_features = control->features | (psp_keep("mewakeprobe") ? ME_FEATURE_WAKE_PROBE : 0u);
 	wake_early = psp_keep("mewake") && !psp_keep("mewakeoff") && psp_keep("mewakeearly");
 	wake_fw = psp_keep("mewakefw");
@@ -4679,6 +4723,23 @@ void psp_me_report(void)
 		(double)window / 1e6, (unsigned long)nested_us_last, length ? line : "; no jobs");
 	if (ring_line[0])
 		platform_log("%s", ring_line);
+	{
+		/* the AI job's drains since the start: the longest ring job in one, and
+		the visibility jobs run in them or left to the ME's loop */
+		unsigned int worst = *UNCACHED(&aime_drain_worst), run = *UNCACHED(&aime_drain_vis_run),
+			left = *UNCACHED(&aime_drain_vis_left);
+
+		static unsigned int said[3];
+
+		if ((worst || run || left) && (worst != said[0] || run != said[1] || left != said[2]))
+			platform_log("ME: the AI job's drains: the longest ring job %lu us (type %u); visibility jobs run in them %u, left to the ME's loop %u (aimevisleft %s)",
+				me_cycles_per_us > 0.0f ? (unsigned long)((float)worst / me_cycles_per_us) : 0,
+				*UNCACHED(&aime_drain_worst_type), run, left,
+				(CONTROL->features & ME_FEATURE_AIME_VIS_LEFT) ? "on" : "off");
+		said[0] = worst;
+		said[1] = run;
+		said[2] = left;
+	}
 	{
 		/* aimeringlook's yields inside an actor's thinking since the last line */
 		unsigned int yields = INNER_STATS->yields, jobs = INNER_STATS->ring_jobs, low = INNER_STATS->low;

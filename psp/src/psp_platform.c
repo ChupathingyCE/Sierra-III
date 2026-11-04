@@ -3516,6 +3516,9 @@ static struct
 	program's code, the tick's bins then the drawing's */
 	volatile unsigned int pc_wanted, pc_counts, pc_base, pc_bins, pc_shift, pc_period;
 	volatile unsigned int pc_samples, pc_binned, pc_other_phase, pc_kernel, pc_outside, pc_timer;
+	/* "pcsampleother": a third table for the other phases; the kernel's
+	samples by phase (psp/profile/main.c) */
+	volatile unsigned int pc_tables, pc_kernel_by_phase[4];
 } hwprofile __attribute__((aligned(64)));
 /* "pcsample": 512-byte bins over the program's code, the tick's and the
 drawing's (~54 KB for 3.5 MB of code); written to log/pcsample.txt every
@@ -3567,11 +3570,14 @@ static void hwprofile_start(const char *eboot_path)
 	{
 		extern char _ftext[], _etext[];
 		unsigned int bins = (((unsigned int)_etext - (unsigned int)_ftext) >> PC_SHIFT) + 1;
-		void *counts = memalign(64, bins * 2 * sizeof(unsigned int));
+		/* "pcsampleother": the other phases binned too (~27 KB more) */
+		unsigned int tables = psp_keep("pcsampleother") ? 3 : 2;
+		void *counts = memalign(64, bins * tables * sizeof(unsigned int));
 
 		if (counts)
 		{
-			memset(counts, 0, bins * 2 * sizeof(unsigned int));
+			memset(counts, 0, bins * tables * sizeof(unsigned int));
+			hwprofile.pc_tables = tables;
 			hwprofile.pc_counts = (unsigned int)counts;
 			hwprofile.pc_base = (unsigned int)_ftext;
 			hwprofile.pc_bins = bins;
@@ -3583,7 +3589,7 @@ static void hwprofile_start(const char *eboot_path)
 			hwprofile.pc_wanted = 1;
 		}
 		platform_log("pcsample: %s (%u bins of %u bytes from %08x, %u KB)", counts ? "on" : "no room",
-			bins, 1u << PC_SHIFT, (unsigned int)_ftext, bins * 2 * 4 / 1024);
+			bins, 1u << PC_SHIFT, (unsigned int)_ftext, bins * (hwprofile.pc_tables ? hwprofile.pc_tables : 2) * 4 / 1024);
 	}
 	module = sceKernelLoadModule(path, 0, NULL);
 	if (module >= 0)
@@ -3639,9 +3645,10 @@ static void pc_report(void)
 	now_us = sceKernelGetSystemTimeLow();
 	rate = last_us && now_us != last_us ? (unsigned int)((unsigned long long)(samples - last_samples) * 1000000u / (now_us - last_us)) : 0;
 	last_us = now_us;
-	platform_log("pcsample: %u a second; %u samples (%u since the last), binned %u, in other phases %u, in the kernel %u, elsewhere %u (timer %d, period %u)",
+	platform_log("pcsample: %u a second; %u samples (%u since the last), binned %u, in other phases %u, in the kernel %u (by phase: other %u, tick %u, drawing %u, frame end %u), elsewhere %u (timer %d, period %u)",
 		rate, samples, samples - last_samples, hwprofile.pc_binned, hwprofile.pc_other_phase, hwprofile.pc_kernel,
-		hwprofile.pc_outside, (int)hwprofile.pc_timer, hwprofile.pc_period);
+		hwprofile.pc_kernel_by_phase[0], hwprofile.pc_kernel_by_phase[1], hwprofile.pc_kernel_by_phase[2],
+		hwprofile.pc_kernel_by_phase[3], hwprofile.pc_outside, (int)hwprofile.pc_timer, hwprofile.pc_period);
 	last_samples = samples;
 	if (++pc_report_beats % 12)
 		return;
@@ -3658,7 +3665,8 @@ static void pc_report(void)
 		static char chunk[4096];
 		unsigned int used = 0;
 
-		for (phase = 0; phase < 2; phase++)
+		/* phase 0 in the file is the third table: the other phases */
+		for (phase = 0; phase < (hwprofile.pc_tables >= 3 ? 3u : 2u); phase++)
 			for (k = 0; k < hwprofile.pc_bins; k++)
 			{
 				unsigned int count = counts[phase * hwprofile.pc_bins + k];
@@ -3670,7 +3678,7 @@ static void pc_report(void)
 					sceIoWrite(file, chunk, used);
 					used = 0;
 				}
-				used += (unsigned int)snprintf(chunk + used, sizeof(chunk) - used, "pcsample %u %u %u\n", phase + 1, k, count);
+				used += (unsigned int)snprintf(chunk + used, sizeof(chunk) - used, "pcsample %u %u %u\n", phase < 2 ? phase + 1 : 0u, k, count);
 			}
 		if (used)
 			sceIoWrite(file, chunk, used);
