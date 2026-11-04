@@ -221,12 +221,6 @@ Each PE has a second unit behind its primary. It is fed from the staging latch (
 - The interconnect's skew for the secondary's input.
 - The VME's clock, which needs a clock change.
 
-## 8. Credits and terms
-
-The register map, the wipe and configuration sequence, the context layout and every opcode tried are mcidclan's (m-c/d), MIT, from https://github.com/mcidclan/psp-media-engine-custom-core and https://github.com/mcidclan/psp-virtual-mobile-engine-ext. The colour-space converter's registers are from https://github.com/mcidclan/me-vme-hardware-csc (MIT). The secondary unit's chain is his saturate-clamp-second-fu sample (psp-virtual-mobile-engine-ext 15884a0, MIT), and the saturator's field is from his datapath notes (https://github.com/mcidclan/psp-media-engine-cracking-the-unknown f921778, MIT). The AVC power sequence is read from uofw's me_wrapper (https://github.com/uofw/uofw 28306bb).
-
-His repositories accept no AI-attributed pull requests, so nothing from this work goes upstream to them. The measurements and the Phat's differences above are ours, to share with him by hand if Sheepdog01 chooses.
-
 ## 8. Sizing: the world light pass on the VME (recon, 2026-11-04)
 
 The question (the lab's master, 2026-11-04 14:55, item 5): could the VME take the world light pass's per-vertex work off the ME, and how much of d20's ME time would that free, end to end with the transfers? A sizing from the figures above and ledger 2 (`capacity_model.md`). Nothing was built or benched for it.
@@ -249,3 +243,9 @@ The question (the lab's master, 2026-11-04 14:55, item 5): could the VME take th
 - What remains for the VME is dynamic lights on level geometry, which is small on every stretch measured.
 - The VME would pay here only if the corners' light-relative data stayed resident across frames (a dynamic light over static geometry, with its data in eDRAM). The 48 KB of buffers holds ~2,700 corners at six words each, so that's one light's lit set at most.
 - **No bench is proposed.** If one is wanted to confirm the per-corner figure, it is one PSP-1000 run timing the kernel's pass chain over 2,048 elements fed from eDRAM.
+
+## 9. Credits and terms
+
+The register map, the wipe and configuration sequence, the context layout and every opcode tried are mcidclan's (m-c/d), MIT, from https://github.com/mcidclan/psp-media-engine-custom-core and https://github.com/mcidclan/psp-virtual-mobile-engine-ext. The colour-space converter's registers are from https://github.com/mcidclan/me-vme-hardware-csc (MIT). The secondary unit's chain is his saturate-clamp-second-fu sample (psp-virtual-mobile-engine-ext 15884a0, MIT), and the saturator's field is from his datapath notes (https://github.com/mcidclan/psp-media-engine-cracking-the-unknown f921778, MIT). The AVC power sequence is read from uofw's me_wrapper (https://github.com/uofw/uofw 28306bb).
+
+His repositories accept no AI-attributed pull requests, so nothing from this work goes upstream to them. The measurements and the Phat's differences above are ours, to share with him by hand if Sheepdog01 chooses.
