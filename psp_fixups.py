@@ -27686,12 +27686,6 @@ void render_objects(
 						definition->object.model.index,
 						level_of_detail_pixels,
 						object_get_node_matrices(object_index),"""),
-("""						data->no_planar_fog ? FLAG(_render_model_no_planar_fog_bit) : 0);
-""", """						data->no_planar_fog ? FLAG(_render_model_no_planar_fog_bit) : 0);
-#ifdef HALO_PSP
-					psp_census_definition = -1; /* psp_fixups.py (FIXES_RECON #modelcensus) */
-#endif
-"""),
 ]
 
 # "sleepcensus" (keep.txt): every 5 s of game time, a log line of the sleep
@@ -28231,46 +28225,8 @@ void object_compute_node_matrices_recursive(""", """
 
 void object_compute_node_matrices_recursive("""),
 ]
-FIXES_RECON["source/render/render_objects.c#objcost"] = [
-("\t\t\trender_object_globals.rendered_object_indices[rendered_object_index];\n\t\trender_object(data);\n",
-"""\t\t\trender_object_globals.rendered_object_indices[rendered_object_index];
-#ifdef HALO_PSP
-\t\t{
-\t\t\t/* psp_fixups.py (FIXES_RECON #objcost) */
-\t\t\textern void psp_objcost(long definition, int type, int drawing, unsigned long microseconds, unsigned long count);
-\t\t\tunsigned long psp_start = psp_microseconds();
-
-\t\t\trender_object(data);
-\t\t\tpsp_objcost(object_get(data->object_index)->definition_index, object_get_type(data->object_index), 1,
-\t\t\t\tpsp_microseconds() - psp_start, 1);
-\t\t}
-#else
-\t\trender_object(data);
-#endif
-"""),
-]
-
-FIXES_RECON["source/render/render_objects.c#objsteps"] = [
-("""\t\t\tunsigned long psp_start = psp_microseconds();
-
-\t\t\trender_object(data);
-""", """\t\t\tunsigned long psp_start = psp_microseconds();
-
-#ifdef PSP_TICK_STEPS
-\t\t\t{
-\t\t\t\t/* psp_fixups.py (FIXES_RECON #objsteps) */
-\t\t\t\textern void psp_objsteps_push(long definition, int type, int drawing);
-\t\t\t\textern void psp_objsteps_pop(void);
-
-\t\t\t\tpsp_objsteps_push(object_get(data->object_index)->definition_index, object_get_type(data->object_index), 1);
-\t\t\t\trender_object(data);
-\t\t\t\tpsp_objsteps_pop();
-\t\t\t}
-#else
-\t\t\trender_object(data);
-#endif
-"""),
-]
+# (the walk's own objcost and objsteps pairs are in FIXES_RECONLATE: they sit
+# in DRAWPART's text)
 
 # "particlecensus": each particle asked for, by the effect that asked, and
 # what became of it (made, unseen at birth, over the budget, thinned out of a
@@ -46365,6 +46321,129 @@ static boolean psp_drawpart_wanted(
 """),
 ]
 
+# ---------- FIXES_RECONLATE: the recon instruments that sit in DRAWPART's text
+# (PSP_RECON=1 builds only), applied after it. With drawpart a model's draw is
+# made after the walk, or inside a later object's walk when the record buffer
+# fills, so each instrument follows the draw to where it's made:
+# modelcensus's "object being drawn" (psp_ge.c's draw census) is named again
+# around each recorded draw; objcost charges each recorded draw to the view's
+# object that recorded it, and takes a buffer's draws made inside a walk out of
+# that walk's own time; objsteps pushes the recording object around its draws.
+# With drawpart off the walk draws as before and the records are never made.
+FIXES_RECONLATE = {}
+FIXES_RECONLATE["source/render/render_objects.c#reconlate"] = [
+# modelcensus: no object is being drawn once render_model returns
+("""						data->no_planar_fog ? FLAG(_render_model_no_planar_fog_bit) : 0);
+					}
+""", """						data->no_planar_fog ? FLAG(_render_model_no_planar_fog_bit) : 0);
+					}
+#ifdef HALO_PSP
+					psp_census_definition = -1; /* psp_fixups.py (FIXES_RECONLATE, modelcensus) */
+#endif
+"""),
+# each record remembers the view's object whose walk made it
+("""	struct render_model_effect model_effect;
+};
+""", """	struct render_model_effect model_effect;
+	long objcost_root; /* psp_fixups.py (FIXES_RECONLATE, objcost) */
+};
+"""),
+("""static struct psp_drawpart_record psp_drawpart_records[PSP_DRAWPART_RECORDS];
+""", """/* psp_fixups.py (FIXES_RECONLATE, objcost): the view's object being walked,
+and the time spent drawing records so far, so a walk that draws a full buffer
+can take that time out of its own */
+extern void psp_objcost(long definition, int type, int drawing, unsigned long microseconds, unsigned long count);
+extern unsigned long psp_microseconds(void);
+#ifdef PSP_TICK_STEPS
+extern void psp_objsteps_push(long definition, int type, int drawing);
+extern void psp_objsteps_pop(void);
+#endif
+static long psp_objcost_root = NONE;
+static unsigned long psp_drawpart_drawn_us = 0;
+
+static struct psp_drawpart_record psp_drawpart_records[PSP_DRAWPART_RECORDS];
+"""),
+("""		struct psp_drawpart_record const *record = &psp_drawpart_records[record_index];
+
+		if (record->widgets)
+""", """		struct psp_drawpart_record const *record = &psp_drawpart_records[record_index];
+		unsigned long psp_recon_start = psp_microseconds(); /* psp_fixups.py (FIXES_RECONLATE, objcost) */
+
+#ifdef PSP_TICK_STEPS
+		psp_objsteps_push(object_get(record->objcost_root)->definition_index, object_get_type(record->objcost_root), 1);
+#endif
+		if (record->widgets)
+"""),
+("""			psp_rso_object = record->rso_object;
+			render_model(
+				record->model_index,
+""", """			psp_rso_object = record->rso_object;
+			/* psp_fixups.py (FIXES_RECONLATE, modelcensus) */
+			psp_census_definition = object_get(record->object_index)->definition_index;
+			render_model(
+				record->model_index,
+"""),
+("""				record->flags);
+			psp_rso_object = NONE;
+		}
+	}
+	psp_drawpart_count = 0;
+""", """				record->flags);
+			psp_rso_object = NONE;
+			psp_census_definition = -1; /* psp_fixups.py (FIXES_RECONLATE, modelcensus) */
+		}
+#ifdef PSP_TICK_STEPS
+		psp_objsteps_pop();
+#endif
+		{
+			/* psp_fixups.py (FIXES_RECONLATE, objcost): drawing time, no draw counted (the walk counts it) */
+			unsigned long psp_recon_us = psp_microseconds() - psp_recon_start;
+
+			psp_drawpart_drawn_us += psp_recon_us;
+			psp_objcost(object_get(record->objcost_root)->definition_index, object_get_type(record->objcost_root), 1,
+				psp_recon_us, 0);
+		}
+	}
+	psp_drawpart_count = 0;
+"""),
+("""	if (psp_drawpart_count == PSP_DRAWPART_RECORDS)
+		psp_drawpart_draw();
+	return &psp_drawpart_records[psp_drawpart_count++];
+""", """	if (psp_drawpart_count == PSP_DRAWPART_RECORDS)
+		psp_drawpart_draw();
+	psp_drawpart_records[psp_drawpart_count].objcost_root = psp_objcost_root; /* psp_fixups.py (FIXES_RECONLATE, objcost) */
+	return &psp_drawpart_records[psp_drawpart_count++];
+"""),
+# objcost: each object of the view's walk timed, less the buffers it drew;
+# objsteps: the step stack's push and pop around it
+("""		psp_walk_root = psp_reuse && rendered_object_index < PSP_WALK_REUSE_OBJECTS ? rendered_object_index : -1;
+#endif
+		render_object(data);
+""", """		psp_walk_root = psp_reuse && rendered_object_index < PSP_WALK_REUSE_OBJECTS ? rendered_object_index : -1;
+#endif
+#ifdef HALO_PSP
+		{
+			/* psp_fixups.py (FIXES_RECONLATE, objcost) */
+			unsigned long psp_drawn = psp_drawpart_drawn_us;
+			unsigned long psp_start = psp_microseconds();
+
+			psp_objcost_root = data->object_index;
+#ifdef PSP_TICK_STEPS
+			psp_objsteps_push(object_get(data->object_index)->definition_index, object_get_type(data->object_index), 1);
+#endif
+			render_object(data);
+#ifdef PSP_TICK_STEPS
+			psp_objsteps_pop();
+#endif
+			psp_objcost(object_get(data->object_index)->definition_index, object_get_type(data->object_index), 1,
+				psp_microseconds() - psp_start - (psp_drawpart_drawn_us - psp_drawn), 1);
+		}
+#else
+		render_object(data);
+#endif
+"""),
+]
+
 # "p2pass" (keep word; on by default, off word p2passoff): tick pass P2. A non-collideable
 # object's partition disconnect and reconnect made inside the object walk are
 # queued and made after it, in their order, each with the sphere and location
@@ -47061,7 +47140,7 @@ FIXES_P2CENSUS["source/game/players.c#p2census"] = [
 """),
 ]
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items()) + list(FIXES_AIME2A.items()) + (list(FIXES_STACKHOT.items()) if STACKHOT else []) + (list(FIXES_STACKHOT2.items()) if STACKHOT2 else []) + list(FIXES_PWSL.items()) + list(FIXES_SPHSL.items()) + list(FIXES_RECONLIST.items()) + list(FIXES_TP1.items()) + list(FIXES_WXDEAD.items()) + list(FIXES_AIMEMOVE.items()) + list(FIXES_PROPCRASH.items()) + list(FIXES_SNDEDRAM.items()) + list(FIXES_LIGHTFIRST.items()) + list(FIXES_DRAWPART.items()) + list(FIXES_P2PASS.items()) + (list(FIXES_P2CENSUS.items()) if P2CENSUS else [])):
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items()) + list(FIXES_AIME2A.items()) + (list(FIXES_STACKHOT.items()) if STACKHOT else []) + (list(FIXES_STACKHOT2.items()) if STACKHOT2 else []) + list(FIXES_PWSL.items()) + list(FIXES_SPHSL.items()) + list(FIXES_RECONLIST.items()) + list(FIXES_TP1.items()) + list(FIXES_WXDEAD.items()) + list(FIXES_AIMEMOVE.items()) + list(FIXES_PROPCRASH.items()) + list(FIXES_SNDEDRAM.items()) + list(FIXES_LIGHTFIRST.items()) + list(FIXES_DRAWPART.items()) + (list(FIXES_RECONLATE.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + list(FIXES_P2PASS.items()) + (list(FIXES_P2CENSUS.items()) if P2CENSUS else [])):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
