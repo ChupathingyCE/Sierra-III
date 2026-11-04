@@ -5,7 +5,7 @@ The VME is the Media Engine's reconfigurable vector engine. This page reports a 
 **In short:** the VME computes at **2 operations a cycle across its 4 processing elements**, 17–32× the ME's own CPU on long streams. It does so beside the ME's CPU, which runs freely during a pass. It has **16,384 words of 24 bits** (48 KB). Three things limit it:
 
 - **Set-up:** writing a context costs ~709 cycles. A pass's own overhead is 72 cycles.
-- **Moving the data:** inbound transfers cost 9–38 cycles a word, against 2 cycles an element of compute.
+- **Moving the data:** inbound transfers cost 9–38 cycles a word at the DMAC's rest setting, 3.0 (eDRAM) and 5.1 (main RAM) with its config bits 8–9 set (§9), against 2 cycles an element of compute. The buffers can't be fed during a pass; the next context can (§9).
 - **No lookup operation exists,** and 13 of 64 opcodes behave differently on the PSP-1000 than on the Slim.
 
 Good fits are long fixed-point streams that stay resident or are reused. Gathers, tables and recurrences are poor fits.
@@ -184,7 +184,7 @@ Each PE has a second unit behind its primary. It is fed from the staging latch (
 - **The DMAC doesn't wait for the pass.** Started during one, it finishes in its own time (12,555 against 12,426 alone), with bits 0x800, 0x400 and 0x200 all set at once. The words it moved during the pass are lost.
 - **So moving and computing are serial,** a hard limit on any stream. With round 1's reads (a stale latch during a pass), the buffers are the VME's alone while it runs.
 - **What streaming costs:** two input streams through the DMAC from eDRAM (12.1 cycles a word) and one out (2.7), per element, is ~27 cycles. Compute is 0.5. The ME's CPU does the same MUL in 16.6.
-  - **So a one-pass stream is slower on the VME than on the ME's CPU.** The VME pays only when data stays resident through several passes, about six or more a load, or when the CPU's own time is what's short: the DMAC moves the data while the CPU does other work (§4).
+  - **So a one-pass stream is slower on the VME than on the ME's CPU** at the DMAC's rest setting. With its fast setting (§9) it is about 1.9× faster [U]. The VME pays only when data stays resident through several passes, about six or more a load, or when the CPU's own time is what's short: the DMAC moves the data while the CPU does other work (§4).
 
 ### The VME's clock [U]
 
@@ -277,8 +277,110 @@ The question (the lab's master, 2026-11-04 14:55, item 5): could the VME take th
 - The VME would pay here only if the corners' light-relative data stayed resident across frames (a dynamic light over static geometry, with its data in eDRAM). The 48 KB of buffers holds ~2,700 corners at six words each, so that's one light's lit set at most.
 - **No bench is proposed.** If one is wanted to confirm the per-corner figure, it is one PSP-1000 run timing the kernel's pass chain over 2,048 elements fed from eDRAM.
 
-## 9. Credits and terms
+## 9. Round 3: who owns the buffers while a pass runs
 
-The register map, the wipe and configuration sequence, the context layout and every opcode tried are mcidclan's (m-c/d), MIT, from https://github.com/mcidclan/psp-media-engine-custom-core and https://github.com/mcidclan/psp-virtual-mobile-engine-ext. The colour-space converter's registers are from https://github.com/mcidclan/me-vme-hardware-csc (MIT). The secondary unit's chain is his saturate-clamp-second-fu sample (psp-virtual-mobile-engine-ext 15884a0, MIT), and the saturator's field is from his datapath notes (https://github.com/mcidclan/psp-media-engine-cracking-the-unknown f921778, MIT). The AVC power sequence, and the power switch's NID the bench imports, are read from uofw's me_wrapper (https://github.com/uofw/uofw 28306bb).
+The question (Sheepdog01, 2026-11-04): a codec engine with 8 buffers normally ping-pongs, so is §7's serial result the hardware, or the way our set-up drives it? The bench is the same program with the keep words `vmeoverlap` and `vmeldl` (branch `recon/vme-overlap`). Everything here is [M] on both PSPs: bench-hw 41920673771 and 41921904314 on the PSP-1000 (the second also ran the vendor moves), and 41921919611 on the PSP-3000. The two models agree everywhere. Where they differ in cycles, the difference is named. Every run ended clean, with no wait reaching its bound and every guard intact.
+
+**In short:**
+- **The data buffers have one owner at a time, for all of them at once.** While a pass runs, every write into any buffer is dropped. This holds for every set-up tried, including a pass that touches only one of the 8 buffers. The DMAC's reads in the same window come back wrong.
+- **The context is double-buffered.** A context loaded by the DMAC while a pass runs leaves that pass exact. It takes effect on the next flow word. That is the ping-pong this engine has.
+- **The DMAC has a fast mode that round 2 didn't use.** Bits 8 and 9 of its config word (0x440ff004), part of the firmware's 0x31b, make transfers into the VME 4.1× faster from eDRAM and 7.3× faster from main RAM, with every word exact.
+
+So moving and computing stay serial, but the moving is now 2.5–5.5 cycles a word, not 12–46. A one-pass stream from eDRAM comes out ahead of the ME's CPU [U, from the rates below].
+
+### Bank ownership by set-up (item 1)
+
+Each trial tags all 16,384 words. It triggers a pass of 768 elements, then stores into words 1792–2047 of all 8 buffers, words that no context here reads or writes. Each round of 8 stores is sampled against the busy bit (0x800) before and after. A round counts as "in the pass" only when both samples are busy, and "outside" only when neither is. A word the pass wrote is counted from a snapshot.
+
+| Context | Buffers the pass wrote (base 0–3, top 0–3) | Stores in the pass that landed | Outside the pass |
+|---|---|---|---|
+| Round 2's four-PE stream | base 0–3, 768 each, all exact | 0 of 11–12 in every buffer | all (243–244 each) |
+| The same, PE 1–3's units zeroed | base 0–3 (PE 0's exact; 1–3 zero products) | 0 in every buffer | all |
+| PE 0 alone on its own address units (top 0 × base 0) | base 0 only | 0 in every buffer | all |
+| PE 2 alone on its own (top 2 × base 2) | base 2 only | 0 in every buffer | all |
+| Stores through the mirrors (+0x8000), four-PE and PE 0 alone | as above | 0 in every buffer | all |
+
+- **The lock covers the whole buffer space, not the buffers in use.** A pass that reads top 0 and base 0 and writes only base 0 still drops a store into top 3. The interconnect's routing (all PEs on PE 0's address units, or each on its own) changes nothing.
+- **The mirrors** [M]. 0x44008000–0x4400ffff mirrors base 0–3, and 0x44028000–0x44031fff mirrors top 0–3, with top 0 again at 0x44030000. Stores through a mirror land in the buffer. 0x44010000–0x4401ffff takes no store and reads back each buffer's last-read word, like round 1's stale latch. A mirror is the same port, not a second one.
+- **DMAC reads in a pass fail too:** 256 words out of top 1 while a pass ran gave 1 right, against 256 of 256 (739 cycles) alone.
+- **A DMAC transfer in doesn't wait.** Started in a pass, it runs at its own pace (3,156 cycles against 3,140 alone for 256 words). It lands only the words that arrive after the pass ends: 129–136 of 256, which is (3,156 − 1,592) / 12.2.
+- **The trigger:** the pass trigger is the DMAC's control code 0x18, which mcidclan's library sends as `meCoreDMACPrimMuxSetCtrl_0x018`. A pass is the DMAC's own multiplexer at work, which fits a single owner. The other control codes weren't varied: an unknown code could move data with whatever addresses were left in the registers.
+
+### The DMAC's config and status bits (item 2)
+
+The config word reads 0x00000010 at rest on both PSPs. mcidclan's notes list 0x0, 0x31b, 0x831b, 0x1031b and 0x1831b as values the firmware sets. The bench tried those four, then each single bit added to 0x10 (0x1, 0x2, 0x4, 0x8, 0x20, 0x40, 0x100, 0x200, 0x8000, 0x10000), and the status bits 0x04, 0x08, 0x10 and 0x1c written before the trigger. Under every one, the stores in the pass were 0 of 12 in every buffer. Under every one, the pass was exact and a plain pass afterwards was exact.
+
+**But bits 8 and 9 speed up the DMAC.** Each path was timed with 2,048 words, every word checked in 24 bits and the guards after each destination intact:
+
+| Config (0x004) | eDRAM → VME | main RAM → VME | VME → eDRAM | VME → main RAM |
+|---|---|---|---|---|
+| 0x010 (rest) | 24,814 (12.1 a word) | 75,693 (37.0); Slim 93,911 (45.9) | 5,543 (2.71) | 7,000 (3.42); Slim 6,508 |
+| 0x110 (bit 8) | 9,922 (4.8) | 24,597 (12.0); Slim 26,567 | 5,367 | 5,987; Slim 8,169 |
+| 0x210 (bit 9) | 7,868 (3.8) | 15,677 (7.7); Slim 17,223 | 5,071 | 9,151; Slim 10,967 |
+| **0x310 (both)** | **6,066 (2.96; 448 MB/s)** | **10,347 (5.05; 262 MB/s); Slim 11,225 (5.48)** | 5,049 (2.47) | 5,717 (2.79); Slim 5,113 |
+| 0x31b (the firmware's) | 6,066 | 10,641; Slim 11,615 | 5,049 | 9,767; Slim 15,033 |
+
+- **The cycle counts are the PSP-1000's.** The PSP-3000's eDRAM paths agree within 0.2%. Its main-RAM paths are named where they differ.
+- **0x310 is the setting to use.** The firmware's extra low bits (0x1b) leave inbound unchanged but slow the write to main RAM. The single low bits (0x1, 0x2, 0x8) changed nothing measured.
+- **Main RAM → VME at 262 MB/s** matches DMACplus's 250–263 MB/s into eDRAM (`dma_engines.md`). So the staging step through eDRAM that §5 and `dma_engines.md` priced at 88 MB/s isn't needed: the VME's DMAC reads main RAM directly at 3× that.
+- **Not measured:** the fast mode's cost to the main CPU's misses. The DMAC at rest cost them nothing (`dma_engines.md`), but 262 MB/s is a real share of the bus [U]. That needs its own run before a lever relies on it.
+- **The registers in a pass** [M]: 0x000 reads 0x810 (0x10 at rest, 0x610 during a transfer), 0x008 reads 0x88808810, and 0x00c reads 0x88800000 (0 otherwise). Their meaning is not decoded.
+
+### The context is double-buffered (the ping-pong found)
+
+This follows mcidclan's switching-ram-context sample, which loads each next context while the last one runs. A is round 2's four-PE stream of 768. B is a context image in eDRAM: the same stream of 512, with products shifted by 2 so its output tells. B is loaded with the DMAC's context code (0x0c, after config 0x1c).
+
+| Sequence | A | B |
+|---|---|---|
+| B loaded while A runs, then the flow word (VCTRL = 3) and a trigger | exact, 3,072 of 3,072 | ran, 2,048 of 2,048 |
+| B loaded while A runs, B's trigger sent at once (no wait) | ran to its end (tail 1,024 of 1,024) | ran after A, 2,048 of 2,048 |
+| B loaded (alone or in A), done bit acknowledged, trigger with no flow word | — | **didn't run:** the trigger ran the old context |
+| B loaded alone, the ack, the flow word, then a trigger | — | ran, 2,048 of 2,048 |
+
+- **Loading a context doesn't disturb the pass that is running.** The loaded context waits until the flow word, or until a trigger sent during the load, makes it the one that runs. So the datapath's configuration has a shadow, and the next job's set-up overlaps the current pass.
+- **The load's cost:** 3,182 cycles on the PSP-1000 and 898 on the PSP-3000, each against a pass of 1,592. On the Slim a load fits inside a pass of about 450 elements or more; on the PSP-1000 it needs about 1,600 elements. That is §1's ~709-cycle set-up, taken off the critical path.
+- The flow word's other job is §7's: without it, a refresh runs the wrong length.
+
+### The vendor moves (item 3)
+
+These are mcidclan's ldl/sdl reused, where the base register's number names a bank and the offset names a slot. Bank $8 was set to point at a guarded eDRAM block, so that an ordinary store would show there. Only the PSP-1000 ran this step.
+
+- **Unforced** (0xBC400018 read 0x80008381): offsets 3 and 7 answer. Both read whatever was last written to either, so they are one slot. The rest read 0.
+- **Forced** by his recipe: the pattern became offsets 0 and 4, again one slot, which matches his "00, xx, xx, xx, 04" pattern.
+- **What they don't do:** no store reached memory (guard 0 of 64 changed), and **no VME buffer word changed** (0 of 14,336 checked, before any pass).
+- **What they do in a pass:** they work. A value written in a pass reads back in it and after it.
+- **So they are a 16-bit register or two beside the ME, not a way into the buffers.** The forced pattern stays on that PSP until a reset (his notes: some patterns persist).
+- A bench slip: this step ran after the DMAC sweep had overwritten rows 2–3. Its "pass right 1,544 of 3,072" counts rows 0–1 only, and the "VME words changed in all" figure counts the pass's own outputs. Neither is an effect of the moves.
+
+### The AVC block's paths into the VME (item 4) [D, U]
+
+- **Only public sources were read** (Sheepdog01, 2026-11-04: Sony's ME decoder is not read).
+  - uofw's `me_wrapper` drives the AVC block only through RPC indices into the ME's firmware: the power switch (§7), the AVC clock select (7), and the AW eDRAM bus clock (387/388).
+  - It names an ME-side DMAC0 bus clock in its bus-granularity call (391).
+  - No register-level path from the AVC block into the VME's buffers is in uofw or in mcidclan's notes.
+- **mcidclan's VLD** (psp-media-engine-reload) sits at 0x44100000, clocked by bit 6 of 0xBC100050. It reads its bitstream and writes its coefficients by address registers (0x1c and 0x30), so it masters memory itself.
+  - Whether its output address may be a VME buffer is untested [U].
+  - Under this section's lock, its writes would also be dropped while a pass runs, unless it uses another port [U].
+- **His notes name the VME's buffers "ping-pong buffers"** and say the DMAC "shares hardware control registers with Multiplexer DMAC but uses different configuration parameters". The measured shape fits that, between passes rather than during one: a config word switches the transfer mode, and the context alternates.
+- **No AVC step ran this round,** so the AVC block wasn't powered for it.
+
+### What this changes (§7's streaming cost)
+
+- **A one-pass stream, serial,** with two inputs and one output a element at 0x310:
+  - **From eDRAM:** 2 × 2.96 + 2.47 + 0.5 ≈ 8.9 cycles an element, against the ME's CPU's 16.6 [U, from the rates above]. So the VME now wins a one-pass stream, about 1.9× over the ME's CPU, with the ME's CPU free while the DMAC runs (§4).
+  - **From main RAM:** 2 × 5.05 + 2.79 + 0.5 ≈ 13.4 cycles an element, with no staging step.
+- **§7's "about six or more passes a load" falls to about one.**
+- **Next:** VMEMIX's revive_if and the world light pass (§8) were priced with the slow DMAC and should be priced again with 0x310.
+
+**What's left:**
+- The fast mode's cost to the main CPU's misses.
+- Whether bits 8 and 9 are a burst length, which would explain the rate.
+- 0x004's bits above 17.
+- The context load's cost on the PSP-1000 (3.5× the Slim's).
+- The VLD's output into a VME buffer.
+
+## 10. Credits and terms
+
+The register map, the wipe and configuration sequence, the context layout and every opcode tried are mcidclan's (m-c/d), MIT, from https://github.com/mcidclan/psp-media-engine-custom-core and https://github.com/mcidclan/psp-virtual-mobile-engine-ext. The colour-space converter's registers are from https://github.com/mcidclan/me-vme-hardware-csc (MIT). The secondary unit's chain is his saturate-clamp-second-fu sample (psp-virtual-mobile-engine-ext 15884a0, MIT), and the saturator's field is from his datapath notes (https://github.com/mcidclan/psp-media-engine-cracking-the-unknown f921778, MIT). The AVC power sequence, and the power switch's NID the bench imports, are read from uofw's me_wrapper (https://github.com/uofw/uofw 28306bb). §9: the context loaded during a pass follows his switching-ram-context sample (psp-virtual-mobile-engine-ext 15884a0, MIT); the vendor moves, their banks and his forcing recipe are from his mt-mf-vme.md, and the config word's firmware values from his 0x440ff000.md (psp-media-engine-cracking-the-unknown f921778, MIT); the buffers' mirrors, the "ping-pong buffers" and the multiplexer DMAC's shared registers, and the VLD's registers are from https://github.com/mcidclan/psp-media-engine-reload 006ac29 (MIT); the AVC clock and bus-clock RPC indices from uofw's me_wrapper 28306bb.
 
 His repositories accept no AI-attributed pull requests, so nothing from this work goes upstream to them. The measurements and the Phat's differences above are ours, to share with him by hand if Sheepdog01 chooses.
