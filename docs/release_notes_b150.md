@@ -1,6 +1,6 @@
 # Sierra-III b150: release notes
 
-> **Draft until Sheepdog01's hand test passes.** Two things are still open before it's published: (1) the bake's default sound profile (see "Bake again"): at the tick's commit the bundle bakes `--sound s9`, which gives the halved music, while every test of b150 used a `--sound s9full` bake; (2) the known issues Sheepdog01's test adds. The release session fills the bake bundles' names and hashes at the cut.
+> **Draft until Sheepdog01's hand test passes.** One thing is still open before it's published: the known issues Sheepdog01's test adds. The bake's default sound profile is settled: from 0234b610 the bundle bakes `--sound s9full` by default, the profile every b150 test used. The release session fills the bake bundles' names and hashes at the cut.
 
 **Sierra-III b150** is Halo: Combat Evolved's campaign on the PSP. It is built for the PSP-1000, and the PSP-2000 and 3000 work too. It contains nothing from the game: you bake the maps yourself, from your own Xbox disc, on your own PC. The full source of this release is in this repository.
 
