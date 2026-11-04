@@ -88,7 +88,7 @@ The maps grow a little: about 40 MB for the converted models, and the music take
   - some lights on world geometry are missing.
 - **Sleep:** the power switch doesn't sleep the PSP while the game runs. Quit to the XMB first, then sleep it there (`docs/play.md`). Holding the switch for about 8 seconds still turns the PSP off.
 
-**Build it yourself:** the EBOOT's SHA-256 starts `EBOOT_HASH`. On Linux with the pspdev toolchain (`docs/toolchain.md`):
+**Build it yourself:** the EBOOT's SHA-256 starts `29620d204385bb82`. On Linux with the pspdev toolchain (`docs/toolchain.md`):
 
 ```
 PSPDEV=/opt/pspdev LABEL=b150 \

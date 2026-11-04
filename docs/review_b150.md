@@ -135,7 +135,7 @@ What changed in the bake tool since b149's (`git diff b4e06773 3a104119 -- bake 
 | `drawpartoff` draws as before | t160x2 | GE lists identical; pictures within the default/default spread [E] |
 | Strict build at the tick | sierra-build 41904627308 | 0 functions without counts, heap 5,772 KB, EBOOT `0a00f831` (metrics on) |
 | Release check | rc161a 41904641396 | 14/14 played, strict 0 sites, the `PSP_METRICS=0` build (EBOOT `29620d20`) links and plays the route and the front door [E] |
-| The release zip | release150's sierra-build (`release_notes_b150.md`) | strict, `PSP_METRICS=0`, from the docs head; code identical to `3a104119` |
+| The release zip | sierra-build 41917225769 at `43fa5166` (this review's docs on `3a104119`) | `halo_psp_b150rel.zip`: strict, 0 functions without counts, heap 5,780 KB, EBOOT `29620d204385bb82`, the same EBOOT as rc161a's `PSP_METRICS=0` build, so the docs commits changed no code; the zip carries presets 18-20 |
 | PSP-1000 ladder, every map in one launch | sierra-hw 41910133801 | no crash, no ME stop, 0 heap failures, 0 sounds refused; fps in the release notes' table [M] |
 | P2NC on the tock | sierra-hw 41905207966 | c20 frame -2.1 to -7.4% (real) [M] |
 | tock160 vs tock159, b30 route | 41891744166 vs 41820025872 | cinematic -2.2% frame (drawing -7.1%), flight -2.8% (drawing -5.9%) [M] |
