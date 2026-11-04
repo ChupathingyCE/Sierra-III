@@ -2,6 +2,8 @@
 
 Sheepdog01, 2026-11-04 13:01 and 13:14: if the port is to be rebuilt, every part is examined for how it fits the whole and where it best runs, and no part of the hardware is left unused or underused. **Gaps in our hardware knowledge are catalogued and chased first, in order of what they might add to the goal; then we build.**
 
+Sheepdog01, 14:51: "no stone unturned as far as hardware capability is concerned." A unit's limit found by one method (one DMA mode, one set of known opcodes) is our method's limit until a full mapping shows it's the hardware's.
+
 This page is the plan for that recon: what's mapped, in what order, by whom, and what each part must answer. The pages it produces are the design's inputs; `cpu_cost_map.md` is the first.
 
 Labels: [M] measured on a PSP, [E] emulator or estimate, [D] read in code or docs, [U] inference.
