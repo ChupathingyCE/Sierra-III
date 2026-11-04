@@ -34315,6 +34315,7 @@ the eDRAM), and moved points the voices playing it at the new place. Run
 with the mixer held. counts: rescued, their bytes, left for want of room,
 copies failed. Returns the sounds left in the tier */
 #define PSP_TIER_RESCUE_MOST 64
+void platform_psp_log(const char *format, ...);
 long psp_sound_tier_rescue(
 	unsigned long low,
 	unsigned long high,
@@ -34348,7 +34349,12 @@ long psp_sound_tier_rescue(
 
 		/* still loading: the loss fails its pieces and the game asks again */
 		if (old->loaded != 1)
+		{
+			platform_psp_log("sound tier: left in the tier (not loaded, %d): %s, %ld bytes, played by %d + %d",
+				old->loaded, tag_get_name(sound->runtime_tag_index), size, old->software_reference_count,
+				old->hardware_reference_count);
 			continue;
+		}
 		index = lruv_block_new(xbox_sound_cache_globals.cache, size);
 		if (index == NONE)
 		{

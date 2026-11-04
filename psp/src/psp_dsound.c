@@ -1498,7 +1498,7 @@ int psp_me_halted_clean(void);
 from it copied into the main tier (tier_rescue). -1 not read yet */
 static int tier_back = -1;
 /* rescued, their bytes, left for want of room, copies failed; the DMA's us */
-static unsigned long tier_back_counts[4], tier_back_us = 0;
+static unsigned long tier_back_counts[4], tier_back_us = 0, tier_back_missed = 0;
 extern int psp_lruv_fence_closed; /* lruv_cache.c: the fence locks the tier's pages */
 int psp_keep_number(const char *prefix, int fallback);
 int psp_sound_cache_drop(long block_index);
@@ -2304,6 +2304,11 @@ static void mute_cache_voices(struct psp_stream *const *list, unsigned long coun
 
 			if (!packet->finished && packet->data >= edram_lo && packet->data < edram_hi)
 			{
+				/* the rescue's check: a voice it should have moved */
+				if (tier_back_counts[0] && !tier_back_missed++)
+					platform_log("sound tier: after the rescue a voice still plays from the tier: its packet %u of %lu at %u KB into the tier, %lu frames, %s, %lu channels, %lu Hz",
+						(unsigned int)position, stream->packet_count, (unsigned int)((packet->data - edram_lo) / 1024), packet->frames,
+						stream->adpcm ? "ADPCM" : "PCM", stream->channels, (unsigned long)stream->sample_rate);
 				stream->target_left = stream->target_right = 0;
 				stream->current_left = stream->current_right = 0;
 				any = 1;
