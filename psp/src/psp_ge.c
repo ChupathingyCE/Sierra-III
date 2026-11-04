@@ -21909,7 +21909,12 @@ struct split_corner
 	int view_bits;
 };
 
-/* outside_cone's test of one corner: the planes it is beyond */
+/* outside_cone's test of one corner, the planes it is beyond, and four more
+across the pyramid's edges: an octagon round the cone instead of a square.
+The square's corners outside the round cone are a fifth of its section, and
+a piece there split all the way down to unlit pieces; the octagon leaves a
+twentieth. Each plane passes the light and touches the cone, so a piece
+wholly beyond one has every point outside the cone: nothing of it is lit */
 static int cone_side(const float *p, float tangent)
 {
 	ScePspFMatrix4 const *m = &light_basis;
@@ -21917,6 +21922,7 @@ static int cone_side(const float *p, float tangent)
 	float x = d[0] * m->x.x + d[1] * m->y.x + d[2] * m->z.x;
 	float y = d[0] * m->x.y + d[1] * m->y.y + d[2] * m->z.y;
 	float z = (d[0] * light.forward[0] + d[1] * light.forward[1] + d[2] * light.forward[2]) * tangent;
+	float across = 1.41421356f * z, sum = x + y, difference = x - y;
 	int b = 0;
 
 	if (x > z) b |= 1;
@@ -21924,6 +21930,10 @@ static int cone_side(const float *p, float tangent)
 	if (y > z) b |= 4;
 	if (y < -z) b |= 8;
 	if (z <= 0.0f) b |= 16;
+	if (sum > across) b |= 32;
+	if (sum < -across) b |= 64;
+	if (difference > across) b |= 128;
+	if (difference < -across) b |= 256;
 	return b;
 }
 
