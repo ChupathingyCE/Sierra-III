@@ -102,6 +102,8 @@ The DMAC is at 0x440ff000, his "main VME DMAC". Its registers, as his samples us
 - **The 16-bit modes** halve the memory traffic of 16-bit data at about the same cost a memory read [U].
 - **The PSP-3000** [M]: the eDRAM paths are the same to within 0.3%: in 24,817 cycles, out 5,578, fill 4,140. The main-RAM paths are slower on the Slim: in 91,888 (44.9 a word), out 15,436 (7.5), 16-bit in 52,737 and out 11,162. The CPU's copies are alike: 17,606 / 31,741 / 22,159. No hang, guards intact, and the overlap is full (93,675 cycles of work alone and inside a 93,855-cycle transfer).
 
+**Every DMA engine, and the staging pipeline through eDRAM, is mapped in `dma_engines.md`:** main RAM → eDRAM by DMACplus beside eDRAM → the VME by this DMAC moves 88 MB/s with the ME's CPU free [M, both PSPs]. The DMAC's group modes (0x50/0x58) gather and scatter on the way. The DMAC never slows the main CPU's misses.
+
 ## 6. The candidates, sized
 
 The common sum: the compute is nearly free and the moving costs. Each candidate's own cost must be set against moving its data in (8.6–12 cycles a word from eDRAM, or ~0 CPU by the DMAC beside it) and out (2.7 a word by the DMAC).

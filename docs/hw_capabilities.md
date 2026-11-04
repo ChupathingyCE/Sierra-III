@@ -59,7 +59,7 @@ Labels: [M] measured on a PSP, [E] emulator or estimate, [D] read in code or doc
 
 | In use | Measured | Note |
 |---|---|---|
-| texture uploads (`sceDmacMemcpy`), the DMACplus for the eDRAM | 2.6–3× memcpy [M]; the CPU's misses 218 → 499 ns while it runs [M] | Other bulk copies still go through the CPU [U, to count] |
+| texture uploads (`sceDmacMemcpy`), the DMACplus for the eDRAM | The system DMAC 182–204 MB/s, the CPU's misses ×2.1 at full duty, ×1.2 at half, none at a quarter (bench12) [M]; DMACplus 250–263 MB/s into the eDRAM and 264–273 out, the misses +44% [M]; the VME's DMAC 110 MB/s from eDRAM and 28–36 from main RAM, **no cost to the CPU's misses** [M, both PSPs]; main RAM → eDRAM → VME 88 MB/s with the ME's CPU free [M] (`dma_engines.md`) | Other bulk copies still go through the CPU [U, to count]; the VME's DMAC is a mover that never slows the CPU (C8) |
 
 ### The GE
 
