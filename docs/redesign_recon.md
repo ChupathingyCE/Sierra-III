@@ -28,6 +28,8 @@ Each ledger is a page in `docs/` (or the lab's findings, for numbers), kept curr
 | 4 | **Memory** (`memory_ledger.md`, refreshed) | Every pool (RAM, VRAM, eDRAM, scratchpad, the volatile 4 MB), its peak and room by map, what a KB buys where | The ledger's 10-27 version, the builds' heap lines | None new |
 | 5 | **The cost map** (`cpu_cost_map.md`) | The main CPU's cache costs and the ways to cut them | Done 11-04; kept current | — |
 
+**The bake** (Sheepdog01, 2026-11-04 13:22) comes after the design but belongs in it: whatever the PSP need not work out at run time (data laid out for the cache, the GE's own formats, precomputed visibility, lighting or posing tables) can move to bake time. So the design says, job by job, what is baked and what is computed, and the bake tool's rebuild follows from that.
+
 Then **the design**: where each job runs, how data flows between the units, the cache strategy for each stage, the capacity it leaves, and a staged build order. Each stage is proven in the lab, keeps the campaign playable, and rides the tick/tock cadence.
 
 ## Ledger 1's first gap list
