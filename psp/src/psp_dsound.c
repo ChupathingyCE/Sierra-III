@@ -1491,6 +1491,14 @@ static const char *tier_closed_why = NULL;
 static unsigned long tier_dmas = 0, tier_dma_us = 0, tier_dma_worst_us = 0, tier_dma_failed = 0, tier_check_bad = 0,
 	tier_given_up = 0, tier_polls = 0;
 unsigned long psp_sound_tier_drained = 0; /* psp_sound_tier_drain's, xbox_sound_cache.c */
+long psp_sound_tier_rescue(unsigned long low, unsigned long high, int (*copy)(void *to, const void *from, unsigned long bytes),
+	void (*moved)(unsigned long from, unsigned long to, unsigned long bytes), unsigned long *counts);
+int psp_me_halted_clean(void);
+/* "sndtierback" (B55): at the tier's loss to an ME stop, the sounds playing
+from it copied into the main tier (tier_rescue). -1 not read yet */
+static int tier_back = -1;
+/* rescued, their bytes, left for want of room, copies failed; the DMA's us */
+static unsigned long tier_back_counts[4], tier_back_us = 0;
 extern int psp_lruv_fence_closed; /* lruv_cache.c: the fence locks the tier's pages */
 int psp_keep_number(const char *prefix, int fallback);
 int psp_sound_cache_drop(long block_index);
@@ -1862,6 +1870,73 @@ static void piece_done(struct stage_slot *slot, int copied)
 	slot->state = SLOT_FREE;
 }
 
+/* the rescue's copy out of the tier: by DMACplus from the eDRAM, which the
+halted ME no longer uses (bench15 found the transfer sound with the ME idle),
+in the controller's largest single pieces; a plain copy in the emulator, where
+the tier is main RAM. The block's room is whole pages, so the 16-byte round up
+stays inside both blocks */
+static int tier_back_copy(void *to, const void *from, unsigned long bytes)
+{
+	unsigned long at, part, rounded = (bytes + 15) & ~15ul;
+	unsigned int us;
+
+	if (tier_mode == 2)
+	{
+		memcpy(to, from, bytes);
+		return 1;
+	}
+	sceKernelDcacheWritebackInvalidateRange(to, rounded);
+	for (at = 0; at < rounded; at += part)
+	{
+		part = rounded - at < 65520ul ? rounded - at : 65520ul;
+		if (psp_me_dma_edram(0, (unsigned char *)to + at, (unsigned int)((const unsigned char *)from + at - (const unsigned char *)ME_EDRAM),
+			(unsigned int)part, TIER_DMA_TIMEOUT_US, &us))
+			return 0;
+		tier_back_us += us;
+	}
+	sceKernelDcacheInvalidateRange(to, rounded);
+	return 1;
+}
+
+/* the voices' packets that point into a moved sound, pointed at its new place
+(the mixer held: nothing reads them meanwhile) */
+static void tier_back_moved(unsigned long from, unsigned long to, unsigned long bytes)
+{
+	struct psp_stream *stream;
+	unsigned long position;
+
+	for (stream = streams; stream; stream = GAME_OF(stream)->next)
+		for (position = 0; position < stream->packet_count && position < MAXIMUM_STREAM_PACKETS; position++)
+		{
+			struct voice_packet *packet = &stream->packets[(stream->packet_head + position) % MAXIMUM_STREAM_PACKETS];
+			unsigned long at = (unsigned long)packet->data;
+
+			if (at >= from && at - from < bytes)
+				packet->data = (const unsigned char *)(to + (at - from));
+		}
+}
+
+/* at the ME's stop, before the tier is closed: only once the ME halted itself
+cleanly (held in reset, or stopped for a sleep, its eDRAM isn't read) */
+static void tier_rescue(void)
+{
+	if (tier_back < 0)
+		tier_back = psp_keep("sndtierback") != 0;
+	if (!tier_back || tier_mode <= 0 || edram_lost)
+		return;
+	if (tier_mode == 1 && !psp_me_halted_clean())
+	{
+		platform_log("sound tier: the ME stopped without halting itself: its eDRAM isn't read, and the tier's playing sounds stay silent (sndtierback)");
+		return;
+	}
+	game_lock();
+	tier_left = psp_sound_tier_rescue((unsigned long)tier_base, (unsigned long)(tier_base + tier_bytes), tier_back_copy,
+		tier_back_moved, tier_back_counts);
+	pthread_mutex_unlock(&mixer_lock);
+	platform_log("sound tier: the ME stopped: %lu playing sounds (%lu KB) copied into the main tier (%lu us of DMA), %lu left for want of room, %lu copies failed; %ld left in the tier (sndtierback)",
+		tier_back_counts[0], tier_back_counts[1] / 1024, tier_back_us, tier_back_counts[2], tier_back_counts[3], tier_left);
+}
+
 static void edram_loss(const char *why)
 {
 	if (edram_lost)
@@ -1978,7 +2053,10 @@ void psp_sound_upload_poll(void)
 		}
 	}
 	if (psp_me_stops != stops_at_start)
+	{
+		tier_rescue();
 		edram_loss("the Media Engine stopped");
+	}
 	else if (tier_closed_why && !edram_lost)
 		edram_loss(tier_closed_why);
 	if (muted_blocks && !muted_said)

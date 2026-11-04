@@ -34305,6 +34305,93 @@ long psp_sound_tier_drain(unsigned long low, unsigned long high)
 	}
 	return left;
 }
+
+/* "sndtierback" (B55): the tier lost while its sounds play (the ME stopped).
+What nothing plays is given up at once, so its next play reads it again into
+the main tier; each sound still playing gets a block of the main tier (the
+cache's own allocation: the closed fence keeps it out of the tier, and it
+pushes out what nothing plays), copy brings its bytes over (the DMA out of
+the eDRAM), and moved points the voices playing it at the new place. Run
+with the mixer held. counts: rescued, their bytes, left for want of room,
+copies failed. Returns the sounds left in the tier */
+#define PSP_TIER_RESCUE_MOST 64
+long psp_sound_tier_rescue(
+	unsigned long low,
+	unsigned long high,
+	int (*copy)(void *to, const void *from, unsigned long bytes),
+	void (*moved)(unsigned long from, unsigned long to, unsigned long bytes),
+	unsigned long *counts)
+{
+	struct data_iterator iterator;
+	struct xbox_cache_sound_datum *cache_sound;
+	long blocks[PSP_TIER_RESCUE_MOST], left;
+	int count = 0, k;
+
+	if (!xbox_sound_cache_globals.cache_sounds)
+		return 0;
+	left = psp_sound_tier_drain(low, high);
+	/* the blocks first: the allocations below change the array */
+	data_iterator_new(&iterator, xbox_sound_cache_globals.cache_sounds);
+	while ((cache_sound = data_iterator_next(&iterator)) != NULL && count < PSP_TIER_RESCUE_MOST)
+	{
+		unsigned long at = cache_sound->sound ? (unsigned long)cache_sound->sound->cache_base_address : 0;
+
+		if (at >= low && at < high)
+			blocks[count++] = iterator.datum_index;
+	}
+	for (k = 0; k < count; k++)
+	{
+		struct xbox_cache_sound_datum *old = datum_get(xbox_sound_cache_globals.cache_sounds, blocks[k]), *moved_sound;
+		struct sound_permutation *sound = old->sound;
+		unsigned long from = (unsigned long)sound->cache_base_address, to;
+		long size = sound->samples.size, index;
+
+		/* still loading: the loss fails its pieces and the game asks again */
+		if (old->loaded != 1)
+			continue;
+		index = lruv_block_new(xbox_sound_cache_globals.cache, size);
+		if (index == NONE)
+		{
+			counts[2]++;
+			continue;
+		}
+		to = (unsigned long)(xbox_sound_cache_globals.base_address +
+			(unsigned long)lruv_block_get_address(xbox_sound_cache_globals.cache, index));
+		datum_new_at_index(xbox_sound_cache_globals.cache_sounds, index);
+		moved_sound = datum_get(xbox_sound_cache_globals.cache_sounds, index);
+		if (!copy((void *)to, (const void *)from, (unsigned long)size))
+		{
+			/* the new block given back as an unplayed sound of its own */
+			counts[3]++;
+			moved_sound->sound = sound;
+			moved_sound->loaded = 1;
+			moved_sound->software_reference_count = 0;
+			moved_sound->hardware_reference_count = 0;
+			sound->cache_block_index = index;
+			lruv_block_delete(xbox_sound_cache_globals.cache, index);
+			sound->cache_block_index = blocks[k];
+			sound->cache_base_address = from;
+			continue;
+		}
+		{
+			short identifier = moved_sound->identifier;
+
+			*moved_sound = *old;
+			moved_sound->identifier = identifier;
+		}
+		/* the old block let go as an unplayed one (its counts are the new one's now) */
+		old->software_reference_count = 0;
+		old->hardware_reference_count = 0;
+		lruv_block_delete(xbox_sound_cache_globals.cache, blocks[k]);
+		sound->cache_block_index = index;
+		sound->cache_base_address = to;
+		moved(from, to, (unsigned long)size);
+		counts[0]++;
+		counts[1] += (unsigned long)size;
+		left--;
+	}
+	return left;
+}
 #endif"""),
 ]
 FIXES_SNDEDRAM["source/sound/sound_dsound_xbox.c#sndedram"] = [
@@ -41648,10 +41735,14 @@ FIXES_AIME2A["source/ai/actors.c#aime2a"] = [
 			/* between actors: the collection's word first, then audio, the
 			ring and a waiting render job, then the word again */
 			psp_aime_step(0);
+			psp_aime_answer_point(0);
 			if (psp_aime2a_abort && *psp_aime2a_abort)
 				psp_aime_late_now = 1;
 			else
+			{
 				psp_me_yield_slots();
+				psp_aime_answer_point(0);
+			}
 			if (psp_aime2a_guard_hit || psp_me_aime_guard_touched())
 			{
 				/* the stack's guard reached, by the actor before or a job run
@@ -41671,7 +41762,10 @@ FIXES_AIME2A["source/ai/actors.c#aime2a"] = [
 		psp_aime_think_actor(iterator.index);
 	}
 	if (psp_work_on_me())
+	{
 		psp_aime_step(-1);
+		psp_aime_answer_point(-1);
+	}
 	if (psp_aime_late_now)
 		psp_aime2a_me_stats.aborted++;
 	if (!psp_work_on_me() && !psp_aime2a_alike)
@@ -41871,6 +41965,7 @@ static boolean psp_aime2a_active(
 			extern int psp_keep_number(const char *prefix, int fallback);
 
 			psp_aime_late_every = psp_keep_number("aimelate", 0);
+			psp_aime2a_stop_at = psp_keep_number("mestopat", 0);
 		}
 		psp_aime_move_stop = !psp_keep("aimemoveold");
 		/* the race check's write trace: the job's window its own (psp_ge.c) */
@@ -41963,7 +42058,7 @@ the collection's word. Steps: 0 the yield between actors (audio, the ring),
 decision loop and the rest of its update; each step's longest run, in the
 ME's cycles, and the step in hand (read at a stop, when the word went
 unanswered). On the ME only: its cycle counter can't be read elsewhere */
-#define PSP_AIME_STEPS 11
+#define PSP_AIME_STEPS 13
 static PSP_AIME_ME_SIDE int psp_aime_step_now = -1, psp_aime_step_tag_now = -1;
 /* "aimeringlook" (psp_aime_late_check): read once, on the main CPU */
 int psp_aime_ring_looks = 0;
@@ -41972,6 +42067,15 @@ void psp_me_yield_inner(void); /* psp_me.c */
 void psp_me_stash_place(unsigned int place); /* psp_me.c */
 #endif
 static PSP_AIME_ME_SIDE unsigned int psp_aime_step_at = 0, psp_aime_step_worst[PSP_AIME_STEPS];
+/* what bounds the collection's wait: the longest stretch between two places
+the job could have answered the word (a look while the actor in hand can be
+handed back, or the word's tests between actors), where it began and ended
+and the steps marked inside it (a bit each). The steps' own worsts above are
+from one mark to the next, which may hold no look at all. On the ME only */
+static PSP_AIME_ME_SIDE unsigned int psp_aime_answer_at = 0, psp_aime_answer_steps = 0, psp_aime_answer_worst = 0,
+	psp_aime_answer_worst_steps = 0;
+static PSP_AIME_ME_SIDE int psp_aime_answer_open = 0, psp_aime_answer_from = -1, psp_aime_answer_worst_from = -1,
+	psp_aime_answer_worst_to = -1;
 /* the longest run's tag: the actor's type (decide), its action (perform) */
 static PSP_AIME_ME_SIDE int psp_aime_step_worst_tag[PSP_AIME_STEPS];
 void psp_aime_step_tagged(
@@ -41992,6 +42096,8 @@ void psp_aime_step_tagged(
 	psp_aime_step_now = step;
 	psp_aime_step_tag_now = tag;
 	psp_aime_step_at = now;
+	if (step >= 0 && step < 32)
+		psp_aime_answer_steps |= 1u << step;
 #ifdef PSP_RECON
 	psp_me_stash_place(0x0F000000u | (((unsigned int)tag & 0xFFFFu) << 8) | ((unsigned int)step & 0xFFu));
 #endif
@@ -42001,6 +42107,29 @@ void psp_aime_step(
 	int step)
 {
 	psp_aime_step_tagged(step, -1);
+}
+
+/* a place the word could have been answered (step: the census's step there,
+-1 the pass's end, which closes the stretch) */
+void psp_aime_answer_point(
+	int step)
+{
+	unsigned int now;
+
+	if (!psp_cpu_is_me())
+		return;
+	__asm__ __volatile__("mfc0 %0, $9" : "=r"(now));
+	if (psp_aime_answer_open && now - psp_aime_answer_at > psp_aime_answer_worst)
+	{
+		psp_aime_answer_worst = now - psp_aime_answer_at;
+		psp_aime_answer_worst_from = psp_aime_answer_from;
+		psp_aime_answer_worst_to = step;
+		psp_aime_answer_worst_steps = psp_aime_answer_steps;
+	}
+	psp_aime_answer_open = step >= 0;
+	psp_aime_answer_at = now;
+	psp_aime_answer_from = step;
+	psp_aime_answer_steps = 0;
 }
 
 /* between the steps of an actor's thinking in the frame's last pass (the
@@ -42028,6 +42157,8 @@ void psp_aime_ring_yield(
 void psp_aime_late_check(
 	void)
 {
+	if (psp_aime_arm == 1)
+		psp_aime_answer_point(psp_aime_step_now);
 	psp_aime_ring_yield();
 	if (!psp_aime_late_now)
 	{
@@ -42094,6 +42225,14 @@ what it read; a pass due from the tick before (not the frame's last) run */
 void psp_aime2a_tick_begin(
 	void)
 {
+	/* "mestopatN" (a test, never for play): the ME stopped at game time N as
+	a late job stops it, so what follows a stop (the main CPU's jobs, the
+	sound tier's rescue) can be tried at a set place */
+	if (psp_aime2a_stop_at > 0 && game_time_get() >= psp_aime2a_stop_at)
+	{
+		psp_aime2a_stop_at = 0;
+		psp_me_stop("mestopat: a test's stop");
+	}
 	if (PSP_MEPROBE_REPORT() || psp_aime2a_out)
 	{
 		unsigned int results[ME_JOB_RESULTS] = { 0 };
@@ -42220,6 +42359,11 @@ static void psp_aime2a_log(
 				(unsigned int)(psp_aime_step_worst[5] / per_us), psp_aime_step_worst_tag[5], (unsigned int)(psp_aime_step_worst[6] / per_us),
 				(unsigned int)(psp_aime_step_worst[8] / per_us), psp_aime_step_worst_tag[8] == 1 ? "the actor's area" : "the target's",
 				(unsigned int)(psp_aime_step_worst[9] / per_us), (unsigned int)(psp_aime_step_worst[10] / per_us));
+		if (per_us > 0.0f)
+			platform_psp_log("aime2a: game time %ld | the job's longest stretch between places it could answer the word %u us, from step %d's to step %d's (-1 the pass's end), steps marked inside it (a bit each) %05x; an obstacle-avoidance step %u, after an actor's path is built %u (aimeobslook %s)",
+				now, (unsigned int)(psp_aime_answer_worst / per_us), psp_aime_answer_worst_from, psp_aime_answer_worst_to,
+				psp_aime_answer_worst_steps, (unsigned int)(psp_aime_step_worst[11] / per_us),
+				(unsigned int)(psp_aime_step_worst[12] / per_us), psp_aime_obstacle_looks ? "on" : "off");
 	}
 	if (psp_aime_chain_on > 0)
 	{
@@ -42479,6 +42623,44 @@ short actor_select_firing_position(
 # 41290635492: an area flood ran 33 ms without a look). A node's expansion
 # writes only the search's own state, which its caller made (a local or the
 # caller's workspace), and no collision walk is open between nodes
+# B54: the obstacle-avoidance search that builds an actor's path has no look
+# of its own; its steps are like the path search's nodes (psp_aime_search_look)
+FIXES_AIME2A["source/ai/path_obstacle_avoidance.c#aimelook"] = [
+("""static boolean path_iterate(
+	struct obstacle_path *path)
+{""",
+ """void psp_aime_search_look(int step); /* actors.c (FIXES_AIME2A) */
+extern int psp_aime_arm;
+
+static boolean path_iterate(
+	struct obstacle_path *path)
+{"""),
+("""	while (path_iterate(path))
+	{
+	}""",
+ """	while ((psp_aime_arm ? psp_aime_search_look(11) : (void)0), path_iterate(path))
+	{
+	}"""),
+]
+# the census's mark once an actor's path is built: the movement and the rest
+# of its update after it, apart from the searches' steps
+FIXES_AIME2A["source/ai/actor_moving.c#aimelook"] = [
+("""boolean actor_path_refresh(""",
+ """void psp_aime_search_mark(int step); /* actors.c (FIXES_AIME2A) */
+
+boolean actor_path_refresh("""),
+("""					if (path_state_find(&path_state) &&
+						path_state_build_path(&path_state, &actor->control.path.path))
+					{
+						success = TRUE;
+					}""",
+ """					if (path_state_find(&path_state) &&
+						path_state_build_path(&path_state, &actor->control.path.path))
+					{
+						success = TRUE;
+					}
+					psp_aime_search_mark(12);"""),
+]
 FIXES_AIME2A["source/ai/path.c#aimelook"] = [
 ("""static boolean path_state_traverse(
 	struct path_state *state)
@@ -42575,6 +42757,30 @@ void psp_aime_decision_look(
 	PSP_AIME_DECISION_LOOK(step, tag);
 }
 
+/* "aimeobslook" (B54): the look between the steps of the obstacle-avoidance
+search that builds an actor's path (path_obstacle_avoidance.c's path_find),
+which had none: from a path search's last node to the actor's next look the
+job ran up to 45 ms on d20 on the PSP-3000, past the collection's 20 ms
+bound, and the ME was stopped. A step of that search writes only the search's
+own state (the caller's local or the debug storage) and no collision walk is
+open between steps, so a stop is put back by 1b's copies as at the path
+search's nodes. "aimeobslookoff": the mark only, no look */
+int psp_aime_obstacle_looks = 1;
+void psp_aime_search_look(
+	int step)
+{
+	PSP_AIME_MARK(step, -1);
+	if (psp_aime_obstacle_looks && psp_aime_arm && (psp_aime_job_now[0] || psp_aime_fpu_main) && psp_aime_here())
+		psp_aime_late_check();
+}
+
+/* the census's mark alone (no look), where an actor's path is built */
+void psp_aime_search_mark(
+	int step)
+{
+	PSP_AIME_MARK(step, -1);
+}
+
 static void actor_decision_loop(
 	long actor_index)
 {"""),
@@ -42596,6 +42802,7 @@ FIXES_AIME2A["source/ai/actors.c#aime2a"].insert(0, (
 """,
 """/* FIXES_AIME2A: "aime2a" (see there) */
 void psp_aime_step(int step);
+void psp_aime_answer_point(int step);
 #ifndef ME_SLOT_AI
 #define ME_SLOT_AI 3
 #define ME_JOB_AIME 15
@@ -42620,6 +42827,7 @@ unsigned long long sceKernelGetSystemTimeWide(void);
 int sceKernelDelayThread(unsigned int delay);
 void psp_nms_pending_for_me(void);
 static int psp_aime2a_on = -1, psp_aime2a_check_on = 0;
+static long psp_aime2a_stop_at = 0;
 static boolean psp_aime2a_owed = FALSE, psp_aime2a_out = FALSE, psp_aime2a_failed = FALSE;
 static volatile unsigned int *psp_aime2a_abort = NULL;
 /* the collection's wait for the actor in hand, once the job is asked to end */
@@ -42712,6 +42920,11 @@ FIXES_AIME2A["source/ai/actors.c#aime2a"].append((
 			extern int psp_aime_decision_looks, psp_aime_ring_looks;
 
 			psp_aime_decision_looks = !psp_keep("aimedecisionold");
+			{
+				extern int psp_aime_obstacle_looks;
+
+				psp_aime_obstacle_looks = psp_keep("aimeobslook") != 0;
+			}
 			psp_aime_ring_looks = psp_keep("aimeringlook") != 0;
 		}
 """))

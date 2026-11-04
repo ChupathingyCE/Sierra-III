@@ -1147,7 +1147,7 @@ static const struct
 	const char *word, *off;
 } keep_levers[] = {
 	{ "wxdead", "wxdeadoff" }, { "texavg", "texavgoff" }, { "lightcarry", "lightcarryoff" }, { "sndedram", "sndedramoff" }, { "musadpcm", "musadpcmoff" },
-	{ "lightringlook", "lightringlookoff" },
+	{ "lightringlook", "lightringlookoff" }, { "aimeobslook", "aimeobslookoff" }, { "sndtierback", "sndtierbackoff" },
 };
 static char keep_defaults_added[KEEP_DEFAULTS_ROOM] = "";
 
@@ -1200,7 +1200,11 @@ static void keep_defaults_add(void)
 	sound cache comes from sndedram's tier: psp_sound_cache_bytes).
 	lightringlook: the ME serves the ring inside the light pass, so a long
 	flashlight record no longer leaves ring jobs past their deadline
-	(docs/review_lightringlook.md) */
+	(docs/review_lightringlook.md). aimeobslook: the AI job looks at the
+	collection's word between the steps of the obstacle-avoidance search too,
+	so building a path can't hold the word past its bound and stop the ME.
+	sndtierback: at an ME stop the tier's playing sounds are copied into the
+	main tier, so they stay audible (docs/review_mestop.md) */
 	for (k = 0; k < (int)(sizeof(keep_levers) / sizeof(keep_levers[0])); k++)
 		if (!keep_search(keep_levers[k].off))
 			keep_default_add(keep_levers[k].word);
