@@ -73,7 +73,7 @@ The split is roughly 60/40 by count. A writeback adds to the cost of the data mi
 | **Data prefetch** (`cache 30`) | D latency | As the code is: 0.2–0.4 ms a tick at every site; in reshaped loops or next-item pipelining: 0.8–2.6 ms a tick [E, `prefetch_map.md`] | Placed by hand: microseconds (pf123b/c). NPF (node walk) exact but a loss in the model, +0.05 to +0.26 ms. PX open [E] | Loops reshaped so a fill has ~70+ cycles of miss-free work to hide behind: a redesign's tool, not a patch's |
 | **Whole-line writes** (`cache 24`) | D writebacks (~900 a million cycles) | Half the cost of each line written whole [M bench] | In drawing's list writes. Node blocks considered and not built (lines shared by two nodes; ≤ ~0.2 ms) [E, `cache_work.md` §2] | Buffers written whole each tick, laid out on line boundaries |
 | **Work moved to the ME** | Main CPU time (a second miss in flight) | — | Audio, the drawing replay, AI (AIME 2a), point physics, visibility, sound copies | Measured fit, both directions (CLAUDE.md, placement) |
-| **Keeping the GE off RAM during the tick** | Miss cost (+65–272% under RAM reads) | Up to doubling of every miss | GE busy 2–5% of the clock on b30, c20, d20, counting the main CPU's lists only; the ME's lists are untimed (`gebusy2`) [M, 41821725723] | Time the ME's lists, then see how much of the tick the GE overlaps |
+| **Keeping the GE off RAM during the tick** | Miss cost (+65–272% under RAM reads) | Up to doubling of every miss | Counting the main CPU's lists only, GE busy 2–5% of the clock on b30, c20, d20 [M, 41821725723]. With the ME's lists timed (`gebusy2`), d20's heavy view: **GE busy 41 ms a frame, 55–57% of the clock**, 23–24 ms of it stalled waiting for the ME's next chunk; at least ~11 ms a frame of its RAM reading falls inside the tick [U on M, recon, sierra-hw 41893041680] | recon's phase split of `gebusy` (each chunk's time to the main CPU's phase) gives the overlap exactly |
 
 ## 5. What the record teaches
 
@@ -89,4 +89,4 @@ The split is roughly 60/40 by count. A writeback adds to the cost of the data mi
 - **When it's checked:** at each tick build, the master re-reads section 1 against that build's ladder and section 4 against `levers.tsv`, and dates the check here.
 - **What it isn't:** the detail lives in the pages it cites (`prefetch_map.md`, `cache_work.md`, `research/research_icache.md`, `memory_traffic.md`, `draw_rebuild.md`, the lab's findings). This page keeps the summary and the ceilings; when they disagree, fix this page from them.
 
-Last checked: 2026-11-04 (tock159's ladder; DRAWPART3's pair).
+Last checked: 2026-11-04 (tock159's ladder; DRAWPART3's pair; d20's gebusy2 run).
