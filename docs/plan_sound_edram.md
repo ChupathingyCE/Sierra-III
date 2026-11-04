@@ -12,7 +12,11 @@ The goal (Sheepdog01, 2026-11-03): keep the sound's fidelity and move memory out
 
 **One cache, two tiers.** The engine's sound cache stays one lruv page space of the same size (1,792 KB, `soundN`). Its first pages are main RAM (1,136 KB), its last 164 pages are the eDRAM (656 KB). A sound's block is still one run of pages, and never one that crosses the boundary (a fence in both hole searches). The placement is today's: big sounds (32 KB and up) take the highest place they fit (`soundplace`), so the tier holds mostly dialogue, music and long loops; the rest go by age as before. Same room, same policy: the sounds that play are the ones that play today, less any refusal the fence causes (counted).
 
-**Who fills it.** A main-tier load reads straight into the cache, as now. A tier load goes through R2's staging (two 64 KB slots in main RAM, 60 KB pieces): the stick reader reads a piece, then the game thread, in `sound_cache_idle`, writes the staging back from its cache and DMAs it into place (one descriptor, ~240 µs for 60 KB), waits for it within a bound (2 ms), and once the last piece is in, calls the sound loaded. No ME job is involved, so the ME's time and its ring are untouched.
+**Who fills it.** A main-tier load reads straight into the cache, as now. A tier load goes through R2's staging (two 64 KB slots in main RAM, 60 KB pieces): the stick reader reads a piece, then the game thread, in `sound_cache_idle`, writes the staging back from its cache and hands what's read to R2's copy job (`ME_JOB_SOUNDCOPY` in the probe slot, at most two pieces, collected when done and never waited for); once the last piece is in, the sound is called loaded. The ME writes its own memory, so no DMA crosses the bus while it works.
+
+The first fill was a DMACplus transfer from the main CPU (one descriptor, ~240 µs for 60 KB, bounded at 2 ms). It was exact in the emulator but hung the PSP-3000 hard at b30's opening on both tier runs (sierra-hw 41772932718) [M]; the likeliest cause is a DMACplus transfer into the eDRAM while the ME is busy on the bus (75-83% there; bench15 only ran it against an idle ME) [U]. It stays behind `sndtierdma`, off, until a bench of DMACplus against a busy ME decides it.
+
+**The copy job's bounds.** A job not collected 250 ms after it was handed over counts as a failure: its pieces are given up when it ends (the staging can't be reused before) and its sounds read again. A job that copies the wrong count, or (`sndedramcheck`) whose hashes disagree with the main CPU's hash of the staging, is a failure too. Three failures close the tier, as below. The ME hashes each piece as it reads it and again from the eDRAM once its cache is written back, so the check covers both the staging's hand-over and the eDRAM's contents.
 
 **How the mixer reads it.** Unchanged: a packet's data is the sound's eDRAM address (the ME's cached view, `0x80000000` + offset). The audio job drops the ME's whole data cache before it mixes, so the bytes a DMA landed are read fresh, the same ordering main RAM's sounds have (written, then loaded, then mixed). `meaudioranges` (opt-in) drops only main-RAM lines, so it's refused with the tier.
 
@@ -30,12 +34,13 @@ The goal (Sheepdog01, 2026-11-03): keep the sound's fidelity and move memory out
 |---|---|
 | `sndedram` | the tier on (off by default) |
 | `sndtierN` | the tier's size in KB (64 to 656), the main tier the rest of `soundN` |
-| `sndedramcheck` | each piece read back from the eDRAM by DMA and compared (PSP), or the copy compared (emulator); mismatches counted |
+| `sndedramcheck` | each piece hashed by the copy job as read and as the eDRAM holds it, against the main CPU's hash of the staging (with `sndtierdma`: read back by DMA and compared); mismatches counted as failures |
+| `sndtierdma` | the tier filled by DMACplus from the main CPU instead of the ME's copy job (off: it hung the PSP-3000) |
 
 Refused (logged, the cache as today) with `soundedram` and `edramcheck`, which use the same eDRAM, and when the ME is off.
 
 ## Steps
 
-1. The tier, its fence, the DMA fill, the failure path and the census line (`sound tier:` with the sound cache's line every 5 s: loads and bytes per tier, DMAs and their time, failures, muted blocks, state). Off by default. Proof: play + both seeds on vs off (b30, c20), the census showing the tier used; one PSP-3000 pair on b30's flight for the frame, with `sndedramcheck`'s counts.
+1. The tier, its fence, the fill (the ME's copy job; DMACplus behind `sndtierdma`), the failure path and the census line (`sound tier:` with the sound cache's line every 5 s: loads and bytes per tier, DMAs and their time, failures, muted blocks, state). Off by default. Proof: play + both seeds on vs off (b30, c20), the census showing the tier used; one PSP-3000 pair on b30's flight for the frame, with `sndedramcheck`'s counts.
 2. The freed 528 KB to the texture caches (heapmap's census picks the cache), and the tier's size and placement tuned by refusals and reads (a preference for big sounds in the tier, if the census shows small ones crowding it).
 3. Reopening the tier after an ME restart (flush, then reuse), so a HOME visit doesn't cost it for the session.

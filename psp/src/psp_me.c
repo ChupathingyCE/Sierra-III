@@ -692,8 +692,12 @@ static void run_job(volatile struct me_slot *slot, int *sums, int on_me)
 		sound cache. me_serve drops the ME's cache before the job (so the
 		staging is read fresh) and writes it back after (into the eDRAM). Off
 		the ME only when simulated, where the cache is in main RAM; an eDRAM
-		destination there is refused */
-		unsigned int k, copied = 0;
+		destination there is refused. "sndedram"'s tier fills its eDRAM
+		pages with the same job; a piece whose byte count has bit 0 set
+		("sndedramcheck") is also hashed as read and, once the ME's cache is
+		written back, as the eDRAM holds it, so the main CPU can compare
+		both with its own hash of the staging (results 1 and 2) */
+		unsigned int k, copied = 0, check = 0, read_hash = PSP_ME_HASH_START, held_hash = PSP_ME_HASH_START;
 
 		for (k = 0; k + 2 < ME_JOB_ARGS && slot->args[k + 2]; k += 3)
 		{
@@ -705,18 +709,46 @@ static void run_job(volatile struct me_slot *slot, int *sums, int on_me)
 				copied = 0xFFFFFFFFu;
 				break;
 			}
-			for (w = 0; w < words; w += 4)
+			if (slot->args[k + 2] & 1)
 			{
-				unsigned int a = from[w], b = from[w + 1], c = from[w + 2], d = from[w + 3];
+				check = 1;
+				for (w = 0; w < words; w++)
+				{
+					unsigned int a = from[w];
 
-				to[w] = a;
-				to[w + 1] = b;
-				to[w + 2] = c;
-				to[w + 3] = d;
+					to[w] = a;
+					read_hash = psp_me_hash(read_hash, a);
+				}
 			}
+			else
+				for (w = 0; w < words; w += 4)
+				{
+					unsigned int a = from[w], b = from[w + 1], c = from[w + 2], d = from[w + 3];
+
+					to[w] = a;
+					to[w + 1] = b;
+					to[w + 2] = c;
+					to[w + 3] = d;
+				}
 			copied += words << 2;
 		}
+		if (check && copied != 0xFFFFFFFFu)
+		{
+			if (on_me)
+				meLibDcacheWritebackInvalidateAll();
+			for (k = 0; k + 2 < ME_JOB_ARGS && slot->args[k + 2]; k += 3)
+				if (slot->args[k + 2] & 1)
+				{
+					const volatile unsigned int *held = (const volatile unsigned int *)slot->args[k + 1];
+					unsigned int words = slot->args[k + 2] >> 2, w;
+
+					for (w = 0; w < words; w++)
+						held_hash = psp_me_hash(held_hash, held[w]);
+				}
+		}
 		slot->results[0] = copied;
+		slot->results[1] = read_hash;
+		slot->results[2] = held_hash;
 		break;
 	}
 	default:

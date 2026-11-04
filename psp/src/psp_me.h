@@ -146,6 +146,12 @@ the room the layout plan leaves free above MIST's reserve, PDC and
 MEVGATHER, up to AIME's data. Moving the tier is these two lines */
 #define ME_EDRAM_SNDTIER 0xC8000u
 #define ME_EDRAM_SNDTIER_END ME_EDRAM_AIME_DATA
+/* ME_JOB_SOUNDCOPY's check hash, word by word, the same on both CPUs */
+#define PSP_ME_HASH_START 0x811C9DC5u
+static inline unsigned int psp_me_hash(unsigned int hash, unsigned int word)
+{
+	return (hash ^ word) * 0x01000193u;
+}
 
 /* DMACplus, from the main CPU (bench/halo_bench15 proved the path on the
 PSP-1000): one descriptor between main RAM and the eDRAM at offset

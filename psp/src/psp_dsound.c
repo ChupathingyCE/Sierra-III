@@ -1447,7 +1447,9 @@ the first ones main RAM (the main tier), the last ones the eDRAM at
 psp_me.h's ME_EDRAM_SNDTIER (the tier); the lruv cache keeps every block on
 one side of the boundary (its fence, psp_fixups.py FIXES_SNDEDRAM). A sound
 placed in the tier is loaded through R2's staging above, and each piece goes
-in by DMACplus from this thread, so no ME job is involved. The rest of R2's
+in by R2's copy job, the ME writing its own memory, so no DMA crosses the bus
+while the ME works ("sndtierdma": by DMACplus from this thread instead, which
+hung the PSP-3000 at b30's opening with the ME busy). The rest of R2's
 rules hold for the tier's sounds: only the ME reads them, a block the main CPU
 mixes plays them silent, and once the ME has stopped the eDRAM is taken as
 lost. A loss closes the tier rather than the sound: the fence locks its
@@ -1462,12 +1464,24 @@ tier and the DMA a copy, so everything but the eDRAM and the DMA runs */
 #endif
 /* a 60 KB piece takes ~240 us at the measured 256 MB/s */
 #define TIER_DMA_TIMEOUT_US 2000
-/* failed DMAs before the tier is closed for the session */
+/* failed fills before the tier is closed for the session */
 #define TIER_FAILS_MAX 3
+/* a copy job not collected this long after it was handed over counts as a
+failure: its pieces are given up when it ends (the staging can't be reused
+before), and its sounds read again. Several frames: the ME serves its slots
+between ring jobs, the longest of which is a heavy frame's drawing */
+#define TIER_JOB_LATE_US 250000
 static int tier_mode = -1; /* 0 off, 1 the ME's eDRAM, 2 simulated (the emulator) */
 static unsigned long tier_bytes = 0, tier_main_bytes = 0;
 static unsigned char *cache_base = NULL, *tier_base = NULL;
-static int tier_check = 0, tier_fails = 0, tier_left = -1;
+static int tier_check = 0, tier_fails = 0, tier_left = -1, tier_dma = 0;
+static unsigned long tier_jobs = 0, tier_job_pieces = 0, tier_job_us = 0, tier_job_worst_us = 0, tier_job_late = 0,
+	tier_job_failed = 0;
+/* the copy job out: when it was handed over, what it should copy, the
+staging's hash (sndedramcheck), and whether it has run past its bound */
+static SceUInt64 copy_at = 0;
+static unsigned int copy_bytes = 0, copy_hash = 0;
+static int copy_late = 0, copy_checked = 0;
 static const char *tier_closed_why = NULL;
 static unsigned long tier_dmas = 0, tier_dma_us = 0, tier_dma_worst_us = 0, tier_dma_failed = 0, tier_check_bad = 0,
 	tier_given_up = 0, tier_polls = 0;
@@ -1502,6 +1516,7 @@ int psp_sound_tier_mode(void)
 				tier_bytes = (kb * 1024) & ~0xFFFul;
 				tier_mode = psp_me_simulated() ? 2 : 1;
 				tier_check = psp_keep("sndedramcheck");
+				tier_dma = psp_keep("sndtierdma");
 			}
 			else
 				platform_log("sound tier: refused: %lu KB of room, %d KB at least", kb, TIER_MIN_KB);
@@ -1560,7 +1575,13 @@ static void tier_close(const char *why)
 		why, tier_main_bytes / 1024);
 }
 
-/* a piece into the tier; 1 when it's there */
+static void tier_fill_failed(void)
+{
+	if (++tier_fails >= TIER_FAILS_MAX)
+		tier_close(tier_dma ? "DMAs failed" : "copy jobs failed");
+}
+
+/* "sndtierdma": a piece into the tier by DMACplus; 1 when it's there */
 static int tier_copy(const unsigned char *from, unsigned char *to, unsigned long bytes)
 {
 	static unsigned char check[4096] __attribute__((aligned(64)));
@@ -1613,8 +1634,8 @@ static int tier_copy(const unsigned char *from, unsigned char *to, unsigned long
 	tier_dma_us += us;
 	if (us > tier_dma_worst_us)
 		tier_dma_worst_us = us;
-	if (!ok && ++tier_fails >= TIER_FAILS_MAX)
-		tier_close("DMAs failed");
+	if (!ok)
+		tier_fill_failed();
 	return ok;
 }
 
@@ -1705,7 +1726,8 @@ void *psp_sound_cache_place(void *block)
 		edram_hi = tier_base + tier_bytes;
 		stops_at_start = psp_me_stops;
 		platform_log("sound tier: on (%s): the cache's %lu KB as %lu KB of main RAM at %08x and %lu KB at %08x (eDRAM %lu-%lu KB), %lu KB staging; %lu KB taken from the heap%s",
-			tier_mode == 1 ? "the ME's eDRAM, filled by DMACplus" : "SIMULATED: the emulator's tier is main RAM",
+			tier_mode == 2 ? "SIMULATED: the emulator's tier is main RAM" :
+				tier_dma ? "the ME's eDRAM, filled by DMACplus (sndtierdma)" : "the ME's eDRAM, filled by the ME's copy job",
 			cache / 1024, tier_main_bytes / 1024, (unsigned int)base, tier_bytes / 1024, (unsigned int)tier_base,
 			(unsigned long)ME_EDRAM_SNDTIER / 1024, (unsigned long)(ME_EDRAM_SNDTIER + tier_bytes) / 1024, stage_bytes / 1024,
 			block_bytes / 1024, tier_check ? "; sndedramcheck: every piece read back" : "");
@@ -1886,11 +1908,45 @@ void psp_sound_upload_poll(void)
 		int ok = psp_me_finish(ME_SLOT_PROBE, results) && results[0] != 0xFFFFFFFFu;
 
 		copy_out = 0;
+		if (tier_mode > 0)
+		{
+			unsigned long us = (unsigned long)(sceKernelGetSystemTimeWide() - copy_at);
+
+			tier_job_us += us;
+			if (us > tier_job_worst_us)
+				tier_job_worst_us = us;
+			if (ok && results[0] != copy_bytes)
+				ok = 0;
+			if (ok && copy_checked && (results[1] != copy_hash || results[2] != copy_hash))
+			{
+				ok = 0;
+				tier_check_bad++;
+			}
+			if (!ok && psp_me_stops == stops_at_start)
+			{
+				tier_job_failed++;
+				platform_log("sound tier: a copy job of %u bytes failed (copied %08x, hashes %08x %08x against %08x%s)",
+					copy_bytes, results[0], results[1], results[2], copy_hash, copy_checked ? "" : ", unchecked");
+				tier_fill_failed();
+			}
+			/* past its bound: counted as a failure then, given up now */
+			if (copy_late)
+				ok = 0;
+		}
 		for (k = 0; k < STAGE_SLOTS; k++)
 			if (stage[k].state == SLOT_COPYING)
 				piece_done(&stage[k], ok);
-		if (!ok)
+		if (!ok && tier_mode <= 0)
 			edram_loss("the copy job failed");
+	}
+	else if (copy_out && tier_mode > 0 && !copy_late &&
+		sceKernelGetSystemTimeWide() - copy_at > TIER_JOB_LATE_US)
+	{
+		copy_late = 1;
+		tier_job_late++;
+		platform_log("sound tier: a copy job not done %u ms after it was handed over: its sounds are read again",
+			TIER_JOB_LATE_US / 1000);
+		tier_fill_failed();
 	}
 	if (psp_me_stops != stops_at_start)
 		edram_loss("the Media Engine stopped");
@@ -1925,7 +1981,7 @@ void psp_sound_upload_poll(void)
 	}
 	/* the tier: what's read, into the eDRAM in the order it was asked for, so
 	a load finished by it is told below and its slot read into again */
-	if (tier_mode > 0 && !edram_lost)
+	if (tier_mode > 0 && tier_dma && !edram_lost)
 	{
 		for (;;)
 		{
@@ -2022,9 +2078,9 @@ void psp_sound_upload_poll(void)
 		cache_file_read(u->tag_index, u->file_offset + slot->offset, slot->bytes, slot->buffer, (unsigned char *)&slot->done, 0);
 	}
 	/* what's read, to the ME in the order it was asked for: one job */
-	if (tier_mode <= 0 && !copy_out)
+	if ((tier_mode <= 0 || !tier_dma) && !copy_out)
 	{
-		unsigned int args[ME_JOB_ARGS] = { 0 }, n = 0, order[STAGE_SLOTS], m = 0, j;
+		unsigned int args[ME_JOB_ARGS] = { 0 }, n = 0, order[STAGE_SLOTS], m = 0, j, hash = PSP_ME_HASH_START, bytes_out = 0;
 
 		for (k = 0; k < STAGE_SLOTS; k++)
 			if (stage[k].state == SLOT_READING && stage[k].done == 1)
@@ -2046,19 +2102,37 @@ void psp_sound_upload_poll(void)
 				piece_done(slot, 0);
 				continue;
 			}
+			/* the check's hash from what the ME will read: RAM, once written back */
+			if (tier_mode > 0 && tier_check)
+			{
+				const unsigned int *word = (const unsigned int *)slot->buffer;
+				unsigned long w;
+
+				sceKernelDcacheWritebackInvalidateRange(slot->buffer, (bytes + 63) & ~63ul);
+				for (w = 0; w < bytes / 4; w++)
+					hash = psp_me_hash(hash, word[w]);
+			}
 			sceKernelDcacheWritebackInvalidateRange(slot->buffer, (bytes + 63) & ~63ul);
 			args[3 * n] = (unsigned int)slot->buffer;
 			args[3 * n + 1] = (unsigned int)(u->dest + slot->offset);
-			args[3 * n + 2] = (unsigned int)bytes;
+			args[3 * n + 2] = (unsigned int)bytes | (tier_mode > 0 && tier_check ? 1u : 0u);
+			bytes_out += (unsigned int)bytes;
 			slot->state = SLOT_COPYING;
 			n++;
 		}
 		if (n)
 		{
+			copy_at = sceKernelGetSystemTimeWide();
+			copy_bytes = bytes_out;
+			copy_hash = hash;
+			copy_checked = tier_mode > 0 && tier_check;
+			copy_late = 0;
 			if (psp_me_submit(ME_SLOT_PROBE, ME_JOB_SOUNDCOPY, args, ME_JOB_ARGS))
 			{
 				copy_out = 1;
 				up_jobs++;
+				tier_jobs += tier_mode > 0;
+				tier_job_pieces += tier_mode > 0 ? n : 0;
 			}
 			else
 			{
@@ -2075,10 +2149,17 @@ void psp_sound_upload_poll(void)
 /* psp_sound_cache_report's line (every 5 s) */
 void psp_sound_upload_report(void)
 {
-	if (tier_mode > 0)
+	if (tier_mode > 0 && tier_dma)
 		platform_log("sound tier: %lu sounds in (%lu KB, %lu pieces), each %lu ms from asked to loaded on average (worst %lu); %lu DMAs, %lu us in them (worst %lu), %lu failed, %lu read back wrong%s; %lu reads failed, %lu deleted while loading, %lu refused (queue full), %lu given up; %lu blocks with voices mixed silent; %s%s",
 			up_sounds, up_bytes / 1024, up_pieces, up_sounds ? up_wait_us / up_sounds / 1000 : 0, up_worst_us / 1000,
 			tier_dmas, tier_dma_us, tier_dma_worst_us, tier_dma_failed, tier_check_bad, tier_check ? "" : " (unchecked)",
+			up_failed, up_dropped, up_full, tier_given_up + psp_sound_tier_drained, muted_blocks,
+			tier_closed_why ? "CLOSED: " : "open", tier_closed_why ? tier_closed_why : "");
+	else if (tier_mode > 0)
+		platform_log("sound tier: %lu sounds in (%lu KB, %lu pieces), each %lu ms from asked to loaded on average (worst %lu); %lu copy jobs (%lu pieces), %lu us from handed over to collected on average (worst %lu), %lu failed, %lu late, %lu hashed wrong%s; %lu reads failed, %lu deleted while loading, %lu refused (queue full), %lu given up; %lu blocks with voices mixed silent; %s%s",
+			up_sounds, up_bytes / 1024, up_pieces, up_sounds ? up_wait_us / up_sounds / 1000 : 0, up_worst_us / 1000,
+			tier_jobs, tier_job_pieces, tier_jobs ? tier_job_us / tier_jobs : 0, tier_job_worst_us, tier_job_failed,
+			tier_job_late, tier_check_bad, tier_check ? "" : " (unchecked)",
 			up_failed, up_dropped, up_full, tier_given_up + psp_sound_tier_drained, muted_blocks,
 			tier_closed_why ? "CLOSED: " : "open", tier_closed_why ? tier_closed_why : "");
 	if (edram_mode <= 0)
