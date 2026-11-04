@@ -1990,6 +1990,8 @@ static void tier_rescue(void)
 		platform_log("sound tier: the ME stopped without halting itself: its eDRAM isn't read, and the tier's playing sounds stay silent (sndtierback)");
 		return;
 	}
+	/* the fence closed first, so the new blocks come from the main tier */
+	psp_lruv_fence_closed = 1;
 	game_lock();
 	tier_left = psp_sound_tier_rescue((unsigned long)tier_base, (unsigned long)(tier_base + tier_bytes), tier_back_copy,
 		tier_back_moved, tier_back_in_play, tier_back_counts);
