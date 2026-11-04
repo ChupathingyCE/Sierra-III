@@ -1147,7 +1147,7 @@ static const struct
 	const char *word, *off;
 } keep_levers[] = {
 	{ "wxdead", "wxdeadoff" }, { "texavg", "texavgoff" }, { "lightcarry", "lightcarryoff" }, { "sndedram", "sndedramoff" }, { "musadpcm", "musadpcmoff" },
-	{ "lightringlook", "lightringlookoff" }, { "aimeobslook", "aimeobslookoff" },
+	{ "lightringlook", "lightringlookoff" }, { "aimeobslook", "aimeobslookoff" }, { "lightfirst", "lightfirstoff" },
 };
 static char keep_defaults_added[KEEP_DEFAULTS_ROOM] = "";
 
@@ -1203,6 +1203,9 @@ static void keep_defaults_add(void)
 	(docs/review_lightringlook.md). aimeobslook: the AI job looks at the
 	collection's word between the steps of the obstacle-avoidance search too,
 	so building a path can't hold the word past its bound and stop the ME.
+	lightfirst: the objects' lighting made in a pass of its own before the
+	model walk, so each pass's code stays in the I-cache across the objects
+	(exact; c10 drawing -1.3 to -3.0% on the PSP; docs/review_lightfirst.md).
 	sndtierback: at an ME stop the tier's playing and loading sounds are read
 	again from the disc into the main tier, so they stay audible: off until its
 	PSP run (docs/review_mestop.md) */
