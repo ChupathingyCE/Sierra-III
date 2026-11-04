@@ -34306,23 +34306,23 @@ long psp_sound_tier_drain(unsigned long low, unsigned long high)
 	return left;
 }
 
-/* "sndtierback" (B55): the tier lost while its sounds play (the ME stopped).
-Each tier sound still playing gets a block of the main tier (the cache's own
-allocation: the closed fence keeps it out of the tier, and it pushes out what
-nothing plays), copy brings its bytes over (the DMA out of the eDRAM), and
-moved points the voices playing it at the new place. Playing is the cache's
+/* "sndtierback" (B55): the tier lost (the ME stopped), and with it every
+sound in it: nothing may read the eDRAM after a stop. Each tier sound still
+playing or loading is taken off the tier's books: it gets a block of the main
+tier (the cache's own allocation: the closed fence keeps it out of the tier,
+and it pushes out what nothing plays) and is read again from the disc into it,
+as any main tier sound loads; moved points the voices playing it at the new
+place, which they play muted until the read lands. Playing is the cache's
 counts or a voice with a packet queued in it (in_play): a channel lets go of
 its sound while the mixer still has packets of it queued. What nothing plays
-is given up after, so its next play reads it again into the main tier.
-counts: rescued, their bytes, left for want of room, copies failed, rescued
-by their packets alone, read again (still loading). Returns the sounds left
-in the tier */
+is given up after, so its next play reads it again into the main tier. counts:
+read again, their bytes, left for want of room, read again by their packets
+alone. Returns the sounds left in the tier */
 #define PSP_TIER_RESCUE_MOST 64
 long psp_sound_tier_rescue(
 	unsigned long low,
 	unsigned long high,
-	int (*copy)(void *to, const void *from, unsigned long bytes),
-	void (*moved)(unsigned long from, unsigned long to, unsigned long bytes),
+	void (*moved)(unsigned long from, unsigned long to, unsigned long bytes, const unsigned char *loaded),
 	int (*in_play)(unsigned long from, unsigned long bytes),
 	unsigned long *counts)
 {
@@ -34368,11 +34368,6 @@ long psp_sound_tier_rescue(
 			(unsigned long)lruv_block_get_address(xbox_sound_cache_globals.cache, index));
 		datum_new_at_index(xbox_sound_cache_globals.cache_sounds, index);
 		moved_sound = datum_get(xbox_sound_cache_globals.cache_sounds, index);
-		/* a sound still loading into the tier (or whose load failed there,
-		which the cache's flag can't tell from loaded) is read again into its
-		new block, as a main tier sound loads: the tier's own load of it is
-		dropped once its datum has moved (psp_sound_cache_alive) */
-		if (old->loaded != 1)
 		{
 			short identifier = moved_sound->identifier;
 
@@ -34380,49 +34375,21 @@ long psp_sound_tier_rescue(
 			moved_sound->identifier = identifier;
 			moved_sound->software_reference_count--;
 			moved_sound->loaded = FALSE;
-			old->software_reference_count = 0;
-			old->hardware_reference_count = 0;
-			lruv_block_delete(xbox_sound_cache_globals.cache, blocks[k]);
-			sound->cache_block_index = index;
-			sound->cache_base_address = to;
-			cache_file_read(sound->cache_tag_index, sound->samples.file_offset, sound->samples.size, (void *)to,
-				&moved_sound->loaded, FALSE);
-			moved(from, to, (unsigned long)size);
-			counts[5]++;
-			continue;
 		}
-		if (!copy((void *)to, (const void *)from, (unsigned long)size))
-		{
-			/* the new block given back as an unplayed sound of its own */
-			old->software_reference_count--;
-			counts[3]++;
-			moved_sound->sound = sound;
-			moved_sound->loaded = 1;
-			moved_sound->software_reference_count = 0;
-			moved_sound->hardware_reference_count = 0;
-			sound->cache_block_index = index;
-			lruv_block_delete(xbox_sound_cache_globals.cache, index);
-			sound->cache_block_index = blocks[k];
-			sound->cache_base_address = from;
-			continue;
-		}
-		{
-			short identifier = moved_sound->identifier;
-
-			*moved_sound = *old;
-			moved_sound->identifier = identifier;
-			moved_sound->software_reference_count--;
-		}
-		/* the old block let go as an unplayed one (its counts are the new one's now) */
+		/* the old block let go as an unplayed one (its counts are the new
+		one's now); the tier's own load of it, if any, is dropped once its
+		datum has gone (psp_sound_cache_alive) */
 		old->software_reference_count = 0;
 		old->hardware_reference_count = 0;
 		lruv_block_delete(xbox_sound_cache_globals.cache, blocks[k]);
 		sound->cache_block_index = index;
 		sound->cache_base_address = to;
-		moved(from, to, (unsigned long)size);
+		cache_file_read(sound->cache_tag_index, sound->samples.file_offset, sound->samples.size, (void *)to,
+			&moved_sound->loaded, FALSE);
+		moved(from, to, (unsigned long)size, &moved_sound->loaded);
 		counts[0]++;
 		counts[1] += (unsigned long)size;
-		counts[4] += by_packets[k];
+		counts[3] += by_packets[k];
 	}
 	return psp_sound_tier_drain(low, high);
 }

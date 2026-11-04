@@ -1907,17 +1907,6 @@ int psp_me_stop_asked(void)
 	return CONTROL->stop != 0;
 }
 
-/* 1 once a stop (not a sleep's) found the ME halted by its own hand: it no
-longer runs, so the eDRAM may be read by DMA (psp_me_dma_edram), as
-bench15 read it with the ME idle. Cleared by a sleep, whose power-off loses
-the eDRAM, and by a start */
-static int me_halted_clean = 0;
-
-int psp_me_halted_clean(void)
-{
-	return me_halted_clean;
-}
-
 static void me_stop(const char *why, int for_sleep)
 {
 	volatile struct me_control *control = CONTROL;
@@ -1941,10 +1930,7 @@ static void me_stop(const char *why, int for_sleep)
 		}
 		me_maybe_running = 0;
 		if (control->stop == 2)
-		{
-			me_halted_clean = !for_sleep;
 			platform_log("ME: stopped (%s); halted itself after %d ms; the main CPU runs its jobs from here", why, k);
-		}
 		else
 		{
 			volatile struct me_fault *fault = UNCACHED(&psp_me_fault_storage);
@@ -1982,7 +1968,6 @@ void psp_me_stop(const char *why)
 /* the power callback's, as the PSP goes to sleep: the wake may start it again */
 void psp_me_sleep_stop(void)
 {
-	me_halted_clean = 0;
 	me_stop("sleep", 1);
 }
 
@@ -2110,7 +2095,7 @@ int psp_me_dma_edram(int into_edram, void *main_ram, unsigned int edram_offset, 
 
 	if (us)
 		*us = 0;
-	if ((me_state != 1 && !(me_state == -1 && me_halted_clean)) || !count || bytes % 16 || count > DMACP_MAX_COUNT || (ram & 15) || (edram_offset & 15) ||
+	if (me_state != 1 || !count || bytes % 16 || count > DMACP_MAX_COUNT || (ram & 15) || (edram_offset & 15) ||
 		edram_offset + bytes > ME_EDRAM_STACK_TOP)
 		return -5;
 	call.channel = into_edram ? DMACP_SC2ME : DMACP_ME2SC;
@@ -2284,7 +2269,6 @@ int psp_me_start(void)
 		me_cycles_per_us = us ? (float)cycles / (float)us : 0.0f;
 	}
 	me_state = 1;
-	me_halted_clean = 0;
 	me_restartable = 1;
 	atexit(stop_at_exit);
 	/* mehalt only now, so the start check above saw the ME polling */
@@ -4249,7 +4233,6 @@ answered:
 		return;
 	}
 	me_state = 1;
-	me_halted_clean = 0;
 	me_cpu_check(control, "restart");
 	wake_report("ME: restarted after wake in %lu ms (its first idle poll %lu us after the reset's release%s; %u frame ends waiting for its clients%s)",
 		(unsigned long)((now - wake_mark) / 1000), (unsigned long)(now - release),

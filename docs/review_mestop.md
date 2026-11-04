@@ -1,6 +1,6 @@
 # Review: aimeobslook and sndtierback (B54, B55: the ME stopped on d20, and the sound tier silent after a stop)
 
-**Branch** master/mestop, on master/tock159. **Keep words** `aimeobslook`, on by default (`keep_levers` in psp_platform.c; `aimeobslookoff` turns it off), and `sndtierback`, **off by default**: it turns the rescue on. It stays off until it runs on a PSP without a hang (see B55's proofs). `mestopatN` is a test word: it stops the ME at game time N. **Touches** psp_fixups.py (FIXES_AIME2A: actors.c, path_obstacle_avoidance.c, actor_moving.c; FIXES_SNDEDRAM: xbox_sound_cache.c), psp/src/psp_dsound.c, psp/src/psp_me.c, psp/src/psp_platform.c.
+**Branch** master/mestop, on master/tock159. **Keep words** `aimeobslook`, on by default (`keep_levers` in psp_platform.c; `aimeobslookoff` turns it off), and `sndtierback`, **off by default** until its PSP run: it turns the rescue on. `mestopatN` is a test word: it stops the ME at game time N. **Touches** psp_fixups.py (FIXES_AIME2A: actors.c, path_obstacle_avoidance.c, actor_moving.c; FIXES_SNDEDRAM: xbox_sound_cache.c), psp/src/psp_dsound.c, psp/src/psp_platform.c.
 
 ## B54: the AI job's word unanswered for 20 ms
 
@@ -29,18 +29,14 @@ The obstacle search is the unbounded part: its steps grow with the crowd near th
 
 **The bug [M].** When the ME stops, the sound tier closes. Voices playing from the eDRAM are then mixed silent: the main CPU mixes, and it can't read the eDRAM. Each such sound is given up only once it stops playing. In B54's run that was 335 blocks with voices silent (~7.7 s) before all 23 tier sounds had been given up.
 
-**The fix.** At the first poll that sees the stop, with the cache's fence closed first, before the rest of the tier's close:
-- Only if the ME halted itself, and not for a sleep. bench15 read the eDRAM by DMACplus with the ME idle. A sleep loses the eDRAM, and a held reset is unproven.
-- Every tier sound that nothing plays is given up at once (`psp_sound_tier_drain`), so its next play reads it again into the main tier.
-- Playing means the cache's counts, or a packet of the sound in the game's view of any voice's queue: a channel lets go of its sound while the mixer still has packets of it queued. Each such sound is held by a count of its own while the list is worked, because the allocation pushes out whatever nothing holds, tier blocks included.
-- Each tier sound still playing gets a block of the main tier from the cache's own allocation. The closed fence keeps the allocation out of the tier, and it pushes out what nothing plays. Its bytes come out of the eDRAM by DMACplus, in pieces of up to 65,520 bytes. The main CPU's lines for the block are written back and dropped first, and dropped again after. The cache's datum moves to the new block with its play counts. The old block is let go as an unplayed one. The game's view of each queue is moved at once. The mixer's packets are moved by a command (`CMD_MOVE`) that the audio thread applies in order, after any packet queued before it. In the default mode the audio thread doesn't take the mixer's lock, so moving the packets from the game thread would miss those still in the command ring.
-- A sound still loading into the tier is moved the same way and read again from the disc into its new block. Its load would fail at the loss, and the cache's flag holds 2 for a failed read, which the engine reads as loaded.
-- The DMA refuses any block outside main RAM's user memory, and any source outside the tier.
-- The whole tier is 656 KB: ~2.6 ms of DMA at the measured 256 MB/s, once a session.
-- A sound that finds no room, or whose copy fails, stays silent as before and is given up when it stops. A log line counts both.
-- In the emulator the tier is main RAM, and the copy is a memcpy.
-
-`psp_me_dma_edram` now also reads the eDRAM after such a halt (`psp_me_halted_clean`). A start or a sleep clears that.
+**The fix (v2: no eDRAM access after a stop).** Three fills near a busy or stopped ME have hung a PSP (sndedram round 1 twice, and this branch's first cut's DMACplus out of the eDRAM after a stop). So nothing here reads or writes the eDRAM once the ME has stopped. At the first poll that sees the stop:
+- The cache's fence is closed first, so new blocks come from the main tier.
+- Each tier sound still playing or loading is taken off the tier's books. Playing means the cache's counts, or a packet of it in the game's view of any voice's queue: a channel lets go of its sound while the mixer still has packets of it queued. Each such sound is held by a count of its own while the list is worked, because the allocation pushes out whatever nothing holds, tier blocks included.
+- Each gets a main-tier block from the cache's own allocation, and the datum moves to it with its counts. It is then read again from the disc by `cache_file_read`, the main tier's normal load. The old block is let go as an unplayed one, and the tier's own load of it, if any, is dropped (`psp_sound_cache_alive`).
+- The game's view of each queue is moved at once. The mixer's packets are moved by a command (`CMD_MOVE`) that the audio thread applies in order after any packet queued before it, since in the default mode the audio thread doesn't take the mixer's lock.
+- Until a block's read lands (or 5 s pass), its voices play muted: a brief gap, counted ("voices played muted meanwhile in N blocks").
+- Every other tier sound is given up, so its next play reads it into the main tier.
+- A sound that finds no room stays silent as before and is given up when it stops (counted).
 
 ## Proofs
 
