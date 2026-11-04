@@ -201,4 +201,4 @@ The PSP-3000 is the same [M]: 227 ns alone, 226 beside 0x40, 220 beside 0x48.
 - **The system DMAC's layout** is from uofw (https://github.com/uofw/uofw, GPL; read only, no code taken).
 - **PPSSPP's timing** is from https://github.com/hrydgard/ppsspp (GPL; read only).
 
-His repositories accept no AI-attributed pull requests. The measurements above are ours, to share with him by hand if Sheepdog01 chooses.
+His repositories accept no AI-attributed pull requests. The measurements above are ours, to share with him by hand.
