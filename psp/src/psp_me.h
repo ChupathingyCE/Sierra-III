@@ -292,4 +292,26 @@ ME, or marked as its by psp_me_context (gemesim: the main CPU runs it) */
 extern volatile unsigned int psp_me_context;
 #define PSP_ME_WORK() (psp_me_context != 0 || psp_on_me())
 
+/* "meprobe" (psp_post.h has the engine's side): the port's own units, which
+don't include psp_post.h. The emulator's AI pass is told by its stack */
+#ifndef PSP_MEPROBE_EXPR
+#ifdef PSP_MEPROBE
+extern unsigned int psp_aime_sp_low, psp_aime_sp_high;
+void psp_meprobe_note(int site, void *ra);
+void psp_meprobe_report(void);
+static __inline__ __attribute__((always_inline)) int psp_meprobe_here_(void)
+{
+	unsigned int sp_;
+
+	__asm__ ("move %0, $sp" : "=r"(sp_));
+	return psp_cpu_is_me() || (psp_me_context && sp_ - psp_aime_sp_low < psp_aime_sp_high - psp_aime_sp_low);
+}
+#define PSP_MEPROBE_EXPR(site) (psp_meprobe_here_() ? (psp_meprobe_note((site), __builtin_return_address(0)), 0) : 0)
+#define PSP_MEPROBE_REPORT() (psp_meprobe_report(), 0)
+#else
+#define PSP_MEPROBE_EXPR(site) 0
+#define PSP_MEPROBE_REPORT() 0
+#endif
+#endif
+
 #endif
