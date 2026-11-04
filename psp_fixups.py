@@ -32011,16 +32011,15 @@ void psp_points_end(void)
 	psp_points_count = 0;
 	if (psp_points_on > 0)
 	{
-		static unsigned long mark = 0;
-		unsigned long now = psp_microseconds();
+		/* every ~30 s counted in frames, not read from the clock: under
+		notimers (a default) psp_microseconds answers 0 */
+		static unsigned long calls = 0;
 
-		if (!mark)
-			mark = now;
-		if (now - mark >= 30000000UL)
+		if (++calls >= 900)
 		{
 			unsigned long frames = psp_points_stats.frames ? psp_points_stats.frames : 1;
 
-			mark = now;
+			calls = 0;
 			platform_psp_log("mepoints: over %lu frames, %lu points listed a frame; %lu hand-overs (%lu refused, %lu failed, %lu not begun by the loop's end: mepointsclaim) of %lu points: "
 				"the ME made %lu, the loops took %lu of them, made %lu here first, %lu changed since listed, %lu left to this CPU; "
 				"checked %lu, %lu differed; the slowest point the ME made about %lu us (kind %lu slot %lu), the longest first ray "
