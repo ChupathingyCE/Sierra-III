@@ -4062,9 +4062,11 @@ static int heartbeat_thread(SceSize args, void *argp)
 				/* build 87: the Media Engine's jobs (psp_me.c), every window */
 				extern void psp_me_report(void);
 				extern void psp_me_edram_probe(void);
+				extern void psp_me_vme_probe(void);
 
 				psp_me_report();
 				psp_me_edram_probe(); /* build 115: edramcheck */
+				psp_me_vme_probe(); /* vmetest (psp_vme.c) */
 			}
 			{
 				/* build 88: the learned textures, saved here during play (psp_tex.c) */

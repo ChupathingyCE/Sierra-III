@@ -34,10 +34,14 @@ int psp_me_music_yield(void);
 #define ME_JOB_GE 4 /* build 112: a run of the GE layer's waiting calls (psp_ge.c, "gemeon") */
 #define ME_JOB_EDRAM 5 /* build 115: fill or check a stretch of the ME's eDRAM (edramcheck) */
 /* 6: ME_JOB_SLANT, a ring job (below) */
+#define ME_JOB_VME 17 /* "vmetest": mcidclan's mat4x4 on the VME, checked (psp_vme.c; a measurement) */
 #define ME_JOB_SOUNDCOPY 11 /* "soundedram": staged sound pieces copied into the sound cache in eDRAM (psp_dsound.c) */
 
 int psp_me_start(void);
 int psp_me_running(void);
+/* psp_vme.c: the job (on the ME) and the heartbeat's probe ("vmetest") */
+void psp_vme_job(volatile unsigned int *args, volatile unsigned int *results, int on_me);
+void psp_me_vme_probe(void);
 void psp_me_stop(const char *why);
 int psp_me_run(int which, unsigned int type, const unsigned int *args, int arg_count, unsigned int *results,
 	unsigned int first_look_us);
