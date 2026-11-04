@@ -842,6 +842,12 @@ int psp_me_music_yield(void)
 }
 #endif
 
+/* the ME's cycles spent inside a slot job's yields on other work (the ring
+drained, a render job served): that time is counted in the slot job's own
+time and again in the ring's or the render slot's, so the busy share takes
+it off once (psp_me_report). Read through the uncached view, as nested_features is */
+static PSP_AIME_ME_SIDE unsigned int nested_cycles_total = 0;
+
 void psp_me_yield(void)
 {
 	volatile struct me_private *p;
@@ -864,8 +870,13 @@ void psp_me_yield(void)
 		/* inside the AI job, the ring stops at its word (the rest wait for
 		the ME's loop): a burst of ring jobs drained here ran 23 ms on b30
 		(41178529227), past the bound the collection gives the word */
-		p->ring_popped = me_ring_drain(p->ring_popped, &last_look,
-			aime_now ? &SLOT(ME_SLOT_AI)->args[ME_JOB_ARGS - 1] : NULL);
+		{
+			unsigned int begun = me_cycles();
+
+			p->ring_popped = me_ring_drain(p->ring_popped, &last_look,
+				aime_now ? &SLOT(ME_SLOT_AI)->args[ME_JOB_ARGS - 1] : NULL);
+			nested_cycles_total += me_cycles() - begun;
+		}
 		p->ring_last_look = last_look;
 		if (aime_now)
 			psp_aime_step(0);
@@ -907,6 +918,7 @@ void psp_me_yield_slots(void)
 		nested_features = CONTROL->features | 0x80000000u;
 		me_serve(slot, ME_AUDIO_SUMS);
 		ran = me_cycles() - begun;
+		nested_cycles_total += ran;
 		nested_renders++;
 		if (ran > nested_worst)
 			nested_worst = ran;
@@ -1654,6 +1666,7 @@ static void audio_look_next(unsigned long waited_us)
 }
 static unsigned long long report_mark = 0;
 static float busy_percent_last = 0.0f;
+static unsigned long long nested_us_last = 0;
 
 /* "mehalt" on this side. A wake is a kernel call (me-core's
 meLibEmitSoftwareInterrupt), so it is sent only to a halted ME, and again
@@ -4292,6 +4305,21 @@ void psp_me_report(void)
 		}
 		memset(&ring_stats, 0, sizeof(ring_stats));
 	}
+	/* the yields' nested work, counted in both the slot job's time and its
+	own (nested_cycles_total), taken off once; "mebusyold" keeps the old sum */
+	{
+		static unsigned int nested_seen = 0;
+		static int old_sum = -1;
+		unsigned int nested_now = *(volatile unsigned int *)((unsigned int)&nested_cycles_total | 0x40000000u);
+		unsigned long long nested_us = me_cycles_per_us > 0.0f ? (unsigned long long)((float)(nested_now - nested_seen) / me_cycles_per_us) : 0;
+
+		if (old_sum < 0)
+			old_sum = psp_keep("mebusyold") != 0;
+		nested_seen = nested_now;
+		if (!old_sum && me_state != 2)
+			busy_us_all = busy_us_all > nested_us ? busy_us_all - nested_us : 0;
+		nested_us_last = nested_us;
+	}
 	busy_percent_last = window ? (float)(100.0 * (double)busy_us_all / (double)window) : 0.0f;
 	if (me_halting && length < (int)sizeof(line) - 160)
 	{
@@ -4309,8 +4337,9 @@ void psp_me_report(void)
 		wakes_last = wakes;
 		wakes_sent = 0;
 	}
-	platform_log("ME: %s, %.1f%% busy over %.1f s%s", me_state == 1 ? "running" : me_state == 2 ? "SIMULATED (emulator)" :
-		"stopped", busy_percent_last, (double)window / 1e6, length ? line : "; no jobs");
+	platform_log("ME: %s, %.1f%% busy over %.1f s (work nested in a job's yields, counted once: %lu us)%s",
+		me_state == 1 ? "running" : me_state == 2 ? "SIMULATED (emulator)" : "stopped", busy_percent_last,
+		(double)window / 1e6, (unsigned long)nested_us_last, length ? line : "; no jobs");
 	if (ring_line[0])
 		platform_log("%s", ring_line);
 	if (me_state == 1 && stats[ME_SLOT_AUDIO].jobs)
