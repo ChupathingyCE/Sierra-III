@@ -1,6 +1,6 @@
 # Review: LIGHTFIRST, the objects' lighting before the model walk
 
-The drawing rebuild's stage 3, first slice (`docs/draw_rebuild.md`). Off by default; keep word `lightfirst`.
+The drawing rebuild's stage 3, first slice (`docs/draw_rebuild.md`). On by default (`keep_levers` in `psp/src/psp_platform.c`); off word `lightfirstoff`.
 
 ## What changed
 
@@ -23,4 +23,7 @@ Per object, the model walk runs about 20 KB of hot code lines: the lighting (`ob
 ## Proofs
 
 - Exact [E]: play and both seeds the same every tick on b30 (4,500 ticks), c10, c20 (3,600), d20 (2,700). The GE's work list by list is the same on b30 (2,280 lists), c20 and d20. On c10, two start-up lists differed. They differ between batches with the lever off too, so they aren't the lever's. Frames are within the off-vs-off control's spread.
-- Price: the PSP pair (b30 route, `- | lightfirst` x2). It's cache work, so the cache model's figure neither sizes it nor dismisses it.
+- As built, in the cache model [E]: the drawing's I-misses fall 5% on b30 and 14% on c10 (-0.4 and -1.0 ms a frame).
+- PSP-3000 pairs, `- | lightfirst` x2:
+  - c10 opening: drawing -1.0 ms (-3.0%, real) at game time 300-1500; frame -0.8 ms (-1.9%, real) and drawing -0.4 ms (-1.3%, real) at 1500-2700.
+  - b30 route: drawing -0.2 ms (-0.5%) on the flight and landing, at the floor; the frame is in the noise.
