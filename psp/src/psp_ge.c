@@ -9589,6 +9589,7 @@ static void __attribute__((cold)) stream_room_frame_end(void)
 }
 
 int psp_tex_bind(unsigned int key, int *has_alpha);
+int psp_tex_bind_texels(unsigned int key, int *has_alpha);
 int psp_tex_size(unsigned int key, int *width, int *height);
 void psp_tex_hud_note(unsigned int key); /* stripcensus */
 static unsigned long textured_draws = 0, flat_draws = 0;
@@ -19993,7 +19994,7 @@ void psp_ge_zoom_mask(unsigned int key, unsigned int strength)
 	transparent_flush();
 	if (list_full())
 		return;
-	if (!psp_tex_size(key, &width, &height) || !psp_tex_bind(key, NULL))
+	if (!psp_tex_size(key, &width, &height) || !psp_tex_bind_texels(key, NULL))
 	{
 		zoom_masks_missing++;
 		return;
@@ -20332,7 +20333,7 @@ static void screen_quad(void const *vertices, unsigned int key, short blend, flo
 		}
 		return;
 	}
-	if (!psp_tex_bind(key, &alpha))
+	if (!psp_tex_bind_texels(key, &alpha))
 		return;
 	psp_tex_hud_note(key);
 	{
@@ -23512,7 +23513,7 @@ static int blip_texture(unsigned int key, float *uv)
 {
 	int width, height, alpha, corner;
 
-	if (!key || !psp_tex_size(key, &width, &height) || !psp_tex_bind(key, &alpha))
+	if (!key || !psp_tex_size(key, &width, &height) || !psp_tex_bind_texels(key, &alpha))
 		return 0;
 	psp_tex_hud_note(key);
 	for (corner = 0; corner < 4; corner++)

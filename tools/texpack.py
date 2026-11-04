@@ -51,6 +51,12 @@ File layout (little endian):
     then count x u32: each texture's average colour (ABGR; 0 for one in its
     own colours), in directory order, as psp_tex_average used to sample it.
     Since bake format 2 every table above is written, empty or not
+  stand-ins, right after the averages: 'TSI1', u32 count (the textures'),
+    then count x 16 u16: each texture's 4 x 4 stand-in as a CLUT4 palette,
+    row by row (5650, or 4444 for a texture with alpha; all 0 for one in its
+    own colours), in directory order. The game draws it (keep word texavg)
+    while the texture itself isn't in memory. A build that reads only up to
+    'TAV1' never looks at it
   glow maps: directory entries keyed by a self-illuminated model shader's
     tag address | 2 (glow_looks), beside the bitmaps' keys; entries with the
     same texels share their data
@@ -2143,6 +2149,66 @@ def runtime_reads(entries):
     return struct.pack('<4sI', b'TAV1', len(averages)) + struct.pack('<%dI' % len(averages), *averages)
 
 
+def standin(e):
+    """a texture's 4 x 4 stand-in (the 'TSI1' table): its top level cut into
+    a 4 x 4 grid of blocks, each block's average as one 16-bit colour, the
+    sixteen in row order. A texture with alpha keeps each block's mean alpha
+    and the mean colour of its texels weighted by their alpha, so the
+    see-through texels' colour (often black) doesn't darken the visible
+    ones. Halo's cut-outs (foliage, grates) are near 0 or 255 and drawn with
+    the alpha test at half, so a block passes where at least half its texels
+    do: a coarse shape of the cut-out, not a solid card; blended textures
+    keep their mean opacity. 4444 for those, 5650 otherwise: 32 bytes a
+    texture, the least the GE can load as a palette"""
+    levels, words = read_levels(e)
+    w, h = e['w'], e['h']
+    top = levels[0][:h, :w]
+    c = words[top].astype(np.int64)
+    if e['alpha']:
+        rgba = np.stack([c & 0xFF, (c >> 8) & 0xFF, (c >> 16) & 0xFF, (c >> 24) & 0xFF], 2).astype(np.float64)
+    else:
+        rgba = np.stack([(c & 31) * 255 / 31, ((c >> 5) & 63) * 255 / 63, (c >> 11) * 255 / 31,
+                         np.full(c.shape, 255)], 2).astype(np.float64)
+    out = []
+    for by in range(4):
+        # a texture under 4 texels a side repeats its texels across the blocks
+        y0 = by * h // 4
+        y1 = max(y0 + 1, (by + 1) * h // 4)
+        for bx in range(4):
+            x0 = bx * w // 4
+            x1 = max(x0 + 1, (bx + 1) * w // 4)
+            block = rgba[y0:y1, x0:x1].reshape(-1, 4)
+            a = block[:, 3]
+            if e['alpha'] and a.sum() > 0:
+                rgb = (block[:, :3] * a[:, None]).sum(0) / a.sum()
+            else:
+                rgb = block[:, :3].mean(0)
+            alpha = a.mean()
+            if e['alpha']:
+                q = [int(round(v * 15 / 255)) for v in (rgb[0], rgb[1], rgb[2], alpha)]
+                out.append(q[0] | q[1] << 4 | q[2] << 8 | q[3] << 12)
+            else:
+                out.append(int(round(rgb[0] * 31 / 255)) | int(round(rgb[1] * 63 / 255)) << 5 |
+                           int(round(rgb[2] * 31 / 255)) << 11)
+    return out
+
+
+def standins(entries):
+    """the 'TSI1' table's bytes: every paletted texture's stand-in
+    (standin), in directory order; zeros for one in its own colours (the
+    showcase's, which the game never stands in for)"""
+    out = bytearray(struct.pack('<4sI', b'TSI1', len(entries)))
+    made = 0
+    for e in entries:
+        if e['psm'] in (4, 5):
+            out += struct.pack('<16H', *standin(e))
+            made += 1
+        else:
+            out += bytes(32)
+    print('stand-ins (texavg): %d of %d textures, %d KB' % (made, len(entries), (len(out) - 8) // 1024), file=sys.stderr)
+    return bytes(out)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('map')
@@ -2621,6 +2687,7 @@ def main():
     tint_bytes += struct.pack('<4sI', b'TNC1', len(composites)) + b''.join(
         struct.pack('<II', address, composites[address]) for address in sorted(composites))
     tint_bytes += runtime_reads(entries)
+    tint_bytes += standins(entries)
     header = 12
     directory = 20 * len(entries)
     offset = (header + directory + len(tint_bytes) + 15) // 16 * 16
