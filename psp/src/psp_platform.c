@@ -3563,9 +3563,15 @@ frame end), for the emulator's cache models to split their counts by
 (PSP_DCACHE_PHASE; tools/ppsspp_local_patches.diff) */
 volatile int psp_current_phase = 0;
 
+/* gebusy2's phase ring (psp_ge.c): the GE's busy time split by phase */
+extern volatile int psp_ge_phase_ring_on;
+void psp_ge_phase_mark(int phase);
+
 void psp_phase(int phase)
 {
 	psp_current_phase = phase;
+	if (psp_ge_phase_ring_on)
+		psp_ge_phase_mark(phase);
 	/* "lanetrace" (psp_lanetrace.c) */
 	PSP_LANE(PSP_LANE_PHASE, 0, sceKernelGetSystemTimeLow(), 0, (unsigned int)phase);
 	if (hwprofile_running)
