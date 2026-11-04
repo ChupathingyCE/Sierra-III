@@ -226,3 +226,26 @@ Each PE has a second unit behind its primary. It is fed from the staging latch (
 The register map, the wipe and configuration sequence, the context layout and every opcode tried are mcidclan's (m-c/d), MIT, from https://github.com/mcidclan/psp-media-engine-custom-core and https://github.com/mcidclan/psp-virtual-mobile-engine-ext. The colour-space converter's registers are from https://github.com/mcidclan/me-vme-hardware-csc (MIT). The secondary unit's chain is his saturate-clamp-second-fu sample (psp-virtual-mobile-engine-ext 15884a0, MIT), and the saturator's field is from his datapath notes (https://github.com/mcidclan/psp-media-engine-cracking-the-unknown f921778, MIT). The AVC power sequence is read from uofw's me_wrapper (https://github.com/uofw/uofw 28306bb).
 
 His repositories accept no AI-attributed pull requests, so nothing from this work goes upstream to them. The measurements and the Phat's differences above are ours, to share with him by hand if Sheepdog01 chooses.
+
+## 8. Sizing: the world light pass on the VME (recon, 2026-11-04)
+
+The question (the lab's master, 2026-11-04 14:55, item 5): could the VME take the world light pass's per-vertex work off the ME, and how much of d20's ME time would that free, end to end with the transfers? A sizing from the figures above and ledger 2 (`capacity_model.md`). Nothing was built or benched for it.
+
+**The work.** On d20's heavy hands-off view the pass looks at ~8,400 triangles a frame on the PSP and lights ~31% of them. The emulator counted 1,468 looked and 449 lit, but undercounts ~8× there (B58) [U on E, ledger 2 §2]. The ME's render job is ~65 ms a frame on that view, and the main CPU waits 14–17 ms a frame for it [M, `cpu_cost_map.md` §1]. The pass's own ME time on today's build hasn't been measured; LM's 15.1 ms is from an earlier build.
+
+**On the VME, per lit corner** (element-wise, 24-bit fixed point relative to the light; positions within the light's reach fit easily) [U on M, this page's figures]:
+- **Compute:** distance squared (a MAC over three vectors), the falloff `(1 - d²/r²)²`, the facing term `n·d / |d|`, and the clamp. There is no lookup and no divide, so `1/|d|` takes a Newton step from a polynomial seed over the known range `0 < d² ≤ r²`. That is about 12–15 dependent passes: at n = 2,048 elements a pass (56 + 2n cycles), ~30 VME cycles an element.
+- **Feed:** writes into the VME's buffers are dropped during a pass (§7), so feeding is serial. Six input words a corner (position and normal) from eDRAM by the VME's DMAC at 12.09 cycles a word is ~73 cycles; one to three output words at 2.70 is ~3–8. Staging main RAM → eDRAM by DMACplus overlaps (88 MB/s, `dma_engines.md`).
+- **Total:** ~105–110 cycles of VME and DMAC time a lit corner, beside the ME's CPU (§6: the ME's CPU loses nothing during a pass or a DMAC transfer).
+
+**On the ME, what's removed and what's added** [U]:
+- **Removed:** the per-corner falloff, facing and colour on the lit ~31%. At roughly half of a corner's all-in cost (~200 ME cycles a corner, if the pass is ~15 ms of ME over ~25,000 corners), that's ~100 cycles × ~7,800 lit corners ≈ 0.8 M cycles, **~2.3 ms of ME a frame**.
+- **Added:** the gather. The lit corners are scattered by index through the level's vertex buffers in main RAM; neither DMA engine gathers by index (the VME DMAC's 2-D mode is strided, `dma_engines.md`), so the ME's CPU packs six words a corner at 8.6–10.5 cycles a word: ~60 cycles × 7,800 ≈ 0.47 M cycles, **~1.4 ms**. Plus a context (~709 cycles) a light and the triggers and polls.
+- **Net: about 1 ms of ME a frame on d20's heavy view at best**, for ~2.6 ms of VME time beside it. Elsewhere it's less: b30's bunker flashlight lights ~0 triangles a frame, and the swamp's flashlight 14.
+
+**Verdict: a poor fit.**
+- The serial feed and the index gather eat most of what the VME's speed would save.
+- The large share of the pass is static lights on static geometry: ~85% of d20's swamp light-frames are static [E, ledger 2]. LMC removes that work outright by keeping each static light's result across frames, without the VME or a transfer, and is ranked first (ledger 2 §4).
+- What remains for the VME is dynamic lights on level geometry, which is small on every stretch measured.
+- The VME would pay here only if the corners' light-relative data stayed resident across frames (a dynamic light over static geometry, with its data in eDRAM). The 48 KB of buffers holds ~2,700 corners at six words each, so that's one light's lit set at most.
+- **No bench is proposed.** If one is wanted to confirm the per-corner figure, it is one PSP-1000 run timing the kernel's pass chain over 2,048 elements fed from eDRAM.
