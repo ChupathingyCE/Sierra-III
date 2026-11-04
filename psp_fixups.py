@@ -45149,7 +45149,8 @@ static void psp_wx_report(long now)
 # guard that already has the shout when its prop goes: the guard is set up as
 # before (the transition, the point where the body lay), with no shout. Play
 # without it is unchanged: the branch is reached only with a prop of NONE,
-# which the engine never gives it
+# which the engine never gives it. "shoutcensus" (recon) and "shoutforce" (a
+# test that deletes the waiting bodies) are its repro, in ai.c
 FIXES_PROPCRASH = {}
 FIXES_PROPCRASH["source/ai/action_guard.c#propcrash"] = [
 ("""/* ---------- public code */
@@ -45226,11 +45227,87 @@ FIXES_PROPCRASH["source/ai/ai.c#propcrash"] = [
 	{
 		/* psp_fixups.py (FIXES_PROPCRASH, "shoutnone"): action_guard.c */
 		extern void psp_guard_initialize_for_new_map(void);
+		extern void psp_guard_census_initialize(void);
 
 		psp_guard_initialize_for_new_map();
+		psp_guard_census_initialize();
 	}
 #endif
 """),
+("""void ai_update(
+	void)
+{""",
+ """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_PROPCRASH): "shoutcensus" (recon) counts the
+found-body transitions still waiting for their decision when a tick's
+ai_update ends, where the engine has none (actor_decision_loop clears every
+stimulus in the update that made it). "shoutforce" (a test, with the
+census) deletes each such body's unit there, as garbage collection may
+before the next ai_update, so the decision meets the transition's prop gone */
+int psp_keep(const char *name);
+void platform_psp_log(const char *format, ...);
+
+static boolean psp_guard_census = FALSE, psp_guard_force = FALSE;
+static unsigned long psp_guard_waiting = 0, psp_guard_forced = 0;
+static long psp_guard_census_logged = NONE;
+
+void psp_guard_census_initialize(
+	void)
+{
+	static boolean read = FALSE;
+
+	if (!read)
+	{
+		read = TRUE;
+		psp_guard_force = psp_keep("shoutforce") != 0;
+		psp_guard_census = psp_guard_force || psp_keep("shoutcensus") != 0;
+		if (psp_guard_census)
+			platform_psp_log("ai: found-body transitions waiting at a tick's end counted (shoutcensus)%s",
+				psp_guard_force ? "; their bodies deleted there (shoutforce, a test)" : "");
+	}
+}
+
+/* the end of ai_update, on the main CPU, before objects_update */
+static void psp_guard_tick_end(
+	void)
+{
+	struct actor_iterator iterator;
+	struct actor_datum *actor;
+	long now;
+
+	if (!psp_guard_census)
+		return;
+	actor_iterator_new(&iterator, TRUE);
+	while ((actor = actor_iterator_next(&iterator)) != NULL)
+	{
+		if (actor->stimuli.combat_transition != 2)
+			continue;
+		psp_guard_waiting++;
+		if (psp_guard_force && actor->stimuli.combat_transition_prop_index != NONE)
+		{
+			long unit_index = prop_get(actor->stimuli.combat_transition_prop_index)->unit_index;
+
+			if (unit_index != NONE)
+			{
+				psp_guard_forced++;
+				object_delete(unit_index);
+			}
+		}
+	}
+	now = game_time_get();
+	if (psp_guard_census_logged == NONE || now < psp_guard_census_logged || now - psp_guard_census_logged >= 900)
+	{
+		if (psp_guard_census_logged != NONE)
+			platform_psp_log("ai: shoutcensus: game time %ld | found-body transitions waiting at a tick's end %lu; bodies deleted there %lu",
+				now, psp_guard_waiting, psp_guard_forced);
+		psp_guard_census_logged = now;
+	}
+}
+#endif
+
+void ai_update(
+	void)
+{"""),
 ("""	profile_enter(ai_update_section);
 """,
  """	profile_enter(ai_update_section);
@@ -45242,6 +45319,17 @@ FIXES_PROPCRASH["source/ai/ai.c#propcrash"] = [
 		psp_guard_report();
 	}
 #endif
+"""),
+("""	profile_exit(ai_update_section);
+""",
+ """#ifdef HALO_PSP
+	if (update_ai)
+	{
+		/* psp_fixups.py (FIXES_PROPCRASH, "shoutcensus"): above */
+		psp_guard_tick_end();
+	}
+#endif
+	profile_exit(ai_update_section);
 """),
 ]
 
