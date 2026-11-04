@@ -45186,6 +45186,19 @@ void psp_guard_initialize_for_new_map(
 	}
 }
 
+/* the decision met the transition's prop gone: counted, and logged where a
+log may be written (not in the ME's pass); TRUE sets the shout up anyway */
+static boolean psp_guard_prop_gone(
+	long actor_index)
+{
+	psp_guard_shouts_gone++;
+	if (!psp_work_on_me())
+		platform_psp_log("ai: game time %ld | actor %08lx: a found body's prop gone before the decision took it up%s",
+			game_time_get(), actor_index,
+			psp_guard_shoutnone ? " (shoutnone: the shout set up about NONE)" : "; the guard set up without the shout");
+	return psp_guard_shoutnone;
+}
+
 /* each ai_update on the main CPU: a line when the count moves (rare) */
 void psp_guard_report(
 	void)
@@ -45211,7 +45224,7 @@ action_guard_setup_current_position("""),
 		waited for this decision: no shout, as action_guard_replace_prop
 		leaves a guard whose prop goes */
 		&& (actor->stimuli.combat_transition_prop_index != NONE ||
-			(psp_guard_shouts_gone++, psp_guard_shoutnone))
+			psp_guard_prop_gone(actor_index))
 #endif
 		)
 	{
@@ -45247,6 +45260,8 @@ before the next ai_update, so the decision meets the transition's prop gone */
 int psp_keep(const char *name);
 void platform_psp_log(const char *format, ...);
 
+boolean psp_aicad_rest(long actor_index); /* actors.c */
+
 static boolean psp_guard_census = FALSE, psp_guard_force = FALSE;
 static unsigned long psp_guard_waiting = 0, psp_guard_forced = 0;
 static long psp_guard_census_logged = NONE;
@@ -45280,18 +45295,21 @@ static void psp_guard_tick_end(
 	actor_iterator_new(&iterator, TRUE);
 	while ((actor = actor_iterator_next(&iterator)) != NULL)
 	{
+		long prop_index = actor->stimuli.combat_transition_prop_index;
+		long unit_index = NONE;
+
 		if (actor->stimuli.combat_transition != 2)
 			continue;
 		psp_guard_waiting++;
-		if (psp_guard_force && actor->stimuli.combat_transition_prop_index != NONE)
+		if (prop_index != NONE)
+			unit_index = prop_get(prop_index)->unit_index;
+		platform_psp_log("ai: shoutcensus: game time %ld | actor %08lx waits with a found body (prop %08lx, unit %08lx); resting this tick %d (aicad)%s",
+			game_time_get(), iterator.index, prop_index, unit_index, (int)psp_aicad_rest(iterator.index),
+			psp_guard_force && unit_index != NONE ? "; its unit deleted (shoutforce)" : "");
+		if (psp_guard_force && unit_index != NONE)
 		{
-			long unit_index = prop_get(actor->stimuli.combat_transition_prop_index)->unit_index;
-
-			if (unit_index != NONE)
-			{
-				psp_guard_forced++;
-				object_delete(unit_index);
-			}
+			psp_guard_forced++;
+			object_delete(unit_index);
 		}
 	}
 	now = game_time_get();
