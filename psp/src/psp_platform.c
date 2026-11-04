@@ -1552,7 +1552,16 @@ unsigned long psp_sound_cache_bytes(void)
 
 	if (!bytes)
 	{
-		int kb = psp_keep_number("sound", SOUND_CACHE_DEFAULT_KB);
+		int kb = psp_keep_number("sound", SOUND_CACHE_DEFAULT_KB), grown = 0;
+
+		/* "musadpcm"'s full-rate music needs room the halved music doesn't
+		(d20 refused 220 -> 420 loads in 300 s); with "sndedram" the tier's
+		656 KB leave the heap, so 256 KB of them go back to the cache
+		(d20 99 refused, a10 0) and the heap still keeps ~270 KB of the tier's
+		gain. Only then: without the full-rate music the heap stays as it is */
+		if (kb == SOUND_CACHE_DEFAULT_KB && psp_keep("musadpcm") && psp_keep("sndedram") &&
+			!psp_keep("soundedram") && !psp_keep("musroomoff"))
+			kb += 256, grown = 1;
 
 		/* "soundedram" (psp_dsound.c): the eDRAM's room at most */
 		extern unsigned long psp_sound_edram_bytes(void);
@@ -1580,7 +1589,8 @@ unsigned long psp_sound_cache_bytes(void)
 		if (room && bytes > room)
 			bytes = room;
 		platform_log("sound cache: %lu KB (%s)", bytes / 1024,
-			room ? "soundedram: the ME's eDRAM" : kb == SOUND_CACHE_DEFAULT_KB ? "the default" : "keep.txt's sound word");
+			room ? "soundedram: the ME's eDRAM" : grown ? "the default + 256 KB for musadpcm's music (musroom)" :
+			kb == SOUND_CACHE_DEFAULT_KB ? "the default" : "keep.txt's sound word");
 	}
 	return bytes;
 }
