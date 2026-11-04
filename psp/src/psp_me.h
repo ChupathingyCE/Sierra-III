@@ -145,6 +145,27 @@ ME's stack never reached below 1,984 KB (edramcheck over the ten-map ladder),
 so 128 KB stays its, twice the reach measured */
 #define ME_EDRAM_SOUND 0x40000u
 #define ME_EDRAM_SOUND_END 0x1E0000u
+/* "sndedram": the sound cache's last pages (docs/plan_sound_edram.md), in
+the room the layout plan leaves free above MIST's reserve, PDC and
+MEVGATHER, up to AIME's data. Moving the tier is these two lines */
+#define ME_EDRAM_SNDTIER 0xC8000u
+#define ME_EDRAM_SNDTIER_END ME_EDRAM_AIME_DATA
+/* ME_JOB_SOUNDCOPY's check hash, word by word, the same on both CPUs */
+#define PSP_ME_HASH_START 0x811C9DC5u
+static inline unsigned int psp_me_hash(unsigned int hash, unsigned int word)
+{
+	return (hash ^ word) * 0x01000193u;
+}
+
+/* DMACplus, from the main CPU (bench/halo_bench15 proved the path on the
+PSP-1000): one descriptor between main RAM and the eDRAM at offset
+edram_offset, bytes a multiple of 16 up to 65,520, both ends 16-aligned. The
+caller writes main RAM's cache back before a transfer into the eDRAM, and
+drops it after one out of it. Waits at most timeout_us; 0 when done, -1 the
+channel busy, -2 the controller off, -3 timed out (stopped), -4 an error
+reported, -5 refused (the arguments, or no ME on this PSP). us: how long */
+int psp_me_dma_edram(int into_edram, void *main_ram, unsigned int edram_offset, unsigned int bytes,
+	unsigned int timeout_us, unsigned int *us);
 
 /* On the ME, inside a long job: an audio block waiting is mixed now and,
 from a slot job (not from inside a ring job), the ring's waiting jobs run.

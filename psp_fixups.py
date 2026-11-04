@@ -34073,6 +34073,267 @@ void sound_cache_idle(
 ]
 
 
+# ---------- FIXES_SNDEDRAM: SNDEDRAM2, the sound cache's last pages in the
+# Media Engine's eDRAM ("sndedram", psp_dsound.c; docs/plan_sound_edram.md).
+# The cache keeps its size and its placement; its pages past the main tier are
+# the eDRAM's. lruv_cache.c gets a fence at the boundary, so no block spans
+# the two (a hole is cut there as at a locked block, and a free run that
+# crosses it is two runs); once the tier is closed (the eDRAM lost) nothing
+# past the fence is offered at all. xbox_sound_cache.c maps a block's address
+# into the tier, sends a tier load through the staging, and can give a tier
+# sound up; sound_dsound_xbox.c's check before it queues a sound takes either
+# tier. With the word off the fence is never set, every address is the
+# engine's, and the check is the engine's own
+FIXES_SNDEDRAM = {}
+FIXES_SNDEDRAM["source/memory/lruv_cache.c#sndedram"] = [
+("""struct lruv_cache *psp_lruv_high_cache = NULL;
+#define PSP_LRUV_HIGH_PAGES 8
+""",
+ """struct lruv_cache *psp_lruv_high_cache = NULL;
+#define PSP_LRUV_HIGH_PAGES 8
+/* "sndedram" (xbox_sound_cache.c sets them): the cache whose pages from the
+fence on are another memory's, and whether those are closed */
+struct lruv_cache *psp_lruv_fence_cache = NULL;
+long psp_lruv_fence_page = 0;
+int psp_lruv_fence_closed = 0;
+"""),
+("""		struct lruv_cache_block *block;
+
+		if (block_index == NONE)
+		{
+			run += cache->page_count - page;
+			break;
+		}
+		block = datum_get(cache->blocks, block_index);
+		if (page < block->first_page_index)
+		{""",
+ """		struct lruv_cache_block *block;
+		long psp_next = block_index == NONE ? cache->page_count :
+			((struct lruv_cache_block *)datum_get(cache->blocks, block_index))->first_page_index;
+
+		if (cache == psp_lruv_fence_cache && page == psp_lruv_fence_page)
+		{
+			if (run > best)
+				best = run;
+			run = 0;
+			if (psp_lruv_fence_closed)
+				break;
+		}
+		if (cache == psp_lruv_fence_cache && page < psp_lruv_fence_page && psp_next > psp_lruv_fence_page)
+		{
+			run += psp_lruv_fence_page - page;
+			page = psp_lruv_fence_page;
+			continue;
+		}
+		if (block_index == NONE)
+		{
+			run += cache->page_count - page;
+			break;
+		}
+		block = datum_get(cache->blocks, block_index);
+		if (page < block->first_page_index)
+		{"""),
+# the window's search: at the fence, the holes so far are cut (as a locked
+# block cuts them, but the hole that starts at the fence is kept)
+("""			while (page_index < cache->page_count)
+			{
+				locked = FALSE;
+
+				if (NEXT_HOLE_INDEX(hole_write_index) != hole_read_index)""",
+ """			while (page_index < cache->page_count)
+			{
+				locked = FALSE;
+
+				if (cache == psp_lruv_fence_cache && page_index == psp_lruv_fence_page)
+				{
+					if (psp_lruv_fence_closed)
+					{
+						page_index = cache->page_count;
+						break;
+					}
+					hole_read_index = hole_write_index;
+					psp_front = psp_back = 0;
+				}
+				if (NEXT_HOLE_INDEX(hole_write_index) != hole_read_index)"""),
+# a free run that crosses the fence ends at it (blocks never cross it)
+("""				if (locked)
+				{
+					hole_read_index = hole_write_index;
+					psp_front = psp_back = 0;""",
+ """				if (cache == psp_lruv_fence_cache && page_index > psp_lruv_fence_page &&
+					page_index - page_count < psp_lruv_fence_page)
+				{
+					page_count -= page_index - psp_lruv_fence_page;
+					page_index = psp_lruv_fence_page;
+				}
+				if (locked)
+				{
+					hole_read_index = hole_write_index;
+					psp_front = psp_back = 0;"""),
+# the engine's own search, the same two
+("""	while (page_index < cache->page_count)
+	{
+		locked = FALSE;
+
+		if (NEXT_HOLE_INDEX(hole_write_index) != hole_read_index)""",
+ """	while (page_index < cache->page_count)
+	{
+		locked = FALSE;
+
+#ifdef HALO_PSP
+		if (cache == psp_lruv_fence_cache && page_index == psp_lruv_fence_page)
+		{
+			if (psp_lruv_fence_closed)
+			{
+				page_index = cache->page_count;
+				break;
+			}
+			hole_read_index = hole_write_index;
+		}
+#endif
+		if (NEXT_HOLE_INDEX(hole_write_index) != hole_read_index)"""),
+("""		if (locked)
+			hole_read_index = hole_write_index;
+		else
+		{
+			hole_index = hole_read_index;""",
+ """#ifdef HALO_PSP
+		if (cache == psp_lruv_fence_cache && page_index > psp_lruv_fence_page &&
+			page_index - page_count < psp_lruv_fence_page)
+		{
+			page_count -= page_index - psp_lruv_fence_page;
+			page_index = psp_lruv_fence_page;
+		}
+#endif
+		if (locked)
+			hole_read_index = hole_write_index;
+		else
+		{
+			hole_index = hole_read_index;"""),
+]
+FIXES_SNDEDRAM["source/cache/xbox_sound_cache.c#sndedram"] = [
+("""		if (!psp_keep("nosoundplace"))
+			psp_lruv_high_cache = xbox_sound_cache_globals.cache;
+	}
+#endif""",
+ """		if (!psp_keep("nosoundplace"))
+			psp_lruv_high_cache = xbox_sound_cache_globals.cache;
+	}
+	{
+		extern struct lruv_cache *psp_lruv_fence_cache;
+		extern long psp_lruv_fence_page;
+		extern int psp_lruv_fence_closed;
+		extern long psp_sound_tier_fence_page(void);
+		long fence = psp_sound_tier_fence_page();
+
+		psp_lruv_fence_cache = fence > 0 ? xbox_sound_cache_globals.cache : NULL;
+		psp_lruv_fence_page = fence;
+		psp_lruv_fence_closed = 0;
+	}
+#endif"""),
+("""				xbox_sound_cache_globals.cache,
+				cache_block_index);
+		new_cache_sound_index = datum_new_at_index(""",
+ """				xbox_sound_cache_globals.cache,
+				cache_block_index);
+#ifdef HALO_PSP
+		{
+			extern void *psp_sound_tier_address(void *address);
+
+			cache_address = psp_sound_tier_address(cache_address);
+		}
+#endif
+		new_cache_sound_index = datum_new_at_index("""),
+("""		if (psp_sound_edram_mode())
+			psp_sound_upload_start(sound->cache_tag_index, sound->samples.file_offset, sound->samples.size,
+				cache_address, &cache_sound->loaded, cache_sound, cache_sound->identifier, sound);""",
+ """		extern int psp_sound_tier_holds(const void *address);
+		extern void psp_sound_upload_begin(long tag_index, long file_offset, long size, void *dest, byte *loaded,
+			void *datum, short identifier, void *sound, long block_index);
+
+		if (psp_sound_tier_holds(cache_address))
+			psp_sound_upload_begin(sound->cache_tag_index, sound->samples.file_offset, sound->samples.size,
+				cache_address, &cache_sound->loaded, cache_sound, cache_sound->identifier, sound, cache_block_index);
+		else if (psp_sound_edram_mode())
+			psp_sound_upload_start(sound->cache_tag_index, sound->samples.file_offset, sound->samples.size,
+				cache_address, &cache_sound->loaded, cache_sound, cache_sound->identifier, sound);"""),
+("""	return cache_sound->identifier == identifier && cache_sound->sound == sound &&
+		(unsigned long)((struct sound_permutation *)sound)->cache_base_address == address;
+}
+#endif""",
+ """	return cache_sound->identifier == identifier && cache_sound->sound == sound &&
+		(unsigned long)((struct sound_permutation *)sound)->cache_base_address == address;
+}
+
+/* "sndedram": a tier sound's block given up when nothing plays or loads it
+(the cache's own test), as a hole search would push it out; 1 if it went */
+int psp_sound_cache_drop(long block_index)
+{
+	struct xbox_cache_sound_datum *cache_sound;
+
+	if (block_index == NONE || !xbox_sound_cache_globals.cache_sounds)
+		return 0;
+	cache_sound = datum_try_and_get(xbox_sound_cache_globals.cache_sounds, block_index);
+	if (!cache_sound || sound_cache_locked_block_proc(block_index))
+		return 0;
+	lruv_block_delete(xbox_sound_cache_globals.cache, block_index);
+	return 1;
+}
+
+/* the closed tier (its memory lost): each of its sounds that nothing plays or
+loads given up; the ones left in it */
+long psp_sound_tier_drain(unsigned long low, unsigned long high)
+{
+	extern unsigned long psp_sound_tier_drained;
+	struct data_iterator iterator;
+	struct xbox_cache_sound_datum *cache_sound;
+	long left = 0;
+
+	if (!xbox_sound_cache_globals.cache_sounds)
+		return 0;
+	data_iterator_new(&iterator, xbox_sound_cache_globals.cache_sounds);
+	while ((cache_sound = data_iterator_next(&iterator)) != NULL)
+	{
+		unsigned long at = cache_sound->sound ? (unsigned long)cache_sound->sound->cache_base_address : 0;
+
+		if (at < low || at >= high)
+			continue;
+		if (psp_sound_cache_drop(iterator.datum_index))
+			psp_sound_tier_drained++;
+		else
+			left++;
+	}
+	return left;
+}
+#endif"""),
+]
+FIXES_SNDEDRAM["source/sound/sound_dsound_xbox.c#sndedram"] = [
+("""			if ((byte *)xbox_pointer(channel->playing_permutation->cache_base_address)>=
+					(byte *)physical_memory_get_sound_cache_base_address() &&
+				channel->playing_permutation->samples.size>=0 &&
+				channel->playing_permutation->samples.size<=SOUND_CACHE_SIZE &&
+				(unsigned long)((byte *)xbox_pointer(channel->playing_permutation->cache_base_address)-
+					(byte *)physical_memory_get_sound_cache_base_address())<=
+					(unsigned long)(SOUND_CACHE_SIZE-channel->playing_permutation->samples.size) &&""",
+ """#ifdef HALO_PSP
+			/* the cache's main tier or its tier in the eDRAM ("sndedram",
+			psp_dsound.c), one of the two entirely */
+			extern int psp_sound_cache_holds(const void *address, long size);
+
+			if (psp_sound_cache_holds(xbox_pointer(channel->playing_permutation->cache_base_address),
+					channel->playing_permutation->samples.size) &&
+#else
+			if ((byte *)xbox_pointer(channel->playing_permutation->cache_base_address)>=
+					(byte *)physical_memory_get_sound_cache_base_address() &&
+				channel->playing_permutation->samples.size>=0 &&
+				channel->playing_permutation->samples.size<=SOUND_CACHE_SIZE &&
+				(unsigned long)((byte *)xbox_pointer(channel->playing_permutation->cache_base_address)-
+					(byte *)physical_memory_get_sound_cache_base_address())<=
+					(unsigned long)(SOUND_CACHE_SIZE-channel->playing_permutation->samples.size) &&
+#endif"""),
+]
+
+
 # ---------- FIXES_DECALFADE: dynamic decals fade out and go after a while
 # The engine already ages a decal by its tag's lifetime: decal_update, run
 # for every decal each drawn frame, fades its intensity over the last
@@ -45352,7 +45613,7 @@ void ai_update(
 ]
 
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items()) + list(FIXES_AIME2A.items()) + (list(FIXES_STACKHOT.items()) if STACKHOT else []) + (list(FIXES_STACKHOT2.items()) if STACKHOT2 else []) + list(FIXES_PWSL.items()) + list(FIXES_SPHSL.items()) + list(FIXES_RECONLIST.items()) + list(FIXES_TP1.items()) + list(FIXES_WXDEAD.items()) + list(FIXES_AIMEMOVE.items()) + list(FIXES_PROPCRASH.items())):
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items()) + list(FIXES_AIME2A.items()) + (list(FIXES_STACKHOT.items()) if STACKHOT else []) + (list(FIXES_STACKHOT2.items()) if STACKHOT2 else []) + list(FIXES_PWSL.items()) + list(FIXES_SPHSL.items()) + list(FIXES_RECONLIST.items()) + list(FIXES_TP1.items()) + list(FIXES_WXDEAD.items()) + list(FIXES_AIMEMOVE.items()) + list(FIXES_PROPCRASH.items()) + list(FIXES_SNDEDRAM.items())):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
