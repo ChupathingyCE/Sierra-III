@@ -4,7 +4,7 @@ This guide takes you from a PSP and your own Halo: Combat Evolved disc for the o
 
 Sierra-III contains nothing from the game. You bake the maps yourself, from your own disc, on your own PC. Never download game files, and never share the ones you bake.
 
-These steps are for **release b149**. It is the campaign only: multiplayer isn't part of it (step 7).
+These steps are for **release b150**. It is the campaign only: multiplayer isn't part of it (step 7).
 
 ## The short version
 
@@ -15,7 +15,7 @@ These steps are for **release b149**. It is the campaign only: multiplayer isn't
 5. Copy what it made to the root of the Memory Stick (step 5).
 6. On the PSP: Game, Memory Stick, Sierra-III: Halo CE port (step 6).
 
-**What to expect:** the whole campaign plays, but only the lightest levels run near full speed. Most run between 12 and 20 frames a second and the heaviest, *The Silent Cartographer*, about 6 (step 6, "What to expect"). It is a work in progress.
+**What to expect:** the whole campaign plays, but only the lightest levels run near full speed. Most run between 13 and 21 frames a second and the heaviest, *The Silent Cartographer*, about 8 (step 6, "What to expect"). It is a work in progress.
 
 **Commands** are for a terminal on Linux or macOS (bash, zsh or dash all work). On Windows, each step says what to do in File Explorer or the Command Prompt instead. Three names stand for paths on your machine:
 - `$STICK`: where your PSP's Memory Stick is mounted (step 1, "Finding `$STICK`", shows how to find it).
@@ -30,9 +30,9 @@ These steps are for **release b149**. It is the campaign only: multiplayer isn't
 4. **Your Halo disc** for the original Xbox, **NTSC, version 01.10.12.2276**, as a disc image (step 3). Other versions and languages aren't supported yet: the bake refuses them rather than guess (step 3).
 5. **A PC to bake on**, any one of:
    - Windows 10 or 11 (x86-64);
-   - Linux (x86-64) with **glibc 2.39 or later**: Ubuntu 24.04, Debian 13, Fedora 40, or a current rolling release such as Arch. Older systems can't run b149's Linux bake tool; a build for older ones is planned.
+   - Linux (x86-64) with **glibc 2.39 or later**: Ubuntu 24.04, Debian 13, Fedora 40, or a current rolling release such as Arch. Older systems can't run b150's Linux bake tool; a build for older ones is planned.
 
-   b149 has no macOS bake tool. Bake on a Windows or Linux PC (a virtual machine will do), then copy the result to the stick from your Mac (step 5).
+   b150 has no macOS bake tool. Bake on a Windows or Linux PC (a virtual machine will do), then copy the result to the stick from your Mac (step 5).
 
    The bake uses the computer's own **Python** if it is 3.9 to 3.14; if there is none, it asks to download a portable one into its own folder. It needs the internet the first time.
 6. **About 8 GB free on the PC** while the bake runs. The result is about 2.2 GB (the campaign and the menus); the rest is the bake's working files, which it deletes as it goes. The 8 GB is a safe estimate: the bake says how much it needs before it starts, and stops if the drive hasn't that much free.
@@ -78,16 +78,16 @@ The bake reads your disc's files out of an image you made. It takes any of these
 
 The bake turns your disc's maps into the files the PSP reads: each map rebuilt for the PSP's memory, plus its texture, geometry and wall-decal packs. It reads the loading screen's chant out of the disc's `default.xbe`, adds a clip of your disc's music to the game as the sound the PSP's menu plays on its entry, and puts the game and the maps together in one folder, ready for the stick.
 
-**Use the bake bundle from the same release as the build zip.** A release says when its bundle changed and the maps must be baked again (b147h did: its maps carry more than b143's, so the game says to bake again, and stops, if it finds maps from b143's tool; `bake_changes.md`). b149 plays a bake made with b147h's or b148's bundle, but **bake again with b149's bundle**: it converts the models into the PSP's own form as it bakes, which ends a dropped frame at b30's start and gives the game more memory (the maps grow by about 40 MB in all).
+**Use the bake bundle from the same release as the build zip.** A release says when its bundle changed and the maps must be baked again (b147h did: its maps carry more than b143's, so the game says to bake again, and stops, if it finds maps from b143's tool; `bake_changes.md`). b150 plays a bake made with b147h's or b148's bundle, but **bake again with b150's bundle**: it leaves the levels' music at the disc's 44.1 kHz, which b150 mixes at full rate; it writes each texture's 4 x 4 stand-in, drawn while the texture itself is still loading; and it converts the models into the PSP's own form, which ends a dropped frame at b30's start and gives the game more memory (the maps grow by about 40 MB for the models, and the music takes about twice its old room).
 
 **A second bake is faster.** The bake keeps the work it can reuse (the textures' palettes and the converted sounds, about 420 MB) in your user cache folder: `%LOCALAPPDATA%\halo-psp-bake` on Windows, `~/.cache/halo-psp-bake` on Linux. A bake that finds them takes about a third of the time. The first time, the guided bake asks whether to keep them. Deleting the folder is always safe; the next bake just makes them again.
 
-1. **Download** from the release page, **[Sierra-III-Release's releases](https://github.com/Sheepdog-01/Sierra-III-Release/releases)**, the build zip, `halo_psp_b149.zip`, and the bake bundle for your system:
+1. **Download** from the release page, **[Sierra-III-Release's releases](https://github.com/Sheepdog-01/Sierra-III-Release/releases)**, the build zip, `halo_psp_b150.zip`, and the bake bundle for your system:
 
    | System | Bundle |
    |---|---|
-   | Windows 10 or 11 | `halo-psp-bake-windows-b149.zip` |
-   | Linux, glibc 2.39 or later | `halo-psp-bake-linux-b149.tar.gz` |
+   | Windows 10 or 11 | `halo-psp-bake-windows-b150.zip` |
+   | Linux, glibc 2.39 or later | `halo-psp-bake-linux-b150.tar.gz` |
 
    Each has a `.sha256` beside it, which the bundle's SHA-256 must equal (Windows PowerShell: `Get-FileHash <file>`; macOS: `shasum -a 256 <file>`; Linux: `sha256sum <file>`).
 2. **Unpack the bundle.** It makes one folder, `halo-psp-bake`. On Windows (right-click, *Extract All*), keep its path short: `C:\halo-psp-bake` always works, and the bake says if the path is too long.
@@ -206,20 +206,20 @@ prints `the build is on the stick` and lists the three files. On Windows, check 
 
 ## What to expect
 
-**Speed.** The port's aim is 30 frames a second everywhere; it isn't there yet. Measured on a PSP-1000 at its standard clock, over the second half of the first two minutes of each level (the stretch includes fights, so it is not a best case), on the build just before b143's final profile (b149 measures the same or faster):
+**Speed.** The port's aim is 30 frames a second everywhere; it isn't there yet. Measured on b150 on a PSP-1000 at its standard clock, over the second half of the first two minutes of each level with nobody at the controls (the stretch includes fights, so it is not a best case):
 
 | Level | Frames a second |
 |---|---|
+| *Assault on the Control Room* (b40) | about 30 |
+| *Truth and Reconciliation* (a50) | about 30 |
 | *The Maw* (d40) | about 30 |
-| *Assault on the Control Room* (b40) | about 29 |
-| *Two Betrayals* (c40) | about 26 |
-| *The Pillar of Autumn* (a10) | about 20 |
-| *343 Guilty Spark* (c10) | about 17 |
-| *Truth and Reconciliation* (a50) | about 16 |
+| *Two Betrayals* (c40) | about 28 |
+| *The Pillar of Autumn* (a10) | about 21 |
+| *343 Guilty Spark* (c10) | about 21 |
+| *The Library* (c20) | about 17 |
 | *Keyes* (d20) | about 14 |
 | *Halo* (a30) | about 13 |
-| *The Library* (c20) | about 13 |
-| *The Silent Cartographer* (b30) | about 6 |
+| *The Silent Cartographer* (b30) | about 8 |
 
 A PSP-3000 measures within 3% of these. On the lighter levels the game's own logic keeps close to its full 30 ticks a second; on the heaviest it falls behind too, so those play in slow motion as well as at a low frame rate.
 
@@ -238,6 +238,8 @@ A PSP-3000 measures within 3% of these. On the lighter levels the game's own log
 - **OPTIONS:** the everyday keep words (switches) as toggles.
 - **PRESETS:** named sets of keep words, from `halo/presets.txt`.
 - **Controls:** up/down move; left/right or cross toggle; L/R switch pages; START saves and starts the game.
+
+**If something new looks or sounds wrong,** presets 18 to 20 turn b150's new changes off in groups, which tells which change a fault comes from (say which in your report, step 8): 18 the drawing and tick passes (`drawpartoff lightfirstoff p2passoff`), 19 the music halved as in b148 (`musadpcmoff musroomoff`), 20 the Media Engine's stop fixes (`aimeobslookoff sndtierbackoff`). Each word also works on its own in `halo/keep.txt`.
 
 It writes your choices to `halo/keep.txt` (keep words, separated by spaces) and `halo/init.txt` (the map). The next plain launch still goes to the main menu, with the keep words you chose. To go back to the defaults, delete both files. None is needed to play.
 
