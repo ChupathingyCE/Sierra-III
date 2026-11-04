@@ -1208,8 +1208,8 @@ static void keep_defaults_add(void)
 	model walk, so each pass's code stays in the I-cache across the objects
 	(exact; c10 drawing -1.3 to -3.0% on the PSP; docs/review_lightfirst.md).
 	sndtierback: at an ME stop the tier's playing and loading sounds are read
-	again from the disc into the main tier, so most stay audible; a safety net
-	only, since an ME stop is itself a bug to fix where it runs
+	again from the disc into the main tier, so most stay audible; the safety net
+	for a stop, which is a bug to prevent, not a state to recover from
 	(docs/review_mestop.md). drawpart: the model walk records its model calls
 	and makes them after the walk, so the walk's code and the drawing's each
 	stay in the I-cache across the objects; it turns lightreuse on too, the
