@@ -129,7 +129,7 @@ static __inline__ __attribute__((always_inline)) int psp_aime_here(void)
 	return psp_sp_ - psp_aime_sp_low < psp_aime_sp_high - psp_aime_sp_low;
 }
 
-/* "meprobe" (PSP_CFLAGS=-DPSP_MEPROBE=1, a recon build): the ring's main-CPU
+/* "meprobe" (PSP_MEPROBE=1, a recon build): the ring's main-CPU
 calls (psp_me_wait, psp_me_push, psp_me_hold) and the paths to them noted
 when the Media Engine's work reaches them: on the PSP the ME itself; in the
 emulator the AI job's simulated pass (its own stack, psp_me_context set).
