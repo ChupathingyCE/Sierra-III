@@ -33,7 +33,31 @@ Per object, the walk ran about 20 KB of hot code lines, past the 16 KB I-cache: 
 
 ## Proofs
 
-(filled in when read)
+- **Exact [E].**
+  - Play and both seeds are the same every tick on b30 (4,500 ticks), c10 and c20 (3,600 each) and d20 (2,700), drawpart against off.
+  - The GE's work is the same list by list on all four maps: 2,280, 1,832, 1,829 and 1,378 lists.
+  - Pictures: b30 differs at 161 of 2,247 frames, against 157 for off against off; the other maps differ at 2-12 frames.
+  - The whole state's bytes differ from off, as they did with LIGHTFIRST alone.
+  - The front door is clean: the menu, then a10, with drawpart on.
+- **In the cache model [E]** (the drawing's misses over the run; ms at 80 cycles a miss; the tick unchanged):
+
+  | | drawpart | lightreuse alone |
+  |---|---|---|
+  | b30 route | I-misses -9.1%, D -2.4%: -0.96 ms a frame (-3.3%) | -0.27 ms |
+  | c10 opening | I-misses -22.0%, D -5.6%: -1.95 ms a frame (-8.1%) | -0.70 ms |
+
+  With `render_model`'s calls in a cache pair of their own (this split's ceiling), the drawing's I-misses fall 22.9% on b30 and 21.7% on c10. So c10 reaches the whole ceiling and b30 about 40% of it. Why b30 takes less isn't measured yet [U]. Two candidates: b30's ~89 objects and their widgets fill the 64 records more than once a frame, so its runs are shorter; and the ceiling's pair also keeps `render_model`'s lines across the rest of the frame (the level, the effects), which counts for more on b30's heavier frame.
+- **On the PSP** [M] (`- | drawpart`, 2 runs a side):
+  - **c10 opening, PSP-3000:**
+    - 300-1500: frame 68.5 → 64.3 ms (-6.1%), drawing -2.7 ms (-8.5%).
+    - 1500-2600: frame 44.4 → 41.1 ms (-7.4%), drawing -3.4 ms (-12.4%). The tick there rises 0.9 ms; the cause isn't known [U].
+  - **b30 route, PSP-1000:**
+    - Cinematic: frame -1.7%.
+    - Flight: frame 134.1 → 128.3 ms (-4.3%), drawing -3.6 ms (-7.9%), tick -1.0 ms.
+    - Landing (2000-2600): frame +1.5 ms (+1.2%). Read 2100-2650 it's +1.0 ms (+0.8%), drawing +0.4 ms. The PSP's own drawing counters there are no higher. Read to 2700, the landing seems +3.1%, but that's the windows: the drawpart side runs ~30 ticks ahead from the flight on, so the 2700 cut drops its first fast window.
+    - The route from 570 to 2600: frame -2.8%, drawing -5.7%.
+  - Every gap above is larger than its side's own spread and than the stretch's floor.
+  - The PSP's gain is 2-4 times the cache model's, as the lab's cache rule expects.
 
 ## Memory
 
