@@ -336,7 +336,11 @@ The config word reads 0x00000010 at rest on both PSPs. mcidclan's notes list 0x0
 - **The cycle counts are the PSP-1000's.** The PSP-3000's eDRAM paths agree within 0.2%. Its main-RAM paths are named where they differ.
 - **0x310 is the setting to use.** The firmware's extra low bits (0x1b) leave inbound unchanged but slow the write to main RAM. The single low bits (0x1, 0x2, 0x8) changed nothing measured.
 - **Main RAM → VME at 262 MB/s** matches DMACplus's 250–263 MB/s into eDRAM (`dma_engines.md`). So the staging step through eDRAM that §5 and `dma_engines.md` priced at 88 MB/s isn't needed: the VME's DMAC reads main RAM directly at 3× that.
-- **Not measured:** the fast mode's cost to the main CPU's misses. The DMAC at rest cost them nothing (`dma_engines.md`), but 262 MB/s is a real share of the bus [U]. That needs its own run before a lever relies on it.
+- **The fast mode's cost to the main CPU's misses** [M, PSP-3000, bench-hw 41925003539; the PSP-1000 was away]: the main CPU chased 100,000 dependent misses while the ME ran the VME's DMAC back to back.
+  - **Main RAM → VME in fast mode takes the bus:** a miss goes from 227 ns to 303 ns (×1.33), and the DMAC keeps close to its own rate (5.9 cycles a word). That's DMACplus's kind of cost (+44% at 99% duty), not the rest mode's.
+  - **In rest mode the same transfer yields:** misses stay at 227 ns, and the DMAC slows to ~65 cycles a word.
+  - **Fast VME → main RAM** (229 → 231 ns) and **fast eDRAM → VME** (227 → 226) cost the main CPU nothing measurable.
+  - So inbound from main RAM is a choice: fast and contended, or slow and polite. The fast mode belongs where the main CPU isn't missing (the frame's GE-bound stretches) or for short bursts. Any lever that streams main RAM into the VME during the tick has to be priced on the PSP with the fast mode on.
 - **The registers in a pass** [M]: 0x000 reads 0x810 (0x10 at rest, 0x610 during a transfer), 0x008 reads 0x88808810, and 0x00c reads 0x88800000 (0 otherwise). Their meaning is not decoded.
 
 ### The context is double-buffered (the ping-pong found)
@@ -386,7 +390,6 @@ These are mcidclan's ldl/sdl reused, where the base register's number names a ba
 - **Re-priced:** the world light pass (§8, the addendum) and VMEMIX's revive_if (the lab's grounds.tsv) now use 0x310. Neither verdict moves: the light pass is still behind LMC, and VMEMIX's ceiling (~3% of the ME) still parks it.
 
 **What's left:**
-- The fast mode's cost to the main CPU's misses.
 - Whether bits 8 and 9 are a burst length, which would explain the rate.
 - 0x004's bits above 17.
 - The context load's cost on the PSP-1000 (3.5× the Slim's).
