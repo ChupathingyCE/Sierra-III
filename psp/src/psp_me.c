@@ -1939,6 +1939,121 @@ void psp_me_exit(const char *why)
 		"launch", regs_launch.reset, regs_launch.bus_clock, regs_launch.clock, regs_launch.avc);
 }
 
+/* ---------- DMACplus between main RAM and the eDRAM (psp_me.h)
+
+The registers and the control word are bench/halo_bench15's, which measured
+them on the PSP-1000: mcidclan's dmacplus.h layout (psp-media-engine-custom-
+core), the controller's own control word (the terminal-count bit, bits 27 and
+26 clear for a transfer with the ME's side in it, the masters in 25 and 24,
+the width code twice, both bursts) and single descriptors only, since a chain
+hung the PSP. The ME's side address is the eDRAM's offset. The channel runs
+with its interrupts masked, so the kernel's own handler never sees ours, and
+the raw status bits it sets (2 for main RAM to the ME, 3 back, as the bench
+saw them) are cleared before each start */
+#define DMACP 0xBC800000u
+#define DMACP_INT_TC_CLEAR (DMACP + 0x08)
+#define DMACP_INT_ERR_CLEAR (DMACP + 0x10)
+#define DMACP_RAW_ERR (DMACP + 0x18)
+#define DMACP_ENABLED (DMACP + 0x1C)
+#define DMACP_CONFIG (DMACP + 0x30)
+#define DMACP_SC2ME 0x180u
+#define DMACP_ME2SC 0x1A0u
+#define DMACP_STATUS_BIT(channel) ((channel) == DMACP_SC2ME ? 4u : 8u)
+#define DMACP_WIDTH16 4u
+#define DMACP_MAX_COUNT 4095u
+
+struct dmacp_call
+{
+	unsigned int channel, src, dst, control;
+	int result;
+};
+
+static int dmacp_start_kernel(void *param)
+{
+	struct dmacp_call *call = (struct dmacp_call *)param;
+	unsigned int base = DMACP + call->channel, bit = DMACP_STATUS_BIT(call->channel);
+	int interrupts;
+
+	/* the controller's enable bit reads 0 while the display's channel runs:
+	a channel running is the proof it is on */
+	if (!(hw(DMACP_CONFIG) & 1) && !hw(DMACP_ENABLED))
+		return call->result = -2;
+	if (hw(base + 0x10) & 1)
+		return call->result = -1;
+	hw(DMACP_INT_TC_CLEAR) = bit;
+	hw(DMACP_INT_ERR_CLEAR) = bit;
+	interrupts = sceKernelCpuSuspendIntr();
+	hw(base + 0x00) = call->src;
+	hw(base + 0x04) = call->dst;
+	hw(base + 0x08) = 0;
+	hw(base + 0x0C) = call->control;
+	hw(base + 0x10) = 1;
+	__asm__ __volatile__("sync");
+	sceKernelCpuResumeIntrWithSync(interrupts);
+	return call->result = 0;
+}
+
+/* 1 once the channel has stopped: result -4 if it reported an error */
+static int dmacp_poll_kernel(void *param)
+{
+	struct dmacp_call *call = (struct dmacp_call *)param;
+	unsigned int bit = DMACP_STATUS_BIT(call->channel);
+
+	if (hw(DMACP + call->channel + 0x10) & 1)
+		return 0;
+	call->result = (hw(DMACP_RAW_ERR) & bit) ? -4 : 0;
+	hw(DMACP_INT_TC_CLEAR) = bit;
+	hw(DMACP_INT_ERR_CLEAR) = bit;
+	return 1;
+}
+
+static int dmacp_stop_kernel(void *param)
+{
+	struct dmacp_call *call = (struct dmacp_call *)param;
+	unsigned int bit = DMACP_STATUS_BIT(call->channel);
+
+	hw(DMACP + call->channel + 0x10) = 0;
+	__asm__ __volatile__("sync");
+	hw(DMACP_INT_TC_CLEAR) = bit;
+	hw(DMACP_INT_ERR_CLEAR) = bit;
+	return 0;
+}
+
+int psp_me_dma_edram(int into_edram, void *main_ram, unsigned int edram_offset, unsigned int bytes,
+	unsigned int timeout_us, unsigned int *us)
+{
+	struct dmacp_call call;
+	unsigned int ram = (unsigned int)main_ram & 0x1FFFFFFFu, count = bytes / 16, start;
+
+	if (us)
+		*us = 0;
+	if (me_state != 1 || !count || bytes % 16 || count > DMACP_MAX_COUNT || (ram & 15) || (edram_offset & 15) ||
+		edram_offset + bytes > ME_EDRAM_STACK_TOP)
+		return -5;
+	call.channel = into_edram ? DMACP_SC2ME : DMACP_ME2SC;
+	call.src = into_edram ? ram : edram_offset;
+	call.dst = into_edram ? edram_offset : ram;
+	/* the masters: 1 the ME's side, at the destination going in, at the source coming out */
+	call.control = (1u << 31) | ((into_edram ? 1u : 0u) << 25) | ((into_edram ? 0u : 1u) << 24) |
+		(DMACP_WIDTH16 << 21) | (DMACP_WIDTH16 << 18) | (1u << 15) | (1u << 12) | count;
+	call.result = 0;
+	kcall_3(dmacp_start_kernel, 0, &call);
+	if (call.result)
+		return call.result;
+	start = sceKernelGetSystemTimeLow();
+	while (!kcall_3(dmacp_poll_kernel, 0, &call))
+		if (sceKernelGetSystemTimeLow() - start > timeout_us)
+		{
+			kcall_3(dmacp_stop_kernel, 0, &call);
+			if (us)
+				*us = sceKernelGetSystemTimeLow() - start;
+			return -3;
+		}
+	if (us)
+		*us = sceKernelGetSystemTimeLow() - start;
+	return call.result;
+}
+
 /* launch (build 87: on unless the launch menu's "nomeaudio"): the ME started,
 its first signs of life checked, its clock measured. Non-zero when jobs can
 be handed over */

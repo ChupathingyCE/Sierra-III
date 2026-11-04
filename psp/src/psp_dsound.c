@@ -1408,7 +1408,7 @@ struct upload
 	unsigned char *dest;   /* the sound's block in the cache */
 	unsigned char *loaded; /* the engine's flag */
 	void *datum, *sound;
-	long tag_index, file_offset, size, issued, copied;
+	long tag_index, file_offset, size, issued, copied, block_index;
 	SceUInt64 start_us;
 	short identifier;
 	unsigned char outstanding, failed, dead, finished;
@@ -1439,6 +1439,184 @@ static unsigned int upload_head = 0, upload_count = 0, next_sequence = 0;
 static struct stage_slot stage[STAGE_SLOTS];
 static unsigned long up_sounds = 0, up_bytes = 0, up_pieces = 0, up_jobs = 0, up_failed = 0, up_dropped = 0,
 	up_full = 0, up_after_loss = 0, up_wait_us = 0, up_worst_us = 0, muted_blocks = 0, muted_said = 0;
+
+/* ---------- SNDEDRAM2: the sound cache's last pages in the ME's eDRAM ("sndedram")
+
+docs/plan_sound_edram.md. The cache stays one run of pages of its usual size,
+the first ones main RAM (the main tier), the last ones the eDRAM at
+psp_me.h's ME_EDRAM_SNDTIER (the tier); the lruv cache keeps every block on
+one side of the boundary (its fence, psp_fixups.py FIXES_SNDEDRAM). A sound
+placed in the tier is loaded through R2's staging above, and each piece goes
+in by DMACplus from this thread, so no ME job is involved. The rest of R2's
+rules hold for the tier's sounds: only the ME reads them, a block the main CPU
+mixes plays them silent, and once the ME has stopped the eDRAM is taken as
+lost. A loss closes the tier rather than the sound: the fence locks its
+pages, the sounds in it are given up as they stop playing, and the main tier
+goes on alone. In the emulator (mode 2) the tier is main RAM after the main
+tier and the DMA a copy, so everything but the eDRAM and the DMA runs */
+#define TIER_MIN_KB 64
+#if PSP_MUSIC
+#define TIER_END (ME_EDRAM_MUSIC < ME_EDRAM_SNDTIER_END ? ME_EDRAM_MUSIC : ME_EDRAM_SNDTIER_END)
+#else
+#define TIER_END ME_EDRAM_SNDTIER_END
+#endif
+/* a 60 KB piece takes ~240 us at the measured 256 MB/s */
+#define TIER_DMA_TIMEOUT_US 2000
+/* failed DMAs before the tier is closed for the session */
+#define TIER_FAILS_MAX 3
+static int tier_mode = -1; /* 0 off, 1 the ME's eDRAM, 2 simulated (the emulator) */
+static unsigned long tier_bytes = 0, tier_main_bytes = 0;
+static unsigned char *cache_base = NULL, *tier_base = NULL;
+static int tier_check = 0, tier_fails = 0, tier_left = -1;
+static const char *tier_closed_why = NULL;
+static unsigned long tier_dmas = 0, tier_dma_us = 0, tier_dma_worst_us = 0, tier_dma_failed = 0, tier_check_bad = 0,
+	tier_given_up = 0, tier_polls = 0;
+unsigned long psp_sound_tier_drained = 0; /* psp_sound_tier_drain's, xbox_sound_cache.c */
+extern int psp_lruv_fence_closed; /* lruv_cache.c: the fence locks the tier's pages */
+int psp_keep_number(const char *prefix, int fallback);
+int psp_sound_cache_drop(long block_index);
+long psp_sound_tier_drain(unsigned long low, unsigned long high);
+
+int psp_sound_tier_mode(void)
+{
+	if (tier_mode < 0)
+	{
+		tier_mode = 0;
+		if (!psp_keep("sndedram"))
+			return 0;
+		if (psp_keep("soundedram"))
+			platform_log("sound tier: refused: soundedram puts the whole cache in the eDRAM");
+		else if (psp_keep("edramcheck"))
+			platform_log("sound tier: refused: edramcheck patterns the same stretch");
+		else if (!psp_me_start())
+			platform_log("sound tier: refused: the Media Engine is off (nomeaudio?)");
+		else
+		{
+			unsigned long room = TIER_END > ME_EDRAM_SNDTIER ? TIER_END - ME_EDRAM_SNDTIER : 0;
+			unsigned long kb = (unsigned long)psp_keep_number("sndtier", (int)(room / 1024));
+
+			if (kb > room / 1024)
+				kb = room / 1024;
+			if (kb >= TIER_MIN_KB)
+			{
+				tier_bytes = (kb * 1024) & ~0xFFFul;
+				tier_mode = psp_me_simulated() ? 2 : 1;
+				tier_check = psp_keep("sndedramcheck");
+			}
+			else
+				platform_log("sound tier: refused: %lu KB of room, %d KB at least", kb, TIER_MIN_KB);
+		}
+	}
+	return tier_mode;
+}
+
+/* the main tier's pages, which is where lruv's fence goes; 0 with no tier */
+long psp_sound_tier_fence_page(void)
+{
+	return psp_sound_tier_mode() ? (long)(tier_main_bytes >> 12) : 0;
+}
+
+/* lruv's address for a block (the cache's base plus its first page's
+offset), moved into the tier when it lies past the main tier */
+void *psp_sound_tier_address(void *address)
+{
+	unsigned char *at = (unsigned char *)address;
+
+	if (tier_mode > 0 && at >= cache_base + tier_main_bytes)
+		return tier_base + (at - (cache_base + tier_main_bytes));
+	return address;
+}
+
+int psp_sound_tier_holds(const void *address)
+{
+	const unsigned char *at = (const unsigned char *)address;
+
+	return tier_mode > 0 && at >= tier_base && at < tier_base + tier_bytes;
+}
+
+/* sound_dsound_xbox.c's check before it queues a sound: its samples lie
+inside the cache, in one tier. Without the tier, the engine's own test */
+int psp_sound_cache_holds(const void *address, long size)
+{
+	const unsigned char *at = (const unsigned char *)address;
+	unsigned long main_bytes = tier_mode > 0 ? tier_main_bytes : psp_sound_cache_bytes();
+
+	if (size < 0 || !cache_base)
+		return 0;
+	if (at >= cache_base && (unsigned long)size <= main_bytes && (unsigned long)(at - cache_base) <= main_bytes - size)
+		return 1;
+	return tier_mode > 0 && at >= tier_base && (unsigned long)size <= tier_bytes &&
+		(unsigned long)(at - tier_base) <= tier_bytes - size;
+}
+
+static void tier_close(const char *why)
+{
+	if (tier_mode <= 0 || tier_closed_why)
+		return;
+	tier_closed_why = why;
+	psp_lruv_fence_closed = 1;
+	tier_left = -1;
+	platform_log("sound tier: closed (%s): no new sound goes in the eDRAM; the ones there are given up as they stop playing, and the main tier's %lu KB plays on",
+		why, tier_main_bytes / 1024);
+}
+
+/* a piece into the tier; 1 when it's there */
+static int tier_copy(const unsigned char *from, unsigned char *to, unsigned long bytes)
+{
+	static unsigned char check[4096] __attribute__((aligned(64)));
+	unsigned int us = 0;
+	int ok = 1;
+
+	if (tier_mode == 2)
+	{
+		/* the emulator: a copy at the DMA's place */
+		memcpy(to, from, bytes);
+		if (tier_check && memcmp(to, from, bytes))
+			tier_check_bad++;
+	}
+	else
+	{
+		int result = psp_me_dma_edram(1, (void *)from, (unsigned int)(to - (unsigned char *)ME_EDRAM), (unsigned int)bytes,
+			TIER_DMA_TIMEOUT_US, &us);
+
+		ok = result == 0;
+		if (!ok)
+		{
+			tier_dma_failed++;
+			platform_log("sound tier: a DMA of %lu bytes to eDRAM %08x failed (%d after %u us)", bytes,
+				(unsigned int)(to - (unsigned char *)ME_EDRAM), result, us);
+		}
+		else if (tier_check)
+		{
+			unsigned long at, part;
+
+			/* read back through the same controller, a 4 KB part at a time */
+			for (at = 0; at < bytes && ok; at += part)
+			{
+				part = bytes - at < sizeof(check) ? bytes - at : sizeof(check);
+				sceKernelDcacheWritebackInvalidateRange(check, sizeof(check));
+				if (psp_me_dma_edram(0, check, (unsigned int)(to + at - (unsigned char *)ME_EDRAM), (unsigned int)part,
+					TIER_DMA_TIMEOUT_US, NULL))
+					ok = 0;
+				else
+				{
+					sceKernelDcacheInvalidateRange(check, sizeof(check));
+					if (memcmp(check, from + at, part))
+						ok = 0;
+				}
+			}
+			if (!ok)
+				tier_check_bad++;
+		}
+	}
+	tier_dmas++;
+	tier_dma_us += us;
+	if (us > tier_dma_worst_us)
+		tier_dma_worst_us = us;
+	if (!ok && ++tier_fails >= TIER_FAILS_MAX)
+		tier_close("DMAs failed");
+	return ok;
+}
 
 int psp_sound_edram_mode(void)
 {
@@ -1472,7 +1650,15 @@ unsigned long psp_sound_block_bytes(void)
 	unsigned long cache = psp_sound_cache_bytes(), stage_bytes = STAGE_SLOTS * STAGE_SLOT_BYTES, want;
 	int geo = psp_keep("soundgeo");
 
-	switch (psp_sound_edram_mode())
+	if (!psp_sound_edram_mode() && psp_sound_tier_mode())
+	{
+		/* the tier never takes more than a quarter of a megabyte's main tier */
+		if (tier_bytes + 256 * 1024 > cache)
+			tier_bytes = cache > 512 * 1024 ? (cache - 256 * 1024) & ~0xFFFul : 0;
+		tier_main_bytes = cache - tier_bytes;
+		want = stage_bytes + tier_main_bytes + (tier_mode == 2 ? tier_bytes : 0);
+	}
+	else switch (psp_sound_edram_mode())
 	{
 	case 1:
 		want = geo && SOUND_BLOCK_DEFAULT_BYTES > stage_bytes ? SOUND_BLOCK_DEFAULT_BYTES : stage_bytes;
@@ -1508,7 +1694,23 @@ void *psp_sound_cache_place(void *block)
 
 	sound_block = (unsigned char *)block;
 	block_bytes = psp_sound_block_bytes();
-	switch (psp_sound_edram_mode())
+	if (!psp_sound_edram_mode() && psp_sound_tier_mode() && tier_bytes)
+	{
+		base = sound_block + stage_bytes;
+		used = stage_bytes + tier_main_bytes + (tier_mode == 2 ? tier_bytes : 0);
+		tier_base = tier_mode == 1 ? (unsigned char *)(ME_EDRAM + ME_EDRAM_SNDTIER) : base + tier_main_bytes;
+		for (k = 0; k < STAGE_SLOTS; k++)
+			stage[k].buffer = sound_block + k * STAGE_SLOT_BYTES;
+		edram_lo = tier_base;
+		edram_hi = tier_base + tier_bytes;
+		stops_at_start = psp_me_stops;
+		platform_log("sound tier: on (%s): the cache's %lu KB as %lu KB of main RAM at %08x and %lu KB at %08x (eDRAM %lu-%lu KB), %lu KB staging; %lu KB taken from the heap%s",
+			tier_mode == 1 ? "the ME's eDRAM, filled by DMACplus" : "SIMULATED: the emulator's tier is main RAM",
+			cache / 1024, tier_main_bytes / 1024, (unsigned int)base, tier_bytes / 1024, (unsigned int)tier_base,
+			(unsigned long)ME_EDRAM_SNDTIER / 1024, (unsigned long)(ME_EDRAM_SNDTIER + tier_bytes) / 1024, stage_bytes / 1024,
+			block_bytes / 1024, tier_check ? "; sndedramcheck: every piece read back" : "");
+	}
+	else switch (psp_sound_edram_mode())
 	{
 	case 1:
 		base = (unsigned char *)(ME_EDRAM + ME_EDRAM_SOUND);
@@ -1523,6 +1725,7 @@ void *psp_sound_cache_place(void *block)
 		used = cache;
 		break;
 	}
+	cache_base = base;
 	if (edram_mode)
 	{
 		for (k = 0; k < STAGE_SLOTS; k++)
@@ -1572,9 +1775,10 @@ void *psp_sound_block(void)
 }
 
 /* instead of the stick reader's read into the cache (xbox_sound_cache.c):
-the sound's pieces go through the staging */
-void psp_sound_upload_start(long tag_index, long file_offset, long size, void *dest, unsigned char *loaded, void *datum,
-	short identifier, void *sound)
+the sound's pieces go through the staging. block_index, the sound's block,
+is given up if a tier load fails (-1: R2's, kept) */
+void psp_sound_upload_begin(long tag_index, long file_offset, long size, void *dest, unsigned char *loaded, void *datum,
+	short identifier, void *sound, long block_index)
 {
 	struct upload *u;
 
@@ -1599,8 +1803,15 @@ void psp_sound_upload_start(long tag_index, long file_offset, long size, void *d
 	u->tag_index = tag_index;
 	u->file_offset = file_offset;
 	u->size = size;
+	u->block_index = block_index;
 	u->start_us = sceKernelGetSystemTimeWide();
 	*loaded = 0;
+}
+
+void psp_sound_upload_start(long tag_index, long file_offset, long size, void *dest, unsigned char *loaded, void *datum,
+	short identifier, void *sound)
+{
+	psp_sound_upload_begin(tag_index, file_offset, size, dest, loaded, datum, identifier, sound, -1);
 }
 
 /* the map is going (sound_cache_close): no waiting load is the engine's any more */
@@ -1629,8 +1840,11 @@ static void edram_loss(const char *why)
 	if (edram_lost)
 		return;
 	edram_lost = 1;
-	platform_log("sound eDRAM: %s: the sound cache in its eDRAM is taken as lost; sounds from it are silent from here on",
-		why);
+	if (tier_mode > 0)
+		tier_close(why);
+	else
+		platform_log("sound eDRAM: %s: the sound cache in its eDRAM is taken as lost; sounds from it are silent from here on",
+			why);
 }
 
 /* the game thread, every frame (sound_cache_idle): collect the copy job,
@@ -1662,8 +1876,9 @@ void psp_sound_upload_poll(void)
 {
 	unsigned int k;
 
-	if (edram_mode <= 0)
+	if (edram_mode <= 0 && tier_mode <= 0)
 		return;
+	tier_polls++;
 	/* collected once done, never waited for: the ME may be on a long job */
 	if (copy_out && (psp_me_submitted_done(ME_SLOT_PROBE) || psp_me_stops != stops_at_start))
 	{
@@ -1679,10 +1894,22 @@ void psp_sound_upload_poll(void)
 	}
 	if (psp_me_stops != stops_at_start)
 		edram_loss("the Media Engine stopped");
+	else if (tier_closed_why && !edram_lost)
+		edram_loss(tier_closed_why);
 	if (muted_blocks && !muted_said)
 	{
 		muted_said = 1;
 		platform_log("sound eDRAM: voices from the cache mixed silent: the main CPU mixes and can't read the eDRAM");
+	}
+	/* a closed tier's sounds given up as they stop playing (a pass over the
+	cache's sounds every 16th poll), until none is left */
+	if (tier_mode > 0 && edram_lost && tier_left != 0 && tier_polls % 16 == 0)
+	{
+		long before = tier_left;
+
+		tier_left = psp_sound_tier_drain((unsigned long)tier_base, (unsigned long)(tier_base + tier_bytes));
+		if (!tier_left && before)
+			platform_log("sound tier: every sound in the eDRAM given up (%lu)", psp_sound_tier_drained);
 	}
 	/* pieces read for a load that's gone, or that failed */
 	for (k = 0; k < STAGE_SLOTS; k++)
@@ -1695,6 +1922,34 @@ void psp_sound_upload_poll(void)
 			up_failed++;
 		if (slot->done == READ_FAILED || edram_lost || uploads[slot->upload].dead)
 			piece_done(slot, 0);
+	}
+	/* the tier: what's read, into the eDRAM in the order it was asked for, so
+	a load finished by it is told below and its slot read into again */
+	if (tier_mode > 0 && !edram_lost)
+	{
+		for (;;)
+		{
+			struct stage_slot *slot = NULL;
+			struct upload *u;
+			unsigned long bytes;
+
+			for (k = 0; k < STAGE_SLOTS; k++)
+				if (stage[k].state == SLOT_READING && stage[k].done == 1 &&
+					(!slot || stage[k].sequence < slot->sequence))
+					slot = &stage[k];
+			if (!slot)
+				break;
+			u = &uploads[slot->upload];
+			if (u->dead || !psp_sound_cache_alive(u->datum, u->identifier, u->sound, (unsigned long)u->dest))
+			{
+				u->dead = 1;
+				piece_done(slot, 0);
+				continue;
+			}
+			bytes = (slot->bytes + 15) & ~15ul;
+			sceKernelDcacheWritebackInvalidateRange(slot->buffer, (bytes + 63) & ~63ul);
+			piece_done(slot, tier_copy(slot->buffer, u->dest + slot->offset, bytes));
+		}
 	}
 	/* loads with nothing left to do: the engine told */
 	for (k = 0; k < upload_count; k++)
@@ -1714,6 +1969,11 @@ void psp_sound_upload_poll(void)
 			continue;
 		}
 		*u->loaded = u->failed ? READ_FAILED : 1;
+		/* a tier sound that didn't load: its block given up, so the sound is
+		asked for and read again (into the main tier once the tier is
+		closed), rather than played from what the block held */
+		if (u->failed && u->block_index >= 0 && psp_sound_cache_drop(u->block_index))
+			tier_given_up++;
 		if (!u->failed)
 		{
 			unsigned long us = (unsigned long)(sceKernelGetSystemTimeWide() - u->start_us);
@@ -1762,7 +2022,7 @@ void psp_sound_upload_poll(void)
 		cache_file_read(u->tag_index, u->file_offset + slot->offset, slot->bytes, slot->buffer, (unsigned char *)&slot->done, 0);
 	}
 	/* what's read, to the ME in the order it was asked for: one job */
-	if (!copy_out)
+	if (tier_mode <= 0 && !copy_out)
 	{
 		unsigned int args[ME_JOB_ARGS] = { 0 }, n = 0, order[STAGE_SLOTS], m = 0, j;
 
@@ -1815,6 +2075,12 @@ void psp_sound_upload_poll(void)
 /* psp_sound_cache_report's line (every 5 s) */
 void psp_sound_upload_report(void)
 {
+	if (tier_mode > 0)
+		platform_log("sound tier: %lu sounds in (%lu KB, %lu pieces), each %lu ms from asked to loaded on average (worst %lu); %lu DMAs, %lu us in them (worst %lu), %lu failed, %lu read back wrong%s; %lu reads failed, %lu deleted while loading, %lu refused (queue full), %lu given up; %lu blocks with voices mixed silent; %s%s",
+			up_sounds, up_bytes / 1024, up_pieces, up_sounds ? up_wait_us / up_sounds / 1000 : 0, up_worst_us / 1000,
+			tier_dmas, tier_dma_us, tier_dma_worst_us, tier_dma_failed, tier_check_bad, tier_check ? "" : " (unchecked)",
+			up_failed, up_dropped, up_full, tier_given_up + psp_sound_tier_drained, muted_blocks,
+			tier_closed_why ? "CLOSED: " : "open", tier_closed_why ? tier_closed_why : "");
 	if (edram_mode <= 0)
 		return;
 	platform_log("sound eDRAM: %lu sounds in (%lu KB, %lu pieces, %lu copy jobs), each %lu ms from asked to loaded on average (worst %lu); %lu reads failed, %lu deleted while loading, %lu refused (queue full), %lu after the loss; %lu blocks with voices mixed silent%s",
@@ -2214,6 +2480,13 @@ static int mix(short *output, short *full, short *out44, unsigned long frames)
 			extern int psp_keep(const char *word);
 
 			ranges_on = psp_keep("meaudioranges");
+			/* its ranges drop main RAM's lines only, and a DMA lands the
+			tier's bytes behind the ME's cache: the whole cache it is */
+			if (ranges_on && psp_sound_tier_mode())
+			{
+				ranges_on = 0;
+				platform_log("sound tier: meaudioranges refused: the ME drops its whole cache before each block");
+			}
 		}
 		/* everything the ME reads, from this CPU's cache to RAM (the lines
 		the mix touches, or the whole cache); no copy of the output block
