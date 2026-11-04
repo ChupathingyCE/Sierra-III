@@ -192,7 +192,7 @@ Sources, all read only, no code taken: uofw (github.com/uofw/uofw 28306bb, GPL: 
 
   - **Neither has a priority field.**
   - **b105's reading is corrected by this map:** `bc10004c` 0x40 → 0 is the USB block's reset released, not the ME's. mcidclan's ME start writes 0x14 and then 0 to 0xBC10004C, which releases every reset at once. `bc100050` gaining 0x20 is DMAC0's bus clock (the system DMAC, for the texture uploads).
-  - **The ME has a system-control block of its own** [M, recon, `vme_capability.md` §7]. Its 0xBC100050 holds 0x0F, the value its start writes, where the main CPU's holds 0xD41D. Read with this map, the main CPU's value is: ME, AW B, eDRAM, DMACplus, MSIF0, EMCDDR, APB and audio 0 on; DMAC0, DMAC1, AW A and KIRK off. So the system DMACs are clocked only while a copy runs.
+  - **The ME has a system-control block of its own** [M, recon, `vme_capability.md` §7]. Its 0xBC100050 holds 0x0F, the value its start writes, where the main CPU's holds 0xD41D. Read with this map, the main CPU's value is: ME, AW B, eDRAM, DMACplus, MSIF0, EMCDDR, APB and audio 0 on; DMAC0, DMAC1, AW A and KIRK off. So the system DMACs are likely clocked only while a copy runs [U].
 
 ### 6.3 DMACplus, the DDR controller and the bus's priority (C4) [D]
 
