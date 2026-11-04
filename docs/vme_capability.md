@@ -58,7 +58,7 @@ The bench ran 64 opcodes on both PSPs, one on each PE, with 16 inputs: front fro
 
 None gives a different answer on the Phat: each is a no-op or a zero there. **So every context must be proven on the PSP-1000.** Where an operation the job needs is among these, its Phat equivalent is listed above (add: 0x00020000).
 
-The saturator bit (`fu_sat`) changes ADD's result on both models in a way not yet decoded. The secondary units weren't tried.
+The saturator, the secondary units and the refresh rules are §7 (round 2, PSP-1000).
 
 ## 3. The local buffers (c)
 
@@ -133,8 +133,94 @@ The common sum: the compute is nearly free and the moving costs. Each candidate'
 
 The ME's own budget decides whether it's worth a context. The ME is ~9% busy with audio. Its render replay is the GE's bottleneck on d20 (the cost map, "Keeping the GE off RAM"), and that replay is list building, not vector maths.
 
-## 7. Credits and terms
+## 7. Round 2: the saturator, the secondary units, the sustained rate, the media blocks
 
-The register map, the wipe and configuration sequence, the context layout and every opcode tried are mcidclan's (m-c/d), MIT, from https://github.com/mcidclan/psp-media-engine-custom-core and https://github.com/mcidclan/psp-virtual-mobile-engine-ext. The colour-space converter's registers are from https://github.com/mcidclan/me-vme-hardware-csc (MIT).
+The bench is the same program with the keep words `vmeunits` and `csc` (branch `recon/vme-units`). Everything here is [M, PSP-1000] unless it says otherwise; the PSP-3000's run is pending.
+
+### The saturator (`fu_sat(n)`, bits 11:7 of a unit's word)
+
+- **It clamps the result to n signed bits,** [−2^(n−1), 2^(n−1) − 1], for every n tried (1, 2, 3, 4, 5, 8, 9, 12, 16, 17, 20, 23, 24, 31). This is mcidclan's formula, and it works on the PSP-1000.
+- **It acts on the wide result, before the 24-bit word.** 0x7fffff + 7 saturates to 0x7fffff at n = 24, where without it the word wraps to 0x800006. So n = 24 gives saturating 24-bit arithmetic. n = 31 wraps as no saturator does.
+- **Order:** product, then the shift k, then the clamp. A MUL with k = 4 and n = 8 gives clamp(p >> 4, −128, 127).
+- **On a MAC it clamps the output, not the accumulator.** The running sum −5,024 comes out as −2,048 at n = 12, and the next partial (+6,000) comes out as 976.
+- Round 1's undecoded ADD result was this clamp at n = 1: each output was the sign, 0 or −1.
+- **Bit 6 rounds to nearest** before the shift: −5,000 >> 4 gives −312 with it, −313 without.
+
+So int16 and int8 saturation, and rounding, are free in any pass.
+
+### The secondary units
+
+Each PE has a second unit behind its primary. It is fed from the staging latch (its back input `STAGING_n`), with FU_1's enable set (0xf0000000) and the write delay at 9 instead of 6 (mcidclan's `saturate-clamp-second-fu` sample).
+
+- **It is free.** A MUL with a clamp behind it ran 1,000 refreshes at n = 1,024 in exactly the cycles of a MUL alone (2,104 each), every result exact. So the VME does **4 operations a cycle** with both units, 1.29 G a second.
+- **Its operations** [M]:
+  - add with A, shifts, the clamp, the constant and passthrough work, each with its own saturator.
+  - **MUL and MAC give 0 on the secondary.** It is an ALU, with no multiplier.
+- **Its own buffer input arrives 3 words ahead.** `(b·f) + f[n]` came out as `(b·f) + f[n+3]`. To use a buffer there, offset its address unit by 3 (or try the interconnect's skew; not tested).
+- **The staging latch is 24 bits.** A wrapped product reaches the secondary's clamp wrapped, where the primary's own saturator sees it wide.
+- **Any PE's latch can feed any PE's secondary.** PE 2's secondary took PE 3's primary result exactly. So chains can run across PEs.
+- mcidclan's sample (ADD, saturate to 7 bits, then clamp to [0, 0x7fffff]) gives his [0, 63] on the PSP-1000.
+
+### Refreshes and the sustained rate
+
+- **A refresh costs 56 + 2n cycles** (2,104 at n = 1,024, 88 at n = 16). Across 1,000 back-to-back refreshes the longest pass was the shortest plus one cycle. The VME keeps the ME's clock to the cycle over 6.35 ms. Sustained, that is 1.95 elements a cycle (646 M a second), or 4 operations a cycle with the secondary in use.
+- **Write the flow word (VCTRL = 3) before each refresh** of a primary-only context. Without it, every second back-to-back trigger runs at the wrong length: 2,104 cycles at n = 16, and 88–112 at n = 1,024. The outputs stayed right in the cases checked. With the flow word, or with a secondary in the path, every pass is the same length. The flow word costs nothing measurable.
+- The write delay must match the path: 6 for the primary alone, 9 with the secondary. A delay of 9 with the secondary off left 7 of 4,096 words right.
+
+### No feeding beside a pass
+
+- **While a pass runs, every write into the VME's buffers is dropped.** This holds for the ME's stores and for the DMAC, and for any buffer half the pass doesn't touch (both runs):
+
+  | Writer | Target | Lost |
+  |---|---|---|
+  | ME stores (6.0 cycles each) | top 0–3, upper halves | 342 of 4,096 |
+  | ME stores | base 1–3, upper halves | 328 of 3,072 |
+  | DMAC | top 0, upper half | 160 of 1,024 |
+  | DMAC | base 2, upper half | 165 of 1,024 |
+
+  Each loss is about the number of writes that fall inside the pass's ~2,100 cycles. The pass's own results stayed exact, except 4 words in one run of the first case.
+- **The DMAC doesn't wait for the pass.** Started during one, it finishes in its own time (12,555 against 12,426 alone), with bits 0x800, 0x400 and 0x200 all set at once. The words it moved during the pass are lost.
+- **So moving and computing are serial,** a hard limit on any stream. With round 1's reads (a stale latch during a pass), the buffers are the VME's alone while it runs.
+- **What streaming costs:** two input streams through the DMAC from eDRAM (12.1 cycles a word) and one out (2.7), per element, is ~27 cycles. Compute is 0.5. The ME's CPU does the same MUL in 16.6.
+  - **So a one-pass stream is slower on the VME than on the ME's CPU.** The VME pays only when data stays resident through several passes, about six or more a load, or when the CPU's own time is what's short: the DMAC moves the data while the CPU does other work (§4).
+
+### The VME's clock [U]
+
+- No source gives it. The PSP's figures are in the ME's cycles, at 331.4 a µs.
+- Every pass is an exact whole number of them, and that number holds steady.
+- **An element takes 2 ME cycles a PE,** and the DMAC's fill takes 2.0 a word.
+- That fits a datapath at half the ME's clock (~166 MHz, the bus clock) handling one element a clock in each PE. A datapath at the ME's clock running at half rate fits equally. Telling them apart needs a clock change, which the bench doesn't make.
+
+### The media blocks as general hardware (4)
+
+- **The AVC block is unpowered in a game** [M, PSP-1000]: 0xbc100070 reads 0.
+  - The firmware powers it only when a video codec opens. Its sequence (uofw's `me_wrapper.c`, `sceMePowerControlAvcPower`, called from the video open `sceMeVideo_driver_E8CD3C75`) is three steps: syscon's `sceSysconCtrlTachyonAvcPower(1)`, then bit 2 of 0xbc100070, then the AVC reset released (sysreg bit 0x20) [D].
+  - The bench therefore made no access to the converter's registers. An unpowered block's registers might hang the bus.
+  - The only AVC registers the bench touches are mcidclan's transfer set-up at 0xBCC00000–0xBCC00070, at every ME start. They answer on both PSPs.
+- **The colour-space converter** (0xBC800120–0xBC800160, his `me-vme-hardware-csc`) [D]:
+  - What it does: a fixed 3×3 matrix with Q3.7 coefficients, from 4:2:0 YCbCr planes of bytes in the ME's eDRAM to 8888 or 565 RGB in VRAM, 480×272 in blocks of 16×8, started by one register.
+  - It is a per-pixel matrix: no lookup, no recursion. Outside video it could only recolour three byte planes into a framebuffer.
+  - Not measured: the run needs the AVC block powered (below).
+- **The VLD and the decoder's transform and filter units** [D, U]:
+  - No public source maps their registers. mcidclan's notes name a VLD and the ME's vendor move instructions (LDL/SDL reused, banks $8/$9 holding data). He reports their results unstable, possibly shared between the VME and the decoder.
+  - uofw drives the decoder only through the ME firmware's RPC. PPSSPP replaces the codecs at a high level (sceVideocodec in HLE) and models none of the blocks.
+  - A VLD decodes by tables inside itself, but nothing known exposes that as a lookup on general data.
+- **Lookups and recursive filters, plainly:**
+  - **No reachable unit provides either.** Round 1 found none in the VME's main array.
+  - The secondary units are ALUs, and feed forward.
+  - The IIR codes are running sums: (Σb) >> k, the output shifted but not fed back.
+  - The address units step by constants.
+  - The decoder's blocks are undocumented and unpowered in a game.
+- **Sheepdog01's question** (it decodes H.264 at 480p 30 fps, so is there no headroom?): the headroom is in the decoder's own fixed blocks (VLD, transforms, prediction, deblocking) and the AVC DMA paths. Those are a fixed video pipeline, not a general engine. The VME's general part is measured above (4 ops a cycle when data is resident), with the moving serial. The video rate comes from fixed blocks reading the ME's eDRAM directly, not from the VME's buffers [U].
+
+**What's left:**
+- The PSP-3000's run of round 2.
+- The converter, timed with the AVC block powered by the firmware's own path. Opening the video codec before the bench takes the ME is one way. It is untested, and it needs its own small run and recon's word.
+- The interconnect's skew for the secondary's input.
+- The VME's clock, which needs a clock change.
+
+## 8. Credits and terms
+
+The register map, the wipe and configuration sequence, the context layout and every opcode tried are mcidclan's (m-c/d), MIT, from https://github.com/mcidclan/psp-media-engine-custom-core and https://github.com/mcidclan/psp-virtual-mobile-engine-ext. The colour-space converter's registers are from https://github.com/mcidclan/me-vme-hardware-csc (MIT). The secondary unit's chain is his saturate-clamp-second-fu sample (psp-virtual-mobile-engine-ext 15884a0, MIT), and the saturator's field is from his datapath notes (https://github.com/mcidclan/psp-media-engine-cracking-the-unknown f921778, MIT). The AVC power sequence is read from uofw's me_wrapper (https://github.com/uofw/uofw 28306bb).
 
 His repositories accept no AI-attributed pull requests, so nothing from this work goes upstream to them. The measurements and the Phat's differences above are ours, to share with him by hand if Sheepdog01 chooses.
