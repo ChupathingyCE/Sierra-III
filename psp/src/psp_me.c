@@ -2823,10 +2823,10 @@ actor, as before */
 #define INNER_STACK_ROOM (RING_RAYS_STACK_BYTES + 16 * 1024)
 static struct
 {
-	unsigned int yields, ring_jobs, low, pad[13];
+	unsigned int yields, ring_jobs, low, light_looks, light_jobs, light_low, pad[10];
 } inner_stats_storage __attribute__((aligned(64)));
 #define INNER_STATS UNCACHED(&inner_stats_storage)
-static unsigned int inner_seen[3];
+static unsigned int inner_seen[6];
 
 /* at start: the counters' lines out of this CPU's cache (a dirty line
 written back later would put back zeros over the ME's counts) */
@@ -2834,7 +2834,8 @@ static void psp_me_inner_reset(void)
 {
 	sceKernelDcacheWritebackInvalidateRange(&inner_stats_storage, sizeof(inner_stats_storage));
 	INNER_STATS->yields = INNER_STATS->ring_jobs = INNER_STATS->low = 0;
-	inner_seen[0] = inner_seen[1] = inner_seen[2] = 0;
+	INNER_STATS->light_looks = INNER_STATS->light_jobs = INNER_STATS->light_low = 0;
+	memset(inner_seen, 0, sizeof(inner_seen));
 }
 
 void psp_me_yield_inner(void)
@@ -2871,6 +2872,69 @@ void psp_me_yield_inner(void)
 	p->ring_last_look = last_look;
 	INNER_STATS->ring_jobs += p->ring_popped - popped;
 	psp_aime_job_now[0] = aime_now;
+}
+
+/* "lightringlook" (B50): the render job serves the ring between records,
+and one record, the spotlight's light pass over the level's triangles near
+the player (DEFER_LIGHT_DRAW, with its cut pieces), runs past the ring's
+10 ms deadline on the ME, so a points job pushed meanwhile came back late
+and the ring rested for a second (all 12 lates of a census of d20's
+flashlight stretch). The pass's triangle loop holds nothing a ring job
+reads or writes (its state is the GE layer's: the light, the near plane,
+the pieces, the list), so the ring is served there: at most once every
+INNER_GAP_CYCLES of the ME's clock, and only with room on the stack for the
+deepest ring job above the AI job's guard (a render job can run nested in
+the AI job's yields, on its stack). The ring alone: audio is mixed between
+records as before, and inside the drain only before a ring job, as it is
+there. Inside a nested render job the AI job's mark is down, as in
+psp_me_yield, so the drain runs to the ring's end */
+static PSP_AIME_ME_SIDE unsigned int light_look_mark = 0;
+
+void psp_me_ring_look_start(void)
+{
+	if (psp_on_me())
+		light_look_mark = me_cycles();
+}
+
+void psp_me_ring_look(void)
+{
+	volatile struct me_private *p;
+	unsigned int now, sp, popped, last_look;
+	int aime_now;
+
+	if (!psp_on_me())
+		return;
+	now = me_cycles();
+	if (now - light_look_mark < INNER_GAP_CYCLES)
+		return;
+	light_look_mark = now;
+	__asm__ __volatile__("move %0, $sp" : "=r"(sp));
+	if (sp < ME_EDRAM + (me_stack_top - (ME_EDRAM_STACK_TOP - ME_EDRAM_AIME_STACK)) + ME_EDRAM_AIME_GUARD_BYTES +
+			INNER_STACK_ROOM)
+	{
+		INNER_STATS->light_low++;
+		return;
+	}
+	p = ME_PRIVATE;
+	INNER_STATS->light_looks++;
+#ifdef PSP_RECON
+	if (CONTROL->features & ME_FEATURE_STASH)
+		STASH[STASH_LOOK] = now;
+#endif
+	if (!p->ring_ready || p->in_ring || RING_PUSHED == p->ring_popped)
+		return;
+	aime_now = psp_aime_job_now[0];
+	psp_aime_job_now[0] = 0;
+	popped = p->ring_popped;
+	last_look = p->ring_last_look;
+	p->ring_popped = me_ring_drain(popped, &last_look, aime_now ? &SLOT(ME_SLOT_AI)->args[ME_JOB_ARGS - 1] : NULL);
+	p->ring_last_look = last_look;
+	INNER_STATS->light_jobs += p->ring_popped - popped;
+	psp_aime_job_now[0] = aime_now;
+	/* counted in the render slot's time and the ring's: the busy share
+	takes it off once, as psp_me_yield's drain */
+	light_look_mark = me_cycles();
+	nested_cycles_total += light_look_mark - now;
 }
 
 /* the job on the ME, on the ME's own stack in its eDRAM. Its deepest reach
@@ -4625,6 +4689,16 @@ void psp_me_report(void)
 		inner_seen[0] = yields;
 		inner_seen[1] = jobs;
 		inner_seen[2] = low;
+		/* lightringlook's looks inside the light pass */
+		yields = INNER_STATS->light_looks;
+		jobs = INNER_STATS->light_jobs;
+		low = INNER_STATS->light_low;
+		if (yields != inner_seen[3] || low != inner_seen[5])
+			platform_log("ME: inside the light pass (lightringlook): %u looks, %u ring jobs run in them, %u looks passed by for the stack",
+				yields - inner_seen[3], jobs - inner_seen[4], low - inner_seen[5]);
+		inner_seen[3] = yields;
+		inner_seen[4] = jobs;
+		inner_seen[5] = low;
 	}
 	if (me_state == 1 && stats[ME_SLOT_AUDIO].jobs)
 	{

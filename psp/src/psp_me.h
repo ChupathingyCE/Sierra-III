@@ -181,6 +181,11 @@ void psp_me_yield_slots(void);
 the ring's waiting jobs (not audio) at most every ~1 ms of the ME's clock,
 and only with a ring job's stack room left above the job's guard */
 void psp_me_yield_inner(void);
+/* from a long record of the render job's ("lightringlook": the light
+pass's triangle loop): the ring served at most every ~1 ms of the ME's
+clock from the start mark, and only with a ring job's stack room left */
+void psp_me_ring_look_start(void);
+void psp_me_ring_look(void);
 #ifdef PSP_RECON
 /* on the ME: where a long slot job is, for a late ring job's stash report */
 void psp_me_stash_place(unsigned int place);
