@@ -42007,13 +42007,15 @@ void psp_aime_step(
 ME's job, or aimefpu's pass alike): a look at the collection's word (the
 ME's job only) or aimelate's count; once either is up, the actor in hand
 goes back to its copies and the pass ends at its next actor */
-/* aimeringlook (B50): audio and the ring served inside an actor's thinking,
+/* aimeringlook (B50): the ring served inside an actor's thinking,
 at the word's looks and between perception's props (psp_me_yield_inner
 says how often), the census's step put back after it */
 void psp_aime_ring_yield(
 	void)
 {
-	if (psp_aime_ring_looks && psp_aime_job_now[0] && !psp_aime_late_now)
+	/* never once the word is up: the look after this answers it */
+	if (psp_aime_ring_looks && psp_aime_job_now[0] && !psp_aime_late_now &&
+		!(psp_aime2a_abort && *psp_aime2a_abort))
 	{
 		int step = psp_aime_step_now, tag = psp_aime_step_tag_now;
 

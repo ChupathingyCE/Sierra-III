@@ -178,8 +178,8 @@ void psp_me_yield(void);
 asked for meanwhile is run now too, so the record never waits behind it */
 void psp_me_yield_slots(void);
 /* from the AI job's looks inside an actor's thinking ("aimeringlook"):
-psp_me_yield at most every ~1 ms of the ME's clock, and only with a ring
-job's stack room left above the job's guard */
+the ring's waiting jobs (not audio) at most every ~1 ms of the ME's clock,
+and only with a ring job's stack room left above the job's guard */
 void psp_me_yield_inner(void);
 #ifdef PSP_RECON
 /* on the ME: where a long slot job is, for a late ring job's stash report */
