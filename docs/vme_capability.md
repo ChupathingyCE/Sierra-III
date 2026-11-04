@@ -211,7 +211,7 @@ Each PE has a second unit behind its primary. It is fed from the staging latch (
   - The IIR codes are running sums: (Σb) >> k, the output shifted but not fed back.
   - The address units step by constants.
   - The decoder's blocks are undocumented and unpowered in a game.
-- **Sheepdog01's question** (it decodes H.264 at 480p 30 fps, so is there no headroom?): the headroom is in the decoder's own fixed blocks (VLD, transforms, prediction, deblocking) and the AVC DMA paths. Those are a fixed video pipeline, not a general engine. The VME's general part is measured above (4 ops a cycle when data is resident), with the moving serial. The video rate comes from fixed blocks reading the ME's eDRAM directly, not from the VME's buffers [U].
+- **The question behind this round** (the ME decodes H.264 at 480p 30 fps, so is there no headroom?): the headroom is in the decoder's own fixed blocks (VLD, transforms, prediction, deblocking) and the AVC DMA paths. Those are a fixed video pipeline, not a general engine. The VME's general part is measured above (4 ops a cycle when data is resident), with the moving serial. The video rate comes from fixed blocks reading the ME's eDRAM directly, not from the VME's buffers [U].
 
 **What's left:**
 - The PSP-3000's run of round 2.
