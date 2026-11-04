@@ -1149,7 +1149,7 @@ static const struct
 	{ "wxdead", "wxdeadoff" }, { "texavg", "texavgoff" }, { "lightcarry", "lightcarryoff" }, { "sndedram", "sndedramoff" }, { "musadpcm", "musadpcmoff" },
 	{ "lightringlook", "lightringlookoff" }, { "aimeobslook", "aimeobslookoff" }, { "lightfirst", "lightfirstoff" },
 	{ "sndtierback", "sndtierbackoff" }, { "drawpart", "drawpartoff" }, { "p2pass", "p2passoff" },
-	{ "mepointsclaim", "mepointsclaimoff" },
+	{ "mepointsclaim", "mepointsclaimoff" }, { "aimepathlook", "aimepathlookoff" },
 };
 static char keep_defaults_added[KEEP_DEFAULTS_ROOM] = "";
 /* defaults that found no room: a lever silently off would be read as on */
@@ -1230,7 +1230,10 @@ static void keep_defaults_add(void)
 	on the PSP; docs/review_drawpart.md). mepointsclaim: a points job the ME
 	hasn't begun when the main CPU's loop has made every point is left to it,
 	not waited for, so a busy ME doesn't rest the ring (exact; the emulator
-	runs no ME code; docs/review_mepointsclaim.md) */
+	runs no ME code; docs/review_mepointsclaim.md). aimepathlook: the AI job
+	looks at the collection's word while an actor's path is smoothed and its
+	obstacles gathered too, the stretch that held the ME longest without a look
+	(exact; docs/review_aimepathlook.md) */
 	for (k = 0; k < (int)(sizeof(keep_levers) / sizeof(keep_levers[0])); k++)
 		if (!keep_search(keep_levers[k].off))
 			keep_default_add(keep_levers[k].word);

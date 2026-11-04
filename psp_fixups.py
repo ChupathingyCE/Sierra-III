@@ -42060,7 +42060,7 @@ the collection's word. Steps: 0 the yield between actors (audio, the ring),
 decision loop and the rest of its update; each step's longest run, in the
 ME's cycles, and the step in hand (read at a stop, when the word went
 unanswered). On the ME only: its cycle counter can't be read elsewhere */
-#define PSP_AIME_STEPS 13
+#define PSP_AIME_STEPS 15
 static PSP_AIME_ME_SIDE int psp_aime_step_now = -1, psp_aime_step_tag_now = -1;
 /* "aimeringlook" (psp_aime_late_check): read once, on the main CPU */
 int psp_aime_ring_looks = 0;
@@ -42362,10 +42362,12 @@ static void psp_aime2a_log(
 				(unsigned int)(psp_aime_step_worst[8] / per_us), psp_aime_step_worst_tag[8] == 1 ? "the actor's area" : "the target's",
 				(unsigned int)(psp_aime_step_worst[9] / per_us), (unsigned int)(psp_aime_step_worst[10] / per_us));
 		if (per_us > 0.0f)
-			platform_psp_log("aime2a: game time %ld | the job's longest stretch between places it could answer the word %u us, from step %d's to step %d's (-1 the pass's end), steps marked inside it (a bit each) %05x; an obstacle-avoidance step %u, after an actor's path is built %u (aimeobslook %s)",
+			platform_psp_log("aime2a: game time %ld | the job's longest stretch between places it could answer the word %u us, from step %d's to step %d's (-1 the pass's end), steps marked inside it (a bit each) %05x; an obstacle-avoidance step %u, after an actor's path is built %u (aimeobslook %s); building a path: a smoothing test %u, an obstacle gathered %u (aimepathlook %s)",
 				now, (unsigned int)(psp_aime_answer_worst / per_us), psp_aime_answer_worst_from, psp_aime_answer_worst_to,
 				psp_aime_answer_worst_steps, (unsigned int)(psp_aime_step_worst[11] / per_us),
-				(unsigned int)(psp_aime_step_worst[12] / per_us), psp_aime_obstacle_looks ? "on" : "off");
+				(unsigned int)(psp_aime_step_worst[12] / per_us), psp_aime_obstacle_looks ? "on" : "off",
+				(unsigned int)(psp_aime_step_worst[13] / per_us), (unsigned int)(psp_aime_step_worst[14] / per_us),
+				psp_aime_path_looks ? "on" : "off");
 	}
 	if (psp_aime_chain_on > 0)
 	{
@@ -42632,6 +42634,7 @@ FIXES_AIME2A["source/ai/path_obstacle_avoidance.c#aimelook"] = [
 	struct obstacle_path *path)
 {""",
  """void psp_aime_search_look(int step); /* actors.c (FIXES_AIME2A) */
+void psp_aime_build_look(int step); /* actors.c (FIXES_AIME2A) */
 extern int psp_aime_arm;
 
 static boolean path_iterate(
@@ -42682,6 +42685,74 @@ static boolean path_state_traverse(
 		/* (the look first, in the declaration, so the block's declarations stay ahead of its code) */
 		short cheapest_node_index = ((psp_aime_arm ? psp_aime_decision_look(10, 0) : (void)0),
 			path_heap_pop_cheapest_node(state));"""),
+]
+# B56: from a path search's last node to the obstacle-avoidance search's first
+# step, building the path ran 9 ms with no look (the PSP-1000 on d20): the
+# smoothing's pill tests across the raw path and its turning points, then the
+# obstacles' gathering. Each pill test, turning point, object and disc holds
+# only the build's own locals between them, and no collision walk is open
+# there, so a stop is put back by 1b's copies as at the steps either side
+# (psp_aime_build_look)
+FIXES_AIME2A["source/ai/path_smoothing.c#aimelook"] = [
+("""void path_smooth(
+	struct path_state *state,""",
+ """void psp_aime_build_look(int step); /* actors.c (FIXES_AIME2A) */
+extern int psp_aime_arm;
+#define PSP_AIME_BUILD_LOOK() (psp_aime_arm ? psp_aime_build_look(13) : (void)0)
+
+void path_smooth(
+	struct path_state *state,"""),
+("""				for (i = raw_step_count - 1; i >= step_index; i--)
+				{
+					if (!structure_test_pill2d(""",
+ """				for (i = raw_step_count - 1; i >= step_index; i--)
+				{
+					PSP_AIME_BUILD_LOOK();
+					if (!structure_test_pill2d("""),
+("""			for (i = step_index; i < raw_step_count; i++)
+			{
+				if (structure_test_pill2d(""",
+ """			for (i = step_index; i < raw_step_count; i++)
+			{
+				PSP_AIME_BUILD_LOOK();
+				if (structure_test_pill2d("""),
+("""			found_clockwise = find_turning_point(""",
+ """			PSP_AIME_BUILD_LOOK();
+			found_clockwise = find_turning_point("""),
+("""			found_counterclockwise = find_turning_point(""",
+ """			PSP_AIME_BUILD_LOOK();
+			found_counterclockwise = find_turning_point("""),
+]
+FIXES_AIME2A["source/ai/path_obstacle_avoidance.c#aimelook"].append((
+"""		if (compute_obstacles)
+		{
+			obstacles_new(obstacles);""",
+"""		if (psp_aime_arm)
+			psp_aime_build_look(14);
+		if (compute_obstacles)
+		{
+			obstacles_new(obstacles);"""))
+FIXES_AIME2A["source/ai/path_obstacles.c#aimelook"] = [
+("""void obstacles_get_discs_in_sphere(""",
+ """void psp_aime_build_look(int step); /* actors.c (FIXES_AIME2A) */
+extern int psp_aime_arm;
+#define PSP_AIME_BUILD_LOOK() (psp_aime_arm ? psp_aime_build_look(14) : (void)0)
+
+void obstacles_get_discs_in_sphere("""),
+("""		long object_index = object_indices[object_number];
+		struct object_datum *object = object_get(object_index);""",
+ """		/* (the look first, in the declaration, so the block's declarations stay ahead of its code) */
+		long object_index = (PSP_AIME_BUILD_LOOK(), object_indices[object_number]);
+		struct object_datum *object = object_get(object_index);"""),
+("""	for (disc_index = 0; disc_index < obstacles->disc_count; disc_index++)
+	{
+		if (obstacles->discs[disc_index].obstacle_index == NONE)
+		{""",
+ """	for (disc_index = 0; disc_index < obstacles->disc_count; disc_index++)
+	{
+		PSP_AIME_BUILD_LOOK();
+		if (obstacles->discs[disc_index].obstacle_index == NONE)
+		{"""),
 ]
 FIXES_AIME2A["source/ai/actors.c#aime2a_late"] = [
 ("""static void actor_update(
@@ -42781,6 +42852,22 @@ void psp_aime_search_mark(
 	int step)
 {
 	PSP_AIME_MARK(step, -1);
+}
+
+/* "aimepathlook" (B56): the look while an actor's path is built, between
+the path search's last node and the obstacle-avoidance search's first step
+(path_smoothing.c, path_obstacle_avoidance.c, path_obstacles.c): step 13 the
+smoothing's pill tests and turning points, step 14 the obstacles' gathering.
+That stretch held the ME 9 ms without a look on d20, so a ring job pushed
+meanwhile (aimeringlook serves it at the looks) passed its deadline.
+"aimepathlookoff": the marks only, no look */
+int psp_aime_path_looks = 1;
+void psp_aime_build_look(
+	int step)
+{
+	PSP_AIME_MARK(step, -1);
+	if (psp_aime_path_looks && psp_aime_arm && (psp_aime_job_now[0] || psp_aime_fpu_main) && psp_aime_here())
+		psp_aime_late_check();
 }
 
 static void actor_decision_loop(
@@ -42926,6 +43013,11 @@ FIXES_AIME2A["source/ai/actors.c#aime2a"].append((
 				extern int psp_aime_obstacle_looks;
 
 				psp_aime_obstacle_looks = psp_keep("aimeobslook") != 0;
+			}
+			{
+				extern int psp_aime_path_looks;
+
+				psp_aime_path_looks = psp_keep("aimepathlook") != 0;
 			}
 			psp_aime_ring_looks = psp_keep("aimeringlook") != 0;
 		}
