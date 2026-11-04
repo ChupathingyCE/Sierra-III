@@ -1147,7 +1147,7 @@ static const struct
 	const char *word, *off;
 } keep_levers[] = {
 	{ "wxdead", "wxdeadoff" }, { "texavg", "texavgoff" }, { "lightcarry", "lightcarryoff" }, { "sndedram", "sndedramoff" }, { "musadpcm", "musadpcmoff" },
-	{ "lightringlook", "lightringlookoff" }, { "aimeobslook", "aimeobslookoff" }, { "sndtierback", "sndtierbackoff" },
+	{ "lightringlook", "lightringlookoff" }, { "aimeobslook", "aimeobslookoff" },
 };
 static char keep_defaults_added[KEEP_DEFAULTS_ROOM] = "";
 
@@ -1204,7 +1204,8 @@ static void keep_defaults_add(void)
 	collection's word between the steps of the obstacle-avoidance search too,
 	so building a path can't hold the word past its bound and stop the ME.
 	sndtierback: at an ME stop the tier's playing sounds are copied into the
-	main tier, so they stay audible (docs/review_mestop.md) */
+	main tier, so they stay audible: off until it runs on a PSP without a hang
+	(docs/review_mestop.md) */
 	for (k = 0; k < (int)(sizeof(keep_levers) / sizeof(keep_levers[0])); k++)
 		if (!keep_search(keep_levers[k].off))
 			keep_default_add(keep_levers[k].word);
