@@ -583,6 +583,7 @@ CPU's words for it: publish each stall address, and serve the ring's jobs
 between records (geinflight) */
 static int replay_inflight = 0;
 static PSP_MAIN_SIDE int replay_kinds_on = 0; /* "mekinds" (see defer_replay) */
+static PSP_MAIN_SIDE int light_ring_look = 0; /* "lightringlook" (psp_ge_light_draw_body; psp_me.c) */
 static PSP_MAIN_SIDE int widget_sprites_off = 0; /* "nowidgetsprites" (defer_frame_begin) */
 static PSP_MAIN_SIDE int shadow_indexed = 1; /* "shadowindexoff" (defer_frame_begin; psp_ge_shadow_draw_body) */
 static PSP_MAIN_SIDE int shadow_rim_cull = 1; /* "shadowrimoff" (the same) */
@@ -853,6 +854,9 @@ static void defer_frame_begin(void)
 					platform_log("GE: texpretouch: each recorded draw's textures read in as it is written down, for the replay's binds%s",
 						pretouch_all ? " (txptall: every texture a record names)" : "");
 				replay_kinds_on = psp_keep("mekinds") != 0;
+				light_ring_look = psp_keep("lightringlook") != 0;
+				if (light_ring_look)
+					platform_log("GE: lightringlook: the ME serves the ring inside the light pass, at most every ~1 ms");
 				if (replay_kinds_on)
 					platform_log("GE: mekinds: each record kind timed as it's carried out, the main CPU's and the ME's apart (a line each 300 frames)");
 				if (me_bench)
@@ -1480,6 +1484,10 @@ static void defer_replay(const defer_word *buffer, unsigned int used, int on_me)
 
 		at += buffer[at].u >> 8;
 		psp_me_record_kind = kind;
+#ifdef PSP_RECON
+		if (on_me)
+			psp_me_stash_place(0x04000000u | (unsigned int)kind);
+#endif
 		if (timed)
 		{
 			kind_before = kind < REPLAY_KINDS - 1 ? kind : 0;
@@ -22222,10 +22230,18 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 
 	if (probes_on)
 		light_setup_us += light_loop_start - light_call_start;
+	/* the pass can hold the ME past a ring job's deadline: the ring is
+	served from inside it (psp_me_ring_look), every 8 triangles a clock read */
+	int ring_look = light_ring_look && psp_on_me();
 
+	if (ring_look)
+		psp_me_ring_look_start();
 	for (index = 0; index < triangle_count && kept_count < SCRATCH_TRIANGLES; index++)
 	{
 		const unsigned short *triangle = indices + 3 * index;
+
+		if (ring_look && (index & 7) == 7)
+			psp_me_ring_look();
 		/* after b116: no clear of all 33 floats a triangle; each corner's
 		fields are written below before they're read, but 6 and 10 (an
 		independent review) */

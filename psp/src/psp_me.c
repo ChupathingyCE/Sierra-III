@@ -187,6 +187,9 @@ main CPU only reads it */
 #define STASH_PUSHED 10   /* the ring's pushed count as the ME last read it */
 #define STASH_AUDIO_RANGES 11 /* audio blocks the ME handed over by ranges */
 #define STASH_SLOTS_IN 12 /* the slot jobs in hand, a bit per type: nested ones show beside their host */
+#define STASH_LOOK 13     /* the ME's clock at its last look at the ring */
+#define STASH_PLACE 14    /* PSP_RECON: where in a long slot job the ME is (psp_me_stash_place) */
+#define STASH_PLACE_CLOCK 15 /* the ME's clock when it got there */
 #define STASH_WORDS 32
 #define STASH_IDLE 1
 #define STASH_SLOT_DROP 2 /* a slot job's cache work before it */
@@ -849,6 +852,7 @@ static int me_audio_now(void)
 }
 
 static unsigned int me_ring_drain(unsigned int popped, unsigned int *last_look, volatile const unsigned int *stop);
+static void psp_me_inner_reset(void);
 
 /* called by a long job on the ME (the GE layer's replay, psp_ge.c's
 defer_replay) every few records: an audio block asked for meanwhile is mixed
@@ -897,6 +901,11 @@ void psp_me_yield(void)
 	psp_aime_job_now[0] = 0;
 	me_audio_now();
 	p = ME_PRIVATE;
+#ifdef PSP_RECON
+	/* a look that finds the ring empty is a look too */
+	if (p->ring_ready && !p->in_ring && (CONTROL->features & ME_FEATURE_STASH))
+		STASH[STASH_LOOK] = me_cycles();
+#endif
 	if (p->ring_ready && !p->in_ring && RING_PUSHED != p->ring_popped)
 	{
 		unsigned int last_look = p->ring_last_look;
@@ -931,6 +940,10 @@ static PSP_AIME_ME_SIDE unsigned int nested_renders = 0, nested_worst = 0, neste
 the only way in, yet b30 ran one with it off: 41178529227 run 2) */
 static PSP_AIME_ME_SIDE unsigned int nested_features = 0;
 
+/* the ME's clock at the AI job's last yield, between actors or inside one
+(psp_me_yield_inner) */
+static PSP_AIME_ME_SIDE unsigned int inner_mark = 0;
+
 void psp_me_yield_slots(void)
 {
 	volatile struct me_slot *slot;
@@ -939,6 +952,7 @@ void psp_me_yield_slots(void)
 
 	if (!psp_on_me())
 		return;
+	inner_mark = me_cycles();
 	psp_me_yield();
 	aime_now = psp_aime_job_now[0];
 	psp_aime_job_now[0] = 0;
@@ -1332,7 +1346,10 @@ static unsigned int me_ring_drain(unsigned int popped, unsigned int *last_look, 
 	int audio_first = (CONTROL->features & ME_FEATURE_AUDIO_FIRST) != 0;
 
 	if (CONTROL->features & ME_FEATURE_STASH)
+	{
 		STASH[STASH_PUSHED] = pushed;
+		STASH[STASH_LOOK] = looked;
+	}
 	while (popped != pushed && !(stop && *stop))
 	{
 		if (audio_first && me_audio_now())
@@ -2163,6 +2180,7 @@ int psp_me_start(void)
 	sceKernelDcacheWritebackInvalidateRange(stash_storage, sizeof(stash_storage));
 	for (k = 0; k < STASH_WORDS; k++)
 		STASH[k] = 0;
+	psp_me_inner_reset();
 	ring_on = psp_me_slant_wanted() || psp_me_rays_wanted() || psp_keep("meringtest") || psp_keep("mebatchtest") ||
 		!psp_keep("nomepoints");
 #ifdef PSP_RECON
@@ -2777,6 +2795,148 @@ int psp_me_aime_guard_touched(void)
 	return 0;
 }
 
+#ifdef PSP_RECON
+/* where a long slot job is, for the stash's report of a late ring job */
+void psp_me_stash_place(unsigned int place)
+{
+	if (!psp_on_me() || !(CONTROL->features & ME_FEATURE_STASH))
+		return;
+	STASH[STASH_PLACE] = place;
+	STASH[STASH_PLACE_CLOCK] = me_cycles();
+}
+#endif
+
+/* "aimeringlook" (B50): the AI job yields only between actors, and one
+actor's thinking runs up to ~19 ms on the ME (R3's census), so a ring job
+pushed meanwhile (the frame's points, pushed while the job runs) missed its
+10 ms deadline and the ring rested for a second. The job's looks at the
+collection's word inside an actor, and the head of each prop perception
+tests (psp_fixups.py psp_aime_ring_yield), sit where its work holds nothing
+shared, so the ring is served there too: at most once every
+INNER_GAP_CYCLES, so a path search's looks (one a node) cost one clock read
+each, and only with room on the stack for the deepest ring job (a points or
+rays job's allowance) above the guard. The ring alone, not audio: an audio
+block there (~5-7 ms on d20) held the word's answer past the collection's
+20 ms bound and stopped the ME in a PSP pair; audio waits for the next
+actor, as before */
+#define INNER_GAP_CYCLES (333u * 1000u) /* ~1 ms of the ME's clock */
+#define INNER_STACK_ROOM (RING_RAYS_STACK_BYTES + 16 * 1024)
+static struct
+{
+	unsigned int yields, ring_jobs, low, light_looks, light_jobs, light_low, pad[10];
+} inner_stats_storage __attribute__((aligned(64)));
+#define INNER_STATS UNCACHED(&inner_stats_storage)
+static unsigned int inner_seen[6];
+
+/* at start: the counters' lines out of this CPU's cache (a dirty line
+written back later would put back zeros over the ME's counts) */
+static void psp_me_inner_reset(void)
+{
+	sceKernelDcacheWritebackInvalidateRange(&inner_stats_storage, sizeof(inner_stats_storage));
+	INNER_STATS->yields = INNER_STATS->ring_jobs = INNER_STATS->low = 0;
+	INNER_STATS->light_looks = INNER_STATS->light_jobs = INNER_STATS->light_low = 0;
+	memset(inner_seen, 0, sizeof(inner_seen));
+}
+
+void psp_me_yield_inner(void)
+{
+	volatile struct me_private *p;
+	unsigned int now, sp, popped, last_look;
+	int aime_now;
+
+	if (!psp_on_me())
+		return;
+	now = me_cycles();
+	if (now - inner_mark < INNER_GAP_CYCLES)
+		return;
+	inner_mark = now;
+	__asm__ __volatile__("move %0, $sp" : "=r"(sp));
+	if (!aime_guard || sp < (unsigned int)aime_guard + ME_EDRAM_AIME_GUARD_BYTES + INNER_STACK_ROOM)
+	{
+		INNER_STATS->low++;
+		return;
+	}
+	p = ME_PRIVATE;
+	INNER_STATS->yields++;
+	if (!p->ring_ready || p->in_ring || RING_PUSHED == p->ring_popped)
+		return;
+	/* as psp_me_yield's drain: the jobs run here aren't the AI job, and
+	the drain stops at the collection's word */
+	aime_now = psp_aime_job_now[0];
+	psp_aime_job_now[0] = 0;
+	if (aime_now)
+		psp_aime_step(7);
+	popped = p->ring_popped;
+	last_look = p->ring_last_look;
+	p->ring_popped = me_ring_drain(popped, &last_look, &SLOT(ME_SLOT_AI)->args[ME_JOB_ARGS - 1]);
+	p->ring_last_look = last_look;
+	INNER_STATS->ring_jobs += p->ring_popped - popped;
+	psp_aime_job_now[0] = aime_now;
+}
+
+/* "lightringlook" (B50): the render job serves the ring between records,
+and one record, the spotlight's light pass over the level's triangles near
+the player (DEFER_LIGHT_DRAW, with its cut pieces), runs past the ring's
+10 ms deadline on the ME, so a points job pushed meanwhile came back late
+and the ring rested for a second (all 12 lates of a census of d20's
+flashlight stretch). The pass's triangle loop holds nothing a ring job
+reads or writes (its state is the GE layer's: the light, the near plane,
+the pieces, the list), so the ring is served there: at most once every
+INNER_GAP_CYCLES of the ME's clock, and only with room on the stack for the
+deepest ring job above the AI job's guard (a render job can run nested in
+the AI job's yields, on its stack). The ring alone: audio is mixed between
+records as before, and inside the drain only before a ring job, as it is
+there. Inside a nested render job the AI job's mark is down, as in
+psp_me_yield, so the drain runs to the ring's end */
+static PSP_AIME_ME_SIDE unsigned int light_look_mark = 0;
+
+void psp_me_ring_look_start(void)
+{
+	if (psp_on_me())
+		light_look_mark = me_cycles();
+}
+
+void psp_me_ring_look(void)
+{
+	volatile struct me_private *p;
+	unsigned int now, sp, popped, last_look;
+	int aime_now;
+
+	if (!psp_on_me())
+		return;
+	now = me_cycles();
+	if (now - light_look_mark < INNER_GAP_CYCLES)
+		return;
+	light_look_mark = now;
+	__asm__ __volatile__("move %0, $sp" : "=r"(sp));
+	if (sp < ME_EDRAM + (me_stack_top - (ME_EDRAM_STACK_TOP - ME_EDRAM_AIME_STACK)) + ME_EDRAM_AIME_GUARD_BYTES +
+			INNER_STACK_ROOM)
+	{
+		INNER_STATS->light_low++;
+		return;
+	}
+	p = ME_PRIVATE;
+	INNER_STATS->light_looks++;
+#ifdef PSP_RECON
+	if (CONTROL->features & ME_FEATURE_STASH)
+		STASH[STASH_LOOK] = now;
+#endif
+	if (!p->ring_ready || p->in_ring || RING_PUSHED == p->ring_popped)
+		return;
+	aime_now = psp_aime_job_now[0];
+	psp_aime_job_now[0] = 0;
+	popped = p->ring_popped;
+	last_look = p->ring_last_look;
+	p->ring_popped = me_ring_drain(popped, &last_look, aime_now ? &SLOT(ME_SLOT_AI)->args[ME_JOB_ARGS - 1] : NULL);
+	p->ring_last_look = last_look;
+	INNER_STATS->light_jobs += p->ring_popped - popped;
+	psp_aime_job_now[0] = aime_now;
+	/* counted in the render slot's time and the ring's: the busy share
+	takes it off once, as psp_me_yield's drain */
+	light_look_mark = me_cycles();
+	nested_cycles_total += light_look_mark - now;
+}
+
 /* the job on the ME, on the ME's own stack in its eDRAM. Its deepest reach
 is measured the same way, every nested job included (audio, the ring and a
 render job run inside its yields, on the same stack): the room below the
@@ -2944,6 +3104,20 @@ static __attribute__((noinline, cold)) void me_stash_dump(const char *why)
 		stash[STASH_RING_ENDED], stash[STASH_PUSHED], RING_POPPED, stash[STASH_SLOT_BEGUN], stash[STASH_SLOT_ENDED],
 		stash[STASH_SLOTS_IN], stash[STASH_AUDIO_INSIDE], stash[STASH_CLOCK], now, (int)((float)(int)(now - stash[STASH_CLOCK]) / rate),
 		CONTROL->alive);
+	{
+		/* the ME's clock can't be read here: its latest mark stands in for
+		now, so each age is a lower bound */
+		unsigned int marks[4] = { stash[STASH_CLOCK], stash[STASH_PLACE_CLOCK], stash[STASH_LOOK], now }, latest = marks[0], k;
+
+		for (k = 1; k < 4; k++)
+			if ((int)(marks[k] - latest) > 0)
+				latest = marks[k];
+		platform_log("ME: stash (%s), continued: the ME's last look at the ring %d us before its latest mark; a long job's place %08x "
+			"(PSP_RECON; the AI job's 0f0000ss with ss its step and the tag above, the render job's 040000kk with kk the record's kind), "
+			"reached %d us before it; the note %d us before it",
+			why, (int)((float)(int)(latest - stash[STASH_LOOK]) / rate), stash[STASH_PLACE],
+			(int)((float)(int)(latest - stash[STASH_PLACE_CLOCK]) / rate), (int)((float)(int)(latest - stash[STASH_CLOCK]) / rate));
+	}
 	psp_log_flush();
 }
 
@@ -4505,6 +4679,27 @@ void psp_me_report(void)
 		(double)window / 1e6, (unsigned long)nested_us_last, length ? line : "; no jobs");
 	if (ring_line[0])
 		platform_log("%s", ring_line);
+	{
+		/* aimeringlook's yields inside an actor's thinking since the last line */
+		unsigned int yields = INNER_STATS->yields, jobs = INNER_STATS->ring_jobs, low = INNER_STATS->low;
+
+		if (yields != inner_seen[0] || low != inner_seen[2])
+			platform_log("ME: inside the AI job's actors (aimeringlook): %u yields, %u ring jobs run in them, %u looks passed by for the stack",
+				yields - inner_seen[0], jobs - inner_seen[1], low - inner_seen[2]);
+		inner_seen[0] = yields;
+		inner_seen[1] = jobs;
+		inner_seen[2] = low;
+		/* lightringlook's looks inside the light pass */
+		yields = INNER_STATS->light_looks;
+		jobs = INNER_STATS->light_jobs;
+		low = INNER_STATS->light_low;
+		if (yields != inner_seen[3] || low != inner_seen[5])
+			platform_log("ME: inside the light pass (lightringlook): %u looks, %u ring jobs run in them, %u looks passed by for the stack",
+				yields - inner_seen[3], jobs - inner_seen[4], low - inner_seen[5]);
+		inner_seen[3] = yields;
+		inner_seen[4] = jobs;
+		inner_seen[5] = low;
+	}
 	if (me_state == 1 && stats[ME_SLOT_AUDIO].jobs)
 	{
 		/* how often the audio thread woke to look (mepoll's measure; the
