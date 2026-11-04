@@ -869,6 +869,7 @@ void psp_me_serve_audio(void)
 only in its own work (psp_post.h's psp_aime_here) */
 extern int psp_aime_job_now[16];
 void psp_aime_step(int step); /* actors.c (psp_fixups.py FIXES_AIME2A) */
+void psp_aime_answer_point(int step); /* actors.c: a place the word could be answered */
 #if PSP_MUSIC
 int psp_me_music_yield(void)
 {
@@ -1352,6 +1353,10 @@ static unsigned int me_ring_drain(unsigned int popped, unsigned int *last_look, 
 	}
 	while (popped != pushed && !(stop && *stop))
 	{
+		/* inside the AI job the word was just tested: a place it could be
+		answered, so the census's stretch is one ring job, not the drain */
+		if (stop)
+			psp_aime_answer_point(7);
 		if (audio_first && me_audio_now())
 			me_count(STASH_AUDIO_INSIDE);
 		ring_run(popped & RING_MASK, 1, me_cycles() - *last_look);
@@ -1359,6 +1364,8 @@ static unsigned int me_ring_drain(unsigned int popped, unsigned int *last_look, 
 		RING_POPPED = popped;
 		__asm__ __volatile__("sync");
 	}
+	if (stop)
+		psp_aime_answer_point(7);
 	/* anything pushed after the read above came after this moment */
 	*last_look = looked;
 	return popped;
