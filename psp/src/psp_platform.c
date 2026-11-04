@@ -1149,6 +1149,7 @@ static const struct
 	{ "wxdead", "wxdeadoff" }, { "texavg", "texavgoff" }, { "lightcarry", "lightcarryoff" }, { "sndedram", "sndedramoff" }, { "musadpcm", "musadpcmoff" },
 	{ "lightringlook", "lightringlookoff" }, { "aimeobslook", "aimeobslookoff" }, { "lightfirst", "lightfirstoff" },
 	{ "sndtierback", "sndtierbackoff" }, { "drawpart", "drawpartoff" }, { "p2pass", "p2passoff" },
+	{ "mepointsclaim", "mepointsclaimoff" },
 };
 static char keep_defaults_added[KEEP_DEFAULTS_ROOM] = "";
 /* defaults that found no room: a lever silently off would be read as on */
@@ -1226,7 +1227,10 @@ static void keep_defaults_add(void)
 	and makes them after the walk, so the walk's code and the drawing's each
 	stay in the I-cache across the objects; it turns lightreuse on too, the
 	walk taking the lighting LIGHTFIRST's pass made (exact; c10 frame -6 to -7%
-	on the PSP; docs/review_drawpart.md) */
+	on the PSP; docs/review_drawpart.md). mepointsclaim: a points job the ME
+	hasn't begun when the main CPU's loop has made every point is left to it,
+	not waited for, so a busy ME doesn't rest the ring (exact; the emulator
+	runs no ME code; docs/review_mepointsclaim.md) */
 	for (k = 0; k < (int)(sizeof(keep_levers) / sizeof(keep_levers[0])); k++)
 		if (!keep_search(keep_levers[k].off))
 			keep_default_add(keep_levers[k].word);

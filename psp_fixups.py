@@ -31287,6 +31287,9 @@ static struct psp_points_word psp_points_main_word;
 static struct psp_points_word psp_points_me_word;
 
 static int psp_points_on = -1, psp_points_check = 0, psp_points_min = 8, psp_points_slow_lines = 0, psp_points_clock_here = 0, psp_points_failed_lines = 0;
+/* "mepointsclaim" (B56): a job the ME hasn't begun when the loop is done is
+left to it, not waited for (psp_points_end) */
+static int psp_points_claim = 0;
 static struct psp_point_input *psp_point_inputs; /* the list as it is made: PSP_POINTS_MAX, kept circular */
 static struct psp_point_answer *psp_point_answers;
 static unsigned char *psp_point_slots[2]; /* by kind, a slot's list index + 1, 0 none */
@@ -31297,7 +31300,7 @@ static byte psp_points_breakable[MAXIMUM_BREAKABLE_SURFACES_PER_MAP / 8];
 static struct
 {
 	unsigned long frames, jobs, listed, handed, taken, here, changed, unserved, compared, differed, refused, failed;
-	unsigned long me_made;
+	unsigned long me_made, unbegun;
 	unsigned long slowest_us, slowest_kind, slowest_slot;
 	real longest_reach;
 } psp_points_stats;
@@ -31317,6 +31320,9 @@ static inline int psp_on_me(void)
 main CPU's clock, a system call inside the ME's work that gemesim's check
 would report, so only on asking */
 #define PSP_POINTS_CLOCK_HERE 0x40000u
+/* mepointsclaim: the ME marks the job begun before its first look at the
+main CPU's word */
+#define PSP_POINTS_MARK_BEGUN 0x80000u
 
 /* a point's time, for the slowest point's line: on the ME its cycle counter
 (which faults on the main CPU in user mode); elsewhere microseconds times
@@ -31499,6 +31505,15 @@ void psp_points_me_make(const unsigned int *args, unsigned int *results)
 
 	__asm__ __volatile__("cfc1 %0, $31" : "=r"(control));
 	__asm__ __volatile__("ctc1 %0, $31" : : "r"(args[4]));
+	/* begun, none made: stored before the first look at the main CPU's word,
+	as that CPU stores its stop before it looks at this one, so either it
+	sees this job begun and waits for it, or this job sees the stop and
+	makes nothing (psp_points_end) */
+	if ((args[3] & PSP_POINTS_MARK_BEGUN) && count)
+	{
+		PSP_POINTS_UNCACHED(me_word) = (generation << 16) | count;
+		__asm__ __volatile__("sync");
+	}
 	for (k = (long)count - 1; k >= 0; k--)
 	{
 		struct psp_point_input const *in = &inputs[k];
@@ -31569,6 +31584,7 @@ int psp_points_begin(void)
 		psp_points_check = psp_keep("mepointscheck");
 		psp_points_min = psp_keep_number("mepointsmin", 8);
 		psp_points_clock_here = psp_keep("mepointsclock");
+		psp_points_claim = psp_keep("mepointsclaim");
 		if (psp_points_on)
 		{
 			psp_point_inputs = (struct psp_point_input *)memalign(64, PSP_POINTS_MAX * sizeof(struct psp_point_input));
@@ -31668,7 +31684,7 @@ void psp_points_hand_over(void)
 	__asm__ __volatile__("sync");
 	if (psp_me_push_points(psp_point_inputs, (unsigned int)count, psp_point_answers,
 		(unsigned int)count * sizeof(struct psp_point_answer), psp_points_generation |
-		(psp_points_clock_here ? PSP_POINTS_CLOCK_HERE : 0u), &psp_points_main_word,
+		(psp_points_clock_here ? PSP_POINTS_CLOCK_HERE : 0u) | (psp_points_claim ? PSP_POINTS_MARK_BEGUN : 0u), &psp_points_main_word,
 		&psp_points_me_word, &psp_points_ticket))
 	{
 		psp_points_out = 1;
@@ -31947,7 +31963,14 @@ void psp_points_end(void)
 
 		PSP_POINTS_UNCACHED(&psp_points_main_word) = ((unsigned long)psp_points_generation << 16) | 0xFFFFu;
 		__asm__ __volatile__("sync");
-		if (psp_me_wait(psp_points_ticket, results))
+		/* mepointsclaim (B56): the ME still inside a long slot job's stretch
+		(an actor's thinking) hasn't begun the job, and every point is made
+		here already. When it begins it finds the stop and makes nothing, so
+		there's nothing to wait for: the wait would run out at the ring's
+		deadline, and the ring would rest for a second as if the ME were stuck */
+		if (psp_points_claim && (PSP_POINTS_UNCACHED(&psp_points_me_word) >> 16) != psp_points_generation)
+			psp_points_stats.unbegun++;
+		else if (psp_me_wait(psp_points_ticket, results))
 		{
 			psp_points_stats.me_made += results[0];
 			if (results[0])
@@ -31998,12 +32021,12 @@ void psp_points_end(void)
 			unsigned long frames = psp_points_stats.frames ? psp_points_stats.frames : 1;
 
 			mark = now;
-			platform_psp_log("mepoints: over %lu frames, %lu points listed a frame; %lu hand-overs (%lu refused, %lu failed) of %lu points: "
+			platform_psp_log("mepoints: over %lu frames, %lu points listed a frame; %lu hand-overs (%lu refused, %lu failed, %lu not begun by the loop's end: mepointsclaim) of %lu points: "
 				"the ME made %lu, the loops took %lu of them, made %lu here first, %lu changed since listed, %lu left to this CPU; "
 				"checked %lu, %lu differed; the slowest point the ME made about %lu us (kind %lu slot %lu), the longest first ray "
 				"%.2f world units",
 				psp_points_stats.frames, psp_points_stats.listed / frames, psp_points_stats.jobs, psp_points_stats.refused,
-				psp_points_stats.failed, psp_points_stats.handed, psp_points_stats.me_made, psp_points_stats.taken,
+				psp_points_stats.failed, psp_points_stats.unbegun, psp_points_stats.handed, psp_points_stats.me_made, psp_points_stats.taken,
 				psp_points_stats.here, psp_points_stats.changed, psp_points_stats.unserved, psp_points_stats.compared,
 				psp_points_stats.differed, psp_points_stats.slowest_us, psp_points_stats.slowest_kind,
 				psp_points_stats.slowest_slot, sqrt(psp_points_stats.longest_reach));
