@@ -34315,9 +34315,11 @@ as any main tier sound loads; moved points the voices playing it at the new
 place, which they play muted until the read lands. Playing is the cache's
 counts or a voice with a packet queued in it (in_play): a channel lets go of
 its sound while the mixer still has packets of it queued. What nothing plays
-is given up after, so its next play reads it again into the main tier. counts:
-read again, their bytes, left for want of room, read again by their packets
-alone. Returns the sounds left in the tier */
+is given up after, so its next play reads it again into the main tier. A
+sound with no room stays in the tier, unheld, and the caller tries again as
+the main tier's sounds end (tier_back_retry). counts (added to): read again,
+their bytes, left for want of room, read again by their packets alone.
+Returns the sounds left in the tier */
 #define PSP_TIER_RESCUE_MOST 64
 long psp_sound_tier_rescue(
 	unsigned long low,
@@ -34349,6 +34351,25 @@ long psp_sound_tier_rescue(
 			continue;
 		cache_sound->software_reference_count++;
 		blocks[count++] = iterator.datum_index;
+	}
+	/* the largest first, so the smaller ones fit the holes the larger leave
+	(a full main tier: mestop8 left one sound for want of room) */
+	for (k = 1; k < count; k++)
+	{
+		long block = blocks[k], size = ((struct xbox_cache_sound_datum *)datum_get(xbox_sound_cache_globals.cache_sounds,
+			block))->sound->samples.size;
+		boolean packets = by_packets[k];
+		int j = k;
+
+		while (j > 0 && ((struct xbox_cache_sound_datum *)datum_get(xbox_sound_cache_globals.cache_sounds,
+			blocks[j - 1]))->sound->samples.size < size)
+		{
+			blocks[j] = blocks[j - 1];
+			by_packets[j] = by_packets[j - 1];
+			j--;
+		}
+		blocks[j] = block;
+		by_packets[j] = packets;
 	}
 	for (k = 0; k < count; k++)
 	{

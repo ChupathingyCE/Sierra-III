@@ -1528,6 +1528,12 @@ static int tier_back = -1;
 /* read again, their bytes, left for want of room, read again by their packets
 alone */
 static unsigned long tier_back_counts[4], tier_back_missed = 0, tier_back_gap_blocks = 0;
+/* sounds the rescue left for want of room in the main tier, tried again each
+poll as the main tier's own sounds end (tier_back_retry), for at most
+TIER_BACK_RETRY_US after the stop; the tries made */
+#define TIER_BACK_RETRY_US 30000000
+static unsigned long tier_back_no_room = 0, tier_back_retries = 0;
+static SceUInt64 tier_back_stop_at = 0;
 /* the new blocks whose reads haven't landed: voices in them play muted until
 then (the audio thread reads the table; the game thread fills and clears it) */
 #define TIER_BACK_MOST 64
@@ -2022,8 +2028,43 @@ static void tier_rescue(void)
 	tier_left = psp_sound_tier_rescue((unsigned long)tier_base, (unsigned long)(tier_base + tier_bytes),
 		tier_back_moved, tier_back_in_play, tier_back_counts);
 	pthread_mutex_unlock(&mixer_lock);
+	tier_back_no_room = tier_back_counts[2];
+	tier_back_stop_at = sceKernelGetSystemTimeWide();
 	platform_log("sound tier: the ME stopped: %lu sounds playing or loading (%lu KB; %lu of them by their queued packets alone) read again from the disc into the main tier, %lu left for want of room; %ld left in the tier (sndtierback)",
 		tier_back_counts[0], tier_back_counts[1] / 1024, tier_back_counts[3], tier_back_counts[2], tier_left);
+}
+
+/* a poll after the rescue that left sounds for want of room: the rescue again,
+over what's still in the tier (what found room before is in the main tier
+now and isn't met again); the main tier's blocks free as its sounds end. Like
+the rescue, nothing here touches the eDRAM. Its voices meanwhile mix silent
+from the tier (muted_blocks counts them) */
+static void tier_back_retry(void)
+{
+	unsigned long counts[4] = { 0, 0, 0, 0 };
+
+	if (sceKernelGetSystemTimeWide() - tier_back_stop_at > TIER_BACK_RETRY_US)
+	{
+		platform_log("sound tier: %lu sounds found no room in the main tier within %u s of the ME's stop, after %lu tries (sndtierback)",
+			tier_back_no_room, TIER_BACK_RETRY_US / 1000000, tier_back_retries);
+		tier_back_no_room = 0;
+		return;
+	}
+	tier_back_retries++;
+	game_lock();
+	tier_left = psp_sound_tier_rescue((unsigned long)tier_base, (unsigned long)(tier_base + tier_bytes),
+		tier_back_moved, tier_back_in_play, counts);
+	pthread_mutex_unlock(&mixer_lock);
+	tier_back_counts[0] += counts[0];
+	tier_back_counts[1] += counts[1];
+	tier_back_counts[3] += counts[3];
+	if (counts[0])
+		platform_log("sound tier: %lu sounds (%lu KB) found room in the main tier on try %lu, %lu ms after the ME's stop, and are read again from the disc; %lu still without (sndtierback)",
+			counts[0], counts[1] / 1024, tier_back_retries,
+			(unsigned long)((sceKernelGetSystemTimeWide() - tier_back_stop_at) / 1000), counts[2]);
+	/* what's left without room now, playing still; a sound that stopped
+	meanwhile was given up by the rescue's drain */
+	tier_back_no_room = counts[2];
 }
 
 static void edram_loss(const char *why)
@@ -2157,7 +2198,9 @@ void psp_sound_upload_poll(void)
 	}
 	/* a closed tier's sounds given up as they stop playing (a pass over the
 	cache's sounds every 16th poll), until none is left */
-	if (tier_mode > 0 && edram_lost && tier_left != 0 && tier_polls % 16 == 0)
+	if (tier_mode > 0 && edram_lost && tier_left != 0 && tier_back_no_room)
+		tier_back_retry();
+	else if (tier_mode > 0 && edram_lost && tier_left != 0 && tier_polls % 16 == 0)
 	{
 		long before = tier_left;
 
