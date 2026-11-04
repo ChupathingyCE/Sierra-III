@@ -1146,7 +1146,7 @@ static const struct
 {
 	const char *word, *off;
 } keep_levers[] = {
-	{ "wxdead", "wxdeadoff" }, { "texavg", "texavgoff" }, { "lightcarry", "lightcarryoff" }, { "sndedram", "sndedramoff" },
+	{ "wxdead", "wxdeadoff" }, { "texavg", "texavgoff" }, { "lightcarry", "lightcarryoff" }, { "sndedram", "sndedramoff" }, { "musadpcm", "musadpcmoff" },
 };
 static char keep_defaults_added[KEEP_DEFAULTS_ROOM] = "";
 
@@ -1193,7 +1193,10 @@ static void keep_defaults_add(void)
 	lightcarry: the flashlight's cone split carries each corner's work to
 	the pieces that share it (exact; d20's swamp frame -10% on the PSP).
 	sndedram: the sound cache's last pages in the ME's eDRAM, copied in by
-	the ME (plays the same; 528 KB of heap back) */
+	the ME (plays the same; 528 KB of heap back). musadpcm: the disc's
+	44.1 kHz music mixed at its own rate instead of halved (the original's
+	sound; it needs a bake made with --music-adpcm, and its room in the
+	sound cache comes from sndedram's tier: psp_sound_cache_bytes) */
 	for (k = 0; k < (int)(sizeof(keep_levers) / sizeof(keep_levers[0])); k++)
 		if (!keep_search(keep_levers[k].off))
 			keep_default_add(keep_levers[k].word);

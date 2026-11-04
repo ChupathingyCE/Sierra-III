@@ -2365,8 +2365,9 @@ static unsigned long mix_checked(struct psp_stream **list, unsigned long count, 
 	return voices;
 }
 
-/* MUSADPCM ("musadpcm", off by default): a stereo 44.1 kHz ADPCM voice (the
-disc's music, in a map baked with --music-full) mixed at 44,100 Hz into a
+/* MUSADPCM ("musadpcm", on by default; "musadpcmoff" halves the music
+again): a stereo 44.1 kHz ADPCM voice (the disc's music, in a map baked with
+--music-adpcm) mixed at 44,100 Hz into a
 block of its own, added to the rest of the mix once that is taken to 44.1 kHz
 (audio44's filter), instead of being read at every other frame into the
 22,050 Hz mix with nothing to take out what lies above 11 kHz. Half the step
