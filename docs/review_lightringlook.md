@@ -1,6 +1,6 @@
 # Review: lightringlook (B50, the light pass holds the ME past a ring job's deadline)
 
-**Branch** master/ringlate2, on master/tock158 (round 1's `aimeringlook` carried, off). **Keep word** `lightringlook` (off by default until its PSP pair is read; `lightringlookoff` wins over it, for the flip). **Touches** `psp/src/psp_me.c`, `psp/src/psp_me.h`, `psp/src/psp_ge.c` (the light pass's triangle loop: a flag test while off).
+**Branch** master/ringlate2, on master/tock158 (round 1's `aimeringlook` carried, off). **Keep word** `lightringlook`, on by default (`keep_levers` in psp_platform.c); `lightringlookoff` turns it off. **Touches** `psp/src/psp_me.c`, `psp/src/psp_me.h`, `psp/src/psp_ge.c` (the light pass's triangle loop: a flag test while off).
 
 ## The bug
 
@@ -22,4 +22,12 @@ A line each second while the word is on: `ME: inside the light pass (lightringlo
 ## Proofs
 
 - Emulator [E]: play and both seeds, every tick, on the b30 route, c20 and d20 with the flashlight. The emulator's render job runs on the main CPU, where the look does nothing, so this proves the code around the look changes nothing. It doesn't prove the ME's interleaving.
-- PSP-3000 pair [M]: d20 to exitat90, flashlight at 1400, `- | lightringlook`, two runs a side, mouths on. Read: lates a run, ME stops, the AI word's worst, the tick over game time 1400-2700. Results are in the lab's findings (`lightringlook_*`).
+- Pictures [E], d20: on vs off differ at 2 of 1,345 frames, off vs an off2 control at 3. So the look is picture-exact within a build. Across builds d20's pictures move with any rebuild, even one whose change is off.
+- PSP-3000 pair [M]: d20 to exitat90, flashlight at 1400, `- | lightringlook` in one build, two runs a side, mouths on.
+  - Late ring jobs: off 9 and 8 a run (points, poses and rays; each rests the ring 1-2 s); on 0 and 0.
+  - The ME didn't stop except at the game's own exit. The looks never passed by for the stack.
+  - In a busy second the light pass made ~960 looks and ran 50-100 ring jobs.
+  - The AI word answered within 15.8 / 5.9 ms (off) and 14.1 / 5.2 ms (on) at worst; the bound is 20 ms.
+  - Tick over game time 1400-2700: off 19.9 / 21.4 ms, on 20.0 / 20.7. fps 11.67 / 11.42 vs 11.75 / 11.50. Both are a tie inside the runs' own spread.
+
+  It fixes the failure where it runs, at no measured cost.

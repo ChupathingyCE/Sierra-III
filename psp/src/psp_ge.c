@@ -854,7 +854,7 @@ static void defer_frame_begin(void)
 					platform_log("GE: texpretouch: each recorded draw's textures read in as it is written down, for the replay's binds%s",
 						pretouch_all ? " (txptall: every texture a record names)" : "");
 				replay_kinds_on = psp_keep("mekinds") != 0;
-				light_ring_look = psp_keep("lightringlook") && !psp_keep("lightringlookoff");
+				light_ring_look = psp_keep("lightringlook") != 0;
 				if (light_ring_look)
 					platform_log("GE: lightringlook: the ME serves the ring inside the light pass, at most every ~1 ms");
 				if (replay_kinds_on)
