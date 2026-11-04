@@ -705,7 +705,7 @@ static void run_job(volatile struct me_slot *slot, int *sums, int on_me)
 		sound cache. me_serve drops the ME's cache before the job (so the
 		staging is read fresh) and writes it back after (into the eDRAM). Off
 		the ME only when simulated, where the cache is in main RAM; an eDRAM
-		destination there is refused. "sndedram"'s tier fills its eDRAM
+		destination there is refused unless the emulator maps it. "sndedram"'s tier fills its eDRAM
 		pages with the same job; a piece whose byte count has bit 0 set
 		("sndedramcheck") is also hashed as read and, once the ME's cache is
 		written back, as the eDRAM holds it, so the main CPU can compare
@@ -717,7 +717,8 @@ static void run_job(volatile struct me_slot *slot, int *sums, int on_me)
 			const unsigned int *from = (const unsigned int *)slot->args[k];
 			unsigned int *to = (unsigned int *)slot->args[k + 1], words = slot->args[k + 2] >> 2, w;
 
-			if (!on_me && (slot->args[k + 1] & 0x1FFFFFFFu) < 0x08000000u)
+			if (!on_me && (slot->args[k + 1] & 0x1FFFFFFFu) < 0x08000000u
+				&& !psp_me_sim_edram_holds(slot->args[k + 1] & 0x1FFFFFFFu, words << 2))
 			{
 				copied = 0xFFFFFFFFu;
 				break;
@@ -1933,6 +1934,15 @@ int psp_me_simulated(void)
 	return me_state == 2;
 }
 
+/* the part of the eDRAM the emulator maps, as offsets [lo, hi): asked once
+at the start, so a simulated job never makes the call; none on a PSP */
+static unsigned int sim_edram_lo = 0, sim_edram_hi = 0;
+
+int psp_me_sim_edram_holds(unsigned int offset, unsigned int bytes)
+{
+	return me_state == 2 && offset >= sim_edram_lo && offset < sim_edram_hi && bytes <= sim_edram_hi - offset;
+}
+
 /* psp_ge.c's mechunk: the frame's job reads its records as the main CPU
 publishes them. On the ME, before each piece, what it has cached written back
 and dropped (the line the last piece ended in held words written since);
@@ -2256,6 +2266,15 @@ int psp_me_start(void)
 	report_mark = sceKernelGetSystemTimeWide();
 	if (emulator())
 	{
+		/* PPSSPP's device names the span it maps (tools/ppsspp_local_patches.diff);
+		without the patch it writes nothing and the span stays empty */
+		unsigned int span[2] = { 0, 0 };
+
+		if (sceIoDevctl("kemulator:", 0x4D45, NULL, 0, span, sizeof(span)) == 0 && span[0] < span[1])
+		{
+			sim_edram_lo = span[0];
+			sim_edram_hi = span[1];
+		}
 		me_state = 2;
 		me_restartable = 2;
 		platform_log("ME: the emulator runs no ME code; each job is SIMULATED (the main CPU runs it)%s",

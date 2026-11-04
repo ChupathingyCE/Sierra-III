@@ -1553,16 +1553,6 @@ int psp_keep_number(const char *prefix, int fallback);
 int psp_sound_cache_drop(long block_index);
 long psp_sound_tier_drain(unsigned long low, unsigned long high);
 
-/* PPSSPP's own device says which part of the eDRAM it maps (tools/ppsspp_local_patches.diff);
-a PSP has no such device and an emulator without the patch writes nothing */
-static int tier_edram_mapped(unsigned long bytes)
-{
-	unsigned int range[2] = {0, 0};
-
-	return sceIoDevctl("kemulator:", 0x4D45, NULL, 0, range, sizeof(range)) == 0
-		&& range[0] <= ME_EDRAM_SNDTIER && range[1] >= ME_EDRAM_SNDTIER + bytes;
-}
-
 int psp_sound_tier_mode(void)
 {
 	if (tier_mode < 0)
@@ -1588,7 +1578,7 @@ int psp_sound_tier_mode(void)
 				tier_bytes = (kb * 1024) & ~0xFFFul;
 				tier_mode = psp_me_simulated() ? 2 : 1;
 				/* "sndtierram" keeps the emulator's tier in the heap, where an emulator without the map has it */
-				tier_mapped = tier_mode == 2 && !psp_keep("sndtierram") && tier_edram_mapped(tier_bytes);
+				tier_mapped = tier_mode == 2 && !psp_keep("sndtierram") && psp_me_sim_edram_holds(ME_EDRAM_SNDTIER, (unsigned int)tier_bytes);
 				tier_check = psp_keep("sndedramcheck");
 				tier_dma = psp_keep("sndtierdma");
 			}

@@ -72,6 +72,8 @@ it held in its eDRAM is taken as gone from the first stop on */
 extern volatile unsigned int psp_me_stops;
 /* 1 when the ME's jobs are simulated (the emulator: the main CPU runs them) */
 int psp_me_simulated(void);
+/* 1 when simulated and the emulator maps [offset, offset + bytes) of the eDRAM */
+int psp_me_sim_edram_holds(unsigned int offset, unsigned int bytes);
 
 /* The job ring (ME phase 1, keep word "meslant" turns it on): jobs handed
 to the ME without a slot of their own, collected later. Each job is a leaf:
