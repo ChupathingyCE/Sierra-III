@@ -2810,9 +2810,10 @@ void psp_me_stash_place(unsigned int place)
 actor's thinking runs up to ~19 ms on the ME (R3's census), so a ring job
 pushed meanwhile (the frame's points, pushed while the job runs) missed its
 10 ms deadline and the ring rested for a second. The job's looks at the
-collection's word inside an actor (psp_fixups.py psp_aime_late_check) sit
-where its work holds nothing shared, so audio and the ring are served
-there too: at most once every INNER_GAP_CYCLES, so a path search's looks
+collection's word inside an actor, and the head of each prop perception
+tests (psp_fixups.py psp_aime_ring_yield), sit where its work holds nothing
+shared, so audio and the ring are served there too: at most once every
+INNER_GAP_CYCLES, so a path search's looks
 (one a node) cost one clock read each, and only with room on the stack for
 the deepest ring job (a points or rays job's allowance) above the guard */
 #define INNER_GAP_CYCLES (333u * 1000u) /* ~1 ms of the ME's clock */

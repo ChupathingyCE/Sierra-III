@@ -42007,11 +42007,12 @@ void psp_aime_step(
 ME's job, or aimefpu's pass alike): a look at the collection's word (the
 ME's job only) or aimelate's count; once either is up, the actor in hand
 goes back to its copies and the pass ends at its next actor */
-void psp_aime_late_check(
+/* aimeringlook (B50): audio and the ring served inside an actor's thinking,
+at the word's looks and between perception's props (psp_me_yield_inner
+says how often), the census's step put back after it */
+void psp_aime_ring_yield(
 	void)
 {
-	/* aimeringlook (B50): audio and the ring served at this look too, the
-	census's step put back after it */
 	if (psp_aime_ring_looks && psp_aime_job_now[0] && !psp_aime_late_now)
 	{
 		int step = psp_aime_step_now, tag = psp_aime_step_tag_now;
@@ -42020,6 +42021,12 @@ void psp_aime_late_check(
 		if (psp_aime_step_now != step)
 			psp_aime_step_tagged(step, tag);
 	}
+}
+
+void psp_aime_late_check(
+	void)
+{
+	psp_aime_ring_yield();
 	if (!psp_aime_late_now)
 	{
 		if (psp_aime_late_due && ++psp_aime_late_checks == PSP_AIME_LATE_AT)
@@ -42780,6 +42787,33 @@ FIXES_AIME2A["source/game/game_time.c#aime2a"] = [
 # perception's queued answers are the main CPU's (the ME pass queues none):
 # the ME walks each line of sight in place
 FIXES_AIME2A["source/ai/actor_perception.c#aime2a"] = [
+# aimeringlook (B50): perception's props one by one, each test whole calls,
+# so no collision walk is open between them; recon's mestash found a ring
+# job waiting past its deadline inside one actor's perception (step 1)
+("""	while ((prop = prop_iterator_next(&iterator)) != NULL)
+	{
+		short new_state = NONE;
+		boolean orphan_expired = FALSE;
+		boolean refresh_position = FALSE;
+		boolean refresh_status = FALSE;
+		boolean became_acknowledged = FALSE;
+		boolean expected_acknowledgement = FALSE;""",
+ """	while ((prop = prop_iterator_next(&iterator)) != NULL)
+	{
+		short new_state = NONE;
+		boolean orphan_expired = FALSE;
+		boolean refresh_position = FALSE;
+		boolean refresh_status = FALSE;
+		boolean became_acknowledged = FALSE;
+		boolean expected_acknowledgement = FALSE;
+
+#ifdef HALO_PSP
+		{
+			void psp_aime_ring_yield(void); /* actors.c (psp_fixups.py FIXES_AIME2A) */
+
+			psp_aime_ring_yield();
+		}
+#endif"""),
 ("""	short index;
 
 	if (psp_perc_ray_count > 0 && psp_perc_ray_epoch != psp_object_epoch)
