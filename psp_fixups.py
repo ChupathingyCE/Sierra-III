@@ -45971,7 +45971,401 @@ static void process_rendered_objects(
 """),
 ]
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items()) + list(FIXES_AIME2A.items()) + (list(FIXES_STACKHOT.items()) if STACKHOT else []) + (list(FIXES_STACKHOT2.items()) if STACKHOT2 else []) + list(FIXES_PWSL.items()) + list(FIXES_SPHSL.items()) + list(FIXES_RECONLIST.items()) + list(FIXES_TP1.items()) + list(FIXES_WXDEAD.items()) + list(FIXES_AIMEMOVE.items()) + list(FIXES_PROPCRASH.items()) + list(FIXES_SNDEDRAM.items()) + list(FIXES_LIGHTFIRST.items())):
+# ---------- DRAWPART (the drawing rebuild's stage 3, slice 2) and LIGHTREUSE:
+# the model walk in two stages over the view's objects. Per object the walk
+# ran ~20 KB of hot code lines (render_object, render_object_list, the level
+# of detail, the lighting lookup, then render_model and the rasterizer's
+# per-part chain), past the 16 KB I-cache, so each object fetched all of it
+# again. With drawpart the walk only records each render_model and
+# widgets_render call with its arguments, and the calls are made after the
+# walk (or when the record buffer fills), in the walk's order: each stage's
+# code is fetched once a run of objects. With lightreuse (which drawpart
+# turns on too) the walk takes the lighting and level of detail that
+# LIGHTFIRST's pass made for the same object in the same scene, instead of
+# looking them up again. Exact by construction: the calls are made with the
+# same arguments in the same order; what they point to (the object's node
+# matrices, permutations, colours and function values, its render state's
+# lighting) isn't written between the walk and the calls, since nothing the
+# walk does writes it and the render states the walk takes come from free
+# slots (no state a recorded call points to is taken back); a second lookup
+# of the lighting in the same scene changes nothing and returns the same
+# state (review_lightfirst.md), and the level of detail is worked out from
+# the same camera and sphere
+FIXES_DRAWPART = {}
+FIXES_DRAWPART["source/render/render_objects.c#drawpart"] = [
+("""static void render_object_list(
+	struct object_render_data *data,
+	struct render_model_effect const *parent_model_effect,
+	long object_index)
+{
+""", """#ifdef HALO_PSP
+/* the view's objects LIGHTFIRST's pass lit, by their place in the view's
+list, with the level of detail it lit them at (lightreuse); objects past the
+first PSP_WALK_REUSE_OBJECTS look theirs up again */
+#define PSP_WALK_REUSE_OBJECTS 256
+
+static long psp_walk_lit[PSP_WALK_REUSE_OBJECTS];
+static real psp_walk_pixels[PSP_WALK_REUSE_OBJECTS];
+/* the walked object's place in that list, or -1 (no pass, or not reused) */
+static short psp_walk_root = -1;
+
+static boolean psp_walk_reuse_wanted(
+	void)
+{
+	return PSP_KEEP_ONCE("lightreuse") || PSP_KEEP_ONCE("drawpart");
+}
+
+/* the lighting the pass refreshed in this scene, or NULL: looking it up again
+would change nothing (a second refresh in a scene is none) */
+static struct render_lighting *psp_walk_lighting(
+	long object_index)
+{
+	if (psp_walk_root >= 0 && psp_walk_lit[psp_walk_root] == object_index)
+	{
+		long render_state_index = object_get(object_index)->object.cached_render_state_index;
+		struct object_render_state *state;
+
+		if (render_state_index == NONE)
+			return NULL;
+		state = object_render_state_get(render_state_index);
+		if (state->object_index == object_index && state->render_scene_index == render.scene_index)
+			return &state->lighting;
+	}
+	return NULL;
+}
+
+static real psp_walk_level_of_detail_pixels(
+	long object_index)
+{
+	if (psp_walk_root >= 0 && psp_walk_lit[psp_walk_root] == object_index)
+		return psp_walk_pixels[psp_walk_root];
+	return object_get_level_of_detail_pixels(object_index);
+}
+
+/* drawpart's records: a model or an object's widgets, as the walk would have
+drawn them. 64 records hold a run of objects; a full buffer is drawn and the
+walk goes on recording */
+#define PSP_DRAWPART_RECORDS 64
+
+struct psp_drawpart_record
+{
+	boolean widgets; /* the object's widgets, not a model */
+	long model_index;
+	long object_index;
+	long rso_object;
+	real level_of_detail_pixels;
+	real radius;
+	real_matrix4x3 const *node_matrices;
+	char const *region_permutations;
+	real_rgb_color const *change_colors;
+	real const *function_values;
+	struct render_lighting const *lighting;
+	real_point3d const *centroid;
+	unsigned long flags;
+	short forced_shader_permutation_index;
+	struct render_model_effect model_effect;
+};
+
+static struct psp_drawpart_record psp_drawpart_records[PSP_DRAWPART_RECORDS];
+static short psp_drawpart_count = 0;
+static boolean psp_drawpart_recording = FALSE;
+
+static void psp_drawpart_draw(
+	void)
+{
+	extern long psp_rso_object;
+	short record_index;
+
+	for (record_index = 0; record_index < psp_drawpart_count; record_index++)
+	{
+		struct psp_drawpart_record const *record = &psp_drawpart_records[record_index];
+
+		if (record->widgets)
+		{
+			struct render_animation animation;
+
+			animation.colors = record->change_colors;
+			animation.values = record->function_values;
+			widgets_render(record->object_index, record->lighting, &animation);
+		}
+		else
+		{
+			psp_rso_object = record->rso_object;
+			render_model(
+				record->model_index,
+				record->level_of_detail_pixels,
+				record->node_matrices,
+				record->region_permutations,
+				record->change_colors,
+				record->function_values,
+				record->lighting,
+				record->centroid,
+				record->radius,
+				&record->model_effect,
+				record->object_index,
+				record->forced_shader_permutation_index,
+				record->flags);
+			psp_rso_object = NONE;
+		}
+	}
+	psp_drawpart_count = 0;
+}
+
+static struct psp_drawpart_record *psp_drawpart_next(
+	void)
+{
+	if (psp_drawpart_count == PSP_DRAWPART_RECORDS)
+		psp_drawpart_draw();
+	return &psp_drawpart_records[psp_drawpart_count++];
+}
+
+/* the model render_object_list would draw now; the RSO's choice for it is
+taken from psp_rso_object, set for this call */
+static void psp_drawpart_model(
+	struct object_datum const *object,
+	long object_index,
+	long model_index,
+	real level_of_detail_pixels,
+	real_matrix4x3 const *node_matrices,
+	struct render_lighting const *lighting,
+	struct render_model_effect const *model_effect,
+	unsigned long flags)
+{
+	extern long psp_rso_object;
+	struct psp_drawpart_record *record = psp_drawpart_next();
+
+	record->widgets = FALSE;
+	record->model_index = model_index;
+	record->object_index = object_index;
+	record->rso_object = psp_rso_object;
+	record->level_of_detail_pixels = level_of_detail_pixels;
+	record->radius = object->object.bounding_sphere_radius;
+	record->node_matrices = node_matrices;
+	record->region_permutations = (char const *)object->object.region_permutations;
+	record->change_colors = object->object.outgoing_change_colors;
+	record->function_values = object->object.outgoing_function_values;
+	record->lighting = lighting;
+	record->centroid = &object->object.bounding_sphere_center;
+	record->flags = flags;
+	record->forced_shader_permutation_index = object->object.forced_shader_permutation_index;
+	record->model_effect = *model_effect;
+	psp_rso_object = NONE;
+}
+
+static void psp_drawpart_widgets(
+	struct object_datum const *object,
+	long object_index,
+	struct render_lighting const *lighting)
+{
+	struct psp_drawpart_record *record = psp_drawpart_next();
+
+	record->widgets = TRUE;
+	record->object_index = object_index;
+	record->lighting = lighting;
+	record->change_colors = object->object.outgoing_change_colors;
+	record->function_values = object->object.outgoing_function_values;
+}
+#endif
+
+static void render_object_list(
+	struct object_render_data *data,
+	struct render_model_effect const *parent_model_effect,
+	long object_index)
+{
+"""),
+("""				real level_of_detail_pixels = object_get_level_of_detail_pixels(object_index);
+""", """#ifdef HALO_PSP
+				real level_of_detail_pixels = psp_walk_level_of_detail_pixels(object_index);
+#else
+				real level_of_detail_pixels = object_get_level_of_detail_pixels(object_index);
+#endif
+"""),
+# (braced: the step labels put a statement before the call)
+("""					render_model(
+						definition->object.model.index,
+						level_of_detail_pixels,
+""", """#ifdef HALO_PSP
+					if (psp_drawpart_recording)
+						psp_drawpart_model(object, object_index, definition->object.model.index, level_of_detail_pixels,
+							object_get_node_matrices(object_index), data->lighting, &model_effect,
+							data->no_planar_fog ? FLAG(_render_model_no_planar_fog_bit) : 0);
+					else
+#endif
+					{
+					render_model(
+						definition->object.model.index,
+						level_of_detail_pixels,
+"""),
+("""						data->no_planar_fog ? FLAG(_render_model_no_planar_fog_bit) : 0);
+
+					{
+						extern long psp_rso_object;
+
+						psp_rso_object = NONE; /* psp_fixups.py (FIXES_RSO) */
+""", """						data->no_planar_fog ? FLAG(_render_model_no_planar_fog_bit) : 0);
+					}
+
+					{
+						extern long psp_rso_object;
+
+						psp_rso_object = NONE; /* psp_fixups.py (FIXES_RSO) */
+"""),
+("""				widgets_render(object_index, data->lighting, &animation);
+""", """#ifdef HALO_PSP
+				if (psp_drawpart_recording)
+					psp_drawpart_widgets(object, object_index, data->lighting);
+				else
+#endif
+				{
+				widgets_render(object_index, data->lighting, &animation);
+				}
+"""),
+("""				data->lighting = object_get_cached_render_lighting(
+					data->object_index,
+""", """#ifdef HALO_PSP
+				data->lighting = psp_walk_lighting(data->object_index);
+				if (!data->lighting)
+#endif
+				data->lighting = object_get_cached_render_lighting(
+					data->object_index,
+"""),
+("""static void psp_light_first(
+	void)
+{
+	short rendered_object_index;
+
+	if (!PSP_KEEP_ONCE("lightfirst"))
+		return;
+	if (cached_object_render_states->maximum_count - cached_object_render_states->actual_count <
+		render_object_globals.rendered_object_count + PSP_LIGHT_FIRST_SPARE)
+	{
+		return;
+	}
+	for (rendered_object_index = 0;
+		rendered_object_index < render_object_globals.rendered_object_count;
+		rendered_object_index++)
+	{
+		long object_index = render_object_globals.rendered_object_indices[rendered_object_index];
+		struct object_datum *object = object_get(object_index);
+
+		/* render_object's own test for lighting, and a state it holds */
+		if ((!TEST_FLAG(object->object.flags, _object_invisible_bit) ||
+				object->object.first_child_object_index != NONE ||
+				widgets_need_lighting(object->object.first_widget_index)) &&
+			object->object.cached_render_state_index != NONE &&
+			object_render_state_get(object->object.cached_render_state_index)->object_index == object_index)
+		{
+			object_get_cached_render_lighting(object_index, object_get_level_of_detail_pixels(object_index));
+		}
+	}
+}
+#endif
+""", """/* whether the walk's states all come from free slots: the cache has one for
+every object of the view and the spares */
+static boolean psp_render_states_spare(
+	void)
+{
+	return cached_object_render_states->maximum_count - cached_object_render_states->actual_count >=
+		render_object_globals.rendered_object_count + PSP_LIGHT_FIRST_SPARE;
+}
+
+/* TRUE when the walk may take the lighting and level of detail this pass
+made (lightreuse) */
+static boolean psp_light_first(
+	void)
+{
+	short rendered_object_index;
+	boolean reuse = psp_walk_reuse_wanted();
+
+	if (!PSP_KEEP_ONCE("lightfirst"))
+		return FALSE;
+	if (!psp_render_states_spare())
+		return FALSE;
+	for (rendered_object_index = 0;
+		rendered_object_index < render_object_globals.rendered_object_count;
+		rendered_object_index++)
+	{
+		long object_index = render_object_globals.rendered_object_indices[rendered_object_index];
+		struct object_datum *object = object_get(object_index);
+		boolean remembered = reuse && rendered_object_index < PSP_WALK_REUSE_OBJECTS;
+
+		if (remembered)
+			psp_walk_lit[rendered_object_index] = NONE;
+		/* render_object's own test for lighting, and a state it holds */
+		if ((!TEST_FLAG(object->object.flags, _object_invisible_bit) ||
+				object->object.first_child_object_index != NONE ||
+				widgets_need_lighting(object->object.first_widget_index)) &&
+			object->object.cached_render_state_index != NONE &&
+			object_render_state_get(object->object.cached_render_state_index)->object_index == object_index)
+		{
+			real pixels = object_get_level_of_detail_pixels(object_index);
+
+			object_get_cached_render_lighting(object_index, pixels);
+			if (remembered)
+			{
+				psp_walk_lit[rendered_object_index] = object_index;
+				psp_walk_pixels[rendered_object_index] = pixels;
+			}
+		}
+	}
+	return reuse;
+}
+
+/* drawpart's records are made only where they're exact: nothing debug
+draws between the calls, and no render state is taken back in the walk */
+static boolean psp_drawpart_wanted(
+	void)
+{
+	return PSP_KEEP_ONCE("drawpart") && !debug_objects && !debug_inactive_objects && psp_render_states_spare();
+}
+#endif
+"""),
+("""#ifdef HALO_PSP
+	if (!data->shadow)
+		psp_light_first();
+#endif
+
+	for (rendered_object_index = 0;
+		rendered_object_index < render_object_globals.rendered_object_count;
+		rendered_object_index++)
+	{
+		data->object_index =
+			render_object_globals.rendered_object_indices[rendered_object_index];
+		render_object(data);
+	}
+""", """#ifdef HALO_PSP
+	boolean psp_reuse = FALSE;
+
+	if (!data->shadow)
+	{
+		psp_reuse = psp_light_first();
+		psp_drawpart_recording = psp_drawpart_wanted();
+	}
+#endif
+
+	for (rendered_object_index = 0;
+		rendered_object_index < render_object_globals.rendered_object_count;
+		rendered_object_index++)
+	{
+		data->object_index =
+			render_object_globals.rendered_object_indices[rendered_object_index];
+#ifdef HALO_PSP
+		psp_walk_root = psp_reuse && rendered_object_index < PSP_WALK_REUSE_OBJECTS ? rendered_object_index : -1;
+#endif
+		render_object(data);
+	}
+#ifdef HALO_PSP
+	psp_walk_root = -1;
+	if (psp_drawpart_recording)
+	{
+		psp_drawpart_recording = FALSE;
+		psp_drawpart_draw();
+	}
+#endif
+"""),
+]
+
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items()) + list(FIXES_AIME2A.items()) + (list(FIXES_STACKHOT.items()) if STACKHOT else []) + (list(FIXES_STACKHOT2.items()) if STACKHOT2 else []) + list(FIXES_PWSL.items()) + list(FIXES_SPHSL.items()) + list(FIXES_RECONLIST.items()) + list(FIXES_TP1.items()) + list(FIXES_WXDEAD.items()) + list(FIXES_AIMEMOVE.items()) + list(FIXES_PROPCRASH.items()) + list(FIXES_SNDEDRAM.items()) + list(FIXES_LIGHTFIRST.items()) + list(FIXES_DRAWPART.items())):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
