@@ -21495,11 +21495,35 @@ static unsigned long light_exact_triangles = 0;
 
 /* one lit triangle (corners: camera space, texture coordinates, the light's
 reach at 5, the world position at 7): kept, cut up, or skipped by the view */
+/* "lightcarrycheck": each split triangle split both ways first with the
+pieces only hashed (every float of every corner and its view bits), and the
+two hashes compared */
+static int light_split_hashing = 0;
+static unsigned int light_split_hash;
+
+static void light_split_hash_add(float corners[3][CORNER_FLOATS], const int bits[3])
+{
+	const unsigned int *word = (const unsigned int *)corners;
+	unsigned int hash = light_split_hash;
+	int k;
+
+	for (k = 0; k < 3 * CORNER_FLOATS; k++)
+		hash = (hash ^ word[k]) * 16777619u;
+	for (k = 0; k < 3; k++)
+		hash = (hash ^ (unsigned int)bits[k]) * 16777619u;
+	light_split_hash = hash;
+}
+
 static void light_emit_known(float corners[3][CORNER_FLOATS], const int bits[3], struct shadow_vertex *out,
 	long *kept_count, int *cut_count)
 {
 	int corner;
 
+	if (light_split_hashing)
+	{
+		light_split_hash_add(corners, bits);
+		return;
+	}
 	if (bits[0] & bits[1] & bits[2])
 		return;
 	if (!(bits[0] | bits[1] | bits[2]))
@@ -22068,6 +22092,25 @@ static void light_split_carry(struct split_corner *c[3], const unsigned int norm
 	}
 }
 
+static int light_carry_check = -1;
+static unsigned long light_carry_checks = 0, light_carry_mismatches = 0;
+
+static void light_split_carry_root(float p[3][3], float uv[3][2], const unsigned int normal[3],
+	struct shadow_vertex *out, long *kept_count, int *cut_count)
+{
+	struct split_corner root[3], *c[3];
+	int corner;
+
+	for (corner = 0; corner < 3; corner++)
+	{
+		memcpy(root[corner].p, p[corner], sizeof(root[0].p));
+		memcpy(root[corner].uv, uv[corner], sizeof(root[0].uv));
+		split_corner_set(&root[corner]);
+		c[corner] = &root[corner];
+	}
+	light_split_carry(c, normal, 0, out, kept_count, cut_count);
+}
+
 static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const unsigned short *indices, long triangle_count,
 	unsigned int base_key)
 {
@@ -22258,19 +22301,28 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 						light_carry = psp_keep("lightcarry");
 					if (light_split_edges < 0)
 						light_split_edges = !psp_keep("lightsplitold");
-					if (light_carry && light_split_edges && light_spot_base())
+					if (light_carry_check < 0)
+						light_carry_check = psp_keep("lightcarrycheck");
+					if (light_carry_check && light_split_edges && light_spot_base())
 					{
-						struct split_corner root[3], *c[3];
+						unsigned int before;
 
-						for (corner = 0; corner < 3; corner++)
-						{
-							memcpy(root[corner].p, p[corner], sizeof(root[0].p));
-							memcpy(root[corner].uv, uv[corner], sizeof(root[0].uv));
-							split_corner_set(&root[corner]);
-							c[corner] = &root[corner];
-						}
-						light_split_carry(c, normal, 0, out, &kept_count, &cut_count);
+						light_split_hashing = 1;
+						light_split_hash = 2166136261u;
+						light_split(p, uv, normal, 0, out, &kept_count, &cut_count);
+						before = light_split_hash;
+						light_split_hash = 2166136261u;
+						light_split_carry_root(p, uv, normal, out, &kept_count, &cut_count);
+						light_split_hashing = 0;
+						light_carry_checks++;
+						if (light_split_hash != before)
+							light_carry_mismatches++;
+						if (!(light_carry_checks & 4095))
+							platform_log("GE: light carry checked %lu split triangles, %lu mismatches", light_carry_checks,
+								light_carry_mismatches);
 					}
+					if (light_carry && light_split_edges && light_spot_base())
+						light_split_carry_root(p, uv, normal, out, &kept_count, &cut_count);
 					else
 						light_split(p, uv, normal, 0, out, &kept_count, &cut_count);
 					continue;
