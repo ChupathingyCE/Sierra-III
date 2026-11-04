@@ -18601,7 +18601,7 @@ psp_perception_line_of_sight looked at the epoch first) */
 static void psp_merays_collect(
 	short index)
 {
-	short job = (index - psp_merays_first) / PSP_MERAYS_JOB_RAYS;
+	short job = (index - psp_merays_first) / PSP_MERAYS_JOB_RAYS + PSP_MEPROBE_EXPR(7);
 
 	while (psp_merays_collected <= job && psp_merays_collected < psp_merays_jobs)
 	{
@@ -18641,7 +18641,7 @@ void psp_merays_settle(void)
 	unsigned int results[11];
 	short keep = psp_merays_first + psp_merays_collected * PSP_MERAYS_JOB_RAYS;
 
-	if (!psp_merays_out)
+	if (PSP_MEPROBE_EXPR(4) || !psp_merays_out)
 		return;
 	while (psp_merays_collected < psp_merays_jobs)
 		psp_me_wait(psp_merays_tickets[psp_merays_collected++], results);
@@ -21914,7 +21914,7 @@ static void psp_pose_ahead_collect(void)
 {
 	unsigned long start;
 
-	if (psp_pose_time <= 0 || !psp_pose_job_out)
+	if (PSP_MEPROBE_EXPR(5) || psp_pose_time <= 0 || !psp_pose_job_out)
 	{
 		psp_pose_ahead_collect_work();
 		return;
@@ -30131,7 +30131,7 @@ static void psp_nms_make(long object_index, struct psp_nms_entry const *entry)
 	unsigned char const *p = (unsigned char const *)&entry->inputs, *a = (unsigned char const *)&after;
 	unsigned int k;
 
-	psp_nms_inputs_get(object, &now);
+	psp_nms_inputs_get(object, &now + PSP_MEPROBE_EXPR(9));
 	psp_nms_inputs_put(object, &entry->inputs);
 	psp_nms_settle_time = entry->time;
 	object_compute_node_matrices(object_index);
@@ -30208,7 +30208,7 @@ __attribute__((noinline)) static void psp_nms_settle_absolute(long absolute, int
 /* a reader of an object whose compute was left out: made first */
 __attribute__((noinline)) void psp_nms_settle(long object_index, void *site)
 {
-	psp_nms_reader = site;
+	psp_nms_reader = (void *)((char *)site + PSP_MEPROBE_EXPR(6));
 	long absolute = DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index);
 
 	if (absolute < MAXIMUM_OBJECTS_PER_MAP && psp_nms_waits(absolute))
@@ -31984,7 +31984,7 @@ void psp_points_end(void)
 {
 	int k;
 
-	if (psp_points_out)
+	if (!PSP_MEPROBE_EXPR(8) && psp_points_out)
 	{
 		unsigned int results[11] = { 0 };
 
@@ -41803,7 +41803,7 @@ what it read; a pass due from the tick before (not the frame's last) run */
 void psp_aime2a_tick_begin(
 	void)
 {
-	if (psp_aime2a_out)
+	if (PSP_MEPROBE_REPORT() || psp_aime2a_out)
 	{
 		unsigned int results[ME_JOB_RESULTS] = { 0 };
 		unsigned long long asked;
