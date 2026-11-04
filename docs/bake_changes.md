@@ -107,3 +107,11 @@ Lightmaps and HUD sheets the bake would make CLUT8 are written at 4 bits when on
 ## What a player needs to do
 
 Bake again with build 139's bundle: the palettes and decal cuts change.
+
+## b150: stand-ins and the full-rate music
+
+- **Stand-ins** (`tools/texpack.py`, `standin()`): each pack gains a `TSI1` table after the averages, each texture's 4 x 4 stand-in as a 16-colour palette (5650, or 4444 with alpha; 32 bytes a texture). The game draws it while the texture itself isn't in memory (keep word `texavg`, on by default). A pack without the table logs "no stand-ins" and draws untextured as before.
+- **The music as the disc has it** (`bake/lib/soundpack.py`, `--sound s9full`): s9, with the music tags left at 44.1 kHz stereo Xbox ADPCM instead of halved, for the mixer's full-rate path (keep word `musadpcm`, on by default). On a bake without them the game plays the halved music as before. `--music-adpcm` also writes `maps/<map>.pmad` (the disc's music blocks unchanged) and `--music-stream` writes Vorbis `.pmus` packs for `PSP_MUSIC=1` builds; neither changes the map, and the default build reads neither [D].
+- **The default is still `--sound s9`** at b150's commit (`3a104119`); b150 was tested on a bake made with `--sound s9full --music-adpcm`. Whether the release's bundle bakes s9full by default is the release cut's call (`docs/review_b150.md`, section 6).
+
+**Re-bake needed:** for the stand-ins and the full-rate music only. Older bakes load and play as before.

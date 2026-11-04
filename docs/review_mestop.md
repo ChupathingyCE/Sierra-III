@@ -1,6 +1,6 @@
 # Review: aimeobslook and sndtierback (B54, B55: the ME stopped on d20, and the sound tier silent after a stop)
 
-**Branch** master/mestop, on master/tock159. **Keep words** `aimeobslook`, on by default (`keep_levers` in psp_platform.c; `aimeobslookoff` turns it off), and `sndtierback`, **on by default** (`sndtierbackoff` turns it off): the safety net for an ME stop, which is a bug to prevent (Sheepdog01, 2026-11-04 10:51), not a state to recover from. `mestopatN` is a test word: it stops the ME at game time N. **Touches** psp_fixups.py (FIXES_AIME2A: actors.c, path_obstacle_avoidance.c, actor_moving.c; FIXES_SNDEDRAM: xbox_sound_cache.c), psp/src/psp_dsound.c, psp/src/psp_platform.c.
+**Merged** into tock160 (`acf738e0`, with recon's v3 retry `bd6ae399`), so in b150; it was written on its own branch off tock159. **Keep words** `aimeobslook`, on by default (`keep_levers` in psp_platform.c; `aimeobslookoff` turns it off), and `sndtierback`, **on by default** (`sndtierbackoff` turns it off): the safety net for an ME stop, which is a bug to prevent (Sheepdog01, 2026-11-04 10:51), not a state to recover from. `mestopatN` is a test word: it stops the ME at game time N. **Touches** psp_fixups.py (FIXES_AIME2A: actors.c, path_obstacle_avoidance.c, actor_moving.c; FIXES_SNDEDRAM: xbox_sound_cache.c), psp/src/psp_dsound.c, psp/src/psp_platform.c.
 
 ## B54: the AI job's word unanswered for 20 ms
 

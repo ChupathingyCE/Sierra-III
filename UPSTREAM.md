@@ -15,6 +15,8 @@ Sierra-III doesn't copy anyone's source into this repository. It pins each upstr
 
 ## Moving the engine pin
 
+**Not past ChupathingyCE's GPL change without the maintainer's decision first.** ChupathingyCE is GPL-3.0-or-later from the commit that changed its licence (it ships as 0.8.0). v0.7.5d and every commit before that change stay CC0, so the pin above is unaffected. A pin past it would make every EBOOT a GPLv3+ combined work: our MIT files stay MIT, but a release would convey the whole under GPLv3+, and `psp_fixups.py`'s anchored engine text would become GPL text.
+
 1. Check out the new commit.
 2. Run `PSP_FIXUPS_CHECK=1 python3 psp_build.py`. It lists every fixup anchor that no longer matches, without building anything.
 3. Fix those anchors in `psp_fixups.py`.
