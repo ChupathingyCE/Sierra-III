@@ -98,6 +98,8 @@ struct me_slot
 	unsigned int cycles;   /* the ME: its cycle counter across the last job */
 	unsigned int job_cycles; /* the ME: of those, the job's own code (without
 	                         the two cache hand-overs around it) */
+	unsigned int begun;    /* the ME: the number of the last job it started,
+	                       so a wait to be served is told from a job's own run */
 	unsigned int args[ME_JOB_ARGS];
 	unsigned int results[ME_JOB_RESULTS];
 } __attribute__((aligned(64)));
@@ -768,6 +770,7 @@ static void me_serve(volatile struct me_slot *slot, int *sums)
 	int ranges;
 
 	start = me_cycles();
+	slot->begun = request;
 	me_count(STASH_SLOT_BEGUN);
 	if (control->features & ME_FEATURE_STASH)
 		STASH[STASH_SLOTS_IN] |= 1u << (type & 31);
@@ -2559,6 +2562,16 @@ int psp_me_submitted_done(int which)
 	if (which < 0 || which >= ME_SLOTS || !submitted[which])
 		return 0;
 	return submitted[which] == 2 || SLOT(which)->done == slot_request[which];
+}
+
+/* the ME has started the job handed over with psp_me_submit (or it was run
+here): the time since is the job's own, not its wait behind the ring's */
+int psp_me_submitted_begun(int which)
+{
+	if (which < 0 || which >= ME_SLOTS || !submitted[which])
+		return 0;
+	return submitted[which] == 2 || SLOT(which)->begun == slot_request[which] ||
+		SLOT(which)->done == slot_request[which];
 }
 
 int psp_me_finish(int which, unsigned int *results)

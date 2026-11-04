@@ -53,6 +53,8 @@ void psp_me_edram_probe(void);
 int psp_me_submit(int which, unsigned int type, const unsigned int *args, int arg_count);
 int psp_me_finish(int which, unsigned int *results);
 int psp_me_submitted_done(int which);
+int psp_me_submitted_begun(int which);
+unsigned int psp_me_last_job_us(int which); /* the ME's own time on the slot's last job */
 
 /* sleep and wake: the power callback stops the ME as the PSP sleeps and asks
 for a restart once it is awake; with "mewake" the main thread's frame end

@@ -1466,20 +1466,25 @@ tier and the DMA a copy, so everything but the eDRAM and the DMA runs */
 #define TIER_DMA_TIMEOUT_US 2000
 /* failed fills before the tier is closed for the session */
 #define TIER_FAILS_MAX 3
-/* a copy job not collected this long after it was handed over counts as a
+/* a copy job still running this long after the ME started it counts as a
 failure: its pieces are given up when it ends (the staging can't be reused
-before), and its sounds read again. Several frames: the ME serves its slots
-between ring jobs, the longest of which is a heavy frame's drawing */
+before), and its sounds read again. Its two pieces copy in well under a
+millisecond, so this bounds the copy alone. Its wait to be started is bounded
+apart (TIER_JOB_WAIT_US): the ME serves its slots between ring jobs, and a
+heavy frame's drawing there runs past a second on the PSP, which isn't a
+failure of the copy. Both are seen only when the sound thread polls, so the
+collected figures carry the poll's gap (a frame or more at low frame rates) */
 #define TIER_JOB_LATE_US 250000
+#define TIER_JOB_WAIT_US 2000000
 static int tier_mode = -1; /* 0 off, 1 the ME's eDRAM, 2 simulated (the emulator) */
 static unsigned long tier_bytes = 0, tier_main_bytes = 0;
 static unsigned char *cache_base = NULL, *tier_base = NULL;
 static int tier_check = 0, tier_fails = 0, tier_left = -1, tier_dma = 0;
 static unsigned long tier_jobs = 0, tier_job_pieces = 0, tier_job_us = 0, tier_job_worst_us = 0, tier_job_late = 0,
-	tier_job_failed = 0;
+	tier_job_failed = 0, tier_job_me_us = 0, tier_job_me_worst_us = 0, tier_job_begun_worst_us = 0, tier_job_unbegun = 0;
 /* the copy job out: when it was handed over, what it should copy, the
 staging's hash (sndedramcheck), and whether it has run past its bound */
-static SceUInt64 copy_at = 0;
+static SceUInt64 copy_at = 0, copy_begun_at = 0; /* begun: the first poll that saw the ME on it */
 static unsigned int copy_bytes = 0, copy_hash = 0;
 static int copy_late = 0, copy_checked = 0;
 static const char *tier_closed_why = NULL;
@@ -1915,6 +1920,15 @@ void psp_sound_upload_poll(void)
 			tier_job_us += us;
 			if (us > tier_job_worst_us)
 				tier_job_worst_us = us;
+			/* the ME's own time on it, against the collected figure's poll gap */
+			if (ok)
+			{
+				unsigned long me_us = psp_me_last_job_us(ME_SLOT_PROBE);
+
+				tier_job_me_us += me_us;
+				if (me_us > tier_job_me_worst_us)
+					tier_job_me_worst_us = me_us;
+			}
 			if (ok && results[0] != copy_bytes)
 				ok = 0;
 			if (ok && copy_checked && (results[1] != copy_hash || results[2] != copy_hash))
@@ -1939,14 +1953,29 @@ void psp_sound_upload_poll(void)
 		if (!ok && tier_mode <= 0)
 			edram_loss("the copy job failed");
 	}
-	else if (copy_out && tier_mode > 0 && !copy_late &&
-		sceKernelGetSystemTimeWide() - copy_at > TIER_JOB_LATE_US)
+	else if (copy_out && tier_mode > 0 && !copy_late)
 	{
-		copy_late = 1;
-		tier_job_late++;
-		platform_log("sound tier: a copy job not done %u ms after it was handed over: its sounds are read again",
-			TIER_JOB_LATE_US / 1000);
-		tier_fill_failed();
+		SceUInt64 now = sceKernelGetSystemTimeWide();
+
+		if (!copy_begun_at && psp_me_submitted_begun(ME_SLOT_PROBE))
+		{
+			copy_begun_at = now;
+			if (now - copy_at > tier_job_begun_worst_us)
+				tier_job_begun_worst_us = (unsigned long)(now - copy_at);
+		}
+		if (copy_begun_at ? now - copy_begun_at > TIER_JOB_LATE_US : now - copy_at > TIER_JOB_WAIT_US)
+		{
+			copy_late = 1;
+			tier_job_late++;
+			tier_job_unbegun += !copy_begun_at;
+			if (copy_begun_at)
+				platform_log("sound tier: a copy job not done %u ms after the ME started it: its sounds are read again",
+					TIER_JOB_LATE_US / 1000);
+			else
+				platform_log("sound tier: a copy job not started %u ms after it was handed over: its sounds are read again",
+					TIER_JOB_WAIT_US / 1000);
+			tier_fill_failed();
+		}
 	}
 	if (psp_me_stops != stops_at_start)
 		edram_loss("the Media Engine stopped");
@@ -2127,6 +2156,7 @@ void psp_sound_upload_poll(void)
 			copy_hash = hash;
 			copy_checked = tier_mode > 0 && tier_check;
 			copy_late = 0;
+			copy_begun_at = 0;
 			if (psp_me_submit(ME_SLOT_PROBE, ME_JOB_SOUNDCOPY, args, ME_JOB_ARGS))
 			{
 				copy_out = 1;
@@ -2162,6 +2192,10 @@ void psp_sound_upload_report(void)
 			tier_job_late, tier_check_bad, tier_check ? "" : " (unchecked)",
 			up_failed, up_dropped, up_full, tier_given_up + psp_sound_tier_drained, muted_blocks,
 			tier_closed_why ? "CLOSED: " : "open", tier_closed_why ? tier_closed_why : "");
+	if (tier_mode > 0)
+		platform_log("sound tier: copy jobs on the ME %lu us each on average (worst %lu); seen started at worst %lu ms after the hand-over; %lu late of them not started",
+			tier_jobs ? tier_job_me_us / tier_jobs : 0, tier_job_me_worst_us, tier_job_begun_worst_us / 1000,
+			tier_job_unbegun);
 	if (edram_mode <= 0)
 		return;
 	platform_log("sound eDRAM: %lu sounds in (%lu KB, %lu pieces, %lu copy jobs), each %lu ms from asked to loaded on average (worst %lu); %lu reads failed, %lu deleted while loading, %lu refused (queue full), %lu after the loss; %lu blocks with voices mixed silent%s",
