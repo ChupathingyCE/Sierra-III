@@ -44845,7 +44845,294 @@ void psp_rl_game_state_saving(void); /* cluster_partitions.c (psp_fixups.py, FIX
 """),
 ]
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items()) + list(FIXES_AIME2A.items()) + (list(FIXES_STACKHOT.items()) if STACKHOT else []) + (list(FIXES_STACKHOT2.items()) if STACKHOT2 else []) + list(FIXES_PWSL.items()) + list(FIXES_SPHSL.items()) + list(FIXES_RECONLIST.items()) + list(FIXES_TP1.items()) + list(FIXES_AIMEMOVE.items())):
+# ---------- FIXES_WXDEAD: the weather's dead leaf walk left out (lever WXDEAD)
+# Each weather particle's update calls point_physics_update with
+# ignore_position and force_no_collisions, so its ray tests nothing; the
+# engine's ray with nothing to test still finds the leaf at the ray's end
+# (scenario_location_from_point, a walk down the BSP) and writes it to the
+# location it was handed. The weather hands it system->location, and that is
+# read by nothing before weather_particle_systems_render sets its leaf and
+# cluster from the render's again, the next time the weather is drawn: the
+# update takes its wind from the palette, not the location, and the point is
+# in the weather box's frame (0 to its width), not the world's. So with
+# "wxdead" the weather's rays only add their delta, the same addition the
+# ray makes, and the walk is left out; every other caller is as before.
+# Exact: positions, velocities and both seeds are unchanged.
+#
+# "wxwalk" (keep word): the census behind it. At each new level (and the map's
+# first), one line per level and per weather palette entry: the particle
+# system and wind named, how many clusters and fog regions use it and a spot
+# in its first cluster (the middle of its first subcluster), and the level's
+# fog palette named; so which maps and levels have weather can be read
+# without play, by switching levels. Every 300 ticks of game time, the
+# frames that drew weather, its particles and the update's and the whole
+# weather render's time a frame
+FIXES_WXDEAD = {}
+FIXES_WXDEAD["source/physics/point_physics.h#wxdead"] = [
+("""	_point_physics_force_no_collisions_bit,
+	NUMBER_OF_POINT_PHYSICS_FLAGS,
+};
+""", """	_point_physics_force_no_collisions_bit,
+	NUMBER_OF_POINT_PHYSICS_FLAGS,
+};
+
+#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_WXDEAD): the caller reads nothing point_physics_update
+writes to *location, so a ray with nothing to test needn't find its leaf */
+#define PSP_POINT_PHYSICS_LOCATION_UNUSED 0x80000000UL
+#endif
+"""),
+]
+FIXES_WXDEAD["source/physics/point_physics.c#wxdead"] = [
+("""		global_current_collision_users[global_current_collision_user_depth++] = _collision_user_point_physics;
+
+		for (i = 0; dt != 0.0f && i < MAXIMUM_POINT_PHYSICS_COLLISIONS; i++)
+		{
+			delta.i = translational_velocity->i * dt;""",
+ """		global_current_collision_users[global_current_collision_user_depth++] = _collision_user_point_physics;
+
+#ifdef HALO_PSP
+		/* psp_fixups.py (FIXES_WXDEAD): collision_test_vector's answer for a
+		ray with nothing to test, without its leaf: the end is the start plus
+		the delta, added as the ray adds it */
+		if ((flags & PSP_POINT_PHYSICS_LOCATION_UNUSED) &&
+			!TEST_FLAG(collision_flags, _collision_test_media_bit) &&
+			!TEST_FLAG(collision_flags, _collision_test_structure_bit))
+		{
+			delta.i = translational_velocity->i * dt;
+			delta.j = translational_velocity->j * dt;
+			delta.k = translational_velocity->k * dt;
+			add_vectors3d((real_vector3d const *)position, &delta, (real_vector3d *)position);
+		}
+		else
+#endif
+		for (i = 0; dt != 0.0f && i < MAXIMUM_POINT_PHYSICS_COLLISIONS; i++)
+		{
+			delta.i = translational_velocity->i * dt;"""),
+]
+FIXES_WXDEAD["source/effects/weather_particle_systems.c#wxdead"] = [
+("""static struct weather_particle_system_globals weather_particle_system_globals = { 0 };
+struct data_array *weather_particle_data;
+""", """static struct weather_particle_system_globals weather_particle_system_globals = { 0 };
+struct data_array *weather_particle_data;
+
+#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_WXDEAD): see the notes there */
+#include <string.h>
+#include "scenario/scenario_definitions.h"
+#include "tag_files/tag_files.h"
+void platform_log(const char *format, ...);
+int psp_keep(const char *name);
+unsigned long psp_microseconds(void);
+long game_time_get(void);
+
+static int psp_wx_keeps = 0, psp_wx_walk = 0;
+/* "wxdead": the flag the weather's point physics carries */
+static unsigned long psp_wx_dead_flag = 0;
+/* the level last described: its data, its index and the map's (a level may
+load where the last one was) */
+static void const *psp_wx_level_seen = NULL;
+static long psp_wx_level_index = NONE, psp_wx_level_map = NONE;
+static long psp_wx_report_time = -1;
+static struct
+{
+	unsigned long frames, particles, update_us, render_us;
+} psp_wx_stats;
+
+static void psp_wx_keeps_read(void)
+{
+	psp_wx_keeps = 1;
+	psp_wx_dead_flag = psp_keep("wxdead") ? PSP_POINT_PHYSICS_LOCATION_UNUSED : 0;
+	psp_wx_walk = psp_keep("wxwalk") != 0;
+	if (psp_wx_dead_flag || psp_wx_walk)
+		platform_log("wxwalk: %s%s", psp_wx_dead_flag ? "wxdead: the weather's rays find no leaf" : "",
+			psp_wx_walk ? (psp_wx_dead_flag ? "; the census on" : "the census on") : "");
+}
+
+static char const *psp_wx_tag_name(long tag_index)
+{
+	char const *name = tag_index != NONE ? tag_get_name(tag_index) : NULL;
+
+	return name ? name : "none";
+}
+
+/* the middle of a cluster's first subcluster's bounds: the block at 0x34 of
+the cluster (Invader's layout; the engine's header leaves it unnamed), its
+elements 0x24 bytes, the bounds first. Read only if the block lies in the
+level's own data, beside its clusters */
+static int psp_wx_cluster_spot(struct structure_bsp *bsp, long cluster_index, real *spot)
+{
+	struct structure_cluster *cluster = TAG_BLOCK_GET_ELEMENT(&bsp->clusters, cluster_index, struct structure_cluster);
+	struct tag_block const *subclusters = (struct tag_block const *)((char const *)cluster + 0x34);
+	unsigned long at = (unsigned long)subclusters->address, near = (unsigned long)bsp->clusters.address;
+	real const *bounds;
+
+	if (subclusters->count <= 0 || subclusters->count > 4096 || !at || (at & 3) ||
+		at + 0x1000000UL < near || at > near + 0x1000000UL)
+		return 0;
+	bounds = (real const *)at;
+	spot[0] = (bounds[0] + bounds[1]) * 0.5f;
+	spot[1] = (bounds[2] + bounds[3]) * 0.5f;
+	spot[2] = (bounds[4] + bounds[5]) * 0.5f;
+	return 1;
+}
+
+static void psp_wx_level(void)
+{
+	struct structure_bsp *bsp = global_structure_bsp_get();
+	long p, c;
+
+	platform_log("wxwalk: level: bsp %d of %ld (%s): weather palette %ld, weather polyhedra %ld, clusters %ld; fog palette %ld, fog regions %ld, fog planes %ld",
+		(int)global_structure_bsp_index_get(), global_scenario_get()->structure_bsp_references.count,
+		psp_wx_tag_name(global_scenario_index), bsp->weather_palette.count, bsp->weather_polyhedra.count, bsp->clusters.count,
+		bsp->fog_palette.count, bsp->fog_regions.count, bsp->fog_planes.count);
+	for (p = 0; p < bsp->weather_palette.count && p < 32; p++)
+	{
+		struct structure_weather_palette_entry *entry = TAG_BLOCK_GET_ELEMENT(&bsp->weather_palette, p,
+			struct structure_weather_palette_entry);
+		long clusters = 0, first = NONE, regions = 0, types = 0;
+		real spot[3] = { 0.f, 0.f, 0.f };
+		int spotted = 0;
+
+		for (c = 0; c < bsp->clusters.count; c++)
+			if (TAG_BLOCK_GET_ELEMENT(&bsp->clusters, c, struct structure_cluster)->weather_palette_index == p)
+			{
+				if (first == NONE)
+					first = c;
+				clusters++;
+			}
+		for (c = 0; c < bsp->fog_regions.count; c++)
+			if (TAG_BLOCK_GET_ELEMENT(&bsp->fog_regions, c, struct structure_fog_region)->weather_palette_index == p)
+				regions++;
+		if (entry->particle_system.index != NONE)
+			types = weather_particle_system_definition_get(entry->particle_system.index)->particle_types.count;
+		if (first != NONE)
+			spotted = psp_wx_cluster_spot(bsp, first, spot);
+		platform_log("wxwalk: level:   weather %ld: particles %s (%ld types), wind %s; clusters %ld (first %ld%s %.2f %.2f %.2f), fog regions %ld",
+			p, psp_wx_tag_name(entry->particle_system.index), types, psp_wx_tag_name(entry->wind.index), clusters, first,
+			spotted ? ", its middle" : ", no spot", spot[0], spot[1], spot[2], regions);
+	}
+	for (p = 0; p < bsp->fog_palette.count && p < 32; p++)
+	{
+		struct structure_fog_palette_entry *entry = TAG_BLOCK_GET_ELEMENT(&bsp->fog_palette, p, struct structure_fog_palette_entry);
+		long regions = 0, with_weather = 0;
+
+		for (c = 0; c < bsp->fog_regions.count; c++)
+		{
+			struct structure_fog_region *region = TAG_BLOCK_GET_ELEMENT(&bsp->fog_regions, c, struct structure_fog_region);
+
+			if (region->fog_palette_index == p)
+			{
+				regions++;
+				if (region->weather_palette_index != NONE)
+					with_weather++;
+			}
+		}
+		platform_log("wxwalk: level:   fog %ld: %s; fog regions %ld (with a weather palette entry %ld)",
+			p, psp_wx_tag_name(entry->fog.index), regions, with_weather);
+	}
+}
+
+static void psp_wx_report(long now)
+{
+	double f = psp_wx_stats.frames ? (double)psp_wx_stats.frames : 1.0;
+
+	platform_log("wxwalk: game time %ld, bsp %d: %lu frames drew weather; a frame: particles %.1f, update %.0f us, the weather's render %.0f us (with its update)%s",
+		now, (int)global_structure_bsp_index_get(), psp_wx_stats.frames, psp_wx_stats.particles / f,
+		psp_wx_stats.update_us / f, psp_wx_stats.render_us / f, psp_wx_dead_flag ? "; wxdead" : "");
+	memset(&psp_wx_stats, 0, sizeof(psp_wx_stats));
+}
+#endif
+"""),
+("""	struct structure_bsp *structure = global_structure_bsp_get();
+	short type_index;
+
+	weather_particle_system_update(local_player_index);
+
+	for (type_index = 0;""",
+ """	struct structure_bsp *structure = global_structure_bsp_get();
+	short type_index;
+#ifdef HALO_PSP
+	/* psp_fixups.py (FIXES_WXDEAD): "wxwalk"'s times */
+	unsigned long psp_wx_start = psp_wx_walk ? psp_microseconds() : 0;
+
+	weather_particle_system_update(local_player_index);
+	if (psp_wx_walk)
+	{
+		psp_wx_stats.frames++;
+		psp_wx_stats.update_us += psp_microseconds() - psp_wx_start;
+		for (type_index = 0; type_index<weather_particle_system_type_count(definition); type_index++)
+			psp_wx_stats.particles += system->types[type_index].particle_count;
+	}
+#else
+	weather_particle_system_update(local_player_index);
+#endif
+
+	for (type_index = 0;"""),
+("""			build_sprites_end(&sprite_data);
+		}
+	}
+
+	return;
+}""",
+ """			build_sprites_end(&sprite_data);
+		}
+	}
+
+#ifdef HALO_PSP
+	if (psp_wx_walk)
+		psp_wx_stats.render_us += psp_microseconds() - psp_wx_start; /* psp_fixups.py (FIXES_WXDEAD) */
+#endif
+	return;
+}"""),
+("""void weather_particle_systems_render(
+	void)
+{
+	if (render_particle_systems_enabled && weather)""",
+ """void weather_particle_systems_render(
+	void)
+{
+#ifdef HALO_PSP
+	/* psp_fixups.py (FIXES_WXDEAD): the keep words, and "wxwalk"'s lines */
+	if (!psp_wx_keeps)
+		psp_wx_keeps_read();
+	if (psp_wx_walk)
+	{
+		long now = game_time_get();
+
+		if (psp_wx_level_seen != (void const *)global_structure_bsp_get() ||
+			psp_wx_level_index != global_structure_bsp_index_get() || psp_wx_level_map != global_scenario_index)
+		{
+			psp_wx_level_seen = global_structure_bsp_get();
+			psp_wx_level_index = global_structure_bsp_index_get();
+			psp_wx_level_map = global_scenario_index;
+			psp_wx_level();
+			memset(&psp_wx_stats, 0, sizeof(psp_wx_stats));
+			psp_wx_report_time = now;
+		}
+		if (psp_wx_report_time < 0 || now < psp_wx_report_time)
+			psp_wx_report_time = now;
+		else if (now - psp_wx_report_time >= 300)
+		{
+			psp_wx_report(now);
+			psp_wx_report_time = now;
+		}
+	}
+#endif
+	if (render_particle_systems_enabled && weather)"""),
+("""			FLAG(_point_physics_ignore_position_bit)|FLAG(_point_physics_force_no_collisions_bit);
+		point_physics_update(""",
+ """			FLAG(_point_physics_ignore_position_bit)|FLAG(_point_physics_force_no_collisions_bit);
+#ifdef HALO_PSP
+		/* psp_fixups.py (FIXES_WXDEAD): system->location is set again before
+		anything reads it */
+		flags |= psp_wx_dead_flag;
+#endif
+		point_physics_update("""),
+]
+
+
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items()) + list(FIXES_AIME2A.items()) + (list(FIXES_STACKHOT.items()) if STACKHOT else []) + (list(FIXES_STACKHOT2.items()) if STACKHOT2 else []) + list(FIXES_PWSL.items()) + list(FIXES_SPHSL.items()) + list(FIXES_RECONLIST.items()) + list(FIXES_TP1.items()) + list(FIXES_WXDEAD.items()) + list(FIXES_AIMEMOVE.items())):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
