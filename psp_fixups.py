@@ -46365,7 +46365,703 @@ static boolean psp_drawpart_wanted(
 """),
 ]
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items()) + list(FIXES_AIME2A.items()) + (list(FIXES_STACKHOT.items()) if STACKHOT else []) + (list(FIXES_STACKHOT2.items()) if STACKHOT2 else []) + list(FIXES_PWSL.items()) + list(FIXES_SPHSL.items()) + list(FIXES_RECONLIST.items()) + list(FIXES_TP1.items()) + list(FIXES_WXDEAD.items()) + list(FIXES_AIMEMOVE.items()) + list(FIXES_PROPCRASH.items()) + list(FIXES_SNDEDRAM.items()) + list(FIXES_LIGHTFIRST.items()) + list(FIXES_DRAWPART.items())):
+# "p2pass" (keep word; on by default, off word p2passoff): tick pass P2. A non-collideable
+# object's partition disconnect and reconnect made inside the object walk are
+# queued and made after it, in their order, each with the sphere and location
+# it had then; the rest of the move (the location lookup, the wake, the
+# activation) stays where it was. c20's walk interleaves ~31 machine moves a
+# tick with the other objects' updates, so the partition code (~7 KB) is
+# fetched again at each; queued, it runs once a tick with its caches warm.
+# Exact by construction: the non-collideable partition has pools of its own,
+# so the same calls in the same order leave it as before, and anything that
+# reads it inside the walk (a cluster's list, an object's own clusters) has
+# the queue made first, as does an object moved again (its reconnect must
+# land before its next disconnect) or a full queue.
+FIXES_P2PASS = {}
+FIXES_P2PASS["source/objects/objects.c#p2pass"] = [
+("""long cluster_get_first_noncollideable_object(
+	long *reference_index,
+	short cluster_index)
+{
+""", """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_P2PASS): see there */
+#define PSP_P2Q 64
+static struct psp_p2q_entry
+{
+	long datum_index;
+	long chain; /* the disconnect's references */
+	real_point3d center;
+	real radius;
+	struct location location;
+	unsigned char disconnect, reconnect;
+} psp_p2q[PSP_P2Q];
+static int psp_p2q_count, psp_p2q_open, psp_p2q_on = -1;
+static unsigned long psp_p2q_waiting[(MAXIMUM_OBJECTS_PER_MAP + 31) / 32]; /* a reconnect queued */
+static unsigned long psp_p2q_made, psp_p2q_logged, psp_p2q_flushes[5];
+
+/* why the queue was made: 0 the walk's end, 1 a list read, 2 an object moved
+again, 3 a full queue, 4 an object's own clusters read */
+static void psp_p2q_flush(int why)
+{
+	extern int psp_aime_arm, psp_aime_fpu_main, psp_aime_move_stop, psp_merays_out;
+	extern void psp_aime_handback(int which);
+	void psp_merays_settle(void);
+	int k;
+
+	if (!psp_p2q_count)
+		return;
+	/* as a move in place: the ME's readers of the lists finish first */
+	if (psp_aime_arm && psp_aime_move_stop && (psp_work_on_me() || psp_aime_fpu_main))
+		psp_aime_handback(34);
+	if (psp_merays_out)
+		psp_merays_settle();
+	psp_p2q_flushes[why]++;
+	for (k = 0; k < psp_p2q_count; k++)
+	{
+		struct psp_p2q_entry *entry = &psp_p2q[k];
+
+		if (entry->disconnect)
+			cluster_partition_disconnect(&noncollideable_object_cluster_partition, entry->datum_index, &entry->chain);
+		if (entry->reconnect)
+		{
+			long absolute = DATUM_INDEX_TO_ABSOLUTE_INDEX(entry->datum_index);
+
+			psp_p2q_waiting[absolute >> 5] &= ~(1ul << (absolute & 31));
+			cluster_partition_reconnect(&noncollideable_object_cluster_partition, entry->datum_index,
+				&object_get(entry->datum_index)->object.first_cluster_reference_index, &entry->center, entry->radius,
+				&entry->location);
+		}
+	}
+	psp_p2q_made += psp_p2q_count;
+	psp_p2q_count = 0;
+	if (psp_p2q_made / 20000 != psp_p2q_logged)
+	{
+		void platform_psp_log(const char *format, ...);
+
+		psp_p2q_logged = psp_p2q_made / 20000;
+		platform_psp_log("p2pass: %lu partition moves made after their place; queues made at the walk's end %lu, "
+			"by a list read %lu, an object moved again %lu, full %lu, an object's own clusters read %lu",
+			psp_p2q_made, psp_p2q_flushes[0], psp_p2q_flushes[1], psp_p2q_flushes[2], psp_p2q_flushes[3], psp_p2q_flushes[4]);
+	}
+}
+
+static void psp_p2q_begin(void)
+{
+	if (psp_p2q_on < 0)
+	{
+		int psp_keep(const char *name);
+
+		psp_p2q_on = psp_keep("p2pass") != 0;
+	}
+	psp_p2q_open = psp_p2q_on;
+}
+
+static void psp_p2q_end(void)
+{
+	psp_p2q_open = 0;
+	psp_p2q_flush(0);
+}
+
+/* 1: the disconnect queued (the object's pointer cleared, as the
+disconnect leaves it) */
+static int psp_p2q_disconnect(long object_index, long *first_cluster_reference)
+{
+	long absolute = DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index);
+	struct psp_p2q_entry *entry;
+
+	if (!psp_p2q_open || absolute < 0 || absolute >= MAXIMUM_OBJECTS_PER_MAP)
+		return 0;
+	if (psp_p2q_waiting[absolute >> 5] & (1ul << (absolute & 31)))
+		psp_p2q_flush(2);
+	if (psp_p2q_count == PSP_P2Q)
+		psp_p2q_flush(3);
+	entry = &psp_p2q[psp_p2q_count++];
+	entry->datum_index = object_index;
+	entry->chain = *first_cluster_reference;
+	entry->disconnect = 1;
+	entry->reconnect = 0;
+	*first_cluster_reference = NONE;
+	return 1;
+}
+
+/* 1: the reconnect queued, with what it reads now; after its own
+disconnect, in the same entry */
+static int psp_p2q_reconnect(long object_index, real_point3d const *center, real radius, struct location const *location)
+{
+	long absolute = DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index);
+	struct psp_p2q_entry *entry = psp_p2q_count ? &psp_p2q[psp_p2q_count - 1] : NULL;
+
+	if (!psp_p2q_open || absolute < 0 || absolute >= MAXIMUM_OBJECTS_PER_MAP)
+		return 0;
+	if (!entry || entry->datum_index != object_index || !entry->disconnect || entry->reconnect)
+	{
+		if (psp_p2q_count == PSP_P2Q)
+			psp_p2q_flush(3);
+		entry = &psp_p2q[psp_p2q_count++];
+		entry->datum_index = object_index;
+		entry->chain = NONE;
+		entry->disconnect = 0;
+	}
+	entry->reconnect = 1;
+	entry->center = *center;
+	entry->radius = radius;
+	entry->location = *location;
+	psp_p2q_waiting[absolute >> 5] |= 1ul << (absolute & 31);
+	return 1;
+}
+#endif
+
+long cluster_get_first_noncollideable_object(
+	long *reference_index,
+	short cluster_index)
+{
+#ifdef HALO_PSP
+	if (psp_p2q_count)
+		psp_p2q_flush(1); /* psp_fixups.py (FIXES_P2PASS) */
+#endif
+"""),
+("""short object_get_first_cluster(
+	struct object_cluster_iterator *iterator,
+	long object_index)
+{
+""", """short object_get_first_cluster(
+	struct object_cluster_iterator *iterator,
+	long object_index)
+{
+#ifdef HALO_PSP
+	/* psp_fixups.py (FIXES_P2PASS) */
+	if (psp_p2q_count &&
+		!TEST_FLAG(object_get(object_get_ultimate_parent(object_index))->object.flags, _object_has_collision_model_bit))
+		psp_p2q_flush(4);
+#endif
+"""),
+("""		cluster_partition_disconnect(
+			(TEST_FLAG(object_get(object_index)->object.flags, _object_has_collision_model_bit) ?
+				&collideable_object_cluster_partition :
+				&noncollideable_object_cluster_partition
+			),
+			object_index,
+			&object->object.first_cluster_reference_index);
+""", """#ifdef HALO_PSP
+		/* psp_fixups.py (FIXES_P2PASS) */
+		if (TEST_FLAG(object->object.flags, _object_has_collision_model_bit) ||
+			!psp_p2q_disconnect(object_index, &object->object.first_cluster_reference_index))
+#endif
+		cluster_partition_disconnect(
+			(TEST_FLAG(object_get(object_index)->object.flags, _object_has_collision_model_bit) ?
+				&collideable_object_cluster_partition :
+				&noncollideable_object_cluster_partition
+			),
+			object_index,
+			&object->object.first_cluster_reference_index);
+"""),
+("""		cluster_partition_reconnect(
+			(TEST_FLAG(object_get(object_index)->object.flags, _object_has_collision_model_bit) ?
+				&collideable_object_cluster_partition :
+				&noncollideable_object_cluster_partition
+			),
+			object_index,
+			&object->object.first_cluster_reference_index,
+			&object->object.bounding_sphere_center,
+			object->object.bounding_sphere_radius,
+			&object->object.location);
+""", """#ifdef HALO_PSP
+		/* psp_fixups.py (FIXES_P2PASS) */
+		if (TEST_FLAG(object->object.flags, _object_has_collision_model_bit) ||
+			!psp_p2q_reconnect(object_index, &object->object.bounding_sphere_center, object->object.bounding_sphere_radius,
+				&object->object.location))
+#endif
+		cluster_partition_reconnect(
+			(TEST_FLAG(object_get(object_index)->object.flags, _object_has_collision_model_bit) ?
+				&collideable_object_cluster_partition :
+				&noncollideable_object_cluster_partition
+			),
+			object_index,
+			&object->object.first_cluster_reference_index,
+			&object->object.bounding_sphere_center,
+			object->object.bounding_sphere_radius,
+			&object->object.location);
+"""),
+("""	psp_fvp_begin(); /* psp_fixups.py (FIXES_FISSION) */
+""", """	psp_p2q_begin(); /* psp_fixups.py (FIXES_P2PASS) */
+	psp_fvp_begin(); /* psp_fixups.py (FIXES_FISSION) */
+"""),
+("""	psp_nms_close(); /* psp_fixups.py (FIXES_NMSKIP) */
+""", """	psp_p2q_end(); /* psp_fixups.py (FIXES_P2PASS): before the collector deletes */
+	psp_nms_close(); /* psp_fixups.py (FIXES_NMSKIP) */
+"""),
+]
+
+# "p2census" (PSP_P2CENSUS=1 builds it in; keep word p2census turns it on): a
+# census for the tick pass P2, the non-collideable objects' map reconnects
+# made after the object walk instead of inside it. Every 300 walks it logs the
+# partition work by class (collideable, non-collideable, child) inside and
+# outside the walk, its time on the game's clock (each call's clock-pair cost
+# taken off), how many of the walk's non-collideable reconnects repeat an
+# object or change its cluster set, and who reads the non-collideable
+# partition inside the walk after one has moved: what a deferral would change.
+# The non-collideable calls go through functions of their own, so the cache
+# model's split (cachesplit psp_p2nc_reconnect,psp_p2nc_disconnect) can price
+# them as a pass. Reads only: the game plays as without it.
+P2CENSUS = os.environ.get("PSP_P2CENSUS", "") == "1"
+FIXES_P2CENSUS = {}
+FIXES_P2CENSUS["source/objects/objects.c#p2census"] = [
+("""long cluster_get_first_noncollideable_object(
+	long *reference_index,
+	short cluster_index)
+{
+""", """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_P2CENSUS): see there */
+int psp_keep(const char *name);
+void platform_psp_log(const char *format, ...);
+unsigned long psp_heartbeat_clock(void);
+static int psp_p2_on = -1;
+int psp_p2_in_walk;
+int psp_p2_reader; /* 0 another, 1 area damage, 2 a player's nearby objects */
+static unsigned short psp_p2_serial = 1;
+static unsigned long psp_p2_walk_start;
+/* the walk an object's partition reconnect was last made in */
+static unsigned short psp_p2_moved[MAXIMUM_OBJECTS_PER_MAP];
+/* its cluster set before its disconnect; 0 none */
+static unsigned long psp_p2_sig[MAXIMUM_OBJECTS_PER_MAP];
+#define PSP_P2_CHANGED 64
+static long psp_p2_changed[PSP_P2_CHANGED];
+static int psp_p2_changed_count;
+static unsigned long psp_p2_walk_nc;
+static struct
+{
+	unsigned long rc[2][3], dc[2][3];
+	long rc_us[2][3], dc_us[2][3], pair_us, walk_us;
+	unsigned long nc_type[12];
+	unsigned long nc_repeat, nc_changed, nc_same, nc_new, co_repeat, co_changed, co_same, co_new, changed_overflow;
+	unsigned long aoe[2], aoe_moved, aoe_results_nc, aoe_results_moved, aoe_near_changed, aoe_near_changed_objects;
+	unsigned long reads[2][3], reads_after, own_reads, own_reads_moved, own_reads_changed;
+	unsigned long walks;
+} psp_p2;
+
+static unsigned long psp_p2_signature(struct cluster_partition const *partition, long first)
+{
+	long reference, cluster;
+	unsigned long sum = 0, count = 0;
+
+	for (cluster = cluster_partition_get_first_cluster(partition, &reference, first); cluster != NONE;
+		cluster = cluster_partition_get_next_cluster(partition, &reference))
+	{
+		sum += (unsigned long)(cluster + 1) * 2654435761u;
+		count++;
+	}
+	return (sum ^ (count << 24)) | 1;
+}
+
+/* 0 collideable, 1 non-collideable, 2 a child (no partition) */
+static int psp_p2_class(struct object_datum const *object)
+{
+	if (object->object.parent_object_index != NONE)
+		return 2;
+	return TEST_FLAG(object->object.flags, _object_has_collision_model_bit) ? 0 : 1;
+}
+
+static struct object_header_datum *psp_p2_header(long object_index)
+{
+	long absolute = DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index);
+	struct object_header_datum *header;
+
+	if (absolute < 0 || absolute >= object_header_data->count)
+		return NULL;
+	header = (struct object_header_datum *)xbox_pointer(object_header_data->data) + absolute;
+	return header->identifier == DATUM_INDEX_TO_IDENTIFIER(object_index) && header->datum ? header : NULL;
+}
+
+static void psp_p2_log(void)
+{
+	unsigned long *t = psp_p2.nc_type;
+
+	platform_psp_log("p2census: %lu walks to %ld: reconnects in the walk co %lu nc %lu child %lu, outside co %lu nc %lu child %lu; "
+		"disconnects in the walk co %lu nc %lu child %lu, outside co %lu nc %lu child %lu",
+		psp_p2.walks, (long)game_time_get(), psp_p2.rc[1][0], psp_p2.rc[1][1], psp_p2.rc[1][2], psp_p2.rc[0][0], psp_p2.rc[0][1],
+		psp_p2.rc[0][2], psp_p2.dc[1][0], psp_p2.dc[1][1], psp_p2.dc[1][2], psp_p2.dc[0][0], psp_p2.dc[0][1], psp_p2.dc[0][2]);
+	platform_psp_log("p2census us: reconnects in the walk co %ld nc %ld child %ld, outside co %ld nc %ld child %ld; disconnects in the walk "
+		"co %ld nc %ld child %ld, outside co %ld nc %ld child %ld; the walk %ld; clock pairs %ld",
+		psp_p2.rc_us[1][0], psp_p2.rc_us[1][1], psp_p2.rc_us[1][2], psp_p2.rc_us[0][0], psp_p2.rc_us[0][1], psp_p2.rc_us[0][2],
+		psp_p2.dc_us[1][0], psp_p2.dc_us[1][1], psp_p2.dc_us[1][2], psp_p2.dc_us[0][0], psp_p2.dc_us[0][1], psp_p2.dc_us[0][2],
+		psp_p2.walk_us, psp_p2.pair_us);
+	platform_psp_log("p2census nc in the walk: by type biped %lu vehicle %lu weapon %lu equipment %lu garbage %lu projectile %lu "
+		"scenery %lu machine %lu control %lu light %lu placeholder %lu sound %lu; repeats %lu, clusters the same %lu changed %lu new %lu "
+		"(changed past the list %lu); co: repeats %lu same %lu changed %lu new %lu",
+		t[0], t[1], t[2], t[3], t[4], t[5], t[6], t[7], t[8], t[9], t[10], t[11], psp_p2.nc_repeat, psp_p2.nc_same, psp_p2.nc_changed,
+		psp_p2.nc_new, psp_p2.changed_overflow, psp_p2.co_repeat, psp_p2.co_same, psp_p2.co_changed, psp_p2.co_new);
+	platform_psp_log("p2census reads: area damage queries in the walk %lu (reaching an nc moved in this walk %lu; results nc %lu, of them "
+		"moved %lu; near an nc whose clusters changed %lu, objects %lu), outside %lu; nc cluster lists read in the walk: area damage %lu, "
+		"nearby objects %lu, other %lu (after an nc reconnect in the walk %lu), outside: %lu %lu %lu; an nc object's own clusters "
+		"read in the walk %lu (moved %lu, changed %lu)",
+		psp_p2.aoe[1], psp_p2.aoe_moved, psp_p2.aoe_results_nc, psp_p2.aoe_results_moved, psp_p2.aoe_near_changed,
+		psp_p2.aoe_near_changed_objects, psp_p2.aoe[0], psp_p2.reads[1][1], psp_p2.reads[1][2], psp_p2.reads[1][0], psp_p2.reads_after,
+		psp_p2.reads[0][1], psp_p2.reads[0][2], psp_p2.reads[0][0], psp_p2.own_reads, psp_p2.own_reads_moved, psp_p2.own_reads_changed);
+	memset(&psp_p2, 0, sizeof(psp_p2));
+}
+
+void psp_p2_walk_begin(void)
+{
+	if (psp_p2_on < 0)
+		psp_p2_on = psp_keep("p2census");
+	if (!psp_p2_on)
+		return;
+	if (++psp_p2.walks % 300 == 0)
+		psp_p2_log();
+	psp_p2_in_walk = 1;
+	psp_p2_walk_nc = 0;
+	psp_p2_changed_count = 0;
+	if (!++psp_p2_serial)
+		psp_p2_serial = 1;
+	psp_p2_walk_start = psp_heartbeat_clock();
+}
+
+void psp_p2_walk_end(void)
+{
+	if (psp_p2_on <= 0)
+		return;
+	psp_p2_in_walk = 0;
+	psp_p2.walk_us += (long)(psp_heartbeat_clock() - psp_p2_walk_start);
+}
+
+/* an area damage query's answer: did it reach an nc object moved earlier in
+this walk (its lists' order differs under a deferral), or pass near one whose
+cluster set changed (the answer itself may differ) */
+void psp_p2_area_damage(real_point3d const *origin, real radius, long const *indices, short count)
+{
+	int moved = 0, near = 0, k;
+
+	if (psp_p2_on <= 0)
+		return;
+	psp_p2.aoe[psp_p2_in_walk]++;
+	if (!psp_p2_in_walk)
+		return;
+	for (k = 0; k < count; k++)
+	{
+		struct object_header_datum *header = psp_p2_header(indices[k]);
+		long absolute = DATUM_INDEX_TO_ABSOLUTE_INDEX(indices[k]);
+
+		if (header && !TEST_FLAG(header->datum->object.flags, _object_has_collision_model_bit))
+		{
+			psp_p2.aoe_results_nc++;
+			if (psp_p2_moved[absolute] == psp_p2_serial)
+			{
+				psp_p2.aoe_results_moved++;
+				moved = 1;
+			}
+		}
+	}
+	for (k = 0; k < psp_p2_changed_count; k++)
+	{
+		struct object_header_datum *header = psp_p2_header(psp_p2_changed[k]);
+
+		if (header && point_in_sphere(origin, &header->datum->object.bounding_sphere_center,
+			header->datum->object.bounding_sphere_radius + radius))
+		{
+			near = 1;
+			psp_p2.aoe_near_changed_objects++;
+		}
+	}
+	psp_p2.aoe_moved += moved;
+	psp_p2.aoe_near_changed += near;
+}
+#endif
+
+long cluster_get_first_noncollideable_object(
+	long *reference_index,
+	short cluster_index)
+{
+#ifdef HALO_PSP
+	if (psp_p2_on > 0)
+	{
+		psp_p2.reads[psp_p2_in_walk][psp_p2_reader]++;
+		if (psp_p2_in_walk && psp_p2_walk_nc)
+			psp_p2.reads_after++;
+	}
+#endif
+"""),
+("""short object_get_first_cluster(
+	struct object_cluster_iterator *iterator,
+	long object_index)
+{
+""", """short object_get_first_cluster(
+	struct object_cluster_iterator *iterator,
+	long object_index)
+{
+#ifdef HALO_PSP
+	/* psp_fixups.py (FIXES_P2CENSUS) */
+	if (psp_p2_on > 0 && psp_p2_in_walk)
+	{
+		long top = object_get_ultimate_parent(object_index);
+		long absolute = DATUM_INDEX_TO_ABSOLUTE_INDEX(top);
+
+		if (!TEST_FLAG(object_get(top)->object.flags, _object_has_collision_model_bit))
+		{
+			int k;
+
+			psp_p2.own_reads++;
+			if (psp_p2_moved[absolute] == psp_p2_serial)
+				psp_p2.own_reads_moved++;
+			for (k = 0; k < psp_p2_changed_count; k++)
+				if (psp_p2_changed[k] == top)
+				{
+					psp_p2.own_reads_changed++;
+					break;
+				}
+		}
+	}
+#endif
+"""),
+("""void object_disconnect_from_map(
+	long object_index)
+{
+""", """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_P2CENSUS): each class's calls in functions of their
+own, for the cache model's split */
+static void __attribute__((noinline)) psp_p2_disconnect_body(long object_index);
+void __attribute__((noinline)) psp_p2nc_disconnect(long object_index)
+{
+	psp_p2_disconnect_body(object_index);
+}
+void __attribute__((noinline)) psp_p2co_disconnect(long object_index)
+{
+	psp_p2_disconnect_body(object_index);
+}
+
+void object_disconnect_from_map(
+	long object_index)
+{
+	struct object_datum *object = object_get(object_index);
+	int class_index = psp_p2_class(object);
+	long absolute = DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index);
+	unsigned long t0, t1, t2;
+
+	if (psp_p2_on <= 0)
+	{
+		if (class_index == 1)
+			psp_p2nc_disconnect(object_index);
+		else
+			psp_p2co_disconnect(object_index);
+		return;
+	}
+	if (class_index != 2 && absolute >= 0 && absolute < MAXIMUM_OBJECTS_PER_MAP)
+		psp_p2_sig[absolute] = psp_p2_signature(class_index ? &noncollideable_object_cluster_partition :
+			&collideable_object_cluster_partition, object->object.first_cluster_reference_index);
+	t0 = psp_heartbeat_clock();
+	t1 = psp_heartbeat_clock();
+	if (class_index == 1)
+		psp_p2nc_disconnect(object_index);
+	else
+		psp_p2co_disconnect(object_index);
+	t2 = psp_heartbeat_clock();
+	psp_p2.dc[psp_p2_in_walk][class_index]++;
+	psp_p2.dc_us[psp_p2_in_walk][class_index] += (long)(t2 - t1) - (long)(t1 - t0);
+	psp_p2.pair_us += (long)(t1 - t0);
+}
+
+static void __attribute__((noinline)) psp_p2_disconnect_body(
+	long object_index)
+{
+#else
+void object_disconnect_from_map(
+	long object_index)
+{
+#endif
+"""),
+("""void object_reconnect_to_map(
+	long object_index,
+	struct location const *location)
+{
+""", """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_P2CENSUS): as the disconnect */
+static void __attribute__((noinline)) psp_p2_reconnect_body(long object_index, struct location const *location);
+void __attribute__((noinline)) psp_p2nc_reconnect(long object_index, struct location const *location)
+{
+	psp_p2_reconnect_body(object_index, location);
+}
+void __attribute__((noinline)) psp_p2co_reconnect(long object_index, struct location const *location)
+{
+	psp_p2_reconnect_body(object_index, location);
+}
+
+void object_reconnect_to_map(
+	long object_index,
+	struct location const *location)
+{
+	struct object_datum *object = object_get(object_index);
+	int class_index = psp_p2_class(object), type = object->object.type;
+	long absolute = DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index);
+	unsigned long t0, t1, t2;
+	struct object_header_datum *header;
+
+	if (psp_p2_on <= 0)
+	{
+		if (class_index == 1)
+			psp_p2nc_reconnect(object_index, location);
+		else
+			psp_p2co_reconnect(object_index, location);
+		return;
+	}
+	t0 = psp_heartbeat_clock();
+	t1 = psp_heartbeat_clock();
+	if (class_index == 1)
+		psp_p2nc_reconnect(object_index, location);
+	else
+		psp_p2co_reconnect(object_index, location);
+	t2 = psp_heartbeat_clock();
+	psp_p2.rc[psp_p2_in_walk][class_index]++;
+	psp_p2.rc_us[psp_p2_in_walk][class_index] += (long)(t2 - t1) - (long)(t1 - t0);
+	psp_p2.pair_us += (long)(t1 - t0);
+	if (class_index == 2 || absolute < 0 || absolute >= MAXIMUM_OBJECTS_PER_MAP)
+		return;
+	header = psp_p2_header(object_index);
+	if (psp_p2_in_walk)
+	{
+		unsigned long before = psp_p2_sig[absolute], after = 0;
+
+		if (header && TEST_FLAG(header->datum->object.flags, _object_connected_to_map_bit))
+			after = psp_p2_signature(class_index ? &noncollideable_object_cluster_partition : &collideable_object_cluster_partition,
+				header->datum->object.first_cluster_reference_index);
+		if (class_index == 1)
+		{
+			if ((unsigned)type < 12)
+				psp_p2.nc_type[type]++;
+			if (psp_p2_moved[absolute] == psp_p2_serial)
+				psp_p2.nc_repeat++;
+			psp_p2_walk_nc++;
+			if (!before)
+				psp_p2.nc_new++;
+			else if (before == after)
+				psp_p2.nc_same++;
+			else
+			{
+				int k;
+
+				psp_p2.nc_changed++;
+				for (k = 0; k < psp_p2_changed_count && psp_p2_changed[k] != object_index; k++)
+					;
+				if (k == psp_p2_changed_count)
+				{
+					if (psp_p2_changed_count < PSP_P2_CHANGED)
+						psp_p2_changed[psp_p2_changed_count++] = object_index;
+					else
+						psp_p2.changed_overflow++;
+				}
+			}
+		}
+		else
+		{
+			if (psp_p2_moved[absolute] == psp_p2_serial)
+				psp_p2.co_repeat++;
+			if (!before)
+				psp_p2.co_new++;
+			else if (before == after)
+				psp_p2.co_same++;
+			else
+				psp_p2.co_changed++;
+		}
+		psp_p2_moved[absolute] = psp_p2_serial;
+	}
+	psp_p2_sig[absolute] = 0;
+}
+
+static void __attribute__((noinline)) psp_p2_reconnect_body(
+	long object_index,
+	struct location const *location)
+{
+#else
+void object_reconnect_to_map(
+	long object_index,
+	struct location const *location)
+{
+#endif
+"""),
+("""	psp_fvp_begin(); /* psp_fixups.py (FIXES_FISSION) */
+#endif
+""", """	psp_fvp_begin(); /* psp_fixups.py (FIXES_FISSION) */
+	psp_p2_walk_begin(); /* psp_fixups.py (FIXES_P2CENSUS) */
+#endif
+"""),
+("""	/* psp_fixups.py (FIXES_134 #nmreaders) */
+	psp_nmr_in_update = 0;
+""", """	/* psp_fixups.py (FIXES_134 #nmreaders) */
+	psp_nmr_in_update = 0;
+	psp_p2_walk_end(); /* psp_fixups.py (FIXES_P2CENSUS) */
+"""),
+]
+FIXES_P2CENSUS["source/objects/damage.c#p2census"] = [
+("""	object_count = objects_in_sphere(
+		0,
+		0,
+		&damage->location,
+		&damage->origin,
+		definition->cutoff_radius,
+		object_indices,
+		NUMBEROF(object_indices));
+""", """#ifdef HALO_PSP
+	{
+		/* psp_fixups.py (FIXES_P2CENSUS) */
+		extern int psp_p2_reader;
+
+		psp_p2_reader = 1;
+	}
+#endif
+	object_count = objects_in_sphere(
+		0,
+		0,
+		&damage->location,
+		&damage->origin,
+		definition->cutoff_radius,
+		object_indices,
+		NUMBEROF(object_indices));
+#ifdef HALO_PSP
+	{
+		/* psp_fixups.py (FIXES_P2CENSUS) */
+		extern int psp_p2_reader;
+		extern void psp_p2_area_damage(real_point3d const *origin, real radius, long const *indices, short count);
+
+		psp_p2_reader = 0;
+		psp_p2_area_damage(&damage->origin, definition->cutoff_radius, object_indices, object_count);
+	}
+#endif
+"""),
+]
+FIXES_P2CENSUS["source/game/players.c#p2census"] = [
+("""			object_count = objects_in_sphere(
+				0,
+				_object_mask_player_interaction,
+				&unit->object.location,
+				&unit->object.bounding_sphere_center,
+				unit->object.bounding_sphere_radius,
+				object_indices,
+				NUMBEROF(object_indices));
+""", """#ifdef HALO_PSP
+			{
+				/* psp_fixups.py (FIXES_P2CENSUS) */
+				extern int psp_p2_reader;
+
+				psp_p2_reader = 2;
+			}
+#endif
+			object_count = objects_in_sphere(
+				0,
+				_object_mask_player_interaction,
+				&unit->object.location,
+				&unit->object.bounding_sphere_center,
+				unit->object.bounding_sphere_radius,
+				object_indices,
+				NUMBEROF(object_indices));
+#ifdef HALO_PSP
+			{
+				extern int psp_p2_reader;
+
+				psp_p2_reader = 0;
+			}
+#endif
+"""),
+]
+
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items()) + list(FIXES_AIME2A.items()) + (list(FIXES_STACKHOT.items()) if STACKHOT else []) + (list(FIXES_STACKHOT2.items()) if STACKHOT2 else []) + list(FIXES_PWSL.items()) + list(FIXES_SPHSL.items()) + list(FIXES_RECONLIST.items()) + list(FIXES_TP1.items()) + list(FIXES_WXDEAD.items()) + list(FIXES_AIMEMOVE.items()) + list(FIXES_PROPCRASH.items()) + list(FIXES_SNDEDRAM.items()) + list(FIXES_LIGHTFIRST.items()) + list(FIXES_DRAWPART.items()) + list(FIXES_P2PASS.items()) + (list(FIXES_P2CENSUS.items()) if P2CENSUS else [])):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
