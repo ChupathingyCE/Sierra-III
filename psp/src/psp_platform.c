@@ -4118,7 +4118,7 @@ static void load_crash_handler(const char *eboot_path)
 }
 
 /* The last launches' files kept, numbered, in the log folder: log.txt,
-profile.txt and crash.txt become log/NNN_log.txt and so on (NNN counts
+profile.txt, pcsample.txt and crash.txt become log/NNN_log.txt and so on (NNN counts
 launches), and only the last OLD_LAUNCHES sets stay, so a test whose log
 wasn't pulled before the next launch isn't lost, and profile.txt doesn't
 gather every launch's windows. Renamed within the one folder: whether the
@@ -4129,8 +4129,8 @@ renames at start-up */
 #define OLD_LAUNCHES 20
 static void keep_last_launch(void)
 {
-	static const char *const names[3] = { LOG_FOLDER "/log.txt", LOG_FOLDER "/profile.txt", DATA_ROOT "/crash.txt" };
-	static const char *const suffixes[3] = { "log.txt", "profile.txt", "crash.txt" };
+	static const char *const names[4] = { LOG_FOLDER "/log.txt", LOG_FOLDER "/profile.txt", LOG_FOLDER "/pcsample.txt", DATA_ROOT "/crash.txt" };
+	static const char *const suffixes[4] = { "log.txt", "profile.txt", "pcsample.txt", "crash.txt" };
 	SceIoStat status;
 	SceIoDirent entry;
 	SceUID folder;
@@ -4159,11 +4159,11 @@ static void keep_last_launch(void)
 		sceIoDclose(folder);
 	}
 	number = newest >= 999 ? 1 : newest + 1;
-	for (k = 0; k < 3; k++)
+	for (k = 0; k < 4; k++)
 	{
 		snprintf(path, sizeof(path), LOG_FOLDER "/%03d_%s", number, suffixes[k]);
 		sceIoRemove(path);
-		if (k < 2)
+		if (k < 3)
 			sceIoRename(names[k], path);
 		else if (sceIoGetstat(names[k], &status) >= 0)
 			sceIoRename(names[k], path); /* on failure, left in ms0:/halo as before */
@@ -4174,7 +4174,7 @@ static void keep_last_launch(void)
 		snprintf(path, sizeof(path), LOG_FOLDER "/%03d_log.txt", n);
 		if (sceIoRemove(path) < 0)
 			continue;
-		for (k = 1; k < 3; k++)
+		for (k = 1; k < 4; k++)
 		{
 			snprintf(path, sizeof(path), LOG_FOLDER "/%03d_%s", n, suffixes[k]);
 			sceIoRemove(path);
