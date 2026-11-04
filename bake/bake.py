@@ -47,13 +47,13 @@ Options:
                                 full size (fp, weapons, vehicles, characters,
                                 chief):
                                 the launch menu's "assetdetail" uses them
-    --sound s9                  the sound bake (the default; streaming.md S9):
-                                every sound at 22,050 Hz at most, effects mono,
-                                music stereo, still Xbox ADPCM (lib/soundpack.py);
-                                --sound none keeps the disc's sounds as they are;
-                                --sound s9full is s9 with the music as the disc
-                                has it, 44.1 kHz stereo, for the mixer's full-rate
-                                path (keep word musadpcm)
+    --sound s9full              the sound bake (the default; streaming.md S9):
+                                every effect at 22,050 Hz at most and mono, the
+                                music as the disc has it, 44.1 kHz stereo, for the
+                                mixer's full-rate path (keep word musadpcm, on by
+                                default), still Xbox ADPCM (lib/soundpack.py);
+                                --sound s9 halves the music too (22,050 Hz);
+                                --sound none keeps the disc's sounds as they are
     --music-stream              also writes maps/<map>.pmus: the map's music at
                                 44.1 kHz as Vorbis, for the music path (keep word
                                 musicstream; docs/plan_music_stream.md). The map
@@ -774,7 +774,7 @@ def main():
     ap.add_argument('--keep-work', action='store_true')
     ap.add_argument('--force', action='store_true')
     ap.add_argument('--detail', default='')
-    ap.add_argument('--sound', default='s9', choices=['none', 's9', 's9full', 's10'])
+    ap.add_argument('--sound', default='s9full', choices=['none', 's9', 's9full', 's10'])
     ap.add_argument('--music-stream', action='store_true')
     ap.add_argument('--music-adpcm', action='store_true')
     ap.add_argument('--eboot', default='')
