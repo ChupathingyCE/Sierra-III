@@ -161,7 +161,24 @@ index 8d4b05a..80db818 100644
  	u32 error;
  	__IoFreeFd(id, error);
  	// Timing is not accurate, aiming low for now.
-@@ -2261,6 +2281,7 @@ static int sceIoCloseAsync(int id) {
+@@ -2172,6 +2192,16 @@
+ 				Memory::WriteUnchecked_U8(HLEPlugins::GetKey(argAddr), outPtr);
+ 			}
+ 			return hleLogDebug(Log::sceIo, 0);
++		case 0x4D45:
++			// local patch (Halo PSP port, B58): which part of the ME's eDRAM is
++			// mapped, as offsets from its start (the first byte, the end), so a
++			// game asks before it puts anything there. Without the patch this
++			// command writes nothing and still returns 0.
++			if (Memory::IsValidRange(outPtr, 8)) {
++				Memory::WriteUnchecked_U32(Memory::ME_EDRAM_MAP_START, outPtr);
++				Memory::WriteUnchecked_U32(Memory::ME_EDRAM_MAP_START + Memory::ME_EDRAM_MAP_SIZE, outPtr + 4);
++			}
++			return hleLogDebug(Log::sceIo, 0);
+ 		}
+ 
+ 		return hleLogError(Log::sceIo, 0, "UNKNOWN PARAMETERS");
+@@ -2261,6 +2291,7 @@ static int sceIoCloseAsync(int id) {
  	}
  
  	f->closePending = true;
@@ -169,7 +186,7 @@ index 8d4b05a..80db818 100644
  
  	auto &params = asyncParams[id];
  	params.op = IoAsyncOp::CLOSE;
-@@ -2311,6 +2332,7 @@ static u32 sceIoOpenAsync(const char *filename, int flags, int mode) {
+@@ -2311,6 +2342,7 @@ static u32 sceIoOpenAsync(const char *filename, int flags, int mode) {
  
  	// We need an fd even for errors, since it's async.
  	int fd = __IoAllocFd(f);
@@ -177,7 +194,7 @@ index 8d4b05a..80db818 100644
  	if (fd < 0) {
  		kernelObjects.Destroy<FileNode>(f->GetUID());
  		return hleDelayResult(hleLogError(Log::sceIo, fd, "out of fds"), "file opened", 1000);
-@@ -2545,6 +2567,7 @@ static u32 sceIoDopen(const char *path) {
+@@ -2545,6 +2577,7 @@ static u32 sceIoDopen(const char *path) {
  	dir->listing = listing;
  	dir->index = 0;
  	dir->name = std::string(path);
@@ -185,7 +202,7 @@ index 8d4b05a..80db818 100644
  
  	double listTime = time_now_d() - startTime;
  
-@@ -2669,6 +2692,7 @@ static u32 sceIoDread(int id, u32 dirent_addr) {
+@@ -2669,6 +2702,7 @@ static u32 sceIoDread(int id, u32 dirent_addr) {
  }
  
  static u32 sceIoDclose(int id) {
@@ -203,7 +220,7 @@ index 723b566..9baa426 100644
  // Copyright (c) 2012- PPSSPP Project.
  
  // This program is free software: you can redistribute it and/or modify
-@@ -170,6 +172,44 @@ void WriteMMIO_U32(MIPSState *mips, u32 addr, u32 value) {
+@@ -170,6 +172,48 @@ void WriteMMIO_U32(MIPSState *mips, u32 addr, u32 value) {
  	WARN_LOG(Log::CPU, "Unhandled MMIO Write32 at %08x = %08x", addr, value);
  }
  
@@ -226,6 +243,10 @@ index 723b566..9baa426 100644
 +	if (pc < 0x08804000 || pc >= 0x08C00000)
 +		return;
 +	u32 a = addr & 0x3FFFFFFF;
++	// The mapped eDRAM (B58) is the ME's: the game's simulated ME work reaches
++	// it from this CPU through the kernel segment, as the ME does on a PSP.
++	if (Memory::IsMeEdramAddress(addr))
++		return;
 +	bool bad = (addr & 0x80000000) != 0 || (a >= 0x08000000 && a < 0x08400000) /* 0x08400000-0x08800000: the volatile 4 MB, ours since sceKernelVolatileMemLock */ || a < 0x00010000 ||
 +		(a >= 0x0A000000 && a < 0x10000000) /* a PSP-1000 has 32 MB: no RAM from 0x0a000000 */;
 +	if (!bad)
@@ -248,7 +269,7 @@ index 723b566..9baa426 100644
  namespace MIPSInt {
  	void Int_Cache(MIPSState *mips, MIPSOpcode op) {
  		int imm = SignExtend16ToS32(op);
-@@ -496,6 +536,17 @@ namespace MIPSInt {
+@@ -496,6 +540,17 @@ namespace MIPSInt {
  		int rs = _RS;
  		const u32 addr = R(rs) + imm;
  
@@ -266,7 +287,7 @@ index 723b566..9baa426 100644
  		if (((op >> 29) & 1) == 0 && rt == 0) {
  			// Don't load anything into $zr
  			PC += 4;
-@@ -679,6 +730,12 @@ namespace MIPSInt {
+@@ -679,6 +734,12 @@ namespace MIPSInt {
  		int rs = _RS;
  		u32 addr = R(rs) + offset;
  
@@ -279,7 +300,7 @@ index 723b566..9baa426 100644
  		switch (op >> 26) {
  		case 49:
  			if (!Memory::IsValid4AlignedAddress(addr)) {
-@@ -1117,6 +1174,18 @@ namespace MIPSInt {
+@@ -1117,6 +1178,18 @@ namespace MIPSInt {
  	void Int_FPU2op(MIPSState *mips, MIPSOpcode op) {
  		int fs = _FS;
  		int fd = _FD;
@@ -298,7 +319,7 @@ index 723b566..9baa426 100644
  
  		switch (op & 0x3f)
  		{
-@@ -1166,6 +1235,8 @@ namespace MIPSInt {
+@@ -1166,6 +1239,8 @@ namespace MIPSInt {
  		int fs = _FS;
  		int ft = _FT;
  		bool cond;
@@ -307,7 +328,7 @@ index 723b566..9baa426 100644
  		switch (op & 0xf)
  		{
  		case 0: //f
-@@ -1221,6 +1292,8 @@ namespace MIPSInt {
+@@ -1221,6 +1296,8 @@ namespace MIPSInt {
  		int ft = _FT;
  		int fs = _FS;
  		int fd = _FD;
@@ -316,7 +337,7 @@ index 723b566..9baa426 100644
  
  		switch (op & 0x3f)
  		{
-@@ -1267,6 +1340,17 @@ namespace MIPSInt {
+@@ -1267,6 +1344,17 @@ namespace MIPSInt {
  			_dbg_assert_msg_(false,"Trying to interpret FPU3Op instruction that can't be interpreted");
  			break;
  		}
@@ -750,3 +771,143 @@ index 2a41a5833..66a18a451 100644
  	// _dbg_assert_(g_stackSize == 0);
  	g_stackSize = 0;
  
+diff --git a/Core/MemMap.cpp b/Core/MemMap.cpp
+index c925c54..138d04a 100644
+--- a/Core/MemMap.cpp
++++ b/Core/MemMap.cpp
+@@ -54,6 +54,8 @@ u8 *m_pNullPage;
+ u8 *m_pPhysicalScratchPad;
+ u8 *m_pUncachedScratchPad;
+ u8 *m_pKernelScratchPad;
++// local patch (Halo PSP port, B58): the mapped part of the ME's eDRAM (MemMap.h)
++static u8 *m_pMeEdram[4];
+ u8 *m_pUncachedKernelScratchPad;
+ // 64-bit: Pointers to high-mem mirrors
+ // 32-bit: Same as above
+@@ -100,6 +102,12 @@ static MemoryView views[] = {
+ 	// writing 0x80010000 (see docs/VSHBootInvestigation.md).
+ 	{&m_pKernelScratchPad,        0x80010000, SCRATCHPAD_SIZE, MV_MIRROR_PREVIOUS | MV_KERNEL},
+ 	{&m_pUncachedKernelScratchPad,0xC0010000, SCRATCHPAD_SIZE, MV_MIRROR_PREVIOUS | MV_KERNEL},
++	// local patch (Halo PSP port, B58): the ME's eDRAM, as the game addresses it
++	// (0x80000000 up) and through the same mirrors as the scratchpad
++	{&m_pMeEdram[0],          ME_EDRAM_MAP_START, ME_EDRAM_MAP_SIZE, 0},
++	{&m_pMeEdram[1],          0x40000000 | ME_EDRAM_MAP_START, ME_EDRAM_MAP_SIZE, MV_MIRROR_PREVIOUS},
++	{&m_pMeEdram[2],          0x80000000 | ME_EDRAM_MAP_START, ME_EDRAM_MAP_SIZE, MV_MIRROR_PREVIOUS | MV_KERNEL},
++	{&m_pMeEdram[3],          0xC0000000 | ME_EDRAM_MAP_START, ME_EDRAM_MAP_SIZE, MV_MIRROR_PREVIOUS | MV_KERNEL},
+ 	{&m_pPhysicalVRAM[0],     0x04000000, 0x00200000, 0},
+ 	{&m_pPhysicalVRAM[1],     0x04200000, 0x00200000, MV_MIRROR_PREVIOUS},
+ 	{&m_pPhysicalVRAM[2],     0x04400000, 0x00200000, MV_MIRROR_PREVIOUS},
+diff --git a/Core/MemMap.h b/Core/MemMap.h
+index 83fe8ec..60d8dac 100644
+--- a/Core/MemMap.h
++++ b/Core/MemMap.h
+@@ -103,6 +103,15 @@ enum {
+ 
+ 	SCRATCHPAD_SIZE = 0x00004000,
+ 
++	// local patch (Halo PSP port, B58): the part of the Media Engine's 2 MB
++	// eDRAM the game's sound tier uses (its 0xC8000-0x16C000), mapped so the
++	// game's simulated ME work can keep the tier where the PSP's ME does
++	// instead of in the heap. Only the ME reaches it on a PSP; the emulator
++	// runs that work on the main CPU. Above the scratchpad (0x10000-0x13FFF),
++	// so no address that was mapped before moves.
++	ME_EDRAM_MAP_START = 0x000C8000,
++	ME_EDRAM_MAP_SIZE  = 0x000A4000,
++
+ #ifdef MASKED_PSP_MEMORY
+ 	// This wraparound should work for PSP too.
+ 	MEMVIEW32_MASK  = 0x3FFFFFFF,
+@@ -311,6 +320,12 @@ inline bool AddressesEqualAfterMask(const u32 address1, const u32 address2) {
+ 	return (address1 & 0x3FFFFFFF) == (address2 & 0x3FFFFFFF);
+ }
+ 
++// local patch (Halo PSP port, B58): the mapped eDRAM, through its four
++// mirrors (the uncached and kernel bits, 0x40000000 and 0x80000000)
++inline bool IsMeEdramAddress(const u32 address) {
++	return (address & 0x3FFFFFFF) - ME_EDRAM_MAP_START < ME_EDRAM_MAP_SIZE;
++}
++
+ // Applies to user mode.
+ // Without a length, IsValidAddress is generally semi-meaningless, unless it's about a single byte access. For larger accesses, use IsValid4AlignedAddress
+ // etc when appropriate, or for longer sizes, use IsValidRange or IsValid4AlignedRange for example. Checking aligned-ness helps avoid the problem
+@@ -322,6 +337,8 @@ inline bool IsValidAddress(const u32 address) {
+ 		return true;  // 0xBxx above: Let's disallow kernel-flagged VRAM. We don't have it mapped and I am not sure if it's accessible.
+ 	} else if ((address & 0x3FFFC000) == 0x00010000) {
+ 		return true;
++	} else if (IsMeEdramAddress(address)) {
++		return true;
+ 	} else if ((address & 0x3FFFFFFF) >= 0x08000000 && (address & 0x3FFFFFFF) < 0x08000000 + g_MemorySize) {
+ 		return true;
+ 	} else {
+@@ -336,6 +353,8 @@ inline bool IsValid2AlignedAddress(const u32 address) {
+ 		return true;  // 0xBxx above: Let's disallow kernel-flagged VRAM. We don't have it mapped and I am not sure if it's accessible.
+ 	} else if ((address & 0x3FFFC001) == 0x00010000) {
+ 		return true;
++	} else if (IsMeEdramAddress(address)) {
++		return (address & 1) == 0;
+ 	} else if ((address & 0x3FFFFFFF) >= 0x08000000 && (address & 0x3FFFFFFF) < 0x08000000 + g_MemorySize) {
+ 		return (address & 1) == 0;
+ 	} else {
+@@ -350,6 +369,8 @@ inline bool IsValid4AlignedAddress(const u32 address) {
+ 		return true;  // 0xBxx above: Let's disallow kernel-flagged VRAM. We don't have it mapped and I am not sure if it's accessible.
+ 	} else if ((address & 0x3FFFC003) == 0x00010000) {
+ 		return true;
++	} else if (IsMeEdramAddress(address)) {
++		return (address & 3) == 0;
+ 	} else if ((address & 0x3FFFFFFF) >= 0x08000000 && (address & 0x3FFFFFFF) < 0x08000000 + g_MemorySize) {
+ 		return (address & 3) == 0;
+ 	} else {
+@@ -365,6 +386,8 @@ inline bool IsValidNAlignedAddress(const u32 address) {
+ 		return true;  // 0xBxx above: Let's disallow kernel-flagged VRAM. We don't have it mapped and I am not sure if it's accessible.
+ 	} else if ((address & (0x3FFFC000 | (A - 1))) == 0x00010000) {
+ 		return true;
++	} else if (IsMeEdramAddress(address)) {
++		return (address & (A - 1)) == 0;
+ 	} else if ((address & 0x3FFFFFFF) >= 0x08000000 && (address & 0x3FFFFFFF) < 0x08000000 + g_MemorySize) {
+ 		return (address & (A - 1)) == 0;
+ 	} else {
+@@ -379,6 +402,8 @@ inline u32 MaxSizeAtAddress(const u32 address) {
+ 		return 0x04800000 - (address & 0x3FFFFFFF);  // VRAM. Same 0xBxx trick as above, modified for this use case.
+ 	} else if ((address & 0x3FFFC000) == 0x00010000) {
+ 		return 0x00014000 - (address & 0x3FFFFFFF);
++	} else if (IsMeEdramAddress(address)) {
++		return ME_EDRAM_MAP_START + ME_EDRAM_MAP_SIZE - (address & 0x3FFFFFFF);
+ 	} else if ((address & 0x3FFFFFFF) >= 0x08000000 && (address & 0x3FFFFFFF) < 0x08000000 + g_MemorySize) {
+ 		return 0x08000000 + g_MemorySize - (address & 0x3FFFFFFF);
+ 	} else {
+diff --git a/Core/MemMapFunctions.cpp b/Core/MemMapFunctions.cpp
+index af5419b..75e403f 100644
+--- a/Core/MemMapFunctions.cpp
++++ b/Core/MemMapFunctions.cpp
+@@ -31,6 +31,7 @@ u8 *GetPointerWriteOrException(const u32 address) {
+ 	if ((address & 0x3E000000) == 0x08000000 || // RAM
+ 		(address & 0xBF800000) == 0x04000000 || // VRAM
+ 		(address & 0x3FFFC000) == 0x00010000 || // Scratchpad
++		IsMeEdramAddress(address) || // local patch (Halo PSP port, B58): the mapped eDRAM
+ 		((address & 0x3FFFFFFF) >= 0x08000000 && (address & 0x3FFFFFFF) < 0x08000000 + g_MemorySize)) { // More RAM (remasters, etc.)
+ 		return GetPointerWriteUnchecked(address);
+ 	} else {
+@@ -44,6 +45,7 @@ const u8 *GetPointerOrException(const u32 address) {
+ 	if ((address & 0x3E000000) == 0x08000000 || // RAM
+ 		(address & 0xBF800000) == 0x04000000 || // VRAM
+ 		(address & 0x3FFFC000) == 0x00010000 || // Scratchpad
++		IsMeEdramAddress(address) || // local patch (Halo PSP port, B58): the mapped eDRAM
+ 		((address & 0x3FFFFFFF) >= 0x08000000 && (address & 0x3FFFFFFF) < 0x08000000 + g_MemorySize)) { // More RAM (remasters, etc.)
+ 		return GetPointerUnchecked(address);
+ 	} else {
+@@ -90,6 +92,7 @@ inline void ReadMemoryOrException(T &var, const u32 address) {
+ 	if ((address & 0x3E000000) == 0x08000000 || // RAM
+ 		(address & 0xBF800000) == 0x04000000 || // VRAM
+ 		(address & 0x3FFFC000) == 0x00010000 || // Scratchpad
++		IsMeEdramAddress(address) || // local patch (Halo PSP port, B58): the mapped eDRAM
+ 		((address & 0x3FFFFFFF) >= 0x08000000 && (address & 0x3FFFFFFF) < 0x08000000 + g_MemorySize)) { // More RAM (remasters, etc.)
+ 		var = *((const T*)GetPointerUnchecked(address));
+ 	} else {
+@@ -103,6 +106,7 @@ inline void WriteMemoryOrException(u32 address, const T data) {
+ 	if ((address & 0x3E000000) == 0x08000000 || // RAM
+ 		(address & 0xBF800000) == 0x04000000 || // VRAM
+ 		(address & 0x3FFFC000) == 0x00010000 || // Scratchpad
++		IsMeEdramAddress(address) || // local patch (Halo PSP port, B58): the mapped eDRAM
+ 		((address & 0x3FFFFFFF) >= 0x08000000 && (address & 0x3FFFFFFF) < 0x08000000 + g_MemorySize)) { // More RAM (remasters, etc.)
+ 		*(T*)GetPointerUnchecked(address) = data;
+ 	} else {

@@ -1505,6 +1505,9 @@ collected figures carry the poll's gap (a frame or more at low frame rates) */
 #define TIER_JOB_LATE_US 250000
 #define TIER_JOB_WAIT_US 2000000
 static int tier_mode = -1; /* 0 off, 1 the ME's eDRAM, 2 simulated (the emulator) */
+/* mode 2 with the tier where the PSP's is: the emulator maps that part of the
+eDRAM, so the heap gives the sound block only what a PSP's takes */
+static int tier_mapped = 0;
 static unsigned long tier_bytes = 0, tier_main_bytes = 0;
 static unsigned char *cache_base = NULL, *tier_base = NULL;
 static int tier_check = 0, tier_fails = 0, tier_left = -1, tier_dma = 0;
@@ -1550,6 +1553,16 @@ int psp_keep_number(const char *prefix, int fallback);
 int psp_sound_cache_drop(long block_index);
 long psp_sound_tier_drain(unsigned long low, unsigned long high);
 
+/* PPSSPP's own device says which part of the eDRAM it maps (tools/ppsspp_local_patches.diff);
+a PSP has no such device and an emulator without the patch writes nothing */
+static int tier_edram_mapped(unsigned long bytes)
+{
+	unsigned int range[2] = {0, 0};
+
+	return sceIoDevctl("kemulator:", 0x4D45, NULL, 0, range, sizeof(range)) == 0
+		&& range[0] <= ME_EDRAM_SNDTIER && range[1] >= ME_EDRAM_SNDTIER + bytes;
+}
+
 int psp_sound_tier_mode(void)
 {
 	if (tier_mode < 0)
@@ -1574,6 +1587,8 @@ int psp_sound_tier_mode(void)
 			{
 				tier_bytes = (kb * 1024) & ~0xFFFul;
 				tier_mode = psp_me_simulated() ? 2 : 1;
+				/* "sndtierram" keeps the emulator's tier in the heap, where an emulator without the map has it */
+				tier_mapped = tier_mode == 2 && !psp_keep("sndtierram") && tier_edram_mapped(tier_bytes);
 				tier_check = psp_keep("sndedramcheck");
 				tier_dma = psp_keep("sndtierdma");
 			}
@@ -1736,7 +1751,7 @@ unsigned long psp_sound_block_bytes(void)
 		if (tier_bytes + 256 * 1024 > cache)
 			tier_bytes = cache > 512 * 1024 ? (cache - 256 * 1024) & ~0xFFFul : 0;
 		tier_main_bytes = cache - tier_bytes;
-		want = stage_bytes + tier_main_bytes + (tier_mode == 2 ? tier_bytes : 0);
+		want = stage_bytes + tier_main_bytes + (tier_mode == 2 && !tier_mapped ? tier_bytes : 0);
 	}
 	else switch (psp_sound_edram_mode())
 	{
@@ -1777,15 +1792,15 @@ void *psp_sound_cache_place(void *block)
 	if (!psp_sound_edram_mode() && psp_sound_tier_mode() && tier_bytes)
 	{
 		base = sound_block + stage_bytes;
-		used = stage_bytes + tier_main_bytes + (tier_mode == 2 ? tier_bytes : 0);
-		tier_base = tier_mode == 1 ? (unsigned char *)(ME_EDRAM + ME_EDRAM_SNDTIER) : base + tier_main_bytes;
+		used = stage_bytes + tier_main_bytes + (tier_mode == 2 && !tier_mapped ? tier_bytes : 0);
+		tier_base = tier_mode == 1 || tier_mapped ? (unsigned char *)(ME_EDRAM + ME_EDRAM_SNDTIER) : base + tier_main_bytes;
 		for (k = 0; k < STAGE_SLOTS; k++)
 			stage[k].buffer = sound_block + k * STAGE_SLOT_BYTES;
 		edram_lo = tier_base;
 		edram_hi = tier_base + tier_bytes;
 		stops_at_start = psp_me_stops;
 		platform_log("sound tier: on (%s): the cache's %lu KB as %lu KB of main RAM at %08x and %lu KB at %08x (eDRAM %lu-%lu KB), %lu KB staging; %lu KB taken from the heap%s",
-			tier_mode == 2 ? "SIMULATED: the emulator's tier is main RAM" :
+			tier_mode == 2 ? (tier_mapped ? "SIMULATED: the emulator's tier is its mapped eDRAM" : "SIMULATED: the emulator's tier is main RAM") :
 				tier_dma ? "the ME's eDRAM, filled by DMACplus (sndtierdma)" : "the ME's eDRAM, filled by the ME's copy job",
 			cache / 1024, tier_main_bytes / 1024, (unsigned int)base, tier_bytes / 1024, (unsigned int)tier_base,
 			(unsigned long)ME_EDRAM_SNDTIER / 1024, (unsigned long)(ME_EDRAM_SNDTIER + tier_bytes) / 1024, stage_bytes / 1024,
