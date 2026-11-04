@@ -34315,7 +34315,8 @@ counts or a voice with a packet queued in it (in_play): a channel lets go of
 its sound while the mixer still has packets of it queued. What nothing plays
 is given up after, so its next play reads it again into the main tier.
 counts: rescued, their bytes, left for want of room, copies failed, rescued
-by their packets alone. Returns the sounds left in the tier */
+by their packets alone, read again (still loading). Returns the sounds left
+in the tier */
 #define PSP_TIER_RESCUE_MOST 64
 long psp_sound_tier_rescue(
 	unsigned long low,
@@ -34341,8 +34342,7 @@ long psp_sound_tier_rescue(
 	{
 		unsigned long at = cache_sound->sound ? (unsigned long)cache_sound->sound->cache_base_address : 0;
 
-		/* (still loading: the loss fails its pieces and the game asks again) */
-		if (at < low || at >= high || cache_sound->loaded != 1)
+		if (at < low || at >= high)
 			continue;
 		by_packets[count] = !sound_cache_locked_block_proc(iterator.datum_index);
 		if (by_packets[count] && !in_play(at, (unsigned long)cache_sound->sound->samples.size))
@@ -34368,6 +34368,29 @@ long psp_sound_tier_rescue(
 			(unsigned long)lruv_block_get_address(xbox_sound_cache_globals.cache, index));
 		datum_new_at_index(xbox_sound_cache_globals.cache_sounds, index);
 		moved_sound = datum_get(xbox_sound_cache_globals.cache_sounds, index);
+		/* a sound still loading into the tier (or whose load failed there,
+		which the cache's flag can't tell from loaded) is read again into its
+		new block, as a main tier sound loads: the tier's own load of it is
+		dropped once its datum has moved (psp_sound_cache_alive) */
+		if (old->loaded != 1)
+		{
+			short identifier = moved_sound->identifier;
+
+			*moved_sound = *old;
+			moved_sound->identifier = identifier;
+			moved_sound->software_reference_count--;
+			moved_sound->loaded = FALSE;
+			old->software_reference_count = 0;
+			old->hardware_reference_count = 0;
+			lruv_block_delete(xbox_sound_cache_globals.cache, blocks[k]);
+			sound->cache_block_index = index;
+			sound->cache_base_address = to;
+			cache_file_read(sound->cache_tag_index, sound->samples.file_offset, sound->samples.size, (void *)to,
+				&moved_sound->loaded, FALSE);
+			moved(from, to, (unsigned long)size);
+			counts[5]++;
+			continue;
+		}
 		if (!copy((void *)to, (const void *)from, (unsigned long)size))
 		{
 			/* the new block given back as an unplayed sound of its own */

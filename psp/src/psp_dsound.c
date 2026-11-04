@@ -1527,8 +1527,8 @@ int psp_me_halted_clean(void);
 from it copied into the main tier (tier_rescue). -1 not read yet */
 static int tier_back = -1;
 /* rescued, their bytes, left for want of room, copies failed, rescued by their
-packets alone; the DMA's us */
-static unsigned long tier_back_counts[5], tier_back_us = 0, tier_back_missed = 0;
+packets alone, read again (still loading); the DMA's us */
+static unsigned long tier_back_counts[6], tier_back_us = 0, tier_back_missed = 0;
 extern int psp_lruv_fence_closed; /* lruv_cache.c: the fence locks the tier's pages */
 int psp_keep_number(const char *prefix, int fallback);
 int psp_sound_cache_drop(long block_index);
@@ -1994,9 +1994,9 @@ static void tier_rescue(void)
 	tier_left = psp_sound_tier_rescue((unsigned long)tier_base, (unsigned long)(tier_base + tier_bytes), tier_back_copy,
 		tier_back_moved, tier_back_in_play, tier_back_counts);
 	pthread_mutex_unlock(&mixer_lock);
-	platform_log("sound tier: the ME stopped: %lu playing sounds (%lu KB; %lu of them by their queued packets alone) copied into the main tier (%lu us of DMA), %lu left for want of room, %lu copies failed; %ld left in the tier (sndtierback)",
-		tier_back_counts[0], tier_back_counts[1] / 1024, tier_back_counts[4], tier_back_us, tier_back_counts[2],
-		tier_back_counts[3], tier_left);
+	platform_log("sound tier: the ME stopped: %lu playing sounds (%lu KB; %lu of them by their queued packets alone) copied into the main tier (%lu us of DMA), %lu still loading read again into it, %lu left for want of room, %lu copies failed; %ld left in the tier (sndtierback)",
+		tier_back_counts[0], tier_back_counts[1] / 1024, tier_back_counts[4], tier_back_us, tier_back_counts[5],
+		tier_back_counts[2], tier_back_counts[3], tier_left);
 }
 
 static void edram_loss(const char *why)
