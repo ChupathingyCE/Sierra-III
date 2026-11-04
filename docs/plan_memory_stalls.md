@@ -1,5 +1,7 @@
 # Plan: the memory stalls, the speed work's first goal (2026-10-16)
 
+The current figures are in `cpu_cost_map.md`: this plan's "two thirds instruction" split is nearer 60/40 by count on tock159 [M].
+
 Sheepdog01, 2026-10-16: this is the high-priority speed goal. Labels: [M] measured on a PSP, [E] emulator or estimate, [D] read in code or data, [U] inference.
 
 ## The root cause
