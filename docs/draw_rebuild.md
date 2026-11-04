@@ -41,3 +41,14 @@ Rebuilt, stage by stage over a run of parts: every part's bind words, then every
 ## Labels
 
 Census figures [E]; the stage gains are unsized [U] until stage 1.
+
+## Stage 3's slices
+
+- **Slice 1, LIGHTFIRST** (`review_lightfirst.md`): the objects' lighting in a pass of its own before the walk. On by default.
+- **Slice 2, DRAWPART** (`review_drawpart.md`), keep word `drawpart`, off by default: the walk in two stages over a run of objects.
+  - The walk stage: the lighting (taken from slice 1's pass: `lightreuse`), the level of detail, the effect.
+  - The model stage: the recorded `render_model` and `widgets_render` calls, in the walk's order.
+- **What's left after slice 2** [E] (b30, the split census: each named stage in a cache pair of its own):
+  - **The per-part chain.** `rasterizer_model_draw` and everything it calls misses ~7.1 M on its own, against ~19 M for the same functions in the walk: about 1.2 ms a frame, the largest single stage. In slice 2's model stage it still alternates with `render_model`'s own code and the model's begin every model. Taking it apart needs the parts' records made across models: each model's begin state (its node matrices, lighting, effect, the GE layer's per-model globals) kept per model, and the begin's records emitted with its parts so the GE stream stays in order. That's slice 3.
+  - **The lighting chain.** `object_get_cached_render_lighting` with what it calls misses ~9.7 M even in a cache pair of its own: its hot lines alone are over 16 KB (the static lighting's vector test into the BSP and the lightmap sample), so no reordering takes it all. A hot/cold split of `lights_distant_lighting_at_point`'s path is stage 1's tool for it.
+  - **The model's begin** (`rasterizer_model_begin`, 4.5 k on its own) and **the level of detail** (0.4 k) fit their pairs.
