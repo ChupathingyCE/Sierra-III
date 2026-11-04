@@ -1064,7 +1064,7 @@ no more): a preset with the menu's own words needs ~250, and words past the
 limit are lost silently. KEEP_DEFAULTS_ROOM more holds the campaign's
 default words (keep_defaults_add), however full the file is */
 #define KEEP_FILE_BYTES 509
-#define KEEP_DEFAULTS_ROOM 384
+#define KEEP_DEFAULTS_ROOM 640
 static char keep_words[KEEP_FILE_BYTES + 3 + KEEP_DEFAULTS_ROOM] = "";
 /* build 106: bumped whenever keep_words changes, so psp_keep's remembered
 answers are asked again */
@@ -1151,13 +1151,24 @@ static const struct
 	{ "sndtierback", "sndtierbackoff" }, { "drawpart", "drawpartoff" }, { "p2pass", "p2passoff" },
 };
 static char keep_defaults_added[KEEP_DEFAULTS_ROOM] = "";
+/* defaults that found no room: a lever silently off would be read as on */
+static char keep_defaults_dropped[128] = "";
 
 static void keep_default_add(const char *word)
 {
 	size_t used = strlen(keep_words), length = strlen(word);
 
-	if (keep_search(word) || used + length + 2 > sizeof(keep_words))
+	if (keep_search(word))
 		return;
+	if (used + length + 2 > sizeof(keep_words))
+	{
+		if (strlen(keep_defaults_dropped) + length + 2 <= sizeof(keep_defaults_dropped))
+		{
+			strcat(keep_defaults_dropped, " ");
+			strcat(keep_defaults_dropped, word);
+		}
+		return;
+	}
 	/* keep_words ends in a space: the word, then the space a whole-word
 	search needs after it */
 	memcpy(keep_words + used, word, length);
@@ -1177,6 +1188,7 @@ static void keep_defaults_add(void)
 	int k;
 
 	keep_defaults_added[0] = '\0';
+	keep_defaults_dropped[0] = '\0';
 	/* the motion sensor's target in the depth buffer (docs/review_vrbroom.md):
 	exact, and its 16 KB of VRAM go to the model copies; apart from M6 #2,
 	so m6off and the instruments leave it on */
@@ -1335,6 +1347,8 @@ static void keep_load(void)
 	platform_log("keep words, small wins batch 1 (COMPACTSKIP, GCHEAD): all off: smallwins1old; each off: compactalways (pool compaction walked even when compact); opt-in: gchead (the garbage collector keeps each player's head for a collection; off by default after the PSP-3000 removed garbage in view with it on)");
 	platform_log("keep words, small wins batch 2 (VIS): all off: smallwins2old; each off: visrectold (every portal clipped against the region seen, as before); check: visrectcheck (clips the skipped ones anyway and counts any not empty)");
 #ifndef PSP_MULTIPLAYER
+	if (keep_defaults_dropped[0])
+		platform_log("keep words, the campaign's defaults: NO ROOM for:%s (keep.txt plus the defaults pass keep_words' size; these levers are off)", keep_defaults_dropped);
 	platform_log("keep words, the campaign's defaults (M6 #2, docs/review_m6default.md): added:%s; off: m6off (all of M6 #2), gedeferoff geinflightoff gemeonoff mevramoff notexpretouch mepolloff, inflightkbN (another buffer size; 128 as before); none of M6 #2 with mebench gemeoverlap geserial; blipdepthoff (the sensor target in its own 16 KB)",
 		keep_defaults_added[0] ? keep_defaults_added : " none");
 #endif
