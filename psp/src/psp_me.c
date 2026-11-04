@@ -3068,13 +3068,27 @@ static __attribute__((noinline, cold)) void aime_simulated(volatile struct me_sl
 		job's reach: "aimesimslack" for the old 640 KB */
 		if (psp_keep("aimesimslack"))
 			aime_sim_slack_bytes = 640 * 1024;
-		aime_sim_stack = (unsigned char *)memalign(64, AIME_SIM_SLACK_BYTES + AIME_SIM_STACK_BYTES);
+		/* An emulator that maps the eDRAM (kemulator:'s span) takes the
+		heap's copy out: the room at the PSP's own address, and the slack
+		in the job's data reserve below it, which nothing places anything
+		in. 64 KB would reach 16 KB into the sound tier's end, so the slack
+		is 48 KB there. "aimestackram" keeps the heap's copy, as an
+		emulator without the map has it */
+		else if (!psp_keep("aimestackram") &&
+			psp_me_sim_edram_holds(ME_EDRAM_AIME_DATA, ME_EDRAM_STACK_TOP - ME_EDRAM_AIME_DATA))
+		{
+			aime_sim_slack_bytes = ME_EDRAM_AIME_STACK - ME_EDRAM_AIME_DATA;
+			aime_sim_stack = (unsigned char *)(ME_EDRAM + ME_EDRAM_AIME_DATA);
+		}
+		if (!aime_sim_stack)
+			aime_sim_stack = (unsigned char *)memalign(64, AIME_SIM_SLACK_BYTES + AIME_SIM_STACK_BYTES);
 		if (!aime_sim_stack)
 			platform_log("ME (simulated): no room for the AI job's stack; it runs on the caller's");
 		else
-			platform_log("ME (simulated): the AI job's stack %u KB (the PSP's room) and %u KB below it, %p-%p, its guard at %p",
+			platform_log("ME (simulated): the AI job's stack %u KB (the PSP's room) and %u KB below it, %p-%p, its guard at %p%s",
 				AIME_SIM_STACK_BYTES / 1024, AIME_SIM_SLACK_BYTES / 1024, aime_sim_stack,
-				aime_sim_stack + AIME_SIM_SLACK_BYTES + AIME_SIM_STACK_BYTES, aime_sim_stack + AIME_SIM_SLACK_BYTES);
+				aime_sim_stack + AIME_SIM_SLACK_BYTES + AIME_SIM_STACK_BYTES, aime_sim_stack + AIME_SIM_SLACK_BYTES,
+				(unsigned int)aime_sim_stack == ME_EDRAM + ME_EDRAM_AIME_DATA ? "; SIMULATED: in the emulator's mapped eDRAM" : "");
 	}
 	/* (psp_ge.c's psp_me_window_split: the job's window its own) */
 	if (psp_me_window_split)
@@ -3100,6 +3114,11 @@ static __attribute__((noinline, cold)) void aime_simulated(volatile struct me_sl
 			(words[k] == AIME_SIM_FILL || (k >= guard_first && k < guard_end && words[k] == AIME_GUARD_WORD)); k++)
 			;
 		deepest = AIME_SIM_SLACK_BYTES + AIME_SIM_STACK_BYTES - k * 4;
+		/* the whole slack used: the reach may have gone on below it, into
+		whatever sits there (the sound tier's end, or the heap's next block) */
+		if (deepest == AIME_SIM_SLACK_BYTES + AIME_SIM_STACK_BYTES && aime_sim_deepest < deepest)
+			platform_log("ME (simulated): the AI job's stack reached the bottom of its slack (%u KB); its figure is a floor",
+				deepest / 1024);
 		if (deepest > aime_sim_deepest)
 			aime_sim_deepest = deepest;
 		slot->results[ME_JOB_RESULTS - 1] = aime_sim_deepest;

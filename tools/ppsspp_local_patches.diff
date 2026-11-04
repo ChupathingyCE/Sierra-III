@@ -806,13 +806,13 @@ index 83fe8ec..60d8dac 100644
  	SCRATCHPAD_SIZE = 0x00004000,
  
 +	// local patch (Halo PSP port, B58): the part of the Media Engine's 2 MB
-+	// eDRAM the game's sound tier uses (its 0xC8000-0x16C000), mapped so the
-+	// game's simulated ME work can keep the tier where the PSP's ME does
-+	// instead of in the heap. Only the ME reaches it on a PSP; the emulator
-+	// runs that work on the main CPU. Above the scratchpad (0x10000-0x13FFF),
-+	// so no address that was mapped before moves.
++	// eDRAM the game's sound tier and AI job's stack use (0xC8000-0x200000),
++	// mapped so the game's simulated ME work keeps them where the PSP's ME
++	// does instead of in the heap. Only the ME reaches it on a PSP; the
++	// emulator runs that work on the main CPU. Above the scratchpad
++	// (0x10000-0x13FFF), so no address that was mapped before moves.
 +	ME_EDRAM_MAP_START = 0x000C8000,
-+	ME_EDRAM_MAP_SIZE  = 0x000A4000,
++	ME_EDRAM_MAP_SIZE  = 0x00138000,
 +
  #ifdef MASKED_PSP_MEMORY
  	// This wraparound should work for PSP too.
