@@ -64,6 +64,10 @@ struct totals
 	bytes of code from pc_base. PCs elsewhere are counted, not binned */
 	volatile unsigned int pc_wanted, pc_counts, pc_base, pc_bins, pc_shift, pc_period;
 	volatile unsigned int pc_samples, pc_binned, pc_other_phase, pc_kernel, pc_outside, pc_timer;
+	/* pc_tables 3: a third table of bins for the other phases (other, frame
+	end), so the time outside the tick and the drawing is named too; the
+	kernel's samples by the phase they fell in (system calls, firmware) */
+	volatile unsigned int pc_tables, pc_kernel_by_phase[4];
 };
 
 static struct totals *table = 0;
@@ -287,10 +291,17 @@ static int pc_handler(void)
 			table->pc_binned++;
 		}
 		else
+		{
+			if (table->pc_tables >= 3)
+				((volatile unsigned int *)table->pc_counts)[2 * table->pc_bins + (offset >> table->pc_shift)]++;
 			table->pc_other_phase++;
+		}
 	}
 	else if (epc >= 0x80000000u)
+	{
 		table->pc_kernel++;
+		table->pc_kernel_by_phase[phase_current & 3]++;
+	}
 	else
 		table->pc_outside++;
 	return -1;
@@ -370,7 +381,7 @@ int module_start(SceSize args, void *argp)
 		system_clocks(&idle_last, &switches_last);
 	}
 	if (table->pc_wanted && table->pc_counts >= 0x08800000 && table->pc_bins && table->pc_shift < 16 &&
-		table->pc_counts + table->pc_bins * 8 <= 0x0A000000)
+		table->pc_counts + table->pc_bins * 4 * (table->pc_tables >= 3 ? 3 : 2) <= 0x0A000000)
 	{
 		SceSysTimerId timer = sceSTimerAlloc();
 
