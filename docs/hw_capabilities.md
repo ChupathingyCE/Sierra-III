@@ -103,7 +103,7 @@ Labels: [M] measured on a PSP, [E] emulator or estimate, [D] read in code or doc
 | C1 | **The ME's capacity and scheduling.** On d20's heavy view the ME binds the frame and starves the GE | Frame time wherever the ME binds; capacity for more AI and effects | The frame timeline (ledger 3), then the scheduler's design | PSP runs (recon) |
 | C2 | **Lighting, split model and world** (recon's census, round 1): models already take all 4 GE lights, with no extra pass. The world pass is the cost where it's big (d20: 5,893 triangles a frame, machines' lights 3,244 and the flashlight 2,153; b30's bunker with the flashlight 1,533; the beach <300). Vehicles cost through the GE's vertex work (8,789 indices a frame each against a biped's 961), not lighting. ~92-95 of b30's ~100 attached-light relinks a frame are weapons whose lights never reach the pass | The world pass's share of the ME on d20 and in the bunker; the wasted relinks (DAL/LSAME ground); vehicles via their vertex counts | Round 2: the pass's counts and lc2's cache-model prices; then whether a projected-texture pass beats the ME's per-vertex work where the ME binds | Emulator, then a PSP pair |
 | C3 | **Memory Stick reads async, done right.** The design exists, never built: `streaming.md` §3, S1–S5 (one input stage owning the stick, prefetch by place, pack order, smallest mips first, pinned effects) | The streaming hitches (up to 98 ms a frame; the game thread waited for the stick 2.5 s a run, worst 767 ms [M, b114]); the caches sized to the working set | S1 first (one reader, its priority measured on the PSP), then S2–S3 with the bake | Code and the bake, then PSP pairs |
-| C4 | **The bus's priority** | If it exists, up to the GE's 8–18 ms cost to the CPU | No public source has one (§6.3); disassembly closed. Left: the register snapshot (§6.4) and, only with Sheepdog01's OK, a call of `sceDdrWriteMaxAllocate` | halo_bench16_regsnap on the PSP |
+| C4 | **The bus's priority** | If it exists, up to the GE's 8–18 ms cost to the CPU | No public source has one (§6.3); disassembly closed. Left: the register snapshot (§6.4: the first pass read safe; the run hung in its GE-from-VRAM state before writing values) and, only with Sheepdog01's OK, a call of `sceDdrWriteMaxAllocate` | A second regsnap run, reshaped (§6.4) |
 | C5 | **The VME's capability** | A third processor for fixed work | **Done 2026-11-04** (`vme_capability.md`): computes on both PSPs, 2 ops a cycle; candidates sized there (none ready: the mix's tail only, decode and palettes don't fit) | — |
 | C6 | **The VFPU's coverage:** the float inventory against tock161, and the approximation ops | Tick and drawing maths | Refresh `hardware_utilization.md` §3 | Code reading, emulator |
 | C7 | **DXT textures** | VRAM and RAM room (8 → 4 bits a texel on CLUT8 textures) | A bench of its sampling cost and look; Sheepdog01's call on the look | PSP bench |
@@ -209,17 +209,22 @@ Sources, all read only, no code taken: uofw (github.com/uofw/uofw 28306bb, GPL: 
 - **So, plainly: nothing public documents a bus arbiter or a per-master priority on the PSP.** Searched: uofw, jpcsp, PPSSPP, mcidclan's repositories, ARK-4's NID map, and the web for every function name. psdevwiki's register page was read earlier, from a saved copy (`psp_hardware_reference.md` §9.1).
   - The one named candidate, `sceDdrWriteMaxAllocate`, can't be read (disassembly closed). It could be called, as an export through kcall, but its arguments are unknown and a wrong value may hang the bus until power-off. **Not proposed without Sheepdog01's call.**
 
-### 6.4 The register snapshot by our own bench (not yet read)
+### 6.4 The register snapshot by our own bench (states 0–4 read; it hung in state 5)
 
 - **The bench:** `bench/halo_bench16_regsnap` on branch `research/regsnap` (98a86766).
-  - It reads, in kernel mode and read-only, about 280 documented registers of the memory access, system control, clock ratio, profiler, DMACplus, DMAC0/1, DDR, GE, GE eDRAM and audio blocks.
+  - It reads, in kernel mode and read-only, 241 documented registers in 11 blocks: memory access, system control, clock ratios, profiler, DMACplus, DMAC0/1, DDR, GE, GE eDRAM and audio.
   - The states: before the ME starts, the ME idle, the ME streaming eDRAM, the ME streaming main RAM, the GE texturing from main RAM, from VRAM, the system DMAC, DMACplus into the eDRAM (with the ME idle), the converter's channel playing, and all of them together.
-  - The ME reads its own view of the same addresses. recon has since shown that view is the ME's own block (§6.2), so the ME's side mainly adds the ratio words.
   - Blocks whose bus clock is off are skipped. The fuse ID (0xBC100090–98) is never read.
-- **The run hung the PSP-1000** [M, bench-hw 41923464223: no answer at the wall + 4 minutes, no log back]. Its log on the stick (`ms0:/halo/log/regsnap.txt`, flushed before each block of the first pass) names where it stopped. It will be read after Sheepdog01's power cycle.
-- **The likeliest suspects** are the reads that no firmware driver makes [U]:
-  - memory access 0x10–0x2C and 0x4C–0x7C (sysmem saves only 0x00–0x0C and 0x30–0x48);
-  - system control's 0x3C, 0x6C, 0x74, 0xB8–0x100;
-  - DMACplus 0x00–0x2C;
-  - the PL080 globals.
-  - A second run, if any, keeps to the offsets uofw's drivers read.
+- **What came back** [M, PSP-1000; the log recovered by psp-probe 41926842519 after Sheepdog01's remote restart]:
+  - **The first pass read all 11 blocks safely**, 2–7 µs a block. DMAC0 and DMAC1 had their clocks off and were skipped. So none of the registers no firmware driver reads hangs the bus when idle: the suspects listed before the run are cleared.
+  - **States 0–4 completed:** before the ME, the ME idle, the ME streaming its eDRAM (35 laps), the ME streaming main RAM (13 laps), and the GE texturing from main RAM (1 list). A whole snapshot took 37–48 µs.
+  - **The ME's clock:** its cycle counter ran 331.35 cycles a µs. That confirms §6.2: the ME runs at the CPU's full clock, with no headroom.
+  - **It hung in state 5, the GE texturing from VRAM.** The state never logged its end, and the PSP stopped answering.
+- **Why, so far** [U]. The contender threads end with a 2 s timeout (`end_thread`), so a GE list that never finished couldn't hang the bench by itself. What's left is a snapshot read that stalls while the GE pulls textures from its own eDRAM. The likeliest are the GE block (0xBD400000) and the GE eDRAM block (0xBD500000). In state 4 the GE also wrote its frame into the eDRAM, so the difference is the texture reads.
+- **What's lost:** the register values. The bench writes them at its end, so none came back.
+- **A second run, if one is worth it**, needs three changes:
+  - write each state's values as the state ends;
+  - leave the GE and GE eDRAM blocks out of the snapshots taken under GE load;
+  - run the GE-from-VRAM state last.
+
+  That gives C4 its answer, the busy registers under each contender, without risking the rest.
