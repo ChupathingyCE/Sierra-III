@@ -3844,6 +3844,47 @@ static unsigned int gebusy_span(unsigned int a, unsigned int b, unsigned int c, 
 	return (int)(to - from) > 0 ? to - from : 0;
 }
 
+/* gebusy2's split of the GE's busy time by what the main CPU was doing
+(psp_platform.c's psp_phase: 0 other, 1 tick, 2 drawing, 3 frame end): the
+last phase changes, each chunk's span shared among the phases it covered;
+[4] the part older than the ring holds. psp_phase writes, the GE's interrupt
+reads: a torn entry costs one chunk's split, and this is an instrument */
+#define GE_PHASE_RING 256
+volatile int psp_ge_phase_ring_on = 0;
+static volatile unsigned int ge_phase_at[GE_PHASE_RING], ge_phase_head = 0;
+static volatile unsigned char ge_phase_is[GE_PHASE_RING];
+static PSP_MAIN_SIDE volatile unsigned long gebusy_phase_us[5];
+
+void psp_ge_phase_mark(int phase)
+{
+	unsigned int h = ge_phase_head;
+
+	ge_phase_at[h % GE_PHASE_RING] = sceKernelGetSystemTimeLow();
+	ge_phase_is[h % GE_PHASE_RING] = (unsigned char)(phase & 3);
+	ge_phase_head = h + 1;
+}
+
+static void gebusy_by_phase(unsigned int start, unsigned int now)
+{
+	unsigned int h = ge_phase_head, to = now, k;
+
+	for (k = 1; k <= GE_PHASE_RING && k <= h; k++)
+	{
+		unsigned int i = (h - k) % GE_PHASE_RING, at = ge_phase_at[i], from = (int)(at - start) > 0 ? at : start;
+
+		if ((int)(to - from) > 0)
+			gebusy_phase_us[ge_phase_is[i]] += to - from;
+		if ((int)(at - start) <= 0)
+		{
+			to = start;
+			break;
+		}
+		to = at;
+	}
+	if ((int)(to - start) > 0)
+		gebusy_phase_us[4] += to - start;
+}
+
 static void gebusy_add(unsigned int start, unsigned int now, int kind)
 {
 	if ((int)(gebusy_last_reached - start) > 0)
@@ -3859,6 +3900,7 @@ static void gebusy_add(unsigned int start, unsigned int now, int kind)
 			gebusy_kind_us[kind] += now - start;
 		if (gebusy_me_on)
 		{
+			gebusy_by_phase(start, now);
 			if (gebusy_waited_to)
 				gebusy_waited_us[gebusy_waited_which] += gebusy_span(start, now, gebusy_waited_from, gebusy_waited_to);
 			if (gebusy_wait_open)
@@ -4042,6 +4084,7 @@ static void gebusy_start(void)
 	if (me_tail_on)
 		platform_log("GE: metail on (the Media Engine publishes the frame's last draws to the GE at its frame's end)");
 	gebusy_me_on = psp_keep("gebusy2") ? 1 : 0;
+	psp_ge_phase_ring_on = gebusy_me_on;
 	gebusy_on = psp_keep("gebusy") || gebusy_me_on;
 	if (!gebusy_on)
 		return;
@@ -4055,6 +4098,7 @@ static void gebusy_start(void)
 			platform_log("GE: gebusy2 off: no GE callbacks of its own (%08x); gebusy alone", (unsigned int)gebusy_cbid);
 			gebusy_cbid = -1;
 			gebusy_me_on = 0;
+			psp_ge_phase_ring_on = 0;
 		}
 	}
 	if (gebusy_me_on)
@@ -4085,6 +4129,10 @@ static void gebusy_window(char *text, int size, unsigned long frames_in_window)
 			"busy while the main CPU waited for the ME %.1f, for the GE %.1f ms a frame",
 			(double)gebusy_me_chunks / n, (double)gebusy_chunks / n, gebusy_idle_us / 1000.0 / n,
 			gebusy_waited_us[0] / 1000.0 / n, gebusy_waited_us[1] / 1000.0 / n);
+		platform_log("gebusy2: the GE's busy time by the main CPU's phase, ms a frame: other %.1f, tick %.1f, drawing %.1f, frame end %.1f, before the ring %.1f",
+			gebusy_phase_us[0] / 1000.0 / n, gebusy_phase_us[1] / 1000.0 / n, gebusy_phase_us[2] / 1000.0 / n,
+			gebusy_phase_us[3] / 1000.0 / n, gebusy_phase_us[4] / 1000.0 / n);
+		memset((void *)gebusy_phase_us, 0, sizeof(gebusy_phase_us));
 		gebusy_me_chunks = gebusy_idle_us = 0;
 		gebusy_waited_us[0] = gebusy_waited_us[1] = 0;
 	}
