@@ -1915,6 +1915,12 @@ static int tier_back_copy(void *to, const void *from, unsigned long bytes)
 		memcpy(to, from, bytes);
 		return 1;
 	}
+	/* only main RAM's user memory on one side and the tier on the other: a
+	block from anywhere else must never reach the controller (the first cut,
+	with the fence still open, could hand it a block in the tier itself) */
+	if (((unsigned long)to & 0x1FFFFFFFul) < 0x08800000ul || ((unsigned long)to & 0x1FFFFFFFul) + rounded > 0x0A000000ul ||
+		(const unsigned char *)from < tier_base || (const unsigned char *)from + rounded > tier_base + tier_bytes)
+		return 0;
 	sceKernelDcacheWritebackInvalidateRange(to, rounded);
 	for (at = 0; at < rounded; at += part)
 	{
