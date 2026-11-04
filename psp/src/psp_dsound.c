@@ -1520,13 +1520,15 @@ static unsigned long tier_dmas = 0, tier_dma_us = 0, tier_dma_worst_us = 0, tier
 	tier_given_up = 0, tier_polls = 0;
 unsigned long psp_sound_tier_drained = 0; /* psp_sound_tier_drain's, xbox_sound_cache.c */
 long psp_sound_tier_rescue(unsigned long low, unsigned long high, int (*copy)(void *to, const void *from, unsigned long bytes),
-	void (*moved)(unsigned long from, unsigned long to, unsigned long bytes), unsigned long *counts);
+	void (*moved)(unsigned long from, unsigned long to, unsigned long bytes), int (*in_play)(unsigned long from, unsigned long bytes),
+	unsigned long *counts);
 int psp_me_halted_clean(void);
 /* "sndtierback" (B55): at the tier's loss to an ME stop, the sounds playing
 from it copied into the main tier (tier_rescue). -1 not read yet */
 static int tier_back = -1;
-/* rescued, their bytes, left for want of room, copies failed; the DMA's us */
-static unsigned long tier_back_counts[4], tier_back_us = 0, tier_back_missed = 0;
+/* rescued, their bytes, left for want of room, copies failed, rescued by their
+packets alone; the DMA's us */
+static unsigned long tier_back_counts[5], tier_back_us = 0, tier_back_missed = 0;
 extern int psp_lruv_fence_closed; /* lruv_cache.c: the fence locks the tier's pages */
 int psp_keep_number(const char *prefix, int fallback);
 int psp_sound_cache_drop(long block_index);
@@ -1953,6 +1955,28 @@ static void tier_back_moved(unsigned long from, unsigned long to, unsigned long 
 	mix_command(NULL, CMD_MOVE, (const unsigned char *)from, bytes, 0);
 }
 
+/* whether a voice has a packet queued inside a sound's bytes: the game's view
+of each queue, which holds what the command ring hasn't handed the mixer yet */
+static int tier_back_in_play(unsigned long from, unsigned long bytes)
+{
+	struct psp_stream *stream;
+	unsigned long k;
+
+	for (stream = streams; stream; stream = GAME_OF(stream)->next)
+	{
+		struct stream_game *game = GAME_OF(stream);
+
+		for (k = 0; k < game->count && k < MAXIMUM_STREAM_PACKETS; k++)
+		{
+			unsigned long at = (unsigned long)game->packet[(game->head + k) % MAXIMUM_STREAM_PACKETS].pvBuffer;
+
+			if (at >= from && at - from < bytes)
+				return 1;
+		}
+	}
+	return 0;
+}
+
 /* at the ME's stop, before the tier is closed: only once the ME halted itself
 cleanly (held in reset, or stopped for a sleep, its eDRAM isn't read) */
 static void tier_rescue(void)
@@ -1968,10 +1992,11 @@ static void tier_rescue(void)
 	}
 	game_lock();
 	tier_left = psp_sound_tier_rescue((unsigned long)tier_base, (unsigned long)(tier_base + tier_bytes), tier_back_copy,
-		tier_back_moved, tier_back_counts);
+		tier_back_moved, tier_back_in_play, tier_back_counts);
 	pthread_mutex_unlock(&mixer_lock);
-	platform_log("sound tier: the ME stopped: %lu playing sounds (%lu KB) copied into the main tier (%lu us of DMA), %lu left for want of room, %lu copies failed; %ld left in the tier (sndtierback)",
-		tier_back_counts[0], tier_back_counts[1] / 1024, tier_back_us, tier_back_counts[2], tier_back_counts[3], tier_left);
+	platform_log("sound tier: the ME stopped: %lu playing sounds (%lu KB; %lu of them by their queued packets alone) copied into the main tier (%lu us of DMA), %lu left for want of room, %lu copies failed; %ld left in the tier (sndtierback)",
+		tier_back_counts[0], tier_back_counts[1] / 1024, tier_back_counts[4], tier_back_us, tier_back_counts[2],
+		tier_back_counts[3], tier_left);
 }
 
 static void edram_loss(const char *why)

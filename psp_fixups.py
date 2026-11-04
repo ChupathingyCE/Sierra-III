@@ -34307,30 +34307,31 @@ long psp_sound_tier_drain(unsigned long low, unsigned long high)
 }
 
 /* "sndtierback" (B55): the tier lost while its sounds play (the ME stopped).
-What nothing plays is given up at once, so its next play reads it again into
-the main tier; each sound still playing gets a block of the main tier (the
-cache's own allocation: the closed fence keeps it out of the tier, and it
-pushes out what nothing plays), copy brings its bytes over (the DMA out of
-the eDRAM), and moved points the voices playing it at the new place. Run
-with the mixer held. counts: rescued, their bytes, left for want of room,
-copies failed. Returns the sounds left in the tier */
+Each tier sound still playing gets a block of the main tier (the cache's own
+allocation: the closed fence keeps it out of the tier, and it pushes out what
+nothing plays), copy brings its bytes over (the DMA out of the eDRAM), and
+moved points the voices playing it at the new place. Playing is the cache's
+counts or a voice with a packet queued in it (in_play): a channel lets go of
+its sound while the mixer still has packets of it queued. What nothing plays
+is given up after, so its next play reads it again into the main tier.
+counts: rescued, their bytes, left for want of room, copies failed, rescued
+by their packets alone. Returns the sounds left in the tier */
 #define PSP_TIER_RESCUE_MOST 64
-void platform_psp_log(const char *format, ...);
 long psp_sound_tier_rescue(
 	unsigned long low,
 	unsigned long high,
 	int (*copy)(void *to, const void *from, unsigned long bytes),
 	void (*moved)(unsigned long from, unsigned long to, unsigned long bytes),
+	int (*in_play)(unsigned long from, unsigned long bytes),
 	unsigned long *counts)
 {
 	struct data_iterator iterator;
 	struct xbox_cache_sound_datum *cache_sound;
-	long blocks[PSP_TIER_RESCUE_MOST], left;
+	long blocks[PSP_TIER_RESCUE_MOST];
 	int count = 0, k;
 
 	if (!xbox_sound_cache_globals.cache_sounds)
 		return 0;
-	left = psp_sound_tier_drain(low, high);
 	/* the blocks first: the allocations below change the array */
 	data_iterator_new(&iterator, xbox_sound_cache_globals.cache_sounds);
 	while ((cache_sound = data_iterator_next(&iterator)) != NULL && count < PSP_TIER_RESCUE_MOST)
@@ -34347,14 +34348,14 @@ long psp_sound_tier_rescue(
 		unsigned long from = (unsigned long)sound->cache_base_address, to;
 		long size = sound->samples.size, index;
 
+		boolean by_packets;
+
 		/* still loading: the loss fails its pieces and the game asks again */
 		if (old->loaded != 1)
-		{
-			platform_psp_log("sound tier: left in the tier (not loaded, %d): %s, %ld bytes, played by %d + %d",
-				old->loaded, tag_get_name(sound->runtime_tag_index), size, old->software_reference_count,
-				old->hardware_reference_count);
 			continue;
-		}
+		by_packets = !sound_cache_locked_block_proc(blocks[k]);
+		if (by_packets && !in_play(from, (unsigned long)size))
+			continue;
 		index = lruv_block_new(xbox_sound_cache_globals.cache, size);
 		if (index == NONE)
 		{
@@ -34394,9 +34395,9 @@ long psp_sound_tier_rescue(
 		moved(from, to, (unsigned long)size);
 		counts[0]++;
 		counts[1] += (unsigned long)size;
-		left--;
+		counts[4] += by_packets;
 	}
-	return left;
+	return psp_sound_tier_drain(low, high);
 }
 #endif"""),
 ]
