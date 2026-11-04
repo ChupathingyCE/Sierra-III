@@ -1064,7 +1064,7 @@ no more): a preset with the menu's own words needs ~250, and words past the
 limit are lost silently. KEEP_DEFAULTS_ROOM more holds the campaign's
 default words (keep_defaults_add), however full the file is */
 #define KEEP_FILE_BYTES 509
-#define KEEP_DEFAULTS_ROOM 320
+#define KEEP_DEFAULTS_ROOM 384
 static char keep_words[KEEP_FILE_BYTES + 3 + KEEP_DEFAULTS_ROOM] = "";
 /* build 106: bumped whenever keep_words changes, so psp_keep's remembered
 answers are asked again */
@@ -1142,6 +1142,12 @@ static const struct
 	drawing -1.3% (geoindexme) (sierra-hw 41272758085) */
 	{ "mememo", "mememooff" }, { "geoindexme", "geoindexmeoff" }, { "notimers", "timerson" }, /* the AI thinks on the ME during the record, a few ms early in game time, which no player can feel (FIXES_AIME*; b30 frame -3 to -10% on the PSP) */ { "aime", "aimeoff" }, { "aime1b", "aimeoff" }, { "aime2a", "aimeoff" }, PSP_RELEASE_DEFAULTS
 };
+static const struct
+{
+	const char *word, *off;
+} keep_levers[] = {
+	{ "wxdead", "wxdeadoff" }, { "texavg", "texavgoff" }, { "lightcarry", "lightcarryoff" }, { "sndedram", "sndedramoff" },
+};
 static char keep_defaults_added[KEEP_DEFAULTS_ROOM] = "";
 
 static void keep_default_add(const char *word)
@@ -1179,6 +1185,18 @@ static void keep_defaults_add(void)
 	side, and aicad2 still wins when asked */
 	if (!keep_search("aicad3off") && !keep_search("aicad2"))
 		keep_default_add("aicad3");
+	/* levers apart from M6 #2, so m6off and its instruments leave them on.
+	wxdead: the weather's rays skip the leaf search whose answer nothing
+	reads (exact; c10 frame -1.6% on the PSP). texavg: a texture not yet in
+	memory drawn as its 4 x 4 stand-in rather than untextured (a
+	restoration of a kind; the pack's TSI1 table, or untextured as before).
+	lightcarry: the flashlight's cone split carries each corner's work to
+	the pieces that share it (exact; d20's swamp frame -10% on the PSP).
+	sndedram: the sound cache's last pages in the ME's eDRAM, copied in by
+	the ME (plays the same; 528 KB of heap back) */
+	for (k = 0; k < (int)(sizeof(keep_levers) / sizeof(keep_levers[0])); k++)
+		if (!keep_search(keep_levers[k].off))
+			keep_default_add(keep_levers[k].word);
 	if (keep_search("m6off") || keep_search("mebench") || keep_search("gemeoverlap") || keep_search("geserial"))
 		return;
 	for (k = 0; k < (int)(sizeof(keep_defaults) / sizeof(keep_defaults[0])); k++)
