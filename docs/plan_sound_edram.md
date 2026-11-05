@@ -28,6 +28,10 @@ The first fill was a DMACplus transfer from the main CPU (one descriptor, ~240 Â
 
 **The emulator.** PPSSPP has no eDRAM and no DMACplus. There the tier is a main-RAM block at the eDRAM's size, and the DMA is a copy at the same point in the poll. So the emulator proves the placement, the fence, the staging, the load order, the counts and play (tick for tick: statecrc, both seeds), and the heap's size; it can't prove the DMA, the eDRAM's addresses, the ME's cache ordering or any timing. Those are the PSP's: `sndedramcheck` DMAs each piece back from the eDRAM and compares it, and a PSP pair prices the frame.
 
+**The emulator's mapped eDRAM.** The patched PPSSPP (`tools/ppsspp_local_patches.diff`) maps the tier's part of the eDRAM, 0xC8000-0x16C000 (0x800C8000 as the game addresses it, with its uncached and kernel mirrors), and says so through its `kemulator:` device (command 0x4D45: the mapped span's first and end offsets). When the span holds the tier, the emulator's tier sits at the PSP's address and the sound block takes from the heap only what a PSP's does (1,520 KB on d20, against 2,176 with the tier in the heap). Without it, the heap was 650 KB shorter than the PSP's after load, materials waited for room for their level copies, and the emulator's drawing censuses undercounted on d20 and b30 [E against M]. The keep word `sndtierram` puts the tier back in the heap; an emulator without the map, and every PSP, never ask.
+
+**The AI job's stack, the same way.** The span runs on to the eDRAM's top, 0xC8000-0x200000, and the simulated AI job (psp_me.c's `aime_simulated`) runs on the PSP's own room, 0x178000-0x200000 (544 KB), with its slack in the job's 48 KB data reserve below it, 0x16C000-0x178000, which nothing places anything in on either machine [D]. The heap's copy was 608 KB (the room and 64 KB of slack); 64 KB below the room would reach 16 KB into the tier's end, so the slack is 48 KB in the eDRAM. A reach through the whole slack is logged once (its figure is then a floor). The keep word `aimestackram` puts the stack back in the heap; `aimesimslack` (640 KB of slack, for runs that measure the job's reach) keeps it there too, since it can't fit below the room.
+
 ## Keep words
 
 | Word | Does |
@@ -36,6 +40,8 @@ The first fill was a DMACplus transfer from the main CPU (one descriptor, ~240 Â
 | `sndtierN` | the tier's size in KB (64 to 656), the main tier the rest of `soundN` |
 | `sndedramcheck` | each piece hashed by the copy job as read and as the eDRAM holds it, against the main CPU's hash of the staging (with `sndtierdma`: read back by DMA and compared); mismatches counted as failures |
 | `sndtierdma` | the tier filled by DMACplus from the main CPU instead of the ME's copy job (off: it hung the PSP-3000) |
+| `sndtierram` | the emulator only: the tier in main RAM inside the sound block, as an emulator without the mapped eDRAM has it |
+| `aimestackram` | the emulator only: the simulated AI job's stack in the heap (608 KB), as an emulator without the mapped eDRAM has it |
 
 Refused (logged, the cache as today) with `soundedram` and `edramcheck`, which use the same eDRAM, and when the ME is off.
 
