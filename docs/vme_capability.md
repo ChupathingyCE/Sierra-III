@@ -355,7 +355,7 @@ This follows mcidclan's switching-ram-context sample, which loads each next cont
 | B loaded alone, the ack, the flow word, then a trigger | — | ran, 2,048 of 2,048 |
 
 - **Loading a context doesn't disturb the pass that is running.** The loaded context waits until the flow word, or until a trigger sent during the load, makes it the one that runs. So the datapath's configuration has a shadow, and the next job's set-up overlaps the current pass.
-- **The load's cost:** 3,182 cycles on the PSP-1000 and 898 on the PSP-3000, each against a pass of 1,592. On the Slim a load fits inside a pass of about 450 elements or more; on the PSP-1000 it needs about 1,600 elements. That is §1's ~709-cycle set-up, taken off the critical path.
+- **The load's cost:** 3,182 cycles on the PSP-1000 and 898 on the PSP-3000, each against a pass of 1,592. On the Slim a load fits inside a pass of about 450 elements or more; on the PSP-1000 it needs about 1,600 elements at rest, and about 400 at 0x310 (866 cycles, §10). That is §1's ~709-cycle set-up, taken off the critical path.
 - The flow word's other job is §7's: without it, a refresh runs the wrong length.
 
 ### The vendor moves (item 3)
@@ -392,12 +392,12 @@ These are mcidclan's ldl/sdl reused, where the base register's number names a ba
 **What's left:**
 - Whether bits 8 and 9 are a burst length, which would explain the rate.
 - 0x004's bits above 17.
-- The context load's cost on the PSP-1000 (3.5× the Slim's).
+- ~~The context load's cost on the PSP-1000 (3.5× the Slim's).~~ 866 cycles at 0x310 (§10).
 - The VLD's output into a VME buffer.
 
 ## 10. Round 4: mcidclan's later samples, read and benched ahead
 
-The question (2026-11-04): his later samples (psp-virtual-mobile-engine-ext 15884a0) show units chained, data kept resident, contexts pipelined, named opcodes, a lock between the CPUs and a texture pass. Which of these are new to us, and what does each cost on the PSP-1000? The bench is the same program with the keep word `vmer4` (branch `recon/vme-r4`). It compiles with no warnings and waits for the PSP-1000. Until it runs, everything here is [D] (his code and notes) or [U].
+The question (2026-11-04): his later samples (psp-virtual-mobile-engine-ext 15884a0) show units chained, data kept resident, contexts pipelined, named opcodes, a lock between the CPUs and a texture pass. Which of these are new to us, and what does each cost on the PSP-1000? The bench is the same program with the keep word `vmer4` (branch `recon/vme-r4`). Its results are below, from two clean PSP-1000 runs with the ME's counter running ("Measured"); what his code answers is [D].
 
 **What his code already answers** [D]:
 - **The context's MMIO at 0x440f8000–0x440f81a4 is the datapath itself.** His notes call it the "fine grained controller": each word is one setting of the live datapath (106 words, `VME_DATAPATH_BASE`). Every round here has written contexts through it (§1's 709-cycle set-up is those writes). So "writes there change the datapath" is how every context so far was built. What's new is how it relates to §9's shadow context, which the bench tests.
@@ -416,20 +416,72 @@ The question (2026-11-04): his later samples (psp-virtual-mobile-engine-ext 1588
 - **Each PE's own address units run its own stream and count.** MUL plus clamp with the interconnect at 0x3210 was exact on all four PEs: 4,096 of 4,096 with equal counts, and 1,024, 512, 256 and 128 with mixed ones.
 - **The window is write-only.** Word 8 written with 0x123456 reads 0. Reads return other state (0x10, 0x8010, 0x1fff, 0x88009a00, like the DMAC's own registers in §9).
 - **A write during a pass doesn't change that pass.** The four primaries' shift was rewritten about 1,000 cycles into a MUL of 1,024, timed by look count because the counter was stopped [U]. All 4,096 outputs came out with the old shift.
-- **But it wedges the VME.** The next passes, with or without the flow word, wrote 1,920 of 4,096 words with the new shift. After that, every load and pass hit its bound with 0x800 and 0x200 both set, until the ME's next start. **Never write the window while a pass runs.** The bench now runs this step after every other VME step (40312cad).
-- **Not yet measured:** resident against streamed, the pipelined contexts, the accumulator, the texture pass and the lock. The first run stopped in the window step on a spin bounded by the counter alone (fixed, 3ed40834). The second wedged there.
+- ~~But it wedges the VME.~~ Not so with the counter running (below): the next pass takes the new shift whole, and nothing hangs. This run's 1,920 of 4,096, and the hang after it, came with the counter stopped, when the 1,000-cycle wait was a look count and the bench's waits had no clock [U].
+- Measured since (below): resident against streamed, the pipelined contexts, the accumulator, the texture pass and the lock. The first run stopped in the window step on a spin bounded by the counter alone (fixed, 3ed40834). The second wedged there.
 
-**What the bench measures** [the rest to come, PSP-1000 with its counter running]:
-1. **Units in series.** A probe finds which staging latch a primary's back input names (0–7; round 2 proved 0–3 for the secondaries). Then a chain runs: MUL, then add on PE 0's secondary, then clamp on PE 1's primary, then select on PE 2's primary by a mask stream. Each level is swept over write delays 6–21, refreshed 100 times, and set against the ME's CPU. Beside it, the same MUL and clamp run on shared and on per-PE address units, with equal and mixed counts. This tests his "each FU has its own address generator, in series or in parallel".
-2. **The window against the shadow.** The bench reads the window back. It writes the window 1,000 cycles into a pass. And it writes the window after a DMAC context load but before the flow word, to see which one runs.
-3. **Resident against streamed, in cycles an element.** His batching runs as 64 passes with one window write each. Against it, each vector is streamed in by the DMAC at 0x10 and at 0x310. The long element-wise stream is also run resident and fed and drained from eDRAM.
-4. **Pipelined context switches.** Eight contexts are run serially and pipelined (§9's flow word), from eDRAM and main RAM, at 0x10 and 0x310, at n = 64, 512 and 1,024. This sets the switch against round 1's ~709 cycles and §9's 3,182-cycle load.
-5. **The accumulator** and 6. **the lock**, as above. 7. **The texture pass** at rest and fast, the resident refresh, and the ME's CPU on eDRAM and on main RAM.
+**Measured, PSP-1000** [M; bench-hw 41936841784 at bbaa425b and 41938293728 at 76ce63a0; the counter written at the ME's start, 600,003 and 600,064 cycles for 100k nops]. The first run's contexts step started with a context load that never ended, so its last four VME steps hit their bounds. The second run sets the transfer registers before each load (the length every good load had: 256 words) and runs the loads after the steps that need none. Nothing in it hit a bound. Where both runs measured a figure they agree within 0.4%.
 
-**Against Sony's figures** [U]: 166 MHz, ~5 G operations a second and ~30 a cycle fit a count of every address unit's step and every unit's operation in a cycle. That's 4 PEs × (2 units + 3 address units) at one element a clock, plus the interconnect. We measured 4 unit operations a cycle at the ME's clock (§7, 1.29 G). The chain's cycles an element will show whether series costs a pass more or nothing.
+1. **Units in series cost nothing.** A pass of 1,024 takes 2,107 cycles at every depth, one unit to four (2,131 at write delays 18–21, the tail). The four-step chain refreshed 100 times averages 2,117 (2,116–2,179). The ME's CPU does the same four steps from cached eDRAM in 18,113 (17.7 an element). So the chain is **2.07 cycles an element, 8.6× the ME's CPU** on resident data.
+   - **Against the ceilings:** the three exact steps (multiply-shift, add, clamp) are 1.46 operations a cycle on one stream, using three of the datapath's eight unit slots. A pass's 8 slots an element at 2.06 cycles is **3.9 a cycle, §7's 4** (1.29 G a second). Chaining fills more of the slots a stream can use; it doesn't raise the ceiling. **Sony's ~30 a cycle stays out of reach** [U: their count must take in the address units and the interconnect, which do no arithmetic we can use].
+   - **Shared or own address units, equal or mixed counts:** 2,108 cycles in every case, all exact. Counts of 512, 256 and 128 on PEs 1–3 don't shorten the pass (2,192 once in the second run, the case after the chain without its flow word: §7's wrong-length trigger [U]).
+   - The select is still unsolved: 500 of 1,024 at delay 18 in both runs. The other count (245 against the mask-plus-−7 form) fits a mask read out of step equally well as one testing the mask's bit 1, so the next try is an offset on its address unit, then A = 2 [U].
+2. **The window and the shadow.**
+   - The window is write-only, 6.7 cycles a word (669 for 100). §1's 709-cycle set-up is about 106 of these.
+   - **A write during a pass leaves that pass alone** (4,096 of 4,096 with the old shift) **and takes effect at the next trigger,** with or without the flow word (4,096 of 4,096 with the new). Nothing hung after it.
+   - **A context loaded by the DMAC wins over window writes made before the flow word:** B ran (2,048 of 2,048, n 512), and the window's shift reached 25 words. So the window writes the active context, and the flow word swaps the loaded one in over it.
+   - A pass of 4 costs 142 cycles from the flow word to done: the fixed cost of a tiny pass.
+3. **Resident against streamed.**
+   - **The element-wise MUL, 4 × 1,024:**
+
+     | Feed | Cycles | A result | Exact |
+     |---|---|---|---|
+     | resident, one refresh | 2,191 | 0.53 | 4,096 |
+     | from eDRAM at rest (0x10): in 62,847, pass 2,233, out 11,724 | 76,804 | 18.8 | 4,096 |
+     | from eDRAM at 0x310: in 15,686 (3.06 a word), pass 2,179, out 10,495 (2.56) | 28,360 | 6.9 | 4,096 |
+     | the ME's CPU (§7) | | 16.6 | |
+
+     **So a one-pass stream at 0x310 is 2.4× the ME's CPU,** better than §9's 8.9 estimate, and resident data is 31×.
+   - **His host batching (a 4×4 MAC, 64 vectors):** resident with one window write a pass, 162 cycles a vector (10,341). Each vector streamed in, 321 at rest and 286 at 0x310. **Only 4 of 256 results were right in every variant,** resident and streamed alike. That fits a MAC whose sum carries from one refresh to the next, so only the first vector is right; his mat4x4-mul-reset-acc notes say no way is known to reset it at a stream position [U]. So the pattern is priced, but batched MACs need that reset first. And at 142 cycles a tiny pass, a 4-element job doesn't pay against the ME's CPU anyway.
+4. **Context switches.**
+
+   | Context load (0x0c) | At rest (0x10) | At 0x310 |
+   |---|---|---|
+   | from eDRAM | 3,210–3,302 | **866** |
+   | from main RAM | 9,154–10,412 | 1,362–1,414 |
+
+   - §9's 3,182 on the PSP-1000 is the rest setting (3,210 here). At 0x310 the PSP-1000 loads in 866, as fast as the PSP-3000 at rest (898). So the fast mode closes the 3.5× gap between the models (the 3000 is untested at 0x310).
+   - **Eight contexts alternated** (A shift 0, B shift 2), from eDRAM at 0x310, all exact:
+
+     | n | Pass | Serial, a context | Pipelined, a context |
+     |---|---|---|---|
+     | 64 | 264 | 1,079 | 951 |
+     | 512 | 1,080 | 1,966 | 1,248 |
+     | 1,024 | 2,112 | 3,001 | 2,265 |
+
+   - **Pipelined, a switch costs ~150 cycles over the pass** once the pass is longer than the load (about 400 elements or more). Shorter passes run at the load's pace. At rest, or from main RAM, the load dominates (rest from main RAM: 10,100–11,900 a context). Every one of the 12 sequences ended exact.
+5. **The accumulator is 64 bits, shifted, not rotated.** 1 and 0x7fffff² read through every shift k = 0–63 match a 64-bit arithmetic shift in 64 of 64. The 23 shifts that would tell a rotation from a shift say shift, so his "barrel/cyclic" note doesn't hold on the PSP-1000. The sum of 256 × 0x7fffff² (~2^54) reads exactly through 8 shifts of 8; a 32-bit sum would fit 3. So long dot products don't overflow, and any 24 bits of the sum can be read.
+6. **The lock is a real mutex, owner-only** (first run; in the second the main CPU's answers didn't come inside the 0.6 s bound, so its awaits read 0).
+   - A try and a free cost 118 cycles on the ME and 118.5 on the main CPU (100,000 pairs, 11.85 M cycles). The ids are 1 (main) and 2 (ME). Every try won with the lock free, and the main CPU took it at its first try.
+   - While one CPU holds it, the other's tries fail (100 of 100), and its write of 0 leaves the lock held, both ways.
+   - **The main CPU needs kernel mode for it:** an empty kcall costs 17.1 µs, 145× the lock. So a user-mode game would need a kernel module to use it per job [U].
+7. **The texture pass: the repack template, priced.** 4,096 5551 pixels go from main RAM to the four top buffers as halves (0x52). Each PE ORs its tile with B, and the result goes back out as halves (0x5a):
+
+   | Path | In | Pass | Out | A pixel | Exact |
+   |---|---|---|---|---|---|
+   | VME, 0x310 | 11,387 | 2,114 | 9,253 | **5.56** | 4,096 |
+   | VME, rest | 78,040 | 2,176 | 10,983 | 22.3 | 4,096 |
+   | ME's CPU, eDRAM to eDRAM (cached) | | | | 8.73 | 4,096 |
+   | ME's CPU, main RAM uncached | | | | 83.9 | |
+
+   - **At 0x310 the VME repacks main RAM to main RAM at 5.56 cycles a pixel,** 1.6× the ME's CPU working in its own eDRAM and 15× the ME's CPU on main RAM. The DMAC is 90% of it, and the pass 0.52 a pixel. Since units in series are free (item 1), a repack of a few shifts, masks and ORs a pixel should cost the same [U, OR alone measured].
+   - Not a swizzle: only linear addressing is known (his mat4x4-mul-reset-acc notes: the other addressing modes are unknown) [D], so reordering pixels isn't in reach yet.
+   - **The resident refresh failed:** B rewritten through the window, then the flow word, the pass and out, gave 128 of 4,096, exactly the 1 in 32 pixels where both ORs agree. So the previous output came back. Either the window write of B didn't take (item 2 says it should), or the out started before the pass's busy bit showed (the wait doesn't wait for it to appear) [U]. The chain's refreshes, which change nothing, were right.
+   - Levers: VMETEX in the lab's levers.tsv (a template, no use yet).
+
+**What's left:** the select's mask alignment; a MAC reset at a stream position; the texture refresh's failure; the PSP-3000 at 0x310 for the context load; the lock's main-side answers inside its bound (the main loop answers once a frame).
 
 ## 11. Credits and terms
 
-The register map, the wipe and configuration sequence, the context layout and every opcode tried are mcidclan's (m-c/d), MIT, from https://github.com/mcidclan/psp-media-engine-custom-core and https://github.com/mcidclan/psp-virtual-mobile-engine-ext. The colour-space converter's registers are from https://github.com/mcidclan/me-vme-hardware-csc (MIT). The secondary unit's chain is his saturate-clamp-second-fu sample (psp-virtual-mobile-engine-ext 15884a0, MIT), and the saturator's field is from his datapath notes (https://github.com/mcidclan/psp-media-engine-cracking-the-unknown f921778, MIT). The AVC power sequence, and the power switch's NID the bench imports, are read from uofw's me_wrapper (https://github.com/uofw/uofw 28306bb). §10: the resident batching, the pipelined contexts and the texture pass follow his mat4x4-mul-host-batching, switching-ram-context and texture-processing samples (psp-virtual-mobile-engine-ext 15884a0, MIT); the lock is his hw-mutex sample (psp-media-engine-custom-core 0197c99, MIT); the accumulator's width and rotation, the datapath window's name and the opcode table are from his datapath notes (psp-media-engine-cracking-the-unknown f921778, MIT). §9: the context loaded during a pass follows his switching-ram-context sample (psp-virtual-mobile-engine-ext 15884a0, MIT); the vendor moves, their banks and his forcing recipe are from his mt-mf-vme.md, and the config word's firmware values from his 0x440ff000.md (psp-media-engine-cracking-the-unknown f921778, MIT); the buffers' mirrors, the "ping-pong buffers" and the multiplexer DMAC's shared registers, and the VLD's registers are from https://github.com/mcidclan/psp-media-engine-reload 006ac29 (MIT); the AVC clock and bus-clock RPC indices from uofw's me_wrapper 28306bb.
+The register map, the wipe and configuration sequence, the context layout and every opcode tried are mcidclan's (m-c/d), MIT, from https://github.com/mcidclan/psp-media-engine-custom-core and https://github.com/mcidclan/psp-virtual-mobile-engine-ext. The colour-space converter's registers are from https://github.com/mcidclan/me-vme-hardware-csc (MIT). The secondary unit's chain is his saturate-clamp-second-fu sample (psp-virtual-mobile-engine-ext 15884a0, MIT), and the saturator's field is from his datapath notes (https://github.com/mcidclan/psp-media-engine-cracking-the-unknown f921778, MIT). The AVC power sequence, and the power switch's NID the bench imports, are read from uofw's me_wrapper (https://github.com/uofw/uofw 28306bb). §10: the resident batching, the pipelined contexts and the texture pass follow his mat4x4-mul-host-batching, switching-ram-context and texture-processing samples (psp-virtual-mobile-engine-ext 15884a0, MIT); the lock is his hw-mutex sample (psp-media-engine-custom-core 0197c99, MIT); the MAC's missing reset and linear-only addressing are from his mat4x4-mul-reset-acc notes (psp-virtual-mobile-engine-ext, MIT); the accumulator's width and rotation, the datapath window's name and the opcode table are from his datapath notes (psp-media-engine-cracking-the-unknown f921778, MIT). §9: the context loaded during a pass follows his switching-ram-context sample (psp-virtual-mobile-engine-ext 15884a0, MIT); the vendor moves, their banks and his forcing recipe are from his mt-mf-vme.md, and the config word's firmware values from his 0x440ff000.md (psp-media-engine-cracking-the-unknown f921778, MIT); the buffers' mirrors, the "ping-pong buffers" and the multiplexer DMAC's shared registers, and the VLD's registers are from https://github.com/mcidclan/psp-media-engine-reload 006ac29 (MIT); the AVC clock and bus-clock RPC indices from uofw's me_wrapper 28306bb.
 
 His repositories accept no AI-attributed pull requests, so nothing from this work goes upstream to them. The measurements and the Phat's differences above are ours, to share with him by hand if Sheepdog01 chooses.
