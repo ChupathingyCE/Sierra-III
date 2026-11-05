@@ -1815,28 +1815,171 @@ unsigned int psp_tex_frame_now(void)
 	return frame;
 }
 
+/* where a texture goes once the ring position is taken, the arena's start
+then the end of each protected texture in table order: each place tested by
+a whole table scan (fits). Kept as "texallocold" and as texallocchk's
+reference */
+static unsigned int alloc_tests = 0;
+
+static unsigned int pick_scan(int which, unsigned int size, unsigned int recent)
+{
+	int index;
+
+	alloc_tests++;
+	if (fits(which, arenas[which].start, size, recent))
+		return arenas[which].start;
+	for (index = 0; index < entry_count; index++)
+	{
+		unsigned int candidate;
+
+		if (!protected_at(index, which, recent))
+			continue;
+		candidate = resident_at[index] + alignment(entries[index].size);
+		alloc_tests++;
+		if (fits(which, candidate, size, recent))
+			return candidate;
+	}
+	return 0;
+}
+
+/* The same places in the same order, each tested against the arena's
+protected spans sorted by start, every span's end raised to the furthest end
+at or before it: [start, start + size) meets a protected texture exactly
+when the last span starting before its end reaches past its start, so a
+test is a halving instead of a scan, whether or not the spans overlap. With
+the cache full every place fails, and the scans made each refused read cost
+places x textures (the snowfield's drawing spent ~17% of its samples in
+fits and allocate). The table lives in the staging buffer, which is free
+until load_into's read */
+struct alloc_span
+{
+	unsigned int lo, hi;
+};
+#define ALLOC_SPANS_MAX ((int)(STAGING_BYTES / sizeof(struct alloc_span)))
+/* -1 unread; 0 the spans; 1 "texallocold": the scans; 2 "texallocchk":
+the spans, each answer checked against the scans' */
+static int alloc_mode = -1;
+static unsigned int alloc_searches = 0, alloc_spans_peak = 0, alloc_spans_over = 0, alloc_mismatches = 0;
+static unsigned long alloc_us = 0;
+
+static int alloc_span_order(void const *a, void const *b)
+{
+	unsigned int x = ((struct alloc_span const *)a)->lo, y = ((struct alloc_span const *)b)->lo;
+
+	return x < y ? -1 : x > y;
+}
+
+/* the arena's protected spans into the staging buffer, sorted; -1 when
+they don't all fit there (the scans answer instead) */
+static int alloc_spans_build(int which, unsigned int recent)
+{
+	struct alloc_span *spans = (struct alloc_span *)staging;
+	unsigned int furthest = 0;
+	int index, n = 0;
+
+	for (index = 0; index < entry_count; index++)
+	{
+		if (!protected_at(index, which, recent))
+			continue;
+		if (n == ALLOC_SPANS_MAX)
+		{
+			alloc_spans_over++;
+			return -1;
+		}
+		spans[n].lo = resident_at[index];
+		spans[n].hi = resident_at[index] + alignment(entries[index].size);
+		n++;
+	}
+	if ((unsigned int)n > alloc_spans_peak)
+		alloc_spans_peak = (unsigned int)n;
+	qsort(spans, (size_t)n, sizeof(*spans), alloc_span_order);
+	for (index = 0; index < n; index++)
+	{
+		if (spans[index].hi > furthest)
+			furthest = spans[index].hi;
+		spans[index].hi = furthest;
+	}
+	return n;
+}
+
+/* fits, answered from the spans */
+static int alloc_span_fits(int which, int n, unsigned int start, unsigned int size)
+{
+	struct alloc_span const *spans = (struct alloc_span const *)staging;
+	unsigned int end = start + size;
+	int low = 0, high = n;
+
+	if (end > arenas[which].end)
+		return 0;
+	/* low: how many spans start before end */
+	while (low < high)
+	{
+		int middle = (low + high) >> 1;
+
+		if (spans[middle].lo < end)
+			low = middle + 1;
+		else
+			high = middle;
+	}
+	return low == 0 || spans[low - 1].hi <= start;
+}
+
+static unsigned int pick_spans(int which, unsigned int size, unsigned int recent, int n)
+{
+	int index;
+
+	alloc_tests++;
+	if (alloc_span_fits(which, n, arenas[which].start, size))
+		return arenas[which].start;
+	for (index = 0; index < entry_count; index++)
+	{
+		unsigned int candidate;
+
+		if (!protected_at(index, which, recent))
+			continue;
+		candidate = resident_at[index] + alignment(entries[index].size);
+		alloc_tests++;
+		if (alloc_span_fits(which, n, candidate, size))
+			return candidate;
+	}
+	return 0;
+}
+
 static unsigned int allocate(int which, unsigned int size, unsigned int recent)
 {
 	struct arena *arena = &arenas[which];
-	unsigned int start = 0, candidate;
-	int index;
+	unsigned int start = 0, began;
+	int index, n;
 
 	if (!arena->start || size > arena->end - arena->start)
 		return 0;
 	if (fits(which, arena->next, size, recent))
 		start = arena->next;
-	else if (fits(which, arena->start, size, recent))
-		start = arena->start;
 	else
 	{
-		for (index = 0; index < entry_count && !start; index++)
+		if (alloc_mode < 0)
+			alloc_mode = psp_keep("texallocold") ? 1 : psp_keep("texallocchk") ? 2 : 0;
+		began = sceKernelGetSystemTimeLow();
+		alloc_searches++;
+		if (alloc_mode != 1 && (n = alloc_spans_build(which, recent)) >= 0)
 		{
-			if (!protected_at(index, which, recent))
-				continue;
-			candidate = resident_at[index] + alignment(entries[index].size);
-			if (fits(which, candidate, size, recent))
-				start = candidate;
+			start = pick_spans(which, size, recent, n);
+			/* the table's lines dropped unwritten: the read that follows
+			fills the buffer without old lines of ours to write back */
+			if (n)
+				sceKernelDcacheInvalidateRange(staging, ((unsigned int)n * sizeof(struct alloc_span) + 63) & ~63u);
+			if (alloc_mode == 2)
+			{
+				unsigned int tests = alloc_tests;
+
+				if (pick_scan(which, size, recent) != start)
+					alloc_mismatches++;
+				alloc_tests = tests;
+			}
 		}
+		else
+			start = pick_scan(which, size, recent);
+		alloc_us += sceKernelGetSystemTimeLow() - began;
 	}
 	if (!start)
 		return 0;
@@ -3383,6 +3526,14 @@ void psp_tex_frame_end(void)
 		platform_log("textures: %lu loaded (%lu KB), %lu requests waited for the next frame, %lu for room; %lu evicted; largest frame %lu textures, %lu KB; %lu frames drew something untextured (longest run %lu)",
 			loads, load_bytes / 1024, misses - (loads - preloaded), waits, evictions, frame_set_peak_count, frame_set_peak / 1024,
 			untextured_frames, untextured_run_worst);
+	if (entries && frame % 300 == 0)
+	{
+		platform_log("textures: texalloc (%s): %u searches past the ring position in 300 frames, %u places tested (each a scan of %d textures under texallocold), %lu us searching; at most %u protected, %u past the span room; %u answers differing from the scans (texallocchk)",
+			alloc_mode == 1 ? "texallocold" : alloc_mode == 2 ? "texallocchk" : alloc_mode == 0 ? "spans" : "none yet",
+			alloc_searches, alloc_tests, entry_count, alloc_us, alloc_spans_peak, alloc_spans_over, alloc_mismatches);
+		alloc_searches = alloc_tests = alloc_spans_peak = 0;
+		alloc_us = 0;
+	}
 	if (entries && frame % 300 == 0)
 		platform_log("textures, the HUD's and the screen's (%s): %lu missing when drawn (%lu read past the frame's budget), %lu drawn untextured; recorded for the Media Engine (%s): %lu marked, %lu past the ceiling, %lu refused room; read back at a frame's start %lu, refused %lu (%d pinned, %u KB, %u KB of them resident)",
 			hud_pin_on > 0 ? "pinned" : "hudpinoff", hud_misses, hud_reads_past_budget, hud_untextured,
