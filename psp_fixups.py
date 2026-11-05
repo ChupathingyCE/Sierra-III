@@ -47909,6 +47909,7 @@ for bit. A push the ring refuses, or an answer later than PSP_ML_LATE_US,
 has the main CPU make its own visibility there: the safety net, as before */
 #define PSP_ML_LATE_US 50000
 int psp_me_push_visibility_into(void *record, void *answer, unsigned int answer_bytes, unsigned int *ticket); /* psp_me.c */
+void psp_me_ring_collected(unsigned int ticket); /* psp_me.c: mevisring */
 
 static int psp_ml_on = -1, psp_ml_check = 0, psp_ml_out = 0, psp_ml_waiting = 0, psp_ml_objects_ready = 0, psp_ml_overran = 0;
 /* where the walk runs is decided by measurement (CLAUDE.md, placement): the
@@ -47973,6 +47974,7 @@ int psp_mevisland_push(void)
 			psp_ml_busy++;
 			return 0;
 		}
+		psp_me_ring_collected(psp_ml_ticket);
 		psp_ml_out = 0;
 	}
 	/* (a structure the port can't hold: the main CPU's own path, which
@@ -48031,6 +48033,7 @@ void psp_mevisland_collect(void)
 		structure_visibility_compute();
 		return;
 	}
+	psp_me_ring_collected(psp_ml_ticket);
 	psp_ml_out = 0;
 	psp_ml_drop(psp_mv_record, sizeof(*psp_mv_record));
 	if (psp_mv_record->depth_most > psp_ml_depth_most)

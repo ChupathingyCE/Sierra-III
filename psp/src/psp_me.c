@@ -2794,6 +2794,9 @@ that was reset, and their entries hold no answer for them */
 static unsigned int ring_epoch = 0;
 static int ring_restarted = 0;
 static unsigned int ring_push_mark[ME_RING_ENTRIES]; /* the push's time, a ticket's */
+/* the emulator: a ticket's job's own time, run inside the push (the polled
+jobs' count reads it, psp_me_ring_collected) */
+static unsigned int ring_sim_us[ME_RING_ENTRIES];
 static unsigned int ring_thread = 0;      /* simulated: the producer's thread, for psp_me_context */
 /* simulated: a ring job pushed and not yet waited for (the trace's window) */
 static int ring_sim_open = 0;
@@ -3273,7 +3276,8 @@ static __attribute__((noinline, cold)) void ring_push_simulated(unsigned int ind
 	else
 		ring_run(index, 0, 0);
 	psp_me_context = 0;
-	ring_stats.simulated_us += sceKernelGetSystemTimeLow() - job_start;
+	ring_sim_us[index] = sceKernelGetSystemTimeLow() - job_start;
+	ring_stats.simulated_us += ring_sim_us[index];
 #ifdef PSP_RECON
 	if (ring_late_every && t && t % ring_late_every == 0)
 		ring_sim_behind = 1;
@@ -3731,6 +3735,86 @@ int psp_me_wait(unsigned int ticket, unsigned int *results)
 	PSP_LANE(PSP_LANE_ME_RING, ring_push_mark[index], now, request->type,
 		me_cycles_per_us > 0.0f ? (unsigned int)((float)result->job_cycles / me_cycles_per_us) : 0);
 	return 1;
+}
+
+/* "mevisring": a ring job the game collects by polling (psp_me_ring_done:
+mevisland's visibility) instead of through psp_me_wait, which alone counted
+ring jobs, so the ring's figures, the busy share and lanetrace left it out.
+The poll that first sees it done calls this: its result is read and counted
+on a line of its own, its ME time joins the busy share, and lanetrace gets
+its span from the push to that poll. Off, nothing is read or counted */
+static int ring_polled_on = -1;
+static struct
+{
+	unsigned long jobs, uncounted;
+	unsigned long long job_cycles, all_cycles, round_us, simulated_us;
+	unsigned long worst_cycles, worst_simulated_us;
+} ring_polled;
+
+void psp_me_ring_collected(unsigned int ticket)
+{
+	unsigned int index = ticket & RING_MASK, now;
+	struct me_ring_request *request = &ring_requests[index];
+	struct me_ring_result *result = &ring_results[index];
+
+	if (ring_polled_on < 0)
+		ring_polled_on = psp_keep("mevisring") != 0;
+	if (!ring_polled_on)
+		return;
+	/* a ticket the ring has moved past (its entry reused) or not yet done */
+	if (ring_next - ticket - 1 >= ME_RING_ENTRIES || (int)(RING_POPPED - ticket) <= 0)
+	{
+		ring_polled.uncounted++;
+		return;
+	}
+	/* this CPU never writes the result's lines: dropping them loses nothing */
+	lines_drop((unsigned int)result, sizeof(*result));
+	if (me_state != 2 && (result->ticket != ticket || result->status != RING_OK))
+	{
+		ring_polled.uncounted++;
+		return;
+	}
+	now = sceKernelGetSystemTimeLow();
+	ring_polled.jobs++;
+	ring_polled.round_us += now - ring_push_mark[index];
+	if (me_state == 2)
+	{
+		ring_polled.simulated_us += ring_sim_us[index];
+		if (ring_sim_us[index] > ring_polled.worst_simulated_us)
+			ring_polled.worst_simulated_us = ring_sim_us[index];
+		PSP_LANE(PSP_LANE_ME_RING, ring_push_mark[index], now, request->type, ring_sim_us[index]);
+		return;
+	}
+	ring_polled.job_cycles += result->job_cycles;
+	ring_polled.all_cycles += result->all_cycles;
+	if (result->all_cycles > ring_polled.worst_cycles)
+		ring_polled.worst_cycles = result->all_cycles;
+	PSP_LANE(PSP_LANE_ME_RING, ring_push_mark[index], now, request->type,
+		me_cycles_per_us > 0.0f ? (unsigned int)((float)result->all_cycles / me_cycles_per_us) : 0);
+}
+
+/* the polled jobs' line (psp_me_report), and their ME time for the busy
+share: on the PSP their own time; in the emulator 0, since the ring's
+simulated time, which the busy share takes whole, already holds it */
+static __attribute__((noinline, cold)) unsigned long long ring_polled_report(void)
+{
+	float rate = me_cycles_per_us > 0.0f ? me_cycles_per_us : 1.0f;
+	unsigned long jobs = ring_polled.jobs ? ring_polled.jobs : 1;
+	unsigned long long all_us = (unsigned long long)((float)ring_polled.all_cycles / rate);
+
+	if (ring_polled_on <= 0 || (!ring_polled.jobs && !ring_polled.uncounted))
+		return 0;
+	if (me_state == 2)
+		platform_log("ME: ring, polled (mevisring): %lu jobs, SIMULATED inside the push, %lu us a job (longest %lu), %llu us in all; push to seen done %lu us a job; %lu not counted",
+			ring_polled.jobs, (unsigned long)(ring_polled.simulated_us / jobs), ring_polled.worst_simulated_us,
+			ring_polled.simulated_us, (unsigned long)(ring_polled.round_us / jobs), ring_polled.uncounted);
+	else
+		platform_log("ME: ring, polled (mevisring): %lu jobs, the ME's own time %lu us a job (the job's code %lu; longest %lu), %llu us in all; push to seen done %lu us a job; %lu not counted",
+			ring_polled.jobs, (unsigned long)(all_us / jobs), (unsigned long)((float)ring_polled.job_cycles / rate / (float)jobs),
+			(unsigned long)((float)ring_polled.worst_cycles / rate), all_us, (unsigned long)(ring_polled.round_us / jobs),
+			ring_polled.uncounted);
+	memset(&ring_polled, 0, sizeof(ring_polled));
+	return me_state == 2 ? 0 : all_us;
 }
 
 /* ---------- batches: the main CPU's side (psp_me.h has the contract) */
@@ -4847,6 +4931,9 @@ void psp_me_report(void)
 		}
 		memset(&ring_stats, 0, sizeof(ring_stats));
 	}
+	/* the jobs collected by polling (mevisring): their own time, which a
+	drain inside the AI job also counts as nested work, taken off below */
+	busy_us_all += ring_polled_report();
 	/* the yields' nested work, counted in both the slot job's time and its
 	own (nested_cycles_total), taken off once; "mebusyold" keeps the old sum */
 	{
