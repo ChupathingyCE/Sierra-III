@@ -98,6 +98,7 @@ struct tex_census
 };
 static int census_on = -1;
 static struct tex_census *census = NULL;
+static unsigned char *texlod_seen = NULL; /* "texlod" (below census_name) */
 static int census_evictor = -1;
 static unsigned char *resident_in = NULL;
 /* the textures the HUD and the other screen-space draws use (the meters,
@@ -543,6 +544,8 @@ void psp_tex_close(void)
 	free(last_frame);
 	free(census);
 	census = NULL;
+	free(texlod_seen);
+	texlod_seen = NULL;
 	free(resident_in);
 	free(hud_pinned);
 	hud_pinned = NULL;
@@ -1257,6 +1260,73 @@ long psp_tex_pack_bytes(const char *name, char *path, int size)
 plans, psp_fixups.py) start again when it moves */
 PSP_MAIN_SIDE unsigned long psp_tex_map_opens = 0;
 
+/* "texfit" (TEXFIT1): textures loaded from the finest mip level the GE
+samples, where the bake measured that level on the ladder's routes and
+wrote each such texture again from it. The trimmed copies sit after the
+pack's data, listed by a 'TFT1' table that a trailer at the file's end
+points to, so the same pack carries both sides and a build that doesn't
+know the table never reads it. Each listed entry takes the trimmed copy's
+size, chain and place: every user of the entry (the bind, the bind blocks,
+psp_tex_size and the slope it feeds) then sees one consistent smaller
+texture. Halving width and height lowers the GE's level choice by exactly
+the levels left out, so each pixel samples the same texels as before as
+long as the left-out levels were never chosen. The bake lists only
+paletted textures with no masks, no CPU reads and two levels kept, so the
+filter and every reader of the texels stay as they were; averages and
+stand-ins still describe the top level, which is what both sides draw.
+Lightmaps under their own key stay whole: object lighting reads their top
+level (psp_tex_light_texel). A row marked composite (a base map with its
+detail or relief baked in, a lightmap's whole copy, a see-through composite,
+a glow map: drawn by the GE alone) is its own slice, keep word "texfitb", so
+each slice can be measured and switched apart */
+struct texfit_row
+{
+	unsigned int index, key;
+	unsigned short width, height;
+	unsigned char levels, skipped, composite, pad;
+	unsigned int offset, size;
+};
+
+static void texfit_apply(SceUID file)
+{
+	unsigned int trailer[2], table[2], i, applied = 0, before = 0, after = 0, composites = 0;
+	int plain = psp_keep("texfit"), composite = psp_keep("texfitb");
+	struct texfit_row row;
+
+	if (!plain && !composite)
+		return;
+	if (sceIoLseek32(file, -8, PSP_SEEK_END) < 0 || sceIoRead(file, trailer, sizeof(trailer)) != (int)sizeof(trailer) ||
+		trailer[0] != 0x31454654 /* TFE1 */ || sceIoLseek32(file, trailer[1], PSP_SEEK_SET) != (int)trailer[1] ||
+		sceIoRead(file, table, sizeof(table)) != (int)sizeof(table) || table[0] != 0x31544654 /* TFT1 */)
+	{
+		platform_log("textures: texfit: no table in this pack (baked without --texfit-census): every texture whole");
+		return;
+	}
+	for (i = 0; i < table[1]; i++)
+	{
+		struct pack_entry *entry;
+
+		if (sceIoRead(file, &row, sizeof(row)) != (int)sizeof(row))
+			break;
+		if (row.index >= (unsigned int)entry_count || entries[row.index].key != row.key ||
+			row.levels < 2 || row.levels + row.skipped != entries[row.index].levels ||
+			!(row.composite ? composite : plain))
+			continue;
+		entry = &entries[row.index];
+		composites += row.composite != 0;
+		before += entry->size;
+		after += row.size;
+		entry->width = row.width;
+		entry->height = row.height;
+		entry->levels = row.levels;
+		entry->offset = row.offset;
+		entry->size = row.size;
+		applied++;
+	}
+	platform_log("textures: texfit: %u of %u textures from the finest level sampled (%u composite or glow), %u KB of %u KB (%u KB less)",
+		applied, table[1], composites, after / 1024, before / 1024, (before - after) / 1024);
+}
+
 void psp_tex_map_opened(const char *name)
 {
 	char path[128];
@@ -1296,6 +1366,8 @@ void psp_tex_map_opened(const char *name)
 	last_frame = line_calloc(header[1], sizeof(unsigned int));
 	free(census);
 	census = psp_keep("texcensus") ? calloc(header[1], sizeof(struct tex_census)) : NULL;
+	free(texlod_seen);
+	texlod_seen = psp_keep_number("texlod", 0) > 0 ? calloc((header[1] + 3) / 4, 1) : NULL;
 	resident_in = calloc(header[1], 1);
 	hud_pinned = calloc(header[1], 1);
 	bind_counts = line_calloc(header[1], sizeof(unsigned short));
@@ -1435,6 +1507,7 @@ void psp_tex_map_opened(const char *name)
 	if (angle_tint_count)
 		platform_log("textures: tints by angle for %d shaders%s", angle_tint_count,
 			psp_keep("noangletint") ? " (noangletint: the middle angle's)" : "");
+	texfit_apply(file);
 	platform_log("textures: %s, %d textures; caches %d KB of VRAM and %d KB of RAM", path, entry_count,
 		(VRAM_CACHE_END - VRAM_CACHE_START) / 1024, (int)(arenas[1].end - arenas[1].start) / 1024);
 	{
@@ -1704,6 +1777,86 @@ static char const *census_name(int index)
 		if (other != index && !(entries[other].key & 3u) && entries[other].offset == entries[index].offset)
 			name = psp_bitmap_tag_name((void const *)entries[other].key);
 	return name ? name : "?";
+}
+
+/* "texlodN" (TEXFIT1, an emulator test): which mip levels the GE samples,
+per texture. The emulator can't tell the game's textures apart (they move
+between addresses as the caches turn over), so each bind numbers its
+texture with a NOP the GE ignores: 0xA5 in bits 16-23, the pack index below
+(0xFFFF for a texture bound outside the pack's binds). Every N frames
+another NOP (0xA6, the window's number) has the patched emulator print
+which levels each numbered texture was sampled at in those frames
+(halo-local.patch item 22: TEXLOD lines). Each texture's first bind in a map
+logs its number, key, name and the bytes each level takes, so a tool can
+price the textures with only the levels sampled loaded. On the PSP the NOPs
+cost a command each and tell nothing: emulator runs only */
+static int texlod_frames = -1;
+static unsigned int texlod_window = 0, texlod_window_due = 0;
+
+/* texlod_seen: two bits a texture, bound (set by the bind) and logged */
+static void texlod_mark(int index)
+{
+	if (texlod_window_due)
+	{
+		sceGuSendCommandi(0, 0xA60000 | (texlod_window_due & 0xFFFFu));
+		texlod_window_due = 0;
+	}
+	sceGuSendCommandi(0, 0xA50000 | (index >= 0 && index < 0xFFFF ? (unsigned int)index : 0xFFFFu));
+	/* logged at the frame's end, on the main CPU (the Media Engine's replay
+	binds most textures, and the log is a system call) */
+	if (index >= 0 && texlod_seen)
+		texlod_seen[index / 4] |= (unsigned char)(1u << (index % 4 * 2));
+}
+
+static void texlod_log(int index)
+{
+	struct pack_entry const *e;
+	unsigned int width, height, level, bytes[8];
+
+	e = &entries[index];
+	width = e->width;
+	height = e->height;
+	for (level = 0; level < 8; level++)
+	{
+		unsigned int row = e->psm == GU_PSM_T4 ? (width + 1) / 2 : width * TEXEL_BYTES(e);
+
+		row = ((row < 16 ? 16 : row) + 15) & ~15u;
+		bytes[level] = level < e->levels ? row * ((height + 7) & ~7u) : 0;
+		width = width > 1 ? width / 2 : 1;
+		height = height > 1 ? height / 2 : 1;
+	}
+	platform_log("textures: texlod: texture %d key %08x %ux%u levels %u palette %u bytes %u %u %u %u %u %u %u %u size %u %s",
+		index, e->key, e->width, e->height, e->levels,
+		DIRECT(e) ? 0 : (e->clut == GU_PSM_8888 ? 4 : 2) * (e->psm == GU_PSM_T4 ? 16 : 256),
+		bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7], alignment(e->size), census_name(index));
+}
+
+static int texlod_on(void)
+{
+	if (texlod_frames < 0)
+		texlod_frames = psp_keep_number("texlod", 0);
+	return texlod_frames > 0;
+}
+
+/* at a frame's end, every N frames: the window closes at the next frame's
+first bind (the frame's list is closed by now) */
+static void texlod_frame_end(unsigned int frame_number)
+{
+	int index;
+
+	if (!texlod_on())
+		return;
+	for (index = 0; texlod_seen && index < entry_count; index++)
+		if ((texlod_seen[index / 4] >> (index % 4 * 2) & 3u) == 1u)
+		{
+			texlod_seen[index / 4] |= (unsigned char)(2u << (index % 4 * 2));
+			texlod_log(index);
+		}
+	if (frame_number % (unsigned int)texlod_frames)
+		return;
+	texlod_window_due = ++texlod_window & 0xFFFFu;
+	platform_log("textures: texlod: window %u ends at game time %ld (frame %u)", texlod_window & 0xFFFFu,
+		psp_game_time_peek(), frame_number);
 }
 
 static void census_report(void)
@@ -2255,6 +2408,8 @@ void __wrap_sceGuTexImage(int mipmap, int width, int height, int tbw, const void
 	memo_key = 0;
 	if (ME_MEMO_HERE())
 		tex_me_memo.key = 0;
+	if (mipmap == 0 && texlod_frames > 0)
+		sceGuSendCommandi(0, 0xA5FFFF); /* "texlod": not one of the pack's */
 	__real_sceGuTexImage(mipmap, width, height, tbw, tbp);
 }
 void __wrap_sceGuTexMode(int tpsm, int maxmips, int mc, int swizzle)
@@ -2552,6 +2707,8 @@ static inline __attribute__((always_inline)) int tex_bind(unsigned int key, int 
 	psp_tex_binds_sent++;
 	if (__builtin_expect(psp_tex_reads_on, 0))
 		tex_reads_note(index, address, entry->size, palette_bytes);
+	if (texlod_on())
+		texlod_mark(index);
 	if (bind_blocks_on < 0)
 	{
 		bind_blocks_on = psp_keep("bindblocks");
@@ -3542,6 +3699,8 @@ void psp_tex_frame_end(void)
 		psp_tex_light_report();
 	if (entries && frame % 300 == 0)
 		census_report();
+	if (entries)
+		texlod_frame_end(frame);
 	if (entries && frame % 300 == 0 && bind_blocks_on > 0)
 	{
 		platform_log("textures: bindblocks: %lu binds a frame CALLed a ready block, %lu blocks made a frame, %lu times every slot in use (last 300 frames)",

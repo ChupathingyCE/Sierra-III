@@ -32,7 +32,7 @@ Largest first, by the map where each is largest.
 - model vertex buffers in the GE's form (PRECONVERT; B8 closed);
 - the level's vertices slimmed (LVLSLIM, proved);
 - the collision BSP depth-first (BSPDFS: exact, even on the PSP, shelved);
-- textures from the finest level the GE samples (TEXFIT1, catalogued);
+- textures from the finest level the GE samples (TEXFIT1, keep word `texfit`, off by default: plain entries; TEXFIT1b, keep word `texfitb`: the composite and glow entries, key & 3, which nothing on the CPU reads; lightmaps under their own key stay whole, since object lighting reads their top level). The bake lists both slices in one TFT1 table, so one pack prices each; the trims are in the lab's findings (levers.tsv) [D];
 - polygon reduction (SSPR, under the bar).
 
 ## What it says

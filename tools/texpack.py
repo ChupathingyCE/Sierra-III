@@ -2209,10 +2209,129 @@ def standins(entries):
     return bytes(out)
 
 
+def texfit_held(e):
+    """why a texture can't be loaded from a finer level on (texfit), or None.
+    Paletted only; no change mask or CPU reads (they index the top level);
+    and no lightmap under its own key: object lighting (psp_tex_light_texel)
+    takes the colour under an object from that key's top level on the CPU,
+    so a trimmed lightmap lights objects from coarser texels. A lightmap's
+    whole copy (key | 1, drawn for its seams) has no such reader"""
+    if e['psm'] not in (4, 5):
+        return 'direct colour'
+    if e.get('flags', 0) & (8 | 16):
+        return 'change mask or CPU reads'
+    if e.get('cls') == 'lightmap' and not e['key'] & 3:
+        return 'lightmap (object lighting reads its top level)'
+    if e['levels'] < 3:
+        return 'under 3 levels'
+    return None
+
+
+def texfit_trimmable(e):
+    """the bytes before each level when a texture can be loaded from a finer
+    level on (texfit, texfit_held), its data exactly its palette and levels
+    (no reflection mask after them); else None. A composite or glow entry
+    (key & 3: a base map with its detail map or bump relief baked in, a
+    lightmap kept whole, a see-through composite, a glow map) is drawn only
+    by the GE, so it trims like any other; its row is marked for its own
+    keep word (texfitb)"""
+    if texfit_held(e):
+        return None
+    palette = (4 if e['clut'] == 3 else 2) * (16 if e['psm'] == 4 else 256)
+    starts, at, w, h = [], palette, e['w'], e['h']
+    for _ in range(e['levels']):
+        starts.append(at)
+        row, rows = level_bytes(w, h, 4 if e['psm'] == 4 else 8)
+        at += row * rows
+        w, h = max(1, w // 2), max(1, h // 2)
+    if at != len(e['data']):
+        return None
+    return palette, starts
+
+
+def texfit_table(entries, census, at):
+    """TEXFIT1 (keep word texfit): each texture the census never saw sampled
+    at its top level written again from the finest level it was sampled at,
+    after the pack's data, with the 'TFT1' table listing them and an 8-byte
+    trailer ('TFE1', the table's offset) at the file's end. The census file
+    has a line 'key finest' per texture (hex key, the finest level sampled
+    anywhere on the map's runs); a texture missing from it stays whole.
+    Two levels are always kept, so the GE's filter stays a mip filter"""
+    finest = {}
+    with open(census) as f:
+        for line in f:
+            p = line.split()
+            if len(p) == 2 and not line.startswith('#'):
+                finest[int(p[0], 16)] = int(p[1])
+    blob, rows, whole, kept = bytearray(), [], 0, 0
+    while (at + len(blob)) % 16:
+        blob += b'\0'
+    # what the census asked for and what each eligibility rule held back,
+    # in textures and KB (sums only: the bake's log names no texture)
+    held = {}
+    # rows and bytes left out, plain [0] and composite or glow [1]
+    slices = [[0, 0], [0, 0]]
+
+    def hold(reason, e, k):
+        bits = {4: 4, 5: 8, 3: 32}.get(e['psm'], 16)
+        w, h, lost = e['w'], e['h'], 0
+        for _ in range(min(k, e['levels'])):
+            row, rows = level_bytes(w, h, bits)
+            lost += row * rows
+            w, h = max(1, w // 2), max(1, h // 2)
+        c = held.setdefault(reason, [0, 0])
+        c[0] += 1
+        c[1] += lost
+
+    for index, e in enumerate(entries):
+        k = finest.get(e['key'], 0)
+        if k <= 0:
+            continue
+        cut = texfit_trimmable(e)
+        if cut is None:
+            hold(texfit_held(e) or 'data past its levels', e, k)
+            continue
+        if k > e['levels'] - 2:
+            hold('2 levels kept', e, k)
+            hold('2 levels kept (allowed back)', e, max(0, e['levels'] - 2))
+        k = min(k, e['levels'] - 2)
+        if k <= 0:
+            continue
+        palette, starts = cut
+        data = e['data'][:palette] + e['data'][starts[k]:]
+        # the row's first pad byte: 1 for a composite or glow entry (texfitb)
+        composite = 1 if e['key'] & 3 else 0
+        rows.append(struct.pack('<IIHHBBBBII', index, e['key'], max(1, e['w'] >> k), max(1, e['h'] >> k),
+                                e['levels'] - k, k, composite, 0, at + len(blob), len(data)))
+        slices[composite][0] += 1
+        slices[composite][1] += len(e['data']) - len(data)
+        blob += data
+        while (at + len(blob)) % 16:
+            blob += b'\0'
+        whole += len(e['data'])
+        kept += len(data)
+    table = at + len(blob)
+    blob += struct.pack('<4sI', b'TFT1', len(rows)) + b''.join(rows)
+    blob += struct.pack('<4sI', b'TFE1', table)
+    print('texfit: %d textures from a finer level (census %d), %d KB of %d KB (%d KB less)' % (
+        len(rows), len(finest), kept // 1024, whole // 1024, (whole - kept) // 1024), file=sys.stderr)
+    print('texfit: plain %d textures, %d KB less (texfit); composite or glow %d textures, %d KB less (texfitb)' % (
+        slices[0][0], slices[0][1] // 1024, slices[1][0], slices[1][1] // 1024), file=sys.stderr)
+    if '2 levels kept' in held:
+        a, b = held['2 levels kept'], held.pop('2 levels kept (allowed back)')
+        held['2 levels kept'] = [a[0], a[1] - b[1]]
+    print('texfit: held back from the census (textures, KB of levels it never sampled): %s' % (
+        '; '.join('%s %d, %d KB' % (r, c[0], c[1] // 1024) for r, c in sorted(held.items(), key=lambda kv: -kv[1][1]))
+        or 'none'), file=sys.stderr)
+    return bytes(blob)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('map')
     ap.add_argument('out')
+    ap.add_argument('--texfit', default=None,
+                    help='TEXFIT1: a census file (hex key, finest level sampled) for the trimmed copies and their table')
     ap.add_argument('--limit', type=int, default=0)
     ap.add_argument('--lightmap-scale', type=int, default=1, help='asset track: lightmaps shrunk by this (2: half)')
     ap.add_argument('--lightmap-seam-whole', action='store_true',
@@ -2436,6 +2555,7 @@ def main():
             continue
         r['key'] = b['address']
         r['name'] = b['tag']
+        r['cls'] = cls
         # what the runtime reads out of this texture (design_b25_bake.md):
         # the HUD's meters (a unit's shield and health panels, a weapon's
         # ammunition: 'meter bitmap' fields) go through meter_palette as the
@@ -2450,6 +2570,7 @@ def main():
                 if v is not None:
                     v['key'] = b['address'] | 1
                     v['name'] = b['tag'] + ' (whole: its seams)'
+                    v['cls'] = cls
                     entries.append(v)
                     LIGHTMAPS_KEPT_WHOLE.append((b['tag'], b['index'], broken, worst, len(v['data'])))
         if b['address'] in reliefs and not NO_RELIEF:
@@ -2709,6 +2830,8 @@ def main():
     while len(out) < offset:
         out += b'\0'
     out += blob
+    if a.texfit:
+        out += texfit_table(entries, a.texfit, len(out))
     open(a.out, 'wb').write(out)
     print('quality %d: %s' % (QUALITY, 'palettes fitted in Oklab, texels by error diffusion, sizes by Lanczos'
                               if QUALITY >= 2 else 'as before (RGB fit, nearest entry, box)'), file=sys.stderr)
