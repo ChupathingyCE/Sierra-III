@@ -1,5 +1,7 @@
 # The redesign: the tick
 
+**The redesign's spine is now `redesign_plan.md`** (Sheepdog01, 2026-11-05): its frame budget, its parts (S, the tick by change rate; R, retained rendering; B, the memory map) and the rule for building them. T1-T7 below are its inputs and S's pieces.
+
 Sheepdog01, 2026-11-05 07:42: "we're working on a redesign, not patches." This page is the design's tick section: what binds the main CPU's tick, what can change that, and the order to build it in. It rests on the recon's ledgers (`redesign_recon.md`) and the cost map (`cpu_cost_map.md`), and it cites them rather than restating them. The fact sheet behind it is lab or-job 42038302650 (128 of 130 quotes checked).
 
 **The goals** (Sheepdog01, 2026-11-05 13:30, rewording 08:33's; even motion is the end goal):
