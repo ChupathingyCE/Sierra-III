@@ -3884,12 +3884,16 @@ static unsigned int gebusy_span(unsigned int a, unsigned int b, unsigned int c, 
 (psp_platform.c's psp_phase: 0 other, 1 tick, 2 drawing, 3 frame end): the
 last phase changes, each chunk's span shared among the phases it covered;
 [4] the part older than the ring holds. psp_phase writes, the GE's interrupt
-reads: a torn entry costs one chunk's split, and this is an instrument */
+reads: a torn entry costs one chunk's split, and this is an instrument.
+The tick's share is also kept by the chunk's kind (each chunk is one kind's):
+which kinds the GE runs while the tick runs, since the GE's vertex reads
+cost the tick's misses ~3x what its texture reads do (redesign_tick.md T4) */
 #define GE_PHASE_RING 256
 volatile int psp_ge_phase_ring_on = 0;
 static volatile unsigned int ge_phase_at[GE_PHASE_RING], ge_phase_head = 0;
 static volatile unsigned char ge_phase_is[GE_PHASE_RING];
 static PSP_MAIN_SIDE volatile unsigned long gebusy_phase_us[5];
+static PSP_MAIN_SIDE volatile unsigned long gebusy_tick_kind_us[KINDS];
 
 void psp_ge_phase_mark(int phase)
 {
@@ -3900,7 +3904,7 @@ void psp_ge_phase_mark(int phase)
 	ge_phase_head = h + 1;
 }
 
-static void gebusy_by_phase(unsigned int start, unsigned int now)
+static void gebusy_by_phase(unsigned int start, unsigned int now, int kind)
 {
 	unsigned int h = ge_phase_head, to = now, k;
 
@@ -3909,7 +3913,11 @@ static void gebusy_by_phase(unsigned int start, unsigned int now)
 		unsigned int i = (h - k) % GE_PHASE_RING, at = ge_phase_at[i], from = (int)(at - start) > 0 ? at : start;
 
 		if ((int)(to - from) > 0)
+		{
 			gebusy_phase_us[ge_phase_is[i]] += to - from;
+			if (ge_phase_is[i] == 1 && kind >= 0 && kind < KINDS)
+				gebusy_tick_kind_us[kind] += to - from;
+		}
 		if ((int)(at - start) <= 0)
 		{
 			to = start;
@@ -3936,7 +3944,7 @@ static void gebusy_add(unsigned int start, unsigned int now, int kind)
 			gebusy_kind_us[kind] += now - start;
 		if (gebusy_me_on)
 		{
-			gebusy_by_phase(start, now);
+			gebusy_by_phase(start, now, kind);
 			if (gebusy_waited_to)
 				gebusy_waited_us[gebusy_waited_which] += gebusy_span(start, now, gebusy_waited_from, gebusy_waited_to);
 			if (gebusy_wait_open)
@@ -4173,7 +4181,17 @@ static void gebusy_window(char *text, int size, unsigned long frames_in_window)
 		platform_log("gebusy2: the GE's busy time by the main CPU's phase, ms a frame: other %.1f, tick %.1f, drawing %.1f, frame end %.1f, before the ring %.1f",
 			gebusy_phase_us[0] / 1000.0 / n, gebusy_phase_us[1] / 1000.0 / n, gebusy_phase_us[2] / 1000.0 / n,
 			gebusy_phase_us[3] / 1000.0 / n, gebusy_phase_us[4] / 1000.0 / n);
+		{
+			char line[420];
+			int k, at = snprintf(line, sizeof(line), "gebusy2: the GE's busy time during the tick by kind, ms a frame:");
+
+			for (k = 0; k < KINDS && at < (int)sizeof(line) - 1; k++)
+				if (gebusy_tick_kind_us[k])
+					at += snprintf(line + at, sizeof(line) - at, " %s %.2f;", kind_names[k], gebusy_tick_kind_us[k] / 1000.0 / n);
+			platform_log("%s", line);
+		}
 		memset((void *)gebusy_phase_us, 0, sizeof(gebusy_phase_us));
+		memset((void *)gebusy_tick_kind_us, 0, sizeof(gebusy_tick_kind_us));
 		gebusy_me_chunks = gebusy_idle_us = 0;
 		gebusy_waited_us[0] = gebusy_waited_us[1] = 0;
 	}
