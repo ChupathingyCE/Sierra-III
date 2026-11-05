@@ -219,19 +219,20 @@ static void phase_account(int next)
 	sceKernelCpuResumeIntr(interrupts);
 }
 
-/* build 105: the bus-priority probe (psp_hardware_reference.md section 9.1).
+/* The bus-priority probe (psp_hardware_reference.md section 9.1).
 Read-only: the registers psdevwiki and uofw name in the DDR controller, the
-GE and its EDRAM, and the system controller, whose meaning nobody has
-documented. A value that differs between the GE idle (start-up) and busy
-(in play) marks a candidate for the arbiter's priority. The list lives here,
-not in the caller, so nothing else can be read through this call; registers
-known to act when read or written (the DDR flush, the hardware mutex, the
-soft interrupt) are left out */
+GE and the system controller, whose meaning nobody has documented. A value
+that differs between the GE idle (start-up) and busy (in play) marks a
+candidate for the arbiter's priority. The list lives here, not in the
+caller, so nothing else can be read through this call; registers known to
+act when read or written (the DDR flush, the hardware mutex, the soft
+interrupt) are left out. The GE's eDRAM block (0xBD5000xx) is left out too:
+read while the Media Engine runs, it can switch the PSP off (five
+shutdowns on the PSP-1000, docs/hw_capabilities.md section 6.4) */
 static const unsigned int bus_registers[] =
 {
 	0xBD000020, 0xBD000024, 0xBD00002C, 0xBD000030, 0xBD000034, 0xBD000038, 0xBD000040, 0xBD000044, /* DDR */
 	0xBD400004, 0xBD400104, 0xBD400300,                                                             /* GE */
-	0xBD500040, 0xBD500050, 0xBD500060, 0xBD500090, 0xBD5000A0,                                     /* EDRAM */
 	0xBC100040, 0xBC10004C, 0xBC100050,                                                             /* system */
 };
 #define BUS_REGISTERS (int)(sizeof(bus_registers) / sizeof(bus_registers[0]))
