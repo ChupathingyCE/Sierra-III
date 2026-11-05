@@ -1398,6 +1398,11 @@ struct replay_kind_times
 {
 	unsigned long long ticks[2][REPLAY_KINDS]; /* [0] main CPU, us; [1] ME, cycles */
 	unsigned int records[2][REPLAY_KINDS];
+	/* the longest single record of each kind: on the ME, audio and the ring
+	are served between records (and between the frame end's see-through
+	draws), so outside the frame's end the longest record is the longest the
+	audio slot can wait on the frame's job (B62) */
+	unsigned int worst[2][REPLAY_KINDS];
 	unsigned int runs[2];
 } __attribute__((aligned(64))); /* a line of its own: the ME writes it while the main CPU runs on */
 static struct replay_kind_times replay_kinds;
@@ -1438,9 +1443,11 @@ static inline unsigned int replay_clock(int me)
 /* the time since *mark to kind, on side's clock */
 static inline void replay_kinds_add(int side, int kind, unsigned int *mark)
 {
-	unsigned int now = replay_clock(side);
+	unsigned int now = replay_clock(side), spent = now - *mark;
 
-	replay_kinds.ticks[side][kind] += now - *mark;
+	replay_kinds.ticks[side][kind] += spent;
+	if (spent > replay_kinds.worst[side][kind])
+		replay_kinds.worst[side][kind] = spent;
 	*mark = now;
 }
 
@@ -1716,8 +1723,9 @@ static void replay_kinds_report(unsigned int frames)
 			if (us / frames < 1.0f)
 				break; /* the rest are under a microsecond a frame */
 			size = replay_kinds.records[side][best] ?
-				snprintf(entry, sizeof(entry), " %s %.0f (%.1f a frame, %.1f us each);", replay_kind_names[best] ? replay_kind_names[best] : "?",
-					us / frames, (float)replay_kinds.records[side][best] / frames, us / replay_kinds.records[side][best]) :
+				snprintf(entry, sizeof(entry), " %s %.0f (%.1f a frame, %.1f us each, worst %.0f);", replay_kind_names[best] ? replay_kind_names[best] : "?",
+					us / frames, (float)replay_kinds.records[side][best] / frames, us / replay_kinds.records[side][best],
+					(float)replay_kinds.worst[side][best] / rate) :
 				snprintf(entry, sizeof(entry), " %s %.0f;", replay_kind_names[best], us / frames);
 			if (size >= (int)sizeof(entry))
 				size = sizeof(entry) - 1;
