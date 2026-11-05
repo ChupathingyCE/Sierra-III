@@ -2692,12 +2692,13 @@ static struct check_band check_bands[4];
 static long long check_worst_ref = 1, check_worst_diff = 0;
 static unsigned long check_peak = 0, check_identical = 0, check_report_blocks = 0, check_approx_states = 0,
 	check_approx_skipped = 0;
-/* the filters' states, per channel, for the reference and the difference */
-static int check_low[2][OUTPUT_CHANNELS], check_mid[2][OUTPUT_CHANNELS];
+/* the filters' states, per channel, for the reference and the difference:
+two one-pole stages a corner, 12 dB an octave, so a tone lands in its band */
+static int check_low[2][OUTPUT_CHANNELS][2], check_mid[2][OUTPUT_CHANNELS][2];
 
 static void check_energy(const short *ref, const short *alt, unsigned long frames)
 {
-	/* a = 1 - exp(-2 pi f / 22,050), Q16: 300 Hz and 4 kHz */
+	/* a = 1 - exp(-2 pi f / 22,050), Q16: 300 Hz and 4 kHz a stage */
 	enum { LOW_A = 5370, MID_A = 44560 };
 	long long block_ref = 0, block_diff = 0;
 	unsigned long i, c;
@@ -2713,12 +2714,16 @@ static void check_energy(const short *ref, const short *alt, unsigned long frame
 			{
 				int part[4], b;
 
-				check_low[which][c] += (int)(((long long)(x[which] - check_low[which][c]) * LOW_A) >> 16);
-				check_mid[which][c] += (int)(((long long)(x[which] - check_mid[which][c]) * MID_A) >> 16);
+				int *low = check_low[which][c], *mid = check_mid[which][c];
+
+				low[0] += (int)(((long long)(x[which] - low[0]) * LOW_A) >> 16);
+				low[1] += (int)(((long long)(low[0] - low[1]) * LOW_A) >> 16);
+				mid[0] += (int)(((long long)(x[which] - mid[0]) * MID_A) >> 16);
+				mid[1] += (int)(((long long)(mid[0] - mid[1]) * MID_A) >> 16);
 				part[0] = x[which];
-				part[1] = check_low[which][c];
-				part[2] = check_mid[which][c] - check_low[which][c];
-				part[3] = x[which] - check_mid[which][c];
+				part[1] = low[1];
+				part[2] = mid[1] - low[1];
+				part[3] = x[which] - mid[1];
 				for (b = 0; b < 4; b++)
 				{
 					if (which)
@@ -2808,15 +2813,20 @@ static void audio_check_report(void)
 	static const char *const names[4] = { "all", "low", "mid", "high" };
 	char bands[160];
 	unsigned long b, used = 0;
+	long long full;
 
 	if (!audio_check || !check_report_blocks)
 		return;
 	for (b = 1; b < 4; b++)
 		used += (unsigned long)snprintf(bands + used, sizeof(bands) - used, "%s%s %.1f", b > 1 ? ", " : "", names[b],
 			(double)check_db(check_bands[b].ref, check_bands[b].diff));
-	platform_log("audio: audiocheck (approximate paths 0x%x): %lu blocks, %lu identical, %lu over %d voices not checked; the difference %.1f dB below the mix (bands: %s; 999: none), its peak %lu of 32,767, the worst block %.1f dB below its own mix; the voices' states after differed in %lu",
+	/* against the mix, and against full scale: in a quiet stretch a tiny
+	error is close to the mix and still far under hearing */
+	full = (long long)check_report_blocks * MIX_FRAMES * OUTPUT_CHANNELS * 32767LL * 32767LL;
+	platform_log("audio: audiocheck (approximate paths 0x%x): %lu blocks, %lu identical, %lu over %d voices not checked; the difference %.1f dB below the mix (bands: %s; 999: none) and %.1f dB below full scale (the mix %.1f), its peak %lu of 32,767, the worst block %.1f dB below its own mix; the voices' states after differed in %lu",
 		audio_approx, check_report_blocks, check_identical, check_approx_skipped, CHECK_VOICES,
-		(double)check_db(check_bands[0].ref, check_bands[0].diff), bands, check_peak,
+		(double)check_db(check_bands[0].ref, check_bands[0].diff), bands,
+		(double)check_db(full, check_bands[0].diff), (double)check_db(full, check_bands[0].ref), check_peak,
 		(double)check_db(check_worst_ref, check_worst_diff), check_approx_states);
 	memset(check_bands, 0, sizeof(check_bands));
 	check_worst_ref = 1;
