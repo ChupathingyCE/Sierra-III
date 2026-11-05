@@ -219,21 +219,18 @@ static void phase_account(int next)
 	sceKernelCpuResumeIntr(interrupts);
 }
 
-/* The bus-priority probe (psp_hardware_reference.md section 9.1).
-Read-only: the registers psdevwiki and uofw name in the DDR controller, the
-GE and the system controller, whose meaning nobody has documented. A value
-that differs between the GE idle (start-up) and busy (in play) marks a
-candidate for the arbiter's priority. The list lives here, not in the
-caller, so nothing else can be read through this call; registers known to
-act when read or written (the DDR flush, the hardware mutex, the soft
-interrupt) are left out. The GE's eDRAM block (0xBD5000xx) is left out too:
-read while the Media Engine runs, it can switch the PSP off (five
-shutdowns on the PSP-1000, docs/hw_capabilities.md section 6.4) */
+/* The bus probe: the system controller's clock and reset words, read at
+start-up and in play (hwprofile, benchrun). It once read the DDR controller,
+the GE and the GE's eDRAM block too, looking for a bus-priority setting;
+the register snapshot bench settled that (none moves with load) and showed
+that reading the GE's register space (0xBD4xxxxx, 0xBD5xxxxx) while the
+Media Engine runs can switch the PSP off (docs/hw_capabilities.md section
+6.4), so only the words read safely in every condition stay. The list
+lives here, not in the caller, so nothing else can be read through this
+call */
 static const unsigned int bus_registers[] =
 {
-	0xBD000020, 0xBD000024, 0xBD00002C, 0xBD000030, 0xBD000034, 0xBD000038, 0xBD000040, 0xBD000044, /* DDR */
-	0xBD400004, 0xBD400104, 0xBD400300,                                                             /* GE */
-	0xBC100040, 0xBC10004C, 0xBC100050,                                                             /* system */
+	0xBC100040, 0xBC10004C, 0xBC100050, /* system: reset, clock enables, bus clocks */
 };
 #define BUS_REGISTERS (int)(sizeof(bus_registers) / sizeof(bus_registers[0]))
 
