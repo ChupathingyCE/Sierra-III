@@ -11231,6 +11231,14 @@ their direction) and puts shared corners of parts with one step on the same
 lattice point. First-person parts, the sky and see-through parts stay in
 floats: the first are seen closest, the last are read on the CPU */
 static int model14 = -1;
+/* "skinwoff": every bending batch drawn at its part's slot count, as before.
+By default each draws at its own highest slot in use: the GE blends every
+weight a draw declares, zeros included, at ~60 ns a weight a vertex, and the
+slots past a batch's highest hold no node of its vertices, so their weights
+are zero. 1-4 and 5-8 weights share a record layout (the texture coordinate
+starts 4 or 8 bytes in), so a batch keeps its part's class. Read on the main
+CPU before any replay, as model14 */
+static int skinw_off = -1;
 /* the step's exponent + 128 a converted block (0: float records) */
 static unsigned char converted_step[CONVERTED_BUFFERS];
 /* set by the caller before model_convert: the part must stay in floats */
@@ -11341,6 +11349,11 @@ void psp_ge_model_begin(const float *node_matrices, int node_matrix_count, float
 	{
 		model14 = psp_keep("model14");
 		sceKernelDcacheWritebackRange(&model14, sizeof(model14));
+	}
+	if (skinw_off < 0 && !psp_on_me())
+	{
+		skinw_off = psp_keep("skinwoff");
+		sceKernelDcacheWritebackRange(&skinw_off, sizeof(skinw_off));
 	}
 	if (DEFER_RECORDING() &&
 		defer_model_begin(node_matrices, node_matrix_count, u_scale, v_scale, ambient, light_count, light0, light1))
@@ -15090,6 +15103,7 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 			struct skin_batch *b = &skin->batches[batch];
 			const unsigned short *draw = b->indices;
 			int draw_count = b->index_count;
+			int weights = skin->weights;
 			/* each slot's matrix as the depth it gives a point: its rows
 			dotted with the camera's forward direction (build 41) */
 			/* static: 16-byte aligned for the VFPU's quad loads (build 106);
@@ -15158,6 +15172,14 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 			}
 			slot_us += probe_clock() - slot_start;
 			slot_batches++;
+			if (skinw_off == 0)
+			{
+				int top = skin->weights;
+
+				while (top > 1 && b->node[top - 1] == 0xFF)
+					top--;
+				weights = skin->weights <= 4 || top >= 5 ? top : 5;
+			}
 			if (cursor)
 			{
 				/* the sub-list ends with a return; this pass calls it too */
@@ -15180,7 +15202,7 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 				if (near_memo[batch].cut_count)
 				{
 					if (draw_count)
-						sceGumDrawArray(GU_TRIANGLES, GU_WEIGHTS(skin->weights) | GU_WEIGHT_8BIT | GU_TEXTURE_32BITF |
+						sceGumDrawArray(GU_TRIANGLES, GU_WEIGHTS(weights) | GU_WEIGHT_8BIT | GU_TEXTURE_32BITF |
 							GU_NORMAL_8BIT | GU_VERTEX_32BITF | GU_INDEX_16BIT | GU_TRANSFORM_3D, draw_count, draw,
 							vertices);
 					sceGumDrawArray(GU_TRIANGLES, GU_TEXTURE_32BITF | GU_NORMAL_8BIT | GU_VERTEX_32BITF | GU_TRANSFORM_3D,
@@ -15532,7 +15554,7 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 							memcpy(record + 12, &corner[7], 12);
 						}
 						if (draw_count)
-							sceGumDrawArray(GU_TRIANGLES, GU_WEIGHTS(skin->weights) | GU_WEIGHT_8BIT | GU_TEXTURE_32BITF |
+							sceGumDrawArray(GU_TRIANGLES, GU_WEIGHTS(weights) | GU_WEIGHT_8BIT | GU_TEXTURE_32BITF |
 								GU_NORMAL_8BIT | GU_VERTEX_32BITF | GU_INDEX_16BIT | GU_TRANSFORM_3D, draw_count, draw,
 								vertices);
 						sceGumDrawArray(GU_TRIANGLES, GU_TEXTURE_32BITF | GU_NORMAL_8BIT | GU_VERTEX_32BITF | GU_TRANSFORM_3D,
@@ -15558,7 +15580,7 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 				if (!draw_count)
 					continue;
 			}
-			sceGumDrawArray(GU_TRIANGLES, GU_WEIGHTS(skin->weights) | GU_WEIGHT_8BIT | GU_TEXTURE_32BITF |
+			sceGumDrawArray(GU_TRIANGLES, GU_WEIGHTS(weights) | GU_WEIGHT_8BIT | GU_TEXTURE_32BITF |
 				GU_NORMAL_8BIT | GU_VERTEX_32BITF | GU_INDEX_16BIT | GU_TRANSFORM_3D, draw_count, draw,
 				vertices);
 		}
