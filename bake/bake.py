@@ -135,6 +135,11 @@ LEVEL_SLIM = False
 # since converting while drawing dropped a frame at b30's start (B8);
 # --no-preconvert leaves it out
 PRECONVERT = True
+# --skin-variants: the baked model buffers also with their skinning plans made
+# otherwise (first-fit slots, strips where shorter), each a region of its own
+# the keep words skinw2 and skinstrip choose (tools/modelconvert.py); the
+# geometry pack grows by about three times its baked buffers
+SKIN_VARIANTS = False
 ATRACDENC = os.path.join(HERE, 'atracdenc')    # the bundled encoder (else atracdenc on PATH)
 MUSICENC = os.path.join(HERE, 'musicenc')      # the music path's Vorbis encoder (bundle/musicenc.c)
 sys.path.insert(0, HERE)
@@ -465,6 +470,8 @@ def tool_env():
     # spinning). The palettes' sums are the same on one thread as on many
     for name in ('OPENBLAS_NUM_THREADS', 'OMP_NUM_THREADS', 'MKL_NUM_THREADS', 'VECLIB_MAXIMUM_THREADS'):
         env[name] = '1'
+    if SKIN_VARIANTS:
+        env['MODELCONVERT_VARIANTS'] = '1'
     return env
 
 
@@ -796,6 +803,9 @@ def main():
                          'draws (exact; the geometry pack grows by about the model vertices); the default')
     ap.add_argument('--no-preconvert', dest='preconvert', action='store_false',
                     help='leave the conversions to the port at run time (smaller packs; b30 drops a frame at its start)')
+    ap.add_argument('--skin-variants', action='store_true',
+                    help="the baked model buffers also with first-fit slots and strips (keep words skinw2, "
+                         'skinstrip), each as a region of its own; the default region is as without it')
     ap.add_argument('--slim-level', action='store_true',
                     help="the level's rendered vertices without the binormal and tangent the port never reads "
                          '(24 bytes a vertex in the geometry pack instead of 32; exact)')
@@ -835,8 +845,9 @@ def main():
     a = ap.parse_args()
     if a.sound == 'none':
         a.sound = ''
-    global COMPARE_OLD, PROFILE, COMPARE_PALETTES, LEVEL_SLIM, ALPHA_AUDIT, PRECONVERT
+    global COMPARE_OLD, PROFILE, COMPARE_PALETTES, LEVEL_SLIM, ALPHA_AUDIT, PRECONVERT, SKIN_VARIANTS
     LEVEL_SLIM = a.slim_level
+    SKIN_VARIANTS = a.skin_variants
     PRECONVERT = a.preconvert
     COMPARE_OLD, PROFILE, COMPARE_PALETTES = a.compare_old, a.profile, a.compare_palettes
     ALPHA_AUDIT = a.alpha_audit
