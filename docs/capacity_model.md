@@ -129,3 +129,54 @@ A projected pass is a compromise (a look change) unless the textures reproduce H
 - ~~**The GE's per-vertex price.**~~ **Answered [M, PSP-3000, lab sierra-hw 41914079168, tock161 3a104119, d20 hands off, `- | nopointlights` x2]:** the GE's busy time is 38.8 / 38.8 ms a frame with the models' two point lights and 38.8 / 38.7 without, from game time 1,800. The frame moves -0.7 to -1.0% in the opening and flight (the flight's -0.8 ms is real, mostly the tick's -0.3 ms of the dynamic preparation), and the heavy second half is in the noise. So the GE's hardware lighting costs it nothing measurable per vertex at d20's load. A GE spot or attenuated light on models would be priced by its look, not by GE time.
 - ~~**Is the copy shortage the emulator's, or tock161's?**~~ The emulator's (B58 in the lab's bugs.md). Its simulated sound tier takes 656 KB of heap that the PSP keeps in eDRAM: the heap after d20's load is 5,782 KB taken in the emulator, 5,132 KB on the PSP. The fix (the ME's eDRAM mapped in the lab's emulator) is in progress, 2026-11-04.
 - The world pass's ME time on today's build: LM's 15.1 ms (d20 swamp) is from an earlier build.
+
+## Ledger 2: the jobs' fixed and per-entity costs (started 2026-11-04)
+
+The master, 2026-11-04 17:45: each job's fixed cost a frame plus its cost per entity, the emulator's censuses first, then a few PSP runs with the counts varied, and first answers to the capacity questions. Branch Sierra-III `recon/capacity2` (cbf0b5e = `recon/b58-edram` b5c3b403, the emulator's B58 fix, plus the recon-only keep word `aiplaceallN`: every encounter of the level placed at once, by its own `ai_place`, at N s). Rows in the lab's `findings/measurements.tsv`, metrics `capacity_*`. The price is read against `cpu_cost_map.md` §1 (the tick is 37–58% of the heavy maps' clock) and its §4 lines "Doing less work" and "Work moved to the ME".
+
+**The budget.** 30/30 is one tick and one frame in 33.3 ms on each unit: the main CPU (tick + drawing + the rest), the ME (the AI job, audio, the replay, visibility) and the GE.
+
+### 1. The runs
+
+- **The census** [E]: lab sierra-batch 41937949354 (`cap2b`): b30, a30, c20 routes and d20's swamp; a50, b40 and c10 hands off, each without and with `aiplaceall30`. Tick steps (`PSP_TICK_STEPS=1`, `stepsall`, `timerson`) grouped into jobs; counts from `workcensus` (objects updated by type, actors, collision vectors, node matrices) and `objcost` (per type and definition). Counts are exact; times are the emulator's JIT ms. (41937378999 ran the same without `timerson`: counts only. Note: every build starts with `notimers`, so a step census needs `timerson`.)
+- **Placing every encounter steps the awake count only where the encounters are near.** On a50 and b40 the actors updated a tick don't move (28.0 and 10.0 on both sides): encounters placed away from the player sleep, and a sleeping actor costs nothing measurable a tick [E]. On c10 the count goes from 0 to 14.1 actors a tick (bipeds 2 → 9, weapons 1 → 7, collision vectors 7 → 16). So c10 is the stepped stretch.
+- **The PSP pair** [M]: sierra-hw 41941016273, PSP-1000, the clean build (no recon switches, timers off, AIME and the replay on the ME as shipped), c10 hands off to game time 4,500, `- | aiplaceall30`, one run a side. Read from game time 1,800 (cumulative budget lines differenced).
+- **An instrumented pair first** (sierra-hw 41938919389, PSP-3000, tick steps and `timerson`): **the ME faulted at start on both sides** (Cause code 8, EPC 08af9cc0), so the AI, the replay, point physics and audio all ran on the main CPU, and its timers cost ~1.9× the clean tick. Its per-job split, its particle and its voice figures are used below as upper bounds for the main CPU; its totals are not. That the fault comes from the step timers' clock calls in ME-run code is a guess [U]; it's unreproduced in the clean build.
+
+### 2. Per entity: the table
+
+| Entity | Main CPU, a tick | Main CPU, drawing a frame | ME | Fixed part | Source |
+|---|---|---|---|---|---|
+| **Actor in play** (thinking, its biped and weapon updated and posed, collision, perception refreshes, props, lights) | **0.71 ms** [M] | ~0.7–1.0 ms when on screen [U on M] | its thinking: ~0.12 ms a frame [U on M] | AI ~3.3 emu ms a tick with no actor [E] | PSP-1000 pair: tick 17.55 → 27.61 ms for +14.1 actors; drawing unchanged (off screen). Drawn: b30 w139 `objcost` 0.9–1.3 ms a drawn biped (instrumented, before drawpart's −8–12%). ME: c20's AI job 3.5 ms a frame for ~29 actors (`aime_schedule_read`) |
+| ↳ of it by job | AI's main-CPU side ~35%, biped/unit ~28%, posing ~20%, objects ~14%, lights ~4% [U on M × E] | | | | cap2b c10's job shares on the same pair |
+| **Asleep actor** (placed away from the player) | ~0 [E] | 0 | 0 | | a50, b40: counts unchanged |
+| **Biped update** alone (`objcost`, per update) | 208–1,437 emu µs, median ~450 → ~1.3 ms [U on E] | | | | cap2b; the factor 2.9 below. d20's Flood 1,437 |
+| **Vehicle, driven or flying** | 3.4–3.9 ms driven Warthog; 4.8–6.3 ms flying Pelican; 1.7–1.9 ms parked awake; 0.013–0.020 asleep [M, w139] | 0.5–2.6 ms a vehicle [M, w139 `objcost`] | | | fixsim-hw1 39395866364; today: 765–3,161 emu µs an update (cap2b) |
+| **Projectile** | 44–109 emu µs an update → 0.13–0.32 ms [U on E] | ~0 | | | cap2b b30, b40, a30 |
+| **Weapon** (lying or held) | 3–38 emu µs → ≤ 0.1 ms [U on E] | | | | cap2b |
+| **Particle** (alive) | **14.6 µs a frame** (28.6 an update) + 158 µs fixed [M, upper bound: point physics on the main CPU] | | on the ME by default (point physics) | 158 µs | 41938919389, 11 windows, 4–92 alive |
+| **Sound voice** | | | **0.28 ms a frame** (192 µs a 23.2 ms block) + 0.19 fixed [M, mixed on the main CPU; the ME's own split agrees: 57 cycles a voice-frame mixing, decoding beside it] | 129 µs a block | 41938919389, 81 blocks, 1–13 voices; `audio_split_b30_flight` |
+| **Light** | ledger 2's lighting section above | | | | |
+
+**The exchange rate.** The emulator's tick grows 3.5 JIT ms for c10's 14.1 actors where the PSP-1000's grows 10.06 ms: **×2.9** reads the emulator's per-entity slopes as PSP-1000 ms on today's build [U]. Each [U on E] figure above uses it.
+
+**What's fixed, what scales.** With no actor awake, c10's tick is still 17.5 ms on the PSP-1000 and its drawing 28 ms: 237 scenery updates a tick (~32 emu µs each, ~7.5 emu ms a tick) and 221 node-matrix calls are the map's own load, not its fighters'. Each map's fixed load is its scenery, its BSP and its effects; the census rows give it per map.
+
+### 3. First answers to the four questions
+
+All against 33.3 ms on the main CPU (it binds first: the ME carries the thinking at ~0.12 ms an actor and voices at 0.28 ms). An actor in play costs ~0.71 ms a tick plus ~0.7–1.0 ms when drawn: **~1.5 ms a frame on screen, ~0.7 off screen**.
+
+| Question | First answer | Weakest assumption |
+|---|---|---|
+| **Firefight waves** | On an arena whose own load is a light map's (tick ~3.6 ms, as b40's 10.7 ms less its 10 actors; world drawing ~15 ms [U]), ~14 ms is left: **~9 actors on screen, or ~20 with half off screen**, before any vehicle (one driven vehicle ≈ 5 actors). On c10's own ground (46 ms before any actor) none fit at 30/30. | The arena's world drawing (no light map's drawing split is measured on today's build) and the drawn biped's ~0.8 ms (w139, instrumented) |
+| **Co-op 4 / 16** | A remote player is a biped updated, posed and drawn without thinking: ~0.46 ms a tick + ~0.8 drawn ≈ **1.3 ms**. 4 players add ~4 ms (12% of the budget); 16 add ~20 ms (60%). The campaign's heavy maps are already over 33 ms alone (b30's tick 35.5 ms, tock160 ladder), so co-op 4 waits on the campaign's own cuts; 16 needs remote players far cheaper than an AI biped. | The network's own cost a player (unmeasured) and the remote biped priced as the AI biped's non-thinking share (65%, emulator shares) |
+| **A 128-player client** | 127 remote bipeds at ~0.46 ms a tick each is ~58 ms a tick: **not at today's per-biped cost**. It fits only if far players cost tens of µs (position only: no posing, physics or collision) and drawn players are capped near ~10 (13 ms). The memory side is unchecked: today's actor pool is 128 (R4) and the multiplayer build's 8. | That a far remote player can skip posing and physics and still be correct for the server (`multiplayer_recon.md`: the client's floats are corrected) |
+| **Custom content** | Room is 33.3 ms less the map's own load: today only the light maps (b40, c40, d40: 27–30 fps on tock160's ladder) leave any. 1 ms buys **~1.4 actors off screen or ~0.7 on screen, ~70 particles, ~3.5 voices (ME), ~3–8 projectiles, or a fifth of a driven vehicle**. | The vehicles' figures are w139's; UVB and later levers may have cut them |
+
+### 4. Still open
+
+- **The drawn actor on today's build.** The clean pair placed c10's actors off screen. A pair with them in view (an encounter placed at the player, the `camoplace60` way) prices the ~0.8 ms.
+- **The ME's AI cost per actor.** The clean log has no ME busy time for the job; `mebusN` or the AI job's own timing would give it.
+- **Vehicles, projectiles on today's build** [M]: the w139 figures predate UVB and the tick passes.
+- **The ME fault under `timerson`** (code 8, EPC 08af9cc0): a recon instrument that stops the ME can't price ME work. Find the call, or keep tick-step PSP runs to `aimeoff`-style sides and say so.
+- The fixed loads per map on the PSP: one budget run a map gives them (the ladder's lines hold tick and drawing; the job split is the emulator's).
