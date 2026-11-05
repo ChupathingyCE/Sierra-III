@@ -15,6 +15,7 @@ Sheepdog01: "We take what we can get." Headroom isn't a fixed margin. It's knowi
 - **Co-op:** can the PSP run the campaign with 4 players, or 16?
 - **Multiplayer as a client:** what would 128 players take?
 - **Custom campaigns and expansions:** what room is left for new content?
+- **Hosting co-op for other PSPs** (Sheepdog01 2026-11-04 22:59: mostly a client today; the end goal is PSP-hosted games for other PSPs, ideally co-op): how many players a PSP host can carry per map class, with the whole simulation (AI included) on the host. When PSPs host PSPs, the exactness boundary is ours: what only the host computes need only be what it sends (a protocol mode of its own, Sheepdog01's call).
 
 So the design is judged by the **capacity it leaves**: for each kind of thing the game holds (an actor thinking, a biped posed, a vehicle, a projectile, a particle, a light, a sound voice, a remote player), what it costs each unit and memory, and how many fit once the campaign's own load is carried at 30/30.
 
@@ -34,6 +35,7 @@ Each ledger is a page in `docs/` (or the lab's findings, for numbers), kept curr
 | 8 | **Memory per entity** (in `capacity_model.md`) | Beside ledger 2's time, each entity's memory: pool slots (actors, props, objects, particles, lights), heap and tag room, so the capacity answers are bounded by both | `PSP_POOLS_XBOX` runs, the pools' peaks, the heap lines | A few runs with counts varied (with ledger 2's). **Done 11-04 for tock162** (`capacity_model.md`, ledger 8): no entity takes heap of its own; an actor in view ~9.2 KB of game state (5.2 of it the objects pool), a Warthog ~4.8, a projectile ~0.7, a particle 112 B, a light ~148 B, a voice 0 new; c20's room holds ~17 more actors in view, the other maps 33-65 |
 | 9 | **Hazards and rules** (`hw_capabilities.md` §6.5) | What the hardware punishes and the rules our code keeps: no kernel code at a user PC (kcall seg 0 switches the PSP off), the cache and DMA rules, unaligned loads, the GE's clock-gated blocks. Every stage of the build is checked against it | The benches (2026-11-04's regsnap runs 1-18), `psp_hardware_reference.md` | As each hazard is found |
 | 10 | **From the emulator to the PSP** (`emu_to_psp.md`) | One table of how emulator and cache-model figures carry over: the cache model undersizes cache work 2-3x (X10), the JIT ran ~2.9x faster for a capacity change (capacity2), what the strict interpreter's times mean. The design estimates from the emulator, so it needs these factors | The lab's paired findings (the same change on both) | None new |
+| 11 | **The network** (`network_ledger.md`) | The firmware network stack's CPU cost a player, Wi-Fi throughput and latency on the PSP-1000 (ad hoc and through the hotspot), the snapshot's size a co-op player, and what a host's sends cost the tick | sceNet's docs and the multiplayer code; benches on two PSPs | Paper only until Sheepdog01 reopens multiplayer work (2026-10-21) |
 
 **The bake** (Sheepdog01, 2026-11-04 13:22) comes after the design but belongs in it: whatever the PSP need not work out at run time (data laid out for the cache, the GE's own formats, precomputed visibility, lighting or posing tables) can move to bake time. So the design says, job by job, what is baked and what is computed, and the bake tool's rebuild follows from that.
 
@@ -49,6 +51,11 @@ The two large leads, checked before the design rests on them (Sheepdog01 2026-11
 | **B2. The ME's heavy view relieved** | d20 with the flashlight ~-9 to -10 ms (the replay split by fit, or audio onto the main CPU's VFPU) | The ME's scheduler as a named part of the design; starting the replay earlier buys nothing | mesched |
 | SKINW2 (+ SKINSTRIP) | GE -18 ms a frame on b30's flight (reaching the tick through A1's mechanism), +5 ms of ME replay | The cleared bake (Sheepdog01 22:38) | skinlev |
 | Stage-major restructuring | bipeds ~0.7 ms a tick (out, Sheepdog01 21:47); the other big code being sized (stagesize) | — | phasetrial |
+
+**How work is placed** (Sheepdog01 2026-11-04 22:53, 22:56): no frame-by-frame balancer between the units (it would rubber-band, and a moved job pays its cache misses on the unit it lands on). Instead:
+- **fixed homes** for the heavy unit-specific work (the drawing replay on the ME, the simulation core on the main CPU), chosen once per map class;
+- **overloads fixed where they happen** (d20's light pass made cheaper, the list shrunk), not shifted;
+- **a stealable job pool** for the divisible work (points, AI thinks, sound decoding, posing batches): whichever unit is free takes the next job within the frame, with deadlines from ledger 6. No feedback loop, so nothing to oscillate, and it adapts to load nobody profiled: multiplayer and custom maps, and a co-op host whose load swings with players. mepointsclaim (B56) is its first small form. Its costs: each pool job's code on both units (the ME without a VFPU), results identical either way where ledger 7 says they must be, and jobs big enough to pay for a cold cache.
 
 **What it says about the shape:** the frame's schedule across the three units, and where data lives, matter an order of magnitude more than restructuring the tick's code. The design centres on (1) balancing work between the main CPU and the ME stretch by stretch (B1 and B2 pull in opposite directions on different maps, so the placement must adapt), and (2) the GE's data out of main RAM during the tick (A1, A2). The ME's scheduler stops being deferred: it is the mechanism for both B1 and B2.
 
