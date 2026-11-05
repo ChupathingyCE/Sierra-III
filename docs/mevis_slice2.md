@@ -138,4 +138,11 @@ The code is in `psp_fixups.py` (FIXES_MEVISLAND: `main.c`'s `main_game_render` a
 
 ## 8. Proofs and price
 
-(filled in as the runs are read)
+**Exactness [E]** (the emulator, `mevispush ringslotdone` against off with an off2 control, non-strict, bake w157m):
+- Play and both seeds the same at every tick: b30's route to 4,500, c20 to 3,600, d20's swamp with the flashlight to 2,700; and on b30 with `mevislandcheck` too (0 differing clusters or objects in every 300-view line).
+- Pictures: b30 differs at 508 frames against off/off2's 503, c20 at 5 against 4.
+- The whole-state hash's objects differ from tick ~89 with the slice (off/off2 from ~3,180): that is what the drawing writes into objects, which the play hash leaves out. d20's actor and looping-sound allocations differ once each, read as the sound's timing [U].
+- `mevispush`: the sound ran after the push in 300 of 300 frames in every line, the main menu included. The front door went from the menu into a10 clean.
+- `ringslotdone`: refusals for a busy ME 1,909 -> 0 on b30, 612 -> 0 on c20, 1,185 -> 0 on d20, with ring jobs 6,454 -> 7,963, 4,792 -> 5,326, 3,563 -> 4,489. The emulator runs a copy inside its submit, so every copy has finished when the next push comes; on the PSP a copy still running refuses, for its ~0.4 ms.
+
+**Price [M]:** the PSP pair (section 5), as it is read.
