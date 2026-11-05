@@ -1884,6 +1884,13 @@ to RING_REST_MAX_US */
 #define RING_REST_MAX_US 16000000ull
 #define RING_AGAIN_US 5000000ull
 static int ring_give_up = 0;              /* "ringgiveup" */
+/* "ringslotdone": a non-yielding slot job the ME has finished no longer
+refuses the ring. It stays submitted until the main CPU collects it (the sound
+tier's copy, at the next sound_render's end, about a frame later), but the ME
+runs nothing more for it, so a ring job pushed then waits only on what is
+running */
+static int ring_slot_done = 0;
+static unsigned long ring_slot_passed = 0;
 static unsigned int ring_lates = 0, ring_revivals = 0;
 static unsigned long long ring_late_mark = 0, ring_revive_mark = 0, ring_rest_base_us = RING_REST_US, ring_rest_us = RING_REST_US;
 #ifdef PSP_RECON
@@ -2338,6 +2345,7 @@ int psp_me_start(void)
 	me_grace_off = psp_keep("megraceoff");
 	me_claim_old = psp_keep("meclaimold");
 	ring_give_up = psp_keep("ringgiveup");
+	ring_slot_done = psp_keep("ringslotdone");
 	{
 		int rest = psp_keep_number("ringrest", -1);
 
@@ -3439,6 +3447,11 @@ int psp_me_push(const struct psp_me_job *job, unsigned int *ticket)
 	for (k = 0; k < ME_SLOTS; k++)
 		if (k != ME_SLOT_AUDIO && submitted[k] && !slot_yields[k])
 		{
+			if (ring_slot_done && psp_me_submitted_done((int)k))
+			{
+				ring_slot_passed++;
+				continue;
+			}
 			ring_stats.refused_busy++;
 			return 0;
 		}
@@ -4893,6 +4906,11 @@ void psp_me_report(void)
 			audio_split.voice_frames ? (unsigned long)((audio_split.voices - audio_split.decode) / audio_split.voice_frames) : 0,
 			(unsigned long)((float)audio_split.ends / per_block));
 		memset(&audio_split, 0, sizeof(audio_split));
+	}
+	if (ring_slot_done)
+	{
+		platform_log("ME: ringslotdone: %lu pushes passed a finished slot job not yet collected", ring_slot_passed);
+		ring_slot_passed = 0;
 	}
 	ring_line[0] = 0;
 	if (ring_stats.jobs || ring_stats.failures || ring_stats.refused_busy || ring_stats.refused_full || ring_stats.refused_check)

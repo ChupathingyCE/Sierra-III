@@ -37511,9 +37511,12 @@ FIXES_MEVISLAND["source/render/render.c#mevisland"] = [
 #ifdef HALO_PSP
 	{
 		int psp_mevisland_push(void); /* structure_visibility.c (psp_fixups.py, mevisland) */
+		void psp_mevispush_sound(int in_window); /* structure_visibility.c (psp_fixups.py, mevispush) */
 
 		if (!psp_mevisland_push())
 			structure_visibility_compute();
+		/* mevispush: the sound's frame made while the ME walks */
+		psp_mevispush_sound(1);
 	}
 #else
 	structure_visibility_compute();
@@ -37542,6 +37545,51 @@ FIXES_MEVISLAND["source/render/render.c#mevisland"] = [
 #endif
 	bink_playback_render();
 	render_camera_debug_frustum("""),
+]
+# "mevispush" (off by default; docs/mevis_slice2.md): sound_render moves from
+# main_game_render's start to just after the first view's visibility push in
+# render_window, so the main CPU does the sound's frame (its obstruction rays
+# the most of it) while the ME walks, and the answer is nearer ready at its
+# first reader. The two share no state: sound_render reads the listener from
+# the observer, which is final before main_game_render, and no render field;
+# the window loop, the frame's begin and the view's prelude start no sound.
+# A frame with no player window (a film, a screenshot) makes it after
+# render_frame, still inside the frame's seed lock and collision period
+FIXES_MEVISLAND["source/main/main.c#mevispush"] = [
+("""	collision_log_continue_period(TRUE);
+	sound_render();
+	force_single_screen = game_engine_force_single_screen();
+""", """	collision_log_continue_period(TRUE);
+#ifdef HALO_PSP
+	{
+		int psp_mevispush_defer(void); /* structure_visibility.c (psp_fixups.py, mevispush) */
+
+		if (!psp_mevispush_defer())
+			sound_render();
+	}
+#else
+	sound_render();
+#endif
+	force_single_screen = game_engine_force_single_screen();
+"""),
+("""		screenshot_render(global_screenshot_count.windows);
+	}
+
+	collision_log_end_period();
+	unlock_global_random_seed();
+""", """		screenshot_render(global_screenshot_count.windows);
+	}
+
+#ifdef HALO_PSP
+	{
+		void psp_mevispush_sound(int in_window); /* structure_visibility.c (psp_fixups.py, mevispush) */
+
+		psp_mevispush_sound(0);
+	}
+#endif
+	collision_log_end_period();
+	unlock_global_random_seed();
+"""),
 ]
 FIXES_MEVISLAND["source/render/render_objects.c#mevisland"] = [
 ("""	object_marker_begin();
@@ -48186,6 +48234,51 @@ void psp_mevisland_settle(void)
 		psp_ml_views = psp_ml_used = psp_ml_refused = psp_ml_busy = psp_ml_late = psp_ml_failed = 0;
 		psp_ml_wait_us = psp_ml_wait_worst = psp_ml_waited = psp_ml_differ_clusters = psp_ml_differ_objects = 0;
 		psp_ml_depth_most = psp_ml_too_deep = psp_ml_here = psp_ml_rests = psp_ml_probes_back = 0;
+	}
+}
+
+/* ---------- "mevispush" (docs/mevis_slice2.md): the frame's sound_render made
+right after the first view's visibility push, so the main CPU spends it while
+the ME walks. main_game_render leaves it owed; render_window makes it after its
+push (once a frame); main_game_render makes it at its end if no window took
+it */
+void sound_render(void); /* sound_manager.c */
+
+static int psp_mp_on = -1, psp_mp_owed = 0;
+static unsigned long psp_mp_frames = 0, psp_mp_in_window = 0, psp_mp_at_end = 0;
+
+/* main.c's main_game_render, in place of sound_render: 1 when it is left owed */
+int psp_mevispush_defer(void)
+{
+	if (psp_mp_on < 0)
+	{
+		psp_mp_on = psp_keep("mevispush");
+		if (psp_mp_on)
+			platform_psp_log("mevispush: the frame's sound made after the first view's visibility push");
+	}
+	if (!psp_mp_on)
+		return 0;
+	psp_mp_owed = 1;
+	return 1;
+}
+
+/* render.c's render_window after the push (in_window 1), and main_game_render's
+end (0): the owed sound_render, once */
+void psp_mevispush_sound(int in_window)
+{
+	if (!psp_mp_owed)
+		return;
+	psp_mp_owed = 0;
+	sound_render();
+	if (in_window)
+		psp_mp_in_window++;
+	else
+		psp_mp_at_end++;
+	if (++psp_mp_frames >= 300)
+	{
+		platform_psp_log("mevispush: %lu frames: the sound made after the visibility push %lu, owed to the frame's end %lu (last 300 frames)",
+			psp_mp_frames, psp_mp_in_window, psp_mp_at_end);
+		psp_mp_frames = psp_mp_in_window = psp_mp_at_end = 0;
 	}
 }
 """
