@@ -37,6 +37,21 @@ Each ledger is a page in `docs/` (or the lab's findings, for numbers), kept curr
 
 **The bake** (Sheepdog01, 2026-11-04 13:22) comes after the design but belongs in it: whatever the PSP need not work out at run time (data laid out for the cache, the GE's own formats, precomputed visibility, lighting or posing tables) can move to bake time. So the design says, job by job, what is baked and what is computed, and the bake tool's rebuild follows from that.
 
+## The design's starting priorities (2026-11-05, from leads A and B)
+
+The two large leads, checked before the design rests on them (Sheepdog01 2026-11-04 21:49). Ceilings, not prices: each still needs its PSP pair when built.
+
+| Lead | What it buys | What it needs | Source |
+|---|---|---|---|
+| **B1. Work onto the ME where the main CPU binds** | b30's beach up to ~-17 ms a frame: the ME has ~25-36 ms of room a frame on main-CPU-bound stretches [U on M] | Jobs that fit the ME (ledger 6's reads and writes; ledger 7's exact boundary), and the ME's audio and ring deadlines kept (B56, B60's looks) | mesched, PSP-3000 on tock162 d76ff14b; `frame_timeline.md` per-job table |
+| **A1. The GE's RAM reads out of the tick's way** | b30's tick ~7.5 ms (16-17%), c20 ~5.5, d20 3.4-4.4 [U on E x M] | Vertices and indices in VRAM (200/400/800 KB buy 3.5/5.5/7.2 ms on b30's flight), which needs VRAM made: TEXFIT1 (in the cleared bake) and trades against the texture cache | geoff; `cpu_cost_map.md` §4 |
+| **A2. LISTBYTES** | b30's flight up to 4.4 ms, c20/d20 1.7-1.9 | Fewer words in the display list (no VRAM needed): a count of redundant words first | geoff |
+| **B2. The ME's heavy view relieved** | d20 with the flashlight ~-9 to -10 ms (the replay split by fit, or audio onto the main CPU's VFPU) | The ME's scheduler as a named part of the design; starting the replay earlier buys nothing | mesched |
+| SKINW2 (+ SKINSTRIP) | GE -18 ms a frame on b30's flight (reaching the tick through A1's mechanism), +5 ms of ME replay | The cleared bake (Sheepdog01 22:38) | skinlev |
+| Stage-major restructuring | bipeds ~0.7 ms a tick (out, Sheepdog01 21:47); the other big code being sized (stagesize) | — | phasetrial |
+
+**What it says about the shape:** the frame's schedule across the three units, and where data lives, matter an order of magnitude more than restructuring the tick's code. The design centres on (1) balancing work between the main CPU and the ME stretch by stretch (B1 and B2 pull in opposite directions on different maps, so the placement must adapt), and (2) the GE's data out of main RAM during the tick (A1, A2). The ME's scheduler stops being deferred: it is the mechanism for both B1 and B2.
+
 **Before the design commits: two checks.**
 - **The targets.** A frame budget per map and the capacity wanted with it (e.g. b30 at 33 ms with its campaign load, a firefight arena with N actors in view), written with Sheepdog01, so the design has numbers to meet rather than "faster".
 - **A trial of the main idea.** Every ledger so far points at restructuring the tick around the cache, with the data price of staging counted (`cpu_cost_map.md` §4-5). Slice 3 showed a ceiling can still lose when built. So one subsystem (the bipeds' update, phased) is built small and priced on the PSP before the design rests on the idea.
