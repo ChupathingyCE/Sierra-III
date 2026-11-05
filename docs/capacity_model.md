@@ -187,3 +187,61 @@ All against 33.3 ms on each unit, at one tick a frame. **An actor in view costs 
 - ~~**The ME fault under `timerson`**~~ B59, fixed for recon builds (§1).
 - **B60: placing an encounter beside the player on c10 stopped the ME** (the audio job past 40 ms, on the clean build). Which job held the ME isn't known; the replay at 29–35 ms a frame there is the likely one [U]. A fight that brings this many actors into view at once on a heavy map could do it in play.
 - The fixed loads per map on the PSP: one budget run a map gives them (the ladder's lines hold tick and drawing; the job split is the emulator's).
+
+## Ledger 8: memory per entity (2026-11-04)
+
+The redesign's ledger 8 (`redesign_recon.md`): the pool slots and bytes each entity takes, beside ledger 2's time, and how many of each the room ledger 4 found would hold (`memory_ledger.md` §0). Labels as above; every figure is [E] unless marked.
+
+### 1. The runs
+
+- **Build:** recon/ledger8 6bdbfb22 = recon/capacity4 (tock162 64647bb5 + B58's emulator fix + `aiplaceallN`, `aiviewN`/`aiviewplace`, `drivetest`) + **objbytes**: each poolpeaks report is followed by the objects pool summed by object type (count, bytes asked, bytes held with each block's 24-byte header and rounding, least and most of one). `PSP_RECON=1 PSP_POOLS_XBOX=1` (the game state's arrays at the Xbox's sizes, so nothing caps), `-DPSP_DRIVE=1`, no PGO, bake w157m. Recon only, never for merging. tock162's later head c3f3dba5 (ledger 4's) changes no array or pool.
+- **Batch l8a** (lab sierra-batch 41960587740, 10/10 ok to game time ~3,675, 0 strict sites; `poolpeaks memcensus nomeaudio`, hands off, `fixedticks fixedseed`): entity counts varied on one build. c10 with no actors placed, one encounter placed in view (`aiview30` against `aiview30 aiviewplace`: 6 Covenant beside the player) and every encounter (`aiplaceall30`: 39 encounters, 42 more actors living); b30 and d20 hands off against every encounter (b30 +55 actors, d20 +12); b30 `drivetest` against `drivenone` (both erase the AI at 90 s; the Warthog alone). Each pair is read at the 120 s report as live slots and object bytes, placed side less control (the 60 s report agrees within a few slots).
+- **The heap was the same on both sides of every pair:** heap top 5,216 KB (c10), 5,224 (b30), 5,108 (d20) with or without the actors or the Warthog; voices at most 5 -> 18 with the drive, same heap. An entity takes no heap of its own: its memory is the game state's fixed arrays and objects pool (sized at start), plus per-tag caches (sound, geometry, VRAM) that every instance of a kind shares. This build's heap is 5,228 KB (the Xbox's arrays take 536 KB more game state than the shipped 5,764), so b30's 62 failed heap requests on all four of its runs are the build's, not the entities'.
+
+### 2. Per entity: slots and bytes
+
+| Entity | Objects pool (KB, held) | Game-state slots it takes (bytes a slot) | Bytes in all | Heap |
+|---|---|---|---|---|
+| **Actor in view** (c10, 6 Covenant beside the player) | biped 4.17 KB + 1 weapon 1.01 = **5.18 KB** | actor 1 (1,828 B); object headers 2 (12); lights 3.3 (124); props 3.7 (312: its records of the units it perceives); pursuits 4.7 (40); render states 1.7 (256); light and object cluster refs 5 + 5 (12 each), collideable 1 + 1 (12); looping sounds 0.7 (52) = **4.2 KB** | **~9.2 KB** | 0 |
+| **Actor spread through the map** (b30 +55, d20 +12, c10 +42; mostly dormant, out of view) | biped 4.35-4.36 KB (d20's flood and sentinels 5.56) + 1 weapon 1.03-1.06 = **~5.2 KB**; c10's every-encounter fight left 2.1 bipeds a living actor (bodies of the dead) = 9.8 KB | actor 1; headers 1.8-2.8; lights 1.8-4.1; props 0.5-0.7; pursuits 0-0.7; render states 0.1-1.1; cluster refs 0-2.6 each; looping sounds 0.4-0.6 = **~2.5 KB** | **~7.5 KB** (a dead one leaves ~4.4 until the garbage collector) | 0 |
+| **Warthog** (driven, b30) | 3.26 KB (one 3,236 B vehicle) [E]; a 1,496 B vehicle-type object and a 752 B weapon came with the drive (+2.3 KB, not attributed) [U] | antenna 1 (700 B); lights 4 (124); recorded animations 2 (100); headers 3 (12); looping sounds 1 (52); cluster refs 7 + 7 (12) | **~4.8 KB** (7.1 with the two unattributed objects) | 0 |
+| **Projectile** (b30's beach: every one 604 B asked) | **0.63 KB** | an effect (252 B) and its locations (60) where it hits or flies; a contrail (68) and its points (56 each) on a projectile that trails; a light (124) on one that glows [D: the tag decides which] | **~0.7 KB**, more with a long contrail | 0 |
+| **Particle** | none | particle 1 (**112 B**); a system's particles take system particles (128) and each system 344 [E, poolpeaks sizes] | **112 B** | 0 |
+| **Light** (dynamic) | none | lights 1 (**124 B**); a light cluster ref pair (2 x 12) per cluster it reaches: ~0.8 a light in b30's actors | **~148 B** | 0 |
+| **Voice** | none | none: the sound start-up makes one mixer stream per engine channel (`IDirectSound_CreateSoundStream`, `psp_dsound.c`: a 64-byte-aligned block of the mixer's state + the game's side, ~3.4 KB each [U from the structs]); a playing voice takes one that is already made [D]. Its sound's samples sit once per sound tag in the 2,048 KB sound cache, shared by every voice playing it; a looping sound on an object takes an object looping sound (52 B) | **0** new; ~3.4 KB a channel if channels are added [U] | 0 [E: 5 -> 18 voices at most, same heap] |
+| Object, any (for scale) | b30's opening: scenery 0.48-1.05 KB, machines 0.52-0.99, equipment 0.62, controls 0.51, light objects 0.53-0.58, sound scenery 0.48 | a header (12 B) | | 0 |
+
+- **The objects pool is the actor's binding store:** 5.2 KB of the ~9.2 an actor in view takes, and the pool is full by design (1,000 of 1,024 KB at b30's route peak, ledger 4 §0.3; the garbage collector's limit keeps it there). The actor array has room (86 of 160 at its peak: 74 more); props (252 free at 312 B: ~68 actors in view), lights (533 free: ~160 actors) and cluster refs (~1,280 free: ~250) come next. Render states are full (512) but a miss reworks the lighting rather than failing.
+- **What scales with what:** props and pursuits with how many units each actor perceives (3.7 and 4.7 an actor in a fight in view, 0.5-0.7 spread out); render states with drawing (1.7 an actor in view, 0.1 spread); lights with the actors' weapons (Covenant plasma weapons glow) [U].
+- **d20's actors** (12 more, 7 more bipeds) aren't all bipeds: some are swarm or vehicle-borne [U]; its bipeds (flood, sentinels) are the largest, 5.6 KB.
+
+### 3. How many the room would hold, by map
+
+Ledger 4's heap room at the top (§0.2, shipped build, tock162), turned into entities if the game state's arrays and objects pool grew into it (an entity takes no heap of its own, §1): room / bytes in all [U on E]. The machine-wide stores beside it: user RAM outside the heap 70 KB (largest 28), and the ME's eDRAM 544 KB at 256-800 KB (main-CPU game state there would pay the ME bus on every access: not priced).
+
+| Map (ledger 4 run) | Heap room (KB) | Actors in view (9.2 KB) | Actors spread (7.5 KB) | Warthogs (4.8 KB) | Projectiles (696 B) | Particles (112 B) | Lights (148 B) |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| a10 route | 344 | 37 | 45 | 71 | 506 | 3,145 | 2,380 |
+| a30 route | 316 | 34 | 42 | 65 | 464 | 2,889 | 2,186 |
+| b30 route | 308 | 33 | 40 | 64 | 453 | 2,816 | 2,131 |
+| d20 route | 476 | 51 | 63 | 99 | 700 | 4,352 | 3,293 |
+| a10 opening | 544 | 59 | 72 | 113 | 800 | 4,973 | 3,763 |
+| a30 opening | 312 | 34 | 41 | 65 | 459 | 2,852 | 2,158 |
+| a50 opening | 596 | 65 | 79 | 124 | 876 | 5,449 | 4,123 |
+| b30 opening | 348 | 37 | 46 | 72 | 512 | 3,181 | 2,407 |
+| b40 opening | 348 | 37 | 46 | 72 | 512 | 3,181 | 2,407 |
+| c10 opening | 400 | 43 | 53 | 83 | 588 | 3,657 | 2,767 |
+| **c20 opening** | **160** | **17** | **21** | **33** | 235 | 1,462 | 1,107 |
+| c40 opening | 320 | 34 | 42 | 66 | 470 | 2,925 | 2,214 |
+| d20 opening | 392 | 42 | 52 | 81 | 576 | 3,584 | 2,712 |
+| d40 opening | 532 | 58 | 70 | 110 | 782 | 4,864 | 3,680 |
+
+- **Memory is not the binding limit for actors; time is.** The tightest map (c20) holds ~17 more actors in view; ledger 2 puts the main CPU's room at ~1-2 more in view on b40's first fight (each ~1.9 ms main + ~1.1 ms ME a frame). At today's sizes, without growing anything, the objects pool binds first: its 24 KB at b30's peak is ~4 actors' bodies and weapons, after which the garbage collector deletes bodies sooner.
+- **Particles, lights and projectiles** are cheap in memory (hundreds to thousands per map's room) and live in arrays with room today (particles 512 free, lights 533); their limit is time too (ledger 2: ~70 particles or ~5 projectiles a ms of the main CPU).
+- **Custom content and co-op:** a remote co-op player (a biped, its weapons, its props in every actor) is an actor-in-view's ~9 KB; 4 players ~37 KB fit every map; 16 fit all but c20's opening.
+
+### 4. Still open
+
+1. The 1,496 B vehicle-type object and 752 B weapon that came with the drive: which tags (an objbytes line by definition would say).
+2. The voice channel's bytes are read from the structs [U]; a `sizeof` print would make it [D], and the engine's channel count (its sound preferences) isn't read.
+3. A per-map array table (ledger 4 printed the worst map's peak only): the array room by map, for maps where an array rather than the heap binds.
