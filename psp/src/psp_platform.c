@@ -3321,6 +3321,14 @@ steps in order: the console has no way to wait */
 		if (exit_tick > 0 && (long)ticks_seen == exit_tick)
 			exit_game("exitat");
 	}
+	/* "lanetraceatN": lanetrace's window at game tick N (psp_lanetrace.c);
+	asked each tick only until that tick */
+	{
+		static int lane_waiting = 1;
+
+		if (lane_waiting)
+			lane_waiting = psp_lane_at(ticks_seen);
+	}
 	psp_sleep_tick((long)ticks_seen); /* sleepdryN's moment */
 #ifdef PSP_PGO_GENERATE
 	{

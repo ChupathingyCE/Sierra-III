@@ -4604,6 +4604,11 @@ void psp_me_edram_probe(void)
 	}
 }
 
+/* the longest line platform_log writes whole (its buffer, psp_fixups.py),
+and the continued lines' length under it */
+#define ME_LOG_LINE 510
+#define ME_LOG_CONTINUED 500
+
 void psp_me_report(void)
 {
 #if PSP_MUSIC
@@ -4612,8 +4617,8 @@ void psp_me_report(void)
 	static const char *const names[ME_SLOTS] = { "audio", "render", "probe", "ai" };
 #endif
 	unsigned long long now = sceKernelGetSystemTimeWide(), window = now - report_mark, busy_us_all = 0;
-	char line[900], ring_line[640];
-	int length = 0, k;
+	char line[1400], ring_line[640];
+	int length = 0, k, parts = 0, part_at[ME_SLOTS + 1];
 
 	if (!me_state)
 		return;
@@ -4636,6 +4641,7 @@ void psp_me_report(void)
 		busy_us_all += me_us;
 		if (!stats[k].jobs && !stats[k].failures)
 			continue;
+		part_at[parts++] = length;
 		length += snprintf(line + length, sizeof(line) - length,
 			"; %s: %lu jobs, the ME's own time %lu us a job (the job's code %lu, cache hand-overs the rest; worst %lu), %.1f%% of the ME; the main CPU's hand-over %lu us a job, waiting %lu us a job (worst %lu); %lu failed",
 			names[k], stats[k].jobs, stats[k].jobs ? (unsigned long)(me_us / stats[k].jobs) : 0,
@@ -4720,6 +4726,7 @@ void psp_me_report(void)
 		static unsigned int halts_last, wakes_last;
 		unsigned int halts = CONTROL->halts, wakes = CONTROL->wakes;
 
+		part_at[parts++] = length;
 		length += snprintf(line + length, sizeof(line) - length,
 			"; mehalt: %u halts, %lu wakes sent (a kernel call, %lu us each), %u taken",
 			halts - halts_last, wakes_sent, wakes_timed ? (unsigned long)(wake_us / wakes_timed) : 0, wakes - wakes_last);
@@ -4727,9 +4734,54 @@ void psp_me_report(void)
 		wakes_last = wakes;
 		wakes_sent = 0;
 	}
-	platform_log("ME: %s, %.1f%% busy over %.1f s (work nested in a job's yields, counted once: %lu us)%s",
-		me_state == 1 ? "running" : me_state == 2 ? "SIMULATED (emulator)" : "stopped", busy_percent_last,
-		(double)window / 1e6, (unsigned long)nested_us_last, length ? line : "; no jobs");
+	if (length >= (int)sizeof(line))
+		length = (int)sizeof(line) - 1;
+	{
+		/* platform_log keeps ME_LOG_LINE characters of a line, and four
+		slots' figures are longer: the line stays as the readers know it (cut
+		where the log cuts it), and each slot it doesn't hold whole follows,
+		whole, on "ME, continued" lines (a slot cut on the first line is
+		repeated there). "meslotsold" leaves out the continued lines */
+		static int one_line = -1;
+		char out[ME_LOG_LINE + 1];
+		int at, p;
+
+		if (one_line < 0)
+			one_line = psp_keep("meslotsold") != 0;
+		at = snprintf(out, sizeof(out), "ME: %s, %.1f%% busy over %.1f s (work nested in a job's yields, counted once: %lu us)",
+			me_state == 1 ? "running" : me_state == 2 ? "SIMULATED (emulator)" : "stopped", busy_percent_last,
+			(double)window / 1e6, (unsigned long)nested_us_last);
+		platform_log("%s%s", out, length ? line : "; no jobs");
+		if (!one_line && length)
+		{
+			int kept = ME_LOG_LINE - at, more = 0;
+
+			for (p = 0; p < parts; p++)
+			{
+				int end = p + 1 < parts ? part_at[p + 1] : length, size = end - part_at[p];
+
+				if (end <= kept)
+					continue;
+				if (more && at + size > ME_LOG_CONTINUED)
+				{
+					platform_log("%s", out);
+					more = 0;
+				}
+				if (!more)
+				{
+					at = snprintf(out, sizeof(out), "ME, continued");
+					more = 1;
+				}
+				if (size > ME_LOG_CONTINUED - at)
+					size = ME_LOG_CONTINUED - at;
+				memcpy(out + at, line + part_at[p], size);
+				at += size;
+				out[at] = 0;
+			}
+			if (more)
+				platform_log("%s", out);
+		}
+	}
 	if (ring_line[0])
 		platform_log("%s", ring_line);
 	{

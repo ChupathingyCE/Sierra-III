@@ -32,6 +32,11 @@ F the frame, W its length in us, every T in us from the last frame's end
 (negative: before it, a job handed over in the frame before).
 tools: a lanes reader script reads them.
 
+"lanetraceatN" opens one window at game tick N instead (as flashlightatN
+counts ticks), and the phase edges open none: phase edges fall where a map
+changes, so a steady stretch well inside one (a long fight, a heavy view)
+had no window. It turns lanetrace on by itself.
+
 Measurement only: nothing the game does changes. The notes (18 KB) come from
 the heap when the word is first seen; without it every hook is one test of a
 word. Compiled with PSP_METRICS, so a final release has none of it. */
@@ -68,6 +73,7 @@ struct lane_note
 volatile int psp_lane_on = 0;          /* 1 while a window records, 2 while it prints */
 static int lane_word = -1;              /* -1: the keep word not read yet */
 static int lane_frames_wanted = 60;
+static long lane_at = -1;               /* "lanetraceatN": the one window's game tick, else -1 */
 /* "lanekinds": a GE span joins the last only when their kinds match, so each
 span keeps its kind (what the GE is drawing while a tick runs: getick.py in
 the lab). Windows fill sooner, in fewer frames */
@@ -83,7 +89,8 @@ static int lane_ready(void)
 	{
 		int n = psp_keep_number("lanetrace", 0);
 
-		lane_word = psp_keep("lanetrace") != 0 || n > 0;
+		lane_at = psp_keep_number("lanetraceat", -1);
+		lane_word = psp_keep("lanetrace") != 0 || n > 0 || lane_at >= 0;
 		lane_kinds = psp_keep("lanekinds") != 0;
 		if (lane_word)
 		{
@@ -94,6 +101,9 @@ static int lane_ready(void)
 				platform_log("lanetrace: no room for its %u KB; off", (unsigned)(LANE_NOTES * sizeof(*lane_notes) / 1024));
 				lane_word = 0;
 			}
+			else if (lane_at >= 0)
+				platform_log("lanetrace on: %d frames from game tick %ld (lanetraceat; no windows at phase edges)",
+					lane_frames_wanted, lane_at);
 			else
 				platform_log("lanetrace on: %d frames after each phase edge (the main CPU's phases, the GE's busy spans with gebusy or gebusy2, the ME's jobs)",
 					lane_frames_wanted);
@@ -140,17 +150,38 @@ void psp_lane_note(unsigned int kind, unsigned int from, unsigned int t, unsigne
 	sceKernelCpuResumeIntr(flags);
 }
 
-/* a phase edge (psp_platform.c's phase_mark): a window opens unless one is
-recording */
-void psp_lane_arm(void)
+static void lane_open(void)
 {
-	if (lane_ready() <= 0 || psp_lane_on)
-		return;
 	lane_count = 0;
 	lane_frames = 0;
 	lane_window_start = lane_last_end = sceKernelGetSystemTimeLow();
 	lane_windows++;
 	psp_lane_on = 1;
+}
+
+/* a phase edge (psp_platform.c's phase_mark): a window opens unless one is
+recording, or lanetraceatN has chosen the window's moment */
+void psp_lane_arm(void)
+{
+	if (lane_ready() <= 0 || psp_lane_on || lane_at >= 0)
+		return;
+	lane_open();
+}
+
+/* each game tick while "lanetraceatN" waits (psp_platform.c's tick hook):
+the window opens at tick N */
+int psp_lane_at(unsigned long tick)
+{
+	if (lane_ready() <= 0 || lane_at < 0)
+		return 0;
+	if ((long)tick != lane_at)
+		return (long)tick < lane_at;
+	if (!psp_lane_on)
+	{
+		platform_log("lanetrace: window %u opens at game tick %lu (lanetraceat)", lane_windows + 1, tick);
+		lane_open();
+	}
+	return 0;
 }
 
 static int lane_add(char *line, int at, const char *format, int x, int y, int z, int w)
@@ -260,6 +291,12 @@ void psp_lane_note(unsigned int kind, unsigned int from, unsigned int t, unsigne
 
 void psp_lane_arm(void)
 {
+}
+
+int psp_lane_at(unsigned long tick)
+{
+	(void)tick;
+	return 0;
 }
 
 void psp_lane_frame(unsigned long frame_number, unsigned int ticks)

@@ -18,13 +18,16 @@ extern volatile int psp_lane_on;
 #ifdef PSP_METRICS
 void psp_lane_note(unsigned int kind, unsigned int from, unsigned int t, unsigned int b, unsigned int c);
 void psp_lane_arm(void);
+int psp_lane_at(unsigned long tick);
 void psp_lane_frame(unsigned long frame_number, unsigned int ticks);
 #else
 void psp_lane_note_off(unsigned int kind, unsigned int from, unsigned int t, unsigned int b, unsigned int c);
 void psp_lane_arm_off(void);
+int psp_lane_at_off(unsigned long tick);
 void psp_lane_frame_off(unsigned long frame_number, unsigned int ticks);
 #define psp_lane_note psp_lane_note_off
 #define psp_lane_arm psp_lane_arm_off
+#define psp_lane_at psp_lane_at_off
 #define psp_lane_frame psp_lane_frame_off
 #endif
 #define PSP_LANE(kind, from, t, b, c) do { if (psp_lane_on) psp_lane_note((kind), (from), (t), (b), (c)); } while (0)
