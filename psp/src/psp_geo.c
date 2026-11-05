@@ -1398,9 +1398,8 @@ void psp_geo_map_opened(const char *name, unsigned int map_crc, const void *firs
 
 		if (!why && want)
 		{
-			unsigned int directory[32], at = (start + bytes + 63) & ~63u, k;
+			unsigned int directory[32], at = (start + bytes + 63) & ~63u, k, found = 0;
 
-			why = "the keep words ask for a variant region the pack doesn't have";
 			if ((SceOff)(HEADER_BYTES + at + sizeof(directory)) <= file_bytes &&
 				sceIoLseek32(pack, HEADER_BYTES + at, PSP_SEEK_SET) >= 0 &&
 				sceIoRead(pack, directory, sizeof(directory)) == (int)sizeof(directory) &&
@@ -1412,11 +1411,20 @@ void psp_geo_map_opened(const char *name, unsigned int map_crc, const void *firs
 						bytes = directory[4 + 5 * k];
 						table_at = directory[5 + 5 * k];
 						entries = directory[6 + 5 * k];
-						why = NULL;
+						found = 1;
 						platform_log("geometry: preconvert: variant region%s%s", want & 1 ? " skinw2" : "",
 							want & 2 ? " skinstrip" : "");
 						break;
 					}
+			/* the words are on by default, so a pack baked without the variants
+			keeps its plain region rather than leaving the baked buffers unused;
+			the line says so, so an A/B on such a pack isn't read as one */
+			if (!found)
+			{
+				platform_log("geometry: preconvert: no variant region%s%s in this pack: its plain region",
+					want & 1 ? " skinw2" : "", want & 2 ? " skinstrip" : "");
+				want = 0;
+			}
 		}
 
 		if (!why && (start < pack_size || start % 64 || table_at < start || !entries || entries > 65535 ||

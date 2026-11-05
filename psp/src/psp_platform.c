@@ -1154,6 +1154,11 @@ static const struct
 	/* mevisland's placement rests only on a walk time measured in the stretch
 	it rests in (structure_visibility.c, mevisprobe): exact either way */
 	{ "mevisprobe", "mevisprobeoff" },
+	/* the bake's skin variants (modelconvert.py --skin-variants): each node on
+	the lowest free slot, and strips where shorter. They play and look the same
+	(a few scattered pixels a frame); a pack without the variants keeps its
+	plain region unused, so these want a variant bake */
+	{ "skinw2", "skinw2off" }, { "skinstrip", "skinstripoff" },
 };
 static char keep_defaults_added[KEEP_DEFAULTS_ROOM] = "";
 /* defaults that found no room: a lever silently off would be read as on */
