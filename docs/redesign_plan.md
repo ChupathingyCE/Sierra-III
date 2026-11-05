@@ -111,6 +111,16 @@ The GE was built for retained mode: lists that CALL sub-lists, 8 bone matrix and
   - the shader forms a map needs (C1);
   - the store's room, which has to be GE-readable: main RAM or VRAM, not eDRAM. The room is the frame list it replaces, 768 KB of list plus the record buffer, 128 KB by default and 224 with the default keep set [D, `psp_ge.c` DEFER_INFLIGHT_KB; IFKB];
   - the dynamic floor (C2);
+- **C1, the store (2026-11-05 17:53, the master; bake w162s, sierra-formcensus 42132247128 and 42132545265)** [D for the counts, U for the bytes at 560 a form]:
+
+  | | Forms, every level of detail | Store | Super high alone |
+  |---|---:|---:|---:|
+  | b30 | 1,462 | 799 KB | 652 / 356 KB |
+  | c10 | 1,679 | 918 KB | 800 / 437 KB |
+  | the ten maps | 667-1,679 | 364-918 KB | 407-800 / 222-437 KB |
+
+  - **It fits the room R frees** [U]. Super high is drawn only for objects taller than the screen (the cinematics' close-ups, `memory_ledger.md`), so a store of the other four levels of detail, ~250-480 KB on most maps, fits inside today's 768 KB frame list, which R cuts to tens of KB. Super high can stay immediate, or stream in for a cinematic. The 560 bytes a form and the passes per feature are estimates, so the master's next read of psp_ge.c's model passes reprices it.
+  - **The level needs no store of its own** [U]: its triangles are 0.35-2.1 MB of 16-bit indices a map (a10 365k triangles, 2.1 MB), too much to copy, but they're already in main RAM as the BSP's surfaces. A bake that orders each material's surfaces by cluster makes each (cluster, material) a contiguous range the GE can index in place. That's for R's design page to settle.
   - near the camera, geometry still has to be cut each frame (C5: the GE can't draw it uncut), so what's near the eye stays per-frame work.
 - **Milestone:** b30's models drawn from prebuilt lists with the record and replay bypassed for them; one PSP pair against the old path. **Switch-over:** every kind drawn by R; one pair.
 - **Stop rule:** if C1 shows the store can't fit, or C4 that R's ME saving can't reach the floor's need with S and B, Sheepdog01 decides before any build.
@@ -135,7 +145,7 @@ Sent to the master 2026-11-05 17:20 (the lab's coord/inbox/master.md) for those 
 
 | | Count | Answers | Where | Who | State |
 |---|---|---|---|---|---|
-| C1 | Each map's prebuilt forms (parts × levels of detail × shader passes) and their bytes | whether R fits | a counter in the baker, run as a sierra-bake job that prints counts only | the master (or this session drafts the counter, built by the master) | asked |
+| C1 | Each map's prebuilt forms (parts × levels of detail × shader passes) and their bytes | whether R fits | a counter in the baker, run as a sierra-bake job that prints counts only | this session's counter, run by the master | **done** (§3 R) |
 | C2 | The frame list's inline data (b30's flight 254 of 501 KB) by kind: model and level cut pieces, decals, kept index copies, effects, see-through, HUD | R's floor: what stays per frame | emulator, `listcensus` (Sierra-III recon/listbytes2; lab coord/handoff/listbytes_2026-11-05.md) | the master | asked |
 | C3 | The tick by subsystem on the four heavy stretches, and its change rate: the share of each subsystem's per-object work whose inputs didn't change since the last tick | where S's last 4-6 ms a tick comes from | emulator: the PC sampler, `PSP_TICK_STEPS=1`, `nmstudy` extended (lab coord/handoff/nmstudy.md) | recon, through the master | **(a) done**; **(b) by object done** (§3 S); by query asked |
 | C4 | The replay by record kind, and the models' time by step | R's ceiling on the ME | emulator for the shape; one bare PSP run for the ms (meparts' ME cycle counter) | the master | asked |
