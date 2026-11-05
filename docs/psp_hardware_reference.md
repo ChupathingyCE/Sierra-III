@@ -32,6 +32,14 @@
 
 ---
 
+### 1.2 Kernel-mode code at a user address (2026-11-04; `hw_capabilities.md` §6.4–6.5) [M]
+
+- **Kernel-mode code running at a user address can switch the PSP-1000 off,** the ME running or not. It's a power-off, not a hang. mcidclan's `kcall(f, 0)` runs `f` in kernel mode at 0x08xxxxxx: about one shutdown per ~5 ms spent there (5 in ~26 ms over calls of 7–35 µs), so a rate per µs, not a length threshold.
+- **The same code at the kernel's cached alias is clean:** `kcall(f, 0x80000000)` ran 3,245 calls of 35–97 µs, interrupts on and off, with and without the ME.
+- So: call every kernel function through the alias (`CACHED_KERNEL_MASK`), and hand the firmware the alias of any user-address handler it will call in kernel mode (sysevent, exception). Firmware calls and real kernel modules are already at kernel addresses.
+- Ruled out by split: the ME's polling, the stick's writes, interrupts arriving inside the call alone (with them off it still stops), kcall's I-cache invalidate, and the hardware registers (132,000 eDRAM reads clean).
+- **Leave the GE's register space (0xBD400000–0xBD5000FF) to the firmware's driver.** The registers aren't the hazard (132,000 eDRAM reads ran clean without the ME). But with the GE's bus clock off (0xBC100050 bit 1) they read one stale bus word, and the driver owns them.
+
 ## 2. The Media Engine, in detail
 
 ### 2.1 How code gets onto it [D, from mcidclan's `me-core-custom.c`, `me-core.h`, `kernel/main.c`]
@@ -242,3 +250,9 @@ All five go into one hardware micro-benchmark (halo_bench v9) before any engine 
 Meanwhile the levers that don't need it are clear from b102 run 5: fewer GE main-RAM fetches (b103's "level vertices in VRAM" switch measures it), and the scratchpad for the CPU's hot read-mostly tables (v9: unaffected by the GE).
 
 **Step 1 done, b105 run 1 [M].** The probe read the registers with the GE idle and busy. The DDR controller's are identical in both (`bd000020=00008020 24=00020220 2c=80000004 30=11110410 34=00000007 38=0 40=0 44=0000000a`). `bd400004/104/300` go from 0 to an address inside our display list (the GE's list pointers), and `bc10004c`/`bc100050` change the way the Media Engine starting would (a reset released, a bus clock on) [U]. Nothing moved with the GE's load the way a priority setting would. `bd000030 = 11110410` is the only value shaped like per-master fields [U]. Step 2 (disassembling `sceDdrWriteMaxAllocate`) is next.
+
+**Searched again, 2026-11-04 [D]** (`hw_capabilities.md` §6.2–6.3 has the detail and the sources):
+- **Step 2 is closed.** No Sony firmware is read in any form (lab decision 2026-11-04 16:55).
+- **No public source names a priority.** uofw, jpcsp's register models, PPSSPP, mcidclan's repositories and ARK-4's NID map were searched. jpcsp names all 14 `sceDdr_driver` exports (`sceDdrWriteMaxAllocate` is 0x4F30BFE8 on 6.60), but only as empty stubs.
+- **b105's two moving bits, reread** with uofw's and jpcsp's bit maps: `bc10004c` 0x40 is the USB block's reset, which mcidclan's ME start releases along with every other reset when it writes 0 there. `bc100050` 0x20 is DMAC0's bus clock. Neither is the ME, and neither is a priority.
+- **What's left:** our own register snapshot, idle and busy, for every documented block (`bench/halo_bench16_regsnap`; its first run hung the PSP-1000 and is to be read from the stick). Calling `sceDdrWriteMaxAllocate` with guessed arguments stays Sheepdog01's call: a wrong value may hang the bus until power-off.
