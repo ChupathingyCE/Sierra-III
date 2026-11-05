@@ -26,7 +26,7 @@ Each ledger is a page in `docs/` (or the lab's findings, for numbers), kept curr
 |---|---|---|---|---|
 | 1 | **Hardware capabilities and gaps** (`hw_capabilities.md`) | Every unit and feature the PSP has: what it can do, what it costs [M], whether we use it and where, what it could carry. The gaps (unknown, unmeasured, unused), ranked by what they might add | The docs, the SDK's headers, the research sources, the code; then one bench round | One `halo_bench` round for the unmeasured features |
 | 2 | **Workload and capacity** (`capacity_model.md`) | Every job a frame does: its time, code and data footprint, inputs, outputs and dependencies, deadline, unit now, units it could run on. Each as a **fixed cost per frame plus a cost per entity**, so capacity can be read off | The emulator's censuses, the code, the lab's findings | A few runs with entity counts varied (more AI, more bipeds) |
-| 3 | **The frame timeline** (`frame_timeline.md`) | One chart per heavy stretch: every unit's busy and waiting time a frame (the main CPU's phases, each ME job, the GE with the ME's lists), and who waits on whom | The PSP's instruments (`hwprofile`, `gebusy2` with its phase split, `mebusN`, `frametrace`) | About 4 runs, one per stretch |
+| 3 | **The frame timeline** (`frame_timeline.md`) | One chart per heavy stretch: every unit's busy and waiting time a frame (the main CPU's phases, each ME job, the GE with the ME's lists), and who waits on whom. **First pass done 11-04** (tock162, four runs): the main CPU's ticks bind b30, c20 and d20's walk; the ME binds d20's heavy view; b40 waits on the display. Open: the AI job's own time (the ME's report line is cut), lanetrace windows at a chosen game time | The PSP's instruments (`hwprofile`, `gebusy2` with its phase split, `frametrace`, `lanetrace`; `mebusN` left out: it adds a synthetic load) | 4 runs, one per map |
 | 4 | **Memory** (`memory_ledger.md`, refreshed) | Every pool (RAM, VRAM, eDRAM, scratchpad, the volatile 4 MB), its peak and room by map, what a KB buys where | The ledger's 10-27 version, the builds' heap lines | None new |
 | 5 | **The cost map** (`cpu_cost_map.md`) | The main CPU's cache costs and the ways to cut them | Done 11-04; kept current | — |
 
@@ -70,7 +70,7 @@ A shallow first pass, for the sweep to confirm or correct. These features exist 
 
 - Ledger 1 lists every feature with its status and a measured cost or a reason it can't be measured. Every gap is chased or ranked out.
 - Ledger 2 gives each job's fixed and per-entity cost on each unit it could run on. The capacity questions above each have a first answer.
-- Ledger 3 has a timeline for b30, c20, d20 and one light map.
+- Ledger 3 has a timeline for b30, c20, d20 and one light map. (Done 11-04 for tock162, light map b40; its gaps are listed in `frame_timeline.md`.)
 - Ledger 4 is current on today's builds.
 - The design is written against all five, and Sheepdog01 has read it.
 
