@@ -637,6 +637,9 @@ it: in the mid band, peak 33 */
 #define IMA_ROWS 89
 static unsigned int ima_fast[IMA_ROWS * 8] __attribute__((aligned(64)));
 static int ima_fast_old = 1;
+/* "upfuseold": the half-band filter and the full-rate add as two passes
+(upsample_full); read uncached: set on the main CPU, read on the ME */
+static int up_fuse_old = 0;
 
 static inline int ima_expand_fast(int nibble, int *predictor, int *row)
 {
@@ -676,6 +679,7 @@ static void ima_fast_build(void)
 					differed++;
 			}
 	ima_fast_old = psp_keep("imatableoff") != 0 || differed != 0;
+	*(volatile int *)((unsigned int)&up_fuse_old | 0x40000000u) = psp_keep("upfuseold") != 0;
 	sceKernelDcacheWritebackRange(ima_fast, sizeof(ima_fast));
 	platform_log("audio: ADPCM decoded %s; its table checked against the formula at %lu codes, %lu differed",
 		ima_fast_old ? (differed ? "by the formula: the table differed" : "by the formula, as before (imatableoff)")
@@ -2947,6 +2951,42 @@ static void upsample(const short *in, short *out)
 	memcpy(up_history, up_input + MIX_FRAMES * OUTPUT_CHANNELS, sizeof(up_history));
 }
 
+/* UPFUSE: the full-rate block added in the filter's own loop, with the same
+two clamps in the same order (the filtered sample's, then the sum's), so the
+same samples as upsample then add_full, in one pass over the 44.1 kHz block
+instead of two. "upfuseold" keeps the two passes */
+static void upsample_full(const short *in, short *out, const short *full)
+{
+	int j, c, k;
+
+	if (!full || *(volatile int *)((unsigned int)&up_fuse_old | 0x40000000u))
+	{
+		upsample(in, out);
+		if (full)
+			add_full(out, full);
+		return;
+	}
+	memcpy(up_input, up_history, sizeof(up_history));
+	memcpy(up_input + 2 * UP_TAPS * OUTPUT_CHANNELS, in, MIX_FRAMES * OUTPUT_CHANNELS * sizeof(short));
+	for (j = 0; j < MIX_FRAMES; j++)
+		for (c = 0; c < OUTPUT_CHANNELS; c++)
+		{
+			const short *e = up_input + (j + UP_TAPS) * OUTPUT_CHANNELS + c;
+			int even = 2 * j * OUTPUT_CHANNELS + c, odd = (2 * j + 1) * OUTPUT_CHANNELS + c;
+			int sum = 0, value;
+
+			for (k = 0; k < UP_TAPS; k++)
+				sum += up_taps[k] * (e[-k * OUTPUT_CHANNELS] + e[(k + 1) * OUTPUT_CHANNELS]);
+			value = (sum + 16384) >> 15;
+			value = value > 32767 ? 32767 : value < -32768 ? -32768 : value;
+			value += full[odd];
+			out[odd] = (short)(value > 32767 ? 32767 : value < -32768 ? -32768 : value);
+			value = e[0] + full[even];
+			out[even] = (short)(value > 32767 ? 32767 : value < -32768 ? -32768 : value);
+		}
+	memcpy(up_history, up_input + MIX_FRAMES * OUTPUT_CHANNELS, sizeof(up_history));
+}
+
 static unsigned long full_blocks = 0, full_voice_blocks = 0, full_heard = 0, full_on_me_blocks = 0;
 
 static int full_rate_voice(const struct psp_stream *stream)
@@ -2998,9 +3038,7 @@ void psp_dsound_full_job(void *const *list, unsigned long count, unsigned long f
 
 	if (full)
 		h = mix_full_rate((struct psp_stream **)list, count, full, frames, &over);
-	upsample(output22, out44);
-	if (full)
-		add_full(out44, full);
+	upsample_full(output22, out44, full);
 	*heard = (unsigned int)h;
 	*clipped = (unsigned int)over;
 }
@@ -3341,9 +3379,7 @@ static int audio_thread(SceSize arguments, void *argument)
 		if (!mix(output_buffers[which], full_rate ? output_full[which] : NULL, up ? output44[which] : NULL, MIX_FRAMES) &&
 			up)
 		{
-			upsample(output_buffers[which], output44[which]);
-			if (full_rate)
-				add_full(output44[which], output_full[which]);
+			upsample_full(output_buffers[which], output44[which], full_rate ? output_full[which] : NULL);
 		}
 		if (dump >= 0 && up)
 		{
