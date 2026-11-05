@@ -276,7 +276,7 @@ What the table says [U on M]:
 - **The exact moves on the beach add to ~5-8 ms a frame** (rows 1-6), against the ~17 ms ceiling: the rest of the ceiling is held by work the tick needs at once (collision, node matrices) or that writes the seed and the pools (effects, the AI's mid-frame pass). They all land in the ME's window after the frame's last tick, beside the AI job, so each is a ring job served at its ~1 ms looks.
 - **The biggest piece of the main CPU's tick can't move exactly.** Collision (25% of the tick) and node matrices (10%) are read inside the same object's update. They move only with a world that holds still (`stage_state_note.md`, WORLDVIEW: a compromise and Sheepdog01's call) or not at all.
 - **c20 has little to give:** its ME room (~16 ms) lies after the replay, which already makes the record wait, so only drawing-phase jobs (rows 1, 2, 5) fit there, ~2-3 ms in all.
-- **The largest single figure is a compromise**, the AI's mid-frame think pipelined on the ME (~5-8 ms on the beach): catalogued, not built.
+- **The largest single figure is a compromise**, the AI's mid-frame think pipelined on the ME (~5-8 ms on the beach [U]). **Built as AITICKOLD and priced** [M, PSP-3000 lab sierra-hw 42041663929, b30 route, 2 runs a side]: the flight's frame -9.7 ms (-7.8%) and tick -5.9 ms (-14.5%), both real; the beach in the noise (frame -0.3 ms), because the ME cut 30% of the beach's second passes at the AI job's word (135 of 450 between game time 2,700 and 3,600, against ~0.6% on the flight).
 
 ## b40 late: the cliff path and the snowfield fight (2026-11-04)
 
