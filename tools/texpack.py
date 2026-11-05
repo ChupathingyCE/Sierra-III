@@ -2245,13 +2245,34 @@ def texfit_table(entries, census, at):
     blob, rows, whole, kept = bytearray(), [], 0, 0
     while (at + len(blob)) % 16:
         blob += b'\0'
+    # what the census asked for and what each eligibility rule held back,
+    # in textures and KB (sums only: the bake's log names no texture)
+    held = {}
+
+    def hold(reason, e, k):
+        bits = {4: 4, 5: 8, 3: 32}.get(e['psm'], 16)
+        w, h, lost = e['w'], e['h'], 0
+        for _ in range(min(k, e['levels'])):
+            row, rows = level_bytes(w, h, bits)
+            lost += row * rows
+            w, h = max(1, w // 2), max(1, h // 2)
+        c = held.setdefault(reason, [0, 0])
+        c[0] += 1
+        c[1] += lost
+
     for index, e in enumerate(entries):
         k = finest.get(e['key'], 0)
         if k <= 0:
             continue
         cut = texfit_trimmable(e)
         if cut is None:
+            hold('direct colour' if e['psm'] not in (4, 5) else 'change mask or CPU reads' if e.get('flags', 0) & (8 | 16)
+                 else 'composite or glow' if e['key'] & 3 else 'under 3 levels' if e['levels'] < 3
+                 else 'data past its levels', e, k)
             continue
+        if k > e['levels'] - 2:
+            hold('2 levels kept', e, k)
+            hold('2 levels kept (allowed back)', e, max(0, e['levels'] - 2))
         k = min(k, e['levels'] - 2)
         if k <= 0:
             continue
@@ -2269,6 +2290,12 @@ def texfit_table(entries, census, at):
     blob += struct.pack('<4sI', b'TFE1', table)
     print('texfit: %d textures from a finer level (census %d), %d KB of %d KB (%d KB less)' % (
         len(rows), len(finest), kept // 1024, whole // 1024, (whole - kept) // 1024), file=sys.stderr)
+    if '2 levels kept' in held:
+        a, b = held['2 levels kept'], held.pop('2 levels kept (allowed back)')
+        held['2 levels kept'] = [a[0], a[1] - b[1]]
+    print('texfit: held back from the census (textures, KB of levels it never sampled): %s' % (
+        '; '.join('%s %d, %d KB' % (r, c[0], c[1] // 1024) for r, c in sorted(held.items(), key=lambda kv: -kv[1][1]))
+        or 'none'), file=sys.stderr)
     return bytes(blob)
 
 
