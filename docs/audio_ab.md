@@ -15,7 +15,8 @@ Each 22,050 Hz block is mixed with no approximate path and with `audio_approx`, 
 Per report: the difference in dB below the mix (all, and three bands: under ~300 Hz, ~300 Hz-4 kHz, over ~4 kHz, by one-pole filters on both signals), its peak of 32,767, the worst block against its own mix, and the blocks whose voices' states after differed (a virtual voice that resumes in another place shows here).
 
 - With no approximate path on, every block is identical: the check of the check.
-- `audiocheckcal` adds a 1 kHz tone at -60 dB of full scale to the approximate side: the mid band must show it, peak 33.
+- `audiocheckcal` adds a 1 kHz tone at -60 dB of full scale (peak 33) to the approximate side. audcheck2 (42072112242) read it at 63.1 dB below full scale, peak 32: a sine's RMS is 3 dB under its peak, so the meter is right [E].
+- The mix is quiet: b30's flight runs ~47-50 dB below full scale, the beach ~20-25 [E]. So "below the mix" alone misleads in quiet stretches (the same tone read anywhere from 77 dB over to 42 dB under it), and the check logs the level against full scale as well. The bands are one-pole pairs (12 dB an octave): coarse, enough to say where a difference lies, not a spectrum.
 - Not yet in it: the 44.1 kHz work (the music, the half-band filter). A lever there extends the check first.
 
 ## Layer 2: a perceptual score [E]
@@ -46,7 +47,7 @@ And beside it a synthetic set that needs no game data at all: sweeps, tones, noi
 
 | Measured | Verdict |
 |---|---|
-| The difference at least 60 dB below the mix in every band, the score's drop under 0.1 | Sounds the same: the session's call, on by default |
+| The difference at least 60 dB below the mix in every band, or under -90 dB of full scale (16-bit output's own floor is ~-98), and the score's drop under 0.1 | Sounds the same: the session's call, on by default |
 | Between that and plainly audible | Sheepdog01's ABX decides |
 | Clearly audible | A compromise: catalogued, not built (CLAUDE.md) |
 
