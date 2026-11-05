@@ -149,6 +149,56 @@ What it says for the design [U]:
 - **The ME's room is uneven:** 25–48 ms a frame idle on b30 and d20's walk, about 15 on c20, none on d20's heavy view. A job moved to the ME has to fit beside the replay where it is longest.
 - **b40's ~5 ms a frame of sleep** is the light maps' headroom.
 
+## The GE's main-RAM reads inside the tick (lead A, 2026-11-04)
+
+The GE draws through most of the tick (above), and while it reads main RAM every tick miss costs more (`cpu_cost_map.md` §2). This section turns that into a figure: what the GE reads from main RAM, what share of it lands inside the ticks, and what that costs the tick.
+
+**How it's counted** [U on E and M]:
+- **Bytes:** `gereadskind` on tock162 with B58's emulator fix (lab sierra-batch 41964943382, Sierra-III `geoff/gecensus` 482d95b2) [E]. It counts the GE's main-RAM bytes by kind of draw and by part: vertices (v), indices (i), the list's own bytes with the data inline in it (l), textures once a frame (o), and palettes (p). It also places each byte by where in the frame's list it comes (quarters).
+- **Overlap:** the share of each quarter of the GE's busy time that falls inside the ticks, on the PSP [M]. b30's flight uses lane-hw2's quarters (96 / 96 / 94 / 51%, sierra-hw 40718998656). c20 uses lanetrace on tock162 (77 / 90 / 87 / 56%, 41942245562). The other stretches use ledger 3's GE-in-tick share, spread evenly.
+- **Price:** GEBUS's slopes [M on E]: 9.6 µs of tick for each KB a frame of geometry (v, i, l), 1.7 µs for each KB of textures.
+- **Where the GE can read from:** the GE reads only main RAM and VRAM [D]. The ME's eDRAM is private to the ME.
+
+| ms a frame of tick | b30 cinematic | b30 flight end (1802–2402) | c20 steady | d20 swamp walk | d20 flashlight on |
+|---|---:|---:|---:|---:|---:|
+| GE main-RAM KB a frame [E] | 1,788 | 3,447 | 1,454–1,883 | 948–1,157 | 1,090–1,281 |
+| Inside the ticks | 99% | 84% | 80% | 95% | 59% |
+| Vertices | 6.5 | 4.2 | 1.0 | 1.0 | 0.5 |
+| Indices | 2.1 | 3.8 | 1.0 | 0.5 | 0.3 |
+| **The list's own bytes** | 2.0 | **4.4** | **1.9** | **1.7** | **1.8** |
+| Textures + palettes | 1.1 | 2.8 | 1.6 | 1.1 | 0.7 |
+| **The toll** | **11.7** | **15.1** | **5.5** | **4.4** | **3.4** |
+| Of the tick (ledger 3) | 16% | 17% | 15% | 7% | 8% |
+
+- **b30 is the map where it matters.** The toll is ~7.5 ms a tick on the flight, a sixth of the tick. GEBUS measured 13.0 ms a frame on the flight directly (the GE held wholly outside the ticks, PSP-1000 [M]), within 16% of this count. c20's toll is 2.9 ms a tick and d20's is under 2.5.
+- **By kind:** on b30, models carry 60% of it (9.0 of 15.1 ms) and come first in the list (quarters 1–2, 96% inside the tick). The level comes second half (4.8 ms). On c20 the level leads (2.5 of 5.5). With the flashlight on d20, the light pass's list is the largest part (1.2 ms).
+- **The flight report is partial.** The flight's own reports (1202, 1802) lost their kind lines to the log; their vertex fit curves survived. The 2402 report covers the flight's end and the landing's start. w142's flight report (gereads1, 3,172 KB a frame) agrees within 9%.
+
+**What VRAM would take, and what a KB is worth** (b30's flight; [U on M]): the fit curve of the 1202 report. 128 main-RAM vertex buffers are read 832 KB a frame. Each step below holds the best buffers in VRAM, priced at 90% inside the tick and 9.6 µs a KB:
+
+| VRAM given to vertex buffers | KB a frame taken off main RAM | Tick saved, ms a frame | Per KB of VRAM |
+|---:|---:|---:|---:|
+| 200 KB | 408 (49%) | 3.5 | 17.6 µs |
+| 400 KB | 632 (76%) | 5.5 | 9.8 µs |
+| 600 KB | 765 (92%) | 6.6 | 5.7 µs |
+| 800 KB | 832 (100%) | 7.2 | 2.9 µs |
+
+- **The curve agrees with a measurement.** CTNG's +177 KB of copies' room measured −2.8 ms a frame on the flight, 15.8 µs a KB [M, VRSP-784 39661123709].
+- **Index lists are about as dense.** VRAMIDX's 153–234 KB of live lists carry ~410 KB a frame, worth up to ~3.8 ms.
+- **On the other maps the room is worth less.** On c20, 200 KB takes all 128 KB a frame of vertex reads: ~1.0 ms. On d20, 200 KB takes 43–47% of 108–148 KB: ~0.5 ms.
+
+**Where the room would come from:** nowhere, today. Ledger 4 (`memory_ledger.md` §0.4) has 13–48 KB of VRAM free in all: 2–16 in the textures' share and 11–32 in the copies' share, with the frame and depth buffers' 816 KB fixed. The eDRAM's 544 KB at 256–800 KB is the machine's largest free block, but the GE can't read it. The ME, which writes the list, can't see VRAM [D]. So keeping the overlap and moving the bytes needs VRAM freed first:
+- **Trading the textures' share:** closed on b30 (VRSP: untextured frames ×10, frame in the noise).
+- **Shrinking the copies:** MV14 measured a loss; MVDIET was dropped.
+- **Scanning the display out of main RAM:** rejected on arithmetic [U]. It would put ~16 MB/s of steady reads on the bus, more than the GE's geometry reads (~11 MB/s on the flight).
+
+The curve is the price to rank any future source of VRAM against: ~17 µs of b30 tick a frame for each KB of the first 200.
+
+**What the two other options cost** (step 2):
+- **The GE wholly out of the tick** (geserial, GEBUS, PSP-1000 [M]): tick −2.6 to −7.6 ms a tick, but frame +14 to +52 ms. The GE's work then runs in series, and on tock162 it is larger (83.6 ms a frame on b30's flight against GEBUS's 69). Not run again: tock162 differs only in the direction that strengthens that verdict.
+- **Gating the GE between ticks** (CTNT): parked as it was.
+- **Keeping the overlap:** what stays in the tick whatever VRAM gets is the list's own bytes (4.4 ms a frame on b30's flight; 1.7–1.9 on c20 and d20, the largest part there) and the textures (2.8 ms). The list is the next count: lever LISTBYTES (the lab's levers.tsv) splits it by command and looks for words the GE already holds.
+
 ## Gaps this ledger leaves
 
 - **The ME's report line is cut at 512 bytes,** so the AI slot job's own time, count and waits never print (every window of these runs). The fix is the report's, not the AI job's: split the line, or print the slots on lines of their own. Until then the AI job's row stays [U].
