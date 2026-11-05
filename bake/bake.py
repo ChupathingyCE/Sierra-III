@@ -578,8 +578,12 @@ def bake_map(name, retail, out_maps, work, track, keep_work, detail='', sound=''
         echo_from(name, log_path, start, ('levelslim:',))
     log('%s: textures' % name)
     start = os.path.getsize(log_path)
+    # every pack a level may open gets the trimmed copies: the asset track's
+    # is the one played (and the one the census sampled), so a table in the
+    # usual pack alone would leave texfit doing nothing
+    texfit = texfit_census(name, out_maps)
     run([sys.executable, os.path.join(LIB, 'texpack.py'), final, os.path.join(out_maps, name + '.ptex')] + TEXPACK_OPTIONS
-        + texfit_census(name, out_maps), log_path, cwd=LIB, env=env)
+        + texfit, log_path, cwd=LIB, env=env)
     echo_from(name, log_path, start, ('texfit:', 'tint ', 'see-through shaders tinted', 'meter shader maps', 'runtime reads', 'HUD sheets', 'glow ', 'detail mask', 'quality ',
                                 'kmeans compare summary', 'kmeans compare worse', 'bump relief') + MEASURES + ALPHA_LINES)
     # the main menu is the hardware's showcase (CLAUDE.md): a pack of its own
@@ -600,14 +604,14 @@ def bake_map(name, retail, out_maps, work, track, keep_work, detail='', sound=''
         log('%s: textures, asset track (half-size lightmaps, plants kept whole at a distance)' % name)
         start = os.path.getsize(log_path)
         run([sys.executable, os.path.join(LIB, 'texpack.py'), final, os.path.join(out_maps, name + '_track.ptex'),
-             '--lightmap-scale', '2', '--alpha-coverage', '--pgeo', pgeo] + TEXPACK_OPTIONS, log_path, cwd=LIB, env=env)
-        echo_from(name, log_path, start, ('lightmaps 1/', 'lightmaps whole', 'lightmap seams', 'lightmap charts')
+             '--lightmap-scale', '2', '--alpha-coverage', '--pgeo', pgeo] + TEXPACK_OPTIONS + texfit, log_path, cwd=LIB, env=env)
+        echo_from(name, log_path, start, ('texfit:', 'lightmaps 1/', 'lightmaps whole', 'lightmap seams', 'lightmap charts')
                   + MEASURES + ALPHA_LINES)
     if detail and name != 'ui':
         log('%s: textures at full size for %s' % (name, detail))
         start = os.path.getsize(log_path)
         run([sys.executable, os.path.join(LIB, 'texpack.py'), final, os.path.join(out_maps, name + '_detail.ptex'),
-             '--full-detail', detail] + TEXPACK_OPTIONS, log_path, cwd=LIB, env=env)
+             '--full-detail', detail] + TEXPACK_OPTIONS + texfit, log_path, cwd=LIB, env=env)
         echo_from(name, log_path, start, MEASURES)
     if name != 'ui':
         log('%s: wall decals' % name)
