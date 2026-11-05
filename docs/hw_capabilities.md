@@ -103,7 +103,7 @@ Labels: [M] measured on a PSP, [E] emulator or estimate, [D] read in code or doc
 | C1 | **The ME's capacity and scheduling.** On d20's heavy view the ME binds the frame and starves the GE | Frame time wherever the ME binds; capacity for more AI and effects | The frame timeline (ledger 3), then the scheduler's design | PSP runs (recon) |
 | C2 | **Lighting, split model and world** (recon's census, round 1): models already take all 4 GE lights, with no extra pass. The world pass is the cost where it's big (d20: 5,893 triangles a frame, machines' lights 3,244 and the flashlight 2,153; b30's bunker with the flashlight 1,533; the beach <300). Vehicles cost through the GE's vertex work (8,789 indices a frame each against a biped's 961), not lighting. ~92-95 of b30's ~100 attached-light relinks a frame are weapons whose lights never reach the pass | The world pass's share of the ME on d20 and in the bunker; the wasted relinks (DAL/LSAME ground); vehicles via their vertex counts | Round 2: the pass's counts and lc2's cache-model prices; then whether a projected-texture pass beats the ME's per-vertex work where the ME binds | Emulator, then a PSP pair |
 | C3 | **Memory Stick reads async, done right.** The design exists, never built: `streaming.md` §3, S1–S5 (one input stage owning the stick, prefetch by place, pack order, smallest mips first, pinned effects) | The streaming hitches (up to 98 ms a frame; the game thread waited for the stick 2.5 s a run, worst 767 ms [M, b114]); the caches sized to the working set | S1 first (one reader, its priority measured on the PSP), then S2–S3 with the bake | Code and the bake, then PSP pairs |
-| C4 | **The bus's priority** | If it exists, up to the GE's 8–18 ms cost to the CPU | No public source has one (§6.3); disassembly closed. The register snapshot (§6.4, run 2, 9 of 11 states) found no register that moves with load beyond clock, status and address words: none of the documented ones is a priority setting [M]. A static word may be one (DDR 0x30), testable only by a write (Sheepdog01's call). The snapshot's stops were not the registers: long kcalls with the ME running shut the PSP down (§6.4, §6.5) | Closed by reading |
+| C4 | **The bus's priority** | If it exists, up to the GE's 8–18 ms cost to the CPU | No public source has one (§6.3); disassembly closed. The register snapshot (§6.4, run 2, 9 of 11 states) found no register that moves with load beyond clock, status and address words: none of the documented ones is a priority setting [M]. A static word may be one (DDR 0x30), testable only by a write (Sheepdog01's call). The snapshot's stops were not the registers: kernel-mode time at a user address (seg-0 kcalls) shut the PSP down, the ME running or not (§6.4, §6.5) | Closed by reading |
 | C5 | **The VME's capability** | A third processor for fixed work | **Done 2026-11-04** (`vme_capability.md`): computes on both PSPs, 2 ops a cycle; candidates sized there (none ready: the mix's tail only, decode and palettes don't fit) | — |
 | C6 | **The VFPU's coverage:** the float inventory against tock161, and the approximation ops | Tick and drawing maths | Refresh `hardware_utilization.md` §3 | Code reading, emulator |
 | C7 | **DXT textures** | VRAM and RAM room (8 → 4 bits a texel on CLUT8 textures) | A bench of its sampling cost and look; Sheepdog01's call on the look | PSP bench |
@@ -209,7 +209,7 @@ Sources, all read only, no code taken: uofw (github.com/uofw/uofw 28306bb, GPL: 
 - **So, plainly: nothing public documents a bus arbiter or a per-master priority on the PSP.** Searched: uofw, jpcsp, PPSSPP, mcidclan's repositories, ARK-4's NID map, and the web for every function name. psdevwiki's register page was read earlier, from a saved copy (`psp_hardware_reference.md` §9.1).
   - The one named candidate, `sceDdrWriteMaxAllocate`, can't be read (disassembly closed). It could be called, as an export through kcall, but its arguments are unknown and a wrong value may hang the bus until power-off. **Not proposed without Sheepdog01's call.**
 
-### 6.4 The register snapshot by our own bench (13 runs on the PSP-1000; why it stopped)
+### 6.4 The register snapshot by our own bench (18 runs on the PSP-1000; why it stopped)
 
 - **The bench:** `bench/halo_bench16_regsnap` on branch `research/regsnap`.
   - It reads, in kernel mode and read-only, 241 documented registers in 11 blocks: memory access, system control, clock ratios, profiler, DMACplus, DMAC0/1, DDR, GE, GE eDRAM and audio. The ME reads its own short list (the clock-ratio words, its view of system control, the AVC transfer words).
@@ -249,8 +249,8 @@ Sources, all read only, no code taken: uofw (github.com/uofw/uofw 28306bb, GPL: 
   - **The profiler (0xBC400000 = 1: on)** counts in 0x04–0x44 in every state. Its spread scales with each state's length (30–45 s traced against ~30 ms untraced), so this run gives it no rates.
   - **So for C4:** no documented register exposes a bus priority, and nothing configurable answers to load. Whether a static word is one (DDR 0x30's per-nibble 0x11110410 is the likeliest look) can't be told by reading. Finding out takes a write, which stays Sheepdog01's call, like `sceDdrWriteMaxAllocate` (§6.3).
 
-- **Runs 3–13: what the stops need** (Sierra-III `research/regsnap` d1fe984b → 63d0b6a9, one PSP-1000 run each; the PSP on AC throughout, battery 99 %, 4218 mV, 20 °C in every supply line) [M unless marked]:
-  - **Each stop was the PSP switching itself off** (Sheepdog01 saw runs 2–13; run 1, unseen, ended with no answer at wall + 4 min, which a shutdown would also give). Not a freeze and not a reboot: like B47.
+- **Runs 3–18: what the stops need** (Sierra-III `research/regsnap` d1fe984b → ccc5d1ad, one PSP-1000 run each; the PSP on AC throughout, battery 99 %, 4218 mV, 20 °C in every supply line) [M unless marked]:
+  - **Each stop was the PSP switching itself off** (Sheepdog01 saw runs 2–17; run 1, unseen, ended with no answer at wall + 4 min, which a shutdown would also give). Not a freeze and not a reboot: like B47.
 
     | Run | Bench | Where it stopped, or "clean" |
     |---|---|---|
@@ -265,33 +265,48 @@ Sources, all read only, no code taken: uofw (github.com/uofw/uofw 28306bb, GPL: 
     | 11 41952011001 | the reads taken apart, ME | interrupt-off kcalls reading **through the cache** (no bus traffic past 64 lines): ~3 s, ~100 calls |
     | 12 41952406335 | the interrupts taken apart, ME | clean: **795,000 uncached main-RAM reads from user mode, interrupts on**; then cached kcalls with **interrupts on**: ~3 s |
     | 13 41952854966 | time in the kcall, ME | clean: 800 kcalls spinning 2 µs (≤ 8 µs measured); **kcalls spinning 10 µs, interrupts on, a counted nop loop touching nothing** (the timer read only before and after): ~1–2 s, ~80 calls |
+    | 14 41954147841 | 10 µs spins, **the ME never started** | ~36 calls, ~1 s, in the first stretch: the ME isn't needed |
+    | 15 41954703761 | 3 µs spins, no ME | ~615 calls, 15 s |
+    | 16 41954888207 | 10 µs spins, no ME, **a 20 ms delay in place of the stick write** | ~100 calls, ~2 s: the stick isn't needed either |
+    | 17 41955069726 | 10 µs spins, no ME, **at the kernel alias** (seg 0x80000000) | **clean: 809 calls of 35–103 µs**; then 10 µs at seg 0 with **interrupts off**: ~187 calls, ~4 s |
+    | 18 41955337648 | 10 µs spins at the alias: interrupts on, off, then with the ME polling | **clean: 810, 814 and 812 calls**, every call 35–97 µs |
 
-  - **So the cause [U, strong]: time spent inside a mcidclan kcall while the ME runs.** A kcall of ≳ 5–10 µs, whatever it does, shut the PSP down within ~50–100 calls with the ME up. Empty or 2 µs kcalls, user-mode work and the firmware's own long syscalls (each stick write is milliseconds in the kernel) did not. Without the ME, ~1,300 kcalls of the same kind were clean (run 5).
-  - So the register reads were never the cause. Every regsnap stop sat in a stretch of 5–40 µs kcalls (a snapshot, a block, a batch); the blocks named in the trails (eDRAM, GE, system control) are simply where the next long call fell.
-  - **Not yet separated** [U]. Each split is a ~2-minute PSP run (the handoff lists them):
-    - how kcall runs its function: user-segment code (seg 0) in kernel mode, just after `sceKernelIcacheInvalidateAll`;
-    - an interrupt taken inside the call (a stop per call in proportion to length × the interrupt rate; the threshold looks too sharp for a plain rate: 3–6 µs calls stopped after ~100, 6–7 µs eDRAM batches lasted ~2,700);
-    - the ME's polling as the partner (its quiet loop is untested: no run reached it);
-    - a 3–10 µs sweep for the threshold.
+  - **A spin's "µs" is nominal** (166 turns of a nop loop a µs). The alias stretches timed it at 35 µs a 10 µs call (35–36 with interrupts off), so a nominal µs is ~3.5 real ones [M]: 2 µs ≈ 7 µs (run 13 measured ≤ 8), 3 µs ≈ 10 µs, 10 µs ≈ 35 µs. The seg-0 stretches never reached their closing line, so their length is taken from the same loop at the alias [U, the same instructions].
+  - **The cause [M for the split, U for the mechanism]: kernel-mode time with the PC in the user segment.** mcidclan's `kcall(f, seg)` jumps to `seg | f`. With seg 0 (every call in this bench before run 17, and every kcall the game makes, §6.5) the function runs in kernel mode at its user address, 0x08xxxxxx. That is what switches the PSP off:
+    - **Not the ME:** without it, 10 µs spins stopped in ~36 calls (run 14) and 3 µs ones in ~615 (run 15).
+    - **Not the stick:** with a delay in place of each call's stick write, ~100 calls (run 16).
+    - **Not interrupts arriving inside the call alone:** with them off, ~187 calls (run 17). Those that arrive during the hold are taken at the resume, which is still inside the call.
+    - **Not kcall's way in, its I-cache invalidate or kernel mode as such:** the same spin at the kernel's cached alias of the same code (seg 0x80000000, the segment me-core-mapper's own mutex calls use) ran 3,245 calls clean, interrupts on and off, with and without the ME (runs 17–18, ~114 ms in the calls).
+  - **It is a rate, not a threshold** [M, the fit E]. Runs 13–17 at seg 0 gave 5 shutdowns in ~26 ms of time inside the calls (7 µs × 800 clean, 35 µs × ~80, ~36, ~100 and ~187, 10 µs × ~615): **about one per ~5 ms of user-segment kernel time**, in calls of any length. At that rate the alias's 114 ms would have given ~22. So no seg-0 call is safe, only a short one is unlikely to hit: an empty kcall's ~1 µs is ~0.02 % a call.
+  - **The mechanism [U].** The rate, ~200 a second, is near the PSP's interrupt rate (the vblank, the system timer, the stick's driver). The likeliest reading: an interrupt taken while the CPU is in kernel mode with its PC in the user segment is mishandled by the firmware's exception path (its context judged by the address), and the kernel's fault handling powers the PSP down. Not tested further: the split above is what our code needs.
+  - So the register reads were never the cause, and the ME was beside it, not in it. Every regsnap stop sat in a stretch of 5–40 µs seg-0 kcalls; the blocks the trails named (eDRAM, GE, system control) are where the next long call fell.
   - **mcidclan's `kcall()`** (me-core-mapper `kernel/main.c`) [D]: a plain export of a kernel module (attribute 0x1006). It invalidates the I-cache and calls `seg | f`. It touches neither k1 nor the stack; the firmware's syscall entry sets both, as for any syscall.
 - **For C4 the values above stand** (states 0–8 of run 2, read in kcalls the PSP survived). The stops were the bench's way of reading them, not the registers.
+- **The bench:** `ctlx` in Sierra-III `research/regsnap` ccc5d1ad takes a plan of spin stretches as keep words (`x<µs>` with `k` the alias, `o` interrupts off, `d` a delay in place of the stick write, `m` the ME started), so a split needs no rebuild.
 
-### 6.5 Rules for our own code while the ME runs [M from §6.4's runs; U where marked]
+### 6.5 Rules for our own code in kernel mode [M from §6.4's runs; E for call lengths read in code; U where marked]
 
-- **Keep every kcall short while the ME runs.** A kcall through me-core-mapper's `kcall()` should do a few register touches, under ~2 µs, and never a loop. 10 µs spins shut the PSP-1000 down in ~80 calls; 2 µs ones were clean for 800.
-  - Anything longer is either done with the ME held in reset (as `me_restart_kernel` does), or moved out of kernel mode.
-- **Safe with the ME running, measured:**
-  - user-mode uncached and cached reads of main RAM (795,000 in 20 s);
-  - the firmware's own syscalls, stick writes included (1,223 in 30 s);
-  - user-mode `sceKernelIcacheInvalidateAll` and `sceKernelCpuSuspendIntr`/`Resume`;
-  - empty kcalls (1,219 each).
-- **Hardware registers are not themselves the hazard.** Without the ME, 132,000 GE eDRAM reads ran clean under every GE load. Still, keep the GE's register space (0xBD4xxxxx, 0xBD5xxxxx) out of our code: the firmware's GE driver owns it, and with the GE's clock off (0xBC100050 bit 1) its registers read one stale bus word. The bus probe no longer reads them (Sierra-III tock162 c3f3dba5, b150 7e2f647a).
-- **Where the game stands** [D], every kcall the game makes with the ME up:
-  - launch: the CPU-number check (`me_cpu_number_kernel`) and the launch sysregs (`me_sysregs_running_kernel`);
-  - exit: `me_sysregs_kernel`, `me_hold_reset`;
-  - sleep and wake: `me_sleep_kernel`, `me_wake_kernel`, `me_restart_kernel` (long, but with the ME held in reset), the wake sysregs;
-  - an ME stop or fault: `me_hold_reset`;
-  - in play only with the keep word `sndtierdma` (off by default): `psp_me_dma_edram`'s start, poll loop and stop.
+- **Run kernel-mode code at a kernel address, never at its user address.** Call mcidclan's `kcall()` with seg `0x80000000` (`CACHED_KERNEL_MASK`), so the function runs at the kernel's cached alias of the same code (0x88xxxxxx). With seg 0 it runs in kernel mode at 0x08xxxxxx, and every µs there carries about a 1-in-5,000 chance of switching the PSP off, the ME running or not (§6.4).
+  - The same holds for any user-address function the firmware calls in kernel mode: a sysevent handler, an exception handler. Pass their alias.
+  - At the alias, the function's direct calls (`jal`) stay in the alias (a `jal` keeps the PC's top bits), and its import stubs work as before. A call through a function pointer to a plain user address would go back to the user segment: keep kernel functions free of them, or alias the pointer.
+  - Firmware calls (stick writes, cache calls, interrupt suspend) and real kernel modules (`halo_profile.prx`, `halo_crash.prx`) run at kernel addresses already: measured safe.
+- **Safe beside a running ME, measured:** user-mode memory traffic, uncached or not (795,000 reads in 20 s); the firmware's own syscalls, stick writes included; user-mode cache and interrupt calls; alias kcalls of any length (3,245 calls of 35–97 µs). The ME's polling is not a partner.
+- **Hardware registers are not themselves the hazard.** Still, keep the GE's register space (0xBD4xxxxx, 0xBD5xxxxx) out of our code: the firmware's GE driver owns it, and with the GE's clock off (0xBC100050 bit 1) its registers read one stale bus word. The bus probe no longer reads them (Sierra-III tock162 c3f3dba5, b150 7e2f647a).
+- **Where the game stands** (tock162 c3f3dba5, `psp/src/psp_me.c` and the me-core-mapper library it links). Every entry is at seg 0 today. Lengths are the time at a user PC, read from the code [E]; time inside a firmware call it makes doesn't count:
 
-  All are short register touches, so the game is barely exposed. B47 (the PSP-3000 off at the ME's start) fits only if a launch kcall ran long [U].
-- **The lab's benches that make many kcalls with the ME up:** halo_bench16_regsnap (all its runs). halo_bench15_vmecap (recon/vme-r4: 11 kcall sites, tens of calls, csc and hardware-mutex tests; vme-dma, vme-dmafast: 3) has low exposure, but a result cut short there by a shutdown would look like this.
+  | Where | Kernel-mode code at a user address | When | Length [E] |
+  |---|---|---|---|
+  | 2276 `meLibDefaultInit()` (library) | `kcall(meLibInit, 0)`: the witness word, the table pick, `meLibReset` (the ~276-byte handler copied to 0xBFC00000 uncached, then the cache calls and the reset pulse) | each launch | ~2–10 µs |
+  | same, `kinit(eventHandler)` (library) | the library's `eventHandler`, installed as the firmware's ME sysevent handler; on sleep and wake it runs the game's `meLibOnSleep` / `meLibOnWake` (with `mewakeearly`, the whole restart) | every sysevent of that handler; sleep, wake | < 1 µs a call; ~5–10 µs with `mewakeearly` |
+  | 2190 `me_cpu_number_kernel` | one CP0 read | launch | < 1 µs |
+  | 2334 `me_sysregs_running_kernel` / `me_sysregs_kernel` | 4–8 register reads | launch | ~1 µs |
+  | 1981, 2043, 2303, 4272 `me_hold_reset` | the reset written | an ME stop or fault, the exit, a failed start | < 1 µs |
+  | 2047, 4269 `me_sysregs_kernel` | 8 register reads | exit; after a restart | ~1 µs |
+  | 4264 `me_restart_kernel` | two register snapshots, the reset held, the stub and handler (~376 bytes) copied uncached, the reset released | each wake from sleep (`psp_me_wake_poll`) | ~3–10 µs |
+  | 4334, 4354 `me_sleep_kernel`, `me_wake_kernel` | `meLibOnSleep` / `meLibOnWake` | `mewaketest` only | < 1 µs |
+  | 2151–2158 `dmacp_start/poll/stop_kernel` | a few DMACplus registers a call, the poll a loop of calls | `sndtierdma` only (off) | < 1 µs a call; the poll's total grows with the transfer |
+  | `halo_crash.prx`'s handler (0x08AC28FC in one build) | the game's exception handler, entered in kernel mode at its user address | a crash only | n/a |
+
+  - So a launch spends some ~5–15 µs at a user PC in kernel mode, a wake ~5–10: about **0.1–0.3 % a launch** at §6.4's rate [E]. Over the rig's hundreds of launches that is a few shutdowns. **B47** (the PSP-3000 off with the log ending at `ME: starting the Media Engine`, i.e. inside `meLibDefaultInit`) fits it [U]; the bus probe it was put on is cleared by §6.4 (the registers aren't the hazard, and `halo_profile.prx` runs at kernel addresses).
+- **The fix** (a proposal for the master, the lab's `coord/handoff/regsnap3_2026-11-04.md`): every kcall through the alias, the launch's library init done by the game itself through the alias, and the sysevent handler installed at its alias.
+- **The lab's benches that make many kcalls:** halo_bench16_regsnap (every run before ctlx's `k`); halo_bench15_vmecap (recon/vme-r4: 11 kcall sites, tens of calls, csc and hardware-mutex tests; vme-dma, vme-dmafast: 3), whose own seg-0 calls are short but whose result cut short by a shutdown would look like this. Pass seg `0x80000000` in new bench code.

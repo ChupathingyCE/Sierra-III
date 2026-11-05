@@ -32,11 +32,12 @@
 
 ---
 
-### 1.2 Kernel calls while the ME runs (2026-11-04; `hw_capabilities.md` §6.4–6.5) [M]
+### 1.2 Kernel-mode code at a user address (2026-11-04; `hw_capabilities.md` §6.4–6.5) [M]
 
-- **A me-core-mapper `kcall()` that lasts ≳ 5–10 µs while the ME runs can switch the PSP-1000 off.** It's a power-off, not a hang. A counted nop loop of 10 µs inside the call did it within ~80 calls; 2 µs calls ran 800 clean. Without the ME, the same calls were clean.
-- So: with the ME up, keep each kcall to a few register touches (under ~2 µs), never a loop, or hold the ME in reset first.
-- Measured safe beside a running ME: user-mode memory traffic, uncached or not; the firmware's own syscalls, stick writes included; user-mode cache and interrupt calls; empty kcalls.
+- **Kernel-mode code running at a user address can switch the PSP-1000 off,** the ME running or not. It's a power-off, not a hang. mcidclan's `kcall(f, 0)` runs `f` in kernel mode at 0x08xxxxxx: about one shutdown per ~5 ms spent there (5 in ~26 ms over calls of 7–35 µs), so a rate per µs, not a length threshold.
+- **The same code at the kernel's cached alias is clean:** `kcall(f, 0x80000000)` ran 3,245 calls of 35–97 µs, interrupts on and off, with and without the ME.
+- So: call every kernel function through the alias (`CACHED_KERNEL_MASK`), and hand the firmware the alias of any user-address handler it will call in kernel mode (sysevent, exception). Firmware calls and real kernel modules are already at kernel addresses.
+- Ruled out by split: the ME's polling, the stick's writes, interrupts arriving inside the call alone (with them off it still stops), kcall's I-cache invalidate, and the hardware registers (132,000 eDRAM reads clean).
 - **Leave the GE's register space (0xBD400000–0xBD5000FF) to the firmware's driver.** The registers aren't the hazard (132,000 eDRAM reads ran clean without the ME). But with the GE's bus clock off (0xBC100050 bit 1) they read one stale bus word, and the driver owns them.
 
 ## 2. The Media Engine, in detail
