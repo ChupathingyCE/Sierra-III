@@ -103,7 +103,7 @@ Labels: [M] measured on a PSP, [E] emulator or estimate, [D] read in code or doc
 | C1 | **The ME's capacity and scheduling.** On d20's heavy view the ME binds the frame and starves the GE | Frame time wherever the ME binds; capacity for more AI and effects | The frame timeline (ledger 3), then the scheduler's design | PSP runs (recon) |
 | C2 | **Lighting, split model and world** (recon's census, round 1): models already take all 4 GE lights, with no extra pass. The world pass is the cost where it's big (d20: 5,893 triangles a frame, machines' lights 3,244 and the flashlight 2,153; b30's bunker with the flashlight 1,533; the beach <300). Vehicles cost through the GE's vertex work (8,789 indices a frame each against a biped's 961), not lighting. ~92-95 of b30's ~100 attached-light relinks a frame are weapons whose lights never reach the pass | The world pass's share of the ME on d20 and in the bunker; the wasted relinks (DAL/LSAME ground); vehicles via their vertex counts | Round 2: the pass's counts and lc2's cache-model prices; then whether a projected-texture pass beats the ME's per-vertex work where the ME binds | Emulator, then a PSP pair |
 | C3 | **Memory Stick reads async, done right.** The design exists, never built: `streaming.md` §3, S1–S5 (one input stage owning the stick, prefetch by place, pack order, smallest mips first, pinned effects) | The streaming hitches (up to 98 ms a frame; the game thread waited for the stick 2.5 s a run, worst 767 ms [M, b114]); the caches sized to the working set | S1 first (one reader, its priority measured on the PSP), then S2–S3 with the bake | Code and the bake, then PSP pairs |
-| C4 | **The bus's priority** | If it exists, up to the GE's 8–18 ms cost to the CPU | No public source has one (§6.3); disassembly closed. The register snapshot (§6.4, two PSP-1000 runs, 9 of 11 states) found no register that moves with load beyond clock, status and address words: none of the documented ones is a priority setting [M]. A static word may be one (DDR 0x30), testable only by a write (Sheepdog01's call) | Closed by reading. Left: run 1's VRAM hang and run 2's stop in the second idle state (d1fe984b traces both; a third run only with the master's OK) |
+| C4 | **The bus's priority** | If it exists, up to the GE's 8–18 ms cost to the CPU | No public source has one (§6.3); disassembly closed. The register snapshot (§6.4, run 2, 9 of 11 states) found no register that moves with load beyond clock, status and address words: none of the documented ones is a priority setting [M]. A static word may be one (DDR 0x30), testable only by a write (Sheepdog01's call). The snapshot's stops were not the registers: long kcalls with the ME running shut the PSP down (§6.4, §6.5) | Closed by reading |
 | C5 | **The VME's capability** | A third processor for fixed work | **Done 2026-11-04** (`vme_capability.md`): computes on both PSPs, 2 ops a cycle; candidates sized there (none ready: the mix's tail only, decode and palettes don't fit) | — |
 | C6 | **The VFPU's coverage:** the float inventory against tock161, and the approximation ops | Tick and drawing maths | Refresh `hardware_utilization.md` §3 | Code reading, emulator |
 | C7 | **DXT textures** | VRAM and RAM room (8 → 4 bits a texel on CLUT8 textures) | A bench of its sampling cost and look; Sheepdog01's call on the look | PSP bench |
@@ -209,7 +209,7 @@ Sources, all read only, no code taken: uofw (github.com/uofw/uofw 28306bb, GPL: 
 - **So, plainly: nothing public documents a bus arbiter or a per-master priority on the PSP.** Searched: uofw, jpcsp, PPSSPP, mcidclan's repositories, ARK-4's NID map, and the web for every function name. psdevwiki's register page was read earlier, from a saved copy (`psp_hardware_reference.md` §9.1).
   - The one named candidate, `sceDdrWriteMaxAllocate`, can't be read (disassembly closed). It could be called, as an export through kcall, but its arguments are unknown and a wrong value may hang the bus until power-off. **Not proposed without Sheepdog01's call.**
 
-### 6.4 The register snapshot by our own bench (two runs on the PSP-1000; 9 of 11 states read)
+### 6.4 The register snapshot by our own bench (13 runs on the PSP-1000; why it stopped)
 
 - **The bench:** `bench/halo_bench16_regsnap` on branch `research/regsnap`.
   - It reads, in kernel mode and read-only, 241 documented registers in 11 blocks: memory access, system control, clock ratios, profiler, DMACplus, DMAC0/1, DDR, GE, GE eDRAM and audio. The ME reads its own short list (the clock-ratio words, its view of system control, the AVC transfer words).
@@ -221,7 +221,7 @@ Sources, all read only, no code taken: uofw (github.com/uofw/uofw 28306bb, GPL: 
   - The first pass read all 11 blocks idle, 2–7 µs a block (DMAC0/1 clock off, skipped). States 0–4 completed, 37–48 µs a snapshot. The ME's counter ran 331.35 cycles a µs (§6.2: the ME at the CPU's full clock).
   - It hung in the GE-from-VRAM state, untraced, with every value still in memory.
 
-- **Run 2** (f5d0e898, bench-hw 41942770497, launched 18:38:32; Sheepdog01 power-cycled the PSP at ~18:40:36) [M]:
+- **Run 2** (f5d0e898, bench-hw 41942770497, launched 18:38:32; the PSP **switched itself off** ~18:40, Sheepdog01's report) [M]:
   - **States 0–8 came back with their values.** That includes both traced GE states: 48 samples, each reading all 29 GE and GE eDRAM registers one at a time under the GE texturing from main RAM (with the ME, the system DMAC and audio beside it in state 8). None of them hung. So reading the GE blocks under GE load from main RAM is cleared.
   - **It stopped in state 9, the ME idle again, before the VRAM state began.** state 8's table is the log's last text. Every contender (the GE thread, the DMA thread, the audio channel's release, the ME's stream) had ended before that table was written, and state 9 writes its own table before the VRAM state starts. State 9's work is bounded at ~2 s (the ME's 2 s answer wait, then 24 snapshots of ~40 µs). Yet nothing came for the ≥ ~40 s up to the power cycle [E: state 8 ran ~44.5 s by its 1,918 audio blocks of 23.2 ms; state 4 ≤ 33 s by its sample spans].
   - **The cause [U]**, two candidates, both inside state 9 (its reads were untraced):
@@ -248,3 +248,50 @@ Sources, all read only, no code taken: uofw (github.com/uofw/uofw 28306bb, GPL: 
     Both are status bits [U], not settings.
   - **The profiler (0xBC400000 = 1: on)** counts in 0x04–0x44 in every state. Its spread scales with each state's length (30–45 s traced against ~30 ms untraced), so this run gives it no rates.
   - **So for C4:** no documented register exposes a bus priority, and nothing configurable answers to load. Whether a static word is one (DDR 0x30's per-nibble 0x11110410 is the likeliest look) can't be told by reading. Finding out takes a write, which stays Sheepdog01's call, like `sceDdrWriteMaxAllocate` (§6.3).
+
+- **Runs 3–13: what the stops need** (Sierra-III `research/regsnap` d1fe984b → 63d0b6a9, one PSP-1000 run each; the PSP on AC throughout, battery 99 %, 4218 mV, 20 °C in every supply line) [M unless marked]:
+  - **Each stop was the PSP switching itself off** (Sheepdog01 saw runs 2–13; run 1, unseen, ended with no answer at wall + 4 min, which a shutdown would also give). Not a freeze and not a reboot: like B47.
+
+    | Run | Bench | Where it stopped, or "clean" |
+    |---|---|---|
+    | 3 41944515417 | the states, traced | state 4 (GE from RAM), sample 5, on 0xBD500080 |
+    | 4 41945381801 | eDRAM left out under GE load | state 5 (system DMAC), untraced |
+    | 5 41947077100 | eDRAM probe, **no ME** | clean: 132,000 eDRAM reads (GE idle, under RAM and VRAM load, after), 30 s of GE load with no reads |
+    | 6 41948011177 | eDRAM probe, ME started | the ME 20 s alone clean; then GE idle, round 25 on 0xBD500040 (~27,000 reads) |
+    | 7 41949300166 | block probe, ME | round 0, the GE block (its clock off) |
+    | 8 41950051159 | block probe, GE blocks gated | round 8, system control (~100,000 reads of the plain blocks first) |
+    | 9 41950804503 | control probe, ME | **the ME alone 90 s clean; 1,223 stick writes clean**; then interrupt-off kcalls reading only main RAM: ~1.4 s, ~52 calls |
+    | 10 41951469181 | the kcall taken apart, ME | clean: 1,205 user-mode I-cache invalidates, 1,219 interrupt suspends, 1,219 empty kcalls; then the main-RAM kcalls: ~1.3 s, ~49 calls |
+    | 11 41952011001 | the reads taken apart, ME | interrupt-off kcalls reading **through the cache** (no bus traffic past 64 lines): ~3 s, ~100 calls |
+    | 12 41952406335 | the interrupts taken apart, ME | clean: **795,000 uncached main-RAM reads from user mode, interrupts on**; then cached kcalls with **interrupts on**: ~3 s |
+    | 13 41952854966 | time in the kcall, ME | clean: 800 kcalls spinning 2 µs (≤ 8 µs measured); **kcalls spinning 10 µs, interrupts on, a counted nop loop touching nothing** (the timer read only before and after): ~1–2 s, ~80 calls |
+
+  - **So the cause [U, strong]: time spent inside a mcidclan kcall while the ME runs.** A kcall of ≳ 5–10 µs, whatever it does, shut the PSP down within ~50–100 calls with the ME up. Empty or 2 µs kcalls, user-mode work and the firmware's own long syscalls (each stick write is milliseconds in the kernel) did not. Without the ME, ~1,300 kcalls of the same kind were clean (run 5).
+  - So the register reads were never the cause. Every regsnap stop sat in a stretch of 5–40 µs kcalls (a snapshot, a block, a batch); the blocks named in the trails (eDRAM, GE, system control) are simply where the next long call fell.
+  - **Not yet separated** [U]. Each split is a ~2-minute PSP run (the handoff lists them):
+    - how kcall runs its function: user-segment code (seg 0) in kernel mode, just after `sceKernelIcacheInvalidateAll`;
+    - an interrupt taken inside the call (a stop per call in proportion to length × the interrupt rate; the threshold looks too sharp for a plain rate: 3–6 µs calls stopped after ~100, 6–7 µs eDRAM batches lasted ~2,700);
+    - the ME's polling as the partner (its quiet loop is untested: no run reached it);
+    - a 3–10 µs sweep for the threshold.
+  - **mcidclan's `kcall()`** (me-core-mapper `kernel/main.c`) [D]: a plain export of a kernel module (attribute 0x1006). It invalidates the I-cache and calls `seg | f`. It touches neither k1 nor the stack; the firmware's syscall entry sets both, as for any syscall.
+- **For C4 the values above stand** (states 0–8 of run 2, read in kcalls the PSP survived). The stops were the bench's way of reading them, not the registers.
+
+### 6.5 Rules for our own code while the ME runs [M from §6.4's runs; U where marked]
+
+- **Keep every kcall short while the ME runs.** A kcall through me-core-mapper's `kcall()` should do a few register touches, under ~2 µs, and never a loop. 10 µs spins shut the PSP-1000 down in ~80 calls; 2 µs ones were clean for 800.
+  - Anything longer is either done with the ME held in reset (as `me_restart_kernel` does), or moved out of kernel mode.
+- **Safe with the ME running, measured:**
+  - user-mode uncached and cached reads of main RAM (795,000 in 20 s);
+  - the firmware's own syscalls, stick writes included (1,223 in 30 s);
+  - user-mode `sceKernelIcacheInvalidateAll` and `sceKernelCpuSuspendIntr`/`Resume`;
+  - empty kcalls (1,219 each).
+- **Hardware registers are not themselves the hazard.** Without the ME, 132,000 GE eDRAM reads ran clean under every GE load. Still, keep the GE's register space (0xBD4xxxxx, 0xBD5xxxxx) out of our code: the firmware's GE driver owns it, and with the GE's clock off (0xBC100050 bit 1) its registers read one stale bus word. The bus probe no longer reads them (Sierra-III tock162 c3f3dba5, b150 7e2f647a).
+- **Where the game stands** [D], every kcall the game makes with the ME up:
+  - launch: the CPU-number check (`me_cpu_number_kernel`) and the launch sysregs (`me_sysregs_running_kernel`);
+  - exit: `me_sysregs_kernel`, `me_hold_reset`;
+  - sleep and wake: `me_sleep_kernel`, `me_wake_kernel`, `me_restart_kernel` (long, but with the ME held in reset), the wake sysregs;
+  - an ME stop or fault: `me_hold_reset`;
+  - in play only with the keep word `sndtierdma` (off by default): `psp_me_dma_edram`'s start, poll loop and stop.
+
+  All are short register touches, so the game is barely exposed. B47 (the PSP-3000 off at the ME's start) fits only if a launch kcall ran long [U].
+- **The lab's benches that make many kcalls with the ME up:** halo_bench16_regsnap (all its runs). halo_bench15_vmecap (recon/vme-r4: 11 kcall sites, tens of calls, csc and hardware-mutex tests; vme-dma, vme-dmafast: 3) has low exposure, but a result cut short there by a shutdown would look like this.

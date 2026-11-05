@@ -32,6 +32,13 @@
 
 ---
 
+### 1.2 Kernel calls while the ME runs (2026-11-04; `hw_capabilities.md` §6.4–6.5) [M]
+
+- **A me-core-mapper `kcall()` that lasts ≳ 5–10 µs while the ME runs can switch the PSP-1000 off.** It's a power-off, not a hang. A counted nop loop of 10 µs inside the call did it within ~80 calls; 2 µs calls ran 800 clean. Without the ME, the same calls were clean.
+- So: with the ME up, keep each kcall to a few register touches (under ~2 µs), never a loop, or hold the ME in reset first.
+- Measured safe beside a running ME: user-mode memory traffic, uncached or not; the firmware's own syscalls, stick writes included; user-mode cache and interrupt calls; empty kcalls.
+- **Leave the GE's register space (0xBD400000–0xBD5000FF) to the firmware's driver.** The registers aren't the hazard (132,000 eDRAM reads ran clean without the ME). But with the GE's bus clock off (0xBC100050 bit 1) they read one stale bus word, and the driver owns them.
+
 ## 2. The Media Engine, in detail
 
 ### 2.1 How code gets onto it [D, from mcidclan's `me-core-custom.c`, `me-core.h`, `kernel/main.c`]
