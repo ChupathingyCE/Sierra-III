@@ -1,6 +1,6 @@
 # Visibility on the ME, slice 2: the answer ready when it's read
 
-**Status:** built, both off by default: `mevispush` (FIXES_MEVISLAND in `psp_fixups.py`: `main.c`'s `main_game_render`, `render.c`'s `render_window`, the C at mevis's tail in `structure_visibility.c`) and `ringslotdone` (`psp/src/psp_me.c`, `psp_me_push`'s busy test). The proofs are in section 8 as they come in. MEVISEARLY slice 2, lever MEVISPUSH, with RINGSLOTDONE beside it. It follows `mevis_landing.md` (the landing, the placement, "The rest's stale walk time") and `frame_timeline.md`'s B1 table, row 1.
+**Status:** built, both off by default: `mevispush` (FIXES_MEVISLAND in `psp_fixups.py`: `main.c`'s `main_game_render`, `render.c`'s `render_window`, the C at mevis's tail in `structure_visibility.c`) and `ringslotdone` (`psp/src/psp_me.c`, `psp_me_push`'s busy test). Exact in the emulator and priced on the PSP-3000 (section 8): b30's beach frame −2.6 ms. MEVISEARLY slice 2, lever MEVISPUSH, with RINGSLOTDONE beside it. It follows `mevis_landing.md` (the landing, the placement, "The rest's stale walk time") and `frame_timeline.md`'s B1 table, row 1.
 
 Evidence labels: [M] measured on the PSP, [E] emulator, [D] read in code, [U] inference.
 
@@ -145,4 +145,20 @@ The code is in `psp_fixups.py` (FIXES_MEVISLAND: `main.c`'s `main_game_render` a
 - `mevispush`: the sound ran after the push in 300 of 300 frames in every line, the main menu included. The front door went from the menu into a10 clean.
 - `ringslotdone`: refusals for a busy ME 1,909 -> 0 on b30, 612 -> 0 on c20, 1,185 -> 0 on d20, with ring jobs 6,454 -> 7,963, 4,792 -> 5,326, 3,563 -> 4,489. The emulator runs a copy inside its submit, so every copy has finished when the next push comes; on the PSP a copy still running refuses, for its ~0.4 ms.
 
-**Price [M]:** the PSP pair (section 5), as it is read.
+**Price [M]** (the PSP pair of section 5, on the PSP-3000: b30's timed route, `mevisprobeoff | mevispush ringslotdone`, 2 runs a side, beach 2,700-3,700):
+
+| | today's default (mevisprobeoff) | the slice (with MEVISPROBE) |
+|---|---|---|
+| Frame by the clock, ms | 95.7 (96.4, 95.1) | **93.1** (91.6, 94.6) |
+| Drawing, ms | 24.8 (25.2, 24.4) | **21.6** (22.1, 21.1) |
+| Tick, ms | 32.4 (32.5, 32.3) | 33.0 (32.0, 34.0) |
+| Views the ME's answer used, of 600 | 324, 327 | 584, 584 |
+| Made here: ring refusals / placement | 79, 67 / 197, 206 | 0, 0 / 16, 16 |
+| The wait at the first reader, ms a view | 1.39, 1.50 | 0.81, 0.78 |
+| Ring jobs / refused for a busy ME | 1,432, 1,466 / 493, 489 | 1,944, 2,101 / 2, 0 (614-650 passed a finished copy) |
+| The ME busy | 61%, 60% | 66%, 63% |
+| The GE inside the ticks, ms a frame | 30.4, 30.3 | 30.2, 30.6 |
+
+- The frame is 2.6 ms faster (−2.7%), past the PSP-3000's 0.5 ms floor, and the sides' runs don't overlap. abreport's own spread test calls it noise because the slice's two runs differ by 3.0 ms. The drawing's −3.2 ms is real by any test. The flight (300-1,800) is the same: frame −0.4 ms, inside the floor.
+- The wait fell to ~0.8 ms a view, inside section 6's 0.7-1.5, and the ME took 97% of views against 54%. The ring's refusals went to ~0. The ME stays under the main CPU (63-66% busy).
+- The tick's +0.6 ms is one run (run 4: 34.0 against 32.0-32.5), as slice 1's +1.7 was (its run 3). The GE inside the ticks didn't move. It is worth a look on the PSP-1000 before the default flips: two slices each with one slow-tick run.
