@@ -930,6 +930,34 @@ static void __attribute__((noinline, cold)) inflight_room_park(void)
 	inflight_room_check(1);
 }
 
+/* a record past DEFER_LARGEST runs as it comes, after a drain of what waits:
+with frames in flight that drain is a render job the main CPU sleeps through
+mid-drawing, and a call that keeps coming (a decal at its 256-quad cap needs
+8 + 4,096 words) pays it every frame. A buffer larger than the plain one
+(geinflight's) keeps records up to a quarter of itself, as the plain one
+does at DEFER_LARGEST, so they replay in flight with the rest.
+"drainflightoff": the plain bound everywhere */
+static PSP_MAIN_SIDE int drainflight_on = -1;
+static PSP_MAIN_SIDE unsigned long defer_kept_large = 0, defer_large_words_most = 0;
+static PSP_MAIN_SIDE int defer_large_kind = -1;
+
+static int __attribute__((noinline)) defer_too_large_for(int kind, unsigned int words)
+{
+	if (words > defer_large_words_most)
+	{
+		defer_large_words_most = words;
+		defer_large_kind = kind;
+	}
+	if (drainflight_on < 0)
+		drainflight_on = !psp_keep("drainflightoff");
+	if (drainflight_on && defer_limit > DEFER_WORDS && words <= defer_limit / 4)
+	{
+		defer_kept_large++;
+		return 0;
+	}
+	return 1;
+}
+
 static defer_word *defer_take(int kind, unsigned int words)
 {
 	defer_word *at;
@@ -938,7 +966,7 @@ static defer_word *defer_take(int kind, unsigned int words)
 		inflight_room_park();
 	if (inflight_pending)
 		inflight_sync();
-	if (words > DEFER_LARGEST)
+	if (words > DEFER_LARGEST && defer_too_large_for(kind, words))
 	{
 		defer_too_large++;
 		GE_DEFER_DRAIN();
@@ -25626,6 +25654,14 @@ static void frame_end_show(void)
 			if (defer_on)
 				platform_log("GE: gedefer: %lu calls deferred, carried out in %lu runs (%lu when the buffer filled); ran as they came: %lu models with more than %d nodes, %lu calls too large",
 					defer_records, defer_drains, defer_drains_full, defer_big_models, DEFER_MAX_NODES, defer_too_large);
+			if (defer_on && defer_large_kind >= 0)
+			{
+				platform_log("GE: drainflight: records past %d words: %lu kept in flight, %lu ran as they came; the largest %lu words (kind %d)%s",
+					DEFER_LARGEST, defer_kept_large, defer_too_large, defer_large_words_most, defer_large_kind,
+					drainflight_on > 0 ? "" : " (drainflightoff)");
+				defer_kept_large = defer_large_words_most = 0;
+				defer_large_kind = -1;
+			}
 			if (inflight_on && inflight_frames)
 			{
 				platform_log("GE: geinflight: %lu frames carried out after the next frame's ticks (%lu of them on the Media Engine, %lu stall addresses passed on while out), %lu KB a frame written down (fullest %lu KB of %u)",
