@@ -244,6 +244,52 @@ A frame in flight lasts about as long as its busiest unit's work, since the unit
 
 So the ME scheduler's rebuild buys on one kind of stretch only: where a heavy light pass puts the replay past the ticks (d20's flashlight, capacity4's hands-off beach). Its best single move there is a replay split by measured fit, worth up to ~10 ms on d20's heavy view; audio on the VFPU is next. On the main-CPU-bound stretches the ME's room is the prize, and it goes to work moved onto the ME, not off it.
 
+## b40 late: the cliff path and the snowfield fight (2026-11-04)
+
+Sheepdog01's b150 hand test on the PSP-1000 slowed to 5-10 fps late in b40: on the cliff path to the bridge (level 0, z ~48) and in the snowfield fight below it (level 0, z ~0) [M, his logs]. This section makes both stretches reproducible and reads their frames as the stretches above.
+
+**The recipe.** The lab's route `b40_b150hand_timed` replays his first try through the fight, position by position on his clock (`route_from_log.py --timed --map b40`, his log cut before its revert). It reaches levels 0, 4 and 0 by itself, and the fight spawns as it did for him. Forcing the BSP switches by command makes them flap. A shortcut that starts at the elevator's foot reaches level 0 with no enemies (1 biped a tick): the encounters follow the level's script, which needs the whole path [E, lab sierra-batch 41970036866]. On the PSP: `init = "cheat_deathless_player 1"`, `exitat518`, wall 1200 s; it takes ~13 minutes. The route replays positions, not shooting, so no enemy dies: the snowfield has 30 bipeds a tick against ~21 in Sheepdog01's play.
+
+**The run.** Tock162 d76ff14b, strict on campaign-w162d, layouts w161a_tgc90 and hotg161a, bake w157m: the build of the lead B rows above. The ledger 3 keep set with `geo2` (Sheepdog01's) and `lanetraceat14500`. One run (lab sierra-hw 41971570306, PSP-3000, exited at game time 15,475).
+
+| ms a frame [M] | upper: cliff path (5,100-7,350) | lower: snowfield fight (14,350-15,500) | lower, Sheepdog01's play (b150, PSP-1000) |
+|---|---|---|---|
+| **Frame** | 118.9 (8.4 fps) | 136.5 (7.3 fps) | 133.0 (7.5 fps) |
+| tick (one tick; ticks a frame) | 78.4 (39.4; 2.00) | 81.2 (42.2; 1.91) | 60.0 (35.0; 1.7) |
+| drawing, working | 31.9 | 32.9 | 44.4 |
+| drawing, asleep | 1.8 | **14.9** | 19.8 |
+| other | 6.6 | 6.7 | 8.5 |
+| tick waiting on memory, % of its cycles | 68% | 64% | |
+| tick I / D misses, writebacks a million cycles | 3,782 / 2,488, 855 | 4,287 / 2,934, 957 | |
+| *ME* (busy %) | 69% | 37% | 34% |
+| the replay (render jobs) | 46.1 | 21.7 (two a frame) | 24.5 |
+| audio | 23.7 | 10.2 | 9.1 |
+| the AI job | 11.8 | 12.6 | |
+| ring jobs | 2.8 | 3.7 | 2.8 |
+| main CPU's wait for the render jobs | 0.6 | **15.6** | 12.2 |
+| *GE* busy (inside the ticks) | 46.3 (45.5) | 36.7 (27.8) | |
+| GE idle in a list | 3.1 | 0.1 | |
+| *What the tick carries, a tick* | | | |
+| actors updated (thinking, aicad3) | ~18.5 (~10) | ~23 (~12) | |
+| bipeds, vehicles, projectiles | 16.9, 7.0, 19.8 | 30.0, 9.9, 0.1 | 20.7, 2.6, - (at the switch) |
+| scenery updates | 126 | 116 | |
+
+Sheepdog01's column comes from his own log (lab psp-probe 41967536333, `014_log.txt`, 14,363-15,305, before the ME stopped there: B62, the master's). His build is b150 (tock161's code). His drawing's sleep was the replay's wait 12.2 ms plus texture reads, ~6 ms a frame. His texture cache was more starved than the route's run: 4,632 requests waited for room in the stretch, against 105 [M]. A whole evening's play had filled it.
+
+**What binds both: the main CPU's ticks.** The tick takes 66% of the upper frame and 60% of the lower. One tick costs 39-42 ms, more than a whole 30 fps frame, and two run in every frame. The ME has room on both (31% idle upper, 63% lower). The GE is busy 31-39% of the clock and almost never stalls on the ME. These are b30's beach and d20's walk again, with a heavier tick: b30's beach ticks 32 ms a tick on the same build [M, the ME per job above].
+
+**The lower zone's second cost: a synchronous render job inside the drawing.** lanetrace's window at 14,500 shows two render jobs each frame [M]:
+- frame 9055, 132.7 ms: tick 1.6-40.8, tick 41.0-84.1, drawing 87.7-132.1;
+- the first render job, handed over at the frame's end and collected as the drawing starts, has 1.8 ms of its own: the frame in flight;
+- the second is handed over at 108.1 ms, inside the drawing, and collected at 126.8 ms. It has 17.4 ms of its own, and the main CPU sleeps through it.
+
+The main CPU's wait for the render slot is 9.7-13.6 ms a job, two jobs a frame: about one whole job each frame. In the code, the render slot has one path that the main CPU waits for at once: `defer_drain`. A call that must run at once, or a full buffer, sends everything recorded so far to the ME through `psp_me_run`, and the main CPU waits for the result (`defer_on_me`, `psp_ge.c`) [D]. The upper zone has no such job (its wait is 0.6 ms). What sets the drain off in the snowfield isn't read yet [U]. The window counted 143 "calls run at once" (geshow2), 48 "strings drawn though their frame's start was still written down" (geinflight), and stencil-baked level see-through on the old path (1,034 wall triangles, 4,860 stencil triangles). If the drain ran in flight like the rest of the record, the lower frame would lose up to ~15 ms (11%) [U].
+
+**Gaps.**
+- **Where inside the tick the time goes isn't measured here.** The emulator's step and per-object timings came back empty on both recipes tried: lab sierra-batch 41971709334 with `PSP_TICK_STEPS=1` alone, and 41973433126 with `PSP_RECON=1` as well (`objsteps` printed headers only) [E]. A PSP `pcsample` run of the same route would name the tick's functions [M]. A lever sweep of the tick's paths for these counts is out to an or-job (lab 41974123240): leads only, not checked yet.
+- The cache model can't run this route: 15,500 ticks under the interpreter don't fit a job. The per-phase misses above come from the PSP's counters.
+- lanetrace opened one window (the lower zone). The upper zone's order inside a frame is inferred from its waits.
+
 ## Gaps this ledger leaves
 
 - **The ME's report line was cut at 512 bytes,** so the AI job's own time never printed in ledger 3's runs: its column above is [U]. Fixed in tock162 (instr4's continued lines); measured from d76ff14b in the ME-per-job section.
