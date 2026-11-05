@@ -199,9 +199,55 @@ The curve is the price to rank any future source of VRAM against: ~17 µs of b30
 - **Gating the GE between ticks** (CTNT): parked as it was.
 - **Keeping the overlap:** what stays in the tick whatever VRAM gets is the list's own bytes (4.4 ms a frame on b30's flight; 1.7–1.9 on c20 and d20, the largest part there) and the textures (2.8 ms). The list is the next count: lever LISTBYTES (the lab's levers.tsv) splits it by command and looks for words the GE already holds.
 
+## The ME per job, and what moving it would buy (lead B)
+
+Lead B (the master, 2026-11-04 23:20): the ME's scheduling sized before any rebuild. Two PSP-3000 runs on tock162 d76ff14b (6fcf5520 + B58's emulator fix, strict, profile campaign-w162d, 0 functions without counts), the ledger 3 keep set plus `lanetraceatN` (one window of 60 frames inside the stretch): d20's swamp route with the flashlight (lab sierra-hw 41967367512, `lanetraceat2100`, exited at 2,669) and b30's timed route (41967373964, `lanetraceat3200`, exited at 4,384). One run a stretch: a sizing, not an A/B. The ME heartbeat's slots now print whole (instr4's continued lines), so **the AI job's row is measured**, no longer by difference. The emulator gave the shape first (lab sierra-batch 41965518688, recon/mesched2 = tock162 + B58's series: 0 heap requests failed, strict 0 sites): one replay and one AI job a frame, a sound copy every 7-11 frames; its ME is simulated, so no ME times [E].
+
+| ms a frame [M] | d20 swamp walk (300-1350) | d20 flashlight on (1500-2669) | b30 flight (600-2000) | b30 beach (2700-3700) |
+|---|---|---|---|---|
+| **Frame** | 99.4 | 93.8 | 135.5 | 95.0 |
+| Main CPU working (tick + drawing working + other) | 97.3 (tick 67.9) | 76.1 (tick 41.0) | 132.6 (tick 89.1) | 94.2 (tick 64.2) |
+| Main CPU asleep in drawing | 2.0 | **17.7** | 2.9 | 0.8 |
+| *The ME's jobs (own time)* | | | | |
+| the replay (1.0 a frame; longest one) | 26.6 (62 ms) | **80.8** (147 ms) | 71.7 (96 ms) | 27.7 (74 ms) |
+| audio (blocks a frame) | 20.9 (4.3) | 15.6 (4.0) | 17.6 (5.8) | 20.7 (4.1) |
+| the AI job, measured (longest one) | 12.0 (41 ms) | 3.6 (27 ms) | 18.9 (35 ms) | 10.6 (30 ms) |
+| ring jobs: rays, poses, points (jobs a frame) | 3.6 (0.67, 1.53, 0.78) | 1.5 (0.17, 1.65, 0.75) | 3.7 (0.85, 1.69, 0.62) | 2.1 (0.70, 1.47, 0.66) |
+| visibility (`mevisland`) [U] | ~1.4 | ~0.5 | ~3.6 | ~1-3.5 |
+| sound tier copies | 0.1 | 0.1 | 0.1 | 0.1 |
+| busy (the ME line, visibility left out) | 61.2 | 99.9 (101-104% of the clock) | 105.5 | 59.3 |
+| *Deadlines and waits* | | | | |
+| the replay: by the next record's first GE call; the main CPU's wait | 0.1 | **19.9** | 0.3 | 0.0 |
+| audio: a block each 23.2 ms (bound 40); the audio thread's wait a block, mean (worst) | 5.2 (11.2) | 4.8 (13.4) | 3.6 (13.9) | 5.1 (11.6) |
+| the AI job: by the next frame's first tick (bound 20 ms after its word); the main CPU's wait | 0.00 | 0.00 | 0.00 | 0.00 |
+| ring jobs: within 10 ms; the main CPU's wait (refused, ME busy, a frame) | 0.23 (0.91) | 0.16 (0.59) | 0.15 (0.74) | 0.10 (1.20) |
+| the GE stalled in a list for the ME's next chunk | 4.2 | **49.7** | 2.6 | 1.2 |
+
+How to read it [M unless marked]:
+- **Where the ME is saturated its own times sum past the clock** (d20's heavy view reads 101-104% busy): take its job figures as ~3% high there.
+- **Visibility isn't in the ME's figures at all** [D, `psp_me.c`]: its job is collected by polling (`psp_me_ring_done`), and only `psp_me_wait` counts a ring job, so neither the ring line, the busy % nor lanetrace sees it. Its row is [U]: the views it answered (b30 217-262 of each 300 on the flight, 227 and 40 on the beach; d20 32-160 on the walk, 32 with the flashlight, the rest refused or not offered) times ~4.5 ms, the longest visibility job the AI job's drains saw on d20 (4.4-4.6 ms; the main CPU's own walk on the beach 4.8 ms a view, its wait for the ME's answer 2.1). On b30's beach that puts the ME at ~60-63 ms busy, not 59.
+- **The AI job never makes the main CPU wait** on these stretches (worst 157 µs): handed over after the frame's last tick, it runs 6-12 ms of its own inside a ~25-45 ms span and is done before the next frame's first tick (lanetrace: b30 frames 1619-1622 handed at −25 to −32 ms, collected at +1.3 to +1.7). Its ledger 3 row by difference was close on d20's heavy view (3.7) and b30's flight (17.2), and high on d20's walk (19.5 [U] against 12.0 measured) and b30's beach (13.1 against 10.6).
+- **The replay is one job a frame**, handed over at the frame's end (lanetrace: −80 to −136 µs) and collected at the next record's first GE call. On d20's heavy view it is 63-66 ms of its own in a 67-71 ms lanetrace frame (window at tick 2100), against 26.6 ms on the walk: **the flashlight adds ~54 ms of replay a frame**, the light pass the ME carries.
+- On the beach the timed route keeps the ME at ~65% of the clock. Capacity4's hands-off stand at the beach (lab sierra-hw 41950823554) is another view: replay 91 ms a frame with its AI, 66-68 with it erased. There the beach is ME-bound too, so a design must hold both views.
+
+### The ceilings [U on M]
+
+A frame in flight lasts about as long as its busiest unit's work, since the units overlap: frame ≈ max(main CPU working, ME busy), with the GE below both here. A job moved from the ME to the main CPU at a cost of c ms of the main CPU for each ms of the ME makes it max(ME − X, main CPU + c·X). c from the record: the ME builds the GE's lists ~25% slower than the main CPU (L1), so c ≈ 0.8 for the replay; the AI job is the engine's own code, which ran on the main CPU before AIME, c ≈ 1; audio's mix is float work, c ≈ 1 as written and ~0.3-0.5 if put on the VFPU (a matrix product is ~3x faster on the VFPU than on the ME's FPU, `hw_capabilities.md`) [U].
+
+- **The main CPU's wait if the replay started earlier, or ran in parts beside the ticks:** d20's heavy view: **0 ms**. The ME is busy the whole frame, so an earlier start or a split in time gives it no room: the replay already runs beside the next frame's ticks (handed over at the frame's end). Only work leaving the ME shortens it. b30's beach: **0 ms**: the main CPU waits 0.0 ms for the replay now. b30's flight: 0.3.
+- **d20's heavy view, ME-bound by ~18 ms** (ME ~94, main CPU 76.1), balance at ~85 ms:
+  1. **The replay split across the units** (part of the lists made on the main CPU again, the light pass's first): move ~10 ms, c 0.8 → **frame ~84, −9.8 ms (−10%)**, the most of the three.
+  2. **Audio moved to the main CPU**: 15.6 ms. As written (c 1): max(78.2, 91.7) → **−2 ms**. On the VFPU (c 0.3-0.5): **−8 to −10 ms**, and the ME's audio bound (40 ms, B60) leaves with it.
+  3. **The AI job moved back**: only 3.6 ms here → **−3.6 ms**; it costs b30 and d20's walk 10-19 ms of the main CPU, where the main CPU binds (AIME's own pair: b30 frame −4.3 to −8.5% with it on the ME).
+  - Any mix can't pass the balance: (76.1 + 93.8) / 2 ≈ 85 ms, **−9 ms**. Beyond it, only the replay doing less (the light pass's work itself) pays.
+- **b30's beach (route) and flight, and d20's walk, are main-CPU-bound** (ME ~65% busy on the beach, ~80% on the flight, ~63% on the walk). None of the three designs buys anything there: each moves work onto the unit that binds (audio +20.7, the AI job +10.6 ms on the beach). What pays is the other direction: **work moved onto the ME's ~32 ms of room** a frame on the beach (~36 on the walk), up to the balance, (94.2 + ~62) / 2 ≈ 78 ms, **−17 ms at most** at c 1, less for float work (the ME's FPU ~3x the VFPU) [U].
+
+So the ME scheduler's rebuild buys on one kind of stretch only: where a heavy light pass puts the replay past the ticks (d20's flashlight, capacity4's hands-off beach). Its best single move there is a replay split by measured fit, worth up to ~10 ms on d20's heavy view; audio on the VFPU is next. On the main-CPU-bound stretches the ME's room is the prize, and it goes to work moved onto the ME, not off it.
+
 ## Gaps this ledger leaves
 
-- **The ME's report line is cut at 512 bytes,** so the AI slot job's own time, count and waits never print (every window of these runs). The fix is the report's, not the AI job's: split the line, or print the slots on lines of their own. Until then the AI job's row stays [U].
+- **The ME's report line was cut at 512 bytes,** so the AI job's own time never printed in ledger 3's runs: its column above is [U]. Fixed in tock162 (instr4's continued lines); measured from d76ff14b in the ME-per-job section.
+- **Visibility's ME time isn't counted** (collected by polling, never through `psp_me_wait`): the ring line, the busy % and lanetrace all leave it out. Counting it at the poll that sees it done would close it.
 - **lanetrace opens a window only at a phase edge** (a map loaded, a cutscene's start or end, a BSP switch; keep word `phasemark`). So its frames come from the start of play, not from the stretches above: c20's window after its cutscene (game time ~1,069, 73.2 ms a frame) and b40's (35.1). A window opened at a game time (a `lanetraceatN`) would place d20's heavy view and c20's steady state frame by frame.
 - **One run a stretch.** The figures carry each run's own spread: b30 and d20 by route, c20 and b40 hands off. A pair is for a lever, not for this map.
 - **The earlier d20 reading of gebusy2, corrected:** sierra-hw 41893041680's "GE busy 41 ms a frame, 23–24 ms of it stalled" read the stall as part of busy; it is outside it [D, `gebusy_add`]. That view's GE was busy 41 ms and stalled 23–24 ms more.
