@@ -96,7 +96,7 @@ The GE was built for retained mode: lists that CALL sub-lists, 8 bone matrix and
   - the shader forms a map needs (C1);
   - the store's room, which has to be GE-readable: main RAM or VRAM, not eDRAM. The room is the frame list it replaces, 768 KB of list plus the record buffer, 128 KB by default and 224 with the default keep set [D, `psp_ge.c` DEFER_INFLIGHT_KB; IFKB];
   - the dynamic floor (C2);
-  - Halo's object lighting on the GE's 4 lights (C5).
+  - near the camera, geometry still has to be cut each frame (C5: the GE can't draw it uncut), so what's near the eye stays per-frame work.
 - **Milestone:** b30's models drawn from prebuilt lists with the record and replay bypassed for them; one PSP pair against the old path. **Switch-over:** every kind drawn by R; one pair.
 - **Stop rule:** if C1 shows the store can't fit, or C4 that R's ME saving can't reach the floor's need with S and B, Sheepdog01 decides before any build.
 - **Fallback:** immediate mode stays in the build for what R can't hold: parts whose forms didn't fit the store, and any failure. The old record and replay go at the switch-over; immediate drawing doesn't.
@@ -114,18 +114,29 @@ R decides what must be GE-readable, and S's layout what the tick reads hot. B pl
 
 T1 and T2 (work onto the ME) wait for the ME room R frees. T4 is B's. T3, T5, T6 and T7 are S's pieces. The lever list goes on beside the plan (§6), not on its parts' paths.
 
-## 4. The counts (no PSP time unless marked)
+## 4. The counts
 
-| | Count | Answers | Where | Who (proposed) |
-|---|---|---|---|---|
-| C1 | Each map's prebuilt forms (parts × levels of detail × shader passes) and their bytes | whether R fits | the bake, offline | bottleneck |
-| C2 | The frame list's inline data (b30's flight 254 of 501 KB) by kind: cut pieces, decals, kept index copies, the rest | R's floor: what stays per frame | emulator, the lab's `listcensus` (Sierra-III recon/listbytes; lab coord/handoff/listbytes_2026-11-05.md) | bottleneck |
-| C3 | The tick by subsystem and by change rate on the four heavy stretches: what's recomputed each tick against what changed | where S's last 4-6 ms a tick comes from | emulator: the PC sampler, tick steps, and `nmstudy` (lab coord/handoff/nmstudy.md) | recon |
-| C4 | The replay split by record kind | R's ceiling on the ME | emulator for the shape; one bare PSP run for the ms | master |
-| C5 | Reads: what the GE does at the near plane (do the cut pieces need doing?), and how the replay lights a model (GE lights or software) | two of R's unknowns | code and docs | bottleneck |
-| C6 | The GE's own time on b30's flight and landing by what limits it: vertices, fill, or reading main RAM | whether the GE's work can lose ~15 ms a frame for the same picture | gebusy2's kinds [M] plus the emulator | bottleneck |
+Sent to the master 2026-11-05 17:20 (the lab's coord/inbox/master.md) for those that need a build; the rest done here. Results go into the lab's findings and this page's §1 and §3.
+
+| | Count | Answers | Where | Who | State |
+|---|---|---|---|---|---|
+| C1 | Each map's prebuilt forms (parts × levels of detail × shader passes) and their bytes | whether R fits | a counter in the baker, run as a sierra-bake job that prints counts only | the master (or this session drafts the counter, built by the master) | asked |
+| C2 | The frame list's inline data (b30's flight 254 of 501 KB) by kind: model and level cut pieces, decals, kept index copies, effects, see-through, HUD | R's floor: what stays per frame | emulator, `listcensus` (Sierra-III recon/listbytes2; lab coord/handoff/listbytes_2026-11-05.md) | the master | asked |
+| C3 | The tick by subsystem on the four heavy stretches, and its change rate: the share of each subsystem's per-object work whose inputs didn't change since the last tick | where S's last 4-6 ms a tick comes from | emulator: the PC sampler, `PSP_TICK_STEPS=1`, `nmstudy` extended (lab coord/handoff/nmstudy.md) | recon, through the master | asked |
+| C4 | The replay by record kind, and the models' time by step | R's ceiling on the ME | emulator for the shape; one bare PSP run for the ms (meparts' ME cycle counter) | the master | asked |
+| C5 | What the GE does at the near plane; how the replay lights a model | two of R's unknowns | code | this session | **done** (below) |
+| C6 | The GE's own time on b30's flight and landing by what limits it | whether the GE's work can lose ~15 ms a frame for the same picture | existing measures, then one PSP pair | this session; the pair through the master | **half done** (below) |
 
 C3, C4 and C6 decide the heavy stretches; C1 decides whether R is built at all.
+
+### What the reads found
+
+- **C5, the near plane** [D, `psp_ge.c`'s header, tock162 70bc508]: the GE "drops a whole triangle when a corner falls behind the camera or lands too far off the screen (its coordinates only reach 2048 pixels either side)". So triangles near the eye are checked and cut on the CPU each frame, and the pieces drawn at the frame's end. For R: a prebuilt part can be CALLed only when it's wholly and safely in front; the rest (the ground under the player, models beside the camera) stays per-frame work. That's part of R's dynamic floor, and C2 sizes it.
+- **C5, model lighting** [D, `psp_ge.c` model_lighting]: already the GE's own lights. Two directional lights and two point lights, with the ambient, are set per part through `sceGuLight` and `sceGuLightColor` (the light pass of the world's lights is separate). For R that's a few per-instance words before a part's CALL. Lighting is not a blocker.
+- **C6, what doesn't limit the GE** [M on E]: moving its reads off main RAM barely changes its own time. mevram's measured rate is 1.63 µs of GE time a KB moved to VRAM, so M6B's 294-551 KB a frame was worth 0.3-0.9 ms of GE time (the lab's levers.tsv, M6B, GEV). On b30's flight (83.5 ms busy) the GE is bound by its own vertex and pixel work, not by memory. Its reads still matter to the tick (the toll), not to itself.
+- **C6, what's left:** whether that work is vertices or pixels. No count separates them. The cheapest test is one PSP pair on b30's flight with a keep word that clips every draw to a 1-pixel scissor: the GE still fetches and transforms every vertex but fills almost nothing, so the gap in GE busy is the fill. Built by the master; the pair sized as the rule's default (two sides, repeat 2, the flight only).
+- **C1, the order of magnitude** [E]: one frame's model commands on b30 are ~37,800 words (~150 KB, `pdc_plan.md`'s census), ~560 bytes a hit (pdcprobe's ~140 words). A map's whole store is a multiple of one frame's visible set, by how many parts, levels of detail and passes it holds [U]. The frame list R shrinks is 768 KB. Whether the store fits is C1's question.
+- **C4, what's known** [E]: on b30 the models were 61% of the replay's ME time in the older split by kind (mekinds, in `pdc_plan.md`); on c10 the models' steps are bind + state + lighting 38%, geometry 29%, two-sided and glow passes 24%, convert 6.5%, node matrix 3% [M, meparts 40961270594]. On b30's flight that puts the models at ~43 of the replay's 70 ms and the level and the rest at ~27 [U]. R's need there (−33 ms) takes most of the models' removable share plus part of the level's: C4 settles it.
 
 ## 5. Decision points for Sheepdog01
 
@@ -144,6 +155,41 @@ The redesign rule (Sierra-III CLAUDE.md and the lab's, "Redesign work", Sheepdog
 - **Levers stay off a part's ground.** Once a part has Sheepdog01's go, a lever on a ground it replaces isn't started (the lab's levercheck names the part), unless it pays before the part lands and Sheepdog01 says so. Before the go, a lever there says how it fits the part. A lever that failed through the old layers is marked revivable under the part (PDC, PDCCALL and X2 are, under R).
 - **Progress is the budget.** A milestone updates §1's table. A lever reports its effect in its terms.
 
-## 7. Why the habits changed
+## 7. The road
+
+**Phase 0, the counts (now; no part has Sheepdog01's go).**
+- C1-C6 above, in parallel: the master and recon on the builds, this session on the reads.
+- PSP time: C4's one bare run and C6's one pair. Nothing else.
+- Each count's result goes into the lab's findings and this page's §1 and §3, and the dashboard's Redesign tab follows (`redesign.tsv`).
+- **Ends when** C1, C3, C4 and C6 are in.
+
+**Gate 1 (Sheepdog01): the go per part.**
+- For each heavy stretch, the parts' ceilings from Phase 0 against §1's gap.
+- Sheepdog01 rules on §5.1 (what fills any gap: "plays the same" or a lifted compromise) and §5.2 (R's go).
+- A part without its go stays a plan; its levers carry on, saying how they fit it.
+
+**Phase 1, the design pages.**
+- One page per part with its go, in `docs/`: the data it keeps, its interfaces with the old path, its slices in order, each slice's proof, its keep word, its fallback, and its milestone's stretch.
+- R's names the instance list's format, the store and its placement (with B), patch-on-change for textures, and the dynamic path (cut pieces, decals, effects).
+- S's comes from C3: which subsystems become computed-on-read, and what each keeps.
+- Reviewed before building: a second-opinion read of the page against the code, as this page had.
+
+**Phase 2, the build.**
+- Each part on its own branch, as a separate path under its keep word. The master builds; recon builds S's census-driven pieces.
+- Slices are proven in the emulator for correctness only (§6).
+- The milestone's PSP pair: R at "b30's models from prebuilt lists, record and replay bypassed for them"; S at its first piece replacing the old tick path on b30.
+- After each milestone, §1's table is redone with the measured figures. If a part falls short of its share, Sheepdog01 decides before the next slice.
+
+**Phase 3, the switch-over.**
+- One PSP pair per part at the switch-over. The old record and replay go; immediate drawing stays as R's fallback (§3).
+- With the ME room R frees, T1's remaining jobs and AITICKOLD move onto it, priced as placements (CLAUDE.md).
+- B's layout is set from what R and S hold.
+- The ladder and the ledger bench run on the first tick that carries them (the lab's bench rule).
+
+**Beside it all, the lever lane.** Levers go on in the tock as now, off a part's ground once it has its go. They report in §1's terms.
+
+**Who keeps it true.** This page is the redesign's record. It's updated in the same turn as a result that changes it, like the cost map. The lab's `redesign.tsv` and the dashboard follow.
+
+## 8. Why the habits changed
 
 On the dashboard's lever table (2026-11-05): 513 levers, 145 in the build, 93 rejected, 54 shelved; `levers.tsv` changed in 510 commits since the tick-and-tock rule (2026-10-24). The large wins were sized before they were built. PDC's census put the replay's saving at 22-30 ms a frame on b30. Its build, held to the old path's GE stream through the old layers, ran even, and PDCCALL measured +1.2-2.3%. Both were judged slice by slice. The rule above is so that a design whose payoff comes when the old layer goes isn't judged on its first slice.
