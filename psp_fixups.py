@@ -43010,7 +43010,7 @@ FIXES_AIME2A["source/ai/actors.c#aime2a"].append((
 		psp_aime_fpu_main_on = psp_keep("aimefpu") != 0;
 		psp_aime_chain_on = psp_keep("aimechain") != 0;
 		{
-			extern int psp_aime_decision_looks, psp_aime_ring_looks;
+			extern int psp_aime_decision_looks, psp_aime_ring_looks, psp_aime_audio_looks;
 
 			psp_aime_decision_looks = !psp_keep("aimedecisionold");
 			{
