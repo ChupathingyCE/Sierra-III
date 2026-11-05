@@ -6,11 +6,11 @@ The Allegrex has one prefetch, `cache 0x1E` (also "cache 30"). This page maps wh
 - **Dropped into today's code, a prefetch is a small lever: about 0.2–0.4 ms a tick at most [E]**, and that's if every one of ~8,500 missing loads and stores got one at its best spot. Placed by hand at the top sites, it saves microseconds. The earlier estimate for X5's prefetch, 0.6–2.4 ms a tick [E], only holds if the code around the loads is reshaped (below).
 - **Why it's small:**
   - A fill in flight holds up every load and store [M v7c], and the tick's code has almost no long stretches without one.
-  - The modelled I-cache misses one fetch in 34–81 in the tick (39,000–99,000 misses a tick). If an I-miss also waits for a fill [U], those misses break nearly every window that's left.
+  - The modelled I-cache misses one fetch in 34–81 in the tick (39,000–99,000 misses a tick). An I-miss also waits for a fill in flight [M, PSP-3000 bench-hw 42086540153, halo_bench16], so those misses break nearly every window that's left.
 - **What would make it pay:**
   - **Reshaping code:** moving up to three loads or spills per site takes the total to 0.9–2.2 ms a tick [E].
   - **Software pipelining:** fetching the next item a loop run ahead gets 0.8–2.6 ms [E]. Both figures assume every site is reworked, so they are ceilings.
-  - **A hardware answer:** if I-misses don't wait for a fill [U], the total is 0.8–1.9 ms.
+  - ~~A hardware answer~~ (answered 2026-11-05): I-misses **do** wait for a fill [M, PSP-3000 bench-hw 42086540153, halo_bench16], so the 0.8–1.9 ms that assumed they don't is out.
 - **Scored placements:**
   - pf123b: nine prefetches at the map's top sites, placed with `PSP_PF_INJECT` (the code itself unchanged). Every target's misses disappeared, but the tick gained only 1,900–4,100 model cycles (6–12 µs). The next load after each short stretch waited out the fill instead.
   - pf123c: three placed where the stretch is long in cycles saved 2,600–10,800 cycles a tick (8–33 µs).
@@ -28,7 +28,7 @@ The emulator's D-cache model (16 KB, 2-way, 64-byte lines) gained a clock and th
 | A miss stalls 72 cycles at its load or store; two misses never overlap | [M v7] |
 | `cache 0x1E` doesn't stall; its line lands 72 cycles later and a load after that hits | [M v7b]: 80–90% of a miss hidden 64–96 cycles ahead |
 | While a fill is in flight, every load and store waits until it lands; a second prefetch waits too (fills serialize) | [M v7c] for cached loads and stores (148 cycles right after a fill, against 85); assumed for uncached and scratchpad ones [U] |
-| An I-miss costs 64 cycles and waits for a fill in flight | 55–70 cycles [M v7]; **the wait is unmeasured [U]** (`PSP_DCACHE_IWAIT=0` turns it off) |
+| An I-miss costs 64 cycles and waits for a fill in flight | 55–70 cycles [M v7]; **the wait measured** [M, PSP-3000 bench-hw 42086540153, halo_bench16]: an I-miss right behind a fill 141.1 cycles a loop against 88 if it overlapped and 142 if the costs add; 32 cycles into the fill, 156.3 against 121 and ~159. The I-miss itself 68.9 cycles. The model's default (`PSP_DCACHE_IWAIT=1`) was right; `=0` is now only a what-if |
 | Every other instruction costs PPSSPP's estimate (1 cycle; VFPU 2; `div.s` 29) | [E]. Real FPU and VFPU latencies are longer, so real register-only stretches are, if anything, longer than modelled |
 
 The model was checked against a test program (the lab's `psp/emulators/ppsspp/tests/pftest/`). The program runs 2,048 loads per test, and every load misses:
@@ -216,7 +216,7 @@ Each of these is an exact speed-up: it changes timing only.
 2. **`objects_update+0x378` (X5)**: one store sits between a call's returned pointer and its first use. Move the store after the load, or prefetch inside the getter it calls. win 4 → 72 [E], 213 misses a tick: up to about 15,000 cycles a tick.
 3. **The prologue-spill sites in perception** (`actor_perception_refresh_test_object`, `actor_perception_update`) **and X5** (`object_compute_function_values`): prefetch the argument's line in the caller before the call, where the caller has register-only work. That is up to 4,000–8,600 cycles a tick each [E].
 4. **`memset` in the tick: use `cache 0x18`, not a prefetch.** 313 misses a tick at one store alone. That's lever 9, already measured on hardware [M v7b].
-5. **One hardware question before any of it: does an I-miss wait for a fill in flight?** It decides between 0.26 and 1.24 ms a tick for the whole lever. A halo_bench test: `cache 0x1E`, then a jump to code that isn't cached, then time the jump. It fits the rig's idle gaps (`research_application.md` item 9).
+5. **Answered: an I-miss waits for a fill in flight** [M, PSP-3000 bench-hw 42086540153, halo_bench16]. So the whole lever is the 0.26 ms column, not 1.24, as the code stands; the reshaped columns were modelled with the wait and stand as ceilings, but each window must also run in code that's in the I-cache, which ties the reshaped walks to the code layout.
 
 After any of these is built, score it in the model with the build's own cache runs (`pfmap = 1`, the DCTIME lines against the base). Then measure it on the PSP. Placement 1 as the code stands (no reshaping) is already scored: 4,300–12,700 cycles a tick (pf123c).
 
@@ -228,7 +228,7 @@ After any of these is built, score it in the model with the build's own cache ru
 | Three placed by cycles (pf123c); the matrix one alone 0.013–0.038 | 0.008–0.032 | [E] |
 | The best five placements once their code is reshaped | ~0.1–0.15 | [E→U] |
 | Every site at its best spot, code as is | 0.18–0.40 (mean 0.26) | [E] |
-| The same if I-misses don't wait for fills | 0.8–1.9 (mean 1.24) | [E] on an [U] |
+| ~~The same if I-misses don't wait for fills~~ | ~~0.8–1.9 (mean 1.24)~~ ruled out: they wait | [M, PSP-3000 bench-hw 42086540153, halo_bench16] |
 | Every site with up to three data operations moved | 0.9–2.2 (mean 1.34) | [E], a ceiling |
 | Every loop prefetching its next item | 0.8–2.6 (mean 1.65) | [E], a ceiling |
 
