@@ -47919,8 +47919,12 @@ answer's wait at the first reader too (psp_ml_wait_avg, eighths of a us,
 both moving averages). When the wait comes within PSP_ML_MARGIN_US of the
 walk itself, the next PSP_ML_REST views are made here, which also refreshes
 the walk's time, then the ME is tried again; a long run of pushes rests for
-PSP_ML_REFRESH views now and then to keep that time current. "mevislandalways"
-pushes every view (the A/B's other side). The ME's time isn't free either (its
+PSP_ML_REFRESH views now and then to keep that time current. The walk's time
+is only refreshed while views are made here, so by the time a check comes it
+may be from another stretch (a cheap landing before a heavy beach): with
+"mevisprobe" (on by default) a rest is weighed again every PSP_ML_REFRESH
+views on the walk's fresh time, against the wait that called for it, and
+ends as soon as that time no longer calls for one. "mevislandalways" pushes every view (the A/B's other side). The ME's time isn't free either (its
 own frame's replay waits behind the walk, and the bus is shared with the
 tick), so a walk under PSP_ML_MIN_WALK_US stays here: there's little to win */
 #define PSP_ML_MARGIN_US 500
@@ -47930,7 +47934,16 @@ tick), so a walk under PSP_ML_MIN_WALK_US stays here: there's little to win */
 #define PSP_ML_PUSHES_BEFORE_REFRESH 600
 #define PSP_ML_REFRESH 16
 static int psp_ml_always = 0, psp_ml_rest = PSP_ML_CHECK, psp_ml_since_check = 0, psp_ml_since_refresh = 0;
-static unsigned long psp_ml_main_avg = 0, psp_ml_wait_avg = 0, psp_ml_here = 0, psp_ml_rests = 0;
+static int psp_ml_probe = 0, psp_ml_rest_weighed = 0;
+static unsigned long psp_ml_main_avg = 0, psp_ml_wait_avg = 0, psp_ml_here = 0, psp_ml_rests = 0, psp_ml_probes_back = 0;
+static unsigned long psp_ml_rest_wait = 0;
+
+/* the test that calls for a rest: the ME's answer waited (wait_avg) for nearly
+as long as the walk takes here, or a walk too short to be worth the ME's time */
+static int psp_ml_rest_called(unsigned long wait_avg)
+{
+	return wait_avg / 8 + PSP_ML_MARGIN_US >= psp_ml_main_avg / 8 || psp_ml_main_avg / 8 < PSP_ML_MIN_WALK_US;
+}
 static unsigned long psp_ml_depth_most = 0, psp_ml_too_deep = 0;
 static unsigned int psp_ml_ticket, psp_ml_state_bytes;
 static unsigned long psp_ml_views, psp_ml_used, psp_ml_refused, psp_ml_busy, psp_ml_late, psp_ml_failed, psp_ml_wait_us,
@@ -47957,6 +47970,7 @@ int psp_mevisland_push(void)
 		psp_ml_on = psp_keep("mevisland") ? (psp_mv != NULL || psp_mv_start()) : 0;
 		psp_ml_check = psp_ml_on && psp_keep("mevislandcheck");
 		psp_ml_always = psp_ml_on && (psp_keep("mevislandalways") || psp_ml_check);
+		psp_ml_probe = psp_ml_on && psp_keep("mevisprobe");
 		psp_ml_state_bytes = PSP_MV_STATE_BYTES;
 		if (psp_ml_on)
 			platform_psp_log("mevisland: the frame's visibility made on the ME and used%s",
@@ -47990,6 +48004,12 @@ int psp_mevisland_push(void)
 		structure_visibility_compute();
 		took = sceKernelGetSystemTimeLow() - start;
 		psp_ml_main_avg = psp_ml_main_avg ? (psp_ml_main_avg * 7 + took * 8) / 8 : took * 8;
+		if (psp_ml_rest_weighed && psp_ml_rest > 0 && (PSP_ML_REST - psp_ml_rest) % PSP_ML_REFRESH == 0 &&
+			!psp_ml_rest_called(psp_ml_rest_wait))
+		{
+			psp_ml_rest = 0;
+			psp_ml_probes_back++;
+		}
 		return 1;
 	}
 	csmemcpy(psp_mv_record->head, &render, PSP_MV_HEAD_BYTES);
@@ -48080,10 +48100,12 @@ void psp_mevisland_collect(void)
 	if (!psp_ml_always && ++psp_ml_since_check >= PSP_ML_CHECK)
 	{
 		psp_ml_since_check = 0;
-		if (psp_ml_wait_avg / 8 + PSP_ML_MARGIN_US >= psp_ml_main_avg / 8 || psp_ml_main_avg / 8 < PSP_ML_MIN_WALK_US)
+		if (psp_ml_rest_called(psp_ml_wait_avg))
 		{
 			psp_ml_rest = PSP_ML_REST;
 			psp_ml_rests++;
+			psp_ml_rest_wait = psp_ml_wait_avg;
+			psp_ml_rest_weighed = psp_ml_probe;
 			psp_ml_wait_avg = 0;
 			psp_ml_since_refresh = 0;
 		}
@@ -48092,6 +48114,7 @@ void psp_mevisland_collect(void)
 	{
 		psp_ml_since_refresh = 0;
 		psp_ml_rest = PSP_ML_REFRESH;
+		psp_ml_rest_weighed = 0;
 	}
 }
 
@@ -48152,17 +48175,17 @@ void psp_mevisland_settle(void)
 			while (low < PSP_MV_STACK / 4 && psp_mv_stack_bottom[low] == PSP_MV_CANARY)
 				low++;
 		}
-		platform_psp_log("mevisland: %lu views: the ME's answer used %lu; made here instead: refused by the ring %lu, the ME still on an earlier one %lu, late %lu, failed %lu (%lu cut at %d clusters deep); waited at the first reader %.2f ms a view (%lu views waited, the most %.2f ms); the deepest walk %lu clusters; the stack used %u of %u KB at most (since the start); made here by placement %lu (%lu rests; the walk here %.2f ms, the wait for the ME's %.2f ms, moving averages)%s (last 300 views)",
+		platform_psp_log("mevisland: %lu views: the ME's answer used %lu; made here instead: refused by the ring %lu, the ME still on an earlier one %lu, late %lu, failed %lu (%lu cut at %d clusters deep); waited at the first reader %.2f ms a view (%lu views waited, the most %.2f ms); the deepest walk %lu clusters; the stack used %u of %u KB at most (since the start); made here by placement %lu (%lu rests, %lu of them ended early on the walk's fresh time; the walk here %.2f ms, the wait for the ME's %.2f ms, moving averages)%s (last 300 views)",
 			psp_ml_views, psp_ml_used, psp_ml_refused, psp_ml_busy, psp_ml_late, psp_ml_failed, psp_ml_too_deep, PSP_MV_DEPTH,
 			psp_ml_wait_us / 1000.0 / psp_ml_views, psp_ml_waited, psp_ml_wait_worst / 1000.0, psp_ml_depth_most,
-			low ? (PSP_MV_STACK - low * 4) / 1024 : 0, PSP_MV_STACK / 1024, psp_ml_here, psp_ml_rests,
+			low ? (PSP_MV_STACK - low * 4) / 1024 : 0, PSP_MV_STACK / 1024, psp_ml_here, psp_ml_rests, psp_ml_probes_back,
 			psp_ml_main_avg / 8000.0, psp_ml_wait_avg / 8000.0, psp_ml_always ? "; mevislandalways: every view pushed" : "");
 		if (psp_ml_check)
 			platform_psp_log("mevislandcheck: differing from the main CPU's own: clusters %lu, objects %lu (last 300 views)",
 				psp_ml_differ_clusters, psp_ml_differ_objects);
 		psp_ml_views = psp_ml_used = psp_ml_refused = psp_ml_busy = psp_ml_late = psp_ml_failed = 0;
 		psp_ml_wait_us = psp_ml_wait_worst = psp_ml_waited = psp_ml_differ_clusters = psp_ml_differ_objects = 0;
-		psp_ml_depth_most = psp_ml_too_deep = psp_ml_here = psp_ml_rests = 0;
+		psp_ml_depth_most = psp_ml_too_deep = psp_ml_here = psp_ml_rests = psp_ml_probes_back = 0;
 	}
 }
 """

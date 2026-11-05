@@ -121,6 +121,8 @@ So where the walk runs is decided by measurement, view by view:
 
 Both paths are exact, so the choice changes no answer.
 
+**The rest's stale walk time (`mevisprobe`, on by default; off: `mevisprobeoff`).** The walk's time is refreshed only while views are made on the main CPU, so a check can weigh this stretch's wait against a walk timed in another. On b30's route (PSP-1000, two runs [M]) a 16-view refresh in the landing timed the walk at 1.4-2.6 ms; the next check rested 240 views on that, and the beach then walked 4.5 ms a view on the main CPU while the ME's answer waited only 2.4-3.5. Of the views the ME missed on the beach (it took 0.37 a frame), about four in five were that rest and one in five the ring's refusals (a render job out). c20 rested the same way once (a walk of 2.0 ms, the ME's answer waiting 0.0-0.1). With `mevisprobe` a rest is weighed again every 16 views on the walk's fresh time, against the wait that called for it, and ends as soon as that time no longer calls for one (the emulator rests the same way on b30's landing, its walk 0.7 ms against the 1.5 ms floor, and its first 16 beach views still came under the floor, so a single probe wasn't enough).
+
 ## The steps
 
 1. **Measure the wait's split.** Per frame on b30 (route) and c20 (hands off), split the main CPU's time from `structure_visibility_compute`'s start to `lights_preprocess_scene` into:
