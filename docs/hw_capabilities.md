@@ -96,7 +96,7 @@ Measured on both PSPs (PSP-1000 lab bench-hw 41960963933, PSP-3000 41960453758: 
 
 What it changes [U on these M]:
 - **The GE's vertex work is compute, not fetch.** Moving vertices to VRAM or shrinking them (MV14, MVDIET) changes the bus the CPU shares, never the GE's own time. Less GE time on models means fewer transforms or cheaper ones.
-- **A bending part at 8 slots costs 2.4x a rigid part's vertex with 4 lights, 5.2x with 2 distant lights.** In a list, its triangle is 3 transforms: ~1.5 µs at 8 weights against ~0.25 µs for a rigid strip triangle with 2 lights. Bending models are where the GE's vertex time goes, where the GE binds (c10's later stretch, d20's heavy view, b30's flight with its marines and Pelican). Gap C11.
+- **A bending part at 8 slots costs 2.4x a rigid part's vertex with 4 lights, 5.2x with 2 distant lights.** In a list, its triangle is 3 transforms: ~1.5 µs at 8 weights against ~0.15–0.4 µs for a rigid strip triangle (1.2–1.6 indices at 96–255 ns). Bending models are where the GE's vertex time goes, where the GE binds (c10's later stretch, d20's heavy view, b30's flight with its marines and Pelican). Gap C11.
 
 ### Memory
 
