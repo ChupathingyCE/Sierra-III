@@ -1273,21 +1273,27 @@ the levels left out, so each pixel samples the same texels as before as
 long as the left-out levels were never chosen. The bake lists only
 paletted textures with no masks, no CPU reads and two levels kept, so the
 filter and every reader of the texels stay as they were; averages and
-stand-ins still describe the top level, which is what both sides draw */
+stand-ins still describe the top level, which is what both sides draw.
+Lightmaps under their own key stay whole: object lighting reads their top
+level (psp_tex_light_texel). A row marked composite (a base map with its
+detail or relief baked in, a lightmap's whole copy, a see-through composite,
+a glow map: drawn by the GE alone) is its own slice, keep word "texfitb", so
+each slice can be measured and switched apart */
 struct texfit_row
 {
 	unsigned int index, key;
 	unsigned short width, height;
-	unsigned char levels, skipped, pad[2];
+	unsigned char levels, skipped, composite, pad;
 	unsigned int offset, size;
 };
 
 static void texfit_apply(SceUID file)
 {
-	unsigned int trailer[2], table[2], i, applied = 0, before = 0, after = 0;
+	unsigned int trailer[2], table[2], i, applied = 0, before = 0, after = 0, composites = 0;
+	int plain = psp_keep("texfit"), composite = psp_keep("texfitb");
 	struct texfit_row row;
 
-	if (!psp_keep("texfit"))
+	if (!plain && !composite)
 		return;
 	if (sceIoLseek32(file, -8, PSP_SEEK_END) < 0 || sceIoRead(file, trailer, sizeof(trailer)) != (int)sizeof(trailer) ||
 		trailer[0] != 0x31454654 /* TFE1 */ || sceIoLseek32(file, trailer[1], PSP_SEEK_SET) != (int)trailer[1] ||
@@ -1303,9 +1309,11 @@ static void texfit_apply(SceUID file)
 		if (sceIoRead(file, &row, sizeof(row)) != (int)sizeof(row))
 			break;
 		if (row.index >= (unsigned int)entry_count || entries[row.index].key != row.key ||
-			row.levels < 2 || row.levels + row.skipped != entries[row.index].levels)
+			row.levels < 2 || row.levels + row.skipped != entries[row.index].levels ||
+			!(row.composite ? composite : plain))
 			continue;
 		entry = &entries[row.index];
+		composites += row.composite != 0;
 		before += entry->size;
 		after += row.size;
 		entry->width = row.width;
@@ -1315,8 +1323,8 @@ static void texfit_apply(SceUID file)
 		entry->size = row.size;
 		applied++;
 	}
-	platform_log("textures: texfit: %u of %u textures from the finest level sampled, %u KB of %u KB (%u KB less)",
-		applied, table[1], after / 1024, before / 1024, (before - after) / 1024);
+	platform_log("textures: texfit: %u of %u textures from the finest level sampled (%u composite or glow), %u KB of %u KB (%u KB less)",
+		applied, table[1], composites, after / 1024, before / 1024, (before - after) / 1024);
 }
 
 void psp_tex_map_opened(const char *name)
