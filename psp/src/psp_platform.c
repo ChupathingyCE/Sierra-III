@@ -1159,6 +1159,10 @@ static const struct
 	(a few scattered pixels a frame); a pack without the variants keeps its
 	plain region unused, so these want a variant bake */
 	{ "skinw2", "skinw2off" }, { "skinstrip", "skinstripoff" },
+	/* the visibility views pushed to the ME with sound_render after them, so
+	the answer is ready at its first reader, and a ring push not refused for a
+	slot job whose answer is already in (mevis_slice2.md): exact */
+	{ "mevispush", "mevispushoff" }, { "ringslotdone", "ringslotdoneoff" },
 };
 static char keep_defaults_added[KEEP_DEFAULTS_ROOM] = "";
 /* defaults that found no room: a lever silently off would be read as on */
