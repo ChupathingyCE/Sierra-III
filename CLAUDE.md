@@ -36,7 +36,7 @@ Sierra-III is a native PSP-1000 port of Halo: Combat Evolved, built on a decompi
   - **Budget first:** a part starts as its ceiling on each unit and stretch against the plan's frame budget (§1), and Sheepdog01's go.
   - **A separate path, switched whole:** built beside the old path, not inside it, with its own machinery, under one keep word. The old path stays as the A/B side and fallback until the switch-over, then goes. "Every change ships behind a keep word" is met by that one word.
   - **Proven for correctness, priced once:** slices are proven in the emulator for correctness (pictures for drawing; play + seeds, or the outcome census, for the simulation). Identity with the old path's GE stream isn't asked of a part that replaces it. The multiplayer boundary still holds. A slice slower on its own is not a rejection: the PSP prices the part at its milestone (the old layer bypassed) and at the switch-over.
-  - **Levers stay off a part's ground:** a lever on a ground a part replaces isn't started unless it pays before the part lands and Sheepdog01 says so.
+  - **Levers stay off a part's ground:** once a part has Sheepdog01's go, a lever on a ground it replaces isn't started unless it pays before the part lands and Sheepdog01 says so (the lab's `tools/levercheck.py` names the part). Before the go, a lever there says how it fits the part.
 - **The hardware rules:**
   - The target is the PSP-1000: 333 MHz, 24 MB user RAM, 16 KB caches. Never rely on overclocking.
   - Write the CPU's cache back before the GE, the Media Engine or DMA reads what it wrote.

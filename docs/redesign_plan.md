@@ -96,7 +96,7 @@ The redesign rule (Sierra-III CLAUDE.md and the lab's, "Redesign work", Sheepdog
 - **Budget first.** A part starts as its ceiling on each unit and stretch against §1's gap, and Sheepdog01's go.
 - **A separate path, switched whole.** A part is built beside the old path, not inside it, with its own machinery, under one keep word. The old path stays as the A/B side and the fallback until the switch-over, then goes.
 - **Proven for correctness, priced once.** Slices are proven in the emulator for correctness: pictures for drawing, play + seeds or the outcome census for the simulation. GE-stream identity with the old path isn't asked of a part that replaces it. The multiplayer boundary still holds. A slice slower on its own is not a rejection. The PSP prices a part at its milestone (the old layer bypassed) and at the switch-over.
-- **Levers stay off a part's ground.** A lever on a ground a part replaces isn't started (levercheck names the part), unless it pays before the part lands and Sheepdog01 says so.
+- **Levers stay off a part's ground.** Once a part has Sheepdog01's go, a lever on a ground it replaces isn't started (the lab's levercheck names the part), unless it pays before the part lands and Sheepdog01 says so. Before the go, a lever there says how it fits the part. A lever that failed through the old layers is marked revivable under the part (PDC, PDCCALL and X2 are, under R).
 - **Progress is the budget.** A milestone updates §1's table; a lever reports its effect in its terms.
 
 ## 7. Why the habits changed
