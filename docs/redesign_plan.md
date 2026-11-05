@@ -2,53 +2,79 @@
 
 Sheepdog01, 2026-11-05 15:41-16:24 (the bottleneck session): the redesign had turned back into a build and test of small fixes. "The whole point of the redesign was to attack the time costs directly." Patching over replacing "has killed the project timeline". This page is the plan that replaces the lever order as the redesign's spine. `redesign_tick.md` (T1-T7) and `redesign_recon.md` stay as its inputs. The rules for building it are in this repo's CLAUDE.md and the lab's ("Redesign work").
 
-Labels: [M] measured on the PSP, [E] emulator or estimate, [D] read in code or data, [U] inference.
+Revised 2026-11-05 17:05 after a second-opinion review (lab or-job 42123727478, each point checked against the sources): the GE enters the floor; one bare baseline; S's target derived, and shared with R and B; R's saving tied to its frame rate; criteria, owners and a fallback per part.
+
+Labels: [M] measured on the PSP, [E] emulator or estimate, [D] read in code or data, [U] inference. Lab paths are the lab repository's.
+
+## 0. What the plan delivers
+
+- **The floor first: real time (30 ticks a second, at least 15 fps) on every benched stretch** (the goals, `redesign_tick.md`). The target (30 fps per level) follows on the lighter levels; on the heaviest it isn't promised (§5).
+- **Viability, as of this page** [U on M]:
+  - **Six of the ten benched stretches** (b30's opening and beach, c20, d20's walk and flashlight, b40's opening) reach the floor on paper with the parts below and the pieces already measured.
+  - **The four heaviest** (b30's flight and landing, b40's cliff path and snowfield) need every unit cut at once (§1). The known ceilings don't add up to that yet. Counts C3, C4 and C6 decide whether the parts close it, and §5's first decision is what happens if they don't.
 
 ## 1. The frame budget
 
-Every unit has 1000 ms a second. One second of real time asks each unit for:
-- **main CPU:** 30 ticks + fps × (drawing, other and frame end, working);
-- **ME:** fps × the replay + audio at its real-time rate + 30 × (the AI job and ring jobs a tick);
-- **GE:** fps × (busy + stalled).
+Every unit has 1000 ms a second. One second of real time at 15 fps asks each unit for:
+- **main CPU:** 30 ticks + 15 × (drawing, other and frame end, working);
+- **ME:** 15 × the replay + audio at its real-time rate + 30 × (the AI job and ring jobs a tick);
+- **GE:** 15 × its own work (busy), with the time it sits stalled for the ME's next chunk shown apart (that's the ME's lateness, not the GE's work).
 
-The work a frame is held as measured, contention included [U on M]. Figures from ledger 3 (`frame_timeline.md`, tock162). They carry the instruments' cost, ~5% of b30's tick (the master's bare-run split, lab sierra-hw 42114568213: flight frame 118.6 ms against 132.8, tick 39.9 ms against 43.7).
+**Where the formula's assumptions fail** [U]:
+- The work a frame is held as measured, at today's 7-15 fps. At higher frame rates less changes between frames (R's saving grows, §3), and contention is held as measured.
+- The tick's cost is taken as independent of the frame rate. That's true of the game's work, not of contention: the toll depends on what the GE reads beside the ticks.
 
-| ms a second, at 15 fps / at 30 fps | 30 ticks alone | Main CPU | ME | GE |
-|---|---:|---:|---:|---:|
-| b30 opening | **1071** | 1380 / 1689 | 689 / 978 | 570 / 1140 |
-| b30 flight | **1310** | 1947 / 2584 | 1498 / 2545 | 1291 / 2583 |
-| b30 landing | **1184** | 1914 / 2645 | 1572 / 2668 | 1228 / 2457 |
-| b30 beach | **1019** | 1476 / 1934 | 844 / 1257 | 492 / 984 |
-| c20 | 570 | 925 / 1281 | 775 / 1373 | 639 / 1278 |
-| d20 swamp walk | **1016** | 1457 / 1898 | 916 / 1279 | 434 / 867 |
-| d20 flashlight on | 649 | 1143 / 1636 | **1379** / 2526 | 1138 / 2277 |
-| b40 opening | 327 | 589 / 852 | 494 / 754 | 266 / 531 |
-| b40 cliff path | **1176** | 1755 / 2334 | 1110 / 1801 | 741 / 1482 |
-| b40 snowfield | **1275** | 1871 / 2466 | 656 / 982 | 552 / 1104 |
+**The baseline.** Ledger 3 (`frame_timeline.md`, tock162 64647bb5) carries the instruments `hwthreads frametrace gebusy gebusy2 mevisring` and the PC sampler. Measured against a bare run, they cost b30's flight tick +5.2% and +1.8%: ~7% [M, lab sierra-hw 42114568213]. So the ticks below are ledger 3's less 7%. The other columns keep ledger 3's figures; their instruments' cost isn't split yet.
+
+| At 15 fps, ms a second | 30 ticks (bare) | One tick (bare) | Main CPU | ME | GE work | GE stalled |
+|---|---:|---:|---:|---:|---:|---:|
+| b30 opening | 996 | 33.2 | 1305 | 689 | 542 | 28 |
+| **b30 flight** | **1218** | **40.6** | **1855** | **1498** | **1252** | 39 |
+| **b30 landing** | **1101** | **36.7** | **1831** | **1572** | **1209** | 20 |
+| b30 beach | 947 | 31.6 | 1405 | 844 | 479 | 14 |
+| c20 | 530 | 17.7 | 885 | 775 | 632 | 8 |
+| d20 swamp walk | 945 | 31.5 | 1386 | 916 | 360 | 74 |
+| d20 flashlight on | 604 | 20.1 | 1097 | **1379** | 430 | 708 |
+| b40 opening | 304 | 10.1 | 566 | 494 | 250 | 15 |
+| **b40 cliff path** | **1094** | **36.5** | **1673** | **1110** | 694 | 46 |
+| **b40 snowfield** | **1186** | **39.5** | **1782** | 656 | 550 | 2 |
 
 What it says:
-- **The tick alone is over budget on 7 of the 10 stretches** (bold). Nothing done to drawing, the ME or the GE reaches the floor there. The tick has to fall first: on b30's flight, from 39.9 ms (bare) to ~26 ms (−35%) once drawing is down to ~15 ms a frame.
-- **The ME is the second wall.** It's over the floor on b30's flight and landing and binds d20's flashlight; at the target it's over on every heavy stretch. Moving more work onto it (T1, T2, AITICKOLD) needs room something else frees first.
-- **The GE binds nothing at the floor** [M: the main CPU waits on it 0-2 ms a frame]. At the target it's 2.3-2.7× over on b30, d20's flashlight and the landing: there the GE's own work has to shrink, which with the same geometry may mean a compromise (§5).
+- **The main CPU is over on every stretch but c20 and b40's opening.** The ticks alone are over on the four heavy stretches, and at 93-100% on three more.
+- **What one tick may cost.** With drawing, other and frame end at ~15 ms a frame, a tick has 25.8 ms on every stretch ((1000 − 15 × 15) / 30). Today's bare ticks need: b30's flight −36%, landing −30%, b40's snowfield −35%, cliff −29%, b30's opening −22%, beach −18%, d20's walk −18%. With drawing left at ~22 ms a frame, the flight needs −45%.
+- **Drawing has to fall 2-3× on the heavy stretches** (b30's flight 42.5 ms a frame of drawing, other and frame end; landing 48.7; b40's 38.6-39.7).
+- **The ME is over on b30's flight and landing and on d20's flashlight.** The replay must lose ~33 ms a frame on the flight, ~38 on the landing and ~25 on the flashlight.
+- **The GE's own work is over on b30's flight (1252) and landing (1209)**, so the GE enters the floor there. d20's flashlight is the ME's lateness: the GE's own work (430) fits.
 
 ## 2. Why the time is what it is
 
-- **The tick** waits on memory for 56-68% of its cycles on every stretch [M]: a PC engine's data, scattered behind pointers, against a 16 KB data cache. On b30's flight: computing 36%, its own misses 47%, the GE's contention toll 17% (lead A). The flight's tick has never been split by subsystem.
-- **The drawing and the replay do the per-part work twice.** The engine's immediate-mode renderer runs on the main CPU and records every part's draw (37 ms a frame on b30's flight); the ME decodes each record and re-derives its GE state (70 ms). Both are limited by instruction misses: the drawing's hot code is ~45 KB, the replay's ~29 KB, against a 16 KB I-cache (`draw_rebuild.md`, cachecensus1 [E]). And most of it is the same as the frame before: a model part's GE words are **97-98% unchanged apart from its matrices**, 544 of 552 model draws a frame on b30 match last frame's (`pdc_plan.md`, pdc1 [E]; the share held on the PSP, pdcprobe [M]).
-- **Every part's commands go through main RAM every frame** (~500 KB a frame of list on b30's flight), and the GE reads them beside the tick: the list's own bytes are 4.4 ms of b30's toll.
+- **The tick** waits on memory for 56-67% of its cycles on every stretch [M, ledger 3]: a PC engine's data, scattered behind pointers, against a 16 KB data cache. On b30's flight: computing 36%, its own misses 47%, and the GE's contention toll 17% (15.1 ms a frame, `frame_timeline.md` lead A [U on E and M]). The flight's tick has never been split by subsystem.
+- **The drawing and the replay do the per-part work twice.** The engine's immediate-mode renderer runs on the main CPU and records every part's draw (37 ms a frame on b30's flight). The ME decodes each record and re-derives its GE state (70 ms). Both are limited by instruction misses: the drawing's hot code is ~45 KB and the replay's ~29 KB, against a 16 KB I-cache (`draw_rebuild.md`, cachecensus1 [E]).
+- **Most of it repeats.** A model part's GE words are 97-98% unchanged frame to frame apart from its matrices, and 544 of 552 model draws a frame on b30 match last frame's (`pdc_plan.md`, pdc1 [E]; the share held on the PSP, pdcprobe [M]). That census ran at 1.1-1.6 ticks a frame; at today's two ticks a frame less repeats.
+- **Every part's commands cross main RAM every frame**, ~500 KB a frame of list on b30's flight. The GE reads them beside the tick: the list's own bytes are 4.4 ms of b30's toll.
 
 ## 3. The parts
 
-### S. The tick, by how often its work changes (first)
+Each part: what it changes, its ceiling, its milestone (when the PSP prices it), its stop rule, its fallback, and who does it (proposed; Sheepdog01 assigns).
 
-The tick is the wall on most stretches, so it leads. Today every object's work runs every tick. The redesigned tick computes what's read, when it's read, and keeps results until their inputs change.
+### S. The tick, by how often its work changes
 
-- **Known:** animation and node matrices are 19-40% of the tick on every map (9-29 ms a frame, framesplit [M]); 17-54% of that work is for objects neither drawn nor read before the next draw (nmstudy, VISLAZY [U on E × M]). Collision is 25% of the beach's tick. Sleeping objects already skip work.
-- **The target:** b30's flight tick −35% (39.9 → ~26 ms, bare), with drawing at ~15 ms a frame.
-- **First:** the census (C3, §4). What's known adds up to well short of −35%: the census decides whether S closes the gap by itself, or T6's tick-start world and T7's layout have to carry the rest.
-- T3 (parts of the tick less often), T6, T7 and VISLAZY become S's pieces, judged against S's target, not one by one.
+Today every object's work runs every tick. The redesigned tick computes what's read, when it's read, and keeps results until their inputs change. T3, T5, T6 and T7 are its pieces.
 
-### R. Retained rendering (second, alongside S)
+- **Target, derived (§1):** a bare tick of ≤ 25.8 ms with drawing at ~15 ms a frame. That is b30's flight −36%, b40's snowfield −35%, b30's landing −30%, b40's cliff −29%; the lighter stretches −18 to −22%.
+- **The target is shared.** Part of the tick is the GE's toll, which R and B shrink (the list's own bytes; vertices and indices moved to VRAM where room is freed). What's left after them is S's.
+- **What's already in the measured figures:** VISLAZY and aicad3 are on by default (the lab's `levers.tsv`), so their gains are in ledger 3.
+- **What's known on top, on b30's flight** [U on M]:
+  - AITICKOLD, the AI's think on the ME from a world one tick older: tick −14.5% [M, PSP-3000 sierra-hw 42041663929]. It needs ME room, which R frees.
+  - The toll R and B can remove: ~2-4 ms a tick.
+  - T5 and T7: ~0.5-1.
+  - Together: 40.6 → ~30-32 ms against ≤ 25.8. **A gap of ~4-6 ms a tick has no known source.** C3 has to find it.
+- **Milestone:** C3's census done and S's pieces chosen against the target; the PSP prices S when the first of them replaces the old tick path on b30.
+- **Stop rule:** if C3 shows the pieces can't reach the target exactly or "plays the same", Sheepdog01 decides (§5.1).
+- **Fallback:** the old tick path behind S's keep word; it stays the safety net for a failure, per CLAUDE.md's failure rule.
+- **Who:** recon (C3); the master builds.
+
+### R. Retained rendering
 
 The GE was built for retained mode: lists that CALL sub-lists, 8 bone matrix and 4 light registers, a stall address. Native PSP games build a part's commands once and write only what changes.
 
@@ -60,45 +86,64 @@ The GE was built for retained mode: lists that CALL sub-lists, 8 bone matrix and
 | every frame, dynamic | particles, decals, contrails, sorted see-through, the HUD, first person | immediate mode, as now | the frame list |
 
 - **The units' jobs:** the main CPU runs the tick and the visibility, and hands over an instance list, not a record of every call. The ME writes the frame list from the instances and makes the dynamic geometry: the replay as a stage goes. The GE draws as now.
-- **What it buys on b30's flight** [U]: the ME ~1400 → ~850-1000 ms a second at the floor (the models' per-part replay, after PDC's census: 22-30 ms a frame); the main CPU's drawing ~640 → ~300-400. The ticks are untouched. **R makes the ME fit the floor and frees the room T1 and AITICKOLD need**; it doesn't fit b30 by itself (§1).
-- **Why PDC, PDCCALL and X2 didn't pay:** they kept the record, the key, the hash and the replay, and copied prebuilt words into the old per-frame list, bit for bit: PDCCALL's ceiling was 3.5-4.3 ms of a 40 ms ME job [M], and its store didn't fit b30's heap. They didn't show retained mode loses; they showed half of it costs what it saves. R is built under the rules in §6.
-- **What could sink it:** the shader forms a map needs (C1); the store's room, which has to be GE-readable (main RAM or VRAM, not eDRAM; the room is the frame list it replaces, 768 KB plus the 224 KB record buffer [D]); the dynamic floor (C2); Halo's object lighting on the GE's 4 lights (C5).
+- **What it must deliver at the floor (§1):** the ME's replay −33 ms a frame on b30's flight (−38 landing, −25 d20's flashlight); drawing, other and frame end 42.5 → ~15-20 ms on the flight; some of the GE's work (the list words the GE re-reads: 24% of b30's list reads repeat what the GE holds, LISTBYTES in `levers.tsv`).
+- **What's known of its worth** [U on E and M]: PDC's census puts the models' removable share at 22-30 ms a frame of the replay on b30, measured near one tick a frame. At the floor's two ticks a frame it's smaller (`pdc_plan.md`: "the saving today is smaller than at the target. It grows as the frame rate rises"). The level's per-cluster lists add to it, unsized. **So R as known meets the floor's ME need on d20's flashlight and falls ~5-15 ms short on b30's flight and landing.** C4 and C2 size the rest.
+- **Why the earlier tries didn't pay** (the lab's `levers.tsv` and `grounds.tsv`, rows PDC, PDCCALL, X2):
+  - PDC copied prebuilt words into the old per-frame list through the old layers, bit for bit, from an eDRAM store the GE can't read. Its pairs ran even to +1.6 ms a frame.
+  - PDCCALL CALLed retained blocks, but kept the key, the hash, the replay and the built parts. It measured +1.2-2.3% frame on c10 [M, PSP-1000 sierra-hw 41216890230], and its store didn't fit b30's heap.
+  - Neither is R: R is bake-built per level of detail and pass, with no per-frame record or replay. They showed that half a retained mode costs about what it saves, not that retained mode loses.
+- **What could sink it:**
+  - the shader forms a map needs (C1);
+  - the store's room, which has to be GE-readable: main RAM or VRAM, not eDRAM. The room is the frame list it replaces, 768 KB of list plus the record buffer, 128 KB by default and 224 with the default keep set [D, `psp_ge.c` DEFER_INFLIGHT_KB; IFKB];
+  - the dynamic floor (C2);
+  - Halo's object lighting on the GE's 4 lights (C5).
+- **Milestone:** b30's models drawn from prebuilt lists with the record and replay bypassed for them; one PSP pair against the old path. **Switch-over:** every kind drawn by R; one pair.
+- **Stop rule:** if C1 shows the store can't fit, or C4 that R's ME saving can't reach the floor's need with S and B, Sheepdog01 decides before any build.
+- **Fallback:** immediate mode stays in the build for what R can't hold: parts whose forms didn't fit the store, and any failure. The old record and replay go at the switch-over; immediate drawing doesn't.
+- **Who:** the bottleneck session (C1, C2, C5); the master (C4, the build).
 
-### B. The memory map (with R)
+### B. The memory map by design (with R)
 
-R decides what has to be GE-readable, and S's layout what the tick reads hot. B places them: VRAM, main RAM and the ME's eDRAM by design, not job by job. Known: VRAM has 13-48 KB free behind 816 KB of fixed buffers; freed VRAM is worth ~17.6 µs of b30's tick a frame a KB for the first 200 KB (lead A [U on M]); the eDRAM's 544 KB is the largest free block, readable by the ME only. B follows C1's sizes.
+R decides what must be GE-readable, and S's layout what the tick reads hot. B places them: VRAM, main RAM and the ME's eDRAM by design, not job by job. T4 joins it.
+
+- **Known:** VRAM has 13-48 KB free behind 816 KB of fixed buffers. Freed VRAM is worth ~17.6 µs of b30's tick a frame a KB for the first 200 KB (lead A [U on M]). The eDRAM's 544 KB is the largest free block, readable by the ME only.
+- **Milestone and stop:** set by C1's sizes. B is a layout, priced inside R's and S's milestones.
+- **Who:** the master, from C1.
 
 ### The old parts
 
 T1 and T2 (work onto the ME) wait for the ME room R frees. T4 is B's. T3, T5, T6 and T7 are S's pieces. The lever list goes on beside the plan (§6), not on its parts' paths.
 
-## 4. The first counts (no PSP time)
+## 4. The counts (no PSP time unless marked)
 
-| | Count | Answers | Where |
-|---|---|---|---|
-| C1 | Each map's prebuilt forms: parts × levels of detail × shader passes, and their bytes | whether R fits the machine | the bake, offline |
-| C2 | The frame list's inline data (b30's flight 254 of 501 KB) by kind: cut pieces, decals, kept index copies, the rest | R's floor: what stays per frame | emulator, `listcensus` |
-| C3 | The tick by subsystem and by change rate: what's recomputed each tick against what changed | whether S reaches −35% | emulator, the PC sampler and tick steps |
-| C4 | The replay split by record kind, bare (the ledger's `replaypart`) | R's ceiling on the ME | emulator for the shape, one PSP run for the ms |
-| C5 | Reads: what the GE does at the near plane (do the cut pieces need doing?), and how the replay lights a model (GE lights or software) | two of R's unknowns | code and docs |
+| | Count | Answers | Where | Who (proposed) |
+|---|---|---|---|---|
+| C1 | Each map's prebuilt forms (parts × levels of detail × shader passes) and their bytes | whether R fits | the bake, offline | bottleneck |
+| C2 | The frame list's inline data (b30's flight 254 of 501 KB) by kind: cut pieces, decals, kept index copies, the rest | R's floor: what stays per frame | emulator, the lab's `listcensus` (Sierra-III recon/listbytes; lab coord/handoff/listbytes_2026-11-05.md) | bottleneck |
+| C3 | The tick by subsystem and by change rate on the four heavy stretches: what's recomputed each tick against what changed | where S's last 4-6 ms a tick comes from | emulator: the PC sampler, tick steps, and `nmstudy` (lab coord/handoff/nmstudy.md) | recon |
+| C4 | The replay split by record kind | R's ceiling on the ME | emulator for the shape; one bare PSP run for the ms | master |
+| C5 | Reads: what the GE does at the near plane (do the cut pieces need doing?), and how the replay lights a model (GE lights or software) | two of R's unknowns | code and docs | bottleneck |
+| C6 | The GE's own time on b30's flight and landing by what limits it: vertices, fill, or reading main RAM | whether the GE's work can lose ~15 ms a frame for the same picture | gebusy2's kinds [M] plus the emulator | bottleneck |
 
-C3 and C1 decide the plan; C2, C4 and C5 size R.
+C3, C4 and C6 decide the heavy stretches; C1 decides whether R is built at all.
 
 ## 5. Decision points for Sheepdog01
 
-1. **After C3:** whether S reaches the floor's tick on b30 exactly, or needs "plays the same" work (the simulation rule of 2026-10-30) or a compromise.
+1. **After C3, C4 and C6:** if the parts' ceilings don't reach the floor on the four heavy stretches, what fills the gap there: "plays the same" work (the simulation rule of 2026-10-30), or compromises. Compromises are frozen apart from L15, FX15, RENDERTICK, AIFAR and PRIO60 (CLAUDE.md, 2026-10-25 and 10-29), so this one is Sheepdog01's to lift.
 2. **After C1:** whether R fits, and the go to build it as a separate path.
-3. **At the target:** where the GE is 2.3-2.7× over (b30's flight and landing, d20's flashlight), 30 fps needs less GE work for the same picture or a compromise. Not needed for the floor.
+3. **The target:** 30 fps per level looks reachable with R and S on the lighter levels: a10 and c10 at 20.7 fps today, c20 17.2, c40 27.5 (tock161's ladder, PSP-1000 [M]). It isn't promised on b30, a30 or d20 (×2.2-3.7). Whether to chase it there comes after the floor.
 
 ## 6. How it's built
 
 The redesign rule (Sierra-III CLAUDE.md and the lab's, "Redesign work", Sheepdog01 2026-11-05 16:24):
 - **Budget first.** A part starts as its ceiling on each unit and stretch against §1's gap, and Sheepdog01's go.
-- **A separate path, switched whole.** A part is built beside the old path, not inside it, with its own machinery, under one keep word. The old path stays as the A/B side and the fallback until the switch-over, then goes.
-- **Proven for correctness, priced once.** Slices are proven in the emulator for correctness: pictures for drawing, play + seeds or the outcome census for the simulation. GE-stream identity with the old path isn't asked of a part that replaces it. The multiplayer boundary still holds. A slice slower on its own is not a rejection. The PSP prices a part at its milestone (the old layer bypassed) and at the switch-over.
+- **A separate path, switched whole.** A part is built beside the old path, not inside it, with its own machinery, under one keep word. The old path stays as the A/B side until the switch-over. A failure fallback stays after it (§3's fallbacks), per CLAUDE.md's failure rule.
+- **Proven for correctness, priced once.** Slices are proven in the emulator for correctness: pictures for drawing, play + seeds or the outcome census for the simulation. GE-stream identity with the old path isn't asked of a part that replaces it.
+- **The multiplayer boundary is proven in the campaign build.** State the server consumes or checks (the rules, the 30 Hz tick, collision's answers, tag indices, object slots) stays exact, proven by play + seeds against the old path, while multiplayer builds are left out (CLAUDE.md, 2026-10-21).
+- **A slower slice is not a rejection.** The PSP prices a part at its milestone and at its switch-over.
 - **Levers stay off a part's ground.** Once a part has Sheepdog01's go, a lever on a ground it replaces isn't started (the lab's levercheck names the part), unless it pays before the part lands and Sheepdog01 says so. Before the go, a lever there says how it fits the part. A lever that failed through the old layers is marked revivable under the part (PDC, PDCCALL and X2 are, under R).
-- **Progress is the budget.** A milestone updates §1's table; a lever reports its effect in its terms.
+- **Progress is the budget.** A milestone updates §1's table. A lever reports its effect in its terms.
 
 ## 7. Why the habits changed
 
-On the dashboard's lever table (2026-11-05): 513 levers, 145 in the build, 93 rejected, 54 shelved; `levers.tsv` changed in 510 commits since the tick-and-tock rule (2026-10-24). The large wins were sized before they were built: PDC's census put the replay's saving at 22-30 ms a frame on b30, and its build, held to the old path's GE stream through the old layers, measured +1.2-2.3% and was rejected. The rule above is so that a design whose payoff comes when the old layer goes isn't judged on its first slice.
+On the dashboard's lever table (2026-11-05): 513 levers, 145 in the build, 93 rejected, 54 shelved; `levers.tsv` changed in 510 commits since the tick-and-tock rule (2026-10-24). The large wins were sized before they were built. PDC's census put the replay's saving at 22-30 ms a frame on b30. Its build, held to the old path's GE stream through the old layers, ran even, and PDCCALL measured +1.2-2.3%. Both were judged slice by slice. The rule above is so that a design whose payoff comes when the old layer goes isn't judged on its first slice.
