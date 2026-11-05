@@ -95,6 +95,7 @@ struct tex_census
 	unsigned int evict_kb;
 	unsigned int evicted_frame, evicted_age;
 	unsigned short evicted_by, evicted_recent;
+	unsigned int refused_stamp; /* the frame last refused room */
 };
 static int census_on = -1;
 static struct tex_census *census = NULL;
@@ -1653,6 +1654,37 @@ static int census_ready(void)
 	return census_on > 0 && census != NULL;
 }
 
+/* the refuse-and-retry's size: reads refused room, the textures refused a
+frame and how many of them were refused the frame before too, and the frame's
+wanted bytes (its drawn set plus the refused) against both arenas' room */
+static unsigned int retry_reads = 0, retry_frame_n = 0, retry_frame_again = 0;
+static unsigned long retry_frame_bytes = 0;
+static unsigned int retry_frames = 0, retry_textures = 0, retry_again = 0, retry_over = 0;
+static unsigned long retry_kb = 0, retry_kb_peak = 0, retry_wanted_peak = 0, retry_set_kb = 0;
+
+static void census_frame_end(void)
+{
+	unsigned long wanted = frame_set_bytes + retry_frame_bytes;
+	unsigned int room = (arenas[0].end - arenas[0].start) + (arenas[1].end - arenas[1].start);
+
+	if (retry_frame_n)
+	{
+		retry_frames++;
+		retry_textures += retry_frame_n;
+		retry_again += retry_frame_again;
+		retry_kb += retry_frame_bytes / 1024;
+		if (retry_frame_bytes / 1024 > retry_kb_peak)
+			retry_kb_peak = retry_frame_bytes / 1024;
+		retry_set_kb += frame_set_bytes / 1024;
+		if (wanted > room)
+			retry_over++;
+	}
+	if (wanted / 1024 > retry_wanted_peak)
+		retry_wanted_peak = wanted / 1024;
+	retry_frame_n = retry_frame_again = 0;
+	retry_frame_bytes = 0;
+}
+
 /* index went without in this frame; why: 1 no room, 2 the budget, 0 not known */
 static void census_without(int index, int why)
 {
@@ -1667,7 +1699,18 @@ static void census_without(int index, int why)
 		c->without++;
 	}
 	if (why == 1)
+	{
 		c->room++;
+		retry_reads++;
+		if (c->refused_stamp != frame)
+		{
+			retry_frame_n++;
+			retry_frame_bytes += alignment(entries[index].size);
+			if (c->refused_stamp && c->refused_stamp + 1 == frame)
+				retry_frame_again++;
+			c->refused_stamp = frame;
+		}
+	}
 	else if (why == 2)
 		c->budget++;
 }
@@ -1714,6 +1757,12 @@ static void census_report(void)
 
 	if (!census_ready())
 		return;
+	platform_log("textures: texretry: game time %ld: %u of 300 frames refused room; %u reads refused, %u textures refused a frame (summed), %u of them refused the frame before too; refused %lu KB a refusing frame (most %lu) beside a drawn set of %lu KB; wanted (set + refused) past the room (%u KB) in %u frames, most %lu KB",
+		psp_game_time_peek(), retry_frames, retry_reads, retry_textures, retry_again,
+		retry_frames ? retry_kb / retry_frames : 0, retry_kb_peak, retry_frames ? retry_set_kb / retry_frames : 0,
+		((arenas[0].end - arenas[0].start) + (arenas[1].end - arenas[1].start)) / 1024, retry_over, retry_wanted_peak);
+	retry_reads = retry_frames = retry_textures = retry_again = retry_over = 0;
+	retry_kb = retry_kb_peak = retry_wanted_peak = retry_set_kb = 0;
 	/* the eight longest without and the five that evicted the most: a pass
 	each, every 300 frames */
 	for (n = 0; n < 8; n++)
@@ -1905,10 +1954,9 @@ static int alloc_spans_build(int which, unsigned int recent)
 	return n;
 }
 
-/* fits, answered from the spans */
-static int alloc_span_fits(int which, int n, unsigned int start, unsigned int size)
+/* fits, answered from spans sorted by start with running-maximum ends */
+static int alloc_span_fits_in(struct alloc_span const *spans, int which, int n, unsigned int start, unsigned int size)
 {
-	struct alloc_span const *spans = (struct alloc_span const *)staging + n;
 	unsigned int end = start + size;
 	int low = 0, high = n;
 
@@ -1925,6 +1973,172 @@ static int alloc_span_fits(int which, int n, unsigned int start, unsigned int si
 			high = middle;
 	}
 	return low == 0 || spans[low - 1].hi <= start;
+}
+
+static int alloc_span_fits(int which, int n, unsigned int start, unsigned int size)
+{
+	return alloc_span_fits_in((struct alloc_span const *)staging + n, which, n, start, size);
+}
+
+/* TEXALLOC2: load_into's up to six allocate calls (two arenas, three recency
+levels) all fail before one succeeds, and nothing they read changes in
+between: residency and the arenas change only when one succeeds, and
+last_frame, the HUD pins and the frame counter only on the main CPU outside
+the read. So the table is walked once a refused read, not once a search:
+every resident texture that the widest recency could protect goes into a
+compact list in table order (the places to try), with an index of it sorted
+by start; each search filters those instead of walking 900-odd entries, and
+the ring position's own test from the second call on is answered from the
+list too. Same places, same order, same answers. Off: "texalloc2off" */
+struct alloc_tex
+{
+	unsigned int lo, hi, last, arena_pin; /* arena_pin: the arena, and 0x100 if a live HUD pin */
+};
+#define ALLOC_GATHER_MAX ((int)((STAGING_BYTES - 8) / (sizeof(struct alloc_tex) + sizeof(unsigned short) + sizeof(struct alloc_span))))
+/* -1 unread; 1 on; 0 "texalloc2off" */
+static int alloc_gather_on = -1;
+/* set by load_into around its allocate calls: they belong to one read */
+static int alloc_in_read = 0;
+/* this read's list: -1 not made, -2 not usable (the per-search spans answer), else its length */
+static int gather_n = -1;
+static unsigned int gather_recent_max = 0, gather_span_at = 0, gather_bytes = 0;
+static unsigned int alloc_gathers = 0, alloc_gather_peak = 0, alloc_gather_over = 0, alloc_ring_mismatches = 0;
+static unsigned int alloc_read_searched = 0;
+static unsigned long alloc_read_us = 0;
+
+static int gather_protected(struct alloc_tex const *t, int which, unsigned int recent)
+{
+	return (int)(t->arena_pin & 0xFF) == which && (t->last + recent > frame || (t->arena_pin & 0x100));
+}
+
+static void gather_build(void)
+{
+	struct alloc_tex *list = (struct alloc_tex *)staging;
+	unsigned short *sorted;
+	unsigned int widest = RECENT_FRAMES;
+	int index, n = 0, gap, k, gaps;
+	static int const gap_list[] = { 701, 301, 132, 57, 23, 10, 4, 1 };
+
+	alloc_gathers++;
+	if (recent_middle < 0)
+		recent_middle = psp_keep_number("texrecent", 8);
+	if (recent_middle > (int)widest)
+		widest = (unsigned int)recent_middle;
+	for (index = 0; index < entry_count; index++)
+	{
+		unsigned int at = resident_at[index], last = last_frame[index];
+		int pin;
+
+		if (!at)
+			continue;
+		pin = hud_pinned && hud_pinned[index] && last + RECENT_FRAMES > frame;
+		if (!pin && !(last + widest > frame))
+			continue;
+		if (n == ALLOC_GATHER_MAX)
+		{
+			alloc_gather_over++;
+			gather_bytes = (unsigned int)n * sizeof(*list);
+			gather_n = -2;
+			return;
+		}
+		list[n].lo = at;
+		list[n].hi = at + alignment(entries[index].size);
+		list[n].last = last;
+		list[n].arena_pin = resident_in[index] | (pin ? 0x100u : 0);
+		n++;
+	}
+	/* a Shell sort of indices by start: no callback, and the order of equal
+	starts doesn't change any answer (a halving cuts between starts) */
+	sorted = (unsigned short *)(list + n);
+	for (k = 0; k < n; k++)
+		sorted[k] = (unsigned short)k;
+	for (gaps = 0; gaps < (int)(sizeof(gap_list) / sizeof(gap_list[0])); gaps++)
+	{
+		gap = gap_list[gaps];
+		for (k = gap; k < n; k++)
+		{
+			unsigned short moving = sorted[k];
+			unsigned int key = list[moving].lo;
+			int j = k;
+
+			while (j >= gap && list[sorted[j - gap]].lo > key)
+			{
+				sorted[j] = sorted[j - gap];
+				j -= gap;
+			}
+			sorted[j] = moving;
+		}
+	}
+	gather_span_at = ((unsigned int)n * (sizeof(*list) + sizeof(*sorted)) + 7) & ~7u;
+	gather_bytes = gather_span_at;
+	gather_recent_max = widest;
+	gather_n = n;
+	if ((unsigned int)n > alloc_gather_peak)
+		alloc_gather_peak = (unsigned int)n;
+}
+
+/* fits, answered from the list */
+static int gather_fits(int which, unsigned int start, unsigned int size, unsigned int recent)
+{
+	struct alloc_tex const *list = (struct alloc_tex const *)staging;
+	unsigned int end = start + size;
+	int k;
+
+	if (end > arenas[which].end)
+		return 0;
+	for (k = 0; k < gather_n; k++)
+		if (list[k].lo < end && list[k].hi > start && gather_protected(&list[k], which, recent))
+			return 0;
+	return 1;
+}
+
+/* pick_spans, its spans filtered from the list's sorted index */
+static unsigned int pick_gather(int which, unsigned int size, unsigned int recent)
+{
+	struct alloc_tex const *list = (struct alloc_tex const *)staging;
+	unsigned short const *sorted = (unsigned short const *)(list + gather_n);
+	struct alloc_span *spans = (struct alloc_span *)(staging + gather_span_at);
+	unsigned int furthest = 0, used;
+	int k, n = 0;
+
+	for (k = 0; k < gather_n; k++)
+	{
+		struct alloc_tex const *t = &list[sorted[k]];
+
+		if (!gather_protected(t, which, recent))
+			continue;
+		if (t->hi > furthest)
+			furthest = t->hi;
+		spans[n].lo = t->lo;
+		spans[n].hi = furthest;
+		n++;
+	}
+	if ((unsigned int)n > alloc_spans_peak)
+		alloc_spans_peak = (unsigned int)n;
+	used = gather_span_at + (unsigned int)n * sizeof(*spans);
+	if (used > gather_bytes)
+		gather_bytes = used;
+	alloc_tests++;
+	if (alloc_span_fits_in(spans, which, n, arenas[which].start, size))
+		return arenas[which].start;
+	for (k = 0; k < gather_n; k++)
+	{
+		if (!gather_protected(&list[k], which, recent))
+			continue;
+		alloc_tests++;
+		if (alloc_span_fits_in(spans, which, n, list[k].hi, size))
+			return list[k].hi;
+	}
+	return 0;
+}
+
+/* the list's lines dropped unwritten before the read fills the buffer */
+static void gather_end(void)
+{
+	if (gather_bytes)
+		sceKernelDcacheInvalidateRange(staging, (gather_bytes + 63) & ~63u);
+	gather_bytes = 0;
+	gather_n = -1;
 }
 
 static unsigned int pick_spans(int which, unsigned int size, int n)
@@ -1952,15 +2166,41 @@ static unsigned int allocate(int which, unsigned int size, unsigned int recent)
 
 	if (!arena->start || size > arena->end - arena->start)
 		return 0;
-	if (fits(which, arena->next, size, recent))
+	if (gather_n >= 0 && recent > gather_recent_max)
+		gather_n = -2;
+	if (gather_n >= 0)
+	{
+		if (gather_fits(which, arena->next, size, recent))
+			start = arena->next;
+		if (alloc_mode == 2 && fits(which, arena->next, size, recent) != (start != 0))
+			alloc_ring_mismatches++;
+	}
+	else if (fits(which, arena->next, size, recent))
 		start = arena->next;
-	else
+	if (!start)
 	{
 		if (alloc_mode < 0)
+		{
 			alloc_mode = psp_keep("texallocold") ? 1 : psp_keep("texallocchk") ? 2 : 0;
+			alloc_gather_on = !psp_keep("texalloc2off");
+		}
 		began = sceKernelGetSystemTimeLow();
 		alloc_searches++;
-		if (alloc_mode != 1 && (n = alloc_spans_build(which, recent)) >= 0)
+		if (alloc_mode != 1 && alloc_gather_on && alloc_in_read && gather_n == -1)
+			gather_build();
+		if (alloc_mode != 1 && gather_n >= 0)
+		{
+			start = pick_gather(which, size, recent);
+			if (alloc_mode == 2)
+			{
+				unsigned int tests = alloc_tests;
+
+				if (pick_scan(which, size, recent) != start)
+					alloc_mismatches++;
+				alloc_tests = tests;
+			}
+		}
+		else if (alloc_mode != 1 && (n = alloc_spans_build(which, recent)) >= 0)
 		{
 			start = pick_spans(which, size, n);
 			/* the table's lines dropped unwritten: the read that follows
@@ -2040,7 +2280,7 @@ extern volatile int psp_ge_show_busy; /* psp_ge.c */
 static int load_into(int index, int only)
 {
 	struct pack_entry const *entry = &entries[index];
-	unsigned int at = 0, done = 0, read_start;
+	unsigned int at = 0, done = 0, read_start, searches_before, chain_began;
 	int which = 0;
 
 	/* build 33: a texture drawn in the last two seconds isn't evicted while
@@ -2049,6 +2289,9 @@ static int load_into(int index, int only)
 	sat mostly empty, and on the PSP surfaces vanished and came back as their
 	textures were read from the Memory Stick again */
 	census_evictor = index;
+	searches_before = alloc_searches;
+	chain_began = sceKernelGetSystemTimeLow();
+	alloc_in_read = 1;
 	if (only != 1)
 		at = allocate(which = 0, alignment(entry->size), RECENT_FRAMES);
 	if (!at && only != 0)
@@ -2072,6 +2315,15 @@ static int load_into(int index, int only)
 	if (!at && only != 0)
 		at = allocate(which = 1, alignment(entry->size), psp_ge_show_busy ? 2 : 1);
 	census_evictor = -1;
+	alloc_in_read = 0;
+	gather_end();
+	/* the whole read's allocation when it searched: TEXALLOC2 also takes
+	the ring position's tests, which the search's own time leaves out */
+	if (alloc_searches != searches_before)
+	{
+		alloc_read_searched++;
+		alloc_read_us += sceKernelGetSystemTimeLow() - chain_began;
+	}
 	if (!at)
 	{
 		waits++;
@@ -3492,6 +3744,8 @@ void psp_tex_frame_end(void)
 #ifdef PSP_RECON
 	txc_frame_end();
 #endif
+	if (census_ready())
+		census_frame_end();
 	if (frame_set_bytes > frame_set_peak)
 	{
 		frame_set_peak = frame_set_bytes;
@@ -3530,8 +3784,13 @@ void psp_tex_frame_end(void)
 		platform_log("textures: texalloc (%s): %u searches past the ring position in 300 frames, %u places tested (each a scan of %d textures under texallocold), %lu us searching; at most %u protected, %u past the span room; %u answers differing from the scans (texallocchk)",
 			alloc_mode == 1 ? "texallocold" : alloc_mode == 2 ? "texallocchk" : alloc_mode == 0 ? "spans" : "none yet",
 			alloc_searches, alloc_tests, entry_count, alloc_us, alloc_spans_peak, alloc_spans_over, alloc_mismatches);
+		platform_log("textures: texalloc2 (%s): %u reads searched in 300 frames, %lu us allocating them (every allocate call, ring tests included); %u walks of the table, at most %u listed, %u past the list's room; %u ring tests differing from the scans (texallocchk)",
+			alloc_mode == 1 ? "texallocold" : alloc_gather_on == 0 ? "texalloc2off" : alloc_gather_on > 0 ? "on" : "none yet",
+			alloc_read_searched, alloc_read_us, alloc_gathers, alloc_gather_peak, alloc_gather_over, alloc_ring_mismatches);
 		alloc_searches = alloc_tests = alloc_spans_peak = 0;
 		alloc_us = 0;
+		alloc_read_searched = alloc_gathers = alloc_gather_peak = 0;
+		alloc_read_us = 0;
 	}
 	if (entries && frame % 300 == 0)
 		platform_log("textures, the HUD's and the screen's (%s): %lu missing when drawn (%lu read past the frame's budget), %lu drawn untextured; recorded for the Media Engine (%s): %lu marked, %lu past the ceiling, %lu refused room; read back at a frame's start %lu, refused %lu (%d pinned, %u KB, %u KB of them resident)",
