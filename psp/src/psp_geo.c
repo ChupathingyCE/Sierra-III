@@ -221,6 +221,17 @@ static unsigned int *pcv_table = NULL;
 static unsigned int pcv_entries = 0, pcv_start = 0, pcv_end = 0;
 /* read by the renderer on either CPU: set at a map's open only */
 int psp_pcv_on = 0;
+/* the blocks are a strip variant's ("skinstrip"): read by the renderer on
+either CPU, set at a map's open only */
+int psp_pcv_strips = 0;
+/* the variant regions (tools/modelconvert.py --skin-variants): the same
+buffers with their plans made otherwise, after a directory that follows the
+first region: 'PCVV', the count, then each one's bits (1: "skinw2", first-fit
+slots; 2: "skinstrip", strips where shorter), start, bytes, table offset and
+entries, as header words 11-14 hold the first's. A keep word that asks for a
+variant the pack lacks leaves the baked buffers unused, so a run never
+measures the first region by mistake */
+#define PCV_VARIANTS 0x56564350u /* 'PCVV' */
 static int pcv_check = 0;
 static PSP_MAIN_SIDE unsigned long pcv_locks = 0, pcv_loads = 0, pcv_load_bytes = 0, pcv_fallbacks = 0;
 int psp_ge_pcv_relocate(void *block, unsigned int size);
@@ -1288,7 +1299,9 @@ void psp_geo_close(void)
 	pcv_table = NULL;
 	pcv_entries = pcv_start = pcv_end = 0;
 	psp_pcv_on = 0;
+	psp_pcv_strips = 0;
 	sceKernelDcacheWritebackRange(&psp_pcv_on, sizeof(psp_pcv_on));
+	sceKernelDcacheWritebackRange(&psp_pcv_strips, sizeof(psp_pcv_strips));
 }
 
 /* the tag window's part the map never uses, past what the animation cache
@@ -1381,6 +1394,30 @@ void psp_geo_map_opened(const char *name, unsigned int map_crc, const void *firs
 			psp_showcase_map ? "the main menu converts at run time" : NULL;
 		unsigned int start = header[11], bytes = header[12], table_at = header[13], entries = header[14];
 		SceOff file_bytes = sceIoLseek(pack, 0, PSP_SEEK_END);
+		unsigned int want = (psp_keep("skinw2") ? 1u : 0u) | (psp_keep("skinstrip") ? 2u : 0u);
+
+		if (!why && want)
+		{
+			unsigned int directory[32], at = (start + bytes + 63) & ~63u, k;
+
+			why = "the keep words ask for a variant region the pack doesn't have";
+			if ((SceOff)(HEADER_BYTES + at + sizeof(directory)) <= file_bytes &&
+				sceIoLseek32(pack, HEADER_BYTES + at, PSP_SEEK_SET) >= 0 &&
+				sceIoRead(pack, directory, sizeof(directory)) == (int)sizeof(directory) &&
+				directory[0] == PCV_VARIANTS && directory[1] <= 6)
+				for (k = 0; k < directory[1]; k++)
+					if (directory[2 + 5 * k] == want)
+					{
+						start = directory[3 + 5 * k];
+						bytes = directory[4 + 5 * k];
+						table_at = directory[5 + 5 * k];
+						entries = directory[6 + 5 * k];
+						why = NULL;
+						platform_log("geometry: preconvert: variant region%s%s", want & 1 ? " skinw2" : "",
+							want & 2 ? " skinstrip" : "");
+						break;
+					}
+		}
 
 		if (!why && (start < pack_size || start % 64 || table_at < start || !entries || entries > 65535 ||
 			table_at + 4 * (entries + 1) > start + bytes || (SceOff)(HEADER_BYTES + start + bytes) > file_bytes))
@@ -1407,12 +1444,14 @@ void psp_geo_map_opened(const char *name, unsigned int map_crc, const void *firs
 			pcv_end = EXTERNAL_BASE + table_at;
 			pack_size = start + bytes;
 			pcv_check = psp_keep("preconvertcheck");
+			psp_pcv_strips = (want & 2) != 0;
 			pcv_locks = pcv_loads = pcv_load_bytes = pcv_fallbacks = pcv_checked = pcv_check_differed = 0;
 			psp_pcv_on = 1;
 			platform_log("geometry: preconvert: %u model buffers baked in the GE's form, %u KB (table %u KB on the heap)%s",
 				entries, (table_at - start) / 1024, (4 * (entries + 1) + 1023) / 1024, pcv_check ? "; preconvertcheck" : "");
 		}
 		sceKernelDcacheWritebackRange(&psp_pcv_on, sizeof(psp_pcv_on));
+		sceKernelDcacheWritebackRange(&psp_pcv_strips, sizeof(psp_pcv_strips));
 	}
 	snprintf(pack_name, sizeof(pack_name), "%s", name);
 	async_reads = psp_keep("geoasync");

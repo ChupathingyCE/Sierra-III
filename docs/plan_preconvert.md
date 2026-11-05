@@ -194,3 +194,27 @@ I could not verify the 0.9 ms a flight frame. I did not find that figure in the 
 3. The statecrc and shots A/B.
 4. The b30 count and the PSP pair.
 5. The v2 rigid twin, then skipping the strip index lock for baked skinned parts.
+
+## Variant regions: first-fit slots and strips (SKINW2, SKINSTRIP)
+
+A bake made with `--skin-variants` carries the baked buffers four times: the
+first region as before (what the port draws with no keep word), then, after a
+128-byte directory (`PCVV`), one region each for `skinw2` (first-fit slots),
+`skinstrip` (strips where shorter) and both. Every region holds the same
+buffers in the same order, so a part's table index means the same block in
+each, and only the region chosen at the map's open is ever read: the other
+side of each A/B costs nothing but stick space. A keep word that asks for a
+region the pack lacks leaves the baked buffers unused and says so in the log.
+
+- **skinw2**: each node on the lowest slot its neighbours leave free, in the
+  bake and in `skin_plan` (parts converted at run time and `preconvertcheck`
+  follow the same word). With SKINW's highest-slot draw, a batch's weights
+  stay low: the census priced -5 ms of GE on c10 and d20 [U], against twice
+  the batches and 20-35% more node matrices on the ME's replay [E].
+- **skinstrip**: a skinned block from a strip region has a strip table
+  (`struct skin_strip`) right before its batch array, flag `PCV_STRIPS`. A
+  batch drawn whole draws its strip: the same triangles, in the same order,
+  each with its own winding, joined by triangles of no area; cut batches near
+  the eye and the runs' tests keep the triangle list. Only triangles next to
+  each other in the list are chained, so the census's 4-14% fewer indices is
+  all it can give.

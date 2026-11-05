@@ -58,6 +58,12 @@ MAGIC = 0x31564350           # 'PCV1': each block's first word, and header word 
 BLOCK_HEADER = 64
 SKIN_SLOTS, SKIN_NODES, MAX_BATCHES = 8, 128, 64
 NEAR_CLUSTER_TRIANGLES = 16  # psp_ge.c
+PCV_STRIPS = 2               # block flag: a strip table before the batch array (psp_ge.c)
+# the variant regions (--skin-variants): the same buffers with their plans
+# made otherwise, chosen at run time by keep word (psp_geo.c, pcv_variant)
+VARIANT_FIRST_FIT, VARIANT_STRIPS = 1, 2     # keep words skinw2, skinstrip
+VARIANT_MAGIC = 0x56564350                   # 'PCVV': the variant directory after the first region
+VARIANT_DIRECTORY = 128
 BATCH_BYTES = 40             # struct skin_batch on the PSP
 TYPE_UNCOMPRESSED, TYPE_COMPRESSED = 4, 5   # _rasterizer_vertex_type_model_*
 STRIP = 1                                   # _triangle_buffer_type_precompiled_strip
@@ -216,9 +222,11 @@ def triangle_list(indices, index_count, strip):
     return [tuple(int(x) for x in indices[3 * t:3 * t + 3]) for t in range(n)]
 
 
-def skin_plan(src, indices, index_count, strip, census):
+def skin_plan(src, indices, index_count, strip, census, first_fit=False):
     """skin_plan: None leaves the part rigid; else (slots, slot_of, batches),
-    batches as [(node[8], [index, ...])]"""
+    batches as [(node[8], [index, ...])]. first_fit: each node on the lowest
+    slot its neighbours leave free (the C's "skinw2"), not the least used, so
+    a batch's highest slot in use, and the weights the GE blends, stay low"""
     count = src.count
     n0, n1 = src.n0, src.n1
     used = np.zeros(SKIN_NODES, bool)
@@ -268,6 +276,8 @@ def skin_plan(src, indices, index_count, strip, census):
         for slot in range(SKIN_SLOTS):
             if not taken & (1 << slot) and (choice < 0 or slot_use[slot] < slot_use[choice]):
                 choice = slot
+                if first_fit:
+                    break
         if choice < 0:
             census['plan failed'] += 1
             return None
@@ -296,6 +306,54 @@ def skin_plan(src, indices, index_count, strip, census):
     return slots, slot_of, [(batches[b], [v for t in batch_tris[b] for v in t]) for b in range(len(batches))]
 
 
+def strip_of(tri):
+    """a batch's triangle list as one GE strip, or None when the strip isn't
+    shorter. Only triangles next to each other in the list are chained, so
+    the strip draws the same triangles in the same order, each with its own
+    winding: triangle k of a strip is (s[k], s[k+1], s[k+2]), the first two
+    swapped when k is odd (the GE's order, as triangle_list reads Halo's
+    strips). Pieces are joined by repeated indices (triangles of no area),
+    each piece starting on an even k"""
+    tris = [tuple(tri[i:i + 3]) for i in range(0, len(tri), 3)]
+
+    def rotations(t):
+        return ((t[0], t[1], t[2]), (t[1], t[2], t[0]), (t[2], t[0], t[1]))
+
+    def next_index(s, t):
+        k = len(s) - 2
+        want = (s[-1], s[-2]) if k & 1 else (s[-2], s[-1])
+        for p, q, r in rotations(t):
+            if (p, q) == want:
+                return r
+        return None
+
+    pieces = []
+    i = 0
+    while i < len(tris):
+        start = list(tris[i])
+        if i + 1 < len(tris):
+            for r in rotations(tris[i]):
+                if next_index(list(r), tris[i + 1]) is not None:
+                    start = list(r)
+                    break
+        i += 1
+        while i < len(tris):
+            d = next_index(start, tris[i])
+            if d is None:
+                break
+            start.append(d)
+            i += 1
+        pieces.append(start)
+    out = []
+    for piece in pieces:
+        if out:
+            out += [out[-1], piece[0]]
+            if len(out) & 1:
+                out.append(piece[0])
+        out += piece
+    return out if len(out) < len(tri) else None
+
+
 def first_extreme(p, smallest):
     """the C loop's low (or high) over p in order: the first value, then any
     strictly smaller (larger); NaN never replaces and is kept if first"""
@@ -321,11 +379,12 @@ def sphere(points):
     return center, F(np.sqrt(F(reach)))
 
 
-def convert(raw, count, uncompressed, indices, index_count, strip, census):
+def convert(raw, count, uncompressed, indices, index_count, strip, census, variant=0):
     """model_convert for an opaque draw (a skinning plan asked for, model14
-    off): (records bytes, plan or None)"""
+    off): (records bytes, plan or None). variant: VARIANT_FIRST_FIT and
+    VARIANT_STRIPS bits"""
     src = Source(raw, count, uncompressed)
-    plan = skin_plan(src, indices, index_count, strip, census)
+    plan = skin_plan(src, indices, index_count, strip, census, bool(variant & VARIANT_FIRST_FIT))
     if plan is None:
         rec = np.zeros((count, 24), np.uint8)
         rec[:, 0:8] = src.uv
@@ -357,8 +416,8 @@ def convert(raw, count, uncompressed, indices, index_count, strip, census):
         for c in range(0, len(tri), 3 * NEAR_CLUSTER_TRIANGLES):
             rc, rr = sphere(p[c:c + 3 * NEAR_CLUSTER_TRIANGLES])
             runs.append((rc, rr))
-        out.append((nodes, tri, center, radius, runs))
-    return rec.tobytes(), (slots, stride, out)
+        out.append((nodes, tri, center, radius, runs, strip_of(tri) if variant & VARIANT_STRIPS else None))
+    return rec.tobytes(), (slots, stride, out, bool(variant & VARIANT_STRIPS))
 
 
 # ---------- the blocks, the table, the pack
@@ -372,19 +431,34 @@ def block(raw_address, index_address, count, uncompressed, index_count, strip, r
         skin = (0, 0, 0, 0, 0)
         flags = 0
     else:
-        slots, stride, batches = plan
+        slots, stride, batches, strips = plan
         flags = 1
+        if strips:
+            # the strip table (struct skin_strip: the strip's offset and
+            # length, 0 where the batch draws its triangle list) sits right
+            # before the batch array, where the runtime finds it
+            flags |= PCV_STRIPS
+            table_at = BLOCK_HEADER + len(body)
+            body += bytes(8 * len(batches))
         at = BLOCK_HEADER + len(body)                # the batch array
         lists_at = at + BATCH_BYTES * len(batches)
         lists = bytearray()
         list_offsets = []
-        for nodes, tri, center, radius, runs in batches:
+        strip_offsets = []
+        for nodes, tri, center, radius, runs, strip_list in batches:
             list_offsets.append(lists_at + len(lists))
             lists += np.array(tri, '<u2').tobytes()
+        for nodes, tri, center, radius, runs, strip_list in batches:
+            strip_offsets.append(lists_at + len(lists) if strip_list else 0)
+            if strip_list:
+                lists += np.array(strip_list, '<u2').tobytes()
+        if strips:
+            body[table_at - BLOCK_HEADER:at - BLOCK_HEADER] = b''.join(
+                struct.pack('<Ii', so, len(b[5]) if b[5] else 0) for so, b in zip(strip_offsets, batches))
         runs_at = up(lists_at + len(lists), 16)
         run_bytes = bytearray()
         array = bytearray()
-        for (nodes, tri, center, radius, runs), lo in zip(batches, list_offsets):
+        for (nodes, tri, center, radius, runs, strip_list), lo in zip(batches, list_offsets):
             ro = runs_at + len(run_bytes) if runs else 0
             # floats as their float32 bytes (struct's 'f' would round-trip
             # through a double)
@@ -407,24 +481,8 @@ def block(raw_address, index_address, count, uncompressed, index_count, strip, r
     return out + bytes(up(len(out), 64) - len(out))
 
 
-def bake(pack, parts):
-    header = list(struct.unpack_from('<16I', pack, 0))
-    size = header[3]
-    data = bytes(pack[HEADER:HEADER + size])
-    if len(data) != size:
-        raise Refused('the pack is shorter than its header says')
-    census = {'parts': len(parts), 'buffers': 0, 'skinned': 0, 'rigid': 0, 'plan failed': 0, 'shared': 0,
-              'other form': 0, 'outside': 0, 'raw bytes': 0, 'baked bytes': 0, 'triangle list bytes': 0,
-              'vertices': 0}
-    by_vertices = {}
-    for v, vcount, vtype, i, tcount, ttype, pad in parts:
-        if v is None or i is None:
-            census['outside'] += 1
-            continue
-        strip = 1 if ttype == STRIP else 0
-        index_count = tcount + 2 if strip else 3 * tcount
-        by_vertices.setdefault(v, set()).add((vcount, vtype, i, index_count, strip, ttype))
-    region = up(size, 64)
+def region_blocks(data, size, by_vertices, region, census, variant):
+    """the blocks of one region at data offset region: (blocks, table)"""
     blocks = bytearray()
     table = []
     for v in sorted(by_vertices):
@@ -443,7 +501,7 @@ def bake(pack, parts):
             continue
         raw = data[v - PACK_BASE:v - PACK_BASE + vbytes]
         indices = np.frombuffer(data, '<u2', index_count, i - PACK_BASE) if index_count > 0 else None
-        records, plan = convert(raw, vcount, vtype == TYPE_UNCOMPRESSED, indices, index_count, strip, census)
+        records, plan = convert(raw, vcount, vtype == TYPE_UNCOMPRESSED, indices, index_count, strip, census, variant)
         b = block(v, i, vcount, int(vtype == TYPE_UNCOMPRESSED), index_count, strip, records, plan)
         table.append((v, PACK_BASE + region + len(blocks)))
         blocks += b
@@ -454,16 +512,84 @@ def bake(pack, parts):
         census['vertices'] += vcount
         if plan:
             census['triangle list bytes'] += 2 * sum(len(x[1]) for x in plan[2])
-    if not table:
-        return None, census, {}
-    end_address = PACK_BASE + region + len(blocks)
-    table_at = region + len(blocks)
-    table_bytes = b''.join(struct.pack('<I', a) for r, a in table) + struct.pack('<I', end_address)
-    region_bytes = len(blocks) + len(table_bytes)
-    header[11], header[12], header[13], header[14], header[15] = region, region_bytes, table_at, len(table), MAGIC
-    new = struct.pack('<16I', *header) + data + bytes(region - size) + bytes(blocks) + table_bytes
-    index_of = {raw: k for k, (raw, a) in enumerate(table)}
-    return new, census, index_of
+            census['batches'] += len(plan[2])
+            census['weights drawn'] += sum(drawn_weights(plan[0], x[0]) * len(x[1]) for x in plan[2])
+            census['indices drawn'] += sum(len(x[5]) if x[5] else len(x[1]) for x in plan[2])
+            census['strips'] += sum(1 for x in plan[2] if x[5])
+    return blocks, table
+
+
+def drawn_weights(slots, nodes):
+    """the weights a batch draws at (SKINW: its highest slot in use, within
+    its part's record class)"""
+    top = slots
+    while top > 1 and nodes[top - 1] == 0xFF:
+        top -= 1
+    return top if slots <= 4 or top >= 5 else 5
+
+
+def new_census(parts):
+    return {'parts': len(parts), 'buffers': 0, 'skinned': 0, 'rigid': 0, 'plan failed': 0, 'shared': 0,
+            'other form': 0, 'outside': 0, 'raw bytes': 0, 'baked bytes': 0, 'triangle list bytes': 0,
+            'vertices': 0, 'batches': 0, 'weights drawn': 0, 'indices drawn': 0, 'strips': 0}
+
+
+def bake(pack, parts, variants=()):
+    """the pack with its first region (the plans as the runtime makes them)
+    and, after a directory, one region for each variant in variants"""
+    header = list(struct.unpack_from('<16I', pack, 0))
+    size = header[3]
+    data = bytes(pack[HEADER:HEADER + size])
+    if len(data) != size:
+        raise Refused('the pack is shorter than its header says')
+    by_vertices = {}
+    outside = 0
+    for v, vcount, vtype, i, tcount, ttype, pad in parts:
+        if v is None or i is None:
+            outside += 1
+            continue
+        strip = 1 if ttype == STRIP else 0
+        index_count = tcount + 2 if strip else 3 * tcount
+        by_vertices.setdefault(v, set()).add((vcount, vtype, i, index_count, strip, ttype))
+    censuses = []
+    regions = []    # (start, bytes)
+    out = bytearray()
+    region = up(size, 64)
+    tables = []
+    for variant in (0,) + tuple(variants):
+        census = new_census(parts)
+        census['outside'] += outside
+        blocks, table = region_blocks(data, size, by_vertices, region, census, variant)
+        censuses.append(census)
+        if not table:
+            return None, censuses, {}
+        if tables and [r for r, a in table] != [r for r, a in tables[0]]:
+            raise Refused('variant %d baked other buffers than the first region' % variant)
+        tables.append(table)
+        end_address = PACK_BASE + region + len(blocks)
+        table_bytes = b''.join(struct.pack('<I', a) for r, a in table) + struct.pack('<I', end_address)
+        out += bytes(region - size - len(out))
+        out += blocks + table_bytes
+        regions.append((region, len(blocks) + len(table_bytes), region + len(blocks), len(table), variant))
+        region = up(region + len(blocks) + len(table_bytes), 64)
+        if variant == 0 and variants:
+            directory_at = region
+            region += VARIANT_DIRECTORY
+    if variants:
+        # the directory: 'PCVV', the count, then each variant's bits, start,
+        # bytes, table offset and entries (the first region's header words)
+        words = [VARIANT_MAGIC, len(variants)]
+        for start, nbytes, table_at, entries, variant in regions[1:]:
+            words += [variant, start, nbytes, table_at, entries]
+        directory = struct.pack('<%dI' % len(words), *words)
+        directory += bytes(VARIANT_DIRECTORY - len(directory))
+        at = directory_at - size
+        out[at:at + VARIANT_DIRECTORY] = directory
+    start, nbytes, table_at, entries, variant = regions[0]
+    header[11], header[12], header[13], header[14], header[15] = start, nbytes, table_at, entries, MAGIC
+    new = struct.pack('<16I', *header) + data + bytes(out)
+    index_of = {raw: k for k, (raw, a) in enumerate(tables[0])}
+    return new, censuses, index_of
 
 
 def main(map_path, pgeo_path):
@@ -479,13 +605,23 @@ def main(map_path, pgeo_path):
     if taken:
         raise Refused('%d model parts\' vertex buffer pad words are not 0 (first at file offset %08x)'
                       % (len(taken), taken[0]))
-    new, c, index_of = bake(pack, parts)
+    variants = (VARIANT_FIRST_FIT, VARIANT_STRIPS, VARIANT_FIRST_FIT | VARIANT_STRIPS) \
+        if os.environ.get('MODELCONVERT_VARIANTS') == '1' else ()
+    new, censuses, index_of = bake(pack, parts, variants)
+    c = censuses[0]
     line = ('%d model parts, %d vertex buffers baked (%d skinned, %d rigid, %d plans failed: rigid as at run time), '
             '%d vertices; left to run time: %d drawn with two shapes, %d of another form, %d outside the pack; '
             'raw %d KB, baked %d KB (triangle lists %d KB)'
             % (c['parts'], c['buffers'], c['skinned'], c['rigid'], c['plan failed'], c['vertices'], c['shared'],
                c['other form'], c['outside'], c['raw bytes'] // 1024, c['baked bytes'] // 1024,
                c['triangle list bytes'] // 1024))
+    for variant, v in zip((0,) + variants, censuses):
+        if variants:
+            print('modelconvert: variant %s: %d skinned, %d plans failed, %d batches, %d indices drawn '
+                  '(%d batches as strips), %d weights x indices, baked %d KB'
+                  % ('+'.join(n for bit, n in ((1, 'skinw2'), (2, 'skinstrip')) if variant & bit) or 'plain',
+                     v['skinned'], v['plan failed'], v['batches'], v['indices drawn'], v['strips'],
+                     v['weights drawn'], v['baked bytes'] // 1024))
     if new is None:
         print('modelconvert: nothing to bake; %s' % line)
         return

@@ -11896,6 +11896,9 @@ struct skin_part
 };
 
 static struct skin_part *skinned[CONVERTED_BUFFERS];
+/* "skinw2": the plans made here put each node on the lowest free slot (main
+CPU only, as every plan) */
+static int skinw2_plan = -1;
 /* each node's slot in the part being planned */
 static signed char skin_slot[SKIN_NODES];
 static unsigned long skinned_parts = 0, skin_batches = 0, skin_failures = 0, skin_bytes = 0;
@@ -12111,7 +12114,11 @@ static struct skin_part *skin_plan(const void *vertices, int count, int uncompre
 				}
 	}
 	/* slots: the most connected nodes first, each on the least used slot its
-	neighbours leave free */
+	neighbours leave free; "skinw2": on the lowest free slot instead
+	(tools/modelconvert.py's variant regions make the same plans), so a batch's
+	highest slot in use, and the weights the GE blends for it, stay low */
+	if (skinw2_plan < 0)
+		skinw2_plan = psp_keep("skinw2");
 	memset(slot_of, -1, SKIN_NODES);
 	memset(slot_use, 0, sizeof(slot_use));
 	for (i = 0; i < node_count; i++)
@@ -12129,7 +12136,11 @@ static struct skin_part *skin_plan(const void *vertices, int count, int uncompre
 					taken |= 1 << slot_of[other];
 			for (slot = 0; slot < SKIN_SLOTS; slot++)
 				if (!(taken & (1 << slot)) && (choice < 0 || slot_use[slot] < slot_use[choice]))
+				{
 					choice = slot;
+					if (skinw2_plan > 0)
+						break;
+				}
 			if (choice < 0)
 			{
 				/* more than 8 nodes share triangles with one another */
@@ -12825,6 +12836,9 @@ or skinned[]. A buffer the bake didn't take (see-through draws, buffers two
 parts draw with different triangles) converts at run time as before */
 #define PCV_MAGIC 0x31564350u /* 'PCV1' */
 #define PCV_SKINNED 1u
+/* a strip table (struct skin_strip, one a batch) right before the batch
+array: the variant regions "skinstrip" picks (tools/modelconvert.py) */
+#define PCV_STRIPS 2u
 #define PCV_BAD 0x80000000u
 struct pcv_header
 {
@@ -12833,6 +12847,17 @@ struct pcv_header
 	unsigned int checked, raw_indices, spare;
 };
 typedef char verify_pcv_header[sizeof(struct pcv_header) == 64 ? 1 : -1];
+/* a batch's triangles as one strip (the same triangles in the same order,
+joined by triangles of no area), drawn where the batch is drawn whole; count
+0: the batch keeps its list (the strip wasn't shorter) */
+struct skin_strip
+{
+	unsigned short *indices;
+	int count;
+};
+extern int psp_pcv_strips; /* psp_geo.c: this map's blocks come from a strip variant */
+/* whole batches drawn as strips (a count, either CPU: the census's, not exact) */
+static unsigned long skin_strip_draws = 0;
 typedef char verify_pcv_batch[sizeof(struct skin_batch) == 40 && offsetof(struct skin_batch, indices) == 8 &&
 	offsetof(struct skin_batch, center) == 16 && offsetof(struct skin_batch, clusters) == 32 ? 1 : -1];
 extern int psp_pcv_on; /* psp_geo.c: this map's pack has baked buffers, in use */
@@ -12867,6 +12892,22 @@ int psp_ge_pcv_relocate(void *block, unsigned int size)
 				goto bad;
 			batch->indices = (unsigned short *)(at + list);
 			batch->clusters = batch->cluster_count ? (float (*)[4])(at + runs) : NULL;
+		}
+		if (h->flags & PCV_STRIPS)
+		{
+			struct skin_strip *strips = (struct skin_strip *)h->part.batches - h->part.batch_count;
+			unsigned int records_end = 64u + h->count * h->stride;
+
+			if ((unsigned int)strips < at + records_end)
+				goto bad;
+			for (b = 0; b < (unsigned int)h->part.batch_count; b++)
+			{
+				unsigned int list = (unsigned int)strips[b].indices;
+
+				if (strips[b].count < 0 || (strips[b].count && (list % 2 || list + 2u * (unsigned int)strips[b].count > size)))
+					goto bad;
+				strips[b].indices = strips[b].count ? (unsigned short *)(at + list) : NULL;
+			}
 		}
 	}
 	pcv_relocated++;
@@ -13383,9 +13424,10 @@ int psp_ge_pcv_check(void *block, const void *raw, unsigned int raw_bytes, const
 /* the 300-frame report's line (psp_geo.c) */
 void psp_ge_pcv_report(void)
 {
-	platform_log("GE: preconvert: %lu draws took a baked buffer as it was read, %lu refused (not as baked), %lu blocks relocated, %lu malformed; preconvertcheck differences: records %lu, plans %lu, spheres %lu, runs %lu",
+	platform_log("GE: preconvert: %lu draws took a baked buffer as it was read, %lu refused (not as baked), %lu blocks relocated, %lu malformed; preconvertcheck differences: records %lu, plans %lu, spheres %lu, runs %lu; skinstrip: %lu batches drawn as strips",
 		pcv_answers, pcv_refused, pcv_relocated, pcv_bad_blocks, pcv_differ_records, pcv_differ_plans, pcv_differ_spheres,
-		pcv_differ_runs);
+		pcv_differ_runs, skin_strip_draws);
+	skin_strip_draws = 0;
 }
 
 /* the change colour (build 31): on the Xbox the lit base map is multiplied
@@ -15589,6 +15631,25 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 				}
 				if (!draw_count)
 					continue;
+			}
+			/* "skinstrip": a whole batch from a strip variant's block draws its
+			strip, the GE transforming each index once and a strip's triangle
+			at ~1 index where a list's takes 3. Only baked plans have strips:
+			a plan made here has its batches right after it */
+			if (psp_pcv_strips && draw == b->indices && b->index_count == draw_count &&
+				skin->batches != (struct skin_batch *)(skin + 1) &&
+				(((const struct pcv_header *)((const char *)skin - offsetof(struct pcv_header, part)))->flags & PCV_STRIPS))
+			{
+				const struct skin_strip *s = (const struct skin_strip *)skin->batches - skin->batch_count + batch;
+
+				if (s->count)
+				{
+					sceGumDrawArray(GU_TRIANGLE_STRIP, GU_WEIGHTS(weights) | GU_WEIGHT_8BIT | GU_TEXTURE_32BITF |
+						GU_NORMAL_8BIT | GU_VERTEX_32BITF | GU_INDEX_16BIT | GU_TRANSFORM_3D, s->count, s->indices,
+						vertices);
+					skin_strip_draws++;
+					continue;
+				}
 			}
 			sceGumDrawArray(GU_TRIANGLES, GU_WEIGHTS(weights) | GU_WEIGHT_8BIT | GU_TEXTURE_32BITF |
 				GU_NORMAL_8BIT | GU_VERTEX_32BITF | GU_INDEX_16BIT | GU_TRANSFORM_3D, draw_count, draw,
