@@ -1850,12 +1850,13 @@ test is a halving instead of a scan, whether or not the spans overlap. With
 the cache full every place fails, and the scans made each refused read cost
 places x textures (the snowfield's drawing spent ~17% of its samples in
 fits and allocate). The table lives in the staging buffer, which is free
-until load_into's read */
+until load_into's read: the spans in table order (the places to try, in
+the scans' order) then the same spans sorted */
 struct alloc_span
 {
 	unsigned int lo, hi;
 };
-#define ALLOC_SPANS_MAX ((int)(STAGING_BYTES / sizeof(struct alloc_span)))
+#define ALLOC_SPANS_MAX ((int)(STAGING_BYTES / (2 * sizeof(struct alloc_span))))
 /* -1 unread; 0 the spans; 1 "texallocold": the scans; 2 "texallocchk":
 the spans, each answer checked against the scans' */
 static int alloc_mode = -1;
@@ -1869,8 +1870,8 @@ static int alloc_span_order(void const *a, void const *b)
 	return x < y ? -1 : x > y;
 }
 
-/* the arena's protected spans into the staging buffer, sorted; -1 when
-they don't all fit there (the scans answer instead) */
+/* the arena's protected spans into the staging buffer, in table order and
+sorted; -1 when they don't all fit there (the scans answer instead) */
 static int alloc_spans_build(int which, unsigned int recent)
 {
 	struct alloc_span *spans = (struct alloc_span *)staging;
@@ -1892,6 +1893,8 @@ static int alloc_spans_build(int which, unsigned int recent)
 	}
 	if ((unsigned int)n > alloc_spans_peak)
 		alloc_spans_peak = (unsigned int)n;
+	memcpy(spans + n, spans, (size_t)n * sizeof(*spans));
+	spans += n;
 	qsort(spans, (size_t)n, sizeof(*spans), alloc_span_order);
 	for (index = 0; index < n; index++)
 	{
@@ -1905,7 +1908,7 @@ static int alloc_spans_build(int which, unsigned int recent)
 /* fits, answered from the spans */
 static int alloc_span_fits(int which, int n, unsigned int start, unsigned int size)
 {
-	struct alloc_span const *spans = (struct alloc_span const *)staging;
+	struct alloc_span const *spans = (struct alloc_span const *)staging + n;
 	unsigned int end = start + size;
 	int low = 0, high = n;
 
@@ -1924,23 +1927,19 @@ static int alloc_span_fits(int which, int n, unsigned int start, unsigned int si
 	return low == 0 || spans[low - 1].hi <= start;
 }
 
-static unsigned int pick_spans(int which, unsigned int size, unsigned int recent, int n)
+static unsigned int pick_spans(int which, unsigned int size, int n)
 {
-	int index;
+	struct alloc_span const *in_order = (struct alloc_span const *)staging;
+	int k;
 
 	alloc_tests++;
 	if (alloc_span_fits(which, n, arenas[which].start, size))
 		return arenas[which].start;
-	for (index = 0; index < entry_count; index++)
+	for (k = 0; k < n; k++)
 	{
-		unsigned int candidate;
-
-		if (!protected_at(index, which, recent))
-			continue;
-		candidate = resident_at[index] + alignment(entries[index].size);
 		alloc_tests++;
-		if (alloc_span_fits(which, n, candidate, size))
-			return candidate;
+		if (alloc_span_fits(which, n, in_order[k].hi, size))
+			return in_order[k].hi;
 	}
 	return 0;
 }
@@ -1963,11 +1962,11 @@ static unsigned int allocate(int which, unsigned int size, unsigned int recent)
 		alloc_searches++;
 		if (alloc_mode != 1 && (n = alloc_spans_build(which, recent)) >= 0)
 		{
-			start = pick_spans(which, size, recent, n);
+			start = pick_spans(which, size, n);
 			/* the table's lines dropped unwritten: the read that follows
 			fills the buffer without old lines of ours to write back */
 			if (n)
-				sceKernelDcacheInvalidateRange(staging, ((unsigned int)n * sizeof(struct alloc_span) + 63) & ~63u);
+				sceKernelDcacheInvalidateRange(staging, ((unsigned int)n * 2 * sizeof(struct alloc_span) + 63) & ~63u);
 			if (alloc_mode == 2)
 			{
 				unsigned int tests = alloc_tests;
