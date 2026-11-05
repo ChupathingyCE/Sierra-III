@@ -42063,7 +42063,10 @@ unanswered). On the ME only: its cycle counter can't be read elsewhere */
 static PSP_AIME_ME_SIDE int psp_aime_step_now = -1, psp_aime_step_tag_now = -1;
 /* "aimeringlook" (psp_aime_late_check): read once, on the main CPU */
 int psp_aime_ring_looks = 0;
-void psp_me_yield_inner(void); /* psp_me.c */
+/* "aimeaudiolook" (B60): the same looks mix an audio block near its bound
+(psp_me.c, me_audio_due); read once, on the main CPU */
+int psp_aime_audio_looks = 0;
+void psp_me_yield_inner(int ring); /* psp_me.c */
 #ifdef PSP_RECON
 void psp_me_stash_place(unsigned int place); /* psp_me.c */
 #endif
@@ -42139,17 +42142,19 @@ ME's job only) or aimelate's count; once either is up, the actor in hand
 goes back to its copies and the pass ends at its next actor */
 /* aimeringlook (B50): the ring served inside an actor's thinking,
 at the word's looks and between perception's props (psp_me_yield_inner
-says how often), the census's step put back after it */
+says how often), the census's step put back after it; aimeaudiolook (B60):
+an audio block near its bound mixed there too, since one actor can hold
+the ME past the audio job's 40 ms */
 void psp_aime_ring_yield(
 	void)
 {
 	/* never once the word is up: the look after this answers it */
-	if (psp_aime_ring_looks && psp_aime_job_now[0] && !psp_aime_late_now &&
+	if ((psp_aime_ring_looks || psp_aime_audio_looks) && psp_aime_job_now[0] && !psp_aime_late_now &&
 		!(psp_aime2a_abort && *psp_aime2a_abort))
 	{
 		int step = psp_aime_step_now, tag = psp_aime_step_tag_now;
 
-		psp_me_yield_inner();
+		psp_me_yield_inner(psp_aime_ring_looks);
 		if (psp_aime_step_now != step)
 			psp_aime_step_tagged(step, tag);
 	}
@@ -43019,6 +43024,7 @@ FIXES_AIME2A["source/ai/actors.c#aime2a"].append((
 				psp_aime_path_looks = psp_keep("aimepathlook") != 0;
 			}
 			psp_aime_ring_looks = psp_keep("aimeringlook") != 0;
+			psp_aime_audio_looks = psp_keep("aimeaudiolook") != 0;
 		}
 """))
 FIXES_AIME2A["source/ai/ai.c#aime2a"] = [

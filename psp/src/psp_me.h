@@ -177,10 +177,11 @@ void psp_me_yield(void);
 /* the same from a long slot job that isn't the render slot's: a render job
 asked for meanwhile is run now too, so the record never waits behind it */
 void psp_me_yield_slots(void);
-/* from the AI job's looks inside an actor's thinking ("aimeringlook"):
-the ring's waiting jobs (not audio) at most every ~1 ms of the ME's clock,
-and only with a ring job's stack room left above the job's guard */
-void psp_me_yield_inner(void);
+/* from the AI job's looks inside an actor's thinking: the ring's waiting
+jobs when ring ("aimeringlook"), and an audio block near its bound
+("aimeaudiolook"), at most every ~1 ms of the ME's clock, and only with a
+ring job's stack room left above the job's guard */
+void psp_me_yield_inner(int ring);
 /* from a long record of the render job's ("lightringlook": the light
 pass's triangle loop): the ring served at most every ~1 ms of the ME's
 clock from the start mark, and only with a ring job's stack room left */

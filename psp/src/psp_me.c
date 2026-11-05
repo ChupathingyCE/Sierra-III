@@ -174,6 +174,12 @@ is short and ends at the word */
 it can't be stopped once begun, and on b30 one ran ~17.8 ms with the AI job's
 word unanswerable (sierra-hw 41880162180) */
 #define ME_FEATURE_AIME_VIS_LEFT 8192u
+/* "aimeaudiolook" (on; aimeaudiolookoff): an audio block that has waited
+past AUDIO_LOOK_DUE_CYCLES is mixed at the looks inside a long job (the AI
+job's inside an actor, the light pass's), where only the ring was served:
+one actor's thinking can run past the audio job's 40 ms bound on its own
+(me_audio_due) */
+#define ME_FEATURE_AUDIO_LOOK 16384u
 
 /* The debug stash: where the ME is, in words of its own (two cache lines,
 only ever used through the uncached view), so a main CPU that gives up on a
@@ -854,6 +860,36 @@ static int me_audio_now(void)
 		return 0;
 	me_serve(slot, ME_AUDIO_SUMS);
 	return 1;
+}
+
+/* "aimeaudiolook": at a look inside a long job, 1 when the audio slot's job
+has waited AUDIO_LOOK_DUE_CYCLES since a look first saw it, so it's mixed
+there (me_audio_now). The ME can't read when the main CPU pushed it, so the
+wait counts from the first look that saw it, at most a stretch between
+looks after the push. Its bound: two stretches (~10 ms at worst on d20), the due time and
+the block's own mix (~2.5 ms on c10, 5-7 on d20) stay inside the main CPU's
+40 ms. Most blocks are still mixed between actors or records, so a look
+mixes one only inside a long stretch of one job. No mix starts once the
+collection's word is up, and the word is tested right after the look (at
+perception's props, at its next look, ~2 ms on), so a mix delays its answer
+by about the mix alone, inside its 20 ms. Only on the ME */
+#define AUDIO_LOOK_DUE_CYCLES (333u * 4000u) /* ~4 ms of the ME's clock */
+static PSP_AIME_ME_SIDE unsigned int audio_look_request = 0, audio_look_seen = 0;
+
+static int me_audio_due(unsigned int now)
+{
+	volatile struct me_slot *slot = SLOT(ME_SLOT_AUDIO);
+	unsigned int request = slot->request;
+
+	if (request == slot->done)
+		return 0;
+	if (request != audio_look_request)
+	{
+		audio_look_request = request;
+		audio_look_seen = now;
+		return 0;
+	}
+	return now - audio_look_seen >= AUDIO_LOOK_DUE_CYCLES;
 }
 
 static unsigned int me_ring_drain(unsigned int popped, unsigned int *last_look, volatile const unsigned int *stop);
@@ -2323,7 +2359,8 @@ int psp_me_start(void)
 		(me_claim_old ? ME_FEATURE_CLAIM_OLD : 0u) | (psp_keep("mebcc1") ? ME_FEATURE_BCC : 0u) |
 		(psp_keep("mefaultoff") ? ME_FEATURE_FAULT_OFF : 0u) | (psp_keep("mefaulttest") ? ME_FEATURE_FAULT_TEST : 0u) |
 		(psp_keep("menestrender") ? ME_FEATURE_NEST_RENDER : 0u) |
-		(psp_keep("aimevisleft") ? ME_FEATURE_AIME_VIS_LEFT : 0u);
+		(psp_keep("aimevisleft") ? ME_FEATURE_AIME_VIS_LEFT : 0u) |
+		(psp_keep("aimeaudiolook") ? ME_FEATURE_AUDIO_LOOK : 0u);
 	wake_features = control->features | (psp_keep("mewakeprobe") ? ME_FEATURE_WAKE_PROBE : 0u);
 	wake_early = psp_keep("mewake") && !psp_keep("mewakeoff") && psp_keep("mewakeearly");
 	wake_fw = psp_keep("mewakefw");
@@ -2867,10 +2904,10 @@ actor, as before */
 #define INNER_STACK_ROOM (RING_RAYS_STACK_BYTES + 16 * 1024)
 static struct
 {
-	unsigned int yields, ring_jobs, low, light_looks, light_jobs, light_low, pad[10];
+	unsigned int yields, ring_jobs, low, light_looks, light_jobs, light_low, audio, light_audio, pad[8];
 } inner_stats_storage __attribute__((aligned(64)));
 #define INNER_STATS UNCACHED(&inner_stats_storage)
-static unsigned int inner_seen[6];
+static unsigned int inner_seen[8];
 
 /* at start: the counters' lines out of this CPU's cache (a dirty line
 written back later would put back zeros over the ME's counts) */
@@ -2879,10 +2916,11 @@ static void psp_me_inner_reset(void)
 	sceKernelDcacheWritebackInvalidateRange(&inner_stats_storage, sizeof(inner_stats_storage));
 	INNER_STATS->yields = INNER_STATS->ring_jobs = INNER_STATS->low = 0;
 	INNER_STATS->light_looks = INNER_STATS->light_jobs = INNER_STATS->light_low = 0;
+	INNER_STATS->audio = INNER_STATS->light_audio = 0;
 	memset(inner_seen, 0, sizeof(inner_seen));
 }
 
-void psp_me_yield_inner(void)
+void psp_me_yield_inner(int ring)
 {
 	volatile struct me_private *p;
 	unsigned int now, sp, popped, last_look;
@@ -2902,7 +2940,18 @@ void psp_me_yield_inner(void)
 	}
 	p = ME_PRIVATE;
 	INNER_STATS->yields++;
-	if (!p->ring_ready || p->in_ring || RING_PUSHED == p->ring_popped)
+	/* the caller tested the word: it isn't up */
+	if ((CONTROL->features & ME_FEATURE_AUDIO_LOOK) && me_audio_due(now))
+	{
+		/* the census times it as the yield's audio, as between actors */
+		aime_now = psp_aime_job_now[0];
+		psp_aime_job_now[0] = 0;
+		if (aime_now)
+			psp_aime_step(7);
+		INNER_STATS->audio += me_audio_now();
+		psp_aime_job_now[0] = aime_now;
+	}
+	if (!ring || !p->ring_ready || p->in_ring || RING_PUSHED == p->ring_popped)
 		return;
 	/* as psp_me_yield's drain: the jobs run here aren't the AI job, and
 	the drain stops at the collection's word */
@@ -2965,6 +3014,15 @@ void psp_me_ring_look(void)
 	if (CONTROL->features & ME_FEATURE_STASH)
 		STASH[STASH_LOOK] = now;
 #endif
+	/* a nested render job (menestrender) can't see the AI job's mark, so
+	the AI job's word is read itself: once it is up, no mix delays it */
+	if ((CONTROL->features & ME_FEATURE_AUDIO_LOOK) && me_audio_due(now) && !SLOT(ME_SLOT_AI)->args[ME_JOB_ARGS - 1])
+	{
+		/* not counted as nested work: audio mixed in a yield isn't
+		(psp_me_yield), the audio slot's own time holds it */
+		INNER_STATS->light_audio += me_audio_now();
+		now = light_look_mark = me_cycles();
+	}
 	if (!p->ring_ready || p->in_ring || RING_PUSHED == p->ring_popped)
 		return;
 	aime_now = psp_aime_job_now[0];
@@ -4760,6 +4818,14 @@ void psp_me_report(void)
 		inner_seen[3] = yields;
 		inner_seen[4] = jobs;
 		inner_seen[5] = low;
+		/* aimeaudiolook's mixes at those looks */
+		yields = INNER_STATS->audio;
+		jobs = INNER_STATS->light_audio;
+		if (yields != inner_seen[6] || jobs != inner_seen[7])
+			platform_log("ME: audio blocks mixed at long jobs' looks, near their bound (aimeaudiolook): %u in the AI job's actors, %u in the light pass",
+				yields - inner_seen[6], jobs - inner_seen[7]);
+		inner_seen[6] = yields;
+		inner_seen[7] = jobs;
 	}
 	if (me_state == 1 && stats[ME_SLOT_AUDIO].jobs)
 	{
