@@ -23,6 +23,15 @@ Two of the six rays repeat a call the pill test has already made, with the same 
 
 ## What it removes
 
-Census (`obscensus`, recon builds) [E]: the repeats are 21-24% of the search's rays (b30 23.5%, c10 21.0%, c10 placed 21.4%, d20 20.8%). On c10 placed the rays fall 26,062 to 20,494 a run, but the surfaces they cross only 71,555 to 67,267 (-6%): the rays across the pill are a radius long and cross few surfaces. The disc tests (36,310 a run there) are untouched. So the saving on the search is between ~6% (if its time goes by surfaces crossed) and ~21% (by calls). The PSP-3000 pair prices it.
+Census (`obscensus`, recon builds) [E]: the repeats are 21-24% of the search's rays (b30 23.5%, c10 21.0%, c10 placed 21.4%, d20 20.8%). On c10 placed the rays fall 26,062 to 20,494 a run, but the surfaces they cross only 71,555 to 67,267 (-6%): the rays across the pill are a radius long and cross few surfaces. The disc tests (36,310 a run there) are untouched. So the saving on the search is between ~6% (if its time goes by surfaces crossed) and ~21% (by calls).
+
+## On the PSP-3000
+
+c10 with the encounter placed beside the player, on against `obsrayreuseoff`, two runs a side [M]:
+- the longest single step of the search: 347 and 351 us against 390 and 389 (-10.4%, outside each side's spread);
+- the AI job's ME time a job: 4.1 and 4.4 ms against 4.8 and 4.3 (-6.7%, inside the spread); its worst job 26.3 ms against 26.7;
+- frame and tick: in the noise on every stretch (the AI thinks on the ME, so the tick doesn't carry it).
+
+A small exact win on the ME's AI job, where the search's long thinks sit; it doesn't by itself bound a think (the search's step count does).
 
 A memo of whole repeated finds was counted too and isn't built: finds whose whole input matched one of the last 64 carry 0.1-1.6% of the search's rays.
