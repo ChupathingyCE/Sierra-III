@@ -63,6 +63,8 @@ The two large leads, checked before the design rests on them (Sheepdog01 2026-11
 - **The targets.** A frame budget per map and the capacity wanted with it (e.g. b30 at 33 ms with its campaign load, a firefight arena with N actors in view), written with Sheepdog01, so the design has numbers to meet rather than "faster".
 - **A trial of the main idea.** Every ledger so far points at restructuring the tick around the cache, with the data price of staging counted (`cpu_cost_map.md` §4-5). Slice 3 showed a ceiling can still lose when built. So one subsystem (the bipeds' update, phased) is built small and priced on the PSP before the design rests on the idea.
 
+**The tick's section is written** (`redesign_tick.md`, 2026-11-05): six parts (work off the main CPU, the shared pool, the tick run less often, the GE kept off the tick's misses, walks that overlap their misses, a tick-start world) with ceilings, exactness and a build order.
+
 Then **the design**: the ME's scheduler as a named part of it (the frame timeline shows the ME binding d20's heavy view and part of b30's beach, and B60 is the same pressure; Sheepdog01 deferred the rebuild on 11-04 12:13, and it now has its evidence), where each job runs, how data flows between the units, the cache strategy for each stage, the capacity it leaves, and a staged build order. Each stage is proven in the lab, keeps the campaign playable, and rides the tick/tock cadence.
 
 ## Ledger 1's first gap list
