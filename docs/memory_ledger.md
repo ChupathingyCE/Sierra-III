@@ -143,13 +143,15 @@ w140 `psp_tex.c` [D]; use from CTNG's VRSP-784 read (sierra-hw 39661123709, PSP-
 
 | Block | KB | Peak use | What a KB of it is worth | Idle or oversized at peak? |
 |---|---:|---|---|---|
-| Frame buffers, 2 x 512 x 272 x 16 bit | 544 | 100% | fixed: one buffer tears (rejected, `memory_savings_b137.md` §3); the 32-pixel stride padding is 51 KB in strips, too fiddly | no |
+| Frame buffers, 2 x 512 x 272 x 16 bit | 544 | 100% | fixed: one buffer tears (rejected, `memory_savings_b137.md` §3); the 32-pixel stride padding is 51 KB in strips: too narrow for the HUD's textures (VRB1), and as vertex room by rewritten indices (VRTAIL: 1,600 24-byte slots, ~37 KB, depth rows 0-15 left to `blipdepth`) sized out, below | no |
 | Depth buffer (motion sensor target inside it: `blipdepth`) | 272 | 100% | fixed; the sensor's 16 KB went to the copies' room | no |
 | **Texture cache** | 616 | 99-100% on every map ([M] hand test 610-614; [E] routes 607-614) | **b30: more than a KB of copies.** Shrinking it 184 KB (616 -> 432, `vrammodels784`) took untextured frames 33/41 -> 194/581 and drawing +2.8-3.9% on the PSP [M], eating 40-55% of the copies' tick gain: rejected. c20 waits for no texture room (VSPLIT: 140 KB a frame more could move there, ~1.3 ms [E x M slope]) | b30, a30: no (binding). c20: yes, ~184 KB its textures never wait for [E] |
 | **Model copies' room** (vertex buffers and level streams; indices never) | 616 (600 + `blipdepth`'s 16) | b30 483 of 616 used on average, 132 KB idle while the best candidate is refused 3 frames in 4 [M]; c20 ~37 idle, a30 ~89 [E]; 87.7% of draws from a copy (b30) | **15.9-17 us of tick a frame per KB on b30's flight and landing [M]** (+177 KB = -2.8 / -3.0 ms); ~3.4 beach [M]; c20 7.3, a30 7.5 [E slope x 9.6 us/KB] | the 132 KB of gaps (VMFILL: fill them: b30 1.0-2.1 ms flight [E x M], CTNG plan step 1) |
 | **Total** | 2,048 | | | |
 
 **What VRAM can still give:** only (a) the copies' own idle gaps (VMFILL, 66-132 KB, no texture cost), (b) texture bytes made smaller (CLUT4: the exact set freed 42 KB of b30's pack; the look set, dig 3), (c) per-map splits where textures don't wait (VSPLIT on c20, a30 if its textures allow). Every KB the copies take from the texture cache on b30 costs more in untextured frames than it saves in tick.
+
+**The slope above has not held at the margin.** VMFILL later moved the room's refused buffers (95-152 KB a frame of GE reads on b30's flight) into VRAM and the flight did not move on the PSP (frame in the noise, bus and memory wait unchanged [M]); only the cinematic did. So the stride tails (VRTAIL) were sized, not built: the most they could take is the refused rigid model vertices, ~62 KB a frame of GE reads on b30's flight (~1,540 distinct 24-byte vertices, which would fit) [E], the same kind of bytes VMFILL moved for nothing, and fewer of them. Building them would also mean refilling the tails after every whole-buffer clear (the colour buffers' resets, the debug overlay's first opening on the depth buffer) [D]. Worth reopening only if a PSP pair shows refused model vertices costing flight time.
 
 ### 2.2 Main RAM (24 MB user RAM, plus the 4 MB volatile partition and the ME's 2 MB eDRAM)
 
