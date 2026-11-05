@@ -50,7 +50,7 @@ The two large leads, checked before the design rests on them (Sheepdog01 2026-11
 | **A2. LISTBYTES** | b30's flight up to 4.4 ms, c20/d20 1.7-1.9 | Fewer words in the display list (no VRAM needed): a count of redundant words first | geoff |
 | **B2. The ME's heavy view relieved** | d20 with the flashlight ~-9 to -10 ms (the replay split by fit, or audio onto the main CPU's VFPU) | The ME's scheduler as a named part of the design; starting the replay earlier buys nothing | mesched |
 | SKINW2 (+ SKINSTRIP) | GE -18 ms a frame on b30's flight (reaching the tick through A1's mechanism), +5 ms of ME replay | The cleared bake (Sheepdog01 22:38) | skinlev |
-| Stage-major restructuring | bipeds ~0.7 ms a tick (out, Sheepdog01 21:47); the other big code being sized (stagesize) | — | phasetrial |
+| Stage-major restructuring | bipeds ~0.7 ms a tick (b131; ~1.1 b30, ~2.6 c20 on tock162's LTO build; out, Sheepdog01 21:47); node matrices ~0.7-1.2, collision ~0.5-0.75, the rest ≤ ~0.2, none with an exact cut (`cpu_cost_map.md` §4a); the shared state that walls them: `stage_state_note.md` | — | phasetrial, stagesize |
 
 **How work is placed** (Sheepdog01 2026-11-04 22:53, 22:56): no frame-by-frame balancer between the units (it would rubber-band, and a moved job pays its cache misses on the unit it lands on). Instead:
 - **fixed homes** for the heavy unit-specific work (the drawing replay on the ME, the simulation core on the main CPU), chosen once per map class;
