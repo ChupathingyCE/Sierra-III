@@ -1151,6 +1151,9 @@ static const struct
 	{ "sndtierback", "sndtierbackoff" }, { "drawpart", "drawpartoff" }, { "p2pass", "p2passoff" },
 	{ "mepointsclaim", "mepointsclaimoff" }, { "aimepathlook", "aimepathlookoff" }, { "aimeringlook", "aimeringlookoff" },
 	{ "aimeaudiolook", "aimeaudiolookoff" }, { "obsrayreuse", "obsrayreuseoff" },
+	/* mevisland's placement rests only on a walk time measured in the stretch
+	it rests in (structure_visibility.c, mevisprobe): exact either way */
+	{ "mevisprobe", "mevisprobeoff" },
 };
 static char keep_defaults_added[KEEP_DEFAULTS_ROOM] = "";
 /* defaults that found no room: a lever silently off would be read as on */
