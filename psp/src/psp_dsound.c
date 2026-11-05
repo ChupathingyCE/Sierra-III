@@ -117,6 +117,9 @@ struct psp_stream
 	/* "adpcmold": the header's sample left out and the padding nibble played,
 	as before (set with silent_overrun) */
 	int adpcm_old;
+	/* "imatableoff" (or a table that failed its check): ADPCM decoded by the
+	formula, as before (set with silent_overrun) */
+	int ima_fast_old;
 	/* "memixold": the heard voice mixed by the per-sample loop, as before
 	(set with silent_overrun; mix_voice) */
 	int memix_old;
@@ -579,22 +582,91 @@ static const short ima_step_table[89] =
 	32767,
 };
 
-static inline int ima_expand(int nibble, int *predictor, int *index)
+static inline int ima_magnitude(int step, int nibble)
 {
-	int step = ima_step_table[*index];
 	int difference = step >> 3;
 
 	if (nibble & 1) difference += step >> 2;
 	if (nibble & 2) difference += step >> 1;
 	if (nibble & 4) difference += step;
+	return difference;
+}
+
+static inline int ima_next_index(int index, int nibble)
+{
+	index += ima_index_table[nibble];
+	if (index < 0) index = 0;
+	if (index > 88) index = 88;
+	return index;
+}
+
+static inline int ima_expand(int nibble, int *predictor, int *index)
+{
+	int difference = ima_magnitude(ima_step_table[*index], nibble);
+
 	if (nibble & 8) difference = -difference;
 	*predictor += difference;
 	if (*predictor > 32767) *predictor = 32767;
 	if (*predictor < -32768) *predictor = -32768;
-	*index += ima_index_table[nibble];
-	if (*index < 0) *index = 0;
-	if (*index > 88) *index = 88;
+	*index = ima_next_index(*index, nibble);
 	return *predictor;
+}
+
+/* IMATABLE: every answer of ima_expand but the add, for each step index and
+the code's three magnitude bits: the difference's magnitude (at most 61,436)
+in the low 16 bits, the next index's row (index * 8) above. The index table
+doesn't depend on the sign bit, so 89 x 8 entries cover all 16 codes. The
+decoder's bit tests branch on the data, which the in-order core can't
+foresee; a load and a sign flip don't. Built from ima_magnitude and
+ima_next_index themselves, so it can't disagree with them; checked at the
+audio's start all the same. "imatableoff" decodes as before */
+#define IMA_ROWS 89
+static unsigned int ima_fast[IMA_ROWS * 8] __attribute__((aligned(64)));
+static int ima_fast_old = 1;
+
+static inline int ima_expand_fast(int nibble, int *predictor, int *row)
+{
+	unsigned int entry = ima_fast[*row + (nibble & 7)];
+	int sign = -((nibble >> 3) & 1);
+	int value = *predictor + (((int)(entry & 0xffff) ^ sign) - sign);
+
+	value = value > 32767 ? 32767 : value;
+	value = value < -32768 ? -32768 : value;
+	*predictor = value;
+	*row = (int)(entry >> 16);
+	return value;
+}
+
+/* on the main CPU before the mixer runs; the check decodes every code from
+every index at the predictors where the clamps act, both ways */
+static void ima_fast_build(void)
+{
+	extern int psp_keep(const char *word);
+	static const int predictors[] = { -32768, -32767, -30000, -1, 0, 1, 30000, 32766, 32767 };
+	unsigned long index, code, which, differed = 0;
+
+	for (index = 0; index < IMA_ROWS; index++)
+		for (code = 0; code < 8; code++)
+			ima_fast[index * 8 + code] = (unsigned int)ima_magnitude(ima_step_table[index], (int)code)
+				| (unsigned int)(ima_next_index((int)index, (int)code) * 8) << 16;
+	for (index = 0; index < IMA_ROWS; index++)
+		for (code = 0; code < 16; code++)
+			for (which = 0; which < sizeof(predictors) / sizeof(predictors[0]); which++)
+			{
+				int slow_predictor = predictors[which], slow_index = (int)index;
+				int fast_predictor = predictors[which], fast_row = (int)index * 8;
+				int slow = ima_expand((int)code, &slow_predictor, &slow_index);
+				int fast = ima_expand_fast((int)code, &fast_predictor, &fast_row);
+
+				if (slow != fast || fast_row != slow_index * 8)
+					differed++;
+			}
+	ima_fast_old = psp_keep("imatableoff") != 0 || differed != 0;
+	sceKernelDcacheWritebackRange(ima_fast, sizeof(ima_fast));
+	platform_log("audio: ADPCM decoded %s; its table checked against the formula at %lu codes, %lu differed",
+		ima_fast_old ? (differed ? "by the formula: the table differed" : "by the formula, as before (imatableoff)")
+			: "by one table lookup a sample (IMATABLE)",
+		(unsigned long)IMA_ROWS * 16 * (sizeof(predictors) / sizeof(predictors[0])), differed);
 }
 
 /* one Xbox ADPCM block of a packet into the stream's decoded block: per
@@ -605,12 +677,56 @@ samples per channel. The nibbles code the 63 samples after the header's: the
 wrong sample in every 64, a buzz at 344 Hz in 22 kHz sounds (after
 ChupathingyCE's dsound_sdl.c decode_adpcm, Jeff Clark). "adpcmold" decodes
 as before. The decoded block is always two channels (a mono one twice) */
+static void decode_block_fast(struct psp_stream *stream, const struct voice_packet *packet, long block)
+{
+	unsigned long channels = stream->channels;
+	const unsigned char *data = packet->data + block * XBOX_ADPCM_BLOCK_BYTES * channels;
+	short *decoded = stream->decoded[block & 1];
+	unsigned long channel, byte;
+
+	for (channel = 0; channel < channels; channel++)
+	{
+		const unsigned char *header = data + channel * 4;
+		int predictor = (short)(header[0] | (header[1] << 8));
+		int row = (header[2] > 88 ? 88 : header[2]) * 8;
+		/* a mono block goes into both channels as it decodes, not by a second pass */
+		short *output = decoded + channel;
+		unsigned long other = channels == 1 ? 1 : 0;
+
+		output[0] = (short)predictor;
+		output[other] = (short)predictor;
+		/* byte b of the 32 holds samples 2b + 1 and 2b + 2: the last byte's
+		high nibble only pads the block */
+		for (byte = 0; byte < 32; byte++)
+		{
+			unsigned int nibbles = data[4 * channels + ((byte >> 2) * channels + channel) * 4 + (byte & 3)];
+			short *pair = output + 2 * (2 * byte + 1);
+			short sample = (short)ima_expand_fast((int)(nibbles & 0xf), &predictor, &row);
+
+			pair[0] = sample;
+			pair[other] = sample;
+			if (byte == 31)
+				break;
+			sample = (short)ima_expand_fast((int)(nibbles >> 4), &predictor, &row);
+			pair[2] = sample;
+			pair[2 + other] = sample;
+		}
+	}
+	stream->decoded_packet[block & 1] = packet;
+	stream->decoded_block[block & 1] = block;
+}
+
 static void decode_block(struct psp_stream *stream, const struct voice_packet *packet, long block)
 {
 	unsigned long channels = stream->channels;
 	const unsigned char *data = packet->data + block * XBOX_ADPCM_BLOCK_BYTES * channels;
 	unsigned long channel, group, byte;
 
+	if (!stream->ima_fast_old && !stream->adpcm_old)
+	{
+		decode_block_fast(stream, packet, block);
+		return;
+	}
 	for (channel = 0; channel < channels; channel++)
 	{
 		const unsigned char *header = data + channel * 4;
@@ -881,6 +997,7 @@ static int prepare_voice(struct psp_stream *stream)
 		}
 		stream->silent_overrun = overrun;
 		stream->adpcm_old = adpcm_old;
+		stream->ima_fast_old = ima_fast_old;
 		stream->memix_old = memix_old;
 		if (audio_old || !game->has_3d)
 			stream->lowpass_coefficient = GAIN_ONE;
@@ -3116,6 +3233,8 @@ static void audio_start(void)
 		return;
 	audio_started = 1;
 	master_volume = (float)config_real("audio.volume");
+	/* its table is written back before the Media Engine can decode */
+	ima_fast_build();
 	/* build 86: the launch option meaudio: the Media Engine mixes */
 	psp_meaudio_start();
 	{

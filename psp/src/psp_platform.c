@@ -1163,6 +1163,9 @@ static const struct
 	the answer is ready at its first reader, and a ring push not refused for a
 	slot job whose answer is already in (mevis_slice2.md): exact */
 	{ "mevispush", "mevispushoff" }, { "ringslotdone", "ringslotdoneoff" },
+	/* ADPCM decoded by one table lookup a sample, not the formula's data-led
+	branches (psp_dsound.c, ima_fast): exact, checked at the audio's start */
+	{ "imatable", "imatableoff" },
 };
 static char keep_defaults_added[KEEP_DEFAULTS_ROOM] = "";
 /* defaults that found no room: a lever silently off would be read as on */
