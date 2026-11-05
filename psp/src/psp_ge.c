@@ -4063,6 +4063,8 @@ int psp_ge_list_callback(int cbid)
 	return gebusy_cbid >= 0 ? gebusy_cbid : cbid;
 }
 
+static void gr_table_alloc(void);
+
 static void gebusy_start(void)
 {
 	gk_on = psp_keep("gereadskind") ? 1 : 0;
@@ -4076,7 +4078,10 @@ static void gebusy_start(void)
 	if (gk_on)
 		platform_log("GE: gereadskind on (the GE's main-RAM bytes by kind, part, place and quarter of the list)");
 	if (ge_reads_on)
+	{
+		gr_table_alloc();
 		platform_log("GE: gereads on (what each draw makes the GE read, by where it lives: a report every 300 frames)");
+	}
 	probes_on = psp_keep("probes") ? 1 : 0; /* build 119 */
 	if (probes_on)
 		platform_log("GE: probes on (the near corner loop, the level's passes, the light draw and the decal calls split by piece)");
@@ -7949,6 +7954,19 @@ void psp_ge_reads_texture(unsigned int address, unsigned int bytes, unsigned int
 	gk_note(GK_PALETTES, palette_bytes, address);
 }
 
+/* the table comes from the heap at start-up, on the main CPU: taken lazily it
+was asked for by the ME's replay once a level had filled the heap, and failed */
+static void gr_table_alloc(void)
+{
+	if (!gr_table)
+		gr_table = calloc(GR_SLOTS, sizeof(struct gr_entry));
+	if (!gr_table)
+	{
+		ge_reads_on = 0;
+		platform_log("GE: gereads: no room for its table; off");
+	}
+}
+
 static void ge_reads_note(int vtype, int count, const void *indices, const void *vertices)
 {
 	int vsize = gr_vertex_size(vtype), isize = ((vtype >> 11) & 3) == 1 ? 1 : ((vtype >> 11) & 3) == 2 ? 2 : 0;
@@ -7958,15 +7976,7 @@ static void ge_reads_note(int vtype, int count, const void *indices, const void 
 	if (count <= 0 || !vertices || vsize <= 0)
 		return;
 	if (!gr_table)
-	{
-		gr_table = calloc(GR_SLOTS, sizeof(struct gr_entry));
-		if (!gr_table)
-		{
-			ge_reads_on = 0;
-			platform_log("GE: gereads: no room for its table; off");
-			return;
-		}
-	}
+		return;
 	gr_draws++;
 	bytes = (unsigned int)count * (unsigned int)vsize;
 	place = gr_place((unsigned int)vertices);
