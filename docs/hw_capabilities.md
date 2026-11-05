@@ -65,19 +65,38 @@ Labels: [M] measured on a PSP, [E] emulator or estimate, [D] read in code or doc
 
 | Feature | In use | Note |
 |---|---|---|
-| Hardware skinning (8 bone matrices, vertex weights) | yes, on by default (`sceGuBoneMatrix`, `GU_WEIGHTS`) | Closed |
+| Hardware skinning (8 bone matrices, vertex weights) | yes, on by default (`sceGuBoneMatrix`, `GU_WEIGHTS`) | The blend is already the GE's. **Its rate [M, bench 17]:** the GE blends every weight a draw declares, zeros included, ~60 ns a weight a vertex (1: 82, 2: 139, 3: 199, 4: 259, 8: 501 ns unlit). `skin_plan` spreads a part over up to 8 slots (each node on the least-used free slot) though a Halo vertex blends at most two nodes [D], and bending batches are triangle lists. Both are open: SKINW and SKINSTRIP (gap C11). The GE can't take the posing itself: no hierarchy and no output but pixels, so node matrices stay CPU (or ME) work [D] |
 | Hardware lights | yes on models: all 4 (2 distant + 2 point, `sceGuLight`) | A dynamic light adds no pass to a model: its falloff and cone are folded into one value per model, and rarely more than two lights reach one [D/E, recon's light census lc1 41904975882]. **`sceGuLightSpot` is never called**, so a spot on models would be a look change (a cone across the model instead of one value), not a capacity one: Sheepdog01's A/B. The world's dynamic lights are a separate pass (the flashlight, machines' lights), worked out per vertex on the ME |
-| Call lists | yes, hand-built (BASE/CALL/RET) | A CALL costs 0.27 µs [M]; the bindblocks showed no saving [M] |
-| Texture formats | CLUT8 and CLUT4, swizzled, mipmapped | **DXT1/3/5 never used.** The docs disagree on whether it's worth trying (`streaming.md` S6 against `halo-psp-feasibility.md`). It's lossy, so it would be a look call for Sheepdog01 |
-| Mipmaps | yes, every CLUT texture | Closed |
+| Call lists | yes, hand-built (BASE/CALL/RET) | BASE + CALL + RET 0.33 µs (~32 plain commands at 10.4 ns) [M, bench 17; earlier 0.27 µs]. A bone matrix load (13 words) 132 ns in the list, 164–191 ns called from RAM in eights, 105 ns called from VRAM [M]. The bindblocks showed no saving [M]. Closed: a call is cheap, and nothing it holds is expensive to fetch |
+| Texture formats | CLUT8 and CLUT4, swizzled, mipmapped | **DXT1/3/5 never used, and closed by the bench** [M, bench 17, both PSPs]: at 1:1 the GE samples DXT1 17.1 (RAM) / 24.2 (VRAM) ns a pixel, DXT3 and DXT5 19.6 / 14.9, against CLUT8 6.9 / 7.4 and CLUT4 5.9 / 7.1 (8888 15.2 / 12.3; flat fill 4.95); minified 2:1 at level 0, DXT1 49.5 against CLUT8 11.3. DXT1 holds the same 4 bits a texel as CLUT4 at ~3x the sampling cost; VRBTEX's in-game bench found 3–65x. Only room, never time, could pay for it, and CLUT4 gives the same room where 16 colours hold the look |
+| Mipmaps | yes, every CLUT texture | Closed. What a level saves at 2:1 [M, bench 17]: CLUT8 11.3 → 7.2 ns a pixel (−36%), DXT1 49.5 → 17.7 (−64%). Whether every minified draw samples its right level (the LOD bias) is a separate question |
 | Fog, dither, alpha test, blend, depth, scissor, culling, texture matrix, environment map | yes | — |
 | The GE's clip planes switch | enabled; no plane set | The GE clips at the near plane only; the CPU cuts far triangles [D] |
-| Bounding-box culling in a list (`sceGuBeginObject`) | no | ~1.6 µs a box [feasibility note]. Saves GE work only, small [D]. The keep word `noboxtest` is a CPU test, not this |
-| Morphing (`sceGuMorphWeight`) | no | Halo's models have no per-vertex blend shapes [U] |
+| Bounding-box culling in a list (`sceGuBeginObject`) | no | A box that passes costs 46 ns; one that fails costs 1.18 µs in place of its draw [M, bench 17; the feasibility note had ~1.6 µs]. Cheap, but BBX's count leaves it nothing: 1.7–6.8 draws and 25–79 triangles a frame wholly off screen (~0.05 ms of GE at 211 ns a vertex). The keep word `noboxtest` is a CPU test, not this |
+| Morphing (`sceGuMorphWeight`) | no | Halo's models have no per-vertex blend shapes [U]. Its rate [M, bench 17]: like a weight, ~65 ns a morph target above the lighting floor (2: 211, 4: 261, 8: 521 ns a vertex, lit). Closed |
 | Patches (`sceGuDrawBezier`, `sceGuDrawSpline`) | no | Halo has no curved surfaces [U] |
 | Stencil (`sceGuStencilFunc`, `sceGuStencilOp`) | no | Replaced by the stencil bake (the GE's stencil is too limited) [D] |
 | Logic ops, colour test | no | No Halo material needs one [U] |
 | Material colours (`sceGuColorMaterial`, `sceGuModelColor`, `sceGuAmbientColor`) | no | Colours come with the vertices [U]. Whether material colours could shrink vertices is open |
+
+### The GE's rates (bench 17, 2026-11-04)
+
+Measured on both PSPs (PSP-1000 lab bench-hw 41960963933, PSP-3000 41960453758: equal to 0.1% on every vertex case), one guarded list a case, 5 rounds, the empty list subtracted. Synthetic lists with nothing else on the bus, so these are the GE's own rates, not its cost to the CPU [M]:
+
+| What | ns |
+|---|---|
+| A vertex, the rigid record (float uv, 8-bit normal, float position): unlit / 2 distant lights / 2 distant + 2 point / + specular | 65 / 96 / 211 / 320 |
+| A vertex, the bending record by weights, unlit: 1 / 2 / 3 / 4 / 5 / 6 / 8 | 82 / 139 / 199 / 259 / 320 / 380 / 501 |
+| The same lit (2 distant + 2 point): the slower of lighting and skinning sets the rate | 211 up to 3 weights, then as unlit |
+| A vertex from VRAM against RAM; 16-bit positions and uv against float | the same (within 1.4%) |
+| An index (indexed mesh, each vertex in ~6 triangles): rigid lit / 8 weights | 255 / 501: no reuse, every index is a transform |
+| A strip vertex | as a list vertex: a strip triangle costs ~1 transform, a list triangle 3 |
+| A plain command; BASE + CALL + RET | 10.4; 328 |
+| A pixel, flat fill (32-px strips) | 4.95 |
+
+What it changes [U on these M]:
+- **The GE's vertex work is compute, not fetch.** Moving vertices to VRAM or shrinking them (MV14, MVDIET) changes the bus the CPU shares, never the GE's own time. Less GE time on models means fewer transforms or cheaper ones.
+- **A bending part at 8 slots costs 2.4x a rigid part's vertex with 4 lights, 5.2x with 2 distant lights.** In a list, its triangle is 3 transforms: ~1.5 µs at 8 weights against ~0.25 µs for a rigid strip triangle with 2 lights. Bending models are where the GE's vertex time goes, where the GE binds (c10's later stretch, d20's heavy view, b30's flight with its marines and Pelican). Gap C11.
 
 ### Memory
 
@@ -106,10 +125,11 @@ Labels: [M] measured on a PSP, [E] emulator or estimate, [D] read in code or doc
 | C4 | **The bus's priority** | If it exists, up to the GE's 8–18 ms cost to the CPU | No public source has one (§6.3); disassembly closed. The register snapshot (§6.4, run 2, 9 of 11 states) found no register that moves with load beyond clock, status and address words: none of the documented ones is a priority setting [M]. A static word may be one (DDR 0x30), testable only by a write (Sheepdog01's call). The snapshot's stops were not the registers: kernel-mode time at a user address (seg-0 kcalls) shut the PSP down, the ME running or not (§6.4, §6.5) | Closed by reading |
 | C5 | **The VME's capability** | A third processor for fixed work | **Done 2026-11-04** (`vme_capability.md`): computes on both PSPs, 2 ops a cycle; candidates sized there (none ready: the mix's tail only, decode and palettes don't fit) | — |
 | C6 | **The VFPU's coverage:** the float inventory against tock161, and the approximation ops | Tick and drawing maths | Refresh `hardware_utilization.md` §3 | Code reading, emulator |
-| C7 | **DXT textures** | VRAM and RAM room (8 → 4 bits a texel on CLUT8 textures) | A bench of its sampling cost and look; Sheepdog01's call on the look | PSP bench |
+| C7 | ~~DXT textures~~ **closed** | Room only: the GE samples DXT1/3/5 at 2–3.4x CLUT8's cost and ~3x CLUT4's at DXT1's size (bench 17 [M]) | — | — |
 | C8 | **DMA for more copies** | CPU time on bulk copies, weighed against its bus cost | Count the CPU's bulk copies | Emulator census |
 | C9 | **The eDRAM's map:** all 2 MB, who holds what | Room for ME code and data | One page | Code reading |
-| C10 | The rest (BBOX, clip planes, morphing, patches, stencil, logic ops, material colours, AVC, sceSas) | Small or nothing, each with its reason above | — | — |
+| C10 | The rest (BBOX, clip planes, morphing, patches, stencil, logic ops, material colours, AVC, sceSas) | Small or nothing, each with its reason above (BBOX and morphing priced by bench 17) | — | — |
+| C11 | **The GE's vertex work on bending parts** (SKINW, SKINSTRIP in the lab's levers) | GE time where the GE binds: up to 58% of an 8-slot batch's vertex time with 4 lights, 72% with 2 lights (fewer weights a draw), and ~45–60% more as strips [U on M] | A census in the emulator: skinned indices a frame by the draw's weight count, and the strip lengths the batches would take, on b30's flight, c10's later stretch and d20's heavy view. Then the plan change (first-fit slots, each batch drawn at its highest slot, strips) and a PSP pair | Emulator census, then a PSP pair |
 
 ## 3. Docs found stale (to fix)
 
