@@ -368,6 +368,56 @@ kernel's cached alias ran 3,245 calls clean, which is the segment the
 library's own kcalls pass (me-lib.h). "kcallseg0" brings back seg 0 */
 static unsigned int me_kseg = CACHED_KERNEL_MASK;
 
+/* meLibDefaultInit's steps (psp-media-engine-custom-core, m-c/d, MIT: its
+eventHandler, meLibInit and meLibDefaultInit), so that the ME's reset runs
+in me_kseg too: the library's own kcall(meLibInit, 0) runs the copy of the
+ME's code, both cache flushes and the reset at the user address, long enough
+to switch the PSP off now and then at "starting the Media Engine" (B47).
+"melibinit" calls the library's own instead */
+__attribute__((noinline, aligned(4)))
+static int me_lib_event(int event)
+{
+	static int last = 0;
+
+	if (event == 0x00000402 && last != 0x00000402)
+	{
+		meLibOnSleep();
+		last = event;
+	}
+	else if (event == 0x00010005 && last != 0x00010005)
+	{
+		meLibOnWake();
+		last = event;
+	}
+	return 0;
+}
+
+static int me_lib_reset(void)
+{
+	const int table = meCoreGetTableIdFromWitnessWord();
+
+	/* tables 0 and 1 are images the library has no mapping for */
+	if (table < 2)
+		return -6;
+	meCoreSelectSystemTable(table);
+	meLibReset();
+	return table;
+}
+
+static int me_lib_init(void)
+{
+	int error;
+
+	if (psp_keep("melibinit"))
+		return meLibDefaultInit();
+	error = meLibLoadPrx();
+	if (error < 0)
+		return error;
+	if (kinit((void *)me_lib_event) < 0)
+		return -5;
+	return kcall_2(me_lib_reset, me_kseg);
+}
+
 /* The system registers that decide whether the ME can run, as the main CPU
 sees them: resets (0xbc10004c), bus clocks (0xbc100050: the ME's is bit 0),
 clocks (0xbc100058) and AVC power (0xbc100070); with them, the ME's start
@@ -2337,7 +2387,7 @@ int psp_me_start(void)
 		platform_log("ME: starting the Media Engine (a hang here: hold the power switch up 10 s; launch with nomeaudio)");
 		psp_log_flush();
 		chdir(PSP_DATA_ROOT);
-		table = meLibDefaultInit();
+		table = me_lib_init();
 		/* the Slim and 3000's image (table 2) starts the ME's stack at 4 MB, the
 		1000's at 2 MB (me-core.h): the AI job's room and its measure sit below
 		the real top, so its guard and its depth mean the same on both */
