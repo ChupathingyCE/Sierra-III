@@ -354,6 +354,13 @@ hold in reset at that moment (mid-sleep, mid-wake). So the ME's two bits are
 set and cleared alone, as the firmware's own sysreg driver does.
 "meresetwhole": the whole-register writes again */
 static int me_reset_whole = 0;
+/* The segment every kcall below runs its kernel function in. kcall jumps to
+seg | f, and kernel-mode code run at its user address (seg 0) switches the
+PSP off at random, about once per ~5 ms spent there (bench-hw 41954147841 to
+41955337648, docs/hw_capabilities.md section 6.5); the same code at the
+kernel's cached alias ran 3,245 calls clean, which is the segment the
+library's own kcalls pass (me-lib.h). "kcallseg0" brings back seg 0 */
+static unsigned int me_kseg = CACHED_KERNEL_MASK;
 
 /* The system registers that decide whether the ME can run, as the main CPU
 sees them: resets (0xbc10004c), bus clocks (0xbc100050: the ME's is bit 0),
@@ -1978,7 +1985,7 @@ static void me_stop(const char *why, int for_sleep)
 		{
 			volatile struct me_fault *fault = UNCACHED(&psp_me_fault_storage);
 
-			kcall_2(me_hold_reset, 0);
+			kcall_2(me_hold_reset, me_kseg);
 			platform_log("ME: stopped (%s): NO answer in 100 ms, held in reset; the main CPU runs its jobs from here", why);
 			/* B31: where it faulted (EPC is in kseg0: less 0x88804000, the
 			link map's address), or that it didn't */
@@ -2040,11 +2047,11 @@ void psp_me_exit(const char *why)
 		return;
 	if (me_maybe_running)
 	{
-		kcall_2(me_hold_reset, 0);
+		kcall_2(me_hold_reset, me_kseg);
 		me_maybe_running = 0;
 		platform_log("ME: held in reset for the exit (a restart may have had it running)");
 	}
-	kcall_3(me_sysregs_kernel, 0, &regs_exit);
+	kcall_3(me_sysregs_kernel, me_kseg, &regs_exit);
 	sysregs_line(line, sizeof(line), "exit", &regs_exit);
 	platform_log("ME: system registers (reset, bus clocks, clocks, AVC power) at %s; %s %08x %08x %08x %08x", line,
 		"launch", regs_launch.reset, regs_launch.bus_clock, regs_launch.clock, regs_launch.avc);
@@ -2148,14 +2155,14 @@ int psp_me_dma_edram(int into_edram, void *main_ram, unsigned int edram_offset, 
 	call.control = (1u << 31) | ((into_edram ? 1u : 0u) << 25) | ((into_edram ? 0u : 1u) << 24) |
 		(DMACP_WIDTH16 << 21) | (DMACP_WIDTH16 << 18) | (1u << 15) | (1u << 12) | count;
 	call.result = 0;
-	kcall_3(dmacp_start_kernel, 0, &call);
+	kcall_3(dmacp_start_kernel, me_kseg, &call);
 	if (call.result)
 		return call.result;
 	start = sceKernelGetSystemTimeLow();
-	while (!kcall_3(dmacp_poll_kernel, 0, &call))
+	while (!kcall_3(dmacp_poll_kernel, me_kseg, &call))
 		if (sceKernelGetSystemTimeLow() - start > timeout_us)
 		{
-			kcall_3(dmacp_stop_kernel, 0, &call);
+			kcall_3(dmacp_stop_kernel, me_kseg, &call);
 			if (us)
 				*us = sceKernelGetSystemTimeLow() - start;
 			return -3;
@@ -2187,7 +2194,7 @@ static void me_cpu_check(volatile struct me_control *control, const char *when)
 	static unsigned int main_number = 0xffffffffu;
 
 	if (main_number == 0xffffffffu)
-		kcall_3(me_cpu_number_kernel, 0, &main_number);
+		kcall_3(me_cpu_number_kernel, me_kseg, &main_number);
 	platform_log("ME: CPU numbers (coprocessor 0 register 22) at the %s: the ME %s%u, the main CPU %u",
 		when, control->cpu_seen ? "" : "(nothing reported) ", control->cpu_seen ? control->cpu_number : 0xffffffffu,
 		main_number);
@@ -2270,6 +2277,8 @@ int psp_me_start(void)
 		int have = getcwd(folder, sizeof(folder)) != NULL;
 
 		me_reset_whole = psp_keep("meresetwhole");
+		if (psp_keep("kcallseg0"))
+			me_kseg = 0;
 		platform_log("ME: starting the Media Engine (a hang here: hold the power switch up 10 s; launch with nomeaudio)");
 		psp_log_flush();
 		chdir(PSP_DATA_ROOT);
@@ -2300,7 +2309,7 @@ int psp_me_start(void)
 	if (control->alive == before)
 	{
 		me_state = -1;
-		kcall_2(me_hold_reset, 0);
+		kcall_2(me_hold_reset, me_kseg);
 		me_maybe_running = 0;
 		platform_log("ME: the ME didn't start (alive %u -> %u in 20 ms; table %d); held in reset", before, control->alive, table);
 		return 0;
@@ -2331,7 +2340,7 @@ int psp_me_start(void)
 		table, control->alive - before, me_cycles_per_us, me_cycles_per_us < 1.0f ? ": ME times will read 0" : "",
 		control->cause_before, control->cause_after);
 	me_cpu_check(control, "launch");
-	kcall_3(psp_keep("memarksatlaunch") ? me_sysregs_kernel : me_sysregs_running_kernel, 0, &regs_launch);
+	kcall_3(psp_keep("memarksatlaunch") ? me_sysregs_kernel : me_sysregs_running_kernel, me_kseg, &regs_launch);
 	{
 		char line[96];
 
@@ -4261,15 +4270,15 @@ void psp_me_wake_poll(void)
 	/* B41: a release that never returns (the ME's bus unpowered) is named
 	by the heartbeat's stall reporter */
 	PSP_WAIT_BEGIN(PSP_WAIT_ME_RESTART);
-	kcall_3(me_restart_kernel, 0, 0);
+	kcall_3(me_restart_kernel, me_kseg, 0);
 	PSP_WAIT_END(PSP_WAIT_ME_RESTART);
 	while (control->alive == 0 && (now = sceKernelGetSystemTimeWide()) - release < WAKE_ANSWER_US)
 		sceKernelDelayThread(500);
 answered:
-	kcall_3(me_sysregs_kernel, 0, &regs_answer);
+	kcall_3(me_sysregs_kernel, me_kseg, &regs_answer);
 	if (control->alive == 0 || me_sleeps != sleeps)
 	{
-		kcall_2(me_hold_reset, 0);
+		kcall_2(me_hold_reset, me_kseg);
 		me_maybe_running = 0;
 		wake_report("ME: restart after the wake FAILED (%s; the ME's start got %s); held in reset, the main CPU runs its jobs",
 			control->alive == 0 ? "no idle poll within 300 ms of the reset's release" : "the PSP slept again meanwhile",
@@ -4331,7 +4340,7 @@ void psp_me_wake_test_sleep(void)
 	}
 	psp_me_sleep_stop();
 	if (me_restartable == 1)
-		kcall_2(me_sleep_kernel, 0);
+		kcall_2(me_sleep_kernel, me_kseg);
 	else
 	{
 		me_state = -1;
@@ -4351,7 +4360,7 @@ mewakeearly, the release is there), then the power callback's request */
 void psp_me_wake_test_wake(void)
 {
 	if (me_restartable == 1)
-		kcall_2(me_wake_kernel, 0);
+		kcall_2(me_wake_kernel, me_kseg);
 	psp_me_wake_request();
 }
 
