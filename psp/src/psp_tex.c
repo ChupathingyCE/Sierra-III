@@ -1260,6 +1260,65 @@ long psp_tex_pack_bytes(const char *name, char *path, int size)
 plans, psp_fixups.py) start again when it moves */
 PSP_MAIN_SIDE unsigned long psp_tex_map_opens = 0;
 
+/* "texfit" (TEXFIT1): textures loaded from the finest mip level the GE
+samples, where the bake measured that level on the ladder's routes and
+wrote each such texture again from it. The trimmed copies sit after the
+pack's data, listed by a 'TFT1' table that a trailer at the file's end
+points to, so the same pack carries both sides and a build that doesn't
+know the table never reads it. Each listed entry takes the trimmed copy's
+size, chain and place: every user of the entry (the bind, the bind blocks,
+psp_tex_size and the slope it feeds) then sees one consistent smaller
+texture. Halving width and height lowers the GE's level choice by exactly
+the levels left out, so each pixel samples the same texels as before as
+long as the left-out levels were never chosen. The bake lists only
+paletted textures with no masks, no CPU reads and two levels kept, so the
+filter and every reader of the texels stay as they were; averages and
+stand-ins still describe the top level, which is what both sides draw */
+struct texfit_row
+{
+	unsigned int index, key;
+	unsigned short width, height;
+	unsigned char levels, skipped, pad[2];
+	unsigned int offset, size;
+};
+
+static void texfit_apply(SceUID file)
+{
+	unsigned int trailer[2], table[2], i, applied = 0, before = 0, after = 0;
+	struct texfit_row row;
+
+	if (!psp_keep("texfit"))
+		return;
+	if (sceIoLseek32(file, -8, PSP_SEEK_END) < 0 || sceIoRead(file, trailer, sizeof(trailer)) != (int)sizeof(trailer) ||
+		trailer[0] != 0x31454654 /* TFE1 */ || sceIoLseek32(file, trailer[1], PSP_SEEK_SET) != (int)trailer[1] ||
+		sceIoRead(file, table, sizeof(table)) != (int)sizeof(table) || table[0] != 0x31544654 /* TFT1 */)
+	{
+		platform_log("textures: texfit: no table in this pack (baked without --texfit-census): every texture whole");
+		return;
+	}
+	for (i = 0; i < table[1]; i++)
+	{
+		struct pack_entry *entry;
+
+		if (sceIoRead(file, &row, sizeof(row)) != (int)sizeof(row))
+			break;
+		if (row.index >= (unsigned int)entry_count || entries[row.index].key != row.key ||
+			row.levels < 2 || row.levels + row.skipped != entries[row.index].levels)
+			continue;
+		entry = &entries[row.index];
+		before += entry->size;
+		after += row.size;
+		entry->width = row.width;
+		entry->height = row.height;
+		entry->levels = row.levels;
+		entry->offset = row.offset;
+		entry->size = row.size;
+		applied++;
+	}
+	platform_log("textures: texfit: %u of %u textures from the finest level sampled, %u KB of %u KB (%u KB less)",
+		applied, table[1], after / 1024, before / 1024, (before - after) / 1024);
+}
+
 void psp_tex_map_opened(const char *name)
 {
 	char path[128];
@@ -1440,6 +1499,7 @@ void psp_tex_map_opened(const char *name)
 	if (angle_tint_count)
 		platform_log("textures: tints by angle for %d shaders%s", angle_tint_count,
 			psp_keep("noangletint") ? " (noangletint: the middle angle's)" : "");
+	texfit_apply(file);
 	platform_log("textures: %s, %d textures; caches %d KB of VRAM and %d KB of RAM", path, entry_count,
 		(VRAM_CACHE_END - VRAM_CACHE_START) / 1024, (int)(arenas[1].end - arenas[1].start) / 1024);
 	{

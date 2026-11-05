@@ -2209,10 +2209,75 @@ def standins(entries):
     return bytes(out)
 
 
+def texfit_trimmable(e):
+    """the bytes before each level when a texture can be loaded from a finer
+    level on (texfit): paletted, no change mask or CPU reads (they index the
+    top level), its data exactly its palette and levels (no reflection
+    mask after them), not a composite or glow entry; else None"""
+    if e['psm'] not in (4, 5) or e.get('flags', 0) & (8 | 16) or e['key'] & 3 or e['levels'] < 3:
+        return None
+    palette = (4 if e['clut'] == 3 else 2) * (16 if e['psm'] == 4 else 256)
+    starts, at, w, h = [], palette, e['w'], e['h']
+    for _ in range(e['levels']):
+        starts.append(at)
+        row, rows = level_bytes(w, h, 4 if e['psm'] == 4 else 8)
+        at += row * rows
+        w, h = max(1, w // 2), max(1, h // 2)
+    if at != len(e['data']):
+        return None
+    return palette, starts
+
+
+def texfit_table(entries, census, at):
+    """TEXFIT1 (keep word texfit): each texture the census never saw sampled
+    at its top level written again from the finest level it was sampled at,
+    after the pack's data, with the 'TFT1' table listing them and an 8-byte
+    trailer ('TFE1', the table's offset) at the file's end. The census file
+    has a line 'key finest' per texture (hex key, the finest level sampled
+    anywhere on the map's runs); a texture missing from it stays whole.
+    Two levels are always kept, so the GE's filter stays a mip filter"""
+    finest = {}
+    with open(census) as f:
+        for line in f:
+            p = line.split()
+            if len(p) == 2 and not line.startswith('#'):
+                finest[int(p[0], 16)] = int(p[1])
+    blob, rows, whole, kept = bytearray(), [], 0, 0
+    while (at + len(blob)) % 16:
+        blob += b'\0'
+    for index, e in enumerate(entries):
+        k = finest.get(e['key'], 0)
+        if k <= 0:
+            continue
+        cut = texfit_trimmable(e)
+        if cut is None:
+            continue
+        k = min(k, e['levels'] - 2)
+        if k <= 0:
+            continue
+        palette, starts = cut
+        data = e['data'][:palette] + e['data'][starts[k]:]
+        rows.append(struct.pack('<IIHHBBHII', index, e['key'], max(1, e['w'] >> k), max(1, e['h'] >> k),
+                                e['levels'] - k, k, 0, at + len(blob), len(data)))
+        blob += data
+        while (at + len(blob)) % 16:
+            blob += b'\0'
+        whole += len(e['data'])
+        kept += len(data)
+    table = at + len(blob)
+    blob += struct.pack('<4sI', b'TFT1', len(rows)) + b''.join(rows)
+    blob += struct.pack('<4sI', b'TFE1', table)
+    print('texfit: %d textures from a finer level (census %d), %d KB of %d KB (%d KB less)' % (
+        len(rows), len(finest), kept // 1024, whole // 1024, (whole - kept) // 1024), file=sys.stderr)
+    return bytes(blob)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('map')
     ap.add_argument('out')
+    ap.add_argument('--texfit', default=None,
+                    help='TEXFIT1: a census file (hex key, finest level sampled) for the trimmed copies and their table')
     ap.add_argument('--limit', type=int, default=0)
     ap.add_argument('--lightmap-scale', type=int, default=1, help='asset track: lightmaps shrunk by this (2: half)')
     ap.add_argument('--lightmap-seam-whole', action='store_true',
@@ -2709,6 +2774,8 @@ def main():
     while len(out) < offset:
         out += b'\0'
     out += blob
+    if a.texfit:
+        out += texfit_table(entries, a.texfit, len(out))
     open(a.out, 'wb').write(out)
     print('quality %d: %s' % (QUALITY, 'palettes fitted in Oklab, texels by error diffusion, sizes by Lanczos'
                               if QUALITY >= 2 else 'as before (RGB fit, nearest entry, box)'), file=sys.stderr)

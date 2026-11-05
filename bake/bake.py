@@ -116,7 +116,7 @@ Options:
                                 shows (its mask), not only its colour
 
 Nothing from the game is in this tool; it only converts the copy you own."""
-import argparse, concurrent.futures, hashlib, json, os, re, shutil, struct, subprocess, sys, threading, time, zlib
+import argparse, concurrent.futures, glob, hashlib, json, os, re, shutil, struct, subprocess, sys, threading, time, zlib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 LIB = os.path.join(HERE, 'lib')
@@ -140,6 +140,11 @@ PRECONVERT = True
 # the keep words skinw2 and skinstrip choose (tools/modelconvert.py); the
 # geometry pack grows by about three times its baked buffers
 SKIN_VARIANTS = False
+# --texfit-census DIR (TEXFIT1, keep word texfit): the folder of the mip-level
+# census's per-run files ('# map <name>', then 'key finest' lines); each map's
+# textures never sampled at their top level are also written from the finest
+# level sampled, behind the pack's own data (texpack.py --texfit)
+TEXFIT_CENSUS = None
 ATRACDENC = os.path.join(HERE, 'atracdenc')    # the bundled encoder (else atracdenc on PATH)
 MUSICENC = os.path.join(HERE, 'musicenc')      # the music path's Vorbis encoder (bundle/musicenc.c)
 sys.path.insert(0, HERE)
@@ -202,6 +207,36 @@ def invader(tool):
     if not os.path.exists(path):
         sys.exit('halo-psp-bake: %s is missing (the bundle\'s invader/bin)' % path)
     return path
+
+
+def texfit_census(name, out_maps):
+    """texpack.py's --texfit for this map: the census runs' finest levels
+    merged (the finest any run sampled each texture at); nothing when no
+    run covered the map"""
+    if not TEXFIT_CENSUS:
+        return []
+    finest = {}
+    for path in sorted(glob.glob(os.path.join(TEXFIT_CENSUS, '*.census'))):
+        with open(path) as f:
+            lines = f.read().splitlines()
+        if not lines or lines[0].split()[-1:] != [name]:
+            continue
+        for line in lines[1:]:
+            p = line.split()
+            if len(p) == 2:
+                key, level = int(p[0], 16), int(p[1])
+                finest[key] = min(level, finest.get(key, level))
+    if not finest:
+        log('%s: texfit: no census run on this map; its textures stay whole' % name)
+        return []
+    # beside the bake's halo folder, not in it, so it never reaches a stick
+    merged = os.path.join(out_maps, '..', '..', 'texfit', name + '.texfit')
+    os.makedirs(os.path.dirname(merged), exist_ok=True)
+    with open(merged, 'w') as f:
+        f.write('# map %s\n' % name)
+        for key in sorted(finest):
+            f.write('%08x %d\n' % (key, finest[key]))
+    return ['--texfit', os.path.abspath(merged)]
 
 
 def run(command, log_path, cwd=None, env=None):
@@ -543,9 +578,9 @@ def bake_map(name, retail, out_maps, work, track, keep_work, detail='', sound=''
         echo_from(name, log_path, start, ('levelslim:',))
     log('%s: textures' % name)
     start = os.path.getsize(log_path)
-    run([sys.executable, os.path.join(LIB, 'texpack.py'), final, os.path.join(out_maps, name + '.ptex')] + TEXPACK_OPTIONS,
-        log_path, cwd=LIB, env=env)
-    echo_from(name, log_path, start, ('tint ', 'see-through shaders tinted', 'meter shader maps', 'runtime reads', 'HUD sheets', 'glow ', 'detail mask', 'quality ',
+    run([sys.executable, os.path.join(LIB, 'texpack.py'), final, os.path.join(out_maps, name + '.ptex')] + TEXPACK_OPTIONS
+        + texfit_census(name, out_maps), log_path, cwd=LIB, env=env)
+    echo_from(name, log_path, start, ('texfit:', 'tint ', 'see-through shaders tinted', 'meter shader maps', 'runtime reads', 'HUD sheets', 'glow ', 'detail mask', 'quality ',
                                 'kmeans compare summary', 'kmeans compare worse', 'bump relief') + MEASURES + ALPHA_LINES)
     # the main menu is the hardware's showcase (CLAUDE.md): a pack of its own
     # at the most the GE can take, beside the usual one ("noshowcase")
@@ -803,6 +838,9 @@ def main():
                          'draws (exact; the geometry pack grows by about the model vertices); the default')
     ap.add_argument('--no-preconvert', dest='preconvert', action='store_false',
                     help='leave the conversions to the port at run time (smaller packs; b30 drops a frame at its start)')
+    ap.add_argument('--texfit-census', default=None,
+                    help="TEXFIT1: a folder of mip-level census files; each map's packs also carry its textures "
+                         "from the finest level sampled (keep word texfit; the default load is as without it)")
     ap.add_argument('--skin-variants', action='store_true',
                     help="the baked model buffers also with first-fit slots and strips (keep words skinw2, "
                          'skinstrip), each as a region of its own; the default region is as without it')
@@ -845,8 +883,9 @@ def main():
     a = ap.parse_args()
     if a.sound == 'none':
         a.sound = ''
-    global COMPARE_OLD, PROFILE, COMPARE_PALETTES, LEVEL_SLIM, ALPHA_AUDIT, PRECONVERT, SKIN_VARIANTS
+    global COMPARE_OLD, PROFILE, COMPARE_PALETTES, LEVEL_SLIM, ALPHA_AUDIT, PRECONVERT, SKIN_VARIANTS, TEXFIT_CENSUS
     LEVEL_SLIM = a.slim_level
+    TEXFIT_CENSUS = a.texfit_census
     SKIN_VARIANTS = a.skin_variants
     PRECONVERT = a.preconvert
     COMPARE_OLD, PROFILE, COMPARE_PALETTES = a.compare_old, a.profile, a.compare_palettes
