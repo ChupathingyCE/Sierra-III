@@ -3682,28 +3682,14 @@ counts a millisecond (counters in PspDebugProfilerRegs order, from systemck) */
 log/pcsample.txt every twelfth (a minute): "pcsample <phase> <bin> <count>",
 phase 1 the tick, 2 the drawing, the bin's code at base + bin << shift, the
 header line naming base, shift and the totals */
-static void pc_report(void)
+static void pc_write(const char *path, unsigned int samples)
 {
-	static unsigned int last_samples = 0, last_us = 0;
-	unsigned int samples, k, phase, now_us, rate;
+	unsigned int k, phase;
 	SceUID file;
 	char line[96];
 	const volatile unsigned int *counts;
 
-	if (!hwprofile_running || !hwprofile.pc_wanted)
-		return;
-	samples = hwprofile.pc_samples;
-	now_us = sceKernelGetSystemTimeLow();
-	rate = last_us && now_us != last_us ? (unsigned int)((unsigned long long)(samples - last_samples) * 1000000u / (now_us - last_us)) : 0;
-	last_us = now_us;
-	platform_log("pcsample: %u a second; %u samples (%u since the last), binned %u, in other phases %u, in the kernel %u (by phase: other %u, tick %u, drawing %u, frame end %u), elsewhere %u (timer %d, period %u)",
-		rate, samples, samples - last_samples, hwprofile.pc_binned, hwprofile.pc_other_phase, hwprofile.pc_kernel,
-		hwprofile.pc_kernel_by_phase[0], hwprofile.pc_kernel_by_phase[1], hwprofile.pc_kernel_by_phase[2],
-		hwprofile.pc_kernel_by_phase[3], hwprofile.pc_outside, (int)hwprofile.pc_timer, hwprofile.pc_period);
-	last_samples = samples;
-	if (++pc_report_beats % 12)
-		return;
-	file = sceIoOpen(LOG_FOLDER "/pcsample.txt", PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
+	file = sceIoOpen(path, PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
 	if (file < 0)
 		return;
 	k = (unsigned int)snprintf(line, sizeof(line), "pcsample base %08x shift %u bins %u samples %u binned %u\n",
@@ -3735,6 +3721,72 @@ static void pc_report(void)
 			sceIoWrite(file, chunk, used);
 	}
 	sceIoClose(file);
+}
+
+/* "pcsnapN" (any number of them, up to PC_SNAPS): the counts so far also go
+to log/pcsample_N.txt at the first heartbeat at or past game tick N, so a
+stretch's own profile is the difference of the snapshots around it
+(pcsample.py --minus) rather than the whole run's */
+#define PC_SNAPS 8
+static long pc_snap_at[PC_SNAPS];
+static int pc_snaps = -1, pc_snaps_done = 0;
+
+static void pc_snaps_read(void)
+{
+	const char *at = keep_words;
+	long tick;
+	int k;
+
+	pc_snaps = 0;
+	while ((at = strstr(at, " pcsnap")) != NULL && pc_snaps < PC_SNAPS)
+	{
+		at += 7;
+		if (*at < '0' || *at > '9')
+			continue;
+		tick = atol(at);
+		/* in order, so one test a heartbeat finds the next */
+		for (k = pc_snaps++; k > 0 && pc_snap_at[k - 1] > tick; k--)
+			pc_snap_at[k] = pc_snap_at[k - 1];
+		pc_snap_at[k] = tick;
+	}
+	if (pc_snaps)
+		platform_log("pcsample: %d snapshots by game tick (pcsnapN)", pc_snaps);
+}
+
+static void pc_report(void)
+{
+	static unsigned int last_samples = 0, last_us = 0;
+	unsigned int samples, now_us, rate;
+	long ticks;
+
+	if (!hwprofile_running || !hwprofile.pc_wanted)
+		return;
+	samples = hwprofile.pc_samples;
+	now_us = sceKernelGetSystemTimeLow();
+	rate = last_us && now_us != last_us ? (unsigned int)((unsigned long long)(samples - last_samples) * 1000000u / (now_us - last_us)) : 0;
+	last_us = now_us;
+	platform_log("pcsample: %u a second; %u samples (%u since the last), binned %u, in other phases %u, in the kernel %u (by phase: other %u, tick %u, drawing %u, frame end %u), elsewhere %u (timer %d, period %u)",
+		rate, samples, samples - last_samples, hwprofile.pc_binned, hwprofile.pc_other_phase, hwprofile.pc_kernel,
+		hwprofile.pc_kernel_by_phase[0], hwprofile.pc_kernel_by_phase[1], hwprofile.pc_kernel_by_phase[2],
+		hwprofile.pc_kernel_by_phase[3], hwprofile.pc_outside, (int)hwprofile.pc_timer, hwprofile.pc_period);
+	last_samples = samples;
+	if (pc_snaps < 0)
+		pc_snaps_read();
+	ticks = psp_game_time_peek();
+	if (pc_snaps_done < pc_snaps && ticks >= pc_snap_at[pc_snaps_done])
+	{
+		char path[64];
+
+		snprintf(path, sizeof(path), LOG_FOLDER "/pcsample_%ld.txt", pc_snap_at[pc_snaps_done]);
+		pc_write(path, samples);
+		platform_log("pcsample: snapshot %s at game tick %ld, %u samples", path, ticks, samples);
+		/* past several at once (a load): the one file stands for them all */
+		while (pc_snaps_done < pc_snaps && ticks >= pc_snap_at[pc_snaps_done])
+			pc_snaps_done++;
+	}
+	if (++pc_report_beats % 12)
+		return;
+	pc_write(LOG_FOLDER "/pcsample.txt", samples);
 }
 
 static void hwprofile_report(void)
