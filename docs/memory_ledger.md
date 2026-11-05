@@ -2,6 +2,95 @@
 
 Sheepdog01, 2026-10-21 15:51-15:53: memory is now a lever. VRAM trades the texture cache against model copies; main RAM buys headroom, cache sizes and fidelity. Three digs for the master (helper `memdig`), on w140 `bc12443`, bake `b140x` (the exact CLUT4 set): (1) geometry bytes that could go without degrading the look; (2) the ledger of both pools; (3) the CLUT4 look A/B for Sheepdog01. Labels: [M] measured on a PSP, [E] emulator or estimate, [D] read in code or data, [U] inference or arithmetic. Counts reused from recon's helpers (cull-lod, CTNG, survey) are cited, not redone.
 
+## 0. Ledger 4: every pool's peak and room by map, on tock162 (2026-11-04)
+
+The redesign's ledger 4 (`redesign_recon.md`). **Build:** tock162 c3f3dba5 with B58's emulator fix merged on top (the simulated ME's sound tier and AI stack in the emulator's mapped eDRAM: without it the emulator's heap was ~600 KB short and d20 failed 422 requests), tock162's recipe without STRICT (campaign-w162b, layouts w161a_tgc90 / hotg161a), bake w157m. **Runs** (lab sierra-batch 41956515467, `ledger4a`, all 10 ended at their stop, 0 strict sites): the ladder (each map's 90 s opening) and the a10, a30, b30, d20 routes (Sheepdog01's b139 hand-test inputs, deathless, `fixedticks fixedseed`; d20 with the flashlight from tick 1400), each once on the shipped build (`memcensus heapmap`, the metrics heap lines) and once with `PSP_RECON=1 PSP_POOLS_XBOX=1` (`poolpeaks`: the game-state arrays at the Xbox's sizes, so no peak is capped). Every figure here is **[E], that build**, unless marked. Read with `tools/memcensus.py`.
+
+**The emulator against the PSP on the same tock162** (timeline3's sierra-hw 41941407089 b30 and 41941380156 d20, PSP-3000 [M], strict 64647bb5): the heap is 5,768 KB there and 5,764 here (the strict link's 4 KB); the sound tier splits the same (1,392 KB of main RAM + 656 KB of eDRAM); b30's heap top 5,292 KB over 150 s [M] against 5,416 over its 90 s opening and 5,456 over the route [E]; d20 5,228 over 90 s [M] against 5,372 / 5,288 [E]; 0 failed requests on both. Close enough to read the emulator's peaks as the PSP's, stretch for stretch.
+
+### 0.1 What changed since §2 (w140, 10-21 to 10-27)
+
+The sound cache is **2,048 KB**, its last 656 KB in the ME's eDRAM (SNDEDRAM2's tier, on by default), so the heap holds 1,392 KB of it plus 128 KB staging; the AI job's stack (544 KB) and data (48) are in eDRAM; the geometry cache is **1,280 KB** in the volatile partition, plus the tag window's free span as its second region on maps that have one (b30 1,592, c10 1,402, c40 1,346, d40 1,608, c20 2,496 KB); the level carve takes up to 1,024 KB; the heap is **5,764 KB**. **a10's 4 KB of headroom is gone: it has 344 KB at its route's peak.** No map failed a heap request.
+
+### 0.2 Main RAM: the heap and its blocks, by map
+
+Heap 5,764 KB. "Top" is the heap's highest point; room = 5,764 - top; "free low" and "largest low" are the metrics heap lines' least free and least largest block over the map (fragmentation shows as the gap between them).
+
+| Map (run) | Top | Room at the top | In use, most | Free low / largest low | Display list, fullest frame (768) | Level copies' arena (800) | Level carve (1,024) |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| a10 route | 5,420 | **344** | 5,415 | 348 / **255** | 525 | 800 (17 let go, 144 to the heap) | **848** |
+| a30 route | 5,448 | 316 | 5,439 | 324 / 322 | 451 | 761 | 0 |
+| b30 route | 5,456 | 308 | 5,397 | 366 / 328 | 603 | 800 (196 let go) | 256 |
+| d20 route | 5,288 | 476 | 5,283 | 480 / 476 | 586 | 800 (90 let go) | 255 |
+| a10 opening | 5,220 | 544 | 5,163 | 600 / 596 | 282 | 800 | 246 |
+| a30 opening | 5,452 | 312 | 5,428 | 335 / 320 | 351 | 726 | 0 |
+| a50 opening | 5,168 | 596 | 5,116 | 647 / 596 | 399 | 612 | 0 |
+| b30 opening | 5,416 | 348 | 5,412 | 351 / 347 | 597 | 800 | 246 |
+| b40 opening | 5,416 | 348 | 5,288 | 475 / 442 | 505 | 413 | 0 |
+| c10 opening | 5,364 | 400 | 5,343 | 420 / 417 | 528 | 796 | 8 |
+| **c20 opening** | **5,604** | **160** | 5,422 | 341 / **182** | 330 | 799 | 383 |
+| c40 opening | 5,444 | 320 | 5,287 | 476 / 320 | 217 | 486 | 0 |
+| d20 opening | 5,372 | 392 | 5,285 | 478 / 465 | 432 | 800 | 255 |
+| d40 opening | 5,232 | 532 | 5,133 | 630 / 531 | 422 | 797 | 0 |
+
+- **The tightest:** c20's opening (160 KB at the top; its largest free block fell to 182 KB) and b30's and a30's routes (~310 KB). The sound and copies' blocks inside the heap are full on every map (the sound cache 1,984-2,048 of 2,048 occupied, c20 1,236; the copies' arena 800 of 800 on a10, b30, c10, c20, d20, d40); the room is the heap's own margin, not idle blocks.
+- **What churns at the limits** (routes): d20's sound cache failed 111 loads for room (the only map that did); b30 let level copies go 196 times, d20 90, a10 17; c20's opening sent 155 copies to the heap at w140 and its arena is again 799 of 800.
+- **Outside the heap** (top of user RAM): **70 KB free at the least on every map, largest block 28 KB** (the metrics heap lines' "user memory free low"): the ~130 KB of §2.2 is down to 70.
+- **The game state:** 3,003 of 3,012 KB allocated, every map.
+- **The in-flight record buffer** (224 KB): b30's route 19 KB a frame on average, 62 at most [E: the emulator's ME is simulated, so its fills run lower than the PSP's 184-197 of §2.2].
+
+### 0.3 The game state's arrays: the most in any run against the shipped size
+
+`poolpeaks` on the Xbox's sizes; shipped = the campaign's sizes (`psp_capacity.h`). Route maps are a10, a30, b30, d20; the ladder adds the other six maps' openings (its peaks carry over from map to map for a few arrays: a value repeated on later maps is an earlier map's, not theirs).
+
+| Array | Shipped size | Most (where) | Room at the most | Next |
+|---|---:|---|---:|---|
+| objects pool | 1,024 KB | **1,000 KB** (b30 route) | 24 KB: full by design (the Xbox's garbage limit) | d20 852-934 (furthest end) |
+| cached object render states | 512 | **512** (a30, b30 routes) | 0: full (misses rework the lighting) | d20 500 |
+| effect | 256 | **255** (a10 route) | 1: full, the Xbox's size | d20 248 |
+| contrail point | 768 (trimmed) | **665** (a30 route) | **103**: the tightest trim (was 561 at the census) | b30 519 |
+| particle | 1,024 | 512 (b30 route) | 512 | d20 395 |
+| object | 2,048 | 1,122 (d20 route) | 926 | b30 1,100 |
+| effect location | 512 | 358 (d20 route) | 154 | a10 257 |
+| object looping sounds | 640 (trimmed) | 339 (c20) | 301 | d20 191 |
+| lights | 896 | 363 (b30 route) | 533 (every encounter placed at once filled 896 on b40: §2.4) | d20 313 |
+| prop | 512 | 260 (b30 route) | 252 (the hand test's 283 [M]) | d20 172 |
+| system particles | 448 (trimmed) | 225 (a10 route) | 223 | b30 105 |
+| hs thread | 256 | 179 (b40) | 77 | c20 151 |
+| glow particles | 256 | 128 (b30 route) | 128 | 0 elsewhere |
+| actor | 160 | 86 (b30 route) | 74 (every encounter on b40: 139) | d20 30 |
+| collideable cluster references | 2,048 | 766-769 (b30 route) | ~1,280 | a30 434 |
+| light cluster references | 2,048 | 691 (d20 route) | 1,357 | b30 442 |
+| noncollideable cluster references | 2,048 | 705 (c10) | 1,343 | d20 492 |
+| device groups | 1,024 | 697 (c20) | 327 | d20 518 |
+| hs globals | 1,024 | 571 (a50) | 453 | a30 551 |
+| decals | 2,048 | 391 (d20) | 1,657 | b30 383 |
+| encounter | 128 | 81 (c20) | 47 | b40 75 |
+| contrail / particle systems / swarm component | 96 / 32 / 160 (trimmed) | 37 (b30) / 12 (a10) / 23 (c20) | 59 / 20 / 137 | |
+
+### 0.4 The other pools
+
+| Pool | Size | Peak by map | Room | Source |
+|---|---:|---|---|---|
+| **VRAM**: frame buffers + depth | 544 + 272 KB | fixed | 0 | [D] |
+| VRAM: the textures' share | 616 KB | 600-614 on every map | 2-16 KB | [E] |
+| VRAM: the models' share | 616 KB | 584-605 on the levels (b40 504, a50 536); full 745 (d20) to 4,713 (b30) times over the routes | 11-32 KB on the busy maps | [E] |
+| **Volatile 4 MB**: geometry cache | 1,280 KB (+ the tag window's span where there is one: b30 312, c10 122, c40 66, d40 328, c20 1,216 KB) | 1,221-1,266 of 1,280 (every map); b30 1,551 of 1,592; c20 1,428 of 2,496; c40 922 of 1,346 | c20 ~1 MB, c40 ~420 KB idle in their openings; full elsewhere | [E] |
+| Volatile: level carve | up to 1,024 KB | a10 848 (route), c20 383, b30 / d20 256; 0 on a30, a50, b40, c40, d40 | grows on demand, out of the texture RAM cache | [E] |
+| Volatile: texture RAM cache | 2,784 KB less the carve (2,528 at 256) | b30 15 MB read over the route, 948 evicted | the carve's loser | [E] |
+| Volatile: glyph sheet | 32 KB | | | [D] |
+| **Tag window** | 9,216 KB | tags: b40 5,944, a50 5,362, c10 5,278 ... c20 2,998 KB (the map file; the BSP takes the rest) | its free span above | [E] |
+| **ME eDRAM** (2,048 KB; tock162 defaults [D], `psp_me.h`) | 0-192 left as found; 192-208 recon scratch; 208-256 the ME's private state (opt-in); **256-800 KB free (544)**; 800-1,456 the sound tier (656, full: 2,036-2,048 of the cache occupied); 1,456-1,504 the AI job's data (48); 1,504-2,048 its stack (544) | the stack's depth: ~192 KB+ on b30 and d20 [M, aime2a2 at w14x, edram.md]; not remeasured here | **544 KB at 256-800**, minus MIST's reservation (unpinned) | [D] + [M] |
+| **Scratchpad** | 16,384 B | 16,384 used (BSP top nodes, the profiler's slots and table) | 0 | [E], the start-up lines |
+
+### 0.5 What a KB buys now (the order of §2.5, revised)
+
+1. **c20's heap** (160 KB at the top, largest block 182) is now the tightest, not a10 (344). Anything the full set adds to c20 sizes against that.
+2. **The eDRAM's 544 KB at 256-800 KB** is the largest free block in the machine: PDC (~240), L1 (~190) and CSTPOOL (64-80) fit beside each other (edram.md's claims), once MIST's table address is pinned. MUSICSTREAM's region (1,184-1,456) now overlaps the sound tier: it needs a new place if `PSP_MUSIC` returns.
+3. **The geometry cache's second region** works where the tag window has room (c20's 1.2 MB is mostly idle in its opening); a10, a30, a50, b40 have none.
+4. **User RAM outside the heap is down to 70 KB** (largest 28): a new thread stack or outside-heap block has to come from the heap.
+5. Arrays: the only trims left with margin are small (contrail point has 103; the full arrays, objects, render states and effect, are full by the Xbox's design).
+
 ## 1. Geometry: what could go without degrading the look
 
 ### 1.0 First, a correction: the 14-byte vertex was never built
@@ -46,7 +135,7 @@ The rest of each pack (~1.7-3.3 MB) is animation frame data (`-M`).
 
 **Sheepdog01's calls in dig 1:** none for (e) and (b) (exact). The 14-byte vertex is a "looks the same" change: side-by-sides decide. (c), (d) and (a) detract and are not recommended at their prices.
 
-## 2. The ledger, both pools
+## 2. The ledger, both pools (w140, 10-21; §0 supersedes it wherever it gives a figure)
 
 ### 2.1 VRAM (2,048 KB; the same layout on every map)
 
