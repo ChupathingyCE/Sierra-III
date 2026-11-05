@@ -47922,10 +47922,9 @@ the walk's time, then the ME is tried again; a long run of pushes rests for
 PSP_ML_REFRESH views now and then to keep that time current. The walk's time
 is only refreshed while views are made here, so by the time a check comes it
 may be from another stretch (a cheap landing before a heavy beach): with
-"mevisprobe" (on by default) a check that calls for a rest first makes
-PSP_ML_REFRESH views here, so the walk's time is this stretch's, and the rest
-goes on only if that fresh time still calls for it; otherwise the ME is
-tried again at once. "mevislandalways" pushes every view (the A/B's other side). The ME's time isn't free either (its
+"mevisprobe" (on by default) a rest is weighed again every PSP_ML_REFRESH
+views on the walk's fresh time, against the wait that called for it, and
+ends as soon as that time no longer calls for one. "mevislandalways" pushes every view (the A/B's other side). The ME's time isn't free either (its
 own frame's replay waits behind the walk, and the bus is shared with the
 tick), so a walk under PSP_ML_MIN_WALK_US stays here: there's little to win */
 #define PSP_ML_MARGIN_US 500
@@ -47935,14 +47934,15 @@ tick), so a walk under PSP_ML_MIN_WALK_US stays here: there's little to win */
 #define PSP_ML_PUSHES_BEFORE_REFRESH 600
 #define PSP_ML_REFRESH 16
 static int psp_ml_always = 0, psp_ml_rest = PSP_ML_CHECK, psp_ml_since_check = 0, psp_ml_since_refresh = 0;
-static int psp_ml_probe = 0, psp_ml_probing = 0;
+static int psp_ml_probe = 0, psp_ml_rest_weighed = 0;
 static unsigned long psp_ml_main_avg = 0, psp_ml_wait_avg = 0, psp_ml_here = 0, psp_ml_rests = 0, psp_ml_probes_back = 0;
+static unsigned long psp_ml_rest_wait = 0;
 
-/* the test that calls for a rest: the ME's answer waited for nearly as long as
-the walk takes here, or a walk too short to be worth the ME's time */
-static int psp_ml_rest_called(void)
+/* the test that calls for a rest: the ME's answer waited (wait_avg) for nearly
+as long as the walk takes here, or a walk too short to be worth the ME's time */
+static int psp_ml_rest_called(unsigned long wait_avg)
 {
-	return psp_ml_wait_avg / 8 + PSP_ML_MARGIN_US >= psp_ml_main_avg / 8 || psp_ml_main_avg / 8 < PSP_ML_MIN_WALK_US;
+	return wait_avg / 8 + PSP_ML_MARGIN_US >= psp_ml_main_avg / 8 || psp_ml_main_avg / 8 < PSP_ML_MIN_WALK_US;
 }
 static unsigned long psp_ml_depth_most = 0, psp_ml_too_deep = 0;
 static unsigned int psp_ml_ticket, psp_ml_state_bytes;
@@ -47995,19 +47995,6 @@ int psp_mevisland_push(void)
 	clears what it can) */
 	if (!structure_bsp_port_verify(global_structure_bsp_get()))
 		return 0;
-	if (psp_ml_probing && psp_ml_rest == 0)
-	{
-		/* the probe's views made here: the rest goes on only if the walk's
-		fresh time still calls for it */
-		psp_ml_probing = 0;
-		if (psp_ml_rest_called())
-		{
-			psp_ml_rest = PSP_ML_REST - PSP_ML_REFRESH;
-			psp_ml_wait_avg = 0;
-		}
-		else
-			psp_ml_probes_back++;
-	}
 	if (!psp_ml_always && psp_ml_rest > 0)
 	{
 		unsigned int start = sceKernelGetSystemTimeLow(), took;
@@ -48017,6 +48004,12 @@ int psp_mevisland_push(void)
 		structure_visibility_compute();
 		took = sceKernelGetSystemTimeLow() - start;
 		psp_ml_main_avg = psp_ml_main_avg ? (psp_ml_main_avg * 7 + took * 8) / 8 : took * 8;
+		if (psp_ml_rest_weighed && psp_ml_rest > 0 && (PSP_ML_REST - psp_ml_rest) % PSP_ML_REFRESH == 0 &&
+			!psp_ml_rest_called(psp_ml_rest_wait))
+		{
+			psp_ml_rest = 0;
+			psp_ml_probes_back++;
+		}
 		return 1;
 	}
 	csmemcpy(psp_mv_record->head, &render, PSP_MV_HEAD_BYTES);
@@ -48107,27 +48100,21 @@ void psp_mevisland_collect(void)
 	if (!psp_ml_always && ++psp_ml_since_check >= PSP_ML_CHECK)
 	{
 		psp_ml_since_check = 0;
-		if (psp_ml_rest_called())
+		if (psp_ml_rest_called(psp_ml_wait_avg))
 		{
+			psp_ml_rest = PSP_ML_REST;
 			psp_ml_rests++;
+			psp_ml_rest_wait = psp_ml_wait_avg;
+			psp_ml_rest_weighed = psp_ml_probe;
+			psp_ml_wait_avg = 0;
 			psp_ml_since_refresh = 0;
-			if (psp_ml_probe)
-			{
-				/* the wait stays: the probe's walk is weighed against it */
-				psp_ml_rest = PSP_ML_REFRESH;
-				psp_ml_probing = 1;
-			}
-			else
-			{
-				psp_ml_rest = PSP_ML_REST;
-				psp_ml_wait_avg = 0;
-			}
 		}
 	}
 	if (!psp_ml_always && ++psp_ml_since_refresh >= PSP_ML_PUSHES_BEFORE_REFRESH)
 	{
 		psp_ml_since_refresh = 0;
 		psp_ml_rest = PSP_ML_REFRESH;
+		psp_ml_rest_weighed = 0;
 	}
 }
 
@@ -48188,7 +48175,7 @@ void psp_mevisland_settle(void)
 			while (low < PSP_MV_STACK / 4 && psp_mv_stack_bottom[low] == PSP_MV_CANARY)
 				low++;
 		}
-		platform_psp_log("mevisland: %lu views: the ME's answer used %lu; made here instead: refused by the ring %lu, the ME still on an earlier one %lu, late %lu, failed %lu (%lu cut at %d clusters deep); waited at the first reader %.2f ms a view (%lu views waited, the most %.2f ms); the deepest walk %lu clusters; the stack used %u of %u KB at most (since the start); made here by placement %lu (%lu rests, %lu of them probes that went back to the ME; the walk here %.2f ms, the wait for the ME's %.2f ms, moving averages)%s (last 300 views)",
+		platform_psp_log("mevisland: %lu views: the ME's answer used %lu; made here instead: refused by the ring %lu, the ME still on an earlier one %lu, late %lu, failed %lu (%lu cut at %d clusters deep); waited at the first reader %.2f ms a view (%lu views waited, the most %.2f ms); the deepest walk %lu clusters; the stack used %u of %u KB at most (since the start); made here by placement %lu (%lu rests, %lu of them ended early on the walk's fresh time; the walk here %.2f ms, the wait for the ME's %.2f ms, moving averages)%s (last 300 views)",
 			psp_ml_views, psp_ml_used, psp_ml_refused, psp_ml_busy, psp_ml_late, psp_ml_failed, psp_ml_too_deep, PSP_MV_DEPTH,
 			psp_ml_wait_us / 1000.0 / psp_ml_views, psp_ml_waited, psp_ml_wait_worst / 1000.0, psp_ml_depth_most,
 			low ? (PSP_MV_STACK - low * 4) / 1024 : 0, PSP_MV_STACK / 1024, psp_ml_here, psp_ml_rests, psp_ml_probes_back,
