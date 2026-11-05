@@ -246,13 +246,13 @@ So the ME scheduler's rebuild buys on one kind of stretch only: where a heavy li
 
 ## b40 late: the cliff path and the snowfield fight (2026-11-04)
 
-Sheepdog01's b150 hand test on the PSP-1000 slowed to 5-10 fps late in b40: on the cliff path to the bridge (level 0, z ~48) and in the snowfield fight below it (level 0, z ~0) [M, his logs]. This section makes both stretches reproducible and reads their frames as the stretches above.
+b150's hand test on the PSP-1000 slowed to 5-10 fps late in b40: on the cliff path to the bridge (level 0, z ~48) and in the snowfield fight below it (level 0, z ~0) [M, its logs]. This section makes both stretches reproducible and reads their frames as the stretches above.
 
-**The recipe.** The lab's route `b40_b150hand_timed` replays his first try through the fight, position by position on his clock (`route_from_log.py --timed --map b40`, his log cut before its revert). It reaches levels 0, 4 and 0 by itself, and the fight spawns as it did for him. Forcing the BSP switches by command makes them flap. A shortcut that starts at the elevator's foot reaches level 0 with no enemies (1 biped a tick): the encounters follow the level's script, which needs the whole path [E, lab sierra-batch 41970036866]. On the PSP: `init = "cheat_deathless_player 1"`, `exitat518`, wall 1200 s; it takes ~13 minutes. The route replays positions, not shooting, so no enemy dies: the snowfield has 30 bipeds a tick against ~21 in Sheepdog01's play.
+**The recipe.** The lab's route `b40_b150hand_timed` replays the hand test's first try through the fight, position by position on its clock (`route_from_log.py --timed --map b40`, the log cut before its revert). It reaches levels 0, 4 and 0 by itself, and the fight spawns as it did in the hand test. Forcing the BSP switches by command makes them flap. A shortcut that starts at the elevator's foot reaches level 0 with no enemies (1 biped a tick): the encounters follow the level's script, which needs the whole path [E, lab sierra-batch 41970036866]. On the PSP: `init = "cheat_deathless_player 1"`, `exitat518`, wall 1200 s; it takes ~13 minutes. The route replays positions, not shooting, so no enemy dies: the snowfield has 30 bipeds a tick against ~21 in the hand test's play.
 
-**The run.** Tock162 d76ff14b, strict on campaign-w162d, layouts w161a_tgc90 and hotg161a, bake w157m: the build of the lead B rows above. The ledger 3 keep set with `geo2` (Sheepdog01's) and `lanetraceat14500`. One run (lab sierra-hw 41971570306, PSP-3000, exited at game time 15,475).
+**The run.** Tock162 d76ff14b, strict on campaign-w162d, layouts w161a_tgc90 and hotg161a, bake w157m: the build of the lead B rows above. The ledger 3 keep set with `geo2` (the hand test's) and `lanetraceat14500`. One run (lab sierra-hw 41971570306, PSP-3000, exited at game time 15,475).
 
-| ms a frame [M] | upper: cliff path (5,100-7,350) | lower: snowfield fight (14,350-15,500) | lower, Sheepdog01's play (b150, PSP-1000) |
+| ms a frame [M] | upper: cliff path (5,100-7,350) | lower: snowfield fight (14,350-15,500) | lower, the hand test's play (b150, PSP-1000) |
 |---|---|---|---|
 | **Frame** | 118.9 (8.4 fps) | 136.5 (7.3 fps) | 133.0 (7.5 fps) |
 | tick (one tick; ticks a frame) | 78.4 (39.4; 2.00) | 81.2 (42.2; 1.91) | 60.0 (35.0; 1.7) |
@@ -274,7 +274,7 @@ Sheepdog01's b150 hand test on the PSP-1000 slowed to 5-10 fps late in b40: on t
 | bipeds, vehicles, projectiles | 16.9, 7.0, 19.8 | 30.0, 9.9, 0.1 | 20.7, 2.6, - (at the switch) |
 | scenery updates | 126 | 116 | |
 
-Sheepdog01's column comes from his own log (lab psp-probe 41967536333, `014_log.txt`, 14,363-15,305, before the ME stopped there: B62, the master's). His build is b150 (tock161's code). His drawing's sleep was the replay's wait 12.2 ms plus texture reads, ~6 ms a frame. His texture cache was more starved than the route's run: 4,632 requests waited for room in the stretch, against 105 [M]. A whole evening's play had filled it.
+The hand test's column comes from its own log (lab psp-probe 41967536333, `014_log.txt`, 14,363-15,305, before the ME stopped there: B62, the master's). Its build is b150 (tock161's code). Its drawing's sleep was the replay's wait 12.2 ms plus texture reads, ~6 ms a frame. Its texture cache was more starved than the route's run: 4,632 requests waited for room in the stretch, against 105 [M]. A whole evening's play had filled it.
 
 **What binds both: the main CPU's ticks.** The tick takes 66% of the upper frame and 60% of the lower. One tick costs 39-42 ms, more than a whole 30 fps frame, and two run in every frame. The ME has room on both (31% idle upper, 63% lower). The GE is busy 31-39% of the clock and almost never stalls on the ME. These are b30's beach and d20's walk again, with a heavier tick: b30's beach ticks 32 ms a tick on the same build [M, the ME per job above].
 
