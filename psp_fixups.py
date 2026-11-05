@@ -37511,9 +37511,12 @@ FIXES_MEVISLAND["source/render/render.c#mevisland"] = [
 #ifdef HALO_PSP
 	{
 		int psp_mevisland_push(void); /* structure_visibility.c (psp_fixups.py, mevisland) */
+		void psp_mevispush_sound(int in_window); /* structure_visibility.c (psp_fixups.py, mevispush) */
 
 		if (!psp_mevisland_push())
 			structure_visibility_compute();
+		/* mevispush: the sound's frame made while the ME walks */
+		psp_mevispush_sound(1);
 	}
 #else
 	structure_visibility_compute();
@@ -37542,6 +37545,51 @@ FIXES_MEVISLAND["source/render/render.c#mevisland"] = [
 #endif
 	bink_playback_render();
 	render_camera_debug_frustum("""),
+]
+# "mevispush" (off by default; docs/mevis_slice2.md): sound_render moves from
+# main_game_render's start to just after the first view's visibility push in
+# render_window, so the main CPU does the sound's frame (its obstruction rays
+# the most of it) while the ME walks, and the answer is nearer ready at its
+# first reader. The two share no state: sound_render reads the listener from
+# the observer, which is final before main_game_render, and no render field;
+# the window loop, the frame's begin and the view's prelude start no sound.
+# A frame with no player window (a film, a screenshot) makes it after
+# render_frame, still inside the frame's seed lock and collision period
+FIXES_MEVISLAND["source/main/main.c#mevispush"] = [
+("""	collision_log_continue_period(TRUE);
+	sound_render();
+	force_single_screen = game_engine_force_single_screen();
+""", """	collision_log_continue_period(TRUE);
+#ifdef HALO_PSP
+	{
+		int psp_mevispush_defer(void); /* structure_visibility.c (psp_fixups.py, mevispush) */
+
+		if (!psp_mevispush_defer())
+			sound_render();
+	}
+#else
+	sound_render();
+#endif
+	force_single_screen = game_engine_force_single_screen();
+"""),
+("""		screenshot_render(global_screenshot_count.windows);
+	}
+
+	collision_log_end_period();
+	unlock_global_random_seed();
+""", """		screenshot_render(global_screenshot_count.windows);
+	}
+
+#ifdef HALO_PSP
+	{
+		void psp_mevispush_sound(int in_window); /* structure_visibility.c (psp_fixups.py, mevispush) */
+
+		psp_mevispush_sound(0);
+	}
+#endif
+	collision_log_end_period();
+	unlock_global_random_seed();
+"""),
 ]
 FIXES_MEVISLAND["source/render/render_objects.c#mevisland"] = [
 ("""	object_marker_begin();
@@ -47919,8 +47967,12 @@ answer's wait at the first reader too (psp_ml_wait_avg, eighths of a us,
 both moving averages). When the wait comes within PSP_ML_MARGIN_US of the
 walk itself, the next PSP_ML_REST views are made here, which also refreshes
 the walk's time, then the ME is tried again; a long run of pushes rests for
-PSP_ML_REFRESH views now and then to keep that time current. "mevislandalways"
-pushes every view (the A/B's other side). The ME's time isn't free either (its
+PSP_ML_REFRESH views now and then to keep that time current. The walk's time
+is only refreshed while views are made here, so by the time a check comes it
+may be from another stretch (a cheap landing before a heavy beach): with
+"mevisprobe" (on by default) a rest is weighed again every PSP_ML_REFRESH
+views on the walk's fresh time, against the wait that called for it, and
+ends as soon as that time no longer calls for one. "mevislandalways" pushes every view (the A/B's other side). The ME's time isn't free either (its
 own frame's replay waits behind the walk, and the bus is shared with the
 tick), so a walk under PSP_ML_MIN_WALK_US stays here: there's little to win */
 #define PSP_ML_MARGIN_US 500
@@ -47930,7 +47982,16 @@ tick), so a walk under PSP_ML_MIN_WALK_US stays here: there's little to win */
 #define PSP_ML_PUSHES_BEFORE_REFRESH 600
 #define PSP_ML_REFRESH 16
 static int psp_ml_always = 0, psp_ml_rest = PSP_ML_CHECK, psp_ml_since_check = 0, psp_ml_since_refresh = 0;
-static unsigned long psp_ml_main_avg = 0, psp_ml_wait_avg = 0, psp_ml_here = 0, psp_ml_rests = 0;
+static int psp_ml_probe = 0, psp_ml_rest_weighed = 0;
+static unsigned long psp_ml_main_avg = 0, psp_ml_wait_avg = 0, psp_ml_here = 0, psp_ml_rests = 0, psp_ml_probes_back = 0;
+static unsigned long psp_ml_rest_wait = 0;
+
+/* the test that calls for a rest: the ME's answer waited (wait_avg) for nearly
+as long as the walk takes here, or a walk too short to be worth the ME's time */
+static int psp_ml_rest_called(unsigned long wait_avg)
+{
+	return wait_avg / 8 + PSP_ML_MARGIN_US >= psp_ml_main_avg / 8 || psp_ml_main_avg / 8 < PSP_ML_MIN_WALK_US;
+}
 static unsigned long psp_ml_depth_most = 0, psp_ml_too_deep = 0;
 static unsigned int psp_ml_ticket, psp_ml_state_bytes;
 static unsigned long psp_ml_views, psp_ml_used, psp_ml_refused, psp_ml_busy, psp_ml_late, psp_ml_failed, psp_ml_wait_us,
@@ -47957,6 +48018,7 @@ int psp_mevisland_push(void)
 		psp_ml_on = psp_keep("mevisland") ? (psp_mv != NULL || psp_mv_start()) : 0;
 		psp_ml_check = psp_ml_on && psp_keep("mevislandcheck");
 		psp_ml_always = psp_ml_on && (psp_keep("mevislandalways") || psp_ml_check);
+		psp_ml_probe = psp_ml_on && psp_keep("mevisprobe");
 		psp_ml_state_bytes = PSP_MV_STATE_BYTES;
 		if (psp_ml_on)
 			platform_psp_log("mevisland: the frame's visibility made on the ME and used%s",
@@ -47990,6 +48052,12 @@ int psp_mevisland_push(void)
 		structure_visibility_compute();
 		took = sceKernelGetSystemTimeLow() - start;
 		psp_ml_main_avg = psp_ml_main_avg ? (psp_ml_main_avg * 7 + took * 8) / 8 : took * 8;
+		if (psp_ml_rest_weighed && psp_ml_rest > 0 && (PSP_ML_REST - psp_ml_rest) % PSP_ML_REFRESH == 0 &&
+			!psp_ml_rest_called(psp_ml_rest_wait))
+		{
+			psp_ml_rest = 0;
+			psp_ml_probes_back++;
+		}
 		return 1;
 	}
 	csmemcpy(psp_mv_record->head, &render, PSP_MV_HEAD_BYTES);
@@ -48080,10 +48148,12 @@ void psp_mevisland_collect(void)
 	if (!psp_ml_always && ++psp_ml_since_check >= PSP_ML_CHECK)
 	{
 		psp_ml_since_check = 0;
-		if (psp_ml_wait_avg / 8 + PSP_ML_MARGIN_US >= psp_ml_main_avg / 8 || psp_ml_main_avg / 8 < PSP_ML_MIN_WALK_US)
+		if (psp_ml_rest_called(psp_ml_wait_avg))
 		{
 			psp_ml_rest = PSP_ML_REST;
 			psp_ml_rests++;
+			psp_ml_rest_wait = psp_ml_wait_avg;
+			psp_ml_rest_weighed = psp_ml_probe;
 			psp_ml_wait_avg = 0;
 			psp_ml_since_refresh = 0;
 		}
@@ -48092,6 +48162,7 @@ void psp_mevisland_collect(void)
 	{
 		psp_ml_since_refresh = 0;
 		psp_ml_rest = PSP_ML_REFRESH;
+		psp_ml_rest_weighed = 0;
 	}
 }
 
@@ -48152,17 +48223,62 @@ void psp_mevisland_settle(void)
 			while (low < PSP_MV_STACK / 4 && psp_mv_stack_bottom[low] == PSP_MV_CANARY)
 				low++;
 		}
-		platform_psp_log("mevisland: %lu views: the ME's answer used %lu; made here instead: refused by the ring %lu, the ME still on an earlier one %lu, late %lu, failed %lu (%lu cut at %d clusters deep); waited at the first reader %.2f ms a view (%lu views waited, the most %.2f ms); the deepest walk %lu clusters; the stack used %u of %u KB at most (since the start); made here by placement %lu (%lu rests; the walk here %.2f ms, the wait for the ME's %.2f ms, moving averages)%s (last 300 views)",
+		platform_psp_log("mevisland: %lu views: the ME's answer used %lu; made here instead: refused by the ring %lu, the ME still on an earlier one %lu, late %lu, failed %lu (%lu cut at %d clusters deep); waited at the first reader %.2f ms a view (%lu views waited, the most %.2f ms); the deepest walk %lu clusters; the stack used %u of %u KB at most (since the start); made here by placement %lu (%lu rests, %lu of them ended early on the walk's fresh time; the walk here %.2f ms, the wait for the ME's %.2f ms, moving averages)%s (last 300 views)",
 			psp_ml_views, psp_ml_used, psp_ml_refused, psp_ml_busy, psp_ml_late, psp_ml_failed, psp_ml_too_deep, PSP_MV_DEPTH,
 			psp_ml_wait_us / 1000.0 / psp_ml_views, psp_ml_waited, psp_ml_wait_worst / 1000.0, psp_ml_depth_most,
-			low ? (PSP_MV_STACK - low * 4) / 1024 : 0, PSP_MV_STACK / 1024, psp_ml_here, psp_ml_rests,
+			low ? (PSP_MV_STACK - low * 4) / 1024 : 0, PSP_MV_STACK / 1024, psp_ml_here, psp_ml_rests, psp_ml_probes_back,
 			psp_ml_main_avg / 8000.0, psp_ml_wait_avg / 8000.0, psp_ml_always ? "; mevislandalways: every view pushed" : "");
 		if (psp_ml_check)
 			platform_psp_log("mevislandcheck: differing from the main CPU's own: clusters %lu, objects %lu (last 300 views)",
 				psp_ml_differ_clusters, psp_ml_differ_objects);
 		psp_ml_views = psp_ml_used = psp_ml_refused = psp_ml_busy = psp_ml_late = psp_ml_failed = 0;
 		psp_ml_wait_us = psp_ml_wait_worst = psp_ml_waited = psp_ml_differ_clusters = psp_ml_differ_objects = 0;
-		psp_ml_depth_most = psp_ml_too_deep = psp_ml_here = psp_ml_rests = 0;
+		psp_ml_depth_most = psp_ml_too_deep = psp_ml_here = psp_ml_rests = psp_ml_probes_back = 0;
+	}
+}
+
+/* ---------- "mevispush" (docs/mevis_slice2.md): the frame's sound_render made
+right after the first view's visibility push, so the main CPU spends it while
+the ME walks. main_game_render leaves it owed; render_window makes it after its
+push (once a frame); main_game_render makes it at its end if no window took
+it */
+void sound_render(void); /* sound_manager.c */
+
+static int psp_mp_on = -1, psp_mp_owed = 0;
+static unsigned long psp_mp_frames = 0, psp_mp_in_window = 0, psp_mp_at_end = 0;
+
+/* main.c's main_game_render, in place of sound_render: 1 when it is left owed */
+int psp_mevispush_defer(void)
+{
+	if (psp_mp_on < 0)
+	{
+		psp_mp_on = psp_keep("mevispush");
+		if (psp_mp_on)
+			platform_psp_log("mevispush: the frame's sound made after the first view's visibility push");
+	}
+	if (!psp_mp_on)
+		return 0;
+	psp_mp_owed = 1;
+	return 1;
+}
+
+/* render.c's render_window after the push (in_window 1), and main_game_render's
+end (0): the owed sound_render, once */
+void psp_mevispush_sound(int in_window)
+{
+	if (!psp_mp_owed)
+		return;
+	psp_mp_owed = 0;
+	sound_render();
+	if (in_window)
+		psp_mp_in_window++;
+	else
+		psp_mp_at_end++;
+	if (++psp_mp_frames >= 300)
+	{
+		platform_psp_log("mevispush: %lu frames: the sound made after the visibility push %lu, owed to the frame's end %lu (last 300 frames)",
+			psp_mp_frames, psp_mp_in_window, psp_mp_at_end);
+		psp_mp_frames = psp_mp_in_window = psp_mp_at_end = 0;
 	}
 }
 """
