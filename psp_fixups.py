@@ -43682,6 +43682,295 @@ void psp_aime_pf_apply(
 
 """ + _PSP_PF_ME),
 ]
+# ---------- FIXES_AITICKOLD: the frame's second tick thought on the ME with its first (build switch PSP_AITICKOLD=1, keep word "aitickold"; off)
+# A compromise (not exact by design). With aime2a, the thinking for a frame's
+# first tick runs on the ME during the record, from the world the frame's
+# last tick left, and the thinking for its second tick runs on the main CPU
+# at that tick's start. "aitickold" moves the second onto the ME too, in the
+# same job right after the first: it thinks with the game time one tick on,
+# from the same world, so the second tick's AI reacts to the world one tick
+# older than it would. The world holds still through the record, so the ME
+# reads it as the first pass does; no snapshot is needed. Its marks, its pass
+# time and its share of 1b's queue are kept apart from the first pass's: the
+# first tick uses the first pass's marks (with the second's thinking already
+# in the actors' state), the second tick the second's. A second pass cut by
+# the collection's word leaves its unreached actors to think whole in the
+# tick, as the first pass's are; no second pass (the job refused, the first
+# cut) leaves the second tick's pass on the main CPU, as without it. The
+# AI doesn't run on a multiplayer client, and aime is campaign only
+AITICKOLD = os.environ.get("PSP_AITICKOLD", "") == "1"
+FIXES_AITICKOLD = {}
+FIXES_AITICKOLD["source/ai/actors.c#aitickold"] = [
+("""static long psp_aime_logged = NONE;
+""",
+ """static long psp_aime_logged = NONE;
+/* FIXES_AITICKOLD: "aitickold" (see there). The second pass's game time,
+marks and queue share, the ME's to write while its job runs */
+static PSP_AIME_ME_SIDE long psp_aime_pass_time_b = NONE;
+static PSP_AIME_ME_SIDE unsigned long psp_aime_slot_pass_b[MAXIMUM_ACTORS];
+static PSP_AIME_ME_SIDE short psp_aime_slot_identifier_b[MAXIMUM_ACTORS];
+/* TRUE while the second pass runs: game_time.c's clock one tick on */
+PSP_AIME_ME_SIDE int psp_aitickold_now = 0;
+static PSP_AIME_ME_SIDE short psp_aime_queue_split = -1;
+static PSP_AIME_ME_SIDE long psp_aime_queue_time_b = NONE;
+static struct
+{
+	unsigned long passes, actors, cut;
+} psp_aitickold_me_stats PSP_AIME_ME_SIDE;
+/* written by the main CPU before the push, read by the ME */
+static int psp_aitickold_on = -1, psp_aitickold_want = 0;
+static struct
+{
+	unsigned long asked, used, inline_passes, queue_carried;
+} psp_aitickold_stats;
+"""),
+("""	return !psp_aime_think_only && psp_aime_pass_time != NONE && psp_aime_pass_time == game_time_get() &&
+""",
+ """	if (!psp_aime_think_only && psp_aime_pass_time_b != NONE && psp_aime_pass_time_b == game_time_get() &&
+		psp_aime_pass_time != psp_aime_pass_time_b)
+		return absolute_index >= 0 && absolute_index < MAXIMUM_ACTORS &&
+			psp_aime_slot_pass_b[absolute_index] == psp_aime_pass &&
+			psp_aime_slot_identifier_b[absolute_index] == actor_get(actor_index)->identifier;
+	return !psp_aime_think_only && psp_aime_pass_time != NONE && psp_aime_pass_time == game_time_get() &&
+"""),
+("""	psp_aime_slot_pass[absolute_index] = psp_aime_pass;
+	psp_aime_slot_identifier[absolute_index] = actor_get(actor_index)->identifier;
+	psp_aime_stats.ahead++;
+""",
+ """	if (psp_aitickold_now)
+	{
+		psp_aime_slot_pass_b[absolute_index] = psp_aime_pass;
+		psp_aime_slot_identifier_b[absolute_index] = actor_get(actor_index)->identifier;
+		psp_aitickold_me_stats.actors++;
+		return;
+	}
+	psp_aime_slot_pass[absolute_index] = psp_aime_pass;
+	psp_aime_slot_identifier[absolute_index] = actor_get(actor_index)->identifier;
+	psp_aime_stats.ahead++;
+"""),
+("""	boolean psp_ahead = psp_aime_active() && psp_aime_pass_time != NONE && psp_aime_pass_time == game_time_get();
+""",
+ """	boolean psp_ahead = psp_aime_active() && ((psp_aime_pass_time != NONE && psp_aime_pass_time == game_time_get()) ||
+		(psp_aime_pass_time_b != NONE && psp_aime_pass_time_b == game_time_get()));
+"""),
+("""	if (!psp_ahead)
+		psp_perception_end();
+	psp_aime_pass_time = NONE;
+""",
+ """	if (!psp_ahead)
+		psp_perception_end();
+	psp_aime_pass_time = NONE;
+	/* (the second pass's time is the next tick's until that tick has run) */
+	if (psp_aime_pass_time_b != NONE && psp_aime_pass_time_b <= game_time_get())
+		psp_aime_pass_time_b = NONE;
+"""),
+# the second pass keeps the first's number (each has its own marks) and the
+# seed's time, so the next frame's pass doesn't take the seed afresh
+("""	psp_aime_seed_time = now;
+	psp_aime_pass++;
+""",
+ """	if (!psp_aitickold_now)
+	{
+		psp_aime_seed_time = now;
+		psp_aime_pass++;
+	}
+"""),
+("""	if (psp_aime_queue_count)
+	{
+		/* the last pass's queue never reached an ai_update */
+""",
+ """	if (psp_aitickold_now)
+	{
+		/* the first pass's calls stay for the first tick; the second's follow */
+		psp_aime_queue_split = psp_aime_queue_count;
+		return;
+	}
+	psp_aime_queue_split = -1;
+	if (psp_aime_queue_count)
+	{
+		/* the last pass's queue never reached an ai_update */
+"""),
+("""	psp_aime_think_only = FALSE;
+	psp_aime_pass_time = now;
+	psp_aime_queue_time = now;
+""",
+ """	psp_aime_think_only = FALSE;
+	if (psp_aitickold_now)
+	{
+		psp_aime_pass_time_b = now;
+		psp_aime_queue_time_b = now;
+	}
+	else
+	{
+		psp_aime_pass_time = now;
+		psp_aime_queue_time = now;
+		psp_aime_pass_time_b = NONE;
+	}
+"""),
+# 1b's queue: the first tick applies the first pass's calls and carries the
+# second's to the second tick
+("""void psp_aime_collect(
+	void)
+{
+	short count = psp_aime_queue_count, k;
+
+	if (!count)
+		return;
+	psp_aime_queue_count = 0;
+	if (psp_aime_queue_time == NONE || psp_aime_queue_time != game_time_get())
+	{
+		psp_aime1b_stats.stale += count;
+		return;
+	}
+""",
+ """void psp_aime_collect(
+	void)
+{
+	short count = psp_aime_queue_count, k, split = count, later = 0;
+
+	if (psp_aime_queue_split >= 0 && psp_aime_queue_split <= count)
+	{
+		split = psp_aime_queue_split;
+		later = count - split;
+		count = split;
+	}
+	psp_aime_queue_split = -1;
+	if (!count && !later)
+		return;
+	psp_aime_queue_count = 0;
+	if (count && (psp_aime_queue_time == NONE || psp_aime_queue_time != game_time_get()))
+	{
+		psp_aime1b_stats.stale += count;
+		count = 0;
+	}
+"""),
+("""		psp_aime1b_stats.applied++;
+	}
+}
+""",
+ """		psp_aime1b_stats.applied++;
+	}
+	if (later)
+	{
+		for (k = 0; k < later; k++)
+			psp_aime_queue[k] = psp_aime_queue[split + k];
+		psp_aime_queue_count = later;
+		psp_aime_queue_time = psp_aime_queue_time_b;
+		psp_aitickold_stats.queue_carried += later;
+	}
+}
+"""),
+# the job: the second pass right after the first, unless the first was cut
+("""	psp_aime_job_now[0] = 1;
+	psp_aime_think();
+	psp_aime_job_now[0] = 0;
+""",
+ """	psp_aime_job_now[0] = 1;
+	psp_aime_think();
+	if (psp_aitickold_want && !psp_aime_late_now && !psp_aime2a_guard_hit && !psp_me_aime_guard_touched())
+	{
+		psp_aitickold_now = 1;
+		psp_aime_think();
+		psp_aitickold_now = 0;
+		psp_aitickold_me_stats.passes++;
+		if (psp_aime_late_now)
+			psp_aitickold_me_stats.cut++;
+	}
+	psp_aime_job_now[0] = 0;
+"""),
+("""/* game_time.c, before game_frame: the frame's last pass to the ME */
+""",
+ """/* FIXES_AITICKOLD: "aitickold" (see there), with aime2a */
+static boolean psp_aitickold_active(
+	void)
+{
+	if (psp_aitickold_on < 0)
+	{
+		psp_aitickold_on = psp_keep("aitickold") != 0;
+		if (psp_aitickold_on)
+			platform_psp_log("ai: a frame's second tick thought on the Media Engine with its first, from the world one tick older (aitickold: a compromise)");
+	}
+	return psp_aitickold_on > 0 && psp_aime2a_active();
+}
+
+/* the second tick's pass already made by the job */
+static boolean psp_aitickold_covers(
+	void)
+{
+	return psp_aime_pass_time_b != NONE && psp_aime_pass_time_b == game_time_get();
+}
+
+/* game_time.c, before game_frame: the frame's last pass to the ME */
+"""),
+("""	psp_aime2a_stats.pushed++;
+	psp_aime2a_out = TRUE;
+""",
+ """	psp_aitickold_want = psp_aitickold_active();
+	if (psp_aitickold_want)
+		psp_aitickold_stats.asked++;
+	psp_aime2a_stats.pushed++;
+	psp_aime2a_out = TRUE;
+"""),
+("""	if (psp_aime2a_owed)
+	{
+		psp_aime2a_owed = FALSE;
+		if (psp_aime_update_allowed())
+		{
+			psp_aime2a_stats.inline_passes++;
+""",
+ """	if (psp_aime2a_owed)
+	{
+		psp_aime2a_owed = FALSE;
+		if (psp_aitickold_covers())
+			psp_aitickold_stats.used++;
+		else if (psp_aime_update_allowed())
+		{
+			if (psp_aitickold_on > 0)
+				psp_aitickold_stats.inline_passes++;
+			psp_aime2a_stats.inline_passes++;
+"""),
+("""static void psp_aime2a_log(
+	long now)
+{
+	if (psp_aime2a_on <= 0)
+		return;
+""",
+ """static void psp_aime2a_log(
+	long now)
+{
+	if (psp_aime2a_on <= 0)
+		return;
+	if (psp_aitickold_on > 0)
+		platform_psp_log("aitickold: game time %ld | second passes asked %lu, made on the ME %lu (cut by the word %lu), actors thought for the second tick %lu | second ticks that used them %lu, thought on the main CPU instead %lu | queued calls carried to the second tick %lu",
+			now, psp_aitickold_stats.asked, psp_aitickold_me_stats.passes, psp_aitickold_me_stats.cut, psp_aitickold_me_stats.actors,
+			psp_aitickold_stats.used, psp_aitickold_stats.inline_passes, psp_aitickold_stats.queue_carried);
+"""),
+]
+# the second pass's clock: the game time one tick on, in the pass's own
+# context only (the main CPU's frame reads the true time while the job runs)
+FIXES_AITICKOLD["source/game/game_time.c#aitickold"] = [
+("""	return game_time_globals->local_time;
+}
+
+short game_time_get_elapsed(
+""",
+ """#ifdef HALO_PSP
+	{
+		/* psp_fixups.py (FIXES_AITICKOLD, "aitickold") */
+		extern int psp_aitickold_now;
+
+		if (psp_aitickold_now && psp_aime_here())
+			return game_time_globals->local_time + 1;
+	}
+#endif
+	return game_time_globals->local_time;
+}
+
+short game_time_get_elapsed(
+"""),
+]
+
+
 # the C library's formatting takes a lock and may allocate (firmware), and a
 # broken pool's report writes the log: on the ME, the thinking actor stops at
 # either and thinks in the tick (the formatting the thinking reaches is its
@@ -47413,7 +47702,7 @@ FIXES_OBSRAY["source/ai/ai.c#obsray"] = [
 ]
 
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items()) + list(FIXES_AIME2A.items()) + (list(FIXES_STACKHOT.items()) if STACKHOT else []) + (list(FIXES_STACKHOT2.items()) if STACKHOT2 else []) + list(FIXES_PWSL.items()) + list(FIXES_SPHSL.items()) + list(FIXES_RECONLIST.items()) + list(FIXES_TP1.items()) + list(FIXES_WXDEAD.items()) + list(FIXES_AIMEMOVE.items()) + list(FIXES_PROPCRASH.items()) + list(FIXES_SNDEDRAM.items()) + list(FIXES_LIGHTFIRST.items()) + list(FIXES_DRAWPART.items()) + (list(FIXES_RECONLATE.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + list(FIXES_P2PASS.items()) + (list(FIXES_P2CENSUS.items()) if P2CENSUS else []) + list(FIXES_OBSRAY.items())):
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items()) + list(FIXES_AIME2A.items()) + (list(FIXES_STACKHOT.items()) if STACKHOT else []) + (list(FIXES_STACKHOT2.items()) if STACKHOT2 else []) + list(FIXES_PWSL.items()) + list(FIXES_SPHSL.items()) + list(FIXES_RECONLIST.items()) + list(FIXES_TP1.items()) + list(FIXES_WXDEAD.items()) + list(FIXES_AIMEMOVE.items()) + list(FIXES_PROPCRASH.items()) + list(FIXES_SNDEDRAM.items()) + list(FIXES_LIGHTFIRST.items()) + list(FIXES_DRAWPART.items()) + (list(FIXES_RECONLATE.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + list(FIXES_P2PASS.items()) + (list(FIXES_P2CENSUS.items()) if P2CENSUS else []) + list(FIXES_OBSRAY.items()) + (list(FIXES_AITICKOLD.items()) if AITICKOLD else [])):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
