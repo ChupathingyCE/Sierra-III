@@ -47261,7 +47261,111 @@ FIXES_P2CENSUS["source/game/players.c#p2census"] = [
 """),
 ]
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items()) + list(FIXES_AIME2A.items()) + (list(FIXES_STACKHOT.items()) if STACKHOT else []) + (list(FIXES_STACKHOT2.items()) if STACKHOT2 else []) + list(FIXES_PWSL.items()) + list(FIXES_SPHSL.items()) + list(FIXES_RECONLIST.items()) + list(FIXES_TP1.items()) + list(FIXES_WXDEAD.items()) + list(FIXES_AIMEMOVE.items()) + list(FIXES_PROPCRASH.items()) + list(FIXES_SNDEDRAM.items()) + list(FIXES_LIGHTFIRST.items()) + list(FIXES_DRAWPART.items()) + (list(FIXES_RECONLATE.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + list(FIXES_P2PASS.items()) + (list(FIXES_P2CENSUS.items()) if P2CENSUS else [])):
+# ---------- FIXES_OBSRAY: two rays of the obstacle-avoidance pill test reused
+# (lever OBSRAY). A pill test (path_test_pill2d) casts six 2d rays across the
+# pathfinding surfaces. Two of them repeat a call it has already made, with
+# the same inputs: the right side's ray across the pill is the left side's
+# call again (both pass the same perpendicular, not its negation; the engine's
+# own behaviour, kept), and the last ray, which finds the surface at the
+# result's distance, is the first ray again whenever no test shortened that
+# distance. structure_test_ray2d reads only its arguments, the structure's
+# tags and the breakable surfaces' flags, none of which a pill test changes,
+# and writes every field of its result, so the earlier answer is the one the
+# repeat would give: exact. An actor's think can make 100+ steps of this
+# search, each with a pill test per step and per disc it floods, so the repeats
+# are up to a third of the search's rays. "obsrayreuse" (on; obsrayreuseoff):
+# the repeats reused
+FIXES_OBSRAY = {}
+FIXES_OBSRAY["source/ai/path_obstacle_avoidance.c#obsray"] = [
+("""static boolean path_test_pill2d(
+	struct structure_bsp const *structure,
+	boolean ignore_broken_surfaces,
+	struct obstacles const *obstacles,
+	short ignore_disc_index,
+	real_point2d const *point,
+	long surface_index,
+	real_vector2d const *direction,
+	real radius,
+	real distance,
+	boolean ignore_structure,
+	boolean endpoint_is_goal,
+	boolean ignore_optional,
+	struct path_test_pill2d_result *result)
+{
+	boolean hit;
+	struct structure_test_ray2d_result ray_result;
+""", """/* psp_fixups.py (FIXES_OBSRAY): "obsrayreuse", set on the main CPU when a
+map starts (ai.c), read by whichever CPU thinks */
+int psp_obsray_on = 1;
+
+static boolean path_test_pill2d(
+	struct structure_bsp const *structure,
+	boolean ignore_broken_surfaces,
+	struct obstacles const *obstacles,
+	short ignore_disc_index,
+	real_point2d const *point,
+	long surface_index,
+	real_vector2d const *direction,
+	real radius,
+	real distance,
+	boolean ignore_structure,
+	boolean endpoint_is_goal,
+	boolean ignore_optional,
+	struct path_test_pill2d_result *result)
+{
+	boolean hit;
+	struct structure_test_ray2d_result ray_result;
+	real psp_obsray_first_distance;
+"""),
+("""	if (!ignore_structure)
+	{
+		real_vector2d perpendicular;""", """	/* psp_fixups.py (FIXES_OBSRAY): the first ray's length, to know whether
+	the last ray repeats it */
+	psp_obsray_first_distance= result->distance;
+	if (!ignore_structure)
+	{
+		real_vector2d perpendicular;"""),
+("""		structure_test_ray2d(structure, ignore_broken_surfaces, point, surface_index, &perpendicular, radius, &left_result);
+""", """		structure_test_ray2d(structure, ignore_broken_surfaces, point, surface_index, &perpendicular, radius, &left_result);
+		/* psp_fixups.py (FIXES_OBSRAY): the right side's ray across the pill
+		is this call again */
+		right_result= left_result;
+"""),
+("""		structure_test_ray2d(structure, ignore_broken_surfaces, point, surface_index, &perpendicular, radius, &right_result);
+""", """		if (!psp_obsray_on)
+		{
+			structure_test_ray2d(structure, ignore_broken_surfaces, point, surface_index, &perpendicular, radius, &right_result);
+		}
+"""),
+("""	structure_test_ray2d(structure, ignore_broken_surfaces, point, surface_index, direction, result->distance, &ray_result);
+	result->surface_index= ray_result.surface_index;
+""", """	/* psp_fixups.py (FIXES_OBSRAY): with the first ray's length unchanged
+	this is the first ray's call again, and ray_result still holds its answer */
+	if (!psp_obsray_on || ignore_structure || result->distance!=psp_obsray_first_distance)
+	{
+		structure_test_ray2d(structure, ignore_broken_surfaces, point, surface_index, direction, result->distance, &ray_result);
+	}
+	result->surface_index= ray_result.surface_index;
+"""),
+]
+# the keep word read once a map, on the main CPU, before any actor thinks
+FIXES_OBSRAY["source/ai/ai.c#obsray"] = [
+("""	ai_globals->ai_active = TRUE;
+	ai_globals->ai_has_control_data = TRUE;
+""", """	ai_globals->ai_active = TRUE;
+	ai_globals->ai_has_control_data = TRUE;
+	{
+		/* psp_fixups.py (FIXES_OBSRAY) */
+		extern int psp_obsray_on;
+		int psp_keep(const char *name);
+
+		psp_obsray_on = psp_keep("obsrayreuse") != 0;
+	}
+"""),
+]
+
+
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items()) + list(FIXES_AIME2A.items()) + (list(FIXES_STACKHOT.items()) if STACKHOT else []) + (list(FIXES_STACKHOT2.items()) if STACKHOT2 else []) + list(FIXES_PWSL.items()) + list(FIXES_SPHSL.items()) + list(FIXES_RECONLIST.items()) + list(FIXES_TP1.items()) + list(FIXES_WXDEAD.items()) + list(FIXES_AIMEMOVE.items()) + list(FIXES_PROPCRASH.items()) + list(FIXES_SNDEDRAM.items()) + list(FIXES_LIGHTFIRST.items()) + list(FIXES_DRAWPART.items()) + (list(FIXES_RECONLATE.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + list(FIXES_P2PASS.items()) + (list(FIXES_P2CENSUS.items()) if P2CENSUS else []) + list(FIXES_OBSRAY.items())):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
