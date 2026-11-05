@@ -2,7 +2,14 @@
 
 Sheepdog01, 2026-11-05 07:42: "we're working on a redesign, not patches." This page is the design's tick section: what binds the main CPU's tick, what can change that, and the order to build it in. It rests on the recon's ledgers (`redesign_recon.md`) and the cost map (`cpu_cost_map.md`), and it cites them rather than restating them. The fact sheet behind it is lab or-job 42038302650 (128 of 130 quotes checked).
 
-**The goals** (Sheepdog01, 2026-11-05 08:33; CLAUDE.md): the floor in every gameplay section, tried or not, is **15 fps at 30 ticks a second**; the target **30 fps on average at 30 ticks**; a stretch goal 30 fps minimum; an ambitious one 60 fps on average. In frame time: the floor 66.7 ms, the target 33.3 ms on average.
+**The goals** (Sheepdog01, 2026-11-05 13:30, rewording 08:33's; even motion is the end goal):
+- **The floor: real time.** 30 ticks a second held in every gameplay stretch, tried or not. That means at least 15 fps: Halo caps a frame's elapsed time at 1/15 s (`main.c`, `psp_hardware_reference.md`), so below 15 fps it still runs two ticks a frame and the game slows down instead of skipping ticks.
+- **The target: tick parity.** 30 fps, one frame per tick, as a per-level average over interactive play, measured as frames ÷ seconds (cutscenes excluded). Per level, so a heavy level can't hide behind a light one; frames ÷ seconds, so a slow stretch counts for the time it takes.
+- **The stretch: parity everywhere.** 30 fps minimum in every stretch.
+- **Not pursued: above 30 fps.** At 30 ticks a second a frame past 30 either repeats a tick or interpolates between two (an extra draw a frame and a tick of latency). 30 fps is the end state.
+- **A frame lock is deferred** (Sheepdog01, 13:26): at 30 ticks only 30 fps (1 tick a frame) and 15 fps (2) move evenly; 20 fps alternates 2 and 1 and judders. A 15 fps lock for stretches that can't hold 30 is a feel lever for later: built behind a keep word, off in every tock and lab run (a lock sleeps out its slot, which hides gains from fps and forces two ticks a frame everywhere), decided by Sheepdog01's hand A/B once the heavy maps near the floor.
+
+In frame time: the floor 66.7 ms (two ticks a frame), the target 33.3 ms (one).
 
 Labels: [M] measured on a PSP, [E] emulator or cache model, [D] read in code or docs, [U] inference.
 
@@ -26,8 +33,9 @@ So the tick doesn't get faster by shaving functions. It gets faster when **the m
 | **T4. The GE kept off the tick's misses** | When the GE reads main RAM, and from where | The GE wholly out of the tick: tick -2.6 to -7.6 ms, but frame +14 to +52 ms [M]: serializing loses. Room did pay once: CTNG's +177 KB of copies, frame -2.8 ms (`frame_timeline.md`) [M] | Yes | **Measured, and closed as an ordering design** [M, PSP-3000 sierra-hw 42088765228, gebusy2's tick share by kind, Sierra-III master/t4kinds 79ddb7d4]: with the ME replaying, the GE draws the last frame during the next frame's ticks, so 96-100% of its busy time falls inside the tick (b30 flight 56.6 of 58.7 ms a frame, landing 61.6 of 62.9, beach 24.3 of 24.3), models ~70% of it and the level ~23%. There's no time outside the tick to move vertex-heavy kinds into, so reordering the replay changes nothing. What's left on this ground is less read per model (the models' vertex diet: MV14, MVDIET, PRECONVERT, SKINW2, SKINSTRIP, LISTBYTES in levers.tsv) and room where a bake frees it (VRAM; VMFILL didn't pay at the margin) |
 | **T5. Walks that overlap their misses** | The collision, cluster and node walks reshaped so each miss has ~70+ cycles of work to hide behind (next-item prefetch) | 0.8-2.6 ms a tick [E], ceilings modelled with I-misses waiting for fills, as the PSP now shows [M, PSP-3000 bench-hw 42086540153, halo_bench16]; as the code is, 0.2-0.4 [E]; hand placements gave microseconds | Yes | **The hardware answer is in:** an instruction miss waits for a data fill in flight [M, PSP-3000 bench-hw 42086540153], so as the code is the ceiling is 0.26 ms a tick, not 1.24 (`prefetch_map.md`). The reshaped walks need their windows in hot code: after the code layout's work |
 | **T6. A tick-start world** (WORLDVIEW) | Collision and node matrices read a copy of the world as the tick began, so each runs as one pass | Collision ~0.75 / ~0.54 ms, node matrices ~0.7-1.2 a tick [U on E], less the copy's price (uncounted) | No: it changes campaign play, inside every client bound | Catalogued. Sheepdog01's call, and the copy's price is counted first (`stage_state_note.md`) |
+| **T7. Data laid out for the tick** | Fewer data lines a tick: each object's hot fields (position, sphere, cluster links, flags) apart from its cold ones; the BSP walk's records packed in the order it reads them | Unsized. The ground: the tag window 32% of the tick's data misses (half of it the level BSP), the object pool 16% [E, `cache_work.md`]; data misses are about half the tick's miss cost (`cpu_cost_map.md` §1) | Yes: addresses move, slot numbers and tag indices don't | **Unscored** (`cpu_cost_map.md` §4, "Data density and layout"). Size it as §4a sized the subsystems: the hot fields' lines a tick against the whole records'. A BSP repack is a bake change, so its price includes testers re-baking (Sheepdog01 10-28); BSPLAYOUT (neutral) is the try to read first |
 
-**Why this shape.** T1-T3 attack the time the main CPU spends; T4-T5 attack the time each miss costs; T6 is the only way the two biggest subsystems (collision 25% of the beach's tick, node matrices 10%) can be restructured at all, and it costs exactness. The exact parts: T1 ~5-8 ms a frame on b30's beach, plus T5's 0.8-2.6 a tick (1.6-5.2 a frame at two ticks) if the fill bench opens it. AITICKOLD, which Sheepdog01 takes as imperceptible, carries the next large number.
+**Why this shape.** T1-T3 attack the time the main CPU spends; T4, T5 and T7 attack what each miss costs and how many there are; T6 is the only way the two biggest subsystems (collision 25% of the beach's tick, node matrices 10%) can be restructured at all, and it costs exactness. The exact parts: T1 ~5-8 ms a frame on b30's beach; T5 is 0.26 ms a tick as the code is (the fill bench), more only once its walks' windows sit in hot code; T7 unsized. AITICKOLD, which Sheepdog01 takes as imperceptible, carries the next large number.
 
 ## 3. The build order
 
@@ -53,4 +61,23 @@ From the goals above (Sheepdog01, 2026-11-05): every stretch must reach the floo
 
 **What it says.** The exact parts and AITICKOLD reach the floor on c20 and come close on b30's beach; b40's snowfield is twice the floor away and is the hardest stretch we know. The target is out of reach of everything on this page: it needs the tick's shape changed (T5, T6) and drawing and the ME's work cut too. So the first aim is the floor on every stretch, b40 first.
 
-Started 2026-11-05 (master), after the overnight round. Revised 2026-11-05 08:50 (Sheepdog01 08:33: the goals as targets, L15 held in reserve). Revised 08:10 from recon's check (DeepSeek's or-job redtick 42039706086, judged by recon): slice 2 built, T1's double count, the per-tick sum, L15 without interpolation, VMFILL's results, AITICKOLD under T1. Revised as each step reports.
+### 4a. The budget for one tick
+
+The goals as a limit on one tick, with D the frame's work outside the ticks (drawing working and asleep, "other"):
+
+- **The floor** (two ticks a frame): one tick ≤ (66.7 − D) ÷ 2.
+- **The target** (one tick a frame): one tick ≤ 33.3 − D.
+
+| Stretch [M, PSP-1000, tock162] | One tick now | D now | Floor: one tick ≤ | Target: one tick ≤ |
+|---|---|---|---|---|
+| c20 | ~19 ms [U: 38.0 a frame ÷ ~2] | 26.7 | 20.0: **met** | 6.6 |
+| b30's beach | ~33 ms [U: 65.4 ÷ ~2] | 31.8 | 17.5 | 1.5 |
+| b40's snowfield (`frame_timeline.md`, b40 late) | 42.2 (1.91 a frame: the game in slow motion) | 55.3 | 5.7 | none: D alone is past 33.3 |
+
+- **The target needs both halves cut, about in half each, on the heavy maps.** On b30's beach even a free tick misses 30 fps by its drawing. The tick's own half: ~33 → ~17 ms a tick, more than every exact part above adds up to (~5-8 a tick at best [U]).
+- **That's the scale of the tick's memory wait.** The tick waits on memory for 63% of its cycles on b30 (§1): all of it gone would make it ~2.7× faster. Halving the tick means removing most of the wait, which is what T4, T5 and T7 attack, and why T7 is worth sizing.
+- **b40's snowfield: its D falls first.** 14.9 ms a frame of its D is the main CPU asleep on drained render jobs (the snow's oversized sprite records); DRAINFLIGHT (exact [E], its PSP pair pending; `cpu_cost_map.md` §4) takes up to ~15 of it. With that, the floor needs a tick ≤ ~13 ms.
+- **b40's route overstates the fight.** It replays positions without shooting, so the snowfield holds 30 bipeds a tick against ~21 in Sheepdog01's hand play (tick 42.2 against 35.0 ms), and its collision is mostly the bipeds' and actors' own rays. Read its gap as an upper bound until a route kills as a player does.
+- **Where the ME's room comes from.** T1 and T2 place work on the ME, and its room limits them: audio is 10-24 ms a frame of it [M]. Sheepdog01's aim of audio under 10% of the ME, or wholly on the VME (2026-11-05), frees the room these parts spend.
+
+Started 2026-11-05 (master), after the overnight round. Revised 2026-11-05 08:50 (Sheepdog01 08:33: the goals as targets, L15 held in reserve). Revised 08:10 from recon's check (DeepSeek's or-job redtick 42039706086, judged by recon): slice 2 built, T1's double count, the per-tick sum, L15 without interpolation, VMFILL's results, AITICKOLD under T1. Revised 13:30 with Sheepdog01 (chat session): the goals reworded (real time as the floor, tick parity per level as the target, nothing past 30 fps, the frame lock deferred), T7 added, §4a's budget for one tick. Revised as each step reports.
