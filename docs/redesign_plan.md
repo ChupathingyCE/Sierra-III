@@ -44,7 +44,7 @@ Every unit has 1000 ms a second. One second of real time at 15 fps asks each uni
 What it says:
 - **The ticks alone are over the second on b30's flight (1270) and landing (1059) and b40's snowfield (1127)**, and at the line on b30's beach (1005). The cliff waits on its re-run.
 - **What one tick may cost:** with drawing, other and frame end at ~15 ms a frame, a tick has 25.8 ms. Today's bare ticks need: **b30's flight -39%** (42.4), the snowfield -31% (37.6), the landing -27% (35.3), the beach -23% (33.5), b30's opening -20%, d20's walk -16%.
-- **Drawing, other and frame end** run 19-43 ms a frame on the heavy stretches (the flight 40.6, the landing 42.6): they have to come to ~15, and 'other' alone is ~5 (recon's split), so drawing to ~10.
+- **Drawing, other and frame end** run 19-43 ms a frame on the heavy stretches (the flight 40.6, the landing 42.6): they have to come to ~15, and 'other' alone is ~5 on b30's flight and ~6.4 on b40's snowfield (recon's splits, rows other_split_*: per-frame particles and effects lead, then the game loop, tags, sound, input), so drawing to ~10.
 - **The ME is over on b30's flight (1511, the replay must lose ~34 ms a frame), the landing (1387, ~26) and d20's flashlight (1414, ~28; its replay is 78.4 ms, the main CPU asleep 18.9 ms in drawing waiting for it).**
 - **The GE's own work fits the floor everywhere** (at most 898 ms a second, the flight). d20's flashlight is the ME's lateness (796 stalled), not the GE's work. At the target (30 fps) the GE is ~1.8× on the flight: fewer vertices (C6).
 
