@@ -38,13 +38,13 @@ Every unit has 1000 ms a second. One second of real time at 15 fps asks each uni
 | d20 swamp walk | 922 | 30.7 | 1325 | 851 | 284 | 144 |
 | d20 flashlight on | 615 | 20.5 | 1095 | **1414** | 345 | 796 |
 | b40 opening (route-played; not comparable with ledger 3) | 581 | 19.4 | 952 | 876 | 330 | 206 |
-| b40 cliff path (a lighter fight in this run; re-run 42156503649) | (429) | (14.3) | (767) | (596) | (222) | (39) |
+| **b40 cliff path** (re-run 42156503649, 18.7 bipeds a tick) | **1076** | **35.9** | **1551** | 1045 | 537 | 95 |
 | **b40 snowfield** | **1127** | **37.6** | **1547** | 676 | 396 | 3 |
 
 What it says:
-- **The ticks alone are over the second on b30's flight (1270) and landing (1059) and b40's snowfield (1127)**, and at the line on b30's beach (1005). The cliff waits on its re-run.
-- **What one tick may cost:** with drawing, other and frame end at ~15 ms a frame, a tick has 25.8 ms. Today's bare ticks need: **b30's flight -39%** (42.4), the snowfield -31% (37.6), the landing -27% (35.3), the beach -23% (33.5), b30's opening -20%, d20's walk -16%.
-- **Drawing, other and frame end** run 19-43 ms a frame on the heavy stretches (the flight 40.6, the landing 42.6): they have to come to ~15, and 'other' alone is ~5 (recon's split), so drawing to ~10.
+- **The ticks alone are over the second on b30's flight (1270) and landing (1059), b40's snowfield (1127) and b40's cliff (1076)**, and at the line on b30's beach (1005).
+- **What one tick may cost:** with drawing, other and frame end at ~15 ms a frame, a tick has 25.8 ms. Today's bare ticks need: **b30's flight -39%** (42.4), the snowfield -31% (37.6), the cliff -28% (35.9), the landing -27% (35.3), the beach -23% (33.5), b30's opening -20%, d20's walk -16%.
+- **Drawing, other and frame end** run 19-43 ms a frame on the heavy stretches (the flight 40.6, the landing 42.6): they have to come to ~15, and 'other' alone is ~5 on b30's flight and ~6.4 on b40's snowfield (recon's splits, rows other_split_*: per-frame particles and effects lead, then the game loop, tags, sound, input), so drawing to ~10.
 - **The ME is over on b30's flight (1511, the replay must lose ~34 ms a frame), the landing (1387, ~26) and d20's flashlight (1414, ~28; its replay is 78.4 ms, the main CPU asleep 18.9 ms in drawing waiting for it).**
 - **The GE's own work fits the floor everywhere** (at most 898 ms a second, the flight). d20's flashlight is the ME's lateness (796 stalled), not the GE's work. At the target (30 fps) the GE is ~1.8× on the flight: fewer vertices (C6).
 
@@ -63,7 +63,7 @@ Each part: what it changes, its ceiling, its milestone (when the PSP prices it),
 
 Today every object's work runs every tick. The redesigned tick computes what's read, when it's read, and keeps results until their inputs change. T3, T5, T6 and T7 are its pieces.
 
-- **Target, derived (§1):** a bare tick of ≤ 25.8 ms with drawing at ~15 ms a frame. That is b30's flight −36%, b40's snowfield −35%, b30's landing −30%, b40's cliff −29%; the lighter stretches −18 to −22%.
+- **Target, derived (§1):** a bare tick of ≤ 25.8 ms with drawing at ~15 ms a frame. That is b30's flight −36%, b40's snowfield −35%, b30's landing −30%, b40's cliff −28%; the lighter stretches −18 to −22%.
 - **The target is shared.** Part of the tick is the GE's toll, which R and B shrink (the list's own bytes; vertices and indices moved to VRAM where room is freed). What's left after them is S's.
 - **What's already in the measured figures:** VISLAZY and aicad3 are on by default (the lab's `levers.tsv`), so their gains are in ledger 3.
 - **What's known on top, on b30's flight** [U on M]:
@@ -188,7 +188,10 @@ R decides what must be GE-readable, and S's layout what the tick reads hot. B pl
 - **Today's audio was priced as it stands, on the ME's CPU** [M]: ~1.7 ms + ~0.12 ms a voice per 23 ms block on b30 (VMEMIX's pair), ~13-20% of the ME's second on the heavy stretches (b30's beach: 20.2 ms a frame at 10 fps), and it scales with real time, not frames.
 - **The VME bolted onto today's mix lost:** VMEMIX was exact in game and 22 µs a voice slower, because feeding the VME cost more than its compute saved. Its study (`vme_capability.md`) found the mix's tail fits (gain, accumulate), but not the interpolation at the pitch step (a gather) or the one-pole lowpass (recursive), and not the ADPCM decode (sequential, table-driven).
 - **What a built-for-the-VME audio path would change** [U]: voices kept resident in the VME across blocks; the interpolation and lowpass reshaped so they need no gather and no recursion (a sound question for the audiocheck meter, a "plays the same" change); the decode done ahead in bulk, or sounds baked to a form the VME reads. Its ceiling is unsized.
-- **First, a census** (recon): the audio job by stage per block on b30's flight and beach (decode, interpolation, filters, mix, effects, streaming), from audiocheck's counters, so A's ceiling is known before it's designed. A becomes a part only with Sheepdog01's go after that.
+- **The census** (recon, 2026-11-05, PSP-3000 sierra-hw 42152480586, audiokinds; row audio_by_stage_b30) [M]: every heard voice is mono ADPCM. Per voice-frame: plain 73 cycles (decode 28 + mix 45), pitched 87, low-passed 85, both ~98. Over b30's run: **decode ~32%, the mix's multiply-accumulate ~53%, pitch interpolation ~13%, the low-pass ~2%**, plus ~81-85 µs a block zeroing and writing out. Pitched voices carry 63% of the mix time.
+- **A's shape, from it** [U]: the ME's CPU keeps what the VME can't do and does it in one pass: decode each voice and step its pitch (the gather) straight into a PCM buffer in eDRAM. The DMAC moves those buffers into the VME beside the CPU (2.96 cycles a word from eDRAM, ~0 of the CPU), where every voice's gain and accumulate run as one resident pass a block, double-buffered. The low-pass (2%) stays on the CPU or becomes a short FIR (a sound question for the audiocheck meter). VMEMIX lost because the CPU fed the VME word by word per voice; here the CPU writes the decoded samples once, where it writes them today anyway, and the DMAC does the moving.
+- **Its ceiling** [U]: the mix's ~53% less its write-out, so at most about half of audio's ME time: on b30's flight ~17.9 ms a frame of audio, so ~6-9 ms a frame at today's 7.5 fps, ~60-70 ms of the ME's second (~6-7%). That matters for the target more than the floor: at 30 fps audio stays per real second while the frame halves, so its share of a frame doubles.
+- **Open for Sheepdog01** (he's away; no build until he says): whether A becomes a part. Its first step would be a bench on one PSP, the DMAC feed and a resident VME accumulate of 12 voices a block, before any game code.
 
 ### The old parts
 

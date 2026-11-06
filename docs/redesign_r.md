@@ -133,7 +133,16 @@ Each slice is proven in the emulator for correctness only (§4). A slice slower 
 | — | **Switch-over:** every kind R takes drawn by R; the old record and replay kept only for the dynamic kinds | one PSP pair on the heavy stretches; then the old model path goes |
 | 9 | SSPR (for the target) | pictures at each level of detail's distance |
 
-**Why slices 2-4 were reordered** (2026-11-05, slice 1's counts; the master's rslice1a v3 42153611114, master/rslice1 f81a02d9, d20): of 40 opaque parts a frame, the first draft's slice 2 (rigid, single pass, opaque, not near) took **1.1**; the rest were skinned 17.0, with a reflection pass 15.4, two-sided 4.2, glow 1.3, no baked buffer 0.9. So the skinned parts join the rigid ones in slice 2 and the reflection pass leads slice 3: the milestone measures R on most of the parts, not 3% of them. b30, c10 and c20's counts (rslice1b 42157109120) confirm or adjust the order. Slice 1's proof: play and both seeds identical at every tick on b30's route, c10, c20 and d20; strict clean; compare 1: 0 of 15,807 instances differ; the instance list 12.2 KB a frame, peak 42.6 KB (d20).
+**Why slices 2-4 were reordered** (2026-11-05, slice 1's counts; the master's rslice1a v3 42153611114, master/rslice1 f81a02d9, d20): of 40 opaque parts a frame, the first draft's slice 2 (rigid, single pass, opaque, not near) took **1.1**; the rest were skinned 17.0, with a reflection pass 15.4, two-sided 4.2, glow 1.3, no baked buffer 0.9. So the skinned parts join the rigid ones in slice 2 and the reflection pass leads slice 3: the milestone measures R on most of the parts, not 3% of them. **Confirmed on all four maps** (rslice1b v2 42160136450, row r_slice1_parts [E]): opaque parts a frame, the rigid set's take, then the main others:
+
+| Map | Parts | Rigid set | Skinned | Reflection | Glow | Two-sided | No model begun |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| b30 | 246.4 | 42.8 (17%) | 127.5 | 19.1 | 16.7 | 16.0 | 11.5 |
+| c10 | 150.0 | 3.5 (2%) | 96.9 | 25.2 | 22.8 | | |
+| c20 | 27.8 | 1.0 | 10.1 | | | | |
+| d20 | 33.7 | 0.7 | 10.9 | 8.6 | | | |
+
+Skinned is half or more of every map's parts, so slice 2 (rigid and skinned) takes ~69% of b30's and ~67% of c10's parts, and slice 3's reflection pass the next 8-17%. Glow sits level with two-sided on b30 and above it on c10, so slice 3 takes them together. b30's 11.5 parts with no model begun (first person or the sky, unread) are slice 4's to place. Compare 1 held on all four: 0 of 265,383 instances differ. b30 filled the 64 KB instance list; it's 128 KB now and rslice1c reruns b30, with the full state-word census for slice 1's §2. Slice 1's proof: play and both seeds identical at every tick on b30's route, c10, c20 and d20; strict clean; compare 1: 0 of 15,807 instances differ; the instance list 12.2 KB a frame, peak 42.6 KB (d20).
 
 ## 4. The proofs
 
