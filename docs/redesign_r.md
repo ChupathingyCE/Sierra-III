@@ -34,15 +34,15 @@ The engine's walk keeps what decides *whether and how* an object is drawn: visib
 
 **An object with some parts R can't take** (see-through parts, oversized skinned buffers without a PCV block, super high, near the eye) keeps its model's begin, shape and effect records as today beside the instance, so its immediate parts draw as they do now.
 
-### 2.2 The bake: forms
+### 2.2 Forms
 
-A **form** is one part's GE words for one pass, built once by the bake. modelconvert.py's PCV blocks (PRECONVERT, on by default) already put every opaque part's vertices in the GE's own form, with each skinned part's batches and bone slots (SKINW2's first-fit plan) [D, `tools/modelconvert.py`]. A form adds the rest:
+A **form** is one part's GE words for one pass, made once a map. **They're captured, not baked** (2026-11-05 23:12, `redesign_r_slice1.md` §2): today's draw path runs the part once with the memos off into scratch, and the census's form words are kept (~55 of a part's 140.7 today [E]), with holes for the touch's. One implementation of the rules, exact by construction; a bake-side maker can come later as a load-time saver. modelconvert.py's PCV blocks (PRECONVERT, on by default) already put every opaque part's vertices in the GE's own form, with each skinned part's batches and bone slots (SKINW2's first-fit plan) [D, `tools/modelconvert.py`]. A form adds the rest:
 - the state words: blend, alpha test, culling, the texture state except its address (format, size, filtering, the CLUT's format), since a texture's address exists only once it's bound (§2.3);
 - the vertex type and the draw: for a rigid part one PRIM over its PCV records; for a skinned part, per batch, its PRIM, the batch's bone-slot words left to the ME (§2.4). No vertex or index address is in the form: the ME sets VADDR and IADDR before the CALL (§2.3);
 - the rigid part's node (static: today the ME reads it from the part's first vertex each draw, `psp_ge.c` ~16884), kept in the form's table so the ME needn't read the vertices;
 - per pass, a form of its own: the base pass; multipurpose (change colour, glow); reflection; detail; two-sided where the shader asks.
 
-Forms are found by part, as PCV blocks are (a pad word in the map's part, or a table beside the PCV table). C1 counted 667-1,679 forms a map at every level of detail; at C4's ~40 state words plus ~13 a draw call that's roughly 200-300 bytes a form [U on M]. **Super high is left to the immediate path** (it's drawn only for objects taller than the screen: the cinematics' close-ups), which takes the store to ~250-480 KB on most maps.
+Forms are found by part, keyed by geometry, part, pass and shader permutation, and live with the geometry block's residency. C1 counted 667-1,679 forms a map at every level of detail; at C4's ~40 state words plus ~13 a draw call that's roughly 200-300 bytes a form [U on M]. **Super high is left to the immediate path** (it's drawn only for objects taller than the screen: the cinematics' close-ups), which takes the store to ~250-480 KB on most maps.
 
 ### 2.3 The store and residency
 
@@ -121,7 +121,7 @@ Each slice is proven in the emulator for correctness only (§4). A slice slower 
 
 | # | Slice | Proven by |
 |---|---|---|
-| 1 | The scaffold: the keep word, the instance list written beside today's records (both paths run, R's output unused), the forms baked and their table | the instance list matches the records it shadows (a check pass); a form plus its touch words rebuild today's words for a part **with the lighting and texture memos off** (today's stream depends on what was drawn before), compared word by word against the immediate path on b30, c10, c20, d20 |
+| 1 | The scaffold: the keep word, the instance list written beside today's records (both paths run, R's output unused), the forms captured and their table | the instance list matches the records it shadows (a check pass); a form plus its touch words rebuild today's words for a part **with the lighting and texture memos off** (today's stream depends on what was drawn before), compared word by word against the immediate path on b30, c10, c20, d20 |
 | 2 | **Rigid and skinned parts' base pass** from forms (the bone slots from the PCV plans, ~104 words a batch from the instance's node copy); extra passes and everything else immediate | pictures against the old path (framecrc within the sides' spread) on the four maps |
 | 3 | **The reflection pass,** then two-sided, change colour and glow, detail | as 2, and the cinematics' close-ups |
 | 4 | The sky (through the model path, its own depth range) and whatever slice 1's counts still leave immediate | as 2 |
