@@ -32,7 +32,7 @@ Labels as `redesign_r.md`.
 - the vertex type and the PRIM over the PCV block's records (no VADDR or IADDR);
 - the rigid part's node index (from its first vertex, as `psp_ge.c` ~16884 reads it each draw).
 
-Stored after the PCV region with a table indexed like the PCV table (the pack's header words: the next free ones after PCV's 11-15). A runtime that doesn't know them ignores them (as with PCV).
+Stored in a region appended after PCV's, found by a trailer at the file's end (its offset, its size, 'FRM1'): the .pgeo header's 16 words are all taken (`psp_geo.c` `header[16]`; modelconvert.py packs `'<16I'`). Older runtimes read nothing past the regions they know (the master, 21:05).
 
 **Loaded** with the pack; its bytes logged (`R: forms N, KB K`), against C1's estimate (~200-300 bytes a form).
 
@@ -69,6 +69,10 @@ On b30's route (to game time ~2,700), c10, c20 and d20, strict, with `retained r
 - the counts in a findings row, and the share of parts slice 2 takes on each map in `redesign_r.md`.
 
 Slice 1 is done when those hold. It gets no PSP run: it changes no time the player sees.
+
+## 6b. Still objects (RSO)
+
+RSO (on by default) sends a still object's records again without the model calls, so the instance list never sees those objects. Slice 1's proof runs with `rsooff`. **The rule from slice 2 on:** with `retained` on, an object R takes is drawn by R every frame, and RSO stands down for it (an instance plus forms is what RSO's re-sent records approximate, at less cost). RSO keeps the objects R can't take whole (those with see-through or other immediate parts). Its ~0.8-1.1 ms of record lane [E] moves into R's own gain; the milestone pair runs R against today's default (RSO on), so R pays for it there.
 
 ## 7. What slice 1 doesn't do
 
