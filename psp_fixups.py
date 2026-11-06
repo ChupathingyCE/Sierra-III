@@ -44018,6 +44018,44 @@ static void actor_update(
 			psp_aitickold_refresh(actor_index);
 #else"""),
 ]
+# "aitickoldclock" (recon's S3 split; off): the second pass reads the true
+# game time, as the first does; its marks and queue still count it the next
+# tick's. Against "aitickold" alone it tells what the clock one tick on does
+# from what the pass's early writes do
+FIXES_AITICKOLD["source/ai/actors.c#aitickoldclock"] = [
+("""	psp_aitickold_want = psp_aitickold_active();
+""",
+ """	psp_aitickold_want = psp_aitickold_active();
+	{
+		static int psp_aitickold_clock_on = -1;
+
+		if (psp_aitickold_clock_on < 0)
+		{
+			psp_aitickold_clock_on = psp_keep("aitickoldclock") != 0;
+			if (psp_aitickold_clock_on)
+				platform_psp_log("aitickold: the second pass reads the true game time (aitickoldclock)");
+		}
+		psp_aitickold_trueclock = psp_aitickold_want && psp_aitickold_clock_on;
+	}
+"""),
+("""	if (!psp_aime_active())
+		return;
+	now = game_time_get();
+	/* a new map or a reverted game""",
+ """	if (!psp_aime_active())
+		return;
+	now = game_time_get();
+	/* aitickoldclock: the pass is still the next tick's */
+	if (psp_aitickold_now && psp_aitickold_trueclock)
+		now++;
+	/* a new map or a reverted game"""),
+("""static long psp_aime_logged = NONE;
+/* FIXES_AITICKOLD""",
+ """static long psp_aime_logged = NONE;
+/* FIXES_AITICKOLD: "aitickoldclock" (see there); the main CPU's, before the push */
+int psp_aitickold_trueclock = 0;
+/* FIXES_AITICKOLD"""),
+]
 # the second pass's clock: the game time one tick on, in the pass's own
 # context only (the main CPU's frame reads the true time while the job runs)
 FIXES_AITICKOLD["source/game/game_time.c#aitickold"] = [
@@ -44029,9 +44067,9 @@ short game_time_get_elapsed(
  """#ifdef HALO_PSP
 	{
 		/* psp_fixups.py (FIXES_AITICKOLD, "aitickold") */
-		extern int psp_aitickold_now;
+		extern int psp_aitickold_now, psp_aitickold_trueclock;
 
-		if (psp_aitickold_now && psp_aime_here())
+		if (psp_aitickold_now && !psp_aitickold_trueclock && psp_aime_here())
 			return game_time_globals->local_time + 1;
 	}
 #endif
