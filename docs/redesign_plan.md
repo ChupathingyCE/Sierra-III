@@ -107,7 +107,26 @@ The GE was built for retained mode: lists that CALL sub-lists, 8 bone matrix and
 - **The light pass is R's too (C4 on d20, 2026-11-05 18:08, recon)** [M, PSP-3000, sierra-hw 42132069463, bare mekinds]. With the flashlight on, the replay is mostly the world's lights: light draws 28.2 and 47.9 ms of 49.3 and 71.8 a frame (57-67%), 94-108 draws a frame at 260-511 µs each, the worst single record 11-15 ms. The models are only 3.0-3.6 ms, the level 6.4-7.7, decals 1-2. Before the flashlight: 32.5 ms in all, models 8.1, lights 1.3.
   - So on d20's heavy view R's ceiling is the light pass, not the model parts. Each light redraws the surfaces it reaches, with a projected cone texture for a spotlight (`psp_ge.c`), and its per-draw work (each vertex's reach, the near cut, the bands) is immediate mode, redone every frame.
   - **Its pieces under R, already sized and never started** (the lab's levers.tsv): **LMC**, a static light's reach and lit-triangle list kept across frames while the light doesn't move (d20's machine lights); and **LM**, one draw with up to four GE lights in place of one draw per light. The flashlight moves every frame, so LMC doesn't take it: its form (the cone kept as a projected texture, or the GE's own spotlight, which is a look question) is for R's design page.
- (the lab's `levers.tsv` and `grounds.tsv`, rows PDC, PDCCALL, X2):
+  - **The flashlight's form, as built and as R could have it** [D, `psp_ge.c`, tock162]. The PSP doesn't use the GE's own spotlights (no `GU_SPOTLIGHT` anywhere; models get directional and point lights). The flashlight is drawn as a pass of its own, its cone a 32×32 texture projected from the light so the cone's edge is per pixel (build 36: per-vertex cones showed as lit triangles). Its **gel, the pattern the Xbox projects, is only sampled at each lit vertex** (GELC's 16-a-side cube), so on large level triangles the pattern blurs away. Working out each vertex's reach and gel on the ME, and copying the vertices with those colours, is the light pass's cost: the 191 KB a frame of lit copies (C2) and most of the 28-48 ms (C4).
+    - **Option 1, the GE's spotlight in the surface's own pass:** no pass, no copies, no ME work, but per vertex: the lit triangles of b35 come back and there's still no pattern.
+    - **Option 2, the gel projected as the pass's texture** [U]: the cone texture replaced by the cone times the gel's face the light points through, and the falloff with it, projected by the GE's texture matrix from the vertices' positions (`sceGuTexMapMode` with the texture matrix), so the ME computes no per-vertex light. That gives the pattern per pixel, and the 191 KB of copies and most of the ME's light work go. Its cost is the GE's one texture a pass: the surface's own texture still can't be multiplied in, as today. That's lever PROJLIGHT (catalogued as a compromise, 2026-11-04); with the pattern restored, the look question is whether it reads closer to the Xbox than today's, which is Sheepdog01's side-by-side.
+    - R's design page settles which, after an emulator side-by-side against the PC reference.
+- **R's dynamic floor (C2, 2026-11-05 18:14, recon)** [E, sierra-batch 42134306096, Sierra-III recon/c2listsplit de95a013; rows c2_inline_split]. The frame list's inline data by writer, KB a frame:
+
+  | | b30 flight | d20 flashlight | b40 snowfield |
+  |---|---:|---:|---:|
+  | inline data in all | 214.9 | 256.4 | 116.2 |
+  | kept index copies (models + level) | 62.7 + 28.1 | 2.1 + 22.0 | 3.0 + 13.8 |
+  | planar fog's per-vertex colour | 45.2 | 0 | 36.2 |
+  | the light pass's lit copies | 1.4 | **191.3** | 0.5 |
+  | see-through, particles, decals, HUD | 32.3 + 22.7 + 11.3 + 6.9 | 11.4 + 8.6 + 8.0 + 5.4 | 5.2 + 47.3 + 6.1 + 2.7 |
+  | near-plane cut pieces | ~1-6 | ~1-6 | ~1-6 |
+
+  - **The cutting is small** (C5's worry): 1-6 KB a frame.
+  - **The index copies go with R:** a part CALLed whole, or a level range indexed in place, needs no copy. That's 91 KB a frame on b30's flight.
+  - **Fog and lights are per frame as built,** unless they move to the GE's own fog and to option 2 above: 45 KB of fog on b30's flight and 36 on b40's snowfield, and the light pass's 191 KB on d20's flashlight.
+  - **The truly dynamic floor** (see-through, particles, decals, HUD) is ~73 KB a frame on b30's flight, ~33 on d20 and ~61 on b40, against today's 768 KB list.
+- **Why the earlier tries didn't pay** (the lab's `levers.tsv` and `grounds.tsv`, rows PDC, PDCCALL, X2):
   - PDC copied prebuilt words into the old per-frame list through the old layers, bit for bit, from an eDRAM store the GE can't read. Its pairs ran even to +1.6 ms a frame.
   - PDCCALL CALLed retained blocks, but kept the key, the hash, the replay and the built parts. It measured +1.2-2.3% frame on c10 [M, PSP-1000 sierra-hw 41216890230], and its store didn't fit b30's heap.
   - Neither is R: R is bake-built per level of detail and pass, with no per-frame record or replay. They showed that half a retained mode costs about what it saves, not that retained mode loses.
@@ -150,7 +169,7 @@ Sent to the master 2026-11-05 17:20 (the lab's coord/inbox/master.md) for those 
 | | Count | Answers | Where | Who | State |
 |---|---|---|---|---|---|
 | C1 | Each map's prebuilt forms (parts × levels of detail × shader passes) and their bytes | whether R fits | a counter in the baker, run as a sierra-bake job that prints counts only | this session's counter, run by the master | **done** (§3 R) |
-| C2 | The frame list's inline data (b30's flight 254 of 501 KB) by kind: model and level cut pieces, decals, kept index copies, effects, see-through, HUD | R's floor: what stays per frame | emulator, `listcensus` (Sierra-III recon/listbytes2; lab coord/handoff/listbytes_2026-11-05.md) | the master | asked |
+| C2 | The frame list's inline data (b30's flight 254 of 501 KB) by kind: model and level cut pieces, decals, kept index copies, effects, see-through, HUD | R's floor: what stays per frame | emulator, `listcensus` (Sierra-III recon/listbytes2; lab coord/handoff/listbytes_2026-11-05.md) | recon | **done** (§3 R) |
 | C3 | The tick by subsystem on the four heavy stretches, and its change rate: the share of each subsystem's per-object work whose inputs didn't change since the last tick | where S's last 4-6 ms a tick comes from | emulator: the PC sampler, `PSP_TICK_STEPS=1`, `nmstudy` extended (lab coord/handoff/nmstudy.md) | recon, through the master | **(a) done**; **(b) by object done** (§3 S); by query asked |
 | C4 | The replay by record kind, and the models' time by step | R's ceiling on the ME | emulator for the shape; one bare PSP run for the ms (meparts' ME cycle counter) | the master | asked |
 | C5 | What the GE does at the near plane; how the replay lights a model | two of R's unknowns | code | this session | **done** (below) |
