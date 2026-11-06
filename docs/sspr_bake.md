@@ -32,6 +32,17 @@ A build plan (master, 2026-11-06). Sheepdog01 asked on 14:03, through bottleneck
    - A tree is told by its shader (alpha-tested, two-sided, many disjoint quads). [U: the rule is checked against the census's list of the flight's trees]
 5. **Off by default behind `sspr`.** Without it the GE layer never looks the directory up, so one build plays both sides of an A/B. Each bake's *e* is in the pack's header and logged at the map's start.
 
+## How it's built (the pieces)
+
+- **`tools/sspr.py`** runs after modelconvert, on the map and the pack.
+  - It finds rigid parts whose model has no lower level anywhere (every region permutation's five geometry indices are one).
+  - It decimates each such part (meshoptimizer through a host library built from `tools/third_party/meshoptimizer`).
+  - It writes the levels as PCV blocks with a new flag, **PCV_LEVEL (4): the block's own triangle list follows its records** (a rigid block today draws the part's index buffer). It also writes a directory (the part's block index × 4 levels → the level's block, 0 for none) and the bake's *e* in the pack header's next free words.
+  - It writes the cutoffs into the map.
+- **The level the engine picked reaches the GE layer** through a fixup at the model draw: `FIXES_SSPR` sets `psp_model_level` (0-4) where render_models picks the geometry. Only the number is carried; the pick is the engine's.
+- **The GE layer's model draw** (psp_ge.c, where a part's baked block is found), under `sspr`: when the directory has a block for (this part's block, the level), it draws that block with its own triangle list. The key R takes carries the list's address, so each level is its own form.
+- **psp_geo.c** reads the directory with the pack's header, and relocates a PCV_LEVEL block's list as it relocates a skinned block's.
+
 ## The proof
 
 - **Exactness isn't asked** (it's a look change by design). Play and seeds must be identical to off, because only drawing changes. That's checked by statecrc's play and seeds fields.
