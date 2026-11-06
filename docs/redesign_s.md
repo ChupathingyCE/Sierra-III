@@ -6,7 +6,7 @@ Labels: [M] measured on the PSP, [E] emulator or estimate, [D] read in code or d
 
 ## 1. The target, and where the tick goes
 
-**Target:** a bare tick of ≤ 25.8 ms on b30's flight, with drawing, other and frame end at ~15 ms a frame; ≤ 22.3 if they end at ~20 (plan §1). Today it's 40.6 ms bare (ledger 3 less the instruments' ~7%; ledger1 on b151 replaces it overnight).
+**Target:** a bare tick of ≤ 25.8 ms on b30's flight, with drawing, other and frame end at ~15 ms a frame; ≤ 22.3 if they end at ~20 (plan §1). Today it's **42.4 ms bare** (b151's ledger1 bench, PSP-3000, 2026-11-05; ledger 3 less the instruments' ~7% had estimated 40.6).
 
 **Where it goes** (b30's flight, PSP-3000 sampler, 42114568213) [M]: collision 25.6%, AI 16.5, node matrices and animation 11.3, units and vehicles 9.3, other objects 7.7, libm and memcpy 5.3, effects 3.4, tags 2.9, audio 2.4, scripts 1.6, the rest 14.5. It waits on memory for 56-68% of its cycles on every stretch, its instruction and data misses close to even in cost (`cpu_cost_map.md` §2).
 
@@ -20,14 +20,14 @@ Labels: [M] measured on the PSP, [E] emulator or estimate, [D] read in code or d
 
 | # | Piece | Exact? | Ceiling on b30's flight, ms a tick | Evidence |
 |---|---|---|---|---|
-| S1 | Unchanged objects skip their update | exact | ~1.5-3 (of the 6.8 measured, the Pelicans' 2.4 aren't at rest: see S1; the rest ~4.2, scaled to the bare tick and a predicate) | objcost 42141971439 [M]; whyawake1 [E] |
-| S2 | Collision's repeating feature queries answered from last tick's result | exact | ~1 | C3 by query [E] |
+| S1 | Bodies held up by sleeping objects sleep too | exact | ~1-2 (of the 6.8 measured unchanged, the Pelicans' 2.4 are scripted and the scenery's 2.3 animated: what's left is bodies and small work) | objcost 42141971439 [M]; whyawake1-3 [E] |
+| S2 | Collision's feature queries: the level half reused while the sphere is unchanged | exact | ~0.75-1.1 | s2census1 [E] |
 | S3 | AITICKOLD: the AI's think on the ME from a world one tick older | plays the same (built, Sheepdog01's earlier OK to experiment) | ~5.9 (-14.5%) | PSP-3000 pair 42041663929 [M]; needs ME room R frees |
 | S4 | The far-biped tier | plays the same | ~2.3 (half rate) to ~4.6 (on the ME a tick behind) | objcost2 shares × the PSP's 24.3 [U on E × M] |
 | S5 | T5 (walks that overlap their misses) and T7 (data laid out for the tick) | exact | ~0.5-1 | `redesign_tick.md` |
 | — | The GE's toll, cut by R and B | exact | ~2-4 | lead A [U on E and M] |
 
-**Sum** [U]: 40.6 less 13.2 to 19.5 → **~21-27 ms a tick** against 25.8 (or 22.3). The floor's tick is reached around the middle of the ranges with drawing at ~15 ms a frame; with drawing at ~20 it needs the upper half.
+**Sum** [U], on b151's 42.4: less 12.65 to 18.8 → **~23.6-29.8 ms a tick** against 25.8 (or 22.3 with drawing at ~20). The floor's tick on the flight needs the upper half of the ranges; b30's landing (35.3, its bodies a quarter of the biped time, slept exactly by S1) and b40's snowfield (37.6, its far bipeds a third) need less.
 
 ### S1. The unchanged-object skip
 
@@ -35,13 +35,21 @@ An object whose update leaves it bitwise unchanged doesn't need the update. The 
 
 - **Already done this way:** the sleepers (FIXES_WS: ~217 of b30's ~274 scenery a tick never enter `psp_object_update`; recon, 18:57) and the resting weapons and equipment (IS). S1 extends the same idea to the kinds that still carry the measured 6.8 ms:
   - **not vehicles, after all** (recon's predicate read, whyawake1 42152687593 [E]): the 2.4 ms of "unchanged" vehicle updates on b30's flight are the Pelicans hovering on a script, not at rest (~1.1 a tick); parked Warthogs already sleep or cost ~11 µs. A scripted vehicle's input is its script, so it stays out of S1;
-  - **awake scenery** (2.3 ms, 53 a tick at ~42 µs) **isn't unchanged: it's animated** (recon's read, whyawake2 42153640742 [E]): its node matrices change every tick (b30's leafy trees, c10's plants and lily pads); the play hash leaves node matrices out, which is why objcost counted it unchanged. Skipping it isn't exact. What's left for S1 is its update's non-pose work (emitters' timers, a few function words), not yet split; recon times it next. **An exact angle on the pose itself** [U]: at the floor's two ticks a frame only the drawn tick's pose is seen, so a tree's node matrices could be made only on the drawn tick and on any read (LBM's machinery). LBM lost on bipeds because the AI reads their poses every tick (~1.2 ms a tick of reads, `levers.tsv`); trees may be read rarely. Recon counts the reads of scenery's node matrices on the undrawn tick before anything is built;
+  - **awake scenery** (2.3 ms, 53 a tick at ~42 µs) **isn't unchanged: it's animated** (recon's read, whyawake2 42153640742 [E]): its node matrices change every tick (b30's leafy trees, c10's plants and lily pads); the play hash leaves node matrices out, which is why objcost counted it unchanged. Skipping it isn't exact. What's left for S1 is its update's non-pose work (emitters' timers, a few function words), not yet split; recon times it next. **An exact angle on the pose itself** [U]: at the floor's two ticks a frame only the drawn tick's pose is seen, so a tree's node matrices could be made only on the drawn tick and on any read (LBM's machinery). LBM lost on bipeds because the AI reads their poses every tick (~1.2 ms a tick of reads, `levers.tsv`); trees may be read rarely. **Counted** (whyawake3 42155122122 [E]; row s_slice2_scenery_pose): node matrices are 36% of awake scenery's update on b30 and 48% on c10 (c10's plants and lily pads, ~3.0 ms a tick of scenery updates in the emulator). On **c10 nothing reads them on the undrawn tick** (0 reads in 150 undrawn ticks), so poses made only on the drawn tick and on a read are exact there and halve that pose time (~0.7 ms a tick [U]). On **b30 bipeds and code outside the object loop read them** (~6,900 reads in 150 undrawn ticks), so LBM's lesson holds and b30 gains nothing. A target-side piece for c10, not a floor piece for the heavy stretches;
   - **bodies** (25% of the biped time on the landing, 86-97% unchanged): the corpse sleep (b105-b114) already offers every settled body; what keeps some awake is its own guard, a body held up by something other than the level (b30 7.7 of ~50 a tick, d20 12.3 of 36; 55-440 µs each in the emulator). **Slice 1 is therefore:** a body held up by objects may sleep while everything holding it is asleep or static, and wakes the tick any of them wakes or goes (recon, building under `skipchange`).
 - **The wake rules** are the sleepers': contact, damage, a script, a parent that moved, a force. A wrong predicate shows up as a play difference, so each kind's rule is proven by play and both seeds identical on b30, c10, c20 and d20 (statecrc), with a check build that runs the update anyway and compares (as `rsocheck` and `vislazycheck` do).
 
-### S2. Collision's feature-query reuse
+### S2. Collision's feature-query reuse: the level half
 
-The repeating queries are bipeds' `collision_get_features_in_sphere` calls: a biped standing still asks the same sphere against the same world. A query's key is its sphere and the versions of what it reaches (the objects in the clusters it touches, and the level, which doesn't change). The answer is kept per caller for one tick; an unchanged key returns it without the walk. Exact by construction. The table is a few KB (a scratchpad candidate, `redesign_b.md` §3.1). Proof: play and seeds identical, plus a check build comparing every reused answer with a fresh walk.
+The repeating queries are bipeds' `collision_get_features_in_sphere` calls. **Census** (recon, s2census1 42155463319 [E]; row s_slice3_census):
+- **the level's part is most of a call:** its BSP sphere test and features are 71% of the call's time on b30 (64 + 2 of 93 µs), 61% on b40, 76% on c20, 50% on d20; the objects' part is the rest;
+- **the level never changes**, so its half of the answer is exact to reuse whenever the sphere and the query's flags are bitwise the same and no breakable surface has changed (glass that breaks changes the level's answer). That holds on **31-47% of biped feature queries**, more than the 19-39% that also need every object unchanged;
+- **the objects' half can't be keyed cheaply:** collidable objects change their node matrices without a reconnect (held weapons, trees, b40's turret, some grunts), so a per-cluster stamp would be inexact. It stays live (recomputed every query) in S2's form;
+- **memory is small:** a biped's answer is 2-3 features, ~250-300 bytes on average (at most 4.3 KB on b30): a level-half store of ~1 KB a caller covers nearly all, ~30 KB for b30's bipeds (the heap has ~69 KB free there; a scratchpad candidate only in part).
+
+**Worth** [U]: the sphere test and feature gathering are ~8.5% of b30's flight tick (~3.4 ms of 40.6), the level part ~70% of that, reused on ~31-47%: **~0.75-1.1 ms a tick.**
+
+**Proof:** play and both seeds identical; a check build compares every reused level answer with a fresh walk (as slice 1).
 
 ### S3. AITICKOLD on R's ME room
 
@@ -61,9 +69,9 @@ Collision stays the same code against the same world (the rule: collision exact,
 
 | # | Slice | Proven by |
 |---|---|---|
-| 1 | S1 for bodies held up by sleeping or static objects, with its check build (recon, under way) | play and both seeds identical on four maps; the check build's compare clean |
+| 1 | S1 for bodies held up by sleeping or static objects, with its check build (recon/skipchange 6840c815: play and both seeds identical every tick on b30, c10, c20, d20; the check build flags some d20 grunts and elites changing while counted asleep, being read; row s_slice1_skipchange_proof) | play and both seeds identical on four maps; the check build's compare clean |
 | 2 | S1 for awake scenery (its animation advanced alone) | as 1 |
-| 3 | S2, the feature-query reuse, with its check build | as 1 |
+| 3 | S2, the level half of bipeds' feature queries reused (the objects' half live), with its check build (recon, building) | as 1 |
 | — | **Milestone:** S1 and S2 on b30, the old update path bypassed for the kinds they take | one PSP pair, `- \| skipchange` (the keep word), b30's flight |
 | 4 | S4's half-rate form | side-by-sides and the outcome census on b30's flight, the snowfield and a30 |
 | 5 | S3 on (after R's milestone frees the ME) | AITICKOLD's own proofs; the window's cut passes counted |
