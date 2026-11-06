@@ -69,9 +69,9 @@ Collision stays the same code against the same world (the rule: collision exact,
 
 | # | Slice | Proven by |
 |---|---|---|
-| 1 | S1 for bodies held up by sleeping or static objects, with its check build (recon/skipchange 6840c815: play and both seeds identical every tick on b30, c10, c20, d20; the check build flags some d20 grunts and elites changing while counted asleep, being read; row s_slice1_skipchange_proof) | play and both seeds identical on four maps; the check build's compare clean |
+| 1 | S1 for bodies held up by sleeping or static objects, with its check build (recon/skipchange: play and both seeds identical every tick on b30, c10, c20, d20; the check build's remaining words, on d20's bodies, are the unit timer's low half, idle_ticks and a dead biped's aim servo and functions: the words the shipped corpse sleep's checksum deliberately leaves out, so it's exact to that sleep's standard, not statecrc-exact; skip10 confirms) | play and both seeds identical on four maps; the check build's compare clean |
 | 2 | S1 for awake scenery (its animation advanced alone) | as 1 |
-| 3 | S2, the level half of bipeds' feature queries reused (the objects' half live), with its check build (recon, building) | as 1 |
+| 3 | S2, the level half of bipeds' feature queries reused (the objects' half live), with its check build (recon/skipchange 7a55d714: 0 differences in 27,000 reused level halves against fresh walks; reuse 28% of b30's biped queries, 22% of c10's; play and seeds identical; c10's full dump identical in every object datum word, the allocation difference outside the datums) | as 1 |
 | — | **Milestone:** S1 and S2 on b30, the old update path bypassed for the kinds they take | one PSP pair, `- \| skipchange` (the keep word), b30's flight |
 | 4 | S4's half-rate form | side-by-sides and the outcome census on b30's flight, the snowfield and a30 |
 | 5 | S3 on (after R's milestone frees the ME) | AITICKOLD's own proofs; the window's cut passes counted |
