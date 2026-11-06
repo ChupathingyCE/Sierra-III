@@ -1,6 +1,6 @@
 # R, retained rendering: the design page (Phase 1)
 
-Part R of `redesign_plan.md` (§3 R). Sheepdog01 gave it its go at Gate 1 (2026-11-05 19:28). It's built under the redesign rule (CLAUDE.md, "Redesign work"): a separate path switched whole under one keep word, its slices proven for correctness in the emulator, priced on the PSP at its milestone and its switch-over. This page is the design the slices follow; the master builds it. It's a draft for review before building, as the plan was (a second-opinion read against the code).
+Part R of `redesign_plan.md` (§3 R). Sheepdog01 gave it its go at Gate 1 (2026-11-05 19:28). It's built under the redesign rule (CLAUDE.md, "Redesign work"): a separate path switched whole under one keep word, its slices proven for correctness in the emulator, priced on the PSP at its milestone and its switch-over. This page is the design the slices follow; the master builds it. Revised 2026-11-05 after a second-opinion read against tock162's code (lab or-job 42145484821; each point re-read by the bottleneck session): forms carry no addresses (§2.3), the instance carries its node matrices and shape (§2.1), the level's saving is unverified (§2.6), and slice 1's word compare runs with the memos off (§3).
 
 Labels: [M] measured on the PSP, [E] emulator or estimate, [D] read in code or data, [U] inference. Code references are tock162 (master/tock162 70bc508 and later).
 
@@ -27,15 +27,19 @@ The engine's walk keeps what decides *whether and how* an object is drawn: visib
 | node matrices (a pointer into the frame's matrix snapshot) | the skinning parameters `psp_ge_model_begin` gets today |
 | lighting: ambient, two distant lights, up to two point lights | `parameters->lighting`, as the fixups pass it |
 | change colours, glow, self-illumination phase, the effect and its intensity | today's `psp_ge_model_multipurpose` / `_effect` arguments |
-| flags: first person, shadow, near the eye (§2.5), faded | the walk |
+| the shape: first person, centroid, radius, near and far for first person | `psp_ge_model_shape`'s arguments (`psp_fixups.py` ~300), from which the near test, the size floor (`model_pixels`) and nearauto's nearest-object tally are made |
+| flags: shadow, faded, sky | the walk (the sky is drawn through the model path, `ge_kind(KIND_SKY)`) |
 
-An instance is a few hundred bytes against a part's ~1 KB of words today. The instance list is double-buffered with frames in flight, as the record buffer is now.
+**An instance is not small:** the engine's node matrices are a pointer that doesn't outlive the walk, so the instance copies them, as today's record does (`defer_model_begin`: up to DEFER_MAX_NODES 64 × NODE_FLOATS 13 floats, 3.3 KB; first-person arms 36 nodes). Its size is about today's model record. R's saving is in what follows it: no record per part and no per-part chain on the ME. The instance list is double-buffered with frames in flight, as the record buffer is now.
+
+**An object with some parts R can't take** (see-through parts, oversized skinned buffers without a PCV block, super high, near the eye) keeps its model's begin, shape and effect records as today beside the instance, so its immediate parts draw as they do now.
 
 ### 2.2 The bake: forms
 
 A **form** is one part's GE words for one pass, built once by the bake. modelconvert.py's PCV blocks (PRECONVERT, on by default) already put every opaque part's vertices in the GE's own form, with each skinned part's batches and bone slots (SKINW2's first-fit plan) [D, `tools/modelconvert.py`]. A form adds the rest:
-- the state words: blend, alpha test, culling, the texture state (format, size, the address by a relocation, §2.3), the CLUT;
-- the vertex type and the draw: for a rigid part one PRIM over its PCV records; for a skinned part, per batch, the batch's bone-slot words left for the instance (§2.4) and its PRIM;
+- the state words: blend, alpha test, culling, the texture state except its address (format, size, filtering, the CLUT's format), since a texture's address exists only once it's bound (§2.3);
+- the vertex type and the draw: for a rigid part one PRIM over its PCV records; for a skinned part, per batch, its PRIM, the batch's bone-slot words left to the ME (§2.4). No vertex or index address is in the form: the ME sets VADDR and IADDR before the CALL (§2.3);
+- the rigid part's node (static: today the ME reads it from the part's first vertex each draw, `psp_ge.c` ~16884), kept in the form's table so the ME needn't read the vertices;
 - per pass, a form of its own: the base pass; multipurpose (change colour, glow); reflection; detail; two-sided where the shader asks.
 
 Forms are found by part, as PCV blocks are (a pad word in the map's part, or a table beside the PCV table). C1 counted 667-1,679 forms a map at every level of detail; at C4's ~40 state words plus ~13 a draw call that's roughly 200-300 bytes a form [U on M]. **Super high is left to the immediate path** (it's drawn only for objects taller than the screen: the cinematics' close-ups), which takes the store to ~250-480 KB on most maps.
@@ -44,24 +48,31 @@ Forms are found by part, as PCV blocks are (a pad word in the map's part, or a t
 
 Forms live in a main-RAM arena (the GE can't read the ME's eDRAM). Its room comes from what R shrinks: the frame list (768 KB today) and the record buffer (128-224 KB), both down to tens of KB for the dynamic path [U on C1, C2].
 
-Two things a form points at move at run time:
-- **geometry:** a part's PCV block lives in the geometry cache, read from the pack on demand (`psp_geo_lock`, `psp_geo.c`);
-- **textures:** the texture cache places and evicts them (`psp_tex_bind`, the VRAM copies, TXPT's first-sight load).
+**Forms hold no addresses.** Two things a form would point at move at run time, and both caches keep their bookkeeping in the act of using them:
+- **geometry:** a part's PCV block lives in the geometry cache, read from the pack on demand. A block is protected from eviction only while it's locked recently: `protected_entry` keeps an entry whose `last_frame` is within RECENT_FRAMES (2) of now, and the lock is what sets `last_frame` (`psp_geo.c` 350-352, 530, 670, 816). There's no pin or refcount. A form path that stopped locking would let its blocks be evicted under it.
+- **textures:** a texture's address is known only at bind (`resident_at[index]`, `psp_tex.c`), and the bind also marks it in use this frame (`frame_set_mark`, through `me_book.marks` on the ME, which can't load a missing texture and raises a want instead: `psp_tex.c` 281-311, ~2867-2908).
 
-Each form carries its relocations, listed at bake (offsets of the words holding a vertex, index, texture or CLUT address). **Patch on change:** when the geometry cache loads a block or the texture cache moves a texture, the forms that point at it are patched, and a form whose target isn't resident is marked not ready; its part takes the immediate path that frame (and the texture's want is raised as today). Patches happen on loads and evictions, not every frame.
+So per part per frame the ME does a **touch**, not a bind:
+1. the geometry block's lock-equivalent: refresh `last_frame` and get its current address (or learn it's not resident);
+2. each pass's texture: its current address and the frame mark (or a want, if it's missing);
+3. writes VADDR, IADDR and the texture address words (a few words), then the CALL.
 
-An alternative to patching vertex and index addresses [U, to verify]: the GE's address offset (the OFFSET register, which JUMP, CALL, VADDR and IADDR can be relative to) set per CALL, so a form's addresses are block-relative. It isn't used anywhere in the port today; slice 1 checks it in the emulator and on one PSP run before relying on it.
+A part whose block or texture isn't resident takes the immediate path that frame, as a missing texture draws untextured today. The forms never change once built, so frames in flight need no protection beyond what the store's lifetime gives (a form is freed only between maps).
+
+The GE's address offset was an alternative to patching; with no addresses in the forms it isn't needed. (The review found the port uses only BASE with CALL, `psp_ge.c` ~15122, and `sceGuOffset` is the screen origin.)
 
 ### 2.4 The ME: the frame list from instances
 
 Per instance, the ME writes:
-1. the world matrix (relative to the GE's world origin, as today, `psp_ge.c` ~4868-4905);
-2. for a skinned part's batch, its bone-slot matrices (up to 8, BONE words) from the instance's node matrices by the batch's plan;
-3. the lights and ambient, only where they differ from what the GE holds (MEMEMO's memo does this today);
+1. per rigid part, its node's matrix (from the instance's node copy and the form table's node index; relative to the GE's world origin, as today, `psp_ge.c` ~4868-4905);
+2. for a skinned part's batch, its bone-slot matrices (up to 8 slots, 13 words a slot, ~104 words a batch: today's `bone_commands`, already memoised per skin and batch in `bone_memo`) from the instance's node copy by the batch's plan;
+3. the lights and ambient, per instance (point lights are camera-relative, `position - ge_eye`, so they change every frame for a moving camera; the lighting memo is per job, `lit_forget_state`);
 4. the material colours (change colour, glow, effect);
-5. a CALL to each visible part's forms, pass by pass, in the order the engine draws them.
+5. per part: the touch (§2.3), then a CALL to each pass's form, in the order the engine draws them.
 
-That's ~30-60 words a part instead of ~140-200 today [U on C4], no per-part bind, lighting or geometry chain (the replay's instruction-cache problem, `draw_rebuild.md`), and no record to decode. The ME's jobs keep their place in the frame: the frame list is handed to the GE in chunks as now (the stall address).
+The per-frame state today's replay leaves for later draws has an owner under R: the near-object tally (nearauto) and the size floor from the instance's shape; the frame marks from the touch; the lighting and texture memos per job as now; `ge_kind`'s reserves (model, sky) by the instance's flags.
+
+That's ~10-20 words a rigid part and ~100+ a skinned batch (its bone slots) instead of ~140-200 a part today [U on C4], no per-part bind, lighting or geometry chain (the replay's instruction-cache problem, `draw_rebuild.md`), and no record to decode. The ME's jobs keep their place in the frame: the frame list is handed to the GE in chunks as now (the stall address).
 
 **What stays on the ME, by step** (b30's flight, PSP-3000 meparts4 42135685691, the ME's cycle counter; row c4_model_steps_b30_flight) [M for today, U for R]:
 
@@ -89,7 +100,7 @@ The record and replay stay for the dynamic kinds (C2's floor, ~33-73 KB a frame)
 
 ### 2.6 The level
 
-The level's draws keep their visibility but stop copying indices. The bake orders each material's surfaces by cluster, so each (cluster, material) is a contiguous range of the BSP's own surface indices, already in main RAM. A level draw becomes a PRIM over a range, with the material's state as a form. The kept index copies go (28 KB a frame on b30's flight, C2). Its passes (lightmap, detail, glow) follow the same pattern.
+**Unverified, and probably smaller than the plan's ~5 ms.** The review found the level's draw isn't one PRIM over a range: its index list is rebuilt every frame from the visible surfaces (`structure_render_build_dynamic_triangles`), stencil pieces are substituted (`psp_ge.c` ~10603), and when the slant buckets split a material it's drawn once a bucket with its own texture slope (`sceGuTexSlope(slope * angle_factor[...])`, `psp_ge.c` 10294). So the level's form is per (cluster, material, bucket) at best, and its per-frame index build stays unless the cluster order makes the visible set a union of ranges. Slice 6 reads `structure_render.c` and sizes it before any build; until then the plan counts R's ME saving on the flight from the models alone (~29-31 ms, §2.4's table), ~2-4 short of the floor's 33.
 
 **Planar fog** writes a per-vertex colour copy today (45 KB a frame on b30's flight, 36 on b40's snowfield, C2). The GE's own fog is distance fog, not planar; whether it reads the same is a look question for a side-by-side (slice 9).
 
@@ -110,11 +121,11 @@ Each slice is proven in the emulator for correctness only (§4). A slice slower 
 
 | # | Slice | Proven by |
 |---|---|---|
-| 1 | The scaffold: the keep word, the instance list written beside today's records (both paths run, R's output unused), the forms baked and their table, the GE offset checked | the instance list matches the records it shadows (a check pass); the bake's forms rebuild today's words for a part, compared word by word on b30, c10, c20, d20 |
+| 1 | The scaffold: the keep word, the instance list written beside today's records (both paths run, R's output unused), the forms baked and their table | the instance list matches the records it shadows (a check pass); a form plus its touch words rebuild today's words for a part **with the lighting and texture memos off** (today's stream depends on what was drawn before), compared word by word against the immediate path on b30, c10, c20, d20 |
 | 2 | Rigid, single-pass, opaque parts from forms; everything else immediate | pictures against the old path (framecrc within the sides' spread) on the four maps |
 | 3 | Skinned parts (bone slots from the PCV plans) | as 2 |
 | 4 | The extra passes (multipurpose, change colour, glow, reflection, detail, two-sided) | as 2, and the cinematics' close-ups |
-| 5 | Residency: patch on change, not-ready parts to the immediate path, the store's room logged | as 2 over a whole route (b30's), with the geometry and texture caches churning; no part drawn from a stale address (a check) |
+| 5 | Residency under the touch: not-resident parts to the immediate path, the frame marks and wants as the bind gives them, the store's room logged | as 2 over a whole route (b30's), with the geometry and texture caches churning; no part drawn from a stale address and no in-use texture evicted (checks) |
 | — | **Milestone:** b30's models drawn from forms, the record and replay bypassed for them | one PSP pair, `- \| retained`, b30's flight (the plan's milestone) |
 | 6 | The level's ranges (the bake's cluster order) | as 2 |
 | 7 | The light pass: LMC, then LM, then the flashlight's form | as 2; the flashlight by a side-by-side against the PC reference |
@@ -142,8 +153,10 @@ If the ME falls short of its share, Sheepdog01 decides before slice 6 (the plan'
 ## 6. Risks and open questions
 
 - **The walk's remaining cost:** how much of today's 37 ms of drawing is the per-part chain R removes, and how much is the walk it keeps (visibility, LOD, lighting). `draw_rebuild.md`'s census puts the per-part chain at the largest stage [E]; slice 1's shadow pass can time both sides.
-- **Residency churn:** if the geometry cache evicts often on a heavy stretch, patches and not-ready parts could eat the gain. Slice 5 logs it; the store could pin the blocks its forms use if needed.
+- **Residency churn:** if the geometry cache evicts often on a heavy stretch, not-ready parts fall to the immediate path and eat the gain. Slice 5 logs it.
+- **The marks' cap:** the ME buffers texture marks with a hard cap (`marks_dropped`); with every part touching its textures each frame the count is the same as today's binds, but slice 5 checks the cap holds.
+- **The sky** goes through the model path (`KIND_SKY`, its own depth range, fog off): it's formable with its flags, or stays immediate; slice 4 decides.
+- **PCV gaps:** oversized skinned buffers fall back to raw vertices (`psp_geo.c` ~1675) and see-through draws convert their own: both stay immediate.
 - **The order of draws:** the engine's part order (and the see-through queue's sort) is kept, since the frame list emits instances in walk order and passes in the engine's order.
 - **RSO** (records kept for still objects, on by default) becomes unnecessary under R; it stays on the immediate path until the switch-over.
-- **The GE offset** (§2.3) is unverified on this hardware.
 - **Who reviews:** this page goes through a second-opinion read against the code before slice 1, as the plan did.
