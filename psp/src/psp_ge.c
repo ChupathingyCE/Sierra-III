@@ -12895,6 +12895,7 @@ array: the variant regions "skinstrip" picks (tools/modelconvert.py) */
 #define PCV_STRIPS 2u
 /* SSPR's levels (tools/sspr.py): a rigid block whose own triangle list follows its records */
 #define PCV_LEVEL 4u
+static PSP_MAIN_SIDE unsigned long model_drawn_indices = 0, model_drawn_vertices = 0; /* psp_ge_pcv_report */
 #define PCV_BAD 0x80000000u
 struct pcv_header
 {
@@ -13480,6 +13481,9 @@ int psp_ge_pcv_check(void *block, const void *raw, unsigned int raw_bytes, const
 /* the 300-frame report's line (psp_geo.c) */
 void psp_ge_pcv_report(void)
 {
+	platform_log("GE: model parts drawn in the last 300 frames: %lu indices (the GE's vertices), %lu buffer vertices; %.0f and %.0f a frame",
+		model_drawn_indices, model_drawn_vertices, (double)model_drawn_indices / 300.0, (double)model_drawn_vertices / 300.0);
+	model_drawn_indices = model_drawn_vertices = 0;
 	platform_log("GE: preconvert: %lu draws took a baked buffer as it was read, %lu refused (not as baked), %lu blocks relocated, %lu malformed; preconvertcheck differences: records %lu, plans %lu, spheres %lu, runs %lu; skinstrip: %lu batches drawn as strips",
 		pcv_answers, pcv_refused, pcv_relocated, pcv_bad_blocks, pcv_differ_records, pcv_differ_plans, pcv_differ_spheres,
 		pcv_differ_runs, skin_strip_draws);
@@ -16489,6 +16493,14 @@ void psp_ge_draw_model(void *vertices, int vertex_count, int uncompressed, const
 		indices = (const unsigned short *)((const unsigned char *)vertices + ((level->count * 24u + 15u) & ~15u));
 		index_count = (long)level->index_count;
 		strip = 0;
+	}
+	/* what the frame's model parts ask of the GE, counted once a part (as
+	the game draws it, not as the replay draws it again): its indices are the
+	vertices the GE transforms, since it keeps none it has done */
+	if (!PSP_ME_WORK() && !defer_replaying && vertex_count > 0)
+	{
+		model_drawn_indices += (unsigned long)index_count;
+		model_drawn_vertices += (unsigned long)vertex_count;
 	}
 	GE_BENCH_SKIP();
 	GE_PRETOUCH(base_key, TXPT_MODEL_BASE);
