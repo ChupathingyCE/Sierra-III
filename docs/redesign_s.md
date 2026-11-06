@@ -76,6 +76,7 @@ Collision stays the same code against the same world (the rule: collision exact,
 | 2 | S1 for awake scenery (its animation advanced alone) | as 1 |
 | 3 | S2, the level half of bipeds' feature queries reused (the objects' half live), with its check build (recon/skipchange 7a55d714: 0 differences in 27,000 reused level halves against fresh walks; reuse 28% of b30's biped queries, 22% of c10's; play and seeds identical; c10's full dump identical in every object datum word, the allocation difference outside the datums) | as 1 |
 | — | **Milestone:** S1 and S2 on b30, the old update path bypassed for the kinds they take | one PSP pair, `- \| skipchange` (the keep word), b30's flight |
+| — | **Milestone result** (sierra-hw 42169096020, PSP-3000, b30's flight 600-1,950, first look by the master 00:38; recon records it) [M] | **no gain:** tick 44.11 and 44.10 off, 44.33 with skipchange (one run; run 4 cut), against S1 + S2's ~1.75-3.1. See §5, "What the milestone says" |
 | 4 | S4's half-rate form | side-by-sides and the outcome census on b30's flight, the snowfield and a30 |
 | 5 | S3 on (after R's milestone frees the ME) | AITICKOLD's own proofs; the window's cut passes counted |
 | 6 | S5's pieces that fit the new shape (T5's prefetch in the reshaped loops; T7) | as 1 |
@@ -89,6 +90,18 @@ Collision stays the same code against the same world (the rule: collision exact,
 - The multiplayer boundary: what the server consumes or checks stays exact (the rules, the 30 Hz tick, collision's answers, tag indices, object slots). S1 and S2 are exact; S3 and S4 touch only local AI and far local bipeds.
 
 ## 5. Risks and open questions
+
+**What the milestone says** (2026-11-06 00:40, bottleneck's reading of the code at recon/skipchange 50863234) [D for the code, U for the costs]: S2 reused the level half in ~30% of biped queries on the flight, and the tick didn't move. The code shows where its cost may hide, none of which the emulator's estimate (walk time saved, on the emulator's clock) counted:
+- **every non-reused query pays a keep** (~70% of them): the level half packed and copied into the biped's slot (up to 896 bytes, the leaves, the breakable flags), with the prisms' unused points zeroed. A moving biped pays it every query and never reuses it;
+- **the slot table is ~27 KB** (24 slots of ~1.1 KB), over the 16 KB data cache, and **its slot search walks the 24 `caller` words, each on its own line**, up to three times a query (reuse, then keep's two lookups); with more than 24 bipeds asking, slots are given up in turn and thrash;
+- **the walk it saves may cost less on the PSP than the emulator's 15 µs:** SCRATCHBSP holds the BSP's top 304 nodes in the scratchpad there.
+S1's share of the result isn't separated (its count of bodies asleep this way on the flight is in the run's log, not yet read).
+
+What follows from the rule: the milestone prices the part once; it doesn't send S1 and S2 back as levers to tune. What it changes is S2's design, and the sum: without S1 and S2, S on b30's flight is ~10.9-15.7 of the -16.6 needed, so S3 and S4 (and S4's ME form) carry it, and the margin grows. The design S2 would need:
+- **keep only on a repeat:** a 24-byte key per biped compared each query; the answer kept only when the key matched the last query (a biped standing still), so a moving biped pays a compare and nothing else;
+- **the table split:** the callers' keys in one small array (one or two lines), the answers apart, sized to the bipeds that stand still (the census gives the count);
+- **counts before time:** reused, kept and given-up per query from the run's own log, and the emulator's instruction counts of keep against walk, before any second pair.
+
 
 - **b40's cliff** (bare tick 35.9, -28% to 25.8; re-run 42156503649 [M]) has the smallest far share (14% of biped time), so S4 buys least there; its -10.1 ms leans on S2 and AITICKOLD (the turrets give ~0.4 at most). Its per-kind object costs aren't timed yet: the snowfield's objcost run's twin on the cliff would price it.
 - **The predicates (S1)** must be read in the engine: what an at-rest vehicle's update does that isn't visible in its play hash (timers, effects, sounds). The check build is the guard.
