@@ -6,7 +6,7 @@ Labels: [M] measured on the PSP, [E] emulator or estimate, [D] read in code or d
 
 ## 1. The target, and where the tick goes
 
-**Target:** a bare tick of ≤ 25.8 ms on b30's flight, with drawing, other and frame end at ~15 ms a frame; ≤ 22.3 if they end at ~20 (plan §1). Today it's 40.6 ms bare (ledger 3 less the instruments' ~7%; ledger1 on b151 replaces it overnight).
+**Target:** a bare tick of ≤ 25.8 ms on b30's flight, with drawing, other and frame end at ~15 ms a frame; ≤ 22.3 if they end at ~20 (plan §1). Today it's **42.4 ms bare** (b151's ledger1 bench, PSP-3000, 2026-11-05; ledger 3 less the instruments' ~7% had estimated 40.6).
 
 **Where it goes** (b30's flight, PSP-3000 sampler, 42114568213) [M]: collision 25.6%, AI 16.5, node matrices and animation 11.3, units and vehicles 9.3, other objects 7.7, libm and memcpy 5.3, effects 3.4, tags 2.9, audio 2.4, scripts 1.6, the rest 14.5. It waits on memory for 56-68% of its cycles on every stretch, its instruction and data misses close to even in cost (`cpu_cost_map.md` §2).
 
@@ -20,14 +20,14 @@ Labels: [M] measured on the PSP, [E] emulator or estimate, [D] read in code or d
 
 | # | Piece | Exact? | Ceiling on b30's flight, ms a tick | Evidence |
 |---|---|---|---|---|
-| S1 | Unchanged objects skip their update | exact | ~1.5-3 (of the 6.8 measured, the Pelicans' 2.4 aren't at rest: see S1; the rest ~4.2, scaled to the bare tick and a predicate) | objcost 42141971439 [M]; whyawake1 [E] |
+| S1 | Bodies held up by sleeping objects sleep too | exact | ~1-2 (of the 6.8 measured unchanged, the Pelicans' 2.4 are scripted and the scenery's 2.3 animated: what's left is bodies and small work) | objcost 42141971439 [M]; whyawake1-3 [E] |
 | S2 | Collision's feature queries: the level half reused while the sphere is unchanged | exact | ~0.75-1.1 | s2census1 [E] |
 | S3 | AITICKOLD: the AI's think on the ME from a world one tick older | plays the same (built, Sheepdog01's earlier OK to experiment) | ~5.9 (-14.5%) | PSP-3000 pair 42041663929 [M]; needs ME room R frees |
 | S4 | The far-biped tier | plays the same | ~2.3 (half rate) to ~4.6 (on the ME a tick behind) | objcost2 shares × the PSP's 24.3 [U on E × M] |
 | S5 | T5 (walks that overlap their misses) and T7 (data laid out for the tick) | exact | ~0.5-1 | `redesign_tick.md` |
 | — | The GE's toll, cut by R and B | exact | ~2-4 | lead A [U on E and M] |
 
-**Sum** [U]: 40.6 less 13.2 to 19.5 → **~21-27 ms a tick** against 25.8 (or 22.3). The floor's tick is reached around the middle of the ranges with drawing at ~15 ms a frame; with drawing at ~20 it needs the upper half.
+**Sum** [U], on b151's 42.4: less 12.65 to 18.8 → **~23.6-29.8 ms a tick** against 25.8 (or 22.3 with drawing at ~20). The floor's tick on the flight needs the upper half of the ranges; b30's landing (35.3, its bodies a quarter of the biped time, slept exactly by S1) and b40's snowfield (37.6, its far bipeds a third) need less.
 
 ### S1. The unchanged-object skip
 

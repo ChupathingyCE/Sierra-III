@@ -9,12 +9,11 @@ Labels: [M] measured on the PSP, [E] emulator or estimate, [D] read in code or d
 ## 0. What the plan delivers
 
 - **The floor first: real time (30 ticks a second, at least 15 fps) on every benched stretch** (the goals, `redesign_tick.md`). The target (30 fps per level) follows on the lighter levels; on the heaviest it isn't promised (§5).
-- **Viability at Gate 1** (2026-11-05 19:20, the counts in §4 done) [U on M]:
-  - **Six of the ten benched stretches** (b30's opening and beach, c20, d20's walk and flashlight, b40's opening) reach the floor with the parts below. d20's flashlight needs R's light pass.
-  - **b30's flight:** the floor is within reach exactly, with no slack: R meets the ME's need (~-31 to -35 ms a frame against -33, ~-29 to -31 from the models alone if the level's share falls through), the GE fits on the current tock, and S's exact pieces reach ~25-29 ms a tick against 25.8 (§3 S).
-  - **b30's landing:** S's need is smaller (-30%), but R falls ~3-7 ms a frame short on the ME (its decals are dynamic).
-  - **b40's cliff and snowfield:** S needs -29% and -35%. Their objects are 96-97% unchanged, so the exact skip is likelier to be worth more there, but it's timed only on b30. R takes drawing from ~39 ms a frame; the ME fits already on the snowfield and is ~1.1× on the cliff.
-  - **So the redesign reaches the floor on most of the campaign exactly, and on the heaviest stretches only if every piece lands near its ceiling.** §5 asks Sheepdog01 what covers the margin.
+- **Viability, on b151's bare bench** (2026-11-05 21:40; §1) [U on M]:
+  - **Most stretches reach the floor with R and S:** b30's opening and beach, c20, d20's walk and flashlight (with R's light pass), b40's opening, and b30's landing (its tick needs -27%, and its bodies are a quarter of its biped time, which S1 sleeps exactly).
+  - **b30's flight is the hardest:** its bare tick is 42.4 ms (-39% to 25.8), and S's pieces reach ~23.6-29.8 (§3 S): the floor needs the upper half of their ranges. R takes ~29-31 ms of the ME's ~34 needed from the models alone; the level's share is unverified (`redesign_r.md` §2.6).
+  - **b40's snowfield** needs -31% on the tick; its far, out-of-the-fight bipeds are a third of its biped time, so S4 is worth most there. Its timed run (recon) prices it.
+  - **So the margin sits on b30's flight.** Sheepdog01's ruling 3 covers it: "plays the same" on the moving bipeds first (the in-fight 20-40 band is the next pool after S4), the compromise freeze only if that's hopeless.
 
 ## 1. The frame budget
 
@@ -27,29 +26,27 @@ Every unit has 1000 ms a second. One second of real time at 15 fps asks each uni
 - The work a frame is held as measured, at today's 7-15 fps. At higher frame rates less changes between frames (R's saving grows, §3), and contention is held as measured.
 - The tick's cost is taken as independent of the frame rate. That's true of the game's work, not of contention: the toll depends on what the GE reads beside the ticks.
 
-**The baseline.** Ledger 3 (`frame_timeline.md`, tock162 64647bb5) carries the instruments `hwthreads frametrace gebusy gebusy2 mevisring` and the PC sampler. Measured against a bare run, they cost b30's flight tick +5.2% and +1.8%: ~7% [M, lab sierra-hw 42114568213]. So the ticks below are ledger 3's less 7%. The other columns keep ledger 3's figures; their instruments' cost isn't split yet.
+**The baseline: b151's bare bench** (ledger1, PSP-3000, the figures runs without instruments; the lab's findings @f076f1770, stretches.tsv; read 2026-11-05 21:35). It replaces ledger 3, which carried the instruments (~7% on the tick) and predated SKINW. The GE's split is scaled from the instrumented runs [U on M].
 
-| At 15 fps, ms a second | 30 ticks (bare) | One tick (bare) | Main CPU | ME | GE work | GE stalled |
+| At 15 fps, ms a second | 30 ticks | One tick | Main CPU | ME | GE work | GE stalled |
 |---|---:|---:|---:|---:|---:|---:|
-| b30 opening | 996 | 33.2 | 1305 | 689 | 542 | 28 |
-| **b30 flight** | **1218** | **40.6** | **1855** | **1498** | **1252** | 39 |
-| **b30 landing** | **1101** | **36.7** | **1831** | **1572** | **1209** | 20 |
-| b30 beach | 947 | 31.6 | 1405 | 844 | 479 | 14 |
-| c20 | 530 | 17.7 | 885 | 775 | 632 | 8 |
-| d20 swamp walk | 945 | 31.5 | 1386 | 916 | 360 | 74 |
-| d20 flashlight on | 604 | 20.1 | 1097 | **1379** | 430 | 708 |
-| b40 opening | 304 | 10.1 | 566 | 494 | 250 | 15 |
-| **b40 cliff path** | **1094** | **36.5** | **1673** | **1110** | 694 | 46 |
-| **b40 snowfield** | **1186** | **39.5** | **1782** | 656 | 550 | 2 |
+| b30 opening | 970 | 32.4 | 1258 | 743 | 368 | 100 |
+| **b30 flight** | **1270** | **42.4** | **1880** | **1511** | 898 | 171 |
+| **b30 landing** | **1059** | **35.3** | **1698** | **1387** | 844 | 153 |
+| b30 beach | 1005 | 33.5 | 1425 | 874 | 357 | 42 |
+| c20 | 579 | 19.3 | 901 | 788 | 420 | 141 |
+| d20 swamp walk | 922 | 30.7 | 1325 | 851 | 284 | 144 |
+| d20 flashlight on | 615 | 20.5 | 1095 | **1414** | 345 | 796 |
+| b40 opening (route-played; not comparable with ledger 3) | 581 | 19.4 | 952 | 876 | 330 | 206 |
+| b40 cliff path (a lighter fight in this run; re-run 42156503649) | (429) | (14.3) | (767) | (596) | (222) | (39) |
+| **b40 snowfield** | **1127** | **37.6** | **1547** | 676 | 396 | 3 |
 
 What it says:
-- **The main CPU is over on every stretch but c20 and b40's opening.** The ticks alone are over on the four heavy stretches, and at 93-100% on three more.
-- **What one tick may cost.** With drawing, other and frame end at ~15 ms a frame, a tick has 25.8 ms on every stretch ((1000 − 15 × 15) / 30). Today's bare ticks need: b30's flight −36%, landing −30%, b40's snowfield −35%, cliff −29%, b30's opening −22%, beach −18%, d20's walk −18%. With drawing left at ~22 ms a frame, the flight needs −45%.
-- **"Other" is ~5 ms a frame of that budget** (recon, 2026-11-05, b30's flight, the ledger bench's sampler 42114568213; row other_split_b30_flight) [M]: particles and effects 24%, the game loop and time 11%, input and aim assist 8%, collision vectors 8%, sound 8%, the rest thin. It's per-frame game work, so it doesn't shrink as fps rises. That leaves drawing ~10 ms of the floor's ~15. A save path (game_state_write_to_file, 2.5% of 'other') runs during the flight: worth a look.
-- **Drawing has to fall 2-3× on the heavy stretches** (b30's flight 42.5 ms a frame of drawing, other and frame end; landing 48.7; b40's 38.6-39.7).
-- **The ME is over on b30's flight and landing and on d20's flashlight.** The replay must lose ~33 ms a frame on the flight, ~38 on the landing and ~25 on the flashlight.
-- **The GE's own work, in ledger 3, is over on b30's flight (1252) and landing (1209)**, but that column is stale (next bullet). d20's flashlight is the ME's lateness: the GE's own work (430) fits.
-- **On the current tock the GE fits the floor on the flight** (the master, 2026-11-05 18:04) [M]. Ledger 3's GE row predates three GE changes: SKINW (968fb8ce, each bending batch at its highest bone slot in use: on a vertex-bound GE, C6, the likeliest cause), DRAINFLIGHT (a8fd86be) and the bake w157m → w162s. Since then the flight's GE has read 58.7 ms a frame (T4's run, PSP-3000, 42088765228) and 62.5 over game time 600-2000 (C6's pair, PSP-1000, 42131785138), both with gebusy2: ~885-945 ms a second at 15 fps. So **the GE isn't a floor wall on the flight**; ledger 3's GE column is stale for the tock until the first ledger1 bench on it replaces the row. At the target (30 fps) the GE is still ~1.8-1.9× over on the flight: there it needs fewer vertices or bytes (C6).
+- **The ticks alone are over the second on b30's flight (1270) and landing (1059) and b40's snowfield (1127)**, and at the line on b30's beach (1005). The cliff waits on its re-run.
+- **What one tick may cost:** with drawing, other and frame end at ~15 ms a frame, a tick has 25.8 ms. Today's bare ticks need: **b30's flight -39%** (42.4), the snowfield -31% (37.6), the landing -27% (35.3), the beach -23% (33.5), b30's opening -20%, d20's walk -16%.
+- **Drawing, other and frame end** run 19-43 ms a frame on the heavy stretches (the flight 40.6, the landing 42.6): they have to come to ~15, and 'other' alone is ~5 (recon's split), so drawing to ~10.
+- **The ME is over on b30's flight (1511, the replay must lose ~34 ms a frame), the landing (1387, ~26) and d20's flashlight (1414, ~28; its replay is 78.4 ms, the main CPU asleep 18.9 ms in drawing waiting for it).**
+- **The GE's own work fits the floor everywhere** (at most 898 ms a second, the flight). d20's flashlight is the ME's lateness (796 stalled), not the GE's work. At the target (30 fps) the GE is ~1.8× on the flight: fewer vertices (C6).
 
 ## 2. Why the time is what it is
 
@@ -100,7 +97,7 @@ Today every object's work runs every tick. The redesigned tick computes what's r
   - **So the exact change-rate form doesn't close S's gap** [U]. Reuse keyed on unchanged inputs pays on the feature queries (a fifth to two fifths), little on the rest: of collision's ~25% of b30's flight tick, roughly 1 ms a tick, against the 4-6 ms missing. The objects mostly don't change (C3b by object), but the queries are made by the ones that do.
 - **The unchanged objects' update time (C3, 2026-11-05 19:18, recon)** [M, PSP-1000, sierra-hw 42141971439, game time 600-1799; row c3_objcost_ms_b30_flight; a census build with a mismatched profile, its tick ~47-60 ms, wall clock per update]. Object updates take 34.9 ms a tick; **6.8 (19%) is in updates that left the object unchanged**: parked or idle vehicles 2.4 (2.1 a tick at ~1.1 ms), the 53 awake scenery 2.3 (the ~220 asleep cost only the check), half the weapons 0.45, the rest small. The moving bipeds hold 22.9 ms (23.6 a tick at ~970 µs each).
   - An exact skip has to know beforehand that an update won't change its object, so 6.8 is a ceiling. Scaled to the bare tick (~40 against the run's ~47-60) it's ~5 ms, and a skip that predicts well takes perhaps half to most of it: **~2.5-5 ms a tick** [U].
-  - **Where S stands for Gate 1** (b30's flight, bare) [U on M]: 40.6 ms a tick, less AITICKOLD (-14.5%, needs ME room), the toll R and B remove (~2-4), T5 and T7 (~0.5-1), collision's repeats (~1), the unchanged-object skip (~2.5-5): **~25-29 ms against 25.8.** The floor's tick is within reach exactly, at the high end of every piece, with no slack. If drawing ends at ~20 ms a frame rather than 15, the tick has 22.3 ms and S falls ~3-6 short.
+  - **Where S stands** (b30's flight, b151's bare tick 42.4 ms) [U on M]: less AITICKOLD (-14.5%, ~6.1, needs ME room), the toll R and B remove (~2-4), T5 and T7 (~0.5-1), S2's level half (~0.75-1.1), S1's sleeping bodies (~1-2), S4's far-biped tier (~2.3-4.6): **~23.6-29.8 ms against 25.8.** The floor's tick on the flight needs the upper half of those ranges (`redesign_s.md` §2).
   - **What's left beyond exact work:** the moving bipeds' 23 ms a tick (~970 µs each). Only "plays the same" work reaches them (the AI already thinks at half rate: aicad3).
 - **S's "plays the same" piece, the far-biped tier** (Sheepdog01 19:28, ruling 3; 19:34: agreed). Three forms, each stopped before only because it had to be exact:
   - **far bipeds at half rate:** a biped far from the player and out of combat updated every other tick with twice the time step, as the AI already thinks. If about half the bipeds are far, ~5-6 ms a tick on b30's flight [U], enough for S's margin;
