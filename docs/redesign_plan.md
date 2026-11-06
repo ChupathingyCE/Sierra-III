@@ -9,9 +9,12 @@ Labels: [M] measured on the PSP, [E] emulator or estimate, [D] read in code or d
 ## 0. What the plan delivers
 
 - **The floor first: real time (30 ticks a second, at least 15 fps) on every benched stretch** (the goals, `redesign_tick.md`). The target (30 fps per level) follows on the lighter levels; on the heaviest it isn't promised (§5).
-- **Viability, as of this page** [U on M]:
-  - **Six of the ten benched stretches** (b30's opening and beach, c20, d20's walk and flashlight, b40's opening) reach the floor on paper with the parts below and the pieces already measured.
-  - **The four heaviest** (b30's flight and landing, b40's cliff path and snowfield) need every unit cut at once (§1). The known ceilings don't add up to that yet. Counts C3, C4 and C6 decide whether the parts close it, and §5's first decision is what happens if they don't.
+- **Viability at Gate 1** (2026-11-05 19:20, the counts in §4 done) [U on M]:
+  - **Six of the ten benched stretches** (b30's opening and beach, c20, d20's walk and flashlight, b40's opening) reach the floor with the parts below. d20's flashlight needs R's light pass.
+  - **b30's flight:** the floor is within reach exactly, with no slack: R meets the ME's need (~-31 to -35 ms a frame against -33), the GE fits on the current tock, and S's exact pieces reach ~25-29 ms a tick against 25.8 (§3 S).
+  - **b30's landing:** S's need is smaller (-30%), but R falls ~3-7 ms a frame short on the ME (its decals are dynamic).
+  - **b40's cliff and snowfield:** S needs -29% and -35%. Their objects are 96-97% unchanged, so the exact skip is likelier to be worth more there, but it's timed only on b30. R takes drawing from ~39 ms a frame; the ME fits already on the snowfield and is ~1.1× on the cliff.
+  - **So the redesign reaches the floor on most of the campaign exactly, and on the heaviest stretches only if every piece lands near its ceiling.** §5 asks Sheepdog01 what covers the margin.
 
 ## 1. The frame budget
 
@@ -94,7 +97,10 @@ Today every object's work runs every tick. The redesigned tick computes what's r
 
   Bipeds carry nearly all of it (their vectors repeat 30-64%, their feature queries 25-46%); vehicles', projectiles' and callerless queries ~0%.
   - **So the exact change-rate form doesn't close S's gap** [U]. Reuse keyed on unchanged inputs pays on the feature queries (a fifth to two fifths), little on the rest: of collision's ~25% of b30's flight tick, roughly 1 ms a tick, against the 4-6 ms missing. The objects mostly don't change (C3b by object), but the queries are made by the ones that do.
-  - **Where S stands for Gate 1** (b30's flight, bare) [U on M]: 40.6 ms a tick, less AITICKOLD (-14.5%, needs ME room), the toll R and B remove (~2-4), T5 and T7 (~0.5-1), collision's repeats (~1): **~29-31 ms against 25.8.** A gap of ~3-5 ms a tick remains with no exact source found. The unchanged objects' own updates (69-73% of b30's objects, 96-97% of b40's) are the one count not yet priced: whether skipping them saves time depends on what they cost, and the moving bipeds are likely most of it [U].
+- **The unchanged objects' update time (C3, 2026-11-05 19:18, recon)** [M, PSP-1000, sierra-hw 42141971439, game time 600-1799; row c3_objcost_ms_b30_flight; a census build with a mismatched profile, its tick ~47-60 ms, wall clock per update]. Object updates take 34.9 ms a tick; **6.8 (19%) is in updates that left the object unchanged**: parked or idle vehicles 2.4 (2.1 a tick at ~1.1 ms), the 53 awake scenery 2.3 (the ~220 asleep cost only the check), half the weapons 0.45, the rest small. The moving bipeds hold 22.9 ms (23.6 a tick at ~970 µs each).
+  - An exact skip has to know beforehand that an update won't change its object, so 6.8 is a ceiling. Scaled to the bare tick (~40 against the run's ~47-60) it's ~5 ms, and a skip that predicts well takes perhaps half to most of it: **~2.5-5 ms a tick** [U].
+  - **Where S stands for Gate 1** (b30's flight, bare) [U on M]: 40.6 ms a tick, less AITICKOLD (-14.5%, needs ME room), the toll R and B remove (~2-4), T5 and T7 (~0.5-1), collision's repeats (~1), the unchanged-object skip (~2.5-5): **~25-29 ms against 25.8.** The floor's tick is within reach exactly, at the high end of every piece, with no slack. If drawing ends at ~20 ms a frame rather than 15, the tick has 22.3 ms and S falls ~3-6 short.
+  - **What's left beyond exact work:** the moving bipeds' 23 ms a tick. Only "plays the same" work reaches them (the AI already thinks at half rate: aicad3). That's §5's first decision.
 - **Milestone:** C3's census done and S's pieces chosen against the target; the PSP prices S when the first of them replaces the old tick path on b30.
 - **Stop rule:** if C3 shows the pieces can't reach the target exactly or "plays the same", Sheepdog01 decides (§5.1).
 - **Fallback:** the old tick path behind S's keep word; it stays the safety net for a failure, per CLAUDE.md's failure rule.
@@ -200,11 +206,16 @@ C3, C4 and C6 decide the heavy stretches; C1 decides whether R is built at all.
 - **C1, the order of magnitude** [E]: one frame's model commands on b30 are ~37,800 words (~150 KB, `pdc_plan.md`'s census), ~560 bytes a hit (pdcprobe's ~140 words). A map's whole store is a multiple of one frame's visible set, by how many parts, levels of detail and passes it holds [U]. The frame list R shrinks is 768 KB. Whether the store fits is C1's question.
 - **C4, what's known** [E]: on b30 the models were 61% of the replay's ME time in the older split by kind (mekinds, in `pdc_plan.md`); on c10 the models' steps are bind + state + lighting 38%, geometry 29%, two-sided and glow passes 24%, convert 6.5%, node matrix 3% [M, meparts 40961270594]. On b30's flight that puts the models at ~43 of the replay's 70 ms and the level and the rest at ~27 [U]. R's need there (−33 ms) takes most of the models' removable share plus part of the level's: C4 settles it.
 
-## 5. Decision points for Sheepdog01
+## 5. Decision points for Sheepdog01 (Gate 1, 2026-11-05)
 
-1. **After C3, C4 and C6:** if the parts' ceilings don't reach the floor on the four heavy stretches, what fills the gap there: "plays the same" work (the simulation rule of 2026-10-30), or compromises. Compromises are frozen apart from L15, FX15, RENDERTICK, AIFAR and PRIO60 (CLAUDE.md, 2026-10-25 and 10-29), so this one is Sheepdog01's to lift.
-2. **After C1:** whether R fits, and the go to build it as a separate path.
-3. **The target:** 30 fps per level looks reachable with R and S on the lighter levels: a10 and c10 at 20.7 fps today, c20 17.2, c40 27.5 (tock161's ladder, PSP-1000 [M]). It isn't promised on b30, a30 or d20 (×2.2-3.7). Whether to chase it there comes after the floor.
+1. **R's go:** build retained rendering as a separate path. Its store fits (C1, with C4's words a form), its dynamic floor is small (C2), it meets b30 flight's ME need and carries d20's light pass. It frees the ME room AITICKOLD needs, so S waits on it. The flashlight's form (the GE's spotlight per vertex, or the cone times the gel projected per pixel) is settled on R's design page by a side-by-side against the PC reference (Sheepdog01, 18:15: worth considering if it improves performance for a similar benefit; the gel's pattern is what's missing today).
+2. **S's go:** build the tick by change rate with its pieces: AITICKOLD on the room R frees, the unchanged-object skip (exact), collision's reuse on the repeating feature queries (exact), T5 and T7. Its target is a bare tick of 25.8 ms on b30's flight.
+3. **The margin on the heaviest stretches:** if R and S land below their ceilings, b30's landing and the b40 stretches stay a few ms over the floor. What may cover it:
+   - "plays the same" work on the moving bipeds' 23 ms a tick (the simulation rule of 2026-10-30; collision stays exact): for example, a far biped's update at a lower rate, as the AI already is; or
+   - lifting the compromise freeze for those stretches (frozen apart from L15, FX15, RENDERTICK, AIFAR and PRIO60; L15 held in reserve).
+
+   This can wait until R's and S's milestones measure what they really give. Deciding now only sets whether that work is designed beside them.
+4. **The target:** 30 fps per level looks reachable with R and S on the lighter levels: a10 and c10 at 20.7 fps today, c20 17.2, c40 27.5 (tock161's ladder, PSP-1000 [M]). It isn't promised on b30, a30 or d20 (×2.2-3.7). Whether to chase it there comes after the floor.
 
 ## 6. How it's built
 
@@ -225,7 +236,7 @@ The redesign rule (Sierra-III CLAUDE.md and the lab's, "Redesign work", Sheepdog
 - Each count's result goes into the lab's findings and this page's §1 and §3, and the dashboard's Redesign tab follows (`redesign.tsv`).
 - **Ends when** C1, C3, C4 and C6 are in.
 
-**Gate 1 (Sheepdog01): the go per part.**
+**Gate 1 (Sheepdog01): the go per part.** Ready 2026-11-05 19:20 (§5).
 - For each heavy stretch, the parts' ceilings from Phase 0 against §1's gap.
 - Sheepdog01 rules on §5.1 (what fills any gap: "plays the same" or a lifted compromise) and §5.2 (R's go).
 - A part without its go stays a plan; its levers carry on, saying how they fit it.
