@@ -28,7 +28,7 @@ Labels: [M] measured on the PSP, [E] emulator or estimate, [D] read in code or d
 | S5 | T5 (walks that overlap their misses) and T7 (data laid out for the tick) | exact | ~0.5-1 | `redesign_tick.md` |
 | — | The GE's toll, cut by R and B | exact | ~2-4 | lead A [U on E and M] |
 
-**On b40's snowfield** (bare tick 37.6, -31% to 25.8) [U on M]: S4's far tier ~2.75 (half rate) to ~5.5 (the ME); S1's unchanged vehicles up to ~3.7 if their predicate holds: on both the cliff and the snowfield they are the covenant gun turrets (`vehicles\c gun turret`), at rest and unchanged every update, kept awake because the vehicle sleep (b40-b89) refuses a vehicle carrying a unit (recon, whyawake4 42161237964 [E]; whyawake5 42161670797 names whether a gunner is aboard and which words move). If the turrets are empty, or carry a gunner whose state doesn't move, they're S1's next piece: a turret predicate beside the bodies'. Bodies ~0.6; S2's level half and AITICKOLD not yet priced there. The snowfield's -11.8 ms looks reachable with S4 and S1's vehicles together.
+**On b40's snowfield** (bare tick 37.6, -31% to 25.8) [U on M]: S4's far tier ~2.75 (half rate) to ~5.5 (the ME); S1's unchanged vehicles are the covenant gun turrets (`vehicles\c gun turret`; recon, whyawake4 42161237964 and whyawake5 42161670797 [E]), and **they give S1 little:** two thirds of their unchanged updates have a gunner aboard (AI's; the vehicle sleep rightly refuses them), and the empty third's aim servo still moves its aim and look block on a third of updates. The exact piece, empty turrets with a still aim block, is under ~0.4 ms of the 3.7 [U, shares × the PSP figure]: an open S1 note, not a slice. Bodies ~0.6; S2's level half and AITICKOLD not yet priced there. **So the snowfield's -11.8 ms leans on S4 (its ME form), AITICKOLD and S2**, not on S1's vehicles: AITICKOLD's and S2's share there is the next thing to price.
 
 **Sum** [U], on b151's 42.4: less 12.65 to 18.8 → **~23.6-29.8 ms a tick** against 25.8 (or 22.3 with drawing at ~20). The floor's tick on the flight needs the upper half of the ranges; b30's landing (35.3, its bodies a quarter of the biped time, slept exactly by S1) and b40's snowfield (37.6, its far bipeds a third) need less.
 
@@ -90,8 +90,7 @@ Collision stays the same code against the same world (the rule: collision exact,
 
 ## 5. Risks and open questions
 
-- **b40's cliff** (bare tick 35.9, -28% to 25.8; re-run 42156503649 [M]) has the smallest far share (14% of biped time), so S4 buys least there; its -10.1 ms leans on S1's turrets, S2 and AITICKOLD. Its per-kind object costs aren't timed yet: the snowfield's objcost run's twin on the cliff would price it.
-- **The turrets (S1, b40):** a manned turret's unit is a biped the tier or the AI may still touch, so sleeping the turret has to leave its gunner's update intact; whyawake5 says which case b40 has.
+- **b40's cliff** (bare tick 35.9, -28% to 25.8; re-run 42156503649 [M]) has the smallest far share (14% of biped time), so S4 buys least there; its -10.1 ms leans on S2 and AITICKOLD (the turrets give ~0.4 at most). Its per-kind object costs aren't timed yet: the snowfield's objcost run's twin on the cliff would price it.
 - **The predicates (S1)** must be read in the engine: what an at-rest vehicle's update does that isn't visible in its play hash (timers, effects, sounds). The check build is the guard.
 - **The half-rate tier's physics:** a doubled step on a slope or a fall can land a biped differently; that's what the side-by-sides look for.
 - **The in-fight 20-40 band** is the margin's home if the pieces fall short: Sheepdog01's ruling 3 is "plays the same" first, then the compromise freeze only if that's hopeless.
