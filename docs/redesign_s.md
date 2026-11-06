@@ -21,8 +21,8 @@ Labels: [M] measured on the PSP, [E] emulator or estimate, [D] read in code or d
 
 | # | Piece | Exact? | Ceiling on b30's flight, ms a tick | Evidence |
 |---|---|---|---|---|
-| S1 | Bodies held up by sleeping objects sleep too | exact | ~1-2 (of the 6.8 measured unchanged, the Pelicans' 2.4 are scripted and the scenery's 2.3 animated: what's left is bodies and small work) | objcost 42141971439 [M]; whyawake1-3 [E] |
-| S2 | Collision's feature queries: the level half reused while the sphere is unchanged | exact | ~0.75-1.1 | s2census1 [E] |
+| S1 | Bodies held up by sleeping objects sleep too | exact | **~0 on the flight** (~1 body a tick; est. ~1-2 by subtraction); a d20 piece | objcost 42141971439 [M]; whyawake1-3 [E] |
+| S2 | Collision's feature queries: the level half reused while the sphere is unchanged | exact | **~0 [M], shelved 11-06** (est. ~0.75-1.1) | s2census1 [E]; two PSP pairs, §5 |
 | S3 | AITICKOLD: the AI's think on the ME from a world one tick older | plays the same (built, Sheepdog01's earlier OK to experiment) | ~5.9 (-14.5%) | PSP-3000 pair 42041663929 [M]; needs ME room R frees |
 | S4 | The far-biped tier | plays the same | ~2.3 (half rate) to ~4.6 (on the ME a tick behind) | objcost2 shares × the PSP's 24.3 [U on E × M] |
 | S5 | T5 (walks that overlap their misses) and T7 (data laid out for the tick) | exact | ~0.5-1 | `redesign_tick.md` |
@@ -102,7 +102,7 @@ What follows from the rule: the milestone prices the part once; it doesn't send 
 - **the table split:** the callers' keys in one small array (one or two lines), the answers apart, sized to the bipeds that stand still (the census gives the count);
 - **counts before time:** reused, kept and given-up per query from the run's own log, and the emulator's instruction counts of keep against walk, before any second pair.
 
-**S2 v2, kept only on a repeat** (recon/skipchange 2893d7b4, skip14 42175805803 [E], strict): play and seeds identical on b30, c10 and d20; on b30, of 30,000 biped queries, reused 26% (v1 30%), **kept 8% (v1 67%)**, too big 135 (v1 739); the answers' store ~9 KB (8 slots) against ~27 KB, and a moving biped pays a 14-word hash. Its price is a PSP pair on b30's flight (the master's call); if it reads ~0 again, S2 is shelved with `revive_if: under a collision redesign`.
+**S2 v2, kept only on a repeat** (recon/skipchange 2893d7b4, skip14 42175805803 [E], strict): play and seeds identical on b30, c10 and d20; on b30, of 30,000 biped queries, reused 26% (v1 30%), **kept 8% (v1 67%)**, too big 135 (v1 739); the answers' store ~9 KB (8 slots) against ~27 KB, and a moving biped pays a 14-word hash. **Its pair read ~0 too** (sierra-hw 42179121901, PSP-3000, b30's flight [M]): tick 43.61 and 43.56 off, 43.64 and 43.72 with it. **S2 is shelved** (`revive_if: under a collision redesign`), and S goes on with S3 and S4. What the two pairs say about the ground: reusing a quarter to a third of the level halves buys nothing measurable on the PSP, so the level half's walk is cheap there (SCRATCHBSP's top nodes) [U]; collision's cost on the flight is elsewhere (the objects' half, the vector tests).
 
 
 - **b40's cliff** (bare tick 35.9, -28% to 25.8; re-run 42156503649 [M]) has the smallest far share (14% of biped time), so S4 buys least there; its -10.1 ms leans on S2 and AITICKOLD (the turrets give ~0.4 at most). Its per-kind object costs aren't timed yet: the snowfield's objcost run's twin on the cliff would price it.
