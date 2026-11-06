@@ -122,9 +122,9 @@ Each slice is proven in the emulator for correctness only (§4). A slice slower 
 | # | Slice | Proven by |
 |---|---|---|
 | 1 | The scaffold: the keep word, the instance list written beside today's records (both paths run, R's output unused), the forms baked and their table | the instance list matches the records it shadows (a check pass); a form plus its touch words rebuild today's words for a part **with the lighting and texture memos off** (today's stream depends on what was drawn before), compared word by word against the immediate path on b30, c10, c20, d20 |
-| 2 | Rigid, single-pass, opaque parts from forms; everything else immediate | pictures against the old path (framecrc within the sides' spread) on the four maps |
-| 3 | Skinned parts (bone slots from the PCV plans) | as 2 |
-| 4 | The extra passes (multipurpose, change colour, glow, reflection, detail, two-sided) | as 2, and the cinematics' close-ups |
+| 2 | **Rigid and skinned parts' base pass** from forms (the bone slots from the PCV plans, ~104 words a batch from the instance's node copy); extra passes and everything else immediate | pictures against the old path (framecrc within the sides' spread) on the four maps |
+| 3 | **The reflection pass,** then two-sided, change colour and glow, detail | as 2, and the cinematics' close-ups |
+| 4 | The sky (through the model path, its own depth range) and whatever slice 1's counts still leave immediate | as 2 |
 | 5 | Residency under the touch: not-resident parts to the immediate path, the frame marks and wants as the bind gives them, the store's room logged | as 2 over a whole route (b30's), with the geometry and texture caches churning; no part drawn from a stale address and no in-use texture evicted (checks) |
 | — | **Milestone:** b30's models drawn from forms, the record and replay bypassed for them | one PSP pair, `- \| retained`, b30's flight (the plan's milestone) |
 | 6 | The level's ranges (the bake's cluster order) | as 2 |
@@ -132,6 +132,8 @@ Each slice is proven in the emulator for correctness only (§4). A slice slower 
 | 8 | Planar fog, if the GE's fog reads the same | a side-by-side |
 | — | **Switch-over:** every kind R takes drawn by R; the old record and replay kept only for the dynamic kinds | one PSP pair on the heavy stretches; then the old model path goes |
 | 9 | SSPR (for the target) | pictures at each level of detail's distance |
+
+**Why slices 2-4 were reordered** (2026-11-05, slice 1's counts; the master's rslice1a v3 42153611114, master/rslice1 f81a02d9, d20): of 40 opaque parts a frame, the first draft's slice 2 (rigid, single pass, opaque, not near) took **1.1**; the rest were skinned 17.0, with a reflection pass 15.4, two-sided 4.2, glow 1.3, no baked buffer 0.9. So the skinned parts join the rigid ones in slice 2 and the reflection pass leads slice 3: the milestone measures R on most of the parts, not 3% of them. b30, c10 and c20's counts (rslice1b 42157109120) confirm or adjust the order. Slice 1's proof: play and both seeds identical at every tick on b30's route, c10, c20 and d20; strict clean; compare 1: 0 of 15,807 instances differ; the instance list 12.2 KB a frame, peak 42.6 KB (d20).
 
 ## 4. The proofs
 
