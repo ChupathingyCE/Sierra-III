@@ -221,6 +221,29 @@ static unsigned int *pcv_table = NULL;
 static unsigned int pcv_entries = 0, pcv_start = 0, pcv_end = 0;
 /* read by the renderer on either CPU: set at a map's open only */
 int psp_pcv_on = 0;
+
+/* SSPR (docs/sspr_bake.md): the lower levels the bake made for the models
+that had one level of detail, in a region of their own after the baked
+buffers, found by the 'SSP1' trailer at the pack's end. Under the keep word
+sspr: the directory (a level block's address and bytes for levels 0-3 of
+each baked buffer) is read through
+the cache as the lock needs it, and the listed models' cutoffs are made here
+from each level's error and the pixel budget (ssprhalf, sspr2: 0.5 and 2
+pixels; 1 otherwise) */
+#define SSPR_MAGIC 0x31505353u /* 'SSP1' */
+#define PCV_LEVEL 4u
+struct sspr_model
+{
+	unsigned int tag;
+	float cutoff[5]; /* detail_cutoff_pixels as the engine's pick reads them */
+};
+static struct sspr_model *sspr_models = NULL;
+static unsigned int sspr_model_count = 0, sspr_start = 0, sspr_end = 0, sspr_directory = 0;
+static unsigned long sspr_swaps = 0, sspr_levels_drawn[4];
+static float sspr_e = 1.0f;
+/* the level render_model picked for the model it draws (FIXES_SSPR): 4, the
+top, outside it */
+int psp_model_level = 4;
 /* the blocks are a strip variant's ("skinstrip"): read by the renderer on
 either CPU, set at a map's open only */
 int psp_pcv_strips = 0;
@@ -244,7 +267,8 @@ static unsigned long pcv_checked = 0, pcv_check_differed = 0;
 completion's write-back, which then covers what this writes) */
 static void pcv_loaded(struct geo_entry *e)
 {
-	if (!pcv_table || e->address < pcv_start || e->address >= pcv_end)
+	if (!pcv_table || ((e->address < pcv_start || e->address >= pcv_end) &&
+		(e->address < sspr_start || e->address >= sspr_end)))
 		return;
 	psp_ge_pcv_relocate((void *)e->at, e->size);
 	pcv_loads++;
@@ -1247,6 +1271,9 @@ void psp_geo_frame_end(void)
 		{
 			platform_log("geometry: preconvert: %lu draws locked a baked buffer, %lu blocks read (%lu KB), %lu fell back to the raw buffer",
 				pcv_locks, pcv_loads, pcv_load_bytes / 1024, pcv_fallbacks);
+			if (sspr_model_count)
+				platform_log("geometry: sspr: %lu draws took a level made at bake (levels 0-3: %lu %lu %lu %lu)",
+					sspr_swaps, sspr_levels_drawn[0], sspr_levels_drawn[1], sspr_levels_drawn[2], sspr_levels_drawn[3]);
 			if (pcv_check)
 				platform_log("geometry: preconvertcheck: %lu blocks checked against the run-time conversion, %lu differed",
 					pcv_checked, pcv_check_differed);
@@ -1298,6 +1325,10 @@ void psp_geo_close(void)
 	free(pcv_table);
 	pcv_table = NULL;
 	pcv_entries = pcv_start = pcv_end = 0;
+	free(sspr_models);
+	sspr_models = NULL;
+	sspr_model_count = sspr_start = sspr_end = sspr_directory = 0;
+	psp_model_level = 4;
 	psp_pcv_on = 0;
 	psp_pcv_strips = 0;
 	sceKernelDcacheWritebackRange(&psp_pcv_on, sizeof(psp_pcv_on));
@@ -1336,6 +1367,100 @@ static void psp_geo_window(unsigned int window_at, unsigned int window_bytes, un
 /* a map's tags were loaded: its geometry pack, if it was built with one.
 Called before the texture pack opens, so the texture cache's RAM share is
 settled first */
+/* SSPR's levels, when the pack has them and sspr asks: the trailer read,
+the listed models' cutoffs made from their errors, the levels' range added
+to the baked range (they're read and relocated as baked blocks) */
+static void sspr_open(SceUID file, SceOff file_bytes, unsigned int entries)
+{
+	unsigned int trailer[16], k;
+	const char *why = NULL;
+
+	if (!psp_keep("sspr"))
+		return;
+	sspr_e = psp_keep("ssprhalf") ? 0.5f : psp_keep("sspr2") ? 2.0f : 1.0f;
+	if (file_bytes < 64 || sceIoLseek32(file, (int)(file_bytes - 64), PSP_SEEK_SET) < 0 ||
+		sceIoRead(file, trailer, sizeof(trailer)) != (int)sizeof(trailer) || trailer[0] != SSPR_MAGIC)
+		why = "the pack has no levels (bake it with --sspr)";
+	else if (trailer[4] != entries || trailer[1] % 64 || trailer[3] < trailer[1] ||
+		trailer[3] + 32u * entries > trailer[1] + trailer[2] || trailer[5] + 24u * trailer[6] > trailer[1] + trailer[2] ||
+		(SceOff)(HEADER_BYTES + trailer[1] + trailer[2]) > file_bytes || trailer[6] > 4096)
+		why = "its levels don't fit the pack or its baked buffers";
+	if (!why && trailer[6])
+	{
+		unsigned int words = 6 * trailer[6];
+		unsigned int *raw = malloc(4 * words);
+
+		sspr_models = malloc(sizeof(*sspr_models) * trailer[6]);
+		if (!raw || !sspr_models || sceIoLseek32(file, HEADER_BYTES + trailer[5], PSP_SEEK_SET) < 0 ||
+			sceIoRead(file, raw, 4 * words) != (int)(4 * words))
+			why = "its models couldn't be read";
+		else
+			for (k = 0; k < trailer[6]; k++)
+			{
+				/* level L is drawn below e x D / error_L pixels: the engine
+				steps down from the top while the size is under the cutoff
+				at the level it's at, so that value is level L+1's cutoff;
+				kept non-increasing downwards, and 0 below a level no part has */
+				const float *f = (const float *)&raw[6 * k + 1];
+				float diameter = f[0], above = 1e30f;
+				int level;
+
+				sspr_models[k].tag = raw[6 * k];
+				sspr_models[k].cutoff[0] = 0.0f;
+				for (level = 3; level >= 0; level--)
+				{
+					float error = f[1 + level], cut = error > 0.0f && above > 0.0f ? sspr_e * diameter / error : 0.0f;
+
+					if (cut > above)
+						cut = above;
+					sspr_models[k].cutoff[level + 1] = cut;
+					above = cut;
+				}
+			}
+		free(raw);
+	}
+	if (why)
+	{
+		free(sspr_models);
+		sspr_models = NULL;
+		platform_log("geometry: sspr: not used: %s", why);
+		return;
+	}
+	sspr_model_count = trailer[6];
+	sspr_start = EXTERNAL_BASE + trailer[1];
+	sspr_end = EXTERNAL_BASE + trailer[3];
+	sspr_directory = EXTERNAL_BASE + trailer[3];
+	if (trailer[1] + trailer[2] > pack_size)
+		pack_size = trailer[1] + trailer[2];
+	sspr_swaps = 0;
+	memset(sspr_levels_drawn, 0, sizeof(sspr_levels_drawn));
+	platform_log("geometry: sspr: %u models with levels made at bake, %u KB; budget %.1f px at 272 lines (rso is off "
+		"under sspr: its re-locks don't know the level)", sspr_model_count, (trailer[3] - trailer[1]) / 1024, (double)sspr_e);
+}
+
+/* FIXES_SSPR, after render_model's own pick: the level for a listed model
+from its own cutoffs, the engine's for any other (the same loop) */
+int psp_sspr_level(unsigned long model, float pixels, int engine_level)
+{
+	unsigned int lo = 0, hi = sspr_model_count;
+	int level;
+
+	while (lo < hi)
+	{
+		unsigned int mid = (lo + hi) / 2;
+
+		if (sspr_models[mid].tag < model)
+			lo = mid + 1;
+		else
+			hi = mid;
+	}
+	if (lo >= sspr_model_count || sspr_models[lo].tag != model)
+		return engine_level;
+	for (level = 4; level > 0 && pixels < sspr_models[lo].cutoff[level]; level--)
+		;
+	return level;
+}
+
 void psp_geo_map_opened(const char *name, unsigned int map_crc, const void *first_vertex_descriptor,
 	unsigned int tag_data_end, unsigned int window_end)
 {
@@ -1457,6 +1582,7 @@ void psp_geo_map_opened(const char *name, unsigned int map_crc, const void *firs
 			psp_pcv_on = 1;
 			platform_log("geometry: preconvert: %u model buffers baked in the GE's form, %u KB (table %u KB on the heap)%s",
 				entries, (table_at - start) / 1024, (4 * (entries + 1) + 1023) / 1024, pcv_check ? "; preconvertcheck" : "");
+			sspr_open(pack, file_bytes, entries);
 		}
 		sceKernelDcacheWritebackRange(&psp_pcv_on, sizeof(psp_pcv_on));
 		sceKernelDcacheWritebackRange(&psp_pcv_strips, sizeof(psp_pcv_strips));
@@ -1732,6 +1858,32 @@ void *psp_vertex_lock(const struct vertex_buffer *buffer)
 		pcv_fallbacks++;
 		return psp_vertex_lock_raw(buffer);
 	}
+	if (sspr_model_count && psp_model_level < 4)
+	{
+		/* the level the engine picked, when the bake made one for this
+		buffer: its block, whose own triangle list the draw takes
+		(psp_ge_draw_model); else the top as before */
+		const unsigned int *directory = psp_geo_lock(sspr_directory + 32u * index, 32);
+		unsigned int level_at = directory ? directory[2 * psp_model_level] : 0;
+		unsigned int bytes = directory ? directory[2 * psp_model_level + 1] : 0;
+		unsigned int *level_block = level_at && bytes && (unsigned int)alignment(bytes) <= largest_stretch() ?
+			psp_geo_lock(level_at, bytes) : NULL;
+
+		if (level_block && level_block[0] == PCV_MAGIC && (level_block[1] & PCV_LEVEL) && level_block[7] == address)
+		{
+			{
+				sspr_swaps++;
+				sspr_levels_drawn[psp_model_level]++;
+				pcv_locks++;
+				psp_ge_pcv_locked(level_block);
+				return (unsigned char *)level_block + PCV_HEADER_BYTES;
+			}
+		}
+		/* the top's block may have gone meanwhile: locked again */
+		block = psp_geo_lock(pcv_table[index], pcv_table[index + 1] - pcv_table[index]);
+		if (!block)
+			return NULL;
+	}
 	pcv_locks++;
 	psp_ge_pcv_locked(block);
 	if (pcv_check && !block[13])
@@ -1766,7 +1918,8 @@ const void *psp_geo_baked(const void *vertices)
 	if (!psp_pcv_on)
 		return NULL;
 	index = resident_entry(vertices);
-	if (index < 0 || entries[index].address < pcv_start || entries[index].address >= pcv_end ||
+	if (index < 0 || ((entries[index].address < pcv_start || entries[index].address >= pcv_end) &&
+		(entries[index].address < sspr_start || entries[index].address >= sspr_end)) ||
 		(unsigned int)vertices != entries[index].at + PCV_HEADER_BYTES)
 		return NULL;
 	return (const void *)entries[index].at;

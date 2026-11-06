@@ -12893,6 +12893,8 @@ parts draw with different triangles) converts at run time as before */
 /* a strip table (struct skin_strip, one a batch) right before the batch
 array: the variant regions "skinstrip" picks (tools/modelconvert.py) */
 #define PCV_STRIPS 2u
+/* SSPR's levels (tools/sspr.py): a rigid block whose own triangle list follows its records */
+#define PCV_LEVEL 4u
 #define PCV_BAD 0x80000000u
 struct pcv_header
 {
@@ -14243,6 +14245,11 @@ static void rso_window(void)
 		gain on every map in the cache model; "rsooff" turns it off */
 		rso_asked = rso_check || psp_rso_all || !psp_keep("rsooff");
 #endif
+		/* SSPR's levels are chosen as the vertex buffer is locked, in
+		render_model; rso's re-locks of a still object come outside it and
+		would take the top's block (docs/sspr_bake.md) */
+		if (psp_keep("sspr"))
+			rso_asked = 0;
 		psp_rso_on = rso_asked;
 	}
 }
@@ -16472,6 +16479,17 @@ void psp_ge_draw_model(void *vertices, int vertex_count, int uncompressed, const
 	long index_count, int strip, unsigned int color, unsigned int base_key, float u_scale, float v_scale,
 	int alpha_tested)
 {
+	const struct pcv_header *level = vertices ? psp_geo_baked(vertices) : NULL;
+
+	/* SSPR: a level the bake made (psp_geo.c locked it for the level the
+	engine picked) draws its own triangle list, after its records */
+	if (level && (level->flags & PCV_LEVEL))
+	{
+		vertex_count = (int)level->count;
+		indices = (const unsigned short *)((const unsigned char *)vertices + ((level->count * 24u + 15u) & ~15u));
+		index_count = (long)level->index_count;
+		strip = 0;
+	}
 	GE_BENCH_SKIP();
 	GE_PRETOUCH(base_key, TXPT_MODEL_BASE);
 	if (PRETOUCHING() && vertices && vertex_count > 0)

@@ -18,7 +18,8 @@ modelconvert):
   follows its records, padded to 16 bytes, and header word 4 is its index
   count;
 - the directory: for each of modelconvert's baked buffers (its table's order),
-  four words, levels 0-3, each a level block's pack address or 0;
+  eight words, levels 0-3, each a level block's pack address and bytes (0, 0
+  for none), so the runtime locks a level whole in one read;
 - the models: for each model given levels, its tag id, its diameter (model
   units, the parts' bounding sphere at the top level) and its four levels'
   errors (float32, model units; 0 for a level no part of it has);
@@ -277,7 +278,7 @@ def main(map_path, pgeo_path):
               'top vertices': 0, 'triangles': [0] * LEVELS, 'vertices': [0] * LEVELS}
     region = mc.up(len(data), 64)
     blocks = bytearray()
-    directory = [[0] * LEVELS for _ in range(entries)]
+    directory = [[0] * (2 * LEVELS) for _ in range(entries)]
     model_errors, model_points = {}, {}
     for v, (tag_id, vcount, vtype, i, tcount, ttype) in sorted(parts.items()):
         k = raw_of.get(v)
@@ -289,8 +290,11 @@ def main(map_path, pgeo_path):
             continue
         levels, errors, positions = got
         for level, records, local in levels:
-            directory[k][level] = mc.PACK_BASE + region + len(blocks)
-            blocks += level_block(v, i, int(vtype == mc.TYPE_UNCOMPRESSED), records, local)
+            b = level_block(v, i, int(vtype == mc.TYPE_UNCOMPRESSED), records, local)
+            directory[k][2 * level] = mc.PACK_BASE + region + len(blocks)
+            directory[k][2 * level + 1] = len(b)
+            blocks += b
+        tag_id &= 0xFFFFFFFF    # the map's datum, as the runtime compares it (unsigned)
         e = model_errors.setdefault(tag_id, [0.0] * LEVELS)
         for level in range(LEVELS):
             e[level] = max(e[level], errors[level])
