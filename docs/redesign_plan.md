@@ -84,7 +84,17 @@ Today every object's work runs every tick. The redesigned tick computes what's r
   | b40 snowfield | 476 | 96.5% | 80.0% (45) |
 
   - **What it means for S** [U]: on b40 almost nothing but bipeds changes from one tick to the next. On b30 the scenery that changes (36-43%) does so by its animation frame (swaying), not its place. So object updates and node matrices for unchanged objects are repeated work in the shares above, and collision is mostly queries by moving callers (bipeds, projectiles, the Pelican) against unchanged objects and an unchanged level.
-  - **Still to count for Gate 1:** collision's repeat share by query, not by object. A query repeats exactly when its caller and everything it reaches are unchanged. Asked of recon 18:10: hash each query's inputs (the caller's sphere or ray, the version of each object it reaches), emulator only.
+- **Collision's repeat share by query (C3b, 2026-11-05 18:30, recon)** [E; rows c3_query_repeats_*]. A query repeats when its caller's inputs and every object it reaches match the last tick:
+
+  | Repeats | Vectors | Features in a sphere | Cluster reconnects |
+  |---|---:|---:|---:|
+  | b30 flight | 2.7% (of 112k) | 19.0% (of 45k) | 3.5% (of 115k) |
+  | b40 snowfield | 6.1% | 16.3% | 4.9% |
+  | b40 cliff | 3.1% | 39.4% | 4.8% |
+
+  Bipeds carry nearly all of it (their vectors repeat 30-64%, their feature queries 25-46%); vehicles', projectiles' and callerless queries ~0%.
+  - **So the exact change-rate form doesn't close S's gap** [U]. Reuse keyed on unchanged inputs pays on the feature queries (a fifth to two fifths), little on the rest: of collision's ~25% of b30's flight tick, roughly 1 ms a tick, against the 4-6 ms missing. The objects mostly don't change (C3b by object), but the queries are made by the ones that do.
+  - **Where S stands for Gate 1** (b30's flight, bare) [U on M]: 40.6 ms a tick, less AITICKOLD (-14.5%, needs ME room), the toll R and B remove (~2-4), T5 and T7 (~0.5-1), collision's repeats (~1): **~29-31 ms against 25.8.** A gap of ~3-5 ms a tick remains with no exact source found. The unchanged objects' own updates (69-73% of b30's objects, 96-97% of b40's) are the one count not yet priced: whether skipping them saves time depends on what they cost, and the moving bipeds are likely most of it [U].
 - **Milestone:** C3's census done and S's pieces chosen against the target; the PSP prices S when the first of them replaces the old tick path on b30.
 - **Stop rule:** if C3 shows the pieces can't reach the target exactly or "plays the same", Sheepdog01 decides (§5.1).
 - **Fallback:** the old tick path behind S's keep word; it stays the safety net for a failure, per CLAUDE.md's failure rule.
@@ -134,6 +144,7 @@ The GE was built for retained mode: lists that CALL sub-lists, 8 bone matrix and
   - the shader forms a map needs (C1);
   - the store's room, which has to be GE-readable: main RAM or VRAM, not eDRAM. The room is the frame list it replaces, 768 KB of list plus the record buffer, 128 KB by default and 224 with the default keep set [D, `psp_ge.c` DEFER_INFLIGHT_KB; IFKB];
   - the dynamic floor (C2);
+- **The words a form takes (C4, 2026-11-05 18:30, recon)** [M, PSP-3000, b30's flight, words only: the probes inflate the times]: a model part's bind, state and lighting is ~40 words (~160 bytes; 272-282 a frame), a geometry draw call ~12.7 words, the near-plane filter 5.9-6.6k words a frame, two-sided passes ~3k, the level's passes 16.9-20.2k words in 13-15 calls; the whole list 173-211 KB a frame. So a prebuilt form is ~40 words plus ~13 a draw call, nearer 200-300 bytes than C1's 560, and the store below roughly halves [U].
 - **C1, the store (2026-11-05 17:53, the master; bake w162s, sierra-formcensus 42132247128 and 42132545265)** [D for the counts, U for the bytes at 560 a form]:
 
   | | Forms, every level of detail | Store | Super high alone |
@@ -170,7 +181,7 @@ Sent to the master 2026-11-05 17:20 (the lab's coord/inbox/master.md) for those 
 |---|---|---|---|---|---|
 | C1 | Each map's prebuilt forms (parts × levels of detail × shader passes) and their bytes | whether R fits | a counter in the baker, run as a sierra-bake job that prints counts only | this session's counter, run by the master | **done** (§3 R) |
 | C2 | The frame list's inline data (b30's flight 254 of 501 KB) by kind: model and level cut pieces, decals, kept index copies, effects, see-through, HUD | R's floor: what stays per frame | emulator, `listcensus` (Sierra-III recon/listbytes2; lab coord/handoff/listbytes_2026-11-05.md) | recon | **done** (§3 R) |
-| C3 | The tick by subsystem on the four heavy stretches, and its change rate: the share of each subsystem's per-object work whose inputs didn't change since the last tick | where S's last 4-6 ms a tick comes from | emulator: the PC sampler, `PSP_TICK_STEPS=1`, `nmstudy` extended (lab coord/handoff/nmstudy.md) | recon, through the master | **(a) done**; **(b) by object done** (§3 S); by query asked |
+| C3 | The tick by subsystem on the four heavy stretches, and its change rate: the share of each subsystem's per-object work whose inputs didn't change since the last tick | where S's last 4-6 ms a tick comes from | emulator: the PC sampler, `PSP_TICK_STEPS=1`, `nmstudy` extended (lab coord/handoff/nmstudy.md) | recon, through the master | **done** (§3 S): S falls ~3-5 ms a tick short on b30's flight |
 | C4 | The replay by record kind, and the models' time by step | R's ceiling on the ME | emulator for the shape; one bare PSP run for the ms (meparts' ME cycle counter) | the master | asked |
 | C5 | What the GE does at the near plane; how the replay lights a model | two of R's unknowns | code | this session | **done** (below) |
 | C6 | The GE's own time on b30's flight and landing by what limits it | whether the GE's work can lose ~15 ms a frame for the same picture | existing measures, then one PSP pair | this session; the pair through the master | **done** (below) |
