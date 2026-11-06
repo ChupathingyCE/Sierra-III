@@ -208,6 +208,8 @@ C3, C4 and C6 decide the heavy stretches; C1 decides whether R is built at all.
 
 ## 5. Decision points for Sheepdog01 (Gate 1, 2026-11-05)
 
+**Sheepdog01's rulings, 2026-11-05 19:28:** (1) R: go. (2) S: go. (3) The margin: "plays the same" work on the moving bipeds first; lifting the compromise freeze only if that's hopeless. So R and S move to Phase 1 (their design pages), and the levers on their grounds now wait for them (the redesign rule), unless one pays before its part lands and Sheepdog01 says so.
+
 1. **R's go:** build retained rendering as a separate path. Its store fits (C1, with C4's words a form), its dynamic floor is small (C2), it meets b30 flight's ME need and carries d20's light pass. It frees the ME room AITICKOLD needs, so S waits on it. The flashlight's form (the GE's spotlight per vertex, or the cone times the gel projected per pixel) is settled on R's design page by a side-by-side against the PC reference (Sheepdog01, 18:15: worth considering if it improves performance for a similar benefit; the gel's pattern is what's missing today).
 2. **S's go:** build the tick by change rate with its pieces: AITICKOLD on the room R frees, the unchanged-object skip (exact), collision's reuse on the repeating feature queries (exact), T5 and T7. Its target is a bare tick of 25.8 ms on b30's flight.
 3. **The margin on the heaviest stretches:** if R and S land below their ceilings, b30's landing and the b40 stretches stay a few ms over the floor. What may cover it:
@@ -236,7 +238,7 @@ The redesign rule (Sierra-III CLAUDE.md and the lab's, "Redesign work", Sheepdog
 - Each count's result goes into the lab's findings and this page's §1 and §3, and the dashboard's Redesign tab follows (`redesign.tsv`).
 - **Ends when** C1, C3, C4 and C6 are in.
 
-**Gate 1 (Sheepdog01): the go per part.** Ready 2026-11-05 19:20 (§5).
+**Gate 1 (Sheepdog01): the go per part.** Passed 2026-11-05 19:28: R and S have their go (§5).
 - For each heavy stretch, the parts' ceilings from Phase 0 against §1's gap.
 - Sheepdog01 rules on §5.1 (what fills any gap: "plays the same" or a lifted compromise) and §5.2 (R's go).
 - A part without its go stays a plan; its levers carry on, saying how they fit it.
