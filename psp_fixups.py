@@ -43946,6 +43946,78 @@ static boolean psp_aitickold_covers(
 			psp_aitickold_stats.used, psp_aitickold_stats.inline_passes, psp_aitickold_stats.queue_carried);
 """),
 ]
+# "aitickoldself" and "aitickoldaim" (recon's S3 variant; off): the second
+# pass reads the world as the frame's first tick found it, so on the tick it
+# covers an actor acts from its own position and its fire target's one tick
+# old (the line of fire and the burst target are already the tick's, in
+# actor_combat_update). "aitickoldself" samples the actor's own position
+# again before it acts; "aitickoldaim" (implies it) also refreshes its prop
+# target's position as perception's update would. The main CPU's, in the tick
+FIXES_AITICKOLD["source/ai/actors.c#aitickoldfresh"] = [
+("""static void actor_update(
+	long actor_index)
+{""",
+ """/* FIXES_AITICKOLD: "aitickoldself", "aitickoldaim" (see there) */
+static int psp_aitickold_fresh_on = -1;
+static unsigned long psp_aitickold_fresh_self, psp_aitickold_fresh_aim;
+static long psp_aitickold_fresh_logged = NONE;
+
+static void psp_aitickold_refresh(
+	long actor_index)
+{
+	struct actor_datum *actor = actor_get(actor_index);
+	long now = game_time_get();
+
+	if (psp_aitickold_fresh_on < 0)
+	{
+		psp_aitickold_fresh_on = psp_keep("aitickoldaim") ? 2 : psp_keep("aitickoldself") ? 1 : 0;
+		if (psp_aitickold_fresh_on)
+			platform_psp_log("aitickold: the covered tick re-reads the actor's own position%s (%s)",
+				psp_aitickold_fresh_on == 2 ? " and its fire target's" : "",
+				psp_aitickold_fresh_on == 2 ? "aitickoldaim" : "aitickoldself");
+	}
+	if (!psp_aitickold_fresh_on || psp_aitickold_on <= 0 || psp_aime_pass_time_b == NONE ||
+		psp_aime_pass_time_b != now || psp_aime_pass_time == psp_aime_pass_time_b ||
+		actor->meta.swarm || actor->meta.unit_index == NONE)
+		return;
+	actor_input_sample_position(actor_index, actor->meta.unit_index, &actor->input.position);
+	psp_aitickold_fresh_self++;
+	if (psp_aitickold_fresh_on == 2 && actor->control.current_fire_target_type == _actor_fire_target_prop &&
+		actor->control.current_fire_target_prop_index != NONE)
+	{
+		struct prop_datum *prop = prop_get(actor->control.current_fire_target_prop_index);
+
+		/* perception's own rule: an in-use prop past acknowledging is refreshed */
+		if (prop->in_use && prop->state > _prop_state_becoming_acknowledged &&
+			prop->state < _prop_state_uninspected_orphan)
+		{
+			struct actor_position_data position;
+
+			prop_position_refresh(actor_index, actor->control.current_fire_target_prop_index, &position, FALSE, FALSE);
+			psp_aitickold_fresh_aim++;
+		}
+	}
+	if (psp_aitickold_fresh_logged == NONE || now < psp_aitickold_fresh_logged || now - psp_aitickold_fresh_logged >= 900)
+	{
+		if (psp_aitickold_fresh_logged != NONE)
+			platform_psp_log("aitickoldfresh: game time %ld | own positions re-read %lu, fire targets refreshed %lu",
+				now, psp_aitickold_fresh_self, psp_aitickold_fresh_aim);
+		psp_aitickold_fresh_logged = now;
+	}
+}
+
+static void actor_update(
+	long actor_index)
+{"""),
+("""		psp_aicad_seen(actor_index);
+		}
+#else""",
+ """		psp_aicad_seen(actor_index);
+		}
+		else
+			psp_aitickold_refresh(actor_index);
+#else"""),
+]
 # the second pass's clock: the game time one tick on, in the pass's own
 # context only (the main CPU's frame reads the true time while the job runs)
 FIXES_AITICKOLD["source/game/game_time.c#aitickold"] = [
