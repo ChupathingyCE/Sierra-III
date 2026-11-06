@@ -10,6 +10,10 @@ anyway, and an effect played in 3D is mixed as mono. streaming.md S9
     s9    every sound at 22,050 Hz at most; effects mono; music stereo
     s9full  s9, the music left as the disc has it (44.1 kHz stereo), for
           the mixer's full-rate path (MUSADPCM, keep word musadpcm)
+    s9mono  every sound at 22,050 Hz at most and mono, the music and the
+          ambience included: the PSP's speakers are the target, and a 3D
+          effect is mixed mono and panned anyway (Sheepdog01 2026-11-06 17:07:
+          nothing that gameplay doesn't need in stereo stays stereo)
     s10   s9, and footsteps, impacts and casings at 11,025 Hz (S10: a
           listening A/B first)
 
@@ -510,7 +514,7 @@ def bake_sound(d, data, profile, stats, music=None, name=''):
         stats['other format'] += 1
         return None
     channels = 2 if channels_enum == STEREO else 1
-    keep_stereo = sound_class == CLASS_MUSIC
+    keep_stereo = sound_class == CLASS_MUSIC and profile != 's9mono'
     rewrite = profile != 'none'
     to_mono = rewrite and channels == 2 and not keep_stereo
     # s9full (MUSADPCM): the music as the disc has it, 44.1 kHz stereo, for
@@ -680,7 +684,7 @@ def main():
             sys.exit(__doc__)
         pack_path, adpcm = args[i + 1], True
         args = args[:i] + args[i + 2:]
-    if len(args) not in (2, 3) or args[1] not in ('s9', 's9full', 's10') + (('none',) if pack_path else ()):
+    if len(args) not in (2, 3) or args[1] not in ('s9', 's9full', 's9mono', 's10') + (('none',) if pack_path else ()):
         sys.exit(__doc__)
     folder, profile = args[0], args[1]
     cache = args[2] if len(args) == 3 and not pack_path else ''
@@ -709,7 +713,8 @@ def main():
     print('soundpack %s%s: %d sound tags, %d changed (%d to mono, %d to 22,050 Hz), %d kept, %d not Xbox ADPCM, %d failed; '
           'their samples %.1f MB -> %.1f MB (%.0f%%); the re-encode\'s SNR over %d permutations: median %.1f dB, lowest %.1f' % (
               profile, ' (as s9: the tag has no 11 kHz rate)' if profile == 's10' else
-              ' (as s9, the music kept as on the disc)' if profile == 's9full' else '', len(paths),
+              ' (as s9, the music kept as on the disc)' if profile == 's9full' else
+              ' (as s9, the music mono too)' if profile == 's9mono' else '', len(paths),
               stats['changed'], stats['mono'], stats['half rate'], stats['kept'], stats['other format'],
               stats['failed'], before / 1e6, after / 1e6, 100.0 * after / before if before else 100.0,
               len(finite), float(np.median(finite)) if finite else 0.0, min(finite) if finite else 0.0))

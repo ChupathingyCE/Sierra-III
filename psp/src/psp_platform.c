@@ -1146,7 +1146,7 @@ static const struct
 {
 	const char *word, *off;
 } keep_levers[] = {
-	{ "wxdead", "wxdeadoff" }, { "texavg", "texavgoff" }, { "lightcarry", "lightcarryoff" }, { "sndedram", "sndedramoff" }, { "musadpcm", "musadpcmoff" },
+	{ "wxdead", "wxdeadoff" }, { "texavg", "texavgoff" }, { "lightcarry", "lightcarryoff" }, { "sndedram", "sndedramoff" },
 	{ "lightringlook", "lightringlookoff" }, { "aimeobslook", "aimeobslookoff" }, { "lightfirst", "lightfirstoff" },
 	{ "sndtierback", "sndtierbackoff" }, { "drawpart", "drawpartoff" }, { "p2pass", "p2passoff" },
 	{ "mepointsclaim", "mepointsclaimoff" }, { "aimepathlook", "aimepathlookoff" }, { "aimeringlook", "aimeringlookoff" },
@@ -1224,10 +1224,11 @@ static void keep_defaults_add(void)
 	lightcarry: the flashlight's cone split carries each corner's work to
 	the pieces that share it (exact; d20's swamp frame -10% on the PSP).
 	sndedram: the sound cache's last pages in the ME's eDRAM, copied in by
-	the ME (plays the same; 528 KB of heap back). musadpcm: the disc's
-	44.1 kHz music mixed at its own rate instead of halved (the original's
-	sound; it needs a bake made with --music-adpcm, and its room in the
-	sound cache comes from sndedram's tier: psp_sound_cache_bytes).
+	the ME (plays the same; 528 KB of heap back). musadpcm (the disc's
+	44.1 kHz music mixed at its own rate, with a bake made with
+	--music-adpcm) is opt-in: the PSP's speakers are the target and the
+	music is baked mono at 22,050 Hz (s9mono), so neither its 256 KB of
+	cache (musroom) nor its ~1 ms of the ME a block is spent.
 	lightringlook: the ME serves the ring inside the light pass, so a long
 	flashlight record no longer leaves ring jobs past their deadline
 	(docs/review_lightringlook.md). aimeobslook: the AI job looks at the
