@@ -8,7 +8,7 @@ Labels as `redesign_r.md`.
 
 1. **The keep words:** `retained` (R's path; in slice 1 it builds R's output beside today's and draws today's) and `retainedcheck` (the compares below; implies `retained`). Both off by default.
 2. **The instance list,** written by the main CPU beside today's records.
-3. **The form table,** baked into the pack, and its loader.
+3. **The form table,** captured from today's path (§2), and its room.
 4. **The touch,** written for the parts slice 2 will take (rigid, single pass, opaque), into scratch only.
 5. **Two compares** that say R's output matches what today's path makes, and the counts that size slice 2.
 
@@ -27,16 +27,15 @@ Labels as `redesign_r.md`.
 
 ## 2. The form table
 
-**Baked** by a new step in the bake after modelconvert.py (`tools/formbake.py`, run where modelconvert runs: `bake/bake.py` ~627). Per model part that has a PCV block and draws opaque in one pass (slice 2's set), one form:
-- the state words today's path writes for the part's base pass: blend, alpha test, culling, the texture's format, size and filtering, the CLUT's format (no addresses);
-- the vertex type and the PRIM over the PCV block's records (no VADDR or IADDR);
-- the rigid part's node index (from its first vertex, as `psp_ge.c` ~16884 reads it each draw).
+**What a form holds** (the master's word census, `redesign_r_slice1_words.md` on master/rslice1, rslice1c 42163086868 [E], b30's route, memos off): of 140.7 command words a part today, the form holds ~55 (vertex type and PRIM, the texture's format, sizes and filtering, the palette's format, culling, the cut-out test, the material's colours, each pass's blend and depth state); the touch writes ~51 (BASE ~14, VADDR/IADDR and the texture and palette addresses ~23, the node matrix ~12.5); the instance's lighting, ~25 a part today, is written once a model; the frame's fog is ~4. A part with a change colour has its material colours in the touch, not the form.
 
-Stored in a region appended after PCV's, found by a trailer at the file's end (its offset, its size, 'FRM1'): the .pgeo header's 16 words are all taken (`psp_geo.c` `header[16]`; modelconvert.py packs `'<16I'`). Older runtimes read nothing past the regions they know (the master, 21:05).
-
-**Loaded** with the pack; its bytes logged (`R: forms N, KB K`), against C1's estimate (~200-300 bytes a form).
-
-**Words the bake can't know** are left for the touch: addresses, and anything the immediate path decides per frame. The first build lists every state word the immediate path writes for a part (`psp_ge_draw_model`'s path) and classes each as baked, touched or per frame; the list goes in this page.
+**Made by capture, not by the bake** (bottleneck and the master, 2026-11-05 23:12). A form is today's own words for the part: the part is run once through today's draw path with the memos off into a scratch list, and the census's form words are kept, with holes for the touch's. One implementation of the rules, exact by construction; compare 2 then checks the touch and the holes. The bake's arithmetic (`formbake.py`) can come later, as a load-time saver, if capture costs too much. Its conditions:
+- **The key holds everything a form word depends on:** the geometry, the part, the pass, and the shader's permutation, plus anything compare 2 sees vary between draws of one part (a change colour, a fade, active camouflage, the flashlight's pass). Capture under a passing state (a fading object, a damage flash) must never become every instance's form: with `retainedcheck` each draw is captured again and compared with the kept form, counted by command.
+- **No side effects from capture:** run into scratch, with no texture want, geometry conversion or memo write it wouldn't have made anyway; anything it does make is logged.
+- **When:** on the geometry block's arrival or at map load where it can be, not at first draw in the frame, so the cost stays off play; slice 1 logs capture's ms a frame and its worst frame on b30's flight (the hitch figure).
+- **Lifetime:** a form lives and dies with its geometry block's residency, so an eviction costs one capture beside the reload it already costs.
+- **Room:** C1's ~364-918 KB a map at run time is part B's to place (`redesign_b.md` §3.4; c20's heap is the tight place); slice 1 logs the forms' bytes and peak.
+- **At the switch-over,** today's per-frame walk goes; the state decisions it captures from stay as R's form maker, factored into a function of (part, pass, permutation) that writes into a buffer, so R depends on the rules, not on the old walk.
 
 ## 3. The touch (scratch only in slice 1)
 
