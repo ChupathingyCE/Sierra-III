@@ -100,7 +100,12 @@ Today every object's work runs every tick. The redesigned tick computes what's r
 - **The unchanged objects' update time (C3, 2026-11-05 19:18, recon)** [M, PSP-1000, sierra-hw 42141971439, game time 600-1799; row c3_objcost_ms_b30_flight; a census build with a mismatched profile, its tick ~47-60 ms, wall clock per update]. Object updates take 34.9 ms a tick; **6.8 (19%) is in updates that left the object unchanged**: parked or idle vehicles 2.4 (2.1 a tick at ~1.1 ms), the 53 awake scenery 2.3 (the ~220 asleep cost only the check), half the weapons 0.45, the rest small. The moving bipeds hold 22.9 ms (23.6 a tick at ~970 µs each).
   - An exact skip has to know beforehand that an update won't change its object, so 6.8 is a ceiling. Scaled to the bare tick (~40 against the run's ~47-60) it's ~5 ms, and a skip that predicts well takes perhaps half to most of it: **~2.5-5 ms a tick** [U].
   - **Where S stands for Gate 1** (b30's flight, bare) [U on M]: 40.6 ms a tick, less AITICKOLD (-14.5%, needs ME room), the toll R and B remove (~2-4), T5 and T7 (~0.5-1), collision's repeats (~1), the unchanged-object skip (~2.5-5): **~25-29 ms against 25.8.** The floor's tick is within reach exactly, at the high end of every piece, with no slack. If drawing ends at ~20 ms a frame rather than 15, the tick has 22.3 ms and S falls ~3-6 short.
-  - **What's left beyond exact work:** the moving bipeds' 23 ms a tick. Only "plays the same" work reaches them (the AI already thinks at half rate: aicad3). That's §5's first decision.
+  - **What's left beyond exact work:** the moving bipeds' 23 ms a tick (~970 µs each). Only "plays the same" work reaches them (the AI already thinks at half rate: aicad3).
+- **S's "plays the same" piece, the far-biped tier** (Sheepdog01 19:28, ruling 3; 19:34: agreed). Three forms, each stopped before only because it had to be exact:
+  - **far bipeds at half rate:** a biped far from the player and out of combat updated every other tick with twice the time step, as the AI already thinks. If about half the bipeds are far, ~5-6 ms a tick on b30's flight [U], enough for S's margin;
+  - **far bipeds on the ME, a tick behind** (BW; the AITICKOLD pattern), on the room R frees;
+  - **the bipeds' update in stages that fit the I-cache** (PHASEB: its revive_if was "Sheepdog01's OK for the plays-the-same form"): ~1.1 ms a tick on b30 and ~2.6 on c20 on tock162's LTO build [U on E].
+  - Collision stays exact in all three (the queries are the same code against the same world). Proof: side-by-sides and the outcome census. First count: bipeds a tick by distance from the player and by combat state (recon, emulator).
 - **Milestone:** C3's census done and S's pieces chosen against the target; the PSP prices S when the first of them replaces the old tick path on b30.
 - **Stop rule:** if C3 shows the pieces can't reach the target exactly or "plays the same", Sheepdog01 decides (§5.1).
 - **Fallback:** the old tick path behind S's keep word; it stays the safety net for a failure, per CLAUDE.md's failure rule.
@@ -149,6 +154,7 @@ The GE was built for retained mode: lists that CALL sub-lists, 8 bone matrix and
   - PDC copied prebuilt words into the old per-frame list through the old layers, bit for bit, from an eDRAM store the GE can't read. Its pairs ran even to +1.6 ms a frame.
   - PDCCALL CALLed retained blocks, but kept the key, the hash, the replay and the built parts. It measured +1.2-2.3% frame on c10 [M, PSP-1000 sierra-hw 41216890230], and its store didn't fit b30's heap.
   - Neither is R: R is bake-built per level of detail and pass, with no per-frame record or replay. They showed that half a retained mode costs about what it saves, not that retained mode loses.
+- **Fewer vertices at bake time** (lever SSPR, open): each lower level of detail simplified to what can be seen at the distance it's drawn. C6 found the GE ~89% vertex-bound on b30's flight, so this is the target's GE lever; R's bake already rebuilds every part, so it goes there.
 - **What could sink it:**
   - the shader forms a map needs (C1);
   - the store's room, which has to be GE-readable: main RAM or VRAM, not eDRAM. The room is the frame list it replaces, 768 KB of list plus the record buffer, 128 KB by default and 224 with the default keep set [D, `psp_ge.c` DEFER_INFLIGHT_KB; IFKB];
@@ -175,8 +181,16 @@ The GE was built for retained mode: lists that CALL sub-lists, 8 bone matrix and
 R decides what must be GE-readable, and S's layout what the tick reads hot. B places them: VRAM, main RAM and the ME's eDRAM by design, not job by job. T4 joins it.
 
 - **Known:** VRAM has 13-48 KB free behind 816 KB of fixed buffers. Freed VRAM is worth ~17.6 µs of b30's tick a frame a KB for the first 200 KB (lead A [U on M]). The eDRAM's 544 KB is the largest free block, readable by the ME only.
+- **The scratchpad by design** (Sheepdog01 19:34). 16 KB, always a hit, off the bus, reachable by the main CPU and the GE (cpu_cost_map.md §2). Today: the level collision BSP's top 304 nodes (SCRATCHBSP, a small win [M]) and the profiler's slots and table (6.6 KB; moving them out gained nothing, PROFHEAP). It was last set by misses per byte in the old shape (build 108, then SCRATCHBSP). In the new shape the candidates change: S's change-rate keys (each object's version, the feature queries' reuse table), the far-biped tier's per-pass arrays, the hot tag fields (the tag window is 32% of the tick's data misses, TAGHOT), and R's per-frame instance list on the main CPU side. B re-ranks them by misses per byte on the new shape's cache map once S's and R's design pages fix their tables, and the winner is priced by a PSP pair (the cache rule).
 - **Milestone and stop:** set by C1's sizes. B is a layout, priced inside R's and S's milestones.
 - **Who:** the master, from C1.
+
+### A. Audio built around the VME (candidate, Sheepdog01 19:34)
+
+- **Today's audio was priced as it stands, on the ME's CPU** [M]: ~1.7 ms + ~0.12 ms a voice per 23 ms block on b30 (VMEMIX's pair), ~13-20% of the ME's second on the heavy stretches (b30's beach: 20.2 ms a frame at 10 fps), and it scales with real time, not frames.
+- **The VME bolted onto today's mix lost:** VMEMIX was exact in game and 22 µs a voice slower, because feeding the VME cost more than its compute saved. Its study (`vme_capability.md`) found the mix's tail fits (gain, accumulate), but not the interpolation at the pitch step (a gather) or the one-pole lowpass (recursive), and not the ADPCM decode (sequential, table-driven).
+- **What a built-for-the-VME audio path would change** [U]: voices kept resident in the VME across blocks; the interpolation and lowpass reshaped so they need no gather and no recursion (a sound question for the audiocheck meter, a "plays the same" change); the decode done ahead in bulk, or sounds baked to a form the VME reads. Its ceiling is unsized.
+- **First, a census** (recon): the audio job by stage per block on b30's flight and beach (decode, interpolation, filters, mix, effects, streaming), from audiocheck's counters, so A's ceiling is known before it's designed. A becomes a part only with Sheepdog01's go after that.
 
 ### The old parts
 
@@ -196,6 +210,13 @@ Sent to the master 2026-11-05 17:20 (the lab's coord/inbox/master.md) for those 
 | C6 | The GE's own time on b30's flight and landing by what limits it | whether the GE's work can lose ~15 ms a frame for the same picture | existing measures, then one PSP pair | this session; the pair through the master | **done** (below) |
 
 C3, C4 and C6 decide the heavy stretches; C1 decides whether R is built at all.
+
+**Gaps still open after Gate 1** (asked 2026-11-05 19:45):
+- **The bare ledger bench on the current tock:** the frame budget's rows are ledger 3's, instrumented (~7% on the tick) and stale on the GE (master, at the tock's finalization).
+- **The main CPU's "other"** (5-9 ms a frame on the heavy stretches) has never been split, and the floor's tick budget assumes drawing and other fit in ~15 ms together (recon, the PC sampler's `pcsampleother`).
+- **b40, timed:** the unchanged-object skip and AITICKOLD are priced on b30 only (recon, one bare PSP run of b40's snowfield).
+- **Bipeds by distance and combat state** for the far-biped tier (recon, emulator).
+- **Audio by stage** for part A (recon, emulator for the shape).
 
 ### What the reads found
 
