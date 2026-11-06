@@ -983,6 +983,9 @@ def link(objs, stubs):
            "--wrap=sceDmacMemcpy,--wrap=sceGeListEnQueue,--wrap=sceDisplaySetFrameBuf,--wrap=sceIoWrite,--wrap=sceIoGetstat,"
            "--wrap=sceIoDopen,--wrap=sceIoDclose,--wrap=open,--wrap=sceIoWaitAsync,--wrap=sceIoPollAsync,--wrap=sceIoChangeAsyncPriority,"
            "--wrap=sceIoRemove,--wrap=sceIoRename,"
+           # newlib's locks kept when the heap refuses them (B64; psp_libc.c)
+           "--wrap=__retarget_lock_init,--wrap=__retarget_lock_init_recursive,--wrap=__retarget_lock_close,"
+           "--wrap=__retarget_lock_close_recursive,"
            # build 106: condition variables that sleep instead of polling (psp_libc.c)
            "--wrap=pthread_cond_init,--wrap=pthread_cond_destroy,--wrap=pthread_cond_wait,--wrap=pthread_cond_timedwait,"
            "--wrap=pthread_cond_signal,--wrap=pthread_cond_broadcast,"

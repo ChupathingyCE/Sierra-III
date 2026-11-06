@@ -1350,3 +1350,92 @@ void psp_heap_survey(unsigned long *free_bytes, unsigned long *largest_bytes, un
 	*largest_bytes = largest;
 	*used_bytes = used_total;
 }
+
+/* ---------- newlib's locks when the heap refuses them (B64)
+
+pspsdk's libcglue makes each of newlib's locks (a file's, among others) with
+malloc and goes on to create its mutex in it unchecked, so a refused malloc
+under a tight heap becomes a write to address 0 (recon 2026-11-06: c20 under
+R's A/B, the emulator's segfault in sceKernelCreateLwMutex). These are the
+same functions with a small pool behind the malloc; the lock is libcglue's
+own layout (a light mutex's workarea), and a pool lock is given back at its
+close instead of freed */
+struct psp_newlib_lock
+{
+	SceLwMutexWorkarea mutex;
+};
+
+#define PSP_LOCK_POOL 16
+static struct psp_newlib_lock psp_lock_pool[PSP_LOCK_POOL];
+static unsigned char psp_lock_pool_used[PSP_LOCK_POOL];
+unsigned long psp_lock_pool_taken = 0, psp_lock_pool_missed = 0;
+
+static struct psp_newlib_lock *psp_lock_take(void)
+{
+	struct psp_newlib_lock *lock = malloc(sizeof(*lock));
+	int k, interrupts;
+
+	if (lock)
+		return lock;
+	interrupts = pspSdkDisableInterrupts();
+	for (k = 0; k < PSP_LOCK_POOL; k++)
+		if (!psp_lock_pool_used[k])
+		{
+			psp_lock_pool_used[k] = 1;
+			lock = &psp_lock_pool[k];
+			break;
+		}
+	if (lock)
+		psp_lock_pool_taken++;
+	else
+		psp_lock_pool_missed++;
+	pspSdkEnableInterrupts(interrupts);
+	return lock;
+}
+
+static void psp_lock_give(struct psp_newlib_lock *lock)
+{
+	if (lock >= psp_lock_pool && lock < psp_lock_pool + PSP_LOCK_POOL)
+	{
+		int interrupts = pspSdkDisableInterrupts();
+
+		psp_lock_pool_used[lock - psp_lock_pool] = 0;
+		pspSdkEnableInterrupts(interrupts);
+	}
+	else
+		free(lock);
+}
+
+void __wrap___retarget_lock_init(struct psp_newlib_lock **lock)
+{
+	struct psp_newlib_lock *made = psp_lock_take();
+
+	if (made)
+		sceKernelCreateLwMutex(&made->mutex, "lock API mutex", PSP_LW_MUTEX_ATTR_THFIFO, 0, 0);
+	*lock = made;
+}
+
+void __wrap___retarget_lock_init_recursive(struct psp_newlib_lock **lock)
+{
+	struct psp_newlib_lock *made = psp_lock_take();
+
+	if (made)
+		sceKernelCreateLwMutex(&made->mutex, "lock API mutex Recursive", PSP_LW_MUTEX_ATTR_RECURSIVE, 0, 0);
+	*lock = made;
+}
+
+void __wrap___retarget_lock_close(struct psp_newlib_lock *lock)
+{
+	if (!lock)
+		return;
+	sceKernelDeleteLwMutex(&lock->mutex);
+	psp_lock_give(lock);
+}
+
+void __wrap___retarget_lock_close_recursive(struct psp_newlib_lock *lock)
+{
+	if (!lock)
+		return;
+	sceKernelDeleteLwMutex(&lock->mutex);
+	psp_lock_give(lock);
+}
