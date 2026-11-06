@@ -1,0 +1,86 @@
+# S, the tick by how often its work changes: the design page (Phase 1 draft)
+
+Part S of `redesign_plan.md` (§3 S). Sheepdog01 gave it its go at Gate 1 (2026-11-05 19:28), with ruling 3: the margin is covered by "plays the same" work on the moving bipeds first, and the compromise freeze lifted only if that's hopeless. Built under the redesign rule (CLAUDE.md, "Redesign work"). The master builds; recon builds the census-driven pieces. A draft for a second-opinion read against the code before slice 1.
+
+Labels: [M] measured on the PSP, [E] emulator or estimate, [D] read in code or data, [U] inference. Code references are tock162.
+
+## 1. The target, and where the tick goes
+
+**Target:** a bare tick of ≤ 25.8 ms on b30's flight, with drawing, other and frame end at ~15 ms a frame; ≤ 22.3 if they end at ~20 (plan §1). Today it's 40.6 ms bare (ledger 3 less the instruments' ~7%; ledger1 on b151 replaces it overnight).
+
+**Where it goes** (b30's flight, PSP-3000 sampler, 42114568213) [M]: collision 25.6%, AI 16.5, node matrices and animation 11.3, units and vehicles 9.3, other objects 7.7, libm and memcpy 5.3, effects 3.4, tags 2.9, audio 2.4, scripts 1.6, the rest 14.5. It waits on memory for 56-68% of its cycles on every stretch, its instruction and data misses close to even in cost (`cpu_cost_map.md` §2).
+
+**What changes tick to tick** (C3) [E for counts, M for times]:
+- objects: 69-73% unchanged on b30, 96-97% on b40;
+- object updates' time (PSP-1000, 42141971439): 34.9 ms a tick, 6.8 of it (19%) in updates that left the object unchanged; the moving bipeds 22.9 (~970 µs each);
+- collision's queries mostly don't repeat (vectors 3-6%, reconnects under 5%); bipeds' feature-in-sphere queries do (25-46% for bipeds; 16-39% overall);
+- bipeds by distance and fight (objcost2 42146294460, shares of biped time): far and out of the fight 19% on b30's flight (~4.6 ms a tick at the PSP's 24.3), 32% on b40's snowfield, 14% on the cliff, 8% on b30's landing; in the fight at 20-40 units 30-38% everywhere; bodies without an AI 25% on the landing, 86-97% unchanged.
+
+## 2. The pieces
+
+| # | Piece | Exact? | Ceiling on b30's flight, ms a tick | Evidence |
+|---|---|---|---|---|
+| S1 | Unchanged objects skip their update | exact | ~2.5-5 (6.8 measured as the ceiling, before scaling to the bare tick and allowing for a predicate that must know beforehand) | objcost 42141971439 [M] |
+| S2 | Collision's repeating feature queries answered from last tick's result | exact | ~1 | C3 by query [E] |
+| S3 | AITICKOLD: the AI's think on the ME from a world one tick older | plays the same (built, Sheepdog01's earlier OK to experiment) | ~5.9 (-14.5%) | PSP-3000 pair 42041663929 [M]; needs ME room R frees |
+| S4 | The far-biped tier | plays the same | ~2.3 (half rate) to ~4.6 (on the ME a tick behind) | objcost2 shares × the PSP's 24.3 [U on E × M] |
+| S5 | T5 (walks that overlap their misses) and T7 (data laid out for the tick) | exact | ~0.5-1 | `redesign_tick.md` |
+| — | The GE's toll, cut by R and B | exact | ~2-4 | lead A [U on E and M] |
+
+**Sum** [U]: 40.6 less 14.2 to 21.5 → **~19-26 ms a tick** against 25.8 (or 22.3). The floor's tick is reached at the middle of the ranges, not only at their tops as it was before S4 and the bipeds' count.
+
+### S1. The unchanged-object skip
+
+An object whose update leaves it bitwise unchanged doesn't need the update. The work is knowing that *before* the update runs, with a predicate that's never wrong:
+
+- **Already done this way:** the sleepers (FIXES_WS: ~217 of b30's ~274 scenery a tick never enter `psp_object_update`; recon, 18:57) and the resting weapons and equipment (IS). S1 extends the same idea to the kinds that still carry the measured 6.8 ms:
+  - **parked or idle vehicles** (2.4 ms on b30's flight, ~2.1 a tick at ~1.1 ms each): no driver or passenger, at rest, no impulse, damage or attached effect since the last tick;
+  - **awake scenery** (2.3 ms, 53 a tick at ~42 µs): its animation is the only change, so the update's work is the animation's, which can be advanced without the rest of the update when the object is otherwise at rest [U, to read in objects.c];
+  - **bodies** (25% of the biped time on the landing, 86-97% unchanged): a dead biped at rest on the ground.
+- **The wake rules** are the sleepers': contact, damage, a script, a parent that moved, a force. A wrong predicate shows up as a play difference, so each kind's rule is proven by play and both seeds identical on b30, c10, c20 and d20 (statecrc), with a check build that runs the update anyway and compares (as `rsocheck` and `vislazycheck` do).
+
+### S2. Collision's feature-query reuse
+
+The repeating queries are bipeds' `collision_get_features_in_sphere` calls: a biped standing still asks the same sphere against the same world. A query's key is its sphere and the versions of what it reaches (the objects in the clusters it touches, and the level, which doesn't change). The answer is kept per caller for one tick; an unchanged key returns it without the walk. Exact by construction. The table is a few KB (a scratchpad candidate, `redesign_b.md` §3.1). Proof: play and seeds identical, plus a check build comparing every reused answer with a fresh walk.
+
+### S3. AITICKOLD on R's ME room
+
+Built and measured: b30's flight frame -7.8%, tick -14.5% on the PSP-3000 [M]; off by default because the ME's window is full on the beach (the AI job fills 84% of it, recon 16:15). R frees ~29-31 ms of the ME's frame on the flight (`redesign_r.md` §2.4), which is room for both passes. So S3 lands after R's milestone. Recon's MECODE (the AI pass's code in eDRAM, ~1-1.6 ms a pass) makes it cheaper still (B).
+
+### S4. The far-biped tier (ruling 3)
+
+For bipeds far from the player and out of the fight (AIFAR's test), two forms, chosen by a count and a side-by-side:
+- **half rate:** updated every other tick with twice the time step, as the AI's think already is at half rate (aicad3). Saves half their time (~2.3 ms a tick on b30's flight, more on the snowfield). Risk: physics with a doubled step (a fall, a slope); proven by side-by-sides and the outcome census at the stretches where far bipeds move.
+- **on the ME a tick behind** (BW, the AITICKOLD pattern): their whole update moved, so the main CPU saves all of it (~4.6 ms a tick on b30's flight). It needs ME room after S3 and a snapshot of what they read (`redesign_b.md` §3.2), so it comes second.
+
+Collision stays the same code against the same world (the rule: collision exact, one path). The tier is local: in the campaign every biped is the PSP's own; in co-op the host runs the far AI.
+
+**What S4 doesn't reach:** bipeds in the fight at 20-40 units are the largest band (30-38% of biped time). A distance tier leaves them alone, since they're what the player is fighting. If S1-S4 land below their ceilings, they're where the margin sits; the plan's ruling 3 says what comes next (§5).
+
+## 3. The slices
+
+| # | Slice | Proven by |
+|---|---|---|
+| 1 | S1 for parked vehicles and bodies, with its check build | play and both seeds identical on four maps; the check build's compare clean |
+| 2 | S1 for awake scenery (its animation advanced alone) | as 1 |
+| 3 | S2, the feature-query reuse, with its check build | as 1 |
+| — | **Milestone:** S1 and S2 on b30, the old update path bypassed for the kinds they take | one PSP pair, `- \| skipchange` (the keep word), b30's flight |
+| 4 | S4's half-rate form | side-by-sides and the outcome census on b30's flight, the snowfield and a30 |
+| 5 | S3 on (after R's milestone frees the ME) | AITICKOLD's own proofs; the window's cut passes counted |
+| 6 | S5's pieces that fit the new shape (T5's prefetch in the reshaped loops; T7) | as 1 |
+| 7 | S4's ME form, if the half-rate form falls short | as 4, plus the snapshot's census |
+| — | **Switch-over:** S's pieces on by default | one PSP pair on the heavy stretches |
+
+## 4. Proofs and boundaries
+
+- Exact pieces (S1, S2, S5): play and both seeds identical, statecrc, on b30, c10, c20 and d20; check builds that run the old path beside the new and compare.
+- "Plays the same" pieces (S3, S4): side-by-sides and the outcome census (the rule of 2026-10-30), with statecrc's identity no longer the proof; both sides of their A/B carry the new maths.
+- The multiplayer boundary: what the server consumes or checks stays exact (the rules, the 30 Hz tick, collision's answers, tag indices, object slots). S1 and S2 are exact; S3 and S4 touch only local AI and far local bipeds.
+
+## 5. Risks and open questions
+
+- **b40 is priced by its shares only.** Recon's timed b40 run (its queue item 3) gives the snowfield's ms; until then b40's lines are shares × b30's times.
+- **The predicates (S1)** must be read in the engine: what an at-rest vehicle's update does that isn't visible in its play hash (timers, effects, sounds). The check build is the guard.
+- **The half-rate tier's physics:** a doubled step on a slope or a fall can land a biped differently; that's what the side-by-sides look for.
+- **The in-fight 20-40 band** is the margin's home if the pieces fall short: Sheepdog01's ruling 3 is "plays the same" first, then the compromise freeze only if that's hopeless.
+- **The drawing budget:** S's target assumes drawing, other and frame end at ~15 ms a frame. Recon's split puts 'other' alone at ~5 ms (b30's flight), so R's drawing has to reach ~10.
