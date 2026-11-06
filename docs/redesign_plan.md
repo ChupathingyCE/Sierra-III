@@ -9,9 +9,12 @@ Labels: [M] measured on the PSP, [E] emulator or estimate, [D] read in code or d
 ## 0. What the plan delivers
 
 - **The floor first: real time (30 ticks a second, at least 15 fps) on every benched stretch** (the goals, `redesign_tick.md`). The target (30 fps per level) follows on the lighter levels; on the heaviest it isn't promised (§5).
-- **Viability, as of this page** [U on M]:
-  - **Six of the ten benched stretches** (b30's opening and beach, c20, d20's walk and flashlight, b40's opening) reach the floor on paper with the parts below and the pieces already measured.
-  - **The four heaviest** (b30's flight and landing, b40's cliff path and snowfield) need every unit cut at once (§1). The known ceilings don't add up to that yet. Counts C3, C4 and C6 decide whether the parts close it, and §5's first decision is what happens if they don't.
+- **Viability at Gate 1** (2026-11-05 19:20, the counts in §4 done) [U on M]:
+  - **Six of the ten benched stretches** (b30's opening and beach, c20, d20's walk and flashlight, b40's opening) reach the floor with the parts below. d20's flashlight needs R's light pass.
+  - **b30's flight:** the floor is within reach exactly, with no slack: R meets the ME's need (~-31 to -35 ms a frame against -33), the GE fits on the current tock, and S's exact pieces reach ~25-29 ms a tick against 25.8 (§3 S).
+  - **b30's landing:** S's need is smaller (-30%), but R falls ~3-7 ms a frame short on the ME (its decals are dynamic).
+  - **b40's cliff and snowfield:** S needs -29% and -35%. Their objects are 96-97% unchanged, so the exact skip is likelier to be worth more there, but it's timed only on b30. R takes drawing from ~39 ms a frame; the ME fits already on the snowfield and is ~1.1× on the cliff.
+  - **So the redesign reaches the floor on most of the campaign exactly, and on the heaviest stretches only if every piece lands near its ceiling.** §5 asks Sheepdog01 what covers the margin.
 
 ## 1. The frame budget
 
@@ -94,7 +97,10 @@ Today every object's work runs every tick. The redesigned tick computes what's r
 
   Bipeds carry nearly all of it (their vectors repeat 30-64%, their feature queries 25-46%); vehicles', projectiles' and callerless queries ~0%.
   - **So the exact change-rate form doesn't close S's gap** [U]. Reuse keyed on unchanged inputs pays on the feature queries (a fifth to two fifths), little on the rest: of collision's ~25% of b30's flight tick, roughly 1 ms a tick, against the 4-6 ms missing. The objects mostly don't change (C3b by object), but the queries are made by the ones that do.
-  - **Where S stands for Gate 1** (b30's flight, bare) [U on M]: 40.6 ms a tick, less AITICKOLD (-14.5%, needs ME room), the toll R and B remove (~2-4), T5 and T7 (~0.5-1), collision's repeats (~1): **~29-31 ms against 25.8.** A gap of ~3-5 ms a tick remains with no exact source found. The unchanged objects' own updates (69-73% of b30's objects, 96-97% of b40's) are the one count not yet priced: whether skipping them saves time depends on what they cost, and the moving bipeds are likely most of it [U].
+- **The unchanged objects' update time (C3, 2026-11-05 19:18, recon)** [M, PSP-1000, sierra-hw 42141971439, game time 600-1799; row c3_objcost_ms_b30_flight; a census build with a mismatched profile, its tick ~47-60 ms, wall clock per update]. Object updates take 34.9 ms a tick; **6.8 (19%) is in updates that left the object unchanged**: parked or idle vehicles 2.4 (2.1 a tick at ~1.1 ms), the 53 awake scenery 2.3 (the ~220 asleep cost only the check), half the weapons 0.45, the rest small. The moving bipeds hold 22.9 ms (23.6 a tick at ~970 µs each).
+  - An exact skip has to know beforehand that an update won't change its object, so 6.8 is a ceiling. Scaled to the bare tick (~40 against the run's ~47-60) it's ~5 ms, and a skip that predicts well takes perhaps half to most of it: **~2.5-5 ms a tick** [U].
+  - **Where S stands for Gate 1** (b30's flight, bare) [U on M]: 40.6 ms a tick, less AITICKOLD (-14.5%, needs ME room), the toll R and B remove (~2-4), T5 and T7 (~0.5-1), collision's repeats (~1), the unchanged-object skip (~2.5-5): **~25-29 ms against 25.8.** The floor's tick is within reach exactly, at the high end of every piece, with no slack. If drawing ends at ~20 ms a frame rather than 15, the tick has 22.3 ms and S falls ~3-6 short.
+  - **What's left beyond exact work:** the moving bipeds' 23 ms a tick. Only "plays the same" work reaches them (the AI already thinks at half rate: aicad3). That's §5's first decision.
 - **Milestone:** C3's census done and S's pieces chosen against the target; the PSP prices S when the first of them replaces the old tick path on b30.
 - **Stop rule:** if C3 shows the pieces can't reach the target exactly or "plays the same", Sheepdog01 decides (§5.1).
 - **Fallback:** the old tick path behind S's keep word; it stays the safety net for a failure, per CLAUDE.md's failure rule.
@@ -114,6 +120,9 @@ The GE was built for retained mode: lists that CALL sub-lists, 8 bone matrix and
 - **The units' jobs:** the main CPU runs the tick and the visibility, and hands over an instance list, not a record of every call. The ME writes the frame list from the instances and makes the dynamic geometry: the replay as a stage goes. The GE draws as now.
 - **What it must deliver at the floor (§1):** the ME's replay −33 ms a frame on b30's flight (−38 landing, −25 d20's flashlight); drawing, other and frame end 42.5 → ~15-20 ms on the flight. At the target, the GE's work too: fewer vertices and bytes (C6: the flight's GE work is ~89% vertex-side).
 - **What's known of its worth** [U on E and M]: PDC's census puts the models' removable share at 22-30 ms a frame of the replay on b30, measured near one tick a frame. At the floor's two ticks a frame it's smaller (`pdc_plan.md`: "the saving today is smaller than at the target. It grows as the frame rate rises"). The level's per-cluster lists add to it, unsized. **So R as known meets the floor's ME need on d20's flashlight and falls ~5-15 ms short on b30's flight and landing.** C4 and C2 size the rest.
+- **R on b30's flight and landing (C4, 2026-11-05 17:54, recon)** [M, PSP-3000, sierra-hw 42132063553, bare mekinds, tock162 88d3e33c; rows c4_replay_by_kind_b30_*]. The flight's replay is 67.9 ms a frame: model part draws 37.8 (277 a frame, 56%), audio and the ring served inside it 12.6, level draws 6.8, see-through 3.0 + 0.65, screen quads 1.5, model begin 1.0, multipurpose 0.9, shadows 0.8. No light pass, decals under 0.5. The landing's is 77.4: models 37.6, decals 6.8.
+  - **What R takes** [U]: the models' part draws down to their per-instance words (matrices, bones, lights, the CALL; ~40 of a part's words are state that repeats, C4's word count): 37.8 → ~8-12 ms, about -26 to -30. The level's draws down to ranges indexed in place: 6.8 → ~2, about -5. Together **~-31 to -35 ms a frame against the floor's need of -33 on the flight**: met, just. On the landing (need -38) it's ~3-7 short, the decals' 6.8 being dynamic.
+  - Audio and the ring (12.6) stay on the ME whatever R does.
 - **The light pass is R's too (C4 on d20, 2026-11-05 18:08, recon)** [M, PSP-3000, sierra-hw 42132069463, bare mekinds]. With the flashlight on, the replay is mostly the world's lights: light draws 28.2 and 47.9 ms of 49.3 and 71.8 a frame (57-67%), 94-108 draws a frame at 260-511 µs each, the worst single record 11-15 ms. The models are only 3.0-3.6 ms, the level 6.4-7.7, decals 1-2. Before the flashlight: 32.5 ms in all, models 8.1, lights 1.3.
   - So on d20's heavy view R's ceiling is the light pass, not the model parts. Each light redraws the surfaces it reaches, with a projected cone texture for a spotlight (`psp_ge.c`), and its per-draw work (each vertex's reach, the near cut, the bands) is immediate mode, redone every frame.
   - **Its pieces under R, already sized and never started** (the lab's levers.tsv): **LMC**, a static light's reach and lit-triangle list kept across frames while the light doesn't move (d20's machine lights); and **LM**, one draw with up to four GE lights in place of one draw per light. The flashlight moves every frame, so LMC doesn't take it: its form (the cone kept as a projected texture, or the GE's own spotlight, which is a look question) is for R's design page.
@@ -182,7 +191,7 @@ Sent to the master 2026-11-05 17:20 (the lab's coord/inbox/master.md) for those 
 | C1 | Each map's prebuilt forms (parts × levels of detail × shader passes) and their bytes | whether R fits | a counter in the baker, run as a sierra-bake job that prints counts only | this session's counter, run by the master | **done** (§3 R) |
 | C2 | The frame list's inline data (b30's flight 254 of 501 KB) by kind: model and level cut pieces, decals, kept index copies, effects, see-through, HUD | R's floor: what stays per frame | emulator, `listcensus` (Sierra-III recon/listbytes2; lab coord/handoff/listbytes_2026-11-05.md) | recon | **done** (§3 R) |
 | C3 | The tick by subsystem on the four heavy stretches, and its change rate: the share of each subsystem's per-object work whose inputs didn't change since the last tick | where S's last 4-6 ms a tick comes from | emulator: the PC sampler, `PSP_TICK_STEPS=1`, `nmstudy` extended (lab coord/handoff/nmstudy.md) | recon, through the master | **done** (§3 S): S falls ~3-5 ms a tick short on b30's flight |
-| C4 | The replay by record kind, and the models' time by step | R's ceiling on the ME | emulator for the shape; one bare PSP run for the ms (meparts' ME cycle counter) | the master | asked |
+| C4 | The replay by record kind, and the models' time by step | R's ceiling on the ME | emulator for the shape; one bare PSP run for the ms (meparts' ME cycle counter) | recon | **done** (§3 R): R meets b30 flight's floor need just, ~3-7 short on the landing |
 | C5 | What the GE does at the near plane; how the replay lights a model | two of R's unknowns | code | this session | **done** (below) |
 | C6 | The GE's own time on b30's flight and landing by what limits it | whether the GE's work can lose ~15 ms a frame for the same picture | existing measures, then one PSP pair | this session; the pair through the master | **done** (below) |
 
@@ -197,11 +206,16 @@ C3, C4 and C6 decide the heavy stretches; C1 decides whether R is built at all.
 - **C1, the order of magnitude** [E]: one frame's model commands on b30 are ~37,800 words (~150 KB, `pdc_plan.md`'s census), ~560 bytes a hit (pdcprobe's ~140 words). A map's whole store is a multiple of one frame's visible set, by how many parts, levels of detail and passes it holds [U]. The frame list R shrinks is 768 KB. Whether the store fits is C1's question.
 - **C4, what's known** [E]: on b30 the models were 61% of the replay's ME time in the older split by kind (mekinds, in `pdc_plan.md`); on c10 the models' steps are bind + state + lighting 38%, geometry 29%, two-sided and glow passes 24%, convert 6.5%, node matrix 3% [M, meparts 40961270594]. On b30's flight that puts the models at ~43 of the replay's 70 ms and the level and the rest at ~27 [U]. R's need there (−33 ms) takes most of the models' removable share plus part of the level's: C4 settles it.
 
-## 5. Decision points for Sheepdog01
+## 5. Decision points for Sheepdog01 (Gate 1, 2026-11-05)
 
-1. **After C3, C4 and C6:** if the parts' ceilings don't reach the floor on the four heavy stretches, what fills the gap there: "plays the same" work (the simulation rule of 2026-10-30), or compromises. Compromises are frozen apart from L15, FX15, RENDERTICK, AIFAR and PRIO60 (CLAUDE.md, 2026-10-25 and 10-29), so this one is Sheepdog01's to lift.
-2. **After C1:** whether R fits, and the go to build it as a separate path.
-3. **The target:** 30 fps per level looks reachable with R and S on the lighter levels: a10 and c10 at 20.7 fps today, c20 17.2, c40 27.5 (tock161's ladder, PSP-1000 [M]). It isn't promised on b30, a30 or d20 (×2.2-3.7). Whether to chase it there comes after the floor.
+1. **R's go:** build retained rendering as a separate path. Its store fits (C1, with C4's words a form), its dynamic floor is small (C2), it meets b30 flight's ME need and carries d20's light pass. It frees the ME room AITICKOLD needs, so S waits on it. The flashlight's form (the GE's spotlight per vertex, or the cone times the gel projected per pixel) is settled on R's design page by a side-by-side against the PC reference (Sheepdog01, 18:15: worth considering if it improves performance for a similar benefit; the gel's pattern is what's missing today).
+2. **S's go:** build the tick by change rate with its pieces: AITICKOLD on the room R frees, the unchanged-object skip (exact), collision's reuse on the repeating feature queries (exact), T5 and T7. Its target is a bare tick of 25.8 ms on b30's flight.
+3. **The margin on the heaviest stretches:** if R and S land below their ceilings, b30's landing and the b40 stretches stay a few ms over the floor. What may cover it:
+   - "plays the same" work on the moving bipeds' 23 ms a tick (the simulation rule of 2026-10-30; collision stays exact): for example, a far biped's update at a lower rate, as the AI already is; or
+   - lifting the compromise freeze for those stretches (frozen apart from L15, FX15, RENDERTICK, AIFAR and PRIO60; L15 held in reserve).
+
+   This can wait until R's and S's milestones measure what they really give. Deciding now only sets whether that work is designed beside them.
+4. **The target:** 30 fps per level looks reachable with R and S on the lighter levels: a10 and c10 at 20.7 fps today, c20 17.2, c40 27.5 (tock161's ladder, PSP-1000 [M]). It isn't promised on b30, a30 or d20 (×2.2-3.7). Whether to chase it there comes after the floor.
 
 ## 6. How it's built
 
@@ -222,7 +236,7 @@ The redesign rule (Sierra-III CLAUDE.md and the lab's, "Redesign work", Sheepdog
 - Each count's result goes into the lab's findings and this page's §1 and §3, and the dashboard's Redesign tab follows (`redesign.tsv`).
 - **Ends when** C1, C3, C4 and C6 are in.
 
-**Gate 1 (Sheepdog01): the go per part.**
+**Gate 1 (Sheepdog01): the go per part.** Ready 2026-11-05 19:20 (§5).
 - For each heavy stretch, the parts' ceilings from Phase 0 against §1's gap.
 - Sheepdog01 rules on §5.1 (what fills any gap: "plays the same" or a lifted compromise) and §5.2 (R's go).
 - A part without its go stays a plan; its levers carry on, saying how they fit it.
