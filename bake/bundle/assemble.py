@@ -21,7 +21,8 @@ import zipfile
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # the tools the bake runs from tools/ (the rest of tools/ is the port's own)
-TOOLS = ['texpack.py', 'stencilbake.py', 'dez.py', 'lightmap_masks.py', 'bspread.py', 'levelslim.py', 'modelconvert.py']
+TOOLS = ['texpack.py', 'stencilbake.py', 'dez.py', 'lightmap_masks.py', 'bspread.py', 'levelslim.py', 'modelconvert.py',
+         'sspr.py']
 # a tool in tools/ finds the bake's readers in bake/lib with this line; in the
 # bundle they sit side by side, so it goes
 READERS_LINE = "'bake', 'lib'))  # the bake's readers"
@@ -57,6 +58,8 @@ COMPONENTS = [
      'source/atracdenc-src.tar.gz (src/lib/libgha/src/3rd/kissfft)'),
     ('libsndfile (linked into atracdenc; WAV only, no external codecs)', 'LGPL-2.1-or-later', 'libsndfile',
      'source/libsndfile-1.2.2.tar.xz; https://github.com/libsndfile/libsndfile'),
+    ('meshoptimizer\'s simplifier (lib/third_party/meshoptimizer: compiled on the bake\'s machine by --sspr)', 'MIT',
+     'meshoptimizer', 'https://github.com/zeux/meshoptimizer (v1.3), by Arseny Kapoulkine'),
     ('the GCC runtime (libstdc++, libgcc; linked in on Linux and Windows)',
      'GPL-3.0 with the GCC Runtime Library Exception, which puts no conditions on programs linked with it',
      'gcc-runtime', 'https://gcc.gnu.org'),
@@ -161,6 +164,9 @@ def assemble(tools, out, target):
             lines = [line for line in f if READERS_LINE not in line]
         with open(os.path.join(out, 'lib', os.path.basename(path)), 'w', encoding='utf-8', newline='\n') as f:
             f.writelines(lines)
+    # SSPR's simplifier, as source: sspr.py compiles it where it runs
+    shutil.copytree(os.path.join(REPO, 'tools', 'third_party', 'meshoptimizer'),
+                    os.path.join(out, 'lib', 'third_party', 'meshoptimizer'))
     for folder in ('invader', 'atracdenc', 'musicenc', 'source'):
         shutil.copytree(os.path.join(tools, folder), os.path.join(out, folder))
     exe = TARGET_EXE[target]
@@ -176,6 +182,8 @@ def assemble(tools, out, target):
     # Rust's standard library is linked into Invader on every OS, but MSYS2's
     # Rust ships no licence texts: these are rustup's (MIT and Apache-2.0,
     # the same for every release)
+    shutil.copytree(os.path.join(REPO, 'tools', 'third_party', 'meshoptimizer'), os.path.join(licenses, 'meshoptimizer'),
+                    ignore=lambda d, names: [n for n in names if n != 'LICENSE.md'])
     if not os.path.isdir(os.path.join(licenses, 'rust-std')):
         shutil.copytree(os.path.join(REPO, 'bake', 'bundle', 'licenses', 'rust-std'), os.path.join(licenses, 'rust-std'))
     readme = [LICENSES_README]
