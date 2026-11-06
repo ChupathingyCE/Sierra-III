@@ -63,6 +63,23 @@ Per instance, the ME writes:
 
 That's ~30-60 words a part instead of ~140-200 today [U on C4], no per-part bind, lighting or geometry chain (the replay's instruction-cache problem, `draw_rebuild.md`), and no record to decode. The ME's jobs keep their place in the frame: the frame list is handed to the GE in chunks as now (the stall address).
 
+**What stays on the ME, by step** (b30's flight, PSP-3000 meparts4 42135685691, the ME's cycle counter; row c4_model_steps_b30_flight) [M for today, U for R]:
+
+| Step | Today, ms a frame | Under R |
+|---|---:|---|
+| bind + state + lighting | 7.7 | forms; per-instance lights only where they change (~1) |
+| geometry, to the batch | 8.1 | forms (gone) |
+| draw calls | 5.2 | CALLs (~1-2) |
+| bone matrices | 5.1 | stays (~5): the ME still writes each batch's bone slots |
+| near tests and lists | 4.0 | one test an instance (~1) |
+| two-sided, change and glow passes | 2.5 | forms (gone) |
+| near-plane filter | 2.0 | the immediate path's near instances only (small) |
+| convert | 1.6 | gone (PCV blocks) |
+| geometry's rest, node matrix | 3.1 | mostly gone |
+| **together** | **39.2** | **~8-10** |
+
+So R takes ~29-31 ms of the models' ME time on the flight, which carries most of the plan's ~-31 to -35 (the level's ~5 makes the rest).
+
 ### 2.5 What stays immediate
 
 The record and replay stay for the dynamic kinds (C2's floor, ~33-73 KB a frame): the see-through queue, particles, decals, contrails, the HUD, screen quads, shadows. Also on the immediate path:
