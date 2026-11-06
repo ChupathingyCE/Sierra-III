@@ -20,23 +20,23 @@ Labels: [M] measured on the PSP, [E] emulator or estimate, [D] read in code or d
 
 | # | Piece | Exact? | Ceiling on b30's flight, ms a tick | Evidence |
 |---|---|---|---|---|
-| S1 | Unchanged objects skip their update | exact | ~2.5-5 (6.8 measured as the ceiling, before scaling to the bare tick and allowing for a predicate that must know beforehand) | objcost 42141971439 [M] |
+| S1 | Unchanged objects skip their update | exact | ~1.5-3 (of the 6.8 measured, the Pelicans' 2.4 aren't at rest: see S1; the rest ~4.2, scaled to the bare tick and a predicate) | objcost 42141971439 [M]; whyawake1 [E] |
 | S2 | Collision's repeating feature queries answered from last tick's result | exact | ~1 | C3 by query [E] |
 | S3 | AITICKOLD: the AI's think on the ME from a world one tick older | plays the same (built, Sheepdog01's earlier OK to experiment) | ~5.9 (-14.5%) | PSP-3000 pair 42041663929 [M]; needs ME room R frees |
 | S4 | The far-biped tier | plays the same | ~2.3 (half rate) to ~4.6 (on the ME a tick behind) | objcost2 shares × the PSP's 24.3 [U on E × M] |
 | S5 | T5 (walks that overlap their misses) and T7 (data laid out for the tick) | exact | ~0.5-1 | `redesign_tick.md` |
 | — | The GE's toll, cut by R and B | exact | ~2-4 | lead A [U on E and M] |
 
-**Sum** [U]: 40.6 less 14.2 to 21.5 → **~19-26 ms a tick** against 25.8 (or 22.3). The floor's tick is reached at the middle of the ranges, not only at their tops as it was before S4 and the bipeds' count.
+**Sum** [U]: 40.6 less 13.2 to 19.5 → **~21-27 ms a tick** against 25.8 (or 22.3). The floor's tick is reached around the middle of the ranges with drawing at ~15 ms a frame; with drawing at ~20 it needs the upper half.
 
 ### S1. The unchanged-object skip
 
 An object whose update leaves it bitwise unchanged doesn't need the update. The work is knowing that *before* the update runs, with a predicate that's never wrong:
 
 - **Already done this way:** the sleepers (FIXES_WS: ~217 of b30's ~274 scenery a tick never enter `psp_object_update`; recon, 18:57) and the resting weapons and equipment (IS). S1 extends the same idea to the kinds that still carry the measured 6.8 ms:
-  - **parked or idle vehicles** (2.4 ms on b30's flight, ~2.1 a tick at ~1.1 ms each): no driver or passenger, at rest, no impulse, damage or attached effect since the last tick;
+  - **not vehicles, after all** (recon's predicate read, whyawake1 42152687593 [E]): the 2.4 ms of "unchanged" vehicle updates on b30's flight are the Pelicans hovering on a script, not at rest (~1.1 a tick); parked Warthogs already sleep or cost ~11 µs. A scripted vehicle's input is its script, so it stays out of S1;
   - **awake scenery** (2.3 ms, 53 a tick at ~42 µs): its animation is the only change, so the update's work is the animation's, which can be advanced without the rest of the update when the object is otherwise at rest [U, to read in objects.c];
-  - **bodies** (25% of the biped time on the landing, 86-97% unchanged): a dead biped at rest on the ground.
+  - **bodies** (25% of the biped time on the landing, 86-97% unchanged): the corpse sleep (b105-b114) already offers every settled body; what keeps some awake is its own guard, a body held up by something other than the level (b30 7.7 of ~50 a tick, d20 12.3 of 36; 55-440 µs each in the emulator). **Slice 1 is therefore:** a body held up by objects may sleep while everything holding it is asleep or static, and wakes the tick any of them wakes or goes (recon, building under `skipchange`).
 - **The wake rules** are the sleepers': contact, damage, a script, a parent that moved, a force. A wrong predicate shows up as a play difference, so each kind's rule is proven by play and both seeds identical on b30, c10, c20 and d20 (statecrc), with a check build that runs the update anyway and compares (as `rsocheck` and `vislazycheck` do).
 
 ### S2. Collision's feature-query reuse
@@ -61,7 +61,7 @@ Collision stays the same code against the same world (the rule: collision exact,
 
 | # | Slice | Proven by |
 |---|---|---|
-| 1 | S1 for parked vehicles and bodies, with its check build | play and both seeds identical on four maps; the check build's compare clean |
+| 1 | S1 for bodies held up by sleeping or static objects, with its check build (recon, under way) | play and both seeds identical on four maps; the check build's compare clean |
 | 2 | S1 for awake scenery (its animation advanced alone) | as 1 |
 | 3 | S2, the feature-query reuse, with its check build | as 1 |
 | — | **Milestone:** S1 and S2 on b30, the old update path bypassed for the kinds they take | one PSP pair, `- \| skipchange` (the keep word), b30's flight |
