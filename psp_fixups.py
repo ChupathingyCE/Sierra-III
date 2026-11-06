@@ -8045,6 +8045,52 @@ static int psp_prio_take(long definition_index, float share)
 	return share >= 0.5f;
 }
 
+/* the budget's own rule for a free particle of rank 3 or 4 (impacts, smoke
+and their kin): refused past its budget, a rank 3 far from the eye refused
+once the budget is 3/4 full, and past 96 in flight every second one left
+out, past 160 two of three, so a big burst (the tank shell's) comes out
+thinner but on time, where the budget alone took it whole and then refused
+everything after. Asked before the particle's location and setup are worked
+out (psp_particle_admit), or in particle_new under padmitoff */
+static int psp_particle_room(int rank, long definition_index, real_point3d const *position)
+{
+	long budget = rank == 4 ? PSP_RANK4_BUDGET : psp_particle_budget;
+	long thin_from = rank == 4 ? PSP_RANK4_THIN : 96;
+
+	if (psp_free_particles >= budget)
+	{
+		psp_particles_refused++;
+		PSP_CENSUS(definition_index, refused);
+		return 0;
+	}
+	if (rank == 3 && psp_ranks_on > 0 && psp_free_particles >= budget * 3 / 4)
+	{
+		struct observer_result const *eye = observer_get_camera(0);
+		real dx = position->x - eye->position.x, dy = position->y - eye->position.y, dz = position->z - eye->position.z;
+
+		if (dx * dx + dy * dy + dz * dz > PSP_RANK3_NEAR * PSP_RANK3_NEAR)
+		{
+			psp_particles_refused++;
+			PSP_CENSUS(definition_index, refused);
+			return 0;
+		}
+	}
+	if (psp_particle_budget != 0x7FFF && psp_free_particles >= thin_from)
+	{
+		static unsigned long thin = 0;
+
+		if (++thin % (psp_free_particles >= thin_from + 64 ? 3 : 2))
+		{
+			psp_particles_thinned++;
+			PSP_CENSUS(definition_index, thinned);
+			return 0;
+		}
+	}
+	return 1;
+}
+
+static int psp_admit_early = -1; /* "padmitoff": the budget decided in particle_new, after the setup */
+
 int psp_particle_admit(long definition_index, real_point3d const *at, int attached, int node_relative,
 	int first_person, real radius)
 {
@@ -8066,10 +8112,39 @@ int psp_particle_admit(long definition_index, real_point3d const *at, int attach
 		if (psp_prio_on)
 			platform_psp_log("particles: particleprio: free particles kept by priority (rank, distance, size) before they are built, judged against %d%% of the budget", psp_prio_room);
 	}
-	if (!psp_prio_on)
-		return 1;
 	if (psp_particle_budget < 0)
 		psp_particle_budget = psp_keep("fullparticles") ? 0x7FFF : PSP_PARTICLE_BUDGET;
+	if (!psp_prio_on)
+	{
+		/* the budget's rule asked before the effect works out where the
+		particle goes and whether it's seen (a BSP walk and the setup, ~12 us
+		a particle [E]), which none of the rule reads: the armed plasma
+		grenade asks 32 an update and the budget left out two thirds of them
+		after paying for that (recon's fxcensus_flame_grenade). The distance
+		test reads the effect's place, not the particle's own (it's not yet
+		made), and the thinning's count now runs over asks that would have
+		been unseen: the same budget, not the same particles. A kept one
+		skips particle_new's own rule */
+		int rank, keep = 1;
+
+		if (psp_admit_early < 0)
+			psp_admit_early = !psp_keep("padmitoff");
+		if (!psp_admit_early || attached || psp_particle_budget == 0x7FFF)
+			return 1;
+		if (psp_ranks_on < 0)
+			psp_ranks_on = psp_keep("particleranks");
+		rank = psp_ranks_on > 0 ? psp_particle_rank(definition_index, &keep) : 3;
+		if (rank == 2 && !keep)
+		{
+			psp_particles_thinned++;
+			PSP_CENSUS(definition_index, thinned);
+			return 0;
+		}
+		if (rank >= 3 && !psp_particle_room(rank, definition_index, at))
+			return 0;
+		psp_prio_admitted = 1;
+		return 1;
+	}
 	if (psp_particle_budget == 0x7FFF || attached || first_person)
 		return 1;
 	rank = psp_particle_rank_of(definition_index);
@@ -8164,7 +8239,6 @@ void particle_new(
 	if (data->object_index == NONE)
 	{
 		int psp_rank = 3, psp_keep_this = 1, psp_pre = psp_prio_admitted;
-		long psp_budget, psp_thin_from;
 
 		psp_prio_admitted = 0;
 		if (psp_particle_budget < 0)
@@ -8173,7 +8247,8 @@ void particle_new(
 			psp_ranks_on = psp_keep("particleranks");
 		if (psp_ranks_on > 0 && psp_particle_budget != 0x7FFF && !psp_pre)
 			psp_rank = psp_particle_rank(data->definition_index, &psp_keep_this);
-		/* kept by particleprio: only the pool's end refuses it (below) */
+		/* already judged by psp_particle_admit (the budget's rule, or
+		particleprio): only the pool's end refuses it (below) */
 		if (psp_pre)
 			psp_rank = 1;
 		if (psp_rank == 2 && !psp_keep_this)
@@ -8182,42 +8257,8 @@ void particle_new(
 			PSP_CENSUS(data->definition_index, thinned);
 			return;
 		}
-		psp_budget = psp_rank == 4 ? PSP_RANK4_BUDGET : psp_particle_budget;
-		psp_thin_from = psp_rank == 4 ? PSP_RANK4_THIN : 96;
-		if (psp_rank >= 3 && psp_free_particles >= psp_budget)
-		{
-			psp_particles_refused++;
-			PSP_CENSUS(data->definition_index, refused);
+		if (psp_rank >= 3 && !psp_particle_room(psp_rank, data->definition_index, &data->position))
 			return;
-		}
-		if (psp_rank == 3 && psp_ranks_on > 0 && psp_free_particles >= psp_budget * 3 / 4)
-		{
-			struct observer_result const *psp_eye = observer_get_camera(0);
-			real psp_dx = data->position.x - psp_eye->position.x, psp_dy = data->position.y - psp_eye->position.y,
-				psp_dz = data->position.z - psp_eye->position.z;
-
-			if (psp_dx * psp_dx + psp_dy * psp_dy + psp_dz * psp_dz > PSP_RANK3_NEAR * PSP_RANK3_NEAR)
-			{
-				psp_particles_refused++;
-				PSP_CENSUS(data->definition_index, refused);
-				return;
-			}
-		}
-		/* build 41: past 96 in flight, every second new one is left out,
-		past 160 two of three: a big burst (the tank shell's) comes out
-		thinner but on time, where the budget alone took it whole and then
-		refused everything after (dense, and a big cut in frames) */
-		if (psp_rank >= 3 && psp_particle_budget != 0x7FFF && psp_free_particles >= psp_thin_from)
-		{
-			static unsigned long psp_thin = 0;
-
-			if (++psp_thin % (psp_free_particles >= psp_thin_from + 64 ? 3 : 2))
-			{
-				psp_particles_thinned++;
-				PSP_CENSUS(data->definition_index, thinned);
-				return;
-			}
-		}
 	}
 #endif
 	particle_index = datum_new(particle_data);
