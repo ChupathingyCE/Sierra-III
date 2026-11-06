@@ -14,6 +14,7 @@ Labels: [M] measured on the PSP, [E] emulator or estimate, [D] read in code or d
 - objects: 69-73% unchanged on b30, 96-97% on b40;
 - object updates' time (PSP-1000, 42141971439): 34.9 ms a tick, 6.8 of it (19%) in updates that left the object unchanged; the moving bipeds 22.9 (~970 µs each);
 - collision's queries mostly don't repeat (vectors 3-6%, reconnects under 5%); bipeds' feature-in-sphere queries do (25-46% for bipeds; 16-39% overall);
+- **b40's snowfield, timed** (PSP-3000, sierra-hw 42152471353, game time 14,100-15,300; row c3_objcost_ms_b40_snowfield) [M]: object updates 30.8 ms a tick, 6.6 (21%) leaving the object unchanged: **vehicles 3.7** (6.4 a tick at ~580 µs: gun turrets and parked vehicles), machines 0.9, weapons 0.7, scenery 0.4, bodies 0.6. Bipeds 20.0 ms (24.9 a tick); **far and out of the fight 28% of it, ~5.5 ms a tick**; in the fight 57%;
 - bipeds by distance and fight (objcost2 42146294460, shares of biped time): far and out of the fight 19% on b30's flight (~4.6 ms a tick at the PSP's 24.3), 32% on b40's snowfield, 14% on the cliff, 8% on b30's landing; in the fight at 20-40 units 30-38% everywhere; bodies without an AI 25% on the landing, 86-97% unchanged.
 
 ## 2. The pieces
@@ -26,6 +27,8 @@ Labels: [M] measured on the PSP, [E] emulator or estimate, [D] read in code or d
 | S4 | The far-biped tier | plays the same | ~2.3 (half rate) to ~4.6 (on the ME a tick behind) | objcost2 shares × the PSP's 24.3 [U on E × M] |
 | S5 | T5 (walks that overlap their misses) and T7 (data laid out for the tick) | exact | ~0.5-1 | `redesign_tick.md` |
 | — | The GE's toll, cut by R and B | exact | ~2-4 | lead A [U on E and M] |
+
+**On b40's snowfield** (bare tick 37.6, -31% to 25.8) [U on M]: S4's far tier ~2.75 (half rate) to ~5.5 (the ME); S1's unchanged vehicles up to ~3.7 if their predicate holds (turrets and parked vehicles, being read), bodies ~0.6; S2's level half and AITICKOLD not yet priced there. The snowfield's -11.8 ms looks reachable with S4 and S1's vehicles together.
 
 **Sum** [U], on b151's 42.4: less 12.65 to 18.8 → **~23.6-29.8 ms a tick** against 25.8 (or 22.3 with drawing at ~20). The floor's tick on the flight needs the upper half of the ranges; b30's landing (35.3, its bodies a quarter of the biped time, slept exactly by S1) and b40's snowfield (37.6, its far bipeds a third) need less.
 
