@@ -12896,6 +12896,9 @@ array: the variant regions "skinstrip" picks (tools/modelconvert.py) */
 /* SSPR's levels (tools/sspr.py): a rigid block whose own triangle list follows its records */
 #define PCV_LEVEL 4u
 static PSP_MAIN_SIDE unsigned long model_drawn_indices = 0, model_drawn_vertices = 0; /* psp_ge_pcv_report */
+/* the pass options' words and counts (pass_small, below) */
+static int pass_glow_small = -1, pass_back_small = -1, pass_change_small = -1;
+static unsigned long passes_left_small[3]; /* glow, sheen and detail; back; change */
 #define PCV_BAD 0x80000000u
 struct pcv_header
 {
@@ -13484,6 +13487,13 @@ void psp_ge_pcv_report(void)
 	platform_log("GE: model parts drawn in the last 300 frames: %lu indices (the GE's vertices), %lu buffer vertices; %.0f and %.0f a frame",
 		model_drawn_indices, model_drawn_vertices, (double)model_drawn_indices / 300.0, (double)model_drawn_vertices / 300.0);
 	model_drawn_indices = model_drawn_vertices = 0;
+	if (pass_glow_small > 0 || pass_back_small > 0 || pass_change_small > 0)
+	{
+		platform_log("GE: passes left out on small models in the last 300 frames: glow, sheen and detail %lu (under %d px), back faces %lu (under %d px), change colour %lu (under %d px)",
+			passes_left_small[0], pass_glow_small, passes_left_small[1], pass_back_small, passes_left_small[2],
+			pass_change_small);
+		memset(passes_left_small, 0, sizeof(passes_left_small));
+	}
 	platform_log("GE: preconvert: %lu draws took a baked buffer as it was read, %lu refused (not as baked), %lu blocks relocated, %lu malformed; preconvertcheck differences: records %lu, plans %lu, spheres %lu, runs %lu; skinstrip: %lu batches drawn as strips",
 		pcv_answers, pcv_refused, pcv_relocated, pcv_bad_blocks, pcv_differ_records, pcv_differ_plans, pcv_differ_spheres,
 		pcv_differ_runs, skin_strip_draws);
@@ -15986,6 +15996,25 @@ static int rigid_run_verdict(const float *sphere, float stretch)
 	return sphere_beyond(centre, radius, NEAR_CLIP) ? 2 : 0;
 }
 
+/* The pass options (Sheepdog01 15:23, redesign_tick_target §3.4; compromises, each
+off by default behind its word): on a model drawn under N pixels across, a
+pass that adds little there is left out. glowsmallN: glow, sheen and detail;
+backsmallN: a two-sided part's back faces; changesmallN: the change colour.
+One size test, a model's own pixels, so R's instance decision calls the
+same. First person and the sky keep every pass */
+
+static int pass_small(int pixels)
+{
+	return pixels > 0 && model_pixels < (float)pixels && !model_first_person && !in_sky;
+}
+
+static void pass_words(void)
+{
+	pass_glow_small = psp_keep_number("glowsmall", 0);
+	pass_back_small = psp_keep_number("backsmall", 0);
+	pass_change_small = psp_keep_number("changesmall", 0);
+}
+
 static void psp_ge_draw_model_body(void *vertices, int vertex_count, int uncompressed, const unsigned short *indices,
 	long index_count, int strip, unsigned int color, unsigned int base_key, float u_scale, float v_scale,
 	int alpha_tested)
@@ -16338,7 +16367,11 @@ static void psp_ge_draw_model_body(void *vertices, int vertex_count, int uncompr
 	part_add(8);
 	if (back_pass_off < 0)
 		back_pass_off = psp_keep("nobackpass");
-	if (two_sided && model_cull && model_camouflage <= 0.0f && !back_pass_off)
+	if (pass_glow_small < 0)
+		pass_words();
+	if (two_sided && model_cull && model_camouflage <= 0.0f && !back_pass_off && pass_small(pass_back_small))
+		passes_left_small[1]++;
+	else if (two_sided && model_cull && model_camouflage <= 0.0f && !back_pass_off)
 	{
 		int index;
 
@@ -16376,7 +16409,9 @@ static void psp_ge_draw_model_body(void *vertices, int vertex_count, int uncompr
 		/* "noglowpass" (recon): which brightness on a model is its self-illumination */
 		static int glow_off = -1;
 
-		if (change_color != 0xFFFFFFFF && change_pass(vertices, indices, index_count, strip, skin, &model))
+		if (change_color != 0xFFFFFFFF && pass_small(pass_change_small))
+			passes_left_small[2]++;
+		else if (change_color != 0xFFFFFFFF && change_pass(vertices, indices, index_count, strip, skin, &model))
 		{
 			change_passes++;
 			CENSUS(census_tint(base_key, change_key, change_color));
@@ -16384,7 +16419,9 @@ static void psp_ge_draw_model_body(void *vertices, int vertex_count, int uncompr
 		if (glow_off < 0)
 			glow_off = psp_keep("noglowpass");
 		glow_base_key = base_key; /* the clamp's base (glow_map_pass) */
-		if (glow_color && !glow_off)
+		if (glow_color && !glow_off && pass_small(pass_glow_small))
+			passes_left_small[0]++;
+		else if (glow_color && !glow_off)
 		{
 			if (!psp_tex_has(glow_key))
 				glow_unmapped++;
@@ -16392,7 +16429,9 @@ static void psp_ge_draw_model_body(void *vertices, int vertex_count, int uncompr
 				glow_passes++;
 		}
 	}
-	if (sheen && sheen_pass(vertices, indices, index_count, strip, skin, &model))
+	if (sheen && pass_small(pass_glow_small))
+		passes_left_small[0]++;
+	else if (sheen && sheen_pass(vertices, indices, index_count, strip, skin, &model))
 		sheen_passes++;
 	if (env)
 	{
@@ -16410,7 +16449,9 @@ static void psp_ge_draw_model_body(void *vertices, int vertex_count, int uncompr
 			env_unbound++;
 		sceGuTexScale(model_u_scale * (u_scale != 0.0f ? u_scale : 1.0f), model_v_scale * (v_scale != 0.0f ? v_scale : 1.0f));
 	}
-	if (textured && model_detail_key && model_camouflage <= 0.0f && !in_sky)
+	if (textured && model_detail_key && model_camouflage <= 0.0f && !in_sky && pass_small(pass_glow_small))
+		passes_left_small[0]++;
+	else if (textured && model_detail_key && model_camouflage <= 0.0f && !in_sky)
 		model_detail_pass(vertices, indices, index_count, strip, skin, &model);
 	if (model_camouflage > 0.0f)
 	{
