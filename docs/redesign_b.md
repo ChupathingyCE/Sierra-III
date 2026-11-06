@@ -23,7 +23,7 @@ The tightest single place is c20's heap: 160 KB at the top, largest block 182 KB
 - needs the forms GE-readable: main RAM or VRAM, never eDRAM;
 - makes PDC's claim on the eDRAM (~240 KB of tables and stores) unnecessary: R replaces PDC.
 
-Net, R should leave main RAM a few hundred KB better off [U], to be measured at R's slice 5 (it logs the store's bytes). **At risk:** captured forms run ~400 bytes each, and b30 has ~2,970 keys, ~1.2 MB by key (rslice1f [E]), more than R frees. So the store holds the forms of resident geometry only, sized to the working set over a window; if that's still over, the forms' share of the geometry cache comes out of the cache, and the trade is priced by a pair.
+Net, R should leave main RAM a few hundred KB better off [U], to be measured at R's slice 5 (it logs the store's bytes). **The store, by use:** captured forms are ~350 bytes each; by key b30 has ~1.2 MB of them and by residency ~713 KB, but the forms drawn in a second take ≤ 130 KB (rslice1h [E]). So the store is kept by use at 256 KB to start (a miss is today's draw plus a copy), plus one bind list a resident texture. R's net is then ~+0.6-0.7 MB of main RAM [U], to be confirmed at slice 5.
 
 **S (the tick by change rate) claims small, hot tables:**
 - each object's version (for the unchanged-object skip and the collision reuse key): ~4-8 bytes an object, ~2-5 KB for b30's ~650 objects;
