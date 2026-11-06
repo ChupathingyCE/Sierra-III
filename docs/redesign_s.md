@@ -102,6 +102,8 @@ What follows from the rule: the milestone prices the part once; it doesn't send 
 - **the table split:** the callers' keys in one small array (one or two lines), the answers apart, sized to the bipeds that stand still (the census gives the count);
 - **counts before time:** reused, kept and given-up per query from the run's own log, and the emulator's instruction counts of keep against walk, before any second pair.
 
+**S2 v2, kept only on a repeat** (recon/skipchange 2893d7b4, skip14 42175805803 [E], strict): play and seeds identical on b30, c10 and d20; on b30, of 30,000 biped queries, reused 26% (v1 30%), **kept 8% (v1 67%)**, too big 135 (v1 739); the answers' store ~9 KB (8 slots) against ~27 KB, and a moving biped pays a 14-word hash. Its price is a PSP pair on b30's flight (the master's call); if it reads ~0 again, S2 is shelved with `revive_if: under a collision redesign`.
+
 
 - **b40's cliff** (bare tick 35.9, -28% to 25.8; re-run 42156503649 [M]) has the smallest far share (14% of biped time), so S4 buys least there; its -10.1 ms leans on S2 and AITICKOLD (the turrets give ~0.4 at most). Its per-kind object costs aren't timed yet: the snowfield's objcost run's twin on the cliff would price it.
 - **The predicates (S1)** must be read in the engine: what an at-rest vehicle's update does that isn't visible in its play hash (timers, effects, sounds). The check build is the guard.
