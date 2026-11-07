@@ -244,12 +244,11 @@ All five go into one hardware micro-benchmark (halo_bench v9) before any engine 
 
 **Next steps, in order of risk:**
 1. **Read-only probe** (kernel mode through mecore's `kcall`, which the game already loads with the ME): log the documented-but-unknown registers once at start-up: DDR `0xBD000000`–`0x44`, GE `0xBD400004/104/200/300`, EDRAM `0xBD500000`–`0xA0`, `0xBC100040`–`0x5C`. Values that differ between "GE idle" and "GE busy", or that look like small fields, are the candidates. Harmless, since only addresses psdevwiki lists are read.
-2. **Disassemble `sceDdrWriteMaxAllocate`** from the 6.61 `flash0:/kd/lowio.prx` (copied to the stick with ARK-4's file manager; it's Sony's code, so it stays on our machines, unshared). That shows which DDR register it writes, and with what.
-3. **Only then a write test** in halo_bench, not the game: v9's dependent-miss latency with the GE texturing from RAM, before and after the write. A wrong value could hang the bus until power-off, so it needs a test that is safe to lose.
+2. **Only then a write test** in halo_bench, not the game: v9's dependent-miss latency with the GE texturing from RAM, before and after the write. A wrong value could hang the bus until power-off, so it needs a test that is safe to lose.
 
 Meanwhile the levers that don't need it are clear from b102 run 5: fewer GE main-RAM fetches (b103's "level vertices in VRAM" switch measures it), and the scratchpad for the CPU's hot read-mostly tables (v9: unaffected by the GE).
 
-**Step 1 done, b105 run 1 [M].** The probe read the registers with the GE idle and busy. The DDR controller's are identical in both (`bd000020=00008020 24=00020220 2c=80000004 30=11110410 34=00000007 38=0 40=0 44=0000000a`). `bd400004/104/300` go from 0 to an address inside our display list (the GE's list pointers), and `bc10004c`/`bc100050` change the way the Media Engine starting would (a reset released, a bus clock on) [U]. Nothing moved with the GE's load the way a priority setting would. `bd000030 = 11110410` is the only value shaped like per-master fields [U]. Step 2 (disassembling `sceDdrWriteMaxAllocate`) is next.
+**Step 1 done, b105 run 1 [M].** The probe read the registers with the GE idle and busy. The DDR controller's are identical in both (`bd000020=00008020 24=00020220 2c=80000004 30=11110410 34=00000007 38=0 40=0 44=0000000a`). `bd400004/104/300` go from 0 to an address inside our display list (the GE's list pointers), and `bc10004c`/`bc100050` change the way the Media Engine starting would (a reset released, a bus clock on) [U]. Nothing moved with the GE's load the way a priority setting would. `bd000030 = 11110410` is the only value shaped like per-master fields [U]. The write test stays a blind write, Sheepdog01's call.
 
 **Searched again, 2026-11-04 [D]** (`hw_capabilities.md` §6.2–6.3 has the detail and the sources):
 - **Step 2 is closed.** No Sony firmware is read in any form (lab decision 2026-11-04 16:55).
