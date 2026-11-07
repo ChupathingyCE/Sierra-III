@@ -12,8 +12,8 @@ anyway, and an effect played in 3D is mixed as mono. streaming.md S9
           the mixer's full-rate path (MUSADPCM, keep word musadpcm)
     s9mono  every sound at 22,050 Hz at most and mono, the music and the
           ambience included: the PSP's speakers are the target, and a 3D
-          effect is mixed mono and panned anyway (Sheepdog01 2026-11-06 17:07:
-          nothing that gameplay doesn't need in stereo stays stereo)
+          effect is mixed mono and panned anyway: nothing that gameplay
+          doesn't need in stereo stays stereo
     s10   s9, and footsteps, impacts and casings at 11,025 Hz (S10: a
           listening A/B first)
 

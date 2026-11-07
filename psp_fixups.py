@@ -45884,7 +45884,7 @@ static void psp_wx_report(long now)
 
 
 # ---------- FIXES_APCPOOL: a file completion never lost to a full heap (a fix,
-# B64; recon's read 2026-11-06 16:31). platform_queue_apc takes each
+# B64). platform_queue_apc takes each
 # ReadFileEx/WriteFileEx completion's record from the heap and drops the call
 # when the heap refuses it, so the read has happened but its waiter never
 # hears (b30 and c20 refused it under R's A/B period's tight heap). A small
@@ -47544,7 +47544,7 @@ FIXES_OBSRAY["source/ai/ai.c#obsray"] = [
 # ---------- FIXES_FLAMEDECAL: a looping effect's scorch not stamped again
 # while its last one is fresh beneath it (lever FLAMEDECAL; keep word
 # "flamedecal", opt-in until d20's side-by-sides show the scorch looks the
-# same, Sheepdog01 2026-11-06 18:33). d20's burning flame stamps its scorch decal at
+# same). d20's burning flame stamps its scorch decal at
 # every event, ~1.5 a tick, and each costs decal_new's collision ray,
 # projection and clipping (~500-610 us [E], ~85% of the flame's update). The
 # scorch under a fire is saturated by the first few. So an effect's decal part
@@ -47697,8 +47697,8 @@ FIXES_SNDPERMAP["source/cache/xbox_sound_cache.c#sndpermap"] = [
 ]
 
 # ---------- FIXES_SNDWAIT: the sound cache's refusals as sounds held back
-# (on by default, "sndwaitoff" turns it off: it logs only when a sound waits;
-# Sheepdog01 2026-11-06 18:26 and 23:19, the cache per map, played data from hand tests). The
+# (on by default, "sndwaitoff" turns it off: it logs only when a sound waits,
+# so the cache can be sized per map from what play holds back). The
 # engine asks again for a sound with no room every couple of ticks, so "failed
 # for room" counts asks, not sounds. This names each sound held back, when it
 # was first asked for, and how long it waited before it loaded, or that it
@@ -48072,8 +48072,7 @@ unsigned long psp_milliseconds_live(void);
 # ---------- FIXES_STRICTALIAS: the type puns -fstrict-aliasing would break,
 # read through a union instead (GCC defines that), so the same bits come out
 # with or without it. valid_real alone is 268 of GCC's 733 warnings
-# (PSP_STRICTALIAS_WARN=1, sierra-build 42365484319): inlined everywhere a
-# real is checked
+# (PSP_STRICTALIAS_WARN=1): inlined everywhere a real is checked
 FIXES_STRICTALIAS = {}
 FIXES_STRICTALIAS["source/math/real_math.h#strictalias"] = [
 ("""	return (*(long *)&n & 0x7F800000) != 0x7F800000;""",

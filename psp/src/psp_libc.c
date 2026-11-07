@@ -1355,8 +1355,8 @@ void psp_heap_survey(unsigned long *free_bytes, unsigned long *largest_bytes, un
 
 pspsdk's libcglue makes each of newlib's locks (a file's, among others) with
 malloc and goes on to create its mutex in it unchecked, so a refused malloc
-under a tight heap becomes a write to address 0 (recon 2026-11-06: c20 under
-R's A/B, the emulator's segfault in sceKernelCreateLwMutex). These are the
+under a tight heap becomes a write to address 0 (the emulator's segfault in
+sceKernelCreateLwMutex, with c20's heap tight). These are the
 same functions with a small pool behind the malloc; the lock is libcglue's
 own layout (a light mutex's workarea), and a pool lock is given back at its
 close instead of freed */
