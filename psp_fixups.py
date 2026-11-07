@@ -13,6 +13,8 @@ TREE = sys.argv[1]
 # (the tree is left as it was) rather than stopping at the first: what a new
 # upstream would cost (docs/overnight_b108.md, section 7)
 CHECK_ONLY = os.environ.get("PSP_FIXUPS_CHECK", "") == "1"
+# psp_build.py's PSP_FRAMEPTR: 0 builds the engine without the frame pointer
+FRAMEPTR = os.environ.get("PSP_FRAMEPTR", "1") != "0"
 
 
 FIXES = {
@@ -48835,6 +48837,13 @@ for rel, changes in FIXES.items():
     if CHECK_ONLY or not applied:
         # (a file with no changes left is left as it is)
         continue
+    # PSP_FRAMEPTR=0 builds every engine unit without the frame pointer, so
+    # the lookups' own omit-frame-pointer attribute says nothing more. Left
+    # in, it gives each its own optimisation settings, which -fprofile-use
+    # and -fprofile-generate fill in differently: their callers were inlined
+    # differently in the counting build and lost their counts
+    if not FRAMEPTR:
+        text = text.replace(' __attribute__((optimize("omit-frame-pointer")))', "")
     # the sizes go after the file's first #include, so its headers come first
     if rel.endswith(".h"):
         open(path, "w", errors="surrogateescape").write(text); continue
