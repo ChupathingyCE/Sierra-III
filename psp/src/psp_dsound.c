@@ -773,6 +773,7 @@ struct sndstream_piece
 };
 static struct sndstream_piece sndstream_pieces[SNDSTREAM_PIECES_MAX] __attribute__((aligned(64)));
 static int sndstream_piece_count = 0;
+static int sndstream_pieces_kept = -1;
 
 static unsigned long sndstream_packet(const void *permutation, const unsigned char *data, unsigned long *offset,
 	int *check);
@@ -4662,7 +4663,7 @@ static long sndpermap_pages(const char *map)
 }
 
 #if PSP_SNDSTREAM
-static long sndstream_map_open(void);
+static long sndstream_map_open(const char *map);
 static void sndstream_place(unsigned char *pool, long pages);
 static long sndstream_pool_pages = 0;
 #endif
@@ -4691,7 +4692,7 @@ long psp_sound_map_pages(const char *map)
 	/* the streamed sounds' pool: the top of the cache's main RAM (the main
 	tier's, with the tier), the same place for every map, so the cache stops
 	short of it */
-	pool = sndstream_map_open();
+	pool = sndstream_map_open(map);
 	if (pool && pages > boot_pages - pool)
 		pages = boot_pages - pool;
 #endif
@@ -4830,30 +4831,56 @@ static int sndstream_on(void)
 		}
 		if (sndstream_mode)
 		{
-			/* 32 (256 KB): d20's swamp, the busiest, needed at most 38 at
-			once with every just-placed sound's first piece held, and played
-			no late block and held no sound back at 32; 24 played late */
-			int pieces = psp_keep_number("sndstreampieces", 32);
+			/* sndstreampiecesN sets one pool for every map; without it,
+			each map's own (sndstream_map_pieces) */
+			int pieces = psp_keep_number("sndstreampieces", -1);
 
-			if (pieces < 8)
+			if (pieces >= 0 && pieces < 8)
 				pieces = 8;
 			if (pieces > SNDSTREAM_PIECES_MAX)
 				pieces = SNDSTREAM_PIECES_MAX;
-			sndstream_piece_count = pieces;
+			sndstream_pieces_kept = pieces;
 		}
 	}
 	return sndstream_mode;
 }
 
+/* The pool each map needs: the most pieces wanted at once on its
+hands-off run to 300 s, with room over it (sndstream5a), d20's swamp the
+busiest (38 at once with every just-placed sound's first piece held; 24
+played late there, 32 didn't). b40, c20 and c40 have no ambient loop long
+enough to stream, so they keep the room. A map not listed gets 32. */
+static int sndstream_map_pieces(const char *map)
+{
+	static const struct { const char *map; int pieces; } pools[] = {
+		{ "d20", 40 }, { "a30", 24 }, { "a50", 16 }, { "d40", 16 }, { "c10", 12 },
+		{ "a10", 8 }, { "b30", 8 }, { "b40", 0 }, { "c20", 0 }, { "c40", 0 },
+	};
+	int k;
+
+	if (sndstream_pieces_kept >= 0)
+		return sndstream_pieces_kept;
+	for (k = 0; k < (int)(sizeof(pools) / sizeof(pools[0])); k++)
+		if (map && strcmp(map, pools[k].map) == 0)
+			return pools[k].pieces;
+	return 32;
+}
+
 /* a map opens (psp_sound_map_pages, the cache empty): every piece and sound
 forgotten; the pool's pages, which the cache gives up (placed once the
 cache's own size is settled) */
-static long sndstream_map_open(void)
+static long sndstream_map_open(const char *map)
 {
 	sndstream_pool = NULL;
 	sndstream_pool_pages = 0;
 	if (!sndstream_on() || !cache_base)
 		return 0;
+	sndstream_piece_count = sndstream_map_pieces(map);
+	if (!sndstream_piece_count)
+	{
+		platform_log("sndstream: %s streams nothing; no pool", map ? map : "?");
+		return 0;
+	}
 	memset(sndstream_sounds, 0, sizeof(sndstream_sounds));
 	sndstream_flight = 0;
 	sndstream_chosen = NULL;
