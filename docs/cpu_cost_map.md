@@ -56,7 +56,7 @@ The split is roughly 60/40 by count. A writeback adds to the cost of the data mi
 
 ## 3. Why the tick misses
 
-- **Capacity, not conflicts.** A fully associative cache would remove only 16–18% of the tick's I-misses [E, `cache_work.md`], so ~82–84% are capacity. The tick's hot code is ~70 KB, fetched again 47–75 times a tick [E, same].
+- **Capacity, not conflicts.** A fully associative cache would remove only 5–8% of the tick's I-misses on b151 (b30, c20, b40) [E, lab icsweep1 42311430811; 16–18% on the older builds of `cache_work.md`], so over 90% are capacity. The size sweep says the same: a 32 KB I-cache would take 25–40% of them off, 64 KB 53–71%, 128 KB 71–85% [E, icsweep1]. The tick's hot code is ~70 KB, fetched again 47–75 times a tick [E, `cache_work.md`].
 - **The big updates are bigger than the cache on their own** [E, `cache_work.md` §1, c20]: one `object_update` call runs 365 code lines (78 calls a tick), `biped_update` 299, `unit_update` 68 (384 over its 29 calls). The cache holds 256 lines.
 - **Data misses by region** [E, `cache_work.md`, b30]: game state 37% (the object pool alone 16%), the tag window 32%, program globals 19%, thread stacks 10%, heap 2%.
 - **By function:** `collision_bsp_test_vector_recursive` 6.6%, `object_get_and_verify_type` 4.9% (TYP took it), `psp_bsp3d_test_sphere` 4.6%, `cluster_partition_get_next_datum` 3.1%, `object_compute_node_matrices` 2.5% [E, same].
