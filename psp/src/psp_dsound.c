@@ -1231,7 +1231,15 @@ static int prepare_voice(struct psp_stream *stream)
 			rate = (unsigned long)(rate * doppler + 0.5f);
 			fx_shifted++;
 		}
+#ifndef PSP_DBLSOFT_OFF
+		/* rate * 65536 / OUTPUT_RATE in 32 bits (a doubled rate passes 2^32
+		shifted): the whole part of rate / OUTPUT_RATE, shifted, plus the
+		remainder's share, which is the same floor (FIXES_DBLSOFT, dsoft3: the
+		64-bit divide was a libgcc call on every stream's update) */
+		stream->step = ((rate / OUTPUT_RATE) << 16) + ((rate % OUTPUT_RATE) << 16) / OUTPUT_RATE;
+#else
 		stream->step = (unsigned long)(((unsigned long long)rate << 16) / OUTPUT_RATE);
+#endif
 	}
 	voice_gains(game, &stream->target_left, &stream->target_right);
 	if (stream->target_left > stream->peak_gain)
