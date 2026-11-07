@@ -4878,10 +4878,10 @@ enough to stream, so they keep the room. A map not listed gets 32. */
 static int sndstream_map_pieces(const char *map)
 {
 	/* devices: the pieces "sndstreamdevices" adds, where its sounds came to
-	more than the pool (sndclose4a, at most needed at once: a10 31 of 28, b40
+	more than the pool (sndclose4a, at most needed at once: a10 31 of 28, which with 36 still went 46 polls short in sndclose5, so 44; b40
 	19 of 12, c20 15 of 12) */
 	static const struct { const char *map; int pieces, dialog, devices; } pools[] = {
-		{ "d20", 40, 1, 0 }, { "a30", 32, 1, 0 }, { "a10", 16, 1, 8 }, { "a50", 16, 1, 0 }, { "d40", 16, 1, 0 },
+		{ "d20", 40, 1, 0 }, { "a30", 32, 1, 0 }, { "a10", 16, 1, 16 }, { "a50", 16, 1, 0 }, { "d40", 16, 1, 0 },
 		{ "c10", 12, 1, 0 }, { "b30", 8, 1, 0 }, { "b40", 0, 1, 12 }, { "c20", 0, 1, 8 }, { "c40", 0, 1, 0 },
 	};
 	int k;
