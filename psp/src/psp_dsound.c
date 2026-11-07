@@ -749,6 +749,11 @@ struct sndstream_piece
 	long index;
 	const unsigned char *buffer;
 	volatile long state;
+	/* the read's completion flag: the piece's own, or for a stub's first
+	piece the engine's loaded flag (the game may wait for it on its own
+	thread, where the reader runs). A piece being read whose flag says done
+	is whole in RAM, so the mixer takes it before the reader marks it */
+	const volatile unsigned char *flag;
 	/* the reader's own */
 	unsigned long stamp;
 	long bytes;
@@ -763,18 +768,25 @@ static unsigned long sndstream_packet(const void *permutation, const unsigned ch
 	int *check);
 static void sndstream_collect(struct psp_stream *stream);
 
+static inline const unsigned char *piece_bytes(const struct sndstream_piece *piece)
+{
+	long state = piece->state;
+
+	return state == PIECE_READY || (state == PIECE_READING && *piece->flag == 1) ? piece->buffer : NULL;
+}
+
 /* the piece of sound id numbered index, if its bytes are in */
 static const unsigned char *stream_piece(struct psp_stream *stream, unsigned long id, long index)
 {
 	int k = stream->snd_hint;
 
 	if (k >= 0 && k < sndstream_piece_count && sndstream_pieces[k].id == id && sndstream_pieces[k].index == index)
-		return sndstream_pieces[k].state == PIECE_READY ? sndstream_pieces[k].buffer : NULL;
+		return piece_bytes(&sndstream_pieces[k]);
 	for (k = 0; k < sndstream_piece_count; k++)
 		if (sndstream_pieces[k].id == id && sndstream_pieces[k].index == index)
 		{
 			stream->snd_hint = k;
-			return sndstream_pieces[k].state == PIECE_READY ? sndstream_pieces[k].buffer : NULL;
+			return piece_bytes(&sndstream_pieces[k]);
 		}
 	return NULL;
 }
@@ -4756,7 +4768,8 @@ static unsigned long sndstream_next_id = 1, sndstream_polls = 0;
 static int sndstream_flight = 0, sndstream_peak_pieces = 0;
 static unsigned long snd_registered = 0, snd_stubs = 0, snd_refused = 0, snd_reads = 0, snd_read_bytes = 0,
 	snd_read_failed = 0, snd_read_us = 0, snd_read_worst_us = 0, snd_reads_done = 0, snd_short_polls = 0,
-	snd_first_us = 0, snd_first_worst_us = 0, snd_firsts = 0, snd_stub_peak_bytes = 0, snd_maps = 0;
+	snd_first_us = 0, snd_first_worst_us = 0, snd_firsts = 0, snd_stub_peak_bytes = 0, snd_maps = 0, snd_stolen = 0,
+	snd_unread_firsts = 0;
 /* the mixer's counts, summed by the audio thread after each block */
 static volatile unsigned long snd_blocks = 0, snd_late = 0, snd_checked = 0, snd_mismatched = 0, snd_unaligned = 0;
 
@@ -4813,6 +4826,7 @@ static long sndstream_map_open(long boot)
 		piece->index = -1;
 		piece->buffer = sndstream_pool + (unsigned long)k * SNDSTREAM_PIECE_ROOM;
 		piece->done = piece->first = 0;
+		piece->flag = &piece->done;
 		piece->stamp = 0;
 	}
 	sndstream_flight = 0;
@@ -4859,7 +4873,8 @@ static struct sndstream_sound *sndstream_find(unsigned long id)
 /* a piece filled from the stick: marked free first, so no mix takes it while
 it changes; its lines dropped, so neither CPU's cache holds old bytes over
 what the read puts in RAM */
-static void sndstream_read(struct sndstream_piece *piece, const struct sndstream_sound *sound, long index, int first)
+static void sndstream_read(struct sndstream_piece *piece, const struct sndstream_sound *sound, long index, int first,
+	unsigned char *flag)
 {
 	long bytes = sound->size - index * (long)SNDSTREAM_PIECE_BYTES;
 
@@ -4871,6 +4886,10 @@ static void sndstream_read(struct sndstream_piece *piece, const struct sndstream
 	piece->index = index;
 	piece->bytes = bytes;
 	piece->done = 0;
+	if (!flag)
+		flag = (unsigned char *)&piece->done;
+	*flag = 0;
+	piece->flag = flag;
 	piece->first = (unsigned char)first;
 	piece->stamp = sndstream_polls;
 	piece->issued_us = sceKernelGetSystemTimeWide();
@@ -4881,7 +4900,7 @@ static void sndstream_read(struct sndstream_piece *piece, const struct sndstream
 	snd_reads++;
 	snd_read_bytes += (unsigned long)bytes;
 	cache_file_read(sound->tag_index, sound->file_offset + index * (long)SNDSTREAM_PIECE_BYTES, bytes,
-		(void *)piece->buffer, (unsigned char *)&piece->done, 0);
+		(void *)piece->buffer, flag, 0);
 }
 
 /* the piece to fill: a free one, else the one no voice needs that was needed
@@ -4962,10 +4981,29 @@ int psp_sndstream_placed(const void *permutation, void *address, unsigned char *
 	snd_registered++;
 	if (sound->stub)
 		snd_stubs++;
-	/* its first piece at once, past the reads-in-flight limit: the game waits for it */
+	/* its first piece at once, past the reads-in-flight limit: the game may
+	wait for it. With every piece needed, the oldest ready one is taken (a
+	voice may play a late block); with none ready, a stub is called loaded at
+	once and starts late, rather than the game waiting on a read never made */
 	piece = sndstream_victim();
+	if (!piece)
+	{
+		int k;
+
+		for (k = 0; k < sndstream_piece_count; k++)
+			if (sndstream_pieces[k].state == PIECE_READY && (!piece || sndstream_pieces[k].stamp < piece->stamp))
+				piece = &sndstream_pieces[k];
+		if (piece)
+			snd_stolen++;
+	}
 	if (piece)
-		sndstream_read(piece, sound, 0, 1);
+		sndstream_read(piece, sound, 0, 1, sound->stub ? loaded : NULL);
+	else if (sound->stub)
+	{
+		snd_unread_firsts++;
+		sound->first_in = 1;
+		*loaded = 1;
+	}
 	return sound->stub;
 }
 
@@ -5044,19 +5082,23 @@ static void sndstream_poll(void)
 		struct sndstream_sound *sound;
 		unsigned long us;
 
-		if (piece->state != PIECE_READING || !piece->done)
+		unsigned char done;
+
+		if (piece->state != PIECE_READING || !*piece->flag)
 			continue;
+		done = *piece->flag;
 		sndstream_flight--;
 		us = (unsigned long)(now - piece->issued_us);
 		snd_read_us += us;
 		if (us > snd_read_worst_us)
 			snd_read_worst_us = us;
 		snd_reads_done++;
-		if (piece->done == 1)
+		if (done == 1)
 		{
 			sceKernelDcacheWritebackInvalidateRange((void *)piece->buffer, SNDSTREAM_PIECE_ROOM);
 			__asm__ __volatile__("sync" : : : "memory");
 			piece->state = PIECE_READY;
+			piece->flag = &piece->done;
 		}
 		else
 		{
@@ -5076,8 +5118,6 @@ static void sndstream_poll(void)
 			snd_first_us += us;
 			if (us > snd_first_worst_us)
 				snd_first_worst_us = us;
-			if (sound->stub && sndstream_alive(sound))
-				*sound->loaded = piece->done == 1 ? 1 : 2;
 		}
 	}
 	/* what the voices need: each queued packet not yet played out, nearest first */
@@ -5188,7 +5228,13 @@ static void sndstream_poll(void)
 			snd_short_polls++;
 			break;
 		}
-		sndstream_read(piece, sound, needs[best].index, needs[best].index == 0 && !sound->first_in);
+		{
+			int first = needs[best].index == 0 && !sound->first_in;
+
+			/* a stub's first piece read again (its first read had no piece)
+			completes into the engine's flag, as the first one does */
+			sndstream_read(piece, sound, needs[best].index, first, first && sound->stub ? sound->loaded : NULL);
+		}
 		needs[best].id = 0;
 	}
 	for (k = 0; k < sndstream_piece_count; k++)
@@ -5218,13 +5264,13 @@ static void sndstream_report(void)
 		in_use += sndstream_pieces[k].state != PIECE_FREE;
 	platform_log("sndstream: %s; %d sounds streamed now, %d of them stubs standing for %lu KB (peak %lu KB); "
 		"%lu registered, %lu stubs made, %lu refused (table full); pieces %d of %d in use (peak %d), %lu polls short of a piece; "
-		"reads %lu (%lu KB, %lu failed, %lu in flight, mean %lu us, worst %lu us); first pieces %lu (mean %lu us, worst %lu us); "
+		"reads %lu (%lu KB, %lu failed, %lu in flight, mean %lu us, worst %lu us); first pieces %lu (mean %lu us, worst %lu us; %lu taken from a voice, %lu not read); "
 		"blocks from pieces %lu, late blocks %lu, checked %lu equal, %lu differed, %lu unaligned",
 		sndstream_mode == 2 ? "sndstreamcheck" : "on", sounds, stubs, stub_bytes / 1024, snd_stub_peak_bytes / 1024,
 		snd_registered, snd_stubs, snd_refused, in_use, sndstream_piece_count, sndstream_peak_pieces, snd_short_polls,
 		snd_reads, snd_read_bytes / 1024, snd_read_failed, (unsigned long)sndstream_flight,
 		snd_reads_done ? snd_read_us / snd_reads_done : 0, snd_read_worst_us,
-		snd_firsts, snd_firsts ? snd_first_us / snd_firsts : 0, snd_first_worst_us,
+		snd_firsts, snd_firsts ? snd_first_us / snd_firsts : 0, snd_first_worst_us, snd_stolen, snd_unread_firsts,
 		snd_blocks, snd_late, snd_checked, snd_mismatched, snd_unaligned);
 }
 #endif
