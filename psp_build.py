@@ -316,7 +316,12 @@ def pgo_flags(rel):
     return []
 PSP = ["psp-gcc", "-G%d" % SMALLDATA, GAME_OPT, "-march=allegrex", "-ffp-contract=off", "-fshort-wchar",
        "-fms-extensions", "-fcommon", "-fno-strict-aliasing", "-fwrapv",
-       "-fno-delete-null-pointer-checks"] + (["-mno-extern-sdata"] if SMALLDATA else []) + (
+       "-fno-delete-null-pointer-checks"] + (
+       # -mgpopt: an SDK library built with LTO and -mno-gpopt joins the
+       # link's own compile, and GCC refuses -mno-gpopt with small data unless
+       # relocations are explicit, which the hot code's split functions can't
+       # be. Named here, it reaches the link's compile last and holds there
+       ["-mno-extern-sdata", "-mgpopt"] if SMALLDATA else []) + (
        # The engine kept the Xbox build's frame pointer: one register fewer
        # and its save and restore in every function that calls others. Nothing
        # here walks $fp (the crash handler dumps from sp; the profilers sample
@@ -1111,6 +1116,11 @@ def smalldata_report(r):
         where = symbols.get(t)
         sect = next((s for s, (a, n2) in outs.items() if where is not None and a <= where < a + n2), "?")
         print("smalldata: out of reach: %s (%d references) at %s, in %s" % (t, n, "0x%08x" % where if where else "?", sect))
+    # the SDK's LTO members, whose code the link's compile now builds with
+    # $gp too (their small variables were in small data already)
+    sdk_lto = sorted({re.sub(r"^.*/", "", f) for s, a, n, f in map_sections(path)
+                      if s.startswith(".gnu.lto_") and ".a(" in f})
+    print("smalldata: SDK members under LTO: %d%s" % (len(sdk_lto), (": " + ", ".join(sdk_lto[:30])) if sdk_lto else ""))
     if r.returncode:
         return
     try:
