@@ -14,7 +14,7 @@ TREE = sys.argv[1]
 # upstream would cost (docs/overnight_b108.md, section 7)
 CHECK_ONLY = os.environ.get("PSP_FIXUPS_CHECK", "") == "1"
 # psp_build.py's PSP_FRAMEPTR: 0 builds the engine without the frame pointer
-FRAMEPTR = os.environ.get("PSP_FRAMEPTR", "1") != "0"
+FRAMEPTR = os.environ.get("PSP_FRAMEPTR", "0") != "0"
 
 
 FIXES = {

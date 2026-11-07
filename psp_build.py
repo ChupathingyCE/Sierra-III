@@ -194,8 +194,10 @@ SNDSTREAM = os.environ.get("PSP_SNDSTREAM", "") == "1"
 # small variables stay in reach (hot_data_block), and the ME sets its own $gp
 # before it runs any engine code (psp_me.c): its reset leaves the register
 # unset, where the kernel gives each of the module's threads the module's.
-# 0, the default, builds what -G0 has always built
-SMALLDATA = int(os.environ.get("PSP_SMALLDATA", "0") or "0")
+# 8 by default (RH5 on the PSP, with its own profile and layouts: c20 frame
+# -3 to -9%, b30 -5 to -13%, against the shipped tock); 0 builds what -G0
+# has always built, the A/B's other side
+SMALLDATA = int(os.environ.get("PSP_SMALLDATA", "8") or "0")
 if SMALLDATA not in (0, 4, 8):
     sys.exit("psp_build: PSP_SMALLDATA is 0, 4 or 8")
 # PSP_DEADCODE_INLINE=1: the sleep's debug reports inline in the hot sleep
@@ -336,9 +338,9 @@ PSP = ["psp-gcc", "-G%d" % SMALLDATA, GAME_OPT, "-march=allegrex", "-ffp-contrac
        # The engine kept the Xbox build's frame pointer: one register fewer
        # and its save and restore in every function that calls others. Nothing
        # here walks $fp (the crash handler dumps from sp; the profilers sample
-       # pc), and psp/src's units already go without it. PSP_FRAMEPTR=0 drops
-       # it for the engine too (lever FRAMEPTR, E18)
-       ["-fno-omit-frame-pointer"] if os.environ.get("PSP_FRAMEPTR", "1") != "0" else ["-fomit-frame-pointer"]) + (
+       # pc), and psp/src's units already go without it. Off by default since the
+       # RH5 bundle (lever FRAMEPTR, E18); PSP_FRAMEPTR=1 keeps it, the old side
+       ["-fno-omit-frame-pointer"] if os.environ.get("PSP_FRAMEPTR", "0") != "0" else ["-fomit-frame-pointer"]) + (
        # PSP_STRICTALIAS_WARN=1: GCC names each type pun it sees (the build
        # log's "-Wstrict-aliasing" lines) instead of silencing every warning
        ["-Wstrict-aliasing=2"] if os.environ.get("PSP_STRICTALIAS_WARN", "") == "1" else ["-w"]) + [
