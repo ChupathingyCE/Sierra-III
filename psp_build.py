@@ -328,6 +328,11 @@ PSP = ["psp-gcc", "-G%d" % SMALLDATA, GAME_OPT, "-march=allegrex", "-ffp-contrac
        # off, and refuses that with small data unless relocations are
        # explicit, which the hot code's split functions can't be
        ["-mno-extern-sdata", "-mgpopt"] if SMALLDATA else []) + (
+       # A counting build's arc counters are each unit's own small statics,
+       # and they alone overflow $gp's 64 KB: there local statics stay out of
+       # small data. The counts are taken before code generation, so the
+       # profile still matches the -G build that uses it
+       ["-mno-local-sdata"] if SMALLDATA and PGO == "generate" else []) + (
        # The engine kept the Xbox build's frame pointer: one register fewer
        # and its save and restore in every function that calls others. Nothing
        # here walks $fp (the crash handler dumps from sp; the profilers sample
