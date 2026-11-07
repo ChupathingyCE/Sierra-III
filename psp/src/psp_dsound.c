@@ -4877,9 +4877,12 @@ played late there, 32 didn't). b40, c20 and c40 have no ambient loop long
 enough to stream, so they keep the room. A map not listed gets 32. */
 static int sndstream_map_pieces(const char *map)
 {
-	static const struct { const char *map; int pieces, dialog; } pools[] = {
-		{ "d20", 40, 1 }, { "a30", 32, 1 }, { "a10", 16, 1 }, { "a50", 16, 1 }, { "d40", 16, 1 },
-		{ "c10", 12, 1 }, { "b30", 8, 1 }, { "b40", 0, 1 }, { "c20", 0, 1 }, { "c40", 0, 1 },
+	/* devices: the pieces "sndstreamdevices" adds, where its sounds came to
+	more than the pool (sndclose4a, at most needed at once: a10 31 of 28, b40
+	19 of 12, c20 15 of 12) */
+	static const struct { const char *map; int pieces, dialog, devices; } pools[] = {
+		{ "d20", 40, 1, 0 }, { "a30", 32, 1, 0 }, { "a10", 16, 1, 8 }, { "a50", 16, 1, 0 }, { "d40", 16, 1, 0 },
+		{ "c10", 12, 1, 0 }, { "b30", 8, 1, 0 }, { "b40", 0, 1, 12 }, { "c20", 0, 1, 8 }, { "c40", 0, 1, 0 },
 	};
 	int k;
 
@@ -4889,7 +4892,8 @@ static int sndstream_map_pieces(const char *map)
 		if (map && strcmp(map, pools[k].map) == 0)
 			/* a few lines of dialog at once, each a piece playing and two
 			ahead: 8 left c40 short of a piece 47 times (sndstream8) */
-			return sndstream_dialog && pools[k].dialog ? pools[k].pieces + 12 : pools[k].pieces;
+			return pools[k].pieces + (sndstream_dialog && pools[k].dialog ? 12 : 0) +
+				(sndstream_devices ? pools[k].devices : 0);
 	return 32;
 }
 
