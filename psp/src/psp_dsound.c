@@ -4846,15 +4846,16 @@ static int sndstream_on(void)
 }
 
 /* The pool each map needs: the most pieces wanted at once on its
-hands-off run to 300 s, with room over it (sndstream5a), d20's swamp the
+hands-off run to 300 s, with room over it (sndstream5a, sndstream6: a10 at 8 and
+a30 at 24 played late), d20's swamp the
 busiest (38 at once with every just-placed sound's first piece held; 24
 played late there, 32 didn't). b40, c20 and c40 have no ambient loop long
 enough to stream, so they keep the room. A map not listed gets 32. */
 static int sndstream_map_pieces(const char *map)
 {
 	static const struct { const char *map; int pieces; } pools[] = {
-		{ "d20", 40 }, { "a30", 24 }, { "a50", 16 }, { "d40", 16 }, { "c10", 12 },
-		{ "a10", 8 }, { "b30", 8 }, { "b40", 0 }, { "c20", 0 }, { "c40", 0 },
+		{ "d20", 40 }, { "a30", 32 }, { "a10", 16 }, { "a50", 16 }, { "d40", 16 }, { "c10", 12 },
+		{ "b30", 8 }, { "b40", 0 }, { "c20", 0 }, { "c40", 0 },
 	};
 	int k;
 
@@ -4972,8 +4973,14 @@ static void sndstream_read(struct sndstream_piece *piece, const struct sndstream
 	sndstream_flight++;
 	snd_reads++;
 	snd_read_bytes += (unsigned long)bytes;
-	cache_file_read(sound->tag_index, sound->file_offset + index * (long)SNDSTREAM_PIECE_BYTES, bytes,
-		(void *)piece->buffer, flag, 0);
+	{
+		/* ahead of the level's reads (FIXES_SNDSTREAM #sndurgent) */
+		extern int psp_cache_read_urgent_next;
+
+		psp_cache_read_urgent_next = 1;
+		cache_file_read(sound->tag_index, sound->file_offset + index * (long)SNDSTREAM_PIECE_BYTES, bytes,
+			(void *)piece->buffer, flag, 0);
+	}
 }
 
 /* the piece to fill: a free one, else the one no voice needs that was needed
