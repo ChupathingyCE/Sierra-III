@@ -142,6 +142,11 @@ PRECONVERT = True
 # the keep words skinw2 and skinstrip choose (tools/modelconvert.py); the
 # geometry pack grows by about three times its baked buffers
 SKIN_VARIANTS = False
+# --sspr (SSPR step 1, docs/sspr_bake.md): the models with one level of detail
+# get lower levels made here, each with its error, appended to the pack after
+# modelconvert's regions (tools/sspr.py); the runtime uses them under the keep
+# word sspr and makes their cutoffs from the pixel budget it asks for
+SSPR = False
 # --texfit-census DIR (TEXFIT1, keep word texfit): the folder of the mip-level
 # census's per-run files ('# map <name>', then 'key finest' lines); each map's
 # textures never sampled at their top level are also written from the finest
@@ -628,6 +633,10 @@ def bake_map(name, retail, out_maps, work, track, keep_work, detail='', sound=''
         start = os.path.getsize(log_path)
         run([sys.executable, os.path.join(LIB, 'modelconvert.py'), final, pgeo], log_path, cwd=LIB, env=env)
         echo_from(name, log_path, start, ('modelconvert:',))
+        if SSPR:
+            start = os.path.getsize(log_path)
+            run([sys.executable, os.path.join(LIB, 'sspr.py'), final, pgeo], log_path, cwd=LIB, env=env)
+            echo_from(name, log_path, start, ('sspr:',))
     if not keep_work:
         shutil.rmtree(folder, ignore_errors=True)
     log('%s: done in %.0f s' % (name, time.time() - started))
@@ -847,6 +856,9 @@ def main():
     ap.add_argument('--texfit-census', default=None,
                     help="TEXFIT1: a folder of mip-level census files; each map's packs also carry its textures "
                          "from the finest level sampled (keep word texfit; the default load is as without it)")
+    ap.add_argument('--sspr', action='store_true',
+                    help="SSPR: lower levels of detail made for the models that have none, each with its error "
+                         '(keep word sspr; needs a C++ compiler; the default load is as without it)')
     ap.add_argument('--skin-variants', action='store_true',
                     help="the baked model buffers also with first-fit slots and strips (keep words skinw2, "
                          'skinstrip), each as a region of its own; the default region is as without it')
@@ -889,10 +901,11 @@ def main():
     a = ap.parse_args()
     if a.sound == 'none':
         a.sound = ''
-    global COMPARE_OLD, PROFILE, COMPARE_PALETTES, LEVEL_SLIM, ALPHA_AUDIT, PRECONVERT, SKIN_VARIANTS, TEXFIT_CENSUS
+    global COMPARE_OLD, PROFILE, COMPARE_PALETTES, LEVEL_SLIM, ALPHA_AUDIT, PRECONVERT, SKIN_VARIANTS, TEXFIT_CENSUS, SSPR
     LEVEL_SLIM = a.slim_level
     TEXFIT_CENSUS = a.texfit_census
     SKIN_VARIANTS = a.skin_variants
+    SSPR = a.sspr
     PRECONVERT = a.preconvert
     COMPARE_OLD, PROFILE, COMPARE_PALETTES = a.compare_old, a.profile, a.compare_palettes
     ALPHA_AUDIT = a.alpha_audit
