@@ -41,6 +41,7 @@ the game calls every frame, and from Flush, never from the audio thread.
 #include "psp_me.h"      /* the eDRAM map and the sound copy job (soundedram) */
 
 void platform_log(const char *format, ...);
+void psp_vfpu_sincosf(float angle, float *sine, float *cosine); /* psp_vfputrig.c */
 
 #define OUTPUT_RATE 22050
 #define OUTPUT_CHANNELS 2
@@ -1110,8 +1111,9 @@ static void spatialize(const struct stream_game *stream, float *left, float *rig
 			pan *= distance / stream->minimum_distance;
 		pan *= 0.75f;
 		angle = (pan + 1.0f) * 0.25f * 3.14159265f;
-		*left = cosf(angle);
-		*right = sinf(angle);
+		/* E17 (keep word vfputrig, psp_vfputrig.c): the panning on the VFPU,
+		which no ear tells from the libm's */
+		psp_vfpu_sincosf(angle, right, left);
 	}
 	attenuation *= stream->i3dl2_gain * cone_gain(stream, offset);
 	*left *= attenuation;
