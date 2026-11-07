@@ -4676,7 +4676,9 @@ static long sndpermap_pages(const char *map)
 #if PSP_SNDSTREAM
 static long sndstream_map_open(const char *map);
 static void sndstream_place(unsigned char *pool, long pages);
+static long sndstream_permap_kb(const char *map);
 static long sndstream_pool_pages = 0;
+static int sndstream_mode;
 #endif
 
 /* the engine's page count for the map now opening; sets the main tier's
@@ -4704,6 +4706,14 @@ long psp_sound_map_pages(const char *map)
 	tier's, with the tier), the same place for every map, so the cache stops
 	short of it */
 	pool = sndstream_map_open(map);
+	if (on && sndstream_mode == 1)
+	{
+		long kb = sndstream_permap_kb(map);
+
+		pages = kb ? (kb >> 2) - pool : boot_pages;
+		if (pages > boot_pages)
+			pages = boot_pages;
+	}
 	if (pool && pages > boot_pages - pool)
 		pages = boot_pages - pool;
 #endif
@@ -4862,12 +4872,16 @@ hands-off run to 300 s, with room over it (sndstream5a, sndstream6: a10 at 8 and
 a30 at 24 played late), d20's swamp the
 busiest (38 at once with every just-placed sound's first piece held; 24
 played late there, 32 didn't). b40, c20 and c40 have no ambient loop long
-enough to stream, so they keep the room. A map not listed gets 32. */
+enough to stream, so they keep the room. c10 streams nothing: no piece
+played in its 300 s, its long sounds aren't of the streamed classes (the
+largest, 346 KB, loads whole), and a pool there only shrank its cache (13
+refusals and a sound held 800 ms at 1,536, sndcut1a), so it has none, dialog
+or not. A map not listed gets 32. */
 static int sndstream_map_pieces(const char *map)
 {
-	static const struct { const char *map; int pieces; } pools[] = {
-		{ "d20", 40 }, { "a30", 32 }, { "a10", 16 }, { "a50", 16 }, { "d40", 16 }, { "c10", 12 },
-		{ "b30", 8 }, { "b40", 0 }, { "c20", 0 }, { "c40", 0 },
+	static const struct { const char *map; int pieces, dialog; } pools[] = {
+		{ "d20", 40, 1 }, { "a30", 32, 1 }, { "a10", 16, 1 }, { "a50", 16, 1 }, { "d40", 16, 1 },
+		{ "b30", 8, 1 }, { "b40", 0, 1 }, { "c20", 0, 1 }, { "c40", 0, 1 }, { "c10", 0, 0 },
 	};
 	int k;
 
@@ -4877,8 +4891,30 @@ static int sndstream_map_pieces(const char *map)
 		if (map && strcmp(map, pools[k].map) == 0)
 			/* a few lines of dialog at once, each a piece playing and two
 			ahead: 8 left c40 short of a piece 47 times (sndstream8) */
-			return sndstream_dialog ? pools[k].pieces + 12 : pools[k].pieces;
+			return sndstream_dialog && pools[k].dialog ? pools[k].pieces + 12 : pools[k].pieces;
 	return 32;
+}
+
+/* SNDPERMAP's sizes with the sounds streamed: the cache and the pool
+together. With the streamed block at 1,536 KB (psp_platform.c), sndcut1b
+found these seven maps clean at 1,280 (no refusal, nothing held: b30's
+busiest second used 972 KB of its 1,120), while a10 (147 refusals, a computer
+ambience never loaded), c10 (138, a sound held 8.9 s) and d20 (no room for its
+pool) keep the whole block */
+static long sndstream_permap_kb(const char *map)
+{
+	static const char *const small[] = { "a30", "a50", "b30", "b40", "c20", "c40", "d40" };
+	int k;
+
+	for (k = 0; k < (int)(sizeof(small) / sizeof(small[0])); k++)
+		if (map && strcmp(map, small[k]) == 0)
+			return 1280;
+	return 0;
+}
+
+int psp_sndstream_wanted(void)
+{
+	return sndstream_on() == 1;
 }
 
 /* a map opens (psp_sound_map_pages, the cache empty): every piece and sound

@@ -1618,6 +1618,17 @@ unsigned long psp_sound_cache_bytes(void)
 		656 KB leave the heap, so 256 KB of them go back to the cache
 		(d20 99 refused, a10 0) and the heap still keeps ~270 KB of the tier's
 		gain. Only then: without the full-rate music the heap stays as it is */
+#if PSP_SNDSTREAM
+		/* with the long sounds streamed ("sndstream") the block is 1,536 KB,
+		the pool's pieces inside it: a10, c10 and d20 need all of it, the
+		rest 1,280 (sndcut1a/b, the full-rate music playing). 512 KB less of
+		the heap than the 2,048 the music's room grows the default to */
+		extern int psp_sndstream_wanted(void);
+
+		if (kb == SOUND_CACHE_DEFAULT_KB && psp_sndstream_wanted())
+			kb = 1536;
+		else
+#endif
 		if (kb == SOUND_CACHE_DEFAULT_KB && psp_keep("musadpcm") && psp_keep("sndedram") &&
 			!psp_keep("soundedram") && !psp_keep("musroomoff"))
 			kb += 256, grown = 1;
