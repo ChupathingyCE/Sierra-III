@@ -65,6 +65,13 @@ struct voice_packet
 	int music;
 	unsigned long music_start, music_scale;
 #endif
+#if PSP_SNDSTREAM
+	/* a streamed sound's packet (SNDSTREAMLONG): the sound's id (0: none),
+	where the packet starts in its samples, and whether the cache holds the
+	samples too (sndstreamcheck: the piece is only compared) */
+	unsigned long snd_id, snd_offset;
+	int snd_check;
+#endif
 };
 
 struct psp_stream
@@ -144,6 +151,17 @@ struct psp_stream
 #else
 	/* a build without the music path (PSP_MUSIC) has no music voices */
 #define MUSIC_BLOCK(stream) 0
+#endif
+#if PSP_SNDSTREAM
+	/* the piece this voice last decoded from (a guess for the next block),
+	and its blocks since the audio thread last collected them: decoded from
+	pieces, not in RAM in time (played silent), and with sndstreamcheck the
+	pieces compared with the cache's copy, equal or not */
+	int snd_hint;
+	unsigned long snd_blocks, snd_late, snd_checked, snd_mismatched, snd_unaligned;
+	/* the first block that differed since the last collection: its sound and
+	where it lies in the samples (sndstreamcheck) */
+	unsigned long snd_differ_id, snd_differ_at;
 #endif
 
 	/* last, so a hand-over by ranges covers the fields above in a few whole
@@ -271,6 +289,11 @@ struct stream_game
 	struct psp_stream *zombie_next;
 	unsigned long zombie_stamp;
 	XMEDIAPACKET packet[MAXIMUM_STREAM_PACKETS];
+#if PSP_SNDSTREAM
+	/* each queued packet's streamed sound and where it starts in it, as the
+	mixer's entries have them: the reader's view of what is to play */
+	unsigned long snd_id[MAXIMUM_STREAM_PACKETS], snd_offset[MAXIMUM_STREAM_PACKETS];
+#endif
 };
 #define GAME_BYTES ((sizeof(struct stream_game) + 63) & ~(size_t)63)
 #define GAME_OF(stream) ((struct stream_game *)((unsigned char *)(stream) + STREAM_BYTES))
@@ -288,6 +311,10 @@ struct mix_command
 #if PSP_MUSIC
 	int music;
 	unsigned long music_start, music_scale;
+#endif
+#if PSP_SNDSTREAM
+	unsigned long snd_id, snd_offset;
+	int snd_check;
 #endif
 };
 static struct mix_command commands[MIX_COMMANDS];
@@ -320,7 +347,14 @@ static void packets_move(const unsigned char *from, const unsigned char *to, uns
 			struct voice_packet *packet = &stream->packets[(stream->packet_head + position) % MAXIMUM_STREAM_PACKETS];
 
 			if (packet->data >= from && (unsigned long)(packet->data - from) < bytes)
+			{
 				packet->data = to + (packet->data - from);
+#if PSP_SNDSTREAM
+				/* a streamed sound read again whole (the tier's rescue): its
+				packets play the samples at the new place */
+				packet->snd_id = 0;
+#endif
+			}
 		}
 }
 
@@ -344,6 +378,11 @@ static void mix_apply(const struct mix_command *command)
 		entry->music = command->music;
 		entry->music_start = command->music_start;
 		entry->music_scale = command->music_scale;
+#endif
+#if PSP_SNDSTREAM
+		entry->snd_id = command->snd_id;
+		entry->snd_offset = command->snd_offset;
+		entry->snd_check = command->snd_check;
 #endif
 		if (stream->packet_count && stream->dry_frames)
 		{
@@ -407,7 +446,7 @@ static void drain_commands(void)
 Otherwise queued, the tail moved with interrupts off (the audio thread preempts
 the game); the game waits for room only when 512 are out, which the audio
 thread empties every block */
-#if PSP_MUSIC
+#if PSP_MUSIC || PSP_SNDSTREAM
 static void mix_queue(const struct mix_command *made);
 #endif
 /* CMD_MOVE's destination, set by its one caller (tier_back_moved) */
@@ -423,13 +462,19 @@ static void mix_command(struct psp_stream *stream, unsigned long type, const uns
 	command.to = type == CMD_MOVE ? move_to : NULL;
 	command.frames = frames;
 	command.sound_class = sound_class;
+#if PSP_MUSIC || PSP_SNDSTREAM
 #if PSP_MUSIC
 	command.music = 0;
 	command.music_start = command.music_scale = 0;
+#endif
+#if PSP_SNDSTREAM
+	command.snd_id = command.snd_offset = 0;
+	command.snd_check = 0;
+#endif
 	mix_queue(&command);
 }
 
-/* a command made whole by the caller (a music stub's packet, psp_music.c) */
+/* a command made whole by the caller (a music stub's or a streamed sound's packet) */
 static void mix_queue(const struct mix_command *made)
 {
 	struct mix_command command = *made;
@@ -687,6 +732,142 @@ static void ima_fast_build(void)
 		(unsigned long)IMA_ROWS * 16 * (sizeof(predictors) / sizeof(predictors[0])), differed);
 }
 
+#if PSP_SNDSTREAM
+/* ---------- SNDSTREAMLONG: the mixer's side (the reader is at the end of this file)
+
+A streamed sound (a long ambient loop, "sndstream") keeps a one-page stub in
+the sound cache; its samples come from the stick in pieces, each a whole
+number of ADPCM blocks of either channel count, into a pool outside the
+cache. A packet of it carries the sound's id and where it starts in the
+samples, so a block's bytes are found by their place in the sound, not by
+the packet's address (which runs past the stub). This runs on whichever CPU
+mixes, the ME included: it reads only the piece table and the pieces, which
+only the main CPU writes. The reader changes a piece only once no voice is
+before it (it is behind every voice playing the sound), and marks it ready
+last, after its bytes are in RAM, so a mix sees a piece whole or not at all */
+#define SNDSTREAM_PIECE_BYTES (113ul * 2 * XBOX_ADPCM_BLOCK_BYTES) /* 8,136: whole mono and stereo blocks */
+#define SNDSTREAM_PIECE_ROOM 8192ul /* the reader rounds a read up to 512-byte sectors */
+#define SNDSTREAM_PIECES_MAX 128
+#define PIECE_FREE 0
+#define PIECE_READING 1
+#define PIECE_READY 2
+struct sndstream_piece
+{
+	/* what the mixer reads: whose piece it is (the sound's id, the piece's
+	number in its samples), its bytes, and whether they are in */
+	unsigned long id;
+	long index;
+	const unsigned char *buffer;
+	volatile long state;
+	/* the read's completion flag: the piece's own, or for a stub's first
+	piece the engine's loaded flag (the game may wait for it on its own
+	thread, where the reader runs). A piece being read whose flag says done
+	is whole in RAM, so the mixer takes it before the reader marks it */
+	const volatile unsigned char *flag;
+	/* the reader's own */
+	unsigned long stamp;
+	long bytes;
+	SceUInt64 issued_us;
+	volatile unsigned char done; /* the stick reader's completion flag */
+	unsigned char first; /* a stub's first piece: sets its loaded flag */
+};
+static struct sndstream_piece sndstream_pieces[SNDSTREAM_PIECES_MAX] __attribute__((aligned(64)));
+static int sndstream_piece_count = 0;
+
+static unsigned long sndstream_packet(const void *permutation, const unsigned char *data, unsigned long *offset,
+	int *check);
+static void sndstream_collect(struct psp_stream *stream);
+
+static inline const unsigned char *piece_bytes(const struct sndstream_piece *piece)
+{
+	long state = piece->state;
+
+	return state == PIECE_READY || (state == PIECE_READING && *piece->flag == 1) ? piece->buffer : NULL;
+}
+
+/* the piece of sound id numbered index, if its bytes are in */
+static const unsigned char *stream_piece(struct psp_stream *stream, unsigned long id, long index)
+{
+	int k = stream->snd_hint;
+
+	if (k >= 0 && k < sndstream_piece_count && sndstream_pieces[k].id == id && sndstream_pieces[k].index == index)
+		return piece_bytes(&sndstream_pieces[k]);
+	for (k = 0; k < sndstream_piece_count; k++)
+		if (sndstream_pieces[k].id == id && sndstream_pieces[k].index == index)
+		{
+			stream->snd_hint = k;
+			return piece_bytes(&sndstream_pieces[k]);
+		}
+	return NULL;
+}
+
+/* a streamed packet's block: its bytes in a piece, or NULL (late: played
+silent). With sndstreamcheck the cache holds the samples too: the block is
+played from the cache's copy, and the piece's is compared with it */
+static const unsigned char *stream_block(struct psp_stream *stream, const struct voice_packet *packet, long block)
+{
+	unsigned long bytes = XBOX_ADPCM_BLOCK_BYTES * stream->channels;
+	unsigned long at = packet->snd_offset + (unsigned long)block * bytes;
+	long index = (long)(at / SNDSTREAM_PIECE_BYTES);
+	unsigned long within = at - (unsigned long)index * SNDSTREAM_PIECE_BYTES;
+	const unsigned char *piece = NULL;
+
+	if (within + bytes > SNDSTREAM_PIECE_BYTES)
+		stream->snd_unaligned++;
+	else
+		piece = stream_piece(stream, packet->snd_id, index);
+	if (packet->snd_check)
+	{
+		const unsigned char *real = packet->data + block * bytes;
+
+		if (!piece)
+			stream->snd_late++;
+		else
+		{
+			/* word by word: both are 4-byte aligned (blocks of 36 bytes from
+			page-aligned blocks and pieces), and the ME calls nothing */
+			const unsigned int *a = (const unsigned int *)real, *b = (const unsigned int *)(piece + within);
+			unsigned long k, differ = 0;
+
+			for (k = 0; k < bytes / 4; k++)
+				differ |= a[k] ^ b[k];
+			if (differ)
+			{
+				if (!stream->snd_mismatched)
+				{
+					stream->snd_differ_id = packet->snd_id;
+					stream->snd_differ_at = at;
+				}
+				stream->snd_mismatched++;
+			}
+			else
+				stream->snd_checked++;
+		}
+		return real;
+	}
+	if (!piece)
+	{
+		stream->snd_late++;
+		return NULL;
+	}
+	stream->snd_blocks++;
+	return piece + within;
+}
+
+/* a late block's samples: silence (a loop, not memset: the ME calls nothing) */
+__attribute__((optimize("no-tree-loop-distribute-patterns")))
+static void stream_silence(struct psp_stream *stream, const struct voice_packet *packet, long block)
+{
+	short *decoded = stream->decoded[block & 1];
+	unsigned long k;
+
+	for (k = 0; k < XBOX_ADPCM_BLOCK_SAMPLES * 2; k++)
+		decoded[k] = 0;
+	stream->decoded_packet[block & 1] = packet;
+	stream->decoded_block[block & 1] = block;
+}
+#endif
+
 /* one Xbox ADPCM block of a packet into the stream's decoded block: per
 channel a 4-byte header (the block's first sample, step index), then 4-byte
 groups of eight nibbles, low nibble first, alternating between channels; 64
@@ -695,10 +876,10 @@ samples per channel. The nibbles code the 63 samples after the header's: the
 wrong sample in every 64, a buzz at 344 Hz in 22 kHz sounds (after
 ChupathingyCE's dsound_sdl.c decode_adpcm, Jeff Clark). "adpcmold" decodes
 as before. The decoded block is always two channels (a mono one twice) */
-static void decode_block_fast(struct psp_stream *stream, const struct voice_packet *packet, long block)
+static void decode_block_fast(struct psp_stream *stream, const struct voice_packet *packet, long block,
+	const unsigned char *data)
 {
 	unsigned long channels = stream->channels;
-	const unsigned char *data = packet->data + block * XBOX_ADPCM_BLOCK_BYTES * channels;
 	short *decoded = stream->decoded[block & 1];
 	unsigned long channel, byte;
 
@@ -740,9 +921,22 @@ static void decode_block(struct psp_stream *stream, const struct voice_packet *p
 	const unsigned char *data = packet->data + block * XBOX_ADPCM_BLOCK_BYTES * channels;
 	unsigned long channel, group, byte;
 
+#if PSP_SNDSTREAM
+	if (packet->snd_id)
+	{
+		data = stream_block(stream, packet, block);
+		if (!data)
+		{
+			/* its piece isn't in RAM: the block plays silent, and the next
+			decodes as usual, since each block carries its own predictor */
+			stream_silence(stream, packet, block);
+			return;
+		}
+	}
+#endif
 	if (!stream->ima_fast_old && !stream->adpcm_old)
 	{
-		decode_block_fast(stream, packet, block);
+		decode_block_fast(stream, packet, block, data);
 		return;
 	}
 	for (channel = 0; channel < channels; channel++)
@@ -1474,6 +1668,11 @@ static unsigned long sample_lines(struct psp_stream *stream, unsigned long frame
 			frame -= packet->frames;
 			continue;
 		}
+#if PSP_SNDSTREAM
+		/* a streamed packet reads pieces, past these ranges: the whole cache */
+		if (packet->snd_id)
+			return HANDOVER_WHOLE_BYTES + 1;
+#endif
 		last = packet->frames - 1;
 		if (need - 1 < last - frame)
 			last = frame + (unsigned long)need - 1;
@@ -1758,6 +1957,16 @@ int psp_sound_cache_holds(const void *address, long size)
 
 	if (size < 0 || !cache_base)
 		return 0;
+#if PSP_SNDSTREAM
+	{
+		/* a streamed sound's stub holds a page, not the samples its size
+		says: its packets run past it, and nothing reads them there */
+		extern int psp_sndstream_holds(const void *address);
+
+		if (psp_sndstream_holds(address))
+			return 1;
+	}
+#endif
 	if (at >= cache_base && (unsigned long)size <= main_bytes && (unsigned long)(at - cache_base) <= main_bytes - size)
 		return 1;
 	return tier_mode > 0 && at >= tier_base && (unsigned long)size <= tier_bytes &&
@@ -2245,10 +2454,16 @@ void psp_sound_request_report(void)
 		psp_sound_request_unyielded, psp_sound_noyield() ? "" : " off: soundyieldold");
 }
 
+#if PSP_SNDSTREAM
+static void sndstream_poll(void);
+#endif
 void psp_sound_upload_poll(void)
 {
 	unsigned int k;
 
+#if PSP_SNDSTREAM
+	sndstream_poll();
+#endif
 	if (edram_mode <= 0 && tier_mode <= 0)
 		return;
 	tier_polls++;
@@ -3292,6 +3507,12 @@ static int mix(short *output, short *full, short *out44, unsigned long frames)
 			publish_finished(list[k]);
 		for (k = 0; k < full_count; k++)
 			publish_finished(full_list[k]);
+#if PSP_SNDSTREAM
+		for (k = 0; k < count; k++)
+			sndstream_collect(list[k]);
+		for (k = 0; k < full_count; k++)
+			sndstream_collect(full_list[k]);
+#endif
 	}
 	blocks_ended++;
 	if (mixlock_old)
@@ -3487,8 +3708,14 @@ static void audio_start(void)
 }
 
 /* the mixer's cost, for the heartbeat log */
+#if PSP_SNDSTREAM
+static void sndstream_report(void);
+#endif
 void psp_audio_report(void)
 {
+#if PSP_SNDSTREAM
+	sndstream_report();
+#endif
 #if PSP_MUSIC
 	{
 		extern void psp_music_report(void);
@@ -3783,10 +4010,10 @@ static HRESULT STDMETHODCALLTYPE stream_process(IDirectSoundStream *object, LPCX
 	game->queued_context = input->pContext;
 	if (psp_sound_queueing_class >= 0)
 		game->sound_class = psp_sound_queueing_class;
-#if PSP_MUSIC
+#if PSP_MUSIC || PSP_SNDSTREAM
 	{
-		/* whether it is a music stub's is the game's side's to say: the stubs
-		are made and freed on the game's thread */
+		/* whether it is a music stub's or a streamed sound's is the game's
+		side's to say: the stubs are made and freed on the game's thread */
 		extern int psp_music_packet(const void *permutation, const unsigned char *data, unsigned long channels,
 			unsigned long *start, unsigned long *scale);
 		struct mix_command command;
@@ -3797,8 +4024,17 @@ static HRESULT STDMETHODCALLTYPE stream_process(IDirectSoundStream *object, LPCX
 		command.data = data;
 		command.frames = data ? frames : 0;
 		command.sound_class = game->sound_class;
+#if PSP_MUSIC
 		command.music = psp_music_packet(input->pContext, data, stream->channels, &command.music_start,
 			&command.music_scale);
+#endif
+#if PSP_SNDSTREAM
+		command.snd_check = 0;
+		command.snd_id = stream->adpcm ? sndstream_packet(input->pContext, data, &command.snd_offset,
+			&command.snd_check) : 0;
+		game->snd_id[(game->head + game->count) % MAXIMUM_STREAM_PACKETS] = command.snd_id;
+		game->snd_offset[(game->head + game->count) % MAXIMUM_STREAM_PACKETS] = command.snd_offset;
+#endif
 		mix_queue(&command);
 	}
 #else
@@ -4005,6 +4241,9 @@ static void stream_start(struct psp_stream *stream, LPCDSSTREAMDESC description)
 	stream->callback = description->lpfnCallback;
 	stream->context = description->lpvContext;
 	game->sound_class = -1;
+#if PSP_SNDSTREAM
+	stream->snd_hint = -1;
+#endif
 	stream->adpcm = format && format->wFormatTag == WAVE_FORMAT_XBOX_ADPCM;
 	stream->channels = format && format->nChannels == 2 ? 2 : 1;
 	stream->sample_rate = format ? format->nSamplesPerSec : 0;
@@ -4422,12 +4661,21 @@ static long sndpermap_pages(const char *map)
 	return boot_pages;
 }
 
+#if PSP_SNDSTREAM
+static long sndstream_map_open(void);
+static void sndstream_place(unsigned char *pool, long pages);
+static long sndstream_pool_pages = 0;
+#endif
+
 /* the engine's page count for the map now opening; sets the main tier's
 share, and logs the spare */
 long psp_sound_map_pages(const char *map)
 {
 	static int on = -1;
 	long pages;
+#if PSP_SNDSTREAM
+	long pool;
+#endif
 
 	if (!boot_pages)
 	{
@@ -4439,6 +4687,14 @@ long psp_sound_map_pages(const char *map)
 	pages = on ? sndpermap_pages(map) : boot_pages;
 	if (pages > boot_pages)
 		pages = boot_pages;
+#if PSP_SNDSTREAM
+	/* the streamed sounds' pool: the top of the cache's main RAM (the main
+	tier's, with the tier), the same place for every map, so the cache stops
+	short of it */
+	pool = sndstream_map_open();
+	if (pool && pages > boot_pages - pool)
+		pages = boot_pages - pool;
+#endif
 	if (tier_mode > 0 && tier_main_boot)
 	{
 		unsigned long cut = (unsigned long)(boot_pages - pages) << 12;
@@ -4449,7 +4705,31 @@ long psp_sound_map_pages(const char *map)
 			pages = boot_pages - (long)(cut >> 12);
 		}
 		tier_main_bytes = tier_main_boot - cut;
+		{
+			/* the cache's fence between its tiers moves with the main tier's
+			end: set at start-up (sound_cache_new) and never since, it let a
+			block straddle the main tier's new end, its tail past it in main
+			RAM the map doesn't give the cache (lruv_cache.c's fence) */
+			extern struct lruv_cache *psp_lruv_fence_cache;
+			extern long psp_lruv_fence_page;
+
+			if (psp_lruv_fence_cache)
+				psp_lruv_fence_page = (long)(tier_main_bytes >> 12);
+		}
 	}
+#if PSP_SNDSTREAM
+	if (pool)
+	{
+		unsigned long top = tier_mode > 0 ? tier_main_boot : (unsigned long)boot_pages << 12;
+		unsigned long used = tier_mode > 0 ? tier_main_bytes : (unsigned long)pages << 12;
+
+		if (top - used >= (unsigned long)pool << 12)
+			sndstream_place(cache_base + top - ((unsigned long)pool << 12), pool);
+		else
+			platform_log("sndstream: refused for %s: the main tier keeps %lu KB (the least it may), with no room for the pool",
+				map ? map : "?", used >> 10);
+	}
+#endif
 	if (on && pages != map_pages)
 		platform_log("sndpermap: %s's sound cache %ld KB of %ld; %lu KB of main RAM spare at %08x for this map",
 			map ? map : "?", pages << 2, boot_pages << 2, (unsigned long)(boot_pages - pages) << 12 >> 10,
@@ -4468,6 +4748,10 @@ void *psp_sound_map_spare(unsigned long *bytes)
 {
 	unsigned long spare = map_pages && boot_pages > map_pages ? (unsigned long)(boot_pages - map_pages) << 12 : 0;
 
+#if PSP_SNDSTREAM
+	/* the streamed sounds' pool is the block's top */
+	spare = spare > (unsigned long)sndstream_pool_pages << 12 ? spare - ((unsigned long)sndstream_pool_pages << 12) : 0;
+#endif
 	if (edram_mode > 0) /* the cache whole in the eDRAM: no main RAM to spare */
 		spare = 0;
 	if (bytes)
@@ -4476,3 +4760,636 @@ void *psp_sound_map_spare(unsigned long *bytes)
 		return NULL;
 	return cache_base + (tier_mode > 0 ? tier_main_bytes : (unsigned long)map_pages << 12);
 }
+
+#if PSP_SNDSTREAM
+/* ---------- SNDSTREAMLONG: the reader (docs/plan_sndstream.md; keep words
+"sndstream", and "sndstreamcheck" for the proof)
+
+Which sounds: permutations of the ambient classes (33-35) of 32 KB or more,
+in Xbox ADPCM. Such a sound takes a one-page stub in the cache instead of its
+samples ("sndstream"); with "sndstreamcheck" it loads whole as before and is
+streamed beside, its pieces compared with the cache's copy as they play.
+
+Pieces: a pool at the top of the sound block, the same place for every map,
+which the cache stops short of (psp_sound_map_pages). A piece is 8,136 bytes
+(whole blocks, mono or stereo) of one sound, keyed by the sound's id and its
+number in the samples, so voices playing the same sound share it.
+
+The reader runs once a frame on the game's thread (psp_sound_upload_poll,
+from sound_cache_idle, after the frame's packets are queued), through the
+stick reader the cache's own loads use (cache_file_read), a few reads in
+flight. What each voice needs is read from the game's side of its queue (the
+packets not yet played out, up to two pieces ahead a channel), nearest
+first. A piece no voice needs (behind every voice playing its sound, or of a
+sound gone) is reused, a sound's first piece last; one a read is filling
+never is. A stub is loaded (its flag set, so the game plays it) when its
+first piece is in. A block whose piece isn't in plays silent and is counted */
+#define SNDSTREAM_SOUNDS 128
+#define SNDSTREAM_STUB_BYTES 4096
+#define SNDSTREAM_MIN_BYTES (32 * 1024)
+#define SNDSTREAM_FLIGHT 4
+#define SNDSTREAM_NEEDS 96
+#define SNDSTREAM_FIRST_KEEP_US 3000000ull
+
+struct sndstream_sound
+{
+	const void *permutation;
+	void *datum;
+	unsigned char *loaded; /* a stub's: the engine's flag, set when its first piece is in */
+	unsigned long base;    /* its block in the cache */
+	unsigned long id;      /* 0: a free entry */
+	long tag_index, file_offset, size;
+	SceUInt64 made_us;
+	short identifier;
+	unsigned char stub, first_in;
+};
+static struct sndstream_sound sndstream_sounds[SNDSTREAM_SOUNDS];
+/* 0 off, 1 "sndstream" (stubs), 2 "sndstreamcheck" (the cache keeps the samples) */
+static int sndstream_mode = -1;
+static unsigned char *sndstream_pool = NULL;
+static const void *sndstream_chosen = NULL;
+static unsigned long sndstream_next_id = 1, sndstream_polls = 0;
+static int sndstream_flight = 0, sndstream_peak_pieces = 0;
+static unsigned long snd_registered = 0, snd_stubs = 0, snd_refused = 0, snd_reads = 0, snd_read_bytes = 0,
+	snd_read_failed = 0, snd_read_us = 0, snd_read_worst_us = 0, snd_reads_done = 0, snd_short_polls = 0,
+	snd_first_us = 0, snd_first_worst_us = 0, snd_firsts = 0, snd_stub_peak_bytes = 0, snd_maps = 0, snd_stolen = 0,
+	snd_unread_firsts = 0, snd_differ_alive = 0, snd_differ_gone = 0, snd_differ_said = 0, snd_need_peak = 0,
+	snd_differ_tier = 0, snd_landed_equal = 0, snd_landed_differ = 0, snd_landed_differ_tier = 0, snd_landed_said = 0;
+/* the mixer's counts, summed by the audio thread after each block */
+static volatile unsigned long snd_blocks = 0, snd_late = 0, snd_checked = 0, snd_mismatched = 0, snd_unaligned = 0;
+
+static int sndstream_on(void)
+{
+	if (sndstream_mode < 0)
+	{
+		sndstream_mode = psp_keep("sndstreamcheck") ? 2 : psp_keep("sndstream") ? 1 : 0;
+		if (sndstream_mode && psp_sound_edram_mode())
+		{
+			platform_log("sndstream: refused: the whole sound cache is in the ME's eDRAM (soundedram)");
+			sndstream_mode = 0;
+		}
+		if (sndstream_mode)
+		{
+			/* 32 (256 KB): d20's swamp, the busiest, needed at most 38 at
+			once with every just-placed sound's first piece held, and played
+			no late block and held no sound back at 32; 24 played late */
+			int pieces = psp_keep_number("sndstreampieces", 32);
+
+			if (pieces < 8)
+				pieces = 8;
+			if (pieces > SNDSTREAM_PIECES_MAX)
+				pieces = SNDSTREAM_PIECES_MAX;
+			sndstream_piece_count = pieces;
+		}
+	}
+	return sndstream_mode;
+}
+
+/* a map opens (psp_sound_map_pages, the cache empty): every piece and sound
+forgotten; the pool's pages, which the cache gives up (placed once the
+cache's own size is settled) */
+static long sndstream_map_open(void)
+{
+	sndstream_pool = NULL;
+	sndstream_pool_pages = 0;
+	if (!sndstream_on() || !cache_base)
+		return 0;
+	memset(sndstream_sounds, 0, sizeof(sndstream_sounds));
+	sndstream_flight = 0;
+	sndstream_chosen = NULL;
+	return (long)(((unsigned long)sndstream_piece_count * SNDSTREAM_PIECE_ROOM + 4095) >> 12);
+}
+
+static void sndstream_place(unsigned char *pool, long pages)
+{
+	int k;
+
+	sndstream_pool = pool;
+	sndstream_pool_pages = pages;
+	for (k = 0; k < sndstream_piece_count; k++)
+	{
+		struct sndstream_piece *piece = &sndstream_pieces[k];
+
+		piece->state = PIECE_FREE;
+		piece->id = 0;
+		piece->index = -1;
+		piece->buffer = sndstream_pool + (unsigned long)k * SNDSTREAM_PIECE_ROOM;
+		piece->done = piece->first = 0;
+		piece->flag = &piece->done;
+		piece->stamp = 0;
+	}
+	snd_maps++;
+	platform_log("sndstream: %s; a pool of %d pieces (%ld KB) at %08x, the top of the cache's main RAM",
+		sndstream_mode == 2 ? "sndstreamcheck (the cache keeps the samples; pieces compared as they play)" :
+		"on (stubs)", sndstream_piece_count, pages << 2, (unsigned int)sndstream_pool);
+}
+
+static int sndstream_alive(const struct sndstream_sound *sound)
+{
+	return sound->id && psp_sound_cache_alive(sound->datum, sound->identifier, (void *)sound->permutation, sound->base);
+}
+
+/* a free entry, a gone sound's freed for it; -1 when every one is live */
+static int sndstream_slot(void)
+{
+	int k;
+
+	for (k = 0; k < SNDSTREAM_SOUNDS; k++)
+		if (!sndstream_sounds[k].id)
+			return k;
+	for (k = 0; k < SNDSTREAM_SOUNDS; k++)
+		if (!sndstream_alive(&sndstream_sounds[k]))
+		{
+			sndstream_sounds[k].id = 0;
+			return k;
+		}
+	return -1;
+}
+
+static struct sndstream_sound *sndstream_find(unsigned long id)
+{
+	int k;
+
+	for (k = 0; k < SNDSTREAM_SOUNDS; k++)
+		if (sndstream_sounds[k].id == id)
+			return &sndstream_sounds[k];
+	return NULL;
+}
+
+/* a piece filled from the stick: marked free first, so no mix takes it while
+it changes; its lines dropped, so neither CPU's cache holds old bytes over
+what the read puts in RAM */
+static void sndstream_read(struct sndstream_piece *piece, const struct sndstream_sound *sound, long index, int first,
+	unsigned char *flag)
+{
+	long bytes = sound->size - index * (long)SNDSTREAM_PIECE_BYTES;
+
+	if (bytes > (long)SNDSTREAM_PIECE_BYTES)
+		bytes = (long)SNDSTREAM_PIECE_BYTES;
+	piece->state = PIECE_FREE;
+	__asm__ __volatile__("" : : : "memory");
+	piece->id = sound->id;
+	piece->index = index;
+	piece->bytes = bytes;
+	piece->done = 0;
+	if (!flag)
+		flag = (unsigned char *)&piece->done;
+	*flag = 0;
+	piece->flag = flag;
+	piece->first = (unsigned char)first;
+	piece->stamp = sndstream_polls;
+	piece->issued_us = sceKernelGetSystemTimeWide();
+	sceKernelDcacheWritebackInvalidateRange((void *)piece->buffer, SNDSTREAM_PIECE_ROOM);
+	__asm__ __volatile__("" : : : "memory");
+	piece->state = PIECE_READING;
+	sndstream_flight++;
+	snd_reads++;
+	snd_read_bytes += (unsigned long)bytes;
+	cache_file_read(sound->tag_index, sound->file_offset + index * (long)SNDSTREAM_PIECE_BYTES, bytes,
+		(void *)piece->buffer, flag, 0);
+}
+
+/* the piece to fill: a free one, else the one no voice needs that was needed
+longest ago, a sound's first piece last (it is what a sound starting again
+plays first); NULL when every piece is needed or being read */
+static struct sndstream_piece *sndstream_victim(void)
+{
+	struct sndstream_piece *best = NULL;
+	int k;
+
+	for (k = 0; k < sndstream_piece_count; k++)
+	{
+		struct sndstream_piece *piece = &sndstream_pieces[k];
+
+		if (piece->state == PIECE_FREE)
+			return piece;
+		if (piece->state != PIECE_READY || piece->stamp == sndstream_polls)
+			continue;
+		if (!best || (best->index == 0 && piece->index != 0) ||
+			((best->index == 0) == (piece->index == 0) && piece->stamp < best->stamp))
+			best = piece;
+	}
+	return best;
+}
+
+/* xbox_sound_cache.c, before a sound's block is made: the stub's size for a
+sound streamed ("sndstream"), else 0 (it loads whole) */
+long psp_sndstream_choose(const void *permutation, int sound_class, int compression, long size)
+{
+	sndstream_chosen = NULL;
+	if (!sndstream_pool || sound_class < 33 || sound_class > 35 || compression != 1 || size < SNDSTREAM_MIN_BYTES)
+		return 0;
+	if (sndstream_slot() < 0)
+	{
+		snd_refused++;
+		return 0;
+	}
+	sndstream_chosen = permutation;
+	return sndstream_mode == 1 ? SNDSTREAM_STUB_BYTES : 0;
+}
+
+/* ... and once it is placed: 1 for a stub (no read of its samples: its first
+piece is asked for, and loaded is set when that is in), 0 to read it as before */
+int psp_sndstream_placed(const void *permutation, void *address, unsigned char *loaded, void *datum, short identifier,
+	long tag_index, long file_offset, long size)
+{
+	struct sndstream_sound *sound;
+	struct sndstream_piece *piece;
+	int slot;
+
+	if (!sndstream_chosen || sndstream_chosen != permutation)
+		return 0;
+	sndstream_chosen = NULL;
+	slot = sndstream_slot();
+	if (slot < 0)
+	{
+		/* (choose found it room on this thread just before) */
+		if (sndstream_mode != 1)
+			return 0;
+		*loaded = 2; /* cache_files.h's _cache_file_read_failed: its block holds a page */
+		return 1;
+	}
+	sound = &sndstream_sounds[slot];
+	sound->permutation = permutation;
+	sound->datum = datum;
+	sound->identifier = identifier;
+	sound->loaded = loaded;
+	sound->base = (unsigned long)address;
+	sound->tag_index = tag_index;
+	sound->file_offset = file_offset;
+	sound->size = size;
+	sound->stub = sndstream_mode == 1;
+	sound->first_in = 0;
+	sound->made_us = sceKernelGetSystemTimeWide();
+	sound->id = sndstream_next_id++;
+	if (!sndstream_next_id)
+		sndstream_next_id = 1;
+	snd_registered++;
+	if (sound->stub)
+		snd_stubs++;
+	/* its first piece at once, past the reads-in-flight limit: the game may
+	wait for it. With every piece needed, the oldest ready one is taken (a
+	voice may play a late block); with none ready, a stub is called loaded at
+	once and starts late, rather than the game waiting on a read never made */
+	piece = sndstream_victim();
+	if (!piece)
+	{
+		int k;
+
+		for (k = 0; k < sndstream_piece_count; k++)
+			if (sndstream_pieces[k].state == PIECE_READY && (!piece || sndstream_pieces[k].stamp < piece->stamp))
+				piece = &sndstream_pieces[k];
+		if (piece)
+			snd_stolen++;
+	}
+	if (piece)
+		sndstream_read(piece, sound, 0, 1, sound->stub ? loaded : NULL);
+	else if (sound->stub)
+	{
+		snd_unread_firsts++;
+		sound->first_in = 1;
+		*loaded = 1;
+	}
+	return sound->stub;
+}
+
+/* the queueing range check (psp_sound_cache_holds): a stub's samples run past its page */
+int psp_sndstream_holds(const void *address)
+{
+	int k;
+
+	if (!sndstream_pool)
+		return 0;
+	for (k = 0; k < SNDSTREAM_SOUNDS; k++)
+		if (sndstream_sounds[k].id && sndstream_sounds[k].stub && sndstream_sounds[k].base == (unsigned long)address)
+			return 1;
+	return 0;
+}
+
+/* stream_process, as the game queues a packet: its sound's id if streamed,
+where it starts in the samples, and whether the cache holds them too */
+static unsigned long sndstream_packet(const void *permutation, const unsigned char *data, unsigned long *offset,
+	int *check)
+{
+	int k;
+
+	if (!sndstream_pool || !data)
+		return 0;
+	for (k = 0; k < SNDSTREAM_SOUNDS; k++)
+	{
+		const struct sndstream_sound *sound = &sndstream_sounds[k];
+
+		if (sound->id && sound->permutation == permutation && (unsigned long)data >= sound->base &&
+			(unsigned long)data - sound->base < (unsigned long)sound->size)
+		{
+			*offset = (unsigned long)data - sound->base;
+			*check = !sound->stub;
+			return sound->id;
+		}
+	}
+	return 0;
+}
+
+/* the audio thread, after a block: the voice's counts into the totals */
+static void sndstream_collect(struct psp_stream *stream)
+{
+	if (!(stream->snd_blocks | stream->snd_late | stream->snd_checked | stream->snd_mismatched | stream->snd_unaligned))
+		return;
+	if (stream->snd_mismatched)
+	{
+		/* whose copy changed: the cache's, when its block no longer holds
+		that sound (a channel lets go of its sound while the mixer still has
+		packets of it queued, and the cache may then reuse the block); the
+		piece's, otherwise */
+		const struct sndstream_sound *sound = sndstream_find(stream->snd_differ_id);
+		int alive = sound && sndstream_alive(sound);
+
+		if (alive)
+		{
+			snd_differ_alive += stream->snd_mismatched;
+			if (psp_sound_tier_holds((const void *)sound->base))
+				snd_differ_tier += stream->snd_mismatched;
+		}
+		else
+			snd_differ_gone += stream->snd_mismatched;
+		if (snd_differ_said < 8)
+		{
+			snd_differ_said++;
+			platform_log("sndstream: %lu blocks differed in a block's mix, the first of sound %lu at byte %lu: %s",
+				stream->snd_mismatched, stream->snd_differ_id, stream->snd_differ_at,
+				alive ? (psp_sound_tier_holds((const void *)sound->base) ? "its cache copy still that sound, in the eDRAM tier" :
+				"its cache copy still that sound, in the main tier") :
+				sound ? "its cache block no longer that sound's" : "its sound gone from the table");
+		}
+	}
+	snd_blocks += stream->snd_blocks;
+	snd_late += stream->snd_late;
+	snd_checked += stream->snd_checked;
+	snd_mismatched += stream->snd_mismatched;
+	snd_unaligned += stream->snd_unaligned;
+	stream->snd_blocks = stream->snd_late = stream->snd_checked = stream->snd_mismatched = stream->snd_unaligned = 0;
+}
+
+/* sndstreamcheck: a piece as it lands, against the cache's copy, where this
+CPU can read it (the main tier; the tier too in the emulator, whose eDRAM is
+mapped), once that copy is loaded: whether the read itself brought the right
+bytes, apart from anything that happens to either copy later */
+static void sndstream_landed(const struct sndstream_piece *piece)
+{
+	const struct sndstream_sound *sound = sndstream_find(piece->id);
+	const unsigned char *copy;
+	int tier;
+
+	if (!sound || !sndstream_alive(sound) || *sound->loaded != 1)
+		return;
+	copy = (const unsigned char *)sound->base + piece->index * (long)SNDSTREAM_PIECE_BYTES;
+	tier = psp_sound_tier_holds(copy);
+	if (tier && tier_mode != 2)
+		return;
+	if (memcmp(copy, piece->buffer, (size_t)piece->bytes) == 0)
+	{
+		snd_landed_equal++;
+		return;
+	}
+	snd_landed_differ++;
+	snd_landed_differ_tier += tier;
+	if (snd_landed_said < 8)
+	{
+		long k = 0;
+
+		while (k < piece->bytes && copy[k] == piece->buffer[k])
+			k++;
+		snd_landed_said++;
+		platform_log("sndstream: piece %ld of sound %lu (%ld bytes, file offset %ld + %ld) differs as it lands from its cache copy (%s) from byte %ld",
+			piece->index, piece->id, piece->bytes, sound->file_offset, piece->index * (long)SNDSTREAM_PIECE_BYTES,
+			tier ? "in the eDRAM tier" : "in the main tier", k);
+	}
+}
+
+struct sndstream_need
+{
+	unsigned long id;
+	long index, ahead;
+};
+
+static void sndstream_poll(void)
+{
+	static struct sndstream_need needs[SNDSTREAM_NEEDS];
+	SceUInt64 now;
+	struct psp_stream *stream;
+	int k, count = 0, in_use = 0;
+	unsigned long stub_bytes = 0;
+
+	if (!sndstream_pool)
+		return;
+	sndstream_polls++;
+	now = sceKernelGetSystemTimeWide();
+	/* reads done: a piece is ready once its bytes are in RAM */
+	for (k = 0; k < sndstream_piece_count; k++)
+	{
+		struct sndstream_piece *piece = &sndstream_pieces[k];
+		struct sndstream_sound *sound;
+		unsigned long us;
+
+		unsigned char done;
+
+		if (piece->state != PIECE_READING || !*piece->flag)
+			continue;
+		done = *piece->flag;
+		sndstream_flight--;
+		us = (unsigned long)(now - piece->issued_us);
+		snd_read_us += us;
+		if (us > snd_read_worst_us)
+			snd_read_worst_us = us;
+		snd_reads_done++;
+		if (done == 1)
+		{
+			sceKernelDcacheWritebackInvalidateRange((void *)piece->buffer, SNDSTREAM_PIECE_ROOM);
+			__asm__ __volatile__("sync" : : : "memory");
+			piece->state = PIECE_READY;
+			piece->flag = &piece->done;
+			if (sndstream_mode == 2)
+				sndstream_landed(piece);
+		}
+		else
+		{
+			snd_read_failed++;
+			piece->id = 0;
+			piece->state = PIECE_FREE;
+		}
+		if (!piece->first)
+			continue;
+		piece->first = 0;
+		sound = sndstream_find(piece->id);
+		if (sound && !sound->first_in)
+		{
+			sound->first_in = 1;
+			us = (unsigned long)(now - sound->made_us);
+			snd_firsts++;
+			snd_first_us += us;
+			if (us > snd_first_worst_us)
+				snd_first_worst_us = us;
+		}
+	}
+	/* what the voices need: each queued packet not yet played out, nearest first */
+	for (stream = streams; stream; stream = GAME_OF(stream)->next)
+	{
+		struct stream_game *game = GAME_OF(stream);
+		unsigned long budget = 2 * SNDSTREAM_PIECE_BYTES * (stream->channels ? stream->channels : 1), ahead = 0, j;
+		unsigned long finished_to = game->finished_to;
+
+		if (stream->snd_hint >= 0 && stream->snd_hint < sndstream_piece_count)
+			sndstream_pieces[stream->snd_hint].stamp = sndstream_polls;
+		for (j = 0; j < game->count && ahead < budget; j++)
+		{
+			unsigned long slot = (game->head + j) % MAXIMUM_STREAM_PACKETS, id = game->snd_id[slot];
+			unsigned long size = game->packet[slot].dwMaxSize;
+
+			if (game->popped + j < finished_to)
+				continue;
+			if (id)
+			{
+				unsigned long from = game->snd_offset[slot], to = from + size, at;
+
+				for (at = from; at < to && ahead + (at - from) < budget;
+					at = (at / SNDSTREAM_PIECE_BYTES + 1) * SNDSTREAM_PIECE_BYTES)
+				{
+					long index = (long)(at / SNDSTREAM_PIECE_BYTES);
+					int n, have = 0;
+
+					for (n = 0; n < count; n++)
+						if (needs[n].id == id && needs[n].index == index)
+						{
+							have = 1;
+							if (needs[n].ahead > (long)(ahead + (at - from)))
+								needs[n].ahead = (long)(ahead + (at - from));
+							break;
+						}
+					if (!have && count < SNDSTREAM_NEEDS)
+					{
+						needs[count].id = id;
+						needs[count].index = index;
+						needs[count].ahead = (long)(ahead + (at - from));
+						count++;
+					}
+				}
+			}
+			ahead += size;
+		}
+	}
+	/* a sound just placed keeps its first piece a while: the game starts it
+	within a frame or two of asking */
+	for (k = 0; k < SNDSTREAM_SOUNDS; k++)
+	{
+		struct sndstream_sound *sound = &sndstream_sounds[k];
+
+		if (!sound->id)
+			continue;
+		if (!sndstream_alive(sound))
+		{
+			sound->id = 0;
+			continue;
+		}
+		if (sound->stub)
+			stub_bytes += (unsigned long)sound->size;
+		if ((!sound->first_in || now - sound->made_us < SNDSTREAM_FIRST_KEEP_US) && count < SNDSTREAM_NEEDS)
+		{
+			needs[count].id = sound->id;
+			needs[count].index = 0;
+			needs[count].ahead = 0;
+			count++;
+		}
+	}
+	if (stub_bytes > snd_stub_peak_bytes)
+		snd_stub_peak_bytes = stub_bytes;
+	if ((unsigned long)count > snd_need_peak)
+		snd_need_peak = (unsigned long)count;
+	/* the pieces there, kept; the rest read, nearest first */
+	for (k = 0; k < count; k++)
+	{
+		int n;
+
+		for (n = 0; n < sndstream_piece_count; n++)
+			if (sndstream_pieces[n].state != PIECE_FREE && sndstream_pieces[n].id == needs[k].id &&
+				sndstream_pieces[n].index == needs[k].index)
+			{
+				sndstream_pieces[n].stamp = sndstream_polls;
+				needs[k].id = 0;
+				break;
+			}
+	}
+	while (sndstream_flight < SNDSTREAM_FLIGHT)
+	{
+		struct sndstream_piece *piece;
+		struct sndstream_sound *sound;
+		int best = -1;
+
+		for (k = 0; k < count; k++)
+			if (needs[k].id && (best < 0 || needs[k].ahead < needs[best].ahead))
+				best = k;
+		if (best < 0)
+			break;
+		sound = sndstream_find(needs[best].id);
+		if (!sound || needs[best].index * (long)SNDSTREAM_PIECE_BYTES >= sound->size)
+		{
+			needs[best].id = 0;
+			continue;
+		}
+		piece = sndstream_victim();
+		if (!piece)
+		{
+			snd_short_polls++;
+			break;
+		}
+		{
+			int first = needs[best].index == 0 && !sound->first_in;
+
+			/* a stub's first piece read again (its first read had no piece)
+			completes into the engine's flag, as the first one does */
+			sndstream_read(piece, sound, needs[best].index, first, first && sound->stub ? sound->loaded : NULL);
+		}
+		needs[best].id = 0;
+	}
+	for (k = 0; k < sndstream_piece_count; k++)
+		in_use += sndstream_pieces[k].state != PIECE_FREE;
+	if (in_use > sndstream_peak_pieces)
+		sndstream_peak_pieces = in_use;
+}
+
+static void sndstream_report(void)
+{
+	int k, sounds = 0, stubs = 0, in_use = 0;
+	unsigned long stub_bytes = 0;
+
+	if (!sndstream_mode || sndstream_mode < 0)
+		return;
+	for (k = 0; k < SNDSTREAM_SOUNDS; k++)
+		if (sndstream_sounds[k].id)
+		{
+			sounds++;
+			if (sndstream_sounds[k].stub)
+			{
+				stubs++;
+				stub_bytes += (unsigned long)sndstream_sounds[k].size;
+			}
+		}
+	for (k = 0; k < sndstream_piece_count; k++)
+		in_use += sndstream_pieces[k].state != PIECE_FREE;
+	/* two lines: the log cuts a line at about 1 KB */
+	platform_log("sndstream: %s; late blocks %lu, blocks from pieces %lu, checked %lu equal, %lu differed "
+		"(%lu with the cache's copy that sound's, %lu of them in the tier; %lu not), %lu unaligned; "
+		"pieces as they landed against the cache's copy: %lu equal, %lu differed (%lu in the tier)",
+		sndstream_mode == 2 ? "sndstreamcheck" : "on", snd_late, snd_blocks, snd_checked, snd_mismatched,
+		snd_differ_alive, snd_differ_tier, snd_differ_gone, snd_unaligned,
+		snd_landed_equal, snd_landed_differ, snd_landed_differ_tier);
+	platform_log("sndstream: %d sounds streamed now, %d of them stubs standing for %lu KB (peak %lu KB); "
+		"%lu registered, %lu stubs made, %lu refused (table full); pieces %d of %d in use (peak %d, at most %lu needed at once), "
+		"%lu polls short of a piece; reads %lu (%lu KB, %lu failed, %lu in flight, mean %lu us, worst %lu us); "
+		"first pieces %lu (mean %lu us, worst %lu us; %lu taken from a voice, %lu not read)",
+		sounds, stubs, stub_bytes / 1024, snd_stub_peak_bytes / 1024,
+		snd_registered, snd_stubs, snd_refused, in_use, sndstream_piece_count, sndstream_peak_pieces, snd_need_peak,
+		snd_short_polls, snd_reads, snd_read_bytes / 1024, snd_read_failed, (unsigned long)sndstream_flight,
+		snd_reads_done ? snd_read_us / snd_reads_done : 0, snd_read_worst_us,
+		snd_firsts, snd_firsts ? snd_first_us / snd_firsts : 0, snd_first_worst_us, snd_stolen, snd_unread_firsts);
+}
+#endif
