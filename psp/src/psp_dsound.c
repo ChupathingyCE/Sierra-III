@@ -4463,7 +4463,7 @@ long psp_sound_pages_now(void)
 }
 
 /* the map's spare main RAM in the sound block (none without sndpermap) */
-void *psp_sound_spare(unsigned long *bytes)
+void *psp_sound_map_spare(unsigned long *bytes)
 {
 	unsigned long spare = map_pages && boot_pages > map_pages ? (unsigned long)(boot_pages - map_pages) << 12 : 0;
 
