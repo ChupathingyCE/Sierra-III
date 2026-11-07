@@ -774,6 +774,7 @@ struct sndstream_piece
 static struct sndstream_piece sndstream_pieces[SNDSTREAM_PIECES_MAX] __attribute__((aligned(64)));
 static int sndstream_piece_count = 0;
 static int sndstream_pieces_kept = -1;
+static int sndstream_dialog = 0;
 
 static unsigned long sndstream_packet(const void *permutation, const unsigned char *data, unsigned long *offset,
 	int *check);
@@ -4840,21 +4841,23 @@ static int sndstream_on(void)
 			if (pieces > SNDSTREAM_PIECES_MAX)
 				pieces = SNDSTREAM_PIECES_MAX;
 			sndstream_pieces_kept = pieces;
+			sndstream_dialog = psp_keep("sndstreamdialog");
 		}
 	}
 	return sndstream_mode;
 }
 
 /* The pool each map needs: the most pieces wanted at once on its
-hands-off run to 300 s, with room over it (sndstream5a), d20's swamp the
+hands-off run to 300 s, with room over it (sndstream5a, sndstream6: a10 at 8 and
+a30 at 24 played late), d20's swamp the
 busiest (38 at once with every just-placed sound's first piece held; 24
 played late there, 32 didn't). b40, c20 and c40 have no ambient loop long
 enough to stream, so they keep the room. A map not listed gets 32. */
 static int sndstream_map_pieces(const char *map)
 {
 	static const struct { const char *map; int pieces; } pools[] = {
-		{ "d20", 40 }, { "a30", 24 }, { "a50", 16 }, { "d40", 16 }, { "c10", 12 },
-		{ "a10", 8 }, { "b30", 8 }, { "b40", 0 }, { "c20", 0 }, { "c40", 0 },
+		{ "d20", 40 }, { "a30", 32 }, { "a10", 16 }, { "a50", 16 }, { "d40", 16 }, { "c10", 12 },
+		{ "b30", 8 }, { "b40", 0 }, { "c20", 0 }, { "c40", 0 },
 	};
 	int k;
 
@@ -4862,7 +4865,9 @@ static int sndstream_map_pieces(const char *map)
 		return sndstream_pieces_kept;
 	for (k = 0; k < (int)(sizeof(pools) / sizeof(pools[0])); k++)
 		if (map && strcmp(map, pools[k].map) == 0)
-			return pools[k].pieces;
+			/* a few lines of dialog at once, each a piece playing and two
+			ahead: 8 left c40 short of a piece 47 times (sndstream8) */
+			return sndstream_dialog ? pools[k].pieces + 12 : pools[k].pieces;
 	return 32;
 }
 
@@ -4972,8 +4977,14 @@ static void sndstream_read(struct sndstream_piece *piece, const struct sndstream
 	sndstream_flight++;
 	snd_reads++;
 	snd_read_bytes += (unsigned long)bytes;
-	cache_file_read(sound->tag_index, sound->file_offset + index * (long)SNDSTREAM_PIECE_BYTES, bytes,
-		(void *)piece->buffer, flag, 0);
+	{
+		/* ahead of the level's reads (FIXES_SNDSTREAM #sndurgent) */
+		extern int psp_cache_read_urgent_next;
+
+		psp_cache_read_urgent_next = 1;
+		cache_file_read(sound->tag_index, sound->file_offset + index * (long)SNDSTREAM_PIECE_BYTES, bytes,
+			(void *)piece->buffer, flag, 0);
+	}
 }
 
 /* the piece to fill: a free one, else the one no voice needs that was needed
@@ -5004,7 +5015,14 @@ sound streamed ("sndstream"), else 0 (it loads whole) */
 long psp_sndstream_choose(const void *permutation, int sound_class, int compression, long size)
 {
 	sndstream_chosen = NULL;
-	if (!sndstream_pool || sound_class < 33 || sound_class > 35 || compression != 1 || size < SNDSTREAM_MIN_BYTES)
+	if (!sndstream_pool || compression != 1 || size < SNDSTREAM_MIN_BYTES)
+		return 0;
+	/* the ambient loops (33-35); with "sndstreamdialog" the dialog too
+	(unit 19, scripted 44, 46, 47): long, played once, and the sounds the
+	cache held back longest (sndstream5a: c40's monitor 32 s, c10's
+	captain 26 s) */
+	if (!(sound_class >= 33 && sound_class <= 35) &&
+		!(sndstream_dialog && (sound_class == 19 || sound_class == 44 || sound_class == 46 || sound_class == 47)))
 		return 0;
 	if (sndstream_slot() < 0)
 	{

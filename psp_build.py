@@ -315,7 +315,14 @@ def pgo_flags(rel):
                 "-Wno-missing-profile", "-Wno-error=coverage-mismatch"] + PGO_EXTRA
     return []
 PSP = ["psp-gcc", "-G%d" % SMALLDATA, GAME_OPT, "-march=allegrex", "-ffp-contract=off", "-fshort-wchar",
-       "-fms-extensions", "-fcommon", "-fno-strict-aliasing", "-fwrapv",
+       "-fms-extensions", "-fcommon"] + (
+       # The engine was written for MSVC, which never assumed strict
+       # aliasing; GCC's -fno-strict-aliasing keeps that, at the price of
+       # reloading values after any store it can't rule out. PSP_STRICTALIAS=1
+       # lets GCC assume it: a ceiling A/B (trap STRICTALIAS; the audit
+       # or-job 42351227876 lists the sites that pun types and would need
+       # fixing before it could ship)
+       ["-fstrict-aliasing"] if os.environ.get("PSP_STRICTALIAS", "") == "1" else ["-fno-strict-aliasing"]) + ["-fwrapv",
        "-fno-delete-null-pointer-checks"] + (
        # -mgpopt named: the link's own compile (LTO) otherwise takes it as
        # off, and refuses that with small data unless relocations are
