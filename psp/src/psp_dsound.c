@@ -4704,6 +4704,17 @@ long psp_sound_map_pages(const char *map)
 			pages = boot_pages - (long)(cut >> 12);
 		}
 		tier_main_bytes = tier_main_boot - cut;
+		{
+			/* the cache's fence between its tiers moves with the main tier's
+			end: set at start-up (sound_cache_new) and never since, it let a
+			block straddle the main tier's new end, its tail past it in main
+			RAM the map doesn't give the cache (lruv_cache.c's fence) */
+			extern struct lruv_cache *psp_lruv_fence_cache;
+			extern long psp_lruv_fence_page;
+
+			if (psp_lruv_fence_cache)
+				psp_lruv_fence_page = (long)(tier_main_bytes >> 12);
+		}
 	}
 #if PSP_SNDSTREAM
 	if (pool)
