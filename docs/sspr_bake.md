@@ -59,6 +59,8 @@ A build plan (master, 2026-11-06). Sheepdog01 asked on 14:03, through bottleneck
 
 Skinned models, with each vertex's bone weights kept valid across a collapse (no vertex is merged into one hung on other nodes). The skin plans are made again for each level by modelconvert's planner.
 
+**Shading in the error, before step 2** (bottleneck 17:55, from sspr1's b30 shot 7 at 2 px [E]): a near boulder kept its outline but its lit face shifted (2,032 pixels), because the vertex lighting follows the decimated normals and ε measures shape only. Lit skin and armour would show it more. So step 2 weights normals in the simplifier's attributes, or adds a shading term to ε, and step 1's rigid levels are rebaked the same way.
+
 ## Rules it keeps
 
 - **The bakes stay on the X3D** (game data); only counts and shots reach the results branch.

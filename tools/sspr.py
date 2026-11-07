@@ -113,9 +113,16 @@ def simplify(m, positions, attributes, indices, target, leaves):
     return out[:n].copy(), float(err.value) * float(scale)
 
 
-def pieces(indices, vcount):
-    """connected pieces (by shared vertices) of a triangle list"""
+def pieces(indices, positions):
+    """connected pieces of a triangle list, by shared position: a hard edge
+    or a UV seam splits vertices at one place, and counting by index would
+    take a faceted prop for a pile of cards (sspr1: one on b40 vanished at
+    2 px, simplified as leaf cards)"""
+    _, weld = np.unique(np.round(positions, 4), axis=0, return_inverse=True)
+    weld = weld.reshape(-1)
+    vcount = int(weld.max()) + 1 if len(weld) else 0
     parent = np.arange(vcount)
+    indices = weld[indices.astype(np.int64)]
 
     def find(a):
         while parent[a] != a:
@@ -218,7 +225,7 @@ def part_levels(m, data, v, vcount, vtype, i, tcount, ttype, census):
     uv = src.uv.copy().view('<f4').reshape(vcount, 2)
     normal = mc.unpack_normals(src.packed).astype(F)
     attributes = np.ascontiguousarray(np.concatenate([uv, normal], axis=1), F)
-    leaves = pieces(tri, vcount) >= LEAF_PIECES * (len(tri) // 3)
+    leaves = pieces(tri, positions) >= LEAF_PIECES * (len(tri) // 3)
     census['leaf parts' if leaves else 'parts'] += 1
     levels, errors = [], [0.0] * LEVELS
     for level in range(LEVELS - 1, -1, -1):
