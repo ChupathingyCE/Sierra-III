@@ -180,8 +180,13 @@ R decides what must be GE-readable, and S's layout what the tick reads hot. B pl
 
 - **Known:** VRAM has 13-48 KB free behind 816 KB of fixed buffers. Freed VRAM is worth ~17.6 µs of b30's tick a frame a KB for the first 200 KB (lead A [U on M]). The eDRAM's 544 KB is the largest free block, readable by the ME only.
 - **The scratchpad by design** (Sheepdog01 19:34). 16 KB, always a hit, off the bus, reachable by the main CPU and the GE (cpu_cost_map.md §2). Today: the level collision BSP's top 304 nodes (SCRATCHBSP, a small win [M]) and the profiler's slots and table (6.6 KB; moving them out gained nothing, PROFHEAP). It was last set by misses per byte in the old shape (build 108, then SCRATCHBSP). In the new shape the candidates change: S's change-rate keys (each object's version, the feature queries' reuse table), the far-biped tier's per-pass arrays, the hot tag fields (the tag window is 32% of the tick's data misses, TAGHOT), and R's per-frame instance list on the main CPU side. B re-ranks them by misses per byte on the new shape's cache map once S's and R's design pages fix their tables, and the winner is priced by a PSP pair (the cache rule).
-- **Milestone and stop:** set by C1's sizes. B is a layout, priced inside R's and S's milestones.
-- **Who:** the master, from C1.
+- **Promoted to a design-first part beside R** (Sheepdog01's go, 2026-11-07; the review and the sizing are the lab's `docs/research/design_review_2026-11-07.md` and `gap_sizing_2026-11-07.md`). Contention is the measured limit: the tick waits on memory 56-68% of its cycles [M]; with the GE reading VRAM only, the wait fell 56% → 40% and a D-miss's cost 358 → 192 cycles (b102 [M]); M6 #2's replay costs the tick ~2 ms with the miss count flat (TICKI [M]). There's no bus-priority setting (§9.1 closed), so placement is the only lever. B's scope is three things:
+  - **The GE's traffic onto VRAM:** vertices and indices (up to ~8 ms of b30's flight). The display list stays in main RAM, because the ME writes it and can't see VRAM. Gated on freeing VRAM (13-48 KB free today). First step: one PSP pair moving vertices and indices to VRAM (vrammodels' room), checked against lead A's ~17.6 µs a KB.
+  - **The hot tag window as a packed, typed layout,** read through accessors: 32% of the tick's D-misses, half of them in a 16 KB hot set. TAGHOT's retrofit is blocked by raw-offset readers; B lays the hot fields out once instead. Exact; ~2-4 ms a tick [U], priced by a PSP pair (the cache rule). First step: the readers' clustering audit (are the hot fields read in a few functions or across the tick).
+  - **Freeing VRAM,** which the first of these needs.
+- **Not B's:** the tick restructured around the I-cache (82-84% of its I-misses are capacity) needs WORLDVIEW, a tick-start view of the world that changes play. It's Sheepdog01's call as a compromise, ~1.5 ms a tick ceiling [U].
+- **Milestone and stop:** each of the three priced by its own PSP pair; B's layout then priced inside R's and S's milestones.
+- **Who:** the master.
 
 ### A. Audio built around the VME (candidate, Sheepdog01 19:34)
 
@@ -275,6 +280,9 @@ The redesign rule (Sierra-III CLAUDE.md and the lab's, "Redesign work", Sheepdog
 - Each part on its own branch, as a separate path under its keep word. The master builds; recon builds S's census-driven pieces.
 - Slices are proven in the emulator for correctness only (§6).
 - The milestone's PSP pair: R at "b30's models from prebuilt lists, record and replay bypassed for them"; S at its first piece replacing the old tick path on b30.
+- **R's one early pair** (Sheepdog01's go, 2026-11-07): after slice 2c's ring, one PSP pair logs what R's drawing in the ME's replay really costs the ME and the tick (the emulator charges the ME's work ~0). It's for information, not a gate, and isn't a frame A/B of R (the old layers are still there). It runs with the sound stream on both sides, which gives R's ~440 KB its heap.
+- **LMC under R** (Sheepdog01, 2026-11-07: "sounds like a good idea"): static lights' light-pass work kept across frames goes before R lands only if it pays first, sized in the eDRAM (an `edram.md` row: in main RAM the ME's reads of it would add the contention it removes), and built as the mechanism R adopts for static lights.
+- **The stick is scheduled** for every streaming part: fewer, larger reads; the game thread's reads first; no long writes in play.
 - After each milestone, §1's table is redone with the measured figures. If a part falls short of its share, Sheepdog01 decides before the next slice.
 
 **Phase 3, the switch-over.**
