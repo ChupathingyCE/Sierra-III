@@ -596,10 +596,11 @@ def compile_one(item):
     # path, nested in folders the PSP's libgcov can't make
     out = os.path.relpath(obj, TREE) if PGO else obj
     # PSP_STRICTALIAS_UNITS=objects,render limits -fstrict-aliasing to those
-    # source/ directories (a bisection for the type puns it would break)
+    # source/ directories, or to any tree path given with its slash
+    # (port/linux/game): a bisection for the type puns it would break
     sa_dirs = [w for w in os.environ.get("PSP_STRICTALIAS_UNITS", "").split(",") if w]
     if sa_dirs and os.environ.get("PSP_STRICTALIAS", "") == "1" and not any(
-            rel.replace("\\", "/").startswith("source/%s/" % d) for d in sa_dirs):
+            rel.replace("\\", "/").startswith("source/%s/" % d) or rel.replace("\\", "/").startswith(d + "/") for d in sa_dirs):
         extra = extra + ["-fno-strict-aliasing"]
     cmd = PSP + flags + extra + defines + ["-include", os.path.join(HERE, "psp_post.h"), "-c", src, "-o", out]
     if src.endswith(("psp_sdl.c", "psp_libc.c", "psp_ge.c", "psp_tex.c", "psp_vfpu.c", "psp_vfpu_quat.c", "psp_vfputrig.c", "psp_menu.c", "psp_geo.c", "psp_anim.c",
