@@ -4865,9 +4865,9 @@ static int sndstream_map_pieces(const char *map)
 		return sndstream_pieces_kept;
 	for (k = 0; k < (int)(sizeof(pools) / sizeof(pools[0])); k++)
 		if (map && strcmp(map, pools[k].map) == 0)
-			/* a line or two of dialog at once, each a piece playing and
-			two ahead */
-			return sndstream_dialog ? pools[k].pieces + 8 : pools[k].pieces;
+			/* a few lines of dialog at once, each a piece playing and two
+			ahead: 8 left c40 short of a piece 47 times (sndstream8) */
+			return sndstream_dialog ? pools[k].pieces + 12 : pools[k].pieces;
 	return 32;
 }
 
