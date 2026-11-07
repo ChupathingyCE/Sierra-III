@@ -4400,7 +4400,8 @@ The block taken at start-up stays the boot size (the largest any map needs);
 each map's open sizes the engine's cache to its own pages, and the main-RAM
 pages it doesn't use, the main tier's end, are spare for that map: the
 sound-wait census (soundsweep3, sndwait) found no sound held back at these
-sizes. The eDRAM tier keeps its pages, so a smaller cache gives up main RAM
+sizes (a10 held a computer ambience 3 s at 1,536 on the ladder, sndpermap1, so it keeps
+the full cache). The eDRAM tier keeps its pages, so a smaller cache gives up main RAM
 only. A taker of the spare uses it for the map alone and lets it go before the
 next map's open, which may grow the cache back over it */
 static long map_pages = 0, boot_pages = 0;
@@ -4409,8 +4410,8 @@ static unsigned long tier_main_boot = 0;
 static long sndpermap_pages(const char *map)
 {
 	static const struct { const char *map; long kb; } sizes[] = {
-		{ "d20", 1792 },
-		{ "a10", 1536 }, { "a50", 1536 }, { "b30", 1536 }, { "c10", 1536 },
+		{ "d20", 1792 }, { "a10", 1792 },
+		{ "a50", 1536 }, { "b30", 1536 }, { "c10", 1536 },
 		{ "a30", 1280 }, { "b40", 1280 }, { "c20", 1280 }, { "c40", 1280 }, { "d40", 1280 },
 	};
 	int k;
