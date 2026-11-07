@@ -47546,17 +47546,19 @@ FIXES_OBSRAY["source/ai/ai.c#obsray"] = [
 # every event, ~1.5 a tick, and each costs decal_new's collision ray,
 # projection and clipping (~500-610 us [E], ~85% of the flame's update). The
 # scorch under a fire is saturated by the first few. So an effect's decal part
-# is left out while the same effect's last stamp of that decal is within half
-# the decal's smallest radius and younger than half its shortest lifetime (2 s
-# when the tag gives none). Campaign only: decals draw from the local random
-# seed, which other code reads, as FIXES_DECALFADE notes
+# is left out while a stamp of the same decal lies within half the decal's
+# smallest radius and is younger than half its shortest lifetime (2 s when the
+# tag gives none), whichever effect made it: the flame is a stream of short
+# effects, so one effect rarely stamps twice (flamedecal1: keyed by the effect,
+# 52 of 2,816 stamps left out). Campaign only: decals draw from the local
+# random seed, which other code reads, as FIXES_DECALFADE notes
 FIXES_FLAMEDECAL = {}
 FIXES_FLAMEDECAL["source/effects/decals.c#flamedecal"] = [
 ("""void decal_new(
 	long decal_definition_index,""",
  """#if defined(HALO_PSP) && !defined(PSP_MULTIPLAYER)
 /* psp_fixups.py (FIXES_FLAMEDECAL) */
-#define PSP_DECAL_REPEAT_SLOTS 16
+#define PSP_DECAL_REPEAT_SLOTS 32
 static struct psp_decal_repeat { void const *effect; long definition; real_point3d origin; long time; } psp_decal_repeats[PSP_DECAL_REPEAT_SLOTS];
 static unsigned long psp_decal_repeat_skipped = 0, psp_decal_repeat_made = 0;
 
@@ -47581,17 +47583,15 @@ boolean psp_decal_repeat(long decal_definition_index, real_point3d const *origin
 	{
 		struct psp_decal_repeat *slot = &psp_decal_repeats[k];
 
-		if (slot->effect == effect && slot->definition == decal_definition_index)
+		if (slot->definition == decal_definition_index && now - slot->time < window)
 		{
 			real di = origin->x - slot->origin.x, dj = origin->y - slot->origin.y, dk = origin->z - slot->origin.z;
 
-			if (now - slot->time < window && di * di + dj * dj + dk * dk < near * near)
+			if (di * di + dj * dj + dk * dk < near * near)
 			{
 				psp_decal_repeat_skipped++;
 				return TRUE;
 			}
-			oldest = k;
-			break;
 		}
 		if (slot->time < psp_decal_repeats[oldest].time)
 			oldest = k;
