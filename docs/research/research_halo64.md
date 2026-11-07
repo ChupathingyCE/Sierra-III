@@ -20,7 +20,7 @@ Sierra-III is already ahead of Halo 64 on most CPU work: the double-maths narrow
 | H2 | `path_state_new` clears only the header, not the whole state | Exact | One 47 KB clear per path search [D] | Count searches a tick, then take it with a check word |
 | H3 | Prisms facing away from the move skip their test | Exact | One divide per skipped prism [D] | Take it |
 | H4 | `add_feature` finds duplicates by a stamped hash | Exact | Unknown on the PSP | Count its compares in the emulator first |
-| H5 | gp-relative small data (`-G8`) | Exact (code generation) | Halo 64: 2.3% fewer instructions, 28 KB less code (static counts, theirs) | One flag A/B on the rig, if the PRX tools accept it |
+| H5 | gp-relative small data (`-G8`) | Exact (code generation) | Halo 64: 2.3% fewer instructions, 28 KB less code (static counts, theirs) | Built: `PSP_SMALLDATA=8` links, code 1.7% smaller; PSP pairs next |
 
 ### H1: `aiming_change` for units with no aiming limit (restoration)
 
@@ -76,8 +76,13 @@ Sierra-III is already ahead of Halo 64 on most CPU work: the double-maths narrow
 
 - **What.** With `-G8`, globals of 8 bytes or less go in `.sdata`/`.sbss` and are read with one load from `$gp`, instead of `lui` plus a load.
 - **Their result.** 2.3% fewer instructions in the program (306,788 → 299,715) and 28 KB less code. Those are static counts, not timings.
-- **Sierra-III status.** Listed in `optimization_ranking.md` (Build) with the caveat that PRX relocation may forbid it. We build with `-G0` throughout, and `halo.elf` goes through `psp-prxgen`.
-- **Next step.** One test link: does `psp-prxgen` accept GP-relative relocations? If it does, one rig A/B. Exact by construction: it changes only how globals are addressed.
+- **Sierra-III status.** Built as the switch `PSP_SMALLDATA=8` (lever RH5, off by default). It links: `psp-prxgen` drops the GP-relative relocations, which need none once linked [D]. With the shipped settings the program's code is 62 KB (1.7%) smaller, the hot code 2.3%, and the heap 56 KB larger [D]. Small data takes 15 KB of `$gp`'s 64 KB.
+- **What it took** [D]:
+  - `-mno-extern-sdata`: only variables defined in the same unit (or, under LTO, the same link) go through `$gp`. A plain `-G8` guesses that every small `extern` is in small data, and the variables defined in the port's `-G0` units are not, so the link fails ("relocation truncated to fit: R_MIPS_GPREL16").
+  - `-mgpopt` named, for the LTO link's own compile, which otherwise takes it as off and refuses small data with the implicit relocations the hot code's split functions need.
+  - The hot data run (HOTG) moves to the start of `.sdata`, inside `$gp`'s reach.
+  - The Media Engine sets `$gp` at its entry (`psp_me.c`): me-core sets only its stack, and nothing used `$gp` before, since the SDK's libraries are built `-mno-gpopt`. The main CPU's threads get the module's value from the kernel.
+- **Next step.** Exactness in the emulator (play and both seeds), then PSP pairs on c20. Only the PSP tests the ME's `$gp`, since the emulator runs the ME's jobs on the main CPU.
 
 ## 2. Design input: the biped collision plan
 
