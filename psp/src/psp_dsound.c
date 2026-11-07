@@ -4801,7 +4801,8 @@ static int sndstream_flight = 0, sndstream_peak_pieces = 0;
 static unsigned long snd_registered = 0, snd_stubs = 0, snd_refused = 0, snd_reads = 0, snd_read_bytes = 0,
 	snd_read_failed = 0, snd_read_us = 0, snd_read_worst_us = 0, snd_reads_done = 0, snd_short_polls = 0,
 	snd_first_us = 0, snd_first_worst_us = 0, snd_firsts = 0, snd_stub_peak_bytes = 0, snd_maps = 0, snd_stolen = 0,
-	snd_unread_firsts = 0, snd_differ_alive = 0, snd_differ_gone = 0, snd_differ_said = 0, snd_need_peak = 0;
+	snd_unread_firsts = 0, snd_differ_alive = 0, snd_differ_gone = 0, snd_differ_said = 0, snd_need_peak = 0,
+	snd_differ_tier = 0, snd_landed_equal = 0, snd_landed_differ = 0, snd_landed_differ_tier = 0, snd_landed_said = 0;
 /* the mixer's counts, summed by the audio thread after each block */
 static volatile unsigned long snd_blocks = 0, snd_late = 0, snd_checked = 0, snd_mismatched = 0, snd_unaligned = 0;
 
@@ -4817,7 +4818,10 @@ static int sndstream_on(void)
 		}
 		if (sndstream_mode)
 		{
-			int pieces = psp_keep_number("sndstreampieces", 48);
+			/* 32 (256 KB): d20's swamp, the busiest, needed at most 38 at
+			once with every just-placed sound's first piece held, and played
+			no late block and held no sound back at 32; 24 played late */
+			int pieces = psp_keep_number("sndstreampieces", 32);
 
 			if (pieces < 8)
 				pieces = 8;
@@ -5089,7 +5093,11 @@ static void sndstream_collect(struct psp_stream *stream)
 		int alive = sound && sndstream_alive(sound);
 
 		if (alive)
+		{
 			snd_differ_alive += stream->snd_mismatched;
+			if (psp_sound_tier_holds((const void *)sound->base))
+				snd_differ_tier += stream->snd_mismatched;
+		}
 		else
 			snd_differ_gone += stream->snd_mismatched;
 		if (snd_differ_said < 8)
@@ -5097,7 +5105,8 @@ static void sndstream_collect(struct psp_stream *stream)
 			snd_differ_said++;
 			platform_log("sndstream: %lu blocks differed in a block's mix, the first of sound %lu at byte %lu: %s",
 				stream->snd_mismatched, stream->snd_differ_id, stream->snd_differ_at,
-				alive ? "its cache copy still that sound (the piece differs)" :
+				alive ? (psp_sound_tier_holds((const void *)sound->base) ? "its cache copy still that sound, in the eDRAM tier" :
+				"its cache copy still that sound, in the main tier") :
 				sound ? "its cache block no longer that sound's" : "its sound gone from the table");
 		}
 	}
@@ -5107,6 +5116,42 @@ static void sndstream_collect(struct psp_stream *stream)
 	snd_mismatched += stream->snd_mismatched;
 	snd_unaligned += stream->snd_unaligned;
 	stream->snd_blocks = stream->snd_late = stream->snd_checked = stream->snd_mismatched = stream->snd_unaligned = 0;
+}
+
+/* sndstreamcheck: a piece as it lands, against the cache's copy, where this
+CPU can read it (the main tier; the tier too in the emulator, whose eDRAM is
+mapped), once that copy is loaded: whether the read itself brought the right
+bytes, apart from anything that happens to either copy later */
+static void sndstream_landed(const struct sndstream_piece *piece)
+{
+	const struct sndstream_sound *sound = sndstream_find(piece->id);
+	const unsigned char *copy;
+	int tier;
+
+	if (!sound || !sndstream_alive(sound) || *sound->loaded != 1)
+		return;
+	copy = (const unsigned char *)sound->base + piece->index * (long)SNDSTREAM_PIECE_BYTES;
+	tier = psp_sound_tier_holds(copy);
+	if (tier && tier_mode != 2)
+		return;
+	if (memcmp(copy, piece->buffer, (size_t)piece->bytes) == 0)
+	{
+		snd_landed_equal++;
+		return;
+	}
+	snd_landed_differ++;
+	snd_landed_differ_tier += tier;
+	if (snd_landed_said < 8)
+	{
+		long k = 0;
+
+		while (k < piece->bytes && copy[k] == piece->buffer[k])
+			k++;
+		snd_landed_said++;
+		platform_log("sndstream: piece %ld of sound %lu (%ld bytes, file offset %ld + %ld) differs as it lands from its cache copy (%s) from byte %ld",
+			piece->index, piece->id, piece->bytes, sound->file_offset, piece->index * (long)SNDSTREAM_PIECE_BYTES,
+			tier ? "in the eDRAM tier" : "in the main tier", k);
+	}
 }
 
 struct sndstream_need
@@ -5151,6 +5196,8 @@ static void sndstream_poll(void)
 			__asm__ __volatile__("sync" : : : "memory");
 			piece->state = PIECE_READY;
 			piece->flag = &piece->done;
+			if (sndstream_mode == 2)
+				sndstream_landed(piece);
 		}
 		else
 		{
@@ -5316,16 +5363,21 @@ static void sndstream_report(void)
 		}
 	for (k = 0; k < sndstream_piece_count; k++)
 		in_use += sndstream_pieces[k].state != PIECE_FREE;
-	platform_log("sndstream: %s; %d sounds streamed now, %d of them stubs standing for %lu KB (peak %lu KB); "
-		"%lu registered, %lu stubs made, %lu refused (table full); pieces %d of %d in use (peak %d), %lu polls short of a piece; "
-		"reads %lu (%lu KB, %lu failed, %lu in flight, mean %lu us, worst %lu us); first pieces %lu (mean %lu us, worst %lu us; %lu taken from a voice, %lu not read); "
-		"blocks from pieces %lu, late blocks %lu, checked %lu equal, %lu differed (%lu with the cache's copy that sound's, %lu not), %lu unaligned; "
-		"at most %lu pieces needed at once",
-		sndstream_mode == 2 ? "sndstreamcheck" : "on", sounds, stubs, stub_bytes / 1024, snd_stub_peak_bytes / 1024,
-		snd_registered, snd_stubs, snd_refused, in_use, sndstream_piece_count, sndstream_peak_pieces, snd_short_polls,
-		snd_reads, snd_read_bytes / 1024, snd_read_failed, (unsigned long)sndstream_flight,
+	/* two lines: the log cuts a line at about 1 KB */
+	platform_log("sndstream: %s; late blocks %lu, blocks from pieces %lu, checked %lu equal, %lu differed "
+		"(%lu with the cache's copy that sound's, %lu of them in the tier; %lu not), %lu unaligned; "
+		"pieces as they landed against the cache's copy: %lu equal, %lu differed (%lu in the tier)",
+		sndstream_mode == 2 ? "sndstreamcheck" : "on", snd_late, snd_blocks, snd_checked, snd_mismatched,
+		snd_differ_alive, snd_differ_tier, snd_differ_gone, snd_unaligned,
+		snd_landed_equal, snd_landed_differ, snd_landed_differ_tier);
+	platform_log("sndstream: %d sounds streamed now, %d of them stubs standing for %lu KB (peak %lu KB); "
+		"%lu registered, %lu stubs made, %lu refused (table full); pieces %d of %d in use (peak %d, at most %lu needed at once), "
+		"%lu polls short of a piece; reads %lu (%lu KB, %lu failed, %lu in flight, mean %lu us, worst %lu us); "
+		"first pieces %lu (mean %lu us, worst %lu us; %lu taken from a voice, %lu not read)",
+		sounds, stubs, stub_bytes / 1024, snd_stub_peak_bytes / 1024,
+		snd_registered, snd_stubs, snd_refused, in_use, sndstream_piece_count, sndstream_peak_pieces, snd_need_peak,
+		snd_short_polls, snd_reads, snd_read_bytes / 1024, snd_read_failed, (unsigned long)sndstream_flight,
 		snd_reads_done ? snd_read_us / snd_reads_done : 0, snd_read_worst_us,
-		snd_firsts, snd_firsts ? snd_first_us / snd_firsts : 0, snd_first_worst_us, snd_stolen, snd_unread_firsts,
-		snd_blocks, snd_late, snd_checked, snd_mismatched, snd_differ_alive, snd_differ_gone, snd_unaligned, snd_need_peak);
+		snd_firsts, snd_firsts ? snd_first_us / snd_firsts : 0, snd_first_worst_us, snd_stolen, snd_unread_firsts);
 }
 #endif
