@@ -775,7 +775,7 @@ struct sndstream_piece
 static struct sndstream_piece sndstream_pieces[SNDSTREAM_PIECES_MAX] __attribute__((aligned(64)));
 static int sndstream_piece_count = 0;
 static int sndstream_pieces_kept = -1;
-static int sndstream_dialog = 0;
+static int sndstream_dialog = 0, sndstream_devices = 0;
 
 static unsigned long sndstream_packet(const void *permutation, const unsigned char *data, unsigned long *offset,
 	int *check);
@@ -4863,6 +4863,7 @@ static int sndstream_on(void)
 				pieces = SNDSTREAM_PIECES_MAX;
 			sndstream_pieces_kept = pieces;
 			sndstream_dialog = psp_keep("sndstreamdialog");
+			sndstream_devices = psp_keep("sndstreamdevices");
 		}
 	}
 	return sndstream_mode;
@@ -5053,14 +5054,28 @@ static struct sndstream_piece *sndstream_victim(void)
 	return best;
 }
 
+/* the classes streamed: the ambient loops (33-35); with "sndstreamdialog" the
+dialog (unit 19, scripted 44, 46, 47): long, played once, and the sounds the
+cache held back longest (sndstream5a: c40's monitor 32 s); with
+"sndstreamdevices" the devices' (26-30): a10's computer ambiences (class 30,
+97-189 KB) and c10's c10_captpilot (346 KB, tagged class 26), the large sounds
+that still loaded whole (sndclose3) */
+static int sndstream_class(int sound_class)
+{
+	if (sound_class >= 33 && sound_class <= 35)
+		return 1;
+	if (sndstream_dialog && (sound_class == 19 || sound_class == 44 || sound_class == 46 || sound_class == 47))
+		return 1;
+	return sndstream_devices && sound_class >= 26 && sound_class <= 30;
+}
+
 /* xbox_sound_cache.c, before a sound's block is made: the stub's size for a
 sound streamed ("sndstream"), else 0 (it loads whole) */
 long psp_sndstream_choose(const void *permutation, int sound_class, int compression, long size)
 {
 	sndstream_chosen = NULL;
 	if (sndstream_pool && size >= 96 * 1024 && snd_big_said < 16 &&
-		(compression != 1 || !((sound_class >= 33 && sound_class <= 35) ||
-		(sndstream_dialog && (sound_class == 19 || sound_class == 44 || sound_class == 46 || sound_class == 47)))))
+		(compression != 1 || !sndstream_class(sound_class)))
 	{
 		/* the large sounds that load whole: what a smaller cache must still hold */
 		snd_big_said++;
@@ -5068,12 +5083,7 @@ long psp_sndstream_choose(const void *permutation, int sound_class, int compress
 	}
 	if (!sndstream_pool || compression != 1 || size < SNDSTREAM_MIN_BYTES)
 		return 0;
-	/* the ambient loops (33-35); with "sndstreamdialog" the dialog too
-	(unit 19, scripted 44, 46, 47): long, played once, and the sounds the
-	cache held back longest (sndstream5a: c40's monitor 32 s, c10's
-	captain 26 s) */
-	if (!(sound_class >= 33 && sound_class <= 35) &&
-		!(sndstream_dialog && (sound_class == 19 || sound_class == 44 || sound_class == 46 || sound_class == 47)))
+	if (!sndstream_class(sound_class))
 		return 0;
 	if (sndstream_slot() < 0)
 	{
