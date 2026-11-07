@@ -1168,6 +1168,12 @@ def main():
         sys.exit("psp_build: PSP_LTO=1 but no unit is an LTO unit (PSP_LTO_UNITS?)")
     results = list(ThreadPoolExecutor(JOBS).map(compile_one, items))
     bad = [(s, e) for s, c, e, o in results if c]
+    if os.environ.get("PSP_STRICTALIAS_WARN", "") == "1":
+        # the type puns GCC names, printed so the build's log keeps them
+        for s, c, e, o in results:
+            for line in (e or "").splitlines():
+                if "strict-aliasing" in line or "type-punned" in line:
+                    print("strictalias: " + line.replace(TREE + "/", ""))
     with open(os.path.join(OUT, "compile_errors.txt"), "w") as f:
         for s, e in bad:
             f.write("=== %s\n%s\n" % (s, e))
