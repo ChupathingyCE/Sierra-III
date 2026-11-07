@@ -28303,12 +28303,15 @@ FIXES_RECON["source/effects/particles.c#particlecensus"] = [
 # refused (2) and thinned (3), the budget's and particleranks' alike
 ("\t\t\tpsp_particles_thinned++;\n\t\t\tPSP_CENSUS(data->definition_index, thinned);\n\t\t\treturn;\n",
  "\t\t\tpsp_particles_thinned++;\n\t\t\tPSP_CENSUS(data->definition_index, thinned);\n\t\t\tpsp_particle_census(psp_particle_effect, data->definition_index, 3);\n\t\t\treturn;\n"),
-("\t\t\tpsp_particles_refused++;\n\t\t\tPSP_CENSUS(data->definition_index, refused);\n\t\t\treturn;\n",
- "\t\t\tpsp_particles_refused++;\n\t\t\tPSP_CENSUS(data->definition_index, refused);\n\t\t\tpsp_particle_census(psp_particle_effect, data->definition_index, 2);\n\t\t\treturn;\n"),
-("\t\t\t\tpsp_particles_refused++;\n\t\t\t\tPSP_CENSUS(data->definition_index, refused);\n\t\t\t\treturn;\n",
- "\t\t\t\tpsp_particles_refused++;\n\t\t\t\tPSP_CENSUS(data->definition_index, refused);\n\t\t\t\tpsp_particle_census(psp_particle_effect, data->definition_index, 2);\n\t\t\t\treturn;\n"),
-("\t\t\t\tpsp_particles_thinned++;\n\t\t\t\tPSP_CENSUS(data->definition_index, thinned);\n\t\t\t\treturn;\n",
- "\t\t\t\tpsp_particles_thinned++;\n\t\t\t\tPSP_CENSUS(data->definition_index, thinned);\n\t\t\t\tpsp_particle_census(psp_particle_effect, data->definition_index, 3);\n\t\t\t\treturn;\n"),
+# the budget's refusals and thinning, decided in psp_particle_room since PADMIT
+("static int psp_particle_room(int rank, long definition_index, real_point3d const *position)\n{\n",
+ "extern long psp_particle_effect;\nvoid psp_particle_census(long effect, long particle, int outcome);\n\nstatic int psp_particle_room(int rank, long definition_index, real_point3d const *position)\n{\n"),
+("\t\tpsp_particles_refused++;\n\t\tPSP_CENSUS(definition_index, refused);\n\t\treturn 0;\n",
+ "\t\tpsp_particles_refused++;\n\t\tPSP_CENSUS(definition_index, refused);\n\t\tpsp_particle_census(psp_particle_effect, definition_index, 2);\n\t\treturn 0;\n"),
+("\t\t\tpsp_particles_refused++;\n\t\t\tPSP_CENSUS(definition_index, refused);\n\t\t\treturn 0;\n",
+ "\t\t\tpsp_particles_refused++;\n\t\t\tPSP_CENSUS(definition_index, refused);\n\t\t\tpsp_particle_census(psp_particle_effect, definition_index, 2);\n\t\t\treturn 0;\n"),
+("\t\t{\n\t\t\tpsp_particles_thinned++;\n\t\t\tPSP_CENSUS(definition_index, thinned);\n\t\t\treturn 0;\n\t\t}\n\t}\n\treturn 1;\n}\n",
+ "\t\t{\n\t\t\tpsp_particles_thinned++;\n\t\t\tPSP_CENSUS(definition_index, thinned);\n\t\t\tpsp_particle_census(psp_particle_effect, definition_index, 3);\n\t\t\treturn 0;\n\t\t}\n\t}\n\treturn 1;\n}\n"),
 ("\tparticle_index = datum_new(particle_data);\n\n\tif (particle_index == NONE)\n\t\treturn;\n#ifdef HALO_PSP\n",
 """\tparticle_index = datum_new(particle_data);
 
