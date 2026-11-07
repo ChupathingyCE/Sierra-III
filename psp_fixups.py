@@ -47944,7 +47944,7 @@ FIXES_DBLSOFT["source/cseries/profile.c"] = [
 #endif"""),
 ]
 
-# ---------- FIXES_VFPUTRIG (E17, keep word "vfputrig", off by default):
+# ---------- FIXES_VFPUTRIG (E17, on by default; "vfputrigoff" for the libm):
 # sine and cosine on the VFPU (psp_vfputrig.c) for work that only draws: the
 # sprites' rotation, the shaders' texture animation, the HUD's rotated
 # bitmaps and overlays, and the effect cones drawn from the local seed. The

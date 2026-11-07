@@ -2,7 +2,7 @@
 PSP_VFPUTRIG.C
 
 Sine and cosine on the VFPU for the work that only draws or sounds (lever
-E17, keep word "vfputrig", off by default): the sprites' rotation, the
+E17; on by default, "vfputrigoff" for the libm): the sprites' rotation, the
 shaders' texture animation, the HUD's rotated bitmaps, local-only effect
 cones and the mixer's panning. The VFPU's vsin/vcos take quarter turns and
 agree with the float libm to a few units in the last place, which no picture
@@ -29,7 +29,9 @@ int psp_vfputrig_on(void)
 	{
 		if (!psp_keep_loaded())
 			return 0;
-		vfputrig = psp_keep("vfputrig") ? 1 : 0;
+		/* on by default: drawing -3% and the frame -1.3% on b30's flight
+		(PSP-1000 42356299435), the pictures the same */
+		vfputrig = psp_keep("vfputrigoff") ? 0 : 1;
 	}
 	return vfputrig > 0 && !psp_cpu_is_me();
 }
