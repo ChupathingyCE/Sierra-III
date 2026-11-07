@@ -4831,6 +4831,7 @@ static int sndstream_mode = -1;
 static unsigned char *sndstream_pool = NULL;
 static const void *sndstream_chosen = NULL;
 static unsigned long sndstream_next_id = 1, sndstream_polls = 0;
+static int snd_big_said = 0;
 static int sndstream_flight = 0, sndstream_peak_pieces = 0;
 static unsigned long snd_registered = 0, snd_stubs = 0, snd_refused = 0, snd_reads = 0, snd_read_bytes = 0,
 	snd_read_failed = 0, snd_read_us = 0, snd_read_worst_us = 0, snd_reads_done = 0, snd_short_polls = 0,
@@ -4872,16 +4873,12 @@ hands-off run to 300 s, with room over it (sndstream5a, sndstream6: a10 at 8 and
 a30 at 24 played late), d20's swamp the
 busiest (38 at once with every just-placed sound's first piece held; 24
 played late there, 32 didn't). b40, c20 and c40 have no ambient loop long
-enough to stream, so they keep the room. c10 streams nothing: no piece
-played in its 300 s, its long sounds aren't of the streamed classes (the
-largest, 346 KB, loads whole), and a pool there only shrank its cache (13
-refusals and a sound held 800 ms at 1,536, sndcut1a), so it has none, dialog
-or not. A map not listed gets 32. */
+enough to stream, so they keep the room. A map not listed gets 32. */
 static int sndstream_map_pieces(const char *map)
 {
 	static const struct { const char *map; int pieces, dialog; } pools[] = {
 		{ "d20", 40, 1 }, { "a30", 32, 1 }, { "a10", 16, 1 }, { "a50", 16, 1 }, { "d40", 16, 1 },
-		{ "b30", 8, 1 }, { "b40", 0, 1 }, { "c20", 0, 1 }, { "c40", 0, 1 }, { "c10", 0, 0 },
+		{ "c10", 12, 1 }, { "b30", 8, 1 }, { "b40", 0, 1 }, { "c20", 0, 1 }, { "c40", 0, 1 },
 	};
 	int k;
 
@@ -5061,6 +5058,14 @@ sound streamed ("sndstream"), else 0 (it loads whole) */
 long psp_sndstream_choose(const void *permutation, int sound_class, int compression, long size)
 {
 	sndstream_chosen = NULL;
+	if (sndstream_pool && size >= 96 * 1024 && snd_big_said < 16 &&
+		(compression != 1 || !((sound_class >= 33 && sound_class <= 35) ||
+		(sndstream_dialog && (sound_class == 19 || sound_class == 44 || sound_class == 46 || sound_class == 47)))))
+	{
+		/* the large sounds that load whole: what a smaller cache must still hold */
+		snd_big_said++;
+		platform_log("sndstream: %ld KB loads whole (class %d, compression %d)", size >> 10, sound_class, compression);
+	}
 	if (!sndstream_pool || compression != 1 || size < SNDSTREAM_MIN_BYTES)
 		return 0;
 	/* the ambient loops (33-35); with "sndstreamdialog" the dialog too
