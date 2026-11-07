@@ -4603,3 +4603,36 @@ int psp_build_number(void)
 {
 	return PSP_BUILD_NUMBER;
 }
+
+/* ---------- GetTickCount's counter (FIXES_TICKCACHE, keep word "tickcache")
+
+The engine asks GetTickCount ~72 times a tick, mostly for how long a button
+has been held; each ask was a system call and a 64-bit divide. With
+"tickcache" the vertical blank thread refreshes a millisecond counter 60
+times a second and GetTickCount returns it: Windows' own GetTickCount moves
+in 10-16 ms steps, so the counter keeps the original's resolution. The frame
+loop (main.c) reads the clock live. */
+volatile unsigned long psp_tick_ms = 0;
+volatile int psp_tick_ms_valid = 0;
+
+unsigned long psp_milliseconds_live(void)
+{
+	return (unsigned long)(sceKernelGetSystemTimeWide() / 1000);
+}
+
+void psp_tick_ms_refresh(void)
+{
+	static int on = -1;
+
+	if (on < 0)
+	{
+		if (!psp_keep_loaded())
+			return;
+		on = psp_keep("tickcache") ? 1 : 0;
+	}
+	if (!on)
+		return;
+	psp_tick_ms = psp_milliseconds_live();
+	__asm__ __volatile__("" ::: "memory");
+	psp_tick_ms_valid = 1;
+}
