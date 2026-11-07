@@ -4394,3 +4394,84 @@ void psp_dsound_loop_stop(void *voice)
 	stream_unlink(&loop_voices[k].stream);
 	loop_voice_used[k] = 0;
 }
+
+/* SNDPERMAP (keep word "sndpermap", opt-in): the sound cache sized per map.
+The block taken at start-up stays the boot size (the largest any map needs);
+each map's open sizes the engine's cache to its own pages, and the main-RAM
+pages it doesn't use, the main tier's end, are spare for that map: the
+sound-wait census (soundsweep3, sndwait) found no sound held back at these
+sizes. The eDRAM tier keeps its pages, so a smaller cache gives up main RAM
+only. A taker of the spare uses it for the map alone and lets it go before the
+next map's open, which may grow the cache back over it */
+static long map_pages = 0, boot_pages = 0;
+static unsigned long tier_main_boot = 0;
+
+static long sndpermap_pages(const char *map)
+{
+	static const struct { const char *map; long kb; } sizes[] = {
+		{ "d20", 1792 },
+		{ "a10", 1536 }, { "a50", 1536 }, { "b30", 1536 }, { "c10", 1536 },
+		{ "a30", 1280 }, { "b40", 1280 }, { "c20", 1280 }, { "c40", 1280 }, { "d40", 1280 },
+	};
+	int k;
+
+	for (k = 0; k < (int)(sizeof(sizes) / sizeof(sizes[0])); k++)
+		if (map && strcmp(map, sizes[k].map) == 0)
+			return sizes[k].kb >> 2;
+	return boot_pages;
+}
+
+/* the engine's page count for the map now opening; sets the main tier's
+share, and logs the spare */
+long psp_sound_map_pages(const char *map)
+{
+	static int on = -1;
+	long pages;
+
+	if (!boot_pages)
+	{
+		boot_pages = (long)(psp_sound_cache_bytes() >> 12);
+		tier_main_boot = tier_main_bytes;
+	}
+	if (on < 0)
+		on = psp_keep("sndpermap");
+	pages = on ? sndpermap_pages(map) : boot_pages;
+	if (pages > boot_pages)
+		pages = boot_pages;
+	if (tier_mode > 0 && tier_main_boot)
+	{
+		unsigned long cut = (unsigned long)(boot_pages - pages) << 12;
+
+		if (cut + 256 * 1024 > tier_main_boot)
+		{
+			cut = tier_main_boot > 256 * 1024 ? tier_main_boot - 256 * 1024 : 0;
+			pages = boot_pages - (long)(cut >> 12);
+		}
+		tier_main_bytes = tier_main_boot - cut;
+	}
+	if (on && pages != map_pages)
+		platform_log("sndpermap: %s's sound cache %ld KB of %ld; %lu KB of main RAM spare at %08x for this map",
+			map ? map : "?", pages << 2, boot_pages << 2, (unsigned long)(boot_pages - pages) << 12 >> 10,
+			(unsigned int)(cache_base + (tier_mode > 0 ? tier_main_bytes : (unsigned long)pages << 12)));
+	map_pages = pages;
+	return pages;
+}
+
+long psp_sound_pages_now(void)
+{
+	return map_pages ? map_pages : (long)(psp_sound_cache_bytes() >> 12);
+}
+
+/* the map's spare main RAM in the sound block (none without sndpermap) */
+void *psp_sound_spare(unsigned long *bytes)
+{
+	unsigned long spare = map_pages && boot_pages > map_pages ? (unsigned long)(boot_pages - map_pages) << 12 : 0;
+
+	if (edram_mode > 0) /* the cache whole in the eDRAM: no main RAM to spare */
+		spare = 0;
+	if (bytes)
+		*bytes = spare;
+	if (!spare || !cache_base)
+		return NULL;
+	return cache_base + (tier_mode > 0 ? tier_main_bytes : (unsigned long)map_pages << 12);
+}
