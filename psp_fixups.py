@@ -48052,9 +48052,11 @@ FIXES_TICKCACHE["port/linux/src/d3d8_gl.c#tickcache"] = [
 		vertical_blank_count++;"""),
 ]
 FIXES_TICKCACHE["source/main/main.c#tickcache"] = [
-("""#include "interface/marketing_and_strategic_business_development.h"
+("""#include "interface/interface.h"
+#include "interface/marketing_and_strategic_business_development.h"
 """,
- """#include "interface/marketing_and_strategic_business_development.h"
+ """#include "interface/interface.h"
+#include "interface/marketing_and_strategic_business_development.h"
 
 #ifdef HALO_PSP
 /* psp_fixups.py (FIXES_TICKCACHE): the frame loop paces its ticks by the
