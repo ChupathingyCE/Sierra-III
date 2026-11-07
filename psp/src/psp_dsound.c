@@ -344,7 +344,14 @@ static void packets_move(const unsigned char *from, const unsigned char *to, uns
 			struct voice_packet *packet = &stream->packets[(stream->packet_head + position) % MAXIMUM_STREAM_PACKETS];
 
 			if (packet->data >= from && (unsigned long)(packet->data - from) < bytes)
+			{
 				packet->data = to + (packet->data - from);
+#if PSP_SNDSTREAM
+				/* a streamed sound read again whole (the tier's rescue): its
+				packets play the samples at the new place */
+				packet->snd_id = 0;
+#endif
+			}
 		}
 }
 
@@ -4644,7 +4651,8 @@ static long sndpermap_pages(const char *map)
 }
 
 #if PSP_SNDSTREAM
-static long sndstream_map_open(long boot);
+static long sndstream_map_open(void);
+static void sndstream_place(unsigned char *pool, long pages);
 static long sndstream_pool_pages = 0;
 #endif
 
@@ -4654,6 +4662,9 @@ long psp_sound_map_pages(const char *map)
 {
 	static int on = -1;
 	long pages;
+#if PSP_SNDSTREAM
+	long pool;
+#endif
 
 	if (!boot_pages)
 	{
@@ -4666,14 +4677,12 @@ long psp_sound_map_pages(const char *map)
 	if (pages > boot_pages)
 		pages = boot_pages;
 #if PSP_SNDSTREAM
-	{
-		/* the streamed sounds' pool: the boot block's last pages, the same
-		place for every map, so the cache stops short of them */
-		long pool = sndstream_map_open(boot_pages);
-
-		if (pool && pages > boot_pages - pool)
-			pages = boot_pages - pool;
-	}
+	/* the streamed sounds' pool: the top of the cache's main RAM (the main
+	tier's, with the tier), the same place for every map, so the cache stops
+	short of it */
+	pool = sndstream_map_open();
+	if (pool && pages > boot_pages - pool)
+		pages = boot_pages - pool;
 #endif
 	if (tier_mode > 0 && tier_main_boot)
 	{
@@ -4686,6 +4695,19 @@ long psp_sound_map_pages(const char *map)
 		}
 		tier_main_bytes = tier_main_boot - cut;
 	}
+#if PSP_SNDSTREAM
+	if (pool)
+	{
+		unsigned long top = tier_mode > 0 ? tier_main_boot : (unsigned long)boot_pages << 12;
+		unsigned long used = tier_mode > 0 ? tier_main_bytes : (unsigned long)pages << 12;
+
+		if (top - used >= (unsigned long)pool << 12)
+			sndstream_place(cache_base + top - ((unsigned long)pool << 12), pool);
+		else
+			platform_log("sndstream: refused for %s: the main tier keeps %lu KB (the least it may), with no room for the pool",
+				map ? map : "?", used >> 10);
+	}
+#endif
 	if (on && pages != map_pages)
 		platform_log("sndpermap: %s's sound cache %ld KB of %ld; %lu KB of main RAM spare at %08x for this map",
 			map ? map : "?", pages << 2, boot_pages << 2, (unsigned long)(boot_pages - pages) << 12 >> 10,
@@ -4778,9 +4800,9 @@ static int sndstream_on(void)
 	if (sndstream_mode < 0)
 	{
 		sndstream_mode = psp_keep("sndstreamcheck") ? 2 : psp_keep("sndstream") ? 1 : 0;
-		if (sndstream_mode && (psp_sound_edram_mode() || psp_sound_tier_mode()))
+		if (sndstream_mode && psp_sound_edram_mode())
 		{
-			platform_log("sndstream: refused: the sound cache is in the ME's eDRAM (soundedram, sndedram)");
+			platform_log("sndstream: refused: the whole sound cache is in the ME's eDRAM (soundedram)");
 			sndstream_mode = 0;
 		}
 		if (sndstream_mode)
@@ -4798,25 +4820,26 @@ static int sndstream_on(void)
 }
 
 /* a map opens (psp_sound_map_pages, the cache empty): every piece and sound
-forgotten; the pool's pages, which the cache gives up */
-static long sndstream_map_open(long boot)
+forgotten; the pool's pages, which the cache gives up (placed once the
+cache's own size is settled) */
+static long sndstream_map_open(void)
 {
-	long pages;
-	int k;
-
 	sndstream_pool = NULL;
 	sndstream_pool_pages = 0;
 	if (!sndstream_on() || !cache_base)
 		return 0;
-	pages = (long)(((unsigned long)sndstream_piece_count * SNDSTREAM_PIECE_ROOM + 4095) >> 12);
-	if (pages * 2 > boot)
-	{
-		platform_log("sndstream: refused: a pool of %ld KB in a cache of %ld KB", pages << 2, boot << 2);
-		return 0;
-	}
-	sndstream_pool = cache_base + ((unsigned long)(boot - pages) << 12);
-	sndstream_pool_pages = pages;
 	memset(sndstream_sounds, 0, sizeof(sndstream_sounds));
+	sndstream_flight = 0;
+	sndstream_chosen = NULL;
+	return (long)(((unsigned long)sndstream_piece_count * SNDSTREAM_PIECE_ROOM + 4095) >> 12);
+}
+
+static void sndstream_place(unsigned char *pool, long pages)
+{
+	int k;
+
+	sndstream_pool = pool;
+	sndstream_pool_pages = pages;
 	for (k = 0; k < sndstream_piece_count; k++)
 	{
 		struct sndstream_piece *piece = &sndstream_pieces[k];
@@ -4829,13 +4852,10 @@ static long sndstream_map_open(long boot)
 		piece->flag = &piece->done;
 		piece->stamp = 0;
 	}
-	sndstream_flight = 0;
-	sndstream_chosen = NULL;
 	snd_maps++;
-	platform_log("sndstream: %s; a pool of %d pieces (%ld KB) at %08x, the cache's top %ld KB",
+	platform_log("sndstream: %s; a pool of %d pieces (%ld KB) at %08x, the top of the cache's main RAM",
 		sndstream_mode == 2 ? "sndstreamcheck (the cache keeps the samples; pieces compared as they play)" :
-		"on (stubs)", sndstream_piece_count, pages << 2, (unsigned int)sndstream_pool, pages << 2);
-	return pages;
+		"on (stubs)", sndstream_piece_count, pages << 2, (unsigned int)sndstream_pool);
 }
 
 static int sndstream_alive(const struct sndstream_sound *sound)
