@@ -183,6 +183,21 @@ if MUSIC:
 # Its test sits in the mixer's block decode on the ME and its fields in every
 # voice's packets, so a default build leaves it out
 SNDSTREAM = os.environ.get("PSP_SNDSTREAM", "") == "1"
+# PSP_SMALLDATA=8 (or 4): the units built with the game's flags put variables
+# of up to that many bytes in small data, read with one load from $gp instead
+# of lui and a load, so the code is shorter (lever RH5, after Halo 64's -G8).
+# Only for variables defined in the same unit or, under LTO, the same link
+# (-mno-extern-sdata): a variable defined in a -G0 unit (the port's plain-C
+# units, psp_ge.c, psp_me.c and the rest; the SDK's libraries) or by the link
+# script is out of $gp's reach, and an extern guess would fail the link. The
+# hot data run moves into .sdata, so its
+# small variables stay in reach (hot_data_block), and the ME sets its own $gp
+# before it runs any engine code (psp_me.c): its reset leaves the register
+# unset, where the kernel gives each of the module's threads the module's.
+# 0, the default, builds what -G0 has always built
+SMALLDATA = int(os.environ.get("PSP_SMALLDATA", "0") or "0")
+if SMALLDATA not in (0, 4, 8):
+    sys.exit("psp_build: PSP_SMALLDATA is 0, 4 or 8")
 # PSP_DEADCODE_INLINE=1: the sleep's debug reports inline in the hot sleep
 # check and the collision usage log's empty calls kept, as before
 # psp_fixups.py's FIXES_DEADCHK: the old side of that layout's A/B (read by
@@ -299,9 +314,9 @@ def pgo_flags(rel):
                 ["-fprofile-partial-training"] if PGO_PARTIAL else []) + [
                 "-Wno-missing-profile", "-Wno-error=coverage-mismatch"] + PGO_EXTRA
     return []
-PSP = ["psp-gcc", "-G0", GAME_OPT, "-march=allegrex", "-ffp-contract=off", "-fshort-wchar",
+PSP = ["psp-gcc", "-G%d" % SMALLDATA, GAME_OPT, "-march=allegrex", "-ffp-contract=off", "-fshort-wchar",
        "-fms-extensions", "-fcommon", "-fno-strict-aliasing", "-fwrapv",
-       "-fno-delete-null-pointer-checks"] + (
+       "-fno-delete-null-pointer-checks"] + (["-mno-extern-sdata"] if SMALLDATA else []) + (
        # The engine kept the Xbox build's frame pointer: one register fewer
        # and its save and restore in every function that calls others. Nothing
        # here walks $fp (the crash handler dumps from sp; the profilers sample
@@ -614,6 +629,8 @@ def compile_one(item):
                ["-DPSP_MEVISLAND=1"] if MEVISLAND else []) + (
                ["-DPSP_METRICS=1"] if METRICS else []) + (
                ["-DPSP_MUSIC=1"] if MUSIC else []) + (
+               # the ME's entry sets $gp for the engine code it runs
+               ["-DPSP_SMALLDATA=1"] if SMALLDATA and src.endswith("psp_me.c") else []) + (
                # the switches their #if blocks test (psp_ge.c's debug tools)
                ["-DPSP_DEBUG_TOOLS=1"] if DEBUG_TOOLS else []) + (
                ["-DPSP_TICK_STEPS=1"] if TICK_STEPS else []) + [
@@ -838,7 +855,17 @@ def link(objs, stubs):
             if not placed:
                 continue
             files, sections = placed
-            if files == "*":
+            if SMALLDATA:
+                # a variable small enough for small data is in .sdata.<name>
+                # or .sbss.<name> (a common in .scommon), whichever the layout
+                # was ranked from
+                twins = {"COMMON": ".scommon"}
+                sections = " ".join(s + ("" if s.startswith(".s") else " " + twins.get(s, re.sub(r"^\.(data|bss)\.", r".s\1.", s)))
+                                    if re.match(r"^(\.(data|bss)\.|COMMON$)", s) else s for s in sections.split())
+            if files == "*" and SMALLDATA:
+                # (EXCLUDE_FILE applies only to the pattern after it)
+                sections = " ".join("EXCLUDE_FILE(%s) %s" % (" ".join(me_objects), s) for s in sections.split())
+            elif files == "*":
                 sections = "EXCLUDE_FILE(%s) %s" % (" ".join(me_objects), sections)
             elif any(o.strip("*").split(":")[0] in files for o in me_objects):
                 sys.exit("psp_build: PSP_DATA_LAYOUT places the ME's own variables (%s): they keep their block" % l)
@@ -933,6 +960,7 @@ def link(objs, stubs):
         music_objects = ("*libmu_vorbisidec.a:*", "*libogg.a:*")
         music_data = "".join("    %s(.data .data.*)\n" % o for o in music_objects) + "    . = ALIGN(64);\n"
         music_bss = "".join("   %s(.bss .bss.* COMMON)\n" % o for o in music_objects) + "   . = ALIGN(64);\n"
+    hot_block = hot_data_block(me_objects)
     text = text.replace(old_data, "    _fdata = . ;\n"
                         "    . = ALIGN(64);\n    __psp_main_side_start = .;\n    KEEP(*(.data.psp_main_side))\n"
                         "    . = ALIGN(64);\n    __psp_main_side_end = .;\n"
@@ -942,8 +970,17 @@ def link(objs, stubs):
                         "    . = ALIGN(64);\n    __psp_aime_me_end = .;\n    __psp_me_data_start = .;\n" +
                         me_hot_data_block(me_objects, "data") +
                         "".join("    %s(.data .data.*)\n" % o for o in me_objects) +
-                        "    . = ALIGN(64);\n    __psp_me_data_end = .;\n" + music_data + hot_data_block(me_objects) +
+                        "    . = ALIGN(64);\n    __psp_me_data_end = .;\n" + music_data + ("" if SMALLDATA else hot_block) +
                         "    *(.data .data.* .gnu.linkonce.d.*)\n")
+    if SMALLDATA and hot_block:
+        # the hot run first in .sdata: its small variables are read through
+        # $gp, which reaches 32 KB either side of _gp (32 KB past .sdata's
+        # start), and .data lies below that; the run starts on a line of its
+        # own, as it did after the ME's block
+        old_sdata = "    *(.sdata .sdata.* .gnu.linkonce.s.*)\n"
+        if text.count(old_sdata) != 1:
+            sys.exit("psp_build: the SDK's linkfile.prx has changed; PSP_SMALLDATA can't place the hot data run")
+        text = text.replace(old_sdata, "    . = ALIGN(64);\n" + hot_block + old_sdata)
     text = text.replace(old_bss, "   *(.dynbss)\n   . = ALIGN(64);\n   __psp_me_bss_start = .;\n" +
                         me_hot_data_block(me_objects, "bss") +
                         "".join("   %s(.bss .bss.* COMMON)\n" % o for o in me_objects) +
@@ -985,7 +1022,7 @@ def link(objs, stubs):
     # build 107: the link map (halo.map: each function's and variable's
     # address, size and object file) is written every link, for
     # tools/coverage.py's per-file inventory
-    cmd = ["psp-gcc", "-G0", "-L" + SDK + "/lib"] + (["-L" + MECORE + "/lib"] if MECORE else []) + (
+    cmd = ["psp-gcc", "-G%d" % SMALLDATA, "-L" + SDK + "/lib"] + (["-L" + MECORE + "/lib"] if MECORE else []) + (
            ["-fprofile-generate"] if PGO == "generate" else []) + ["-specs=" + SDK + "/lib/prxspecs",
            "-Wl,-q,-T" + linkfile, "-Wl,-zmax-page-size=128", "-Wl,--gc-sections",
            "-Wl,-Map=" + os.path.join(OUT, "halo.map"),
@@ -1025,6 +1062,69 @@ def map_sections(path):
             found.append((m.group(1) or pending, int(m.group(2), 16), int(m.group(3), 16), m.group(4).strip()))
         pending = None
     return found
+
+def smalldata_report(r):
+    """PSP_SMALLDATA: how much of $gp's 64 KB the small data takes, by section
+    and by its largest inputs; when the link failed on $gp's reach, which
+    variables were out of it and where the link put them; and, once linked,
+    that every relocation left is one psp-prxgen and the PSP's loader know
+    (prxgen drops the $gp-relative ones, which need none once linked)"""
+    path = os.path.join(OUT, "halo.map")
+    if not os.path.exists(path):
+        print("smalldata: no halo.map")
+        return
+    lines = open(path, errors="replace").read().splitlines()
+    outs, gp = {}, None
+    for line in lines:
+        m = re.match(r"^(\.got|\.sdata|\.lit8|\.lit4|\.sbss|\.data|\.bss)\s+0x([0-9a-f]+)\s+0x([0-9a-f]+)", line)
+        if m and m.group(1) not in outs:
+            outs[m.group(1)] = (int(m.group(2), 16), int(m.group(3), 16))
+        m = re.match(r"^\s+0x([0-9a-f]+)\s+_gp\s*=", line)
+        if m:
+            gp = int(m.group(1), 16)
+    small = [outs[s] for s in (".got", ".sdata", ".lit8", ".lit4", ".sbss") if s in outs]
+    if not small or gp is None:
+        print("smalldata: no small-data sections or _gp in halo.map")
+        return
+    lo, hi = min(a for a, n in small), max(a + n for a, n in small)
+    print("smalldata: -G%d; _gp 0x%08x reaches 0x%08x-0x%08x; small data 0x%08x-0x%08x, %d of 65536 bytes (%s)%s" %
+          (SMALLDATA, gp, gp - 0x8000, gp + 0x7fff, lo, hi, hi - lo,
+           ", ".join("%s %d" % (s, outs[s][1]) for s in (".got", ".sdata", ".lit8", ".lit4", ".sbss") if s in outs),
+           "" if hi - 1 <= gp + 0x7fff else ": PAST $gp's reach"))
+    by_file = {}
+    for s, a, n, f in map_sections(path):
+        if lo <= a < hi and n:
+            k = os.path.relpath(f, OBJ) if f.startswith(OBJ) else os.path.basename(f)
+            by_file[k] = by_file.get(k, 0) + n
+    for k, n in sorted(by_file.items(), key=lambda kv: -kv[1])[:12]:
+        print("  %6d  %s" % (n, k))
+    targets = {}
+    for t in re.findall(r"relocation truncated to fit: R_MIPS_(?:GPREL16|LITERAL|GPREL32) against `([^']+)'", r.stderr):
+        targets[t] = targets.get(t, 0) + 1
+    symbols = {}
+    if targets:
+        for l in lines:
+            m = re.match(r"^\s+0x([0-9a-f]+)\s+([A-Za-z_.$][\w.$]*)$", l)
+            if m:
+                symbols.setdefault(m.group(2), int(m.group(1), 16))
+    for t, n in sorted(targets.items(), key=lambda kv: -kv[1])[:20]:
+        where = symbols.get(t)
+        sect = next((s for s, (a, n2) in outs.items() if where is not None and a <= where < a + n2), "?")
+        print("smalldata: out of reach: %s (%d references) at %s, in %s" % (t, n, "0x%08x" % where if where else "?", sect))
+    if r.returncode:
+        return
+    try:
+        rel = subprocess.run(["psp-readelf", "-r", "-W", os.path.join(OUT, "halo.elf")], capture_output=True, text=True).stdout
+    except OSError:
+        print("smalldata: no psp-readelf; relocation kinds unchecked")
+        return
+    kinds = {}
+    for k in re.findall(r"^[0-9a-f]+\s+[0-9a-f]+\s+(R_MIPS_\w+)", rel, re.M):
+        kinds[k] = kinds.get(k, 0) + 1
+    print("smalldata: relocations: " + ", ".join("%s %d" % kv for kv in sorted(kinds.items())))
+    unknown = sorted(k for k in kinds if k in ("R_MIPS_LITERAL", "R_MIPS_GPREL32", "R_MIPS_GOT16", "R_MIPS_CALL16"))
+    if unknown:
+        sys.exit("psp_build: PSP_SMALLDATA: relocations psp-prxgen keeps and the PSP's loader doesn't take: " + ", ".join(unknown))
 
 def lto_report(r):
     """checks that the link did what PSP_LTO asks, and reports its code.
@@ -1079,7 +1179,7 @@ def lto_report(r):
     made = []
     for f in sorted(os.listdir(OUT)):
         if re.fullmatch(r"halo\.elf\.ltrans\d+\.ltrans\.s", f):
-            r2 = subprocess.run(["psp-gcc", "-G0", "-march=allegrex", "-c", os.path.join(OUT, f),
+            r2 = subprocess.run(["psp-gcc", "-G%d" % SMALLDATA, "-march=allegrex", "-c", os.path.join(OUT, f),
                                  "-o", os.path.join(OBJ, f[:-2] + ".o")], capture_output=True, text=True)
             if r2.returncode == 0:
                 made.append(f[:-2] + ".o")
@@ -1191,6 +1291,8 @@ def main():
             print("\n".join(l for l in r.stderr.splitlines() if any(n in l for n in odd))[-4000:])
             sys.exit("not linking: undefined names that aren't C: " + ", ".join(odd[:20]))
         stubs |= missing
+    if SMALLDATA:
+        smalldata_report(r)
     if r.returncode:
         print(r.stderr[-3000:])
         if LTO_OBJS:

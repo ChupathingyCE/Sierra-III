@@ -1614,6 +1614,15 @@ void meLibOnProcess(void)
 	int features_seen = 0; /* the features word has been written (mebcc1 applied) */
 	unsigned int fault_test_at = 0; /* mefaulttest: when, by the ME's cycle counter */
 
+#if PSP_SMALLDATA
+	/* The engine's units read their small variables through $gp
+	(PSP_SMALLDATA), and the ME's reset leaves it unset, where the kernel
+	gives each of the main CPU's threads the module's value. The ME's jobs run
+	engine code, so it takes the same value here, before any of them; its
+	interrupts save and restore it. This unit itself is built without small
+	data, so nothing above needs it */
+	__asm__ __volatile__("la $gp, _gp");
+#endif
 	hw(ME_MARK_PROCESS) = ME_MARK_PROCESS_IN;
 	meLibSync();
 	/* build 88: the cycle counter (coprocessor 0 register 9) stood still on
