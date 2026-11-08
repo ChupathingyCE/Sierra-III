@@ -11988,6 +11988,14 @@ FIXES_112["source/main/main.c#fixedticks"] = [
 		if (fixed && main_globals.connection == _game_connection_local && !main_globals.movie)
 			seconds_elapsed = 0.06666667014360428f;
 	}
+	{
+		/* the pad recorder (psp_pad.c): the frame's time step recorded, or
+		replayed, so a replay runs the recording's ticks */
+		extern float psp_pad_seconds(float seconds);
+
+		if (main_globals.connection == _game_connection_local && !main_globals.movie)
+			seconds_elapsed = psp_pad_seconds(seconds_elapsed);
+	}
 #endif
 	main_globals.seconds_elapsed = seconds_elapsed;"""),
 ]
@@ -36872,6 +36880,27 @@ boolean psp_thread_has_exited_waiting(struct thread_reference *thread_reference)
 # time: real and game seconds, frames, yaw turned); "frameslowN" (N ms more
 # each frame, tests only: slow frames on demand).
 FIXES_LOOKREAL = {}
+FIXES_LOOKREAL["source/game/player_control.c#padrec"] = [
+("""	get_local_player_input_blob(
+		local_player_index,
+		time_delta_sec,
+		&input);
+""",
+ """	get_local_player_input_blob(
+		local_player_index,
+		time_delta_sec,
+		&input);
+#ifdef HALO_PSP
+	{
+		/* the pad recorder (psp_pad.c): the input the game acts on, recorded
+		or replaced by the recording's */
+		extern void psp_pad_blob(int local_player_index, void *blob, int bytes);
+
+		psp_pad_blob(local_player_index, &input, (int)sizeof(input));
+	}
+#endif
+"""),
+]
 FIXES_LOOKREAL["source/game/player_control.c#lookreal"] = [
 ("""static real player_control_autolevel_time[MAXIMUM_NUMBER_OF_LOCAL_PLAYERS];
 """,
