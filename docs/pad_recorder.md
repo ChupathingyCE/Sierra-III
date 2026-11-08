@@ -8,12 +8,12 @@
 
 - **Where:** `handle_one_player_input` (`game/player_control.c`), right after `get_local_player_input_blob`: the `input_blob` the game acts on, after the pad, the sensitivity and the inhibitions, so the replay doesn't depend on the stick's dead zones or the control settings.
 - **The time step too:** each frame's `seconds_elapsed` (`main.c`), which decides how many ticks the frame runs. Recorded with the blob, so a replay runs the same ticks with the same inputs however fast its build draws. No `fixedticks` needed to record: Sheepdog01 plays at real speed.
-- **What's written:** a header (the map, the build's commit, the seed word, the keep words that change play), then per frame its `seconds_elapsed` and per `player_control_update` call each local player's blob. Kept in a RAM buffer, written to `ms0:/halo/log/pad_NNN.pad` in 64 KB pieces by the I/O thread, so the main thread never waits on the stick.
+- **What's written** (v1, `psp/src/psp_pad.c`): per frame its `seconds_elapsed` ('F' and 4 bytes) and per `player_control_update` call each local player's blob ('B', the player, 32 bytes), kept in a 64 KB buffer and written to `ms0:/halo/log/pad_<map load>.pad` when it fills (~1 KB a second of play, so a write about once a minute, on the main thread in v1). `padlog` also logs the bytes in hex, so an emulator run's recording comes back with its log (the results take no binary files). Not yet: a header naming the map, the build and the play-changing keep words.
 - **The start:** a recording starts at a map's load (a checkpoint revert or a new map ends it and starts the next file), so a replay starts from the same state. `fixedseed` is on for both.
 
-## Replay (keep word `padplay`, `padplayN` for file N)
+## Replay (keep word `padplay`)
 
-- The file is read whole at the map's load; each frame takes its `seconds_elapsed` from it and each call its blob in place of the pad's.
+- `ms0:/halo/pad.pad` is read whole at the first map load; each frame takes its `seconds_elapsed` from it and each call its blob in place of the pad's.
 - **Checked as it goes:** the replay logs statecrc's play and seed hashes; a recording made with `statecrc` on carries them, and the replay names the first tick that parts (a build that changes play, or a race not yet found).
 - **The bench:** a lab route-like file (`psp/sierra/pads/`, inputs only: no game data) and `sierra-hw ... keep="padplay ..."`; the stretch's window picked from the recording's own heaviest seconds (its metrics lines).
 
