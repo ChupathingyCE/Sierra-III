@@ -4,8 +4,8 @@ the game acts on them, so the rig can replay Sheepdog01's fights as benches.
 "padrec": each frame's seconds_elapsed (main.c: how many ticks the frame
 runs) and each local player's input_blob (player_control.c: the input after
 the pad, the sensitivity, the aim assist and the inhibitions) go to
-DATA_ROOT/log/pad_<map load>.bin, one file a map load. "padplay": a map
-load reads DATA_ROOT/pad.bin whole and the frames take their time steps and
+DATA_ROOT/log/pad_<map load>.pad, one file a map load. "padplay": a map
+load reads DATA_ROOT/pad.pad whole and the frames take their time steps and
 the players their blobs from it, so the replay runs the same ticks with the
 same inputs however fast its build draws. With fixedseed on both sides the
 game then plays the same (the PSP's two races fixed first: tock162 edc2d39,
@@ -37,10 +37,37 @@ static unsigned char *pad_in = NULL;
 static unsigned int pad_in_size = 0, pad_in_at = 0;
 static int pad_in_ended = 0;
 
+static int pad_log_on = 0;
+
+/* "padlog": the recording's bytes also in the log, in hex, so an emulator
+run's recording comes back with its log (the results take no binary files):
+the lab's psp/sierra/padfromlog.py rebuilds the file */
+static void pad_log(const unsigned char *data, unsigned int bytes)
+{
+	static const char hex[] = "0123456789abcdef";
+	char line[2 * 120 + 1];
+	unsigned int at, k;
+
+	for (at = 0; at < bytes; at += 120)
+	{
+		for (k = 0; k < 120 && at + k < bytes; k++)
+		{
+			line[2 * k] = hex[data[at + k] >> 4];
+			line[2 * k + 1] = hex[data[at + k] & 15];
+		}
+		line[2 * k] = 0;
+		platform_log("pad: data %s", line);
+	}
+}
+
 static void pad_flush(void)
 {
 	if (pad_file >= 0 && pad_out_used)
+	{
 		sceIoWrite(pad_file, pad_out, pad_out_used);
+		if (pad_log_on)
+			pad_log(pad_out, pad_out_used);
+	}
 	pad_out_used = 0;
 }
 
@@ -67,6 +94,7 @@ static void pad_map_check(void)
 		pad_mode = psp_keep("padplay") ? 2 : psp_keep("padrec") ? 1 : 0;
 		if (pad_mode == 1 && !(pad_out = malloc(PAD_CHUNK)))
 			pad_mode = 0;
+		pad_log_on = pad_mode == 1 && psp_keep("padlog");
 	}
 	if (!pad_mode || pad_generation == psp_map_generation)
 		return;
@@ -74,7 +102,7 @@ static void pad_map_check(void)
 	if (pad_mode == 1)
 	{
 		pad_close();
-		snprintf(path, sizeof(path), "%s/log/pad_%d.bin", PSP_DATA_ROOT, pad_generation);
+		snprintf(path, sizeof(path), "%s/log/pad_%d.pad", PSP_DATA_ROOT, pad_generation);
 		pad_file = sceIoOpen(path, PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
 		platform_log("pad: recording to %s%s", path, pad_file < 0 ? " (couldn't open it: not recording)" : "");
 		return;
@@ -92,7 +120,7 @@ static void pad_map_check(void)
 		SceUID file;
 		SceOff size;
 
-		snprintf(path, sizeof(path), "%s/pad.bin", PSP_DATA_ROOT);
+		snprintf(path, sizeof(path), "%s/pad.pad", PSP_DATA_ROOT);
 		file = sceIoOpen(path, PSP_O_RDONLY, 0);
 		size = file >= 0 ? sceIoLseek(file, 0, PSP_SEEK_END) : 0;
 		if (file >= 0 && size > 0 && size < 16 * 1024 * 1024 && (pad_in = malloc((unsigned int)size)) != NULL)

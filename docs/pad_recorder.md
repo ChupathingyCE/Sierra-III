@@ -8,7 +8,7 @@
 
 - **Where:** `handle_one_player_input` (`game/player_control.c`), right after `get_local_player_input_blob`: the `input_blob` the game acts on, after the pad, the sensitivity and the inhibitions, so the replay doesn't depend on the stick's dead zones or the control settings.
 - **The time step too:** each frame's `seconds_elapsed` (`main.c`), which decides how many ticks the frame runs. Recorded with the blob, so a replay runs the same ticks with the same inputs however fast its build draws. No `fixedticks` needed to record: Sheepdog01 plays at real speed.
-- **What's written:** a header (the map, the build's commit, the seed word, the keep words that change play), then per frame its `seconds_elapsed` and per `player_control_update` call each local player's blob. Kept in a RAM buffer, written to `ms0:/halo/log/pad_NNN.bin` in 64 KB pieces by the I/O thread, so the main thread never waits on the stick.
+- **What's written:** a header (the map, the build's commit, the seed word, the keep words that change play), then per frame its `seconds_elapsed` and per `player_control_update` call each local player's blob. Kept in a RAM buffer, written to `ms0:/halo/log/pad_NNN.pad` in 64 KB pieces by the I/O thread, so the main thread never waits on the stick.
 - **The start:** a recording starts at a map's load (a checkpoint revert or a new map ends it and starts the next file), so a replay starts from the same state. `fixedseed` is on for both.
 
 ## Replay (keep word `padplay`, `padplayN` for file N)

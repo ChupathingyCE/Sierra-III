@@ -15,7 +15,7 @@
 #   MS      memory stick directory (default /tmp/ms)
 #   EXTRA   more PPSSPPHeadless arguments
 #   ROUTE   route.txt to replay (build 102)
-#   PAD     pad.bin to replay with keep word padplay (docs/pad_recorder.md)
+#   PAD     pad.pad to replay with keep word padplay (docs/pad_recorder.md)
 #   PPSSPP  the folder holding PPSSPPHeadless (default /tmp/ppsspp/build)
 #   RUNS    where results go (default /tmp/claude-0)
 #   PSP_MAXFD  descriptor limit of the patched emulator (13: a PSP-1000's; tools/ppsspp_local_patches.diff)
@@ -38,7 +38,7 @@ if [ "$MAP" = none ]; then : > $D/init.txt; else printf "map_name %s\n" "${MAP:-
 : > $D/keep.txt
 for w in ${KEEP-nearauto nomeaudio}; do echo "$w" >> $D/keep.txt; done
 if [ -n "$ROUTE" ]; then cp "$ROUTE" $D/route.txt; else rm -f $D/route.txt; fi
-if [ -n "${PAD:-}" ]; then cp "$PAD" $D/pad.bin; else rm -f $D/pad.bin; fi
+if [ -n "${PAD:-}" ]; then cp "$PAD" $D/pad.pad; else rm -f $D/pad.pad; fi
 if [ -n "$TP" ]; then echo "$TP" > $D/teleport.txt; else rm -f $D/teleport.txt; fi
 if [ -n "$INPUT" ]; then cp "$INPUT" $D/input.txt; else echo "0 0000 128 128" > $D/input.txt; fi
 rm -f $D/log/log.txt $D/log/profile.txt $D/log/animtrace.bin $D/crash.txt; mkdir -p $RUNS/old_shots; mv $D/shots/*.bmp $RUNS/old_shots/ 2>/dev/null
