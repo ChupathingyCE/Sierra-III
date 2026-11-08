@@ -42106,6 +42106,7 @@ static boolean psp_aime2a_active(
 			extern int psp_keep_number(const char *prefix, int fallback);
 
 			psp_aime_late_every = psp_keep_number("aimelate", 0);
+			psp_aime_wait = psp_keep("aimewait") != 0;
 			psp_aime2a_stop_at = psp_keep_number("mestopat", 0);
 		}
 		psp_aime_move_stop = !psp_keep("aimemoveold");
@@ -42389,10 +42390,11 @@ void psp_aime2a_tick_begin(
 		if (!psp_me_submitted_done(ME_SLOT_AI))
 		{
 			psp_aime2a_stats.late++;
-			if (psp_aime2a_abort)
+			if (psp_aime2a_abort && !psp_aime_wait)
 				*psp_aime2a_abort = 1;
 			asked = sceKernelGetSystemTimeWide();
-			while (!psp_me_submitted_done(ME_SLOT_AI) && sceKernelGetSystemTimeWide() - asked < PSP_AIME2A_BOUND_US)
+			while (!psp_me_submitted_done(ME_SLOT_AI) &&
+				sceKernelGetSystemTimeWide() - asked < (psp_aime_wait ? PSP_AIME_WAIT_BOUND_US : PSP_AIME2A_BOUND_US))
 				sceKernelDelayThread(50);
 			if (!psp_me_submitted_done(ME_SLOT_AI))
 			{
@@ -43065,6 +43067,14 @@ static boolean psp_aime2a_owed = FALSE, psp_aime2a_out = FALSE, psp_aime2a_faile
 static volatile unsigned int *psp_aime2a_abort = NULL;
 /* the collection's wait for the actor in hand, once the job is asked to end */
 #define PSP_AIME2A_BOUND_US 20000
+/* "aimewait" (benches only): a late job isn't asked to end; the collection
+waits for all of it, up to this bound, so which actors the ME thought never
+depends on how fast it ran and two runs play the same (by default play
+parts in b30's beach fight between identical PSP runs, and repeats through
+the run with aimeoff: sierra-hw 42453856832). Its waits are the main CPU's
+time, so a bench with it prices the ME's lateness as a wait */
+#define PSP_AIME_WAIT_BOUND_US 200000
+static int psp_aime_wait = 0;
 /* the main CPU's counts (pushed, among them, is written while the job runs) */
 static struct
 {
