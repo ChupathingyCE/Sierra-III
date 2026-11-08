@@ -41,13 +41,13 @@ if [ -n "$ROUTE" ]; then cp "$ROUTE" $D/route.txt; else rm -f $D/route.txt; fi
 if [ -n "${PAD:-}" ]; then cp "$PAD" $D/pad.pad; else rm -f $D/pad.pad; fi
 if [ -n "$TP" ]; then echo "$TP" > $D/teleport.txt; else rm -f $D/teleport.txt; fi
 if [ -n "$INPUT" ]; then cp "$INPUT" $D/input.txt; else echo "0 0000 128 128" > $D/input.txt; fi
-rm -f $D/log/log.txt $D/log/profile.txt $D/log/animtrace.bin $D/crash.txt; mkdir -p $RUNS/old_shots; mv $D/shots/*.bmp $RUNS/old_shots/ 2>/dev/null
+rm -f $D/log/log.txt $D/log/profile.txt $D/log/animtrace.bin $D/log/pad_*.pad $D/crash.txt; mkdir -p $RUNS/old_shots; mv $D/shots/*.bmp $RUNS/old_shots/ 2>/dev/null
 ARGS="--memstick=$MS --timeout-wall=${WALL:-200}"
 [ "$STRICT" = 1 ] && ARGS="-i $ARGS"
 FATV=1; [ "$FAT" = 0 ] && FATV=
 (cd ${PPSSPP:-/tmp/ppsspp/build} && env ${FATV:+PPSSPP_FAT=1} timeout $(( ${WALL:-200} + 120 )) ./PPSSPPHeadless $ARGS $EXTRA $MS/PSP/GAME/halo/EBOOT.PBP > $RUNS/r_$L.txt 2>&1)
 rm -rf $RUNS/r_$L; mkdir -p $RUNS/r_$L
-cp $D/log/log.txt $D/log/profile.txt $D/log/animtrace.bin $D/shots/*.bmp $RUNS/r_$L/ 2>/dev/null
+cp $D/log/log.txt $D/log/profile.txt $D/log/animtrace.bin $D/log/pad_*.pad $D/shots/*.bmp $RUNS/r_$L/ 2>/dev/null
 [ -f $D/crash.txt ] && cp $D/crash.txt $RUNS/r_$L/
 S=$(python3 $HERE/strictfilter.py $RUNS/r_$L.txt 2>&1 | tail -1)
 T=$(grep -v "^metrics " $RUNS/r_$L/log.txt 2>/dev/null | grep -o "game time [-0-9]*" | tail -1) # the metrics lines name earlier game times (a low point's)
