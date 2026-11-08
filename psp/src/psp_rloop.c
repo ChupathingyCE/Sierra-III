@@ -118,7 +118,8 @@ int psp_rl_find(void const *model, char const *permutations, int permutation_cou
 		hash = (hash ^ key[probe]) * 2654435761u;
 	for (probe = 0; probe < 8; probe++)
 	{
-		slot = &rl_slots[(hash + probe) & (RL_KEYS - 1)];
+		/* the hash's top bits: its low ones follow the pointers' alignment */
+		slot = &rl_slots[((hash >> 22) + probe) & (RL_KEYS - 1)];
 		if (!slot->used)
 			break;
 		if (!memcmp(slot->key, key, sizeof(key)))
