@@ -47752,6 +47752,137 @@ FIXES_HUHINT["source/objects/objects.c#huhint"] = [
 # why). The engine's cache is resized as each map opens (it's empty then:
 # sound_cache_close let every sound go), and the 5 s report counts the pages
 # the map has, not the boot size
+# ---------- FIXES_RLOOP: R slice 5's kept loop (psp_rloop.c, "retainedloop")
+# render_model_parts' calls noted the first time a key is drawn and made
+# straight from the note after that; the draws note themselves while a loop
+# is noted (a see-through part, which the note can't carry, spoils it)
+FIXES_RLOOP = {}
+FIXES_RLOOP["source/models/models.c#rloop"] = [
+("""		render_model_parts(
+			model,
+			region_permutation_indices,
+			region_permutation_count,
+			&model_parameters.skinning,
+			unique_identifier,
+			geometry_detail_level_index,
+			forced_shader_permutation_index,
+			flags);
+""",
+"""#ifdef HALO_PSP
+		/* psp_fixups.py (FIXES_RLOOP): the loop's calls made from its note
+		(psp_rloop.c), when this key's loop is kept */
+		{
+			struct psp_rl_call
+			{
+				void const *shader;
+				void const *triangles;
+				void const *vertices;
+				long triangle_count;
+				short permutation;
+				short kind;
+			};
+			extern int psp_rl_on;
+			int psp_rl_find(void const *model, char const *permutations, int permutation_count, int level, int forced,
+				unsigned long flags, struct psp_rl_call const **calls, int *count);
+			struct psp_rl_call const *psp_rl_calls;
+			int psp_rl_count, psp_rl_k;
+
+			if (psp_rl_on && !rasterizer_debug_options.debug_model_vertices_enabled && !render_model_no_geometry &&
+				psp_rl_find(model, region_permutation_indices, region_permutation_count, geometry_detail_level_index,
+					forced_shader_permutation_index, (unsigned long)flags, &psp_rl_calls, &psp_rl_count))
+			{
+				for (psp_rl_k = 0; psp_rl_k < psp_rl_count; psp_rl_k++)
+				{
+					struct psp_rl_call const *psp_rl_call = &psp_rl_calls[psp_rl_k];
+
+					if (psp_rl_call->kind)
+						rasterizer_environment_shadow_model_draw((struct shader const *)psp_rl_call->shader,
+							psp_rl_call->permutation, (struct triangle_buffer const *)psp_rl_call->triangles,
+							(struct vertex_buffer const *)psp_rl_call->vertices);
+					else
+						rasterizer_model_draw((struct shader *)psp_rl_call->shader, psp_rl_call->permutation,
+							(struct triangle_buffer const *)psp_rl_call->triangles, NONE, psp_rl_call->triangle_count,
+							(struct vertex_buffer const *)psp_rl_call->vertices, NONE);
+				}
+				goto psp_rl_done;
+			}
+		}
+#endif
+		render_model_parts(
+			model,
+			region_permutation_indices,
+			region_permutation_count,
+			&model_parameters.skinning,
+			unique_identifier,
+			geometry_detail_level_index,
+			forced_shader_permutation_index,
+			flags);
+#ifdef HALO_PSP
+		{
+			void psp_rl_noted(void);
+
+			psp_rl_noted();
+		}
+	psp_rl_done:
+#endif
+"""),
+]
+FIXES_RLOOP["source/rasterizer/rasterizer.c#rloop"] = [
+("""	long triangle_count,
+	struct vertex_buffer const *vertex_buffer,
+	long dynamic_vertex_buffer_index)
+{
+""",
+"""	long triangle_count,
+	struct vertex_buffer const *vertex_buffer,
+	long dynamic_vertex_buffer_index)
+{
+#ifdef HALO_PSP
+	{
+		/* psp_fixups.py (FIXES_RLOOP): noted while a loop is (psp_rloop.c) */
+		void psp_rl_note(int, void const *, int, void const *, long, long, void const *, long);
+
+		psp_rl_note(0, shader, shader_permutation_index, triangle_buffer, dynamic_triangle_buffer_index, triangle_count,
+			vertex_buffer, dynamic_vertex_buffer_index);
+	}
+#endif
+"""),
+("""	long dynamic_vertex_buffer_index,
+	real_point3d const *centroid,
+	struct render_sort_filth *sort_filth)
+{
+""",
+"""	long dynamic_vertex_buffer_index,
+	real_point3d const *centroid,
+	struct render_sort_filth *sort_filth)
+{
+#ifdef HALO_PSP
+	{
+		/* psp_fixups.py (FIXES_RLOOP): a see-through part: the loop isn't kept */
+		void psp_rl_note(int, void const *, int, void const *, long, long, void const *, long);
+
+		psp_rl_note(-1, shader, 0, triangle_buffer, NONE, 0, vertex_buffer, NONE);
+	}
+#endif
+"""),
+("""	struct triangle_buffer const *triangle_buffer,
+	struct vertex_buffer const *vertex_buffer)
+{
+	_rasterizer_environment_shadow_model_draw(""",
+"""	struct triangle_buffer const *triangle_buffer,
+	struct vertex_buffer const *vertex_buffer)
+{
+#ifdef HALO_PSP
+	{
+		/* psp_fixups.py (FIXES_RLOOP): noted while a loop is (psp_rloop.c) */
+		void psp_rl_note(int, void const *, int, void const *, long, long, void const *, long);
+
+		psp_rl_note(1, shader, bitmap_index, triangle_buffer, NONE, 0, vertex_buffer, NONE);
+	}
+#endif
+	_rasterizer_environment_shadow_model_draw("""),
+]
+
 FIXES_SNDPERMAP = {}
 FIXES_SNDPERMAP["source/cache/xbox_sound_cache.c#sndpermap"] = [
 ("""void sound_cache_open(
@@ -48167,7 +48298,7 @@ FIXES_STRICTALIAS["source/math/real_math.h#strictalias"] = [
 #endif"""),
 ]
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_SSPR.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items()) + list(FIXES_AIME2A.items()) + (list(FIXES_STACKHOT.items()) if STACKHOT else []) + (list(FIXES_STACKHOT2.items()) if STACKHOT2 else []) + list(FIXES_PWSL.items()) + list(FIXES_SPHSL.items()) + list(FIXES_RECONLIST.items()) + list(FIXES_TP1.items()) + list(FIXES_WXDEAD.items()) + list(FIXES_AIMEMOVE.items()) + list(FIXES_PROPCRASH.items()) + list(FIXES_APCPOOL.items()) + list(FIXES_SNDEDRAM.items()) + list(FIXES_LIGHTFIRST.items()) + list(FIXES_DRAWPART.items()) + (list(FIXES_RECONLATE.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + list(FIXES_P2PASS.items()) + (list(FIXES_P2CENSUS.items()) if P2CENSUS else []) + list(FIXES_OBSRAY.items()) + list(FIXES_SNDWAIT.items()) + list(FIXES_FLAMEDECAL.items()) + list(FIXES_HUHINT.items()) + list(FIXES_DBLSOFT.items()) + list(FIXES_VFPUTRIG.items()) + list(FIXES_TICKCACHE.items()) + list(FIXES_STRICTALIAS.items()) + list(FIXES_SNDPERMAP.items()) + (list(FIXES_SNDSTREAM.items()) if os.environ.get("PSP_SNDSTREAM", "") == "1" else [])):
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_SSPR.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items()) + list(FIXES_AIME2A.items()) + (list(FIXES_STACKHOT.items()) if STACKHOT else []) + (list(FIXES_STACKHOT2.items()) if STACKHOT2 else []) + list(FIXES_PWSL.items()) + list(FIXES_SPHSL.items()) + list(FIXES_RECONLIST.items()) + list(FIXES_TP1.items()) + list(FIXES_WXDEAD.items()) + list(FIXES_AIMEMOVE.items()) + list(FIXES_PROPCRASH.items()) + list(FIXES_APCPOOL.items()) + list(FIXES_SNDEDRAM.items()) + list(FIXES_LIGHTFIRST.items()) + list(FIXES_DRAWPART.items()) + (list(FIXES_RECONLATE.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + list(FIXES_P2PASS.items()) + (list(FIXES_P2CENSUS.items()) if P2CENSUS else []) + list(FIXES_OBSRAY.items()) + list(FIXES_SNDWAIT.items()) + list(FIXES_FLAMEDECAL.items()) + list(FIXES_HUHINT.items()) + list(FIXES_DBLSOFT.items()) + list(FIXES_VFPUTRIG.items()) + list(FIXES_TICKCACHE.items()) + list(FIXES_STRICTALIAS.items()) + list(FIXES_SNDPERMAP.items()) + list(FIXES_RLOOP.items()) + (list(FIXES_SNDSTREAM.items()) if os.environ.get("PSP_SNDSTREAM", "") == "1" else [])):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 

@@ -2532,14 +2532,15 @@ static int load_into(int index, int only)
 }
 
 /* the bitmap_data of a bitmap tag's bitmap: the key a texture is found by */
-unsigned int psp_tex_bitmap_key(long bitmap_tag_index, int bitmap)
+int psp_rs_lookup(long bitmap_tag_index, unsigned int *key);
+void psp_rs_store(long bitmap_tag_index, unsigned int key);
+
+static unsigned int bitmap_key_find(long bitmap_tag_index, int bitmap)
 {
 	char *group;
 	long count;
 	char *address;
 
-	if (bitmap_tag_index == -1 || !entries)
-		return 0;
 	group = tag_get(0x6269746D /* bitm */, bitmap_tag_index);
 	if (!group)
 		return 0;
@@ -2548,6 +2549,25 @@ unsigned int psp_tex_bitmap_key(long bitmap_tag_index, int bitmap)
 	if (bitmap < 0 || bitmap >= count || !address)
 		return 0;
 	return (unsigned int)(address + 48 * bitmap);
+}
+
+unsigned int psp_tex_bitmap_key(long bitmap_tag_index, int bitmap)
+{
+	unsigned int key;
+
+	if (bitmap_tag_index == -1 || !entries)
+		return 0;
+	/* a tag's first bitmap, the one the model draw asks for (psp_rloop.c,
+	"retainedshader") */
+	if (bitmap == 0)
+	{
+		if (psp_rs_lookup(bitmap_tag_index, &key))
+			return key;
+		key = bitmap_key_find(bitmap_tag_index, 0);
+		psp_rs_store(bitmap_tag_index, key);
+		return key;
+	}
+	return bitmap_key_find(bitmap_tag_index, bitmap);
 }
 
 /* how many bitmaps a bitmap tag holds (a numeric shader's digits; build 25) */
