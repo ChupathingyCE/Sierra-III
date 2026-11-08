@@ -1,7 +1,7 @@
 /* R slice 5, step 3 (docs/redesign_r_slice5.md, "Slice 5 as 2.1"): the
 engine's per-part loop skipped, and a shader's tag-only keys found once.
 
-"retainedloop": render_model_parts walks pass -> region -> permutation ->
+"retainedloop" (on by default; off: "retainedloopold"): render_model_parts walks pass -> region -> permutation ->
 geometry -> part and, for each part, finds its shader and calls the draw. All
 of that comes from the model's tags and the call's inputs (the model, its
 region permutations, its level of detail, the forced shader permutation and
@@ -12,7 +12,7 @@ itself. The calls themselves are unchanged, so the GE's stream is the same.
 A key whose loop does anything else (a see-through part: its sort records and
 centroid are the frame's; a dynamic buffer; the debug views) isn't kept.
 
-"retainedshader" (below): the bitmap tags' keys the draw's hook looks up,
+"retainedshader" (below; off: "retainedshaderold"): the bitmap tags' keys the draw's hook looks up,
 found once a map.
 
 Both are emptied at each map load. Their tables are fixed: a key or a shader
@@ -73,8 +73,12 @@ static void rl_reset(void)
 
 static void rl_start(void)
 {
-	psp_rl_on = psp_keep("retainedloop") != 0;
-	psp_rs_on = psp_keep("retainedshader") != 0;
+	/* on by default: exact (play, seeds and pictures as without, rloop1-2)
+	and on the PSP's b30 combat bench the frame 3-5% faster in every stretch
+	(lab sierra-hw 42494203180); "retainedloopold" and "retainedshaderold"
+	turn them off */
+	psp_rl_on = !psp_keep("retainedloopold");
+	psp_rs_on = !psp_keep("retainedshaderold");
 	if (psp_rl_on)
 	{
 		rl_slots = calloc(RL_KEYS, sizeof(*rl_slots));
