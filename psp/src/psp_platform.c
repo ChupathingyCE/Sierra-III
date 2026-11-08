@@ -2239,6 +2239,8 @@ void psp_sleepguard_end(void);
 static int exit_callbacks_registered[3] = { 1, 1, 1 };
 
 /* back to the XMB (or ARK-4's menu), saying why in the log */
+void psp_pad_exit(void);
+
 static void exit_game(const char *why)
 {
 	exiting = 1;
@@ -2254,6 +2256,10 @@ static void exit_game(const char *why)
 	there. psp_me_exit leaves it halted or held in reset, the states the
 	firmware's own ME boot starts from */
 	PSP_METRICS_ME_EXIT(why);
+	/* the pad recorder's last frames: from the game's own thread only, as
+	the drain above (a HOME exit keeps what was written each 64 frames) */
+	if (strcmp(why, "HOME") != 0)
+		psp_pad_exit();
 	platform_log("%s: exiting", why);
 	log_flush();
 	/* the XMB gets its sleep switch back (psp_sleepguard.c) */

@@ -209,3 +209,11 @@ void psp_pad_blob(int local_player_index, void *blob, int bytes)
 	else if (pad_take(PAD_BLOB, record, sizeof(record)) && record[0] == (unsigned char)local_player_index)
 		memcpy(blob, record + 1, PAD_BLOB_BYTES);
 }
+
+/* the exit (exitatN, ladderN, the level's end): the recording's last frames
+written and the file closed */
+void psp_pad_exit(void)
+{
+	if (pad_mode == 1)
+		pad_close();
+}
