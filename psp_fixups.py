@@ -29777,10 +29777,16 @@ extern int psp_nms_count;
 extern unsigned long psp_nms_pending[];
 void psp_nms_settle(long object_index, void *site);
 static void psp_nms_forget(void);
+/* on the ME (the AI's pass), owed as the hand-over found it (psp_nms_me):
+the main CPU's record pays owed computes while the pass is out, so reading
+the live bits there made which actors were handed back depend on which CPU
+got to an object first, and two PSP runs played differently */
+extern unsigned long psp_nms_me[];
 #define PSP_NMS_READ(index) do { \\
 		unsigned long psp_nms_absolute = (unsigned long)(index) & 0xFFFFUL; \\
-		if (psp_nms_count && psp_nms_absolute < MAXIMUM_OBJECTS_PER_MAP && \\
-			((psp_nms_pending[psp_nms_absolute >> 5] >> (psp_nms_absolute & 31)) & 1)) \\
+		if (psp_nms_absolute < MAXIMUM_OBJECTS_PER_MAP && (psp_work_on_me() ? \\
+			(psp_nms_me[0] && ((psp_nms_me[16 + (psp_nms_absolute >> 5)] >> (psp_nms_absolute & 31)) & 1)) : \\
+			(psp_nms_count && ((psp_nms_pending[psp_nms_absolute >> 5] >> (psp_nms_absolute & 31)) & 1)))) \\
 			psp_nms_settle(index, __builtin_return_address(0)); \\
 	} while (0)
 #else
