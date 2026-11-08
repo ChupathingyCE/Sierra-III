@@ -11889,14 +11889,30 @@ void psp_objects_play_dump(long tick)
 	}
 	if (first < 0 || tick < first || tick >= first + 48)
 		return;
+	/* the tick's tally, one short line the log keeps when it drops the long
+	ones: how many objects, and their play words' and whole datums' hashes
+	together, so two runs say whether an object's presence, its play or the
+	rest of its datum parted first */
+	unsigned long tally_play = 2166136261UL, tally_whole = 2166136261UL, tally_count = 0;
 	object_iterator_new(&iterator, _object_mask_all, 0);
 	while ((object = (struct object_datum *)object_iterator_next(&iterator)) != NULL)
 	{
-		unsigned long words[24], hash = 2166136261UL;
+		unsigned long words[24], hash = 2166136261UL, full = 2166136261UL;
 		int count = psp_object_play_words(iterator.index, object, words), k;
 
 		for (k = 0; k < count; k++)
 			hash = (hash ^ words[k]) * 16777619UL;
+		{
+			struct object_header_datum const *tally_header = object_header_get(iterator.index);
+			unsigned long const *tally_datum = (unsigned long const *)tally_header->datum;
+			long w;
+
+			for (w = 0; w < tally_header->data_size / 4; w++)
+				full = (full ^ tally_datum[w]) * 16777619UL;
+		}
+		tally_count++;
+		tally_play = (tally_play ^ iterator.index ^ hash) * 16777619UL;
+		tally_whole = (tally_whole ^ iterator.index ^ full) * 16777619UL;
 		for (k = 0; k < named_count && named[k] != object->definition_index; k++)
 			;
 		if (k == named_count && named_count < 256)
@@ -11910,8 +11926,8 @@ void psp_objects_play_dump(long tick)
 			platform_psp_log("state: objects at tick %ld:%s", tick, line);
 			length = 0;
 		}
-		length += snprintf(line + length, sizeof(line) - length, " %08lx %08lx %08lx", (unsigned long)iterator.index,
-			(unsigned long)object->definition_index, hash);
+		length += snprintf(line + length, sizeof(line) - length, " %08lx %08lx %08lx %08lx", (unsigned long)iterator.index,
+			(unsigned long)object->definition_index, hash, full);
 		if (watched == -2 || (watched >= 0 && (iterator.index & 0xFFFF) == watched))
 		{
 			char text[24 * 9 + 1];
@@ -11942,6 +11958,8 @@ void psp_objects_play_dump(long tick)
 	}
 	if (length)
 		platform_psp_log("state: objects at tick %ld:%s", tick, line);
+	platform_psp_log("state: objects tally at tick %ld: %lu objects, play %08lx, whole %08lx", tick, tally_count,
+		tally_play, tally_whole);
 }
 #endif
 
