@@ -29847,6 +29847,15 @@ static int psp_vl_on = 0, psp_vl_ticked = 0;
 (the sleep check, psp_sleepy_update) */
 long psp_vl_moving = NONE;
 static unsigned long psp_vl_drawn[(MAXIMUM_OBJECTS_PER_MAP + 31) / 32];
+/* the renderer's list goes here, and becomes psp_vl_drawn at the next tick's
+start: the AI's pass on the ME reads psp_vl_drawn while the frame is
+recorded, and when the record wrote psp_vl_drawn itself which actors owed a
+node block depended on which got there first, so two PSP runs handed
+different actors back to the tick and played differently (sierra-hw
+42475844519, 42477229781). "vislazyraceold": the list written in place */
+static unsigned long psp_vl_drawn_next[(MAXIMUM_OBJECTS_PER_MAP + 31) / 32];
+static int psp_vl_next_fresh = 0, psp_vl_in_place = -1;
+int psp_keep(const char *name);
 static unsigned long psp_vl_peak, psp_vl_frames, psp_vl_sites_other;
 #define PSP_VL_SITES 16
 static void *psp_vl_site[PSP_VL_SITES];
@@ -29861,18 +29870,24 @@ void psp_vl_listed(long const *indices, short count)
 
 	if (psp_vl_on <= 0)
 		return;
+	unsigned long *set;
+
+	if (psp_vl_in_place < 0)
+		psp_vl_in_place = psp_keep("vislazyraceold") != 0;
+	set = psp_vl_in_place ? psp_vl_drawn : psp_vl_drawn_next;
 	if (psp_vl_ticked)
 	{
-		csmemset(psp_vl_drawn, 0, sizeof(psp_vl_drawn));
+		csmemset(set, 0, sizeof(psp_vl_drawn));
 		psp_vl_ticked = 0;
 		psp_vl_frames++;
 	}
+	psp_vl_next_fresh = 1;
 	for (k = 0; k < count; k++)
 	{
 		unsigned long absolute = (unsigned long)indices[k] & 0xFFFFUL;
 
 		if (absolute < MAXIMUM_OBJECTS_PER_MAP)
-			psp_vl_drawn[absolute >> 5] |= 1ul << (absolute & 31);
+			set[absolute >> 5] |= 1ul << (absolute & 31);
 	}
 }
 
@@ -30031,6 +30046,9 @@ __attribute__((noinline)) static int psp_nms_begin(void)
 		return 0;
 	}
 	psp_nms_ticks++;
+	if (psp_vl_next_fresh && psp_vl_in_place == 0)
+		csmemcpy(psp_vl_drawn, psp_vl_drawn_next, sizeof(psp_vl_drawn));
+	psp_vl_next_fresh = 0;
 	psp_vl_ticked = 1;
 	psp_vl_moving = NONE;
 	if (psp_lights_link_tick)
