@@ -38,6 +38,9 @@ static unsigned int pad_in_size = 0, pad_in_at = 0;
 static int pad_in_ended = 0;
 
 static int pad_log_on = 0;
+/* a log line's bytes: the log cuts longer lines (padrec1's 120-byte lines
+came back short) */
+#define PAD_LOG_BYTES 48
 
 /* "padlog": the recording's bytes also in the log, in hex, so an emulator
 run's recording comes back with its log (the results take no binary files):
@@ -45,12 +48,12 @@ the lab's psp/sierra/padfromlog.py rebuilds the file */
 static void pad_log(const unsigned char *data, unsigned int bytes)
 {
 	static const char hex[] = "0123456789abcdef";
-	char line[2 * 120 + 1];
+	char line[2 * PAD_LOG_BYTES + 1];
 	unsigned int at, k;
 
-	for (at = 0; at < bytes; at += 120)
+	for (at = 0; at < bytes; at += PAD_LOG_BYTES)
 	{
-		for (k = 0; k < 120 && at + k < bytes; k++)
+		for (k = 0; k < PAD_LOG_BYTES && at + k < bytes; k++)
 		{
 			line[2 * k] = hex[data[at + k] >> 4];
 			line[2 * k + 1] = hex[data[at + k] & 15];
@@ -173,7 +176,10 @@ float psp_pad_seconds(float seconds)
 	if (pad_mode == 1)
 	{
 		pad_put(PAD_FRAME, &seconds, sizeof(seconds));
-		pad_frames++;
+		/* written every 64 frames (~9 KB), so a run that ends by quitting
+		keeps all but its last few seconds */
+		if ((++pad_frames & 63) == 0)
+			pad_flush();
 	}
 	else if (pad_mode == 2)
 	{
