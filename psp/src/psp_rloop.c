@@ -127,7 +127,10 @@ int psp_rl_find(void const *model, char const *permutations, int permutation_cou
 				return 0;
 			*calls = &rl_calls[slot->first];
 			*count = slot->count;
-			rl_hits++;
+			/* a running count, as a map's own total comes only at the next load */
+			if ((++rl_hits & 8191) == 0)
+				platform_log("rloop: %lu loops skipped, %lu noted (%u calls), %lu not kept, %lu without room", rl_hits,
+					rl_notes, rl_calls_used, rl_spoils, rl_full);
 			return 1;
 		}
 	}
@@ -225,7 +228,8 @@ int psp_rs_lookup(long bitmap_tag_index, unsigned int *key)
 	if (rs_index[slot] == bitmap_tag_index)
 	{
 		*key = rs_key[slot];
-		psp_rs_hits++;
+		if ((++psp_rs_hits & 65535) == 0)
+			platform_log("rshader: %lu bitmap keys kept, %lu looked up", psp_rs_hits, psp_rs_misses);
 		return 1;
 	}
 	psp_rs_misses++;
