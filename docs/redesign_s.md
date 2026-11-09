@@ -75,7 +75,7 @@ For bipeds far from the player and out of the fight (AIFAR's test), two forms, c
 - **Exactness:** it's the same update on the same inputs, with only the cost moved; the side effects land in walk order. If the census bears that out, S4's ME form is exact, not "plays the same", and it needs no tick behind.
 - **The census it needs** (recon, strict, b30's flight and the snowfield), for far out-of-the-fight bipeds: the share that pass the tier test (awake non-static objects within reach, airborne, damage); what their update reads outside their own datums, by kind and bytes; their side effects per update (effects, sounds, seed draws, reconnects); and the bytes of their datums. It sizes the eDRAM's share and the tier's take.
 
-Collision stays the same code against the same world (the rule: collision exact, one path). The tier is local: in the campaign every biped is the PSP's own; in co-op the host runs the far AI.
+Collision stays the same code against the same world (a choice that keeps statecrc as S3's proof, not a multiplayer requirement: since Sheepdog01's 2026-11-09 17:30 ruling collision's answers need only keep hit reports and movement inside the host's bounds, CLAUDE.md). The tier is local: in the campaign every biped is the PSP's own; in co-op the host runs the far AI.
 
 **What S4 doesn't reach:** bipeds in the fight at 20-40 units are the largest band (30-38% of biped time). A distance tier leaves them alone, since they're what the player is fighting. If S1-S4 land below their ceilings, they're where the margin sits; the plan's ruling 3 says what comes next (§5).
 
