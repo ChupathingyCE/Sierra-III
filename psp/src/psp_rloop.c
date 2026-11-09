@@ -33,8 +33,13 @@ int psp_r_wanted(void);
 void platform_log(const char *format, ...);
 extern int psp_map_generation;
 
-#define RL_KEYS 1024        /* slots, a power of two */
-#define RL_CALLS 6144       /* noted calls, all keys */
+/* sized to the most a map noted with ~2.5x room (b30: 108 keys, 403 calls;
+a30 74, c10 69, d20 41 keys): 30 KB. At 1,024 and 6,144 (160 KB) b30's heap
+ran out under R at 24 MB and refused allocations dropped drawing (lab
+sierra-hw 42494203180, sierra-batch 42673679992). A key past them runs the
+old way */
+#define RL_KEYS 256         /* slots, a power of two */
+#define RL_CALLS 1024       /* noted calls, all keys */
 #define RL_REGIONS 16
 #define RL_KEY_WORDS (4 + RL_REGIONS / 4)
 
