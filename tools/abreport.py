@@ -13,6 +13,10 @@ against the first side and a verdict:
                 repeats that agree exactly would make any wiggle look real)
   in the noise  the gap is within a side's own spread, or under that floor
   no verdict    a side has a single run
+  INVALID       a run of either side refused heap requests (its `heap:` lines):
+                refused allocations drop drawing, so that side reads faster
+                than it is (step 3's R-on pair "gained" 3-8% with 62 requests
+                failed, lab findings r_loop_heap_full_under_r)
 
 The figures are benchreport.py's (the same reader): the frame by the clock,
 the frame's own work (drawing) and a tick's own cost, ms, weighted by frames.
@@ -39,6 +43,7 @@ METRICS = (
     ("Drawing, ms", lambda rows: weighted(rows, lambda r: r[1], lambda r: r[3])),
     ("Tick, ms", lambda rows: weighted(rows, lambda r: r[2], lambda r: r[3])),
 )
+HEAP_FAILED = re.compile(r"^heap: .*?(\d+) requests failed")
 RUN_LABEL = re.compile(r"^run (\d+) \(set (\d+): (.*?)\): ")
 
 
@@ -66,6 +71,20 @@ def sides_from_args(specs):
     return sides
 
 
+def heap_failed(path):
+    """the most requests a run's heap: lines say were refused (0 without any)"""
+    most = 0
+    try:
+        with open(path, errors="replace") as f:
+            for line in f:
+                m = HEAP_FAILED.match(line)
+                if m:
+                    most = max(most, int(m.group(1)))
+    except OSError:
+        pass
+    return most
+
+
 def verdict(base, other):
     if len(base) < 2 or len(other) < 2:
         return "no verdict"
@@ -89,6 +108,13 @@ def main():
     beats = {name: [read(p)[0] for p in logs] for name, logs in sides.items()}
     names = list(sides)
     base = names[0]
+    failed = {n: [heap_failed(p) for p in sides[n]] for n in names}
+    invalid = {n for n in names if any(failed[n])}
+    for n in names:
+        if n in invalid:
+            print("**INVALID: side %s refused heap requests** (most a run: %s): its drawing dropped work, so its times "
+                  "read faster than they are. No verdict on it until both sides fit.\n"
+                  % (n, ", ".join(str(f) for f in failed[n])))
     print("Sides: " + "; ".join("%s (%d runs)" % (n, len(sides[n])) for n in names) + ". Gaps are against **%s**.\n" % base)
     for part in a.stretches.split(","):
         title, span = part.split(":")
@@ -113,7 +139,7 @@ def main():
                     gap, word = "-", "-"
                 else:
                     gap = "%+.1f (%+.1f%%)" % (means[n] - means[base], 100.0 * (means[n] - means[base]) / means[base])
-                    word = verdict(figures[metric, base], figures[metric, n])
+                    word = "INVALID" if base in invalid or n in invalid else verdict(figures[metric, base], figures[metric, n])
                 label = metric if len(names) == 2 else "%s, %s" % (metric, n)
                 print("| %s | %s | %s | %s |" % (label, " | ".join(cells), gap, word))
         print()
