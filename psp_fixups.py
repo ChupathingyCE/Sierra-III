@@ -2196,8 +2196,9 @@ NOT_STEPS = {"if", "while", "for", "switch", "return", "sizeof", "PSP_STEP", "ma
              "match_assert_valid_real_normal2d", "match_assert_valid_real_vector2d", "match_assert_valid_real_point2d"}
 def step_excluded(name):
     """asserts and other macros that expand to statements can't be made expressions"""
-    # PSP_AIME_*: the AI job's marks in actors.c are do { } while (0) macros
-    return name in NOT_STEPS or name.startswith(("match_assert", "assert_valid", "match_vassert", "PSP_AIME_"))
+    # PSP_AIME_*: the AI job's marks in actors.c are do { } while (0) macros;
+    # PSP_AIT_*: aitiers' step timers (FIXES_RECONLATE #aitiers) are too
+    return name in NOT_STEPS or name.startswith(("match_assert", "assert_valid", "match_vassert", "PSP_AIME_", "PSP_AIT_"))
 STEP_DECLARATION = "\n#ifdef HALO_PSP\nvoid psp_step(const char *name); /* psp_fixups.py */\n#define PSP_STEP(name) psp_step(name)\n#else\n#define PSP_STEP(name) ((void)0)\n#endif\n"
 
 def declare_step(text):
