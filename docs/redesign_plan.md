@@ -332,6 +332,12 @@ The redesign rule (Sierra-III CLAUDE.md and the lab's, "Redesign work", Sheepdog
 - **Levers stay off a part's ground.** Once a part has Sheepdog01's go, a lever on a ground it replaces isn't started (the lab's levercheck names the part), unless it pays before the part lands and Sheepdog01 says so. Before the go, a lever there says how it fits the part. A lever that failed through the old layers is marked revivable under the part (PDC, PDCCALL and X2 are, under R).
 - **Progress is the budget.** A milestone updates §1's table. A lever reports its effect in its terms.
 
+**Traps when proving a new path against the old one** (learned on R's slices):
+- A form exists, so the ME never hands its part back again (rslice3): compare R's ME counts with an m6off run's before trusting a widening's reach.
+- A check that runs the old path after the new one sees the state the new one left (the point-light flag): restore every CPU-side shadow of GE state first.
+- A list swapped for a scratch list must be invisible to the display list's machinery (stall updates, the ring's room, the pending write-back act on `gu_list->current`): suspend them for the scratch run (3be5e21).
+- A run that never fills a cache proves nothing about its eviction (R's 11 KB set in a 32 KB ring): check the let-go counts are > 0, and cut the store below the set for the proof.
+
 ## 7. The road
 
 **Phase 0, the counts (now; no part has Sheepdog01's go).**

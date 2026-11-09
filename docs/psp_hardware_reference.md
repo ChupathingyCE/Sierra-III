@@ -4,6 +4,8 @@
 
 **Labels.** **[M]** measured, by us (a PSP-1000 or this emulator, as stated). **[D]** documented: in the firmware's own code (uofw), an SDK header, a hardware document, or a library's source we read. **[C]** claimed: by a homebrew author about their own tests, not reproduced here. **[U]** untested: our inference. Treat [C] and [U] as questions for the next hardware run.
 
+**For the current measured figures, read `hardware_facts.md` first:** this page is the October background and reasoning; that one collects every number since, each with its source.
+
 ---
 
 ## 1. The machine, as it matters to a 30 Hz game

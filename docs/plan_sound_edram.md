@@ -32,6 +32,8 @@ The first fill was a DMACplus transfer from the main CPU (one descriptor, ~240 Â
 
 **The AI job's stack, the same way.** The span runs on to the eDRAM's top, 0xC8000-0x200000, and the simulated AI job (psp_me.c's `aime_simulated`) runs on the PSP's own room, 0x178000-0x200000 (544 KB), with its slack in the job's 48 KB data reserve below it, 0x16C000-0x178000, which nothing places anything in on either machine [D]. The heap's copy was 608 KB (the room and 64 KB of slack); 64 KB below the room would reach 16 KB into the tier's end, so the slack is 48 KB in the eDRAM. A reach through the whole slack is logged once (its figure is then a floor). The keep word `aimestackram` puts the stack back in the heap; `aimesimslack` (640 KB of slack, for runs that measure the job's reach) keeps it there too, since it can't fit below the room.
 
+**A per-map cut of the sound cache must move the tiers' fence too** (sndstream3: blocks straddled into RAM the map no longer gave the cache; fixed cfed490), and `sndedram` is on by default: plan a cut against the main tier (1,136 KB), not the whole 1,792 KB.
+
 ## Keep words
 
 | Word | Does |

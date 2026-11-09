@@ -22,7 +22,12 @@ What it says:
 - **The toll is measured at 15 fps.** At the target the GE's work on the flight is ~1,800 ms a second, so it reads RAM all the time and the toll per tick likely rises [U]. Getting the GE off RAM (A1, A2) is worth more at the target than at 15 fps.
 - **A realistic path stacks three things:** the toll removed; misses cut deeply (halved is already large); and the work cut by something like half. The last is where Sheepdog01's compromises with little visible cost come in (§3).
 
-**By system** (framesplit on b30, tick 44.3, PSP [M] × the emulator's step split): AI 26%, posing (animation and node matrices) 33%, physics and collision 14%, unit_update's body 8%, object lights 5%, object functions 4%, other objects 7%, scripts 2%.
+**By system, on the PSP** (corrected 2026-11-09; the lab's findings row `tick_by_system_b30_flight_correction`, ledger `cpu/tick/*` on b30's flight):
+- **By function** (the PC sampler, PSP-3000, sierra-hw 42114568213, b151's code) [M]: collision and BSP 25.6%, AI on the main CPU 16.5 (its rays count as collision; the thinking runs on the ME), node matrices and animation 11.3, units' own code 9.3, other objects 7.7, libm and memcpy 5.3, effects 3.4, tags 2.9, audio 2.4, scripts 1.6, the rest 14.5.
+- **By object kind** (objcost, PSP-1000, sierra-hw 42141971439) [M]: object updates 34.9 ms a tick as instrumented, bipeds 24.3 of it; the moving bipeds 23.6 (~24 a tick at ~970 µs each).
+- **Bipeds by band** (S4's census, PSP-1000, sierra-hw 42672087890) [M]: far and out of the fight 30%, in the fight at 20-40 units 36%, at 10-20 units 19%.
+
+The split this line used to give (AI 26%, posing 33%, collision 14%) was a PSP total × the emulator's step split [M × E]. Under the 2026-11-09 rule it doesn't rank: the PSP puts collision first and posing at a third of that figure. **What it changes:** "the AI thinking less often" frees mostly the ME, which is also over at the target (§2a), not the tick. The tick's ground is the moving bipeds' updates: their physics, the collision they call, and their posing.
 
 ## 2. What doesn't help at the target
 
@@ -317,5 +322,5 @@ An audit of what the PSP offers against what the code uses (`git grep` over psp/
 
 What it says:
 - **The GE column nearly closes** with the geometry work (LODs, the stand-in, the passes), the flight from ~1,800 to ~1,050-1,150 ms a second [U], before measured numbers replace the guesses.
-- **The tick column doesn't close by a long way.** With every ceiling above at its top, the flight's tick is still ~29-32 ms against 16.6 [U]. AI (26% of the tick, aicad3 already on in the bare bench) and collision (14%) carry no lever here; S3 (AITICKOLD) doesn't play the same yet; the code's working set now has its ceiling (§3.9).
+- **The tick column doesn't close by a long way.** With every ceiling above at its top, the flight's tick is still ~29-32 ms against 16.6 [U]. Collision (25.6% of the tick on the PSP, §1) and the AI's main-CPU share (16.5%, aicad3 already on in the bare bench) carry no lever here; S3 (AITICKOLD) doesn't play the same yet; the code's working set now has its ceiling (§3.9).
 - **So by exhaustion so far, the flight's tick at 30 fps needs compromises in the simulation itself**, beyond Sheepdog01's ruling 3's first step: the in-fight bipeds at a lower rate, the AI thinking less often, or fewer actors simulated at full fidelity. Those are Sheepdog01's to decide stretch by stretch, with outcome censuses. The exact angles left: the code working set (§3.9, now in the sum), S3's fix, and bus priority (§3.10), a blind write that is Sheepdog01's call.
