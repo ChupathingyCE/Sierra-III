@@ -89,6 +89,80 @@ Four families (the lab's `research/manifest/tickmap_collision_code_2026-11-09.md
 - **The same position walked twice** [D, engine `physics.c:837` then `:843` → `:684`]: each mass point's physics update does a point walk for its location, then a feature query from the root at the same position, so the sphere walk retraces the point's descent until the sphere straddles a plane. Vehicles and props only, not bipeds; worth unsized.
 - **Misses:** collision's walks are pointer chases over BSP nodes, surfaces and cluster lists, with one miss in flight; PACKFEAT (surfaces with their edges and vertices together) and CSPK (packed cluster lists) are the layout answers, unbuilt.
 
-## 2-11. The other systems
+## 2. Node matrices and animation (posing)
 
-To come, each built the same way: AI on the main CPU, node matrices and animation, units and vehicles, other objects, libm and memcpy, effects and particles, tags, audio, scripts, the rest.
+### 2.1 What it computes, and who reads it [D]
+
+The lab's `research/manifest/tickmap_posing_code_2026-11-09.md` (line numbers there are the port's tree after fixups).
+- **One entry,** `object_compute_node_matrices`: the pose's decode, then its overlays, scale, the type's preprocess (units add action, overlay and ping animations), interpolation from the last pose, the node-stack matrices, and the bounding sphere (copied to the port's sphere table). Units then run inverse kinematics on the hands.
+- **Called once per awake top-level object in the walk,** after its type update; children are posed by recursion. Bipeds and units pose with pre- and postprocess, vehicles and weapons with preprocess only, scenery with neither.
+- **The port's gates on the call:** `posehalf` (far resting objects every other tick), `machinesfar`, VISLAZY (undrawn scenery-kind objects made on demand), and hoisting. **Its replacements for the decode:** the loop-pose table (PSC), poses decoded ahead on the ME (pose-ahead), and VFPU quaternion maths (VFPUQD, VFPUP).
+- **Readers inside the tick, and the nodes each needs:** markers (the marker's node: head, body, hand, seat, trigger, attachments), `collision_model_instance_new` (every node its collision model binds), IK (the hand chain), lights and effects at attachment markers, machine elevators, items' rest node, the held weapon (its parent's node), the AI's perception and aim (head and camera markers), and the draw (every node). AI and effects run before the walk, so they read the previous tick's pose.
+
+### 2.2 What it costs on the PSP
+
+| Stretch | Posing's share | Source |
+|---|---|---|
+| b30 flight | 11.3% of the tick (by function) | PC sampler, PSP-3000, sierra-hw 42114568213 [M] |
+| b30 beach | 10.1% of the tick (by function) | PC sampler, PSP-1000, sierra-hw 42000782600 [M] |
+| b30 beach fight (the pad's replay) | animation and node matrices 6.7 of 44.2 ms a tick (15%, by step, instrumented); `object_compute_node_matrices` 6.1 ms | combatsteps, PSP-3000, sierra-hw 42633989710 [M] |
+| c20 hands off | 13.2% of the tick (by function) | PC sampler, PSP-1000 [M] |
+| landing, b40, d20, a30 | **not measured** | gap |
+
+**By drawn size, only in the emulator** (animlod1 [E]): drawn bipeds under 16 px carry 44.7% of the flight's posing, undrawn bipeds 49.2% of b40's. The PSP census has to retake this before any size tier is priced (`redesign_tick_target.md` §3.1 and §3.5 sized the tiers on it).
+
+### 2.3 Every lever tried on it, and where it was priced
+
+49 levers sit on posing's ground (the lab's `research/manifest/tickmap_posing_levers_2026-11-09.md`, checked with `tools/levercite.py`: 46 listed, all citations right; MC2, NB and UVBUNIT added by hand).
+- **On by default:** PV, PA, PQ, MP (posing a frame behind on the ME), VISLAZY, AIMCACHE, VFPUQD, VFPUP, MECTX, PSC, POSEFPU, LINEHEAT. MP and POSEFPU aren't bit-exact and ship because they play the same.
+- **Priced on one PSP map only** (14): PQ (c20), WM, NPF, LEAF, VFPUQD, VFPUP, SKELBATCH (b30), MEB, LBM (b30, both PSPs), PREDEC (b30), PSC (c10), NW2 (c20), VH2 (a10). LBM (poses made only on the drawn tick and on a read) lost on b30 because bipeds' poses are read every tick; NW2 (the node walk on the ME, copied back) lost on c20.
+- **Priced only in the emulator** (19), which today's rules don't let stop anything on time: NW, PH, NMS, UNCR, PNC, ANIM2, NMR, VISLAZY, NMPRE, AIMCACHE, NMSAME, POSEW, UNSEENPOSE, RENDERTICK, LNM, NW1, MECTX, TAGHOT, ARMPASS, WORLDVIEW. **Several stopped partly for not being exact:** ANIM2 (far bipeds posed only on the drawn tick: "under gate and PSP floors; not exact"), UNSEENPOSE (undrawn units posed at the root), ARMPASS (armed bipeds' matrices after the walk: "plays differently"), LNM ("plays the same rather than exact ... not built"), WORLDVIEW. Under the netcode's boundary (Sheepdog01 17:30; posing never goes on the wire) these reopen, each with its PSP price.
+- **Proposed, never built:** RD (cook-time bounding spheres), GL4, MEPOSE.
+
+### 2.4 Where else it might gain
+
+- **The vehicle double compute** [D, new, exact]: a vehicle moved by physics computes its node matrices in `physics_update_new`'s `object_set_position` (engine `source/physics/physics.c:1422`, then `:1523` or `:1587`; the compute at `source/objects/objects.c:3413`), then again in the walk. The first one's job is likely the root and the bounding sphere for the reconnect. `levercheck.py` finds no earlier try. Other paths do the same (seat exits `units.c`, `action_obey.c`: set the position, then recompute). Count in the emulator, price on the PSP.
+- **Readers need few nodes:** the tick's readers other than the draw and the collision model read a handful of markers (tinynodes1 [E]: grunt 8 of 17 nodes, elite 11 of 26). Posing only the read chains for tiny bipeds (`redesign_tick_target.md` §3.5) rests on this.
+- **The stretches never measured** (landing, b40, d20), where b40's posing sits in undrawn bipeds the AI reads.
+
+### 2.5 Does the algorithm suit this machine? [D/U]
+
+- **It's miss-bound, not arithmetic-bound:** SKELBATCH (the poses batched onto the VFPU) gained nothing on the PSP, and VFPUQD and VFPUP pay small. Pose decode walks animation data per node; the matrices chain parent to child.
+- **Every awake object poses every tick, whoever reads it.** The gates take scenery (VISLAZY) and far resting objects (`posehalf`), not moving bipeds, whose markers the AI reads each tick (LBM's lesson). What a moving biped's readers need this tick is a few chains; what the draw needs is every node, once a frame.
+- **The ME already decodes poses ahead** (pose-ahead), and the ME is near full at the target on the heavy stretches (`redesign_tick_target.md` §2a): more posing on the ME is a placement only where it has room.
+
+## 3. AI on the main CPU
+
+### 3.1 What runs where [D]
+
+The lab's `research/manifest/tickmap_ai_code_2026-11-09.md`. Under the default keep words (`aime`, `aime1b`, `aime2a`), **the AI's thinking is one Media Engine job a tick**: input, perception, situation, emotion, orders and the decision loop, with its own line-of-sight rays cast inline. `soundedram` would turn it off, but that word is opt-in. The PSP agrees: the ledger measures the AI's ME work at 19.5 ms a frame on b30's flight [M].
+
+**What stays on the main CPU** (the 16.5% of the flight's tick the sampler counts as AI [M]):
+- **the control half of each actor:** action update, movement, look, combat, unit control, communication and conversation: the steps that write the unit and the world other systems read this tick;
+- **encounters and squads** (no ME hook at all);
+- **path searches** started from `actor_destination_update` (those reached from a decision run on the ME);
+- **the tick's batch of perception rays:** the first four on the main CPU, the rest as a ring job on the ME;
+- **the hand-over and the collection:** write-back, submit at the frame's end; at the next tick's start a bounded wait, invalidate, applying the job's pathfinding memo and its queued world writes (speak, activate).
+
+### 3.2 What it costs on the PSP
+
+| Stretch | AI on the main CPU | Source |
+|---|---|---|
+| b30 flight | 16.5% of the tick | PC sampler, PSP-3000 [M] |
+| b30 beach | 8.6% thinking + 1.4% control (by function) | PC sampler, PSP-1000 [M] |
+| b30 beach fight | 5.9 of 44.2 ms a tick (13%, instrumented) | combatsteps, PSP-3000 [M] |
+| The ME's AI job | b30 flight 19.5 ms a frame (ledger); b40 snowfield 14.4 ms a job, worst 42.9 | ledger1 and sierra-hw 42152471353 [M] |
+
+The flight's 16.5% and the beach's ~10% differ by stretch, and the sampler groups by function, so the AI's rays are counted under collision.
+
+### 3.3 Levers
+
+To come: the lever history on the AI's ground (the next DeepSeek read). Known from the record: S3 (AITICKOLD: the ME thinks from a world a tick older, tick -14.5% on b30's beach [M]; fights resolve differently, so it doesn't yet play the same); AIFAR (built, off: far calm actors think less often); OBSRAY and PRS on by default.
+
+### 3.4 What it means for the menu [U on M]
+
+**"The AI thinks less often" mostly frees the ME, not the tick.** The thinking is on the ME; the main CPU carries the control half for every actor every tick, plus encounters. So the main CPU's AI levers are the control half's cost per actor and how many actors run it each tick, and the ME's are the thinking (where it's over at the target on the flight, `redesign_tick_target.md` §2a).
+
+## 4-11. The other systems
+
+To come, each built the same way: units and vehicles (its code read is done: `research/manifest/tickmap_units_code_2026-11-09.md`), other objects, libm and memcpy, effects and particles, tags, audio, scripts, the rest.
