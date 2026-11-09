@@ -6,7 +6,35 @@ Revised 2026-11-05 17:05 after a second-opinion review (lab or-job 42123727478, 
 
 Labels: [M] measured on the PSP, [E] emulator or estimate, [D] read in code or data, [U] inference. Lab paths are the lab repository's.
 
-## 0. What the plan delivers
+## Where it stands, and the two goals (2026-11-09, Sheepdog01 15:37-15:55)
+
+**The goals** (Sierra-III `CLAUDE.md`; this page's §1, §1b):
+- **The floor, hard:** 30 ticks a second at 15 fps or more: a frame of 66.7 ms holds two ticks, so a tick may cost ~25.8 ms on b30's flight (today's bare 42.4: **-39%**).
+- **The target, what to attack** (Sheepdog01 15:37: "chasing marginal levers to scrape by to 15/30 is the wrong approach when we want 30/30 as the end goal"): 30 fps, one tick a frame, each level's own average: a frame of 33.3 ms, so a tick may cost ~13-17 ms on the heavy stretches and **16.6 on b30's flight (-61%)**; at 30 fps the main CPU, the ME and on the heaviest stretches the GE are all over their second after R (§1b).
+
+**Today, in the units seen on the PSP** (b151's bare bench, PSP-3000, `stretches.tsv`; ms a frame, then fps) [M]:
+
+| Stretch | Frame | fps | Ticks a frame |
+|---|---:|---:|---:|
+| b30 Pelican flight | 127 | 7.9 | 2 |
+| b30 landing | 115 | 8.7 | 2 |
+| b30 beach fight | 96 | 10.4 | 2 |
+| d20 flashlight on | 91 | 11.0 | 2 |
+| d20 swamp walk | 85 | 11.8 | 2 |
+| b30 opening | 85 | 11.8 | 2 |
+| c20 after the opening | 61 | 16.4 | 2 |
+
+The tock since b151 is faster on b30 (the RH5 bundle: -5 to -13% [M]), and the worst moments by hand are 70-200 ms a frame. **So the floor is ~1.3-1.9x away on the heavy stretches, the target ~2.6-3.8x.**
+
+**How it's attacked** (Sheepdog01 15:55: "compromises are a no go. we have to find ways to either be more efficient, or leverage other hardware we haven't tapped into"): structural parts, not levers; efficiency and untapped hardware first; a rule in the way goes to Sheepdog01 as a question; compromises are found and priced, never built.
+
+**Where each part's live detail is, and its state:**
+- **The tick (S and beyond)**: `redesign_tick_target.md` (the ceilings against the 50-60% cut, the tiny-object stand-in §3.5, SSPR's design §3.6) and `redesign_s.md`; the **tick30** session owns it from 2026-11-09 (the lab's `coord/handoff/tick30_2026-11-09.md`). S4's far tier is a flight-and-landing lever (30% / 13% of biped time); the in-fight bipeds are the beach's cost.
+- **R (drawing and the ME's replay)**: `redesign_r.md`, `redesign_r_slice5.md`. Slices 1-4 and 5's step 3 and 5a.1-5a.2 proven exact in the emulator (a kept key's parts drawn from what was kept, records word-identical); the milestone pair is on the PSP (lab sierra-hw 42706253796, 2026-11-09).
+- **B (the memory map)**: the lab's `redesign.tsv`; its VRAM gains are spent, what's left is fewer bytes in R's forms.
+- **The GE's vertices**: SSPR step 1 built (`sspr_bake.md`); the tiny-object stand-in designed, not built (`redesign_tick_target.md` §3.5, ~13-14 ms a frame of GE on the flight [U]).
+
+## 0. What the plan delivered at the floor (2026-11-05)
 
 - **The floor first: real time (30 ticks a second, at least 15 fps) on every benched stretch** (the goals, `redesign_tick.md`). The target (30 fps per level) follows on the lighter levels; on the heaviest it isn't promised (§5).
 - **Viability, on b151's bare bench** (2026-11-05 21:40; §1) [U on M]:
@@ -47,6 +75,53 @@ What it says:
 - **Drawing, other and frame end** run 19-43 ms a frame on the heavy stretches (the flight 40.6, the landing 42.6): they have to come to ~15, and 'other' alone is ~5 on b30's flight and ~6.4 on b40's snowfield (recon's splits, rows other_split_*: per-frame particles and effects lead, then the game loop, tags, sound, input), so drawing to ~10.
 - **The ME is over on b30's flight (1511, the replay must lose ~34 ms a frame), the landing (1387, ~26) and d20's flashlight (1414, ~28; its replay is 78.4 ms, the main CPU asleep 18.9 ms in drawing waiting for it).**
 - **The GE's own work fits the floor everywhere** (at most 898 ms a second, the flight). d20's flashlight is the ME's lateness (796 stalled), not the GE's work. At the target (30 fps) the GE is ~1.8× on the flight: fewer vertices (C6).
+
+### 1a. Both units together (2026-11-06 04:20, bottleneck) [U on M]
+
+S's tick sum counted AITICKOLD (S3) and S4's ME form as cuts to the main CPU's tick. They are, but the same work lands on the ME, so they are **placements, not reductions**. The floor needs both units at or under 1000 ms a second, so the test that decides viability is **the two units' total against 2,000**, then the balance between them. On b151's bare bench, with R at its design figures (the ME's replay ×0.57, i.e. b30's flight's −30 of 69 ms a frame; the main CPU's drawing to ~10 ms a frame; 'other' and frame end as they are):
+
+| Stretch | Main CPU, ME today | After R | Total after R | Against 2,000 |
+|---|---|---|---:|---:|
+| b30 flight | 1910, 1511 | 1522, 1064 | 2587 | **+587** |
+| b30 landing | 1719, 1387 | 1302, 962 | 2264 | **+264** |
+| b40 cliff | 1574, 1045 | 1328, 768 | 2095 | **+95** |
+| d20 flashlight | 1376, 1414 | 1139, 908 | 2046 | **+46** |
+| b30 beach | 1440, 874 | 1263, 710 | 1973 | −27 |
+| d20 walk | 1360, 851 | 1222, 663 | 1884 | −116 |
+| b40 snowfield | 1579, 676 | 1378, 507 | 1885 | −115 |
+| b30 opening | 1269, 743 | 1166, 576 | 1741 | −259 |
+| b40 opening | 988, 876 | 836, 642 | 1478 | −522 |
+| c20 | 966, 788 | 876, 524 | 1400 | −600 |
+
+What it says:
+- **Where the total fits** (the beach, d20's walk, the snowfield, the openings, c20), the floor is a matter of balance: S3 and S4's ME form move ~4.5 ms a tick each (~135 ms a second each) from the main CPU to the ME, which is exactly what those stretches need. The snowfield: 1378 + 507 → about 1110 + 775 with both, then the toll and T5/T7 finish it.
+- **Where it doesn't** (b30's flight, its landing, b40's cliff, d20's flashlight), only work that's removed counts: S4's half-rate form (~70 ms a second on the flight), the GE toll R and B cut (~60-120), T5 and T7 (~15-30), part A (~60-70, the ME), MECODE (~30-50, the ME), and 'other' (75 ms a second on the flight, owned by no part yet). Together ~235-340 of the flight's 587 [U]: **the flight stays ~250-350 ms a second over** with every piece at its ceiling, the landing about level, the cliff and the flashlight under. That's ruling 3's margin, sized: the in-fight bipeds ("plays the same") first, then compromises.
+- **So S's pieces divide in two:** reductions (S4 half rate, T5/T7, the toll) help everywhere; placements (S3, S4 on the ME) help only where the ME has room after R, and on the flight it doesn't (1064 after R). There S4 takes its half-rate form, and S3 waits for the ME room part A and MECODE make.
+- **'Other', sized from recon's splits** (other_split_b30_flight, _b40_snowfield [M]): ~5.0-5.3 ms a frame on the flight, ~6.4 on the snowfield, 12-18% of it in the kernel, the rest spread thin: particles and effects 24-27% (particles_update, bsp3d_test_point, point physics: ~1.2-1.7 ms a frame), the game loop and state ~11, input and aim 6-8, collision 5-8, sound 6-8, tags 5-9, AI ~4. Only the particles are a chunk, and moving their point physics to the ME is B1's "points' remainder", a placement. Removable work there is ~20-40 ms a second [U]: it doesn't change the flight's margin.
+
+### 1b. At the target: 30 fps, each level's own average (2026-11-06 11:35, master) [U on M]
+
+The goal is each level's own average at 30 fps, one frame a tick (Sheepdog01 2026-11-06 11:31: per level, not across the ladder, so a heavy level's stretches must reach 30 themselves; the floor stays hard). The same sums as §1a with the frame terms doubled (main CPU: 30 ticks + 30 × the frame side; ME: 30 × the replay + audio at real time + 30 × AI and ring a tick; GE: 30 × its work), from §1a's after-R totals:
+
+| Stretch | Tick today (ms) | Total after R at 30 fps | Against 2,000 | GE at 30 fps | The tick may cost | Cut |
+|---|---:|---:|---:|---:|---:|---:|
+| b30 flight | 42.4 | 3429 | **+1429** | **1796** | 16.6 | 61% |
+| b30 landing | 35.3 | 3071 | **+1071** | **1688** | 17.1 | 51% |
+| b40 cliff | 35.9 | 2716 | **+716** | **1074** | 16.5 | 54% |
+| d20 flashlight | 20.5 | 3241 | **+1241** | 690 | (the ME first: its main CPU waits on the replay) | |
+| b30 beach | 33.5 | 2448 | +448 | 714 | 16.1 | 52% |
+| d20 walk | 30.7 | 2434 | +434 | 568 | 13.3 | 57% |
+| b40 snowfield | 37.6 | 2359 | +359 | 792 | 16.6 | 56% |
+| b30 opening | 32.4 | 2159 | +159 | 736 | 20.3 | 37% |
+| b40 opening | 19.4 | 2042 | +42 | 660 | 16.3 | 16% |
+| c20 | 19.3 | 2047 | +47 | 840 | 13.5 | 30% |
+
+What it says:
+- **Every benched stretch is over at the target, after R.** The plan's parts at their ceilings (§1a: ~235-340 ms a second removed on the flight) close the floor on most stretches, not the target.
+- **The tick is the core.** After R a frame's non-tick work on the main CPU is ~16-20 ms, so a tick may cost ~13-17 ms: the heavy stretches' ticks must lose **50-60%** (the flight 42.4 → ~16.6). The tick costs the same a tick at any frame rate, so this figure isn't softened by R's saving growing with the frame rate.
+- **The ME is over too** (the flight ~1,650 ms a second): the replay runs twice as often. R's saving should grow at higher frame rates (less changes between frames), so this column is pessimistic.
+- **The GE is over on b30's flight and landing and b40's cliff** (1,074-1,796): fewer vertices drawn (C6), not faster CPUs.
+- **So the tick side needs a redesign of what the tick does, not levers** (Sheepdog01 11:33: "if it means a fundamental redesign we want to explore it"). The work: size where the flight's and the heavy stretches' tick goes by system (cpu_cost_map.md §4), then design for a ~55-60% cut; candidates to weigh include lower-rate or lower-fidelity simulation away from the player (plays the same), the AI and collision rebuilt around change, and whole tick systems as designed ME jobs (placements help only where the ME has room, which §1b says is little).
 
 ## 2. Why the time is what it is
 
@@ -152,7 +227,7 @@ The GE was built for retained mode: lists that CALL sub-lists, 8 bone matrix and
   - PDC copied prebuilt words into the old per-frame list through the old layers, bit for bit, from an eDRAM store the GE can't read. Its pairs ran even to +1.6 ms a frame.
   - PDCCALL CALLed retained blocks, but kept the key, the hash, the replay and the built parts. It measured +1.2-2.3% frame on c10 [M, PSP-1000 sierra-hw 41216890230], and its store didn't fit b30's heap.
   - Neither is R: R is bake-built per level of detail and pass, with no per-frame record or replay. They showed that half a retained mode costs about what it saves, not that retained mode loses.
-- **Fewer vertices at bake time** (lever SSPR, open): each lower level of detail simplified to what can be seen at the distance it's drawn. C6 found the GE ~89% vertex-bound on b30's flight, so this is the target's GE lever; R's bake already rebuilds every part, so it goes there.
+- **Fewer vertices at bake time** (SSPR; step 1, rigid models, built and in the benches' bake w162s: `sspr_bake.md`, b30 48 models with baked levels; lodcensus1 [E]: 66% of b30 flight's model vertices belong to models with no lower level of their own, which is why it's needed): each lower level of detail simplified to what can be seen at the distance it's drawn. C6 found the GE ~89% vertex-bound on b30's flight, so this is the target's GE lever; R's bake already rebuilds every part, so it goes there.
 - **What could sink it:**
   - the shader forms a map needs (C1);
   - the store's room, which has to be GE-readable: main RAM or VRAM, not eDRAM. The room is the frame list it replaces, 768 KB of list plus the record buffer, 128 KB by default and 224 with the default keep set [D, `psp_ge.c` DEFER_INFLIGHT_KB; IFKB];
