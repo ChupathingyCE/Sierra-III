@@ -1,7 +1,13 @@
 /* R slice 5, step 3 (docs/redesign_r_slice5.md, "Slice 5 as 2.1"): the
 engine's per-part loop skipped, and a shader's tag-only keys found once.
 
-"retainedloop" (on by default; off: "retainedloopold"): render_model_parts walks pass -> region -> permutation ->
+Both are part R's, so they're on exactly when R is (PSP_RETAINED and R's
+keep words, psp_r_wanted): R is built and switched as one path, and outside R
+the PSP priced them at about nothing (lab findings r_loop_psp_b30_tock). With
+R on, "retainedloopold" and "retainedshaderold" turn them off for an A/B; a
+build without R turns them on with "retainedloop" and "retainedshader".
+
+"retainedloop": render_model_parts walks pass -> region -> permutation ->
 geometry -> part and, for each part, finds its shader and calls the draw. All
 of that comes from the model's tags and the call's inputs (the model, its
 region permutations, its level of detail, the forced shader permutation and
@@ -12,7 +18,7 @@ itself. The calls themselves are unchanged, so the GE's stream is the same.
 A key whose loop does anything else (a see-through part: its sort records and
 centroid are the frame's; a dynamic buffer; the debug views) isn't kept.
 
-"retainedshader" (below; off: "retainedshaderold"): the bitmap tags' keys the draw's hook looks up,
+"retainedshader" (below): the bitmap tags' keys the draw's hook looks up,
 found once a map.
 
 Both are emptied at each map load. Their tables are fixed: a key or a shader
@@ -21,6 +27,9 @@ that doesn't fit runs the old way */
 #include <string.h>
 
 int psp_keep(const char *name);
+#ifdef PSP_RETAINED
+int psp_r_wanted(void);
+#endif
 void platform_log(const char *format, ...);
 extern int psp_map_generation;
 
@@ -73,12 +82,15 @@ static void rl_reset(void)
 
 static void rl_start(void)
 {
-	/* on by default: exact (play, seeds and pictures as without, rloop1-2)
-	and on the PSP's b30 combat bench the frame 3-5% faster in every stretch
-	(lab sierra-hw 42494203180); "retainedloopold" and "retainedshaderold"
-	turn them off */
-	psp_rl_on = !psp_keep("retainedloopold");
-	psp_rs_on = !psp_keep("retainedshaderold");
+	/* with R, on unless an A/B's off word says otherwise: there they pay
+	(lab findings r_loop_psp_b30_reclip); without R, only when asked */
+#ifdef PSP_RETAINED
+	int r = psp_r_wanted();
+#else
+	int r = 0;
+#endif
+	psp_rl_on = r ? !psp_keep("retainedloopold") : psp_keep("retainedloop") != 0;
+	psp_rs_on = r ? !psp_keep("retainedshaderold") : psp_keep("retainedshader") != 0;
 	if (psp_rl_on)
 	{
 		rl_slots = calloc(RL_KEYS, sizeof(*rl_slots));
