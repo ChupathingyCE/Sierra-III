@@ -581,6 +581,33 @@ def lto_asm_context(stderr):
         for l in text[max(0, n - 25):n + 5]:
             print("    " + l)
 
+# A build switch's define reaches only the units this file names: psp_rloop.c
+# once tested PSP_RETAINED without being given it, so step 3 stayed off under
+# R (the lab's rloop4). Each unit's tests of the PSP_ defines are noted, and a
+# unit that tests one this build gives other units, but not it, is named.
+# Defines whose value is meant for one unit alone aren't counted
+PER_UNIT_DEFINES = {"PSP_HEAP_KB", "PSP_PGO_PROFILE", "PSP_BAKE_FORMAT", "PSP_ASSERTS_OFF", "PSP_SMALLDATA"}
+PREPROCESSOR_TEST = re.compile(r"^[ \t]*#[ \t]*(?:if|ifdef|ifndef|elif)\b(.*)$", re.M)
+DEFINES_SEEN = {}   # unit -> (the PSP_ defines it tests, those it's given)
+
+def note_defines(src, cmd):
+    try:
+        with open(src if os.path.isabs(src) else os.path.join(TREE, src), errors="replace") as f:
+            text = f.read()
+    except OSError:
+        return
+    tested = set()
+    for line in PREPROCESSOR_TEST.findall(text):
+        tested.update(re.findall(r"\b(PSP_[A-Z0-9_]+)\b", line))
+    given = {a[2:].split("=")[0] for a in cmd if a.startswith("-DPSP_")}
+    DEFINES_SEEN[src] = (tested - PER_UNIT_DEFINES, given)
+
+def defines_missed():
+    """(unit, define) for each unit that tests a define this build gives others but not it"""
+    given_any = set().union(*(g for t, g in DEFINES_SEEN.values())) if DEFINES_SEEN else set()
+    return sorted((os.path.basename(src), d) for src, (tested, given) in DEFINES_SEEN.items()
+                  for d in (tested & given_any) - given)
+
 def compile_one(item):
     src, flags, extra = item
     rel = os.path.relpath(src, HERE) if src.startswith("/") else src
@@ -677,6 +704,7 @@ def compile_one(item):
     # profile_mismatches(); -w hides it (b133's d9e7cf3 ran 3-20% slower
     # with five hot functions compiled without their counts, unseen)
     checked = PGO == "use" and any(a.startswith("-fprofile-use=") for a in cmd)
+    note_defines(src, cmd)
     plain = cmd
     if checked:
         cmd = [a for a in cmd if a != "-w"]
@@ -1293,6 +1321,9 @@ def main():
     with open(os.path.join(OUT, "compile_errors.txt"), "w") as f:
         for s, e in bad:
             f.write("=== %s\n%s\n" % (s, e))
+    for unit, define in defines_missed():
+        print("psp_build: warning: %s tests %s, which this build gives other units but not this one (psp_build.py's "
+              "defines for it)" % (unit, define))
     print("compiled %d of %d%s" % (len(results) - len(bad), len(results),
           "; failures in compile_errors.txt: " + ", ".join(os.path.basename(s) for s, e in bad) if bad else ""))
     if LTO_OBJS:
