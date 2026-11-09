@@ -163,6 +163,45 @@ To come: the lever history on the AI's ground (the next DeepSeek read). Known fr
 
 **"The AI thinks less often" mostly frees the ME, not the tick.** The thinking is on the ME; the main CPU carries the control half for every actor every tick, plus encounters. So the main CPU's AI levers are the control half's cost per actor and how many actors run it each tick, and the ME's are the thinking (where it's over at the target on the flight, `redesign_tick_target.md` §2a).
 
-## 4-11. The other systems
+## 4. Units and vehicles (their own update code)
 
-To come, each built the same way: units and vehicles (its code read is done: `research/manifest/tickmap_units_code_2026-11-09.md`), other objects, libm and memcpy, effects and particles, tags, audio, scripts, the rest.
+### 4.1 What it computes, and who reads it [D]
+
+The lab's `research/manifest/tickmap_units_code_2026-11-09.md` (line numbers there are the port's tree after fixups).
+- **The object walk** visits each awake object; sleepers and resting scenery are skipped (FIXES_WS, wake-on-write). `object_update` runs the type update, damage, exported function values, the pose (§2), function values and change colours, light connection, then children.
+- **A biped's type update is `unit_update` then `biped_update`.** `unit_update`: timers, the driver's and gunner's control copy, camouflage and stun timers, aim integration, `weapon_owner_update`, seats, delayed damage into `ai_handle_damage`, dialogue, lights. `biped_update`: facing, state from animation, turning, then `biped_update_moving` → `biped_update_physics` (velocity model, `collision_move_pill`, the support-plane search, landing) → `object_translate` (disconnect and reconnect to the map), melee, footsteps, `unit_update_animation`.
+- **A vehicle's is `vehicle_update`:** steering and speed seeks, then mass-point physics unless at rest (each mass point a point walk and a ground feature query, §1.5), suspension, slipping and crash effects; a parked vehicle runs only the suspension.
+- **Who reads it this tick:** later objects' collision reads the moved object's sphere and cluster links; the draw reads poses and positions; sounds and effects start from footsteps, slips and lights; riders update after their parent. The AI runs before the walk, so it reads the previous tick's positions.
+
+### 4.2 What it costs on the PSP
+
+| Stretch | Cost | Source |
+|---|---|---|
+| b30 flight | units' own code 9.3% of the tick (by function, excluding the collision and posing they call); object updates 34.9 ms a tick as instrumented (inclusive), bipeds 24.3, the moving bipeds 23.6 (~24 a tick at ~970 µs), vehicles 6.6 (the Pelicans on their script) | sampler, PSP-3000; objcost, PSP-1000 sierra-hw 42141971439 [M] |
+| b30 beach fight | object, unit and biped updates 21.6 of 44.2 ms a tick (49%, instrumented): `biped_update_physics` 4.1, the step marked `unit_verify_vectors` 3.2, `object_type_update_for_type` 2.8, `psp_object_update` 2.0 | combatsteps, PSP-3000 sierra-hw 42633989710 [M] |
+| b40 snowfield | object updates 30.8 ms a tick, bipeds 20.0 (far and out of the fight 28%, ~5.5 ms), vehicles 3.7 (gun turrets) | objcost, PSP-3000 sierra-hw 42152471353 [M] |
+| landing, cliff, d20, a30 | not measured by kind | gap |
+
+**How to read the step names:** a step runs from its marker to the next, and markers go before calls written as statements; a call inside a conditional expression gets no marker and is booked to the step before it (`psp_fixups.py`, step_call). So "unit_verify_vectors 3.2 ms" is the work after that call up to the next marked call, mostly the vehicles' physics (UVBUNIT's row: "the step is the vehicles' physics, not unit_update"), not the debug check, which is off by default.
+
+### 4.3 Every lever tried on it, and where it was priced
+
+43 levers sit on object-update's ground (the lab's `research/manifest/tickmap_units_levers_2026-11-09.md`; 36 listed by the read, all citations right; DAL, FISSB, FVP, GSCHECK, HUHINT, VH2 and WT added from levers.tsv).
+- **On by default, paid on the PSP:** WT (wake-on-write: PSP-1000 b30 frame -3.7 to -4.8%), HUHINT (function values' phase in 32 bits: c20 frame -3-4% on both PSPs), UVB (vehicle physics early-out: a30 fight tick -8%, PSP-3000), CW (collision loops inlined: b30 drive tick -7%), P2NC (non-collideable relinks queued: c20 tick -2.4…-4.7%), LD1 (attached lights once a frame: b30 tick -5…-7%).
+- **Priced only in the emulator:** RB, RB1, BW (the whole biped update on the ME), LPH (loop phasing: the cache model said -11.5%, the real batch lost 34%), VISLAZY, MACHLINE, OBJHOT, PHASEB (bipeds stage-major: "no exact cut").
+- **Stopped for want of an exact form:** PHASEB and FISSB (stage-major and split passes). Under the netcode's boundary (Sheepdog01 17:30) a plays-the-same form is allowed; `redesign_tick_target.md` §3.9 sized it at ~1-2 ms a tick on the flight.
+
+### 4.4 Where else it might gain
+
+- **Awake sleep candidates that change every tick** [D, a lead]: a sleep candidate pays a checksum before and after its update (`psp_sleepy_update`); wake-on-write skips the first for objects quiet two ticks, but one that changes every tick pays both for a sleep it can't take. How many a tick, and the cost, are unmeasured.
+- **The moving bipeds are the ground:** ~24 a tick on the flight at ~970 µs each, inclusive of their physics, collision and posing. The in-fight band at 20-40 units is 36% of biped time on the flight and 58% on the landing (S4's census); S4's tier takes only the far, out-of-the-fight ones.
+- **Vehicles moved by physics pose twice a tick** (§2.4).
+
+### 4.5 Does the algorithm suit this machine? [D/U]
+
+- **Each object runs its whole update chain in turn,** so each update re-fetches its ~300-400 lines of code: instruction misses scale with the updates run (`redesign_tick_target.md` §3.9). Fewer updates (tiers, rates) cut both work and misses; reordering them (stage-major) was priced at ~1-2 ms in a plays-the-same form.
+- **A biped's movement is a sequential chain:** velocity, pill move (collision), support search, translate (reconnect). Each step reads what the last wrote, so the chain itself doesn't overlap; the gain is in how often it runs and for whom.
+
+## 5-11. The other systems
+
+To come, each built the same way: other objects, libm and memcpy, effects and particles, tags, audio, scripts, the rest.
