@@ -49169,6 +49169,44 @@ void psp_mevispush_sound(int in_window)
 """
 
 
+# An anchor inside a block the PSP never compiles changes nothing that runs:
+# TICKCACHE's matched inside `#ifdef HALO_64BIT` and built a lever that did
+# nothing. The blocks around each match are read (#if/#ifdef/#ifndef/#elif/
+# #else/#endif, nested) and a match under one that names a macro the PSP
+# build never sets, or `#if 0`, is named. A heuristic: `#if` expressions are
+# judged by the names in them, not evaluated
+OFF_MACROS = {"HALO_64BIT", "_WIN32", "_WIN64", "_MSC_VER", "__APPLE__", "__linux__", "__x86_64__", "HALO_GL"}
+PREPROCESSOR_LINE = re.compile(r"^[ \t]*#[ \t]*(if|ifdef|ifndef|elif|else|endif)\b(.*)$", re.M)
+
+def dead_block(text, at):
+    """the condition of a block around offset `at` the PSP never compiles, or None"""
+    stack = []   # (the condition, whether the block is off)
+    for m in PREPROCESSOR_LINE.finditer(text, 0, at):
+        word, rest = m.group(1), m.group(2).split("//")[0].split("/*")[0].strip()
+        if word in ("if", "ifdef", "ifndef"):
+            names = set(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", rest)) - {"defined"}
+            if word == "ifdef":
+                off = rest in OFF_MACROS
+            elif word == "ifndef":
+                off = False
+            else:
+                off = rest == "0" or bool(names & OFF_MACROS) and "!" not in rest and "||" not in rest
+            stack.append(("#%s %s" % (word, rest), off))
+        elif word == "elif" and stack:
+            names = set(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", rest)) - {"defined"}
+            stack[-1] = ("#elif %s" % rest, rest == "0" or bool(names & OFF_MACROS) and "!" not in rest and "||" not in rest)
+        elif word == "else" and stack:
+            cond, off = stack[-1]
+            # the #else of a block that names an off macro is the PSP's
+            stack[-1] = ("#else of %s" % cond, False if off else cond.startswith("#ifndef") and cond.split()[1] in OFF_MACROS)
+        elif word == "endif" and stack:
+            stack.pop()
+    for cond, off in stack:
+        if off:
+            return cond
+    return None
+
+dead_anchors = []
 failures = []
 for rel, changes in FIXES.items():
     path = os.path.join(TREE, rel)
@@ -49185,6 +49223,10 @@ for rel, changes in FIXES.items():
             if not CHECK_ONLY:
                 sys.exit(failures[-1])
             continue
+        dead = dead_block(text, text.index(old))
+        if dead:
+            dead_anchors.append("psp_fixups: warning: %s: an anchor matches only inside %s, which the PSP doesn't "
+                                "compile:\n%s" % (rel, dead, old[:200]))
         text = text.replace(old, new)
     if CHECK_ONLY or not applied:
         # (a file with no changes left is left as it is)
@@ -49203,6 +49245,8 @@ for rel, changes in FIXES.items():
     line_end = text.index("\n", first) + 1
     text = text[:line_end] + PRELUDE + text[line_end:]
     open(path, "w", errors="surrogateescape").write(text)
+for line in dead_anchors:
+    print(line)
 if CHECK_ONLY:
     print("\n\n".join(failures))
     sys.exit("psp_fixups: %d anchors don't match once" % len(failures) if failures else 0)
