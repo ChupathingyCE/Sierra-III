@@ -38,7 +38,7 @@ The PSP is only ever a client. A client sends the host five things: its players'
 |---|---|---|
 | Biped physics and collision, `unit_update` (main CPU) | own player's unit (bounded 3.5); hit reports' positions through melee (bounded) | may differ in the last bits; collision stays exact anyway by the project's rule (Sheepdog01 10-30: one path, every mode) |
 | Vehicle physics (main CPU) | own vehicle (bounded 5.0) | may differ in the last bits |
-| Projectile update and its collision (main CPU) | hit reports (bounded 2-6 units, finite) | may differ in the last bits; collision exact by rule |
+| Projectile update and its collision (main CPU) | hit reports (bounded 2-6 units, finite) | may differ in the last bits, collision included (Sheepdog01 2026-11-09 17:30/17:52 retired "collision exact"; CLAUDE.md, the multiplayer boundary) |
 | Node matrices (main CPU) and next tick's base poses (ME_JOB_POSES) | hit reports' node, region, material, through the model's collision | local but feeds an unbounded pick [U]: a systematic bias would go unnoticed (§6's riskiest call 2) |
 | Input and `player_control` (main CPU) | input (clamped) | the client's word |
 | Tick pacing, the main loop (main CPU) | the clock (never over 1.1x, 15 ticks ahead) | rate must hold; content free |
