@@ -6,10 +6,10 @@ The project's test setup is private (it runs on a machine holding game data), bu
 
 | Loop | Answers | Who runs it |
 |---|---|---|
-| **The emulator, in bulk** | *Where* time goes, whether the game behaves, whether a change is exact | Automated: dozens of runs a night |
-| **The PSP, by hand** | *How long* things take (the emulator has no bus contention, no uncached-store cost, no real Memory Stick) | A person with the console, a few runs a day |
+| **The emulator, in bulk** | Whether the game behaves, whether a change is exact, exact counts | Automated: dozens of runs a night |
+| **The PSP** | *Where* time goes and *how long* things take (the emulator has no bus contention, no uncached-store cost, no real Memory Stick) | A person with the console, a few runs a day |
 
-A change goes through the emulator first (does it work, is it exact, what does it cost in instructions and cache misses), then to the PSP for the number that counts.
+A change goes through the emulator first (does it work, is it exact, does play or the picture part), then to the PSP for every question of time, including where it goes: the emulator's split of a tick by step can differ from the hardware's several times over (2026-11-09: object updates 32% of the tick in the emulator, 49% on the PSP-3000, on the same build and replayed fight).
 
 ## The automated loop
 
