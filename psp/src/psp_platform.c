@@ -680,6 +680,11 @@ void psp_step(const char *name)
 {
 	unsigned int now;
 
+	/* AI code the ME runs ahead (AIME) passes the same steps: its clock is a
+	syscall the ME can't make (a fault, code 8, that stops it: sierra-hw
+	42631841189 with timerson), and its time isn't the tick's */
+	if (PSP_ME_WORK())
+		return;
 	if (psp_timers_off)
 	{
 		/* the step is still kept for the crash report and the crumbs */
@@ -1837,7 +1842,7 @@ static void objsteps_split(void)
 
 void psp_objsteps_push(long definition, int type, int drawing)
 {
-	if (!objsteps_ready())
+	if (PSP_ME_WORK() || !objsteps_ready())
 		return;
 	objsteps_split();
 	if (objsteps_depth < OBJSTEPS_DEPTH)
@@ -1865,7 +1870,7 @@ void psp_objsteps_push(long definition, int type, int drawing)
 
 void psp_objsteps_pop(void)
 {
-	if (objsteps_on <= 0 || objsteps_depth <= 0)
+	if (PSP_ME_WORK() || objsteps_on <= 0 || objsteps_depth <= 0)
 		return;
 	objsteps_split();
 	objsteps_depth--;
