@@ -100,7 +100,7 @@ Collision stays the same code against the same world (the rule: collision exact,
 
 - Exact pieces (S1, S2, S5): play and both seeds identical, statecrc, on b30, c10, c20 and d20; check builds that run the old path beside the new and compare.
 - "Plays the same" pieces (S3, S4): side-by-sides and the outcome census (the rule of 2026-10-30), with statecrc's identity no longer the proof; both sides of their A/B carry the new maths.
-- The multiplayer boundary: what the server consumes or checks stays exact (the rules, the 30 Hz tick, collision's answers, tag indices, object slots). S1 and S2 are exact; S3 and S4 touch only local AI and far local bipeds.
+- The multiplayer boundary (corrected 2026-11-09, Sheepdog01 17:30; CLAUDE.md): it is the netcode's, not bit-exactness. Nothing a client computes is compared bit for bit; collision, node matrices, AI and physics reach the host only through movement (3.5 units) and hit reports (3-6 units), both bounds-checked; what must match is discrete (datum indices at map load, the join's version and checksums). So no piece of S needs to be exact for multiplayer: exact pieces are proven by statecrc because it's the cheaper proof, the rest by side-by-sides and the outcome census. (The list this replaces, "the rules, the 30 Hz tick, collision's answers, tag indices, object slots", was stricter than the netcode.)
 
 ## 5. Risks and open questions
 
