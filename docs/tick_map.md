@@ -206,6 +206,46 @@ The lab's `research/manifest/tickmap_units_code_2026-11-09.md` (line numbers the
 - **Each object runs its whole update chain in turn,** so each update re-fetches its ~300-400 lines of code: instruction misses scale with the updates run (`redesign_tick_target.md` §3.9). Fewer updates (tiers, rates) cut both work and misses; reordering them (stage-major) was priced at ~1-2 ms in a plays-the-same form.
 - **A biped's movement is a sequential chain:** velocity, pill move (collision), support search, translate (reconnect). Each step reads what the last wrote, so the chain itself doesn't overlap; the gain is in how often it runs and for whom.
 
-## 5-11. The other systems
+## 5. The smaller systems
 
-To come, each built the same way: other objects, libm and memcpy, effects and particles, tags, audio, scripts, the rest.
+Each is a few percent of the flight's tick; together, with the rest, about 37%. Sources: the lab's `research/manifest/tickmap_small_code_2026-11-09.md` (what runs, callers, readers) and `tickmap_small_levers_2026-11-09.md` (every lever on effects, lookups, sound and micro-opt, checked: 143 of 143 citations right, CTN and NEARZ added by hand). Shares are the PC sampler's on b30's flight (PSP-3000) [M] unless named.
+
+### 5.1 Effects and particles (3.4%; 1.5% on b30's beach, PSP-1000)
+
+- **What runs:** `effects_update` (tick) walks live effects: location from the parent, scale and colour functions, visibility, then events that make particles, decals, sounds, objects and damage. Particles, contrails and particle systems update on the **frame** path, decals at the rasterizer's frame start: at 30 fps a frame is one tick, so they count against it at the target. d20 is the heavy map (effects_update ~1,060 µs a tick, 175 live effects [E], `redesign_tick_target.md` §3.4).
+- **Levers (44):** on by default and PSP-paid include WXDEAD (c10 frame -1.6%) and VFPUTRIG; PADMIT (the budget asked first) and FLAMEDECAL are priced only in the emulator, with DC, MF, DM, DB, DFADE and others; FX15, L15, PRIO are compromises built off. Stopped partly on exactness: L15, PRIO, DFADE, VFPUTRIG (now shipping).
+- **Where else:** the decorative level emitters at a lower fixed rate or only on screen; particles under ~2 px faded early (`redesign_tick_target.md` §3.4). PADMIT and FLAMEDECAL need their PSP prices.
+
+### 5.2 Tag lookups (2.9%)
+
+- **What runs:** every `*_definition_get` is a macro over `tag_get`; the port's TAGSNAP caches the window's (instances, count) inline and falls back to the checked routine; `TAG_BLOCK_GET_ELEMENT` is inlined. **The tag window is 32% of the tick's data misses** (`cache_work.md`), so the cost is the misses on tag data, not the lookup.
+- **Levers (10):** TYP, HANDLES, ACCLEAF, LIGHTFIRST priced on one PSP map; RL1, LODX, TLM, LIGHTREUSE emulator only. TAGHOT (hot tag fields copied to compact records; ceiling ~4% of the tick's data misses in the hottest 4 KB [E]) and B's packed tag window are proposed.
+
+### 5.3 Audio on the main CPU (2.4%; 1.7% on the beach)
+
+- **What runs:** per frame, `game_sound_update` (looping sounds) and `sound_render` (listener, priorities, channels, the sound cache); obstruction is a PVS test and one ray, cached 4 ticks and capped at 6 tests a frame. The mix runs on the ME.
+- **Levers (67):** the largest ground by count, most of them the ME's audio; 16 emulator only (RM1, SC1, SI, E1, NMS, AFX, HALFMUFFLE, VIRTVOICE, ...), 34 on one PSP map. Stopped partly on exactness: NMS, E3N, HALFMUFFLE, VIRTVOICE.
+
+### 5.4 Scripts (1.6%)
+
+- **What runs:** `hs_runtime_update` walks every script thread every tick and runs those due (`hs_runtime.c`: sleeping threads still cost a step), then object-list garbage collection every tick and node collection every 16. Scripts run before `objects_update`, which reads what they set.
+- **Levers:** none of its own on the record; the walk over sleeping threads is a candidate only if the count is large (unmeasured).
+
+### 5.5 libm and memcpy (5.3%)
+
+- **What runs:** matrix products take the VFPU on the main CPU; `sqrt` and `atan2` are narrowed to single precision; `memcpy` is the port's. The heaviest matrix site is the pose compute (§2); square roots sit mostly on AI paths (firing positions, path search).
+- **Levers (24 on micro-opt):** DBLSOFT, HUHINT, VFPUQD, VFPUP, VFPUTRIG, FPDENORM, STRICTALIAS, GETTICKCACHE each priced on one PSP map; ENUM32 stopped (an identical EBOOT). TUNE (GCC told the Allegrex's costs) and FDIV (where divides and square roots run) are open, priced as their rows say.
+
+### 5.6 Other object code (7.7%)
+
+- **What runs:** weapons (tracking, animation, heat), items (keeping upright), projectiles, machines (platforms; automatic doors test `objects_in_sphere` one tick in four), scenery (an animation step). Equipment has no update of its own, only `item_update` (engine `object_types.c:321-331`).
+- **The port's changes:** the sleepers (vehicles, machines, corpses, weapons and equipment, scenery), with sleepers still computing their function values; `posehalf` and `machinesfar`.
+- **Where else:** the awake sleep candidates that change every tick and pay both checksums (§4.4).
+
+## 6. What the map says so far
+
+To be written once the census fills the gaps (§1.2, §2.2, §4.2: the landing, b40, d20 and a30 by system, drawn size, band x step). Leads it already holds, each with its kind:
+- **Exact:** the vehicle double compute (§2.4); the mass-point double walk (§1.5); awake sleep candidates' checksums (§4.4).
+- **Plays the same, reopened by the netcode's boundary** (Sheepdog01 17:30, 17:52): collision's reuse, batching and tick-start views (§1.4); posing's emulator-only stops (ANIM2, UNSEENPOSE, ARMPASS, LNM, §2.3); the stage-major forms (PHASEB, FISSB, §4.3).
+- **Plays the same, open on play:** AITICKOLD's two fixes together (the outcome census s3o5 is running); the AI's cadence levers (§3.3).
+- **Untapped hardware:** particle point physics on the VME with a per-batch origin; the VFPU's approximation ops (the lab's `research/manifest/vme_vfpu_under_1607_2026-11-09.md`).
