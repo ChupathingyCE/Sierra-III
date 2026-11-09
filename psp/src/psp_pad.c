@@ -5,8 +5,11 @@ the game acts on them, so the rig can replay Sheepdog01's fights as benches.
 runs) and each local player's input_blob (player_control.c: the input after
 the pad, the sensitivity, the aim assist and the inhibitions) go to
 DATA_ROOT/log/pad_<map load>.pad, one file a map load. "padplay": a map
-load reads DATA_ROOT/pad.pad whole and the frames take their time steps and
-the players their blobs from it, so the replay runs the same ticks with the
+load reads DATA_ROOT/pad.pad and the frames take their time steps and the
+players their blobs from it, PAD_WINDOW bytes at a time (read whole, b30's
+264 KB fight took that much heap from the game it benched: R's milestone
+pairs lost the copies' arena on the PSP, the lab's sierra-hw 42706253796 and
+42713237567), so the replay runs the same ticks with the
 same inputs however fast its build draws. With fixedseed on both sides the
 game then plays the same (the PSP's two races fixed first: tock162 edc2d39,
 74cd771) */
@@ -32,9 +35,13 @@ static unsigned char *pad_out = NULL;
 static unsigned int pad_out_used = 0;
 static SceUID pad_file = -1;
 static unsigned long pad_frames = 0, pad_blobs = 0;
-/* replaying */
+/* replaying: the file's bytes from pad_in_base, pad_in_fill of them, in a
+window read again as the replay reaches its end (16 KB: ~230 ticks of one
+player's inputs, a read every few seconds) */
+#define PAD_WINDOW (16 * 1024)
 static unsigned char *pad_in = NULL;
-static unsigned int pad_in_size = 0, pad_in_at = 0;
+static unsigned int pad_in_size = 0, pad_in_at = 0, pad_in_base = 0, pad_in_fill = 0;
+static SceUID pad_in_file = -1;
 static int pad_in_ended = 0;
 
 static int pad_log_on = 0;
@@ -120,22 +127,25 @@ static void pad_map_check(void)
 		return;
 	}
 	{
-		SceUID file;
 		SceOff size;
 
 		snprintf(path, sizeof(path), "%s/pad.pad", PSP_DATA_ROOT);
-		file = sceIoOpen(path, PSP_O_RDONLY, 0);
-		size = file >= 0 ? sceIoLseek(file, 0, PSP_SEEK_END) : 0;
-		if (file >= 0 && size > 0 && size < 16 * 1024 * 1024 && (pad_in = malloc((unsigned int)size)) != NULL)
+		pad_in_file = sceIoOpen(path, PSP_O_RDONLY, 0);
+		size = pad_in_file >= 0 ? sceIoLseek(pad_in_file, 0, PSP_SEEK_END) : 0;
+		if (pad_in_file >= 0 && size > 0 && size < 16 * 1024 * 1024 && (pad_in = malloc(PAD_WINDOW)) != NULL)
 		{
-			sceIoLseek(file, 0, PSP_SEEK_SET);
-			pad_in_size = (unsigned int)sceIoRead(file, pad_in, (unsigned int)size);
+			sceIoLseek(pad_in_file, 0, PSP_SEEK_SET);
+			pad_in_size = (unsigned int)size;
 		}
-		if (file >= 0)
-			sceIoClose(file);
-		pad_in_at = 0;
+		else if (pad_in_file >= 0)
+		{
+			sceIoClose(pad_in_file);
+			pad_in_file = -1;
+		}
+		pad_in_at = pad_in_base = pad_in_fill = 0;
 		pad_in_ended = !pad_in;
-		platform_log("pad: replaying %s, %u bytes%s", path, pad_in_size, pad_in ? "" : " (none: the game's own input)");
+		platform_log("pad: replaying %s, %u bytes, %u at a time%s", path, pad_in_size, (unsigned int)PAD_WINDOW,
+			pad_in ? "" : " (none: the game's own input)");
 	}
 }
 
@@ -150,21 +160,50 @@ static void pad_put(unsigned int tag, const void *data, unsigned int bytes)
 	pad_out_used += bytes;
 }
 
+/* the window holds the file's bytes [pad_in_at, pad_in_at + bytes), read
+on when it doesn't: what's left moves to its start and the rest is filled */
+static void pad_window(unsigned int bytes)
+{
+	unsigned int keep, got;
+	int read;
+
+	if (pad_in_at + bytes <= pad_in_base + pad_in_fill || pad_in_file < 0)
+		return;
+	keep = pad_in_base + pad_in_fill - pad_in_at;
+	memmove(pad_in, pad_in + (pad_in_at - pad_in_base), keep);
+	pad_in_base = pad_in_at;
+	pad_in_fill = keep;
+	read = sceIoRead(pad_in_file, pad_in + keep, PAD_WINDOW - keep);
+	got = read > 0 ? (unsigned int)read : 0;
+	pad_in_fill += got;
+	if (pad_in_base + pad_in_fill >= pad_in_size || !got)
+	{
+		sceIoClose(pad_in_file);
+		pad_in_file = -1;
+	}
+}
+
 /* the next record of the replay, which must be tag: 1 with its bytes, 0 at
 the end or a mismatch (said once; the game's own input from then on) */
 static int pad_take(unsigned int tag, void *data, unsigned int bytes)
 {
+	unsigned char const *at;
+
 	if (pad_in_ended || !pad_in)
 		return 0;
-	if (pad_in_at + 1 + bytes > pad_in_size || pad_in[pad_in_at] != tag)
+	pad_window(1 + bytes);
+	at = pad_in + (pad_in_at - pad_in_base);
+	if (pad_in_at + 1 + bytes > pad_in_base + pad_in_fill || at[0] != tag)
 	{
+		int in = pad_in_at < pad_in_base + pad_in_fill;
+
 		platform_log("pad: replay %s at byte %u of %u (wanted '%c', found '%c')",
 			pad_in_at >= pad_in_size ? "ended" : "parted from the recording", pad_in_at, pad_in_size, tag,
-			pad_in_at < pad_in_size ? pad_in[pad_in_at] : '-');
+			in ? at[0] : '-');
 		pad_in_ended = 1;
 		return 0;
 	}
-	memcpy(data, pad_in + pad_in_at + 1, bytes);
+	memcpy(data, at + 1, bytes);
 	pad_in_at += 1 + bytes;
 	return 1;
 }
