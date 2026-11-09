@@ -26,7 +26,7 @@ Labels: [M] measured on the PSP, [E] emulator or estimate, [D] read in code or d
 | S1 | Bodies held up by sleeping objects sleep too | exact | **~0 on the flight** (~1 body a tick; est. ~1-2 by subtraction); a d20 piece | objcost 42141971439 [M]; whyawake1-3 [E] |
 | S2 | Collision's feature queries: the level half reused while the sphere is unchanged | exact | **~0 [M], shelved 11-06** (est. ~0.75-1.1) | s2census1 [E]; two PSP pairs, §5 |
 | S3 | AITICKOLD: the AI's think on the ME from a world one tick older | plays the same (built, Sheepdog01's earlier OK to experiment) | ~5.9 (-14.5%) | PSP-3000 pair 42041663929 [M]; needs ME room R frees |
-| S4 | The far-biped tier | plays the same | ~2.3 (half rate) to ~4.6 (on the ME a tick behind) | objcost2 shares × the PSP's 24.3 [U on E × M] |
+| S4 | The far-biped tier | plays the same | beach ~0.7 (half rate) to ~1.4 (on the ME a tick behind); the flight's share is 5x the beach's | the PSP-1000's own band census (5.6% of biped time on the beach) × the PSP's 24.3 [U on M]; was ~2.3 to ~4.6 on objcost2's emulator shares |
 | S5 | T5 (walks that overlap their misses) and T7 (data laid out for the tick) | exact | ~0.5-1 | `redesign_tick.md` |
 | — | The GE's toll, cut by R and B | exact | ~2-4 | lead A [U on E and M] |
 
@@ -78,6 +78,8 @@ For bipeds far from the player and out of the fight (AIFAR's test), two forms, c
 Collision stays the same code against the same world (the rule: collision exact, one path). The tier is local: in the campaign every biped is the PSP's own; in co-op the host runs the far AI.
 
 **What S4 doesn't reach:** bipeds in the fight at 20-40 units are the largest band (30-38% of biped time). A distance tier leaves them alone, since they're what the player is fighting. If S1-S4 land below their ceilings, they're where the margin sits; the plan's ruling 3 says what comes next (§5).
+
+**S4's band census on the PSP (2026-11-09, PSP-1000, the b30 pad bench, master/qrtock b6d285a: lab sierra-hw 42672087890, findings `s4_far_out_share_*`) [M, shares; the census inflates the tick]:** far (20+) bipeds not in the fight are **30.3%** of the bipeds' update time on the flight, **12.8%** on the landing and **5.6%** on the beach fight, where all of it is actor-less bodies at ~0.14 ms each. In the fight, at every distance, is 84% of the beach's biped time (under 10: 31%, 10-20: 27%, 20-40: 26%). So the tier as shaped is a flight-and-landing lever, worth ~1 ms of the combat tick at most; combat's biped cost is the update itself, for bipeds the player is fighting. That points S at making each biped's update cheaper (`biped_update_physics`, `object_compute_node_matrices`, `unit_verify_vectors`: the PSP's top steps, combatsteps) rather than at updating fewer, and keeps any rate cut for in-fight bipeds a compromise behind Sheepdog01's A/B.
 
 ## 3. The slices
 
