@@ -155,9 +155,13 @@ The lab's `research/manifest/tickmap_ai_code_2026-11-09.md`. Under the default k
 
 The flight's 16.5% and the beach's ~10% differ by stretch, and the sampler groups by function, so the AI's rays are counted under collision.
 
-### 3.3 Levers
+### 3.3 Every lever tried on it, and where it was priced
 
-To come: the lever history on the AI's ground (the next DeepSeek read). Known from the record: S3 (AITICKOLD: the ME thinks from a world a tick older, tick -14.5% on b30's beach [M]; fights resolve differently, so it doesn't yet play the same); AIFAR (built, off: far calm actors think less often); OBSRAY and PRS on by default.
+51 levers sit on the ai ground (the lab's `research/manifest/tickmap_ai_levers_2026-11-09.md`, checked with `tools/levercite.py`: 49 of 50 citations right, SPHSL added).
+- **On by default, paid on the PSP:** AIME (the thinking on the ME: c20 and b30, both PSPs), AICAD (thinking at half rate, shipped as a cadence change), PWSL and SPHSL (reconnects answered by slack: c20 tick -0.6 to -2.8%), OBSRAY (obstacle rays reused: step -10.4%), PRS.
+- **Priced on one PSP map only** (most on b30, PSP-3000): AIFAR (far calm actors think 1 tick in 4: frame -1.9% cinematic, -3.4% landing; off, Sheepdog01's A/B), AITICKOLD (tick -14.5% on the beach), MESCHED, MEMEMO, CLUSTERPACK, TGME, TIMERCALLS, AUDIOCHUNK, RBK; the AIME look jobs on d20 or c10.
+- **Priced only in the emulator:** L3, RA, RC, AP, AC, MB, LPH, UNC, UNCR, PRS, LODS, UNSEENPOSE, ORPH, AIMEDRAM; never priced: ACTORSPLIT, RT1, RV3, RH, NNAI, ANIM2, MPAIM.
+- **Stopped on play, not on the netcode:** RA (far actors sliced: b30's marines lose the beach), AICAD and AIFAR (cadence changes by design), AITICKOLD (fights resolve differently; two fixes built, unproven together), UNSEENPOSE, UNCR (a skipped side effect diverges play). The AI runs on the host only, and the campaign has no host, so the netcode excuses none of these: they stay questions of "plays the same" (Sheepdog01's bar), and AITICKOLD's two fixes are the cheapest of them to prove.
 
 ### 3.4 What it means for the menu [U on M]
 
