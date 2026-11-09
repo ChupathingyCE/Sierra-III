@@ -47,7 +47,7 @@ Four families (the lab's `research/manifest/tickmap_collision_code_2026-11-09.md
 | **Point tests** | `bsp3d_test_point` (via `scenario_location_from_point`) | every mass point's location each physics update; `collision_test_point`'s cluster lookup; the camera's leaf |
 | **Cluster reconnect and partition** | `cluster_partition_reconnect` → `structure_clusters_in_sphere` | every `object_translate` (`object_reconnect_to_map`), the queued non-collideable pass, object lights; the cluster lists it builds are what the object halves of the queries above walk, and what `objects_in_sphere` uses for biped and vehicle contact |
 
-**Multiplayer boundary:** collision's answers are among the state a server consumes (`redesign_s.md` §4), so collision stays exact, or campaign-only and proven to play the same.
+**Multiplayer boundary (corrected 2026-11-09):** collision never goes on the wire. Halo's netcode isn't lockstep: the PSP is only ever a client, and collision reaches the host only through the client's movement and hit reports, both checked against loose bounds (3.5 units for its own biped, 3-6 for hits) rather than bit for bit (`hardware_utilization.md` §6, api-job 40731381973 [D]). So collision may differ in the last bits if it plays the same; what must hold is play staying well inside those tolerances, and objects taking the same datum indices at map load. `redesign_s.md` §4's list ("collision's answers" among the state a server consumes) is stricter than the netcode.
 
 ### 1.2 What it costs on the PSP
 
@@ -80,7 +80,7 @@ Four families (the lab's `research/manifest/tickmap_collision_code_2026-11-09.md
 
 - **The stretches never priced:** the landing (in-fight bipeds 58% of biped time), b40's snowfield and cliff, d20. Collision's share there is unmeasured, so every collision stop priced on b30 alone is open there.
 - **The emulator-only and never-priced levers** above each need a PSP pair before they count either way.
-- **Plays the same:** Sheepdog01 16:07 allows it where multiplayer stays compatible. Collision's answers are server state, so it applies only to campaign-only paths proven by side-by-sides and the outcome census.
+- **Plays the same:** Sheepdog01 16:07 allows it where multiplayer stays compatible, and for collision it does (§1.1): every collision lever stopped only for not being bit-exact reopens, proven by side-by-sides and the outcome census instead of the state hash.
 
 ### 1.5 Does the algorithm suit this machine? [D/U]
 
