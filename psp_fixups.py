@@ -44086,6 +44086,12 @@ actor's start in them (-1 none), the ME's to write in the second pass */
 #define PSP_AITICKOLD_BUF_WORDS (48 * 1024 / 4)
 static unsigned long *psp_aitickold_buf = NULL;
 static int psp_aitickold_buf_on = -1, psp_aitickold_buf_want = 0;
+/* diagnostics: "aitickoldbufcheck" checks each installed actor's orphan
+links before and after; "aitickoldbufnokeep" deletes every prop the
+thinking deleted; "aitickoldbufnooffer" doesn't offer a refused record's
+timeslice again */
+static int psp_aitickold_buf_check = 0, psp_aitickold_buf_nokeep = 0, psp_aitickold_buf_nooffer = 0;
+static long psp_aitickold_buf_check_lines = 0;
 static PSP_AIME_ME_SIDE long psp_aitickold_rec[MAXIMUM_ACTORS];
 static PSP_AIME_ME_SIDE long psp_aitickold_buf_used = 0;
 /* FALSE when the actor's thinking ran past what its copy can put back */
@@ -44388,6 +44394,74 @@ static void psp_aitickold_merge(
 	*word = (mine & tick) ? value : (*word & ~mine) | (value & mine);
 }
 
+/* aitickoldbufcheck: every prop of the actor's chain whose orphan link
+doesn't hold (an orphan's parent alive and naming it back; a parent's orphan
+alive, an orphan, and naming it back), logged with what the record did to
+it: c changed (its link or state word: l, s), m made, k kept */
+static void psp_aitickold_check(
+	long actor_index_whole,
+	short absolute_index,
+	char const *when,
+	unsigned long const *buf,
+	long start,
+	long count,
+	short props)
+{
+	long prop_index;
+	short steps = 0;
+	struct actor_datum *actor = (struct actor_datum *)psp_aime_datum_address(actor_data, absolute_index);
+
+	for (prop_index = actor->meta.first_prop_index; prop_index != NONE && steps < 64;
+		prop_index = ((struct prop_datum *)psp_aime_datum_address(prop_data, prop_index))->next_prop_index, steps++)
+	{
+		struct prop_datum *prop = (struct prop_datum *)psp_aime_datum_address(prop_data, prop_index);
+		long link = prop->orphan_prop_index, back = -2;
+		boolean orphan = prop->state >= _prop_state_uninspected_orphan && prop->state <= _prop_state_inspected_orphan;
+		boolean bad, alive = psp_aitickold_prop_alive(link);
+		char how[8] = "-";
+		short p, at_how = 0, link_state = -1;
+
+		if (alive)
+		{
+			back = ((struct prop_datum *)psp_aime_datum_address(prop_data, link))->orphan_prop_index;
+			link_state = ((struct prop_datum *)psp_aime_datum_address(prop_data, link))->state;
+		}
+		bad = orphan ? (!alive || back != prop_index) :
+			(link != NONE && (!alive || back != prop_index || link_state < _prop_state_uninspected_orphan));
+		if (!bad || psp_aitickold_buf_check_lines >= 60)
+			continue;
+		psp_aitickold_buf_check_lines++;
+		if (buf)
+		{
+			long at = start + 3 + count * 3;
+
+			for (p = 0; p < props; p++)
+			{
+				unsigned long kind = buf[at] >> 16, n = buf[at] & 0xffffu;
+
+				if ((long)buf[at + 1] == prop_index && at_how < 5)
+				{
+					unsigned long r;
+
+					how[at_how++] = kind == 0 ? 'c' : kind == 1 ? 'm' : 'k';
+					for (r = 0; kind == 0 && r < n && at_how < 6; r++)
+					{
+						if (buf[at + 2 + r * 3] == 3)
+							how[at_how++] = 'l';
+						else if (buf[at + 2 + r * 3] == 9)
+							how[at_how++] = 's';
+					}
+				}
+				at += 2 + (kind == 1 ? n : kind == 2 ? 0 : n * 3);
+			}
+			how[at_how ? at_how : 1] = 0;
+		}
+		platform_psp_log("aitickoldbufcheck: game time %ld | %s actor %08lx prop %08lx state %d link %08lx (alive %d, state %d, back %08lx) record %s",
+			(long)game_time_get(), when, (unsigned long)actor_index_whole, (unsigned long)prop_index, (int)prop->state,
+			(unsigned long)link, (int)alive, (int)link_state, (unsigned long)back, how);
+	}
+}
+
 /* the actor as the record leaves it, built before anything is written */
 static unsigned long psp_aitickold_scratch[sizeof(struct actor_datum) / 4];
 
@@ -44413,6 +44487,14 @@ static void psp_aitickold_install(
 
 	if (!psp_aitickold_buf_want || !buf)
 		return;
+	for (absolute_index = 0; psp_aitickold_buf_check && absolute_index < actor_data->count; absolute_index++)
+	{
+		struct actor_datum *actor = (struct actor_datum *)psp_aime_datum_address(actor_data, absolute_index);
+
+		if (actor->identifier)
+			psp_aitickold_check(DATUM_INDEX_NEW(absolute_index, actor->identifier), absolute_index,
+				psp_aitickold_rec[absolute_index] >= 0 ? "tick, record" : "tick", NULL, 0, 0, 0);
+	}
 	for (absolute_index = 0; absolute_index < MAXIMUM_ACTORS; absolute_index++)
 	{
 		long start = psp_aitickold_rec[absolute_index], at, count, k, prop_index, last;
@@ -44469,7 +44551,7 @@ static void psp_aitickold_install(
 		{
 			psp_aitickold_buf_stats.conflicts++;
 			psp_aime_slot_identifier_b[absolute_index] = 0;
-			if (scratch->meta.timeslice && !actor->meta.timeslice)
+			if (scratch->meta.timeslice && !actor->meta.timeslice && !psp_aitickold_buf_nooffer)
 				ai_globals->time_given_this_frame = FALSE;
 			continue;
 		}
@@ -44505,7 +44587,7 @@ static void psp_aitickold_install(
 			more = FALSE;
 			for (p = 0; p < deleted_count; p++)
 			{
-				if (!kept[p] && psp_aitickold_named(actor, deleted, kept, deleted_count, deleted[p]))
+				if (!kept[p] && !psp_aitickold_buf_nokeep && psp_aitickold_named(actor, deleted, kept, deleted_count, deleted[p]))
 					kept[p] = more = TRUE;
 			}
 		} while (more);
@@ -44528,6 +44610,8 @@ static void psp_aitickold_install(
 			last = deleted[p];
 			psp_aitickold_buf_stats.kept++;
 		}
+		if (psp_aitickold_buf_check)
+			psp_aitickold_check(DATUM_INDEX_NEW(absolute_index, actor->identifier), absolute_index, "after", buf, start, count, props);
 		psp_aitickold_buf_stats.put++;
 	}
 }
@@ -44541,6 +44625,9 @@ static void psp_aitickold_install(
  """	if (psp_aitickold_buf_on < 0)
 	{
 		psp_aitickold_buf_on = psp_keep("aitickoldbuf") != 0 && psp_aime1b_active();
+		psp_aitickold_buf_check = psp_keep("aitickoldbufcheck") != 0;
+		psp_aitickold_buf_nokeep = psp_keep("aitickoldbufnokeep") != 0;
+		psp_aitickold_buf_nooffer = psp_keep("aitickoldbufnooffer") != 0;
 		if (psp_aitickold_buf_on)
 		{
 			psp_aitickold_buf = psp_aime_lines(PSP_AITICKOLD_BUF_WORDS * sizeof(unsigned long));
