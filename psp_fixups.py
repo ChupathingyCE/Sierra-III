@@ -44331,7 +44331,34 @@ static void psp_aitickold_install(
 			continue;
 		count = (long)buf[start + 1];
 		props = (short)buf[start + 2];
-		/* first, whether every prop it names is as the second pass left it */
+		/* the actor's chain as the record found it: the tick makes props too
+		(damage and effects noticed, actor_handle_damage and
+		actors_handle_unit_effect) and deletes them, and the record's links
+		are good only over the chain they were made against */
+		{
+			long chain = actor->meta.first_prop_index;
+
+			at = start + 3 + count * 2;
+			for (p = 0; p < props && ok; p++)
+			{
+				unsigned long kind = buf[at] >> 16, n = buf[at] & 0xffffu;
+				struct datum_header *header;
+
+				if (kind == 1)
+					break;
+				ok = chain != NONE && (long)buf[at + 1] == chain;
+				if (ok)
+				{
+					header = psp_aime_datum_address(prop_data, chain);
+					ok = header->identifier == (short)(chain >> 16);
+					if (ok)
+						chain = ((struct prop_datum *)header)->next_prop_index;
+				}
+				at += 2 + (kind == 2 ? 0 : n * 2);
+			}
+			ok = ok && chain == NONE;
+		}
+		/* then whether every prop it names is as the second pass left it */
 		at = start + 3 + count * 2;
 		for (p = 0; p < props && ok; p++)
 		{
