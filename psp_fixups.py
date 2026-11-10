@@ -29403,7 +29403,9 @@ int psp_light_relink(
 	if (psp_lsame_on < 0)
 	{
 		psp_lsame_count_only = psp_keep("lsamecount") != 0;
-		psp_lsame_on = psp_lsame_count_only || psp_keep("lsame") != 0;
+		psp_lsame_exact = psp_keep("lsameexact") != 0;
+		psp_lsame_on = psp_lsame_count_only || psp_lsame_exact || psp_keep("lsame") != 0;
+		csmemset(psp_lsame_marks, 0xFF, sizeof(psp_lsame_marks));
 		if (psp_lsame_on)
 		{
 			psp_lsame = (struct psp_lsame_entry *)malloc(MAXIMUM_LIGHTS_PER_MAP * sizeof(*psp_lsame));
@@ -29456,13 +29458,30 @@ int psp_light_relink(
 		entry->bits[0] == bits[0] && entry->bits[1] == bits[1] && entry->bits[2] == bits[2] && entry->bits[3] == bits[3];
 	psp_lsame_relinks++;
 	if (same)
+	{
+		long reference, cluster;
+		boolean clear = TRUE;
+
 		psp_lsame_same++;
+		for (cluster = cluster_partition_get_first_cluster(&light_cluster_partition, &reference, light->cluster_reference);
+			cluster != NONE && clear;
+			cluster = cluster_partition_get_next_cluster(&light_cluster_partition, &reference))
+		{
+			clear = psp_lsame_marks[(unsigned short)cluster % PSP_LSAME_CLUSTER_MARKS] != game_time_get();
+		}
+		if (clear)
+			psp_lsame_free++;
+		else if (psp_lsame_exact)
+			same = FALSE;
+	}
 	if (game_time_get() / 900 != psp_lsame_logged)
 	{
 		psp_lsame_logged = game_time_get() / 900;
-		platform_psp_log("lsame: game time %ld | relinks %lu, the same sphere and cluster %lu (%lu%%), skipped %lu",
+		platform_psp_log("lsame: game time %ld | relinks %lu, the same sphere and cluster %lu (%lu%%), of them no light added to its clusters earlier in the pass %lu (%lu%%: the list-order rule's share); skipped %lu (%s)",
 			(long)game_time_get(), psp_lsame_relinks, psp_lsame_same,
-			psp_lsame_relinks ? psp_lsame_same * 100 / psp_lsame_relinks : 0, psp_lsame_skipped);
+			psp_lsame_relinks ? psp_lsame_same * 100 / psp_lsame_relinks : 0, psp_lsame_free,
+			psp_lsame_relinks ? psp_lsame_free * 100 / psp_lsame_relinks : 0, psp_lsame_skipped,
+			psp_lsame_count_only ? "counting only" : psp_lsame_exact ? "the list-order rule" : "any same");
 	}
 	if (same && !psp_lsame_count_only)
 	{
@@ -29473,6 +29492,16 @@ int psp_light_relink(
 	make it, from the reads above */
 	cluster_partition_disconnect(&light_cluster_partition, light_index, &light->cluster_reference);
 	cluster_partition_reconnect(&light_cluster_partition, light_index, &light->cluster_reference, &position, radius, &location);
+	{
+		long reference, cluster;
+
+		for (cluster = cluster_partition_get_first_cluster(&light_cluster_partition, &reference, light->cluster_reference);
+			cluster != NONE;
+			cluster = cluster_partition_get_next_cluster(&light_cluster_partition, &reference))
+		{
+			psp_lsame_marks[(unsigned short)cluster % PSP_LSAME_CLUSTER_MARKS] = game_time_get();
+		}
+	}
 	entry->bits[0] = bits[0];
 	entry->bits[1] = bits[1];
 	entry->bits[2] = bits[2];
@@ -29515,9 +29544,20 @@ struct psp_lsame_entry
 	short cluster_index; /* NONE: empty */
 };
 static struct psp_lsame_entry *psp_lsame = NULL;
-static int psp_lsame_on = -1, psp_lsame_count_only = 0;
+static int psp_lsame_on = -1, psp_lsame_count_only = 0, psp_lsame_exact = 0;
+/* the list-order rule ("lsameexact"): a light added to a cluster's list this
+pass went first in it, where a light relinked after it would have gone
+ahead of it again; so a skip keeps the original order only when none of
+the light's clusters took a light earlier in the pass. The marks are the
+pass (the game time) by cluster index modulo their count: a shared mark
+only refuses a skip */
+#define PSP_LSAME_CLUSTER_MARKS 1024
+static long psp_lsame_marks[PSP_LSAME_CLUSTER_MARKS];
+static unsigned long psp_lsame_free;
 static unsigned long psp_lsame_generation = 1;
 static unsigned long psp_lsame_relinks, psp_lsame_same, psp_lsame_skipped;
+long cluster_partition_get_first_cluster(struct cluster_partition const *partition, long *reference_index, long first_cluster_reference);
+long cluster_partition_get_next_cluster(struct cluster_partition const *partition, long *reference_index);
 static long psp_lsame_logged = -1;
 
 static void psp_lsame_forget(
