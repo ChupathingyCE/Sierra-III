@@ -56,7 +56,7 @@ The bench ran 64 opcodes on both PSPs, one on each PE, with 16 inputs: front fro
 - both 8-bit channel adds (0x0005c000, 0x00058000)
 - BARREL 0x00098000
 
-None gives a different answer on the Phat: each is a no-op or a zero there. **So every context must be proven on the PSP-1000.** Where an operation the job needs is among these, its Phat equivalent is listed above (add: 0x00020000).
+None gives a different answer on the Phat: each is a no-op or a zero there. **So every context must be proven on the PSP-1000.** Confirmed opcode by opcode with an independent harness (2026-11-10, the lab's findings `vme_opcodes_psp1000`): Dink's vme2-next-level kernels for 0x010, 0x014, 0x018, 0x038, 0x03c, 0x058, 0x05c, 0x08c and 0x098 each pass an operand through on the PSP-1000, while `add_ofa` (0x030) is exact; his toolkit's `--compat fat` marks only 0x010 not portable. Where an operation the job needs is among these, its Phat equivalent is listed above (add: 0x00020000).
 
 The saturator, the secondary units and the refresh rules are §7 (round 2, PSP-1000).
 

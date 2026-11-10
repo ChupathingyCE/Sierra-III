@@ -149,7 +149,7 @@ The Allegrex is a MIPS 4K-based core: in-order, single-issue, and every interloc
 
 ## DMA
 
-- **System DMAC: 182–204 MB/s, but the CPU's misses ×2.1 at full duty, ×1.2 at half, none at a quarter.** [M] `hw_capabilities.md:62` — `182–204 MB/s`.
+- **System DMAC: 182–204 MB/s, but the CPU's misses ×2.1 at full duty, ×1.2 at half, none at a quarter.** Superseded in part 2026-11-10: the half and quarter figures are medians that drop the burst chunks; as time paid they're ×1.38 and ×1.20 (`hardware_facts.md`, Bus and contention). [M] `hw_capabilities.md:62` — `182–204 MB/s`.
 - **DMACplus rate by length (main RAM → eDRAM, 16-byte width, burst 1):** 4 KB 97 MB/s, 16 KB 198, 32 KB 222, 65,520 B 263 (~296 MB/s slope, ~28 µs fixed); eDRAM → main 273 MB/s for 16 KB; the CPU's misses +44% beside it. [M, PSP-1000] `lab:psp/sierra/findings/measurements.tsv:11458` — `4 KB 42-45 us (97 MB/s), 16 KB 82-83 (198)`; `hw_capabilities.md:62` — `the misses +44%`.
 - **DMACplus measured on the PSP-3000: 4 KB in 42–43 µs (234–250 MB/s); 16 KB 85–89 µs; eDRAM→main 62 µs (264 MB/s).** [M] `dma_engines.md:125` — `4 KB in 42–43 µs`.
 - **DMACplus into the ME's eDRAM: 254–256 MB/s at 16-byte transfers; one descriptor up to 4,095 counts (65,520 bytes); a chained descriptor list hung the PSP.** [M] `plan_sound_edram.md:7` — `254-256 MB/s at 16-byte transfers`; `A chained descriptor list hung the PSP`.

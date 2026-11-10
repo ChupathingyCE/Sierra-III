@@ -132,6 +132,13 @@ Each slice is proven in the emulator for correctness only (§4). A slice slower 
 | 8 | Planar fog, if the GE's fog reads the same | a side-by-side |
 | — | **Switch-over:** every kind R takes drawn by R; the old record and replay kept only for the dynamic kinds | one PSP pair on the heavy stretches; then the old model path goes |
 | 9 | SSPR (for the target) | pictures at each level of detail's distance |
+| 10 | **MEXEC: the ME's hot replay code run from eDRAM** (the lab's `me_unnamed.md`, lever 5), then the hot/cold split with TGME's layout on what's left, then parts in runs by path | play and seeds identical (code placement only); priced as a PSP pair at R's milestone |
+
+**Why slice 10 (2026-11-10, the master; the lab's findings `me_unnamed_test1_steps`, `_outside`, `me_imiss_spread_r`, `mexec_code_fetch_psp1000`, `_loaded`):**
+- On R's milestone build the ME's code misses are **29-32% of its job on b30's flight** (14-21 ms a frame at ~75 cycles a miss) [M]: spread over every step of the part chain, not only the gaps between the timed steps.
+- They fall over **~100 KB of code**, 75% of them in 104 KB [E, shares], so no split fits the ME's 16 KB I-cache.
+- **The ME fetches a code line from eDRAM in 25 cycles against main RAM's 54 alone and 70 under bus load; eDRAM doesn't slow under load** [M, PSP-1000].
+- So moving the ~104 KB into eDRAM (544 KB free) should save about half the code-miss time, **~7-10 ms a frame of the ME on the flight** [U on M and E]. That also frees the ME's room the two-core tick needs (the lab's `tick_core.md`).
 
 **Why slices 2-4 were reordered** (2026-11-05, slice 1's counts; the master's rslice1a v3 42153611114, master/rslice1 f81a02d9, d20): of 40 opaque parts a frame, the first draft's slice 2 (rigid, single pass, opaque, not near) took **1.1**; the rest were skinned 17.0, with a reflection pass 15.4, two-sided 4.2, glow 1.3, no baked buffer 0.9. So the skinned parts join the rigid ones in slice 2 and the reflection pass leads slice 3: the milestone measures R on most of the parts, not 3% of them. **Confirmed on all four maps** (rslice1b v2 42160136450, row r_slice1_parts [E]): opaque parts a frame, the rigid set's take, then the main others:
 

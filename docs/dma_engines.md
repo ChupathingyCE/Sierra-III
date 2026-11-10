@@ -151,7 +151,7 @@ The PSP-3000 is the same [M]: 227 ns alone, 226 beside 0x40, 220 beside 0x48.
 **Rates and cost** [M, both PSPs, bench12]:
 
 - **Rate:** RAM → RAM 182–204 MB/s idle, 62–65 MB/s while the main CPU misses.
-- **Its cost to the main CPU's misses:** ×2.12 at full duty, ×1.2 at half, none at a quarter. RAM → VRAM costs ×1.93.
+- **Its cost to the main CPU's misses:** ×2.12 at full duty, ×1.2 at half, none at a quarter. RAM → VRAM costs ×1.93. Superseded in part 2026-11-10: the half and quarter figures are medians that drop the burst chunks; as time paid they're ×1.38 and ×1.20 (`hardware_facts.md`, Bus and contention).
 
 **Its clocks and the audio's use** [D, uofw `audio.c` and `sysreg_driver.c`, jpcsp]:
 - DMAC0's and DMAC1's bus clocks are bits 5 and 6 of 0xBC100050, and DMACplus's is bit 4.
