@@ -44066,7 +44066,7 @@ int psp_aitickold_trueclock = 0;
 # deleted) goes into a record, and the actor's state and props return to
 # the first pass's, so the first tick acts exactly on its own thinking. At
 # the second tick's start, where the main CPU's pass would think, the
-# records are put in, over what the first tick did: the words the thinking
+# records are put in, over what the first tick did: the bits the thinking
 # changed take its value, the rest keep the first tick's (the order the
 # thinking and the tick's update have without AITICKOLD). The pass's seed,
 # its 1b queue share, the timeslice's fields and the marks' flag go on as
@@ -44171,7 +44171,10 @@ static boolean psp_aitickold_buf_skip(
 	return TRUE;
 }
 
-/* the words of a datum that differ from its copy, as (word, value) pairs */
+/* the words of a datum that differ from its copy, as (word, value, bits
+changed) triples: the merge puts in only the bits the thinking changed, as
+the datums pack flags and short fields into shared words (ai_erase's
+erase_next_tick sits in the word of active and encounterless) */
 static long psp_aitickold_diff(
 	unsigned long *out,
 	long room,
@@ -44185,10 +44188,11 @@ static long psp_aitickold_diff(
 	{
 		if (now[k] != before[k])
 		{
-			if (count * 2 + 2 > room)
+			if (count * 3 + 3 > room)
 				return -1;
-			out[count * 2] = (unsigned long)k;
-			out[count * 2 + 1] = now[k];
+			out[count * 3] = (unsigned long)k;
+			out[count * 3 + 1] = now[k];
+			out[count * 3 + 2] = now[k] ^ before[k];
 			count++;
 		}
 	}
@@ -44226,7 +44230,7 @@ static void psp_aitickold_shelve(
 	buf[start] = (unsigned long)(unsigned short)actor->identifier;
 	buf[start + 1] = (unsigned long)count;
 	psp_aitickold_buf_me_stats.words += count;
-	at += count * 2;
+	at += count * 3;
 	/* the first pass's props: each changed or deleted (every one recorded, so
 	the second tick sees any the first tick deleted) */
 	for (k = 0; k < copy->prop_count; k++)
@@ -44251,7 +44255,7 @@ static void psp_aitickold_shelve(
 			if (count < 0)
 				goto full;
 			buf[at] = (unsigned long)count;
-			at += 2 + count * 2;
+			at += 2 + count * 3;
 			if (count)
 				psp_aitickold_buf_me_stats.props_changed++;
 		}
@@ -44359,13 +44363,38 @@ static boolean psp_aitickold_named(
 	return FALSE;
 }
 
+/* the bytes of a word that hold a changed bit */
+static unsigned long psp_aitickold_bytes(
+	unsigned long changed)
+{
+	changed |= changed >> 1;
+	changed |= changed >> 2;
+	changed |= changed >> 4;
+	return (changed & 0x01010101UL) * 0xffUL;
+}
+
+/* one word of the record over the tick's: the bytes the thinking changed take
+its value and the rest keep the tick's, so flags and short fields packed in
+one word merge as fields. Where both changed the same byte (one field both
+wrote) the thinking's whole word goes in, so a value is never made of parts
+of two */
+static void psp_aitickold_merge(
+	unsigned long *word,
+	unsigned long value,
+	unsigned long changed)
+{
+	unsigned long mine = psp_aitickold_bytes(changed), tick = psp_aitickold_bytes(*word ^ (value ^ changed));
+
+	*word = (mine & tick) ? value : (*word & ~mine) | (value & mine);
+}
+
 /* the actor as the record leaves it, built before anything is written */
 static unsigned long psp_aitickold_scratch[sizeof(struct actor_datum) / 4];
 
 /* the second tick's start: each record put in over the first tick's work, as
-the thinking at that tick's start would write over it: the actor's words the
-thinking changed take its values, the rest keep the tick's; its props' words
-likewise; the props it made are made at their slots. The record's links are
+the thinking at that tick's start would write over it: the bits of the actor's
+words the thinking changed take its values, the rest keep the tick's; its
+props' words likewise; the props it made are made at their slots. The record's links are
 good only over the prop chain it was made against, and the tick makes props
 too (damage and effects noticed: actor_handle_damage,
 actors_handle_unit_effect) and deletes them, so a record goes in only when
@@ -44404,11 +44433,11 @@ static void psp_aitickold_install(
 		props = (short)buf[start + 2];
 		csmemcpy(scratch, actor, sizeof(*scratch));
 		for (k = 0; k < count; k++)
-			psp_aitickold_scratch[buf[start + 3 + k * 2]] = buf[start + 4 + k * 2];
+			psp_aitickold_merge(&psp_aitickold_scratch[buf[start + 3 + k * 3]], buf[start + 4 + k * 3], buf[start + 5 + k * 3]);
 		/* the chain as the record found it: its changed and deleted props, in
 		the chain's order, then the props it made */
 		prop_index = actor->meta.first_prop_index;
-		at = start + 3 + count * 2;
+		at = start + 3 + count * 3;
 		for (p = 0; p < props && ok; p++)
 		{
 			unsigned long kind = buf[at] >> 16, n = buf[at] & 0xffffu;
@@ -44424,7 +44453,7 @@ static void psp_aitickold_install(
 				if (ok)
 					deleted[deleted_count++] = (long)buf[at + 1];
 			}
-			at += 2 + (kind == 2 ? 0 : n * 2);
+			at += 2 + (kind == 2 ? 0 : n * 3);
 		}
 		ok = ok && prop_index == NONE;
 		if (!ok)
@@ -44447,7 +44476,7 @@ static void psp_aitickold_install(
 		/* in: the actor, then its props' words and the props it made */
 		csmemcpy(actor, scratch, sizeof(*actor));
 		psp_aitickold_buf_stats.words += count;
-		at = start + 3 + count * 2;
+		at = start + 3 + count * 3;
 		for (p = 0; p < props; p++)
 		{
 			unsigned long kind = buf[at] >> 16, n = buf[at] & 0xffffu;
@@ -44463,9 +44492,9 @@ static void psp_aitickold_install(
 				unsigned long *prop_words = (unsigned long *)psp_aime_datum_address(prop_data, prop_index);
 
 				for (k = 0; k < (long)n; k++)
-					prop_words[buf[at + 2 + k * 2]] = buf[at + 3 + k * 2];
+					psp_aitickold_merge(&prop_words[buf[at + 2 + k * 3]], buf[at + 3 + k * 3], buf[at + 4 + k * 3]);
 			}
-			at += 2 + (kind == 1 ? n : kind == 2 ? 0 : n * 2);
+			at += 2 + (kind == 1 ? n : kind == 2 ? 0 : n * 3);
 		}
 		/* the deletions last: a prop named by the actor or by a prop that
 		stays is kept, and so is whatever a kept prop names */
