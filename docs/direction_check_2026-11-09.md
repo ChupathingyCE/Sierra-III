@@ -34,3 +34,9 @@ On the main CPU a frame holds its ticks, its drawing and a few ms of the rest (w
 3. **R's own design is the obvious candidate to price before anything new:** the instance as GE words (`redesign_r.md`: ~10-20 words a rigid part instead of ~140-200, no per-part bind, lighting or geometry chain), extended upward to the walk (an object's visible parts, LOD and permutations carried from frame to frame, checked by stamp). That is the piece that would take the main CPU's drawing toward ~10; slices 1-5a built the forms and the arguments, not the walk.
 4. **Price R whole against the old path once** (the redesign rule's milestone), ME time included, so §1a/§1b's R column is a measurement, not a design figure.
 5. **Re-run §1a and §1b with measured figures** in place of R's design ones; the floor's margin on the flight changes sign if drawing stays near 35.
+
+## Since (18:30-18:56) [M]
+
+- **The drawing by part:** `draw_map.md` §0 (sierra-hw 42728051032). The model path is ~41% of the flight's and landing's drawing (17.1 and 22.3 ms); everything else is thin, with a 1,585-function tail of 10-12 ms.
+- **R whole against the old path:** `draw_map.md` §2.1 (42729345783). R takes 1.6-7.3 ms of the main CPU's drawing and adds 0.6-1.3 ms to the tick; the ME's replay is unchanged (×1.02, not ×0.57). R's two design figures in §1a, the replay ×0.57 and the drawing to ~10 ms, are both unmet as built.
+

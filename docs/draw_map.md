@@ -61,7 +61,13 @@ The samples are named by `psp/sierra/pcsample.py`, using the symbols of sierra-b
 
 ## §2 Open, in order
 
-1. **Price R whole against the old path** (one PSP pair, ME time included). Then §1a and §1b of `redesign_plan.md` can carry measured figures.
+1. **R whole against the old path: priced** (lab sierra-hw 42729345783, PSP-1000, one build, both sides with R's code) [M]. R takes from the main CPU's drawing:
+   - −1.8 ms on the cinematic (−8.4%);
+   - −2.9 on the flight (−6.5%);
+   - −7.3 on the landing (−12.7%);
+   - −1.6 on the beach (−6.4%).
+
+   The tick rises 0.6-1.3 ms (+1.6% to +3.8%): R's code sits in the cache beside the tick's. The frame falls 0.6-4.8 ms. **The ME's replay is unchanged** (50.1 → 51.3 ms a job, ×1.02). `redesign_plan.md` §1a carried R at the replay ×0.57 and the main CPU's drawing at ~10 ms, so its after-R columns are design figures and stand corrected by these.
 2. **The drawing phase's instruction and data misses on the PSP** (the hardware counters across the drawing phase, one run). This says whether the tail is misses or work.
 3. **Size the retained model path's design**: the instance as GE words, plus the walk carried by stamp. Weigh its ceiling (§1.2) on all three units: the main CPU above, the ME's replay, and the GE's lists.
 4. Each part's section, as `tick_map.md` does for the tick: what it computes and who reads it, every lever tried on it with where it was priced, where else it might gain, and its algorithm.
