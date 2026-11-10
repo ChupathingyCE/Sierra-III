@@ -102,7 +102,7 @@ Each placement changes only addresses, so it's exact by construction (play and b
 - **The tests that size it:**
   - a per-kind contention bench (list, strip, non-indexed, VRAM, RAM textures by size, paced duty);
   - `gedouble` (the toll's slope in play);
-  - ceilingbus's fourth side (the far tiers' bus dividend);
+  - ceilingbus's fourth side (the far tiers' bus dividend): **measured 2026-11-10, at most ~1.6 ms a tick on b30's flight** (the GE skipping models under 96 px: 39.1 → 37.5 ms; no models 35.3; the lab's `bus_toll_models_small_b30_flight`);
   - the VRAM budget census by kind with the far tiers' bands.
 
 ## 5. Open questions
