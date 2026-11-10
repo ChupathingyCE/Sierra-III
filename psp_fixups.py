@@ -44083,7 +44083,7 @@ FIXES_AITICKOLD["source/ai/actors.c#aitickoldbuf"] = [
 } psp_aitickold_stats;
 /* FIXES_AITICKOLD: "aitickoldbuf" (see there). The records, in words; each
 actor's start in them (-1 none), the ME's to write in the second pass */
-#define PSP_AITICKOLD_BUF_WORDS (160 * 1024 / 4)
+#define PSP_AITICKOLD_BUF_WORDS (48 * 1024 / 4)
 static unsigned long *psp_aitickold_buf = NULL;
 static int psp_aitickold_buf_on = -1, psp_aitickold_buf_want = 0;
 static PSP_AIME_ME_SIDE long psp_aitickold_rec[MAXIMUM_ACTORS];
@@ -44096,7 +44096,7 @@ static struct
 } psp_aitickold_buf_me_stats PSP_AIME_ME_SIDE;
 static struct
 {
-	unsigned long put, conflicts, words;
+	unsigned long put, conflicts, words, kept, added;
 } psp_aitickold_buf_stats;
 static void psp_aitickold_buf_begin(void);
 static boolean psp_aitickold_buf_skip(long actor_index);
@@ -44217,7 +44217,7 @@ static void psp_aitickold_shelve(
 		psp_aitickold_buf_me_stats.kept++;
 		return;
 	}
-	at = start + 3;
+	at = start + 4;
 	room = PSP_AITICKOLD_BUF_WORDS - at;
 	count = room > 0 ? psp_aitickold_diff(buf + at, room, (unsigned long const *)actor, (unsigned long const *)&copy->actor,
 		(long)(sizeof(struct actor_datum) / 4)) : -1;
@@ -44276,6 +44276,16 @@ static void psp_aitickold_shelve(
 		psp_aitickold_buf_me_stats.props_made++;
 	}
 	buf[start + 2] = (unsigned long)props;
+	/* the chain's order as the thinking left it */
+	count = 0;
+	for (prop_index = actor->meta.first_prop_index; prop_index != NONE; prop_index = prop_get(prop_index)->next_prop_index)
+	{
+		if (at + 1 > PSP_AITICKOLD_BUF_WORDS)
+			goto full;
+		buf[at++] = (unsigned long)prop_index;
+		count++;
+	}
+	buf[start + 3] = (unsigned long)count;
 	psp_aitickold_buf_used = at;
 	if ((unsigned long)at > psp_aitickold_buf_me_stats.peak)
 		psp_aitickold_buf_me_stats.peak = (unsigned long)at;
@@ -44304,23 +44314,62 @@ full:
 	psp_aime_slot_identifier_b[absolute_index] = 0;
 }
 
-/* the second tick's start: each record put in over the first tick's work. A
-record that can't go in clears its actor's mark: it thinks whole in the tick */
+/* TRUE when a word of the block holds the value (a prop's index) */
+static boolean psp_aitickold_names(
+	unsigned long const *words,
+	long count,
+	unsigned long value)
+{
+	long k;
+
+	for (k = 0; k < count; k++)
+	{
+		if (words[k] == value)
+			return TRUE;
+	}
+	return FALSE;
+}
+
+static boolean psp_aitickold_prop_alive(
+	long prop_index)
+{
+	return prop_index != NONE && DATUM_INDEX_TO_ABSOLUTE_INDEX(prop_index) < prop_data->maximum_count &&
+		psp_aime_datum_address(prop_data, prop_index)->identifier == (short)(prop_index >> 16);
+}
+
+#define PSP_AITICKOLD_CHAIN_MOST 64
+/* the actor as the record leaves it, built before anything is written */
+static unsigned long psp_aitickold_scratch[sizeof(struct actor_datum) / 4];
+
+/* the second tick's start: each record put in over the first tick's work, as
+the thinking at that tick's start would write over it. The actor's words the
+thinking changed take its values (built first in a scratch copy); its props'
+words likewise; the props it made are made at their slots. The tick may have
+changed the actor's props meanwhile (damage and effects noticed make props:
+actor_handle_damage, actors_handle_unit_effect; events delete them), so the
+chain is built again: the thinking's order, then any prop the tick added. A
+prop the thinking deleted that the actor still names (the tick's control
+took it as a target meanwhile) is kept, as the engine never deletes a prop
+an actor names; the next thinking lets it go. A record that names a prop the
+tick deleted, or makes one in a slot the tick took, isn't put in: the actor
+loses its mark and thinks whole in the tick, and a timeslice the record held
+is offered again */
 static void psp_aitickold_install(
 	void)
 {
 	unsigned long *buf = psp_aitickold_buf;
-	long size = prop_data->size;
+	long size = prop_data->size, words = (long)(sizeof(struct actor_datum) / 4);
 	short absolute_index;
 
 	if (!psp_aitickold_buf_want || !buf)
 		return;
 	for (absolute_index = 0; absolute_index < MAXIMUM_ACTORS; absolute_index++)
 	{
-		long start = psp_aitickold_rec[absolute_index], at, count, k;
+		long start = psp_aitickold_rec[absolute_index], at, count, chain_count, k, prop_index;
+		long now_chain[PSP_AITICKOLD_CHAIN_MOST], new_chain[PSP_AITICKOLD_CHAIN_MOST];
+		short now_count = 0, new_count = 0, props, p;
 		struct actor_datum *actor;
-		unsigned long *words;
-		short props, p;
+		struct actor_datum *scratch = (struct actor_datum *)psp_aitickold_scratch;
 		boolean ok = TRUE;
 
 		if (start < 0 || absolute_index >= actor_data->count)
@@ -44331,79 +44380,111 @@ static void psp_aitickold_install(
 			continue;
 		count = (long)buf[start + 1];
 		props = (short)buf[start + 2];
-		/* the actor's chain as the record found it: the tick makes props too
-		(damage and effects noticed, actor_handle_damage and
-		actors_handle_unit_effect) and deletes them, and the record's links
-		are good only over the chain they were made against */
+		chain_count = (long)buf[start + 3];
+		/* the chain the tick left */
+		for (prop_index = actor->meta.first_prop_index; prop_index != NONE && ok;
+			prop_index = ((struct prop_datum *)psp_aime_datum_address(prop_data, prop_index))->next_prop_index)
 		{
-			long chain = actor->meta.first_prop_index;
-
-			at = start + 3 + count * 2;
-			for (p = 0; p < props && ok; p++)
-			{
-				unsigned long kind = buf[at] >> 16, n = buf[at] & 0xffffu;
-				struct datum_header *header;
-
-				if (kind == 1)
-					break;
-				ok = chain != NONE && (long)buf[at + 1] == chain;
-				if (ok)
-				{
-					header = psp_aime_datum_address(prop_data, chain);
-					ok = header->identifier == (short)(chain >> 16);
-					if (ok)
-						chain = ((struct prop_datum *)header)->next_prop_index;
-				}
-				at += 2 + (kind == 2 ? 0 : n * 2);
-			}
-			ok = ok && chain == NONE;
+			ok = now_count < PSP_AITICKOLD_CHAIN_MOST && psp_aitickold_prop_alive(prop_index);
+			if (ok)
+				now_chain[now_count++] = prop_index;
 		}
-		/* then whether every prop it names is as the second pass left it */
-		at = start + 3 + count * 2;
+		csmemcpy(scratch, actor, sizeof(*scratch));
+		for (k = 0; k < count; k++)
+			psp_aitickold_scratch[buf[start + 4 + k * 2]] = buf[start + 5 + k * 2];
+		/* every prop the record names: a slot it makes a prop in still free,
+		and no prop the tick deleted named by the actor or a prop it makes */
+		at = start + 4 + count * 2;
 		for (p = 0; p < props && ok; p++)
 		{
 			unsigned long kind = buf[at] >> 16, n = buf[at] & 0xffffu;
-			long prop_index = (long)buf[at + 1];
-			struct datum_header *header = psp_aime_datum_address(prop_data, prop_index);
 
+			prop_index = (long)buf[at + 1];
 			if (kind == 1)
-				ok = !header->identifier;
-			else
-				ok = header->identifier == (short)(prop_index >> 16);
+				ok = !psp_aime_datum_address(prop_data, prop_index)->identifier;
+			else if (!psp_aitickold_prop_alive(prop_index))
+			{
+				long q, at2 = start + 4 + count * 2;
+
+				ok = !psp_aitickold_names(psp_aitickold_scratch, words, (unsigned long)prop_index);
+				for (q = 0; q < props && ok; q++)
+				{
+					unsigned long kind2 = buf[at2] >> 16, n2 = buf[at2] & 0xffffu;
+
+					if (kind2 == 1)
+						ok = !psp_aitickold_names(buf + at2 + 2, (long)n2, (unsigned long)prop_index);
+					at2 += 2 + (kind2 == 1 ? n2 : kind2 == 2 ? 0 : n2 * 2);
+				}
+			}
 			at += 2 + (kind == 1 ? n : kind == 2 ? 0 : n * 2);
 		}
+		ok = ok && chain_count <= PSP_AITICKOLD_CHAIN_MOST;
 		if (!ok)
 		{
 			psp_aitickold_buf_stats.conflicts++;
 			psp_aime_slot_identifier_b[absolute_index] = 0;
+			if (scratch->meta.timeslice && !actor->meta.timeslice)
+				ai_globals->time_given_this_frame = FALSE;
 			continue;
 		}
-		words = (unsigned long *)actor;
-		for (k = 0; k < count; k++)
-			words[buf[start + 3 + k * 2]] = buf[start + 4 + k * 2];
+		/* in: the actor, then its props */
+		csmemcpy(actor, scratch, sizeof(*actor));
 		psp_aitickold_buf_stats.words += count;
-		at = start + 3 + count * 2;
+		at = start + 4 + count * 2;
 		for (p = 0; p < props; p++)
 		{
 			unsigned long kind = buf[at] >> 16, n = buf[at] & 0xffffu;
-			long prop_index = (long)buf[at + 1];
 
-			if (kind == 2)
-				datum_delete(prop_data, prop_index);
-			else if (kind == 1)
+			prop_index = (long)buf[at + 1];
+			if (kind == 1)
 			{
 				if (datum_new_at_index(prop_data, prop_index) == prop_index)
 					csmemcpy(psp_aime_datum_address(prop_data, prop_index), buf + at + 2, size);
 			}
-			else
+			else if (psp_aitickold_prop_alive(prop_index))
 			{
 				unsigned long *prop_words = (unsigned long *)psp_aime_datum_address(prop_data, prop_index);
 
-				for (k = 0; k < (long)n; k++)
-					prop_words[buf[at + 2 + k * 2]] = buf[at + 3 + k * 2];
+				if (kind == 2)
+				{
+					if (psp_aitickold_names((unsigned long const *)actor, words, (unsigned long)prop_index))
+						psp_aitickold_buf_stats.kept++;
+					else
+						datum_delete(prop_data, prop_index);
+				}
+				else
+				{
+					for (k = 0; k < (long)n; k++)
+						prop_words[buf[at + 2 + k * 2]] = buf[at + 3 + k * 2];
+				}
 			}
 			at += 2 + (kind == 1 ? n : kind == 2 ? 0 : n * 2);
 		}
+		/* the chain again: the thinking's order, then what the tick added and
+		the props kept */
+		for (k = 0; k < chain_count; k++)
+		{
+			prop_index = (long)buf[at + k];
+			if (psp_aitickold_prop_alive(prop_index))
+				new_chain[new_count++] = prop_index;
+		}
+		for (k = 0; k < now_count; k++)
+		{
+			short q;
+			boolean had = FALSE;
+
+			for (q = 0; q < new_count && !had; q++)
+				had = new_chain[q] == now_chain[k];
+			if (!had && psp_aitickold_prop_alive(now_chain[k]) && new_count < PSP_AITICKOLD_CHAIN_MOST)
+			{
+				new_chain[new_count++] = now_chain[k];
+				psp_aitickold_buf_stats.added++;
+			}
+		}
+		actor->meta.first_prop_index = new_count ? new_chain[0] : NONE;
+		for (k = 0; k < new_count; k++)
+			((struct prop_datum *)psp_aime_datum_address(prop_data, new_chain[k]))->next_prop_index =
+				k + 1 < new_count ? new_chain[k + 1] : NONE;
 		psp_aitickold_buf_stats.put++;
 	}
 }
@@ -44443,11 +44524,12 @@ static void psp_aitickold_install(
 """,
  """			psp_aitickold_stats.used, psp_aitickold_stats.inline_passes, psp_aitickold_stats.queue_carried);
 	if (psp_aitickold_buf_on > 0)
-		platform_psp_log("aitickoldbuf: game time %ld | second thinkings kept %lu (words %lu; props changed %lu, made %lu, deleted %lu), left in place %lu, skipped %lu, no room %lu, records' peak %lu words | put in %lu (words %lu), conflicts %lu",
+		platform_psp_log("aitickoldbuf: game time %ld | second thinkings kept %lu (words %lu; props changed %lu, made %lu, deleted %lu), left in place %lu, skipped %lu, no room %lu, records' peak %lu words | put in %lu (words %lu), not put in %lu; props the actor still named kept %lu, props the tick added %lu",
 			now, psp_aitickold_buf_me_stats.unshelved, psp_aitickold_buf_me_stats.words, psp_aitickold_buf_me_stats.props_changed,
 			psp_aitickold_buf_me_stats.props_made, psp_aitickold_buf_me_stats.props_deleted, psp_aitickold_buf_me_stats.kept,
 			psp_aitickold_buf_me_stats.skipped, psp_aitickold_buf_me_stats.full, psp_aitickold_buf_me_stats.peak,
-			psp_aitickold_buf_stats.put, psp_aitickold_buf_stats.words, psp_aitickold_buf_stats.conflicts);
+			psp_aitickold_buf_stats.put, psp_aitickold_buf_stats.words, psp_aitickold_buf_stats.conflicts,
+			psp_aitickold_buf_stats.kept, psp_aitickold_buf_stats.added);
 """),
 ]
 # the second pass's clock: the game time one tick on, in the pass's own
