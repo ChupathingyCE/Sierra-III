@@ -29575,6 +29575,27 @@ void lights_reconnect_to_structure_bsp(
 	psp_lsame_generation++; /* (FIXES_LSAME) another BSP */
 """),
 ]
+FIXES_LSAME["source/objects/object_lights.c#lsame"].append(
+("""			radius,
+			&location);
+#else
+		/* port: The dedicated server draws nothing""",
+"""			radius,
+			&location);
+		{
+			/* (FIXES_LSAME) a light joined through here went first in its
+			clusters' lists too, so a later skip there would leave it behind */
+			long psp_reference, psp_cluster;
+
+			for (psp_cluster = cluster_partition_get_first_cluster(&light_cluster_partition, &psp_reference, light->cluster_reference);
+				psp_cluster != NONE;
+				psp_cluster = cluster_partition_get_next_cluster(&light_cluster_partition, &psp_reference))
+			{
+				psp_lsame_marks[(unsigned short)psp_cluster % PSP_LSAME_CLUSTER_MARKS] = game_time_get();
+			}
+		}
+#else
+		/* port: The dedicated server draws nothing"""))
 FIXES_LSAME["source/objects/objects.c#lsame"] = [
 ("""				if (disconnect)
 				{
