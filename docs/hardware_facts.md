@@ -293,7 +293,7 @@ The Allegrex is a MIPS 4K-based core: in-order, single-issue, and every interloc
 - **The fast VME DMAC's cost to main-CPU misses (×1.33) was measured on the PSP-3000 only.** [M, PSP-3000] `dma_engines.md:11` — `a main-CPU miss goes 227 → 303 ns`.
 - **The PSP-1000's VFPU corrupts data on unaligned `ulv.q`/`usv.q`; the PSP-3000 is not named in that bug.** [M] `psp_hardware_reference.md:16` — `PSP-1000 silicon bug: unaligned`.
 - **The two PSPs draw b119 and b120 identically.** [M] `hardware_b120.md:82` — `draws b119 and b120 identically`.
-- **The PSP-3000's second 32 MB isn't granted to the game on the rig:** a MEMSIZE=1 build (PSP_BIG_RAM=1) launched by the agent under ARK-4 saw the standard user partition and crashed at load. [M, PSP-3000] `lab:psp/sierra/findings/measurements.tsv:12613` — `got the standard user partition`.
+- **The PSP-3000's second 32 MB reaches the game only with ARK-4's extra-memory option set:** a MEMSIZE=1 build (PSP_BIG_RAM=1) saw the standard user partition and crashed at load without it; with the option at its maximum it started with 37,604 KB free (the standard build: 13,012). [M, PSP-3000] `lab:psp/sierra/findings/measurements.tsv:12613` — `got the standard user partition`; `lab:psp/sierra/findings/measurements.tsv:12614` — `started with 37,604 KB free`.
 
 ---
 - **The PSP-3000's misses are cheaper in cycles** (44–59 against the 1000's 55–71), so the 3000's cycle counts stand in for the 1000's only as shares. [M] `lab:psp/sierra/findings/measurements.tsv:2487` — `The PSP-3000's misses are cheaper than the PSP-1000's`.
