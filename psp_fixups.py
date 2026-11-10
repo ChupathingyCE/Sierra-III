@@ -29405,7 +29405,6 @@ int psp_light_relink(
 		psp_lsame_count_only = psp_keep("lsamecount") != 0;
 		psp_lsame_exact = psp_keep("lsameexact") != 0;
 		psp_lsame_on = psp_lsame_count_only || psp_lsame_exact || psp_keep("lsame") != 0;
-		csmemset(psp_lsame_marks, 0xFF, sizeof(psp_lsame_marks));
 		if (psp_lsame_on)
 		{
 			psp_lsame = (struct psp_lsame_entry *)malloc(MAXIMUM_LIGHTS_PER_MAP * sizeof(*psp_lsame));
@@ -29467,7 +29466,9 @@ int psp_light_relink(
 			cluster != NONE && clear;
 			cluster = cluster_partition_get_next_cluster(&light_cluster_partition, &reference))
 		{
-			clear = psp_lsame_marks[(unsigned short)cluster % PSP_LSAME_CLUSTER_MARKS] != game_time_get();
+			long first_reference;
+
+			clear = cluster_partition_get_first_datum(&light_cluster_partition, &first_reference, (short)cluster) == light_index;
 		}
 		if (clear)
 			psp_lsame_free++;
@@ -29477,7 +29478,7 @@ int psp_light_relink(
 	if (game_time_get() / 900 != psp_lsame_logged)
 	{
 		psp_lsame_logged = game_time_get() / 900;
-		platform_psp_log("lsame: game time %ld | relinks %lu, the same sphere and cluster %lu (%lu%%), of them no light added to its clusters earlier in the pass %lu (%lu%%: the list-order rule's share); skipped %lu (%s)",
+		platform_psp_log("lsame: game time %ld | relinks %lu, the same sphere and cluster %lu (%lu%%), of them first in all their clusters' lists %lu (%lu%%: the list-order rule's share); skipped %lu (%s)",
 			(long)game_time_get(), psp_lsame_relinks, psp_lsame_same,
 			psp_lsame_relinks ? psp_lsame_same * 100 / psp_lsame_relinks : 0, psp_lsame_free,
 			psp_lsame_relinks ? psp_lsame_free * 100 / psp_lsame_relinks : 0, psp_lsame_skipped,
@@ -29492,16 +29493,6 @@ int psp_light_relink(
 	make it, from the reads above */
 	cluster_partition_disconnect(&light_cluster_partition, light_index, &light->cluster_reference);
 	cluster_partition_reconnect(&light_cluster_partition, light_index, &light->cluster_reference, &position, radius, &location);
-	{
-		long reference, cluster;
-
-		for (cluster = cluster_partition_get_first_cluster(&light_cluster_partition, &reference, light->cluster_reference);
-			cluster != NONE;
-			cluster = cluster_partition_get_next_cluster(&light_cluster_partition, &reference))
-		{
-			psp_lsame_marks[(unsigned short)cluster % PSP_LSAME_CLUSTER_MARKS] = game_time_get();
-		}
-	}
 	entry->bits[0] = bits[0];
 	entry->bits[1] = bits[1];
 	entry->bits[2] = bits[2];
@@ -29545,14 +29536,10 @@ struct psp_lsame_entry
 };
 static struct psp_lsame_entry *psp_lsame = NULL;
 static int psp_lsame_on = -1, psp_lsame_count_only = 0, psp_lsame_exact = 0;
-/* the list-order rule ("lsameexact"): a light added to a cluster's list this
-pass went first in it, where a light relinked after it would have gone
-ahead of it again; so a skip keeps the original order only when none of
-the light's clusters took a light earlier in the pass. The marks are the
-pass (the game time) by cluster index modulo their count: a shared mark
-only refuses a skip */
-#define PSP_LSAME_CLUSTER_MARKS 1024
-static long psp_lsame_marks[PSP_LSAME_CLUSTER_MARKS];
+/* the list-order rule ("lsameexact"): a relink puts the light first in each
+of its clusters' lists, and what happens to the lists after it is the same
+whether it ran or not; so a skip leaves every list as the relink would have
+exactly when the light is already first in each of them */
 static unsigned long psp_lsame_free;
 static unsigned long psp_lsame_generation = 1;
 static unsigned long psp_lsame_relinks, psp_lsame_same, psp_lsame_skipped;
@@ -29575,27 +29562,6 @@ void lights_reconnect_to_structure_bsp(
 	psp_lsame_generation++; /* (FIXES_LSAME) another BSP */
 """),
 ]
-FIXES_LSAME["source/objects/object_lights.c#lsame"].append(
-("""			radius,
-			&location);
-#else
-		/* port: The dedicated server draws nothing""",
-"""			radius,
-			&location);
-		{
-			/* (FIXES_LSAME) a light joined through here went first in its
-			clusters' lists too, so a later skip there would leave it behind */
-			long psp_reference, psp_cluster;
-
-			for (psp_cluster = cluster_partition_get_first_cluster(&light_cluster_partition, &psp_reference, light->cluster_reference);
-				psp_cluster != NONE;
-				psp_cluster = cluster_partition_get_next_cluster(&light_cluster_partition, &psp_reference))
-			{
-				psp_lsame_marks[(unsigned short)psp_cluster % PSP_LSAME_CLUSTER_MARKS] = game_time_get();
-			}
-		}
-#else
-		/* port: The dedicated server draws nothing"""))
 FIXES_LSAME["source/objects/objects.c#lsame"] = [
 ("""				if (disconnect)
 				{
