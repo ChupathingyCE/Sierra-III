@@ -44088,6 +44088,8 @@ static unsigned long *psp_aitickold_buf = NULL;
 static int psp_aitickold_buf_on = -1, psp_aitickold_buf_want = 0;
 static PSP_AIME_ME_SIDE long psp_aitickold_rec[MAXIMUM_ACTORS];
 static PSP_AIME_ME_SIDE long psp_aitickold_buf_used = 0;
+/* FALSE when the actor's thinking ran past what its copy can put back */
+static PSP_AIME_ME_SIDE int psp_aitickold_copy_whole = 0;
 static struct
 {
 	unsigned long kept, words, props_changed, props_made, props_deleted, full, skipped, unshelved, peak;
@@ -44116,6 +44118,15 @@ static void psp_aitickold_install(void);
 		return;
 	psp_aime_save(actor_index);
 	psp_aime1b_stats.actors++;
+"""),
+("""		actor_update(actor_index);
+		if (psp_aime_arm == 2)
+			psp_aime1b_stats.no_stop++;
+""",
+ """		actor_update(actor_index);
+		psp_aitickold_copy_whole = psp_aime_arm != 2;
+		if (psp_aime_arm == 2)
+			psp_aime1b_stats.no_stop++;
 """),
 ("""	if (psp_aime_chain_on > 0)
 		psp_aime_chain_check(1, actor_index);
@@ -44200,7 +44211,7 @@ static void psp_aitickold_shelve(
 	unsigned long *buf = psp_aitickold_buf;
 	short props = 0;
 
-	if (psp_aime_arm == 2 || absolute_index < 0 || absolute_index >= MAXIMUM_ACTORS)
+	if (!psp_aitickold_copy_whole || absolute_index < 0 || absolute_index >= MAXIMUM_ACTORS)
 	{
 		/* (a copy that can't be complete: the thinking stays in place) */
 		psp_aitickold_buf_me_stats.kept++;
