@@ -1658,7 +1658,7 @@ static void me_mexec_install(volatile struct me_control *control)
 
 		*word = (*word & 0xFC000000u) | (((copy + t[at + 1]) >> 2) & 0x03FFFFFFu);
 	}
-	tramp_at = t[3] - 8 * t[6];
+	tramp_at = t[11];
 	for (k = 0; k < t[6]; k++, at += 2)
 	{
 		unsigned int *tramp = (unsigned int *)(copy + tramp_at + 8 * k);
@@ -1673,6 +1673,22 @@ static void me_mexec_install(volatile struct me_control *control)
 		unsigned int tramp = copy + tramp_at + 8 * t[at + 1];
 
 		*word = (*word & 0xFFFF0000u) | (((tramp - (copy + t[at] + 4)) >> 2) & 0xFFFFu);
+	}
+	/* the lui/%lo pairs that load a jump table's address, re-aimed at its copy */
+	for (k = 0; k < t[8]; k++, at += 2)
+	{
+		unsigned int *word = (unsigned int *)(copy + t[at]);
+
+		*word = (*word & 0xFFFF0000u) | (t[at + 1] & 0xFFFFu);
+	}
+	/* the jump tables, their words the copy's addresses */
+	for (k = 0; k < t[10]; k++)
+	{
+		unsigned int *to = (unsigned int *)(copy + t[at]), words = t[at + 1], w;
+
+		for (w = 0; w < words; w++)
+			to[w] = t[at + 2 + w];
+		at += 2 + words;
 	}
 	for (k = 0; k < t[3] / 4; k++)
 		sum += ((const unsigned int *)copy)[k];
@@ -2427,8 +2443,9 @@ static int me_mexec_wanted(void)
 		platform_log("ME: mexec refused: the build's table is empty (tools/mexec.py didn't run)");
 		return 0;
 	}
-	platform_log("ME: mexec: %u functions, %u bytes into eDRAM at %u KB (%u calls, %u branches re-aimed; %u jump-table words run on in main RAM)",
-		psp_mexec_table[4], psp_mexec_table[3], MEXEC_AT / 1024, psp_mexec_table[5], psp_mexec_table[7], psp_mexec_table[9]);
+	platform_log("ME: mexec: %u functions, %u bytes into eDRAM at %u KB (%u calls, %u branches, %u jump-table addresses re-aimed; %u jump tables copied, %u words left in main RAM)",
+		psp_mexec_table[4], psp_mexec_table[3], MEXEC_AT / 1024, psp_mexec_table[5], psp_mexec_table[7], psp_mexec_table[8],
+		psp_mexec_table[10], psp_mexec_table[9]);
 	return 1;
 #else
 	return 0;

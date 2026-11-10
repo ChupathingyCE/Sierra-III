@@ -21,22 +21,27 @@ each copied function:
   - R_MIPS_PC16 (a branch out of the function: -freorder-blocks-and-partition's
     jumps to a .cold part): re-aimed at a trampoline in the copy, j target;
     nop, the target its copy if copied, else main RAM.
-Everything else (HI16/LO16 pairs naming code: function pointers, jump tables)
-is left alone: it reaches the originals in main RAM, correct and slower. The
-tool counts what leaves the copy that way.
+  - a jump table (a run of .rodata words naming the inside of one copied
+    function): copied after the code with the copy's addresses, and the
+    lui/%lo pair that loads its address re-aimed at the copy (a table whose
+    pair isn't found stays in main RAM, its switch running on there).
+Everything else (HI16/LO16 pairs naming code: function pointers) is left
+alone: it reaches the originals in main RAM, correct and slower.
 
 The table (32-bit words, all offsets in bytes):
   0 magic 'MEXC', 1 version, 2 the entry's link address (the ME takes the
     program's load base from its own address of psp_ge_me_replay less this),
   3 copy bytes (functions and trampolines), 4 functions, 5 call patches,
-  6 trampolines, 7 branch patches, 8 calls to copies left out (none: all
-    patched), 9 jump-table words that name a copied function's inside,
-  10-15 0;
+  6 trampolines, 7 branch patches, 8 immediate patches, 9 jump-table words
+    left in main RAM, 10 jump tables copied, 11 the trampolines' place,
+  12-15 0;
   then per function: link address, bytes, place in the copy;
   per call patch: the word's place in the copy, the target's place;
   per trampoline: 1 if its target is a place in the copy else 0, the target
     (a place, or a link address);
-  per branch patch: the word's place in the copy, the trampoline's number.
+  per branch patch: the word's place in the copy, the trampoline's number;
+  per immediate patch: the word's place, its new low 16 bits;
+  per jump table: its place, its words, then the words (eDRAM addresses).
 """
 import struct
 import sys
@@ -47,7 +52,8 @@ HEADER_WORDS = 16
 ROOM = 128 * 1024   # docs/mexec.md: eDRAM 0x40000-0x60000
 ALIGN = 64
 
-R_MIPS_32, R_MIPS_26, R_MIPS_PC16 = 2, 4, 10
+R_MIPS_32, R_MIPS_26, R_MIPS_HI16, R_MIPS_LO16, R_MIPS_PC16 = 2, 4, 5, 6, 10
+EDRAM = 0x80040000  # the copy's address on the ME (docs/mexec.md)
 SHT_SYMTAB, SHT_REL = 2, 9
 STT_OBJECT, STT_FUNC = 1, 2
 
@@ -175,14 +181,64 @@ def build(elf, names, log):
         reach = tramp_at + 8 * k - (site_place + 4)
         if not -0x20000 <= reach < 0x20000:
             sys.exit("mexec: a branch at copy %#x can't reach its trampoline (%d bytes)" % (site_place, reach))
-    jump_words = 0
-    for site, typ in elf.relocations(".rodata"):
-        if typ == R_MIPS_32 and copy_place(elf.word(site)) is not None:
-            jump_words += 1
+    # jump tables: runs of .rodata words naming the inside of one copied
+    # function. Each is copied after the trampolines, its words the eDRAM
+    # addresses of the copy, and the lui/lo pair in the function that loads
+    # its address re-aimed at it (the pair found as the lui's register used as
+    # the base of a %lo within 8 instructions, its address the table's). A
+    # table whose pair can't be found that way stays in main RAM, and its
+    # switch runs on in main RAM
+    rod = sorted((site, owner(elf.word(site)), elf.word(site)) for site, typ in elf.relocations(".rodata")
+                 if typ == R_MIPS_32 and owner(elf.word(site)) is not None)
+    tables, run = [], []
+    for site, f, target in rod:
+        if run and (site != run[-1][0] + 4 or f is not run[-1][1]):
+            tables.append(run)
+            run = []
+        run.append((site, f, target))
+    if run:
+        tables.append(run)
+    text_relocs = {}
+    for site, typ in elf.relocations(".text"):
+        f = owner(site)
+        if f is not None and typ in (R_MIPS_HI16, R_MIPS_LO16):
+            text_relocs.setdefault(f["value"], []).append((site, typ))
+    imm_patches, data_blocks, jump_left = [], [], 0
+    data_at = total
+    for run in tables:
+        start, f = run[0][0], run[0][1]
+        pairs = []
+        rel = sorted(text_relocs.get(f["value"], []))
+        for k, (h, typ) in enumerate(rel):
+            if typ != R_MIPS_HI16:
+                continue
+            hw = elf.word(h)
+            rt = (hw >> 16) & 31
+            hi = hw & 0xFFFF
+            for l, typ2 in rel[k + 1:]:
+                if l > h + 32:
+                    break
+                lw_ = elf.word(l)
+                if typ2 != R_MIPS_LO16 or (lw_ >> 21) & 31 != rt:
+                    continue
+                if ((hi << 16) + sext16(lw_ & 0xFFFF)) & 0xFFFFFFFF == start:
+                    pairs.append((h, l))
+                    break
+        if not pairs:
+            jump_left += len(run)
+            continue
+        new = EDRAM + data_at
+        for h, l in pairs:
+            imm_patches.append((place[f["value"]] + h - f["value"], ((new + 0x8000) >> 16) & 0xFFFF))
+            imm_patches.append((place[f["value"]] + l - f["value"], new & 0xFFFF))
+        data_blocks.append((data_at, [EDRAM + place[g["value"]] + t - g["value"] for _, g, t in run]))
+        data_at += 4 * len(run)
+    jump_words = sum(len(r) for r in tables)
+    total = data_at
     if total > ROOM:
         sys.exit("mexec: the copy is %d bytes, over the %d of its room: shorten the list" % (total, ROOM))
     words = [MAGIC, VERSION, chosen[0]["value"], total, len(chosen), len(calls), len(trampolines), len(branches),
-             0, jump_words] + [0] * (HEADER_WORDS - 10)
+             len(imm_patches), jump_left, len(data_blocks), tramp_at] + [0] * (HEADER_WORDS - 12)
     for f in chosen:
         words += [f["value"], f["size"], place[f["value"]]]
     for site_place, p in calls:
@@ -191,10 +247,14 @@ def build(elf, names, log):
         words += [kind, value]
     for site_place, k in branches:
         words += [site_place, k]
+    for site_place, imm in imm_patches:
+        words += [site_place, imm]
+    for at, block in data_blocks:
+        words += [at, len(block)] + block
     log("mexec: %d functions, %d bytes of code, %d trampolines (%d bytes in all, of %d); %d calls re-aimed at copies, "
-        "%d branches through trampolines; %d jump-table words name a copy's inside (they run on in main RAM); "
+        "%d branches through trampolines; jump tables: %d of %d words copied (%d tables, %d immediates re-aimed), %d left in main RAM; "
         "other relocations left: %s" % (len(chosen), code_bytes, len(trampolines), total, ROOM, len(calls), len(branches),
-                                        jump_words, ", ".join("type %d x%d" % kv for kv in sorted(other_kinds.items())) or "none"))
+                                        jump_words - jump_left, jump_words, len(data_blocks), len(imm_patches), jump_left, ", ".join("type %d x%d" % kv for kv in sorted(other_kinds.items())) or "none"))
     return words
 
 
