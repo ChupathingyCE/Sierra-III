@@ -181,7 +181,7 @@ Today every object's work runs every tick. The redesigned tick computes what's r
   - **far bipeds on the ME, a tick behind** (BW; the AITICKOLD pattern), on the room R frees;
   - **the bipeds' update in stages that fit the I-cache** (PHASEB: its revive_if was "Sheepdog01's OK for the plays-the-same form"): ~1.1 ms a tick on b30 and ~2.6 on c20 on tock162's LTO build [U on E].
   - Collision runs the same code against the same world in all three (a choice that keeps the proof cheap; since 17:30 not a rule). Proof: side-by-sides and the outcome census. First count: bipeds a tick by distance from the player and by combat state (recon, emulator).
-- **Milestone:** C3's census done and S's pieces chosen against the target; the PSP prices S when the first of them replaces the old tick path on b30.
+- **Milestone:** priced as two builds on Sheepdog01's pad benches (b30_play2 and c20_play1): old-only (S's words off) against new-only (S's slices on), each with the whole heap (Sheepdog01 2026-11-10 01:16). Its trigger and due point are in the lab's plan (`research/opportunities/PLAN.md`, "Milestones"; Sheepdog01 2026-11-10 10:07): no part goes more than three proven slices or two days without a hardware number.
 - **Stop rule:** if C3 shows the pieces can't reach the target exactly or "plays the same", Sheepdog01 decides (§5.1).
 - **Fallback:** the old tick path behind S's keep word; it stays the safety net for a failure, per CLAUDE.md's failure rule.
 - **Who:** recon (C3); the master builds.
@@ -246,7 +246,7 @@ The GE was built for retained mode: lists that CALL sub-lists, 8 bone matrix and
   - **It fits the room R frees** [U]. Super high is drawn only for objects taller than the screen (the cinematics' close-ups, `memory_ledger.md`), so a store of the other four levels of detail, ~250-480 KB on most maps, fits inside today's 768 KB frame list, which R cuts to tens of KB. Super high can stay immediate, or stream in for a cinematic. The 560 bytes a form and the passes per feature are estimates, so the master's next read of psp_ge.c's model passes reprices it.
   - **The level needs no store of its own** [U]: its triangles are 0.35-2.1 MB of 16-bit indices a map (a10 365k triangles, 2.1 MB), too much to copy, but they're already in main RAM as the BSP's surfaces. A bake that orders each material's surfaces by cluster makes each (cluster, material) a contiguous range the GE can index in place. That's for R's design page to settle.
   - near the camera, geometry still has to be cut each frame (C5: the GE can't draw it uncut), so what's near the eye stays per-frame work.
-- **Milestone:** b30's models drawn from prebuilt lists with the record and replay bypassed for them; one PSP pair against the old path. **Switch-over:** every kind drawn by R; one pair.
+- **Milestone:** two builds on Sheepdog01's pad benches (b30_play2 and c20_play1): old-only (R off) against new-only (R with its proven slices, R top-down's included), each with the whole heap (Sheepdog01 2026-11-10 01:16); its trigger and due point are in the lab's plan (`research/opportunities/PLAN.md`, "Milestones"). **Switch-over:** every kind drawn by R; the same two builds again.
 - **Stop rule:** if C1 shows the store can't fit, or C4 that R's ME saving can't reach the floor's need with S and B, Sheepdog01 decides before any build.
 - **Fallback:** immediate mode stays in the build for what R can't hold: parts whose forms didn't fit the store, and any failure. The old record and replay go at the switch-over; immediate drawing doesn't.
 - **Who:** the bottleneck session (C1, C2, C5); the master (C4, the build).
@@ -362,7 +362,7 @@ The redesign rule (Sierra-III CLAUDE.md and the lab's, "Redesign work", Sheepdog
 **Phase 2, the build.**
 - Each part on its own branch, as a separate path under its keep word. The master builds; recon builds S's census-driven pieces.
 - Slices are proven in the emulator for correctness only (§6).
-- The milestone's PSP pair: R at "b30's models from prebuilt lists, record and replay bypassed for them"; S at its first piece replacing the old tick path on b30.
+- The milestone's price: two builds (old-only, new-only) on the pad benches, triggered as the lab's plan says (`research/opportunities/PLAN.md`, "Milestones"). A slice is never priced on the PSP by itself.
 - **R's one early pair** (Sheepdog01's go, 2026-11-07): after slice 2c's ring, one PSP pair logs what R's drawing in the ME's replay really costs the ME and the tick (the emulator charges the ME's work ~0). It's for information, not a gate, and isn't a frame A/B of R (the old layers are still there). It runs with the sound stream on both sides, which gives R's ~440 KB its heap.
 - **LMC under R** (Sheepdog01, 2026-11-07: "sounds like a good idea"): static lights' light-pass work kept across frames goes before R lands only if it pays first, sized in the eDRAM (an `edram.md` row: in main RAM the ME's reads of it would add the contention it removes), and built as the mechanism R adopts for static lights.
 - **The stick is scheduled** for every streaming part: fewer, larger reads; the game thread's reads first; no long writes in play.
