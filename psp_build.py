@@ -246,6 +246,13 @@ if SMALLDATA not in (0, 4, 8):
 # FIXES_WALKAPART). Its hooks sit in the tick's object marks and the particle
 # loop, so a default build leaves all of it out
 WALKAPART = os.environ.get("PSP_WALKAPART", "") == "1"
+# PSP_MEXEC=<name>: MEXEC (docs/mexec.md): psp_me.c carries psp_mexec_table,
+# and after the link tools/mexec.py fills it from psp/layout/mexec_<name>.txt
+# (the functions the Media Engine copies into its eDRAM). Keep word mexec
+# turns the copy on; a default build leaves the table out
+MEXEC = os.environ.get("PSP_MEXEC", "")
+if MEXEC and not re.match(r"^[A-Za-z0-9_]+$", MEXEC):
+    sys.exit("psp_build: PSP_MEXEC names a list in psp/layout (mexec_<name>.txt)")
 # PSP_MEVISLAND=0: leaves out the frame's visibility made on the ME (mevis's
 # copies of the visibility code, 23 KB, and the landing's hooks; keep word
 # mevisland, on by default; docs/mevis_landing.md). Built in otherwise
@@ -721,6 +728,7 @@ def compile_one(item):
                ["-DPSP_RECON=1"] if RECON else []) + (
                ["-DPSP_MEPROBE=1"] if MEPROBE else []) + (
                ["-DPSP_WALKAPART=1"] if WALKAPART else []) + (
+               ["-DPSP_MEXEC=1"] if MEXEC and src.endswith("psp_me.c") else []) + (
                ["-DPSP_MEVISLAND=1"] if MEVISLAND else []) + (
                ["-DPSP_METRICS=1"] if METRICS else []) + (
                ["-DPSP_MUSIC=1"] if MUSIC else []) + (
@@ -1439,6 +1447,13 @@ def main():
     if LTO_OBJS:
         lto_report(r)
     subprocess.run(["psp-fixup-imports", os.path.join(OUT, "halo.elf")], check=True)
+    if MEXEC:
+        # the copy's table, into the linked program before prxgen (the
+        # relocations it reads are -q's, which prxgen drops)
+        lst = os.path.join(HERE, "psp/layout/mexec_%s.txt" % MEXEC)
+        if not os.path.exists(lst):
+            sys.exit("psp_build: PSP_MEXEC: no list " + lst)
+        subprocess.run([sys.executable, os.path.join(HERE, "tools/mexec.py"), os.path.join(OUT, "halo.elf"), lst], check=True)
     subprocess.run(["psp-prxgen", os.path.join(OUT, "halo.elf"), os.path.join(OUT, "halo.prx")], check=True)
     # the title the XMB shows: the multiplayer build's is its own, so the two
     # EBOOTs installed side by side (PSP/GAME/halo, PSP/GAME/halomp) tell apart;

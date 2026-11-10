@@ -1,0 +1,45 @@
+# MEXEC's first list (docs/mexec.md): the functions the Media Engine copies into
+# its eDRAM, the hottest first. The ME's entry first; then the top 40 of the ME's
+# I-misses on R's milestone build, b30's flight (drawhot2, the lab's sierra-batch
+# 42906990536: 75% of them, 104 KB)
+psp_ge_me_replay
+psp_ge_draw_model
+defer_replay
+model_lighting
+model_geometry
+r_part_key
+psp_tex_bind
+psp_ge_draw_model_body
+psp_ge_model_shape.part.0
+vm_redirect_me
+resident_entry
+draw_before
+memset
+halo_matrix
+model_tail
+psp_ge_draw_level_body
+psp_ge_queue_transparent
+ambient_with_reflection
+kind_limit
+psp_ge_model_begin.part.0
+__wrap_sceGeListUpdateStallAddr
+psp_ge_model_reflection
+memcpy
+sceGuSetMatrix
+psp_geo_baked
+abgr_from_rgb
+sceGumUpdateMatrix
+sceGuEnable
+sceGuDisable
+reflection_strength
+r_part_key_slot
+psp_ge_model_multipurpose
+reflection_before
+list_take
+psp_ge_decal_body
+psp_tex_address
+psp_tex_touch
+ge_kind
+sceGumMatrixMode
+r_call
+r_touch_geometry
