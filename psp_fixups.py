@@ -44338,6 +44338,31 @@ static boolean psp_aitickold_prop_alive(
 }
 
 #define PSP_AITICKOLD_CHAIN_MOST 64
+
+/* TRUE when the actor, or a live prop of either chain other than this one,
+names the prop: it can't be deleted yet */
+static boolean psp_aitickold_named(
+	struct actor_datum const *actor,
+	long const *chain_a,
+	short count_a,
+	long const *chain_b,
+	long count_b,
+	long prop_index)
+{
+	long k, words = prop_data->size / 4;
+
+	if (psp_aitickold_names((unsigned long const *)actor, (long)(sizeof(*actor) / 4), (unsigned long)prop_index))
+		return TRUE;
+	for (k = 0; k < count_a + count_b; k++)
+	{
+		long other = k < count_a ? chain_a[k] : chain_b[k - count_a];
+
+		if (other != prop_index && psp_aitickold_prop_alive(other) &&
+			psp_aitickold_names((unsigned long const *)psp_aime_datum_address(prop_data, other), words, (unsigned long)prop_index))
+			return TRUE;
+	}
+	return FALSE;
+}
 /* the actor as the record leaves it, built before anything is written */
 static unsigned long psp_aitickold_scratch[sizeof(struct actor_datum) / 4];
 
@@ -44365,7 +44390,7 @@ static void psp_aitickold_install(
 		return;
 	for (absolute_index = 0; absolute_index < MAXIMUM_ACTORS; absolute_index++)
 	{
-		long start = psp_aitickold_rec[absolute_index], at, count, chain_count, k, prop_index;
+		long start = psp_aitickold_rec[absolute_index], at, chain_at, count, chain_count, k, prop_index;
 		long now_chain[PSP_AITICKOLD_CHAIN_MOST], new_chain[PSP_AITICKOLD_CHAIN_MOST];
 		short now_count = 0, new_count = 0, props, p;
 		struct actor_datum *actor;
@@ -44413,6 +44438,13 @@ static void psp_aitickold_install(
 
 					if (kind2 == 1)
 						ok = !psp_aitickold_names(buf + at2 + 2, (long)n2, (unsigned long)prop_index);
+					else if (kind2 == 0)
+					{
+						unsigned long r;
+
+						for (r = 0; r < n2 && ok; r++)
+							ok = buf[at2 + 3 + r * 2] != (unsigned long)prop_index;
+					}
 					at2 += 2 + (kind2 == 1 ? n2 : kind2 == 2 ? 0 : n2 * 2);
 				}
 			}
@@ -44445,14 +44477,7 @@ static void psp_aitickold_install(
 			{
 				unsigned long *prop_words = (unsigned long *)psp_aime_datum_address(prop_data, prop_index);
 
-				if (kind == 2)
-				{
-					if (psp_aitickold_names((unsigned long const *)actor, words, (unsigned long)prop_index))
-						psp_aitickold_buf_stats.kept++;
-					else
-						datum_delete(prop_data, prop_index);
-				}
-				else
+				if (kind == 0)
 				{
 					for (k = 0; k < (long)n; k++)
 						prop_words[buf[at + 2 + k * 2]] = buf[at + 3 + k * 2];
@@ -44460,11 +44485,29 @@ static void psp_aitickold_install(
 			}
 			at += 2 + (kind == 1 ? n : kind == 2 ? 0 : n * 2);
 		}
+		chain_at = at;
+		/* the deletions last, once every word is in: a prop still named by the
+		actor or by a prop it keeps (the tick's own props may link to it) stays */
+		at = start + 4 + count * 2;
+		for (p = 0; p < props; p++)
+		{
+			unsigned long kind = buf[at] >> 16, n = buf[at] & 0xffffu;
+
+			prop_index = (long)buf[at + 1];
+			if (kind == 2 && psp_aitickold_prop_alive(prop_index))
+			{
+				if (psp_aitickold_named(actor, now_chain, now_count, (long const *)(buf + chain_at), chain_count, prop_index))
+					psp_aitickold_buf_stats.kept++;
+				else
+					datum_delete(prop_data, prop_index);
+			}
+			at += 2 + (kind == 1 ? n : kind == 2 ? 0 : n * 2);
+		}
 		/* the chain again: the thinking's order, then what the tick added and
 		the props kept */
 		for (k = 0; k < chain_count; k++)
 		{
-			prop_index = (long)buf[at + k];
+			prop_index = (long)buf[chain_at + k];
 			if (psp_aitickold_prop_alive(prop_index))
 				new_chain[new_count++] = prop_index;
 		}
