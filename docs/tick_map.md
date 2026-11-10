@@ -107,9 +107,20 @@ The lab's `research/manifest/tickmap_posing_code_2026-11-09.md` (line numbers th
 | b30 beach | 10.1% of the tick (by function) | PC sampler, PSP-1000, sierra-hw 42000782600 [M] |
 | b30 beach fight (the pad's replay) | animation and node matrices 6.7 of 44.2 ms a tick (15%, by step, instrumented); `object_compute_node_matrices` 6.1 ms | combatsteps, PSP-3000, sierra-hw 42633989710 [M] |
 | c20 hands off | 13.2% of the tick (by function) | PC sampler, PSP-1000 [M] |
-| landing, b40, d20, a30 | **not measured** | gap |
+| b30 flight, landing; b40 cliff (the PSP census) | node matrices 10.6, 8.5 and 10.0 ms a tick, instrumented; bipeds 74%, 69%, 67% of it | the PSP census, PSP-3000 sierra-hw 42730757534, 42730780195 [M]; lab findings `census_nodes_fate_*` |
+| d20, a30 | **not measured** | gap |
 
-**By drawn size, only in the emulator** (animlod1 [E]): drawn bipeds under 16 px carry 44.7% of the flight's posing, undrawn bipeds 49.2% of b40's. The PSP census has to retake this before any size tier is priced (`redesign_tick_target.md` §3.1 and §3.5 sized the tiers on it).
+**By drawn size, on the PSP** (the census's animlod, PSP-3000 [M]), as a share of all posing:
+
+| Stretch | Bipeds undrawn | under 16 px | 16-32 px | over 128 px |
+|---|---:|---:|---:|---:|
+| b30 flight | 15.5% | **40.2%** | 4.8% | 12.8% |
+| b30 landing | 7.5% | **58.5%** | 0.2% | 2.9% |
+| b40 cliff | **51.3%** | 4.0% | 3.7% | 4.6% |
+
+The emulator's animlod1 [E] had the same shape (under 16 px 44.7% of the flight's and 37.2% of the landing's; undrawn 49.2% of b40's), so the size tiers sized on it in `redesign_tick_target.md` §3.1 and §3.5 stand on the PSP.
+
+**Who reads the matrices** (the census's nmsplit fates): a biped's matrices are read first by its own update (markers, aiming), drawn or not, so the simulation needs them; only the drawing's extra nodes are free to skip. Made and never read, drawn or not: 0.4-0.5 ms a tick on b30, 1.35 on b40's cliff (scenery, weapons and vehicles mostly). About half of every kind's compute time is made over before a draw judges it: at two ticks a frame the first tick's matrices always are, so that is the frame rate, not waste, and goes away at one tick a frame.
 
 ### 2.3 Every lever tried on it, and where it was priced
 
