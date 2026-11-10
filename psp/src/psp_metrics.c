@@ -14,6 +14,9 @@ The lines (times in ms; "ends" or "so far" after the map's name):
     where each second of the map went: the ticks, the drawing, the frame's
     end (the GE and the swap) and the rest (the main loop, sound, waits),
     adding to 1,000.
+  metrics play (MAP, ends): interactive F frames, T ticks in W s (P fps, R ticks/s); cutscenes F2 frames in W2 s
+    the goal's own figure: frames over seconds of play with the cutscenes
+    left out (a frame counts as a cutscene's while cinematic_in_progress()).
   metrics hitches (MAP, ends): over 100 ms A, over 250 ms B, over 500 ms C; worst W ms at game time G (CAUSE); causes of those over 100 ms: checkpoint a, cutscene b, textures c, geometry d, animations e, map start f, other g
   metrics hitch (MAP): W ms at game time G, CAUSE (ticks T ms in K, draw D, end E; stick textures X geometry Y animations Z)
     one for each frame over 250 ms as it happens (the first 32 a map).
@@ -82,6 +85,8 @@ static struct
 	unsigned long started, last_end;      /* the clock at play's start and at the last frame's end */
 	unsigned long long wall_us, tick_us, draw_us, end_us;
 	unsigned long frames, ticks;
+	unsigned long long play_wall_us, cut_wall_us;
+	unsigned long play_frames, play_ticks, cut_frames;
 	unsigned long frame_tick_us, frame_ticks; /* since the last frame */
 	unsigned long frame_stick[PSP_METRICS_STICK_KINDS];
 	unsigned long hitches[HITCH_THRESHOLDS], causes[CAUSES], logged;
@@ -144,6 +149,11 @@ static void report(const char *when)
 		tick_ms, m.ticks / wall_s, m.ticks ? m.tick_us / 1000.0 / m.ticks : 0.0,
 		draw_ms, m.frames / wall_s, m.draw_us / 1000.0 / m.frames,
 		end_ms, 1000.0 - tick_ms - draw_ms - end_ms);
+	platform_log("metrics play (%s, %s): interactive %lu frames, %lu ticks in %.1f s (%.1f fps, %.1f ticks/s); cutscenes %lu frames in %.1f s",
+		m.map, when, m.play_frames, m.play_ticks, m.play_wall_us / 1e6,
+		m.play_wall_us ? m.play_frames * 1e6 / m.play_wall_us : 0.0,
+		m.play_wall_us ? m.play_ticks * 1e6 / m.play_wall_us : 0.0,
+		m.cut_frames, m.cut_wall_us / 1e6);
 	platform_log("metrics hitches (%s, %s): over 100 ms %lu, over 250 ms %lu, over 500 ms %lu; worst %.0f ms at game time %ld (%s); "
 		"causes of those over 100 ms: checkpoint %lu, cutscene %lu, textures %lu, geometry %lu, animations %lu, map start %lu, other %lu",
 		m.map, when, m.hitches[0], m.hitches[1], m.hitches[2], m.worst_us / 1000.0, m.worst_at,
@@ -288,6 +298,10 @@ void psp_metrics_frame(unsigned long draw_us, unsigned long ticks, unsigned long
 	m.frames++;
 	m.ticks += m.frame_ticks;
 	m.wall_us += wall;
+	if (cinematic_in_progress())
+		m.cut_frames++, m.cut_wall_us += wall;
+	else
+		m.play_frames++, m.play_ticks += m.frame_ticks, m.play_wall_us += wall;
 	m.tick_us += m.frame_tick_us;
 	m.draw_us += draw_us;
 	m.end_us += end_us;
