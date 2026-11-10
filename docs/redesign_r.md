@@ -110,6 +110,7 @@ On d20 with the flashlight on, the light pass is 57-67% of the replay [M, C4]. I
 - **LMC:** a static light's reach and lit-triangle list kept across frames while the light doesn't move (d20's machine lights, ~85% of the swamp's light-frames static [E]);
 - **LM:** one draw with up to four GE lights in place of one draw per light;
 - **the flashlight:** either the GE's own spotlight in the surface's pass (cheapest, per vertex, no gel pattern) or the cone times the gel projected as the pass's texture by the texture matrix (the pattern per pixel, the ME's per-vertex reach and the 191 KB of lit copies gone; lever PROJLIGHT). Sheepdog01 (18:15): worth considering if it improves performance for a similar benefit; the gel's pattern is what's missing today. Settled by a side-by-side against the PC reference.
+  - **What each form gives up** (2026-11-10, research; the lab's `research/opportunities/light_pass.md`): the frame buffer is 5650, so there's no destination alpha. The projected form takes the surface's texture only as its average colour (B7 given up, the gel's pattern gained); keeping both needs a light buffer of its own (~278 KB of VRAM). Before ordering this slice: the pass's zero point and B7's share on d20's heavy view (T1 there), and LMC's and LM's ground on today's build (c4 reads d20 swamp's light draws at 1.3 ms a frame before the flashlight, against LM's 15.1 from October). If B7's share is most of the pass, the flashlight's form goes first.
 
 ### 2.8 Fewer vertices (for the target)
 
