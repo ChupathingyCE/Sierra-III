@@ -116,7 +116,7 @@ The goal is each level's own average at 30 fps, one frame a tick (Sheepdog01 202
 | b40 opening | 19.4 | 2042 | +42 | 660 | 16.3 | 16% |
 | c20 | 19.3 | 2047 | +47 | 840 | 13.5 | 30% |
 
-**The GE column, checked on the PSP** (the design review's G6, lab sierra-hw 42736528894, PSP-1000, the tock without R, `gebusy2` only; findings `ge_busy_true_*`) [M]: the GE is busy 49.9 ms a frame on the flight and 54.1 on the landing, so ~1,500-1,620 ms a second at 30 fps. The column's 1,796 (the ledger's scaled share) is near that; the unscaled 83.5 (2,505) is not. The GE stays over its second at 30 fps on both. **R's columns are design figures** (the replay ×0.57, the drawing ~10 ms): R priced whole on the PSP left the ME's replay at ×1.02 and took 1.6-7.3 ms of drawing (`draw_map.md` §2.1).
+**The GE column, checked on the PSP** (the design review's G6, lab sierra-hw 42736528894, PSP-1000, the tock without R, `gebusy2` only; findings `ge_busy_plain_g6`) [M]: the GE is busy 48.8 ms a frame on the flight and 53.7 on the landing, so ~1,460-1,610 ms a second at 30 fps. The column's 1,796 (the ledger's scaled share) is near that; the unscaled 83.5 (2,505) is not. The GE stays over its second at 30 fps on both. **R's columns are design figures** (the replay ×0.57, the drawing ~10 ms): R priced whole on the PSP left the ME's replay at ×1.02 and took 1.6-7.3 ms of drawing (`draw_map.md` §2.1).
 
 What it says:
 - **Every benched stretch is over at the target, after R.** The plan's parts at their ceilings (§1a: ~235-340 ms a second removed on the flight) close the floor on most stretches, not the target.
