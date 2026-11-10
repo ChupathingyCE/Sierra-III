@@ -2219,6 +2219,10 @@ def definition(text, function):
 def step_call(match):
     if step_excluded(match.group(2)):
         return match.group(0)
+    # a line holding two statements ("f(a); g(b));", the tail of a macro's
+    # argument split over lines) isn't one call: wrapping it breaks the build
+    if ";" in match.group(3):
+        return match.group(0)
     return '%s(PSP_STEP("%s"), %s(%s));' % (match.group(1), match.group(2), match.group(2), match.group(3))
 
 # A step runs from its marker to the next, and markers go before calls made
