@@ -44056,6 +44056,362 @@ FIXES_AITICKOLD["source/ai/actors.c#aitickoldclock"] = [
 int psp_aitickold_trueclock = 0;
 /* FIXES_AITICKOLD"""),
 ]
+# "aitickoldbuf" (off): the second pass's thinking kept for its own tick. With
+# "aitickold" alone the second pass writes the actors' state during the
+# record, so the frame's first tick acts on the second pass's decisions
+# (made for the tick after, its clock one tick on) and the second tick acts
+# with no thinking of its own: the AI thinks twice in a row and acts twice
+# from it. Here each actor's second thinking is taken back once made: what
+# it changed (the actor's words, its props' words, the props it made or
+# deleted) goes into a record, and the actor's state and props return to
+# the first pass's, so the first tick acts exactly on its own thinking. At
+# the second tick's start, where the main CPU's pass would think, the
+# records are put in, over what the first tick did: the words the thinking
+# changed take its value, the rest keep the first tick's (the order the
+# thinking and the tick's update have without AITICKOLD). The pass's seed,
+# its 1b queue share, the timeslice's fields and the marks' flag go on as
+# the thinking left them, as the main CPU's pass would. An actor the record
+# can't be put in for (a prop it read gone, a slot it made a prop in taken,
+# the record room full) loses its mark and thinks whole in the second tick,
+# as an actor the pass didn't reach. Actors handed back in the first pass,
+# and swarms, aren't thought in the second: they think whole in the tick
+FIXES_AITICKOLD["source/ai/actors.c#aitickoldbuf"] = [
+("""	unsigned long asked, used, inline_passes, queue_carried;
+} psp_aitickold_stats;
+""",
+ """	unsigned long asked, used, inline_passes, queue_carried;
+} psp_aitickold_stats;
+/* FIXES_AITICKOLD: "aitickoldbuf" (see there). The records, in words; each
+actor's start in them (-1 none), the ME's to write in the second pass */
+#define PSP_AITICKOLD_BUF_WORDS (160 * 1024 / 4)
+static unsigned long *psp_aitickold_buf = NULL;
+static int psp_aitickold_buf_on = -1, psp_aitickold_buf_want = 0;
+static PSP_AIME_ME_SIDE long psp_aitickold_rec[MAXIMUM_ACTORS];
+static PSP_AIME_ME_SIDE long psp_aitickold_buf_used = 0;
+static struct
+{
+	unsigned long kept, words, props_changed, props_made, props_deleted, full, skipped, unshelved, peak;
+} psp_aitickold_buf_me_stats PSP_AIME_ME_SIDE;
+static struct
+{
+	unsigned long put, conflicts, words;
+} psp_aitickold_buf_stats;
+static void psp_aitickold_buf_begin(void);
+static boolean psp_aitickold_buf_skip(long actor_index);
+static void psp_aitickold_shelve(long actor_index);
+static void psp_aitickold_install(void);
+"""),
+# the records begin with the second pass
+("""		/* the first pass's calls stay for the first tick; the second's follow */
+		psp_aime_queue_split = psp_aime_queue_count;
+""",
+ """		/* the first pass's calls stay for the first tick; the second's follow */
+		psp_aime_queue_split = psp_aime_queue_count;
+		psp_aitickold_buf_begin();
+"""),
+("""	psp_aime_save(actor_index);
+	psp_aime1b_stats.actors++;
+""",
+ """	if (psp_aitickold_buf_skip(actor_index))
+		return;
+	psp_aime_save(actor_index);
+	psp_aime1b_stats.actors++;
+"""),
+("""	if (psp_aime_chain_on > 0)
+		psp_aime_chain_check(1, actor_index);
+	if (psp_aime1b_checking && psp_aime_stopped)
+""",
+ """	if (psp_aitickold_now && psp_aitickold_buf_want && !psp_aime_stopped)
+		psp_aitickold_shelve(actor_index);
+	if (psp_aime_chain_on > 0)
+		psp_aime_chain_check(1, actor_index);
+	if (psp_aime1b_checking && psp_aime_stopped)
+"""),
+("""/* the pass's loop: one actor thought ahead, or stopped and left to the tick.
+""",
+ """/* FIXES_AITICKOLD: "aitickoldbuf" (see there) */
+static void psp_aitickold_buf_begin(
+	void)
+{
+	short k;
+
+	if (!psp_aitickold_buf_want)
+		return;
+	for (k = 0; k < MAXIMUM_ACTORS; k++)
+		psp_aitickold_rec[k] = -1;
+	psp_aitickold_buf_used = 0;
+}
+
+/* the second pass thinks only actors the first thought ahead (their state is
+the first pass's to take back to) and no swarms (their swarm's own state has
+no record) */
+static boolean psp_aitickold_buf_skip(
+	long actor_index)
+{
+	struct actor_datum *actor = actor_get(actor_index);
+	short absolute_index = DATUM_INDEX_TO_ABSOLUTE_INDEX(actor_index);
+
+	if (!psp_aitickold_now || !psp_aitickold_buf_want)
+		return FALSE;
+	if (!actor->meta.swarm && absolute_index >= 0 && absolute_index < MAXIMUM_ACTORS &&
+		psp_aime_slot_pass[absolute_index] == psp_aime_pass && psp_aime_slot_identifier[absolute_index] == actor->identifier)
+		return FALSE;
+	psp_aitickold_buf_me_stats.skipped++;
+	return TRUE;
+}
+
+/* the words of a datum that differ from its copy, as (word, value) pairs */
+static long psp_aitickold_diff(
+	unsigned long *out,
+	long room,
+	unsigned long const *now,
+	unsigned long const *before,
+	long words)
+{
+	long k, count = 0;
+
+	for (k = 0; k < words; k++)
+	{
+		if (now[k] != before[k])
+		{
+			if (count * 2 + 2 > room)
+				return -1;
+			out[count * 2] = (unsigned long)k;
+			out[count * 2 + 1] = now[k];
+			count++;
+		}
+	}
+	return count;
+}
+
+/* the actor just thought for the second tick: what its thinking changed into
+a record, its state and props back to the first pass's. The seed, the 1b
+queue, the timeslice's fields and the marks' flag stay as the thinking left
+them. With no room for the record the actor goes back as a stop does
+(its queued calls dropped, its mark cleared): it thinks whole in the tick */
+static void psp_aitickold_shelve(
+	long actor_index)
+{
+	struct psp_aime_copy *copy = psp_aime_copy;
+	struct actor_datum *actor = actor_get(actor_index);
+	short absolute_index = DATUM_INDEX_TO_ABSOLUTE_INDEX(actor_index);
+	long size = prop_data->size, prop_words = size / 4;
+	long start = psp_aitickold_buf_used, at, room, count, k, prop_index;
+	unsigned long *buf = psp_aitickold_buf;
+	short props = 0;
+
+	if (psp_aime_arm == 2 || absolute_index < 0 || absolute_index >= MAXIMUM_ACTORS)
+	{
+		/* (a copy that can't be complete: the thinking stays in place) */
+		psp_aitickold_buf_me_stats.kept++;
+		return;
+	}
+	at = start + 3;
+	room = PSP_AITICKOLD_BUF_WORDS - at;
+	count = room > 0 ? psp_aitickold_diff(buf + at, room, (unsigned long const *)actor, (unsigned long const *)&copy->actor,
+		(long)(sizeof(struct actor_datum) / 4)) : -1;
+	if (count < 0)
+		goto full;
+	buf[start] = (unsigned long)(unsigned short)actor->identifier;
+	buf[start + 1] = (unsigned long)count;
+	psp_aitickold_buf_me_stats.words += count;
+	at += count * 2;
+	/* the first pass's props: each changed or deleted (every one recorded, so
+	the second tick sees any the first tick deleted) */
+	for (k = 0; k < copy->prop_count; k++)
+	{
+		struct datum_header *header = psp_aime_datum_address(prop_data, copy->prop_index[k]);
+		byte const *before = psp_aime_prop_bytes + k * size;
+		boolean alive = header->identifier && header->identifier == ((struct datum_header const *)before)->identifier;
+
+		if (at + 2 > PSP_AITICKOLD_BUF_WORDS)
+			goto full;
+		buf[at + 1] = (unsigned long)copy->prop_index[k];
+		if (!alive)
+		{
+			buf[at] = 2UL << 16;
+			at += 2;
+			psp_aitickold_buf_me_stats.props_deleted++;
+		}
+		else
+		{
+			count = psp_aitickold_diff(buf + at + 2, PSP_AITICKOLD_BUF_WORDS - at - 2, (unsigned long const *)header,
+				(unsigned long const *)before, prop_words);
+			if (count < 0)
+				goto full;
+			buf[at] = (unsigned long)count;
+			at += 2 + count * 2;
+			if (count)
+				psp_aitickold_buf_me_stats.props_changed++;
+		}
+		props++;
+	}
+	/* the props it made: the actor's chain now, less the first pass's */
+	for (prop_index = actor->meta.first_prop_index; prop_index != NONE; prop_index = prop_get(prop_index)->next_prop_index)
+	{
+		boolean had = FALSE;
+
+		for (k = 0; k < copy->prop_count && !had; k++)
+			had = copy->prop_index[k] == prop_index;
+		if (had)
+			continue;
+		if (at + 2 + prop_words > PSP_AITICKOLD_BUF_WORDS)
+			goto full;
+		buf[at] = (1UL << 16) | (unsigned long)prop_words;
+		buf[at + 1] = (unsigned long)prop_index;
+		csmemcpy(buf + at + 2, prop_get(prop_index), size);
+		at += 2 + prop_words;
+		props++;
+		psp_aitickold_buf_me_stats.props_made++;
+	}
+	buf[start + 2] = (unsigned long)props;
+	psp_aitickold_buf_used = at;
+	if ((unsigned long)at > psp_aitickold_buf_me_stats.peak)
+		psp_aitickold_buf_me_stats.peak = (unsigned long)at;
+	psp_aitickold_rec[absolute_index] = start;
+	/* back to the first pass's: the props it made or deleted undone, its props
+	and the pool's header as they were, the actor as the copy holds it */
+	for (k = copy->log_count - 1; k >= 0; k--)
+	{
+		struct datum_header *header = psp_aime_datum_address(prop_data, copy->log_index[k]);
+
+		if (copy->log_deleted[k])
+			csmemcpy(header, psp_aime_log_bytes + k * size, size);
+		else
+			header->identifier = 0;
+	}
+	csmemcpy(prop_data, &copy->prop_header, sizeof(struct data_array));
+	for (k = 0; k < copy->prop_count; k++)
+		csmemcpy(psp_aime_datum_address(prop_data, copy->prop_index[k]), psp_aime_prop_bytes + k * size, size);
+	csmemcpy(actor, &copy->actor, sizeof(copy->actor));
+	psp_aitickold_buf_me_stats.unshelved++;
+	return;
+full:
+	psp_aitickold_buf_me_stats.full++;
+	psp_aime_stop_which = PSP_AIME_STOP_LOG_FULL;
+	psp_aime_restore();
+	psp_aime_slot_identifier_b[absolute_index] = 0;
+}
+
+/* the second tick's start: each record put in over the first tick's work. A
+record that can't go in clears its actor's mark: it thinks whole in the tick */
+static void psp_aitickold_install(
+	void)
+{
+	unsigned long *buf = psp_aitickold_buf;
+	long size = prop_data->size;
+	short absolute_index;
+
+	if (!psp_aitickold_buf_want || !buf)
+		return;
+	for (absolute_index = 0; absolute_index < MAXIMUM_ACTORS; absolute_index++)
+	{
+		long start = psp_aitickold_rec[absolute_index], at, count, k;
+		struct actor_datum *actor;
+		unsigned long *words;
+		short props, p;
+		boolean ok = TRUE;
+
+		if (start < 0 || absolute_index >= actor_data->count)
+			continue;
+		actor = (struct actor_datum *)psp_aime_datum_address(actor_data, absolute_index);
+		if (!actor->identifier || (unsigned short)actor->identifier != buf[start] ||
+			psp_aime_slot_pass_b[absolute_index] != psp_aime_pass || psp_aime_slot_identifier_b[absolute_index] != actor->identifier)
+			continue;
+		count = (long)buf[start + 1];
+		props = (short)buf[start + 2];
+		/* first, whether every prop it names is as the second pass left it */
+		at = start + 3 + count * 2;
+		for (p = 0; p < props && ok; p++)
+		{
+			unsigned long kind = buf[at] >> 16, n = buf[at] & 0xffffu;
+			long prop_index = (long)buf[at + 1];
+			struct datum_header *header = psp_aime_datum_address(prop_data, prop_index);
+
+			if (kind == 1)
+				ok = !header->identifier;
+			else
+				ok = header->identifier == (short)(prop_index >> 16);
+			at += 2 + (kind == 1 ? n : kind == 2 ? 0 : n * 2);
+		}
+		if (!ok)
+		{
+			psp_aitickold_buf_stats.conflicts++;
+			psp_aime_slot_identifier_b[absolute_index] = 0;
+			continue;
+		}
+		words = (unsigned long *)actor;
+		for (k = 0; k < count; k++)
+			words[buf[start + 3 + k * 2]] = buf[start + 4 + k * 2];
+		psp_aitickold_buf_stats.words += count;
+		at = start + 3 + count * 2;
+		for (p = 0; p < props; p++)
+		{
+			unsigned long kind = buf[at] >> 16, n = buf[at] & 0xffffu;
+			long prop_index = (long)buf[at + 1];
+
+			if (kind == 2)
+				datum_delete(prop_data, prop_index);
+			else if (kind == 1)
+			{
+				if (datum_new_at_index(prop_data, prop_index) == prop_index)
+					csmemcpy(psp_aime_datum_address(prop_data, prop_index), buf + at + 2, size);
+			}
+			else
+			{
+				unsigned long *prop_words = (unsigned long *)psp_aime_datum_address(prop_data, prop_index);
+
+				for (k = 0; k < (long)n; k++)
+					prop_words[buf[at + 2 + k * 2]] = buf[at + 3 + k * 2];
+			}
+			at += 2 + (kind == 1 ? n : kind == 2 ? 0 : n * 2);
+		}
+		psp_aitickold_buf_stats.put++;
+	}
+}
+
+/* the pass's loop: one actor thought ahead, or stopped and left to the tick.
+"""),
+# read before the push, on the main CPU
+("""	if (psp_aitickold_want)
+		psp_aitickold_stats.asked++;
+""",
+ """	if (psp_aitickold_buf_on < 0)
+	{
+		psp_aitickold_buf_on = psp_keep("aitickoldbuf") != 0 && psp_aime1b_active();
+		if (psp_aitickold_buf_on)
+		{
+			psp_aitickold_buf = psp_aime_lines(PSP_AITICKOLD_BUF_WORDS * sizeof(unsigned long));
+			if (!psp_aitickold_buf)
+				psp_aitickold_buf_on = 0;
+			platform_psp_log(psp_aitickold_buf_on ? "aitickold: the second pass's thinking kept for its own tick (aitickoldbuf)" :
+				"aitickold: no room for aitickoldbuf's records, so it's off");
+		}
+	}
+	psp_aitickold_buf_want = psp_aitickold_want && psp_aitickold_buf_on > 0;
+	if (psp_aitickold_want)
+		psp_aitickold_stats.asked++;
+"""),
+("""		if (psp_aitickold_covers())
+			psp_aitickold_stats.used++;
+""",
+ """		if (psp_aitickold_covers())
+		{
+			psp_aitickold_install();
+			psp_aitickold_stats.used++;
+		}
+"""),
+("""			psp_aitickold_stats.used, psp_aitickold_stats.inline_passes, psp_aitickold_stats.queue_carried);
+""",
+ """			psp_aitickold_stats.used, psp_aitickold_stats.inline_passes, psp_aitickold_stats.queue_carried);
+	if (psp_aitickold_buf_on > 0)
+		platform_psp_log("aitickoldbuf: game time %ld | second thinkings kept %lu (words %lu; props changed %lu, made %lu, deleted %lu), left in place %lu, skipped %lu, no room %lu, records' peak %lu words | put in %lu (words %lu), conflicts %lu",
+			now, psp_aitickold_buf_me_stats.unshelved, psp_aitickold_buf_me_stats.words, psp_aitickold_buf_me_stats.props_changed,
+			psp_aitickold_buf_me_stats.props_made, psp_aitickold_buf_me_stats.props_deleted, psp_aitickold_buf_me_stats.kept,
+			psp_aitickold_buf_me_stats.skipped, psp_aitickold_buf_me_stats.full, psp_aitickold_buf_me_stats.peak,
+			psp_aitickold_buf_stats.put, psp_aitickold_buf_stats.words, psp_aitickold_buf_stats.conflicts);
+"""),
+]
 # the second pass's clock: the game time one tick on, in the pass's own
 # context only (the main CPU's frame reads the true time while the job runs)
 FIXES_AITICKOLD["source/game/game_time.c#aitickold"] = [
