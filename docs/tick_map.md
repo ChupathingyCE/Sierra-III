@@ -116,6 +116,7 @@ The lab's `research/manifest/tickmap_posing_code_2026-11-09.md` (line numbers th
 |---|---:|---:|---:|---:|
 | b30 flight | 15.5% | **40.2%** | 4.8% | 12.8% |
 | b30 landing | 7.5% | **58.5%** | 0.2% | 2.9% |
+| b30 beach fight | **63.6%** | 1.5% | 3.5% | 4.4% |
 | b40 cliff | **51.3%** | 4.0% | 3.7% | 4.6% |
 
 The emulator's animlod1 [E] had the same shape (under 16 px 44.7% of the flight's and 37.2% of the landing's; undrawn 49.2% of b40's), so the size tiers sized on it in `redesign_tick_target.md` §3.1 and §3.5 stand on the PSP.
@@ -163,7 +164,7 @@ The lab's `research/manifest/tickmap_ai_code_2026-11-09.md`. Under the default k
 | b30 beach | 8.6% thinking + 1.4% control (by function) | PC sampler, PSP-1000 [M] |
 | b30 beach fight | 5.9 of 44.2 ms a tick (13%, instrumented) | combatsteps, PSP-3000 [M] |
 | The ME's AI job | b30 flight 19.5 ms a frame (ledger); b40 snowfield 14.4 ms a job, worst 42.9 | ledger1 and sierra-hw 42152471353 [M] |
-| Actor updates alone, by band (the PSP census) | 2.9 ms a tick on b30's flight, 2.7 on the landing and b40's cliff (instrumented); in a fight 79-86%. By band: flight 20-40 units 46%, 10-20 27%; landing 20-40 69%; cliff under 10 units 55%. By drawn size: flight under 32 px 67%; cliff undrawn 78% | the PSP census, PSP-3000 [M]; lab findings `census_ai_actor_updates` |
+| Actor updates alone, by band (the PSP census) | 2.9 ms a tick on b30's flight, 2.7 on the landing and b40's cliff (instrumented); in a fight 79-86%. By band: flight 20-40 units 46%, 10-20 27%; landing 20-40 69%; cliff under 10 units 55%. By drawn size: flight under 32 px 67%; cliff undrawn 78%; the beach fight 2.6 ms a tick, 98% in a fight, undrawn 91% | the PSP census, PSP-3000 [M]; lab findings `census_ai_actor_updates` |
 
 The flight's 16.5% and the beach's ~10% differ by stretch, and the sampler groups by function, so the AI's rays are counted under collision. The census's actor updates (~2.7-2.9 ms a tick) are only the updates themselves: the rest of the 16.5% is the encounters, path searches and hand-over around them.
 
@@ -198,6 +199,7 @@ The lab's `research/manifest/tickmap_units_code_2026-11-09.md` (line numbers the
 | b40 snowfield | object updates 30.8 ms a tick, bipeds 20.0 (far and out of the fight 28%, ~5.5 ms), vehicles 3.7 (gun turrets) | objcost, PSP-3000 sierra-hw 42152471353 [M] |
 | b30 flight, by change state | object updates 38.8 ms a tick (instrumented): moving bipeds 26.6 (68.5%; 23.5 updates a tick, ~1.13 ms each), vehicles that changed 4.9, scenery that changed nothing 2.7 (~53 updates a tick, ~51 µs each), vehicles that changed nothing 2.0 (~0.9 ms each); **updates that changed nothing 6.4 ms a tick, 16.5%** | the PSP census, PSP-3000 sierra-hw 42730757534 (recon/census c368edef) [M]; lab findings `census_objcost_by_state_flight` |
 | b30 landing, by change state | object updates 34.5 ms a tick: moving bipeds 22.5 (65.2%; 20 a tick, ~1.13 ms each), vehicles that changed nothing 3.3 (2.8 a tick, ~1.2 ms each), scenery unchanged 2.8, bipeds unchanged 2.4; **updates that changed nothing 9.5 ms a tick, 27.5%** | the same run [M]; `census_objcost_by_state_landing` |
+| b30 beach fight, by change state | object updates 29.7 ms a tick: moving bipeds 20.9 (70.3%; 17.7 a tick, ~1.18 ms each), vehicles that changed 3.8, scenery unchanged 1.2; **updates that changed nothing 3.2 ms a tick, 10.9%** | the PSP census, PSP-3000 sierra-hw 42736037265 [M]; `census_beach` |
 | b40 cliff, by change state | object updates 32.1 ms a tick: moving bipeds 20.6 (64.3%; 19 a tick, ~1.09 ms each), vehicles that changed 4.1, vehicles unchanged 2.6 (5.4 a tick, ~0.47 ms each; the turrets), projectiles 2.0, machines and scenery unchanged 1.1 each; **updates that changed nothing 5.5 ms a tick, 17.0%** | the PSP census, PSP-3000 sierra-hw 42730780195 [M]; `census_objcost_by_state_cliff` |
 | d20, a30 | not measured by kind | gap |
 
