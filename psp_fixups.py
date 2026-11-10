@@ -48027,17 +48027,22 @@ static int psp_one_walk; /* psp_fixups.py (FIXES_ONEWALK) */
 # the lists' order and the references' identifiers as they were, which collision's walks and
 # objects_in_sphere's count limit can read: not exact, and proven as "plays the same"
 # (side-by-sides and the outcome census; inside the multiplayer boundary: no object's datum
-# index moves). "rlskip": on; off by default until its census and PSP pair.
+# index moves). "rlskip": on; off by default until its census and PSP pair. "rlskiphead": only
+# when the object is already first in each of its lists (the order the remake would leave),
+# so only the references' identifiers differ: c20's machines behaved differently under
+# "rlskip" (the lists' order is read: objects_in_sphere's limit, collision's walks).
 FIXES_RLSKIP = {}
 FIXES_RLSKIP["source/structures/cluster_partitions.c#rlskip"] = [
 ("""static void cluster_partition_disconnect_now(struct cluster_partition *partition, long datum_index, long *first_cluster_reference);
 """, """static void cluster_partition_disconnect_now(struct cluster_partition *partition, long datum_index, long *first_cluster_reference);
 /* psp_fixups.py (FIXES_RLSKIP) */
-static int psp_rl_skip = -1;
-static unsigned long psp_rl_skipped, psp_rl_skip_logged;
+static int psp_rl_skip = -1; /* 0 off, 1 "rlskip", 2 "rlskiphead" */
+static unsigned long psp_rl_skipped, psp_rl_skip_logged, psp_rl_skip_not_head;
 
 /* 1 when the held object's references name these clusters in their order (the first part
-of psp_rl_plan's test: the clusters, not the slots) */
+of psp_rl_plan's test: the clusters, not the slots); under "rlskiphead", only when the
+object is also first in each of those clusters' lists, where the remake would leave it:
+then the lists' order is the remake's and only the references' identifiers differ */
 static int psp_rl_same_clusters(struct cluster_partition *partition, long datum_index, short const *clusters, short count)
 {
 	struct data_array *cluster_array = partition->cluster_reference_data, *data_array = partition->data_reference_data;
@@ -48059,6 +48064,11 @@ static int psp_rl_same_clusters(struct cluster_partition *partition, long datum_
 		data_reference = psp_reference_at(data_array, cluster_reference->pad);
 		if (!data_reference || data_reference->datum_index != datum_index)
 			return 0;
+		if (psp_rl_skip == 2 && data_reference->pad != PSP_REFERENCE_HEAD)
+		{
+			psp_rl_skip_not_head++;
+			return 0;
+		}
 		n++;
 		walk = cluster_reference->next_reference_index;
 	}
@@ -48070,7 +48080,7 @@ static int psp_rl_same_clusters(struct cluster_partition *partition, long datum_
 		struct psp_rl_plan plan;
 
 		if (psp_rl_plan(""", """	if (psp_rl_skip < 0)
-		psp_rl_skip = psp_keep("rlskip");
+		psp_rl_skip = psp_keep("rlskiphead") ? 2 : psp_keep("rlskip") ? 1 : 0;
 	if (psp_rl.held && psp_rl_skip && !psp_rl.check && psp_rl_same_clusters(partition, datum_index, cluster_indices, cluster_count))
 	{
 		/* psp_fixups.py (FIXES_RLSKIP): the references stay where they are */
@@ -48079,8 +48089,8 @@ static int psp_rl_same_clusters(struct cluster_partition *partition, long datum_
 		if (++psp_rl_skipped / 20000 != psp_rl_skip_logged)
 		{
 			psp_rl_skip_logged = psp_rl_skipped / 20000;
-			platform_psp_log("rlskip: %lu reconnects to the same clusters skipped (made in place %lu, made as before %lu)",
-				psp_rl_skipped, psp_rl_in_place_count, psp_rl_flushed);
+			platform_psp_log("rlskip: %lu reconnects to the same clusters skipped (made in place %lu, made as before %lu, not first in a list %lu)",
+				psp_rl_skipped, psp_rl_in_place_count, psp_rl_flushed, psp_rl_skip_not_head);
 		}
 		return;
 	}
