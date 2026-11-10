@@ -294,12 +294,15 @@ static void log_flush(void)
 
 static void log_flush_body(void)
 {
-	char *copy = log_copy;
+	char *copy;
 	int length, dropped;
 	SceUID file;
 
 	int locked = log_lock_take();
 
+	/* read under the lock: the batch and its copy can grow together
+	(log_batch_grow), and the copy must be at least the batch's size */
+	copy = log_copy;
 	length = log_batch_length;
 	dropped = log_batch_dropped;
 	memcpy(copy, log_batch, length);
@@ -397,39 +400,58 @@ void psp_lock_report(void)
 		platform_log("%s", line);
 }
 
-/* build 102: the blackbox's larger batch (32 KB and its copy), from the
-user partition's free memory (not the game's heap); kept at 8 KB if there
-is none */
+/* build 102: the blackbox's larger batch, from the user partition's free
+memory (not the game's heap). 2026-11-10: also grown on its own the first time
+the 8 KB batch passes half full (psp_log_write), since a burst of lines (the GE's
+300-frame report on b30) filled it faster than the writer thread drained it and
+lines were dropped. The batch and its copy are separate blocks of 32 KB, or of
+16 KB where no 32 KB block is free (the PSP-1000's free memory comes in pieces:
+largest 28 KB on b30). Only the log's lock is taken: a flush already writing
+from the old 8 KB copy keeps a valid buffer (static), and log_flush_body reads
+the copy's address under the same lock, so nothing here waits on the stick */
 static void log_batch_grow(void)
 {
-	SceUID block;
-	char *big;
+	static const int sizes[] = { 32768, 16384 };
+	unsigned int k;
 
 	if (log_batch_size > (int)sizeof(log_batch_small))
 		return;
-	block = sceKernelAllocPartitionMemory(2, "halo log batch", PSP_SMEM_High, 2 * 32768, NULL);
-	if (block < 0)
+	for (k = 0; k < sizeof(sizes) / sizeof(sizes[0]); k++)
 	{
-		platform_log("log: no free memory for the blackbox's batch (0x%08x); 8 KB", (unsigned)block);
-		return;
-	}
-	big = sceKernelGetBlockHeadAddr(block);
-	/* nothing may flush (it reads the copy) or add lines while they change */
-	if (flush_lock >= 0)
-		sceKernelWaitSema(flush_lock, 1, NULL);
-	{
-		int locked = log_lock_take();
+		SceUID batch_block = sceKernelAllocPartitionMemory(2, "halo log batch", PSP_SMEM_High, sizes[k], NULL);
+		SceUID copy_block = batch_block < 0 ? -1 : sceKernelAllocPartitionMemory(2, "halo log copy", PSP_SMEM_High, sizes[k], NULL);
+		int locked;
 
-		memcpy(big, log_batch, log_batch_length);
-		log_batch = big;
-		log_copy = big + 32768;
-		log_batch_size = 32768;
+		if (copy_block < 0)
+		{
+			if (batch_block >= 0)
+				sceKernelFreePartitionMemory(batch_block);
+			continue;
+		}
+		locked = log_lock_take();
+		memcpy(sceKernelGetBlockHeadAddr(batch_block), log_batch, log_batch_length);
+		log_batch = sceKernelGetBlockHeadAddr(batch_block);
+		log_copy = sceKernelGetBlockHeadAddr(copy_block);
+		log_batch_size = sizes[k];
 		if (locked)
 			sceKernelSignalSema(log_lock, 1);
+		platform_log("log: the batch grown to %d KB (and its copy) from free memory", sizes[k] / 1024);
+		return;
 	}
-	if (flush_lock >= 0)
-		sceKernelSignalSema(flush_lock, 1);
-	platform_log("log: the blackbox's batch, 32 KB from free memory");
+	platform_log("log: no free memory to grow the batch; 8 KB");
+}
+
+int psp_keep_loaded(void);
+
+/* "logsmall": the batch stays at 8 KB unless the blackbox asks (as before
+2026-11-10); a line that doesn't fit is dropped and counted either way */
+static int log_grow_allowed(void)
+{
+	static int off = -1;
+
+	if (off < 0 && psp_keep_loaded())
+		off = psp_keep("logsmall") != 0;
+	return off == 0;
 }
 
 /* "logeachline": each line written at once until 20 s after launch, its
@@ -474,6 +496,17 @@ void psp_log_write(const char *text)
 			log_batch_dropped++;
 		if (locked)
 			sceKernelSignalSema(log_lock, 1);
+		/* 2026-11-10: grown once, before a burst can fill it (log_batch_grow) */
+		{
+			static int grow_tried = 0;
+
+			if (!grow_tried && log_batch_length > log_batch_size / 2 &&
+				log_batch_size == (int)sizeof(log_batch_small) && !exiting && log_grow_allowed())
+			{
+				grow_tried = 1;
+				log_batch_grow();
+			}
+		}
 		/* build 99: a batch three quarters full is written at once (the
 		blackbox's first frames stream hundreds of textures in one frame) */
 		if (log_batch_length > log_batch_size * 3 / 4)

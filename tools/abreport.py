@@ -17,6 +17,10 @@ against the first side and a verdict:
                 refused allocations drop drawing, so that side reads faster
                 than it is (step 3's R-on pair "gained" 3-8% with 62 requests
                 failed, lab findings r_loop_heap_full_under_r)
+  LOG HOLES     a run's log dropped lines ('(log: N lines dropped ...)'): its
+                heartbeat windows or reports may be missing, so a stretch's
+                figures can rest on fewer windows than the other side's
+                (2026-11-10: rtop6's b30 lost 61 lines; the batch now grows)
 
 The figures are benchreport.py's (the same reader): the frame by the clock,
 the frame's own work (drawing) and a tick's own cost, ms, weighted by frames.
@@ -44,6 +48,7 @@ METRICS = (
     ("Tick, ms", lambda rows: weighted(rows, lambda r: r[2], lambda r: r[3])),
 )
 HEAP_FAILED = re.compile(r"^heap: .*?(\d+) requests failed")
+LOG_DROPPED = re.compile(r"^\(log: (\d+) lines dropped")
 RUN_LABEL = re.compile(r"^run (\d+) \(set (\d+): (.*?)\): ")
 
 
@@ -85,6 +90,20 @@ def heap_failed(path):
     return most
 
 
+def log_dropped(path):
+    """the lines a run's log says it dropped, summed (0 without any)"""
+    total = 0
+    try:
+        with open(path, errors="replace") as f:
+            for line in f:
+                m = LOG_DROPPED.match(line)
+                if m:
+                    total += int(m.group(1))
+    except OSError:
+        pass
+    return total
+
+
 def verdict(base, other):
     if len(base) < 2 or len(other) < 2:
         return "no verdict"
@@ -115,6 +134,11 @@ def main():
             print("**INVALID: side %s refused heap requests** (most a run: %s): its drawing dropped work, so its times "
                   "read faster than they are. No verdict on it until both sides fit.\n"
                   % (n, ", ".join(str(f) for f in failed[n])))
+    for n in names:
+        drops = [log_dropped(p) for p in sides[n]]
+        if any(drops):
+            print("**LOG HOLES: side %s dropped log lines** (a run: %s): some heartbeat windows or reports may be "
+                  "missing from its figures.\n" % (n, ", ".join(str(d) for d in drops)))
     print("Sides: " + "; ".join("%s (%d runs)" % (n, len(sides[n])) for n in names) + ". Gaps are against **%s**.\n" % base)
     for part in a.stretches.split(","):
         title, span = part.split(":")
