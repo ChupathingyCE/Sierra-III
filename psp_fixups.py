@@ -44102,7 +44102,7 @@ static struct
 } psp_aitickold_buf_me_stats PSP_AIME_ME_SIDE;
 static struct
 {
-	unsigned long put, conflicts, chain, words, switched, dangling;
+	unsigned long put, conflicts, chain, words, switched, dangling, conversations;
 } psp_aitickold_buf_stats;
 static void psp_aitickold_buf_begin(void);
 static boolean psp_aitickold_buf_skip(long actor_index);
@@ -44388,6 +44388,14 @@ its value and the rest keep the tick's, so flags and short fields packed in
 one word merge as fields. Where both changed the same byte (one field both
 wrote) the thinking's whole word goes in, so a value is never made of parts
 of two */
+/* aitickoldbufwords (log only): per actor word the record changed, how
+often the tick left it alone (0), changed other bytes of it (1) or the same
+bytes (2, the thinking's whole word goes in): which of the actor's fields the
+tick and its thinking both write */
+#define PSP_AITICKOLD_WORDS_MOST 1024
+static int psp_aitickold_words_on;
+static unsigned long psp_aitickold_words[PSP_AITICKOLD_WORDS_MOST][3];
+
 static void psp_aitickold_merge(
 	unsigned long *word,
 	unsigned long value,
@@ -44518,7 +44526,18 @@ static void psp_aitickold_install(
 		props = (short)buf[start + 2];
 		csmemcpy(scratch, actor, sizeof(*scratch));
 		for (k = 0; k < count; k++)
+		{
+			if (psp_aitickold_words_on)
+			{
+				unsigned long w = buf[start + 3 + k * 3], changed = buf[start + 5 + k * 3];
+				unsigned long before = buf[start + 4 + k * 3] ^ changed;
+				unsigned long mine = psp_aitickold_bytes(changed), tick = psp_aitickold_bytes(psp_aitickold_scratch[w] ^ before);
+
+				if (w < PSP_AITICKOLD_WORDS_MOST)
+					psp_aitickold_words[w][(mine & tick) ? 2 : tick ? 1 : 0]++;
+			}
 			psp_aitickold_merge(&psp_aitickold_scratch[buf[start + 3 + k * 3]], buf[start + 4 + k * 3], buf[start + 5 + k * 3]);
+		}
 		/* the chain as the record found it: its changed and deleted props, in
 		the chain's order, then the props it made */
 		prop_index = actor->meta.first_prop_index;
@@ -44557,6 +44576,22 @@ static void psp_aitickold_install(
 			if (scratch->meta.timeslice && !actor->meta.timeslice && !psp_aitickold_buf_nooffer)
 				ai_globals->time_given_this_frame = FALSE;
 			continue;
+		}
+		/* a conversation the record names that the tick ended meanwhile
+		(its datum gone) is let go as the engine's end lets its
+		participants go: a marine's next decision read the dead one
+		(lab sierra-batch 42837765983, b40) */
+		if (scratch->external_orders.conversation_index != NONE &&
+			!datum_try_and_get(conversation_data, scratch->external_orders.conversation_index))
+		{
+			if (psp_aitickold_buf_stats.conversations++ < 8)
+				platform_psp_log("aitickoldbuf: game time %ld | actor %d: the record names conversation %08lx, gone (the tick's word %08lx)",
+					(long)game_time_get(), (int)absolute_index, (unsigned long)scratch->external_orders.conversation_index,
+					(unsigned long)actor->external_orders.conversation_index);
+			scratch->external_orders.conversation_index = NONE;
+			scratch->external_orders.conversation_attention_unit_index = NONE;
+			if (scratch->state.action == _actor_action_converse)
+				scratch->state.action_data.converse.conversation_index = NONE;
 		}
 		/* in: the actor, then its props' words and the props it made */
 		csmemcpy(actor, scratch, sizeof(*actor));
@@ -44634,6 +44669,7 @@ static void psp_aitickold_install(
 		psp_aitickold_buf_check = psp_keep("aitickoldbufcheck") != 0;
 		psp_aitickold_buf_noswitch = psp_keep("aitickoldbufnoswitch") != 0;
 		psp_aitickold_buf_nooffer = psp_keep("aitickoldbufnooffer") != 0;
+		psp_aitickold_words_on = psp_keep("aitickoldbufwords") != 0;
 		if (psp_aitickold_buf_on)
 		{
 			psp_aitickold_buf = psp_aime_lines(PSP_AITICKOLD_BUF_WORDS * sizeof(unsigned long));
@@ -44660,12 +44696,24 @@ static void psp_aitickold_install(
 """,
  """			psp_aitickold_stats.used, psp_aitickold_stats.inline_passes, psp_aitickold_stats.queue_carried);
 	if (psp_aitickold_buf_on > 0)
-		platform_psp_log("aitickoldbuf: game time %ld | second thinkings kept %lu (words %lu; props changed %lu, made %lu, deleted %lu), left in place %lu, skipped %lu, no room %lu, records' peak %lu words | put in %lu (words %lu), not put in %lu (the tick changed the chain %lu); references the tick made to props the thinking deleted switched %lu (words left naming one %lu)",
+		platform_psp_log("aitickoldbuf: game time %ld | second thinkings kept %lu (words %lu; props changed %lu, made %lu, deleted %lu), left in place %lu, skipped %lu, no room %lu, records' peak %lu words | put in %lu (words %lu), not put in %lu (the tick changed the chain %lu); references the tick made to props the thinking deleted switched %lu (words left naming one %lu); conversations gone let go %lu",
 			now, psp_aitickold_buf_me_stats.unshelved, psp_aitickold_buf_me_stats.words, psp_aitickold_buf_me_stats.props_changed,
 			psp_aitickold_buf_me_stats.props_made, psp_aitickold_buf_me_stats.props_deleted, psp_aitickold_buf_me_stats.kept,
 			psp_aitickold_buf_me_stats.skipped, psp_aitickold_buf_me_stats.full, psp_aitickold_buf_me_stats.peak,
 			psp_aitickold_buf_stats.put, psp_aitickold_buf_stats.words, psp_aitickold_buf_stats.conflicts,
-			psp_aitickold_buf_stats.chain, psp_aitickold_buf_stats.switched, psp_aitickold_buf_stats.dangling);
+			psp_aitickold_buf_stats.chain, psp_aitickold_buf_stats.switched, psp_aitickold_buf_stats.dangling,
+			psp_aitickold_buf_stats.conversations);
+	if (psp_aitickold_buf_on > 0 && psp_aitickold_words_on)
+	{
+		long w;
+
+		for (w = 0; w < PSP_AITICKOLD_WORDS_MOST; w++)
+		{
+			if (psp_aitickold_words[w][1] + psp_aitickold_words[w][2])
+				platform_psp_log("aitickoldbufwords: game time %ld | actor word +%ld: the thinking's alone %lu, both other bytes %lu, both the same bytes %lu",
+					now, w * 4, psp_aitickold_words[w][0], psp_aitickold_words[w][1], psp_aitickold_words[w][2]);
+		}
+	}
 """),
 ]
 # the second pass's clock: the game time one tick on, in the pass's own
