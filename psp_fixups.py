@@ -29454,7 +29454,7 @@ int psp_light_relink(
 	csmemcpy(&bits[3], &radius, 4);
 	entry = &psp_lsame[absolute_index];
 	same = entry->cluster_index != NONE && entry->generation == psp_lsame_generation &&
-		entry->identifier == light->identifier && entry->cluster_index == location.cluster_index &&
+		entry->identifier == light->header.identifier && entry->cluster_index == location.cluster_index &&
 		entry->bits[0] == bits[0] && entry->bits[1] == bits[1] && entry->bits[2] == bits[2] && entry->bits[3] == bits[3];
 	psp_lsame_relinks++;
 	if (same)
@@ -29507,7 +29507,7 @@ int psp_light_relink(
 	entry->bits[2] = bits[2];
 	entry->bits[3] = bits[3];
 	entry->generation = psp_lsame_generation;
-	entry->identifier = light->identifier;
+	entry->identifier = light->header.identifier;
 	entry->cluster_index = location.cluster_index;
 	return 1;
 }
