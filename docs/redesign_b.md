@@ -92,12 +92,13 @@ Each placement changes only addresses, so it's exact by construction (play and b
 ## 4b. The bus at the target frame rate (2026-11-10, chat1110; the lab's `research/opportunities/bus_toll.md`)
 
 - **Contention follows duty, not bytes** [M, the contention bench]: a main CPU miss costs ×1.0 when another master holds the bus 25% of the time, ×1.2 at 50%, ×2.1 at 100%. That's why the small byte cuts priced ~0 (MV14 3a, levelcompact, VMFILL, VMRANK) and the large moves paid (the copies' room's first ~550 KB, 10-25 ms of tick).
+  - **Superseded 2026-11-10 (the master; the lab's findings `ge_pacing_contention_means`):** those duty figures were medians, which drop the chunks landing in the bursts. As the time the CPU pays (window means) the toll is **linear in the time a master holds the bus**: DMA ×1.38 at 50%, ×1.20 at 25%; the GE's RAM list paced with filler ×2.16 at 50%, ×1.65 at 25%. The GE fetches a vertex for every index at memory latency (bench18), so its time on the bus is set by the number of fetches, not bytes: the diets cut bytes, the copies' room removed fetches. That's the likelier reason small byte cuts priced ~0 [U on M].
 - **Every bus price on record was measured at 8-15 fps.** At 30 fps the GE's ~3 MB a frame of main-RAM reads (b30's flight [E]) arrive ~4× more densely, so the toll's prices understate it there.
 - **B's target:** the GE reads almost nothing from main RAM during the tick. That means:
   - geometry from VRAM, made small enough by the far tiers (`drawing_sizing.md`: 81-86% of b30's model indices drawn under 96 px);
   - textures from VRAM or atlases sized for the screen;
   - the display list as the only main-RAM stream.
-- **What stays in main RAM is shaped in software** (no bus-priority register exists): the list interleaved so main-RAM-heavy draws are spread, and the GE paced by a VRAM-only filler where it has slack. The design and the runs are in the lab's page, §8-9.
+- **What stays in main RAM is shaped in software** (no bus-priority register exists): the list interleaved so main-RAM-heavy draws are spread, and the GE paced by a VRAM-only filler where it has slack. The design and the runs are in the lab's page, §8-9. **Expected to buy ~nothing since the toll is linear (above)**; `gedouble` tests the slope in play before either is built. What cuts it is fewer fetches from RAM: VRAM residency, strips (a third of a list's fetches), the far tiers.
 - **The tests that size it:**
   - a per-kind contention bench (list, strip, non-indexed, VRAM, RAM textures by size, paced duty);
   - `gedouble` (the toll's slope in play);
