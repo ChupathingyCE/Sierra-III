@@ -42164,7 +42164,7 @@ static boolean psp_aime2a_active(
 			extern int psp_keep_number(const char *prefix, int fallback);
 
 			psp_aime_late_every = psp_keep_number("aimelate", 0);
-			psp_aime_wait = psp_keep("aimewait") != 0;
+			psp_aime_wait = !psp_keep("aimelateold");
 			psp_aime2a_stop_at = psp_keep_number("mestopat", 0);
 		}
 		psp_aime_move_stop = !psp_keep("aimemoveold");
@@ -42454,6 +42454,25 @@ void psp_aime2a_tick_begin(
 			while (!psp_me_submitted_done(ME_SLOT_AI) &&
 				sceKernelGetSystemTimeWide() - asked < (psp_aime_wait ? PSP_AIME_WAIT_BOUND_US : PSP_AIME2A_BOUND_US))
 				sceKernelDelayThread(50);
+			if (psp_aime_wait)
+			{
+				unsigned long waited = (unsigned long)(sceKernelGetSystemTimeWide() - asked);
+
+				psp_aime2a_stats.waited++;
+				psp_aime2a_stats.waited_us += waited;
+				if (waited > psp_aime2a_stats.waited_worst_us)
+					psp_aime2a_stats.waited_worst_us = waited;
+				/* the safety net: past the wait's bound, the word */
+				if (!psp_me_submitted_done(ME_SLOT_AI) && psp_aime2a_abort)
+				{
+					psp_aime2a_stats.wait_bound++;
+					*psp_aime2a_abort = 1;
+					asked = sceKernelGetSystemTimeWide();
+					while (!psp_me_submitted_done(ME_SLOT_AI) &&
+						sceKernelGetSystemTimeWide() - asked < PSP_AIME2A_BOUND_US)
+						sceKernelDelayThread(50);
+				}
+			}
 			if (!psp_me_submitted_done(ME_SLOT_AI))
 			{
 				psp_aime2a_stats.no_answer++;
@@ -42544,6 +42563,10 @@ static void psp_aime2a_log(
 	platform_psp_log("aime2a: game time %ld | late jobs: ended at the word %lu (aimelate %lu), the actor in hand handed back %lu, actors left to the tick %lu",
 		now, psp_aime2a_me_stats.aborted, psp_aime2a_me_stats.forced_late, psp_aime1b_stats.back[PSP_AIME_STOP_LATE],
 		psp_aime2a_me_stats.unreached);
+	platform_psp_log("aime2a: game time %ld | late jobs waited for %lu (%s), %lu us in all, the longest %lu us; past the wait's bound (%u us) %lu",
+		now, psp_aime2a_stats.waited, psp_aime_wait ? "the default" : "aimelateold: asked to end instead",
+		psp_aime2a_stats.waited_us, psp_aime2a_stats.waited_worst_us, (unsigned int)PSP_AIME_WAIT_BOUND_US,
+		psp_aime2a_stats.wait_bound);
 	platform_psp_log("aime2a: game time %ld | jobs %lu (refused %lu), collected %lu, late %lu, no answer %lu, failed %lu | passes inline %lu | actors on the ME %lu, ended by the word %lu, props over the copy %lu | pathfinding log %lu, applied %lu (woken %lu), full %lu | stack %lu bytes%s, the guard reached %lu",
 		now, psp_aime2a_stats.pushed, psp_aime2a_stats.refused, psp_aime2a_stats.collected, psp_aime2a_stats.late,
 		psp_aime2a_stats.no_answer, psp_aime2a_stats.failed, psp_aime2a_stats.inline_passes, psp_aime2a_me_stats.on_me,
@@ -43125,18 +43148,23 @@ static boolean psp_aime2a_owed = FALSE, psp_aime2a_out = FALSE, psp_aime2a_faile
 static volatile unsigned int *psp_aime2a_abort = NULL;
 /* the collection's wait for the actor in hand, once the job is asked to end */
 #define PSP_AIME2A_BOUND_US 20000
-/* "aimewait" (benches only): a late job isn't asked to end; the collection
-waits for all of it, up to this bound, so which actors the ME thought never
-depends on how fast it ran and two runs play the same (by default play
-parts in b30's beach fight between identical PSP runs, and repeats through
-the run with aimeoff: sierra-hw 42453856832). Its waits are the main CPU's
-time, so a bench with it prices the ME's lateness as a wait */
+/* A late job isn't asked to end: the collection waits for all of it, up to
+this bound, and only past it asks the job to end at its word as the safety
+net. A job asked to end hands its actor in hand back to its copies and
+leaves the actors it didn't reach to the tick, which think there from the
+game's seed rather than the pass's and after the tick's earlier steps: they
+play differently (forced late passes part play from the first one, in the
+emulator), so ending a job by the clock made play depend on the ME's speed
+and PSP replays parted. A wait gives the same thinking whatever the timing;
+it costs the main CPU the late job's rest, counted in the log. "aimelateold":
+asked to end at once, as before ("aimewait" is now the default) */
 #define PSP_AIME_WAIT_BOUND_US 200000
-static int psp_aime_wait = 0;
+static int psp_aime_wait = 1;
 /* the main CPU's counts (pushed, among them, is written while the job runs) */
 static struct
 {
 	unsigned long pushed, refused, collected, late, no_answer, failed, inline_passes;
+	unsigned long waited, waited_us, waited_worst_us, wait_bound;
 	unsigned long checked, check_changed, stack_deepest, guard;
 	/* RW1's counters: the render jobs run inside the job's yields (the word
 	can't be read while one runs), and the late job's answer to the word */
@@ -48303,7 +48331,262 @@ FIXES_STRICTALIAS["source/math/real_math.h#strictalias"] = [
 #endif"""),
 ]
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_SSPR.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items()) + list(FIXES_AIME2A.items()) + (list(FIXES_STACKHOT.items()) if STACKHOT else []) + (list(FIXES_STACKHOT2.items()) if STACKHOT2 else []) + list(FIXES_PWSL.items()) + list(FIXES_SPHSL.items()) + list(FIXES_RECONLIST.items()) + list(FIXES_TP1.items()) + list(FIXES_WXDEAD.items()) + list(FIXES_AIMEMOVE.items()) + list(FIXES_PROPCRASH.items()) + list(FIXES_APCPOOL.items()) + list(FIXES_SNDEDRAM.items()) + list(FIXES_LIGHTFIRST.items()) + list(FIXES_DRAWPART.items()) + (list(FIXES_RECONLATE.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + list(FIXES_P2PASS.items()) + (list(FIXES_P2CENSUS.items()) if P2CENSUS else []) + list(FIXES_OBSRAY.items()) + list(FIXES_SNDWAIT.items()) + list(FIXES_FLAMEDECAL.items()) + list(FIXES_HUHINT.items()) + list(FIXES_DBLSOFT.items()) + list(FIXES_VFPUTRIG.items()) + list(FIXES_TICKCACHE.items()) + list(FIXES_STRICTALIAS.items()) + list(FIXES_SNDPERMAP.items()) + list(FIXES_RLOOP.items()) + (list(FIXES_SNDSTREAM.items()) if os.environ.get("PSP_SNDSTREAM", "") == "1" else [])):
+# ---------- FIXES_MOUTHCLOCK: the lip sync follows the frames, not the mixer
+# A speaking unit's mouth aperture (unit.mouth_aperture) drives an overlay on
+# its nodes, so it reaches play: a marker, a ray against the head, the
+# perception that reads them. The engine read it each frame from the channel
+# playing the line, at a play time the system clock and the mixer advance, so
+# play followed how fast the Memory Stick and the Media Engine ran: PSP
+# replays of one recording parted (b30 at the landing), and in the emulator a
+# line held up by its read (readswait) or left silent (nomouth) moves play at
+# the same tick. Here the line's own mouth data is read at a time counted from
+# the tick that started it, by the frames' own time steps (the ones the pad
+# recorder replays) while the sound manager isn't paused, at the line's pitch
+# and after its travel delay: in play at real speed, the voice's own timing
+# within its read's delay; given the same frames, the same mouth. The line
+# itself (which permutation, its pitch) draws from a seed of its own under
+# "fixedseed", since the sound manager's other draws follow the clock (detail
+# sounds). Keep word "mouthold": the mixer's clock, as before. Campaign and
+# multiplayer alike: no state on the wire
+FIXES_MOUTHCLOCK = {}
+FIXES_MOUTHCLOCK["source/math/random_math.c#mouthclock"] = [
+("""unsigned long *psp_sound_seed(void)
+{
+	return psp_fixed_seed_on() ? &psp_sound_random_seed : &random_math_globals.global_local_random_seed;
+}
+""",
+ """/* while a speech line starts (sound_manager.c, FIXES_MOUTHCLOCK) */
+int psp_sound_speech = 0;
+static unsigned long psp_speech_random_seed = 0x53504B52UL;
+
+unsigned long *psp_sound_seed(void)
+{
+	if (!psp_fixed_seed_on())
+		return &random_math_globals.global_local_random_seed;
+	return psp_sound_speech ? &psp_speech_random_seed : &psp_sound_random_seed;
+}
+"""),
+("""		psp_sound_random_seed = 0x50554E44UL;
+	}
+}""",
+ """		psp_sound_random_seed = 0x50554E44UL;
+		psp_speech_random_seed = 0x53504B52UL;
+	}
+}"""),
+]
+FIXES_MOUTHCLOCK["source/sound/sound_manager.c#mouthclock"] = [
+("""void sound_initialize_for_new_map(
+	void)
+{
+	return;
+}""",
+ """#ifdef HALO_PSP
+static void psp_mouth_clear(void);
+#endif
+
+void sound_initialize_for_new_map(
+	void)
+{
+#ifdef HALO_PSP
+	psp_mouth_clear();
+#endif
+	return;
+}"""),
+("""void sound_stop_all(
+	void)
+{
+	if (sound_manager_globals.initialized)
+	{""",
+ """#ifdef HALO_PSP
+/* FIXES_MOUTHCLOCK (psp_fixups.py): the lines whose mouths are driven, one
+per speaker (a new line replaces the speaker's last), the oldest given up
+when all are taken */
+#define PSP_MOUTH_LINES 16
+extern int psp_sound_speech; /* random_math.c */
+int psp_keep(const char *name);
+int psp_keep_loaded(void);
+void platform_psp_log(const char *format, ...);
+float main_get_seconds_elapsed(void);
+static struct
+{
+	long object_index;
+	struct sound_permutation *permutation;
+	long ticks;
+	real rate;
+	unsigned long long start_us, delay_us;
+} psp_mouth_lines[PSP_MOUTH_LINES];
+static unsigned char psp_mouth_used[PSP_MOUTH_LINES];
+static unsigned long long psp_mouth_clock_us = 0;
+static int psp_mouth_clock = -1;
+static unsigned long psp_mouth_started = 0, psp_mouth_given_up = 0;
+
+static int psp_mouth_clock_on(
+	void)
+{
+	if (psp_mouth_clock < 0)
+	{
+		if (!psp_keep_loaded())
+			return 1;
+		psp_mouth_clock = !psp_keep("mouthold");
+		platform_psp_log("sound: speakers' mouths follow %s", psp_mouth_clock ?
+			"the frames' time steps from the tick their line started (the mouth clock)" :
+			"the mixer's play time (mouthold)");
+	}
+	return psp_mouth_clock;
+}
+
+static void psp_mouth_clear(
+	void)
+{
+	csmemset(psp_mouth_used, 0, sizeof(psp_mouth_used));
+}
+
+/* sound_new_impulse: a speech line tracked to an object has started */
+static void psp_mouth_add(
+	long sound_index,
+	long object_index)
+{
+	struct sound_datum *sound = sound_get(sound_index);
+	struct sound_definition *definition = sound_definition_get(sound->definition_index);
+	struct sound_pitch_range *range = TAG_BLOCK_GET_ELEMENT(&definition->pitch_ranges, sound->pitch_range_index,
+		struct sound_pitch_range);
+	struct sound_permutation *permutation = TAG_BLOCK_GET_ELEMENT(&range->permutations, sound->permutation_index,
+		struct sound_permutation);
+	int k, slot = -1, oldest = 0;
+
+	if (permutation->mouth_data.size <= 0)
+		return;
+	for (k = 0; k < PSP_MOUTH_LINES; k++)
+	{
+		if (psp_mouth_used[k] && psp_mouth_lines[k].object_index == object_index)
+		{
+			slot = k;
+			break;
+		}
+		if (!psp_mouth_used[k] && slot < 0)
+			slot = k;
+		if (psp_mouth_used[k] && psp_mouth_lines[k].start_us < psp_mouth_lines[oldest].start_us)
+			oldest = k;
+	}
+	if (slot < 0)
+	{
+		slot = oldest;
+		psp_mouth_given_up++;
+	}
+	psp_mouth_used[slot] = TRUE;
+	psp_mouth_lines[slot].object_index = object_index;
+	psp_mouth_lines[slot].permutation = permutation;
+	psp_mouth_lines[slot].ticks = permutation->mouth_data.size;
+	psp_mouth_lines[slot].rate = sound->pitch * range->playback_rate;
+	psp_mouth_lines[slot].start_us = psp_mouth_clock_us;
+	/* the travel delay the line starts after (the speed of sound) */
+	psp_mouth_lines[slot].delay_us = sound->start_time > sound_manager_globals.render_time ?
+		(unsigned long long)(sound->start_time - sound_manager_globals.render_time) * 1000 : 0;
+	psp_mouth_started++;
+}
+
+/* update_channels, once a frame while the sound manager runs: each line's
+mouth at its play time, then the clock on by the frame's time step */
+static void psp_mouth_update(
+	void)
+{
+	int k;
+
+	if (!psp_mouth_clock_on())
+		return;
+	for (k = 0; k < PSP_MOUTH_LINES; k++)
+	{
+		unsigned long long since;
+		real tick;
+
+		if (!psp_mouth_used[k])
+			continue;
+		since = psp_mouth_clock_us - psp_mouth_lines[k].start_us;
+		if (since < psp_mouth_lines[k].delay_us)
+			continue;
+		since -= psp_mouth_lines[k].delay_us;
+		/* (a line is seconds long: past ten minutes it is long over) */
+		tick = since > 600000000ULL ? (real)psp_mouth_lines[k].ticks :
+			(real)(unsigned long)since * 0.00003f * psp_mouth_lines[k].rate;
+		if (tick >= (real)psp_mouth_lines[k].ticks)
+		{
+			psp_mouth_used[k] = FALSE;
+			continue;
+		}
+		game_sound_set_mouth_aperture(psp_mouth_lines[k].object_index,
+			sound_permutation_get_real_mouth_aperture(psp_mouth_lines[k].permutation, (long)tick));
+	}
+	psp_mouth_clock_us += (unsigned long)(main_get_seconds_elapsed() * 1000000.0f);
+}
+#endif
+
+void sound_stop_all(
+	void)
+{
+#ifdef HALO_PSP
+	psp_mouth_clear();
+#endif
+	if (sound_manager_globals.initialized)
+	{"""),
+("""	long sound_index = NONE;
+	struct sound_definition *definition = sound_definition_get(definition_index);
+	real scale = source->scale;
+""",
+ """	long sound_index = NONE;
+	struct sound_definition *definition = sound_definition_get(definition_index);
+	real scale = source->scale;
+#ifdef HALO_PSP
+	/* FIXES_MOUTHCLOCK: a speaker's line, its draws from the speech seed */
+	int psp_speech_was = psp_sound_speech;
+	boolean psp_mouthed = track_proc == track_object_impulse_sound &&
+		sound_class_get(definition->sound_class)->speech && psp_mouth_clock_on();
+
+	if (psp_mouthed)
+		psp_sound_speech = 1;
+#endif
+"""),
+("""	return sound_index;
+}
+
+boolean sound_refresh_looping(""",
+ """#ifdef HALO_PSP
+	psp_sound_speech = psp_speech_was;
+	if (psp_mouthed && sound_index != NONE)
+		psp_mouth_add(sound_index, source_identifier);
+#endif
+	return sound_index;
+}
+
+boolean sound_refresh_looping("""),
+("""			if (sound_class_get(definition->sound_class)->speech &&
+				sound->track_proc == track_object_impulse_sound)
+""",
+ """			if (sound_class_get(definition->sound_class)->speech &&
+				sound->track_proc == track_object_impulse_sound
+#ifdef HALO_PSP
+				&& !psp_mouth_clock_on()
+#endif
+				)
+"""),
+("""	return;
+}
+
+static void prioritize_sounds(
+	void)
+{""",
+ """#ifdef HALO_PSP
+	psp_mouth_update();
+#endif
+	return;
+}
+
+static void prioritize_sounds(
+	void)
+{"""),
+]
+
+
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_SSPR.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items()) + list(FIXES_AIME2A.items()) + (list(FIXES_STACKHOT.items()) if STACKHOT else []) + (list(FIXES_STACKHOT2.items()) if STACKHOT2 else []) + list(FIXES_PWSL.items()) + list(FIXES_SPHSL.items()) + list(FIXES_RECONLIST.items()) + list(FIXES_TP1.items()) + list(FIXES_WXDEAD.items()) + list(FIXES_AIMEMOVE.items()) + list(FIXES_PROPCRASH.items()) + list(FIXES_APCPOOL.items()) + list(FIXES_SNDEDRAM.items()) + list(FIXES_LIGHTFIRST.items()) + list(FIXES_DRAWPART.items()) + (list(FIXES_RECONLATE.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + list(FIXES_P2PASS.items()) + (list(FIXES_P2CENSUS.items()) if P2CENSUS else []) + list(FIXES_OBSRAY.items()) + list(FIXES_SNDWAIT.items()) + list(FIXES_FLAMEDECAL.items()) + list(FIXES_HUHINT.items()) + list(FIXES_DBLSOFT.items()) + list(FIXES_VFPUTRIG.items()) + list(FIXES_TICKCACHE.items()) + list(FIXES_STRICTALIAS.items()) + list(FIXES_SNDPERMAP.items()) + list(FIXES_RLOOP.items()) + (list(FIXES_SNDSTREAM.items()) if os.environ.get("PSP_SNDSTREAM", "") == "1" else []) + list(FIXES_MOUTHCLOCK.items())):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
