@@ -16018,8 +16018,8 @@ static int rigid_run_verdict(const float *sphere, float stretch)
 /* The pass options (redesign_tick_target §3.4): on a model drawn under N
 pixels across, a pass that adds little there is left out. glowsmallN: glow,
 sheen and detail; backsmallN: a two-sided part's back faces; changesmallN:
-the change colour. 16 by default, the size Sheepdog01 chose from the side-by-sides;
-N0 keeps the pass at every size. One size test, a model's own pixels, so R's
+the change colour. 64 by default: far objects are drawn approximately, the
+threshold set high and tuned back by eye with these numbers. N0 keeps the pass at every size. One size test, a model's own pixels, so R's
 instance decision calls the same. First person and the sky keep every pass */
 
 static int pass_small(int pixels)
@@ -16027,11 +16027,12 @@ static int pass_small(int pixels)
 	return pixels > 0 && model_pixels < (float)pixels && !model_first_person && !in_sky;
 }
 
+#define PASS_SMALL_PIXELS 64
 static void pass_words(void)
 {
-	pass_glow_small = psp_keep_number("glowsmall", 16);
-	pass_back_small = psp_keep_number("backsmall", 16);
-	pass_change_small = psp_keep_number("changesmall", 16);
+	pass_glow_small = psp_keep_number("glowsmall", PASS_SMALL_PIXELS);
+	pass_back_small = psp_keep_number("backsmall", PASS_SMALL_PIXELS);
+	pass_change_small = psp_keep_number("changesmall", PASS_SMALL_PIXELS);
 }
 
 static void psp_ge_draw_model_body(void *vertices, int vertex_count, int uncompressed, const unsigned short *indices,
