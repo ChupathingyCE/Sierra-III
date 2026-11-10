@@ -98,7 +98,7 @@ Each placement changes only addresses, so it's exact by construction (play and b
   - geometry from VRAM, made small enough by the far tiers (`drawing_sizing.md`: 81-86% of b30's model indices drawn under 96 px);
   - textures from VRAM or atlases sized for the screen;
   - the display list as the only main-RAM stream.
-- **What stays in main RAM is shaped in software** (no bus-priority register exists): the list interleaved so main-RAM-heavy draws are spread, and the GE paced by a VRAM-only filler where it has slack. The design and the runs are in the lab's page, §8-9. **Expected to buy ~nothing since the toll is linear (above)**; `gedouble` tests the slope in play before either is built. What cuts it is fewer fetches from RAM: VRAM residency, strips (a third of a list's fetches), the far tiers.
+- **What stays in main RAM is shaped in software** (no bus-priority register exists): the list interleaved so main-RAM-heavy draws are spread, and the GE paced by a VRAM-only filler where it has slack. The design and the runs are in the lab's page, §8-9. **Expected to buy ~nothing since the toll is linear (above)**; `gedouble` tests the slope in play before either is built. **It did (2026-11-10, the lab's `bus_toll_gedouble_b30_flight`) [M]:** on b30's flight the GE's reads cost the tick 5.8 ms (`gebusnone`: 39.5 → 33.7 ms), and doubled they cost 8.9 (+53%): sub-linear, the GE already busy most of the frame. So shaping has nothing to work on; fewer fetches from RAM is the lever. What cuts it is fewer fetches from RAM: VRAM residency, strips (a third of a list's fetches), the far tiers.
 - **The tests that size it:**
   - a per-kind contention bench (list, strip, non-indexed, VRAM, RAM textures by size, paced duty);
   - `gedouble` (the toll's slope in play);
