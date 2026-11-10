@@ -163,8 +163,9 @@ The lab's `research/manifest/tickmap_ai_code_2026-11-09.md`. Under the default k
 | b30 beach | 8.6% thinking + 1.4% control (by function) | PC sampler, PSP-1000 [M] |
 | b30 beach fight | 5.9 of 44.2 ms a tick (13%, instrumented) | combatsteps, PSP-3000 [M] |
 | The ME's AI job | b30 flight 19.5 ms a frame (ledger); b40 snowfield 14.4 ms a job, worst 42.9 | ledger1 and sierra-hw 42152471353 [M] |
+| Actor updates alone, by band (the PSP census) | 2.9 ms a tick on b30's flight, 2.7 on the landing and b40's cliff (instrumented); in a fight 79-86%. By band: flight 20-40 units 46%, 10-20 27%; landing 20-40 69%; cliff under 10 units 55%. By drawn size: flight under 32 px 67%; cliff undrawn 78% | the PSP census, PSP-3000 [M]; lab findings `census_ai_actor_updates` |
 
-The flight's 16.5% and the beach's ~10% differ by stretch, and the sampler groups by function, so the AI's rays are counted under collision.
+The flight's 16.5% and the beach's ~10% differ by stretch, and the sampler groups by function, so the AI's rays are counted under collision. The census's actor updates (~2.7-2.9 ms a tick) are only the updates themselves: the rest of the 16.5% is the encounters, path searches and hand-over around them.
 
 ### 3.3 Every lever tried on it, and where it was priced
 
