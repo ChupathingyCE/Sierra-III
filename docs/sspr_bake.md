@@ -55,6 +55,12 @@ A build plan (master, 2026-11-06). Sheepdog01 asked on 14:03, through bottleneck
 - **Step 1's GE figure is the Pelican's and the trees' share only** (bottleneck 14:12). The bipeds are skinned, step 2's, and carry the larger share (under 16 px: grunts, elites and marines ~14k of the flight's 55k vertices [E]).
 - **Priced on the PSP once Sheepdog01 picks *e*:** one pair, `- | sspr`, on b30's flight (the redesign rule).
 
+## The levels are drawn as lists (2026-11-10, chat1110)
+
+[D] in code, its size [U]. `tools/sspr.py` writes each level as a triangle list, and `psp_ge.c` draws a level with `strip = 0`; the top draws in its source's form, a strip where the tag has one. The GE keeps no transformed vertex (`hardware_facts.md`, GE), so its work is the index count: a list pays 3 a triangle, a strip ~1. A level is kept when its list is shorter than the top's *list* (`len(out) < len(tri)`), so a strip-sourced part's level above ~1/3 of the top's triangles sends more transforms than the top. The levels stop near half (`sspr_bake_census_fixed`), which is the leading explanation for step 1's −3.6% of indices.
+
+The fix, exact and bake-only: stripify each level (`meshopt_stripify`, joined by repeated indices: the GE has no restart), drawn with the strip flag, and keep a level only when its strip is shorter than what the top draws. Count first: each rigid part's source form and its indices, top against each level as a list and as a strip. Rigid parts whose source is a list can be drawn as strips by the same rule (modelconvert's `strip_of`, as SKINSTRIP does for bending batches). The PSP pair waits for the stripified levels.
+
 ## Step 2, after Sheepdog01's look
 
 Skinned models, with each vertex's bone weights kept valid across a collapse (no vertex is merged into one hung on other nodes). The skin plans are made again for each level by modelconvert's planner.
