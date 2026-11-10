@@ -262,7 +262,7 @@ R decides what must be GE-readable, and S's layout what the tick reads hot. B pl
   - **The hot tag window as a packed, typed layout,** read through accessors: 32% of the tick's D-misses, half of them in a 16 KB hot set. TAGHOT's retrofit is blocked by raw-offset readers; B lays the hot fields out once instead. Exact; ~2-4 ms a tick [U], priced by a PSP pair (the cache rule). First step: the readers' clustering audit (are the hot fields read in a few functions or across the tick).
   - **Freeing VRAM,** which the first of these needs.
 - **Not B's:** the tick restructured around the I-cache (82-84% of its I-misses are capacity) needs WORLDVIEW, a tick-start view of the world that changes play. It's Sheepdog01's call as a compromise, ~1.5 ms a tick ceiling [U].
-- **Milestone and stop:** each of the three priced by its own PSP pair; B's layout then priced inside R's and S's milestones.
+- **Milestone and stop:** priced at B's own milestone (two builds, old-only and new-only, on the pad benches; Sheepdog01 2026-11-10 01:16) or inside R's and S's, not piece by piece; the trigger goes in the lab's plan ("Milestones") when B has its next go.
 - **Who:** the master.
 
 ### A. Audio built around the VME (candidate, Sheepdog01 19:34)
