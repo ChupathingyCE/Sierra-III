@@ -44086,11 +44086,11 @@ actor's start in them (-1 none), the ME's to write in the second pass */
 #define PSP_AITICKOLD_BUF_WORDS (48 * 1024 / 4)
 static unsigned long *psp_aitickold_buf = NULL;
 static int psp_aitickold_buf_on = -1, psp_aitickold_buf_want = 0;
-/* diagnostics: "aitickoldbufcheck" checks each installed actor's orphan
-links before and after; "aitickoldbufnokeep" deletes every prop the
-thinking deleted; "aitickoldbufnooffer" doesn't offer a refused record's
-timeslice again */
-static int psp_aitickold_buf_check = 0, psp_aitickold_buf_nokeep = 0, psp_aitickold_buf_nooffer = 0;
+/* diagnostics: "aitickoldbufcheck" logs broken orphan links at each
+install's start and after each install; "aitickoldbufnoswitch" deletes the
+props the thinking deleted without switching the tick's references to them;
+"aitickoldbufnooffer" doesn't offer a refused record's timeslice again */
+static int psp_aitickold_buf_check = 0, psp_aitickold_buf_noswitch = 0, psp_aitickold_buf_nooffer = 0;
 static long psp_aitickold_buf_check_lines = 0;
 static PSP_AIME_ME_SIDE long psp_aitickold_rec[MAXIMUM_ACTORS];
 static PSP_AIME_ME_SIDE long psp_aitickold_buf_used = 0;
@@ -44102,7 +44102,7 @@ static struct
 } psp_aitickold_buf_me_stats PSP_AIME_ME_SIDE;
 static struct
 {
-	unsigned long put, conflicts, chain, words, kept;
+	unsigned long put, conflicts, chain, words, switched, dangling;
 } psp_aitickold_buf_stats;
 static void psp_aitickold_buf_begin(void);
 static boolean psp_aitickold_buf_skip(long actor_index);
@@ -44339,34 +44339,38 @@ static boolean psp_aitickold_prop_alive(
 
 #define PSP_AITICKOLD_DELETED_MOST 32
 
-/* TRUE when the actor, or a prop that stays (its chain's, or one already
-kept), names the prop */
-static boolean psp_aitickold_named(
-	struct actor_datum const *actor,
-	long const *deleted,
-	boolean const *kept,
-	short deleted_count,
+/* what the thinking switched the actor's references to a prop it deleted to:
+the engine deletes a prop only after actor_switch_props moves the actor's
+references off it, to its parent when an orphan's parent is seen again,
+else to none. An actor word the record moved off the prop says which;
+without one, an orphan whose parent the thinking made acknowledged and
+let go of it went back to that parent */
+static long psp_aitickold_switched_to(
+	unsigned long const *buf,
+	long start,
+	long count,
 	long prop_index)
 {
-	long other, words = prop_data->size / 4;
-	short k;
+	struct prop_datum *prop = (struct prop_datum *)psp_aime_datum_address(prop_data, prop_index);
+	long k, parent;
 
-	if (psp_aitickold_names((unsigned long const *)actor, (long)(sizeof(*actor) / 4), (unsigned long)prop_index))
-		return TRUE;
-	for (other = actor->meta.first_prop_index; other != NONE;
-		other = ((struct prop_datum *)psp_aime_datum_address(prop_data, other))->next_prop_index)
+	for (k = 0; k < count; k++)
 	{
-		if (other != prop_index &&
-			psp_aitickold_names((unsigned long const *)psp_aime_datum_address(prop_data, other), words, (unsigned long)prop_index))
-			return TRUE;
+		unsigned long value = buf[start + 4 + k * 3], before = value ^ buf[start + 5 + k * 3];
+
+		if (before == (unsigned long)prop_index && (value == (unsigned long)NONE || psp_aitickold_prop_alive((long)value)))
+			return (long)value;
 	}
-	for (k = 0; k < deleted_count; k++)
+	parent = prop->parent_prop_index;
+	if (prop->state >= _prop_state_uninspected_orphan && prop->state <= _prop_state_inspected_orphan &&
+		psp_aitickold_prop_alive(parent))
 	{
-		if (kept[k] && deleted[k] != prop_index &&
-			psp_aitickold_names((unsigned long const *)psp_aime_datum_address(prop_data, deleted[k]), words, (unsigned long)prop_index))
-			return TRUE;
+		struct prop_datum *parent_prop = (struct prop_datum *)psp_aime_datum_address(prop_data, parent);
+
+		if (parent_prop->orphan_prop_index != prop_index && parent_prop->state == _prop_state_acknowledged)
+			return parent;
 	}
-	return FALSE;
+	return NONE;
 }
 
 /* the bytes of a word that hold a changed bit */
@@ -44397,7 +44401,7 @@ static void psp_aitickold_merge(
 /* aitickoldbufcheck: every prop of the actor's chain whose orphan link
 doesn't hold (an orphan's parent alive and naming it back; a parent's orphan
 alive, an orphan, and naming it back), logged with what the record did to
-it: c changed (its link or state word: l, s), m made, k kept */
+it: c changed (its link or state word: l, s), m made, d deleted */
 static void psp_aitickold_check(
 	long actor_index_whole,
 	short absolute_index,
@@ -44443,7 +44447,7 @@ static void psp_aitickold_check(
 				{
 					unsigned long r;
 
-					how[at_how++] = kind == 0 ? 'c' : kind == 1 ? 'm' : 'k';
+					how[at_how++] = kind == 0 ? 'c' : kind == 1 ? 'm' : 'd';
 					for (r = 0; kind == 0 && r < n && at_how < 6; r++)
 					{
 						if (buf[at + 2 + r * 3] == 3)
@@ -44466,18 +44470,18 @@ static void psp_aitickold_check(
 static unsigned long psp_aitickold_scratch[sizeof(struct actor_datum) / 4];
 
 /* the second tick's start: each record put in over the first tick's work, as
-the thinking at that tick's start would write over it: the bits of the actor's
-words the thinking changed take its values, the rest keep the tick's; its
-props' words likewise; the props it made are made at their slots. The record's links are
-good only over the prop chain it was made against, and the tick makes props
-too (damage and effects noticed: actor_handle_damage,
-actors_handle_unit_effect) and deletes them, so a record goes in only when
-the tick left the actor's chain as it was and every slot the record makes a
-prop in free. Otherwise the actor loses its mark and thinks whole in the
-tick, and a timeslice the record held is offered again. A prop the thinking
-deleted that the actor still names (the tick's control took it as a target
-meanwhile), or that a prop it keeps names, stays at the chain's end, as the
-engine never deletes a prop an actor names; the next thinking lets it go */
+the thinking at that tick's start would write over it: the bytes of the
+actor's words the thinking changed take its values, the rest keep the
+tick's; its props' words likewise; the props it made are made at their
+slots. The record's links are good only over the prop chain it was made
+against, and the tick makes props too (damage and effects noticed:
+actor_handle_damage, actors_handle_unit_effect) and deletes them, so a
+record goes in only when the tick left the actor's chain as it was and
+every slot the record makes a prop in free. Otherwise the actor loses its
+mark and thinks whole in the tick, and a timeslice the record held is
+offered again. A prop the thinking deleted that the tick named in the actor
+meanwhile gets the switch the engine makes before every delete. Keeping
+such a prop alive instead left an orphan whose parent had let it go */
 static void psp_aitickold_install(
 	void)
 {
@@ -44497,13 +44501,12 @@ static void psp_aitickold_install(
 	}
 	for (absolute_index = 0; absolute_index < MAXIMUM_ACTORS; absolute_index++)
 	{
-		long start = psp_aitickold_rec[absolute_index], at, count, k, prop_index, last;
+		long start = psp_aitickold_rec[absolute_index], at, count, k, prop_index;
 		long deleted[PSP_AITICKOLD_DELETED_MOST];
-		boolean kept[PSP_AITICKOLD_DELETED_MOST];
 		short props, p, deleted_count = 0;
 		struct actor_datum *actor;
 		struct actor_datum *scratch = (struct actor_datum *)psp_aitickold_scratch;
-		boolean ok = TRUE, more;
+		boolean ok = TRUE;
 
 		if (start < 0 || absolute_index >= actor_data->count)
 			continue;
@@ -44578,38 +44581,41 @@ static void psp_aitickold_install(
 			}
 			at += 2 + (kind == 1 ? n : kind == 2 ? 0 : n * 3);
 		}
-		/* the deletions last: a prop named by the actor or by a prop that
-		stays is kept, and so is whatever a kept prop names */
-		for (p = 0; p < deleted_count; p++)
-			kept[p] = FALSE;
-		do
-		{
-			more = FALSE;
-			for (p = 0; p < deleted_count; p++)
-			{
-				if (!kept[p] && !psp_aitickold_buf_nokeep && psp_aitickold_named(actor, deleted, kept, deleted_count, deleted[p]))
-					kept[p] = more = TRUE;
-			}
-		} while (more);
-		last = NONE;
-		for (prop_index = actor->meta.first_prop_index; prop_index != NONE;
-			prop_index = ((struct prop_datum *)psp_aime_datum_address(prop_data, prop_index))->next_prop_index)
-			last = prop_index;
+		/* the deletions last. A prop the tick named in the actor meanwhile
+		(a fire target its control took) gets the switch the thinking gave
+		the prop's other references, as the engine does before any delete */
 		for (p = 0; p < deleted_count; p++)
 		{
-			if (!kept[p])
+			if (!psp_aitickold_buf_noswitch &&
+				psp_aitickold_names((unsigned long const *)actor, (long)(sizeof(*actor) / 4), (unsigned long)deleted[p]))
 			{
-				datum_delete(prop_data, deleted[p]);
-				continue;
+				long to = deleted[p];
+				short steps, q;
+				boolean going = TRUE;
+
+				/* a target the record deletes too is followed to its own */
+				for (steps = 0; going && steps < 4; steps++)
+				{
+					to = psp_aitickold_switched_to(buf, start, count, to);
+					for (q = 0, going = FALSE; q < deleted_count && !going; q++)
+						going = to == deleted[q];
+				}
+				actor_switch_props(DATUM_INDEX_NEW(absolute_index, actor->identifier), deleted[p], going ? NONE : to);
+				psp_aitickold_buf_stats.switched++;
+				/* a word the engine's switch doesn't cover */
+				for (k = 0; k < (long)(sizeof(*actor) / 4); k++)
+				{
+					if (((unsigned long const *)actor)[k] == (unsigned long)deleted[p])
+					{
+						if (psp_aitickold_buf_stats.dangling++ < 8)
+							platform_psp_log("aitickoldbuf: game time %ld | actor %d word %ld still names deleted prop %08lx",
+								(long)game_time_get(), (int)absolute_index, k, (unsigned long)deleted[p]);
+					}
+				}
 			}
-			((struct prop_datum *)psp_aime_datum_address(prop_data, deleted[p]))->next_prop_index = NONE;
-			if (last == NONE)
-				actor->meta.first_prop_index = deleted[p];
-			else
-				((struct prop_datum *)psp_aime_datum_address(prop_data, last))->next_prop_index = deleted[p];
-			last = deleted[p];
-			psp_aitickold_buf_stats.kept++;
 		}
+		for (p = 0; p < deleted_count; p++)
+			datum_delete(prop_data, deleted[p]);
 		if (psp_aitickold_buf_check)
 			psp_aitickold_check(DATUM_INDEX_NEW(absolute_index, actor->identifier), absolute_index, "after", buf, start, count, props);
 		psp_aitickold_buf_stats.put++;
@@ -44626,7 +44632,7 @@ static void psp_aitickold_install(
 	{
 		psp_aitickold_buf_on = psp_keep("aitickoldbuf") != 0 && psp_aime1b_active();
 		psp_aitickold_buf_check = psp_keep("aitickoldbufcheck") != 0;
-		psp_aitickold_buf_nokeep = psp_keep("aitickoldbufnokeep") != 0;
+		psp_aitickold_buf_noswitch = psp_keep("aitickoldbufnoswitch") != 0;
 		psp_aitickold_buf_nooffer = psp_keep("aitickoldbufnooffer") != 0;
 		if (psp_aitickold_buf_on)
 		{
@@ -44654,12 +44660,12 @@ static void psp_aitickold_install(
 """,
  """			psp_aitickold_stats.used, psp_aitickold_stats.inline_passes, psp_aitickold_stats.queue_carried);
 	if (psp_aitickold_buf_on > 0)
-		platform_psp_log("aitickoldbuf: game time %ld | second thinkings kept %lu (words %lu; props changed %lu, made %lu, deleted %lu), left in place %lu, skipped %lu, no room %lu, records' peak %lu words | put in %lu (words %lu), not put in %lu (the tick changed the chain %lu); props the thinking deleted kept as still named %lu",
+		platform_psp_log("aitickoldbuf: game time %ld | second thinkings kept %lu (words %lu; props changed %lu, made %lu, deleted %lu), left in place %lu, skipped %lu, no room %lu, records' peak %lu words | put in %lu (words %lu), not put in %lu (the tick changed the chain %lu); references the tick made to props the thinking deleted switched %lu (words left naming one %lu)",
 			now, psp_aitickold_buf_me_stats.unshelved, psp_aitickold_buf_me_stats.words, psp_aitickold_buf_me_stats.props_changed,
 			psp_aitickold_buf_me_stats.props_made, psp_aitickold_buf_me_stats.props_deleted, psp_aitickold_buf_me_stats.kept,
 			psp_aitickold_buf_me_stats.skipped, psp_aitickold_buf_me_stats.full, psp_aitickold_buf_me_stats.peak,
 			psp_aitickold_buf_stats.put, psp_aitickold_buf_stats.words, psp_aitickold_buf_stats.conflicts,
-			psp_aitickold_buf_stats.chain, psp_aitickold_buf_stats.kept);
+			psp_aitickold_buf_stats.chain, psp_aitickold_buf_stats.switched, psp_aitickold_buf_stats.dangling);
 """),
 ]
 # the second pass's clock: the game time one tick on, in the pass's own
