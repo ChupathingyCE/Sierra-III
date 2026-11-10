@@ -47785,6 +47785,335 @@ FIXES_HUHINT["source/objects/objects.c#huhint"] = [
 # why). The engine's cache is resized as each map opens (it's empty then:
 # sound_cache_close let every sound go), and the 5 s report counts the pages
 # the map has, not the boot size
+# ---------- POSEK (bottleneck, 2026-11-10; lab research/opportunities/posing.md, slices P1
+# and P3): the node walk after the root reads a per-model plan instead of the model's tag
+# nodes. The old loop reads each node's links from its 156-byte tag entry (a line or two a
+# node, every object every tick) and runs the root's large block in the same loop body; the
+# plan is the same visit order, two bytes a node (node, parent), made once a map per model,
+# and the walk is one small noinline loop (orientation to matrix, product with the parent).
+# Exact: the same products in the same order. A model whose links the old loop would report
+# (a bad index, node_stack full, the root reached twice) keeps the old loop, as does
+# "nodeprefetch". PSP_POSEK=0 builds without it (the old-only side of its two-build pair);
+# "posekold": the old loop in this build.
+POSEK = os.environ.get("PSP_POSEK", "1") != "0"
+FIXES_POSEK = {}
+FIXES_POSEK["source/objects/objects.c#posek"] = [
+("""static int psp_nrchk_mode; /* psp_fixups.py (FIXES_NRCHK) */
+#endif
+
+void objects_initialize_for_new_map(""",
+ """static int psp_nrchk_mode; /* psp_fixups.py (FIXES_NRCHK) */
+static void psp_posek_forget(void); /* psp_fixups.py (FIXES_POSEK) */
+#endif
+
+void objects_initialize_for_new_map("""),
+("""	psp_nrchk_mode = -1; /* psp_fixups.py (FIXES_NRCHK) */
+#endif
+	damage_initialize_for_new_map();""",
+ """	psp_nrchk_mode = -1; /* psp_fixups.py (FIXES_NRCHK) */
+	psp_posek_forget(); /* psp_fixups.py (FIXES_POSEK): the plans name this map's models */
+#endif
+	damage_initialize_for_new_map();"""),
+("""void object_compute_node_matrices(
+	long object_index)
+{
+	struct object_datum *object = object_get(object_index);
+
+	object_compute_node_matrices_with(""",
+ """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_POSEK): each model's walk after the root, as (node, parent) byte
+pairs in the old loop's visit order. A slot's state: 0 free, 1 a plan, 2 the old loop
+(links the old loop reports, or no room). A map's 32-63 posed models took under 400
+bytes on c20, b30 and a30 (the lab's posek1); the log says how full */
+#define PSP_POSEK_SLOTS 128
+#define PSP_POSEK_BYTES 2048
+struct psp_posek_slot
+{
+	struct model *model;
+	unsigned short at;
+	unsigned char count;
+	unsigned char state;
+};
+static struct psp_posek_slot psp_posek_slots[PSP_POSEK_SLOTS];
+static unsigned char psp_posek_pairs[PSP_POSEK_BYTES];
+static int psp_posek_used, psp_posek_plans, psp_posek_old, psp_posek_full;
+
+static void psp_posek_forget(void)
+{
+	if (psp_posek_plans || psp_posek_old || psp_posek_full)
+		platform_psp_log("posek: %d plans in %d of %d bytes, %d models on the old loop, %d refused for room",
+			psp_posek_plans, psp_posek_used, PSP_POSEK_BYTES, psp_posek_old, psp_posek_full);
+	csmemset(psp_posek_slots, 0, sizeof(psp_posek_slots));
+	psp_posek_used = psp_posek_plans = psp_posek_old = psp_posek_full = 0;
+}
+
+/* the old loop's walk, run once without the maths: the same queue, the same pushes and
+the same checks; any case where it would report the model's links leaves the model on the
+old loop, which reports them as before */
+static int psp_posek_make(struct model *model, short model_node_count, unsigned char *out)
+{
+	short stack[MAXIMUM_NODES_PER_MODEL];
+	short index = 0, count = 1;
+	int made = 0;
+
+	stack[0] = 0;
+	while (TRUE)
+	{
+		short at = stack[index++];
+		struct model_node *node = TAG_BLOCK_GET_ELEMENT(&model->nodes, at, struct model_node);
+
+		if (at == 0)
+		{
+			if (index != 1)
+				return -1;
+		}
+		else
+		{
+			if (!VALID_INDEX(node->parent_node_index, model_node_count))
+				return -1;
+			out[made * 2] = (unsigned char)at;
+			out[made * 2 + 1] = (unsigned char)node->parent_node_index;
+			made++;
+		}
+		if (node->next_sibling_node_index != NONE)
+		{
+			if (!VALID_INDEX(node->next_sibling_node_index, model_node_count) || count >= MAXIMUM_NODES_PER_MODEL)
+				return -1;
+			stack[count++] = node->next_sibling_node_index;
+		}
+		if (node->first_child_node_index != NONE)
+		{
+			if (!VALID_INDEX(node->first_child_node_index, model_node_count) || count >= MAXIMUM_NODES_PER_MODEL)
+				return -1;
+			stack[count++] = node->first_child_node_index;
+		}
+		if (index == count)
+			return made;
+	}
+}
+
+static unsigned char const *psp_posek_plan(struct model *model, short model_node_count, int *count)
+{
+	unsigned long k = (((unsigned long)model >> 4) * 2654435761u) >> 25;
+	int probe;
+
+	for (probe = 0; probe < 8; probe++, k = (k + 1) & (PSP_POSEK_SLOTS - 1))
+	{
+		struct psp_posek_slot *slot = &psp_posek_slots[k];
+
+		if (slot->state && slot->model == model)
+		{
+			*count = slot->count;
+			return slot->state == 1 ? &psp_posek_pairs[slot->at] : NULL;
+		}
+		if (!slot->state)
+		{
+			unsigned char pairs[2 * MAXIMUM_NODES_PER_MODEL];
+			int made = psp_posek_make(model, model_node_count, pairs);
+
+			slot->model = model;
+			if (made < 0)
+			{
+				slot->state = 2;
+				psp_posek_old++;
+				return NULL;
+			}
+			if (psp_posek_used + made * 2 > PSP_POSEK_BYTES)
+			{
+				slot->state = 2;
+				if (!psp_posek_full++)
+					platform_psp_log("posek: no room for a plan (%d plans in %d bytes)", psp_posek_plans, psp_posek_used);
+				return NULL;
+			}
+			csmemcpy(&psp_posek_pairs[psp_posek_used], pairs, made * 2);
+			slot->at = (unsigned short)psp_posek_used;
+			slot->count = (unsigned char)made;
+			slot->state = 1;
+			psp_posek_used += made * 2;
+			psp_posek_plans++;
+			if (psp_posek_plans >= 16 && !(psp_posek_plans & (psp_posek_plans - 1)))
+				platform_psp_log("posek: %d plans in %d bytes, %d models on the old loop, %d refused for room",
+					psp_posek_plans, psp_posek_used, psp_posek_old, psp_posek_full);
+			*count = made;
+			return &psp_posek_pairs[slot->at];
+		}
+	}
+	psp_posek_full++;
+	return NULL;
+}
+
+/* the walk after the root: the old loop's non-root step, node by node in its order */
+static void __attribute__((noinline)) psp_posek_walk(
+	unsigned char const *pairs,
+	int count,
+	real_matrix4x3 *nodes,
+	real_orientation const *orientations,
+	int psc)
+{
+	int i;
+
+	for (i = 0; i < count; i++)
+	{
+		short node = pairs[i * 2];
+
+		if (psc && node < psp_psc_locals_count)
+			psp_psc_local(&nodes[node], &orientations[node], node);
+		else
+			matrix4x3_from_orientation(&nodes[node], &orientations[node]);
+		matrix4x3_multiply(&nodes[pairs[i * 2 + 1]], &nodes[node], &nodes[node]);
+	}
+}
+#endif
+
+void object_compute_node_matrices(
+	long object_index)
+{
+	struct object_datum *object = object_get(object_index);
+
+	object_compute_node_matrices_with("""),
+("""		if (psp_node_prefetch)
+			psp_node_lines_prefetch(object_nodes, model, 0);
+#endif
+""",
+ """		if (psp_node_prefetch)
+			psp_node_lines_prefetch(object_nodes, model, 0);
+		/* psp_fixups.py (FIXES_POSEK) */
+		int psp_posek_count = 0;
+		unsigned char const *psp_posek_pairs_now = psp_node_prefetch || PSP_KEEP_ONCE("posekold") ? NULL : psp_posek_plan(model, model_node_count, &psp_posek_count);
+#endif
+"""),
+("""			next_sibling_node_index = node->next_sibling_node_index;
+""",
+ """#ifdef HALO_PSP
+			/* psp_fixups.py (FIXES_POSEK): the root was this loop's first and only
+			pass; the plan walks the rest */
+			if (psp_posek_pairs_now)
+			{
+				psp_posek_walk(psp_posek_pairs_now, psp_posek_count, object_nodes, node_orientations, psp_psc_locals && psp_psc_locals_object == object_index && object->object.animation.interpolation_frame_count == 0);
+				break;
+			}
+#endif
+			next_sibling_node_index = node->next_sibling_node_index;
+"""),
+]
+
+# ---------- ONEWALK (bottleneck, 2026-11-10; lab research/opportunities/collision.md, slice
+# C1's first step): the level sphere walk always the port's (FIXES_121's surfacetest), never
+# the engine's bsp3d_test_sphere_recursive. The choice by leaves a walk was made on the cache
+# model ("c20 walk at parity" [E]); with two walks in use, a section keeps both resident in
+# the I-cache. Exact: the two walks' answers are the same (surfacetestcheck, 0 differing over
+# 1.4 M walks). "onewalk": the port's walk always; off by default until its PSP pair.
+FIXES_ONEWALK = {}
+FIXES_ONEWALK["source/physics/collision_bsp.c#onewalk"] = [
+("""static int psp_surface_test_on = -1, psp_surface_test_check = 0;
+""", """static int psp_surface_test_on = -1, psp_surface_test_check = 0;
+static int psp_one_walk; /* psp_fixups.py (FIXES_ONEWALK) */
+"""),
+("""		psp_surface_test_check = psp_keep("surfacetestcheck");
+	}
+""", """		psp_surface_test_check = psp_keep("surfacetestcheck");
+		psp_one_walk = psp_keep("onewalk");
+	}
+"""),
+("""	if (!psp_surface_test_check && psp_walk_leaves16 <= PSP_SURFACE_DEDUP_LEAVES16)""",
+ """	if (!psp_surface_test_check && !psp_one_walk && psp_walk_leaves16 <= PSP_SURFACE_DEDUP_LEAVES16)"""),
+]
+
+# ---------- RLSKIP (bottleneck, 2026-11-10; lab research/opportunities/maplinks_anatomy_ds.md):
+# a moving object's reconnect to the same clusters, in the same order, skipped: its held
+# disconnect is taken back and its references stay where they are. RECONLIST makes the same
+# reconnect in place, exactly as the engine would (new identifiers, each reference moved to
+# its list's head), which costs the writes into other objects' references. The skip leaves
+# the lists' order and the references' identifiers as they were, which collision's walks and
+# objects_in_sphere's count limit can read: not exact, and proven as "plays the same"
+# (side-by-sides and the outcome census; inside the multiplayer boundary: no object's datum
+# index moves). "rlskip": on; off by default until its census and PSP pair.
+FIXES_RLSKIP = {}
+FIXES_RLSKIP["source/structures/cluster_partitions.c#rlskip"] = [
+("""static void cluster_partition_disconnect_now(struct cluster_partition *partition, long datum_index, long *first_cluster_reference);
+""", """static void cluster_partition_disconnect_now(struct cluster_partition *partition, long datum_index, long *first_cluster_reference);
+/* psp_fixups.py (FIXES_RLSKIP) */
+static int psp_rl_skip = -1;
+static unsigned long psp_rl_skipped, psp_rl_skip_logged;
+
+/* 1 when the held object's references name these clusters in their order (the first part
+of psp_rl_plan's test: the clusters, not the slots) */
+static int psp_rl_same_clusters(struct cluster_partition *partition, long datum_index, short const *clusters, short count)
+{
+	struct data_array *cluster_array = partition->cluster_reference_data, *data_array = partition->data_reference_data;
+	long walk = psp_rl.chain;
+	short n = 0;
+
+	if (count <= 0)
+		return 0;
+	while (walk != NONE)
+	{
+		struct data_reference *cluster_reference, *data_reference;
+
+		if (n >= count)
+			return 0;
+		cluster_reference = psp_reference_at(cluster_array, DATUM_INDEX_TO_ABSOLUTE_INDEX(walk));
+		if (!cluster_reference || DATUM_INDEX_NEW(DATUM_INDEX_TO_ABSOLUTE_INDEX(walk), cluster_reference->identifier) != walk ||
+			cluster_reference->datum_index != clusters[count - 1 - n])
+			return 0;
+		data_reference = psp_reference_at(data_array, cluster_reference->pad);
+		if (!data_reference || data_reference->datum_index != datum_index)
+			return 0;
+		n++;
+		walk = cluster_reference->next_reference_index;
+	}
+	return n == count;
+}
+"""),
+("""	if (psp_rl.held)
+	{
+		struct psp_rl_plan plan;
+
+		if (psp_rl_plan(""", """	if (psp_rl_skip < 0)
+		psp_rl_skip = psp_keep("rlskip");
+	if (psp_rl.held && psp_rl_skip && !psp_rl.check && psp_rl_same_clusters(partition, datum_index, cluster_indices, cluster_count))
+	{
+		/* psp_fixups.py (FIXES_RLSKIP): the references stay where they are */
+		psp_rl.held = 0;
+		*first_cluster_reference = psp_rl.chain;
+		if (++psp_rl_skipped / 20000 != psp_rl_skip_logged)
+		{
+			psp_rl_skip_logged = psp_rl_skipped / 20000;
+			platform_psp_log("rlskip: %lu reconnects to the same clusters skipped (made in place %lu, made as before %lu)",
+				psp_rl_skipped, psp_rl_in_place_count, psp_rl_flushed);
+		}
+		return;
+	}
+	if (psp_rl.held)
+	{
+		struct psp_rl_plan plan;
+
+		if (psp_rl_plan("""),
+]
+
+# ---------- L10 (sweep1b, verified 2026-11-10; lab catalogue.tsv): only units post-process
+# their node matrices (unit_data_definition's seat and weapon IK; every other type's slot is
+# NULL, object_types.c's table), so object_postprocess_node_matrices returns for any other
+# type before it loads the object's definition and its node matrices block. Exact: the
+# skipped calls changed nothing. "postgateold": the old path, every type through the lookups.
+FIXES_L10 = {}
+FIXES_L10["source/objects/objects.c#l10"] = [
+("""static void object_postprocess_node_matrices(
+	long object_index)
+{
+	struct object_datum *object = object_get(object_index);
+""", """static void object_postprocess_node_matrices(
+	long object_index)
+{
+	struct object_datum *object = object_get(object_index);
+
+	if (!TEST_FLAG(_object_mask_unit, object->object.type) && !PSP_KEEP_ONCE("postgateold"))
+	{
+		return;
+	}
+"""),
+]
+
 # ---------- FIXES_RLOOP: R slice 5's kept loop (psp_rloop.c, "retainedloop")
 # render_model_parts' calls noted the first time a key is drawn and made
 # straight from the note after that; the draws note themselves while a loop
@@ -48586,7 +48915,7 @@ static void prioritize_sounds(
 ]
 
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_SSPR.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items()) + list(FIXES_AIME2A.items()) + (list(FIXES_STACKHOT.items()) if STACKHOT else []) + (list(FIXES_STACKHOT2.items()) if STACKHOT2 else []) + list(FIXES_PWSL.items()) + list(FIXES_SPHSL.items()) + list(FIXES_RECONLIST.items()) + list(FIXES_TP1.items()) + list(FIXES_WXDEAD.items()) + list(FIXES_AIMEMOVE.items()) + list(FIXES_PROPCRASH.items()) + list(FIXES_APCPOOL.items()) + list(FIXES_SNDEDRAM.items()) + list(FIXES_LIGHTFIRST.items()) + list(FIXES_DRAWPART.items()) + (list(FIXES_RECONLATE.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + list(FIXES_P2PASS.items()) + (list(FIXES_P2CENSUS.items()) if P2CENSUS else []) + list(FIXES_OBSRAY.items()) + list(FIXES_SNDWAIT.items()) + list(FIXES_FLAMEDECAL.items()) + list(FIXES_HUHINT.items()) + list(FIXES_DBLSOFT.items()) + list(FIXES_VFPUTRIG.items()) + list(FIXES_TICKCACHE.items()) + list(FIXES_STRICTALIAS.items()) + list(FIXES_SNDPERMAP.items()) + list(FIXES_RLOOP.items()) + (list(FIXES_SNDSTREAM.items()) if os.environ.get("PSP_SNDSTREAM", "") == "1" else []) + list(FIXES_MOUTHCLOCK.items())):
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_SSPR.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items()) + list(FIXES_AIME2A.items()) + (list(FIXES_STACKHOT.items()) if STACKHOT else []) + (list(FIXES_STACKHOT2.items()) if STACKHOT2 else []) + list(FIXES_PWSL.items()) + list(FIXES_SPHSL.items()) + list(FIXES_RECONLIST.items()) + list(FIXES_TP1.items()) + list(FIXES_WXDEAD.items()) + list(FIXES_AIMEMOVE.items()) + list(FIXES_PROPCRASH.items()) + list(FIXES_APCPOOL.items()) + list(FIXES_SNDEDRAM.items()) + list(FIXES_LIGHTFIRST.items()) + list(FIXES_DRAWPART.items()) + (list(FIXES_RECONLATE.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + list(FIXES_P2PASS.items()) + (list(FIXES_P2CENSUS.items()) if P2CENSUS else []) + list(FIXES_OBSRAY.items()) + list(FIXES_SNDWAIT.items()) + list(FIXES_FLAMEDECAL.items()) + list(FIXES_HUHINT.items()) + list(FIXES_DBLSOFT.items()) + list(FIXES_VFPUTRIG.items()) + list(FIXES_TICKCACHE.items()) + list(FIXES_STRICTALIAS.items()) + list(FIXES_SNDPERMAP.items()) + list(FIXES_RLOOP.items()) + list(FIXES_L10.items()) + list(FIXES_RLSKIP.items()) + list(FIXES_ONEWALK.items()) + (list(FIXES_POSEK.items()) if POSEK else []) + (list(FIXES_SNDSTREAM.items()) if os.environ.get("PSP_SNDSTREAM", "") == "1" else []) + list(FIXES_MOUTHCLOCK.items())):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
