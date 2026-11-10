@@ -4,6 +4,10 @@
 
 **What makes it possible:** the simulation is deterministic given the same start, the seed and the inputs each tick. In the emulator that's proven every batch (statecrc). On the PSP it held only once two races were fixed (tock162 edc2d39 and 74cd771: the AI's pass on the ME read tables the record rewrote while it ran): two b30 runs then play the same through the beach fight (lab sierra-hw 42485968207).
 
+That run had the bench guards `nomouth aimewait readswait`; Sheepdog01's recordings run without them, and their replays parted again (b30 at the landing). Two more paths followed the clock, both fixed so a recording replays without guards [E]:
+- **The lip sync** (`FIXES_MOUTHCLOCK`): a speaker's mouth aperture, which moves its nodes, was read at the mixer's play time; a line slowed by its read (`readswait`) or left silent (`nomouth`) moved play. Now each line's mouth data is read from the tick it started, by the frames' time steps (the ones recorded here), its draws from a speech seed under `fixedseed`. `mouthold`: the mixer's clock.
+- **A late AI job on the ME** was asked to end at once, and what it handed back thought in the tick from the game's seed (forced late passes, `aimelate1`, part play at once). The collection now waits for the whole job, up to 200 ms, and asks it to end only past that. `aimelateold`: asked to end at once.
+
 ## Recording (keep word `padrec`)
 
 - **Where:** `handle_one_player_input` (`game/player_control.c`), right after `get_local_player_input_blob`: the `input_blob` the game acts on, after the pad, the sensitivity and the inhibitions, so the replay doesn't depend on the stick's dead zones or the control settings.
