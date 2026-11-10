@@ -28149,6 +28149,53 @@ void objects_update(
 """),
 ]
 
+# "tickcore" (recon only, with "objtrace" and the emulator's PSP_OBJTRACE_STEP):
+# the two-core tick's census (lab research/opportunities/tick_core.md). The
+# emulator classes each tick load by who last wrote the word this tick, so it
+# needs the tick's start: psp_objtrace[5] counts game_tick's calls. And the
+# AI's think reads its own unit as its own, so while an actor updates the
+# trace names the actor's unit as the object updating
+FIXES_RECON["source/game/game.c#tickcore"] = [
+("""	profile_tick_start();
+	collision_log_begin_period(0);
+""", """	profile_tick_start();
+	{
+		/* psp_fixups.py (FIXES_RECON #tickcore): the tick's epoch */
+		extern volatile unsigned long psp_objtrace[8];
+
+		psp_objtrace[5]++;
+	}
+	collision_log_begin_period(0);
+"""),
+]
+FIXES_RECON["source/ai/actors.c#tickcore"] = [
+("""	global_updating_actor_index = actor_index;
+""", """	global_updating_actor_index = actor_index;
+	{
+		/* psp_fixups.py (FIXES_RECON #tickcore): the actor's unit as the
+		object updating, so its think reads that unit as its own */
+		extern volatile unsigned long psp_objtrace[8];
+
+		psp_objtrace[2] = actor->meta.unit_index != NONE
+			? (unsigned long)DATUM_INDEX_TO_ABSOLUTE_INDEX(actor->meta.unit_index) : (unsigned long)-1;
+	}
+"""),
+("""	global_updating_actor_index = NONE;
+
+	return;
+}
+""", """	global_updating_actor_index = NONE;
+	{
+		extern volatile unsigned long psp_objtrace[8];
+
+		psp_objtrace[2] = (unsigned long)-1; /* (FIXES_RECON #tickcore) */
+	}
+
+	return;
+}
+"""),
+]
+
 # "poolpeaks" (keep.txt): which game-state arrays and pools could shrink
 # exactly on every map. At each level's end (psp_loading.c, before the old
 # level is let go) and every 60 s of game time (psp_platform.c), a line per
