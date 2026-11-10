@@ -21,6 +21,11 @@ against the first side and a verdict:
                 heartbeat windows or reports may be missing, so a stretch's
                 figures can rest on fewer windows than the other side's
                 (2026-11-10: rtop6's b30 lost 61 lines; the batch now grows)
+  NOT USED      a side's runs say a feature was 'not used' where the first
+                side's don't (the build or the bake lacks what its keep word
+                asks for), so that side may be the first side again
+                (2026-11-10: SSPR's pair 42874194898 ran on a bake without
+                levels; 'geometry: sspr: not used: the pack has no levels')
 
 The figures are benchreport.py's (the same reader): the frame by the clock,
 the frame's own work (drawing) and a tick's own cost, ms, weighted by frames.
@@ -49,6 +54,7 @@ METRICS = (
 )
 HEAP_FAILED = re.compile(r"^heap: .*?(\d+) requests failed")
 LOG_DROPPED = re.compile(r"^\(log: (\d+) lines dropped")
+NOT_USED = re.compile(r": not used(:|$| )")
 RUN_LABEL = re.compile(r"^run (\d+) \(set (\d+): (.*?)\): ")
 
 
@@ -104,6 +110,20 @@ def log_dropped(path):
     return total
 
 
+def not_used(path):
+    """the run's 'not used' lines, numbers and addresses blanked, so runs
+    compare by kind"""
+    found = set()
+    try:
+        with open(path, errors="replace") as f:
+            for line in f:
+                if NOT_USED.search(line):
+                    found.add(re.sub(r"[0-9a-fx]*[0-9][0-9a-fx]*", "#", line.strip())[:160])
+    except OSError:
+        pass
+    return found
+
+
 def verdict(base, other):
     if len(base) < 2 or len(other) < 2:
         return "no verdict"
@@ -139,6 +159,12 @@ def main():
         if any(drops):
             print("**LOG HOLES: side %s dropped log lines** (a run: %s): some heartbeat windows or reports may be "
                   "missing from its figures.\n" % (n, ", ".join(str(d) for d in drops)))
+    unused = {n: set().union(*(not_used(p) for p in sides[n])) for n in names}
+    for n in names[1:]:
+        extra = sorted(unused[n] - unused[base])
+        if extra:
+            print("**NOT USED: side %s's runs say what its keep words ask for wasn't used**, where %s's don't; "
+                  "it may be %s again:\n%s\n" % (n, base, base, "\n".join("- `%s`" % x for x in extra)))
     print("Sides: " + "; ".join("%s (%d runs)" % (n, len(sides[n])) for n in names) + ". Gaps are against **%s**.\n" % base)
     for part in a.stretches.split(","):
         title, span = part.split(":")
