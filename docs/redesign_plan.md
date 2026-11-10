@@ -116,6 +116,8 @@ The goal is each level's own average at 30 fps, one frame a tick (Sheepdog01 202
 | b40 opening | 19.4 | 2042 | +42 | 660 | 16.3 | 16% |
 | c20 | 19.3 | 2047 | +47 | 840 | 13.5 | 30% |
 
+**The GE column is likely low** (bottleneck's review pack, 2026-11-09, `gaps.md` G6): it reads the ledger's scaled `ge/busy` row (the attribution run's busy share scaled to the figures run's frame: the flight 59.9 × 30 = 1,796). The GE's own drawing doesn't stretch with the CPU's frame. The unscaled busy is 83.5 ms a frame on the flight, × 30 = 2,505 ms a second. **R's columns are design figures** (the replay ×0.57, the drawing ~10 ms): R priced whole on the PSP left the ME's replay at ×1.02 and took 1.6-7.3 ms of drawing (`draw_map.md` §2.1).
+
 What it says:
 - **Every benched stretch is over at the target, after R.** The plan's parts at their ceilings (§1a: ~235-340 ms a second removed on the flight) close the floor on most stretches, not the target.
 - **The tick is the core.** After R a frame's non-tick work on the main CPU is ~16-20 ms, so a tick may cost ~13-17 ms: the heavy stretches' ticks must lose **50-60%** (the flight 42.4 → ~16.6). The tick costs the same a tick at any frame rate, so this figure isn't softened by R's saving growing with the frame rate.
@@ -148,7 +150,7 @@ Today every object's work runs every tick. The redesigned tick computes what's r
   - Together: 40.6 → ~30-32 ms against ≤ 25.8. **A gap of ~4-6 ms a tick has no known source.** C3 has to find it.
 - **Where the tick goes (C3a, 2026-11-05 17:46, recon)** [M]. b30's flight on tock162 (PSP-3000, the ledger bench's sampler set, sierra-hw 42114568213): collision 25.6%, AI 16.5, node matrices and animation 11.3, units and vehicles 9.3, other objects 7.7, libm and memcpy 5.3, effects 3.4, tags 2.9, audio on the main CPU 2.4, scripts 1.6, the rest 14.5 spread thin. b40 (PSP-1000, b40tick 41979909751): the snowfield collision 26.6%, AI 13.9, node matrices 12.4; the cliff collision 18.6, node matrices 14.2, AI 13.7.
   - **So collision is S's first piece** [U]: a quarter of the heavy ticks, more than AI, and the likeliest home of the missing 4-6 ms. On the flight: sphere tests (the 3-D BSP sphere test 6.0%, the 2-D one 2.5, gathering features in a sphere 2.5), the vector walk, cluster reconnects 2.0.
-  - **It stays exact by the rules** (collision is exact in every mode, one path: CLAUDE.md, 2026-10-30; the host checks hit reports). The change-rate form is exact by construction: a query whose object and world didn't change since the last tick gives the same answer. C3b counts how often that holds.
+  - **Exact by choice, not by rule** (Sheepdog01 2026-11-09 17:30/17:52 retired 10-30's "collision is exact in every mode, one path": collision is held to plays-the-same and the host's bounds on hit reports, CLAUDE.md). The change-rate form is exact by construction: a query whose object and world didn't change since the last tick gives the same answer. C3b counts how often that holds.
   - b30's landing has no sampler window yet (the bench stops at game time 2,000). It's left out unless S's design needs it: the flight and both b40 stretches agree.
 - **How much of the tick's work repeats (C3b, 2026-11-05 17:52, recon)** [E, sierra-batch 42131939482, fixedticks; each object's play hash compared tick to tick over 48 ticks]:
 
@@ -178,7 +180,7 @@ Today every object's work runs every tick. The redesigned tick computes what's r
   - **far bipeds at half rate:** a biped far from the player and out of combat updated every other tick with twice the time step, as the AI already thinks. If about half the bipeds are far, ~5-6 ms a tick on b30's flight [U], enough for S's margin;
   - **far bipeds on the ME, a tick behind** (BW; the AITICKOLD pattern), on the room R frees;
   - **the bipeds' update in stages that fit the I-cache** (PHASEB: its revive_if was "Sheepdog01's OK for the plays-the-same form"): ~1.1 ms a tick on b30 and ~2.6 on c20 on tock162's LTO build [U on E].
-  - Collision stays exact in all three (the queries are the same code against the same world). Proof: side-by-sides and the outcome census. First count: bipeds a tick by distance from the player and by combat state (recon, emulator).
+  - Collision runs the same code against the same world in all three (a choice that keeps the proof cheap; since 17:30 not a rule). Proof: side-by-sides and the outcome census. First count: bipeds a tick by distance from the player and by combat state (recon, emulator).
 - **Milestone:** C3's census done and S's pieces chosen against the target; the PSP prices S when the first of them replaces the old tick path on b30.
 - **Stop rule:** if C3 shows the pieces can't reach the target exactly or "plays the same", Sheepdog01 decides (§5.1).
 - **Fallback:** the old tick path behind S's keep word; it stays the safety net for a failure, per CLAUDE.md's failure rule.
@@ -315,7 +317,7 @@ C3, C4 and C6 decide the heavy stretches; C1 decides whether R is built at all.
 1. **R's go:** build retained rendering as a separate path. Its store fits (C1, with C4's words a form), its dynamic floor is small (C2), it meets b30 flight's ME need and carries d20's light pass. It frees the ME room AITICKOLD needs, so S waits on it. The flashlight's form (the GE's spotlight per vertex, or the cone times the gel projected per pixel) is settled on R's design page by a side-by-side against the PC reference (Sheepdog01, 18:15: worth considering if it improves performance for a similar benefit; the gel's pattern is what's missing today).
 2. **S's go:** build the tick by change rate with its pieces: AITICKOLD on the room R frees, the unchanged-object skip (exact), collision's reuse on the repeating feature queries (exact), T5 and T7. Its target is a bare tick of 25.8 ms on b30's flight.
 3. **The margin on the heaviest stretches:** if R and S land below their ceilings, b30's landing and the b40 stretches stay a few ms over the floor. What may cover it:
-   - "plays the same" work on the moving bipeds' 23 ms a tick (the simulation rule of 2026-10-30; collision stays exact): for example, a far biped's update at a lower rate, as the AI already is; or
+   - "plays the same" work on the moving bipeds' 23 ms a tick (the simulation rule of 2026-10-30; collision included since Sheepdog01 2026-11-09 17:30/17:52, and running less often is efficiency when a player can't tell, 18:16): for example, a far biped's update at a lower rate, as the AI already is; or
    - lifting the compromise freeze for those stretches (frozen apart from L15, FX15, RENDERTICK, AIFAR and PRIO60; L15 held in reserve).
 
    This can wait until R's and S's milestones measure what they really give. Deciding now only sets whether that work is designed beside them.
