@@ -23,7 +23,7 @@ R's slice 10 (`redesign_r.md` §3). The lab's `research/opportunities/me_unnamed
 2. **At start** (`psp_me.c`, the ME's `meLibOnProcess`, before its loop, and again after every restart, since eDRAM doesn't survive a sleep): with keep word `mexec` and a table that matches, the ME copies each function's loaded bytes from main RAM into eDRAM. The loader has already relocated the originals, so a call from a copy to a function not copied is right as it stands: `jal` keeps the PC's top four bits, and the ME runs its code through the cached alias (`0x80000000 | address`, as mcidclan's handler and the port's fault vector enter it), so `0x08xxxxxx` becomes `0x88xxxxxx` on the ME. Then it applies the table's patches, writes the copy's D-cache lines back and drops its I-cache lines.
 3. **The entry** (`ME_JOB_GE` in `psp_me.c`): on the ME, with the copy in place, `psp_ge_me_replay` is called through its copy's address. Everything it reaches through `jal` among the copied functions then stays in eDRAM.
 
-**Where in eDRAM:** 128 KB at 256 KB (`0x40000-0x60000`), the start of the room `psp_me.h` calls resident and `hardware_facts.md`'s default map calls free (256-800 KB). The sound tier starts at 800 KB, AI's data at 1,456 KB, and the stack is at the top. There's no claim registry for that room: its users refuse each other by keep word (`psp_vme.c`'s `vmetest` refuses with `soundedram` or `edramcheck`). MEXEC does the same: it's refused with `soundedram` (R2's sound cache from 256 KB, off by default), `edramcheck` and `mebusedram` (recon), and `vmetest` (its probe slot), and says so in the log.
+**Where in eDRAM:** up to 192 KB at 256 KB (`0x40000-0x70000`; 128 KB until list r2 added d20's light pass), the start of the room `psp_me.h` calls resident and `hardware_facts.md`'s default map calls free (256-800 KB). The sound tier starts at 800 KB, AI's data at 1,456 KB, and the stack is at the top. There's no claim registry for that room: its users refuse each other by keep word (`psp_vme.c`'s `vmetest` refuses with `soundedram` or `edramcheck`). MEXEC does the same: it's refused with `soundedram` (R2's sound cache from 256 KB, off by default), `edramcheck` and `mebusedram` (recon), and `vmetest` (its probe slot), and says so in the log.
 
 ## Proof and price
 
@@ -41,4 +41,4 @@ R's slice 10 (`redesign_r.md` §3). The lab's `research/opportunities/me_unnamed
 
 - **A function whose own code the ME reads as data** (none known), or one that compares its own address: the tool can't see either; the PSP proof would.
 - **Jump tables and function pointers** leave the copy for main RAM (counted above).
-- **Room:** if the list outgrows 128 KB, it's cut at the line where the misses held stop paying for the room.
+- **Room:** if the list outgrows 192 KB, it's cut at the line where the misses held stop paying for the room. The free eDRAM runs to 800 KB (the sound tier's start).

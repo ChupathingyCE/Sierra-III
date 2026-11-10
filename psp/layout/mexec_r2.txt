@@ -55,3 +55,7 @@ outside_cone
 psp_ge_light_gel
 light_emit.constprop.0
 light_split_carry_root.constprop.0
+light_edge_splits
+psp_tex_gel_cube_at
+light_color
+light_color_gel

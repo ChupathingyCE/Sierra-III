@@ -194,7 +194,7 @@ its eDRAM at start and runs the GE replay from the copy */
 #define MEXEC_MAGIC 0x4D455843u
 #define MEXEC_HEADER 16
 #define MEXEC_AT 0x40000u   /* eDRAM 256 KB: the resident room's start (psp_me.h) */
-#define MEXEC_ROOM 0x20000u
+#define MEXEC_ROOM 0x30000u
 unsigned int psp_mexec_table[MEXEC_TABLE_WORDS] = { 0x4D455830u };
 /* the replay's copy, 0 until the copy is in place; cleared at every start,
 since the eDRAM doesn't survive a sleep */
@@ -2435,7 +2435,7 @@ static int me_mexec_wanted(void)
 	for (k = 0; k < sizeof(sharers) / sizeof(sharers[0]); k++)
 		if (psp_keep(sharers[k]))
 		{
-			platform_log("ME: mexec refused: %s shares eDRAM 256-384 KB", sharers[k]);
+			platform_log("ME: mexec refused: %s shares eDRAM 256-448 KB", sharers[k]);
 			return 0;
 		}
 	if (psp_mexec_table[0] != MEXEC_MAGIC)
