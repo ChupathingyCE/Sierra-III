@@ -89,6 +89,21 @@ In order of what a KB buys (`memory_ledger.md` §0.5):
 
 Each placement changes only addresses, so it's exact by construction (play and both seeds identical); its price is a PSP pair.
 
+## 4b. The bus at the target frame rate (2026-11-10, chat1110; the lab's `research/opportunities/bus_toll.md`)
+
+- **Contention follows duty, not bytes** [M, the contention bench]: a main CPU miss costs ×1.0 when another master holds the bus 25% of the time, ×1.2 at 50%, ×2.1 at 100%. That's why the small byte cuts priced ~0 (MV14 3a, levelcompact, VMFILL, VMRANK) and the large moves paid (the copies' room's first ~550 KB, 10-25 ms of tick).
+- **Every bus price on record was measured at 8-15 fps.** At 30 fps the GE's ~3 MB a frame of main-RAM reads (b30's flight [E]) arrive ~4× more densely, so the toll's prices understate it there.
+- **B's target:** the GE reads almost nothing from main RAM during the tick. That means:
+  - geometry from VRAM, made small enough by the far tiers (`drawing_sizing.md`: 81-86% of b30's model indices drawn under 96 px);
+  - textures from VRAM or atlases sized for the screen;
+  - the display list as the only main-RAM stream.
+- **What stays in main RAM is shaped in software** (no bus-priority register exists): the list interleaved so main-RAM-heavy draws are spread, and the GE paced by a VRAM-only filler where it has slack. The design and the runs are in the lab's page, §8-9.
+- **The tests that size it:**
+  - a per-kind contention bench (list, strip, non-indexed, VRAM, RAM textures by size, paced duty);
+  - `gedouble` (the toll's slope in play);
+  - ceilingbus's fourth side (the far tiers' bus dividend);
+  - the VRAM budget census by kind with the far tiers' bands.
+
 ## 5. Open questions
 
 - **MIST's table address** on the PSP-1000 (blocks any claim at the eDRAM's low end until pinned).
