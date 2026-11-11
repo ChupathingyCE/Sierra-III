@@ -4,7 +4,7 @@ Sierra-III doesn't copy anyone's source into this repository. It pins each upstr
 
 | Piece | Upstream | Pinned at | Our changes | Licence |
 |---|---|---|---|---|
-| **Engine (current base)** | [ChupathingyCE](https://github.com/ChupathingyCE/chupathingyce) (tag `v0.7.5d`, network version 29) | `d98982b8e92c1bf2c96cf9953b9b890b2a421616` | None in the checkout: `psp_fixups.py` changes a mirror of it at build time | CC0 1.0 (its `LICENSE.md`) |
+| **Engine (current base)** | [ChupathingyCE](https://github.com/ChupathingyCE/chupathingyce) (tag `v0.9.0d`, network version 32) | `085ad8ebe1f608366297ee374dfc3d79c7cbfc03` | None in the checkout: `psp_fixups.py` changes a mirror of it at build time | GPL-3.0-or-later (its `LICENSE`; CC0 1.0 up to v0.7.5d) |
 | **Invader** (the map builder the bake uses) | [SnowyMouse/invader](https://github.com/SnowyMouse/invader) | `d43ce550db5b6b68ddea0d4c2080b616555e5279`; submodule `ext/riat` at `c1380cbfc708d89a3713af57b48d3f4368c34f8a` | `upstream/invader/psp-fork.patch` (apply with `git apply`); `upstream/invader/no-editor.patch` (Qt6 and SDL2 only for the tag editor, so the bake bundle's build needs neither) | GPLv3 |
 | **atracdenc** (the bake's encoder for the XMB menu sound) | [dcherednik/atracdenc](https://github.com/dcherednik/atracdenc) | `cb170709f836cb43dc0312455188c791159d81dc`; submodule `src/lib/libgha` at `00a95243254cfb1e43b05888ebc68e9aa401507a` | None (`bake/bundle/build_tools.sh` builds it on a static libsndfile 1.2.2, WAV only) | LGPL-2.1 (libsndfile: LGPL-2.1+) |
 | **Media Engine library** | [mcidclan/psp-media-engine-custom-core](https://github.com/mcidclan/psp-media-engine-custom-core) (me-core-mapper) | `727421b4d5f006f298f22451864a464eb0e7fd20` | None. `tools/build_release.sh` builds it with cmake into its cache (`PSP_MECORE` points `psp_build.py` at it) | MIT (shipped beside the EBOOT as `LICENSE-mecore.md`) |
@@ -15,7 +15,7 @@ Sierra-III doesn't copy anyone's source into this repository. It pins each upstr
 
 ## Moving the engine pin
 
-**Not past ChupathingyCE's GPL change without the maintainer's decision first.** ChupathingyCE is GPL-3.0-or-later from the commit that changed its licence (it ships as 0.8.0). v0.7.5d and every commit before that change stay CC0, so the pin above is unaffected. A pin past it would make every EBOOT a GPLv3+ combined work: our MIT files stay MIT, but a release would convey the whole under GPLv3+, and `psp_fixups.py`'s anchored engine text would become GPL text.
+**The pin is past ChupathingyCE's GPL change** (Sheepdog01, 2026-11-11: the rebuild is based on ChupathingyCE's latest release). ChupathingyCE is GPL-3.0-or-later from the commit that changed its licence (it ships as 0.8.0); v0.7.5d and the commits before it stay CC0. From the v0.9.0d pin every EBOOT is a GPLv3+ combined work: Sierra-III's own files keep their MIT licence, a release conveys the whole under GPL-3.0-or-later, and `psp_fixups.py`'s anchored engine text is GPL text. Sierra-III-Release already publishes each release's source, which the GPL asks of a release.
 
 1. Check out the new commit.
 2. Run `PSP_FIXUPS_CHECK=1 python3 psp_build.py`. It lists every fixup anchor that no longer matches, without building anything.

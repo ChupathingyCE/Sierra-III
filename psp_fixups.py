@@ -10021,40 +10021,28 @@ FIXES_106["source/models/model_animations.c#frames"] = [
 # freed the tag's (with free(), on tag memory): it now takes any table that
 # agrees with its own header
 FIXES_106["source/hs/hs.c"] = [
-("""	/* port: as the map holds it only when it is sound */
-	if (scenario &&
-		scenario->hs_syntax_data.size ==
-			sizeof(struct data_array)+MAXIMUM_HS_SYNTAX_NODES_PER_SCENARIO*sizeof(struct hs_syntax_node) &&
-		hs_scenario_syntax_data_valid(scenario))
-""",
-  """	/* port: as the map holds it only when it is sound */
-	if (scenario &&
-#ifndef HALO_PSP
-		/* (psp_fixups.py, build 106: on the PSP a table sized to the map,
-		invader-build -Y; hs_scenario_syntax_data_valid checks its size) */
-		scenario->hs_syntax_data.size ==
-			sizeof(struct data_array)+MAXIMUM_HS_SYNTAX_NODES_PER_SCENARIO*sizeof(struct hs_syntax_node) &&
-#endif
-		hs_scenario_syntax_data_valid(scenario))
-"""),
 # ChupathingyCE only: its script data check, for a table sized to the map (its header)
-("""	return data->signature == 'd@t@' &&
-		data->maximum_count == MAXIMUM_HS_SYNTAX_NODES_PER_SCENARIO &&
-		data->size == sizeof(struct hs_syntax_node) &&
-		data->valid &&
+("""	if (data->signature != 'd@t@' ||
+		data->maximum_count != MAXIMUM_HS_SYNTAX_NODES_PER_SCENARIO ||
+		data->size != sizeof(struct hs_syntax_node))
+	{
+		return "its header isn't a script node array's";
+	}
 """,
-  """	return data->signature == 'd@t@' &&
+  """	if (data->signature != 'd@t@' ||
 #ifdef HALO_PSP
 		/* psp_fixups.py (build 106): any maximum up to the engine's, the
 		table holding exactly that many nodes */
-		data->maximum_count > 0 &&
-		data->maximum_count <= MAXIMUM_HS_SYNTAX_NODES_PER_SCENARIO &&
-		syntax_data_size == (long)(sizeof(struct data_array) + data->maximum_count * sizeof(struct hs_syntax_node)) &&
+		data->maximum_count <= 0 ||
+		data->maximum_count > MAXIMUM_HS_SYNTAX_NODES_PER_SCENARIO ||
+		syntax_data_size != (long)(sizeof(struct data_array) + data->maximum_count * sizeof(struct hs_syntax_node)) ||
 #else
-		data->maximum_count == MAXIMUM_HS_SYNTAX_NODES_PER_SCENARIO &&
+		data->maximum_count != MAXIMUM_HS_SYNTAX_NODES_PER_SCENARIO ||
 #endif
-		data->size == sizeof(struct hs_syntax_node) &&
-		data->valid &&
+		data->size != sizeof(struct hs_syntax_node))
+	{
+		return "its header isn't a script node array's";
+	}
 """),
 # ChupathingyCE only: its script data check, for a table sized to the map
 ("""	long const syntax_data_size =
@@ -10150,6 +10138,13 @@ FIXES_106["source/physics/collision_usage.c"] = [
 ("""void collision_log_start_time(
 	LARGE_INTEGER *start_time)
 {
+	/* port: the clock is read only when the times are shown
+	(collision_log_time): this runs twice for every collision test */
+	if (!collision_log_time)
+	{
+		start_time->QuadPart = 0;
+		return;
+	}
 	QueryPerformanceCounter(start_time);
 """,
  """void collision_log_start_time(
@@ -10160,12 +10155,18 @@ FIXES_106["source/physics/collision_usage.c"] = [
 	start_time->QuadPart = 0;
 	return;
 #endif
+	/* port: the clock is read only when the times are shown
+	(collision_log_time): this runs twice for every collision test */
+	if (!collision_log_time)
+	{
+		start_time->QuadPart = 0;
+		return;
+	}
 	QueryPerformanceCounter(start_time);
 """),
 ("""	LARGE_INTEGER end_time;
 	short user;
 
-	QueryPerformanceCounter(&end_time);
 	user = collision_log_get_current_user(collision_function);""",
  """	LARGE_INTEGER end_time;
 	short user;
@@ -10173,7 +10174,6 @@ FIXES_106["source/physics/collision_usage.c"] = [
 #if defined(HALO_PSP) && !defined(PSP_DEBUG_TOOLS)
 	return;
 #endif
-	QueryPerformanceCounter(&end_time);
 	user = collision_log_get_current_user(collision_function);"""),
 ("""	short user;
 
@@ -12409,8 +12409,9 @@ void posix_describe_address(void *address, char *buffer, posix_ulong size)
 # keeps: the program's static memory comes off the heap's end (psp_build.py
 # sizes the heap to what is left), and ChupathingyCE took 298 KB more of it
 # than halo-ce-universal. Each is the PSP's size of the same thing:
-# - the script check's walk: its 76 KB stack only while it walks, which it
-#   does only for a map whose scripts are damaged (never a shipped map's);
+# - (the script check's walk: its 76 KB stack only while it walks, which the
+#   engine itself does from ChupathingyCE v0.9.0d; the PSP's own left with the
+#   rebase, docs/chupa_rebase.md)
 # - the empty tag data an index that isn't one reads: 8 KB (the largest
 #   tag root is the scenario's, 1,456 bytes), not 64, and 8 to zero again
 #   each time, not 64;
@@ -12420,61 +12421,6 @@ void posix_describe_address(void *address, char *buffer, posix_ulong size)
 # - the game state's allocations kept for checking a saved game: 128, not 256;
 # - desktop OpenGL's sampler objects and the texture lookups remembered:
 #   the null renderer has no samplers; the lookups halo-ce-universal's 64
-FIXES_CHUPA["source/hs/hs.c#walk"] = [
-("""static short hs_expression_refusal(
-	long root_expression_index,
-	char const **name)
-{
-	static long stack[MAXIMUM_HS_SYNTAX_NODES_PER_SCENARIO+1];
-	long stack_count = 0;
-""",
- """#ifdef HALO_PSP
-/* psp_fixups.py (FIXES_CHUPA): the walk's stack (76 KB) from the heap, only
-while it walks (only a map whose scripts are damaged is walked). With no
-room the expression is run unchecked, as halo-ce-universal runs every one */
-#include <stdlib.h>
-
-static short hs_expression_refusal_walk(
-	long root_expression_index,
-	char const **name,
-	long *stack);
-
-static short hs_expression_refusal(
-	long root_expression_index,
-	char const **name)
-{
-	long *stack = malloc((MAXIMUM_HS_SYNTAX_NODES_PER_SCENARIO+1) * sizeof(long));
-	short refusal = _hs_node_refusal_none;
-
-	*name = NULL;
-	if (stack)
-	{
-		refusal = hs_expression_refusal_walk(root_expression_index, name, stack);
-		free(stack);
-	}
-	else
-	{
-		error(_error_silent, "no memory to check a script's expression: it runs unchecked");
-	}
-
-	return refusal;
-}
-
-static short hs_expression_refusal_walk(
-	long root_expression_index,
-	char const **name,
-	long *stack)
-{
-#else
-static short hs_expression_refusal(
-	long root_expression_index,
-	char const **name)
-{
-	static long stack[MAXIMUM_HS_SYNTAX_NODES_PER_SCENARIO+1];
-#endif
-	long stack_count = 0;
-"""),
-]
 FIXES_CHUPA["source/tag_files/tag_groups.c#empty"] = [
 ("""	TAG_EMPTY_DATA_SIZE = 0x10000,""",
  """#ifdef HALO_PSP
