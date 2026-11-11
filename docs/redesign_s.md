@@ -97,7 +97,7 @@ Collision stays the same code against the same world (a choice that keeps statec
 | — | **Milestone result** (sierra-hw 42169096020, PSP-3000, b30's flight 600-1,950, first look by the master 00:38; recon records it) [M] | **no gain:** tick 44.11 and 44.10 off, 44.33 with skipchange (one run; run 4 cut), against S1 + S2's ~1.75-3.1. See §5, "What the milestone says" |
 | 4 | S4's half-rate form | side-by-sides and the outcome census on b30's flight, the snowfield and a30 |
 | 5 | S3 on (after R's milestone frees the ME) | AITICKOLD's own proofs; the window's cut passes counted |
-| 6 | S5's pieces that fit the new shape (T5's prefetch in the reshaped loops; T7) | as 1 |
+| 6 | S5's pieces that fit the new shape (T5's prefetch in the reshaped loops; T7, including the three big stack frames that push the tick's hot leaves 2-4 KB down: `object_compute_node_matrices_with`'s 2 KB `cannot_interpolate_node_orientations_storage`, used only when an object can't interpolate; `collision_get_features_in_sphere`'s 4,112-byte `collision_bsp_test_sphere_result`; `actor_perception_update`'s 3,328 bytes; ~0.15 ms a tick on b30 [E x M], up to ~0.5 if it pays like STACKHOT; each made static only after a check that it never nests: the lab's research/opportunities/footprint.md §4, STK) | as 1 |
 | 7 | S4's ME form, if the half-rate form falls short | as 4, plus the snapshot's census |
 | — | **Switch-over:** S's pieces on by default | one PSP pair on the heavy stretches |
 
