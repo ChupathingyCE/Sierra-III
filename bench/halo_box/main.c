@@ -153,12 +153,17 @@ void plat_crowd(void)
 /* ---------- the GE beside ---------- */
 
 /* Blocks of two sprites, one textured from main RAM and one from VRAM, sized
-so the RAM one takes `duty` percent of a block's time when the GE has the bus
-to itself: the GE stays busy throughout, and reads main RAM for that share.
-Nothing wakes the CPU while the list runs. Each block opens with two no-ops;
-writing FINISH and END over them stops the list at the next block. */
+so the main-RAM one takes `duty` percent of a block's time when the GE has the
+bus to itself: the GE stays busy throughout, and reads main RAM for that
+share. Nothing wakes the CPU while the list runs. Each block opens with two
+no-ops; writing FINISH and END over them stops the list at the next block.
+
+A block is about 200 us, far shorter than a pass over a tick: with long
+blocks a short pass sits wholly inside one sprite (the first run on a PSP had
+10 ms blocks, and its "50%" passes ran beside the main-RAM sprite alone). */
 #define GE_LIST_BYTES (512 * 1024)
 #define GE_BLOCKS_MOST 2048
+#define GE_BLOCK_US 200.0f
 #define RAM_SIDE 512
 #define VRAM_LINES 256
 static unsigned int __attribute__((aligned(64))) ge_list[GE_LIST_BYTES / 4];
@@ -166,39 +171,62 @@ static unsigned int *ge_stop[GE_BLOCKS_MOST];
 static unsigned int ge_blocks;
 static unsigned int *ram_texture;
 #define VRAM_TEXTURE ((void *)0x04154000) /* after the three 512 x 272 buffers */
-static float ram_us_a_line, vram_us_a_line;
+/* measured at the start, the bus to itself: a pixel textured from each place, and a block's two sprites when they draw nothing */
+static float ram_us_a_pixel, vram_us_a_pixel, block_overhead_us;
 static int ge_ready;
-/* the span in flight: when its list started, what one of its blocks spends on VRAM alone, and what the last stop found */
+/* the span in flight: when its list started, what one of its blocks spends off main RAM alone, and what the last stop found */
 static unsigned int ge_started;
-static float ge_block_vram_us;
+static float ge_block_other_us;
 static double ge_met = -1;
 /* a state word no sprite reads (the specular power: lighting is off) carries each block's number, so a stop can ask how far the list got */
 #define GE_MARK 0x5b
 
 struct ge_vertex { unsigned short u, v; short x, y, z; };
 
-static void ge_sprite(int first_line, int lines)
+static void ge_sprite(int first_line, int lines, int width)
 {
 	struct ge_vertex *v = (struct ge_vertex *)sceGuGetMemory(2 * sizeof(struct ge_vertex));
 
 	v[0].u = 0; v[0].v = (unsigned short)first_line; v[0].x = 0; v[0].y = 0; v[0].z = 0;
-	v[1].u = 480; v[1].v = (unsigned short)(first_line + lines); v[1].x = 480; v[1].y = (short)lines; v[1].z = 0;
+	v[1].u = (unsigned short)width; v[1].v = (unsigned short)(first_line + lines); v[1].x = (short)width; v[1].y = (short)lines; v[1].z = 0;
 	sceGuDrawArray(GU_SPRITES, GU_TEXTURE_16BIT | GU_VERTEX_16BIT | GU_TRANSFORM_2D, 2, 0, v);
 }
 
-static unsigned int ge_time(int from_ram, int sprites)
+/* a sprite of about `pixels`: as many 480-pixel lines as it takes, the last share spread over them */
+static void ge_shape(float pixels, int *lines, int *width)
 {
-	unsigned int before;
-	int k;
+	int whole = pixels < 1 ? 1 : pixels > 480.0f * VRAM_LINES ? 480 * VRAM_LINES : (int)(pixels + 0.5f);
+
+	*lines = (whole + 479) / 480;
+	*width = whole / *lines;
+	if (*width < 1)
+		*width = 1;
+}
+
+/* one block: its number, the main-RAM sprite, the VRAM one (0 lines: none) */
+static void ge_block(unsigned int number, int *first, int ram_lines, int ram_width, int vram_lines, int vram_width)
+{
+	sceGuSendCommandi(GE_MARK, (int)number);
+	sceGuTexImage(0, RAM_SIDE, RAM_SIDE, RAM_SIDE, ram_texture);
+	ge_sprite(*first, ram_lines, ram_width);
+	*first = (*first + ram_lines) % (RAM_SIDE - VRAM_LINES); /* the reads move through the megabyte */
+	if (vram_lines)
+	{
+		sceGuTexImage(0, 512, VRAM_LINES, 512, VRAM_TEXTURE);
+		ge_sprite(0, vram_lines, vram_width);
+	}
+}
+
+/* microseconds for `blocks` blocks of the given shape, waited for */
+static unsigned int ge_time(unsigned int blocks, int ram_lines, int ram_width, int vram_lines, int vram_width)
+{
+	unsigned int before, k;
+	int first = 0;
 
 	sceGuStart(GU_DIRECT, ge_list);
-	if (from_ram)
-		sceGuTexImage(0, RAM_SIDE, RAM_SIDE, RAM_SIDE, ram_texture);
-	else
-		sceGuTexImage(0, 512, VRAM_LINES, 512, VRAM_TEXTURE);
 	before = plat_now();
-	for (k = 0; k < sprites; k++)
-		ge_sprite(0, VRAM_LINES);
+	for (k = 0; k < blocks; k++)
+		ge_block(k, &first, ram_lines, ram_width, vram_lines, vram_width);
 	sceGuFinish();
 	sceGuSync(GU_SYNC_FINISH, GU_SYNC_WHAT_DONE);
 	return plat_now() - before;
@@ -207,6 +235,7 @@ static unsigned int ge_time(int from_ram, int sprites)
 static void ge_init(void)
 {
 	unsigned int k;
+	float small, big_ram, big_vram;
 
 	ram_texture = (unsigned int *)memalign(64, RAM_SIDE * RAM_SIDE * 4);
 	if (!ram_texture)
@@ -237,40 +266,47 @@ static void ge_init(void)
 	sceGuTexFilter(GU_NEAREST, GU_NEAREST);
 	sceGuFinish();
 	sceGuSync(GU_SYNC_FINISH, GU_SYNC_WHAT_DONE);
-	ge_time(1, 4);
-	ram_us_a_line = (float)ge_time(1, 32) / (32.0f * VRAM_LINES);
-	vram_us_a_line = (float)ge_time(0, 32) / (32.0f * VRAM_LINES);
-	plat_out("GE: a 480-pixel line textured from main RAM %.3f us, from VRAM %.3f us (the bus to itself)", (double)ram_us_a_line,
-		(double)vram_us_a_line);
-	ge_ready = ram_us_a_line > 0 && vram_us_a_line > 0;
+	ge_time(64, 1, 1, 1, 1);
+	/* 256 blocks whose sprites are one pixel each, then the same with 16 lines more of one sprite or the other */
+	small = (float)ge_time(256, 1, 1, 1, 1);
+	big_ram = (float)ge_time(256, 17, 480, 1, 1);
+	big_vram = (float)ge_time(256, 1, 1, 17, 480);
+	block_overhead_us = small / 256.0f;
+	ram_us_a_pixel = (big_ram - small) / (256.0f * 16 * 480);
+	vram_us_a_pixel = (big_vram - small) / (256.0f * 16 * 480);
+	plat_out("GE: a pixel textured from main RAM %.4f us, from VRAM %.4f us; a block's two sprites drawing nothing %.1f us (the bus to itself)",
+		(double)ram_us_a_pixel, (double)vram_us_a_pixel, (double)block_overhead_us);
+	ge_ready = ram_us_a_pixel > 0 && vram_us_a_pixel > 0;
 	if (!ge_ready)
-		plat_out("GE: its lists take no time here (an emulator?): the GE runs are left out");
+		plat_out("GE: its sprites take no time here (an emulator?): the GE runs are left out");
 }
 
 void plat_ge_start(int duty, unsigned int span_us)
 {
-	/* the two sprites' lines: 256 between them, split so the RAM sprite's time is duty% of the block's */
-	float ram_weight = (float)duty / ram_us_a_line, vram_weight = (float)(100 - duty) / vram_us_a_line;
-	int ram_lines = (int)(VRAM_LINES * ram_weight / (ram_weight + vram_weight) + 0.5f), vram_lines, first = 0;
-	float block_us;
+	/* a block's time: its overhead, the share on main RAM, the rest on VRAM. Where the overhead alone is a large part, the block is longer */
+	float block = block_overhead_us * 4 > GE_BLOCK_US ? block_overhead_us * 4 : GE_BLOCK_US;
+	float ram_us = block * (float)duty / 100.0f, vram_us = block - block_overhead_us - ram_us, block_us;
+	int ram_lines, ram_width, vram_lines = 0, vram_width = 0, first = 0;
 	unsigned int blocks, k;
 	static int told[101];
 
-	if (!ge_ready)
+	if (!ge_ready || duty < 1 || duty > 100)
 		return;
-	ram_lines = ram_lines < 1 ? 1 : ram_lines > VRAM_LINES ? VRAM_LINES : ram_lines;
-	vram_lines = duty >= 100 ? 0 : VRAM_LINES - ram_lines < 1 ? 1 : VRAM_LINES - ram_lines;
-	block_us = ram_lines * ram_us_a_line + vram_lines * vram_us_a_line;
+	ge_shape(ram_us / ram_us_a_pixel, &ram_lines, &ram_width);
+	if (duty < 100 && vram_us > 0)
+		ge_shape(vram_us / vram_us_a_pixel, &vram_lines, &vram_width);
+	ge_block_other_us = block_overhead_us + vram_lines * vram_width * vram_us_a_pixel;
+	block_us = ge_block_other_us + ram_lines * ram_width * ram_us_a_pixel;
 	blocks = (unsigned int)((float)span_us / block_us) + 3;
 	if (blocks > GE_BLOCKS_MOST)
 		blocks = GE_BLOCKS_MOST;
-	if (duty >= 0 && duty <= 100 && !told[duty])
+	if (!told[duty])
 	{
 		told[duty] = 1;
-		plat_out("GE %d%%: blocks of %d lines from main RAM and %d from VRAM, %.0f us a block, %.1f%% of it on main RAM", duty, ram_lines,
-			vram_lines, (double)block_us, (double)(100.0f * ram_lines * ram_us_a_line / block_us));
+		plat_out("GE %d%%: blocks of %d x %d pixels from main RAM and %d x %d from VRAM, %.0f us a block, %.1f%% of it on main RAM; at most %.0f ms a list",
+			duty, ram_width, ram_lines, vram_width, vram_lines, (double)block_us,
+			(double)(100.0f * ram_lines * ram_width * ram_us_a_pixel / block_us), (double)(GE_BLOCKS_MOST * block_us / 1000.0f));
 	}
-	ge_block_vram_us = vram_lines * vram_us_a_line;
 	ge_started = plat_now();
 	sceGuStart(GU_DIRECT, ge_list);
 	for (k = 0; k < blocks; k++)
@@ -279,15 +315,7 @@ void plat_ge_start(int duty, unsigned int span_us)
 		ge_stop[k] = (unsigned int *)(0x40000000u | ((unsigned int)ge_list + (unsigned int)sceGuCheckList()));
 		sceGuSendCommandi(0, 0);
 		sceGuSendCommandi(0, 0);
-		sceGuSendCommandi(GE_MARK, (int)k);
-		sceGuTexImage(0, RAM_SIDE, RAM_SIDE, RAM_SIDE, ram_texture);
-		ge_sprite(first, ram_lines);
-		first = (first + ram_lines) % (RAM_SIDE - VRAM_LINES); /* the reads move through the megabyte */
-		if (vram_lines)
-		{
-			sceGuTexImage(0, 512, VRAM_LINES, 512, VRAM_TEXTURE);
-			ge_sprite(0, vram_lines);
-		}
+		ge_block(k, &first, ram_lines, ram_width, vram_lines, vram_width);
 	}
 	ge_blocks = blocks;
 	sceGuFinish();
@@ -303,12 +331,12 @@ int plat_ge_stop(void)
 	busy = sceGeDrawSync(1) != PSP_GE_LIST_DONE;
 	{
 		/* The blocks finished in the span, against what they take alone: the
-		VRAM sprite's time doesn't stretch under the CPU's misses, the main-RAM
-		one's does, so whatever of the span the VRAM sprites don't account for
-		was spent on main RAM. */
+		VRAM sprite's time and the block's overhead don't stretch under the
+		CPU's misses, the main-RAM sprite's does, so whatever of the span
+		they don't account for was spent on main RAM. */
 		unsigned int span = plat_now() - ge_started, done = sceGeGetCmd(GE_MARK) & 0xffffffu;
 
-		ge_met = busy && done >= 4 && span ? 100.0 * (1.0 - (double)done * ge_block_vram_us / (double)span) : -1;
+		ge_met = busy && done >= 4 && span ? 100.0 * (1.0 - (double)done * ge_block_other_us / (double)span) : -1;
 	}
 	for (k = 0; k < ge_blocks; k++)
 	{
@@ -318,6 +346,8 @@ int plat_ge_stop(void)
 	sceGuSync(GU_SYNC_FINISH, GU_SYNC_WHAT_DONE);
 	return busy;
 }
+
+double plat_ge_met(void) { return ge_ready ? ge_met : -1; }
 
 /* ---------- the CPU's counters ---------- */
 
@@ -355,8 +385,6 @@ static int counters_load(void)
 }
 
 void plat_counters(unsigned int out[COUNTERS]) { halo_boxk_counters(out); }
-
-double plat_ge_met(void) { return ge_ready ? ge_met : -1; }
 
 /* ---------- keep words and captures ---------- */
 
