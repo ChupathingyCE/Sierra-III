@@ -44257,6 +44257,16 @@ static void psp_stale_census(
 			(int)actor->control.trigger_delay_timer, (int)actor->control.current_fire_target_type,
 			(int)actor->control.current_fire_target_visible, (long)actor->control.current_fire_target_timer,
 			actor->output.analog_primary_trigger, (unsigned long)actor->output.control_flags);
+		platform_psp_log("stalecensus: game time %ld | actor %d why: firing decision %d | firing position %d (outside range %d, moved away %d) | path at destination %d, distance %.1f of %.1f, refreshed %d | movement complete %d, thwarted %d | look priority %d, direction type %d, aiming away %d",
+			now, (int)DATUM_INDEX_TO_ABSOLUTE_INDEX(iterator.index),
+			actor_debug_array ? (int)actor_debug_array[DATUM_INDEX_TO_ABSOLUTE_INDEX(iterator.index)].firing_decision : -2,
+			(int)actor->firing_positions.current_position_index, (int)actor->firing_positions.current_position_found_outside_range,
+			(int)actor->firing_positions.moved_away_from_firing_position,
+			(int)actor->control.path.at_destination, actor->control.path.destination_distance,
+			actor->control.path.destination_original_distance, (int)actor->control.path.refreshed_this_tick,
+			(int)actor->control.movement_complete, (int)actor->control.movement_thwarted,
+			(int)actor->orders.look.primary_priority, (int)actor->orders.look.primary_direction.type,
+			(int)actor->control.aiming_away_from_primary);
 		lines++;
 	}
 }
