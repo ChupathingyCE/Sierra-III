@@ -1017,8 +1017,9 @@ def link(objs, stubs):
     # under R, the ME's hot stack and heap lines crowd sets 0xfc0-0x1940,
     # and the block's own address happened to put its 32 lines on those
     # same sets (the lab's mehotgr1). The pad before the block and the pad
-    # after it add up to 8 KB, so everything after the block keeps its cache
-    # sets (HOTG's run among them). Costs 8 KB of heap. Only addresses move
+    # after it add up to 8 KB (or nothing), so everything after the block
+    # keeps its cache sets (HOTG's run among them). Costs up to 8 KB of heap.
+    # Only addresses move
     def me_set_pad(where):
         target = os.environ.get("PSP_ME_DATA_SET", "")
         if not target:
@@ -1028,9 +1029,17 @@ def link(objs, stubs):
         t = int(target, 0)
         if t % 64 or not 0 <= t < 0x2000:
             sys.exit("psp_build: PSP_ME_DATA_SET=%s: a multiple of 64 below 0x2000" % target)
+        # ld adds the section's start to an absolute value given to "." inside
+        # a section (f31660a's "+=" form put 3.5 MB in .data and the build
+        # faulted at boot), so each pad sets "." from ALIGN, which ld takes as
+        # an address: the next address at the wanted offset in the 8 KB way
+        def at_offset(off):
+            return ("    . = ALIGN(0x2000) + %s - ((ALIGN(0x2000) + %s - ABSOLUTE(.)) >= 0x2000 ? 0x2000 : 0);\n"
+                    % (off, off))
         if where == "before":
-            return "    __psp_me_set_pad = ABSOLUTE(.);\n    . += ((0x%x - ABSOLUTE(.)) & 0x1fff);\n" % t
-        return "    . += 0x2000 - ((0x%x - __psp_me_set_pad) & 0x1fff);\n" % t
+            return "    __psp_me_set_pad = ABSOLUTE(.);\n" + at_offset("0x%x" % t)
+        return ("    __psp_me_set_to = ABSOLUTE((__psp_me_set_pad + ABSOLUTE(__psp_me_data_end)"
+                " - ABSOLUTE(__psp_me_data_start)) & 0x1fff);\n" + at_offset("__psp_me_set_to"))
 
     linkfile = SDK + "/lib/linkfile.prx"
     text = open(linkfile).read()
