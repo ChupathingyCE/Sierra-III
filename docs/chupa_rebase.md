@@ -144,7 +144,7 @@ HALO_REPO=/home/claude/chupa PSP_OUT=/tmp/psp_chupa python3 psp_build.py --jobs 
 
 ## v0.9.0d (2026-11-11, in progress)
 
-The pin moves from v0.7.5d (`d98982b`) to v0.9.0d (`085ad8e`), past ChupathingyCE's GPL change (Sheepdog01, 2026-11-11; `UPSTREAM.md`). Network version 29 → 32 (joining 11 to 42; `psp_limits.h`). With the engine's configure step run, `PSP_FIXUPS_CHECK=1` listed **83 anchors** that no longer match [D]; none were cascades of an earlier failure. The engine now has console ports of its own (`HALO_XBOX_CONSOLE`, `HALO_CONSOLE_*`); the PSP defines none of them and keeps its own paths, so the PSP takes each new feature's desktop side unless a line below says otherwise.
+The pin moves from v0.7.5d (`d98982b`) to v0.9.0d (`085ad8e`), past ChupathingyCE's GPL change (the maintainer's decision, 2026-11-11; `UPSTREAM.md`). Network version 29 → 32 (joining 11 to 42; `psp_limits.h`). With the engine's configure step run, `PSP_FIXUPS_CHECK=1` listed **83 anchors** that no longer match [D]; none were cascades of an earlier failure. The engine now has console ports of its own (`HALO_XBOX_CONSOLE`, `HALO_CONSOLE_*`); the PSP defines none of them and keeps its own paths, so the PSP takes each new feature's desktop side unless a line below says otherwise.
 
 **Build switches.** The desktop builds now also set `HALO_MAP_LIST` (the map list and map packs that go with Custom Edition, Stubbs mode's lower tag window among them), `HALO_COMPRESSED_MAPS` (Chimera's compressed maps, zstd) and `HALO_BINK_FFMPEG` (the movies' FFmpeg decoder). `psp_build.py` drops them with `HALO_CUSTOM_EDITION`.
 
