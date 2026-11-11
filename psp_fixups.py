@@ -44322,7 +44322,7 @@ struct psp_convend_ring_t
 };
 struct psp_convend_ring_t psp_convend_ring __attribute__((aligned(64)));
 
-/* psp_fixups.py (FIXES_AITICKOLD #convdefer, keep word "aitickoldconvdefer"):
+/* psp_fixups.py (FIXES_AITICKOLD #convdefer; on, keep word "aitickoldconvnow" for the old way):
 a conversation's end made in a thinking pass (AITICKOLD's, on the ME or the
 main CPU's ahead) is kept here and made by the main CPU at its next tick's
 start, if the datum is still the same one; one the thinking finds gone is
@@ -44392,7 +44392,8 @@ void psp_aitickold_conv_drain(
 		/* no cached copy of the rings' lines may be written back over them later */
 		sceKernelDcacheWritebackInvalidateRange(&psp_convdefer_ring, sizeof(psp_convdefer_ring));
 		sceKernelDcacheWritebackInvalidateRange(&psp_convend_ring, sizeof(psp_convend_ring));
-		ring->on = psp_keep("aitickoldconvdefer") ? 1 : 2;
+		/* on with AITICKOLD; "aitickoldconvnow" is the old way, the A/B side */
+		ring->on = psp_keep("aitickoldconvnow") ? 2 : 1;
 		__asm__ __volatile__("sync" ::: "memory");
 	}
 	if (ring->on != 1)
