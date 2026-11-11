@@ -1439,3 +1439,191 @@ void __wrap___retarget_lock_close_recursive(struct psp_newlib_lock *lock)
 	sceKernelDeleteLwMutex(&lock->mutex);
 	psp_lock_give(lock);
 }
+
+#ifdef PSP_CLAIMFILL
+/* ---------- CLAIMFILL: copies and fills that claim their destination lines
+
+A store to a line that isn't in the data cache fetches the line first, though
+a copy or a fill is about to replace every byte of it. cache 0x18 makes the
+line in the cache without the fetch (it runs in user mode; the fetch it saves
+measured ~65 cycles a line on the PSP-1000), and the kernel's own block
+copies and fills use it the same way, with the same guards as here: only
+lines that lie wholly inside the range, only cached memory, only past 256
+bytes. A claimed line holds no defined bytes until its sixteen words are
+stored, so each is claimed and filled at once, and nothing is claimed that
+this call doesn't then write in full. The emulator runs the op as nothing: a
+wrong claim can only show on a PSP, which is what "claimcheck" is for.
+
+"claimfill" turns it on. Not on the Media Engine: the op is unmeasured there. */
+void *__real_memcpy(void *to, const void *from, size_t bytes);
+void *__real_memset(void *to, int value, size_t bytes);
+int psp_keep(const char *name);
+int psp_keep_loaded(void);
+
+#define CLAIM_OVER 256u
+#define CLAIM_RAM 0x08800000u /* the user partition, through the cache */
+#define CLAIM_RAM_END 0x0A000000u
+
+static int claim_state = -1; /* 0 off, 1 on, 2 on and checked; -1 until keep.txt is read */
+static int claim_asking;
+static unsigned long claim_copies, claim_fills, claim_lines, claim_checked, claim_disagreed;
+static unsigned int claim_first_bad;
+
+static int claim_ask(void)
+{
+	if (claim_asking || !psp_keep_loaded())
+		return 0;
+	claim_asking = 1;
+	claim_state = !psp_keep("claimfill") ? 0 : psp_keep("claimcheck") ? 2 : 1;
+	claim_asking = 0;
+	return claim_state;
+}
+
+static __inline__ __attribute__((always_inline)) void claim_line(void *line)
+{
+	__asm__ __volatile__("cache 0x18, 0(%0)" : : "r"(line));
+}
+
+/* the range's whole lines claimed and copied, its head and tail as ever */
+static __attribute__((optimize("no-tree-loop-distribute-patterns"))) void claim_copy(unsigned int d, unsigned int s, size_t bytes)
+{
+	unsigned int head = (0u - d) & 63u;
+
+	if (head)
+		__real_memcpy((void *)d, (const void *)s, head);
+	d += head;
+	s += head;
+	bytes -= head;
+	claim_lines += bytes >> 6;
+	for (; bytes >= 64; bytes -= 64, d += 64, s += 64)
+	{
+		const unsigned int *in = (const unsigned int *)s;
+		unsigned int *out = (unsigned int *)d;
+
+		claim_line(out);
+		out[0] = in[0]; out[1] = in[1]; out[2] = in[2]; out[3] = in[3];
+		out[4] = in[4]; out[5] = in[5]; out[6] = in[6]; out[7] = in[7];
+		out[8] = in[8]; out[9] = in[9]; out[10] = in[10]; out[11] = in[11];
+		out[12] = in[12]; out[13] = in[13]; out[14] = in[14]; out[15] = in[15];
+	}
+	if (bytes)
+		__real_memcpy((void *)d, (const void *)s, bytes);
+}
+
+static __attribute__((optimize("no-tree-loop-distribute-patterns"))) void claim_fill(unsigned int d, int value, size_t bytes)
+{
+	unsigned int head = (0u - d) & 63u, word = (unsigned char)value * 0x01010101u;
+
+	if (head)
+		__real_memset((void *)d, value, head);
+	d += head;
+	bytes -= head;
+	claim_lines += bytes >> 6;
+	for (; bytes >= 64; bytes -= 64, d += 64)
+	{
+		unsigned int *out = (unsigned int *)d;
+
+		claim_line(out);
+		out[0] = word; out[1] = word; out[2] = word; out[3] = word;
+		out[4] = word; out[5] = word; out[6] = word; out[7] = word;
+		out[8] = word; out[9] = word; out[10] = word; out[11] = word;
+		out[12] = word; out[13] = word; out[14] = word; out[15] = word;
+	}
+	if (bytes)
+		__real_memset((void *)d, value, bytes);
+}
+
+/* "claimcheck": the same copy or fill, with interrupts off unless it is long,
+then every byte of the range compared with what it should hold, and the line either side of the
+claimed lines compared with what it held before (a claim that landed on a
+line it shouldn't have) */
+static void claim_checked_run(unsigned int d, unsigned int s, int value, size_t bytes, int fill)
+{
+	unsigned int first = (d + 63u) & ~63u, last = (d + bytes) & ~63u, k, bad = 0;
+	unsigned char before[64], after[64];
+	/* a long range is compared without holding interrupts off for it, and
+	without the neighbours (another thread may write them meanwhile) */
+	int quiet = bytes <= 65536u;
+	int guards = quiet && first - 64u >= CLAIM_RAM && last + 64u <= CLAIM_RAM_END;
+	int interrupts = quiet ? sceKernelCpuSuspendIntr() : 0;
+
+	if (guards)
+	{
+		__real_memcpy(before, (const void *)(first - 64u), 64);
+		__real_memcpy(after, (const void *)last, 64);
+	}
+	if (fill)
+		claim_fill(d, value, bytes);
+	else
+		claim_copy(d, s, bytes);
+	if (fill)
+	{
+		for (k = 0; k < bytes && !bad; k++)
+			if (((const unsigned char *)d)[k] != (unsigned char)value)
+				bad = d + k;
+	}
+	else if (memcmp((const void *)d, (const void *)s, bytes))
+		bad = d;
+	if (guards && !bad)
+	{
+		/* the neighbours' bytes outside the range itself */
+		for (k = 0; k < 64 && !bad; k++)
+		{
+			if (first - 64u + k < d && ((const unsigned char *)(first - 64u))[k] != before[k])
+				bad = first - 64u + k;
+			if (last + k >= d + bytes && ((const unsigned char *)last)[k] != after[k])
+				bad = last + k;
+		}
+	}
+	claim_checked++;
+	if (bad)
+	{
+		if (!claim_disagreed++)
+			claim_first_bad = bad;
+	}
+	if (quiet)
+		sceKernelCpuResumeIntr(interrupts);
+}
+
+void *__wrap_memcpy(void *to, const void *from, size_t bytes)
+{
+	unsigned int d = (unsigned int)to, s = (unsigned int)from;
+
+	/* short, switched off, outside cached user memory, overlapping, or a
+	source whose words won't be aligned when the destination's lines are */
+	if (bytes <= CLAIM_OVER || !claim_state || d - CLAIM_RAM >= CLAIM_RAM_END - CLAIM_RAM || bytes > CLAIM_RAM_END - d ||
+		d - s < bytes || s - d < bytes || ((s - d) & 3u) || PSP_ME_WORK() || (claim_state < 0 && !claim_ask()))
+		return __real_memcpy(to, from, bytes);
+	claim_copies++;
+	if (claim_state == 2)
+		claim_checked_run(d, s, 0, bytes, 0);
+	else
+		claim_copy(d, s, bytes);
+	return to;
+}
+
+void *__wrap_memset(void *to, int value, size_t bytes)
+{
+	unsigned int d = (unsigned int)to;
+
+	if (bytes <= CLAIM_OVER || !claim_state || d - CLAIM_RAM >= CLAIM_RAM_END - CLAIM_RAM || bytes > CLAIM_RAM_END - d ||
+		PSP_ME_WORK() || (claim_state < 0 && !claim_ask()))
+		return __real_memset(to, value, bytes);
+	claim_fills++;
+	if (claim_state == 2)
+		claim_checked_run(d, 0, value, bytes, 1);
+	else
+		claim_fill(d, value, bytes);
+	return to;
+}
+
+/* with the map's metrics: what was claimed, and the check's verdict */
+void psp_claim_report(const char *when)
+{
+	void platform_log(const char *format, ...);
+
+	if (claim_state > 0)
+		platform_log("claimfill (%s): %lu copies and %lu fills claimed %lu lines; checked %lu, disagreed %lu (first at %08x)",
+			when, claim_copies, claim_fills, claim_lines, claim_checked, claim_disagreed, claim_first_bad);
+}
+#endif
