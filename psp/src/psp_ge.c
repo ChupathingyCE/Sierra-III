@@ -584,6 +584,8 @@ between records (geinflight) */
 static int replay_inflight = 0;
 static PSP_MAIN_SIDE int replay_kinds_on = 0; /* "mekinds" (see defer_replay) */
 static PSP_MAIN_SIDE int light_ring_look = 0; /* "lightringlook" (psp_ge_light_draw_body; psp_me.c) */
+static PSP_MAIN_SIDE int light_view_cull = 0; /* "lviewcull" (light_split_draws_nothing) */
+static unsigned long light_view_culled = 0, light_back_culled = 0;
 static PSP_MAIN_SIDE int widget_sprites_off = 0; /* "nowidgetsprites" (defer_frame_begin) */
 static PSP_MAIN_SIDE int shadow_indexed = 1; /* "shadowindexoff" (defer_frame_begin; psp_ge_shadow_draw_body) */
 static PSP_MAIN_SIDE int shadow_rim_cull = 1; /* "shadowrimoff" (the same) */
@@ -855,6 +857,9 @@ static void defer_frame_begin(void)
 						pretouch_all ? " (txptall: every texture a record names)" : "");
 				replay_kinds_on = psp_keep("mekinds") != 0;
 				light_ring_look = psp_keep("lightringlook") != 0;
+				light_view_cull = psp_keep("lviewcull") != 0;
+				if (light_view_cull)
+					platform_log("GE: lviewcull: a triangle the flashlight would split is left out first when it draws nothing wherever it's cut");
 				if (light_ring_look)
 					platform_log("GE: lightringlook: the ME serves the ring inside the light pass, at most every ~1 ms");
 				if (replay_kinds_on)
@@ -21965,6 +21970,42 @@ gaps, dark along the seams of the flashlight's pool. Keep word
 static int light_split_edges = -1;
 static unsigned long light_split_triangles = 0, light_split_pieces = 0;
 
+/* "lviewcull": a triangle about to be split that draws nothing wherever the
+split cuts it. Every piece lies inside the triangle, so a triangle wholly past
+one of the view's planes (its corners' outside bits in common) has every piece
+past it, and each is dropped at its emit; and a piece's facing uses one of the
+triangle's three normals at a point inside it, so with the light behind the
+plane of each normal at all three corners no piece faces the light. The
+flashlight's cone is far wider than the screen, so the split worked many such
+triangles to the end only for their emits to drop them (the lab's
+light_pass.md, LVIEWCULL) */
+static int light_split_draws_nothing(float p[3][3], const unsigned int normal[3])
+{
+	float camera[3], n[3];
+	int view = ~0, corner, k;
+
+	for (corner = 0; corner < 3; corner++)
+	{
+		level_to_camera(p[corner], camera);
+		view &= outside(camera);
+	}
+	if (view)
+	{
+		light_view_culled++;
+		return 1;
+	}
+	for (k = 0; k < 3; k++)
+	{
+		unpack_normal(normal[k], n);
+		for (corner = 0; corner < 3; corner++)
+			if (n[0] * (light.position[0] - p[corner][0]) + n[1] * (light.position[1] - p[corner][1]) +
+				n[2] * (light.position[2] - p[corner][2]) > 0.0f)
+				return 0;
+	}
+	light_back_culled++;
+	return 1;
+}
+
 static void light_emit_spot(float corners[3][CORNER_FLOATS], struct shadow_vertex *out, long *kept_count, int *cut_count)
 {
 	/* the projected cone mirrors behind the light, so the part of the
@@ -22577,6 +22618,8 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 					}
 					/* out of the light's reach altogether: as before */
 					if (sqrtf(nearest) - sqrtf(longest) > light.radius)
+						continue;
+					if (light_view_cull && light_split_draws_nothing(p, normal))
 						continue;
 					light_split_triangles++;
 					light_split_tangent = tangent;
@@ -25433,6 +25476,9 @@ static void frame_end_show(void)
 			sky_draws, sky_parts, transparent_drawn, transparent_dropped, sprites_queued, hud_quads, text_characters,
 			blips_drawn, skinned_parts, skin_batches, skin_bytes / 1024, skin_failures, level_transparent_draws, decals_drawn, flashes_drawn, shadow_begins, shadow_requests, shadows_drawn, lights_drawn, light_cone_draws, light_cone_skipped, light_split_triangles, light_split_pieces, skin_cut_triangles, skin_cut_pieces, two_sided_draws, near_models, near_triangles_dropped);
 		platform_log("GE: cut pieces lost to a full cut buffer %lu (since the start)", cut_pieces_lost);
+		if (light_view_cull)
+			platform_log("GE: lviewcull: %lu triangles left out before the split wholly past a view plane, %lu facing away (since the start)",
+				light_view_culled, light_back_culled);
 		if (shadow_index_corners || shadow_rim_culled)
 			platform_log("GE: shadowindexed: %lu receiving corners written as %lu vertices and their indices; shadowrim: %lu receiving triangles left out past the blob's rim or faded to nothing (since the start)",
 				shadow_index_corners, shadow_index_vertices, shadow_rim_culled);
