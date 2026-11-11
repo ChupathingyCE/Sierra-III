@@ -25,7 +25,7 @@ The lab's `research/opportunities/REBUILD.md` is the spine (§3.3, §4, §7 step
 - the tick writes **163-236 KB a frame of object data** on b30 (objects, lights, particles; the AI's props and actors 46-98 KB) (the lab's `tickwrites_kb_a_frame`, snap1 40903127317);
 - the costly steps' loads are **~97% their own family or last tick's state**: a parallel phase reading the tick's start is consistent with them (the lab's `tickcore_census`, 42927567774). The stores that need care are named there: collision's shared scratch, the walk's bookkeeping, the clusters' lists, the AI's shared scratch, the global seed, function values written into other objects, and fresh reads of others' nodes.
 
-**The store's layout** (to fill from the map): per type, the fields each box reads and writes every tick, grouped by box, in arrays by type (structure of arrays where a walk reads one field of many objects, the datum's own order where a box reads many fields of one object), with each field's bytes per object and per section. The engine's cold fields stay in the datum.
+**The store's layout:** per type, the fields each box reads and writes every tick, grouped by owner; its first cut follows the map below.
 
 **The read and write map, per box** [E counts: the lab's worldmap1 (sierra-batch 43064891428: b30, b40, d20, a30, ~17,000 ticks, emulator item 29's per-step field counts), read by the lab's `psp/sierra/worldstore.py --boxes`; the whole map is the lab's `research/opportunities/worldstore_map_2026-11-11.txt`]. Each tick step is put in the box it belongs to (posing, biped motion, AI, effects, vehicles and other objects, the walk, the engine's scripts, players and HUD); a field counts for a box when the box touches it at least 0.1 times a tick, which leaves out an object's creation and deletion (they write a datum whole, once, in whatever step runs).
 
@@ -39,7 +39,7 @@ The lab's `research/opportunities/REBUILD.md` is the spine (§3.3, §4, §7 step
 | effects | 740 / 30 | 277 | 60 |
 | engine (scripts, players, HUD) | 250 / 60 | 98 | 30 |
 
-**Hot fields per object** (touched at least once every two updates of that type, against its datum; the node blocks counted apart): biped **119 words (476 B, 41% of its 1,152) of which 36 written**, and 478 node-block words; vehicle 33 words (132 B, 11%), 35 node-block words; weapon 40 (160 B, 25%); projectile 49 (196 B, 35%); light fixture 16 (64 B); scenery 4 (16 B, 3%) and sound scenery 6, over 5.4 and 0.9 million updates. **So the store is small per object outside the bipeds' node blocks**, and the bipeds' 476 hot bytes against 1,152 is means A's room: today each biped's hot words sit spread over ~40 lines (the earlier `objhot_biped_lines_touched`, 497 words with node blocks, 32 lines packed).
+**Hot fields per object** ~~(touched at least once every two updates of that type, against its datum; the node blocks counted apart): biped 119 words (476 B, 41% of its 1,152) of which 36 written, and 478 node-block words; vehicle 33 words (132 B, 11%), 35 node-block words; weapon 40 (160 B, 25%); projectile 49 (196 B, 35%); light fixture 16 (64 B); scenery 4 (16 B, 3%) and sound scenery 6, over 5.4 and 0.9 million updates.~~ (superseded 2026-11-11 by the layout's first cut below, which counts the updates that touch each word (the census's word touches) where these came from the map's per-step access counts: biped 99 words, 396 B). **So the store is small per object outside the bipeds' node blocks**, and the bipeds' 396 hot bytes against 1,152 (the cut below) is means A's room: today each biped's hot words sit spread over ~40 lines (the earlier `objhot_biped_lines_touched`, 497 words with node blocks, 32 lines packed).
 
 **Fields written by more than one box: 379** (the world store's rule is one writer a field a phase). The groups:
 - **posing called from inside other boxes' steps** (node-block words written under biped motion's steps: 57 biped, 39 scenery; under the vehicle update: 84 vehicle): node matrices are made over on demand inside those updates, so reader-driven posing (`box_posing.md`) has to take those calls as declared readers, not leave them to the old walk [U];
@@ -48,6 +48,27 @@ The lab's `research/opportunities/REBUILD.md` is the spine (§3.3, §4, §7 step
 - **projectiles' position and velocity** written by effects, their update and the walk; scenery moved by biped motion (pushed) and effects (attached).
 
 These are the hand-overs the tick schedule's serial phase has to own (`two_core_tick.md`); the counts are the census's [E] and say nothing of time.
+
+**The store's layout, first cut** [E counts: the same worldmap1 traces, read by the lab's `psp/sierra/worldlayout.py`; its output and word list are the lab's `research/opportunities/worldstore_layout_2026-11-11.txt` and `.tsv`]. The principle stands: per type, the fields each box reads and writes every tick, grouped by owner, in arrays by type (structure of arrays where a walk reads one field of many objects, the datum's own order where a box reads many fields of one object); the engine's cold fields stay in the datum. A word is hot when it's touched in at least half the updates of its type (the walk's reads of `object.type` count the updates; where under a quarter of the live objects are updated, the live objects are the base); its section is the boxes that write it, a writer with under a tenth of the main writer's stores counted as minor (a rare path, or a leaf's step label).
+
+| Type | Live | Updated a tick | Hot bytes | Lines packed | Lines, a box a line | Datum lines touched today | Hot KB at the live count | Node blocks hot |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| biped | 30.6 | 25.7 | 396 of 1,152 | 7 | 16 | 11.3 | 11.8 | 1,428 B |
+| weapon | 45.2 | 14.9 | 248 of 636 | 4 | 7 | 10.6 | 10.9 | 252 B |
+| projectile | 1.8 | 3.0 | 128 of 552 | 2 | 6 | 4.2 | 0.2 | 52 B |
+| light fixture | 11.8 | 4.3 | 116 of 476 | 2 | 4 | 7.7 | 1.3 | 52 B |
+| vehicle | 18.9 | 5.5 | 24 of 1,148 | 1 | 1 | 10.3 | 0.4 | - |
+| scenery, machine, sound scenery, equipment, control | 520 | 51 | one word each | 1 | 1 | 1.0-1.8 | 1.8 | (scenery 104 B under its updates) |
+
+What it says:
+- **The store is small: ~27 KB of hot words at the live counts, ~54 KB more of hot node-block words**, against a pool of ~1 MB, so it fits beside the datums with room: means A's packing and C's double buffer of the parallel phase's fields are both affordable in memory (the heap's room is still the limit, §4).
+- **A biped's 396 hot bytes fit 7 lines against the 11.3 datum lines an update touches today** (plus its 1,428 hot bytes of node blocks, posing's; `box_posing.md`). Laid out one box a line (the ME's rule, one writer a line) they take 16 until the shared words are owned; once the unit's own update and biped motion are one box (below) and the controller's hand-over is a record of its own, about 10.
+- **A weapon's 248 hot bytes fit 4 lines against 10.6**: a held weapon's update (heat, triggers, magazines, its position copied from the holder's hand) touches a tenth of its words but over most of its lines.
+- **The vehicles' hot set is small because most are parked**: of 18.9, 5.5 are updated a tick and only 6 words are touched in half of those; a driven vehicle's set is the vehicle box's to take from a capture of its own.
+- **Scenery and the other still kinds have one hot word each over their live counts** (most sleep); the reads of them are other boxes' (collision, the AI's perception) over many objects, the structure-of-arrays case: their positions and bounds in arrays the collision service walks.
+- **The biped's shared words, by the step that writes them** [D, the map's steps]: the controller's desired words and control flags (`desired_aiming/looking/facing_vector`, `throttle`, `control_flags`, `current_zoom_level`) are written by `actor_unit_control` (the AI) or `players_update_before_game` and then normalised by `unit_verify_vectors` in the unit's own update; the actual aiming and looking vectors and velocities by biped motion's turning and the unit update; the velocity and the animation's frame indices by biped motion and posing. In the map's box rules the unit's own update falls under "vehicles and other objects"; in the layout it belongs with biped motion (it's the unit's update), which takes the motion + objects words to one owner. What's left is the controller's hand-over, already the per-unit control record of §2's groups, and the animation state written by both the motion and posing, which the posing box's v0 leaves to the engine (`box_posing.md` §6b) and reads as an input.
+
+Next for the layout: the per-type field list as a header (`psp/src/box_world_store.h`), owners as above, and the fill and write-back's cost counted per tick (§5), with the tick schedule's serial phase taking the hand-overs.
 
 ## 3. Placement
 
@@ -78,3 +99,4 @@ The store filled and written back with no box using it yet: play and both seeds 
 
 - 2026-11-11: spec started; the map's census (the lab's worldmap1) running.
 - 2026-11-11: the map taken (§2): per box, its fields read and written, the hot bytes per object, and the 379 fields two boxes write.
+- 2026-11-11: the layout's first cut (§2): per type, the hot words by owner; the store ~27 KB of hot words and ~54 KB of hot node blocks at the live counts.
