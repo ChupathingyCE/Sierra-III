@@ -194,6 +194,16 @@ boolean map_family_xbox_path(char const *map_name, char *path, long size)
 /* the held loading screen's skip (loading_screen.c, left out): asked only
 while display.loading_screen_*_seconds holds it, 0 by default */
 boolean loading_screen_skip_pressed(void) { return FALSE; }
+/* door_portals.c (left out): no door shuts a portal, as on the Xbox, so a
+light keeps every cluster its portals reach */
+void door_portals_new_map(void) {}
+void door_portals_update(void) {}
+void door_portals_light(long rasterizer_light_index, short cluster_index, real_point3d const *center,
+	real radius) { (void)rasterizer_light_index; (void)cluster_index; (void)center; (void)radius; }
+boolean door_portals_light_blocked(long rasterizer_light_index, short cluster_index)
+{ (void)rasterizer_light_index; (void)cluster_index; return FALSE; }
+short door_portals_light_filter(long rasterizer_light_index, short count, short *clusters)
+{ (void)rasterizer_light_index; (void)clusters; return count; }
 /* ui_point.c: the postgame prompt's parts under a pointer; the PSP has none */
 struct ui_point_prompt;
 int ui_point_prompt_part(struct ui_point_prompt const *prompt, short margin, short x, short y)

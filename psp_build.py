@@ -117,7 +117,13 @@ CHUPA_DESKTOP_UNITS = ("port/linux/game/ce_", "port/linux/game/browser_screen.c"
                        "port/linux/game/structure_culling.c", "port/linux/game/object_bounds_cache.c",
                        # (the 0.9.1 test build's CPU-made Xbox loading screen, 2.4 MB of
                        # .bss: the PSP's progress bar draws as before, psp_fixups.py)
-                       "port/linux/game/loading_screen.c")
+                       "port/linux/game/loading_screen.c",
+                       # (the 0.9.1 test build's closed doors shutting their portals to
+                       # the dynamic lights: a desktop addition the Xbox never had, ~20 KB
+                       # of .bss; its pairing faulted at the first map's start on the PSP's
+                       # bake, sierra-batch 43072517988. The PSP keeps the Xbox's open
+                       # portals; psp/src/psp_chupa.c answers its calls)
+                       "source/objects/door_portals.c")
 # ... except what the multiplayer build needs as it is: map_families.c names a
 # game's map in the game's protocol (an Xbox map as itself, a Custom Edition
 # map custom_maps\<name>), in the host's advertisement and settings and the
