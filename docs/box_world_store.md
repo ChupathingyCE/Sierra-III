@@ -4,7 +4,7 @@ The lab's `research/opportunities/REBUILD.md` is the spine (§3.3, §4, §7 step
 
 **What it is:** the objects' hot state laid out for the tick's walks. It holds what each tick box reads and writes every tick, apart from what scripts and rules touch rarely. It's the root of the tick: every other tick box (posing, biped motion, the collision service, AI, vehicles, effects) reads and writes through it. Datum indices and object slot numbers stay the disc's (the multiplayer rule).
 
-**State:** spec. The read and write map below is being taken (the lab's worldmap1); the field lists are filled from it.
+**State:** spec, with its read and write map taken (2026-11-11, §2).
 
 ## 1. Contract
 
@@ -27,7 +27,27 @@ The lab's `research/opportunities/REBUILD.md` is the spine (§3.3, §4, §7 step
 
 **The store's layout** (to fill from the map): per type, the fields each box reads and writes every tick, grouped by box, in arrays by type (structure of arrays where a walk reads one field of many objects, the datum's own order where a box reads many fields of one object), with each field's bytes per object and per section. The engine's cold fields stay in the datum.
 
-**The read and write map, per box** [E, to fill: the lab's worldmap1, `psp/sierra/worldstore.py` on `TICKCORE: stepfield`, b30, b40, d20 and a30]: for each tick step (posing's node matrices, biped physics, vehicles, the per-type update, the object update, the AI's think), the fields it reads (R), writes (W) or both, with loads and stores a tick, and the fields written by more than one step.
+**The read and write map, per box** [E counts: the lab's worldmap1 (sierra-batch 43064891428: b30, b40, d20, a30, ~17,000 ticks, emulator item 29's per-step field counts), read by the lab's `psp/sierra/worldstore.py --boxes`; the whole map is the lab's `research/opportunities/worldstore_map_2026-11-11.txt`]. Each tick step is put in the box it belongs to (posing, biped motion, AI, effects, vehicles and other objects, the walk, the engine's scripts, players and HUD); a field counts for a box when the box touches it at least 0.1 times a tick, which leaves out an object's creation and deletion (they write a datum whole, once, in whatever step runs).
+
+| Box | Loads / stores a tick | Fields only read | Fields written |
+|---|---:|---:|---:|
+| posing | 19,900 / 17,200 | 511 | 1,638 (mostly node blocks) |
+| vehicles and other objects | 6,060 / 740 | 701 | 375 |
+| biped motion | 3,420 / 1,160 | 406 | 330 |
+| AI | 3,380 / 310 | 521 | **32** |
+| the walk | 2,030 / 580 | 968 | 218 |
+| effects | 740 / 30 | 277 | 60 |
+| engine (scripts, players, HUD) | 250 / 60 | 98 | 30 |
+
+**Hot fields per object** (touched at least once every two updates of that type, against its datum; the node blocks counted apart): biped **119 words (476 B, 41% of its 1,152) of which 36 written**, and 478 node-block words; vehicle 33 words (132 B, 11%), 35 node-block words; weapon 40 (160 B, 25%); projectile 49 (196 B, 35%); light fixture 16 (64 B); scenery 4 (16 B, 3%) and sound scenery 6, over 5.4 and 0.9 million updates. **So the store is small per object outside the bipeds' node blocks**, and the bipeds' 476 hot bytes against 1,152 is means A's room: today each biped's hot words sit spread over ~40 lines (the earlier `objhot_biped_lines_touched`, 497 words with node blocks, 32 lines packed).
+
+**Fields written by more than one box: 379** (the world store's rule is one writer a field a phase). The groups:
+- **posing called from inside other boxes' steps** (node-block words written under biped motion's steps: 57 biped, 39 scenery; under the vehicle update: 84 vehicle): node matrices are made over on demand inside those updates, so reader-driven posing (`box_posing.md`) has to take those calls as declared readers, not leave them to the old walk [U];
+- **the controller's hand-over to the unit:** `unit.desired_facing/aiming/looking_vector`, `throttle`, `control_flags`, `primary_trigger` written by the AI, the players' input (engine) and the unit's own update; `aiming/looking_vector` and their velocities by biped motion and the unit update. The owner is the controller for the desired words and the unit's update for the actual ones, the hand-over a per-unit control record (AITICKOLD's shape: the AI box writes almost nothing else, 32 fields in all, mostly these plus `biped.pathfinding_point`);
+- **function values and change colours** (`incoming/outgoing_function_values`, `outgoing_change_colors`) written by the per-type update and the walk's export: one owner, the export;
+- **projectiles' position and velocity** written by effects, their update and the walk; scenery moved by biped motion (pushed) and effects (attached).
+
+These are the hand-overs the tick schedule's serial phase has to own (`two_core_tick.md`); the counts are the census's [E] and say nothing of time.
 
 ## 3. Placement
 
@@ -46,7 +66,7 @@ Main RAM, in the layout above; the parallel phase's two copies (last tick's and 
 
 ## 6. What it replaces
 
-The engine's object datum as the tick's working storage (`object_get` and the datum walks in `objects_update`); the port's earlier tries on this ground: OBJHOT (the hot words packed), DATUMSPLIT, WORLDVIEW (Sheepdog01 declined on its standalone ceiling 2026-11-07; the one-tick-old view is now what the parallel phase needs), Plan C's snapshot (didn't fit, `snapdry_buffer_kb`). Each by `tools/levercheck.py` before the store's design is settled.
+The engine's object datum as the tick's working storage (`object_get` and the datum walks in `objects_update`); the port's earlier tries on this ground: OBJHOT (the hot words packed), DATUMSPLIT, WORLDVIEW (~~declined on its standalone ceiling, Sheepdog01 2026-11-07~~ superseded for this use: Sheepdog01 2026-11-10 16:43, the lab's decisions.md: the one-tick-old world is pursued as the two-core tick's enabler, proven by side-by-sides and the outcome census), Plan C's snapshot (didn't fit, `snapdry_buffer_kb`). Each by `tools/levercheck.py` before the store's design is settled.
 
 **Upstream manifest:** the engine's datum structs and the functions that read them in the tick, at the pin after the rebase (REBUILD.md §5b, §5c): taken on the rebased engine.
 
@@ -57,3 +77,4 @@ The store filled and written back with no box using it yet: play and both seeds 
 ## 8. States
 
 - 2026-11-11: spec started; the map's census (the lab's worldmap1) running.
+- 2026-11-11: the map taken (§2): per box, its fields read and written, the hot bytes per object, and the 379 fields two boxes write.
