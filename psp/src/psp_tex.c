@@ -2515,6 +2515,24 @@ static int load_into(int index, int only)
 			platform_log("textures: reading texture %d failed", index);
 			return 0;
 		}
+#ifdef PSP_RECON
+		/* "stickwholecheck": the same bytes read again as the entry's own
+		read would, and compared */
+		if (stick_whole && psp_keep("stickwholecheck"))
+		{
+			static unsigned char again[STAGING_BYTES] __attribute__((aligned(64)));
+			static unsigned int compared, differed;
+			unsigned int next = entry->offset - (entry->offset & 511) + (done ? (entry->offset & 511) + done : 0) + ask;
+
+			if (sceIoLseek32(pack, entry->offset + done, PSP_SEEK_SET) != (int)(entry->offset + done) ||
+				sceIoRead(pack, again, part) != (int)part || memcmp(again, staging + head, part))
+				differed++;
+			compared++;
+			if (differed || !(compared & (compared - 1)) || !(compared % 200))
+				platform_log("stickwholecheck: %u parts read both ways, %u differed", compared, differed);
+			sceIoLseek32(pack, next, PSP_SEEK_SET);
+		}
+#endif
 		/* build 46: by DMA (2.6 to 3 times memcpy's speed into VRAM:
 		halo_bench v9), the staging buffer written back from the CPU's cache
 		first; the cache never holds the caches' lines (written only through
