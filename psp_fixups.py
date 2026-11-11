@@ -49330,6 +49330,14 @@ static void prioritize_sounds(
 ]
 
 
+# ---------- CHUPA090: what ChupathingyCE v0.9.0d added that the PSP leaves out
+# (docs/chupa_rebase.md, "v0.9.0d"). The structure's culling
+# (port/linux/game/structure_culling.c) sorts each BSP's surfaces into buckets
+# allocated as the BSP loads, and tests them each frame before the visible
+# surface walk: the PSP keeps the walk it has (its own surface index reads,
+# psp_ge.c's draw) and the heap the buckets would take, as the engine's
+# original Xbox build does; the unit isn't compiled (psp_build.py)
+FIXES_CHUPA090 = {}
 # The 0.9.1 test build's energy-before-glass part links (models.c,
 # model_geometry_fix_transparent_part_links) read each candidate model's
 # vertex and index buffers through the desktop's Direct3D locks to see
@@ -49350,14 +49358,6 @@ FIXES_CHUPA090["source/render/render.c#partlinks"] = [
 """),
 ]
 
-# ---------- CHUPA090: what ChupathingyCE v0.9.0d added that the PSP leaves out
-# (docs/chupa_rebase.md, "v0.9.0d"). The structure's culling
-# (port/linux/game/structure_culling.c) sorts each BSP's surfaces into buckets
-# allocated as the BSP loads, and tests them each frame before the visible
-# surface walk: the PSP keeps the walk it has (its own surface index reads,
-# psp_ge.c's draw) and the heap the buckets would take, as the engine's
-# original Xbox build does; the unit isn't compiled (psp_build.py)
-FIXES_CHUPA090 = {}
 # The asserts whose expression the game needs done (match_assert_evaluated,
 # match_vassert_evaluated, new in v0.9.0d: the obstacle path's heap_insert,
 # the script compiler's hs_parse_variable and the network_settings tag read)
