@@ -83,6 +83,8 @@ static void log_line(const char *prefix, const char *format, va_list list)
 	pending_bytes += length;
 }
 
+/* on the stick before it returns, as a step is: a run that hangs or outlives
+its wall loses nothing it printed (no line is printed inside a timed pass) */
 void plat_out(const char *format, ...)
 {
 	va_list list;
@@ -90,6 +92,7 @@ void plat_out(const char *format, ...)
 	va_start(list, format);
 	log_line("", format, list);
 	va_end(list);
+	log_flush();
 }
 
 /* a step's name is on the stick before the step starts: after a hang, the

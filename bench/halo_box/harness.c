@@ -270,6 +270,10 @@ static void time_tick(struct state *st, const struct box_adapter *box, struct fi
 				unsigned int kept = into->count, whole = 0;
 				int duty = st->options->duties[d], covered = 1;
 
+				/* the first tick walks every path the run will take: if one hangs, the log names it */
+				if (st->ticks == 1)
+					plat_step("tick %u: %s box, %s, GE %d%%, try %d", tick->tick, f == &st->of_box ? box->name : "the null",
+						mode_names[mode], duty, tries + 1);
 				if (duty)
 					/* a miss beside the GE takes up to three times as long */
 					plat_ge_start(duty, (alone[mode] * 3 + 1000) << tries);
@@ -590,6 +594,8 @@ static void one_tick(struct state *st, const struct box_tick *tick)
 {
 	st->ticks++;
 	st->entities += tick->entities;
+	if (st->ticks == 1)
+		plat_step("tick %u: the check (%u entities)", tick->tick, tick->entities);
 	check_tick(st, tick);
 	time_tick(st, &st->null, &st->of_null, tick);
 	time_tick(st, st->box, &st->of_box, tick);
@@ -598,6 +604,7 @@ static void one_tick(struct state *st, const struct box_tick *tick)
 int harness_run(const struct box_adapter *box, const char *const *files, int file_count, const struct harness_options *options)
 {
 	static struct state st; /* zeroed; one run a program */
+	unsigned int run_start = plat_now();
 	int f;
 
 	st.box = box;
@@ -651,8 +658,8 @@ int harness_run(const struct box_adapter *box, const char *const *files, int fil
 		st.static_bytes += c.header.static_bytes;
 		while ((!options->ticks_most || st.ticks < (unsigned int)options->ticks_most) && capture_tick(&c, &tick, files[f]))
 		{
-			if (!(st.ticks & 31))
-				plat_step("tick %u (the %uth of this run)", tick.tick, st.ticks + 1);
+			/* every tick: a run that outlives its wall says how far it got, and at what rate */
+			plat_step("tick %u (the %uth of this run), %u ms in", tick.tick, st.ticks + 1, (plat_now() - run_start) / 1000u);
 			one_tick(&st, &tick);
 		}
 		st.capture_bytes += (unsigned int)ftell(c.file);
