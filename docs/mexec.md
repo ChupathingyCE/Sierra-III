@@ -35,7 +35,7 @@ R's slice 10 (`redesign_r.md` §3). The lab's `research/opportunities/me_unnamed
 
 - **List r1 (41 functions, 108 KB) on the PSP-1000, b30's flight, `- | mexec` x2 (sierra-hw 42922573141):** the ME's GE job −3.8 / −5.6 / −4.0 ms a frame over three windows (−9%), its model part draws −2.8 to −4.1. Play and both seeds identical on all 1,800 ticks of all four runs; the copy installed on both mexec runs.
 - **About half the ceiling [U]:** the list holds ~75% of the code misses; the instruments, audio and the other jobs run from main RAM. The frame is flat there, since the ME doesn't bind that instrumented flight.
-- **List r2** adds d20's light pass (55 functions, 128.7 KB; the room widened to 192 KB): its pair is on d20's flashlight.
+- **List r2** adds d20's light pass (55 functions, 128.7 KB; the room widened to 192 KB). **On d20's flashlight, PSP-1000, `- | mexec` x2 (sierra-hw 42929075271; the lab's `mexec_r2_d20_flashlight`):** the ME's GE job -0.8 to -1.7 ms a frame over four windows (-2 to -5%), its light draws only -0.6 / -0.1 (-1.5%); play and both seeds identical on all 2,700 ticks of the four runs. The light pass isn't bound by code misses (11.6 k I-misses a frame at its heaviest, the lab's `light_t2_parts_d20_flashlight`), so its own share from the copy is small; its cost is the split's work.
 
 ## Then
 
