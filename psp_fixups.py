@@ -44399,6 +44399,31 @@ void psp_aitickold_conv_tick(
 	if (!psp_aitickold_conv_scan || psp_aime_think_only) /* not in a thinking pass (the ME's, or the main CPU's ahead) */
 		return;
 	{
+		/* each conversation slot's header word as the last scan saw it: a
+		change at a scan point names the window it happened in (the ends
+		are logged where the engine makes them, convscanend) */
+		static short shadow[32];
+		static long shadow_for = -1;
+		static int changes = 0;
+		short k, n = conversation_data->maximum_count < 32 ? conversation_data->maximum_count : 32;
+
+		for (k = 0; k < n; k++)
+		{
+			short now = *(short *)((char *)conversation_data->data + k * conversation_data->size);
+
+			if (shadow_for == (long)(unsigned long)conversation_data && now != shadow[k] && changes < 40)
+			{
+				changes++;
+				platform_psp_log("aitickoldconvscan: game time %ld | %s%d: conversation slot %d's header %04x -> %04x",
+					(long)game_time_get(), after_actor == NONE ? "tick start" : "after the update of actor ",
+					after_actor == NONE ? 0 : (int)DATUM_INDEX_TO_ABSOLUTE_INDEX(after_actor),
+					(int)k, (unsigned)(unsigned short)shadow[k], (unsigned)(unsigned short)now);
+			}
+			shadow[k] = now;
+		}
+		shadow_for = (long)(unsigned long)conversation_data;
+	}
+	{
 		/* once a map: where the conversations' datums lie, for the write trace */
 		static void *logged_for = NULL;
 
