@@ -29407,11 +29407,11 @@ int psp_light_relink(
 		psp_lsame_on = psp_lsame_count_only || psp_lsame_exact || psp_keep("lsame") != 0;
 		if (psp_lsame_on)
 		{
-			psp_lsame = (struct psp_lsame_entry *)malloc(MAXIMUM_LIGHTS_PER_MAP * sizeof(*psp_lsame));
-			if (psp_lsame)
-				csmemset(psp_lsame, 0xFF, MAXIMUM_LIGHTS_PER_MAP * sizeof(*psp_lsame));
-			else
-				psp_lsame_on = 0;
+			/* a table of its own in .bss, not the heap: an allocation only
+			with the word on moved later allocations, and c20's pictures
+			differed with it on and almost nothing skipped (lsame4) */
+			psp_lsame = psp_lsame_table;
+			csmemset(psp_lsame, 0xFF, MAXIMUM_LIGHTS_PER_MAP * sizeof(*psp_lsame));
 			platform_psp_log(psp_lsame_on ? "lsame: an attached light's relink %s when its sphere and cluster are the same" :
 				"lsame: no room for its table; off", psp_lsame_count_only ? "counted" : "skipped");
 		}
@@ -29534,6 +29534,7 @@ struct psp_lsame_entry
 	short identifier;
 	short cluster_index; /* NONE: empty */
 };
+static struct psp_lsame_entry psp_lsame_table[MAXIMUM_LIGHTS_PER_MAP];
 static struct psp_lsame_entry *psp_lsame = NULL;
 static int psp_lsame_on = -1, psp_lsame_count_only = 0, psp_lsame_exact = 0;
 /* the list-order rule ("lsameexact"): a relink puts the light first in each
