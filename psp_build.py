@@ -183,6 +183,11 @@ if MUSIC:
 # Its test sits in the mixer's block decode on the ME and its fields in every
 # voice's packets, so a default build leaves it out
 SNDSTREAM = os.environ.get("PSP_SNDSTREAM", "") == "1"
+# PSP_CLAIMFILL=1 builds in memcpy's and memset's wrappers that claim whole
+# destination lines without fetching them (lever CLAIMFILL, psp_libc.c;
+# keep words claimfill, claimcheck): every call to the two routines passes
+# through the wrappers, so a default build leaves them out.
+CLAIMFILL = os.environ.get("PSP_CLAIMFILL", "") == "1"
 # PSP_SMALLDATA=8 (or 4): the units built with the game's flags put variables
 # of up to that many bytes in small data, read with one load from $gp instead
 # of lui and a load, so the code is shorter (lever RH5, after Halo 64's -G8).
@@ -346,7 +351,7 @@ PSP = ["psp-gcc", "-G%d" % SMALLDATA, GAME_OPT, "-march=allegrex", "-ffp-contrac
        ["-Wstrict-aliasing=2"] if os.environ.get("PSP_STRICTALIAS_WARN", "") == "1" else ["-w"]) + [
        "-ffunction-sections", "-fdata-sections", "-fno-math-errno", "-fsingle-precision-constant",
        "-DHALO_PSP=1", "-DHALO_RELEASE=1", "-DHALO_ANDROID=1",
-       ] + (["-DPSP_MULTIPLAYER=1"] if MULTIPLAYER else []) + (["-DPSP_MUSIC=1"] if MUSIC else []) + (["-DPSP_SNDSTREAM=1"] if SNDSTREAM else []) + (["-DPSP_MP_COOP=1"] if MULTIPLAYER and MP_COOP else []) + (["-DPSP_MP_HOST=1"] if MULTIPLAYER and MP_HOST else []) + (["-DPSP_MAP_CHECKS=1"] if MAP_CHECKS else []) + (["-DPSP_POOLS_XBOX=1"] if POOLS_XBOX else []) + (["-DPSP_RECON_64MB=1"] if BIG_RAM else []) + (["-DPSP_DEBUG_TOOLS=1"] if DEBUG_TOOLS else []) + (["-DPSP_TICK_STEPS=1"] if TICK_STEPS else []) + (["-DPSP_RECON=1"] if RECON else []) + (["-DPSP_MEPROBE=1"] if MEPROBE else []) + (["-DPSP_METRICS=1"] if METRICS else []) + (["-DPSP_STACKHOT=2"] if os.environ.get("PSP_STACKHOT", "2") == "2" else []) + (["-DPSP_PGO_GENERATE=1"] if PGO == "generate" else []) + os.environ.get("PSP_CFLAGS", "").split() + [
+       ] + (["-DPSP_MULTIPLAYER=1"] if MULTIPLAYER else []) + (["-DPSP_MUSIC=1"] if MUSIC else []) + (["-DPSP_SNDSTREAM=1"] if SNDSTREAM else []) + (["-DPSP_CLAIMFILL=1"] if CLAIMFILL else []) + (["-DPSP_MP_COOP=1"] if MULTIPLAYER and MP_COOP else []) + (["-DPSP_MP_HOST=1"] if MULTIPLAYER and MP_HOST else []) + (["-DPSP_MAP_CHECKS=1"] if MAP_CHECKS else []) + (["-DPSP_POOLS_XBOX=1"] if POOLS_XBOX else []) + (["-DPSP_RECON_64MB=1"] if BIG_RAM else []) + (["-DPSP_DEBUG_TOOLS=1"] if DEBUG_TOOLS else []) + (["-DPSP_TICK_STEPS=1"] if TICK_STEPS else []) + (["-DPSP_RECON=1"] if RECON else []) + (["-DPSP_MEPROBE=1"] if MEPROBE else []) + (["-DPSP_METRICS=1"] if METRICS else []) + (["-DPSP_STACKHOT=2"] if os.environ.get("PSP_STACKHOT", "2") == "2" else []) + (["-DPSP_PGO_GENERATE=1"] if PGO == "generate" else []) + os.environ.get("PSP_CFLAGS", "").split() + [
        # The fatal asserts are compiled out, unevaluated (X10): their checks
        # and messages fill the 16 KB instruction cache, so with them gone b30's
        # tick is 6.6% shorter on the PSP-3000 [M], and play is identical. The
@@ -1099,6 +1104,7 @@ def link(objs, stubs):
            "--wrap=sceGuTexImage,--wrap=sceGuTexMode,--wrap=sceGuClutLoad,--wrap=sceGuClutMode,--wrap=sceGuTexFilter,"
            # build 114: list regions join the pending range (psp_ge.c, listcachedall)
            "--wrap=sceGuGetMemory",
+           ] + (["-Wl,--wrap=memcpy,--wrap=memset"] if CLAIMFILL else []) + [
            "@" + os.path.join(OUT, "objs.rsp"), SDK + "/lib/prxexports.o"] + (music_libs() if MUSIC else []) + LIBS + ["-o", os.path.join(OUT, "halo.elf")]
     if LTO_OBJS:
         cmd[1:1] = lto_link_flags()

@@ -154,6 +154,13 @@ static void report(const char *when)
 		m.play_wall_us ? m.play_frames * 1e6 / m.play_wall_us : 0.0,
 		m.play_wall_us ? m.play_ticks * 1e6 / m.play_wall_us : 0.0,
 		m.cut_frames, m.cut_wall_us / 1e6);
+#ifdef PSP_CLAIMFILL
+	{
+		void psp_claim_report(const char *when);
+
+		psp_claim_report(when);
+	}
+#endif
 	platform_log("metrics hitches (%s, %s): over 100 ms %lu, over 250 ms %lu, over 500 ms %lu; worst %.0f ms at game time %ld (%s); "
 		"causes of those over 100 ms: checkpoint %lu, cutscene %lu, textures %lu, geometry %lu, animations %lu, map start %lu, other %lu",
 		m.map, when, m.hitches[0], m.hitches[1], m.hitches[2], m.worst_us / 1000.0, m.worst_at,
