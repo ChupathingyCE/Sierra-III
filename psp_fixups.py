@@ -44114,6 +44114,75 @@ FIXES_AITICKOLD["source/ai/actions.c#aitickoldconv"] = [
 	{"""),
 ]
 
+# "firecensus" (log only): what the enemies do at the player, to set AITICKOLD's
+# b30 parting (the player hit 3-5 times as often with it on: s3o13-s3o15) to a
+# cause. Every 900 ticks: bursts begun and ticks with the trigger held, with
+# the fire target the player's unit or another, and those begun on a frame's
+# second tick (where AITICKOLD's thinking acts)
+FIXES_AITICKOLD["source/ai/actor_combat.c#firecensus"] = [
+("""void actor_combat_update(""", """/* psp_fixups.py (FIXES_AITICKOLD #firecensus) */
+int psp_keep(const char *name);
+void platform_psp_log(const char *format, ...);
+extern int psp_lights_link_tick; /* game_time.c: this tick is the last before a frame */
+static int psp_fire_census = -1;
+static unsigned long psp_fire_bursts[2][2], psp_fire_trigger[2][2]; /* [at the player][a frame's last tick] */
+static long psp_fire_logged = -1;
+
+static int psp_fire_at_player(
+	long actor_index)
+{
+	struct actor_datum *actor = actor_get(actor_index);
+	struct prop_datum *prop;
+
+	if (actor->control.current_fire_target_type != _actor_fire_target_prop ||
+		actor->control.current_fire_target_prop_index == NONE)
+		return 0;
+	prop = (struct prop_datum *)datum_try_and_get(prop_data, actor->control.current_fire_target_prop_index);
+	return prop && prop->unit_index != NONE && player_index_from_unit_index(prop->unit_index) != NONE;
+}
+
+static void psp_fire_count(
+	long actor_index,
+	int burst)
+{
+	int player, last;
+
+	if (psp_fire_census < 0)
+		psp_fire_census = psp_keep("firecensus") != 0;
+	if (!psp_fire_census)
+		return;
+	player = psp_fire_at_player(actor_index);
+	last = psp_lights_link_tick != 0;
+	if (burst)
+		psp_fire_bursts[player][last]++;
+	else
+		psp_fire_trigger[player][last]++;
+	if (game_time_get() / 900 != psp_fire_logged)
+	{
+		psp_fire_logged = game_time_get() / 900;
+		platform_psp_log("firecensus: game time %ld | bursts begun at the player %lu (a frame's last tick %lu), at others %lu (%lu) | ticks with the trigger held at the player %lu (%lu), at others %lu (%lu)",
+			(long)game_time_get(), psp_fire_bursts[1][0] + psp_fire_bursts[1][1], psp_fire_bursts[1][1],
+			psp_fire_bursts[0][0] + psp_fire_bursts[0][1], psp_fire_bursts[0][1],
+			psp_fire_trigger[1][0] + psp_fire_trigger[1][1], psp_fire_trigger[1][1],
+			psp_fire_trigger[0][0] + psp_fire_trigger[0][1], psp_fire_trigger[0][1]);
+	}
+}
+
+void actor_combat_update("""),
+("""			actor->control.fire_state = new_state;
+		}
+""", """			actor->control.fire_state = new_state;
+			if (new_state == _actor_fire_state_bursting)
+				psp_fire_count(actor_index, 1); /* (FIXES_AITICKOLD #firecensus) */
+		}
+"""),
+("""			actor_unit_control_primary_trigger(actor_index, primary_trigger, primary_trigger_value);
+""", """			if (primary_trigger)
+				psp_fire_count(actor_index, 0); /* (FIXES_AITICKOLD #firecensus) */
+			actor_unit_control_primary_trigger(actor_index, primary_trigger, primary_trigger_value);
+"""),
+]
+
 FIXES_AITICKOLD["source/ai/actors.c#aitickoldbuf"] = [
 ("""	unsigned long asked, used, inline_passes, queue_carried;
 } psp_aitickold_stats;
