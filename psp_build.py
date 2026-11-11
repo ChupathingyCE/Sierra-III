@@ -1011,6 +1011,27 @@ def link(objs, stubs):
                 block += "%s    %s(%s)\n" % (sep, m.group(1), m.group(2))
         return block + (sep if block else "")
 
+    # PSP_ME_DATA_SET=<offset> (with PSP_ME_DATA_LAYOUT; recon) starts the
+    # ME's .data block at that offset within the data cache's 8 KB way, so
+    # its packed hot lines fall on cache sets that no fixed hot line uses:
+    # under R, the ME's hot stack and heap lines crowd sets 0xfc0-0x1940,
+    # and the block's own address happened to put its 32 lines on those
+    # same sets (the lab's mehotgr1). The pad before the block and the pad
+    # after it add up to 8 KB, so everything after the block keeps its cache
+    # sets (HOTG's run among them). Costs 8 KB of heap. Only addresses move
+    def me_set_pad(where):
+        target = os.environ.get("PSP_ME_DATA_SET", "")
+        if not target:
+            return ""
+        if os.environ.get("PSP_ME_DATA_LAYOUT", "") in ("", "none"):
+            sys.exit("psp_build: PSP_ME_DATA_SET places the block PSP_ME_DATA_LAYOUT packs; set both")
+        t = int(target, 0)
+        if t % 64 or not 0 <= t < 0x2000:
+            sys.exit("psp_build: PSP_ME_DATA_SET=%s: a multiple of 64 below 0x2000" % target)
+        if where == "before":
+            return "    __psp_me_set_pad = ABSOLUTE(.);\n    . += ((0x%x - ABSOLUTE(.)) & 0x1fff);\n" % t
+        return "    . += 0x2000 - ((0x%x - __psp_me_set_pad) & 0x1fff);\n" % t
+
     linkfile = SDK + "/lib/linkfile.prx"
     text = open(linkfile).read()
     layout = os.environ.get("PSP_TEXT_LAYOUT", "")
@@ -1073,10 +1094,12 @@ def link(objs, stubs):
                         # the variables the ME writes during "aime2a"'s job
                         # (PSP_AIME_ME_SIDE, psp_me.h) on lines of their own
                         "    __psp_aime_me_start = .;\n    KEEP(*(.data.psp_aime_me))\n"
-                        "    . = ALIGN(64);\n    __psp_aime_me_end = .;\n    __psp_me_data_start = .;\n" +
+                        "    . = ALIGN(64);\n    __psp_aime_me_end = .;\n" +
+                        me_set_pad("before") +
+                        "    __psp_me_data_start = .;\n" +
                         me_hot_data_block(me_objects, "data") +
                         "".join("    %s(.data .data.*)\n" % o for o in me_objects) +
-                        "    . = ALIGN(64);\n    __psp_me_data_end = .;\n" + music_data + ("" if SMALLDATA else hot_block) +
+                        "    . = ALIGN(64);\n    __psp_me_data_end = .;\n" + me_set_pad("after") + music_data + ("" if SMALLDATA else hot_block) +
                         "    *(.data .data.* .gnu.linkonce.d.*)\n")
     if SMALLDATA and hot_block:
         # the hot run first in .sdata: its small variables are read through
