@@ -156,8 +156,9 @@ long pc_menu_text_marquee(struct widget_instance const *widget, boolean focus)
 	return NONE;
 }
 /* map_families.c, left out: every map the PSP plays is an Xbox map
-(_map_family_xbox, 0), named as itself; no pack's map has a file to read a
-header from, so cache_files.c's multiplayer checks take a map as playable */
+(_map_family_xbox, 0), named as itself, its file the maps folder's
+<name>.map, as cache_files_windows.c composed it on v0.7.5d (FALSE when it
+doesn't fit: no file is found, not a cut one) */
 short map_family_parse(char const *map, char *file, long size)
 {
 	if (file && size > 0)
@@ -175,10 +176,20 @@ short map_family_parse(char const *map, char *file, long size)
 	}
 	return 0;
 }
+char const *cache_files_map_directory(void);
 boolean map_family_xbox_path(char const *map_name, char *path, long size)
 {
-	(void)map_name; (void)path; (void)size;
-	return FALSE;
+	int length;
+
+	if (size <= 0)
+		return FALSE;
+	length = snprintf(path, (size_t)size, "%s%s.map", cache_files_map_directory(), map_name);
+	if (length < 0 || length >= size)
+	{
+		path[0] = 0;
+		return FALSE;
+	}
+	return TRUE;
 }
 /* the held loading screen's skip (loading_screen.c, left out): asked only
 while display.loading_screen_*_seconds holds it, 0 by default */
