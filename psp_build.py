@@ -1016,19 +1016,25 @@ def link(objs, stubs):
     # its packed hot lines fall on cache sets that no fixed hot line uses:
     # under R, the ME's hot stack and heap lines crowd sets 0xfc0-0x1940,
     # and the block's own address happened to put its 32 lines on those
-    # same sets (the lab's mehotgr1). The pad before the block and the pad
-    # after it add up to 8 KB (or nothing), so everything after the block
-    # keeps its cache sets (HOTG's run among them). Costs up to 8 KB of heap.
-    # Only addresses move
+    # same sets (the lab's mehotgr1). The pads before and after the block
+    # always add up to 8 KB, so everything after it keeps its cache sets
+    # (HOTG's run among them) and the heap is 8 KB smaller. "keep" adds the
+    # same 8 KB after the block and leaves the block where it falls: the
+    # other side of the A/B, with the same heap. The heap's size moves which
+    # texture levels stay resident, and with them R's pictures (mehotgr2:
+    # 549 of 677 frames differed against a build 8 KB larger, play and seeds
+    # identical). Only addresses move
     def me_set_pad(where):
         target = os.environ.get("PSP_ME_DATA_SET", "")
         if not target:
             return ""
         if os.environ.get("PSP_ME_DATA_LAYOUT", "") in ("", "none"):
             sys.exit("psp_build: PSP_ME_DATA_SET places the block PSP_ME_DATA_LAYOUT packs; set both")
+        if target == "keep":
+            return "" if where == "before" else "    . = . + 0x2000;\n"
         t = int(target, 0)
         if t % 64 or not 0 <= t < 0x2000:
-            sys.exit("psp_build: PSP_ME_DATA_SET=%s: a multiple of 64 below 0x2000" % target)
+            sys.exit("psp_build: PSP_ME_DATA_SET=%s: keep, or a multiple of 64 below 0x2000" % target)
         # ld adds the section's start to an absolute value given to "." inside
         # a section (f31660a's "+=" form put 3.5 MB in .data and the build
         # faulted at boot), so each pad sets "." from ALIGN, which ld takes as
@@ -1039,7 +1045,9 @@ def link(objs, stubs):
         if where == "before":
             return "    __psp_me_set_pad = ABSOLUTE(.);\n" + at_offset("0x%x" % t)
         return ("    __psp_me_set_to = ABSOLUTE((__psp_me_set_pad + ABSOLUTE(__psp_me_data_end)"
-                " - ABSOLUTE(__psp_me_data_start)) & 0x1fff);\n" + at_offset("__psp_me_set_to"))
+                " - ABSOLUTE(__psp_me_data_start)) & 0x1fff);\n" + at_offset("__psp_me_set_to") +
+                # a block already at the offset takes its 8 KB after it
+                "    . = . + (ABSOLUTE(.) == ABSOLUTE(__psp_me_data_end) ? 0x2000 : 0);\n")
 
     linkfile = SDK + "/lib/linkfile.prx"
     text = open(linkfile).read()
