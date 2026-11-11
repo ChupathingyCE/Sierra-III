@@ -18260,6 +18260,9 @@ boolean psp_collision_bsp_test_vector_quiet(
 	result->leaf_count = 0;
 	context.last_contents = _contents_unknown;
 	context.nodes_left = bsp->bsp3d.nodes.count;
+	/* (the 0.9.1 test build's render batches' node cache: a stock query has
+	none, and the recursion reads the field) */
+	context.cache = NULL;
 
 	t = PIN(maximum_t, 0.f, 1.f);
 	return collision_bsp_test_vector_recursive(&context, 0, 0.f, t, 0);
