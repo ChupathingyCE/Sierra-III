@@ -41,6 +41,7 @@ struct psp_capture_plan
 
 int psp_capture_open(const struct psp_capture_plan *plan); /* 1 when open */
 int psp_capture_tick(unsigned int tick);                    /* 1 when this tick is sampled */
+int psp_capture_sampled(void);                               /* 1 when a hook's records are wanted now */
 void psp_capture_static(unsigned int key, const void *bytes, unsigned int length);
 void psp_capture_begin(unsigned int id, unsigned int kind, unsigned int flags);
 void psp_capture_input(const void *bytes, unsigned int length);

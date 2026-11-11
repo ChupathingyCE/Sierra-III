@@ -49799,7 +49799,188 @@ FIXES_CHUPA090RUNS["source/render/render_particles.c#runs"] = [
 """),
 ]
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_SSPR.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + list(FIXES_CHUPA090RUNS.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items()) + list(FIXES_AIME2A.items()) + (list(FIXES_STACKHOT.items()) if STACKHOT else []) + (list(FIXES_STACKHOT2.items()) if STACKHOT2 else []) + list(FIXES_PWSL.items()) + list(FIXES_SPHSL.items()) + list(FIXES_RECONLIST.items()) + list(FIXES_TP1.items()) + list(FIXES_WXDEAD.items()) + list(FIXES_AIMEMOVE.items()) + list(FIXES_PROPCRASH.items()) + list(FIXES_APCPOOL.items()) + list(FIXES_SNDEDRAM.items()) + list(FIXES_LIGHTFIRST.items()) + list(FIXES_DRAWPART.items()) + (list(FIXES_RECONLATE.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + list(FIXES_P2PASS.items()) + (list(FIXES_P2CENSUS.items()) if P2CENSUS else []) + list(FIXES_OBSRAY.items()) + list(FIXES_SNDWAIT.items()) + list(FIXES_FLAMEDECAL.items()) + list(FIXES_HUHINT.items()) + list(FIXES_DBLSOFT.items()) + list(FIXES_VFPUTRIG.items()) + list(FIXES_TICKCACHE.items()) + list(FIXES_STRICTALIAS.items()) + list(FIXES_SNDPERMAP.items()) + list(FIXES_RLOOP.items()) + list(FIXES_L10.items()) + list(FIXES_RLSKIP.items()) + list(FIXES_ONEWALK.items()) + (list(FIXES_POSEK.items()) if POSEK else []) + (list(FIXES_SNDSTREAM.items()) if os.environ.get("PSP_SNDSTREAM", "") == "1" else []) + list(FIXES_MOUTHCLOCK.items()) + list(FIXES_LSAME.items()) + list(FIXES_CHUPA090.items())):
+# ---------- FIXES_CAPTURE_POSING: the posing box's capture (PSP_CAPTURE=posing;
+# docs/box_posing.md §6b, the lab's research/opportunities/REBUILD.md §5). At
+# object_compute_node_matrices' walk, for each object it poses in a sampled
+# tick, the inputs where the walk starts (after the interpolation) and the
+# old code's outputs where the function returns, through psp/src/psp_capture.c
+# in the records bench/halo_box/adapters/posing.c reads. A recon build only:
+# the hooks cost every pose a few calls, and the writer takes its tick room
+# from the heap
+CAPTURE = os.environ.get("PSP_CAPTURE", "")
+FIXES_CAPTURE_POSING = {}
+FIXES_CAPTURE_POSING["source/objects/objects.c#capture"] = [
+("""void object_compute_node_matrices(
+	long object_index)
+{""",
+ """#ifdef PSP_CAPTURE_POSING
+void psp_capture_static(unsigned int key, const void *bytes, unsigned int length);
+void psp_capture_begin(unsigned int id, unsigned int kind, unsigned int flags);
+void psp_capture_input(const void *bytes, unsigned int length);
+void psp_capture_output(const void *bytes, unsigned int length);
+void psp_capture_end(void);
+int psp_capture_sampled(void);
+
+/* the box's flags (psp/src/box_posing.h, BOX_POSE_*) */
+#define PSP_CAP_POSE_WORLD_RELATIVE 1
+#define PSP_CAP_POSE_MIRRORED 2
+#define PSP_CAP_POSE_PARENT 4
+#define PSP_CAP_POSE_PARENT_MIRRORED 8
+#define PSP_CAP_POSE_PHYSICS 16
+#define PSP_CAP_POSE_NO_MODEL 32
+
+/* an object's inputs, in the adapter's order: the model's key, the flags,
+its place, the centre of mass negated, the definition's offsets, radius and
+scale, the parent's node matrix, then the node orientations by node index;
+a model's node table goes once a file as its static record */
+static void psp_cap_posing_in(
+	long object_index,
+	struct object_datum const *object,
+	struct object_definition const *object_definition,
+	struct model const *model,
+	short node_count,
+	real_orientation const *node_orientations,
+	boolean world_relative,
+	real_matrix4x3 const *parent)
+{
+	unsigned long head[2], count = node_count > 0 ? (unsigned long)node_count : 0;
+	real place[20];
+	real_matrix4x3 parent_copy;
+
+	if (!psp_capture_sampled())
+		return;
+	if (model && count)
+	{
+		static unsigned char table[4 + 8 * MAXIMUM_NODES_PER_MODEL];
+		short n;
+
+		table[0] = (unsigned char)(count & 0xff);
+		table[1] = (unsigned char)(count >> 8);
+		table[2] = table[3] = 0;
+		for (n = 0; n < node_count; n++)
+		{
+			struct model_node const *node = TAG_BLOCK_GET_ELEMENT(&model->nodes, n, struct model_node);
+			short links[4];
+
+			links[0] = node->parent_node_index;
+			links[1] = node->first_child_node_index;
+			links[2] = node->next_sibling_node_index;
+			links[3] = 0;
+			memcpy(table + 4 + 8 * n, links, sizeof(links));
+		}
+		psp_capture_static((unsigned long)object_definition->object.model.index, table, 4 + 8 * count);
+	}
+	head[0] = model ? (unsigned long)object_definition->object.model.index : 0xFFFFFFFFul;
+	head[1] = (world_relative ? PSP_CAP_POSE_WORLD_RELATIVE : 0) |
+		(TEST_FLAG(object->object.flags, _object_mirrored_bit) ? PSP_CAP_POSE_MIRRORED : 0) |
+		(parent ? PSP_CAP_POSE_PARENT : 0) |
+		(parent && TEST_FLAG(object_get(object->object.parent_object_index)->object.flags, _object_mirrored_bit) ? PSP_CAP_POSE_PARENT_MIRRORED : 0) |
+		(object_definition->object.physics.index != NONE ? PSP_CAP_POSE_PHYSICS : 0) |
+		(model ? 0 : PSP_CAP_POSE_NO_MODEL);
+	memcpy(&place[0], &object->object.position, 12);
+	memcpy(&place[3], &object->object.forward, 12);
+	memcpy(&place[6], &object->object.up, 12);
+	place[9] = place[10] = place[11] = 0.f;
+	if (object_definition->object.physics.index != NONE)
+	{
+		struct physics_definition const *physics = physics_definition_get(object_definition->object.physics.index);
+
+		place[9] = -physics->center_of_mass.x;
+		place[10] = -physics->center_of_mass.y;
+		place[11] = -physics->center_of_mass.z;
+	}
+	memcpy(&place[12], &object_definition->object.origin_offset, 12);
+	memcpy(&place[15], &object_definition->object.bounding_offset, 12);
+	place[18] = object_definition->object.bounding_radius;
+	place[19] = object->object.scale;
+	if (parent)
+		parent_copy = *parent;
+	else
+		memset(&parent_copy, 0, sizeof(parent_copy));
+	psp_capture_begin((unsigned long)object_index, object->object.type, 0);
+	psp_capture_input(head, sizeof(head));
+	psp_capture_input(place, sizeof(place));
+	psp_capture_input(&parent_copy, sizeof(parent_copy));
+	psp_capture_input(&count, sizeof(count));
+	if (count)
+		psp_capture_input(node_orientations, sizeof(real_orientation) * count);
+}
+
+/* the old code's outputs: the node matrices by node index (the root alone
+for an object placed with no model), then the bounding sphere */
+static void psp_cap_posing_out(
+	struct object_datum const *object,
+	real_matrix4x3 const *object_nodes,
+	short node_count)
+{
+	real sphere[4];
+
+	if (!psp_capture_sampled())
+		return;
+	psp_capture_output(object_nodes, sizeof(real_matrix4x3) * (node_count > 0 ? node_count : 1));
+	memcpy(sphere, &object->object.bounding_sphere_center, 12);
+	sphere[3] = object->object.bounding_sphere_radius;
+	psp_capture_output(sphere, sizeof(sphere));
+	psp_capture_end();
+}
+#endif
+
+void object_compute_node_matrices(
+	long object_index)
+{"""),
+("""static void object_compute_node_matrices_with(
+	long object_index,
+	struct object_datum *object,
+	struct object_definition *object_definition)
+{""",
+ """static void object_compute_node_matrices_with(
+	long object_index,
+	struct object_datum *object,
+	struct object_definition *object_definition)
+{
+#ifdef PSP_CAPTURE_POSING
+	short psp_cap_posed_nodes = 0;
+#endif"""),
+("""		if (!world_relative)
+		{
+			match_vassert(
+				"c:\\\\halo\\\\SOURCE\\\\objects\\\\objects.c",
+				2786,""",
+ """#ifdef PSP_CAPTURE_POSING
+		psp_cap_posing_in(object_index, object, object_definition, model, model_node_count, node_orientations,
+			world_relative, object_node_matrix);
+		psp_cap_posed_nodes = model_node_count;
+#endif
+		if (!world_relative)
+		{
+			match_vassert(
+				"c:\\\\halo\\\\SOURCE\\\\objects\\\\objects.c",
+				2786,"""),
+("""	else
+	{
+		object_nodes[0].scale = 1.f;
+		object_nodes[0].forward = object->object.forward;""",
+ """	else
+	{
+#ifdef PSP_CAPTURE_POSING
+		psp_cap_posing_in(object_index, object, object_definition, NULL, 0, NULL, FALSE, NULL);
+		psp_cap_posed_nodes = 0;
+#endif
+		object_nodes[0].scale = 1.f;
+		object_nodes[0].forward = object->object.forward;"""),
+("""#ifdef HALO_PSP
+	/* psp_fixups.py (FIXES_NMSKIP) */
+	if (psp_nms_on > 0 && TEST_FLAG(PSP_NMS_TYPES, object->object.type))""",
+ """#ifdef PSP_CAPTURE_POSING
+	psp_cap_posing_out(object, object_nodes, psp_cap_posed_nodes);
+#endif
+#ifdef HALO_PSP
+	/* psp_fixups.py (FIXES_NMSKIP) */
+	if (psp_nms_on > 0 && TEST_FLAG(PSP_NMS_TYPES, object->object.type))"""),
+]
+
+
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_SSPR.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + list(FIXES_CHUPA090RUNS.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items()) + list(FIXES_AIME2A.items()) + (list(FIXES_STACKHOT.items()) if STACKHOT else []) + (list(FIXES_STACKHOT2.items()) if STACKHOT2 else []) + list(FIXES_PWSL.items()) + list(FIXES_SPHSL.items()) + list(FIXES_RECONLIST.items()) + list(FIXES_TP1.items()) + list(FIXES_WXDEAD.items()) + list(FIXES_AIMEMOVE.items()) + list(FIXES_PROPCRASH.items()) + list(FIXES_APCPOOL.items()) + list(FIXES_SNDEDRAM.items()) + list(FIXES_LIGHTFIRST.items()) + list(FIXES_DRAWPART.items()) + (list(FIXES_RECONLATE.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + list(FIXES_P2PASS.items()) + (list(FIXES_P2CENSUS.items()) if P2CENSUS else []) + list(FIXES_OBSRAY.items()) + list(FIXES_SNDWAIT.items()) + list(FIXES_FLAMEDECAL.items()) + list(FIXES_HUHINT.items()) + list(FIXES_DBLSOFT.items()) + list(FIXES_VFPUTRIG.items()) + list(FIXES_TICKCACHE.items()) + list(FIXES_STRICTALIAS.items()) + list(FIXES_SNDPERMAP.items()) + list(FIXES_RLOOP.items()) + list(FIXES_L10.items()) + list(FIXES_RLSKIP.items()) + list(FIXES_ONEWALK.items()) + (list(FIXES_POSEK.items()) if POSEK else []) + (list(FIXES_SNDSTREAM.items()) if os.environ.get("PSP_SNDSTREAM", "") == "1" else []) + list(FIXES_MOUTHCLOCK.items()) + list(FIXES_LSAME.items()) + list(FIXES_CHUPA090.items()) + (list(FIXES_CAPTURE_POSING.items()) if CAPTURE == "posing" else [])):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 

@@ -217,6 +217,18 @@ SNDSTREAM = os.environ.get("PSP_SNDSTREAM", "") == "1"
 # rebase's profile and layouts are counted with them; PSP_CLAIMFILL=0 builds
 # them out.
 CLAIMFILL = os.environ.get("PSP_CLAIMFILL", "1") != "0"
+# PSP_CAPTURE=<box> builds a box's capture in (REBUILD.md §5; the lab's
+# research/opportunities/harness.md §7): psp/src/psp_capture.c, the writer, and
+# the box's hooks at the old code's entry and exit (psp_fixups.py
+# FIXES_CAPTURE_<BOX>). keep.txt's capfirstN, capeveryN, capticksN and
+# capkbN set its sampling (psp_platform.c). A recon build: never for play
+CAPTURE = os.environ.get("PSP_CAPTURE", "")
+CAPTURE_BOXES = ("posing",)
+if CAPTURE and CAPTURE not in CAPTURE_BOXES:
+    sys.exit("psp_build: PSP_CAPTURE=%s isn't a box with a capture (%s)" % (CAPTURE, ", ".join(CAPTURE_BOXES)))
+CAPTURE_DEFINES = ["-DPSP_CAPTURE=1", "-DPSP_CAPTURE_%s=1" % CAPTURE.upper()] if CAPTURE else []
+if CAPTURE:
+    PSP_FILES.append("psp_capture")
 # PSP_SMALLDATA=8 (or 4): the units built with the game's flags put variables
 # of up to that many bytes in small data, read with one load from $gp instead
 # of lui and a load, so the code is shorter (lever RH5, after Halo 64's -G8).
@@ -393,7 +405,7 @@ PSP = ["psp-gcc", "-G%d" % SMALLDATA, GAME_OPT, "-march=allegrex", "-ffp-contrac
        # statics and the GL layer's d3d8_visibility_test_number); and the
        # Xbox maps' sizes (flare rows, respawning vehicles: -135 KB)
        "-DHALO_CONSOLE_WAITED_VISIBILITY_TESTS=1", "-DHALO_CONSOLE_XBOX_MAP_SIZES=1",
-       ] + (["-DPSP_MULTIPLAYER=1"] if MULTIPLAYER else []) + (["-DPSP_MUSIC=1"] if MUSIC else []) + (["-DPSP_SNDSTREAM=1"] if SNDSTREAM else []) + (["-DPSP_CLAIMFILL=1"] if CLAIMFILL else []) + (["-DPSP_MP_COOP=1"] if MULTIPLAYER and MP_COOP else []) + (["-DPSP_MP_HOST=1"] if MULTIPLAYER and MP_HOST else []) + (["-DPSP_MAP_CHECKS=1"] if MAP_CHECKS else []) + (["-DPSP_POOLS_XBOX=1"] if POOLS_XBOX else []) + (["-DPSP_RECON_64MB=1"] if BIG_RAM else []) + (["-DPSP_DEBUG_TOOLS=1"] if DEBUG_TOOLS else []) + (["-DPSP_TICK_STEPS=1"] if TICK_STEPS else []) + (["-DPSP_RECON=1"] if RECON else []) + (["-DPSP_MEPROBE=1"] if MEPROBE else []) + (["-DPSP_METRICS=1"] if METRICS else []) + (["-DPSP_STACKHOT=2"] if os.environ.get("PSP_STACKHOT", "2") == "2" else []) + (["-DPSP_PGO_GENERATE=1"] if PGO == "generate" else []) + os.environ.get("PSP_CFLAGS", "").split() + [
+       ] + (["-DPSP_MULTIPLAYER=1"] if MULTIPLAYER else []) + (["-DPSP_MUSIC=1"] if MUSIC else []) + (["-DPSP_SNDSTREAM=1"] if SNDSTREAM else []) + (["-DPSP_CLAIMFILL=1"] if CLAIMFILL else []) + CAPTURE_DEFINES + (["-DPSP_MP_COOP=1"] if MULTIPLAYER and MP_COOP else []) + (["-DPSP_MP_HOST=1"] if MULTIPLAYER and MP_HOST else []) + (["-DPSP_MAP_CHECKS=1"] if MAP_CHECKS else []) + (["-DPSP_POOLS_XBOX=1"] if POOLS_XBOX else []) + (["-DPSP_RECON_64MB=1"] if BIG_RAM else []) + (["-DPSP_DEBUG_TOOLS=1"] if DEBUG_TOOLS else []) + (["-DPSP_TICK_STEPS=1"] if TICK_STEPS else []) + (["-DPSP_RECON=1"] if RECON else []) + (["-DPSP_MEPROBE=1"] if MEPROBE else []) + (["-DPSP_METRICS=1"] if METRICS else []) + (["-DPSP_STACKHOT=2"] if os.environ.get("PSP_STACKHOT", "2") == "2" else []) + (["-DPSP_PGO_GENERATE=1"] if PGO == "generate" else []) + os.environ.get("PSP_CFLAGS", "").split() + [
        # The fatal asserts are compiled out, unevaluated (X10): their checks
        # and messages fill the 16 KB instruction cache, so with them gone b30's
        # tick is 6.6% shorter on the PSP-3000 [M], and play is identical. The
@@ -730,7 +742,7 @@ def compile_one(item):
                ["-DPSP_WALKAPART=1"] if WALKAPART else []) + (
                ["-DPSP_MEXEC=1"] if MEXEC and src.endswith("psp_me.c") else []) + (
                ["-DPSP_MEVISLAND=1"] if MEVISLAND else []) + (
-               ["-DPSP_METRICS=1"] if METRICS else []) + (
+               ["-DPSP_METRICS=1"] if METRICS else []) + CAPTURE_DEFINES + (
                ["-DPSP_MUSIC=1"] if MUSIC else []) + (
                # the wrappers the link's --wrap=memcpy,--wrap=memset names
                ["-DPSP_CLAIMFILL=1"] if CLAIMFILL and src.endswith("psp_libc.c") else []) + (

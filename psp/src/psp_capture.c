@@ -279,6 +279,13 @@ int psp_capture_tick(unsigned int tick)
 	return 1;
 }
 
+/* whether a hook's work is wanted now: a capture open, this tick sampled, and
+not on the Media Engine (so a hook can skip making its records otherwise) */
+int psp_capture_sampled(void)
+{
+	return cap.open && cap.in_tick && !cap_on_me();
+}
+
 void psp_capture_static(unsigned int key, const void *bytes, unsigned int length)
 {
 	struct cap1_static record;
