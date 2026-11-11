@@ -1261,6 +1261,10 @@ static void keep_defaults_add(void)
 	restoration of a kind; the pack's TSI1 table, or untextured as before).
 	lightcarry: the flashlight's cone split carries each corner's work to
 	the pieces that share it (exact; d20's swamp frame -10% on the PSP).
+	lightpieceN (a number, 60 by default; B7's 30): the flashlight's pieces
+	N hundredths of the cone's width where they are (Sheepdog01 2026-11-10: the
+	larger pieces kept until his hand run says otherwise; d20's flashlight
+	light draws -13 to -28% on the PSP-3000).
 	lviewcull: a triangle the flashlight would split is left out first when
 	it draws nothing wherever it's cut (exact; d20's flashlight light draws
 	-4 to -9% on the PSP-1000).
