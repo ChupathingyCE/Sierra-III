@@ -400,8 +400,8 @@ void psp_lock_report(void)
 		platform_log("%s", line);
 }
 
-/* build 102: the blackbox's larger batch, from the user partition's free
-memory (not the game's heap). 2026-11-10: also grown on its own the first time
+/* the blackbox's larger batch, from the user partition's free
+memory (not the game's heap). Also grown on its own the first time
 the 8 KB batch passes half full (psp_log_write), since a burst of lines (the GE's
 300-frame report on b30) filled it faster than the writer thread drained it and
 lines were dropped. The batch and its copy are separate blocks of 32 KB, or of
@@ -443,8 +443,8 @@ static void log_batch_grow(void)
 
 int psp_keep_loaded(void);
 
-/* "logsmall": the batch stays at 8 KB unless the blackbox asks (as before
-2026-11-10); a line that doesn't fit is dropped and counted either way */
+/* "logsmall": the batch stays at 8 KB unless the blackbox asks; a line
+that doesn't fit is dropped and counted either way */
 static int log_grow_allowed(void)
 {
 	static int off = -1;
@@ -496,7 +496,7 @@ void psp_log_write(const char *text)
 			log_batch_dropped++;
 		if (locked)
 			sceKernelSignalSema(log_lock, 1);
-		/* 2026-11-10: grown once, before a burst can fill it (log_batch_grow) */
+		/* grown once, before a burst can fill it (log_batch_grow) */
 		{
 			static int grow_tried = 0;
 
@@ -1262,9 +1262,9 @@ static void keep_defaults_add(void)
 	lightcarry: the flashlight's cone split carries each corner's work to
 	the pieces that share it (exact; d20's swamp frame -10% on the PSP).
 	lightpieceN (a number, 60 by default; B7's 30): the flashlight's pieces
-	N hundredths of the cone's width where they are (Sheepdog01 2026-11-10: the
-	larger pieces kept until his hand run says otherwise; d20's flashlight
-	light draws -13 to -28% on the PSP-3000).
+	N hundredths of the cone's width where they are (the larger pieces kept
+	until Sheepdog01's hand run says otherwise; d20's flashlight light draws -13 to
+	-28% on the PSP-3000).
 	lviewcull: a triangle the flashlight would split is left out first when
 	it draws nothing wherever it's cut (exact; d20's flashlight light draws
 	-4 to -9% on the PSP-1000).

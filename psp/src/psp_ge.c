@@ -588,8 +588,8 @@ static PSP_MAIN_SIDE int light_view_cull = 0; /* "lviewcull" (light_split_draws_
 /* The flashlight's piece size as keep-word numbers (LSPLITCOARSE, the lab's
 light_pass.md): "lightpieceN" the piece across as N hundredths of the cone's
 width where it is, "lightleastN" its floor as N thousandths of the light's
-radius (30). B7 had 30; 60 by default (Sheepdog01 2026-11-10 20:50, his hand run
-to veto): ~60% fewer pieces on d20's and c20's flashlight for the pool's
+radius (30). B7 had 30; 60 by default (Sheepdog01's hand run
+may veto it): ~60% fewer pieces on d20's and c20's flashlight for the pool's
 gradient a level or a few apart, play the same; "lightpiece30" is B7's */
 int psp_keep_number(const char *prefix, int fallback);
 static PSP_MAIN_SIDE float light_piece_factor = 0.6f, light_piece_least = 0.03f;

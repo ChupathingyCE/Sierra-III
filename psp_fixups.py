@@ -48016,7 +48016,7 @@ FIXES_HUHINT["source/objects/objects.c#huhint"] = [
 # why). The engine's cache is resized as each map opens (it's empty then:
 # sound_cache_close let every sound go), and the 5 s report counts the pages
 # the map has, not the boot size
-# ---------- POSEK (bottleneck, 2026-11-10; lab research/opportunities/posing.md, slices P1
+# ---------- POSEK (lab research/opportunities/posing.md, slices P1
 # and P3): the node walk after the root reads a per-model plan instead of the model's tag
 # nodes. The old loop reads each node's links from its 156-byte tag entry (a line or two a
 # node, every object every tick) and runs the root's large block in the same loop body; the
@@ -48228,7 +48228,7 @@ void object_compute_node_matrices(
 """),
 ]
 
-# ---------- ONEWALK (bottleneck, 2026-11-10; lab research/opportunities/collision.md, slice
+# ---------- ONEWALK (lab research/opportunities/collision.md, slice
 # C1's first step): the level sphere walk always the port's (FIXES_121's surfacetest), never
 # the engine's bsp3d_test_sphere_recursive. The choice by leaves a walk was made on the cache
 # model ("c20 walk at parity" [E]); with two walks in use, a section keeps both resident in
@@ -48250,7 +48250,7 @@ static int psp_one_walk; /* psp_fixups.py (FIXES_ONEWALK) */
  """	if (!psp_surface_test_check && !psp_one_walk && psp_walk_leaves16 <= PSP_SURFACE_DEDUP_LEAVES16)"""),
 ]
 
-# ---------- RLSKIP (bottleneck, 2026-11-10; lab research/opportunities/maplinks_anatomy_ds.md):
+# ---------- RLSKIP (lab research/opportunities/maplinks_anatomy_ds.md):
 # a moving object's reconnect to the same clusters, in the same order, skipped: its held
 # disconnect is taken back and its references stay where they are. RECONLIST makes the same
 # reconnect in place, exactly as the engine would (new identifiers, each reference moved to
@@ -48332,7 +48332,7 @@ static int psp_rl_same_clusters(struct cluster_partition *partition, long datum_
 		if (psp_rl_plan("""),
 ]
 
-# ---------- L10 (sweep1b, verified 2026-11-10; lab catalogue.tsv): only units post-process
+# ---------- L10 (lab catalogue.tsv): only units post-process
 # their node matrices (unit_data_definition's seat and weapon IK; every other type's slot is
 # NULL, object_types.c's table), so object_postprocess_node_matrices returns for any other
 # type before it loads the object's definition and its node matrices block. Exact: the
