@@ -204,6 +204,12 @@ boolean door_portals_light_blocked(long rasterizer_light_index, short cluster_in
 { (void)rasterizer_light_index; (void)cluster_index; return FALSE; }
 short door_portals_light_filter(long rasterizer_light_index, short count, short *clusters)
 { (void)rasterizer_light_index; (void)clusters; return count; }
+/* follow_camera.c (left out): a dead player has the Xbox's death camera
+alone, as with display.follow_camera off */
+long follow_camera_unit(short local_player_index) { (void)local_player_index; return NONE; }
+void follow_camera_player_killed(long killing_player_index, long dead_player_index)
+{ (void)killing_player_index; (void)dead_player_index; }
+void follow_camera_draw(short local_player_index) { (void)local_player_index; }
 /* ui_point.c: the postgame prompt's parts under a pointer; the PSP has none */
 struct ui_point_prompt;
 int ui_point_prompt_part(struct ui_point_prompt const *prompt, short margin, short x, short y)

@@ -35,7 +35,9 @@ halo_port_limits.h): those new since v0.7.5d, which the PSP never built, are
 left out as a console leaves them: the Light effects (plasma_*.c, ~1.5 MB of
 .bss), the object functions, particle streams and camera shake drawn
 between ticks (render_interpolation.c, player_effects.c), the audio probe,
-the Controls screen, Delta Profile, Discord and voice. The extras the PSP
+the Controls screen, Delta Profile, Discord and voice, and the network
+tests' bots with the determinism check (debug.determinism: the lab's statecrc
+is the PSP's). The extras the PSP
 built on v0.7.5d (player names, hi-res text answered by psp_chupa_platform.c,
 tag validation left out by psp_build.py's desktop units) stay as they were */
 #define HALO_CONSOLE_NO_LIGHT_EFFECTS 1
@@ -47,6 +49,7 @@ tag validation left out by psp_build.py's desktop units) stay as they were */
 #define HALO_CONSOLE_NO_DELTA_PROFILE 1
 #define HALO_CONSOLE_NO_DISCORD 1
 #define HALO_CONSOLE_NO_VOICE 1
+#define HALO_CONSOLE_NO_NETWORK_TEST 1
 /* (the two units compiled with their own build.ninja lines, posix_files.c
 and tomlc17.c, have no port/linux/include on their path; they test none of
 the capabilities) */

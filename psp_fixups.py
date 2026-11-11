@@ -49501,6 +49501,102 @@ FIXES_CHUPA090["source/rasterizer/rasterizer.h#unlit"] = [
 #endif
 #else"""),
 ]
+# The particles' limit (display.particle_limit, 0 by default: the desktop's
+# answer to a Halo PC map that filled the native builds' larger pool) is read
+# by name every frame and its ring of the particles in the order they were
+# made is kept whatever it is (4 KB): the PSP's pool is the Xbox's 1,024 and
+# its own budget decides what's made (psp_prio). The tick mode's owner table
+# (4 KB) is read only by particle_render_position: the PSP's own update never
+# moves particles by the tick, so, as on the Xbox console, a particle is
+# drawn where it is
+FIXES_CHUPA090["source/effects/particles.c#limit"] = [
+("""static long particles_made_order[HALO_PORT_MAXIMUM_PARTICLES];
+""",
+ """#ifndef HALO_PSP
+static long particles_made_order[HALO_PORT_MAXIMUM_PARTICLES];
+#endif
+"""),
+("""	while (particles_made_count > 0)
+	{
+		long particle_index = particles_made_order[particles_made_oldest];""",
+ """#ifdef HALO_PSP
+	while (0)
+	{
+		long particle_index = NONE;
+#else
+	while (particles_made_count > 0)
+	{
+		long particle_index = particles_made_order[particles_made_oldest];
+#endif"""),
+("""	particles_made_order[(particles_made_oldest + particles_made_count) % HALO_PORT_MAXIMUM_PARTICLES] = particle_index;
+	particles_made_count++;
+""",
+ """#ifdef HALO_PSP
+	(void)particle_index;
+#else
+	particles_made_order[(particles_made_oldest + particles_made_count) % HALO_PORT_MAXIMUM_PARTICLES] = particle_index;
+	particles_made_count++;
+#endif
+"""),
+("""static long particle_tick_owner[HALO_PORT_MAXIMUM_PARTICLES];
+static real_point3d particle_tick_previous[HALO_PORT_MAXIMUM_PARTICLES];
+static short particle_tick_owed[HALO_PORT_MAXIMUM_PARTICLES];
+""",
+ """#ifndef HALO_PSP
+static long particle_tick_owner[HALO_PORT_MAXIMUM_PARTICLES];
+static real_point3d particle_tick_previous[HALO_PORT_MAXIMUM_PARTICLES];
+static short particle_tick_owed[HALO_PORT_MAXIMUM_PARTICLES];
+#endif
+"""),
+("""	particles_made_oldest = particles_made_count = 0;
+	for (slot = 0; slot < HALO_PORT_MAXIMUM_PARTICLES; slot++)
+		particle_tick_owner[slot] = NONE;
+""",
+ """	particles_made_oldest = particles_made_count = 0;
+#ifdef HALO_PSP
+	(void)slot;
+#else
+	for (slot = 0; slot < HALO_PORT_MAXIMUM_PARTICLES; slot++)
+		particle_tick_owner[slot] = NONE;
+#endif
+"""),
+("""	struct particle_datum *particle = particle_get(particle_index);
+#ifndef HALO_XBOX_CONSOLE
+	long slot = particle_index & 0xFFFF;
+#endif
+
+	*position = particle->position;
+#ifndef HALO_XBOX_CONSOLE
+	if (!particles_each_frame""",
+ """	struct particle_datum *particle = particle_get(particle_index);
+#if !defined(HALO_XBOX_CONSOLE) && !defined(HALO_PSP)
+	long slot = particle_index & 0xFFFF;
+#endif
+
+	*position = particle->position;
+#if !defined(HALO_XBOX_CONSOLE) && !defined(HALO_PSP)
+	if (!particles_each_frame"""),
+("""	{
+		extern long config_integer(const char *name);
+		extern void platform_log(const char *format, ...);
+		static long counted_frames, counted_alive, counted_most;""",
+ """#ifndef HALO_PSP
+	{
+		extern long config_integer(const char *name);
+		extern void platform_log(const char *format, ...);
+		static long counted_frames, counted_alive, counted_most;"""),
+("""			particles_refused = particles_retired = 0;
+			counted_seconds = 0.0f;
+		}
+	}
+""",
+ """			particles_refused = particles_retired = 0;
+			counted_seconds = 0.0f;
+		}
+	}
+#endif
+"""),
+]
 
 for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_SSPR.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items()) + list(FIXES_AIME2A.items()) + (list(FIXES_STACKHOT.items()) if STACKHOT else []) + (list(FIXES_STACKHOT2.items()) if STACKHOT2 else []) + list(FIXES_PWSL.items()) + list(FIXES_SPHSL.items()) + list(FIXES_RECONLIST.items()) + list(FIXES_TP1.items()) + list(FIXES_WXDEAD.items()) + list(FIXES_AIMEMOVE.items()) + list(FIXES_PROPCRASH.items()) + list(FIXES_APCPOOL.items()) + list(FIXES_SNDEDRAM.items()) + list(FIXES_LIGHTFIRST.items()) + list(FIXES_DRAWPART.items()) + (list(FIXES_RECONLATE.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + list(FIXES_P2PASS.items()) + (list(FIXES_P2CENSUS.items()) if P2CENSUS else []) + list(FIXES_OBSRAY.items()) + list(FIXES_SNDWAIT.items()) + list(FIXES_FLAMEDECAL.items()) + list(FIXES_HUHINT.items()) + list(FIXES_DBLSOFT.items()) + list(FIXES_VFPUTRIG.items()) + list(FIXES_TICKCACHE.items()) + list(FIXES_STRICTALIAS.items()) + list(FIXES_SNDPERMAP.items()) + list(FIXES_RLOOP.items()) + list(FIXES_L10.items()) + list(FIXES_RLSKIP.items()) + list(FIXES_ONEWALK.items()) + (list(FIXES_POSEK.items()) if POSEK else []) + (list(FIXES_SNDSTREAM.items()) if os.environ.get("PSP_SNDSTREAM", "") == "1" else []) + list(FIXES_MOUTHCLOCK.items()) + list(FIXES_LSAME.items()) + list(FIXES_CHUPA090.items())):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
