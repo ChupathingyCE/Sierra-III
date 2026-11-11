@@ -49629,6 +49629,17 @@ FIXES_HEAPTRIM["port/linux/src/xbox_files.c#sharedsaves"] = [
 	{"""),
 ]
 
+# The radix sort's second buffer (8 KB of .bss) as a local beside the list it
+# sorts, which render_particles already keeps on the stack: it lives only for
+# the sort. The main thread's stack has room (424 KB, 362 at its deepest on
+# a30_play1's whole replay: the lab's rebase090mem), and that stack is
+# reserved either way, so the heap gains the 8 KB.
+FIXES_HEAPTRIM["source/render/render_particles.c#scratch"] = [
+    ("""	static struct rendered_particle_datum scratch[MAXIMUM_RENDERED_PARTICLES];""",
+     """	/* psp_fixups.py (FIXES_HEAPTRIM): on the stack, for the sort alone */
+	struct rendered_particle_datum scratch[MAXIMUM_RENDERED_PARTICLES];"""),
+]
+
 FIXES_CHUPA090RUNS = {}
 FIXES_CHUPA090RUNS["source/render/render_particles.c#runs"] = [
 ("""/* port: the depths the transparent queue's groups sort at, and a run of
