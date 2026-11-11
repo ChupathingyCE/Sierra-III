@@ -25,6 +25,7 @@ own file is passed through untraced. */
 
 void platform_log(const char *format, ...);
 int psp_keep(const char *name);
+int psp_keep_number(const char *prefix, int fallback);
 int psp_keep_loaded(void);
 #define psp_keep_loaded_early psp_keep_loaded
 
@@ -556,11 +557,14 @@ void psp_stick_release(void)
 	stick_give();
 }
 
+static void align_report(void);
+
 void psp_stick_report(void)
 {
 	char line[400];
 	int k, length;
 
+	align_report();
 	length = snprintf(line, sizeof(line), "stick (%s):", stick_enabled > 0 && !psp_keep("stickparallel") ? "one thread at a time" : "parallel");
 	for (k = 0; k < STICK_THREADS && length < (int)sizeof(line) - 1; k++)
 	{
@@ -950,6 +954,134 @@ static void open_failed(const char *path, char kind, int result)
 	}
 }
 
+/* "stickalign" (keep.txt; lever STKALIGN): how each read meets the stick, by
+the firmware's own rules. The FAT layer hands a read to the block driver as
+one command only when it starts and ends on sectors, lies in one run of whole
+clusters (or inside one cluster) and its buffer is 64-byte aligned. A head or
+a tail inside a sector goes through a one-sector buffer as a command of its
+own; whole sectors into a buffer that is 4- but not 64-byte aligned have
+their first and last sector bounced the same way, and into one that isn't
+4-byte aligned every sector is; a read that crosses out of its first cluster
+or into its last one is cut there. Each command pays the stick's fixed cost,
+so the count of commands a read is what a bake's padding or a reader's
+rounding could save. Counts only, so the emulator's are the PSP's.
+"stickclusterN": the cluster in KB the model cuts at (32 if not given) */
+static int align_on = -1;
+static unsigned int align_cluster = 32 * 1024;
+static struct align_count
+{
+	unsigned long reads, clean, head, tail, off_cluster, buffer64, buffer4, commands, big, big_follow;
+	unsigned long long bytes;
+} align_counts[IO_KINDS];
+static int align_big_end[TRACE_FILES]; /* where this file's last read of 32 KB or more ended; 0: none yet */
+
+/* the commands for whole sectors read straight into the buffer */
+static unsigned int align_whole(unsigned int sectors, unsigned int buffer)
+{
+	if (!sectors)
+		return 0;
+	if (buffer & 3)
+		return sectors;
+	if (buffer & 63)
+		return sectors >= 3 ? 3 : sectors;
+	return (sectors + 511) / 512;
+}
+
+/* one stretch inside a cluster, or a run of whole clusters */
+static unsigned int align_stretch(unsigned int at, unsigned int bytes, unsigned int buffer)
+{
+	unsigned int head = at & 511, end = at + bytes, tail = end & 511, commands = 0, first_whole, last_whole;
+
+	if (!bytes)
+		return 0;
+	if ((at >> 9) == ((end - 1) >> 9) && (head || tail))
+		return 1; /* inside one sector */
+	first_whole = head ? (at | 511) + 1 : at;
+	last_whole = end - tail;
+	if (head)
+		commands++;
+	if (tail)
+		commands++;
+	return commands + align_whole((last_whole - first_whole) >> 9, buffer + (first_whole - at));
+}
+
+static void align_note(SceUID fd, int kind, const void *data, unsigned int size)
+{
+	struct align_count *count;
+	unsigned int at, end, buffer = (unsigned int)data, commands, cluster, first_cut, last_cut;
+
+	if (align_on < 0)
+	{
+		/* asked once keep.txt is read: the first reads are keep.txt's own */
+		if (!psp_keep_loaded())
+			return;
+		align_on = psp_keep("stickalign") != 0;
+		if (align_on)
+		{
+			int kb = psp_keep_number("stickcluster", 32);
+
+			align_cluster = (unsigned int)(kb < 1 ? 1 : kb > 1024 ? 1024 : kb) * 1024;
+		}
+	}
+	if (!align_on || fd < 0 || fd >= TRACE_FILES || !size || kind < 0 || kind >= IO_KINDS || fd_pos[fd] < 0)
+		return;
+	at = (unsigned int)fd_pos[fd];
+	end = at + size;
+	cluster = align_cluster;
+	count = &align_counts[kind];
+	count->reads++;
+	count->bytes += size;
+	if (at & 511)
+		count->head++;
+	if (end & 511)
+		count->tail++;
+	if (buffer & 63)
+		count->buffer64++;
+	if (buffer & 3)
+		count->buffer4++;
+	first_cut = (at + cluster - 1) / cluster * cluster; /* the first cluster edge at or after the start */
+	last_cut = end / cluster * cluster;                   /* the last at or before the end */
+	if (first_cut >= end || last_cut <= at || first_cut > last_cut)
+		commands = align_stretch(at, size, buffer); /* inside one cluster, or two with no whole one between */
+	else
+		commands = align_stretch(at, first_cut - at, buffer) + align_stretch(first_cut, last_cut - first_cut, buffer + (first_cut - at))
+			+ align_stretch(last_cut, end - last_cut, buffer + (last_cut - at));
+	if (first_cut != at && first_cut < end)
+		count->off_cluster++;
+	count->commands += commands;
+	if (commands == 1)
+		count->clean++;
+	if (size >= 32 * 1024)
+	{
+		count->big++;
+		if (align_big_end[fd] && (unsigned int)align_big_end[fd] == at)
+			count->big_follow++;
+		align_big_end[fd] = (int)end;
+	}
+}
+
+/* with the stick report: totals since the start, a line a kind of file */
+static void align_report(void)
+{
+	int kind;
+
+	if (align_on <= 0)
+		return;
+	for (kind = 0; kind < IO_KINDS; kind++)
+	{
+		const struct align_count *count = &align_counts[kind];
+
+		if (!count->reads)
+			continue;
+		platform_log("stickalign: %s: %lu reads, %llu KB since the start; one command %lu; start inside a sector %lu, end inside one %lu, "
+			"crossing out of the first cluster %lu (%u KB clusters); buffer not 64-byte aligned %lu (not 4-byte %lu); "
+			"commands by the firmware's rules %lu (%lu more than one a read); reads of 32 KB or more %lu, %lu of them starting where the last ended",
+			io_kind_names[kind], count->reads, count->bytes / 1024, count->clean, count->head, count->tail, count->off_cluster,
+			align_cluster / 1024, count->buffer64, count->buffer4, count->commands, count->commands - count->reads, count->big,
+			count->big_follow);
+	}
+}
+
 /* for the stick report */
 void psp_handles_line(char *line, int size)
 {
@@ -975,6 +1107,7 @@ SceUID __wrap_sceIoOpen(const char *file, int flags, SceMode mode)
 	{
 		fd_kind[fd] = (unsigned char)kind_of_path(file);
 		fd_pos[fd] = 0;
+		align_big_end[fd] = 0;
 	}
 	else
 		open_failed(file, 'f', fd);
@@ -1029,6 +1162,7 @@ int __wrap_sceIoRead(SceUID fd, void *data, SceSize size)
 	psp_trace_line("read %s %d into %08x, %u bytes", name_of(fd), (int)fd, (unsigned)data, (unsigned)size);
 	int kind = kind_of_fd(fd);
 
+	align_note(fd, kind, data, (unsigned int)size);
 	stick_take_op(kind, "read", path_of_fd(fd));
 	result = __real_sceIoRead(io_real(fd), data, size);
 	stick_give();
@@ -1054,6 +1188,7 @@ int __wrap_sceIoReadAsync(SceUID fd, void *data, SceSize size)
 	psp_trace_line("read async %s %d into %08x, %u bytes", name_of(fd), (int)fd, (unsigned)data, (unsigned)size);
 	int kind = kind_of_fd(fd);
 
+	align_note(fd, kind, data, (unsigned int)size);
 	stick_take_op(kind, "read async", path_of_fd(fd));
 	result = __real_sceIoReadAsync(io_real(fd), data, size);
 	stick_give();
