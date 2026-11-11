@@ -176,10 +176,13 @@ static unsigned int *ram_texture;
 /* measured at the start, the bus to itself: a pixel textured from each place, and a block's two sprites when they draw nothing */
 static float ram_us_a_pixel, vram_us_a_pixel, block_overhead_us;
 static int ge_ready, ge_fake;
-/* the span in flight: when its list started, what one of its blocks spends off main RAM alone, and what the last stop found */
+/* a duty's block, tuned on its first use: the two sprites' shapes, and what a block takes alone, in all and off main RAM */
+static struct ge_shape { int tuned, ram_lines, ram_width, vram_lines, vram_width; float block_us, other_us; } ge_shapes[101];
+/* the span in flight: when its list started, its duty, and what the last stop found */
 static unsigned int ge_started;
-static float ge_block_other_us;
-static double ge_met = -1;
+static int ge_duty;
+static double ge_span_us, ge_other_us;
+static int ge_known;
 /* a state word no sprite reads (the specular power: lighting is off) carries each block's number, so a stop can ask how far the list got */
 #define GE_MARK 0x5b
 
@@ -292,32 +295,71 @@ static void ge_init(void)
 		plat_out("GE: its sprites take no time here (an emulator?): the GE runs are left out");
 }
 
+/* A sprite's cost is not its pixels times a rate: small sprites cost less a
+pixel than the big ones the rates were taken from (the first PSP run with
+200 us blocks finished them in ~120). So a duty's block is tuned by timing
+it: the whole block, and the block with its main-RAM sprite shrunk to one
+pixel, whose difference is the time on main RAM; the two sprites are resized
+until that is the duty asked for. */
+static void ge_tune(int duty)
+{
+	struct ge_shape *g = &ge_shapes[duty];
+	float target = block_overhead_us * 4 > GE_BLOCK_US ? block_overhead_us * 4 : GE_BLOCK_US;
+	float ram_target = target * (float)duty / 100.0f, other_target = target - ram_target;
+	float ram_pixels = ram_target / ram_us_a_pixel;
+	float vram_pixels = other_target > block_overhead_us ? (other_target - block_overhead_us) / vram_us_a_pixel : 0;
+	int round;
+
+	g->tuned = 1;
+	for (round = 0; round < 5; round++)
+	{
+		float whole, other, ram;
+
+		ge_shape(ram_pixels, &g->ram_lines, &g->ram_width);
+		g->vram_lines = g->vram_width = 0;
+		if (duty < 100 && vram_pixels >= 1)
+			ge_shape(vram_pixels, &g->vram_lines, &g->vram_width);
+		if (ge_fake)
+		{
+			g->other_us = block_overhead_us + g->vram_lines * g->vram_width * vram_us_a_pixel;
+			g->block_us = g->other_us + g->ram_lines * g->ram_width * ram_us_a_pixel;
+			break;
+		}
+		whole = (float)ge_time(128, g->ram_lines, g->ram_width, g->vram_lines, g->vram_width) / 128.0f;
+		other = (float)ge_time(128, 1, 1, g->vram_lines, g->vram_width) / 128.0f;
+		ram = whole - other;
+		g->block_us = whole;
+		g->other_us = other;
+		if (whole <= 0 || ram <= 0)
+			break;
+		if (100.0f * ram / whole > (float)duty - 2 && 100.0f * ram / whole < (float)duty + 2 && whole > target * 0.7f && whole < target * 1.4f)
+			break;
+		ram_pixels *= ram_target / ram;
+		if (duty < 100)
+			vram_pixels = other > block_overhead_us + 1 ? vram_pixels * (other_target - block_overhead_us) / (other - block_overhead_us)
+			                                              : vram_pixels * 2 + 64;
+	}
+	plat_out("GE %d%%: blocks of %d x %d pixels from main RAM and %d x %d from VRAM; timed alone %.0f us a block, %.0f of it off main RAM: %.1f%% on main RAM (%d rounds of tuning); at most %.0f ms a list",
+		duty, g->ram_width, g->ram_lines, g->vram_width, g->vram_lines, (double)g->block_us, (double)g->other_us,
+		g->block_us > 0 ? (double)(100.0f * (g->block_us - g->other_us) / g->block_us) : 0.0, round < 5 ? round + 1 : 5,
+		(double)(GE_BLOCKS_MOST * g->block_us / 1000.0f));
+}
+
 void plat_ge_start(int duty, unsigned int span_us)
 {
-	/* a block's time: its overhead, the share on main RAM, the rest on VRAM. Where the overhead alone is a large part, the block is longer */
-	float block = block_overhead_us * 4 > GE_BLOCK_US ? block_overhead_us * 4 : GE_BLOCK_US;
-	float ram_us = block * (float)duty / 100.0f, vram_us = block - block_overhead_us - ram_us, block_us;
-	int ram_lines, ram_width, vram_lines = 0, vram_width = 0, first = 0;
+	struct ge_shape *g;
 	unsigned int blocks, k;
-	static int told[101];
+	int first = 0;
 
 	if (!ge_ready || duty < 1 || duty > 100)
 		return;
-	ge_shape(ram_us / ram_us_a_pixel, &ram_lines, &ram_width);
-	if (duty < 100 && vram_us > 0)
-		ge_shape(vram_us / vram_us_a_pixel, &vram_lines, &vram_width);
-	ge_block_other_us = block_overhead_us + vram_lines * vram_width * vram_us_a_pixel;
-	block_us = ge_block_other_us + ram_lines * ram_width * ram_us_a_pixel;
-	blocks = (unsigned int)((float)span_us / block_us) + 3;
+	g = &ge_shapes[duty];
+	if (!g->tuned)
+		ge_tune(duty);
+	blocks = g->block_us > 0 ? (unsigned int)((float)span_us / g->block_us) + 3 : GE_BLOCKS_MOST;
 	if (blocks > GE_BLOCKS_MOST)
 		blocks = GE_BLOCKS_MOST;
-	if (!told[duty])
-	{
-		told[duty] = 1;
-		plat_out("GE %d%%: blocks of %d x %d pixels from main RAM and %d x %d from VRAM, %.0f us a block, %.1f%% of it on main RAM; at most %.0f ms a list",
-			duty, ram_width, ram_lines, vram_width, vram_lines, (double)block_us,
-			(double)(100.0f * ram_lines * ram_width * ram_us_a_pixel / block_us), (double)(GE_BLOCKS_MOST * block_us / 1000.0f));
-	}
+	ge_duty = duty;
 	ge_started = plat_now();
 	sceGuStart(GU_DIRECT, ge_list);
 	for (k = 0; k < blocks; k++)
@@ -326,7 +368,7 @@ void plat_ge_start(int duty, unsigned int span_us)
 		ge_stop[k] = (unsigned int *)(0x40000000u | ((unsigned int)ge_list + (unsigned int)sceGuCheckList()));
 		sceGuSendCommandi(0, 0);
 		sceGuSendCommandi(0, 0);
-		ge_block(k, &first, ram_lines, ram_width, vram_lines, vram_width);
+		ge_block(k, &first, g->ram_lines, g->ram_width, g->vram_lines, g->vram_width);
 	}
 	ge_blocks = blocks;
 	sceGuFinish();
@@ -341,13 +383,16 @@ int plat_ge_stop(void)
 		return 1;
 	busy = sceGeDrawSync(1) != PSP_GE_LIST_DONE;
 	{
-		/* The blocks finished in the span, against what they take alone: the
-		VRAM sprite's time and the block's overhead don't stretch under the
-		CPU's misses, the main-RAM sprite's does, so whatever of the span
-		they don't account for was spent on main RAM. */
+		/* The blocks finished in the span, against what such a block spends
+		off main RAM when timed alone: the VRAM sprite and the block's overhead
+		don't stretch under the CPU's misses, the main-RAM sprite does, so
+		whatever of the span they don't account for was spent on main RAM. The
+		harness sums both over a mode's passes. */
 		unsigned int span = plat_now() - ge_started, done = sceGeGetCmd(GE_MARK) & 0xffffffu;
 
-		ge_met = busy && done >= 4 && span ? 100.0 * (1.0 - (double)done * ge_block_other_us / (double)span) : -1;
+		ge_known = busy && span;
+		ge_span_us = span;
+		ge_other_us = (double)done * ge_shapes[ge_duty].other_us;
 	}
 	for (k = 0; k < ge_blocks; k++)
 	{
@@ -358,7 +403,12 @@ int plat_ge_stop(void)
 	return busy;
 }
 
-double plat_ge_met(void) { return ge_ready ? ge_met : -1; }
+int plat_ge_spent(double *span_us, double *other_us)
+{
+	*span_us = ge_span_us;
+	*other_us = ge_other_us;
+	return ge_ready && ge_known;
+}
 
 /* ---------- the CPU's counters ---------- */
 

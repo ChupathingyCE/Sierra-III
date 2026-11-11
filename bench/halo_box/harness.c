@@ -53,8 +53,7 @@ struct figures
 	double whole_us[DUTIES_MOST];
 	unsigned int whole_entities[DUTIES_MOST];
 	unsigned int short_spans[MODES][DUTIES_MOST]; /* passes the GE's list ended before */
-	double met[MODES][DUTIES_MOST];               /* the duty the GE met, summed over the passes that reported one */
-	unsigned int met_passes[MODES][DUTIES_MOST];
+	double ge_span[MODES][DUTIES_MOST], ge_other[MODES][DUTIES_MOST]; /* the GE's spans, and their part off main RAM, summed */
 	double counters[MODES][COUNTERS]; /* summed over the counted pass's calls */
 	unsigned int counted[MODES];      /* entities behind them */
 	unsigned char *kind;       /* an entity's kind, in the order sampled */
@@ -286,10 +285,14 @@ static void time_tick(struct state *st, const struct box_adapter *box, struct fi
 				if (duty)
 				{
 					covered = plat_ge_stop();
-					if (covered && plat_ge_met() >= 0)
 					{
-						f->met[mode][d] += plat_ge_met();
-						f->met_passes[mode][d]++;
+						double span_us, other_us;
+
+						if (covered && plat_ge_spent(&span_us, &other_us))
+						{
+							f->ge_span[mode][d] += span_us;
+							f->ge_other[mode][d] += other_us;
+						}
 					}
 				}
 				else
@@ -528,8 +531,8 @@ static void report(struct state *st)
 
 			if (box->budget_ms_a_tick > 0)
 				snprintf(budget, sizeof(budget), "  x%.2f", tick_ms / box->budget_ms_a_tick);
-			if (f->met_passes[mode][d])
-				snprintf(met, sizeof(met), "(%3.0f)", f->met[mode][d] / f->met_passes[mode][d]);
+			if (f->ge_span[mode][d] > 0)
+				snprintf(met, sizeof(met), "(%3.0f)", 100.0 * (1.0 - f->ge_other[mode][d] / f->ge_span[mode][d]));
 			plat_out("%-8s %3d %s  %22.2f  (%8.2f, %7.2f)  %6.1f %6.1f %6.0f | %13.3f%s | %5u  %u%s", mode_names[mode], o->duties[d], met, net,
 				raw.mean / share, harness.mean / share, (raw.median - harness.median) / share, (raw.high - harness.median) / share,
 				raw.worst / share, tick_ms, budget, raw.count, f->short_spans[mode][d],

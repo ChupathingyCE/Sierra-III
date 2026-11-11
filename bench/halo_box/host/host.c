@@ -18,7 +18,7 @@ void plat_empty(void) {}
 void plat_crowd(void) {}
 void plat_ge_start(int duty, unsigned int span_us) { (void)duty; (void)span_us; }
 int plat_ge_stop(void) { return 1; }
-double plat_ge_met(void) { return 61.0; }
+int plat_ge_spent(double *span_us, double *other_us) { *span_us = 100; *other_us = 39; return 1; }
 /* made-up counters, so the report's arithmetic runs: 100 cycles, 1 data miss and 40 stalled cycles a read */
 void plat_counters(unsigned int out[COUNTERS])
 {
