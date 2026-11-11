@@ -49330,6 +49330,26 @@ static void prioritize_sounds(
 ]
 
 
+# The 0.9.1 test build's energy-before-glass part links (models.c,
+# model_geometry_fix_transparent_part_links) read each candidate model's
+# vertex and index buffers through the desktop's Direct3D locks to see
+# whether the glass shell encloses the energy. On the PSP those buffers are
+# the bake's, not Xbox Direct3D buffers, and the read faulted at the first
+# map's start (the lab's sierra-batch 43072517988 and 43073928447). The
+# PSP's parts keep their draw order as on v0.7.5d; bringing the links to the
+# PSP, from the bake's own vertices, is a restoration to price with pictures
+# (docs/chupa_rebase.md)
+FIXES_CHUPA090["source/render/render.c#partlinks"] = [
+("""	/* port: preserve retail's energy-then-two-sided-glass compositing. */
+	models_fix_transparent_part_links();
+""",
+ """#ifndef HALO_PSP
+	/* port: preserve retail's energy-then-two-sided-glass compositing. */
+	models_fix_transparent_part_links();
+#endif
+"""),
+]
+
 # ---------- CHUPA090: what ChupathingyCE v0.9.0d added that the PSP leaves out
 # (docs/chupa_rebase.md, "v0.9.0d"). The structure's culling
 # (port/linux/game/structure_culling.c) sorts each BSP's surfaces into buckets
