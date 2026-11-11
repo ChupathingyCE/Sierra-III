@@ -314,6 +314,7 @@ static void me_book_merge(void)
 	me_book.mark_count = 0;
 }
 static unsigned char staging[STAGING_BYTES] __attribute__((aligned(64)));
+static int stick_whole = -1; /* "stickwhole": asked at the first read */
 
 static int alignment(unsigned int size)
 {
@@ -2433,7 +2434,7 @@ extern volatile int psp_ge_show_busy; /* psp_ge.c */
 static int load_into(int index, int only)
 {
 	struct pack_entry const *entry = &entries[index];
-	unsigned int at = 0, done = 0, read_start, searches_before, chain_began;
+	unsigned int at = 0, done = 0, head, read_start, searches_before, chain_began;
 	int which = 0;
 
 	/* build 33: a texture drawn in the last two seconds isn't evicted while
@@ -2484,31 +2485,69 @@ static int load_into(int index, int only)
 		return 0;
 	}
 	read_start = sceKernelGetSystemTimeLow();
-	if (sceIoLseek32(pack, entry->offset, PSP_SEEK_SET) != (int)entry->offset)
+	/* "stickwhole": the read rounded out to whole sectors. The pack aligns its
+	entries to 16 bytes, so a read starts and ends inside a sector: the
+	stick's driver makes one command of the head, one of the tail, and
+	bounces the first and last sectors of the middle too, because they land
+	16- but not 64-byte aligned in the buffer. Up to five commands, each with
+	the stick's fixed cost, where a read of whole sectors into the 64-aligned
+	staging buffer is one. The entry's bytes then start at staging + head,
+	still 16-aligned, which keeps sceDmacMemcpy at its 16-byte transfers (it
+	sizes them by what the two addresses' low four bits share) */
+	if (stick_whole < 0)
+	{
+		stick_whole = psp_keep("stickwhole") != 0;
+		if (stick_whole)
+			platform_log("textures: pack reads rounded out to whole sectors (stickwhole)");
+	}
+	head = stick_whole ? entry->offset & 511 : 0;
+	if (sceIoLseek32(pack, entry->offset - head, PSP_SEEK_SET) != (int)(entry->offset - head))
 		return 0;
 	while (done < entry->size)
 	{
-		unsigned int part = entry->size - done > STAGING_BYTES ? STAGING_BYTES : entry->size - done;
+		unsigned int left = entry->size - done;
+		unsigned int part = left > STAGING_BYTES - head ? STAGING_BYTES - head : left;
+		/* the tail's sector whole as well; the file may end inside it */
+		unsigned int ask = stick_whole ? (head + part + 511) & ~511u : part;
 
-		if (sceIoRead(pack, staging, part) != (int)part)
+		if (sceIoRead(pack, staging, ask) < (int)(head + part))
 		{
 			platform_log("textures: reading texture %d failed", index);
 			return 0;
 		}
+#ifdef PSP_RECON
+		/* "stickwholecheck": the same bytes read again as the entry's own
+		read would, and compared */
+		if (stick_whole && psp_keep("stickwholecheck"))
+		{
+			static unsigned char again[STAGING_BYTES] __attribute__((aligned(64)));
+			static unsigned int compared, differed;
+			unsigned int next = entry->offset - (entry->offset & 511) + (done ? (entry->offset & 511) + done : 0) + ask;
+
+			if (sceIoLseek32(pack, entry->offset + done, PSP_SEEK_SET) != (int)(entry->offset + done) ||
+				sceIoRead(pack, again, part) != (int)part || memcmp(again, staging + head, part))
+				differed++;
+			compared++;
+			if (differed || !(compared & (compared - 1)) || !(compared % 200))
+				platform_log("stickwholecheck: %u parts read both ways, %u differed", compared, differed);
+			sceIoLseek32(pack, next, PSP_SEEK_SET);
+		}
+#endif
 		/* build 46: by DMA (2.6 to 3 times memcpy's speed into VRAM:
 		halo_bench v9), the staging buffer written back from the CPU's cache
 		first; the cache never holds the caches' lines (written only through
 		the uncached view, and written back and invalidated when acquired), so
 		nothing stale is written over the copy later. memcpy through the
 		uncached view if the DMA call fails */
-		sceKernelDcacheWritebackRange(staging, part);
-		if (dma_failures || sceDmacMemcpy((void *)(at + done), staging, part) < 0)
+		sceKernelDcacheWritebackRange(staging, head + part);
+		if (dma_failures || sceDmacMemcpy((void *)(at + done), staging + head, part) < 0)
 		{
 			if (!dma_failures++)
 				platform_log("textures: sceDmacMemcpy failed; copying with the CPU");
-			memcpy((void *)((at + done) | arenas[which].write_offset), staging, part);
+			memcpy((void *)((at + done) | arenas[which].write_offset), staging + head, part);
 		}
 		done += part;
+		head = 0;
 	}
 		/* build 35: the Memory Stick's time, measured (about 1.2 MB/s expected) */
 	read_us += sceKernelGetSystemTimeLow() - read_start;
