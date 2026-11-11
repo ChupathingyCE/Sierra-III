@@ -1012,6 +1012,9 @@ static void align_note(SceUID fd, int kind, const void *data, unsigned int size)
 
 	if (align_on < 0)
 	{
+		/* asked once keep.txt is read: the first reads are keep.txt's own */
+		if (!psp_keep_loaded())
+			return;
 		align_on = psp_keep("stickalign") != 0;
 		if (align_on)
 		{
