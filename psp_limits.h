@@ -36,8 +36,8 @@ left out as a console leaves them: the Light effects (plasma_*.c, ~1.5 MB of
 .bss), the object functions, particle streams and camera shake drawn
 between ticks (render_interpolation.c, player_effects.c), the audio probe,
 the Controls screen, Delta Profile, Discord and voice, and the network
-tests' bots with the determinism check (debug.determinism: the lab's statecrc
-is the PSP's). The extras the PSP
+tests' bots with the determinism check (debug.determinism: statecrc is the
+PSP's own). The extras the PSP
 built on v0.7.5d (player names, hi-res text answered by psp_chupa_platform.c,
 tag validation left out by psp_build.py's desktop units) stay as they were */
 #define HALO_CONSOLE_NO_LIGHT_EFFECTS 1

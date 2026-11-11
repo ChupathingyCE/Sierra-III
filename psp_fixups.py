@@ -49485,8 +49485,7 @@ boolean structure_culling_traverse(struct structure_bsp *structure);
 # the Xbox console's 8 a particle, never under 12,288, for Halo PC maps' busy
 # frames. The PSP keeps retail's 4 a particle (4,096 for its 1,024): the
 # buffer and its spare are 96 KB each, not 288, and both fit beside the heap
-# instead of taking 576 KB from it (the lab's sierra-batch 43077748556: 1,608
-# requests failed on b30)
+# instead of taking 576 KB from it (b30 ran out of heap)
 FIXES_CHUPA090["source/rasterizer/rasterizer.h#unlit"] = [
 ("""	RASTERIZER_MAXIMUM_DYNAMIC_UNLIT_VERTICES = 8 * HALO_PORT_MAXIMUM_PARTICLES > 12288 ?
 		8 * HALO_PORT_MAXIMUM_PARTICLES :
