@@ -2,7 +2,7 @@
 
 Prices one box of the rebuild alone, before it is cut into the engine: the box's own code over a **capture** (the box's inputs and the old code's outputs for sampled ticks of a pad bench), in three modes, alone and beside the GE, with every output checked against the capture's. What it can't give is the in-frame price: alone, a box has both caches and the bus to itself. The modes bracket the frame from both sides; the pair of builds on a pad bench still decides.
 
-State: version 1, built and proven on a desktop (`host/test.sh`) and compiled for the PSP; not yet run in the emulator or on a PSP. Main-CPU boxes only.
+State: version 1. Proven on a desktop (`host/test.sh`) and in the emulator [E]: the null box; the self-test box, whose capture it writes, reads back and checks (1,280 outputs, 0 outside); the spoiled capture caught and named; the strict interpreter, no bad access; and the GE's lists built, stopped and waited for without a hang (the emulator's GE takes no time, so every pass there is counted "GE short", as it should be). **Not yet run on a PSP: no figure of time exists yet.** Main-CPU boxes only.
 
 ## Running it
 
@@ -15,7 +15,7 @@ One program holds every adapter in `adapters/` and every box unit of the port (`
 | `ticks<N>` | stop after N ticks |
 | `spoil` | `boxselftest` only: one output of its capture is written wrong, and the run must name it |
 
-Captures are every `ms0:/halo/capture/*.cap` whose header names the box, in name order. The report is `ms0:/halo/log/box_<name>.txt`; each step is named on the stick before it starts, so after a hang the last line says where.
+Captures are every `ms0:/halo/capture/*.cap` (in either case: the emulator's stick gives short names back in capitals) whose header names the box, in name order. The report is `ms0:/halo/log/box_<name>.txt`; each step is named on the stick before it starts, so after a hang the last line says where.
 
 - **The null box** (an entity that does nothing) needs no capture: 256 ticks of 91 entities. Its figure in each mode is the harness's own cost there. It runs beside every other box, and is printed and subtracted.
 - **The self-test box** writes its own capture (numbers only) and reads it back: the proof of the reader, the comparison and the stick's file calls. With `spoil`, the run must end "not clean" and name tick 210, entity 1013, element 3.
