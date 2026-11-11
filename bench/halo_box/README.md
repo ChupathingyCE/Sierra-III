@@ -63,6 +63,12 @@ The same EBOOT under the emulator's cache models gives exact counts an entity, w
 
 The self-test box, as the first worked example [E]: 326 instructions and 102 data accesses an entity; data misses 2.3 warm, 12.1 emptied and crowded; instruction misses 0 warm, 5.0 crowded; in the crowded mode every data miss wrote a dirty line back, as that mode intends. Against the PSP-3000's times for the same box [M]: the 15 misses the emptied mode adds cost 2.74 µs, 61 cycles a miss; the crowded mode's cost 3.93 µs, which is ~100 cycles for each data miss behind a dirty line. Both agree with the port's measured figures for a miss, which is the harness's modes doing what they say.
 
+## The capture's writer
+
+`psp/src/psp_capture.c` (calls in `psp_capture.h`) writes CAP1 files from hooks at the old code's entry and exit for a box: `psp_capture_open(plan)` once; in a tick `psp_capture_tick(tick)` (1 if the tick is sampled), then for each entity `psp_capture_static(key, bytes, length)` wherever a static is met (kept once a file), `psp_capture_begin(id, kind, flags)`, `psp_capture_input(...)` in pieces at the entry, `psp_capture_output(...)` in pieces at the exit, `psp_capture_end()`; `psp_capture_tick_end()`; `psp_capture_close()` at the run's end. Entities may begin inside one another (an attached object posed inside its parent's call), up to eight deep. Files are `ms0:/halo/capture/<box>_NNN.cap`, each complete in itself, closed before a size cap (32 MB unless the plan says otherwise); a tick that outgrows its room is dropped whole and counted. Every call does nothing with no capture open, in a tick that isn't sampled, and on the Media Engine. It is not built into the port by this branch: the capture switch and the hooks are the build's side.
+
+Proven on a desktop (`host/test.sh`: the self-test box's records pushed through the calls with entities nested two deep, a 48 KB file cap making ten files, a tick too large for its room; the harness reads the files back and every output checks) and compiled for the PSP. Not yet run in the port.
+
 ## Not in version 1
 
 - **Boxes that run on the Media Engine.**
