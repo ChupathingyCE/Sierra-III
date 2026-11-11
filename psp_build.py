@@ -723,6 +723,8 @@ def compile_one(item):
                ["-DPSP_MEVISLAND=1"] if MEVISLAND else []) + (
                ["-DPSP_METRICS=1"] if METRICS else []) + (
                ["-DPSP_MUSIC=1"] if MUSIC else []) + (
+               # the wrappers the link's --wrap=memcpy,--wrap=memset names
+               ["-DPSP_CLAIMFILL=1"] if CLAIMFILL and src.endswith("psp_libc.c") else []) + (
                # the ME's entry sets $gp for the engine code it runs
                ["-DPSP_SMALLDATA=1"] if SMALLDATA and src.endswith("psp_me.c") else []) + (
                # the switches their #if blocks test (psp_ge.c's debug tools)
@@ -1400,6 +1402,12 @@ def main():
         if odd:
             print("\n".join(l for l in r.stderr.splitlines() if any(n in l for n in odd))[-4000:])
             sys.exit("not linking: undefined names that aren't C: " + ", ".join(odd[:20]))
+        # a --wrap's own names are never stubbed: an empty __wrap_memcpy is
+        # every copy in the program doing nothing, and the build still links
+        wrapped = sorted(n for n in missing if n.startswith(("__wrap_", "__real_")))
+        if wrapped:
+            sys.exit("not linking: a --wrap names %s, which no unit defines (is the unit that holds it given the "
+                     "switch's define?)" % ", ".join(wrapped))
         stubs |= missing
     if SMALLDATA:
         smalldata_report(r)
