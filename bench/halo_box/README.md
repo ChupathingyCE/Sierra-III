@@ -2,7 +2,7 @@
 
 Prices one box of the rebuild alone, before it is cut into the engine: the box's own code over a **capture** (the box's inputs and the old code's outputs for sampled ticks of a pad bench), in three modes, alone and beside the GE, with every output checked against the capture's. What it can't give is the in-frame price: alone, a box has both caches and the bus to itself. The modes bracket the frame from both sides; the pair of builds on a pad bench still decides.
 
-State: version 1. Proven on a desktop (`host/test.sh`) and in the emulator [E]: the null box; the self-test box, whose capture it writes, reads back and checks (1,280 outputs, 0 outside); the spoiled capture caught and named; the strict interpreter, no bad access; and the GE's lists built, stopped and waited for without a hang (the emulator's GE takes no time, so every pass there is counted "GE short", as it should be). **Not yet run on a PSP: no figure of time exists yet.** Main-CPU boxes only.
+State: version 1. Proven on a desktop (`host/test.sh`) and in the emulator [E]: the null box; the self-test box, whose capture it writes, reads back and checks (1,280 outputs, 0 outside); the spoiled capture caught and named; the strict interpreter, no bad access; and the GE's lists built, stopped and waited for without a hang (the emulator's GE takes no time, so every pass there is counted "GE short", as it should be). The counters' module loads and its system call answers in the emulator, where the registers don't count (the bench notices and leaves the pass out); **the counted pass has only run with made-up counters, on a desktop.** **Not yet run on a PSP: no figure of time exists yet.** Main-CPU boxes only.
 
 ## Running it
 
@@ -13,6 +13,7 @@ One program holds every adapter in `adapters/` and every box unit of the port (`
 | `box<name>` | the box to run (`boxnull`, `boxselftest`, ...); the null box if none |
 | `ge<N>` | also run every mode with the GE reading main RAM N% of the time (`ge35`); up to three |
 | `ticks<N>` | stop after N ticks |
+| `counters` | one more pass in each mode, alone, with the CPU's own counters read either side of each entity: cycles, cycles stalled on memory and in the pipeline, instruction and data misses, write-backs, cached loads and stores, FPU and VFPU instructions, net of the null box's. The emptied mode's misses are the entity's **footprint in lines**. Loads the bench's kernel module (`kernel/main.c`: one system call, nothing else), which the EBOOT carries and writes to `ms0:/halo/halo_boxk.prx` |
 | `spoil` | `boxselftest` only: one output of its capture is written wrong, and the run must name it |
 
 Captures are every `ms0:/halo/capture/*.cap` (in either case: the emulator's stick gives short names back in capitals) whose header names the box, in name order. The report is `ms0:/halo/log/box_<name>.txt`; each step is named on the stick before it starts, so after a hang the last line says where.
@@ -57,7 +58,6 @@ The clock is `sceKernelGetSystemTimeLow`: 1 µs steps, 0.57 µs a read [M]. A si
 
 ## Not in version 1
 
-- **The hardware's counters an entity** (cycles, misses, stalled cycles, from `psp/profile`): needs the profiler module loaded beside the bench.
 - **Boxes that run on the Media Engine.**
 - **The emulator's exact misses an entity** (the cache model beside the same EBOOT).
 

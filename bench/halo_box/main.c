@@ -311,7 +311,8 @@ static int counters_load(void)
 {
 	static const char path[] = "ms0:/halo/halo_boxk.prx";
 	SceUID file = sceIoOpen(path, PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777), module;
-	unsigned int probe[COUNTERS];
+	unsigned int probe[COUNTERS], again[COUNTERS];
+	volatile unsigned int spin;
 	int written;
 
 	if (file < 0)
@@ -326,8 +327,11 @@ static int counters_load(void)
 		return plat_out("counters: the kernel module didn't load (%08x): the counted pass is left out", (unsigned int)module), 0;
 	plat_step("the counters' first read");
 	halo_boxk_counters(probe);
-	plat_out("counters: on; %u cycles since the module started", probe[C_CYCLES]);
-	if (!probe[C_CYCLES])
+	for (spin = 0; spin < 10000; spin++)
+		;
+	halo_boxk_counters(again);
+	plat_out("counters: on; %u cycles over a spin of 10,000 turns", again[C_CYCLES] - probe[C_CYCLES]);
+	if (again[C_CYCLES] == probe[C_CYCLES])
 		return plat_out("counters: they don't count here (an emulator?): the counted pass is left out"), 0;
 	return 1;
 }
