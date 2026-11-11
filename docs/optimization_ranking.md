@@ -145,7 +145,7 @@ Mostly a day or less each. Savings are at the b30 beach on the PSP unless anothe
 | E17 | **VFPU trig** (`vsin` etc.) for the remaining tick trig (≈ exact) | 0.1–0.2 ms a tick [U] | proposed | Error < 4.8e-7; the last ~3 mantissa bits differ |
 | E18 | **Frame pointers omitted** (`-fno-omit-frame-pointer` is on the game's units) | unknown | proposed | The crash handler dumps from `sp` and doesn't walk `$fp` [D] |
 | E19 | **Keep-word asks cached in statics** (per model LOD, shadow, decal cluster, HUD draw, texture, particle) | small | proposed | Each ask is still a hash + strcmp + seqlock read |
-| E20 | **VFPU context only on threads that use the VFPU** | unknown: 0 to ~3% of the CPU [U] | proposed | The audio thread wakes up to 10,000 times a second during ME jobs [D], and `psp_vfpu.c`'s wrapper gives every thread the VFPU. A halo_bench test of thread switches with and without the flag settles whether the kernel saves the registers each time |
+| E20 | **VFPU context only on threads that use the VFPU** | ~0.5–1% of the CPU while a frame is out with the ME [U on D and M]; was "unknown: 0 to ~3%" | built for the GE's forwarding thread, off by default (keep word `novfpufwd`, 2026-11-11); its PSP pair is the master's | `psp_vfpu.c`'s wrapper gives every thread the VFPU. **The kernel's side is read (2026-11-11, `hardware_facts.md`, Firmware):** the VFPU's 576-byte context moves on every switch to a thread that carries the attribute and isn't the unit's owner, so each wake of a flagged helper costs two saves and two loads; the FPU's context is lazy. The forwarder wakes 600–720 times a second at 25–32 µs a wake [M, `design_mepoll.md`]. A thread goes without the attribute only when `tools/mewalk.py` finds no VFPU instruction in its reach (a VFPU instruction on an unflagged thread faults, on hardware only). The other helper threads (audio, callbacks, heartbeat) follow by the same check if the pair pays |
 | E21 | **Maths flags for the plain-C `psp/src` units** (`-fno-math-errno` etc.) | small | proposed | Drops the errno branch after `sqrt.s` in the GE code's hot loops |
 | E22 | **Object render-state cache cap** (256, full on b30, c10, d20) | unknown | measure first | Objects past the cap may rebuild their lighting every frame [U] |
 | E23 | **HUD bitmaps resident in VRAM** | unknown | proposed | No blocking texture load inside a frame |
@@ -487,6 +487,7 @@ These words turn a shipped speed lever **off** again, for A/Bs and diagnosis:
 - `awake`, `vehiclesawake`, `corpsesawake`, `slowchecksum`, `markersearch`, `poolverify`, `verifytags`;
 - `fulllod`, `flaresexact`, `fullparticles`, `objectpointlights`, `bonesdirect`, `decalall`, `decalnocull`, `detailallfar`;
 - `noboxtest`, `listuncached`, `stalleach`, `nolevelreserve`, `nosizefloor`, `vramlargest`;
+- `novfpufwd` (E20): the GE's forwarding thread made without the VFPU attribute;
 - `transparent`, `textures`, `interpolation`, `novfpu`, `noscratch`, `nocull`;
 - `readerslow`, `nomeaudio`.
 - build 118: `verifyvectors` (X10, the vector checks), `tcutfull` (T1, the see-through cut's sphere test), `restlesscheck` (the restless back-off: every sleep candidate checked every tick).

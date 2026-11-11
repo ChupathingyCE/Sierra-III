@@ -40,10 +40,27 @@ pthreads, which doesn't ask for it) */
 SceUID __real_sceKernelCreateThread(const char *name, SceKernelThreadEntry entry, int priority, int stack,
 	SceUInt attributes, SceKernelThreadOptParam *options);
 
+/* "novfpufwd" (keep.txt; lever E20): the GE's forwarding thread made without
+the attribute. The kernel moves the VFPU's 576-byte context on every switch to
+a thread that carries the attribute and isn't the unit's owner, so a helper
+that preempts the game thread and never runs a VFPU instruction costs two
+saves and two loads a wake for nothing. A thread without the attribute that
+runs one faults, on hardware only: a thread goes without it only when
+tools/mewalk.py finds no VFPU instruction in its reach */
+static SceUInt vfpu_attribute(const char *name)
+{
+	if (name && !strcmp(name, "ge forward") && psp_keep("novfpufwd"))
+	{
+		platform_log("VFPU: the thread '%s' is made without the VFPU attribute (novfpufwd)", name);
+		return 0;
+	}
+	return PSP_THREAD_ATTR_VFPU;
+}
+
 SceUID __wrap_sceKernelCreateThread(const char *name, SceKernelThreadEntry entry, int priority, int stack,
 	SceUInt attributes, SceKernelThreadOptParam *options)
 {
-	return __real_sceKernelCreateThread(name, entry, priority, stack, attributes | PSP_THREAD_ATTR_VFPU, options);
+	return __real_sceKernelCreateThread(name, entry, priority, stack, attributes | vfpu_attribute(name), options);
 }
 
 /* the game's matrix4x3_multiply (matrix_math.c), the FPU's way: each row of b
