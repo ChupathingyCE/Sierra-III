@@ -8,6 +8,9 @@ Keep words (ms0:/halo/keep.txt):
   ge<N>       also run every mode with the GE reading main RAM N% of the
               time (ge35); up to three; without one, alone only
   ticks<N>    stop after N ticks of the capture
+  counters    one more pass in each mode with the CPU's own counters read
+              either side of each entity (cycles, stalled cycles, misses):
+              loads the bench's kernel module, halo_boxk
   spoil       boxselftest only: one output of its capture is written wrong,
               and the run must say which (the comparison's own proof)
 
@@ -25,6 +28,7 @@ caches between entities, and the GE as a bus contender. harness.c is the rest.
 #include <pspgu.h>
 #include <psppower.h>
 #include <psputils.h>
+#include <pspsdk.h>
 #include <pspiofilemgr.h>
 #include <malloc.h>
 #include <stdarg.h>
@@ -297,6 +301,39 @@ int plat_ge_stop(void)
 	return busy;
 }
 
+/* ---------- the CPU's counters ---------- */
+
+extern unsigned char embedded_boxk[];
+extern unsigned int embedded_boxk_len;
+int halo_boxk_counters(unsigned int *out); /* the module's system call */
+
+static int counters_load(void)
+{
+	static const char path[] = "ms0:/halo/halo_boxk.prx";
+	SceUID file = sceIoOpen(path, PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777), module;
+	unsigned int probe[COUNTERS];
+	int written;
+
+	if (file < 0)
+		return plat_out("counters: %s can't be written (%08x)", path, (unsigned int)file), 0;
+	written = sceIoWrite(file, embedded_boxk, embedded_boxk_len);
+	sceIoClose(file);
+	if (written != (int)embedded_boxk_len)
+		return plat_out("counters: %s was cut short", path), 0;
+	plat_step("loading the kernel module (%u bytes)", embedded_boxk_len);
+	module = pspSdkLoadStartModule(path, PSP_MEMORY_PARTITION_KERNEL);
+	if (module < 0)
+		return plat_out("counters: the kernel module didn't load (%08x): the counted pass is left out", (unsigned int)module), 0;
+	plat_step("the counters' first read");
+	halo_boxk_counters(probe);
+	plat_out("counters: on; %u cycles since the module started", probe[C_CYCLES]);
+	if (!probe[C_CYCLES])
+		return plat_out("counters: they don't count here (an emulator?): the counted pass is left out"), 0;
+	return 1;
+}
+
+void plat_counters(unsigned int out[COUNTERS]) { halo_boxk_counters(out); }
+
 /* ---------- keep words and captures ---------- */
 
 static char keep_text[1024];
@@ -354,7 +391,7 @@ static int capture_files(void)
 
 int main(void)
 {
-	struct harness_options options = { 0, { 0 }, 1, 256, 91 };
+	struct harness_options options = { 0, { 0 }, 1, 256, 91, 0 };
 	const struct box_adapter *box = &box_null;
 	char *word, *rest = keep_text;
 	int file_count, k, result, spoil = 0;
@@ -382,6 +419,8 @@ int main(void)
 			options.ticks_most = atoi(word + 5);
 		else if (!strcmp(word, "spoil"))
 			spoil = 1;
+		else if (!strcmp(word, "counters"))
+			options.counted = 1;
 	}
 	sceIoMkdir("ms0:/halo", 0777);
 	sceIoMkdir("ms0:/halo/log", 0777);
@@ -396,6 +435,8 @@ int main(void)
 		if (!ge_ready)
 			options.duty_count = 1;
 	}
+	if (options.counted)
+		options.counted = counters_load();
 	if (box == &box_selftest)
 	{
 		plat_step("writing the self-test box's capture%s", spoil ? ", one output spoiled (tick 210, entity 1013, element 3)" : "");

@@ -10,6 +10,10 @@ For each tick of a capture, and for the box and the null box beside it:
   - emptied: both caches emptied before each entity, a clock read either side;
   - crowded: both caches filled with other work's lines before each entity.
 
+With the counters asked for, each mode has one more pass, alone: the CPU's
+own counters read either side of each entity (cycles, cycles stalled, cache
+misses). Its times aren't used: a read costs about 3 us.
+
 The three timed modes run once alone and once for each GE duty asked for.
 The null box's figure in the same mode is the harness's own cost there, and
 is printed and subtracted.
@@ -42,6 +46,8 @@ struct figures
 	double whole_us[DUTIES_MOST];
 	unsigned int whole_entities[DUTIES_MOST];
 	unsigned int short_spans[MODES][DUTIES_MOST]; /* passes the GE's list ended before */
+	double counters[MODES][COUNTERS]; /* summed over the counted pass's calls */
+	unsigned int counted[MODES];      /* entities behind them */
 	unsigned char *kind;       /* an entity's kind, in the order sampled */
 	unsigned int *call_entities; /* entities behind each timed call (1, or a tick's count) */
 	unsigned int calls_noted, calls_room;
@@ -198,6 +204,25 @@ static unsigned int pass_each(const struct box_adapter *box, const struct box_ti
 	return plat_now() - start;
 }
 
+static void pass_counted(const struct box_adapter *box, const struct box_tick *tick, int mode, struct figures *f)
+{
+	unsigned int i, k, calls = box->batch ? 1 : tick->entities, before[COUNTERS], after[COUNTERS];
+
+	for (i = 0; i < calls; i++)
+	{
+		if (mode == MODE_EMPTIED)
+			plat_empty();
+		else if (mode == MODE_CROWDED)
+			plat_crowd();
+		plat_counters(before);
+		box->run(box->batch ? BOX_ALL : (int)i);
+		plat_counters(after);
+		for (k = 0; k < COUNTERS; k++)
+			f->counters[mode][k] += (double)(unsigned int)(after[k] - before[k]); /* 32 bits, wrapping */
+	}
+	f->counted[mode] += tick->entities;
+}
+
 static unsigned int pass_whole(const struct box_adapter *box, const struct box_tick *tick)
 {
 	unsigned int i, before = plat_now();
@@ -250,7 +275,20 @@ static void time_tick(struct state *st, const struct box_adapter *box, struct fi
 				if (duty)
 					covered = plat_ge_stop();
 				else
+				{
 					alone[mode] = span + whole * 2;
+					if (st->options->counted)
+					{
+						if (mode == MODE_WARM)
+						{
+							/* the pass before it had clock reads between entities: once more to settle */
+							box->tick(tick);
+							pass_whole(box, tick);
+						}
+						box->tick(tick);
+						pass_counted(box, tick, mode, f);
+					}
+				}
 				if (covered || tries == 2)
 				{
 					if (!covered)
@@ -481,6 +519,31 @@ static void report(struct state *st)
 			plat_out("warm, whole ticks (two clock reads a tick), GE %d%%: %.3f ms a tick net, %.2f us an entity (the harness %.2f)",
 				o->duties[d], whole / st->ticks / 1000.0, whole / f->whole_entities[d], n->whole_us[d] / f->whole_entities[d]);
 		}
+	if (o->counted)
+	{
+		plat_out("the CPU's counters an entity, alone, net of the harness's own (its figure in brackets):");
+		plat_out("mode       cycles (us at 333 MHz)  stalled: memory  pipeline  | I misses  D misses  write-backs | cached loads  stores | FPU  VFPU  (harness: cycles, I, D)");
+		for (mode = 0; mode < MODES; mode++)
+			if (f->counted[mode] && n->counted[mode])
+			{
+				double c[COUNTERS], h[COUNTERS];
+
+				for (k = 0; k < COUNTERS; k++)
+				{
+					h[k] = n->counters[mode][k] / n->counted[mode];
+					c[k] = f->counters[mode][k] / f->counted[mode] - h[k];
+				}
+				plat_out("%-8s %9.0f (%7.2f) %15.0f %9.0f  | %8.2f %9.2f %12.2f | %12.1f %7.1f | %4.0f %5.0f  (%.0f, %.2f, %.2f)", mode_names[mode],
+					c[C_CYCLES], c[C_CYCLES] / 333.0, c[C_STALL_MEMORY], c[C_STALL_INTERNAL], c[C_I_MISS], c[C_D_MISS], c[C_D_WRITEBACK],
+					c[C_CACHED_LOAD], c[C_CACHED_STORE], c[C_FPU], c[C_VFPU], h[C_CYCLES], h[C_I_MISS], h[C_D_MISS]);
+				if (mode == MODE_EMPTIED)
+					plat_out("footprint: an entity touches %.1f lines of code and %.1f of data (each missed once from empty caches; a cache holds 256)",
+						c[C_I_MISS], c[C_D_MISS]);
+				if (c[C_I_MISS] + c[C_D_MISS] >= 0.05)
+					plat_out("%-8s %.0f%% of an entity's cycles are waits on memory: %.0f cycles a miss", mode_names[mode],
+						c[C_CYCLES] > 0 ? 100.0 * c[C_STALL_MEMORY] / c[C_CYCLES] : 0, c[C_STALL_MEMORY] / (c[C_I_MISS] + c[C_D_MISS]));
+			}
+	}
 	plat_out("check: %u outputs compared, %u outside the tolerance (%s%s%g absolute, %g relative); largest difference %g absolute, %g relative",
 		st->checked, st->outside, box->compare ? "the box's own comparison; " : "",
 		box->tolerance == BOX_EXACT ? "exact; " : box->tolerance == BOX_ABSOLUTE ? "absolute; " : "relative; ",
