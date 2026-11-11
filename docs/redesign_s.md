@@ -60,6 +60,11 @@ The repeating queries are bipeds' `collision_get_features_in_sphere` calls. **Ce
 
 Built and measured: b30's flight frame -7.8%, tick -14.5% on the PSP-3000 [M]; off by default because the ME's window is full on the beach (the AI job fills 84% of it, recon 16:15). R frees ~29-31 ms of the ME's frame on the flight (`redesign_r.md` §2.4), which is room for both passes. So S3 lands after R's milestone. Recon's MECODE (the AI pass's code in eDRAM, ~1-1.6 ms a pass) makes it cheaper still (B).
 
+**The hand-over, for S3's redesign of it (2026-11-11, bottleneck, from firmware's footprint census and research):**
+- **Its copies are memcpy's misses** [E counts, the lab's dcanat2 43011966093, research/opportunities/footprint.md §5]: `psp_aime_think_actor` 1,252 misses a tick on b30's flight (134 copies of ~386 B) and `psp_pose_ahead_take_work` 604 (43 of ~434 B), 90% of memcpy's misses there (92% on c20); ~0.4-0.8 ms a tick at the PSP's miss price [U]. The redesign's record should be narrower (the fields the ME's think reads) or taken by reference.
+- **The scratchpad can't hold the hottest `$gp` globals while the ME reads them** (SPADG, ~11% of the tick's data misses on b30 [E]): ME-run code reads the same `$gp` area (actor_data, prop_data, globals, the port's flags) and the ME can't see the scratchpad, so SPADG's clean form is the ME's `$gp` on a copy of its own: a choice for this hand-over's design, not a link change.
+- **What the think writes into the live world must go through the hand-over** [D + E, `aime_me.md` rounds 9-11]: AITICKOLD's think on the ME ended conversations straight into the live pool (`ai_conversation_finish` from an actor's `action_converse_end`), where the main CPU's actors still named them: b40 lost conversations and faulted (the lab's s3o23/s3o25_b40). The fix on trial keeps such an end and makes it on the main CPU at the next tick (`aitickoldconvdefer`, bottleneck/s3fix 7bc6472c; the lab's s3o27_b40). The redesign's hand-over should list every pool the think can write (conversations, props, the recent-conversation table, the firing-position sort pointer of B69) and give each a record or a main-CPU step.
+
 ### S4. The far-biped tier (ruling 3)
 
 For bipeds far from the player and out of the fight (AIFAR's test), two forms, chosen by a count and a side-by-side:
