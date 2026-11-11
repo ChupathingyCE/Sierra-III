@@ -133,7 +133,7 @@ Each slice is proven in the emulator for correctness only (§4). A slice slower 
 | 8 | Planar fog, if the GE's fog reads the same | a side-by-side |
 | — | **Switch-over:** every kind R takes drawn by R; the old record and replay kept only for the dynamic kinds | one PSP pair on the heavy stretches; then the old model path goes |
 | 9 | SSPR (for the target) | pictures at each level of detail's distance |
-| 10 | **MEXEC: the ME's hot replay code run from eDRAM** (the lab's `me_unnamed.md`, lever 5), then the hot/cold split with TGME's layout on what's left, then parts in runs by path | play and seeds identical (code placement only); priced as a PSP pair at R's milestone |
+| 10 | **MEXEC: the ME's hot replay code run from eDRAM** (the lab's `me_unnamed.md`, lever 5; design `docs/mexec.md` on master/mexec2), then the hot/cold split with TGME's layout on what's left, then parts in runs by path | play and seeds identical (code placement only); priced as a PSP pair at R's milestone. **First price (2026-11-10, PSP-1000, b30's flight): the ME's GE job −3.8 to −5.6 ms a frame (−9%), exact** (the lab's `mexec_r1_b30_flight`) |
 
 **Why slice 10 (2026-11-10, the master; the lab's findings `me_unnamed_test1_steps`, `_outside`, `me_imiss_spread_r`, `mexec_code_fetch_psp1000`, `_loaded`):**
 - On R's milestone build the ME's code misses are **29-32% of its job on b30's flight** (14-21 ms a frame at ~75 cycles a miss) [M]: spread over every step of the part chain, not only the gaps between the timed steps.
