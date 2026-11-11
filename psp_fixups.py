@@ -44183,6 +44183,86 @@ void actor_combat_update("""),
 """),
 ]
 
+# "stalecensus" (log only, with aitickold): s3o17_b30 showed AITICKOLD's b30
+# runs reaching a state the off runs never did, two or three covenant and
+# seven to nine marines alive together for 1,350 ticks with no burst between
+# them, while the covenant fired at the player three times as often each.
+# This logs every living actor every 300 ticks from 3,600 to 6,300 at the
+# tick's start: its team, action, place, target and what its enemy props
+# hold, so the two sides' stalemates can be read actor by actor
+FIXES_AITICKOLD["source/ai/actors.c#stalecensus"] = [
+("""void actors_update(
+	void)
+{
+	struct actor_iterator iterator;
+	struct actor_datum *actor;
+""", """/* psp_fixups.py (FIXES_AITICKOLD #stalecensus) */
+static int psp_stale_on = -1;
+
+static void psp_stale_census(
+	void)
+{
+	struct actor_iterator iterator;
+	struct actor_datum *actor;
+	long now = game_time_get();
+	int lines = 0;
+
+	if (psp_stale_on < 0)
+		psp_stale_on = psp_keep("stalecensus") != 0;
+	if (!psp_stale_on || now < 3600 || now > 6300 || now % 300)
+		return;
+	actor_iterator_new(&iterator, TRUE);
+	while ((actor = actor_iterator_next(&iterator)) != NULL && lines < 40)
+	{
+		struct prop_iterator props;
+		struct prop_datum *prop;
+		struct prop_datum *target;
+		real_point3d at = { 0.0f, 0.0f, 0.0f };
+		int enemies = 0, acknowledged = 0, seen = 0, sight = 0, allies = 0, target_player = -1;
+
+		if (actor->state.mode <= _actor_mode_braindead || actor->meta.unit_index == NONE)
+			continue;
+		object_get_origin(actor->meta.unit_index, &at);
+		prop_iterator_new(&props, iterator.index);
+		while ((prop = prop_iterator_next(&props)) != NULL)
+		{
+			if (!prop->enemy)
+			{
+				allies++;
+				continue;
+			}
+			enemies++;
+			if (prop->state == _prop_state_acknowledged)
+				acknowledged++;
+			if (prop->last_visible_time != NONE && now - prop->last_visible_time <= 30)
+				seen++;
+			if (prop->line_of_sight)
+				sight++;
+		}
+		target = actor->target.target_prop_index == NONE ? NULL :
+			(struct prop_datum *)datum_try_and_get(prop_data, actor->target.target_prop_index);
+		if (target)
+			target_player = target->unit_index != NONE && player_index_from_unit_index(target->unit_index) != NONE;
+		platform_psp_log("stalecensus: game time %ld | actor %d team %d action %d combat %d | at %.1f %.1f %.1f | target type %d, the player %d, seen %ld ago | enemy props %d (acknowledged %d, seen in 30 ticks %d, line of sight %d), allies %d",
+			now, (int)DATUM_INDEX_TO_ABSOLUTE_INDEX(iterator.index), (int)actor->meta.team_index,
+			(int)actor->state.action, (int)actor->state.combat_status, at.x, at.y, at.z,
+			(int)actor->target.target_type, target_player,
+			actor->target.target_last_visible_time == NONE ? -1L : (long)(now - actor->target.target_last_visible_time),
+			enemies, acknowledged, seen, sight, allies);
+		lines++;
+	}
+}
+
+void actors_update(
+	void)
+{
+	struct actor_iterator iterator;
+	struct actor_datum *actor;
+
+	psp_stale_census(); /* (FIXES_AITICKOLD #stalecensus) */
+"""),
+]
+
 FIXES_AITICKOLD["source/ai/actors.c#aitickoldbuf"] = [
 ("""	unsigned long asked, used, inline_passes, queue_carried;
 } psp_aitickold_stats;
