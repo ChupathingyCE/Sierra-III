@@ -91,15 +91,24 @@ def nocoop():
 #   of every tag as a map loads, against the Xbox's layouts, which the PSP's
 #   bake changes (slim blocks, packed BSP vertices, geometry outside)
 # - touch input
+# - the structure's culling, buckets made as each BSP loads (psp_fixups.py,
+#   FIXES_CHUPA090), and the objects' packed bounding spheres for collision's
+#   object loops, which the PSP has had since build 107 (psp_object_spheres)
+# - the map list and map packs that go with Custom Edition (HALO_MAP_LIST:
+#   Stubbs mode's lower tag window among them), Chimera's compressed maps
+#   (HALO_COMPRESSED_MAPS: zstd) and the movies' FFmpeg decoder
+#   (HALO_BINK_FFMPEG), each set on the desktop builds from v0.9.0d
 # psp/src/psp_chupa.c answers what the game still calls in them
-CHUPA_FLAGS_DROPPED = ("-DHALO_CUSTOM_EDITION", "-DHALO_GAME_BROWSER")
+CHUPA_FLAGS_DROPPED = ("-DHALO_CUSTOM_EDITION", "-DHALO_GAME_BROWSER", "-DHALO_MAP_LIST",
+                       "-DHALO_COMPRESSED_MAPS", "-DHALO_BINK_FFMPEG")
 CHUPA_DESKTOP_UNITS = ("port/linux/game/ce_", "port/linux/game/browser_screen.c", "port/linux/game/server_browser.c",
                        "port/linux/game/game_events.c", "port/linux/game/game_list_claims.c",
                        "port/linux/game/game_stats.c", "port/linux/game/moderation_screen.c",
                        "port/linux/game/map_families.c", "port/linux/game/ui_map_list.c",
                        "port/linux/game/menu_functions.c", "port/linux/game/menu_tags.c",
                        "port/linux/game/tag_schema_", "port/linux/game/tag_validate",
-                       "port/linux/game/touch_game.c", "port/linux/game/hud_hires_tags.c")
+                       "port/linux/game/touch_game.c", "port/linux/game/hud_hires_tags.c",
+                       "port/linux/game/structure_culling.c", "port/linux/game/object_bounds_cache.c")
 # ... except what the multiplayer build needs as it is: map_families.c names a
 # game's map in the game's protocol (an Xbox map as itself, a Custom Edition
 # map custom_maps\<name>), in the host's advertisement and settings and the

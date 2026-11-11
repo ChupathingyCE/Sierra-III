@@ -124,3 +124,9 @@ int z_inflateInit_(void *stream, char const *version, int stream_size)
 }
 int z_inflate(void *stream, int flush) { (void)stream; (void)flush; return PSP_Z_STREAM_ERROR; }
 int z_inflateEnd(void *stream) { (void)stream; return PSP_Z_STREAM_ERROR; }
+
+/* object_bounds_cache.c, left out: the PSP keeps its own packed copy of the
+objects' bounding spheres for collision's object loops (psp_object_spheres,
+psp_fixups.py), and the engine's copy is never read; the game state's
+replace hook still names this */
+void object_bounds_cache_invalidate(void) {}
