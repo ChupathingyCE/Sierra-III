@@ -585,6 +585,12 @@ static int replay_inflight = 0;
 static PSP_MAIN_SIDE int replay_kinds_on = 0; /* "mekinds" (see defer_replay) */
 static PSP_MAIN_SIDE int light_ring_look = 0; /* "lightringlook" (psp_ge_light_draw_body; psp_me.c) */
 static PSP_MAIN_SIDE int light_view_cull = 0; /* "lviewcull" (light_split_draws_nothing) */
+/* B7's piece size, as keep-word numbers for LSPLITCOARSE's shots (the lab's
+light_pass.md): "lightpieceN" the piece across as N hundredths of the cone's
+width where it is (30), "lightleastN" its floor as N thousandths of the
+light's radius (30), which sets the pieces within ~2 units of the eye */
+int psp_keep_number(const char *prefix, int fallback);
+static PSP_MAIN_SIDE float light_piece_factor = 0.3f, light_piece_least = 0.03f;
 static unsigned long light_view_culled = 0, light_back_culled = 0;
 static PSP_MAIN_SIDE int widget_sprites_off = 0; /* "nowidgetsprites" (defer_frame_begin) */
 static PSP_MAIN_SIDE int shadow_indexed = 1; /* "shadowindexoff" (defer_frame_begin; psp_ge_shadow_draw_body) */
@@ -858,6 +864,11 @@ static void defer_frame_begin(void)
 				replay_kinds_on = psp_keep("mekinds") != 0;
 				light_ring_look = psp_keep("lightringlook") != 0;
 				light_view_cull = psp_keep("lviewcull") != 0;
+				light_piece_factor = psp_keep_number("lightpiece", 30) / 100.0f;
+				light_piece_least = psp_keep_number("lightleast", 30) / 1000.0f;
+				if (light_piece_factor != 0.3f || light_piece_least != 0.03f)
+					platform_log("GE: lightpiece: the flashlight's pieces %.2f of the cone's width, at least %.3f of its radius (B7's 0.30, 0.030)",
+						light_piece_factor, light_piece_least);
 				if (light_view_cull)
 					platform_log("GE: lviewcull: a triangle the flashlight would split is left out first when it draws nothing wherever it's cut");
 				if (light_ring_look)
@@ -22071,8 +22082,8 @@ static int light_edge_splits(const float *a, const float *b)
 		width where they are, so the pool has corners inside it to be bright
 		and round (by distance alone the pool near the player was two pieces
 		across and drew dim) */
-		split = 0.3f * nearest * (light_split_tangent > 0.05f ? light_split_tangent : 0.05f);
-		least = 0.03f * light.radius;
+		split = light_piece_factor * nearest * (light_split_tangent > 0.05f ? light_split_tangent : 0.05f);
+		least = light_piece_least * light.radius;
 	}
 	else
 	{
@@ -22291,8 +22302,8 @@ static int split_edge_known(const struct split_corner *a, const struct split_cor
 {
 	float nearest = a->near < b->near ? a->near : b->near, split, least;
 
-	split = 0.3f * nearest * (light_split_tangent > 0.05f ? light_split_tangent : 0.05f);
-	least = 0.03f * light.radius;
+	split = light_piece_factor * nearest * (light_split_tangent > 0.05f ? light_split_tangent : 0.05f);
+	least = light_piece_least * light.radius;
 	if (split < least)
 		split = least;
 	return edge > split * split;
