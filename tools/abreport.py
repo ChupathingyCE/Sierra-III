@@ -124,6 +124,9 @@ def not_used(path):
     return found
 
 
+MIN_BEATS = 3   # heartbeats a run needs in a stretch before its gap is read
+
+
 def verdict(base, other):
     if len(base) < 2 or len(other) < 2:
         return "no verdict"
@@ -175,7 +178,16 @@ def main():
                 figures[metric, n] = [v for v in (pick([b for b in run if lo <= b[0] < hi]) for run in beats[n]) if v is not None]
         if not any(figures.values()):
             continue
+        # A stretch the runs only graze (they end inside it, or a beat or two
+        # falls in it) is one heartbeat's window, not the stretch: its gap says
+        # where each run's last beat landed, so it gets no verdict.
+        counts = [sum(1 for b in run if lo <= b[0] < hi) for n in names for run in beats[n]]
+        ends = [run[-1][0] for n in names for run in beats[n] if run]
+        short = min(counts) < MIN_BEATS
         print("**%s (game time %d-%d)**\n" % (title, lo, hi))
+        if short:
+            print("_Only %d-%d heartbeats a run in this stretch (the runs end at game time %d-%d): too short for a verdict._\n"
+                  % (min(counts), max(counts), min(ends), max(ends)))
         print("| Metric | " + " | ".join(names) + " | Gap | Verdict |")
         print("|---|" + "---:|" * len(names) + "---:|---|")
         for metric, _ in METRICS:
@@ -189,7 +201,7 @@ def main():
                     gap, word = "-", "-"
                 else:
                     gap = "%+.1f (%+.1f%%)" % (means[n] - means[base], 100.0 * (means[n] - means[base]) / means[base])
-                    word = "INVALID" if base in invalid or n in invalid else verdict(figures[metric, base], figures[metric, n])
+                    word = "INVALID" if base in invalid or n in invalid else ("too short" if short else verdict(figures[metric, base], figures[metric, n]))
                 label = metric if len(names) == 2 else "%s, %s" % (metric, n)
                 print("| %s | %s | %s | %s |" % (label, " | ".join(cells), gap, word))
         print()
