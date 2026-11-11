@@ -10,5 +10,5 @@ static __attribute__((noinline)) void null_run(int i) { (void)i; __asm__ __volat
 static void null_output(int i, const void **bytes, unsigned int *length) { (void)i; *bytes = 0; *length = 0; }
 
 const struct box_adapter box_null = {
-	"null", 0, 0, BOX_EXACT, 0, 0, 0, 0, null_setup, null_tick, null_run, null_output, 0,
+	"null", 0, 0, 1, BOX_EXACT, 0, 0, 0, 0, null_setup, null_tick, null_run, null_output, 0,
 };

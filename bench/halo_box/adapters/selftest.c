@@ -48,5 +48,5 @@ static void selftest_output(int i, const void **bytes, unsigned int *length)
 }
 
 const struct box_adapter box_selftest = {
-	"selftest", kinds, 0, BOX_RELATIVE, 1e-6f, 1e-5f, 0.01f, 0.5f, selftest_setup, selftest_tick, selftest_run, selftest_output, 0,
+	"selftest", kinds, 0, 0, BOX_RELATIVE, 1e-6f, 1e-5f, 0.01f, 0.5f, selftest_setup, selftest_tick, selftest_run, selftest_output, 0,
 };

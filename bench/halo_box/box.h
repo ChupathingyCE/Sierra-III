@@ -23,6 +23,7 @@ struct box_adapter
 	const char *name;
 	const char *const *kinds; /* names for the capture's kind numbers, ended by a null; or null */
 	int batch;                /* 1: run() is called once a tick, with BOX_ALL */
+	int no_capture;           /* 1: the box reads nothing, and runs over entities that carry nothing when there is no capture */
 	/* the comparison of an entity's output with the capture's, as 32-bit
 	floats unless exact: absolute, within eps_absolute; relative, within
 	eps_relative of the larger magnitude or within eps_absolute */

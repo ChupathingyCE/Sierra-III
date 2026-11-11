@@ -326,20 +326,22 @@ static int capture_files(void)
 {
 	SceUID folder = sceIoDopen("ms0:/halo/capture");
 	SceIoDirent entry;
-	int count = 0, k;
+	int count = 0, seen = 0, k;
 
 	if (folder < 0)
-		return 0;
+		return plat_out("ms0:/halo/capture can't be opened (%08x)", (unsigned int)folder), 0;
 	memset(&entry, 0, sizeof(entry));
 	while (count < FILES_MOST && sceIoDread(folder, &entry) > 0)
 	{
 		size_t length = strlen(entry.d_name);
 
+		seen++;
 		if (length > 4 && length < 64 && !strcmp(entry.d_name + length - 4, ".cap"))
 			snprintf(file_names[count++], sizeof(file_names[0]), "ms0:/halo/capture/%s", entry.d_name);
 		memset(&entry, 0, sizeof(entry));
 	}
 	sceIoDclose(folder);
+	plat_out("ms0:/halo/capture: %d entries, %d of them captures", seen, count);
 	qsort(file_names, count, sizeof(file_names[0]), by_name);
 	for (k = 0; k < count; k++)
 		files[k] = file_names[k];
@@ -398,8 +400,6 @@ int main(void)
 			plat_out("the self-test capture couldn't be written");
 	}
 	file_count = box == &box_null ? 0 : capture_files();
-	if (box != &box_null && !file_count)
-		plat_out("no ms0:/halo/capture/*.cap");
 	result = harness_run(box, files, file_count, &options);
 	plat_step("halo_box: finished (%s)", result ? "not clean" : "clean");
 	sceKernelDelayThread(2 * 1000 * 1000);

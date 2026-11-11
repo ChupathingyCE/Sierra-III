@@ -513,6 +513,8 @@ int harness_run(const struct box_adapter *box, const char *const *files, int fil
 	st.options = options;
 	st.null = box_null;
 	st.null.batch = box->batch;
+	if (!file_count && !box->no_capture)
+		return plat_out("STOPPED: box %s needs a capture, and there is none", box->name), 1;
 	if (!file_count)
 	{
 		/* no capture: entities that carry nothing, for a box that reads nothing */
@@ -521,7 +523,7 @@ int harness_run(const struct box_adapter *box, const char *const *files, int fil
 		unsigned int t;
 
 		if (!blank || box->setup(0, 0) < 0)
-			return plat_out("STOPPED: box %s needs a capture", box->name), 1;
+			return plat_out("STOPPED: box %s wouldn't set up", box->name), 1;
 		plat_step("box %s without a capture: %d ticks of %d entities that carry nothing", box->name, options->synthetic_ticks,
 			options->synthetic_entities);
 		for (t = 0; t < (unsigned int)options->synthetic_ticks; t++)
