@@ -1,0 +1,219 @@
+/* The posing box: see box_posing.h and docs/box_posing.md. */
+#include "box_posing.h"
+
+int box_posing_plan_make(struct box_posing_plan *plan, const struct box_posing_node *nodes, int count)
+{
+	unsigned char stack[BOX_POSING_NODES];
+	int top = 0, filled = 1, k;
+
+	if (count > BOX_POSING_NODES)
+		count = BOX_POSING_NODES;
+	if (count <= 0)
+	{
+		plan->nodes = 0;
+		return 0;
+	}
+	for (k = 0; k < BOX_POSING_NODES; k++)
+		plan->parent[k] = 0;
+	stack[0] = 0;
+	/* the engine's order exactly: a node's matrix needs its parent's, and the
+	walk reaches parents first only because it follows the tag's links */
+	while (top < filled)
+	{
+		int at = stack[top++];
+		const struct box_posing_node *node = &nodes[at];
+
+		plan->order[top - 1] = (unsigned char)at;
+		if (at != 0)
+			plan->parent[at] = (unsigned char)(node->parent >= 0 && node->parent < count ? node->parent : 0);
+		if (node->next_sibling >= 0 && node->next_sibling < count && filled < BOX_POSING_NODES)
+			stack[filled++] = (unsigned char)node->next_sibling;
+		if (node->first_child >= 0 && node->first_child < count && filled < BOX_POSING_NODES)
+			stack[filled++] = (unsigned char)node->first_child;
+	}
+	plan->nodes = (unsigned short)filled;
+	return filled;
+}
+
+/* result = a x b, the engine's matrix4x3_multiply term for term: b's rows
+combine a's, b's position is scaled by a's scale before a's own is added.
+`result` may be `b` */
+static inline void multiply(const float *a, const float *b, float *result)
+{
+	float product[12];
+	int row, column;
+
+	for (row = 0; row < 4; row++)
+		for (column = 0; column < 3; column++)
+		{
+			float value = b[1 + row * 3 + 0] * a[1 + column] + b[1 + row * 3 + 1] * a[1 + 3 + column] +
+				b[1 + row * 3 + 2] * a[1 + 6 + column];
+
+			if (row == 3)
+				value = value * a[0] + a[1 + 9 + column];
+			product[row * 3 + column] = value;
+		}
+	result[0] = a[0] * b[0];
+	for (row = 0; row < 12; row++)
+		result[1 + row] = product[row];
+}
+
+/* the engine's matrix4x3_from_orientation (matrix4x3_rotation_from_quaternion,
+then the orientation's scale and translation) */
+static inline void from_orientation(const float *o, float *m)
+{
+	float s = o[0] * o[0] + o[1] * o[1] + o[2] * o[2] + o[3] * o[3];
+	float x, y, z, wx, wy, wz, xx, xy, xz, yy, yz, zz;
+
+	s = s != 0.f ? 2.f / s : 0.f;
+	x = s * o[0];
+	y = s * o[1];
+	z = s * o[2];
+	wx = o[3] * x;
+	wy = o[3] * y;
+	wz = o[3] * z;
+	xx = o[0] * x;
+	xy = o[0] * y;
+	xz = o[0] * z;
+	yy = o[1] * y;
+	yz = o[1] * z;
+	zz = o[2] * z;
+	m[0] = o[7];
+	m[1] = 1.f - (yy + zz);
+	m[2] = xy - wz;
+	m[3] = xz + wy;
+	m[4] = xy + wz;
+	m[5] = 1.f - (xx + zz);
+	m[6] = yz - wx;
+	m[7] = xz - wy;
+	m[8] = yz + wx;
+	m[9] = 1.f - (xx + yy);
+	m[10] = o[4];
+	m[11] = o[5];
+	m[12] = o[6];
+}
+
+static inline void translation(const float *p, float *m)
+{
+	int k;
+
+	for (k = 0; k < 13; k++)
+		m[k] = 0.f;
+	m[0] = m[1] = m[5] = m[9] = 1.f;
+	m[10] = p[0];
+	m[11] = p[1];
+	m[12] = p[2];
+}
+
+static inline void cross(const float *a, const float *b, float *out)
+{
+	out[0] = a[1] * b[2] - a[2] * b[1];
+	out[1] = a[2] * b[0] - a[0] * b[2];
+	out[2] = a[0] * b[1] - a[1] * b[0];
+}
+
+/* the root's matrix: the object's translation and rotation (with its
+centre of mass and origin offset), under its parent's node if attached */
+static void root(const struct box_posing_object *object, const float *node, float *out)
+{
+	float t[13], r[13], c[13];
+	int k;
+
+	translation(object->position, t);
+	r[0] = 1.f;
+	for (k = 0; k < 3; k++)
+	{
+		r[1 + k] = object->forward[k];
+		r[7 + k] = object->up[k];
+		r[10 + k] = 0.f;
+	}
+	cross(object->up, object->forward, r + 4);
+	if (object->flags & BOX_POSE_MIRRORED)
+		for (k = 4; k < 7; k++)
+			r[k] = -r[k];
+	if (object->flags & BOX_POSE_PHYSICS)
+	{
+		translation(object->center, c);
+		multiply(r, c, r);
+	}
+	translation(object->origin_offset, c);
+	multiply(r, c, r);
+	if (object->flags & BOX_POSE_PARENT)
+	{
+		float p[13];
+
+		for (k = 0; k < 13; k++)
+			p[k] = object->parent[k];
+		if (p[0] != 1.f)
+		{
+			t[10] *= p[0];
+			t[11] *= p[0];
+			t[12] *= p[0];
+			p[0] = 1.f;
+		}
+		if (object->flags & BOX_POSE_PARENT_MIRRORED)
+			for (k = 4; k < 7; k++)
+				p[k] = -p[k];
+		multiply(p, t, out);
+		multiply(out, r, out);
+		multiply(out, node, out);
+	}
+	else
+	{
+		multiply(t, r, out);
+		multiply(out, node, out);
+	}
+}
+
+void box_posing_pose(const struct box_posing_plan *plan, const struct box_posing_object *object,
+	const box_orientation *orientations, box_matrix *nodes, float sphere[4])
+{
+	float *root_matrix = nodes[0];
+	int k;
+
+	if ((object->flags & BOX_POSE_NO_MODEL) || plan->nodes == 0)
+	{
+		root_matrix[0] = 1.f;
+		for (k = 0; k < 3; k++)
+		{
+			root_matrix[1 + k] = object->forward[k];
+			root_matrix[7 + k] = object->up[k];
+			root_matrix[10 + k] = object->position[k];
+		}
+		cross(object->up, object->forward, root_matrix + 4);
+	}
+	else
+	{
+		float node[13];
+
+		from_orientation(orientations[0], node);
+		if (object->flags & BOX_POSE_WORLD_RELATIVE)
+			for (k = 0; k < 13; k++)
+				root_matrix[k] = node[k];
+		else
+			root(object, node, root_matrix);
+		/* the walk: each node from its orientation, under its parent, which
+		the plan's order has made already */
+		for (k = 1; k < plan->nodes; k++)
+		{
+			int at = plan->order[k];
+
+			from_orientation(orientations[at], node);
+			multiply(nodes[plan->parent[at]], node, nodes[at]);
+		}
+	}
+	{
+		/* the engine's matrix4x3_transform_point of the bounding offset by the root */
+		float x = object->bounding_offset[0], y = object->bounding_offset[1], z = object->bounding_offset[2];
+
+		if (root_matrix[0] != 1.f)
+		{
+			x *= root_matrix[0];
+			y *= root_matrix[0];
+			z *= root_matrix[0];
+		}
+		for (k = 0; k < 3; k++)
+			sphere[k] = root_matrix[7 + k] * z + root_matrix[4 + k] * y + root_matrix[1 + k] * x + root_matrix[10 + k];
+		sphere[3] = object->scale > 0.f ? object->bounding_radius * object->scale : object->bounding_radius;
+	}
+}

@@ -47,7 +47,7 @@ struct box_adapter
 		float *largest_relative, unsigned int *element);
 };
 
-extern const struct box_adapter box_null, box_selftest;
+extern const struct box_adapter box_null, box_selftest, box_posing;
 /* every adapter built in, ended by a null (adapters.c) */
 extern const struct box_adapter *const box_adapters[];
 
