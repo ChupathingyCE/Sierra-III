@@ -31,6 +31,12 @@ R's slice 10 (`redesign_r.md` §3). The lab's `research/opportunities/me_unnamed
 - **Checks in the build's log:** the table matched, the bytes copied, the patches applied, and a checksum of the copy read back on the ME against the table's.
 - **Price:** one PSP pair at R's milestone, `- | mexec`, b30's flight, with `meprofile meparts`: the ME's I-misses' cost (memory-wait cycles) and its job time against off. The miss *count* stays about the same; each miss is cheaper.
 
+## The first price (2026-11-10; the lab's findings `mexec_r1_b30_flight`) [M]
+
+- **List r1 (41 functions, 108 KB) on the PSP-1000, b30's flight, `- | mexec` x2 (sierra-hw 42922573141):** the ME's GE job −3.8 / −5.6 / −4.0 ms a frame over three windows (−9%), its model part draws −2.8 to −4.1. Play and both seeds identical on all 1,800 ticks of all four runs; the copy installed on both mexec runs.
+- **About half the ceiling [U]:** the list holds ~75% of the code misses; the instruments, audio and the other jobs run from main RAM. The frame is flat there, since the ME doesn't bind that instrumented flight.
+- **List r2** adds d20's light pass (55 functions, 128.7 KB; the room widened to 192 KB): its pair is on d20's flashlight.
+
 ## Then
 
 - **The hot/cold split and TGME's layout** on what's left (me_unnamed.md lever 2 + 4): the misses in code not copied, and the copy's own conflicts in the I-cache, its layout chosen for the ME alone.
