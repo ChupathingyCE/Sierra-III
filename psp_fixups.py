@@ -44300,6 +44300,28 @@ FIXES_AITICKOLD["source/ai/actors.c#convscanafter"] = [
 # "aitickoldconvscan" at each conversation's end too (s3o21_b40: an actor
 # found naming a gone conversation at a tick's start, though it was listed
 # after every update before: the end left it, or something put it back)
+FIXES_AITICKOLD["source/ai/ai_communication.c#convendring"] = [
+("""void ai_conversation_finish(
+""", """/* psp_fixups.py (FIXES_AITICKOLD #convendring): conversation ends made on
+the ME (aitickoldconvscan), for the main CPU's scan to log; its own 64-byte
+lines, read and written only through the uncached view */
+#define PSP_CONVEND_RING 16
+struct psp_convend_rec_t
+{
+	long conversation, actor, time, how;
+	unsigned long participants;
+	long first, second, spare;
+};
+struct psp_convend_ring_t
+{
+	unsigned long head, tail, lost, pad[13];
+	struct psp_convend_rec_t rec[PSP_CONVEND_RING];
+};
+struct psp_convend_ring_t psp_convend_ring __attribute__((aligned(64)));
+
+void ai_conversation_finish(
+"""),
+]
 FIXES_AITICKOLD["source/ai/ai_communication.c#convscanend"] = [
 ("""		datum_delete(conversation_data, conversation_index);
 	}
@@ -44317,9 +44339,39 @@ FIXES_AITICKOLD["source/ai/ai_communication.c#convscanend"] = [
 			struct actor_iterator psp_iterator;
 			struct actor_datum *psp_actor;
 
+			extern volatile unsigned int psp_me_context;
+			extern struct psp_convend_ring_t psp_convend_ring;
+			unsigned int psp_sp;
+
 			if (psp_convend_on < 0)
 				psp_convend_on = psp_keep("aitickoldconvscan") != 0;
-			if (psp_convend_on && psp_convend_lines < 40)
+			__asm__ ("move %0, $sp" : "=r"(psp_sp));
+			if (psp_convend_on && (psp_me_context != 0 || (psp_sp & 0x1FFFFFFFu) < 0x01000000u))
+			{
+				/* an end inside the ME's thinking, where the log refuses (s3o25_b40:
+				a header cleared with no end logged): kept for the main CPU's next
+				scan, through the uncached view so neither CPU's cache holds it */
+				volatile struct psp_convend_ring_t *psp_ring = (volatile struct psp_convend_ring_t *)((unsigned long)&psp_convend_ring | 0x40000000u);
+				unsigned long psp_k = psp_ring->head;
+
+				if (psp_k - psp_ring->tail < PSP_CONVEND_RING)
+				{
+					volatile struct psp_convend_rec_t *psp_r = &psp_ring->rec[psp_k % PSP_CONVEND_RING];
+
+					psp_r->conversation = conversation_index;
+					psp_r->actor = global_updating_actor_index;
+					psp_r->time = (long)game_time_get();
+					psp_r->how = (unable_to_begin ? 1 : 0) | (success ? 2 : 0);
+					psp_r->participants = conversation->participant_bitmask;
+					psp_r->first = conversation->actor_indices[0];
+					psp_r->second = conversation->actor_indices[1];
+					__asm__ __volatile__("sync" ::: "memory");
+					psp_ring->head = psp_k + 1;
+				}
+				else
+					psp_ring->lost++;
+			}
+			else if (psp_convend_on && psp_convend_lines < 40)
 			{
 				platform_psp_log("aitickoldconvscan: game time %ld | conversation %08lx ended (unable %d, success %d) while actor %08lx updates; participants %08lx: %08lx %08lx %08lx %08lx",
 					(long)game_time_get(), (unsigned long)conversation_index, (int)unable_to_begin, (int)success,
@@ -44398,6 +44450,40 @@ void psp_aitickold_conv_tick(
 
 	if (!psp_aitickold_conv_scan || psp_aime_think_only) /* not in a thinking pass (the ME's, or the main CPU's ahead) */
 		return;
+	{
+		/* the ends the ME made since the last scan (convendring) */
+		struct psp_convend_rec_t
+		{
+			long conversation, actor, time, how;
+			unsigned long participants;
+			long first, second, spare;
+		};
+		struct psp_convend_ring_t
+		{
+			unsigned long head, tail, lost, pad[13];
+			struct psp_convend_rec_t rec[16];
+		};
+		extern struct psp_convend_ring_t psp_convend_ring;
+		volatile struct psp_convend_ring_t *ring = (volatile struct psp_convend_ring_t *)((unsigned long)&psp_convend_ring | 0x40000000u);
+		static unsigned long lost_said = 0;
+
+		while (ring->tail != ring->head)
+		{
+			volatile struct psp_convend_rec_t *r = &ring->rec[ring->tail % 16];
+
+			platform_psp_log("aitickoldconvscan: game time %ld | conversation %08lx ended ON THE ME at game time %ld (unable %d, success %d) in actor %08lx's thinking; participants %08lx: %08lx %08lx; seen at %s%d",
+				(long)game_time_get(), (unsigned long)r->conversation, r->time, (int)(r->how & 1), (int)((r->how >> 1) & 1),
+				(unsigned long)r->actor, r->participants, (unsigned long)r->first, (unsigned long)r->second,
+				after_actor == NONE ? "tick start" : "after the update of actor ",
+				after_actor == NONE ? 0 : (int)DATUM_INDEX_TO_ABSOLUTE_INDEX(after_actor));
+			ring->tail = ring->tail + 1;
+		}
+		if (ring->lost != lost_said)
+		{
+			lost_said = ring->lost;
+			platform_psp_log("aitickoldconvscan: game time %ld | %lu ME ends lost (the ring was full)", (long)game_time_get(), lost_said);
+		}
+	}
 	{
 		/* each conversation slot's header word as the last scan saw it: a
 		change at a scan point names the window it happened in (the ends
