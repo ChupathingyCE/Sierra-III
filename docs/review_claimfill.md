@@ -16,3 +16,14 @@
 **Not exact in one sense.** The bytes are the same. The data cache's contents differ (lines made without a fetch, and the victims they push out), which is the point; that is why its price comes from the PSP and not from the cache model, whose `cache 0x18` is still a drop (the lab's M18).
 
 **The build's own guard.** `psp_libc.c` is one of the plain-C units with a compile line of its own, so it takes `-DPSP_CLAIMFILL=1` there, not from the engine's defines. Without it the link's `--wrap` names two functions nobody defines, and the link's stubbing of undefined names would make every copy and fill in the program an empty call: a build that links and never reaches its first log line. The link now refuses to stub a `__wrap_` or `__real_` name and says which.
+
+**The emulator's proof [E]** (the lab's sierra-batch claimfill2, 43068167920; tock162 9e74d6e + this branch at db4e8d1, `PSP_CLAIMFILL=1`, no profile). It proves the routines' logic and counts the work; the claim itself runs as nothing there.
+
+| | b30, the flight to the beach (3,900 ticks) | c20 from its start (3,600 ticks) |
+|---|---|---|
+| Play and both seeds, the word off / on / on with `claimcheck` | identical on every tick | identical on every tick |
+| `claimcheck`: copies and fills compared byte for byte, with the line either side | 689,692, disagreed 0 | 412,862, disagreed 0 |
+| Lines claimed a tick in play (ticks 1,800-3,600) | ~1,900 (97 copies + 77 fills, ~11 lines each) | ~1,200 |
+| Ceiling at the ~65 cycles a line the PSP-1000 measured, if every claimed line would have missed | ~0.37 ms a tick | ~0.23 ms a tick |
+
+The ceiling is a count [E] times a cost [M], a lead only: a destination line already in the cache saves nothing, and only a PSP pair prices it. Still to do, in order: one PSP run with `claimfill claimcheck` (disagreed 0 is the claim's proof on hardware), then the pair on b30's flight.
