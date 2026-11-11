@@ -44198,6 +44198,7 @@ FIXES_AITICKOLD["source/ai/actors.c#stalecensus"] = [
 	struct actor_datum *actor;
 """, """/* psp_fixups.py (FIXES_AITICKOLD #stalecensus) */
 static int psp_stale_on = -1;
+void psp_aitickold_conv_tick(void);
 
 static void psp_stale_census(
 	void)
@@ -44260,6 +44261,7 @@ void actors_update(
 	struct actor_datum *actor;
 
 	psp_stale_census(); /* (FIXES_AITICKOLD #stalecensus) */
+	psp_aitickold_conv_tick(); /* (FIXES_AITICKOLD #aitickoldbuf: aitickoldconvscan) */
 """),
 ]
 
@@ -44280,6 +44282,64 @@ props the thinking deleted without switching the tick's references to them;
 "aitickoldbufnooffer" doesn't offer a refused record's timeslice again */
 static int psp_aitickold_buf_check = 0, psp_aitickold_buf_noswitch = 0, psp_aitickold_buf_nooffer = 0;
 static long psp_aitickold_buf_check_lines = 0;
+/* "aitickoldconvscan": conversations an actor names that are gone or don't
+list it, at each install and each tick's start (s3o16_b40: the fault reads a
+dead conversation through action_converse_end, not the reads aitickoldconv
+guards) */
+static int psp_aitickold_conv_scan = 0;
+extern int psp_lights_link_tick; /* objects.c (FIXES_LD1) */
+static long psp_aitickold_conv_lines = 0;
+
+static boolean psp_aitickold_conv_lists(
+	long conversation_index,
+	long actor_index)
+{
+	struct conversation_datum *conversation = (struct conversation_datum *)datum_try_and_get(conversation_data, conversation_index);
+	short k;
+
+	if (!conversation)
+		return FALSE;
+	for (k = 0; k < 8; k++)
+		if ((conversation->participant_bitmask & (1u << k)) && conversation->actor_indices[k] == actor_index)
+			return TRUE;
+	return FALSE;
+}
+
+/* every actor at the tick's start, on the main CPU: the first tick each
+(actor, conversation) pair is found gone or unlisted */
+void psp_aitickold_conv_tick(
+	void)
+{
+	static long seen_actor[24], seen_conversation[24];
+	static short seen = 0;
+	struct actor_iterator iterator;
+	struct actor_datum *actor;
+
+	if (!psp_aitickold_conv_scan)
+		return;
+	actor_iterator_new(&iterator, TRUE);
+	while ((actor = actor_iterator_next(&iterator)) != NULL)
+	{
+		long c = actor->external_orders.conversation_index;
+		short k;
+		boolean gone;
+
+		if (c == NONE || psp_aitickold_conv_lists(c, iterator.index))
+			continue;
+		for (k = 0; k < seen; k++)
+			if (seen_actor[k] == iterator.index && seen_conversation[k] == c)
+				break;
+		if (k < seen || seen >= 24)
+			continue;
+		seen_actor[seen] = iterator.index;
+		seen_conversation[seen++] = c;
+		gone = datum_try_and_get(conversation_data, c) == NULL;
+		platform_psp_log("aitickoldconvscan: game time %ld | tick start: actor %d names conversation %08lx, %s; action %d, its converse index %08lx; a frame's last tick %d",
+			(long)game_time_get(), (int)DATUM_INDEX_TO_ABSOLUTE_INDEX(iterator.index), (unsigned long)c,
+			gone ? "gone" : "alive but not listing it", (int)actor->state.action,
+			(unsigned long)actor->state.action_data.converse.conversation_index, psp_lights_link_tick != 0);
+	}
+}
 static PSP_AIME_ME_SIDE long psp_aitickold_rec[MAXIMUM_ACTORS];
 static PSP_AIME_ME_SIDE long psp_aitickold_buf_used = 0;
 /* FALSE when the actor's thinking ran past what its copy can put back */
@@ -44793,6 +44853,12 @@ static void psp_aitickold_install(
 			if (scratch->state.action == _actor_action_converse)
 				scratch->state.action_data.converse.conversation_index = NONE;
 		}
+		else if (psp_aitickold_conv_scan && scratch->external_orders.conversation_index != NONE &&
+			!psp_aitickold_conv_lists(scratch->external_orders.conversation_index, DATUM_INDEX_NEW(absolute_index, actor->identifier)) &&
+			psp_aitickold_conv_lines++ < 24)
+			platform_psp_log("aitickoldconvscan: game time %ld | install: actor %d's record names conversation %08lx, which doesn't list it (the tick's word %08lx, action %d -> %d)",
+				(long)game_time_get(), (int)absolute_index, (unsigned long)scratch->external_orders.conversation_index,
+				(unsigned long)actor->external_orders.conversation_index, (int)actor->state.action, (int)scratch->state.action);
 		/* in: the actor, then its props' words and the props it made */
 		csmemcpy(actor, scratch, sizeof(*actor));
 		psp_aitickold_buf_stats.words += count;
@@ -44867,6 +44933,7 @@ static void psp_aitickold_install(
 	{
 		psp_aitickold_buf_on = psp_keep("aitickoldbuf") != 0 && psp_aime1b_active();
 		psp_aitickold_buf_check = psp_keep("aitickoldbufcheck") != 0;
+		psp_aitickold_conv_scan = psp_keep("aitickoldconvscan") != 0;
 		psp_aitickold_buf_noswitch = psp_keep("aitickoldbufnoswitch") != 0;
 		psp_aitickold_buf_nooffer = psp_keep("aitickoldbufnooffer") != 0;
 		psp_aitickold_words_on = psp_keep("aitickoldbufwords") != 0;
