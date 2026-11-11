@@ -43362,7 +43362,20 @@ int sceKernelDelayThread(unsigned int delay);
 void psp_nms_pending_for_me(void);
 static int psp_aime2a_on = -1, psp_aime2a_check_on = 0;
 static long psp_aime2a_stop_at = 0;
-static boolean psp_aime2a_owed = FALSE, psp_aime2a_out = FALSE, psp_aime2a_failed = FALSE;
+/* the main CPU's own words about the job, written while the job runs, on a
+cache line of their own: on a line the ME's thinking also writes (the AI's
+firing-position sort pointer sat beside them), a write-back of either CPU's
+copy of the line put back the other's old words, so a collected job could
+read as still out and the next collection waited 200 ms for nothing
+(the lab's bugs.md B69, b69g and b69cohere) */
+static struct
+{
+	boolean owed, out, failed;
+	unsigned char rest[64 - 3 * sizeof(boolean)];
+} psp_aime2a_main __attribute__((aligned(64)));
+#define psp_aime2a_owed (psp_aime2a_main.owed)
+#define psp_aime2a_out (psp_aime2a_main.out)
+#define psp_aime2a_failed (psp_aime2a_main.failed)
 static volatile unsigned int *psp_aime2a_abort = NULL;
 /* the collection's wait for the actor in hand, once the job is asked to end */
 #define PSP_AIME2A_BOUND_US 20000
