@@ -2605,6 +2605,35 @@ later with psp_me_finish. One job a slot at a time. Returns 1 if handed over
 can't take it (off, stopped, a job already out): the caller runs it itself.
 The caller writes back its data cache first, as for psp_me_run */
 static int submitted[ME_SLOTS]; /* 0 none, 1 out with the ME, 2 run here (simulated) */
+/* B69 (the lab's bugs.md): the same marks kept again in whole lines of their
+own, read and written only through the uncached view. Twice a halt followed
+a wait that never saw a job done that the stop's report found finished, and
+only on a build where submitted[] fell on one cache set: the main CPU's own
+mark read 0 while the job was out [U]. So the marks the waits read come from
+the uncached copy, and a disagreement with the cached one is logged */
+static int submitted_storage[(ME_SLOTS + 15) & ~15] __attribute__((aligned(64)));
+#define SUBMITTED_UC ((volatile int *)(0x40000000u | (unsigned int)submitted_storage))
+static unsigned int mark_disagreements;
+
+static void me_mark_set(int which, int state)
+{
+	submitted[which] = state;
+	SUBMITTED_UC[which] = state;
+}
+
+static int me_mark(int which)
+{
+	int cached = submitted[which], uncached = SUBMITTED_UC[which];
+
+	if (cached != uncached)
+	{
+		if (mark_disagreements++ < 8 && !PSP_ME_WORK())
+			platform_log("ME: slot %d's mark disagrees: cached %d at %p, uncached %d (the uncached one used; %u so far)",
+				which, cached, (void *)&submitted[which], uncached, mark_disagreements);
+		submitted[which] = uncached;
+	}
+	return uncached;
+}
 static unsigned long long submit_mark[ME_SLOTS];
 /* the slot job out serves the ring between its steps (the GE layer's
 replay yields every 32 records): pushes go on while it runs */
@@ -2612,7 +2641,7 @@ static int slot_yields[ME_SLOTS];
 
 void psp_me_touch(int which)
 {
-	if (which >= 0 && which < ME_SLOTS && submitted[which] == 1)
+	if (which >= 0 && which < ME_SLOTS && me_mark(which) == 1)
 		submit_mark[which] = sceKernelGetSystemTimeWide();
 }
 
@@ -2621,7 +2650,7 @@ int psp_me_submit(int which, unsigned int type, const unsigned int *args, int ar
 	volatile struct me_slot *slot;
 	int k;
 
-	if (which < 0 || which >= ME_SLOTS || arg_count > ME_JOB_ARGS || submitted[which])
+	if (which < 0 || which >= ME_SLOTS || arg_count > ME_JOB_ARGS || me_mark(which))
 		return 0;
 	/* down again at psp_me_finish's end */
 	slot_busy[which] = 1;
@@ -2647,14 +2676,14 @@ int psp_me_submit(int which, unsigned int type, const unsigned int *args, int ar
 		run_job(slot, simulated_sums, 0);
 		last_job_us[which] = (unsigned int)(sceKernelGetSystemTimeWide() - submit_mark[which]);
 		stats[which].simulated++;
-		submitted[which] = 2;
+		me_mark_set(which, 2);
 		return 1;
 	}
 	__asm__ __volatile__("sync");
 	slot->request = ++slot_request[which];
 	__asm__ __volatile__("sync");
 	me_wake();
-	submitted[which] = 1;
+	me_mark_set(which, 1);
 	return 1;
 }
 
@@ -2684,8 +2713,8 @@ static int me_finish_slot(int which, unsigned int *results)
 
 	if (slow < 0)
 		slow = psp_keep("mefinishslow");
-	state = submitted[which];
-	submitted[which] = 0;
+	state = me_mark(which);
+	me_mark_set(which, 0);
 	slot = SLOT(which);
 	start = now = sceKernelGetSystemTimeWide();
 	if (state == 1)
@@ -2753,18 +2782,22 @@ static int me_finish_slot(int which, unsigned int *results)
 psp_me_finish won't wait; 0 while the ME is still on it, or none is out */
 int psp_me_submitted_done(int which)
 {
-	if (which < 0 || which >= ME_SLOTS || !submitted[which])
+	int state;
+
+	if (which < 0 || which >= ME_SLOTS || !(state = me_mark(which)))
 		return 0;
-	return submitted[which] == 2 || SLOT(which)->done == slot_request[which];
+	return state == 2 || SLOT(which)->done == slot_request[which];
 }
 
 /* the ME has started the job handed over with psp_me_submit (or it was run
 here): the time since is the job's own, not its wait behind the ring's */
 int psp_me_submitted_begun(int which)
 {
-	if (which < 0 || which >= ME_SLOTS || !submitted[which])
+	int state;
+
+	if (which < 0 || which >= ME_SLOTS || !(state = me_mark(which)))
 		return 0;
-	return submitted[which] == 2 || SLOT(which)->begun == slot_request[which] ||
+	return state == 2 || SLOT(which)->begun == slot_request[which] ||
 		SLOT(which)->done == slot_request[which];
 }
 
@@ -2772,7 +2805,7 @@ int psp_me_finish(int which, unsigned int *results)
 {
 	int done;
 
-	if (which < 0 || which >= ME_SLOTS || !submitted[which])
+	if (which < 0 || which >= ME_SLOTS || !me_mark(which))
 		return 0;
 	done = me_finish_slot(which, results);
 	slot_busy[which] = 0;
@@ -3454,7 +3487,7 @@ int psp_me_push(const struct psp_me_job *job, unsigned int *ticket)
 	~10 ms on the PSP, review_b120.md 5): a ring job behind it would be
 	waited for longer than its work is worth */
 	for (k = 0; k < ME_SLOTS; k++)
-		if (k != ME_SLOT_AUDIO && submitted[k] && !slot_yields[k])
+		if (k != ME_SLOT_AUDIO && me_mark(k) && !slot_yields[k])
 		{
 			if (ring_slot_done && psp_me_submitted_done((int)k))
 			{
@@ -4489,7 +4522,7 @@ void psp_me_wake_poll(void)
 		return;
 	}
 	for (k = 0; k < ME_SLOTS; k++)
-		if (slot_busy[k] || submitted[k])
+		if (slot_busy[k] || me_mark(k))
 		{
 			wake_frames++;
 			return;
