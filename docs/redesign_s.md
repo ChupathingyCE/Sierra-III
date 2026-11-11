@@ -1,5 +1,7 @@
 # S, the tick by how often its work changes: the design page (Phase 1 draft)
 
+**From 2026-11-11 the rebuild's spine is the lab's `research/opportunities/REBUILD.md`** (Sheepdog01 09:37, 09:40): the frame budgeted forward from zero as boxes, each priced alone on the PSP before integration. S dissolves into the tick's boxes there (its §3.3); this page stays as the record of S's pieces and what each measured, and its merged slices stay in as levers on the old path.
+
 Part S of `redesign_plan.md` (§3 S). Sheepdog01 gave it its go at Gate 1 (2026-11-05 19:28), with ruling 3: the margin is covered by "plays the same" work on the moving bipeds first, and the compromise freeze lifted only if that's hopeless. Built under the redesign rule (CLAUDE.md, "Redesign work"). The master builds; recon builds the census-driven pieces. A draft for a second-opinion read against the code before slice 1.
 
 Labels: [M] measured on the PSP, [E] emulator or estimate, [D] read in code or data, [U] inference. Code references are tock162.
