@@ -211,11 +211,12 @@ if MUSIC:
 # Its test sits in the mixer's block decode on the ME and its fields in every
 # voice's packets, so a default build leaves it out
 SNDSTREAM = os.environ.get("PSP_SNDSTREAM", "") == "1"
-# PSP_CLAIMFILL=1 builds in memcpy's and memset's wrappers that claim whole
-# destination lines without fetching them (lever CLAIMFILL, psp_libc.c;
-# keep words claimfill, claimcheck): every call to the two routines passes
-# through the wrappers, so a default build leaves them out.
-CLAIMFILL = os.environ.get("PSP_CLAIMFILL", "") == "1"
+# memcpy's and memset's wrappers that claim whole destination lines without
+# fetching them (lever CLAIMFILL, psp_libc.c; keep words noclaimfill, the
+# other side of its A/B, and claimcheck): built in and on by default, as the
+# rebase's profile and layouts are counted with them; PSP_CLAIMFILL=0 builds
+# them out.
+CLAIMFILL = os.environ.get("PSP_CLAIMFILL", "1") != "0"
 # PSP_SMALLDATA=8 (or 4): the units built with the game's flags put variables
 # of up to that many bytes in small data, read with one load from $gp instead
 # of lui and a load, so the code is shorter (lever RH5, after Halo 64's -G8).
