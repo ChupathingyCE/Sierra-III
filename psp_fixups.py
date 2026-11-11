@@ -44297,6 +44297,55 @@ FIXES_AITICKOLD["source/ai/actors.c#convscanafter"] = [
 	global_updating_actor_index = NONE;
 """),
 ]
+# "aitickoldconvscan" at each conversation's end too (s3o21_b40: an actor
+# found naming a gone conversation at a tick's start, though it was listed
+# after every update before: the end left it, or something put it back)
+FIXES_AITICKOLD["source/ai/ai_communication.c#convscanend"] = [
+("""		datum_delete(conversation_data, conversation_index);
+	}
+
+	return;
+}
+""", """		datum_delete(conversation_data, conversation_index);
+		{
+			/* psp_fixups.py (FIXES_AITICKOLD #convscanend) */
+			extern int psp_keep(const char *name);
+			extern void platform_psp_log(const char *format, ...);
+			extern long global_updating_actor_index;
+			static int psp_convend_on = -1;
+			static long psp_convend_lines = 0;
+			struct actor_iterator psp_iterator;
+			struct actor_datum *psp_actor;
+
+			if (psp_convend_on < 0)
+				psp_convend_on = psp_keep("aitickoldconvscan") != 0;
+			if (psp_convend_on && psp_convend_lines < 40)
+			{
+				platform_psp_log("aitickoldconvscan: game time %ld | conversation %08lx ended (unable %d, success %d) while actor %08lx updates; participants %08lx: %08lx %08lx %08lx %08lx",
+					(long)game_time_get(), (unsigned long)conversation_index, (int)unable_to_begin, (int)success,
+					(unsigned long)global_updating_actor_index, (unsigned long)conversation->participant_bitmask,
+					(unsigned long)conversation->actor_indices[0], (unsigned long)conversation->actor_indices[1],
+					(unsigned long)conversation->actor_indices[2], (unsigned long)conversation->actor_indices[3]);
+				psp_convend_lines++;
+				actor_iterator_new(&psp_iterator, TRUE);
+				while ((psp_actor = actor_iterator_next(&psp_iterator)) != NULL)
+					if (psp_actor->external_orders.conversation_index == conversation_index ||
+						(psp_actor->state.action == _actor_action_converse && psp_actor->state.action_data.converse.conversation_index == conversation_index))
+					{
+						platform_psp_log("aitickoldconvscan: game time %ld | conversation %08lx ended but actor %08lx still names it (orders %08lx, action %d, converse %08lx)",
+							(long)game_time_get(), (unsigned long)conversation_index, (unsigned long)psp_iterator.index,
+							(unsigned long)psp_actor->external_orders.conversation_index, (int)psp_actor->state.action,
+							(unsigned long)psp_actor->state.action_data.converse.conversation_index);
+						psp_convend_lines++;
+					}
+			}
+		}
+	}
+
+	return;
+}
+"""),
+]
 FIXES_AITICKOLD["source/ai/actors.c#aitickoldbuf"] = [
 ("""	unsigned long asked, used, inline_passes, queue_carried;
 } psp_aitickold_stats;
