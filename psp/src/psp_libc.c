@@ -424,12 +424,18 @@ psp_me_context names), a format is refused: the caller's text is left
 empty, and the format counted, on lines only the ME writes, for the main
 CPU's log (psp_format_refused_log) */
 #define FORMAT_REFUSED_KINDS 15
-static struct
+/* the type aligned, not only the variable, so its size rounds up to whole
+lines: with the variable alone aligned the struct was 124 bytes and the link
+put format_depth in its last word, a line both CPUs wrote (the ME's cache
+model, the lab's cohere162: the main CPU's format_depth undone by the ME's
+write-back) */
+static struct __attribute__((aligned(64)))
 {
 	const char *format[FORMAT_REFUSED_KINDS];
 	unsigned int count[FORMAT_REFUSED_KINDS];
 	unsigned int other;
-} format_refused __attribute__((aligned(64)));
+} format_refused;
+_Static_assert(sizeof(format_refused) % 64 == 0, "format_refused must fill whole lines");
 
 int psp_format_refused(const char *format)
 {
