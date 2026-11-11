@@ -51,10 +51,25 @@ The engine's `object_compute_node_matrices_with` (and its postprocess), the unit
 
 **Upstream manifest** (`psp/boxes/posing.upstream`, REBUILD.md §5b): `objects.c` object_compute_node_matrices_with and its callers' node reads, `models.c` model_find_marker / model_get_marker_by_name, `units.c`'s node preprocess, the animation interpolation it consumes; taken at the rebased pin (§5c).
 
+## 6b. v0's cut, and the capture
+
+**v0 is the walk** (Sierra-III `bottleneck/box-posing`: `psp/src/box_posing.c`, its adapter `bench/halo_box/adapters/posing.c`): the root's matrix from the object's place (translation, rotation from forward and up, mirrored, the physics' centre of mass and the origin offset, under the parent's node with its scale taken out and its mirror applied) and each node's matrix from its orientation under its parent, in a per-model plan's order (the engine's node-stack order over the tag's links, made once a map) in place of the links' reads; then the bounding sphere. **Upstream of it, still the engine's in v0** and captured as their result: the animation decode (the ME's pose-ahead), the overlays, the object's scale, the type's preprocess (the units' aim and look) and the interpolation. They join the box after the walk is priced alone, each with its own share of the 2.3 ms, so the pilot answers its question (can a node be made in ~2.3 µs alone) first. The units' postprocess (IK) stays the engine's in v0 too.
+
+**The capture** (`PSP_CAPTURE=posing`, a recon build's hook; the master builds it, REBUILD.md §5, the lab's `research/opportunities/harness.md` §7). At `object_compute_node_matrices`' walk, for each object it poses in a sampled tick:
+- **in**, taken where the walk starts (after the interpolation): the model's key, the flags (world relative; mirrored; attached, with the parent object mirrored; with physics; placed with no model), the object's position, forward and up, its physics' centre of mass negated, its definition's origin offset, bounding offset and radius, its scale, the parent's node matrix if attached, the node count and the node orientations (32 bytes each, by node index);
+- **out**, taken where the function returns: the node matrices (52 bytes each, by node index) and the bounding sphere's centre and radius;
+- **static**, once a model a capture: its node table as the tag has it (parent, first child, next sibling a node);
+- **kind:** the object's type; **id:** the object's datum index.
+
+The records, byte for byte, are in the adapter's head. **Tolerance:** relative, 1e-4 of the larger magnitude or 1e-3 absolute (the PSP's old code multiplies on the VFPU, whose last bits differ from the box's FPU, and a node's error grows down its chain). **Budget an entity:** ~25 µs an object (2.3 ms over the ~91 objects b30's flight poses a tick [E]).
+
+**Proven so far** [desktop only]: over a made-up capture (random trees of 1-64 nodes and random places, `tools/cap1.py posing`, whose outputs are the engine's walk restated in Python: its node stack and matrix4x3_multiply term for term), **1,456 objects, 0 outside the tolerance**, and a spoiled output named (`bench/halo_box/host/test.sh`). Not yet: the PSP toolchain's build, a capture of the game, any time.
+
 ## 7. Proof
 
 Against the capture first: every posed object's node matrices equal the old code's within the box's tolerance (bit-identical where the maths is the same; the VFPU product's last bits where it isn't), and every object a reader read was posed. Then in the frame: play and both seeds on c20, a30, b30 and d20 if the maths is identical, the outcome census if not; pictures only if the ME writes node blocks (§3).
 
 ## 8. States
 
-- 2026-11-11: spec (this page). The capture and harness are REBUILD.md §7 step 2 (research designs, the master builds; `research/opportunities/harness.md` takes posing as its worked example).
+- 2026-11-11: spec (this page).
+- 2026-11-11: v0's walk and its adapter built (§6b, Sierra-III bottleneck/box-posing), proven on a desktop over a made-up capture; the game's capture (`PSP_CAPTURE=posing`) is the master's to build. The capture and harness are REBUILD.md §7 step 2 (research designs, the master builds; `research/opportunities/harness.md` takes posing as its worked example).
