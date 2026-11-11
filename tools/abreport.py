@@ -152,8 +152,8 @@ def player_path(path):
 
 
 def parted_at(base_paths, other_paths):
-    """the first game time the sides' players are more than PART_UNITS apart
-    on two samples running (a change that isn't exact makes a pad replay play
+    """the game time from which the sides' players stay more than PART_UNITS
+    apart to the run's end, on two samples or more (a change that isn't exact makes a pad replay play
     a different game from there on, so later stretches compare different
     games); None if never. The other run's place is interpolated to the base
     run's game time, since their heartbeats fall at different ticks"""
@@ -168,18 +168,22 @@ def parted_at(base_paths, other_paths):
     first = None
     for a in base_paths:
         for b in other_paths:
-            run_apart = 0
+            # the parting is the start of the last run of samples apart, if it lasts to the
+            # run's end: a ride both sides follow (the Pelican moves ~10 units a heartbeat, so
+            # the interpolation strays) comes back together, a parted game doesn't
+            streak_start, streak = None, 0
             for g, x, y, z in a:
                 q = place(b, g)
                 if q is None:
                     continue
                 if ((q[0] - x) ** 2 + (q[1] - y) ** 2 + (q[2] - z) ** 2) ** 0.5 > PART_UNITS:
-                    run_apart += 1
-                    if run_apart == 2:
-                        first = g if first is None else min(first, g)
-                        break
+                    if streak == 0:
+                        streak_start = g
+                    streak += 1
                 else:
-                    run_apart = 0
+                    streak = 0
+            if streak >= 2:
+                first = streak_start if first is None else min(first, streak_start)
     return first
 
 def verdict(base, other):
