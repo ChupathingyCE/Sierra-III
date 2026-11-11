@@ -44398,6 +44398,18 @@ void psp_aitickold_conv_tick(
 
 	if (!psp_aitickold_conv_scan || psp_aime_think_only) /* not in a thinking pass (the ME's, or the main CPU's ahead) */
 		return;
+	{
+		/* once a map: where the conversations' datums lie, for the write trace */
+		static void *logged_for = NULL;
+
+		if (logged_for != (void *)conversation_data)
+		{
+			logged_for = (void *)conversation_data;
+			platform_psp_log("aitickoldconvscan: conversation_data at %p, its datums at %p, %d datums of %d bytes",
+				(void *)conversation_data, (void *)conversation_data->data,
+				(int)conversation_data->maximum_count, (int)conversation_data->size);
+		}
+	}
 	actor_iterator_new(&iterator, TRUE);
 	while ((actor = actor_iterator_next(&iterator)) != NULL)
 	{
