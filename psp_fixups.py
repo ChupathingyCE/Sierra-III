@@ -29372,6 +29372,224 @@ FIXES_DRAWCOLD["source/models/models.c#debuggate"] = [
 ]
 
 
+# ---------- FIXES_LSAME: an attached light's relink skipped when nothing it
+# reads changed (lever LSAME; keep word "lsame", off; "lsamecount" counts only)
+# A relink leaves the light's clusters and joins them again from its sphere
+# (position and radius) and the cluster it starts in, and the clusters' lists
+# are read only by drawing (FIXES_LD1's note: the lights that light an
+# object, and the map's light pass). When the sphere and the start cluster are
+# the same bit for bit, the light joins the same clusters; skipping the relink
+# keeps it where it was in each cluster's list instead of moving it first, so
+# only the lists' order can differ, and with it which lights a lit object
+# picks when it has more than it can take. The light's own fields (position,
+# forward, up) are written as the relink writes them. "lsamecount" makes the
+# same test without skipping and logs how often it holds, for the share
+FIXES_LSAME = {}
+FIXES_LSAME["source/objects/object_lights.c#lsame"] = [
+("""/* a light of a cluster, for find_point_lights_for_object_in_cluster: as""",
+"""/* 1: the relink is done (or skipped) here; 0: the caller relinks as before */
+int psp_light_relink(
+	long light_index)
+{
+	struct light_datum *light;
+	struct psp_lsame_entry *entry;
+	struct location location;
+	real_point3d position;
+	real radius;
+	unsigned long bits[4];
+	short absolute_index = DATUM_INDEX_TO_ABSOLUTE_INDEX(light_index);
+	boolean same;
+
+	if (psp_lsame_on < 0)
+	{
+		psp_lsame_count_only = psp_keep("lsamecount") != 0;
+		psp_lsame_exact = psp_keep("lsameexact") != 0;
+		psp_lsame_on = psp_lsame_count_only || psp_lsame_exact || psp_keep("lsame") != 0;
+		if (psp_lsame_on)
+		{
+			/* a table of its own in .bss, not the heap: an allocation only
+			with the word on moved later allocations, and c20's pictures
+			differed with it on and almost nothing skipped (lsame4) */
+			psp_lsame = psp_lsame_table;
+			csmemset(psp_lsame, 0xFF, MAXIMUM_LIGHTS_PER_MAP * sizeof(*psp_lsame));
+			platform_psp_log(psp_lsame_on ? "lsame: an attached light's relink %s when its sphere and cluster are the same" :
+				"lsame: no room for its table; off", psp_lsame_count_only ? "counted" : "skipped");
+		}
+	}
+	light = light_get(light_index);
+	if (!psp_lsame_on || absolute_index < 0 || absolute_index >= MAXIMUM_LIGHTS_PER_MAP ||
+		!TEST_FLAG(light->flags, _point_light_connects_to_map_bit) ||
+		!TEST_FLAG(light->flags, _point_light_connected_to_map_bit))
+		return 0;
+	/* the relink's own reads, as light_reconnect_to_map makes them */
+	if (light->parent_light_index == NONE)
+	{
+		struct object_marker markers[1];
+
+		object_get_marker_by_name(
+			light->object_index,
+			object_get_attachment_marker_name(light->object_index, light->attachment_marker_index),
+			markers,
+			1);
+		light->position = markers[0].matrix.position;
+		light->forward = markers[0].matrix.forward;
+		light->up = markers[0].matrix.up;
+	}
+	else if (object_try_and_get(light->object_index))
+	{
+		real_matrix4x3 *node_matrix = object_get_node_matrix(light->object_index, light->attachment_marker_index);
+
+		matrix4x3_transform_point(node_matrix, &light->node.relative_position, &light->position);
+		matrix4x3_transform_normal(node_matrix, &light->node.relative_forward, &light->forward);
+		perpendicular3d(&light->forward, &light->up);
+		normalize3d(&light->up);
+	}
+	light_compute_bounding_sphere(light_index, TRUE, FALSE, TRUE, &position, &radius);
+	if (light->object_index != NONE && object_try_and_get(light->object_index))
+		object_get_location(light->object_index, &location);
+	else
+		scenario_location_from_point(&location, &position);
+	csmemcpy(bits, &position, 12);
+	csmemcpy(&bits[3], &radius, 4);
+	entry = &psp_lsame[absolute_index];
+	same = entry->cluster_index != NONE && entry->generation == psp_lsame_generation &&
+		entry->identifier == light->header.identifier && entry->cluster_index == location.cluster_index &&
+		entry->bits[0] == bits[0] && entry->bits[1] == bits[1] && entry->bits[2] == bits[2] && entry->bits[3] == bits[3];
+	psp_lsame_relinks++;
+	if (same)
+	{
+		long reference, cluster;
+		boolean clear = TRUE;
+
+		psp_lsame_same++;
+		for (cluster = cluster_partition_get_first_cluster(&light_cluster_partition, &reference, light->cluster_reference);
+			cluster != NONE && clear;
+			cluster = cluster_partition_get_next_cluster(&light_cluster_partition, &reference))
+		{
+			long first_reference;
+
+			clear = cluster_partition_get_first_datum(&light_cluster_partition, &first_reference, (short)cluster) == light_index;
+		}
+		if (clear)
+			psp_lsame_free++;
+		else if (psp_lsame_exact)
+			same = FALSE;
+	}
+	if (game_time_get() / 900 != psp_lsame_logged)
+	{
+		psp_lsame_logged = game_time_get() / 900;
+		platform_psp_log("lsame: game time %ld | relinks %lu, the same sphere and cluster %lu (%lu%%), of them first in all their clusters' lists %lu (%lu%%: the list-order rule's share); skipped %lu (%s)",
+			(long)game_time_get(), psp_lsame_relinks, psp_lsame_same,
+			psp_lsame_relinks ? psp_lsame_same * 100 / psp_lsame_relinks : 0, psp_lsame_free,
+			psp_lsame_relinks ? psp_lsame_free * 100 / psp_lsame_relinks : 0, psp_lsame_skipped,
+			psp_lsame_count_only ? "counting only" : psp_lsame_exact ? "the list-order rule" : "any same");
+	}
+	if (same && !psp_lsame_count_only)
+	{
+		psp_lsame_skipped++;
+		return 1;
+	}
+	/* the relink, as light_disconnect_from_map and light_reconnect_to_map
+	make it, from the reads above */
+	cluster_partition_disconnect(&light_cluster_partition, light_index, &light->cluster_reference);
+	cluster_partition_reconnect(&light_cluster_partition, light_index, &light->cluster_reference, &position, radius, &location);
+	entry->bits[0] = bits[0];
+	entry->bits[1] = bits[1];
+	entry->bits[2] = bits[2];
+	entry->bits[3] = bits[3];
+	entry->generation = psp_lsame_generation;
+	entry->identifier = light->header.identifier;
+	entry->cluster_index = location.cluster_index;
+	return 1;
+}
+
+/* a light of a cluster, for find_point_lights_for_object_in_cluster: as"""),
+("""	real radius;
+
+	if (light->parent_light_index == NONE)
+	{
+		object_get_marker_by_name(""",
+"""	real radius;
+
+	/* (FIXES_LSAME) a relink not made through psp_light_relink: its entry no
+	longer says what the light joined from */
+	psp_lsame_forget(light_index);
+	if (light->parent_light_index == NONE)
+	{
+		object_get_marker_by_name("""),
+("""void lights_reconnect_to_structure_bsp(
+	void)
+{
+	long light_index;
+""", """/* psp_fixups.py (FIXES_LSAME): what each light last joined its clusters
+from, by its absolute index; an entry holds only while the light is
+connected through psp_light_relink and the level's BSP is the one it was
+made in */
+int psp_keep(const char *name);
+void platform_psp_log(const char *format, ...);
+struct psp_lsame_entry
+{
+	unsigned long bits[4]; /* the sphere: x, y, z, radius */
+	unsigned long generation;
+	short identifier;
+	short cluster_index; /* NONE: empty */
+};
+static struct psp_lsame_entry psp_lsame_table[MAXIMUM_LIGHTS_PER_MAP];
+static struct psp_lsame_entry *psp_lsame = NULL;
+static int psp_lsame_on = -1, psp_lsame_count_only = 0, psp_lsame_exact = 0;
+/* the list-order rule ("lsameexact"): a relink puts the light first in each
+of its clusters' lists, and what happens to the lists after it is the same
+whether it ran or not; so a skip leaves every list as the relink would have
+exactly when the light is already first in each of them */
+static unsigned long psp_lsame_free;
+static unsigned long psp_lsame_generation = 1;
+static unsigned long psp_lsame_relinks, psp_lsame_same, psp_lsame_skipped;
+long cluster_partition_get_first_cluster(struct cluster_partition const *partition, long *reference_index, long first_cluster_reference);
+long cluster_partition_get_next_cluster(struct cluster_partition const *partition, long *reference_index);
+static long psp_lsame_logged = -1;
+
+static void psp_lsame_forget(
+	long light_index)
+{
+	if (psp_lsame && light_index != NONE && DATUM_INDEX_TO_ABSOLUTE_INDEX(light_index) < MAXIMUM_LIGHTS_PER_MAP)
+		psp_lsame[DATUM_INDEX_TO_ABSOLUTE_INDEX(light_index)].cluster_index = NONE;
+}
+
+void lights_reconnect_to_structure_bsp(
+	void)
+{
+	long light_index;
+
+	psp_lsame_generation++; /* (FIXES_LSAME) another BSP */
+"""),
+]
+FIXES_LSAME["source/objects/objects.c#lsame"] = [
+("""				if (disconnect)
+				{
+					light_disconnect_from_map(object->object.attachment_indices[i]);
+				}
+				if (reconnect)
+				{
+					light_reconnect_to_map(object->object.attachment_indices[i]);
+				}
+""", """#ifdef HALO_PSP
+				/* psp_fixups.py (FIXES_LSAME) */
+				extern int psp_light_relink(long light_index);
+
+				if (disconnect && reconnect && psp_light_relink(object->object.attachment_indices[i]))
+					continue;
+#endif
+				if (disconnect)
+				{
+					light_disconnect_from_map(object->object.attachment_indices[i]);
+				}
+				if (reconnect)
+				{
+					light_reconnect_to_map(object->object.attachment_indices[i]);
+				}
+"""),
+]
+
 # ---------- FIXES_LD1: attached lights re-linked once a frame (lever LD1)
 # object_connect_lights re-links every updated object's attached lights to the
 # map every tick (2.57 ms a tick on b30, PSP-1000), but only drawing reads the
@@ -48925,7 +49143,7 @@ static void prioritize_sounds(
 ]
 
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_SSPR.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items()) + list(FIXES_AIME2A.items()) + (list(FIXES_STACKHOT.items()) if STACKHOT else []) + (list(FIXES_STACKHOT2.items()) if STACKHOT2 else []) + list(FIXES_PWSL.items()) + list(FIXES_SPHSL.items()) + list(FIXES_RECONLIST.items()) + list(FIXES_TP1.items()) + list(FIXES_WXDEAD.items()) + list(FIXES_AIMEMOVE.items()) + list(FIXES_PROPCRASH.items()) + list(FIXES_APCPOOL.items()) + list(FIXES_SNDEDRAM.items()) + list(FIXES_LIGHTFIRST.items()) + list(FIXES_DRAWPART.items()) + (list(FIXES_RECONLATE.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + list(FIXES_P2PASS.items()) + (list(FIXES_P2CENSUS.items()) if P2CENSUS else []) + list(FIXES_OBSRAY.items()) + list(FIXES_SNDWAIT.items()) + list(FIXES_FLAMEDECAL.items()) + list(FIXES_HUHINT.items()) + list(FIXES_DBLSOFT.items()) + list(FIXES_VFPUTRIG.items()) + list(FIXES_TICKCACHE.items()) + list(FIXES_STRICTALIAS.items()) + list(FIXES_SNDPERMAP.items()) + list(FIXES_RLOOP.items()) + list(FIXES_L10.items()) + list(FIXES_RLSKIP.items()) + list(FIXES_ONEWALK.items()) + (list(FIXES_POSEK.items()) if POSEK else []) + (list(FIXES_SNDSTREAM.items()) if os.environ.get("PSP_SNDSTREAM", "") == "1" else []) + list(FIXES_MOUTHCLOCK.items())):
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_SSPR.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items()) + list(FIXES_AIME2A.items()) + (list(FIXES_STACKHOT.items()) if STACKHOT else []) + (list(FIXES_STACKHOT2.items()) if STACKHOT2 else []) + list(FIXES_PWSL.items()) + list(FIXES_SPHSL.items()) + list(FIXES_RECONLIST.items()) + list(FIXES_TP1.items()) + list(FIXES_WXDEAD.items()) + list(FIXES_AIMEMOVE.items()) + list(FIXES_PROPCRASH.items()) + list(FIXES_APCPOOL.items()) + list(FIXES_SNDEDRAM.items()) + list(FIXES_LIGHTFIRST.items()) + list(FIXES_DRAWPART.items()) + (list(FIXES_RECONLATE.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + list(FIXES_P2PASS.items()) + (list(FIXES_P2CENSUS.items()) if P2CENSUS else []) + list(FIXES_OBSRAY.items()) + list(FIXES_SNDWAIT.items()) + list(FIXES_FLAMEDECAL.items()) + list(FIXES_HUHINT.items()) + list(FIXES_DBLSOFT.items()) + list(FIXES_VFPUTRIG.items()) + list(FIXES_TICKCACHE.items()) + list(FIXES_STRICTALIAS.items()) + list(FIXES_SNDPERMAP.items()) + list(FIXES_RLOOP.items()) + list(FIXES_L10.items()) + list(FIXES_RLSKIP.items()) + list(FIXES_ONEWALK.items()) + (list(FIXES_POSEK.items()) if POSEK else []) + (list(FIXES_SNDSTREAM.items()) if os.environ.get("PSP_SNDSTREAM", "") == "1" else []) + list(FIXES_MOUTHCLOCK.items()) + list(FIXES_LSAME.items())):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
