@@ -44198,7 +44198,7 @@ FIXES_AITICKOLD["source/ai/actors.c#stalecensus"] = [
 	struct actor_datum *actor;
 """, """/* psp_fixups.py (FIXES_AITICKOLD #stalecensus) */
 static int psp_stale_on = -1;
-void psp_aitickold_conv_tick(void);
+void psp_aitickold_conv_tick(long after_actor);
 
 static void psp_stale_census(
 	void)
@@ -44268,10 +44268,25 @@ void actors_update(
 	struct actor_datum *actor;
 
 	psp_stale_census(); /* (FIXES_AITICKOLD #stalecensus) */
-	psp_aitickold_conv_tick(); /* (FIXES_AITICKOLD #aitickoldbuf: aitickoldconvscan) */
+	psp_aitickold_conv_tick(NONE); /* (FIXES_AITICKOLD #aitickoldbuf: aitickoldconvscan) */
 """),
 ]
 
+# "aitickoldconvscan" after each actor's update too (s3o19_b40: never seen
+# at the tick's start or an install, yet the fault came: the name goes dead
+# inside the actors' pass)
+FIXES_AITICKOLD["source/ai/actors.c#convscanafter"] = [
+("""static void actor_update_end(
+	void)
+{
+	global_updating_actor_index = NONE;
+""", """static void actor_update_end(
+	void)
+{
+	psp_aitickold_conv_tick(global_updating_actor_index); /* (FIXES_AITICKOLD #convscanafter) */
+	global_updating_actor_index = NONE;
+"""),
+]
 FIXES_AITICKOLD["source/ai/actors.c#aitickoldbuf"] = [
 ("""	unsigned long asked, used, inline_passes, queue_carried;
 } psp_aitickold_stats;
@@ -44315,14 +44330,14 @@ static boolean psp_aitickold_conv_lists(
 /* every actor at the tick's start, on the main CPU: the first tick each
 (actor, conversation) pair is found gone or unlisted */
 void psp_aitickold_conv_tick(
-	void)
+	long after_actor)
 {
 	static long seen_actor[24], seen_conversation[24];
 	static short seen = 0;
 	struct actor_iterator iterator;
 	struct actor_datum *actor;
 
-	if (!psp_aitickold_conv_scan)
+	if (!psp_aitickold_conv_scan || psp_aime_think_only) /* not in a thinking pass (the ME's, or the main CPU's ahead) */
 		return;
 	actor_iterator_new(&iterator, TRUE);
 	while ((actor = actor_iterator_next(&iterator)) != NULL)
@@ -44341,8 +44356,10 @@ void psp_aitickold_conv_tick(
 		seen_actor[seen] = iterator.index;
 		seen_conversation[seen++] = c;
 		gone = datum_try_and_get(conversation_data, c) == NULL;
-		platform_psp_log("aitickoldconvscan: game time %ld | tick start: actor %d names conversation %08lx, %s; action %d, its converse index %08lx; a frame's last tick %d",
-			(long)game_time_get(), (int)DATUM_INDEX_TO_ABSOLUTE_INDEX(iterator.index), (unsigned long)c,
+		platform_psp_log("aitickoldconvscan: game time %ld | %s%d: actor %d names conversation %08lx, %s; action %d, its converse index %08lx; a frame's last tick %d",
+			(long)game_time_get(), after_actor == NONE ? "tick start" : "after the update of actor ",
+			after_actor == NONE ? 0 : (int)DATUM_INDEX_TO_ABSOLUTE_INDEX(after_actor),
+			(int)DATUM_INDEX_TO_ABSOLUTE_INDEX(iterator.index), (unsigned long)c,
 			gone ? "gone" : "alive but not listing it", (int)actor->state.action,
 			(unsigned long)actor->state.action_data.converse.conversation_index, psp_lights_link_tick != 0);
 	}
