@@ -31,6 +31,7 @@ caches between entities, and the GE as a bus contender. harness.c is the rest.
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include "harness.h"
 
 PSP_MODULE_INFO("halo_box", 0, 1, 0);
@@ -320,7 +321,7 @@ static void keep_read(void)
 static char file_names[FILES_MOST][96];
 static const char *files[FILES_MOST];
 
-static int by_name(const void *a, const void *b) { return strcmp((const char *)a, (const char *)b); }
+static int by_name(const void *a, const void *b) { return strcasecmp((const char *)a, (const char *)b); }
 
 static int capture_files(void)
 {
@@ -336,8 +337,11 @@ static int capture_files(void)
 		size_t length = strlen(entry.d_name);
 
 		seen++;
-		if (length > 4 && length < 64 && !strcmp(entry.d_name + length - 4, ".cap"))
+		/* (a stick's short names come back in capitals) */
+		if (length > 4 && length < 64 && !strcasecmp(entry.d_name + length - 4, ".cap"))
 			snprintf(file_names[count++], sizeof(file_names[0]), "ms0:/halo/capture/%s", entry.d_name);
+		else if (entry.d_name[0] != '.')
+			plat_out("ms0:/halo/capture: '%.60s' is not a capture by its name", entry.d_name);
 		memset(&entry, 0, sizeof(entry));
 	}
 	sceIoDclose(folder);
