@@ -57,10 +57,15 @@ The clock is `sceKernelGetSystemTimeLow`: 1 µs steps, 0.57 µs a read [M]. A si
 
 `psp/src/psp_cap1.h` is the format; `selftest_capture.c` writes one in C and `tools/cap1.py` reads and writes them on a desktop (`cap1.py info FILE`). A capture of the game is game data: it never comes into this repository.
 
+## The emulator twin
+
+The same EBOOT under the emulator's cache models gives exact counts an entity, which a PSP's counters are then checked against: `harness.c` names what it is doing in a word (`box_phase`: 0 the harness, then mode + 1 while the box runs an entity in its per-entity pass, alone), and the models split their counts by it. Per entity and mode: instructions run, cached data accesses, data misses, instruction misses, dirty lines written back. The crowded mode's instruction misses are the entity's footprint in lines of code, and the emptied or crowded mode's data misses its footprint in lines of data (the instruction model isn't emptied by the firmware's invalidate, so the emptied mode's instruction misses are not the PSP's: read the code's footprint from the crowded mode).
+
+The self-test box, as the first worked example [E]: 326 instructions and 102 data accesses an entity; data misses 2.3 warm, 12.1 emptied and crowded; instruction misses 0 warm, 5.0 crowded; in the crowded mode every data miss wrote a dirty line back, as that mode intends. Against the PSP-3000's times for the same box [M]: the 15 misses the emptied mode adds cost 2.74 µs, 61 cycles a miss; the crowded mode's cost 3.93 µs, which is ~100 cycles for each data miss behind a dirty line. Both agree with the port's measured figures for a miss, which is the harness's modes doing what they say.
+
 ## Not in version 1
 
 - **Boxes that run on the Media Engine.**
-- **The emulator's exact misses an entity** (the cache model beside the same EBOOT).
 
 ## The desktop test
 
