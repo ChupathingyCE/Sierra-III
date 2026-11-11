@@ -44213,7 +44213,7 @@ static void psp_stale_census(
 	if (!psp_stale_on || now < 3600 || now > 6300 || now % 300)
 		return;
 	actor_iterator_new(&iterator, TRUE);
-	while ((actor = actor_iterator_next(&iterator)) != NULL && lines < 40)
+	while ((actor = actor_iterator_next(&iterator)) != NULL && lines < 20)
 	{
 		struct prop_iterator props;
 		struct prop_datum *prop;
@@ -44250,6 +44250,13 @@ static void psp_stale_census(
 			(int)actor->target.target_type, target_player,
 			actor->target.target_last_visible_time == NONE ? -1L : (long)(now - actor->target.target_last_visible_time),
 			enemies, acknowledged, seen, sight, allies);
+		platform_psp_log("stalecensus: game time %ld | actor %d control: moving %d, throttle %.2f %.2f, movement %d | fire state %d (timer %d), burst disable %d, trigger delay %d, fire target type %d (visible %d, timer %ld), trigger %.2f | output flags %08lx",
+			now, (int)DATUM_INDEX_TO_ABSOLUTE_INDEX(iterator.index), (int)actor->control.moving,
+			actor->output.throttle.i, actor->output.throttle.j, (int)actor->output.movement_type,
+			(int)actor->control.fire_state, (int)actor->control.fire_state_timer, (int)actor->control.burst_disable_timer,
+			(int)actor->control.trigger_delay_timer, (int)actor->control.current_fire_target_type,
+			(int)actor->control.current_fire_target_visible, (long)actor->control.current_fire_target_timer,
+			actor->output.analog_primary_trigger, (unsigned long)actor->output.control_flags);
 		lines++;
 	}
 }
