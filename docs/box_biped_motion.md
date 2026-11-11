@@ -56,9 +56,10 @@ Alone, against a capture of a pad bench (one of Sheepdog01's recordings): per bi
 ## 8. States
 
 - 2026-11-11: spec started, from the world store's layout and the collision draft; waits on the pilot's price before any code.
+- 2026-11-11: the hazard's reach, first read (Open 1): half of a biped's reads of other bipeds land on ones updated earlier this tick; bipeds write other bipeds and scenery 91 times a tick.
 
 ## Open
 
-1. Serial or parallel form: a census of how often a biped's queries meet a mover updated earlier in the same tick (the hazard's reach), before the parallel form is designed. `[enables:biped motion]`
+1. **Serial or parallel form: the hazard's reach, first read** [E counts, worldmap1's object trace, the emulator's `cross` lines over b30, b40, d20 and a30, 16,954 ticks]. During a biped's update, **its loads of other bipeds' data run 370 a tick into bipeds updated earlier this tick and 351 into later ones**, on their position, velocity, forward and up (+12 to +56); into vehicles 92 earlier and 9 later; into scenery 920 and 448 (most of it asleep and unchanged, so the order doesn't matter there). So about half of what a biped reads of other bipeds already holds this tick's values today, and the parallel form would show it last tick's instead: that half is the play the census has to hold. **A biped also writes others' data**: 27 stores a tick into other bipeds (position, velocity, forward and up, and +144 to +168) and 64 into scenery (moved or pushed), so the parallel form needs those as requests the serial phase applies, not stores. Still to count: how many of the earlier reads find words that changed this tick (a mover that moved), which is the hazard's true size. `[enables:biped motion]`
 2. The collision service's own page (`box_collision.md`), from `collision.md` once it's verified line by line.
 3. Posing called from inside the motion's steps: the posing box takes those calls as declared readers (`box_posing.md`); which ones the motion needs before its own move ends is to read in code.
