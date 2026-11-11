@@ -1184,7 +1184,7 @@ static const struct
 {
 	const char *word, *off;
 } keep_levers[] = {
-	{ "wxdead", "wxdeadoff" }, { "texavg", "texavgoff" }, { "lightcarry", "lightcarryoff" }, { "lviewcull", "lviewculloff" }, { "sndedram", "sndedramoff" },
+	{ "wxdead", "wxdeadoff" }, { "texavg", "texavgoff" }, { "lightcarry", "lightcarryoff" }, { "lviewcull", "lviewculloff" }, { "novfpufwd", "vfpufwd" }, { "sndedram", "sndedramoff" },
 	{ "lightringlook", "lightringlookoff" }, { "aimeobslook", "aimeobslookoff" }, { "lightfirst", "lightfirstoff" },
 	{ "sndtierback", "sndtierbackoff" }, { "drawpart", "drawpartoff" }, { "p2pass", "p2passoff" },
 	{ "mepointsclaim", "mepointsclaimoff" }, { "aimepathlook", "aimepathlookoff" }, { "aimeringlook", "aimeringlookoff" },
@@ -1268,6 +1268,9 @@ static void keep_defaults_add(void)
 	lviewcull: a triangle the flashlight would split is left out first when
 	it draws nothing wherever it's cut (exact; d20's flashlight light draws
 	-4 to -9% on the PSP-1000).
+	novfpufwd: the GE's forwarding thread made without the VFPU attribute,
+	so its wakes don't move the VFPU's context (exact; b30's cinematic
+	-0.6% on the PSP-1000).
 	sndedram: the sound cache's last pages in the ME's eDRAM, copied in by
 	the ME (plays the same; 528 KB of heap back). musadpcm (the disc's
 	44.1 kHz music mixed at its own rate, with a bake made with
