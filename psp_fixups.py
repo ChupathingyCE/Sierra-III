@@ -44075,6 +44075,45 @@ int psp_aitickold_trueclock = 0;
 # the record room full) loses its mark and thinks whole in the second tick,
 # as an actor the pass didn't reach. Actors handed back in the first pass,
 # and swarms, aren't thought in the second: they think whole in the tick
+# "aitickoldconv" (log only, with aitickold): s3o13_b40 and s3o14_b40 faulted
+# in actor_action_can_stop_conversing on a conversation index whose datum was
+# gone, and the record install's guard never saw one. This reports each such
+# read (the actor, the index, the game time, its action) and reads it as no
+# conversation, so the run goes on to report the next (reads in the ME's
+# thinking are counted, not logged: the log refuses formats there)
+FIXES_AITICKOLD["source/ai/actions.c#aitickoldconv"] = [
+("""	long conversation_index = actor->external_orders.conversation_index;
+	boolean result = TRUE;
+
+	if (conversation_index != NONE)
+	{""", """	long conversation_index = actor->external_orders.conversation_index;
+	boolean result = TRUE;
+
+#ifdef HALO_PSP
+	{
+		/* psp_fixups.py (FIXES_AITICKOLD #aitickoldconv) */
+		int psp_keep(const char *name);
+		void platform_psp_log(const char *format, ...);
+		static int psp_conv_check = -1;
+		static unsigned long psp_conv_dead = 0;
+
+		if (psp_conv_check < 0)
+			psp_conv_check = psp_keep("aitickoldconv") != 0;
+		if (psp_conv_check && conversation_index != NONE && !datum_try_and_get(conversation_data, conversation_index))
+		{
+			if (psp_conv_dead++ < 16) /* (refused on the ME: psp_libc.c) */
+				platform_psp_log("aitickoldconv: game time %ld | actor %d (%08lx) reads conversation %08lx, gone; action %d, its converse index %08lx (%lu so far)",
+					(long)game_time_get(), (int)DATUM_INDEX_TO_ABSOLUTE_INDEX(actor_index), (unsigned long)actor_index,
+					(unsigned long)conversation_index, (int)actor->state.action,
+					(unsigned long)actor->state.action_data.converse.conversation_index, psp_conv_dead);
+			conversation_index = NONE;
+		}
+	}
+#endif
+	if (conversation_index != NONE)
+	{"""),
+]
+
 FIXES_AITICKOLD["source/ai/actors.c#aitickoldbuf"] = [
 ("""	unsigned long asked, used, inline_passes, queue_carried;
 } psp_aitickold_stats;
