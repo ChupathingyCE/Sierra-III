@@ -160,7 +160,7 @@ is newer (network_client_manager.c). A host advertises it, with its netcode,
 in its game's advertisement's reserved bytes (network_server_message_handler.c),
 which hosts built before there was a version send as zeros: version 0.
 Raise it with any change to what the machines send each other. The PSP's
-numbers are the engine pin's (ChupathingyCE v0.9.0d: 32, joining 11 to 42):
+numbers are the engine pin's (ChupathingyCE 6eef2f3, the 0.9.1 test build: 32, joining 11 to 42):
 move them with the pin, since the PSP compiles that pin's netcode */
 #define HALO_PORT_NETWORK_VERSION 32
 /* ... the versions whose hosts a client joins (ChupathingyCE: delta.h's

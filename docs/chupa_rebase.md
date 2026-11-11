@@ -142,7 +142,9 @@ HALO_REPO=/home/claude/chupa PSP_OUT=/tmp/psp_chupa python3 psp_build.py --jobs 
 - `PSP_MAP_CHECKS=1` builds ChupathingyCE's map checks in (trusted maps off).
 - `HALO_REPO=/tmp/halo-sp` (the default) still builds halo-ce-universal.
 
-## v0.9.0d (2026-11-11, in progress)
+## The 0.9.1 test build, 6eef2f3 (2026-11-11, in progress; first aimed at v0.9.0d)
+
+**Interim pin** (the maintainer, 2026-11-11 10:47): the 0.9.1 test build's commit `6eef2f3e3ce8` (tag `v0.9.1-testing`, a moving tag, so the sha is pinned) until 0.9.1 is released; then the pin moves to its tag and `PSP_FIXUPS_CHECK=1` runs again. 6eef2f3 is not a descendant of v0.9.0d (merge base 6f6e545; 494 commits past it, v0.9.0d's 154 own commits merged in by content). Network version still 32 (11 to 42). The work below was done against v0.9.0d first (round 1 and round 2's first half), then moved: at 6eef2f3, 42 more campaign anchors failed and 11 multiplayer ones.
 
 The pin moves from v0.7.5d (`d98982b`) to v0.9.0d (`085ad8e`), past ChupathingyCE's GPL change (the maintainer's decision, 2026-11-11; `UPSTREAM.md`). Network version 29 → 32 (joining 11 to 42; `psp_limits.h`). With the engine's configure step run, `PSP_FIXUPS_CHECK=1` listed **83 anchors** that no longer match [D]; none were cascades of an earlier failure. The engine now has console ports of its own (`HALO_XBOX_CONSOLE`, `HALO_CONSOLE_*`); the PSP defines none of them and keeps its own paths, so the PSP takes each new feature's desktop side unless a line below says otherwise.
 
@@ -164,4 +166,44 @@ The pin moves from v0.7.5d (`d98982b`) to v0.9.0d (`085ad8e`), past ChupathingyC
 
 **Multiplayer only, not compiled or checked** (the rule leaves multiplayer out): `network_objects.c`'s loop also clears the engine's new `objects_host_last_objects` and `objects_client_unsteered_path`. Co-op debt: the PSP's client-only `HOST_OBJECTS 1` shrink doesn't cover `objects_host_last_objects`.
 
-**Still to do** (`coord/handoff/rebase090.md` in the lab): 33 anchors in game_sound.c (the obstruction cache, now under `HALO_XBOX_CONSOLE` guards: 51-56), ai_debug.c, render.c, models.c, lruv_cache.c, ui_widget.c, terminal.c, hud_messaging.c, virtual_keyboard.c, path_obstacle_avoidance.c, hs_compile.c, playlist_profile.c, xbox_files.c, and the multiplayer files (network_damage.c, network_distributed.c, network_client_manager.c, p2p.c, p2p_lobby.c); then the compile, the new units' fit (`port/linux/game`'s new files), `psp_limits.h` against the engine's new `halo_port_limits.h` defines (`HALO_PORT_WIRE_NETWORK_*`, `HALO_PORT_ADVERTISED_*`), and the emulator proof.
+**Round 2: the last 33** [D]
+
+Dropped, the engine now does the fixup's work:
+- `FIXES_MENUS` `ui_widget.c#menus`, the column `draw_bitmap_in_rect` starts from (`draw_bitmap_texel_x`) and its use in the texture coordinates: the engine has both (for its wide-screen keyboard). `psp_keyboard_background` uses the engine's variable.
+- `FIXES_FRONT` `xbox_files.c#copybuffer`: `CopyFileA` takes its 64 KB buffer from the heap. What went with the fixups: the PSP's 2 KB stack buffer when the heap had no 64 KB; the copy now fails (ENOMEM) instead.
+- `FIXES_ASSERTSEVAL` `path_obstacle_avoidance.c#heap` and `hs_compile.c#variable`: the engine marks both `match_vassert_evaluated`. Under `PSP_ASSERTS_OFF` that macro fell back on the PSP's `match_vassert`, which never evaluates, so the two inserts (and the new `network_settings` read) would have been lost: `FIXES_CHUPA090` `cseries.h#evaluated` makes the evaluated forms evaluate, unchecked, when the PSP's asserts are off.
+- `FIXES_FRONT` `playlist_profile.c#variants`, the comparison: the engine leaves a default variant whose file already holds its bytes (`playlist_profile_default_file_matches`). The PSP keeps its keep word `variantswrite` (written every time) and the log's count.
+
+Re-anchored, intent kept:
+- `game_sound.c` obstruction (`FIXES_106`, `FIXES_107`): the engine's cache is under `#ifndef HALO_XBOX_CONSOLE`; the PSP's reuse rule sits inside the same guard. The five 107 anchors were cascades.
+- `ai_debug.c` path storage (`FIXES_107`): the counts are `MAXIMUM_AI_DEBUG_PATH_STORAGE` and `AI_DEBUG_ACTOR_RECORD_COUNT` now (`ai_debug_records`' sizes renamed to match). The actor records moved behind `ACTOR_DEBUG_INFO_GET` in `ai_debug.h`, out of `ai_debug_records`' sight (8 files wrapped before, 1 now): with the PSP's one record allocated, the macro would have written past it. `FIXES_CHUPA090` `ai_debug.h#records` puts its index through `PSP_DEBUG_INDEX`.
+- `render.c` (mevisland's push): after the engine's `HALO_PERF_RENDER_PART`, a no-op on the PSP.
+- `models.c` (SSPR's level): after the engine's `display.full_model_detail` choice, before the debug override, as before.
+- `lruv_cache.c` (the block walk): the engine's release build turns the walk off (`HALO_RELEASE`, which the PSP sets); on the PSP that is left to the keep word `lruvverify` as before, so the engine's line is `!HALO_PSP`.
+- `ui_widget.c` and `hud_messaging.c` (the PSP's glyphs): the engine's new `glyph_scale` and `bitmap_scale`; in the HUD the glyph's extra width also moves the engine's new gap for the words after an icon (`hud_message_icon_x1`).
+- `terminal.c` (`FIXES_CHUPA` `#render2`): the engine draws the console's output only while it's open by default now (`terminal_render_enable` starts at 2); `terminalon` draws it as 1 would.
+- `virtual_keyboard.c` (the legends' glyphs): before the engine's wide-screen sides (`HALO_PORT_WIDE_INTERFACE` is on for the PSP, but they're drawn only on a screen wider than 640).
+- `playlist_profile.c`: the loop's bound adds `NUMBER_OF_PORT_DEFAULT_PLAYLIST_PROFILES` (0 without the game browser).
+
+Carried unported, multiplayer only (8: `network_damage.c`, `network_distributed.c`, `network_client_manager.c`, `p2p.c` ×4, `p2p_lobby.c`): a campaign build doesn't compile these units, so `psp_fixups.py` reports their failed anchors (`MULTIPLAYER_ONLY`) and goes on. The engine moved toward the PSP's own work there (`P2P_JOINER_ONLY` searches its stand-ins as the PSP's `psp_proxy_at_port` did; the Online Games item under `HALO_CONSOLE_ONLINE_GAMES`): reconciled when multiplayer work resumes.
+
+The passes: `transport_endpoint_set_winsock.c`'s step line made unique (a second deadline), `gl_never` counts 12 tests of `gl_ready` (the menus' pointer's bgfx form, `halo_draw_picture`) and finds `gl_initialize` in `HALO_BGFX`'s `#else`, and `psp_build.py` drops `-DHALO_BGFX` (the new bgfx renderer). Every other pass counts as on tock162 9e74d6e with the old engine (168 files, unaligned 1, breadcrumbs 12, appended 4, skipped passes 3, designators 36, AI state 3, colours 2, interpolation 1, GL 2, COLLUSERS 24, AIMETERS 11).
+
+New engine units the campaign build compiles as they come (the desktop list leaves out only what it names): `port/linux/game/` audio_probe, chat, conduct_rules, controls_screen, determinism_check, discord_game, follow_camera, gametype_files, host_evidence, host_rules, invite_prompt, line_of_sight, loading_picture, loading_screen, map_packs, menu_style, powerup_timers, profile_names, profile_screen, stubbs_functions, stubbs_mode, team_change (network_* are multiplayer units).
+
+**Moved to 6eef2f3** [D] (round 2, second half):
+- **The perf log** (`halo_perf_log.h`, `HALO_PERF_BEGIN`/`END`/`COUNT` around the tick's parts in game.c, physics.c and objects.c's update loop: 26 anchors). The PSP never defines `HALO_PERF_LOG` (nor `HALO_CONSOLE_GL_LAYER`, which turns it on), so they're `((void)0)`; `psp_fixups.py`'s `PERF_STRIP` takes those statement lines and the include out of the three files before the anchors match (none is the lone body of an if or a loop at 6eef2f3). render.c's and main.c's `HALO_PERF_*` lines stay in their anchors, as round 1 re-anchored them.
+- `game_sound.c`: the obstruction cache's guard is `HALO_PORT_FRAMES_BETWEEN_TICKS` now (on for the PSP: below).
+- `rasterizer_lights.c` (the flare peak): before the engine's `lens_flare_test_frame` count.
+- `collision_bsp.c`: the engine's batch of vector tests (a node cache and a start node below the root). BSPR's kept answer is taken and kept only for a walk from the root (`start_node` 0, depth 0); SCRATCHBSP's scratchpad node read sits in the cache's miss branch.
+- `structure_visibility.c` (the surfaces' triangle test): the PSP's `psp_material_vertex_point` in place of the engine's new little-endian `vertex_data_read_point`.
+- `object_lights.c` (datum_get inline): after the new `plasma_lighting.h` include. `lruv_cache.c`: the engine's skip now also under `HALO_CONSOLE_NO_DEBUG_ASSERTS`; still `!HALO_PSP`. `ui_widget.c` (the boot screen's input hold): before the engine's Guide. `xbox_kernel.c` `platform_log`: the PSP's line write replaces the engine's new format-then-redact block (`log_paths_redact_line`).
+- `gl_never` counts 14 `gl_ready` tests.
+- Multiplayer carried (11 now): `network_objects.c` ×2 and `p2p_signal.c` join the 8.
+
+**The engine's console switches** (`halo_console_features.h`, the master 2026-11-11 from research's read) [D]:
+- `HALO_CONSOLE_WAITED_VISIBILITY_TESTS` set (`psp_build.py`): the lens flares' visibility tests waited in their frame as before; without it each flare gets an async slot (~360 KB of statics) and the build needs the GL layer's `d3d8_visibility_test_number`.
+- `HALO_CONSOLE_XBOX_MAP_SIZES` set: flare occlusion rows 8,192 not 32,768 (the PSP's own table is `PSP_LENS_FLARE_MARKERS` already), respawning vehicles 256 not 1,024 (-39 KB).
+- `HALO_CONSOLE_LIGHT_LIMITS` left off (a lead for the Lighting box, not the rebase).
+- `MAXIMUM_LIGHTS_PER_WINDOW` = `HALO_PORT_MAXIMUM_RENDERED_LIGHTS` = 128 on the PSP (the Xbox's: `halo_port_capacity.h` gives 512 only where not `HALO_ANDROID && !HALO_64BIT`, and the PSP sets `HALO_ANDROID`).
+- **Open, for the master: `HALO_PORT_FRAMES_BETWEEN_TICKS`** is on for the PSP (every build that isn't `HALO_XBOX_CONSOLE`). It gates the native builds' between-tick code in about 20 files (observer, contrails, particles, player effects, weather, input, first-person weapons, motion sensor, fog, render objects, sound manager, game_sound's obstruction cache ...). Through v0.9.0d that code had no guard, so the PSP built it on v0.7.5d too; turning it off would put the PSP on the Xbox console's path in all of them (and drop the obstruction cache the PSP's FIXES_106 reuse rule extends). Left on, as the old engine had it, until the master decides; the emulator batch's heap lines say what it costs against tock162.
