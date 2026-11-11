@@ -44199,6 +44199,7 @@ FIXES_AITICKOLD["source/ai/actors.c#stalecensus"] = [
 """, """/* psp_fixups.py (FIXES_AITICKOLD #stalecensus) */
 static int psp_stale_on = -1;
 void psp_aitickold_conv_tick(long after_actor);
+void psp_aitickold_conv_drain(void);
 
 static void psp_stale_census(
 	void)
@@ -44278,6 +44279,8 @@ void actors_update(
 	struct actor_datum *actor;
 
 	psp_stale_census(); /* (FIXES_AITICKOLD #stalecensus) */
+	if (!psp_aime_think_only)
+		psp_aitickold_conv_drain(); /* (FIXES_AITICKOLD #convdefer: aitickoldconvdefer) */
 	psp_aitickold_conv_tick(NONE); /* (FIXES_AITICKOLD #aitickoldbuf: aitickoldconvscan) */
 """),
 ]
@@ -44319,7 +44322,118 @@ struct psp_convend_ring_t
 };
 struct psp_convend_ring_t psp_convend_ring __attribute__((aligned(64)));
 
+/* psp_fixups.py (FIXES_AITICKOLD #convdefer, keep word "aitickoldconvdefer"):
+a conversation's end made in a thinking pass (AITICKOLD's, on the ME or the
+main CPU's ahead) is kept here and made by the main CPU at its next tick's
+start, if the datum is still the same one; one the thinking finds gone is
+passed by. The thinking works from an older world, so its ends can't go
+straight into the live pool: s3o23/s3o25_b40 lost conversations the main
+CPU's actors still named, and a thinking faulted ending one already gone.
+Its own 64-byte lines, through the uncached view only */
+#define PSP_CONVDEFER_RING 16
+struct psp_convdefer_ring_t
+{
+	unsigned long head, tail, on, kept, gone, made, stale, full, pad[8];
+	struct
+	{
+		long conversation, how, time, spare;
+	} rec[PSP_CONVDEFER_RING];
+};
+struct psp_convdefer_ring_t psp_convdefer_ring __attribute__((aligned(64)));
+#define PSP_CONVDEFER_UC ((volatile struct psp_convdefer_ring_t *)((unsigned long)&psp_convdefer_ring | 0x40000000u))
+
+/* in a thinking pass with convdefer on: kept (or passed by); TRUE when the
+caller is to do nothing more */
+static boolean psp_convdefer_keep(
+	long conversation_index,
+	boolean unable_to_begin,
+	boolean success)
+{
+	extern int psp_aitickold_thinking(void);
+	volatile struct psp_convdefer_ring_t *ring = PSP_CONVDEFER_UC;
+	unsigned long k;
+
+	if (ring->on != 1 || !psp_aitickold_thinking())
+		return FALSE;
+	if (!datum_try_and_get(conversation_data, conversation_index))
+	{
+		ring->gone = ring->gone + 1;
+		return TRUE;
+	}
+	k = ring->head;
+	if (k - ring->tail >= PSP_CONVDEFER_RING)
+	{
+		/* no room: the main CPU's next drain finds the actors naming it */
+		ring->full = ring->full + 1;
+		return TRUE;
+	}
+	ring->rec[k % PSP_CONVDEFER_RING].conversation = conversation_index;
+	ring->rec[k % PSP_CONVDEFER_RING].how = (unable_to_begin ? 1 : 0) | (success ? 2 : 0);
+	ring->rec[k % PSP_CONVDEFER_RING].time = (long)game_time_get();
+	__asm__ __volatile__("sync" ::: "memory");
+	ring->head = k + 1;
+	ring->kept = ring->kept + 1;
+	return TRUE;
+}
+
+/* the main CPU, at each tick's start outside a thinking pass */
+void psp_aitickold_conv_drain(
+	void)
+{
+	extern int psp_keep(const char *name);
+	extern void platform_psp_log(const char *format, ...);
+	volatile struct psp_convdefer_ring_t *ring = PSP_CONVDEFER_UC;
+	static long next_report = 0;
+
+	if (ring->on == 0)
+	{
+		extern void sceKernelDcacheWritebackInvalidateRange(const void *p, unsigned int size);
+
+		/* no cached copy of the rings' lines may be written back over them later */
+		sceKernelDcacheWritebackInvalidateRange(&psp_convdefer_ring, sizeof(psp_convdefer_ring));
+		sceKernelDcacheWritebackInvalidateRange(&psp_convend_ring, sizeof(psp_convend_ring));
+		ring->on = psp_keep("aitickoldconvdefer") ? 1 : 2;
+		__asm__ __volatile__("sync" ::: "memory");
+	}
+	if (ring->on != 1)
+		return;
+	while (ring->tail != ring->head)
+	{
+		unsigned long k = ring->tail;
+		long conversation_index = ring->rec[k % PSP_CONVDEFER_RING].conversation;
+		long how = ring->rec[k % PSP_CONVDEFER_RING].how;
+
+		ring->tail = k + 1;
+		if (datum_try_and_get(conversation_data, conversation_index))
+		{
+			ring->made = ring->made + 1;
+			ai_conversation_finish(conversation_index, (how & 1) != 0, (how & 2) != 0);
+		}
+		else
+			ring->stale = ring->stale + 1;
+	}
+	if ((long)game_time_get() >= next_report)
+	{
+		next_report = (long)game_time_get() + 900;
+		platform_psp_log("aitickoldconvdefer: game time %ld | ends made in a thinking pass: kept %lu, made by the main CPU %lu, gone by then %lu; found gone in the thinking %lu; no room %lu",
+			(long)game_time_get(), ring->kept, ring->made, ring->stale, ring->gone, ring->full);
+	}
+}
+
 void ai_conversation_finish(
+"""),
+]
+FIXES_AITICKOLD["source/ai/ai_communication.c#convdefer"] = [
+("""	short participant_index;
+	short actor_action;
+
+	if (conversation_index != NONE)
+""", """	short participant_index;
+	short actor_action;
+
+	if (conversation_index != NONE && psp_convdefer_keep(conversation_index, unable_to_begin, success)) /* (FIXES_AITICKOLD #convdefer) */
+		return;
+	if (conversation_index != NONE)
 """),
 ]
 FIXES_AITICKOLD["source/ai/ai_communication.c#convscanend"] = [
@@ -44436,6 +44550,14 @@ static boolean psp_aitickold_conv_lists(
 		if ((conversation->participant_bitmask & (1u << k)) && conversation->actor_indices[k] == actor_index)
 			return TRUE;
 	return FALSE;
+}
+
+/* in a thinking pass (the ME's, or the main CPU's ahead): ai_communication.c's
+convdefer asks */
+int psp_aitickold_thinking(
+	void)
+{
+	return psp_aime_think_only;
 }
 
 /* every actor at the tick's start, on the main CPU: the first tick each
