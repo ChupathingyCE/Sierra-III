@@ -26,4 +26,10 @@
 | Lines claimed a tick in play (ticks 1,800-3,600) | ~1,900 (97 copies + 77 fills, ~11 lines each) | ~1,200 |
 | Ceiling at the ~65 cycles a line the PSP-1000 measured, if every claimed line would have missed | ~0.37 ms a tick | ~0.23 ms a tick |
 
-The ceiling is a count [E] times a cost [M], a lead only: a destination line already in the cache saves nothing, and only a PSP pair prices it. Still to do, in order: one PSP run with `claimfill claimcheck` (disagreed 0 is the claim's proof on hardware), then the pair on b30's flight.
+The ceiling is a count [E] times a cost [M], a lead only: a destination line already in the cache saves nothing, and only a PSP pair prices it. ~~Still to do, in order: one PSP run with `claimfill claimcheck`, then the pair on b30's flight.~~ *(done 2026-11-11, below)*
+
+**On the PSP-3000 [M]** (2026-11-11, master; lab findings `claimfill_check_psp3000`, `claimfill_b30_pair`):
+
+- **The claim holds on hardware.** `claimfill claimcheck` over a minute of b30 (sierra-hw 43069705102): 4,071,218 lines claimed, 324,435 compared, 0 disagreed.
+- **The price is small and in one place.** The b30 pair, `- | claimfill` x2 to `exitat60` (sierra-hw 43071955144): the whole run -0.2% (106.7 / 106.6 s against 107.0 / 106.8). By 300-tick window the frame is the same within ~1%, except game time 300-600, where the level streams in at the cinematic's end: the frame -5.6% (96.2 / 98.8 ms against 103.9 / 103.1), all of it the drawing (29.0 against 34.6 ms). The tick is unchanged (38.4 against 38.5 ms). Play is the same on both sides.
+- **So:** exact, and never worse where measured. It goes on by default at the next profile recount, because the switch moves code and the current profile and layouts were made without it.
