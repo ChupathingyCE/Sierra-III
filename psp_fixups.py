@@ -4746,8 +4746,8 @@ FIXES_19 = {
  "#ifdef HALO_PSP\n\tpsp_object_start = psp_microseconds();\n\tobjects_garbage_collection();\n\tpsp_object_account(13, psp_microseconds() - psp_object_start);\n#else\n\tobjects_garbage_collection();\n#endif\n\n\tprofile_exit(section);"),
 ],
 "port/include/halo_math.h": [
-("#define pow(x, y) halo_pow(x, y)\n",
- """#define pow(x, y) halo_pow(x, y)
+("#define fmod(x, y) halo_fmod(x, y)\n",
+ """#define fmod(x, y) halo_fmod(x, y)
 
 #ifdef HALO_PSP
 /* single precision for float arguments (build 19; psp_fixups.py). The PSP's
@@ -4756,7 +4756,8 @@ and the compiler does not narrow (real)sqrt(f) or (real)floor(f) itself.
 sqrt, floor, ceil and fmod are exact, so the float versions give the same
 bits; the halo_ trig functions already compute in float (psp_libc.c), so
 calling sinf and the rest directly only drops the conversions. Arguments
-that really are double keep the double functions. */
+that really are double keep the double functions. fmod's macro replaces the
+engine's halo_fmod (made for the UCRT's x87 fmod), so fmod is as it was. */
 #define PSP_IS_FLOAT(x) __builtin_types_compatible_p(__typeof__(x), float)
 #define PSP_NARROW1(F, D, x) __builtin_choose_expr(PSP_IS_FLOAT(x), F##f(x), D(x))
 #define PSP_NARROW2(F, D, x, y) __builtin_choose_expr(PSP_IS_FLOAT((x) + (y)), F##f(x, y), D(x, y))
@@ -4768,6 +4769,7 @@ that really are double keep the double functions. */
 #undef atan
 #undef atan2
 #undef pow
+#undef fmod
 #define sin(x) PSP_NARROW1(sin, halo_sin, x)
 #define cos(x) PSP_NARROW1(cos, halo_cos, x)
 #define tan(x) PSP_NARROW1(tan, halo_tan, x)
@@ -4922,14 +4924,14 @@ FIXES_23["source/ai/ai_debug.h"] = [
 	MAXIMUM_AI_DEBUG_LINEOFSIGHT_POINTS = 16384,
 	MAXIMUM_AI_DEBUG_LINEOFSIGHT_PAIRS = 8192,
 #endif"""),
-("""typedef char ai_debug_state_ballistic_lineoffire_valid_offset_assert[""",
- """#ifndef HALO_PSP
+("""#ifndef HALO_XBOX_CONSOLE
+typedef char ai_debug_state_ballistic_lineoffire_valid_offset_assert[""",
+ """#if !defined(HALO_XBOX_CONSOLE) && !defined(HALO_PSP)
 typedef char ai_debug_state_ballistic_lineoffire_valid_offset_assert["""),
-("""typedef char ai_debug_state_field_7D380_offset_assert[
-	offsetof(struct ai_debug_state, evaluation_context_valid) == 0x7D380 ? 1 : -1];""",
- """typedef char ai_debug_state_field_7D380_offset_assert[
-	offsetof(struct ai_debug_state, evaluation_context_valid) == 0x7D380 ? 1 : -1];
-#endif"""),
+("""#if !defined(HALO_64BIT) && !defined(HALO_XBOX_CONSOLE)
+typedef char ai_debug_state_field_859F4_offset_assert[""",
+ """#if !defined(HALO_64BIT) && !defined(HALO_XBOX_CONSOLE) && !defined(HALO_PSP)
+typedef char ai_debug_state_field_859F4_offset_assert["""),
 ]
 
 # build 102: the rest of the AI debugger's static state, 231 of its 237 KB:
@@ -49369,6 +49371,19 @@ match_assert above), the expression still made */
 FIXES_CHUPA090["source/ai/ai_debug.h#records"] = [
 ("""#define ACTOR_DEBUG_INFO_GET(actor_index) (&actor_debug_array[DATUM_INDEX_TO_ABSOLUTE_INDEX(actor_index)])""",
  """#define ACTOR_DEBUG_INFO_GET(actor_index) (&actor_debug_array[PSP_DEBUG_INDEX(DATUM_INDEX_TO_ABSOLUTE_INDEX(actor_index))])"""),
+]
+# The audio capture's per-sound line (new at 6eef2f3) names the permutation,
+# whose name the PSP leaves out of its sound tags (FIXES_SOUND's
+# sound_permutation); the PSP has no audio capture, so the call goes
+FIXES_CHUPA090["source/sound/sound_dsound_xbox.c#probe"] = [
+("""			audio_probe_sound_started(index, channel->type_flags, sound->name, sound->samples.size,
+				channel->gain, channel->obstruction, channel->occlusion, channel->spatialized);
+""",
+ """#ifndef HALO_PSP
+			audio_probe_sound_started(index, channel->type_flags, sound->name, sound->samples.size,
+				channel->gain, channel->obstruction, channel->occlusion, channel->spatialized);
+#endif
+"""),
 ]
 FIXES_CHUPA090["port/linux/game/structure_culling.h"] = [
 ("""#ifdef HALO_XBOX_CONSOLE

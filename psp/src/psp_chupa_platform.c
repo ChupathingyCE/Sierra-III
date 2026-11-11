@@ -305,11 +305,12 @@ unsigned int hud_hires_override_texture(long asset, unsigned long *levels) { (vo
 int hud_hires_override_coverage(long asset) { (void)asset; return 0; }
 int hud_hires_override_point_threshold(long asset) { (void)asset; return 0; }
 
-long text_hires_font(char const *tag_name, float cap_height, float oversample)
+long text_hires_font(char const *tag_name, float cap_height, short const *letter_widths, float oversample)
 {
-	(void)tag_name; (void)cap_height; (void)oversample;
+	(void)tag_name; (void)cap_height; (void)letter_widths; (void)oversample;
 	return -1;
 }
+int text_hires_enabled(void) { return 0; }
 int text_hires_covers(long font, unsigned long code) { (void)font; (void)code; return 0; }
 int text_hires_glyph(long font, unsigned long code, struct text_hires_glyph *glyph)
 {

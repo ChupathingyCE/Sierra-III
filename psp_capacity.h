@@ -128,6 +128,10 @@ outside_alloc), and the heap keeps its room for the rest
 
 #define HALO_PORT_MAXIMUM_RENDERED_ENVIRONMENT_SURFACES 16384
 #define HALO_PORT_MAXIMUM_DYNAMIC_TRIANGLES 32768
+/* a console above its memory baseline sizes the dynamic triangles' index
+buffer to this (halo_console_memory.h); the PSP has no such class, so the
+same as the Xbox's, as the engine gives every build that isn't the Xbox's */
+#define HALO_PORT_MAXIMUM_DYNAMIC_TRIANGLES_EXTRAS HALO_PORT_MAXIMUM_DYNAMIC_TRIANGLES
 
 /* ---------- transparent geometry, particles and lights a frame draws
 
@@ -138,6 +142,10 @@ PSP's heap can't spare */
 #define HALO_PORT_MAXIMUM_TRANSPARENT_GEOMETRY_GROUPS 384
 #define HALO_PORT_MAXIMUM_RENDERED_PARTICLE_GROUPS 512
 #define HALO_PORT_MAXIMUM_RENDERED_LIGHTS 128
+/* the transparent geometry groups' arrays (rasterizer_transparent_geometry.c,
+render_particles.c) are sized to this, for a console above its memory
+baseline; the PSP's stay the Xbox's 384 */
+#define HALO_PORT_MAXIMUM_TRANSPARENT_GEOMETRY_GROUPS_EXTRAS HALO_PORT_MAXIMUM_TRANSPARENT_GEOMETRY_GROUPS
 
 /* ---------- AI */
 

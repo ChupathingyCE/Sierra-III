@@ -19,6 +19,24 @@ a finishing place in 7 bits.
 #ifndef __HALO_PORT_LIMITS_H
 #define __HALO_PORT_LIMITS_H
 
+/* what the build asks of the shared code (halo_console_features.h), which
+the engine's halo_port_limits.h includes and this header, taking its guard,
+must include in its place: without it every unit but the few that include
+it themselves sees none of the capabilities, so code under
+HALO_PORT_FRAMES_BETWEEN_TICKS and HALO_PORT_WIDE_INTERFACE (on in every
+build but the original Xbox's, and built ungated on the PSP up to v0.9.0d)
+would differ unit by unit. Two of the desktop's capabilities are left out
+here, as a console leaves them: the shaders prepared while a map loads (the
+GL renderer's) and the loading screen's picture (loading_picture.c) */
+#define HALO_CONSOLE_NO_SHADER_PREP 1
+#define HALO_CONSOLE_NO_LOADING_PICTURE 1
+/* (the two units compiled with their own build.ninja lines, posix_files.c
+and tomlc17.c, have no port/linux/include on their path; they test none of
+the capabilities) */
+#if __has_include("halo_console_features.h")
+#include "halo_console_features.h"
+#endif
+
 /* a PSP value, or the other ports' (psp_fixups.py) */
 #ifdef HALO_PSP
 #define HALO_PSP_OR(psp, other) (psp)

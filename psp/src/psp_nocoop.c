@@ -160,7 +160,22 @@ void coop_scripts_gather_in_volume(short trigger_volume_index, long object_list_
 {
 	(void)trigger_volume_index; (void)object_list_index;
 }
-void coop_scripts_teleport_followers(long unit_index) { (void)unit_index; }
+void coop_scripts_teleport_followers(long unit_index, real_point3d const *destination)
+{
+	(void)unit_index; (void)destination;
+}
+/* the next two are asked only by a co-op host (hs_teleport_players_not_in_trigger_volume) */
+boolean coop_scripts_unit_near(long unit_index, real_point3d const *destination)
+{
+	(void)unit_index; (void)destination;
+	return FALSE;
+}
+boolean coop_scripts_arrive_at(long player_index, real_point3d const *destination,
+	long const *arrived_unit_indices, short arrived_count)
+{
+	(void)player_index; (void)destination; (void)arrived_unit_indices; (void)arrived_count;
+	return FALSE;
+}
 void coop_scripts_suspend_followers(long unit_index, boolean suspended) { (void)unit_index; (void)suspended; }
 void coop_scripts_exit_followers(long unit_index, long vehicle_index) { (void)unit_index; (void)vehicle_index; }
 void coop_scripts_board_followers(long unit_index, long vehicle_index, char const *seat_name)
