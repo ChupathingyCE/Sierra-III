@@ -128,8 +128,11 @@ outside_alloc), and the heap keeps its room for the rest
 halo_port_capacity.h, which this header replaces, includes it). The PSP
 defines no HALO_CONSOLE_MEMORY_CLASS, so every size is its baseline; without
 the header the macro's uses linked as stubbed calls answering 0 (no
-transparent geometry groups, no dynamic triangles) */
+transparent geometry groups, no dynamic triangles). (posix_files.c and
+tomlc17.c have no port/linux/include on their path, as psp_limits.h says) */
+#if __has_include("halo_console_memory.h")
 #include "halo_console_memory.h"
+#endif
 
 /* ---------- structure rendering */
 
