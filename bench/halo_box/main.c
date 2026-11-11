@@ -7,6 +7,8 @@ Keep words (ms0:/halo/keep.txt):
   box<name>   the box to run (boxnull, boxselftest, ...); the null box if none
   ge<N>       also run every mode with the GE reading main RAM N% of the
               time (ge35); up to three; without one, alone only
+  gefake      the emulator only: the GE's three figures replaced by a PSP's,
+              so the list's building and stopping run where the GE takes no time
   ticks<N>    stop after N ticks of the capture
   counters    one more pass in each mode with the CPU's own counters read
               either side of each entity (cycles, stalled cycles, misses):
@@ -173,7 +175,7 @@ static unsigned int *ram_texture;
 #define VRAM_TEXTURE ((void *)0x04154000) /* after the three 512 x 272 buffers */
 /* measured at the start, the bus to itself: a pixel textured from each place, and a block's two sprites when they draw nothing */
 static float ram_us_a_pixel, vram_us_a_pixel, block_overhead_us;
-static int ge_ready;
+static int ge_ready, ge_fake;
 /* the span in flight: when its list started, what one of its blocks spends off main RAM alone, and what the last stop found */
 static unsigned int ge_started;
 static float ge_block_other_us;
@@ -276,7 +278,16 @@ static void ge_init(void)
 	vram_us_a_pixel = (big_vram - small) / (256.0f * 16 * 480);
 	plat_out("GE: a pixel textured from main RAM %.4f us, from VRAM %.4f us; a block's two sprites drawing nothing %.1f us (the bus to itself)",
 		(double)ram_us_a_pixel, (double)vram_us_a_pixel, (double)block_overhead_us);
-	ge_ready = ram_us_a_pixel > 0 && vram_us_a_pixel > 0;
+	if (ge_fake)
+	{
+		/* the list's building, stopping and waiting exercised where the GE takes no time: a PSP-3000's figures stand in */
+		ram_us_a_pixel = 0.33f;
+		vram_us_a_pixel = 0.049f;
+		block_overhead_us = 15.0f;
+		plat_out("GE: gefake: those three replaced by 0.33, 0.049 and 15; nothing beside this GE is a measurement");
+	}
+	/* (a PSP's are 0.33 and 0.05: under a hundredth of that is no GE at all, and sprites sized from it would never end) */
+	ge_ready = ram_us_a_pixel > 0.003f && vram_us_a_pixel > 0.0005f;
 	if (!ge_ready)
 		plat_out("GE: its sprites take no time here (an emulator?): the GE runs are left out");
 }
@@ -471,6 +482,8 @@ int main(void)
 			options.ticks_most = atoi(word + 5);
 		else if (!strcmp(word, "spoil"))
 			spoil = 1;
+		else if (!strcmp(word, "gefake"))
+			ge_fake = 1;
 		else if (!strcmp(word, "counters"))
 			options.counted = 1;
 	}

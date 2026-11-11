@@ -12,6 +12,7 @@ One program holds every adapter in `adapters/` and every box unit of the port (`
 |---|---|
 | `box<name>` | the box to run (`boxnull`, `boxselftest`, ...); the null box if none |
 | `ge<N>` | also run every mode with the GE reading main RAM N% of the time (`ge35`); up to three |
+| `gefake` | the emulator only: the GE's three measured figures replaced by a PSP's, so the list's building and stopping are exercised where the GE takes no time. Nothing beside that GE is a measurement |
 | `ticks<N>` | stop after N ticks |
 | `counters` | one more pass in each mode, alone, with the CPU's own counters read either side of each entity: cycles, cycles stalled on memory and in the pipeline, instruction and data misses, write-backs, cached loads and stores, FPU and VFPU instructions, net of the null box's. The emptied mode's misses are the entity's **footprint in lines**. Loads the bench's kernel module (`kernel/main.c`: one system call, nothing else), which the EBOOT carries and writes to `ms0:/halo/halo_boxk.prx` |
 | `spoil` | `boxselftest` only: one output of its capture is written wrong, and the run must name it |
