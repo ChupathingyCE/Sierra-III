@@ -98,9 +98,11 @@ def nocoop():
 #   Stubbs mode's lower tag window among them), Chimera's compressed maps
 #   (HALO_COMPRESSED_MAPS: zstd) and the movies' FFmpeg decoder
 #   (HALO_BINK_FFMPEG), each set on the desktop builds from v0.9.0d
+# - the bgfx renderer (HALO_BGFX, v0.9.0d): the PSP draws through its own GE
+#   path, and the GL device it never makes (psp_fixups.py, gl_never)
 # psp/src/psp_chupa.c answers what the game still calls in them
 CHUPA_FLAGS_DROPPED = ("-DHALO_CUSTOM_EDITION", "-DHALO_GAME_BROWSER", "-DHALO_MAP_LIST",
-                       "-DHALO_COMPRESSED_MAPS", "-DHALO_BINK_FFMPEG")
+                       "-DHALO_COMPRESSED_MAPS", "-DHALO_BINK_FFMPEG", "-DHALO_BGFX")
 CHUPA_DESKTOP_UNITS = ("port/linux/game/ce_", "port/linux/game/browser_screen.c", "port/linux/game/server_browser.c",
                        "port/linux/game/game_events.c", "port/linux/game/game_list_claims.c",
                        "port/linux/game/game_stats.c", "port/linux/game/moderation_screen.c",

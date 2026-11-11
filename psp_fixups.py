@@ -1665,8 +1665,8 @@ def ai_debug_records(tree):
             text = wrap_indices(text)
             if name == "ai_debug.c":
                 for old, new in (
-                    ("sizeof(*actor_debug_array) * MAXIMUM_NUMBER_OF_ACTORS", "sizeof(*actor_debug_array) * PSP_DEBUG_COUNT(MAXIMUM_NUMBER_OF_ACTORS)"),
-                    ("sizeof(*actor_path_debug_array) * MAXIMUM_NUMBER_OF_ACTOR_PATHS", "sizeof(*actor_path_debug_array) * PSP_DEBUG_COUNT(MAXIMUM_NUMBER_OF_ACTOR_PATHS)"),
+                    ("sizeof(*actor_debug_array) * AI_DEBUG_ACTOR_RECORD_COUNT", "sizeof(*actor_debug_array) * PSP_DEBUG_COUNT(AI_DEBUG_ACTOR_RECORD_COUNT)"),
+                    ("sizeof(*actor_path_debug_array) * MAXIMUM_AI_DEBUG_PATH_STORAGE", "sizeof(*actor_path_debug_array) * PSP_DEBUG_COUNT(MAXIMUM_AI_DEBUG_PATH_STORAGE)"),
                 ):
                     if text.count(old) != 2:
                         sys.exit("psp_fixups: ai_debug.c: expected 2 of %s, found %d" % (old, text.count(old)))
@@ -2019,14 +2019,18 @@ GL_NEVER_DEFINE = """#ifdef HALO_PSP
 #define DEVICE_GL_READY device.gl_ready
 #endif
 """
-GL_NEVER_CALL = ("""			platform_video_initialize(width, height))
+# (from ChupathingyCE v0.9.0d the call is the #else of HALO_BGFX, which the
+# PSP build leaves out: psp_build.py's CHUPA_FLAGS_DROPPED)
+GL_NEVER_CALL = ("""#else
 			gl_initialize();
+#endif
 		else
-""", """			platform_video_initialize(width, height))
+""", """#else
 #ifdef HALO_PSP
 			; /* never taken: SDL_CreateWindow fails on the PSP (psp_sdl.c) */
 #else
 			gl_initialize();
+#endif
 #endif
 		else
 """)
@@ -2055,8 +2059,10 @@ def gl_never(tree):
         return 0
     anchor = '#include "xgpu.h"\n'
     reads = len(GL_READY_READ.findall(text))
-    if text.count(anchor) != 1 or text.count(GL_NEVER_CALL[0]) != 1 or reads != 10:
-        sys.exit("psp_fixups: d3d8_gl.c: expected the xgpu.h include, gl_initialize's one call and 10 tests of gl_ready, found %d tests" % reads)
+    # (12 tests from ChupathingyCE v0.9.0d: the menus' pointer's bgfx form,
+    # and halo_draw_picture's)
+    if text.count(anchor) != 1 or text.count(GL_NEVER_CALL[0]) != 1 or reads != 12:
+        sys.exit("psp_fixups: d3d8_gl.c: expected the xgpu.h include, gl_initialize's one call and 12 tests of gl_ready, found %d tests" % reads)
     text = GL_READY_READ.sub("DEVICE_GL_READY", text)
     text = text.replace(GL_NEVER_CALL[0], GL_NEVER_CALL[1])
     text = text.replace(anchor, anchor + GL_NEVER_DEFINE)
@@ -2208,7 +2214,7 @@ if os.environ.get("PSP_TICK_STEPS", "") == "1":
 STEP_LINES = {
     "source/bungie_net/network/transport_endpoint_set_winsock.c": [
         "\t\tbypass_file = fopen(", "\t\tif (XNetStartup(", "\t\twsa_error = WSAStartup(",
-        "\t\tdeadline = system_milliseconds()", "\t\tXNetRandom(global_nonce"],
+        "\t\tdeadline = system_milliseconds() + 10000", "\t\tXNetRandom(global_nonce"],
 }
 # build 47: a step with its own label before chosen lines (multi-line calls
 # the CALL pattern below can't see, and loop tops). Each text must occur in
@@ -10451,6 +10457,7 @@ FIXES_106["source/sound/game_sound.c#obstruction"] = [
 	real distance)
 {
 	struct observer_result const *camera = observer_get_camera(local_player_index);
+#ifndef HALO_XBOX_CONSOLE
 	long slot = obstruction_cache_slot(local_player_index, &source->location.position);
 	long now = game_time_get();
 
@@ -10465,6 +10472,7 @@ FIXES_106["source/sound/game_sound.c#obstruction"] = [
 		source->occlusion = obstruction_cache[slot].occlusion;
 		return;
 	}
+#endif
 """,
  """#ifdef HALO_PSP
 /* psp_fixups.py (build 106): see FIXES_106 game_sound.c#obstruction */
@@ -10494,6 +10502,7 @@ void compute_sound_obstruction(
 	real distance)
 {
 	struct observer_result const *camera = observer_get_camera(local_player_index);
+#ifndef HALO_XBOX_CONSOLE
 	long slot = obstruction_cache_slot(local_player_index, &source->location.position);
 	long now = game_time_get();
 
@@ -10532,6 +10541,7 @@ void compute_sound_obstruction(
 		source->occlusion = obstruction_cache[slot].occlusion;
 		return;
 	}
+#endif
 #endif
 """),
 ("""	game_sound_globals->update_index++;
@@ -10745,16 +10755,18 @@ FIXES_107["source/ai/ai_debug.c#pathstorage"] = [
 # and its array (114 KB of heap) isn't made: nothing asks for it. (The
 # sizes are written as the game has them: ai_debug_records, after these
 # fixups, wraps both, the allocation's and the memset's, in PSP_DEBUG_COUNT)
-("""	actor_path_debug_array = actor_path_debug_array==NULL ? (struct path_debug_storage *)debug_malloc(sizeof(*actor_path_debug_array) * MAXIMUM_NUMBER_OF_ACTOR_PATHS, FALSE, "c:\\\\halo\\\\SOURCE\\\\ai\\\\ai_debug.c", 148) : actor_path_debug_array;
+("""	actor_path_debug_array = actor_path_debug_array==NULL ? (struct path_debug_storage *)debug_malloc(sizeof(*actor_path_debug_array) * MAXIMUM_AI_DEBUG_PATH_STORAGE, FALSE, "c:\\\\halo\\\\SOURCE\\\\ai\\\\ai_debug.c", 148) : actor_path_debug_array;
 
+#ifndef HALO_CONSOLE_AI_DEBUG_ON_DEMAND
 	match_assert("c:\\\\halo\\\\SOURCE\\\\ai\\\\ai_debug.c", 150, actor_debug_array && actor_path_debug_array);""",
  """#if defined(HALO_PSP) && !PSP_DEBUG_TOOLS
 	/* psp_fixups.py (build 107): see FIXES_107 ai_debug.c#pathstorage */
 	actor_path_debug_array = NULL;
 #else
-	actor_path_debug_array = actor_path_debug_array==NULL ? (struct path_debug_storage *)debug_malloc(sizeof(*actor_path_debug_array) * MAXIMUM_NUMBER_OF_ACTOR_PATHS, FALSE, "c:\\\\halo\\\\SOURCE\\\\ai\\\\ai_debug.c", 148) : actor_path_debug_array;
+	actor_path_debug_array = actor_path_debug_array==NULL ? (struct path_debug_storage *)debug_malloc(sizeof(*actor_path_debug_array) * MAXIMUM_AI_DEBUG_PATH_STORAGE, FALSE, "c:\\\\halo\\\\SOURCE\\\\ai\\\\ai_debug.c", 148) : actor_path_debug_array;
 #endif
 
+#ifndef HALO_CONSOLE_AI_DEBUG_ON_DEMAND
 #if defined(HALO_PSP) && !PSP_DEBUG_TOOLS
 	match_assert("c:\\\\halo\\\\SOURCE\\\\ai\\\\ai_debug.c", 150, actor_debug_array);
 #else
@@ -10763,10 +10775,10 @@ FIXES_107["source/ai/ai_debug.c#pathstorage"] = [
 # (and the five that read it take no array as no records)
 ("""	match_assert("c:\\\\halo\\\\SOURCE\\\\ai\\\\ai_debug.c", 211, actor_path_debug_array)
 
-	memset(actor_path_debug_array, 0, sizeof(*actor_path_debug_array) * MAXIMUM_NUMBER_OF_ACTOR_PATHS);
+	memset(actor_path_debug_array, 0, sizeof(*actor_path_debug_array) * MAXIMUM_AI_DEBUG_PATH_STORAGE);
 """,
  """	if (actor_path_debug_array)
-		memset(actor_path_debug_array, 0, sizeof(*actor_path_debug_array) * MAXIMUM_NUMBER_OF_ACTOR_PATHS);
+		memset(actor_path_debug_array, 0, sizeof(*actor_path_debug_array) * MAXIMUM_AI_DEBUG_PATH_STORAGE);
 """),
 ("""void ai_debug_actor_deleted(
 	long actor_index)
@@ -12602,10 +12614,11 @@ FIXES_CHUPA["source/physics/bsp3d.c#trusted"] = [
 # The engine's console output (script prints, "true" and other messages) is
 # drawn over the game whenever there is any: ChupathingyCE since 0.8.0 draws it
 # only while the console is open ("terminal_render 2", Milenko, commits
-# 3a4dee17 and 827e688d). The PSP has no console to open, so it is drawn
-# only with "terminalon"; the log keeps every line either way
+# 3a4dee17 and 827e688d), and from v0.9.0d by default (terminal_render_enable
+# starts at 2). The PSP has no console to open, so "terminalon" draws it as
+# 1 would; the log keeps every line either way
 FIXES_CHUPA["source/interface/terminal.c#render2"] = [
-("""		if (terminal_render_enable)
+("""		if (terminal_render_enable == 1 || (terminal_render_enable >= 2 && terminal_globals.input_state))
 		{
 			struct output_line_datum *line;""",
  """#ifdef HALO_PSP
@@ -12614,9 +12627,9 @@ FIXES_CHUPA["source/interface/terminal.c#render2"] = [
 
 		if (psp_terminal_on < 0)
 			psp_terminal_on = psp_keep("terminalon");
-		if (terminal_render_enable && (psp_terminal_on || terminal_globals.input_state))
+		if (terminal_render_enable == 1 || (terminal_render_enable >= 2 && (psp_terminal_on || terminal_globals.input_state)))
 #else
-		if (terminal_render_enable)
+		if (terminal_render_enable == 1 || (terminal_render_enable >= 2 && terminal_globals.input_state))
 #endif
 		{
 			struct output_line_datum *line;"""),
@@ -24982,12 +24995,32 @@ FIXES_FRONT["source/interface/ui_widget.c#checktimes"] = [
 # rewrite was nearly all of the ~54 s the menu took no input on a
 # PSP-1000 (frontdoor3's timers: the profiles' reads 54,195 ms). A variant
 # whose file already holds the same bytes is left as it is, so only a fresh
-# stick writes them, once. "variantswrite" writes them every time, as before.
+# stick writes them, once: ChupathingyCE does that itself from v0.9.0d
+# (playlist_profile_default_file_matches), so the PSP keeps only its keep word
+# "variantswrite" (written every time, as before) and the log's count.
 FIXES_FRONT["source/saved games/playlist_profile.c#variants"] = [
-('\t\t\t_snprintf(path, MAXIMUM_FILENAME_LENGTH, "z:\\\\saved\\\\playlists\\\\default_playlist\\\\%02d", profile_index);\n\t\t\tpath[MAXIMUM_FILENAME_LENGTH] = 0;\n\t\t\tdirectory_create_or_delete_contents(path);\n\t\t\tcsstrncat(path, "\\\\blam.lst", MAXIMUM_FILENAME_LENGTH);\n\t\t\tpath[MAXIMUM_FILENAME_LENGTH] = 0;\n\n\t\t\tdisplay_name = unicode_string_list_get_string(\n\t\t\t\tstring_list_index,\n\t\t\t\t(short)profile_index);\n\n\t\t\tcsmemcpy(\n\t\t\t\tblock,\n\t\t\t\t&variant,\n\t\t\t\tsizeof(struct game_variant));\n\t\t\tustrncpy(\n\t\t\t\t(wchar_t *)block,\n\t\t\t\tdisplay_name,\n\t\t\t\tMAXIMUM_GAME_VARIANT_NAME_LENGTH - 1);\n\t\t\t((struct game_variant *)block)->human_readable_game_description[MAXIMUM_GAME_VARIANT_NAME_LENGTH - 1] = 0;\n\t\t\t((struct game_variant *)block)->flags |= (short)(profile_index << 8);\n\t\t\tsaved_game_file_generate_checksum(\n\t\t\t\tblock,\n\t\t\t\tPLAYLIST_PROFILE_CHECKSUM_DATA_SIZE,\n\t\t\t\t(XCALCSIG_SIGNATURE *)(block + PLAYLIST_PROFILE_CHECKSUM_DATA_SIZE));\n\n\t\t\tif (file_reference_create_from_path(&file, path, FALSE) &&\n\t\t\t\tfile_create(&file) &&\n\t\t\t\tfile_open(&file, FLAG(_permission_write_bit)) &&\n\t\t\t\tfile_set_position(&file, 0))\n\t\t\t{\n\t\t\t\tfile_written = file_write(&file, sizeof(block), block);\n\t\t\t\tfile_close(&file);\n\t\t\t}\n\n',
- '#ifdef HALO_PSP\n\t\t\t/* psp_fixups.py (FIXES_FRONT): the folder emptied and the file\n\t\t\twritten only when the file on the stick doesn\'t already hold\n\t\t\tthese bytes. Only the checksummed part is ever read back (the\n\t\t\trest of the block is whatever the stack held), so that\'s the\n\t\t\tpart compared */\n\t\t\t_snprintf(path, MAXIMUM_FILENAME_LENGTH, "z:\\\\saved\\\\playlists\\\\default_playlist\\\\%02d", profile_index);\n\t\t\tpath[MAXIMUM_FILENAME_LENGTH] = 0;\n\t\t\t{\n\t\t\t\tsize_t directory_length = strlen(path);\n\n\t\t\t\tcsstrncat(path, "\\\\blam.lst", MAXIMUM_FILENAME_LENGTH);\n\t\t\t\tpath[MAXIMUM_FILENAME_LENGTH] = 0;\n\n\t\t\t\tdisplay_name = unicode_string_list_get_string(\n\t\t\t\t\tstring_list_index,\n\t\t\t\t\t(short)profile_index);\n\n\t\t\t\tcsmemcpy(\n\t\t\t\t\tblock,\n\t\t\t\t\t&variant,\n\t\t\t\t\tsizeof(struct game_variant));\n\t\t\t\tustrncpy(\n\t\t\t\t\t(wchar_t *)block,\n\t\t\t\t\tdisplay_name,\n\t\t\t\t\tMAXIMUM_GAME_VARIANT_NAME_LENGTH - 1);\n\t\t\t\t((struct game_variant *)block)->human_readable_game_description[MAXIMUM_GAME_VARIANT_NAME_LENGTH - 1] = 0;\n\t\t\t\t((struct game_variant *)block)->flags |= (short)(profile_index << 8);\n\t\t\t\tsaved_game_file_generate_checksum(\n\t\t\t\t\tblock,\n\t\t\t\t\tPLAYLIST_PROFILE_CHECKSUM_DATA_SIZE,\n\t\t\t\t\t(XCALCSIG_SIGNATURE *)(block + PLAYLIST_PROFILE_CHECKSUM_DATA_SIZE));\n\n\t\t\t\tif (!psp_keep("variantswrite") &&\n\t\t\t\t\tfile_reference_create_from_path(&file, path, FALSE) &&\n\t\t\t\t\tfile_exists(&file) &&\n\t\t\t\t\tfile_open(&file, FLAG(_permission_read_bit)))\n\t\t\t\t{\n\t\t\t\t\tbyte existing[SAVED_GAME_FILE_BLOCK_SIZE];\n\n\t\t\t\t\tif (file_read(&file, sizeof(existing), existing) &&\n\t\t\t\t\t\t!csmemcmp(existing, block, PLAYLIST_PROFILE_CHECKSUM_DATA_SIZE + sizeof(XCALCSIG_SIGNATURE)))\n\t\t\t\t\t{\n\t\t\t\t\t\tfile_written = TRUE;\n\t\t\t\t\t\tpsp_variants_kept++;\n\t\t\t\t\t}\n\t\t\t\t\tfile_close(&file);\n\t\t\t\t}\n\n\t\t\t\tif (!file_written)\n\t\t\t\t{\n\t\t\t\t\tpath[directory_length] = 0;\n\t\t\t\t\tdirectory_create_or_delete_contents(path);\n\t\t\t\t\tcsstrncat(path, "\\\\blam.lst", MAXIMUM_FILENAME_LENGTH);\n\t\t\t\t\tpath[MAXIMUM_FILENAME_LENGTH] = 0;\n\t\t\t\t\tif (file_reference_create_from_path(&file, path, FALSE) &&\n\t\t\t\t\t\tfile_create(&file) &&\n\t\t\t\t\t\tfile_open(&file, FLAG(_permission_write_bit)) &&\n\t\t\t\t\t\tfile_set_position(&file, 0))\n\t\t\t\t\t{\n\t\t\t\t\t\tfile_written = file_write(&file, sizeof(block), block);\n\t\t\t\t\t\tfile_close(&file);\n\t\t\t\t\t}\n\t\t\t\t}\n\t\t\t}\n#else\n\t\t\t_snprintf(path, MAXIMUM_FILENAME_LENGTH, "z:\\\\saved\\\\playlists\\\\default_playlist\\\\%02d", profile_index);\n\t\t\tpath[MAXIMUM_FILENAME_LENGTH] = 0;\n\t\t\tdirectory_create_or_delete_contents(path);\n\t\t\tcsstrncat(path, "\\\\blam.lst", MAXIMUM_FILENAME_LENGTH);\n\t\t\tpath[MAXIMUM_FILENAME_LENGTH] = 0;\n\n\t\t\tdisplay_name = unicode_string_list_get_string(\n\t\t\t\tstring_list_index,\n\t\t\t\t(short)profile_index);\n\n\t\t\tcsmemcpy(\n\t\t\t\tblock,\n\t\t\t\t&variant,\n\t\t\t\tsizeof(struct game_variant));\n\t\t\tustrncpy(\n\t\t\t\t(wchar_t *)block,\n\t\t\t\tdisplay_name,\n\t\t\t\tMAXIMUM_GAME_VARIANT_NAME_LENGTH - 1);\n\t\t\t((struct game_variant *)block)->human_readable_game_description[MAXIMUM_GAME_VARIANT_NAME_LENGTH - 1] = 0;\n\t\t\t((struct game_variant *)block)->flags |= (short)(profile_index << 8);\n\t\t\tsaved_game_file_generate_checksum(\n\t\t\t\tblock,\n\t\t\t\tPLAYLIST_PROFILE_CHECKSUM_DATA_SIZE,\n\t\t\t\t(XCALCSIG_SIGNATURE *)(block + PLAYLIST_PROFILE_CHECKSUM_DATA_SIZE));\n\n\t\t\tif (file_reference_create_from_path(&file, path, FALSE) &&\n\t\t\t\tfile_create(&file) &&\n\t\t\t\tfile_open(&file, FLAG(_permission_write_bit)) &&\n\t\t\t\tfile_set_position(&file, 0))\n\t\t\t{\n\t\t\t\tfile_written = file_write(&file, sizeof(block), block);\n\t\t\t\tfile_close(&file);\n\t\t\t}\n\n#endif\n'),
-('\t\tlong profile_index;\n\n\t\tfor (profile_index = 0;\n\t\t\tprofile_index < NUMBER_OF_DEFAULT_PLAYLIST_PROFILES;\n\t\t\tprofile_index++)',
- '\t\tlong profile_index;\n#ifdef HALO_PSP\n\t\textern unsigned long psp_microseconds(void);\n\t\textern void platform_log(const char *format, ...);\n\t\textern int psp_keep(const char *name);\n\t\tunsigned long psp_variants_start = psp_microseconds();\n\t\tlong psp_variants_kept = 0;\n#endif\n\n\t\tfor (profile_index = 0;\n\t\t\tprofile_index < NUMBER_OF_DEFAULT_PLAYLIST_PROFILES;\n\t\t\tprofile_index++)'),
+("""			if (playlist_profile_default_file_matches(path, block))
+			{
+				file_written = TRUE;
+			}
+""",
+ """#ifdef HALO_PSP
+			/* psp_fixups.py (FIXES_FRONT): "variantswrite" writes them every
+			time, as the Xbox did; the kept ones are counted for the log */
+			if (!psp_keep("variantswrite") && playlist_profile_default_file_matches(path, block))
+			{
+				file_written = TRUE;
+				psp_variants_kept++;
+			}
+#else
+			if (playlist_profile_default_file_matches(path, block))
+			{
+				file_written = TRUE;
+			}
+#endif
+"""),
+('\t\tlong profile_index;\n\n\t\tfor (profile_index = 0;\n\t\t\tprofile_index < NUMBER_OF_DEFAULT_PLAYLIST_PROFILES + NUMBER_OF_PORT_DEFAULT_PLAYLIST_PROFILES;\n\t\t\tprofile_index++)',
+ '\t\tlong profile_index;\n#ifdef HALO_PSP\n\t\textern unsigned long psp_microseconds(void);\n\t\textern void platform_log(const char *format, ...);\n\t\textern int psp_keep(const char *name);\n\t\tunsigned long psp_variants_start = psp_microseconds();\n\t\tlong psp_variants_kept = 0;\n#endif\n\n\t\tfor (profile_index = 0;\n\t\t\tprofile_index < NUMBER_OF_DEFAULT_PLAYLIST_PROFILES + NUMBER_OF_PORT_DEFAULT_PLAYLIST_PROFILES;\n\t\t\tprofile_index++)'),
 ('\t\tsaved_game_files_notify_memory_units_changed();\n\t}\n\telse\n\t{\n\t\terror(',
  '#ifdef HALO_PSP\n\t\tplatform_log("front door: the default game variants: %ld already on the stick, %ld written (%lu ms)",\n\t\t\tpsp_variants_kept, (long)NUMBER_OF_DEFAULT_PLAYLIST_PROFILES - psp_variants_kept,\n\t\t\t(psp_microseconds() - psp_variants_start) / 1000);\n#endif\n\t\tsaved_game_files_notify_memory_units_changed();\n\t}\n\telse\n\t{\n\t\terror('),
 ]
@@ -25238,50 +25271,10 @@ BOOL WINAPI SetEndOfFile(HANDLE handle)
 # so naming a new profile ran the thread 18 KB or more past its stack: the
 # crash saving a new profile (pthread0007, a breakpoint in the firmware), and
 # the new name's folder left with its SaveMeta.xbx and no blam.sav, which
-# then refused that name for good ("maybe the name is already in use?"). On
-# the PSP the buffer is taken from the heap, or a small one on the stack when
-# the heap has no 64 KB to give. No keep word: the old way is the overflow.
-FIXES_FRONT["port/linux/src/xbox_files.c#copybuffer"] = [
-("""	char buffer[65536];
-	int source, destination;""", """#ifdef HALO_PSP
-	/* psp_fixups.py (FIXES_FRONT #copybuffer): game threads have 48 KB of
-	stack */
-	char small_buffer[2048];
-	char *buffer = small_buffer;
-	size_t buffer_size = sizeof(small_buffer);
-#else
-	char buffer[65536];
-	size_t buffer_size = sizeof(buffer);
-#endif
-	int source, destination;"""),
-("""	for (;;)
-	{
-		ssize_t count = read(source, buffer, sizeof(buffer));""", """#ifdef HALO_PSP
-	{
-		char *heap_buffer = malloc(65536);
-
-		if (heap_buffer)
-		{
-			buffer = heap_buffer;
-			buffer_size = 65536;
-		}
-	}
-#endif
-	for (;;)
-	{
-		ssize_t count = read(source, buffer, buffer_size);"""),
-("""	close(source);
-	close(destination);
-	return success;
-}""", """	close(source);
-	close(destination);
-#ifdef HALO_PSP
-	if (buffer != small_buffer)
-		free(buffer);
-#endif
-	return success;
-}"""),
-]
+# then refused that name for good ("maybe the name is already in use?").
+# ChupathingyCE v0.9.0d takes the buffer from the heap itself, so the PSP's
+# fixups here were dropped; what went with them is the 2 KB stack buffer used
+# when the heap had no 64 KB to give (the copy now fails, ENOMEM, instead).
 
 # A save folder holding its SaveMeta.xbx but neither blam.sav nor blam.lst
 # can't be listed, opened or deleted from the menus ("random crap found by
@@ -25503,12 +25496,18 @@ static void render_state_bitmap(
 {"""),
 ("""	real_rectangle2d const *clip = NULL;
 	real scale;
+	/* port: the bitmap's size (its group's high resolution flags, a Custom
+	Edition map's: the weapons' pickup icons) */
+	real bitmap_scale = 1.0f;
 	point2d point;
 
 	if (icon->frame_rate)
 		frame_index = game_time_get() / icon->frame_rate;""",
  """	real_rectangle2d const *clip = NULL;
 	real scale;
+	/* port: the bitmap's size (its group's high resolution flags, a Custom
+	Edition map's: the weapons' pickup icons) */
+	real bitmap_scale = 1.0f;
 	point2d point;
 #ifdef HALO_PSP
 	int psp_glyph = psp_icon_drawing != NONE ? psp_button_glyph(psp_icon_drawing, FALSE, NULL) : NONE;
@@ -25534,20 +25533,35 @@ static void render_state_bitmap(
 #endif
 		if (TEST_FLAG(icon->flags, _hud_icon_absolute_width_bit))
 			cursor_bounds->x0 = (short)(icon->width_offset * scale + point.x);"""),
-("""			cursor_bounds->x0 = (short)(
-				(bitmap->width + icon->width_offset) * scale + point.x);
+("""				(bitmap->width * bitmap_scale + icon->width_offset) * scale + point.x);
 		}
+		/* (the gap the words after it start at) */
+		hud_message_after_icon = hud_message_text_ink_valid;
+		hud_message_icon_gap = point.x - hud_message_text_ink_x1;
+		hud_message_icon_x1 = point.x + (clip ? (clip->x1 - clip->x0) : 1.0f) * bitmap->width * bitmap_scale * scale;
+		hud_message_icon_shift = 0;
+		hud_message_text_ink_valid = FALSE;
 	}
 """,
- """			cursor_bounds->x0 = (short)(
-				(bitmap->width + icon->width_offset) * scale + point.x);
+ """				(bitmap->width * bitmap_scale + icon->width_offset) * scale + point.x);
 		}
+		/* (the gap the words after it start at) */
+		hud_message_after_icon = hud_message_text_ink_valid;
+		hud_message_icon_gap = point.x - hud_message_text_ink_x1;
+		hud_message_icon_x1 = point.x + (clip ? (clip->x1 - clip->x0) : 1.0f) * bitmap->width * bitmap_scale * scale;
+		hud_message_icon_shift = 0;
+		hud_message_text_ink_valid = FALSE;
 #ifdef HALO_PSP
+		/* (the PSP's glyph is drawn wider than the Xbox's icon: the words
+		after it start past it) */
 		if (psp_glyph != NONE)
 		{
-			cursor_bounds->x0 += (short)psp_button_glyph_extra(psp_glyph,
-				(clip ? clip->x1 - clip->x0 : 1.0f) * bitmap->width * scale,
-				(clip ? clip->y1 - clip->y0 : 1.0f) * bitmap->height * scale);
+			short psp_extra = (short)psp_button_glyph_extra(psp_glyph,
+				(clip ? clip->x1 - clip->x0 : 1.0f) * bitmap->width * bitmap_scale * scale,
+				(clip ? clip->y1 - clip->y0 : 1.0f) * bitmap->height * bitmap_scale * scale);
+
+			cursor_bounds->x0 += psp_extra;
+			hud_message_icon_x1 += psp_extra;
 		}
 #endif
 	}
@@ -25613,11 +25627,13 @@ static void render_state_bitmap(
 {"""),
 ("""	real_rectangle2d const *clip;
 	real scale;
+	real glyph_scale;
 	point2d point;
 
 	global_scenario_get();""",
  """	real_rectangle2d const *clip;
 	real scale;
+	real glyph_scale;
 	point2d point;
 #ifdef HALO_PSP
 	int psp_glyph = psp_icon_drawing != NONE ? psp_button_glyph(psp_icon_drawing, TRUE, NULL) : NONE;
@@ -25643,11 +25659,11 @@ static void render_state_bitmap(
 		if (TEST_FLAG(icon->flags, _hud_icon_absolute_width_bit))
 			cursor_bounds->x0 = icon->width_offset + point.x;"""),
 ("""		else
-			cursor_bounds->x0 = bitmap->width + icon->width_offset + point.x;
+			cursor_bounds->x0 = (short)(bitmap->width * glyph_scale + icon->width_offset + point.x);
 	}
 """,
  """		else
-			cursor_bounds->x0 = bitmap->width + icon->width_offset + point.x;
+			cursor_bounds->x0 = (short)(bitmap->width * glyph_scale + icon->width_offset + point.x);
 #ifdef HALO_PSP
 		if (psp_glyph != NONE)
 		{
@@ -25726,23 +25742,9 @@ float psp_player_crouch(void)
 # "menuwarnall" (the red warnings of designed stops back), "xboxwording".
 FIXES_MENUS = {}
 
+# (draw_bitmap_texel_x, the column draw_bitmap_in_rect starts from, is the
+# engine's own since ChupathingyCE v0.9.0d: its declaration and use left here)
 FIXES_MENUS["source/interface/ui_widget.c#menus"] = [
-("""static short draw_bitmap_texel_y = 0;
-""",
- """static short draw_bitmap_texel_y = 0;
-#ifdef HALO_PSP
-/* the same for the column: the virtual keyboard's legend covers its Xbox
-buttons with its own background from beside them (psp_keyboard_background) */
-static short draw_bitmap_texel_x = 0;
-#endif
-"""),
-("""			vertices[vertex_index].texture_coordinates.x =
-				(vertex_index % 3) ? texture_width : 0.0f;""",
- """			vertices[vertex_index].texture_coordinates.x =
-#ifdef HALO_PSP
-				draw_bitmap_texel_x / bitmap_width +
-#endif
-				((vertex_index % 3) ? texture_width : 0.0f);"""),
 ("""static void widget_instance_render_recursive(
 	struct widget_instance *widget,
 	rectangle2d *clip_rect,
@@ -26102,7 +26104,7 @@ static void widget_instance_render_recursive(
 
 FIXES_MENUS["source/interface/virtual_keyboard.c#menus"] = [
 ("""		draw_bitmap_in_rect(bitmap, &bounds, &bounds, NULL, 0xffffffff, NULL, FALSE);
-	}
+#ifdef HALO_PORT_WIDE_INTERFACE
 """,
  """#ifdef HALO_PSP
 		/* the legends' Xbox buttons are the picture's own (ui_widget.c) */
@@ -26111,7 +26113,7 @@ FIXES_MENUS["source/interface/virtual_keyboard.c#menus"] = [
 		if (!psp_keyboard_background(bitmap))
 #endif
 		draw_bitmap_in_rect(bitmap, &bounds, &bounds, NULL, 0xffffffff, NULL, FALSE);
-	}
+#ifdef HALO_PORT_WIDE_INTERFACE
 """),
 ]
 
@@ -27353,43 +27355,12 @@ def snd_eval(code):
 # outside the assert, so compiling the checks out leaves it; with asserts kept
 # nothing changes (assertsoff1 40460818822, api-job 40473519163).
 FIXES_ASSERTSEVAL = {}
-# The asserts whose expression is the game's own work, which a later
-# ChupathingyCE marks match_vassert_evaluated (not at our pin): the obstacle
-# path's heap_insert and the script compiler's hs_parse_variable. With asserts
-# compiled out they were dropped: assertsoff5 (40490801164), compiling out
-# only ai/'s asserts, parted b30 at tick 82
-FIXES_ASSERTSEVAL["source/ai/path_obstacle_avoidance.c#heap"] = [
-("""		match_vassert("c:\\\\halo\\\\SOURCE\\\\ai\\\\path_obstacle_avoidance.c", 420, heap_insert(path, step_index), NULL);
-""",
-"""		{
-			/* psp_fixups.py (FIXES_ASSERTSEVAL): the insert is the game's */
-			boolean psp_inserted = heap_insert(path, step_index);
-
-			match_vassert("c:\\\\halo\\\\SOURCE\\\\ai\\\\path_obstacle_avoidance.c", 420, psp_inserted, NULL);
-			(void)psp_inserted;
-		}
-"""),
-]
-FIXES_ASSERTSEVAL["source/hs/hs_compile.c#variable"] = [
-("""						match_vassert(
-							"c:\\\\halo\\\\source\\\\hs\\\\hs_library_internal_compile.h",
-							0x126,
-							hs_parse_variable(variable_expression_index),
-							"asserted");
-""",
-"""						{
-							/* psp_fixups.py (FIXES_ASSERTSEVAL): the parse is the game's */
-							boolean psp_parsed = hs_parse_variable(variable_expression_index);
-
-							match_vassert(
-								"c:\\\\halo\\\\source\\\\hs\\\\hs_library_internal_compile.h",
-								0x126,
-								psp_parsed,
-								"asserted");
-							(void)psp_parsed;
-						}
-"""),
-]
+# The asserts whose expression is the game's own work that ChupathingyCE
+# marks match_vassert_evaluated from v0.9.0d (the obstacle path's heap_insert,
+# the script compiler's hs_parse_variable) are made by FIXES_CHUPA090
+# cseries.h#evaluated. With asserts compiled out they had been dropped:
+# assertsoff5 (40490801164), compiling out only ai/'s asserts, parted b30 at
+# tick 82
 FIXES_ASSERTSEVAL["source/sound/sound_manager.c#loaded"] = [snd_eval("0x79A"), snd_eval("0x9DA")]
 # The frame data checks ask the animation cache for the frame again
 # (psp_anim.c keeps the last few ranges it hands out), and with asserts
@@ -36273,22 +36244,22 @@ void ai_scripting_place(
 # level's block. The debug override still wins.
 FIXES_SSPR = {}
 FIXES_SSPR["source/models/models.c#sspr"] = [
-("""\t\t\tgeometry_detail_level_index--;
-\t\t}
-\t\tif (rasterizer_debug_options.debug_model_lod!=NONE)""",
-"""\t\t\tgeometry_detail_level_index--;
-\t\t}
+("""			geometry_detail_level_index--;
+		}
+		if (full_model_detail())""",
+"""			geometry_detail_level_index--;
+		}
 #ifdef HALO_PSP
-\t\t{
-\t\t\textern int psp_model_level;
-\t\t\tint psp_sspr_level(unsigned long model, float pixels, int engine_level);
+		{
+			extern int psp_model_level;
+			int psp_sspr_level(unsigned long model, float pixels, int engine_level);
 
-\t\t\tgeometry_detail_level_index = (short)psp_sspr_level((unsigned long)model_index, level_of_detail_pixels,
-\t\t\t\tgeometry_detail_level_index);
-\t\t\tpsp_model_level = geometry_detail_level_index;
-\t\t}
+			geometry_detail_level_index = (short)psp_sspr_level((unsigned long)model_index, level_of_detail_pixels,
+				geometry_detail_level_index);
+			psp_model_level = geometry_detail_level_index;
+		}
 #endif
-\t\tif (rasterizer_debug_options.debug_model_lod!=NONE)"""),
+		if (full_model_detail())"""),
 ]
 
 
@@ -37625,12 +37596,29 @@ static void lruv_cache_verify(
 	unsigned int psp_census_start = 0;
 #endif
 """),
-(r"""	data_verify(cache->blocks);
+("""	data_verify(cache->blocks);
 
+#ifdef HALO_RELEASE
+	/* port: the walk over every block of the cache is a check only (it reads
+	them, and asserts): a release build leaves it out, as the retail game's
+	did. It ran at every block made, touched and let go - a decal cache's,
+	at each bullet's mark, was 6% of the Switch's game thread in a
+	64-player firefight. */
+	verify_blocks = FALSE;
+#endif
 	if (verify_blocks)
 	{
-""", r"""	data_verify(cache->blocks);
+""", """	data_verify(cache->blocks);
 
+#if defined(HALO_RELEASE) && !defined(HALO_PSP)
+	/* (the PSP leaves the walk to its keep word lruvverify, below) */
+	/* port: the walk over every block of the cache is a check only (it reads
+	them, and asserts): a release build leaves it out, as the retail game's
+	did. It ran at every block made, touched and let go - a decal cache's,
+	at each bullet's mark, was 6% of the Switch's game thread in a
+	64-player firefight. */
+	verify_blocks = FALSE;
+#endif
 #ifdef HALO_PSP
 	if (verify_blocks)
 	{
@@ -38048,9 +38036,11 @@ FIXES_MEVISLAND = {}
 FIXES_MEVISLAND["source/render/render.c#mevisland"] = [
 ("""	parameters.fog = render.fog;
 
+	HALO_PERF_RENDER_PART(_halo_perf_render_world);
 	structure_visibility_compute();
 """, """	parameters.fog = render.fog;
 
+	HALO_PERF_RENDER_PART(_halo_perf_render_world);
 #ifdef HALO_PSP
 	{
 		int psp_mevisland_push(void); /* structure_visibility.c (psp_fixups.py, mevisland) */
@@ -49338,6 +49328,40 @@ static void prioritize_sounds(
 # psp_ge.c's draw) and the heap the buckets would take, as the engine's
 # original Xbox build does; the unit isn't compiled (psp_build.py)
 FIXES_CHUPA090 = {}
+# The asserts whose expression the game needs done (match_assert_evaluated,
+# match_vassert_evaluated, new in v0.9.0d: the obstacle path's heap_insert,
+# the script compiler's hs_parse_variable and the network_settings tag read)
+# are evaluated, unchecked, where PSP_ASSERTS_OFF compiles the checks out:
+# outside the engine's console build they fall back on match_assert, which
+# the PSP's PSP_ASSERTS_OFF form never evaluates (FIXES_CHUPA cseries.h#asserts).
+# FIXES_ASSERTSEVAL did this for the first two by hand before the pin moved
+FIXES_CHUPA090["source/cseries/cseries.h#evaluated"] = [
+("""#else
+/* an assert whose expression the game needs done (see above) */
+#define match_assert_evaluated(file, line, expr) match_assert(file, line, expr)
+#define match_vassert_evaluated(file, line, expr, string) match_vassert(file, line, expr, string)
+#endif""",
+ """#elif defined(PSP_ASSERTS_OFF)
+/* psp_fixups.py (FIXES_CHUPA090): the PSP's asserts compiled out (see
+match_assert above), the expression still made */
+#define match_assert_evaluated(file, line, expr) { (void)(expr); }
+#define match_vassert_evaluated(file, line, expr, string) { (void)(expr); }
+#else
+/* an assert whose expression the game needs done (see above) */
+#define match_assert_evaluated(file, line, expr) match_assert(file, line, expr)
+#define match_vassert_evaluated(file, line, expr, string) match_vassert(file, line, expr, string)
+#endif"""),
+]
+# An actor's debug record: from v0.9.0d the AI's units reach it through
+# ai_debug.h's ACTOR_DEBUG_INFO_GET, not by indexing actor_debug_array in
+# each file, so ai_debug_records (above), which wraps the .c files' indices,
+# no longer sees them. The PSP allocates one record (PSP_DEBUG_COUNT), so the
+# macro's index goes through PSP_DEBUG_INDEX as every index did before: every
+# actor shares the one record
+FIXES_CHUPA090["source/ai/ai_debug.h#records"] = [
+("""#define ACTOR_DEBUG_INFO_GET(actor_index) (&actor_debug_array[DATUM_INDEX_TO_ABSOLUTE_INDEX(actor_index)])""",
+ """#define ACTOR_DEBUG_INFO_GET(actor_index) (&actor_debug_array[PSP_DEBUG_INDEX(DATUM_INDEX_TO_ABSOLUTE_INDEX(actor_index))])"""),
+]
 FIXES_CHUPA090["port/linux/game/structure_culling.h"] = [
 ("""#ifdef HALO_XBOX_CONSOLE
 /* (the original Xbox build draws""",
@@ -50259,6 +50283,16 @@ def dead_block(text, at):
             return cond
     return None
 
+# The units only the multiplayer build compiles (psp_build.py's
+# MULTIPLAYER_UNITS and INTERNET_UNITS). While multiplayer is left out (Sheepdog01,
+# 2026-10-21), a campaign build reports their anchors that no longer match
+# and goes on: their fixups were carried across the v0.9.0d pin unported, to
+# be reconciled with the multiplayer build (docs/chupa_rebase.md, "v0.9.0d")
+MULTIPLAYER_ONLY = ("source/networking/", "source/bungie_net/", "source/game/game_engine_",
+                    "port/linux/game/network_", "port/linux/game/coop_", "port/linux/src/xnet.c",
+                    "port/linux/src/p2p")
+CARRY_MULTIPLAYER = os.environ.get("PSP_MULTIPLAYER", "") != "1"
+carried = []
 dead_anchors = []
 failures = []
 for rel, changes in FIXES.items():
@@ -50271,6 +50305,9 @@ for rel, changes in FIXES.items():
         applied += 1
         old, new = change
         count = text.count(old)
+        if count != 1 and CARRY_MULTIPLAYER and rel.startswith(MULTIPLAYER_ONLY) and rel != "source/bungie_net/common/thread_win32.c":
+            carried.append(rel)
+            continue
         if count != 1:
             failures.append("psp_fixups: %s: expected 1 match, found %d:\n%s" % (rel, count, old[:200]))
             if not CHECK_ONLY:
@@ -50300,6 +50337,9 @@ for rel, changes in FIXES.items():
     open(path, "w", errors="surrogateescape").write(text)
 for line in dead_anchors:
     print(line)
+if carried:
+    print("psp_fixups: warning: %d anchors in multiplayer-only units carried unmatched (a campaign build doesn't compile them): %s"
+          % (len(carried), ", ".join("%s x%d" % (rel, carried.count(rel)) for rel in sorted(set(carried)))))
 if CHECK_ONLY:
     print("\n\n".join(failures))
     sys.exit("psp_fixups: %d anchors don't match once" % len(failures) if failures else 0)
