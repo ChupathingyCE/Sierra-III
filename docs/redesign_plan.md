@@ -1,5 +1,7 @@
 # The redesign plan: the frame budget, the parts, and how they're built
 
+**From 2026-11-11 the rebuild's spine is the lab's `research/opportunities/REBUILD.md`** (Sheepdog01 09:37, 09:40): the frame budgeted forward from zero as boxes, each priced alone on the PSP before integration. This page stays as the frame-budget arithmetic and the parts' history; R, S, B and A map onto the boxes there (its §3.3).
+
 Sheepdog01, 2026-11-05 15:41-16:24 (the bottleneck session): the redesign had turned back into a build and test of small fixes. "The whole point of the redesign was to attack the time costs directly." Patching over replacing "has killed the project timeline". This page is the plan that replaces the lever order as the redesign's spine. `redesign_tick.md` (T1-T7) and `redesign_recon.md` stay as its inputs. The rules for building it are in this repo's CLAUDE.md and the lab's ("Redesign work").
 
 Revised 2026-11-05 17:05 after a second-opinion review (lab or-job 42123727478, each point checked against the sources): the GE enters the floor; one bare baseline; S's target derived, and shared with R and B; R's saving tied to its frame rate; criteria, owners and a fallback per part.
