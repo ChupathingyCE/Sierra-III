@@ -252,6 +252,7 @@ The Allegrex is a MIPS 4K-based core: in-order, single-issue, and every interloc
 - **13 of 64 opcodes differ on the PSP-1000 (no-ops or zeros there).** [M] `hw_capabilities.md:50` — `13 of 64 opcodes differ on the PSP-1000`.
 - **The PSP-1000's odd opcodes, confirmed opcode by opcode with an independent harness:** Dink's vme2-next-level kernels (4 PEs × 256 inputs each), checked against his emulator, pass exactly with `add_ofa` (0x030) as the control, and fail for 0x010, 0x014, 0x018, 0x038, 0x03c, 0x058, 0x05c, 0x08c (8 constant pairs) and 0x098 (5 constants), each passing one operand through. The toolkit's `--compat fat` marks only 0x010 not portable. [M, PSP-1000] `lab:psp/sierra/findings/measurements.tsv:12719` — `add_ofa (0x030) x7 controls: exact`.
 - **Sony's own AVC power-on doesn't revive them** (2026-11-11): with the firmware's switch run first (syscon power, 0xbc100070 3 -> 7 in 37 ms, command 8 answered by Sony's ME image), then mcidclan's core, all 27 opcode kernels came out byte for byte as without it. So it isn't power, or set-up at the ME image's boot or command 8; missing units are the likely reading [U]. [M, PSP-1000] `lab:psp/sierra/findings/measurements.tsv:12782` — `kernels whose dump changed (of 27)`.
+- **No set-up of Sony's revives them either** (2026-11-11): Sony's config word `0x440ff004 = 0x0001031b` after every wipe changed no dump (`0x440ff000` is a status register, not a mode); Sony's live VME context, found at eDRAM `0x18ae98` and replayed with command `0x1d`, stalled even the working `add_ofa` control; the image's own default context sets only `0x00020000`, the fat's working add [D, the firmware session's read]. So the 13 are most likely absent on the PSP-1000 [U]: kernels for it build on the fat's working opcodes. [M, PSP-1000] `lab:psp/sierra/findings/measurements.tsv:12798` — `SONY'S LIVE VME CONTEXT BREAKS THE KERNELS, IT DOESN'T UNLOCK ANY`.
 - **Round 2: the saturator and the secondary ALU behind each PE are free — 4 ops a cycle.** [M] `hw_capabilities.md:50` — `4 ops a cycle`.
 - **All 32 unit tests give the same words on both PSP models.** [M] `vme_capability.md:140` — `all 32 unit tests`.
 - **The element-wise stream at 0x310 runs 6.9 cycles a result (2.4× the ME's CPU), 0.53 resident; a context load from eDRAM is 866 cycles; pipelined switches cost ~150 over a 400+ pass.** [M] `lab:coord/handoff/vme4r_2026-11-04.md:13` — `6.9 cycles a result (2.4x the ME's CPU)`.
@@ -335,6 +336,7 @@ Read, not measured: what Sony's 6.61 kernel modules and the PSP-1000's Media Eng
 
 ## Settled (were open in the records; the answer is in the section named)
 
+- **Why 13 VME opcodes are dead on the PSP-1000** (settled 2026-11-11 as far as it can be without a source: not power, not Sony's set-up; most likely absent units [U]): VME section.
 - **Bus arbiter:** no knob exists; closed by a register snapshot and the DDR driver's disassembly (Bus and contention, 2026-11-04/07).
 - **Bus clock:** the clock registers read 333/166 as set (Bus and contention, 2026-11-07).
 - **A direct GE-bus counter:** none; 0x50 reads 0 under load (Bus and contention, 2026-11-07).
@@ -354,7 +356,6 @@ Read, not measured: what Sony's 6.61 kernel modules and the PSP-1000's Media Eng
 - **The 4 MB volatile partition is verified on lock and latency, unchanged across the game's own stops; across a real power-down it is untested directly (real sleeps pass, b149).** [M]/[D] `lab:coord/handoff/hw_audit_2026-10-30.md:53` — `Loss on real sleep: no`.
 - **The write buffer's / no-snooping model has never been benched directly.** [D] `lab:coord/handoff/hw_audit_2026-10-30.md:50` — `Not a bench of the *write buffer* itself`.
 - **A DMACplus fill into eDRAM while the ME is busy hung the PSP-3000 at b30's opening; the cause is unproven.** [M]/[U] `plan_sound_edram.md:17` — `hung the PSP-3000 hard`; `the likeliest cause`.
-- **13 of 64 VME opcodes differ on the PSP-1000; every one is a no-op or zero there (none gives a different answer), ~~but why is unknown~~ narrowed 2026-11-11: not the AVC power or Sony's ME image's boot or command 8 (VME section); a unit-enable that mcidclan's ME reset clears is the one set-up left, open on the read of the fat's `meimg.img`.** [M] `hw_capabilities.md:50` — `no-ops or zeros there`.
 - **`pthread_cond_wait` polls in pspdev's pthreads; the scheduler's priority behaviour on waits is measured only in passing.** [D]/[E] `psp_hardware_reference.md:113` — `polls condition variables`.
 - **Async stick reads: the priority rule holds for the bench, but was not re-measured for each port thread.** [M]/[U] `lab:coord/handoff/hw_audit_2026-10-30.md:72` — `not re-measured per port thread`.
 - **The ME's D-cache geometry** (its I-cache is measured: Media Engine section).
