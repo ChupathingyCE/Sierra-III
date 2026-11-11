@@ -33,6 +33,13 @@ once a tick, and its figures are divided by the tick's entity count.
 
 static const char *const mode_names[MODES] = { "warm", "emptied", "crowded" };
 
+/* For the emulator's cache models, which split their exact counts by a word
+the program names (the lab's PSP_DCACHE_PHASE): 0 the harness, then mode + 1
+while the box runs an entity in its per-entity pass, alone. The null box
+stores 0 the same way, so the two stores cancel in the subtraction; on a PSP
+nothing reads it. */
+volatile unsigned int box_phase;
+
 struct series
 {
 	unsigned short *us; /* one a timed call: an entity, or a tick for a batching box */
@@ -185,7 +192,7 @@ static void check_tick(struct state *st, const struct box_tick *tick)
 
 /* one pass over a tick with a clock read either side of each call; returns
 the pass's whole span, clock reads and the work between entities included */
-static unsigned int pass_each(const struct box_adapter *box, const struct box_tick *tick, int mode, struct series *into)
+static unsigned int pass_each(const struct box_adapter *box, const struct box_tick *tick, int mode, struct series *into, unsigned int phase)
 {
 	unsigned int i, calls = box->batch ? 1 : tick->entities, start = plat_now();
 
@@ -198,7 +205,9 @@ static unsigned int pass_each(const struct box_adapter *box, const struct box_ti
 		else if (mode == MODE_CROWDED)
 			plat_crowd();
 		before = plat_now();
+		box_phase = phase;
 		box->run(box->batch ? BOX_ALL : (int)i);
+		box_phase = 0;
 		after = plat_now();
 		if (into)
 			sample(into, after - before);
@@ -273,7 +282,7 @@ static void time_tick(struct state *st, const struct box_adapter *box, struct fi
 					whole = pass_whole(box, tick);
 				}
 				box->tick(tick);
-				span = pass_each(box, tick, mode, into);
+				span = pass_each(box, tick, mode, into, !duty && f == &st->of_box ? (unsigned int)mode + 1 : 0);
 				if (duty)
 				{
 					covered = plat_ge_stop();
@@ -570,6 +579,7 @@ static void report(struct state *st)
 		else
 			plat_out("check: the first is tick %u, entity %u, element %u", st->first_tick, st->first_entity, st->first_element);
 	}
+	plat_out("twin: phases 1 warm, 2 emptied, 3 crowded: each covers %u entity runs of box %s (its per-entity pass, alone)", st->entities, box->name);
 	plat_out("==== box %s: %s ====", box->name, st->outside ? "OUTPUTS OUTSIDE THE TOLERANCE: its times mean nothing until that is fixed" : "done");
 }
 
