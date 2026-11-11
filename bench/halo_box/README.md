@@ -44,11 +44,11 @@ A capture's inputs are 4-byte aligned in memory and no more: a box that wants 16
 | emptied | both caches emptied | every line the entity touches fetched once |
 | crowded | 32 KB of other data written and 32 KB of other code run, so every set of both caches holds someone else's lines, the data lines dirty | play's worst case: a miss's victim has to be written back first |
 
-Beside the GE: the same three with a display list running that keeps the GE busy and reading a main-RAM texture N% of the time (blocks of two sprites, one textured from main RAM and one from VRAM, sized from the two rates the bench measures first). Nothing wakes the CPU while the list runs. The duty is the list's own, with the bus to itself: under the CPU's misses the GE's main-RAM slices run longer, so the real share is higher.
+Beside the GE: the same three with a display list running that keeps the GE busy and reading a main-RAM texture N% of the time (blocks of two sprites, one textured from main RAM and one from VRAM, sized from the two rates the bench measures first). Nothing wakes the CPU while the list runs. The duty set is the list's own, with the bus to itself. Under the CPU's misses the GE's main-RAM slices run longer, so the report prints **the duty met** beside it: each block carries its number in a state word no sprite reads, a stop asks how far the list got, and whatever of the span the VRAM sprites (which don't stretch) don't account for was spent on main RAM.
 
 ## The report
 
-µs an entity for each mode and duty: the mean net of the null box, the raw mean and the harness's own beside it, the median, the 95th percentile and the worst; ms a tick at the capture's loads, against the box's budget; by kind (warm). The check: outputs compared, how many outside the tolerance, the largest differences, the first offender. A run whose check fails says so in its last line: its times mean nothing.
+Where the code sat (the box's `run`, the null box's and the harness's loop, with their instruction-cache sets: one program holds every box, so adding one moves the others; the build's log lists each unit's size). µs an entity for each mode and duty: the mean net of the null box, the raw mean and the harness's own beside it, the median, the 95th percentile and the worst; ms a tick at the capture's loads, against the box's budget; by kind (warm). The check: outputs compared, how many outside the tolerance, the largest differences, the first offender. A run whose check fails says so in its last line: its times mean nothing.
 
 The clock is `sceKernelGetSystemTimeLow`: 1 µs steps, 0.57 µs a read [M]. A single entity's time is therefore coarse; the means over a capture's thousands are not.
 

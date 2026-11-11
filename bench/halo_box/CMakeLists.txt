@@ -42,4 +42,6 @@ add_executable(halo_box main.c harness.c selftest_capture.c adapters.c ${ADAPTER
 target_compile_options(halo_box PRIVATE -O2 -G0 -Wall -ffunction-sections -fdata-sections -fno-math-errno)
 target_include_directories(halo_box PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../psp/src)
 target_link_libraries(halo_box pspgu pspge psppower pspdebug pspdisplay m)
+# each unit's size into the build's log: one program holds every box, so a new box moves the others
+add_custom_command(TARGET halo_box POST_BUILD COMMAND psp-size $<TARGET_OBJECTS:halo_box> COMMAND_EXPAND_LISTS)
 create_pbp_file(TARGET halo_box TITLE "Halo PSP - the box harness" BUILD_PRX)

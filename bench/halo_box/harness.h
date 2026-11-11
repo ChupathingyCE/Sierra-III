@@ -39,6 +39,7 @@ void plat_empty(void);                       /* both caches emptied */
 void plat_crowd(void);                       /* both caches filled with other work's lines, the data lines dirty */
 void plat_ge_start(int duty, unsigned int span_us); /* the GE reading main RAM `duty` percent of the time, for at least the span */
 int plat_ge_stop(void);                      /* 1 if the GE was still at it (the span was covered) */
+double plat_ge_met(void);                    /* the share of the span just stopped that the GE spent on main RAM, percent; negative if unknown */
 void plat_counters(unsigned int out[COUNTERS]); /* the CPU's counters as they stand (only called when options.counted) */
 void plat_out(const char *format, ...) __attribute__((format(printf, 1, 2)));
 void plat_step(const char *format, ...) __attribute__((format(printf, 1, 2))); /* names a step before it starts, on disk before it returns */

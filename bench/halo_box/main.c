@@ -168,6 +168,12 @@ static unsigned int *ram_texture;
 #define VRAM_TEXTURE ((void *)0x04154000) /* after the three 512 x 272 buffers */
 static float ram_us_a_line, vram_us_a_line;
 static int ge_ready;
+/* the span in flight: when its list started, what one of its blocks spends on VRAM alone, and what the last stop found */
+static unsigned int ge_started;
+static float ge_block_vram_us;
+static double ge_met = -1;
+/* a state word no sprite reads (the specular power: lighting is off) carries each block's number, so a stop can ask how far the list got */
+#define GE_MARK 0x5b
 
 struct ge_vertex { unsigned short u, v; short x, y, z; };
 
@@ -264,6 +270,8 @@ void plat_ge_start(int duty, unsigned int span_us)
 		plat_out("GE %d%%: blocks of %d lines from main RAM and %d from VRAM, %.0f us a block, %.1f%% of it on main RAM", duty, ram_lines,
 			vram_lines, (double)block_us, (double)(100.0f * ram_lines * ram_us_a_line / block_us));
 	}
+	ge_block_vram_us = vram_lines * vram_us_a_line;
+	ge_started = plat_now();
 	sceGuStart(GU_DIRECT, ge_list);
 	for (k = 0; k < blocks; k++)
 	{
@@ -271,6 +279,7 @@ void plat_ge_start(int duty, unsigned int span_us)
 		ge_stop[k] = (unsigned int *)(0x40000000u | ((unsigned int)ge_list + (unsigned int)sceGuCheckList()));
 		sceGuSendCommandi(0, 0);
 		sceGuSendCommandi(0, 0);
+		sceGuSendCommandi(GE_MARK, (int)k);
 		sceGuTexImage(0, RAM_SIDE, RAM_SIDE, RAM_SIDE, ram_texture);
 		ge_sprite(first, ram_lines);
 		first = (first + ram_lines) % (RAM_SIDE - VRAM_LINES); /* the reads move through the megabyte */
@@ -292,6 +301,15 @@ int plat_ge_stop(void)
 	if (!ge_ready)
 		return 1;
 	busy = sceGeDrawSync(1) != PSP_GE_LIST_DONE;
+	{
+		/* The blocks finished in the span, against what they take alone: the
+		VRAM sprite's time doesn't stretch under the CPU's misses, the main-RAM
+		one's does, so whatever of the span the VRAM sprites don't account for
+		was spent on main RAM. */
+		unsigned int span = plat_now() - ge_started, done = sceGeGetCmd(GE_MARK) & 0xffffffu;
+
+		ge_met = busy && done >= 4 && span ? 100.0 * (1.0 - (double)done * ge_block_vram_us / (double)span) : -1;
+	}
 	for (k = 0; k < ge_blocks; k++)
 	{
 		ge_stop[k][0] = 0x0f000000u; /* FINISH */
@@ -337,6 +355,8 @@ static int counters_load(void)
 }
 
 void plat_counters(unsigned int out[COUNTERS]) { halo_boxk_counters(out); }
+
+double plat_ge_met(void) { return ge_ready ? ge_met : -1; }
 
 /* ---------- keep words and captures ---------- */
 

@@ -46,6 +46,8 @@ struct figures
 	double whole_us[DUTIES_MOST];
 	unsigned int whole_entities[DUTIES_MOST];
 	unsigned int short_spans[MODES][DUTIES_MOST]; /* passes the GE's list ended before */
+	double met[MODES][DUTIES_MOST];               /* the duty the GE met, summed over the passes that reported one */
+	unsigned int met_passes[MODES][DUTIES_MOST];
 	double counters[MODES][COUNTERS]; /* summed over the counted pass's calls */
 	unsigned int counted[MODES];      /* entities behind them */
 	unsigned char *kind;       /* an entity's kind, in the order sampled */
@@ -273,7 +275,14 @@ static void time_tick(struct state *st, const struct box_adapter *box, struct fi
 				box->tick(tick);
 				span = pass_each(box, tick, mode, into);
 				if (duty)
+				{
 					covered = plat_ge_stop();
+					if (covered && plat_ge_met() >= 0)
+					{
+						f->met[mode][d] += plat_ge_met();
+						f->met_passes[mode][d]++;
+					}
+				}
 				else
 				{
 					alone[mode] = span + whole * 2;
@@ -495,18 +504,24 @@ static void report(struct state *st)
 			}
 	}
 
-	plat_out("mode     GE%%  us an entity: net mean  (raw mean, harness)  median   95th  worst | ms a tick net%s | calls  GE short",
+	/* one program holds every box, so adding one moves the others: where this run's code sat */
+	plat_out("code: the box's run() at %p (instruction-cache set %u of 128), the null box's at %p (set %u), the harness's loop at %p (set %u)",
+		(void *)box->run, ((unsigned int)(size_t)box->run >> 6) & 127u, (void *)st->null.run, ((unsigned int)(size_t)st->null.run >> 6) & 127u,
+		(void *)pass_each, ((unsigned int)(size_t)pass_each >> 6) & 127u);
+	plat_out("mode     GE%% (met)  us an entity: net mean  (raw mean, harness)  median   95th  worst | ms a tick net%s | calls  GE short",
 		box->budget_ms_a_tick > 0 ? "  x budget" : "");
 	for (d = 0; d < o->duty_count; d++)
 		for (mode = 0; mode < MODES; mode++)
 		{
 			struct summary raw = summarise(&f->calls[mode][d]), harness = summarise(&n->calls[mode][d]);
 			double net = (raw.mean - harness.mean) / share, tick_ms = net * per_tick / 1000.0;
-			char budget[32] = "";
+			char budget[32] = "", met[16] = "     ";
 
 			if (box->budget_ms_a_tick > 0)
 				snprintf(budget, sizeof(budget), "  x%.2f", tick_ms / box->budget_ms_a_tick);
-			plat_out("%-8s %3d  %22.2f  (%8.2f, %7.2f)  %6.1f %6.1f %6.0f | %13.3f%s | %5u  %u%s", mode_names[mode], o->duties[d], net,
+			if (f->met_passes[mode][d])
+				snprintf(met, sizeof(met), "(%3.0f)", f->met[mode][d] / f->met_passes[mode][d]);
+			plat_out("%-8s %3d %s  %22.2f  (%8.2f, %7.2f)  %6.1f %6.1f %6.0f | %13.3f%s | %5u  %u%s", mode_names[mode], o->duties[d], met, net,
 				raw.mean / share, harness.mean / share, (raw.median - harness.median) / share, (raw.high - harness.median) / share,
 				raw.worst / share, tick_ms, budget, raw.count, f->short_spans[mode][d],
 				f->calls[mode][d].clipped ? "  (some calls past 65 ms, counted as 65)" : "");
