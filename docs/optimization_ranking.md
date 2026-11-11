@@ -487,7 +487,6 @@ These words turn a shipped speed lever **off** again, for A/Bs and diagnosis:
 - `awake`, `vehiclesawake`, `corpsesawake`, `slowchecksum`, `markersearch`, `poolverify`, `verifytags`;
 - `fulllod`, `flaresexact`, `fullparticles`, `objectpointlights`, `bonesdirect`, `decalall`, `decalnocull`, `detailallfar`;
 - `noboxtest`, `listuncached`, `stalleach`, `nolevelreserve`, `nosizefloor`, `vramlargest`;
-- `novfpufwd` (E20): the GE's forwarding thread made without the VFPU attribute;
 - `transparent`, `textures`, `interpolation`, `novfpu`, `noscratch`, `nocull`;
 - `readerslow`, `nomeaudio`.
 - build 118: `verifyvectors` (X10, the vector checks), `tcutfull` (T1, the see-through cut's sphere test), `restlesscheck` (the restless back-off: every sleep candidate checked every tick).
