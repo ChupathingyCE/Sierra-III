@@ -44393,7 +44393,7 @@ often the tick left it alone (0), changed other bytes of it (1) or the same
 bytes (2, the thinking's whole word goes in): which of the actor's fields the
 tick and its thinking both write */
 #define PSP_AITICKOLD_WORDS_MOST 1024
-static int psp_aitickold_words_on;
+static int psp_aitickold_words_on, psp_aitickold_input_tick;
 static unsigned long psp_aitickold_words[PSP_AITICKOLD_WORDS_MOST][3];
 
 static void psp_aitickold_merge(
@@ -44527,6 +44527,18 @@ static void psp_aitickold_install(
 		csmemcpy(scratch, actor, sizeof(*scratch));
 		for (k = 0; k < count; k++)
 		{
+			/* aitickoldbufinput: the actor's input block (its position,
+			pathfinding surface and point, facing, vitality) is the tick's to
+			refresh (actor_input_update), so the tick's values stand over the
+			thinking's one-tick-older ones (s3o14_b30: pathfinding_surface_index
+			and pathfinding_point were the words both wrote most) */
+			if (psp_aitickold_input_tick)
+			{
+				unsigned long w = buf[start + 3 + k * 3];
+
+				if (w * 4 >= offsetof(struct actor_datum, input) && w * 4 < offsetof(struct actor_datum, external_orders))
+					continue;
+			}
 			if (psp_aitickold_words_on)
 			{
 				unsigned long w = buf[start + 3 + k * 3], changed = buf[start + 5 + k * 3];
@@ -44670,6 +44682,7 @@ static void psp_aitickold_install(
 		psp_aitickold_buf_noswitch = psp_keep("aitickoldbufnoswitch") != 0;
 		psp_aitickold_buf_nooffer = psp_keep("aitickoldbufnooffer") != 0;
 		psp_aitickold_words_on = psp_keep("aitickoldbufwords") != 0;
+		psp_aitickold_input_tick = psp_keep("aitickoldbufinput") != 0;
 		if (psp_aitickold_buf_on)
 		{
 			psp_aitickold_buf = psp_aime_lines(PSP_AITICKOLD_BUF_WORDS * sizeof(unsigned long));
