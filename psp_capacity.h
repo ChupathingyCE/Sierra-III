@@ -124,6 +124,13 @@ outside_alloc), and the heap keeps its room for the rest
 #define PSP_TEXTURE_CACHE_SIZE 0x10000 /* (0x1600000) */
 #define HALO_PORT_TEXTURE_CACHE_SIZE PSP_TEXTURE_CACHE_SIZE
 
+/* a console's memory class (HALO_CONSOLE_MEMORY_EXTRAS: the engine's
+halo_port_capacity.h, which this header replaces, includes it). The PSP
+defines no HALO_CONSOLE_MEMORY_CLASS, so every size is its baseline; without
+the header the macro's uses linked as stubbed calls answering 0 (no
+transparent geometry groups, no dynamic triangles) */
+#include "halo_console_memory.h"
+
 /* ---------- structure rendering */
 
 #define HALO_PORT_MAXIMUM_RENDERED_ENVIRONMENT_SURFACES 16384

@@ -171,6 +171,11 @@ bool SDL_GL_MakeCurrent(SDL_Window *window, SDL_GLContext context) { (void)windo
 bool SDL_GL_SetAttribute(SDL_GLAttr attribute, int value) { (void)attribute; (void)value; return false; }
 bool SDL_GL_SetSwapInterval(int interval) { (void)interval; return false; }
 bool SDL_GL_SwapWindow(SDL_Window *window) { (void)window; return false; }
+/* (the 0.9.1 test build's teardown and dialogs: no window, context or
+message box was ever made) */
+void SDL_DestroyWindow(SDL_Window *window) { (void)window; }
+bool SDL_GL_DestroyContext(SDL_GLContext context) { (void)context; return false; }
+bool SDL_ShowMessageBox(const SDL_MessageBoxData *data, int *button) { (void)data; (void)button; return false; }
 SDL_FunctionPointer SDL_GL_GetProcAddress(const char *name) { (void)name; return NULL; }
 bool SDL_GetWindowSizeInPixels(SDL_Window *window, int *w, int *h)
 { (void)window; if (w) *w = 480; if (h) *h = 272; return true; }
@@ -601,6 +606,8 @@ gamepad from then on: the controls died while the game kept running.
 SDL_free (above) knows not to free it */
 static SDL_JoystickID gamepad_list[2] = { PSP_GAMEPAD_ID, 0 };
 
+/* the PSP's own controls, always there (SDL_GetGamepads, below) */
+bool SDL_HasGamepad(void) { return true; }
 SDL_JoystickID *SDL_GetGamepads(int *count)
 {
 	if (count) *count = 1;

@@ -30,11 +30,29 @@ here, as a console leaves them: the shaders prepared while a map loads (the
 GL renderer's) and the loading screen's picture (loading_picture.c) */
 #define HALO_CONSOLE_NO_SHADER_PREP 1
 #define HALO_CONSOLE_NO_LOADING_PICTURE 1
+/* the same for the desktop's extras (halo_port_features.h, also included by
+halo_port_limits.h): those new since v0.7.5d, which the PSP never built, are
+left out as a console leaves them: the Light effects (plasma_*.c, ~1.5 MB of
+.bss), the object functions, particle streams and camera shake drawn
+between ticks (render_interpolation.c, player_effects.c), the audio probe,
+the Controls screen, Delta Profile, Discord and voice. The extras the PSP
+built on v0.7.5d (player names, hi-res text answered by psp_chupa_platform.c,
+tag validation left out by psp_build.py's desktop units) stay as they were */
+#define HALO_CONSOLE_NO_LIGHT_EFFECTS 1
+#define HALO_CONSOLE_NO_SMOOTH_FUNCTIONS 1
+#define HALO_CONSOLE_NO_PARTICLE_STREAMS 1
+#define HALO_CONSOLE_NO_SMOOTH_SHAKE 1
+#define HALO_CONSOLE_NO_AUDIO_PROBE 1
+#define HALO_CONSOLE_NO_CONTROLS 1
+#define HALO_CONSOLE_NO_DELTA_PROFILE 1
+#define HALO_CONSOLE_NO_DISCORD 1
+#define HALO_CONSOLE_NO_VOICE 1
 /* (the two units compiled with their own build.ninja lines, posix_files.c
 and tomlc17.c, have no port/linux/include on their path; they test none of
 the capabilities) */
 #if __has_include("halo_console_features.h")
 #include "halo_console_features.h"
+#include "halo_port_features.h"
 #endif
 
 /* a PSP value, or the other ports' (psp_fixups.py) */

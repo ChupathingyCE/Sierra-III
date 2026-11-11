@@ -49385,6 +49385,65 @@ FIXES_CHUPA090["source/sound/sound_dsound_xbox.c#probe"] = [
 #endif
 """),
 ]
+# The CPU-made Xbox loading screen (loading_screen.c, new at 6eef2f3: 2.4 MB
+# of .bss for its 640x480 frames) isn't built (psp_build.py's desktop units):
+# the PSP's progress bar runs its update as on v0.7.5d, without the step
+# gate and the CPU's picture
+FIXES_CHUPA090["source/interface/progress_bar.c#loadingscreen"] = [
+("""	/* port: from black, as the Xbox's front buffer was cleared */
+	loading_screen_reset();
+""",
+ """#ifndef HALO_PSP
+	/* port: from black, as the Xbox's front buffer was cleared */
+	loading_screen_reset();
+#endif
+"""),
+("""	/* port: a step each refresh, as the Xbox's (loading_screen.c) */
+	if (!loading_screen_step_due())
+		return;
+""",
+ """#ifndef HALO_PSP
+	/* port: a step each refresh, as the Xbox's (loading_screen.c) */
+	if (!loading_screen_step_due())
+		return;
+#endif
+"""),
+("""	/* port: the Xbox's drawing below reads its front buffer through a
+	texture made from its address (this_is_awful) and draws with no vertex
+	shader, neither of which the port's Direct3D has: the CPU makes the same
+	picture from the same textures (port/linux/game/loading_screen.c) */
+	if (progress_bar_mode.texture0 && progress_bar_mode.texture1)""",
+ """#ifndef HALO_PSP
+	/* port: the Xbox's drawing below reads its front buffer through a
+	texture made from its address (this_is_awful) and draws with no vertex
+	shader, neither of which the port's Direct3D has: the CPU makes the same
+	picture from the same textures (port/linux/game/loading_screen.c) */
+	if (progress_bar_mode.texture0 && progress_bar_mode.texture1)"""),
+("""		IDirect3DTexture8_UnlockRect(progress_bar_mode.texture1, 0);
+		IDirect3DTexture8_UnlockRect(progress_bar_mode.texture0, 0);
+	}
+	return;
+""",
+ """		IDirect3DTexture8_UnlockRect(progress_bar_mode.texture1, 0);
+		IDirect3DTexture8_UnlockRect(progress_bar_mode.texture0, 0);
+	}
+	return;
+#endif
+"""),
+]
+# The model vertices' debug display (new at 6eef2f3) keeps 128 KB of .bss for
+# a console command: the PSP takes the Xbox console's form, allocated the
+# first time the display is turned on
+FIXES_CHUPA090["source/rasterizer/rasterizer.c#debugvertices"] = [
+("""#ifdef HALO_XBOX_CONSOLE
+	/* (the console: never on the stack""",
+ """#if defined(HALO_XBOX_CONSOLE) || defined(HALO_PSP)
+	/* (the console: never on the stack"""),
+("""#ifdef HALO_XBOX_CONSOLE
+	if (rasterizer_debug_model_vertices_enabled && !debug_vertices)""",
+ """#if defined(HALO_XBOX_CONSOLE) || defined(HALO_PSP)
+	if (rasterizer_debug_model_vertices_enabled && !debug_vertices)"""),
+]
 FIXES_CHUPA090["port/linux/game/structure_culling.h"] = [
 ("""#ifdef HALO_XBOX_CONSOLE
 /* (the original Xbox build draws""",

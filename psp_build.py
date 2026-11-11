@@ -41,6 +41,10 @@ PLATFORM_FILES = [
     "bink_null", "xbox_xapi", "xbox_files", "xbox_kernel", "msvc_crt", "msvc_wide", "posix_files",
     "xnet", "halo_linker_common", "port_config", "sdl_platform", "xinput_sdl", "dsound_sdl",
     "d3d8_gl", "d3d8_resources", "xbox_textures", "nv2a_vsh", "xbdm",
+    # (from the 0.9.1 test build: the game's folders' names and paths, the
+    # save folder's choice, and the platform threads' count that d3d8_gl.c's
+    # vertical blank thread starts through)
+    "port_folders", "save_folder", "thread_stop",
 ]
 # build 107: the campaign-only engine. Co-op and multiplayer become a branch
 # of their own, with their own budgets (2026-10-08), so the campaign
@@ -110,7 +114,10 @@ CHUPA_DESKTOP_UNITS = ("port/linux/game/ce_", "port/linux/game/browser_screen.c"
                        "port/linux/game/menu_functions.c", "port/linux/game/menu_tags.c",
                        "port/linux/game/tag_schema_", "port/linux/game/tag_validate",
                        "port/linux/game/touch_game.c", "port/linux/game/hud_hires_tags.c",
-                       "port/linux/game/structure_culling.c", "port/linux/game/object_bounds_cache.c")
+                       "port/linux/game/structure_culling.c", "port/linux/game/object_bounds_cache.c",
+                       # (the 0.9.1 test build's CPU-made Xbox loading screen, 2.4 MB of
+                       # .bss: the PSP's progress bar draws as before, psp_fixups.py)
+                       "port/linux/game/loading_screen.c")
 # ... except what the multiplayer build needs as it is: map_families.c names a
 # game's map in the game's protocol (an Xbox map as itself, a Custom Edition
 # map custom_maps\<name>), in the host's advertisement and settings and the
