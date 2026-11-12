@@ -125,6 +125,19 @@ The ME's replay makes some answers from the camera, and a kept block is CALLed o
 | cap | `PSP_CAPTURE=draw_list`: a frame's handed-over records (entries, RSO's pool, the camera, residency) over b30_play2's flight | [enables:draw list] | the box alone on `bench-hw` over the capture, warm, emptied and crowded, the GE beside (REBUILD.md §5) |
 | — | **In the frame:** two builds, `PSP_DRAWLIST=0` and `=1`, b30_play2 and c20_play1 | | one PSP pair each (the lead calls the cut-in) |
 
+**s0's first read (drawreuse1, 2026-11-12 15:5x; sierra-batch 43309859657, builder/drawreuse 73597ab on tock 4d07a4ae) [E, exact counts]:**
+
+| Map (pad to game time 3000) | Instance words a frame | Reusable, origin left out | Origin held at 8 units | at 2 units | Origin hops per 100 frames (2 / 8 u) |
+|---|---:|---:|---:|---:|---:|
+| b30_play2 | 17,587 | 21.7% | 21.4% | 20.3% | 7.7 / 1.9 |
+| b40_play1 | 8,747 | 11.5% | 11.4% | 11.0% | 4.7 / 1.5 |
+| c10_play1 | 12,138 | 31.0% | 30.7% | 30.4% | 2.5 / 1.1 |
+| d20_play1 | 10,841 | 13.7% | 13.5% | 13.0% | 5.5 / 1.6 |
+
+- **The origin is not the obstacle:** held at 8 units it costs ~0.3 points of reuse; §10.3 stands, N = 8.
+- **Records that change are:** reuse here compares each instance's records bit for bit; ~20 instances a frame on b30 change records while their world state, per the census (§5), mostly doesn't. The census counted instances, these count words (the posed units' words weigh most). drawreuse2 (43315155698) names the record kind and field that change.
+- **rso keeps nothing on the tock** (bugs.md 2026-11-12 15:5x): the far level's record isn't in rso's allowed kinds, so `rsoall` changed nothing here. v0's record takes the far form as a kind (§10.2 item 1).
+
 Nothing past s0 is built until s0's count is read: if the kept share of the ME's words is small on the heavy stretches, or the arena doesn't fit b30's heap, the design changes here first.
 
 ### 10.7 Against the budget (§4), honestly
