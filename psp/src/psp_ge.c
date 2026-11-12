@@ -4941,6 +4941,20 @@ static int origin_held_set = 0;
 static unsigned long origin_held_hops = 0, origin_held_frames = 0;
 #endif
 
+/* whether the draw list box is on (built in, and its keep word given) */
+int psp_drawlist_on(void)
+{
+#ifdef PSP_DRAWLIST
+	static int on = -1;
+
+	if (on < 0)
+		on = psp_keep("drawlist") != 0;
+	return on;
+#else
+	return 0;
+#endif
+}
+
 /* the value the GE keeps of a matrix word: the low 8 bits dropped (pspgu
 sends a float's top 24 bits) */
 static float ge_matrix_float(float f)
@@ -14052,6 +14066,58 @@ static int rso_room(void)
 /* a kept entry's records into the buffer, after its geometry is locked again
 where they point and its textures are pretouched; 0 (nothing written) if a
 part's geometry moved or the records don't fit */
+/* the far level's size (farlevelN; the bare word, on by default, is 32) and
+whether its blocks may be copied to VRAM, read once */
+static int far_pixels = -1, far_vram = -1;
+
+static int far_pixels_now(void)
+{
+	if (far_pixels < 0)
+	{
+		far_pixels = psp_keep_number("farlevel", 0);
+		if (far_pixels <= 0)
+			far_pixels = psp_keep("farlevel") ? 32 : 0;
+		if (far_pixels > 0)
+			platform_log("GE: farlevel: models under %d px drawn as their far level", far_pixels);
+		far_vram = !psp_keep("farvramoff");
+	}
+	return far_pixels;
+}
+
+/* a far form's shown groups made known to vrammodels, as psp_far_draw does,
+for a form sent again from rso's kept records */
+static void far_note(const void *block, unsigned int mask_low, unsigned int mask_high)
+{
+	const unsigned char *at = block;
+	unsigned int group = 0;
+
+	if (!far_vram)
+		return;
+	while (at && group < 64)
+	{
+		const unsigned int *head = (const unsigned int *)at;
+
+		if (((group < 32 ? mask_low >> group : mask_high >> (group - 32)) & 1u) && head[2])
+			vm_note((void *)(at + ((head[1] & 0x20000u) ? 80 : 64)), head[3] * head[2]);
+		group++;
+		at = head[14] ? at + head[14] : NULL;
+	}
+}
+
+/* rso's key's word for the far form (models.c, FIXES_RSO): 0 with the draw
+list off (no word in the key); otherwise 1, plus 1 when the model is under
+the far level's size, so a kept walk drawn far is never sent again for a
+model come near, nor the other way */
+int psp_drawlist_far_key(float pixels)
+{
+	int size;
+
+	if (!psp_drawlist_on())
+		return 0;
+	size = far_pixels_now();
+	return 1 + (size > 0 && pixels > 0.0f && pixels < (float)size);
+}
+
 static int rso_send(unsigned int *entry)
 {
 	unsigned int parts = entry[RSO_PARTS], words = entry[RSO_RECORD_WORDS];
@@ -14062,7 +14128,19 @@ static int rso_send(unsigned int *entry)
 	if (words > DEFER_LARGEST)
 		return 0;
 	for (at = record; at < end; at += at->u >> 8)
-		if ((at->u & 0xFF) == DEFER_DRAW_MODEL)
+		if ((at->u & 0xFF) == DEFER_DRAW_FAR)
+		{
+			/* a far form's block (drawlist): its geometry address and size were
+			kept as its part's two words */
+			if (part >= parts || psp_geo_lock((unsigned int)buffers[2 * part], (unsigned int)buffers[2 * part + 1]) != at[1].p)
+			{
+				rso_moved++;
+				return 0;
+			}
+			far_note(at[1].p, at[2].u, at[3].u);
+			part++;
+		}
+		else if ((at->u & 0xFF) == DEFER_DRAW_MODEL)
 		{
 			if (part >= parts || psp_vertex_lock((const struct vertex_buffer *)buffers[2 * part]) != at[1].p ||
 				psp_index_lock((const struct triangle_buffer *)buffers[2 * part + 1]) != at[4].p)
@@ -14376,7 +14454,7 @@ unsigned int *psp_rso_capture_end(unsigned int key_words)
 			rso_broken++;
 			return NULL;
 		}
-		if (kind == DEFER_DRAW_MODEL)
+		if (kind == DEFER_DRAW_MODEL || (kind == DEFER_DRAW_FAR && psp_drawlist_on()))
 			parts++;
 		else if (kind == DEFER_MODEL_MULTIPURPOSE ? !at[3].u || !at[7].u :
 			kind != DEFER_MODEL_BEGIN && kind != DEFER_MODEL_SHAPE && kind != DEFER_MODEL_EFFECT &&
@@ -17394,31 +17472,18 @@ void psp_ge_draw_far(const void *block, unsigned int mask_low, unsigned int mask
 1 when the model's far level is drawn in place of its parts, 2 when in place
 of its solid pass's parts only (its decal and transparent passes still to
 draw) */
-static int far_pixels = -1;
-
 int psp_far_draw(unsigned long model, float pixels, const char *permutations, int permutation_count,
 	const float *change_colours)
 {
 	extern unsigned int psp_far_version;
 	unsigned int address, bytes, mask[2] = { 0, 0 }, group = 0, tints[4];
-	static int far_vram = -1;
 	const void *block;
 
-	if (far_pixels < 0)
-	{
-		/* farlevelN sets the size; the bare word (on by default) is 32 */
-		far_pixels = psp_keep_number("farlevel", 0);
-		if (far_pixels <= 0)
-			far_pixels = psp_keep("farlevel") ? 32 : 0;
-		if (far_pixels > 0)
-			platform_log("GE: farlevel: models under %d px drawn as their far level", far_pixels);
-	}
+	(void)far_pixels_now();
 	/* first person and the sky are left out by the caller's flags: this side's
 	model state is the recorded one's, not yet replayed */
 	if (far_pixels <= 0 || pixels >= (float)far_pixels || pixels <= 0.0f)
 		return 0;
-	if (far_vram < 0)
-		far_vram = !psp_keep("farvramoff");
 	address = psp_far_block(model, &bytes);
 	if (!address)
 		return 0;
@@ -17515,6 +17580,15 @@ int psp_far_draw(unsigned long model, float pixels, const char *permutations, in
 			scale = sqrtf(m.x.x * m.x.x + m.x.y * m.x.y + m.x.z * m.x.z);
 			if (distance <= 0.0f || 2.0f * box[3] * scale * pixels_per_unit() >= (float)sprite_pixels * distance)
 				sprite = NULL;
+		}
+		if (psp_drawlist_on())
+		{
+			/* drawlist: rso keeps the far form's block as its part (the
+			address and size it is locked by); a sprite's choice follows the
+			camera, so a walk that could take one isn't kept */
+			psp_rso_geometry((const void *)address, (const void *)bytes);
+			if (sprite_pixels > 0 && pixels < (float)sprite_pixels)
+				psp_rso_volatile |= 8;
 		}
 		psp_ge_draw_far(block, mask[0], mask[1], tints, sprite);
 		if (sprite)
