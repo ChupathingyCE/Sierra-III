@@ -20,11 +20,13 @@ game then plays the same (the PSP's two races fixed first: tock162 edc2d39,
 #include "psp_paths.h"
 
 int psp_keep(const char *name);
+int psp_keep_number(const char *prefix, int fallback);
 void platform_log(const char *format, ...);
 extern int psp_map_generation;
 
 #define PAD_FRAME 0x46u /* 'F': a frame's seconds_elapsed */
 #define PAD_BLOB 0x42u  /* 'B': a local player's input_blob */
+#define PAD_MENU 0x55u  /* 'U': what the menus did, when it changes (psp_pad_menu) */
 #define PAD_BLOB_BYTES 32
 #define PAD_CHUNK (64 * 1024)
 
@@ -43,6 +45,9 @@ static unsigned char *pad_in = NULL;
 static unsigned int pad_in_size = 0, pad_in_at = 0, pad_in_base = 0, pad_in_fill = 0;
 static SceUID pad_in_file = -1;
 static int pad_in_ended = 0;
+/* the menus' state last written, or last read back: a file starts at 0 */
+static int pad_menu_state = 0;
+static unsigned long pad_menu_changes = 0;
 
 static int pad_log_on = 0;
 /* a log line's bytes: the log cuts longer lines (padrec1's 120-byte lines
@@ -114,6 +119,7 @@ static void pad_map_check(void)
 		pad_close();
 		snprintf(path, sizeof(path), "%s/log/pad_%d.pad", PSP_DATA_ROOT, pad_generation);
 		pad_file = sceIoOpen(path, PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
+		pad_menu_state = 0;
 		platform_log("pad: recording to %s%s", path, pad_file < 0 ? " (couldn't open it: not recording)" : "");
 		return;
 	}
@@ -144,6 +150,7 @@ static void pad_map_check(void)
 		}
 		pad_in_at = pad_in_base = pad_in_fill = 0;
 		pad_in_ended = !pad_in;
+		pad_menu_state = 0;
 		platform_log("pad: replaying %s, %u bytes, %u at a time%s", path, pad_in_size, (unsigned int)PAD_WINDOW,
 			pad_in ? "" : " (none: the game's own input)");
 	}
@@ -228,6 +235,70 @@ float psp_pad_seconds(float seconds)
 			return recorded;
 	}
 	return seconds;
+}
+
+/* main.c, each frame after the menus' update and before the players'
+input: what the menus did that the input blobs don't carry (the pause, and
+the pause menu's "restart level" and "restart at checkpoint", whose flags
+main.c acts on at the next frame's start). state is the game's: bit 0
+paused, bit 1 a revert asked, bit 2 a restart asked. Recording, a change is
+written ('U' and a byte); a replay returns the recording's state at this
+frame, for main.c to set, or -1 when it isn't replaying. A recording made
+before 'U' existed has none, and its replay keeps the state at 0, as the
+pause was ignored then */
+int psp_pad_menu(int state)
+{
+	if (pad_mode == 1 && pad_file >= 0)
+	{
+		/* "padmenutestN" (tests only, recording): the menus' work done here
+		as the pause menu would, so the emulator can record one: paused at
+		recorded frame N, let go 45 frames on, the level restarted 45 after */
+		static int test = -2;
+
+		if (test == -2)
+			test = psp_keep_number("padmenutest", 0);
+		if (test > 0 && (pad_frames == (unsigned long)test || pad_frames == (unsigned long)test + 45 ||
+			pad_frames == (unsigned long)test + 90))
+		{
+			extern void game_time_set_paused(unsigned char paused);
+			extern void main_reset_map(void);
+
+			if (pad_frames == (unsigned long)test + 90)
+			{
+				main_reset_map();
+				state |= 4;
+			}
+			else
+			{
+				int pause = pad_frames == (unsigned long)test;
+
+				game_time_set_paused((unsigned char)pause);
+				state = (state & ~1) | pause;
+			}
+			platform_log("pad: padmenutest at frame %lu: state %d", pad_frames, state);
+		}
+		if (state != pad_menu_state)
+		{
+			unsigned char byte = (unsigned char)state;
+
+			pad_put(PAD_MENU, &byte, 1);
+			pad_menu_state = state;
+			if (pad_menu_changes++ < 32)
+				platform_log("pad: the menus' state %d recorded at frame %lu", state, pad_frames);
+		}
+		return -1;
+	}
+	if (pad_mode != 2 || pad_in_ended || !pad_in)
+		return -1;
+	pad_window(2);
+	if (pad_in_at + 2 <= pad_in_base + pad_in_fill && pad_in[pad_in_at - pad_in_base] == PAD_MENU)
+	{
+		pad_menu_state = pad_in[pad_in_at - pad_in_base + 1];
+		pad_in_at += 2;
+		if (pad_menu_changes++ < 32)
+			platform_log("pad: the menus' state %d replayed", pad_menu_state);
+	}
+	return pad_menu_state;
 }
 
 /* player_control.c, each local player each frame: the input the game acts

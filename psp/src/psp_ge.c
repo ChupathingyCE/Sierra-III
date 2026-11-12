@@ -9953,7 +9953,7 @@ change nothing there; skipping them saves the GE the fill and the CPU the
 draws. "detailallfar": the detail passes everywhere, as before */
 #define SORT_BUCKETS (2 * ANGLE_BUCKETS)
 #define ANGLE_TRIANGLES 4096
-static int angle_buckets = -1, detail_all_far = -1;
+static int angle_buckets = -1, detail_all_far = -1, detail_far_old = -1;
 static int angle_bucketed = 0, angle_near_any = 0;
 static long angle_first[SORT_BUCKETS], angle_count[SORT_BUCKETS];
 static unsigned char angle_bucket_of[ANGLE_TRIANGLES];
@@ -10942,7 +10942,15 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 
 			reach += m * m;
 		}
-		detail_far_squared = far * far;
+		/* the fog fades the detail by depth, and the buckets test distance:
+		a point on the screen at depth d is at most d * sqrt(1 + tv^2 + th^2)
+		away (tv, th the half-view's tangents), so past this distance its
+		depth is past the fade too, and its detail adds nothing to the picture */
+		{
+			float tv = fov_tan_half(), th = tv * ((float)SCREEN_WIDTH / (float)SCREEN_HEIGHT);
+
+			detail_far_squared = far * far * (1.0f + tv * tv + th * th);
+		}
 		far_possible = reach > detail_far_squared;
 	}
 	/* geshow2: the engine's own index list, rewritten by the next frame's
@@ -11207,8 +11215,25 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 				in the debug menu restores them here */
 				if (detail_by_distance)
 				{
+					/* the near buckets only: they come first in the sorted
+					list, and past DETAIL_FAR the detail map has faded to its
+					neutral grey, so the far triangles' detail changes no
+					pixel ("detailfarold" draws them) */
+					int detail_count = (int)kept_count * 3;
+
+					if (detail_far_old < 0)
+						detail_far_old = psp_keep("detailfarold") != 0;
+					if (angle_bucketed && !detail_far_old)
+					{
+						long near = 0;
+						int b;
+
+						for (b = 0; b < ANGLE_BUCKETS; b++)
+							near += angle_count[b];
+						detail_count = (int)near * 3;
+					}
 					sceGuTexSlope(detail_pass_slope);
-					draw_pass(stream->base, draw, (int)kept_count * 3, &pieces_store, cut_count, 0);
+					draw_pass(stream->base, draw, detail_count, &pieces_store, cut_count, 0);
 				}
 				else
 					draw_pass_angled(stream->base, draw, (int)kept_count * 3, &pieces_store, cut_count, 0, detail_pass_slope, 1);

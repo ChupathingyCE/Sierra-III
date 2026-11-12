@@ -37317,6 +37317,37 @@ FIXES_LOOKREAL["source/game/player_control.c#padrec"] = [
 #endif
 """),
 ]
+FIXES_LOOKREAL["source/main/main.c#padmenu"] = [
+("""			MAIN_STAGE("process_ui_widgets");
+			process_ui_widgets();
+""",
+ """			MAIN_STAGE("process_ui_widgets");
+			process_ui_widgets();
+#ifdef HALO_PSP
+			/* the pad recorder (psp_pad.c): what the menus just did that the
+			input blobs don't carry (the pause; the pause menu's restart and
+			revert, acted on at the next frame's start), recorded, or set
+			again from the recording at the same frame */
+			if (main_globals.connection == _game_connection_local && !main_globals.movie && game_in_progress())
+			{
+				extern int psp_pad_menu(int state);
+				int state = (game_time_get_paused() ? 1 : 0) | (main_globals.revert_map ? 2 : 0) |
+					(main_globals.reset_map ? 4 : 0);
+				int replayed = psp_pad_menu(state);
+
+				if (replayed >= 0)
+				{
+					if ((replayed & 1) != (state & 1))
+						game_time_set_paused((replayed & 1) ? TRUE : FALSE);
+					if ((replayed & 2) && !main_globals.revert_map)
+						main_revert_map();
+					if ((replayed & 4) && !main_globals.reset_map)
+						main_reset_map();
+				}
+			}
+#endif
+"""),
+]
 FIXES_LOOKREAL["source/game/player_control.c#lookreal"] = [
 ("""static real player_control_autolevel_time[MAXIMUM_NUMBER_OF_LOCAL_PLAYERS];
 """,
