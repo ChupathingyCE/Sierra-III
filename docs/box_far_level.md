@@ -54,6 +54,15 @@ Per model with any part drawable far:
 
 Sizes (§1's table [U]): ~1-5 KB a model for the far block, ~4.5 KB for its atlas, ~16 bytes of directory. **What a frame keeps resident** is the distinct far models of that frame. b30's window 5 drew ~13 biped and ~18 scenery definitions under 32 px (row `farcensus3_bands_and_level_far`): ~30 models, so ~100-300 KB of the geometry and texture caches. **That is the first check, before the draw path is built** (slice 0).
 
+## Slice 1's form, simplified (2026-11-12 01:5x)
+
+The atlas needs the texture bake's plumbing: decoding and requantising each base map, and a new texture key. It also has a hard case, tiled uvs, which a single cell can't wrap. So slice 1 drops it, and the atlas becomes a look column (slice 1c) only if Sheepdog01's shots ask for texture under the threshold:
+
+- **Vertex colours carry the texture.** Each far vertex's colour is its base map sampled at its uv, from a mip about the size the part covers at the threshold, times the shape term. At 32 px a far part covers a few dozen pixels, so colour at each vertex of a ~50-300-vertex mesh holds about what the texture showed. That's the overshoot the ruling asks for, tuned by `farlevelN`.
+- **No texture is bound,** so a far instance costs no texture-cache room and no bind. Only its block passes through the geometry cache.
+- **The tint multiplies through the GE's ambient alone:** lighting stays on with no lights enabled, the ambient set to the tint, and the material's ambient taken from the vertex colour (`sceGuColorMaterial(GU_AMBIENT)`). So the GE works out tint × vertex colour with no per-light work, and the change colours come out of the bake per permutation.
+- **The far block** is a PCV block flagged PCV_FAR (8): 12-byte vertices (16-bit position, 16-bit colour, a node byte and padding), then the strip, then the node list.
+
 ## The run-time path
 
 - **The tier:** after the engine's level pick, the object's diameter is compared with `farlevelN`. It drops to far below N and comes back near above 1.15 N, using its tier byte. No cross-fade.
