@@ -17004,15 +17004,16 @@ a list rather than a strip, 14 the bytes to the model's next node group or 0), t
 divided by the scale, a 16-bit position in the box), the indices.
 Untextured, lit by the GE with the model's own lights, each vertex's colour
 its material's ambient and diffuse */
-static unsigned long far_drawn = 0, far_vertices = 0;
+static unsigned long far_drawn = 0, far_vertices = 0, far_small = 0, far_small_vertices = 0;
 #define PIN_UNIT(x) ((x) < 0.0f ? 0.0f : (x) > 1.0f ? 1.0f : (x))
 
 static void far_report(void)
 {
 	if (far_drawn)
-		platform_log("GE: farlevel: %lu models drawn as their far level in the last 300 frames, %lu vertices; %.1f and %.0f a frame",
-			far_drawn, far_vertices, (double)far_drawn / 300.0, (double)far_vertices / 300.0);
-	far_drawn = far_vertices = 0;
+		platform_log("GE: farlevel: %lu models drawn as their far level in the last 300 frames, %lu vertices; %.1f and %.0f a frame; under 16 px (D1's and D2's ground) %.1f and %.0f a frame",
+			far_drawn, far_vertices, (double)far_drawn / 300.0, (double)far_vertices / 300.0,
+			(double)far_small / 300.0, (double)far_small_vertices / 300.0);
+	far_drawn = far_vertices = far_small = far_small_vertices = 0;
 }
 
 void psp_ge_draw_far(const void *block, unsigned int mask_low, unsigned int mask_high, const unsigned int *tints)
@@ -17163,6 +17164,8 @@ int psp_far_draw(unsigned long model, float pixels, const char *permutations, in
 			{
 				mask[group >> 5] |= 1u << (group & 31);
 				far_vertices += head[2];
+				if (pixels < 16.0f)
+					far_small_vertices += head[2];
 			}
 			group++;
 			at = head[14] ? at + head[14] : NULL;
@@ -17184,6 +17187,8 @@ int psp_far_draw(unsigned long model, float pixels, const char *permutations, in
 	}
 	psp_ge_draw_far(block, mask[0], mask[1], tints);
 	far_drawn++;
+	if (pixels < 16.0f)
+		far_small++;
 	/* 2: the model's decal and transparent parts are still to be drawn as
 	they are (the bake's PCV_FAR_KEEPS) */
 	return (((const unsigned int *)block)[1] & 0x10000u) ? 2 : 1;
