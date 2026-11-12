@@ -89,6 +89,7 @@ SOSO_BASE_MAP_ID = 176          # shader_model's base map dependency's tag id
 SOSO_MAP_SCALE = (156, 160)     # shader_model's map u and v scale
 SENV_BASE_MAP_ID = 148          # shader_environment's base map dependency's tag id
 SENV_FLAGS = 40                 # shader_environment's flags (bit 0: alpha tested)
+SEE_THROUGH_SMALL = 0.25        # a see-through part left out only when its radius is under this share of the opaque parts'
 ALPHA_TESTED = set()            # alpha-tested senv tag ids (base_colours fills it): see-through
 # the see-through shaders' groups (transparent chicago and its extended form,
 # generic, glass, meter, plasma, water): their parts aren't drawn far
@@ -218,7 +219,7 @@ def entry(m, hw):
 
 def merged(m, pack_data, offsets, shaders, colours, scales, census):
     """(positions, normals, colours, triangles, each vertex's node) of the model's merged lowest level, or a reason"""
-    P, N, C, T, nodes, keys = [], [], [], [], [], []
+    P, N, C, T, nodes, keys, see_through = [], [], [], [], [], [], []
     base = 0
     for po, key in offsets:
         data = m.data
@@ -233,15 +234,6 @@ def merged(m, pack_data, offsets, shaders, colours, scales, census):
             return 'buffers'
         if not 0 <= shader_index < len(shaders):
             return 'shader index'
-        if shaders[shader_index] not in colours:
-            tag = m.by_id.get(shaders[shader_index]) or m.by_id.get(shaders[shader_index] - (1 << 32))
-            group = tag.group if tag else '?'
-            # see-through parts are left out of the far level: the far
-            # ruling drops see-through parts under the threshold
-            if group in SEE_THROUGH or (shaders[shader_index] & 0xFFFFFFFF) in ALPHA_TESTED:
-                census['see-through parts left out'] += 1
-                continue
-            return 'shader %s' % group
         uncompressed = vtype == mc.TYPE_UNCOMPRESSED
         size = mc.VERTEX_SIZE[vtype] * vcount
         raw = pack_data[v - mc.PACK_BASE:v - mc.PACK_BASE + size]
@@ -251,11 +243,22 @@ def merged(m, pack_data, offsets, shaders, colours, scales, census):
         if len(raw) != size or len(ind) != count:
             return 'buffers'
         src = mc.Source(raw, vcount, uncompressed)
+        positions = src.position.copy().view('<f4').reshape(vcount, 3).astype(F)
+        if shaders[shader_index] not in colours:
+            tag = m.by_id.get(shaders[shader_index]) or m.by_id.get(shaders[shader_index] - (1 << 32))
+            group = tag.group if tag else '?'
+            # see-through parts are left out of the far level, as the far
+            # ruling drops them under the threshold, while they're small
+            # beside the model (checked below: a light's beam or glow isn't)
+            if group in SEE_THROUGH or (shaders[shader_index] & 0xFFFFFFFF) in ALPHA_TESTED:
+                census['see-through parts left out'] += 1
+                see_through.append(positions)
+                continue
+            return 'shader %s' % group
         if (src.n1 >= 0).any():
             return 'skinned'
         nodes.append(np.asarray(src.n0, np.int64).copy())
         keys.append(np.full(vcount, key, np.int64))
-        positions = src.position.copy().view('<f4').reshape(vcount, 3).astype(F)
         normals = mc.unpack_normals(src.packed).astype(F)
         uv = src.uv.copy().view('<f4').reshape(vcount, 2).astype(F)
         img, sus, svs = colours[shaders[shader_index]]
@@ -267,6 +270,17 @@ def merged(m, pack_data, offsets, shaders, colours, scales, census):
         base += vcount
     if not P:
         return 'see-through only'
+    if see_through:
+        # a see-through part may go only while it's small beside the model and
+        # inside its opaque shape: a lamp's glow or beam reaches out of its
+        # small bounds and is drawn large (farlevel8's b40 shots)
+        opaque = np.concatenate(P)
+        centre, radius = mc.sphere(opaque)
+        st = np.concatenate(see_through)
+        st_centre, st_radius = mc.sphere(st)
+        reach = float(np.sqrt(((st - centre) ** 2).sum(1)).max())
+        if st_radius > SEE_THROUGH_SMALL * float(radius) or reach > 1.1 * float(radius):
+            return 'see-through large'
     census['source triangles'] += sum(len(t) for t in T)
     census['source vertices'] += base
     # a group is a node's vertices under one region and permutation key
