@@ -229,6 +229,13 @@ if CAPTURE and CAPTURE not in CAPTURE_BOXES:
 CAPTURE_DEFINES = ["-DPSP_CAPTURE=1", "-DPSP_CAPTURE_%s=1" % CAPTURE.upper()] if CAPTURE else []
 if CAPTURE:
     PSP_FILES.append("psp_capture")
+# PSP_BOXPOSING=1: the posing box cut in (docs/box_posing.md, "The cut-in";
+# psp_fixups.py FIXES_BOXPOSING): every object's node matrices and bounding
+# sphere made by psp/src/box_posing.c in place of the engine's walk. The
+# new-only build of the box's two-build proof; a default build is the old-only
+CAPTURE_DEFINES = CAPTURE_DEFINES + (["-DPSP_BOX_POSING=1"] if os.environ.get("PSP_BOXPOSING", "") == "1" else [])
+if os.environ.get("PSP_BOXPOSING", "") == "1":
+    PSP_FILES.extend(["box_posing", "psp_boxposing"])
 # PSP_SMALLDATA=8 (or 4): the units built with the game's flags put variables
 # of up to that many bytes in small data, read with one load from $gp instead
 # of lui and a load, so the code is shorter (lever RH5, after Halo 64's -G8).
