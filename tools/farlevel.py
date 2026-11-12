@@ -19,7 +19,8 @@ It takes rigid models (rocks, trees, crates, most scenery, and since slice
 2 rigid models of several nodes, one group a node; since slice 3 regions of
 several permutations, one group a region's permutation and node), their opaque
 parts model shaders (soso); their see-through parts are left out of the far
-level, as the far ruling allows. The others are counted by reason and left alone, so they
+level, as the far ruling allows. Projectiles' models are left out whole: the
+ruling keeps projectile visuals to the horizon. The others are counted by reason and left alone, so they
 keep their parts at every distance.
 
 What is appended to the pack (after modelconvert's region, and after
@@ -72,6 +73,7 @@ FAR_PIXELS = 32                 # the size the far level is first drawn at (keep
 SCREEN_LINES = 272              # the pick's pixels are LODS's
 COLOUR_MIP_TEXELS = 16          # the base map's mip sampled: the first at or under this width
 MAX_VERTICES = 65535
+OBJECT_MODEL = 40                # the object definition's model reference (its tag id at +12)
 MAX_GROUPS = 64                  # the draw's mask of groups is 64 bits
 ALWAYS = 0xFFFF                  # a group drawn whatever the object's permutations
 # meshopt_SimplifyErrorAbsolute | Prune | Permissive (meshoptimizer 1.3)
@@ -102,6 +104,8 @@ def check_layouts(d):
         for name, at in want.items():
             if got.get(name) != at:
                 raise Refused('%s\'s %r is at %r, not %#x' % (struct_name, name, got.get(name), at))
+    if fields('Projectile').get('model') != OBJECT_MODEL:
+        raise Refused('the projectile\'s model reference moved')
     sm = fields('ShaderModel')
     if sm.get('base map') != SOSO_BASE_MAP_ID - 12 or (sm.get('map u scale'), sm.get('map v scale')) != SOSO_MAP_SCALE:
         raise Refused('the shader_model layout moved')
@@ -336,8 +340,17 @@ def main(map_path, pgeo_path):
     census = Counter()
     region = mc.up(len(data), 64)
     blocks, directory, sizes = bytearray(), [], []
+    projectile_models = set()
+    for t in m.tags:
+        # projectile visuals stay to the horizon (the far ruling), so a
+        # projectile's model keeps its parts at every distance
+        if t.group == 'proj' and m.in_tags(t.address):
+            model_id = struct.unpack_from('<I', m.data, m.off(t.address) + OBJECT_MODEL + 12)[0]
+            projectile_models.add(model_id & 0xFFFFFFFF)
     for tag_id, scales, shaders, offsets, why in models(m, d):
         census['models'] += 1
+        if tag_id in projectile_models:
+            why = 'projectile'
         if why is None:
             got = merged(m, data, offsets, shaders, colours, scales, census)
             why = got if isinstance(got, str) else None
