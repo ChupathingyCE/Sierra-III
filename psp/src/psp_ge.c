@@ -17048,15 +17048,11 @@ void psp_ge_draw_far(const void *block)
 			sceGumDrawArray(head[13] ? GU_TRIANGLES : GU_TRIANGLE_STRIP,
 				GU_COLOR_5650 | GU_NORMAL_16BIT | GU_VERTEX_16BIT | GU_INDEX_16BIT | GU_TRANSFORM_3D, (int)head[4],
 				(const unsigned short *)(at + 64 + head[3] * head[2]), at + 64);
-			if (!PSP_ME_WORK())
-				far_vertices += head[2];
 		}
 		at = head[14] ? at + head[14] : NULL;
 	}
 	sceGuColorMaterial(0);
 	model_lighting(0);
-	if (!PSP_ME_WORK())
-		far_drawn++;
 }
 
 /* render_model's (FIXES_FARLEVEL), on the main CPU after the model's begin:
@@ -17086,6 +17082,20 @@ int psp_far_draw(unsigned long model, float pixels)
 	if (!block)
 		return 0;
 	psp_ge_draw_far(block);
+	/* counted here, on the main CPU: the draw itself is mostly the ME's
+	replay, which counts nothing */
+	far_drawn++;
+	{
+		const unsigned char *at = block;
+
+		while (at)
+		{
+			const unsigned int *head = (const unsigned int *)at;
+
+			far_vertices += head[2];
+			at = head[14] ? at + head[14] : NULL;
+		}
+	}
 	return 1;
 }
 
