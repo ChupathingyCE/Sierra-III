@@ -74,6 +74,11 @@ The atlas needs the texture bake's plumbing: decoding and requantising each base
 - The merged meshes' strips ran 4.7 indices a triangle, so a list is kept where the strip isn't shorter.
 - The next slices are sized by the groups left: other shaders and permutations first.
 
+**Lit, and with the see-through slice (2026-11-12; the lab's rows `farlevel2_lit`, `farlevel3_seethrough`) [E]:**
+- The flat tint drew the far rocks flat and too bright (`farlevel1_flat_tint`). So the far part is lit by the model's own lights instead: 16-bit normals, divided by the block's one scale, and 14-byte vertices.
+- A model's see-through parts are now left out of its far level rather than the model left out. On b30 that's 39 of 86 models in 155 KB; on b40, 30 of 82 in 78 KB.
+- Play and seeds are identical. b30's shots differ in ~150-207 pixels; b40's in 0-7.
+
 ## The run-time path
 
 - **The tier:** after the engine's level pick, the object's diameter is compared with `farlevelN`. It drops to far below N and comes back near above 1.15 N, using its tier byte. No cross-fade.
