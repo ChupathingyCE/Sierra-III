@@ -12559,6 +12559,9 @@ static unsigned short *vm_hash = NULL, *vm_order = NULL;
 static PSP_MAIN_SIDE int vm_count = 0; /* the main CPU's (vm_find, at the record's writing) */
 static unsigned int vm_base = 0, vm_size = 0, vm_frame = 0;
 static unsigned long vm_draws = 0, vm_redirects = 0, vm_copied = 0, vm_dropped = 0, vm_full = 0;
+/* "vmpackoff": no room made by a span of copies (vm_make_room) */
+static int vm_pack = -1;
+static unsigned long vm_packs = 0, vm_pack_copies = 0;
 
 /* "mevram": the copies for the Media Engine's draws too (the GE layer
 carried out on the ME: gemeon, gemeoverlap, frames in flight). Without it
@@ -12841,8 +12844,73 @@ static unsigned int vm_place(unsigned int bytes)
 	return at + bytes <= vm_size ? at : VM_NONE;
 }
 
+/* No gap holds the newcomer, though the room may hold it many times over:
+first fit leaves the free room between copies, and with every copy drawn
+each frame no single one makes way, so the set froze (c10 after the ladder's
+earlier maps on the PSP-3000: 54 copies in 271 of 616 KB, full in 300 of 300
+frames, 84% of draws from a copy; c10 fresh packed 72 in 541 KB, 100%;
+43239343948 against 43276455249). So the span of the room the newcomer would
+fill whose copies were read least (their reads together, against the
+newcomer's alone: the GE then reads more from VRAM) makes way, if that's
+less than the newcomer's by a quarter (no swapping back and forth); its
+copies go into quarantine like any let go, and the newcomer takes the span
+once they're out. A span starts at the room's start or a copy's end. TRUE
+when a span was let go */
+static int vm_make_room(struct vm_entry const *best)
+{
+	unsigned short *order = vm_order;
+	unsigned int bytes = best->bytes, start;
+	unsigned long long cheapest = ~0ull;
+	int n = 0, k, j, from, chosen = -1;
+
+	if (vm_pack < 0)
+		vm_pack = !psp_keep("vmpackoff");
+	if (!vm_pack)
+		return 0;
+	for (k = 0; k < vm_count; k++)
+	{
+		struct vm_entry *e = &vm[k];
+
+		if (e->at == VM_NONE)
+			continue;
+		for (j = n; j > 0 && vm[order[j - 1]].at > e->at; j--)
+			order[j] = order[j - 1];
+		order[j] = (unsigned short)k;
+		n++;
+	}
+	/* from = -1: the span at the room's start; else the span after copy from */
+	for (from = -1; from < n; from++)
+	{
+		unsigned long long reads = 0;
+
+		start = from < 0 ? 0 : (vm[order[from]].at + vm[order[from]].held + 15) & ~15u;
+		if (start + bytes > vm_size)
+			break;
+		for (k = from + 1; k < n && vm[order[k]].at < start + bytes; k++)
+			if (!vm[order[k]].released)
+				reads += vm[order[k]].reads;
+		if (reads < cheapest)
+		{
+			cheapest = reads;
+			chosen = from;
+		}
+	}
+	if (chosen < -1 || cheapest == ~0ull || cheapest + cheapest / 4 >= best->reads)
+		return 0;
+	start = chosen < 0 ? 0 : (vm[order[chosen]].at + vm[order[chosen]].held + 15) & ~15u;
+	for (k = chosen + 1; k < n && vm[order[k]].at < start + bytes; k++)
+		if (!vm[order[k]].released)
+		{
+			vm_release(&vm[order[k]]);
+			vm_pack_copies++;
+		}
+	vm_packs++;
+	return 1;
+}
+
 /* the frame's end: the best buffers without a copy get one, room allowing;
-when there's none, the least-read copy not drawn lately makes way */
+when there's none, the least-read copy not drawn lately makes way, or else
+the least-read span of copies (vm_make_room) */
 static void vm_frame_end(void)
 {
 	unsigned int budget = VM_COPY_BUDGET;
@@ -12892,7 +12960,8 @@ static void vm_frame_end(void)
 			if (!worst || (unsigned long long)worst->reads * best->bytes >= (unsigned long long)best->reads * worst->bytes)
 			{
 				vm_full++;
-				break;
+				(void)vm_make_room(best);
+				break; /* the span's room comes back after the quarantine */
 			}
 			vm_release(worst);
 			break; /* its room comes back after the quarantine */
@@ -12936,6 +13005,10 @@ static void vm_report(void)
 	platform_log("GE: vrammodels: %u buffers in %u of %u KB of VRAM; draws from a copy %lu of %lu, %lu KB copied, %lu copies let go, %lu times full (last 300 frames; %d buffers known)",
 		resident, bytes / 1024, vm_size / 1024, vm_redirects, vm_draws, vm_copied / 1024, vm_dropped, vm_full, vm_count);
 	vm_draws = vm_redirects = vm_copied = vm_dropped = vm_full = 0;
+	if (vm_packs)
+		platform_log("GE: vmpack: room made by a span of copies %lu times (%lu copies let go for it; last 300 frames)",
+			vm_packs, vm_pack_copies);
+	vm_packs = vm_pack_copies = 0;
 }
 
 /* rewrites a model vertex buffer for the GE, once; 0 if there's no room to
