@@ -71,6 +71,8 @@ Drawing only: play and both seeds identical with the box on and off (statecrc), 
 1. ~~**The change census [E, exact counts]:** an emulator batch over b30_play2 and c20_play1 that counts, each frame, the drawn instances whose key, node matrices (bitwise), light set and passes equal the last frame's, by kind. Its answer sizes B; nothing is built before it.~~ Done 2026-11-12 (§5).
 2. ~~**The box's v0 cut from that count:** records with stamps, reused unchanged; captured with `PSP_CAPTURE=draw_list` and priced alone on the PSP (`bench-hw`, the harness's three modes).~~ Designed in §10; its first step is §10.6's count (s0).
 
+3. **The first slice: the origin held still (`ge_eye`)** (the lead, 2026-11-12 15:35: the box's prerequisite and every retained form's, R's included). `ge_eye` follows the eye every frame (`psp_ge.c` ~6399) and every model matrix, bone slot and point light is written relative to it, so an unchanged instance's words change whenever the camera moves, and no word can be kept. The slice holds the origin on an N-unit grid with the view carrying the remainder (as level_exact's shift already does); s0 (drawreuse1, the lab's 43309859657) counts the hops at N = 2/4/8. Proof: pictures in the emulator; play and seeds identical (drawing only).
+
 ## 10. v0's design (2026-11-12, builder)
 
 ### 10.1 The ground, looked up first
