@@ -32,6 +32,18 @@ Per instance: at ~150 drawn instances a frame [U], 11 ms is ~73 µs of the main 
 ## 5. Means
 
 - **B, work on change: the premise and the largest lever.** An instance whose form, matrices, bones and lights are unchanged since the last frame costs no ME work and no new record: its last words are drawn again. R as built emits every instance every frame, which is the plainest reason its render job didn't fall (`redesign_r_topdown.md`, the milestone priced). **Its worth is unknown until counted:** the first slice (§9) counts, per frame on Sheepdog01's pad benches, the instances unchanged between frames, by kind (scenery, still props, still weapons, posed units and vehicles, the far tiers).
+  - **Counted (2026-11-12, builder; the lab's drawchange1, sierra-batch 43230535738, Sierra-III builder/drawcensus 4a1b530; rows `drawlist_unchanged_*`) [E, exact counts]:** an object instance counts as unchanged when its node matrices (bitwise), its lights and its form (model, level of detail, permutations, change colours, functions, flags) equal its own last frame's.
+
+    | Stretch | Instances a frame | Unchanged | Their share of the parts' GE indices |
+    |---|---:|---:|---:|
+    | b30_play2, the flight | 85-119 | 53-62% | 30-54% (30% at the peak, 80k indices) |
+    | b30_play2, the beach | 51-63 | 66-75% | 51-61% |
+    | b40_play1, the fights | 54-70 | 62-75% | 35-50% |
+    | b40_play1, the snowfield | 18-77 | 87% | 68-74% |
+
+    - By kind: scenery 75-90% unchanged everywhere, equipment ~90-97%; posed units are the changed half (bipeds 0-22% in a fight, 54-88% in lulls; weapons follow their holders); of the changed, the node matrices moved in 74-100%, the lights in 5-32%, the form in 14-52%.
+    - **So B stands, for the static half:** about a third (the flight's peak) to three quarters (the snowfield) of the ME's emitted words would be drawn again unchanged. The fights' worst windows are carried by the posed units, which B doesn't touch: those are the posing box's and the far tiers' ground (D2).
+    - Not counted here: the level (not an object instance), first person and the sky; the PSP's pacing (more ticks a frame, so fewer unchanged posed units and as many unchanged statics).
 - **A, data owned and packed:** the record and its form laid out for the ME's walk, so a frame's records stream through the ME's data cache. R's ring is the start.
 - **C, both cores on separate data:** the main CPU builds the frame's keys and stamps; the ME emits only the changed records' words. Neither writes the other's lines.
 - **The ME's code:** ~47k instruction misses a frame, ~93% capacity misses [U on E x M] (nearme1). MEXEC r2 (the ME's hot code in eDRAM) is in R's milestone and didn't move the job; the emitter as one small function per part kind (R §2) is the box's form.
@@ -51,6 +63,7 @@ Drawing only: play and both seeds identical with the box on and off (statecrc), 
 ## 8. States
 
 - 2026-11-11: spec v0 (this page). Budget from REBUILD.md §3.4.
+- 2026-11-12: the change census counted (§5, B): B stands for the static half.
 
 ## 9. Next
 
