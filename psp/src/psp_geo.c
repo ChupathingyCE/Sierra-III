@@ -241,6 +241,22 @@ static struct sspr_model *sspr_models = NULL;
 static unsigned int sspr_model_count = 0, sspr_start = 0, sspr_end = 0, sspr_directory = 0;
 static unsigned long sspr_swaps = 0, sspr_levels_drawn[4];
 static float sspr_e = 1.0f;
+/* The far levels (docs/box_far_level.md): a model's far level as one part,
+baked by tools/farlevel.py into a region of its own, found by the 'FAR1'
+trailer at the pack's end, or just before sspr's 'SSP1' when that is last.
+Under the keep word farlevel the directory (each model's tag, its block's
+address and bytes, its diameter) is read here at the map's open; the blocks
+are read through the cache as any external block, as they're drawn */
+#define FAR_MAGIC 0x31524146u /* 'FAR1' */
+struct far_model
+{
+	unsigned int tag, address, bytes;
+	float diameter;
+};
+static struct far_model *far_models = NULL;
+static unsigned int far_model_count = 0;
+/* the far region's version: from 3 a group's word 15 is its permutation key */
+unsigned int psp_far_version = 0;
 /* the level render_model picked for the model it draws (FIXES_SSPR): 4, the
 top, outside it */
 int psp_model_level = 4;
@@ -1328,6 +1344,9 @@ void psp_geo_close(void)
 	free(sspr_models);
 	sspr_models = NULL;
 	sspr_model_count = sspr_start = sspr_end = sspr_directory = 0;
+	free(far_models);
+	far_models = NULL;
+	far_model_count = 0;
 	psp_model_level = 4;
 	psp_pcv_on = 0;
 	psp_pcv_strips = 0;
@@ -1436,6 +1455,68 @@ static void sspr_open(SceUID file, SceOff file_bytes, unsigned int entries)
 	memset(sspr_levels_drawn, 0, sizeof(sspr_levels_drawn));
 	platform_log("geometry: sspr: %u models with levels made at bake, %u KB; budget %.1f px at 272 lines (rso is off "
 		"under sspr: its re-locks don't know the level)", sspr_model_count, (trailer[3] - trailer[1]) / 1024, (double)sspr_e);
+}
+
+/* the far levels' directory, when the pack has one and farlevel asks */
+static void far_open(SceUID file, SceOff file_bytes)
+{
+	unsigned int trailer[16];
+	SceOff at = file_bytes - 64;
+	const char *why = NULL;
+
+	if (!psp_keep("farlevel") && !psp_keep_number("farlevel", 0))
+		return;
+	if (file_bytes < 128 || sceIoLseek32(file, (int)at, PSP_SEEK_SET) < 0 ||
+		sceIoRead(file, trailer, sizeof(trailer)) != (int)sizeof(trailer))
+		why = "the pack is too short";
+	else if (trailer[0] == SSPR_MAGIC && (sceIoLseek32(file, (int)(at - 64), PSP_SEEK_SET) < 0 ||
+		sceIoRead(file, trailer, sizeof(trailer)) != (int)sizeof(trailer)))
+		why = "the trailer before sspr's can't be read";
+	if (!why && trailer[0] != FAR_MAGIC)
+		why = "the pack has no far levels (bake it with --far-level)";
+	else if (!why && (trailer[1] % 64 || trailer[3] < trailer[1] || trailer[3] + 16u * trailer[4] > trailer[1] + trailer[2] ||
+		(SceOff)(HEADER_BYTES + trailer[1] + trailer[2]) > file_bytes || !trailer[4] || trailer[4] > 4096))
+		why = "its trailer doesn't add up";
+	if (!why)
+	{
+		far_models = malloc(sizeof(*far_models) * trailer[4]);
+		if (!far_models || sceIoLseek32(file, HEADER_BYTES + trailer[3], PSP_SEEK_SET) < 0 ||
+			sceIoRead(file, far_models, sizeof(*far_models) * trailer[4]) != (int)(sizeof(*far_models) * trailer[4]))
+			why = "no room for its directory, or it can't be read";
+	}
+	if (why)
+	{
+		free(far_models);
+		far_models = NULL;
+		platform_log("geometry: farlevel: not used: %s", why);
+		return;
+	}
+	far_model_count = trailer[4];
+	psp_far_version = trailer[5];
+	if (trailer[1] + trailer[2] > pack_size)
+		pack_size = trailer[1] + trailer[2];
+	platform_log("geometry: farlevel: %u models with a far level, %u KB, made for %u px", far_model_count,
+		(trailer[3] - trailer[1]) / 1024, trailer[6]);
+}
+
+/* the far block of a model (its tag), or 0: its pack address and bytes */
+unsigned int psp_far_block(unsigned long model, unsigned int *bytes)
+{
+	unsigned int lo = 0, hi = far_model_count;
+
+	while (lo < hi)
+	{
+		unsigned int mid = (lo + hi) / 2;
+
+		if (far_models[mid].tag < model)
+			lo = mid + 1;
+		else
+			hi = mid;
+	}
+	if (lo >= far_model_count || far_models[lo].tag != model)
+		return 0;
+	*bytes = far_models[lo].bytes;
+	return far_models[lo].address;
 }
 
 /* FIXES_SSPR, after render_model's own pick: the level for a listed model
@@ -1583,6 +1664,7 @@ void psp_geo_map_opened(const char *name, unsigned int map_crc, const void *firs
 			platform_log("geometry: preconvert: %u model buffers baked in the GE's form, %u KB (table %u KB on the heap)%s",
 				entries, (table_at - start) / 1024, (4 * (entries + 1) + 1023) / 1024, pcv_check ? "; preconvertcheck" : "");
 			sspr_open(pack, file_bytes, entries);
+			far_open(pack, file_bytes);
 		}
 		sceKernelDcacheWritebackRange(&psp_pcv_on, sizeof(psp_pcv_on));
 		sceKernelDcacheWritebackRange(&psp_pcv_strips, sizeof(psp_pcv_strips));

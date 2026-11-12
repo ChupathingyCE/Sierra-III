@@ -147,6 +147,10 @@ SKIN_VARIANTS = False
 # modelconvert's regions (tools/sspr.py); the runtime uses them under the keep
 # word sspr and makes their cutoffs from the pixel budget it asks for
 SSPR = False
+# --far-level (docs/box_far_level.md, slice 1): each model's far level as one
+# part, appended to the pack after modelconvert's (and sspr's) regions
+# (tools/farlevel.py); the runtime draws it under keep word farlevel
+FAR_LEVEL = False
 # --texfit-census DIR (TEXFIT1, keep word texfit): the folder of the mip-level
 # census's per-run files ('# map <name>', then 'key finest' lines); each map's
 # textures never sampled at their top level are also written from the finest
@@ -637,6 +641,10 @@ def bake_map(name, retail, out_maps, work, track, keep_work, detail='', sound=''
             start = os.path.getsize(log_path)
             run([sys.executable, os.path.join(LIB, 'sspr.py'), final, pgeo], log_path, cwd=LIB, env=env)
             echo_from(name, log_path, start, ('sspr:',))
+        if FAR_LEVEL:
+            start = os.path.getsize(log_path)
+            run([sys.executable, os.path.join(LIB, 'farlevel.py'), final, pgeo], log_path, cwd=LIB, env=env)
+            echo_from(name, log_path, start, ('farlevel:',))
     if not keep_work:
         shutil.rmtree(folder, ignore_errors=True)
     log('%s: done in %.0f s' % (name, time.time() - started))
@@ -856,6 +864,9 @@ def main():
     ap.add_argument('--texfit-census', default=None,
                     help="TEXFIT1: a folder of mip-level census files; each map's packs also carry its textures "
                          "from the finest level sampled (keep word texfit; the default load is as without it)")
+    ap.add_argument('--far-level', action='store_true',
+                    help='the far level as one part for each model it can (docs/box_far_level.md; keep word '
+                         'farlevel; needs a C++ compiler)')
     ap.add_argument('--sspr', action='store_true',
                     help="SSPR: lower levels of detail made for the models that have none, each with its error "
                          '(keep word sspr; needs a C++ compiler; the default load is as without it)')
@@ -901,11 +912,12 @@ def main():
     a = ap.parse_args()
     if a.sound == 'none':
         a.sound = ''
-    global COMPARE_OLD, PROFILE, COMPARE_PALETTES, LEVEL_SLIM, ALPHA_AUDIT, PRECONVERT, SKIN_VARIANTS, TEXFIT_CENSUS, SSPR
+    global COMPARE_OLD, PROFILE, COMPARE_PALETTES, LEVEL_SLIM, ALPHA_AUDIT, PRECONVERT, SKIN_VARIANTS, TEXFIT_CENSUS, SSPR, FAR_LEVEL
     LEVEL_SLIM = a.slim_level
     TEXFIT_CENSUS = a.texfit_census
     SKIN_VARIANTS = a.skin_variants
     SSPR = a.sspr
+    FAR_LEVEL = a.far_level
     PRECONVERT = a.preconvert
     COMPARE_OLD, PROFILE, COMPARE_PALETTES = a.compare_old, a.profile, a.compare_palettes
     ALPHA_AUDIT = a.alpha_audit
