@@ -131,6 +131,7 @@ The slices are priced alone on the PSP before integration, per REBUILD.md §5: a
 - **Play and both seeds identical** against `farlevel` off (it draws only): statecrc's fields, b30_play2 and c20_play1.
 - **Pictures:** shots at each band's nearest distance on b30's flight and landing, b40's cliff and c10. The session judges "a few scattered pixels". Anything with a shape a player could see goes to Sheepdog01 as its own question.
 - **The PSP:** the slice alone over a capture; then the pair of builds.
+- **Held, 2026-11-12 [E]:** play and both seeds identical with the far level on against `farlevelold` at every tick of every pad, each to its recording's end (`padend`), VFPU forms on: b30_play2 8,047, c20_play1 13,130, a30_play1 31,319, b40_play1 49,356, d20_play1 29,208 (the lab's farpads2a 43298360739, farpads2b 43298401595). ~~farpads1's partings on c20 and a30~~ (superseded): they start after the pads' recordings end, where frames take the clock's steps and any two builds part (the lab's particletrace7 43296671230); `padend` now stops a run there.
 
 ## Open
 
