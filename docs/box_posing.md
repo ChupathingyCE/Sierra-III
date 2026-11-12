@@ -73,6 +73,23 @@ The records, byte for byte, are in the adapter's head. **Tolerance:** relative, 
 
 **The two builds:** old-only is the default build; new-only adds `PSP_BOXPOSING=1`, each with the whole heap. Correctness in the emulator first (play and both seeds on b30_play2 and b40_play1; the outcome census if they part), then one PSP pair of builds for the in-frame price. A `PSP_PGO_STRICT=1` new-only build refuses to link until the profile is counted with the box in (its two units have no counts).
 
+## 6d. Means A and B in the cut-in (2026-11-12, the lead's 16:20 order)
+
+**Where the fitted pair's +1.3 ms goes** [M, instrumented; cause U] (the lab's findings `boxposing_fitpair_where`; sierra-hw 43193581093 old, 43193607532 box, PSP-1000, each side its own counts and layout, VFPU forms off): not in the posing step. The bipeds' node-matrix step is 6.66 ms a tick old and 6.62 box (208-241 µs an update both sides) and every type's account is flat; the excess is objects_update outside the type accounts (+0.94 ms a tick) and small rises spread over the frame's other steps, with play the same both sides. The hand-over's copies (~260 bytes an object) are too small to be it [U]. In the frame the walk is ~50 µs of a biped's ~220 µs step: the decode, overlays, preprocess and interpolation are still the engine's (§6b).
+
+**Means A, built** (Sierra-III builder/posing-ab c7d6beb; exact by construction, the same products in the same order):
+- **No copy:** the box reads the object's position, forward, up and its parent's node matrix where the object holds them and writes the sphere into the object (`box_posing_pose_ref`); v0 gathered 20 floats a pose and copied them twice.
+- **The definition's constants in its plan:** plans are keyed by the object definition and carry the centre of mass (negated), the origin and bounding offsets and the radius, made once a map (128 plans; a definition past the room poses from a plan made for that call, counted in the `boxposing:` line), so a pose reads nothing of the definition's or the physics tag's.
+- **First touch without the fetch:** a plan whose walk writes every node once (`whole`) claims the node block's whole lines with `cache 0x18` before the walk, so the walk's first stores fetch nothing (~65 cycles a line saved on the PSP-1000 [M, CLAIMFILL]; 21 lines a 26-node biped). Off word `boxposeclaimoff`. The emulator runs the op as nothing, so only the PSP pair proves it.
+- Not done: the node block in walk order. Every reader indexes the block by node index, so packing it in the walk's order would need every reader remapped [D]; the claims take the first-touch cost without moving it.
+
+**Means B, not built: an exact per-tick B has no ground in today's tick** [D, read in the code; the lab's findings `boxposing_b_blockers`]. Owing a biped's walk (root and sphere made, the rest made at the first read) meets four readers that come every tick:
+1. **The AI's pass on the ME** (`aime2a`, pushed every tick, `psp_aime2a_tick_begin`) reads poses there: an owed walk read on the ME hands the actor back to think on the main CPU (`psp_nms_settle`, hand-back 26), and settling every owed walk before the push leaves nothing to skip (the next compute is a tick later).
+2. **The units' postprocess** (`unit_postprocess_node_matrices`: seat and weapon IK) reads and writes the node block right after the compute, for every armed biped whose animation asks for weapon IK.
+3. **The sleep check** checksums the datum and its blocks after each update (`psp_sleepy_update`); a stale block reads as still.
+4. **The limp body** (`biped_limp_noodle_relax_nodes_onto_environment`) reads the block directly.
+readers2's 41% (no other box reads the pose) is counted with the AI on the main CPU (`aimeoff`) and the family's reads apart; LBM (exact, rejected: tick +0.5 to +1.1 ms) and VISLAZY v2 (bipeds refused: attached, root animated) met the same readers. **What B needs:** the readers declared at the box's contract (§1), the AI's hand-over passing the nodes it reads (a head and aim chain made eagerly, the rest owed) and the IK made inside the box after the walk, or B as "plays the same" (a never-read biped's walk at half rate, proven by the outcome census). Each is the lead's call; the pair below prices A alone.
+
 ## 7. Proof
 
 Against the capture first: every posed object's node matrices equal the old code's within the box's tolerance (bit-identical where the maths is the same; the VFPU product's last bits where it isn't), and every object a reader read was posed. Then in the frame: play and both seeds on c20, a30, b30 and d20 if the maths is identical, the outcome census if not; pictures only if the ME writes node blocks (§3).
@@ -80,6 +97,7 @@ Against the capture first: every posed object's node matrices equal the old code
 ## 8. States
 
 - 2026-11-11: spec (this page).
+- 2026-11-12 16:4x: the fitted pair's +1.3 ms isn't in the posing step (§6d); means A built (builder/posing-ab c7d6beb, merged with tock162 eecb79d), its emulator proof the lab's sierra-batch 43322560514 (boxposeab1); means B not built: four every-tick readers block an exact per-tick B (§6d).
 - 2026-11-11 20:1x: cut in under `PSP_BOXPOSING=1` (§6c; Sierra-III builder/posing-cutin), off master/rebase090.
 - 2026-11-11 20:3x: ~~the cut-in plays the same~~ (superseded 21:1x: only the emulator, below) in the emulator [E]: play and both seeds identical every tick on b30_play2 (3,900) and b40_play1 (6,000), strict 0, pictures inside one build's run spread (12 of 2,057 and 7 of 4,426 frames; the lab's sierra-batch 43139371722).
 - 2026-11-12 00:4x: **the like-for-like in-frame pair** [M] (VFPU forms off both sides, so the same fight bit for bit; PSP-3000, b30_play2, `timerson`; the lab's sierra-hw 43167774865 / 43167800997): the bipeds' node matrices **-8% an update** (253 -> 233 µs; 6.66 -> 6.27 ms a tick), yet the tick **+0.78 ms (+1.9%)**, fps -2.9%, with the bipeds' type update, projectiles and the rest each up a little. Read as the build, not the box [U]: the text layout (w091rb_tgc90) and the profile were made on the old-only build, and the box's build moves objects.c's code under LTO and adds two units without counts. Its own layout and counts come before its price is final.
