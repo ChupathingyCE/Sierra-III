@@ -70,6 +70,8 @@ FAR_PIXELS = 32                 # the size the far level is first drawn at (keep
 SCREEN_LINES = 272              # the pick's pixels are LODS's
 COLOUR_MIP_TEXELS = 16          # the base map's mip sampled: the first at or under this width
 MAX_VERTICES = 65535
+# meshopt_SimplifyErrorAbsolute | Prune | Permissive (meshoptimizer 1.3)
+SIMPLIFY_OPTIONS = (1 << 2) | (1 << 3) | (1 << 5)
 F = np.float32
 
 # the definitions' offsets this tool reads, checked against Invader's at the start
@@ -248,13 +250,14 @@ def far_mesh(lib, positions, normals, colours, tri, diameter):
     idx = np.ascontiguousarray(tri, np.uint32)
     out = np.empty_like(idx)
     err = ctypes.c_float(0)
-    scale = lib.meshopt_simplifyScale(sspr.ptr(pos, ctypes.c_float), len(pos), 12)
     weights = np.array([0.5, 0.5, 0.5, 0.25, 0.25], F)
+    # the error in model units; pieces under it pruned whole, and edges
+    # collapsed across colour and normal seams (the far ruling: approximate)
     n = lib.meshopt_simplifyWithAttributes(sspr.ptr(out, ctypes.c_uint), sspr.ptr(idx, ctypes.c_uint), len(idx),
                                            sspr.ptr(pos, ctypes.c_float), len(pos), 12,
                                            sspr.ptr(attributes, ctypes.c_float), 20,
                                            sspr.ptr(weights, ctypes.c_float), 5, None, 3,
-                                           F(limit / scale if scale > 0 else 1.0), 0, ctypes.byref(err))
+                                           F(limit), SIMPLIFY_OPTIONS, ctypes.byref(err))
     if n < 3:
         return None
     out = out[:n].astype(np.int64)
@@ -262,7 +265,7 @@ def far_mesh(lib, positions, normals, colours, tri, diameter):
     order = np.argsort(first)
     remap = np.empty(len(used), np.int64)
     remap[order] = np.arange(len(used))
-    return used[order], remap[inverse], float(err.value) * float(scale)
+    return used[order], remap[inverse], float(err.value)
 
 
 def far_block(positions, normals, colours, local, node, error):
@@ -316,7 +319,7 @@ def main(map_path, pgeo_path):
     lib = sspr.library()
     census = Counter()
     region = mc.up(len(data), 64)
-    blocks, directory = bytearray(), []
+    blocks, directory, sizes = bytearray(), [], []
     for tag_id, scales, shaders, offsets, why in models(m, d):
         census['models'] += 1
         if why is None:
@@ -359,6 +362,8 @@ def main(map_path, pgeo_path):
             census['far triangles'] += len(local) // 3
             census['far indices'] += strip_count
         directory.append((tag_id, mc.PACK_BASE + region + len(blocks), len(model), diameter))
+        tag = m.by_id.get(tag_id) or m.by_id.get(tag_id - (1 << 32))
+        sizes.append((len(model), tag.name if tag else '%08x' % tag_id, len(groups)))
         blocks += model
         census['far models'] += 1
         if len(groups) > 1:
@@ -386,6 +391,9 @@ def main(map_path, pgeo_path):
           (c['models'], c['far models'], FAR_PIXELS, left or 'none', c['see-through parts left out'], c['source triangles'], c['source vertices'],
            c['far triangles'], c['far vertices'], c['far indices'], c['far models of several nodes'], c['far node groups'],
            len(body) // 1024))
+    sizes.sort(reverse=True)
+    print('farlevel: the largest: ' + '; '.join('%s %.1f KB (%d node%s)' % (name, b / 1024.0, g, '' if g == 1 else 's')
+                                                 for b, name, g in sizes[:10]))
 
 
 if __name__ == '__main__':
