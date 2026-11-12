@@ -121,6 +121,9 @@ struct me_control
 	unsigned int wakes;     /* the ME: wake interrupts taken (meLibOnExternalInterrupt) */
 	/* the ME at its start: its coprocessor 0 CPU number, and 1 once it's in */
 	unsigned int cpu_number, cpu_seen;
+	/* MEXEC (docs/mexec.md), the ME at each install: 1 copied, 2 refused
+	(no table), its bytes, the words it patched, and the copy's word sum */
+	unsigned int mexec_state, mexec_bytes, mexec_patches, mexec_sum;
 } __attribute__((aligned(64)));
 #define ME_FEATURE_HALT 1u
 #define ME_FEATURE_RING 2u
@@ -180,6 +183,26 @@ job's inside an actor, the light pass's), where only the ring was served:
 one actor's thinking can run past the audio job's 40 ms bound on its own
 (me_audio_due) */
 #define ME_FEATURE_AUDIO_LOOK 16384u
+/* "mexec" (PSP_MEXEC builds; docs/mexec.md): the ME copies its hot code into
+its eDRAM at start and runs the GE replay from the copy */
+#define ME_FEATURE_MEXEC 32768u
+
+#if PSP_MEXEC
+/* The copy's table: tools/mexec.py writes it into the linked program
+(psp_build.py, before prxgen); 'MEX0' until then. Its layout is the tool's.
+Sized to the lists in use with room to grow (list rb fills 1,040 words): it sits
+in .data, so every word is heap the game doesn't get, and the tool refuses a
+list whose table outgrows it */
+#define MEXEC_TABLE_WORDS 1536
+#define MEXEC_MAGIC 0x4D455843u
+#define MEXEC_HEADER 16
+#define MEXEC_AT 0x40000u   /* eDRAM 256 KB: the resident room's start (psp_me.h) */
+#define MEXEC_ROOM 0x30000u
+unsigned int psp_mexec_table[MEXEC_TABLE_WORDS] = { 0x4D455830u };
+/* the replay's copy, 0 until the copy is in place; cleared at every start,
+since the eDRAM doesn't survive a sleep */
+static PSP_AIME_ME_SIDE unsigned int mexec_entry = 0;
+#endif
 
 /* The debug stash: where the ME is, in words of its own (two cache lines,
 only ever used through the uncached view), so a main CPU that gives up on a
@@ -701,6 +724,10 @@ static void run_job(volatile struct me_slot *slot, int *sums, int on_me)
 			psp_ge_me_classify(args, results);
 		else if (slot->type == ME_JOB_ANGLE)
 			psp_ge_me_angle(args, results);
+#if PSP_MEXEC
+		else if (on_me && mexec_entry)
+			((unsigned int (*)(const unsigned int *, unsigned int *))mexec_entry)(args, results);
+#endif
 		else
 			psp_ge_me_replay(args, results);
 		for (k = 0; k < ME_JOB_RESULTS; k++)
@@ -1603,6 +1630,86 @@ static void me_wake_probe(void)
 	meLibSync();
 }
 
+#if PSP_MEXEC
+/* On the ME: the table's functions copied from their loaded code into the
+eDRAM, the calls between them and the branches out of them re-aimed, the
+copy's lines written back and dropped from the I-cache. A call to a function
+not copied stands as the loader relocated it: the ME runs its code through
+the cached alias, and jal keeps the PC's top four bits */
+static void me_mexec_install(volatile struct me_control *control)
+{
+	const unsigned int *t = psp_mexec_table;
+	unsigned int base, copy = ME_EDRAM + MEXEC_AT, at = MEXEC_HEADER, k, sum = 0, tramp_at, line;
+
+	if (t[0] != MEXEC_MAGIC || t[1] != 1 || t[3] > MEXEC_ROOM || !t[4])
+	{
+		control->mexec_state = 2;
+		return;
+	}
+	base = (unsigned int)psp_ge_me_replay - t[2];
+	for (k = 0; k < t[4]; k++, at += 3)
+	{
+		const unsigned int *from = (const unsigned int *)(base + t[at]);
+		unsigned int *to = (unsigned int *)(copy + t[at + 2]), w;
+
+		for (w = 0; w < t[at + 1] / 4; w++)
+			to[w] = from[w];
+	}
+	for (k = 0; k < t[5]; k++, at += 2)
+	{
+		unsigned int *word = (unsigned int *)(copy + t[at]);
+
+		*word = (*word & 0xFC000000u) | (((copy + t[at + 1]) >> 2) & 0x03FFFFFFu);
+	}
+	tramp_at = t[11];
+	for (k = 0; k < t[6]; k++, at += 2)
+	{
+		unsigned int *tramp = (unsigned int *)(copy + tramp_at + 8 * k);
+		unsigned int to = t[at] ? copy + t[at + 1] : base + t[at + 1];
+
+		tramp[0] = 0x08000000u | ((to >> 2) & 0x03FFFFFFu); /* j to */
+		tramp[1] = 0;                                         /* nop */
+	}
+	for (k = 0; k < t[7]; k++, at += 2)
+	{
+		unsigned int *word = (unsigned int *)(copy + t[at]);
+		unsigned int tramp = copy + tramp_at + 8 * t[at + 1];
+
+		*word = (*word & 0xFFFF0000u) | (((tramp - (copy + t[at] + 4)) >> 2) & 0xFFFFu);
+	}
+	/* the lui/%lo pairs that load a jump table's address, re-aimed at its copy */
+	for (k = 0; k < t[8]; k++, at += 2)
+	{
+		unsigned int *word = (unsigned int *)(copy + t[at]);
+
+		*word = (*word & 0xFFFF0000u) | (t[at + 1] & 0xFFFFu);
+	}
+	/* the jump tables, their words the copy's addresses */
+	for (k = 0; k < t[10]; k++)
+	{
+		unsigned int *to = (unsigned int *)(copy + t[at]), words = t[at + 1], w;
+
+		for (w = 0; w < words; w++)
+			to[w] = t[at + 2 + w];
+		at += 2 + words;
+	}
+	for (k = 0; k < t[3] / 4; k++)
+		sum += ((const unsigned int *)copy)[k];
+	__asm__ __volatile__("sync");
+	for (line = copy; line < copy + t[3]; line += 64)
+		__asm__ __volatile__("cache 0x1b, 0(%0)" : : "r"(line));
+	__asm__ __volatile__("sync");
+	for (line = copy; line < copy + t[3]; line += 64)
+		__asm__ __volatile__("cache 0x08, 0(%0)" : : "r"(line));
+	__asm__ __volatile__("sync");
+	control->mexec_bytes = t[3];
+	control->mexec_patches = t[5] + t[7];
+	control->mexec_sum = sum;
+	mexec_entry = copy + t[MEXEC_HEADER + 2];
+	control->mexec_state = 1;
+}
+#endif
+
 __attribute__((noinline, aligned(4)))
 void meLibOnProcess(void)
 {
@@ -1625,6 +1732,9 @@ void meLibOnProcess(void)
 #endif
 	hw(ME_MARK_PROCESS) = ME_MARK_PROCESS_IN;
 	meLibSync();
+#if PSP_MEXEC
+	mexec_entry = 0;
+#endif
 	/* build 88: the cycle counter (coprocessor 0 register 9) stood still on
 	a PSP-1000 (b87: "runs at 0.0 a microsecond"), so every ME time read
 	0. MIPS32r2's Cause bit 27 (DC, "disable count") stops it; the firmware
@@ -1686,6 +1796,10 @@ void meLibOnProcess(void)
 					hw(0xBCC00040) = 1;
 					meLibSync();
 				}
+#if PSP_MEXEC
+				if (features & ME_FEATURE_MEXEC)
+					me_mexec_install(control);
+#endif
 			}
 
 			if ((features & ME_FEATURE_HALT) && !halt_ready)
@@ -2312,6 +2426,35 @@ static void me_cpu_check(volatile struct me_control *control, const char *when)
 		main_number);
 }
 
+/* "mexec" (docs/mexec.md): the copy wanted, its room free, its table filled */
+static int me_mexec_wanted(void)
+{
+#if PSP_MEXEC
+	static const char *const sharers[] = { "soundedram", "edramcheck", "mebusedram", "vmetest" };
+	unsigned int k;
+
+	if (!psp_keep("mexec"))
+		return 0;
+	for (k = 0; k < sizeof(sharers) / sizeof(sharers[0]); k++)
+		if (psp_keep(sharers[k]))
+		{
+			platform_log("ME: mexec refused: %s shares eDRAM 256-448 KB", sharers[k]);
+			return 0;
+		}
+	if (psp_mexec_table[0] != MEXEC_MAGIC)
+	{
+		platform_log("ME: mexec refused: the build's table is empty (tools/mexec.py didn't run)");
+		return 0;
+	}
+	platform_log("ME: mexec: %u functions, %u bytes into eDRAM at %u KB (%u calls, %u branches, %u jump-table addresses re-aimed; %u jump tables copied, %u words left in main RAM)",
+		psp_mexec_table[4], psp_mexec_table[3], MEXEC_AT / 1024, psp_mexec_table[5], psp_mexec_table[7], psp_mexec_table[8],
+		psp_mexec_table[10], psp_mexec_table[9]);
+	return 1;
+#else
+	return 0;
+#endif
+}
+
 int psp_me_start(void)
 {
 	volatile struct me_control *control = CONTROL;
@@ -2455,7 +2598,7 @@ int psp_me_start(void)
 		(psp_keep("mefaultoff") ? ME_FEATURE_FAULT_OFF : 0u) | (psp_keep("mefaulttest") ? ME_FEATURE_FAULT_TEST : 0u) |
 		(psp_keep("menestrender") ? ME_FEATURE_NEST_RENDER : 0u) |
 		(psp_keep("aimevisleft") ? ME_FEATURE_AIME_VIS_LEFT : 0u) |
-		(psp_keep("aimeaudiolook") ? ME_FEATURE_AUDIO_LOOK : 0u);
+		(psp_keep("aimeaudiolook") ? ME_FEATURE_AUDIO_LOOK : 0u) | (me_mexec_wanted() ? ME_FEATURE_MEXEC : 0u);
 	wake_features = control->features | (psp_keep("mewakeprobe") ? ME_FEATURE_WAKE_PROBE : 0u);
 	wake_early = psp_keep("mewake") && !psp_keep("mewakeoff") && psp_keep("mewakeearly");
 	wake_fw = psp_keep("mewakefw");
@@ -4907,6 +5050,23 @@ void psp_me_report(void)
 
 	if (!me_state)
 		return;
+#if PSP_MEXEC
+	{
+		static unsigned int mexec_seen = 0;
+		volatile struct me_control *control = CONTROL;
+
+		/* each install once (a restart after a sleep installs again) */
+		if (control->mexec_state && control->mexec_sum + control->mexec_state != mexec_seen)
+		{
+			mexec_seen = control->mexec_sum + control->mexec_state;
+			if (control->mexec_state == 1)
+				platform_log("ME: mexec in place: %u bytes copied, %u words patched, sum %08x",
+					control->mexec_bytes, control->mexec_patches, control->mexec_sum);
+			else
+				platform_log("ME: mexec: the ME found no table and runs from main RAM");
+		}
+	}
+#endif
 	if (wake_line_ready)
 	{
 		wake_line_ready = 0;

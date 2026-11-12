@@ -1460,7 +1460,9 @@ stored, so each is claimed and filled at once, and nothing is claimed that
 this call doesn't then write in full. The emulator runs the op as nothing: a
 wrong claim can only show on a PSP, which is what "claimcheck" is for.
 
-"claimfill" turns it on. Not on the Media Engine: the op is unmeasured there. */
+On unless "noclaimfill" (the other side of its A/B); "claimcheck" adds the
+PSP's own check of every claimed line. Not on the Media Engine: the op is
+unmeasured there. */
 void *__real_memcpy(void *to, const void *from, size_t bytes);
 void *__real_memset(void *to, int value, size_t bytes);
 int psp_keep(const char *name);
@@ -1480,7 +1482,7 @@ static int claim_ask(void)
 	if (claim_asking || !psp_keep_loaded())
 		return 0;
 	claim_asking = 1;
-	claim_state = !psp_keep("claimfill") ? 0 : psp_keep("claimcheck") ? 2 : 1;
+	claim_state = psp_keep("noclaimfill") ? 0 : psp_keep("claimcheck") ? 2 : 1;
 	claim_asking = 0;
 	return claim_state;
 }

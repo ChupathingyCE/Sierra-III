@@ -19,6 +19,45 @@ a finishing place in 7 bits.
 #ifndef __HALO_PORT_LIMITS_H
 #define __HALO_PORT_LIMITS_H
 
+/* what the build asks of the shared code (halo_console_features.h), which
+the engine's halo_port_limits.h includes and this header, taking its guard,
+must include in its place: without it every unit but the few that include
+it themselves sees none of the capabilities, so code under
+HALO_PORT_FRAMES_BETWEEN_TICKS and HALO_PORT_WIDE_INTERFACE (on in every
+build but the original Xbox's, and built ungated on the PSP up to v0.9.0d)
+would differ unit by unit. Two of the desktop's capabilities are left out
+here, as a console leaves them: the shaders prepared while a map loads (the
+GL renderer's) and the loading screen's picture (loading_picture.c) */
+#define HALO_CONSOLE_NO_SHADER_PREP 1
+#define HALO_CONSOLE_NO_LOADING_PICTURE 1
+/* the same for the desktop's extras (halo_port_features.h, also included by
+halo_port_limits.h): those new since v0.7.5d, which the PSP never built, are
+left out as a console leaves them: the Light effects (plasma_*.c, ~1.5 MB of
+.bss), the object functions, particle streams and camera shake drawn
+between ticks (render_interpolation.c, player_effects.c), the audio probe,
+the Controls screen, Delta Profile, Discord and voice, and the network
+tests' bots with the determinism check (debug.determinism: statecrc is the
+PSP's own). The extras the PSP
+built on v0.7.5d (player names, hi-res text answered by psp_chupa_platform.c,
+tag validation left out by psp_build.py's desktop units) stay as they were */
+#define HALO_CONSOLE_NO_LIGHT_EFFECTS 1
+#define HALO_CONSOLE_NO_SMOOTH_FUNCTIONS 1
+#define HALO_CONSOLE_NO_PARTICLE_STREAMS 1
+#define HALO_CONSOLE_NO_SMOOTH_SHAKE 1
+#define HALO_CONSOLE_NO_AUDIO_PROBE 1
+#define HALO_CONSOLE_NO_CONTROLS 1
+#define HALO_CONSOLE_NO_DELTA_PROFILE 1
+#define HALO_CONSOLE_NO_DISCORD 1
+#define HALO_CONSOLE_NO_VOICE 1
+#define HALO_CONSOLE_NO_NETWORK_TEST 1
+/* (the two units compiled with their own build.ninja lines, posix_files.c
+and tomlc17.c, have no port/linux/include on their path; they test none of
+the capabilities) */
+#if __has_include("halo_console_features.h")
+#include "halo_console_features.h"
+#include "halo_port_features.h"
+#endif
+
 /* a PSP value, or the other ports' (psp_fixups.py) */
 #ifdef HALO_PSP
 #define HALO_PSP_OR(psp, other) (psp)
@@ -160,13 +199,13 @@ is newer (network_client_manager.c). A host advertises it, with its netcode,
 in its game's advertisement's reserved bytes (network_server_message_handler.c),
 which hosts built before there was a version send as zeros: version 0.
 Raise it with any change to what the machines send each other. The PSP's
-numbers are the engine pin's (ChupathingyCE v0.7.5d: 29, joining 11 to 30):
+numbers are the engine pin's (ChupathingyCE 6eef2f3, the 0.9.1 test build: 32, joining 11 to 42):
 move them with the pin, since the PSP compiles that pin's netcode */
-#define HALO_PORT_NETWORK_VERSION 29
+#define HALO_PORT_NETWORK_VERSION 32
 /* ... the versions whose hosts a client joins (ChupathingyCE: delta.h's
 table, DELTA_LEGACY_VERSIONS); code asks the functions, not the numbers */
 #define HALO_PORT_NETWORK_VERSION_MINIMUM 11
-#define HALO_PORT_NETWORK_VERSION_MAXIMUM 30
+#define HALO_PORT_NETWORK_VERSION_MAXIMUM 42
 int delta_legacy_announce(void);
 int delta_legacy_minimum(void);
 int delta_legacy_maximum(void);

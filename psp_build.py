@@ -41,6 +41,10 @@ PLATFORM_FILES = [
     "bink_null", "xbox_xapi", "xbox_files", "xbox_kernel", "msvc_crt", "msvc_wide", "posix_files",
     "xnet", "halo_linker_common", "port_config", "sdl_platform", "xinput_sdl", "dsound_sdl",
     "d3d8_gl", "d3d8_resources", "xbox_textures", "nv2a_vsh", "xbdm",
+    # (from the 0.9.1 test build: the game's folders' names and paths, the
+    # save folder's choice, and the platform threads' count that d3d8_gl.c's
+    # vertical blank thread starts through)
+    "port_folders", "save_folder", "thread_stop",
 ]
 # build 107: the campaign-only engine. Co-op and multiplayer become a branch
 # of their own, with their own budgets (2026-10-08), so the campaign
@@ -91,15 +95,39 @@ def nocoop():
 #   of every tag as a map loads, against the Xbox's layouts, which the PSP's
 #   bake changes (slim blocks, packed BSP vertices, geometry outside)
 # - touch input
+# - the structure's culling, buckets made as each BSP loads (psp_fixups.py,
+#   FIXES_CHUPA090), and the objects' packed bounding spheres for collision's
+#   object loops, which the PSP has had since build 107 (psp_object_spheres)
+# - the map list and map packs that go with Custom Edition (HALO_MAP_LIST:
+#   Stubbs mode's lower tag window among them), Chimera's compressed maps
+#   (HALO_COMPRESSED_MAPS: zstd) and the movies' FFmpeg decoder
+#   (HALO_BINK_FFMPEG), each set on the desktop builds from v0.9.0d
+# - the bgfx renderer (HALO_BGFX, v0.9.0d): the PSP draws through its own GE
+#   path, and the GL device it never makes (psp_fixups.py, gl_never)
 # psp/src/psp_chupa.c answers what the game still calls in them
-CHUPA_FLAGS_DROPPED = ("-DHALO_CUSTOM_EDITION", "-DHALO_GAME_BROWSER")
+CHUPA_FLAGS_DROPPED = ("-DHALO_CUSTOM_EDITION", "-DHALO_GAME_BROWSER", "-DHALO_MAP_LIST",
+                       "-DHALO_COMPRESSED_MAPS", "-DHALO_BINK_FFMPEG", "-DHALO_BGFX")
 CHUPA_DESKTOP_UNITS = ("port/linux/game/ce_", "port/linux/game/browser_screen.c", "port/linux/game/server_browser.c",
                        "port/linux/game/game_events.c", "port/linux/game/game_list_claims.c",
                        "port/linux/game/game_stats.c", "port/linux/game/moderation_screen.c",
                        "port/linux/game/map_families.c", "port/linux/game/ui_map_list.c",
                        "port/linux/game/menu_functions.c", "port/linux/game/menu_tags.c",
                        "port/linux/game/tag_schema_", "port/linux/game/tag_validate",
-                       "port/linux/game/touch_game.c", "port/linux/game/hud_hires_tags.c")
+                       "port/linux/game/touch_game.c", "port/linux/game/hud_hires_tags.c",
+                       "port/linux/game/structure_culling.c", "port/linux/game/object_bounds_cache.c",
+                       # (the 0.9.1 test build's CPU-made Xbox loading screen, 2.4 MB of
+                       # .bss: the PSP's progress bar draws as before, psp_fixups.py)
+                       "port/linux/game/loading_screen.c",
+                       # (the 0.9.1 test build's closed doors shutting their portals to
+                       # the dynamic lights: a desktop addition the Xbox never had, ~20 KB
+                       # of .bss; its pairing faulted at the first map's start on the PSP's
+                       # bake, sierra-batch 43072517988. The PSP keeps the Xbox's open
+                       # portals; psp/src/psp_chupa.c answers its calls)
+                       "source/objects/door_portals.c",
+                       # (the 0.9.1 test build's multiplayer follow camera, off by
+                       # default: the Xbox had the death camera alone; psp_chupa.c
+                       # answers its calls)
+                       "port/linux/game/follow_camera.c")
 # ... except what the multiplayer build needs as it is: map_families.c names a
 # game's map in the game's protocol (an Xbox map as itself, a Custom Edition
 # map custom_maps\<name>), in the host's advertisement and settings and the
@@ -186,11 +214,12 @@ if MUSIC:
 # Its test sits in the mixer's block decode on the ME and its fields in every
 # voice's packets, so a default build leaves it out
 SNDSTREAM = os.environ.get("PSP_SNDSTREAM", "") == "1"
-# PSP_CLAIMFILL=1 builds in memcpy's and memset's wrappers that claim whole
-# destination lines without fetching them (lever CLAIMFILL, psp_libc.c;
-# keep words claimfill, claimcheck): every call to the two routines passes
-# through the wrappers, so a default build leaves them out.
-CLAIMFILL = os.environ.get("PSP_CLAIMFILL", "") == "1"
+# memcpy's and memset's wrappers that claim whole destination lines without
+# fetching them (lever CLAIMFILL, psp_libc.c; keep words noclaimfill, the
+# other side of its A/B, and claimcheck): built in and on by default, as the
+# rebase's profile and layouts are counted with them; PSP_CLAIMFILL=0 builds
+# them out.
+CLAIMFILL = os.environ.get("PSP_CLAIMFILL", "1") != "0"
 # PSP_SMALLDATA=8 (or 4): the units built with the game's flags put variables
 # of up to that many bytes in small data, read with one load from $gp instead
 # of lui and a load, so the code is shorter (lever RH5, after Halo 64's -G8).
@@ -220,6 +249,13 @@ if SMALLDATA not in (0, 4, 8):
 # FIXES_WALKAPART). Its hooks sit in the tick's object marks and the particle
 # loop, so a default build leaves all of it out
 WALKAPART = os.environ.get("PSP_WALKAPART", "") == "1"
+# PSP_MEXEC=<name>: MEXEC (docs/mexec.md): psp_me.c carries psp_mexec_table,
+# and after the link tools/mexec.py fills it from psp/layout/mexec_<name>.txt
+# (the functions the Media Engine copies into its eDRAM). Keep word mexec
+# turns the copy on; a default build leaves the table out
+MEXEC = os.environ.get("PSP_MEXEC", "")
+if MEXEC and not re.match(r"^[A-Za-z0-9_]+$", MEXEC):
+    sys.exit("psp_build: PSP_MEXEC names a list in psp/layout (mexec_<name>.txt)")
 # PSP_MEVISLAND=0: leaves out the frame's visibility made on the ME (mevis's
 # copies of the visibility code, 23 KB, and the landing's hooks; keep word
 # mevisland, on by default; docs/mevis_landing.md). Built in otherwise
@@ -354,6 +390,12 @@ PSP = ["psp-gcc", "-G%d" % SMALLDATA, GAME_OPT, "-march=allegrex", "-ffp-contrac
        ["-Wstrict-aliasing=2"] if os.environ.get("PSP_STRICTALIAS_WARN", "") == "1" else ["-w"]) + [
        "-ffunction-sections", "-fdata-sections", "-fno-math-errno", "-fsingle-precision-constant",
        "-DHALO_PSP=1", "-DHALO_RELEASE=1", "-DHALO_ANDROID=1",
+       # two of ChupathingyCE's console switches (halo_console_features.h,
+       # from the v0.9.1 test build): the lens flares' visibility tests
+       # waited in their frame, as before, not a slot each (~360 KB of
+       # statics and the GL layer's d3d8_visibility_test_number); and the
+       # Xbox maps' sizes (flare rows, respawning vehicles: -135 KB)
+       "-DHALO_CONSOLE_WAITED_VISIBILITY_TESTS=1", "-DHALO_CONSOLE_XBOX_MAP_SIZES=1",
        ] + (["-DPSP_MULTIPLAYER=1"] if MULTIPLAYER else []) + (["-DPSP_MUSIC=1"] if MUSIC else []) + (["-DPSP_SNDSTREAM=1"] if SNDSTREAM else []) + (["-DPSP_CLAIMFILL=1"] if CLAIMFILL else []) + (["-DPSP_MP_COOP=1"] if MULTIPLAYER and MP_COOP else []) + (["-DPSP_MP_HOST=1"] if MULTIPLAYER and MP_HOST else []) + (["-DPSP_MAP_CHECKS=1"] if MAP_CHECKS else []) + (["-DPSP_POOLS_XBOX=1"] if POOLS_XBOX else []) + (["-DPSP_RECON_64MB=1"] if BIG_RAM else []) + (["-DPSP_DEBUG_TOOLS=1"] if DEBUG_TOOLS else []) + (["-DPSP_TICK_STEPS=1"] if TICK_STEPS else []) + (["-DPSP_RECON=1"] if RECON else []) + (["-DPSP_MEPROBE=1"] if MEPROBE else []) + (["-DPSP_METRICS=1"] if METRICS else []) + (["-DPSP_STACKHOT=2"] if os.environ.get("PSP_STACKHOT", "2") == "2" else []) + (["-DPSP_PGO_GENERATE=1"] if PGO == "generate" else []) + os.environ.get("PSP_CFLAGS", "").split() + [
        # The fatal asserts are compiled out, unevaluated (X10): their checks
        # and messages fill the 16 KB instruction cache, so with them gone b30's
@@ -689,6 +731,7 @@ def compile_one(item):
                ["-DPSP_RECON=1"] if RECON else []) + (
                ["-DPSP_MEPROBE=1"] if MEPROBE else []) + (
                ["-DPSP_WALKAPART=1"] if WALKAPART else []) + (
+               ["-DPSP_MEXEC=1"] if MEXEC and src.endswith("psp_me.c") else []) + (
                ["-DPSP_MEVISLAND=1"] if MEVISLAND else []) + (
                ["-DPSP_METRICS=1"] if METRICS else []) + (
                ["-DPSP_MUSIC=1"] if MUSIC else []) + (
@@ -971,6 +1014,44 @@ def link(objs, stubs):
                 block += "%s    %s(%s)\n" % (sep, m.group(1), m.group(2))
         return block + (sep if block else "")
 
+    # PSP_ME_DATA_SET=<offset> (with PSP_ME_DATA_LAYOUT; recon) starts the
+    # ME's .data block at that offset within the data cache's 8 KB way, so
+    # its packed hot lines fall on cache sets that no fixed hot line uses:
+    # under R, the ME's hot stack and heap lines crowd sets 0xfc0-0x1940,
+    # and the block's own address happened to put its 32 lines on those
+    # same sets (the lab's mehotgr1). The pads before and after the block
+    # always add up to 8 KB, so everything after it keeps its cache sets
+    # (HOTG's run among them) and the heap is 8 KB smaller. "keep" adds the
+    # same 8 KB after the block and leaves the block where it falls: the
+    # other side of the A/B, with the same heap. The heap's size moves which
+    # texture levels stay resident, and with them R's pictures (mehotgr2:
+    # 549 of 677 frames differed against a build 8 KB larger, play and seeds
+    # identical). Only addresses move
+    def me_set_pad(where):
+        target = os.environ.get("PSP_ME_DATA_SET", "")
+        if not target:
+            return ""
+        if os.environ.get("PSP_ME_DATA_LAYOUT", "") in ("", "none"):
+            sys.exit("psp_build: PSP_ME_DATA_SET places the block PSP_ME_DATA_LAYOUT packs; set both")
+        if target == "keep":
+            return "" if where == "before" else "    . = . + 0x2000;\n"
+        t = int(target, 0)
+        if t % 64 or not 0 <= t < 0x2000:
+            sys.exit("psp_build: PSP_ME_DATA_SET=%s: keep, or a multiple of 64 below 0x2000" % target)
+        # ld adds the section's start to an absolute value given to "." inside
+        # a section (f31660a's "+=" form put 3.5 MB in .data and the build
+        # faulted at boot), so each pad sets "." from ALIGN, which ld takes as
+        # an address: the next address at the wanted offset in the 8 KB way
+        def at_offset(off):
+            return ("    . = ALIGN(0x2000) + %s - ((ALIGN(0x2000) + %s - ABSOLUTE(.)) >= 0x2000 ? 0x2000 : 0);\n"
+                    % (off, off))
+        if where == "before":
+            return "    __psp_me_set_pad = ABSOLUTE(.);\n" + at_offset("0x%x" % t)
+        return ("    __psp_me_set_to = ABSOLUTE((__psp_me_set_pad + ABSOLUTE(__psp_me_data_end)"
+                " - ABSOLUTE(__psp_me_data_start)) & 0x1fff);\n" + at_offset("__psp_me_set_to") +
+                # a block already at the offset takes its 8 KB after it
+                "    . = . + (ABSOLUTE(.) == ABSOLUTE(__psp_me_data_end) ? 0x2000 : 0);\n")
+
     linkfile = SDK + "/lib/linkfile.prx"
     text = open(linkfile).read()
     layout = os.environ.get("PSP_TEXT_LAYOUT", "")
@@ -1033,10 +1114,12 @@ def link(objs, stubs):
                         # the variables the ME writes during "aime2a"'s job
                         # (PSP_AIME_ME_SIDE, psp_me.h) on lines of their own
                         "    __psp_aime_me_start = .;\n    KEEP(*(.data.psp_aime_me))\n"
-                        "    . = ALIGN(64);\n    __psp_aime_me_end = .;\n    __psp_me_data_start = .;\n" +
+                        "    . = ALIGN(64);\n    __psp_aime_me_end = .;\n" +
+                        me_set_pad("before") +
+                        "    __psp_me_data_start = .;\n" +
                         me_hot_data_block(me_objects, "data") +
                         "".join("    %s(.data .data.*)\n" % o for o in me_objects) +
-                        "    . = ALIGN(64);\n    __psp_me_data_end = .;\n" + music_data + ("" if SMALLDATA else hot_block) +
+                        "    . = ALIGN(64);\n    __psp_me_data_end = .;\n" + me_set_pad("after") + music_data + ("" if SMALLDATA else hot_block) +
                         "    *(.data .data.* .gnu.linkonce.d.*)\n")
     if SMALLDATA and hot_block:
         # the hot run first in .sdata: its small variables are read through
@@ -1407,6 +1490,19 @@ def main():
     if LTO_OBJS:
         lto_report(r)
     subprocess.run(["psp-fixup-imports", os.path.join(OUT, "halo.elf")], check=True)
+    if MEXEC and PGO == "generate":
+        # a counting build: psp_me.c is compiled as MEXEC builds it, so the
+        # counts match theirs, but the table is left empty (the ME copies
+        # nothing). The counting build's code is larger than the list's room,
+        # and the table's contents don't touch the counts
+        print("psp_build: PSP_MEXEC=%s in a counting build: psp_mexec_table left empty" % MEXEC)
+    elif MEXEC:
+        # the copy's table, into the linked program before prxgen (the
+        # relocations it reads are -q's, which prxgen drops)
+        lst = os.path.join(HERE, "psp/layout/mexec_%s.txt" % MEXEC)
+        if not os.path.exists(lst):
+            sys.exit("psp_build: PSP_MEXEC: no list " + lst)
+        subprocess.run([sys.executable, os.path.join(HERE, "tools/mexec.py"), os.path.join(OUT, "halo.elf"), lst], check=True)
     subprocess.run(["psp-prxgen", os.path.join(OUT, "halo.elf"), os.path.join(OUT, "halo.prx")], check=True)
     # the title the XMB shows: the multiplayer build's is its own, so the two
     # EBOOTs installed side by side (PSP/GAME/halo, PSP/GAME/halomp) tell apart;

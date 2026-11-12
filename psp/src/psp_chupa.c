@@ -124,3 +124,99 @@ int z_inflateInit_(void *stream, char const *version, int stream_size)
 }
 int z_inflate(void *stream, int flush) { (void)stream; (void)flush; return PSP_Z_STREAM_ERROR; }
 int z_inflateEnd(void *stream) { (void)stream; return PSP_Z_STREAM_ERROR; }
+
+/* object_bounds_cache.c, left out: the PSP keeps its own packed copy of the
+objects' bounding spheres for collision's object loops (psp_object_spheres,
+psp_fixups.py), and the engine's copy is never read; the game state's
+replace hook still names this */
+void object_bounds_cache_invalidate(void) {}
+
+/* ---------- from the 0.9.1 test build (docs/chupa_rebase.md) */
+
+/* the PC menus' key caps, controller capture and spinner marquee
+(menu_tags.c, menu_functions.c, left out): no PC menus, no keyboard, so no
+key cap is drawn (its left edge is the bounds' own), nothing is captured and
+no value scrolls */
+boolean pc_menus_chupathingy(void) { return FALSE; }
+boolean pc_menu_button_key_cap(long bitmap_tag_index, short x0, short y0, short x1, short y1, float alpha)
+{
+	(void)bitmap_tag_index; (void)x0; (void)y0; (void)x1; (void)y1; (void)alpha;
+	return FALSE;
+}
+short pc_menu_button_key_cap_left(long bitmap_tag_index, short x0, short y0, short x1, short y1)
+{
+	(void)bitmap_tag_index; (void)y0; (void)x1; (void)y1;
+	return x0;
+}
+boolean pc_menu_controller_capture(void) { return FALSE; }
+struct widget_instance;
+long pc_menu_text_marquee(struct widget_instance const *widget, boolean focus)
+{
+	(void)widget; (void)focus;
+	return NONE;
+}
+/* map_families.c, left out: every map the PSP plays is an Xbox map
+(_map_family_xbox, 0), named as itself, its file the maps folder's
+<name>.map, as cache_files_windows.c composed it on v0.7.5d (FALSE when it
+doesn't fit: no file is found, not a cut one) */
+short map_family_parse(char const *map, char *file, long size)
+{
+	if (file && size > 0)
+	{
+		char const *base = map;
+		char const *cursor;
+
+		for (cursor = map; *cursor; cursor++)
+		{
+			if (*cursor == '\\' || *cursor == '/')
+				base = cursor + 1;
+		}
+		csstrncpy(file, base, size);
+		file[size - 1] = 0;
+	}
+	return 0;
+}
+char const *cache_files_map_directory(void);
+boolean map_family_xbox_path(char const *map_name, char *path, long size)
+{
+	int length;
+
+	if (size <= 0)
+		return FALSE;
+	length = snprintf(path, (size_t)size, "%s%s.map", cache_files_map_directory(), map_name);
+	if (length < 0 || length >= size)
+	{
+		path[0] = 0;
+		return FALSE;
+	}
+	return TRUE;
+}
+/* the held loading screen's skip (loading_screen.c, left out): asked only
+while display.loading_screen_*_seconds holds it, 0 by default */
+boolean loading_screen_skip_pressed(void) { return FALSE; }
+/* door_portals.c (left out): no door shuts a portal, as on the Xbox, so a
+light keeps every cluster its portals reach */
+void door_portals_new_map(void) {}
+void door_portals_update(void) {}
+void door_portals_light(long rasterizer_light_index, short cluster_index, real_point3d const *center,
+	real radius) { (void)rasterizer_light_index; (void)cluster_index; (void)center; (void)radius; }
+boolean door_portals_light_blocked(long rasterizer_light_index, short cluster_index)
+{ (void)rasterizer_light_index; (void)cluster_index; return FALSE; }
+short door_portals_light_filter(long rasterizer_light_index, short count, short *clusters)
+{ (void)rasterizer_light_index; (void)clusters; return count; }
+/* follow_camera.c (left out): a dead player has the Xbox's death camera
+alone, as with display.follow_camera off */
+long follow_camera_unit(short local_player_index) { (void)local_player_index; return NONE; }
+void follow_camera_player_killed(long killing_player_index, long dead_player_index)
+{ (void)killing_player_index; (void)dead_player_index; }
+void follow_camera_draw(short local_player_index) { (void)local_player_index; }
+/* ui_point.c: the postgame prompt's parts under a pointer; the PSP has none */
+struct ui_point_prompt;
+int ui_point_prompt_part(struct ui_point_prompt const *prompt, short margin, short x, short y)
+{
+	(void)prompt; (void)margin; (void)x; (void)y;
+	return NONE;
+}
+/* log_paths.c: the PSP has no home folder to take out of a log line, as a
+console has none (log_paths.h) */
+void log_paths_redact_line(char *line, unsigned int size) { (void)line; (void)size; }

@@ -14,6 +14,7 @@ Things found while porting that belong upstream: what, where, and a draft to fil
 - **The original:** the Xbox and PC games block it: the gate was `!weapon_prevents_melee_attack(weapon_index)`, which is TRUE for no weapon (`weapons.c` ~821–836) [D].
 - **Suggested fix:** keep the unarmed case to multiplayer (a game engine running, or the gametype's loadout), so the campaign plays as the original.
 - **The port's own fix:** Sierra-III `4b97b14` blocks it in the campaign build only (`FIXES_SOUND` `bipeds.c#unarmed`, keep word `unarmedmelee`).
+- **Fixed upstream** by v0.9.0d: the gate is `!weapon_prevents_melee_attack(weapon_index)` again, for every mode [D]. The port's block and `unarmedmelee` left with the rebase onto v0.9.0d (`chupa_rebase.md`).
 
 **Draft issue** (title: *Unarmed melee fires in the campaign*):
 
