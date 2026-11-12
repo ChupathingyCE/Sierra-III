@@ -27413,6 +27413,7 @@ FIXES_RECON["source/render/render.c#visspan"] = [
 	rasterizer_window_begin(&parameters);
 """),
 ("""		first_person_weapon_render_update();
+		HALO_PERF_RENDER_PART(_halo_perf_render_world);
 		lights_preprocess_scene();
 """, """		first_person_weapon_render_update();
 #ifdef HALO_PSP
@@ -27422,6 +27423,7 @@ FIXES_RECON["source/render/render.c#visspan"] = [
 			psp_ge_visspan(2);
 		}
 #endif
+		HALO_PERF_RENDER_PART(_halo_perf_render_world);
 		lights_preprocess_scene();
 """),
 ]
@@ -28413,9 +28415,13 @@ FIXES_RECON["source/objects/objects.c#objcost"] = [
 FIXES_RECON["source/objects/objects.c#objsteps"] = [
 ("""
 	boolean result = TRUE;
+	boolean elevator_sampled = FALSE;
+	real_point3d elevator_sample;
 	if (!TEST_FLAG(header->flags, _object_header_do_not_update_bit))
 	{""", """
 	boolean result = TRUE;
+	boolean elevator_sampled = FALSE;
+	real_point3d elevator_sample;
 #ifdef PSP_TICK_STEPS
 	/* psp_fixups.py (FIXES_RECON #objsteps) */
 	extern void psp_objsteps_push(long definition, int type, int drawing);
@@ -28483,7 +28489,7 @@ FIXES_RECON["source/effects/particles.c#particlecensus"] = [
  "\t\t\tpsp_particles_refused++;\n\t\t\tPSP_CENSUS(definition_index, refused);\n\t\t\tpsp_particle_census(psp_particle_effect, definition_index, 2);\n\t\t\treturn 0;\n"),
 ("\t\t{\n\t\t\tpsp_particles_thinned++;\n\t\t\tPSP_CENSUS(definition_index, thinned);\n\t\t\treturn 0;\n\t\t}\n\t}\n\treturn 1;\n}\n",
  "\t\t{\n\t\t\tpsp_particles_thinned++;\n\t\t\tPSP_CENSUS(definition_index, thinned);\n\t\t\tpsp_particle_census(psp_particle_effect, definition_index, 3);\n\t\t\treturn 0;\n\t\t}\n\t}\n\treturn 1;\n}\n"),
-("\tparticle_index = datum_new(particle_data);\n\n\tif (particle_index == NONE)\n\t\treturn;\n#ifdef HALO_PSP\n",
+("\tparticle_index = datum_new(particle_data);\n\n\tif (particle_index == NONE)\n\t\treturn;\n\tparticles_made(particle_index);\n#ifdef HALO_PSP\n",
 """\tparticle_index = datum_new(particle_data);
 
 \tif (particle_index == NONE)
@@ -28493,6 +28499,7 @@ FIXES_RECON["source/effects/particles.c#particlecensus"] = [
 #endif
 \t\treturn;
 \t}
+\tparticles_made(particle_index);
 #ifdef HALO_PSP
 \tpsp_particle_census(psp_particle_effect, data->definition_index, 0);
 """),
