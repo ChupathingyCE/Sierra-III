@@ -36250,6 +36250,25 @@ FIXES_SSPR["source/models/models.c#sspr"] = [
 # (psp_ge.c, psp_far_draw), and its parts aren't drawn. The shadow pass, first
 # person and the sky (the immediate flag) keep their parts. Drawing only
 FIXES_FARLEVEL = {}
+FIXES_FARLEVEL["source/models/models.c#farlevelpass"] = [
+("""static char default_render_model_region_permutation_indices[MAXIMUM_REGIONS_PER_MODEL] = { 0 };
+""",
+ """static char default_render_model_region_permutation_indices[MAXIMUM_REGIONS_PER_MODEL] = { 0 };
+#ifdef HALO_PSP
+/* the first pass render_model_parts draws: the decal pass when a far level
+stood in for the solid one (psp_fixups.py, FIXES_FARLEVEL) */
+static short psp_far_pass_from = _render_model_pass_solid;
+#endif
+"""),
+("""	for (pass = _render_model_pass_solid; pass<=last_pass; pass++)
+""",
+ """#ifdef HALO_PSP
+	for (pass = psp_far_pass_from; pass<=last_pass; pass++)
+#else
+	for (pass = _render_model_pass_solid; pass<=last_pass; pass++)
+#endif
+"""),
+]
 FIXES_FARLEVEL["source/models/models.c#farlevel"] = [
 ("""			rasterizer_model_begin(&model_parameters, FALSE);
 		}
@@ -36261,12 +36280,26 @@ FIXES_FARLEVEL["source/models/models.c#farlevel"] = [
 		/* psp_fixups.py (FIXES_FARLEVEL) */
 		{
 			int psp_far_draw(unsigned long model, float pixels, const char *permutations, int permutation_count);
+			int psp_far = 0;
 
 			if (!TEST_FLAG(flags, _render_model_shadow_bit) && !TEST_FLAG(flags, _render_model_first_person_bit) &&
-				!TEST_FLAG(flags, _render_model_immediate_bit) &&
-				psp_far_draw((unsigned long)model_index, level_of_detail_pixels, (const char *)region_permutation_indices,
-					(int)region_permutation_count))
+				!TEST_FLAG(flags, _render_model_immediate_bit))
+				psp_far = psp_far_draw((unsigned long)model_index, level_of_detail_pixels,
+					(const char *)region_permutation_indices, (int)region_permutation_count);
+			if (psp_far)
 			{
+				/* the far level stands in for the solid pass: the decal and
+				transparent passes' parts (a lamp's beam, glass, leaves) are
+				drawn as they are, outside RLOOP's notes (their key would
+				hold the solid pass's calls) */
+				if (psp_far == 2)
+				{
+					psp_far_pass_from = _render_model_pass_decal;
+					render_model_parts(model, region_permutation_indices, region_permutation_count,
+						&model_parameters.skinning, unique_identifier, geometry_detail_level_index,
+						forced_shader_permutation_index, flags);
+					psp_far_pass_from = _render_model_pass_solid;
+				}
 				goto psp_rl_done;
 			}
 		}

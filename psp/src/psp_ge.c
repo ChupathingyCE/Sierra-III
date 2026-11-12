@@ -17062,7 +17062,9 @@ void psp_ge_draw_far(const void *block, unsigned int mask_low, unsigned int mask
 }
 
 /* render_model's (FIXES_FARLEVEL), on the main CPU after the model's begin:
-1 when the model's far level is drawn in place of its parts. Off unless
+1 when the model's far level is drawn in place of its parts, 2 when in place
+of its solid pass's parts only (its decal and transparent passes still to
+draw). Off unless
 farlevel (32 px) or farlevelN asks */
 static int far_pixels = -1;
 
@@ -17111,7 +17113,9 @@ int psp_far_draw(unsigned long model, float pixels, const char *permutations, in
 	}
 	psp_ge_draw_far(block, mask[0], mask[1]);
 	far_drawn++;
-	return 1;
+	/* 2: the model's decal and transparent parts are still to be drawn as
+	they are (the bake's PCV_FAR_KEEPS) */
+	return (((const unsigned int *)block)[1] & 0x10000u) ? 2 : 1;
 }
 
 static void node_matrix(const void *vertices, const unsigned short *indices, ScePspFMatrix4 *model)

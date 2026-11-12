@@ -18,8 +18,11 @@ This tool makes that part for each model it can:
 It takes rigid models (rocks, trees, crates, most scenery, and since slice
 2 rigid models of several nodes, one group a node; since slice 3 regions of
 several permutations, one group a region's permutation and node), their opaque
-parts model shaders (soso) or environment shaders (senv, not alpha-tested); their see-through parts are left out of the far
-level, as the far ruling allows. Projectiles' models are left out whole: the
+parts model shaders (soso) or environment shaders (senv): the far level stands
+in for the solid pass only, so a model's decal and transparent parts are
+kept and drawn as they are (the first block's flags carry PCV_FAR_KEEPS);
+alpha-tested environment parts, drawn in the solid pass, are left out while
+they're small beside the model, as the far ruling allows. Projectiles' models are left out whole: the
 ruling keeps projectile visuals to the horizon. The others are counted by reason and left alone, so they
 keep their parts at every distance.
 
@@ -90,6 +93,10 @@ SOSO_MAP_SCALE = (156, 160)     # shader_model's map u and v scale
 SENV_BASE_MAP_ID = 148          # shader_environment's base map dependency's tag id
 SENV_FLAGS = 40                 # shader_environment's flags (bit 0: alpha tested)
 SEE_THROUGH_SMALL = 0.25        # a see-through part left out only when its radius is under this share of the opaque parts'
+SOSO_FLAGS = 40                 # shader_model's flags
+SOSO_DECAL = 1 << 3             # ... alpha blended decal: the decal pass's
+DECALS = set()                  # decal soso tag ids (base_colours fills it): kept, drawn in their own pass
+PCV_FAR_KEEPS = 1 << 16         # a far model's first block flag: its decal and transparent parts are drawn as they are
 ALPHA_TESTED = set()            # alpha-tested senv tag ids (base_colours fills it): see-through
 # the see-through shaders' groups (transparent chicago and its extended form,
 # generic, glass, meter, plasma, water): their parts aren't drawn far
@@ -110,6 +117,8 @@ def check_layouts(d):
                 raise Refused('%s\'s %r is at %r, not %#x' % (struct_name, name, got.get(name), at))
     if fields('Projectile').get('model') != OBJECT_MODEL:
         raise Refused('the projectile\'s model reference moved')
+    if fields('ShaderModel').get('shader model flags') != SOSO_FLAGS:
+        raise Refused('the shader_model flags moved')
     se = fields('ShaderEnvironment')
     if se.get('base map') != SENV_BASE_MAP_ID - 12 or se.get('shader environment flags') != SENV_FLAGS:
         raise Refused('the shader_environment layout moved')
@@ -140,6 +149,11 @@ def base_colours(m, d, texpack):
             base_id, = struct.unpack_from('<i', m.data, o + SENV_BASE_MAP_ID)
             us = vs = 1.0
         else:
+            flags, = struct.unpack_from('<H', m.data, o + SOSO_FLAGS)
+            if flags & SOSO_DECAL:
+                # drawn in the decal pass, after the solid one: kept as it is
+                DECALS.add(t.tag_id & 0xFFFFFFFF)
+                continue
             base_id, = struct.unpack_from('<i', m.data, o + SOSO_BASE_MAP_ID)
             us, vs = struct.unpack_from('<ff', m.data, o + SOSO_MAP_SCALE[0])
         base = m.by_id.get(base_id)
@@ -220,7 +234,7 @@ def entry(m, hw):
 def merged(m, pack_data, offsets, shaders, colours, scales, census):
     """(positions, normals, colours, triangles, each vertex's node) of the model's merged lowest level, or a reason"""
     P, N, C, T, nodes, keys, see_through = [], [], [], [], [], [], []
-    base = 0
+    base = kept = 0
     for po, key in offsets:
         data = m.data
         shader_index, = struct.unpack_from('<h', data, po + PART['shader index'])
@@ -247,10 +261,17 @@ def merged(m, pack_data, offsets, shaders, colours, scales, census):
         if shaders[shader_index] not in colours:
             tag = m.by_id.get(shaders[shader_index]) or m.by_id.get(shaders[shader_index] - (1 << 32))
             group = tag.group if tag else '?'
-            # see-through parts are left out of the far level, as the far
-            # ruling drops them under the threshold, while they're small
-            # beside the model (checked below: a light's beam or glow isn't)
-            if group in SEE_THROUGH or (shaders[shader_index] & 0xFFFFFFFF) in ALPHA_TESTED:
+            # the decal and transparent passes' parts stay as they are: the
+            # far level stands in for the solid pass only, and render_model
+            # still draws those passes (a lamp's beam, a tree's leaves, glass)
+            if group in SEE_THROUGH or (shaders[shader_index] & 0xFFFFFFFF) in DECALS:
+                census['see-through parts kept'] += 1
+                kept += 1
+                continue
+            # an alpha-tested environment shader draws in the solid pass, so
+            # it goes, as the far ruling allows, while it's small beside the
+            # model (checked below)
+            if (shaders[shader_index] & 0xFFFFFFFF) in ALPHA_TESTED:
                 census['see-through parts left out'] += 1
                 see_through.append(positions)
                 continue
@@ -285,7 +306,7 @@ def merged(m, pack_data, offsets, shaders, colours, scales, census):
     census['source vertices'] += base
     # a group is a node's vertices under one region and permutation key
     group = np.concatenate(keys) << 16 | np.concatenate(nodes)
-    return np.concatenate(P), np.concatenate(N), np.concatenate(C), np.concatenate(T).reshape(-1), group
+    return np.concatenate(P), np.concatenate(N), np.concatenate(C), np.concatenate(T).reshape(-1), group, kept
 
 
 def far_mesh(lib, positions, normals, colours, tri, diameter):
@@ -386,7 +407,7 @@ def main(map_path, pgeo_path):
             why = got if isinstance(got, str) else None
         groups = []
         if why is None:
-            positions, normals, cols, tri, vnode = got   # vnode: key << 16 | node
+            positions, normals, cols, tri, vnode, kept = got   # vnode: key << 16 | node
             center, radius = mc.sphere(positions)
             diameter = 2.0 * float(radius)
             tri3 = tri.reshape(-1, 3)
@@ -415,9 +436,11 @@ def main(map_path, pgeo_path):
         model = bytearray()
         for g, (node, (rows, local, error)) in enumerate(groups):
             b, strip_count = far_block(positions[rows], normals[rows], cols[rows], local, node & 0xFFFF, error, node >> 16)
+            b = bytearray(b)
             if g + 1 < len(groups):
-                b = bytearray(b)
                 struct.pack_into('<I', b, 56, len(b))
+            if g == 0 and kept:
+                struct.pack_into('<I', b, 4, PCV_FAR | PCV_FAR_KEEPS)
             model += b
             census['far vertices'] += len(rows)
             census['far triangles'] += len(local) // 3
@@ -430,6 +453,8 @@ def main(map_path, pgeo_path):
         if len(groups) > 1:
             census['far models of several nodes'] += 1
             census['far node groups'] += len(groups)
+        if kept:
+            census['far models with parts kept'] += 1
         if any(k >> 16 != ALWAYS for k, _ in groups):
             census['far models of several permutations'] += 1
     if not directory:
@@ -450,9 +475,9 @@ def main(map_path, pgeo_path):
     c = census
     left = ', '.join('%s %d' % (k[6:], v) for k, v in sorted(c.items()) if k.startswith('left: '))
     print('farlevel: %d models, %d given a far level at %d px (left: %s; see-through parts left out of them: %d); source %d triangles %d vertices -> '
-          'far %d triangles %d vertices, %d indices; %d models of several nodes (%d groups), %d of several permutations; region %d KB' %
+          'far %d triangles %d vertices, %d indices; %d models of several nodes (%d groups), %d of several permutations, %d keeping decal or transparent parts (%d parts); region %d KB' %
           (c['models'], c['far models'], FAR_PIXELS, left or 'none', c['see-through parts left out'], c['source triangles'], c['source vertices'],
-           c['far triangles'], c['far vertices'], c['far indices'], c['far models of several nodes'], c['far node groups'], c['far models of several permutations'],
+           c['far triangles'], c['far vertices'], c['far indices'], c['far models of several nodes'], c['far node groups'], c['far models of several permutations'], c['far models with parts kept'], c['see-through parts kept'],
            len(body) // 1024))
     sizes.sort(reverse=True)
     print('farlevel: the largest: ' + '; '.join('%s %.1f KB (%d node%s)' % (name, b / 1024.0, g, '' if g == 1 else 's')
