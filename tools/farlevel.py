@@ -17,7 +17,8 @@ This tool makes that part for each model it can:
 
 It takes rigid models (rocks, trees, crates, most scenery, and since slice
 2 rigid models of several nodes, one group a node; since slice 3 regions of
-several permutations, one group a region's permutation and node), their opaque
+several permutations, one group a region's permutation and node; since
+slice 3 skinned models, one bone a vertex, in batches of 8 nodes), their opaque
 parts model shaders (soso) or environment shaders (senv): the far level stands
 in for the solid pass only, so a model's decal and transparent parts are
 kept and drawn as they are (the first block's flags carry PCV_FAR_KEEPS);
@@ -38,7 +39,11 @@ sspr's levels when they're there):
     14 the bytes from this block to the model's next node group (another
     such block), 0 for its last, 15 the group's key: 0xFFFF when it's
     always drawn, else its region | its permutation << 8, drawn when the
-    object shows that permutation of that region (version 3);
+    object shows that permutation of that region (version 3); a skinned
+    model's block (flag PCV_FAR_BONES) holds a batch of at most 8 nodes: word
+    11 their count, 16 bytes of node numbers after the header, and each
+    vertex led by that many 8-bit weights (padded to 2 bytes), 128 on the
+    vertex's own node: one bone a vertex;
   - then the vertices, in the GE's order: u16 colour 5650, 3 x s16 normal
     (divided by the scale), 3 x s16 position (centre + q / 32767 x scale);
   - then the strip or the list, u16 indices, padded to 64 bytes;
@@ -96,6 +101,8 @@ SEE_THROUGH_SMALL = 0.25        # a see-through part left out only when its radi
 SOSO_FLAGS = 40                 # shader_model's flags
 SOSO_DECAL = 1 << 3             # ... alpha blended decal: the decal pass's
 DECALS = set()                  # decal soso tag ids (base_colours fills it): kept, drawn in their own pass
+PCV_FAR_BONES = 1 << 17         # a block of a skinned model: 16 bytes of nodes after the header, weights before each vertex
+BONES = 8                       # the GE's bone matrices
 PCV_FAR_KEEPS = 1 << 16         # a far model's first block flag: its decal and transparent parts are drawn as they are
 ALPHA_TESTED = set()            # alpha-tested senv tag ids (base_colours fills it): see-through
 # the see-through shaders' groups (transparent chicago and its extended form,
@@ -235,6 +242,7 @@ def merged(m, pack_data, offsets, shaders, colours, scales, census):
     """(positions, normals, colours, triangles, each vertex's node) of the model's merged lowest level, or a reason"""
     P, N, C, T, nodes, keys, see_through = [], [], [], [], [], [], []
     base = kept = 0
+    skinned = False
     for po, key in offsets:
         data = m.data
         shader_index, = struct.unpack_from('<h', data, po + PART['shader index'])
@@ -276,9 +284,11 @@ def merged(m, pack_data, offsets, shaders, colours, scales, census):
                 see_through.append(positions)
                 continue
             return 'shader %s' % group
-        if (src.n1 >= 0).any():
-            return 'skinned'
-        nodes.append(np.asarray(src.n0, np.int64).copy())
+        # one bone a vertex: a skinned vertex follows its heavier node
+        two = np.asarray(src.n1, np.int64) >= 0
+        skinned = skinned or bool(two.any())
+        nodes.append(np.where(two & (np.asarray(src.w0) < 0.5), np.asarray(src.n1, np.int64),
+                              np.asarray(src.n0, np.int64)))
         keys.append(np.full(vcount, key, np.int64))
         normals = mc.unpack_normals(src.packed).astype(F)
         uv = src.uv.copy().view('<f4').reshape(vcount, 2).astype(F)
@@ -306,7 +316,7 @@ def merged(m, pack_data, offsets, shaders, colours, scales, census):
     census['source vertices'] += base
     # a group is a node's vertices under one region and permutation key
     group = np.concatenate(keys) << 16 | np.concatenate(nodes)
-    return np.concatenate(P), np.concatenate(N), np.concatenate(C), np.concatenate(T).reshape(-1), group, kept
+    return np.concatenate(P), np.concatenate(N), np.concatenate(C), np.concatenate(T).reshape(-1), group, kept, skinned
 
 
 def far_mesh(lib, positions, normals, colours, tri, diameter):
@@ -338,7 +348,49 @@ def far_mesh(lib, positions, normals, colours, tri, diameter):
     return used[order], remap[inverse], float(err.value)
 
 
-def far_block(positions, normals, colours, local, node, error, key):
+def skinned_groups(lib, positions, normals, colours, tri3, vnode, diameter):
+    """a skinned model's blocks: each region and permutation key simplified
+    whole (its vertices share the bind pose's frame), then its triangles cut
+    into batches of at most BONES nodes, drawn by the GE's skinning with one
+    bone a vertex. ([(key << 16, mesh, bones)], None) or ([], reason)"""
+    out = []
+    for key in np.unique(vnode[tri3[:, 0]] >> 16):
+        keep = (vnode[tri3[:, 0]] >> 16) == key
+        mesh = far_mesh(lib, positions, normals, colours, tri3[keep].reshape(-1), diameter)
+        if mesh is None:
+            continue
+        rows, local, error = mesh
+        node = vnode[rows] & 0xFFFF
+        tris = local.reshape(-1, 3)
+        # triangles in their first vertex's node order, cut where a batch
+        # would need a ninth node
+        order = np.argsort(node[tris[:, 0]], kind='stable')
+        batches, current, members = [], [], set()
+        for t in order:
+            need = members | set(int(n) for n in node[tris[t]])
+            if len(need) > BONES and current:
+                batches.append((current, sorted(members)))
+                current, members = [], set()
+                need = set(int(n) for n in node[tris[t]])
+            current.append(t)
+            members = need
+        if current:
+            batches.append((current, sorted(members)))
+        for picked, bones in batches:
+            sub = tris[picked].reshape(-1)
+            used, first, inverse = np.unique(sub, return_index=True, return_inverse=True)
+            o = np.argsort(first)
+            remap = np.empty(len(used), np.int64)
+            remap[o] = np.arange(len(used))
+            out.append((int(key) << 16, (rows[used[o]], remap[inverse], error), bones))
+    if not out:
+        return [], 'simplifier'
+    if len(out) > MAX_GROUPS:
+        return [], 'groups'
+    return out, None
+
+
+def far_block(positions, normals, colours, local, node, error, key, flags=8, bones=None, vnodes=None):
     lo, hi = positions.min(0), positions.max(0)
     center = (lo + hi) * 0.5
     # one scale for the three axes, at least 1: the GE lights with the
@@ -350,20 +402,30 @@ def far_block(positions, normals, colours, local, node, error, key):
     nq = np.clip(np.round(normals / k * 32767.0), -32767, 32767).astype('<i2')
     c = np.clip(np.round(colours), 0, 255).astype(np.int64)
     rgb565 = ((c[:, 2] >> 3) << 11) | ((c[:, 1] >> 2) << 5) | (c[:, 0] >> 3)   # the GE's 5650: red low
-    verts = np.zeros(len(positions), dtype=[('c', '<u2'), ('n', '<i2', 3), ('p', '<i2', 3)])   # the GE's order
+    wbytes = 0 if bones is None else len(bones) + (len(bones) & 1)   # 8-bit weights, padded to the colour's 2 bytes
+    fields = ([('w', 'u1', wbytes)] if wbytes else []) + [('c', '<u2'), ('n', '<i2', 3), ('p', '<i2', 3)]   # the GE's order
+    verts = np.zeros(len(positions), dtype=fields)
     verts['n'] = nq
     verts['p'] = q
     verts['c'] = rgb565.astype('<u2')
+    if wbytes:
+        slot = {b: k for k, b in enumerate(bones)}
+        w = np.zeros((len(positions), wbytes), np.uint8)
+        w[np.arange(len(positions)), [slot[int(n)] for n in vnodes]] = 128   # one bone a vertex: 128 is all of it
+        verts['w'] = w
     tri = [int(x) for x in local]
     strip = mc.strip_of(tri)
     as_list = strip is None    # the strip isn't shorter: drawn as the list
     indices = tri if as_list else strip
-    head = struct.pack('<5I', mc.MAGIC, PCV_FAR, len(positions), 14, len(indices))
+    head = struct.pack('<5I', mc.MAGIC, flags, len(positions), 14 + wbytes, len(indices))
     head += np.array(list(center) + list(half), '<f4').tobytes()
-    head += struct.pack('<IfI', node, error, int(as_list))
+    head += struct.pack('<IfI', node if bones is None else len(bones), error, int(as_list))
     head += struct.pack('<I', 0)   # word 14: bytes to the next node's group, 0 for the last (main fills it)
     head += struct.pack('<I', key)   # word 15: ALWAYS, or region | permutation << 8
     head += bytes(mc.BLOCK_HEADER - len(head))
+    if bones is not None:
+        # the batch's nodes, a byte each (0xFF unused), after the header
+        head += bytes(list(bones) + [0xFF] * (BONES - len(bones))) + bytes(16 - BONES)
     body = verts.tobytes() + np.array(indices, '<u2').tobytes()
     out = head + body
     return out + bytes(mc.up(len(out), 64) - len(out)), len(indices)
@@ -407,16 +469,18 @@ def main(map_path, pgeo_path):
             why = got if isinstance(got, str) else None
         groups = []
         if why is None:
-            positions, normals, cols, tri, vnode, kept = got   # vnode: key << 16 | node
+            positions, normals, cols, tri, vnode, kept, skinned = got   # vnode: key << 16 | node
             center, radius = mc.sphere(positions)
             diameter = 2.0 * float(radius)
             tri3 = tri.reshape(-1, 3)
             tnode = vnode[tri3]
-            if (tnode != tnode[:, :1]).any():
+            if skinned:
+                groups, why = skinned_groups(lib, positions, normals, cols, tri3, vnode, diameter)
+            elif (tnode != tnode[:, :1]).any():
                 why = 'a triangle across nodes'
             elif len(np.unique(tnode[:, 0])) > MAX_GROUPS:
                 why = 'groups'
-        if why is None:
+        if why is None and not skinned:
             # one group a node: each simplified alone and drawn with its
             # node's matrix, so a moving node's parts move as they do near
             for node in np.unique(tnode[:, 0]):
@@ -427,20 +491,24 @@ def main(map_path, pgeo_path):
                 if len(mesh[0]) > MAX_VERTICES:
                     why = 'simplifier'
                     break
-                groups.append((int(node), mesh))
+                groups.append((int(node), mesh, None))
             if why is None and not groups:
                 why = 'simplifier'
         if why is not None:
             census['left: ' + why] += 1
             continue
         model = bytearray()
-        for g, (node, (rows, local, error)) in enumerate(groups):
-            b, strip_count = far_block(positions[rows], normals[rows], cols[rows], local, node & 0xFFFF, error, node >> 16)
+        for g, (node, (rows, local, error), bones) in enumerate(groups):
+            flags = PCV_FAR | (PCV_FAR_KEEPS if g == 0 and kept else 0)
+            if bones is None:
+                b, strip_count = far_block(positions[rows], normals[rows], cols[rows], local, node & 0xFFFF, error,
+                                           node >> 16, flags)
+            else:
+                b, strip_count = far_block(positions[rows], normals[rows], cols[rows], local, 0, error,
+                                           node >> 16, flags | PCV_FAR_BONES, bones, vnode[rows] & 0xFFFF)
             b = bytearray(b)
             if g + 1 < len(groups):
                 struct.pack_into('<I', b, 56, len(b))
-            if g == 0 and kept:
-                struct.pack_into('<I', b, 4, PCV_FAR | PCV_FAR_KEEPS)
             model += b
             census['far vertices'] += len(rows)
             census['far triangles'] += len(local) // 3
@@ -455,7 +523,10 @@ def main(map_path, pgeo_path):
             census['far node groups'] += len(groups)
         if kept:
             census['far models with parts kept'] += 1
-        if any(k >> 16 != ALWAYS for k, _ in groups):
+        if skinned:
+            census['far skinned models'] += 1
+            census['far bone batches'] += len(groups)
+        if any(k >> 16 != ALWAYS for k, _, _ in groups):
             census['far models of several permutations'] += 1
     if not directory:
         print('farlevel: no model given a far level (%s)' % dict(census))
@@ -475,9 +546,9 @@ def main(map_path, pgeo_path):
     c = census
     left = ', '.join('%s %d' % (k[6:], v) for k, v in sorted(c.items()) if k.startswith('left: '))
     print('farlevel: %d models, %d given a far level at %d px (left: %s; see-through parts left out of them: %d); source %d triangles %d vertices -> '
-          'far %d triangles %d vertices, %d indices; %d models of several nodes (%d groups), %d of several permutations, %d keeping decal or transparent parts (%d parts); region %d KB' %
+          'far %d triangles %d vertices, %d indices; %d models of several nodes (%d groups), %d of several permutations, %d keeping decal or transparent parts (%d parts), %d skinned (%d bone batches); region %d KB' %
           (c['models'], c['far models'], FAR_PIXELS, left or 'none', c['see-through parts left out'], c['source triangles'], c['source vertices'],
-           c['far triangles'], c['far vertices'], c['far indices'], c['far models of several nodes'], c['far node groups'], c['far models of several permutations'], c['far models with parts kept'], c['see-through parts kept'],
+           c['far triangles'], c['far vertices'], c['far indices'], c['far models of several nodes'], c['far node groups'], c['far models of several permutations'], c['far models with parts kept'], c['see-through parts kept'], c['far skinned models'], c['far bone batches'],
            len(body) // 1024))
     sizes.sort(reverse=True)
     print('farlevel: the largest: ' + '; '.join('%s %.1f KB (%d node%s)' % (name, b / 1024.0, g, '' if g == 1 else 's')

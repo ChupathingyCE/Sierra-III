@@ -17037,9 +17037,6 @@ void psp_ge_draw_far(const void *block, unsigned int mask_low, unsigned int mask
 		group++;
 		if (shown && head[2] && head[4] >= 3 && !list_full())
 		{
-			if (node >= (unsigned int)model_node_count)
-				node = 0;
-			halo_matrix(model_nodes + 13 * node, &m);
 			centre.x = box[0];
 			centre.y = box[1];
 			centre.z = box[2];
@@ -17048,12 +17045,48 @@ void psp_ge_draw_far(const void *block, unsigned int mask_low, unsigned int mask
 			half.x = box[3] * (32768.0f / 32767.0f);
 			half.y = box[4] * (32768.0f / 32767.0f);
 			half.z = box[5] * (32768.0f / 32767.0f);
-			sceGumLoadMatrix(&m);
-			sceGumTranslate(&centre);
-			sceGumScale(&half);
-			sceGumDrawArray(head[13] ? GU_TRIANGLES : GU_TRIANGLE_STRIP,
-				GU_COLOR_5650 | GU_NORMAL_16BIT | GU_VERTEX_16BIT | GU_INDEX_16BIT | GU_TRANSFORM_3D, (int)head[4],
-				(const unsigned short *)(at + 64 + head[3] * head[2]), at + 64);
+			if (head[1] & 0x20000u)
+			{
+				/* a skinned model's batch: up to 8 nodes, one a vertex, each
+				bone its node's matrix with the box folded in (the position
+				centre + half q in the node's frame), the model matrix the
+				identity */
+				const unsigned char *bones = at + 64;
+				unsigned int k = head[11] > 8 ? 8 : head[11], b;
+
+				for (b = 0; b < k; b++)
+				{
+					ScePspFMatrix4 bone;
+
+					node = bones[b] < (unsigned int)model_node_count ? bones[b] : 0;
+					halo_matrix(model_nodes + 13 * node, &m);
+					bone.x.x = m.x.x * half.x; bone.x.y = m.x.y * half.x; bone.x.z = m.x.z * half.x; bone.x.w = 0.0f;
+					bone.y.x = m.y.x * half.y; bone.y.y = m.y.y * half.y; bone.y.z = m.y.z * half.y; bone.y.w = 0.0f;
+					bone.z.x = m.z.x * half.z; bone.z.y = m.z.y * half.z; bone.z.z = m.z.z * half.z; bone.z.w = 0.0f;
+					bone.w.x = m.w.x + centre.x * m.x.x + centre.y * m.y.x + centre.z * m.z.x;
+					bone.w.y = m.w.y + centre.x * m.x.y + centre.y * m.y.y + centre.z * m.z.y;
+					bone.w.z = m.w.z + centre.x * m.x.z + centre.y * m.y.z + centre.z * m.z.z;
+					bone.w.w = 1.0f;
+					sceGuBoneMatrix(b, &bone);
+				}
+				sceGumLoadIdentity();
+				sceGumDrawArray(head[13] ? GU_TRIANGLES : GU_TRIANGLE_STRIP,
+					GU_WEIGHTS(k ? k : 1) | GU_WEIGHT_8BIT | GU_COLOR_5650 | GU_NORMAL_16BIT | GU_VERTEX_16BIT |
+					GU_INDEX_16BIT | GU_TRANSFORM_3D, (int)head[4],
+					(const unsigned short *)(at + 80 + head[3] * head[2]), at + 80);
+			}
+			else
+			{
+				if (node >= (unsigned int)model_node_count)
+					node = 0;
+				halo_matrix(model_nodes + 13 * node, &m);
+				sceGumLoadMatrix(&m);
+				sceGumTranslate(&centre);
+				sceGumScale(&half);
+				sceGumDrawArray(head[13] ? GU_TRIANGLES : GU_TRIANGLE_STRIP,
+					GU_COLOR_5650 | GU_NORMAL_16BIT | GU_VERTEX_16BIT | GU_INDEX_16BIT | GU_TRANSFORM_3D, (int)head[4],
+					(const unsigned short *)(at + 64 + head[3] * head[2]), at + 64);
+			}
 		}
 		at = head[14] ? at + head[14] : NULL;
 	}
