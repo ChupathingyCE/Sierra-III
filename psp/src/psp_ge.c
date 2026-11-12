@@ -11630,6 +11630,14 @@ static void use_projection(int first_person)
 		float d[3];
 		int k;
 
+		/* the model's point lights were given from the origin in place when
+		they came (before its shape says first person): moved to the new one */
+		for (k = 0; k < model_point_count; k++)
+		{
+			model_point_position[k].x += ge_eye[0] - origin[0];
+			model_point_position[k].y += ge_eye[1] - origin[1];
+			model_point_position[k].z += ge_eye[2] - origin[2];
+		}
 		for (k = 0; k < 3; k++)
 		{
 			ge_eye[k] = origin[k];
