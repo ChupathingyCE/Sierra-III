@@ -101,6 +101,7 @@ SENV_BASE_MAP_ID = 148          # shader_environment's base map dependency's tag
 SENV_FLAGS = 40                 # shader_environment's flags (bit 0: alpha tested)
 SEE_THROUGH_SMALL = 0.25        # a see-through part left out only when its radius is under this share of the opaque parts'
 SOSO_FLAGS = 40                 # shader_model's flags
+SOSO_NOT_ALPHA_TESTED = 1 << 2  # shader_model's 'not alpha tested'
 SOSO_DECAL = 1 << 3             # ... alpha blended decal: the decal pass's
 DECALS = set()
 SOSO_CHANGE_SOURCE = 76         # shader_model's change colour source: 0 none, 1-4 A-D
@@ -179,6 +180,15 @@ def base_colours(m, d, texpack):
         if not base or base.name not in by_tag:
             continue
         b = by_tag[base.name][0]
+        if t.group == 'soso' and not flags & SOSO_NOT_ALPHA_TESTED:
+            # alpha tested (leaves, fences): its colour from the texels that
+            # stay, weighted by alpha, so the clear ones' colour (often black)
+            # doesn't darken it as the mips' plain means do
+            img = texpack.decode_level(m, b, 0)
+            if img is None:
+                continue
+            out[t.tag_id & 0xFFFFFFFF] = (alpha_weighted(np.asarray(img, np.float32)), us or 1.0, vs or 1.0)
+            continue
         k, w = 0, b['w']
         while w > COLOUR_MIP_TEXELS and k < b['mips']:
             k, w = k + 1, max(1, w // 2)
@@ -187,6 +197,21 @@ def base_colours(m, d, texpack):
             continue
         out[t.tag_id & 0xFFFFFFFF] = (np.asarray(img, np.float32), us or 1.0, vs or 1.0)
     return out
+
+
+def alpha_weighted(img):
+    """img box-filtered to at most COLOUR_MIP_TEXELS a side, each box's colour
+    its texels' mean weighted by their alpha (alpha the plain mean)"""
+    h, w = img.shape[:2]
+    fy, fx = max(1, h // COLOUR_MIP_TEXELS), max(1, w // COLOUR_MIP_TEXELS)
+    h2, w2 = h // fy, w // fx
+    img = img[:h2 * fy, :w2 * fx].reshape(h2, fy, w2, fx, 4)
+    a = img[..., 3:4]
+    weight = a.sum((1, 3))
+    rgb = (img[..., :3] * a).sum((1, 3)) / np.maximum(weight, 1e-6)
+    plain = img[..., :3].mean((1, 3))
+    rgb = np.where(weight > 0, rgb, plain)
+    return np.concatenate([rgb, img[..., 3:4].mean((1, 3))], 2).astype(np.float32)
 
 
 def sample(img, uv):
