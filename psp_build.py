@@ -1487,7 +1487,13 @@ def main():
     if LTO_OBJS:
         lto_report(r)
     subprocess.run(["psp-fixup-imports", os.path.join(OUT, "halo.elf")], check=True)
-    if MEXEC:
+    if MEXEC and PGO == "generate":
+        # a counting build: psp_me.c is compiled as MEXEC builds it, so the
+        # counts match theirs, but the table is left empty (the ME copies
+        # nothing). The counting build's code is larger than the list's room,
+        # and the table's contents don't touch the counts
+        print("psp_build: PSP_MEXEC=%s in a counting build: psp_mexec_table left empty" % MEXEC)
+    elif MEXEC:
         # the copy's table, into the linked program before prxgen (the
         # relocations it reads are -q's, which prxgen drops)
         lst = os.path.join(HERE, "psp/layout/mexec_%s.txt" % MEXEC)
