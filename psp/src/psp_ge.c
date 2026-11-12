@@ -16988,7 +16988,7 @@ static void halo_matrix(const float *node, ScePspFMatrix4 *model)
 drawn as the one part tools/farlevel.py baked, in place of its parts. The
 block (psp_geo.c locked it): its 64-byte header (word 2 the vertices, 3 the
 stride, 4 the indices, 5-7 the box's centre, 8-10 its scale, 11 the node, 13
-a list rather than a strip), the vertices (colour 5650, a 16-bit normal
+a list rather than a strip, 14 the bytes to the model's next node group or 0), the vertices (colour 5650, a 16-bit normal
 divided by the scale, a 16-bit position in the box), the indices.
 Untextured, lit by the GE with the model's own lights, each vertex's colour
 its material's ambient and diffuse */
@@ -16996,46 +16996,56 @@ static unsigned long far_drawn = 0, far_vertices = 0;
 
 void psp_ge_draw_far(const void *block)
 {
-	const unsigned int *head = block;
-	const float *box = (const float *)(head + 5);
-	unsigned int node = head[11];
-	ScePspFMatrix4 m;
-	ScePspFVector3 centre, half;
+	const unsigned char *at = block;
 
 	GE_DEFER(defer_draw_far(block));
 	GE_BENCH_SKIP();
-	if (!frame_open || !block || !head[2] || head[4] < 3 || list_full() || !model_nodes)
+	if (!frame_open || !block || !model_nodes)
 		return;
-	if (node >= (unsigned int)model_node_count)
-		node = 0;
-	halo_matrix(model_nodes + 13 * node, &m);
-	centre.x = box[0];
-	centre.y = box[1];
-	centre.z = box[2];
-	/* the GE reads a 16-bit position as q / 32768; the bake wrote q / 32767
-	(its normals take the same scale, and were divided by it) */
-	half.x = box[3] * (32768.0f / 32767.0f);
-	half.y = box[4] * (32768.0f / 32767.0f);
-	half.z = box[5] * (32768.0f / 32767.0f);
 	sceGumMatrixMode(GU_MODEL);
-	sceGumLoadMatrix(&m);
-	sceGumTranslate(&centre);
-	sceGumScale(&half);
 	sceGuDisable(GU_TEXTURE_2D);
 	sceGuDisable(GU_ALPHA_TEST);
 	sceGuDisable(GU_CULL_FACE);
 	model_lighting(1);
 	sceGuColorMaterial(GU_AMBIENT | GU_DIFFUSE);
-	sceGumDrawArray(head[13] ? GU_TRIANGLES : GU_TRIANGLE_STRIP,
-		GU_COLOR_5650 | GU_NORMAL_16BIT | GU_VERTEX_16BIT | GU_INDEX_16BIT | GU_TRANSFORM_3D, (int)head[4],
-		(const unsigned short *)((const unsigned char *)block + 64 + head[3] * head[2]), (const unsigned char *)block + 64);
+	/* one group a node, each with its node's matrix, so a model's moving
+	parts stay where they are near; word 14 leads to the next */
+	while (at)
+	{
+		const unsigned int *head = (const unsigned int *)at;
+		const float *box = (const float *)(head + 5);
+		unsigned int node = head[11];
+		ScePspFMatrix4 m;
+		ScePspFVector3 centre, half;
+
+		if (head[2] && head[4] >= 3 && !list_full())
+		{
+			if (node >= (unsigned int)model_node_count)
+				node = 0;
+			halo_matrix(model_nodes + 13 * node, &m);
+			centre.x = box[0];
+			centre.y = box[1];
+			centre.z = box[2];
+			/* the GE reads a 16-bit position as q / 32768; the bake wrote
+			q / 32767 (its normals take the same scale, and were divided by it) */
+			half.x = box[3] * (32768.0f / 32767.0f);
+			half.y = box[4] * (32768.0f / 32767.0f);
+			half.z = box[5] * (32768.0f / 32767.0f);
+			sceGumLoadMatrix(&m);
+			sceGumTranslate(&centre);
+			sceGumScale(&half);
+			sceGumDrawArray(head[13] ? GU_TRIANGLES : GU_TRIANGLE_STRIP,
+				GU_COLOR_5650 | GU_NORMAL_16BIT | GU_VERTEX_16BIT | GU_INDEX_16BIT | GU_TRANSFORM_3D, (int)head[4],
+				(const unsigned short *)(at + 64 + head[3] * head[2]), at + 64);
+			if (!PSP_ME_WORK())
+				far_vertices += head[2];
+		}
+		at = head[14] ? at + head[14] : NULL;
+	}
 	sceGuColorMaterial(0);
 	model_lighting(0);
 	if (!PSP_ME_WORK())
-	{
 		far_drawn++;
-		far_vertices += head[2];
-	}
 }
 
 /* render_model's (FIXES_FARLEVEL), on the main CPU after the model's begin:

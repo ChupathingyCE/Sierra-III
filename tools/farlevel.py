@@ -15,8 +15,9 @@ This tool makes that part for each model it can:
 - it's packed as a strip, with positions quantised to 16 bits in its box
   and colours as 5650.
 
-Slice 1 takes rigid models whose parts all hang on one node (rocks, trees,
-crates, most scenery), with one permutation in every region, their opaque
+It takes rigid models (rocks, trees, crates, most scenery, and since slice
+2 rigid models of several nodes, one group a node), with one permutation in
+every region, their opaque
 parts model shaders (soso); their see-through parts are left out of the far
 level, as the far ruling allows. The others are counted by reason and left alone, so they
 keep their parts at every distance.
@@ -29,7 +30,9 @@ sspr's levels when they're there):
     count, 5-7 the box's centre (float), 8-10 its scale (float, the three
     alike: the box's largest half extent, at least 1), 11
     the node, 12 the merged shape error (float, model units), 13 1 when the
-    indices are a triangle list (the strip wasn't shorter), 0 for a strip;
+    indices are a triangle list (the strip wasn't shorter), 0 for a strip,
+    14 the bytes from this block to the model's next node group (another
+    such block), 0 for its last;
   - then the vertices, in the GE's order: u16 colour 5650, 3 x s16 normal
     (divided by the scale), 3 x s16 position (centre + q / 32767 x scale);
   - then the strip or the list, u16 indices, padded to 64 bytes;
@@ -61,7 +64,7 @@ import sspr  # noqa: E402  (meshoptimizer, as built for the host)
 
 TRAILER_MAGIC = 0x31524146      # 'FAR1'
 SSPR_MAGIC = 0x31505353         # 'SSP1'
-VERSION = 1
+VERSION = 2      # 2: a model's block is a chain of node groups (word 14); a version 1 block is a chain of one
 PCV_FAR = 8
 FAR_PIXELS = 32                 # the size the far level is first drawn at (keep word farlevelN's default)
 SCREEN_LINES = 272              # the pick's pixels are LODS's
@@ -180,8 +183,8 @@ def entry(m, hw):
 
 
 def merged(m, pack_data, offsets, shaders, colours, scales, census):
-    """(positions, colours, triangles, node) of the model's merged lowest level, or a reason"""
-    P, N, C, T, nodes = [], [], [], [], set()
+    """(positions, normals, colours, triangles, each vertex's node) of the model's merged lowest level, or a reason"""
+    P, N, C, T, nodes = [], [], [], [], []
     base = 0
     for po in offsets:
         data = m.data
@@ -216,9 +219,7 @@ def merged(m, pack_data, offsets, shaders, colours, scales, census):
         src = mc.Source(raw, vcount, uncompressed)
         if (src.n1 >= 0).any():
             return 'skinned'
-        nodes.update(int(n) for n in np.unique(src.n0))
-        if len(nodes) > 1:
-            return 'nodes'
+        nodes.append(np.asarray(src.n0, np.int64).copy())
         positions = src.position.copy().view('<f4').reshape(vcount, 3).astype(F)
         normals = mc.unpack_normals(src.packed).astype(F)
         uv = src.uv.copy().view('<f4').reshape(vcount, 2).astype(F)
@@ -233,13 +234,12 @@ def merged(m, pack_data, offsets, shaders, colours, scales, census):
         return 'see-through only'
     census['source triangles'] += sum(len(t) for t in T)
     census['source vertices'] += base
-    return np.concatenate(P), np.concatenate(N), np.concatenate(C), np.concatenate(T).reshape(-1), nodes.pop()
+    return np.concatenate(P), np.concatenate(N), np.concatenate(C), np.concatenate(T).reshape(-1), np.concatenate(nodes)
 
 
-def far_mesh(lib, positions, normals, colours, tri):
-    """(vertex rows used, indices into them, shape error) after simplifying to a pixel at FAR_PIXELS"""
-    center, radius = mc.sphere(positions)
-    diameter = 2.0 * float(radius)
+def far_mesh(lib, positions, normals, colours, tri, diameter):
+    """(vertex rows used, indices into them, shape error) after simplifying to a pixel at FAR_PIXELS of
+    the whole model's diameter (a node's group is simplified alone, to the model's pixel)"""
     if diameter <= 0:
         return None
     limit = diameter / FAR_PIXELS     # one pixel at the size the far level is first drawn at, in model units
@@ -262,7 +262,7 @@ def far_mesh(lib, positions, normals, colours, tri):
     order = np.argsort(first)
     remap = np.empty(len(used), np.int64)
     remap[order] = np.arange(len(used))
-    return used[order], remap[inverse], float(err.value) * float(scale), diameter
+    return used[order], remap[inverse], float(err.value) * float(scale)
 
 
 def far_block(positions, normals, colours, local, node, error):
@@ -288,6 +288,7 @@ def far_block(positions, normals, colours, local, node, error):
     head = struct.pack('<5I', mc.MAGIC, PCV_FAR, len(positions), 14, len(indices))
     head += np.array(list(center) + list(half), '<f4').tobytes()
     head += struct.pack('<IfI', node, error, int(as_list))
+    head += struct.pack('<I', 0)   # word 14: bytes to the next node's group, 0 for the last (main fills it)
     head += bytes(mc.BLOCK_HEADER - len(head))
     body = verts.tobytes() + np.array(indices, '<u2').tobytes()
     out = head + body
@@ -321,22 +322,48 @@ def main(map_path, pgeo_path):
         if why is None:
             got = merged(m, data, offsets, shaders, colours, scales, census)
             why = got if isinstance(got, str) else None
+        groups = []
         if why is None:
-            positions, normals, cols, tri, node = got
-            mesh = far_mesh(lib, positions, normals, cols, tri)
-            if mesh is None or len(mesh[0]) > MAX_VERTICES:
+            positions, normals, cols, tri, vnode = got
+            center, radius = mc.sphere(positions)
+            diameter = 2.0 * float(radius)
+            tri3 = tri.reshape(-1, 3)
+            tnode = vnode[tri3]
+            if (tnode != tnode[:, :1]).any():
+                why = 'a triangle across nodes'
+        if why is None:
+            # one group a node: each simplified alone and drawn with its
+            # node's matrix, so a moving node's parts move as they do near
+            for node in np.unique(tnode[:, 0]):
+                keep = tnode[:, 0] == node
+                mesh = far_mesh(lib, positions, normals, cols, tri3[keep].reshape(-1), diameter)
+                if mesh is None:
+                    continue   # simplified away at the model's pixel
+                if len(mesh[0]) > MAX_VERTICES:
+                    why = 'simplifier'
+                    break
+                groups.append((int(node), mesh))
+            if why is None and not groups:
                 why = 'simplifier'
         if why is not None:
             census['left: ' + why] += 1
             continue
-        rows, local, error, diameter = mesh
-        b, strip_count = far_block(positions[rows], normals[rows], cols[rows], local, node, error)
-        directory.append((tag_id, mc.PACK_BASE + region + len(blocks), len(b), diameter))
-        blocks += b
+        model = bytearray()
+        for g, (node, (rows, local, error)) in enumerate(groups):
+            b, strip_count = far_block(positions[rows], normals[rows], cols[rows], local, node, error)
+            if g + 1 < len(groups):
+                b = bytearray(b)
+                struct.pack_into('<I', b, 56, len(b))
+            model += b
+            census['far vertices'] += len(rows)
+            census['far triangles'] += len(local) // 3
+            census['far indices'] += strip_count
+        directory.append((tag_id, mc.PACK_BASE + region + len(blocks), len(model), diameter))
+        blocks += model
         census['far models'] += 1
-        census['far vertices'] += len(rows)
-        census['far triangles'] += len(local) // 3
-        census['far indices'] += strip_count
+        if len(groups) > 1:
+            census['far models of several nodes'] += 1
+            census['far node groups'] += len(groups)
     if not directory:
         print('farlevel: no model given a far level (%s)' % dict(census))
         return
@@ -355,9 +382,10 @@ def main(map_path, pgeo_path):
     c = census
     left = ', '.join('%s %d' % (k[6:], v) for k, v in sorted(c.items()) if k.startswith('left: '))
     print('farlevel: %d models, %d given a far level at %d px (left: %s; see-through parts left out of them: %d); source %d triangles %d vertices -> '
-          'far %d triangles %d vertices, %d indices; region %d KB' %
+          'far %d triangles %d vertices, %d indices; %d models of several nodes (%d groups); region %d KB' %
           (c['models'], c['far models'], FAR_PIXELS, left or 'none', c['see-through parts left out'], c['source triangles'], c['source vertices'],
-           c['far triangles'], c['far vertices'], c['far indices'], len(body) // 1024))
+           c['far triangles'], c['far vertices'], c['far indices'], c['far models of several nodes'], c['far node groups'],
+           len(body) // 1024))
 
 
 if __name__ == '__main__':
