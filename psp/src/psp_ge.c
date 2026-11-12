@@ -17267,7 +17267,7 @@ void psp_ge_draw_far(const void *block, unsigned int mask_low, unsigned int mask
 }
 
 /* render_model's (FIXES_FARLEVEL), on the main CPU after the model's begin
-(on by default; farlevelold turns it off, farlevelN sets the size):
+(keep word farlevel, farlevelN sets the size):
 1 when the model's far level is drawn in place of its parts, 2 when in place
 of its solid pass's parts only (its decal and transparent passes still to
 draw) */
@@ -17282,7 +17282,7 @@ int psp_far_draw(unsigned long model, float pixels, const char *permutations, in
 
 	if (far_pixels < 0)
 	{
-		/* farlevelN sets the size; the bare word (on by default) is 32 */
+		/* farlevelN sets the size; the bare word is 32 */
 		far_pixels = psp_keep_number("farlevel", 0);
 		if (far_pixels <= 0)
 			far_pixels = psp_keep("farlevel") ? 32 : 0;
