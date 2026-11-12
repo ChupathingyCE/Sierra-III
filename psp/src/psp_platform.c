@@ -3410,6 +3410,20 @@ steps in order: the console has no way to wait */
 		if (exit_tick > 0 && (long)ticks_seen == exit_tick)
 			exit_game("exitat");
 	}
+	/* keep.txt's "padend": back to the menu when a pad's replay runs out of
+	its recording. Past it the frames take the clock's time steps and no
+	input, so two builds' runs part there by speed alone: a proof that
+	runs on would read a parting that isn't the change's (farpads1ar's c20
+	and a30, every pad's local seed within ticks of its recording's end) */
+	{
+		extern int psp_pad_replay_ended(void);
+		static int pad_end = -1;
+
+		if (pad_end < 0)
+			pad_end = psp_keep("padend");
+		if (pad_end && psp_pad_replay_ended())
+			exit_game("padend");
+	}
 	/* "lanetraceatN": lanetrace's window at game tick N (psp_lanetrace.c);
 	asked each tick only until that tick */
 	{
