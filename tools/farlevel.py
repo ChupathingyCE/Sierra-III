@@ -18,7 +18,7 @@ This tool makes that part for each model it can:
 It takes rigid models (rocks, trees, crates, most scenery, and since slice
 2 rigid models of several nodes, one group a node; since slice 3 regions of
 several permutations, one group a region's permutation and node), their opaque
-parts model shaders (soso); their see-through parts are left out of the far
+parts model shaders (soso) or environment shaders (senv, not alpha-tested); their see-through parts are left out of the far
 level, as the far ruling allows. Projectiles' models are left out whole: the
 ruling keeps projectile visuals to the horizon. The others are counted by reason and left alone, so they
 keep their parts at every distance.
@@ -87,6 +87,9 @@ PART = {'shader index': 4, 'triangle buffer type': 0x44, 'triangle count': 0x48,
         'vertex type': 0x54, 'vertex count': 0x58, 'vertex offset': 0x64}
 SOSO_BASE_MAP_ID = 176          # shader_model's base map dependency's tag id
 SOSO_MAP_SCALE = (156, 160)     # shader_model's map u and v scale
+SENV_BASE_MAP_ID = 148          # shader_environment's base map dependency's tag id
+SENV_FLAGS = 40                 # shader_environment's flags (bit 0: alpha tested)
+ALPHA_TESTED = set()            # alpha-tested senv tag ids (base_colours fills it): see-through
 # the see-through shaders' groups (transparent chicago and its extended form,
 # generic, glass, meter, plasma, water): their parts aren't drawn far
 SEE_THROUGH = {'schi', 'scex', 'sotr', 'sgla', 'smet', 'spla', 'swat'}
@@ -106,6 +109,9 @@ def check_layouts(d):
                 raise Refused('%s\'s %r is at %r, not %#x' % (struct_name, name, got.get(name), at))
     if fields('Projectile').get('model') != OBJECT_MODEL:
         raise Refused('the projectile\'s model reference moved')
+    se = fields('ShaderEnvironment')
+    if se.get('base map') != SENV_BASE_MAP_ID - 12 or se.get('shader environment flags') != SENV_FLAGS:
+        raise Refused('the shader_environment layout moved')
     sm = fields('ShaderModel')
     if sm.get('base map') != SOSO_BASE_MAP_ID - 12 or (sm.get('map u scale'), sm.get('map v scale')) != SOSO_MAP_SCALE:
         raise Refused('the shader_model layout moved')
@@ -114,17 +120,27 @@ def check_layouts(d):
 # ---------- the maps' colours
 
 def base_colours(m, d, texpack):
-    """{soso tag id: (RGBA image of a small mip, map u scale, map v scale)}"""
+    """{soso or opaque senv tag id: (RGBA image of a small mip, map u scale, map v scale)}"""
     by_tag = {}
     for b in texpack.bitmap_list(m, d):
         by_tag.setdefault(b['tag'], []).append(b)
     out = {}
     for t in m.tags:
-        if t.group != 'soso' or not t.address:
+        if t.group not in ('soso', 'senv') or not t.address:
             continue
         o = m.off(t.address)
-        base_id, = struct.unpack_from('<i', m.data, o + SOSO_BASE_MAP_ID)
-        us, vs = struct.unpack_from('<ff', m.data, o + SOSO_MAP_SCALE[0])
+        if t.group == 'senv':
+            # an environment shader on a model: its base map at the vertex
+            # uv; an alpha-tested one is see-through, so left out
+            flags, = struct.unpack_from('<H', m.data, o + SENV_FLAGS)
+            if flags & 1:
+                ALPHA_TESTED.add(t.tag_id & 0xFFFFFFFF)
+                continue
+            base_id, = struct.unpack_from('<i', m.data, o + SENV_BASE_MAP_ID)
+            us = vs = 1.0
+        else:
+            base_id, = struct.unpack_from('<i', m.data, o + SOSO_BASE_MAP_ID)
+            us, vs = struct.unpack_from('<ff', m.data, o + SOSO_MAP_SCALE[0])
         base = m.by_id.get(base_id)
         if not base or base.name not in by_tag:
             continue
@@ -222,7 +238,7 @@ def merged(m, pack_data, offsets, shaders, colours, scales, census):
             group = tag.group if tag else '?'
             # see-through parts are left out of the far level: the far
             # ruling drops see-through parts under the threshold
-            if group in SEE_THROUGH:
+            if group in SEE_THROUGH or (shaders[shader_index] & 0xFFFFFFFF) in ALPHA_TESTED:
                 census['see-through parts left out'] += 1
                 continue
             return 'shader %s' % group
