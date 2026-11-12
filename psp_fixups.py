@@ -28817,7 +28817,12 @@ long lruv_block_new("""),
 # room left between them is pieces. "soundloopstop": only the classes that
 # play as long loops (engines, machines, the devices' and the world's
 # ambience) take the top, so what is held long gathers there and the room
-# below heals as the short sounds end
+# below heals as the short sounds end. On by default since 2026-11-12 (the
+# lead's 09:49 pick for c10's pilot line): on the emulator's ladder the
+# captain's 346 KB line, held back 1,266 ms with 22 refusals by the default,
+# loaded on time with none (the lab's sndloops1 43302891095); play and both
+# seeds identical on every map of the ladder with fixed ticks (sndloops2
+# 43304560455). "soundloopstopoff": b113's placement, every big sound high
 FIXES_SOUND["source/cache/xbox_sound_cache.c#soundloopstop"] = [
 ("""	cache_block_index = lruv_block_new(
 		xbox_sound_cache_globals.cache,
@@ -28834,7 +28839,7 @@ FIXES_SOUND["source/cache/xbox_sound_cache.c#soundloopstop"] = [
 		struct lruv_cache *psp_high_saved = psp_lruv_high_cache;
 
 		if (psp_loops_top < 0)
-			psp_loops_top = psp_keep("soundloopstop");
+			psp_loops_top = !psp_keep("soundloopstopoff");
 		if (psp_loops_top && psp_high_saved)
 		{
 			short psp_class = sound_definition_get(sound->runtime_tag_index)->sound_class;
