@@ -1197,9 +1197,13 @@ static const struct
 	(a few scattered pixels a frame); a pack without the variants keeps its
 	plain region unused, so these want a variant bake */
 	{ "skinw2", "skinw2off" }, { "skinstrip", "skinstripoff" },
-	/* the far level (docs/box_far_level.md) is opt-in (keep word farlevel)
-	until it's drawing-only: on a30 it parts play and on c20 the local seed
-	(lab bugs.md), and the far ruling asks play and seeds identical */
+	/* the far level (docs/box_far_level.md): a model under 32 px drawn as one
+	baked part in place of its solid pass, skinned models one bone a vertex
+	(D1's sprites stay opt-in: farsprite). Drawing only, approximate under the
+	far ruling (Sheepdog01 2026-11-10): play and seeds identical; b30's flight frame
+	-4.6%, drawing -16% on the PSP-1000 (slice 1, sierra-hw 43198060129). It
+	wants a bake with --far-level; a pack without one leaves it off */
+	{ "farlevel", "farlevelold" },
 	/* the visibility views pushed to the ME with sound_render after them, so
 	the answer is ready at its first reader, and a ring push not refused for a
 	slot job whose answer is already in (mevis_slice2.md): exact */
