@@ -123,6 +123,8 @@ The slices are priced alone on the PSP before integration, per REBUILD.md §5: a
    - **Draw** (`psp_far_draw`): under `farspriteN` px (16 by default, a keep-word number as the ruling asks), the view nearest the camera's azimuth in the model's root node frame, drawn as one camera-facing quad at the model's centre, its side the model's diameter: the texture from the locked block (`sceGuTexImage` on the pack's memory, CLUT4, alpha test), lit by the model's lights with the quad's normal toward the camera. One record a model; R's runs batch them later.
    - **Proof:** play and seeds identical (drawing only); shots at 8-16 px for Sheepdog01's look (the switch from the mesh at 16 px is his eye's, as SSPR's).
    - Skinned and permutation models wait for D2 (bipeds' poses) and keep the far mesh.
+   - **Built 2026-11-12 07:1x-07:3x (1986741, 1958221, afb9632; the lab's rows `farlevel14_d1_sprites` to `farlevel17_alpha_weighted`) [E]:** 31 models a map carry sprites; b30's flight draws 13-54 a frame of the ~120 far models under 16 px; play and seeds identical. The sprite is lit as the half of the model the camera sees (each light about 0.4 + 0.4 of its facing the camera; a face toward the camera alone drew them dark) and chosen by its own radius on screen. **The engine's pixels are the bounding sphere's** (`object_get_level_of_detail_pixels`), which can be far smaller than a model's shape (a lamp's beam, trees), so `farlevelN` overshoots for such models, as the ruling prefers, but isn't their size on screen.
+   - Alpha-tested model shaders' far colours are their base maps' texels weighted by alpha (5e14b3f), so a leaf map's clear texels don't darken it.
 
 ## Proof
 
