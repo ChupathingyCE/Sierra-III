@@ -111,7 +111,7 @@ The slices are priced alone on the PSP before integration, per REBUILD.md §5: a
      - So the far form frees geometry room where b30 is tightest. What it brings in is the bake's figure (`tools/farlevel.py`'s census).
    - If the texture side can't take its share, §1's fallback applies: ~64 KB of the copies' VRAM as a resident far region.
 1. **Rigid, one node, opaque** (rocks, trees, crates, most of b30's ~8 repeated scenery models): the bake (merge, atlas, shape term, strip, PCV_FAR), the directory, the tier, the record, the replay. Proven in the emulator by pictures at each band's nearest distance and play + seeds identical. Shots go to Sheepdog01.
-2. **Rigid, many nodes** (vehicles, machines): the bones in the block.
+2. **Rigid, many nodes** (vehicles, machines): the bones in the block. **Built 2026-11-12 05:3x (3582c51):** a model's block is a chain of node groups (header word 14, the bytes to the next), each simplified alone to the whole model's pixel and drawn with its own node's matrix, so moving parts stay where they are near; a triangle across nodes still leaves the model out. Bake w162far5; proof the lab's farlevel4.
 3. **Skinned, one bone a vertex** (bipeds), with change colours by palette row. Under 16 px, D1/D2's sprites take over.
 4. **R's runs:** far instances of one model back to back, one bind and one palette a run (R's key).
 
