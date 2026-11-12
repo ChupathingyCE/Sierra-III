@@ -36260,11 +36260,12 @@ FIXES_FARLEVEL["source/models/models.c#farlevel"] = [
 #ifdef HALO_PSP
 		/* psp_fixups.py (FIXES_FARLEVEL) */
 		{
-			int psp_far_draw(unsigned long model, float pixels);
+			int psp_far_draw(unsigned long model, float pixels, const char *permutations, int permutation_count);
 
 			if (!TEST_FLAG(flags, _render_model_shadow_bit) && !TEST_FLAG(flags, _render_model_first_person_bit) &&
 				!TEST_FLAG(flags, _render_model_immediate_bit) &&
-				psp_far_draw((unsigned long)model_index, level_of_detail_pixels))
+				psp_far_draw((unsigned long)model_index, level_of_detail_pixels, (const char *)region_permutation_indices,
+					(int)region_permutation_count))
 			{
 				goto psp_rl_done;
 			}

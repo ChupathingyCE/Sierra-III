@@ -687,7 +687,7 @@ void psp_ge_model_detail(unsigned int detail_key, float u_scale, float v_scale);
 void psp_ge_draw_model(void *vertices, int vertex_count, int uncompressed, const unsigned short *indices,
 	long index_count, int strip, unsigned int color, unsigned int base_key, float u_scale, float v_scale,
 	int alpha_tested);
-void psp_ge_draw_far(const void *block);
+void psp_ge_draw_far(const void *block, unsigned int mask_low, unsigned int mask_high);
 void psp_ge_queue_transparent(void *vertices, int vertex_count, int uncompressed, const unsigned short *indices,
 	long index_count, int strip, unsigned int key, float u_scale, float v_scale, float u_offset, float v_offset,
 	short blend, const float *centroid);
@@ -1162,11 +1162,13 @@ static int defer_draw_model(void *vertices, int vertex_count, int uncompressed, 
 	return 1;
 }
 
-static int defer_draw_far(const void *block)
+static int defer_draw_far(const void *block, unsigned int mask_low, unsigned int mask_high)
 {
-	defer_word *at = defer_take(DEFER_DRAW_FAR, 1);
+	defer_word *at = defer_take(DEFER_DRAW_FAR, 3);
 
 	at[0].p = block;
+	at[1].u = mask_low;
+	at[2].u = mask_high;
 	return 1;
 }
 
@@ -1590,7 +1592,7 @@ static void defer_replay(const defer_word *buffer, unsigned int used, int on_me)
 			psp_ge_model_reflection(w[0].u, defer_copy_back(w + 1, &rest, 4));
 			break;
 		case DEFER_DRAW_FAR:
-			psp_ge_draw_far(w[0].p);
+			psp_ge_draw_far(w[0].p, w[1].u, w[2].u);
 			break;
 		case DEFER_DRAW_MODEL:
 			psp_ge_draw_model((void *)w[0].p, w[1].i, w[2].i, (const unsigned short *)w[3].p, w[4].i, w[5].i,
@@ -17005,11 +17007,12 @@ static void far_report(void)
 	far_drawn = far_vertices = 0;
 }
 
-void psp_ge_draw_far(const void *block)
+void psp_ge_draw_far(const void *block, unsigned int mask_low, unsigned int mask_high)
 {
 	const unsigned char *at = block;
+	unsigned int group = 0;
 
-	GE_DEFER(defer_draw_far(block));
+	GE_DEFER(defer_draw_far(block, mask_low, mask_high));
 	GE_BENCH_SKIP();
 	if (!frame_open || !block || !model_nodes)
 		return;
@@ -17029,7 +17032,10 @@ void psp_ge_draw_far(const void *block)
 		ScePspFMatrix4 m;
 		ScePspFVector3 centre, half;
 
-		if (head[2] && head[4] >= 3 && !list_full())
+		int shown = group < 32 ? (mask_low >> group) & 1 : (mask_high >> (group - 32)) & 1;
+
+		group++;
+		if (shown && head[2] && head[4] >= 3 && !list_full())
 		{
 			if (node >= (unsigned int)model_node_count)
 				node = 0;
@@ -17060,9 +17066,10 @@ void psp_ge_draw_far(const void *block)
 farlevel (32 px) or farlevelN asks */
 static int far_pixels = -1;
 
-int psp_far_draw(unsigned long model, float pixels)
+int psp_far_draw(unsigned long model, float pixels, const char *permutations, int permutation_count)
 {
-	unsigned int address, bytes;
+	extern unsigned int psp_far_version;
+	unsigned int address, bytes, mask[2] = { 0, 0 }, group = 0;
 	const void *block;
 
 	if (far_pixels < 0)
@@ -17081,21 +17088,29 @@ int psp_far_draw(unsigned long model, float pixels)
 	block = psp_geo_lock(address, bytes);
 	if (!block)
 		return 0;
-	psp_ge_draw_far(block);
-	/* counted here, on the main CPU: the draw itself is mostly the ME's
-	replay, which counts nothing */
-	far_drawn++;
+	/* the groups this object shows: always-drawn ones, and those of the
+	permutation it shows of each region (none for a region it hides). Counted
+	here, on the main CPU: the draw itself is mostly the ME's replay */
 	{
 		const unsigned char *at = block;
 
-		while (at)
+		while (at && group < 64)
 		{
 			const unsigned int *head = (const unsigned int *)at;
+			unsigned int key = psp_far_version >= 3 ? head[15] : 0xFFFFu, region = key & 0xFF;
 
-			far_vertices += head[2];
+			if (key == 0xFFFFu || ((int)region < permutation_count && permutations &&
+				permutations[region] == (char)(key >> 8)))
+			{
+				mask[group >> 5] |= 1u << (group & 31);
+				far_vertices += head[2];
+			}
+			group++;
 			at = head[14] ? at + head[14] : NULL;
 		}
 	}
+	psp_ge_draw_far(block, mask[0], mask[1]);
+	far_drawn++;
 	return 1;
 }
 

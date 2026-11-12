@@ -16,8 +16,8 @@ This tool makes that part for each model it can:
   and colours as 5650.
 
 It takes rigid models (rocks, trees, crates, most scenery, and since slice
-2 rigid models of several nodes, one group a node), with one permutation in
-every region, their opaque
+2 rigid models of several nodes, one group a node; since slice 3 regions of
+several permutations, one group a region's permutation and node), their opaque
 parts model shaders (soso); their see-through parts are left out of the far
 level, as the far ruling allows. The others are counted by reason and left alone, so they
 keep their parts at every distance.
@@ -32,7 +32,9 @@ sspr's levels when they're there):
     the node, 12 the merged shape error (float, model units), 13 1 when the
     indices are a triangle list (the strip wasn't shorter), 0 for a strip,
     14 the bytes from this block to the model's next node group (another
-    such block), 0 for its last;
+    such block), 0 for its last, 15 the group's key: 0xFFFF when it's
+    always drawn, else its region | its permutation << 8, drawn when the
+    object shows that permutation of that region (version 3);
   - then the vertices, in the GE's order: u16 colour 5650, 3 x s16 normal
     (divided by the scale), 3 x s16 position (centre + q / 32767 x scale);
   - then the strip or the list, u16 indices, padded to 64 bytes;
@@ -64,12 +66,14 @@ import sspr  # noqa: E402  (meshoptimizer, as built for the host)
 
 TRAILER_MAGIC = 0x31524146      # 'FAR1'
 SSPR_MAGIC = 0x31505353         # 'SSP1'
-VERSION = 2      # 2: a model's block is a chain of node groups (word 14); a version 1 block is a chain of one
+VERSION = 3      # 3: groups keyed by region and permutation (word 15); 2: a chain of node groups (word 14)
 PCV_FAR = 8
 FAR_PIXELS = 32                 # the size the far level is first drawn at (keep word farlevelN's default)
 SCREEN_LINES = 272              # the pick's pixels are LODS's
 COLOUR_MIP_TEXELS = 16          # the base map's mip sampled: the first at or under this width
 MAX_VERTICES = 65535
+MAX_GROUPS = 64                  # the draw's mask of groups is 64 bits
+ALWAYS = 0xFFFF                  # a group drawn whatever the object's permutations
 # meshopt_SimplifyErrorAbsolute | Prune | Permissive (meshoptimizer 1.3)
 SIMPLIFY_OPTIONS = (1 << 2) | (1 << 3) | (1 << 5)
 F = np.float32
@@ -143,7 +147,8 @@ def sample(img, uv):
 
 def models(m, d):
     """for each model: (tag id, base map scales, shaders' tag ids, [(geometry
-    part's offset) for each region's lowest level]), or (tag id, None, reason)"""
+    part's offset, its region and permutation key) for each region's and
+    permutation's lowest level]), or (tag id, None, reason)"""
     data = m.data
     rsize = d.structs['ModelRegion']['size']
     psize = d.structs['ModelRegionPermutation']['size']
@@ -164,15 +169,22 @@ def models(m, d):
         parts, why = [], None
         for r in range(max(rn, 0)):
             pn, pp = struct.unpack_from('<iI', data, m.off(rp + rsize * r) + rf['permutations'])
-            if pn != 1:
+            if pn > 1 and r > 0xFE or pn > 0xFF:
                 why = 'permutations'
                 break
-            g, = struct.unpack_from('<h', data, m.off(pp) + pf['super low'])
-            if not 0 <= g < gn:
-                why = 'geometry index'
+            # a region of one permutation is always drawn (ALWAYS); one of
+            # several keeps each permutation's parts apart, keyed by region
+            # and permutation, so the draw takes the object's own
+            for q in range(max(pn, 0)):
+                g, = struct.unpack_from('<h', data, m.off(pp + psize * q) + pf['super low'])
+                if not 0 <= g < gn:
+                    why = 'geometry index'
+                    break
+                key = ALWAYS if pn == 1 else (r | q << 8)
+                n, at = struct.unpack_from('<iI', data, m.off(gp + gsize * g) + gf['parts'])
+                parts += [(m.off(at + 104 * k), key) for k in range(max(n, 0))]
+            if why:
                 break
-            n, at = struct.unpack_from('<iI', data, m.off(gp + gsize * g) + gf['parts'])
-            parts += [m.off(at + 104 * k) for k in range(max(n, 0))]
         if why is None and not parts:
             why = 'no parts'
         yield tag_id, (us or 1.0, vs or 1.0), shaders, parts, why
@@ -186,9 +198,9 @@ def entry(m, hw):
 
 def merged(m, pack_data, offsets, shaders, colours, scales, census):
     """(positions, normals, colours, triangles, each vertex's node) of the model's merged lowest level, or a reason"""
-    P, N, C, T, nodes = [], [], [], [], []
+    P, N, C, T, nodes, keys = [], [], [], [], [], []
     base = 0
-    for po in offsets:
+    for po, key in offsets:
         data = m.data
         shader_index, = struct.unpack_from('<h', data, po + PART['shader index'])
         ttype, = struct.unpack_from('<H', data, po + PART['triangle buffer type'])
@@ -222,6 +234,7 @@ def merged(m, pack_data, offsets, shaders, colours, scales, census):
         if (src.n1 >= 0).any():
             return 'skinned'
         nodes.append(np.asarray(src.n0, np.int64).copy())
+        keys.append(np.full(vcount, key, np.int64))
         positions = src.position.copy().view('<f4').reshape(vcount, 3).astype(F)
         normals = mc.unpack_normals(src.packed).astype(F)
         uv = src.uv.copy().view('<f4').reshape(vcount, 2).astype(F)
@@ -236,7 +249,9 @@ def merged(m, pack_data, offsets, shaders, colours, scales, census):
         return 'see-through only'
     census['source triangles'] += sum(len(t) for t in T)
     census['source vertices'] += base
-    return np.concatenate(P), np.concatenate(N), np.concatenate(C), np.concatenate(T).reshape(-1), np.concatenate(nodes)
+    # a group is a node's vertices under one region and permutation key
+    group = np.concatenate(keys) << 16 | np.concatenate(nodes)
+    return np.concatenate(P), np.concatenate(N), np.concatenate(C), np.concatenate(T).reshape(-1), group
 
 
 def far_mesh(lib, positions, normals, colours, tri, diameter):
@@ -268,7 +283,7 @@ def far_mesh(lib, positions, normals, colours, tri, diameter):
     return used[order], remap[inverse], float(err.value)
 
 
-def far_block(positions, normals, colours, local, node, error):
+def far_block(positions, normals, colours, local, node, error, key):
     lo, hi = positions.min(0), positions.max(0)
     center = (lo + hi) * 0.5
     # one scale for the three axes, at least 1: the GE lights with the
@@ -292,6 +307,7 @@ def far_block(positions, normals, colours, local, node, error):
     head += np.array(list(center) + list(half), '<f4').tobytes()
     head += struct.pack('<IfI', node, error, int(as_list))
     head += struct.pack('<I', 0)   # word 14: bytes to the next node's group, 0 for the last (main fills it)
+    head += struct.pack('<I', key)   # word 15: ALWAYS, or region | permutation << 8
     head += bytes(mc.BLOCK_HEADER - len(head))
     body = verts.tobytes() + np.array(indices, '<u2').tobytes()
     out = head + body
@@ -327,13 +343,15 @@ def main(map_path, pgeo_path):
             why = got if isinstance(got, str) else None
         groups = []
         if why is None:
-            positions, normals, cols, tri, vnode = got
+            positions, normals, cols, tri, vnode = got   # vnode: key << 16 | node
             center, radius = mc.sphere(positions)
             diameter = 2.0 * float(radius)
             tri3 = tri.reshape(-1, 3)
             tnode = vnode[tri3]
             if (tnode != tnode[:, :1]).any():
                 why = 'a triangle across nodes'
+            elif len(np.unique(tnode[:, 0])) > MAX_GROUPS:
+                why = 'groups'
         if why is None:
             # one group a node: each simplified alone and drawn with its
             # node's matrix, so a moving node's parts move as they do near
@@ -353,7 +371,7 @@ def main(map_path, pgeo_path):
             continue
         model = bytearray()
         for g, (node, (rows, local, error)) in enumerate(groups):
-            b, strip_count = far_block(positions[rows], normals[rows], cols[rows], local, node, error)
+            b, strip_count = far_block(positions[rows], normals[rows], cols[rows], local, node & 0xFFFF, error, node >> 16)
             if g + 1 < len(groups):
                 b = bytearray(b)
                 struct.pack_into('<I', b, 56, len(b))
@@ -369,6 +387,8 @@ def main(map_path, pgeo_path):
         if len(groups) > 1:
             census['far models of several nodes'] += 1
             census['far node groups'] += len(groups)
+        if any(k >> 16 != ALWAYS for k, _ in groups):
+            census['far models of several permutations'] += 1
     if not directory:
         print('farlevel: no model given a far level (%s)' % dict(census))
         return
@@ -387,9 +407,9 @@ def main(map_path, pgeo_path):
     c = census
     left = ', '.join('%s %d' % (k[6:], v) for k, v in sorted(c.items()) if k.startswith('left: '))
     print('farlevel: %d models, %d given a far level at %d px (left: %s; see-through parts left out of them: %d); source %d triangles %d vertices -> '
-          'far %d triangles %d vertices, %d indices; %d models of several nodes (%d groups); region %d KB' %
+          'far %d triangles %d vertices, %d indices; %d models of several nodes (%d groups), %d of several permutations; region %d KB' %
           (c['models'], c['far models'], FAR_PIXELS, left or 'none', c['see-through parts left out'], c['source triangles'], c['source vertices'],
-           c['far triangles'], c['far vertices'], c['far indices'], c['far models of several nodes'], c['far node groups'],
+           c['far triangles'], c['far vertices'], c['far indices'], c['far models of several nodes'], c['far node groups'], c['far models of several permutations'],
            len(body) // 1024))
     sizes.sort(reverse=True)
     print('farlevel: the largest: ' + '; '.join('%s %.1f KB (%d node%s)' % (name, b / 1024.0, g, '' if g == 1 else 's')

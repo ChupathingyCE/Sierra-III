@@ -255,6 +255,8 @@ struct far_model
 };
 static struct far_model *far_models = NULL;
 static unsigned int far_model_count = 0;
+/* the far region's version: from 3 a group's word 15 is its permutation key */
+unsigned int psp_far_version = 0;
 /* the level render_model picked for the model it draws (FIXES_SSPR): 4, the
 top, outside it */
 int psp_model_level = 4;
@@ -1490,6 +1492,7 @@ static void far_open(SceUID file, SceOff file_bytes)
 		return;
 	}
 	far_model_count = trailer[4];
+	psp_far_version = trailer[5];
 	if (trailer[1] + trailer[2] > pack_size)
 		pack_size = trailer[1] + trailer[2];
 	platform_log("geometry: farlevel: %u models with a far level, %u KB, made for %u px", far_model_count,
