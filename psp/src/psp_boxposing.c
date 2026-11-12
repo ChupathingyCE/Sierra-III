@@ -6,7 +6,8 @@ keeps each model's plan for the map and runs box_posing_pose. It knows the box
 and no engine header: models are only keys, their links come in as numbers.
 
 A map's plans: up to PSP_BOX_PLANS, found through PSP_BOX_SLOTS slots by the
-model's address. POSEK measured 32-63 posed models a map on c20, b30 and a30
+object definition's address (means A, docs/box_posing.md §6d: the plan carries
+what the definition fixes, so a pose reads nothing of the definition's). POSEK measured 32-63 posed models a map on c20, b30 and a30
 (the lab's posek1). A model past the room still poses through the box, from a
 plan made for that one call, and the log counts it: the build's path stays
 whole.
@@ -16,19 +17,28 @@ whole.
 
 void platform_psp_log(const char *format, ...);
 
-#define PSP_BOX_PLANS 96
+#define PSP_BOX_PLANS 128
 #define PSP_BOX_SLOTS 256
 
 struct psp_box_slot
 {
-	const void *model;
+	const void *model; /* the key: the object definition */
 	short plan; /* an index into psp_box_plans */
 };
 
+/* a definition's walk and its place's constants side by side, read together */
+struct psp_box_plan
+{
+	struct box_posing_plan plan;
+	struct box_posing_place place;
+};
+
+int psp_keep(const char *name);
+
 static struct psp_box_slot psp_box_slots[PSP_BOX_SLOTS];
-static struct box_posing_plan psp_box_plans[PSP_BOX_PLANS];
-static struct box_posing_plan psp_box_spare; /* a plan made for one call, when there's no room */
-static int psp_box_plan_count, psp_box_spares, psp_box_poses;
+static struct psp_box_plan psp_box_plans[PSP_BOX_PLANS];
+static struct psp_box_plan psp_box_spare; /* a plan made for one call, when there's no room */
+static int psp_box_plan_count, psp_box_spares, psp_box_poses, psp_box_claim = -1;
 
 /* at each map's start: the plans name the last map's models */
 void psp_box_posing_forget(void)
@@ -38,6 +48,7 @@ void psp_box_posing_forget(void)
 			psp_box_plan_count, PSP_BOX_PLANS, psp_box_poses, psp_box_spares);
 	memset(psp_box_slots, 0, sizeof(psp_box_slots));
 	psp_box_plan_count = psp_box_spares = psp_box_poses = 0;
+	psp_box_claim = -1;
 }
 
 /* the model's plan, or NULL when it hasn't one yet (psp_box_posing_plan_add) */
@@ -57,11 +68,15 @@ const void *psp_box_posing_plan_find(const void *model)
 }
 
 /* a plan from the model's node table (parent, first child, next sibling a
-node, as the tag has them), kept for the map when there's room */
-const void *psp_box_posing_plan_add(const void *model, const short *links, int count)
+node, as the tag has them; none for an object placed with no model) and the
+definition's constants (the centre of mass negated, the origin offset, the
+bounding offset and radius: 10 floats), kept for the map when there's room */
+const void *psp_box_posing_plan_add(const void *model, const short *links, int count, const float *constants, int physics)
 {
 	struct box_posing_node nodes[BOX_POSING_NODES];
-	struct box_posing_plan *plan = psp_box_plan_count < PSP_BOX_PLANS ? &psp_box_plans[psp_box_plan_count] : &psp_box_spare;
+	struct psp_box_plan *whole = psp_box_plan_count < PSP_BOX_PLANS ? &psp_box_plans[psp_box_plan_count] : &psp_box_spare;
+	struct box_posing_plan *plan = &whole->plan;
+	int c;
 	unsigned long k = (((unsigned long)model >> 4) * 2654435761u) >> 24;
 	int n, probe;
 
@@ -73,48 +88,53 @@ const void *psp_box_posing_plan_add(const void *model, const short *links, int c
 		nodes[n].first_child = links[n * 3 + 1];
 		nodes[n].next_sibling = links[n * 3 + 2];
 	}
-	box_posing_plan_make(plan, nodes, count);
-	if (plan == &psp_box_spare)
+	box_posing_plan_make(plan, nodes, count < 0 ? 0 : count);
+	whole->place.flags = physics ? BOX_POSE_PHYSICS : 0;
+	for (c = 0; c < 3; c++)
+	{
+		whole->place.center[c] = constants[c];
+		whole->place.origin_offset[c] = constants[3 + c];
+		whole->place.bounding_offset[c] = constants[6 + c];
+	}
+	whole->place.bounding_radius = constants[9];
+	if (whole == &psp_box_spare)
 	{
 		psp_box_spares++;
-		return plan;
+		return whole;
 	}
 	for (probe = 0; probe < 8; probe++, k = (k + 1) & (PSP_BOX_SLOTS - 1))
 		if (!psp_box_slots[k].model)
 		{
 			psp_box_slots[k].model = model;
 			psp_box_slots[k].plan = (short)psp_box_plan_count++;
-			return plan;
+			return whole;
 		}
 	/* eight slots taken in a row: the plan serves this call only */
-	psp_box_spare = *plan;
+	psp_box_spare = *whole;
 	psp_box_spares++;
 	return &psp_box_spare;
 }
 
-/* one object: `place` as the capture records it (position, forward, up, the
-centre of mass negated, origin offset, bounding offset, bounding radius,
-scale: 20 floats), `parent` the parent's node matrix (13 floats) or NULL;
-`plan` NULL for an object placed with no model. Writes the node matrices by
-node index and the bounding sphere */
-void psp_box_posing_pose(const void *plan, unsigned int flags, const float *place, const float *parent,
-	const float *orientations, float *nodes, float *sphere)
+/* one object by reference (means A): its position, forward and up where the
+object holds them, its parent's node matrix (13 floats) or NULL; the sphere
+straight into the object's centre and radius (4 floats). Nothing is copied:
+`plan` carries what the definition fixes */
+void psp_box_posing_pose(const void *plan, unsigned int flags, const float *position, const float *forward,
+	const float *up, float scale, const float *parent, const float *orientations, float *nodes, float *sphere)
 {
-	static const struct box_posing_plan none; /* nodes 0: the root from the place alone */
-	struct box_posing_object object;
+	const struct psp_box_plan *whole = (const struct psp_box_plan *)plan;
+	struct box_posing_ref ref;
 
-	object.flags = flags;
-	memcpy(object.position, place, sizeof(object.position));
-	memcpy(object.forward, place + 3, sizeof(object.forward));
-	memcpy(object.up, place + 6, sizeof(object.up));
-	memcpy(object.center, place + 9, sizeof(object.center));
-	memcpy(object.origin_offset, place + 12, sizeof(object.origin_offset));
-	memcpy(object.bounding_offset, place + 15, sizeof(object.bounding_offset));
-	object.bounding_radius = place[18];
-	object.scale = place[19];
-	if (parent)
-		memcpy(object.parent, parent, sizeof(object.parent));
+	if (psp_box_claim < 0)
+		psp_box_claim = !psp_keep("boxposeclaimoff");
+	ref.flags = flags;
+	ref.position = position;
+	ref.forward = forward;
+	ref.up = up;
+	ref.parent = parent;
+	ref.scale = scale;
+	ref.place = &whole->place;
 	psp_box_poses++;
-	box_posing_pose(plan ? (const struct box_posing_plan *)plan : &none, &object,
-		(const box_orientation *)orientations, (box_matrix *)nodes, sphere);
+	box_posing_pose_ref(&whole->plan, &ref, (const box_orientation *)orientations, (box_matrix *)nodes, sphere,
+		psp_box_claim);
 }

@@ -25,6 +25,8 @@ typedef float box_orientation[8];
 struct box_posing_plan
 {
 	unsigned short nodes;               /* in the walk (the root first) */
+	unsigned char whole;                /* the walk writes every node of the model exactly once */
+	unsigned char pad;
 	unsigned char order[BOX_POSING_NODES];  /* node indices in the walk's order */
 	unsigned char parent[BOX_POSING_NODES]; /* each node's parent, by node index (the root's is 0) */
 };
@@ -65,5 +67,31 @@ struct box_posing_object
 sphere (centre, radius) from its place and its orientations (by node index) */
 void box_posing_pose(const struct box_posing_plan *plan, const struct box_posing_object *object,
 	const box_orientation *orientations, box_matrix *nodes, float sphere[4]);
+
+/* means A (docs/box_posing.md §6d): what an object's definition fixes, made
+once a map beside its plan, so a pose reads its object's place where it lies
+and nothing is gathered or copied for it */
+struct box_posing_place
+{
+	unsigned int flags;                 /* BOX_POSE_PHYSICS when the definition has physics */
+	float center[3], origin_offset[3];  /* the centre of mass negated (0 without physics) */
+	float bounding_offset[3], bounding_radius;
+};
+
+/* one object's pose by reference: its place where the object holds it */
+struct box_posing_ref
+{
+	unsigned int flags;                 /* BOX_POSE_*, BOX_POSE_PHYSICS taken from `place` */
+	const float *position, *forward, *up, *parent; /* parent: 13 floats, or NULL */
+	float scale;
+	const struct box_posing_place *place;
+};
+
+/* box_posing_pose by reference; `sphere` may be the object's own centre and
+radius. With `claim`, the node block's lines that the walk overwrites whole are
+taken into the data cache without being read first (a plan that is `whole`
+only; the caller vouches that `nodes` is cached memory the main CPU owns) */
+void box_posing_pose_ref(const struct box_posing_plan *plan, const struct box_posing_ref *ref,
+	const box_orientation *orientations, box_matrix *nodes, float sphere[4], int claim);
 
 #endif

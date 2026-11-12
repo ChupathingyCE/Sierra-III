@@ -11,6 +11,7 @@ int box_posing_plan_make(struct box_posing_plan *plan, const struct box_posing_n
 	if (count <= 0)
 	{
 		plan->nodes = 0;
+		plan->whole = 0;
 		return 0;
 	}
 	for (k = 0; k < BOX_POSING_NODES; k++)
@@ -32,6 +33,18 @@ int box_posing_plan_make(struct box_posing_plan *plan, const struct box_posing_n
 			stack[filled++] = (unsigned char)node->first_child;
 	}
 	plan->nodes = (unsigned short)filled;
+	{
+		/* every node once: only then may the node block's lines be claimed */
+		unsigned long long seen = 0;
+
+		plan->whole = filled == count;
+		for (k = 0; k < filled && plan->whole; k++)
+		{
+			if (seen >> plan->order[k] & 1)
+				plan->whole = 0;
+			seen |= 1ull << plan->order[k];
+		}
+	}
 	return filled;
 }
 
@@ -114,7 +127,16 @@ static inline void cross(const float *a, const float *b, float *out)
 
 /* the root's matrix: the object's translation and rotation (with its
 centre of mass and origin offset), under its parent's node if attached */
-static void root(const struct box_posing_object *object, const float *node, float *out)
+/* one object's place, by reference: the harness's records and the game's
+objects both come in through it */
+struct place
+{
+	unsigned int flags;
+	const float *position, *forward, *up, *center, *origin_offset, *bounding_offset, *parent;
+	float bounding_radius, scale;
+};
+
+static void root(const struct place *object, const float *node, float *out)
 {
 	float t[13], r[13], c[13];
 	int k;
@@ -142,6 +164,8 @@ static void root(const struct box_posing_object *object, const float *node, floa
 	{
 		float p[13];
 
+		/* the parent's scale and mirror are taken out of a copy: the parent's
+		own block isn't ours to change */
 		for (k = 0; k < 13; k++)
 			p[k] = object->parent[k];
 		if (p[0] != 1.f)
@@ -165,11 +189,34 @@ static void root(const struct box_posing_object *object, const float *node, floa
 	}
 }
 
-void box_posing_pose(const struct box_posing_plan *plan, const struct box_posing_object *object,
-	const box_orientation *orientations, box_matrix *nodes, float sphere[4])
+/* the node block's lines that lie wholly inside it, made ours without the
+fetch a first store would cost (cache 0x18, create dirty exclusive). A
+claimed line holds no defined bytes until it is stored to: the walk stores
+every byte of a whole plan's block, and reads only nodes it has stored */
+static void claim(box_matrix *nodes, int count)
+{
+#if defined(__psp__) || defined(_PSP) || defined(__mips__)
+	unsigned int at = ((unsigned int)nodes + 63u) & ~63u;
+	unsigned int end = ((unsigned int)nodes + (unsigned int)count * sizeof(box_matrix)) & ~63u;
+
+	if ((unsigned int)nodes < 0x08800000u || end > 0x0A000000u)
+		return;
+	for (; at < end; at += 64u)
+		__asm__ __volatile__("cache 0x18, 0(%0)" : : "r"(at) : "memory");
+#else
+	(void)nodes;
+	(void)count;
+#endif
+}
+
+static void pose(const struct box_posing_plan *plan, const struct place *object,
+	const box_orientation *orientations, box_matrix *nodes, float sphere[4], int claimed)
 {
 	float *root_matrix = nodes[0];
 	int k;
+
+	if (claimed && plan->whole && plan->nodes > 1 && !(object->flags & BOX_POSE_NO_MODEL))
+		claim(nodes, plan->nodes);
 
 	if ((object->flags & BOX_POSE_NO_MODEL) || plan->nodes == 0)
 	{
@@ -216,4 +263,40 @@ void box_posing_pose(const struct box_posing_plan *plan, const struct box_posing
 			sphere[k] = root_matrix[7 + k] * z + root_matrix[4 + k] * y + root_matrix[1 + k] * x + root_matrix[10 + k];
 		sphere[3] = object->scale > 0.f ? object->bounding_radius * object->scale : object->bounding_radius;
 	}
+}
+
+void box_posing_pose(const struct box_posing_plan *plan, const struct box_posing_object *object,
+	const box_orientation *orientations, box_matrix *nodes, float sphere[4])
+{
+	struct place place;
+
+	place.flags = object->flags;
+	place.position = object->position;
+	place.forward = object->forward;
+	place.up = object->up;
+	place.center = object->center;
+	place.origin_offset = object->origin_offset;
+	place.bounding_offset = object->bounding_offset;
+	place.bounding_radius = object->bounding_radius;
+	place.scale = object->scale;
+	place.parent = object->parent;
+	pose(plan, &place, orientations, nodes, sphere, 0);
+}
+
+void box_posing_pose_ref(const struct box_posing_plan *plan, const struct box_posing_ref *ref,
+	const box_orientation *orientations, box_matrix *nodes, float sphere[4], int claim)
+{
+	struct place place;
+
+	place.flags = (ref->flags & ~(unsigned int)BOX_POSE_PHYSICS) | (ref->place->flags & BOX_POSE_PHYSICS);
+	place.position = ref->position;
+	place.forward = ref->forward;
+	place.up = ref->up;
+	place.center = ref->place->center;
+	place.origin_offset = ref->place->origin_offset;
+	place.bounding_offset = ref->place->bounding_offset;
+	place.bounding_radius = ref->place->bounding_radius;
+	place.scale = ref->scale;
+	place.parent = ref->parent;
+	pose(plan, &place, orientations, nodes, sphere, claim);
 }
