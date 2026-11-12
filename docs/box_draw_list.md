@@ -117,6 +117,7 @@ v0 holds the origin still: `ge_eye` on a grid of N units (values the GE keeps ex
 
 - **Precision [D, U]:** the GE keeps a matrix word's top 24 bits (15 of mantissa). The origin at the eye was chosen because a hundred units out a matrix lost ~1 mm, several pixels beside the camera (the comment at ~6385). Within N units the loss scales with N: at N = 8 about a twelfth of that. First person is never kept and can keep the origin at the eye (its own matrices, as today). Proof: shots on the near views, Sheepdog01's look (§10.5).
 - **N** is a keep-word number, sized by §10.6's count of hops a minute against words reused.
+- **Built and proven (2026-11-12 17:0x; Sierra-III builder/originheld, the lab's originheld1-3) [E]:** play and both seeds identical on b30, c20, d20, a30; the origin moves 1-4 times per 300 frames at N = 8; pictures differ by scattered speckle only (0-188 px a shot by more than 24 levels). First person keeps the eye-following origin (`use_projection` swaps the origin, the view and the model's point lights together): with the held origin its weapon took most of the speckle (originheld1), and before its point lights moved with the swap it was lit from the wrong place (originheld2).
 
 ### 10.4 What the camera decides on the ME
 
