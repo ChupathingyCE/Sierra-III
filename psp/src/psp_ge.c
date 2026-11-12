@@ -254,6 +254,7 @@ enum
 	DEFER_TEXT_BEGIN, DEFER_CONTRAIL, DEFER_ZOOM_MASK /* build 113 */,
 	DEFER_FOG_PLANAR, DEFER_SEETHROUGH_TINT, DEFER_SEETHROUGH_METER /* build 116 */,
 	DEFER_MODEL_POINT_LIGHT, DEFER_MODEL_DETAIL, DEFER_FOG_SUBMERGED, DEFER_MODEL_REFLECTION, DEFER_LIGHT_GEL, DEFER_LEVEL_GLOW,
+	DEFER_DRAW_FAR,
 	DEFER_FRAME_END, DEFER_WINDOW_BEGIN /* last: REPLAY_SERVED follows it */
 };
 typedef union
@@ -686,6 +687,7 @@ void psp_ge_model_detail(unsigned int detail_key, float u_scale, float v_scale);
 void psp_ge_draw_model(void *vertices, int vertex_count, int uncompressed, const unsigned short *indices,
 	long index_count, int strip, unsigned int color, unsigned int base_key, float u_scale, float v_scale,
 	int alpha_tested);
+void psp_ge_draw_far(const void *block);
 void psp_ge_queue_transparent(void *vertices, int vertex_count, int uncompressed, const unsigned short *indices,
 	long index_count, int strip, unsigned int key, float u_scale, float v_scale, float u_offset, float v_offset,
 	short blend, const float *centroid);
@@ -1160,6 +1162,14 @@ static int defer_draw_model(void *vertices, int vertex_count, int uncompressed, 
 	return 1;
 }
 
+static int defer_draw_far(const void *block)
+{
+	defer_word *at = defer_take(DEFER_DRAW_FAR, 1);
+
+	at[0].p = block;
+	return 1;
+}
+
 static int defer_queue_transparent(void *vertices, int vertex_count, int uncompressed, const unsigned short *indices,
 	long index_count, int strip, unsigned int key, float u_scale, float v_scale, float u_offset, float v_offset,
 	short blend, const float *centroid)
@@ -1471,7 +1481,7 @@ static const char *const replay_kind_names[REPLAY_KINDS] =
 	[DEFER_SEETHROUGH_TINT] = "see-through tint", [DEFER_SEETHROUGH_METER] = "see-through meters",
 	[DEFER_MODEL_POINT_LIGHT] = "model point lights", [DEFER_MODEL_REFLECTION] = "model reflection",
 	[DEFER_LIGHT_GEL] = "light gel faces",
-	[DEFER_LEVEL_GLOW] = "level glow",
+	[DEFER_LEVEL_GLOW] = "level glow", [DEFER_DRAW_FAR] = "far level",
 	[DEFER_FRAME_END] = "frame end (list's part)",
 	[DEFER_WINDOW_BEGIN] = "window begin (list's part)", [REPLAY_SERVED] = "audio and ring served",
 };
@@ -1578,6 +1588,9 @@ static void defer_replay(const defer_word *buffer, unsigned int used, int on_me)
 			break;
 		case DEFER_MODEL_REFLECTION:
 			psp_ge_model_reflection(w[0].u, defer_copy_back(w + 1, &rest, 4));
+			break;
+		case DEFER_DRAW_FAR:
+			psp_ge_draw_far(w[0].p);
 			break;
 		case DEFER_DRAW_MODEL:
 			psp_ge_draw_model((void *)w[0].p, w[1].i, w[2].i, (const unsigned short *)w[3].p, w[4].i, w[5].i,
@@ -8772,6 +8785,7 @@ address; in the geometry cache, their address in the pack, since the block
 they sit in can be reused for other vertices once they are evicted */
 int psp_geo_external(unsigned int address);
 void *psp_geo_lock(unsigned int address, unsigned int size);
+unsigned int psp_far_block(unsigned long model, unsigned int *bytes);
 unsigned int psp_geo_level_stride(void);
 
 static const void *stream_key(const void *vertices)
@@ -16968,6 +16982,113 @@ static void halo_matrix(const float *node, ScePspFMatrix4 *model)
 	model->z.x = node[0] * node[7]; model->z.y = node[0] * node[8]; model->z.z = node[0] * node[9]; model->z.w = 0.0f;
 	model->w.x = node[10]; model->w.y = node[11]; model->w.z = node[12]; model->w.w = 1.0f;
 	relative(model);
+}
+
+/* The far level (docs/box_far_level.md): a model under farlevelN pixels
+drawn as the one part tools/farlevel.py baked, in place of its parts. The
+block (psp_geo.c locked it): its 64-byte header (word 2 the vertices, 4 the
+strip's indices, 5-7 the box's centre, 8-10 its half extent, 11 the node),
+the vertices (colour 5650, then a 16-bit position in the box), the strip.
+Unlit: the GE's lighting with no light on, its ambient the object's light
+as one tint, taken by each vertex's colour as its material's ambient */
+static unsigned long far_drawn = 0, far_vertices = 0;
+
+static unsigned int far_tint(void)
+{
+	float rgb[3];
+	int channel, index;
+
+	for (channel = 0; channel < 3; channel++)
+	{
+		float v = (float)((model_ambient >> (8 * channel)) & 0xFF);
+
+		/* the distant lights at a half-facing average; the point lights
+		already scaled by their reach at the model's centre */
+		for (index = 0; index < model_light_count; index++)
+			v += 0.5f * (float)((model_light_color[index] >> (8 * channel)) & 0xFF);
+		for (index = 0; index < model_point_count; index++)
+			v += 0.5f * (float)((model_point_color[index] >> (8 * channel)) & 0xFF);
+		rgb[channel] = v * (1.0f / 255.0f);
+	}
+	return color_from_rgb(rgb);
+}
+
+void psp_ge_draw_far(const void *block)
+{
+	const unsigned int *head = block;
+	const float *box = (const float *)(head + 5);
+	unsigned int node = head[11];
+	ScePspFMatrix4 m;
+	ScePspFVector3 centre, half;
+	int light;
+
+	GE_DEFER(defer_draw_far(block));
+	GE_BENCH_SKIP();
+	if (!frame_open || !block || !head[2] || head[4] < 3 || list_full() || !model_nodes)
+		return;
+	if (node >= (unsigned int)model_node_count)
+		node = 0;
+	halo_matrix(model_nodes + 13 * node, &m);
+	centre.x = box[0];
+	centre.y = box[1];
+	centre.z = box[2];
+	/* the GE reads a 16-bit position as q / 32768; the bake wrote q / 32767 */
+	half.x = box[3] * (32768.0f / 32767.0f);
+	half.y = box[4] * (32768.0f / 32767.0f);
+	half.z = box[5] * (32768.0f / 32767.0f);
+	sceGumMatrixMode(GU_MODEL);
+	sceGumLoadMatrix(&m);
+	sceGumTranslate(&centre);
+	sceGumScale(&half);
+	sceGuDisable(GU_TEXTURE_2D);
+	sceGuDisable(GU_ALPHA_TEST);
+	sceGuDisable(GU_CULL_FACE);
+	sceGuEnable(GU_LIGHTING);
+	for (light = 0; light < 4; light++)
+		sceGuDisable(GU_LIGHT0 + light);
+	sceGuAmbient(far_tint());
+	sceGuColorMaterial(GU_AMBIENT);
+	sceGumDrawArray(GU_TRIANGLE_STRIP, GU_COLOR_5650 | GU_VERTEX_16BIT | GU_INDEX_16BIT | GU_TRANSFORM_3D, (int)head[4],
+		(const unsigned short *)((const unsigned char *)block + 64 + 8 * head[2]), (const unsigned char *)block + 64);
+	sceGuColorMaterial(0);
+	sceGuDisable(GU_LIGHTING);
+	/* the next part sends its lighting whole */
+	lit_forget(2);
+	if (!PSP_ME_WORK())
+	{
+		far_drawn++;
+		far_vertices += head[2];
+	}
+}
+
+/* render_model's (FIXES_FARLEVEL), on the main CPU after the model's begin:
+1 when the model's far level is drawn in place of its parts. Off unless
+farlevel (32 px) or farlevelN asks */
+static int far_pixels = -1;
+
+int psp_far_draw(unsigned long model, float pixels)
+{
+	unsigned int address, bytes;
+	const void *block;
+
+	if (far_pixels < 0)
+	{
+		far_pixels = psp_keep("farlevel") ? 32 : psp_keep_number("farlevel", 0);
+		if (far_pixels > 0)
+			platform_log("GE: farlevel: models under %d px drawn as their far level", far_pixels);
+	}
+	/* first person and the sky are left out by the caller's flags: this side's
+	model state is the recorded one's, not yet replayed */
+	if (far_pixels <= 0 || pixels >= (float)far_pixels || pixels <= 0.0f)
+		return 0;
+	address = psp_far_block(model, &bytes);
+	if (!address)
+		return 0;
+	block = psp_geo_lock(address, bytes);
+	if (!block)
+		return 0;
+	psp_ge_draw_far(block);
+	return 1;
 }
 
 static void node_matrix(const void *vertices, const unsigned short *indices, ScePspFMatrix4 *model)

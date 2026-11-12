@@ -27,8 +27,8 @@ sspr's levels when they're there):
   - header words: 0 'PCV1', 1 flags, 2 vertex count, 3 stride (8), 4 strip
     index count, 5-7 the box's centre (float), 8-10 its half extent
     (float), 11 the node, 12 the merged shape error (float, model units);
-  - then the vertices: 3 x s16 position (centre + q / 32767 x half extent),
-    u16 colour 5650;
+  - then the vertices, in the GE's order: u16 colour 5650, then 3 x s16
+    position (centre + q / 32767 x half extent);
   - then the strip, u16 indices, padded to 64 bytes;
 - the directory, sorted by tag id: for each model, its tag id, its far
   block's pack address and bytes, and its diameter (float, model units);
@@ -253,7 +253,7 @@ def far_block(positions, colours, local, node, error):
     q = np.clip(np.round((positions - center) / half * 32767.0), -32767, 32767).astype('<i2')
     c = np.clip(np.round(colours), 0, 255).astype(np.int64)
     rgb565 = ((c[:, 2] >> 3) << 11) | ((c[:, 1] >> 2) << 5) | (c[:, 0] >> 3)   # the GE's 5650: red low
-    verts = np.zeros(len(positions), dtype=[('p', '<i2', 3), ('c', '<u2')])
+    verts = np.zeros(len(positions), dtype=[('c', '<u2'), ('p', '<i2', 3)])   # the GE's order: colour, then position
     verts['p'] = q
     verts['c'] = rgb565.astype('<u2')
     tri = [int(x) for x in local]
