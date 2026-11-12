@@ -16986,33 +16986,13 @@ static void halo_matrix(const float *node, ScePspFMatrix4 *model)
 
 /* The far level (docs/box_far_level.md): a model under farlevelN pixels
 drawn as the one part tools/farlevel.py baked, in place of its parts. The
-block (psp_geo.c locked it): its 64-byte header (word 2 the vertices, 4 the
-indices, 5-7 the box's centre, 8-10 its half extent, 11 the node, 13 a list
-rather than a strip), the vertices (colour 5650, then a 16-bit position in
-the box), the indices.
-Unlit: the GE's lighting with no light on, its ambient the object's light
-as one tint, taken by each vertex's colour as its material's ambient */
+block (psp_geo.c locked it): its 64-byte header (word 2 the vertices, 3 the
+stride, 4 the indices, 5-7 the box's centre, 8-10 its scale, 11 the node, 13
+a list rather than a strip), the vertices (colour 5650, a 16-bit normal
+divided by the scale, a 16-bit position in the box), the indices.
+Untextured, lit by the GE with the model's own lights, each vertex's colour
+its material's ambient and diffuse */
 static unsigned long far_drawn = 0, far_vertices = 0;
-
-static unsigned int far_tint(void)
-{
-	float rgb[3];
-	int channel, index;
-
-	for (channel = 0; channel < 3; channel++)
-	{
-		float v = (float)((model_ambient >> (8 * channel)) & 0xFF);
-
-		/* the distant lights at a half-facing average; the point lights
-		already scaled by their reach at the model's centre */
-		for (index = 0; index < model_light_count; index++)
-			v += 0.5f * (float)((model_light_color[index] >> (8 * channel)) & 0xFF);
-		for (index = 0; index < model_point_count; index++)
-			v += 0.5f * (float)((model_point_color[index] >> (8 * channel)) & 0xFF);
-		rgb[channel] = v * (1.0f / 255.0f);
-	}
-	return color_from_rgb(rgb);
-}
 
 void psp_ge_draw_far(const void *block)
 {
@@ -17021,7 +17001,6 @@ void psp_ge_draw_far(const void *block)
 	unsigned int node = head[11];
 	ScePspFMatrix4 m;
 	ScePspFVector3 centre, half;
-	int light;
 
 	GE_DEFER(defer_draw_far(block));
 	GE_BENCH_SKIP();
@@ -17033,7 +17012,8 @@ void psp_ge_draw_far(const void *block)
 	centre.x = box[0];
 	centre.y = box[1];
 	centre.z = box[2];
-	/* the GE reads a 16-bit position as q / 32768; the bake wrote q / 32767 */
+	/* the GE reads a 16-bit position as q / 32768; the bake wrote q / 32767
+	(its normals take the same scale, and were divided by it) */
 	half.x = box[3] * (32768.0f / 32767.0f);
 	half.y = box[4] * (32768.0f / 32767.0f);
 	half.z = box[5] * (32768.0f / 32767.0f);
@@ -17044,17 +17024,13 @@ void psp_ge_draw_far(const void *block)
 	sceGuDisable(GU_TEXTURE_2D);
 	sceGuDisable(GU_ALPHA_TEST);
 	sceGuDisable(GU_CULL_FACE);
-	sceGuEnable(GU_LIGHTING);
-	for (light = 0; light < 4; light++)
-		sceGuDisable(GU_LIGHT0 + light);
-	sceGuAmbient(far_tint());
-	sceGuColorMaterial(GU_AMBIENT);
-	sceGumDrawArray(head[13] ? GU_TRIANGLES : GU_TRIANGLE_STRIP, GU_COLOR_5650 | GU_VERTEX_16BIT | GU_INDEX_16BIT | GU_TRANSFORM_3D, (int)head[4],
-		(const unsigned short *)((const unsigned char *)block + 64 + 8 * head[2]), (const unsigned char *)block + 64);
+	model_lighting(1);
+	sceGuColorMaterial(GU_AMBIENT | GU_DIFFUSE);
+	sceGumDrawArray(head[13] ? GU_TRIANGLES : GU_TRIANGLE_STRIP,
+		GU_COLOR_5650 | GU_NORMAL_16BIT | GU_VERTEX_16BIT | GU_INDEX_16BIT | GU_TRANSFORM_3D, (int)head[4],
+		(const unsigned short *)((const unsigned char *)block + 64 + head[3] * head[2]), (const unsigned char *)block + 64);
 	sceGuColorMaterial(0);
-	sceGuDisable(GU_LIGHTING);
-	/* the next part sends its lighting whole */
-	lit_forget(2);
+	model_lighting(0);
 	if (!PSP_ME_WORK())
 	{
 		far_drawn++;

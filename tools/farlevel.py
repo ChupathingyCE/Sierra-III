@@ -1,7 +1,7 @@
 """farlevel.py - each model's far level as one part, baked (docs/box_far_level.md, slice 1).
 
-A model drawn under farlevelN pixels is drawn as one part, unlit. The object's
-light comes in as one tint, through the GE's ambient on the vertex colours.
+A model drawn under farlevelN pixels is drawn as one part, untextured, lit by
+the GE with the model's own lights on its vertex colours.
 This tool makes that part for each model it can:
 
 - the source is each region's lowest level (the tag's super low);
@@ -24,12 +24,13 @@ What is appended to the pack (after modelconvert's region, and after
 sspr's levels when they're there):
 - the far blocks, each a PCV block (modelconvert's 64-byte header) flagged
   PCV_FAR (8):
-  - header words: 0 'PCV1', 1 flags, 2 vertex count, 3 stride (8), 4 index
-    count, 5-7 the box's centre (float), 8-10 its half extent (float), 11
+  - header words: 0 'PCV1', 1 flags, 2 vertex count, 3 stride (14), 4 index
+    count, 5-7 the box's centre (float), 8-10 its scale (float, the three
+    alike: the box's largest half extent, at least 1), 11
     the node, 12 the merged shape error (float, model units), 13 1 when the
     indices are a triangle list (the strip wasn't shorter), 0 for a strip;
-  - then the vertices, in the GE's order: u16 colour 5650, then 3 x s16
-    position (centre + q / 32767 x half extent);
+  - then the vertices, in the GE's order: u16 colour 5650, 3 x s16 normal
+    (divided by the scale), 3 x s16 position (centre + q / 32767 x scale);
   - then the strip or the list, u16 indices, padded to 64 bytes;
 - the directory, sorted by tag id: for each model, its tag id, its far
   block's pack address and bytes, and its diameter (float, model units);
@@ -176,7 +177,7 @@ def entry(m, hw):
 
 def merged(m, pack_data, offsets, shaders, colours, scales, census):
     """(positions, colours, triangles, node) of the model's merged lowest level, or a reason"""
-    P, C, T, nodes = [], [], [], set()
+    P, N, C, T, nodes = [], [], [], [], set()
     base = 0
     for po in offsets:
         data = m.data
@@ -209,32 +210,34 @@ def merged(m, pack_data, offsets, shaders, colours, scales, census):
         if len(nodes) > 1:
             return 'nodes'
         positions = src.position.copy().view('<f4').reshape(vcount, 3).astype(F)
+        normals = mc.unpack_normals(src.packed).astype(F)
         uv = src.uv.copy().view('<f4').reshape(vcount, 2).astype(F)
         img, sus, svs = colours[shaders[shader_index]]
         uv = uv * np.array([scales[0] * sus, scales[1] * svs], F)
         P.append(positions)
+        N.append(normals)
         C.append(sample(img, uv))
         T.append(np.array(mc.triangle_list(ind, count, strip), np.int64).reshape(-1, 3) + base)
         base += vcount
     census['source triangles'] += sum(len(t) for t in T)
     census['source vertices'] += base
-    return np.concatenate(P), np.concatenate(C), np.concatenate(T).reshape(-1), nodes.pop()
+    return np.concatenate(P), np.concatenate(N), np.concatenate(C), np.concatenate(T).reshape(-1), nodes.pop()
 
 
-def far_mesh(lib, positions, colours, tri):
+def far_mesh(lib, positions, normals, colours, tri):
     """(vertex rows used, indices into them, shape error) after simplifying to a pixel at FAR_PIXELS"""
     center, radius = mc.sphere(positions)
     diameter = 2.0 * float(radius)
     if diameter <= 0:
         return None
     limit = diameter / FAR_PIXELS     # one pixel at the size the far level is first drawn at, in model units
-    attributes = np.ascontiguousarray(np.concatenate([colours / 255.0, np.zeros((len(colours), 2))], 1), F)
+    attributes = np.ascontiguousarray(np.concatenate([colours / 255.0, normals[:, :2]], 1), F)
     pos = np.ascontiguousarray(positions, F)
     idx = np.ascontiguousarray(tri, np.uint32)
     out = np.empty_like(idx)
     err = ctypes.c_float(0)
     scale = lib.meshopt_simplifyScale(sspr.ptr(pos, ctypes.c_float), len(pos), 12)
-    weights = np.array([0.5, 0.5, 0.5, 0.0, 0.0], F)
+    weights = np.array([0.5, 0.5, 0.5, 0.25, 0.25], F)
     n = lib.meshopt_simplifyWithAttributes(sspr.ptr(out, ctypes.c_uint), sspr.ptr(idx, ctypes.c_uint), len(idx),
                                            sspr.ptr(pos, ctypes.c_float), len(pos), 12,
                                            sspr.ptr(attributes, ctypes.c_float), 20,
@@ -250,21 +253,27 @@ def far_mesh(lib, positions, colours, tri):
     return used[order], remap[inverse], float(err.value) * float(scale), diameter
 
 
-def far_block(positions, colours, local, node, error):
+def far_block(positions, normals, colours, local, node, error):
     lo, hi = positions.min(0), positions.max(0)
     center = (lo + hi) * 0.5
-    half = np.maximum((hi - lo) * 0.5, 1e-6)
-    q = np.clip(np.round((positions - center) / half * 32767.0), -32767, 32767).astype('<i2')
+    # one scale for the three axes, at least 1: the GE lights with the
+    # normals as the model matrix turns them, scale included, so they're
+    # stored divided by it (and fit while it's at least 1)
+    k = max(float(((hi - lo) * 0.5).max()), 1.0)
+    half = np.array([k, k, k], F)
+    q = np.clip(np.round((positions - center) / k * 32767.0), -32767, 32767).astype('<i2')
+    nq = np.clip(np.round(normals / k * 32767.0), -32767, 32767).astype('<i2')
     c = np.clip(np.round(colours), 0, 255).astype(np.int64)
     rgb565 = ((c[:, 2] >> 3) << 11) | ((c[:, 1] >> 2) << 5) | (c[:, 0] >> 3)   # the GE's 5650: red low
-    verts = np.zeros(len(positions), dtype=[('c', '<u2'), ('p', '<i2', 3)])   # the GE's order: colour, then position
+    verts = np.zeros(len(positions), dtype=[('c', '<u2'), ('n', '<i2', 3), ('p', '<i2', 3)])   # the GE's order
+    verts['n'] = nq
     verts['p'] = q
     verts['c'] = rgb565.astype('<u2')
     tri = [int(x) for x in local]
     strip = mc.strip_of(tri)
     as_list = strip is None    # the strip isn't shorter: drawn as the list
     indices = tri if as_list else strip
-    head = struct.pack('<5I', mc.MAGIC, PCV_FAR, len(positions), 8, len(indices))
+    head = struct.pack('<5I', mc.MAGIC, PCV_FAR, len(positions), 14, len(indices))
     head += np.array(list(center) + list(half), '<f4').tobytes()
     head += struct.pack('<IfI', node, error, int(as_list))
     head += bytes(mc.BLOCK_HEADER - len(head))
@@ -301,15 +310,15 @@ def main(map_path, pgeo_path):
             got = merged(m, data, offsets, shaders, colours, scales, census)
             why = got if isinstance(got, str) else None
         if why is None:
-            positions, cols, tri, node = got
-            mesh = far_mesh(lib, positions, cols, tri)
+            positions, normals, cols, tri, node = got
+            mesh = far_mesh(lib, positions, normals, cols, tri)
             if mesh is None or len(mesh[0]) > MAX_VERTICES:
                 why = 'simplifier'
         if why is not None:
             census['left: ' + why] += 1
             continue
         rows, local, error, diameter = mesh
-        b, strip_count = far_block(positions[rows], cols[rows], local, node, error)
+        b, strip_count = far_block(positions[rows], normals[rows], cols[rows], local, node, error)
         directory.append((tag_id, mc.PACK_BASE + region + len(blocks), len(b), diameter))
         blocks += b
         census['far models'] += 1
