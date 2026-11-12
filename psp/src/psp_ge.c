@@ -13513,9 +13513,12 @@ int psp_ge_pcv_check(void *block, const void *raw, unsigned int raw_bytes, const
 	return same;
 }
 
+static void far_report(void);
+
 /* the 300-frame report's line (psp_geo.c) */
 void psp_ge_pcv_report(void)
 {
+	far_report();
 	platform_log("GE: model parts drawn in the last 300 frames: %lu indices (the GE's vertices), %lu buffer vertices; %.0f and %.0f a frame",
 		model_drawn_indices, model_drawn_vertices, (double)model_drawn_indices / 300.0, (double)model_drawn_vertices / 300.0);
 	model_drawn_indices = model_drawn_vertices = 0;
@@ -16993,6 +16996,14 @@ divided by the scale, a 16-bit position in the box), the indices.
 Untextured, lit by the GE with the model's own lights, each vertex's colour
 its material's ambient and diffuse */
 static unsigned long far_drawn = 0, far_vertices = 0;
+
+static void far_report(void)
+{
+	if (far_drawn)
+		platform_log("GE: farlevel: %lu models drawn as their far level in the last 300 frames, %lu vertices; %.1f and %.0f a frame",
+			far_drawn, far_vertices, (double)far_drawn / 300.0, (double)far_vertices / 300.0);
+	far_drawn = far_vertices = 0;
+}
 
 void psp_ge_draw_far(const void *block)
 {
