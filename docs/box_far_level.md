@@ -74,7 +74,11 @@ The slices are priced alone on the PSP before integration, per REBUILD.md §5: a
 
 ## Slices
 
-0. **The cache check** `[enables]`: the census's distinct far models per window, priced against the geometry and texture caches' free room on b30's flight and the snowfield (the caches' own counters, a recon run). If they can't hold it, §1's fallback: ~64 KB of the copies' VRAM as a resident far region.
+0. **The cache check** `[enables]`. The caches have no free room to price against: the geometry cache runs 99-100% full in play, and so do VRAM's shares (`memory_census.md` §1 [M]). So the check is the **swap** instead: the far blocks a window brings in, against the top-level blocks it stops reading.
+   - On b30's route, window 5, the distinct parts drawn under 32 px read **~339 KB** of top-level geometry: <4 px 10 KB, 4-8 68, 8-16 113, 16-32 148 [E, farcensus3].
+   - Their ~30 far models would take ~30-150 KB of far blocks plus ~135 KB of atlases [U]. So geometry comes out ahead by up to ~200-300 KB, and the texture cache takes on ~135 KB.
+   - That holds only where *every* instance of a model is far, so its top blocks age out. The count still to take is how many top-level KB a window reads **only** for far instances. It's a census column: parts drawn only under the threshold that window.
+   - If the texture side can't take its share, §1's fallback applies: ~64 KB of the copies' VRAM as a resident far region.
 1. **Rigid, one node, opaque** (rocks, trees, crates, most of b30's ~8 repeated scenery models): the bake (merge, atlas, shape term, strip, PCV_FAR), the directory, the tier, the record, the replay. Proven in the emulator by pictures at each band's nearest distance and play + seeds identical. Shots go to Sheepdog01.
 2. **Rigid, many nodes** (vehicles, machines): the bones in the block.
 3. **Skinned, one bone a vertex** (bipeds), with change colours by palette row. Under 16 px, D1/D2's sprites take over.
