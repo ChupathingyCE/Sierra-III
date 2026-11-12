@@ -4924,6 +4924,22 @@ whole, and the remainder in the view is a fraction of a unit, which its
 the view a pure turn, as before */
 static float ge_eye[3], ge_eye_camera[3];
 static int level_exact = -1;
+#ifdef PSP_DRAWLIST
+/* The draw list box's first slice (docs/box_draw_list.md §10.3): an
+unchanged instance can draw its last words again only if the origin they
+are relative to stayed put, and ge_eye above follows the eye every frame. So
+under "drawlist" ge_eye is a point of a grid of origin_held_cell units,
+moved only once the eye is three quarters of a cell from it on an axis; the
+view carries the rest, as level_exact's shift already does. A grid point is
+a value the GE keeps whole (a small multiple of a power of two), and so is
+the level's translation from it. Within a cell a model's translation and
+the view's stay under a cell's length, so their rounding is a cell's share
+of what the eye-following origin was chosen against (a hundred units out) */
+static int origin_held = -1;
+static float origin_held_cell = 8.0f, origin_held_at[3];
+static int origin_held_set = 0;
+static unsigned long origin_held_hops = 0, origin_held_frames = 0;
+#endif
 
 /* the value the GE keeps of a matrix word: the low 8 bits dropped (pspgu
 sends a float's top 24 bits) */
@@ -6395,6 +6411,32 @@ static void window_begin_list(const float *position, const float *forward, const
 		/* from level_origin, the level's translation (its origin less
 		ge_eye) is the rounded part itself, whole in the GE's words however
 		near the world's origin the eye is */
+#ifdef PSP_DRAWLIST
+		if (origin_held < 0)
+		{
+			origin_held = psp_keep("drawlist") != 0;
+			origin_held_cell = psp_keep("drawlistcell2") ? 2.0f : psp_keep("drawlistcell4") ? 4.0f :
+				psp_keep("drawlistcell16") ? 16.0f : 8.0f;
+		}
+		if (origin_held && level_exact)
+		{
+			int hop = !origin_held_set;
+
+			for (k = 0; k < 3 && !hop; k++)
+				hop = fabsf(position[k] - origin_held_at[k]) > 0.75f * origin_held_cell;
+			if (hop)
+			{
+				for (k = 0; k < 3; k++)
+					origin_held_at[k] = floorf(position[k] / origin_held_cell + 0.5f) * origin_held_cell;
+				origin_held_hops += origin_held_set;
+				origin_held_set = 1;
+			}
+			origin_held_frames++;
+			for (k = 0; k < 3; k++)
+				ge_eye[k] = origin_held_at[k];
+		}
+		else
+#endif
 		for (k = 0; k < 3; k++)
 			ge_eye[k] = !level_exact ? position[k] :
 				level_local ? level_origin[k] + ge_matrix_float(position[k] - level_origin[k]) : ge_matrix_float(position[k]);
@@ -13628,6 +13670,14 @@ static void far_report(void);
 /* the 300-frame report's line (psp_geo.c) */
 void psp_ge_pcv_report(void)
 {
+#ifdef PSP_DRAWLIST
+	if (origin_held > 0 && origin_held_frames)
+	{
+		platform_log("GE: drawlist: the origin held on a %.0f-unit grid, moved %lu times in %lu frames", (double)origin_held_cell,
+			origin_held_hops, origin_held_frames);
+		origin_held_hops = origin_held_frames = 0;
+	}
+#endif
 	far_report();
 	platform_log("GE: model parts drawn in the last 300 frames: %lu indices (the GE's vertices), %lu buffer vertices; %.0f and %.0f a frame",
 		model_drawn_indices, model_drawn_vertices, (double)model_drawn_indices / 300.0, (double)model_drawn_vertices / 300.0);
