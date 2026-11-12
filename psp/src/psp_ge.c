@@ -17329,6 +17329,26 @@ int psp_far_draw(unsigned long model, float pixels, const char *permutations, in
 				at = head[14] ? at + head[14] : NULL;
 			}
 		}
+		/* the sprite's size on screen from its own radius: the engine's pixels
+		come from the object's bounding sphere, which can be far smaller than
+		its shape (farlevel15: trees ~50 px tall read under 16) */
+		if (sprite && model_nodes)
+		{
+			const unsigned int *head = sprite;
+			const float *box = (const float *)(head + 5);
+			unsigned int node = head[11] < (unsigned int)model_node_count ? head[11] : 0;
+			ScePspFMatrix4 m;
+			float c[3], distance, scale;
+
+			halo_matrix(model_nodes + 13 * node, &m);
+			c[0] = m.w.x + box[0] * m.x.x + box[1] * m.y.x + box[2] * m.z.x;
+			c[1] = m.w.y + box[0] * m.x.y + box[1] * m.y.y + box[2] * m.z.y;
+			c[2] = m.w.z + box[0] * m.x.z + box[1] * m.y.z + box[2] * m.z.z;
+			distance = sqrtf(c[0] * c[0] + c[1] * c[1] + c[2] * c[2]);
+			scale = sqrtf(m.x.x * m.x.x + m.x.y * m.x.y + m.x.z * m.x.z);
+			if (distance <= 0.0f || 2.0f * box[3] * scale * pixels_per_unit() >= (float)sprite_pixels * distance)
+				sprite = NULL;
+		}
 		psp_ge_draw_far(block, mask[0], mask[1], tints, sprite);
 		if (sprite)
 			far_sprites++;
