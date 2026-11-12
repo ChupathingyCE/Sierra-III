@@ -92,7 +92,7 @@ The GE picks a texture's mip level in one of two ways:
 
 **Angle buckets (b64):** each level draw's triangles are sorted by 1/cos(angle to the eye ray) into 7 buckets, half a level apart, each drawn with slope × factor. b64 hardware: ground wobble "much less". [Sheepdog01, b64]
 
-**Far buckets (b66):** triangles wholly past the detail fade get their own buckets and no detail pass. Exact. `detailallfar` reverts. [measured in emulator]
+**Far buckets (b66):** triangles wholly past the detail fade get their own buckets and no detail pass. ~~Exact.~~ Not exact (2026-11-12, the lab's row `detailnear_not_exact`): the buckets test each corner's distance from the eye, while the GE's fog fades the detail by view depth, so an off-axis triangle past DETAIL_FAR can still show some detail. `detailallfar` reverts. [measured in emulator]
 
 **UV centring (b79, on by default; `uvwide` reverts):** each level draw's texture coordinates are shifted by whole repeats (`sceGuTexOffset`, after the pass's scale) so the vertex nearest the eye sits near zero. Exact for repeating textures. Aimed at the ground wobble's precision hypothesis (detail coordinates reach hundreds of repeats on Blood Gulch's ground).
 

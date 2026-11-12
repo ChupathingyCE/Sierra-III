@@ -193,6 +193,9 @@ DEBUG_TOOLS = os.environ.get("PSP_DEBUG_TOOLS", "") == "1"
 # final release is built with PSP_METRICS=0, and then every hook
 # (psp/include/psp_metrics.h) compiles to nothing
 METRICS = os.environ.get("PSP_METRICS", "1") != "0"
+# PSP_AITICKOLD=1: AITICKOLD (psp_fixups.py FIXES_AITICKOLD, keep word
+# aitickold), read by psp_fixups.py itself: its clock hook sits in
+# game_time_get, so a default build leaves it out
 # PSP_DITHERSHIFT=1: the GE's dither moved each pass (keep words dithershift,
 # dithershiftall). Its tests sit in psp_ge.c's hot paths, so a default build
 # leaves them out. Passed to psp_ge.c's own compile, which takes none of the
@@ -1506,7 +1509,13 @@ def main():
     if LTO_OBJS:
         lto_report(r)
     subprocess.run(["psp-fixup-imports", os.path.join(OUT, "halo.elf")], check=True)
-    if MEXEC:
+    if MEXEC and PGO == "generate":
+        # a counting build: psp_me.c is compiled as MEXEC builds it, so the
+        # counts match theirs, but the table is left empty (the ME copies
+        # nothing). The counting build's code is larger than the list's room,
+        # and the table's contents don't touch the counts
+        print("psp_build: PSP_MEXEC=%s in a counting build: psp_mexec_table left empty" % MEXEC)
+    elif MEXEC:
         # the copy's table, into the linked program before prxgen (the
         # relocations it reads are -q's, which prxgen drops)
         lst = os.path.join(HERE, "psp/layout/mexec_%s.txt" % MEXEC)

@@ -254,6 +254,7 @@ enum
 	DEFER_TEXT_BEGIN, DEFER_CONTRAIL, DEFER_ZOOM_MASK /* build 113 */,
 	DEFER_FOG_PLANAR, DEFER_SEETHROUGH_TINT, DEFER_SEETHROUGH_METER /* build 116 */,
 	DEFER_MODEL_POINT_LIGHT, DEFER_MODEL_DETAIL, DEFER_FOG_SUBMERGED, DEFER_MODEL_REFLECTION, DEFER_LIGHT_GEL, DEFER_LEVEL_GLOW,
+	DEFER_DRAW_FAR,
 	DEFER_FRAME_END, DEFER_WINDOW_BEGIN /* last: REPLAY_SERVED follows it */
 };
 typedef union
@@ -686,6 +687,8 @@ void psp_ge_model_detail(unsigned int detail_key, float u_scale, float v_scale);
 void psp_ge_draw_model(void *vertices, int vertex_count, int uncompressed, const unsigned short *indices,
 	long index_count, int strip, unsigned int color, unsigned int base_key, float u_scale, float v_scale,
 	int alpha_tested);
+void psp_ge_draw_far(const void *block, unsigned int mask_low, unsigned int mask_high, const unsigned int *tints,
+	const void *sprite);
 void psp_ge_queue_transparent(void *vertices, int vertex_count, int uncompressed, const unsigned short *indices,
 	long index_count, int strip, unsigned int key, float u_scale, float v_scale, float u_offset, float v_offset,
 	short blend, const float *centroid);
@@ -1160,6 +1163,21 @@ static int defer_draw_model(void *vertices, int vertex_count, int uncompressed, 
 	return 1;
 }
 
+static int defer_draw_far(const void *block, unsigned int mask_low, unsigned int mask_high, const unsigned int *tints,
+	const void *sprite)
+{
+	defer_word *at = defer_take(DEFER_DRAW_FAR, 8);
+	int k;
+
+	at[0].p = block;
+	at[1].u = mask_low;
+	at[2].u = mask_high;
+	for (k = 0; k < 4; k++)
+		at[3 + k].u = tints[k];
+	at[7].p = sprite;
+	return 1;
+}
+
 static int defer_queue_transparent(void *vertices, int vertex_count, int uncompressed, const unsigned short *indices,
 	long index_count, int strip, unsigned int key, float u_scale, float v_scale, float u_offset, float v_offset,
 	short blend, const float *centroid)
@@ -1471,7 +1489,7 @@ static const char *const replay_kind_names[REPLAY_KINDS] =
 	[DEFER_SEETHROUGH_TINT] = "see-through tint", [DEFER_SEETHROUGH_METER] = "see-through meters",
 	[DEFER_MODEL_POINT_LIGHT] = "model point lights", [DEFER_MODEL_REFLECTION] = "model reflection",
 	[DEFER_LIGHT_GEL] = "light gel faces",
-	[DEFER_LEVEL_GLOW] = "level glow",
+	[DEFER_LEVEL_GLOW] = "level glow", [DEFER_DRAW_FAR] = "far level",
 	[DEFER_FRAME_END] = "frame end (list's part)",
 	[DEFER_WINDOW_BEGIN] = "window begin (list's part)", [REPLAY_SERVED] = "audio and ring served",
 };
@@ -1578,6 +1596,13 @@ static void defer_replay(const defer_word *buffer, unsigned int used, int on_me)
 			break;
 		case DEFER_MODEL_REFLECTION:
 			psp_ge_model_reflection(w[0].u, defer_copy_back(w + 1, &rest, 4));
+			break;
+		case DEFER_DRAW_FAR:
+			{
+				unsigned int tints[4] = { w[3].u, w[4].u, w[5].u, w[6].u };
+
+				psp_ge_draw_far(w[0].p, w[1].u, w[2].u, tints, w[7].p);
+			}
 			break;
 		case DEFER_DRAW_MODEL:
 			psp_ge_draw_model((void *)w[0].p, w[1].i, w[2].i, (const unsigned short *)w[3].p, w[4].i, w[5].i,
@@ -8772,6 +8797,7 @@ address; in the geometry cache, their address in the pack, since the block
 they sit in can be reused for other vertices once they are evicted */
 int psp_geo_external(unsigned int address);
 void *psp_geo_lock(unsigned int address, unsigned int size);
+unsigned int psp_far_block(unsigned long model, unsigned int *bytes);
 unsigned int psp_geo_level_stride(void);
 
 static const void *stream_key(const void *vertices)
@@ -9927,7 +9953,7 @@ change nothing there; skipping them saves the GE the fill and the CPU the
 draws. "detailallfar": the detail passes everywhere, as before */
 #define SORT_BUCKETS (2 * ANGLE_BUCKETS)
 #define ANGLE_TRIANGLES 4096
-static int angle_buckets = -1, detail_all_far = -1;
+static int angle_buckets = -1, detail_all_far = -1, detail_far_old = -1;
 static int angle_bucketed = 0, angle_near_any = 0;
 static long angle_first[SORT_BUCKETS], angle_count[SORT_BUCKETS];
 static unsigned char angle_bucket_of[ANGLE_TRIANGLES];
@@ -10916,7 +10942,15 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 
 			reach += m * m;
 		}
-		detail_far_squared = far * far;
+		/* the fog fades the detail by depth, and the buckets test distance:
+		a point on the screen at depth d is at most d * sqrt(1 + tv^2 + th^2)
+		away (tv, th the half-view's tangents), so past this distance its
+		depth is past the fade too, and its detail adds nothing to the picture */
+		{
+			float tv = fov_tan_half(), th = tv * ((float)SCREEN_WIDTH / (float)SCREEN_HEIGHT);
+
+			detail_far_squared = far * far * (1.0f + tv * tv + th * th);
+		}
 		far_possible = reach > detail_far_squared;
 	}
 	/* geshow2: the engine's own index list, rewritten by the next frame's
@@ -11181,8 +11215,25 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 				in the debug menu restores them here */
 				if (detail_by_distance)
 				{
+					/* the near buckets only: they come first in the sorted
+					list, and past DETAIL_FAR the detail map has faded to its
+					neutral grey, so the far triangles' detail changes no
+					pixel ("detailfarold" draws them) */
+					int detail_count = (int)kept_count * 3;
+
+					if (detail_far_old < 0)
+						detail_far_old = psp_keep("detailfarold") != 0;
+					if (angle_bucketed && !detail_far_old)
+					{
+						long near = 0;
+						int b;
+
+						for (b = 0; b < ANGLE_BUCKETS; b++)
+							near += angle_count[b];
+						detail_count = (int)near * 3;
+					}
 					sceGuTexSlope(detail_pass_slope);
-					draw_pass(stream->base, draw, (int)kept_count * 3, &pieces_store, cut_count, 0);
+					draw_pass(stream->base, draw, detail_count, &pieces_store, cut_count, 0);
 				}
 				else
 					draw_pass_angled(stream->base, draw, (int)kept_count * 3, &pieces_store, cut_count, 0, detail_pass_slope, 1);
@@ -12508,6 +12559,9 @@ static unsigned short *vm_hash = NULL, *vm_order = NULL;
 static PSP_MAIN_SIDE int vm_count = 0; /* the main CPU's (vm_find, at the record's writing) */
 static unsigned int vm_base = 0, vm_size = 0, vm_frame = 0;
 static unsigned long vm_draws = 0, vm_redirects = 0, vm_copied = 0, vm_dropped = 0, vm_full = 0;
+/* "vmpackoff": no room made by a span of copies (vm_make_room) */
+static int vm_pack = -1;
+static unsigned long vm_packs = 0, vm_pack_copies = 0;
 
 /* "mevram": the copies for the Media Engine's draws too (the GE layer
 carried out on the ME: gemeon, gemeoverlap, frames in flight). Without it
@@ -12790,8 +12844,73 @@ static unsigned int vm_place(unsigned int bytes)
 	return at + bytes <= vm_size ? at : VM_NONE;
 }
 
+/* No gap holds the newcomer, though the room may hold it many times over:
+first fit leaves the free room between copies, and with every copy drawn
+each frame no single one makes way, so the set froze (c10 after the ladder's
+earlier maps on the PSP-3000: 54 copies in 271 of 616 KB, full in 300 of 300
+frames, 84% of draws from a copy; c10 fresh packed 72 in 541 KB, 100%;
+43239343948 against 43276455249). So the span of the room the newcomer would
+fill whose copies were read least (their reads together, against the
+newcomer's alone: the GE then reads more from VRAM) makes way, if that's
+less than the newcomer's by a quarter (no swapping back and forth); its
+copies go into quarantine like any let go, and the newcomer takes the span
+once they're out. A span starts at the room's start or a copy's end. TRUE
+when a span was let go */
+static int vm_make_room(struct vm_entry const *best)
+{
+	unsigned short *order = vm_order;
+	unsigned int bytes = best->bytes, start;
+	unsigned long long cheapest = ~0ull;
+	int n = 0, k, j, from, chosen = -1;
+
+	if (vm_pack < 0)
+		vm_pack = !psp_keep("vmpackoff");
+	if (!vm_pack)
+		return 0;
+	for (k = 0; k < vm_count; k++)
+	{
+		struct vm_entry *e = &vm[k];
+
+		if (e->at == VM_NONE)
+			continue;
+		for (j = n; j > 0 && vm[order[j - 1]].at > e->at; j--)
+			order[j] = order[j - 1];
+		order[j] = (unsigned short)k;
+		n++;
+	}
+	/* from = -1: the span at the room's start; else the span after copy from */
+	for (from = -1; from < n; from++)
+	{
+		unsigned long long reads = 0;
+
+		start = from < 0 ? 0 : (vm[order[from]].at + vm[order[from]].held + 15) & ~15u;
+		if (start + bytes > vm_size)
+			break;
+		for (k = from + 1; k < n && vm[order[k]].at < start + bytes; k++)
+			if (!vm[order[k]].released)
+				reads += vm[order[k]].reads;
+		if (reads < cheapest)
+		{
+			cheapest = reads;
+			chosen = from;
+		}
+	}
+	if (chosen < -1 || cheapest == ~0ull || cheapest + cheapest / 4 >= best->reads)
+		return 0;
+	start = chosen < 0 ? 0 : (vm[order[chosen]].at + vm[order[chosen]].held + 15) & ~15u;
+	for (k = chosen + 1; k < n && vm[order[k]].at < start + bytes; k++)
+		if (!vm[order[k]].released)
+		{
+			vm_release(&vm[order[k]]);
+			vm_pack_copies++;
+		}
+	vm_packs++;
+	return 1;
+}
+
 /* the frame's end: the best buffers without a copy get one, room allowing;
-when there's none, the least-read copy not drawn lately makes way */
+when there's none, the least-read copy not drawn lately makes way, or else
+the least-read span of copies (vm_make_room) */
 static void vm_frame_end(void)
 {
 	unsigned int budget = VM_COPY_BUDGET;
@@ -12841,7 +12960,8 @@ static void vm_frame_end(void)
 			if (!worst || (unsigned long long)worst->reads * best->bytes >= (unsigned long long)best->reads * worst->bytes)
 			{
 				vm_full++;
-				break;
+				(void)vm_make_room(best);
+				break; /* the span's room comes back after the quarantine */
 			}
 			vm_release(worst);
 			break; /* its room comes back after the quarantine */
@@ -12885,6 +13005,10 @@ static void vm_report(void)
 	platform_log("GE: vrammodels: %u buffers in %u of %u KB of VRAM; draws from a copy %lu of %lu, %lu KB copied, %lu copies let go, %lu times full (last 300 frames; %d buffers known)",
 		resident, bytes / 1024, vm_size / 1024, vm_redirects, vm_draws, vm_copied / 1024, vm_dropped, vm_full, vm_count);
 	vm_draws = vm_redirects = vm_copied = vm_dropped = vm_full = 0;
+	if (vm_packs)
+		platform_log("GE: vmpack: room made by a span of copies %lu times (%lu copies let go for it; last 300 frames)",
+			vm_packs, vm_pack_copies);
+	vm_packs = vm_pack_copies = 0;
 }
 
 /* rewrites a model vertex buffer for the GE, once; 0 if there's no room to
@@ -13499,9 +13623,12 @@ int psp_ge_pcv_check(void *block, const void *raw, unsigned int raw_bytes, const
 	return same;
 }
 
+static void far_report(void);
+
 /* the 300-frame report's line (psp_geo.c) */
 void psp_ge_pcv_report(void)
 {
+	far_report();
 	platform_log("GE: model parts drawn in the last 300 frames: %lu indices (the GE's vertices), %lu buffer vertices; %.0f and %.0f a frame",
 		model_drawn_indices, model_drawn_vertices, (double)model_drawn_indices / 300.0, (double)model_drawn_vertices / 300.0);
 	model_drawn_indices = model_drawn_vertices = 0;
@@ -16968,6 +17095,387 @@ static void halo_matrix(const float *node, ScePspFMatrix4 *model)
 	model->z.x = node[0] * node[7]; model->z.y = node[0] * node[8]; model->z.z = node[0] * node[9]; model->z.w = 0.0f;
 	model->w.x = node[10]; model->w.y = node[11]; model->w.z = node[12]; model->w.w = 1.0f;
 	relative(model);
+}
+
+/* The far level (docs/box_far_level.md): a model under farlevelN pixels
+drawn as the one part tools/farlevel.py baked, in place of its parts. The
+block (psp_geo.c locked it): its 64-byte header (word 2 the vertices, 3 the
+stride, 4 the indices, 5-7 the box's centre, 8-10 its scale, 11 the node, 13
+a list rather than a strip, 14 the bytes to the model's next node group or 0), the vertices (colour 5650, a 16-bit normal
+divided by the scale, a 16-bit position in the box), the indices.
+Untextured, lit by the GE with the model's own lights, each vertex's colour
+its material's ambient and diffuse */
+static unsigned long far_drawn = 0, far_vertices = 0, far_small = 0, far_small_vertices = 0, far_sprites = 0;
+#define PIN_UNIT(x) ((x) < 0.0f ? 0.0f : (x) > 1.0f ? 1.0f : (x))
+
+/* D1 (docs/box_far_level.md, slice 5): a static model under farspriteN px
+drawn as one quad of its sprite block: the view nearest the camera's
+azimuth in its node's frame, upright on the node's up axis and turned to
+the camera, its side the model's diameter. CLUT4 from the locked pack, alpha
+tested; unlit texels times the model's lights for a face toward the camera */
+static void far_sprite(const unsigned char *at)
+{
+	const unsigned int *head = (const unsigned int *)at;
+	const float *box = (const float *)(head + 5);
+	unsigned int node = head[11], views = head[4], size = head[3], best = 0, k;
+	ScePspFMatrix4 m;
+	struct sprite_corner { float u, v; unsigned int colour; float x, y, z; } *v;
+	float c[3], toward[3], up[3], right[3], length, scale2, local_x, local_y, best_dot = -2.0f, r = box[3];
+	static const float cosines[8] = { 1.0f, 0.70710678f, 0.0f, -0.70710678f, -1.0f, -0.70710678f, 0.0f, 0.70710678f };
+	static const float sines[8] = { 0.0f, 0.70710678f, 1.0f, 0.70710678f, 0.0f, -0.70710678f, -1.0f, -0.70710678f };
+	unsigned int colour, channel;
+	float light[3];
+	int i;
+
+	if (views != 8 || size != 32 || list_full())
+		return;
+	if (node >= (unsigned int)model_node_count)
+		node = 0;
+	halo_matrix(model_nodes + 13 * node, &m);
+	/* the centre, relative to the camera (halo_matrix's frame) */
+	c[0] = m.w.x + box[0] * m.x.x + box[1] * m.y.x + box[2] * m.z.x;
+	c[1] = m.w.y + box[0] * m.x.y + box[1] * m.y.y + box[2] * m.z.y;
+	c[2] = m.w.z + box[0] * m.x.z + box[1] * m.y.z + box[2] * m.z.z;
+	length = sqrtf(c[0] * c[0] + c[1] * c[1] + c[2] * c[2]);
+	if (length <= 0.0f)
+		return;
+	toward[0] = -c[0] / length;
+	toward[1] = -c[1] / length;
+	toward[2] = -c[2] / length;
+	/* the camera's azimuth in the node's frame: the view whose direction it
+	nears most */
+	scale2 = m.x.x * m.x.x + m.x.y * m.x.y + m.x.z * m.x.z;
+	local_x = (toward[0] * m.x.x + toward[1] * m.x.y + toward[2] * m.x.z) / scale2;
+	local_y = (toward[0] * m.y.x + toward[1] * m.y.y + toward[2] * m.y.z) / scale2;
+	for (k = 0; k < 8; k++)
+	{
+		float d = local_x * cosines[k] + local_y * sines[k];
+
+		if (d > best_dot)
+		{
+			best_dot = d;
+			best = k;
+		}
+	}
+	/* upright on the node's up axis, turned to the camera */
+	length = sqrtf(scale2);
+	up[0] = m.z.x / length;
+	up[1] = m.z.y / length;
+	up[2] = m.z.z / length;
+	right[0] = up[1] * toward[2] - up[2] * toward[1];
+	right[1] = up[2] * toward[0] - up[0] * toward[2];
+	right[2] = up[0] * toward[1] - up[1] * toward[0];
+	length = sqrtf(right[0] * right[0] + right[1] * right[1] + right[2] * right[2]);
+	if (length <= 1.0e-4f)
+		return;
+	r *= sqrtf(scale2);
+	for (i = 0; i < 3; i++)
+		right[i] *= r / length, up[i] *= r;
+	/* the model's lights on the half of it the camera sees: each light's
+	share is its mean over that half's faces, about 0.4 + 0.4 of its facing
+	the camera (a face toward the camera alone drew the far models dark) */
+	for (channel = 0; channel < 3; channel++)
+		light[channel] = (float)((model_ambient >> (8 * channel)) & 0xFF);
+	for (i = 0; i < model_light_count && i < 2; i++)
+	{
+		float d = toward[0] * model_light_toward[i].x + toward[1] * model_light_toward[i].y +
+			toward[2] * model_light_toward[i].z, share = 0.4f + 0.4f * d;
+
+		if (share > 0.0f)
+			for (channel = 0; channel < 3; channel++)
+				light[channel] += share * (float)((model_light_color[i] >> (8 * channel)) & 0xFF);
+	}
+	colour = 0xFF000000u;
+	for (channel = 0; channel < 3; channel++)
+		colour |= (unsigned int)(light[channel] > 255.0f ? 255.0f : light[channel]) << (8 * channel);
+	v = list_take(4 * sizeof(*v));
+	if (!v)
+		return;
+	for (i = 0; i < 4; i++)
+	{
+		float sx = (i & 1) ? 1.0f : -1.0f, sy = (i & 2) ? -1.0f : 1.0f;
+
+		v[i].u = (i & 1) ? 1.0f : 0.0f;
+		v[i].v = (i & 2) ? 1.0f : 0.0f;
+		v[i].colour = colour;
+		v[i].x = c[0] + sx * right[0] + sy * up[0];
+		v[i].y = c[1] + sx * right[1] + sy * up[1];
+		v[i].z = c[2] + sx * right[2] + sy * up[2];
+	}
+	model_lighting(0);
+	sceGuEnable(GU_TEXTURE_2D);
+	sceGuEnable(GU_ALPHA_TEST);
+	sceGuAlphaFunc(GU_GREATER, 0x80, 0xFF);
+	sceGuClutMode(GU_PSM_8888, 0, 0xFF, 0);
+	sceGuClutLoad(2, at + 64);
+	sceGuTexMode(GU_PSM_T4, 0, 0, 0);
+	sceGuTexImage(0, 32, 32, 32, at + 128 + best * 512);
+	sceGuTexFunc(GU_TFX_MODULATE, GU_TCC_RGBA);
+	sceGuTexFilter(GU_NEAREST, GU_NEAREST);
+	sceGuTexScale(1.0f, 1.0f);
+	sceGuTexOffset(0.0f, 0.0f);
+	sceGumMatrixMode(GU_MODEL);
+	sceGumLoadIdentity();
+	sceGumDrawArray(GU_TRIANGLE_STRIP, GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_32BITF | GU_TRANSFORM_3D, 4, NULL, v);
+	sceGuDisable(GU_ALPHA_TEST);
+}
+
+static void far_report(void)
+{
+	if (far_drawn)
+		platform_log("GE: farlevel: %lu models drawn as their far level in the last 300 frames, %lu vertices; %.1f and %.0f a frame; under 16 px (D1's and D2's ground) %.1f and %.0f a frame; as D1 sprites %.1f a frame",
+			far_drawn, far_vertices, (double)far_drawn / 300.0, (double)far_vertices / 300.0,
+			(double)far_small / 300.0, (double)far_small_vertices / 300.0, (double)far_sprites / 300.0);
+	far_drawn = far_vertices = far_small = far_small_vertices = far_sprites = 0;
+}
+
+static void far_sprite(const unsigned char *at);
+
+void psp_ge_draw_far(const void *block, unsigned int mask_low, unsigned int mask_high, const unsigned int *tints,
+	const void *sprite)
+{
+	const unsigned char *at = block;
+	unsigned int group = 0;
+
+	GE_DEFER(defer_draw_far(block, mask_low, mask_high, tints, sprite));
+	GE_BENCH_SKIP();
+	if (!frame_open || !block || !model_nodes)
+		return;
+	if (sprite)
+	{
+		far_sprite(sprite);
+		return;
+	}
+	sceGumMatrixMode(GU_MODEL);
+	sceGuDisable(GU_TEXTURE_2D);
+	sceGuDisable(GU_ALPHA_TEST);
+	sceGuDisable(GU_CULL_FACE);
+	model_lighting(1);
+	sceGuColorMaterial(GU_AMBIENT | GU_DIFFUSE);
+	/* one group a node, each with its node's matrix, so a model's moving
+	parts stay where they are near; word 14 leads to the next */
+	while (at)
+	{
+		const unsigned int *head = (const unsigned int *)at;
+		const float *box = (const float *)(head + 5);
+		unsigned int node = head[11];
+		ScePspFMatrix4 m;
+		ScePspFVector3 centre, half;
+
+		int shown = group < 32 ? (mask_low >> group) & 1 : (mask_high >> (group - 32)) & 1;
+
+		group++;
+		if (shown && head[2] && head[4] >= 3 && !list_full())
+		{
+			unsigned int source = (head[15] >> 16) & 7;
+
+			if (source >= 1 && source <= 4)
+			{
+				/* a part tinted by the object's change colour: its mean
+				colour (word 12) times that colour, as the material */
+				unsigned int mean = head[12], tint = tints[source - 1], colour = 0xFF000000u, c;
+
+				for (c = 0; c < 24; c += 8)
+					colour |= ((((mean >> c) & 0xFF) * ((tint >> c) & 0xFF) + 127) / 255) << c;
+				sceGuColorMaterial(0);
+				sceGuMaterial(GU_AMBIENT | GU_DIFFUSE, (int)colour);
+			}
+			else
+				sceGuColorMaterial(GU_AMBIENT | GU_DIFFUSE);
+			centre.x = box[0];
+			centre.y = box[1];
+			centre.z = box[2];
+			/* the GE reads a 16-bit position as q / 32768; the bake wrote
+			q / 32767 (its normals take the same scale, and were divided by it) */
+			half.x = box[3] * (32768.0f / 32767.0f);
+			half.y = box[4] * (32768.0f / 32767.0f);
+			half.z = box[5] * (32768.0f / 32767.0f);
+			if (head[1] & 0x20000u)
+			{
+				/* a skinned model's batch: up to 8 nodes, one a vertex, each
+				bone its node's matrix with the box folded in (the position
+				centre + half q in the node's frame), the model matrix the
+				identity */
+				const unsigned char *bones = at + 64;
+				unsigned int k = head[11] > 8 ? 8 : head[11], b;
+
+				for (b = 0; b < k; b++)
+				{
+					ScePspFMatrix4 bone;
+
+					node = bones[b] < (unsigned int)model_node_count ? bones[b] : 0;
+					halo_matrix(model_nodes + 13 * node, &m);
+					bone.x.x = m.x.x * half.x; bone.x.y = m.x.y * half.x; bone.x.z = m.x.z * half.x; bone.x.w = 0.0f;
+					bone.y.x = m.y.x * half.y; bone.y.y = m.y.y * half.y; bone.y.z = m.y.z * half.y; bone.y.w = 0.0f;
+					bone.z.x = m.z.x * half.z; bone.z.y = m.z.y * half.z; bone.z.z = m.z.z * half.z; bone.z.w = 0.0f;
+					bone.w.x = m.w.x + centre.x * m.x.x + centre.y * m.y.x + centre.z * m.z.x;
+					bone.w.y = m.w.y + centre.x * m.x.y + centre.y * m.y.y + centre.z * m.z.y;
+					bone.w.z = m.w.z + centre.x * m.x.z + centre.y * m.y.z + centre.z * m.z.z;
+					bone.w.w = 1.0f;
+					sceGuBoneMatrix(b, &bone);
+				}
+				sceGumLoadIdentity();
+				sceGumDrawArray(head[13] ? GU_TRIANGLES : GU_TRIANGLE_STRIP,
+					GU_WEIGHTS(k ? k : 1) | GU_WEIGHT_8BIT | GU_COLOR_5650 | GU_NORMAL_16BIT | GU_VERTEX_16BIT |
+					GU_INDEX_16BIT | GU_TRANSFORM_3D, (int)head[4],
+					(const unsigned short *)(at + 80 + head[3] * head[2]), at + 80);
+			}
+			else
+			{
+				if (node >= (unsigned int)model_node_count)
+					node = 0;
+				halo_matrix(model_nodes + 13 * node, &m);
+				sceGumLoadMatrix(&m);
+				sceGumTranslate(&centre);
+				sceGumScale(&half);
+				sceGumDrawArray(head[13] ? GU_TRIANGLES : GU_TRIANGLE_STRIP,
+					GU_COLOR_5650 | GU_NORMAL_16BIT | GU_VERTEX_16BIT | GU_INDEX_16BIT | GU_TRANSFORM_3D, (int)head[4],
+					(const unsigned short *)(at + 64 + head[3] * head[2]), at + 64);
+			}
+		}
+		at = head[14] ? at + head[14] : NULL;
+	}
+	sceGuColorMaterial(0);
+	model_lighting(0);
+}
+
+/* render_model's (FIXES_FARLEVEL), on the main CPU after the model's begin
+(on by default; farlevelold turns it off, farlevelN sets the size):
+1 when the model's far level is drawn in place of its parts, 2 when in place
+of its solid pass's parts only (its decal and transparent passes still to
+draw) */
+static int far_pixels = -1;
+
+int psp_far_draw(unsigned long model, float pixels, const char *permutations, int permutation_count,
+	const float *change_colours)
+{
+	extern unsigned int psp_far_version;
+	unsigned int address, bytes, mask[2] = { 0, 0 }, group = 0, tints[4];
+	static int far_vram = -1;
+	const void *block;
+
+	if (far_pixels < 0)
+	{
+		/* farlevelN sets the size; the bare word (on by default) is 32 */
+		far_pixels = psp_keep_number("farlevel", 0);
+		if (far_pixels <= 0)
+			far_pixels = psp_keep("farlevel") ? 32 : 0;
+		if (far_pixels > 0)
+			platform_log("GE: farlevel: models under %d px drawn as their far level", far_pixels);
+	}
+	/* first person and the sky are left out by the caller's flags: this side's
+	model state is the recorded one's, not yet replayed */
+	if (far_pixels <= 0 || pixels >= (float)far_pixels || pixels <= 0.0f)
+		return 0;
+	if (far_vram < 0)
+		far_vram = !psp_keep("farvramoff");
+	address = psp_far_block(model, &bytes);
+	if (!address)
+		return 0;
+	block = psp_geo_lock(address, bytes);
+	if (!block)
+		return 0;
+	/* the groups this object shows: always-drawn ones, and those of the
+	permutation it shows of each region (none for a region it hides). Counted
+	here, on the main CPU: the draw itself is mostly the ME's replay */
+	{
+		const unsigned char *at = block;
+
+		while (at && group < 64)
+		{
+			const unsigned int *head = (const unsigned int *)at;
+			unsigned int key = psp_far_version >= 3 ? head[15] & 0xFFFFu : 0xFFFFu, region = key & 0xFF;
+
+			if (key == 0xFFFFu || ((int)region < permutation_count && permutations &&
+				permutations[region] == (char)(key >> 8)))
+			{
+				/* known to vrammodels as a converted model buffer is, so the
+				GE can read it from a VRAM copy rather than main RAM beside
+				the tick (tickalone's pair: the far level's tick cost was the
+				drawing's reads during the tick) */
+				if (far_vram && head[2])
+					vm_note((void *)(at + ((head[1] & 0x20000u) ? 80 : 64)), head[3] * head[2]);
+				mask[group >> 5] |= 1u << (group & 31);
+				far_vertices += head[2];
+				if (pixels < 16.0f)
+					far_small_vertices += head[2];
+			}
+			group++;
+			at = head[14] ? at + head[14] : NULL;
+		}
+	}
+	/* the object's four change colours, as ABGR, for its tinted groups */
+	{
+		int k;
+
+		for (k = 0; k < 4; k++)
+		{
+			float const *rgb = change_colours ? change_colours + 3 * k : NULL;
+			unsigned int r = rgb ? (unsigned int)(PIN_UNIT(rgb[0]) * 255.0f + 0.5f) : 255;
+			unsigned int g = rgb ? (unsigned int)(PIN_UNIT(rgb[1]) * 255.0f + 0.5f) : 255;
+			unsigned int b = rgb ? (unsigned int)(PIN_UNIT(rgb[2]) * 255.0f + 0.5f) : 255;
+
+			tints[k] = 0xFF000000u | b << 16 | g << 8 | r;
+		}
+	}
+	/* D1: under farspriteN px (farsprite: 16) a model with a sprite block
+	(its chain's last) draws that instead */
+	{
+		static int sprite_pixels = -1;
+		const void *sprite = NULL;
+
+		/* off by default: priced alone on the PSP-3000 it gave the flight's
+		frame nothing and its drawing +0.7 ms (the lab's sierra-hw 43232731029);
+		farsprite (16 px) or farspriteN turns it on */
+		if (sprite_pixels < 0)
+		{
+			sprite_pixels = psp_keep_number("farsprite", 0);
+			if (sprite_pixels <= 0)
+				sprite_pixels = psp_keep("farsprite") ? 16 : 0;
+		}
+		if (pixels < (float)sprite_pixels)
+		{
+			const unsigned char *at = block;
+
+			while (at)
+			{
+				const unsigned int *head = (const unsigned int *)at;
+
+				if (head[1] & 0x40000u)
+					sprite = at;
+				at = head[14] ? at + head[14] : NULL;
+			}
+		}
+		/* the sprite's size on screen from its own radius: the engine's pixels
+		come from the object's bounding sphere, which can be far smaller than
+		its shape (farlevel15: trees ~50 px tall read under 16) */
+		if (sprite && model_nodes)
+		{
+			const unsigned int *head = sprite;
+			const float *box = (const float *)(head + 5);
+			unsigned int node = head[11] < (unsigned int)model_node_count ? head[11] : 0;
+			ScePspFMatrix4 m;
+			float c[3], distance, scale;
+
+			halo_matrix(model_nodes + 13 * node, &m);
+			c[0] = m.w.x + box[0] * m.x.x + box[1] * m.y.x + box[2] * m.z.x;
+			c[1] = m.w.y + box[0] * m.x.y + box[1] * m.y.y + box[2] * m.z.y;
+			c[2] = m.w.z + box[0] * m.x.z + box[1] * m.y.z + box[2] * m.z.z;
+			distance = sqrtf(c[0] * c[0] + c[1] * c[1] + c[2] * c[2]);
+			scale = sqrtf(m.x.x * m.x.x + m.x.y * m.x.y + m.x.z * m.x.z);
+			if (distance <= 0.0f || 2.0f * box[3] * scale * pixels_per_unit() >= (float)sprite_pixels * distance)
+				sprite = NULL;
+		}
+		psp_ge_draw_far(block, mask[0], mask[1], tints, sprite);
+		if (sprite)
+			far_sprites++;
+	}
+	far_drawn++;
+	if (pixels < 16.0f)
+		far_small++;
+	/* 2: the model's decal and transparent parts are still to be drawn as
+	they are (the bake's PCV_FAR_KEEPS) */
+	return (((const unsigned int *)block)[1] & 0x10000u) ? 2 : 1;
 }
 
 static void node_matrix(const void *vertices, const unsigned short *indices, ScePspFMatrix4 *model)

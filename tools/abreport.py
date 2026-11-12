@@ -125,7 +125,66 @@ def not_used(path):
 
 
 MIN_BEATS = 3   # heartbeats a run needs in a stretch before its gap is read
+PART_UNITS = 5.0   # world units between the sides' players, two samples running, that mean play has parted (a ride's own spread between sides is 1-4)
+PLAYER_AT = re.compile(r"player: at (-?[0-9.]+) (-?[0-9.]+) (-?[0-9.]+)")
+HEARTBEAT_TIME = re.compile(r"heartbeat: game time ([0-9]+)")
 
+
+def player_path(path):
+    """the player's place at each heartbeat: (game time, x, y, z), the place
+    taken from the 'player: at' line that follows the heartbeat"""
+    path_out, now = [], None
+    try:
+        with open(path, errors="replace") as f:
+            for line in f:
+                line = re.sub(r"^\[t [0-9.]+\] ", "", line)
+                m = HEARTBEAT_TIME.match(line)
+                if m:
+                    now = int(m.group(1))
+                    continue
+                m = PLAYER_AT.match(line)
+                if m and now is not None:
+                    path_out.append((now,) + tuple(float(m.group(k)) for k in (1, 2, 3)))
+                    now = None
+    except OSError:
+        pass
+    return path_out
+
+
+def parted_at(base_paths, other_paths):
+    """the game time from which the sides' players stay more than PART_UNITS
+    apart to the run's end, on two samples or more (a change that isn't exact makes a pad replay play
+    a different game from there on, so later stretches compare different
+    games); None if never. The other run's place is interpolated to the base
+    run's game time, since their heartbeats fall at different ticks"""
+    def place(path, g):
+        for k in range(1, len(path)):
+            g0, g1 = path[k - 1][0], path[k][0]
+            if g0 <= g <= g1 and g1 > g0:
+                f = (g - g0) / float(g1 - g0)
+                return tuple(path[k - 1][j] + f * (path[k][j] - path[k - 1][j]) for j in (1, 2, 3))
+        return None
+
+    first = None
+    for a in base_paths:
+        for b in other_paths:
+            # the parting is the start of the last run of samples apart, if it lasts to the
+            # run's end: a ride both sides follow (the Pelican moves ~10 units a heartbeat, so
+            # the interpolation strays) comes back together, a parted game doesn't
+            streak_start, streak = None, 0
+            for g, x, y, z in a:
+                q = place(b, g)
+                if q is None:
+                    continue
+                if ((q[0] - x) ** 2 + (q[1] - y) ** 2 + (q[2] - z) ** 2) ** 0.5 > PART_UNITS:
+                    if streak == 0:
+                        streak_start = g
+                    streak += 1
+                else:
+                    streak = 0
+            if streak >= 2:
+                first = streak_start if first is None else min(first, streak_start)
+    return first
 
 def verdict(base, other):
     if len(base) < 2 or len(other) < 2:
@@ -168,6 +227,14 @@ def main():
         if extra:
             print("**NOT USED: side %s's runs say what its keep words ask for wasn't used**, where %s's don't; "
                   "it may be %s again:\n%s\n" % (n, base, base, "\n".join("- `%s`" % x for x in extra)))
+    paths = {n: [player_path(p) for p in sides[n]] for n in names}
+    parted = {}
+    for n in names[1:]:
+        parted[n] = parted_at(paths[base], paths[n])
+        if parted[n] is not None:
+            print("**PLAY PARTED: side %s's player was over %.0f units from %s's by game time %d**: from there the pad "
+                  "replay plays a different game on each side, so stretches after it compare different games and get "
+                  "no verdict.\n" % (n, PART_UNITS, base, parted[n]))
     print("Sides: " + "; ".join("%s (%d runs)" % (n, len(sides[n])) for n in names) + ". Gaps are against **%s**.\n" % base)
     for part in a.stretches.split(","):
         title, span = part.split(":")
@@ -201,7 +268,8 @@ def main():
                     gap, word = "-", "-"
                 else:
                     gap = "%+.1f (%+.1f%%)" % (means[n] - means[base], 100.0 * (means[n] - means[base]) / means[base])
-                    word = "INVALID" if base in invalid or n in invalid else ("too short" if short else verdict(figures[metric, base], figures[metric, n]))
+                    word = "INVALID" if base in invalid or n in invalid else ("too short" if short else (
+                        "play parted" if parted.get(n) is not None and parted[n] < hi else verdict(figures[metric, base], figures[metric, n])))
                 label = metric if len(names) == 2 else "%s, %s" % (metric, n)
                 print("| %s | %s | %s | %s |" % (label, " | ".join(cells), gap, word))
         print()

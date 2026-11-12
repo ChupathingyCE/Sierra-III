@@ -28817,7 +28817,12 @@ long lruv_block_new("""),
 # room left between them is pieces. "soundloopstop": only the classes that
 # play as long loops (engines, machines, the devices' and the world's
 # ambience) take the top, so what is held long gathers there and the room
-# below heals as the short sounds end
+# below heals as the short sounds end. On by default since 2026-11-12 (the
+# lead's 09:49 pick for c10's pilot line): on the emulator's ladder the
+# captain's 346 KB line, held back 1,266 ms with 22 refusals by the default,
+# loaded on time with none (the lab's sndloops1 43302891095); play and both
+# seeds identical on every map of the ladder with fixed ticks (sndloops2
+# 43304560455). "soundloopstopoff": b113's placement, every big sound high
 FIXES_SOUND["source/cache/xbox_sound_cache.c#soundloopstop"] = [
 ("""	cache_block_index = lruv_block_new(
 		xbox_sound_cache_globals.cache,
@@ -28834,7 +28839,7 @@ FIXES_SOUND["source/cache/xbox_sound_cache.c#soundloopstop"] = [
 		struct lruv_cache *psp_high_saved = psp_lruv_high_cache;
 
 		if (psp_loops_top < 0)
-			psp_loops_top = psp_keep("soundloopstop");
+			psp_loops_top = !psp_keep("soundloopstopoff");
 		if (psp_loops_top && psp_high_saved)
 		{
 			short psp_class = sound_definition_get(sound->runtime_tag_index)->sound_class;
@@ -36244,6 +36249,72 @@ FIXES_SSPR["source/models/models.c#sspr"] = [
 ]
 
 
+# ---------- FIXES_FARLEVEL: the far level as one part (docs/box_far_level.md,
+# keep word farlevel or farlevelN). After the model's begin, a model drawn
+# under the threshold whose far level the bake made is drawn as that one part
+# (psp_ge.c, psp_far_draw), and its parts aren't drawn. The shadow pass, first
+# person and the sky (the immediate flag) keep their parts. Drawing only
+FIXES_FARLEVEL = {}
+FIXES_FARLEVEL["source/models/models.c#farlevelpass"] = [
+("""static char default_render_model_region_permutation_indices[MAXIMUM_REGIONS_PER_MODEL] = { 0 };
+""",
+ """static char default_render_model_region_permutation_indices[MAXIMUM_REGIONS_PER_MODEL] = { 0 };
+#ifdef HALO_PSP
+/* the first pass render_model_parts draws: the decal pass when a far level
+stood in for the solid one (psp_fixups.py, FIXES_FARLEVEL) */
+static short psp_far_pass_from = _render_model_pass_solid;
+#endif
+"""),
+("""	for (pass = _render_model_pass_solid; pass<=last_pass; pass++)
+""",
+ """#ifdef HALO_PSP
+	for (pass = psp_far_pass_from; pass<=last_pass; pass++)
+#else
+	for (pass = _render_model_pass_solid; pass<=last_pass; pass++)
+#endif
+"""),
+]
+FIXES_FARLEVEL["source/models/models.c#farlevel"] = [
+("""			rasterizer_model_begin(&model_parameters, FALSE);
+		}
+#ifdef HALO_PSP
+		/* psp_fixups.py (FIXES_RLOOP)""",
+"""			rasterizer_model_begin(&model_parameters, FALSE);
+		}
+#ifdef HALO_PSP
+		/* psp_fixups.py (FIXES_FARLEVEL) */
+		{
+			int psp_far_draw(unsigned long model, float pixels, const char *permutations, int permutation_count,
+				const float *change_colours);
+			int psp_far = 0;
+
+			if (!TEST_FLAG(flags, _render_model_shadow_bit) && !TEST_FLAG(flags, _render_model_first_person_bit) &&
+				!TEST_FLAG(flags, _render_model_immediate_bit))
+				psp_far = psp_far_draw((unsigned long)model_index, level_of_detail_pixels,
+					(const char *)region_permutation_indices, (int)region_permutation_count, (const float *)change_colors);
+			if (psp_far)
+			{
+				/* the far level stands in for the solid pass: the decal and
+				transparent passes' parts (a lamp's beam, glass, leaves) are
+				drawn as they are, outside RLOOP's notes (their key would
+				hold the solid pass's calls) */
+				if (psp_far == 2)
+				{
+					psp_far_pass_from = _render_model_pass_decal;
+					render_model_parts(model, region_permutation_indices, region_permutation_count,
+						&model_parameters.skinning, unique_identifier, geometry_detail_level_index,
+						forced_shader_permutation_index, flags);
+					psp_far_pass_from = _render_model_pass_solid;
+				}
+				goto psp_rl_done;
+			}
+		}
+#endif
+#ifdef HALO_PSP
+		/* psp_fixups.py (FIXES_RLOOP)"""),
+]
+
+
 # ---------- FIXES_VEHPROBE: a moving vehicle's empty surroundings asked once
 # Each tick a moving vehicle asks, for every mass point (22 on a banshee), a
 # ground query (collision_get_features_in_sphere about the point) and, in the
@@ -37248,6 +37319,37 @@ FIXES_LOOKREAL["source/game/player_control.c#padrec"] = [
 
 		psp_pad_blob(local_player_index, &input, (int)sizeof(input));
 	}
+#endif
+"""),
+]
+FIXES_LOOKREAL["source/main/main.c#padmenu"] = [
+("""			MAIN_STAGE("process_ui_widgets");
+			process_ui_widgets();
+""",
+ """			MAIN_STAGE("process_ui_widgets");
+			process_ui_widgets();
+#ifdef HALO_PSP
+			/* the pad recorder (psp_pad.c): what the menus just did that the
+			input blobs don't carry (the pause; the pause menu's restart and
+			revert, acted on at the next frame's start), recorded, or set
+			again from the recording at the same frame */
+			if (main_globals.connection == _game_connection_local && !main_globals.movie && game_in_progress())
+			{
+				extern int psp_pad_menu(int state);
+				int state = (game_time_get_paused() ? 1 : 0) | (main_globals.revert_map ? 2 : 0) |
+					(main_globals.reset_map ? 4 : 0);
+				int replayed = psp_pad_menu(state);
+
+				if (replayed >= 0)
+				{
+					if ((replayed & 1) != (state & 1))
+						game_time_set_paused((replayed & 1) ? TRUE : FALSE);
+					if ((replayed & 2) && !main_globals.revert_map)
+						main_revert_map();
+					if ((replayed & 4) && !main_globals.reset_map)
+						main_reset_map();
+				}
+			}
 #endif
 """),
 ]
@@ -44280,6 +44382,1662 @@ void psp_aime_pf_apply(
 
 """ + _PSP_PF_ME),
 ]
+# ---------- FIXES_AITICKOLD: the frame's second tick thought on the ME with its first (build switch PSP_AITICKOLD=1, keep word "aitickold"; off)
+# A compromise (not exact by design). With aime2a, the thinking for a frame's
+# first tick runs on the ME during the record, from the world the frame's
+# last tick left, and the thinking for its second tick runs on the main CPU
+# at that tick's start. "aitickold" moves the second onto the ME too, in the
+# same job right after the first: it thinks with the game time one tick on,
+# from the same world, so the second tick's AI reacts to the world one tick
+# older than it would. The world holds still through the record, so the ME
+# reads it as the first pass does; no snapshot is needed. Its marks, its pass
+# time and its share of 1b's queue are kept apart from the first pass's: the
+# first tick uses the first pass's marks (with the second's thinking already
+# in the actors' state), the second tick the second's. A second pass cut by
+# the collection's word leaves its unreached actors to think whole in the
+# tick, as the first pass's are; no second pass (the job refused, the first
+# cut) leaves the second tick's pass on the main CPU, as without it. The
+# AI doesn't run on a multiplayer client, and aime is campaign only
+AITICKOLD = os.environ.get("PSP_AITICKOLD", "") == "1"
+FIXES_AITICKOLD = {}
+FIXES_AITICKOLD["source/ai/actors.c#aitickold"] = [
+("""static long psp_aime_logged = NONE;
+""",
+ """static long psp_aime_logged = NONE;
+/* FIXES_AITICKOLD: "aitickold" (see there). The second pass's game time,
+marks and queue share, the ME's to write while its job runs */
+static PSP_AIME_ME_SIDE long psp_aime_pass_time_b = NONE;
+static PSP_AIME_ME_SIDE unsigned long psp_aime_slot_pass_b[MAXIMUM_ACTORS];
+static PSP_AIME_ME_SIDE short psp_aime_slot_identifier_b[MAXIMUM_ACTORS];
+/* TRUE while the second pass runs: game_time.c's clock one tick on */
+PSP_AIME_ME_SIDE int psp_aitickold_now = 0;
+static PSP_AIME_ME_SIDE short psp_aime_queue_split = -1;
+static PSP_AIME_ME_SIDE long psp_aime_queue_time_b = NONE;
+static struct
+{
+	unsigned long passes, actors, cut;
+} psp_aitickold_me_stats PSP_AIME_ME_SIDE;
+/* written by the main CPU before the push, read by the ME */
+static int psp_aitickold_on = -1, psp_aitickold_want = 0;
+static struct
+{
+	unsigned long asked, used, inline_passes, queue_carried;
+} psp_aitickold_stats;
+"""),
+("""	return !psp_aime_think_only && psp_aime_pass_time != NONE && psp_aime_pass_time == game_time_get() &&
+""",
+ """	if (!psp_aime_think_only && psp_aime_pass_time_b != NONE && psp_aime_pass_time_b == game_time_get() &&
+		psp_aime_pass_time != psp_aime_pass_time_b)
+		return absolute_index >= 0 && absolute_index < MAXIMUM_ACTORS &&
+			psp_aime_slot_pass_b[absolute_index] == psp_aime_pass &&
+			psp_aime_slot_identifier_b[absolute_index] == actor_get(actor_index)->identifier;
+	return !psp_aime_think_only && psp_aime_pass_time != NONE && psp_aime_pass_time == game_time_get() &&
+"""),
+("""	psp_aime_slot_pass[absolute_index] = psp_aime_pass;
+	psp_aime_slot_identifier[absolute_index] = actor_get(actor_index)->identifier;
+	psp_aime_stats.ahead++;
+""",
+ """	if (psp_aitickold_now)
+	{
+		psp_aime_slot_pass_b[absolute_index] = psp_aime_pass;
+		psp_aime_slot_identifier_b[absolute_index] = actor_get(actor_index)->identifier;
+		psp_aitickold_me_stats.actors++;
+		return;
+	}
+	psp_aime_slot_pass[absolute_index] = psp_aime_pass;
+	psp_aime_slot_identifier[absolute_index] = actor_get(actor_index)->identifier;
+	psp_aime_stats.ahead++;
+"""),
+("""	boolean psp_ahead = psp_aime_active() && psp_aime_pass_time != NONE && psp_aime_pass_time == game_time_get();
+""",
+ """	boolean psp_ahead = psp_aime_active() && ((psp_aime_pass_time != NONE && psp_aime_pass_time == game_time_get()) ||
+		(psp_aime_pass_time_b != NONE && psp_aime_pass_time_b == game_time_get()));
+"""),
+("""	if (!psp_ahead)
+		psp_perception_end();
+	psp_aime_pass_time = NONE;
+""",
+ """	if (!psp_ahead)
+		psp_perception_end();
+	psp_aime_pass_time = NONE;
+	/* (the second pass's time is the next tick's until that tick has run) */
+	if (psp_aime_pass_time_b != NONE && psp_aime_pass_time_b <= game_time_get())
+		psp_aime_pass_time_b = NONE;
+"""),
+# the second pass keeps the first's number (each has its own marks) and the
+# seed's time, so the next frame's pass doesn't take the seed afresh
+("""	psp_aime_seed_time = now;
+	psp_aime_pass++;
+""",
+ """	if (!psp_aitickold_now)
+	{
+		psp_aime_seed_time = now;
+		psp_aime_pass++;
+	}
+"""),
+("""	if (psp_aime_queue_count)
+	{
+		/* the last pass's queue never reached an ai_update */
+""",
+ """	if (psp_aitickold_now)
+	{
+		/* the first pass's calls stay for the first tick; the second's follow */
+		psp_aime_queue_split = psp_aime_queue_count;
+		return;
+	}
+	psp_aime_queue_split = -1;
+	if (psp_aime_queue_count)
+	{
+		/* the last pass's queue never reached an ai_update */
+"""),
+("""	psp_aime_think_only = FALSE;
+	psp_aime_pass_time = now;
+	psp_aime_queue_time = now;
+""",
+ """	psp_aime_think_only = FALSE;
+	if (psp_aitickold_now)
+	{
+		psp_aime_pass_time_b = now;
+		psp_aime_queue_time_b = now;
+	}
+	else
+	{
+		psp_aime_pass_time = now;
+		psp_aime_queue_time = now;
+		psp_aime_pass_time_b = NONE;
+	}
+"""),
+# 1b's queue: the first tick applies the first pass's calls and carries the
+# second's to the second tick
+("""void psp_aime_collect(
+	void)
+{
+	short count = psp_aime_queue_count, k;
+
+	if (!count)
+		return;
+	psp_aime_queue_count = 0;
+	if (psp_aime_queue_time == NONE || psp_aime_queue_time != game_time_get())
+	{
+		psp_aime1b_stats.stale += count;
+		return;
+	}
+""",
+ """void psp_aime_collect(
+	void)
+{
+	short count = psp_aime_queue_count, k, split = count, later = 0;
+
+	if (psp_aime_queue_split >= 0 && psp_aime_queue_split <= count)
+	{
+		split = psp_aime_queue_split;
+		later = count - split;
+		count = split;
+	}
+	psp_aime_queue_split = -1;
+	if (!count && !later)
+		return;
+	psp_aime_queue_count = 0;
+	if (count && (psp_aime_queue_time == NONE || psp_aime_queue_time != game_time_get()))
+	{
+		psp_aime1b_stats.stale += count;
+		count = 0;
+	}
+"""),
+("""		psp_aime1b_stats.applied++;
+	}
+}
+""",
+ """		psp_aime1b_stats.applied++;
+	}
+	if (later)
+	{
+		for (k = 0; k < later; k++)
+			psp_aime_queue[k] = psp_aime_queue[split + k];
+		psp_aime_queue_count = later;
+		psp_aime_queue_time = psp_aime_queue_time_b;
+		psp_aitickold_stats.queue_carried += later;
+	}
+}
+"""),
+# the job: the second pass right after the first, unless the first was cut
+("""	psp_aime_job_now[0] = 1;
+	psp_aime_think();
+	psp_aime_job_now[0] = 0;
+""",
+ """	psp_aime_job_now[0] = 1;
+	psp_aime_think();
+	if (psp_aitickold_want && !psp_aime_late_now && !psp_aime2a_guard_hit && !psp_me_aime_guard_touched())
+	{
+		psp_aitickold_now = 1;
+		psp_aime_think();
+		psp_aitickold_now = 0;
+		psp_aitickold_me_stats.passes++;
+		if (psp_aime_late_now)
+			psp_aitickold_me_stats.cut++;
+	}
+	psp_aime_job_now[0] = 0;
+"""),
+("""/* game_time.c, before game_frame: the frame's last pass to the ME */
+""",
+ """/* FIXES_AITICKOLD: "aitickold" (see there), with aime2a */
+static boolean psp_aitickold_active(
+	void)
+{
+	if (psp_aitickold_on < 0)
+	{
+		psp_aitickold_on = psp_keep("aitickold") != 0;
+		if (psp_aitickold_on)
+			platform_psp_log("ai: a frame's second tick thought on the Media Engine with its first, from the world one tick older (aitickold: a compromise)");
+	}
+	return psp_aitickold_on > 0 && psp_aime2a_active();
+}
+
+/* the second tick's pass already made by the job */
+static boolean psp_aitickold_covers(
+	void)
+{
+	return psp_aime_pass_time_b != NONE && psp_aime_pass_time_b == game_time_get();
+}
+
+/* game_time.c, before game_frame: the frame's last pass to the ME */
+"""),
+("""	psp_aime2a_stats.pushed++;
+	psp_aime2a_out = TRUE;
+""",
+ """	psp_aitickold_want = psp_aitickold_active();
+	if (psp_aitickold_want)
+		psp_aitickold_stats.asked++;
+	psp_aime2a_stats.pushed++;
+	psp_aime2a_out = TRUE;
+"""),
+("""	if (psp_aime2a_owed)
+	{
+		psp_aime2a_owed = FALSE;
+		if (psp_aime_update_allowed())
+		{
+			psp_aime2a_stats.inline_passes++;
+""",
+ """	if (psp_aime2a_owed)
+	{
+		psp_aime2a_owed = FALSE;
+		if (psp_aitickold_covers())
+			psp_aitickold_stats.used++;
+		else if (psp_aime_update_allowed())
+		{
+			if (psp_aitickold_on > 0)
+				psp_aitickold_stats.inline_passes++;
+			psp_aime2a_stats.inline_passes++;
+"""),
+("""static void psp_aime2a_log(
+	long now)
+{
+	if (psp_aime2a_on <= 0)
+		return;
+""",
+ """static void psp_aime2a_log(
+	long now)
+{
+	if (psp_aime2a_on <= 0)
+		return;
+	if (psp_aitickold_on > 0)
+		platform_psp_log("aitickold: game time %ld | second passes asked %lu, made on the ME %lu (cut by the word %lu), actors thought for the second tick %lu | second ticks that used them %lu, thought on the main CPU instead %lu | queued calls carried to the second tick %lu",
+			now, psp_aitickold_stats.asked, psp_aitickold_me_stats.passes, psp_aitickold_me_stats.cut, psp_aitickold_me_stats.actors,
+			psp_aitickold_stats.used, psp_aitickold_stats.inline_passes, psp_aitickold_stats.queue_carried);
+"""),
+]
+# "aitickoldself" and "aitickoldaim" (recon's S3 variant; off): the second
+# pass reads the world as the frame's first tick found it, so on the tick it
+# covers an actor acts from its own position and its fire target's one tick
+# old (the line of fire and the burst target are already the tick's, in
+# actor_combat_update). "aitickoldself" samples the actor's own position
+# again before it acts; "aitickoldaim" (implies it) also refreshes its prop
+# target's position as perception's update would. The main CPU's, in the tick
+FIXES_AITICKOLD["source/ai/actors.c#aitickoldfresh"] = [
+("""static void actor_update(
+	long actor_index)
+{""",
+ """/* FIXES_AITICKOLD: "aitickoldself", "aitickoldaim" (see there) */
+static int psp_aitickold_fresh_on = -1;
+static unsigned long psp_aitickold_fresh_self, psp_aitickold_fresh_aim;
+static long psp_aitickold_fresh_logged = NONE;
+
+static void psp_aitickold_refresh(
+	long actor_index)
+{
+	struct actor_datum *actor = actor_get(actor_index);
+	long now = game_time_get();
+
+	if (psp_aitickold_fresh_on < 0)
+	{
+		psp_aitickold_fresh_on = psp_keep("aitickoldaim") ? 2 : psp_keep("aitickoldself") ? 1 : 0;
+		if (psp_aitickold_fresh_on)
+			platform_psp_log("aitickold: the covered tick re-reads the actor's own position%s (%s)",
+				psp_aitickold_fresh_on == 2 ? " and its fire target's" : "",
+				psp_aitickold_fresh_on == 2 ? "aitickoldaim" : "aitickoldself");
+	}
+	if (!psp_aitickold_fresh_on || psp_aitickold_on <= 0 || psp_aime_pass_time_b == NONE ||
+		psp_aime_pass_time_b != now || psp_aime_pass_time == psp_aime_pass_time_b ||
+		actor->meta.swarm || actor->meta.unit_index == NONE)
+		return;
+	actor_input_sample_position(actor_index, actor->meta.unit_index, &actor->input.position);
+	psp_aitickold_fresh_self++;
+	if (psp_aitickold_fresh_on == 2 && actor->control.current_fire_target_type == _actor_fire_target_prop &&
+		actor->control.current_fire_target_prop_index != NONE)
+	{
+		struct prop_datum *prop = prop_get(actor->control.current_fire_target_prop_index);
+
+		/* perception's own rule: an in-use prop past acknowledging is refreshed */
+		if (prop->in_use && prop->state > _prop_state_becoming_acknowledged &&
+			prop->state < _prop_state_uninspected_orphan)
+		{
+			struct actor_position_data position;
+
+			prop_position_refresh(actor_index, actor->control.current_fire_target_prop_index, &position, FALSE, FALSE);
+			psp_aitickold_fresh_aim++;
+		}
+	}
+	if (psp_aitickold_fresh_logged == NONE || now < psp_aitickold_fresh_logged || now - psp_aitickold_fresh_logged >= 900)
+	{
+		if (psp_aitickold_fresh_logged != NONE)
+			platform_psp_log("aitickoldfresh: game time %ld | own positions re-read %lu, fire targets refreshed %lu",
+				now, psp_aitickold_fresh_self, psp_aitickold_fresh_aim);
+		psp_aitickold_fresh_logged = now;
+	}
+}
+
+static void actor_update(
+	long actor_index)
+{"""),
+("""		psp_aicad_seen(actor_index);
+		}
+#else""",
+ """		psp_aicad_seen(actor_index);
+		}
+		else
+			psp_aitickold_refresh(actor_index);
+#else"""),
+]
+# "aitickoldclock" (recon's S3 split; off): the second pass reads the true
+# game time, as the first does; its marks and queue still count it the next
+# tick's. Against "aitickold" alone it tells what the clock one tick on does
+# from what the pass's early writes do
+FIXES_AITICKOLD["source/ai/actors.c#aitickoldclock"] = [
+("""	psp_aitickold_want = psp_aitickold_active();
+""",
+ """	psp_aitickold_want = psp_aitickold_active();
+	{
+		static int psp_aitickold_clock_on = -1;
+
+		if (psp_aitickold_clock_on < 0)
+		{
+			psp_aitickold_clock_on = psp_keep("aitickoldclock") != 0;
+			if (psp_aitickold_clock_on)
+				platform_psp_log("aitickold: the second pass reads the true game time (aitickoldclock)");
+		}
+		psp_aitickold_trueclock = psp_aitickold_want && psp_aitickold_clock_on;
+	}
+"""),
+("""	if (!psp_aime_active())
+		return;
+	now = game_time_get();
+	/* a new map or a reverted game""",
+ """	if (!psp_aime_active())
+		return;
+	now = game_time_get();
+	/* aitickoldclock: the pass is still the next tick's */
+	if (psp_aitickold_now && psp_aitickold_trueclock)
+		now++;
+	/* a new map or a reverted game"""),
+("""static long psp_aime_logged = NONE;
+/* FIXES_AITICKOLD""",
+ """static long psp_aime_logged = NONE;
+/* FIXES_AITICKOLD: "aitickoldclock" (see there); the main CPU's, before the push */
+int psp_aitickold_trueclock = 0;
+/* FIXES_AITICKOLD"""),
+]
+# "aitickoldbuf" (off): the second pass's thinking kept for its own tick. With
+# "aitickold" alone the second pass writes the actors' state during the
+# record, so the frame's first tick acts on the second pass's decisions
+# (made for the tick after, its clock one tick on) and the second tick acts
+# with no thinking of its own: the AI thinks twice in a row and acts twice
+# from it. Here each actor's second thinking is taken back once made: what
+# it changed (the actor's words, its props' words, the props it made or
+# deleted) goes into a record, and the actor's state and props return to
+# the first pass's, so the first tick acts exactly on its own thinking. At
+# the second tick's start, where the main CPU's pass would think, the
+# records are put in, over what the first tick did: the bits the thinking
+# changed take its value, the rest keep the first tick's (the order the
+# thinking and the tick's update have without AITICKOLD). The pass's seed,
+# its 1b queue share, the timeslice's fields and the marks' flag go on as
+# the thinking left them, as the main CPU's pass would. An actor the record
+# can't be put in for (a prop it read gone, a slot it made a prop in taken,
+# the record room full) loses its mark and thinks whole in the second tick,
+# as an actor the pass didn't reach. Actors handed back in the first pass,
+# and swarms, aren't thought in the second: they think whole in the tick
+# "aitickoldconv" (log only, with aitickold): s3o13_b40 and s3o14_b40 faulted
+# in actor_action_can_stop_conversing on a conversation index whose datum was
+# gone, and the record install's guard never saw one. This reports each such
+# read (the actor, the index, the game time, its action) and reads it as no
+# conversation, so the run goes on to report the next (reads in the ME's
+# thinking are counted, not logged: the log refuses formats there)
+FIXES_AITICKOLD["source/ai/actions.c#aitickoldconv"] = [
+("""	long conversation_index = actor->external_orders.conversation_index;
+	boolean result = TRUE;
+
+	if (conversation_index != NONE)
+	{""", """	long conversation_index = actor->external_orders.conversation_index;
+	boolean result = TRUE;
+
+#ifdef HALO_PSP
+	{
+		/* psp_fixups.py (FIXES_AITICKOLD #aitickoldconv) */
+		int psp_keep(const char *name);
+		void platform_psp_log(const char *format, ...);
+		static int psp_conv_check = -1;
+		static unsigned long psp_conv_dead = 0;
+
+		if (psp_conv_check < 0)
+			psp_conv_check = psp_keep("aitickoldconv") != 0;
+		if (psp_conv_check && conversation_index != NONE && !datum_try_and_get(conversation_data, conversation_index))
+		{
+			if (psp_conv_dead++ < 16) /* (refused on the ME: psp_libc.c) */
+				platform_psp_log("aitickoldconv: game time %ld | actor %d (%08lx) reads conversation %08lx, gone; action %d, its converse index %08lx (%lu so far)",
+					(long)game_time_get(), (int)DATUM_INDEX_TO_ABSOLUTE_INDEX(actor_index), (unsigned long)actor_index,
+					(unsigned long)conversation_index, (int)actor->state.action,
+					(unsigned long)actor->state.action_data.converse.conversation_index, psp_conv_dead);
+			conversation_index = NONE;
+		}
+	}
+#endif
+	if (conversation_index != NONE)
+	{"""),
+]
+
+# "firecensus" (log only): what the enemies do at the player, to set AITICKOLD's
+# b30 parting (the player hit 3-5 times as often with it on: s3o13-s3o15) to a
+# cause. Every 900 ticks: bursts begun and ticks with the trigger held, with
+# the fire target the player's unit or another, and those begun on a frame's
+# second tick (where AITICKOLD's thinking acts)
+FIXES_AITICKOLD["source/ai/actor_combat.c#firecensus"] = [
+("""void actor_combat_update(""", """/* psp_fixups.py (FIXES_AITICKOLD #firecensus) */
+int psp_keep(const char *name);
+void platform_psp_log(const char *format, ...);
+extern int psp_lights_link_tick; /* game_time.c: this tick is the last before a frame */
+static int psp_fire_census = -1;
+static unsigned long psp_fire_bursts[2][2], psp_fire_trigger[2][2]; /* [at the player][a frame's last tick] */
+static long psp_fire_logged = -1;
+
+static int psp_fire_at_player(
+	long actor_index)
+{
+	struct actor_datum *actor = actor_get(actor_index);
+	struct prop_datum *prop;
+
+	if (actor->control.current_fire_target_type != _actor_fire_target_prop ||
+		actor->control.current_fire_target_prop_index == NONE)
+		return 0;
+	prop = (struct prop_datum *)datum_try_and_get(prop_data, actor->control.current_fire_target_prop_index);
+	return prop && prop->unit_index != NONE && player_index_from_unit_index(prop->unit_index) != NONE;
+}
+
+static void psp_fire_count(
+	long actor_index,
+	int burst)
+{
+	int player, last;
+
+	if (psp_fire_census < 0)
+		psp_fire_census = psp_keep("firecensus") != 0;
+	if (!psp_fire_census)
+		return;
+	player = psp_fire_at_player(actor_index);
+	last = psp_lights_link_tick != 0;
+	if (burst)
+		psp_fire_bursts[player][last]++;
+	else
+		psp_fire_trigger[player][last]++;
+	if (game_time_get() / 900 != psp_fire_logged)
+	{
+		psp_fire_logged = game_time_get() / 900;
+		platform_psp_log("firecensus: game time %ld | bursts begun at the player %lu (a frame's last tick %lu), at others %lu (%lu) | ticks with the trigger held at the player %lu (%lu), at others %lu (%lu)",
+			(long)game_time_get(), psp_fire_bursts[1][0] + psp_fire_bursts[1][1], psp_fire_bursts[1][1],
+			psp_fire_bursts[0][0] + psp_fire_bursts[0][1], psp_fire_bursts[0][1],
+			psp_fire_trigger[1][0] + psp_fire_trigger[1][1], psp_fire_trigger[1][1],
+			psp_fire_trigger[0][0] + psp_fire_trigger[0][1], psp_fire_trigger[0][1]);
+	}
+}
+
+void actor_combat_update("""),
+("""			actor->control.fire_state = new_state;
+		}
+""", """			actor->control.fire_state = new_state;
+			if (new_state == _actor_fire_state_bursting)
+				psp_fire_count(actor_index, 1); /* (FIXES_AITICKOLD #firecensus) */
+		}
+"""),
+("""			actor_unit_control_primary_trigger(actor_index, primary_trigger, primary_trigger_value);
+""", """			if (primary_trigger)
+				psp_fire_count(actor_index, 0); /* (FIXES_AITICKOLD #firecensus) */
+			actor_unit_control_primary_trigger(actor_index, primary_trigger, primary_trigger_value);
+"""),
+]
+
+# "stalecensus" (log only, with aitickold): s3o17_b30 showed AITICKOLD's b30
+# runs reaching a state the off runs never did, two or three covenant and
+# seven to nine marines alive together for 1,350 ticks with no burst between
+# them, while the covenant fired at the player three times as often each.
+# This logs every living actor every 300 ticks from 3,600 to 6,300 at the
+# tick's start: its team, action, place, target and what its enemy props
+# hold, so the two sides' stalemates can be read actor by actor
+FIXES_AITICKOLD["source/ai/actors.c#stalecensus"] = [
+("""void actors_update(
+	void)
+{
+	struct actor_iterator iterator;
+	struct actor_datum *actor;
+""", """/* psp_fixups.py (FIXES_AITICKOLD #stalecensus) */
+static int psp_stale_on = -1;
+void psp_aitickold_conv_tick(long after_actor);
+void psp_aitickold_conv_drain(void);
+
+static void psp_stale_census(
+	void)
+{
+	struct actor_iterator iterator;
+	struct actor_datum *actor;
+	long now = game_time_get();
+	int lines = 0;
+
+	if (psp_stale_on < 0)
+		psp_stale_on = psp_keep("stalecensus") != 0;
+	if (!psp_stale_on || now < 3600 || now > 6300 || now % 300)
+		return;
+	actor_iterator_new(&iterator, TRUE);
+	while ((actor = actor_iterator_next(&iterator)) != NULL && lines < 20)
+	{
+		struct prop_iterator props;
+		struct prop_datum *prop;
+		struct prop_datum *target;
+		real_point3d at = { 0.0f, 0.0f, 0.0f };
+		int enemies = 0, acknowledged = 0, seen = 0, sight = 0, allies = 0, target_player = -1;
+
+		if (actor->state.mode <= _actor_mode_braindead || actor->meta.unit_index == NONE)
+			continue;
+		object_get_origin(actor->meta.unit_index, &at);
+		prop_iterator_new(&props, iterator.index);
+		while ((prop = prop_iterator_next(&props)) != NULL)
+		{
+			if (!prop->enemy)
+			{
+				allies++;
+				continue;
+			}
+			enemies++;
+			if (prop->state == _prop_state_acknowledged)
+				acknowledged++;
+			if (prop->last_visible_time != NONE && now - prop->last_visible_time <= 30)
+				seen++;
+			if (prop->line_of_sight)
+				sight++;
+		}
+		target = actor->target.target_prop_index == NONE ? NULL :
+			(struct prop_datum *)datum_try_and_get(prop_data, actor->target.target_prop_index);
+		if (target)
+			target_player = target->unit_index != NONE && player_index_from_unit_index(target->unit_index) != NONE;
+		platform_psp_log("stalecensus: game time %ld | actor %d team %d action %d combat %d | at %.1f %.1f %.1f | target type %d, the player %d, seen %ld ago | enemy props %d (acknowledged %d, seen in 30 ticks %d, line of sight %d), allies %d",
+			now, (int)DATUM_INDEX_TO_ABSOLUTE_INDEX(iterator.index), (int)actor->meta.team_index,
+			(int)actor->state.action, (int)actor->state.combat_status, at.x, at.y, at.z,
+			(int)actor->target.target_type, target_player,
+			actor->target.target_last_visible_time == NONE ? -1L : (long)(now - actor->target.target_last_visible_time),
+			enemies, acknowledged, seen, sight, allies);
+		platform_psp_log("stalecensus: game time %ld | actor %d control: moving %d, throttle %.2f %.2f, movement %d | fire state %d (timer %d), burst disable %d, trigger delay %d, fire target type %d (visible %d, timer %ld), trigger %.2f | output flags %08lx",
+			now, (int)DATUM_INDEX_TO_ABSOLUTE_INDEX(iterator.index), (int)actor->control.moving,
+			actor->output.throttle.i, actor->output.throttle.j, (int)actor->output.movement_type,
+			(int)actor->control.fire_state, (int)actor->control.fire_state_timer, (int)actor->control.burst_disable_timer,
+			(int)actor->control.trigger_delay_timer, (int)actor->control.current_fire_target_type,
+			(int)actor->control.current_fire_target_visible, (long)actor->control.current_fire_target_timer,
+			actor->output.analog_primary_trigger, (unsigned long)actor->output.control_flags);
+		platform_psp_log("stalecensus: game time %ld | actor %d why: firing decision %d | firing position %d (outside range %d, moved away %d) | path at destination %d, distance %.1f of %.1f, refreshed %d | movement complete %d, thwarted %d | look priority %d, direction type %d, aiming away %d",
+			now, (int)DATUM_INDEX_TO_ABSOLUTE_INDEX(iterator.index),
+			actor_debug_array ? (int)actor_debug_array[DATUM_INDEX_TO_ABSOLUTE_INDEX(iterator.index)].firing_decision : -2,
+			(int)actor->firing_positions.current_position_index, (int)actor->firing_positions.current_position_found_outside_range,
+			(int)actor->firing_positions.moved_away_from_firing_position,
+			(int)actor->control.path.at_destination, actor->control.path.destination_distance,
+			actor->control.path.destination_original_distance, (int)actor->control.path.refreshed_this_tick,
+			(int)actor->control.movement_complete, (int)actor->control.movement_thwarted,
+			(int)actor->orders.look.primary_priority, (int)actor->orders.look.primary_direction.type,
+			(int)actor->control.aiming_away_from_primary);
+		lines++;
+	}
+}
+
+void actors_update(
+	void)
+{
+	struct actor_iterator iterator;
+	struct actor_datum *actor;
+
+	psp_stale_census(); /* (FIXES_AITICKOLD #stalecensus) */
+	if (!psp_aime_think_only)
+		psp_aitickold_conv_drain(); /* (FIXES_AITICKOLD #convdefer: aitickoldconvdefer) */
+	psp_aitickold_conv_tick(NONE); /* (FIXES_AITICKOLD #aitickoldbuf: aitickoldconvscan) */
+"""),
+]
+
+# "aitickoldconvscan" after each actor's update too (s3o19_b40: never seen
+# at the tick's start or an install, yet the fault came: the name goes dead
+# inside the actors' pass)
+FIXES_AITICKOLD["source/ai/actors.c#convscanafter"] = [
+("""static void actor_update_end(
+	void)
+{
+	global_updating_actor_index = NONE;
+""", """static void actor_update_end(
+	void)
+{
+	psp_aitickold_conv_tick(global_updating_actor_index); /* (FIXES_AITICKOLD #convscanafter) */
+	global_updating_actor_index = NONE;
+"""),
+]
+# "aitickoldconvscan" at each conversation's end too (s3o21_b40: an actor
+# found naming a gone conversation at a tick's start, though it was listed
+# after every update before: the end left it, or something put it back)
+FIXES_AITICKOLD["source/ai/ai_communication.c#convendring"] = [
+("""void ai_conversation_finish(
+""", """/* psp_fixups.py (FIXES_AITICKOLD #convendring): conversation ends made on
+the ME (aitickoldconvscan), for the main CPU's scan to log; its own 64-byte
+lines, read and written only through the uncached view */
+#define PSP_CONVEND_RING 16
+struct psp_convend_rec_t
+{
+	long conversation, actor, time, how;
+	unsigned long participants;
+	long first, second, spare;
+};
+struct psp_convend_ring_t
+{
+	unsigned long head, tail, lost, pad[13];
+	struct psp_convend_rec_t rec[PSP_CONVEND_RING];
+};
+struct psp_convend_ring_t psp_convend_ring __attribute__((aligned(64)));
+
+/* psp_fixups.py (FIXES_AITICKOLD #convdefer; on, keep word "aitickoldconvnow" for the old way):
+a conversation's end made in a thinking pass (AITICKOLD's, on the ME or the
+main CPU's ahead) is kept here and made by the main CPU at its next tick's
+start, if the datum is still the same one; one the thinking finds gone is
+passed by. The thinking works from an older world, so its ends can't go
+straight into the live pool: s3o23/s3o25_b40 lost conversations the main
+CPU's actors still named, and a thinking faulted ending one already gone.
+Its own 64-byte lines, through the uncached view only */
+#define PSP_CONVDEFER_RING 16
+struct psp_convdefer_ring_t
+{
+	unsigned long head, tail, on, kept, gone, made, stale, full, pad[8];
+	struct
+	{
+		long conversation, how, time, spare;
+	} rec[PSP_CONVDEFER_RING];
+};
+struct psp_convdefer_ring_t psp_convdefer_ring __attribute__((aligned(64)));
+#define PSP_CONVDEFER_UC ((volatile struct psp_convdefer_ring_t *)((unsigned long)&psp_convdefer_ring | 0x40000000u))
+
+/* in a thinking pass with convdefer on: kept (or passed by); TRUE when the
+caller is to do nothing more */
+static boolean psp_convdefer_keep(
+	long conversation_index,
+	boolean unable_to_begin,
+	boolean success)
+{
+	extern int psp_aitickold_thinking(void);
+	volatile struct psp_convdefer_ring_t *ring = PSP_CONVDEFER_UC;
+	unsigned long k;
+
+	if (ring->on != 1 || !psp_aitickold_thinking())
+		return FALSE;
+	if (!datum_try_and_get(conversation_data, conversation_index))
+	{
+		ring->gone = ring->gone + 1;
+		return TRUE;
+	}
+	k = ring->head;
+	if (k - ring->tail >= PSP_CONVDEFER_RING)
+	{
+		/* no room: the main CPU's next drain finds the actors naming it */
+		ring->full = ring->full + 1;
+		return TRUE;
+	}
+	ring->rec[k % PSP_CONVDEFER_RING].conversation = conversation_index;
+	ring->rec[k % PSP_CONVDEFER_RING].how = (unable_to_begin ? 1 : 0) | (success ? 2 : 0);
+	ring->rec[k % PSP_CONVDEFER_RING].time = (long)game_time_get();
+	__asm__ __volatile__("sync" ::: "memory");
+	ring->head = k + 1;
+	ring->kept = ring->kept + 1;
+	return TRUE;
+}
+
+/* the main CPU, at each tick's start outside a thinking pass */
+void psp_aitickold_conv_drain(
+	void)
+{
+	extern int psp_keep(const char *name);
+	extern void platform_psp_log(const char *format, ...);
+	volatile struct psp_convdefer_ring_t *ring = PSP_CONVDEFER_UC;
+	static long next_report = 0;
+
+	if (ring->on == 0)
+	{
+		extern void sceKernelDcacheWritebackInvalidateRange(const void *p, unsigned int size);
+
+		/* no cached copy of the rings' lines may be written back over them later */
+		sceKernelDcacheWritebackInvalidateRange(&psp_convdefer_ring, sizeof(psp_convdefer_ring));
+		sceKernelDcacheWritebackInvalidateRange(&psp_convend_ring, sizeof(psp_convend_ring));
+		/* on with AITICKOLD; "aitickoldconvnow" is the old way, the A/B side */
+		ring->on = psp_keep("aitickoldconvnow") ? 2 : 1;
+		__asm__ __volatile__("sync" ::: "memory");
+	}
+	if (ring->on != 1)
+		return;
+	while (ring->tail != ring->head)
+	{
+		unsigned long k = ring->tail;
+		long conversation_index = ring->rec[k % PSP_CONVDEFER_RING].conversation;
+		long how = ring->rec[k % PSP_CONVDEFER_RING].how;
+
+		ring->tail = k + 1;
+		if (datum_try_and_get(conversation_data, conversation_index))
+		{
+			ring->made = ring->made + 1;
+			ai_conversation_finish(conversation_index, (how & 1) != 0, (how & 2) != 0);
+		}
+		else
+			ring->stale = ring->stale + 1;
+	}
+	if ((long)game_time_get() >= next_report)
+	{
+		next_report = (long)game_time_get() + 900;
+		platform_psp_log("aitickoldconvdefer: game time %ld | ends made in a thinking pass: kept %lu, made by the main CPU %lu, gone by then %lu; found gone in the thinking %lu; no room %lu",
+			(long)game_time_get(), ring->kept, ring->made, ring->stale, ring->gone, ring->full);
+	}
+}
+
+void ai_conversation_finish(
+"""),
+]
+FIXES_AITICKOLD["source/ai/ai_communication.c#convdefer"] = [
+("""	short participant_index;
+	short actor_action;
+
+	if (conversation_index != NONE)
+""", """	short participant_index;
+	short actor_action;
+
+	if (conversation_index != NONE && psp_convdefer_keep(conversation_index, unable_to_begin, success)) /* (FIXES_AITICKOLD #convdefer) */
+		return;
+	if (conversation_index != NONE)
+"""),
+]
+FIXES_AITICKOLD["source/ai/ai_communication.c#convscanend"] = [
+("""		datum_delete(conversation_data, conversation_index);
+	}
+
+	return;
+}
+""", """		datum_delete(conversation_data, conversation_index);
+		{
+			/* psp_fixups.py (FIXES_AITICKOLD #convscanend) */
+			extern int psp_keep(const char *name);
+			extern void platform_psp_log(const char *format, ...);
+			extern long global_updating_actor_index;
+			static int psp_convend_on = -1;
+			static long psp_convend_lines = 0;
+			struct actor_iterator psp_iterator;
+			struct actor_datum *psp_actor;
+
+			extern volatile unsigned int psp_me_context;
+			extern struct psp_convend_ring_t psp_convend_ring;
+			unsigned int psp_sp;
+
+			if (psp_convend_on < 0)
+				psp_convend_on = psp_keep("aitickoldconvscan") != 0;
+			__asm__ ("move %0, $sp" : "=r"(psp_sp));
+			if (psp_convend_on && (psp_me_context != 0 || (psp_sp & 0x1FFFFFFFu) < 0x01000000u))
+			{
+				/* an end inside the ME's thinking, where the log refuses (s3o25_b40:
+				a header cleared with no end logged): kept for the main CPU's next
+				scan, through the uncached view so neither CPU's cache holds it */
+				volatile struct psp_convend_ring_t *psp_ring = (volatile struct psp_convend_ring_t *)((unsigned long)&psp_convend_ring | 0x40000000u);
+				unsigned long psp_k = psp_ring->head;
+
+				if (psp_k - psp_ring->tail < PSP_CONVEND_RING)
+				{
+					volatile struct psp_convend_rec_t *psp_r = &psp_ring->rec[psp_k % PSP_CONVEND_RING];
+
+					psp_r->conversation = conversation_index;
+					psp_r->actor = global_updating_actor_index;
+					psp_r->time = (long)game_time_get();
+					psp_r->how = (unable_to_begin ? 1 : 0) | (success ? 2 : 0);
+					psp_r->participants = conversation->participant_bitmask;
+					psp_r->first = conversation->actor_indices[0];
+					psp_r->second = conversation->actor_indices[1];
+					__asm__ __volatile__("sync" ::: "memory");
+					psp_ring->head = psp_k + 1;
+				}
+				else
+					psp_ring->lost++;
+			}
+			else if (psp_convend_on && psp_convend_lines < 40)
+			{
+				platform_psp_log("aitickoldconvscan: game time %ld | conversation %08lx ended (unable %d, success %d) while actor %08lx updates; participants %08lx: %08lx %08lx %08lx %08lx",
+					(long)game_time_get(), (unsigned long)conversation_index, (int)unable_to_begin, (int)success,
+					(unsigned long)global_updating_actor_index, (unsigned long)conversation->participant_bitmask,
+					(unsigned long)conversation->actor_indices[0], (unsigned long)conversation->actor_indices[1],
+					(unsigned long)conversation->actor_indices[2], (unsigned long)conversation->actor_indices[3]);
+				psp_convend_lines++;
+				actor_iterator_new(&psp_iterator, TRUE);
+				while ((psp_actor = actor_iterator_next(&psp_iterator)) != NULL)
+					if (psp_actor->external_orders.conversation_index == conversation_index ||
+						(psp_actor->state.action == _actor_action_converse && psp_actor->state.action_data.converse.conversation_index == conversation_index))
+					{
+						platform_psp_log("aitickoldconvscan: game time %ld | conversation %08lx ended but actor %08lx still names it (orders %08lx, action %d, converse %08lx)",
+							(long)game_time_get(), (unsigned long)conversation_index, (unsigned long)psp_iterator.index,
+							(unsigned long)psp_actor->external_orders.conversation_index, (int)psp_actor->state.action,
+							(unsigned long)psp_actor->state.action_data.converse.conversation_index);
+						psp_convend_lines++;
+					}
+			}
+		}
+	}
+
+	return;
+}
+"""),
+]
+FIXES_AITICKOLD["source/ai/actors.c#aitickoldbuf"] = [
+("""	unsigned long asked, used, inline_passes, queue_carried;
+} psp_aitickold_stats;
+""",
+ """	unsigned long asked, used, inline_passes, queue_carried;
+} psp_aitickold_stats;
+/* FIXES_AITICKOLD: "aitickoldbuf" (see there). The records, in words; each
+actor's start in them (-1 none), the ME's to write in the second pass */
+#define PSP_AITICKOLD_BUF_WORDS (48 * 1024 / 4)
+static unsigned long *psp_aitickold_buf = NULL;
+static int psp_aitickold_buf_on = -1, psp_aitickold_buf_want = 0;
+/* diagnostics: "aitickoldbufcheck" logs broken orphan links at each
+install's start and after each install; "aitickoldbufnoswitch" deletes the
+props the thinking deleted without switching the tick's references to them;
+"aitickoldbufnooffer" doesn't offer a refused record's timeslice again */
+static int psp_aitickold_buf_check = 0, psp_aitickold_buf_noswitch = 0, psp_aitickold_buf_nooffer = 0;
+static long psp_aitickold_buf_check_lines = 0;
+/* "aitickoldconvscan": conversations an actor names that are gone or don't
+list it, at each install and each tick's start (s3o16_b40: the fault reads a
+dead conversation through action_converse_end, not the reads aitickoldconv
+guards) */
+static int psp_aitickold_conv_scan = 0;
+extern int psp_lights_link_tick; /* objects.c (FIXES_LD1) */
+static long psp_aitickold_conv_lines = 0;
+
+static boolean psp_aitickold_conv_lists(
+	long conversation_index,
+	long actor_index)
+{
+	struct conversation_datum *conversation = (struct conversation_datum *)datum_try_and_get(conversation_data, conversation_index);
+	short k;
+
+	if (!conversation)
+		return FALSE;
+	for (k = 0; k < 8; k++)
+		if ((conversation->participant_bitmask & (1u << k)) && conversation->actor_indices[k] == actor_index)
+			return TRUE;
+	return FALSE;
+}
+
+/* in a thinking pass (the ME's, or the main CPU's ahead): ai_communication.c's
+convdefer asks */
+int psp_aitickold_thinking(
+	void)
+{
+	return psp_aime_think_only;
+}
+
+/* every actor at the tick's start, on the main CPU: the first tick each
+(actor, conversation) pair is found gone or unlisted */
+void psp_aitickold_conv_tick(
+	long after_actor)
+{
+	static long seen_actor[24], seen_conversation[24];
+	static short seen = 0;
+	struct actor_iterator iterator;
+	struct actor_datum *actor;
+
+	if (!psp_aitickold_conv_scan || psp_aime_think_only) /* not in a thinking pass (the ME's, or the main CPU's ahead) */
+		return;
+	{
+		/* the ends the ME made since the last scan (convendring) */
+		struct psp_convend_rec_t
+		{
+			long conversation, actor, time, how;
+			unsigned long participants;
+			long first, second, spare;
+		};
+		struct psp_convend_ring_t
+		{
+			unsigned long head, tail, lost, pad[13];
+			struct psp_convend_rec_t rec[16];
+		};
+		extern struct psp_convend_ring_t psp_convend_ring;
+		volatile struct psp_convend_ring_t *ring = (volatile struct psp_convend_ring_t *)((unsigned long)&psp_convend_ring | 0x40000000u);
+		static unsigned long lost_said = 0;
+
+		while (ring->tail != ring->head)
+		{
+			volatile struct psp_convend_rec_t *r = &ring->rec[ring->tail % 16];
+
+			platform_psp_log("aitickoldconvscan: game time %ld | conversation %08lx ended ON THE ME at game time %ld (unable %d, success %d) in actor %08lx's thinking; participants %08lx: %08lx %08lx; seen at %s%d",
+				(long)game_time_get(), (unsigned long)r->conversation, r->time, (int)(r->how & 1), (int)((r->how >> 1) & 1),
+				(unsigned long)r->actor, r->participants, (unsigned long)r->first, (unsigned long)r->second,
+				after_actor == NONE ? "tick start" : "after the update of actor ",
+				after_actor == NONE ? 0 : (int)DATUM_INDEX_TO_ABSOLUTE_INDEX(after_actor));
+			ring->tail = ring->tail + 1;
+		}
+		if (ring->lost != lost_said)
+		{
+			lost_said = ring->lost;
+			platform_psp_log("aitickoldconvscan: game time %ld | %lu ME ends lost (the ring was full)", (long)game_time_get(), lost_said);
+		}
+	}
+	{
+		/* each conversation slot's header word as the last scan saw it: a
+		change at a scan point names the window it happened in (the ends
+		are logged where the engine makes them, convscanend) */
+		static short shadow[32];
+		static long shadow_for = -1;
+		static int changes = 0;
+		short k, n = conversation_data->maximum_count < 32 ? conversation_data->maximum_count : 32;
+
+		for (k = 0; k < n; k++)
+		{
+			short now = *(short *)((char *)conversation_data->data + k * conversation_data->size);
+
+			if (shadow_for == (long)(unsigned long)conversation_data && now != shadow[k] && changes < 40)
+			{
+				changes++;
+				platform_psp_log("aitickoldconvscan: game time %ld | %s%d: conversation slot %d's header %04x -> %04x",
+					(long)game_time_get(), after_actor == NONE ? "tick start" : "after the update of actor ",
+					after_actor == NONE ? 0 : (int)DATUM_INDEX_TO_ABSOLUTE_INDEX(after_actor),
+					(int)k, (unsigned)(unsigned short)shadow[k], (unsigned)(unsigned short)now);
+			}
+			shadow[k] = now;
+		}
+		shadow_for = (long)(unsigned long)conversation_data;
+	}
+	{
+		/* once a map: where the conversations' datums lie, for the write trace */
+		static void *logged_for = NULL;
+
+		if (logged_for != (void *)conversation_data)
+		{
+			logged_for = (void *)conversation_data;
+			platform_psp_log("aitickoldconvscan: conversation_data at %p, its datums at %p, %d datums of %d bytes",
+				(void *)conversation_data, (void *)conversation_data->data,
+				(int)conversation_data->maximum_count, (int)conversation_data->size);
+		}
+	}
+	actor_iterator_new(&iterator, TRUE);
+	while ((actor = actor_iterator_next(&iterator)) != NULL)
+	{
+		long c = actor->external_orders.conversation_index;
+		short k;
+		boolean gone;
+
+		if (c == NONE || psp_aitickold_conv_lists(c, iterator.index))
+			continue;
+		for (k = 0; k < seen; k++)
+			if (seen_actor[k] == iterator.index && seen_conversation[k] == c)
+				break;
+		if (k < seen || seen >= 24)
+			continue;
+		seen_actor[seen] = iterator.index;
+		seen_conversation[seen++] = c;
+		gone = datum_try_and_get(conversation_data, c) == NULL;
+		platform_psp_log("aitickoldconvscan: game time %ld | %s%d: actor %d names conversation %08lx, %s; action %d, its converse index %08lx; a frame's last tick %d",
+			(long)game_time_get(), after_actor == NONE ? "tick start" : "after the update of actor ",
+			after_actor == NONE ? 0 : (int)DATUM_INDEX_TO_ABSOLUTE_INDEX(after_actor),
+			(int)DATUM_INDEX_TO_ABSOLUTE_INDEX(iterator.index), (unsigned long)c,
+			gone ? "gone" : "alive but not listing it", (int)actor->state.action,
+			(unsigned long)actor->state.action_data.converse.conversation_index, psp_lights_link_tick != 0);
+	}
+}
+static PSP_AIME_ME_SIDE long psp_aitickold_rec[MAXIMUM_ACTORS];
+static PSP_AIME_ME_SIDE long psp_aitickold_buf_used = 0;
+/* FALSE when the actor's thinking ran past what its copy can put back */
+static PSP_AIME_ME_SIDE int psp_aitickold_copy_whole = 0;
+static struct
+{
+	unsigned long kept, words, props_changed, props_made, props_deleted, full, skipped, unshelved, peak;
+} psp_aitickold_buf_me_stats PSP_AIME_ME_SIDE;
+static struct
+{
+	unsigned long put, conflicts, chain, words, switched, dangling, conversations;
+} psp_aitickold_buf_stats;
+static void psp_aitickold_buf_begin(void);
+static boolean psp_aitickold_buf_skip(long actor_index);
+static void psp_aitickold_shelve(long actor_index);
+static void psp_aitickold_install(void);
+"""),
+# the records begin with the second pass
+("""		/* the first pass's calls stay for the first tick; the second's follow */
+		psp_aime_queue_split = psp_aime_queue_count;
+""",
+ """		/* the first pass's calls stay for the first tick; the second's follow */
+		psp_aime_queue_split = psp_aime_queue_count;
+		psp_aitickold_buf_begin();
+"""),
+("""	psp_aime_save(actor_index);
+	psp_aime1b_stats.actors++;
+""",
+ """	if (psp_aitickold_buf_skip(actor_index))
+		return;
+	psp_aime_save(actor_index);
+	psp_aime1b_stats.actors++;
+"""),
+("""		actor_update(actor_index);
+		if (psp_aime_arm == 2)
+			psp_aime1b_stats.no_stop++;
+""",
+ """		actor_update(actor_index);
+		psp_aitickold_copy_whole = psp_aime_arm != 2;
+		if (psp_aime_arm == 2)
+			psp_aime1b_stats.no_stop++;
+"""),
+("""	if (psp_aime_chain_on > 0)
+		psp_aime_chain_check(1, actor_index);
+	if (psp_aime1b_checking && psp_aime_stopped)
+""",
+ """	if (psp_aitickold_now && psp_aitickold_buf_want && !psp_aime_stopped)
+		psp_aitickold_shelve(actor_index);
+	if (psp_aime_chain_on > 0)
+		psp_aime_chain_check(1, actor_index);
+	if (psp_aime1b_checking && psp_aime_stopped)
+"""),
+("""/* the pass's loop: one actor thought ahead, or stopped and left to the tick.
+""",
+ """/* FIXES_AITICKOLD: "aitickoldbuf" (see there) */
+static void psp_aitickold_buf_begin(
+	void)
+{
+	short k;
+
+	if (!psp_aitickold_buf_want)
+		return;
+	for (k = 0; k < MAXIMUM_ACTORS; k++)
+		psp_aitickold_rec[k] = -1;
+	psp_aitickold_buf_used = 0;
+}
+
+/* the second pass thinks only actors the first thought ahead (their state is
+the first pass's to take back to) and no swarms (their swarm's own state has
+no record) */
+static boolean psp_aitickold_buf_skip(
+	long actor_index)
+{
+	struct actor_datum *actor = actor_get(actor_index);
+	short absolute_index = DATUM_INDEX_TO_ABSOLUTE_INDEX(actor_index);
+
+	if (!psp_aitickold_now || !psp_aitickold_buf_want)
+		return FALSE;
+	if (!actor->meta.swarm && absolute_index >= 0 && absolute_index < MAXIMUM_ACTORS &&
+		psp_aime_slot_pass[absolute_index] == psp_aime_pass && psp_aime_slot_identifier[absolute_index] == actor->identifier)
+		return FALSE;
+	psp_aitickold_buf_me_stats.skipped++;
+	return TRUE;
+}
+
+/* the words of a datum that differ from its copy, as (word, value, bits
+changed) triples: the merge puts in only the bits the thinking changed, as
+the datums pack flags and short fields into shared words (ai_erase's
+erase_next_tick sits in the word of active and encounterless) */
+static long psp_aitickold_diff(
+	unsigned long *out,
+	long room,
+	unsigned long const *now,
+	unsigned long const *before,
+	long words)
+{
+	long k, count = 0;
+
+	for (k = 0; k < words; k++)
+	{
+		if (now[k] != before[k])
+		{
+			if (count * 3 + 3 > room)
+				return -1;
+			out[count * 3] = (unsigned long)k;
+			out[count * 3 + 1] = now[k];
+			out[count * 3 + 2] = now[k] ^ before[k];
+			count++;
+		}
+	}
+	return count;
+}
+
+/* the actor just thought for the second tick: what its thinking changed into
+a record, its state and props back to the first pass's. The seed, the 1b
+queue, the timeslice's fields and the marks' flag stay as the thinking left
+them. With no room for the record the actor goes back as a stop does
+(its queued calls dropped, its mark cleared): it thinks whole in the tick */
+static void psp_aitickold_shelve(
+	long actor_index)
+{
+	struct psp_aime_copy *copy = psp_aime_copy;
+	struct actor_datum *actor = actor_get(actor_index);
+	short absolute_index = DATUM_INDEX_TO_ABSOLUTE_INDEX(actor_index);
+	long size = prop_data->size, prop_words = size / 4;
+	long start = psp_aitickold_buf_used, at, room, count, k, prop_index;
+	unsigned long *buf = psp_aitickold_buf;
+	short props = 0;
+
+	if (!psp_aitickold_copy_whole || absolute_index < 0 || absolute_index >= MAXIMUM_ACTORS)
+	{
+		/* (a copy that can't be complete: the thinking stays in place) */
+		psp_aitickold_buf_me_stats.kept++;
+		return;
+	}
+	at = start + 3;
+	room = PSP_AITICKOLD_BUF_WORDS - at;
+	count = room > 0 ? psp_aitickold_diff(buf + at, room, (unsigned long const *)actor, (unsigned long const *)&copy->actor,
+		(long)(sizeof(struct actor_datum) / 4)) : -1;
+	if (count < 0)
+		goto full;
+	buf[start] = (unsigned long)(unsigned short)actor->identifier;
+	buf[start + 1] = (unsigned long)count;
+	psp_aitickold_buf_me_stats.words += count;
+	at += count * 3;
+	/* the first pass's props: each changed or deleted (every one recorded, so
+	the second tick sees any the first tick deleted) */
+	for (k = 0; k < copy->prop_count; k++)
+	{
+		struct datum_header *header = psp_aime_datum_address(prop_data, copy->prop_index[k]);
+		byte const *before = psp_aime_prop_bytes + k * size;
+		boolean alive = header->identifier && header->identifier == ((struct datum_header const *)before)->identifier;
+
+		if (at + 2 > PSP_AITICKOLD_BUF_WORDS)
+			goto full;
+		buf[at + 1] = (unsigned long)copy->prop_index[k];
+		if (!alive)
+		{
+			buf[at] = 2UL << 16;
+			at += 2;
+			psp_aitickold_buf_me_stats.props_deleted++;
+		}
+		else
+		{
+			count = psp_aitickold_diff(buf + at + 2, PSP_AITICKOLD_BUF_WORDS - at - 2, (unsigned long const *)header,
+				(unsigned long const *)before, prop_words);
+			if (count < 0)
+				goto full;
+			buf[at] = (unsigned long)count;
+			at += 2 + count * 3;
+			if (count)
+				psp_aitickold_buf_me_stats.props_changed++;
+		}
+		props++;
+	}
+	/* the props it made: the actor's chain now, less the first pass's */
+	for (prop_index = actor->meta.first_prop_index; prop_index != NONE; prop_index = prop_get(prop_index)->next_prop_index)
+	{
+		boolean had = FALSE;
+
+		for (k = 0; k < copy->prop_count && !had; k++)
+			had = copy->prop_index[k] == prop_index;
+		if (had)
+			continue;
+		if (at + 2 + prop_words > PSP_AITICKOLD_BUF_WORDS)
+			goto full;
+		buf[at] = (1UL << 16) | (unsigned long)prop_words;
+		buf[at + 1] = (unsigned long)prop_index;
+		csmemcpy(buf + at + 2, prop_get(prop_index), size);
+		at += 2 + prop_words;
+		props++;
+		psp_aitickold_buf_me_stats.props_made++;
+	}
+	buf[start + 2] = (unsigned long)props;
+	psp_aitickold_buf_used = at;
+	if ((unsigned long)at > psp_aitickold_buf_me_stats.peak)
+		psp_aitickold_buf_me_stats.peak = (unsigned long)at;
+	psp_aitickold_rec[absolute_index] = start;
+	/* back to the first pass's: the props it made or deleted undone, its props
+	and the pool's header as they were, the actor as the copy holds it */
+	for (k = copy->log_count - 1; k >= 0; k--)
+	{
+		struct datum_header *header = psp_aime_datum_address(prop_data, copy->log_index[k]);
+
+		if (copy->log_deleted[k])
+			csmemcpy(header, psp_aime_log_bytes + k * size, size);
+		else
+			header->identifier = 0;
+	}
+	csmemcpy(prop_data, &copy->prop_header, sizeof(struct data_array));
+	for (k = 0; k < copy->prop_count; k++)
+		csmemcpy(psp_aime_datum_address(prop_data, copy->prop_index[k]), psp_aime_prop_bytes + k * size, size);
+	csmemcpy(actor, &copy->actor, sizeof(copy->actor));
+	psp_aitickold_buf_me_stats.unshelved++;
+	return;
+full:
+	psp_aitickold_buf_me_stats.full++;
+	psp_aime_stop_which = PSP_AIME_STOP_LOG_FULL;
+	psp_aime_restore();
+	psp_aime_slot_identifier_b[absolute_index] = 0;
+}
+
+/* TRUE when a word of the block holds the value (a prop's index) */
+static boolean psp_aitickold_names(
+	unsigned long const *words,
+	long count,
+	unsigned long value)
+{
+	long k;
+
+	for (k = 0; k < count; k++)
+	{
+		if (words[k] == value)
+			return TRUE;
+	}
+	return FALSE;
+}
+
+static boolean psp_aitickold_prop_alive(
+	long prop_index)
+{
+	return prop_index != NONE && DATUM_INDEX_TO_ABSOLUTE_INDEX(prop_index) < prop_data->maximum_count &&
+		psp_aime_datum_address(prop_data, prop_index)->identifier == (short)(prop_index >> 16);
+}
+
+#define PSP_AITICKOLD_DELETED_MOST 32
+
+/* what the thinking switched the actor's references to a prop it deleted to:
+the engine deletes a prop only after actor_switch_props moves the actor's
+references off it, to its parent when an orphan's parent is seen again,
+else to none. An actor word the record moved off the prop says which;
+without one, an orphan whose parent the thinking made acknowledged and
+let go of it went back to that parent */
+static long psp_aitickold_switched_to(
+	unsigned long const *buf,
+	long start,
+	long count,
+	long prop_index)
+{
+	struct prop_datum *prop = (struct prop_datum *)psp_aime_datum_address(prop_data, prop_index);
+	long k, parent;
+
+	for (k = 0; k < count; k++)
+	{
+		unsigned long value = buf[start + 4 + k * 3], before = value ^ buf[start + 5 + k * 3];
+
+		if (before == (unsigned long)prop_index && (value == (unsigned long)NONE || psp_aitickold_prop_alive((long)value)))
+			return (long)value;
+	}
+	parent = prop->parent_prop_index;
+	if (prop->state >= _prop_state_uninspected_orphan && prop->state <= _prop_state_inspected_orphan &&
+		psp_aitickold_prop_alive(parent))
+	{
+		struct prop_datum *parent_prop = (struct prop_datum *)psp_aime_datum_address(prop_data, parent);
+
+		if (parent_prop->orphan_prop_index != prop_index && parent_prop->state == _prop_state_acknowledged)
+			return parent;
+	}
+	return NONE;
+}
+
+/* the bytes of a word that hold a changed bit */
+static unsigned long psp_aitickold_bytes(
+	unsigned long changed)
+{
+	changed |= changed >> 1;
+	changed |= changed >> 2;
+	changed |= changed >> 4;
+	return (changed & 0x01010101UL) * 0xffUL;
+}
+
+/* one word of the record over the tick's: the bytes the thinking changed take
+its value and the rest keep the tick's, so flags and short fields packed in
+one word merge as fields. Where both changed the same byte (one field both
+wrote) the thinking's whole word goes in, so a value is never made of parts
+of two */
+/* aitickoldbufwords (log only): per actor word the record changed, how
+often the tick left it alone (0), changed other bytes of it (1) or the same
+bytes (2, the thinking's whole word goes in): which of the actor's fields the
+tick and its thinking both write */
+#define PSP_AITICKOLD_WORDS_MOST 1024
+static int psp_aitickold_words_on, psp_aitickold_input_tick;
+static unsigned long psp_aitickold_words[PSP_AITICKOLD_WORDS_MOST][3];
+
+static void psp_aitickold_merge(
+	unsigned long *word,
+	unsigned long value,
+	unsigned long changed)
+{
+	unsigned long mine = psp_aitickold_bytes(changed), tick = psp_aitickold_bytes(*word ^ (value ^ changed));
+
+	*word = (mine & tick) ? value : (*word & ~mine) | (value & mine);
+}
+
+/* aitickoldbufcheck: every prop of the actor's chain whose orphan link
+doesn't hold (an orphan's parent alive and naming it back; a parent's orphan
+alive, an orphan, and naming it back), logged with what the record did to
+it: c changed (its link or state word: l, s), m made, d deleted */
+static void psp_aitickold_check(
+	long actor_index_whole,
+	short absolute_index,
+	char const *when,
+	unsigned long const *buf,
+	long start,
+	long count,
+	short props)
+{
+	long prop_index;
+	short steps = 0;
+	struct actor_datum *actor = (struct actor_datum *)psp_aime_datum_address(actor_data, absolute_index);
+
+	for (prop_index = actor->meta.first_prop_index; prop_index != NONE && steps < 64;
+		prop_index = ((struct prop_datum *)psp_aime_datum_address(prop_data, prop_index))->next_prop_index, steps++)
+	{
+		struct prop_datum *prop = (struct prop_datum *)psp_aime_datum_address(prop_data, prop_index);
+		long link = prop->orphan_prop_index, back = -2;
+		boolean orphan = prop->state >= _prop_state_uninspected_orphan && prop->state <= _prop_state_inspected_orphan;
+		boolean bad, alive = psp_aitickold_prop_alive(link);
+		char how[8] = "-";
+		short p, at_how = 0, link_state = -1;
+
+		if (alive)
+		{
+			back = ((struct prop_datum *)psp_aime_datum_address(prop_data, link))->orphan_prop_index;
+			link_state = ((struct prop_datum *)psp_aime_datum_address(prop_data, link))->state;
+		}
+		bad = orphan ? (!alive || back != prop_index) :
+			(link != NONE && (!alive || back != prop_index || link_state < _prop_state_uninspected_orphan));
+		if (!bad || psp_aitickold_buf_check_lines >= 60)
+			continue;
+		psp_aitickold_buf_check_lines++;
+		if (buf)
+		{
+			long at = start + 3 + count * 3;
+
+			for (p = 0; p < props; p++)
+			{
+				unsigned long kind = buf[at] >> 16, n = buf[at] & 0xffffu;
+
+				if ((long)buf[at + 1] == prop_index && at_how < 5)
+				{
+					unsigned long r;
+
+					how[at_how++] = kind == 0 ? 'c' : kind == 1 ? 'm' : 'd';
+					for (r = 0; kind == 0 && r < n && at_how < 6; r++)
+					{
+						if (buf[at + 2 + r * 3] == 3)
+							how[at_how++] = 'l';
+						else if (buf[at + 2 + r * 3] == 9)
+							how[at_how++] = 's';
+					}
+				}
+				at += 2 + (kind == 1 ? n : kind == 2 ? 0 : n * 3);
+			}
+			how[at_how ? at_how : 1] = 0;
+		}
+		platform_psp_log("aitickoldbufcheck: game time %ld | %s actor %08lx prop %08lx state %d link %08lx (alive %d, state %d, back %08lx) record %s",
+			(long)game_time_get(), when, (unsigned long)actor_index_whole, (unsigned long)prop_index, (int)prop->state,
+			(unsigned long)link, (int)alive, (int)link_state, (unsigned long)back, how);
+	}
+}
+
+/* the actor as the record leaves it, built before anything is written */
+static unsigned long psp_aitickold_scratch[sizeof(struct actor_datum) / 4];
+
+/* the second tick's start: each record put in over the first tick's work, as
+the thinking at that tick's start would write over it: the bytes of the
+actor's words the thinking changed take its values, the rest keep the
+tick's; its props' words likewise; the props it made are made at their
+slots. The record's links are good only over the prop chain it was made
+against, and the tick makes props too (damage and effects noticed:
+actor_handle_damage, actors_handle_unit_effect) and deletes them, so a
+record goes in only when the tick left the actor's chain as it was and
+every slot the record makes a prop in free. Otherwise the actor loses its
+mark and thinks whole in the tick, and a timeslice the record held is
+offered again. A prop the thinking deleted that the tick named in the actor
+meanwhile gets the switch the engine makes before every delete. Keeping
+such a prop alive instead left an orphan whose parent had let it go */
+static void psp_aitickold_install(
+	void)
+{
+	unsigned long *buf = psp_aitickold_buf;
+	long size = prop_data->size;
+	short absolute_index;
+
+	if (!psp_aitickold_buf_want || !buf)
+		return;
+	for (absolute_index = 0; psp_aitickold_buf_check && absolute_index < actor_data->count; absolute_index++)
+	{
+		struct actor_datum *actor = (struct actor_datum *)psp_aime_datum_address(actor_data, absolute_index);
+
+		if (actor->identifier)
+			psp_aitickold_check(DATUM_INDEX_NEW(absolute_index, actor->identifier), absolute_index,
+				psp_aitickold_rec[absolute_index] >= 0 ? "tick, record" : "tick", NULL, 0, 0, 0);
+	}
+	for (absolute_index = 0; absolute_index < MAXIMUM_ACTORS; absolute_index++)
+	{
+		long start = psp_aitickold_rec[absolute_index], at, count, k, prop_index;
+		long deleted[PSP_AITICKOLD_DELETED_MOST];
+		short props, p, deleted_count = 0;
+		struct actor_datum *actor;
+		struct actor_datum *scratch = (struct actor_datum *)psp_aitickold_scratch;
+		boolean ok = TRUE;
+
+		if (start < 0 || absolute_index >= actor_data->count)
+			continue;
+		actor = (struct actor_datum *)psp_aime_datum_address(actor_data, absolute_index);
+		if (!actor->identifier || (unsigned short)actor->identifier != buf[start] ||
+			psp_aime_slot_pass_b[absolute_index] != psp_aime_pass || psp_aime_slot_identifier_b[absolute_index] != actor->identifier)
+			continue;
+		count = (long)buf[start + 1];
+		props = (short)buf[start + 2];
+		csmemcpy(scratch, actor, sizeof(*scratch));
+		for (k = 0; k < count; k++)
+		{
+			/* aitickoldbufinput: the actor's input block (its position,
+			pathfinding surface and point, facing, vitality) is the tick's to
+			refresh (actor_input_update), so the tick's values stand over the
+			thinking's one-tick-older ones (s3o14_b30: pathfinding_surface_index
+			and pathfinding_point were the words both wrote most) */
+			if (psp_aitickold_input_tick)
+			{
+				unsigned long w = buf[start + 3 + k * 3];
+
+				if (w * 4 >= offsetof(struct actor_datum, input) && w * 4 < offsetof(struct actor_datum, external_orders))
+					continue;
+			}
+			if (psp_aitickold_words_on)
+			{
+				unsigned long w = buf[start + 3 + k * 3], changed = buf[start + 5 + k * 3];
+				unsigned long before = buf[start + 4 + k * 3] ^ changed;
+				unsigned long mine = psp_aitickold_bytes(changed), tick = psp_aitickold_bytes(psp_aitickold_scratch[w] ^ before);
+
+				if (w < PSP_AITICKOLD_WORDS_MOST)
+					psp_aitickold_words[w][(mine & tick) ? 2 : tick ? 1 : 0]++;
+			}
+			psp_aitickold_merge(&psp_aitickold_scratch[buf[start + 3 + k * 3]], buf[start + 4 + k * 3], buf[start + 5 + k * 3]);
+		}
+		/* the chain as the record found it: its changed and deleted props, in
+		the chain's order, then the props it made */
+		prop_index = actor->meta.first_prop_index;
+		at = start + 3 + count * 3;
+		for (p = 0; p < props && ok; p++)
+		{
+			unsigned long kind = buf[at] >> 16, n = buf[at] & 0xffffu;
+
+			if (kind == 1)
+				break;
+			ok = prop_index != NONE && (long)buf[at + 1] == prop_index && psp_aitickold_prop_alive(prop_index);
+			if (ok)
+				prop_index = ((struct prop_datum *)psp_aime_datum_address(prop_data, prop_index))->next_prop_index;
+			if (ok && kind == 2)
+			{
+				ok = deleted_count < PSP_AITICKOLD_DELETED_MOST;
+				if (ok)
+					deleted[deleted_count++] = (long)buf[at + 1];
+			}
+			at += 2 + (kind == 2 ? 0 : n * 3);
+		}
+		ok = ok && prop_index == NONE;
+		if (!ok)
+			psp_aitickold_buf_stats.chain++;
+		for (; p < props && ok; p++)
+		{
+			unsigned long n = buf[at] & 0xffffu;
+
+			ok = !psp_aime_datum_address(prop_data, (long)buf[at + 1])->identifier;
+			at += 2 + n;
+		}
+		if (!ok)
+		{
+			psp_aitickold_buf_stats.conflicts++;
+			psp_aime_slot_identifier_b[absolute_index] = 0;
+			if (scratch->meta.timeslice && !actor->meta.timeslice && !psp_aitickold_buf_nooffer)
+				ai_globals->time_given_this_frame = FALSE;
+			continue;
+		}
+		/* a conversation the record names that the tick ended meanwhile
+		(its datum gone) is let go as the engine's end lets its
+		participants go: a marine's next decision read the dead one
+		(lab sierra-batch 42837765983, b40) */
+		if (scratch->external_orders.conversation_index != NONE &&
+			!datum_try_and_get(conversation_data, scratch->external_orders.conversation_index))
+		{
+			if (psp_aitickold_buf_stats.conversations++ < 8)
+				platform_psp_log("aitickoldbuf: game time %ld | actor %d: the record names conversation %08lx, gone (the tick's word %08lx)",
+					(long)game_time_get(), (int)absolute_index, (unsigned long)scratch->external_orders.conversation_index,
+					(unsigned long)actor->external_orders.conversation_index);
+			scratch->external_orders.conversation_index = NONE;
+			scratch->external_orders.conversation_attention_unit_index = NONE;
+			if (scratch->state.action == _actor_action_converse)
+				scratch->state.action_data.converse.conversation_index = NONE;
+		}
+		else if (psp_aitickold_conv_scan && scratch->external_orders.conversation_index != NONE &&
+			!psp_aitickold_conv_lists(scratch->external_orders.conversation_index, DATUM_INDEX_NEW(absolute_index, actor->identifier)) &&
+			psp_aitickold_conv_lines++ < 24)
+			platform_psp_log("aitickoldconvscan: game time %ld | install: actor %d's record names conversation %08lx, which doesn't list it (the tick's word %08lx, action %d -> %d)",
+				(long)game_time_get(), (int)absolute_index, (unsigned long)scratch->external_orders.conversation_index,
+				(unsigned long)actor->external_orders.conversation_index, (int)actor->state.action, (int)scratch->state.action);
+		/* in: the actor, then its props' words and the props it made */
+		csmemcpy(actor, scratch, sizeof(*actor));
+		psp_aitickold_buf_stats.words += count;
+		at = start + 3 + count * 3;
+		for (p = 0; p < props; p++)
+		{
+			unsigned long kind = buf[at] >> 16, n = buf[at] & 0xffffu;
+
+			prop_index = (long)buf[at + 1];
+			if (kind == 1)
+			{
+				if (datum_new_at_index(prop_data, prop_index) == prop_index)
+					csmemcpy(psp_aime_datum_address(prop_data, prop_index), buf + at + 2, size);
+			}
+			else if (kind == 0)
+			{
+				unsigned long *prop_words = (unsigned long *)psp_aime_datum_address(prop_data, prop_index);
+
+				for (k = 0; k < (long)n; k++)
+					psp_aitickold_merge(&prop_words[buf[at + 2 + k * 3]], buf[at + 3 + k * 3], buf[at + 4 + k * 3]);
+			}
+			at += 2 + (kind == 1 ? n : kind == 2 ? 0 : n * 3);
+		}
+		/* the deletions last. A prop the tick named in the actor meanwhile
+		(a fire target its control took) gets the switch the thinking gave
+		the prop's other references, as the engine does before any delete */
+		for (p = 0; p < deleted_count; p++)
+		{
+			if (!psp_aitickold_buf_noswitch &&
+				psp_aitickold_names((unsigned long const *)actor, (long)(sizeof(*actor) / 4), (unsigned long)deleted[p]))
+			{
+				long to = deleted[p];
+				short steps, q;
+				boolean going = TRUE;
+
+				/* a target the record deletes too is followed to its own */
+				for (steps = 0; going && steps < 4; steps++)
+				{
+					to = psp_aitickold_switched_to(buf, start, count, to);
+					for (q = 0, going = FALSE; q < deleted_count && !going; q++)
+						going = to == deleted[q];
+				}
+				actor_switch_props(DATUM_INDEX_NEW(absolute_index, actor->identifier), deleted[p], going ? NONE : to);
+				psp_aitickold_buf_stats.switched++;
+				/* a word the engine's switch doesn't cover */
+				for (k = 0; k < (long)(sizeof(*actor) / 4); k++)
+				{
+					if (((unsigned long const *)actor)[k] == (unsigned long)deleted[p])
+					{
+						if (psp_aitickold_buf_stats.dangling++ < 8)
+							platform_psp_log("aitickoldbuf: game time %ld | actor %d word %ld still names deleted prop %08lx",
+								(long)game_time_get(), (int)absolute_index, k, (unsigned long)deleted[p]);
+					}
+				}
+			}
+		}
+		for (p = 0; p < deleted_count; p++)
+			datum_delete(prop_data, deleted[p]);
+		if (psp_aitickold_buf_check)
+			psp_aitickold_check(DATUM_INDEX_NEW(absolute_index, actor->identifier), absolute_index, "after", buf, start, count, props);
+		psp_aitickold_buf_stats.put++;
+	}
+}
+
+/* the pass's loop: one actor thought ahead, or stopped and left to the tick.
+"""),
+# read before the push, on the main CPU
+("""	if (psp_aitickold_want)
+		psp_aitickold_stats.asked++;
+""",
+ """	if (psp_aitickold_buf_on < 0)
+	{
+		psp_aitickold_buf_on = psp_keep("aitickoldbuf") != 0 && psp_aime1b_active();
+		psp_aitickold_buf_check = psp_keep("aitickoldbufcheck") != 0;
+		psp_aitickold_conv_scan = psp_keep("aitickoldconvscan") != 0;
+		psp_aitickold_buf_noswitch = psp_keep("aitickoldbufnoswitch") != 0;
+		psp_aitickold_buf_nooffer = psp_keep("aitickoldbufnooffer") != 0;
+		psp_aitickold_words_on = psp_keep("aitickoldbufwords") != 0;
+		psp_aitickold_input_tick = psp_keep("aitickoldbufinput") != 0;
+		if (psp_aitickold_buf_on)
+		{
+			psp_aitickold_buf = psp_aime_lines(PSP_AITICKOLD_BUF_WORDS * sizeof(unsigned long));
+			if (!psp_aitickold_buf)
+				psp_aitickold_buf_on = 0;
+			platform_psp_log(psp_aitickold_buf_on ? "aitickold: the second pass's thinking kept for its own tick (aitickoldbuf)" :
+				"aitickold: no room for aitickoldbuf's records, so it's off");
+		}
+	}
+	psp_aitickold_buf_want = psp_aitickold_want && psp_aitickold_buf_on > 0;
+	if (psp_aitickold_want)
+		psp_aitickold_stats.asked++;
+"""),
+("""		if (psp_aitickold_covers())
+			psp_aitickold_stats.used++;
+""",
+ """		if (psp_aitickold_covers())
+		{
+			psp_aitickold_install();
+			psp_aitickold_stats.used++;
+		}
+"""),
+("""			psp_aitickold_stats.used, psp_aitickold_stats.inline_passes, psp_aitickold_stats.queue_carried);
+""",
+ """			psp_aitickold_stats.used, psp_aitickold_stats.inline_passes, psp_aitickold_stats.queue_carried);
+	if (psp_aitickold_buf_on > 0)
+		platform_psp_log("aitickoldbuf: game time %ld | second thinkings kept %lu (words %lu; props changed %lu, made %lu, deleted %lu), left in place %lu, skipped %lu, no room %lu, records' peak %lu words | put in %lu (words %lu), not put in %lu (the tick changed the chain %lu); references the tick made to props the thinking deleted switched %lu (words left naming one %lu); conversations gone let go %lu",
+			now, psp_aitickold_buf_me_stats.unshelved, psp_aitickold_buf_me_stats.words, psp_aitickold_buf_me_stats.props_changed,
+			psp_aitickold_buf_me_stats.props_made, psp_aitickold_buf_me_stats.props_deleted, psp_aitickold_buf_me_stats.kept,
+			psp_aitickold_buf_me_stats.skipped, psp_aitickold_buf_me_stats.full, psp_aitickold_buf_me_stats.peak,
+			psp_aitickold_buf_stats.put, psp_aitickold_buf_stats.words, psp_aitickold_buf_stats.conflicts,
+			psp_aitickold_buf_stats.chain, psp_aitickold_buf_stats.switched, psp_aitickold_buf_stats.dangling,
+			psp_aitickold_buf_stats.conversations);
+	if (psp_aitickold_buf_on > 0 && psp_aitickold_words_on)
+	{
+		long w;
+
+		for (w = 0; w < PSP_AITICKOLD_WORDS_MOST; w++)
+		{
+			if (psp_aitickold_words[w][1] + psp_aitickold_words[w][2])
+				platform_psp_log("aitickoldbufwords: game time %ld | actor word +%ld: the thinking's alone %lu, both other bytes %lu, both the same bytes %lu",
+					now, w * 4, psp_aitickold_words[w][0], psp_aitickold_words[w][1], psp_aitickold_words[w][2]);
+		}
+	}
+"""),
+]
+# the second pass's clock: the game time one tick on, in the pass's own
+# context only (the main CPU's frame reads the true time while the job runs)
+FIXES_AITICKOLD["source/game/game_time.c#aitickold"] = [
+("""	return game_time_globals->local_time;
+}
+
+short game_time_get_elapsed(
+""",
+ """#ifdef HALO_PSP
+	{
+		/* psp_fixups.py (FIXES_AITICKOLD, "aitickold") */
+		extern int psp_aitickold_now, psp_aitickold_trueclock;
+
+		if (psp_aitickold_now && !psp_aitickold_trueclock && psp_aime_here())
+			return game_time_globals->local_time + 1;
+	}
+#endif
+	return game_time_globals->local_time;
+}
+
+short game_time_get_elapsed(
+"""),
+]
+
+
 # the C library's formatting takes a lock and may allocate (firmware), and a
 # broken pool's report writes the log: on the ME, the thinking actor stops at
 # either and thinks in the tick (the formatting the thinking reaches is its
@@ -50170,7 +51928,7 @@ psp_box_posed: ;
 ]
 
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_SSPR.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + list(FIXES_CHUPA090RUNS.items()) + list(FIXES_HEAPTRIM.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items()) + list(FIXES_AIME2A.items()) + (list(FIXES_STACKHOT.items()) if STACKHOT else []) + (list(FIXES_STACKHOT2.items()) if STACKHOT2 else []) + list(FIXES_PWSL.items()) + list(FIXES_SPHSL.items()) + list(FIXES_RECONLIST.items()) + list(FIXES_TP1.items()) + list(FIXES_WXDEAD.items()) + list(FIXES_AIMEMOVE.items()) + list(FIXES_PROPCRASH.items()) + list(FIXES_APCPOOL.items()) + list(FIXES_SNDEDRAM.items()) + list(FIXES_LIGHTFIRST.items()) + list(FIXES_DRAWPART.items()) + (list(FIXES_RECONLATE.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + list(FIXES_P2PASS.items()) + (list(FIXES_P2CENSUS.items()) if P2CENSUS else []) + list(FIXES_OBSRAY.items()) + list(FIXES_SNDWAIT.items()) + list(FIXES_FLAMEDECAL.items()) + list(FIXES_HUHINT.items()) + list(FIXES_DBLSOFT.items()) + list(FIXES_VFPUTRIG.items()) + list(FIXES_TICKCACHE.items()) + list(FIXES_STRICTALIAS.items()) + list(FIXES_SNDPERMAP.items()) + list(FIXES_RLOOP.items()) + list(FIXES_L10.items()) + list(FIXES_RLSKIP.items()) + list(FIXES_ONEWALK.items()) + (list(FIXES_POSEK.items()) if POSEK else []) + (list(FIXES_SNDSTREAM.items()) if os.environ.get("PSP_SNDSTREAM", "") == "1" else []) + list(FIXES_MOUTHCLOCK.items()) + list(FIXES_LSAME.items()) + list(FIXES_CHUPA090.items()) + (list(FIXES_CAPTURE_POSING.items()) if CAPTURE == "posing" else []) + (list(FIXES_BOXPOSING.items()) if os.environ.get("PSP_BOXPOSING", "") == "1" else [])):
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_SSPR.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + list(FIXES_CHUPA090RUNS.items()) + list(FIXES_HEAPTRIM.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items()) + list(FIXES_AIME2A.items()) + (list(FIXES_STACKHOT.items()) if STACKHOT else []) + (list(FIXES_STACKHOT2.items()) if STACKHOT2 else []) + list(FIXES_PWSL.items()) + list(FIXES_SPHSL.items()) + list(FIXES_RECONLIST.items()) + list(FIXES_TP1.items()) + list(FIXES_WXDEAD.items()) + list(FIXES_AIMEMOVE.items()) + list(FIXES_PROPCRASH.items()) + list(FIXES_APCPOOL.items()) + list(FIXES_SNDEDRAM.items()) + list(FIXES_LIGHTFIRST.items()) + list(FIXES_DRAWPART.items()) + (list(FIXES_RECONLATE.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + list(FIXES_P2PASS.items()) + (list(FIXES_P2CENSUS.items()) if P2CENSUS else []) + list(FIXES_OBSRAY.items()) + list(FIXES_SNDWAIT.items()) + list(FIXES_FLAMEDECAL.items()) + list(FIXES_HUHINT.items()) + list(FIXES_DBLSOFT.items()) + list(FIXES_VFPUTRIG.items()) + list(FIXES_TICKCACHE.items()) + list(FIXES_STRICTALIAS.items()) + list(FIXES_SNDPERMAP.items()) + list(FIXES_RLOOP.items()) + list(FIXES_L10.items()) + list(FIXES_RLSKIP.items()) + list(FIXES_ONEWALK.items()) + (list(FIXES_POSEK.items()) if POSEK else []) + (list(FIXES_SNDSTREAM.items()) if os.environ.get("PSP_SNDSTREAM", "") == "1" else []) + list(FIXES_MOUTHCLOCK.items()) + list(FIXES_LSAME.items()) + list(FIXES_CHUPA090.items()) + (list(FIXES_AITICKOLD.items()) if AITICKOLD else []) + list(FIXES_FARLEVEL.items() + (list(FIXES_CAPTURE_POSING.items()) if CAPTURE == "posing" else []) + (list(FIXES_BOXPOSING.items()) if os.environ.get("PSP_BOXPOSING", "") == "1" else []))):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 

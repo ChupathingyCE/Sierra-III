@@ -349,7 +349,7 @@ The PSP is only ever a client of ChupathingyCE's desktop host (network version 2
 | LW2 (the log written every 30 s) | shelved | none | The log's stick time -2/3, but nothing waited behind it; a hang would lose more log; pair 40834903762 |
 | PRECONVERT (model buffers baked in the GE's form) | not merged: Sheepdog01's call | none | Round 1 lost (+36% frame: the baked buffers skipped the VRAM copies); round 2 even; worth B8 and ~200 KB of heap for packs +2.5-5 MB a map; 40841204853, 40845838294 |
 | NW1, NW2 (node matrices on the ME) | can't pay / rejected | NW2: c20 tick +0.8 ms | NW1 sized at <= 3% of c20 with no cache relief; NW2 built and exact, but the walk is cheap on the VFPU and the copy-back costs more; pair 40843585564 |
-| SHADOWWALK, CSTPOOL, PROFSEC, MACHLINE, SKIDX8 | sized | | SHADOWWALK <= 0.15% of b30's frame; CSTPOOL ~0.5-0.95 ms a frame but needs an eDRAM claim (Sheepdog01); PROFSEC dormant; MACHLINE and SKIDX8 under the bar |
+| SHADOWWALK, CSTPOOL, PROFSEC, MACHLINE, SKIDX8 | sized | | SHADOWWALK <= 0.15% of b30's frame; CSTPOOL ~0.5-0.95 ms a frame but needs an eDRAM claim (a row in the lab's edram.md; no longer Sheepdog01's call, 2026-11-11 17:21); PROFSEC dormant; MACHLINE and SKIDX8 under the bar |
 
 **The tock against b148, each built as it ships** (its own profile, strict, layout w142a_tgc90; 2026-10-29 [M]): c10 (PSP-1000) tick -1.0 to -1.5 ms (-6 to -8%), frame -1.6 to -2.5%; b30's flight (PSP-3000) tick -2.2 ms (-4.5%), frame -2.0%; drawing +2.6 to +3.6% on both maps, which the cache model doesn't show (drawhunt1: equal) and link layout alone can do (below). The next test is a layout from the tock's own profile.
 
