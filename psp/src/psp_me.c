@@ -189,8 +189,11 @@ its eDRAM at start and runs the GE replay from the copy */
 
 #if PSP_MEXEC
 /* The copy's table: tools/mexec.py writes it into the linked program
-(psp_build.py, before prxgen); 'MEX0' until then. Its layout is the tool's */
-#define MEXEC_TABLE_WORDS 4096
+(psp_build.py, before prxgen); 'MEX0' until then. Its layout is the tool's.
+Sized to the lists in use with room to grow (list rb fills 1,040 words): it sits
+in .data, so every word is heap the game doesn't get, and the tool refuses a
+list whose table outgrows it */
+#define MEXEC_TABLE_WORDS 1536
 #define MEXEC_MAGIC 0x4D455843u
 #define MEXEC_HEADER 16
 #define MEXEC_AT 0x40000u   /* eDRAM 256 KB: the resident room's start (psp_me.h) */
