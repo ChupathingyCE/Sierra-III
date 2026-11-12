@@ -158,7 +158,7 @@ The ME's replay makes some answers from the camera, and a kept block is CALLed o
 
 Nothing past s0 is built until s0's count is read: if the kept share of the ME's words is small on the heavy stretches, or the arena doesn't fit b30's heap, the design changes here first.
 
-### 10.8 v0's B, as it will be built (2026-11-12 16:4x, builder; the lead 16:20: B small, as the skeleton the forms then fill)
+### 10.8 v0's B, as it will be built (2026-11-12 16:2x, builder; the lead 16:20: B small, as the skeleton the forms then fill)
 
 1. **The far form in the key (main CPU).** RSO refuses every walk holding a `DEFER_DRAW_FAR` (bugs.md 15:5x). Taking it is more than a kind on its list: the far choice and the sprite's are made in `render_model` from `level_of_detail_pixels` (`psp_far_draw`), which RSO's key doesn't hold, so a kept far walk would be sent again after the object came near. The key takes the far answer (far or not, sprite or not, the tinted groups' mask), and `rso_send` locks the far block again (`psp_geo_lock`, as it locks each part's buffers) and drops the entry if it moved. Proof: rsocheck 0 differences, play and seeds identical.
 2. **A kept walk is marked, not only copied (main CPU → ME).** `rso_send` writes one short record ahead of the copied ones: the entry's slot, its generation and the records' length. The copy stays in v0 (hand-over by reference is §10.2 item 2's later step); the ME needs the records only when its block is gone.
