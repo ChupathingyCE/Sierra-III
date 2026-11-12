@@ -215,6 +215,14 @@ static int pad_take(unsigned int tag, void *data, unsigned int bytes)
 	return 1;
 }
 
+/* psp_platform.c's tick hook ("padend"): a replay that has run out of its
+recording; the frames after it take the clock's steps and no input, so two
+builds' runs past it differ by their speed alone */
+int psp_pad_replay_ended(void)
+{
+	return pad_mode == 2 && pad_in_ended;
+}
+
 /* main.c, each frame: the frame's time step, recorded or replayed */
 float psp_pad_seconds(float seconds)
 {

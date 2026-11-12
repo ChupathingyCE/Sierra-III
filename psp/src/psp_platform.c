@@ -1197,9 +1197,13 @@ static const struct
 	(a few scattered pixels a frame); a pack without the variants keeps its
 	plain region unused, so these want a variant bake */
 	{ "skinw2", "skinw2off" }, { "skinstrip", "skinstripoff" },
-	/* the far level (docs/box_far_level.md) is opt-in (keep word farlevel)
-	until it's drawing-only: on a30 it parts play and on c20 the local seed
-	(lab bugs.md), and the far ruling asks play and seeds identical */
+	/* the far level (docs/box_far_level.md): a model under 32 px drawn as one
+	baked part in place of its solid pass, skinned models one bone a vertex
+	(D1's sprites stay opt-in: farsprite). Drawing only, approximate under the
+	far ruling (Sheepdog01 2026-11-10): play and seeds identical; b30's flight frame
+	-4.6%, drawing -16% on the PSP-1000 (slice 1, sierra-hw 43198060129). It
+	wants a bake with --far-level; a pack without one leaves it off */
+	{ "farlevel", "farlevelold" },
 	/* the visibility views pushed to the ME with sound_render after them, so
 	the answer is ready at its first reader, and a ring push not refused for a
 	slot job whose answer is already in (mevis_slice2.md): exact */
@@ -3405,6 +3409,20 @@ steps in order: the console has no way to wait */
 			exit_tick = (long)psp_keep_number("exitat", 0) * 30;
 		if (exit_tick > 0 && (long)ticks_seen == exit_tick)
 			exit_game("exitat");
+	}
+	/* keep.txt's "padend": back to the menu when a pad's replay runs out of
+	its recording. Past it the frames take the clock's time steps and no
+	input, so two builds' runs part there by speed alone: a proof that
+	runs on would read a parting that isn't the change's (farpads1ar's c20
+	and a30, every pad's local seed within ticks of its recording's end) */
+	{
+		extern int psp_pad_replay_ended(void);
+		static int pad_end = -1;
+
+		if (pad_end < 0)
+			pad_end = psp_keep("padend");
+		if (pad_end && psp_pad_replay_ended())
+			exit_game("padend");
 	}
 	/* "lanetraceatN": lanetrace's window at game tick N (psp_lanetrace.c);
 	asked each tick only until that tick */
