@@ -17073,17 +17073,19 @@ static void far_sprite(const unsigned char *at)
 	r *= sqrtf(scale2);
 	for (i = 0; i < 3; i++)
 		right[i] *= r / length, up[i] *= r;
-	/* the model's lights on a face toward the camera */
+	/* the model's lights on the half of it the camera sees: each light's
+	share is its mean over that half's faces, about 0.4 + 0.4 of its facing
+	the camera (a face toward the camera alone drew the far models dark) */
 	for (channel = 0; channel < 3; channel++)
 		light[channel] = (float)((model_ambient >> (8 * channel)) & 0xFF);
 	for (i = 0; i < model_light_count && i < 2; i++)
 	{
 		float d = toward[0] * model_light_toward[i].x + toward[1] * model_light_toward[i].y +
-			toward[2] * model_light_toward[i].z;
+			toward[2] * model_light_toward[i].z, share = 0.4f + 0.4f * d;
 
-		if (d > 0.0f)
+		if (share > 0.0f)
 			for (channel = 0; channel < 3; channel++)
-				light[channel] += d * (float)((model_light_color[i] >> (8 * channel)) & 0xFF);
+				light[channel] += share * (float)((model_light_color[i] >> (8 * channel)) & 0xFF);
 	}
 	colour = 0xFF000000u;
 	for (channel = 0; channel < 3; channel++)

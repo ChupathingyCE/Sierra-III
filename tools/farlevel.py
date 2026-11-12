@@ -424,7 +424,8 @@ def sprite_views(positions, normals, colours, tri):
         x = (rel @ right / radius * 0.5 + 0.5) * size        # texels, left to right
         y = (0.5 - rel @ up / radius * 0.5) * size           # texels, top down
         z = rel @ d                                          # nearer the camera, larger
-        shade = (0.6 + 0.4 * np.clip(normals @ d, 0.0, 1.0))[:, None] * colours
+        # a light shape term only: the draw lights the sprite as the half the camera sees
+        shade = (0.8 + 0.2 * np.clip(normals @ d, 0.0, 1.0))[:, None] * colours
         depth = np.full((size, size), -np.inf, F)
         rgb = np.zeros((size, size, 3), F)
         for i0, i1, i2 in t:
