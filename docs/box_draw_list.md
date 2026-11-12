@@ -29,6 +29,20 @@
 
 Per instance: at ~150 drawn instances a frame [U], 11 ms is ~73 µs of the main CPU an instance and 12 ms ~80 µs of the ME, all work included. The box's standalone price is read against these.
 
+**The ME's render job by stretch on the tock today** [M, 2026-11-12, tock162 9d00a903 (far level on, farvram, vmpack), `timerson mekinds`, Sheepdog01's pads to padend; the ME's own time a render job, one job a frame; the lab's sierra-hw 43312846529 (b30, PSP-1000, 2 runs) and 43314233107 (b40, PSP-3000, 1 run)]:
+
+| Stretch | ME render, ms a frame | Main CPU waiting on it, ms a frame | Against v0's ~12 |
+|---|---:|---:|---:|
+| b30 cinematic | 18.2 | 0.1 | 1.5x |
+| b30 flight | 33.0 | 0.2 | 2.8x |
+| b30 landing | 32.8 | 0.1 | 2.7x |
+| b30 beach | 20.1 | 0.2 | 1.7x |
+| b30 bunker | 17.7 | 0.1 | 1.5x |
+| b40 cliff | 18.8 | **7.4** | 1.6x |
+| b40 snowfield | 17.5 | 0.0 | 1.5x |
+
+These replace §10's "~11-20 ms of the flight [superseded 2026-11-12: 33 ms measured, §4; U]": the flight and the landing are ~33 ms, about twice the rest, so the far ladder and kept words pay most there. On b40's cliff the main CPU waits 7.4 ms a frame for the render job: there the ME's row is on the frame's critical path. (Instrumented: `mekinds` and the timers inflate both units; read the stretches against each other. c20's census, the lab's 43314261608, follows.)
+
 ## 5. Means
 
 - **B, work on change: the premise and the largest lever.** An instance whose form, matrices, bones and lights are unchanged since the last frame costs no ME work and no new record: its last words are drawn again. R as built emits every instance every frame, which is the plainest reason its render job didn't fall (`redesign_r_topdown.md`, the milestone priced). **Its worth is unknown until counted:** the first slice (§9) counts, per frame on Sheepdog01's pad benches, the instances unchanged between frames, by kind (scenery, still props, still weapons, posed units and vehicles, the far tiers).
@@ -70,6 +84,8 @@ Drawing only: play and both seeds identical with the box on and off (statecrc), 
 
 1. ~~**The change census [E, exact counts]:** an emulator batch over b30_play2 and c20_play1 that counts, each frame, the drawn instances whose key, node matrices (bitwise), light set and passes equal the last frame's, by kind. Its answer sizes B; nothing is built before it.~~ Done 2026-11-12 (§5).
 2. ~~**The box's v0 cut from that count:** records with stamps, reused unchanged; captured with `PSP_CAPTURE=draw_list` and priced alone on the PSP (`bench-hw`, the harness's three modes).~~ Designed in §10; its first step is §10.6's count (s0).
+
+3. **The first slice: the origin held still (`ge_eye`)** (the lead, 2026-11-12 15:35: the box's prerequisite and every retained form's, R's included). `ge_eye` follows the eye every frame (`psp_ge.c` ~6399) and every model matrix, bone slot and point light is written relative to it, so an unchanged instance's words change whenever the camera moves, and no word can be kept. The slice holds the origin on an N-unit grid with the view carrying the remainder (as level_exact's shift already does); s0 (drawreuse1, the lab's 43309859657) counts the hops at N = 2/4/8. Proof: pictures in the emulator; play and seeds identical (drawing only).
 
 ## 10. v0's design (2026-11-12, builder)
 
