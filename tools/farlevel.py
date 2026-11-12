@@ -105,6 +105,9 @@ SOSO_DECAL = 1 << 3             # ... alpha blended decal: the decal pass's
 DECALS = set()
 SOSO_CHANGE_SOURCE = 76         # shader_model's change colour source: 0 none, 1-4 A-D
 CHANGE_SOURCE = {}              # soso tag id: its change colour (1-4); base_colours fills it                  # decal soso tag ids (base_colours fills it): kept, drawn in their own pass
+PCV_FAR_SPRITE = 1 << 18        # D1: a model's sprite views, the chain's last element
+SPRITE_VIEWS = 8
+SPRITE_TEXELS = 32
 PCV_FAR_BONES = 1 << 17         # a block of a skinned model: 16 bytes of nodes after the header, weights before each vertex
 BONES = 8                       # the GE's bone matrices
 PCV_FAR_KEEPS = 1 << 16         # a far model's first block flag: its decal and transparent parts are drawn as they are
@@ -402,6 +405,90 @@ def skinned_groups(lib, positions, normals, colours, tri3, vnode, diameter):
     return out, None
 
 
+def sprite_views(positions, normals, colours, tri):
+    """D1: the far mesh seen from SPRITE_VIEWS azimuths about the model's up
+    axis (z) at the horizon, orthographic, rendered at twice SPRITE_TEXELS and
+    box-filtered: [(rgb, coverage)] per view, the centre and the radius"""
+    lo, hi = positions.min(0), positions.max(0)
+    centre = (lo + hi) * 0.5
+    radius = float(np.sqrt(((positions - centre) ** 2).sum(1)).max()) or 1.0
+    size = 2 * SPRITE_TEXELS
+    t = np.asarray(tri, np.int64).reshape(-1, 3)
+    up = np.array([0.0, 0.0, 1.0], F)
+    out = []
+    for k in range(SPRITE_VIEWS):
+        a = 2.0 * np.pi * k / SPRITE_VIEWS
+        d = np.array([np.cos(a), np.sin(a), 0.0], F)        # toward the camera
+        right = np.cross(up, d)
+        rel = positions - centre
+        x = (rel @ right / radius * 0.5 + 0.5) * size        # texels, left to right
+        y = (0.5 - rel @ up / radius * 0.5) * size           # texels, top down
+        z = rel @ d                                          # nearer the camera, larger
+        shade = (0.6 + 0.4 * np.clip(normals @ d, 0.0, 1.0))[:, None] * colours
+        depth = np.full((size, size), -np.inf, F)
+        rgb = np.zeros((size, size, 3), F)
+        for i0, i1, i2 in t:
+            x0, x1, x2, y0, y1, y2 = x[i0], x[i1], x[i2], y[i0], y[i1], y[i2]
+            area = (x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0)
+            if abs(area) < 1e-9:
+                continue
+            xa, xb = max(int(np.floor(min(x0, x1, x2))), 0), min(int(np.ceil(max(x0, x1, x2))), size - 1)
+            ya, yb = max(int(np.floor(min(y0, y1, y2))), 0), min(int(np.ceil(max(y0, y1, y2))), size - 1)
+            if xa > xb or ya > yb:
+                continue
+            px, py = np.meshgrid(np.arange(xa, xb + 1) + 0.5, np.arange(ya, yb + 1) + 0.5)
+            w0 = ((x1 - px) * (y2 - py) - (x2 - px) * (y1 - py)) / area
+            w1 = ((x2 - px) * (y0 - py) - (x0 - px) * (y2 - py)) / area
+            w2 = 1.0 - w0 - w1
+            inside = (w0 >= 0) & (w1 >= 0) & (w2 >= 0)
+            if not inside.any():
+                continue
+            zz = w0 * z[i0] + w1 * z[i1] + w2 * z[i2]
+            sub = depth[ya:yb + 1, xa:xb + 1]
+            win = inside & (zz > sub)
+            if not win.any():
+                continue
+            sub[win] = zz[win]
+            c = w0[..., None] * shade[i0] + w1[..., None] * shade[i1] + w2[..., None] * shade[i2]
+            rgb[ya:yb + 1, xa:xb + 1][win] = c[win]
+        covered = np.isfinite(depth)
+        # 2x2 boxes: the covered texels' mean colour, and how many were covered
+        cov = covered.reshape(SPRITE_TEXELS, 2, SPRITE_TEXELS, 2).sum((1, 3))
+        col = (rgb * covered[..., None]).reshape(SPRITE_TEXELS, 2, SPRITE_TEXELS, 2, 3).sum((1, 3))
+        col = col / np.maximum(cov, 1)[..., None]
+        out.append((col, cov >= 2))
+    return out, centre, radius
+
+
+def sprite_block(views, centre, radius, node):
+    """the D1 sprite block: a header (vertex count 0, so the mesh draw passes
+    it), a 16-colour palette (index 0 clear) and the views' CLUT4 texels"""
+    pixels = np.concatenate([c[m] for c, m in views]) if any(m.any() for _, m in views) else np.zeros((1, 3), F)
+    # 15 colours by k-means over the covered texels
+    rng = np.random.default_rng(0)
+    k = min(15, len(pixels))
+    means = pixels[rng.choice(len(pixels), k, replace=False)].astype(F)
+    for _ in range(12):
+        nearest = ((pixels[:, None, :] - means[None]) ** 2).sum(2).argmin(1)
+        for j in range(k):
+            if (nearest == j).any():
+                means[j] = pixels[nearest == j].mean(0)
+    palette = np.zeros((16, 4), np.uint8)
+    palette[1:k + 1, :3] = np.clip(np.round(means), 0, 255).astype(np.uint8)
+    palette[1:k + 1, 3] = 255
+    texels = bytearray()
+    for c, m in views:
+        index = ((c.reshape(-1, 1, 3) - means[None]) ** 2).sum(2).argmin(1) + 1
+        index = np.where(m.reshape(-1), index, 0).astype(np.uint8)
+        texels += (index[0::2] | index[1::2] << 4).astype(np.uint8).tobytes()   # the GE's T4: low nibble first
+    head = struct.pack('<5I', mc.MAGIC, PCV_FAR | PCV_FAR_SPRITE, 0, SPRITE_TEXELS, len(views))
+    head += np.array(list(centre) + [radius, radius, radius], '<f4').tobytes()
+    head += struct.pack('<IfII', node, 0.0, 0, 0) + struct.pack('<I', ALWAYS)
+    head += bytes(mc.BLOCK_HEADER - len(head))
+    out = head + palette.tobytes() + bytes(texels)
+    return out + bytes(mc.up(len(out), 64) - len(out))
+
+
 def far_block(positions, normals, colours, local, node, error, key, flags=8, bones=None, vnodes=None):
     lo, hi = positions.min(0), positions.max(0)
     center = (lo + hi) * 0.5
@@ -449,7 +536,7 @@ def far_block(positions, normals, colours, local, node, error, key, flags=8, bon
     return out + bytes(mc.up(len(out), 64) - len(out)), len(indices)
 
 
-def main(map_path, pgeo_path):
+def main(map_path, pgeo_path, sprites=True):
     from halomap import CacheMap, Defs
     import texpack
     pack = bytearray(open(pgeo_path, 'rb').read())
@@ -531,6 +618,25 @@ def main(map_path, pgeo_path):
             census['far vertices'] += len(rows)
             census['far triangles'] += len(local) // 3
             census['far indices'] += strip_count
+        # D1's sprite: a static model of one node, always drawn and untinted
+        if (sprites and not skinned and len({n & 0xFFFF for n, _, _ in groups}) == 1 and
+                all(n >> 16 == ALWAYS for n, _, _ in groups)):
+            rows_all = np.concatenate([m_[0] for _, m_, _ in groups])
+            base_at, tri_all = 0, []
+            for _, (rows, local, _e), _b in groups:
+                tri_all.append(np.asarray(local, np.int64) + base_at)
+                base_at += len(rows)
+            views, s_centre, s_radius = sprite_views(positions[rows_all], normals[rows_all], cols[rows_all],
+                                                     np.concatenate(tri_all))
+            start = 0
+            while True:
+                nxt = struct.unpack_from('<I', model, start + 56)[0]
+                if not nxt:
+                    break
+                start += nxt
+            struct.pack_into('<I', model, start + 56, len(model) - start)
+            model += sprite_block(views, s_centre, s_radius, groups[0][0] & 0xFFFF)
+            census['far sprites'] += 1
         directory.append((tag_id, mc.PACK_BASE + region + len(blocks), len(model), diameter))
         tag = m.by_id.get(tag_id) or m.by_id.get(tag_id - (1 << 32))
         sizes.append((len(model), tag.name if tag else '%08x' % tag_id, len(groups)))
@@ -566,9 +672,9 @@ def main(map_path, pgeo_path):
     c = census
     left = ', '.join('%s %d' % (k[6:], v) for k, v in sorted(c.items()) if k.startswith('left: '))
     print('farlevel: %d models, %d given a far level at %d px (left: %s; see-through parts left out of them: %d); source %d triangles %d vertices -> '
-          'far %d triangles %d vertices, %d indices; %d models of several nodes (%d groups), %d of several permutations, %d keeping decal or transparent parts (%d parts), %d skinned (%d bone batches), %d tinted; region %d KB' %
+          'far %d triangles %d vertices, %d indices; %d models of several nodes (%d groups), %d of several permutations, %d keeping decal or transparent parts (%d parts), %d skinned (%d bone batches), %d tinted, %d with D1 sprites; region %d KB' %
           (c['models'], c['far models'], FAR_PIXELS, left or 'none', c['see-through parts left out'], c['source triangles'], c['source vertices'],
-           c['far triangles'], c['far vertices'], c['far indices'], c['far models of several nodes'], c['far node groups'], c['far models of several permutations'], c['far models with parts kept'], c['see-through parts kept'], c['far skinned models'], c['far bone batches'], c['far models tinted'],
+           c['far triangles'], c['far vertices'], c['far indices'], c['far models of several nodes'], c['far node groups'], c['far models of several permutations'], c['far models with parts kept'], c['see-through parts kept'], c['far skinned models'], c['far bone batches'], c['far models tinted'], c['far sprites'],
            len(body) // 1024))
     sizes.sort(reverse=True)
     print('farlevel: the largest: ' + '; '.join('%s %.1f KB (%d node%s)' % (name, b / 1024.0, g, '' if g == 1 else 's')

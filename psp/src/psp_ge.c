@@ -687,7 +687,8 @@ void psp_ge_model_detail(unsigned int detail_key, float u_scale, float v_scale);
 void psp_ge_draw_model(void *vertices, int vertex_count, int uncompressed, const unsigned short *indices,
 	long index_count, int strip, unsigned int color, unsigned int base_key, float u_scale, float v_scale,
 	int alpha_tested);
-void psp_ge_draw_far(const void *block, unsigned int mask_low, unsigned int mask_high, const unsigned int *tints);
+void psp_ge_draw_far(const void *block, unsigned int mask_low, unsigned int mask_high, const unsigned int *tints,
+	const void *sprite);
 void psp_ge_queue_transparent(void *vertices, int vertex_count, int uncompressed, const unsigned short *indices,
 	long index_count, int strip, unsigned int key, float u_scale, float v_scale, float u_offset, float v_offset,
 	short blend, const float *centroid);
@@ -1162,9 +1163,10 @@ static int defer_draw_model(void *vertices, int vertex_count, int uncompressed, 
 	return 1;
 }
 
-static int defer_draw_far(const void *block, unsigned int mask_low, unsigned int mask_high, const unsigned int *tints)
+static int defer_draw_far(const void *block, unsigned int mask_low, unsigned int mask_high, const unsigned int *tints,
+	const void *sprite)
 {
-	defer_word *at = defer_take(DEFER_DRAW_FAR, 7);
+	defer_word *at = defer_take(DEFER_DRAW_FAR, 8);
 	int k;
 
 	at[0].p = block;
@@ -1172,6 +1174,7 @@ static int defer_draw_far(const void *block, unsigned int mask_low, unsigned int
 	at[2].u = mask_high;
 	for (k = 0; k < 4; k++)
 		at[3 + k].u = tints[k];
+	at[7].p = sprite;
 	return 1;
 }
 
@@ -1598,7 +1601,7 @@ static void defer_replay(const defer_word *buffer, unsigned int used, int on_me)
 			{
 				unsigned int tints[4] = { w[3].u, w[4].u, w[5].u, w[6].u };
 
-				psp_ge_draw_far(w[0].p, w[1].u, w[2].u, tints);
+				psp_ge_draw_far(w[0].p, w[1].u, w[2].u, tints, w[7].p);
 			}
 			break;
 		case DEFER_DRAW_MODEL:
@@ -17004,27 +17007,145 @@ a list rather than a strip, 14 the bytes to the model's next node group or 0), t
 divided by the scale, a 16-bit position in the box), the indices.
 Untextured, lit by the GE with the model's own lights, each vertex's colour
 its material's ambient and diffuse */
-static unsigned long far_drawn = 0, far_vertices = 0, far_small = 0, far_small_vertices = 0;
+static unsigned long far_drawn = 0, far_vertices = 0, far_small = 0, far_small_vertices = 0, far_sprites = 0;
 #define PIN_UNIT(x) ((x) < 0.0f ? 0.0f : (x) > 1.0f ? 1.0f : (x))
+
+/* D1 (docs/box_far_level.md, slice 5): a static model under farspriteN px
+drawn as one quad of its sprite block: the view nearest the camera's
+azimuth in its node's frame, upright on the node's up axis and turned to
+the camera, its side the model's diameter. CLUT4 from the locked pack, alpha
+tested; unlit texels times the model's lights for a face toward the camera */
+static void far_sprite(const unsigned char *at)
+{
+	const unsigned int *head = (const unsigned int *)at;
+	const float *box = (const float *)(head + 5);
+	unsigned int node = head[11], views = head[4], size = head[3], best = 0, k;
+	ScePspFMatrix4 m;
+	struct sprite_corner { float u, v; unsigned int colour; float x, y, z; } *v;
+	float c[3], toward[3], up[3], right[3], length, scale2, local_x, local_y, best_dot = -2.0f, r = box[3];
+	static const float cosines[8] = { 1.0f, 0.70710678f, 0.0f, -0.70710678f, -1.0f, -0.70710678f, 0.0f, 0.70710678f };
+	static const float sines[8] = { 0.0f, 0.70710678f, 1.0f, 0.70710678f, 0.0f, -0.70710678f, -1.0f, -0.70710678f };
+	unsigned int colour, channel;
+	float light[3];
+	int i;
+
+	if (views != 8 || size != 32 || list_full())
+		return;
+	if (node >= (unsigned int)model_node_count)
+		node = 0;
+	halo_matrix(model_nodes + 13 * node, &m);
+	/* the centre, relative to the camera (halo_matrix's frame) */
+	c[0] = m.w.x + box[0] * m.x.x + box[1] * m.y.x + box[2] * m.z.x;
+	c[1] = m.w.y + box[0] * m.x.y + box[1] * m.y.y + box[2] * m.z.y;
+	c[2] = m.w.z + box[0] * m.x.z + box[1] * m.y.z + box[2] * m.z.z;
+	length = sqrtf(c[0] * c[0] + c[1] * c[1] + c[2] * c[2]);
+	if (length <= 0.0f)
+		return;
+	toward[0] = -c[0] / length;
+	toward[1] = -c[1] / length;
+	toward[2] = -c[2] / length;
+	/* the camera's azimuth in the node's frame: the view whose direction it
+	nears most */
+	scale2 = m.x.x * m.x.x + m.x.y * m.x.y + m.x.z * m.x.z;
+	local_x = (toward[0] * m.x.x + toward[1] * m.x.y + toward[2] * m.x.z) / scale2;
+	local_y = (toward[0] * m.y.x + toward[1] * m.y.y + toward[2] * m.y.z) / scale2;
+	for (k = 0; k < 8; k++)
+	{
+		float d = local_x * cosines[k] + local_y * sines[k];
+
+		if (d > best_dot)
+		{
+			best_dot = d;
+			best = k;
+		}
+	}
+	/* upright on the node's up axis, turned to the camera */
+	length = sqrtf(scale2);
+	up[0] = m.z.x / length;
+	up[1] = m.z.y / length;
+	up[2] = m.z.z / length;
+	right[0] = up[1] * toward[2] - up[2] * toward[1];
+	right[1] = up[2] * toward[0] - up[0] * toward[2];
+	right[2] = up[0] * toward[1] - up[1] * toward[0];
+	length = sqrtf(right[0] * right[0] + right[1] * right[1] + right[2] * right[2]);
+	if (length <= 1.0e-4f)
+		return;
+	r *= sqrtf(scale2);
+	for (i = 0; i < 3; i++)
+		right[i] *= r / length, up[i] *= r;
+	/* the model's lights on a face toward the camera */
+	for (channel = 0; channel < 3; channel++)
+		light[channel] = (float)((model_ambient >> (8 * channel)) & 0xFF);
+	for (i = 0; i < model_light_count && i < 2; i++)
+	{
+		float d = toward[0] * model_light_toward[i].x + toward[1] * model_light_toward[i].y +
+			toward[2] * model_light_toward[i].z;
+
+		if (d > 0.0f)
+			for (channel = 0; channel < 3; channel++)
+				light[channel] += d * (float)((model_light_color[i] >> (8 * channel)) & 0xFF);
+	}
+	colour = 0xFF000000u;
+	for (channel = 0; channel < 3; channel++)
+		colour |= (unsigned int)(light[channel] > 255.0f ? 255.0f : light[channel]) << (8 * channel);
+	v = list_take(4 * sizeof(*v));
+	if (!v)
+		return;
+	for (i = 0; i < 4; i++)
+	{
+		float sx = (i & 1) ? 1.0f : -1.0f, sy = (i & 2) ? -1.0f : 1.0f;
+
+		v[i].u = (i & 1) ? 1.0f : 0.0f;
+		v[i].v = (i & 2) ? 1.0f : 0.0f;
+		v[i].colour = colour;
+		v[i].x = c[0] + sx * right[0] + sy * up[0];
+		v[i].y = c[1] + sx * right[1] + sy * up[1];
+		v[i].z = c[2] + sx * right[2] + sy * up[2];
+	}
+	model_lighting(0);
+	sceGuEnable(GU_TEXTURE_2D);
+	sceGuEnable(GU_ALPHA_TEST);
+	sceGuAlphaFunc(GU_GREATER, 0x80, 0xFF);
+	sceGuClutMode(GU_PSM_8888, 0, 0xFF, 0);
+	sceGuClutLoad(2, at + 64);
+	sceGuTexMode(GU_PSM_T4, 0, 0, 0);
+	sceGuTexImage(0, 32, 32, 32, at + 128 + best * 512);
+	sceGuTexFunc(GU_TFX_MODULATE, GU_TCC_RGBA);
+	sceGuTexFilter(GU_NEAREST, GU_NEAREST);
+	sceGuTexScale(1.0f, 1.0f);
+	sceGuTexOffset(0.0f, 0.0f);
+	sceGumMatrixMode(GU_MODEL);
+	sceGumLoadIdentity();
+	sceGumDrawArray(GU_TRIANGLE_STRIP, GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_32BITF | GU_TRANSFORM_3D, 4, NULL, v);
+	sceGuDisable(GU_ALPHA_TEST);
+}
 
 static void far_report(void)
 {
 	if (far_drawn)
-		platform_log("GE: farlevel: %lu models drawn as their far level in the last 300 frames, %lu vertices; %.1f and %.0f a frame; under 16 px (D1's and D2's ground) %.1f and %.0f a frame",
+		platform_log("GE: farlevel: %lu models drawn as their far level in the last 300 frames, %lu vertices; %.1f and %.0f a frame; under 16 px (D1's and D2's ground) %.1f and %.0f a frame; as D1 sprites %.1f a frame",
 			far_drawn, far_vertices, (double)far_drawn / 300.0, (double)far_vertices / 300.0,
-			(double)far_small / 300.0, (double)far_small_vertices / 300.0);
-	far_drawn = far_vertices = far_small = far_small_vertices = 0;
+			(double)far_small / 300.0, (double)far_small_vertices / 300.0, (double)far_sprites / 300.0);
+	far_drawn = far_vertices = far_small = far_small_vertices = far_sprites = 0;
 }
 
-void psp_ge_draw_far(const void *block, unsigned int mask_low, unsigned int mask_high, const unsigned int *tints)
+static void far_sprite(const unsigned char *at);
+
+void psp_ge_draw_far(const void *block, unsigned int mask_low, unsigned int mask_high, const unsigned int *tints,
+	const void *sprite)
 {
 	const unsigned char *at = block;
 	unsigned int group = 0;
 
-	GE_DEFER(defer_draw_far(block, mask_low, mask_high, tints));
+	GE_DEFER(defer_draw_far(block, mask_low, mask_high, tints, sprite));
 	GE_BENCH_SKIP();
 	if (!frame_open || !block || !model_nodes)
 		return;
+	if (sprite)
+	{
+		far_sprite(sprite);
+		return;
+	}
 	sceGumMatrixMode(GU_MODEL);
 	sceGuDisable(GU_TEXTURE_2D);
 	sceGuDisable(GU_ALPHA_TEST);
@@ -17185,7 +17306,31 @@ int psp_far_draw(unsigned long model, float pixels, const char *permutations, in
 			tints[k] = 0xFF000000u | b << 16 | g << 8 | r;
 		}
 	}
-	psp_ge_draw_far(block, mask[0], mask[1], tints);
+	/* D1: under farspriteN px (16 by default) a model with a sprite block
+	(its chain's last) draws that instead */
+	{
+		static int sprite_pixels = -1;
+		const void *sprite = NULL;
+
+		if (sprite_pixels < 0)
+			sprite_pixels = psp_keep("farspriteoff") ? 0 : psp_keep_number("farsprite", 16);
+		if (pixels < (float)sprite_pixels)
+		{
+			const unsigned char *at = block;
+
+			while (at)
+			{
+				const unsigned int *head = (const unsigned int *)at;
+
+				if (head[1] & 0x40000u)
+					sprite = at;
+				at = head[14] ? at + head[14] : NULL;
+			}
+		}
+		psp_ge_draw_far(block, mask[0], mask[1], tints, sprite);
+		if (sprite)
+			far_sprites++;
+	}
 	far_drawn++;
 	if (pixels < 16.0f)
 		far_small++;
