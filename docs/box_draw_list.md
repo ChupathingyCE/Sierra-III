@@ -40,8 +40,12 @@ Per instance: at ~150 drawn instances a frame [U], 11 ms is ~73 µs of the main 
 | b30 bunker | 17.7 | 0.1 | 1.5x |
 | b40 cliff | 18.8 | **7.4** | 1.6x |
 | b40 snowfield | 17.5 | 0.0 | 1.5x |
+| c20 first 120 s (300-3600) | 25.5 | 0.5 | 2.1x |
+| c20 play (3600-13130) | 27.8 | 0.3 | 2.3x |
+| a30 opening (300-3600) | 22.2 | 0.6 | 1.9x |
+| a30 play (3600-9000) | 21.1 | 0.0 | 1.8x |
 
-These replace §10's "~11-20 ms of the flight [superseded 2026-11-12: 33 ms measured, §4; U]": the flight and the landing are ~33 ms, about twice the rest, so the far ladder and kept words pay most there. On b40's cliff the main CPU waits 7.4 ms a frame for the render job: there the ME's row is on the frame's critical path. (Instrumented: `mekinds` and the timers inflate both units; read the stretches against each other. c20's census, the lab's 43314261608, follows.)
+These replace §10's "~11-20 ms of the flight [superseded 2026-11-12: 33 ms measured, §4; U]": the flight and the landing are ~33 ms, about twice the rest, so the far ladder and kept words pay most there. On b40's cliff the main CPU waits 7.4 ms a frame for the render job: there the ME's row is on the frame's critical path. (Instrumented: `mekinds` and the timers inflate both units; read the stretches against each other. c20: the lab's 43314261608, PSP-3000, c20_play1 to padend; a30: 43318228389, PSP-3000, a30_play1 to 300 s. c20 holds 25-28 ms through its whole recording: after b30's flight, the heaviest stretch measured.)
 
 ## 5. Means
 
