@@ -4937,6 +4937,12 @@ the view's stay under a cell's length, so their rounding is a cell's share
 of what the eye-following origin was chosen against (a hundred units out) */
 static int origin_held = -1;
 static float origin_held_cell = 8.0f, origin_held_at[3];
+/* first person keeps the eye-following origin (its matrices are next to the
+eye, where a cell's offset shows as speckle on the weapon: the lab's
+originheld1): the frame's view and that origin, for use_projection's swap */
+static float origin_follow[3], origin_view_position[3];
+static ScePspFVector3 origin_view_ahead, origin_view_up;
+static int origin_held_now = 0;
 static int origin_held_set = 0;
 static unsigned long origin_held_hops = 0, origin_held_frames = 0;
 #endif
@@ -6432,6 +6438,10 @@ static void window_begin_list(const float *position, const float *forward, const
 			origin_held_cell = psp_keep("drawlistcell2") ? 2.0f : psp_keep("drawlistcell4") ? 4.0f :
 				psp_keep("drawlistcell16") ? 16.0f : 8.0f;
 		}
+		for (k = 0; k < 3; k++)
+			origin_follow[k] = !level_exact ? position[k] :
+				level_local ? level_origin[k] + ge_matrix_float(position[k] - level_origin[k]) : ge_matrix_float(position[k]);
+		origin_held_now = 0;
 		if (origin_held && level_exact)
 		{
 			int hop = !origin_held_set;
@@ -6447,7 +6457,13 @@ static void window_begin_list(const float *position, const float *forward, const
 			}
 			origin_held_frames++;
 			for (k = 0; k < 3; k++)
+			{
 				ge_eye[k] = origin_held_at[k];
+				origin_view_position[k] = position[k];
+			}
+			origin_view_ahead.x = forward[0]; origin_view_ahead.y = forward[1]; origin_view_ahead.z = forward[2];
+			origin_view_up = upward;
+			origin_held_now = 1;
 		}
 		else
 #endif
@@ -11603,6 +11619,34 @@ as a wedge across the screen (b37's shot of a rock in the cave), so
 those models' triangles are checked one by one (psp_ge_draw_model) */
 static void use_projection(int first_person)
 {
+#ifdef PSP_DRAWLIST
+	if (origin_held_now)
+	{
+		/* first person from the eye-following origin, the rest from the held
+		one: the origin, the view that carries the rest, and the origin seen
+		from the camera, swapped together */
+		ScePspFVector3 zero = { 0.0f, 0.0f, 0.0f }, shift;
+		const float *origin = first_person ? origin_follow : origin_held_at;
+		float d[3];
+		int k;
+
+		for (k = 0; k < 3; k++)
+		{
+			ge_eye[k] = origin[k];
+			d[k] = ge_eye[k] - camera_eye[k];
+		}
+		ge_eye_camera[0] = d[0] * camera_right[0] + d[1] * camera_right[1] + d[2] * camera_right[2];
+		ge_eye_camera[1] = d[0] * camera_up[0] + d[1] * camera_up[1] + d[2] * camera_up[2];
+		ge_eye_camera[2] = d[0] * camera_forward[0] + d[1] * camera_forward[1] + d[2] * camera_forward[2];
+		sceGumMatrixMode(GU_VIEW);
+		sceGumLoadIdentity();
+		sceGumLookAt(&zero, &origin_view_ahead, &origin_view_up);
+		shift.x = ge_eye[0] - origin_view_position[0];
+		shift.y = ge_eye[1] - origin_view_position[1];
+		shift.z = ge_eye[2] - origin_view_position[2];
+		sceGumTranslate(&shift);
+	}
+#endif
 	sceGumMatrixMode(GU_PROJECTION);
 	perspective(projection_fov * (180.0f / 3.14159265f),
 		first_person ? first_person_near : projection_near, first_person ? first_person_far : projection_far);
