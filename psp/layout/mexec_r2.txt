@@ -1,0 +1,61 @@
+# MEXEC's second list (docs/mexec.md): the functions the Media Engine copies into
+# its eDRAM, the hottest first. The ME's entry first; then the top 40 of the ME's
+# I-misses on R's milestone build, b30's flight (drawhot2, the lab's sierra-batch
+# 42906990536: 75% of them, 104 KB)
+# r2 adds d20's light pass (research's light_pass.md: the ME's binding work on
+# d20's flashlight, none of it in r1)
+psp_ge_me_replay
+psp_ge_draw_model
+defer_replay
+model_lighting
+model_geometry
+r_part_key
+psp_tex_bind
+psp_ge_draw_model_body
+psp_ge_model_shape.part.0
+vm_redirect_me
+resident_entry
+draw_before
+memset
+halo_matrix
+model_tail
+psp_ge_draw_level_body
+psp_ge_queue_transparent
+ambient_with_reflection
+kind_limit
+psp_ge_model_begin.part.0
+__wrap_sceGeListUpdateStallAddr
+psp_ge_model_reflection
+memcpy
+sceGuSetMatrix
+psp_geo_baked
+abgr_from_rgb
+sceGumUpdateMatrix
+sceGuEnable
+sceGuDisable
+reflection_strength
+r_part_key_slot
+psp_ge_model_multipurpose
+reflection_before
+list_take
+psp_ge_decal_body
+psp_tex_address
+psp_tex_touch
+ge_kind
+sceGumMatrixMode
+r_call
+r_touch_geometry
+psp_ge_light_draw_body
+psp_ge_light_draw
+light_split_carry.constprop.0
+psp_ge_light_begin
+light_emit_known.constprop.0
+light_reach
+outside_cone
+psp_ge_light_gel
+light_emit.constprop.0
+light_split_carry_root.constprop.0
+light_edge_splits
+psp_tex_gel_cube_at
+light_color
+light_color_gel

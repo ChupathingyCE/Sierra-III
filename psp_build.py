@@ -246,6 +246,13 @@ if SMALLDATA not in (0, 4, 8):
 # FIXES_WALKAPART). Its hooks sit in the tick's object marks and the particle
 # loop, so a default build leaves all of it out
 WALKAPART = os.environ.get("PSP_WALKAPART", "") == "1"
+# PSP_MEXEC=<name>: MEXEC (docs/mexec.md): psp_me.c carries psp_mexec_table,
+# and after the link tools/mexec.py fills it from psp/layout/mexec_<name>.txt
+# (the functions the Media Engine copies into its eDRAM). Keep word mexec
+# turns the copy on; a default build leaves the table out
+MEXEC = os.environ.get("PSP_MEXEC", "")
+if MEXEC and not re.match(r"^[A-Za-z0-9_]+$", MEXEC):
+    sys.exit("psp_build: PSP_MEXEC names a list in psp/layout (mexec_<name>.txt)")
 # PSP_MEVISLAND=0: leaves out the frame's visibility made on the ME (mevis's
 # copies of the visibility code, 23 KB, and the landing's hooks; keep word
 # mevisland, on by default; docs/mevis_landing.md). Built in otherwise
@@ -721,6 +728,7 @@ def compile_one(item):
                ["-DPSP_RECON=1"] if RECON else []) + (
                ["-DPSP_MEPROBE=1"] if MEPROBE else []) + (
                ["-DPSP_WALKAPART=1"] if WALKAPART else []) + (
+               ["-DPSP_MEXEC=1"] if MEXEC and src.endswith("psp_me.c") else []) + (
                ["-DPSP_MEVISLAND=1"] if MEVISLAND else []) + (
                ["-DPSP_METRICS=1"] if METRICS else []) + (
                ["-DPSP_MUSIC=1"] if MUSIC else []) + (
@@ -1003,6 +1011,44 @@ def link(objs, stubs):
                 block += "%s    %s(%s)\n" % (sep, m.group(1), m.group(2))
         return block + (sep if block else "")
 
+    # PSP_ME_DATA_SET=<offset> (with PSP_ME_DATA_LAYOUT; recon) starts the
+    # ME's .data block at that offset within the data cache's 8 KB way, so
+    # its packed hot lines fall on cache sets that no fixed hot line uses:
+    # under R, the ME's hot stack and heap lines crowd sets 0xfc0-0x1940,
+    # and the block's own address happened to put its 32 lines on those
+    # same sets (the lab's mehotgr1). The pads before and after the block
+    # always add up to 8 KB, so everything after it keeps its cache sets
+    # (HOTG's run among them) and the heap is 8 KB smaller. "keep" adds the
+    # same 8 KB after the block and leaves the block where it falls: the
+    # other side of the A/B, with the same heap. The heap's size moves which
+    # texture levels stay resident, and with them R's pictures (mehotgr2:
+    # 549 of 677 frames differed against a build 8 KB larger, play and seeds
+    # identical). Only addresses move
+    def me_set_pad(where):
+        target = os.environ.get("PSP_ME_DATA_SET", "")
+        if not target:
+            return ""
+        if os.environ.get("PSP_ME_DATA_LAYOUT", "") in ("", "none"):
+            sys.exit("psp_build: PSP_ME_DATA_SET places the block PSP_ME_DATA_LAYOUT packs; set both")
+        if target == "keep":
+            return "" if where == "before" else "    . = . + 0x2000;\n"
+        t = int(target, 0)
+        if t % 64 or not 0 <= t < 0x2000:
+            sys.exit("psp_build: PSP_ME_DATA_SET=%s: keep, or a multiple of 64 below 0x2000" % target)
+        # ld adds the section's start to an absolute value given to "." inside
+        # a section (f31660a's "+=" form put 3.5 MB in .data and the build
+        # faulted at boot), so each pad sets "." from ALIGN, which ld takes as
+        # an address: the next address at the wanted offset in the 8 KB way
+        def at_offset(off):
+            return ("    . = ALIGN(0x2000) + %s - ((ALIGN(0x2000) + %s - ABSOLUTE(.)) >= 0x2000 ? 0x2000 : 0);\n"
+                    % (off, off))
+        if where == "before":
+            return "    __psp_me_set_pad = ABSOLUTE(.);\n" + at_offset("0x%x" % t)
+        return ("    __psp_me_set_to = ABSOLUTE((__psp_me_set_pad + ABSOLUTE(__psp_me_data_end)"
+                " - ABSOLUTE(__psp_me_data_start)) & 0x1fff);\n" + at_offset("__psp_me_set_to") +
+                # a block already at the offset takes its 8 KB after it
+                "    . = . + (ABSOLUTE(.) == ABSOLUTE(__psp_me_data_end) ? 0x2000 : 0);\n")
+
     linkfile = SDK + "/lib/linkfile.prx"
     text = open(linkfile).read()
     layout = os.environ.get("PSP_TEXT_LAYOUT", "")
@@ -1065,10 +1111,12 @@ def link(objs, stubs):
                         # the variables the ME writes during "aime2a"'s job
                         # (PSP_AIME_ME_SIDE, psp_me.h) on lines of their own
                         "    __psp_aime_me_start = .;\n    KEEP(*(.data.psp_aime_me))\n"
-                        "    . = ALIGN(64);\n    __psp_aime_me_end = .;\n    __psp_me_data_start = .;\n" +
+                        "    . = ALIGN(64);\n    __psp_aime_me_end = .;\n" +
+                        me_set_pad("before") +
+                        "    __psp_me_data_start = .;\n" +
                         me_hot_data_block(me_objects, "data") +
                         "".join("    %s(.data .data.*)\n" % o for o in me_objects) +
-                        "    . = ALIGN(64);\n    __psp_me_data_end = .;\n" + music_data + ("" if SMALLDATA else hot_block) +
+                        "    . = ALIGN(64);\n    __psp_me_data_end = .;\n" + me_set_pad("after") + music_data + ("" if SMALLDATA else hot_block) +
                         "    *(.data .data.* .gnu.linkonce.d.*)\n")
     if SMALLDATA and hot_block:
         # the hot run first in .sdata: its small variables are read through
@@ -1439,6 +1487,13 @@ def main():
     if LTO_OBJS:
         lto_report(r)
     subprocess.run(["psp-fixup-imports", os.path.join(OUT, "halo.elf")], check=True)
+    if MEXEC:
+        # the copy's table, into the linked program before prxgen (the
+        # relocations it reads are -q's, which prxgen drops)
+        lst = os.path.join(HERE, "psp/layout/mexec_%s.txt" % MEXEC)
+        if not os.path.exists(lst):
+            sys.exit("psp_build: PSP_MEXEC: no list " + lst)
+        subprocess.run([sys.executable, os.path.join(HERE, "tools/mexec.py"), os.path.join(OUT, "halo.elf"), lst], check=True)
     subprocess.run(["psp-prxgen", os.path.join(OUT, "halo.elf"), os.path.join(OUT, "halo.prx")], check=True)
     # the title the XMB shows: the multiplayer build's is its own, so the two
     # EBOOTs installed side by side (PSP/GAME/halo, PSP/GAME/halomp) tell apart;
