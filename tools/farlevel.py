@@ -39,7 +39,9 @@ sspr's levels when they're there):
     14 the bytes from this block to the model's next node group (another
     such block), 0 for its last, 15 the group's key: 0xFFFF when it's
     always drawn, else its region | its permutation << 8, drawn when the
-    object shows that permutation of that region (version 3); a skinned
+    object shows that permutation of that region (version 3), and in bits
+    16-18 the change colour (1-4, A-D) a tinted group is multiplied by, its
+    word 12 then its mean colour (0x00BBGGRR) rather than the error; a skinned
     model's block (flag PCV_FAR_BONES) holds a batch of at most 8 nodes: word
     11 their count, 16 bytes of node numbers after the header, and each
     vertex led by that many 8-bit weights (padded to 2 bytes), 128 on the
@@ -100,7 +102,9 @@ SENV_FLAGS = 40                 # shader_environment's flags (bit 0: alpha teste
 SEE_THROUGH_SMALL = 0.25        # a see-through part left out only when its radius is under this share of the opaque parts'
 SOSO_FLAGS = 40                 # shader_model's flags
 SOSO_DECAL = 1 << 3             # ... alpha blended decal: the decal pass's
-DECALS = set()                  # decal soso tag ids (base_colours fills it): kept, drawn in their own pass
+DECALS = set()
+SOSO_CHANGE_SOURCE = 76         # shader_model's change colour source: 0 none, 1-4 A-D
+CHANGE_SOURCE = {}              # soso tag id: its change colour (1-4); base_colours fills it                  # decal soso tag ids (base_colours fills it): kept, drawn in their own pass
 PCV_FAR_BONES = 1 << 17         # a block of a skinned model: 16 bytes of nodes after the header, weights before each vertex
 BONES = 8                       # the GE's bone matrices
 PCV_FAR_KEEPS = 1 << 16         # a far model's first block flag: its decal and transparent parts are drawn as they are
@@ -126,6 +130,8 @@ def check_layouts(d):
         raise Refused('the projectile\'s model reference moved')
     if fields('ShaderModel').get('shader model flags') != SOSO_FLAGS:
         raise Refused('the shader_model flags moved')
+    if fields('ShaderModel').get('change color source') != SOSO_CHANGE_SOURCE:
+        raise Refused('the shader_model change colour source moved')
     se = fields('ShaderEnvironment')
     if se.get('base map') != SENV_BASE_MAP_ID - 12 or se.get('shader environment flags') != SENV_FLAGS:
         raise Refused('the shader_environment layout moved')
@@ -163,6 +169,9 @@ def base_colours(m, d, texpack):
                 continue
             base_id, = struct.unpack_from('<i', m.data, o + SOSO_BASE_MAP_ID)
             us, vs = struct.unpack_from('<ff', m.data, o + SOSO_MAP_SCALE[0])
+            source, = struct.unpack_from('<H', m.data, o + SOSO_CHANGE_SOURCE)
+            if 1 <= source <= 4:
+                CHANGE_SOURCE[t.tag_id & 0xFFFFFFFF] = source
         base = m.by_id.get(base_id)
         if not base or base.name not in by_tag:
             continue
@@ -289,7 +298,10 @@ def merged(m, pack_data, offsets, shaders, colours, scales, census):
         skinned = skinned or bool(two.any())
         nodes.append(np.where(two & (np.asarray(src.w0) < 0.5), np.asarray(src.n1, np.int64),
                               np.asarray(src.n0, np.int64)))
-        keys.append(np.full(vcount, key, np.int64))
+        # a part tinted by the object's change colour keeps groups of its own
+        # (the source in the key's bits 16-18), drawn in its mean colour times
+        # the object's change colour
+        keys.append(np.full(vcount, key | CHANGE_SOURCE.get(shaders[shader_index] & 0xFFFFFFFF, 0) << 16, np.int64))
         normals = mc.unpack_normals(src.packed).astype(F)
         uv = src.uv.copy().view('<f4').reshape(vcount, 2).astype(F)
         img, sus, svs = colours[shaders[shader_index]]
@@ -419,7 +431,13 @@ def far_block(positions, normals, colours, local, node, error, key, flags=8, bon
     indices = tri if as_list else strip
     head = struct.pack('<5I', mc.MAGIC, flags, len(positions), 14 + wbytes, len(indices))
     head += np.array(list(center) + list(half), '<f4').tobytes()
-    head += struct.pack('<IfI', node if bones is None else len(bones), error, int(as_list))
+    if key >> 16:
+        # a tinted group: its mean colour (0x00BBGGRR) in place of the error
+        mean = np.clip(np.round(colours.mean(0)), 0, 255).astype(np.int64)
+        head += struct.pack('<III', node if bones is None else len(bones),
+                            int(mean[0]) | int(mean[1]) << 8 | int(mean[2]) << 16, int(as_list))
+    else:
+        head += struct.pack('<IfI', node if bones is None else len(bones), error, int(as_list))
     head += struct.pack('<I', 0)   # word 14: bytes to the next node's group, 0 for the last (main fills it)
     head += struct.pack('<I', key)   # word 15: ALWAYS, or region | permutation << 8
     head += bytes(mc.BLOCK_HEADER - len(head))
@@ -523,10 +541,12 @@ def main(map_path, pgeo_path):
             census['far node groups'] += len(groups)
         if kept:
             census['far models with parts kept'] += 1
+        if any(k >> 32 for k, _, _ in groups):
+            census['far models tinted'] += 1
         if skinned:
             census['far skinned models'] += 1
             census['far bone batches'] += len(groups)
-        if any(k >> 16 != ALWAYS for k, _, _ in groups):
+        if any(k >> 16 & 0xFFFF != ALWAYS for k, _, _ in groups):
             census['far models of several permutations'] += 1
     if not directory:
         print('farlevel: no model given a far level (%s)' % dict(census))
@@ -546,9 +566,9 @@ def main(map_path, pgeo_path):
     c = census
     left = ', '.join('%s %d' % (k[6:], v) for k, v in sorted(c.items()) if k.startswith('left: '))
     print('farlevel: %d models, %d given a far level at %d px (left: %s; see-through parts left out of them: %d); source %d triangles %d vertices -> '
-          'far %d triangles %d vertices, %d indices; %d models of several nodes (%d groups), %d of several permutations, %d keeping decal or transparent parts (%d parts), %d skinned (%d bone batches); region %d KB' %
+          'far %d triangles %d vertices, %d indices; %d models of several nodes (%d groups), %d of several permutations, %d keeping decal or transparent parts (%d parts), %d skinned (%d bone batches), %d tinted; region %d KB' %
           (c['models'], c['far models'], FAR_PIXELS, left or 'none', c['see-through parts left out'], c['source triangles'], c['source vertices'],
-           c['far triangles'], c['far vertices'], c['far indices'], c['far models of several nodes'], c['far node groups'], c['far models of several permutations'], c['far models with parts kept'], c['see-through parts kept'], c['far skinned models'], c['far bone batches'],
+           c['far triangles'], c['far vertices'], c['far indices'], c['far models of several nodes'], c['far node groups'], c['far models of several permutations'], c['far models with parts kept'], c['see-through parts kept'], c['far skinned models'], c['far bone batches'], c['far models tinted'],
            len(body) // 1024))
     sizes.sort(reverse=True)
     print('farlevel: the largest: ' + '; '.join('%s %.1f KB (%d node%s)' % (name, b / 1024.0, g, '' if g == 1 else 's')

@@ -687,7 +687,7 @@ void psp_ge_model_detail(unsigned int detail_key, float u_scale, float v_scale);
 void psp_ge_draw_model(void *vertices, int vertex_count, int uncompressed, const unsigned short *indices,
 	long index_count, int strip, unsigned int color, unsigned int base_key, float u_scale, float v_scale,
 	int alpha_tested);
-void psp_ge_draw_far(const void *block, unsigned int mask_low, unsigned int mask_high);
+void psp_ge_draw_far(const void *block, unsigned int mask_low, unsigned int mask_high, const unsigned int *tints);
 void psp_ge_queue_transparent(void *vertices, int vertex_count, int uncompressed, const unsigned short *indices,
 	long index_count, int strip, unsigned int key, float u_scale, float v_scale, float u_offset, float v_offset,
 	short blend, const float *centroid);
@@ -1162,13 +1162,16 @@ static int defer_draw_model(void *vertices, int vertex_count, int uncompressed, 
 	return 1;
 }
 
-static int defer_draw_far(const void *block, unsigned int mask_low, unsigned int mask_high)
+static int defer_draw_far(const void *block, unsigned int mask_low, unsigned int mask_high, const unsigned int *tints)
 {
-	defer_word *at = defer_take(DEFER_DRAW_FAR, 3);
+	defer_word *at = defer_take(DEFER_DRAW_FAR, 7);
+	int k;
 
 	at[0].p = block;
 	at[1].u = mask_low;
 	at[2].u = mask_high;
+	for (k = 0; k < 4; k++)
+		at[3 + k].u = tints[k];
 	return 1;
 }
 
@@ -1592,7 +1595,11 @@ static void defer_replay(const defer_word *buffer, unsigned int used, int on_me)
 			psp_ge_model_reflection(w[0].u, defer_copy_back(w + 1, &rest, 4));
 			break;
 		case DEFER_DRAW_FAR:
-			psp_ge_draw_far(w[0].p, w[1].u, w[2].u);
+			{
+				unsigned int tints[4] = { w[3].u, w[4].u, w[5].u, w[6].u };
+
+				psp_ge_draw_far(w[0].p, w[1].u, w[2].u, tints);
+			}
 			break;
 		case DEFER_DRAW_MODEL:
 			psp_ge_draw_model((void *)w[0].p, w[1].i, w[2].i, (const unsigned short *)w[3].p, w[4].i, w[5].i,
@@ -16998,6 +17005,7 @@ divided by the scale, a 16-bit position in the box), the indices.
 Untextured, lit by the GE with the model's own lights, each vertex's colour
 its material's ambient and diffuse */
 static unsigned long far_drawn = 0, far_vertices = 0;
+#define PIN_UNIT(x) ((x) < 0.0f ? 0.0f : (x) > 1.0f ? 1.0f : (x))
 
 static void far_report(void)
 {
@@ -17007,12 +17015,12 @@ static void far_report(void)
 	far_drawn = far_vertices = 0;
 }
 
-void psp_ge_draw_far(const void *block, unsigned int mask_low, unsigned int mask_high)
+void psp_ge_draw_far(const void *block, unsigned int mask_low, unsigned int mask_high, const unsigned int *tints)
 {
 	const unsigned char *at = block;
 	unsigned int group = 0;
 
-	GE_DEFER(defer_draw_far(block, mask_low, mask_high));
+	GE_DEFER(defer_draw_far(block, mask_low, mask_high, tints));
 	GE_BENCH_SKIP();
 	if (!frame_open || !block || !model_nodes)
 		return;
@@ -17037,6 +17045,21 @@ void psp_ge_draw_far(const void *block, unsigned int mask_low, unsigned int mask
 		group++;
 		if (shown && head[2] && head[4] >= 3 && !list_full())
 		{
+			unsigned int source = (head[15] >> 16) & 7;
+
+			if (source >= 1 && source <= 4)
+			{
+				/* a part tinted by the object's change colour: its mean
+				colour (word 12) times that colour, as the material */
+				unsigned int mean = head[12], tint = tints[source - 1], colour = 0xFF000000u, c;
+
+				for (c = 0; c < 24; c += 8)
+					colour |= ((((mean >> c) & 0xFF) * ((tint >> c) & 0xFF) + 127) / 255) << c;
+				sceGuColorMaterial(0);
+				sceGuMaterial(GU_AMBIENT | GU_DIFFUSE, (int)colour);
+			}
+			else
+				sceGuColorMaterial(GU_AMBIENT | GU_DIFFUSE);
 			centre.x = box[0];
 			centre.y = box[1];
 			centre.z = box[2];
@@ -17101,10 +17124,11 @@ draw). Off unless
 farlevel (32 px) or farlevelN asks */
 static int far_pixels = -1;
 
-int psp_far_draw(unsigned long model, float pixels, const char *permutations, int permutation_count)
+int psp_far_draw(unsigned long model, float pixels, const char *permutations, int permutation_count,
+	const float *change_colours)
 {
 	extern unsigned int psp_far_version;
-	unsigned int address, bytes, mask[2] = { 0, 0 }, group = 0;
+	unsigned int address, bytes, mask[2] = { 0, 0 }, group = 0, tints[4];
 	const void *block;
 
 	if (far_pixels < 0)
@@ -17132,7 +17156,7 @@ int psp_far_draw(unsigned long model, float pixels, const char *permutations, in
 		while (at && group < 64)
 		{
 			const unsigned int *head = (const unsigned int *)at;
-			unsigned int key = psp_far_version >= 3 ? head[15] : 0xFFFFu, region = key & 0xFF;
+			unsigned int key = psp_far_version >= 3 ? head[15] & 0xFFFFu : 0xFFFFu, region = key & 0xFF;
 
 			if (key == 0xFFFFu || ((int)region < permutation_count && permutations &&
 				permutations[region] == (char)(key >> 8)))
@@ -17144,7 +17168,21 @@ int psp_far_draw(unsigned long model, float pixels, const char *permutations, in
 			at = head[14] ? at + head[14] : NULL;
 		}
 	}
-	psp_ge_draw_far(block, mask[0], mask[1]);
+	/* the object's four change colours, as ABGR, for its tinted groups */
+	{
+		int k;
+
+		for (k = 0; k < 4; k++)
+		{
+			float const *rgb = change_colours ? change_colours + 3 * k : NULL;
+			unsigned int r = rgb ? (unsigned int)(PIN_UNIT(rgb[0]) * 255.0f + 0.5f) : 255;
+			unsigned int g = rgb ? (unsigned int)(PIN_UNIT(rgb[1]) * 255.0f + 0.5f) : 255;
+			unsigned int b = rgb ? (unsigned int)(PIN_UNIT(rgb[2]) * 255.0f + 0.5f) : 255;
+
+			tints[k] = 0xFF000000u | b << 16 | g << 8 | r;
+		}
+	}
+	psp_ge_draw_far(block, mask[0], mask[1], tints);
 	far_drawn++;
 	/* 2: the model's decal and transparent parts are still to be drawn as
 	they are (the bake's PCV_FAR_KEEPS) */
