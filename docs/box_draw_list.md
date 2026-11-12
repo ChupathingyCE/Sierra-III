@@ -29,6 +29,20 @@
 
 Per instance: at ~150 drawn instances a frame [U], 11 ms is ~73 µs of the main CPU an instance and 12 ms ~80 µs of the ME, all work included. The box's standalone price is read against these.
 
+**The ME's render job by stretch on the tock today** [M, 2026-11-12, tock162 9d00a903 (far level on, farvram, vmpack), `timerson mekinds`, Sheepdog01's pads to padend; the ME's own time a render job, one job a frame; the lab's sierra-hw 43312846529 (b30, PSP-1000, 2 runs) and 43314233107 (b40, PSP-3000, 1 run)]:
+
+| Stretch | ME render, ms a frame | Main CPU waiting on it, ms a frame | Against v0's ~12 |
+|---|---:|---:|---:|
+| b30 cinematic | 18.2 | 0.1 | 1.5x |
+| b30 flight | 33.0 | 0.2 | 2.8x |
+| b30 landing | 32.8 | 0.1 | 2.7x |
+| b30 beach | 20.1 | 0.2 | 1.7x |
+| b30 bunker | 17.7 | 0.1 | 1.5x |
+| b40 cliff | 18.8 | **7.4** | 1.6x |
+| b40 snowfield | 17.5 | 0.0 | 1.5x |
+
+These replace §10's "~11-20 ms of the flight [superseded 2026-11-12: 33 ms measured, §4; U]": the flight and the landing are ~33 ms, about twice the rest, so the far ladder and kept words pay most there. On b40's cliff the main CPU waits 7.4 ms a frame for the render job: there the ME's row is on the frame's critical path. (Instrumented: `mekinds` and the timers inflate both units; read the stretches against each other. c20's census, the lab's 43314261608, follows.)
+
 ## 5. Means
 
 - **B, work on change: the premise and the largest lever.** An instance whose form, matrices, bones and lights are unchanged since the last frame costs no ME work and no new record: its last words are drawn again. R as built emits every instance every frame, which is the plainest reason its render job didn't fall (`redesign_r_topdown.md`, the milestone priced). **Its worth is unknown until counted:** the first slice (§9) counts, per frame on Sheepdog01's pad benches, the instances unchanged between frames, by kind (scenery, still props, still weapons, posed units and vehicles, the far tiers).
