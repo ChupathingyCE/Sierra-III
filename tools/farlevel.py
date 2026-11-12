@@ -16,8 +16,9 @@ This tool makes that part for each model it can:
   and colours as 5650.
 
 Slice 1 takes rigid models whose parts all hang on one node (rocks, trees,
-crates, most scenery), with one permutation in every region and model
-shaders (soso) only. The others are counted by reason and left alone, so they
+crates, most scenery), with one permutation in every region, their opaque
+parts model shaders (soso); their see-through parts are left out of the far
+level, as the far ruling allows. The others are counted by reason and left alone, so they
 keep their parts at every distance.
 
 What is appended to the pack (after modelconvert's region, and after
@@ -75,6 +76,9 @@ PART = {'shader index': 4, 'triangle buffer type': 0x44, 'triangle count': 0x48,
         'vertex type': 0x54, 'vertex count': 0x58, 'vertex offset': 0x64}
 SOSO_BASE_MAP_ID = 176          # shader_model's base map dependency's tag id
 SOSO_MAP_SCALE = (156, 160)     # shader_model's map u and v scale
+# the see-through shaders' groups (transparent chicago and its extended form,
+# generic, glass, meter, plasma, water): their parts aren't drawn far
+SEE_THROUGH = {'schi', 'scex', 'sotr', 'sgla', 'smet', 'spla', 'swat'}
 
 
 class Refused(Exception):
@@ -194,7 +198,13 @@ def merged(m, pack_data, offsets, shaders, colours, scales, census):
             return 'shader index'
         if shaders[shader_index] not in colours:
             tag = m.by_id.get(shaders[shader_index]) or m.by_id.get(shaders[shader_index] - (1 << 32))
-            return 'shader %s' % (tag.group if tag else '?')
+            group = tag.group if tag else '?'
+            # see-through parts are left out of the far level: the far
+            # ruling drops see-through parts under the threshold
+            if group in SEE_THROUGH:
+                census['see-through parts left out'] += 1
+                continue
+            return 'shader %s' % group
         uncompressed = vtype == mc.TYPE_UNCOMPRESSED
         size = mc.VERTEX_SIZE[vtype] * vcount
         raw = pack_data[v - mc.PACK_BASE:v - mc.PACK_BASE + size]
@@ -219,6 +229,8 @@ def merged(m, pack_data, offsets, shaders, colours, scales, census):
         C.append(sample(img, uv))
         T.append(np.array(mc.triangle_list(ind, count, strip), np.int64).reshape(-1, 3) + base)
         base += vcount
+    if not P:
+        return 'see-through only'
     census['source triangles'] += sum(len(t) for t in T)
     census['source vertices'] += base
     return np.concatenate(P), np.concatenate(N), np.concatenate(C), np.concatenate(T).reshape(-1), nodes.pop()
@@ -342,9 +354,9 @@ def main(map_path, pgeo_path):
     open(pgeo_path, 'wb').write(out)
     c = census
     left = ', '.join('%s %d' % (k[6:], v) for k, v in sorted(c.items()) if k.startswith('left: '))
-    print('farlevel: %d models, %d given a far level at %d px (left: %s); source %d triangles %d vertices -> '
+    print('farlevel: %d models, %d given a far level at %d px (left: %s; see-through parts left out of them: %d); source %d triangles %d vertices -> '
           'far %d triangles %d vertices, %d indices; region %d KB' %
-          (c['models'], c['far models'], FAR_PIXELS, left or 'none', c['source triangles'], c['source vertices'],
+          (c['models'], c['far models'], FAR_PIXELS, left or 'none', c['see-through parts left out'], c['source triangles'], c['source vertices'],
            c['far triangles'], c['far vertices'], c['far indices'], len(body) // 1024))
 
 
