@@ -10916,7 +10916,15 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 
 			reach += m * m;
 		}
-		detail_far_squared = far * far;
+		/* the fog fades the detail by depth, and the buckets test distance:
+		a point on the screen at depth d is at most d * sqrt(1 + tv^2 + th^2)
+		away (tv, th the half-view's tangents), so past this distance its
+		depth is past the fade too, and its detail adds nothing to the picture */
+		{
+			float tv = fov_tan_half(), th = tv * ((float)SCREEN_WIDTH / (float)SCREEN_HEIGHT);
+
+			detail_far_squared = far * far * (1.0f + tv * tv + th * th);
+		}
 		far_possible = reach > detail_far_squared;
 	}
 	/* geshow2: the engine's own index list, rewritten by the next frame's
