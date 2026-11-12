@@ -20,6 +20,7 @@ game then plays the same (the PSP's two races fixed first: tock162 edc2d39,
 #include "psp_paths.h"
 
 int psp_keep(const char *name);
+int psp_keep_number(const char *prefix, int fallback);
 void platform_log(const char *format, ...);
 extern int psp_map_generation;
 
@@ -249,6 +250,33 @@ int psp_pad_menu(int state)
 {
 	if (pad_mode == 1 && pad_file >= 0)
 	{
+		/* "padmenutestN" (tests only, recording): the menus' work done here
+		as the pause menu would, so the emulator can record one: paused at
+		recorded frame N, let go 45 frames on, the level restarted 45 after */
+		static int test = -2;
+
+		if (test == -2)
+			test = psp_keep_number("padmenutest", 0);
+		if (test > 0 && (pad_frames == (unsigned long)test || pad_frames == (unsigned long)test + 45 ||
+			pad_frames == (unsigned long)test + 90))
+		{
+			extern void game_time_set_paused(unsigned char paused);
+			extern void main_reset_map(void);
+
+			if (pad_frames == (unsigned long)test + 90)
+			{
+				main_reset_map();
+				state |= 4;
+			}
+			else
+			{
+				int pause = pad_frames == (unsigned long)test;
+
+				game_time_set_paused((unsigned char)pause);
+				state = (state & ~1) | pause;
+			}
+			platform_log("pad: padmenutest at frame %lu: state %d", pad_frames, state);
+		}
 		if (state != pad_menu_state)
 		{
 			unsigned char byte = (unsigned char)state;
