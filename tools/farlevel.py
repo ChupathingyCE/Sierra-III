@@ -189,8 +189,11 @@ def merged(m, pack_data, offsets, shaders, colours, scales, census):
         i = entry(m, struct.unpack_from('<I', data, po + PART['triangle offset 2'])[0])
         if v is None or i is None or vtype not in mc.VERTEX_SIZE:
             return 'buffers'
-        if not 0 <= shader_index < len(shaders) or shaders[shader_index] not in colours:
-            return 'shader'
+        if not 0 <= shader_index < len(shaders):
+            return 'shader index'
+        if shaders[shader_index] not in colours:
+            tag = m.by_id.get(shaders[shader_index]) or m.by_id.get(shaders[shader_index] - (1 << 32))
+            return 'shader %s' % (tag.group if tag else '?')
         uncompressed = vtype == mc.TYPE_UNCOMPRESSED
         size = mc.VERTEX_SIZE[vtype] * vcount
         raw = pack_data[v - mc.PACK_BASE:v - mc.PACK_BASE + size]
