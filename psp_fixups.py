@@ -33206,6 +33206,17 @@ static unsigned int psp_rso_key(
 	PSP_RSO_FIELD(6, &radius, sizeof(radius));
 	PSP_RSO_FIELD(7, change_colors, NUMBER_OF_OBJECT_CHANGE_COLORS * sizeof(real_rgb_color));
 	PSP_RSO_FIELD(8, node_matrices, node_count * sizeof(real_matrix4x3));
+	{
+		/* the draw list (PSP_DRAWLIST, keep drawlist): whether the model is
+		drawn as its far form, so a kept far walk is never sent again for a
+		model come near (psp_ge.c, psp_drawlist_far_key; a miss counts under
+		field 10) */
+		extern int psp_drawlist_far_key(float pixels);
+		int psp_far_key = psp_drawlist_far_key(level_of_detail_pixels);
+
+		if (psp_far_key)
+			PSP_RSO_FIELD(10, &psp_far_key, sizeof(psp_far_key));
+	}
 #undef PSP_RSO_FIELD
 	if (key && !fill && at != kept_words)
 	{
