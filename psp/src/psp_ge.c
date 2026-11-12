@@ -17336,14 +17336,21 @@ int psp_far_draw(unsigned long model, float pixels, const char *permutations, in
 			tints[k] = 0xFF000000u | b << 16 | g << 8 | r;
 		}
 	}
-	/* D1: under farspriteN px (16 by default) a model with a sprite block
+	/* D1: under farspriteN px (farsprite: 16) a model with a sprite block
 	(its chain's last) draws that instead */
 	{
 		static int sprite_pixels = -1;
 		const void *sprite = NULL;
 
+		/* off by default: priced alone on the PSP-3000 it gave the flight's
+		frame nothing and its drawing +0.7 ms (the lab's sierra-hw 43232731029);
+		farsprite (16 px) or farspriteN turns it on */
 		if (sprite_pixels < 0)
-			sprite_pixels = psp_keep("farspriteoff") ? 0 : psp_keep_number("farsprite", 16);
+		{
+			sprite_pixels = psp_keep_number("farsprite", 0);
+			if (sprite_pixels <= 0)
+				sprite_pixels = psp_keep("farsprite") ? 16 : 0;
+		}
 		if (pixels < (float)sprite_pixels)
 		{
 			const unsigned char *at = block;

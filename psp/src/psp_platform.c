@@ -1198,8 +1198,8 @@ static const struct
 	plain region unused, so these want a variant bake */
 	{ "skinw2", "skinw2off" }, { "skinstrip", "skinstripoff" },
 	/* the far level (docs/box_far_level.md): a model under 32 px drawn as one
-	baked part in place of its solid pass, skinned models one bone a vertex,
-	static ones under 16 px as sprites. Drawing only, approximate under the
+	baked part in place of its solid pass, skinned models one bone a vertex
+	(D1's sprites stay opt-in: farsprite). Drawing only, approximate under the
 	far ruling (Sheepdog01 2026-11-10): play and seeds identical; b30's flight frame
 	-4.6%, drawing -16% on the PSP-1000 (slice 1, sierra-hw 43198060129). It
 	wants a bake with --far-level; a pack without one leaves it off */
