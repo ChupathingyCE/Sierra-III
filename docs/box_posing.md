@@ -81,6 +81,7 @@ Against the capture first: every posed object's node matrices equal the old code
 
 - 2026-11-11: spec (this page).
 - 2026-11-11 20:1x: cut in under `PSP_BOXPOSING=1` (§6c; Sierra-III builder/posing-cutin), off master/rebase090.
+- 2026-11-11 20:3x: the cut-in plays the same in the emulator [E]: play and both seeds identical every tick on b30_play2 (3,900) and b40_play1 (6,000), strict 0, pictures inside one build's run spread (12 of 2,057 and 7 of 4,426 frames; the lab's sierra-batch 43139371722).
 - 2026-11-11 19:3x: with the GE at 50%: warm 2.206, emptied 3.278, crowded 3.609 ms a tick (bench-hw 43134030671).
 - 2026-11-11 19:1x: v0 priced alone on the PSP-3000, GE idle: warm 2.108 ms a tick, emptied 2.881 (bench-hw 43130094096).
 - 2026-11-11: v0's walk and its adapter built (§6b, Sierra-III bottleneck/box-posing), proven on a desktop over a made-up capture; the game's capture (`PSP_CAPTURE=posing`) is the master's to build. The capture and harness are REBUILD.md §7 step 2 (research designs, the master builds; `research/opportunities/harness.md` takes posing as its worked example).
