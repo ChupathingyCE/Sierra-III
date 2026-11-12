@@ -16987,8 +16987,9 @@ static void halo_matrix(const float *node, ScePspFMatrix4 *model)
 /* The far level (docs/box_far_level.md): a model under farlevelN pixels
 drawn as the one part tools/farlevel.py baked, in place of its parts. The
 block (psp_geo.c locked it): its 64-byte header (word 2 the vertices, 4 the
-strip's indices, 5-7 the box's centre, 8-10 its half extent, 11 the node),
-the vertices (colour 5650, then a 16-bit position in the box), the strip.
+indices, 5-7 the box's centre, 8-10 its half extent, 11 the node, 13 a list
+rather than a strip), the vertices (colour 5650, then a 16-bit position in
+the box), the indices.
 Unlit: the GE's lighting with no light on, its ambient the object's light
 as one tint, taken by each vertex's colour as its material's ambient */
 static unsigned long far_drawn = 0, far_vertices = 0;
@@ -17048,7 +17049,7 @@ void psp_ge_draw_far(const void *block)
 		sceGuDisable(GU_LIGHT0 + light);
 	sceGuAmbient(far_tint());
 	sceGuColorMaterial(GU_AMBIENT);
-	sceGumDrawArray(GU_TRIANGLE_STRIP, GU_COLOR_5650 | GU_VERTEX_16BIT | GU_INDEX_16BIT | GU_TRANSFORM_3D, (int)head[4],
+	sceGumDrawArray(head[13] ? GU_TRIANGLES : GU_TRIANGLE_STRIP, GU_COLOR_5650 | GU_VERTEX_16BIT | GU_INDEX_16BIT | GU_TRANSFORM_3D, (int)head[4],
 		(const unsigned short *)((const unsigned char *)block + 64 + 8 * head[2]), (const unsigned char *)block + 64);
 	sceGuColorMaterial(0);
 	sceGuDisable(GU_LIGHTING);

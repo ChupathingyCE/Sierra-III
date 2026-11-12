@@ -24,12 +24,13 @@ What is appended to the pack (after modelconvert's region, and after
 sspr's levels when they're there):
 - the far blocks, each a PCV block (modelconvert's 64-byte header) flagged
   PCV_FAR (8):
-  - header words: 0 'PCV1', 1 flags, 2 vertex count, 3 stride (8), 4 strip
-    index count, 5-7 the box's centre (float), 8-10 its half extent
-    (float), 11 the node, 12 the merged shape error (float, model units);
+  - header words: 0 'PCV1', 1 flags, 2 vertex count, 3 stride (8), 4 index
+    count, 5-7 the box's centre (float), 8-10 its half extent (float), 11
+    the node, 12 the merged shape error (float, model units), 13 1 when the
+    indices are a triangle list (the strip wasn't shorter), 0 for a strip;
   - then the vertices, in the GE's order: u16 colour 5650, then 3 x s16
     position (centre + q / 32767 x half extent);
-  - then the strip, u16 indices, padded to 64 bytes;
+  - then the strip or the list, u16 indices, padded to 64 bytes;
 - the directory, sorted by tag id: for each model, its tag id, its far
   block's pack address and bytes, and its diameter (float, model units);
 - a 64-byte trailer: 'FAR1', the region's start (from the data's start, as
@@ -258,21 +259,15 @@ def far_block(positions, colours, local, node, error):
     verts['c'] = rgb565.astype('<u2')
     tri = [int(x) for x in local]
     strip = mc.strip_of(tri)
-    if strip is None:   # a list's own order as a strip of joined triangles: never shorter, so draw the list
-        strip = []
-        for k in range(0, len(tri), 3):
-            if strip:
-                strip += [strip[-1], tri[k]]
-                if len(strip) & 1:
-                    strip.append(tri[k])
-            strip += tri[k:k + 3]
-    head = struct.pack('<5I', mc.MAGIC, PCV_FAR, len(positions), 8, len(strip))
+    as_list = strip is None    # the strip isn't shorter: drawn as the list
+    indices = tri if as_list else strip
+    head = struct.pack('<5I', mc.MAGIC, PCV_FAR, len(positions), 8, len(indices))
     head += np.array(list(center) + list(half), '<f4').tobytes()
-    head += struct.pack('<If', node, error)
+    head += struct.pack('<IfI', node, error, int(as_list))
     head += bytes(mc.BLOCK_HEADER - len(head))
-    body = verts.tobytes() + np.array(strip, '<u2').tobytes()
+    body = verts.tobytes() + np.array(indices, '<u2').tobytes()
     out = head + body
-    return out + bytes(mc.up(len(out), 64) - len(out)), len(strip)
+    return out + bytes(mc.up(len(out), 64) - len(out)), len(indices)
 
 
 def main(map_path, pgeo_path):
@@ -317,7 +312,7 @@ def main(map_path, pgeo_path):
         census['far models'] += 1
         census['far vertices'] += len(rows)
         census['far triangles'] += len(local) // 3
-        census['far strip indices'] += strip_count
+        census['far indices'] += strip_count
     if not directory:
         print('farlevel: no model given a far level (%s)' % dict(census))
         return
@@ -336,9 +331,9 @@ def main(map_path, pgeo_path):
     c = census
     left = ', '.join('%s %d' % (k[6:], v) for k, v in sorted(c.items()) if k.startswith('left: '))
     print('farlevel: %d models, %d given a far level at %d px (left: %s); source %d triangles %d vertices -> '
-          'far %d triangles %d vertices, %d strip indices; region %d KB' %
+          'far %d triangles %d vertices, %d indices; region %d KB' %
           (c['models'], c['far models'], FAR_PIXELS, left or 'none', c['source triangles'], c['source vertices'],
-           c['far triangles'], c['far vertices'], c['far strip indices'], len(body) // 1024))
+           c['far triangles'], c['far vertices'], c['far indices'], len(body) // 1024))
 
 
 if __name__ == '__main__':
