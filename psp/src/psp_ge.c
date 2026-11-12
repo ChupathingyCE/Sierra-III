@@ -17278,6 +17278,7 @@ int psp_far_draw(unsigned long model, float pixels, const char *permutations, in
 {
 	extern unsigned int psp_far_version;
 	unsigned int address, bytes, mask[2] = { 0, 0 }, group = 0, tints[4];
+	static int far_vram = -1;
 	const void *block;
 
 	if (far_pixels < 0)
@@ -17293,6 +17294,8 @@ int psp_far_draw(unsigned long model, float pixels, const char *permutations, in
 	model state is the recorded one's, not yet replayed */
 	if (far_pixels <= 0 || pixels >= (float)far_pixels || pixels <= 0.0f)
 		return 0;
+	if (far_vram < 0)
+		far_vram = !psp_keep("farvramoff");
 	address = psp_far_block(model, &bytes);
 	if (!address)
 		return 0;
@@ -17313,6 +17316,12 @@ int psp_far_draw(unsigned long model, float pixels, const char *permutations, in
 			if (key == 0xFFFFu || ((int)region < permutation_count && permutations &&
 				permutations[region] == (char)(key >> 8)))
 			{
+				/* known to vrammodels as a converted model buffer is, so the
+				GE can read it from a VRAM copy rather than main RAM beside
+				the tick (tickalone's pair: the far level's tick cost was the
+				drawing's reads during the tick) */
+				if (far_vram && head[2])
+					vm_note((void *)(at + ((head[1] & 0x20000u) ? 80 : 64)), head[3] * head[2]);
 				mask[group >> 5] |= 1u << (group & 31);
 				far_vertices += head[2];
 				if (pixels < 16.0f)
