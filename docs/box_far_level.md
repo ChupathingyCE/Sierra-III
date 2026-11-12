@@ -63,6 +63,17 @@ The atlas needs the texture bake's plumbing: decoding and requantising each base
 - **The tint multiplies through the GE's ambient alone:** lighting stays on with no lights enabled, the ambient set to the tint, and the material's ambient taken from the vertex colour (`sceGuColorMaterial(GU_AMBIENT)`). So the GE works out tint × vertex colour with no per-light work, and the change colours come out of the bake per permutation.
 - **The far block** is a PCV block flagged PCV_FAR (8): 12-byte vertices (16-bit position, 16-bit colour, a node byte and padding), then the strip, then the node list.
 
+**The first bake (w162far1, 2026-11-12; the lab's row `farlevel_bake_census_w162far1`) [D]:**
+- On b30, 28 of 86 models qualify, in a 66 KB region. The rest are left for:
+  - a non-soso shader: 29;
+  - more than one permutation: 12;
+  - more than one node: 11;
+  - skinning: 6.
+- On b40, 22 of 82 qualify, in 33 KB.
+- Slice 1 alone brings in under a third of what b30's small parts stop reading (slice 0).
+- The merged meshes' strips ran 4.7 indices a triangle, so a list is kept where the strip isn't shorter.
+- The next slices are sized by the groups left: other shaders and permutations first.
+
 ## The run-time path
 
 - **The tier:** after the engine's level pick, the object's diameter is compared with `farlevelN`. It drops to far below N and comes back near above 1.15 N, using its tier byte. No cross-fade.
