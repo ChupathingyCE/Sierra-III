@@ -48,3 +48,12 @@ R's slice 10 (`redesign_r.md` §3). The lab's `research/opportunities/me_unnamed
 - **A function whose own code the ME reads as data** (none known), or one that compares its own address: the tool can't see either; the PSP proof would.
 - **Jump tables and function pointers** leave the copy for main RAM (counted above).
 - **Room:** if the list outgrows 192 KB, it's cut at the line where the misses held stop paying for the room. The free eDRAM runs to 800 KB (the sound tier's start).
+
+## On the rebase (builder, 2026-11-11; for the recount's priced pair)
+
+- **The machinery came across alone** (Sierra-III `builder/meplace`, off master/rebase090 1fbd2bd): its seven commits cherry-picked; the one conflict, psp_build.py, kept MEXEC's lines and left out R's `PSP_RETAINED` (R's milestone isn't on the rebase, and MEXEC doesn't need it: the GE replay job it enters is the tock's).
+- **List rb** (`psp/layout/mexec_rb.txt`): r2 couldn't stand, as 17 of its 55 functions aren't in the rebased program (R's own, and clones under other names). Re-derived from the lab's drawhotrb (sierra-batch 43126079655: the ME side of the cache map on b30's flight and d20's route): the entry, then the GE replay's family by ME code misses over both routes while 192 KB holds them [E counts]. **95 functions, 158.4 KB of code; 332 calls re-aimed, 3 jump tables** (sierra-build 43130385257). The ME's other jobs on this build (the AI's simulation, the sound mixer, visibility) are left out: the replay never enters them.
+- **The table sized to the lists** (1,536 words, 6 KB; rb fills 1,040): at 4,096 words it held 16 KB of .data the heap gave up. **MEXEC on costs the heap 8 KB** (5,632 KB against 5,640 without PSP_MEXEC) [D].
+- **eDRAM** [D, from the build's figures and psp_me.h's map]: the copy at 256 KB to ~415 KB, so ~385 KB stays free up to the sound tier's start at 800 KB (SNDEDRAM2, on by default under `sndedram`, 656 KB); the AI job's stack at 1,456-2,048 KB. MEXEC refuses only beside `soundedram` (the old tier at 256 KB), `edramcheck`, `mebusedram` and `vmetest`. To confirm on a PSP: the install's own log line (`ME: mexec ...`).
+- **Its exactness is a PSP's to prove**, as r1's and r2's were: the emulator doesn't map the ME's low eDRAM for code.
+
