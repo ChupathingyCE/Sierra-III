@@ -2757,6 +2757,46 @@ int psp_path_state_get(struct psp_path_state *state)
 		(player_control_get_zoom_level(0) >= 0 ? 4 : 0));
 	return 1;
 }
+
+/* the pad path's hold ("padhold", psp_pad.c): the local player, on foot, set
+on his recorded path with its velocity (units a tick), or only moved when
+velocity is NULL; and the look he asks for set to the recording's. The look
+is control state: the unit turns to it by its own rules */
+void psp_path_snap(const float *position, const float *velocity)
+{
+	long unit_index = psp_local_unit(NULL);
+	struct unit_datum *unit;
+	real_point3d point;
+
+	if (unit_index == NONE)
+		return;
+	unit = unit_get(unit_index);
+	if (unit->object.parent_object_index != NONE)
+		return;
+	point.x = position[0];
+	point.y = position[1];
+	point.z = position[2];
+	object_set_position(unit_index, &point, NULL, NULL);
+	if (velocity)
+	{
+		unit->object.translational_velocity.i = velocity[0];
+		unit->object.translational_velocity.j = velocity[1];
+		unit->object.translational_velocity.k = velocity[2];
+	}
+}
+
+void psp_path_view(float yaw, float pitch)
+{
+	real_euler_angles2d angles;
+	real_vector3d facing;
+
+	if (psp_local_unit(NULL) == NONE)
+		return;
+	angles.yaw = yaw;
+	angles.pitch = pitch;
+	vector3d_from_euler_angles2d(&facing, &angles);
+	player_control_set_facing(0, &facing);
+}
 #endif
 
 /* build 59: the local player put at a spot and turned to a direction

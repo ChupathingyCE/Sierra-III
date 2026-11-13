@@ -94,7 +94,12 @@ Why steer at all, and not snap small and often: a snap skips collision, so near 
 
 What steer can't do, and so what the snap is for: catch up when the recorded stick is already full (the clip leaves no room), a fall, a missed jump, a lift or door that wasn't there yet.
 
-The three bounds are [U]: slice 2's watcher gives the error's real distribution, and they are set from it.
+**The bounds against slice 2's table** (the lab's `psp/sierra/findings/padpath2_watch.txt`, d20, per 300 ticks) [E]:
+
+- **Seeds slide, slowly:** the route is exact (0.000) on every variant to tick 1,800, then the seeds and the VFPU's other rounding go 0.05 → 0.5 units over about 300 ticks (seed 2: mean 0.14, max 0.36 in its first parted window; 0.53, 0.99 in the next). That is steering's ground, and 0.05 and 0.5 are the right order.
+- **A script's move looks like a jump and undoes itself:** in ticks 2,700-2,999 three variants are ~60 units off for 72 ticks and back under one unit by 3,300: the game teleported the player behind a gate the fight opens, 2.4 s later than on the recording. So **past 8 units the hold waits 150 ticks before it sets him on the path** (`holdfarN`): the game usually brings him itself, and a snap ahead of the script would put him where the level isn't ready.
+- **Posing B's build is a jump that doesn't come back** (9.4 units inside its first window, 55 by 3,000, objects at 51%): the far wait runs out and the snap takes it.
+- **What steering can't do, measured on a toy biped** (a host harness around `psp_pad.c`, 3,000 ticks): a 0.3-unit push is closed in 13 ticks with no snap; a 3-unit push is one snap; a biped made 3% slower than the recording's can't catch up at full stick and is set on the path every ~130 ticks (22 snaps, mean 0.17 off, never past 0.52); on the same game the hold does nothing and play ends at the same place to the last digit.
 
 ### 3.4 Seats and vehicles: force the seat, then hold the root
 
@@ -213,16 +218,19 @@ All proofs are emulator runs unless marked. Keep words: `pathrec` (`pathlog`), `
 
 ## 10. Built so far (on this branch; nothing merged)
 
-**Slices 1 and 2 are written, built and proven in the emulator (2026-11-13; results below).** How they were made: this session has no toolchain and can't start a run, so the builder builds and runs them (the lead's 01:07, the builder's 01:35). `psp_pad.c` passes a host syntax check against stub headers [E]; the engine-side reader was checked by eye against the pinned engine's headers [D].
+**Slices 1 and 2 are written, built and proven in the emulator (2026-11-13; results below); slice 3 is written (the lead's yes 02:51) and waits for its build and batch.** How they were made: this session has no toolchain and can't start a run, so the builder builds and runs them (the lead's 01:07, the builder's 01:35). `psp_pad.c` passes a host syntax check against stub headers [E]; the engine-side reader was checked by eye against the pinned engine's headers [D].
 
 - **Build switch `PSP_PADPATH=1`** (the builder's 01:59): the reader is an engine function a tick's profile has no counts for, so a strict build would refuse it, and the hook moves the tick's layout. A default build has none of it. `seedN` is not under the switch: it is two lines in the map-start code.
 - **`pathrec`** (`pathlog` for the bytes in the log): `psp_pad.c`'s second half, one hook after each game tick (`psp_tick_account`), and a read-only state reader beside `psp_player_snapshot` (`psp_fixups.py`, players.c). Works while recording by hand, while replaying, or alone.
 - **`padwatch`**: reads `ms0:/halo/pad.path` through a 16 KB window and logs a `watch:` line per 300 ticks: ticks compared, the mean and largest distance off the path, ticks over 0.05, 0.5 and 2 units, the largest view error, ticks the seat, weapon or BSP differed. It corrects nothing. The distance is a bound (the flat part within 8% over, or the height if larger).
+- **`padhold`** (slice 3; it watches too): §3.2's view set and §3.3's steer and snap, on foot with the player in control on both sides; seated ticks and cinematics are left alone until slice 4. The steer bends the replayed stick inside `psp_pad_blob`, so no new hook in the engine; the snap and the view set are two small functions beside the reader. Bounds by keep word: `holddeadN` and `holdsnapN` (hundredths of a unit; 5, 50), `holdfarN` (units; 8). `holdkickN` is the test push. Each 300 ticks a `hold:` line (ticks steered, times set on the path, times the view was set) and a line per snap.
 - **`seedN`** with `fixedseed`: the local seed and the game's own both start from N's; no word, or `seed0`, is today's game exactly.
 - **The lab's tools:** `padfromlog.py <log> <out.pad|-> [<out.path>]`, `pathcheck.py <path> [<recording log>]` (§5's proof), `watchread.py name=log ...` (runs side by side per window, the census as a percentage of the first run's). Tested on a made-up log in the game's formats.
 - **Not in these slices:** the path's header holds only its format (the pad's checksum, the builds and the difficulty wait for the builder's pad header); the rig's copy of the path to the stick.
 
-**The proofs the builder runs** (emulator; the brief for each is in the lab's inbox line):
+**Slice 3's proofs** (emulator, d20_play1 and its path): (i) `padhold` on the path's own build and seed: play and both seeds identical to the run without it, and every `hold:` line zero; (ii) the same with `holdkick3000`: a steer logged, then one snap, and the replay inside tolerance to the end; (iii) `padhold` on seeds 1-3, `vfpudotoff` and posing B's build: held to the pad's end, corrections counted, and the census per window against the base's, which is the gate's open half.
+
+**The proofs the builder ran for slices 1-2** (emulator):
 1. *Slice 1:* d20_play1 replayed with and without `pathrec pathlog`: play and both seeds identical (statecrc). Its path, rebuilt from the log, passes `pathcheck` against Sheepdog01's recording log.
 2. *Slice 2, the gate:* with that path, `padwatch` on (a) `seed0` (expect: 0.000 off at every tick, census 100%), `seed1`, `seed2`, `seed3` on the path's build; (b) `vfpudotoff`; (c) posing B's new-only build. Read with `watchread.py`: how fast and how far each parts, and whether (c)'s census sits inside (a)'s spread.
 
@@ -232,7 +240,8 @@ All proofs are emulator runs unless marked. Keep words: `pathrec` (`pathlog`), `
 - **The watcher reads true:** on the path's own build and seed, 0.000 off at every compared tick, census 100%.
 - **Every other variant leaves Sheepdog01's route within 60-90 seconds of d20:** seeds 1-3 and the VFPU's other rounding are 0.1-0.4 units off (mean) in ticks 1,800-2,699, 1.2-16 by 3,600-5,400, 50-80 past ~20,000, with the BSP differing. **Posing B's new-only build parts first and furthest:** 7.1 in ticks 1,800-2,699, 44-59 by 2,700-4,500 (its maths is the old path's only with the VFPU forms off; B is exact against A).
 - **What that settles:** §1's claim, now counted on a rebased pad on its own generation: unheld, a pad prices Sheepdog01's game for about a minute on any build that differs at all, and another game after. A box's new-only side is the worst case, which is the pair REBUILD §5 prices on.
-- **What it does not settle:** the census here (24-207% of the base's) is of runs that have *left the route*, so it measures the lost route, not a fight's sample noise on a held one. §2.3's thresholds wait for slice 3's batch, where the route is held and only the fight differs.
+- **What it does not settle:** the later census (24-207% of the base's) is of runs that have *left the route*, so it measures the lost route, not a fight's sample noise on a held one. §2.3's thresholds wait for slice 3's batch, where the route is held and only the fight differs.
+- **A first look at that noise, from the 1,500 ticks before anything parted** (ticks 300-1,799, route 0.000 on every variant): across seeds the actors summed over a window are 98-111% of the base's and the effects 89-105%; the VFPU's other rounding 93-102% and 94-101%; posing B's build 98-102% and 82-103%. So on an identical route the population already differs by ~±10% between two seeds of one build, and a different build sits about inside that. It is d20's quiet opening and one pad; slice 3's batch is the real read. (The table's first window, ticks 0-299, shows the base far under the others; that is one run's short first window, not play.)
 - **For the bounds (§3.3):** the seeds' first parted windows are small and slow (0.1-0.4 mean over 900 ticks), which is steering's ground; posing B's 7.1 in its first window is a jump, which is the snap's. The per-300-tick lines will say how fast each grows; the bounds stay [U] until slice 3 runs against them.
 
 ## 11. Open, and who can close it

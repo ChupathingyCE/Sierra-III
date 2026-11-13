@@ -14,6 +14,7 @@ same inputs however fast its build draws. With fixedseed on both sides the
 game then plays the same (the PSP's two races fixed first: tock162 edc2d39,
 74cd771) */
 #include <pspiofilemgr.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -21,6 +22,9 @@ game then plays the same (the PSP's two races fixed first: tock162 edc2d39,
 
 int psp_keep(const char *name);
 int psp_keep_number(const char *prefix, int fallback);
+#ifdef PSP_PADPATH
+static void path_steer(void *blob);
+#endif
 void platform_log(const char *format, ...);
 extern int psp_map_generation;
 
@@ -325,7 +329,13 @@ void psp_pad_blob(int local_player_index, void *blob, int bytes)
 		pad_blobs++;
 	}
 	else if (pad_take(PAD_BLOB, record, sizeof(record)) && record[0] == (unsigned char)local_player_index)
+	{
 		memcpy(blob, record + 1, PAD_BLOB_BYTES);
+#ifdef PSP_PADPATH
+		if (local_player_index == 0)
+			path_steer(blob);
+#endif
+	}
 }
 
 /* the exit (exitatN, ladderN, the level's end): the recording's last frames
@@ -355,7 +365,22 @@ the game, so a run plays the same with it; made while a pad replays on its
 recording's build, the file is that pad's path. "padwatch": DATA_ROOT/pad.path
 is read beside the game and the player's distance from it logged for every
 PATH_REPORT ticks; nothing is corrected. Both log the same "census:" line,
-so two runs' populations compare window by window. Build switch
+so two runs' populations compare window by window.
+
+"padhold" (with padplay; it watches too): the replay is held to the path on
+foot. The look he asked for is set when it is more than a quarter degree
+off: it is control state, so nothing physical is touched. A player off the
+path by more than "holddeadN" hundredths of a unit (5) is steered: the
+replayed stick is bent toward the path, so he gets there by the biped's own
+movement, through collision as a player would. Past "holdsnapN" hundredths
+(50) flat or in height, or 45 ticks over half of it without closing, he is
+set on the path with its velocity. Past "holdfarN" units (8) he is left
+for 150 ticks first: that far is a script's move (a teleport behind a gate
+the fight opens), which the game makes by itself a little later or sooner
+than the recording did (d20's seeds: 60 units off for 72 ticks, then back
+within one; the lab's padpath2). Seated ticks and cinematics are left
+alone. "holdkickN" (tests): he is pushed 0.3 units at game tick N and 3
+units 300 ticks later, to show a steer and a snap. Build switch
 PSP_PADPATH=1 */
 struct psp_path_state
 {
@@ -368,6 +393,8 @@ struct psp_path_state
 	unsigned char flags;
 };
 int psp_path_state_get(struct psp_path_state *state); /* players.c (psp_fixups.py) */
+void psp_path_snap(const float *position, const float *velocity);
+void psp_path_view(float yaw, float pitch);
 
 #define PATH_POINT 0x50u /* 'P': a tick's record */
 #define PATH_HEAD 0x48u  /* 'H': the file's first record */
@@ -380,7 +407,23 @@ int psp_path_state_get(struct psp_path_state *state); /* players.c (psp_fixups.p
 #define PATH_FLAG_SEATED 2
 #define PATH_FLAG_ZOOMED 4
 
-static int path_mode = -1; /* bit 0 recording, bit 1 watching */
+#define PATH_STALL_TICKS 45
+#define PATH_FAR_TICKS 150
+#define PATH_VIEW_DEGREES 0.25f
+#define PATH_HOLD_LOGGED 400
+
+static int path_mode = -1; /* bit 0 recording, bit 1 watching, bit 2 holding */
+/* holding: the bounds in units, the path's last record for its velocity,
+and what the next frame's stick is bent by (the path less the player, flat,
+and the look's yaw the stick is relative to) */
+static float path_dead = 0.05f, path_snap = 0.5f, path_far = 8.f;
+static int path_far_ticks = 0;
+static long path_kick = 0;
+static float path_before[3];
+static long path_before_time = -1;
+static int path_steer_on = 0, path_stall = 0;
+static float path_steer_x = 0.f, path_steer_y = 0.f, path_steer_yaw = 0.f;
+static unsigned long path_hold_logged = 0;
 static int path_generation = -1;
 static int path_log_on = 0;
 /* recording */
@@ -403,8 +446,10 @@ static struct
 	unsigned long ticks, actors, objects, effects;
 	/* the watcher's */
 	unsigned long compared, no_record, over_small, over_snap, over_far, seat_differs, weapon_differs, bsp_differs;
+	/* the hold's */
+	unsigned long steered, snaps, view_sets;
 	float error_sum, error_max, view_max;
-} path_sum = { -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.f, 0.f, 0.f };
+} path_sum = { -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.f, 0.f, 0.f };
 
 static void path_log(const unsigned char *data, unsigned int bytes)
 {
@@ -527,7 +572,11 @@ static void path_map_check(void)
 
 	if (path_mode < 0)
 	{
-		path_mode = (psp_keep("pathrec") ? 1 : 0) | (psp_keep("padwatch") ? 2 : 0);
+		path_mode = (psp_keep("pathrec") ? 1 : 0) | (psp_keep("padwatch") ? 2 : 0) | (psp_keep("padhold") ? 6 : 0);
+		path_dead = (float)psp_keep_number("holddead", 5) * 0.01f;
+		path_snap = (float)psp_keep_number("holdsnap", 50) * 0.01f;
+		path_far = (float)psp_keep_number("holdfar", 8);
+		path_kick = psp_keep_number("holdkick", 0);
 		if ((path_mode & 1) && !(path_out = malloc(PATH_OUT)))
 			path_mode &= ~1;
 		path_log_on = (path_mode & 1) && psp_keep("pathlog");
@@ -570,10 +619,13 @@ static void path_map_check(void)
 			sceIoClose(path_in_file);
 			path_in_file = -1;
 		}
-		path_last_record = path_last_tick = -1;
+		path_last_record = path_last_tick = path_before_time = -1;
 		path_skip_to_restart = 0;
-		platform_log("path: watching %s, %u bytes%s", path, path_in_size,
+		platform_log("path: %s %s, %u bytes%s", (path_mode & 4) ? "holding the replay to" : "watching", path, path_in_size,
 			!path_in ? " (none: nothing to watch)" : path_in_ended ? " (not a path this build reads)" : "");
+		if (path_mode & 4)
+			platform_log("path: steered past %.2f units, set on the path past %.2f, left 150 ticks first past %.0f",
+				(double)path_dead, (double)path_snap, (double)path_far);
 	}
 	else if (path_mode & 2)
 	{
@@ -609,7 +661,10 @@ static int path_peek(struct psp_path_state *state)
 	if (path_in_at + 1 + PATH_POINT_BYTES > path_in_base + path_in_fill ||
 		path_in[path_in_at - path_in_base] != PATH_POINT)
 	{
-		platform_log("path: the watch %s at byte %u of %u", path_in_at >= path_in_size ? "ended" : "lost the file's records",
+		int more = path_in_at < path_in_base + path_in_fill;
+
+		platform_log("path: the watch %s at byte %u of %u", !more ? "ended" :
+			path_in[path_in_at - path_in_base] == PATH_HEAD ? "ended at the path's next map load" : "lost the file's records",
 			path_in_at, path_in_size);
 		path_in_ended = 1;
 		return 0;
@@ -623,13 +678,95 @@ static float path_abs(float value)
 	return value < 0.f ? -value : value;
 }
 
+/* psp_pad_blob, each frame of a replay: the recording's stick bent toward
+the path by what the last tick found. The stick is in the look's frame:
+forward along the yaw, left a quarter turn from it (bipeds.c's movement).
+Half a unit off asks for the whole stick, and the sum is cut to the stick's
+circle as the game cuts the pad's */
+static void path_steer(void *blob)
+{
+	float throttle[2], cosine, sine, length;
+
+	if (!path_steer_on || pad_in_ended)
+		return;
+	memcpy(throttle, blob, sizeof(throttle));
+	cosine = cosf(path_steer_yaw);
+	sine = sinf(path_steer_yaw);
+	throttle[0] += 2.f * (path_steer_x * cosine + path_steer_y * sine);
+	throttle[1] += 2.f * (path_steer_y * cosine - path_steer_x * sine);
+	length = throttle[0] * throttle[0] + throttle[1] * throttle[1];
+	if (length > 1.f)
+	{
+		length = 1.f / sqrtf(length);
+		throttle[0] *= length;
+		throttle[1] *= length;
+	}
+	memcpy(blob, throttle, sizeof(throttle));
+}
+
+/* a tick of the hold, on foot with the player in control on both sides */
+static void path_hold(const struct psp_path_state *now, const struct psp_path_state *then, float flat, float height,
+	float view)
+{
+	path_steer_on = 0;
+	if (now->seat != -1 || then->seat != -1 || !(now->flags & then->flags & PATH_FLAG_CONTROL) || pad_in_ended)
+	{
+		path_stall = path_far_ticks = 0;
+		return;
+	}
+	if (view > PATH_VIEW_DEGREES)
+	{
+		psp_path_view(then->yaw, then->pitch);
+		path_sum.view_sets++;
+	}
+	if (flat > path_far || height > path_far)
+	{
+		if (++path_far_ticks <= PATH_FAR_TICKS)
+		{
+			path_stall = 0;
+			return;
+		}
+	}
+	else
+		path_far_ticks = 0;
+	if (flat > path_snap || height > path_snap || path_stall > PATH_STALL_TICKS)
+	{
+		float velocity[3] = { 0.f, 0.f, 0.f };
+
+		/* the path's own step into this tick, when its last record is the tick before */
+		if (path_before_time == then->game_time - 1)
+		{
+			velocity[0] = then->position[0] - path_before[0];
+			velocity[1] = then->position[1] - path_before[1];
+			velocity[2] = then->position[2] - path_before[2];
+		}
+		psp_path_snap(then->position, velocity);
+		path_sum.snaps++;
+		if (path_hold_logged++ < PATH_HOLD_LOGGED)
+			platform_log("hold: set on the path at tick %ld: %.2f off flat, %.2f in height%s", now->game_time, (double)flat,
+				(double)height, path_stall > PATH_STALL_TICKS ? " (steered 45 ticks without closing)" :
+				path_far_ticks ? " (far for 150 ticks: no script brought him)" : "");
+		path_stall = path_far_ticks = 0;
+		return;
+	}
+	if (flat > path_dead)
+	{
+		path_steer_on = 1;
+		path_steer_x = then->position[0] - now->position[0];
+		path_steer_y = then->position[1] - now->position[1];
+		path_steer_yaw = now->yaw;
+		path_sum.steered++;
+	}
+	path_stall = flat > 0.5f * path_snap ? path_stall + 1 : 0;
+}
+
 /* the player against the path's record of this tick. Game time going back
 (a revert, a restart) is followed on both sides: the path's records are
 skipped to where its own time went back */
 static void path_watch(const struct psp_path_state *now)
 {
 	struct psp_path_state then;
-	float dx, dy, dz, error, yaw, pitch, view;
+	float dx, dy, dz, flat, height, error, yaw, pitch, view;
 
 	if (path_last_tick >= 0 && now->game_time < path_last_tick)
 		path_skip_to_restart = 1;
@@ -660,9 +797,9 @@ static void path_watch(const struct psp_path_state *now)
 		dz = now->position[2] - then.position[2];
 		/* a bound, not the distance: the flat part within 8% over, or the
 		height if larger, is enough to sort a tick into its band */
-		error = path_abs(dx) > path_abs(dy) ? path_abs(dx) + 0.41f * path_abs(dy) : path_abs(dy) + 0.41f * path_abs(dx);
-		if (path_abs(dz) > error)
-			error = path_abs(dz);
+		flat = path_abs(dx) > path_abs(dy) ? path_abs(dx) + 0.41f * path_abs(dy) : path_abs(dy) + 0.41f * path_abs(dx);
+		height = path_abs(dz);
+		error = height > flat ? height : flat;
 		yaw = path_abs(now->yaw - then.yaw);
 		if (yaw > 3.1415927f)
 			yaw = 6.2831853f - yaw;
@@ -680,8 +817,13 @@ static void path_watch(const struct psp_path_state *now)
 		path_sum.seat_differs += now->seat != then.seat;
 		path_sum.weapon_differs += now->weapon != then.weapon;
 		path_sum.bsp_differs += now->bsp != then.bsp;
+		if (path_mode & 4)
+			path_hold(now, &then, flat, height, view);
+		memcpy(path_before, then.position, sizeof(path_before));
+		path_before_time = then.game_time;
 		return;
 	}
+	path_steer_on = 0;
 	path_sum.no_record++;
 }
 
@@ -700,6 +842,9 @@ static void path_report(void)
 			path_sum.compared ? (double)(path_sum.error_sum / (float)path_sum.compared) : 0.0, (double)path_sum.error_max,
 			path_sum.over_small, path_sum.over_snap, path_sum.over_far, (double)path_sum.view_max, path_sum.seat_differs,
 			path_sum.weapon_differs, path_sum.bsp_differs);
+	if (path_mode & 4)
+		platform_log("hold: ticks %ld-%ld | steered %lu ticks | set on the path %lu times | view set %lu times", from,
+			from + PATH_REPORT - 1, path_sum.steered, path_sum.snaps, path_sum.view_sets);
 	memset(&path_sum, 0, sizeof(path_sum));
 	path_sum.window = -1;
 }
@@ -737,6 +882,16 @@ void psp_path_tick(void)
 	}
 	if (path_mode & 2)
 		path_watch(&now);
+	if ((path_mode & 4) && path_kick > 0 && (now.game_time == path_kick || now.game_time == path_kick + 300) && now.seat == -1)
+	{
+		float to[3];
+
+		memcpy(to, now.position, sizeof(to));
+		to[0] += now.game_time == path_kick ? 0.3f : 3.f;
+		psp_path_snap(to, NULL);
+		platform_log("hold: holdkick pushed the player %.1f units at tick %ld", now.game_time == path_kick ? 0.3 : 3.0,
+			now.game_time);
+	}
 }
 
 /* the exit: the last window's lines, the path's last records written */
