@@ -270,6 +270,14 @@ As §3.4, in its first form: a seat on one side only is forced after 15 ticks (t
 
 **Its proofs (padpath7, b40_play1 and c40_play1):** each pad's path made on this head and PROVEN against Sheepdog01's recording log (b40's replay is known to track to ~12,922 in the emulator; where a path stops being his play it is used only up to there); `padhold` on the path's own game: inert, nothing forced; `padhold` on seeds 1-2 and posing B: seats taken and fetched, the ride's distance off the path per window, and whether the level runs on to the pad's end.
 
+**padpath7 (05:43 and 06:53, the builder; 43414900345 and 43419611862; findings `padpath7_paths`, `padpath7_seats`, tables `padpath7_b40_watch.txt`, `_c40_`) [E]:**
+
+- **The paths:** c40_play1's is PROVEN for the whole level (428 on-foot samples met, 257 kills in 130 squads). b40_play1's is Sheepdog01's play to ~18,000 only (the pad's own replay parts from his log there), so b40 is read to 17,900; 55 kills in 30 squads.
+- **Inert on both paths' own games:** no seat forced, no ride set, no kill forced.
+- **Held, with vehicles:** b40 on seeds 1-2 and posing B: 0.13-0.73 units off (mean a window), 2-5 seats taken, one vehicle fetched, 14-24 times the ride was set on the path, each from just over its 2-unit bound. c40 on seeds 1-2: held to the level's end (0.03-0.58 mean, largest 3.8), 4-6 seats taken, 2-3 fetched, 14-27 ride sets. No crash, wrong vehicle or thrown vehicle in any log.
+- **One failure, fixed on the branch:** posing B on c40 lost its vehicle at tick 44,720 ("none within 30 units" for 10,000 ticks) and walked the rest, never reaching the level's end. The search is now the whole level (a Banshee left in the air is far away); a seat not found is said once in 900 ticks.
+- **So the look alone does steer:** a driven vehicle drifts to the 2-unit bound about once every 1,000-2,000 ticks and is set back; no stick bending was needed.
+
 ## 11. The outcome hold (design, for the lead's read; nothing built)
 
 **Why** (padpath3, §10): a held replay keeps Sheepdog01's route and aim, but his shots land only in his own game. Elsewhere the enemies stand a little off where they stood, the fire misses, and they live about twice as long: 1.4-2.5x the actor-ticks in d20's fights on every variant [E]. The bench then prices a longer fight than he played, and gates that wait for an encounter to die open late.

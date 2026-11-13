@@ -2788,9 +2788,9 @@ void psp_path_snap(const float *position, const float *velocity)
 /* the pad path's seats ("padhold", psp_pad.c): the local player put in the
 seat his recording has him in. The nearest vehicle whose seat he can take
 is the one, when it stands within 3 units of where the recording's stood
-(1); failing that the nearest within 30 units is first set there, as the
-recording's stood (2: an AI or a fight left it elsewhere); 0 when there is
-none. The seat is taken at once, as the scripts seat a unit */
+(1); failing that the nearest in the level is first set there, as the
+recording's stood (2: an AI or a fight left it elsewhere, or he left a
+Banshee in the air); 0 when the level has none with that seat free. The seat is taken at once, as the scripts seat a unit */
 static void psp_path_axes(const float *forward_in, const float *up_in, real_vector3d *forward, real_vector3d *up)
 {
 	/* the path keeps the axes in 8 bits each: made unit and square again */
@@ -2843,7 +2843,7 @@ int psp_path_seat(int seat, const float *position, const float *forward_in, cons
 			best = distance;
 		}
 	}
-	if (best_index == NONE || best > 30.f * 30.f)
+	if (best_index == NONE)
 		return 0;
 	if (best > 3.f * 3.f)
 	{

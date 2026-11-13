@@ -393,7 +393,8 @@ Seats are held as state, since the vehicle's place is the world's and not
 his: where the recording sits and the replay doesn't, PATH_SEAT_TICKS on,
 he is put in that seat of the nearest vehicle that has it free, the
 vehicle first set where the recording's stood when it isn't within 3
-units; where the replay sits and the recording doesn't, he is let out.
+units (from anywhere in the level: within 30 only, posing B's build lost
+c40's Banshee and walked the rest; the lab's padpath7); where the replay sits and the recording doesn't, he is let out.
 Seated on both sides, the look is set as on foot (which is the steering,
 for a driver) and what he rides is set on the path, with its axes and
 velocity, past "holdseatsnapN" hundredths of a unit (200). "holdnoseat":
@@ -461,6 +462,7 @@ and the look's yaw the stick is relative to) */
 static float path_dead = 0.05f, path_snap = 0.5f, path_far = 8.f;
 static int path_far_ticks = 0;
 static int path_seats_held = 0, path_seat_ticks = 0;
+static long path_seat_said = -1000000;
 static float path_seat_snap = 2.f;
 static float (*path_ring)[3] = NULL;
 static unsigned long path_ring_count = 0; /* records put in the ring, ever */
@@ -954,10 +956,15 @@ static void path_hold(const struct psp_path_state *now, const struct psp_path_st
 			path_sum.seats_fetched += did == 2;
 			path_sum.seats_left += did == 3;
 			path_sum.seats_lost += did == 0;
-			if (did >= 0)
+			/* a seat not found is said once in 900 ticks, not at every try */
+			if (did > 0 || (did == 0 && (now->game_time - path_seat_said >= 900 || now->game_time < path_seat_said)))
+			{
+				if (did == 0)
+					path_seat_said = now->game_time;
 				platform_log("hold: tick %ld, the path %s (seat %d): %s", now->game_time, then->seat == -1 ? "is on foot" : "is seated",
 					(int)then->seat, did == 1 ? "seated in the vehicle there" : did == 2 ? "a vehicle fetched to the path, and seated" :
-					did == 3 ? "let out of his seat" : "no vehicle with that seat free within 30 units");
+					did == 3 ? "let out of his seat" : "no vehicle in the level with that seat free");
+			}
 		}
 		return;
 	}
