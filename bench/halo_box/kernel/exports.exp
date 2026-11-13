@@ -1,0 +1,15 @@
+# halo_boxk.prx's exports: its entry point, and halo_boxk_counters as a system
+# call the bench (user mode) can make (attribute 0x4001: exported to user mode
+# through the syscall table)
+PSP_BEGIN_EXPORTS
+
+PSP_EXPORT_START(syslib, 0, 0x8000)
+PSP_EXPORT_FUNC_HASH(module_start)
+PSP_EXPORT_VAR_HASH(module_info)
+PSP_EXPORT_END
+
+PSP_EXPORT_START(halo_boxk, 0, 0x4001)
+PSP_EXPORT_FUNC(halo_boxk_counters)
+PSP_EXPORT_END
+
+PSP_END_EXPORTS
