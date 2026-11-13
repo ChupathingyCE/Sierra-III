@@ -96,6 +96,7 @@ Against the capture first: every posed object's node matrices equal the old code
 
 ## 8. States
 
+- 2026-11-12 19:2x: **means A's in-frame pair read** [M, PSP-3000, the lab's sierra-hw 43335341419 old and 43335363541 box, b30_play2 to 60 s, 2 a side, each side its own counts and layout; findings `boxposing_a_inframe_b30_psp3000`]: the box at the old path's cost: tick +0.30 / +0.09 ms (36.51 -> 36.81, 36.71 -> 36.80; +0.8% / +0.2%), frame +0.1% / +0.3%, inside the old side's own two runs; **the bipeds' node matrices unchanged** (6.34 / 6.32 ms a tick against 6.32 / 6.31). So the cut-in's +1.3-2.0 ms against the old path (§6c, §6d) is gone with each side's own profile and layout, and means A itself buys nothing over the old walk in frame. The posing box's in-frame gain is still to come from B (posing only what's read, §6d) and the kernel.
 - 2026-11-12 17:0x: **means A proven exact** [E] (the lab's boxposeab1, sierra-batch 43322560514; builder/posing-ab 9585bb9): play and both seeds identical old against box on b30_play2 (3,900 ticks) and b40_play1 (6,000), the VFPU forms off both sides; the strict interpreter clean on b30 to 60 s. The line claims are a no-op in the emulator: the PSP pair prices them. Both sides' counts are being taken at 9585bb9 for that pair (the lab's pgo-genpose k-n).
 
 - 2026-11-11: spec (this page).
