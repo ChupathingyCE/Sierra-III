@@ -386,8 +386,18 @@ ticks in a level whose BSP had never switched (the lab's padpath3). And
 while the level's BSP isn't the path's, nothing is done at all: the
 recording's script has moved him to a part of the level this run hasn't
 loaded, and only this run's own script can take him there (padpath4: set
-there by the hold, two variants never switched). Seated ticks and
-cinematics are left alone.
+there by the hold, two variants never switched). Cinematics are left
+alone.
+
+Seats are held as state, since the vehicle's place is the world's and not
+his: where the recording sits and the replay doesn't, PATH_SEAT_TICKS on,
+he is put in that seat of the nearest vehicle that has it free, the
+vehicle first set where the recording's stood when it isn't within 3
+units; where the replay sits and the recording doesn't, he is let out.
+Seated on both sides, the look is set as on foot (which is the steering,
+for a driver) and what he rides is set on the path, with its axes and
+velocity, past "holdseatsnapN" hundredths of a unit (200). "holdnoseat":
+seated ticks left alone, as before.
 
 The hold also keeps the deaths the player caused (docs/pad_path.md, "The
 outcome hold"). His shots land only in his own game: on any other, the
@@ -414,6 +424,9 @@ struct psp_path_state
 int psp_path_state_get(struct psp_path_state *state); /* players.c (psp_fixups.py) */
 void psp_path_snap(const float *position, const float *velocity);
 void psp_path_view(float yaw, float pitch);
+int psp_path_seat(int seat, const float *position, const float *forward, const float *up);
+int psp_path_unseat(void);
+void psp_path_root_set(const float *position, const float *forward, const float *up, const float *velocity);
 int psp_path_kill_one(int encounter, int squad, const float *near); /* ai.c (psp_fixups.py) */
 
 #define PATH_POINT 0x50u /* 'P': a tick's record */
@@ -435,6 +448,7 @@ int psp_path_kill_one(int encounter, int squad, const float *near); /* ai.c (psp
 
 #define PATH_STALL_TICKS 45
 #define PATH_FAR_TICKS 150
+#define PATH_SEAT_TICKS 15
 #define PATH_RING 1024 /* the path's last ticks kept, to walk him back along */
 #define PATH_SWEEP_STEP 4
 #define PATH_VIEW_DEGREES 0.25f
@@ -446,6 +460,8 @@ and what the next frame's stick is bent by (the path less the player, flat,
 and the look's yaw the stick is relative to) */
 static float path_dead = 0.05f, path_snap = 0.5f, path_far = 8.f;
 static int path_far_ticks = 0;
+static int path_seats_held = 0, path_seat_ticks = 0;
+static float path_seat_snap = 2.f;
 static float (*path_ring)[3] = NULL;
 static unsigned long path_ring_count = 0; /* records put in the ring, ever */
 static long path_sweep_at = -1;            /* the ring's record he is at while walked along, or -1 */
@@ -499,8 +515,9 @@ static struct
 	/* the hold's */
 	unsigned long held, held_over_snap, steered, snaps, view_sets, swept;
 	unsigned long kills_own, kills_forced, kills_matched, kills_missing, bsp_waits;
+	unsigned long seats_forced, seats_fetched, seats_lost, seats_left, root_sets;
 	float error_sum, error_max, view_max;
-} path_sum = { -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.f, 0.f, 0.f };
+} path_sum = { -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.f, 0.f, 0.f };
 
 static void path_log(const unsigned char *data, unsigned int bytes)
 {
@@ -630,6 +647,8 @@ static void path_map_check(void)
 		if ((path_mode & 4) && !(path_ring = malloc(PATH_RING * sizeof(*path_ring))))
 			path_mode &= ~4;
 		path_kills_held = (path_mode & 4) && !psp_keep("holdnokill");
+		path_seats_held = (path_mode & 4) && !psp_keep("holdnoseat");
+		path_seat_snap = (float)psp_keep_number("holdseatsnap", 200) * 0.01f;
 		path_kick = psp_keep_number("holdkick", 0);
 		if ((path_mode & 1) && !(path_out = malloc(PATH_OUT)))
 			path_mode &= ~1;
@@ -890,8 +909,10 @@ static void path_hold(const struct psp_path_state *now, const struct psp_path_st
 	float (*slot)[3] = &path_ring[path_ring_count % PATH_RING];
 
 	path_steer_on = 0;
-	if (now->seat != -1 || then->seat != -1 || !(now->flags & then->flags & PATH_FLAG_CONTROL) || pad_in_ended)
+	if ((!path_seats_held && (now->seat != -1 || then->seat != -1)) || !(now->flags & then->flags & PATH_FLAG_CONTROL) ||
+		pad_in_ended)
 	{
+		path_seat_ticks = 0;
 		path_stall = path_far_ticks = 0;
 		path_sweep_at = -1;
 		path_ring_count = 0; /* the path across a seat or a cinematic isn't one to walk along */
@@ -912,6 +933,61 @@ static void path_hold(const struct psp_path_state *now, const struct psp_path_st
 			said = now->game_time;
 			platform_log("hold: waiting at tick %ld: the path is in BSP %d and the level is in %d", now->game_time, (int)then->bsp,
 				(int)now->bsp);
+		}
+		return;
+	}
+	if (now->seat != then->seat)
+	{
+		/* a seat on one side only: forced after its grace, and nothing else
+		held meanwhile (his place and the path's aren't the same thing's) */
+		path_stall = path_far_ticks = 0;
+		path_sweep_at = -1;
+		path_ring_count = 0;
+		if (++path_seat_ticks > PATH_SEAT_TICKS)
+		{
+			int did = then->seat == -1 ? (psp_path_unseat() ? 3 : -1) :
+				now->seat != -1 ? (psp_path_unseat() ? 3 : -1) : /* the wrong seat: out first */
+				psp_path_seat(then->seat, then->position, then->forward, then->up);
+
+			path_seat_ticks = 0;
+			path_sum.seats_forced += did == 1;
+			path_sum.seats_fetched += did == 2;
+			path_sum.seats_left += did == 3;
+			path_sum.seats_lost += did == 0;
+			if (did >= 0)
+				platform_log("hold: tick %ld, the path %s (seat %d): %s", now->game_time, then->seat == -1 ? "is on foot" : "is seated",
+					(int)then->seat, did == 1 ? "seated in the vehicle there" : did == 2 ? "a vehicle fetched to the path, and seated" :
+					did == 3 ? "let out of his seat" : "no vehicle with that seat free within 30 units");
+		}
+		return;
+	}
+	path_seat_ticks = 0;
+	if (then->seat != -1)
+	{
+		/* seated on both sides: the look, and what he rides past its bound */
+		path_sum.held++;
+		path_sum.held_over_snap += flat > path_seat_snap || height > path_seat_snap;
+		path_ring_count = 0;
+		if (view > PATH_VIEW_DEGREES)
+		{
+			psp_path_view(then->yaw, then->pitch);
+			path_sum.view_sets++;
+		}
+		if (flat > path_seat_snap || height > path_seat_snap)
+		{
+			float velocity[3] = { 0.f, 0.f, 0.f };
+
+			if (path_before_time == then->game_time - 1)
+			{
+				velocity[0] = then->position[0] - path_before[0];
+				velocity[1] = then->position[1] - path_before[1];
+				velocity[2] = then->position[2] - path_before[2];
+			}
+			psp_path_root_set(then->position, then->forward, then->up, velocity);
+			path_sum.root_sets++;
+			if (path_hold_logged++ < PATH_HOLD_LOGGED)
+				platform_log("hold: what he rides set on the path at tick %ld: %.2f off flat, %.2f in height", now->game_time,
+					(double)flat, (double)height);
 		}
 		return;
 	}
@@ -1100,10 +1176,12 @@ static void path_report(void)
 		platform_log("hold: ticks %ld-%ld | steered %lu ticks | set on the path %lu times | view set %lu times"
 			" | held %lu ticks, %lu of them over the snap bound | walked along %lu ticks"
 			" | kills: his own %lu, the recording's matched unforced %lu, forced %lu, let go %lu"
-			" | waited for the level's BSP %lu ticks", from,
+			" | waited for the level's BSP %lu ticks"
+			" | seats: taken %lu, vehicle fetched %lu, none found %lu, let out %lu, ride set on the path %lu", from,
 			from + PATH_REPORT - 1, path_sum.steered, path_sum.snaps, path_sum.view_sets, path_sum.held,
 			path_sum.held_over_snap, path_sum.swept, path_sum.kills_own, path_sum.kills_matched, path_sum.kills_forced,
-			path_sum.kills_missing, path_sum.bsp_waits);
+			path_sum.kills_missing, path_sum.bsp_waits, path_sum.seats_forced, path_sum.seats_fetched, path_sum.seats_lost,
+			path_sum.seats_left, path_sum.root_sets);
 	memset(&path_sum, 0, sizeof(path_sum));
 	path_sum.window = -1;
 }

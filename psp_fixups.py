@@ -2785,6 +2785,116 @@ void psp_path_snap(const float *position, const float *velocity)
 	}
 }
 
+/* the pad path's seats ("padhold", psp_pad.c): the local player put in the
+seat his recording has him in. The nearest vehicle whose seat he can take
+is the one, when it stands within 3 units of where the recording's stood
+(1); failing that the nearest within 30 units is first set there, as the
+recording's stood (2: an AI or a fight left it elsewhere); 0 when there is
+none. The seat is taken at once, as the scripts seat a unit */
+static void psp_path_axes(const float *forward_in, const float *up_in, real_vector3d *forward, real_vector3d *up)
+{
+	/* the path keeps the axes in 8 bits each: made unit and square again */
+	real_vector3d right;
+
+	forward->i = forward_in[0]; forward->j = forward_in[1]; forward->k = forward_in[2];
+	up->i = up_in[0]; up->j = up_in[1]; up->k = up_in[2];
+	if (normalize3d(forward) == 0.f)
+	{
+		forward->i = 1.f;
+		forward->j = forward->k = 0.f;
+	}
+	cross_product3d(up, forward, &right);
+	if (normalize3d(&right) == 0.f)
+	{
+		right.i = forward->j; right.j = -forward->i; right.k = 0.f;
+		if (normalize3d(&right) == 0.f)
+		{
+			right.i = 0.f;
+			right.j = 1.f;
+		}
+	}
+	cross_product3d(forward, &right, up);
+}
+
+int psp_path_seat(int seat, const float *position, const float *forward_in, const float *up_in)
+{
+	long unit_index = psp_local_unit(NULL);
+	struct object_iterator iterator;
+	struct object_datum *vehicle;
+	long best_index = NONE;
+	float best = 0.f;
+
+	if (unit_index == NONE || seat < 0 || unit_get(unit_index)->object.parent_object_index != NONE)
+		return 0;
+	object_iterator_new(&iterator, FLAG(_object_type_vehicle), 0);
+	while ((vehicle = (struct object_datum *)object_iterator_next(&iterator)) != NULL)
+	{
+		float dx = vehicle->object.position.x - position[0], dy = vehicle->object.position.y - position[1];
+		float dz = vehicle->object.position.z - position[2];
+		float distance = dx * dx + dy * dy + dz * dz;
+
+		if (vehicle->object.parent_object_index != NONE ||
+			unit_definition_get(vehicle->definition_index)->unit.seats.count <= seat ||
+			!unit_can_enter_seat(unit_index, iterator.index, (short)seat, NULL))
+			continue;
+		if (best_index == NONE || distance < best)
+		{
+			best_index = iterator.index;
+			best = distance;
+		}
+	}
+	if (best_index == NONE || best > 30.f * 30.f)
+		return 0;
+	if (best > 3.f * 3.f)
+	{
+		real_point3d point;
+		real_vector3d forward, up;
+
+		point.x = position[0];
+		point.y = position[1];
+		point.z = position[2];
+		psp_path_axes(forward_in, up_in, &forward, &up);
+		object_set_position(best_index, &point, &forward, &up);
+		return unit_enter_seat(unit_index, best_index, (short)seat) ? 2 : 0;
+	}
+	return unit_enter_seat(unit_index, best_index, (short)seat) ? 1 : 0;
+}
+
+/* out of a seat the recording isn't in: 1 when the game let him start */
+int psp_path_unseat(void)
+{
+	long unit_index = psp_local_unit(NULL);
+
+	return unit_index != NONE && unit_try_and_exit_seat(unit_index);
+}
+
+/* seated: what he rides set where the recording's stood, as it stood, with
+its velocity (units a tick) */
+void psp_path_root_set(const float *position, const float *forward_in, const float *up_in, const float *velocity)
+{
+	long root_index = psp_local_unit(NULL);
+	struct object_datum *root;
+	real_point3d point;
+	real_vector3d forward, up;
+
+	if (root_index == NONE)
+		return;
+	while (object_get(root_index)->object.parent_object_index != NONE)
+		root_index = object_get(root_index)->object.parent_object_index;
+	point.x = position[0];
+	point.y = position[1];
+	point.z = position[2];
+	psp_path_axes(forward_in, up_in, &forward, &up);
+	object_set_position(root_index, &point, &forward, &up);
+	root = object_get(root_index);
+	if (velocity)
+	{
+		root->object.translational_velocity.i = velocity[0];
+		root->object.translational_velocity.j = velocity[1];
+		root->object.translational_velocity.k = velocity[2];
+	}
+}
+
 void psp_path_view(float yaw, float pitch)
 {
 	real_euler_angles2d angles;
