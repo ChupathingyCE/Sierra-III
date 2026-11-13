@@ -46919,6 +46919,8 @@ keep word decalringold) */
 int psp_keep(const char *name);
 static long psp_ring_page = 0;      /* the first page of the next block made */
 static long psp_ring_prev = NONE;   /* the block that ends there, or NONE at the cache's start */
+static unsigned long psp_ring_made, psp_ring_wraps, psp_ring_fallbacks;
+void platform_log(const char *format, ...);
 static boolean psp_ring_locked(
 	struct lruv_cache *cache,
 	long block_index,
@@ -46927,6 +46929,36 @@ static boolean psp_ring_locked(
 	return (unsigned long)block->last_used_tick == (unsigned long)cache->tick ||
 		(cache->locked_block_proc && cache->locked_block_proc(block_index));
 }
+/* the turn wraps: the blocks from the turn to the cache's end are a lap
+older than those at page 0, so they go first (the lead 2026-11-13 13:47:
+oldest made first, strictly); a locked one stays */
+static void psp_ring_tail_free(
+	struct lruv_cache *cache)
+{
+	long index = cache->first_block_index;
+
+	while (index != NONE)
+	{
+		struct lruv_cache_block *block = datum_get(cache->blocks, index);
+		long after = block->next_block_index;
+
+		if (block->first_page_index >= psp_ring_page && !psp_ring_locked(cache, index, block))
+			lruv_block_delete(cache, index);
+		index = after;
+	}
+}
+
+/* the safety net taken, counted for the proof's log */
+static long psp_ring_fallback(
+	struct lruv_cache *cache,
+	long size)
+{
+	if (++psp_ring_fallbacks <= 8)
+		platform_log("decalring: the old walk made a block (%lu so far; %lu made by the ring, %lu wraps)",
+			psp_ring_fallbacks, psp_ring_made, psp_ring_wraps);
+	return lruv_block_new(cache, size);
+}
+
 static long psp_ring_new(
 	struct lruv_cache *cache,
 	long size)
@@ -46952,8 +46984,10 @@ static long psp_ring_new(
 
 		if (psp_ring_page + pages > cache->page_count)
 		{
+			psp_ring_tail_free(cache);
 			psp_ring_page = 0;
 			psp_ring_prev = NONE;
+			psp_ring_wraps++;
 		}
 		/* the block before the turn's pages: the last made, if it's still there */
 		if (psp_ring_prev != NONE)
@@ -47008,17 +47042,17 @@ static long psp_ring_new(
 			long after;
 
 			if (next_index == NONE)
-				return lruv_block_new(cache, size);
+				return psp_ring_fallback(cache, size);
 			block = datum_get(cache->blocks, next_index);
 			if (psp_ring_locked(cache, next_index, block))
-				return lruv_block_new(cache, size);
+				return psp_ring_fallback(cache, size);
 			after = block->next_block_index;
 			lruv_block_delete(cache, next_index);
 			next_index = after;
 		}
 		new_index = datum_new(cache->blocks);
 		if (new_index == NONE)
-			return lruv_block_new(cache, size);
+			return psp_ring_fallback(cache, size);
 		block = datum_get(cache->blocks, new_index);
 		/* linked between the block before (or the list's head) and the next */
 		block->previous_block_index = prev_block ? psp_ring_prev : NONE;
@@ -47036,9 +47070,12 @@ static long psp_ring_new(
 		block->last_used_tick = cache->tick;
 		psp_ring_page += pages;
 		psp_ring_prev = new_index;
+		if ((++psp_ring_made & 511) == 0)
+			platform_log("decalring: %lu made by the ring, %lu wraps, %lu by the old walk", psp_ring_made, psp_ring_wraps,
+				psp_ring_fallbacks);
 		return new_index;
 	}
-	return lruv_block_new(cache, size);
+	return psp_ring_fallback(cache, size);
 }
 #endif
 
