@@ -535,6 +535,33 @@ COLD_PORT_UNITS = ("port/linux/src/port_config.c", "port/linux/src/xiso.c", "por
                    # mpb1: internet play runs on its own threads, a join's
                    # keys once; the ONLINE GAMES screen only in the menus
                    "psp/src/psp_online.c", "psp/src/psp_internet.c") + INTERNET_UNITS
+def port_definitions(names):
+    """the names among these that a psp/src unit defines at file scope (a
+    function's body or a variable, not a prototype or an extern): name to file"""
+    found = {}
+    if not names:
+        return found
+    src_dir = os.path.join(HERE, "psp", "src")
+    pattern = re.compile(r"^(?!extern\b|static\b|#|typedef\b)[A-Za-z_][^;{}]*?\b(%s)\b\s*(\(|=|;|\[)" %
+                         "|".join(re.escape(n) for n in sorted(names)))
+    for f in sorted(os.listdir(src_dir)):
+        if not f.endswith(".c"):
+            continue
+        lines = open(os.path.join(src_dir, f), errors="replace").read().split("\n")
+        for i, line in enumerate(lines):
+            m = pattern.match(line)
+            if not m or m.group(1) in found:
+                continue
+            if m.group(2) == "(":
+                # a definition, not a prototype: no ';' before the body's '{'
+                rest = " ".join(lines[i:i + 12])
+                body, semi = rest.find("{"), rest.find(";")
+                if body < 0 or (0 <= semi < body):
+                    continue
+            found[m.group(1)] = f
+    return found
+
+
 def cold_code(rel):
     if os.environ.get("PSP_NO_COLD") or GAME_OPT != "-O2":
         return False
@@ -1478,6 +1505,13 @@ def main():
         if LTO_OBJS:
             lto_asm_context(r.stderr)
         sys.exit(1)
+    # a stubbed name that a psp/src unit defines is a unit left out of
+    # PSP_FILES (or built without its switch's define): the link would run
+    # with that unit's calls doing nothing (poseplan's first PSP pair did)
+    defined = port_definitions(stubs)
+    if defined:
+        sys.exit("not linking: stubbed, though psp/src defines them (is the unit in PSP_FILES, and given its switch's "
+                 "define?): " + ", ".join("%s (%s)" % (n, f) for n, f in sorted(defined.items())[:20]))
     open(os.path.join(OUT, "stubbed_symbols.txt"), "w").write("\n".join(sorted(stubs)) + "\n")
     # size the heap: from the program's end up to the game state
     size = subprocess.run(["psp-size", os.path.join(OUT, "halo.elf")], capture_output=True, text=True).stdout.splitlines()[1].split()
