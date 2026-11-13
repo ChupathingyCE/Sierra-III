@@ -14804,9 +14804,49 @@ is the kept block's */
 /* a block is opened only with this much room: list_full asks for
 DISPLAY_LIST_MARGIN past every draw */
 #define DL_OPEN_LEAST (DISPLAY_LIST_MARGIN + 12 * 1024)
+/* what pspgu keeps of the GE's state on the CPU and builds later words from
+(its context's texture function and 2x, the texture map modes, and the
+switches): a block is written from what it was then and leaves what it left,
+so it's CALLed only from the same, and leaves the same behind it. Its
+context's layout is pspsdk's guInternal.h GuContext */
+struct dl_gu_context
+{
+	unsigned int *start, *current;
+	int parent_context, scissor_enable, scissor_start[2], scissor_end[2], near_plane, far_plane, depth_offset;
+	int fragment_2x, texture_function, texture_proj_map_mode, texture_map_mode, sprite_mode[4];
+	unsigned int clear_color, clear_stencil, clear_depth;
+	int texture_mode;
+};
+extern struct dl_gu_context gu_contexts[3];
+extern int gu_curr_context, gu_states;
+struct dl_gu { int fragment_2x, texture_function, texture_proj_map_mode, texture_map_mode, states; };
+
+static void dl_gu_read(struct dl_gu *g)
+{
+	const struct dl_gu_context *c = &gu_contexts[gu_curr_context];
+
+	g->fragment_2x = c->fragment_2x;
+	g->texture_function = c->texture_function;
+	g->texture_proj_map_mode = c->texture_proj_map_mode;
+	g->texture_map_mode = c->texture_map_mode;
+	g->states = gu_states;
+}
+
+static void dl_gu_write(const struct dl_gu *g)
+{
+	struct dl_gu_context *c = &gu_contexts[gu_curr_context];
+
+	c->fragment_2x = g->fragment_2x;
+	c->texture_function = g->texture_function;
+	c->texture_proj_map_mode = g->texture_proj_map_mode;
+	c->texture_map_mode = g->texture_map_mode;
+	gu_states = g->states;
+}
+
 struct dl_meta
 {
 	unsigned int id, words, block, deps, texes, shapes;
+	struct dl_gu gu_in, gu_out;
 	float eye[3], floor;
 	float lo[DL_SHAPES], hi[DL_SHAPES];
 	/* then deps dl_deps, then texes index and address pairs */
@@ -14817,7 +14857,7 @@ struct dl_meta
 /* the counts, the replay's (read by the main CPU's report through the
 uncached view, never reset: the report keeps what it read last) */
 enum { DLC_MADE, DLC_CALLED, DLC_WORDS_CALLED, DLC_ABANDONED, DLC_STALE_SHAPE, DLC_STALE_EYE, DLC_STALE_FLOOR,
-	DLC_STALE_OWNER, DLC_STALE_TEXTURE, DLC_STALE_VRAM, DLC_NO_ROOM, DLC_SWITCHES, DLC_PEAK, DLC_CHECKED,
+	DLC_STALE_OWNER, DLC_STALE_TEXTURE, DLC_STALE_VRAM, DLC_STALE_GU, DLC_NO_ROOM, DLC_SWITCHES, DLC_PEAK, DLC_CHECKED,
 	DLC_CHECK_DIFFER, DLC_CHECK_WORDS, DLC_CHECK_SKIPPED, DLC_FIRST_AT, DLC_FIRST_KEPT, DLC_FIRST_FRESH, DLC_REFUSED,
 	DLC_COUNTS = DLC_REFUSED + DL_NEVERS };
 static struct __attribute__((aligned(64))) dl_arena_state
@@ -14825,6 +14865,7 @@ static struct __attribute__((aligned(64))) dl_arena_state
 	unsigned int half, at, gen[2], left[2], gen_next;
 	unsigned int *saved_current, *saved_start;
 	unsigned int saved_pending[2], block;
+	struct dl_gu gu_in, gu_out;
 	float eye[3], floor;
 	unsigned int count[DLC_COUNTS];
 } dl;
@@ -15028,6 +15069,7 @@ static int dl_open(int switch_ok)
 	dl.eye[1] = ge_eye[1];
 	dl.eye[2] = ge_eye[2];
 	dl.floor = model_size_floor;
+	dl_gu_read(&dl.gu_in);
 	dl_w.never = 0;
 	dl_w.shape = 0;
 	dl_w.deps = 0;
@@ -15047,6 +15089,11 @@ static unsigned int dl_shut(void)
 	dl_w.noting = 0;
 	if (!dl_w.never)
 		sceGuSendCommandi(0x0B, 0); /* RET */
+	dl_gu_read(&dl.gu_out);
+	/* a block given up: its walk is replayed into the list from where the
+	block started */
+	if (dl_w.never)
+		dl_gu_write(&dl.gu_in);
 	end = (unsigned int)gu_list->current & ~0x40000000u;
 	gu_list->current = dl.saved_current;
 	gu_list->start = dl.saved_start;
@@ -15102,6 +15149,8 @@ static struct dl_meta *dl_close(unsigned int id)
 	m->eye[1] = dl.eye[1];
 	m->eye[2] = dl.eye[2];
 	m->floor = dl.floor;
+	m->gu_in = dl.gu_in;
+	m->gu_out = dl.gu_out;
 	for (k = 0; k < DL_SHAPES; k++)
 	{
 		m->lo[k] = dl_w.lo[k];
@@ -15242,9 +15291,14 @@ static void dl_kept(const defer_word *records, unsigned int words, unsigned int 
 			stale = DLC_STALE_SHAPE;
 		else
 		{
+			struct dl_gu now;
+
 			dl_settle();
+			dl_gu_read(&now);
 			if (memcmp(m->eye, ge_eye, sizeof(m->eye)))
 				stale = DLC_STALE_EYE;
+			else if (memcmp(&now, &m->gu_in, sizeof(now)))
+				stale = DLC_STALE_GU;
 			else if (!dl_vram_still(m))
 				stale = DLC_STALE_VRAM;
 		}
@@ -15270,6 +15324,7 @@ static void dl_kept(const defer_word *records, unsigned int words, unsigned int 
 				dl_settle();
 				sceGuSendCommandi(0x10, (int)((m->block >> 8) & 0xF0000u)); /* BASE */
 				sceGuSendCommandi(0x0A, (int)(m->block & 0xFFFFFFu)); /* CALL */
+				dl_gu_write(&m->gu_out);
 				dl_forget_state();
 				{
 					/* gum's model matrix sent again by the next draw: the GE's
@@ -15348,9 +15403,9 @@ static void dl_report(void)
 		if (d[DLC_REFUSED + k])
 			at += snprintf(refused + at, sizeof(refused) - at, " %s %u,", never_names[k], d[DLC_REFUSED + k]);
 	platform_log("GE: drawlist: blocks made %u, CALLed %u, words CALLed %u (300 frames); refused by%s abandoned %u; "
-		"stale: shape %u, eye %u, floor %u, owner %u, texture %u, vram %u; arena: no room %u, halves switched %u, peak KB %u",
+		"stale: shape %u, eye %u, floor %u, owner %u, texture %u, vram %u, pspgu %u; arena: no room %u, halves switched %u, peak KB %u",
 		d[DLC_MADE], d[DLC_CALLED], d[DLC_WORDS_CALLED], at ? refused : " none,", d[DLC_ABANDONED], d[DLC_STALE_SHAPE],
-		d[DLC_STALE_EYE], d[DLC_STALE_FLOOR], d[DLC_STALE_OWNER], d[DLC_STALE_TEXTURE], d[DLC_STALE_VRAM], d[DLC_NO_ROOM],
+		d[DLC_STALE_EYE], d[DLC_STALE_FLOOR], d[DLC_STALE_OWNER], d[DLC_STALE_TEXTURE], d[DLC_STALE_VRAM], d[DLC_STALE_GU], d[DLC_NO_ROOM],
 		d[DLC_SWITCHES], now[DLC_PEAK] / 1024);
 	if (dl_words.check)
 		platform_log("GE: drawlistcheck: blocks checked %u, differ %u, words differ %u, skipped %u; the first: word %u kept %08x fresh %08x",
