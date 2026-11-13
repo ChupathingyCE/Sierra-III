@@ -697,10 +697,21 @@ volatile partition (the heap's 256 KB block keeps it all for textures) */
 unsigned int psp_ge_inflight_room_bytes(void);
 static int inflight_room_asked = 0;
 static unsigned int inflight_room_bytes = 0;
+/* then the draw list's blocks' arena (psp_ge.c, psp_ge_drawlist_room_bytes),
+asked at the same moment for the same reason: off the display list, which a
+map at its edge needs whole (d20's fight), and off the heap, which b30 hasn't
+got; the texture cache gives up those bytes instead */
+#ifdef PSP_DRAWLIST
+unsigned int psp_ge_drawlist_room_bytes(void);
+static unsigned int drawlist_room_bytes = 0;
+#define DRAWLIST_ROOM_BYTES drawlist_room_bytes
+#else
+#define DRAWLIST_ROOM_BYTES 0
+#endif
 
 static unsigned int front_bytes(void)
 {
-	return GLYPH_ROOM_BYTES + (volatile_locked ? inflight_room_bytes : 0);
+	return GLYPH_ROOM_BYTES + (volatile_locked ? inflight_room_bytes + DRAWLIST_ROOM_BYTES : 0);
 }
 
 static void ram_cache_acquire(void)
@@ -726,6 +737,11 @@ static void ram_cache_acquire(void)
 		inflight_room_bytes = (psp_ge_inflight_room_bytes() + 63) & ~63u;
 		if (inflight_room_bytes > ram_cache_bytes / 4)
 			inflight_room_bytes = 0;
+#ifdef PSP_DRAWLIST
+		drawlist_room_bytes = (psp_ge_drawlist_room_bytes() + 63) & ~63u;
+		if (drawlist_room_bytes > ram_cache_bytes / 8)
+			drawlist_room_bytes = 0;
+#endif
 	}
 	if (!squeezed)
 		squeezed = psp_keep("texvramonly") ? 2 : psp_keep("texsqueeze") ? 1 : -1;
@@ -744,10 +760,18 @@ static void ram_cache_acquire(void)
 		arenas[1].end = (unsigned int)ram_cache + size;
 		sceKernelDcacheWritebackInvalidateRange(ram_cache, given);
 	}
+#ifdef PSP_DRAWLIST
+	platform_log("textures: RAM cache %d KB (%s%s%s; the glyph sheet's 32 KB before it, then %u KB of geinflight's records and %u KB of the draw list's blocks)",
+		(int)(size - front_bytes()) / 1024, volatile_locked ? "volatile partition" : "heap",
+		squeezed == 1 ? ", squeezed by keep.txt" : squeezed == 2 ? ", left empty by keep.txt" : "",
+		carved_bytes ? ", the rest the geometry cache's" : "", volatile_locked ? inflight_room_bytes / 1024 : 0,
+		volatile_locked ? drawlist_room_bytes / 1024 : 0);
+#else
 	platform_log("textures: RAM cache %d KB (%s%s%s; the glyph sheet's 32 KB before it, then %u KB of geinflight's records)",
 		(int)(size - front_bytes()) / 1024, volatile_locked ? "volatile partition" : "heap",
 		squeezed == 1 ? ", squeezed by keep.txt" : squeezed == 2 ? ", left empty by keep.txt" : "",
 		carved_bytes ? ", the rest the geometry cache's" : "", (front_bytes() - GLYPH_ROOM_BYTES) / 1024);
+#endif
 }
 
 /* build 68: bytes at the end of the RAM block for the geometry cache (0 gives
@@ -813,6 +837,20 @@ void *psp_tex_inflight_room(unsigned int *generation)
 		return NULL;
 	return (void *)((unsigned int)ram_cache + GLYPH_ROOM_BYTES);
 }
+
+#ifdef PSP_DRAWLIST
+/* the draw list's arena in the front room (NULL without one: no volatile
+partition, asleep, or no room asked) and the block's generation: blocks
+written in an older one were in the block the system had while the PSP slept */
+void *psp_tex_drawlist_room(unsigned int *generation, unsigned int *bytes)
+{
+	*generation = ram_cache_generation;
+	*bytes = drawlist_room_bytes;
+	if (!volatile_locked || !ram_cache || !drawlist_room_bytes)
+		return NULL;
+	return (void *)((unsigned int)ram_cache + GLYPH_ROOM_BYTES + inflight_room_bytes);
+}
+#endif
 
 /* the lowest carved address while the volatile partition is lent (NULL while
 it isn't: asleep, or the heap's block instead), and the block's generation.

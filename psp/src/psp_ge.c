@@ -276,15 +276,20 @@ made from has changed. This is the state of the block being written or
 checked, the replay's own: a cache line of its own, as the hooks in the
 draw path read it on whichever CPU replays */
 #define DEFER_KEPT_WORDS 3
-/* the blocks' arena: the display list's last KB (display_list_acquire),
-"drawlistkbN" */
-#define DL_KB 128
+/* the blocks' arena: a room at the texture RAM block's front
+(psp_ge_drawlist_room_bytes), sized to what the blocks use (a half's peak was
+38 KB on b30, d20 and a30: two halves of 48 KB), "drawlistkbN". Not the
+display list's tail: d20's fight needs all 768 KB of the list (drawlistb5-7:
+at 640 KB lights, decals and particles were skipped) */
+#define DL_KB 96
 #define DL_KB_LEAST 32
-static unsigned int dl_arena_bytes = 0;
+#define DL_KB_MOST 256
 int psp_drawlist_on(void);
-/* the keep words (at the first window) and the arena (as the display list
-is taken), set on the main CPU and written back; the replay reads them */
-static struct __attribute__((aligned(64))) dl_words_state { int on, check; unsigned int arena, bytes; } dl_words;
+/* the keep words (at the first window) and the arena (at each frame's
+start: its place and the texture block's generation, which changes when the
+block went back to the system while the PSP slept), set on the main CPU and
+written back; the replay reads them */
+static struct __attribute__((aligned(64))) dl_words_state { int on, check; unsigned int arena, bytes, generation; } dl_words;
 #define DL_SHAPES 4
 #define DL_DEPS 64
 enum { DL_NEVER_ROOM = 1, DL_NEVER_NEAR = 2, DL_NEVER_FIRST_PERSON = 4, DL_NEVER_SKY = 8, DL_NEVER_CAMO = 16,
@@ -837,8 +842,14 @@ unsigned int psp_ge_inflight_room_bytes(void)
 
 /* at each frame's start: whether this frame defers (the keep word, asked
 once; the buffer taken the first time) */
+#ifdef PSP_DRAWLIST
+static void dl_arena_now(void);
+#endif
 static void defer_frame_begin(void)
 {
+#ifdef PSP_DRAWLIST
+	dl_arena_now();
+#endif
 	if (defer_asked < 0)
 	{
 		/* settled here, on the main CPU before any replay: the ME may carry
@@ -4477,11 +4488,6 @@ static int display_list_free_kb = 0, display_list_largest_kb = 0;
 /* at least this much stays free outside the heap for what is made later
 (threads' stacks, the blackbox's buffer: b104 took 32 KB more after load) */
 #define DISPLAY_LIST_LEAVES_FREE (128 * 1024)
-#ifdef PSP_DRAWLIST
-#define DL_ARENA_BYTES dl_arena_bytes
-#else
-#define DL_ARENA_BYTES 0
-#endif
 
 static void transparent_table_acquire(void); /* build 114: the see-through table, with the list */
 
@@ -4493,23 +4499,8 @@ static void display_list_acquire(void)
 		return;
 	if (psp_keep("list512"))
 		display_list_size = DISPLAY_LIST_BYTES;
-#ifdef PSP_DRAWLIST
-	/* the draw list's blocks hold words the list would have held: their
-	arena is the list's last KB (on b30 there is no other room: taken from the
-	heap, 192 KB left it full) */
-	if (psp_drawlist_on() && !psp_keep("drawlistblocksoff"))
-	{
-		extern int psp_keep_number(const char *prefix, int fallback);
-		int kb = psp_keep_number("drawlistkb", DL_KB);
-
-		kb = kb < DL_KB_LEAST ? DL_KB_LEAST : kb > display_list_size / 4096 ? display_list_size / 4096 : kb;
-		dl_arena_bytes = (unsigned int)kb * 1024;
-		display_list_size -= kb * 1024;
-	}
-#endif
-	if ((int)sceKernelTotalFreeMemSize() >= display_list_size + (int)DL_ARENA_BYTES + 64 + DISPLAY_LIST_LEAVES_FREE)
-		block = sceKernelAllocPartitionMemory(2, "halo display list", PSP_SMEM_High, display_list_size + DL_ARENA_BYTES + 64,
-			NULL);
+	if ((int)sceKernelTotalFreeMemSize() >= display_list_size + 64 + DISPLAY_LIST_LEAVES_FREE)
+		block = sceKernelAllocPartitionMemory(2, "halo display list", PSP_SMEM_High, display_list_size + 64, NULL);
 	if (block >= 0)
 	{
 		display_list = (unsigned int *)(((unsigned int)sceKernelGetBlockHeadAddr(block) + 63) & ~63u);
@@ -4517,20 +4508,9 @@ static void display_list_acquire(void)
 	}
 	else
 	{
-		display_list = memalign(64, display_list_size + DL_ARENA_BYTES);
+		display_list = memalign(64, display_list_size);
 		display_list_where = display_list ? "the heap (no room for it outside)" : "nowhere: no memory";
 	}
-#ifdef PSP_DRAWLIST
-	if (display_list && dl_arena_bytes)
-	{
-		dl_words.arena = (unsigned int)display_list + (unsigned int)display_list_size;
-		dl_words.bytes = dl_arena_bytes;
-		sceKernelDcacheWritebackInvalidateRange((void *)dl_words.arena, dl_arena_bytes);
-		sceKernelDcacheWritebackRange(&dl_words, sizeof(dl_words));
-		platform_log("GE: drawlist: the blocks' arena %u KB (two halves), the display list's last; the list %d KB",
-			dl_arena_bytes / 1024, display_list_size / 1024);
-	}
-#endif
 	display_list_free_kb = sceKernelTotalFreeMemSize() / 1024;
 	display_list_largest_kb = sceKernelMaxFreeMemSize() / 1024;
 	/* build 114: no line of the block left in the cache from earlier use
@@ -14901,6 +14881,7 @@ enum { DLC_MADE, DLC_CALLED, DLC_WORDS_CALLED, DLC_ABANDONED, DLC_STALE_SHAPE, D
 static struct __attribute__((aligned(64))) dl_arena_state
 {
 	unsigned int half, at, gen[2], left[2], gen_next;
+	unsigned int arena, arena_generation; /* the arena the halves are in */
 	unsigned int *saved_current, *saved_start;
 	unsigned int saved_pending[2], block;
 	struct dl_gu gu_in, gu_out;
@@ -14914,6 +14895,60 @@ int psp_tex_dl_still(const unsigned int *notes, int count);
 void psp_tex_dl_touch(const unsigned int *notes, int count);
 void psp_tex_memo_forget_all(void);
 void psp_tex_dl_drop(void);
+
+/* the room psp_tex.c keeps for the arena at the texture RAM block's front,
+asked as the block is first taken */
+unsigned int psp_ge_drawlist_room_bytes(void)
+{
+	extern int psp_keep_number(const char *prefix, int fallback);
+	int kb;
+
+	if (!psp_drawlist_on() || psp_keep("drawlistblocksoff"))
+		return 0;
+	kb = psp_keep_number("drawlistkb", DL_KB);
+	kb = kb < DL_KB_LEAST ? DL_KB_LEAST : kb > DL_KB_MOST ? DL_KB_MOST : kb;
+	return (unsigned int)kb * 1024;
+}
+
+void *psp_tex_drawlist_room(unsigned int *generation, unsigned int *bytes);
+
+/* at each frame's start, on the main CPU before any replay: where the arena
+is now (none while the PSP's texture block is the system's, or without the
+volatile partition: the walks are then replayed as without blocks) */
+static void dl_arena_now(void)
+{
+	unsigned int generation, bytes;
+	void *room;
+
+	if (!dl_words.on)
+		return;
+	room = psp_tex_drawlist_room(&generation, &bytes);
+	if ((unsigned int)room == dl_words.arena && generation == dl_words.generation && bytes == dl_words.bytes)
+		return;
+	if (room && dl_words.arena == 0 && dl_words.generation == 0)
+		platform_log("GE: drawlist: the blocks' arena %u KB (two halves), at the texture RAM block's front", bytes / 1024);
+	dl_words.arena = (unsigned int)room;
+	dl_words.bytes = room ? bytes : 0;
+	dl_words.generation = generation;
+	if (room)
+		sceKernelDcacheWritebackInvalidateRange(room, bytes);
+	sceKernelDcacheWritebackRange(&dl_words, sizeof(dl_words));
+}
+
+/* on the replay's side: an arena moved or given back and taken again holds
+none of the blocks the slots name, so they are all forgotten */
+static void dl_arena_check(void)
+{
+	if (dl.arena == dl_words.arena && dl.arena_generation == dl_words.generation)
+		return;
+	dl.arena = dl_words.arena;
+	dl.arena_generation = dl_words.generation;
+	dl.gen[0] = ++dl.gen_next;
+	dl.gen[1] = 0;
+	dl.half = 0;
+	dl.at = 0;
+	dl.left[0] = dl.left[1] = 0;
+}
 
 static void dl_words_read(void)
 {
@@ -15293,6 +15328,7 @@ static void dl_kept(const defer_word *records, unsigned int words, unsigned int 
 		defer_replay(records, words, on_me);
 		return;
 	}
+	dl_arena_check();
 	m = slot->id == id && slot->gen == dl.gen[dl.half] ? slot->meta : NULL;
 	if (m && !(stale = dl_still(m)))
 	{
