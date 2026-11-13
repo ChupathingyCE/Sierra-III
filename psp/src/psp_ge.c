@@ -14156,15 +14156,27 @@ static void far_note(const void *block, unsigned int mask_low, unsigned int mask
 	}
 }
 
-/* rso's key's word for the far form (models.c, FIXES_RSO): 0 with the draw
-list off (no word in the key); otherwise 1, plus 1 when the model is under
+/* whether rso keeps a walk that holds the far form (B76): the far level
+draws most of a level's still models, so with the far form refused rso kept
+almost none of them. On by default; rsofarold refuses it again, for the A/B */
+static int rso_far_on(void)
+{
+	static int on = -1;
+
+	if (on < 0)
+		on = psp_drawlist_on() || !psp_keep("rsofarold");
+	return on;
+}
+
+/* rso's key's word for the far form (models.c, FIXES_RSO): 0 with it
+refused (no word in the key); otherwise 1, plus 1 when the model is under
 the far level's size, so a kept walk drawn far is never sent again for a
 model come near, nor the other way */
-int psp_drawlist_far_key(float pixels)
+int psp_rso_far_key(float pixels)
 {
 	int size;
 
-	if (!psp_drawlist_on())
+	if (!rso_far_on())
 		return 0;
 	size = far_pixels_now();
 	return 1 + (size > 0 && pixels > 0.0f && pixels < (float)size);
@@ -14506,7 +14518,7 @@ unsigned int *psp_rso_capture_end(unsigned int key_words)
 			rso_broken++;
 			return NULL;
 		}
-		if (kind == DEFER_DRAW_MODEL || (kind == DEFER_DRAW_FAR && psp_drawlist_on()))
+		if (kind == DEFER_DRAW_MODEL || (kind == DEFER_DRAW_FAR && rso_far_on()))
 			parts++;
 		else if (kind == DEFER_MODEL_MULTIPURPOSE ? !at[3].u || !at[7].u :
 			kind != DEFER_MODEL_BEGIN && kind != DEFER_MODEL_SHAPE && kind != DEFER_MODEL_EFFECT &&
@@ -17633,9 +17645,9 @@ int psp_far_draw(unsigned long model, float pixels, const char *permutations, in
 			if (distance <= 0.0f || 2.0f * box[3] * scale * pixels_per_unit() >= (float)sprite_pixels * distance)
 				sprite = NULL;
 		}
-		if (psp_drawlist_on())
+		if (rso_far_on())
 		{
-			/* drawlist: rso keeps the far form's block as its part (the
+			/* rso keeps the far form's block as its part (the
 			address and size it is locked by); a sprite's choice follows the
 			camera, so a walk that could take one isn't kept */
 			psp_rso_geometry((const void *)address, (const void *)bytes);
