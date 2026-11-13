@@ -378,8 +378,12 @@ set on the path with its velocity. Past "holdfarN" units (8) he is left
 for 150 ticks first: that far is a script's move (a teleport behind a gate
 the fight opens), which the game makes by itself a little later or sooner
 than the recording did (d20's seeds: 60 units off for 72 ticks, then back
-within one; the lab's padpath2). Seated ticks and cinematics are left
-alone. "holdkickN" (tests): he is pushed 0.3 units at game tick N and 3
+within one; the lab's padpath2). If no script brings him, he is walked
+along the path from where he left it, PATH_SWEEP_STEP of its ticks a tick,
+never set straight across: the level's scripts test where he is, not what
+he crossed, and a jump over a trigger volume left posing B's build 9,000
+ticks in a level whose BSP had never switched (the lab's padpath3). Seated
+ticks and cinematics are left alone. "holdkickN" (tests): he is pushed 0.3 units at game tick N and 3
 units 300 ticks later, to show a steer and a snap. Build switch
 PSP_PADPATH=1 */
 struct psp_path_state
@@ -409,6 +413,8 @@ void psp_path_view(float yaw, float pitch);
 
 #define PATH_STALL_TICKS 45
 #define PATH_FAR_TICKS 150
+#define PATH_RING 1024 /* the path's last ticks kept, to walk him back along */
+#define PATH_SWEEP_STEP 4
 #define PATH_VIEW_DEGREES 0.25f
 #define PATH_HOLD_LOGGED 400
 
@@ -418,6 +424,9 @@ and what the next frame's stick is bent by (the path less the player, flat,
 and the look's yaw the stick is relative to) */
 static float path_dead = 0.05f, path_snap = 0.5f, path_far = 8.f;
 static int path_far_ticks = 0;
+static float (*path_ring)[3] = NULL;
+static unsigned long path_ring_count = 0; /* records put in the ring, ever */
+static long path_sweep_at = -1;            /* the ring's record he is at while walked along, or -1 */
 static long path_kick = 0;
 static float path_before[3];
 static long path_before_time = -1;
@@ -447,9 +456,9 @@ static struct
 	/* the watcher's */
 	unsigned long compared, no_record, over_small, over_snap, over_far, seat_differs, weapon_differs, bsp_differs;
 	/* the hold's */
-	unsigned long steered, snaps, view_sets;
+	unsigned long held, held_over_snap, steered, snaps, view_sets, swept;
 	float error_sum, error_max, view_max;
-} path_sum = { -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.f, 0.f, 0.f };
+} path_sum = { -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.f, 0.f, 0.f };
 
 static void path_log(const unsigned char *data, unsigned int bytes)
 {
@@ -576,6 +585,8 @@ static void path_map_check(void)
 		path_dead = (float)psp_keep_number("holddead", 5) * 0.01f;
 		path_snap = (float)psp_keep_number("holdsnap", 50) * 0.01f;
 		path_far = (float)psp_keep_number("holdfar", 8);
+		if ((path_mode & 4) && !(path_ring = malloc(PATH_RING * sizeof(*path_ring))))
+			path_mode &= ~4;
 		path_kick = psp_keep_number("holdkick", 0);
 		if ((path_mode & 1) && !(path_out = malloc(PATH_OUT)))
 			path_mode &= ~1;
@@ -619,7 +630,8 @@ static void path_map_check(void)
 			sceIoClose(path_in_file);
 			path_in_file = -1;
 		}
-		path_last_record = path_last_tick = path_before_time = -1;
+		path_last_record = path_last_tick = path_before_time = path_sweep_at = -1;
+		path_ring_count = 0;
 		path_skip_to_restart = 0;
 		platform_log("path: %s %s, %u bytes%s", (path_mode & 4) ? "holding the replay to" : "watching", path, path_in_size,
 			!path_in ? " (none: nothing to watch)" : path_in_ended ? " (not a path this build reads)" : "");
@@ -708,11 +720,36 @@ static void path_steer(void *blob)
 static void path_hold(const struct psp_path_state *now, const struct psp_path_state *then, float flat, float height,
 	float view)
 {
+	float (*slot)[3] = &path_ring[path_ring_count % PATH_RING];
+
 	path_steer_on = 0;
 	if (now->seat != -1 || then->seat != -1 || !(now->flags & then->flags & PATH_FLAG_CONTROL) || pad_in_ended)
 	{
 		path_stall = path_far_ticks = 0;
+		path_sweep_at = -1;
+		path_ring_count = 0; /* the path across a seat or a cinematic isn't one to walk along */
 		return;
+	}
+	memcpy(*slot, then->position, sizeof(*slot));
+	path_ring_count++;
+	path_sum.held++;
+	path_sum.held_over_snap += flat > path_snap || height > path_snap;
+	if (path_sweep_at >= 0)
+	{
+		/* walked along: the next records of the ring, until he is at the newest */
+		path_sweep_at += PATH_SWEEP_STEP;
+		if ((unsigned long)path_sweep_at >= path_ring_count - 1)
+		{
+			path_sweep_at = -1;
+			if (path_hold_logged++ < PATH_HOLD_LOGGED)
+				platform_log("hold: walked along the path up to tick %ld", now->game_time);
+		}
+		else
+		{
+			psp_path_snap(path_ring[path_sweep_at % PATH_RING], NULL);
+			path_sum.swept++;
+			return;
+		}
 	}
 	if (view > PATH_VIEW_DEGREES)
 	{
@@ -721,9 +758,39 @@ static void path_hold(const struct psp_path_state *now, const struct psp_path_st
 	}
 	if (flat > path_far || height > path_far)
 	{
+		unsigned long kept = path_ring_count < PATH_RING ? path_ring_count : PATH_RING, k, nearest = 0;
+		float best = 1e30f;
+
 		if (++path_far_ticks <= PATH_FAR_TICKS)
 		{
 			path_stall = 0;
+			return;
+		}
+		/* where he left the path: the kept record nearest to him. From there
+		he is walked along it; when none is near, he never was on this
+		stretch, and he is set on the path as below */
+		for (k = 0; k < kept; k++)
+		{
+			const float *at = path_ring[(path_ring_count - 1 - k) % PATH_RING];
+			float dx = path_abs(at[0] - now->position[0]), dy = path_abs(at[1] - now->position[1]);
+			float dz = path_abs(at[2] - now->position[2]);
+			float d = dx > dy ? dx + 0.41f * dy : dy + 0.41f * dx;
+
+			if (dz > d)
+				d = dz;
+			if (d < best)
+			{
+				best = d;
+				nearest = k;
+			}
+		}
+		if (best <= path_far && nearest > PATH_SWEEP_STEP)
+		{
+			path_sweep_at = (long)(path_ring_count - 1 - nearest);
+			path_far_ticks = path_stall = 0;
+			if (path_hold_logged++ < PATH_HOLD_LOGGED)
+				platform_log("hold: %.1f off at tick %ld and no script brought him: walked along the path's last %lu ticks",
+					(double)(flat > height ? flat : height), now->game_time, nearest);
 			return;
 		}
 	}
@@ -745,7 +812,7 @@ static void path_hold(const struct psp_path_state *now, const struct psp_path_st
 		if (path_hold_logged++ < PATH_HOLD_LOGGED)
 			platform_log("hold: set on the path at tick %ld: %.2f off flat, %.2f in height%s", now->game_time, (double)flat,
 				(double)height, path_stall > PATH_STALL_TICKS ? " (steered 45 ticks without closing)" :
-				path_far_ticks ? " (far for 150 ticks: no script brought him)" : "");
+				path_far_ticks ? " (far for 150 ticks, and never near the path's last ticks)" : "");
 		path_stall = path_far_ticks = 0;
 		return;
 	}
@@ -843,8 +910,10 @@ static void path_report(void)
 			path_sum.over_small, path_sum.over_snap, path_sum.over_far, (double)path_sum.view_max, path_sum.seat_differs,
 			path_sum.weapon_differs, path_sum.bsp_differs);
 	if (path_mode & 4)
-		platform_log("hold: ticks %ld-%ld | steered %lu ticks | set on the path %lu times | view set %lu times", from,
-			from + PATH_REPORT - 1, path_sum.steered, path_sum.snaps, path_sum.view_sets);
+		platform_log("hold: ticks %ld-%ld | steered %lu ticks | set on the path %lu times | view set %lu times"
+			" | held %lu ticks, %lu of them over the snap bound | walked along %lu ticks", from,
+			from + PATH_REPORT - 1, path_sum.steered, path_sum.snaps, path_sum.view_sets, path_sum.held,
+			path_sum.held_over_snap, path_sum.swept);
 	memset(&path_sum, 0, sizeof(path_sum));
 	path_sum.window = -1;
 }
