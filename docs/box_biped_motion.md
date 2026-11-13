@@ -58,6 +58,7 @@ Alone, against a capture of a pad bench (one of Sheepdog01's recordings): per bi
 
 - 2026-11-11: spec started, from the world store's layout and the collision draft; waits on the pilot's price before any code.
 - 2026-11-11: the hazard's reach, first read (Open 1): half of a biped's reads of other bipeds land on ones updated earlier this tick; bipeds write other bipeds and scenery 91 times a tick.
+- 2026-11-13: slice 1 built (Sierra-III `builder/motion1`, `PSP_BOXMOTION=1`, keep words `boxmotion`, `boxmotioncheck`: the walking bipeds' physics as box code, exact against the old path, reaching 97% of b30's physics calls; the lab's findings `boxmotion_exact_play_seeds`, `boxmotion_reach`). **Priced alone [M]** (the lab's bench-hw 43508316286, PSP-3000, halo_box 7138a85, b30's beach capture from tick 2,700, 256 ticks, 2,762 biped entities, 10.8 a tick; findings `boxmotion_standalone_beach_psp3000`): **warm 3.08 µs an entity, emptied 16.3, crowded 18.1; with the GE at 50% warm 3.18, emptied 22.1, crowded 25.4** (0.03-0.27 ms a tick); 2,762 outputs compared, 0 outside the tolerance (exact). The physics step is one part of the box's ~170 µs an update (§4): warm it is under 2% of that, crowded ~15%; as with posing, the gap between warm and crowded (6x) is the cache's, so the box's working set and the two-core split decide its in-frame price.
 
 ## Open
 
