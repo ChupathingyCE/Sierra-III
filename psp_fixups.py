@@ -2699,6 +2699,64 @@ void psp_player_snapshot(char *text, int size)
 	}
 }
 
+/* the pad path (psp_pad.c, docs/pad_path.md): the local player's state at
+this tick, for a pad's path to be written from or measured against. Read
+only. Seated, the position and axes are the object's he rides, since his own
+are his seat's offset; the counts are the tables' live entries. 0 without a
+unit */
+struct psp_path_state
+{
+	long game_time;
+	float position[3];
+	float yaw, pitch;
+	float forward[3], up[3];
+	short seat, weapon, bsp;
+	short actors, objects, effects;
+	unsigned char flags;
+};
+
+int psp_path_state_get(struct psp_path_state *state)
+{
+	extern struct data_array *actor_data;
+	extern struct data_array *effect_data;
+	long unit_index = psp_local_unit(NULL);
+	long root_index = unit_index, weapon_index = NONE;
+	struct unit_datum *unit;
+	struct object_datum *root;
+	real_euler_angles2d const *angles;
+
+	if (unit_index == NONE)
+		return 0;
+	unit = unit_get(unit_index);
+	while (object_get(root_index)->object.parent_object_index != NONE)
+		root_index = object_get(root_index)->object.parent_object_index;
+	root = object_get(root_index);
+	angles = player_control_get_facing_angles(0);
+	state->game_time = game_time_get();
+	state->position[0] = root->object.position.x;
+	state->position[1] = root->object.position.y;
+	state->position[2] = root->object.position.z;
+	state->forward[0] = root->object.forward.i;
+	state->forward[1] = root->object.forward.j;
+	state->forward[2] = root->object.forward.k;
+	state->up[0] = root->object.up.i;
+	state->up[1] = root->object.up.j;
+	state->up[2] = root->object.up.k;
+	state->yaw = angles->yaw;
+	state->pitch = angles->pitch;
+	state->seat = root_index == unit_index ? NONE : unit->unit.parent_seat_index;
+	if (unit->unit.current_weapon_index >= 0)
+		weapon_index = unit_inventory_get_weapon(unit_index, unit->unit.current_weapon_index);
+	state->weapon = weapon_index == NONE ? NONE : (short)(object_get(weapon_index)->definition_index & 0xFFFF);
+	state->bsp = global_structure_bsp_index;
+	state->actors = actor_data ? actor_data->actual_count : 0;
+	state->objects = object_header_data ? object_header_data->actual_count : 0;
+	state->effects = effect_data ? effect_data->actual_count : 0;
+	state->flags = (unsigned char)((cinematic_in_progress() ? 0 : 1) | (root_index != unit_index ? 2 : 0) |
+		(player_control_get_zoom_level(0) >= 0 ? 4 : 0));
+	return 1;
+}
+
 /* build 59: the local player put at a spot and turned to a direction
 (ms0:/halo/teleport.txt, psp_platform.c), for repeating what the tester saw at a
 place the screenshots name */
@@ -14605,8 +14663,17 @@ void psp_fixed_seed_new_map(void)
 {
 	if (psp_fixed_seed_on())
 	{
-		random_math_globals.global_local_random_seed = 0x0B5E55EDUL;
+		/* "seedN" with fixedseed: another fixed game. The local seed and the
+		game's own both start from N's, so two runs with the same N play
+		the same and two with different Ns are two samples of the level
+		(docs/pad_path.md: a pair's repeats on different seeds) */
+		int psp_keep_number(const char *prefix, int fallback);
+		unsigned long sample = (unsigned long)psp_keep_number("seed", 0);
+
+		random_math_globals.global_local_random_seed = 0x0B5E55EDUL ^ (sample * 0x9E3779B1UL);
 		psp_sound_random_seed = 0x50554E44UL;
+		if (sample)
+			random_math_globals.global_random_seed ^= sample * 0x85EBCA6BUL;
 	}
 }
 #endif

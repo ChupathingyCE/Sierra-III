@@ -44,7 +44,7 @@ So: **a held path removes the route's share of the noise (all of it outside figh
 
 ### 2.3 How a pair is read under that noise
 
-1. **Repeats run on different seeds.** A `sierra-hw` pair is two sides, `repeat=2`. Today both repeats use the one fixed seed, so on one build they are the same game and their spread is only timer noise: it *understates* the noise between two builds. With the hold, repeat 1 runs seed 1 and repeat 2 seed 2 on both sides. The repeats' spread then contains the fight's sample noise, and `tools/abreport.py`'s existing test (is the gap larger than the repeats' own spread) becomes the honest one. No extra runs. Needs: `fixedseed` taking a number (today it is on or off [D, `FIXES_113`]).
+1. **Repeats run on different seeds.** A `sierra-hw` pair is two sides, `repeat=2`. Today both repeats use the one fixed seed, so on one build they are the same game and their spread is only timer noise: it *understates* the noise between two builds. With the hold, repeat 1 runs seed 1 and repeat 2 seed 2 on both sides. The repeats' spread then contains the fight's sample noise, and `tools/abreport.py`'s existing test (is the gap larger than the repeats' own spread) becomes the honest one. No extra runs. Needs a numbered seed: `seedN` with `fixedseed` (written in slice 2, §10).
 2. **Each stretch prints a census, both sides:** actor-ticks awake, actors alive at the stretch's end, objects updated, effects and projectiles made, and the hold's own line (§4). Counts, so the emulator can check them too.
 3. **A stretch holds** when the hold's line is inside tolerance and the sides' actor-ticks differ by no more than the seeds do on one side. Its frame and tick are then compared as now.
 4. **A stretch that doesn't hold is priced per unit:** the box's own ledger line over its own count (posing a posed biped, collision a query, the AI a think), with the census beside it. Its total is shown and not called a price.
@@ -56,20 +56,23 @@ If the watcher (slice 2) shows fights' census parting further than seeds on one 
 
 ### 3.1 The path (made once per pad)
 
-Replaying the pad on its recording's build with `pathrec` writes one record per game tick, in order:
+Replaying the pad on its recording's build with `pathrec` writes one record per game tick, in order. As built (slice 1, `psp/src/psp_pad.c`), a record is 32 bytes:
 
 | Field | Bytes | Notes |
 |---|---|---|
+| game time | 4 | so a revert or restart inside a recording shows as time going back, and both sides follow it |
 | position | 12 | the player's unit; seated, the root object he rides (a seated unit's own position is its seat's offset [D, `psp_player_teleport`'s comment, B32]) |
 | desired facing: yaw, pitch | 4 | `player_control`'s `desired_angles`, 16 bits each (0.005°) |
 | seat | 1 | NONE on foot, else the seat index |
-| flags | 1 | control active (no cinematic, facing not inhibited), airborne, crouched, zoomed |
+| flags | 1 | control active (no cinematic), seated, zoomed |
 | weapon | 2 | the held weapon's tag index (a number, not data), for the log only |
-| orientation, seated only | 6 | the root's forward and up, 3 × 8 bits each |
+| bsp | 1 | the level's current BSP |
+| orientation | 6 | the root's forward and up, 8 bits an axis |
+| spare | 1 | |
 
-About 20 bytes a tick, 26 seated: d20_play1's 29,234 ticks are ~600 KB, c10's 44,859 ~900 KB. Velocity isn't stored: it is the next record's position less this one's. A revert or restart inside a recording (the 'U' records) writes a marker and the tick count starts again.
+33 bytes a tick with its tag: d20_play1's 29,234 ticks are ~960 KB, c10-sized recordings ~1.5 MB. The design's 20 bytes on foot is a later saving if the Memory Stick read shows in §6's pair. Velocity isn't stored: it is the next record's position less this one's.
 
-Every ~30 ticks a **world mark**: the BSP index, the AI's living count, the object count, whether a cinematic runs. Marks are compared and logged, never corrected (§3.5).
+**The world's state is logged, not stored** (changed from the first draft's marks in the file): every 300 game ticks, a run with `pathrec` or `padwatch` logs a `census:` line (the actors, objects and effects alive, summed over the window's ticks), on windows fixed by game time, so any two runs compare window by window whether or not they share a path.
 
 **The path holds no game data:** it is where Sheepdog01 stood, where he looked and what he sat in.
 
@@ -192,7 +195,7 @@ The path for this run is made in the emulator first (§5), so the job is the pai
 
 ## 9. Question 6 and the build plan: slices, each with its proof
 
-All proofs are emulator runs unless marked. Keep words: `pathrec`, `padwatch`, `padhold`.
+All proofs are emulator runs unless marked. Keep words: `pathrec` (`pathlog`), `padwatch`, `seedN`, `padhold`.
 
 | # | Slice | Done when |
 |---|---|---|
@@ -208,7 +211,21 @@ All proofs are emulator runs unless marked. Keep words: `pathrec`, `padwatch`, `
 
 **Size:** slices 1-2 are small (one file, two tools, one batch) and decide the rest. Slices 3-4 are the work. Nothing here needs Sheepdog01's hands or a new recording.
 
-## 10. Open, and who can close it
+## 10. Built so far (on this branch; nothing merged)
+
+**Slices 1 and 2 are written, 2026-11-13 02:1x, and have not been compiled or run:** this session has no toolchain and can't start a run, so the builder builds and runs them (the lead's 01:07, the builder's 01:35). `psp_pad.c` passes a host syntax check against stub headers [E]; the engine-side reader was checked by eye against the pinned engine's headers [D].
+
+- **`pathrec`** (`pathlog` for the bytes in the log): `psp_pad.c`'s second half, one hook after each game tick (`psp_tick_account`), and a read-only state reader beside `psp_player_snapshot` (`psp_fixups.py`, players.c). Works while recording by hand, while replaying, or alone.
+- **`padwatch`**: reads `ms0:/halo/pad.path` through a 16 KB window and logs a `watch:` line per 300 ticks: ticks compared, the mean and largest distance off the path, ticks over 0.05, 0.5 and 2 units, the largest view error, ticks the seat, weapon or BSP differed. It corrects nothing. The distance is a bound (the flat part within 8% over, or the height if larger).
+- **`seedN`** with `fixedseed`: the local seed and the game's own both start from N's; no word, or `seed0`, is today's game exactly.
+- **The lab's tools:** `padfromlog.py <log> <out.pad|-> [<out.path>]`, `pathcheck.py <path> [<recording log>]` (§5's proof), `watchread.py name=log ...` (runs side by side per window, the census as a percentage of the first run's). Tested on a made-up log in the game's formats.
+- **Not in these slices:** the path's header holds only its format (the pad's checksum, the builds and the difficulty wait for the builder's pad header); the rig's copy of the path to the stick.
+
+**The proofs the builder runs** (emulator; the brief for each is in the lab's inbox line):
+1. *Slice 1:* d20_play1 replayed with and without `pathrec pathlog`: play and both seeds identical (statecrc). Its path, rebuilt from the log, passes `pathcheck` against Sheepdog01's recording log.
+2. *Slice 2, the gate:* with that path, `padwatch` on (a) `seed0` (expect: 0.000 off at every tick, census 100%), `seed1`, `seed2`, `seed3` on the path's build; (b) `vfpudotoff`; (c) posing B's new-only build. Read with `watchread.py`: how fast and how far each parts, and whether (c)'s census sits inside (a)'s spread.
+
+## 11. Open, and who can close it
 
 - The steer and snap bounds, and whether fights part further across builds than across seeds: slice 2's batch. [U until then]
 - Whether a seated snap kicks the springs in practice: slice 4.
