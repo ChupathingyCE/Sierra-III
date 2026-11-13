@@ -3424,6 +3424,7 @@ steps in order: the console has no way to wait */
 		if (pad_end && psp_pad_replay_ended())
 			exit_game("padend");
 	}
+#ifdef PSP_PADPATH
 	/* "pathrec", "padwatch" (psp_pad.c): the player's state this tick, written
 	as a pad's path or measured against one */
 	{
@@ -3431,6 +3432,7 @@ steps in order: the console has no way to wait */
 
 		psp_path_tick();
 	}
+#endif
 	/* "lanetraceatN": lanetrace's window at game tick N (psp_lanetrace.c);
 	asked each tick only until that tick */
 	{

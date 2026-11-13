@@ -330,14 +330,20 @@ void psp_pad_blob(int local_player_index, void *blob, int bytes)
 
 /* the exit (exitatN, ladderN, the level's end): the recording's last frames
 written and the file closed */
+#ifdef PSP_PADPATH
 void psp_path_exit(void);
+#endif
 
 void psp_pad_exit(void)
 {
 	if (pad_mode == 1)
 		pad_close();
+#ifdef PSP_PADPATH
 	psp_path_exit();
+#endif
 }
+
+#ifdef PSP_PADPATH
 
 /* The pad path (docs/pad_path.md): where the player was each tick, beside
 his inputs, so a replay on a build that plays differently can be measured
@@ -349,7 +355,8 @@ the game, so a run plays the same with it; made while a pad replays on its
 recording's build, the file is that pad's path. "padwatch": DATA_ROOT/pad.path
 is read beside the game and the player's distance from it logged for every
 PATH_REPORT ticks; nothing is corrected. Both log the same "census:" line,
-so two runs' populations compare window by window */
+so two runs' populations compare window by window. Build switch
+PSP_PADPATH=1 */
 struct psp_path_state
 {
 	long game_time;
@@ -742,3 +749,4 @@ void psp_path_exit(void)
 			path_close();
 	}
 }
+#endif /* PSP_PADPATH */

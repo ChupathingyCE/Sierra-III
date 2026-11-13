@@ -2699,11 +2699,12 @@ void psp_player_snapshot(char *text, int size)
 	}
 }
 
+#ifdef PSP_PADPATH
 /* the pad path (psp_pad.c, docs/pad_path.md): the local player's state at
 this tick, for a pad's path to be written from or measured against. Read
 only. Seated, the position and axes are the object's he rides, since his own
 are his seat's offset; the counts are the tables' live entries. 0 without a
-unit */
+unit. Build switch PSP_PADPATH=1 */
 struct psp_path_state
 {
 	long game_time;
@@ -2756,6 +2757,7 @@ int psp_path_state_get(struct psp_path_state *state)
 		(player_control_get_zoom_level(0) >= 0 ? 4 : 0));
 	return 1;
 }
+#endif
 
 /* build 59: the local player put at a spot and turned to a direction
 (ms0:/halo/teleport.txt, psp_platform.c), for repeating what the tester saw at a

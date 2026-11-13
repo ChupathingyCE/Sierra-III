@@ -213,8 +213,9 @@ All proofs are emulator runs unless marked. Keep words: `pathrec` (`pathlog`), `
 
 ## 10. Built so far (on this branch; nothing merged)
 
-**Slices 1 and 2 are written, 2026-11-13 02:1x, and have not been compiled or run:** this session has no toolchain and can't start a run, so the builder builds and runs them (the lead's 01:07, the builder's 01:35). `psp_pad.c` passes a host syntax check against stub headers [E]; the engine-side reader was checked by eye against the pinned engine's headers [D].
+**Slices 1 and 2 are written (2026-11-13 ~01:40) and compile on the builder's runner (795b9bd, 01:59); proof 1 is running (the lab's padpath1, 43389661182):** this session has no toolchain and can't start a run, so the builder builds and runs them (the lead's 01:07, the builder's 01:35). `psp_pad.c` passes a host syntax check against stub headers [E]; the engine-side reader was checked by eye against the pinned engine's headers [D].
 
+- **Build switch `PSP_PADPATH=1`** (the builder's 01:59): the reader is an engine function a tick's profile has no counts for, so a strict build would refuse it, and the hook moves the tick's layout. A default build has none of it. `seedN` is not under the switch: it is two lines in the map-start code.
 - **`pathrec`** (`pathlog` for the bytes in the log): `psp_pad.c`'s second half, one hook after each game tick (`psp_tick_account`), and a read-only state reader beside `psp_player_snapshot` (`psp_fixups.py`, players.c). Works while recording by hand, while replaying, or alone.
 - **`padwatch`**: reads `ms0:/halo/pad.path` through a 16 KB window and logs a `watch:` line per 300 ticks: ticks compared, the mean and largest distance off the path, ticks over 0.05, 0.5 and 2 units, the largest view error, ticks the seat, weapon or BSP differed. It corrects nothing. The distance is a bound (the flat part within 8% over, or the height if larger).
 - **`seedN`** with `fixedseed`: the local seed and the game's own both start from N's; no word, or `seed0`, is today's game exactly.

@@ -204,6 +204,11 @@ DITHERSHIFT = os.environ.get("PSP_DITHERSHIFT", "") == "1"
 # PSP_DRAWLIST=1: the draw list box (docs/box_draw_list.md), off by default
 # until it is cut over; under it the keep word "drawlist" turns it on
 DRAWLIST = os.environ.get("PSP_DRAWLIST", "") == "1"
+# PSP_PADPATH=1: the pad path (docs/pad_path.md; psp_pad.c's second half, its
+# reader in players.c, keep words pathrec, pathlog, padwatch). A bench tool:
+# its reader is an engine function a tick's profile has no counts for and its
+# hook sits in the tick, so a default build leaves it out
+PADPATH = os.environ.get("PSP_PADPATH", "") == "1"
 # PSP_MUSIC=1 builds in the music path (psp/src/psp_music.c, Tremor and libogg,
 # FIXES_MUSIC, psp_dsound.c's music marks; keep word musicstream). The decoder
 # and its buffers take about 110 KB of program, which comes off the heap, and
@@ -399,7 +404,7 @@ PSP = ["psp-gcc", "-G%d" % SMALLDATA, GAME_OPT, "-march=allegrex", "-ffp-contrac
        # statics and the GL layer's d3d8_visibility_test_number); and the
        # Xbox maps' sizes (flare rows, respawning vehicles: -135 KB)
        "-DHALO_CONSOLE_WAITED_VISIBILITY_TESTS=1", "-DHALO_CONSOLE_XBOX_MAP_SIZES=1",
-       ] + (["-DPSP_MULTIPLAYER=1"] if MULTIPLAYER else []) + (["-DPSP_MUSIC=1"] if MUSIC else []) + (["-DPSP_SNDSTREAM=1"] if SNDSTREAM else []) + (["-DPSP_CLAIMFILL=1"] if CLAIMFILL else []) + (["-DPSP_MP_COOP=1"] if MULTIPLAYER and MP_COOP else []) + (["-DPSP_MP_HOST=1"] if MULTIPLAYER and MP_HOST else []) + (["-DPSP_MAP_CHECKS=1"] if MAP_CHECKS else []) + (["-DPSP_POOLS_XBOX=1"] if POOLS_XBOX else []) + (["-DPSP_RECON_64MB=1"] if BIG_RAM else []) + (["-DPSP_DEBUG_TOOLS=1"] if DEBUG_TOOLS else []) + (["-DPSP_TICK_STEPS=1"] if TICK_STEPS else []) + (["-DPSP_RECON=1"] if RECON else []) + (["-DPSP_MEPROBE=1"] if MEPROBE else []) + (["-DPSP_METRICS=1"] if METRICS else []) + (["-DPSP_STACKHOT=2"] if os.environ.get("PSP_STACKHOT", "2") == "2" else []) + (["-DPSP_PGO_GENERATE=1"] if PGO == "generate" else []) + os.environ.get("PSP_CFLAGS", "").split() + [
+       ] + (["-DPSP_MULTIPLAYER=1"] if MULTIPLAYER else []) + (["-DPSP_MUSIC=1"] if MUSIC else []) + (["-DPSP_PADPATH=1"] if PADPATH else []) + (["-DPSP_SNDSTREAM=1"] if SNDSTREAM else []) + (["-DPSP_CLAIMFILL=1"] if CLAIMFILL else []) + (["-DPSP_MP_COOP=1"] if MULTIPLAYER and MP_COOP else []) + (["-DPSP_MP_HOST=1"] if MULTIPLAYER and MP_HOST else []) + (["-DPSP_MAP_CHECKS=1"] if MAP_CHECKS else []) + (["-DPSP_POOLS_XBOX=1"] if POOLS_XBOX else []) + (["-DPSP_RECON_64MB=1"] if BIG_RAM else []) + (["-DPSP_DEBUG_TOOLS=1"] if DEBUG_TOOLS else []) + (["-DPSP_TICK_STEPS=1"] if TICK_STEPS else []) + (["-DPSP_RECON=1"] if RECON else []) + (["-DPSP_MEPROBE=1"] if MEPROBE else []) + (["-DPSP_METRICS=1"] if METRICS else []) + (["-DPSP_STACKHOT=2"] if os.environ.get("PSP_STACKHOT", "2") == "2" else []) + (["-DPSP_PGO_GENERATE=1"] if PGO == "generate" else []) + os.environ.get("PSP_CFLAGS", "").split() + [
        # The fatal asserts are compiled out, unevaluated (X10): their checks
        # and messages fill the 16 KB instruction cache, so with them gone b30's
        # tick is 6.6% shorter on the PSP-3000 [M], and play is identical. The
@@ -733,6 +738,7 @@ def compile_one(item):
                ["-DPSP_DITHERSHIFT=1"] if DITHERSHIFT and src.endswith("psp_ge.c") else []) + (
                ["-DPSP_DRAWLIST=1"] if DRAWLIST and src.endswith("psp_ge.c") else []) + (
                ["-DPSP_RECON=1"] if RECON else []) + (
+               ["-DPSP_PADPATH=1"] if PADPATH else []) + (
                ["-DPSP_MEPROBE=1"] if MEPROBE else []) + (
                ["-DPSP_WALKAPART=1"] if WALKAPART else []) + (
                ["-DPSP_MEXEC=1"] if MEXEC and src.endswith("psp_me.c") else []) + (
