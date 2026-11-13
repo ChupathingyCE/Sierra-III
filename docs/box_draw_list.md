@@ -223,3 +223,24 @@ Nothing past s0 is built until s0's count is read: if the kept share of the ME's
 4. The capture (`PSP_CAPTURE=draw_list`) that prices it alone over b30's flight, and its standalone budget per instance (~73 µs main CPU, ~80 µs ME, §4).
 
 v0's in-frame pair (b30_play2's flight, the 3000) gives the baseline v1 is priced against.
+
+### 11.1 What's already priced on v1's ground, and what that leaves (2026-11-13 02:42, builder; the lead 02:13: the v1 page so v1's build can start today)
+
+v0's pair is in (§10.8: no gain, ~20 µs a kept walk), so the ME's row and the main CPU's are the changed half's. R and R top-down already priced most of the obvious forms of it on b30, and v1 is shaped by what they found rather than by §2's first sketch (Sierra-III `master/rtop`, `docs/redesign_r_topdown.md` §1-§12; `docs/redesign_r.md`):
+
+| Tried on this ground | Result | So for v1 |
+|---|---|---|
+| **R as built:** forms captured, a part drawn from them by a touch and CALLs, inside the old replay | milestone b30 frame -0.6 to -2.4%, c20 -1.2 to +2.7%; the ME's job unchanged (48.4 → 48.1 ms) [M] | forms alone don't move the ME: what R drew got ~25-30% cheaper, but it left the dearest parts to the body |
+| **T1, the part slot, the object's bones once, its lighting once** (lookups and pspgu calls cut) | no gain on the PSP-3000; the ME's model part draws +1 ms [M] | a part's ME time isn't its lookups or pspgu's calls: per-part bookkeeping is not v1's ground |
+| **The rigid near runs restored** | none of the ~8 ms [M] | rigid near triangles were cheap |
+| **SLOTMASK, CORNERSETTLE** (tighter bounds in the corner loop) | reach ~2% and ~4-5% [E]; stopped | the run's sphere bounds are spent |
+| **MEXEC** (the ME's hot code from eDRAM) | -9% of the ME's job on b30's flight [M]; in | already in the tock |
+| **v0 B** (kept walks CALLed) | ~0.4-0.7 ms of a ~38 ms job [M] | the still half is small |
+
+**Where the ME's model time is on the flight** [M, rtop §7, §11]: the parts near the eye (the Pelican the player rides and its riders) are 9-19 ms a frame of the models' 22-52 ms, nearly all of them bending (26,603 of 26,606). Their first geometry pass is ~2/3 of it, and the corner loop is 64-70% of that pass (~44k cycles a part on the ride, ~5.6 ms a frame), at ~700-1,500 cycles a corner: several times a corner's arithmetic, so per-triangle overhead or dependence, not misses (corner_verdict holds 0.9% of the data misses) [U on M+E]. After the landing the near parts fall to 1-6 ms, and the beach's 20 ms (§4) is spread over the other kinds.
+
+**So v1, in its own unit (`psp/src/box_draw_list.c`), is two pieces, each priced alone first:**
+1. **The near bending parts' classification kept** [ME]: a near part's corner verdicts kept in the model's own space while the eye's place in that model holds still (a rider seated in the Pelican moves with it), worked out again only for the nodes whose matrices changed relative to the eye. Its ground is the ~5.6 ms loop on the ride; its count first [E]: frames and parts where the eye holds still in the model to within the verdict's tolerance, and corners whose bones moved. It needs posing's output by node (`box_posing.md` §1b) to know which bones moved.
+2. **One record an object for the moving half** [main CPU]: T3's instance (model, LOD, permutations, lighting, colours, flags; node matrices by reference to posing's block, not copied), the engine's per-part walk skipped for an object whose model, LOD and permutations are unchanged, the parts' touches carried while their caches still hold them (T3a). Its ground is the main CPU's 35.8 ms (§4), of which RSO already re-sends the still objects (71 of 93 a frame on b30); its count first [E]: the moving objects' per-part calls a frame, and the share of the walk they take.
+
+**Not v1:** another form of the per-part emitter or its lookups (T1 priced them at nothing), tighter run spheres (spent), the rigid near path (cheap). **Open before design:** the beach's and the fights' 20 ms of ME (§4) by kind, on the PSP, since the flight's near parts are the worst case, not the sizing case (REBUILD.md: the fights size the boxes).
