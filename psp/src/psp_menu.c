@@ -132,14 +132,14 @@ the list ran past the bottom and wrapped over the top). Lines stay at 67 */
 static struct map_entry maps[MAXIMUM_MAPS];
 static int map_count = 0;
 /* a hand load's difficulty and deathless (Sheepdog01 2026-11-12 23:02, the lead
-2026-11-13 13:16): a map chosen here loads at the difficulty shown, heroic
-unless changed, as the console's game_difficulty_set before map_name in
+2026-11-13 13:16): a map chosen here loads at the difficulty shown, legendary
+unless changed (Sheepdog01 2026-11-13 13:24), as the console's game_difficulty_set before map_name in
 init.txt; the pad recorder writes both into the recording (psp_pad.c). A
 direct load gave no choice and fell back to normal. Square cycles the
 difficulty, select toggles deathless (cheat_deathless_player 1) */
 static const char *const difficulty_names[4] = { "easy", "normal", "hard", "impossible" };
 static const char *const difficulty_labels[4] = { "easy", "normal", "heroic", "legendary" };
-static int menu_difficulty = 2, menu_deathless = 1;
+static int menu_difficulty = 3, menu_deathless = 1;
 /* words in keep.txt the menu doesn't know: kept as typed */
 static char extra_words[384] = ""; /* build 116: 384 (256), for the longer presets */
 
