@@ -291,6 +291,14 @@ All proofs are emulator runs unless marked. Keep words: `pathrec` (`pathlog`), `
 
 **padpath5 part 1 (04:28, the builder; 43406365506) [E]:** `pathrec` inert again (play and seeds identical, 29,208 ticks); the version 2 path holds **251 deaths the player caused, in 81 squads**, so a dying unit does still have its actor at the hook (§12's first unknown, closed); PROVEN against Sheepdog01's log as before.
 
+**padpath5 parts 2-3 (04:46, the builder; 43409098251 on 439d29b, findings `padpath5_outcome`, table `padpath5_watch.txt`) [E]:**
+
+- **Inert on its own game:** play and seeds identical to no hold over 29,208 ticks; all 251 kills matched unforced, none forced.
+- **The fight is Sheepdog01's size again:** on seeds 1-2, the VFPU's other rounding and posing B, the actor-ticks are within 15% of the recording's in most windows, where padpath4's ran to 2-3x. Out of the bar: ticks 7,200-10,799 at 78-84% (the hold kills a little *ahead* there: a forced kill and then the run's own), and past 27,000 (seats).
+- **How much of the fight the hold does** (the lead's figure): of his 251 kills a held run makes 48-58 itself, has 133-167 forced, and 30-63 are let go (12-25%: the squad had no one living 900 ticks on). So about a fifth of his kills land by themselves on another game; the rest are the hold's.
+- **The gate at 12,600 opens:** the gap is still there on three variants but is over inside its window, and the BSP differs for 30-90 ticks, against ~9,000 without the kills. **Seed 2 and posing B's build reach d20's end and load the next level, the first held variants to.**
+- **Not yet met:** kills let go are not few; the gap is shorter, not gone (the BSP wait on the branch is for it; padpath6 43410963407 reads it).
+
 **Its proofs (padpath5):** the path made again with `pathrec pathlog` (statecrc identical to the run without; `pathcheck` PROVEN and its count of deaths); `padhold` on that game: no kill forced, play and seeds identical; `padhold` on seeds 1-2, `vfpudotoff` and posing B: actor-ticks per window against the base's (the bar: ±15% in the fight windows), kills forced and matched, and the far gap at 12,600 gone or walked.
 
 ## 12. Open, and who can close it
