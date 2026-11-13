@@ -676,6 +676,40 @@ run as with gedefer alone */
 #define INFLIGHT_RECORDING() (inflight_on && DEFER_RECORDING() && psp_game_running())
 
 int psp_keep(const char *name);
+
+/* Every wait for the GE's list to end is bounded (B75; the lead 2026-11-13
+12:56). The lab's halo_box hung both PSPs waiting in sceGuSync and stopped
+when its waits became this poll (and FS was set; which cured it isn't known):
+a sync that never wakes holds the thread for good, a poll sees the list done
+and gives up after 2 s, logging it, so a lost end costs a frame's picture,
+not the game. geshow3's wait (show3_wait_finish) was bounded already; these
+are the loads', the boot's, the start-up probes' and the frame's without
+geshow3. Keep word gesyncold: sceGuSync as before */
+static void ge_sync_bounded(const char *what)
+{
+	static int old = -1, given_up;
+	unsigned int start;
+
+	if (old < 0)
+		old = psp_keep("gesyncold") != 0;
+	if (old)
+	{
+		sceGuSync(0, 0);
+		return;
+	}
+	start = sceKernelGetSystemTimeLow();
+	while (sceGeDrawSync(1) != 0)
+	{
+		if (sceKernelGetSystemTimeLow() - start > 2000000u)
+		{
+			if (given_up++ < 8)
+				platform_log("GE: %s: the list's end never came in 2 s; gone on without it", what);
+			return;
+		}
+		sceKernelDelayThread(100);
+	}
+}
+
 void psp_ge_model_begin(const float *node_matrices, int node_matrix_count, float u_scale, float v_scale,
 	const float *ambient, int light_count, const float *light0, const float *light1);
 void psp_ge_model_shape(int first_person, const float *centroid, float radius, float near_fp, float far_fp);
@@ -2677,7 +2711,7 @@ static void show2_list_drop(void)
 	stall_force = 1;
 	sceGuFinish();
 	PSP_WAIT_BEGIN(PSP_WAIT_LIST_DROP);
-	sceGuSync(0, 0);
+	ge_sync_bounded("show2_list_drop");
 	PSP_WAIT_END(PSP_WAIT_LIST_DROP);
 	stall_force = 0;
 }
@@ -4760,7 +4794,7 @@ static void __attribute__((noinline, cold)) ge_dither_probe(void)
 	sceGuEnable(GU_DEPTH_TEST);
 	stall_force = 1;
 	sceGuFinish();
-	sceGuSync(0, 0);
+	ge_sync_bounded("ge_dither_probe");
 	stall_force = 0;
 
 	for (row = 0; row < 5; row++)
@@ -4880,7 +4914,7 @@ static void ge_initialize(void)
 	sceGuEnable(GU_FOG);
 	stall_force = 1;
 	sceGuFinish();
-	sceGuSync(0, 0);
+	ge_sync_bounded("ge_initialize");
 	stall_force = 0;
 	draw_buffer = (void *)0; /* as sceGuDrawBuffer has it, whatever the boot screen swapped */
 	/* without the boot screen the buffers hold whatever VRAM held, and the
@@ -5465,7 +5499,7 @@ static float geprec_draw(int mode, const float *eye, const float *forward, const
 	}
 	sceGumDrawArray(GU_TRIANGLES, GU_VERTEX_32BITF | GU_TRANSFORM_3D, 6, NULL, v);
 	sceGuFinish();
-	sceGuSync(0, 0);
+	ge_sync_bounded("geprec_draw");
 	return geprec_edge();
 }
 
@@ -5560,7 +5594,7 @@ static void __attribute__((cold)) ge_precision_test(void)
 	sceGuEnable(GU_DEPTH_TEST);
 	sceGuEnable(GU_FOG);
 	sceGuFinish();
-	sceGuSync(0, 0);
+	ge_sync_bounded("ge_precision_test");
 	stall_force = 0;
 }
 
@@ -25528,7 +25562,7 @@ void psp_ge_loading_frame(const struct psp_loading_view *view)
 	stall_force = 1;
 	sceGuFinish();
 	PSP_WAIT_BEGIN(PSP_WAIT_LOADING_SYNC);
-	sceGuSync(0, 0);
+	ge_sync_bounded("psp_ge_loading_frame");
 	PSP_WAIT_END(PSP_WAIT_LOADING_SYNC);
 	stall_force = 0;
 	if (boot_frozen)
@@ -25621,7 +25655,7 @@ int psp_ge_boot_start(void)
 	sceGuDisable(GU_LIGHTING);
 	stall_force = 1;
 	sceGuFinish();
-	sceGuSync(0, 0);
+	ge_sync_bounded("psp_ge_boot_start");
 	stall_force = 0;
 	/* both frame buffers black before either shows (the uncached view) */
 	memset((void *)0x44000000, 0, 2 * FRAME_BYTES);
@@ -25933,7 +25967,7 @@ static void show_picture(int show3)
 	else
 	{
 		PSP_WAIT_BEGIN(PSP_WAIT_SHOW_SYNC);
-		sceGuSync(0, 0);
+		ge_sync_bounded("show_picture");
 		PSP_WAIT_END(PSP_WAIT_SHOW_SYNC);
 	}
 	gebusy_wait(0, 1);
