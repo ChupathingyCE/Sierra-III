@@ -23,4 +23,4 @@ Every gap is real past the repeats' spread.
 
 The room a decal takes went from 404, 1,017, 2,120 and 2,426 µs (the windows to 5,210, 11,221, 11,521 and 11,821) to 8, 11, 14 and 20 µs. The ray (~32 µs), the clip (~95 µs) and the insert (~7 µs) are unchanged, so they are now what a decal costs.
 
-**State:** priced. Whether it's on by default is the lead's call, with Sheepdog01's look at the shots (a few different tyre marks once the cache is full). Multiplayer: drawing only, nothing on the wire.
+**State:** ~~priced; the default the lead's call with Sheepdog01's look~~ **on by default in the tock** (2026-11-13: the lead 15:12, efficiency under 'plays and feels the same', the oldest marks freed first as Sheepdog01 asked; Sheepdog01 looked 15:13, the lab's decisions.md). Merged into master/tock162 (ff36482); keep word `decalringold` is the way back; it goes forward into the next tick. Multiplayer: drawing only, nothing on the wire.
