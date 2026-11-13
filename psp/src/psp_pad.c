@@ -383,7 +383,18 @@ along the path from where he left it, PATH_SWEEP_STEP of its ticks a tick,
 never set straight across: the level's scripts test where he is, not what
 he crossed, and a jump over a trigger volume left posing B's build 9,000
 ticks in a level whose BSP had never switched (the lab's padpath3). Seated
-ticks and cinematics are left alone. "holdkickN" (tests): he is pushed 0.3 units at game tick N and 3
+ticks and cinematics are left alone.
+
+The hold also keeps the deaths the player caused (docs/pad_path.md, "The
+outcome hold"). His shots land only in his own game: on any other, the
+replayed fire goes where the enemies were, they live about twice as long,
+and the replay is a heavier fight than he played. pathrec writes each death
+he is responsible for ('K': its tick, encounter, squad and place). Holding,
+where the recording is a kill ahead in a squad PATH_KILL_LAG ticks after it
+happened, the living member of that squad nearest that place is killed the
+way the game's scripts kill; a squad with no one living is waited for
+PATH_KILL_KEEP ticks, then let go. "holdnokill": the route alone, as
+before. "holdkickN" (tests): he is pushed 0.3 units at game tick N and 3
 units 300 ticks later, to show a steer and a snap. Build switch
 PSP_PADPATH=1 */
 struct psp_path_state
@@ -399,12 +410,19 @@ struct psp_path_state
 int psp_path_state_get(struct psp_path_state *state); /* players.c (psp_fixups.py) */
 void psp_path_snap(const float *position, const float *velocity);
 void psp_path_view(float yaw, float pitch);
+int psp_path_kill_one(int encounter, int squad, const float *near); /* ai.c (psp_fixups.py) */
 
 #define PATH_POINT 0x50u /* 'P': a tick's record */
 #define PATH_HEAD 0x48u  /* 'H': the file's first record */
 #define PATH_POINT_BYTES 32
+#define PATH_KILL 0x4Bu  /* 'K': a death the player caused */
 #define PATH_HEAD_BYTES 8
-#define PATH_VERSION 1
+#define PATH_KILL_BYTES 20
+#define PATH_VERSION 2 /* 1 had no 'K' records; it is still read */
+#define PATH_KILL_LAG 45
+#define PATH_KILL_KEEP 900
+#define PATH_SQUADS 256
+#define PATH_PENDING 64
 #define PATH_OUT (16 * 1024)
 #define PATH_REPORT 300 /* ticks a "watch:" and a "census:" line cover */
 #define PATH_FLAG_CONTROL 1
@@ -433,6 +451,25 @@ static long path_before_time = -1;
 static int path_steer_on = 0, path_stall = 0;
 static float path_steer_x = 0.f, path_steer_y = 0.f, path_steer_yaw = 0.f;
 static unsigned long path_hold_logged = 0;
+/* the deaths: the game tick last seen, each squad's kills in the recording
+so far and on this run (his own and the forced), and the recording's kills
+not yet settled */
+struct path_squad
+{
+	long key;
+	unsigned short recorded, made;
+};
+static long path_clock = -1;
+static int path_kills_held = 0;
+static struct path_squad path_squads[PATH_SQUADS];
+static int path_squad_count = 0;
+static struct
+{
+	long time, key;
+	unsigned short nth;
+	float position[3];
+} path_pending[PATH_PENDING];
+static int path_pending_count = 0;
 static int path_generation = -1;
 static int path_log_on = 0;
 /* recording */
@@ -457,8 +494,9 @@ static struct
 	unsigned long compared, no_record, over_small, over_snap, over_far, seat_differs, weapon_differs, bsp_differs;
 	/* the hold's */
 	unsigned long held, held_over_snap, steered, snaps, view_sets, swept;
+	unsigned long kills_own, kills_forced, kills_matched, kills_missing;
 	float error_sum, error_max, view_max;
-} path_sum = { -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.f, 0.f, 0.f };
+} path_sum = { -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.f, 0.f, 0.f };
 
 static void path_log(const unsigned char *data, unsigned int bytes)
 {
@@ -587,6 +625,7 @@ static void path_map_check(void)
 		path_far = (float)psp_keep_number("holdfar", 8);
 		if ((path_mode & 4) && !(path_ring = malloc(PATH_RING * sizeof(*path_ring))))
 			path_mode &= ~4;
+		path_kills_held = (path_mode & 4) && !psp_keep("holdnokill");
 		path_kick = psp_keep_number("holdkick", 0);
 		if ((path_mode & 1) && !(path_out = malloc(PATH_OUT)))
 			path_mode &= ~1;
@@ -598,7 +637,7 @@ static void path_map_check(void)
 	path_sum.window = -1;
 	if (path_mode & 1)
 	{
-		unsigned char head[PATH_HEAD_BYTES] = { 'P', 'T', 'H', PATH_VERSION, PATH_POINT_BYTES, 0, 0, 0 };
+		unsigned char head[PATH_HEAD_BYTES] = { 'P', 'T', 'H', PATH_VERSION, PATH_POINT_BYTES, PATH_KILL_BYTES, 0, 0 };
 
 		path_close();
 		snprintf(path, sizeof(path), "%s/log/path_%d.path", PSP_DATA_ROOT, path_generation);
@@ -621,7 +660,7 @@ static void path_map_check(void)
 			path_in_size = (unsigned int)size;
 			path_in_ended = sceIoRead(path_in_file, head, sizeof(head)) != (int)sizeof(head) ||
 				head[0] != PATH_HEAD || head[1] != 'P' || head[2] != 'T' || head[3] != 'H' ||
-				head[4] != PATH_VERSION || head[5] != PATH_POINT_BYTES;
+				(head[4] != 1 && head[4] != PATH_VERSION) || head[5] != PATH_POINT_BYTES;
 			path_in_at = path_in_base = sizeof(head);
 			path_in_fill = 0;
 		}
@@ -632,6 +671,7 @@ static void path_map_check(void)
 		}
 		path_last_record = path_last_tick = path_before_time = path_sweep_at = -1;
 		path_ring_count = 0;
+		path_squad_count = path_pending_count = 0;
 		path_skip_to_restart = 0;
 		platform_log("path: %s %s, %u bytes%s", (path_mode & 4) ? "holding the replay to" : "watching", path, path_in_size,
 			!path_in ? " (none: nothing to watch)" : path_in_ended ? " (not a path this build reads)" : "");
@@ -647,15 +687,59 @@ static void path_map_check(void)
 	}
 }
 
-/* the path's next record without taking it: 1 with it unpacked, 0 at the end */
-static int path_peek(struct psp_path_state *state)
+static struct path_squad *path_squad(long key)
+{
+	int k;
+
+	for (k = 0; k < path_squad_count; k++)
+		if (path_squads[k].key == key)
+			return &path_squads[k];
+	if (path_squad_count == PATH_SQUADS)
+		return &path_squads[PATH_SQUADS - 1]; /* past the table: counted with its last squad */
+	path_squads[path_squad_count].key = key;
+	path_squads[path_squad_count].recorded = path_squads[path_squad_count].made = 0;
+	return &path_squads[path_squad_count++];
+}
+
+/* ai.c's death hook: a death the local player is responsible for. Written
+to the path being made; counted for its squad on a held run */
+void psp_path_kill_event(int encounter, int squad, const float *position)
+{
+	long key = ((long)(encounter & 0xFFFF) << 16) | (long)(squad & 0xFFFF);
+
+	if (path_mode <= 0)
+		return;
+	if (path_mode & 1)
+	{
+		unsigned char record[PATH_KILL_BYTES];
+		unsigned long time = (unsigned long)(path_clock + 1); /* the tick now running */
+
+		record[0] = (unsigned char)time;
+		record[1] = (unsigned char)(time >> 8);
+		record[2] = (unsigned char)(time >> 16);
+		record[3] = (unsigned char)(time >> 24);
+		record[4] = (unsigned char)encounter;
+		record[5] = (unsigned char)(encounter >> 8);
+		record[6] = (unsigned char)squad;
+		record[7] = (unsigned char)(squad >> 8);
+		memcpy(record + 8, position, 12);
+		path_put(PATH_KILL, record, sizeof(record));
+	}
+	if (path_kills_held)
+	{
+		path_squad(key)->made++;
+		path_sum.kills_own++;
+	}
+}
+
+/* the window holds bytes more of the path from where it is read, read on
+when it doesn't: 0 at the file's end */
+static int path_fill(unsigned int bytes)
 {
 	unsigned int keep, got;
 	int read;
 
-	if (path_in_ended || !path_in)
-		return 0;
-	if (path_in_at + 1 + PATH_POINT_BYTES > path_in_base + path_in_fill && path_in_file >= 0)
+	if (path_in_at + bytes > path_in_base + path_in_fill && path_in_file >= 0)
 	{
 		keep = path_in_base + path_in_fill - path_in_at;
 		memmove(path_in, path_in + (path_in_at - path_in_base), keep);
@@ -670,8 +754,39 @@ static int path_peek(struct psp_path_state *state)
 			path_in_file = -1;
 		}
 	}
-	if (path_in_at + 1 + PATH_POINT_BYTES > path_in_base + path_in_fill ||
-		path_in[path_in_at - path_in_base] != PATH_POINT)
+	return path_in_at + bytes <= path_in_base + path_in_fill;
+}
+
+/* the path's next tick without taking it: 1 with it unpacked, 0 at the end.
+The kills written before it are taken on the way: each waits its lag */
+static int path_peek(struct psp_path_state *state)
+{
+	if (path_in_ended || !path_in)
+		return 0;
+	while (path_fill(1 + PATH_KILL_BYTES) && path_in[path_in_at - path_in_base] == PATH_KILL)
+	{
+		const unsigned char *record = path_in + (path_in_at - path_in_base) + 1;
+
+		if (path_kills_held)
+		{
+			long key = ((long)(record[4] | record[5] << 8) << 16) | (long)(record[6] | record[7] << 8);
+
+			if (path_pending_count == PATH_PENDING)
+			{
+				memmove(path_pending, path_pending + 1, (PATH_PENDING - 1) * sizeof(path_pending[0]));
+				path_pending_count--;
+				path_sum.kills_missing++;
+			}
+			path_pending[path_pending_count].time = (long)((unsigned long)record[0] | (unsigned long)record[1] << 8 |
+				(unsigned long)record[2] << 16 | (unsigned long)record[3] << 24);
+			path_pending[path_pending_count].key = key;
+			path_pending[path_pending_count].nth = ++path_squad(key)->recorded;
+			memcpy(path_pending[path_pending_count].position, record + 8, 12);
+			path_pending_count++;
+		}
+		path_in_at += 1 + PATH_KILL_BYTES;
+	}
+	if (!path_fill(1 + PATH_POINT_BYTES) || path_in[path_in_at - path_in_base] != PATH_POINT)
 	{
 		int more = path_in_at < path_in_base + path_in_fill;
 
@@ -683,6 +798,54 @@ static int path_peek(struct psp_path_state *state)
 	}
 	path_unpack(path_in + (path_in_at - path_in_base) + 1, state);
 	return 1;
+}
+
+/* each tick of a held run: the recording's kills whose lag has run. One the
+run has made itself is matched; one it hasn't is forced on the squad's
+living member nearest where the recording's died; a squad with none living
+is waited for, then let go */
+static void path_kills(long now)
+{
+	int k = 0;
+
+	while (k < path_pending_count)
+	{
+		long key = path_pending[k].key;
+		int encounter = (int)((key >> 16) & 0xFFFF), squad = (int)(short)(key & 0xFFFF), done = 0;
+
+		if (now >= path_pending[k].time + PATH_KILL_LAG)
+		{
+			if (path_squad(key)->made >= path_pending[k].nth)
+			{
+				path_sum.kills_matched++;
+				done = 1;
+			}
+			else if (psp_path_kill_one(encounter, squad, path_pending[k].position))
+			{
+				path_squad(key)->made++;
+				path_sum.kills_forced++;
+				done = 1;
+				if (path_hold_logged++ < PATH_HOLD_LOGGED)
+					platform_log("hold: a kill of tick %ld forced at tick %ld (encounter %d squad %d)", path_pending[k].time, now,
+						encounter, squad);
+			}
+			else if (now >= path_pending[k].time + PATH_KILL_KEEP)
+			{
+				path_sum.kills_missing++;
+				done = 1;
+				if (path_hold_logged++ < PATH_HOLD_LOGGED)
+					platform_log("hold: a kill of tick %ld let go at tick %ld: no one of encounter %d squad %d living",
+						path_pending[k].time, now, encounter, squad);
+			}
+		}
+		if (done)
+		{
+			memmove(path_pending + k, path_pending + k + 1, (path_pending_count - k - 1) * sizeof(path_pending[0]));
+			path_pending_count--;
+		}
+		else
+			k++;
+	}
 }
 
 static float path_abs(float value)
@@ -836,7 +999,10 @@ static void path_watch(const struct psp_path_state *now)
 	float dx, dy, dz, flat, height, error, yaw, pitch, view;
 
 	if (path_last_tick >= 0 && now->game_time < path_last_tick)
+	{
 		path_skip_to_restart = 1;
+		path_squad_count = path_pending_count = 0; /* a revert or restart: its kills are counted again */
+	}
 	path_last_tick = now->game_time;
 	for (;;)
 	{
@@ -911,9 +1077,11 @@ static void path_report(void)
 			path_sum.weapon_differs, path_sum.bsp_differs);
 	if (path_mode & 4)
 		platform_log("hold: ticks %ld-%ld | steered %lu ticks | set on the path %lu times | view set %lu times"
-			" | held %lu ticks, %lu of them over the snap bound | walked along %lu ticks", from,
+			" | held %lu ticks, %lu of them over the snap bound | walked along %lu ticks"
+			" | kills: his own %lu, the recording's matched unforced %lu, forced %lu, let go %lu", from,
 			from + PATH_REPORT - 1, path_sum.steered, path_sum.snaps, path_sum.view_sets, path_sum.held,
-			path_sum.held_over_snap, path_sum.swept);
+			path_sum.held_over_snap, path_sum.swept, path_sum.kills_own, path_sum.kills_matched, path_sum.kills_forced,
+			path_sum.kills_missing);
 	memset(&path_sum, 0, sizeof(path_sum));
 	path_sum.window = -1;
 }
@@ -951,6 +1119,9 @@ void psp_path_tick(void)
 	}
 	if (path_mode & 2)
 		path_watch(&now);
+	path_clock = now.game_time;
+	if (path_kills_held && !pad_in_ended)
+		path_kills(now.game_time);
 	if ((path_mode & 4) && path_kick > 0 && (now.game_time == path_kick || now.game_time == path_kick + 300) && now.seat == -1)
 	{
 		float to[3];

@@ -275,7 +275,18 @@ All proofs are emulator runs unless marked. Keep words: `pathrec` (`pathlog`), `
 
 **Done when** (d20, the same six variants): held runs' actor-ticks per window within ±15% of the recording's own in the fight windows (today 140-250%), no far gap from a late gate, play still inside the on-foot bound, and on the path's own build and seed no kill is ever forced.
 
+**Written (the lead's yes, 03:54), on the branch, not yet built on the game:**
+
+- The path is version 2: a `'K'` record per death the player is responsible for (tick, encounter, squad, place; 21 bytes). A version 1 path is still read and simply has none, so **d20_play1's path is made again** with this build before the hold can keep its kills.
+- The engine side is its own fixups group, `FIXES_PADPATH`, applied only with the switch: the hook in `ai_handle_death` (after the game resolves who is responsible; a player's kill is told to `psp_pad.c`), and `psp_path_kill_one`, which marks the squad's living member nearest a point to die by an act of god, the delayed form of the scripts' `actor_kill` [D]: the unit takes its death in its own update. Swarms (the infection forms) lose one member a kill.
+- On a held run the kills are kept unless `holdnokill`. The `hold:` line carries, per 300 ticks: his own kills on this run, the recording's kills the run had made itself when their lag ran out, those forced, and those let go (the lead's two figures for reading pairs).
+- Proven on the toy harness: the same game matches every kill and forces none; a replay that misses has each kill forced 45 ticks after its tick; a squad with no one living is let go 900 ticks on.
+
+**Its proofs (padpath5):** the path made again with `pathrec pathlog` (statecrc identical to the run without; `pathcheck` PROVEN and its count of deaths); `padhold` on that game: no kill forced, play and seeds identical; `padhold` on seeds 1-2, `vfpudotoff` and posing B: actor-ticks per window against the base's (the bar: ±15% in the fight windows), kills forced and matched, and the far gap at 12,600 gone or walked.
+
 ## 12. Open, and who can close it
+
+- **What [U] in the outcome hold only the game can say:** that a dying unit still has its actor when `ai_handle_death` runs (if not, no kill is recorded: padpath5's death count shows it at once); that a death by an act of god plays as a shot one does (body, effects, the encounter's status); what it does to an actor a script has made unkillable.
 
 - The steer and snap bounds, and whether fights part further across builds than across seeds: slice 2's batch. [U until then]
 - Whether a seated snap kicks the springs in practice: slice 4.
