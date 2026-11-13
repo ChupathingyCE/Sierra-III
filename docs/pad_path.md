@@ -213,7 +213,7 @@ All proofs are emulator runs unless marked. Keep words: `pathrec` (`pathlog`), `
 
 ## 10. Built so far (on this branch; nothing merged)
 
-**Slices 1 and 2 are written (2026-11-13 ~01:40) and compile on the builder's runner (795b9bd, 01:59); proof 1 is running (the lab's padpath1, 43389661182):** this session has no toolchain and can't start a run, so the builder builds and runs them (the lead's 01:07, the builder's 01:35). `psp_pad.c` passes a host syntax check against stub headers [E]; the engine-side reader was checked by eye against the pinned engine's headers [D].
+**Slices 1 and 2 are written, built and proven in the emulator (2026-11-13; results below).** How they were made: this session has no toolchain and can't start a run, so the builder builds and runs them (the lead's 01:07, the builder's 01:35). `psp_pad.c` passes a host syntax check against stub headers [E]; the engine-side reader was checked by eye against the pinned engine's headers [D].
 
 - **Build switch `PSP_PADPATH=1`** (the builder's 01:59): the reader is an engine function a tick's profile has no counts for, so a strict build would refuse it, and the hook moves the tick's layout. A default build has none of it. `seedN` is not under the switch: it is two lines in the map-start code.
 - **`pathrec`** (`pathlog` for the bytes in the log): `psp_pad.c`'s second half, one hook after each game tick (`psp_tick_account`), and a read-only state reader beside `psp_player_snapshot` (`psp_fixups.py`, players.c). Works while recording by hand, while replaying, or alone.
@@ -225,6 +225,15 @@ All proofs are emulator runs unless marked. Keep words: `pathrec` (`pathlog`), `
 **The proofs the builder runs** (emulator; the brief for each is in the lab's inbox line):
 1. *Slice 1:* d20_play1 replayed with and without `pathrec pathlog`: play and both seeds identical (statecrc). Its path, rebuilt from the log, passes `pathcheck` against Sheepdog01's recording log.
 2. *Slice 2, the gate:* with that path, `padwatch` on (a) `seed0` (expect: 0.000 off at every tick, census 100%), `seed1`, `seed2`, `seed3` on the path's build; (b) `vfpudotoff`; (c) posing B's new-only build. Read with `watchread.py`: how fast and how far each parts, and whether (c)'s census sits inside (a)'s spread.
+
+### The gate's results (2026-11-13 02:43, the builder's read; the lab's `padpath1` 43389661182 and `padpath2` 43392333694, findings `padpath2_drift`) [E]
+
+- **Proof 1 holds:** d20_play1 to its end with and without `pathrec pathlog`: play and both seeds identical over 29,210 ticks. Its path (964 KB, 29,208 ticks, 621 seated, 3,514 in cinematics) is **PROVEN** against Sheepdog01's recording log: all 265 on-foot samples met.
+- **The watcher reads true:** on the path's own build and seed, 0.000 off at every compared tick, census 100%.
+- **Every other variant leaves Sheepdog01's route within 60-90 seconds of d20:** seeds 1-3 and the VFPU's other rounding are 0.1-0.4 units off (mean) in ticks 1,800-2,699, 1.2-16 by 3,600-5,400, 50-80 past ~20,000, with the BSP differing. **Posing B's new-only build parts first and furthest:** 7.1 in ticks 1,800-2,699, 44-59 by 2,700-4,500 (its maths is the old path's only with the VFPU forms off; B is exact against A).
+- **What that settles:** §1's claim, now counted on a rebased pad on its own generation: unheld, a pad prices Sheepdog01's game for about a minute on any build that differs at all, and another game after. A box's new-only side is the worst case, which is the pair REBUILD §5 prices on.
+- **What it does not settle:** the census here (24-207% of the base's) is of runs that have *left the route*, so it measures the lost route, not a fight's sample noise on a held one. §2.3's thresholds wait for slice 3's batch, where the route is held and only the fight differs.
+- **For the bounds (§3.3):** the seeds' first parted windows are small and slow (0.1-0.4 mean over 900 ticks), which is steering's ground; posing B's 7.1 in its first window is a jump, which is the snap's. The per-300-tick lines will say how fast each grows; the bounds stay [U] until slice 3 runs against them.
 
 ## 11. Open, and who can close it
 
