@@ -207,7 +207,7 @@ Nothing past s0 is built until s0's count is read: if the kept share of the ME's
 - **The main CPU (budget 11 ms):** v0 moves it little: RSO already skips scenery's walk, so v0 adds the other still types and drops the copies. The main CPU's 35.8 ms is mostly the posed units' per-part chain and the walk itself; that's **v1's**: one instance per object for the changed half (R §2.1), its node matrices handed over by the posing box rather than copied. v0's standalone price is read against the ME's row only, and this page says so in its result.
 - **The GE (33.3 ms):** a CALLed block is read from main RAM as the list was; v0 neither adds nor removes GE work. The GE lists box's row.
 
-## 11. v1: the changed half, in the box's own unit (2026-11-12 23:4x, builder; the lead 22:11)
+## 11. v1: the changed half, in the box's own unit (2026-11-12 23:33, builder; the lead 22:11)
 
 **Why v1:** v0 keeps what doesn't change, ~21% of b30's instance words (12-31% across maps) [E]; the ME's row (~12 ms against 33 on the flight [M]) and the main CPU's (11 against 35.8 [M]) are carried by the instances that change every frame: posed units and moving objects. v1 is R's §2.1 and §2.4 for them: one instance per object, not a call per part, and the ME's words from forms, written in `psp/src/box_draw_list.c` against the box's own data so it's priced alone (REBUILD §5), with v0's blocks kept for the unchanged half.
 
