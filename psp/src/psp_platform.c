@@ -4304,9 +4304,13 @@ static int heartbeat_thread(SceSize args, void *argp)
 
 			/* the nub's furthest each way since launch: what a nub.txt
 			calibration is chosen from (psp_sdl.c) */
-			platform_log("%s | pad %04x stick %d,%d (%u reads; the nub has reached x %d-%d, y %d-%d)", player_text,
+			extern int psp_input_script_holding(void);
+			int holding = psp_input_script_holding();
+
+			platform_log("%s | pad %04x stick %d,%d (%u reads; the nub has reached x %d-%d, y %d-%d)%s", player_text,
 				psp_pad_buttons & 0xFFFF, psp_pad_lx, psp_pad_ly, psp_pad_reads, psp_nub_seen[0], psp_nub_seen[1],
-				psp_nub_seen[2], psp_nub_seen[3]);
+				psp_nub_seen[2], psp_nub_seen[3],
+				holding == 1 ? " | INPUT.TXT HOLDS THE STICK" : holding == 2 ? " | input.txt let go of the stick (the nub moved)" : "");
 			{
 				extern volatile unsigned int controls_events[5];
 

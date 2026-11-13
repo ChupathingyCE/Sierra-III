@@ -43,6 +43,14 @@ static struct { float seconds; unsigned int buttons; int x, y; } input_script[MA
 static int input_script_count = 0;
 static SceInt64 input_script_start = 0;
 static int input_script_game_time = -1;
+/* a script that holds the stick (a rig's: hw.sh writes "0 0000 128 128" for
+every run not in hand mode) left on the stick after a job took a person's
+look away: the nub read exactly 128,128 for Sheepdog01's whole c40 run (2026-11-12).
+So the script lets go of the stick for good once the nub itself moves well
+past its rest (a rig's nub never does: its rest wanders 118-132), and it says
+so; psp_input_script_holding() feeds the heartbeat */
+#define SCRIPT_NUB_LET_GO 48
+static int input_script_let_go = 0;
 int psp_keep(const char *name);
 int psp_keep_loaded(void);
 
@@ -69,7 +77,14 @@ static void input_script_load(void)
 		}
 	}
 	fclose(file);
-	platform_log("input script: %d lines from input.txt", input_script_count);
+	platform_log("input script: %d lines from input.txt%s", input_script_count,
+		input_script_count ? ": IT HOLDS THE STICK until the nub moves, then lets go (a rig's file: delete ms0:/halo/input.txt before playing by hand)" : "");
+}
+
+/* 1 while an input script holds the stick, 2 once the nub took it back, 0 with no script */
+int psp_input_script_holding(void)
+{
+	return !input_script_count ? 0 : input_script_let_go ? 2 : 1;
 }
 
 static void input_script_apply(SceCtrlData *pad)
@@ -104,8 +119,18 @@ static void input_script_apply(SceCtrlData *pad)
 	if (current >= 0)
 	{
 		pad->Buttons |= input_script[current].buttons;
-		pad->Lx = (unsigned char)input_script[current].x;
-		pad->Ly = (unsigned char)input_script[current].y;
+		if (!input_script_let_go && (pad->Lx < 128 - SCRIPT_NUB_LET_GO || pad->Lx > 128 + SCRIPT_NUB_LET_GO ||
+			pad->Ly < 128 - SCRIPT_NUB_LET_GO || pad->Ly > 128 + SCRIPT_NUB_LET_GO))
+		{
+			input_script_let_go = 1;
+			platform_log("input script: the nub moved (x %d, y %d) while input.txt held the stick: a person is playing, so the stick is theirs from now on (delete ms0:/halo/input.txt before playing by hand)",
+				pad->Lx, pad->Ly);
+		}
+		if (!input_script_let_go)
+		{
+			pad->Lx = (unsigned char)input_script[current].x;
+			pad->Ly = (unsigned char)input_script[current].y;
+		}
 	}
 }
 
