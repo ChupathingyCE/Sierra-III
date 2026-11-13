@@ -16,7 +16,7 @@ The lab's `research/opportunities/REBUILD.md` is the spine (§3.3, §4, §7 step
 
 **Not this box's:** the animation decode (stays the ME's pose-ahead), the overlays' choice of angles (the units' and AI's), and the drawing's skinning.
 
-## 1b. The readers' contract (means B leads: the lead's 20:13, from Sheepdog01's misses audit, REBUILD §7; builder, 2026-11-12 21:1x)
+## 1b. The readers' contract (means B leads: the lead's 20:13, from Sheepdog01's misses audit, REBUILD §7; builder, 2026-11-12 20:5x)
 
 B poses, for each object, only the nodes something has declared it will read this tick, and owes the rest. It is exact by construction: a node's matrix is its parent's times its own orientation's, walked root first (`model_node_matrices_from_orientations`) [D], so a declared node's chain (it and its ancestors) walked alone gives the same matrices, bit for bit, as the whole walk. Every read goes through the box's accessor, so a read of an owed node is caught and made then (a **late make**, exact too, at LBM's ~17 µs a time [M]). The contract's aim is that late makes are rare: what LBM and VISLAZY lacked was the declaring, not the exactness. Readers, the nodes they declare, and when the declaration is known:
 
