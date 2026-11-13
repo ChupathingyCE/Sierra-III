@@ -306,6 +306,7 @@ static struct __attribute__((aligned(64))) dl_block_state
 	unsigned int room_end; /* the block's room ends here (no view bits) */
 	int shape; /* the walk's shape records so far */
 	int depth; /* kept walks being carried out (the replay is entered again for one) */
+	int path; /* the last kept walk's way (mekinds' REPLAY_KEPT_*) */
 	unsigned int frame; /* the frames the replay has ended */
 	float lo[DL_SHAPES], hi[DL_SHAPES], *check_lo, *check_hi;
 	unsigned int deps;
@@ -1518,7 +1519,17 @@ once a record. Simulated ME work (gemesim) isn't timed: the clock is a system
 call the ME can't make. Set at launch with the replay's other words; off, one
 test a run */
 #define REPLAY_SERVED (DEFER_WINDOW_BEGIN + 1) /* audio and the ring served between records */
+#ifdef PSP_DRAWLIST
+/* a kept walk's time by the way it went (dl_kept): its block CALLed, a block
+made and CALLed, or replayed into the list as without blocks. The walk's
+own records replayed inside it aren't timed again by kind */
+#define REPLAY_KEPT_CALL (REPLAY_SERVED + 1)
+#define REPLAY_KEPT_MAKE (REPLAY_SERVED + 2)
+#define REPLAY_KEPT_PLAIN (REPLAY_SERVED + 3)
+#define REPLAY_KINDS (REPLAY_SERVED + 4)
+#else
 #define REPLAY_KINDS (REPLAY_SERVED + 1)
+#endif
 struct replay_kind_times
 {
 	unsigned long long ticks[2][REPLAY_KINDS]; /* [0] main CPU, us; [1] ME, cycles */
@@ -1552,7 +1563,8 @@ static const char *const replay_kind_names[REPLAY_KINDS] =
 	[DEFER_LIGHT_GEL] = "light gel faces",
 	[DEFER_LEVEL_GLOW] = "level glow", [DEFER_DRAW_FAR] = "far level",
 #ifdef PSP_DRAWLIST
-	[DEFER_KEPT] = "kept walks (drawlist)",
+	[DEFER_KEPT] = "kept walks (drawlist)", [REPLAY_KEPT_CALL] = "kept walks, block CALLed",
+	[REPLAY_KEPT_MAKE] = "kept walks, block made", [REPLAY_KEPT_PLAIN] = "kept walks, replayed into the list",
 #endif
 	[DEFER_FRAME_END] = "frame end (list's part)",
 	[DEFER_WINDOW_BEGIN] = "window begin (list's part)", [REPLAY_SERVED] = "audio and ring served",
@@ -1595,7 +1607,12 @@ static void defer_replay(const defer_word *buffer, unsigned int used, int on_me)
 	unsigned int at = 0, records = 0;
 	/* mekinds: timed only where the clock can be read (not gemesim's
 	simulated ME work) */
+#ifdef PSP_DRAWLIST
+	/* a kept walk's own records are timed as the walk, by the outer replay */
+	int side = psp_on_me(), timed = replay_kinds_on && (side || !psp_me_context) && !dl_w.depth, kind_before = -1;
+#else
 	int side = psp_on_me(), timed = replay_kinds_on && (side || !psp_me_context), kind_before = -1;
+#endif
 	unsigned int mark = timed ? replay_clock(side) : 0;
 
 	if (timed)
@@ -1630,7 +1647,11 @@ static void defer_replay(const defer_word *buffer, unsigned int used, int on_me)
 #endif
 		if (timed)
 		{
+#ifdef PSP_DRAWLIST
+			kind_before = kind <= DEFER_WINDOW_BEGIN ? kind : 0;
+#else
 			kind_before = kind < REPLAY_KINDS - 1 ? kind : 0;
+#endif
 			replay_kinds.records[side][kind_before]++;
 		}
 		switch (kind)
@@ -1687,6 +1708,12 @@ static void defer_replay(const defer_word *buffer, unsigned int used, int on_me)
 				dl_kept(buffer + at, w[1].u, w[0].u, on_me);
 				dl_w.depth--;
 				at += w[1].u;
+				if (timed)
+				{
+					replay_kinds.records[side][kind_before]--;
+					kind_before = dl_w.path;
+					replay_kinds.records[side][kind_before]++;
+				}
 			}
 			break;
 #endif
@@ -15323,6 +15350,7 @@ static void dl_kept(const defer_word *records, unsigned int words, unsigned int 
 	struct dl_meta *m;
 	int stale = 0;
 
+	dl_w.path = REPLAY_KEPT_PLAIN;
 	if (!dl_words.on || !dl_words.arena || !origin_held_now || !frame_open || dl_w.writing)
 	{
 		defer_replay(records, words, on_me);
@@ -15393,6 +15421,7 @@ static void dl_kept(const defer_word *records, unsigned int words, unsigned int 
 			}
 			dl.count[DLC_CALLED]++;
 			dl.count[DLC_WORDS_CALLED] += m->words;
+			dl_w.path = REPLAY_KEPT_CALL;
 			return;
 		}
 	}
@@ -15403,6 +15432,7 @@ static void dl_kept(const defer_word *records, unsigned int words, unsigned int 
 		defer_replay(records, words, on_me);
 		if ((m = dl_close(id)) != NULL)
 		{
+			dl_w.path = REPLAY_KEPT_MAKE;
 			if (!list_full())
 			{
 				sceGuSendCommandi(0x10, (int)((m->block >> 8) & 0xF0000u)); /* BASE */
