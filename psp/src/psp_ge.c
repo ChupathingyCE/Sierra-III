@@ -280,8 +280,11 @@ draw path read it on whichever CPU replays */
 "drawlistkbN" */
 #define DL_KB 128
 #define DL_KB_LEAST 32
-static unsigned int dl_arena_at = 0, dl_arena_bytes = 0;
+static unsigned int dl_arena_bytes = 0;
 int psp_drawlist_on(void);
+/* the keep words (at the first window) and the arena (as the display list
+is taken), set on the main CPU and written back; the replay reads them */
+static struct __attribute__((aligned(64))) dl_words_state { int on, check; unsigned int arena, bytes; } dl_words;
 #define DL_SHAPES 4
 #define DL_DEPS 64
 enum { DL_NEVER_ROOM = 1, DL_NEVER_NEAR = 2, DL_NEVER_FIRST_PERSON = 4, DL_NEVER_SKY = 8, DL_NEVER_CAMO = 16,
@@ -4520,8 +4523,12 @@ static void display_list_acquire(void)
 #ifdef PSP_DRAWLIST
 	if (display_list && dl_arena_bytes)
 	{
-		dl_arena_at = (unsigned int)display_list + (unsigned int)display_list_size;
-		sceKernelDcacheWritebackInvalidateRange((void *)dl_arena_at, dl_arena_bytes);
+		dl_words.arena = (unsigned int)display_list + (unsigned int)display_list_size;
+		dl_words.bytes = dl_arena_bytes;
+		sceKernelDcacheWritebackInvalidateRange((void *)dl_words.arena, dl_arena_bytes);
+		sceKernelDcacheWritebackRange(&dl_words, sizeof(dl_words));
+		platform_log("GE: drawlist: the blocks' arena %u KB (two halves), the display list's last; the list %d KB",
+			dl_arena_bytes / 1024, display_list_size / 1024);
 	}
 #endif
 	display_list_free_kb = sceKernelTotalFreeMemSize() / 1024;
@@ -14901,8 +14908,6 @@ static struct __attribute__((aligned(64))) dl_arena_state
 	unsigned int count[DLC_COUNTS];
 } dl;
 static struct __attribute__((aligned(64))) dl_slot { unsigned int id, gen; struct dl_meta *meta; unsigned int pad; } dl_slot[DL_SLOTS];
-/* the keep words and the arena, set once on the main CPU and written back */
-static struct __attribute__((aligned(64))) dl_words_state { int on, check; unsigned int arena, bytes; } dl_words;
 void psp_tex_dl_begin(void);
 int psp_tex_dl_end(unsigned int *out, int room);
 int psp_tex_dl_still(const unsigned int *notes, int count);
@@ -14914,21 +14919,8 @@ static void dl_words_read(void)
 {
 	dl_words.on = psp_drawlist_on() && psp_keep("drawlistblocksoff") == 0;
 	dl_words.check = dl_words.on && psp_keep("drawlistcheck") != 0;
-	if (dl_words.on)
-	{
-		if (dl_arena_at)
-		{
-			dl_words.arena = dl_arena_at;
-			dl_words.bytes = dl_arena_bytes;
-			platform_log("GE: drawlist: the blocks' arena %u KB (two halves), the display list's last; the list %d KB%s",
-				dl_arena_bytes / 1024, display_list_size / 1024, dl_words.check ? "; drawlistcheck on" : "");
-		}
-		else
-		{
-			dl_words.on = 0;
-			platform_log("GE: drawlist: no arena for the blocks (no display list); the blocks off (the origin still held)");
-		}
-	}
+	if (dl_words.check)
+		platform_log("GE: drawlistcheck: each block CALLed is written again and compared");
 	sceKernelDcacheWritebackRange(&dl_words, sizeof(dl_words));
 }
 
@@ -15296,7 +15288,7 @@ static void dl_kept(const defer_word *records, unsigned int words, unsigned int 
 	struct dl_meta *m;
 	int stale = 0;
 
-	if (!dl_words.on || !origin_held_now || !frame_open || dl_w.writing)
+	if (!dl_words.on || !dl_words.arena || !origin_held_now || !frame_open || dl_w.writing)
 	{
 		defer_replay(records, words, on_me);
 		return;
@@ -15417,7 +15409,7 @@ static void dl_report(void)
 	char refused[200];
 	int at = 0;
 
-	if (!dl_words.on)
+	if (!dl_words.on || !dl_words.arena)
 		return;
 	for (k = 0; k < DLC_COUNTS; k++)
 	{
