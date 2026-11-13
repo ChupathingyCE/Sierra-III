@@ -37456,6 +37456,18 @@ FIXES_LOOKREAL["source/main/main.c#padmenu"] = [
 				int state = (game_time_get_paused() ? 1 : 0) | (main_globals.revert_map ? 2 : 0) |
 					(main_globals.reset_map ? 4 : 0);
 				int replayed = psp_pad_menu(state);
+				extern int psp_map_generation;
+				static int difficulty_logged = -1;
+
+				/* the game's difficulty, once a map load (the pads' census:
+				the recording's own difficulty, which spawns differ by) */
+				if (difficulty_logged != psp_map_generation)
+				{
+					extern short game_difficulty_level_get(void);
+
+					difficulty_logged = psp_map_generation;
+					platform_log("pad: difficulty %d (0 easy, 1 normal, 2 heroic, 3 legendary)", (int)game_difficulty_level_get());
+				}
 
 				if (replayed >= 0)
 				{
@@ -37515,6 +37527,24 @@ int ui_widgets_port_close_pausing(
 
 /* port: back to the screen before, for the menus' functions */
 void ui_widget_port_go_back("""),
+]
+FIXES_LOOKREAL["source/interface/ui_widget.c#helplog"] = [
+("""		local_player_index = player_ui_get_single_player_local_player_controller(0);
+		widget = ui_widget_load_by_name_or_tag(
+			widget_name,""",
+ """		local_player_index = player_ui_get_single_player_local_player_controller(0);
+#ifdef HALO_PSP
+		{
+			/* the pads' help-screen census (the lab's padhelp2): which screen,
+			when, at which difficulty (they open on easy and normal only) */
+			extern short game_difficulty_level_get(void);
+
+			platform_log("help: scenario help %d opened (%s) at game time %ld, difficulty %d", (int)string_index,
+				widget_name, (long)game_time_get(), (int)game_difficulty_level_get());
+		}
+#endif
+		widget = ui_widget_load_by_name_or_tag(
+			widget_name,"""),
 ]
 FIXES_LOOKREAL["source/game/player_control.c#lookreal"] = [
 ("""static real player_control_autolevel_time[MAXIMUM_NUMBER_OF_LOCAL_PLAYERS];
