@@ -2269,6 +2269,19 @@ PSP freezes and switches itself off (PPSSPP keeps the register but takes no
 FPU traps, so it ran on). Every thread masks them: the main thread here, the
 game's threads as they start (psp_fixups.py's xbox_kernel.c change) */
 
+/* FS (bit 24) is set too (B75; Sheepdog01 2026-11-13 via the lead: it guards his
+own play from a freeze). With FS clear, an FPU operation on a denormal, or
+one whose result would be one, raises the unimplemented operation exception,
+which has no enable bit: unhandled, it freezes the PSP as the masked traps
+would (the lab's halo_vfpuexact met it, 3b142b4). With FS set they're
+flushed to zero, at no cost (hardware_facts.md). The ME's jobs take this
+CPU's control word, so they flush alike. Keep word fsold leaves FS as the
+thread found it, on threads started after the keep file is read (the
+game's among them); the main thread's first call comes before it */
+int psp_keep_loaded(void);
+int psp_keep(const char *name);
+void platform_log(const char *format, ...);
+
 void psp_fpu_mask_traps(void)
 {
 	unsigned int control;
@@ -2276,7 +2289,20 @@ void psp_fpu_mask_traps(void)
 	__asm__ __volatile__("cfc1 %0, $31" : "=r"(control));
 	/* enable bits 7-11: inexact, underflow, overflow, divide by zero, invalid */
 	control &= ~0x00000F80u;
+	if (!(psp_keep_loaded() && psp_keep("fsold")))
+		control |= 0x01000000u;
 	__asm__ __volatile__("ctc1 %0, $31" : : "r"(control));
+	if (psp_keep_loaded())
+	{
+		static int said;
+
+		if (!said)
+		{
+			said = 1;
+			platform_log("fpu: FCR31 0x%08x on the first thread masked after keep.txt (FS %s)", control,
+				control & 0x01000000u ? "set: denormals flushed to zero" : "clear: fsold");
+		}
+	}
 }
 
 /* ---------- exit */
