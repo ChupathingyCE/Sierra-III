@@ -14671,9 +14671,9 @@ void psp_fixed_seed_new_map(void)
 		unsigned long sample = (unsigned long)psp_keep_number("seed", 0);
 
 		random_math_globals.global_local_random_seed = 0x0B5E55EDUL ^ (sample * 0x9E3779B1UL);
-		psp_sound_random_seed = 0x50554E44UL;
 		if (sample)
 			random_math_globals.global_random_seed ^= sample * 0x85EBCA6BUL;
+		psp_sound_random_seed = 0x50554E44UL;
 	}
 }
 #endif
