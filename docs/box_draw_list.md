@@ -19,6 +19,8 @@
 - **Today:** the main CPU walks the drawing and builds the records (35.8 ms a frame on b30's flight, b151 [M]); the ME's render job replays them into GE words (48 ms with R, the whole b30 run [M]).
 - **v0:** the same split, with the work cut by B (§5). Whether the main CPU's walk moves to the ME, or the ME's emitter to the main CPU's VFPU, is decided by measurement on the PSP once the box is priced alone.
 
+- **In the two-core tick** (Sheepdog01 2026-11-13 11:02, decisions.md; the lab's `research/opportunities/two_core_tick.md`): **the draw list isn't tick work.** It runs in the frame's drawing, after the tick's join, and reads the tick's final node matrices: serial to the tick, on both cores of its own. **Main CPU:** the walk and the records (RSO's kept walks, today 21.8 of ~38.5 still models a frame re-sent on b30 with B76's fix; v1's records). **ME:** the render job's replay into GE words, which is two_core_tick.md's "drawing's ME share" (~12 ms a frame at 30/30, 19-33 today [M]): every millisecond this box takes off the render job is ME time for its share of the tick. **Working set:** RSO's pool (24 KB of entries on the tock), a record per drawn instance, and the geometry the replay reads; the instruction-cache split by step applies here too (the walk's code on the main CPU, the emitter's on the ME).
+
 ## 4. Budget (REBUILD.md §3.4, research)
 
 | Unit | Today (b30's flight, ms a frame) | v0 budget at 33.3 ms frames | Cut |
