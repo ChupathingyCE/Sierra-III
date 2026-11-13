@@ -382,8 +382,12 @@ within one; the lab's padpath2). If no script brings him, he is walked
 along the path from where he left it, PATH_SWEEP_STEP of its ticks a tick,
 never set straight across: the level's scripts test where he is, not what
 he crossed, and a jump over a trigger volume left posing B's build 9,000
-ticks in a level whose BSP had never switched (the lab's padpath3). Seated
-ticks and cinematics are left alone.
+ticks in a level whose BSP had never switched (the lab's padpath3). And
+while the level's BSP isn't the path's, nothing is done at all: the
+recording's script has moved him to a part of the level this run hasn't
+loaded, and only this run's own script can take him there (padpath4: set
+there by the hold, two variants never switched). Seated ticks and
+cinematics are left alone.
 
 The hold also keeps the deaths the player caused (docs/pad_path.md, "The
 outcome hold"). His shots land only in his own game: on any other, the
@@ -450,7 +454,7 @@ static float path_before[3];
 static long path_before_time = -1;
 static int path_steer_on = 0, path_stall = 0;
 static float path_steer_x = 0.f, path_steer_y = 0.f, path_steer_yaw = 0.f;
-static unsigned long path_hold_logged = 0;
+static unsigned long path_hold_logged = 0, path_kill_logged = 0;
 /* the deaths: the game tick last seen, each squad's kills in the recording
 so far and on this run (his own and the forced), and the recording's kills
 not yet settled */
@@ -494,9 +498,9 @@ static struct
 	unsigned long compared, no_record, over_small, over_snap, over_far, seat_differs, weapon_differs, bsp_differs;
 	/* the hold's */
 	unsigned long held, held_over_snap, steered, snaps, view_sets, swept;
-	unsigned long kills_own, kills_forced, kills_matched, kills_missing;
+	unsigned long kills_own, kills_forced, kills_matched, kills_missing, bsp_waits;
 	float error_sum, error_max, view_max;
-} path_sum = { -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.f, 0.f, 0.f };
+} path_sum = { -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.f, 0.f, 0.f };
 
 static void path_log(const unsigned char *data, unsigned int bytes)
 {
@@ -825,7 +829,7 @@ static void path_kills(long now)
 				path_squad(key)->made++;
 				path_sum.kills_forced++;
 				done = 1;
-				if (path_hold_logged++ < PATH_HOLD_LOGGED)
+				if (path_kill_logged++ < 2 * PATH_HOLD_LOGGED)
 					platform_log("hold: a kill of tick %ld forced at tick %ld (encounter %d squad %d)", path_pending[k].time, now,
 						encounter, squad);
 			}
@@ -833,7 +837,7 @@ static void path_kills(long now)
 			{
 				path_sum.kills_missing++;
 				done = 1;
-				if (path_hold_logged++ < PATH_HOLD_LOGGED)
+				if (path_kill_logged++ < 2 * PATH_HOLD_LOGGED)
 					platform_log("hold: a kill of tick %ld let go at tick %ld: no one of encounter %d squad %d living",
 						path_pending[k].time, now, encounter, squad);
 			}
@@ -893,6 +897,24 @@ static void path_hold(const struct psp_path_state *now, const struct psp_path_st
 		path_ring_count = 0; /* the path across a seat or a cinematic isn't one to walk along */
 		return;
 	}
+	if (now->bsp != then->bsp)
+	{
+		static long said = -1000000;
+
+		/* the path is in a part of the level this run hasn't switched to:
+		wait for this run's own script */
+		path_stall = path_far_ticks = 0;
+		path_sweep_at = -1;
+		path_ring_count = 0;
+		path_sum.bsp_waits++;
+		if (now->game_time - said >= 900 || now->game_time < said)
+		{
+			said = now->game_time;
+			platform_log("hold: waiting at tick %ld: the path is in BSP %d and the level is in %d", now->game_time, (int)then->bsp,
+				(int)now->bsp);
+		}
+		return;
+	}
 	memcpy(*slot, then->position, sizeof(*slot));
 	path_ring_count++;
 	path_sum.held++;
@@ -904,8 +926,7 @@ static void path_hold(const struct psp_path_state *now, const struct psp_path_st
 		if ((unsigned long)path_sweep_at >= path_ring_count - 1)
 		{
 			path_sweep_at = -1;
-			if (path_hold_logged++ < PATH_HOLD_LOGGED)
-				platform_log("hold: walked along the path up to tick %ld", now->game_time);
+			platform_log("hold: walked along the path up to tick %ld", now->game_time);
 		}
 		else
 		{
@@ -951,9 +972,8 @@ static void path_hold(const struct psp_path_state *now, const struct psp_path_st
 		{
 			path_sweep_at = (long)(path_ring_count - 1 - nearest);
 			path_far_ticks = path_stall = 0;
-			if (path_hold_logged++ < PATH_HOLD_LOGGED)
-				platform_log("hold: %.1f off at tick %ld and no script brought him: walked along the path's last %lu ticks",
-					(double)(flat > height ? flat : height), now->game_time, nearest);
+			platform_log("hold: %.1f off at tick %ld and no script brought him: walked along the path's last %lu ticks",
+				(double)(flat > height ? flat : height), now->game_time, nearest);
 			return;
 		}
 	}
@@ -972,7 +992,8 @@ static void path_hold(const struct psp_path_state *now, const struct psp_path_st
 		}
 		psp_path_snap(then->position, velocity);
 		path_sum.snaps++;
-		if (path_hold_logged++ < PATH_HOLD_LOGGED)
+		/* the small ones are capped; one past 2 units is always said */
+		if (flat > 2.f || height > 2.f || path_hold_logged++ < PATH_HOLD_LOGGED)
 			platform_log("hold: set on the path at tick %ld: %.2f off flat, %.2f in height%s", now->game_time, (double)flat,
 				(double)height, path_stall > PATH_STALL_TICKS ? " (steered 45 ticks without closing)" :
 				path_far_ticks ? " (far for 150 ticks, and never near the path's last ticks)" : "");
@@ -1078,10 +1099,11 @@ static void path_report(void)
 	if (path_mode & 4)
 		platform_log("hold: ticks %ld-%ld | steered %lu ticks | set on the path %lu times | view set %lu times"
 			" | held %lu ticks, %lu of them over the snap bound | walked along %lu ticks"
-			" | kills: his own %lu, the recording's matched unforced %lu, forced %lu, let go %lu", from,
+			" | kills: his own %lu, the recording's matched unforced %lu, forced %lu, let go %lu"
+			" | waited for the level's BSP %lu ticks", from,
 			from + PATH_REPORT - 1, path_sum.steered, path_sum.snaps, path_sum.view_sets, path_sum.held,
 			path_sum.held_over_snap, path_sum.swept, path_sum.kills_own, path_sum.kills_matched, path_sum.kills_forced,
-			path_sum.kills_missing);
+			path_sum.kills_missing, path_sum.bsp_waits);
 	memset(&path_sum, 0, sizeof(path_sum));
 	path_sum.window = -1;
 }

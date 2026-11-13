@@ -241,6 +241,13 @@ All proofs are emulator runs unless marked. Keep words: `pathrec` (`pathlog`), `
 
 **After padpath3, on the branch:** a far gap that no script closes is walked along the path (the last 1,024 ticks are kept; four of them a tick) and no longer jumped; the `hold:` line counts held ticks and how many of them were over the snap bound, so the bar is read on held ticks only. Proven on the toy harness (a player held 300 ticks back is walked 450 ticks of path in 150 and lands on it); not yet built on the game.
 
+### padpath4 (2026-11-13 04:37, the builder's read; 43405755010, findings `padpath4_walk`, `padpath4_watch.txt`) [E]
+
+- **The hold is tight between gates:** 0.15-0.23 units off (mean a window), largest ~0.6, on every variant. The 0.3 push at tick 4,800 is back under the bound inside its window.
+- **The walk-along never ran, and the gap at 12,600 isn't its case.** There the *recording's* script moved the player to another BSP during a stretch where the hold stands down (135-161 ticks of cinematic on the path). When the hold came back the path was ~150 units away in a part of the level this run hadn't loaded, the walk's ring was empty by design, and the player was set there: two variants then never switched BSP.
+- **So the rule is not "walk" but "wait":** while the level's BSP isn't the path's, the hold does nothing and says so (`hold: waiting ... the path is in BSP 2 and the level is in 1`, and a count in the `hold:` line). Only this run's own script can take the player there, and what makes that script late is the fight it waits on, which is the outcome hold's job (§11). On the branch; padpath5's read shows whether the kills alone bring the switch on time.
+- **Logging:** a snap past 2 units, a walk and a BSP wait are always logged now; only the half-unit snaps are capped.
+
 **Slice 3's proofs** (emulator, d20_play1 and its path): (i) `padhold` on the path's own build and seed: play and both seeds identical to the run without it, and every `hold:` line zero; (ii) the same with `holdkick3000`: a steer logged, then one snap, and the replay inside tolerance to the end; (iii) `padhold` on seeds 1-3, `vfpudotoff` and posing B's build: held to the pad's end, corrections counted, and the census per window against the base's, which is the gate's open half.
 
 **The proofs the builder ran for slices 1-2** (emulator):
@@ -281,6 +288,8 @@ All proofs are emulator runs unless marked. Keep words: `pathrec` (`pathlog`), `
 - The engine side is its own fixups group, `FIXES_PADPATH`, applied only with the switch: the hook in `ai_handle_death` (after the game resolves who is responsible; a player's kill is told to `psp_pad.c`), and `psp_path_kill_one`, which marks the squad's living member nearest a point to die by an act of god, the delayed form of the scripts' `actor_kill` [D]: the unit takes its death in its own update. Swarms (the infection forms) lose one member a kill.
 - On a held run the kills are kept unless `holdnokill`. The `hold:` line carries, per 300 ticks: his own kills on this run, the recording's kills the run had made itself when their lag ran out, those forced, and those let go (the lead's two figures for reading pairs).
 - Proven on the toy harness: the same game matches every kill and forces none; a replay that misses has each kill forced 45 ticks after its tick; a squad with no one living is let go 900 ticks on.
+
+**padpath5 part 1 (04:28, the builder; 43406365506) [E]:** `pathrec` inert again (play and seeds identical, 29,208 ticks); the version 2 path holds **251 deaths the player caused, in 81 squads**, so a dying unit does still have its actor at the hook (§12's first unknown, closed); PROVEN against Sheepdog01's log as before.
 
 **Its proofs (padpath5):** the path made again with `pathrec pathlog` (statecrc identical to the run without; `pathcheck` PROVEN and its count of deaths); `padhold` on that game: no kill forced, play and seeds identical; `padhold` on seeds 1-2, `vfpudotoff` and posing B: actor-ticks per window against the base's (the bar: ±15% in the fight windows), kills forced and matched, and the far gap at 12,600 gone or walked.
 
