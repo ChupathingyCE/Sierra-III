@@ -257,7 +257,25 @@ All proofs are emulator runs unless marked. Keep words: `pathrec` (`pathlog`), `
 - **A first look at that noise, from the 1,500 ticks before anything parted** (ticks 300-1,799, route 0.000 on every variant): across seeds the actors summed over a window are 98-111% of the base's and the effects 89-105%; the VFPU's other rounding 93-102% and 94-101%; posing B's build 98-102% and 82-103%. So on an identical route the population already differs by ~±10% between two seeds of one build, and a different build sits about inside that. It is d20's quiet opening and one pad; slice 3's batch is the real read. (The table's first window, ticks 0-299, shows the base far under the others; that is one run's short first window, not play.)
 - **For the bounds (§3.3):** the seeds' first parted windows are small and slow (0.1-0.4 mean over 900 ticks), which is steering's ground; posing B's 7.1 in its first window is a jump, which is the snap's. The per-300-tick lines will say how fast each grows; the bounds stay [U] until slice 3 runs against them.
 
-## 11. Open, and who can close it
+## 11. The outcome hold (design, for the lead's read; nothing built)
+
+**Why** (padpath3, §10): a held replay keeps Sheepdog01's route and aim, but his shots land only in his own game. Elsewhere the enemies stand a little off where they stood, the fire misses, and they live about twice as long: 1.4-2.5x the actor-ticks in d20's fights on every variant [E]. The bench then prices a longer fight than he played, and gates that wait for an encounter to die open late.
+
+**What is held: the deaths Sheepdog01 caused, at the tick he caused them.** Not the AI's choices, and not deaths he didn't cause (a grenade of theirs, a marine's kill): those stay the fight's sample.
+
+- **Recorded** (in the path, while it is made): each death the player is responsible for, as the game itself decides it [D: `ai_handle_death` is handed the dead unit and its killer, and resolves the responsible unit]: the game tick, the dead actor's encounter and squad, and its place. A few bytes a kill; a level has a few hundred.
+- **Replayed:** each tick the hold counts the player's kills per squad on this run against the recording's up to that tick. Where the recording is ahead by a kill for more than 45 ticks (the shot that should have landed has had its chance), the hold kills one living actor of that squad: the one nearest the point where the recording's died. It dies the game's ordinary way (`actor_kill`, not silent: the unit takes its death, the body falls, the encounter's status updates [D]), so the death's own cost is paid as it was.
+- **Where this run is ahead** (an enemy died sooner than on the recording): nothing. It can't be undone, and it is rare by the bias's direction.
+- **A squad that isn't there** (not spawned yet, or already empty): logged, not forced. That is a gate still late, and the line names it.
+- **Logged:** per window, kills forced, kills this run made itself, squads missing; and the census's actor-ticks, which is the test.
+
+**What it doesn't fix:** where the survivors stand, what they fire, and which weapon lies on the floor. Those are the sample the bench reads through seeded repeats (§2.3).
+
+**The cost in design terms:** one hook in the engine (the death, read only) under `PSP_PADPATH`, a small table per squad, and one call to an engine function the scripts already use for the same thing. It is the first piece that changes the world rather than the player, so it is the one to watch for side effects: a forced death mid-animation, a scripted actor (`ai_cannot_die`), a swarm (the Flood's infection forms die as a unit of many).
+
+**Done when** (d20, the same six variants): held runs' actor-ticks per window within ±15% of the recording's own in the fight windows (today 140-250%), no far gap from a late gate, play still inside the on-foot bound, and on the path's own build and seed no kill is ever forced.
+
+## 12. Open, and who can close it
 
 - The steer and snap bounds, and whether fights part further across builds than across seeds: slice 2's batch. [U until then]
 - Whether a seated snap kicks the springs in practice: slice 4.
