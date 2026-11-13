@@ -91,3 +91,22 @@ Against the capture first: every posed object's node matrices equal the old code
 **What decides the design, to count first [U until counted]:** the share of decodes and nodes in each form on the pad stretches; nodes animated a decode against those read from defaults; the keyframe searches' lengths; the double `floor`s a tick; the tag bytes a decode reads and from how many lines. One emulator census (exact counts, under PSP_RECON) over b30_play2's flight and beach answers them; the PSP gives the decode's time (§8's pieces).
 
 **The shape it points to [U]:** (1) the per-animation work done once, not per object per tick: a node's flags walked once into a list of (node, form, offsets) kept with the animation (the plan, §2), the bound checks made at load, the default rotations decompressed and normalised once; (2) the frame index found once a decode, in integers (no double `floor`), and each node's keyframe index carried from the last tick (animations advance a frame a tick, so the search is almost always the next keyframe); (3) the per-node maths batched four nodes at a time on the VFPU: shorts to floats and the scale in one instruction, the 6-byte form's square root with `vrsq`, the normalise and the interpolation as today's VFPUQUAT does them; (4) the frame's bytes for a model's nodes read in one pass, in order, against the cache's lines. Exactness: (1) and (2) are exact; (3)'s maths is checked against the FPU's as vfpuquatd is (ulps), and proven by play and seeds or the outcome census.
+
+**Counted (2026-11-13) [E counts, emulator; lab sierra-batch 43500822035, builder/posedecode f2866de under PSP_RECON, b30_play2 and d20_play1 to game time 7,125, the main CPU only]:** per tick, the base decodes (`animation_get_node_orientations`) and their nodes, and every keyframe read (the base pose's and the preprocess's overlays, which call `animation_get_keyframe_*` themselves):
+
+| | b30 flight (to 2,100) | b30 beach (2,700 on) | d20 (all) |
+|---|---|---|---|
+| base decodes a tick | 8.4 | 1.7 | 1.4 |
+| their nodes a tick (a decode) | 76 (9) | 42 (25) | 39 (27) |
+| nodes compressed | 99.9% | 99.9% | 99.9% |
+| nodes with rotation animated | 44% | 42% | 50% |
+| keyframe reads a tick (rotation) | 37 (34) | 23 (20) | 23 (20.5) |
+| of the rotation reads, a default only | 5% (b30 all) | | 6% |
+| searches a keyframe read, steps a search | 0.45, 3.0 (b30 all) | | 0.23, 3.9 |
+
+What it says for the design:
+- **Only the compressed form matters**: the uncompressed path is a few decodes in 7,000 ticks. Build for the compressed form alone; the uncompressed one keeps the engine's code.
+- **Half the nodes aren't animated** (rotation not animated on 50-58% of them; translation animated on 4-7%, scale on 0-2.5%): every tick they read their 6-byte default and normalise it. (1)'s defaults decompressed once per animation removes that half's work outright. On b30 every scale read is of a default (a channel flagged but with no keyframes), so the flags themselves overstate the work.
+- **The search is small**: under half the keyframe reads search, and a search takes three or four steps. (2)'s carried keyframe index is worth little; its integer frame index (no double `floor`, one a keyframe read, ~25 a tick) stays.
+- **The preprocess's own keyframe reads are few** (rotation reads beyond the base pose's animated nodes: 1-2 a tick). Its third of posing (§8) is not in decoding; it is in its fitting, blends and overlays' walk, a separate design.
+- **Per decode, not per node [U]:** b30's decode piece on the PSP was 3.7x larger in the flight than on the beach (§8, 4.27 against 1.14 of objsteps' units), where the census has 4.9x the decodes but 1.8x the nodes. The decode's cost follows the decodes more than the nodes: the per-decode reads (the animation's header, its node flags, the frame's data, each on lines of its own in tag data) weigh more than the per-node maths. So (1) (the per-animation plan kept packed, read in one pass) comes before (3) (the VFPU's batches). The next count is the lines a decode touches, from the emulator's cache map (an exact count); its time stays the PSP's.
