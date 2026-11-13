@@ -51816,14 +51816,109 @@ void psp_box_posing_forget(void); /* psp_fixups.py (FIXES_BOXPOSING) */
  """#ifdef PSP_BOX_POSING
 const void *psp_box_posing_plan_find(const void *key);
 const void *psp_box_posing_plan_add(const void *key, const short *links, int count, const float *constants, int physics);
-void psp_box_posing_pose(const void *plan, unsigned int flags, const float *position, const float *forward,
-	const float *up, float scale, const float *parent, const float *orientations, float *nodes, float *sphere);
+unsigned long long psp_box_posing_pose(const void *plan, unsigned int flags, const float *position, const float *forward,
+	const float *up, float scale, const float *parent, const float *orientations, float *nodes, float *sphere,
+	unsigned long long want);
+unsigned long long psp_box_posing_all(const void *plan);
+unsigned long long *psp_box_posing_standing(const void *plan);
+#include "units/biped_definitions.h"
+
+/* means B: the nodes every pose of a biped's definition makes for its
+standing readers, named once a map: the root; the head marker's nodes (every
+instance: the AI reads the head of every unit it thinks for or about, on
+nearly every pose, docs/box_posing.md §1b); the head and pelvis nodes (the
+player's aim assist) */
+static unsigned long long psp_boxb_standing(struct object_datum const *object,
+	struct object_definition const *object_definition, struct model const *model)
+{
+	unsigned long long nodes = 1;
+	short count = (short)MIN(model->nodes.count, 64);
+	short marker_index = model_find_marker(object_definition->object.model.index, "head"), i;
+
+	if (marker_index != NONE)
+	{
+		struct model_marker *marker = TAG_BLOCK_GET_ELEMENT(&model->markers, marker_index, struct model_marker);
+
+		for (i = 0; i < marker->instances.count; i++)
+		{
+			struct model_marker_instance *instance = TAG_BLOCK_GET_ELEMENT(&marker->instances, i, struct model_marker_instance);
+
+			if (instance->node_index < count)
+				nodes |= 1ull << instance->node_index;
+		}
+	}
+	if (object->object.type == _object_type_biped)
+	{
+		struct biped_definition const *biped = biped_definition_get(object->definition_index);
+
+		if (biped->biped.runtime_head_node_index >= 0 && biped->biped.runtime_head_node_index < count)
+			nodes |= 1ull << biped->biped.runtime_head_node_index;
+		if (biped->biped.runtime_pelvis_node_index >= 0 && biped->biped.runtime_pelvis_node_index < count)
+			nodes |= 1ull << biped->biped.runtime_pelvis_node_index;
+	}
+	return nodes;
+}
+
+/* means B: what this pose makes (all when ~0). A living biped standing on
+its own, whose model's walk is whole, makes its standing readers' nodes and
+each attached child's node; on a frame's last tick, every node if it was
+drawn last frame (the drawing takes the whole block; with vislazy off, which
+keeps that list, every biped) */
+static unsigned long long psp_boxb_want(long object_index, struct object_datum const *object,
+	struct object_definition const *object_definition, struct model const *model, void const *plan)
+{
+	extern int psp_lights_link_tick; /* FIXES_LD1: the frame's last tick */
+	unsigned long long *standing, want;
+	long absolute = DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index);
+	long child;
+
+	if (psp_boxb_on < 0)
+	{
+		psp_boxb_check = psp_keep("boxposebcheck") != 0;
+		psp_boxb_on = psp_boxb_check || psp_keep("boxposeb") != 0;
+	}
+	if (psp_boxb_on <= 0 || object->object.type != _object_type_biped || !psp_box_posing_all(plan))
+		return ~0ull;
+	psp_boxb_poses++;
+	if (TEST_FLAG(object->object.damage_flags, _object_dead_bit) || object->object.parent_object_index != NONE)
+	{
+		/* the limp body and the sleep check read a dead biped's block whole;
+		a rider is read by its vehicle's rays on the ME, past their test */
+		psp_boxb_dead_or_held++;
+		return ~0ull;
+	}
+	if (psp_boxb[absolute & (PSP_BOXB_SLOTS - 1)].object_index != NONE)
+	{
+		psp_boxb_busy++;
+		return ~0ull;
+	}
+	if (psp_lights_link_tick &&
+		(!psp_vl_on || absolute >= MAXIMUM_OBJECTS_PER_MAP || ((psp_vl_drawn[absolute >> 5] >> (absolute & 31)) & 1)))
+	{
+		psp_boxb_drawn_whole++;
+		return ~0ull;
+	}
+	standing = psp_box_posing_standing(plan);
+	if (!*standing)
+		*standing = psp_boxb_standing(object, object_definition, model);
+	want = *standing;
+	for (child = object->object.first_child_object_index; child != NONE; )
+	{
+		struct object_datum const *child_object = object_get(child);
+
+		if (child_object->object.parent_node_index >= 0 && child_object->object.parent_node_index < 64)
+			want |= 1ull << child_object->object.parent_node_index;
+		child = child_object->object.next_object_index;
+	}
+	return want;
+}
 
 /* one object through the box. Means A: the plan is the definition's, made the
 first time the map poses it, and carries what the definition fixes (its
 model's walk, the centre of mass, the offsets, the radius), so each pose
 hands the box its object's place by reference and gathers nothing */
 static void psp_box_pose(
+	long object_index,
 	struct object_datum *object,
 	struct object_definition const *object_definition,
 	struct model const *model,
@@ -51875,9 +51970,38 @@ static void psp_box_pose(
 		(parent ? 4 : 0) |
 		(parent && TEST_FLAG(object_get(object->object.parent_object_index)->object.flags, _object_mirrored_bit) ? 8 : 0) |
 		(model ? 0 : 32);
-	psp_box_posing_pose(plan, flags, &object->object.position.x, &object->object.forward.i, &object->object.up.i,
-		object->object.scale, (float const *)parent, (float const *)node_orientations, (float *)object_nodes,
-		&object->object.bounding_sphere_center.x);
+	{
+		/* means B: a new pose replaces what the last one owed */
+		struct psp_boxb_slot *slot = &psp_boxb[(unsigned long)object_index & (PSP_BOXB_SLOTS - 1)];
+		unsigned long long want, made, all;
+
+		if (slot->object_index == object_index)
+		{
+			slot->object_index = NONE;
+			psp_boxb_count--;
+			psp_boxb_changed = 1;
+		}
+		want = model ? psp_boxb_want(object_index, object, object_definition, model, plan) : ~0ull;
+		made = psp_box_posing_pose(plan, flags, &object->object.position.x, &object->object.forward.i, &object->object.up.i,
+			object->object.scale, (float const *)parent, (float const *)node_orientations, (float *)object_nodes,
+			&object->object.bounding_sphere_center.x, want);
+		if (~want)
+		{
+			all = psp_box_posing_all(plan);
+			psp_boxb_nodes_all += __builtin_popcountll(all);
+			psp_boxb_nodes_made += __builtin_popcountll(made & all);
+			if ((made & all) != all)
+			{
+				psp_boxb_owing_poses++;
+				slot->made = made;
+				slot->all = all;
+				slot->plan = plan;
+				slot->object_index = object_index;
+				psp_boxb_count++;
+				psp_boxb_changed = 1;
+			}
+		}
+	}
 }
 #endif
 
@@ -51890,7 +52014,7 @@ void object_compute_node_matrices(
 				"c:\\\\halo\\\\SOURCE\\\\objects\\\\objects.c",
 				2786,""",
  """#ifdef PSP_BOX_POSING
-		psp_box_pose(object, object_definition, model, model_node_count, node_orientations, world_relative,
+		psp_box_pose(object_index, object, object_definition, model, model_node_count, node_orientations, world_relative,
 			object_node_matrix, object_nodes);
 		goto psp_box_posed;
 #endif
@@ -51902,7 +52026,7 @@ void object_compute_node_matrices(
 ("""		object_nodes[0].scale = 1.f;
 		object_nodes[0].forward = object->object.forward;""",
  """#ifdef PSP_BOX_POSING
-		psp_box_pose(object, object_definition, NULL, 0, NULL, FALSE, NULL, object_nodes);
+		psp_box_pose(object_index, object, object_definition, NULL, 0, NULL, FALSE, NULL, object_nodes);
 		goto psp_box_posed;
 #endif
 		object_nodes[0].scale = 1.f;
@@ -51920,6 +52044,519 @@ void object_compute_node_matrices(
 psp_box_posed: ;
 #endif
 """),
+]
+
+# ---------- FIXES_BOXPOSING, means B (keep word "boxposeb"; docs/box_posing.md
+# §1b): a living biped's pose makes only the nodes its standing readers need
+# (the head marker's chain, the head and pelvis nodes, each attached child's
+# node; every node on a frame's last tick when it was drawn last frame) and
+# owes the rest. Every read goes through an accessor that makes what it needs
+# of an owed pose then, from the orientations the pose was given, which the
+# biped keeps in its own block until its next pose: the same products in the
+# same order, so the same bits as the whole walk. The ME never makes: it
+# reads a copy of what was made, taken at each hand-over, and hands its actor
+# back (or its ray to the main CPU) where a node it needs is owed.
+FIXES_BOXPOSING["source/objects/objects.c#boxposeb"] = [
+("""static int psp_nrchk_mode; /* psp_fixups.py (FIXES_NRCHK) */
+#ifdef PSP_BOX_POSING
+void psp_box_posing_forget(void); /* psp_fixups.py (FIXES_BOXPOSING) */
+#endif
+""",
+ """static int psp_nrchk_mode; /* psp_fixups.py (FIXES_NRCHK) */
+#ifdef PSP_BOX_POSING
+void psp_box_posing_forget(void); /* psp_fixups.py (FIXES_BOXPOSING) */
+void psp_boxb_forget(void);
+#endif
+"""),
+("""	psp_box_posing_forget(); /* the plans name the last map's models */
+""",
+ """	psp_box_posing_forget(); /* the plans name the last map's models */
+	psp_boxb_forget(); /* and what they owed */
+"""),
+("""void psp_nms_pending_for_me(void)
+{
+	psp_nms_me[0] = (unsigned long)psp_nms_count;
+	if (psp_nms_count)
+		csmemcpy(&psp_nms_me[16], psp_nms_pending, sizeof(psp_nms_pending));
+}
+""",
+ """#ifdef PSP_BOX_POSING
+static void psp_boxb_for_me(void);
+#endif
+void psp_nms_pending_for_me(void)
+{
+	psp_nms_me[0] = (unsigned long)psp_nms_count;
+	if (psp_nms_count)
+		csmemcpy(&psp_nms_me[16], psp_nms_pending, sizeof(psp_nms_pending));
+#ifdef PSP_BOX_POSING
+	psp_boxb_for_me();
+#endif
+}
+
+#ifdef PSP_BOX_POSING
+/* psp_fixups.py (FIXES_BOXPOSING, means B; docs/box_posing.md §1b). A slot an
+object, by its absolute index's low bits: a pose that owes takes its slot
+when no other owing pose holds it, and the next pose of the object, or the
+make of its last owed node, gives it back */
+#define PSP_BOXB_SLOTS 256
+struct psp_boxb_slot
+{
+	unsigned long long made; /* the nodes made for the object's pose, by the pose and since */
+	unsigned long long all;  /* every node of its model */
+	long object_index;       /* NONE: the slot owes nothing */
+	void const *plan;
+};
+static struct psp_boxb_slot psp_boxb[PSP_BOXB_SLOTS];
+/* the slots owing, read in line by every reader: 0, no test */
+int psp_boxb_count = 0;
+static int psp_boxb_on = -1, psp_boxb_check = 0, psp_boxb_changed = 1;
+/* the ME's copy (the AI's pass, the rays), made at each hand-over and at the
+objects' loop's end, on whole lines of its own: a node made after it isn't
+the ME's to read, as the main CPU may be making it while the ME reads. A
+copy's `made` has every bit past the model's nodes set */
+struct psp_boxb_me_copy
+{
+	long count;
+	long pad[15];
+	long object_index[PSP_BOXB_SLOTS];
+	unsigned long long made[PSP_BOXB_SLOTS];
+};
+static struct psp_boxb_me_copy psp_boxb_me __attribute__((aligned(64)));
+/* reads on the ME of an owed node with no actor in hand to give back: a
+count only the ME writes, for the log (none is expected) */
+unsigned long psp_boxb_me_stray = 0;
+static unsigned long psp_boxb_ticks, psp_boxb_poses, psp_boxb_owing_poses, psp_boxb_nodes_all, psp_boxb_nodes_made,
+	psp_boxb_late, psp_boxb_late_nodes, psp_boxb_ik, psp_boxb_ik_nodes, psp_boxb_busy, psp_boxb_drawn_whole,
+	psp_boxb_dead_or_held, psp_boxb_settled_all;
+static int psp_boxb_in_ik = 0;
+#define PSP_BOXB_SITES 24
+static void *psp_boxb_site[PSP_BOXB_SITES];
+static unsigned long psp_boxb_site_n[PSP_BOXB_SITES], psp_boxb_site_nodes[PSP_BOXB_SITES], psp_boxb_sites_other;
+unsigned long long psp_box_posing_make(const void *plan, const float *orientations, float *nodes,
+	unsigned long long made, unsigned long long want);
+unsigned long long psp_box_posing_below(const void *plan, int node);
+
+static void psp_boxb_for_me(void)
+{
+	int k;
+
+	if (!psp_boxb_changed)
+		return;
+	psp_boxb_changed = 0;
+	psp_boxb_me.count = psp_boxb_count;
+	if (!psp_boxb_count)
+		return;
+	for (k = 0; k < PSP_BOXB_SLOTS; k++)
+	{
+		psp_boxb_me.object_index[k] = psp_boxb[k].object_index;
+		psp_boxb_me.made[k] = psp_boxb[k].made | ~psp_boxb[k].all;
+	}
+}
+
+/* on the ME: whether the copy says a node of `want` is owed */
+int psp_boxb_me_lacks(long object_index, unsigned long long want)
+{
+	long slot = object_index & (PSP_BOXB_SLOTS - 1);
+
+	return psp_boxb_me.count && psp_boxb_me.object_index[slot] == object_index && (want & ~psp_boxb_me.made[slot]) != 0;
+}
+
+/* on the ME: an owed node is the main CPU's to make, so the actor goes back
+to think there, as an owed vislazy compute's (FIXES_NMSKIP) */
+__attribute__((noinline)) static void psp_boxb_me_read(long object_index, unsigned long long want)
+{
+	extern int psp_aime_arm;
+	extern void psp_aime_handback(int which);
+
+	if (!psp_boxb_me_lacks(object_index, want))
+		return;
+	if (psp_aime_arm)
+		psp_aime_handback(26);
+	psp_boxb_me_stray++;
+}
+
+static void psp_boxb_site_note(void *site, unsigned long nodes)
+{
+	int s;
+
+	for (s = 0; s < PSP_BOXB_SITES && psp_boxb_site[s] && psp_boxb_site[s] != site; s++)
+		;
+	if (s == PSP_BOXB_SITES)
+	{
+		psp_boxb_sites_other++;
+		return;
+	}
+	psp_boxb_site[s] = site;
+	psp_boxb_site_n[s]++;
+	psp_boxb_site_nodes[s] += nodes;
+}
+
+/* a reader wants nodes of an owed pose: they're made now (the main CPU) */
+__attribute__((noinline)) static void psp_boxb_settle(long object_index, unsigned long long want, void *site)
+{
+	struct psp_boxb_slot *slot = &psp_boxb[object_index & (PSP_BOXB_SLOTS - 1)];
+	struct object_datum *object;
+	unsigned long long before = slot->made;
+
+	{
+		/* psp_fixups.py (FIXES_AIME2A, aimefpu): the main CPU's like-for-like
+		pass stops where the ME's would */
+		extern int psp_aime_arm, psp_aime_fpu_main;
+		extern void psp_aime_handback(int which);
+
+		if (psp_aime_arm && psp_aime_fpu_main && psp_boxb_me_lacks(object_index, want))
+			psp_aime_handback(26);
+	}
+	object = object_get(object_index);
+	slot->made = psp_box_posing_make(slot->plan,
+		(float const *)object_header_block_get(object_index, &object->object.node_orientations),
+		(float *)object_header_block_get(object_index, &object->object.node_matrices), before, want & slot->all);
+	psp_boxb_changed = 1;
+	if (psp_boxb_in_ik)
+	{
+		psp_boxb_ik++;
+		psp_boxb_ik_nodes += __builtin_popcountll(slot->made & ~before);
+	}
+	else
+	{
+		psp_boxb_late++;
+		psp_boxb_late_nodes += __builtin_popcountll(slot->made & ~before);
+		psp_boxb_site_note(site, __builtin_popcountll(slot->made & ~before));
+	}
+	if ((slot->made & slot->all) == slot->all)
+	{
+		slot->object_index = NONE;
+		psp_boxb_count--;
+	}
+}
+
+/* every reader's test, in line: an owed node of `want` is made first. On the
+ME, the copy decides */
+#define PSP_BOXB_READ(index, want) do { \\
+		if (psp_boxb_count | psp_boxb_me.count) \\
+		{ \\
+			unsigned long long psp_boxb_w = (want); \\
+			if (psp_work_on_me()) \\
+				psp_boxb_me_read((index), psp_boxb_w); \\
+			else \\
+			{ \\
+				struct psp_boxb_slot const *psp_boxb_s = &psp_boxb[(unsigned long)(index) & (PSP_BOXB_SLOTS - 1)]; \\
+				if (psp_boxb_s->object_index == (long)(index) && (psp_boxb_w & ~psp_boxb_s->made)) \\
+					psp_boxb_settle((index), psp_boxb_w, __builtin_return_address(0)); \\
+			} \\
+		} \\
+	} while (0)
+
+/* every node an owed object has, for a reader outside this unit (the limp
+body) */
+void psp_boxb_whole(long object_index)
+{
+	PSP_BOXB_READ(object_index, ~0ull);
+}
+
+/* every owed node of every object (a game state saved: it holds the node
+matrices; "boxposebcheck": before each tick's state hash) */
+static void psp_boxb_settle_all(void)
+{
+	int k;
+
+	for (k = 0; k < PSP_BOXB_SLOTS && psp_boxb_count; k++)
+	{
+		struct psp_boxb_slot *slot = &psp_boxb[k];
+
+		if (slot->object_index == NONE)
+			continue;
+		if (object_header_try_and_get(slot->object_index))
+			psp_boxb_settle(slot->object_index, ~0ull, (void *)psp_boxb_settle_all);
+		else
+		{
+			slot->object_index = NONE;
+			psp_boxb_count--;
+			psp_boxb_changed = 1;
+		}
+	}
+	psp_boxb_settled_all++;
+}
+
+void psp_boxb_hash_settle(void)
+{
+	if (psp_boxb_check)
+		psp_boxb_settle_all();
+}
+
+/* a map's objects go, or a game state is loaded: nothing of theirs is owed */
+void psp_boxb_forget(void)
+{
+	int k;
+
+	for (k = 0; k < PSP_BOXB_SLOTS; k++)
+		psp_boxb[k].object_index = NONE;
+	psp_boxb_count = 0;
+	psp_boxb_changed = 1;
+	psp_boxb_for_me();
+}
+
+/* the IK moves the arm's nodes after the walk (unit_postprocess_node_matrices):
+the nodes under them are made first, from the walk's matrices, so a later
+make of them reads what the whole walk's postprocess read */
+static void psp_boxb_before_ik(long object_index, short node)
+{
+	struct psp_boxb_slot const *slot = &psp_boxb[(unsigned long)object_index & (PSP_BOXB_SLOTS - 1)];
+
+	if (psp_boxb_count && slot->object_index == object_index && node >= 0 && node < 64)
+	{
+		unsigned long long below = psp_box_posing_below(slot->plan, node);
+
+		psp_boxb_in_ik = 1;
+		PSP_BOXB_READ(object_index, below);
+		psp_boxb_in_ik = 0;
+	}
+}
+
+/* each tick's end (the objects' loop's), and the log every 900 ticks */
+static void psp_boxb_tick_end(void)
+{
+	psp_boxb_for_me();
+	if (psp_boxb_on <= 0 || ++psp_boxb_ticks < 900)
+		return;
+	{
+		char sites[PSP_BOXB_SITES * 28];
+		int at = 0, s;
+
+		sites[0] = 0;
+		for (s = 0; s < PSP_BOXB_SITES && psp_boxb_site[s]; s++)
+			at += snprintf(sites + at, sizeof(sites) - at, " %08lx:%lu/%lu", (unsigned long)psp_boxb_site[s],
+				psp_boxb_site_n[s], psp_boxb_site_nodes[s]);
+		platform_psp_log("boxposeb: %lu ticks: %lu biped poses, %lu owing; nodes %lu of %lu made by the poses; "
+			"late makes %lu (%lu nodes), IK makes %lu (%lu nodes); posed whole: drawn on a frame's last tick %lu, "
+			"dead or attached %lu, slot taken %lu; owing now %d; settled whole %lu; ME reads with no actor to give back %lu",
+			psp_boxb_ticks, psp_boxb_poses, psp_boxb_owing_poses, psp_boxb_nodes_made, psp_boxb_nodes_all,
+			psp_boxb_late, psp_boxb_late_nodes, psp_boxb_ik, psp_boxb_ik_nodes, psp_boxb_drawn_whole,
+			psp_boxb_dead_or_held, psp_boxb_busy, psp_boxb_count, psp_boxb_settled_all, psp_boxb_me_stray);
+		platform_psp_log("boxposeb: late makes by reader (site:makes/nodes):%s; other readers %lu", sites, psp_boxb_sites_other);
+	}
+	psp_boxb_ticks = psp_boxb_poses = psp_boxb_owing_poses = psp_boxb_nodes_all = psp_boxb_nodes_made = 0;
+	psp_boxb_late = psp_boxb_late_nodes = psp_boxb_ik = psp_boxb_ik_nodes = psp_boxb_busy = 0;
+	psp_boxb_drawn_whole = psp_boxb_dead_or_held = psp_boxb_settled_all = psp_boxb_sites_other = 0;
+	csmemset(psp_boxb_site, 0, sizeof(psp_boxb_site));
+	csmemset(psp_boxb_site_n, 0, sizeof(psp_boxb_site_n));
+	csmemset(psp_boxb_site_nodes, 0, sizeof(psp_boxb_site_nodes));
+}
+#endif
+"""),
+("""__attribute__((noinline)) static void psp_nms_close(void)
+{
+	long word;
+
+	psp_nms_open = 0;
+""",
+ """__attribute__((noinline)) static void psp_nms_close(void)
+{
+	long word;
+
+#ifdef PSP_BOX_POSING
+	psp_boxb_tick_end();
+#endif
+	psp_nms_open = 0;
+"""),
+("""void psp_nms_game_state_saving(void)
+{
+	long word;
+
+""",
+ """void psp_nms_game_state_saving(void)
+{
+	long word;
+
+#ifdef PSP_BOX_POSING
+	psp_boxb_settle_all();
+#endif
+"""),
+("""void psp_nms_game_state_loading(void)
+{
+	psp_nms_forget();
+}""",
+ """void psp_nms_game_state_loading(void)
+{
+	psp_nms_forget();
+#ifdef PSP_BOX_POSING
+	psp_boxb_forget();
+#endif
+}"""),
+("""	PSP_NMS_READ(object_index); /* psp_fixups.py (FIXES_NMSKIP) */
+	/* while a frame is drawn, the pose between the last two ticks
+	(port/linux/game/render_interpolation.c) */
+	real_matrix4x3 *interpolated = render_interpolation_object_node_matrices(object_index);
+""",
+ """	PSP_NMS_READ(object_index); /* psp_fixups.py (FIXES_NMSKIP) */
+#ifdef PSP_BOX_POSING
+	PSP_BOXB_READ(object_index, ~0ull); /* the whole block: every owed node */
+#endif
+	/* while a frame is drawn, the pose between the last two ticks
+	(port/linux/game/render_interpolation.c) */
+	real_matrix4x3 *interpolated = render_interpolation_object_node_matrices(object_index);
+"""),
+("""			node_index = 0;
+		}
+	}
+
+	{
+		real_matrix4x3 *interpolated = render_interpolation_object_node_matrices(object_index);
+
+		if (interpolated)
+			return &interpolated[node_index];
+	}""",
+ """			node_index = 0;
+		}
+	}
+#ifdef PSP_BOX_POSING
+	PSP_BOXB_READ(object_index, 1ull << node_index); /* the node and its parents */
+#endif
+
+	{
+		real_matrix4x3 *interpolated = render_interpolation_object_node_matrices(object_index);
+
+		if (interpolated)
+			return &interpolated[node_index];
+	}"""),
+("""short object_get_marker_by_name(
+	long object_index,
+	char const *name,
+	struct object_marker *markers,
+	short maximum_marker_count)
+{""",
+ """#ifdef PSP_BOX_POSING
+/* the nodes model_get_marker_by_name will read for the marker (the
+instances its loop takes, by the object's permutations, up to its count) and
+the root its caller falls back to */
+static unsigned long long psp_boxb_marker_nodes(struct object_datum const *object,
+	struct object_definition const *object_definition, char const *name, short maximum_marker_count)
+{
+	unsigned long long nodes = 1;
+	long model_index = object_definition->object.model.index;
+	short marker_index, i, found = 0;
+
+	if (model_index == NONE)
+		return nodes;
+	marker_index = model_find_marker(model_index, name);
+	if (marker_index != NONE)
+	{
+		struct model *model = model_definition_get(model_index);
+		struct model_marker *marker = TAG_BLOCK_GET_ELEMENT(&model->markers, marker_index, struct model_marker);
+		short count = (short)MIN(model->nodes.count, 64);
+
+		for (i = 0; i < marker->instances.count; i++)
+		{
+			struct model_marker_instance *instance = TAG_BLOCK_GET_ELEMENT(&marker->instances, i, struct model_marker_instance);
+
+			if (instance->region_index >= MAXIMUM_REGIONS_PER_OBJECT || instance->node_index >= count)
+				continue;
+			if (object->object.region_permutations[instance->region_index] == instance->permutation_index)
+			{
+				if (found++ >= maximum_marker_count)
+					break;
+				nodes |= 1ull << instance->node_index;
+			}
+		}
+	}
+	return nodes;
+}
+
+/* object_get_node_matrices without means B's whole make: its caller has
+made what it reads */
+static __inline__ __attribute__((always_inline)) real_matrix4x3 *psp_boxb_node_matrices(long object_index)
+{
+	if (psp_nmr_on > 0)
+		psp_nmr_read(object_index, __builtin_return_address(0));
+	PSP_NMS_READ(object_index);
+	{
+		real_matrix4x3 *interpolated = render_interpolation_object_node_matrices(object_index);
+
+		if (interpolated)
+			return interpolated;
+	}
+	return (real_matrix4x3 *)object_header_block_get(object_index, &object_get(object_index)->object.node_matrices);
+}
+#endif
+
+short object_get_marker_by_name(
+	long object_index,
+	char const *name,
+	struct object_marker *markers,
+	short maximum_marker_count)
+{"""),
+("""	which is when the game asks for markers, this is the same array. */
+	real_matrix4x3 const *matrices = object_get_node_matrices(object_index);
+""",
+ """	which is when the game asks for markers, this is the same array. */
+#ifdef PSP_BOX_POSING
+	/* means B: the marker's nodes only */
+	PSP_BOXB_READ(object_index, psp_boxb_marker_nodes(object, object_definition, name, maximum_marker_count));
+	real_matrix4x3 const *matrices = psp_boxb_node_matrices(object_index);
+#else
+	real_matrix4x3 const *matrices = object_get_node_matrices(object_index);
+#endif
+"""),
+("""		if (desired_hand_index!=NONE)
+		{
+			matrix4x3_inverse(&hand_marker.node_matrix, &desired_hand_matrix);""",
+ """		if (desired_hand_index!=NONE)
+		{
+#ifdef PSP_BOX_POSING
+			psp_boxb_before_ik(hand_object_index, desired_hand_index);
+#endif
+			matrix4x3_inverse(&hand_marker.node_matrix, &desired_hand_matrix);"""),
+]
+FIXES_BOXPOSING["source/units/biped_limp_noodle.c#boxposeb"] = [
+("""	struct object_datum *object = object_get(biped_index);
+	real_matrix4x3 *node_matrices = (real_matrix4x3 *)object_header_block_get(
+		biped_index,
+		&object->object.node_matrices);""",
+ """	struct object_datum *object = object_get(biped_index);
+#ifdef PSP_BOX_POSING
+	/* psp_fixups.py (FIXES_BOXPOSING, means B): the body reads and moves
+	every node: an owed one is made first (a pose owes nothing once dead, but
+	this tick's may be the last made alive) */
+	void psp_boxb_whole(long object_index);
+
+	psp_boxb_whole(biped_index);
+#endif
+	real_matrix4x3 *node_matrices = (real_matrix4x3 *)object_header_block_get(
+		biped_index,
+		&object->object.node_matrices);"""),
+]
+FIXES_BOXPOSING["source/physics/collisions.c#boxposeb"] = [
+("""					if (psp_nms_me[0] && ((psp_nms_me[16 + ((unsigned short)absolute_index >> 5)] >> (absolute_index & 31)) & 1))
+						return -1;""",
+ """					if (psp_nms_me[0] && ((psp_nms_me[16 + ((unsigned short)absolute_index >> 5)] >> (absolute_index & 31)) & 1))
+						return -1;
+#ifdef PSP_BOX_POSING
+					{
+						/* psp_fixups.py (FIXES_BOXPOSING, means B): a pose with
+						nodes owed, as the hand-over's copy has it, is the main
+						CPU's to make */
+						int psp_boxb_me_lacks(long object_index, unsigned long long want);
+
+						if (psp_boxb_me_lacks(object_index, ~0ull))
+							return -1;
+					}
+#endif"""),
+]
+FIXES_BOXPOSING["source/saved games/game_state.c#boxposeb"] = [
+("""	if (!asked || !game_state_globals.base_address)
+		return;""",
+ """	if (!asked || !game_state_globals.base_address)
+		return;
+#ifdef PSP_BOX_POSING
+	{
+		/* psp_fixups.py (FIXES_BOXPOSING): "boxposebcheck" makes every owed
+		node before the hash, so a means B run's state hash is comparable
+		with the whole walk's */
+		extern void psp_boxb_hash_settle(void);
+
+		psp_boxb_hash_settle();
+	}
+#endif"""),
 ]
 
 

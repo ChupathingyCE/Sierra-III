@@ -31,6 +31,11 @@ struct psp_box_plan
 {
 	struct box_posing_plan plan;
 	struct box_posing_place place;
+	/* means B (docs/box_posing.md §1b): the nodes every pose of the
+	definition makes for its standing readers (0 until the engine's side has
+	named them), and every node of its model (0 when its walk isn't whole:
+	such a model owes nothing) */
+	unsigned long long standing, all;
 };
 
 int psp_keep(const char *name);
@@ -97,9 +102,14 @@ const void *psp_box_posing_plan_add(const void *model, const short *links, int c
 		whole->place.bounding_offset[c] = constants[6 + c];
 	}
 	whole->place.bounding_radius = constants[9];
+	whole->standing = 0;
+	whole->all = plan->whole && count > 1 ? (count >= 64 ? ~0ull : (1ull << count) - 1) : 0;
+	/* a plan for one call is made over by the next: what it would owe
+	couldn't be made from it later */
 	if (whole == &psp_box_spare)
 	{
 		psp_box_spares++;
+		whole->all = 0;
 		return whole;
 	}
 	for (probe = 0; probe < 8; probe++, k = (k + 1) & (PSP_BOX_SLOTS - 1))
@@ -111,6 +121,7 @@ const void *psp_box_posing_plan_add(const void *model, const short *links, int c
 		}
 	/* eight slots taken in a row: the plan serves this call only */
 	psp_box_spare = *whole;
+	psp_box_spare.all = 0;
 	psp_box_spares++;
 	return &psp_box_spare;
 }
@@ -118,9 +129,11 @@ const void *psp_box_posing_plan_add(const void *model, const short *links, int c
 /* one object by reference (means A): its position, forward and up where the
 object holds them, its parent's node matrix (13 floats) or NULL; the sphere
 straight into the object's centre and radius (4 floats). Nothing is copied:
-`plan` carries what the definition fixes */
-void psp_box_posing_pose(const void *plan, unsigned int flags, const float *position, const float *forward,
-	const float *up, float scale, const float *parent, const float *orientations, float *nodes, float *sphere)
+`plan` carries what the definition fixes. Means B: only `want`'s nodes (and
+their parents, and the root) are made; returns the nodes made */
+unsigned long long psp_box_posing_pose(const void *plan, unsigned int flags, const float *position, const float *forward,
+	const float *up, float scale, const float *parent, const float *orientations, float *nodes, float *sphere,
+	unsigned long long want)
 {
 	const struct psp_box_plan *whole = (const struct psp_box_plan *)plan;
 	struct box_posing_ref ref;
@@ -135,6 +148,33 @@ void psp_box_posing_pose(const void *plan, unsigned int flags, const float *posi
 	ref.scale = scale;
 	ref.place = &whole->place;
 	psp_box_poses++;
-	box_posing_pose_ref(&whole->plan, &ref, (const box_orientation *)orientations, (box_matrix *)nodes, sphere,
-		psp_box_claim);
+	return box_posing_pose_ref(&whole->plan, &ref, (const box_orientation *)orientations, (box_matrix *)nodes, sphere,
+		psp_box_claim, want);
+}
+
+/* means B's late make of an object posed from `plan` (box_posing_make) */
+unsigned long long psp_box_posing_make(const void *plan, const float *orientations, float *nodes,
+	unsigned long long made, unsigned long long want)
+{
+	return box_posing_make(&((const struct psp_box_plan *)plan)->plan, (const box_orientation *)orientations,
+		(box_matrix *)nodes, made, want);
+}
+
+/* the node and the nodes under it, in `plan`'s model */
+unsigned long long psp_box_posing_below(const void *plan, int node)
+{
+	return box_posing_below(&((const struct psp_box_plan *)plan)->plan, node);
+}
+
+/* every node of the plan's model, or 0 when it may owe none */
+unsigned long long psp_box_posing_all(const void *plan)
+{
+	return ((const struct psp_box_plan *)plan)->all;
+}
+
+/* the definition's standing readers' nodes, kept with its plan for the map
+(0: not named yet) */
+unsigned long long *psp_box_posing_standing(const void *plan)
+{
+	return &((struct psp_box_plan *)plan)->standing;
 }

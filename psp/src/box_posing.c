@@ -209,13 +209,63 @@ static void claim(box_matrix *nodes, int count)
 #endif
 }
 
-static void pose(const struct box_posing_plan *plan, const struct place *object,
-	const box_orientation *orientations, box_matrix *nodes, float sphere[4], int claimed)
+unsigned long long box_posing_make(const struct box_posing_plan *plan, const box_orientation *orientations,
+	box_matrix *nodes, unsigned long long made, unsigned long long want)
 {
-	float *root_matrix = nodes[0];
+	unsigned long long need = want & ~made;
 	int k;
 
-	if (claimed && plan->whole && plan->nodes > 1 && !(object->flags & BOX_POSE_NO_MODEL))
+	if (!need)
+		return made;
+	/* a node's matrix is its parent's times its own: each wanted node takes
+	its parents with it, back to one made. The walk's order has every parent
+	before its children, so a pass from its end carries each want up */
+	for (k = plan->nodes - 1; k > 0; k--)
+	{
+		int at = plan->order[k];
+
+		if (need >> at & 1)
+			need |= 1ull << plan->parent[at];
+	}
+	need &= ~made;
+	/* then in the walk's own order and with its own products, so a node made
+	here is the bits the whole walk makes */
+	for (k = 1; k < plan->nodes; k++)
+	{
+		int at = plan->order[k];
+
+		if (need >> at & 1)
+		{
+			float node[13];
+
+			from_orientation(orientations[at], node);
+			multiply(nodes[plan->parent[at]], node, nodes[at]);
+		}
+	}
+	return made | need;
+}
+
+unsigned long long box_posing_below(const struct box_posing_plan *plan, int node)
+{
+	unsigned long long below = 1ull << node;
+	int k;
+
+	for (k = 1; k < plan->nodes; k++)
+		if (below >> plan->parent[plan->order[k]] & 1)
+			below |= 1ull << plan->order[k];
+	return below;
+}
+
+static unsigned long long pose(const struct box_posing_plan *plan, const struct place *object,
+	const box_orientation *orientations, box_matrix *nodes, float sphere[4], int claimed, unsigned long long want)
+{
+	float *root_matrix = nodes[0];
+	unsigned long long made = 1;
+	int k;
+
+	/* a line claimed holds nothing defined until it is stored: only a walk
+	that stores every node may claim */
+	if (claimed && plan->whole && plan->nodes > 1 && !(object->flags & BOX_POSE_NO_MODEL) && !~want)
 		claim(nodes, plan->nodes);
 
 	if ((object->flags & BOX_POSE_NO_MODEL) || plan->nodes == 0)
@@ -228,6 +278,7 @@ static void pose(const struct box_posing_plan *plan, const struct place *object,
 			root_matrix[10 + k] = object->position[k];
 		}
 		cross(object->up, object->forward, root_matrix + 4);
+		made = ~0ull;
 	}
 	else
 	{
@@ -241,13 +292,19 @@ static void pose(const struct box_posing_plan *plan, const struct place *object,
 			root(object, node, root_matrix);
 		/* the walk: each node from its orientation, under its parent, which
 		the plan's order has made already */
-		for (k = 1; k < plan->nodes; k++)
+		if (!~want)
 		{
-			int at = plan->order[k];
+			for (k = 1; k < plan->nodes; k++)
+			{
+				int at = plan->order[k];
 
-			from_orientation(orientations[at], node);
-			multiply(nodes[plan->parent[at]], node, nodes[at]);
+				from_orientation(orientations[at], node);
+				multiply(nodes[plan->parent[at]], node, nodes[at]);
+			}
+			made = ~0ull;
 		}
+		else
+			made = box_posing_make(plan, orientations, nodes, 1, want);
 	}
 	{
 		/* the engine's matrix4x3_transform_point of the bounding offset by the root */
@@ -263,6 +320,7 @@ static void pose(const struct box_posing_plan *plan, const struct place *object,
 			sphere[k] = root_matrix[7 + k] * z + root_matrix[4 + k] * y + root_matrix[1 + k] * x + root_matrix[10 + k];
 		sphere[3] = object->scale > 0.f ? object->bounding_radius * object->scale : object->bounding_radius;
 	}
+	return made;
 }
 
 void box_posing_pose(const struct box_posing_plan *plan, const struct box_posing_object *object,
@@ -280,11 +338,11 @@ void box_posing_pose(const struct box_posing_plan *plan, const struct box_posing
 	place.bounding_radius = object->bounding_radius;
 	place.scale = object->scale;
 	place.parent = object->parent;
-	pose(plan, &place, orientations, nodes, sphere, 0);
+	pose(plan, &place, orientations, nodes, sphere, 0, ~0ull);
 }
 
-void box_posing_pose_ref(const struct box_posing_plan *plan, const struct box_posing_ref *ref,
-	const box_orientation *orientations, box_matrix *nodes, float sphere[4], int claim)
+unsigned long long box_posing_pose_ref(const struct box_posing_plan *plan, const struct box_posing_ref *ref,
+	const box_orientation *orientations, box_matrix *nodes, float sphere[4], int claim, unsigned long long want)
 {
 	struct place place;
 
@@ -298,5 +356,5 @@ void box_posing_pose_ref(const struct box_posing_plan *plan, const struct box_po
 	place.bounding_radius = ref->place->bounding_radius;
 	place.scale = ref->scale;
 	place.parent = ref->parent;
-	pose(plan, &place, orientations, nodes, sphere, claim);
+	return pose(plan, &place, orientations, nodes, sphere, claim, want);
 }

@@ -90,8 +90,22 @@ struct box_posing_ref
 /* box_posing_pose by reference; `sphere` may be the object's own centre and
 radius. With `claim`, the node block's lines that the walk overwrites whole are
 taken into the data cache without being read first (a plan that is `whole`
-only; the caller vouches that `nodes` is cached memory the main CPU owns) */
-void box_posing_pose_ref(const struct box_posing_plan *plan, const struct box_posing_ref *ref,
-	const box_orientation *orientations, box_matrix *nodes, float sphere[4], int claim);
+only; the caller vouches that `nodes` is cached memory the main CPU owns).
+Means B (docs/box_posing.md §1b): only the nodes in `want` (a bit a node
+index; ~0 for all) and their parents are made, the root always; the rest are
+owed, made later by box_posing_make from the same orientations. Returns the
+nodes made (~0 for all) */
+unsigned long long box_posing_pose_ref(const struct box_posing_plan *plan, const struct box_posing_ref *ref,
+	const box_orientation *orientations, box_matrix *nodes, float sphere[4], int claim, unsigned long long want);
+
+/* means B's late make: the nodes in `want` that `made` lacks, with the
+parents they need, made exactly as the whole walk makes them (the same
+products in the same order, each node under its parent). The orientations
+must be the ones the pose was given. Returns the nodes made now and before */
+unsigned long long box_posing_make(const struct box_posing_plan *plan, const box_orientation *orientations,
+	box_matrix *nodes, unsigned long long made, unsigned long long want);
+
+/* the node and every node under it */
+unsigned long long box_posing_below(const struct box_posing_plan *plan, int node);
 
 #endif
