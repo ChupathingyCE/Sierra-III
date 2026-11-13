@@ -14930,7 +14930,9 @@ unsigned int psp_ge_drawlist_room_bytes(void)
 	extern int psp_keep_number(const char *prefix, int fallback);
 	int kb;
 
-	if (!psp_drawlist_on() || psp_keep("drawlistblocksoff"))
+	/* drawlistroomonly: the room taken with the blocks off, the control that
+	tells the texture cache's smaller room from the blocks themselves */
+	if (!psp_drawlist_on() || (psp_keep("drawlistblocksoff") && !psp_keep("drawlistroomonly")))
 		return 0;
 	kb = psp_keep_number("drawlistkb", DL_KB);
 	kb = kb < DL_KB_LEAST ? DL_KB_LEAST : kb > DL_KB_MOST ? DL_KB_MOST : kb;
