@@ -27988,6 +27988,58 @@ static void psp_sleepy_update(long object_index, short absolute_index, struct ob
 # map an object loop split into phases needs: who reads whom), and each store
 # into a sleeping object at any time, with whether it changed the bytes (the
 # writers a sleeper would have to be told by). docs/recon_134.md
+# "nodereaders" (recon only, keep word nodereaders; box_posing.md §1b's
+# census): each object definition's model node parents, logged once when an
+# object of it is first posed, so the emulator's node-reader census (the lab's
+# halo-local.patch item 32) can close each reader's nodes over their chains
+FIXES_RECON["source/models/models.c#nodereaders"] = [
+("""void model_node_matrices_from_orientations(
+	struct model const *model,""",
+"""#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_RECON #nodereaders) */
+int psp_keep(const char *name);
+void platform_psp_log(const char *format, ...);
+void psp_nodeparents_note(long definition_index, struct model const *model, short node_count)
+{
+	static int on = -1;
+	static unsigned char seen[8192];
+	unsigned int key = (unsigned int)definition_index & 0xFFFFu;
+	char line[64 * 4 + 1];
+	int k, at = 0;
+
+	if (on < 0)
+		on = psp_keep("nodereaders") != 0;
+	if (!on || (seen[key >> 3] & (1u << (key & 7))))
+		return;
+	seen[key >> 3] |= (unsigned char)(1u << (key & 7));
+	line[0] = 0;
+	for (k = 0; k < node_count && k < 64; k++)
+	{
+		struct model_node const *node = TAG_BLOCK_GET_ELEMENT(&model->nodes, k, struct model_node);
+
+		at += snprintf(line + at, sizeof(line) - at, "%s%d", k ? "," : "", (int)node->parent_node_index);
+		if (at >= (int)sizeof(line))
+			break;
+	}
+	platform_psp_log("nodeparents: %08lx %d %s", (unsigned long)definition_index, (int)node_count, line);
+}
+#endif
+
+void model_node_matrices_from_orientations(
+	struct model const *model,"""),
+]
+FIXES_RECON["source/objects/objects.c#nodereaders"] = [
+("""		short model_node_count = (short)MIN(model->nodes.count, MAXIMUM_NODES_PER_MODEL);""",
+"""		short model_node_count = (short)MIN(model->nodes.count, MAXIMUM_NODES_PER_MODEL);
+#ifdef HALO_PSP
+		{
+			/* psp_fixups.py (FIXES_RECON #nodereaders) */
+			extern void psp_nodeparents_note(long definition_index, struct model const *model, short node_count);
+
+			psp_nodeparents_note(object->definition_index, model, model_node_count);
+		}
+#endif"""),
+]
 FIXES_RECON["source/objects/objects.c#objtrace"] = [
 ("""void objects_update(
 	void)
