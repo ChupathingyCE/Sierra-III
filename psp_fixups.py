@@ -27413,6 +27413,7 @@ FIXES_RECON["source/render/render.c#visspan"] = [
 	rasterizer_window_begin(&parameters);
 """),
 ("""		first_person_weapon_render_update();
+		HALO_PERF_RENDER_PART(_halo_perf_render_world);
 		lights_preprocess_scene();
 """, """		first_person_weapon_render_update();
 #ifdef HALO_PSP
@@ -27422,6 +27423,7 @@ FIXES_RECON["source/render/render.c#visspan"] = [
 			psp_ge_visspan(2);
 		}
 #endif
+		HALO_PERF_RENDER_PART(_halo_perf_render_world);
 		lights_preprocess_scene();
 """),
 ]
@@ -27986,6 +27988,58 @@ static void psp_sleepy_update(long object_index, short absolute_index, struct ob
 # map an object loop split into phases needs: who reads whom), and each store
 # into a sleeping object at any time, with whether it changed the bytes (the
 # writers a sleeper would have to be told by). docs/recon_134.md
+# "nodereaders" (recon only, keep word nodereaders; box_posing.md §1b's
+# census): each object definition's model node parents, logged once when an
+# object of it is first posed, so the emulator's node-reader census (the lab's
+# halo-local.patch item 32) can close each reader's nodes over their chains
+FIXES_RECON["source/models/models.c#nodereaders"] = [
+("""void model_node_matrices_from_orientations(
+	struct model const *model,""",
+"""#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_RECON #nodereaders) */
+int psp_keep(const char *name);
+void platform_psp_log(const char *format, ...);
+void psp_nodeparents_note(long definition_index, struct model const *model, short node_count)
+{
+	static int on = -1;
+	static unsigned char seen[8192];
+	unsigned int key = (unsigned int)definition_index & 0xFFFFu;
+	char line[64 * 4 + 1];
+	int k, at = 0;
+
+	if (on < 0)
+		on = psp_keep("nodereaders") != 0;
+	if (!on || (seen[key >> 3] & (1u << (key & 7))))
+		return;
+	seen[key >> 3] |= (unsigned char)(1u << (key & 7));
+	line[0] = 0;
+	for (k = 0; k < node_count && k < 64; k++)
+	{
+		struct model_node const *node = TAG_BLOCK_GET_ELEMENT(&model->nodes, k, struct model_node);
+
+		at += snprintf(line + at, sizeof(line) - at, "%s%d", k ? "," : "", (int)node->parent_node_index);
+		if (at >= (int)sizeof(line))
+			break;
+	}
+	platform_psp_log("nodeparents: %08lx %d %s", (unsigned long)definition_index, (int)node_count, line);
+}
+#endif
+
+void model_node_matrices_from_orientations(
+	struct model const *model,"""),
+]
+FIXES_RECON["source/objects/objects.c#nodereaders"] = [
+("""		short model_node_count = (short)MIN(model->nodes.count, MAXIMUM_NODES_PER_MODEL);""",
+"""		short model_node_count = (short)MIN(model->nodes.count, MAXIMUM_NODES_PER_MODEL);
+#ifdef HALO_PSP
+		{
+			/* psp_fixups.py (FIXES_RECON #nodereaders) */
+			extern void psp_nodeparents_note(long definition_index, struct model const *model, short node_count);
+
+			psp_nodeparents_note(object->definition_index, model, model_node_count);
+		}
+#endif"""),
+]
 FIXES_RECON["source/objects/objects.c#objtrace"] = [
 ("""void objects_update(
 	void)
@@ -28092,6 +28146,53 @@ void objects_update(
 """, """				psp_objtrace[2] = (unsigned long)i; /* (FIXES_RECON #objtrace) */
 				object_update(DATUM_INDEX_NEW(i, object_header->identifier));
 				psp_objtrace[2] = (unsigned long)-1;
+"""),
+]
+
+# "tickcore" (recon only, with "objtrace" and the emulator's PSP_OBJTRACE_STEP):
+# the two-core tick's census (lab research/opportunities/tick_core.md). The
+# emulator classes each tick load by who last wrote the word this tick, so it
+# needs the tick's start: psp_objtrace[5] counts game_tick's calls. And the
+# AI's think reads its own unit as its own, so while an actor updates the
+# trace names the actor's unit as the object updating
+FIXES_RECON["source/game/game.c#tickcore"] = [
+("""	profile_tick_start();
+	collision_log_begin_period(0);
+""", """	profile_tick_start();
+	{
+		/* psp_fixups.py (FIXES_RECON #tickcore): the tick's epoch */
+		extern volatile unsigned long psp_objtrace[8];
+
+		psp_objtrace[5]++;
+	}
+	collision_log_begin_period(0);
+"""),
+]
+FIXES_RECON["source/ai/actors.c#tickcore"] = [
+("""	global_updating_actor_index = actor_index;
+""", """	global_updating_actor_index = actor_index;
+	{
+		/* psp_fixups.py (FIXES_RECON #tickcore): the actor's unit as the
+		object updating, so its think reads that unit as its own */
+		extern volatile unsigned long psp_objtrace[8];
+
+		psp_objtrace[2] = actor->meta.unit_index != NONE
+			? (unsigned long)DATUM_INDEX_TO_ABSOLUTE_INDEX(actor->meta.unit_index) : (unsigned long)-1;
+	}
+"""),
+("""	global_updating_actor_index = NONE;
+
+	return;
+}
+""", """	global_updating_actor_index = NONE;
+	{
+		extern volatile unsigned long psp_objtrace[8];
+
+		psp_objtrace[2] = (unsigned long)-1; /* (FIXES_RECON #tickcore) */
+	}
+
+	return;
+}
 """),
 ]
 
@@ -28413,9 +28514,13 @@ FIXES_RECON["source/objects/objects.c#objcost"] = [
 FIXES_RECON["source/objects/objects.c#objsteps"] = [
 ("""
 	boolean result = TRUE;
+	boolean elevator_sampled = FALSE;
+	real_point3d elevator_sample;
 	if (!TEST_FLAG(header->flags, _object_header_do_not_update_bit))
 	{""", """
 	boolean result = TRUE;
+	boolean elevator_sampled = FALSE;
+	real_point3d elevator_sample;
 #ifdef PSP_TICK_STEPS
 	/* psp_fixups.py (FIXES_RECON #objsteps) */
 	extern void psp_objsteps_push(long definition, int type, int drawing);
@@ -28483,7 +28588,7 @@ FIXES_RECON["source/effects/particles.c#particlecensus"] = [
  "\t\t\tpsp_particles_refused++;\n\t\t\tPSP_CENSUS(definition_index, refused);\n\t\t\tpsp_particle_census(psp_particle_effect, definition_index, 2);\n\t\t\treturn 0;\n"),
 ("\t\t{\n\t\t\tpsp_particles_thinned++;\n\t\t\tPSP_CENSUS(definition_index, thinned);\n\t\t\treturn 0;\n\t\t}\n\t}\n\treturn 1;\n}\n",
  "\t\t{\n\t\t\tpsp_particles_thinned++;\n\t\t\tPSP_CENSUS(definition_index, thinned);\n\t\t\tpsp_particle_census(psp_particle_effect, definition_index, 3);\n\t\t\treturn 0;\n\t\t}\n\t}\n\treturn 1;\n}\n"),
-("\tparticle_index = datum_new(particle_data);\n\n\tif (particle_index == NONE)\n\t\treturn;\n#ifdef HALO_PSP\n",
+("\tparticle_index = datum_new(particle_data);\n\n\tif (particle_index == NONE)\n\t\treturn;\n\tparticles_made(particle_index);\n#ifdef HALO_PSP\n",
 """\tparticle_index = datum_new(particle_data);
 
 \tif (particle_index == NONE)
@@ -28493,6 +28598,7 @@ FIXES_RECON["source/effects/particles.c#particlecensus"] = [
 #endif
 \t\treturn;
 \t}
+\tparticles_made(particle_index);
 #ifdef HALO_PSP
 \tpsp_particle_census(psp_particle_effect, data->definition_index, 0);
 """),
