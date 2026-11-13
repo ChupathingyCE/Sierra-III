@@ -299,6 +299,8 @@ All proofs are emulator runs unless marked. Keep words: `pathrec` (`pathlog`), `
 - **The gate at 12,600 opens:** the gap is still there on three variants but is over inside its window, and the BSP differs for 30-90 ticks, against ~9,000 without the kills. **Seed 2 and posing B's build reach d20's end and load the next level, the first held variants to.**
 - **Not yet met:** kills let go are not few; the gap is shorter, not gone (the BSP wait on the branch is for it; padpath6 43410963407 reads it).
 
+**padpath6 (04:53, the builder; 43410963407 on 7f213de) [E]:** the BSP wait runs 5-6 ticks in the whole level and the gap at 12,600 is unchanged. That gap sits inside the stand-down: this run's own script moves the player during a cinematic, 60-120 ticks off Sheepdog01's timing, and the hold has him again about 120 ticks later [U on the cause]. It is a cutscene's timing, not a lost route: those ticks are not held by design and the `hold:` line counts them apart. Whether a held variant reaches the level's seated end is luck until slice 4.
+
 **Its proofs (padpath5):** the path made again with `pathrec pathlog` (statecrc identical to the run without; `pathcheck` PROVEN and its count of deaths); `padhold` on that game: no kill forced, play and seeds identical; `padhold` on seeds 1-2, `vfpudotoff` and posing B: actor-ticks per window against the base's (the bar: ±15% in the fight windows), kills forced and matched, and the far gap at 12,600 gone or walked.
 
 ## 12. Open, and who can close it
