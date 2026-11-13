@@ -276,6 +276,12 @@ made from has changed. This is the state of the block being written or
 checked, the replay's own: a cache line of its own, as the hooks in the
 draw path read it on whichever CPU replays */
 #define DEFER_KEPT_WORDS 3
+/* the blocks' arena: the display list's last KB (display_list_acquire),
+"drawlistkbN" */
+#define DL_KB 128
+#define DL_KB_LEAST 32
+static unsigned int dl_arena_at = 0, dl_arena_bytes = 0;
+int psp_drawlist_on(void);
 #define DL_SHAPES 4
 #define DL_DEPS 64
 enum { DL_NEVER_ROOM = 1, DL_NEVER_NEAR = 2, DL_NEVER_FIRST_PERSON = 4, DL_NEVER_SKY = 8, DL_NEVER_CAMO = 16,
@@ -4468,6 +4474,11 @@ static int display_list_free_kb = 0, display_list_largest_kb = 0;
 /* at least this much stays free outside the heap for what is made later
 (threads' stacks, the blackbox's buffer: b104 took 32 KB more after load) */
 #define DISPLAY_LIST_LEAVES_FREE (128 * 1024)
+#ifdef PSP_DRAWLIST
+#define DL_ARENA_BYTES dl_arena_bytes
+#else
+#define DL_ARENA_BYTES 0
+#endif
 
 static void transparent_table_acquire(void); /* build 114: the see-through table, with the list */
 
@@ -4479,8 +4490,23 @@ static void display_list_acquire(void)
 		return;
 	if (psp_keep("list512"))
 		display_list_size = DISPLAY_LIST_BYTES;
-	if ((int)sceKernelTotalFreeMemSize() >= display_list_size + 64 + DISPLAY_LIST_LEAVES_FREE)
-		block = sceKernelAllocPartitionMemory(2, "halo display list", PSP_SMEM_High, display_list_size + 64, NULL);
+#ifdef PSP_DRAWLIST
+	/* the draw list's blocks hold words the list would have held: their
+	arena is the list's last KB (on b30 there is no other room: taken from the
+	heap, 192 KB left it full) */
+	if (psp_drawlist_on() && !psp_keep("drawlistblocksoff"))
+	{
+		extern int psp_keep_number(const char *prefix, int fallback);
+		int kb = psp_keep_number("drawlistkb", DL_KB);
+
+		kb = kb < DL_KB_LEAST ? DL_KB_LEAST : kb > display_list_size / 4096 ? display_list_size / 4096 : kb;
+		dl_arena_bytes = (unsigned int)kb * 1024;
+		display_list_size -= kb * 1024;
+	}
+#endif
+	if ((int)sceKernelTotalFreeMemSize() >= display_list_size + (int)DL_ARENA_BYTES + 64 + DISPLAY_LIST_LEAVES_FREE)
+		block = sceKernelAllocPartitionMemory(2, "halo display list", PSP_SMEM_High, display_list_size + DL_ARENA_BYTES + 64,
+			NULL);
 	if (block >= 0)
 	{
 		display_list = (unsigned int *)(((unsigned int)sceKernelGetBlockHeadAddr(block) + 63) & ~63u);
@@ -4488,9 +4514,16 @@ static void display_list_acquire(void)
 	}
 	else
 	{
-		display_list = memalign(64, display_list_size);
+		display_list = memalign(64, display_list_size + DL_ARENA_BYTES);
 		display_list_where = display_list ? "the heap (no room for it outside)" : "nowhere: no memory";
 	}
+#ifdef PSP_DRAWLIST
+	if (display_list && dl_arena_bytes)
+	{
+		dl_arena_at = (unsigned int)display_list + (unsigned int)display_list_size;
+		sceKernelDcacheWritebackInvalidateRange((void *)dl_arena_at, dl_arena_bytes);
+	}
+#endif
 	display_list_free_kb = sceKernelTotalFreeMemSize() / 1024;
 	display_list_largest_kb = sceKernelMaxFreeMemSize() / 1024;
 	/* build 114: no line of the block left in the cache from earlier use
@@ -14796,8 +14829,6 @@ DL_FRAMES_OUT frames after the replay left it.
 records in the room past the arena's newest and compared word by word (an
 address inside the block compared as its offset), then given up; the CALL
 is the kept block's */
-#define DL_KB 192
-#define DL_KB_LEAST 32
 #define DL_SLOTS 1024
 #define DL_TEX_NOTES 32
 #define DL_FRAMES_OUT 3
@@ -14881,25 +14912,21 @@ void psp_tex_dl_drop(void);
 
 static void dl_words_read(void)
 {
-	unsigned int kb = (unsigned int)psp_keep_number("drawlistkb", DL_KB);
-	void *arena = NULL;
-
 	dl_words.on = psp_drawlist_on() && psp_keep("drawlistblocksoff") == 0;
 	dl_words.check = dl_words.on && psp_keep("drawlistcheck") != 0;
 	if (dl_words.on)
 	{
-		for (; kb >= DL_KB_LEAST && !(arena = memalign(64, kb * 1024)); kb /= 2)
-			;
-		if (arena)
+		if (dl_arena_at)
 		{
-			dl_words.arena = (unsigned int)arena;
-			dl_words.bytes = kb * 1024;
-			platform_log("GE: drawlist: the blocks' arena %u KB (two halves)%s", kb, dl_words.check ? "; drawlistcheck on" : "");
+			dl_words.arena = dl_arena_at;
+			dl_words.bytes = dl_arena_bytes;
+			platform_log("GE: drawlist: the blocks' arena %u KB (two halves), the display list's last; the list %d KB%s",
+				dl_arena_bytes / 1024, display_list_size / 1024, dl_words.check ? "; drawlistcheck on" : "");
 		}
 		else
 		{
 			dl_words.on = 0;
-			platform_log("GE: drawlist: no room for the blocks' arena; the blocks off (the origin still held)");
+			platform_log("GE: drawlist: no arena for the blocks (no display list); the blocks off (the origin still held)");
 		}
 	}
 	sceKernelDcacheWritebackRange(&dl_words, sizeof(dl_words));
