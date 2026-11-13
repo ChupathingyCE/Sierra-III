@@ -141,7 +141,9 @@ A stretch is **held** with no snap larger than 2 units, no lost vehicle and p95 
 - **The proof that a path is Sheepdog01's play** is the one B73 used, as a tool: every `player: at` sample in Sheepdog01's own recording log equals the path at that tick to the log's 2 decimals. A path that fails it is not filed.
 - **What is [U]:** that the four pre-rebase pads track in the emulator on their own builds to their ends. The `vfpudot` proof was made on the rebased build's pads. If one parts (a race the old build still had), its path is good to the parting tick and the pad stays A/B input past it. That costs one batch to learn.
 
-c40_play1 (tock eb6d3a7), and b40, d20 and c10 (rebase090 1fbd2bd) are made the same way on builds the tock already tracks.
+c40_play1 (tock eb6d3a7), and b40 and d20 (rebase090 1fbd2bd) are made the same way on builds the tock already tracks.
+
+**c10_play1 can't get a path this way** (2026-11-13 00:4x): Sheepdog01 restarted the level inside that recording and the restart isn't in the pad, so its replay parts from his play by ~1,400 ticks even on a tracking build with its init [M, the lab's bugs.md, sierra-hw 43371365718]. A path is only as good as the replay that makes it. This is the general rule the path makes visible: **a pad gets a path only where its own replay is shown to be Sheepdog01's play** (`pathcheck`), and a recording made with `pathrec` on never has the problem, since its path is written as he plays.
 
 ## 6. Question 5: the corrector's own cost, and its PSP ask
 
