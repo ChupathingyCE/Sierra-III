@@ -46895,6 +46895,167 @@ FIXES_STACKHOT["source/physics/collisions.c#stackhot"] = [
 ]
 
 
+# ---------- FIXES_DECALRING: the decal vertex cache's room taken in turn (keep word decalringold: the old walk)
+# matfxdecal (lab sierra-hw 43382100909, PSP-3000, b40_play1's drive) found a
+# decal's making grow 320 -> 1,989 us as decals pile up, all of it in the room:
+# lruv_block_new walks every block of the cache (the decal's locked proc, a
+# decal datum read, each), then the whole block array again for the blocks
+# over the hole it chose. Decals are never touched, so the cache's "least
+# recently used" is the oldest made, and the walk's choice is near enough the
+# block after the last one made: a ring. Drawing only: proven by play and
+# seeds identical and shots (the far-and-tiny rule, Sheepdog01 2026-11-10)
+FIXES_DECALRING = {}
+FIXES_DECALRING["source/rasterizer/xbox/rasterizer_xbox_decals.c#decalring"] = [
+("""long _rasterizer_decal_vertices_new(
+	long cache_size)
+{""",
+ """/* psp_fixups.py (FIXES_DECALRING): the room taken in turn. The next pages
+after the last block made are taken, the blocks on them let go; a locked
+block (its decal locked or permanent, or made this tick) moves the turn past
+it. Only the blocks let go are read, against every block twice in
+lruv_block_new, which stays the safety net (no room after a few turns, or
+keep word decalringold) */
+#ifdef HALO_PSP
+int psp_keep(const char *name);
+static long psp_ring_page = 0;      /* the first page of the next block made */
+static long psp_ring_prev = NONE;   /* the block that ends there, or NONE at the cache's start */
+static boolean psp_ring_locked(
+	struct lruv_cache *cache,
+	long block_index,
+	struct lruv_cache_block const *block)
+{
+	return (unsigned long)block->last_used_tick == (unsigned long)cache->tick ||
+		(cache->locked_block_proc && cache->locked_block_proc(block_index));
+}
+static long psp_ring_new(
+	struct lruv_cache *cache,
+	long size)
+{
+	static int on = -1;
+	long pages = (size + (1 << cache->page_size_bits) - 1) >> cache->page_size_bits;
+	int turn;
+
+	if (on < 0)
+		on = !psp_keep("decalringold");
+	if (!on || pages <= 0 || pages > cache->page_count)
+		return lruv_block_new(cache, size);
+	if (cache->first_block_index == NONE)
+	{
+		psp_ring_page = 0;
+		psp_ring_prev = NONE;
+	}
+	for (turn = 0; turn < 8; turn++)
+	{
+		struct lruv_cache_block *block, *prev_block = NULL;
+		long next_index, new_index;
+		boolean moved = FALSE;
+
+		if (psp_ring_page + pages > cache->page_count)
+		{
+			psp_ring_page = 0;
+			psp_ring_prev = NONE;
+		}
+		/* the block before the turn's pages: the last made, if it's still there */
+		if (psp_ring_prev != NONE)
+		{
+			prev_block = datum_try_and_get(cache->blocks, psp_ring_prev);
+			if (!prev_block || prev_block->first_page_index + prev_block->page_count != psp_ring_page)
+				prev_block = NULL, psp_ring_prev = NONE;
+		}
+		if (!prev_block && psp_ring_page > 0)
+		{
+			/* it was let go (its decal faded): the last block ending at or
+			before the turn, found along the list (rare) */
+			long index = cache->first_block_index;
+
+			while (index != NONE)
+			{
+				block = datum_get(cache->blocks, index);
+				if (block->first_page_index + block->page_count > psp_ring_page)
+					break;
+				psp_ring_prev = index;
+				prev_block = block;
+				index = block->next_block_index;
+			}
+		}
+		next_index = prev_block ? prev_block->next_block_index : cache->first_block_index;
+		/* the blocks on the turn's pages let go; a locked one moves the turn past it */
+		while (next_index != NONE)
+		{
+			block = datum_get(cache->blocks, next_index);
+			if (block->first_page_index >= psp_ring_page + pages)
+				break;
+			if (psp_ring_locked(cache, next_index, block))
+			{
+				psp_ring_page = block->first_page_index + block->page_count;
+				psp_ring_prev = next_index;
+				moved = TRUE;
+				break;
+			}
+			{
+				long after = block->next_block_index;
+
+				lruv_block_delete(cache, next_index);
+				next_index = after;
+			}
+		}
+		if (moved)
+			continue;
+		/* every block in use: the next one after the pages let go too, as
+		lruv_block_new lets the oldest go */
+		while (cache->blocks->actual_count == cache->blocks->maximum_count)
+		{
+			long after;
+
+			if (next_index == NONE)
+				return lruv_block_new(cache, size);
+			block = datum_get(cache->blocks, next_index);
+			if (psp_ring_locked(cache, next_index, block))
+				return lruv_block_new(cache, size);
+			after = block->next_block_index;
+			lruv_block_delete(cache, next_index);
+			next_index = after;
+		}
+		new_index = datum_new(cache->blocks);
+		if (new_index == NONE)
+			return lruv_block_new(cache, size);
+		block = datum_get(cache->blocks, new_index);
+		/* linked between the block before (or the list's head) and the next */
+		block->previous_block_index = prev_block ? psp_ring_prev : NONE;
+		block->next_block_index = next_index;
+		if (prev_block)
+			prev_block->next_block_index = new_index;
+		else
+			cache->first_block_index = new_index;
+		if (next_index != NONE)
+			((struct lruv_cache_block *)datum_get(cache->blocks, next_index))->previous_block_index = new_index;
+		else
+			cache->last_block_index = new_index;
+		block->first_page_index = psp_ring_page;
+		block->page_count = pages;
+		block->last_used_tick = cache->tick;
+		psp_ring_page += pages;
+		psp_ring_prev = new_index;
+		return new_index;
+	}
+	return lruv_block_new(cache, size);
+}
+#endif
+
+long _rasterizer_decal_vertices_new(
+	long cache_size)
+{"""),
+("""	return lruv_block_new(local_vertex_cache, cache_size);
+}""",
+ """#ifdef HALO_PSP
+	return psp_ring_new(local_vertex_cache, cache_size);
+#else
+	return lruv_block_new(local_vertex_cache, cache_size);
+#endif
+}"""),
+]
+
+
 # ---------- FIXES_STACKHOT2: STACKHOT without its memory (PSP_STACKHOT=2)
 # The five statics (FIXES_STACKHOT) made the tick 1.4-3.7% faster on the
 # PSP-3000 but took 212 KB off the heap, and the drawing paid for it
@@ -52101,7 +52262,7 @@ FIXES_CHUPA090RUNS["source/render/render_particles.c#runs"] = [
 """),
 ]
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_SSPR.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + list(FIXES_CHUPA090RUNS.items()) + list(FIXES_HEAPTRIM.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items()) + list(FIXES_AIME2A.items()) + (list(FIXES_STACKHOT.items()) if STACKHOT else []) + (list(FIXES_STACKHOT2.items()) if STACKHOT2 else []) + list(FIXES_PWSL.items()) + list(FIXES_SPHSL.items()) + list(FIXES_RECONLIST.items()) + list(FIXES_TP1.items()) + list(FIXES_WXDEAD.items()) + list(FIXES_AIMEMOVE.items()) + list(FIXES_PROPCRASH.items()) + list(FIXES_APCPOOL.items()) + list(FIXES_SNDEDRAM.items()) + list(FIXES_LIGHTFIRST.items()) + list(FIXES_DRAWPART.items()) + (list(FIXES_RECONLATE.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + list(FIXES_P2PASS.items()) + (list(FIXES_P2CENSUS.items()) if P2CENSUS else []) + list(FIXES_OBSRAY.items()) + list(FIXES_SNDWAIT.items()) + list(FIXES_FLAMEDECAL.items()) + list(FIXES_HUHINT.items()) + list(FIXES_DBLSOFT.items()) + list(FIXES_VFPUTRIG.items()) + list(FIXES_TICKCACHE.items()) + list(FIXES_STRICTALIAS.items()) + list(FIXES_SNDPERMAP.items()) + list(FIXES_RLOOP.items()) + list(FIXES_L10.items()) + list(FIXES_RLSKIP.items()) + list(FIXES_ONEWALK.items()) + (list(FIXES_POSEK.items()) if POSEK else []) + (list(FIXES_SNDSTREAM.items()) if os.environ.get("PSP_SNDSTREAM", "") == "1" else []) + list(FIXES_MOUTHCLOCK.items()) + list(FIXES_LSAME.items()) + list(FIXES_CHUPA090.items()) + (list(FIXES_AITICKOLD.items()) if AITICKOLD else []) + (list(FIXES_PADPATH.items()) if os.environ.get("PSP_PADPATH", "") == "1" else []) + list(FIXES_FARLEVEL.items())):
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_SSPR.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + list(FIXES_CHUPA090RUNS.items()) + list(FIXES_HEAPTRIM.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items()) + list(FIXES_AIME2A.items()) + (list(FIXES_STACKHOT.items()) if STACKHOT else []) + (list(FIXES_STACKHOT2.items()) if STACKHOT2 else []) + list(FIXES_PWSL.items()) + list(FIXES_SPHSL.items()) + list(FIXES_RECONLIST.items()) + list(FIXES_TP1.items()) + list(FIXES_WXDEAD.items()) + list(FIXES_AIMEMOVE.items()) + list(FIXES_PROPCRASH.items()) + list(FIXES_APCPOOL.items()) + list(FIXES_SNDEDRAM.items()) + list(FIXES_LIGHTFIRST.items()) + list(FIXES_DRAWPART.items()) + (list(FIXES_RECONLATE.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + list(FIXES_P2PASS.items()) + (list(FIXES_P2CENSUS.items()) if P2CENSUS else []) + list(FIXES_OBSRAY.items()) + list(FIXES_SNDWAIT.items()) + list(FIXES_FLAMEDECAL.items()) + list(FIXES_HUHINT.items()) + list(FIXES_DBLSOFT.items()) + list(FIXES_VFPUTRIG.items()) + list(FIXES_TICKCACHE.items()) + list(FIXES_STRICTALIAS.items()) + list(FIXES_SNDPERMAP.items()) + list(FIXES_RLOOP.items()) + list(FIXES_L10.items()) + list(FIXES_RLSKIP.items()) + list(FIXES_ONEWALK.items()) + (list(FIXES_POSEK.items()) if POSEK else []) + (list(FIXES_SNDSTREAM.items()) if os.environ.get("PSP_SNDSTREAM", "") == "1" else []) + list(FIXES_MOUTHCLOCK.items()) + list(FIXES_LSAME.items()) + list(FIXES_CHUPA090.items()) + (list(FIXES_AITICKOLD.items()) if AITICKOLD else []) + (list(FIXES_PADPATH.items()) if os.environ.get("PSP_PADPATH", "") == "1" else []) + list(FIXES_FARLEVEL.items()) + list(FIXES_DECALRING.items())):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
