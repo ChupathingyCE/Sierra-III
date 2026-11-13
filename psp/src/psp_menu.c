@@ -131,6 +131,15 @@ the list ran past the bottom and wrapped over the top). Lines stay at 67 */
 
 static struct map_entry maps[MAXIMUM_MAPS];
 static int map_count = 0;
+/* a hand load's difficulty and deathless (Sheepdog01 2026-11-12 23:02, the lead
+2026-11-13 13:16): a map chosen here loads at the difficulty shown, heroic
+unless changed, as the console's game_difficulty_set before map_name in
+init.txt; the pad recorder writes both into the recording (psp_pad.c). A
+direct load gave no choice and fell back to normal. Square cycles the
+difficulty, select toggles deathless (cheat_deathless_player 1) */
+static const char *const difficulty_names[4] = { "easy", "normal", "hard", "impossible" };
+static const char *const difficulty_labels[4] = { "easy", "normal", "heroic", "legendary" };
+static int menu_difficulty = 2, menu_deathless = 1;
 /* words in keep.txt the menu doesn't know: kept as typed */
 static char extra_words[384] = ""; /* build 116: 384 (256), for the longer presets */
 
@@ -360,6 +369,16 @@ static int current_map(void)
 		return 0;
 	text[length] = '\0';
 	{
+		char *set = strstr(text, "game_difficulty_set ");
+		int d;
+
+		if (set)
+			for (d = 0; d < 4; d++)
+				if (!strncmp(set + 20, difficulty_names[d], strlen(difficulty_names[d])))
+					menu_difficulty = d;
+		menu_deathless = strstr(text, "cheat_deathless_player 1") != NULL || !strstr(text, "map_name");
+	}
+	{
 		char *line = strstr(text, "map_name");
 		char *end, *last;
 
@@ -450,10 +469,12 @@ static void save_files(int map)
 		file = sceIoOpen(DATA_ROOT "/init.txt", PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0666);
 		if (file >= 0)
 		{
+			length = snprintf(text, sizeof(text), "game_difficulty_set %s\n%s", difficulty_names[menu_difficulty],
+				menu_deathless ? "cheat_deathless_player 1\n" : "");
 			if (maps[map].type == 0)
-				length = snprintf(text, sizeof(text), "map_name levels\\%s\\%s\n", maps[map].name, maps[map].name);
+				length += snprintf(text + length, sizeof(text) - length, "map_name levels\\%s\\%s\n", maps[map].name, maps[map].name);
 			else
-				length = snprintf(text, sizeof(text), "map_name levels\\test\\%s\\%s\n", maps[map].name, maps[map].name);
+				length += snprintf(text + length, sizeof(text) - length, "map_name levels\\test\\%s\\%s\n", maps[map].name, maps[map].name);
 			sceIoWrite(file, text, length);
 			sceIoClose(file);
 		}
@@ -511,6 +532,9 @@ static void draw(int page, int cursor, int map, int build, SceCtrlData const *pa
 		}
 		if (!map_count)
 			pspDebugScreenPrintf(" no maps in " PSP_MAPS_ROOT "\n");
+		pspDebugScreenSetTextColor(0xFF00FFFF);
+		pspDebugScreenPrintf("\n difficulty %-9s (square)   deathless %-3s (select)\n",
+			difficulty_labels[menu_difficulty], menu_deathless ? "on" : "off");
 	}
 	else
 	{
@@ -843,6 +867,7 @@ void psp_menu(int build)
 		one could leave the screen unchanged) */
 		for (k = 0; k < OPTION_COUNT; k++)
 			options_now = options_now * 31u + (unsigned int)options[k].on + 1u;
+		options_now = options_now * 31u + (unsigned int)(menu_difficulty * 2 + menu_deathless);
 		/* the NUB page shows the nub live, so it is drawn every pass */
 		if (page != drawn_page || cursor != drawn_cursor || map != drawn_map || options_now != drawn_options ||
 			preset_applied != drawn_preset || page == 3)
@@ -905,6 +930,10 @@ void psp_menu(int build)
 			else if (page == 2 && preset_count && (pressed & PSP_CTRL_CROSS))
 				apply_preset(cursor);
 		}
+		if (page == 0 && (pressed & PSP_CTRL_SQUARE))
+			menu_difficulty = (menu_difficulty + 1) % 4;
+		if (page == 0 && (pressed & PSP_CTRL_SELECT))
+			menu_deathless = !menu_deathless;
 		if (pressed & PSP_CTRL_START)
 			done = 1;
 		/* build 92: ms0:/halo/menudump.txt (emulator test): the options page

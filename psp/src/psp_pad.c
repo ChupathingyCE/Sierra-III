@@ -31,6 +31,18 @@ extern int psp_map_generation;
 #define PAD_FRAME 0x46u /* 'F': a frame's seconds_elapsed */
 #define PAD_BLOB 0x42u  /* 'B': a local player's input_blob */
 #define PAD_MENU 0x55u  /* 'U': what the menus did, when it changes (psp_pad_menu) */
+/* 'H': the recording's head, its first record (2026-11-13; the lead 13:16):
+a version byte (1), the game's difficulty (0 easy .. 3 legendary), then
+init.txt's lines but its map_name, ';' between them, the rest zeros. A
+replay reads it and says whether it plays at the recording's difficulty;
+older files start with 'F' and have none */
+#define PAD_HEAD 0x48u
+#define PAD_HEAD_BYTES 64
+short game_difficulty_level_get(void);
+static void pad_head_make(unsigned char *head);
+static void pad_put(unsigned int tag, const void *data, unsigned int bytes);
+static void pad_window(unsigned int bytes);
+static int pad_take(unsigned int tag, void *data, unsigned int bytes);
 #define PAD_BLOB_BYTES 32
 #define PAD_CHUNK (64 * 1024)
 
@@ -125,6 +137,13 @@ static void pad_map_check(void)
 		pad_file = sceIoOpen(path, PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
 		pad_menu_state = 0;
 		platform_log("pad: recording to %s%s", path, pad_file < 0 ? " (couldn't open it: not recording)" : "");
+		{
+			unsigned char head[PAD_HEAD_BYTES];
+
+			pad_head_make(head);
+			pad_put(PAD_HEAD, head, sizeof(head));
+			platform_log("pad: its head: difficulty %d, init '%.62s'", head[1], (const char *)head + 2);
+		}
 		return;
 	}
 	/* a replay plays the file from the first map load only: a revert or the
@@ -157,6 +176,54 @@ static void pad_map_check(void)
 		pad_menu_state = 0;
 		platform_log("pad: replaying %s, %u bytes, %u at a time%s", path, pad_in_size, (unsigned int)PAD_WINDOW,
 			pad_in ? "" : " (none: the game's own input)");
+		if (pad_in)
+		{
+			pad_window(1 + PAD_HEAD_BYTES);
+			if (pad_in_fill > 0 && pad_in[0] == PAD_HEAD)
+			{
+				unsigned char head[PAD_HEAD_BYTES];
+				int now = game_difficulty_level_get();
+
+				if (pad_take(PAD_HEAD, head, sizeof(head)))
+				{
+					head[PAD_HEAD_BYTES - 1] = 0;
+					platform_log("pad: recorded at difficulty %d, init '%s'; playing at %d%s", head[1], (const char *)head + 2,
+						now, head[1] == now ? "" : ": NOT the recording's difficulty, the replay will part");
+				}
+			}
+			else
+				platform_log("pad: the recording has no head (made before 2026-11-13): its difficulty isn't known");
+		}
+	}
+}
+
+/* the head's bytes: init.txt read again, its map_name line left out */
+static void pad_head_make(unsigned char *head)
+{
+	char text[256];
+	SceUID file = sceIoOpen(PSP_DATA_ROOT "/init.txt", PSP_O_RDONLY, 0);
+	int length = file >= 0 ? sceIoRead(file, text, sizeof(text) - 1) : 0;
+	unsigned int at = 2;
+	char *line, *save = NULL;
+
+	if (file >= 0)
+		sceIoClose(file);
+	text[length > 0 ? length : 0] = 0;
+	memset(head, 0, PAD_HEAD_BYTES);
+	head[0] = 1;
+	head[1] = (unsigned char)game_difficulty_level_get();
+	for (line = strtok_r(text, "\r\n", &save); line; line = strtok_r(NULL, "\r\n", &save))
+	{
+		unsigned int bytes = strlen(line);
+
+		if (!bytes || !strncmp(line, "map_name", 8))
+			continue;
+		if (at > 2 && at < PAD_HEAD_BYTES - 1)
+			head[at++] = ';';
+		if (at + bytes > PAD_HEAD_BYTES - 1)
+			bytes = PAD_HEAD_BYTES - 1 - at;
+		memcpy(head + at, line, bytes);
+		at += bytes;
 	}
 }
 
