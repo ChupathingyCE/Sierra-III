@@ -4924,6 +4924,42 @@ whole, and the remainder in the view is a fraction of a unit, which its
 the view a pure turn, as before */
 static float ge_eye[3], ge_eye_camera[3];
 static int level_exact = -1;
+#ifdef PSP_DRAWLIST
+/* The draw list box's first slice (docs/box_draw_list.md §10.3): an
+unchanged instance can draw its last words again only if the origin they
+are relative to stayed put, and ge_eye above follows the eye every frame. So
+under "drawlist" ge_eye is a point of a grid of origin_held_cell units,
+moved only once the eye is three quarters of a cell from it on an axis; the
+view carries the rest, as level_exact's shift already does. A grid point is
+a value the GE keeps whole (a small multiple of a power of two), and so is
+the level's translation from it. Within a cell a model's translation and
+the view's stay under a cell's length, so their rounding is a cell's share
+of what the eye-following origin was chosen against (a hundred units out) */
+static int origin_held = -1;
+static float origin_held_cell = 8.0f, origin_held_at[3];
+/* first person keeps the eye-following origin (its matrices are next to the
+eye, where a cell's offset shows as speckle on the weapon: the lab's
+originheld1): the frame's view and that origin, for use_projection's swap */
+static float origin_follow[3], origin_view_position[3];
+static ScePspFVector3 origin_view_ahead, origin_view_up;
+static int origin_held_now = 0;
+static int origin_held_set = 0;
+static unsigned long origin_held_hops = 0, origin_held_frames = 0;
+#endif
+
+/* whether the draw list box is on (built in, and its keep word given) */
+int psp_drawlist_on(void)
+{
+#ifdef PSP_DRAWLIST
+	static int on = -1;
+
+	if (on < 0)
+		on = psp_keep("drawlist") != 0;
+	return on;
+#else
+	return 0;
+#endif
+}
 
 /* the value the GE keeps of a matrix word: the low 8 bits dropped (pspgu
 sends a float's top 24 bits) */
@@ -6395,6 +6431,42 @@ static void window_begin_list(const float *position, const float *forward, const
 		/* from level_origin, the level's translation (its origin less
 		ge_eye) is the rounded part itself, whole in the GE's words however
 		near the world's origin the eye is */
+#ifdef PSP_DRAWLIST
+		if (origin_held < 0)
+		{
+			origin_held = psp_keep("drawlist") != 0;
+			origin_held_cell = psp_keep("drawlistcell2") ? 2.0f : psp_keep("drawlistcell4") ? 4.0f :
+				psp_keep("drawlistcell16") ? 16.0f : 8.0f;
+		}
+		for (k = 0; k < 3; k++)
+			origin_follow[k] = !level_exact ? position[k] :
+				level_local ? level_origin[k] + ge_matrix_float(position[k] - level_origin[k]) : ge_matrix_float(position[k]);
+		origin_held_now = 0;
+		if (origin_held && level_exact)
+		{
+			int hop = !origin_held_set;
+
+			for (k = 0; k < 3 && !hop; k++)
+				hop = fabsf(position[k] - origin_held_at[k]) > 0.75f * origin_held_cell;
+			if (hop)
+			{
+				for (k = 0; k < 3; k++)
+					origin_held_at[k] = floorf(position[k] / origin_held_cell + 0.5f) * origin_held_cell;
+				origin_held_hops += origin_held_set;
+				origin_held_set = 1;
+			}
+			origin_held_frames++;
+			for (k = 0; k < 3; k++)
+			{
+				ge_eye[k] = origin_held_at[k];
+				origin_view_position[k] = position[k];
+			}
+			origin_view_ahead.x = forward[0]; origin_view_ahead.y = forward[1]; origin_view_ahead.z = forward[2];
+			origin_view_up = upward;
+			origin_held_now = 1;
+		}
+		else
+#endif
 		for (k = 0; k < 3; k++)
 			ge_eye[k] = !level_exact ? position[k] :
 				level_local ? level_origin[k] + ge_matrix_float(position[k] - level_origin[k]) : ge_matrix_float(position[k]);
@@ -11547,6 +11619,42 @@ as a wedge across the screen (b37's shot of a rock in the cave), so
 those models' triangles are checked one by one (psp_ge_draw_model) */
 static void use_projection(int first_person)
 {
+#ifdef PSP_DRAWLIST
+	if (origin_held_now)
+	{
+		/* first person from the eye-following origin, the rest from the held
+		one: the origin, the view that carries the rest, and the origin seen
+		from the camera, swapped together */
+		ScePspFVector3 zero = { 0.0f, 0.0f, 0.0f }, shift;
+		const float *origin = first_person ? origin_follow : origin_held_at;
+		float d[3];
+		int k;
+
+		/* the model's point lights were given from the origin in place when
+		they came (before its shape says first person): moved to the new one */
+		for (k = 0; k < model_point_count; k++)
+		{
+			model_point_position[k].x += ge_eye[0] - origin[0];
+			model_point_position[k].y += ge_eye[1] - origin[1];
+			model_point_position[k].z += ge_eye[2] - origin[2];
+		}
+		for (k = 0; k < 3; k++)
+		{
+			ge_eye[k] = origin[k];
+			d[k] = ge_eye[k] - camera_eye[k];
+		}
+		ge_eye_camera[0] = d[0] * camera_right[0] + d[1] * camera_right[1] + d[2] * camera_right[2];
+		ge_eye_camera[1] = d[0] * camera_up[0] + d[1] * camera_up[1] + d[2] * camera_up[2];
+		ge_eye_camera[2] = d[0] * camera_forward[0] + d[1] * camera_forward[1] + d[2] * camera_forward[2];
+		sceGumMatrixMode(GU_VIEW);
+		sceGumLoadIdentity();
+		sceGumLookAt(&zero, &origin_view_ahead, &origin_view_up);
+		shift.x = ge_eye[0] - origin_view_position[0];
+		shift.y = ge_eye[1] - origin_view_position[1];
+		shift.z = ge_eye[2] - origin_view_position[2];
+		sceGumTranslate(&shift);
+	}
+#endif
 	sceGumMatrixMode(GU_PROJECTION);
 	perspective(projection_fov * (180.0f / 3.14159265f),
 		first_person ? first_person_near : projection_near, first_person ? first_person_far : projection_far);
@@ -13628,6 +13736,14 @@ static void far_report(void);
 /* the 300-frame report's line (psp_geo.c) */
 void psp_ge_pcv_report(void)
 {
+#ifdef PSP_DRAWLIST
+	if (origin_held > 0 && origin_held_frames)
+	{
+		platform_log("GE: drawlist: the origin held on a %.0f-unit grid, moved %lu times in %lu frames", (double)origin_held_cell,
+			origin_held_hops, origin_held_frames);
+		origin_held_hops = origin_held_frames = 0;
+	}
+#endif
 	far_report();
 	platform_log("GE: model parts drawn in the last 300 frames: %lu indices (the GE's vertices), %lu buffer vertices; %.0f and %.0f a frame",
 		model_drawn_indices, model_drawn_vertices, (double)model_drawn_indices / 300.0, (double)model_drawn_vertices / 300.0);
@@ -14002,6 +14118,58 @@ static int rso_room(void)
 /* a kept entry's records into the buffer, after its geometry is locked again
 where they point and its textures are pretouched; 0 (nothing written) if a
 part's geometry moved or the records don't fit */
+/* the far level's size (farlevelN; the bare word, on by default, is 32) and
+whether its blocks may be copied to VRAM, read once */
+static int far_pixels = -1, far_vram = -1;
+
+static int far_pixels_now(void)
+{
+	if (far_pixels < 0)
+	{
+		far_pixels = psp_keep_number("farlevel", 0);
+		if (far_pixels <= 0)
+			far_pixels = psp_keep("farlevel") ? 32 : 0;
+		if (far_pixels > 0)
+			platform_log("GE: farlevel: models under %d px drawn as their far level", far_pixels);
+		far_vram = !psp_keep("farvramoff");
+	}
+	return far_pixels;
+}
+
+/* a far form's shown groups made known to vrammodels, as psp_far_draw does,
+for a form sent again from rso's kept records */
+static void far_note(const void *block, unsigned int mask_low, unsigned int mask_high)
+{
+	const unsigned char *at = block;
+	unsigned int group = 0;
+
+	if (!far_vram)
+		return;
+	while (at && group < 64)
+	{
+		const unsigned int *head = (const unsigned int *)at;
+
+		if (((group < 32 ? mask_low >> group : mask_high >> (group - 32)) & 1u) && head[2])
+			vm_note((void *)(at + ((head[1] & 0x20000u) ? 80 : 64)), head[3] * head[2]);
+		group++;
+		at = head[14] ? at + head[14] : NULL;
+	}
+}
+
+/* rso's key's word for the far form (models.c, FIXES_RSO): 0 with the draw
+list off (no word in the key); otherwise 1, plus 1 when the model is under
+the far level's size, so a kept walk drawn far is never sent again for a
+model come near, nor the other way */
+int psp_drawlist_far_key(float pixels)
+{
+	int size;
+
+	if (!psp_drawlist_on())
+		return 0;
+	size = far_pixels_now();
+	return 1 + (size > 0 && pixels > 0.0f && pixels < (float)size);
+}
+
 static int rso_send(unsigned int *entry)
 {
 	unsigned int parts = entry[RSO_PARTS], words = entry[RSO_RECORD_WORDS];
@@ -14012,7 +14180,19 @@ static int rso_send(unsigned int *entry)
 	if (words > DEFER_LARGEST)
 		return 0;
 	for (at = record; at < end; at += at->u >> 8)
-		if ((at->u & 0xFF) == DEFER_DRAW_MODEL)
+		if ((at->u & 0xFF) == DEFER_DRAW_FAR)
+		{
+			/* a far form's block (drawlist): its geometry address and size were
+			kept as its part's two words */
+			if (part >= parts || psp_geo_lock((unsigned int)buffers[2 * part], (unsigned int)buffers[2 * part + 1]) != at[1].p)
+			{
+				rso_moved++;
+				return 0;
+			}
+			far_note(at[1].p, at[2].u, at[3].u);
+			part++;
+		}
+		else if ((at->u & 0xFF) == DEFER_DRAW_MODEL)
 		{
 			if (part >= parts || psp_vertex_lock((const struct vertex_buffer *)buffers[2 * part]) != at[1].p ||
 				psp_index_lock((const struct triangle_buffer *)buffers[2 * part + 1]) != at[4].p)
@@ -14326,7 +14506,7 @@ unsigned int *psp_rso_capture_end(unsigned int key_words)
 			rso_broken++;
 			return NULL;
 		}
-		if (kind == DEFER_DRAW_MODEL)
+		if (kind == DEFER_DRAW_MODEL || (kind == DEFER_DRAW_FAR && psp_drawlist_on()))
 			parts++;
 		else if (kind == DEFER_MODEL_MULTIPURPOSE ? !at[3].u || !at[7].u :
 			kind != DEFER_MODEL_BEGIN && kind != DEFER_MODEL_SHAPE && kind != DEFER_MODEL_EFFECT &&
@@ -17344,31 +17524,18 @@ void psp_ge_draw_far(const void *block, unsigned int mask_low, unsigned int mask
 1 when the model's far level is drawn in place of its parts, 2 when in place
 of its solid pass's parts only (its decal and transparent passes still to
 draw) */
-static int far_pixels = -1;
-
 int psp_far_draw(unsigned long model, float pixels, const char *permutations, int permutation_count,
 	const float *change_colours)
 {
 	extern unsigned int psp_far_version;
 	unsigned int address, bytes, mask[2] = { 0, 0 }, group = 0, tints[4];
-	static int far_vram = -1;
 	const void *block;
 
-	if (far_pixels < 0)
-	{
-		/* farlevelN sets the size; the bare word (on by default) is 32 */
-		far_pixels = psp_keep_number("farlevel", 0);
-		if (far_pixels <= 0)
-			far_pixels = psp_keep("farlevel") ? 32 : 0;
-		if (far_pixels > 0)
-			platform_log("GE: farlevel: models under %d px drawn as their far level", far_pixels);
-	}
+	(void)far_pixels_now();
 	/* first person and the sky are left out by the caller's flags: this side's
 	model state is the recorded one's, not yet replayed */
 	if (far_pixels <= 0 || pixels >= (float)far_pixels || pixels <= 0.0f)
 		return 0;
-	if (far_vram < 0)
-		far_vram = !psp_keep("farvramoff");
 	address = psp_far_block(model, &bytes);
 	if (!address)
 		return 0;
@@ -17465,6 +17632,15 @@ int psp_far_draw(unsigned long model, float pixels, const char *permutations, in
 			scale = sqrtf(m.x.x * m.x.x + m.x.y * m.x.y + m.x.z * m.x.z);
 			if (distance <= 0.0f || 2.0f * box[3] * scale * pixels_per_unit() >= (float)sprite_pixels * distance)
 				sprite = NULL;
+		}
+		if (psp_drawlist_on())
+		{
+			/* drawlist: rso keeps the far form's block as its part (the
+			address and size it is locked by); a sprite's choice follows the
+			camera, so a walk that could take one isn't kept */
+			psp_rso_geometry((const void *)address, (const void *)bytes);
+			if (sprite_pixels > 0 && pixels < (float)sprite_pixels)
+				psp_rso_volatile |= 8;
 		}
 		psp_ge_draw_far(block, mask[0], mask[1], tints, sprite);
 		if (sprite)

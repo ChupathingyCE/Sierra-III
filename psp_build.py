@@ -201,6 +201,9 @@ METRICS = os.environ.get("PSP_METRICS", "1") != "0"
 # leaves them out. Passed to psp_ge.c's own compile, which takes none of the
 # engine's defines
 DITHERSHIFT = os.environ.get("PSP_DITHERSHIFT", "") == "1"
+# PSP_DRAWLIST=1: the draw list box (docs/box_draw_list.md), off by default
+# until it is cut over; under it the keep word "drawlist" turns it on
+DRAWLIST = os.environ.get("PSP_DRAWLIST", "") == "1"
 # PSP_MUSIC=1 builds in the music path (psp/src/psp_music.c, Tremor and libogg,
 # FIXES_MUSIC, psp_dsound.c's music marks; keep word musicstream). The decoder
 # and its buffers take about 110 KB of program, which comes off the heap, and
@@ -747,6 +750,7 @@ def compile_one(item):
                ["-DPSP_MP_HOST=1"] if MULTIPLAYER and MP_HOST else []) + (
                pgo_flags(rel) if opt == "-O2" else []) + (
                ["-DPSP_DITHERSHIFT=1"] if DITHERSHIFT and src.endswith("psp_ge.c") else []) + (
+               ["-DPSP_DRAWLIST=1"] if DRAWLIST and src.endswith("psp_ge.c") else []) + (
                ["-DPSP_RECON=1"] if RECON else []) + (
                ["-DPSP_MEPROBE=1"] if MEPROBE else []) + (
                ["-DPSP_WALKAPART=1"] if WALKAPART else []) + (
