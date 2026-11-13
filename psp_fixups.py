@@ -51824,27 +51824,36 @@ unsigned long long *psp_box_posing_standing(const void *plan);
 #include "units/biped_definitions.h"
 
 /* means B: the nodes every pose of a biped's definition makes for its
-standing readers, named once a map: the root; the head marker's nodes (every
-instance: the AI reads the head of every unit it thinks for or about, on
-nearly every pose, docs/box_posing.md §1b); the head and pelvis nodes (the
-player's aim assist) */
+standing readers, named once a map: the root; the head and body markers'
+nodes (every instance: the AI reads them for every unit it thinks for or
+about, on nearly every pose, docs/box_posing.md §1b); the head and pelvis
+nodes (the player's aim assist) */
 static unsigned long long psp_boxb_standing(struct object_datum const *object,
 	struct object_definition const *object_definition, struct model const *model)
 {
 	unsigned long long nodes = 1;
 	short count = (short)MIN(model->nodes.count, 64);
-	short marker_index = model_find_marker(object_definition->object.model.index, "head"), i;
+	/* the AI reads every unit's head and its body (perception's centre of
+	mass, unit_get_center_of_mass) on nearly every pose */
+	static char const *const standing_markers[] = { "head", "body" };
+	short i, m;
 
-	if (marker_index != NONE)
+	for (m = 0; m < (short)(sizeof(standing_markers) / sizeof(standing_markers[0])); m++)
 	{
-		struct model_marker *marker = TAG_BLOCK_GET_ELEMENT(&model->markers, marker_index, struct model_marker);
+		short marker_index = model_find_marker(object_definition->object.model.index, standing_markers[m]);
 
-		for (i = 0; i < marker->instances.count; i++)
+		if (marker_index == NONE)
+			continue;
 		{
-			struct model_marker_instance *instance = TAG_BLOCK_GET_ELEMENT(&marker->instances, i, struct model_marker_instance);
+			struct model_marker *marker = TAG_BLOCK_GET_ELEMENT(&model->markers, marker_index, struct model_marker);
 
-			if (instance->node_index < count)
-				nodes |= 1ull << instance->node_index;
+			for (i = 0; i < marker->instances.count; i++)
+			{
+				struct model_marker_instance *instance = TAG_BLOCK_GET_ELEMENT(&marker->instances, i, struct model_marker_instance);
+
+				if (instance->node_index < count)
+					nodes |= 1ull << instance->node_index;
+			}
 		}
 	}
 	if (object->object.type == _object_type_biped)
@@ -52247,6 +52256,12 @@ ME, the copy decides */
 		} \\
 	} while (0)
 
+/* whether the object owes nodes (on the ME, as the copy has it): a reader
+whose wanted nodes take work to name asks this first */
+#define PSP_BOXB_OWES(index) ((psp_boxb_count | psp_boxb_me.count) && (psp_work_on_me() ? \\
+		psp_boxb_me.count && psp_boxb_me.object_index[(unsigned long)(index) & (PSP_BOXB_SLOTS - 1)] == (long)(index) : \\
+		psp_boxb[(unsigned long)(index) & (PSP_BOXB_SLOTS - 1)].object_index == (long)(index)))
+
 /* every node an owed object has, for a reader outside this unit (the limp
 body) */
 void psp_boxb_whole(long object_index)
@@ -52304,13 +52319,7 @@ static void psp_boxb_before_ik(long object_index, short node)
 	struct psp_boxb_slot const *slot = &psp_boxb[(unsigned long)object_index & (PSP_BOXB_SLOTS - 1)];
 
 	if (psp_boxb_count && slot->object_index == object_index && node >= 0 && node < 64)
-	{
-		unsigned long long below = psp_box_posing_below(slot->plan, node);
-
-		psp_boxb_in_ik = 1;
-		PSP_BOXB_READ(object_index, below);
-		psp_boxb_in_ik = 0;
-	}
+		PSP_BOXB_READ(object_index, psp_box_posing_below(slot->plan, node));
 }
 
 /* each tick's end (the objects' loop's), and the log every 900 ticks */
@@ -52490,8 +52499,9 @@ short object_get_marker_by_name(
 """,
  """	which is when the game asks for markers, this is the same array. */
 #ifdef PSP_BOX_POSING
-	/* means B: the marker's nodes only */
-	PSP_BOXB_READ(object_index, psp_boxb_marker_nodes(object, object_definition, name, maximum_marker_count));
+	/* means B: the marker's nodes only, named for an object that owes */
+	if (PSP_BOXB_OWES(object_index))
+		PSP_BOXB_READ(object_index, psp_boxb_marker_nodes(object, object_definition, name, maximum_marker_count));
 	real_matrix4x3 const *matrices = psp_boxb_node_matrices(object_index);
 #else
 	real_matrix4x3 const *matrices = object_get_node_matrices(object_index);
@@ -52506,6 +52516,22 @@ short object_get_marker_by_name(
 			psp_boxb_before_ik(hand_object_index, desired_hand_index);
 #endif
 			matrix4x3_inverse(&hand_marker.node_matrix, &desired_hand_matrix);"""),
+("""		if (PSP_KEEP_ONCE("hoistold"))
+			object_type_postprocess_node_matrices(object_index, matrices);
+		else
+			object_type_postprocess_node_matrices_for_type(object->object.type, object_index, matrices);""",
+ """#ifdef PSP_BOX_POSING
+		/* means B: what the postprocess makes (the IK's markers and arms) is
+		counted as the IK's, not as a late reader's */
+		psp_boxb_in_ik = 1;
+#endif
+		if (PSP_KEEP_ONCE("hoistold"))
+			object_type_postprocess_node_matrices(object_index, matrices);
+		else
+			object_type_postprocess_node_matrices_for_type(object->object.type, object_index, matrices);
+#ifdef PSP_BOX_POSING
+		psp_boxb_in_ik = 0;
+#endif"""),
 ]
 FIXES_BOXPOSING["source/units/biped_limp_noodle.c#boxposeb"] = [
 ("""	struct object_datum *object = object_get(biped_index);
