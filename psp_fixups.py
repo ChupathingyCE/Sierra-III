@@ -37459,6 +37459,18 @@ FIXES_LOOKREAL["source/main/main.c#padmenu"] = [
 
 				if (replayed >= 0)
 				{
+					/* the recording let the game go while a screen that pauses
+					it is still up here: a player help screen (display_scenario_help)
+					Sheepdog01 closed with a button the input blobs don't carry. Closed
+					as his press closed it, at the same frame (Sheepdog01 2026-11-12: c40's
+					banshee help stayed up for the rest of a replay) */
+					if (!(replayed & 1) && (state & 1))
+					{
+						extern int ui_widgets_port_close_pausing(void);
+
+						if (ui_widgets_port_close_pausing())
+							state = (game_time_get_paused() ? 1 : 0) | (state & ~1);
+					}
 					if ((replayed & 1) != (state & 1))
 						game_time_set_paused((replayed & 1) ? TRUE : FALSE);
 					if ((replayed & 2) && !main_globals.revert_map)
@@ -37469,6 +37481,40 @@ FIXES_LOOKREAL["source/main/main.c#padmenu"] = [
 			}
 #endif
 """),
+]
+FIXES_LOOKREAL["source/interface/ui_widget.c#padhelp"] = [
+("""/* port: back to the screen before, for the menus' functions */
+void ui_widget_port_go_back(""",
+ """#ifdef HALO_PSP
+/* port (the pad recorder's replay, psp_fixups.py FIXES_LOOKREAL #padmenu):
+each local player's open screen that pauses the game closed as its own
+handler's close does (a player help screen: no screen before it to go back
+to); the count closed */
+void platform_log(char const *format, ...);
+int ui_widgets_port_close_pausing(
+	void)
+{
+	short local_player_index;
+	int closed = 0;
+
+	for (local_player_index = 0; local_player_index < MAXIMUM_NUMBER_OF_LOCAL_PLAYERS; local_player_index++)
+	{
+		struct widget_instance *widget = widget_globals.active_widgets[local_player_index];
+
+		if (widget && widget->pause_game_time == TRUE)
+		{
+			ui_widget_delete(widget_instance_get_topmost_parent(widget));
+			closed++;
+		}
+	}
+	if (closed)
+		platform_log("pad: the replay closed %d screen(s) that paused the game, as the recording let the game go", closed);
+	return closed;
+}
+#endif
+
+/* port: back to the screen before, for the menus' functions */
+void ui_widget_port_go_back("""),
 ]
 FIXES_LOOKREAL["source/game/player_control.c#lookreal"] = [
 ("""static real player_control_autolevel_time[MAXIMUM_NUMBER_OF_LOCAL_PLAYERS];
