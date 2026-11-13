@@ -24,3 +24,5 @@ Every gap is real past the repeats' spread.
 The room a decal takes went from 404, 1,017, 2,120 and 2,426 µs (the windows to 5,210, 11,221, 11,521 and 11,821) to 8, 11, 14 and 20 µs. The ray (~32 µs), the clip (~95 µs) and the insert (~7 µs) are unchanged, so they are now what a decal costs.
 
 **State:** ~~priced; the default the lead's call with Sheepdog01's look~~ **on by default in the tock** (2026-11-13: the lead 15:12, efficiency under 'plays and feels the same', the oldest marks freed first as Sheepdog01 asked; Sheepdog01 looked 15:13, the lab's decisions.md). Merged into master/tock162 (ff36482); keep word `decalringold` is the way back; it goes forward into the next tick. Multiplayer: drawing only, nothing on the wire.
+
+**A known residue [E]** (the lab's lruvcallers1, sierra-batch 43518797587, tock162 1593fe6, 2026-11-13; the lead 17:43: noted, nothing to build): on d20's swamp the ring still falls back to `lruv_block_new` 130 times in 2,700 ticks, ~205 data misses each (26,647 in all, against 1.1 million with the old walk). On b30 it never falls back. The residue is the ring finding its next block locked; the walk is the safety net, as designed.
