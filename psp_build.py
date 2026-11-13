@@ -204,6 +204,17 @@ DITHERSHIFT = os.environ.get("PSP_DITHERSHIFT", "") == "1"
 # PSP_DRAWLIST=1: the draw list box (docs/box_draw_list.md), off by default
 # until it is cut over; under it the keep word "drawlist" turns it on
 DRAWLIST = os.environ.get("PSP_DRAWLIST", "") == "1"
+# a block is CALLed only while every test of the model's size on the screen
+# would answer as it did (psp_ge.c, MODEL_PIXELS_BELOW): a use of model_pixels
+# that isn't counted here may be a test outside it, which would let a stale
+# block through, so the build stops until it is looked at and the count moved
+MODEL_PIXELS_USES = 16
+if DRAWLIST:
+    with open(os.path.join(HERE, "psp/src/psp_ge.c")) as _f:
+        _uses = len(re.findall(r"\bmodel_pixels\b", _f.read()))
+    if _uses != MODEL_PIXELS_USES:
+        sys.exit("psp_build: psp_ge.c names model_pixels %d times, not %d: a test of it outside MODEL_PIXELS_BELOW "
+                 "would let a stale draw list block through (docs/box_draw_list.md §10.8)" % (_uses, MODEL_PIXELS_USES))
 # PSP_MUSIC=1 builds in the music path (psp/src/psp_music.c, Tremor and libogg,
 # FIXES_MUSIC, psp_dsound.c's music marks; keep word musicstream). The decoder
 # and its buffers take about 110 KB of program, which comes off the heap, and
@@ -731,7 +742,7 @@ def compile_one(item):
                ["-DPSP_MP_HOST=1"] if MULTIPLAYER and MP_HOST else []) + (
                pgo_flags(rel) if opt == "-O2" else []) + (
                ["-DPSP_DITHERSHIFT=1"] if DITHERSHIFT and src.endswith("psp_ge.c") else []) + (
-               ["-DPSP_DRAWLIST=1"] if DRAWLIST and src.endswith("psp_ge.c") else []) + (
+               ["-DPSP_DRAWLIST=1"] if DRAWLIST and (src.endswith("psp_ge.c") or src.endswith("psp_tex.c")) else []) + (
                ["-DPSP_RECON=1"] if RECON else []) + (
                ["-DPSP_MEPROBE=1"] if MEPROBE else []) + (
                ["-DPSP_WALKAPART=1"] if WALKAPART else []) + (

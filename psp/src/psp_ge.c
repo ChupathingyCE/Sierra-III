@@ -255,6 +255,9 @@ enum
 	DEFER_FOG_PLANAR, DEFER_SEETHROUGH_TINT, DEFER_SEETHROUGH_METER /* build 116 */,
 	DEFER_MODEL_POINT_LIGHT, DEFER_MODEL_DETAIL, DEFER_FOG_SUBMERGED, DEFER_MODEL_REFLECTION, DEFER_LIGHT_GEL, DEFER_LEVEL_GLOW,
 	DEFER_DRAW_FAR,
+#ifdef PSP_DRAWLIST
+	DEFER_KEPT,
+#endif
 	DEFER_FRAME_END, DEFER_WINDOW_BEGIN /* last: REPLAY_SERVED follows it */
 };
 typedef union
@@ -264,6 +267,44 @@ typedef union
 	float f;
 	const void *p;
 } defer_word;
+#ifdef PSP_DRAWLIST
+/* the draw list's blocks (docs/box_draw_list.md §10.8; the code is after
+rso's). A kept walk's records come behind a DEFER_KEPT record (its entry's
+id and the records' words); the replay writes the walk's words once into a
+block of its own and from then on CALLs it while nothing the words were
+made from has changed. This is the state of the block being written or
+checked, the replay's own: a cache line of its own, as the hooks in the
+draw path read it on whichever CPU replays */
+#define DEFER_KEPT_WORDS 3
+#define DL_SHAPES 4
+#define DL_DEPS 64
+enum { DL_NEVER_ROOM = 1, DL_NEVER_NEAR = 2, DL_NEVER_FIRST_PERSON = 4, DL_NEVER_SKY = 8, DL_NEVER_CAMO = 16,
+	DL_NEVER_TEXTURE = 32, DL_NEVER_CONVERT = 64, DL_NEVER_FOG = 128, DL_NEVER_KIND = 256, DL_NEVER_SHAPES = 512,
+	DL_NEVER_DEPS = 1024, DL_NEVER_SPRITE = 2048, DL_NEVERS = 12 };
+struct dl_dep { unsigned int kind, a, b, c; };
+static struct __attribute__((aligned(64))) dl_block_state
+{
+	int writing; /* a block is being written: the list's room is the block's, stall updates held */
+	int noting; /* the draw path notes what the words depend on */
+	int checking; /* a kept block's shapes are being replayed: their model_pixels checked */
+	int skip_draws; /* the replay leaves out the walk's draws (their words are the block's) */
+	unsigned int never, failed;
+	unsigned int room_end; /* the block's room ends here (no view bits) */
+	int shape; /* the walk's shape records so far */
+	int depth; /* kept walks being carried out (the replay is entered again for one) */
+	unsigned int frame; /* the frames the replay has ended */
+	float lo[DL_SHAPES], hi[DL_SHAPES], *check_lo, *check_hi;
+	unsigned int deps;
+	struct dl_dep dep[DL_DEPS];
+} dl_w;
+/* what the words hold an address of: a part's vertices (their geometry
+cache generation), its conversion (the plan), a VRAM copy */
+enum { DL_DEP_GEOMETRY = 1, DL_DEP_CONVERTED, DL_DEP_VRAM };
+static int dl_px_below(float threshold);
+static void dl_dep_note(unsigned int kind, unsigned int a, unsigned int b, unsigned int c);
+static void dl_shape(int first_person);
+static void dl_report(void);
+#endif
 static defer_word *defer_buffer = NULL;
 static float *defer_nodes = NULL; /* the carried-out model's node matrices: model_nodes points here */
 /* "gemesim" (with gedefer): the carrying out marked as the Media Engine's
@@ -1490,6 +1531,9 @@ static const char *const replay_kind_names[REPLAY_KINDS] =
 	[DEFER_MODEL_POINT_LIGHT] = "model point lights", [DEFER_MODEL_REFLECTION] = "model reflection",
 	[DEFER_LIGHT_GEL] = "light gel faces",
 	[DEFER_LEVEL_GLOW] = "level glow", [DEFER_DRAW_FAR] = "far level",
+#ifdef PSP_DRAWLIST
+	[DEFER_KEPT] = "kept walks (drawlist)",
+#endif
 	[DEFER_FRAME_END] = "frame end (list's part)",
 	[DEFER_WINDOW_BEGIN] = "window begin (list's part)", [REPLAY_SERVED] = "audio and ring served",
 };
@@ -1520,6 +1564,11 @@ static void me_memo_run_start(int job);
 /* 1 while psp_ge_me_replay runs its job: a run outside one forgets the
 ME's memo by itself (on lines only the ME's work writes) */
 static PSP_AIME_ME_SIDE int me_memo_in_job = 0;
+
+#ifdef PSP_DRAWLIST
+static void dl_kept(const defer_word *records, unsigned int words, unsigned int id, int on_me);
+static void dl_run_end(void);
+#endif
 
 static void defer_replay(const defer_word *buffer, unsigned int used, int on_me)
 {
@@ -1598,13 +1647,34 @@ static void defer_replay(const defer_word *buffer, unsigned int used, int on_me)
 			psp_ge_model_reflection(w[0].u, defer_copy_back(w + 1, &rest, 4));
 			break;
 		case DEFER_DRAW_FAR:
+#ifdef PSP_DRAWLIST
+			if (dl_w.skip_draws)
+				break;
+#endif
 			{
 				unsigned int tints[4] = { w[3].u, w[4].u, w[5].u, w[6].u };
 
 				psp_ge_draw_far(w[0].p, w[1].u, w[2].u, tints, w[7].p);
 			}
 			break;
+#ifdef PSP_DRAWLIST
+		case DEFER_KEPT:
+			/* the walk's records follow; dl_kept carries them out (or CALLs
+			their block) and the loop goes on past them */
+			if (at + w[1].u <= used)
+			{
+				dl_w.depth++;
+				dl_kept(buffer + at, w[1].u, w[0].u, on_me);
+				dl_w.depth--;
+				at += w[1].u;
+			}
+			break;
+#endif
 		case DEFER_DRAW_MODEL:
+#ifdef PSP_DRAWLIST
+			if (dl_w.skip_draws)
+				break;
+#endif
 			psp_ge_draw_model((void *)w[0].p, w[1].i, w[2].i, (const unsigned short *)w[3].p, w[4].i, w[5].i,
 				w[6].u, w[7].u, w[8].f, w[9].f, w[10].i);
 			break;
@@ -1711,6 +1781,9 @@ static void defer_replay(const defer_word *buffer, unsigned int used, int on_me)
 			break;
 		case DEFER_FRAME_END:
 			inflight_list_ended = frame_end_list();
+#ifdef PSP_DRAWLIST
+			dl_w.frame++;
+#endif
 			break;
 		case DEFER_WINDOW_BEGIN:
 			a = defer_copy_back(w + 3, &rest, 3);
@@ -1745,6 +1818,10 @@ static void defer_replay(const defer_word *buffer, unsigned int used, int on_me)
 	}
 	if (timed && kind_before >= 0)
 		replay_kinds_add(side, kind_before, &mark);
+#ifdef PSP_DRAWLIST
+	if (!dl_w.depth)
+		dl_run_end();
+#endif
 }
 
 /* mekinds: the frames since the last report by kind, the largest first, each
@@ -3144,6 +3221,17 @@ farthest, smallest models, the same ones from frame to frame. The first-person
 weapon and the sky are never left out. Keep word "nosizefloor": as before */
 #define MODEL_SIZE_FLOOR_MOST 8.0f
 static float model_size_floor = 0.0f, model_size_floor_peak = 0.0f, model_pixels = 1.0e9f;
+/* every test of a model's size on the screen goes through here: under
+PSP_DRAWLIST a block notes the range of model_pixels inside which each test
+it met answers the same (psp_build.py counts model_pixels' uses, so a test
+written outside this fails the build until it is looked at) */
+#ifdef PSP_DRAWLIST
+#define MODEL_PIXELS_BELOW(threshold) dl_px_below(threshold)
+#define MODEL_PIXELS_AT_LEAST(threshold) (!dl_px_below(threshold))
+#else
+#define MODEL_PIXELS_BELOW(threshold) (model_pixels < (threshold))
+#define MODEL_PIXELS_AT_LEAST(threshold) (model_pixels >= (threshold))
+#endif
 static int size_floor_on = -1;
 static unsigned long model_floor_left_out = 0;
 
@@ -3661,6 +3749,17 @@ static int show3_room(unsigned int needed)
 	unsigned int view = (unsigned int)gu_list->current & 0x40000000u;
 	unsigned int at = (unsigned int)gu_list->current & ~0x40000000u, used, waited = 0, mark;
 
+#ifdef PSP_DRAWLIST
+	/* a block is written: its own room, never the frame part's or a jump.
+	Out of room, the block is given up and its walk drawn in the list */
+	if (dl_w.writing)
+	{
+		if (at + needed + 16 <= dl_w.room_end)
+			return 1;
+		dl_w.never |= DL_NEVER_ROOM;
+		return 0;
+	}
+#endif
 	if (!show3_part_end || at + needed + 16 <= show3_part_end)
 		return 1;
 	if (show3_part_grow == SHOW3_GROW_NONE)
@@ -4256,6 +4355,12 @@ static void gebusy_window(char *text, int size, unsigned long frames_in_window)
 
 int __wrap_sceGeListUpdateStallAddr(int qid, void *stall)
 {
+#ifdef PSP_DRAWLIST
+	/* the stall is the list's: an address in a block being written means
+	nothing to the GE, and the next update after the block's CALL covers it */
+	if (dl_w.writing)
+		return 0;
+#endif
 	/* build 113: gebusy's own SIGNAL (below) moves the stall address; it
 	comes back here, and the new address is passed on with the chunk */
 	if (gebusy_inserting)
@@ -11739,6 +11844,10 @@ void psp_ge_model_shape(int first_person, const float *centroid, float radius, f
 		if (model_near)
 			near_models++;
 	}
+#ifdef PSP_DRAWLIST
+	if (dl_w.noting || dl_w.checking)
+		dl_shape(first_person);
+#endif
 }
 
 /* active camouflage (build 30): the Xbox draws a camouflaged model as a
@@ -12887,6 +12996,20 @@ static const void *vm_redirect(const void *vertices, int count)
 {
 	struct vm_entry *e;
 
+#ifdef PSP_DRAWLIST
+	/* a block's words hold the address given here: noted, and asked again
+	(with its tally) before the block is CALLed */
+	if (dl_w.noting && vertices)
+	{
+		const void *to;
+
+		dl_w.noting = 0;
+		to = vm_redirect(vertices, count);
+		dl_w.noting = 1;
+		dl_dep_note(DL_DEP_VRAM, (unsigned int)vertices, (unsigned int)count, (unsigned int)to);
+		return to;
+	}
+#endif
 	if (PSP_ME_WORK() || !vertices)
 		return vm_me_on > 0 && vertices ? vm_redirect_me(vertices, count) : vertices;
 	e = vm_find((unsigned int)vertices, 0);
@@ -13744,6 +13867,9 @@ void psp_ge_pcv_report(void)
 		origin_held_hops = origin_held_frames = 0;
 	}
 #endif
+#ifdef PSP_DRAWLIST
+	dl_report();
+#endif
 	far_report();
 	platform_log("GE: model parts drawn in the last 300 frames: %lu indices (the GE's vertices), %lu buffer vertices; %.0f and %.0f a frame",
 		model_drawn_indices, model_drawn_vertices, (double)model_drawn_indices / 300.0, (double)model_drawn_vertices / 300.0);
@@ -13933,7 +14059,11 @@ set or not: the replay reads only that) */
 #define RSO_REST 64
 #define RSO_MAX_FADES 8
 enum { RSO_WORDS, RSO_OBJECT, RSO_USED, RSO_KEY_WORDS, RSO_FADES, RSO_PARTS, RSO_RECORD_WORDS, RSO_RECORDS, RSO_CHANGED,
-	RSO_REST_UNTIL, RSO_SENT, RSO_HEADER };
+	RSO_REST_UNTIL, RSO_SENT,
+#ifdef PSP_DRAWLIST
+	RSO_ID, /* the draw list's: a number of its own each time the entry's records are written */
+#endif
+	RSO_HEADER };
 /* an entry: the header, the key, each camera-faded reflection's cutoff,
 falloff and fraction, each part's two buffers, the records */
 #define RSO_FADE_AT(entry) ((entry) + RSO_HEADER + (entry)[RSO_KEY_WORDS])
@@ -13971,6 +14101,10 @@ static PSP_MAIN_SIDE unsigned long rso_frames, rso_asked_count, rso_sent, rso_se
 	rso_no_room, rso_volatile_count[5], rso_broken, rso_kinds, rso_moved, rso_compared, rso_differ, rso_differ_words,
 	rso_resting, rso_kind_count[32], rso_field_count[11], rso_compactions;
 static PSP_MAIN_SIDE int rso_differ_kind = -1, rso_differ_word = -1;
+#ifdef PSP_DRAWLIST
+static PSP_MAIN_SIDE unsigned int rso_next_id = 0;
+static void dl_words_read(void);
+#endif
 
 static unsigned int rso_slot(long object_index)
 {
@@ -14176,8 +14310,15 @@ static int rso_send(unsigned int *entry)
 	const void *const *buffers = (const void *const *)RSO_BUFFERS_AT(entry);
 	defer_word *record = (defer_word *)RSO_RECORDS_AT(entry), *at, *end = record + words;
 	unsigned int part = 0;
+#ifdef PSP_DRAWLIST
+	unsigned int marker = 0;
+
+	if (words + DEFER_KEPT_WORDS > DEFER_LARGEST)
+#else
+	const unsigned int marker = 0;
 
 	if (words > DEFER_LARGEST)
+#endif
 		return 0;
 	for (at = record; at < end; at += at->u >> 8)
 		if ((at->u & 0xFF) == DEFER_DRAW_FAR)
@@ -14215,7 +14356,12 @@ static int rso_send(unsigned int *entry)
 		inflight_room_park();
 	if (inflight_pending)
 		inflight_sync();
-	if (defer_used + words > defer_limit)
+#ifdef PSP_DRAWLIST
+	/* the draw list: the records come behind a record of their own, which
+	the replay reads first (dl_kept) */
+	marker = psp_drawlist_on() && entry[RSO_ID] ? DEFER_KEPT_WORDS : 0;
+#endif
+	if (defer_used + words + marker > defer_limit)
 	{
 		defer_drains_full++;
 		if (inflight_on)
@@ -14226,6 +14372,18 @@ static int rso_send(unsigned int *entry)
 		(void)psp_tex_inflight_room(&inflight_room_generation);
 	if (chunk_frame && !chunk_stopped && defer_used - chunk_published >= chunk_words)
 		chunk_piece();
+#ifdef PSP_DRAWLIST
+	if (marker)
+	{
+		defer_word *kept = defer_base + defer_used;
+
+		kept[0].u = DEFER_KEPT | (DEFER_KEPT_WORDS << 8);
+		kept[1].u = entry[RSO_ID];
+		kept[2].u = words;
+		defer_used += DEFER_KEPT_WORDS;
+		defer_records++;
+	}
+#endif
 	memcpy(defer_base + defer_used, record, words * sizeof(defer_word));
 	defer_used += words;
 	defer_records += entry[RSO_RECORDS];
@@ -14560,6 +14718,11 @@ unsigned int *psp_rso_capture_end(unsigned int key_words)
 	entry[RSO_CHANGED] = rso_cap_changes;
 	entry[RSO_REST_UNTIL] = 0;
 	entry[RSO_SENT] = 0;
+#ifdef PSP_DRAWLIST
+	if (!++rso_next_id)
+		rso_next_id = 1;
+	entry[RSO_ID] = rso_next_id;
+#endif
 	memcpy(RSO_FADE_AT(entry), rso_cap_fade, 3 * rso_cap_fades * sizeof(float));
 	memcpy(RSO_BUFFERS_AT(entry), rso_cap_buffers, 2 * parts * sizeof(void *));
 	memcpy(RSO_RECORDS_AT(entry), record, words * sizeof(defer_word));
@@ -14591,8 +14754,610 @@ static void rso_window(void)
 		if (psp_keep("sspr"))
 			rso_asked = 0;
 		psp_rso_on = rso_asked;
+#ifdef PSP_DRAWLIST
+		dl_words_read();
+#endif
 	}
 }
+
+#ifdef PSP_DRAWLIST
+/* ---------- the draw list's blocks (docs/box_draw_list.md §10.8)
+
+rso sends a still object's kept records again, and under "drawlist" a
+DEFER_KEPT record ahead of them names the entry's contents (RSO_ID, new each
+time the entry is written). The replay writes such a walk's words once into
+a block of their own in an arena of main RAM, ended by a RET, and puts a
+CALL to it in the list; the next time the same id comes, and nothing the
+words were made from has changed, it writes only the CALL.
+
+What the words depend on, besides the records: the origin (ge_eye, held on
+its grid), the camera's answers (each test of model_pixels narrows a range
+it must stay in; model_near and first person are never kept), the size
+floor, and the owner of every address in the words (the geometry cache's
+generation of each part's vertices, the conversion's plan, a VRAM copy's
+address, each texture's place), checked before each CALL. A block sets
+every state it uses (the lighting and texture memos are forgotten as it
+starts) and leaves the GE with what its last draw set, so the memos are
+forgotten again after its CALL and gum's model matrix is sent again by the
+next draw. The view and projection stay out: settled before a block is
+written or CALLed.
+
+On a CALL the walk's other records are still carried out, without their
+draws: they leave the model's state (its nodes, lights, colours, shape) as
+the replay would, and the shapes' model_pixels are checked as they come.
+
+The arena is two halves, written in turn; only blocks in the half being
+written are CALLed, so a half is free once the GE has finished the last
+frame that read it: the replay of frame N runs after frame N - 2 was shown
+(show_picture waits for its list's finish), and a half is written again
+DL_FRAMES_OUT frames after the replay left it.
+
+"drawlistcheck": each block about to be CALLed is written again from its
+records in the room past the arena's newest and compared word by word (an
+address inside the block compared as its offset), then given up; the CALL
+is the kept block's */
+#define DL_KB 192
+#define DL_KB_LEAST 32
+#define DL_SLOTS 1024
+#define DL_TEX_NOTES 32
+#define DL_FRAMES_OUT 3
+/* a block is opened only with this much room: list_full asks for
+DISPLAY_LIST_MARGIN past every draw */
+#define DL_OPEN_LEAST (DISPLAY_LIST_MARGIN + 12 * 1024)
+struct dl_meta
+{
+	unsigned int id, words, block, deps, texes, shapes;
+	float eye[3], floor;
+	float lo[DL_SHAPES], hi[DL_SHAPES];
+	/* then deps dl_deps, then texes index and address pairs */
+};
+#define DL_META_ROOM ((sizeof(struct dl_meta) + DL_DEPS * sizeof(struct dl_dep) + DL_TEX_NOTES * 8 + 127) & ~63u)
+#define DL_META_DEPS(m) ((struct dl_dep *)((m) + 1))
+#define DL_META_TEXES(m) ((unsigned int *)(DL_META_DEPS(m) + (m)->deps))
+/* the counts, the replay's (read by the main CPU's report through the
+uncached view, never reset: the report keeps what it read last) */
+enum { DLC_MADE, DLC_CALLED, DLC_WORDS_CALLED, DLC_ABANDONED, DLC_STALE_SHAPE, DLC_STALE_EYE, DLC_STALE_FLOOR,
+	DLC_STALE_OWNER, DLC_STALE_TEXTURE, DLC_STALE_VRAM, DLC_NO_ROOM, DLC_SWITCHES, DLC_PEAK, DLC_CHECKED,
+	DLC_CHECK_DIFFER, DLC_CHECK_WORDS, DLC_CHECK_SKIPPED, DLC_FIRST_AT, DLC_FIRST_KEPT, DLC_FIRST_FRESH, DLC_REFUSED,
+	DLC_COUNTS = DLC_REFUSED + DL_NEVERS };
+static struct __attribute__((aligned(64))) dl_arena_state
+{
+	unsigned int half, at, gen[2], left[2], gen_next;
+	unsigned int *saved_current, *saved_start;
+	unsigned int saved_pending[2], block;
+	float eye[3], floor;
+	unsigned int count[DLC_COUNTS];
+} dl;
+static struct __attribute__((aligned(64))) dl_slot { unsigned int id, gen; struct dl_meta *meta; unsigned int pad; } dl_slot[DL_SLOTS];
+/* the keep words and the arena, set once on the main CPU and written back */
+static struct __attribute__((aligned(64))) dl_words_state { int on, check; unsigned int arena, bytes; } dl_words;
+void psp_tex_dl_begin(void);
+int psp_tex_dl_end(unsigned int *out, int room);
+int psp_tex_dl_still(const unsigned int *notes, int count);
+void psp_tex_dl_touch(const unsigned int *notes, int count);
+void psp_tex_memo_forget_all(void);
+void psp_tex_dl_drop(void);
+
+static void dl_words_read(void)
+{
+	unsigned int kb = (unsigned int)psp_keep_number("drawlistkb", DL_KB);
+	void *arena = NULL;
+
+	dl_words.on = psp_drawlist_on() && psp_keep("drawlistblocksoff") == 0;
+	dl_words.check = dl_words.on && psp_keep("drawlistcheck") != 0;
+	if (dl_words.on)
+	{
+		for (; kb >= DL_KB_LEAST && !(arena = memalign(64, kb * 1024)); kb /= 2)
+			;
+		if (arena)
+		{
+			dl_words.arena = (unsigned int)arena;
+			dl_words.bytes = kb * 1024;
+			platform_log("GE: drawlist: the blocks' arena %u KB (two halves)%s", kb, dl_words.check ? "; drawlistcheck on" : "");
+		}
+		else
+		{
+			dl_words.on = 0;
+			platform_log("GE: drawlist: no room for the blocks' arena; the blocks off (the origin still held)");
+		}
+	}
+	sceKernelDcacheWritebackRange(&dl_words, sizeof(dl_words));
+}
+
+/* every test of model_pixels while a block is written: the range it must
+stay in for the test to answer the same */
+static int dl_px_below(float threshold)
+{
+	int below = model_pixels < threshold, k = dl_w.shape - 1;
+
+	if (dl_w.noting)
+	{
+		if (k < 0 || k >= DL_SHAPES)
+			dl_w.never |= DL_NEVER_SHAPES;
+		else if (below)
+		{
+			if (threshold < dl_w.hi[k])
+				dl_w.hi[k] = threshold;
+		}
+		else if (threshold > dl_w.lo[k])
+			dl_w.lo[k] = threshold;
+	}
+	return below;
+}
+
+static void dl_dep_note(unsigned int kind, unsigned int a, unsigned int b, unsigned int c)
+{
+	struct dl_dep *d;
+
+	if (!dl_w.noting)
+		return;
+	if (dl_w.deps >= DL_DEPS)
+	{
+		dl_w.never |= DL_NEVER_DEPS;
+		return;
+	}
+	d = &dl_w.dep[dl_w.deps++];
+	d->kind = kind;
+	d->a = a;
+	d->b = b;
+	d->c = c;
+}
+
+/* psp_ge_model_shape's end, while a block is noted or checked */
+static void dl_shape(int first_person)
+{
+	int k = dl_w.shape++;
+
+	if (dl_w.noting)
+	{
+		if (first_person)
+			dl_w.never |= DL_NEVER_FIRST_PERSON;
+		if (model_near)
+			dl_w.never |= DL_NEVER_NEAR;
+		if (k >= DL_SHAPES)
+			dl_w.never |= DL_NEVER_SHAPES;
+		else
+		{
+			dl_w.lo[k] = -1.0f;
+			dl_w.hi[k] = 3.0e38f;
+		}
+		return;
+	}
+	if (first_person || model_near || k >= DL_SHAPES || model_pixels < dl_w.check_lo[k] || !(model_pixels < dl_w.check_hi[k]))
+		dl_w.failed = 1;
+}
+
+/* a part drawn while a block is noted: what is never kept, and its vertices'
+owner */
+static void dl_part(const void *vertices)
+{
+	if (in_sky)
+		dl_w.never |= DL_NEVER_SKY;
+	if (model_camouflage > 0.0f)
+		dl_w.never |= DL_NEVER_CAMO;
+	if (planar_far > 0.0f)
+		dl_w.never |= DL_NEVER_FOG;
+	if (model_near)
+		dl_w.never |= DL_NEVER_NEAR;
+	if (model_first_person)
+		dl_w.never |= DL_NEVER_FIRST_PERSON;
+	if (vertices)
+		dl_dep_note(DL_DEP_GEOMETRY, (unsigned int)vertices, psp_geo_generation(vertices), 0);
+}
+
+/* the memos at a block's start and after its CALL */
+static void dl_forget_state(void)
+{
+	struct lit_state *L;
+
+	lit_forget(2);
+	if ((L = lit_state_here()) != NULL)
+		L->points_maybe_on = 1;
+	psp_tex_memo_forget_all();
+}
+
+/* the view and projection out of the block: the world's projection, and
+any matrix left to send sent */
+static void dl_settle(void)
+{
+	if (model_first_person)
+	{
+		use_projection(0);
+		model_first_person = 0;
+	}
+	sceGumUpdateMatrix();
+}
+
+/* the room for a block in the half being written (its start, no view bits),
+or 0; the halves change over when one is full, if the GE is done with the
+other (switch 0: never, for drawlistcheck's scratch, so the block it checks
+stays callable) */
+static unsigned int dl_room(int switch_ok)
+{
+	unsigned int half_bytes = (dl_words.bytes / 2) & ~63u, other;
+
+	if (!dl.gen[0])
+	{
+		dl.gen[0] = dl.gen_next = 1;
+		dl.half = 0;
+	}
+	if (half_bytes >= dl.at + DL_OPEN_LEAST + DL_META_ROOM)
+	{
+		dl_w.room_end = dl_words.arena + dl.half * half_bytes + half_bytes - DL_META_ROOM;
+		return dl_words.arena + dl.half * half_bytes + dl.at;
+	}
+	if (!switch_ok)
+		return 0;
+	other = dl.half ^ 1;
+	if (dl.left[other] && dl_w.frame + 1 - dl.left[other] < DL_FRAMES_OUT)
+	{
+		dl.count[DLC_NO_ROOM]++;
+		return 0;
+	}
+	if (dl.at > dl.count[DLC_PEAK])
+		dl.count[DLC_PEAK] = dl.at;
+	dl.left[dl.half] = dl_w.frame + 1;
+	dl.half = other;
+	dl.at = 0;
+	dl.gen[other] = ++dl.gen_next;
+	dl.count[DLC_SWITCHES]++;
+	dl_w.room_end = dl_words.arena + other * half_bytes + half_bytes - DL_META_ROOM;
+	return dl_words.arena + other * half_bytes;
+}
+
+/* the list's words go into a block from here */
+static int dl_open(int switch_ok)
+{
+	unsigned int view = (unsigned int)gu_list->current & 0x40000000u, start, used;
+
+	if (!(start = dl_room(switch_ok)))
+		return 0;
+	dl_settle();
+	dl.saved_current = gu_list->current;
+	dl.saved_start = gu_list->start;
+	dl.saved_pending[0] = pending_start;
+	dl.saved_pending[1] = pending_end;
+	pending_start = pending_end = 0;
+	used = (unsigned int)sceGuCheckList();
+	/* the list's length goes on counting from the frame's: its limits stay
+	the frame's, the block's room is show3_room's */
+	gu_list->current = (unsigned int *)(view | start);
+	gu_list->start = (unsigned int *)((view | start) - used);
+	dl.block = start;
+	dl.eye[0] = ge_eye[0];
+	dl.eye[1] = ge_eye[1];
+	dl.eye[2] = ge_eye[2];
+	dl.floor = model_size_floor;
+	dl_w.never = 0;
+	dl_w.shape = 0;
+	dl_w.deps = 0;
+	dl_w.writing = 1;
+	dl_w.noting = 1;
+	psp_tex_dl_begin();
+	dl_forget_state();
+	return 1;
+}
+
+/* the list back where it was; the block's words end at the returned address
+(no view bits), its RET written if it can be kept */
+static unsigned int dl_shut(void)
+{
+	unsigned int end;
+
+	dl_w.noting = 0;
+	if (!dl_w.never)
+		sceGuSendCommandi(0x0B, 0); /* RET */
+	end = (unsigned int)gu_list->current & ~0x40000000u;
+	gu_list->current = dl.saved_current;
+	gu_list->start = dl.saved_start;
+	pending_start = dl.saved_pending[0];
+	pending_end = dl.saved_pending[1];
+	dl_w.writing = 0;
+	/* the GE state the block's words left */
+	dl_forget_state();
+	return end;
+}
+
+/* the words of start..end and the lines after out of this CPU's cache, to
+memory, where the GE (and the other CPU) read them */
+static void dl_lines_out(unsigned int start, unsigned int end)
+{
+	unsigned int line;
+
+	for (line = start & ~63u; line < end; line += 64)
+		__builtin_allegrex_cache(0x1B, line);
+	__asm__ volatile("sync");
+}
+
+/* the block written: kept (its meta after its words, the slot pointed at
+it), or NULL if something in it can't be kept */
+static struct dl_meta *dl_close(unsigned int id)
+{
+	unsigned int texes[2 * DL_TEX_NOTES], end, meta_end, k, slot = id & (DL_SLOTS - 1);
+	int tex_count = psp_tex_dl_end(texes, DL_TEX_NOTES);
+	struct dl_meta *m;
+
+	if (tex_count < 0)
+		dl_w.never |= DL_NEVER_TEXTURE;
+	end = dl_shut();
+	if (dl_w.never)
+	{
+		for (k = 0; k < DL_NEVERS; k++)
+			if (dl_w.never & (1u << k))
+			{
+				dl.count[DLC_REFUSED + k]++;
+				break;
+			}
+		dl.count[DLC_ABANDONED]++;
+		return NULL;
+	}
+	m = (struct dl_meta *)((end + 63) & ~63u);
+	m->id = id;
+	m->block = dl.block;
+	m->words = (end - dl.block) / 4;
+	m->deps = dl_w.deps;
+	m->texes = (unsigned int)tex_count;
+	m->shapes = (unsigned int)dl_w.shape;
+	m->eye[0] = dl.eye[0];
+	m->eye[1] = dl.eye[1];
+	m->eye[2] = dl.eye[2];
+	m->floor = dl.floor;
+	for (k = 0; k < DL_SHAPES; k++)
+	{
+		m->lo[k] = dl_w.lo[k];
+		m->hi[k] = dl_w.hi[k];
+	}
+	memcpy(DL_META_DEPS(m), dl_w.dep, dl_w.deps * sizeof(struct dl_dep));
+	memcpy(DL_META_TEXES(m), texes, (unsigned int)tex_count * 8);
+	meta_end = (unsigned int)(DL_META_TEXES(m) + 2 * tex_count);
+	meta_end = (meta_end + 63) & ~63u;
+	dl_lines_out(dl.block, meta_end);
+	dl.at = meta_end - (dl_words.arena + dl.half * ((dl_words.bytes / 2) & ~63u));
+	dl_slot[slot].id = id;
+	dl_slot[slot].gen = dl.gen[dl.half];
+	dl_slot[slot].meta = m;
+	dl.count[DLC_MADE]++;
+	return m;
+}
+
+/* what a kept block depends on outside the camera: 0 if all the same, else
+the count it's stale by */
+static int dl_still(const struct dl_meta *m)
+{
+	const struct dl_dep *d = DL_META_DEPS(m);
+	unsigned int k;
+
+	if (m->floor != model_size_floor)
+		return DLC_STALE_FLOOR;
+	for (k = 0; k < m->deps; k++, d++)
+		if (d->kind == DL_DEP_GEOMETRY)
+		{
+			if (psp_geo_generation((const void *)d->a) != d->b)
+				return DLC_STALE_OWNER;
+		}
+		else if (d->kind == DL_DEP_CONVERTED)
+		{
+			const void *vertices = (const void *)d->a;
+			unsigned int slot = ((unsigned int)vertices >> 4) % CONVERTED_BUFFERS, tries = 0;
+
+			if (psp_geo_generation(vertices) != d->c)
+				return DLC_STALE_OWNER;
+			if (psp_pcv_on && psp_geo_baked(vertices))
+				continue;
+			while (converted[slot] && converted[slot] != vertices && ++tries < CONVERTED_BUFFERS)
+				slot = (slot + 1) % CONVERTED_BUFFERS;
+			if (converted[slot] != vertices || converted_generation[slot] != d->c ||
+				(d->b && (unsigned int)skinned[slot] != d->b))
+				return DLC_STALE_OWNER;
+		}
+	if (!psp_tex_dl_still(DL_META_TEXES(m), (int)m->texes))
+		return DLC_STALE_TEXTURE;
+	return 0;
+}
+
+/* the VRAM copies asked again (which counts their reads, as a draw does) */
+static int dl_vram_still(const struct dl_meta *m)
+{
+	const struct dl_dep *d = DL_META_DEPS(m);
+	unsigned int k;
+
+	for (k = 0; k < m->deps; k++, d++)
+		if (d->kind == DL_DEP_VRAM &&
+			(unsigned int)(vm_on > 0 ? vm_redirect((const void *)d->a, (int)d->b) : (const void *)d->a) != d->c)
+			return 0;
+	return 1;
+}
+
+/* drawlistcheck: the words differing between a kept block and one written
+afresh, an address inside each block compared as its offset */
+static void dl_compare(const struct dl_meta *m, unsigned int fresh, unsigned int fresh_end)
+{
+	const unsigned int *a = (const unsigned int *)m->block, *b = (const unsigned int *)fresh;
+	unsigned int na = m->words, nb = (fresh_end - fresh) / 4, n = na < nb ? na : nb, k, differ = 0;
+	unsigned int shift = (fresh - m->block) & 0xFFFFFFu;
+
+	for (k = 0; k < n; k++)
+	{
+		unsigned int x = a[k], y = b[k], command = x >> 24;
+
+		if (x == y)
+			continue;
+		if (command == (y >> 24))
+		{
+			/* VADDR, IADDR, JUMP, CALL: their low 24 bits; BASE: the top four */
+			if ((command == 0x01 || command == 0x02 || command == 0x08 || command == 0x0A) &&
+				((y - x) & 0xFFFFFFu) == shift && (x & 0xFFFFFFu) - (m->block & 0xFFFFFFu) < na * 4)
+				continue;
+			if (command == 0x10 && ((x >> 16) & 0xF) == ((m->block >> 24) & 0xF) && ((y >> 16) & 0xF) == ((fresh >> 24) & 0xF))
+				continue;
+		}
+		if (!differ && !dl.count[DLC_CHECK_DIFFER])
+		{
+			dl.count[DLC_FIRST_AT] = k;
+			dl.count[DLC_FIRST_KEPT] = x;
+			dl.count[DLC_FIRST_FRESH] = y;
+		}
+		differ++;
+	}
+	differ += na > nb ? na - nb : nb - na;
+	dl.count[DLC_CHECKED]++;
+	if (differ)
+	{
+		if (!dl.count[DLC_CHECK_DIFFER] && n == k && na != nb)
+			dl.count[DLC_FIRST_AT] = 0x80000000u | n;
+		dl.count[DLC_CHECK_DIFFER]++;
+		dl.count[DLC_CHECK_WORDS] += differ;
+	}
+	dl_lines_out(m->block, m->block + na * 4);
+	dl_lines_out(fresh, fresh_end);
+}
+
+/* a DEFER_KEPT walk: its block CALLed if it holds, else written (and
+CALLed), else the walk replayed into the list as without the box */
+static void dl_kept(const defer_word *records, unsigned int words, unsigned int id, int on_me)
+{
+	struct dl_slot *slot = &dl_slot[id & (DL_SLOTS - 1)];
+	struct dl_meta *m;
+	int stale = 0;
+
+	if (!dl_words.on || !origin_held_now || !frame_open || dl_w.writing)
+	{
+		defer_replay(records, words, on_me);
+		return;
+	}
+	m = slot->id == id && slot->gen == dl.gen[dl.half] ? slot->meta : NULL;
+	if (m && !(stale = dl_still(m)))
+	{
+		/* the walk's other records, its draws left out; its shapes checked */
+		dl_w.check_lo = m->lo;
+		dl_w.check_hi = m->hi;
+		dl_w.shape = 0;
+		dl_w.failed = 0;
+		dl_w.checking = 1;
+		dl_w.skip_draws = 1;
+		defer_replay(records, words, on_me);
+		dl_w.skip_draws = 0;
+		dl_w.checking = 0;
+		if (dl_w.failed || (unsigned int)dl_w.shape != m->shapes)
+			stale = DLC_STALE_SHAPE;
+		else
+		{
+			dl_settle();
+			if (memcmp(m->eye, ge_eye, sizeof(m->eye)))
+				stale = DLC_STALE_EYE;
+			else if (!dl_vram_still(m))
+				stale = DLC_STALE_VRAM;
+		}
+		if (!stale)
+		{
+			psp_tex_dl_touch(DL_META_TEXES(m), (int)m->texes);
+			if (dl_words.check)
+			{
+				if (dl_open(0))
+				{
+					unsigned int fresh = dl.block, end;
+
+					defer_replay(records, words, on_me);
+					(void)psp_tex_dl_end(NULL, 0);
+					end = dl_shut();
+					dl_compare(m, fresh, end);
+				}
+				else
+					dl.count[DLC_CHECK_SKIPPED]++;
+			}
+			if (!list_full())
+			{
+				dl_settle();
+				sceGuSendCommandi(0x10, (int)((m->block >> 8) & 0xF0000u)); /* BASE */
+				sceGuSendCommandi(0x0A, (int)(m->block & 0xFFFFFFu)); /* CALL */
+				dl_forget_state();
+				{
+					/* gum's model matrix sent again by the next draw: the GE's
+					is the block's last */
+					ScePspFMatrix4 model;
+
+					sceGumMatrixMode(GU_MODEL);
+					sceGumStoreMatrix(&model);
+					sceGumLoadMatrix(&model);
+				}
+			}
+			dl.count[DLC_CALLED]++;
+			dl.count[DLC_WORDS_CALLED] += m->words;
+			return;
+		}
+	}
+	if (stale)
+		dl.count[stale]++;
+	if (dl_open(1))
+	{
+		defer_replay(records, words, on_me);
+		if ((m = dl_close(id)) != NULL)
+		{
+			if (!list_full())
+			{
+				sceGuSendCommandi(0x10, (int)((m->block >> 8) & 0xF0000u)); /* BASE */
+				sceGuSendCommandi(0x0A, (int)(m->block & 0xFFFFFFu)); /* CALL */
+				sceGumMatrixMode(GU_MODEL);
+				{
+					ScePspFMatrix4 model;
+
+					sceGumStoreMatrix(&model);
+					sceGumLoadMatrix(&model);
+				}
+			}
+			return;
+		}
+	}
+	defer_replay(records, words, on_me);
+}
+
+/* a replay's end: the replay's own state written back and out of this
+CPU's cache, so whichever CPU replays next reads it from memory */
+static void dl_run_end(void)
+{
+	if (!dl_words.on)
+		return;
+	dl_lines_out((unsigned int)&dl_w, (unsigned int)&dl_w + sizeof(dl_w));
+	dl_lines_out((unsigned int)&dl, (unsigned int)&dl + sizeof(dl));
+	dl_lines_out((unsigned int)dl_slot, (unsigned int)dl_slot + sizeof(dl_slot));
+	psp_tex_dl_drop();
+}
+
+/* the 300-frame report's line: the counts since the last, read through the
+uncached view (the replay's CPU writes them) */
+static void dl_report(void)
+{
+	static const char *const never_names[DL_NEVERS] = { "room", "near", "first person", "sky", "camouflage", "texture",
+		"convert", "planar fog", "kind", "shapes", "owners", "sprite" };
+	static unsigned int last[DLC_COUNTS];
+	const volatile unsigned int *count = (const volatile unsigned int *)(0x40000000u | (unsigned int)dl.count);
+	unsigned int now[DLC_COUNTS], d[DLC_COUNTS], k;
+	char refused[200];
+	int at = 0;
+
+	if (!dl_words.on)
+		return;
+	for (k = 0; k < DLC_COUNTS; k++)
+	{
+		now[k] = count[k];
+		d[k] = now[k] - last[k];
+		last[k] = now[k];
+	}
+	refused[0] = 0;
+	for (k = 0; k < DL_NEVERS && at < (int)sizeof(refused) - 1; k++)
+		if (d[DLC_REFUSED + k])
+			at += snprintf(refused + at, sizeof(refused) - at, " %s %u,", never_names[k], d[DLC_REFUSED + k]);
+	platform_log("GE: drawlist: blocks made %u, CALLed %u, words CALLed %u (300 frames); refused by%s abandoned %u; "
+		"stale: shape %u, eye %u, floor %u, owner %u, texture %u, vram %u; arena: no room %u, halves switched %u, peak KB %u",
+		d[DLC_MADE], d[DLC_CALLED], d[DLC_WORDS_CALLED], at ? refused : " none,", d[DLC_ABANDONED], d[DLC_STALE_SHAPE],
+		d[DLC_STALE_EYE], d[DLC_STALE_FLOOR], d[DLC_STALE_OWNER], d[DLC_STALE_TEXTURE], d[DLC_STALE_VRAM], d[DLC_NO_ROOM],
+		d[DLC_SWITCHES], now[DLC_PEAK] / 1024);
+	if (dl_words.check)
+		platform_log("GE: drawlistcheck: blocks checked %u, differ %u, words differ %u, skipped %u; the first: word %u kept %08x fresh %08x",
+			d[DLC_CHECKED], d[DLC_CHECK_DIFFER], d[DLC_CHECK_WORDS], d[DLC_CHECK_SKIPPED], now[DLC_FIRST_AT],
+			now[DLC_FIRST_KEPT], now[DLC_FIRST_FRESH]);
+}
+#endif
 
 /* the part's detail map on the main menu: its key (0 none) and its scale on
 the part's texture coordinates (psp_fixups.py: soso shaders, ui.map only) */
@@ -14793,13 +15558,13 @@ static int env_part(const float *strength)
 	int width, height;
 	float most = strength[0] > strength[1] ? strength[0] : strength[1];
 
-	if (reflection_words.chief_visor && reflection_chief == 1 && model_pixels >= 24.0f)
+	if (reflection_words.chief_visor && reflection_chief == 1 && MODEL_PIXELS_AT_LEAST(24.0f))
 		return reflection_cube_key && psp_tex_size(reflection_cube_key, &width, &height) && width == 32 && height == 32;
 	most = most > strength[2] ? most : strength[2];
 	if (most * 100.0f < (float)reflection_words.env_min)
 		return 0;
 	if (!(model_first_person ? reflection_words.env_fp :
-		reflection_words.env_near && model_pixels >= (float)reflection_words.env_pixels))
+		reflection_words.env_near && MODEL_PIXELS_AT_LEAST((float)reflection_words.env_pixels)))
 		return 0;
 	return reflection_cube_key && psp_tex_size(reflection_cube_key, &width, &height) && width == 32 && height == 32;
 }
@@ -16331,7 +17096,7 @@ instance decision calls the same. First person and the sky keep every pass */
 
 static int pass_small(int pixels)
 {
-	return pixels > 0 && model_pixels < (float)pixels && !model_first_person && !in_sky;
+	return pixels > 0 && MODEL_PIXELS_BELOW((float)pixels) && !model_first_person && !in_sky;
 }
 
 #define PASS_SMALL_PIXELS 64
@@ -16342,6 +17107,9 @@ static void pass_words(void)
 	pass_change_small = psp_keep_number("changesmall", PASS_SMALL_PIXELS);
 }
 
+#ifdef PSP_DRAWLIST
+static void dl_part(const void *vertices);
+#endif
 static void psp_ge_draw_model_body(void *vertices, int vertex_count, int uncompressed, const unsigned short *indices,
 	long index_count, int strip, unsigned int color, unsigned int base_key, float u_scale, float v_scale,
 	int alpha_tested)
@@ -16361,10 +17129,14 @@ static void psp_ge_draw_model_body(void *vertices, int vertex_count, int uncompr
 	near_memo_skin = NULL; /* build 106: model_geometry's lists are this part's */
 	near_memo_complete = 0;
 	bone_memo_skin = NULL; /* build 107: and its bone sub-lists */
+#ifdef PSP_DRAWLIST
+	if (dl_w.noting)
+		dl_part(vertices);
+#endif
 	if (!frame_open || index_count < 3 || !vertices || !indices || !model_nodes || model_node_count <= 0 ||
 		vertex_count <= 0 || list_full() || (in_sky && magenta == 1))
 		return;
-	if (model_size_floor > 0.0f && model_pixels < model_size_floor && !model_first_person && !in_sky)
+	if (model_size_floor > 0.0f && MODEL_PIXELS_BELOW(model_size_floor) && !model_first_person && !in_sky)
 	{
 		model_floor_left_out++;
 		return;
@@ -16373,7 +17145,16 @@ static void psp_ge_draw_model_body(void *vertices, int vertex_count, int uncompr
 	part_k14 = 0.0f;
 	convert_float_only = model_first_person || in_sky;
 	if (!model_convert(vertices, vertex_count, uncompressed, indices, (int)index_count, strip, &skin))
+	{
+#ifdef PSP_DRAWLIST
+		dl_w.never |= dl_w.noting ? DL_NEVER_CONVERT : 0;
+#endif
 		return;
+	}
+#ifdef PSP_DRAWLIST
+	if (dl_w.noting)
+		dl_dep_note(DL_DEP_CONVERTED, (unsigned int)vertices, (unsigned int)skin, psp_geo_generation(vertices));
+#endif
 	part_k14 = convert_k;
 	part_add(4);
 	sceGumMatrixMode(GU_MODEL);
@@ -17421,6 +18202,15 @@ void psp_ge_draw_far(const void *block, unsigned int mask_low, unsigned int mask
 	GE_BENCH_SKIP();
 	if (!frame_open || !block || !model_nodes)
 		return;
+#ifdef PSP_DRAWLIST
+	if (dl_w.noting)
+	{
+		/* the sprite faces the camera: its corners are the camera's */
+		if (sprite)
+			dl_w.never |= DL_NEVER_SPRITE;
+		dl_dep_note(DL_DEP_GEOMETRY, (unsigned int)block, psp_geo_generation(block), 0);
+	}
+#endif
 	if (sprite)
 	{
 		far_sprite(sprite);

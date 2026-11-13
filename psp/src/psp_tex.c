@@ -2933,6 +2933,33 @@ static int __attribute__((noinline, cold)) tex_standin(int index, struct pack_en
 	return 1;
 }
 
+#ifdef PSP_DRAWLIST
+/* the draw list's block being written (psp_ge.c, docs/box_draw_list.md
+§10.8): each texture it binds, as its index and the address its words
+hold, checked again before the block is CALLed. A bind that draws a
+stand-in, misses, or goes through a bind block can't be kept. The replay's
+own (a line of its own, whichever CPU replays) */
+#define TEX_DL_NOTES 32
+static struct __attribute__((aligned(64))) tex_dl_state
+{
+	int noting, never;
+	unsigned int count;
+	unsigned int note[TEX_DL_NOTES][2];
+} tex_dl;
+
+static void __attribute__((noinline)) tex_dl_bind(int index)
+{
+	if (psp_tex_standin || !resident_at[index] || (bind_blocks_on > 0 && !PSP_ME_WORK()) || tex_dl.count >= TEX_DL_NOTES)
+	{
+		tex_dl.never = 1;
+		return;
+	}
+	tex_dl.note[tex_dl.count][0] = (unsigned int)index;
+	tex_dl.note[tex_dl.count][1] = resident_at[index];
+	tex_dl.count++;
+}
+#endif
+
 static inline __attribute__((always_inline)) int tex_bind(unsigned int key, int *has_alpha, int standin_ok)
 {
 	int index, level;
@@ -2946,6 +2973,10 @@ static inline __attribute__((always_inline)) int tex_bind(unsigned int key, int 
 		return 0;
 	TXC_BOUND(index);
 	entry = &entries[index];
+#ifdef PSP_DRAWLIST
+	if (__builtin_expect(tex_dl.noting, 0))
+		tex_dl_bind(index);
+#endif
 	if (__builtin_expect(psp_tex_standin != 0, 0))
 	{
 		if (psp_tex_standin == 3)
@@ -3092,6 +3123,93 @@ int psp_tex_bind(unsigned int key, int *has_alpha)
 {
 	return tex_bind(key, has_alpha, 1);
 }
+
+#ifdef PSP_DRAWLIST
+/* psp_ge.c's blocks: noting starts as a block is opened */
+void psp_tex_dl_begin(void)
+{
+	tex_dl.noting = 1;
+	tex_dl.never = 0;
+	tex_dl.count = 0;
+}
+
+/* and ends as it is closed: the binds noted (index and address pairs,
+copied to out, room pairs at most), or -1 if one can't be kept */
+int psp_tex_dl_end(unsigned int *out, int room)
+{
+	unsigned int k;
+
+	tex_dl.noting = 0;
+	if (tex_dl.never || (int)tex_dl.count > room)
+		return -1;
+	for (k = 0; k < tex_dl.count; k++)
+	{
+		out[2 * k] = tex_dl.note[k][0];
+		out[2 * k + 1] = tex_dl.note[k][1];
+	}
+	return (int)tex_dl.count;
+}
+
+/* before a block is CALLed: every texture it binds still where its words
+say */
+int psp_tex_dl_still(const unsigned int *notes, int count)
+{
+	int k;
+
+	if (!entries || psp_tex_standin)
+		return 0;
+	for (k = 0; k < count; k++)
+	{
+		unsigned int index = notes[2 * k];
+
+		if ((int)index >= entry_count || resident_at[index] != notes[2 * k + 1])
+			return 0;
+	}
+	return 1;
+}
+
+/* and as it is CALLed: what a bind does besides its words, so a texture in
+use is kept as one bound would be */
+void psp_tex_dl_touch(const unsigned int *notes, int count)
+{
+	int k;
+
+	for (k = 0; k < count; k++)
+	{
+		int index = (int)notes[2 * k];
+
+		frame_set_mark(index);
+		if (bind_counts && bind_counts[index] < 65535)
+			bind_counts[index]++;
+		if (texline_me && PSP_ME_WORK())
+		{
+			(*texline_me)++;
+			(*texline_me_copy)++;
+		}
+		if (texlod_on())
+			texlod_mark(index);
+	}
+}
+
+/* a block's words set every texture state they use, and after its CALL the
+GE holds the block's: both memos forgotten */
+void psp_tex_memo_forget_all(void)
+{
+	memo_key = 0;
+	tex_me_memo.key = 0;
+}
+
+/* the noting's line out of this CPU's cache, written back: the other CPU
+may replay next */
+void psp_tex_dl_drop(void)
+{
+	__builtin_allegrex_cache(0x1B, (unsigned int)&tex_dl);
+	__builtin_allegrex_cache(0x1B, (unsigned int)&tex_dl + 64);
+	__builtin_allegrex_cache(0x1B, (unsigned int)&tex_dl + 128);
+	__builtin_allegrex_cache(0x1B, (unsigned int)&tex_dl + 192);
+	__builtin_allegrex_cache(0x1B, (unsigned int)&tex_dl + 256);
+}
+#endif
 
 /* a bind for a draw in the GE's 2D mode, whose texture coordinates are in
 the texture's texels: a missing texture draws untextured, as a stand-in's
