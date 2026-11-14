@@ -5363,6 +5363,7 @@ FIXES_23["source/rasterizer/xbox/rasterizer_xbox_decals.c"] = [
 				unsigned long color, int intensity, int alpha_tested, int permanent);
 			extern unsigned int psp_tex_bitmap_key(long, int);
 			extern int psp_ge_decal_visible(long decal_index, unsigned int identifier, void const *vertices, int quad_count);
+			extern void psp_ge_decal_passed(unsigned int key);
 			byte *vertex_data = NULL;
 
 			vertex_data_offset = (unsigned long)lruv_block_get_address(local_vertex_cache, decal_index);
@@ -5384,6 +5385,8 @@ FIXES_23["source/rasterizer/xbox/rasterizer_xbox_decals.c"] = [
 					(int)intensity, local_layer == _decal_layer_alpha_tested,
 					/* build 90: the level's permanent decals (the scenario's painted symbols) */
 					TEST_FLAG(decal->flags, _decal_permanent_bit) ? 1 : 0);
+			else if (vertex_data)
+				psp_ge_decal_passed(psp_key);
 			IDirect3DVertexBuffer8_Unlock(local_d3d_vertex_buffer);
 			decal_index = decal->next_decal_index;
 			continue;

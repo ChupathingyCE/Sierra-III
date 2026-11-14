@@ -24869,6 +24869,20 @@ int psp_ge_decal_visible(long decal_index, unsigned int identifier, void const *
 	return 1;
 }
 
+/* a decal tested out still marks its texture for the loader when
+"decaltesttouch" is given: the proof's other side, to tell a picture changed
+by the test from one changed by the loader's budget going to other textures
+(the old path marked every decal's texture, on the screen or not) */
+void psp_ge_decal_passed(unsigned int key)
+{
+	static int touch = -1;
+
+	if (touch < 0)
+		touch = psp_keep("decaltesttouch");
+	if (touch)
+		GE_PRETOUCH(key, TXPT_DECAL);
+}
+
 void psp_ge_decal(void const *vertices, int quad_count, unsigned int key, short blend, unsigned long color,
 	int intensity, int alpha_tested, int permanent)
 {
