@@ -1491,7 +1491,10 @@ once a record. Simulated ME work (gemesim) isn't timed: the clock is a system
 call the ME can't make. Set at launch with the replay's other words; off, one
 test a run */
 #define REPLAY_SERVED (DEFER_WINDOW_BEGIN + 1) /* audio and the ring served between records */
-#define REPLAY_KINDS (REPLAY_SERVED + 1)
+/* the see-through flush, out of the record that runs it (the frame's first
+HUD quad's, mostly: box_draw_list.md §12.4) */
+#define REPLAY_FLUSH (REPLAY_SERVED + 1)
+#define REPLAY_KINDS (REPLAY_FLUSH + 1)
 struct replay_kind_times
 {
 	unsigned long long ticks[2][REPLAY_KINDS]; /* [0] main CPU, us; [1] ME, cycles */
@@ -1526,6 +1529,7 @@ static const char *const replay_kind_names[REPLAY_KINDS] =
 	[DEFER_LEVEL_GLOW] = "level glow", [DEFER_DRAW_FAR] = "far level",
 	[DEFER_FRAME_END] = "frame end (list's part)",
 	[DEFER_WINDOW_BEGIN] = "window begin (list's part)", [REPLAY_SERVED] = "audio and ring served",
+	[REPLAY_FLUSH] = "see-through flush (inside a record)",
 };
 
 static inline unsigned int replay_clock(int me)
@@ -1555,6 +1559,11 @@ static void me_memo_run_start(int job);
 ME's memo by itself (on lines only the ME's work writes) */
 static PSP_AIME_ME_SIDE int me_memo_in_job = 0;
 
+/* the replay's own timing, while a run is timed: transparent_flush takes
+its time out of the record that runs it */
+static int replay_timing = 0, replay_timing_side = 0, replay_timing_kind = -1;
+static unsigned int replay_timing_mark = 0;
+
 static void defer_replay(const defer_word *buffer, unsigned int used, int on_me)
 {
 	unsigned int at = 0, records = 0;
@@ -1562,6 +1571,10 @@ static void defer_replay(const defer_word *buffer, unsigned int used, int on_me)
 	simulated ME work) */
 	int side = psp_on_me(), timed = replay_kinds_on && (side || !psp_me_context), kind_before = -1;
 	unsigned int mark = timed ? replay_clock(side) : 0;
+	int timing_was = replay_timing;
+
+	if (timed)
+		replay_timing_mark = mark;
 
 	if (timed)
 		replay_kinds.runs[side]++;
@@ -1579,13 +1592,13 @@ static void defer_replay(const defer_word *buffer, unsigned int used, int on_me)
 		which waits on both audio and the ring's jobs (perception's rays, the
 		poses), so they're served every record */
 		if (timed && kind_before >= 0)
-			replay_kinds_add(side, kind_before, &mark);
+			replay_kinds_add(side, kind_before, &replay_timing_mark);
 		if (replay_inflight)
 			inflight_serve();
 		else if (on_me && (++records & 31) == 0)
 			psp_me_serve_audio();
 		if (timed && side)
-			replay_kinds_add(side, REPLAY_SERVED, &mark);
+			replay_kinds_add(side, REPLAY_SERVED, &replay_timing_mark);
 
 		at += buffer[at].u >> 8;
 		psp_me_record_kind = kind;
@@ -1595,8 +1608,11 @@ static void defer_replay(const defer_word *buffer, unsigned int used, int on_me)
 #endif
 		if (timed)
 		{
-			kind_before = kind < REPLAY_KINDS - 1 ? kind : 0;
+			kind_before = kind <= DEFER_WINDOW_BEGIN ? kind : 0;
 			replay_kinds.records[side][kind_before]++;
+			replay_timing = 1;
+			replay_timing_side = side;
+			replay_timing_kind = kind_before;
 		}
 		switch (kind)
 		{
@@ -1778,7 +1794,8 @@ static void defer_replay(const defer_word *buffer, unsigned int used, int on_me)
 		}
 	}
 	if (timed && kind_before >= 0)
-		replay_kinds_add(side, kind_before, &mark);
+		replay_kinds_add(side, kind_before, &replay_timing_mark);
+	replay_timing = timing_was;
 }
 
 /* mekinds: the frames since the last report by kind, the largest first, each
@@ -20553,10 +20570,15 @@ static void transparent_flush_body(void)
 static void transparent_flush(void)
 {
 	unsigned int start = ge_clock();
-	int kind = ge_kind_now;
+	int kind = ge_kind_now, timed = replay_timing;
 
 	ge_kind(KIND_SEETHROUGH_FLUSH); /* build 103 */
+	/* mekinds: the record so far to its own kind, the flush to its own */
+	if (timed && replay_timing_kind >= 0)
+		replay_kinds_add(replay_timing_side, replay_timing_kind, &replay_timing_mark);
 	transparent_flush_body();
+	if (timed)
+		replay_kinds_add(replay_timing_side, REPLAY_FLUSH, &replay_timing_mark);
 	ge_kind(kind);
 	ge_entry_us[8] += ge_clock() - start;
 }
