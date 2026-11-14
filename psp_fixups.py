@@ -52118,16 +52118,20 @@ FIXES_HEAPTRIM["source/render/render_particles.c#scratch"] = [
 # by build and by what last ran on the stack (the ME's, under aime), and it
 # reaches play: rung B's build parted b30_leg1 at 2,061 with it and not
 # without it (the lab's b78emu7). The unused words are cleared at the copy.
-# Keep word lookjunkold leaves them as the engine did.
+# Keep word lookjunkold leaves them as the engine did. Its second form
+# (2026-11-14 13:4x) builds the look from a zeroed copy holding only what its
+# type uses: rung B2 parted b30_leg1 at 2,061 again with only a prop's or an
+# object's two words cleared, the actor differing in the padding after the
+# type (the lab's b78emu9/10, 43599865442).
 FIXES_B78 = {}
 FIXES_B78["source/ai/actor_looking.c#lookjunk"] = [
     ("""	actor->control.secondary_look_direction = *direction;
 
 	return TRUE;""",
-     """	actor->control.secondary_look_direction = *direction;
-#ifdef HALO_PSP
-	/* psp_fixups.py (FIXES_B78): a prop's or an object's look leaves the
-	union's other words to the caller's stack; they're not carried */
+     """#ifdef HALO_PSP
+	/* psp_fixups.py (FIXES_B78): the look made from a zeroed copy holding
+	only what its type uses, so neither the union's unread words nor the
+	padding after the type carry the caller's stack into the actor */
 	{
 		static int junk_old = -1;
 
@@ -52137,13 +52141,36 @@ FIXES_B78["source/ai/actor_looking.c#lookjunk"] = [
 
 			junk_old = psp_keep("lookjunkold");
 		}
-		if (!junk_old &&
-			(direction->type == _direction_specification_prop || direction->type == _direction_specification_object))
+		if (junk_old)
+			actor->control.secondary_look_direction = *direction;
+		else
 		{
-			actor->control.secondary_look_direction.point.y = 0.0f;
-			actor->control.secondary_look_direction.point.z = 0.0f;
+			struct direction_specification clean;
+
+			memset(&clean, 0, sizeof(clean));
+			clean.type = direction->type;
+			switch (direction->type)
+			{
+			case _direction_specification_prop:
+				clean.prop_index = direction->prop_index;
+				break;
+			case _direction_specification_object:
+				clean.object_index = direction->object_index;
+				break;
+			case _direction_specification_point:
+				clean.point = direction->point;
+				break;
+			case _direction_specification_vector:
+				clean.vector = direction->vector;
+				break;
+			default:
+				break;
+			}
+			actor->control.secondary_look_direction = clean;
 		}
 	}
+#else
+	actor->control.secondary_look_direction = *direction;
 #endif
 
 	return TRUE;"""),
