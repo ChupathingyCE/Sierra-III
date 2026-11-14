@@ -107,8 +107,8 @@ Upper bound: the game thread's synchronous stick time in §1's table (5-38 s a b
 
 ## 9. Slices
 
-1. **S1a: the queue under the readers that already wait asynchronously** (textures' next-frame path, sound stream pieces, writes): no behaviour change, the lock's waits by class logged. It shows the real contention on the 1000.
-2. **S1b: geometry onto it** (asynchronous with the skipped-draw form, warm at load), textures' synchronous budget removed. This is the slice b72 failed at; it goes in only with slice 1's wait figures.
+1. **The queue under the readers that already wait asynchronously** (textures' next-frame path, sound stream pieces, writes): no behaviour change, the lock's waits by class logged. It shows the real contention on the 1000.
+2. **Geometry onto it** (asynchronous with the skipped-draw form, warm at load), textures' synchronous budget removed. This is the slice b72 failed at; it goes in only with slice 1's wait figures.
 3. **S2: the per-cluster table in the bake and prefetch by place and by object.**
 4. **Animation pages by encounter.**
 5. **The cache sizes from the table** (§6), handed to the memory map.
