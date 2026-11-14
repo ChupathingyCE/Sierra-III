@@ -12752,6 +12752,9 @@ static unsigned short *vm_hash = NULL, *vm_order = NULL;
 static PSP_MAIN_SIDE int vm_count = 0; /* the main CPU's (vm_find, at the record's writing) */
 static unsigned int vm_base = 0, vm_size = 0, vm_frame = 0;
 static unsigned long vm_draws = 0, vm_redirects = 0, vm_copied = 0, vm_dropped = 0, vm_full = 0;
+/* B80: draws whose buffer has no entry in the table (never noted since the
+last reset), the main CPU's and the ME's, and the resets themselves */
+static unsigned long vm_unknown = 0, vm_resets = 0;
 /* "vmpackoff": no room made by a span of copies (vm_make_room) */
 static int vm_pack = -1;
 static unsigned long vm_packs = 0, vm_pack_copies = 0;
@@ -12827,6 +12830,16 @@ static void vm_reset(void)
 	memset(vm_hash, 0, VM_HASH * sizeof(unsigned short));
 	vm_count = 0;
 	vm_on = 1;
+	{
+		extern long psp_game_time_peek(void);
+		int index, live = 0;
+
+		for (index = 0; index < CONVERTED_BUFFERS; index++)
+			live += converted[index] && psp_geo_generation(converted[index]) == converted_generation[index];
+		vm_resets++;
+		platform_log("GE: vrammodels: tables emptied at game time %ld; %d converted buffers live, which won't be noted again until converted afresh (B80)",
+			psp_game_time_peek(), live);
+	}
 	vm_me_dry = psp_keep("mevramdry");
 	if (psp_keep("mevram") || vm_me_dry)
 	{
@@ -12847,7 +12860,10 @@ static const void * __attribute__((noinline)) vm_redirect_me(const void *vertice
 	struct vm_entry *e = vm_find((unsigned int)vertices, 0);
 
 	if (!e)
+	{
+		vm_me_tally[VM_ENTRIES + 2]++;
 		return vertices;
+	}
 	vm_me_tally[VM_ENTRIES]++;
 	if (!e->level && psp_geo_generation(vertices) != e->generation)
 		return vertices;
@@ -12875,7 +12891,8 @@ static void vm_me_fold(void)
 		}
 	vm_draws += vm_me_tally[VM_ENTRIES];
 	vm_redirects += vm_me_tally[VM_ENTRIES + 1];
-	vm_me_tally[VM_ENTRIES] = vm_me_tally[VM_ENTRIES + 1] = 0;
+	vm_unknown += vm_me_tally[VM_ENTRIES + 2];
+	vm_me_tally[VM_ENTRIES] = vm_me_tally[VM_ENTRIES + 1] = vm_me_tally[VM_ENTRIES + 2] = 0;
 }
 
 /* a copy let go: its room comes back after the quarantine */
@@ -12976,7 +12993,10 @@ static const void *vm_redirect(const void *vertices, int count)
 		return vm_me_on > 0 && vertices ? vm_redirect_me(vertices, count) : vertices;
 	e = vm_find((unsigned int)vertices, 0);
 	if (!e)
+	{
+		vm_unknown++;
 		return vertices;
+	}
 	vm_draws++;
 	if (!e->level && psp_geo_generation(vertices) != e->generation)
 	{
@@ -13198,6 +13218,9 @@ static void vm_report(void)
 	platform_log("GE: vrammodels: %u buffers in %u of %u KB of VRAM; draws from a copy %lu of %lu, %lu KB copied, %lu copies let go, %lu times full (last 300 frames; %d buffers known)",
 		resident, bytes / 1024, vm_size / 1024, vm_redirects, vm_draws, vm_copied / 1024, vm_dropped, vm_full, vm_count);
 	vm_draws = vm_redirects = vm_copied = vm_dropped = vm_full = 0;
+	platform_log("GE: vrammodels, B80: draws whose buffer has no entry %lu (last 300 frames); tables emptied %lu times since the start",
+		vm_unknown, vm_resets);
+	vm_unknown = 0;
 	if (vm_packs)
 		platform_log("GE: vmpack: room made by a span of copies %lu times (%lu copies let go for it; last 300 frames)",
 			vm_packs, vm_pack_copies);
