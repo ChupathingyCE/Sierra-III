@@ -321,7 +321,8 @@ MAP_CHECKS = os.environ.get("PSP_MAP_CHECKS", "") == "1"
 # PSP_PGO=generate builds the hot units (those at -O2) counting their own
 # branches and calls; the counters don't fit the PSP-1000's layout, so it
 # needs PSP_BIG_RAM=1 (the emulator set to a 64 MB model). The game writes
-# the counts to ms0:/halo/gcda at "gcovdumpN" seconds of game time.
+# the counts to ms0:/halo/gcda at "gcovdumpN" seconds of game time, counted
+# from "gcovresetN" seconds if given (one window a run).
 # PSP_PGO=use with PSP_PGO_PROFILE=<name> builds the same units with the
 # counts in pgo/<name>.tgz: an ordinary build, for the PSP-1000. The counts'
 # file names are the objects' paths under PSP_OUT (-fprofile-prefix-path),
