@@ -12775,9 +12775,12 @@ static unsigned long vm_unknown_geo = 0;
 static struct { const void *source; unsigned int draws, vertices; } vm_who[VM_WHO];
 static void vm_who_note(const void *vertices, int count)
 {
+	static int who = -1;
 	int k, low = 0;
 
-	if (!psp_geo_generation(vertices))
+	if (who < 0)
+		who = psp_keep("b80who");
+	if (!who || !psp_geo_generation(vertices))
 		return;
 	vm_unknown_geo++;
 	for (k = 0; k < VM_WHO; k++)
