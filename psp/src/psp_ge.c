@@ -11505,6 +11505,9 @@ static const void *converted[CONVERTED_BUFFERS];
 /* build 68: the geometry cache's generation of the block when it was
 converted; the block can hold other vertices after an eviction */
 static unsigned int converted_generation[CONVERTED_BUFFERS];
+/* B80: each converted buffer's bytes, so vrammodels can note it again when
+its tables are emptied (vm_reset) */
+static unsigned int converted_bytes[CONVERTED_BUFFERS];
 static PSP_MAIN_SIDE unsigned long converted_count = 0, reconverted_count = 0; /* the main CPU's: only it converts */
 static unsigned long multi_node_rigid = 0, transparent_placed = 0;
 /* multi_node_rigid by why: see-through, no triangles given, the skinning plan
@@ -12621,6 +12624,7 @@ static void converted_sweep(void)
 	static const void *keep_address[CONVERTED_BUFFERS];
 	static unsigned int keep_generation[CONVERTED_BUFFERS];
 	static struct skin_part *keep_skin[CONVERTED_BUFFERS];
+	static unsigned int keep_bytes[CONVERTED_BUFFERS];
 	int index, kept = 0;
 
 	for (index = 0; index < CONVERTED_BUFFERS; index++)
@@ -12632,6 +12636,7 @@ static void converted_sweep(void)
 			keep_address[kept] = converted[index];
 			keep_generation[kept] = converted_generation[index];
 			keep_skin[kept] = skinned[index];
+			keep_bytes[kept] = converted_bytes[index];
 			kept++;
 		}
 		else
@@ -12648,6 +12653,7 @@ static void converted_sweep(void)
 	memset(converted, 0, sizeof(converted));
 	memset(converted_generation, 0, sizeof(converted_generation));
 	memset(skinned, 0, sizeof(skinned));
+	memset(converted_bytes, 0, sizeof(converted_bytes));
 	for (index = 0; index < kept; index++)
 	{
 		unsigned int slot = ((unsigned int)keep_address[index] >> 4) % CONVERTED_BUFFERS;
@@ -12657,6 +12663,7 @@ static void converted_sweep(void)
 		converted[slot] = keep_address[index];
 		converted_generation[slot] = keep_generation[index];
 		skinned[slot] = keep_skin[index];
+		converted_bytes[slot] = keep_bytes[index];
 	}
 	converted_used = kept;
 	converted_sweeps++;
@@ -12755,6 +12762,8 @@ static unsigned long vm_draws = 0, vm_redirects = 0, vm_copied = 0, vm_dropped =
 /* B80: draws whose buffer has no entry in the table (never noted since the
 last reset), the main CPU's and the ME's, and the resets themselves */
 static unsigned long vm_unknown = 0, vm_resets = 0;
+static int vm_renote = -1;
+static void vm_note(void *vertices, unsigned int bytes);
 /* "vmpackoff": no room made by a span of copies (vm_make_room) */
 static int vm_pack = -1;
 static unsigned long vm_packs = 0, vm_pack_copies = 0;
@@ -12837,8 +12846,19 @@ static void vm_reset(void)
 		for (index = 0; index < CONVERTED_BUFFERS; index++)
 			live += converted[index] && psp_geo_generation(converted[index]) == converted_generation[index];
 		vm_resets++;
-		platform_log("GE: vrammodels: tables emptied at game time %ld; %d converted buffers live, which won't be noted again until converted afresh (B80)",
-			psp_game_time_peek(), live);
+		/* B80's fix: the buffers still converted are noted again, as they
+		were when converted (their size and their block's generation), so
+		their draws count and rank for the room. "vmrenoteold": they stay
+		out until converted afresh */
+		if (vm_renote < 0)
+			vm_renote = !psp_keep("vmrenoteold");
+		if (vm_renote)
+			for (index = 0; index < CONVERTED_BUFFERS; index++)
+				if (converted[index] && converted_bytes[index] &&
+					psp_geo_generation(converted[index]) == converted_generation[index])
+					vm_note((void *)converted[index], converted_bytes[index]);
+		platform_log("GE: vrammodels: tables emptied at game time %ld; %d converted buffers live, %s (B80)",
+			psp_game_time_peek(), live, vm_renote ? "noted again" : "left out until converted afresh");
 	}
 	vm_me_dry = psp_keep("mevramdry");
 	if (psp_keep("mevram") || vm_me_dry)
@@ -13749,6 +13769,7 @@ static int model_convert(void *vertices, int count, int uncompressed, const unsi
 		int stride = part ? part->stride : convert_k != 0.0f ? 14 : 24;
 
 		ge_writeback(vertices, count * stride);
+		converted_bytes[slot] = (unsigned int)(count * stride);
 		vm_note(vertices, (unsigned int)(count * stride)); /* vrammodels: a copy may go to VRAM */
 	}
 	return 1;
