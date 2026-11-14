@@ -4556,6 +4556,19 @@ int main(int argc, char **argv)
 	/* build 53: the build's number first, so a log says which EBOOT ran */
 	platform_log("Halo PSP bring-up build %d (%s): free user memory %d KB, largest block %d KB", PSP_BUILD_NUMBER,
 		PSP_ENGINE_BASE, sceKernelTotalFreeMemSize() / 1024, sceKernelMaxFreeMemSize() / 1024);
+#ifdef PSP_RECON_64MB
+	/* B83: a 64 MB build that the firmware gave the standard user partition
+	(a PSP-1000, or ARK-4's extra memory not at its maximum on a 2000 or
+	later: ~9,950 KB free) can't take its heap and faults in game_initialize.
+	It says why here and quits instead */
+	if (sceKernelMaxFreeMemSize() < 24 * 1024 * 1024)
+	{
+		platform_log("64 MB build: only %d KB free (largest block %d KB): this build needs a PSP-2000 or later with "
+			"the firmware's extra memory granted (ARK-4: extra memory at its maximum); quitting",
+			sceKernelTotalFreeMemSize() / 1024, sceKernelMaxFreeMemSize() / 1024);
+		sceKernelExitGame();
+	}
+#endif
 #ifdef PSP_PGO_PROFILE
 	/* PSP_PGO=use (psp_build.py): the profile it was built with */
 	platform_log("pgo: the hot code laid out and optimised by the profile pgo/%s.tgz", PSP_PGO_PROFILE);
