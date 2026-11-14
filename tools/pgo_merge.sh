@@ -35,7 +35,7 @@ for spec in "$@"; do
     tar xzf "$archive" -C "$work/run$i"
     if (( i == 1 )); then
         if [[ $weight != 1 ]]; then
-            psp-gcov-tool scale -f "$weight" "$work/run1" -o "$work/merged"
+            psp-gcov-tool rewrite -s "$weight" -o "$work/merged" "$work/run1"
             rm -rf "$work/run1"
         else
             mv "$work/run1" "$work/merged"
