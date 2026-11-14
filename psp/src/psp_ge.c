@@ -12763,6 +12763,35 @@ static unsigned long vm_draws = 0, vm_redirects = 0, vm_copied = 0, vm_dropped =
 last reset), the main CPU's and the ME's, and the resets themselves */
 static unsigned long vm_unknown = 0, vm_resets = 0;
 static int vm_renote = -1;
+/* B80: of the draws with no entry, those reading a geometry-cache block (a
+model buffer, by psp_geo_generation), and the most-drawn such buffers in a
+window: their address, draws, vertices, and whether the converted table
+holds them (live) */
+#define VM_WHO 32
+static unsigned long vm_unknown_geo = 0;
+static struct { const void *source; unsigned int draws, vertices; } vm_who[VM_WHO];
+static void vm_who_note(const void *vertices, int count)
+{
+	int k, low = 0;
+
+	if (!psp_geo_generation(vertices))
+		return;
+	vm_unknown_geo++;
+	for (k = 0; k < VM_WHO; k++)
+	{
+		if (vm_who[k].source == vertices)
+		{
+			vm_who[k].draws++;
+			vm_who[k].vertices += (unsigned int)count;
+			return;
+		}
+		if (vm_who[k].draws < vm_who[low].draws)
+			low = k;
+	}
+	vm_who[low].source = vertices;
+	vm_who[low].draws = 1;
+	vm_who[low].vertices = (unsigned int)count;
+}
 static void vm_note(void *vertices, unsigned int bytes);
 /* "vmpackoff": no room made by a span of copies (vm_make_room) */
 static int vm_pack = -1;
@@ -12882,6 +12911,7 @@ static const void * __attribute__((noinline)) vm_redirect_me(const void *vertice
 	if (!e)
 	{
 		vm_me_tally[VM_ENTRIES + 2]++;
+		vm_who_note(vertices, count);
 		return vertices;
 	}
 	vm_me_tally[VM_ENTRIES]++;
@@ -13015,6 +13045,7 @@ static const void *vm_redirect(const void *vertices, int count)
 	if (!e)
 	{
 		vm_unknown++;
+		vm_who_note(vertices, count);
 		return vertices;
 	}
 	vm_draws++;
@@ -13240,6 +13271,37 @@ static void vm_report(void)
 	vm_draws = vm_redirects = vm_copied = vm_dropped = vm_full = 0;
 	platform_log("GE: vrammodels, B80: draws whose buffer has no entry %lu (last 300 frames); tables emptied %lu times since the start",
 		vm_unknown, vm_resets);
+	{
+		int k, j, shown = 0;
+
+		platform_log("GE: vrammodels, B80: of them reading a geometry-cache block %lu", vm_unknown_geo);
+		for (shown = 0; shown < 8; shown++)
+		{
+			int best = -1;
+
+			for (k = 0; k < VM_WHO; k++)
+				if (vm_who[k].draws && (best < 0 || vm_who[k].vertices > vm_who[best].vertices))
+					best = k;
+			if (best < 0)
+				break;
+			{
+				int live = 0, has = 0;
+
+				for (j = 0; j < CONVERTED_BUFFERS; j++)
+					if (converted[j] == vm_who[best].source)
+					{
+						has = 1;
+						live = psp_geo_generation(converted[j]) == converted_generation[j];
+						break;
+					}
+				platform_log("GE: vrammodels, B80: no entry %p: %u draws, %u vertices; converted table %s",
+					vm_who[best].source, vm_who[best].draws, vm_who[best].vertices, has ? (live ? "live" : "dead") : "absent");
+			}
+			vm_who[best].draws = 0;
+		}
+		memset(vm_who, 0, sizeof(vm_who));
+		vm_unknown_geo = 0;
+	}
 	vm_unknown = 0;
 	if (vm_packs)
 		platform_log("GE: vmpack: room made by a span of copies %lu times (%lu copies let go for it; last 300 frames)",
