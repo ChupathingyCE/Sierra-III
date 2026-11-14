@@ -12759,13 +12759,15 @@ static unsigned short *vm_hash = NULL, *vm_order = NULL;
 static PSP_MAIN_SIDE int vm_count = 0; /* the main CPU's (vm_find, at the record's writing) */
 static unsigned int vm_base = 0, vm_size = 0, vm_frame = 0;
 static unsigned long vm_draws = 0, vm_redirects = 0, vm_copied = 0, vm_dropped = 0, vm_full = 0;
-/* B80: draws whose buffer has no entry in the table (never noted since the
-last reset), the main CPU's and the ME's, and the resets themselves */
-static unsigned long vm_unknown = 0, vm_resets = 0;
 static int vm_renote = -1;
 /* B80: bumped at each emptying of the tables; a baked block is noted again
 the first time it's locked in a new one (psp_ge_pcv_locked) */
 static unsigned int vm_epoch = 1;
+#ifdef PSP_RECON
+/* B80's count (recon only): draws whose buffer has no entry in the table
+(never noted since the last reset), the main CPU's and the ME's, and the
+resets themselves */
+static unsigned long vm_unknown = 0, vm_resets = 0;
 /* B80: of the draws with no entry, those reading a geometry-cache block (a
 model buffer, by psp_geo_generation), and the most-drawn such buffers in a
 window: their address, draws, vertices, and whether the converted table
@@ -12798,6 +12800,12 @@ static void vm_who_note(const void *vertices, int count)
 	vm_who[low].draws = 1;
 	vm_who[low].vertices = (unsigned int)count;
 }
+#define VM_UNKNOWN(vertices, count) (vm_unknown++, vm_who_note((vertices), (count)))
+#define VM_UNKNOWN_ME(vertices, count) (vm_me_tally[VM_ENTRIES + 2]++, vm_who_note((vertices), (count)))
+#else
+#define VM_UNKNOWN(vertices, count) ((void)0)
+#define VM_UNKNOWN_ME(vertices, count) ((void)0)
+#endif
 static void vm_note(void *vertices, unsigned int bytes);
 /* "vmpackoff": no room made by a span of copies (vm_make_room) */
 static int vm_pack = -1;
@@ -12880,17 +12888,18 @@ static void vm_reset(void)
 
 		for (index = 0; index < CONVERTED_BUFFERS; index++)
 			live += converted[index] && psp_geo_generation(converted[index]) == converted_generation[index];
+#ifdef PSP_RECON
 		vm_resets++;
+#endif
+		/* B80's fix: the buffers still converted are noted again, as they
+		were when converted (their size and their block's generation), so
+		their draws count and rank for the room; baked blocks are noted again
+		at their next lock (vm_epoch, psp_ge_pcv_locked). "vmrenoteold": both
+		stay out until converted or loaded afresh */
 		if (vm_renote < 0)
 			vm_renote = !psp_keep("vmrenoteold");
 		if (vm_renote)
 			vm_epoch++;
-		/* B80's fix: the buffers still converted are noted again, as they
-		were when converted (their size and their block's generation), so
-		their draws count and rank for the room. "vmrenoteold": they stay
-		out until converted afresh */
-		if (vm_renote < 0)
-			vm_renote = !psp_keep("vmrenoteold");
 		if (vm_renote)
 			for (index = 0; index < CONVERTED_BUFFERS; index++)
 				if (converted[index] && converted_bytes[index] &&
@@ -12920,8 +12929,7 @@ static const void * __attribute__((noinline)) vm_redirect_me(const void *vertice
 
 	if (!e)
 	{
-		vm_me_tally[VM_ENTRIES + 2]++;
-		vm_who_note(vertices, count);
+		VM_UNKNOWN_ME(vertices, count);
 		return vertices;
 	}
 	vm_me_tally[VM_ENTRIES]++;
@@ -12951,7 +12959,9 @@ static void vm_me_fold(void)
 		}
 	vm_draws += vm_me_tally[VM_ENTRIES];
 	vm_redirects += vm_me_tally[VM_ENTRIES + 1];
+#ifdef PSP_RECON
 	vm_unknown += vm_me_tally[VM_ENTRIES + 2];
+#endif
 	vm_me_tally[VM_ENTRIES] = vm_me_tally[VM_ENTRIES + 1] = vm_me_tally[VM_ENTRIES + 2] = 0;
 }
 
@@ -13054,8 +13064,7 @@ static const void *vm_redirect(const void *vertices, int count)
 	e = vm_find((unsigned int)vertices, 0);
 	if (!e)
 	{
-		vm_unknown++;
-		vm_who_note(vertices, count);
+		VM_UNKNOWN(vertices, count);
 		return vertices;
 	}
 	vm_draws++;
@@ -13279,6 +13288,7 @@ static void vm_report(void)
 	platform_log("GE: vrammodels: %u buffers in %u of %u KB of VRAM; draws from a copy %lu of %lu, %lu KB copied, %lu copies let go, %lu times full (last 300 frames; %d buffers known)",
 		resident, bytes / 1024, vm_size / 1024, vm_redirects, vm_draws, vm_copied / 1024, vm_dropped, vm_full, vm_count);
 	vm_draws = vm_redirects = vm_copied = vm_dropped = vm_full = 0;
+#ifdef PSP_RECON
 	platform_log("GE: vrammodels, B80: draws whose buffer has no entry %lu (last 300 frames); tables emptied %lu times since the start",
 		vm_unknown, vm_resets);
 	{
@@ -13313,6 +13323,7 @@ static void vm_report(void)
 		vm_unknown_geo = 0;
 	}
 	vm_unknown = 0;
+#endif
 	if (vm_packs)
 		platform_log("GE: vmpack: room made by a span of copies %lu times (%lu copies let go for it; last 300 frames)",
 			vm_packs, vm_pack_copies);
