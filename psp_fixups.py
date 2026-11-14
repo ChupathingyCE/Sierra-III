@@ -48970,24 +48970,22 @@ under the heap's lock, the one lock every thread here may already hold */
 static int psp_tls_index(void)
 {
 	extern int sceKernelGetThreadId(void);
-	struct _reent;
 	extern void __malloc_lock(struct _reent *reent);
 	extern void __malloc_unlock(struct _reent *reent);
-	extern struct _reent *_impure_ptr;
 	int me = sceKernelGetThreadId(), k;
 
 	for (k = 0; k < PSP_TLS_THREADS; k++)
 		if (psp_tls_slots[k].thread == me)
 			return k;
-	__malloc_lock(_impure_ptr);
+	__malloc_lock(_REENT);
 	for (k = 0; k < PSP_TLS_THREADS; k++)
 		if (psp_tls_slots[k].thread == me || !psp_tls_slots[k].thread)
 		{
 			psp_tls_slots[k].thread = me;
-			__malloc_unlock(_impure_ptr);
+			__malloc_unlock(_REENT);
 			return k;
 		}
-	__malloc_unlock(_impure_ptr);
+	__malloc_unlock(_REENT);
 	/* more threads than slots: they share the last, said once */
 	if (!psp_tls_overflow++)
 		platform_log("platform: more than %d threads keep per-thread state; the rest share the last slot", PSP_TLS_THREADS);
