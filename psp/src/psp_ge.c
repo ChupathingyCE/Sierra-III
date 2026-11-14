@@ -6596,10 +6596,44 @@ static void window_begin_list(const float *position, const float *forward, const
 	world_model();
 }
 
+/* the main CPU's own copy of the window's camera, for the tests it makes
+before a record is taken (psp_ge_decal_visible): camera_eye and its
+directions are the list's, set when the window's record is carried out,
+which under geinflight is the frame before, on the ME */
+static float main_view_eye[3], main_view_forward[3], main_view_right[3], main_view_up[3], main_view_tan_half;
+static int main_view_set = 0;
+
+static void main_view_begin(const float *position, const float *forward, const float *up, float vertical_field_of_view)
+{
+	float length;
+	int k;
+
+	for (k = 0; k < 3; k++)
+	{
+		main_view_eye[k] = position[k];
+		main_view_forward[k] = forward[k];
+	}
+	/* as window_begin_list makes them: right = forward x up, up = right x forward */
+	main_view_right[0] = forward[1] * up[2] - forward[2] * up[1];
+	main_view_right[1] = forward[2] * up[0] - forward[0] * up[2];
+	main_view_right[2] = forward[0] * up[1] - forward[1] * up[0];
+	length = sqrtf(main_view_right[0] * main_view_right[0] + main_view_right[1] * main_view_right[1] + main_view_right[2] * main_view_right[2]);
+	if (length > 0.0f)
+		for (k = 0; k < 3; k++)
+			main_view_right[k] /= length;
+	main_view_up[0] = main_view_right[1] * forward[2] - main_view_right[2] * forward[1];
+	main_view_up[1] = main_view_right[2] * forward[0] - main_view_right[0] * forward[2];
+	main_view_up[2] = main_view_right[0] * forward[1] - main_view_right[1] * forward[0];
+	main_view_tan_half = tanf(vertical_field_of_view * 0.5f);
+	main_view_set = 1;
+}
+
 void psp_ge_window_begin(const float *position, const float *forward, const float *up,
 	float vertical_field_of_view, float z_near, float z_far)
 {
 	rso_window();
+	if (!PSP_ME_WORK())
+		main_view_begin(position, forward, up, vertical_field_of_view);
 	/* B41: a sleep asked is carried out at a frame's first window, before
 	anything of the frame reaches the GE layer (psp_sleep.c) */
 	if (!window_main_done && !PSP_ME_WORK())
@@ -24812,8 +24846,16 @@ int psp_ge_decal_visible(long decal_index, unsigned int identifier, void const *
 		b->radius = reach * 1.001f + 0.01f;
 		b->id = id;
 	}
-	to_camera(b->centre, camera);
-	half_y = fov_tan_half();
+	if (!main_view_set)
+		return 1;
+	{
+		float d0 = b->centre[0] - main_view_eye[0], d1 = b->centre[1] - main_view_eye[1], d2 = b->centre[2] - main_view_eye[2];
+
+		camera[0] = d0 * main_view_right[0] + d1 * main_view_right[1] + d2 * main_view_right[2];
+		camera[1] = d0 * main_view_up[0] + d1 * main_view_up[1] + d2 * main_view_up[2];
+		camera[2] = d0 * main_view_forward[0] + d1 * main_view_forward[1] + d2 * main_view_forward[2];
+	}
+	half_y = main_view_tan_half;
 	half_x = half_y * (float)SCREEN_WIDTH / SCREEN_HEIGHT;
 	side_x = sqrtf(1.0f + half_x * half_x);
 	side_y = sqrtf(1.0f + half_y * half_y);
