@@ -26,7 +26,10 @@ command -v psp-gcov-tool >/dev/null || { echo "pgo_merge: psp-gcov-tool not on P
 here=$(cd "$(dirname "$0")/.." && pwd)
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 
-i=0
+# each run's weight goes in at its merge (gcov-tool's merge -w): its
+# rewrite -s fails on the top-N value counters (an internal error in
+# __gcov_topn_counter_op, GCC 15.2), so the first run waits for the second
+i=0 first_weight=1
 for spec in "$@"; do
     i=$((i + 1))
     archive=$spec weight=1
@@ -34,18 +37,16 @@ for spec in "$@"; do
     mkdir "$work/run$i"
     tar xzf "$archive" -C "$work/run$i"
     if (( i == 1 )); then
-        if [[ $weight != 1 ]]; then
-            psp-gcov-tool rewrite -s "$weight" -o "$work/merged" "$work/run1"
-            rm -rf "$work/run1"
-        else
-            mv "$work/run1" "$work/merged"
-        fi
+        mv "$work/run1" "$work/merged"
+        first_weight=$weight
     else
-        psp-gcov-tool merge -w "1,$weight" "$work/merged" "$work/run$i" -o "$work/next"
+        psp-gcov-tool merge -w "$first_weight,$weight" "$work/merged" "$work/run$i" -o "$work/next"
+        first_weight=1
         rm -rf "$work/merged" "$work/run$i"; mv "$work/next" "$work/merged"
     fi
     echo "pgo_merge: $i: $archive (weight $weight)"
 done
+[[ $first_weight == 1 ]] || { echo "pgo_merge: a weight needs a second run to merge with" >&2; exit 1; }
 
 mkdir -p "$here/pgo"
 (cd "$work/merged" && tar czf "$here/pgo/$name.tgz" -- *)   # names as the earlier profiles have them, no ./
