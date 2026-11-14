@@ -12763,6 +12763,9 @@ static unsigned long vm_draws = 0, vm_redirects = 0, vm_copied = 0, vm_dropped =
 last reset), the main CPU's and the ME's, and the resets themselves */
 static unsigned long vm_unknown = 0, vm_resets = 0;
 static int vm_renote = -1;
+/* B80: bumped at each emptying of the tables; a baked block is noted again
+the first time it's locked in a new one (psp_ge_pcv_locked) */
+static unsigned int vm_epoch = 1;
 /* B80: of the draws with no entry, those reading a geometry-cache block (a
 model buffer, by psp_geo_generation), and the most-drawn such buffers in a
 window: their address, draws, vertices, and whether the converted table
@@ -12875,6 +12878,10 @@ static void vm_reset(void)
 		for (index = 0; index < CONVERTED_BUFFERS; index++)
 			live += converted[index] && psp_geo_generation(converted[index]) == converted_generation[index];
 		vm_resets++;
+		if (vm_renote < 0)
+			vm_renote = !psp_keep("vmrenoteold");
+		if (vm_renote)
+			vm_epoch++;
 		/* B80's fix: the buffers still converted are noted again, as they
 		were when converted (their size and their block's generation), so
 		their draws count and rank for the room. "vmrenoteold": they stay
@@ -13450,9 +13457,25 @@ void psp_ge_pcv_locked(void *block)
 {
 	struct pcv_header *h = block;
 
-	if (h->spare || (h->flags & PCV_BAD))
-		return;
-	h->spare = 1;
+	/* B80: once a load and once each time vrammodels' tables are emptied
+	(vm_epoch; the block's spare word holds the last epoch it was noted in):
+	once a load only, a block locked before a BSP switch was never noted
+	again and its draws never ranked for the room. "vmrenoteold": once a
+	load */
+	if (vm_renote < 0)
+		vm_renote = !psp_keep("vmrenoteold");
+	if (vm_renote == 0)
+	{
+		if (h->spare || (h->flags & PCV_BAD))
+			return;
+		h->spare = 1;
+	}
+	else
+	{
+		if ((h->flags & PCV_BAD) || h->spare == vm_epoch || vm_on <= 0)
+			return; /* vm_on <= 0: the tables come at the next frame, noted at its first lock then */
+		h->spare = vm_epoch;
+	}
 	vm_note((unsigned char *)block + 64, h->count * h->stride);
 	/* the header's line is one the ME's replay reads (the plan) */
 	sceKernelDcacheWritebackRange(block, 64);
