@@ -1736,7 +1736,7 @@ code (each object's update and draw, each particle's birth), so only recon
 builds carry them, each behind its keep word */
 char *tag_get_name(long tag_index);
 
-#include <malloc.h>
+void *memalign(size_t alignment, size_t size); /* declared as psp_dsound.c does */
 
 /* A census's table, taken from the game's heap when its keep word turns it
 on. As statics, every census's tables took the heap's room in every recon
