@@ -24787,6 +24787,11 @@ struct decal_bound { float centre[3], radius; unsigned int id; };
 static struct decal_bound decal_bounds[DECAL_BOUNDS];
 static int decal_test = -1;
 static unsigned long decals_tested_out = 0;
+/* "decaltestcheck": the test culls nothing and counts where it would have
+been wrong: a decal it tests out with a quad the body's own test (on the same
+camera) keeps, and a kept sphere that no longer fits the decal's corners */
+static int decal_check = -1;
+static unsigned long decal_check_quad_in = 0, decal_check_stale = 0, decal_check_out = 0, decal_check_logged = 0;
 
 int psp_ge_decal_visible(long decal_index, unsigned int identifier, void const *vertices, int quad_count)
 {
@@ -24800,7 +24805,14 @@ int psp_ge_decal_visible(long decal_index, unsigned int identifier, void const *
 		decal_cull = !psp_keep("decalnocull");
 	if (!decal_test || !decal_cull || slot >= DECAL_BOUNDS || quad_count <= 0)
 		return 1;
+	if (decal_check < 0)
+		decal_check = psp_keep("decaltestcheck");
 	b = &decal_bounds[slot];
+	{
+	struct decal_bound before = *b;
+
+	if (decal_check)
+		b->id = ~id;
 	if (b->id != id || b->radius <= 0.0f)
 	{
 		const unsigned char *in = (const unsigned char *)vertices;
@@ -24846,6 +24858,18 @@ int psp_ge_decal_visible(long decal_index, unsigned int identifier, void const *
 		b->radius = reach * 1.001f + 0.01f;
 		b->id = id;
 	}
+	if (decal_check && before.id == id &&
+		(before.radius != b->radius || before.centre[0] != b->centre[0] || before.centre[1] != b->centre[1] || before.centre[2] != b->centre[2]))
+	{
+		decal_check_stale++;
+		if (decal_check_logged < 16)
+		{
+			decal_check_logged++;
+			platform_log("decaltestcheck: stale sphere, slot %u id %08x: kept (%.3f %.3f %.3f) r %.3f, now (%.3f %.3f %.3f) r %.3f",
+				slot, id, before.centre[0], before.centre[1], before.centre[2], before.radius, b->centre[0], b->centre[1], b->centre[2], b->radius);
+		}
+	}
+	}
 	if (!main_view_set)
 		return 1;
 	{
@@ -24864,7 +24888,46 @@ int psp_ge_decal_visible(long decal_index, unsigned int identifier, void const *
 		camera[1] - half_y * camera[2] > b->radius * side_y || -camera[1] - half_y * camera[2] > b->radius * side_y)
 	{
 		decals_tested_out++;
-		return 0;
+		if (!decal_check)
+			return 0;
+		decal_check_out++;
+		{
+			const unsigned char *in = (const unsigned char *)vertices;
+			int quad, corner;
+
+			for (quad = 0; quad < quad_count; quad++)
+			{
+				const float *p0 = (const float *)(in + 16 * (4 * quad)), *p2 = (const float *)(in + 16 * (4 * quad + 2));
+				float qc[3] = { (p0[0] + p2[0]) * 0.5f, (p0[1] + p2[1]) * 0.5f, (p0[2] + p2[2]) * 0.5f }, r2 = 0.0f, r, q[3];
+				float d0 = qc[0] - main_view_eye[0], d1 = qc[1] - main_view_eye[1], d2 = qc[2] - main_view_eye[2];
+
+				for (corner = 0; corner < 4; corner++)
+				{
+					const float *pc = (const float *)(in + 16 * (4 * quad + corner));
+					float dx = pc[0] - qc[0], dy = pc[1] - qc[1], dz = pc[2] - qc[2];
+
+					if (dx * dx + dy * dy + dz * dz > r2)
+						r2 = dx * dx + dy * dy + dz * dz;
+				}
+				r = sqrtf(r2) * 1.01f + 0.01f;
+				q[0] = d0 * main_view_right[0] + d1 * main_view_right[1] + d2 * main_view_right[2];
+				q[1] = d0 * main_view_up[0] + d1 * main_view_up[1] + d2 * main_view_up[2];
+				q[2] = d0 * main_view_forward[0] + d1 * main_view_forward[1] + d2 * main_view_forward[2];
+				if (!(q[2] < -r ||
+					q[0] - half_x * q[2] > r * side_x || -q[0] - half_x * q[2] > r * side_x ||
+					q[1] - half_y * q[2] > r * side_y || -q[1] - half_y * q[2] > r * side_y))
+				{
+					decal_check_quad_in++;
+					if (decal_check_logged < 32)
+					{
+						decal_check_logged++;
+						platform_log("decaltestcheck: tested out but quad %d of %d in: slot %u, sphere (%.3f %.3f %.3f) r %.3f at camera (%.3f %.3f %.3f); quad r %.3f at (%.3f %.3f %.3f)",
+							quad, quad_count, slot, b->centre[0], b->centre[1], b->centre[2], b->radius, camera[0], camera[1], camera[2], r, q[0], q[1], q[2]);
+					}
+					break;
+				}
+			}
+		}
 	}
 	return 1;
 }
@@ -26901,6 +26964,9 @@ static void frame_end_show(void)
 						list_cached_frame ? "cached (listcachedall)" : "uncached", list_lines_back / 300, stall_calls / 300,
 						stall_forwarded / 300, stall_batch == 1 ? "batched" : "each", stall_timed ? (double)stall_timed_us / stall_timed : 0.0, stall_timed, decals_small, decals_offscreen,
 						decals_wholly_left_out / 300, decals_tested_out / 300);
+					if (decal_check > 0)
+						platform_log("decaltestcheck: tested out %lu, of them with a quad in %lu; stale spheres %lu (since the last line)", decal_check_out, decal_check_quad_in, decal_check_stale);
+					decal_check_out = decal_check_quad_in = decal_check_stale = 0;
 					decals_wholly_left_out = 0;
 					decals_tested_out = 0;
 					/* build 119's probe */
