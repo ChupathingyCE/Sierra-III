@@ -1784,22 +1784,13 @@ with the first of them turned on */
 #define RECON_REPORT_BYTES 6144
 static char *recon_report;
 
-static int recon_counter_tables(const char *census, void *table_pointer, unsigned long bytes)
-{
-	void **table = table_pointer;
-
-	if (!recon_report && !(recon_report = psp_recon_table("recon counters' report", RECON_REPORT_BYTES)))
-		return 0;
-	*table = psp_recon_table(census, bytes);
-	return *table != NULL;
-}
 
 void psp_objcost(long definition, int type, int drawing, unsigned long microseconds, unsigned long count)
 {
 	unsigned int k, n;
 
 	if (objcost_on < 0)
-		objcost_on = psp_keep("objcost") && recon_counter_tables("objcost", &objcost, OBJCOST_SLOTS * sizeof(*objcost));
+		objcost_on = psp_keep("objcost") && objcost;
 	if (!objcost_on || definition == -1)
 		return;
 	k = ((unsigned long)definition * 2654435761u) >> 25;
@@ -2095,8 +2086,7 @@ void psp_particle_census(long effect, long particle, int outcome)
 	unsigned int k, n;
 
 	if (particle_census_on < 0)
-		particle_census_on = psp_keep("particlecensus") &&
-			recon_counter_tables("particlecensus", &particle_census, PARTICLE_CENSUS_SLOTS * sizeof(*particle_census));
+		particle_census_on = psp_keep("particlecensus") && particle_census;
 	if (!particle_census_on || tag == -1 || outcome < 0 || outcome >= PARTICLE_OUTCOMES)
 		return;
 	k = ((unsigned long)tag * 2654435761u) >> 26;
@@ -2120,9 +2110,11 @@ void psp_particle_census(long effect, long particle, int outcome)
 	}
 }
 
-/* every census whose table comes from the heap, its keep word read and its
-table taken right after keep.txt is read: by a census's first use the level's
-loads have filled the heap, and the table would find no room (b79test1) */
+/* every census whose table comes from the heap has it taken right after
+keep.txt is read: by a census's first use the level's loads have filled the
+heap, and the table would find no room. Each census still switches itself on
+at its first use, as it did with static tables, so its reports keep their
+windows */
 void psp_ge_census_start(void);
 void psp_tex_recon_start(void);
 void psp_me_bus_start(void);
@@ -2130,9 +2122,15 @@ void psp_nodereaders_start(void); /* psp_fixups.py, FIXES_RECON #nodereaders */
 
 void psp_recon_tables_start(void)
 {
-	/* each resolves its keep word and returns: no definition, no tag */
-	psp_objcost(-1, 0, 0, 0, 0);
-	psp_particle_census(-1, -1, 0);
+	int objcost_asked = psp_keep("objcost"), particles_asked = psp_keep("particlecensus");
+
+	if ((objcost_asked || particles_asked) && (recon_report = psp_recon_table("recon counters' report", RECON_REPORT_BYTES)))
+	{
+		if (objcost_asked)
+			objcost = psp_recon_table("objcost", OBJCOST_SLOTS * sizeof(*objcost));
+		if (particles_asked)
+			particle_census = psp_recon_table("particlecensus", PARTICLE_CENSUS_SLOTS * sizeof(*particle_census));
+	}
 	psp_ge_census_start();
 	psp_tex_recon_start();
 	psp_me_bus_start();
