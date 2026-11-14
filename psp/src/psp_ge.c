@@ -1419,6 +1419,34 @@ static int defer_screen_flash(short type, float intensity, float const *argb)
 	return 1;
 }
 
+/* DECALJOIN (box effects; on by default, decaljoinold the off word): a
+decal recorded right after one of the same texture, blend, colour, alpha test
+and permanence, whose texture density (texels a unit, the slope its mip
+level follows) is within decaljoinslopeN percent of the first's, is appended
+to that record: one call, one set of state words and one draw for the run.
+The joined decals take the first's texture level (psp_ge_decal_body works
+it out from the first quad kept): a mip choice, drawing only; the far-and-
+tiny rule's approximation, its threshold a keep-word number set overshooting
+and tuned back by eye. Each quad is still tested and pulled on its own */
+static int decal_join = -1, decal_join_percent = 25;
+static unsigned long decal_join_calls = 0, decal_join_joined = 0;
+static defer_word *decal_join_record = NULL;
+static unsigned int decal_join_end = 0, decal_join_records = 0;
+static float decal_join_density = 0.0f;
+
+static float decal_density(void const *vertices)
+{
+	const float *a = (const float *)vertices, *b = (const float *)((const unsigned char *)vertices + 16),
+		*c = (const float *)((const unsigned char *)vertices + 32);
+	const short *ua = (const short *)(a + 3), *ub = (const short *)(b + 3), *uc = (const short *)(c + 3);
+	float e1[3] = { b[0] - a[0], b[1] - a[1], b[2] - a[2] }, e2[3] = { c[0] - a[0], c[1] - a[1], c[2] - a[2] };
+	float n[3] = { e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0] };
+	float world_area = sqrtf(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+	float uv_area = fabsf((float)(ub[0] - ua[0]) * (float)(uc[1] - ua[1]) - (float)(uc[0] - ua[0]) * (float)(ub[1] - ua[1]));
+
+	return world_area > 0.0f ? sqrtf(uv_area / world_area) : 0.0f;
+}
+
 static int defer_decal(void const *vertices, int quad_count, unsigned int key, short blend, unsigned long color,
 	int intensity, int alpha_tested, int permanent)
 {
@@ -1426,12 +1454,52 @@ static int defer_decal(void const *vertices, int quad_count, unsigned int key, s
 	ticks, before the frame is carried out, so they're copied (16 bytes a
 	corner, psp_ge_decal_body; at most 256 quads drawn) */
 	int copied = inflight_on && vertices && quad_count > 0 && quad_count <= 256 ? quad_count * 4 * 4 : 0;
-	defer_word *at = defer_take(DEFER_DECAL, 8 + copied);
+	defer_word *at;
+	float density = 0.0f;
 
+	if (decal_join < 0)
+	{
+		extern int psp_keep_number(const char *prefix, int fallback);
+
+		decal_join = psp_keep("decaljoinold") ? 0 : 1;
+		decal_join_percent = psp_keep_number("decaljoinslope", 25);
+	}
+	if (decal_join && copied)
+	{
+		defer_word *last = decal_join_record;
+
+		density = decal_density(vertices);
+		decal_join_calls++;
+		/* the last record still the decal's, not yet handed on, the same
+		state, room for the quads in it and in the buffer */
+		if (last && decal_join_records == defer_records && decal_join_end == defer_used &&
+			(unsigned int)(last - defer_base) >= chunk_published &&
+			last[2].u == key && last[3].i == blend && last[4].u == (unsigned int)color && last[5].i == intensity &&
+			last[6].i == alpha_tested && last[7].i == permanent && last[1].i + quad_count <= 256 &&
+			defer_used + (unsigned int)copied <= defer_limit &&
+			fabsf(density - decal_join_density) <= decal_join_density * (float)decal_join_percent * 0.01f)
+		{
+			memcpy(defer_base + defer_used, vertices, copied * sizeof(defer_word));
+			defer_used += (unsigned int)copied;
+			last[-1].u += (unsigned int)copied << 8;
+			last[1].i += quad_count;
+			decal_join_end = defer_used;
+			decal_join_joined++;
+			return 1;
+		}
+	}
+	at = defer_take(DEFER_DECAL, 8 + copied);
 	if (!at)
 		return 0; /* too large: carried out as it comes, after what waits */
 	if (copied)
 		memcpy(at + 8, vertices, copied * sizeof(defer_word));
+	if (decal_join && copied)
+	{
+		decal_join_record = at;
+		decal_join_end = defer_used;
+		decal_join_records = defer_records;
+		decal_join_density = density;
+	}
 
 	at[0].p = vertices;
 	at[1].i = quad_count;
@@ -27112,6 +27180,10 @@ static void frame_end_show(void)
 					decal_check_out = decal_check_quad_in = decal_check_stale = 0;
 					decals_wholly_left_out = 0;
 					decals_tested_out = 0;
+					if (decal_join > 0)
+						platform_log("GE: decaljoin (slopes within %d%%): %lu decal calls recorded, %lu of them joined to the one before (last 300 frames)",
+							decal_join_percent, decal_join_calls, decal_join_joined);
+					decal_join_calls = decal_join_joined = 0;
 					/* build 119's probe */
 					if (probes_on)
 						platform_log("GE: decal calls by piece, us a frame: setup %lu, the off-screen loop %lu, texture and list room %lu, corners %lu, state and draw %lu",
