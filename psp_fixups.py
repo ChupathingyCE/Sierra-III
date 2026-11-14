@@ -28225,16 +28225,17 @@ FIXES_RECON["source/models/models.c#nodereaders"] = [
 /* psp_fixups.py (FIXES_RECON #nodereaders) */
 int psp_keep(const char *name);
 void platform_psp_log(const char *format, ...);
+void *psp_recon_table(const char *census, unsigned long bytes);
 void psp_nodeparents_note(long definition_index, struct model const *model, short node_count)
 {
 	static int on = -1;
-	static unsigned char seen[8192];
+	static unsigned char *seen; /* a bit a definition, from the heap only when on */
 	unsigned int key = (unsigned int)definition_index & 0xFFFFu;
 	char line[64 * 4 + 1];
 	int k, at = 0;
 
 	if (on < 0)
-		on = psp_keep("nodereaders") != 0;
+		on = psp_keep("nodereaders") && (seen = psp_recon_table("nodereaders", 0x10000 / 8)) != NULL;
 	if (!on || (seen[key >> 3] & (1u << (key & 7))))
 		return;
 	seen[key >> 3] |= (unsigned char)(1u << (key & 7));

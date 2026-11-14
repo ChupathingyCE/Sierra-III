@@ -1175,7 +1175,10 @@ scratch below that stretch: not to be run with edramcheck's watch of it */
 static struct me_ring_counter bus_stop_storage;
 #define BUS_STOP (UNCACHED(&bus_stop_storage)->value)
 #define BUS_OUT_WORDS 4096
-static unsigned int bus_out[BUS_OUT_WORDS] __attribute__((aligned(64)));
+/* from the heap, only once "mebusN" is on (psp_recon_table); handed to the
+job in its args, so the ME never reads the pointer from the main CPU's data */
+static unsigned int *bus_out;
+void *psp_recon_table(const char *census, unsigned long bytes);
 #define BUS_BASE 0x08900000u
 #define BUS_LINES (0x01000000u / 64)
 #define BUS_EDRAM_BASE (ME_EDRAM + ME_EDRAM_RESIDENT)
@@ -1189,7 +1192,7 @@ static void bus_load_job(const unsigned int *args, unsigned int *results)
 	run (the emulator) keeps to main RAM */
 	int edram = args[3] && psp_on_me();
 	unsigned int base = edram ? BUS_EDRAM_BASE : BUS_BASE, lines = edram ? BUS_EDRAM_LINES : BUS_LINES;
-	unsigned int *out = edram ? (unsigned int *)BUS_EDRAM_OUT : bus_out;
+	unsigned int *out = edram ? (unsigned int *)BUS_EDRAM_OUT : (unsigned int *)args[4];
 
 	/* the stop word is an uncached main-RAM read: polled every load, it put a
 	bus trip into every eDRAM load and hid the eDRAM's rate behind it, so it
@@ -5348,8 +5351,9 @@ static int bus_start(int edram)
 	job.args[1] = (unsigned int)(BUS_LIMIT_US * (me_cycles_per_us > 0.0f ? me_cycles_per_us : 333.0f));
 	job.args[2] = bus_coin;
 	job.args[3] = (unsigned int)edram;
+	job.args[4] = (unsigned int)bus_out;
 	job.output = bus_out;
-	job.output_bytes = sizeof(bus_out);
+	job.output_bytes = BUS_OUT_WORDS * sizeof(*bus_out);
 	BUS_STOP = 0;
 	if (!psp_me_push(&job, &bus_ticket))
 		return 0;
@@ -5389,6 +5393,8 @@ void psp_me_bus_phase(int phase)
 	{
 		bus_work = emulator() ? -1 : psp_keep_number("mebus", -1);
 		bus_edram = psp_keep("mebusedram") != 0;
+		if (bus_work >= 0 && !(bus_out = psp_recon_table("mebus", BUS_OUT_WORDS * sizeof(*bus_out))))
+			bus_work = -1;
 	}
 	if (bus_work < 0 || PSP_ME_WORK() || !psp_me_ring_ready())
 		return;

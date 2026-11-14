@@ -35,6 +35,7 @@ void platform_log(const char *format, ...);
 void *tag_get(long group_tag, long tag_index);
 int psp_keep(const char *name);
 int psp_keep_number(const char *prefix, int fallback);
+void *psp_recon_table(const char *census, unsigned long bytes); /* psp_platform.c, recon builds */
 void psp_tex_light_report(void);
 
 struct pack_entry
@@ -2518,9 +2519,13 @@ static int load_into(int index, int only)
 #ifdef PSP_RECON
 		/* "stickwholecheck": the same bytes read again as the entry's own
 		read would, and compared */
-		if (stick_whole && psp_keep("stickwholecheck"))
+		static int whole_check = -1;
+		static unsigned char *again; /* from the heap, only when the check is on */
+
+		if (stick_whole && whole_check < 0)
+			whole_check = psp_keep("stickwholecheck") && (again = psp_recon_table("stickwholecheck", STAGING_BYTES)) != NULL;
+		if (stick_whole && whole_check > 0)
 		{
-			static unsigned char again[STAGING_BYTES] __attribute__((aligned(64)));
 			static unsigned int compared, differed;
 			unsigned int next = entry->offset - (entry->offset & 511) + (done ? (entry->offset & 511) + done : 0) + ask;
 

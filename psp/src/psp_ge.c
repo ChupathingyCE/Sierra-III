@@ -3329,17 +3329,29 @@ static int census_on = -1;
 static unsigned long census_frames = 0;
 
 #define CENSUS_NEAR_SLOTS 64
-static struct
-{
-	long definition;
-	int used;
-	unsigned long rigid_parts, rigid_triangles, bending_triangles;
-} census_near_table[CENSUS_NEAR_SLOTS];
-
 #define CENSUS_TINTS 512
-/* each triple's passes since the start and its tinted copy's size at 16 bits,
-so the report can say what a cache of the most drawn would hold and cover */
-static struct { unsigned int base, change, color; unsigned long passes, bytes16; } census_tints[CENSUS_TINTS];
+#define CENSUS_SURFACES 512
+#define CENSUS_TRIANGLES 8192 /* a frame's triangles seen, by hash */
+/* taken from the heap when "drawcensus" is on (psp_recon_table): ~52 KB a
+recon run without the census would otherwise lose */
+static struct census_tables
+{
+	struct
+	{
+		long definition;
+		int used;
+		unsigned long rigid_parts, rigid_triangles, bending_triangles;
+	} near_table[CENSUS_NEAR_SLOTS];
+	/* each triple's passes since the start and its tinted copy's size at 16
+	bits, so the report can say what a cache of the most drawn would hold and
+	cover */
+	struct { unsigned int base, change, color; unsigned long passes, bytes16; } tints[CENSUS_TINTS];
+	struct { const void *vertices; const unsigned short *indices; long triangles; int lights; } surfaces[CENSUS_SURFACES];
+	unsigned int triangle_seen[CENSUS_TRIANGLES];
+	unsigned char tint_taken[CENSUS_TINTS]; /* the report's */
+} *draw_census;
+void *psp_recon_table(const char *census, unsigned long bytes);
+
 static int census_tint_count = 0;
 static unsigned long census_tint_passes = 0, census_tint_unkept = 0, census_tint_bytes16 = 0, census_tint_bytes8 = 0;
 
@@ -3349,13 +3361,9 @@ vertex buffer, and how many of their triangles another light already drew that
 frame (a triangle is its buffer and its three vertex indices: each light hands
 over a triangle list of its own, so the lists themselves never repeat). What
 drawing a surface once for all the lights that reach it would save */
-#define CENSUS_SURFACES 512
-static struct { const void *vertices; const unsigned short *indices; long triangles; int lights; } census_surfaces[CENSUS_SURFACES];
 static int census_surface_count = 0;
 static unsigned long census_surface_lost = 0, census_surfaces_lit[4] = { 0 }, census_surface_draws = 0;
 static unsigned long census_surface_triangles = 0, census_surface_repeat_triangles = 0, census_triangles_lost = 0;
-#define CENSUS_TRIANGLES 8192 /* a frame's triangles seen, by hash (32 KB) */
-static unsigned int census_triangle_seen[CENSUS_TRIANGLES];
 static unsigned long census_light_run_triangles = 0, census_light_runs_out = 0;
 
 char *tag_get_name(long tag_index);
@@ -3364,7 +3372,7 @@ int psp_tex_size(unsigned int key, int *width, int *height);
 static int census_wanted(void)
 {
 	if (census_on < 0)
-		census_on = psp_keep("drawcensus");
+		census_on = psp_keep("drawcensus") && (draw_census = psp_recon_table("drawcensus", sizeof(*draw_census))) != NULL;
 	return census_on;
 }
 
@@ -3378,20 +3386,20 @@ static void census_near(int rigid, long triangles)
 	slot = ((unsigned int)definition * 2654435761u) % CENSUS_NEAR_SLOTS;
 	for (probe = 0; probe < CENSUS_NEAR_SLOTS; probe++, slot = (slot + 1) % CENSUS_NEAR_SLOTS)
 	{
-		if (!census_near_table[slot].used)
+		if (!draw_census->near_table[slot].used)
 		{
-			census_near_table[slot].used = 1;
-			census_near_table[slot].definition = definition;
+			draw_census->near_table[slot].used = 1;
+			draw_census->near_table[slot].definition = definition;
 		}
-		if (census_near_table[slot].definition == definition)
+		if (draw_census->near_table[slot].definition == definition)
 		{
 			if (rigid)
 			{
-				census_near_table[slot].rigid_parts++;
-				census_near_table[slot].rigid_triangles += (unsigned long)triangles;
+				draw_census->near_table[slot].rigid_parts++;
+				draw_census->near_table[slot].rigid_triangles += (unsigned long)triangles;
 			}
 			else
-				census_near_table[slot].bending_triangles += (unsigned long)triangles;
+				draw_census->near_table[slot].bending_triangles += (unsigned long)triangles;
 			return;
 		}
 	}
@@ -3405,9 +3413,9 @@ static void census_tint(unsigned int base, unsigned int change, unsigned int col
 		return;
 	census_tint_passes++;
 	for (k = 0; k < census_tint_count; k++)
-		if (census_tints[k].base == base && census_tints[k].change == change && census_tints[k].color == color)
+		if (draw_census->tints[k].base == base && draw_census->tints[k].change == change && draw_census->tints[k].color == color)
 		{
-			census_tints[k].passes++;
+			draw_census->tints[k].passes++;
 			return;
 		}
 	if (census_tint_count == CENSUS_TINTS)
@@ -3415,15 +3423,15 @@ static void census_tint(unsigned int base, unsigned int change, unsigned int col
 		census_tint_unkept++;
 		return;
 	}
-	census_tints[census_tint_count].base = base;
-	census_tints[census_tint_count].change = change;
-	census_tints[census_tint_count].color = color;
-	census_tints[census_tint_count].passes = 1;
-	census_tints[census_tint_count].bytes16 = 0;
+	draw_census->tints[census_tint_count].base = base;
+	draw_census->tints[census_tint_count].change = change;
+	draw_census->tints[census_tint_count].color = color;
+	draw_census->tints[census_tint_count].passes = 1;
+	draw_census->tints[census_tint_count].bytes16 = 0;
 	census_tint_count++;
 	if (psp_tex_size(base, &width, &height))
 	{
-		census_tints[census_tint_count - 1].bytes16 = (unsigned long)width * height * 2;
+		draw_census->tints[census_tint_count - 1].bytes16 = (unsigned long)width * height * 2;
 		census_tint_bytes16 += (unsigned long)width * height * 2;
 		census_tint_bytes8 += (unsigned long)width * height;
 	}
@@ -3446,14 +3454,14 @@ static void census_light_surface(const void *vertices, const unsigned short *ind
 		hash |= 1; /* 0 is an empty slot */
 		for (slot = hash % CENSUS_TRIANGLES, probe = 0; probe < 32; probe++, slot = (slot + 1) % CENSUS_TRIANGLES)
 		{
-			if (census_triangle_seen[slot] == hash)
+			if (draw_census->triangle_seen[slot] == hash)
 			{
 				census_surface_repeat_triangles++;
 				break;
 			}
-			if (!census_triangle_seen[slot])
+			if (!draw_census->triangle_seen[slot])
 			{
-				census_triangle_seen[slot] = hash;
+				draw_census->triangle_seen[slot] = hash;
 				break;
 			}
 		}
@@ -3461,9 +3469,9 @@ static void census_light_surface(const void *vertices, const unsigned short *ind
 			census_triangles_lost++;
 	}
 	for (k = 0; k < census_surface_count; k++)
-		if (census_surfaces[k].vertices == vertices)
+		if (draw_census->surfaces[k].vertices == vertices)
 		{
-			census_surfaces[k].lights++;
+			draw_census->surfaces[k].lights++;
 			return;
 		}
 	if (census_surface_count == CENSUS_SURFACES)
@@ -3471,10 +3479,10 @@ static void census_light_surface(const void *vertices, const unsigned short *ind
 		census_surface_lost++;
 		return;
 	}
-	census_surfaces[census_surface_count].vertices = vertices;
-	census_surfaces[census_surface_count].indices = indices;
-	census_surfaces[census_surface_count].triangles = triangles;
-	census_surfaces[census_surface_count].lights = 1;
+	draw_census->surfaces[census_surface_count].vertices = vertices;
+	draw_census->surfaces[census_surface_count].indices = indices;
+	draw_census->surfaces[census_surface_count].triangles = triangles;
+	draw_census->surfaces[census_surface_count].lights = 1;
 	census_surface_count++;
 }
 
@@ -3503,9 +3511,9 @@ static void census_report(void)
 		best = -1;
 		for (k = 0; k < CENSUS_NEAR_SLOTS; k++)
 		{
-			unsigned long triangles = census_near_table[k].rigid_triangles + census_near_table[k].bending_triangles;
+			unsigned long triangles = draw_census->near_table[k].rigid_triangles + draw_census->near_table[k].bending_triangles;
 
-			if (census_near_table[k].used && !done[k] && triangles > most)
+			if (draw_census->near_table[k].used && !done[k] && triangles > most)
 			{
 				most = triangles;
 				best = k;
@@ -3515,8 +3523,8 @@ static void census_report(void)
 			break;
 		done[best] = 1;
 		length += snprintf(line + length, sizeof(line) - length, " %s (%.1f, %.0f; %.0f);",
-			tag_get_name(census_near_table[best].definition), census_near_table[best].rigid_parts / frames,
-			census_near_table[best].rigid_triangles / frames, census_near_table[best].bending_triangles / frames);
+			tag_get_name(draw_census->near_table[best].definition), draw_census->near_table[best].rigid_parts / frames,
+			draw_census->near_table[best].rigid_triangles / frames, draw_census->near_table[best].bending_triangles / frames);
 	}
 	platform_log("%s", line);
 	platform_log("drawcensus: change-colour passes %.1f a frame; %d distinct base, multipurpose map and colour triples since the start (%lu more not kept); their base textures as tinted copies %lu KB at 16 bits, %lu KB at 8",
@@ -3525,13 +3533,13 @@ static void census_report(void)
 		/* the triples by passes, most first: what a cache of the top N would
 		cover, and its size */
 		static const int sizes[5] = { 8, 16, 32, 64, 128 };
-		static unsigned char taken[CENSUS_TINTS];
+		unsigned char *taken = draw_census->tint_taken;
 		unsigned long total = 0, covered = 0, bytes = 0;
 		int n = 0, next = 0;
 
 		for (k = 0; k < census_tint_count; k++)
-			total += census_tints[k].passes;
-		memset(taken, 0, sizeof(taken));
+			total += draw_census->tints[k].passes;
+		memset(taken, 0, sizeof(draw_census->tint_taken));
 		length = snprintf(line, sizeof(line), "drawcensus: tint cache, the most drawn triples since the start (of %lu passes):", total);
 		while (next < 5 && n < census_tint_count)
 		{
@@ -3539,16 +3547,16 @@ static void census_report(void)
 
 			best = -1;
 			for (k = 0; k < census_tint_count; k++)
-				if (!taken[k] && census_tints[k].passes >= most)
+				if (!taken[k] && draw_census->tints[k].passes >= most)
 				{
-					most = census_tints[k].passes;
+					most = draw_census->tints[k].passes;
 					best = k;
 				}
 			if (best < 0)
 				break;
 			taken[best] = 1;
-			covered += census_tints[best].passes;
-			bytes += census_tints[best].bytes16;
+			covered += draw_census->tints[best].passes;
+			bytes += draw_census->tints[best].bytes16;
 			n++;
 			if (n == sizes[next] || n == census_tint_count)
 			{
@@ -3572,7 +3580,7 @@ static void census_report(void)
 		(census_light_draws[0] + census_light_draws[1]) / frames, census_light_draws[1] / frames, census_light_draws[0] / frames,
 		(census_light_looked[0] + census_light_looked[1]) / frames, census_light_looked[1] / frames, census_light_runs_out / frames,
 		census_light_run_triangles ? 100.0f * census_light_runs_out / census_light_run_triangles : 0.0f);
-	memset(census_near_table, 0, sizeof(census_near_table));
+	memset(draw_census->near_table, 0, sizeof(draw_census->near_table));
 	census_tint_passes = 0;
 	census_light_draws[0] = census_light_draws[1] = census_light_looked[0] = census_light_looked[1] = 0;
 	census_light_run_triangles = census_light_runs_out = 0;
@@ -3587,9 +3595,9 @@ static void census_frame(void)
 		return;
 	census_frames++;
 	for (k = 0; k < census_surface_count; k++)
-		census_surfaces_lit[census_surfaces[k].lights >= 4 ? 3 : census_surfaces[k].lights - 1]++;
+		census_surfaces_lit[draw_census->surfaces[k].lights >= 4 ? 3 : draw_census->surfaces[k].lights - 1]++;
 	census_surface_count = 0;
-	memset(census_triangle_seen, 0, sizeof(census_triangle_seen));
+	memset(draw_census->triangle_seen, 0, sizeof(draw_census->triangle_seen));
 }
 #define CENSUS(call) call
 #else

@@ -1736,6 +1736,26 @@ code (each object's update and draw, each particle's birth), so only recon
 builds carry them, each behind its keep word */
 char *tag_get_name(long tag_index);
 
+#include <malloc.h>
+
+/* A census's table, taken from the game's heap when its keep word turns it
+on. As statics, every census's tables took the heap's room in every recon
+run, censuses on or off, and c20 has only a few KB to spare: a recon build
+ran out of heap there with no census on (B79). Zeroed, 64-byte aligned (some
+are DMA or ME targets). A census that gets no room says so and stays off */
+void *psp_recon_table(const char *census, unsigned long bytes)
+{
+	void *table = memalign(64, bytes);
+
+	if (!table)
+	{
+		platform_log("%s: no room in the heap for its %lu KB of tables; it stays off", census, (bytes + 1023) / 1024);
+		return NULL;
+	}
+	memset(table, 0, bytes);
+	return table;
+}
+
 /* a tag's name without its folders, for lines that must stay short. A tag
 index carries its salt in the high half, and a map's salts are 0x8000 and
 over, so a real tag index is negative as a long: NONE (-1) is the only "no
@@ -1757,15 +1777,29 @@ on the sampled ticks, objects.c, as the per-type line) and its drawing
 shadow), FIXES_RECON #objcost. Which vehicle costs what (the Pelican, the
 dropship, the Banshee against the Warthog and the Scorpion) */
 #define OBJCOST_SLOTS 128
-static struct { long definition; int type; unsigned long tick_us, updates, draw_us, draws; } objcost[OBJCOST_SLOTS];
+static struct { long definition; int type; unsigned long tick_us, updates, draw_us, draws; } *objcost;
 static int objcost_on = -1;
+/* the report's table for profile.txt, shared by the counters below; taken
+with the first of them turned on */
+#define RECON_REPORT_BYTES 6144
+static char *recon_report;
+
+static int recon_counter_tables(const char *census, void *table_pointer, unsigned long bytes)
+{
+	void **table = table_pointer;
+
+	if (!recon_report && !(recon_report = psp_recon_table("recon counters' report", RECON_REPORT_BYTES)))
+		return 0;
+	*table = psp_recon_table(census, bytes);
+	return *table != NULL;
+}
 
 void psp_objcost(long definition, int type, int drawing, unsigned long microseconds, unsigned long count)
 {
 	unsigned int k, n;
 
 	if (objcost_on < 0)
-		objcost_on = psp_keep("objcost") != 0;
+		objcost_on = psp_keep("objcost") && recon_counter_tables("objcost", &objcost, OBJCOST_SLOTS * sizeof(*objcost));
 	if (!objcost_on || definition == -1)
 		return;
 	k = ((unsigned long)definition * 2654435761u) >> 25;
@@ -1932,7 +1966,8 @@ static void objsteps_map_loaded(void)
 	if (objsteps_on > 0)
 		objsteps_clear();
 	objsteps_depth = 0;
-	memset(objcost, 0, sizeof(objcost));
+	if (objcost)
+		memset(objcost, 0, OBJCOST_SLOTS * sizeof(*objcost));
 }
 
 /* one side of a row: its largest steps, in ms a tick (update) or a frame (draw) */
@@ -2049,7 +2084,7 @@ of a burst, or no room in the pool (particles.c, effects.c; FIXES_RECON
 #define PARTICLE_CENSUS_SLOTS 64
 #define PARTICLE_OUTCOMES 5
 static const char *const particle_outcomes[PARTICLE_OUTCOMES] = { "made", "unseen", "budget", "thinned", "pool full" };
-static struct { long tag; int from_effect; unsigned long count[PARTICLE_OUTCOMES]; } particle_census[PARTICLE_CENSUS_SLOTS];
+static struct { long tag; int from_effect; unsigned long count[PARTICLE_OUTCOMES]; } *particle_census;
 static int particle_census_on = -1;
 /* the effect whose particle is being made (effects.c), -1 for none */
 long psp_particle_effect = -1;
@@ -2060,7 +2095,8 @@ void psp_particle_census(long effect, long particle, int outcome)
 	unsigned int k, n;
 
 	if (particle_census_on < 0)
-		particle_census_on = psp_keep("particlecensus") != 0;
+		particle_census_on = psp_keep("particlecensus") &&
+			recon_counter_tables("particlecensus", &particle_census, PARTICLE_CENSUS_SLOTS * sizeof(*particle_census));
 	if (!particle_census_on || tag == -1 || outcome < 0 || outcome >= PARTICLE_OUTCOMES)
 		return;
 	k = ((unsigned long)tag * 2654435761u) >> 26;
@@ -2086,7 +2122,7 @@ void psp_particle_census(long effect, long particle, int outcome)
 
 static void recon_counters_report(SceUID file, double seconds, unsigned long frames, unsigned long ticks)
 {
-	static char report[6144];
+	char *report = recon_report;
 	char line[512];
 	int report_length = 0, length, k, shown;
 
@@ -2097,7 +2133,7 @@ static void recon_counters_report(SceUID file, double seconds, unsigned long fra
 			"machine", "control", "light", "placeholder", "sound scenery" };
 		double type_tick[12] = { 0 }, type_draw[12] = { 0 };
 
-		report_length += snprintf(report + report_length, sizeof(report) - report_length,
+		report_length += snprintf(report + report_length, RECON_REPORT_BYTES - report_length,
 			"objcost: %-36s %-10s %9s %9s %9s %9s\n", "definition", "type", "tick ms", "updates", "frame ms", "draws");
 		length = snprintf(line, sizeof(line), "objcost (ms a tick updating, updates a tick | ms a frame drawing, with what it carries, draws a frame):");
 		for (k = 0; k < OBJCOST_SLOTS; k++)
@@ -2123,7 +2159,7 @@ static void recon_counters_report(SceUID file, double seconds, unsigned long fra
 			}
 			if (best < 0)
 				break;
-			report_length += snprintf(report + report_length, sizeof(report) - report_length, "objcost: %-36.36s %-10s %9.3f %9.2f %9.3f %9.2f\n",
+			report_length += snprintf(report + report_length, RECON_REPORT_BYTES - report_length, "objcost: %-36.36s %-10s %9.3f %9.2f %9.3f %9.2f\n",
 				tag_short_name(objcost[best].definition), objcost[best].type >= 0 && objcost[best].type < 12 ? types[objcost[best].type] : "?",
 				ticks ? objcost[best].tick_us / 1000.0 / ticks : 0.0, ticks ? (double)objcost[best].updates / ticks : 0.0,
 				frames ? objcost[best].draw_us / 1000.0 / frames : 0.0, frames ? (double)objcost[best].draws / frames : 0.0);
@@ -2139,7 +2175,7 @@ static void recon_counters_report(SceUID file, double seconds, unsigned long fra
 			if (type_tick[k] > 0.0 || type_draw[k] > 0.0)
 				length += snprintf(line + length, sizeof(line) - length, " %s %.2f | %.2f;", types[k], type_tick[k], type_draw[k]);
 		platform_log("%s", line);
-		memset(objcost, 0, sizeof(objcost));
+		memset(objcost, 0, OBJCOST_SLOTS * sizeof(*objcost));
 	}
 	if (particle_census_on > 0)
 	{
@@ -2151,7 +2187,7 @@ static void recon_counters_report(SceUID file, double seconds, unsigned long fra
 				totals[o] += particle_census[k].count[o];
 		length = snprintf(line, sizeof(line), "particlecensus over %.1f s: made %lu, unseen %lu, budget %lu, thinned %lu, pool full %lu; by effect (made/unseen/budget/thinned/full), the most asked first:",
 			seconds, totals[0], totals[1], totals[2], totals[3], totals[4]);
-		report_length += snprintf(report + report_length, sizeof(report) - report_length,
+		report_length += snprintf(report + report_length, RECON_REPORT_BYTES - report_length,
 			"particlecensus: %-36s %6s %8s %8s %8s %8s %8s\n", "effect (or particle)", "effect", particle_outcomes[0], particle_outcomes[1],
 			particle_outcomes[2], particle_outcomes[3], particle_outcomes[4]);
 		for (shown = 0; shown < 20; shown++)
@@ -2173,7 +2209,7 @@ static void recon_counters_report(SceUID file, double seconds, unsigned long fra
 			}
 			if (best < 0)
 				break;
-			report_length += snprintf(report + report_length, sizeof(report) - report_length, "particlecensus: %-36.36s %6s %8lu %8lu %8lu %8lu %8lu\n",
+			report_length += snprintf(report + report_length, RECON_REPORT_BYTES - report_length, "particlecensus: %-36.36s %6s %8lu %8lu %8lu %8lu %8lu\n",
 				tag_short_name(particle_census[best].tag), particle_census[best].from_effect ? "yes" : "no",
 				particle_census[best].count[0], particle_census[best].count[1], particle_census[best].count[2],
 				particle_census[best].count[3], particle_census[best].count[4]);
@@ -2184,7 +2220,7 @@ static void recon_counters_report(SceUID file, double seconds, unsigned long fra
 			memset(particle_census[best].count, 0, sizeof(particle_census[best].count));
 		}
 		platform_log("%s", line);
-		memset(particle_census, 0, sizeof(particle_census));
+		memset(particle_census, 0, PARTICLE_CENSUS_SLOTS * sizeof(*particle_census));
 	}
 	if (file >= 0 && report_length)
 		sceIoWrite(file, report, report_length);
