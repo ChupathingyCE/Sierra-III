@@ -316,6 +316,19 @@ static void me_book_merge(void)
 }
 static unsigned char staging[STAGING_BYTES] __attribute__((aligned(64)));
 static int stick_whole = -1; /* "stickwhole": asked at the first read */
+#ifdef PSP_RECON
+/* "stickwholecheck" (with stickwhole): its second copy of each read, from the
+heap only when the check is on, taken right after keep.txt is read
+(psp_recon_tables_start), before the level's loads fill the heap */
+static int whole_check = 0;
+static unsigned char *again;
+
+void psp_tex_recon_start(void)
+{
+	whole_check = psp_keep("stickwhole") && psp_keep("stickwholecheck") &&
+		(again = psp_recon_table("stickwholecheck", STAGING_BYTES)) != NULL;
+}
+#endif
 
 static int alignment(unsigned int size)
 {
@@ -2519,11 +2532,6 @@ static int load_into(int index, int only)
 #ifdef PSP_RECON
 		/* "stickwholecheck": the same bytes read again as the entry's own
 		read would, and compared */
-		static int whole_check = -1;
-		static unsigned char *again; /* from the heap, only when the check is on */
-
-		if (stick_whole && whole_check < 0)
-			whole_check = psp_keep("stickwholecheck") && (again = psp_recon_table("stickwholecheck", STAGING_BYTES)) != NULL;
 		if (stick_whole && whole_check > 0)
 		{
 			static unsigned int compared, differed;

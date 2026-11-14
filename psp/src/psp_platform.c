@@ -2120,6 +2120,25 @@ void psp_particle_census(long effect, long particle, int outcome)
 	}
 }
 
+/* every census whose table comes from the heap, its keep word read and its
+table taken right after keep.txt is read: by a census's first use the level's
+loads have filled the heap, and the table would find no room (b79test1) */
+void psp_ge_census_start(void);
+void psp_tex_recon_start(void);
+void psp_me_bus_start(void);
+void psp_nodereaders_start(void); /* psp_fixups.py, FIXES_RECON #nodereaders */
+
+void psp_recon_tables_start(void)
+{
+	/* each resolves its keep word and returns: no definition, no tag */
+	psp_objcost(-1, 0, 0, 0, 0);
+	psp_particle_census(-1, -1, 0);
+	psp_ge_census_start();
+	psp_tex_recon_start();
+	psp_me_bus_start();
+	psp_nodereaders_start();
+}
+
 static void recon_counters_report(SceUID file, double seconds, unsigned long frames, unsigned long ticks)
 {
 	char *report = recon_report;
@@ -4621,6 +4640,9 @@ int main(int argc, char **argv)
 		else if (psp_keep("poolpeaks"))
 			platform_log("poolpeaks: not in this build (PSP_RECON=1 builds it)");
 	}
+#ifdef PSP_RECON
+	psp_recon_tables_start();
+#endif
 	{
 		/* before anything reads the maps: a bake of another format is
 		explained on the screen rather than drawn wrong (psp_bakecheck.c) */

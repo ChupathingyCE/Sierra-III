@@ -28226,17 +28226,24 @@ FIXES_RECON["source/models/models.c#nodereaders"] = [
 int psp_keep(const char *name);
 void platform_psp_log(const char *format, ...);
 void *psp_recon_table(const char *census, unsigned long bytes);
+/* a bit a definition, from the heap only when on, taken right after keep.txt
+is read (psp_recon_tables_start), before the level's loads fill the heap */
+static int psp_nodereaders_on = 0;
+static unsigned char *psp_nodereaders_seen;
+
+void psp_nodereaders_start(void)
+{
+	psp_nodereaders_on = psp_keep("nodereaders") && (psp_nodereaders_seen = psp_recon_table("nodereaders", 0x10000 / 8)) != NULL;
+}
+
 void psp_nodeparents_note(long definition_index, struct model const *model, short node_count)
 {
-	static int on = -1;
-	static unsigned char *seen; /* a bit a definition, from the heap only when on */
+	unsigned char *seen = psp_nodereaders_seen;
 	unsigned int key = (unsigned int)definition_index & 0xFFFFu;
 	char line[64 * 4 + 1];
 	int k, at = 0;
 
-	if (on < 0)
-		on = psp_keep("nodereaders") && (seen = psp_recon_table("nodereaders", 0x10000 / 8)) != NULL;
-	if (!on || (seen[key >> 3] & (1u << (key & 7))))
+	if (!psp_nodereaders_on || (seen[key >> 3] & (1u << (key & 7))))
 		return;
 	seen[key >> 3] |= (unsigned char)(1u << (key & 7));
 	line[0] = 0;

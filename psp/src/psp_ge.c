@@ -3376,6 +3376,13 @@ static int census_wanted(void)
 	return census_on;
 }
 
+/* right after keep.txt is read (psp_recon_tables_start): by the first draw
+the level's loads have taken the heap, and the table finds no room */
+void psp_ge_census_start(void)
+{
+	census_wanted();
+}
+
 static void census_near(int rigid, long triangles)
 {
 	long definition = psp_census_definition;

@@ -5385,17 +5385,23 @@ static void bus_collect(void)
 	bus_finish(&bus_loads, &bus_load_cycles);
 }
 
+/* right after keep.txt is read (psp_recon_tables_start), so the output finds
+room before the level's loads fill the heap */
+void psp_me_bus_start(void)
+{
+	if (bus_work != -2)
+		return;
+	bus_work = emulator() ? -1 : psp_keep_number("mebus", -1);
+	bus_edram = psp_keep("mebusedram") != 0;
+	if (bus_work >= 0 && !(bus_out = psp_recon_table("mebus", BUS_OUT_WORDS * sizeof(*bus_out))))
+		bus_work = -1;
+}
+
 void psp_me_bus_phase(int phase)
 {
 	unsigned int now;
 
-	if (bus_work == -2)
-	{
-		bus_work = emulator() ? -1 : psp_keep_number("mebus", -1);
-		bus_edram = psp_keep("mebusedram") != 0;
-		if (bus_work >= 0 && !(bus_out = psp_recon_table("mebus", BUS_OUT_WORDS * sizeof(*bus_out))))
-			bus_work = -1;
-	}
+	psp_me_bus_start();
 	if (bus_work < 0 || PSP_ME_WORK() || !psp_me_ring_ready())
 		return;
 	now = sceKernelGetSystemTimeLow();
