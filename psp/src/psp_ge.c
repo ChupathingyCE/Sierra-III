@@ -24716,6 +24716,95 @@ static void psp_ge_decal_body(void const *vertices, int quad_count, unsigned int
 	DECAL_PROBE(4);
 }
 
+/* Whether a decal can put anything on the screen, tested on the main CPU
+before its record is taken (box_draw_list.md §12.2): most decal calls draw
+nothing (b40's warthog drive: 633-992 of 779-1,308 a frame), and each one
+still cost a record, a copy of its corners and the ME's walk of every quad.
+The sphere tested contains each quad's own test sphere in
+psp_ge_decal_body (its centre, its radius x 1.01 + 0.01), so a decal that
+fails here is one the body would have drawn nothing of: the same picture.
+The sphere is worked out from the decal's corners once, the first time it's
+drawn, and kept by its datum index and identifier (a decal's vertices don't
+change once made). "decaltestold": every call recorded, as before */
+#define DECAL_BOUNDS 2048 /* the engine's MAXIMUM_DECALS_PER_MAP */
+struct decal_bound { float centre[3], radius; unsigned int id; };
+static struct decal_bound decal_bounds[DECAL_BOUNDS];
+static int decal_test = -1;
+static unsigned long decals_tested_out = 0;
+
+int psp_ge_decal_visible(long decal_index, unsigned int identifier, void const *vertices, int quad_count)
+{
+	struct decal_bound *b;
+	unsigned int slot = (unsigned int)decal_index & 0xFFFFu, id = (identifier << 16) | (unsigned int)(quad_count & 0xFFFF);
+	float camera[3], half_y, half_x, side_x, side_y;
+
+	if (decal_test < 0)
+		decal_test = !psp_keep("decaltestold");
+	if (decal_cull < 0)
+		decal_cull = !psp_keep("decalnocull");
+	if (!decal_test || !decal_cull || slot >= DECAL_BOUNDS || quad_count <= 0)
+		return 1;
+	b = &decal_bounds[slot];
+	if (b->id != id || b->radius <= 0.0f)
+	{
+		const unsigned char *in = (const unsigned char *)vertices;
+		float lo[3] = { 1e30f, 1e30f, 1e30f }, hi[3] = { -1e30f, -1e30f, -1e30f }, reach = 0.0f;
+		int quad, corner, k;
+
+		for (quad = 0; quad < quad_count; quad++)
+			for (corner = 0; corner < 4; corner++)
+			{
+				const float *p = (const float *)(in + 16 * (4 * quad + corner));
+
+				for (k = 0; k < 3; k++)
+				{
+					if (p[k] < lo[k])
+						lo[k] = p[k];
+					if (p[k] > hi[k])
+						hi[k] = p[k];
+				}
+			}
+		for (k = 0; k < 3; k++)
+			b->centre[k] = (lo[k] + hi[k]) * 0.5f;
+		/* each quad's sphere as the body makes it, and its far side's
+		distance from the decal's centre */
+		for (quad = 0; quad < quad_count; quad++)
+		{
+			const float *p0 = (const float *)(in + 16 * (4 * quad)), *p2 = (const float *)(in + 16 * (4 * quad + 2));
+			float qc[3] = { (p0[0] + p2[0]) * 0.5f, (p0[1] + p2[1]) * 0.5f, (p0[2] + p2[2]) * 0.5f }, r2 = 0.0f, d2 = 0.0f;
+
+			for (corner = 0; corner < 4; corner++)
+			{
+				const float *p = (const float *)(in + 16 * (4 * quad + corner));
+				float dx = p[0] - qc[0], dy = p[1] - qc[1], dz = p[2] - qc[2];
+
+				if (dx * dx + dy * dy + dz * dz > r2)
+					r2 = dx * dx + dy * dy + dz * dz;
+			}
+			for (k = 0; k < 3; k++)
+				d2 += (qc[k] - b->centre[k]) * (qc[k] - b->centre[k]);
+			if (sqrtf(d2) + sqrtf(r2) * 1.01f + 0.01f > reach)
+				reach = sqrtf(d2) + sqrtf(r2) * 1.01f + 0.01f;
+		}
+		/* a margin for the rounding of the two sums the body doesn't make */
+		b->radius = reach * 1.001f + 0.01f;
+		b->id = id;
+	}
+	to_camera(b->centre, camera);
+	half_y = fov_tan_half();
+	half_x = half_y * (float)SCREEN_WIDTH / SCREEN_HEIGHT;
+	side_x = sqrtf(1.0f + half_x * half_x);
+	side_y = sqrtf(1.0f + half_y * half_y);
+	if (camera[2] < -b->radius ||
+		camera[0] - half_x * camera[2] > b->radius * side_x || -camera[0] - half_x * camera[2] > b->radius * side_x ||
+		camera[1] - half_y * camera[2] > b->radius * side_y || -camera[1] - half_y * camera[2] > b->radius * side_y)
+	{
+		decals_tested_out++;
+		return 0;
+	}
+	return 1;
+}
+
 void psp_ge_decal(void const *vertices, int quad_count, unsigned int key, short blend, unsigned long color,
 	int intensity, int alpha_tested, int permanent)
 {
@@ -26729,12 +26818,13 @@ static void frame_end_show(void)
 					}
 					platform_log("GE: parts, us a frame (calls a frame): %s", parts);
 					/* build 48: the list's cached regions and the stall updates */
-					platform_log("GE: list: %lu regions a frame written cached (%lu KB a frame, %lu lines written back); command words %s (%lu lines a frame written back); stall updates %lu a frame, %lu passed on (%s), %.1f us each (%lu timed); decal quads under 2 pixels left out %lu, wholly off the screen %lu (since the start); decal calls with nothing on the screen %lu a frame",
+					platform_log("GE: list: %lu regions a frame written cached (%lu KB a frame, %lu lines written back); command words %s (%lu lines a frame written back); stall updates %lu a frame, %lu passed on (%s), %.1f us each (%lu timed); decal quads under 2 pixels left out %lu, wholly off the screen %lu (since the start); decal calls with nothing on the screen %lu a frame; decals tested out before their record %lu a frame",
 						cached_takes / 300, cached_bytes / 300 / 1024, cached_lines_flushed / 300,
 						list_cached_frame ? "cached (listcachedall)" : "uncached", list_lines_back / 300, stall_calls / 300,
 						stall_forwarded / 300, stall_batch == 1 ? "batched" : "each", stall_timed ? (double)stall_timed_us / stall_timed : 0.0, stall_timed, decals_small, decals_offscreen,
-						decals_wholly_left_out / 300);
+						decals_wholly_left_out / 300, decals_tested_out / 300);
 					decals_wholly_left_out = 0;
+					decals_tested_out = 0;
 					/* build 119's probe */
 					if (probes_on)
 						platform_log("GE: decal calls by piece, us a frame: setup %lu, the off-screen loop %lu, texture and list room %lu, corners %lu, state and draw %lu",

@@ -5362,6 +5362,7 @@ FIXES_23["source/rasterizer/xbox/rasterizer_xbox_decals.c"] = [
 			extern void psp_ge_decal(void const *vertices, int quad_count, unsigned int key, short blend,
 				unsigned long color, int intensity, int alpha_tested, int permanent);
 			extern unsigned int psp_tex_bitmap_key(long, int);
+			extern int psp_ge_decal_visible(long decal_index, unsigned int identifier, void const *vertices, int quad_count);
 			byte *vertex_data = NULL;
 
 			vertex_data_offset = (unsigned long)lruv_block_get_address(local_vertex_cache, decal_index);
@@ -5374,7 +5375,10 @@ FIXES_23["source/rasterizer/xbox/rasterizer_xbox_decals.c"] = [
 				psp_key = psp_tex_bitmap_key(shader->map.index, decal->bitmap_index);
 			}
 			IDirect3DVertexBuffer8_Lock(local_d3d_vertex_buffer, 0, 0, &vertex_data, D3DLOCK_READONLY);
-			if (vertex_data)
+			/* psp_ge.c's psp_ge_decal_visible: a decal the view can't show
+			takes no record (box_draw_list.md §12.2) */
+			if (vertex_data && psp_ge_decal_visible(decal_index, (unsigned int)(unsigned short)decal->identifier,
+				vertex_data + vertex_data_offset, decal->quad_count))
 				psp_ge_decal(vertex_data + vertex_data_offset, decal->quad_count,
 					psp_key, framebuffer_blend_function, color,
 					(int)intensity, local_layer == _decal_layer_alpha_tested,
