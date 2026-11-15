@@ -44959,7 +44959,7 @@ static void psp_aime_thinking_seed(
 pass took it, which every actor's seed is made from; and the seed an actor
 thinking in the tick draws from, the game's thread's (the main CPU's alone) */
 static PSP_AIME_ME_SIDE unsigned long psp_aime_seed_root;
-static int psp_redoseed_on = -1;
+int psp_redoseed_on = -1; /* psp_pad.c sets it for a replay: the recording's way */
 static int psp_aime_redo_on = 0, psp_aime_redo_thread = -1;
 static unsigned long psp_aime_redo_seed;
 int sceKernelGetThreadId(void);

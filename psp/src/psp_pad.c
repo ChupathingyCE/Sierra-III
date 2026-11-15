@@ -40,7 +40,14 @@ older files start with 'F' and have none */
 #define PAD_HEAD 0x48u
 #define PAD_HEAD_BYTES 64
 short game_difficulty_level_get(void);
+/* REDOSEED (psp_fixups.py, actors.c): -1 until the first tick decides it,
+1 for each actor's own seed, 0 for the game's as before. A pad's head says
+which way it was recorded (version 2: own seeds; 1 or no head: the game's),
+and a replay plays it the same way, unless the keep word redoseednew asks
+for the new seeds on an old pad */
+extern int psp_redoseed_on;
 static void pad_head_make(unsigned char *head);
+static void pad_seed_follow(unsigned int version);
 static void pad_put(unsigned int tag, const void *data, unsigned int bytes);
 static void pad_window(unsigned int bytes);
 static int pad_take(unsigned int tag, void *data, unsigned int bytes);
@@ -280,15 +287,30 @@ static void pad_map_check(void)
 
 				if (pad_take(PAD_HEAD, head, sizeof(head)))
 				{
+					pad_seed_follow(head[0]);
 					head[PAD_HEAD_BYTES - 1] = 0;
 					platform_log("pad: recorded at difficulty %d, init '%s'; playing at %d%s", head[1], (const char *)head + 2,
 						now, head[1] == now ? "" : ": NOT the recording's difficulty, the replay will part");
 				}
 			}
 			else
+			{
+				pad_seed_follow(0);
 				platform_log("pad: the recording has no head (made before 2026-11-13): its difficulty isn't known");
+			}
 		}
 	}
+}
+
+/* a replay seeds the actors' thinking as its recording did (the head's
+version byte; 0 for no head), decided before the map's first tick */
+static void pad_seed_follow(unsigned int version)
+{
+	int old = version < 2 && !psp_keep("redoseednew");
+
+	psp_redoseed_on = old ? 0 : !psp_keep("redoseedold");
+	platform_log("pad: recorded with %s seeds: the replay thinks with %s%s", version < 2 ? "the game's" : "each actor's own",
+		psp_redoseed_on ? "each actor's own" : "the game's", old ? "" : version < 2 ? " (redoseednew)" : "");
 }
 
 /* the head's bytes: init.txt read again, its map_name line left out */
@@ -304,7 +326,7 @@ static void pad_head_make(unsigned char *head)
 		sceIoClose(file);
 	text[length > 0 ? length : 0] = 0;
 	memset(head, 0, PAD_HEAD_BYTES);
-	head[0] = 1;
+	head[0] = psp_keep("redoseedold") ? 1 : 2;
 	head[1] = (unsigned char)game_difficulty_level_get();
 	for (line = strtok_r(text, "\r\n", &save); line; line = strtok_r(NULL, "\r\n", &save))
 	{
