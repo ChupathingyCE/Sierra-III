@@ -53732,7 +53732,371 @@ FIXES_BOXPOSING["source/saved games/game_state.c#boxposeb"] = [
 ]
 
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_SSPR.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + list(FIXES_CHUPA090RUNS.items()) + list(FIXES_HEAPTRIM.items()) + list(FIXES_B78.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items()) + list(FIXES_AIME2A.items()) + list(FIXES_REDOSEED.items()) + (list(FIXES_STACKHOT.items()) if STACKHOT else []) + (list(FIXES_STACKHOT2.items()) if STACKHOT2 else []) + list(FIXES_PWSL.items()) + list(FIXES_SPHSL.items()) + list(FIXES_RECONLIST.items()) + list(FIXES_TP1.items()) + list(FIXES_WXDEAD.items()) + list(FIXES_AIMEMOVE.items()) + list(FIXES_PROPCRASH.items()) + list(FIXES_APCPOOL.items()) + list(FIXES_PSPTLS.items()) + list(FIXES_SNDEDRAM.items()) + list(FIXES_LIGHTFIRST.items()) + list(FIXES_DRAWPART.items()) + (list(FIXES_RECONLATE.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + list(FIXES_P2PASS.items()) + (list(FIXES_P2CENSUS.items()) if P2CENSUS else []) + list(FIXES_OBSRAY.items()) + list(FIXES_SNDWAIT.items()) + list(FIXES_FLAMEDECAL.items()) + list(FIXES_HUHINT.items()) + list(FIXES_DBLSOFT.items()) + list(FIXES_VFPUTRIG.items()) + list(FIXES_TICKCACHE.items()) + list(FIXES_STRICTALIAS.items()) + list(FIXES_SNDPERMAP.items()) + list(FIXES_RLOOP.items()) + list(FIXES_L10.items()) + list(FIXES_RLSKIP.items()) + list(FIXES_ONEWALK.items()) + (list(FIXES_POSEK.items()) if POSEK else []) + (list(FIXES_SNDSTREAM.items()) if os.environ.get("PSP_SNDSTREAM", "") == "1" else []) + list(FIXES_MOUTHCLOCK.items()) + list(FIXES_LSAME.items()) + list(FIXES_CHUPA090.items()) + (list(FIXES_AITICKOLD.items()) if AITICKOLD else []) + (list(FIXES_PADPATH.items()) if os.environ.get("PSP_PADPATH", "") == "1" else []) + list(FIXES_FARLEVEL.items()) + list(FIXES_DECALRING.items()) + list(FIXES_ARRAYFULL.items()) + (list(FIXES_DEADXBOX.items()) if DEADXBOX else []) + (list(FIXES_CAPTURE_POSING.items()) if CAPTURE == "posing" else []) + (list(FIXES_BOXPOSING.items()) if BOXPOSING else [])):
+
+# ---------- FIXES_ASKCENSUS: the collision service's askers counted (PSP_RECON; keep word "askcensus";
+# the lead 14:42, lab coord/briefs/askers_read.md): every call site the worker's read found
+# (or-job 43761478863, its citations checked against the port's tree at 6e15022), each
+# asked through psp_ask(site) on its way in, counted by phase (psp/src/psp_askcensus.c). Applied
+# last, so its anchors are the lines as every other group leaves them. An emulator count: exact,
+# the ME's askers included (they run on the main CPU there).
+FIXES_ASKCENSUS = {}
+FIXES_ASKCENSUS["source/cseries/cseries.h#askcensus"] = [
+("""	return result;
+}
+
+#endif // __CSERIES_H""", """	return result;
+}
+
+#if defined(HALO_PSP) && defined(PSP_RECON)
+void psp_ask(int site); /* psp_fixups.py FIXES_ASKCENSUS */
+#endif
+
+#endif // __CSERIES_H"""),
+]
+FIXES_ASKCENSUS["source/units/bipeds.c#askcensus"] = [
+# site 1: asker 1, Biped motion — the pill sweep (the move)
+("""		collision_count = collision_move_pill(
+""", """		collision_count = (psp_ask(1), collision_move_pill)(
+"""),
+# site 2: asker 2, Biped motion — crouch and stand test
+("""				if (collision_get_features_in_sphere(
+""", """				if ((psp_ask(2), collision_get_features_in_sphere)(
+"""),
+# site 3: asker 2, Biped motion — crouch and stand test
+("""					if (collision_features_test_vector(
+""", """					if ((psp_ask(3), collision_features_test_vector)(
+"""),
+# site 4: asker 3, Biped — ground surface for pathfinding
+("""	if (collision_bsp_test_vector(
+""", """	if ((psp_ask(4), collision_bsp_test_vector)(
+"""),
+# site 5: asker 4, Biped — nearby support surface
+("""	if (collision_bsp_test_sphere(
+""", """	if ((psp_ask(5), collision_bsp_test_sphere)(
+"""),
+# site 6: asker 5, Biped — fix position (knockback / nudge)
+("""					collision_fix_pill(
+""", """					(psp_ask(6), collision_fix_pill)(
+"""),
+# site 7: asker 5, Biped — fix position (knockback / nudge)
+("""					!collision_test_pill(
+""", """					!(psp_ask(7), collision_test_pill)(
+"""),
+# site 9: asker 7, Biped — melee impact
+("""					collision_model_test_vector(
+""", """					(psp_ask(9), collision_model_test_vector)(
+"""),
+# site 10: asker 7, Biped — melee impact
+("""					!collision_test_vector(
+""", """					!(psp_ask(10), collision_test_vector)(
+"""),
+]
+FIXES_ASKCENSUS["source/units/biped_limp_noodle.c#askcensus"] = [
+# site 8: asker 6, Biped limp body (dead bipeds)
+("""	collision_get_features_in_sphere(
+""", """	(psp_ask(8), collision_get_features_in_sphere)(
+"""),
+]
+FIXES_ASKCENSUS["source/units/units.c#askcensus"] = [
+# site 11: asker 8, Unit — melee damage rays
+("""			if (collision_test_vector(
+				_collision_test_for_projectiles_flags,
+""", """			if ((psp_ask(11), collision_test_vector)(
+				_collision_test_for_projectiles_flags,
+"""),
+# site 12: asker 8, Unit — melee damage rays
+("""				if (collision_test_vector(
+""", """				if ((psp_ask(12), collision_test_vector)(
+"""),
+]
+FIXES_ASKCENSUS["source/ai/actor_looking.c#askcensus"] = [
+# site 13: asker 9, AI — look-around obstruction
+("""			unobstructed = !collision_test_vector(
+""", """			unobstructed = !(psp_ask(13), collision_test_vector)(
+"""),
+]
+FIXES_ASKCENSUS["source/ai/ai.c#askcensus"] = [
+# site 14: asker 10, AI — line of sight / line of fire
+("""		if (!collision_test_vector(
+""", """		if (!(psp_ask(14), collision_test_vector)(
+"""),
+# site 15: asker 10, AI — line of sight / line of fire
+("""		tested = psp_collision_test_vector_quiet(collision_flags, p0, &vector, ignore_object_index, &collision);
+""", """		tested = (psp_ask(15), psp_collision_test_vector_quiet)(collision_flags, p0, &vector, ignore_object_index, &collision);
+"""),
+]
+FIXES_ASKCENSUS["source/ai/ai_communication.c#askcensus"] = [
+# site 16: asker 11, AI — communication LOS
+("""					blocked = collision_test_vector(
+""", """					blocked = (psp_ask(16), collision_test_vector)(
+"""),
+]
+FIXES_ASKCENSUS["source/ai/path_obstacle_avoidance.c#askcensus"] = [
+# site 17: asker 12, AI — obstacle avoidance (2D pill)
+("""		if (structure_test_ray2d(structure, ignore_broken_surfaces, point, surface_index, direction, result->distance, &ray_result) &&
+""", """		if ((psp_ask(17), structure_test_ray2d)(structure, ignore_broken_surfaces, point, surface_index, direction, result->distance, &ray_result) &&
+"""),
+# site 18: asker 12, AI — obstacle avoidance (2D pill)
+("""		structure_test_ray2d(structure, ignore_broken_surfaces, point, surface_index, &perpendicular, radius, &left_result);
+""", """		(psp_ask(18), structure_test_ray2d)(structure, ignore_broken_surfaces, point, surface_index, &perpendicular, radius, &left_result);
+"""),
+# site 19: asker 12, AI — obstacle avoidance (2D pill)
+("""		if (structure_test_ray2d(structure, ignore_broken_surfaces, &left_point, left_result.surface_index, direction, result->distance, &left_result) &&
+""", """		if ((psp_ask(19), structure_test_ray2d)(structure, ignore_broken_surfaces, &left_point, left_result.surface_index, direction, result->distance, &left_result) &&
+"""),
+# site 20: asker 12, AI — obstacle avoidance (2D pill)
+("""			structure_test_ray2d(structure, ignore_broken_surfaces, point, surface_index, &perpendicular, radius, &right_result);
+""", """			(psp_ask(20), structure_test_ray2d)(structure, ignore_broken_surfaces, point, surface_index, &perpendicular, radius, &right_result);
+"""),
+# site 21: asker 12, AI — obstacle avoidance (2D pill)
+("""		if (structure_test_ray2d(structure, ignore_broken_surfaces, &right_point, right_result.surface_index, direction, result->distance, &right_result) &&
+""", """		if ((psp_ask(21), structure_test_ray2d)(structure, ignore_broken_surfaces, &right_point, right_result.surface_index, direction, result->distance, &right_result) &&
+"""),
+# site 22: asker 12, AI — obstacle avoidance (2D pill)
+("""		structure_test_ray2d(structure, ignore_broken_surfaces, point, surface_index, direction, result->distance, &ray_result);
+""", """		(psp_ask(22), structure_test_ray2d)(structure, ignore_broken_surfaces, point, surface_index, direction, result->distance, &ray_result);
+"""),
+]
+FIXES_ASKCENSUS["source/ai/actor_moving.c#askcensus"] = [
+# site 23: asker 13, AI — vector avoidance / evasion ledge
+("""	if (collision_bsp_test_vector(
+""", """	if ((psp_ask(23), collision_bsp_test_vector)(
+"""),
+# site 24: asker 13, AI — vector avoidance / evasion ledge
+("""	else if (collision_bsp_test_vector(
+""", """	else if ((psp_ask(24), collision_bsp_test_vector)(
+"""),
+]
+FIXES_ASKCENSUS["source/ai/action_charge.c#askcensus"] = [
+# site 25: asker 14, AI — charge melee line
+("""		collision_test_line(
+""", """		(psp_ask(25), collision_test_line)(
+"""),
+]
+FIXES_ASKCENSUS["source/ai/action_vehicle.c#askcensus"] = [
+# site 26: asker 15, AI — vehicle destination ground
+("""		if (collision_bsp_test_vector(
+""", """		if ((psp_ask(26), collision_bsp_test_vector)(
+"""),
+]
+FIXES_ASKCENSUS["source/ai/path.c#askcensus"] = [
+# site 27: asker 16, AI — path 3D availability
+("""	if (!collision_bsp_test_vector(
+""", """	if (!(psp_ask(27), collision_bsp_test_vector)(
+"""),
+]
+FIXES_ASKCENSUS["source/units/vehicles.c#askcensus"] = [
+# site 28: asker 17, AI perception → vehicle pathfinding surface
+("""			if (collision_bsp_test_vector(1, bsp, 0, NULL, &origin, &vector, FLT_MAX, &result))
+""", """			if ((psp_ask(28), collision_bsp_test_vector)(1, bsp, 0, NULL, &origin, &vector, FLT_MAX, &result))
+"""),
+# site 43: asker 26, Vehicles — suspension
+("""						collision_test_vector(0xc0a0, &start, &vector, vehicle_index, &collision);
+""", """						(psp_ask(43), collision_test_vector)(0xc0a0, &start, &vector, vehicle_index, &collision);
+"""),
+# site 44: asker 27, Vehicles — effect markers (ghost, pelican)
+("""			if (collision_test_vector(0x61, &marker->matrix.position, &vector, vehicle_index,
+				&collision))
+			{
+				scale = PIN((-marker->matrix.forward.k)*(1.0f-collision.t)*vehicle->unit.seat_power[0],
+""", """			if ((psp_ask(44), collision_test_vector)(0x61, &marker->matrix.position, &vector, vehicle_index,
+				&collision))
+			{
+				scale = PIN((-marker->matrix.forward.k)*(1.0f-collision.t)*vehicle->unit.seat_power[0],
+"""),
+# site 45: asker 27, Vehicles — effect markers (ghost, pelican)
+("""			if (collision_test_vector(0x61, &marker->matrix.position, &vector, vehicle_index,
+				&collision))
+			{
+				marker_points[0] = collision.point;
+""", """			if ((psp_ask(45), collision_test_vector)(0x61, &marker->matrix.position, &vector, vehicle_index,
+				&collision))
+			{
+				marker_points[0] = collision.point;
+"""),
+]
+FIXES_ASKCENSUS["source/game/aim_assist.c#askcensus"] = [
+# site 29: asker 18, Aim assist
+("""	if (!collision_test_vector(
+""", """	if (!(psp_ask(29), collision_test_vector)(
+"""),
+# site 30: asker 18, Aim assist
+("""			collision_test_vector(_collision_test_for_projectiles_flags, &camera_position, &camera_vector,
+""", """			(psp_ask(30), collision_test_vector)(_collision_test_for_projectiles_flags, &camera_position, &camera_vector,
+"""),
+]
+FIXES_ASKCENSUS["source/items/projectiles.c#askcensus"] = [
+# site 31: asker 19, Projectiles
+("""	if (collision_test_line(
+		_collision_test_for_projectiles_flags,
+""", """	if ((psp_ask(31), collision_test_line)(
+		_collision_test_for_projectiles_flags,
+"""),
+]
+FIXES_ASKCENSUS["source/items/items.c#askcensus"] = [
+# site 32: asker 20, Items on the ground
+("""					if (collision_test_point(
+""", """					if ((psp_ask(32), collision_test_point)(
+"""),
+# site 33: asker 20, Items on the ground
+("""					collision_test_point(
+""", """					(psp_ask(33), collision_test_point)(
+"""),
+]
+FIXES_ASKCENSUS["source/objects/damage.c#askcensus"] = [
+# site 34: asker 21, Area-of-effect damage
+("""			collision_test_vector(
+""", """			(psp_ask(34), collision_test_vector)(
+"""),
+# site 35: asker 21, Area-of-effect damage
+("""			if (!collision_test_vector(
+""", """			if (!(psp_ask(35), collision_test_vector)(
+"""),
+# site 36: asker 21, Area-of-effect damage
+("""		collision_blocked = collision_test_vector(
+""", """		collision_blocked = (psp_ask(36), collision_test_vector)(
+"""),
+]
+FIXES_ASKCENSUS["source/physics/point_physics.c#askcensus"] = [
+# site 37: asker 22, Point physics (grenades, particles)
+("""			if (!collision_test_vector(collision_flags, position, &delta, NONE, &collision))
+""", """			if (!(psp_ask(37), collision_test_vector)(collision_flags, position, &delta, NONE, &collision))
+"""),
+# site 38: asker 22, Point physics (grenades, particles)
+("""			hit = psp_collision_test_vector_points(collision_flags, position, &delta, &collision);
+""", """			hit = (psp_ask(38), psp_collision_test_vector_points)(collision_flags, position, &delta, &collision);
+"""),
+]
+FIXES_ASKCENSUS["source/physics/physics.c#askcensus"] = [
+# site 39: asker 23, Vehicles — mass-point ground (planes)
+("""		collision_get_features_in_sphere(
+""", """		(psp_ask(39), collision_get_features_in_sphere)(
+"""),
+# site 40: asker 24, Vehicles — swept mass points (new physics)
+("""					collision_test_vector(
+						_collision_test_for_vehicles_flags |
+""", """					(psp_ask(40), collision_test_vector)(
+						_collision_test_for_vehicles_flags |
+"""),
+# site 41: asker 25, Vehicles — antigravity probe
+("""					collision_test_vector(
+						_collision_test_for_bipeds_dead_flags,
+						&point,
+						&probe_vector,
+						instance->object_index,
+""", """					(psp_ask(41), collision_test_vector)(
+						_collision_test_for_bipeds_dead_flags,
+						&point,
+						&probe_vector,
+						instance->object_index,
+"""),
+# site 42: asker 25, Vehicles — antigravity probe
+("""					collision_test_vector(
+						_collision_test_for_bipeds_dead_flags,
+						&point,
+						&probe_vector,
+						object_index,
+""", """					(psp_ask(42), collision_test_vector)(
+						_collision_test_for_bipeds_dead_flags,
+						&point,
+						&probe_vector,
+						object_index,
+"""),
+# site 46: asker 28, Vehicles running over bipeds
+("""	if (collision_model_test_point(instance, &base))
+""", """	if ((psp_ask(46), collision_model_test_point)(instance, &base))
+"""),
+# site 47: asker 28, Vehicles running over bipeds
+("""		collision_model_get_features_in_sphere(
+""", """		(psp_ask(47), collision_model_get_features_in_sphere)(
+"""),
+]
+FIXES_ASKCENSUS["source/camera/observer.c#askcensus"] = [
+# site 48: asker 29, Camera — the push-back
+("""	if (collision_test_vector(flags, point0, &vector, NONE, &collision))
+""", """	if ((psp_ask(48), collision_test_vector)(flags, point0, &vector, NONE, &collision))
+"""),
+]
+FIXES_ASKCENSUS["source/sound/game_sound.c#askcensus"] = [
+# site 49: asker 30, Sound obstruction
+("""				if (!collision_test_vector(
+""", """				if (!(psp_ask(49), collision_test_vector)(
+"""),
+]
+FIXES_ASKCENSUS["source/effects/decals.c#askcensus"] = [
+# site 50: asker 31, Decals / effects on walls
+("""		if (collision_test_vector(
+""", """		if ((psp_ask(50), collision_test_vector)(
+"""),
+]
+FIXES_ASKCENSUS["source/effects/material_effects.c#askcensus"] = [
+# site 51: asker 32, Material effects (footsteps, impacts)
+("""		if (collision_test_vector(
+""", """		if ((psp_ask(51), collision_test_vector)(
+"""),
+]
+FIXES_ASKCENSUS["source/structures/structures.c#askcensus"] = [
+# site 52: asker 33, Object lighting (lightmap sample down-rays)
+("""		if (collision_test_vector(
+""", """		if ((psp_ask(52), collision_test_vector)(
+"""),
+]
+FIXES_ASKCENSUS["source/rasterizer/xbox/rasterizer_xbox_widgets.c#askcensus"] = [
+# site 53: asker 34, Lens flares — occlusion
+("""						level_hides = collision_test_vector(
+""", """						level_hides = (psp_ask(53), collision_test_vector)(
+"""),
+]
+FIXES_ASKCENSUS["source/interface/hud.c#askcensus"] = [
+# site 54: asker 35, HUD — enemy/ally name LOS
+("""	if (collision_test_vector(_collision_test_for_line_of_sight_flags, &render.camera.position, &vector,
+""", """	if ((psp_ask(54), collision_test_vector)(_collision_test_for_line_of_sight_flags, &render.camera.position, &vector,
+"""),
+]
+FIXES_ASKCENSUS["source/interface/hud_nav_points.c#askcensus"] = [
+# site 55: asker 36, HUD — nav points
+("""	if (collision_test_vector(_collision_test_for_line_of_sight_flags, head, &vector,
+""", """	if ((psp_ask(55), collision_test_vector)(_collision_test_for_line_of_sight_flags, head, &vector,
+"""),
+]
+FIXES_ASKCENSUS["source/game/game_engine.c#askcensus"] = [
+# site 56: asker 37, Teleport / spawn placement
+("""				if (collision_get_features_in_sphere(
+""", """				if ((psp_ask(56), collision_get_features_in_sphere)(
+"""),
+]
+FIXES_ASKCENSUS["source/game/players.c#askcensus"] = [
+# site 57: asker 37, Teleport / spawn placement
+("""				collision_test_point(
+""", """				(psp_ask(57), collision_test_point)(
+"""),
+# site 58: asker 37, Teleport / spawn placement
+("""						if (collision_test_pill(
+""", """						if ((psp_ask(58), collision_test_pill)(
+"""),
+]
+FIXES_ASKCENSUS["source/objects/objects.c#askcensus"] = [
+# site 59: asker 37, Teleport / spawn placement
+("""	if (collision_test_line(_collision_test_for_projectiles_flags, known_good_point, &object->object.position, NONE, &collision) ||
+""", """	if ((psp_ask(59), collision_test_line)(_collision_test_for_projectiles_flags, known_good_point, &object->object.position, NONE, &collision) ||
+"""),
+# site 61: asker 38, Objects' map link (reconnect)
+("""				collision_bsp_test_sphere(
+""", """				(psp_ask(61), collision_bsp_test_sphere)(
+"""),
+# site 62: asker 38, Objects' map link (reconnect)
+("""		on_level = collision_bsp_test_sphere(global_collision_bsp_get(), MAXIMUM_BREAKABLE_SURFACES_PER_MAP,
+""", """		on_level = (psp_ask(62), collision_bsp_test_sphere)(global_collision_bsp_get(), MAXIMUM_BREAKABLE_SURFACES_PER_MAP,
+"""),
+]
+FIXES_ASKCENSUS["source/game/game_engine_bomb.c#askcensus"] = [
+# site 60: asker 37, Teleport / spawn placement
+("""		if (collision_test_vector(FLAG(_collision_test_front_facing_surfaces_bit) |
+""", """		if ((psp_ask(60), collision_test_vector)(FLAG(_collision_test_front_facing_surfaces_bit) |
+"""),
+]
+
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_SSPR.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + list(FIXES_CHUPA090RUNS.items()) + list(FIXES_HEAPTRIM.items()) + list(FIXES_B78.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items()) + list(FIXES_AIME2A.items()) + list(FIXES_REDOSEED.items()) + (list(FIXES_STACKHOT.items()) if STACKHOT else []) + (list(FIXES_STACKHOT2.items()) if STACKHOT2 else []) + list(FIXES_PWSL.items()) + list(FIXES_SPHSL.items()) + list(FIXES_RECONLIST.items()) + list(FIXES_TP1.items()) + list(FIXES_WXDEAD.items()) + list(FIXES_AIMEMOVE.items()) + list(FIXES_PROPCRASH.items()) + list(FIXES_APCPOOL.items()) + list(FIXES_PSPTLS.items()) + list(FIXES_SNDEDRAM.items()) + list(FIXES_LIGHTFIRST.items()) + list(FIXES_DRAWPART.items()) + (list(FIXES_RECONLATE.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + list(FIXES_P2PASS.items()) + (list(FIXES_P2CENSUS.items()) if P2CENSUS else []) + list(FIXES_OBSRAY.items()) + list(FIXES_SNDWAIT.items()) + list(FIXES_FLAMEDECAL.items()) + list(FIXES_HUHINT.items()) + list(FIXES_DBLSOFT.items()) + list(FIXES_VFPUTRIG.items()) + list(FIXES_TICKCACHE.items()) + list(FIXES_STRICTALIAS.items()) + list(FIXES_SNDPERMAP.items()) + list(FIXES_RLOOP.items()) + list(FIXES_L10.items()) + list(FIXES_RLSKIP.items()) + list(FIXES_ONEWALK.items()) + (list(FIXES_POSEK.items()) if POSEK else []) + (list(FIXES_SNDSTREAM.items()) if os.environ.get("PSP_SNDSTREAM", "") == "1" else []) + list(FIXES_MOUTHCLOCK.items()) + list(FIXES_LSAME.items()) + list(FIXES_CHUPA090.items()) + (list(FIXES_AITICKOLD.items()) if AITICKOLD else []) + (list(FIXES_PADPATH.items()) if os.environ.get("PSP_PADPATH", "") == "1" else []) + list(FIXES_FARLEVEL.items()) + list(FIXES_DECALRING.items()) + list(FIXES_ARRAYFULL.items()) + (list(FIXES_DEADXBOX.items()) if DEADXBOX else []) + (list(FIXES_CAPTURE_POSING.items()) if CAPTURE == "posing" else []) + (list(FIXES_BOXPOSING.items()) if BOXPOSING else []) + (list(FIXES_ASKCENSUS.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
