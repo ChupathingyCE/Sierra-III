@@ -553,7 +553,10 @@ void psp_log_write(const char *text)
 		}
 		/* build 99: a batch three quarters full is written at once (the
 		blackbox's first frames stream hundreds of textures in one frame) */
-		if (log_batch_length > log_batch_size * 3 / 4)
+		/* (lw2: at half, as its batch is written rarely and a report's burst,
+		or a checkpoint's hold, filled the last quarter: lw2proof1 dropped
+		773 lines) */
+		if (log_batch_length > (lw2_on > 0 ? log_batch_size / 2 : log_batch_size * 3 / 4))
 		{
 			if (log_wake >= 0 && sceKernelGetThreadId() != log_wake_thread)
 				sceKernelSignalSema(log_wake, 1); /* (a second signal while one waits is refused: harmless) */
