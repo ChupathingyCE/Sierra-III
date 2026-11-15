@@ -85,6 +85,37 @@ def read(path):
     return beats, ge, totals
 
 
+def reach(runs, lo, hi):
+    """Where a stretch ends so that every run's figure covers the same game time.
+
+    A heartbeat stands for the second that ends at its game time. When a run's
+    stop (exitatN, wall) falls inside the stretch, its last beat lands anywhere
+    in the last beat's span, and where the cost slopes the figure follows that
+    phase, not the build (findings d20_bunker_window_reach: up to ~5% in one
+    job). So the stretch ends at the earliest last beat among the runs that
+    reach it, and a beat that ends past that is left out of every run.
+
+    runs: each run's heartbeats (game time first). Returns (end, cut, differs):
+    end is inclusive (hi when no run ends inside, so the figure is as before);
+    differs says the runs' last beats inside are more than one beat apart."""
+    lasts, spans = [], []
+    for beats in runs:
+        inside = [b[0] for b in beats if lo <= b[0] < hi]
+        if not inside:
+            continue    # a run that never reaches the stretch has no figure there
+        if beats[-1][0] < hi:
+            lasts.append(beats[-1][0])
+        spans += [b - a for a, b in zip(inside, inside[1:])][-4:]
+    if not lasts:
+        return hi, False, False
+    span = sorted(spans)[len(spans) // 2] if spans else 0
+    return min(lasts), True, max(lasts) - min(lasts) > span
+
+
+def within(beats, lo, hi, end):
+    return [b for b in beats if lo <= b[0] < hi and b[0] <= end]
+
+
 def weighted(rows, value, weight):
     total = sum(weight(r) for r in rows)
     return sum(value(r) * weight(r) for r in rows) / total if total else None
@@ -112,6 +143,16 @@ def main():
 
     head = "| Stretch (game time) | " + " | ".join(names) + " |"
     rule = "|---|" + "---:|" * len(names)
+    reaches = {}    # name -> (end, cut, differs), the same across the four tables
+    for name, lo, hi in stretches:
+        reaches[name] = reach([r[0] for r in runs], lo, hi)
+
+    def label(name, lo, hi):
+        end, cut, differs = reaches[name]
+        if not cut:
+            return "%s (%d-%d)" % (name, lo, hi)
+        return "%s (%d-%d: cut to common reach%s)" % (name, lo, end, ", REACH DIFFERS" if differs else "")
+
     for title, pick, digits in (
             # each heartbeat is a second: the clock's frame is the seconds over the frames
             ("Frame by the clock, ms", lambda rows: 1000.0 * len(rows) / sum(r[3] for r in rows) if rows and sum(r[3] for r in rows) else None, 1),
@@ -120,18 +161,18 @@ def main():
             ("Frames a second", lambda rows: weighted(rows, lambda r: r[3], lambda r: 1.0), 2)):
         print("**%s**\n\n%s\n%s" % (title, head, rule))
         for name, lo, hi in stretches:
-            cells = [fmt(pick([b for b in r[0] if lo <= b[0] < hi]), digits) for r in runs]
-            print("| %s (%d-%d) | %s |" % (name, lo, hi, " | ".join(cells)))
+            cells = [fmt(pick(within(r[0], lo, hi, reaches[name][0])), digits) for r in runs]
+            print("| %s | %s |" % (label(name, lo, hi), " | ".join(cells)))
         print()
     print("**The GE busy a frame, ms (share of the clock)**\n\n%s\n%s" % (head, rule))
     for name, lo, hi in stretches:
         cells = []
         for r in runs:
-            rows = [g for g in r[1] if lo <= g[0] < hi]
+            rows = within(r[1], lo, hi, reaches[name][0])
             busy = weighted(rows, lambda g: g[2], lambda g: g[1])
             share = weighted(rows, lambda g: g[3], lambda g: g[1])
             cells.append("-" if busy is None else "%.0f (%.0f%%)" % (busy, share))
-        print("| %s (%d-%d) | %s |" % (name, lo, hi, " | ".join(cells)))
+        print("| %s | %s |" % (label(name, lo, hi), " | ".join(cells)))
     print()
     print("**Over the whole run**\n\n| | " + " | ".join(names) + " |\n" + "|---|" + "---:|" * len(names))
     for label, key in (("Game time reached", None), ("Draws skipped, display list full", "skipped"),

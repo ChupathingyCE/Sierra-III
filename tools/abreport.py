@@ -45,7 +45,7 @@ import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from benchreport import STRETCHES, log_path, read, weighted  # noqa: E402  (the same reader as the bench tables)
+from benchreport import STRETCHES, log_path, reach, read, weighted, within  # noqa: E402  (the same reader as the bench tables)
 
 METRICS = (
     ("Frame by the clock, ms", lambda rows: 1000.0 * len(rows) / sum(r[3] for r in rows) if rows and sum(r[3] for r in rows) else None),
@@ -239,19 +239,27 @@ def main():
     for part in a.stretches.split(","):
         title, span = part.split(":")
         lo, hi = (int(x) for x in span.split("-"))
+        # every run on every side ends the stretch at one reach (benchreport.reach)
+        end, cut, differs = reach([run for n in names for run in beats[n]], lo, hi)
         figures = {}   # (metric, side) -> [one figure a run]
         for metric, pick in METRICS:
             for n in names:
-                figures[metric, n] = [v for v in (pick([b for b in run if lo <= b[0] < hi]) for run in beats[n]) if v is not None]
+                figures[metric, n] = [v for v in (pick(within(run, lo, hi, end)) for run in beats[n]) if v is not None]
         if not any(figures.values()):
             continue
         # A stretch the runs only graze (they end inside it, or a beat or two
         # falls in it) is one heartbeat's window, not the stretch: its gap says
         # where each run's last beat landed, so it gets no verdict.
-        counts = [sum(1 for b in run if lo <= b[0] < hi) for n in names for run in beats[n]]
+        counts = [len(within(run, lo, hi, end)) for n in names for run in beats[n]]
         ends = [run[-1][0] for n in names for run in beats[n] if run]
         short = min(counts) < MIN_BEATS
-        print("**%s (game time %d-%d)**\n" % (title, lo, hi))
+        if not cut:
+            print("**%s (game time %d-%d)**\n" % (title, lo, hi))
+        else:
+            print("**%s (game time %d-%d: cut to common reach)**\n" % (title, lo, end))
+            if differs:
+                print("REACH DIFFERS: the runs end inside %s more than a beat apart (game time %d-%d); every run is cut "
+                      "to the earliest, so the figure covers %d-%d, not the whole stretch.\n" % (title, min(ends), max(ends), lo, end))
         if short:
             print("_Only %d-%d heartbeats a run in this stretch (the runs end at game time %d-%d): too short for a verdict._\n"
                   % (min(counts), max(counts), min(ends), max(ends)))
