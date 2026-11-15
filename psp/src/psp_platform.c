@@ -259,7 +259,12 @@ static int log_held(void)
 {
 	static int off = -1;
 
-	if (!log_hold_until || exiting || log_batch_length >= log_batch_size * 7 / 8)
+	extern int psp_lw2_on(void);
+
+	/* (lw2: a batch half full isn't held, or a checkpoint's hold over a
+	batch kept long fills it and drops lines: lw2proof2) */
+	if (!log_hold_until || exiting || log_batch_length >= log_batch_size * 7 / 8 ||
+		(psp_lw2_on() && log_batch_length >= log_batch_size / 2))
 		return 0;
 	if (sceKernelGetSystemTimeWide() >= log_hold_until)
 	{
@@ -493,6 +498,11 @@ static void lw2_start(void)
 	log_batch_grow();
 	lw2_last_write = sceKernelGetSystemTimeWide();
 	platform_log("log: lw2: the batch written every %d s or at half full", lw2_seconds);
+}
+
+int psp_lw2_on(void)
+{
+	return lw2_on > 0;
 }
 
 /* the beat's write: due at the interval, half full, or without LW2 */
