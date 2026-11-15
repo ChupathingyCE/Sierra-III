@@ -428,7 +428,7 @@ For §12.1a's look question (buckets held unless the slant moves a triangle past
 | 6 | All earlier HUD levers are priced under 1 ms and stopped for being under a pair's spread; **no lever touches the blips' per-frame walk**, and the VFPU trig lever that exists covers `hud_draw.c`, not `motion_sensor.c` | [D] |
 | 7 | The counts owed are the blips' update/render split, the units walked a frame, the b40/a30 step tables, and a picture test of a kept target | — |
 
-### 14.1 1. Each HUD step's cost by map, from the step tables
+### 14.1 Each HUD step's cost by map, from the step tables
 
 The steps are Sierra-III's own labels — `psp_fixups.py` puts `"hud: unit motion sensor blips", "before"` on the `motion_sensor_draw_screen(` call (`sierra/psp_fixups.py:2232`), which the generated source shows as `PSP_STEP("hud: unit motion sensor blips");` on `motion_sensor_draw_screen(` (`porttree/source/interface/hud_unit.c:1217-1221`). `stepsplit.py` groups `^hud:` into "D HUD and screen" (`psp/sierra/stepsplit.py:26`); note `^hud_update` is grabbed earlier, by "T tick: other" (`psp/sierra/stepsplit.py:16`), so `hud_update` is *not* in the HUD's drawing figure, while `hud_messaging_update` is.
 
@@ -467,7 +467,7 @@ The steps are Sierra-III's own labels — `psp_fixups.py` puts `"hud: unit motio
 
 Witness lines: `run-results/sierra-hw/43314261608/profile.txt:1226` `hud: unit motion sensor blips                     1.76     2.3      12.8    1761.7`; `run-results/sierra-hw/43314261608/profile.txt:1607` `hud: unit motion sensor blips                     2.57     2.7      10.4    2566.2`; `run-results/sierra-hw/43331666648/profile.txt:2311` `hud: unit motion sensor blips                     6.35     4.9       8.1    6041.5`.
 
-### 14.2 2. What the motion sensor's blips step does each frame
+### 14.2 What the motion sensor's blips step does each frame
 
 `hud_render_unit_interface` computes the panel's anchor, then calls the sensor (`porttree/source/interface/hud_unit.c:1217-1221`):
 
@@ -531,7 +531,7 @@ Two structural notes the box cares about [D]:
 - the sensor draws into **a tiny target of its own** and composites it — so its GE block is already separable from the rest of the HUD (`psp_ge.c:25206-25217`);
 - the sensor's target is where `blipdepth` put it: **in the depth buffer's first 16 KB**, not at `0x0CC000` (`psp_ge.c:25232`, `BLIP_TARGET_DEPTH (2 * FRAME_BYTES)`), live in these runs (`run-results/sierra-hw/43314261608/log.txt:171-232`, `GE: blipdepth: the motion sensor's target in the depth buffer at 088000`).
 
-### 14.3 3. Every earlier lever on the HUD, its price, and why it stopped
+### 14.3 Every earlier lever on the HUD, its price, and why it stopped
 
 | Lever | What it was | Price | Why it stopped |
 |---|---|---|---|
@@ -548,7 +548,7 @@ Two structural notes the box cares about [D]:
 
 `levercheck.py hud|blips|motion sensor` (the ledger says it is owed at `drawing_me_ledger.md:150`) now comes back with: **no lever on the blips' per-frame walk exists**, only HUDX's "static-part display list" glance, SMALLME's move to the ME, and VRB2's memory placement. The word `blipdepth` is VRB2, a memory lever (`sierra/docs/review_vrbroom.md`, `levers.tsv:250`), not a time lever on the drawing.
 
-### 14.4 4. What changes on a tick or an event, and what changes every frame
+### 14.4 What changes on a tick or an event, and what changes every frame
 
 The distinction the box needs is whether a GE block can be kept and replayed while its inputs are unchanged — the mechanism the port already has for models (`psp_ge.c:14236-14247`: "An object whose inputs changed RSO_CHANGES times running without a send … rests for RSO_REST frames"; `rso` is on by default in the campaign, `psp_ge.c:14912`).
 
@@ -566,7 +566,7 @@ The distinction the box needs is whether a GE block can be kept and replayed whi
 
 **The ceiling, stated carefully.** A kept sensor target is the one HUD block whose inputs mostly do not change; its ceiling is the blips step's own measurement, **1.62 ms a frame on c20 and 1.16 on d20** (max 2.57 / 6.35), and that is an upper bound only: (i) the per-frame `update_motion_sensor` inside the step would have to move to the tick to be saved at all, and it is **not sized**; (ii) the sweep must still be drawn every frame, so the target cannot be left untouched as it is today, where `blip_target_open` paints it black first (`psp_ge.c:25342`) — a kept target needs either a second small target or a composite of the kept blips plus a fresh sweep; (iii) the whole rest of the HUD is at most **~0.6-0.9 ms a frame** (the small steps in §1, matching HUDX's "the HUD's own work is ~0.9 ms a frame", `levers.tsv:163`). **No ceiling here is a promise of a 1.6 ms cut.**
 
-### 14.5 5. The counts owed
+### 14.5 The counts owed
 
 1. **The blips step's split between `update_motion_sensor` and `render_motion_sensor`** (`motion_sensor.c:794-795`). There is no `PSP_STEP` inside `motion_sensor.c` at all — a one-line instrument, then one census window answers it. Without it, "keep the block" cannot be sized: it may be that half the step is the update, which no kept block removes.
 2. **The units walked a frame.** `update_motion_sensor` walks only the 16 recorded slots, but the tick's scan walks every unit (`motion_sensor.c:389` `object_iterator_new(&iter, _object_mask_unit, TRUE);`); how many units a d20/c20 frame's slots point at, and how many of the 160 history slots are live, are not counted anywhere. `mekinds`' `blips N (M a frame)` is the drawn count only (`psp_ge.c:1591`, `[DEFER_BLIP] = "blips"`).
