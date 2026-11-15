@@ -48,6 +48,16 @@ int box_posing_plan_make(struct box_posing_plan *plan, const struct box_posing_n
 	return filled;
 }
 
+#ifdef PSP_BOX_POSING
+/* In the game, the engine's own product, in whichever form it takes on this
+CPU (the VFPU's on the main CPU when it's on, the FPU's on the ME or with
+novfpu): the box's nodes then meet the engine's markers and attachments,
+which use it, in the same bits. With the box's FPU product beside the
+engine's VFPU one, a held weapon's place parted in its last bits from tick 0
+on the PSP (the lab's attachlog3, posenovfpu1) */
+void matrix4x3_multiply(const void *a, const void *b, void *result);
+#define multiply(a, b, result) matrix4x3_multiply((a), (b), (result))
+#else
 /* result = a x b, the engine's matrix4x3_multiply term for term: b's rows
 combine a's, b's position is scaled by a's scale before a's own is added.
 `result` may be `b` */
@@ -70,6 +80,7 @@ static inline void multiply(const float *a, const float *b, float *result)
 	for (row = 0; row < 12; row++)
 		result[1 + row] = product[row];
 }
+#endif
 
 /* the engine's matrix4x3_from_orientation (matrix4x3_rotation_from_quaternion,
 then the orientation's scale and translation) */
