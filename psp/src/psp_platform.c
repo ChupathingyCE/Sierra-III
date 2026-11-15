@@ -3941,6 +3941,10 @@ volatile int psp_current_phase = 0;
 extern volatile int psp_ge_phase_ring_on;
 void psp_ge_phase_mark(int phase);
 
+#ifdef PSP_RECON
+void psp_ask_phase(int phase);
+#endif
+
 void psp_phase(int phase)
 {
 	psp_current_phase = phase;
@@ -3952,6 +3956,7 @@ void psp_phase(int phase)
 		halo_profile_phase(phase);
 #ifdef PSP_RECON
 	psp_me_bus_phase(phase); /* "mebusN" (psp_me.c) */
+	psp_ask_phase(phase); /* "askcensus" (psp_askcensus.c) */
 #endif
 }
 
