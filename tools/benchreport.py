@@ -34,6 +34,44 @@ import argparse, os, re, sys
 
 NUMBER = r"(-?[0-9]+(?:\.[0-9]+)?)"
 STRETCHES = "cinematic:150-570,flight:300-2000,landing:2000-2700,beach:2700-6000,bunker:6000-8100"
+# Each map's own stretches over its pad bench, from the lab's
+# psp/sierra/findings/stretches.tsv (its "<map>-pad-<name>" rows): a log that
+# names one of these maps is read by them unless --stretches is given. b30
+# keeps the opening bench's above, which its earlier reads used. Without this,
+# a b40 or c20 pair was read by b30's windows under b30's names and never
+# by its own heavy stretches (the lab's coord/lessons.md, the audit's find).
+MAP_STRETCHES = {
+    "a30": "opening:300-3600,early:3600-12000,middle:12000-22000,late:22000-31318",
+    "b40": "early:2521-5008,heavyA:9123-10272,heavyB:10272-11661,snowfield:13922-14876",
+    "c10": "opening:300-6000,early:6000-15000,middle:15000-30000,late:30000-44859",
+    "c20": "first:300-3600,play:3600-9000",
+    "c40": "opening:300-6000,early:6000-15000,banshee:15000-30000,middle:30000-45000,late:45000-57017",
+    "d20": "opening:300-3000,swamp:3000-9000,interior:9000-18000,late:18000-29234",
+}
+
+
+def map_of(path):
+    """the first map the log loads ('loading: levels\\<x>\\<map> begins'), or None"""
+    for line in open(path, errors="replace"):
+        m = re.search(r"loading: levels\\[^\\]+\\(\w+) begins", line)
+        if m:
+            return m.group(1)
+    return None
+
+
+def stretches_for(paths, given):
+    """the stretches to read: --stretches if given, else the logs' map's own
+    (every log naming the same map in MAP_STRETCHES), else the opening bench's;
+    with a line saying which"""
+    if given:
+        return given, "as given"
+    maps = set(map_of(p) for p in paths)
+    if len(maps) == 1:
+        (name,) = maps
+        if name in MAP_STRETCHES:
+            return MAP_STRETCHES[name], "%s's own (stretches.tsv)" % name
+        return STRETCHES, "b30's opening bench" + ("" if name == "b30" else " (%s has no stretches of its own here)" % name)
+    return STRETCHES, "b30's opening bench (the logs name %s)" % (", ".join(sorted(str(m) for m in maps)))
 
 
 def log_path(arg):
@@ -129,14 +167,16 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("logs", nargs="+")
     ap.add_argument("--names", help="column names, comma separated (default: the build numbers)")
-    ap.add_argument("--stretches", default=STRETCHES, help="NAME:FROM-TO game ticks, comma separated (default: the opening bench's)")
+    ap.add_argument("--stretches", default=None, help="NAME:FROM-TO game ticks, comma separated (default: the logs' map's own, else the opening bench's)")
     a = ap.parse_args()
     runs = [read(log_path(p)) for p in a.logs]
     names = a.names.split(",") if a.names else ["b" + r[2]["build"] for r in runs]
     if len(names) != len(runs):
         sys.exit("benchreport: %d names for %d logs" % (len(names), len(runs)))
+    spec, why = stretches_for([log_path(p) for p in a.logs], a.stretches)
+    print("_Stretches: %s._\n" % why)
     stretches = []
-    for part in a.stretches.split(","):
+    for part in spec.split(","):
         name, span = part.split(":")
         lo, hi = (int(x) for x in span.split("-"))
         stretches.append((name, lo, hi))

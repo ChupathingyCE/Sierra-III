@@ -45,7 +45,7 @@ import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from benchreport import STRETCHES, log_path, reach, read, weighted, within  # noqa: E402  (the same reader as the bench tables)
+from benchreport import log_path, reach, read, stretches_for, weighted, within  # noqa: E402  (the same reader as the bench tables)
 
 METRICS = (
     ("Frame by the clock, ms", lambda rows: 1000.0 * len(rows) / sum(r[3] for r in rows) if rows and sum(r[3] for r in rows) else None),
@@ -198,7 +198,7 @@ def verdict(base, other):
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("sides", nargs="+")
-    ap.add_argument("--stretches", default=STRETCHES)
+    ap.add_argument("--stretches", default=None, help="NAME:FROM-TO game ticks, comma separated (default: the logs' map's own, else b30's opening bench)")
     a = ap.parse_args()
     if len(a.sides) == 1 and os.path.isdir(a.sides[0]) and "=" not in a.sides[0]:
         sides = sides_from_results(a.sides[0])
@@ -236,7 +236,9 @@ def main():
                   "replay plays a different game on each side, so stretches after it compare different games and get "
                   "no verdict.\n" % (n, PART_UNITS, base, parted[n]))
     print("Sides: " + "; ".join("%s (%d runs)" % (n, len(sides[n])) for n in names) + ". Gaps are against **%s**.\n" % base)
-    for part in a.stretches.split(","):
+    spec, why = stretches_for([p for logs in sides.values() for p in logs], a.stretches)
+    print("_Stretches: %s._\n" % why)
+    for part in spec.split(","):
         title, span = part.split(":")
         lo, hi = (int(x) for x in span.split("-"))
         # every run on every side ends the stretch at one reach (benchreport.reach)
