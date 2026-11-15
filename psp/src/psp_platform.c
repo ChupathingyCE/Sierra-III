@@ -4958,3 +4958,19 @@ void psp_tick_ms_refresh(void)
 	__asm__ __volatile__("" ::: "memory");
 	psp_tick_ms_valid = 1;
 }
+
+#ifdef HALO_CONSOLE_NO_DEBUG_TOOLS
+/* Without the game's developer tools (PSP_DEADDEBUG, docs/deadcode.md) the
+hs commands that would reach them call this instead; the console port that
+the switch was written for defines it in its own platform layer */
+void console_debug_tools_unavailable(char const *name)
+{
+	platform_log("%s: the developer tools are not in this build (PSP_DEADDEBUG=0 keeps them)", name);
+}
+
+/* the heartbeat's collision report (FIXES_128) has nothing to report: the
+collision log it reads is compiled out with the tools */
+void psp_collision_report(void)
+{
+}
+#endif

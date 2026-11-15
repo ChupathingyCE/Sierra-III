@@ -187,6 +187,15 @@ MEPROBE = os.environ.get("PSP_MEPROBE", "") == "1"
 # the heap gets the space. The campaign/multiplayer split will be a flavour
 # of the same kind
 DEBUG_TOOLS = os.environ.get("PSP_DEBUG_TOOLS", "") == "1"
+# PSP_DEADDEBUG (lever DEADDEBUG, docs/deadcode.md): ChupathingyCE's own
+# console switch HALO_CONSOLE_NO_DEBUG_TOOLS, which leaves out the game's
+# developer tools: the AI's, the collision's and the caches' debug drawing,
+# the render-debug cache, the profiler and its frame marks, and the
+# collision log's counting. Nothing the game computes reads any of it; the
+# hs commands that reach it stay, answering "not in this build". On by
+# default (~200 KB more heap); PSP_DEADDEBUG=0 keeps the tools, and a
+# PSP_DEBUG_TOOLS=1 build always does (its collision log by user, FIXES_128)
+DEADDEBUG = os.environ.get("PSP_DEADDEBUG", "1") != "0" and not DEBUG_TOOLS
 # PSP_METRICS: each map's figures in the log (psp/src/psp_metrics.c: where
 # each second went, the slow frames and what each was doing, the reads, the
 # heap's low point). On unless PSP_METRICS=0, so every test build has them; a
@@ -404,7 +413,7 @@ PSP = ["psp-gcc", "-G%d" % SMALLDATA, GAME_OPT, "-march=allegrex", "-ffp-contrac
        # statics and the GL layer's d3d8_visibility_test_number); and the
        # Xbox maps' sizes (flare rows, respawning vehicles: -135 KB)
        "-DHALO_CONSOLE_WAITED_VISIBILITY_TESTS=1", "-DHALO_CONSOLE_XBOX_MAP_SIZES=1",
-       ] + (["-DPSP_MULTIPLAYER=1"] if MULTIPLAYER else []) + (["-DPSP_MUSIC=1"] if MUSIC else []) + (["-DPSP_PADPATH=1"] if PADPATH else []) + (["-DPSP_SNDSTREAM=1"] if SNDSTREAM else []) + (["-DPSP_CLAIMFILL=1"] if CLAIMFILL else []) + (["-DPSP_MP_COOP=1"] if MULTIPLAYER and MP_COOP else []) + (["-DPSP_MP_HOST=1"] if MULTIPLAYER and MP_HOST else []) + (["-DPSP_MAP_CHECKS=1"] if MAP_CHECKS else []) + (["-DPSP_POOLS_XBOX=1"] if POOLS_XBOX else []) + (["-DPSP_RECON_64MB=1"] if BIG_RAM else []) + (["-DPSP_DEBUG_TOOLS=1"] if DEBUG_TOOLS else []) + (["-DPSP_TICK_STEPS=1"] if TICK_STEPS else []) + (["-DPSP_RECON=1"] if RECON else []) + (["-DPSP_MEPROBE=1"] if MEPROBE else []) + (["-DPSP_METRICS=1"] if METRICS else []) + (["-DPSP_STACKHOT=2"] if os.environ.get("PSP_STACKHOT", "2") == "2" else []) + (["-DPSP_PGO_GENERATE=1"] if PGO == "generate" else []) + os.environ.get("PSP_CFLAGS", "").split() + [
+       ] + (["-DPSP_MULTIPLAYER=1"] if MULTIPLAYER else []) + (["-DPSP_MUSIC=1"] if MUSIC else []) + (["-DPSP_PADPATH=1"] if PADPATH else []) + (["-DPSP_SNDSTREAM=1"] if SNDSTREAM else []) + (["-DPSP_CLAIMFILL=1"] if CLAIMFILL else []) + (["-DPSP_MP_COOP=1"] if MULTIPLAYER and MP_COOP else []) + (["-DPSP_MP_HOST=1"] if MULTIPLAYER and MP_HOST else []) + (["-DPSP_MAP_CHECKS=1"] if MAP_CHECKS else []) + (["-DPSP_POOLS_XBOX=1"] if POOLS_XBOX else []) + (["-DPSP_RECON_64MB=1"] if BIG_RAM else []) + (["-DPSP_DEBUG_TOOLS=1"] if DEBUG_TOOLS else []) + (["-DHALO_CONSOLE_NO_DEBUG_TOOLS=1"] if DEADDEBUG else []) + (["-DPSP_TICK_STEPS=1"] if TICK_STEPS else []) + (["-DPSP_RECON=1"] if RECON else []) + (["-DPSP_MEPROBE=1"] if MEPROBE else []) + (["-DPSP_METRICS=1"] if METRICS else []) + (["-DPSP_STACKHOT=2"] if os.environ.get("PSP_STACKHOT", "2") == "2" else []) + (["-DPSP_PGO_GENERATE=1"] if PGO == "generate" else []) + os.environ.get("PSP_CFLAGS", "").split() + [
        # The fatal asserts are compiled out, unevaluated (X10): their checks
        # and messages fill the 16 KB instruction cache, so with them gone b30's
        # tick is 6.6% shorter on the PSP-3000 [M], and play is identical. The

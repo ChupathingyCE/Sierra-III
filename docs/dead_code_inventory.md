@@ -2,6 +2,10 @@
 
 It measures which of the program's code ran and which data only unrun code uses, groups the rest by what it's for, and says what cutting each group would take.
 
+## Status 2026-11-15 (`deadcode.md`)
+
+**Group 2 (debug tools) is out** under `PSP_DEADDEBUG`, on by default: ChupathingyCE's own `HALO_CONSOLE_NO_DEBUG_TOOLS` switch. On the shipped recipe the heap went from 5,568 to 5,784 KB, with play and both seeds identical [E]. **Group 6 (the Xbox draw paths) is partly out:** the level's passes went under `PSP_DEADXBOX`, and the transparent group draw is still reachable. The rows below for groups 2 and 6 are superseded by `deadcode.md`; the scanf row is miniscanf's.
+
 ## Status at b125 (2026-10-14, `trim125`)
 
 **Done:**
