@@ -52,6 +52,9 @@ PSP_HEAP_SIZE_KB(PSP_HEAP_KB);
 
 /* ms0:/halo, or the multiplayer build's ms0:/halomp (psp_paths.h) */
 #include "psp_paths.h"
+#ifdef PSP_CAPTURE
+#include "psp_capture.h"
+#endif
 #include "psp_metrics.h"
 #include "psp_lanetrace.h"
 #define DATA_ROOT PSP_DATA_ROOT
@@ -2390,6 +2393,11 @@ static void exit_game(const char *why)
 	there. psp_me_exit leaves it halted or held in reset, the states the
 	firmware's own ME boot starts from */
 	PSP_METRICS_ME_EXIT(why);
+#ifdef PSP_CAPTURE
+	/* the capture's last file finished before the game goes */
+	if (strcmp(why, "HOME") != 0)
+		psp_capture_close();
+#endif
 	/* the pad recorder's last frames: from the game's own thread only, as
 	the drain above (a HOME exit keeps what was written each 64 frames) */
 	if (strcmp(why, "HOME") != 0)
@@ -3282,6 +3290,36 @@ void psp_tick_account(unsigned long microseconds)
 	/* keep.txt's "savetest": a checkpoint 10 s in (once), timed, the way the
 	campaign makes them (game_state_save writes the whole game state) */
 	++ticks_seen;
+#ifdef PSP_CAPTURE
+	/* a capture build (psp_capture.c): the tick just done is closed and the
+	next asked for, by its number from the map's start (keep words capfirstN,
+	capeveryN, capticksN, capkbN: the sampling, its first tick, its spacing,
+	how many, and the room for one tick's records) */
+	{
+		static int capture_opened = 0;
+
+		if (!capture_opened)
+		{
+			struct psp_capture_plan plan;
+
+			capture_opened = 1;
+			memset(&plan, 0, sizeof(plan));
+#ifdef PSP_CAPTURE_POSING
+			plan.box = "posing";
+#endif
+			plan.map = "-";
+			plan.bench = psp_keep("padplay") ? "pad" : "route";
+			plan.first = (unsigned int)psp_keep_number("capfirst", 300);
+			plan.every = (unsigned int)psp_keep_number("capevery", 7);
+			plan.run = 1;
+			plan.ticks_most = (unsigned int)psp_keep_number("capticks", 256);
+			plan.tick_bytes_most = (unsigned int)psp_keep_number("capkb", 384) * 1024u;
+			psp_capture_open(&plan);
+		}
+		psp_capture_tick_end();
+		psp_capture_tick((unsigned int)ticks_seen);
+	}
+#endif
 	/* ms0:/halo/commands.txt: console commands run 10 s after the game starts (one
 a line; e.g. cheat_active_camouflage_local_player 0), for testing what a
 map doesn't show by itself (build 30). Build 106: a line starting "@N "
