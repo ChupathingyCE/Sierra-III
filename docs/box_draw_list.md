@@ -408,3 +408,171 @@ For §12.1a's look question (buckets held unless the slant moves a triangle past
 - **The same shape for the kept set** [U]: a draw whose box was wholly inside the view volume by some margin stays wholly inside while the camera's turn and move stay under a slack kept with it, so the box test and the per-triangle classification are skipped as well. With both slacks a held draw costs two compares and a jump to its block.
 - **Where it matters most** [E, `levelkept4_c20`, landed after §12.1a]: on c20 the kept set repeats for 98% of the level's bytes and 61% have moved buckets: the largest share of the five maps, on the map whose ME render job is furthest over (40-50 ms a job, level draws 6-9 of it; the lab's `ai_census_c20_leg1.md`).
 - **The look** is §12.1a's question unchanged (a mip step's place up to the margin off, for the frames a bucket is held): drawing only, shots.
+
+
+## 14. The HUD (the lead 2026-11-15 12:00: the HUD is the draw list box's; draft v0, 15:1x)
+
+> Drafted by the worker (or-job 43747083755, DeepSeek), checked by the audit. **Checked and right:** the blips step is one call a frame at 1,761.7 us on c20's window (the census run 43314261608's profile.txt:1226); `MAXIMUM_MOTION_SENSOR_BLIPS` 16 and `MOTION_SENSOR_HISTORY_COUNT` 10 (the engine's `source/interface/motion_sensor.c:136,138`), so 160 slots walked a frame; the update's once-a-tick guard (`motion_sensor.c:828`). **A caution for any bare figure:** under `hwprofile` the instrument's own on-screen text (`pspDebugScreenPutChar`, 1.1-1.7% of the drawing on the bare sampler runs, the lab's `drawing_me_ledger.md` §3c) lands in the HUD's kind; the step tables here time the HUD's own steps and don't include it. Paths written `sierra/...` and `run-results/...` are the worker's workspace names. The ceiling (a kept sensor target, at most the blips step's own 1.2-1.6 ms a frame mean) is [U] until its counts (§14's last part) are taken.
+
+**What I read, and the reading I took.** The section is drafted against the two step tables that are actually in this workspace — `run-results/sierra-hw/43314261608/profile.txt` (c20, Sierra-III `9d00a903`) and `run-results/sierra-hw/43331666648/profile.txt` (d20, `f50359fa`) — plus the engine as the port compiles it (`porttree/`). **b40's (`43314233107`) and a30's (`43318228389`) step tables are not in this workspace**, so their HUD figures stay as the ledger has them (`research/opportunities/drawing_me_ledger.md:126`) and are marked so. Where the draft needed a mean I took the unweighted mean of the per-window figures over the play windows in which the step appears (c20: windows 3–48, 46 windows; d20: windows 5–37, 33), said so, and gave the window it came from; nothing is extrapolated. `[D]` = read in code or data, `[U]` = my inference, `[M]` = the lab's instrumented measurement.
+
+### 14.0 Table of findings
+
+| # | Finding | Label |
+|---|---|---|
+| 1 | The HUD's drawing is **1.3–2.5 ms a frame** (ledger §3b) and of it the motion sensor's blips are the single largest step on every map: **mean 1.62 ms a frame on c20** (max 2.57), **1.16 on d20** (max 6.35), 0.5 b40 / 0.4 a30 per the ledger. The ledger's c20 figure of 1.5 is slightly low against the step table's own numbers | [M, tables; D for the labels] |
+| 2 | The blips step runs **exactly once a frame** and its `us/call` *is* its per-frame cost (c20 w20: 1.76 ms/frame, 1761.7 µs/call) | [D, arithmetic on M] |
+| 3 | Each frame the blips step walks **10 history snapshots × 16 blip slots = 160 slots**, and issues **one GE draw call per live slot per snapshot** (up to 160) into a 64×64 target of its own, plus a black clear quad, a sweep quad, a mask quad and one composite sprite | [D] |
+| 4 | The **blip data changes on a tick, and only a fresh scan 1 tick in 15** (`MOTION_SENSOR_UPDATE_PERIOD = 15`); the other 14 ticks copy the previous datum. Only the sweep's scale changes every frame | [D] |
+| 5 | So "work on change" applies to the blips' target but not to the sweep: a kept blips target would save **at most the step's own figure** (1.62 ms c20, 1.16 d20) less the unsized per-frame `update_motion_sensor` walk inside it | [U on M] |
+| 6 | All earlier HUD levers are priced under 1 ms and stopped for being under a pair's spread; **no lever touches the blips' per-frame walk**, and the VFPU trig lever that exists covers `hud_draw.c`, not `motion_sensor.c` | [D] |
+| 7 | The counts owed are the blips' update/render split, the units walked a frame, the b40/a30 step tables, and a picture test of a kept target | — |
+
+### 14.1 Each HUD step's cost by map, from the step tables
+
+The steps are Sierra-III's own labels — `psp_fixups.py` puts `"hud: unit motion sensor blips", "before"` on the `motion_sensor_draw_screen(` call (`sierra/psp_fixups.py:2232`), which the generated source shows as `PSP_STEP("hud: unit motion sensor blips");` on `motion_sensor_draw_screen(` (`porttree/source/interface/hud_unit.c:1217-1221`). `stepsplit.py` groups `^hud:` into "D HUD and screen" (`psp/sierra/stepsplit.py:26`); note `^hud_update` is grabbed earlier, by "T tick: other" (`psp/sierra/stepsplit.py:16`), so `hud_update` is *not* in the HUD's drawing figure, while `hud_messaging_update` is.
+
+**c20 (PSP-3000, `43314261608`, `profile.txt`), ms a frame, unweighted mean of windows 3–48 and the worst window; calls a frame; µs a call (median window ≈ mean ÷ 1):**
+
+| Step | mean | worst (window) | calls/frame | µs/call, range |
+|---|---:|---|---:|---|
+| `hud: unit motion sensor blips` | **1.62** | 2.57 (w26), 0.06 (w47) | 1.0 | 116–2566 |
+| `hud: unit shield + health` | ~0.20 | 0.29 (w34) | 1.0 | 163–290 |
+| `hud: grenades` | ~0.19 | 0.26 (w39) | 1.0 | 158–258 |
+| `hud: weapon numbers` | ~0.15 | 0.18 (w31) | 3.0 | 46–60 |
+| `hud: weapon statics` | ~0.14 | 0.20 (w18) | 3.0 | 40–67 |
+| `hud: unit motion sensor panel` | ~0.08 | 0.24 (w34) | 1.0 | 75–106 |
+| `hud: crosshairs` | ~0.10 | 0.18 (w20) | 1.0 | 74–215 |
+| `hud: weapon meters` | ~0.07 | 0.09 | 3.0 | 21–29 |
+| `hud: unit auxiliary overlays` | ~0.12 | 0.17 (w39) | 1.0 | 106–170 |
+| `hud_messaging_update` (grouped with the HUD) | 0.08–0.38 | 0.38 (w22) | 1.0 | 33–384 |
+
+**d20 (`43331666648`, `profile.txt`), windows 5–37:**
+
+| Step | mean | worst (window) | calls/frame |
+|---|---:|---|---:|
+| `hud: unit motion sensor blips` | **1.16** | 6.35 (w37), 2.87 (w34) | 1.0 |
+| `hud: unit shield + health` | ~0.19 | 0.29 (w34) | 1.0 |
+| `hud: grenades` | ~0.18 | 0.27 (w34) | 1.0 |
+| `hud: weapon numbers` | ~0.17 | 3.12 (w35), 0.71 (w31) | 3.0 |
+| `hud: weapon statics` | ~0.15 | 0.26 (w34) | 3.0 |
+| `hud: unit motion sensor panel` | ~0.09 | 0.12 (w34) | 1.0 |
+| `hud: crosshairs` | ~0.10 | 0.19 (w19) | 1.0 |
+
+**b40 and a30** (from the ledger, the tables not in this workspace): HUD and screen 1.6 / 1.3 ms a frame, of which the blips 0.5 / 0.4 (`research/opportunities/drawing_me_ledger.md:126`: "| **HUD and screen** (`hud: unit motion sensor blips` alone 0.9 / **1.5** / 0.5 / 0.4) | 2.3 | 2.5 | 1.6 | 1.3 |"). **[M via the ledger; not re-read here]**
+
+**Two corrections to the ledger's row, from the tables themselves [D, arithmetic on M]:**
+- c20's blips mean is **1.62**, not 1.5, and its worst window is **2.57 ms**, not 1.5. The ledger's figure is the low end of the play windows, not the mean.
+- "Whatever the scene" holds for the total but not for the blips on d20: the step is **0.18–0.92 ms in the quiet windows** (w5–w18) and **0.7–6.35 ms** once the swamp's units are about (w19–w37) — so the blips are scene-dependent on d20, and they track the number of blips drawn (§2).
+
+Witness lines: `run-results/sierra-hw/43314261608/profile.txt:1226` `hud: unit motion sensor blips                     1.76     2.3      12.8    1761.7`; `run-results/sierra-hw/43314261608/profile.txt:1607` `hud: unit motion sensor blips                     2.57     2.7      10.4    2566.2`; `run-results/sierra-hw/43331666648/profile.txt:2311` `hud: unit motion sensor blips                     6.35     4.9       8.1    6041.5`.
+
+### 14.2 What the motion sensor's blips step does each frame
+
+`hud_render_unit_interface` computes the panel's anchor, then calls the sensor (`porttree/source/interface/hud_unit.c:1217-1221`):
+
+```
+PSP_STEP("hud: unit motion sensor blips");
+motion_sensor_draw_screen(
+    local_player_index,
+    local_player_count() > 1,
+    &corner);
+```
+
+and `motion_sensor_draw_screen` does **two things a frame** — an update and a render (`porttree/source/interface/motion_sensor.c:792-796`):
+
+```
+	if (local_player_index != NONE)
+	{
+		update_motion_sensor(local_player_index);
+		render_motion_sensor(local_player_index, in_multiplayer, pt);
+	}
+```
+
+**(a) `update_motion_sensor` — per frame, over the 16 slots** (`motion_sensor.c:548-591`). For each of `MAXIMUM_MOTION_SENSOR_BLIPS` (16, `motion_sensor.c:136`) it takes the object index, `unit_try_and_get`, calls `should_draw_object` (which itself re-tests `unit_try_and_get`, `game_engine_draw_object_in_motion_sensor`, the trigger and grenade-throw flags, then `object_get_velocities` and a squared-magnitude test against `motion_sensor_velocity_sensitivity` — `motion_sensor.c:1033-1070`), then `object_get_bounding_sphere` and a distance-squared test (`motion_sensor.c:556-584`), and writes the blip's packed position. It also fetches the custom (goal) blips (`motion_sensor.c:603-608`).
+
+**(b) `render_motion_sensor` — per frame, 10 history snapshots × 16 slots** (`motion_sensor.c:675-712`):
+
+```
+	for (history_index = 0;
+		history_index < MOTION_SENSOR_HISTORY_COUNT;
+		history_index++)
+	{
+		...
+		for (blip_index = 0;
+			blip_index < MAXIMUM_MOTION_SENSOR_BLIPS;
+			blip_index++)
+		{
+			struct motion_sensor_blip *blip = &sensor->blips[blip_index];
+
+			if (blip->type != _blip_type_none)
+```
+
+with `MOTION_SENSOR_HISTORY_COUNT = 10` (`motion_sensor.c:138`). **So 160 slots are walked a frame and every live one is drawn again** — the whole history is re-rendered, each snapshot with its own fade and radius (`motion_sensor.c:685-689`, `power(1.0f - weight, 3.5f) * 7.0 + 1.0`), and the custom blips on top (`motion_sensor.c:714-738`).
+
+**(c) What each drawn blip costs** — `render_blip` (`motion_sensor.c:1095-1145`): a `rotate_vector2d` with `sine(-sensor->yaw)` and `cosine(-sensor->yaw)`, a squared magnitude, a `square_root`, a `pow(distance / range, 0.7)`, two `scale_vector2d`s, then
+
+```
+			rasterizer_hud_motion_sensor_blip_draw(
+				&blip_position,
+				fade,
+				blip_draw_size,
+				blip_color,
+				(boolean)(blip_type == _blip_type_custom));
+```
+
+`real_math.h`'s `sine`/`cosine` are `sin`/`cos` (`porttree/source/math/real_math.h:955-965`) and `power` is `pow` (`real_math.h:1040-1045`); the PSP narrows them to the float library (`double halo_sin(double x) { return sinf((float)x); }`, `sierra/psp/src/psp_libc.c:298`; `halo_pow … powf`, `psp_libc.c:309`, wired at `sierra/psp_fixups.py:4988, 4995`). The VFPU trig lever deliberately does not cover this file (§3).
+
+**(d) What the GE gets** — each blip is its own quad and its own draw call: `psp_ge_blip` writes the record and calls `blip_draw` (`sierra/psp/src/psp_ge.c:25378-25388`), which binds the blip texture and calls `blip_quad` (`psp_ge.c:25365-25375`), which ends in **`sceGuDrawArray(GU_TRIANGLE_FAN, … , 4, NULL, out)`** (`psp_ge.c:25300`) — one per blip per snapshot. On top of that, per frame: `psp_ge_blips_begin` flushes the world's see-through parts and *draws the target black with another quad* (`psp_ge.c:25349-25363`; `blip_target_open` at `psp_ge.c:25327-25347`, "black, drawn rather than cleared"), and `psp_ge_blips_end` draws the sweep and the mask quads and then composites the 64×64 target to the screen as one sprite of radius 42 game pixels (`psp_ge.c:25507-25554`).
+
+**Why it costs up to 1.5–2.5 ms on the main CPU** [U on M]: the per-frame cost scales with the number of blips drawn, not with the scene. c20's window 20: `hud: unit motion sensor blips 1.76 ms/frame` against `blips 674 (104.5 a frame, 6.4 us each)` (`run-results/sierra-hc…` — precisely `run-results/sierra-hw/43314261608/log.txt:2161`), i.e. **≈17 µs of main-CPU time a blip** (record, `GE_PRETOUCH_HUD`, the GE's 2D state and one `sceGuDrawArray`), while the replay's own share is 6.4 µs a blip. The step is 1.76 of 104.5 × 17 ≈ consistent, and the worst window (d20 w37, 6.35 ms against `blips 561 (82.0 a frame)` at `run-results/sierra-hw/43331666648/log.txt:6943`) is **≈77 µs a blip** — the step is the *same* work in a starved frame, not more work. What exactly makes the per-blip cost 17 µs here and 77 µs there (list pressure, texture binds, cache) is **not measured** — see §5.
+
+Two structural notes the box cares about [D]:
+- the sensor draws into **a tiny target of its own** and composites it — so its GE block is already separable from the rest of the HUD (`psp_ge.c:25206-25217`);
+- the sensor's target is where `blipdepth` put it: **in the depth buffer's first 16 KB**, not at `0x0CC000` (`psp_ge.c:25232`, `BLIP_TARGET_DEPTH (2 * FRAME_BYTES)`), live in these runs (`run-results/sierra-hw/43314261608/log.txt:171-232`, `GE: blipdepth: the motion sensor's target in the depth buffer at 088000`).
+
+### 14.3 Every earlier lever on the HUD, its price, and why it stopped
+
+| Lever | What it was | Price | Why it stopped |
+|---|---|---|---|
+| **HUDX** (`psp/sierra/findings/levers.tsv:163`) | HUD and menu widgets cached / a static-part display list | "In play the hud: steps sum 3.9 ms a frame on b30 [M], but the first HUD draw pays `list_hud_phase` (transparent_flush + taa_resolve), so **the HUD's own work is ~0.9 ms a frame** [E]"; "A static-part display list would save a fraction of that" | "sized: smaller than thought; not built"; "M6: dropped from every map: too small to move any map's limit" |
+| **SMALLME** (`levers.tsv:399`) | decals, HUD, screen quads as ME jobs | "the HUD **0.64 ms** of b30's 140.8 ms frame (0.45%; … motion sensor 0.24, shield and health 0.11, grenades 0.10, weapon numbers 0.09, statics 0.08)"; "removes at most ~1.2 ms a frame … on b30's flight" | "parked (research, master 2026-10-29 15:40Z) … under a PSP pair's spread"; revive_if: "the HUD's and decals' main-CPU time rising above a pair's spread" (`grounds.tsv:399`) |
+| **VRB1** (`levers.tsv:249`) | HUD pieces into the framebuffer stride-tail strips | "removes ~0 (the HUD costs 10.8 KB a frame of main-RAM reads in all on b30 = ~0.1 ms of tick…)" | "rejected (census: 5 KB at most)"; revive_if: "HUD pieces small enough for a 32-px strip" (`grounds.tsv:249`) |
+| **VRB2 / `blipdepth`** (`levers.tsv:250`) | the sensor's 64×64 target in the depth buffer, freeing 16 KB | "removes ~8-30 KB a frame of GE main-RAM reads … = **0.07-0.29 ms** of tick at 9.6 us a KB [U], under the ~1% gate alone"; exact, merged | "ship with VRSP, not on its own" — **it is on in the census runs** |
+| **VRB3** (`levers.tsv:251`) | depth buffer reused past the sensor target | "removes ~0.1 ms at best: what draws after the 3D pass reads little from main RAM on b30 (HUD 10.8 KB a frame…)" | "idea (not built)" |
+| **FM5 / HUDPIN** (`levers.tsv:199`, `:353`) | HUD and sensor textures pinned under a full cache | a correctness fix, not speed: unpinned draws 88→0, missing 110→23; pins hold 315 KB on b30 / 129 KB on a10 | merged (b144polish), on by default |
+| **GR / `gerace`** (`levers.tsv:118`) | draws whose inputs change after hand-over | instrument only: "only the HUD text picture changes after hand-over (d20 3 frames, a10 5); no port race to fix" | closed as a race question |
+| **VFPUTRIG** (`levers.tsv:536`; `psp_fixups.py:51725-51743`) | sine/cosine on the VFPU for drawing-only callers, "the HUD's rotated bitmaps and overlays" | b30 PSP pair: drawing −3%, frame −1.3% | shipped on; **but its HUD fix is `hud_draw.c` only — `motion_sensor.c` is not in `FIXES_VFPUTRIG`**, so the blips' `sine`/`cosine`/`pow` still take the float library [D] |
+| **RENDERTICK** (`levers.tsv:344`) | "the HUD three" run once a frame instead of every tick | "hud_update 11.7 us a b30 tick (10.5 c20)"; ≤ ~0.2% of the tick | "counted, not built … under the bar" |
+| **RB1** (`levers.tsv:85`) | weapon interface state zeroed (stack garbage) | restoration, "play unchanged" | shipped b126; not a speed lever |
+
+`levercheck.py hud|blips|motion sensor` (the ledger says it is owed at `drawing_me_ledger.md:150`) now comes back with: **no lever on the blips' per-frame walk exists**, only HUDX's "static-part display list" glance, SMALLME's move to the ME, and VRB2's memory placement. The word `blipdepth` is VRB2, a memory lever (`sierra/docs/review_vrbroom.md`, `levers.tsv:250`), not a time lever on the drawing.
+
+### 14.4 What changes on a tick or an event, and what changes every frame
+
+The distinction the box needs is whether a GE block can be kept and replayed while its inputs are unchanged — the mechanism the port already has for models (`psp_ge.c:14236-14247`: "An object whose inputs changed RSO_CHANGES times running without a send … rests for RSO_REST frames"; `rso` is on by default in the campaign, `psp_ge.c:14912`).
+
+| Part | Changes | Evidence | Ceiling if kept [U on M] |
+|---|---|---|---|
+| **the sensor's blip set** | **on a tick, and a fresh scan only 1 tick in 15** | `motion_sensor_tick` guards the update with `if (motion_sensor_globals->last_update_time != game_time_get())` (`motion_sensor.c:828`); `motion_sensor_update` re-scans only when `(current_time % MOTION_SENSOR_UPDATE_PERIOD)` is zero, and **otherwise copies the previous datum** (`motion_sensor.c:312-331`), `MOTION_SENSOR_UPDATE_PERIOD = 15` (`motion_sensor.c:139`) | up to the blips step: **1.62 ms c20 / 1.16 d20** mean, less the unsized per-frame `update_motion_sensor` walk inside it |
+| **the sensor's sweep** | **every frame** (a continuous function of game time, interpolated between ticks) | `motion_sensor.c:741-747`: `render_interpolation_drawing() ? motion_sensor_sweep_theta(render_interpolation_game_time_sec(game_time_get())) : sweep_theta`; the function itself `motion_sensor.c:802-817` | a handful of µs: 2 quads (`psp_ge.c:25412-25433`), not worth keeping |
+| **the sensor's 10 history snapshots** | **the index advances a tick; 14 of 15 ticks carry identical data** | `motion_sensor.c:307-310` (index), `:325-328` (the copy) | the 160-slot walk's cost — this is what "keep while unchanged" would really buy |
+| **the sensor's panel** (background + foreground) | constant (fixed placement, `NONE` flash time) | `hud_unit.c:1190-1207` | ~0.08–0.24 ms a frame (its own step) |
+| **weapon statics / meters / numbers** | on events: state flags and number values from `weapon_build_weapon_interface_state` | `hud_weapon.c:1745-1811`; the values `number_values[state_index]`, `state_flags[state_index]` | 0.07–0.20 ms each |
+| **crosshairs** | on an event (weapon/zoom/firing state) | `hud_weapon.c:2111-2116` | ~0.10 ms |
+| **shield + health, grenades** | on damage / on a grenade count change | `hud_unit.c:945-1155`, `hud_weapon.c:2144-2147` | ~0.19-0.20 ms each |
+| **`hud_messaging_update`** | on an event (a message) | `hud.c:1620-1622` | 0.08–0.38 ms |
+| the **first HUD draw** | once a frame by construction | `psp_ge.c:3076-3085`: `list_hud_phase` runs `transparent_flush(); taa_resolve();` once, on whichever HUD call comes first — the note already in the box at `sierra/docs/box_draw_list.md:349` | not HUD work: it is the see-through flush, already §12.4's |
+
+**The ceiling, stated carefully.** A kept sensor target is the one HUD block whose inputs mostly do not change; its ceiling is the blips step's own measurement, **1.62 ms a frame on c20 and 1.16 on d20** (max 2.57 / 6.35), and that is an upper bound only: (i) the per-frame `update_motion_sensor` inside the step would have to move to the tick to be saved at all, and it is **not sized**; (ii) the sweep must still be drawn every frame, so the target cannot be left untouched as it is today, where `blip_target_open` paints it black first (`psp_ge.c:25342`) — a kept target needs either a second small target or a composite of the kept blips plus a fresh sweep; (iii) the whole rest of the HUD is at most **~0.6-0.9 ms a frame** (the small steps in §1, matching HUDX's "the HUD's own work is ~0.9 ms a frame", `levers.tsv:163`). **No ceiling here is a promise of a 1.6 ms cut.**
+
+### 14.5 The counts owed
+
+1. **The blips step's split between `update_motion_sensor` and `render_motion_sensor`** (`motion_sensor.c:794-795`). There is no `PSP_STEP` inside `motion_sensor.c` at all — a one-line instrument, then one census window answers it. Without it, "keep the block" cannot be sized: it may be that half the step is the update, which no kept block removes.
+2. **The units walked a frame.** `update_motion_sensor` walks only the 16 recorded slots, but the tick's scan walks every unit (`motion_sensor.c:389` `object_iterator_new(&iter, _object_mask_unit, TRUE);`); how many units a d20/c20 frame's slots point at, and how many of the 160 history slots are live, are not counted anywhere. `mekinds`' `blips N (M a frame)` is the drawn count only (`psp_ge.c:1591`, `[DEFER_BLIP] = "blips"`).
+3. **Why a blip costs 17 µs in one window and 77 in another** (§2). The candidates are the per-blip `GE_PRETOUCH_HUD` (`psp_ge.c:25380`, which can `inflight_sync()` — `pretouch` at `psp_ge.c:1054-1061`), the texture bind in `blip_texture` (`psp_ge.c:25304-25317`), and list pressure. Not measured; do not assume.
+4. **b40's and a30's step tables for `hud: ...`** — this workspace has c20 and d20 only. The ledger's 0.5 and 0.4 ms are unverified here.
+5. **A picture test of a kept target** (the rso pattern's proof shape): a PSP pair, `statecrc` + `framecrc`, before any build.
+6. **What `nohud` actually removes.** The keep word exists but only at `hud_render_weapon_interface`'s door (`psp_fixups.py:4902`, `PSP_KEEP_ONCE("nohud")` → `return`), so no existing A/B prices the whole HUD or the sensor; a `nohud`-style word in `hud_draw_screen` and a `noblips` word in `motion_sensor_draw_screen` would give the frame-level price of each, and are the cheapest way to check §1's figures against the frame (2 runs, one keep word each).
+
+**Unfinished in this draft.** The b40/a30 columns of §1 and the weighted-by-frames means are owed (I used unweighted window means and said so); §2's µs-a-blip arithmetic is mine on the lab's two counters and should be re-derived by the audit; §4's ceiling is an upper bound, not a price.
