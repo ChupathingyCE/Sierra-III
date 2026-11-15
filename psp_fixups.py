@@ -42687,10 +42687,75 @@ _psp_aime1b_hooks()
 # at the job's end and again at collection: what changed between was written
 # by the main CPU while the job was out, a race on the PSP. Campaign only
 FIXES_AIME2A = {}
+# B88: an actor joining or leaving an encounter (getting into or out of a
+# vehicle, dying, a script's migration) changes the encounter's list and the
+# other actors' links, which a stop's restore doesn't undo: the stop put the
+# actor back as it was while the lists kept the change, and its retry in the
+# tick detached it from a list it had already left (Sheepdog01's b40 legendary
+# crash at game time 38,326, reproduced by the lab's b88check1). So the
+# thinking done ahead stops before any change of encounter, as before a move
+FIXES_AIME2A["source/ai/encounters.c#aimeencounter"] = [
+("""void encounterless_attach_actor(
+	long actor_index)
+{""",
+ """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_AIME2A, B88) */
+static void psp_aime_encounter_stop(void)
+{
+	extern int psp_aime_arm, psp_aime_fpu_main;
+	extern void psp_aime_handback(int which);
+
+	if (psp_aime_arm && (psp_work_on_me() || psp_aime_fpu_main))
+		psp_aime_handback(35); /* PSP_AIME_STOP_ENCOUNTER */
+}
+#endif
+
+void encounterless_attach_actor(
+	long actor_index)
+{
+#ifdef HALO_PSP
+	psp_aime_encounter_stop();
+#endif"""),
+("""void encounterless_detach_actor(
+	long actor_index)
+{""",
+ """void encounterless_detach_actor(
+	long actor_index)
+{
+#ifdef HALO_PSP
+	psp_aime_encounter_stop();
+#endif"""),
+("""void encounter_detach_actor(
+	long actor_index,
+	boolean died)
+{""",
+ """void encounter_detach_actor(
+	long actor_index,
+	boolean died)
+{
+#ifdef HALO_PSP
+	psp_aime_encounter_stop();
+#endif"""),
+("""void encounter_attach_actor(
+	long actor_index,
+	long encounter_index,
+	short squad_index,
+	boolean has_previous_team)
+{""",
+ """void encounter_attach_actor(
+	long actor_index,
+	long encounter_index,
+	short squad_index,
+	boolean has_previous_team)
+{
+#ifdef HALO_PSP
+	psp_aime_encounter_stop();
+#endif"""),
+]
 FIXES_AIME2A["source/ai/actors.c#aime2a"] = [
 ("""#define PSP_AIME_WRITERS 25
 """,
- """#define PSP_AIME_WRITERS 36
+ """#define PSP_AIME_WRITERS 37
 /* FIXES_AIME2A: the ME's own stops (aimes2a, see there) */
 #define PSP_AIME_STOP_ANIMATION 24
 #define PSP_AIME_STOP_DECISION_REPORT 25
@@ -42703,12 +42768,13 @@ FIXES_AIME2A["source/ai/actors.c#aime2a"] = [
 #define PSP_AIME_STOP_ERROR 32
 #define PSP_AIME_STOP_LATE 33
 #define PSP_AIME_STOP_MOVE 34
+#define PSP_AIME_STOP_ENCOUNTER 35
 """),
 ("""	"weapon_set_total_rounds", "game_allegiance_provoke", "game_allegiance_incident", "hs_wake_by_name", "biped_accelerate", "forced" };
 """,
  """	"weapon_set_total_rounds", "game_allegiance_provoke", "game_allegiance_incident", "hs_wake_by_name", "biped_accelerate",
 	"animation_get_frame_data", "decision_loop_report", "owed_node_block", "anothers_prop", "prop_log_full", "formatting",
-	"pool_report", "stack_guard", "fatal_report", "late_word", "object_move", "forced" };
+	"pool_report", "stack_guard", "fatal_report", "late_word", "object_move", "encounter_change", "forced" };
 """),
 # on the ME, an actor's copy goes out to main RAM before it thinks, so an
 # ME stopped mid-actor can be undone from it
