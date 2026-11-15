@@ -249,12 +249,19 @@ if CAPTURE and CAPTURE not in CAPTURE_BOXES:
 CAPTURE_DEFINES = ["-DPSP_CAPTURE=1", "-DPSP_CAPTURE_%s=1" % CAPTURE.upper()] if CAPTURE else []
 if CAPTURE:
     PSP_FILES.append("psp_capture")
-# PSP_BOXPOSING=1: the posing box cut in (docs/box_posing.md, "The cut-in";
-# psp_fixups.py FIXES_BOXPOSING): every object's node matrices and bounding
-# sphere made by psp/src/box_posing.c in place of the engine's walk. The
-# new-only build of the box's two-build proof; a default build is the old-only
-CAPTURE_DEFINES = CAPTURE_DEFINES + (["-DPSP_BOX_POSING=1"] if os.environ.get("PSP_BOXPOSING", "") == "1" else [])
-if os.environ.get("PSP_BOXPOSING", "") == "1":
+# The posing box (docs/box_posing.md, "The cut-in"; psp_fixups.py
+# FIXES_BOXPOSING): every object's node matrices and bounding sphere made by
+# psp/src/box_posing.c in place of the engine's walk, a living biped making
+# only the nodes its standing readers take (means B; keep word boxposeboff
+# makes every node, means A). Built in by default in the campaign build:
+# PSP_BOXPOSING=0 is the engine's walk, the old-only side of a two-build pair.
+# The multiplayer build leaves it out until it's built for network play
+# (PSP_BOXPOSING=1 builds it in there)
+BOXPOSING = os.environ.get("PSP_BOXPOSING", "0" if MULTIPLAYER else "1") == "1"
+# psp_fixups.py reads the same switch from the environment
+os.environ["PSP_BOXPOSING"] = "1" if BOXPOSING else "0"
+CAPTURE_DEFINES = CAPTURE_DEFINES + (["-DPSP_BOX_POSING=1"] if BOXPOSING else [])
+if BOXPOSING:
     PSP_FILES.extend(["box_posing", "psp_boxposing"])
 # PSP_SMALLDATA=8 (or 4): the units built with the game's flags put variables
 # of up to that many bytes in small data, read with one load from $gp instead

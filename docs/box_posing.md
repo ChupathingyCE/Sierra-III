@@ -2,7 +2,7 @@
 
 The lab's `research/opportunities/REBUILD.md` is the spine (§3.3, §4, §7 step 3: the pilot, whose question is the method's: can a box written forward meet a 2.4x budget alone on the PSP?). This page follows its §4 layout. Its inputs: the lab's `research/opportunities/posing.md` (the cost, the code's shape, the stopped tries; a DeepSeek draft spot-checked), `posing_anatomy_ds.md`, the node census (`census_nodes_fate_*`) and NW2's and NB's failures. Labels: **[M]** measured on a PSP, **[E]** emulator or a count, **[D]** read in code or docs, **[U]** inference.
 
-**State** (2026-11-13): cut in under `PSP_BOXPOSING=1` (§6c) with means A (§6d) and means B (§1b, keep word `boxposeb`, off by default), each exact in the emulator; next: B's PSP price, alone over the posing capture, then in the frame. ~~spec. Next: the capture and the harness (REBUILD.md §5, research designs, the master builds), then the box's code against the capture, then its standalone price.~~
+**State** (2026-11-15): **cut in by default** (the lead, 2026-11-15 04:54): the campaign build has the box with means B on (§1b); keep word `boxposeboff` makes every node (means A, §6d), `PSP_BOXPOSING=0` builds the engine's walk back (the old-only side of a two-build pair); the multiplayer build leaves the box out unless `PSP_BOXPOSING=1`. B's fair in-frame price on d20 is a wash over the run (§8, 2026-11-15). ~~(2026-11-13): cut in under `PSP_BOXPOSING=1` (§6c) with means A (§6d) and means B (§1b, keep word `boxposeb`, off by default), each exact in the emulator; next: B's PSP price, alone over the posing capture, then in the frame.~~ ~~spec. Next: the capture and the harness (REBUILD.md §5, research designs, the master builds), then the box's code against the capture, then its standalone price.~~
 
 ## 1. Contract
 
@@ -95,7 +95,7 @@ The records, byte for byte, are in the adapter's head. **Tolerance:** relative, 
 
 **What the switch leaves out:** the old path's levers on this ground (POSEK, the pose memo, PSC's locals, NRCHK's root test and its error report, the node prefetch) sit inside the skipped walk. What follows the sphere (NMSKIP's note, the spheres' copy, the capture's exit hook) runs as before, so a capture build with the box records the box's own outputs.
 
-**The two builds:** old-only is the default build; new-only adds `PSP_BOXPOSING=1`, each with the whole heap. Correctness in the emulator first (play and both seeds on b30_play2 and b40_play1; the outcome census if they part), then one PSP pair of builds for the in-frame price. A `PSP_PGO_STRICT=1` new-only build refuses to link until the profile is counted with the box in (its two units have no counts).
+**The two builds:** ~~old-only is the default build; new-only adds `PSP_BOXPOSING=1`~~ (superseded 2026-11-15: new-only is the default build, old-only adds `PSP_BOXPOSING=0`), each with the whole heap. Correctness in the emulator first (play and both seeds on b30_play2 and b40_play1; the outcome census if they part), then one PSP pair of builds for the in-frame price. A `PSP_PGO_STRICT=1` new-only build refuses to link until the profile is counted with the box in (its two units have no counts).
 
 ## 6d. Means A and B in the cut-in (2026-11-12, the lead's 16:20 order)
 
