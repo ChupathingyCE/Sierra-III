@@ -52739,6 +52739,12 @@ static unsigned long long psp_boxb_want(long object_index, struct object_datum c
 	{
 		psp_boxb_check = psp_keep("boxposebcheck") != 0;
 		psp_boxb_on = psp_boxb_check || psp_keep("boxposeb") != 0;
+#ifdef PSP_BOXPOSEB_DEFAULT
+		/* a build that is means B's side of a two-build pair (PSP_CFLAGS=
+		-DPSP_BOXPOSEB_DEFAULT=1): on as "boxposeb" would turn it, so both
+		sides' runs take the same keep words */
+		psp_boxb_on = 1;
+#endif
 	}
 	if (psp_boxb_on <= 0 || object->object.type != _object_type_biped || !psp_box_posing_all(plan))
 		return ~0ull;
