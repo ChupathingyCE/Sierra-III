@@ -2412,6 +2412,82 @@ void psp_exit_game(const char *why)
 	exit_game(why);
 }
 
+/* The overflow hook (psp_fixups.py FIXES_ARRAYFULL; the lab's
+coord/briefs/array_overflow_hook.md): a data array with no free slot, or the
+object pool with no room for an object's block. The first refusal of each
+array on a map is logged at once with its caller, every one is counted for the
+heartbeat's game state survey, and a census build (PSP_RECON) or a statecrc
+run ends at the first one ("arrayfullstop" asks for that anywhere,
+"arrayfullgo" keeps any run going), so a size too small fails a proof
+instead of passing it with an enemy missing. Arrays full by design (a new
+datum takes the oldest slot) are counted, never stopped on */
+#define ARRAY_FULL_SLOTS 32
+static struct { const void *array; char name[40]; unsigned long refused; long maximum; int exempt; } array_full[ARRAY_FULL_SLOTS];
+static int array_full_count = 0;
+static long array_full_last_time = -1;
+int psp_array_full_stop = 0;   /* the tick ends the run (exit_game) */
+
+void psp_array_refused(const char *name, const void *array, long count, long maximum, void *caller)
+{
+	extern long game_time_get(void);
+	static int stop = -1;
+	long now = game_time_get();
+	int k;
+
+	if (now < array_full_last_time)   /* a new map: each array is news again */
+	{
+		for (k = 0; k < array_full_count; k++)
+			array_full[k].refused = 0;
+	}
+	array_full_last_time = now;
+	for (k = 0; k < array_full_count && array_full[k].array != array; k++)
+		;
+	if (k == array_full_count)
+	{
+		if (array_full_count == ARRAY_FULL_SLOTS)
+			k = ARRAY_FULL_SLOTS - 1;   /* past 32 arrays the last slot is shared */
+		else
+			array_full_count++;
+		array_full[k].array = array;
+		snprintf(array_full[k].name, sizeof(array_full[k].name), "%s", name ? name : "?");
+		array_full[k].refused = 0;
+		array_full[k].exempt = name && strcmp(name, "cached object render states") == 0;
+	}
+	array_full[k].maximum = maximum;
+	if (array_full[k].refused++ || array_full[k].exempt)
+		return;
+	if (maximum >= 0)
+		platform_log("ARRAY FULL: %s %ld of %ld at game time %ld (asked from %p)", array_full[k].name, count, maximum, now, caller);
+	else
+		platform_log("ARRAY FULL: %s: no room for %ld bytes at game time %ld (asked from %p)", array_full[k].name, count, now, caller);
+	if (stop < 0)
+	{
+#ifdef PSP_RECON
+		stop = 1;
+#else
+		stop = psp_keep("statecrc") || psp_keep("arrayfullstop");
+#endif
+		if (psp_keep("arrayfullgo"))
+			stop = 0;
+	}
+	if (stop)
+		psp_array_full_stop = 1;
+}
+
+/* the survey's line for the arrays that refused (game_state.c's report) */
+void psp_array_full_report(void)
+{
+	char line[480];
+	int length = 0, k;
+
+	for (k = 0; k < array_full_count && length < (int)sizeof(line) - 80; k++)
+		if (array_full[k].refused)
+			length += snprintf(line + length, sizeof(line) - length, " %s %lu refused%s;", array_full[k].name,
+				array_full[k].refused, array_full[k].exempt ? " (full by design)" : "");
+	if (length)
+		platform_log("game state: refused:%s", line);
+}
+
 static int exit_callback(int a, int b, void *c)
 {
 	(void)a; (void)b; (void)c;
@@ -3489,6 +3565,10 @@ steps in order: the console has no way to wait */
 		if (exit_tick > 0 && (long)ticks_seen == exit_tick)
 			exit_game("exitat");
 	}
+	/* the overflow hook's stop (psp_array_refused): at the tick, not inside
+	the allocation that refused */
+	if (psp_array_full_stop)
+		exit_game("arrayfull");
 	/* keep.txt's "padend": back to the menu when a pad's replay runs out of
 	its recording. Past it the frames take the clock's time steps and no
 	input, so two builds' runs part there by speed alone: a proof that

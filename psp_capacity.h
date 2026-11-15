@@ -159,7 +159,12 @@ baseline; the PSP's stay the Xbox's 384 */
 
 /* ---------- AI */
 
-#if PSP_MP_GAME_STATE_SAVED
+#if defined(PSP_TEST_ACTORS)
+/* a test's cut (PSP_CFLAGS=-DPSP_TEST_ACTORS=N): the overflow hook's proof
+that an array too small for a level stops the run (FIXES_ARRAYFULL) */
+#define HALO_PORT_MAXIMUM_ACTORS PSP_TEST_ACTORS
+#define HALO_PORT_MAXIMUM_PROPS 768
+#elif PSP_MP_GAME_STATE_SAVED
 /* the multiplayer build's (above); a custom map's few actors still fit */
 #define HALO_PORT_MAXIMUM_ACTORS 8
 #define HALO_PORT_MAXIMUM_PROPS 32
