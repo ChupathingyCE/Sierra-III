@@ -1,0 +1,111 @@
+/*
+The posing box (docs/box_posing.md): node orientations in, node matrices out,
+walked from a per-model plan in place of the model tag's links. The port's own
+code against its own data: no engine header comes in, so the box builds into
+the harness (bench/halo_box) as it does into the game.
+
+v0 is the walk: the root's matrix from the object's place and its parent's
+node, then each node's matrix from its orientation and its parent's matrix.
+The orientations it takes are the engine's after the decode, the overlays,
+the object's scale, the type's preprocess and the interpolation (docs/
+box_posing.md §1, "v0's cut").
+*/
+#ifndef BOX_POSING_H
+#define BOX_POSING_H
+
+#define BOX_POSING_NODES 64 /* the engine's MAXIMUM_NODES_PER_MODEL */
+
+/* a real_matrix4x3 as the engine lays it out: scale, then forward, left, up
+and position (13 floats, 52 bytes) */
+typedef float box_matrix[13];
+/* a real_orientation: the rotation's i, j, k, w, the translation, the scale */
+typedef float box_orientation[8];
+
+/* a model's walk, made once a map from its node table */
+struct box_posing_plan
+{
+	unsigned short nodes;               /* in the walk (the root first) */
+	unsigned char whole;                /* the walk writes every node of the model exactly once */
+	unsigned char pad;
+	unsigned char order[BOX_POSING_NODES];  /* node indices in the walk's order */
+	unsigned char parent[BOX_POSING_NODES]; /* each node's parent, by node index (the root's is 0) */
+};
+
+/* one node of the model tag's table: as the engine reads it */
+struct box_posing_node
+{
+	short parent, first_child, next_sibling;
+};
+
+/* the plan the engine's walk takes: its node stack, a node's next sibling
+pushed before its first child, links past the model's count or past 64 left
+out, a parent the model doesn't have read as the root. Returns the nodes in
+the walk */
+int box_posing_plan_make(struct box_posing_plan *plan, const struct box_posing_node *nodes, int count);
+
+enum
+{
+	BOX_POSE_WORLD_RELATIVE = 1, /* the animation is world relative: the root is its orientation alone */
+	BOX_POSE_MIRRORED = 2,
+	BOX_POSE_PARENT = 4,         /* attached: `parent` is the parent object's node matrix */
+	BOX_POSE_PARENT_MIRRORED = 8,
+	BOX_POSE_PHYSICS = 16,       /* `center` is the physics' centre of mass, negated */
+	BOX_POSE_NO_MODEL = 32       /* placed with no model: the root from forward, up and position alone */
+};
+
+/* one object's place, as the engine's walk reads it */
+struct box_posing_object
+{
+	unsigned int flags;
+	float position[3], forward[3], up[3];
+	float center[3], origin_offset[3];
+	float bounding_offset[3], bounding_radius, scale;
+	box_matrix parent;
+};
+
+/* poses one object: `nodes` (52 bytes each, by node index) and its bounding
+sphere (centre, radius) from its place and its orientations (by node index) */
+void box_posing_pose(const struct box_posing_plan *plan, const struct box_posing_object *object,
+	const box_orientation *orientations, box_matrix *nodes, float sphere[4]);
+
+/* means A (docs/box_posing.md §6d): what an object's definition fixes, made
+once a map beside its plan, so a pose reads its object's place where it lies
+and nothing is gathered or copied for it */
+struct box_posing_place
+{
+	unsigned int flags;                 /* BOX_POSE_PHYSICS when the definition has physics */
+	float center[3], origin_offset[3];  /* the centre of mass negated (0 without physics) */
+	float bounding_offset[3], bounding_radius;
+};
+
+/* one object's pose by reference: its place where the object holds it */
+struct box_posing_ref
+{
+	unsigned int flags;                 /* BOX_POSE_*, BOX_POSE_PHYSICS taken from `place` */
+	const float *position, *forward, *up, *parent; /* parent: 13 floats, or NULL */
+	float scale;
+	const struct box_posing_place *place;
+};
+
+/* box_posing_pose by reference; `sphere` may be the object's own centre and
+radius. With `claim`, the node block's lines that the walk overwrites whole are
+taken into the data cache without being read first (a plan that is `whole`
+only; the caller vouches that `nodes` is cached memory the main CPU owns).
+Means B (docs/box_posing.md §1b): only the nodes in `want` (a bit a node
+index; ~0 for all) and their parents are made, the root always; the rest are
+owed, made later by box_posing_make from the same orientations. Returns the
+nodes made (~0 for all) */
+unsigned long long box_posing_pose_ref(const struct box_posing_plan *plan, const struct box_posing_ref *ref,
+	const box_orientation *orientations, box_matrix *nodes, float sphere[4], int claim, unsigned long long want);
+
+/* means B's late make: the nodes in `want` that `made` lacks, with the
+parents they need, made exactly as the whole walk makes them (the same
+products in the same order, each node under its parent). The orientations
+must be the ones the pose was given. Returns the nodes made now and before */
+unsigned long long box_posing_make(const struct box_posing_plan *plan, const box_orientation *orientations,
+	box_matrix *nodes, unsigned long long made, unsigned long long want);
+
+/* the node and every node under it */
+unsigned long long box_posing_below(const struct box_posing_plan *plan, int node);
+
+#endif
