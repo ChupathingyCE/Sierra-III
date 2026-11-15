@@ -1640,7 +1640,8 @@ void psp_claim_report(const char *when)
 lead 3). newlib's scanf engines (__ssvfscanf_r, __svfscanf_r and their
 integer-only twins, ~33 KB) served a dozen start-up and bench call sites:
 the input script, the stick's settings, route and camera files, a map's bomb
-spots. These take their place through the link's --wrap: the directives
+spots, and newlib's own tzset. These take their place through the link's
+--wrap: the directives
 those sites use (whitespace, literals, %d %i %u %x %o %ld %lu %c %s %[...]
 %f %e %g with widths, * and %n). A number is collected as newlib collects it
 and converted by strtol, strtoul or strtod, which newlib's engine also ends
@@ -1984,6 +1985,18 @@ int __wrap_fscanf(FILE *file, const char *format, ...)
 
 	va_start(arguments, format);
 	result = __wrap_vfscanf(file, format, arguments);
+	va_end(arguments);
+	return result;
+}
+
+/* newlib's integer-only twin, which its tzset calls to read TZ: the same engine */
+int __wrap_siscanf(const char *text, const char *format, ...)
+{
+	va_list arguments;
+	int result;
+
+	va_start(arguments, format);
+	result = __wrap_vsscanf(text, format, arguments);
 	va_end(arguments);
 	return result;
 }
