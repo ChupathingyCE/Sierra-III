@@ -1225,6 +1225,8 @@ def link(objs, stubs):
            "--wrap=pthread_cond_signal,--wrap=pthread_cond_broadcast,"
            # build 105: newlib's printf engines and strtod under one lock (psp_libc.c)
            "--wrap=_svfprintf_r,--wrap=_vfprintf_r,--wrap=_strtod_r,--wrap=vfprintf,--wrap=strtod,--wrap=strtof,"
+           # the formatted-input family, small (psp_libc.c): newlib's scanf engines left out
+           "--wrap=sscanf,--wrap=vsscanf,--wrap=fscanf,--wrap=vfscanf,"
            # build 114: the texture state's functions clear the bind memo (psp_tex.c, statememo)
            "--wrap=sceGuTexImage,--wrap=sceGuTexMode,--wrap=sceGuClutLoad,--wrap=sceGuClutMode,--wrap=sceGuTexFilter,"
            # build 114: list regions join the pending range (psp_ge.c, listcachedall)

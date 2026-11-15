@@ -1635,3 +1635,355 @@ void psp_claim_report(const char *when)
 			when, claim_copies, claim_fills, claim_lines, claim_checked, claim_disagreed, claim_first_bad);
 }
 #endif
+
+/* ---------- the formatted-input family, small (the lab's pspdev_survey.md,
+lead 3). newlib's scanf engines (__ssvfscanf_r, __svfscanf_r and their
+integer-only twins, ~33 KB) served a dozen start-up and bench call sites:
+the input script, the stick's settings, route and camera files, a map's bomb
+spots. These take their place through the link's --wrap: the directives
+those sites use (whitespace, literals, %d %i %u %x %o %ld %lu %c %s %[...]
+%f %e %g with widths, * and %n). A number is collected as newlib collects it
+and converted by strtol, strtoul or strtod, which newlib's engine also ends
+in, so the values are the same. Not for formats beyond those */
+#include <ctype.h>
+#include <stdarg.h>
+#include <stdlib.h>
+
+struct scan_source
+{
+	const char *text; /* a string, or NULL for a file */
+	FILE *file;
+	int count; /* characters taken */
+};
+
+static int scan_get(struct scan_source *source)
+{
+	int c;
+
+	if (source->text)
+		c = *source->text ? (unsigned char)*source->text++ : EOF;
+	else
+		c = getc(source->file);
+	if (c != EOF)
+		source->count++;
+	return c;
+}
+
+static void scan_unget(struct scan_source *source, int c)
+{
+	if (c == EOF)
+		return;
+	source->count--;
+	if (source->text)
+		source->text--;
+	else
+		ungetc(c, source->file);
+}
+
+/* a [...] set: returns the format just past it; `set` gets 256 flags */
+static const char *scan_set(const char *format, unsigned char *set)
+{
+	int negate = 0, k;
+
+	memset(set, 0, 256);
+	if (*format == '^')
+	{
+		negate = 1;
+		format++;
+	}
+	if (*format == ']')
+		set[(unsigned char)*format++] = 1;
+	while (*format && *format != ']')
+	{
+		if (format[1] == '-' && format[2] && format[2] != ']')
+		{
+			for (k = (unsigned char)format[0]; k <= (unsigned char)format[2]; k++)
+				set[k] = 1;
+			format += 3;
+		}
+		else
+			set[(unsigned char)*format++] = 1;
+	}
+	if (*format == ']')
+		format++;
+	if (negate)
+		for (k = 0; k < 256; k++)
+			set[k] = !set[k];
+	return format;
+}
+
+static int scan_engine(struct scan_source *source, const char *format, va_list arguments)
+{
+	int assigned = 0, any = 0, c;
+
+	while (*format)
+	{
+		if (isspace((unsigned char)*format))
+		{
+			while (isspace((unsigned char)*format))
+				format++;
+			while (isspace(c = scan_get(source)))
+				;
+			scan_unget(source, c);
+			continue;
+		}
+		if (*format != '%' || format[1] == '%')
+		{
+			if (*format == '%')
+				format++;
+			c = scan_get(source);
+			if (c != (unsigned char)*format)
+			{
+				scan_unget(source, c);
+				return c == EOF && !any ? EOF : assigned;
+			}
+			format++;
+			continue;
+		}
+		{
+			int skip = 0, width = 0, length = 0, conversion;
+			char number[64];
+			int n = 0;
+
+			format++;
+			if (*format == '*')
+			{
+				skip = 1;
+				format++;
+			}
+			while (isdigit((unsigned char)*format))
+				width = width * 10 + *format++ - '0';
+			while (*format == 'h' || *format == 'l' || *format == 'L' || *format == 'z' || *format == 'j' || *format == 't')
+				length = *format == 'h' ? length - 1 : length + 1, format++;
+			conversion = *format++;
+			if (conversion == 'n')
+			{
+				if (!skip)
+					*va_arg(arguments, int *) = source->count;
+				continue;
+			}
+			if (conversion != 'c' && conversion != '[')
+			{
+				while (isspace(c = scan_get(source)))
+					;
+				scan_unget(source, c);
+			}
+			if (conversion == 'c' || conversion == 's' || conversion == '[')
+			{
+				unsigned char set[256];
+				char *out = skip ? NULL : va_arg(arguments, char *);
+				int taken = 0;
+
+				if (conversion == '[')
+					format = scan_set(format, set);
+				if (!width)
+					width = conversion == 'c' ? 1 : 0x7FFFFFFF;
+				while (taken < width && (c = scan_get(source)) != EOF)
+				{
+					if ((conversion == 's' && isspace(c)) || (conversion == '[' && !set[c]))
+					{
+						scan_unget(source, c);
+						break;
+					}
+					if (out)
+						out[taken] = (char)c;
+					taken++;
+				}
+				if (!taken)
+					return c == EOF && !any ? EOF : assigned;
+				if (out && conversion != 'c')
+					out[taken] = 0;
+				any = 1;
+				if (out)
+					assigned++;
+				continue;
+			}
+			if (!width || width > (int)sizeof(number) - 1)
+				width = sizeof(number) - 1;
+			c = scan_get(source);
+			if ((c == '+' || c == '-') && n < width)
+			{
+				number[n++] = (char)c;
+				c = scan_get(source);
+			}
+			if (conversion == 'f' || conversion == 'e' || conversion == 'g' || conversion == 'E' || conversion == 'G' ||
+				conversion == 'a')
+			{
+				int dot = 0, digits = 0;
+
+				if (c == 'i' || c == 'I' || c == 'n' || c == 'N')
+				{
+					/* inf, infinity or nan, any case */
+					const char *word = c == 'i' || c == 'I' ? "infinity" : "nan";
+					int k = 0;
+
+					while (n < width && word[k] && tolower(c) == word[k])
+					{
+						number[n++] = (char)c;
+						k++;
+						c = scan_get(source);
+					}
+					scan_unget(source, c);
+					number[n] = 0;
+					if (k != 3 && k != 8)
+						return !any ? (c == EOF ? EOF : assigned) : assigned;
+					any = 1;
+					if (!skip)
+					{
+						double value = strtod(number, NULL);
+
+						if (length > 0)
+							*va_arg(arguments, double *) = value;
+						else
+							*va_arg(arguments, float *) = (float)value;
+						assigned++;
+					}
+					continue;
+				}
+				while (n < width && (isdigit(c) || (c == '.' && !dot)))
+				{
+					dot |= c == '.';
+					digits += isdigit(c) != 0;
+					number[n++] = (char)c;
+					c = scan_get(source);
+				}
+				if (digits && n < width && (c == 'e' || c == 'E'))
+				{
+					int at = n, next;
+
+					number[n++] = (char)c;
+					next = scan_get(source);
+					if ((next == '+' || next == '-') && n < width)
+					{
+						number[n++] = (char)next;
+						next = scan_get(source);
+					}
+					if (isdigit(next))
+					{
+						c = next;
+						while (n < width && isdigit(c))
+						{
+							number[n++] = (char)c;
+							c = scan_get(source);
+						}
+					}
+					else
+					{
+						/* "1e" with no digits after: taken, as newlib and glibc
+						take it (one character of push-back), and the number is
+						what came before it */
+						c = next;
+						n = at;
+					}
+				}
+				scan_unget(source, c);
+				number[n] = 0;
+				if (!digits)
+					return c == EOF && !any ? EOF : assigned;
+				any = 1;
+				if (!skip)
+				{
+					double value = strtod(number, NULL);
+
+					if (length > 0)
+						*va_arg(arguments, double *) = value;
+					else
+						*va_arg(arguments, float *) = (float)value;
+					assigned++;
+				}
+				continue;
+			}
+			{
+				int base = conversion == 'x' || conversion == 'X' || conversion == 'p' ? 16 : conversion == 'o' ? 8 :
+					conversion == 'i' ? 0 : 10;
+				int digits = 0;
+
+				if ((base == 16 || base == 0) && c == '0' && n < width)
+				{
+					number[n++] = (char)c;
+					digits++;
+					c = scan_get(source);
+					if ((c == 'x' || c == 'X') && n < width)
+					{
+						number[n++] = (char)c;
+						c = scan_get(source);
+						base = 16;
+						digits = 0;
+					}
+					else if (base == 0)
+						base = 8;
+				}
+				if (base == 0)
+					base = 10;
+				while (n < width && (base == 16 ? isxdigit(c) : base == 8 ? (c >= '0' && c <= '7') : isdigit(c)))
+				{
+					number[n++] = (char)c;
+					digits++;
+					c = scan_get(source);
+				}
+				scan_unget(source, c);
+				number[n] = 0;
+				if (!digits)
+					return c == EOF && !any ? EOF : assigned;
+				any = 1;
+				if (!skip)
+				{
+					int is_signed = conversion == 'd' || conversion == 'i';
+					unsigned long long value = is_signed ? (unsigned long long)strtoll(number, NULL, base) :
+						strtoull(number, NULL, base);
+
+					if (conversion == 'p')
+						*va_arg(arguments, void **) = (void *)(unsigned long)value;
+					else if (length >= 2)
+						*va_arg(arguments, unsigned long long *) = value;
+					else if (length == 1)
+						*va_arg(arguments, unsigned long *) = (unsigned long)value;
+					else if (length == -1)
+						*va_arg(arguments, unsigned short *) = (unsigned short)value;
+					else if (length <= -2)
+						*va_arg(arguments, unsigned char *) = (unsigned char)value;
+					else
+						*va_arg(arguments, unsigned int *) = (unsigned int)value;
+					assigned++;
+				}
+			}
+		}
+	}
+	return assigned;
+}
+
+int __wrap_vsscanf(const char *text, const char *format, va_list arguments)
+{
+	struct scan_source source = { text, NULL, 0 };
+
+	return scan_engine(&source, format, arguments);
+}
+
+int __wrap_sscanf(const char *text, const char *format, ...)
+{
+	va_list arguments;
+	int result;
+
+	va_start(arguments, format);
+	result = __wrap_vsscanf(text, format, arguments);
+	va_end(arguments);
+	return result;
+}
+
+int __wrap_vfscanf(FILE *file, const char *format, va_list arguments)
+{
+	struct scan_source source = { NULL, file, 0 };
+
+	return scan_engine(&source, format, arguments);
+}
+
+int __wrap_fscanf(FILE *file, const char *format, ...)
+{
+	va_list arguments;
+	int result;
+
+	va_start(arguments, format);
+	result = __wrap_vfscanf(file, format, arguments);
+	va_end(arguments);
+	return result;
+}
