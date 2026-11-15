@@ -40,4 +40,13 @@ The tick's owed set (B91's v1/v2 on its own branch, `tickowedold`) is left out. 
   - `aimelate7`: play parts at 89 with the fix, 79 the old way.
 
   On the PSP a late job is waited for (`aimewait`), so these happen only past the wait's bound. What remains there is the redo's world, not its seed.
-- **Sheepdog01's recordings** (b91m): see the lab's findings `b91_redoseed_pads`.
+- **Sheepdog01's recordings no longer track with the fix** (b91m; replayed to their ends with their heads' init, `padplay fixedseed padend`; each checked against his own log, tools/progresscheck.py):
+
+  | Pad | Tock: tracks Sheepdog01 to | Fix: parts from Sheepdog01 at |
+  |---|---:|---:|
+  | b30_leg1 | 23,385 | 2,055 |
+  | c20_leg1 | the end (63,556) | 3,236 |
+  | c40_leg1 | the end (66,761) | 12,999 |
+  | b40_leg1_part | 26,187 | 3,490 |
+
+  He recorded them on builds with the old stream. The fix changes every actor's draws from the first tick, so the AI plays another fight and the replay leaves his path. With `redoseedold` they track as on the tock. So turning the fix on means re-recording his pads (or replaying them with `redoseedold`). That is his call: determinism against the recordings he has.
