@@ -204,6 +204,7 @@ The Allegrex is a MIPS 4K-based core: in-order, single-issue, and every interloc
 - **Sub-lists: a 13-word bone load costs 105 ns from a VRAM sub-list, 164 from RAM, 132 inline; GE lists do execute from VRAM.** [M, PSP-1000] `lab:psp/sierra/findings/measurements.tsv:11842` — `called sub-list in VRAM 105`.
 - **GE calls nest two deep, no deeper** (a third level never runs; the list still ends); a call costs 310 ns one deep, 554 two deep. [M, PSP-3000] `lab:psp/sierra/findings/measurements.tsv:9856` — `The GE keeps two return addresses`; `lab:psp/sierra/findings/measurements.tsv:9857` — `310 ns a CALL and its RET over two NOPs`.
 - **The GE truncates when converting colour to integer codes** (red's first step at input 8), and readback copies top bits into low ones. [M, PSP-3000] `lab:psp/sierra/findings/measurements.tsv:3132` — `red's first code step at input 8`; `lab:psp/sierra/findings/measurements.tsv:3133` — `24 red inputs dropped`.
+- **The GE clips a triangle at the near plane itself when `GU_CLIP_PLANES` is on (the port's state): the same pixels as the CPU's cut pieces, 0 differing inside, while every corner in front and the near-plane cut lie within ~2048 px of the screen's centre; past that it drops the triangle (no wrapped spike seen). With the switch off, a triangle crossing the near plane is dropped whole.** Depth where both drew mostly 0-16 apart, up to ~7,400 of 65,535 at some pixel in 5 of ~45 cases (not localised). [M, PSP-3000] `lab:psp/sierra/findings/measurements.tsv:12668` — `whole and pieces drew the same pixels`.
 
 ## VRAM
 
