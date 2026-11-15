@@ -44876,6 +44876,137 @@ void psp_aime_pf_apply(
 
 """ + _PSP_PF_ME),
 ]
+# ---------- FIXES_REDOSEED: each actor's thinking draws from a seed of its own, wherever it runs (keep word "redoseedold": as before)
+# AIME's pass drew every actor's thinking from one running seed, and an
+# actor the pass handed back (a world writer, an owed compute, the
+# collection's word, the job's stack guard) or never reached thought in the
+# tick from the game's seed. Whether an actor is handed back can follow the
+# clock (what the frame's readers settled before the pass, how long the ME's
+# job ran), so a hand-back moved the game's random stream and every later
+# draw with it: a replay or a build that changes only the timing could play
+# a shot's spread differently. Now an actor's thinking for a tick draws from
+# a seed made from the map's root seed, that game time and the actor's
+# datum index: the same draws whether the ME's pass, the main CPU's pass or
+# the tick thinks it, and no other actor's stream, nor the game's, moves
+# with where it ran
+FIXES_REDOSEED = {}
+FIXES_REDOSEED["source/ai/actors.c#redoseed"] = [
+("""	return psp_aime_think_only && psp_aime_here() ? &psp_aime_seed : NULL;
+}
+#endif
+""",
+ """	if (psp_aime_think_only && psp_aime_here())
+		return &psp_aime_seed;
+	/* (FIXES_REDOSEED) an actor thinking in the tick: its own seed, on the
+	game's thread alone, so the sound's thread or another CPU's work in the
+	meantime draws from the game's as before */
+	if (psp_aime_redo_on && !psp_cpu_is_me() && sceKernelGetThreadId() == psp_aime_redo_thread)
+		return &psp_aime_redo_seed;
+	return NULL;
+}
+
+/* FIXES_REDOSEED: the actor's seed for the tick it thinks for (game_time_get
+is that tick's in the pass and in the tick alike), mixed so that neighbouring
+indices and ticks start far apart in the engine's random sequence */
+static unsigned long psp_aime_actor_seed(
+	long actor_index)
+{
+	unsigned long x = psp_aime_seed_root ^ ((unsigned long)game_time_get() * 0x9E3779B9u) ^
+		((unsigned long)actor_index * 0x85EBCA6Bu);
+
+	x ^= x >> 16;
+	x *= 0x7FEB352Du;
+	x ^= x >> 15;
+	x *= 0x846CA68Bu;
+	x ^= x >> 16;
+	return x;
+}
+
+/* the main CPU's, before any pass (actors_update): the ME reads it */
+static void psp_redoseed_read(
+	void)
+{
+	if (psp_redoseed_on < 0)
+		psp_redoseed_on = !psp_keep("redoseedold");
+}
+
+/* at the start of an actor's thinking (actor_update) */
+static void psp_aime_thinking_seed(
+	long actor_index)
+{
+	if (psp_redoseed_on <= 0 || !psp_aime_active())
+		return;
+	if (psp_aime_think_only)
+	{
+		if (psp_aime_here())
+			psp_aime_seed = psp_aime_actor_seed(actor_index);
+		return;
+	}
+	/* (no pass yet on this map, or a reverted game before its first: the
+	game's seed, as before, since the root is the last map's or era's) */
+	if (psp_aime_seed_time == NONE || game_time_get() < psp_aime_seed_time)
+		return;
+	psp_aime_redo_seed = psp_aime_actor_seed(actor_index);
+	psp_aime_redo_thread = sceKernelGetThreadId();
+	psp_aime_redo_on = 1;
+}
+#endif
+"""),
+("""static PSP_AIME_ME_SIDE unsigned long psp_aime_seed;
+""",
+ """static PSP_AIME_ME_SIDE unsigned long psp_aime_seed;
+/* FIXES_REDOSEED: the pass's seed as the map's (or a reverted game's) first
+pass took it, which every actor's seed is made from; and the seed an actor
+thinking in the tick draws from, the game's thread's (the main CPU's alone) */
+static PSP_AIME_ME_SIDE unsigned long psp_aime_seed_root;
+static int psp_redoseed_on = -1;
+static int psp_aime_redo_on = 0, psp_aime_redo_thread = -1;
+static unsigned long psp_aime_redo_seed;
+int sceKernelGetThreadId(void);
+"""),
+("""		boolean psp_rest;
+
+		if (psp_full_slot)
+""",
+ """		boolean psp_rest;
+
+		psp_aime_thinking_seed(actor_index);
+		if (psp_full_slot)
+"""),
+("""#endif
+#ifdef HALO_PSP
+		if (psp_aime_think_only)
+			psp_aime_mark(actor_index);
+""",
+ """#endif
+#ifdef HALO_PSP
+		/* (FIXES_REDOSEED) the thinking is over: the rest of the tick's
+		update draws from the game's seed */
+		psp_aime_redo_on = 0;
+		if (psp_aime_think_only)
+			psp_aime_mark(actor_index);
+"""),
+("""	if (!psp_ahead)
+	{
+#endif
+
+	ai_globals->last_highest_service_timer""",
+ """	psp_redoseed_read();
+	if (!psp_ahead)
+	{
+#endif
+
+	ai_globals->last_highest_service_timer"""),
+("""		psp_aime_seed = *get_global_random_seed_address() ^ 0x9E3779B9u;
+""",
+ """	{
+		psp_aime_seed = *get_global_random_seed_address() ^ 0x9E3779B9u;
+		psp_aime_seed_root = psp_aime_seed;
+	}
+"""),
+]
+
+
 # ---------- FIXES_PADPATH: the pad path's outcome hold (build switch PSP_PADPATH=1; docs/pad_path.md, "The outcome hold")
 # The deaths the local player causes are told to psp_pad.c as they happen
 # (pathrec writes them into the path; a held replay counts them per squad),
@@ -53601,7 +53732,7 @@ FIXES_BOXPOSING["source/saved games/game_state.c#boxposeb"] = [
 ]
 
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_SSPR.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + list(FIXES_CHUPA090RUNS.items()) + list(FIXES_HEAPTRIM.items()) + list(FIXES_B78.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items()) + list(FIXES_AIME2A.items()) + (list(FIXES_STACKHOT.items()) if STACKHOT else []) + (list(FIXES_STACKHOT2.items()) if STACKHOT2 else []) + list(FIXES_PWSL.items()) + list(FIXES_SPHSL.items()) + list(FIXES_RECONLIST.items()) + list(FIXES_TP1.items()) + list(FIXES_WXDEAD.items()) + list(FIXES_AIMEMOVE.items()) + list(FIXES_PROPCRASH.items()) + list(FIXES_APCPOOL.items()) + list(FIXES_PSPTLS.items()) + list(FIXES_SNDEDRAM.items()) + list(FIXES_LIGHTFIRST.items()) + list(FIXES_DRAWPART.items()) + (list(FIXES_RECONLATE.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + list(FIXES_P2PASS.items()) + (list(FIXES_P2CENSUS.items()) if P2CENSUS else []) + list(FIXES_OBSRAY.items()) + list(FIXES_SNDWAIT.items()) + list(FIXES_FLAMEDECAL.items()) + list(FIXES_HUHINT.items()) + list(FIXES_DBLSOFT.items()) + list(FIXES_VFPUTRIG.items()) + list(FIXES_TICKCACHE.items()) + list(FIXES_STRICTALIAS.items()) + list(FIXES_SNDPERMAP.items()) + list(FIXES_RLOOP.items()) + list(FIXES_L10.items()) + list(FIXES_RLSKIP.items()) + list(FIXES_ONEWALK.items()) + (list(FIXES_POSEK.items()) if POSEK else []) + (list(FIXES_SNDSTREAM.items()) if os.environ.get("PSP_SNDSTREAM", "") == "1" else []) + list(FIXES_MOUTHCLOCK.items()) + list(FIXES_LSAME.items()) + list(FIXES_CHUPA090.items()) + (list(FIXES_AITICKOLD.items()) if AITICKOLD else []) + (list(FIXES_PADPATH.items()) if os.environ.get("PSP_PADPATH", "") == "1" else []) + list(FIXES_FARLEVEL.items()) + list(FIXES_DECALRING.items()) + list(FIXES_ARRAYFULL.items()) + (list(FIXES_DEADXBOX.items()) if DEADXBOX else []) + (list(FIXES_CAPTURE_POSING.items()) if CAPTURE == "posing" else []) + (list(FIXES_BOXPOSING.items()) if BOXPOSING else [])):
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_SSPR.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + list(FIXES_CHUPA090RUNS.items()) + list(FIXES_HEAPTRIM.items()) + list(FIXES_B78.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items()) + list(FIXES_AIME2A.items()) + list(FIXES_REDOSEED.items()) + (list(FIXES_STACKHOT.items()) if STACKHOT else []) + (list(FIXES_STACKHOT2.items()) if STACKHOT2 else []) + list(FIXES_PWSL.items()) + list(FIXES_SPHSL.items()) + list(FIXES_RECONLIST.items()) + list(FIXES_TP1.items()) + list(FIXES_WXDEAD.items()) + list(FIXES_AIMEMOVE.items()) + list(FIXES_PROPCRASH.items()) + list(FIXES_APCPOOL.items()) + list(FIXES_PSPTLS.items()) + list(FIXES_SNDEDRAM.items()) + list(FIXES_LIGHTFIRST.items()) + list(FIXES_DRAWPART.items()) + (list(FIXES_RECONLATE.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + list(FIXES_P2PASS.items()) + (list(FIXES_P2CENSUS.items()) if P2CENSUS else []) + list(FIXES_OBSRAY.items()) + list(FIXES_SNDWAIT.items()) + list(FIXES_FLAMEDECAL.items()) + list(FIXES_HUHINT.items()) + list(FIXES_DBLSOFT.items()) + list(FIXES_VFPUTRIG.items()) + list(FIXES_TICKCACHE.items()) + list(FIXES_STRICTALIAS.items()) + list(FIXES_SNDPERMAP.items()) + list(FIXES_RLOOP.items()) + list(FIXES_L10.items()) + list(FIXES_RLSKIP.items()) + list(FIXES_ONEWALK.items()) + (list(FIXES_POSEK.items()) if POSEK else []) + (list(FIXES_SNDSTREAM.items()) if os.environ.get("PSP_SNDSTREAM", "") == "1" else []) + list(FIXES_MOUTHCLOCK.items()) + list(FIXES_LSAME.items()) + list(FIXES_CHUPA090.items()) + (list(FIXES_AITICKOLD.items()) if AITICKOLD else []) + (list(FIXES_PADPATH.items()) if os.environ.get("PSP_PADPATH", "") == "1" else []) + list(FIXES_FARLEVEL.items()) + list(FIXES_DECALRING.items()) + list(FIXES_ARRAYFULL.items()) + (list(FIXES_DEADXBOX.items()) if DEADXBOX else []) + (list(FIXES_CAPTURE_POSING.items()) if CAPTURE == "posing" else []) + (list(FIXES_BOXPOSING.items()) if BOXPOSING else [])):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
