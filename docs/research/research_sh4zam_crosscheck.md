@@ -57,3 +57,33 @@ Sheepdog01, 2026-10-17, from a chat outside the sessions: someone suggested a "S
 
 - SH4ZAM: github.com/gyrovorbis/sh4zam; Falco Girgis, FOSDEM 2026, "Accelerated Linear Algebra on the Sega Dreamcast with GCC".
 - Ours: `plan_memory_stalls.md`, `levers_next_b138.md`, `optimization_ranking.md` (E15, E16, N5, X5), `engine_performance.md`, `halo-psp-feasibility.md`, `research_blocked_list_index.md`.
+
+## Read again, 2026-11-13: the routines themselves, and SH4DOW-DC (audit; Sheepdog01 23:39, 23:44)
+
+Why again: boxes are being written with their own aligned data and the VFPU's kernels are reopened (the lab's `coord/briefs/vfpu_kernels.md`), so the question is no longer "swap the engine's helpers" but "what would a kernel library for the boxes hold". SH4ZAM read at gyrovorbis/sh4zam 5b7dfc2 (2026-11-13; MIT, Falco Girgis and contributors) [D]. **No code is taken:** its `AGENTS.md` asks that routines never be copied out (the whole library as a submodule, or contributions upstream), and its code is SH4's in any case.
+
+**What the library is, by its routines:**
+- **XMTRX is the design.** ~150 routines around one current 4x4 matrix kept in the SH4's back bank of FP registers: load (4x4, 3x4, 3x3, transposed, unaligned), *apply* (multiply another matrix into it), store, transform a vector or point through it (one `FTRV`), `load_apply_store_3x4` (C = A x B without the matrix leaving registers), `blend_3x4(matrix, weight)` (weighted matrices accumulated in registers: CPU skinning), `invert_rigid`.
+- **There are no array routines.** Batching is the caller's loop over force-inlined single operations with the matrix already in registers. So the gain is the absence of a call and of the matrix's reload per item, not a wide loop.
+- **Prefetches are placed inside the kernels:** `load_apply_store_3x4` loads the first line of the left matrix, prefetches its second line, and prefetches the right matrix's lines while the left is still loading.
+- **Memory:** copies specialised by size and alignment (`memcpy32/64/128`), the store queues (writes that bypass the data cache) and `MOVCA` (a line claimed without being fetched).
+- **Back-ends:** SH4, plain C (`sw`), and a contributed Cell SPU vector back-end; none for the PSP. The `sw` back-end is C we already have.
+
+**Against what we have** [D, M where marked]:
+
+| SH4ZAM's technique | Ours |
+|---|---|
+| A matrix in registers, C = A x B stored (`load_apply_store_3x4`) | `psp_vfpu.c`'s matrix product, in since b37: 1,892 VFPU matrix products a frame on b30's beach today [M, the log's own count] |
+| Quaternion product, normalise, interpolate | `psp_vfpu_quat.c` (VFPUP, VFPUQD: -0.2 to -0.8 ms a tick [M]) |
+| Fast sine, cosine, inverse root (`FSCA`, `FSRRA`) | `psp_vfputrig.c`; VFPUTRIGSIM priced at no gain [M] |
+| `MOVCA` (claim a line) | CLAIMFILL's `cache 0x18`, in and on |
+| Store queues (bypass the cache) | uncached writes for the GE's lists; the ME's eDRAM copies |
+| Prefetch placed inside a kernel | `cache 30` prefetches exist (X5); **not inside the VFPU kernels**: the one detail here we haven't tried in that place |
+| Weighted matrix blend on the CPU (skinning) | the GE's bones; no CPU pass over vertices |
+
+**So the routines hold no kind of technique the port lacks.** What the library shows is a form: the matrix stays in registers across a caller's loop, everything inlined. Our measured gains from single helpers were small because each call loads and stores; a box's walk over its own aligned block (posing's matrix walk: 4.4 ms a frame on the flight, 1.3 on the beach [M, `posing_pieces_b30_psp3000`]) is where that form applies, with the next node's lines prefetched inside the kernel. That is `vfpu_kernels.md`'s question, and its executed float count and five-helper bench still decide it. Nothing on the ME can use it (no VFPU): biped motion and collision, the near corner loop, the mix.
+
+**SH4DOW-DC** (JiltedValkyrie/SH4DOW-DC, Emerald May, from Halo: Dreamcast Evolved; its own licence: attribution required, not to be sold as a standalone shadow package) [D, its README]: a per-vertex soft self-shadow for skinned characters on the CPU, each limb casting a column along the light, the darkest column winning; 14.70 ms before and 4.5 ms after its tuning for six characters and 5,406 vertices on the Dreamcast (her figures).
+- **Not for us as it stands:** it's a look the Xbox game doesn't have (Sheepdog01's call after an A/B, not a restoration), it needs a CPU pass over every character vertex where ours go to the GE untouched, and the ME is over its 30 fps budget already (the lab's two_core_tick.md, "The ME's column at 30 fps").
+- **Two things in it bear on our work:** its foot cones (a floor quad under each foot, fading with height and distance), a form for far or small characters' shadows under the far-and-tiny ruling, where our shadows gather about six receiving triangles for each one drawn (`box_draw_list.md` §12.6 on audit/drawlist-ground); and its packed lists (each bone's columns copied once a frame into 32-byte entries the vertex loop reads directly: 234 -> 92 cycles a vertex in Flycast's model, her figures), the boxes' "data packed for the walk" measured by someone else on the same game.
+- If either idea is used: credit as `CLAUDE.md` asks ("after SH4DOW-DC's foot cones, Emerald May (JiltedValkyrie)"), the idea only; her code isn't copied into this tree without settling her licence's terms against ours first.
