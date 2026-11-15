@@ -14,6 +14,7 @@ same inputs however fast its build draws. With fixedseed on both sides the
 game then plays the same (the PSP's two races fixed first: tock162 edc2d39,
 74cd771) */
 #include <pspiofilemgr.h>
+#include <pspthreadman.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -91,8 +92,96 @@ static void pad_log(const unsigned char *data, unsigned int bytes)
 	}
 }
 
+/* "lw2" (hand builds): the recording isn't written from the game thread
+every 64 frames. Its 64 KB are two halves; a full half goes to a writer
+thread of its own while the game fills the other, so the game thread waits
+on the stick only if a half fills before the last one is written. In Sheepdog01's
+hand recordings the recorder's writes held the game thread up to 1.45 s
+(the lab's findings hand_logs_stick_lock_waits_psp1000) */
+static int pad_halves = -1;
+static unsigned char *pad_half_base[2];
+static int pad_half_now = 0;
+static SceUID pad_half_ready = -1, pad_half_free = -1;
+static unsigned char *pad_half_out;
+static unsigned int pad_half_bytes;
+static unsigned long pad_half_waits = 0, pad_half_writes = 0;
+
+static int pad_writer(SceSize args, void *argp)
+{
+	(void)args;
+	(void)argp;
+	for (;;)
+	{
+		sceKernelWaitSema(pad_half_ready, 1, NULL);
+		if (pad_file >= 0 && pad_half_bytes)
+			sceIoWrite(pad_file, pad_half_out, pad_half_bytes);
+		pad_half_writes++;
+		sceKernelSignalSema(pad_half_free, 1);
+	}
+	return 0;
+}
+
+static void pad_halves_start(void)
+{
+	SceUID thread;
+
+	pad_halves = 0;
+	if (!psp_keep("lw2") || !pad_out)
+		return;
+	pad_half_ready = sceKernelCreateSema("halo pad half", 0, 0, 1, NULL);
+	pad_half_free = sceKernelCreateSema("halo pad free", 0, 1, 1, NULL);
+	thread = pad_half_ready >= 0 && pad_half_free >= 0 ?
+		sceKernelCreateThread("halo pad writer", pad_writer, 0x18, 0x1000, 0, NULL) : -1;
+	if (thread < 0 || sceKernelStartThread(thread, 0, NULL) < 0)
+	{
+		platform_log("pad: lw2: no writer thread; written from the game thread as before");
+		return;
+	}
+	pad_half_base[0] = pad_out;
+	pad_half_base[1] = pad_out + PAD_CHUNK / 2;
+	pad_halves = 1;
+	platform_log("pad: lw2: the recording written by its own thread, %d KB at a time", PAD_CHUNK / 2 / 1024);
+}
+
+/* the half the game filled, to the writer: waits only for the one before */
+static void pad_half_hand(void)
+{
+	if (sceKernelPollSema(pad_half_free, 1) < 0)
+	{
+		pad_half_waits++;
+		sceKernelWaitSema(pad_half_free, 1, NULL);
+	}
+	pad_half_out = pad_out;
+	pad_half_bytes = pad_out_used;
+	if (pad_log_on)
+		pad_log(pad_out, pad_out_used);
+	sceKernelSignalSema(pad_half_ready, 1);
+	pad_half_now ^= 1;
+	pad_out = pad_half_base[pad_half_now];
+	pad_out_used = 0;
+}
+
+/* everything written before the file closes */
+static void pad_halves_drain(void)
+{
+	sceKernelWaitSema(pad_half_free, 1, NULL);
+	if (pad_file >= 0 && pad_out_used)
+	{
+		sceIoWrite(pad_file, pad_out, pad_out_used);
+		if (pad_log_on)
+			pad_log(pad_out, pad_out_used);
+	}
+	pad_out_used = 0;
+	sceKernelSignalSema(pad_half_free, 1);
+}
+
 static void pad_flush(void)
 {
+	if (pad_halves > 0)
+	{
+		pad_halves_drain();
+		return;
+	}
 	if (pad_file >= 0 && pad_out_used)
 	{
 		sceIoWrite(pad_file, pad_out, pad_out_used);
@@ -110,6 +199,9 @@ static void pad_close(void)
 		sceIoClose(pad_file);
 		platform_log("pad: recorded %lu frames, %lu player inputs (map load %d)", pad_frames, pad_blobs,
 			pad_generation);
+		if (pad_halves > 0)
+			platform_log("pad: lw2: %lu halves written by the writer, the game waited for it %lu times", pad_half_writes,
+				pad_half_waits);
 	}
 	pad_file = -1;
 	pad_frames = pad_blobs = 0;
@@ -125,6 +217,8 @@ static void pad_map_check(void)
 		pad_mode = psp_keep("padplay") ? 2 : psp_keep("padrec") ? 1 : 0;
 		if (pad_mode == 1 && !(pad_out = malloc(PAD_CHUNK)))
 			pad_mode = 0;
+		if (pad_mode == 1)
+			pad_halves_start();
 		pad_log_on = pad_mode == 1 && psp_keep("padlog");
 	}
 	if (!pad_mode || pad_generation == psp_map_generation)
@@ -231,7 +325,12 @@ static void pad_put(unsigned int tag, const void *data, unsigned int bytes)
 {
 	if (pad_file < 0)
 		return;
-	if (pad_out_used + 1 + bytes > PAD_CHUNK)
+	if (pad_halves > 0)
+	{
+		if (pad_out_used + 1 + bytes > PAD_CHUNK / 2)
+			pad_half_hand();
+	}
+	else if (pad_out_used + 1 + bytes > PAD_CHUNK)
 		pad_flush();
 	pad_out[pad_out_used++] = (unsigned char)tag;
 	memcpy(pad_out + pad_out_used, data, bytes);
@@ -302,8 +401,8 @@ float psp_pad_seconds(float seconds)
 	{
 		pad_put(PAD_FRAME, &seconds, sizeof(seconds));
 		/* written every 64 frames (~9 KB), so a run that ends by quitting
-		keeps all but its last few seconds */
-		if ((++pad_frames & 63) == 0)
+		keeps all but its last few seconds (with lw2, a half at a time) */
+		if ((++pad_frames & 63) == 0 && pad_halves <= 0)
 			pad_flush();
 	}
 	else if (pad_mode == 2)

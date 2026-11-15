@@ -467,6 +467,50 @@ static int log_each_line(void)
 	return word > 0;
 }
 
+/* LW2 ("lw2", for hand builds): once the game runs, the batch is written
+at most every 30 s, or when it's half full, not at every beat (5 s). Every
+write is an open, a write and a close, and the game's readers wait behind it
+on the stick: in Sheepdog01's hand recordings on the PSP-1000 one write took up to
+1.5 s and the game thread waited behind it (the lab's findings
+hand_logs_stick_lock_waits_psp1000). The batch grows to 32 KB from free
+memory for it. A crash still writes the batch (psp_crash.c), as do the exit
+and the ME's start; a hang can lose up to the interval's lines.
+"logwriteN": the interval in seconds */
+int psp_keep_number(const char *prefix, int fallback);
+static int lw2_on = -1, lw2_seconds = 30;
+static unsigned long long lw2_last_write = 0;
+
+static void lw2_start(void)
+{
+	if (lw2_on >= 0 || !psp_keep_loaded())
+		return;
+	lw2_on = psp_keep("lw2") && !psp_keep("blackbox");
+	if (!lw2_on)
+		return;
+	lw2_seconds = psp_keep_number("logwrite", 30);
+	if (lw2_seconds < 1)
+		lw2_seconds = 1;
+	log_batch_grow();
+	lw2_last_write = sceKernelGetSystemTimeWide();
+	platform_log("log: lw2: the batch written every %d s or at half full", lw2_seconds);
+}
+
+/* the beat's write: due at the interval, half full, or without LW2 */
+static int lw2_write_due(void)
+{
+	unsigned long long now;
+
+	if (lw2_on <= 0 || exiting)
+		return 1;
+	now = sceKernelGetSystemTimeWide();
+	if (log_batch_length >= log_batch_size / 2 || now - lw2_last_write >= (unsigned long long)lw2_seconds * 1000000ull)
+	{
+		lw2_last_write = now;
+		return 1;
+	}
+	return 0;
+}
+
 /* a line and its newline, joined for one write; only touched under the
 log's lock */
 static char log_line_joined[640];
@@ -4462,7 +4506,10 @@ static int heartbeat_thread(SceSize args, void *argp)
 		400, and geometry waited 0.58 s behind it). A crash still writes the
 		batch (psp_crash.c); a hang loses at most the beat's lines */
 		if (ticks >= 0 && (beat > 20 || !log_each_line()))
+		{
 			log_batching = 1;
+			lw2_start();
+		}
 		if (ticks >= 0)
 		{
 			extern volatile unsigned int psp_pad_buttons, psp_pad_reads;
@@ -4522,7 +4569,8 @@ static int heartbeat_thread(SceSize args, void *argp)
 				log_holds - log_holds_reported);
 			log_holds_reported = log_holds;
 		}
-		log_flush();
+		if (lw2_write_due())
+			log_flush();
 	}
 	return 0;
 }
