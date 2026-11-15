@@ -1294,7 +1294,10 @@ Lightmaps under their own key stay whole: object lighting reads their top
 level (psp_tex_light_texel). A row marked composite (a base map with its
 detail or relief baked in, a lightmap's whole copy, a see-through composite,
 a glow map: drawn by the GE alone) is its own slice, keep word "texfitb", so
-each slice can be measured and switched apart */
+each slice can be measured and switched apart. The plain slice is on by
+default (screen-sized textures are efficiency: Sheepdog01 2026-11-05 08:33 and
+2026-11-10 13:46); "notexfit" turns it off. A pack baked without the table
+loads every texture whole either way */
 struct texfit_row
 {
 	unsigned int index, key;
@@ -1306,7 +1309,7 @@ struct texfit_row
 static void texfit_apply(SceUID file)
 {
 	unsigned int trailer[2], table[2], i, applied = 0, before = 0, after = 0, composites = 0;
-	int plain = psp_keep("texfit"), composite = psp_keep("texfitb");
+	int plain = !psp_keep("notexfit"), composite = psp_keep("texfitb");
 	struct texfit_row row;
 
 	if (!plain && !composite)
