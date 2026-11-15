@@ -5348,7 +5348,16 @@ static void sndstream_poll(void)
 		unsigned long budget = 2 * SNDSTREAM_PIECE_BYTES * (stream->channels ? stream->channels : 1), ahead = 0, j;
 		unsigned long finished_to = game->finished_to;
 
-		if (stream->snd_hint >= 0 && stream->snd_hint < sndstream_piece_count)
+		/* the mixer's last piece kept only while this voice still has a
+		streamed packet to play: a voice keeps its hint after its sound ends,
+		and the game keeps its voices, so stamping every voice's hint pinned
+		one piece per voice that had ever streamed, and once as many voices
+		had streamed as the pool has pieces no piece could be taken (B86:
+		c20's 12 of 12 in use with at most 5 needed, reads stopped, silence) */
+		for (j = 0; j < game->count; j++)
+			if (game->snd_id[(game->head + j) % MAXIMUM_STREAM_PACKETS] && game->popped + j >= finished_to)
+				break;
+		if (j < game->count && stream->snd_hint >= 0 && stream->snd_hint < sndstream_piece_count)
 			sndstream_pieces[stream->snd_hint].stamp = sndstream_polls;
 		for (j = 0; j < game->count && ahead < budget; j++)
 		{
