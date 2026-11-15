@@ -51,9 +51,10 @@ MAP_STRETCHES = {
 
 
 def map_of(path):
-    """the first map the log loads ('loading: levels\\<x>\\<map> begins'), or None"""
+    """the first map the log loads ('loading: levels\\<x>\\<map> begins'), or None;
+    a job whose map input was escaped logs each backslash doubled, so one or more"""
     for line in open(path, errors="replace"):
-        m = re.search(r"loading: levels\\[^\\]+\\(\w+) begins", line)
+        m = re.search(r"loading: levels\\+[^\\]+\\+(\w+) begins", line)
         if m:
             return m.group(1)
     return None
