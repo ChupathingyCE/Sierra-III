@@ -153,6 +153,24 @@ HALO_REPO=/home/claude/chupa PSP_OUT=/tmp/psp_chupa python3 psp_build.py --jobs 
 - **players.c (FIXES_113 #flipwatch):** the action test gained Stubbs's horde action.
 - **xbox_files.c (FIXES_FRONT #pathscan, FIXES_MULTIPLAYER #maps):** the drive's folder may be a mode's own (`save_drive_folder`), and a d: path may be a Workshop item's: the once-a-run folder check and the multiplayer maps folder re-anchored.
 
+**Switches and new units.** `HALO_MCC=0` and `HALO_CONSOLE_NO_STUBBS=1`, as the consoles build them: their headers turn the MCC and Stubbs hooks into static no-ops, and the `stubbs_*` units are left out (`CHUPA_DESKTOP_UNITS`). `FIXES_V091A` holds the rest: Load Level's list includes `stubbs_campaign.h` for its size, and the campaign build keeps no Delta verified mark (`font_group.c`, six 48x48 bitmaps, 14 KB of .bss). The network version is 32, joining 11 to 45 (`psp_limits.h`). `PSP_FIXUPS_CHECK=1` now also lists the passes whose counts changed (`check_fail`): interpolation 11, gl_ready 15, COLLUSERS 70.
+
+**Memory** (Sheepdog01: "pay close attention to the memory", trim what the engine added) [D], sierra-build with `PSP_SNDSTREAM=1`, text / data / bss and the heap:
+
+| Build | text | data | bss | heap |
+|---|---|---|---|---|
+| tock c1292051 (6eef2f3) | 3,403,176 | 122,524 | 1,787,048 | 5,816 KB |
+| pin 6d7f6d91 (Delta mark kept) | 3,421,864 | 122,580 | 1,806,712 | 5,780 KB |
+| pin 6d7f6d91 (no Delta mark) | 3,420,648 | 122,564 | 1,792,776 | 5,796 KB |
+| pin cc6cccc6 (below) | 3,408,688 | 122,364 | 1,780,168 | 5,820 KB |
+
+What the engine added that the campaign build carried: the Delta mark (14.0 KB bss), render interpolation's direct camera and frames (+3.3 KB), upstream's test input (`debug.test_input`, its 4 KB script buffer: +6.1 KB), the settings table's new rows (+4.5 KB), crt0's data (+4.4 KB). Sheepdog01 (2026-11-16): the PSP uses none of the settings menus, the test input, render interpolation or upstream's fonts. So:
+- **render_interpolation.c leaves the build** (`PSP_INTERPOLATION=1` builds it back in): `psp/src/psp_nointerp.c` answers its 19 calls as interpolation off does. The one part that works with interpolation off, the direct camera (`display.direct_camera`, the first-person view from player_control's facing), is kept as the unit makes it.
+- **The test input** is compiled out on the PSP (`FIXES_V091A` `xinput_sdl.c#testinput`), and the virtual test gamepads are off as on the consoles (`HALO_CONSOLE_NO_TEST_GAMEPADS`).
+- **Next: port_config.c and tomlc17** (~128 KB in the tock too: the settings table's help text, the TOML reader and writer). The PSP only sets settings through the environment at boot; a small table of keys, defaults and environment names does that.
+
+**Proof** (emulator [E], fixedticks fixedseed statecrc, b30_leg1, c20_leg1, d20 swamp, against the tock): pin091a2 (6d7f6d91, heap 5,796 KB): c20 and d20 play and seeds identical tick for tick; **b30 parted at tick 2061**, where the new side's sound cache had no room for a sound (`covey_uplink`, 71 KB) the tock's had. 20 KB less heap, a smaller sound cache: the memory difference shows in play. d20's new side refused 6 sounds to the tock's 1, with play the same. pin091a3 (cc6cccc6, heap 5,820 KB): see below.
+
 ## The 0.9.1 test build, 6eef2f3 (2026-11-11, in progress; first aimed at v0.9.0d)
 
 **Interim pin** (the maintainer, 2026-11-11 10:47): the 0.9.1 test build's commit `6eef2f3e3ce8` (tag `v0.9.1-testing`, a moving tag, so the sha is pinned) until 0.9.1 is released; then the pin moves to its tag and `PSP_FIXUPS_CHECK=1` runs again. 6eef2f3 is not a descendant of v0.9.0d (merge base 6f6e545; 494 commits past it, v0.9.0d's 154 own commits merged in by content). Network version still 32 (11 to 42). The work below was done against v0.9.0d first (round 1 and round 2's first half), then moved: at 6eef2f3, 42 more campaign anchors failed and 11 multiplayer ones.
