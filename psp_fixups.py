@@ -54463,10 +54463,10 @@ static unsigned int *psp_mv_stack_bottom;
 walk's stack in the ME's eDRAM, 0-192 KB, which nothing else uses (edramcheck:
 no hash moved there over the ladder), 152 KB off the heap. The main CPU can't
 reach the eDRAM, so the ME copies what the main CPU reads (the clusters, the
-surfaces and the objects) into psp_mv_out, in main RAM, at the walk's end, and
+surfaces and the objects) into psp_mv_handed, in main RAM, at the walk's end, and
 checks its stack itself. psp_mv and the stack are then the ME's addresses:
 nothing on the main CPU may touch them */
-struct psp_mv_out
+struct psp_mv_handed
 {
 	unsigned long visible_cluster_flags[MAXIMUM_CLUSTERS_PER_STRUCTURE / LONG_BITS];
 	struct rendered_cluster rendered_clusters[MAXIMUM_RENDERED_CLUSTERS];
@@ -54479,9 +54479,9 @@ struct psp_mv_out
 #define PSP_MV_EDRAM_TOP 0x30000u /* the stack's top: the end of 0-192 KB */
 /* (more than the ring's whole-cache bound, 16 KB, so the ME writes its whole
 cache back at the job's end, the record's lines with it) */
-typedef char psp_mv_out_whole_cache[sizeof(struct psp_mv_out) > 16 * 1024 ? 1 : -1];
+typedef char psp_mv_out_whole_cache[sizeof(struct psp_mv_handed) > 16 * 1024 ? 1 : -1];
 static int psp_mv_edram;
-static struct psp_mv_out *psp_mv_out;
+static struct psp_mv_handed *psp_mv_handed;
 
 static void psp_mv_error(long priority, char const *format, ...)
 {
@@ -54653,7 +54653,7 @@ static void psp_mv_run(void *argument)
 	if (psp_mv_edram)
 	{
 		/* what the main CPU reads, out of the eDRAM (above) */
-		struct psp_mv_out *out = psp_mv_out;
+		struct psp_mv_handed *out = psp_mv_handed;
 
 		csmemcpy(out->visible_cluster_flags, psp_mv->render.visible_cluster_flags, sizeof(out->visible_cluster_flags));
 		out->rendered_cluster_count = psp_mv->render.rendered_cluster_count;
@@ -54703,7 +54703,7 @@ void psp_mevis_me_job(const unsigned int *args, unsigned int *results)
 
 		while (low < PSP_MV_STACK / 4 && psp_mv_stack_bottom[low] == PSP_MV_CANARY)
 			low++;
-		psp_mv_out->stack_low = low;
+		psp_mv_handed->stack_low = low;
 	}
 	results[0] = 1;
 }
@@ -54743,7 +54743,7 @@ static int psp_mv_start(void)
 	/* mevisedram (above): the eDRAM's 0-192 KB, when the state fits under the
 	stack. The emulator maps no eDRAM below 800 KB, so there the state and the
 	stack stay on the heap, standing in, and only the main CPU's side (the
-	answers through psp_mv_out, the ME's own clear and look) is tried */
+	answers through psp_mv_handed, the ME's own clear and look) is tried */
 	psp_mv_edram = psp_keep("mevisedram") && state_bytes <= PSP_MV_EDRAM_TOP - PSP_MV_STACK;
 	if (psp_mv_edram)
 	{
@@ -54759,7 +54759,7 @@ static int psp_mv_start(void)
 			platform_psp_log("mevisedram: the emulator maps no eDRAM at 0-%u KB: the state and the stack stand in on the heap",
 				PSP_MV_EDRAM_TOP / 1024);
 		}
-		psp_mv_out = (struct psp_mv_out *)memalign(64, sizeof(struct psp_mv_out));
+		psp_mv_handed = (struct psp_mv_handed *)memalign(64, sizeof(struct psp_mv_handed));
 	}
 	else
 	{
@@ -54767,7 +54767,7 @@ static int psp_mv_start(void)
 		stack = memalign(64, PSP_MV_STACK);
 	}
 	psp_mv_record = (struct psp_mv_record *)memalign(64, sizeof(struct psp_mv_record));
-	if (!psp_mv || !stack || !psp_mv_record || (psp_mv_edram && !psp_mv_out))
+	if (!psp_mv || !stack || !psp_mv_record || (psp_mv_edram && !psp_mv_handed))
 	{
 		platform_psp_log("mevis: no room for the ME's copy (%u KB state, %u KB stack); off", state_bytes / 1024,
 			PSP_MV_STACK / 1024);
@@ -54779,10 +54779,10 @@ static int psp_mv_start(void)
 	if (psp_mv_edram)
 	{
 		/* the ME clears the state and fills the stack at its first job */
-		csmemset(psp_mv_out, 0, sizeof(*psp_mv_out));
+		csmemset(psp_mv_handed, 0, sizeof(*psp_mv_handed));
 		psp_mv_record->pad_in[0] = 1;
 		platform_psp_log("mevisedram: the ME's state (%u KB) and stack (%u KB) in its eDRAM at 0-%u KB; %u KB of answers in main RAM",
-			state_bytes / 1024, PSP_MV_STACK / 1024, PSP_MV_EDRAM_TOP / 1024, (unsigned int)sizeof(struct psp_mv_out) / 1024);
+			state_bytes / 1024, PSP_MV_STACK / 1024, PSP_MV_EDRAM_TOP / 1024, (unsigned int)sizeof(struct psp_mv_handed) / 1024);
 	}
 	else
 	{
@@ -55058,8 +55058,8 @@ int psp_mevisland_push(void)
 			psp_mv_record->pad_in[0] = 1;
 		}
 	}
-	if (!psp_me_push_visibility_into(psp_mv_record, psp_mv_edram ? (void *)psp_mv_out : (void *)psp_mv,
-		psp_mv_edram ? (unsigned int)sizeof(struct psp_mv_out) : psp_ml_state_bytes, &psp_ml_ticket))
+	if (!psp_me_push_visibility_into(psp_mv_record, psp_mv_edram ? (void *)psp_mv_handed : (void *)psp_mv,
+		psp_mv_edram ? (unsigned int)sizeof(struct psp_mv_handed) : psp_ml_state_bytes, &psp_ml_ticket))
 	{
 		psp_ml_refused++;
 		return 0;
@@ -55119,7 +55119,7 @@ void psp_mevisland_collect(void)
 	if (psp_mv_edram)
 	{
 		psp_mv_record->pad_in[0] = 0;
-		psp_ml_drop(psp_mv_out, sizeof(*psp_mv_out));
+		psp_ml_drop(psp_mv_handed, sizeof(*psp_mv_handed));
 	}
 	else
 	{
@@ -55137,14 +55137,14 @@ void psp_mevisland_collect(void)
 	}
 	if (psp_mv_edram)
 	{
-		csmemcpy(render.visible_cluster_flags, psp_mv_out->visible_cluster_flags,
+		csmemcpy(render.visible_cluster_flags, psp_mv_handed->visible_cluster_flags,
 			BIT_VECTOR_SIZE_IN_BYTES(structure->clusters.count));
-		render.rendered_cluster_count = psp_mv_out->rendered_cluster_count;
-		csmemcpy(render.rendered_clusters, psp_mv_out->rendered_clusters,
+		render.rendered_cluster_count = psp_mv_handed->rendered_cluster_count;
+		csmemcpy(render.rendered_clusters, psp_mv_handed->rendered_clusters,
 			render.rendered_cluster_count * sizeof(render.rendered_clusters[0]));
-		csmemcpy(render.environment_surface_flags, psp_mv_out->environment_surface_flags,
+		csmemcpy(render.environment_surface_flags, psp_mv_handed->environment_surface_flags,
 			BIT_VECTOR_SIZE_IN_BYTES(structure->surfaces.count));
-		render.environment_surface_count = psp_mv_out->environment_surface_count;
+		render.environment_surface_count = psp_mv_handed->environment_surface_count;
 	}
 	else
 	{
@@ -55207,11 +55207,11 @@ int psp_mevisland_objects(long *indices, short *count)
 		object_marker_end();
 		psp_ml_differ_objects += mine != n || psp_mv_hash(2166136261u, indices, (unsigned int)mine * sizeof(long)) !=
 			psp_mv_record->object_hash;
-		csmemcpy(indices, psp_mv_edram ? psp_mv_out->objects : psp_mv->objects, (unsigned int)n * sizeof(long));
+		csmemcpy(indices, psp_mv_edram ? psp_mv_handed->objects : psp_mv->objects, (unsigned int)n * sizeof(long));
 		*count = n;
 		return 1;
 	}
-	csmemcpy(indices, psp_mv_edram ? psp_mv_out->objects : psp_mv->objects, (unsigned int)n * sizeof(long));
+	csmemcpy(indices, psp_mv_edram ? psp_mv_handed->objects : psp_mv->objects, (unsigned int)n * sizeof(long));
 	object_marker_begin();
 	for (k = 0; k < n; k++)
 		object_mark_function(indices[k]);
@@ -55234,7 +55234,7 @@ void psp_mevisland_settle(void)
 		/* the stack's lowest changed word (the ME wrote it; this CPU never
 		does, so its lines are dropped before the look) */
 		if (psp_mv_edram)
-			low = psp_mv_out->stack_low; /* the ME's own look (psp_mevis_me_job) */
+			low = psp_mv_handed->stack_low; /* the ME's own look (psp_mevis_me_job) */
 		else if (!psp_ml_out)
 		{
 			psp_ml_drop(psp_mv_stack_bottom, PSP_MV_STACK);
