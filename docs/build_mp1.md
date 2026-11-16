@@ -13,7 +13,7 @@ The multiplayer build's first hardware test: a PSP joins ChupathingyCE's dedicat
 | What's in it | the PC's limits (128 players, 128 machines), Wi-Fi and sockets (`psp_net.c`), the 6 MB tag window |
 | What isn't | b112's speed-ups: `mp-recon` branched from `main` before them, so expect b111's frame rate |
 
-**Its maps:** the 6 MB bake, `/bake/mp5` on the X3D (`~/psp-bake/mp5/halo/maps` for Sheepdog01). Blood Gulch needs `ui.*` and `bloodgulch.*` (87 MB without the `_track` pack). The campaign build loads these too, so they replace the old ones in `$psp/halo/maps`.
+**Its maps:** the 6 MB bake, `/bake/mp5` on the desktop (`~/psp-bake/mp5/halo/maps` for Sheepdog01). Blood Gulch needs `ui.*` and `bloodgulch.*` (87 MB without the `_track` pack). The campaign build loads these too, so they replace the old ones in `$psp/halo/maps`.
 
 **Proved in the emulator** (`sierra-netplay`): joins the server, loads Blood Gulch, plays for minutes at 30 ticks a second, heap top 3,528 of 4,352 KB.
 

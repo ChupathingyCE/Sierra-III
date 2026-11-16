@@ -223,7 +223,7 @@ Sizes: w140 build log (sierra-hw 39640880636: program 5.01 MB, heap 5,876 KB), `
 
 The census's c20 figure (790 KB of strict lightmaps, one palette) is this 493 plus the 297 KB of lightmaps the exact set already took. On the shipped track pack the look set is worth 137 KB on c20 and 30 KB on b30.
 
-**The A/B** (lab sierra-batch **39680280258**, emupool x3d; one EBOOT w140 bc12443 both sides, bake b140x vs c4look1; hands off, `fixedticks fixedseed`, a shot every 5 s of game time to 100 s; plain run twice as the control; no `nomouth`). All 8 runs played to game time 2,971-2,977. Pixel differences per frame, the debug line (its clock) left out, 480 x 256 [E]:
+**The A/B** (lab sierra-batch **39680280258**, emupool, desktop; one EBOOT w140 bc12443 both sides, bake b140x vs c4look1; hands off, `fixedticks fixedseed`, a shot every 5 s of game time to 100 s; plain run twice as the control; no `nomouth`). All 8 runs played to game time 2,971-2,977. Pixel differences per frame, the debug line (its clock) left out, 480 x 256 [E]:
 
 | Pair | Shots | Pixels differing, mean (worst shot) | Largest channel step | PSNR, worst shot |
 |---|---:|---|---:|---:|

@@ -298,7 +298,7 @@ These are listed so nothing is lost. Each is in the merged notes with its source
   - the deferred diagnostics fixes (b89);
   - a halo_bench ME-bandwidth test;
   - a hardware run with the clock unset;
-  - the X3D self-hosted runner for parallel emulator A/Bs.
+  - the desktop self-hosted runner for parallel emulator A/Bs.
 
 ---
 
