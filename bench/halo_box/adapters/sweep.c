@@ -1183,8 +1183,9 @@ static void packed_report(void) __attribute__((destructor));
 static void packed_report(void)
 {
 	if (packed)
-		printf("sweepp: %u blocks packed, %u too big, %u keeps with no block free, %u kept sweeps walked packed, %u from a kept walk in all\n",
-			scratch.packed_made, scratch.packed_too_big, scratch.packed_no_block, scratch.packed_used, scratch.kept_hits);
+		printf("sweepp: %u blocks packed, %u too big, %u keeps with no block free, %u kept sweeps walked packed, %u from a kept walk in all; unpacked: %u over the node room, %u no block (%d blocks of %d nodes)\n",
+			scratch.packed_made, scratch.packed_too_big, scratch.packed_no_block, scratch.packed_used, scratch.kept_hits,
+			scratch.packed_sweep_big, scratch.packed_sweep_noblock, BOX_SWEEP_PACKED_BLOCKS, BOX_SWEEP_PACKED_NODES);
 }
 #endif
 

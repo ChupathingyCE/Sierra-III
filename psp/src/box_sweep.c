@@ -854,15 +854,23 @@ static int level_kept(const struct box_sweep_world *w, const float *center, floa
 #else
 	if (w->kept_packed && scratch->packed_ready)
 	{
-		int k;
+		int k, owned = 0;
 
 		for (k = 0; k < BOX_SWEEP_PACKED_BLOCKS; k++)
-			if (scratch->packed[k].owner == scratch->asker && scratch->packed[k].node_count > 0)
+			if (scratch->packed[k].owner == scratch->asker)
 			{
-				scratch->packed_used++;
-				return box_collbsp_sphere_packed(w->level, w->breakable_count, w->breakable, &slot->walk,
-					scratch->packed[k].nodes, scratch->packed[k].leaves, center, radius, &scratch->sphere);
+				owned = 1;
+				if (scratch->packed[k].node_count > 0)
+				{
+					scratch->packed_used++;
+					return box_collbsp_sphere_packed(w->level, w->breakable_count, w->breakable, &slot->walk,
+						scratch->packed[k].nodes, scratch->packed[k].leaves, center, radius, &scratch->sphere);
+				}
 			}
+		if (owned)
+			scratch->packed_sweep_big++;
+		else
+			scratch->packed_sweep_noblock++;
 	}
 	return box_collbsp_sphere_kept(w->level, w->breakable_count, w->breakable, &slot->walk, center, radius, &scratch->sphere);
 #endif

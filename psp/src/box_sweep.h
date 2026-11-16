@@ -162,8 +162,12 @@ asker without one, or whose subtree doesn't fit, walks unpacked as B */
 #ifndef BOX_SWEEP_PACKED_BLOCKS
 #define BOX_SWEEP_PACKED_BLOCKS 14
 #endif
+#ifndef BOX_SWEEP_PACKED_NODES
 #define BOX_SWEEP_PACKED_NODES 100 /* b30's census: 55 a keep, 183 the most */
+#endif
+#ifndef BOX_SWEEP_PACKED_LEAVES
 #define BOX_SWEEP_PACKED_LEAVES 64
+#endif
 struct box_sweep_packed
 {
 	int owner;      /* the asker, or -1 free */
@@ -182,6 +186,7 @@ struct box_sweep_scratch
 	struct box_sweep_packed packed[BOX_SWEEP_PACKED_BLOCKS];
 	unsigned int packed_ready; /* the blocks' owners set free once */
 	unsigned int packed_made, packed_too_big, packed_no_block, packed_used;
+	unsigned int packed_sweep_big, packed_sweep_noblock; /* kept sweeps walked unpacked, by why */
 	const struct box_sweep_kept *kept_last; /* the walk the last level sphere came from (the census) */
 	/* the level the kept walks were made against: a BSP switch or a
 	breakable surface broken drops every one */
