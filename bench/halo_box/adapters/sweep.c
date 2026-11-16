@@ -53,6 +53,10 @@ static const struct box_static *find(const struct box_static *statics, unsigned 
 }
 
 static int form, part;
+static float margin;
+static struct box_sweep_kept kept_saved[BOX_SWEEP_KEPT];
+static unsigned int kept_used_saved[BOX_SWEEP_KEPT], kept_clock_saved, b_last_tick;
+static int b_have_tick;
 
 static int sweep_setup(const struct box_static *statics, unsigned int count)
 {
@@ -165,6 +169,10 @@ static void *grow(void *pool, unsigned int *room, unsigned int need, unsigned in
 }
 
 static struct box_sweep_scratch scratch;
+#ifdef SWEEP_COUNT
+static unsigned int count_tick;
+static int count_pass;
+#endif
 static struct box_sweep_answer answer;
 static unsigned int sweeps_run, sweeps_unsupported, sweeps_bad;
 
@@ -197,7 +205,36 @@ static void sweep_tick(const struct box_tick *tick)
 		output_room = total * 2;
 		outputs = calloc(output_room, sizeof(*outputs));
 	}
+	/* B's kept walks: each pass of a tick starts from what the ticks before
+	left; a walk over the capture again starts with none */
+	if (margin > 0.f)
+	{
+		if (b_have_tick && tick->tick < b_last_tick)
+		{
+			memset(scratch.kept, 0, sizeof(scratch.kept));
+			memset(scratch.kept_used, 0, sizeof(scratch.kept_used));
+			scratch.kept_clock = 0;
+		}
+		if (b_have_tick && tick->tick == b_last_tick)
+		{
+			memcpy(scratch.kept, kept_saved, sizeof(kept_saved));
+			memcpy(scratch.kept_used, kept_used_saved, sizeof(kept_used_saved));
+			scratch.kept_clock = kept_clock_saved;
+		}
+		else
+		{
+			memcpy(kept_saved, scratch.kept, sizeof(kept_saved));
+			memcpy(kept_used_saved, scratch.kept_used, sizeof(kept_used_saved));
+			kept_clock_saved = scratch.kept_clock;
+		}
+		b_have_tick = 1;
+		b_last_tick = tick->tick;
+	}
 	leaves_count = clusters_count = members_count = objects_count = nodes_count = 0;
+#ifdef SWEEP_COUNT
+	count_pass = tick->tick == count_tick;
+	count_tick = tick->tick;
+#endif
 	/* two passes: count each table's rows, then file them, so the tables
 	don't move under the sweeps' pointers */
 	{
@@ -268,6 +305,7 @@ static void sweep_tick(const struct box_tick *tick)
 		s->query.most = (int)head[10];
 		s->world.any = (int)head[11];
 		s->world.part = part;
+		s->world.kept_margin = margin;
 		s->world.skip_objects = (int)head[12];
 		s->world.level = bsp_of(head[13]);
 		s->world.breakable_count = (short)head[14];
@@ -424,6 +462,141 @@ static void sweep_tick(const struct box_tick *tick)
 	}
 }
 
+#ifdef SWEEP_COUNT
+/* a desktop count of B's reach (box_collision.md Open 2): sweeps whose query
+(position, velocity, size, flags) is the same as their asker's last, and of
+those whose level sphere is the same */
+#include <stdio.h>
+#include <math.h>
+static struct { int asker; unsigned int tick; struct box_sweep_query q; } last_seen[64];
+static unsigned long long n_sweeps, n_same_query, n_same_still, n_still, n_zero_move;
+static void count_report(void) __attribute__((destructor));
+static void count_report(void)
+{
+	if (n_sweeps)
+		printf("sweep count: %llu sweeps; the asker's query unchanged from its last sweep %.1f%%; at rest (velocity only gravity's step) %.1f%%, of them unchanged %.1f%%\n",
+			n_sweeps, 100.0 * n_same_query / n_sweeps, 100.0 * n_still / n_sweeps, n_still ? 100.0 * n_same_still / n_still : 0.0);
+}
+/* stage 3's census: each asker's level walk widened by a margin, kept; a later
+sweep whose sphere lies inside it could test only those candidates. Counted:
+how often the sphere lies inside (by margin), and whether its own walk's lists
+are the kept lists' subsequences in order (so a filter could give them exactly) */
+#define MARGINS 3
+static const float margins[MARGINS] = { 0.25f, 0.5f, 1.0f };
+static struct kept { int asker; float c[3], r; struct box_collbsp_sphere_result res; } kept[MARGINS][64];
+static unsigned long long n_level, n_inside[MARGINS], n_ordered[MARGINS];
+static struct box_collbsp_sphere_result own, wide;
+static int subsequence(const int *a, int na, const int *b, int nb)
+{
+	int i = 0, j = 0;
+
+	for (; i < na; i++)
+	{
+		while (j < nb && b[j] != a[i])
+			j++;
+		if (j == nb)
+			return 0;
+		j++;
+	}
+	return 1;
+}
+static void stage3_report(void) __attribute__((destructor));
+static void stage3_report(void)
+{
+	int m;
+
+	if (scratch.kept_hits + scratch.kept_walks)
+		printf("sweepb count: margin %.2f: %u level spheres from a kept walk, %u walks kept (%.1f%% from a kept walk; the bench's passes counted each)\n",
+			margin, scratch.kept_hits, scratch.kept_walks, 100.0 * scratch.kept_hits / (scratch.kept_hits + scratch.kept_walks));
+
+	if (!n_level)
+		return;
+	for (m = 0; m < MARGINS; m++)
+		printf("stage3 count: margin %.2f: %llu of %llu sweeps (%.1f%%) inside their asker's kept walk; of them %.1f%% with every list a subsequence in order\n",
+			margins[m], n_inside[m], n_level, 100.0 * n_inside[m] / n_level, n_inside[m] ? 100.0 * n_ordered[m] / n_inside[m] : 0.0);
+}
+static void stage3_count(const struct sweep *s)
+{
+	const float *p = s->query.position, *v = s->query.velocity;
+	float c[3], r;
+	int m, k;
+
+	c[0] = p[0] + v[0] * 0.5f;
+	c[1] = p[1] + v[1] * 0.5f;
+	c[2] = s->query.height * 0.5f + (p[2] + v[2] * 0.5f);
+	r = sqrtf(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]) * 0.5f + s->query.height * 0.5f + s->query.radius + 0.0625f;
+	box_collbsp_sphere(s->world.level, s->world.breakable_count, s->world.breakable, c, r, s->world.any, &own);
+	n_level++;
+	for (m = 0; m < MARGINS; m++)
+	{
+		struct kept *slot = 0;
+
+		for (k = 0; k < 64; k++)
+			if (kept[m][k].asker == s->query.ignore || (!slot && !kept[m][k].asker))
+			{
+				slot = &kept[m][k];
+				if (kept[m][k].asker == s->query.ignore)
+					break;
+			}
+		if (!slot)
+			slot = &kept[m][0];
+		if (slot->asker == s->query.ignore)
+		{
+			float d[3] = { c[0] - slot->c[0], c[1] - slot->c[1], c[2] - slot->c[2] };
+
+			if (sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]) + r <= slot->r)
+			{
+				n_inside[m]++;
+				if (subsequence(own.surfaces, own.surface_count, slot->res.surfaces, slot->res.surface_count) &&
+					subsequence(own.edges, own.edge_count, slot->res.edges, slot->res.edge_count) &&
+					subsequence(own.vertices, own.vertex_count, slot->res.vertices, slot->res.vertex_count) &&
+					subsequence(own.leaves, own.leaf_count, slot->res.leaves, slot->res.leaf_count))
+					n_ordered[m]++;
+				continue;
+			}
+		}
+		/* a new kept walk at the widened radius */
+		box_collbsp_sphere(s->world.level, s->world.breakable_count, s->world.breakable, c, r + margins[m], s->world.any, &wide);
+		slot->asker = s->query.ignore;
+		memcpy(slot->c, c, 12);
+		slot->r = r + margins[m];
+		slot->res = wide;
+	}
+}
+
+static void sweep_count(const struct sweep *s)
+{
+	stage3_count(s);
+	int k, free_slot = -1, still;
+
+	still = s->query.velocity[0] == 0.0f && s->query.velocity[1] == 0.0f;
+	n_sweeps++;
+	n_still += still;
+	for (k = 0; k < 64; k++)
+	{
+		if (last_seen[k].asker == s->query.ignore && last_seen[k].tick)
+		{
+			if (!memcmp(&last_seen[k].q, &s->query, sizeof(s->query)))
+			{
+				n_same_query++;
+				n_same_still += still;
+			}
+			last_seen[k].q = s->query;
+			last_seen[k].tick = count_tick;
+			return;
+		}
+		if (free_slot < 0 && !last_seen[k].tick)
+			free_slot = k;
+	}
+	if (free_slot >= 0)
+	{
+		last_seen[free_slot].asker = s->query.ignore;
+		last_seen[free_slot].tick = count_tick;
+		last_seen[free_slot].q = s->query;
+	}
+}
+#endif
+
 static __attribute__((noinline)) void sweep_run(int i)
 {
 	struct sweep *s = &sweeps[i];
@@ -436,6 +609,10 @@ static __attribute__((noinline)) void sweep_run(int i)
 			out[used] = 0;
 		return;
 	}
+#ifdef SWEEP_COUNT
+	if (!count_pass)
+		sweep_count(s);
+#endif
 	count = box_sweep(&s->world, &s->query, &scratch, &answer);
 	used = 0;
 	if (room > 0)
@@ -535,6 +712,7 @@ static int sweep_compare(int i, const void *got, const void *want, unsigned int 
 2.2 for every asker), ~30 us a sweep at b30's ~36 a tick */
 static int sweep0_setup(const struct box_static *statics, unsigned int count)
 {
+	margin = 0.f;
 	form = 0;
 	part = 0;
 	return sweep_setup(statics, count);
@@ -548,6 +726,7 @@ const struct box_adapter box_sweep0 = {
 /* form A's level walk under the same sweep (box_collision.md §9, stage 3) */
 static int sweepa_setup(const struct box_static *statics, unsigned int count)
 {
+	margin = 0.f;
 	form = 1;
 	part = 0;
 	return sweep_setup(statics, count);
@@ -563,6 +742,7 @@ level's features alone (no objects, no clip). Their checks fail by design;
 only their times count */
 static int sweepf_setup(const struct box_static *statics, unsigned int count)
 {
+	margin = 0.f;
 	form = 1;
 	part = 1;
 	return sweep_setup(statics, count);
@@ -570,6 +750,7 @@ static int sweepf_setup(const struct box_static *statics, unsigned int count)
 
 static int sweepl_setup(const struct box_static *statics, unsigned int count)
 {
+	margin = 0.f;
 	form = 1;
 	part = 2;
 	return sweep_setup(statics, count);
@@ -584,6 +765,36 @@ const struct box_adapter box_sweepl = {
 	"sweepl", kinds, 0, 0, BOX_EXACT, 0.f, 0.f, 1.1f, 30.f,
 	sweepl_setup, sweep_tick, sweep_run, sweep_output, sweep_compare, "sweep",
 };
+
+/* B (stage 3): form A with each asker's level walk widened by 0.5 and kept */
+static int sweepb_setup(const struct box_static *statics, unsigned int count)
+{
+	form = 1;
+	part = 0;
+	margin = 0.5f;
+	b_have_tick = 0;
+	memset(scratch.kept, 0, sizeof(scratch.kept));
+	memset(scratch.kept_used, 0, sizeof(scratch.kept_used));
+	scratch.kept_clock = 0;
+	{
+		const char *m = getenv("SWEEP_MARGIN");
+
+		if (m)
+			margin = (float)atof(m);
+	}
+	return sweep_setup(statics, count);
+}
+
+const struct box_adapter box_sweepb = {
+	"sweepb", kinds, 0, 0, BOX_EXACT, 0.f, 0.f, 1.1f, 30.f,
+	sweepb_setup, sweep_tick, sweep_run, sweep_output, sweep_compare, "sweep",
+};
+
+void box_sweepb_counts(unsigned int *hits, unsigned int *walks)
+{
+	*hits = scratch.kept_hits;
+	*walks = scratch.kept_walks;
+}
 
 void box_sweep_counts(unsigned int *run, unsigned int *unsupported, unsigned int *bad)
 {

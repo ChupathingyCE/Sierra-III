@@ -74,6 +74,10 @@ struct box_collbsp_sphere_result
 	int edge_count, edges[BOX_COLLBSP_LIST];
 	int vertex_count, vertices[BOX_COLLBSP_LIST];
 	int leaf_count, leaves[BOX_COLLBSP_LIST];
+	/* how each was first met: a surface's plane designator (the projection
+	its polygon was tested in), an edge's direction round its surface */
+	int surface_designator[BOX_COLLBSP_LIST];
+	unsigned char edge_reverse[BOX_COLLBSP_LIST];
 };
 
 /* the sphere: surfaces, edges and vertices it touches, leaves it is in.
@@ -82,6 +86,14 @@ callers read only whether it found one, and the leaves when it didn't).
 Returns whether it found a surface or an edge */
 int box_collbsp_sphere(const struct box_collbsp *bsp, short breakable_count, const unsigned int *breakable,
 	const float center[3], float radius, int any, struct box_collbsp_sphere_result *result);
+
+/* B on the level walk (box_collision.md §9, stage 3): a sphere inside an
+earlier, wider one answered from that one's lists (`kept`, made by
+box_collbsp_sphere at the wider radius): its leaves by the 3D walk alone, its
+vertices, edges and surfaces by testing only the kept ones, in the kept order */
+int box_collbsp_sphere_kept(const struct box_collbsp *bsp, short breakable_count, const unsigned int *breakable,
+	const struct box_collbsp_sphere_result *kept, const float center[3], float radius,
+	struct box_collbsp_sphere_result *result);
 
 struct box_collbsp_ray_result
 {

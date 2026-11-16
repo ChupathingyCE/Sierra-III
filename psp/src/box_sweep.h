@@ -114,6 +114,9 @@ struct box_sweep_world
 	are incomplete by design): 1 the features only, no clip; 2 the level's
 	features only, no objects, no clip */
 	int part;
+	/* B (stage 3): the margin each asker's level walk is widened by and kept
+	for its next sweeps; 0 none */
+	float kept_margin;
 	int skip_objects; /* the engine's debug switch */
 	const struct box_sweep_leaf *leaves;
 	int leaf_count;
@@ -142,8 +145,16 @@ struct box_sweep_answer
 
 /* the sweep's scratch (its feature list and the walks' marks): the asker's
 own, so a sweep writes nothing shared */
+#define BOX_SWEEP_KEPT 32
+struct box_sweep_kept { int asker; float center[3], radius; struct box_collbsp_sphere_result walk; };
+
 struct box_sweep_scratch
 {
+	/* B: each asker's widened walk (BOX_SWEEP_KEPT askers, the oldest given up) */
+	struct box_sweep_kept kept[BOX_SWEEP_KEPT];
+	unsigned int kept_clock, kept_used[BOX_SWEEP_KEPT];
+	unsigned int kept_hits, kept_walks;
+	int asker;
 	struct box_sweep_features features;
 	struct box_collbsp_sphere_result sphere;
 	int marked_clusters[BOX_COLLBSP_LIST], marked_cluster_count;
