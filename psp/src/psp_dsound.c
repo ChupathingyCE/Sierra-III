@@ -167,6 +167,10 @@ struct psp_stream
 
 	/* last, so a hand-over by ranges covers the fields above in a few whole
 	lines and only the queued packets' entries of this (psp_dsound_me_lines) */
+	/* the ring's size less one (a power of two: MAXIMUM_STREAM_PACKETS, or
+	fewer where "streamrecN" made the record smaller), and where the game's
+	record follows this one (a smaller record ends its entries early) */
+	unsigned long packet_mask, game_offset;
 	struct voice_packet packets[MAXIMUM_STREAM_PACKETS];
 };
 /* build 86: a voice takes whole 64-byte cache lines (memalign, the size
@@ -254,6 +258,17 @@ before it prepares each block, so each reaches the mix at the block it reached
 when the game held the mixer's lock for it. "mixlockold": the lock held
 through the job and every call under it, as before (the ring's commands
 applied at once, under it) */
+/* a queued packet as the game gave it, and (PSP_SNDSTREAM) its streamed sound
+and where it starts in it, as the mixer's entries have them: the reader's
+view of what is to play */
+struct game_packet
+{
+	XMEDIAPACKET packet;
+#if PSP_SNDSTREAM
+	unsigned long snd_id, snd_offset;
+#endif
+};
+
 struct stream_game
 {
 	/* the mixer's list, walked by the audio thread: single stores, no lock */
@@ -289,15 +304,14 @@ struct stream_game
 	/* once released: kept until a block that began after has ended */
 	struct psp_stream *zombie_next;
 	unsigned long zombie_stamp;
-	XMEDIAPACKET packet[MAXIMUM_STREAM_PACKETS];
-#if PSP_SNDSTREAM
-	/* each queued packet's streamed sound and where it starts in it, as the
-	mixer's entries have them: the reader's view of what is to play */
-	unsigned long snd_id[MAXIMUM_STREAM_PACKETS], snd_offset[MAXIMUM_STREAM_PACKETS];
-#endif
+	/* last, so a smaller record ("streamrecN") ends its entries early */
+	struct game_packet entry[MAXIMUM_STREAM_PACKETS];
 };
 #define GAME_BYTES ((sizeof(struct stream_game) + 63) & ~(size_t)63)
-#define GAME_OF(stream) ((struct stream_game *)((unsigned char *)(stream) + STREAM_BYTES))
+/* a record holding that many entries, each part in whole cache lines (above) */
+#define stream_bytes(count) ((offsetof(struct psp_stream, packets) + (count) * sizeof(struct voice_packet) + 63) & ~(size_t)63)
+#define game_bytes(count) ((offsetof(struct stream_game, entry) + (count) * sizeof(struct game_packet) + 63) & ~(size_t)63)
+#define GAME_OF(stream) ((struct stream_game *)((unsigned char *)(stream) + (stream)->game_offset))
 
 #define MIX_COMMANDS 512 /* a power of two */
 /* CMD_MOVE: a sound's bytes moved (sndtierback): every packet in data's
@@ -343,9 +357,9 @@ static void packets_move(const unsigned char *from, const unsigned char *to, uns
 	unsigned long position;
 
 	for (stream = streams; stream; stream = GAME_OF(stream)->next)
-		for (position = 0; position < stream->packet_count && position < MAXIMUM_STREAM_PACKETS; position++)
+		for (position = 0; position < stream->packet_count && position <= stream->packet_mask; position++)
 		{
-			struct voice_packet *packet = &stream->packets[(stream->packet_head + position) % MAXIMUM_STREAM_PACKETS];
+			struct voice_packet *packet = &stream->packets[(stream->packet_head + position) & stream->packet_mask];
 
 			if (packet->data >= from && (unsigned long)(packet->data - from) < bytes)
 			{
@@ -370,7 +384,7 @@ static void mix_apply(const struct mix_command *command)
 	}
 	if (command->type == CMD_PUSH)
 	{
-		struct voice_packet *entry = &stream->packets[(stream->packet_head + stream->packet_count) % MAXIMUM_STREAM_PACKETS];
+		struct voice_packet *entry = &stream->packets[(stream->packet_head + stream->packet_count) & stream->packet_mask];
 
 		entry->data = command->data;
 		entry->frames = command->frames;
@@ -420,7 +434,7 @@ static void mix_apply(const struct mix_command *command)
 			stream->decoded_packet[1] = NULL;
 		entry->data = NULL;
 		entry->finished = FALSE;
-		stream->packet_head = (stream->packet_head + 1) % MAXIMUM_STREAM_PACKETS;
+		stream->packet_head = (stream->packet_head + 1) & stream->packet_mask;
 		stream->packet_count--;
 		stream->popped++;
 	}
@@ -513,7 +527,7 @@ static void publish_finished(struct psp_stream *stream)
 {
 	unsigned long k = 0;
 
-	while (k < stream->packet_count && stream->packets[(stream->packet_head + k) % MAXIMUM_STREAM_PACKETS].finished)
+	while (k < stream->packet_count && stream->packets[(stream->packet_head + k) & stream->packet_mask].finished)
 		k++;
 	GAME_OF(stream)->finished_to = stream->popped + k;
 }
@@ -527,7 +541,7 @@ static int packet_finished(struct psp_stream *stream, unsigned long position)
 	struct stream_game *game = GAME_OF(stream);
 
 	if (mixlock_old)
-		return stream->packets[(stream->packet_head + position) % MAXIMUM_STREAM_PACKETS].finished;
+		return stream->packets[(stream->packet_head + position) & stream->packet_mask].finished;
 	return (long)(game->finished_to - (game->popped + position)) > 0;
 }
 
@@ -1156,7 +1170,7 @@ static struct voice_packet *current_packet(struct psp_stream *stream)
 
 		for (position = 0; position < stream->packet_count; position++)
 		{
-			struct voice_packet *candidate = &stream->packets[(stream->packet_head + position) % MAXIMUM_STREAM_PACKETS];
+			struct voice_packet *candidate = &stream->packets[(stream->packet_head + position) & stream->packet_mask];
 
 			if (!candidate->finished)
 			{
@@ -1442,7 +1456,7 @@ static int mix_voice(struct psp_stream *stream, int *output, unsigned long frame
 			return 0;
 		for (position = 0; position < stream->packet_count; position++)
 		{
-			const struct voice_packet *candidate = &stream->packets[(stream->packet_head + position) % MAXIMUM_STREAM_PACKETS];
+			const struct voice_packet *candidate = &stream->packets[(stream->packet_head + position) & stream->packet_mask];
 
 			if (!candidate->finished)
 				queued += candidate->frames;
@@ -1646,11 +1660,12 @@ static unsigned long cache_lines(const void *start, unsigned long bytes, int op)
 /* the queued packets' entries: one stretch of the ring, or two where it wraps */
 static unsigned long entry_lines(struct psp_stream *stream, int op)
 {
-	unsigned long first = stream->packet_head % MAXIMUM_STREAM_PACKETS, count = stream->packet_count, run;
+	unsigned long size = stream->packet_mask + 1, first = stream->packet_head & stream->packet_mask;
+	unsigned long count = stream->packet_count, run;
 
-	if (count > MAXIMUM_STREAM_PACKETS)
-		count = MAXIMUM_STREAM_PACKETS;
-	run = count < MAXIMUM_STREAM_PACKETS - first ? count : MAXIMUM_STREAM_PACKETS - first;
+	if (count > size)
+		count = size;
+	run = count < size - first ? count : size - first;
 	return cache_lines(&stream->packets[first], run * sizeof(struct voice_packet), op) +
 		cache_lines(&stream->packets[0], (count - run) * sizeof(struct voice_packet), op);
 }
@@ -1670,7 +1685,7 @@ static unsigned long sample_lines(struct psp_stream *stream, unsigned long frame
 		return HANDOVER_WHOLE_BYTES + 1; /* a pitch far past any the game asks for: the whole cache */
 	for (position = 0; position < stream->packet_count && need; position++)
 	{
-		const struct voice_packet *packet = &stream->packets[(stream->packet_head + position) % MAXIMUM_STREAM_PACKETS];
+		const struct voice_packet *packet = &stream->packets[(stream->packet_head + position) & stream->packet_mask];
 		unsigned long last, start, end;
 
 		if (packet->finished)
@@ -2291,12 +2306,12 @@ static void tier_back_moved(unsigned long from, unsigned long to, unsigned long 
 	{
 		struct stream_game *game = GAME_OF(stream);
 
-		for (k = 0; k < MAXIMUM_STREAM_PACKETS; k++)
+		for (k = 0; k <= stream->packet_mask; k++)
 		{
-			unsigned long at = (unsigned long)game->packet[k].pvBuffer;
+			unsigned long at = (unsigned long)game->entry[k].packet.pvBuffer;
 
 			if (at >= from && at - from < bytes)
-				game->packet[k].pvBuffer = (LPVOID)(to + (at - from));
+				game->entry[k].packet.pvBuffer = (LPVOID)(to + (at - from));
 		}
 		if ((unsigned long)game->queued_end >= from && (unsigned long)game->queued_end - from <= bytes)
 			game->queued_end = (const unsigned char *)(to + ((unsigned long)game->queued_end - from));
@@ -2364,9 +2379,9 @@ static int tier_back_in_play(unsigned long from, unsigned long bytes)
 	{
 		struct stream_game *game = GAME_OF(stream);
 
-		for (k = 0; k < game->count && k < MAXIMUM_STREAM_PACKETS; k++)
+		for (k = 0; k < game->count && k <= stream->packet_mask; k++)
 		{
-			unsigned long at = (unsigned long)game->packet[(game->head + k) % MAXIMUM_STREAM_PACKETS].pvBuffer;
+			unsigned long at = (unsigned long)game->entry[(game->head + k) & stream->packet_mask].packet.pvBuffer;
 
 			if (at >= from && at - from < bytes)
 				return 1;
@@ -2800,9 +2815,9 @@ static void mute_cache_voices(struct psp_stream *const *list, unsigned long coun
 	{
 		struct psp_stream *stream = list[k];
 
-		for (position = 0; position < stream->packet_count && position < MAXIMUM_STREAM_PACKETS; position++)
+		for (position = 0; position < stream->packet_count && position <= stream->packet_mask; position++)
 		{
-			const struct voice_packet *packet = &stream->packets[(stream->packet_head + position) % MAXIMUM_STREAM_PACKETS];
+			const struct voice_packet *packet = &stream->packets[(stream->packet_head + position) & stream->packet_mask];
 
 			if (!packet->finished && tier_back_pending_count && tier_back_waiting(packet->data))
 			{
@@ -2992,15 +3007,15 @@ static unsigned long mix_approx_checked(struct psp_stream **list, unsigned long 
 	}
 	for (k = 0; k < count; k++)
 	{
-		memcpy(before + k * STREAM_BYTES, list[k], sizeof(struct psp_stream));
+		memcpy(before + k * STREAM_BYTES, list[k], list[k]->game_offset);
 		approx[k] = list[k]->approx;
 		list[k]->approx = 0;
 	}
 	psp_dsound_mix_list((void *const *)list, count, sums, output, frames, &clipped_ref);
 	for (k = 0; k < count; k++)
 	{
-		memcpy(after_ref + k * STREAM_BYTES, list[k], sizeof(struct psp_stream));
-		memcpy(list[k], before + k * STREAM_BYTES, sizeof(struct psp_stream));
+		memcpy(after_ref + k * STREAM_BYTES, list[k], list[k]->game_offset);
+		memcpy(list[k], before + k * STREAM_BYTES, list[k]->game_offset);
 	}
 	voices = psp_dsound_mix_list((void *const *)list, count, sums, check_alt, frames, clipped);
 	if (audio_approx & AUDIO_APPROX_CAL)
@@ -3023,7 +3038,7 @@ static unsigned long mix_approx_checked(struct psp_stream **list, unsigned long 
 	for (k = 0; k < count; k++)
 	{
 		((struct psp_stream *)(after_ref + k * STREAM_BYTES))->approx = approx[k];
-		if (memcmp(after_ref + k * STREAM_BYTES, list[k], sizeof(struct psp_stream)))
+		if (memcmp(after_ref + k * STREAM_BYTES, list[k], list[k]->game_offset))
 			states++;
 	}
 	check_approx_states += states != 0;
@@ -3080,7 +3095,7 @@ static unsigned long mix_checked(struct psp_stream **list, unsigned long count, 
 	{
 		const struct psp_stream *voice = list[k];
 
-		memcpy(before + k * STREAM_BYTES, voice, sizeof(struct psp_stream));
+		memcpy(before + k * STREAM_BYTES, voice, voice->game_offset);
 		list[k]->memix_old = 1;
 		if (voice->channels == 1 && voice->lowpass_left == voice->lowpass_right)
 			check_mono++;
@@ -3096,15 +3111,15 @@ static unsigned long mix_checked(struct psp_stream **list, unsigned long count, 
 	voices_old = psp_dsound_mix_list((void *const *)list, count, sums, check_output, frames, &clipped_old);
 	for (k = 0; k < count; k++)
 	{
-		memcpy(after_old + k * STREAM_BYTES, list[k], sizeof(struct psp_stream));
-		memcpy(list[k], before + k * STREAM_BYTES, sizeof(struct psp_stream));
+		memcpy(after_old + k * STREAM_BYTES, list[k], list[k]->game_offset);
+		memcpy(list[k], before + k * STREAM_BYTES, list[k]->game_offset);
 		list[k]->memix_old = 0;
 	}
 	voices = psp_dsound_mix_list((void *const *)list, count, sums, output, frames, clipped);
 	for (k = 0; k < count; k++)
 	{
 		((struct psp_stream *)(after_old + k * STREAM_BYTES))->memix_old = 0;
-		if (memcmp(after_old + k * STREAM_BYTES, list[k], sizeof(struct psp_stream)))
+		if (memcmp(after_old + k * STREAM_BYTES, list[k], list[k]->game_offset))
 			states++;
 	}
 	check_blocks++;
@@ -3443,12 +3458,12 @@ static int mix(short *output, short *full, short *out44, unsigned long frames)
 				entry_lines(list[k], LINES_DROP);
 			}
 			else
-				sceKernelDcacheInvalidateRange(list[k], STREAM_BYTES);
+				sceKernelDcacheInvalidateRange(list[k], list[k]->game_offset);
 		}
 		if (with_full)
 		{
 			for (k = 0; k < full_count; k++)
-				sceKernelDcacheInvalidateRange(full_list[k], STREAM_BYTES);
+				sceKernelDcacheInvalidateRange(full_list[k], full_list[k]->game_offset);
 			sceKernelDcacheInvalidateRange(out44, 2 * frames * OUTPUT_CHANNELS * sizeof(short));
 			if (full)
 				sceKernelDcacheInvalidateRange(full, 2 * frames * OUTPUT_CHANNELS * sizeof(short));
@@ -3862,9 +3877,9 @@ game's callback runs without */
 static void stream_complete_head(struct psp_stream *stream, DWORD status, DWORD completed_size)
 {
 	struct stream_game *game = GAME_OF(stream);
-	XMEDIAPACKET packet = game->packet[game->head];
+	XMEDIAPACKET packet = game->entry[game->head].packet;
 
-	game->head = (game->head + 1) % MAXIMUM_STREAM_PACKETS;
+	game->head = (game->head + 1) & stream->packet_mask;
 	game->count--;
 	game->popped++;
 	mix_command(stream, CMD_POP, NULL, 0, 0);
@@ -3896,7 +3911,7 @@ static void streams_complete_finished(void)
 		struct stream_game *game = GAME_OF(stream);
 
 		while (game->count && packet_finished(stream, 0))
-			stream_complete_head(stream, XMEDIAPACKET_STATUS_SUCCESS, game->packet[game->head].dwMaxSize);
+			stream_complete_head(stream, XMEDIAPACKET_STATUS_SUCCESS, game->entry[game->head].packet.dwMaxSize);
 	}
 	queue_leave();
 	reap_streams();
@@ -3975,7 +3990,7 @@ static HRESULT STDMETHODCALLTYPE stream_get_status(IDirectSoundStream *object, L
 	struct psp_stream *stream = stream_from_interface(object);
 
 	queue_enter();
-	*status = GAME_OF(stream)->count < MAXIMUM_STREAM_PACKETS ? XMO_STATUSF_ACCEPT_INPUT_DATA : 0;
+	*status = GAME_OF(stream)->count <= stream->packet_mask ? XMO_STATUSF_ACCEPT_INPUT_DATA : 0;
 	queue_leave();
 	return S_OK;
 }
@@ -3995,12 +4010,12 @@ static HRESULT STDMETHODCALLTYPE stream_process(IDirectSoundStream *object, LPCX
 		input->dwMaxSize / (XBOX_ADPCM_BLOCK_BYTES * stream->channels) * XBOX_ADPCM_BLOCK_SAMPLES :
 		input->dwMaxSize / (2 * stream->channels);
 	queue_enter();
-	if (game->count == MAXIMUM_STREAM_PACKETS)
+	if (game->count > stream->packet_mask)
 	{
 		queue_leave();
 		return E_OUTOFMEMORY;
 	}
-	game->packet[(game->head + game->count) % MAXIMUM_STREAM_PACKETS] = *input;
+	game->entry[(game->head + game->count) & stream->packet_mask].packet = *input;
 	data = (const unsigned char *)input->pvBuffer;
 	if (input->pdwStatus)
 		*input->pdwStatus = XMEDIAPACKET_STATUS_PENDING;
@@ -4044,8 +4059,8 @@ static HRESULT STDMETHODCALLTYPE stream_process(IDirectSoundStream *object, LPCX
 		command.snd_check = 0;
 		command.snd_id = stream->adpcm ? sndstream_packet(input->pContext, data, &command.snd_offset,
 			&command.snd_check) : 0;
-		game->snd_id[(game->head + game->count) % MAXIMUM_STREAM_PACKETS] = command.snd_id;
-		game->snd_offset[(game->head + game->count) % MAXIMUM_STREAM_PACKETS] = command.snd_offset;
+		game->entry[(game->head + game->count) & stream->packet_mask].snd_id = command.snd_id;
+		game->entry[(game->head + game->count) & stream->packet_mask].snd_offset = command.snd_offset;
 #endif
 		mix_queue(&command);
 	}
@@ -4090,7 +4105,7 @@ static HRESULT STDMETHODCALLTYPE stream_flush(IDirectSoundStream *object)
 		int done = packet_finished(stream, 0);
 
 		stream_complete_head(stream, done ? XMEDIAPACKET_STATUS_SUCCESS : XMEDIAPACKET_STATUS_FLUSHED,
-			done ? game->packet[game->head].dwMaxSize : 0);
+			done ? game->entry[game->head].packet.dwMaxSize : 0);
 	}
 	mix_command(stream, CMD_RESET, NULL, 0, 0);
 	queue_leave();
@@ -4242,12 +4257,15 @@ HRESULT WINAPI IDirectSound_SetOrientation(LPDIRECTSOUND sound, FLOAT x_front, F
 
 /* a stream as DirectSound starts one, in STREAM_BYTES + GAME_BYTES of 64-byte
 aligned memory (the mixer's record, then the game's), and in the mixer's list */
-static void stream_start(struct psp_stream *stream, LPCDSSTREAMDESC description)
+static void stream_start(struct psp_stream *stream, LPCDSSTREAMDESC description, unsigned long packets)
 {
 	const WAVEFORMATEX *format = description->lpwfxFormat;
-	struct stream_game *game = GAME_OF(stream);
+	struct stream_game *game;
 
-	memset(stream, 0, STREAM_BYTES + GAME_BYTES);
+	memset(stream, 0, stream_bytes(packets) + game_bytes(packets));
+	stream->packet_mask = packets - 1;
+	stream->game_offset = stream_bytes(packets);
+	game = GAME_OF(stream);
 	stream->object.lpVtbl = &stream_vtable;
 	game->reference_count = 1;
 	stream->callback = description->lpfnCallback;
@@ -4282,16 +4300,43 @@ static void stream_start(struct psp_stream *stream, LPCDSSTREAMDESC description)
 	queue_leave();
 }
 
+/* SNDSTREAMREC: the game's streams made with room for 16 queued packets
+rather than MAXIMUM_STREAM_PACKETS ("streamrecN", 8, 32 or 64, for another
+size; streamrec64 is the old record). The game keeps at most
+four attached (sound_dsound_xbox.c, dwMaxAttachedPackets) and the mixer's
+ring held at most 16 on any route (sndrec1); its 81 streams at 64 take ~249
+KB of heap, at 32 ~140. A full ring refuses the packet (E_OUTOFMEMORY), which
+the game logs as "packet refused". The loading chant's loop voices keep 64:
+they loop by queueing the sound in every entry */
+static unsigned long stream_record_packets(void)
+{
+	static long packets = -1;
+
+	if (packets < 0)
+	{
+		extern int psp_keep_number(const char *prefix, int fallback);
+		long n = psp_keep_number("streamrec", 16);
+
+		packets = n == 8 || n == 16 || n == 32 ? n : MAXIMUM_STREAM_PACKETS;
+		if (packets != MAXIMUM_STREAM_PACKETS)
+			platform_log("audio: the game's stream records hold %ld packets (streamrec%ld), %u bytes each (%u at %d)",
+				packets, packets, (unsigned)(stream_bytes(packets) + game_bytes(packets)),
+				(unsigned)(stream_bytes(MAXIMUM_STREAM_PACKETS) + game_bytes(MAXIMUM_STREAM_PACKETS)), MAXIMUM_STREAM_PACKETS);
+	}
+	return (unsigned long)packets;
+}
+
 HRESULT WINAPI IDirectSound_CreateSoundStream(LPDIRECTSOUND sound, LPCDSSTREAMDESC description,
 	LPDIRECTSOUNDSTREAM *result, LPUNKNOWN outer)
 {
-	struct psp_stream *stream = memalign(64, STREAM_BYTES + GAME_BYTES);
+	unsigned long packets = stream_record_packets();
+	struct psp_stream *stream = memalign(64, stream_bytes(packets) + game_bytes(packets));
 
 	(void)sound;
 	(void)outer;
 	if (!stream)
 		return E_OUTOFMEMORY;
-	stream_start(stream, description);
+	stream_start(stream, description, packets);
 	*result = &stream->object;
 	return DS_OK;
 }
@@ -4603,7 +4648,7 @@ void *psp_dsound_loop_start(const void *adpcm, unsigned long bytes, unsigned lon
 		if (k == LOOP_VOICES)
 			return NULL;
 		loop_voice_used[k] = 1;
-		stream_start(&loop_voices[k].stream, &description);
+		stream_start(&loop_voices[k].stream, &description, MAXIMUM_STREAM_PACKETS);
 		stream = (LPDIRECTSOUNDSTREAM)&loop_voices[k].stream.object;
 	}
 	IDirectSoundStream_SetFrequency(stream, frequency);
@@ -5355,20 +5400,20 @@ static void sndstream_poll(void)
 		had streamed as the pool has pieces no piece could be taken (B86:
 		c20's 12 of 12 in use with at most 5 needed, reads stopped, silence) */
 		for (j = 0; j < game->count; j++)
-			if (game->snd_id[(game->head + j) % MAXIMUM_STREAM_PACKETS] && game->popped + j >= finished_to)
+			if (game->entry[(game->head + j) & stream->packet_mask].snd_id && game->popped + j >= finished_to)
 				break;
 		if (j < game->count && stream->snd_hint >= 0 && stream->snd_hint < sndstream_piece_count)
 			sndstream_pieces[stream->snd_hint].stamp = sndstream_polls;
 		for (j = 0; j < game->count && ahead < budget; j++)
 		{
-			unsigned long slot = (game->head + j) % MAXIMUM_STREAM_PACKETS, id = game->snd_id[slot];
-			unsigned long size = game->packet[slot].dwMaxSize;
+			unsigned long slot = (game->head + j) & stream->packet_mask, id = game->entry[slot].snd_id;
+			unsigned long size = game->entry[slot].packet.dwMaxSize;
 
 			if (game->popped + j < finished_to)
 				continue;
 			if (id)
 			{
-				unsigned long from = game->snd_offset[slot], to = from + size, at;
+				unsigned long from = game->entry[slot].snd_offset, to = from + size, at;
 
 				for (at = from; at < to && ahead + (at - from) < budget;
 					at = (at / SNDSTREAM_PIECE_BYTES + 1) * SNDSTREAM_PIECE_BYTES)

@@ -45192,6 +45192,25 @@ static char *config_read_file(const char *path, size_t *size)
 #endif
 """),
 ]
+# Stubbs mode is off in the PSP's build (HALO_CONSOLE_NO_STUBBS), and the
+# stubbs_ units are left out, but stubbs_mode.h has no off form: each of the
+# engine's tests (in 21 units) called the link's stub (101,530 calls in b30's flight,
+# pingain1). It answers FALSE in place, so the tests fold away
+FIXES_V091A["port/linux/include/stubbs_mode.h#off"] = [
+("""/* whether Stubbs mode is on: with the stubbs pack's menus */
+boolean stubbs_mode_active(void);
+""", """/* whether Stubbs mode is on: with the stubbs pack's menus */
+#if defined(HALO_PSP) && defined(HALO_CONSOLE_NO_STUBBS)
+/* psp_fixups.py (FIXES_V091A): never, in a build without Stubbs mode */
+static inline boolean stubbs_mode_active(void)
+{
+	return FALSE;
+}
+#else
+boolean stubbs_mode_active(void);
+#endif
+"""),
+]
 # upstream's automated test input (debug.test_input: the scripted bot, the
 # menu scripts and the followed file; its 4 KB script buffer and its parser):
 # the PSP's tests drive the pad from psp_pad.c, so the PSP calls none of it and
@@ -54504,6 +54523,30 @@ struct psp_mv_state
 static struct psp_mv_state *psp_mv;
 static void *psp_mv_stack_top;
 static unsigned int *psp_mv_stack_bottom;
+/* MEVISEDRAM (the lab's memory_stones row 3; "mevisedramoff" keeps them on
+the heap): the state and the
+walk's stack in the ME's eDRAM, 0-192 KB, which nothing else uses (edramcheck:
+no hash moved there over the ladder), 152 KB off the heap. The main CPU can't
+reach the eDRAM, so the ME copies what the main CPU reads (the clusters, the
+surfaces and the objects) into psp_mv_handed, in main RAM, at the walk's end, and
+checks its stack itself. psp_mv and the stack are then the ME's addresses:
+nothing on the main CPU may touch them */
+struct psp_mv_handed
+{
+	unsigned long visible_cluster_flags[MAXIMUM_CLUSTERS_PER_STRUCTURE / LONG_BITS];
+	struct rendered_cluster rendered_clusters[MAXIMUM_RENDERED_CLUSTERS];
+	unsigned long environment_surface_flags[BIT_VECTOR_SIZE_IN_LONGS(MAXIMUM_SURFACES_PER_STRUCTURE)];
+	long objects[MAXIMUM_RENDERED_OBJECTS];
+	short rendered_cluster_count, environment_surface_count;
+	unsigned int stack_low;
+} __attribute__((aligned(64)));
+#define PSP_MV_ME_EDRAM 0x80000000u /* psp_me.h's ME_EDRAM: the eDRAM as the ME sees it */
+#define PSP_MV_EDRAM_TOP 0x30000u /* the stack's top: the end of 0-192 KB */
+/* (more than the ring's whole-cache bound, 16 KB, so the ME writes its whole
+cache back at the job's end, the record's lines with it) */
+typedef char psp_mv_out_whole_cache[sizeof(struct psp_mv_handed) > 16 * 1024 ? 1 : -1];
+static int psp_mv_edram;
+static struct psp_mv_handed *psp_mv_handed;
 
 static void psp_mv_error(long priority, char const *format, ...)
 {
@@ -54672,6 +54715,20 @@ static void psp_mv_run(void *argument)
 	record->depth_most = (unsigned int)psp_mv->depth_most;
 	record->too_deep = (unsigned int)psp_mv->too_deep;
 	record->pvs_fallback = psp_mv->pvs_fallback;
+	if (psp_mv_edram)
+	{
+		/* what the main CPU reads, out of the eDRAM (above) */
+		struct psp_mv_handed *out = psp_mv_handed;
+
+		csmemcpy(out->visible_cluster_flags, psp_mv->render.visible_cluster_flags, sizeof(out->visible_cluster_flags));
+		out->rendered_cluster_count = psp_mv->render.rendered_cluster_count;
+		csmemcpy(out->rendered_clusters, psp_mv->render.rendered_clusters,
+			(unsigned int)psp_mv->render.rendered_cluster_count * sizeof(out->rendered_clusters[0]));
+		csmemcpy(out->environment_surface_flags, psp_mv->render.environment_surface_flags,
+			sizeof(out->environment_surface_flags));
+		out->environment_surface_count = psp_mv->render.environment_surface_count;
+		csmemcpy(out->objects, psp_mv->objects, (unsigned int)count * sizeof(long));
+	}
 	record->done = 1;
 }
 
@@ -54684,6 +54741,14 @@ void psp_mevis_me_job(const unsigned int *args, unsigned int *results)
 
 	unsigned int k;
 
+	/* mevisedram: the eDRAM's state cleared and its stack filled here, by the
+	ME, on the first job (and after the ME restarted: the main CPU asks) */
+	if (psp_mv_edram && record->pad_in[0])
+	{
+		csmemset(psp_mv, 0, PSP_MV_STATE_BYTES);
+		for (k = 0; k < PSP_MV_STACK / 4; k++)
+			psp_mv_stack_bottom[k] = PSP_MV_CANARY;
+	}
 	__asm__ __volatile__("cfc1 %0, $31" : "=r"(saved));
 	__asm__ __volatile__("ctc1 %0, $31" : : "r"(control));
 	psp_mv_call_on(psp_mv_run, record, psp_mv_stack_top);
@@ -54695,6 +54760,16 @@ void psp_mevis_me_job(const unsigned int *args, unsigned int *results)
 			record->pad_out[0] = 1;
 			break;
 		}
+	if (psp_mv_edram)
+	{
+		/* the stack's lowest changed word, for the report (the main CPU
+		can't look) */
+		unsigned int low = 0;
+
+		while (low < PSP_MV_STACK / 4 && psp_mv_stack_bottom[low] == PSP_MV_CANARY)
+			low++;
+		psp_mv_handed->stack_low = low;
+	}
 	results[0] = 1;
 }
 
@@ -54727,23 +54802,61 @@ static int psp_mv_start(void)
 	unsigned int state_bytes = PSP_MV_STATE_BYTES, k;
 	void *stack;
 
-	psp_mv = (struct psp_mv_state *)memalign(64, state_bytes);
-	stack = memalign(64, PSP_MV_STACK);
+	int psp_me_simulated(void); /* psp_me.c */
+	int psp_me_sim_edram_holds(unsigned int offset, unsigned int bytes);
+
+	/* mevisedram (above): the eDRAM's 0-192 KB, when the state fits under the
+	stack. The emulator maps no eDRAM below 800 KB, so there the state and the
+	stack stay on the heap, standing in, and only the main CPU's side (the
+	answers through psp_mv_handed, the ME's own clear and look) is tried */
+	psp_mv_edram = !psp_keep("mevisedramoff") && state_bytes <= PSP_MV_EDRAM_TOP - PSP_MV_STACK;
+	if (psp_mv_edram)
+	{
+		if (!psp_me_simulated() || psp_me_sim_edram_holds(0, PSP_MV_EDRAM_TOP))
+		{
+			psp_mv = (struct psp_mv_state *)PSP_MV_ME_EDRAM;
+			stack = (void *)(PSP_MV_ME_EDRAM + PSP_MV_EDRAM_TOP - PSP_MV_STACK);
+		}
+		else
+		{
+			psp_mv = (struct psp_mv_state *)memalign(64, state_bytes);
+			stack = memalign(64, PSP_MV_STACK);
+			platform_psp_log("mevisedram: the emulator maps no eDRAM at 0-%u KB: the state and the stack stand in on the heap",
+				PSP_MV_EDRAM_TOP / 1024);
+		}
+		psp_mv_handed = (struct psp_mv_handed *)memalign(64, sizeof(struct psp_mv_handed));
+	}
+	else
+	{
+		psp_mv = (struct psp_mv_state *)memalign(64, state_bytes);
+		stack = memalign(64, PSP_MV_STACK);
+	}
 	psp_mv_record = (struct psp_mv_record *)memalign(64, sizeof(struct psp_mv_record));
-	if (!psp_mv || !stack || !psp_mv_record)
+	if (!psp_mv || !stack || !psp_mv_record || (psp_mv_edram && !psp_mv_handed))
 	{
 		platform_psp_log("mevis: no room for the ME's copy (%u KB state, %u KB stack); off", state_bytes / 1024,
 			PSP_MV_STACK / 1024);
 		return 0;
 	}
-	csmemset(psp_mv, 0, state_bytes);
 	csmemset(psp_mv_record, 0, sizeof(*psp_mv_record));
 	psp_mv_stack_top = (char *)stack + PSP_MV_STACK;
 	psp_mv_stack_bottom = (unsigned int *)stack;
-	/* the whole stack, so the report can say how deep the walks reached
-	(the lowest word changed); the walk's check reads only the bottom */
-	for (k = 0; k < PSP_MV_STACK / 4; k++)
-		psp_mv_stack_bottom[k] = PSP_MV_CANARY;
+	if (psp_mv_edram)
+	{
+		/* the ME clears the state and fills the stack at its first job */
+		csmemset(psp_mv_handed, 0, sizeof(*psp_mv_handed));
+		psp_mv_record->pad_in[0] = 1;
+		platform_psp_log("mevisedram: the ME's state (%u KB) and stack (%u KB) in its eDRAM at 0-%u KB; %u KB of answers in main RAM",
+			state_bytes / 1024, PSP_MV_STACK / 1024, PSP_MV_EDRAM_TOP / 1024, (unsigned int)sizeof(struct psp_mv_handed) / 1024);
+	}
+	else
+	{
+		csmemset(psp_mv, 0, state_bytes);
+		/* the whole stack, so the report can say how deep the walks reached
+		(the lowest word changed); the walk's check reads only the bottom */
+		for (k = 0; k < PSP_MV_STACK / 4; k++)
+			psp_mv_stack_bottom[k] = PSP_MV_CANARY;
+	}
 	platform_psp_log("mevis: the frame's visibility again on the ME, timed and checked (%u KB state, %u KB stack, %d clusters deep at most)",
 		state_bytes / 1024, PSP_MV_STACK / 1024, PSP_MV_DEPTH);
 	return 1;
@@ -54998,7 +55111,20 @@ int psp_mevisland_push(void)
 	__asm__ __volatile__("cfc1 %0, $31" : "=r"(control));
 	psp_mv_record->fpu_control = control;
 	psp_mv_record->done = 0;
-	if (!psp_me_push_visibility_into(psp_mv_record, psp_mv, psp_ml_state_bytes, &psp_ml_ticket))
+	if (psp_mv_edram)
+	{
+		/* an ME restarted (a sleep) left the eDRAM as it found it: clear it again */
+		extern volatile unsigned int psp_me_stops; /* psp_me.c */
+		static unsigned int stops_seen;
+
+		if (psp_me_stops != stops_seen)
+		{
+			stops_seen = psp_me_stops;
+			psp_mv_record->pad_in[0] = 1;
+		}
+	}
+	if (!psp_me_push_visibility_into(psp_mv_record, psp_mv_edram ? (void *)psp_mv_handed : (void *)psp_mv,
+		psp_mv_edram ? (unsigned int)sizeof(struct psp_mv_handed) : psp_ml_state_bytes, &psp_ml_ticket))
 	{
 		psp_ml_refused++;
 		return 0;
@@ -55055,8 +55181,16 @@ void psp_mevisland_collect(void)
 		return;
 	}
 	structure = global_structure_bsp_get();
-	psp_ml_drop(&psp_mv->render, PSP_MV_RENDER_BYTES);
-	psp_ml_drop(psp_mv->objects, sizeof(psp_mv->objects));
+	if (psp_mv_edram)
+	{
+		psp_mv_record->pad_in[0] = 0;
+		psp_ml_drop(psp_mv_handed, sizeof(*psp_mv_handed));
+	}
+	else
+	{
+		psp_ml_drop(&psp_mv->render, PSP_MV_RENDER_BYTES);
+		psp_ml_drop(psp_mv->objects, sizeof(psp_mv->objects));
+	}
 	if (psp_ml_check)
 	{
 		unsigned int clusters, cluster_hash, surfaces, surface_hash;
@@ -55066,14 +55200,28 @@ void psp_mevisland_collect(void)
 		psp_ml_differ_clusters += clusters != psp_mv_record->clusters || cluster_hash != psp_mv_record->cluster_hash ||
 			surfaces != psp_mv_record->surfaces || surface_hash != psp_mv_record->surface_hash;
 	}
-	csmemcpy(render.visible_cluster_flags, psp_mv->render.visible_cluster_flags,
-		BIT_VECTOR_SIZE_IN_BYTES(structure->clusters.count));
-	render.rendered_cluster_count = psp_mv->render.rendered_cluster_count;
-	csmemcpy(render.rendered_clusters, psp_mv->render.rendered_clusters,
-		render.rendered_cluster_count * sizeof(render.rendered_clusters[0]));
-	csmemcpy(render.environment_surface_flags, psp_mv->render.environment_surface_flags,
-		BIT_VECTOR_SIZE_IN_BYTES(structure->surfaces.count));
-	render.environment_surface_count = psp_mv->render.environment_surface_count;
+	if (psp_mv_edram)
+	{
+		csmemcpy(render.visible_cluster_flags, psp_mv_handed->visible_cluster_flags,
+			BIT_VECTOR_SIZE_IN_BYTES(structure->clusters.count));
+		render.rendered_cluster_count = psp_mv_handed->rendered_cluster_count;
+		csmemcpy(render.rendered_clusters, psp_mv_handed->rendered_clusters,
+			render.rendered_cluster_count * sizeof(render.rendered_clusters[0]));
+		csmemcpy(render.environment_surface_flags, psp_mv_handed->environment_surface_flags,
+			BIT_VECTOR_SIZE_IN_BYTES(structure->surfaces.count));
+		render.environment_surface_count = psp_mv_handed->environment_surface_count;
+	}
+	else
+	{
+		csmemcpy(render.visible_cluster_flags, psp_mv->render.visible_cluster_flags,
+			BIT_VECTOR_SIZE_IN_BYTES(structure->clusters.count));
+		render.rendered_cluster_count = psp_mv->render.rendered_cluster_count;
+		csmemcpy(render.rendered_clusters, psp_mv->render.rendered_clusters,
+			render.rendered_cluster_count * sizeof(render.rendered_clusters[0]));
+		csmemcpy(render.environment_surface_flags, psp_mv->render.environment_surface_flags,
+			BIT_VECTOR_SIZE_IN_BYTES(structure->surfaces.count));
+		render.environment_surface_count = psp_mv->render.environment_surface_count;
+	}
 	psp_pvs_fallback = (boolean)psp_mv_record->pvs_fallback;
 	psp_ml_objects_ready = 1;
 	psp_ml_used++;
@@ -55124,11 +55272,11 @@ int psp_mevisland_objects(long *indices, short *count)
 		object_marker_end();
 		psp_ml_differ_objects += mine != n || psp_mv_hash(2166136261u, indices, (unsigned int)mine * sizeof(long)) !=
 			psp_mv_record->object_hash;
-		csmemcpy(indices, psp_mv->objects, (unsigned int)n * sizeof(long));
+		csmemcpy(indices, psp_mv_edram ? psp_mv_handed->objects : psp_mv->objects, (unsigned int)n * sizeof(long));
 		*count = n;
 		return 1;
 	}
-	csmemcpy(indices, psp_mv->objects, (unsigned int)n * sizeof(long));
+	csmemcpy(indices, psp_mv_edram ? psp_mv_handed->objects : psp_mv->objects, (unsigned int)n * sizeof(long));
 	object_marker_begin();
 	for (k = 0; k < n; k++)
 		object_mark_function(indices[k]);
@@ -55150,7 +55298,9 @@ void psp_mevisland_settle(void)
 
 		/* the stack's lowest changed word (the ME wrote it; this CPU never
 		does, so its lines are dropped before the look) */
-		if (!psp_ml_out)
+		if (psp_mv_edram)
+			low = psp_mv_handed->stack_low; /* the ME's own look (psp_mevis_me_job) */
+		else if (!psp_ml_out)
 		{
 			psp_ml_drop(psp_mv_stack_bottom, PSP_MV_STACK);
 			while (low < PSP_MV_STACK / 4 && psp_mv_stack_bottom[low] == PSP_MV_CANARY)
