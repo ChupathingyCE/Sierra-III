@@ -56,6 +56,9 @@ static int form, part;
 static float margin;
 static struct box_sweep_kept kept_saved[BOX_SWEEP_KEPT];
 static unsigned int kept_used_saved[BOX_SWEEP_KEPT], kept_clock_saved, b_last_tick;
+static const struct box_collbsp *kept_level_saved;
+static short kept_breakable_count_saved;
+static unsigned int kept_breakable_saved[BOX_SWEEP_BREAKABLE_WORDS];
 static int b_have_tick;
 
 static int sweep_setup(const struct box_static *statics, unsigned int count)
@@ -214,18 +217,25 @@ static void sweep_tick(const struct box_tick *tick)
 			memset(scratch.kept, 0, sizeof(scratch.kept));
 			memset(scratch.kept_used, 0, sizeof(scratch.kept_used));
 			scratch.kept_clock = 0;
+			scratch.kept_level = 0;
 		}
 		if (b_have_tick && tick->tick == b_last_tick)
 		{
 			memcpy(scratch.kept, kept_saved, sizeof(kept_saved));
 			memcpy(scratch.kept_used, kept_used_saved, sizeof(kept_used_saved));
 			scratch.kept_clock = kept_clock_saved;
+			scratch.kept_level = kept_level_saved;
+			scratch.kept_breakable_count = kept_breakable_count_saved;
+			memcpy(scratch.kept_breakable, kept_breakable_saved, sizeof(kept_breakable_saved));
 		}
 		else
 		{
 			memcpy(kept_saved, scratch.kept, sizeof(kept_saved));
 			memcpy(kept_used_saved, scratch.kept_used, sizeof(kept_used_saved));
 			kept_clock_saved = scratch.kept_clock;
+			kept_level_saved = scratch.kept_level;
+			kept_breakable_count_saved = scratch.kept_breakable_count;
+			memcpy(kept_breakable_saved, scratch.kept_breakable, sizeof(kept_breakable_saved));
 		}
 		b_have_tick = 1;
 		b_last_tick = tick->tick;
@@ -508,6 +518,7 @@ static void stage3_report(void)
 	if (scratch.kept_hits + scratch.kept_walks)
 		printf("sweepb count: margin %.2f: %u level spheres from a kept walk, %u walks kept (%.1f%% from a kept walk; the bench's passes counted each)\n",
 			margin, scratch.kept_hits, scratch.kept_walks, 100.0 * scratch.kept_hits / (scratch.kept_hits + scratch.kept_walks));
+		printf("sweepb count: %u drops of every kept walk (a BSP switch or a breakable surface broken)\n", scratch.kept_drops);
 
 	if (!n_level)
 		return;
