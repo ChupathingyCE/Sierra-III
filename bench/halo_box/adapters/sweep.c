@@ -193,8 +193,171 @@ static struct box_sweep_object *object_entry(struct sweep *s, unsigned int first
 	return 0;
 }
 
+#ifdef SWEEP_COUNT
+/* the still-biped census (the lead 09:52 (1)): each asker's sweep (keyed by
+its own object, the query's ignored object, and its order in the tick)
+against the same asker's sweep a tick before: the query alone unchanged, and
+the whole input unchanged (query, level flags, every candidate's record), in
+which case the answer is the same by construction (checked against the
+engine's) */
+#define STILL_SLOTS 1024
+static struct still { unsigned int asker, nth, tick, input_length, output_length; unsigned char *input, *output; } still[STILL_SLOTS];
+static unsigned long long n_still_sweeps, n_still_prev, n_still_query, n_still_whole, n_still_answer, n_still_guard, n_still_guard_answer;
+static unsigned int still_last_tick = 0xFFFFFFFFu;
+
+static void still_report(void) __attribute__((destructor));
+static void still_report(void)
+{
+	if (!n_still_sweeps)
+		return;
+	printf("still count: %llu sweeps, %llu with the same asker's sweep a tick before; of those %llu (%.1f%%) the query unchanged, %llu (%.1f%%) the whole input unchanged (%.1f%% of all sweeps), answers equal in %llu of them\n",
+		n_still_sweeps, n_still_prev, n_still_query, n_still_prev ? 100.0 * n_still_query / n_still_prev : 0.0,
+		n_still_whole, n_still_prev ? 100.0 * n_still_whole / n_still_prev : 0.0, 100.0 * n_still_whole / n_still_sweeps, n_still_answer);
+	printf("still count: the guard (query, level flags, the gathered objects' records and the members' ids unchanged): %llu (%.1f%% of all sweeps), answers equal in %llu of them\n",
+		n_still_guard, 100.0 * n_still_guard / n_still_sweeps, n_still_guard_answer);
+}
+
+/* the input with each cluster member's sphere copy left out (tag 3 keeps its
+object's id): what the answer depends on, since a member's sphere only
+decides whether it is gathered, and a gathered one's record follows it */
+static unsigned int still_key(const unsigned char *in, unsigned int length, unsigned char *out)
+{
+	static const unsigned int sizes[10] = { 0, 8, 4, 20, 44, 36, 8, 60, 4, 4 };
+	unsigned int flag_bytes, pos, used;
+
+	memcpy(&flag_bytes, in + 60, 4);
+	pos = 64 + flag_bytes;
+	if (pos > length)
+		return 0;
+	memcpy(out, in, pos);
+	used = pos;
+	while (pos + 4 <= length)
+	{
+		unsigned int tag;
+
+		memcpy(&tag, in + pos, 4);
+		if (tag > 9 || !sizes[tag] || pos + 4 + sizes[tag] > length)
+			return 0;
+		memcpy(out + used, in + pos, tag == 3 ? 8 : 4 + sizes[tag]);
+		used += tag == 3 ? 8 : 4 + sizes[tag];
+		pos += 4 + sizes[tag];
+	}
+	return used;
+}
+
+static void still_count(const struct box_tick *tick)
+{
+	unsigned int k, j;
+
+	if (tick->tick == still_last_tick)
+		return; /* the same tick's other passes */
+	still_last_tick = tick->tick;
+	for (k = 0; k < tick->entities; k++)
+	{
+		const struct box_entity *e = &tick->entity[k];
+		unsigned int asker, nth = 0, slot, query_bytes = 64;
+		struct still *t;
+
+		if (e->kind != 1 || e->input_length < 64)
+			continue;
+		memcpy(&asker, e->input + 36, 4);
+		for (j = 0; j < k; j++)
+			if (tick->entity[j].kind == 1 && tick->entity[j].input_length >= 64 && !memcmp(tick->entity[j].input + 36, &asker, 4))
+				nth++;
+		n_still_sweeps++;
+		slot = (asker * 2654435761u + nth * 40503u) % STILL_SLOTS;
+		for (j = 0; j < STILL_SLOTS; j++, slot = (slot + 1) % STILL_SLOTS)
+			if (!still[slot].input || (still[slot].asker == asker && still[slot].nth == nth))
+				break;
+		if (j == STILL_SLOTS)
+			continue;
+		t = &still[slot];
+		if (t->input && t->tick + 1 == tick->tick)
+		{
+			n_still_prev++;
+			if (t->input_length >= query_bytes && !memcmp(t->input, e->input, query_bytes))
+				n_still_query++;
+			if (getenv("STILL_DEBUG") && t->input_length >= query_bytes && !memcmp(t->input, e->input, query_bytes))
+			{
+				unsigned int o;
+
+				for (o = 0; o < t->input_length && o < e->input_length && t->input[o] == e->input[o]; o++)
+					;
+				printf("still debug: asker %08x len %u/%u first diff at %u\n", asker, t->input_length, e->input_length, o);
+				if (getenv("STILL_DUMP"))
+				{
+					unsigned int q;
+
+					for (q = 64; q < 200 && q + 4 <= t->input_length; q += 4)
+					{
+						unsigned int a, b;
+
+						memcpy(&a, t->input + q, 4);
+						memcpy(&b, e->input + q, 4);
+						printf("  %3u %08x %08x%s\n", q, a, b, a != b ? "  <" : "");
+					}
+					exit(0);
+				}
+			}
+			{
+				static unsigned char ka[1 << 20], kb[1 << 20];
+				unsigned int la = t->input_length < sizeof(ka) ? still_key(t->input, t->input_length, ka) : 0;
+				unsigned int lb = e->input_length < sizeof(kb) ? still_key(e->input, e->input_length, kb) : 0;
+
+				if (getenv("STILL_WHY") && la && t->input_length >= query_bytes && !memcmp(t->input, e->input, query_bytes) && !(la == lb && !memcmp(ka, kb, la)))
+				{
+					unsigned int o, q, tag = 0, flag_bytes;
+
+					for (o = 0; o < la && o < lb && ka[o] == kb[o]; o++)
+						;
+					memcpy(&flag_bytes, ka + 60, 4);
+					for (q = 64 + flag_bytes; q < o && q + 4 <= la; )
+					{
+						static const unsigned int sz[10] = { 0, 8, 4, 4, 44, 36, 8, 60, 4, 4 };
+
+						memcpy(&tag, ka + q, 4);
+						if (tag > 9 || !sz[tag])
+							break;
+						if (q + 4 + sz[tag] > o)
+							break;
+						q += 4 + sz[tag];
+					}
+					printf("still why: tag %u at %u (lengths %u %u)\n", tag, o, la, lb);
+				}
+				if (la && la == lb && !memcmp(ka, kb, la))
+				{
+					n_still_guard++;
+					if (t->output_length == e->output_length && !memcmp(t->output, e->output, e->output_length))
+						n_still_guard_answer++;
+				}
+			}
+			if (t->input_length == e->input_length && !memcmp(t->input, e->input, e->input_length))
+			{
+				n_still_whole++;
+				if (t->output_length == e->output_length && !memcmp(t->output, e->output, e->output_length))
+					n_still_answer++;
+			}
+		}
+		free(t->input);
+		free(t->output);
+		t->asker = asker;
+		t->nth = nth;
+		t->tick = tick->tick;
+		t->input_length = e->input_length;
+		t->output_length = e->output_length;
+		t->input = malloc(e->input_length ? e->input_length : 1);
+		t->output = malloc(e->output_length ? e->output_length : 1);
+		memcpy(t->input, e->input, e->input_length);
+		memcpy(t->output, e->output, e->output_length);
+	}
+}
+#endif
+
 static void sweep_tick(const struct box_tick *tick)
 {
+#ifdef SWEEP_COUNT
+	still_count(tick);
+#endif
 	unsigned int k, total = 0, at = 0;
 
 	if (tick->entities > sweep_room)
