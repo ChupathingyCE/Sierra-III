@@ -13,6 +13,15 @@ TREE = sys.argv[1]
 # (the tree is left as it was) rather than stopping at the first: what a new
 # upstream would cost (docs/overnight_b108.md, section 7)
 CHECK_ONLY = os.environ.get("PSP_FIXUPS_CHECK", "") == "1"
+# the passes' own counts (a rewrite that guards how many sites it changes):
+# a build stops at the first that fails; PSP_FIXUPS_CHECK=1 lists them all
+# with the anchors, so a pin move finds them in one pass
+count_failures = []
+def check_fail(message):
+    if not CHECK_ONLY:
+        sys.exit(message)
+    count_failures.append(message)
+    return 0
 # psp_build.py's PSP_FRAMEPTR: 0 builds the engine without the frame pointer
 FRAMEPTR = os.environ.get("PSP_FRAMEPTR", "0") != "0"
 
@@ -1649,7 +1658,7 @@ def ai_debug_records(tree):
                     ("sizeof(*actor_path_debug_array) * MAXIMUM_AI_DEBUG_PATH_STORAGE", "sizeof(*actor_path_debug_array) * PSP_DEBUG_COUNT(MAXIMUM_AI_DEBUG_PATH_STORAGE)"),
                 ):
                     if text.count(old) != 2:
-                        sys.exit("psp_fixups: ai_debug.c: expected 2 of %s, found %d" % (old, text.count(old)))
+                        return check_fail("psp_fixups: ai_debug.c: expected 2 of %s, found %d" % (old, text.count(old)))
                     text = text.replace(old, new)
             open(path, "w", errors="surrogateescape").write(text)
             changed += 1
@@ -1706,7 +1715,7 @@ def ai_debug_shrink(tree):
         n1 = len(re.findall(r"\bai_debug\.path_state\b", text))
         n2 = len(re.findall(r"\bai_debug\.path_storage\b", text))
         if not n1 or not n2:
-            sys.exit("psp_fixups: ai_debug.c: no ai_debug.path_state / path_storage")
+            return check_fail("psp_fixups: ai_debug.c: no ai_debug.path_state / path_storage")
         text = re.sub(r"\bai_debug\.path_state\b", "(*psp_ai_debug_path_state())", text)
         text = re.sub(r"\bai_debug\.path_storage\b", "(*psp_ai_debug_path_storage())", text)
         # the allocator after the file's last #include, so the types are known
@@ -1769,7 +1778,7 @@ def interpolation_players(tree):
     # (v0.9.1a: 11, the direct camera's frames and its 'from' arrays and their
     # bounds check added, of the same kinds)
     if text.count(anchor) != 1 or uses != 11:
-        sys.exit("psp_fixups: render_interpolation.c: expected the nodes' define and 11 uses of MAXIMUM_LOCAL_PLAYERS, found %d" % uses)
+        return check_fail("psp_fixups: render_interpolation.c: expected the nodes' define and 11 uses of MAXIMUM_LOCAL_PLAYERS, found %d" % uses)
     text = re.sub(r"\bMAXIMUM_LOCAL_PLAYERS\b", "INTERPOLATION_LOCAL_PLAYERS", text)
     text = text.replace(anchor, anchor + INTERPOLATION_PLAYERS)
     open(path, "w", errors="surrogateescape").write(text)
@@ -1808,7 +1817,7 @@ def ai_meters(tree):
         return 0
     anchor = "extern struct ai_profile_globals ai_profile;\n"
     if header.count(anchor) != 1:
-        sys.exit("psp_fixups: ai_profile.h: no extern of ai_profile")
+        return check_fail("psp_fixups: ai_profile.h: no extern of ai_profile")
     open(header_path, "w", errors="surrogateescape").write(header.replace(anchor, anchor + AIMETERS_HEADER))
     changed, sites = 1, 0
     for root, _, files in os.walk(os.path.join(tree, "source")):
@@ -1823,17 +1832,17 @@ def ai_meters(tree):
             new, n2 = re.subn(r"ai_profile\.meters\[(\w+)\]\.accumulator \+= ([^;]+);", r"PSP_AI_METER_ADD(\1, \2);", new)
             # (the perception queue's own reads and puts-back of a meter stay)
             if re.search(r"ai_profile\.meters\[\w+\]\.accumulator\s*(\+\+|\+=)", new):
-                sys.exit("psp_fixups: %s: an AI meter written in a form AIMETERS doesn't know" % name)
+                return check_fail("psp_fixups: %s: an AI meter written in a form AIMETERS doesn't know" % name)
             if name == "ai.c":
                 new, n3 = re.subn(r"!ai_debug\.ballistic_lineoffire_freeze\b", "!ai_debug.ballistic_lineoffire_freeze && !psp_work_on_me()", new)
                 if n3 != 4:
-                    sys.exit("psp_fixups: ai.c: expected the ballistic record's 4 freeze tests, found %d" % n3)
+                    return check_fail("psp_fixups: ai.c: expected the ballistic record's 4 freeze tests, found %d" % n3)
             if new != text:
                 open(path, "w", errors="surrogateescape").write(new)
                 changed += 1
                 sites += n1 + n2
     if sites != 34:
-        sys.exit("psp_fixups: AIMETERS: expected 34 meter counts, found %d" % sites)
+        return check_fail("psp_fixups: AIMETERS: expected 34 meter counts, found %d" % sites)
     return changed
 
 # ---------- COLLUSERS: the collision user stack, one per CPU (lever COLLUSERS; docs/aime_me.md)
@@ -1925,7 +1934,7 @@ def collision_users(tree):
         return 0
     anchor = "short global_current_collision_users[MAXIMUM_COLLISION_USER_STACK_DEPTH];\n"
     if text.count(anchor) != 1:
-        sys.exit("psp_fixups: collision_usage.c: no definition of global_current_collision_users")
+        return check_fail("psp_fixups: collision_usage.c: no definition of global_current_collision_users")
     if COLLUSERS_SHARED:
         open(usage_c, "w", errors="surrogateescape").write(text.replace(anchor, anchor + COLLUSERS_DEFINES_SHARED))
         header = open(usage_h, errors="surrogateescape").read()
@@ -1942,7 +1951,7 @@ def collision_users(tree):
     ]
     for old, new in pairs:
         if text.count(old) != 1:
-            sys.exit("psp_fixups: collision_usage.c: COLLUSERS anchor not found once: %r" % old[:60])
+            return check_fail("psp_fixups: collision_usage.c: COLLUSERS anchor not found once: %r" % old[:60])
         text = text.replace(old, new)
     # the asserts' depth tests, outside the definitions
     head, defs, tail = text.partition(anchor)
@@ -1953,7 +1962,7 @@ def collision_users(tree):
     header = open(usage_h, errors="surrogateescape").read()
     extern = "extern short global_current_collision_users[MAXIMUM_COLLISION_USER_STACK_DEPTH];\n"
     if header.count(extern) != 1:
-        sys.exit("psp_fixups: collision_usage.h: no extern of global_current_collision_users")
+        return check_fail("psp_fixups: collision_usage.h: no extern of global_current_collision_users")
     open(usage_h, "w", errors="surrogateescape").write(header.replace(extern, extern + COLLUSERS_HEADER))
     changed, sites = 1, 0
     for root, _, files in os.walk(os.path.join(tree, "source")):
@@ -1972,15 +1981,15 @@ def collision_users(tree):
             # (the strings the asserts' messages became are names, not uses)
             leftover = [l for l in new.splitlines() if re.search(r"\bglobal_current_collision_users?\b", l) and "??_C" not in l]
             if leftover:
-                sys.exit("psp_fixups: %s: a collision user stack use COLLUSERS doesn't know: %s" % (name, leftover[0].strip()))
+                return check_fail("psp_fixups: %s: a collision user stack use COLLUSERS doesn't know: %s" % (name, leftover[0].strip()))
             if n1 != n2 + n3:
-                sys.exit("psp_fixups: %s: %d pushes but %d pops of the collision user stack" % (name, n1, n2 + n3))
+                return check_fail("psp_fixups: %s: %d pushes but %d pops of the collision user stack" % (name, n1, n2 + n3))
             open(path, "w", errors="surrogateescape").write(new)
             changed += 1
             sites += n1 + n2 + n3
     # (v0.9.1a: 70, one more push and pop around a biped test in players.c)
     if sites != 70:
-        sys.exit("psp_fixups: COLLUSERS: expected 70 pushes and pops, found %d" % sites)
+        return check_fail("psp_fixups: COLLUSERS: expected 70 pushes and pops, found %d" % sites)
     return changed
 
 # ---------- b125: the PC renderer's GL path out of the link
@@ -2046,7 +2055,7 @@ def gl_never(tree):
     # pointer's bgfx form and halo_draw_picture's, 6eef2f3 two more; v0.9.1a
     # the menus' pointer's Vulkan form: 15)
     if text.count(anchor) != 1 or text.count(GL_NEVER_CALL[0]) != 1 or reads != 15:
-        sys.exit("psp_fixups: d3d8_gl.c: expected the xgpu.h include, gl_initialize's one call and 15 tests of gl_ready, found %d tests" % reads)
+        return check_fail("psp_fixups: d3d8_gl.c: expected the xgpu.h include, gl_initialize's one call and 15 tests of gl_ready, found %d tests" % reads)
     text = GL_READY_READ.sub("DEVICE_GL_READY", text)
     text = text.replace(GL_NEVER_CALL[0], GL_NEVER_CALL[1])
     text = text.replace(anchor, anchor + GL_NEVER_DEFINE)
@@ -2055,7 +2064,7 @@ def gl_never(tree):
     path = os.path.join(tree, "port/linux/src/sdl_platform.c")
     text = open(path, errors="surrogateescape").read()
     if text.count(GL_NEVER_WINDOW[0]) != 1:
-        sys.exit("psp_fixups: sdl_platform.c: expected SDL_CreateWindow's one failure test")
+        return check_fail("psp_fixups: sdl_platform.c: expected SDL_CreateWindow's one failure test")
     text = text.replace(GL_NEVER_WINDOW[0], GL_NEVER_WINDOW[1])
     open(path, "w", errors="surrogateescape").write(text)
     return 2
@@ -2090,7 +2099,7 @@ def unaligned_accesses(tree):
             continue
         for pattern in patterns:
             if pattern not in text:
-                sys.exit("psp_fixups: %s: no %s" % (rel, pattern))
+                return check_fail("psp_fixups: %s: no %s" % (rel, pattern))
             text = text.replace(pattern, "PSP_UNALIGNED_ULONG(" + pattern[len("*(unsigned long *)("):])
         open(path, "w", errors="surrogateescape").write(text)
         changed += 1
@@ -2260,7 +2269,7 @@ def step_labels(tree):
             continue
         for place, label, where in places:
             if place not in text:
-                sys.exit("psp_fixups: %s: no %r" % (rel, place))
+                return check_fail("psp_fixups: %s: no %r" % (rel, place))
             pieces = text.split(place)
             out = pieces[0]
             for piece in pieces[1:]:
@@ -2371,7 +2380,7 @@ def breadcrumbs(tree):
             continue
         for line in lines:
             if text.count(line) != 1:
-                sys.exit("psp_fixups: %s: expected 1 of %s" % (rel, line))
+                return check_fail("psp_fixups: %s: expected 1 of %s" % (rel, line))
             text = text.replace(line, '\t\tPSP_STEP("transport: %s");\n%s' % (line.strip().split("(")[0].replace('"', ''), line))
         open(path, "w", errors="surrogateescape").write(declare_step(text))
         changed += 1
@@ -3729,7 +3738,7 @@ def skipped_passes(tree):
         for function in functions:
             header = "\nvoid %s(\n\tvoid)\n{\n" % function
             if text.count(header) != 1:
-                sys.exit("psp_fixups: %s: expected one definition of %s" % (rel, function))
+                return check_fail("psp_fixups: %s: expected one definition of %s" % (rel, function))
             # (under PSP_DEADXBOX the test is a constant: these passes are
             # only reached inside a window, and the GE is active from the
             # first window's start, so the Xbox code behind them leaves the
@@ -9800,7 +9809,7 @@ def packed_designators(tree):
         new, count = pattern.subn(r"PSP_DESIGNATOR(\1)", text)
         # never wrap a left-hand side (none exist in the game code; the check keeps it that way)
         if re.search(r"PSP_DESIGNATOR\([^)]*\)\s*=[^=]", new):
-            sys.exit("psp_fixups: %s: a packed designator is assigned to" % rel)
+            return check_fail("psp_fixups: %s: a packed designator is assigned to" % rel)
         if count:
             if "#include" in new:
                 first = new.index("#include")
@@ -55092,8 +55101,10 @@ for rel, changes in FIXES.items():
             dead_anchors.append("psp_fixups: warning: %s: an anchor matches only inside %s, which the PSP doesn't "
                                 "compile:\n%s" % (rel, dead, old[:200]))
         text = text.replace(old, new)
-    if CHECK_ONLY or not applied:
-        # (a file with no changes left is left as it is)
+    if not applied:
+        # (a file with no changes left is left as it is; with
+        # PSP_FIXUPS_CHECK=1 the mirror is still written, so the passes'
+        # counts below are checked on the fixed text)
         continue
     # PSP_FRAMEPTR=0 builds every engine unit without the frame pointer, so
     # the lookups' own omit-frame-pointer attribute says nothing more. Left
@@ -55116,7 +55127,6 @@ if carried:
           % (len(carried), ", ".join("%s x%d" % (rel, carried.count(rel)) for rel in sorted(set(carried)))))
 if CHECK_ONLY:
     print("\n\n".join(failures))
-    sys.exit("psp_fixups: %d anchors don't match once" % len(failures) if failures else 0)
 # (before the passes below, which label and append: the copies are made from
 # the fixed text alone)
 if WALKAPART or MEVISLAND:
@@ -55130,3 +55140,9 @@ print("psp_fixups: render interpolation for one local player in %d files" % inte
 print("psp_fixups: the GL renderer compiled out in %d files" % gl_never(TREE))
 print("psp_fixups: the collision user stack %s in %d files (COLLUSERS)" % ("shared, as before," if COLLUSERS_SHARED else "one a CPU (debug tools) or none", collision_users(TREE)))
 print("psp_fixups: the AI's meters and ballistic record the main CPU's alone in %d files (AIMETERS)" % ai_meters(TREE))
+
+if CHECK_ONLY:
+    for message in count_failures:
+        print(message)
+    sys.exit("psp_fixups: %d anchors don't match once, %d passes' counts fail" % (len(failures), len(count_failures))
+             if failures or count_failures else 0)
