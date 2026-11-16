@@ -822,6 +822,34 @@ static int sweepb100_setup(const struct box_static *statics, unsigned int count)
 	return sweepb_margin(statics, count, 1.0f);
 }
 
+/* B's diagnostic parts at 0.25 (answers incomplete by design): its features
+only (no clip), and its level's features only */
+static int sweepb25f_setup(const struct box_static *statics, unsigned int count)
+{
+	int r = sweepb_margin(statics, count, 0.25f);
+
+	part = 1;
+	return r;
+}
+
+static int sweepb25l_setup(const struct box_static *statics, unsigned int count)
+{
+	int r = sweepb_margin(statics, count, 0.25f);
+
+	part = 2;
+	return r;
+}
+
+const struct box_adapter box_sweepb25f = {
+	"sweepb25f", kinds, 0, 0, BOX_EXACT, 0.f, 0.f, 1.1f, 30.f,
+	sweepb25f_setup, sweep_tick, sweep_run, sweep_output, sweep_compare, "sweep",
+};
+
+const struct box_adapter box_sweepb25l = {
+	"sweepb25l", kinds, 0, 0, BOX_EXACT, 0.f, 0.f, 1.1f, 30.f,
+	sweepb25l_setup, sweep_tick, sweep_run, sweep_output, sweep_compare, "sweep",
+};
+
 const struct box_adapter box_sweepb25 = {
 	"sweepb25", kinds, 0, 0, BOX_EXACT, 0.f, 0.f, 1.1f, 30.f,
 	sweepb25_setup, sweep_tick, sweep_run, sweep_output, sweep_compare, "sweep",
