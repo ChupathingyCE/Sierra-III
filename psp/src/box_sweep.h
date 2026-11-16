@@ -145,7 +145,9 @@ struct box_sweep_answer
 
 /* the sweep's scratch (its feature list and the walks' marks): the asker's
 own, so a sweep writes nothing shared */
+#ifndef BOX_SWEEP_KEPT
 #define BOX_SWEEP_KEPT 32
+#endif
 #define BOX_SWEEP_BREAKABLE_WORDS 8 /* the engine's 256 breakable surfaces */
 struct box_sweep_kept { int asker; float center[3], radius; struct box_collbsp_sphere_result walk; };
 

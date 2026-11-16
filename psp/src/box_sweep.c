@@ -745,6 +745,19 @@ static int level_kept(const struct box_sweep_world *w, const float *center, floa
 		slot->radius = radius + w->kept_margin;
 		box_collbsp_sphere(w->level, w->breakable_count, w->breakable, center, slot->radius, 0, &slot->walk);
 		scratch->kept_walks++;
+#ifdef SWEEP_COUNT
+		{
+			extern unsigned long long sweep_kept_sizes[5];
+			const struct box_collbsp_sphere_result *r = &slot->walk;
+			int n = r->surface_count + r->edge_count + r->vertex_count + r->leaf_count;
+
+			sweep_kept_sizes[0]++;
+			sweep_kept_sizes[1] += (unsigned long long)n;
+			if ((unsigned long long)n > sweep_kept_sizes[2])
+				sweep_kept_sizes[2] = (unsigned long long)n;
+			sweep_kept_sizes[3] += (unsigned long long)r->surface_count + r->edge_count;
+		}
+#endif
 	}
 	scratch->kept_used[slot - scratch->kept] = scratch->kept_clock;
 	return box_collbsp_sphere_kept(w->level, w->breakable_count, w->breakable, &slot->walk, center, radius, &scratch->sphere);
