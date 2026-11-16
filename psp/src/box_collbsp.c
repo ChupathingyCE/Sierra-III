@@ -588,6 +588,30 @@ static int sphere_from(const struct box_collbsp *bsp, int start, short breakable
 	const float center[3], float radius, int any, struct box_collbsp_sphere_result *result);
 
 /* where a sphere's 3D walk first splits (for box_collbsp_sphere_result.start_node) */
+/* the packed subtree's census: the 3D nodes a sphere's walk visits from a
+node (each one the packed copy would hold) and the leaves it reaches */
+void box_collbsp_subtree_count(const struct box_collbsp *bsp, int index, const float center[3], float radius,
+	int *nodes, int *leaves)
+{
+	while (!(index & LONG_MIN_))
+	{
+		const struct box_collbsp_node *node = &bsp->nodes[index];
+		float distance = (center[0] * node->n[0] + center[1] * node->n[1] + center[2] * node->n[2]) - node->d;
+		int second = distance < radius, first_side = distance > -radius;
+
+		(*nodes)++;
+		if (first_side && second)
+		{
+			box_collbsp_subtree_count(bsp, node->child[0], center, radius, nodes, leaves);
+			index = node->child[1];
+			continue;
+		}
+		index = node->child[first_side];
+	}
+	if (index != NONE_)
+		(*leaves)++;
+}
+
 int box_collbsp_split_node(const struct box_collbsp *bsp, const float center[3], float radius)
 {
 	int index = 0;
