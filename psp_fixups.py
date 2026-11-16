@@ -54380,7 +54380,457 @@ FIXES_ASKCENSUS["source/game/game_engine_bomb.c#askcensus"] = [
 """),
 ]
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_SSPR.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + list(FIXES_CHUPA090RUNS.items()) + list(FIXES_HEAPTRIM.items()) + list(FIXES_B78.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items()) + list(FIXES_AIME2A.items()) + list(FIXES_REDOSEED.items()) + (list(FIXES_STACKHOT.items()) if STACKHOT else []) + (list(FIXES_STACKHOT2.items()) if STACKHOT2 else []) + list(FIXES_PWSL.items()) + list(FIXES_SPHSL.items()) + list(FIXES_RECONLIST.items()) + list(FIXES_TP1.items()) + list(FIXES_WXDEAD.items()) + list(FIXES_AIMEMOVE.items()) + list(FIXES_PROPCRASH.items()) + list(FIXES_APCPOOL.items()) + list(FIXES_PSPTLS.items()) + list(FIXES_SNDEDRAM.items()) + list(FIXES_LIGHTFIRST.items()) + list(FIXES_DRAWPART.items()) + (list(FIXES_RECONLATE.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + list(FIXES_P2PASS.items()) + (list(FIXES_P2CENSUS.items()) if P2CENSUS else []) + list(FIXES_OBSRAY.items()) + list(FIXES_SNDWAIT.items()) + list(FIXES_FLAMEDECAL.items()) + list(FIXES_HUHINT.items()) + list(FIXES_DBLSOFT.items()) + list(FIXES_VFPUTRIG.items()) + list(FIXES_TICKCACHE.items()) + list(FIXES_STRICTALIAS.items()) + list(FIXES_SNDPERMAP.items()) + list(FIXES_RLOOP.items()) + list(FIXES_L10.items()) + list(FIXES_RLSKIP.items()) + list(FIXES_ONEWALK.items()) + (list(FIXES_POSEK.items()) if POSEK else []) + (list(FIXES_SNDSTREAM.items()) if os.environ.get("PSP_SNDSTREAM", "") == "1" else []) + list(FIXES_MOUTHCLOCK.items()) + list(FIXES_LSAME.items()) + list(FIXES_CHUPA090.items()) + list(FIXES_V091A.items()) + list(FIXES_AIDEBUGREC.items()) + (list(FIXES_AITICKOLD.items()) if AITICKOLD else []) + (list(FIXES_PADPATH.items()) if os.environ.get("PSP_PADPATH", "") == "1" else []) + list(FIXES_FARLEVEL.items()) + list(FIXES_DECALRING.items()) + list(FIXES_ARRAYFULL.items()) + (list(FIXES_DEADXBOX.items()) if DEADXBOX else []) + (list(FIXES_CAPTURE_POSING.items()) if CAPTURE == "posing" else []) + (list(FIXES_BOXPOSING.items()) if BOXPOSING else []) + (list(FIXES_ASKCENSUS.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
+# ---------- FIXES_CAPTURE_SWEEP: the collision service's first slice, the
+# biped pill sweep (docs/box_collision.md §9; PSP_CAPTURE=sweep): each
+# collision_move_pill call made in a sampled tick, its query, what the walk
+# read of the world (the level's BSP and breakable flags, each leaf's
+# cluster, each reached cluster's collideable objects, each object met, a
+# biped's pill, a model's node BSPs and matrices), and the engine's answer.
+# The world pieces are tagged records, written as the walk meets them; the
+# adapter (bench/halo_box/adapters/sweep.c) files them into tables the box
+# reads by index, so the box's walk makes its own decisions from them.
+FIXES_CAPTURE_SWEEP = {}
+FIXES_CAPTURE_SWEEP["source/physics/collisions.c#capture"] = [
+("""#include "halo_perf_log.h" /* port: console.perf_log */
+""", """#include "halo_perf_log.h" /* port: console.perf_log */
+#ifdef PSP_CAPTURE_SWEEP
+void psp_capture_static(unsigned int key, const void *bytes, unsigned int length);
+void psp_capture_static_ref(unsigned int key, const void *bytes, unsigned int length);
+void psp_capture_begin(unsigned int id, unsigned int kind, unsigned int flags);
+void psp_capture_input(const void *bytes, unsigned int length);
+void psp_capture_output(const void *bytes, unsigned int length);
+void psp_capture_end(void);
+int psp_capture_sampled(void);
+
+/* the record's kind, and the world's tags (box_sweep.h names them too) */
+#define PSP_CAP_SWEEP 1
+#define PSP_SWT_LEAF 1     /* leaf index, its cluster */
+#define PSP_SWT_CLUSTER 2  /* a cluster the walk marked; its objects follow */
+#define PSP_SWT_CLOBJ 3    /* an object the cluster walk gave, with its sphere copy */
+#define PSP_SWT_OBJECT 4   /* an object object_get_features_in_sphere met */
+#define PSP_SWT_BIPED 5    /* a biped's fields and pill */
+#define PSP_SWT_MODEL 6    /* a model's instance: its node count, then NODE records */
+#define PSP_SWT_NODE 7     /* a node that reaches its BSP: the BSP's key and the node's matrix */
+#define PSP_SWT_NOMODEL 8  /* an object with no collision model */
+#define PSP_SWT_PHYSICS 9  /* a vehicle's physics (not in the slice: the call is marked) */
+
+int psp_cap_sweep_on;
+static unsigned long psp_cap_sweep_count;
+extern int psp_sphere_any;
+extern boolean debug_collision_skip_objects;
+
+void psp_cap_sweep_record(unsigned long tag, const void *bytes, unsigned int length)
+{
+	if (!psp_cap_sweep_on)
+		return;
+	psp_capture_input(&tag, sizeof(tag));
+	if (length)
+		psp_capture_input(bytes, length);
+}
+
+/* a BSP once a file (the level's or a model's): its eight arrays named by
+count, element size and key (the array's address), then each array kept by
+reference (tag data: it stays where it is until the capture closes) */
+void psp_cap_sweep_bsp(struct collision_bsp const *bsp)
+{
+	struct tag_block const *blocks[8];
+	unsigned long table[1 + 8 * 3];
+	static const unsigned long sizes[8] = { sizeof(struct bsp3d_node), sizeof(real_plane3d), sizeof(struct collision_leaf),
+		sizeof(struct bsp2d_reference), sizeof(struct bsp2d_node), sizeof(struct collision_surface),
+		sizeof(struct collision_edge), sizeof(struct collision_vertex) };
+	int k;
+
+	blocks[0] = &bsp->bsp3d.nodes;
+	blocks[1] = &bsp->bsp3d.planes;
+	blocks[2] = &bsp->leaves;
+	blocks[3] = &bsp->bsp2d_references;
+	blocks[4] = &bsp->bsp2d.nodes;
+	blocks[5] = &bsp->surfaces;
+	blocks[6] = &bsp->edges;
+	blocks[7] = &bsp->vertices;
+	table[0] = 8;
+	for (k = 0; k < 8; k++)
+	{
+		table[1 + 3 * k] = blocks[k]->count > 0 ? (unsigned long)blocks[k]->count : 0;
+		table[2 + 3 * k] = sizes[k];
+		table[3 + 3 * k] = (unsigned long)blocks[k]->address;
+	}
+	psp_capture_static((unsigned long)bsp, table, sizeof(table));
+	for (k = 0; k < 8; k++)
+		if (blocks[k]->count > 0 && blocks[k]->address)
+			psp_capture_static_ref((unsigned long)blocks[k]->address, blocks[k]->address,
+				(unsigned int)(blocks[k]->count * sizes[k]));
+}
+
+/* the query, at the sweep's start: its arguments, the switches its walk
+reads (the sphere walk's early-out, the objects' skip), the level's BSP key,
+then the breakable surfaces' flags */
+static int psp_cap_sweep_begin(unsigned long flags, real_point3d const *position, real_vector3d const *velocity,
+	real height, real radius, long ignore_object_index, short maximum_collision_count)
+{
+	unsigned long q[16];
+	struct collision_bsp const *level = global_collision_bsp_get();
+	unsigned int flag_bytes = (unsigned int)BIT_VECTOR_SIZE_IN_BYTES(MAXIMUM_BREAKABLE_SURFACES_PER_MAP);
+
+	if (psp_cap_sweep_on || !psp_capture_sampled())
+		return 0;
+	q[0] = flags;
+	memcpy(&q[1], position, 12);
+	memcpy(&q[4], velocity, 12);
+	memcpy(&q[7], &height, 4);
+	memcpy(&q[8], &radius, 4);
+	q[9] = (unsigned long)ignore_object_index;
+	q[10] = (unsigned long)(long)maximum_collision_count;
+	q[11] = psp_sphere_any ? 1 : 0;
+	q[12] = debug_collision_skip_objects ? 1 : 0;
+	q[13] = (unsigned long)level;
+	q[14] = MAXIMUM_BREAKABLE_SURFACES_PER_MAP;
+	q[15] = flag_bytes;
+	psp_cap_sweep_bsp(level);
+	psp_capture_begin((unsigned int)psp_cap_sweep_count++, PSP_CAP_SWEEP, 0);
+	psp_capture_input(q, sizeof(q));
+	psp_capture_input(breakable_surface_flags_get(), flag_bytes);
+	psp_cap_sweep_on = 1;
+	return 1;
+}
+
+/* the answer: the count, the clipped position and velocity, then each
+collision's plane record */
+static void psp_cap_sweep_end(int mine, short count, real_point3d const *position, real_vector3d const *velocity,
+	struct collision_plane const *collisions)
+{
+	unsigned long head[7];
+
+	if (!mine)
+		return;
+	psp_cap_sweep_on = 0;
+	head[0] = (unsigned long)(long)count;
+	memcpy(&head[1], position, 12);
+	memcpy(&head[4], velocity, 12);
+	psp_capture_output(head, sizeof(head));
+	if (count > 0)
+		psp_capture_output(collisions, (unsigned int)(sizeof(*collisions) * (unsigned int)count));
+	psp_capture_end();
+}
+#endif
+"""),
+# the sweep: its query at the start, its answer at the end
+("""	center.x = position->x + velocity->i * 0.5f;
+	center.y = position->y + velocity->j * 0.5f;
+	center.z = height * 0.5f + (position->z + velocity->k * 0.5f);
+
+	if (collision_get_features_in_sphere(
+		flags,
+		&center,
+		magnitude3d(velocity) * 0.5f + height * 0.5f + radius,""",
+ """	center.x = position->x + velocity->i * 0.5f;
+	center.y = position->y + velocity->j * 0.5f;
+	center.z = height * 0.5f + (position->z + velocity->k * 0.5f);
+#ifdef PSP_CAPTURE_SWEEP
+	int psp_cap_mine = psp_cap_sweep_begin(flags, position, velocity, height, radius, ignore_object_index, maximum_collision_count);
+#endif
+
+	if (collision_get_features_in_sphere(
+		flags,
+		&center,
+		magnitude3d(velocity) * 0.5f + height * 0.5f + radius,"""),
+("""	match_assert("c:\\\\halo\\\\SOURCE\\\\physics\\\\collisions.c", 1230, global_current_collision_user_depth > 1);
+	--global_current_collision_user_depth;
+
+	return result;
+}
+#undef features /* psp_fixups.py (FIXES_STACKHOT2) */""",
+ """	match_assert("c:\\\\halo\\\\SOURCE\\\\physics\\\\collisions.c", 1230, global_current_collision_user_depth > 1);
+	--global_current_collision_user_depth;
+#ifdef PSP_CAPTURE_SWEEP
+	psp_cap_sweep_end(psp_cap_mine, result, clipped_position, clipped_velocity, collisions);
+#endif
+
+	return result;
+}
+#undef features /* psp_fixups.py (FIXES_STACKHOT2) */"""),
+# each leaf's cluster, each marked cluster and the objects its walk gives
+("""				long leaf_index = result.leaf_indices[leaf_reference_index];
+				/* port: (collision_cluster_index_from_leaf) */
+				short cluster_index = (short)collision_cluster_index_from_leaf(leaf_index);
+
+				if (structure_cluster_mark(cluster_index))
+				{
+					long reference_index;
+					long object_index;
+#ifdef HALO_PSP
+					/* psp_fixups.py (FIXES_OBJWALK) */
+					boolean walk_inline = psp_objwalk_inline();
+#endif
+""", """				long leaf_index = result.leaf_indices[leaf_reference_index];
+				/* port: (collision_cluster_index_from_leaf) */
+				short cluster_index = (short)collision_cluster_index_from_leaf(leaf_index);
+#ifdef PSP_CAPTURE_SWEEP
+				{
+					long pair[2];
+
+					pair[0] = leaf_index;
+					pair[1] = cluster_index;
+					psp_cap_sweep_record(PSP_SWT_LEAF, pair, sizeof(pair));
+				}
+#endif
+
+				if (structure_cluster_mark(cluster_index))
+				{
+					long reference_index;
+					long object_index;
+#ifdef HALO_PSP
+					/* psp_fixups.py (FIXES_OBJWALK) */
+					boolean walk_inline = psp_objwalk_inline();
+#endif
+#ifdef PSP_CAPTURE_SWEEP
+					{
+						long cluster = cluster_index;
+
+						psp_cap_sweep_record(PSP_SWT_CLUSTER, &cluster, sizeof(cluster));
+					}
+#endif
+"""),
+("""					{
+						/* port: (the far ones passed over on a packed copy
+						of their bounding spheres: object_bounds_cache.c;
+						before they are marked, which reads them: one met
+						again in another cluster is passed over again) */
+						if (
+#ifdef HALO_PSP
+							psp_sphere_may_touch(object_index, center, radius) &&""",
+ """					{
+#ifdef PSP_CAPTURE_SWEEP
+						if (psp_cap_sweep_on)
+						{
+							struct psp_object_sphere const *copy = psp_sphere_of(object_index);
+							unsigned long rec[5];
+
+							rec[0] = (unsigned long)object_index;
+							memcpy(&rec[1], &copy->center, 12);
+							memcpy(&rec[4], &copy->radius, 4);
+							psp_cap_sweep_record(PSP_SWT_CLOBJ, rec, sizeof(rec));
+						}
+#endif
+						/* port: (the far ones passed over on a packed copy
+						of their bounding spheres: object_bounds_cache.c;
+						before they are marked, which reads them: one met
+						again in another cluster is passed over again) */
+						if (
+#ifdef HALO_PSP
+							psp_sphere_may_touch(object_index, center, radius) &&"""),
+# each object met, a biped's pill, a model or none, a vehicle's physics
+("""	do
+	{
+		struct object_datum *object = object_get(object_index);
+
+		if (object_index != ignore_object_index &&
+			!TEST_FLAG(object->object.flags, _object_invisible_bit) &&
+			!TEST_FLAG(object->object.flags, _object_no_collisions_bit) &&
+			(!TEST_FLAG(object->object.damage_flags, _object_dead_bit) ||
+				object->object.type != _object_type_biped))
+		{
+			real reach = object->object.bounding_sphere_radius;""",
+ """	do
+	{
+		struct object_datum *object = object_get(object_index);
+#ifdef PSP_CAPTURE_SWEEP
+		if (psp_cap_sweep_on)
+		{
+			unsigned long rec[11];
+
+			rec[0] = (unsigned long)object_index;
+			rec[1] = (unsigned long)object->object.flags;
+			rec[2] = (unsigned long)object->object.damage_flags;
+			rec[3] = (unsigned long)(long)object->object.type;
+			memcpy(&rec[4], &object->object.bounding_sphere_center, 12);
+			memcpy(&rec[7], &object->object.bounding_sphere_radius, 4);
+			rec[8] = (unsigned long)object->object.parent_object_index;
+			rec[9] = (unsigned long)object->object.next_object_index;
+			rec[10] = (unsigned long)object->object.first_child_object_index;
+			psp_cap_sweep_record(PSP_SWT_OBJECT, rec, sizeof(rec));
+		}
+#endif
+
+		if (object_index != ignore_object_index &&
+			!TEST_FLAG(object->object.flags, _object_invisible_bit) &&
+			!TEST_FLAG(object->object.flags, _object_no_collisions_bit) &&
+			(!TEST_FLAG(object->object.damage_flags, _object_dead_bit) ||
+				object->object.type != _object_type_biped))
+		{
+			real reach = object->object.bounding_sphere_radius;"""),
+("""					case _object_type_biped:
+						{
+							struct biped_datum *biped = (struct biped_datum *)object;
+
+							if ((!TEST_FLAG(flags, _collision_test_skip_passthrough_bipeds_bit) ||""",
+ """					case _object_type_biped:
+						{
+							struct biped_datum *biped = (struct biped_datum *)object;
+#ifdef PSP_CAPTURE_SWEEP
+							if (psp_cap_sweep_on)
+							{
+								unsigned long rec[9];
+								real_point3d pill_base;
+								real pill_h, pill_w;
+
+								biped_get_physics_pill(object_index, &pill_base, &pill_h, &pill_w);
+								rec[0] = (unsigned long)object_index;
+								rec[1] = (unsigned long)biped->biped.flags;
+								rec[2] = (unsigned long)(long)biped->unit.player_index;
+								rec[3] = (unsigned long)(long)biped->unit.parent_seat_index;
+								memcpy(&rec[4], &pill_base, 12);
+								memcpy(&rec[7], &pill_h, 4);
+								memcpy(&rec[8], &pill_w, 4);
+								psp_cap_sweep_record(PSP_SWT_BIPED, rec, sizeof(rec));
+							}
+#endif
+
+							if ((!TEST_FLAG(flags, _collision_test_skip_passthrough_bipeds_bit) ||"""),
+("""							struct physics_instance instance;
+
+							if (physics_instance_new(&instance, object_index))
+							{
+								physics_get_features_in_sphere(""",
+ """							struct physics_instance instance;
+#ifdef PSP_CAPTURE_SWEEP
+							{
+								long index = object_index;
+
+								psp_cap_sweep_record(PSP_SWT_PHYSICS, &index, sizeof(index));
+							}
+#endif
+
+							if (physics_instance_new(&instance, object_index))
+							{
+								physics_get_features_in_sphere("""),
+("""							struct collision_model_instance instance;
+
+							if (collision_model_instance_new(&instance, object_index))
+							{
+								collision_model_get_features_in_sphere(
+									&instance,
+									center,
+									radius,
+									height,
+									width,
+									features);
+							}
+						}
+						break;
+					}
+				}
+
+				if (object->object.first_child_object_index != NONE)
+				{
+					object_get_features_in_sphere(""",
+ """							struct collision_model_instance instance;
+
+							if (collision_model_instance_new(&instance, object_index))
+							{
+								collision_model_get_features_in_sphere(
+									&instance,
+									center,
+									radius,
+									height,
+									width,
+									features);
+							}
+#ifdef PSP_CAPTURE_SWEEP
+							else
+							{
+								long index = object_index;
+
+								psp_cap_sweep_record(PSP_SWT_NOMODEL, &index, sizeof(index));
+							}
+#endif
+						}
+						break;
+					}
+				}
+
+				if (object->object.first_child_object_index != NONE)
+				{
+					object_get_features_in_sphere("""),
+]
+FIXES_CAPTURE_SWEEP["source/physics/collision_models.c#capture"] = [
+("""	const real_matrix4x3 *matrix;
+
+	return_val = FALSE;
+
+	/* port: (instance->node_count, collision_node_region_valid) */
+	for (i = 0; i < instance->node_count; i++)
+	{""",
+ """	const real_matrix4x3 *matrix;
+
+	return_val = FALSE;
+#ifdef PSP_CAPTURE_SWEEP
+	/* (FIXES_CAPTURE_SWEEP) the model's instance as the sweep met it: its
+	object, its node count; each node that reaches its BSP follows */
+	extern int psp_cap_sweep_on;
+	void psp_cap_sweep_record(unsigned long tag, const void *bytes, unsigned int length);
+	void psp_cap_sweep_bsp(struct collision_bsp const *bsp);
+	{
+		long head[2];
+
+		head[0] = instance->object_index;
+		head[1] = instance->node_count;
+		psp_cap_sweep_record(6, head, sizeof(head));
+	}
+#endif
+
+	/* port: (instance->node_count, collision_node_region_valid) */
+	for (i = 0; i < instance->node_count; i++)
+	{"""),
+("""				if (collision_bsp->bsp3d.nodes.count > 0)
+				{
+					matrix = &instance->matrices[i];
+					matrix4x3_inverse(matrix, &inverted_matrix);
+					matrix4x3_transform_point(&inverted_matrix, center, &transformed_center);
+
+					scaled_radius = inverted_matrix.scale * radius;
+
+					if (collision_bsp_test_sphere(
+						collision_bsp,
+						0,
+						0,
+						&transformed_center,
+						scaled_radius,
+						&result))
+					{
+						collision_bsp_get_features_in_sphere(""",
+ """				if (collision_bsp->bsp3d.nodes.count > 0)
+				{
+					matrix = &instance->matrices[i];
+#ifdef PSP_CAPTURE_SWEEP
+					if (psp_cap_sweep_on)
+					{
+						unsigned long rec[2 + 13];
+
+						psp_cap_sweep_bsp(collision_bsp);
+						rec[0] = (unsigned long)i;
+						rec[1] = (unsigned long)collision_bsp;
+						memcpy(&rec[2], matrix, 13 * 4);
+						psp_cap_sweep_record(7, rec, sizeof(rec));
+					}
+#endif
+					matrix4x3_inverse(matrix, &inverted_matrix);
+					matrix4x3_transform_point(&inverted_matrix, center, &transformed_center);
+
+					scaled_radius = inverted_matrix.scale * radius;
+
+					if (collision_bsp_test_sphere(
+						collision_bsp,
+						0,
+						0,
+						&transformed_center,
+						scaled_radius,
+						&result))
+					{
+						collision_bsp_get_features_in_sphere("""),
+]
+
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_SSPR.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + list(FIXES_CHUPA090RUNS.items()) + list(FIXES_HEAPTRIM.items()) + list(FIXES_B78.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items()) + list(FIXES_AIME2A.items()) + list(FIXES_REDOSEED.items()) + (list(FIXES_STACKHOT.items()) if STACKHOT else []) + (list(FIXES_STACKHOT2.items()) if STACKHOT2 else []) + list(FIXES_PWSL.items()) + list(FIXES_SPHSL.items()) + list(FIXES_RECONLIST.items()) + list(FIXES_TP1.items()) + list(FIXES_WXDEAD.items()) + list(FIXES_AIMEMOVE.items()) + list(FIXES_PROPCRASH.items()) + list(FIXES_APCPOOL.items()) + list(FIXES_PSPTLS.items()) + list(FIXES_SNDEDRAM.items()) + list(FIXES_LIGHTFIRST.items()) + list(FIXES_DRAWPART.items()) + (list(FIXES_RECONLATE.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + list(FIXES_P2PASS.items()) + (list(FIXES_P2CENSUS.items()) if P2CENSUS else []) + list(FIXES_OBSRAY.items()) + list(FIXES_SNDWAIT.items()) + list(FIXES_FLAMEDECAL.items()) + list(FIXES_HUHINT.items()) + list(FIXES_DBLSOFT.items()) + list(FIXES_VFPUTRIG.items()) + list(FIXES_TICKCACHE.items()) + list(FIXES_STRICTALIAS.items()) + list(FIXES_SNDPERMAP.items()) + list(FIXES_RLOOP.items()) + list(FIXES_L10.items()) + list(FIXES_RLSKIP.items()) + list(FIXES_ONEWALK.items()) + (list(FIXES_POSEK.items()) if POSEK else []) + (list(FIXES_SNDSTREAM.items()) if os.environ.get("PSP_SNDSTREAM", "") == "1" else []) + list(FIXES_MOUTHCLOCK.items()) + list(FIXES_LSAME.items()) + list(FIXES_CHUPA090.items()) + list(FIXES_V091A.items()) + list(FIXES_AIDEBUGREC.items()) + (list(FIXES_AITICKOLD.items()) if AITICKOLD else []) + (list(FIXES_PADPATH.items()) if os.environ.get("PSP_PADPATH", "") == "1" else []) + list(FIXES_FARLEVEL.items()) + list(FIXES_DECALRING.items()) + list(FIXES_ARRAYFULL.items()) + (list(FIXES_DEADXBOX.items()) if DEADXBOX else []) + (list(FIXES_CAPTURE_POSING.items()) if CAPTURE == "posing" else []) + (list(FIXES_BOXPOSING.items()) if BOXPOSING else []) + (list(FIXES_ASKCENSUS.items()) + list(FIXES_CAPTURE_SWEEP.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 

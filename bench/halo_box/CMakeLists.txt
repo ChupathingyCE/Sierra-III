@@ -39,7 +39,7 @@ file(GLOB ADAPTERS ${CMAKE_CURRENT_SOURCE_DIR}/adapters/*.c)
 file(GLOB BOX_UNITS ${CMAKE_CURRENT_SOURCE_DIR}/../../psp/src/box_*.c)
 add_executable(halo_box main.c harness.c selftest_capture.c adapters.c ${ADAPTERS} ${BOX_UNITS} ${GEN}/embedded.c ${GEN}/halo_boxk.S)
 # the flags psp_build.py gives psp/src's plain C units, so a box is priced as the port compiles it
-target_compile_options(halo_box PRIVATE -O2 -G0 -Wall -ffunction-sections -fdata-sections -fno-math-errno)
+target_compile_options(halo_box PRIVATE -O2 -G0 -Wall -ffp-contract=off -ffunction-sections -fdata-sections -fno-math-errno)
 target_include_directories(halo_box PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../psp/src)
 target_link_libraries(halo_box pspgu pspge psppower pspdebug pspdisplay m)
 # each unit's size into the build's log: one program holds every box, so a new box moves the others

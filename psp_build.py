@@ -247,7 +247,7 @@ CLAIMFILL = os.environ.get("PSP_CLAIMFILL", "1") != "0"
 # FIXES_CAPTURE_<BOX>). keep.txt's capfirstN, capeveryN, capticksN and
 # capkbN set its sampling (psp_platform.c). A recon build: never for play
 CAPTURE = os.environ.get("PSP_CAPTURE", "")
-CAPTURE_BOXES = ("posing",)
+CAPTURE_BOXES = ("posing", "sweep")
 if CAPTURE and CAPTURE not in CAPTURE_BOXES:
     sys.exit("psp_build: PSP_CAPTURE=%s isn't a box with a capture (%s)" % (CAPTURE, ", ".join(CAPTURE_BOXES)))
 CAPTURE_DEFINES = ["-DPSP_CAPTURE=1", "-DPSP_CAPTURE_%s=1" % CAPTURE.upper()] if CAPTURE else []

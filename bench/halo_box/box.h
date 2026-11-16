@@ -45,9 +45,12 @@ struct box_adapter
 	element they were found at */
 	int (*compare)(int i, const void *got, const void *want, unsigned int length, float *largest_absolute,
 		float *largest_relative, unsigned int *element);
+	/* optional: the capture box this one reads, when it isn't its own name (a
+	box's second form over the first's capture) */
+	const char *capture;
 };
 
-extern const struct box_adapter box_null, box_selftest, box_posing;
+extern const struct box_adapter box_null, box_selftest, box_posing, box_collbsp, box_collbspa, box_collbspw, box_collbspr, box_collbspb, box_collbspm, box_sweep0, box_sweepa;
 /* every adapter built in, ended by a null (adapters.c) */
 extern const struct box_adapter *const box_adapters[];
 
