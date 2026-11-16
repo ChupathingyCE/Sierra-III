@@ -45048,6 +45048,28 @@ FIXES_V091A = {}
 # Load Level's list is sized for Stubbs mode's twelve levels, but the unit
 # includes stubbs_campaign.h only inside HALO_MAP_LIST, which the PSP drops
 # (CHUPA_FLAGS_DROPPED)
+# Delta's verified mark (v0.9.1a: the scoreboard's mark beside a verified
+# player's name, drawn into fonts that lack it): six 48x48 bitmaps, ~14 KB of
+# .bss. The campaign build has no scoreboard of network players, so it keeps
+# none (the multiplayer build keeps the mark)
+FIXES_V091A["source/text/font_group.c#deltamark"] = [
+("""	MAXIMUM_DELTA_MARKS = 6,
+	MAXIMUM_DELTA_MARK_SIZE = 48,
+};""", """#if defined(HALO_PSP) && !defined(PSP_MULTIPLAYER)
+	/* psp_fixups.py (FIXES_V091A): no verified mark in the campaign build */
+	MAXIMUM_DELTA_MARKS = 1,
+	MAXIMUM_DELTA_MARK_SIZE = 1,
+#else
+	MAXIMUM_DELTA_MARKS = 6,
+	MAXIMUM_DELTA_MARK_SIZE = 48,
+#endif
+};"""),
+("""	if (!character && character_code == HALO_DELTA_MARK)
+		character = delta_mark_character(font);""", """#if !(defined(HALO_PSP) && !defined(PSP_MULTIPLAYER))
+	if (!character && character_code == HALO_DELTA_MARK)
+		character = delta_mark_character(font);
+#endif"""),
+]
 FIXES_V091A["source/interface/ui_widget_event_handler_functions.c#levels"] = [
 ("""struct single_player_level_entry single_player_level_data[STUBBS_CAMPAIGN_LEVEL_COUNT] = { 0 };""",
  """#ifdef HALO_PSP
