@@ -5088,13 +5088,22 @@ after it. Off by default: a measurement */
 void psp_me_ddr_probe(void)
 {
 	static int asked = -1;
-	static unsigned int filled = 0, next = 0, checked = 0, bad_pieces = 0, bad_words = 0, refused = 0;
+	static unsigned int filled = 0, next = 0, checked = 0, bad_pieces = 0, bad_words = 0, refused = 0, slot_waits = 0;
 	unsigned int args[3], results[ME_JOB_RESULTS] = { 0 }, first;
 
 	if (asked < 0)
 		asked = psp_keep("meddrprobe") != 0;
 	if (!asked || me_state != 1)
 		return;
+	/* the sound tier hands its copies to this slot without waiting
+	(psp_sound_upload_poll, on this thread): a run on the slot while one is
+	out takes the other's place and times out (meddrprobe 43981252966: job 5
+	never started, the ME stopped). So a heartbeat with the slot busy waits */
+	if (me_mark(ME_SLOT_PROBE))
+	{
+		slot_waits++;
+		return;
+	}
 	if (filled < 16)
 	{
 		args[0] = 0;
@@ -5130,8 +5139,8 @@ void psp_me_ddr_probe(void)
 	}
 	next = (next + 1) & 15;
 	if ((checked & 15) == 0)
-		platform_log("ME: meddrprobe: %u pieces checked, %u wrong (%u words), %u jobs refused",
-			checked, bad_pieces, bad_words, refused);
+		platform_log("ME: meddrprobe: %u pieces checked, %u wrong (%u words), %u jobs refused, %u heartbeats waited for the slot",
+			checked, bad_pieces, bad_words, refused, slot_waits);
 }
 
 /* the longest line platform_log writes whole (its buffer, psp_fixups.py),
