@@ -142,6 +142,17 @@ HALO_REPO=/home/claude/chupa PSP_OUT=/tmp/psp_chupa python3 psp_build.py --jobs 
 - `PSP_MAP_CHECKS=1` builds ChupathingyCE's map checks in (trusted maps off).
 - `HALO_REPO=/tmp/halo-sp` (the default) still builds halo-ce-universal.
 
+## v0.9.1a (2026-11-16)
+
+**The pin moves to the release tag** `v0.9.1a` (`2e5eac0`; v0.9.1 is `e215ae5`), as the interim pin below said it would (the lead 11:02, ahead of opening Sierra-III). 6eef2f3 to v0.9.1a is 1,507 files, mostly Stubbs mode (`port/linux/game/stubbs_*`), MCC levels and checkpoints (`mcc_*`), and the Workshop. `PSP_FIXUPS_CHECK=1` found 9 campaign anchors that no longer matched [D]:
+- **main.c (FIXES_LOADING, 2):** the map change and the boot load now return early when an MCC level isn't there (#1149); the loading screen's begin/end bracket the new text, and the early returns end the loading screen too.
+- **render_objects.c (FIXES_B30):** the static lighting's recompute test gained Stubbs's lit-at-body case; the PSP's pending-light read is one more `||` term.
+- **ai_debug.h (build 23):** the 859F4 offset assert gained `!defined(HALO_CONSOLE_NO_DEBUG_TOOLS)`; the PSP's `!defined(HALO_PSP)` is added beside it.
+- **game_state.c (FIXES_CHUPA #image):** upstream now skips the copy when the image is the game state, so the pair is retired.
+- **object_lights.c (FIXES_106 #inline):** the include list changed; the datum inlines sit before the halo.log declaration.
+- **players.c (FIXES_113 #flipwatch):** the action test gained Stubbs's horde action.
+- **xbox_files.c (FIXES_FRONT #pathscan, FIXES_MULTIPLAYER #maps):** the drive's folder may be a mode's own (`save_drive_folder`), and a d: path may be a Workshop item's: the once-a-run folder check and the multiplayer maps folder re-anchored.
+
 ## The 0.9.1 test build, 6eef2f3 (2026-11-11, in progress; first aimed at v0.9.0d)
 
 **Interim pin** (the maintainer, 2026-11-11 10:47): the 0.9.1 test build's commit `6eef2f3e3ce8` (tag `v0.9.1-testing`, a moving tag, so the sha is pinned) until 0.9.1 is released; then the pin moves to its tag and `PSP_FIXUPS_CHECK=1` runs again. 6eef2f3 is not a descendant of v0.9.0d (merge base 6f6e545; 494 commits past it, v0.9.0d's 154 own commits merged in by content). Network version still 32 (11 to 42). The work below was done against v0.9.0d first (round 1 and round 2's first half), then moved: at 6eef2f3, 42 more campaign anchors failed and 11 multiplayer ones.

@@ -5143,9 +5143,9 @@ FIXES_23["source/ai/ai_debug.h"] = [
 typedef char ai_debug_state_ballistic_lineoffire_valid_offset_assert[""",
  """#if !defined(HALO_XBOX_CONSOLE) && !defined(HALO_PSP)
 typedef char ai_debug_state_ballistic_lineoffire_valid_offset_assert["""),
-("""#if !defined(HALO_64BIT) && !defined(HALO_XBOX_CONSOLE)
+("""#if !defined(HALO_64BIT) && !defined(HALO_XBOX_CONSOLE) && !defined(HALO_CONSOLE_NO_DEBUG_TOOLS)
 typedef char ai_debug_state_field_859F4_offset_assert[""",
- """#if !defined(HALO_64BIT) && !defined(HALO_XBOX_CONSOLE) && !defined(HALO_PSP)
+ """#if !defined(HALO_64BIT) && !defined(HALO_XBOX_CONSOLE) && !defined(HALO_CONSOLE_NO_DEBUG_TOOLS) && !defined(HALO_PSP)
 typedef char ai_debug_state_field_859F4_offset_assert["""),
 ]
 
@@ -10545,14 +10545,13 @@ void object_bounds_cache_update(long object_index, real_point3d const *center, r
 /* ---------- constants */"""),
 ]
 FIXES_106["source/objects/object_lights.c#inline"] = [
-("""#include "units/units.h"
-#include "plasma_lighting.h" /* port: port/linux/game/plasma_lighting.c (Light effects) */
-
-/* port: port/linux/src (halo.log) */""",
- """#include "units/units.h"
-#include "plasma_lighting.h" /* port: port/linux/game/plasma_lighting.c (Light effects) */
+("""
+/* port: port/linux/src (halo.log) */
+void platform_log(const char *format, ...);""",
+ """
 """ + _PSP_DATUM_INLINE + """
-/* port: port/linux/src (halo.log) */"""),
+/* port: port/linux/src (halo.log) */
+void platform_log(const char *format, ...);"""),
 ]
 # build 106: game_sound_update in four steps for the profile. b105's
 # run: 11.5 ms a frame (median of 94 windows; up to 16.4), against about 1 ms
@@ -12567,14 +12566,8 @@ boolean game_state_read_from_file(
 #endif
 		CloseHandle(file);"""),
 ]
-FIXES_CHUPA["source/saved games/game_state.c#image"] = [
-("""	csmemcpy(game_state_globals.base_address, image, size);
-	error(_error_silent, "the saved game is taken");""",
- """	/* (the PSP reads it in place: psp_fixups.py, FIXES_CHUPA) */
-	if ((void *)image != (void *)game_state_globals.base_address)
-		csmemcpy(game_state_globals.base_address, image, size);
-	error(_error_silent, "the saved game is taken");"""),
-]
+# (game_state.c's own copy is skipped upstream since 0.9.1a when the image is
+# the game state: FIXES_CHUPA's #image pair there retired)
 # ChupathingyCE's loader checks a map's tags and BSPs against the tag
 # window's size in physical_memory_map.h (cache_files.c, and the tag schema
 # check port/linux/game/tag_validate.c)
@@ -13198,14 +13191,12 @@ FIXES_MULTIPLAYER["source/game/player_queues_new.c#client"] = [
 # this build's folder
 FIXES_MULTIPLAYER["port/linux/src/xbox_files.c#maps"] = [
 ((
-"""		cursor += 2;
-	}
+"""	}
 
 	while (*cursor)
 	{
 		char component[256];""",
-"""		cursor += 2;
-	}
+"""	}
 #if defined(HALO_PSP) && defined(PSP_MULTIPLAYER)
 	/* psp_fixups.py (multiplayer): d:\\maps is the campaign build's folder's
 	(psp_paths.h) */
@@ -14701,6 +14692,7 @@ static void player_examine_nearby_vehicle(
 """),
 ("""					if (TEST_FLAG(action->control_flags, _unit_control_action_bit) &&
 						unit->object.parent_object_index == NONE &&
+						!stubbs_horde_player_action(iterator.datum_index) && /* port: Stubbs mode only */
 						!player_handle_action(iterator.datum_index) &&""",
  """#ifdef HALO_PSP
 #if PSP_DEBUG_TOOLS
@@ -14713,6 +14705,7 @@ static void player_examine_nearby_vehicle(
 #endif
 					if (TEST_FLAG(action->control_flags, _unit_control_action_bit) &&
 						unit->object.parent_object_index == NONE &&
+						!stubbs_horde_player_action(iterator.datum_index) && /* port: Stubbs mode only */
 						!player_handle_action(iterator.datum_index) &&"""),
 ]
 FIXES_113["source/units/vehicles.c#flipwatch"] = [
@@ -25252,32 +25245,27 @@ FIXES_FRONT["source/saved games/playlist_profile.c#variants"] = [
 # each drive's folder is checked once a run. Keep word "pathscan": the scan,
 # as before.
 FIXES_FRONT["port/linux/src/xbox_files.c#pathscan"] = [
-("""		if (drive != 'd')
-		{
-			struct posix_file_information information;
-
-			snprintf(resolved, sizeof(resolved), "%s/%c", platform_save_root(), drive);
+("""			else
+				snprintf(resolved, sizeof(resolved), "%s/%c", platform_save_root(), drive);
 			/* every Xbox drive always exists; create its directory on first use */
 			if (posix_stat(resolved, &information) != 0)
 				posix_make_directory(resolved);
-		}""", """		if (drive != 'd')
-		{
-			struct posix_file_information information;
+		}""", """			else
+				snprintf(resolved, sizeof(resolved), "%s/%c", platform_save_root(), drive);
+			/* every Xbox drive always exists; create its directory on first use */
 #ifdef HALO_PSP
 			/* psp_fixups.py (FIXES_FRONT #pathscan): each drive's folder is
 			made at most once a run */
-			static unsigned long psp_drives_known;
-			unsigned long psp_drive_bit = (drive >= 'a' && drive <= 'z') ? 1UL << (drive - 'a') : 0;
-#endif
-
-			snprintf(resolved, sizeof(resolved), "%s/%c", platform_save_root(), drive);
-			/* every Xbox drive always exists; create its directory on first use */
-#ifdef HALO_PSP
-			if (!psp_drive_bit || !(psp_drives_known & psp_drive_bit))
 			{
-				if (posix_stat(resolved, &information) != 0)
-					posix_make_directory(resolved);
-				psp_drives_known |= psp_drive_bit;
+				static unsigned long psp_drives_known;
+				unsigned long psp_drive_bit = (drive >= 'a' && drive <= 'z') ? 1UL << (drive - 'a') : 0;
+
+				if (!psp_drive_bit || !(psp_drives_known & psp_drive_bit))
+				{
+					if (posix_stat(resolved, &information) != 0)
+						posix_make_directory(resolved);
+					psp_drives_known |= psp_drive_bit;
+				}
 			}
 #else
 			if (posix_stat(resolved, &information) != 0)
@@ -28880,7 +28868,13 @@ FIXES_LOADING = {}
 # load begins can be captured before the new map takes the texture cache.
 FIXES_LOADING["source/main/main.c#loading"] = [
 ("""			game_dispose_from_old_map();
-			game_precache_new_map(options.map_name, TRUE);
+			/* port: an MCC level that isn't there goes back to the menus
+			with its reason, as one that fails to load does (#1149) */
+			if (!game_precache_new_map(options.map_name, TRUE) && mcc_main_load_failed(options.map_name))
+			{
+				main_globals.map_change_load_timer = 0;
+				return;
+			}
 			game_unload();
 			main_new_map(&options);
 """, """#ifdef HALO_PSP
@@ -28892,7 +28886,20 @@ FIXES_LOADING["source/main/main.c#loading"] = [
 			}
 #endif
 			game_dispose_from_old_map();
-			game_precache_new_map(options.map_name, TRUE);
+			/* port: an MCC level that isn't there goes back to the menus
+			with its reason, as one that fails to load does (#1149) */
+			if (!game_precache_new_map(options.map_name, TRUE) && mcc_main_load_failed(options.map_name))
+			{
+				main_globals.map_change_load_timer = 0;
+#ifdef HALO_PSP
+				{
+					extern void psp_loading_end(void);
+
+					psp_loading_end();
+				}
+#endif
+				return;
+			}
 			game_unload();
 			main_new_map(&options);
 #ifdef HALO_PSP
@@ -28905,7 +28912,9 @@ FIXES_LOADING["source/main/main.c#loading"] = [
 			}
 #endif
 """),
-("""		game_precache_new_map(options.map_name, TRUE);
+("""		/* port: (as main_change_map_name's, #1149) */
+		if (!game_precache_new_map(options.map_name, TRUE) && mcc_main_load_failed(options.map_name))
+			return;
 		game_dispose_from_old_map();
 		main_new_map(&options);
 """, """#ifdef HALO_PSP
@@ -28916,7 +28925,16 @@ FIXES_LOADING["source/main/main.c#loading"] = [
 			psp_loading_begin(options.map_name);
 		}
 #endif
-		game_precache_new_map(options.map_name, TRUE);
+		/* port: (as main_change_map_name's, #1149) */
+		if (!game_precache_new_map(options.map_name, TRUE) && mcc_main_load_failed(options.map_name))
+		{
+#ifdef HALO_PSP
+			extern void psp_loading_end(void);
+
+			psp_loading_end();
+#endif
+			return;
+		}
 		game_dispose_from_old_map();
 		main_new_map(&options);
 #ifdef HALO_PSP
@@ -38467,15 +38485,20 @@ FIXES_B30["source/objects/object_lights.c#b30"] = [
 						result = TRUE;"""),
 ]
 FIXES_B30["source/render/render_objects.c#b30"] = [
-("""	if (TEST_FLAG(object_get(object_index)->object.flags, _object_static_lighting_recompute_bit))
+("""	if (TEST_FLAG(object_get(object_index)->object.flags, _object_static_lighting_recompute_bit) ||
+		/* port: and in Stubbs mode a unit's, lit where its body is
+		(port/linux/game/stubbs_looks.c) */
+		(stubbs_mode_active() && stubbs_looks_object_lit_at_body(object_index)))
 	{
 		if (level_of_detail_pixels > OBJECT_RENDER_STATE_LARGE_PIXELS)""",
-"""#ifdef HALO_PSP
-	if (TEST_FLAG(object_get(object_index)->object.flags, _object_static_lighting_recompute_bit) ||
-		psp_light_pending(object_index))
-#else
-	if (TEST_FLAG(object_get(object_index)->object.flags, _object_static_lighting_recompute_bit))
+"""	if (TEST_FLAG(object_get(object_index)->object.flags, _object_static_lighting_recompute_bit) ||
+#ifdef HALO_PSP
+		/* psp_fixups.py (FIXES_B30): a light read that missed tries again */
+		psp_light_pending(object_index) ||
 #endif
+		/* port: and in Stubbs mode a unit's, lit where its body is
+		(port/linux/game/stubbs_looks.c) */
+		(stubbs_mode_active() && stubbs_looks_object_lit_at_body(object_index)))
 	{
 		if (level_of_detail_pixels > OBJECT_RENDER_STATE_LARGE_PIXELS)"""),
 ("""		lights_prepare_for_object_static(object_index, &state->desired_lighting);""",
