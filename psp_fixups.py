@@ -1766,8 +1766,10 @@ def interpolation_players(tree):
         return 0
     anchor = "#define MAXIMUM_INTERPOLATED_NODES 64\n"
     uses = len(re.findall(r"\bMAXIMUM_LOCAL_PLAYERS\b", text))
-    if text.count(anchor) != 1 or uses != 8:
-        sys.exit("psp_fixups: render_interpolation.c: expected the nodes' define and 8 uses of MAXIMUM_LOCAL_PLAYERS, found %d" % uses)
+    # (v0.9.1a: 11, the direct camera's frames and its 'from' arrays and their
+    # bounds check added, of the same kinds)
+    if text.count(anchor) != 1 or uses != 11:
+        sys.exit("psp_fixups: render_interpolation.c: expected the nodes' define and 11 uses of MAXIMUM_LOCAL_PLAYERS, found %d" % uses)
     text = re.sub(r"\bMAXIMUM_LOCAL_PLAYERS\b", "INTERPOLATION_LOCAL_PLAYERS", text)
     text = text.replace(anchor, anchor + INTERPOLATION_PLAYERS)
     open(path, "w", errors="surrogateescape").write(text)
@@ -1976,8 +1978,9 @@ def collision_users(tree):
             open(path, "w", errors="surrogateescape").write(new)
             changed += 1
             sites += n1 + n2 + n3
-    if sites != 68:
-        sys.exit("psp_fixups: COLLUSERS: expected 68 pushes and pops, found %d" % sites)
+    # (v0.9.1a: 70, one more push and pop around a biped test in players.c)
+    if sites != 70:
+        sys.exit("psp_fixups: COLLUSERS: expected 70 pushes and pops, found %d" % sites)
     return changed
 
 # ---------- b125: the PC renderer's GL path out of the link
@@ -2040,9 +2043,10 @@ def gl_never(tree):
     anchor = '#include "xgpu.h"\n'
     reads = len(GL_READY_READ.findall(text))
     # (14 tests at the 0.9.1 test build 6eef2f3: v0.9.0d added the menus'
-    # pointer's bgfx form and halo_draw_picture's, 6eef2f3 two more)
-    if text.count(anchor) != 1 or text.count(GL_NEVER_CALL[0]) != 1 or reads != 14:
-        sys.exit("psp_fixups: d3d8_gl.c: expected the xgpu.h include, gl_initialize's one call and 14 tests of gl_ready, found %d tests" % reads)
+    # pointer's bgfx form and halo_draw_picture's, 6eef2f3 two more; v0.9.1a
+    # the menus' pointer's Vulkan form: 15)
+    if text.count(anchor) != 1 or text.count(GL_NEVER_CALL[0]) != 1 or reads != 15:
+        sys.exit("psp_fixups: d3d8_gl.c: expected the xgpu.h include, gl_initialize's one call and 15 tests of gl_ready, found %d tests" % reads)
     text = GL_READY_READ.sub("DEVICE_GL_READY", text)
     text = text.replace(GL_NEVER_CALL[0], GL_NEVER_CALL[1])
     text = text.replace(anchor, anchor + GL_NEVER_DEFINE)
