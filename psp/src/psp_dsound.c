@@ -4300,8 +4300,9 @@ static void stream_start(struct psp_stream *stream, LPCDSSTREAMDESC description,
 	queue_leave();
 }
 
-/* "streamrecN" (8, 16 or 32): the game's streams made with room for N
-queued packets rather than MAXIMUM_STREAM_PACKETS. The game keeps at most
+/* SNDSTREAMREC: the game's streams made with room for 16 queued packets
+rather than MAXIMUM_STREAM_PACKETS ("streamrecN", 8, 32 or 64, for another
+size; streamrec64 is the old record). The game keeps at most
 four attached (sound_dsound_xbox.c, dwMaxAttachedPackets) and the mixer's
 ring held at most 16 on any route (sndrec1); its 81 streams at 64 take ~249
 KB of heap, at 32 ~140. A full ring refuses the packet (E_OUTOFMEMORY), which
@@ -4314,7 +4315,7 @@ static unsigned long stream_record_packets(void)
 	if (packets < 0)
 	{
 		extern int psp_keep_number(const char *prefix, int fallback);
-		long n = psp_keep_number("streamrec", MAXIMUM_STREAM_PACKETS);
+		long n = psp_keep_number("streamrec", 16);
 
 		packets = n == 8 || n == 16 || n == 32 ? n : MAXIMUM_STREAM_PACKETS;
 		if (packets != MAXIMUM_STREAM_PACKETS)
