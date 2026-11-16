@@ -78,6 +78,10 @@ struct box_collbsp_sphere_result
 	its polygon was tested in), an edge's direction round its surface */
 	int surface_designator[BOX_COLLBSP_LIST];
 	unsigned char edge_reverse[BOX_COLLBSP_LIST];
+	/* B: the 3D walk's first node where the kept sphere straddles a plane (or
+	the leaf it reaches; box_collbsp_split_node): a smaller sphere inside it
+	walks the same single-sided path there, so its walk starts there */
+	int start_node;
 };
 
 /* the sphere: surfaces, edges and vertices it touches, leaves it is in.
@@ -91,6 +95,7 @@ int box_collbsp_sphere(const struct box_collbsp *bsp, short breakable_count, con
 earlier, wider one answered from that one's lists (`kept`, made by
 box_collbsp_sphere at the wider radius): its leaves by the 3D walk alone, its
 vertices, edges and surfaces by testing only the kept ones, in the kept order */
+int box_collbsp_split_node(const struct box_collbsp *bsp, const float center[3], float radius);
 int box_collbsp_sphere_kept(const struct box_collbsp *bsp, short breakable_count, const unsigned int *breakable,
 	const struct box_collbsp_sphere_result *kept, const float center[3], float radius,
 	struct box_collbsp_sphere_result *result);

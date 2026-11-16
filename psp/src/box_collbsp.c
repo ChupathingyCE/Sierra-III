@@ -585,6 +585,24 @@ static void sphere3d(struct sphere *w, int index)
 static int sphere_from(const struct box_collbsp *bsp, int start, short breakable_count, const unsigned int *breakable,
 	const float center[3], float radius, int any, struct box_collbsp_sphere_result *result);
 
+/* where a sphere's 3D walk first splits (for box_collbsp_sphere_result.start_node) */
+int box_collbsp_split_node(const struct box_collbsp *bsp, const float center[3], float radius)
+{
+	int index = 0;
+
+	while (!(index & LONG_MIN_))
+	{
+		const struct box_collbsp_node *node = &bsp->nodes[index];
+		float distance = (center[0] * node->n[0] + center[1] * node->n[1] + center[2] * node->n[2]) - node->d;
+		int second = distance < radius, first_side = distance > -radius;
+
+		if (first_side && second)
+			break;
+		index = node->child[first_side];
+	}
+	return index;
+}
+
 int box_collbsp_sphere(const struct box_collbsp *bsp, short breakable_count, const unsigned int *breakable,
 	const float center[3], float radius, int any, struct box_collbsp_sphere_result *result)
 {
@@ -644,7 +662,7 @@ int box_collbsp_sphere_kept(const struct box_collbsp *bsp, short breakable_count
 	w.designator = 0;
 	memset(w.buckets, 0, sizeof(w.buckets));
 	result->surface_count = result->edge_count = result->vertex_count = result->leaf_count = 0;
-	sphere3d(&w, 0);
+	sphere3d(&w, kept->start_node);
 	for (k = 0; k < kept->vertex_count; k++)
 	{
 		const float *p = bsp->vertices[kept->vertices[k]].p;
