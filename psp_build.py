@@ -457,6 +457,7 @@ PSP = ["psp-gcc", "-G%d" % SMALLDATA, GAME_OPT, "-march=allegrex", "-ffp-contrac
        # upstream's virtual test gamepads (debug.test_gamepads), off as on the
        # consoles (halo_port_features.h): the PSP's tests drive psp_pad.c
        "-DHALO_CONSOLE_NO_TEST_GAMEPADS=1",
+       ] + (["-DPSP_NO_INTERPOLATION=1"] if not INTERPOLATION else []) + [
        ] + (["-DPSP_MULTIPLAYER=1"] if MULTIPLAYER else []) + (["-DPSP_CONFIGFILE=1"] if os.environ.get("PSP_CONFIGFILE", "") == "1" else []) + (["-DPSP_MUSIC=1"] if MUSIC else []) + (["-DPSP_PADPATH=1"] if PADPATH else []) + (["-DPSP_SNDSTREAM=1"] if SNDSTREAM else []) + (["-DPSP_CLAIMFILL=1"] if CLAIMFILL else []) + CAPTURE_DEFINES + (["-DPSP_MP_COOP=1"] if MULTIPLAYER and MP_COOP else []) + (["-DPSP_MP_HOST=1"] if MULTIPLAYER and MP_HOST else []) + (["-DPSP_MAP_CHECKS=1"] if MAP_CHECKS else []) + (["-DPSP_POOLS_XBOX=1"] if POOLS_XBOX else []) + (["-DPSP_RECON_64MB=1"] if BIG_RAM else []) + (["-DPSP_DEBUG_TOOLS=1"] if DEBUG_TOOLS else []) + (["-DHALO_CONSOLE_NO_DEBUG_TOOLS=1"] if DEADDEBUG else []) + (["-DPSP_TICK_STEPS=1"] if TICK_STEPS else []) + (["-DPSP_RECON=1"] if RECON else []) + (["-DPSP_MEPROBE=1"] if MEPROBE else []) + (["-DPSP_METRICS=1"] if METRICS else []) + (["-DPSP_STACKHOT=2"] if os.environ.get("PSP_STACKHOT", "2") == "2" else []) + (["-DPSP_PGO_GENERATE=1"] if PGO == "generate" else []) + os.environ.get("PSP_CFLAGS", "").split() + [
        # The fatal asserts are compiled out, unevaluated (X10): their checks
        # and messages fill the 16 KB instruction cache, so with them gone b30's
@@ -612,6 +613,26 @@ def float_stubs(names):
                 path = os.path.join(root, f)
                 for m in pattern.finditer(open(path, errors="replace").read()):
                     found.setdefault(m.group(2), os.path.relpath(path, TREE))
+    return found
+
+def macro_stubs(names):
+    """the names among these that the mirror #defines as a function-like macro:
+    name to file. A call to one from a unit without the macro's header is an
+    implicitly declared function, which the link stubs (rasterizer.c's
+    shader_definition_get, answering NULL: every shader's extra layers
+    skipped)"""
+    found = {}
+    if not names:
+        return found
+    pattern = re.compile(r"^\s*#\s*define\s+(%s)\(" % "|".join(re.escape(n) for n in sorted(names)), re.M)
+    for top in ("source", "port"):
+        for root, _, files in os.walk(os.path.join(TREE, top)):
+            for f in files:
+                if not f.endswith((".c", ".h")):
+                    continue
+                path = os.path.join(root, f)
+                for m in pattern.finditer(open(path, errors="replace").read()):
+                    found.setdefault(m.group(1), os.path.relpath(path, TREE))
     return found
 
 def port_definitions(names):
@@ -847,7 +868,6 @@ def compile_one(item):
                ["-DPSP_PADPATH=1"] if PADPATH else []) + (
                ["-DPSP_MEPROBE=1"] if MEPROBE else []) + (
                ["-DPSP_WALKAPART=1"] if WALKAPART else []) + (
-               ["-DPSP_NO_INTERPOLATION=1"] if not INTERPOLATION else []) + (
                ["-DPSP_MEXEC=1"] if MEXEC and src.endswith("psp_me.c") else []) + (
                ["-DPSP_MEVISLAND=1"] if MEVISLAND else []) + (
                ["-DPSP_METRICS=1"] if METRICS else []) + CAPTURE_DEFINES + (
@@ -1594,6 +1614,10 @@ def main():
     if defined:
         sys.exit("not linking: stubbed, though psp/src defines them (is the unit in PSP_FILES, and given its switch's "
                  "define?): " + ", ".join("%s (%s)" % (n, f) for n, f in sorted(defined.items())[:20]))
+    macros = macro_stubs(stubs)
+    if macros:
+        sys.exit("not linking: stubbed, though the tree defines them as macros (a unit calls one without its header): "
+                 + ", ".join("%s (%s)" % (n, f) for n, f in sorted(macros.items())[:20]))
     floats = float_stubs(stubs)
     if floats:
         sys.exit("not linking: stubbed, though they return a floating-point value (a stub answers garbage in $f0); "
