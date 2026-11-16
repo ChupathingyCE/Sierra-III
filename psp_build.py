@@ -127,7 +127,11 @@ CHUPA_DESKTOP_UNITS = ("port/linux/game/ce_", "port/linux/game/browser_screen.c"
                        # (the 0.9.1 test build's multiplayer follow camera, off by
                        # default: the Xbox had the death camera alone; psp_chupa.c
                        # answers its calls)
-                       "port/linux/game/follow_camera.c")
+                       "port/linux/game/follow_camera.c",
+                       # (Stubbs mode, off as on the consoles: HALO_CONSOLE_NO_STUBBS
+                       # makes its headers' hooks static no-ops, and its units, which
+                       # define them, aren't built, as the consoles leave them out)
+                       "port/linux/game/stubbs_")
 # ... except what the multiplayer build needs as it is: map_families.c names a
 # game's map in the game's protocol (an Xbox map as itself, a Custom Edition
 # map custom_maps\<name>), in the host's advertisement and settings and the
