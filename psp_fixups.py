@@ -1784,6 +1784,52 @@ def interpolation_players(tree):
     open(path, "w", errors="surrogateescape").write(text)
     return 1
 
+# ---------- CONFIGHELP: the settings' help text left out (Sheepdog01 2026-11-16: the
+# PSP uses no settings screen). port_config.c's table carries each setting's
+# help, written as comments into a new config.toml, and each section's note:
+# ~55 KB of strings. The PSP writes its file without them; every setting,
+# default, environment name and the reading are as they were. Each row's last
+# element (a run of string literals) becomes "": the writer walks it as an
+# empty text. PSP_CONFIGHELP=1 keeps them (and the multiplayer build, whose
+# players edit their config.toml)
+_LITERALS = r'(?:"(?:[^"\\\n]|\\.)*"\s*)+'
+
+def _table_help_out(block):
+    """block: a table's initializer text, one row per entry, its help text the
+    row's last element on lines of their own (string literals only, the last
+    one closing the row; preprocessor lines may sit between them). Those lines
+    go and the row closes on "". Returns the new text and the rows changed."""
+    out = []; changed = 0
+    for line in block.split("\n"):
+        if re.fullmatch(r"\t\t" + _LITERALS, line):
+            continue
+        m = re.fullmatch(r"(\t\t)" + _LITERALS + r"\},", line)
+        if m:
+            out.append(m.group(1) + '"" },'); changed += 1
+            continue
+        out.append(line)
+    return "\n".join(out), changed
+
+def config_help(tree):
+    if os.environ.get("PSP_CONFIGHELP", "") == "1" or os.environ.get("PSP_MULTIPLAYER", "") == "1":
+        return 0
+    path = os.path.join(tree, "port/linux/src/port_config.c")
+    text = open(path, errors="surrogateescape").read()
+    total = 0
+    for head, least in (("static const struct config_setting config_settings[] =\n{\n", 400),
+                        ("} config_sections[] =\n{\n", 10)):
+        if text.count(head) != 1:
+            return check_fail("psp_fixups: port_config.c: CONFIGHELP's table not found: %r" % head)
+        a = text.index(head) + len(head)
+        b = text.index("\n};\n", a)
+        block, changed = _table_help_out(text[a:b])
+        if changed < least:
+            return check_fail("psp_fixups: port_config.c: CONFIGHELP emptied %d rows of %r, expected at least %d" % (changed, head, least))
+        text = text[:a] + block + text[b:]
+        total += changed
+    open(path, "w", errors="surrogateescape").write(text)
+    return total
+
 # ---------- AIMETERS: the AI's meters and the ballistic test's debug record, the main CPU's alone
 # The AI's meters (ai_profile.meters[].accumulator: 32 counts in 12 files,
 # and the perception queue's 2)
@@ -55183,6 +55229,7 @@ print("psp_fixups: %d files changed, AI debug records shared in %d, unaligned ac
 print("psp_fixups: AI debugger state on demand in %d files" % ai_debug_shrink(TREE))
 print("psp_fixups: colour conversions in single precision in %d files" % float_colours(TREE))
 print("psp_fixups: render interpolation for one local player in %d files" % interpolation_players(TREE))
+print("psp_fixups: the settings' help text left out in %d rows (CONFIGHELP)" % config_help(TREE))
 print("psp_fixups: the GL renderer compiled out in %d files" % gl_never(TREE))
 print("psp_fixups: the collision user stack %s in %d files (COLLUSERS)" % ("shared, as before," if COLLUSERS_SHARED else "one a CPU (debug tools) or none", collision_users(TREE)))
 print("psp_fixups: the AI's meters and ballistic record the main CPU's alone in %d files (AIMETERS)" % ai_meters(TREE))
