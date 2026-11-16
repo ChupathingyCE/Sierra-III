@@ -787,10 +787,16 @@ static int sweepb_margin(const struct box_static *statics, unsigned int count, f
 	form = 1;
 	part = 0;
 	margin = m;
-	b_have_tick = 0;
-	memset(scratch.kept, 0, sizeof(scratch.kept));
-	memset(scratch.kept_used, 0, sizeof(scratch.kept_used));
-	scratch.kept_clock = 0;
+	/* a capture that follows another (a run cut at a BSP switch) carries the
+	kept walks over, so the box itself must drop them; a capture whose ticks
+	go back starts from none (the rewind in sweep_tick) */
+	if (!b_have_tick)
+	{
+		memset(scratch.kept, 0, sizeof(scratch.kept));
+		memset(scratch.kept_used, 0, sizeof(scratch.kept_used));
+		scratch.kept_clock = 0;
+		scratch.kept_level = 0;
+	}
 	{
 		const char *m = getenv("SWEEP_MARGIN");
 
