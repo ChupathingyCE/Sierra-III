@@ -1175,7 +1175,10 @@ static int sweepb100_setup(const struct box_static *statics, unsigned int count)
 	return sweepb_margin(statics, count, 1.0f);
 }
 
-/* B packed's own counts, in every build: whether the blocks were used */
+/* B packed's own counts on a desktop run (the PSP's report has no printf):
+whether the blocks were used */
+#if !defined(__psp__) && !defined(_PSP) && !defined(__mips__)
+#include <stdio.h>
 static void packed_report(void) __attribute__((destructor));
 static void packed_report(void)
 {
@@ -1183,6 +1186,7 @@ static void packed_report(void)
 		printf("sweepp: %u blocks packed, %u too big, %u keeps with no block free, %u kept sweeps walked packed, %u from a kept walk in all\n",
 			scratch.packed_made, scratch.packed_too_big, scratch.packed_no_block, scratch.packed_used, scratch.kept_hits);
 }
+#endif
 
 /* B packed at 0.25: B25 with each kept walk's 3D nodes in its asker's block */
 static int sweepp25_setup(const struct box_static *statics, unsigned int count)
