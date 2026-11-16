@@ -761,7 +761,20 @@ static int level_kept(const struct box_sweep_world *w, const float *center, floa
 #endif
 	}
 	scratch->kept_used[slot - scratch->kept] = scratch->kept_clock;
+#ifdef SWEEP_COUNT
+	{
+		extern unsigned long long sweep_kept_tested[3];
+		int r = box_collbsp_sphere_kept(w->level, w->breakable_count, w->breakable, &slot->walk, center, radius, &scratch->sphere);
+		const struct box_collbsp_sphere_result *k = &slot->walk, *o = &scratch->sphere;
+
+		sweep_kept_tested[0]++;
+		sweep_kept_tested[1] += (unsigned long long)(k->surface_count + k->edge_count + k->vertex_count);
+		sweep_kept_tested[2] += (unsigned long long)(o->surface_count + o->edge_count + o->vertex_count);
+		return r;
+	}
+#else
 	return box_collbsp_sphere_kept(w->level, w->breakable_count, w->breakable, &slot->walk, center, radius, &scratch->sphere);
+#endif
 }
 
 /* collision_get_features_in_sphere: the level's, then the objects' in the clusters the sphere reaches */
