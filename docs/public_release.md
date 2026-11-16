@@ -5,16 +5,17 @@ The public repository (`Sheepdog-01/Sierra-III-Release`) is a separate repositor
 ## Making it
 
 ```
-tools/public_export.py <commit> /tmp/public-bNNN --pgo campaign-bNNN --gitleaks <gitleaks>
+tools/public_export.py <commit> /tmp/public-bNNN --deny <deny-list> --pgo campaign-bNNN --gitleaks <gitleaks>
 ```
 
+- `--deny` names the deny-list file (or set `SIERRA_EXPORT_DENY`): the lab's `psp/sierra/export_deny.tsv`, one `label<TAB>regex` per line. It's kept out of this repository because it spells out exactly what must not go public. Without it the tool refuses to run.
 - `<out>` must not exist and must not be inside a git work tree.
 - `--pgo` names the profile the release was built with (`pgo/<name>.tgz`); only that one goes out. Left out, the newest `campaign-bNNN` goes.
-- `tools/public_export.py - x --report` reads the work tree as it is on disk and lists every finding, writing nothing: the quick loop while fixing text.
+- `tools/public_export.py - x --report --deny <deny-list>` reads the work tree as it is on disk and lists every finding, writing nothing: the quick loop while fixing text.
 - gitleaks: any v8 (`gitleaks dir`); checked with 8.21.2.
 
 It refuses, and writes nothing, when a file kept has
-1. a deny-list match (`DENY` in the tool): a person's name or address, a home path, a place, a machine (the desktop, the AI box, the laptop and their specs), a console's ID, the development infrastructure (the lab, its runners and workflows, the coordination files), a USB port, a network detail (addresses, the hotspot's names, MACs), an Actions run number. It reads text files line by line, binaries' readable strings, and the names and contents of archives (`pgo/*.tgz`). Third-party licence texts may carry their authors' addresses (`ALLOW`);
+1. a deny-list match (`--deny`): a person's name or address, a home path, a place, a machine (the desktop, the AI box, the laptop and their specs), a console's ID, the development infrastructure (the lab, its runners and workflows, the coordination files), a USB port, a network detail (addresses, the hotspot's names, MACs), an Actions run number. It reads text files line by line, binaries' readable strings, and the names and contents of archives (`pgo/*.tgz`). Third-party licence texts may carry their authors' addresses (`ALLOW`);
 2. a Markdown link to a file left out;
 3. a refused file type (game data, firmware, build output);
 4. a secret, by gitleaks.
@@ -40,7 +41,7 @@ Every tracked file must match a rule, so a new folder fails the export until it 
 
 | Out | Why |
 |---|---|
-| `CLAUDE.md`, this document, `tools/public_export.py` | the development process (the tool's deny-list names what must not go out) |
+| `CLAUDE.md`, this document, `tools/public_export.py` | the development process (the development process) |
 | `README.md` | the development README; `public/README.md` is the public one |
 | the rest of `docs/` | development history: build notes, hardware reports, reviews, candidates, plans, recon, handoffs, multiplayer setup (not in the release) |
 | the rest of `tools/` | analysis tools for the development runs |
@@ -51,7 +52,7 @@ Every tracked file must match a rule, so a new folder fails the export until it 
 The first release, after the maintainer approves the tree:
 
 ```
-tools/public_export.py <commit> /tmp/public-bNNN --pgo campaign-bNNN --commit-message "Sierra-III bNNN"
+tools/public_export.py <commit> /tmp/public-bNNN --deny <deny-list> --pgo campaign-bNNN --commit-message "Sierra-III bNNN"
 ```
 
 makes `/tmp/public-bNNN` a repository with that one commit, authored and committed as `Sierra-III <noreply@sierra-iii.invalid>` (`PUBLIC_IDENTITY`: a project identity with no personal address; `.invalid` can never be a real mailbox); push it to the new repository by hand. Each later release: export into a new folder, copy it over a clone of the public repository (`rsync -a --delete --exclude .git <export>/ <clone>/`), and commit it as the same identity, one commit per release:

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Builds the public release's tree from one commit of this repository.
 
-    tools/public_export.py <commit> <out folder> [--pgo NAME] [--gitleaks PATH]
-    tools/public_export.py - x --report      (the work tree as it is on disk)
+    tools/public_export.py <commit> <out folder> --deny FILE [--pgo NAME] [--gitleaks PATH]
+    tools/public_export.py - x --report --deny FILE   (the work tree as it is on disk)
                            [--report] [--commit-message TEXT]
 
 The public repository is a separate one with a history of its own: one commit
@@ -11,7 +11,7 @@ From <commit> it takes only what a player or a porter needs (RULES below:
 every tracked file must match one, so a new folder is a decision, not an
 accident), then refuses the export if anything in it
 
-  - matches the deny-list (DENY: personal names and addresses, the test
+  - matches the deny-list (--deny: personal names and addresses, the test
     hardware's and machines' names, the development infrastructure), in any
     text file, in any binary's readable strings, and in the names and contents
     of the archives inside it;
@@ -53,7 +53,7 @@ PUBLIC_IDENTITY = ('Sierra-III', 'noreply@sierra-iii.invalid')
 RULES = [
     # the development process's own files
     ('CLAUDE.md', False, 'working rules for the development sessions'),
-    ('tools/public_export.py', False, 'this tool: its deny-list names what must not go out'),
+    ('tools/public_export.py', False, 'this tool: the development process'),
     ('docs/public_release.md', False, 'how the export is made, for the maintainers'),
 
     # public/ holds the public tree's own versions of files the development
@@ -111,26 +111,33 @@ RULES = [
 ]
 
 # ---------------------------------------------------------------------------
-# The deny-list: (label, regex). Case-insensitive. Each finding fails the
-# export, wherever it is, with one exception below (ALLOW).
+# The deny-list: (label, regex) pairs, case-insensitive. Each finding fails the
+# export, wherever it is, with one exception below (ALLOW). The list itself is
+# kept outside this repository (the lab's psp/sierra/export_deny.tsv), because
+# it names exactly what must not go out; --deny or SIERRA_EXPORT_DENY points
+# here at it. Without one the export refuses to run rather than pass unchecked.
 # ---------------------------------------------------------------------------
-DENY = [
-    ('a person\'s name', r'\bsam\b|\buser\b|[name removed]'),
-    ('a personal address', r'[address removed]|@gmail\.com|15330660|sheepdog-01@users'),
-    ('a home path', r'/home/(?!claude/)\w+|/Users/\w+|~'),
-    ('a place', r'\b[place removed]\b|[place removed]'),
-    ('a machine', r'(?<![0-9a-z])x3d\b|9800x3d|sheepcube|cachyos|\bai[ -]?box\b|\bp14s\b|7840u|gpd win|steam ?deck'),
-    ('a console\'s ID', r'[console id]|[console id]'),
-    ('the development infrastructure',
-     r'lab-repo|lab-repo|\blab\'s\b|\b(?:the|our|a) lab\b|\blab$|'
-     r'\blab\b(?=[ ,(]*(?:run|batch|build|repo|runner|sierra-|pc-|heapladder|ld1why|p3walk|\d{6,}))|\brunners?\b|\bemupool\b|'
-     r'x3d-psp|aibox-p|\bpsprig\b|sheep-psp-tools|\bcoord/|'
-     r'\bsierra-(?:hw|batch|build|bake|test|netplay|tags)\b'),
-    ('a USB port', r'\busb ?(?:port|socket|hub) ?\d|\b\d-\d(?:\.\d)+:1\.\d\b'),
-    ('a network detail', r'\b10\.42\.0\.|\bpsp-(?:lan|open|ap)\b|\b192\.168\.\d+\.\d+|\b10\.\d+\.\d+\.\d+\b|'
-                         r'\b(?!ff:ff:ff:ff:ff:ff)(?!12:34:56:78:9a:bc)(?:[0-9a-f]{2}:){5}[0-9a-f]{2}\b'),
-    ('an Actions run', r'\b3[6-9]\d{9}\b'),
-]
+DENY_ENV = 'SIERRA_EXPORT_DENY'
+
+
+def load_deny(path):
+    """label<TAB>regex per line; blank lines and # comments skipped"""
+    if not path:
+        sys.exit('public_export: no deny-list (--deny FILE or %s); refusing to export unchecked' % DENY_ENV)
+    deny = []
+    with open(path, encoding='utf-8') as f:
+        for n, line in enumerate(f, 1):
+            line = line.rstrip('\n')
+            if not line.strip() or line.lstrip().startswith('#'):
+                continue
+            label, sep, rx = line.partition('\t')
+            if not sep or not rx:
+                sys.exit('public_export: %s:%d: expected label<TAB>regex' % (path, n))
+            re.compile(rx)
+            deny.append((label, rx))
+    if not deny:
+        sys.exit('public_export: %s holds no entries; refusing to export unchecked' % path)
+    return deny
 
 OVERLAY = 'public/'
 
@@ -239,9 +246,9 @@ def allowed(path, label):
     return any(glob_match(path, g) and label == l for g, l in ALLOW)
 
 
-def deny_scan(files):
-    """files: {path: bytes}. Returns [(where, line, label, text)]."""
-    rx = [(label, re.compile(p, re.I)) for label, p in DENY]
+def deny_scan(files, deny):
+    """files: {path: bytes}; deny: [(label, regex)]. Returns [(where, line, label, text)]."""
+    rx = [(label, re.compile(p, re.I)) for label, p in deny]
     found = []
     for path, data in sorted(files.items()):
         for where, text in texts_of(path, data):
@@ -325,9 +332,12 @@ def main():
     ap.add_argument('--pgo', action='append', default=[], metavar='NAME',
                     help='the profile(s) the release is built with (pgo/NAME.tgz); default the newest campaign-bNNN')
     ap.add_argument('--gitleaks', help='the gitleaks program')
+    ap.add_argument('--deny', default=os.environ.get(DENY_ENV),
+                    help='the deny-list file (label<TAB>regex per line); default $%s' % DENY_ENV)
     ap.add_argument('--report', action='store_true', help='list every finding; write nothing')
     ap.add_argument('--commit-message', help='make <out> a git repository with this one commit')
     a = ap.parse_args()
+    deny = load_deny(a.deny)
 
     if a.commit == '-':
         if not a.report:
@@ -342,7 +352,7 @@ def main():
         sys.exit('public_export: no such profile: %s' % ' '.join(missing))
     files = {dest: read(commit, src) for dest, src in keep}
 
-    findings = deny_scan(files) + link_scan(files) + type_scan(files)
+    findings = deny_scan(files, deny) + link_scan(files) + type_scan(files)
     cited = cited_paths(files, set(tracked(commit)))
     if cited:
         print('cited but left out (%d, not refused): %s' % (len(cited), ' '.join(cited)))
