@@ -71,7 +71,7 @@ The emulator's frame is lighter than the PSP's, so the PSP's percentages will be
 
 ## 4. Hardware test plan
 
-1. **Bake b30 with the new bundle** (P14S): `./halo-psp-bake ~/Halo.iso ~/halo-psp-out --maps b30,ui`. Copy `~/halo-psp-out/halo` to the stick's root.
+1. **Bake b30 with the new bundle** (the laptop): `./halo-psp-bake ~/Halo.iso ~/halo-psp-out --maps b30,ui`. Copy `~/halo-psp-out/halo` to the stick's root.
 2. **Install b106**: `PSP/GAME/halo/` from the zip (EBOOT and PRXs).
 3. **The Silent Cartographer**, keep words `assettrack geo2 nearauto` (the emulator's measurements used these), deathless. Play the landing and the beach fight, then up the beach a while. Look for:
    - it loads, and the Pelican drop plays;

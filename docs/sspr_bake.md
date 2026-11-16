@@ -71,6 +71,6 @@ Skinned models, with each vertex's bone weights kept valid across a collapse (no
 
 ## Rules it keeps
 
-- **The bakes stay on the X3D** (game data); only counts and shots reach the results branch.
+- **The bakes stay on the desktop** (game data); only counts and shots reach the results branch.
 - **The near-camera levels are untouched:** the top level, first person and anything drawn under the near plane.
 - **Credit:** meshoptimizer is named in the commit, the build's review and the README's Credits.

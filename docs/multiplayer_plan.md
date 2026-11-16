@@ -199,7 +199,7 @@ PSP ↔ PSP avoids all three (same code, same bake). PSP ↔ PC met them in this
 | 3 | **Wi-Fi and sockets** (`psp_net.c`); link `pspnet pspnet_apctl pspwlan` | ✅ in the emulator |
 | 4 | **Tag order and IDs** in the bake (§3.2) | ✅ all 13 maps |
 | 5 | **Memory:** the 6 MB tag window (§4) | ✅ in the emulator |
-| 6 | **First join, emulator:** the dedicated server and the PSP on the X3D (`sierra-netplay`) | ✅ joined and played, at real speed |
+| 6 | **First join, emulator:** the dedicated server and the PSP on the desktop (`sierra-netplay`) | ✅ joined and played, at real speed |
 | 7 | **Hardware:** Sheepdog01's PSP on the desktop's hotspot, joining the server there; `mp1`, `build_mp1.md`; `mp2`, `build_mp2.md` | mp1: Wi-Fi joins [M]; its first search faulted. mp2 built, to test |
 | 8 | **Delta Peer, client side** (§7) | later |
 | 9 | The Xbox's system link menus; PSP ↔ PSP (one hosts), the fallback | later |
@@ -245,7 +245,7 @@ PSP ↔ PSP avoids all three (same code, same bake). PSP ↔ PC met them in this
 - **The check on connect already exists.** For a Halo PC map the host sends a version, the map file's header checksum (`cache_files_map_version`), and the client compares its own. If the bake writes the source map's checksum into the PSP map, a PSP answers that check like a PC, over the plain protocol.
 
 **Baking: how long, and where** [D, M]:
-- **Time:** 3–10 minutes a map on a desktop (`bake/README.md`); the X3D baked `ui` and the ten campaign levels in about 35 minutes. Most of it is the textures (k-means: Blood Gulch's took about 90 s on two cores, `asset_baking.md` §6).
+- **Time:** 3–10 minutes a map on a desktop (`bake/README.md`); the desktop baked `ui` and the ten campaign levels in about 35 minutes. Most of it is the textures (k-means: Blood Gulch's took about 90 s on two cores, `asset_baking.md` §6).
 - **On the PSP: no.** There's no Invader or Python on it, a source map (44 MB for Blood Gulch) is bigger than its RAM, and the texture fit alone would take hours at 333 MHz.
 - **At connect, on a PC: no.** Minutes, against a join that waits seconds.
 - **Once per map, ahead of time: yes.** Bake each custom map once, keyed by its checksum, and keep the result where PSP players get it (a repository). The texture fit is seeded (`random_state=0`), so the same bundle should make the same pack [U].
@@ -256,7 +256,7 @@ PSP ↔ PSP avoids all three (same code, same bake). PSP ↔ PC met them in this
 - The PSP must open such a name from its own folder. The desktop's CE loader is off on the PSP (`HALO_CUSTOM_EDITION` dropped), so this is new engine work, a small one: the baked map is an Xbox map by then.
 - Delta's `ce_maps` capability checks the file's size and hash too. The PSP has no Delta Peer; the checksum above already catches a stale bake. Later, optionally: carry the size and hash as well and answer Delta's check.
 
-**Try first, before writing any of it:** does `invader-build -g xbox-ntsc` accept a converted CE map's tags at all? One map, by hand, on the X3D.
+**Try first, before writing any of it:** does `invader-build -g xbox-ntsc` accept a converted CE map's tags at all? One map, by hand, on the desktop.
 
 ## 7. Delta on the PSP
 
@@ -286,7 +286,7 @@ PSP ↔ PSP avoids all three (same code, same bake). PSP ↔ PC met them in this
 4. **A PSP platform key.** The registry (`enum delta_platform`) and the policy table are upstream's: ask for a PSP number and row. Until then a key with platform "unknown" works: a host honours a key's own claim when it's lower than its platform's row.
 5. **The PSP's own join check** ("Warthog's side"): at 128/128 the PSP no longer refuses big games by itself, so it skips advertised games above its join limit (overridable, as upstream's `network.platform_limits = "off"`).
 6. **Take no tables at first** (TABLE_HAVE 0xFFFFFFFF), then turn the relay on once an Ed25519 check is timed on the PSP [U: expected tens of ms, once].
-7. **Test** against the X3D's server: HELLO and WELCOME in both logs, the PSP in the roster, the server's advertisement full at the PSP's limit.
+7. **Test** against the desktop's server: HELLO and WELCOME in both logs, the PSP in the roster, the server's advertisement full at the PSP's limit.
 
 ## 8. Co-op, and testing at size
 
@@ -356,5 +356,5 @@ Open:
 HALO_REPO=<engine> PSP_OUT=<out> PSP_MULTIPLAYER=1 python3 psp_build.py --jobs 8
 ```
 
-- **Its maps:** a bake from 2026-10-10 on (`mp-recon`): the multiplayer maps and ui built for the 6 MB window, with the disc's tag IDs. Older bakes' multiplayer maps won't load in it (their BSPs sit past 6 MB); the campaign build loads both. On the X3D: `/bake/mp5` (all 13 and ui; tag handles checked).
+- **Its maps:** a bake from 2026-10-10 on (`mp-recon`): the multiplayer maps and ui built for the 6 MB window, with the disc's tag IDs. Older bakes' multiplayer maps won't load in it (their BSPs sit past 6 MB); the campaign build loads both. On the desktop: `/bake/mp5` (all 13 and ui; tag handles checked).
 - **In the lab:** `sierra-bake` makes the maps, `sierra-tagorder` checks their tag handles, `sierra-test` with `env=PSP_MULTIPLAYER=1` runs a map offline, `sierra-netplay` joins the dedicated server.

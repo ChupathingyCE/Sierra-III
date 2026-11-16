@@ -4,7 +4,7 @@ Two runs on Sheepdog01's PSP-1000 at 333 MHz. `tools/hwreport.py` reads both (it
 
 ## Run 1: The Silent Cartographer (b30)
 
-The map's first hardware run. Sheepdog01's PSP-1000 at 333 MHz. Keep words: `assettrack geo2 nearauto animnowindow`, deathless. The map was baked on the P14S with the b106 bundle (`--maps b30,ui`). Labels: **[M]** measured on the PSP, **[E]** emulator, **[D]** read in the code, **[U]** inference.
+The map's first hardware run. Sheepdog01's PSP-1000 at 333 MHz. Keep words: `assettrack geo2 nearauto animnowindow`, deathless. The map was baked on the laptop with the b106 bundle (`--maps b30,ui`). Labels: **[M]** measured on the PSP, **[E]** emulator, **[D]** read in the code, **[U]** inference.
 
 ### What happened
 

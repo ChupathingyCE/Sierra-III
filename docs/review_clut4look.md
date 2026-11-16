@@ -60,7 +60,7 @@ Lab sierra-bake **39686965976**, bake **b140y** (bundle local:dcf41d8, all 24 ma
 
 ## Proof
 
-- **In play** (lab sierra-batch c4ship1, **39692676257**, emulator x3d-psp-emu; one EBOOT, clut4ship dcf41d8, on b140y vs b140x; hands-off b30 to exitat210 and a10 to exitat300 on the asset track; `fixedticks fixedseed statecrc nomouth`; all 4 played) [E]:
+- **In play** (lab sierra-batch c4ship1, **39692676257**, emulator a desktop emulator runner; one EBOOT, clut4ship dcf41d8, on b140y vs b140x; hands-off b30 to exitat210 and a10 to exitat300 on the asset track; `fixedticks fixedseed statecrc nomouth`; all 4 played) [E]:
   - Play and both random seeds identical look vs exact at every tick: a10 9,000, b30 6,300 (`tools/statecmp.py`).
   - a10's whole state is identical at every tick. b30's differs outside play ("objects", from tick 2,996), as b30 does between two runs of one EBOOT on one bake (c4x1's off vs off control, 39634384439: the same, from tick 4,934).
   - Texture streaming, look vs exact: b30 loaded 3,389 vs 3,425 KB, largest frame 2,402 vs 2,413 KB, untextured frames 25 vs 25; a10 3,158 vs 3,160 KB, 13 vs 13.
