@@ -767,11 +767,11 @@ const struct box_adapter box_sweepl = {
 };
 
 /* B (stage 3): form A with each asker's level walk widened by 0.5 and kept */
-static int sweepb_setup(const struct box_static *statics, unsigned int count)
+static int sweepb_margin(const struct box_static *statics, unsigned int count, float m)
 {
 	form = 1;
 	part = 0;
-	margin = 0.5f;
+	margin = m;
 	b_have_tick = 0;
 	memset(scratch.kept, 0, sizeof(scratch.kept));
 	memset(scratch.kept_used, 0, sizeof(scratch.kept_used));
@@ -784,6 +784,32 @@ static int sweepb_setup(const struct box_static *statics, unsigned int count)
 	}
 	return sweep_setup(statics, count);
 }
+
+static int sweepb_setup(const struct box_static *statics, unsigned int count)
+{
+	return sweepb_margin(statics, count, 0.5f);
+}
+
+/* the PSP has no environment, so the margins the census weighed get names */
+static int sweepb25_setup(const struct box_static *statics, unsigned int count)
+{
+	return sweepb_margin(statics, count, 0.25f);
+}
+
+static int sweepb100_setup(const struct box_static *statics, unsigned int count)
+{
+	return sweepb_margin(statics, count, 1.0f);
+}
+
+const struct box_adapter box_sweepb25 = {
+	"sweepb25", kinds, 0, 0, BOX_EXACT, 0.f, 0.f, 1.1f, 30.f,
+	sweepb25_setup, sweep_tick, sweep_run, sweep_output, sweep_compare, "sweep",
+};
+
+const struct box_adapter box_sweepb100 = {
+	"sweepb100", kinds, 0, 0, BOX_EXACT, 0.f, 0.f, 1.1f, 30.f,
+	sweepb100_setup, sweep_tick, sweep_run, sweep_output, sweep_compare, "sweep",
+};
 
 const struct box_adapter box_sweepb = {
 	"sweepb", kinds, 0, 0, BOX_EXACT, 0.f, 0.f, 1.1f, 30.f,
