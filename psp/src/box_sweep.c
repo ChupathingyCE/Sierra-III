@@ -7,6 +7,13 @@ each test lands on the same side and each answer is the engine's to the bit.
 #include <string.h>
 #include <math.h>
 #include "box_sweep.h"
+#ifdef SWEEP_DEBUG
+#include <stdio.h>
+int box_sweep_debug;
+#define DBG(...) do { if (box_sweep_debug) printf(__VA_ARGS__); } while (0)
+#else
+#define DBG(...) ((void)0)
+#endif
 
 #define EPSILON 0.0001f
 #define REAL_BIG 3.4028235e38f
@@ -1059,6 +1066,9 @@ static int move_point(const struct box_sweep_features *features, const float *ol
 	{
 		struct box_sweep_plane *collision = &collisions[count];
 
+		DBG("  iter %d: pos %.9g %.9g %.9g vel %a %a %a\n", count, clipped_position[0], clipped_position[1], clipped_position[2],
+			clipped_velocity[0], clipped_velocity[1], clipped_velocity[2]);
+
 		if (count >= BOX_SWEEP_FEATURES)
 			return -1;
 		if (features_vector(features, clipped_position, clipped_velocity, collision))
@@ -1117,6 +1127,7 @@ static int move_point(const struct box_sweep_features *features, const float *ol
 		if (count >= most)
 			break;
 	}
+	DBG("  end: count %d clip %d still %d vel %a %a %a\n", count, clip_count, still(clipped_velocity), clipped_velocity[0], clipped_velocity[1], clipped_velocity[2]);
 	memcpy(answer->position, clipped_position, 12);
 	switch (clip_count)
 	{
@@ -1134,6 +1145,61 @@ static int move_point(const struct box_sweep_features *features, const float *ol
 		answer->velocity[1] = 0.0f;
 		answer->velocity[2] = 0.0f;
 		break;
+	}
+	/* held against two or three planes: one more collision, the floor they
+	make (the crease's or the corner's), for the asker's ground test */
+	if (clip_count > 1 && count < most)
+	{
+		struct box_sweep_plane *floor = &collisions[count++];
+		const struct box_sweep_plane *last = &collisions[clip[clip_count - 1]];
+		float lowest = 0.0f;
+		int steepest = -1, k;
+		static const float up[3] = { 0.0f, 0.0f, 1.0f };
+
+		floor->t = last->t;
+		memcpy(floor->point, last->point, 12);
+		floor->object = -1;
+		floor->surface = -1;
+		floor->flags = 0;
+		floor->breakable = 0;
+		floor->material = -1;
+		for (k = 0; k < clip_count; k++)
+			if (collisions[clip[k]].n[2] < lowest)
+			{
+				lowest = collisions[clip[k]].n[2];
+				steepest = k;
+			}
+		if (clip_count == 2)
+		{
+			if (steepest != -1)
+			{
+				if (steepest == 0)
+					cross3(line_vector, collisions[clip[0]].n, floor->n);
+				else
+					cross3(collisions[clip[steepest]].n, line_vector, floor->n);
+			}
+			else
+				along3(up, line_vector, -(line_vector[2] / length_squared3(line_vector)), floor->n);
+			if (normalize3(floor->n) != 0.0f)
+				floor->d = dot3(line_point, floor->n);
+			else
+				count--;
+		}
+		else if (steepest != -1)
+		{
+			const float *n = collisions[clip[steepest]].n;
+
+			along3(up, n, -n[2], floor->n);
+			if (normalize3(floor->n) != 0.0f)
+				floor->d = dot3(clip_point, floor->n);
+			else
+				count--;
+		}
+		else
+		{
+			memcpy(floor->n, up, 12);
+			floor->d = dot3(clip_point, floor->n);
+		}
 	}
 	return count;
 }

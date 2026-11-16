@@ -29,6 +29,9 @@ records (psp_fixups.py, FIXES_CAPTURE_SWEEP):
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef SWEEP_DEBUG
+#include <stdio.h>
+#endif
 #include "../box.h"
 #include "box_sweep.h"
 
@@ -484,6 +487,44 @@ static int sweep_compare(int i, const void *got, const void *want, unsigned int 
 		{
 			*element = k;
 			*largest_absolute = 1.f;
+#ifdef SWEEP_DEBUG
+			{
+				const struct sweep *s = &sweeps[i];
+				unsigned int w;
+
+				printf("sweep differs at word %u: flags %08x pos %g %g %g vel %g %g %g h %g r %g ignore %d most %d; leaves %d clusters %d objects %d\n",
+					k, s->query.flags, s->query.position[0], s->query.position[1], s->query.position[2], s->query.velocity[0],
+					s->query.velocity[1], s->query.velocity[2], s->query.height, s->query.radius, s->query.ignore, s->query.most,
+					s->world.leaf_count, s->world.cluster_count, s->world.object_count);
+				{
+					extern int box_sweep_debug;
+					int f;
+
+					box_sweep_debug = 1;
+					box_sweep(&s->world, &s->query, &scratch, &answer);
+					box_sweep_debug = 0;
+					for (f = 0; f < scratch.features.count[0]; f++)
+						printf("  sphere %d: obj %d surf %d fl %d br %d mat %d c %.9g %.9g %.9g r %.9g\n", f, scratch.features.spheres[f].f.object, scratch.features.spheres[f].f.surface,
+							scratch.features.spheres[f].f.flags, scratch.features.spheres[f].f.breakable, scratch.features.spheres[f].f.material,
+							scratch.features.spheres[f].center[0], scratch.features.spheres[f].center[1], scratch.features.spheres[f].center[2], scratch.features.spheres[f].radius);
+					for (f = 0; f < scratch.features.count[1]; f++)
+						printf("  cylinder %d: obj %d surf %d fl %d br %d mat %d base %.9g %.9g %.9g h %.9g %.9g %.9g w %.9g\n", f, scratch.features.cylinders[f].f.object, scratch.features.cylinders[f].f.surface,
+							scratch.features.cylinders[f].f.flags, scratch.features.cylinders[f].f.breakable, scratch.features.cylinders[f].f.material,
+							scratch.features.cylinders[f].base[0], scratch.features.cylinders[f].base[1], scratch.features.cylinders[f].base[2],
+							scratch.features.cylinders[f].height[0], scratch.features.cylinders[f].height[1], scratch.features.cylinders[f].height[2], scratch.features.cylinders[f].width);
+					for (f = 0; f < scratch.features.count[2]; f++)
+						printf("  prism %d: obj %d surf %d fl %d br %d mat %d n %.9g %.9g %.9g d %.9g h %.9g pts %d\n", f, scratch.features.prisms[f].f.object, scratch.features.prisms[f].f.surface,
+							scratch.features.prisms[f].f.flags, scratch.features.prisms[f].f.breakable, scratch.features.prisms[f].f.material,
+							scratch.features.prisms[f].n[0], scratch.features.prisms[f].n[1], scratch.features.prisms[f].n[2], scratch.features.prisms[f].d, scratch.features.prisms[f].height, scratch.features.prisms[f].point_count);
+				}
+				for (w = 0; w < words && w < 7 + 11 * 4; w++)
+					printf("  w%-3u box %08x %-12g engine %08x %-12g%s\n", w, a[w], *(const float *)&a[w], b[w], *(const float *)&b[w], a[w] != b[w] ? "  <" : "");
+				for (w = 0; w < (unsigned int)s->world.object_count; w++)
+					printf("  object %d type %d flags %08x seen %d nodes %d sphere %g %g %g r %g\n", s->world.objects[w].index, s->world.objects[w].type,
+						s->world.objects[w].flags, s->world.objects[w].seen, s->world.objects[w].node_count, s->world.objects[w].center[0],
+						s->world.objects[w].center[1], s->world.objects[w].center[2], s->world.objects[w].radius);
+			}
+#endif
 			return 1;
 		}
 	return 0;
