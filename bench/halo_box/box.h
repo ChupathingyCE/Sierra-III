@@ -50,7 +50,7 @@ struct box_adapter
 	const char *capture;
 };
 
-extern const struct box_adapter box_null, box_selftest, box_posing, box_collbsp, box_collbspa, box_collbspw, box_collbspr, box_collbspb, box_collbspm, box_sweep0, box_sweepa;
+extern const struct box_adapter box_null, box_selftest, box_posing, box_collbsp, box_collbspa, box_collbspw, box_collbspr, box_collbspb, box_collbspm, box_sweep0, box_sweepa, box_sweepf, box_sweepl;
 /* every adapter built in, ended by a null (adapters.c) */
 extern const struct box_adapter *const box_adapters[];
 

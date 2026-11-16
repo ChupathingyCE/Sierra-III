@@ -52,7 +52,7 @@ static const struct box_static *find(const struct box_static *statics, unsigned 
 	return 0;
 }
 
-static int form;
+static int form, part;
 
 static int sweep_setup(const struct box_static *statics, unsigned int count)
 {
@@ -267,6 +267,7 @@ static void sweep_tick(const struct box_tick *tick)
 		s->query.ignore = (int)head[9];
 		s->query.most = (int)head[10];
 		s->world.any = (int)head[11];
+		s->world.part = part;
 		s->world.skip_objects = (int)head[12];
 		s->world.level = bsp_of(head[13]);
 		s->world.breakable_count = (short)head[14];
@@ -535,6 +536,7 @@ static int sweep_compare(int i, const void *got, const void *want, unsigned int 
 static int sweep0_setup(const struct box_static *statics, unsigned int count)
 {
 	form = 0;
+	part = 0;
 	return sweep_setup(statics, count);
 }
 
@@ -547,12 +549,40 @@ const struct box_adapter box_sweep0 = {
 static int sweepa_setup(const struct box_static *statics, unsigned int count)
 {
 	form = 1;
+	part = 0;
 	return sweep_setup(statics, count);
 }
 
 const struct box_adapter box_sweepa = {
 	"sweepa", kinds, 0, 0, BOX_EXACT, 0.f, 0.f, 1.1f, 30.f,
 	sweepa_setup, sweep_tick, sweep_run, sweep_output, sweep_compare, "sweep",
+};
+
+/* the diagnostic parts, over form A: the features alone (no clip), and the
+level's features alone (no objects, no clip). Their checks fail by design;
+only their times count */
+static int sweepf_setup(const struct box_static *statics, unsigned int count)
+{
+	form = 1;
+	part = 1;
+	return sweep_setup(statics, count);
+}
+
+static int sweepl_setup(const struct box_static *statics, unsigned int count)
+{
+	form = 1;
+	part = 2;
+	return sweep_setup(statics, count);
+}
+
+const struct box_adapter box_sweepf = {
+	"sweepf", kinds, 0, 0, BOX_EXACT, 0.f, 0.f, 1.1f, 30.f,
+	sweepf_setup, sweep_tick, sweep_run, sweep_output, sweep_compare, "sweep",
+};
+
+const struct box_adapter box_sweepl = {
+	"sweepl", kinds, 0, 0, BOX_EXACT, 0.f, 0.f, 1.1f, 30.f,
+	sweepl_setup, sweep_tick, sweep_run, sweep_output, sweep_compare, "sweep",
 };
 
 void box_sweep_counts(unsigned int *run, unsigned int *unsupported, unsigned int *bad)

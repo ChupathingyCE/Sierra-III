@@ -694,6 +694,8 @@ static int features_in_sphere(const struct box_sweep_world *w, unsigned int flag
 		/* the leaves kept apart: a model's walk below reuses the result */
 		leaf_count = r->leaf_count;
 		memcpy(leaves, r->leaves, sizeof(int) * (unsigned int)leaf_count);
+		if (w->part == 2)
+			objects = 0;
 		if (objects && leaf_count > 0)
 		{
 			unsigned int all_types = ((1u << (BOX_SWEEP_TEST_LAST_TYPE + 1)) - (1u << BOX_SWEEP_TEST_FIRST_TYPE));
@@ -1218,6 +1220,8 @@ int box_sweep(const struct box_sweep_world *world, const struct box_sweep_query 
 	reach = sqrtf(length_squared3(v)) * 0.5f + query->height * 0.5f + query->radius;
 	if (!features_in_sphere(world, query->flags, center, reach, query->height, query->radius, query->ignore, scratch))
 		return -1;
+	if (world->part)
+		return answer->count = 0;
 	if (scratch->features.count[0] || scratch->features.count[1] || scratch->features.count[2])
 		return answer->count = move_point(&scratch->features, p, v, query->most, answer);
 	answer->position[0] = p[0] + v[0];

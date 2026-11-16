@@ -110,6 +110,10 @@ struct box_sweep_world
 	short breakable_count;
 	const unsigned int *breakable;
 	int any;          /* the sphere walk's early-out switch, as the engine's global stands */
+	/* diagnostic parts (the bench's price of a sweep's pieces; their answers
+	are incomplete by design): 1 the features only, no clip; 2 the level's
+	features only, no objects, no clip */
+	int part;
 	int skip_objects; /* the engine's debug switch */
 	const struct box_sweep_leaf *leaves;
 	int leaf_count;
