@@ -745,6 +745,19 @@ static int level_kept(const struct box_sweep_world *w, const float *center, floa
 		slot->radius = radius + w->kept_margin;
 		box_collbsp_sphere(w->level, w->breakable_count, w->breakable, center, slot->radius, 0, &slot->walk);
 		slot->walk.start_node = box_collbsp_split_node(w->level, center, slot->radius);
+#ifdef SWEEP_COUNT
+		{
+			extern unsigned long long sweep_subtree[4];
+			int nodes = 0, leaves = 0;
+
+			box_collbsp_subtree_count(w->level, slot->walk.start_node, center, slot->radius, &nodes, &leaves);
+			sweep_subtree[0]++;
+			sweep_subtree[1] += (unsigned long long)nodes;
+			if ((unsigned long long)nodes > sweep_subtree[2])
+				sweep_subtree[2] = (unsigned long long)nodes;
+			sweep_subtree[3] += (unsigned long long)leaves;
+		}
+#endif
 		scratch->kept_walks++;
 #ifdef SWEEP_COUNT
 		{

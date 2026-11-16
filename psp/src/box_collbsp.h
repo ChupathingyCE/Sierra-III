@@ -95,6 +95,7 @@ int box_collbsp_sphere(const struct box_collbsp *bsp, short breakable_count, con
 earlier, wider one answered from that one's lists (`kept`, made by
 box_collbsp_sphere at the wider radius): its leaves by the 3D walk alone, its
 vertices, edges and surfaces by testing only the kept ones, in the kept order */
+void box_collbsp_subtree_count(const struct box_collbsp *bsp, int index, const float center[3], float radius, int *nodes, int *leaves);
 int box_collbsp_split_node(const struct box_collbsp *bsp, const float center[3], float radius);
 int box_collbsp_sphere_kept(const struct box_collbsp *bsp, short breakable_count, const unsigned int *breakable,
 	const struct box_collbsp_sphere_result *kept, const float center[3], float radius,
