@@ -672,6 +672,34 @@ static int object_features(const struct box_sweep_world *w, unsigned int flags, 
 	return 1;
 }
 
+/* B's invalidation: the same BSP and the same breakable flags as the kept
+walks were made against; a change (a surface broken, a BSP switch) is noted
+for the next walks. More flags than the copy holds never match, so B walks
+fresh every sweep there. */
+static int level_same(const struct box_sweep_world *w, struct box_sweep_scratch *scratch)
+{
+	int words = (w->breakable_count + 31) >> 5;
+	int same;
+
+	if (words < 0)
+		words = 0;
+	if (words > BOX_SWEEP_BREAKABLE_WORDS)
+	{
+		scratch->kept_level = 0;
+		return 0;
+	}
+	same = scratch->kept_level == w->level && scratch->kept_breakable_count == w->breakable_count &&
+		(!words || !memcmp(scratch->kept_breakable, w->breakable, words * 4));
+	if (!same)
+	{
+		scratch->kept_level = w->level;
+		scratch->kept_breakable_count = w->breakable_count;
+		if (words)
+			memcpy(scratch->kept_breakable, w->breakable, words * 4);
+	}
+	return same;
+}
+
 /* B: the level's lists for this sphere from the asker's kept wider walk, a new
 one kept when the sphere leaves it */
 static int level_kept(const struct box_sweep_world *w, const float *center, float radius, struct box_sweep_scratch *scratch)
@@ -680,6 +708,12 @@ static int level_kept(const struct box_sweep_world *w, const float *center, floa
 	int k, oldest = 0;
 
 	scratch->kept_clock++;
+	if (!level_same(w, scratch))
+	{
+		/* the walks were made against a level that is no longer this one */
+		memset(scratch->kept_used, 0, sizeof(scratch->kept_used));
+		scratch->kept_drops++;
+	}
 	for (k = 0; k < BOX_SWEEP_KEPT; k++)
 	{
 		if (scratch->kept[k].asker == scratch->asker && scratch->kept_used[k])

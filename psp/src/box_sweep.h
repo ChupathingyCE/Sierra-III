@@ -146,6 +146,7 @@ struct box_sweep_answer
 /* the sweep's scratch (its feature list and the walks' marks): the asker's
 own, so a sweep writes nothing shared */
 #define BOX_SWEEP_KEPT 32
+#define BOX_SWEEP_BREAKABLE_WORDS 8 /* the engine's 256 breakable surfaces */
 struct box_sweep_kept { int asker; float center[3], radius; struct box_collbsp_sphere_result walk; };
 
 struct box_sweep_scratch
@@ -153,7 +154,12 @@ struct box_sweep_scratch
 	/* B: each asker's widened walk (BOX_SWEEP_KEPT askers, the oldest given up) */
 	struct box_sweep_kept kept[BOX_SWEEP_KEPT];
 	unsigned int kept_clock, kept_used[BOX_SWEEP_KEPT];
-	unsigned int kept_hits, kept_walks;
+	unsigned int kept_hits, kept_walks, kept_drops;
+	/* the level the kept walks were made against: a BSP switch or a
+	breakable surface broken drops every one */
+	const struct box_collbsp *kept_level;
+	short kept_breakable_count;
+	unsigned int kept_breakable[BOX_SWEEP_BREAKABLE_WORDS];
 	int asker;
 	struct box_sweep_features features;
 	struct box_collbsp_sphere_result sphere;
