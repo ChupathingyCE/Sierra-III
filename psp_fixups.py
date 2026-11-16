@@ -45129,6 +45129,69 @@ FIXES_V091A["source/interface/ui_widget_event_handler_functions.c#levels"] = [
 #endif
 struct single_player_level_entry single_player_level_data[STUBBS_CAMPAIGN_LEVEL_COUNT] = { 0 };"""),
 ]
+# The campaign build reads and writes no config.toml (Sheepdog01 2026-11-16: the PSP
+# has no settings screen; controls and the player's name live in the
+# profile): every setting is its default, or the boot's environment
+# (psp_platform.c), with the PSP's keep words beside them. The reader answers
+# no file, so the parsing folds away with tomlc17 (--gc-sections), and the
+# writer keeps a written value for the run only, as config_set does. It also
+# ends the once-a-second stat of the stick (config_follow_file).
+# PSP_CONFIGFILE=1 keeps the file, as the multiplayer build does (broadcast,
+# the network)
+FIXES_V091A["port/linux/src/port_config.c#nofile"] = [
+("""/* the whole file, NUL terminated, or NULL; free() it */
+static char *config_read_file(const char *path, size_t *size)
+{
+""", """#if defined(HALO_PSP) && !defined(PSP_MULTIPLAYER) && !defined(PSP_CONFIGFILE)
+/* psp_fixups.py (FIXES_V091A #nofile): no config.toml in the campaign build */
+#define PSP_NO_CONFIG_FILE 1
+#endif
+
+/* the whole file, NUL terminated, or NULL; free() it */
+static char *config_read_file(const char *path, size_t *size)
+{
+#ifdef PSP_NO_CONFIG_FILE
+	(void)path;
+	(void)size;
+	return NULL;
+#endif
+"""),
+("""	int written;
+
+	if ((size_t)snprintf(temporary, sizeof(temporary), "%s.new", path) >= sizeof(temporary))
+		return 0;
+""", """	int written;
+
+#ifdef PSP_NO_CONFIG_FILE
+	(void)length;
+	(void)written;
+	return 1;
+#endif
+	if ((size_t)snprintf(temporary, sizeof(temporary), "%s.new", path) >= sizeof(temporary))
+		return 0;
+"""),
+("""	int changed = 0;
+
+	if (!config_loaded)
+		return;
+""", """	int changed = 0;
+
+#ifdef PSP_NO_CONFIG_FILE
+	return;
+#endif
+	if (!config_loaded)
+		return;
+"""),
+("""#if !defined(HALO_ANDROID) && !defined(HALO_XBOX_CONSOLE)
+	config_report_unread(path);
+#endif
+""", """#ifdef PSP_NO_CONFIG_FILE
+	platform_log("settings: the campaign build reads no %s (PSP_CONFIGFILE=1 does)", path);
+#elif !defined(HALO_ANDROID) && !defined(HALO_XBOX_CONSOLE)
+	config_report_unread(path);
+#endif
+"""),
+]
 # upstream's automated test input (debug.test_input: the scripted bot, the
 # menu scripts and the followed file; its 4 KB script buffer and its parser):
 # the PSP's tests drive the pad from psp_pad.c, so the PSP calls none of it and
