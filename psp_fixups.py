@@ -45192,6 +45192,25 @@ static char *config_read_file(const char *path, size_t *size)
 #endif
 """),
 ]
+# Stubbs mode is off in the PSP's build (HALO_CONSOLE_NO_STUBBS), and the
+# stubbs_ units are left out, but stubbs_mode.h has no off form: each of the
+# engine's tests (in 21 units) called the link's stub (101,530 calls in b30's flight,
+# pingain1). It answers FALSE in place, so the tests fold away
+FIXES_V091A["port/linux/include/stubbs_mode.h#off"] = [
+("""/* whether Stubbs mode is on: with the stubbs pack's menus */
+boolean stubbs_mode_active(void);
+""", """/* whether Stubbs mode is on: with the stubbs pack's menus */
+#if defined(HALO_PSP) && defined(HALO_CONSOLE_NO_STUBBS)
+/* psp_fixups.py (FIXES_V091A): never, in a build without Stubbs mode */
+static inline boolean stubbs_mode_active(void)
+{
+	return FALSE;
+}
+#else
+boolean stubbs_mode_active(void);
+#endif
+"""),
+]
 # upstream's automated test input (debug.test_input: the scripted bot, the
 # menu scripts and the followed file; its 4 KB script buffer and its parser):
 # the PSP's tests drive the pad from psp_pad.c, so the PSP calls none of it and
