@@ -26813,13 +26813,14 @@ static void frame_end_show(void)
 			seethrough_exact_draws, seethrough_clamped_draws, seethrough_fog_faded_draws, level_culled_draws);
 		seethrough_exact_draws = seethrough_clamped_draws = seethrough_fog_faded_draws = level_culled_draws = 0;
 		{
-			extern void psp_transparent_layers_counts(unsigned long *queued, unsigned long *unmapped);
+			extern void psp_transparent_layers_counts(unsigned long *queued, unsigned long *unmapped, unsigned long *parts,
+				unsigned long *missing);
 			extern unsigned long psp_transparent_noise_count(void);
-			unsigned long layers_queued, layers_unmapped;
+			unsigned long layers_queued, layers_unmapped, layers_parts, layers_missing;
 
-			psp_transparent_layers_counts(&layers_queued, &layers_unmapped);
-			platform_log("GE: models as the Xbox draws them, last 300 frames: see-through parts one-sided %lu (seethroughtwosided: both sides); extra layers queued %lu, %lu with no map (nolayers: none); camouflaged parts shimmering %lu (camoshimmer); generic shaders' second map passes %lu (genericnoise); self-occluding objects' depth first %lu times, %lu parts (noselfocclude: none); glass draws tinting the frame behind %lu (glassnotint: none)",
-				seethrough_culled_draws, layers_queued, layers_unmapped, camo_shimmer_parts, psp_transparent_noise_count(),
+			psp_transparent_layers_counts(&layers_queued, &layers_unmapped, &layers_parts, &layers_missing);
+			platform_log("GE: models as the Xbox draws them, last 300 frames: see-through parts one-sided %lu (seethroughtwosided: both sides); extra layers queued %lu, %lu with no map, from %lu layered parts, %lu layers' shaders not found (nolayers: none); camouflaged parts shimmering %lu (camoshimmer); generic shaders' second map passes %lu (genericnoise); self-occluding objects' depth first %lu times, %lu parts (noselfocclude: none); glass draws tinting the frame behind %lu (glassnotint: none)",
+				seethrough_culled_draws, layers_queued, layers_unmapped, layers_parts, layers_missing, camo_shimmer_parts, psp_transparent_noise_count(),
 				self_occlude_runs, self_occlude_parts, glass_tinted_draws);
 		}
 		self_occlude_runs = self_occlude_parts = 0;

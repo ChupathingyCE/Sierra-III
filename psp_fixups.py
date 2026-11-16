@@ -33130,6 +33130,9 @@ FIXES_MODELS["source/rasterizer/rasterizer.c#layers"] = [
 its own layers first. psp_transparent_map's state (the clamp, the meter) is
 the last call's, so the caller works its own shader out again after this */
 static unsigned long psp_transparent_layers_queued = 0, psp_transparent_layers_unmapped = 0;
+/* (the parts with layered shaders that reached here, and layers whose shader
+wasn't found: a check that the lookup answers) */
+static unsigned long psp_transparent_layers_parts = 0, psp_transparent_layers_missing = 0;
 
 static void psp_transparent_layers(struct shader const *shader, short permutation,
 	struct triangle_buffer const *triangle_buffer, long triangle_count, struct vertex_buffer const *vertex_buffer,
@@ -33146,6 +33149,8 @@ static void psp_transparent_layers(struct shader const *shader, short permutatio
 
 	if ((type != 5 && type != 6) || depth >= 2)
 		return;
+	if (depth == 0)
+		psp_transparent_layers_parts++;
 	count = *(long const *)(definition + 72);
 	layers = *(char const *const *)(definition + 76);
 	for (layer = 0; layers && layer < count && layer < 8; layer++)
@@ -33163,7 +33168,10 @@ static void psp_transparent_layers(struct shader const *shader, short permutatio
 		answering NULL, and every layer was skipped) */
 		layer_shader = (struct shader const *)tag_get('shdr', index);
 		if (!layer_shader)
+		{
+			psp_transparent_layers_missing++;
 			continue;
+		}
 		psp_transparent_layers(layer_shader, permutation, triangle_buffer, triangle_count, vertex_buffer, centroid,
 			depth + 1);
 		key = psp_transparent_map(layer_shader, permutation, TRUE, &u_scale, &v_scale, &u_offset, &v_offset, &blend);
@@ -33181,11 +33189,15 @@ static void psp_transparent_layers(struct shader const *shader, short permutatio
 }
 
 /* for the GE's log line (psp_ge.c) */
-void psp_transparent_layers_counts(unsigned long *queued, unsigned long *unmapped)
+void psp_transparent_layers_counts(unsigned long *queued, unsigned long *unmapped, unsigned long *parts,
+	unsigned long *missing)
 {
 	*queued = psp_transparent_layers_queued;
 	*unmapped = psp_transparent_layers_unmapped;
+	*parts = psp_transparent_layers_parts;
+	*missing = psp_transparent_layers_missing;
 	psp_transparent_layers_queued = psp_transparent_layers_unmapped = 0;
+	psp_transparent_layers_parts = psp_transparent_layers_missing = 0;
 }
 #endif
 
