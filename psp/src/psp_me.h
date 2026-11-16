@@ -35,6 +35,7 @@ int psp_me_music_yield(void);
 #define ME_JOB_EDRAM 5 /* build 115: fill or check a stretch of the ME's eDRAM (edramcheck) */
 /* 6: ME_JOB_SLANT, a ring job (below) */
 #define ME_JOB_VME 17 /* "vmetest": mcidclan's mat4x4 on the VME, checked (psp_vme.c; a measurement) */
+#define ME_JOB_DDR 18 /* "meddrprobe": fill or check a stretch of the ME partition's top, from the ME (a measurement: memory_stones row 7) */
 #define ME_JOB_SOUNDCOPY 11 /* "soundedram": staged sound pieces copied into the sound cache in eDRAM (psp_dsound.c) */
 
 int psp_me_start(void);
@@ -49,6 +50,7 @@ void psp_me_handover(int which, unsigned long us);
 void psp_me_report(void);
 float psp_me_busy_percent(void);
 void psp_me_edram_probe(void);
+void psp_me_ddr_probe(void);
 /* build 118: a job handed over without waiting, then finished (gemeoverlap) */
 int psp_me_submit(int which, unsigned int type, const unsigned int *args, int arg_count);
 int psp_me_finish(int which, unsigned int *results);

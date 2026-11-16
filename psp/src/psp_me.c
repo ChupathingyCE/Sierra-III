@@ -67,6 +67,11 @@ ships beside the EBOOT. */
 #include "psp_lanetrace.h"
 #include "psp_paths.h"   /* ms0:/halo or ms0:/halomp, and the maps */
 
+/* meddrprobe's window: the ME partition's top 64 KB (offsets in the partition),
+far above the ME image's ~502 KB and unused in play on both PSPs (sleepmem) */
+#define PSP_ME_DDR_FIRST 0xF0000u
+#define PSP_ME_DDR_PIECE 0x1000u
+
 void platform_log(const char *format, ...);
 void psp_log_flush(void);
 int psp_keep(const char *name);
@@ -788,6 +793,45 @@ static void run_job(volatile struct me_slot *slot, int *sums, int on_me)
 	case ME_JOB_VME:
 		psp_vme_job(slot->args, slot->results, on_me);
 		break;
+	case ME_JOB_DDR:
+	{
+		/* "meddrprobe" (memory_stones row 7): can the ME write and read back
+		the ME partition's top while the game makes its syscalls? 6.61 resets
+		the DDR protection to 0xCCCCCCCC after every syscall, and nothing on
+		record says whether the ME's accesses are held to it. args: 0 fill /
+		1 check, the first byte's offset in the partition, the bytes. Through
+		the uncached window (0xA8300000), so neither CPU's cache stands
+		between the ME and main RAM, and the kernel walker (sleepmem) sees
+		what landed. Each word holds its own offset mixed with a constant.
+		Only on the ME: the main CPU is user mode and can't reach it */
+		unsigned int first = slot->args[1], bytes = slot->args[2], at, bad = 0, first_bad = 0xFFFFFFFFu, found = 0;
+
+		if (!on_me || first < PSP_ME_DDR_FIRST || first + bytes > 0x100000u)
+		{
+			slot->results[0] = 0xFFFFFFFFu;
+			break;
+		}
+		for (at = first; at < first + bytes; at += 4)
+		{
+			volatile unsigned int *word = (volatile unsigned int *)(0xA8300000u + at);
+			unsigned int want = at ^ 0xC3A55A3Cu;
+
+			if (slot->args[0] == 0)
+				*word = want;
+			else if (*word != want)
+			{
+				if (!bad++)
+				{
+					first_bad = at;
+					found = *word;
+				}
+			}
+		}
+		slot->results[0] = bad;
+		slot->results[1] = first_bad;
+		slot->results[2] = found;
+		break;
+	}
 	case ME_JOB_SOUNDCOPY:
 	{
 		/* "soundedram": up to four pieces (source, destination, bytes in
@@ -5033,6 +5077,61 @@ void psp_me_edram_probe(void)
 				passes, checked, EDRAM_PROBE_PIECE / 1024, bad_pieces, hash_moved,
 				stack_lowest == 0xFFFFFFFFu ? 0 : (0x200000u - stack_lowest) / 1024);
 	}
+}
+
+/* "meddrprobe": the ME patterns the partition's top 64 KB once, then checks
+one 4 KB piece a heartbeat, so each piece is read back across seconds of the
+game's syscalls. A check that finds its pattern says the ME's reads and
+writes there aren't held to the DDR protection; the kernel walker (keep word
+sleepmem) sees the fill land as one changed chunk, the top one, and nothing
+after it. Off by default: a measurement */
+void psp_me_ddr_probe(void)
+{
+	static int asked = -1;
+	static unsigned int filled = 0, next = 0, checked = 0, bad_pieces = 0, bad_words = 0, refused = 0;
+	unsigned int args[3], results[ME_JOB_RESULTS] = { 0 }, first;
+
+	if (asked < 0)
+		asked = psp_keep("meddrprobe") != 0;
+	if (!asked || me_state != 1)
+		return;
+	if (filled < 16)
+	{
+		args[0] = 0;
+		args[1] = PSP_ME_DDR_FIRST + filled * PSP_ME_DDR_PIECE;
+		args[2] = PSP_ME_DDR_PIECE;
+		if (!psp_me_run(ME_SLOT_PROBE, ME_JOB_DDR, args, 3, results, 2000) || results[0] == 0xFFFFFFFFu)
+		{
+			if (!refused++)
+				platform_log("ME: meddrprobe: the fill's job didn't run (not on the ME, or no answer)");
+			return;
+		}
+		if (++filled == 16)
+			platform_log("ME: meddrprobe: the ME partition's %u-%u KB patterned from the ME, one 4 KB piece checked a heartbeat",
+				PSP_ME_DDR_FIRST / 1024, PSP_ME_DDR_FIRST / 1024 + 64);
+		return;
+	}
+	first = PSP_ME_DDR_FIRST + next * PSP_ME_DDR_PIECE;
+	args[0] = 1;
+	args[1] = first;
+	args[2] = PSP_ME_DDR_PIECE;
+	if (!psp_me_run(ME_SLOT_PROBE, ME_JOB_DDR, args, 3, results, 2000) || results[0] == 0xFFFFFFFFu)
+	{
+		refused++;
+		return;
+	}
+	checked++;
+	if (results[0])
+	{
+		bad_words += results[0];
+		if (!bad_pieces++)
+			platform_log("ME: meddrprobe: the partition's %u KB piece read back %u words wrong, the first at +0x%x (0x%08x, wanted 0x%08x)",
+				first / 1024, results[0], results[1], results[2], results[1] ^ 0xC3A55A3Cu);
+	}
+	next = (next + 1) & 15;
+	if ((checked & 15) == 0)
+		platform_log("ME: meddrprobe: %u pieces checked, %u wrong (%u words), %u jobs refused",
+			checked, bad_pieces, bad_words, refused);
 }
 
 /* the longest line platform_log writes whole (its buffer, psp_fixups.py),
