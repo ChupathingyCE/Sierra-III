@@ -672,6 +672,50 @@ static int object_features(const struct box_sweep_world *w, unsigned int flags, 
 	return 1;
 }
 
+/* B: the level's lists for this sphere from the asker's kept wider walk, a new
+one kept when the sphere leaves it */
+static int level_kept(const struct box_sweep_world *w, const float *center, float radius, struct box_sweep_scratch *scratch)
+{
+	struct box_sweep_kept *slot = 0;
+	int k, oldest = 0;
+
+	scratch->kept_clock++;
+	for (k = 0; k < BOX_SWEEP_KEPT; k++)
+	{
+		if (scratch->kept[k].asker == scratch->asker && scratch->kept_used[k])
+		{
+			slot = &scratch->kept[k];
+			break;
+		}
+		if (scratch->kept_used[k] < scratch->kept_used[oldest])
+			oldest = k;
+	}
+	if (slot)
+	{
+		float d[3];
+
+		from_to3(slot->center, center, d);
+		if (sqrtf(length_squared3(d)) + radius > slot->radius)
+			slot = 0;
+		else
+			scratch->kept_hits++;
+	}
+	if (!slot)
+	{
+		slot = &scratch->kept[oldest];
+		for (k = 0; k < BOX_SWEEP_KEPT; k++)
+			if (scratch->kept[k].asker == scratch->asker && scratch->kept_used[k])
+				slot = &scratch->kept[k];
+		slot->asker = scratch->asker;
+		memcpy(slot->center, center, 12);
+		slot->radius = radius + w->kept_margin;
+		box_collbsp_sphere(w->level, w->breakable_count, w->breakable, center, slot->radius, 0, &slot->walk);
+		scratch->kept_walks++;
+	}
+	scratch->kept_used[slot - scratch->kept] = scratch->kept_clock;
+	return box_collbsp_sphere_kept(w->level, w->breakable_count, w->breakable, &slot->walk, center, radius, &scratch->sphere);
+}
+
 /* collision_get_features_in_sphere: the level's, then the objects' in the clusters the sphere reaches */
 static int features_in_sphere(const struct box_sweep_world *w, unsigned int flags, const float *center, float radius,
 	float height, float width, int ignore, struct box_sweep_scratch *scratch)
@@ -689,7 +733,8 @@ static int features_in_sphere(const struct box_sweep_world *w, unsigned int flag
 		if (w->skip_objects)
 			objects = 0;
 		radius += 0.0625f;
-		if (box_collbsp_sphere(w->level, w->breakable_count, w->breakable, center, radius, w->any, r) && structure)
+		if (w->kept_margin > 0.f && !w->any ? level_kept(w, center, radius, scratch) && structure
+			: box_collbsp_sphere(w->level, w->breakable_count, w->breakable, center, radius, w->any, r) && structure)
 			bsp_features(w->level, r, 0, height, width, -1, features);
 		/* the leaves kept apart: a model's walk below reuses the result */
 		leaf_count = r->leaf_count;
@@ -1218,6 +1263,7 @@ int box_sweep(const struct box_sweep_world *world, const struct box_sweep_query 
 	center[1] = p[1] + v[1] * 0.5f;
 	center[2] = query->height * 0.5f + (p[2] + v[2] * 0.5f);
 	reach = sqrtf(length_squared3(v)) * 0.5f + query->height * 0.5f + query->radius;
+	scratch->asker = query->ignore;
 	if (!features_in_sphere(world, query->flags, center, reach, query->height, query->radius, query->ignore, scratch))
 		return -1;
 	if (world->part)

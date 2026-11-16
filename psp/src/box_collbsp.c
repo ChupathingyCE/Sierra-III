@@ -306,6 +306,8 @@ struct sphere
 	float center2d[2];
 	/* form A: the surfaces tested this walk, with the projection they were tested in */
 	int seen[32], seen_count;
+	int designator; /* the plane the surface under test is projected by */
+	int walk_only;  /* the 3D walk's leaves alone (B's kept spheres) */
 };
 
 static void add(int *count, int *list, int index)
@@ -431,7 +433,11 @@ static void surface_sphere(struct sphere *w, int s)
 
 		if (edge_touches(p0, along, w->center, w->radius))
 		{
+			int before = w->result->edge_count;
+
 			add(&w->result->edge_count, w->result->edges, e);
+			if (w->result->edge_count > before)
+				w->result->edge_reverse[before] = (unsigned char)reverse;
 			hit = 1;
 		}
 		e = edge->edge[reverse];
@@ -457,7 +463,13 @@ static void surface_sphere(struct sphere *w, int s)
 			e = edge->edge[reverse];
 		} while (e != surface->first_edge && ++count < 8);
 	}
-	add(&w->result->surface_count, w->result->surfaces, s);
+	{
+		int before = w->result->surface_count;
+
+		add(&w->result->surface_count, w->result->surfaces, s);
+		if (w->result->surface_count > before)
+			w->result->surface_designator[before] = w->designator;
+	}
 }
 
 static void sphere2d(struct sphere *w, int child)
@@ -530,7 +542,7 @@ static void sphere3d(struct sphere *w, int index)
 	/* the diagnostic forms (BOX_COLLBSP_FORM_WALK, _REFS: a price of the walk's
 	parts on the PSP, their answers incomplete): the 3D walk alone, or with the
 	references matched and projected but no surface tested */
-	if (bsp->form == BOX_COLLBSP_FORM_WALK)
+	if (bsp->form == BOX_COLLBSP_FORM_WALK || w->walk_only)
 		return;
 	end = leaf->first_reference + leaf->reference_count;
 	for (r = leaf->first_reference; r < end && !w->found; r++)
@@ -561,6 +573,7 @@ static void sphere3d(struct sphere *w, int index)
 					axis = aj >= ai ? 1 : 0;
 				w->axis = axis;
 				w->sign = (plane[axis] > 0.f) != ((designator & LONG_MIN_) ? 1 : 0);
+				w->designator = designator;
 				project(projected, w->axis, w->sign, w->center2d);
 				if (bsp->form != BOX_COLLBSP_FORM_REFS)
 					sphere2d(w, DESIGNATOR(reference->root));
@@ -593,6 +606,8 @@ static int sphere_from(const struct box_collbsp *bsp, int start, short breakable
 	w.result = result;
 	w.depth = 0;
 	w.seen_count = 0;
+	w.walk_only = 0;
+	w.designator = 0;
 	memset(w.buckets, 0, sizeof(w.buckets));
 	COUNT(n_spheres);
 #ifdef BOX_COLLBSP_COUNT
@@ -602,6 +617,124 @@ static int sphere_from(const struct box_collbsp *bsp, int start, short breakable
 	LINE_WALK_BEGIN(bsp);
 	sphere3d(&w, start);
 	LINE_WALK_END(0);
+	return result->surface_count > 0 || result->edge_count > 0;
+}
+
+/* ---------- B: a sphere answered from a wider one's lists */
+
+int box_collbsp_sphere_kept(const struct box_collbsp *bsp, short breakable_count, const unsigned int *breakable,
+	const struct box_collbsp_sphere_result *kept, const float center[3], float radius,
+	struct box_collbsp_sphere_result *result)
+{
+	struct sphere w;
+	float radius_squared = radius * radius;
+	int k;
+
+	w.bsp = bsp;
+	w.breakable_count = breakable ? breakable_count : 0;
+	w.breakable = breakable;
+	w.center = center;
+	w.radius = radius;
+	w.any = 0;
+	w.found = 0;
+	w.result = result;
+	w.depth = 0;
+	w.seen_count = 0;
+	w.walk_only = 1;
+	w.designator = 0;
+	memset(w.buckets, 0, sizeof(w.buckets));
+	result->surface_count = result->edge_count = result->vertex_count = result->leaf_count = 0;
+	sphere3d(&w, 0);
+	for (k = 0; k < kept->vertex_count; k++)
+	{
+		const float *p = bsp->vertices[kept->vertices[k]].p;
+		float dx = p[0] - center[0], dy = p[1] - center[1], dz = p[2] - center[2];
+
+		if (dx * dx + dy * dy + dz * dz <= radius_squared)
+			result->vertices[result->vertex_count++] = kept->vertices[k];
+	}
+	for (k = 0; k < kept->edge_count; k++)
+	{
+		const struct box_collbsp_edge *edge = &bsp->edges[kept->edges[k]];
+		int reverse = kept->edge_reverse[k];
+		const float *p0 = bsp->vertices[edge->vertex[reverse]].p, *p1 = bsp->vertices[edge->vertex[!reverse]].p;
+		float along[3] = { p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2] };
+
+		if (edge_touches(p0, along, center, radius))
+		{
+			result->edge_reverse[result->edge_count] = (unsigned char)reverse;
+			result->edges[result->edge_count++] = kept->edges[k];
+		}
+	}
+	for (k = 0; k < kept->surface_count; k++)
+	{
+		int s = kept->surfaces[k], designator = kept->surface_designator[k], e, count, hit = 0;
+		const struct box_collbsp_surface *surface = &bsp->surfaces[s];
+		const float *plane = bsp->planes + 4 * (designator & LONG_MAX_);
+		float along = -((center[0] * plane[0] + center[1] * plane[1] + center[2] * plane[2]) - plane[3]);
+		float projected[3], ai = fabsf(plane[0]), aj = fabsf(plane[1]), ak = fabsf(plane[2]);
+		short axis;
+		int sign;
+		float c2[2];
+
+		e = surface->first_edge;
+		count = 0;
+		do
+		{
+			const struct box_collbsp_edge *edge = &bsp->edges[e];
+			int reverse = REVERSE(edge, s);
+			const float *p = bsp->vertices[edge->vertex[reverse]].p;
+			const float *p1 = bsp->vertices[edge->vertex[!reverse]].p;
+			float dx = p[0] - center[0], dy = p[1] - center[1], dz = p[2] - center[2];
+			float v[3] = { p1[0] - p[0], p1[1] - p[1], p1[2] - p[2] };
+
+			if (dx * dx + dy * dy + dz * dz <= radius_squared || edge_touches(p, v, center, radius))
+			{
+				hit = 1;
+				break;
+			}
+			e = edge->edge[reverse];
+		} while (e != surface->first_edge && ++count < 8);
+		if (!hit)
+		{
+			projected[0] = plane[0] * along + center[0];
+			projected[1] = plane[1] * along + center[1];
+			projected[2] = plane[2] * along + center[2];
+			if (ak >= aj && ak >= ai)
+				axis = 2;
+			else
+				axis = aj >= ai ? 1 : 0;
+			sign = (plane[axis] > 0.f) != ((designator & LONG_MIN_) ? 1 : 0);
+			project(projected, axis, sign, c2);
+			e = surface->first_edge;
+			count = 0;
+			hit = 1;
+			do
+			{
+				const struct box_collbsp_edge *edge = &bsp->edges[e];
+				int reverse = REVERSE(edge, s);
+				float q0[2], q1[2], v0[2], v1[2];
+
+				project(bsp->vertices[edge->vertex[reverse]].p, axis, sign, q0);
+				project(bsp->vertices[edge->vertex[!reverse]].p, axis, sign, q1);
+				v0[0] = q0[0] - c2[0];
+				v0[1] = q0[1] - c2[1];
+				v1[0] = q1[0] - c2[0];
+				v1[1] = q1[1] - c2[1];
+				if (v0[0] * v1[1] - v0[1] * v1[0] < 0.f)
+				{
+					hit = 0;
+					break;
+				}
+				e = edge->edge[reverse];
+			} while (e != surface->first_edge && ++count < 8);
+		}
+		if (hit)
+		{
+			result->surface_designator[result->surface_count] = designator;
+			result->surfaces[result->surface_count++] = s;
+		}
+	}
 	return result->surface_count > 0 || result->edge_count > 0;
 }
 
