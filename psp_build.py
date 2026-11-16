@@ -615,6 +615,26 @@ def float_stubs(names):
                     found.setdefault(m.group(2), os.path.relpath(path, TREE))
     return found
 
+def macro_stubs(names):
+    """the names among these that the mirror #defines as a function-like macro:
+    name to file. A call to one from a unit without the macro's header is an
+    implicitly declared function, which the link stubs (rasterizer.c's
+    shader_definition_get, answering NULL: every shader's extra layers
+    skipped)"""
+    found = {}
+    if not names:
+        return found
+    pattern = re.compile(r"^\s*#\s*define\s+(%s)\(" % "|".join(re.escape(n) for n in sorted(names)), re.M)
+    for top in ("source", "port"):
+        for root, _, files in os.walk(os.path.join(TREE, top)):
+            for f in files:
+                if not f.endswith((".c", ".h")):
+                    continue
+                path = os.path.join(root, f)
+                for m in pattern.finditer(open(path, errors="replace").read()):
+                    found.setdefault(m.group(1), os.path.relpath(path, TREE))
+    return found
+
 def port_definitions(names):
     """the names among these that a psp/src unit defines at file scope (a
     function's body or a variable, not a prototype or an extern): name to file"""
@@ -1594,6 +1614,10 @@ def main():
     if defined:
         sys.exit("not linking: stubbed, though psp/src defines them (is the unit in PSP_FILES, and given its switch's "
                  "define?): " + ", ".join("%s (%s)" % (n, f) for n, f in sorted(defined.items())[:20]))
+    macros = macro_stubs(stubs)
+    if macros:
+        sys.exit("not linking: stubbed, though the tree defines them as macros (a unit calls one without its header): "
+                 + ", ".join("%s (%s)" % (n, f) for n, f in sorted(macros.items())[:20]))
     floats = float_stubs(stubs)
     if floats:
         sys.exit("not linking: stubbed, though they return a floating-point value (a stub answers garbage in $f0); "

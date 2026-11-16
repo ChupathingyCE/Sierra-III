@@ -33158,7 +33158,10 @@ static void psp_transparent_layers(struct shader const *shader, short permutatio
 
 		if (index == NONE)
 			continue;
-		layer_shader = (struct shader const *)shader_definition_get(index);
+		/* (tag_get as shader_definitions.h's shader_definition_get is: the macro's
+		header isn't this unit's, so the name was a function the link stubbed,
+		answering NULL, and every layer was skipped) */
+		layer_shader = (struct shader const *)tag_get('shdr', index);
 		if (!layer_shader)
 			continue;
 		psp_transparent_layers(layer_shader, permutation, triangle_buffer, triangle_count, vertex_buffer, centroid,
