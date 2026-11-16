@@ -54459,7 +54459,8 @@ struct psp_mv_state
 static struct psp_mv_state *psp_mv;
 static void *psp_mv_stack_top;
 static unsigned int *psp_mv_stack_bottom;
-/* "mevisedram" (MEVISEDRAM, the lab's memory_stones row 3): the state and the
+/* MEVISEDRAM (the lab's memory_stones row 3; "mevisedramoff" keeps them on
+the heap): the state and the
 walk's stack in the ME's eDRAM, 0-192 KB, which nothing else uses (edramcheck:
 no hash moved there over the ladder), 152 KB off the heap. The main CPU can't
 reach the eDRAM, so the ME copies what the main CPU reads (the clusters, the
@@ -54744,7 +54745,7 @@ static int psp_mv_start(void)
 	stack. The emulator maps no eDRAM below 800 KB, so there the state and the
 	stack stay on the heap, standing in, and only the main CPU's side (the
 	answers through psp_mv_handed, the ME's own clear and look) is tried */
-	psp_mv_edram = psp_keep("mevisedram") && state_bytes <= PSP_MV_EDRAM_TOP - PSP_MV_STACK;
+	psp_mv_edram = !psp_keep("mevisedramoff") && state_bytes <= PSP_MV_EDRAM_TOP - PSP_MV_STACK;
 	if (psp_mv_edram)
 	{
 		if (!psp_me_simulated() || psp_me_sim_edram_holds(0, PSP_MV_EDRAM_TOP))
