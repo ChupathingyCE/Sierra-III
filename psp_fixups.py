@@ -54765,6 +54765,22 @@ void psp_cap_sweep_bsp(struct collision_bsp const *bsp)
 
 boolean (collision_surface_edge_ring_continues)("""),
 ]
+FIXES_CAPTURE_SWEEP["source/scenario/scenario.c#capture"] = [
+# a BSP switch ends the capture's file first: its by-reference statics (the
+# level BSP's arrays) are read when the file is written, and the old BSP's
+# go with the unload below
+("""		main_stop_time();
+		collision_log_enable(FALSE);
+""", """		main_stop_time();
+		collision_log_enable(FALSE);
+		{
+			void psp_capture_cut(void);
+
+			psp_capture_cut();
+		}
+"""),
+]
+
 FIXES_CAPTURE_SWEEP["source/physics/collision_models.c#capture"] = [
 ("""	const real_matrix4x3 *matrix;
 

@@ -526,6 +526,26 @@ void psp_capture_tick_end(void)
 		cap.largest_tick = cap.tick_used;
 }
 
+/* the file being made ended now, while what its by-reference statics point
+at is still there (a BSP switch, before the old BSP is unloaded); a tick in
+progress is dropped, since its records would straddle the two files */
+void psp_capture_cut(void)
+{
+	if (!cap.open || cap_on_me())
+		return;
+	if (cap.in_tick)
+	{
+		cap.over = 1;
+		psp_capture_tick_end();
+	}
+	file_finish();
+	if (!scratch_begin())
+	{
+		cap_log("capture %s: stopped: the next scratch file can't be made", cap.box);
+		cap.open = 0;
+	}
+}
+
 void psp_capture_close(void)
 {
 	if (!cap.open || cap_on_me())
