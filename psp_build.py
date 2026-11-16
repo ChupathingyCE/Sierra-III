@@ -593,6 +593,27 @@ COLD_PORT_UNITS = ("port/linux/src/port_config.c", "port/linux/src/xiso.c", "por
                    # mpb1: internet play runs on its own threads, a join's
                    # keys once; the ONLINE GAMES screen only in the menus
                    "psp/src/psp_online.c", "psp/src/psp_internet.c") + INTERNET_UNITS
+def float_stubs(names):
+    """the names among these declared anywhere in the mirror (a prototype or a
+    definition) with a floating-point result (real, float, double): name to
+    file. The link's stubs return 0 in $v0 and nothing in $f0, so a stubbed
+    float function answers whatever $f0 last held (v0.9.1a's
+    network_distributed_rider_ejection_up: a biped's seat test against it)"""
+    found = {}
+    if not names:
+        return found
+    pattern = re.compile(r"^\s*(?:extern\s+)?(?:static\s+)?(?:inline\s+)?(?:const\s+)?(real|float|double)\s+(%s)\s*\(" %
+                         "|".join(re.escape(n) for n in sorted(names)), re.M)
+    for top in ("source", "port"):
+        for root, _, files in os.walk(os.path.join(TREE, top)):
+            for f in files:
+                if not f.endswith((".c", ".h")):
+                    continue
+                path = os.path.join(root, f)
+                for m in pattern.finditer(open(path, errors="replace").read()):
+                    found.setdefault(m.group(2), os.path.relpath(path, TREE))
+    return found
+
 def port_definitions(names):
     """the names among these that a psp/src unit defines at file scope (a
     function's body or a variable, not a prototype or an extern): name to file"""
@@ -1573,6 +1594,10 @@ def main():
     if defined:
         sys.exit("not linking: stubbed, though psp/src defines them (is the unit in PSP_FILES, and given its switch's "
                  "define?): " + ", ".join("%s (%s)" % (n, f) for n, f in sorted(defined.items())[:20]))
+    floats = float_stubs(stubs)
+    if floats:
+        sys.exit("not linking: stubbed, though they return a floating-point value (a stub answers garbage in $f0); "
+                 "answer them in psp/src: " + ", ".join("%s (%s)" % (n, f) for n, f in sorted(floats.items())[:20]))
     open(os.path.join(OUT, "stubbed_symbols.txt"), "w").write("\n".join(sorted(stubs)) + "\n")
     # size the heap: from the program's end up to the game state
     size = subprocess.run(["psp-size", os.path.join(OUT, "halo.elf")], capture_output=True, text=True).stdout.splitlines()[1].split()

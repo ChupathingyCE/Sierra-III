@@ -158,6 +158,9 @@ boolean network_game_client_update_local_player_data(struct network_game_client 
 /* ---------- network_server_manager.c: never given a server */
 
 boolean network_game_server_ban_player(char const *text) { (void)text; return FALSE; }
+/* (network_distributed.c, v0.9.1a: riders leave a vehicle whose up is
+below this; outside a network game it is 0, the Xbox's) */
+real network_distributed_rider_ejection_up(void) { return 0.0f; }
 void network_game_server_change_game_variant(struct network_game_server *server, struct game_variant *variant)
 {
 	(void)server; (void)variant;
