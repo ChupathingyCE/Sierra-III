@@ -374,8 +374,167 @@ static void still_count(const struct box_tick *tick)
 }
 #endif
 
+#ifdef SWEEP_COUNT
+/* the kept leaves' census (the lead 10:13 (3)): a sweep's objects gathered
+from its asker's kept wide leaves (clusters and members from the tick's
+records) against those from its own leaves, after the engine's sphere test:
+the same objects in the same order? Leaf to cluster and cluster to members
+come from every record of the capture so far (the tick's own first) */
+#define LC_LEAVES 65536
+#define LC_CLUSTERS 4096
+#define LC_MEMBERS 64
+static int lc_leaf_cluster[LC_LEAVES];
+static int lc_have_leaf[LC_LEAVES];
+static struct { unsigned int tick; int count; struct box_sweep_member m[LC_MEMBERS]; } lc_cluster[LC_CLUSTERS];
+static unsigned long long lc_sweeps, lc_same, lc_same_set, lc_unknown, lc_extra_leaves, lc_true_leaves;
+static unsigned int lc_tick;
+
+static void lc_report(void) __attribute__((destructor));
+static void lc_report(void)
+{
+	if (!lc_sweeps)
+		return;
+	printf("leaves count: %llu sweeps with a kept walk: gathered objects the same and in order from the kept leaves %llu (%.1f%%), the same set in another order %llu more, a cluster unknown to the capture %llu; leaves a sweep: own %.1f, kept %.1f\n",
+		lc_sweeps, lc_same, 100.0 * lc_same / lc_sweeps, lc_same_set - lc_same, lc_unknown,
+		(double)lc_true_leaves / lc_sweeps, (double)lc_extra_leaves / lc_sweeps);
+}
+
+static void lc_learn(const struct box_tick *tick)
+{
+	unsigned int k;
+
+	lc_tick = tick->tick;
+	for (k = 0; k < tick->entities; k++)
+	{
+		const struct box_entity *e = &tick->entity[k];
+		unsigned int flag_bytes, pos, tag, w[5];
+		int cluster = -1;
+
+		if (e->kind != 1 || e->input_length < 64)
+			continue;
+		memcpy(&flag_bytes, e->input + 60, 4);
+		pos = 64 + flag_bytes;
+		while (pos + 4 <= e->input_length)
+		{
+			static const unsigned int sizes[10] = { 0, 8, 4, 20, 44, 36, 8, 60, 4, 4 };
+
+			memcpy(&tag, e->input + pos, 4);
+			pos += 4;
+			if (tag > 9 || !sizes[tag] || pos + sizes[tag] > e->input_length)
+				break;
+			if (tag == 1)
+			{
+				memcpy(w, e->input + pos, 8);
+				if (w[0] < LC_LEAVES)
+					lc_leaf_cluster[w[0]] = (int)w[1], lc_have_leaf[w[0]] = 1;
+			}
+			else if (tag == 2)
+			{
+				memcpy(w, e->input + pos, 4);
+				cluster = (int)w[0];
+				if (cluster >= 0 && cluster < LC_CLUSTERS && lc_cluster[cluster].tick != tick->tick + 1)
+					lc_cluster[cluster].tick = tick->tick + 1, lc_cluster[cluster].count = 0;
+				else
+					cluster = -1; /* already learned this tick */
+			}
+			else if (tag == 3 && cluster >= 0 && lc_cluster[cluster].count < LC_MEMBERS)
+			{
+				struct box_sweep_member *m = &lc_cluster[cluster].m[lc_cluster[cluster].count++];
+
+				memcpy(w, e->input + pos, 20);
+				m->object = (int)w[0];
+				memcpy(m->center, &w[1], 12);
+				memcpy(&m->radius, &w[4], 4);
+			}
+			pos += sizes[tag];
+		}
+	}
+}
+
+static int lc_gather(const int *leaves, int count, const float *center, float radius, int *out, int *unknown)
+{
+	int clusters[512], nc = 0, n = 0, k, j, m;
+
+	for (k = 0; k < count; k++)
+	{
+		int c;
+
+		if (leaves[k] < 0 || leaves[k] >= LC_LEAVES || !lc_have_leaf[leaves[k]])
+		{
+			*unknown = 1;
+			continue;
+		}
+		c = lc_leaf_cluster[leaves[k]];
+		for (j = 0; j < nc && clusters[j] != c; j++)
+			;
+		if (j < nc || nc == 512)
+			continue;
+		clusters[nc++] = c;
+		if (c < 0 || c >= LC_CLUSTERS || lc_cluster[c].tick != lc_tick + 1)
+		{
+			*unknown = 1;
+			continue;
+		}
+		for (m = 0; m < lc_cluster[c].count; m++)
+		{
+			const struct box_sweep_member *mb = &lc_cluster[c].m[m];
+			float v[3] = { center[0] - mb->center[0], center[1] - mb->center[1], center[2] - mb->center[2] };
+			float reach = mb->radius + radius;
+
+			if (v[0] * v[0] + v[1] * v[1] + v[2] * v[2] > reach * reach)
+				continue;
+			for (j = 0; j < n && out[j] != mb->object; j++)
+				;
+			if (j == n && n < 512)
+				out[n++] = mb->object;
+		}
+	}
+	return n;
+}
+
+void sweep_leaves_census(const struct box_sweep_world *w, const int *kept, int kept_count, const int *own, int own_count,
+	const float *center, float radius)
+{
+	static int a[512], b[512];
+	int na, nb, unknown = 0, k, j;
+
+	(void)w;
+	na = lc_gather(own, own_count, center, radius, a, &unknown);
+	nb = lc_gather(kept, kept_count, center, radius, b, &unknown);
+	lc_sweeps++;
+	lc_true_leaves += (unsigned long long)own_count;
+	lc_extra_leaves += (unsigned long long)kept_count;
+	if (unknown)
+	{
+		lc_unknown++;
+		return;
+	}
+	if (na == nb && !memcmp(a, b, sizeof(int) * (unsigned int)na))
+	{
+		lc_same++;
+		lc_same_set++;
+		return;
+	}
+	if (na == nb)
+	{
+		for (k = 0; k < na; k++)
+		{
+			for (j = 0; j < nb && b[j] != a[k]; j++)
+				;
+			if (j == nb)
+				return;
+		}
+		lc_same_set++;
+	}
+}
+#endif
+
 static void sweep_tick(const struct box_tick *tick)
 {
+#ifdef SWEEP_COUNT
+	if (tick->tick != lc_tick || !lc_sweeps)
+		lc_learn(tick);
+#endif
 #ifdef SWEEP_COUNT
 	still_count(tick);
 #endif

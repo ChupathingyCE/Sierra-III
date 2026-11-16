@@ -761,6 +761,7 @@ static int level_kept(const struct box_sweep_world *w, const float *center, floa
 #endif
 	}
 	scratch->kept_used[slot - scratch->kept] = scratch->kept_clock;
+	scratch->kept_last = slot;
 #ifdef SWEEP_COUNT
 	{
 		extern unsigned long long sweep_kept_tested[3];
@@ -800,6 +801,15 @@ static int features_in_sphere(const struct box_sweep_world *w, unsigned int flag
 		/* the leaves kept apart: a model's walk below reuses the result */
 		leaf_count = r->leaf_count;
 		memcpy(leaves, r->leaves, sizeof(int) * (unsigned int)leaf_count);
+#ifdef SWEEP_COUNT
+		if (objects && w->kept_margin > 0.f && !w->any && scratch->kept_last && !w->skip_objects)
+		{
+			extern void sweep_leaves_census(const struct box_sweep_world *, const int *, int, const int *, int, const float *, float);
+
+			sweep_leaves_census(w, scratch->kept_last->walk.leaves, scratch->kept_last->walk.leaf_count, leaves, leaf_count, center, radius);
+		}
+		scratch->kept_last = 0;
+#endif
 		if (w->part == 2)
 			objects = 0;
 		if (objects && leaf_count > 0)

@@ -157,6 +157,7 @@ struct box_sweep_scratch
 	struct box_sweep_kept kept[BOX_SWEEP_KEPT];
 	unsigned int kept_clock, kept_used[BOX_SWEEP_KEPT];
 	unsigned int kept_hits, kept_walks, kept_drops;
+	const struct box_sweep_kept *kept_last; /* the walk the last level sphere came from (the census) */
 	/* the level the kept walks were made against: a BSP switch or a
 	breakable surface broken drops every one */
 	const struct box_collbsp *kept_level;
