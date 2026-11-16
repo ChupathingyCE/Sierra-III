@@ -3914,6 +3914,12 @@ static struct
 	/* "pcsampleother": a third table for the other phases; the kernel's
 	samples by phase (psp/profile/main.c) */
 	volatile unsigned int pc_tables, pc_kernel_by_phase[4];
+	/* "sleepmem": the ME partition watched by the module (psp/profile/main.c;
+	the lab's memory_stones row 1), in the module's order */
+	volatile unsigned int sleepmem_wanted, sleepmem_chunk_us, sleepmem_watches, sleepmem_us;
+	volatile unsigned int sleepmem_hash[16], sleepmem_changes[16];
+	volatile unsigned int sleepmem_word18, sleepmem_bc0, sleepmem_bc4;
+	volatile int sleepmem_kernel_free, sleepmem_kernel_free_low;
 } hwprofile __attribute__((aligned(64)));
 /* "pcsample": 512-byte bins over the program's code, the tick's and the
 drawing's (~54 KB for 3.5 MB of code); written to log/pcsample.txt every
@@ -3972,6 +3978,8 @@ static void hwprofile_start(const char *eboot_path)
 	slash = strrchr(path, '/');
 	snprintf(slash ? slash + 1 : path, sizeof(path) - (slash ? (size_t)(slash + 1 - path) : 0), "halo_profile.prx");
 	hwprofile.threads_wanted = psp_keep("hwthreads") != 0;
+	/* "sleepmem": the module watches the ME partition, a whole watch every 1.6 s */
+	hwprofile.sleepmem_wanted = psp_keep("sleepmem") != 0;
 	if (psp_keep("pcsample"))
 	{
 		extern char _ftext[], _etext[];
@@ -4165,6 +4173,42 @@ static void hwprofile_report(void)
 		platform_log("memory partitions (1 kernel, 2 the game, 5 the borrowed 4 MB):%s", length ? line : " none reported");
 		platform_log("coprocessor 0 register 24: 0x%08x (bit 0, the firmware's test for the 04g+ boards' L2 cache: %s)",
 			hwprofile.cop0_24, hwprofile.cop0_24 & 1 ? "set" : "clear");
+	}
+	if (hwprofile.sleepmem_wanted && hwprofile.sleepmem_watches)
+	{
+		static unsigned int reported_watches, reported_changes, first_said;
+		unsigned int changed = 0, lower = 0, upper = 0;
+		char line[200];
+		int length = 0;
+
+		for (k = 0; k < 16; k++)
+		{
+			if (k < 8)
+				lower += hwprofile.sleepmem_changes[k];
+			else
+				upper += hwprofile.sleepmem_changes[k];
+			if (hwprofile.sleepmem_changes[k])
+				changed |= 1u << k;
+		}
+		if (!first_said)
+		{
+			first_said = 1;
+			platform_log("sleepmem: first watch: 0xBC000000 %08x, 0xBC000004 %08x, word +0x18 %08x",
+				hwprofile.sleepmem_bc0, hwprofile.sleepmem_bc4, hwprofile.sleepmem_word18);
+		}
+		/* a line when anything moved, and one about a minute regardless (a
+		watch is 1.6 s) */
+		if (hwprofile.sleepmem_watches != reported_watches &&
+			(lower + upper != reported_changes || hwprofile.sleepmem_watches / 36 != reported_watches / 36))
+		{
+			for (k = 0; k < 16 && length < (int)sizeof(line) - 12; k++)
+				length += snprintf(line + length, sizeof(line) - length, " %u", hwprofile.sleepmem_changes[k]);
+			platform_log("sleepmem: %u watches; chunks changed %04x (lower half %u changes, upper %u; by chunk:%s); word +0x18 %08x; kernel partition free %d KB, low %d KB; a watch %u us by the clock, a chunk at most %u us",
+				hwprofile.sleepmem_watches, changed, lower, upper, line, hwprofile.sleepmem_word18,
+				hwprofile.sleepmem_kernel_free / 1024, hwprofile.sleepmem_kernel_free_low / 1024, hwprofile.sleepmem_us, hwprofile.sleepmem_chunk_us);
+			reported_watches = hwprofile.sleepmem_watches;
+			reported_changes = lower + upper;
+		}
 	}
 	for (k = 0; k < HW_COUNTERS; k++)
 	{

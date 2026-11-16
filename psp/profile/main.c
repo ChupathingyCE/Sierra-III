@@ -68,6 +68,17 @@ struct totals
 	end), so the time outside the tick and the drawing is named too; the
 	kernel's samples by the phase they fell in (system calls, firmware) */
 	volatile unsigned int pc_tables, pc_kernel_by_phase[4];
+	/* "sleepmem" (memory_stones row 1): the ME partition (0x08300000-0x083FFFFF)
+	watched read-only from here, as user mode can't read it. With
+	sleepmem_wanted set before the module starts, the sampler hashes its 16
+	64 KB chunks in turn, one every 100 ms (sleepmem_step), counts each
+	chunk's changes from one watch to the next, keeps word +0x18 (the image's witness), the
+	two words at 0xBC000000/04 as the first watch saw them, and the kernel
+	partition's free space, now and its low */
+	volatile unsigned int sleepmem_wanted, sleepmem_chunk_us, sleepmem_watches, sleepmem_us;
+	volatile unsigned int sleepmem_hash[16], sleepmem_changes[16];
+	volatile unsigned int sleepmem_word18, sleepmem_bc0, sleepmem_bc4;
+	volatile int sleepmem_kernel_free, sleepmem_kernel_free_low;
 };
 
 static struct totals *table = 0;
@@ -305,6 +316,53 @@ static int pc_handler(void)
 	return -1;
 }
 
+/* "sleepmem": the ME partition hashed one 64 KB chunk a sampler tick, so a
+whole watch takes 1.6 s and no tick holds the game long. Read uncached
+(0xA8300000), with no cache operation: nothing here can write the range. A
+chunk's hash is a rotate-and-add over its words: any changed word changes it
+but for a vanishing chance */
+#define SLEEPMEM_BASE 0xA8300000u
+#define SLEEPMEM_CHUNK (64 * 1024)
+static unsigned int sleepmem_chunk;
+static unsigned long long sleepmem_started;
+
+static void sleepmem_step(void)
+{
+	unsigned int chunk = sleepmem_chunk;
+	const volatile unsigned int *word = (const volatile unsigned int *)(SLEEPMEM_BASE + chunk * SLEEPMEM_CHUNK);
+	const volatile unsigned int *end = word + SLEEPMEM_CHUNK / 4;
+	unsigned int hash = 0x811C9DC5u, us;
+	unsigned long long chunk_start = sceKernelGetSystemTimeWide();
+
+	if (chunk == 0)
+		sleepmem_started = chunk_start;
+	while (word < end)
+		hash = ((hash << 5) | (hash >> 27)) + *word++;
+	/* (the longest a chunk held this thread: what the game can lose to it) */
+	us = (unsigned int)(sceKernelGetSystemTimeWide() - chunk_start);
+	if (us > table->sleepmem_chunk_us)
+		table->sleepmem_chunk_us = us;
+	if (table->sleepmem_watches && hash != table->sleepmem_hash[chunk])
+		table->sleepmem_changes[chunk]++;
+	table->sleepmem_hash[chunk] = hash;
+	if (++sleepmem_chunk < 16)
+		return;
+	sleepmem_chunk = 0;
+	table->sleepmem_word18 = *(volatile unsigned int *)(SLEEPMEM_BASE + 0x18);
+	if (!table->sleepmem_watches)
+	{
+		table->sleepmem_bc0 = *(volatile unsigned int *)0xBC000000;
+		table->sleepmem_bc4 = *(volatile unsigned int *)0xBC000004;
+		table->sleepmem_kernel_free_low = 0x7FFFFFFF;
+	}
+	table->sleepmem_kernel_free = sceKernelPartitionTotalFreeMemSize(1);
+	if (table->sleepmem_kernel_free < table->sleepmem_kernel_free_low)
+		table->sleepmem_kernel_free_low = table->sleepmem_kernel_free;
+	/* (the watch's span by the clock, the sampler's 1.5 s of sleeps in it) */
+	table->sleepmem_us = (unsigned int)(sceKernelGetSystemTimeWide() - sleepmem_started);
+	table->sleepmem_watches++;
+}
+
 static int sampler(SceSize args, void *argp)
 {
 	unsigned int last[COUNTERS], now[COUNTERS], k;
@@ -313,6 +371,8 @@ static int sampler(SceSize args, void *argp)
 	profiler_read(last);
 	for (;;)
 	{
+		if (table->sleepmem_wanted)
+			sleepmem_step();
 		sceKernelDelayThread(100000);
 		profiler_read(now);
 		for (k = 0; k < COUNTERS; k++)
