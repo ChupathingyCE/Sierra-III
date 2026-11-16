@@ -6,9 +6,18 @@ Native PlayStation Portable port of Halo: Combat Evolved, built for the original
 
 ## Where it stands
 
-The whole campaign loads and plays on a PSP-1000, all ten maps in one session. As of build 139 (2026-10-21, its release candidate's ladder: each map's opening, on the PSP-3000, which measures within 3% of the PSP-1000), *The Maw* (d40) runs at 24 fps, *Two Betrayals* (c40) at 21, *Assault on the Control Room* (b40) at 17 and *The Pillar of Autumn* (a10) at 16, all at about 30 ticks a second. The heaviest map, *The Silent Cartographer* (b30), runs at 4.5 fps in its opening flight, where the game itself runs at 9 ticks a second, under a third of real time; *Keyes* (d20) and *Halo* (a30) open at 7 to 8 fps and 15 ticks a second. The engine base is ChupathingyCE. Each build's notes are `docs/build_bNNN.md`, and what it did on the PSP `docs/hardware_bNNN.md`.
+The whole campaign loads and plays on a PSP-1000, all ten maps in one session. Build 148 is the latest release; build 150 is the next candidate, and new work lands in the tock builds after it (build 153 as of 2026-11-16). `docs/builds.md` lists them all.
 
-The target is a steady 30 ticks a second at 30 fps everywhere in the campaign. 15/15 (15 fps at 15 ticks a second) is a milestone to bench against, not the floor or the ceiling. The plan is `docs/rebuild_plan.md`, and every known speed lever, ranked, is in `docs/optimization_ranking.md`.
+The target is a steady 30 ticks a second at 30 fps everywhere in the campaign, and it isn't there yet. On full playthroughs at Legendary, the heaviest case measured (PSP-3000, November 2026), the slowest stretches run at 7-10 fps on *Assault on the Control Room* (b40), *Halo* (a30), *Two Betrayals* (c40) and *The Truth and Reconciliation* (a50), with the game below real time there (ticks of 35-45 ms against the 33 ms a tick needs). Lighter stretches run in the teens and twenties.
+
+The work under way is a ground-up rebuild: the frame budgeted from zero, with each subsystem rewritten as the port's own code (a "box") against data laid out for the PSP. `docs/redesign_plan.md` is the plan, and `docs/cpu_cost_map.md` says where the main CPU's time goes and how each cut is priced. The engine base is ChupathingyCE. Each build's notes are `docs/build_bNNN.md`, and what it did on the PSP `docs/hardware_bNNN.md`.
+
+## Reading the code
+
+- `psp_fixups.py` holds every change made to the engine, as anchored text replacements applied to a mirror of ChupathingyCE at build time. The engine checkout itself is never edited.
+- `psp/src/` is the port's own code: the PSP platform layer (the GE renderer, the Media Engine's jobs, memory, streaming, sound, input) and the rebuild's boxes (`box_*.c`, each with its design page `docs/box_<name>.md`).
+- `psp_build.py` builds it all; `CLAUDE.md` has the build switches.
+- `docs/README.md` is the index to every write-up. Comments in the code say why, not what; a change's history is in its commit message and its review page (`docs/review_*.md`).
 
 ## How it's made
 
