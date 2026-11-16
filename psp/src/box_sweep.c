@@ -700,6 +700,50 @@ static int level_same(const struct box_sweep_world *w, struct box_sweep_scratch 
 	return same;
 }
 
+/* B packed: the asker's block, or a free one given to it */
+static struct box_sweep_packed *packed_block(struct box_sweep_scratch *scratch, int asker)
+{
+	struct box_sweep_packed *free_block = 0;
+	int k;
+
+	if (!scratch->packed_ready)
+	{
+		for (k = 0; k < BOX_SWEEP_PACKED_BLOCKS; k++)
+			scratch->packed[k].owner = -1;
+		scratch->packed_ready = 1;
+	}
+	for (k = 0; k < BOX_SWEEP_PACKED_BLOCKS; k++)
+	{
+		if (scratch->packed[k].owner == asker)
+			return &scratch->packed[k];
+		if (scratch->packed[k].owner == -1 && !free_block)
+			free_block = &scratch->packed[k];
+	}
+	if (free_block)
+		free_block->owner = asker;
+	return free_block;
+}
+
+static void packed_release(struct box_sweep_scratch *scratch, int asker)
+{
+	int k;
+
+	if (!scratch->packed_ready)
+		return;
+	for (k = 0; k < BOX_SWEEP_PACKED_BLOCKS; k++)
+		if (scratch->packed[k].owner == asker)
+			scratch->packed[k].owner = -1;
+}
+
+static void packed_release_all(struct box_sweep_scratch *scratch)
+{
+	int k;
+
+	for (k = 0; k < BOX_SWEEP_PACKED_BLOCKS; k++)
+		scratch->packed[k].owner = -1;
+	scratch->packed_ready = 1;
+}
+
 /* B: the level's lists for this sphere from the asker's kept wider walk, a new
 one kept when the sphere leaves it */
 static int level_kept(const struct box_sweep_world *w, const float *center, float radius, struct box_sweep_scratch *scratch)
@@ -713,6 +757,7 @@ static int level_kept(const struct box_sweep_world *w, const float *center, floa
 		/* the walks were made against a level that is no longer this one */
 		memset(scratch->kept_used, 0, sizeof(scratch->kept_used));
 		scratch->kept_drops++;
+		packed_release_all(scratch);
 	}
 	for (k = 0; k < BOX_SWEEP_KEPT; k++)
 	{
@@ -740,11 +785,31 @@ static int level_kept(const struct box_sweep_world *w, const float *center, floa
 		for (k = 0; k < BOX_SWEEP_KEPT; k++)
 			if (scratch->kept[k].asker == scratch->asker && scratch->kept_used[k])
 				slot = &scratch->kept[k];
+		if (scratch->kept_used[slot - scratch->kept] && slot->asker != scratch->asker)
+			packed_release(scratch, slot->asker);
 		slot->asker = scratch->asker;
 		memcpy(slot->center, center, 12);
 		slot->radius = radius + w->kept_margin;
 		box_collbsp_sphere(w->level, w->breakable_count, w->breakable, center, slot->radius, 0, &slot->walk);
 		slot->walk.start_node = box_collbsp_split_node(w->level, center, slot->radius);
+		if (w->kept_packed)
+		{
+			struct box_sweep_packed *block = packed_block(scratch, scratch->asker);
+
+			if (!block)
+				scratch->packed_no_block++;
+			else
+			{
+				int n = box_collbsp_pack(w->level, slot->walk.start_node, center, slot->radius, block->nodes,
+					BOX_SWEEP_PACKED_NODES, block->leaves, BOX_SWEEP_PACKED_LEAVES, &block->leaf_count);
+
+				block->node_count = n > 0 ? n : 0;
+				if (n < 0)
+					scratch->packed_too_big++;
+				else
+					scratch->packed_made++;
+			}
+		}
 #ifdef SWEEP_COUNT
 		{
 			extern unsigned long long sweep_subtree[4];
@@ -787,6 +852,18 @@ static int level_kept(const struct box_sweep_world *w, const float *center, floa
 		return r;
 	}
 #else
+	if (w->kept_packed && scratch->packed_ready)
+	{
+		int k;
+
+		for (k = 0; k < BOX_SWEEP_PACKED_BLOCKS; k++)
+			if (scratch->packed[k].owner == scratch->asker && scratch->packed[k].node_count > 0)
+			{
+				scratch->packed_used++;
+				return box_collbsp_sphere_packed(w->level, w->breakable_count, w->breakable, &slot->walk,
+					scratch->packed[k].nodes, scratch->packed[k].leaves, center, radius, &scratch->sphere);
+			}
+	}
 	return box_collbsp_sphere_kept(w->level, w->breakable_count, w->breakable, &slot->walk, center, radius, &scratch->sphere);
 #endif
 }

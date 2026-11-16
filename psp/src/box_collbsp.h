@@ -101,6 +101,29 @@ int box_collbsp_sphere_kept(const struct box_collbsp *bsp, short breakable_count
 	const struct box_collbsp_sphere_result *kept, const float center[3], float radius,
 	struct box_collbsp_sphere_result *result);
 
+/* B packed: the kept walk's 3D nodes copied into one block, so a kept sweep
+reads its ~55 nodes from a few lines instead of from across the level's tree
+(its ceiling is the crowded tick's misses: the audit 10:2x). Each node holds
+its plane and its children: a child >= 0 is a node of the block, < 0 is
+-1-k for the block's k-th leaf (the tree's own leaf word, NONE included), and
+BOX_COLLBSP_PACKED_ABSENT a side the wider walk never took. A sphere inside
+the wider one takes only sides the wider one took, so the packed walk meets
+the same nodes in the same order and its answers are the kept walk's, exact */
+#define BOX_COLLBSP_PACKED_ABSENT 0x7FFF
+struct box_collbsp_packed_node
+{
+	float n[3], d;
+	short child[2];
+};
+/* the wider sphere's subtree from `start` into nodes and leaves; the node
+count, or -1 when it doesn't fit (the kept walk then runs unpacked) */
+int box_collbsp_pack(const struct box_collbsp *bsp, int start, const float center[3], float radius,
+	struct box_collbsp_packed_node *nodes, int node_room, int *leaves, int leaf_room, int *leaf_count);
+/* box_collbsp_sphere_kept with its 3D walk read from the packed block */
+int box_collbsp_sphere_packed(const struct box_collbsp *bsp, short breakable_count, const unsigned int *breakable,
+	const struct box_collbsp_sphere_result *kept, const struct box_collbsp_packed_node *nodes, const int *leaves,
+	const float center[3], float radius, struct box_collbsp_sphere_result *result);
+
 struct box_collbsp_ray_result
 {
 	float t;

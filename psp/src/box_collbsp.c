@@ -310,6 +310,7 @@ struct sphere
 	int seen[32], seen_count;
 	int designator; /* the plane the surface under test is projected by */
 	int walk_only;  /* the 3D walk's leaves alone (B's kept spheres) */
+	int packed_miss; /* the packed walk met a side the wider walk never took */
 };
 
 static void add(int *count, int *list, int index)
@@ -666,9 +667,11 @@ static int sphere_from(const struct box_collbsp *bsp, int start, short breakable
 
 /* ---------- B: a sphere answered from a wider one's lists */
 
-int box_collbsp_sphere_kept(const struct box_collbsp *bsp, short breakable_count, const unsigned int *breakable,
-	const struct box_collbsp_sphere_result *kept, const float center[3], float radius,
-	struct box_collbsp_sphere_result *result)
+static void sphere3d_packed(struct sphere *w, const struct box_collbsp_packed_node *nodes, const int *leaves, int code);
+
+static int sphere_kept_walk(const struct box_collbsp *bsp, short breakable_count, const unsigned int *breakable,
+	const struct box_collbsp_sphere_result *kept, const struct box_collbsp_packed_node *packed, const int *packed_leaves,
+	const float center[3], float radius, struct box_collbsp_sphere_result *result)
 {
 	struct sphere w;
 	float radius_squared = radius * radius;
@@ -700,7 +703,20 @@ int box_collbsp_sphere_kept(const struct box_collbsp *bsp, short breakable_count
 		n_leaves = leaves;
 	}
 #else
-	sphere3d(&w, kept->start_node);
+	if (packed)
+	{
+		w.packed_miss = 0;
+		sphere3d_packed(&w, packed, packed_leaves, 0);
+		if (w.packed_miss)
+		{
+			/* a side the wider walk never took: not by construction, but the
+			tree's own walk is the answer either way */
+			result->leaf_count = 0;
+			sphere3d(&w, kept->start_node);
+		}
+	}
+	else
+		sphere3d(&w, kept->start_node);
 #endif
 	for (k = 0; k < kept->vertex_count; k++)
 	{
@@ -793,6 +809,139 @@ int box_collbsp_sphere_kept(const struct box_collbsp *bsp, short breakable_count
 		}
 	}
 	return result->surface_count > 0 || result->edge_count > 0;
+}
+
+int box_collbsp_sphere_kept(const struct box_collbsp *bsp, short breakable_count, const unsigned int *breakable,
+	const struct box_collbsp_sphere_result *kept, const float center[3], float radius,
+	struct box_collbsp_sphere_result *result)
+{
+	return sphere_kept_walk(bsp, breakable_count, breakable, kept, 0, 0, center, radius, result);
+}
+
+int box_collbsp_sphere_packed(const struct box_collbsp *bsp, short breakable_count, const unsigned int *breakable,
+	const struct box_collbsp_sphere_result *kept, const struct box_collbsp_packed_node *nodes, const int *leaves,
+	const float center[3], float radius, struct box_collbsp_sphere_result *result)
+{
+	return sphere_kept_walk(bsp, breakable_count, breakable, kept, nodes, leaves, center, radius, result);
+}
+
+/* sphere3d's walk-only path (a kept walk reads no references), on the block:
+the same tests on the same planes in the same order */
+static void sphere3d_packed(struct sphere *w, const struct box_collbsp_packed_node *nodes, const int *leaves, int code)
+{
+	int index;
+
+	while (code >= 0)
+	{
+		const struct box_collbsp_packed_node *node;
+		float distance;
+		int second, first_side;
+
+		if (code == BOX_COLLBSP_PACKED_ABSENT)
+		{
+			w->packed_miss = 1;
+			return;
+		}
+		node = &nodes[code];
+		distance = (w->center[0] * node->n[0] + w->center[1] * node->n[1] + w->center[2] * node->n[2]) - node->d;
+		second = distance < w->radius;
+		first_side = distance > -w->radius;
+		COUNT(n_nodes3);
+		if (first_side && second)
+		{
+			sphere3d_packed(w, nodes, leaves, node->child[0]);
+			if (w->packed_miss)
+				return;
+			code = node->child[1];
+			continue;
+		}
+		code = node->child[first_side];
+	}
+	index = leaves[-1 - code];
+	if (index == NONE_)
+		return;
+	index &= LONG_MAX_;
+	COUNT(n_leaves);
+	if (w->result->leaf_count < BOX_COLLBSP_LIST)
+		w->result->leaves[w->result->leaf_count++] = index;
+}
+
+struct packing
+{
+	const struct box_collbsp *bsp;
+	const float *center;
+	float radius;
+	struct box_collbsp_packed_node *nodes;
+	int node_room, node_count;
+	int *leaves;
+	int leaf_room, leaf_count;
+	int full;
+};
+
+/* one side of the wider walk: its code in the block */
+static int pack_side(struct packing *p, int index)
+{
+	while (!(index & LONG_MIN_))
+	{
+		const struct box_collbsp_node *node = &p->bsp->nodes[index];
+		float distance = (p->center[0] * node->n[0] + p->center[1] * node->n[1] + p->center[2] * node->n[2]) - node->d;
+		int second = distance < p->radius, first_side = distance > -p->radius;
+		int at;
+		struct box_collbsp_packed_node *out;
+
+		if (p->node_count >= p->node_room || p->node_count >= BOX_COLLBSP_PACKED_ABSENT)
+		{
+			p->full = 1;
+			return BOX_COLLBSP_PACKED_ABSENT;
+		}
+		at = p->node_count++;
+		out = &p->nodes[at];
+		out->n[0] = node->n[0];
+		out->n[1] = node->n[1];
+		out->n[2] = node->n[2];
+		out->d = node->d;
+		if (first_side && second)
+		{
+			int front = pack_side(p, node->child[0]);
+			int back = pack_side(p, node->child[1]);
+
+			/* filled after the calls: the block may not move, but `out`'s
+			fields are written once both codes are known */
+			p->nodes[at].child[0] = (short)front;
+			p->nodes[at].child[1] = (short)back;
+			return at;
+		}
+		out->child[!first_side] = BOX_COLLBSP_PACKED_ABSENT;
+		out->child[first_side] = (short)pack_side(p, node->child[first_side]);
+		return at;
+	}
+	if (p->leaf_count >= p->leaf_room)
+	{
+		p->full = 1;
+		return BOX_COLLBSP_PACKED_ABSENT;
+	}
+	p->leaves[p->leaf_count] = index;
+	return -1 - p->leaf_count++;
+}
+
+int box_collbsp_pack(const struct box_collbsp *bsp, int start, const float center[3], float radius,
+	struct box_collbsp_packed_node *nodes, int node_room, int *leaves, int leaf_room, int *leaf_count)
+{
+	struct packing p;
+
+	p.bsp = bsp;
+	p.center = center;
+	p.radius = radius;
+	p.nodes = nodes;
+	p.node_room = node_room;
+	p.node_count = 0;
+	p.leaves = leaves;
+	p.leaf_room = leaf_room;
+	p.leaf_count = 0;
+	p.full = 0;
+	pack_side(&p, start);
+	*leaf_count = p.leaf_count;
+	return p.full ? -1 : p.node_count;
 }
 
 /* ---------- the ray */

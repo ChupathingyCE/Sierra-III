@@ -54,6 +54,7 @@ static const struct box_static *find(const struct box_static *statics, unsigned 
 
 static int form, part;
 static float margin;
+static int packed; /* B packed (sweepp25) */
 #ifdef SWEEP_COUNT
 unsigned long long sweep_kept_sizes[5], sweep_kept_tested[3], sweep_subtree[4];
 #endif
@@ -662,6 +663,7 @@ static void sweep_tick(const struct box_tick *tick)
 		s->world.any = (int)head[11];
 		s->world.part = part;
 		s->world.kept_margin = margin;
+		s->world.kept_packed = packed;
 		s->world.skip_objects = (int)head[12];
 		s->world.level = bsp_of(head[13]);
 		s->world.breakable_count = (short)head[14];
@@ -1073,6 +1075,7 @@ static int sweep_compare(int i, const void *got, const void *want, unsigned int 
 static int sweep0_setup(const struct box_static *statics, unsigned int count)
 {
 	margin = 0.f;
+	packed = 0;
 	form = 0;
 	part = 0;
 	return sweep_setup(statics, count);
@@ -1087,6 +1090,7 @@ const struct box_adapter box_sweep0 = {
 static int sweepa_setup(const struct box_static *statics, unsigned int count)
 {
 	margin = 0.f;
+	packed = 0;
 	form = 1;
 	part = 0;
 	return sweep_setup(statics, count);
@@ -1103,6 +1107,7 @@ only their times count */
 static int sweepf_setup(const struct box_static *statics, unsigned int count)
 {
 	margin = 0.f;
+	packed = 0;
 	form = 1;
 	part = 1;
 	return sweep_setup(statics, count);
@@ -1111,6 +1116,7 @@ static int sweepf_setup(const struct box_static *statics, unsigned int count)
 static int sweepl_setup(const struct box_static *statics, unsigned int count)
 {
 	margin = 0.f;
+	packed = 0;
 	form = 1;
 	part = 2;
 	return sweep_setup(statics, count);
@@ -1129,6 +1135,7 @@ const struct box_adapter box_sweepl = {
 /* B (stage 3): form A with each asker's level walk widened by 0.5 and kept */
 static int sweepb_margin(const struct box_static *statics, unsigned int count, float m)
 {
+	packed = 0;
 	form = 1;
 	part = 0;
 	margin = m;
@@ -1141,6 +1148,7 @@ static int sweepb_margin(const struct box_static *statics, unsigned int count, f
 		memset(scratch.kept_used, 0, sizeof(scratch.kept_used));
 		scratch.kept_clock = 0;
 		scratch.kept_level = 0;
+		scratch.packed_ready = 0;
 	}
 	{
 		const char *m = getenv("SWEEP_MARGIN");
@@ -1166,6 +1174,29 @@ static int sweepb100_setup(const struct box_static *statics, unsigned int count)
 {
 	return sweepb_margin(statics, count, 1.0f);
 }
+
+/* B packed's own counts, in every build: whether the blocks were used */
+static void packed_report(void) __attribute__((destructor));
+static void packed_report(void)
+{
+	if (packed)
+		printf("sweepp: %u blocks packed, %u too big, %u keeps with no block free, %u kept sweeps walked packed, %u from a kept walk in all\n",
+			scratch.packed_made, scratch.packed_too_big, scratch.packed_no_block, scratch.packed_used, scratch.kept_hits);
+}
+
+/* B packed at 0.25: B25 with each kept walk's 3D nodes in its asker's block */
+static int sweepp25_setup(const struct box_static *statics, unsigned int count)
+{
+	int r = sweepb_margin(statics, count, 0.25f);
+
+	packed = 1;
+	return r;
+}
+
+const struct box_adapter box_sweepp25 = {
+	"sweepp25", kinds, 0, 0, BOX_EXACT, 0.f, 0.f, 1.1f, 30.f,
+	sweepp25_setup, sweep_tick, sweep_run, sweep_output, sweep_compare, "sweep",
+};
 
 /* B's diagnostic parts at 0.25 (answers incomplete by design): its features
 only (no clip), and its level's features only */

@@ -117,6 +117,9 @@ struct box_sweep_world
 	/* B (stage 3): the margin each asker's level walk is widened by and kept
 	for its next sweeps; 0 none */
 	float kept_margin;
+	/* B packed: each kept walk's 3D nodes also copied into a block of its
+	asker's (box_collbsp_pack); 0 B's unpacked walk */
+	int kept_packed;
 	int skip_objects; /* the engine's debug switch */
 	const struct box_sweep_leaf *leaves;
 	int leaf_count;
@@ -151,12 +154,34 @@ own, so a sweep writes nothing shared */
 #define BOX_SWEEP_BREAKABLE_WORDS 8 /* the engine's 256 breakable surfaces */
 struct box_sweep_kept { int asker; float center[3], radius; struct box_collbsp_sphere_result walk; };
 
+/* B packed's blocks: 14 of ~2.3 KB, 32 KB in all (the lead 10:30's cap
+against the 124 KB heap floor). A block is given to the first asker that
+keeps a walk while one is free and stays with it while that asker's walk is
+kept (not LRU: a pool smaller than its askers would miss every time); an
+asker without one, or whose subtree doesn't fit, walks unpacked as B */
+#ifndef BOX_SWEEP_PACKED_BLOCKS
+#define BOX_SWEEP_PACKED_BLOCKS 14
+#endif
+#define BOX_SWEEP_PACKED_NODES 100 /* b30's census: 55 a keep, 183 the most */
+#define BOX_SWEEP_PACKED_LEAVES 64
+struct box_sweep_packed
+{
+	int owner;      /* the asker, or -1 free */
+	int node_count; /* 0: its walk didn't fit; the asker walks unpacked */
+	int leaf_count;
+	struct box_collbsp_packed_node nodes[BOX_SWEEP_PACKED_NODES];
+	int leaves[BOX_SWEEP_PACKED_LEAVES];
+};
+
 struct box_sweep_scratch
 {
 	/* B: each asker's widened walk (BOX_SWEEP_KEPT askers, the oldest given up) */
 	struct box_sweep_kept kept[BOX_SWEEP_KEPT];
 	unsigned int kept_clock, kept_used[BOX_SWEEP_KEPT];
 	unsigned int kept_hits, kept_walks, kept_drops;
+	struct box_sweep_packed packed[BOX_SWEEP_PACKED_BLOCKS];
+	unsigned int packed_ready; /* the blocks' owners set free once */
+	unsigned int packed_made, packed_too_big, packed_no_block, packed_used;
 	const struct box_sweep_kept *kept_last; /* the walk the last level sphere came from (the census) */
 	/* the level the kept walks were made against: a BSP switch or a
 	breakable surface broken drops every one */
