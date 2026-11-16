@@ -13,6 +13,15 @@ TREE = sys.argv[1]
 # (the tree is left as it was) rather than stopping at the first: what a new
 # upstream would cost (docs/overnight_b108.md, section 7)
 CHECK_ONLY = os.environ.get("PSP_FIXUPS_CHECK", "") == "1"
+# the passes' own counts (a rewrite that guards how many sites it changes):
+# a build stops at the first that fails; PSP_FIXUPS_CHECK=1 lists them all
+# with the anchors, so a pin move finds them in one pass
+count_failures = []
+def check_fail(message):
+    if not CHECK_ONLY:
+        sys.exit(message)
+    count_failures.append(message)
+    return 0
 # psp_build.py's PSP_FRAMEPTR: 0 builds the engine without the frame pointer
 FRAMEPTR = os.environ.get("PSP_FRAMEPTR", "0") != "0"
 
@@ -1649,7 +1658,7 @@ def ai_debug_records(tree):
                     ("sizeof(*actor_path_debug_array) * MAXIMUM_AI_DEBUG_PATH_STORAGE", "sizeof(*actor_path_debug_array) * PSP_DEBUG_COUNT(MAXIMUM_AI_DEBUG_PATH_STORAGE)"),
                 ):
                     if text.count(old) != 2:
-                        sys.exit("psp_fixups: ai_debug.c: expected 2 of %s, found %d" % (old, text.count(old)))
+                        return check_fail("psp_fixups: ai_debug.c: expected 2 of %s, found %d" % (old, text.count(old)))
                     text = text.replace(old, new)
             open(path, "w", errors="surrogateescape").write(text)
             changed += 1
@@ -1706,7 +1715,7 @@ def ai_debug_shrink(tree):
         n1 = len(re.findall(r"\bai_debug\.path_state\b", text))
         n2 = len(re.findall(r"\bai_debug\.path_storage\b", text))
         if not n1 or not n2:
-            sys.exit("psp_fixups: ai_debug.c: no ai_debug.path_state / path_storage")
+            return check_fail("psp_fixups: ai_debug.c: no ai_debug.path_state / path_storage")
         text = re.sub(r"\bai_debug\.path_state\b", "(*psp_ai_debug_path_state())", text)
         text = re.sub(r"\bai_debug\.path_storage\b", "(*psp_ai_debug_path_storage())", text)
         # the allocator after the file's last #include, so the types are known
@@ -1766,12 +1775,60 @@ def interpolation_players(tree):
         return 0
     anchor = "#define MAXIMUM_INTERPOLATED_NODES 64\n"
     uses = len(re.findall(r"\bMAXIMUM_LOCAL_PLAYERS\b", text))
-    if text.count(anchor) != 1 or uses != 8:
-        sys.exit("psp_fixups: render_interpolation.c: expected the nodes' define and 8 uses of MAXIMUM_LOCAL_PLAYERS, found %d" % uses)
+    # (v0.9.1a: 11, the direct camera's frames and its 'from' arrays and their
+    # bounds check added, of the same kinds)
+    if text.count(anchor) != 1 or uses != 11:
+        return check_fail("psp_fixups: render_interpolation.c: expected the nodes' define and 11 uses of MAXIMUM_LOCAL_PLAYERS, found %d" % uses)
     text = re.sub(r"\bMAXIMUM_LOCAL_PLAYERS\b", "INTERPOLATION_LOCAL_PLAYERS", text)
     text = text.replace(anchor, anchor + INTERPOLATION_PLAYERS)
     open(path, "w", errors="surrogateescape").write(text)
     return 1
+
+# ---------- CONFIGHELP: the settings' help text left out (Sheepdog01 2026-11-16: the
+# PSP uses no settings screen). port_config.c's table carries each setting's
+# help, written as comments into a new config.toml, and each section's note:
+# ~55 KB of strings. The PSP writes its file without them; every setting,
+# default, environment name and the reading are as they were. Each row's last
+# element (a run of string literals) becomes "": the writer walks it as an
+# empty text. PSP_CONFIGHELP=1 keeps them (and the multiplayer build, whose
+# players edit their config.toml)
+_LITERALS = r'(?:"(?:[^"\\\n]|\\.)*"\s*)+'
+
+def _table_help_out(block):
+    """block: a table's initializer text, one row per entry, its help text the
+    row's last element on lines of their own (string literals only, the last
+    one closing the row; preprocessor lines may sit between them). Those lines
+    go and the row closes on "". Returns the new text and the rows changed."""
+    out = []; changed = 0
+    for line in block.split("\n"):
+        if re.fullmatch(r"\t\t" + _LITERALS, line):
+            continue
+        m = re.fullmatch(r"(\t\t)" + _LITERALS + r"\},", line)
+        if m:
+            out.append(m.group(1) + '"" },'); changed += 1
+            continue
+        out.append(line)
+    return "\n".join(out), changed
+
+def config_help(tree):
+    if os.environ.get("PSP_CONFIGHELP", "") == "1" or os.environ.get("PSP_MULTIPLAYER", "") == "1":
+        return 0
+    path = os.path.join(tree, "port/linux/src/port_config.c")
+    text = open(path, errors="surrogateescape").read()
+    total = 0
+    for head, least in (("static const struct config_setting config_settings[] =\n{\n", 400),
+                        ("} config_sections[] =\n{\n", 10)):
+        if text.count(head) != 1:
+            return check_fail("psp_fixups: port_config.c: CONFIGHELP's table not found: %r" % head)
+        a = text.index(head) + len(head)
+        b = text.index("\n};\n", a)
+        block, changed = _table_help_out(text[a:b])
+        if changed < least:
+            return check_fail("psp_fixups: port_config.c: CONFIGHELP emptied %d rows of %r, expected at least %d" % (changed, head, least))
+        text = text[:a] + block + text[b:]
+        total += changed
+    open(path, "w", errors="surrogateescape").write(text)
+    return total
 
 # ---------- AIMETERS: the AI's meters and the ballistic test's debug record, the main CPU's alone
 # The AI's meters (ai_profile.meters[].accumulator: 32 counts in 12 files,
@@ -1806,7 +1863,7 @@ def ai_meters(tree):
         return 0
     anchor = "extern struct ai_profile_globals ai_profile;\n"
     if header.count(anchor) != 1:
-        sys.exit("psp_fixups: ai_profile.h: no extern of ai_profile")
+        return check_fail("psp_fixups: ai_profile.h: no extern of ai_profile")
     open(header_path, "w", errors="surrogateescape").write(header.replace(anchor, anchor + AIMETERS_HEADER))
     changed, sites = 1, 0
     for root, _, files in os.walk(os.path.join(tree, "source")):
@@ -1821,17 +1878,17 @@ def ai_meters(tree):
             new, n2 = re.subn(r"ai_profile\.meters\[(\w+)\]\.accumulator \+= ([^;]+);", r"PSP_AI_METER_ADD(\1, \2);", new)
             # (the perception queue's own reads and puts-back of a meter stay)
             if re.search(r"ai_profile\.meters\[\w+\]\.accumulator\s*(\+\+|\+=)", new):
-                sys.exit("psp_fixups: %s: an AI meter written in a form AIMETERS doesn't know" % name)
+                return check_fail("psp_fixups: %s: an AI meter written in a form AIMETERS doesn't know" % name)
             if name == "ai.c":
                 new, n3 = re.subn(r"!ai_debug\.ballistic_lineoffire_freeze\b", "!ai_debug.ballistic_lineoffire_freeze && !psp_work_on_me()", new)
                 if n3 != 4:
-                    sys.exit("psp_fixups: ai.c: expected the ballistic record's 4 freeze tests, found %d" % n3)
+                    return check_fail("psp_fixups: ai.c: expected the ballistic record's 4 freeze tests, found %d" % n3)
             if new != text:
                 open(path, "w", errors="surrogateescape").write(new)
                 changed += 1
                 sites += n1 + n2
     if sites != 34:
-        sys.exit("psp_fixups: AIMETERS: expected 34 meter counts, found %d" % sites)
+        return check_fail("psp_fixups: AIMETERS: expected 34 meter counts, found %d" % sites)
     return changed
 
 # ---------- COLLUSERS: the collision user stack, one per CPU (lever COLLUSERS; docs/aime_me.md)
@@ -1923,7 +1980,7 @@ def collision_users(tree):
         return 0
     anchor = "short global_current_collision_users[MAXIMUM_COLLISION_USER_STACK_DEPTH];\n"
     if text.count(anchor) != 1:
-        sys.exit("psp_fixups: collision_usage.c: no definition of global_current_collision_users")
+        return check_fail("psp_fixups: collision_usage.c: no definition of global_current_collision_users")
     if COLLUSERS_SHARED:
         open(usage_c, "w", errors="surrogateescape").write(text.replace(anchor, anchor + COLLUSERS_DEFINES_SHARED))
         header = open(usage_h, errors="surrogateescape").read()
@@ -1940,7 +1997,7 @@ def collision_users(tree):
     ]
     for old, new in pairs:
         if text.count(old) != 1:
-            sys.exit("psp_fixups: collision_usage.c: COLLUSERS anchor not found once: %r" % old[:60])
+            return check_fail("psp_fixups: collision_usage.c: COLLUSERS anchor not found once: %r" % old[:60])
         text = text.replace(old, new)
     # the asserts' depth tests, outside the definitions
     head, defs, tail = text.partition(anchor)
@@ -1951,7 +2008,7 @@ def collision_users(tree):
     header = open(usage_h, errors="surrogateescape").read()
     extern = "extern short global_current_collision_users[MAXIMUM_COLLISION_USER_STACK_DEPTH];\n"
     if header.count(extern) != 1:
-        sys.exit("psp_fixups: collision_usage.h: no extern of global_current_collision_users")
+        return check_fail("psp_fixups: collision_usage.h: no extern of global_current_collision_users")
     open(usage_h, "w", errors="surrogateescape").write(header.replace(extern, extern + COLLUSERS_HEADER))
     changed, sites = 1, 0
     for root, _, files in os.walk(os.path.join(tree, "source")):
@@ -1970,14 +2027,15 @@ def collision_users(tree):
             # (the strings the asserts' messages became are names, not uses)
             leftover = [l for l in new.splitlines() if re.search(r"\bglobal_current_collision_users?\b", l) and "??_C" not in l]
             if leftover:
-                sys.exit("psp_fixups: %s: a collision user stack use COLLUSERS doesn't know: %s" % (name, leftover[0].strip()))
+                return check_fail("psp_fixups: %s: a collision user stack use COLLUSERS doesn't know: %s" % (name, leftover[0].strip()))
             if n1 != n2 + n3:
-                sys.exit("psp_fixups: %s: %d pushes but %d pops of the collision user stack" % (name, n1, n2 + n3))
+                return check_fail("psp_fixups: %s: %d pushes but %d pops of the collision user stack" % (name, n1, n2 + n3))
             open(path, "w", errors="surrogateescape").write(new)
             changed += 1
             sites += n1 + n2 + n3
-    if sites != 68:
-        sys.exit("psp_fixups: COLLUSERS: expected 68 pushes and pops, found %d" % sites)
+    # (v0.9.1a: 70, one more push and pop around a biped test in players.c)
+    if sites != 70:
+        return check_fail("psp_fixups: COLLUSERS: expected 70 pushes and pops, found %d" % sites)
     return changed
 
 # ---------- b125: the PC renderer's GL path out of the link
@@ -2040,9 +2098,10 @@ def gl_never(tree):
     anchor = '#include "xgpu.h"\n'
     reads = len(GL_READY_READ.findall(text))
     # (14 tests at the 0.9.1 test build 6eef2f3: v0.9.0d added the menus'
-    # pointer's bgfx form and halo_draw_picture's, 6eef2f3 two more)
-    if text.count(anchor) != 1 or text.count(GL_NEVER_CALL[0]) != 1 or reads != 14:
-        sys.exit("psp_fixups: d3d8_gl.c: expected the xgpu.h include, gl_initialize's one call and 14 tests of gl_ready, found %d tests" % reads)
+    # pointer's bgfx form and halo_draw_picture's, 6eef2f3 two more; v0.9.1a
+    # the menus' pointer's Vulkan form: 15)
+    if text.count(anchor) != 1 or text.count(GL_NEVER_CALL[0]) != 1 or reads != 15:
+        return check_fail("psp_fixups: d3d8_gl.c: expected the xgpu.h include, gl_initialize's one call and 15 tests of gl_ready, found %d tests" % reads)
     text = GL_READY_READ.sub("DEVICE_GL_READY", text)
     text = text.replace(GL_NEVER_CALL[0], GL_NEVER_CALL[1])
     text = text.replace(anchor, anchor + GL_NEVER_DEFINE)
@@ -2051,7 +2110,7 @@ def gl_never(tree):
     path = os.path.join(tree, "port/linux/src/sdl_platform.c")
     text = open(path, errors="surrogateescape").read()
     if text.count(GL_NEVER_WINDOW[0]) != 1:
-        sys.exit("psp_fixups: sdl_platform.c: expected SDL_CreateWindow's one failure test")
+        return check_fail("psp_fixups: sdl_platform.c: expected SDL_CreateWindow's one failure test")
     text = text.replace(GL_NEVER_WINDOW[0], GL_NEVER_WINDOW[1])
     open(path, "w", errors="surrogateescape").write(text)
     return 2
@@ -2086,7 +2145,7 @@ def unaligned_accesses(tree):
             continue
         for pattern in patterns:
             if pattern not in text:
-                sys.exit("psp_fixups: %s: no %s" % (rel, pattern))
+                return check_fail("psp_fixups: %s: no %s" % (rel, pattern))
             text = text.replace(pattern, "PSP_UNALIGNED_ULONG(" + pattern[len("*(unsigned long *)("):])
         open(path, "w", errors="surrogateescape").write(text)
         changed += 1
@@ -2256,7 +2315,7 @@ def step_labels(tree):
             continue
         for place, label, where in places:
             if place not in text:
-                sys.exit("psp_fixups: %s: no %r" % (rel, place))
+                return check_fail("psp_fixups: %s: no %r" % (rel, place))
             pieces = text.split(place)
             out = pieces[0]
             for piece in pieces[1:]:
@@ -2367,7 +2426,7 @@ def breadcrumbs(tree):
             continue
         for line in lines:
             if text.count(line) != 1:
-                sys.exit("psp_fixups: %s: expected 1 of %s" % (rel, line))
+                return check_fail("psp_fixups: %s: expected 1 of %s" % (rel, line))
             text = text.replace(line, '\t\tPSP_STEP("transport: %s");\n%s' % (line.strip().split("(")[0].replace('"', ''), line))
         open(path, "w", errors="surrogateescape").write(declare_step(text))
         changed += 1
@@ -3725,7 +3784,7 @@ def skipped_passes(tree):
         for function in functions:
             header = "\nvoid %s(\n\tvoid)\n{\n" % function
             if text.count(header) != 1:
-                sys.exit("psp_fixups: %s: expected one definition of %s" % (rel, function))
+                return check_fail("psp_fixups: %s: expected one definition of %s" % (rel, function))
             # (under PSP_DEADXBOX the test is a constant: these passes are
             # only reached inside a window, and the GE is active from the
             # first window's start, so the Xbox code behind them leaves the
@@ -4934,12 +4993,18 @@ FIXES_19 = {
 	}""",
   """#ifdef HALO_PSP
 	/* off unless keep.txt names it: the PSP draws fewer frames than ticks
-	(psp_fixups.py) */
+	(psp_fixups.py); always off in a build without render_interpolation.c
+	(PSP_INTERPOLATION, psp/src/psp_nointerp.c) */
+#ifdef PSP_NO_INTERPOLATION
+	(void)read_at;
+	enabled = 0;
+#else
 	if (read_at == (unsigned long)-1)
 	{
 		read_at = 0;
 		enabled = psp_keep("interpolation");
 	}
+#endif
 #else
 	if (read_at != config_changes())
 	{
@@ -5143,9 +5208,9 @@ FIXES_23["source/ai/ai_debug.h"] = [
 typedef char ai_debug_state_ballistic_lineoffire_valid_offset_assert[""",
  """#if !defined(HALO_XBOX_CONSOLE) && !defined(HALO_PSP)
 typedef char ai_debug_state_ballistic_lineoffire_valid_offset_assert["""),
-("""#if !defined(HALO_64BIT) && !defined(HALO_XBOX_CONSOLE)
+("""#if !defined(HALO_64BIT) && !defined(HALO_XBOX_CONSOLE) && !defined(HALO_CONSOLE_NO_DEBUG_TOOLS)
 typedef char ai_debug_state_field_859F4_offset_assert[""",
- """#if !defined(HALO_64BIT) && !defined(HALO_XBOX_CONSOLE) && !defined(HALO_PSP)
+ """#if !defined(HALO_64BIT) && !defined(HALO_XBOX_CONSOLE) && !defined(HALO_CONSOLE_NO_DEBUG_TOOLS) && !defined(HALO_PSP)
 typedef char ai_debug_state_field_859F4_offset_assert["""),
 ]
 
@@ -9796,7 +9861,7 @@ def packed_designators(tree):
         new, count = pattern.subn(r"PSP_DESIGNATOR(\1)", text)
         # never wrap a left-hand side (none exist in the game code; the check keeps it that way)
         if re.search(r"PSP_DESIGNATOR\([^)]*\)\s*=[^=]", new):
-            sys.exit("psp_fixups: %s: a packed designator is assigned to" % rel)
+            return check_fail("psp_fixups: %s: a packed designator is assigned to" % rel)
         if count:
             if "#include" in new:
                 first = new.index("#include")
@@ -10545,14 +10610,13 @@ void object_bounds_cache_update(long object_index, real_point3d const *center, r
 /* ---------- constants */"""),
 ]
 FIXES_106["source/objects/object_lights.c#inline"] = [
-("""#include "units/units.h"
-#include "plasma_lighting.h" /* port: port/linux/game/plasma_lighting.c (Light effects) */
-
-/* port: port/linux/src (halo.log) */""",
- """#include "units/units.h"
-#include "plasma_lighting.h" /* port: port/linux/game/plasma_lighting.c (Light effects) */
+("""
+/* port: port/linux/src (halo.log) */
+void platform_log(const char *format, ...);""",
+ """
 """ + _PSP_DATUM_INLINE + """
-/* port: port/linux/src (halo.log) */"""),
+/* port: port/linux/src (halo.log) */
+void platform_log(const char *format, ...);"""),
 ]
 # build 106: game_sound_update in four steps for the profile. b105's
 # run: 11.5 ms a frame (median of 94 windows; up to 16.4), against about 1 ms
@@ -12567,14 +12631,8 @@ boolean game_state_read_from_file(
 #endif
 		CloseHandle(file);"""),
 ]
-FIXES_CHUPA["source/saved games/game_state.c#image"] = [
-("""	csmemcpy(game_state_globals.base_address, image, size);
-	error(_error_silent, "the saved game is taken");""",
- """	/* (the PSP reads it in place: psp_fixups.py, FIXES_CHUPA) */
-	if ((void *)image != (void *)game_state_globals.base_address)
-		csmemcpy(game_state_globals.base_address, image, size);
-	error(_error_silent, "the saved game is taken");"""),
-]
+# (game_state.c's own copy is skipped upstream since 0.9.1a when the image is
+# the game state: FIXES_CHUPA's #image pair there retired)
 # ChupathingyCE's loader checks a map's tags and BSPs against the tag
 # window's size in physical_memory_map.h (cache_files.c, and the tag schema
 # check port/linux/game/tag_validate.c)
@@ -13198,14 +13256,12 @@ FIXES_MULTIPLAYER["source/game/player_queues_new.c#client"] = [
 # this build's folder
 FIXES_MULTIPLAYER["port/linux/src/xbox_files.c#maps"] = [
 ((
-"""		cursor += 2;
-	}
+"""	}
 
 	while (*cursor)
 	{
 		char component[256];""",
-"""		cursor += 2;
-	}
+"""	}
 #if defined(HALO_PSP) && defined(PSP_MULTIPLAYER)
 	/* psp_fixups.py (multiplayer): d:\\maps is the campaign build's folder's
 	(psp_paths.h) */
@@ -14701,6 +14757,7 @@ static void player_examine_nearby_vehicle(
 """),
 ("""					if (TEST_FLAG(action->control_flags, _unit_control_action_bit) &&
 						unit->object.parent_object_index == NONE &&
+						!stubbs_horde_player_action(iterator.datum_index) && /* port: Stubbs mode only */
 						!player_handle_action(iterator.datum_index) &&""",
  """#ifdef HALO_PSP
 #if PSP_DEBUG_TOOLS
@@ -14713,6 +14770,7 @@ static void player_examine_nearby_vehicle(
 #endif
 					if (TEST_FLAG(action->control_flags, _unit_control_action_bit) &&
 						unit->object.parent_object_index == NONE &&
+						!stubbs_horde_player_action(iterator.datum_index) && /* port: Stubbs mode only */
 						!player_handle_action(iterator.datum_index) &&"""),
 ]
 FIXES_113["source/units/vehicles.c#flipwatch"] = [
@@ -25252,32 +25310,27 @@ FIXES_FRONT["source/saved games/playlist_profile.c#variants"] = [
 # each drive's folder is checked once a run. Keep word "pathscan": the scan,
 # as before.
 FIXES_FRONT["port/linux/src/xbox_files.c#pathscan"] = [
-("""		if (drive != 'd')
-		{
-			struct posix_file_information information;
-
-			snprintf(resolved, sizeof(resolved), "%s/%c", platform_save_root(), drive);
+("""			else
+				snprintf(resolved, sizeof(resolved), "%s/%c", platform_save_root(), drive);
 			/* every Xbox drive always exists; create its directory on first use */
 			if (posix_stat(resolved, &information) != 0)
 				posix_make_directory(resolved);
-		}""", """		if (drive != 'd')
-		{
-			struct posix_file_information information;
+		}""", """			else
+				snprintf(resolved, sizeof(resolved), "%s/%c", platform_save_root(), drive);
+			/* every Xbox drive always exists; create its directory on first use */
 #ifdef HALO_PSP
 			/* psp_fixups.py (FIXES_FRONT #pathscan): each drive's folder is
 			made at most once a run */
-			static unsigned long psp_drives_known;
-			unsigned long psp_drive_bit = (drive >= 'a' && drive <= 'z') ? 1UL << (drive - 'a') : 0;
-#endif
-
-			snprintf(resolved, sizeof(resolved), "%s/%c", platform_save_root(), drive);
-			/* every Xbox drive always exists; create its directory on first use */
-#ifdef HALO_PSP
-			if (!psp_drive_bit || !(psp_drives_known & psp_drive_bit))
 			{
-				if (posix_stat(resolved, &information) != 0)
-					posix_make_directory(resolved);
-				psp_drives_known |= psp_drive_bit;
+				static unsigned long psp_drives_known;
+				unsigned long psp_drive_bit = (drive >= 'a' && drive <= 'z') ? 1UL << (drive - 'a') : 0;
+
+				if (!psp_drive_bit || !(psp_drives_known & psp_drive_bit))
+				{
+					if (posix_stat(resolved, &information) != 0)
+						posix_make_directory(resolved);
+					psp_drives_known |= psp_drive_bit;
+				}
 			}
 #else
 			if (posix_stat(resolved, &information) != 0)
@@ -28880,7 +28933,13 @@ FIXES_LOADING = {}
 # load begins can be captured before the new map takes the texture cache.
 FIXES_LOADING["source/main/main.c#loading"] = [
 ("""			game_dispose_from_old_map();
-			game_precache_new_map(options.map_name, TRUE);
+			/* port: an MCC level that isn't there goes back to the menus
+			with its reason, as one that fails to load does (#1149) */
+			if (!game_precache_new_map(options.map_name, TRUE) && mcc_main_load_failed(options.map_name))
+			{
+				main_globals.map_change_load_timer = 0;
+				return;
+			}
 			game_unload();
 			main_new_map(&options);
 """, """#ifdef HALO_PSP
@@ -28892,7 +28951,20 @@ FIXES_LOADING["source/main/main.c#loading"] = [
 			}
 #endif
 			game_dispose_from_old_map();
-			game_precache_new_map(options.map_name, TRUE);
+			/* port: an MCC level that isn't there goes back to the menus
+			with its reason, as one that fails to load does (#1149) */
+			if (!game_precache_new_map(options.map_name, TRUE) && mcc_main_load_failed(options.map_name))
+			{
+				main_globals.map_change_load_timer = 0;
+#ifdef HALO_PSP
+				{
+					extern void psp_loading_end(void);
+
+					psp_loading_end();
+				}
+#endif
+				return;
+			}
 			game_unload();
 			main_new_map(&options);
 #ifdef HALO_PSP
@@ -28905,7 +28977,9 @@ FIXES_LOADING["source/main/main.c#loading"] = [
 			}
 #endif
 """),
-("""		game_precache_new_map(options.map_name, TRUE);
+("""		/* port: (as main_change_map_name's, #1149) */
+		if (!game_precache_new_map(options.map_name, TRUE) && mcc_main_load_failed(options.map_name))
+			return;
 		game_dispose_from_old_map();
 		main_new_map(&options);
 """, """#ifdef HALO_PSP
@@ -28916,7 +28990,16 @@ FIXES_LOADING["source/main/main.c#loading"] = [
 			psp_loading_begin(options.map_name);
 		}
 #endif
-		game_precache_new_map(options.map_name, TRUE);
+		/* port: (as main_change_map_name's, #1149) */
+		if (!game_precache_new_map(options.map_name, TRUE) && mcc_main_load_failed(options.map_name))
+		{
+#ifdef HALO_PSP
+			extern void psp_loading_end(void);
+
+			psp_loading_end();
+#endif
+			return;
+		}
 		game_dispose_from_old_map();
 		main_new_map(&options);
 #ifdef HALO_PSP
@@ -38467,15 +38550,20 @@ FIXES_B30["source/objects/object_lights.c#b30"] = [
 						result = TRUE;"""),
 ]
 FIXES_B30["source/render/render_objects.c#b30"] = [
-("""	if (TEST_FLAG(object_get(object_index)->object.flags, _object_static_lighting_recompute_bit))
+("""	if (TEST_FLAG(object_get(object_index)->object.flags, _object_static_lighting_recompute_bit) ||
+		/* port: and in Stubbs mode a unit's, lit where its body is
+		(port/linux/game/stubbs_looks.c) */
+		(stubbs_mode_active() && stubbs_looks_object_lit_at_body(object_index)))
 	{
 		if (level_of_detail_pixels > OBJECT_RENDER_STATE_LARGE_PIXELS)""",
-"""#ifdef HALO_PSP
-	if (TEST_FLAG(object_get(object_index)->object.flags, _object_static_lighting_recompute_bit) ||
-		psp_light_pending(object_index))
-#else
-	if (TEST_FLAG(object_get(object_index)->object.flags, _object_static_lighting_recompute_bit))
+"""	if (TEST_FLAG(object_get(object_index)->object.flags, _object_static_lighting_recompute_bit) ||
+#ifdef HALO_PSP
+		/* psp_fixups.py (FIXES_B30): a light read that missed tries again */
+		psp_light_pending(object_index) ||
 #endif
+		/* port: and in Stubbs mode a unit's, lit where its body is
+		(port/linux/game/stubbs_looks.c) */
+		(stubbs_mode_active() && stubbs_looks_object_lit_at_body(object_index)))
 	{
 		if (level_of_detail_pixels > OBJECT_RENDER_STATE_LARGE_PIXELS)"""),
 ("""		lights_prepare_for_object_static(object_index, &state->desired_lighting);""",
@@ -45004,6 +45092,123 @@ int sceKernelGetThreadId(void);
 		psp_aime_seed_root = psp_aime_seed;
 	}
 """),
+]
+
+
+# ---------- FIXES_V091A: what the v0.9.1a pin needs on the PSP (docs/chupa_rebase.md, "v0.9.1a")
+FIXES_V091A = {}
+# Load Level's list is sized for Stubbs mode's twelve levels, but the unit
+# includes stubbs_campaign.h only inside HALO_MAP_LIST, which the PSP drops
+# (CHUPA_FLAGS_DROPPED)
+# Delta's verified mark (v0.9.1a: the scoreboard's mark beside a verified
+# player's name, drawn into fonts that lack it): six 48x48 bitmaps, ~14 KB of
+# .bss. The campaign build has no scoreboard of network players, so it keeps
+# none (the multiplayer build keeps the mark)
+FIXES_V091A["source/text/font_group.c#deltamark"] = [
+("""	MAXIMUM_DELTA_MARKS = 6,
+	MAXIMUM_DELTA_MARK_SIZE = 48,
+};""", """#if defined(HALO_PSP) && !defined(PSP_MULTIPLAYER)
+	/* psp_fixups.py (FIXES_V091A): no verified mark in the campaign build */
+	MAXIMUM_DELTA_MARKS = 1,
+	MAXIMUM_DELTA_MARK_SIZE = 1,
+#else
+	MAXIMUM_DELTA_MARKS = 6,
+	MAXIMUM_DELTA_MARK_SIZE = 48,
+#endif
+};"""),
+("""	if (!character && character_code == HALO_DELTA_MARK)
+		character = delta_mark_character(font);""", """#if !(defined(HALO_PSP) && !defined(PSP_MULTIPLAYER))
+	if (!character && character_code == HALO_DELTA_MARK)
+		character = delta_mark_character(font);
+#endif"""),
+]
+FIXES_V091A["source/interface/ui_widget_event_handler_functions.c#levels"] = [
+("""struct single_player_level_entry single_player_level_data[STUBBS_CAMPAIGN_LEVEL_COUNT] = { 0 };""",
+ """#ifdef HALO_PSP
+#include "stubbs_campaign.h" /* psp_fixups.py (FIXES_V091A): STUBBS_CAMPAIGN_LEVEL_COUNT */
+#endif
+struct single_player_level_entry single_player_level_data[STUBBS_CAMPAIGN_LEVEL_COUNT] = { 0 };"""),
+]
+# The campaign build reads and writes no config.toml (Sheepdog01 2026-11-16: the PSP
+# has no settings screen; controls and the player's name live in the
+# profile): every setting is its default, or the boot's environment
+# (psp_platform.c), with the PSP's keep words beside them. The reader answers
+# no file, so the parsing folds away with tomlc17 (--gc-sections), and the
+# writer keeps a written value for the run only, as config_set does. It also
+# ends the once-a-second stat of the stick (config_follow_file).
+# PSP_CONFIGFILE=1 keeps the file, as the multiplayer build does (broadcast,
+# the network)
+FIXES_V091A["port/linux/src/port_config.c#nofile"] = [
+("""/* the whole file, NUL terminated, or NULL; free() it */
+static char *config_read_file(const char *path, size_t *size)
+{
+""", """#if defined(HALO_PSP) && !defined(PSP_MULTIPLAYER) && !defined(PSP_CONFIGFILE)
+/* psp_fixups.py (FIXES_V091A #nofile): no config.toml in the campaign build */
+#define PSP_NO_CONFIG_FILE 1
+#endif
+
+/* the whole file, NUL terminated, or NULL; free() it */
+static char *config_read_file(const char *path, size_t *size)
+{
+#ifdef PSP_NO_CONFIG_FILE
+	(void)path;
+	(void)size;
+	return NULL;
+#endif
+"""),
+("""	int written;
+
+	if ((size_t)snprintf(temporary, sizeof(temporary), "%s.new", path) >= sizeof(temporary))
+		return 0;
+""", """	int written;
+
+#ifdef PSP_NO_CONFIG_FILE
+	(void)length;
+	(void)written;
+	return 1;
+#endif
+	if ((size_t)snprintf(temporary, sizeof(temporary), "%s.new", path) >= sizeof(temporary))
+		return 0;
+"""),
+("""	int changed = 0;
+
+	if (!config_loaded)
+		return;
+""", """	int changed = 0;
+
+#ifdef PSP_NO_CONFIG_FILE
+	return;
+#endif
+	if (!config_loaded)
+		return;
+"""),
+("""#if !defined(HALO_ANDROID) && !defined(HALO_XBOX_CONSOLE)
+	config_report_unread(path);
+#endif
+""", """#ifdef PSP_NO_CONFIG_FILE
+	platform_log("settings: the campaign build reads no %s (PSP_CONFIGFILE=1 does)", path);
+#elif !defined(HALO_ANDROID) && !defined(HALO_XBOX_CONSOLE)
+	config_report_unread(path);
+#endif
+"""),
+]
+# upstream's automated test input (debug.test_input: the scripted bot, the
+# menu scripts and the followed file; its 4 KB script buffer and its parser):
+# the PSP's tests drive the pad from psp_pad.c, so the PSP calls none of it and
+# the static parts leave the link. The bot's hold calls (network_test.c) stay
+FIXES_V091A["port/linux/src/xinput_sdl.c#testinput"] = [
+("""		test_input_menu_keys(&input);
+		test_input_debug_camera(&input);
+""", """#ifndef HALO_PSP
+		test_input_menu_keys(&input);
+		test_input_debug_camera(&input);
+#endif
+"""),
+("""		test_input_gamepad(&state->Gamepad);
+		touch_input_gamepad(&state->Gamepad);""", """#ifndef HALO_PSP
+		test_input_gamepad(&state->Gamepad);
+#endif
+		touch_input_gamepad(&state->Gamepad);"""),
 ]
 
 
@@ -54096,7 +54301,7 @@ FIXES_ASKCENSUS["source/game/game_engine_bomb.c#askcensus"] = [
 """),
 ]
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_SSPR.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + list(FIXES_CHUPA090RUNS.items()) + list(FIXES_HEAPTRIM.items()) + list(FIXES_B78.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items()) + list(FIXES_AIME2A.items()) + list(FIXES_REDOSEED.items()) + (list(FIXES_STACKHOT.items()) if STACKHOT else []) + (list(FIXES_STACKHOT2.items()) if STACKHOT2 else []) + list(FIXES_PWSL.items()) + list(FIXES_SPHSL.items()) + list(FIXES_RECONLIST.items()) + list(FIXES_TP1.items()) + list(FIXES_WXDEAD.items()) + list(FIXES_AIMEMOVE.items()) + list(FIXES_PROPCRASH.items()) + list(FIXES_APCPOOL.items()) + list(FIXES_PSPTLS.items()) + list(FIXES_SNDEDRAM.items()) + list(FIXES_LIGHTFIRST.items()) + list(FIXES_DRAWPART.items()) + (list(FIXES_RECONLATE.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + list(FIXES_P2PASS.items()) + (list(FIXES_P2CENSUS.items()) if P2CENSUS else []) + list(FIXES_OBSRAY.items()) + list(FIXES_SNDWAIT.items()) + list(FIXES_FLAMEDECAL.items()) + list(FIXES_HUHINT.items()) + list(FIXES_DBLSOFT.items()) + list(FIXES_VFPUTRIG.items()) + list(FIXES_TICKCACHE.items()) + list(FIXES_STRICTALIAS.items()) + list(FIXES_SNDPERMAP.items()) + list(FIXES_RLOOP.items()) + list(FIXES_L10.items()) + list(FIXES_RLSKIP.items()) + list(FIXES_ONEWALK.items()) + (list(FIXES_POSEK.items()) if POSEK else []) + (list(FIXES_SNDSTREAM.items()) if os.environ.get("PSP_SNDSTREAM", "") == "1" else []) + list(FIXES_MOUTHCLOCK.items()) + list(FIXES_LSAME.items()) + list(FIXES_CHUPA090.items()) + (list(FIXES_AITICKOLD.items()) if AITICKOLD else []) + (list(FIXES_PADPATH.items()) if os.environ.get("PSP_PADPATH", "") == "1" else []) + list(FIXES_FARLEVEL.items()) + list(FIXES_DECALRING.items()) + list(FIXES_ARRAYFULL.items()) + (list(FIXES_DEADXBOX.items()) if DEADXBOX else []) + (list(FIXES_CAPTURE_POSING.items()) if CAPTURE == "posing" else []) + (list(FIXES_BOXPOSING.items()) if BOXPOSING else []) + (list(FIXES_ASKCENSUS.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_SSPR.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + list(FIXES_CHUPA090RUNS.items()) + list(FIXES_HEAPTRIM.items()) + list(FIXES_B78.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items()) + list(FIXES_AIME2A.items()) + list(FIXES_REDOSEED.items()) + (list(FIXES_STACKHOT.items()) if STACKHOT else []) + (list(FIXES_STACKHOT2.items()) if STACKHOT2 else []) + list(FIXES_PWSL.items()) + list(FIXES_SPHSL.items()) + list(FIXES_RECONLIST.items()) + list(FIXES_TP1.items()) + list(FIXES_WXDEAD.items()) + list(FIXES_AIMEMOVE.items()) + list(FIXES_PROPCRASH.items()) + list(FIXES_APCPOOL.items()) + list(FIXES_PSPTLS.items()) + list(FIXES_SNDEDRAM.items()) + list(FIXES_LIGHTFIRST.items()) + list(FIXES_DRAWPART.items()) + (list(FIXES_RECONLATE.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + list(FIXES_P2PASS.items()) + (list(FIXES_P2CENSUS.items()) if P2CENSUS else []) + list(FIXES_OBSRAY.items()) + list(FIXES_SNDWAIT.items()) + list(FIXES_FLAMEDECAL.items()) + list(FIXES_HUHINT.items()) + list(FIXES_DBLSOFT.items()) + list(FIXES_VFPUTRIG.items()) + list(FIXES_TICKCACHE.items()) + list(FIXES_STRICTALIAS.items()) + list(FIXES_SNDPERMAP.items()) + list(FIXES_RLOOP.items()) + list(FIXES_L10.items()) + list(FIXES_RLSKIP.items()) + list(FIXES_ONEWALK.items()) + (list(FIXES_POSEK.items()) if POSEK else []) + (list(FIXES_SNDSTREAM.items()) if os.environ.get("PSP_SNDSTREAM", "") == "1" else []) + list(FIXES_MOUTHCLOCK.items()) + list(FIXES_LSAME.items()) + list(FIXES_CHUPA090.items()) + list(FIXES_V091A.items()) + (list(FIXES_AITICKOLD.items()) if AITICKOLD else []) + (list(FIXES_PADPATH.items()) if os.environ.get("PSP_PADPATH", "") == "1" else []) + list(FIXES_FARLEVEL.items()) + list(FIXES_DECALRING.items()) + list(FIXES_ARRAYFULL.items()) + (list(FIXES_DEADXBOX.items()) if DEADXBOX else []) + (list(FIXES_CAPTURE_POSING.items()) if CAPTURE == "posing" else []) + (list(FIXES_BOXPOSING.items()) if BOXPOSING else []) + (list(FIXES_ASKCENSUS.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
@@ -55051,8 +55256,10 @@ for rel, changes in FIXES.items():
             dead_anchors.append("psp_fixups: warning: %s: an anchor matches only inside %s, which the PSP doesn't "
                                 "compile:\n%s" % (rel, dead, old[:200]))
         text = text.replace(old, new)
-    if CHECK_ONLY or not applied:
-        # (a file with no changes left is left as it is)
+    if not applied:
+        # (a file with no changes left is left as it is; with
+        # PSP_FIXUPS_CHECK=1 the mirror is still written, so the passes'
+        # counts below are checked on the fixed text)
         continue
     # PSP_FRAMEPTR=0 builds every engine unit without the frame pointer, so
     # the lookups' own omit-frame-pointer attribute says nothing more. Left
@@ -55075,7 +55282,6 @@ if carried:
           % (len(carried), ", ".join("%s x%d" % (rel, carried.count(rel)) for rel in sorted(set(carried)))))
 if CHECK_ONLY:
     print("\n\n".join(failures))
-    sys.exit("psp_fixups: %d anchors don't match once" % len(failures) if failures else 0)
 # (before the passes below, which label and append: the copies are made from
 # the fixed text alone)
 if WALKAPART or MEVISLAND:
@@ -55086,6 +55292,13 @@ print("psp_fixups: %d files changed, AI debug records shared in %d, unaligned ac
 print("psp_fixups: AI debugger state on demand in %d files" % ai_debug_shrink(TREE))
 print("psp_fixups: colour conversions in single precision in %d files" % float_colours(TREE))
 print("psp_fixups: render interpolation for one local player in %d files" % interpolation_players(TREE))
+print("psp_fixups: the settings' help text left out in %d rows (CONFIGHELP)" % config_help(TREE))
 print("psp_fixups: the GL renderer compiled out in %d files" % gl_never(TREE))
 print("psp_fixups: the collision user stack %s in %d files (COLLUSERS)" % ("shared, as before," if COLLUSERS_SHARED else "one a CPU (debug tools) or none", collision_users(TREE)))
 print("psp_fixups: the AI's meters and ballistic record the main CPU's alone in %d files (AIMETERS)" % ai_meters(TREE))
+
+if CHECK_ONLY:
+    for message in count_failures:
+        print(message)
+    sys.exit("psp_fixups: %d anchors don't match once, %d passes' counts fail" % (len(failures), len(count_failures))
+             if failures or count_failures else 0)

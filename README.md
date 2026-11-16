@@ -82,6 +82,14 @@ Each borrowed change also names its source in its commit message and its build's
 
 ## Licence
 
-MIT for Sierra-III's own work (`LICENSE`), which also names what it doesn't cover: the XMB wallpaper (below), our patches to Invader and PPSSPP (under their GPL), and third-party files carried as they are. The engine and the tools this builds on carry their own licences (`UPSTREAM.md`).
+**GPL-3.0-or-later** (`LICENSE`, the licence's text; `NOTICE.md`, the notice and what it covers). The engine, ChupathingyCE, is GPL-3.0-or-later from 0.8.0 and this port's pin is past that change, so Sierra-III follows it. Sierra-III's own work before the switch was MIT (`LICENSES/MIT.txt`); copies taken from that history keep it.
+
+`NOTICE.md` names what the GPL doesn't cover here:
+- the XMB wallpaper (below);
+- the project's own mark and XMB art;
+- our patches to Invader and PPSSPP (under their own GPL terms);
+- third-party files carried as they are.
+
+The engine and the tools this builds on carry their own licences (`UPSTREAM.md`).
 
 Sierra-III was created under Microsoft's "[Game Content Usage Rules](https://www.xbox.com/en-US/developers/rules)" using assets from Halo: Combat Evolved, and it is not endorsed by or affiliated with Microsoft. The only such assets in this repository are the campaign's XMB wallpaper (`psp/xmb/campaign/PIC1.PNG`), made from stills of our own gameplay footage. Halo: Combat Evolved © Microsoft Corporation.

@@ -14,7 +14,7 @@ Labels: [M] PSP, [E] emulator, [D] code, [U] inference.
 ## 2. The shape on the PSP
 
 1. **The sound comes from the player's disc, at bake time**, like the XMB's menu music (`bake/lib/snd0.py`).
-   - The same bytes should be in the disc's `default.xbe` [U: check against the disc image on the X3D]. The bake finds them, decodes them, and renders the four pitched voices as four short stems (`halo/loading/voiceN`).
+   - The same bytes should be in the disc's `default.xbe` [U: check against the disc image on the desktop]. The bake finds them, decodes them, and renders the four pitched voices as four short stems (`halo/loading/voiceN`).
    - The engine's copy is compiled out on the PSP: −18 KB in the EBOOT and in RAM, and no disc audio in any build zip.
    - Rendering the pitches at bake time also sidesteps the mixer: the PSP's `IDirectSoundBuffer_SetPitch` is a stub (`psp_dsound.c`).
    - If the bake gets only a maps folder (no XBE), the loading screen is silent.

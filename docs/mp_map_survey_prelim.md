@@ -6,9 +6,9 @@ What the 13 stock multiplayer maps cost the PSP's memory, from data that already
 - The latest full bake, `sierra-bake/38524010598` (b121's bundle, `/bake/campaign121`), for sizes, tag space and bake times.
 - The only two emulator runs of the multiplayer build on these maps, `sierra-test/38082751432` (Blood Gulch) and `sierra-test/38083090554` (Sidewinder). Both are build 111 + multiplayer, 6 MB window, 200 s, **no input: the player stood at the spawn**.
 
-## 1. Per map: what the bake makes [M on the X3D, D]
+## 1. Per map: what the bake makes [M on the desktop, D]
 
-| Map | Tag space (of 6.00 MiB) | `.pgeo` MB | `.ptex` MB | `.pstn` KB | Bake time, X3D |
+| Map | Tag space (of 6.00 MiB) | `.pgeo` MB | `.ptex` MB | `.pstn` KB | Bake time, desktop |
 |---|---:|---:|---:|---:|---:|
 | sidewinder | **3.30** | 4.22 | 4.98 | 28.3 | 133 s |
 | bloodgulch | 3.10 | 3.84 | **5.19** | 21.6 | 119 s |
@@ -26,7 +26,7 @@ What the 13 stock multiplayer maps cost the PSP's memory, from data that already
 | ui | 1.06 | 0.12 | 6.46 | — | 87 s |
 
 - **Tag space:** every map uses 38–55% of the 6 MB window. The window is nowhere near the binding limit for stock maps.
-- **Bake time:** 98–133 s a map on the X3D [M]. This replaces the earlier "3–10 minutes" estimate for multiplayer maps.
+- **Bake time:** 98–133 s a map on the desktop [M]. This replaces the earlier "3–10 minutes" estimate for multiplayer maps.
 - The texture pack is the largest per-map file after the `.map`, but in the multiplayer build it doesn't touch the heap (§2).
 
 ## 2. What's in the multiplayer heap [E, both runs]
@@ -64,7 +64,7 @@ For all 13 maps in the emulator, multiplayer build, PSP-1000 memory:
 2. Read the heap line (in use, taken from the system, failures), the arena line (peak use, overflow to the heap) and the skinning-plan peak.
 3. Then again with N clients (the load generator) for the player-count curve.
 
-All of it is emulator time on the X3D. No hardware.
+All of it is emulator time on the desktop. No hardware.
 
 ## Levers found on the way (for the multiplayer build)
 1. The `sv_unban` 1 MB buffer (`mp_v075a_and_host_memory.md`): [D], certain.

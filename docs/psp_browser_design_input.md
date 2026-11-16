@@ -6,7 +6,7 @@ Design input for a code-drawn server browser in the multiplayer build (Sheepdog0
 
 ## 0. The finding that reshapes the plan
 
-**Every listed game is joined by its invite, through internet play (`p2p.c`).** Neither list source carries an address: `browser_join(invite)` hands the invite to the tunnel, as an invite link would. The PSP build leaves internet play out today (`multiplayer_plan.md` §1: "LAN only"), and every multiplayer test so far has been system link on the X3D's hotspot.
+**Every listed game is joined by its invite, through internet play (`p2p.c`).** Neither list source carries an address: `browser_join(invite)` hands the invite to the tunnel, as an invite link would. The PSP build leaves internet play out today (`multiplayer_plan.md` §1: "LAN only"), and every multiplayer test so far has been system link on the desktop's hotspot.
 
 So **a browser alone doesn't put a PSP into online games.** Joining PC servers over the internet (phase 1's parity target) needs one of:
 1. **Port internet play** (§3): portable C, no TLS, ~7,200 lines.

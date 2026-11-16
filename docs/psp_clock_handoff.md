@@ -7,7 +7,7 @@ A standalone investigation. Written 2026-10-05.
 ## The device
 - **Model:** PSP-1000, firmware 6.61, ARK-4 (CFW front end: Kommander).
 - **Motherboard revision:** not yet known (TA-0xx). Find it out before opening anything.
-- **Machine for any desktop work:** the P14S laptop (fish shell).
+- **Machine for any desktop work:** the laptop (fish shell).
 
 ## Symptoms (as Sheepdog01 reported them)
 - Pulling the battery and letting the PSP sit resets the date and time.

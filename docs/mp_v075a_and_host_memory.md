@@ -18,7 +18,7 @@ Two desktop checks from the custom-maps planning session. No builds made, nothin
 
 - **The new break:** `port/linux/src/platform.h`. Upstream `64b77c17` widened `#ifdef HALO_ANDROID` to `#if defined(HALO_ANDROID) && !defined(HALO_64BIT)` for its native 64-bit Android build. A re-anchor, nothing more.
 - **All 7 `FIXES_MULTIPLAYER` anchors match on v0.7.5a.**
-- **v0.7.5a's map-identity code (network version 29) doesn't reach the PSP:** the whole-file hash in `cache_files_map_version` sits under `HALO_CUSTOM_EDITION`, which the PSP build leaves out, so stock maps keep version 0 as before. The new Delta wire calls in the networking files (`delta_peer_advertised_wire*`) sit under `HALO_GAME_BROWSER`, also left out. So no new link dependencies at the text level. A compile and link (`sierra-build` on the X3D) is the real check.
+- **v0.7.5a's map-identity code (network version 29) doesn't reach the PSP:** the whole-file hash in `cache_files_map_version` sits under `HALO_CUSTOM_EDITION`, which the PSP build leaves out, so stock maps keep version 0 as before. The new Delta wire calls in the networking files (`delta_peer_advertised_wire*`) sit under `HALO_GAME_BROWSER`, also left out. So no new link dependencies at the text level. A compile and link (`sierra-build` on the desktop) is the real check.
 - **The PSP's network version is its own, not the engine's:** `psp_limits.h` hard-codes `HALO_PORT_NETWORK_VERSION 24` (accepting 11–24) on both branches, while v0.7.5a's `halo_port_limits.h` says 29 (accepting 11–30). A rebase doesn't move it. Moving to 29 is a deliberate edit, made together with the rebase that brings versions 25–29's code.
   - Codebase note: two sources of truth for one number. Worth either deriving the PSP's from the engine's header, or a build-time check that they agree, so the next bump can't be missed.
 
@@ -45,6 +45,6 @@ From mp1's link map (the lab's results, `sierra-build/38100266481`; program 6.16
 
 ## Open unknowns (from the session, for the master list)
 
-Phase 1: the load generator on the X3D (N headless ChupathingyCE clients with `network_test = "join"` and scripted bots); network bytes per tick against N; Delta Peer's cost on the PSP; the rig's user partition at 24 MB (the `hwprofile` partition line); the player-count ladder and Wi-Fi throughput on hardware.
+Phase 1: the load generator on the desktop (N headless ChupathingyCE clients with `network_test = "join"` and scripted bots); network bytes per tick against N; Delta Peer's cost on the PSP; the rig's user partition at 24 MB (the `hwprofile` partition line); the player-count ladder and Wi-Fi throughput on hardware.
 
 Phase 2: CE map sizes against the 6 MB window (needs maps from Sheepdog01's contact); bake time per stage; stock/custom asset split; DXT passthrough on the GE ever measured?; TLS 1.3 (pspkit-https, wolfSSL, GPL-2.0, emulator-tested only) on hardware.

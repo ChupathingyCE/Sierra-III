@@ -142,6 +142,42 @@ HALO_REPO=/home/claude/chupa PSP_OUT=/tmp/psp_chupa python3 psp_build.py --jobs 
 - `PSP_MAP_CHECKS=1` builds ChupathingyCE's map checks in (trusted maps off).
 - `HALO_REPO=/tmp/halo-sp` (the default) still builds halo-ce-universal.
 
+## v0.9.1a (2026-11-16)
+
+**The pin moves to the release tag** `v0.9.1a` (`2e5eac0`; v0.9.1 is `e215ae5`), as the interim pin below said it would (the lead 11:02, ahead of opening Sierra-III). 6eef2f3 to v0.9.1a is 1,507 files, mostly Stubbs mode (`port/linux/game/stubbs_*`), MCC levels and checkpoints (`mcc_*`), and the Workshop. `PSP_FIXUPS_CHECK=1` found 9 campaign anchors that no longer matched [D]:
+- **main.c (FIXES_LOADING, 2):** the map change and the boot load now return early when an MCC level isn't there (#1149); the loading screen's begin/end bracket the new text, and the early returns end the loading screen too.
+- **render_objects.c (FIXES_B30):** the static lighting's recompute test gained Stubbs's lit-at-body case; the PSP's pending-light read is one more `||` term.
+- **ai_debug.h (build 23):** the 859F4 offset assert gained `!defined(HALO_CONSOLE_NO_DEBUG_TOOLS)`; the PSP's `!defined(HALO_PSP)` is added beside it.
+- **game_state.c (FIXES_CHUPA #image):** upstream now skips the copy when the image is the game state, so the pair is retired.
+- **object_lights.c (FIXES_106 #inline):** the include list changed; the datum inlines sit before the halo.log declaration.
+- **players.c (FIXES_113 #flipwatch):** the action test gained Stubbs's horde action.
+- **xbox_files.c (FIXES_FRONT #pathscan, FIXES_MULTIPLAYER #maps):** the drive's folder may be a mode's own (`save_drive_folder`), and a d: path may be a Workshop item's: the once-a-run folder check and the multiplayer maps folder re-anchored.
+
+**Switches and new units.** `HALO_MCC=0` and `HALO_CONSOLE_NO_STUBBS=1`, as the consoles build them: their headers turn the MCC and Stubbs hooks into static no-ops, and the `stubbs_*` units are left out (`CHUPA_DESKTOP_UNITS`). `FIXES_V091A` holds the rest: Load Level's list includes `stubbs_campaign.h` for its size, and the campaign build keeps no Delta verified mark (`font_group.c`, six 48x48 bitmaps, 14 KB of .bss). The network version is 32, joining 11 to 45 (`psp_limits.h`). `PSP_FIXUPS_CHECK=1` now also lists the passes whose counts changed (`check_fail`): interpolation 11, gl_ready 15, COLLUSERS 70.
+
+**Memory** (Sheepdog01: "pay close attention to the memory", trim what the engine added) [D], sierra-build with `PSP_SNDSTREAM=1`, text / data / bss and the heap:
+
+| Build | text | data | bss | heap |
+|---|---|---|---|---|
+| tock c1292051 (6eef2f3) | 3,403,176 | 122,524 | 1,787,048 | 5,816 KB |
+| pin 6d7f6d91 (Delta mark kept) | 3,421,864 | 122,580 | 1,806,712 | 5,780 KB |
+| pin 6d7f6d91 (no Delta mark) | 3,420,648 | 122,564 | 1,792,776 | 5,796 KB |
+| pin cc6cccc6 (below) | 3,408,688 | 122,364 | 1,780,168 | 5,820 KB |
+| pin b374c054 (+ CONFIGHELP) | 3,372,592 | 122,364 | 1,780,168 | 5,856 KB |
+| pin d4fd74e2 (+ no config.toml) | 3,335,484 | 122,348 | 1,777,944 | 5,892 KB |
+
+What the engine added that the campaign build carried: the Delta mark (14.0 KB bss), render interpolation's direct camera and frames (+3.3 KB), upstream's test input (`debug.test_input`, its 4 KB script buffer: +6.1 KB), the settings table's new rows (+4.5 KB), crt0's data (+4.4 KB). Sheepdog01 (2026-11-16): the PSP uses none of the settings menus, the test input, render interpolation or upstream's fonts. So:
+- **render_interpolation.c leaves the build** (`PSP_INTERPOLATION=1` builds it back in): `psp/src/psp_nointerp.c` answers its 19 calls as interpolation off does. The one part that works with interpolation off, the direct camera (`display.direct_camera`, the first-person view from player_control's facing), is kept as the unit makes it.
+- **The test input** is compiled out on the PSP (`FIXES_V091A` `xinput_sdl.c#testinput`), and the virtual test gamepads are off as on the consoles (`HALO_CONSOLE_NO_TEST_GAMEPADS`).
+- **The settings' help text** (CONFIGHELP, `PSP_CONFIGHELP=1` keeps it): each setting's and section's help, written as comments into a new config.toml, emptied in port_config.c's table (430 settings, 18 sections); every setting, default and environment name is as before. +36 KB of heap.
+- **No config.toml in the campaign build** (`PSP_CONFIGFILE=1` keeps it; Sheepdog01 2026-11-16: controls and the player's name live in the profile, and there is no settings screen): the reader answers no file, so the TOML parsing folds away with tomlc17; a written value lasts the run; every setting is its default or the boot's environment, the keep words beside them. It also ends config_follow_file's stat of the stick once a second during play [D]. +36 KB of heap. The multiplayer build keeps the file (broadcast, the network).
+
+**Proof** (emulator [E], fixedticks fixedseed statecrc, b30_leg1, c20_leg1, d20 swamp, against the tock): pin091a2 (6d7f6d91, heap 5,796 KB): c20 and d20 play and seeds identical tick for tick; **b30 parted at tick 2061**, where the new side's sound cache had no room for a sound (`covey_uplink`, 71 KB) the tock's had. 20 KB less heap, a smaller sound cache: the memory difference shows in play. d20's new side refused 6 sounds to the tock's 1, with play the same. pin091a3 (cc6cccc6, heap 5,820 KB): c20 and d20 identical again, no sound refused; **b30 still parted at tick 2061**, so the sound cache was a symptom. The statecrc records show the object memory ('objects') differing from tick 900, with play the same until 2061.
+
+**The cause: a float function stubbed by the link** [D]. v0.9.1a's `bipeds.c` tests a seated biped's vehicle against `network_distributed_rider_ejection_up()` (riders leave a vehicle whose up is below it: 0, the Xbox's, outside a network game). It is defined in `network_distributed.c`, a multiplayer unit, so the campaign link stubbed it, and a stub returns 0 in `$v0`, not `$f0`: the test read whatever `$f0` last held. `psp_campaign.c` answers 0.0f. `psp_build.py` now refuses to link when it would stub a function the tree declares with a `real`, `float` or `double` result. The other new stubs (SDL's gamepad names and log hooks, `SDL_getenv`, `mcc_local_package_path`, `stubbs_mode_active`, the invite link) answer 0 or NULL correctly. Proof of the fix: **pin091a4 (151fbeb3, heap 5,892 KB): play and both seeds identical tick for tick on b30, c20 and d20, strict b30 clean** [E]. Watch items: d20's sound refusals on the new side vary run to run (0, 6, 12; the tock's 1 each time), with play the same; the 'objects' record differs from the tock's (b30 from tick 900) with play the same. The PSP pair (tock against 151fbeb3, b30_leg1) is asked.
+
+**Pictures** (pin091a3, c20, shots every 5 s, the same frames): the view is the same (the direct camera kept); 55 to 4,365 pixels a shot differ, the overlay's timings and a dithered speckle on one wall, no shape.
+
 ## The 0.9.1 test build, 6eef2f3 (2026-11-11, in progress; first aimed at v0.9.0d)
 
 **Interim pin** (the maintainer, 2026-11-11 10:47): the 0.9.1 test build's commit `6eef2f3e3ce8` (tag `v0.9.1-testing`, a moving tag, so the sha is pinned) until 0.9.1 is released; then the pin moves to its tag and `PSP_FIXUPS_CHECK=1` runs again. 6eef2f3 is not a descendant of v0.9.0d (merge base 6f6e545; 494 commits past it, v0.9.0d's 154 own commits merged in by content). Network version still 32 (11 to 42). The work below was done against v0.9.0d first (round 1 and round 2's first half), then moved: at 6eef2f3, 42 more campaign anchors failed and 11 multiplayer ones.

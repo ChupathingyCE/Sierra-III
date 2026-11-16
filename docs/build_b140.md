@@ -18,7 +18,7 @@ umount $psp
 ```
 Clearing `init.txt`, `keep.txt` and `input.txt` takes the rig's last job off the stick (its keep words and its jump straight into b30), so the game boots to its main menu with the build's own defaults. The log's first line should say `bring-up build 140`.
 
-**Maps** (only if the stick doesn't have b140z yet), on the X3D:
+**Maps** (only if the stick doesn't have b140z yet), on the desktop:
 ```fish
 sudo rsync -rt --modify-window=2 --delete /home/runner/psp-bake/b140z/halo/maps/ $psp/halo/maps/
 ```

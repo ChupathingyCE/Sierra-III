@@ -21,7 +21,7 @@ Per report: the difference in dB below the mix (all, and three bands: under ~300
 
 ## Layer 2: a perceptual score [E]
 
-The same run writes both sides' output as raw PCM on the X3D runner (`/work`), and a step scores the pair with ViSQOL (Apache-2.0) and/or PEAQ (ITU-R BS.1387). Only the scores reach the results branch. The captures are made from the game's sounds, so they're game data: `push-results.sh` refuses audio files (2026-11-05), and the files stay on Sheepdog01's machines.
+The same run writes both sides' output as raw PCM on the desktop runner (`/work`), and a step scores the pair with ViSQOL (Apache-2.0) and/or PEAQ (ITU-R BS.1387). Only the scores reach the results branch. The captures are made from the game's sounds, so they're game data: `push-results.sh` refuses audio files (2026-11-05), and the files stay on Sheepdog01's machines.
 
 ## Layer 3: Sheepdog01's blind ABX [M by ear]
 
@@ -41,7 +41,7 @@ A fixed set of stretches, each chosen for a way the approximations could be hear
 
 And beside it a synthetic set that needs no game data at all: sweeps, tones, noise bursts and clicks, played through the mixer's own code on the host at every gain, pitch and muffling the game uses. It checks the maths of each path in isolation, and can be committed.
 
-**Prerecorded references:** the exact mix of each gauntlet stretch, captured once and kept on the X3D, so a later build is compared with it as well as with its own exact side. That needs the mix rendered in step with the game's ticks (a capture mode where audio blocks are made from the game time, not the audio thread's clock), since otherwise a faster build hears a stretch at slightly different moments. Built when the first lever reaches layer 2.
+**Prerecorded references:** the exact mix of each gauntlet stretch, captured once and kept on the desktop, so a later build is compared with it as well as with its own exact side. That needs the mix rendered in step with the game's ticks (a capture mode where audio blocks are made from the game time, not the audio thread's clock), since otherwise a faster build hears a stretch at slightly different moments. Built when the first lever reaches layer 2.
 
 ## Verdicts (proposed thresholds, the master's, not a standard)
 

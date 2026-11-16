@@ -127,7 +127,11 @@ CHUPA_DESKTOP_UNITS = ("port/linux/game/ce_", "port/linux/game/browser_screen.c"
                        # (the 0.9.1 test build's multiplayer follow camera, off by
                        # default: the Xbox had the death camera alone; psp_chupa.c
                        # answers its calls)
-                       "port/linux/game/follow_camera.c")
+                       "port/linux/game/follow_camera.c",
+                       # (Stubbs mode, off as on the consoles: HALO_CONSOLE_NO_STUBBS
+                       # makes its headers' hooks static no-ops, and its units, which
+                       # define them, aren't built, as the consoles leave them out)
+                       "port/linux/game/stubbs_")
 # ... except what the multiplayer build needs as it is: map_families.c names a
 # game's map in the game's protocol (an Xbox map as itself, a Custom Edition
 # map custom_maps\<name>), in the host's advertisement and settings and the
@@ -292,6 +296,11 @@ if SMALLDATA not in (0, 4, 8):
 # FIXES_WALKAPART). Its hooks sit in the tick's object marks and the particle
 # loop, so a default build leaves all of it out
 WALKAPART = os.environ.get("PSP_WALKAPART", "") == "1"
+# PSP_INTERPOLATION=1 builds render_interpolation.c back in (keep word
+# interpolation). By default it stays out: the PSP never draws between ticks,
+# and psp/src/psp_nointerp.c gives its answers with interpolation off, the
+# direct camera kept (23 KB of code and statics)
+INTERPOLATION = os.environ.get("PSP_INTERPOLATION", "") == "1"
 # PSP_MEXEC=<name>: MEXEC (docs/mexec.md): psp_me.c carries psp_mexec_table,
 # and after the link tools/mexec.py fills it from psp/layout/mexec_<name>.txt
 # (the functions the Media Engine copies into its eDRAM). Keep word mexec
@@ -439,7 +448,16 @@ PSP = ["psp-gcc", "-G%d" % SMALLDATA, GAME_OPT, "-march=allegrex", "-ffp-contrac
        # statics and the GL layer's d3d8_visibility_test_number); and the
        # Xbox maps' sizes (flare rows, respawning vehicles: -135 KB)
        "-DHALO_CONSOLE_WAITED_VISIBILITY_TESTS=1", "-DHALO_CONSOLE_XBOX_MAP_SIZES=1",
-       ] + (["-DPSP_MULTIPLAYER=1"] if MULTIPLAYER else []) + (["-DPSP_MUSIC=1"] if MUSIC else []) + (["-DPSP_PADPATH=1"] if PADPATH else []) + (["-DPSP_SNDSTREAM=1"] if SNDSTREAM else []) + (["-DPSP_CLAIMFILL=1"] if CLAIMFILL else []) + CAPTURE_DEFINES + (["-DPSP_MP_COOP=1"] if MULTIPLAYER and MP_COOP else []) + (["-DPSP_MP_HOST=1"] if MULTIPLAYER and MP_HOST else []) + (["-DPSP_MAP_CHECKS=1"] if MAP_CHECKS else []) + (["-DPSP_POOLS_XBOX=1"] if POOLS_XBOX else []) + (["-DPSP_RECON_64MB=1"] if BIG_RAM else []) + (["-DPSP_DEBUG_TOOLS=1"] if DEBUG_TOOLS else []) + (["-DHALO_CONSOLE_NO_DEBUG_TOOLS=1"] if DEADDEBUG else []) + (["-DPSP_TICK_STEPS=1"] if TICK_STEPS else []) + (["-DPSP_RECON=1"] if RECON else []) + (["-DPSP_MEPROBE=1"] if MEPROBE else []) + (["-DPSP_METRICS=1"] if METRICS else []) + (["-DPSP_STACKHOT=2"] if os.environ.get("PSP_STACKHOT", "2") == "2" else []) + (["-DPSP_PGO_GENERATE=1"] if PGO == "generate" else []) + os.environ.get("PSP_CFLAGS", "").split() + [
+       # v0.9.1a's MCC maps and Stubbs mode, as the consoles build them: off
+       # (halo_port_features.h's HALO_MCC, which HALO_ANDROID would turn on;
+       # halo_console_features.h's HALO_CONSOLE_NO_STUBBS). Their headers make
+       # the shared code's hooks static no-ops, so the guarded code folds away
+       # in the units that call them and their own units build to nothing
+       "-DHALO_MCC=0", "-DHALO_CONSOLE_NO_STUBBS=1",
+       # upstream's virtual test gamepads (debug.test_gamepads), off as on the
+       # consoles (halo_port_features.h): the PSP's tests drive psp_pad.c
+       "-DHALO_CONSOLE_NO_TEST_GAMEPADS=1",
+       ] + (["-DPSP_MULTIPLAYER=1"] if MULTIPLAYER else []) + (["-DPSP_CONFIGFILE=1"] if os.environ.get("PSP_CONFIGFILE", "") == "1" else []) + (["-DPSP_MUSIC=1"] if MUSIC else []) + (["-DPSP_PADPATH=1"] if PADPATH else []) + (["-DPSP_SNDSTREAM=1"] if SNDSTREAM else []) + (["-DPSP_CLAIMFILL=1"] if CLAIMFILL else []) + CAPTURE_DEFINES + (["-DPSP_MP_COOP=1"] if MULTIPLAYER and MP_COOP else []) + (["-DPSP_MP_HOST=1"] if MULTIPLAYER and MP_HOST else []) + (["-DPSP_MAP_CHECKS=1"] if MAP_CHECKS else []) + (["-DPSP_POOLS_XBOX=1"] if POOLS_XBOX else []) + (["-DPSP_RECON_64MB=1"] if BIG_RAM else []) + (["-DPSP_DEBUG_TOOLS=1"] if DEBUG_TOOLS else []) + (["-DHALO_CONSOLE_NO_DEBUG_TOOLS=1"] if DEADDEBUG else []) + (["-DPSP_TICK_STEPS=1"] if TICK_STEPS else []) + (["-DPSP_RECON=1"] if RECON else []) + (["-DPSP_MEPROBE=1"] if MEPROBE else []) + (["-DPSP_METRICS=1"] if METRICS else []) + (["-DPSP_STACKHOT=2"] if os.environ.get("PSP_STACKHOT", "2") == "2" else []) + (["-DPSP_PGO_GENERATE=1"] if PGO == "generate" else []) + os.environ.get("PSP_CFLAGS", "").split() + [
        # The fatal asserts are compiled out, unevaluated (X10): their checks
        # and messages fill the 16 KB instruction cache, so with them gone b30's
        # tick is 6.6% shorter on the PSP-3000 [M], and play is identical. The
@@ -488,6 +506,8 @@ def units():
     elif nocoop():
         game = [s for s in game if not coop_unit(s)]
     game = [s for s in game if not desktop_unit(s)]
+    if not INTERPOLATION:
+        game = [s for s in game if s != "port/linux/game/render_interpolation.c"]
     items = [(s, ninja_flags("build/linux/obj/" + s[:-2] + ".o") +
               (["-DHALO_GAME_BROWSER"] if MULTIPLAYER and s in ONLINE_GAMES_UNITS else []), []) for s in game]
     compat = ["-include", os.path.join(HERE, "psp/include/psp_compat.h")]
@@ -535,6 +555,9 @@ def units():
     # version)
     items.append((os.path.join(HERE, "psp/src/psp_chupa.c"),
                   ninja_flags("build/linux/obj/port/linux/game/pal_tags.o"), []))
+    if not INTERPOLATION:
+        items.append((os.path.join(HERE, "psp/src/psp_nointerp.c"),
+                      ninja_flags("build/linux/obj/port/linux/game/render_interpolation.o"), []))
     items.append((os.path.join(HERE, "psp/src/psp_chupa_platform.c"),
                   ninja_flags("build/linux/obj/port/linux/src/sdl_platform.o"), compat))
     # build 108: built as pal_tags.c is, the other in-place fix of a map's tags
@@ -564,12 +587,33 @@ COLD_PORT_UNITS = ("port/linux/src/port_config.c", "port/linux/src/xiso.c", "por
                    "port/linux/src/xbox_xapi.c", "port/linux/game/render_interpolation.c",
                    "port/linux/src/posix_files.c", "port/linux/src/halo_linker_common.c",
                    "port/linux/src/nv2a_psh.c", "port/linux/src/nv2a_vsh.c", "port/linux/src/gl_functions.c",
-                   "port/linux/src/bink_null.c", "port/third_party/tomlc17/tomlc17.c",
+                   "port/linux/src/bink_null.c", "port/third_party/tomlc17/tomlc17.c", "psp/src/psp_nointerp.c",
                    "port/linux/game/pal_tags.c", "psp/src/psp_campaign.c", "psp/src/psp_nocoop.c", "psp/src/psp_chupa.c",
                    "psp/src/psp_chupa_platform.c", "psp/src/psp_tag_layouts.c", "psp/src/psp_bakecheck.c",
                    # mpb1: internet play runs on its own threads, a join's
                    # keys once; the ONLINE GAMES screen only in the menus
                    "psp/src/psp_online.c", "psp/src/psp_internet.c") + INTERNET_UNITS
+def float_stubs(names):
+    """the names among these declared anywhere in the mirror (a prototype or a
+    definition) with a floating-point result (real, float, double): name to
+    file. The link's stubs return 0 in $v0 and nothing in $f0, so a stubbed
+    float function answers whatever $f0 last held (v0.9.1a's
+    network_distributed_rider_ejection_up: a biped's seat test against it)"""
+    found = {}
+    if not names:
+        return found
+    pattern = re.compile(r"^\s*(?:extern\s+)?(?:static\s+)?(?:inline\s+)?(?:const\s+)?(real|float|double)\s+(%s)\s*\(" %
+                         "|".join(re.escape(n) for n in sorted(names)), re.M)
+    for top in ("source", "port"):
+        for root, _, files in os.walk(os.path.join(TREE, top)):
+            for f in files:
+                if not f.endswith((".c", ".h")):
+                    continue
+                path = os.path.join(root, f)
+                for m in pattern.finditer(open(path, errors="replace").read()):
+                    found.setdefault(m.group(2), os.path.relpath(path, TREE))
+    return found
+
 def port_definitions(names):
     """the names among these that a psp/src unit defines at file scope (a
     function's body or a variable, not a prototype or an extern): name to file"""
@@ -803,6 +847,7 @@ def compile_one(item):
                ["-DPSP_PADPATH=1"] if PADPATH else []) + (
                ["-DPSP_MEPROBE=1"] if MEPROBE else []) + (
                ["-DPSP_WALKAPART=1"] if WALKAPART else []) + (
+               ["-DPSP_NO_INTERPOLATION=1"] if not INTERPOLATION else []) + (
                ["-DPSP_MEXEC=1"] if MEXEC and src.endswith("psp_me.c") else []) + (
                ["-DPSP_MEVISLAND=1"] if MEVISLAND else []) + (
                ["-DPSP_METRICS=1"] if METRICS else []) + CAPTURE_DEFINES + (
@@ -1549,6 +1594,10 @@ def main():
     if defined:
         sys.exit("not linking: stubbed, though psp/src defines them (is the unit in PSP_FILES, and given its switch's "
                  "define?): " + ", ".join("%s (%s)" % (n, f) for n, f in sorted(defined.items())[:20]))
+    floats = float_stubs(stubs)
+    if floats:
+        sys.exit("not linking: stubbed, though they return a floating-point value (a stub answers garbage in $f0); "
+                 "answer them in psp/src: " + ", ".join("%s (%s)" % (n, f) for n, f in sorted(floats.items())[:20]))
     open(os.path.join(OUT, "stubbed_symbols.txt"), "w").write("\n".join(sorted(stubs)) + "\n")
     # size the heap: from the program's end up to the game state
     size = subprocess.run(["psp-size", os.path.join(OUT, "halo.elf")], capture_output=True, text=True).stdout.splitlines()[1].split()
