@@ -162,9 +162,10 @@ void network_game_server_change_game_variant(struct network_game_server *server,
 {
 	(void)server; (void)variant;
 }
-void network_game_server_change_map_name(struct network_game_server *server, char const *map_name)
+boolean network_game_server_change_map_name(struct network_game_server *server, char const *map_name)
 {
 	(void)server; (void)map_name;
+	return FALSE;
 }
 short network_game_server_matching_player_names(char const *text, char (*names)[NETWORK_GAME_SERVER_NAME_TEXT_SIZE],
 	short maximum_count)
