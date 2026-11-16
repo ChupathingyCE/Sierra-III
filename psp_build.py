@@ -296,6 +296,11 @@ if SMALLDATA not in (0, 4, 8):
 # FIXES_WALKAPART). Its hooks sit in the tick's object marks and the particle
 # loop, so a default build leaves all of it out
 WALKAPART = os.environ.get("PSP_WALKAPART", "") == "1"
+# PSP_INTERPOLATION=1 builds render_interpolation.c back in (keep word
+# interpolation). By default it stays out: the PSP never draws between ticks,
+# and psp/src/psp_nointerp.c gives its answers with interpolation off, the
+# direct camera kept (23 KB of code and statics)
+INTERPOLATION = os.environ.get("PSP_INTERPOLATION", "") == "1"
 # PSP_MEXEC=<name>: MEXEC (docs/mexec.md): psp_me.c carries psp_mexec_table,
 # and after the link tools/mexec.py fills it from psp/layout/mexec_<name>.txt
 # (the functions the Media Engine copies into its eDRAM). Keep word mexec
@@ -449,6 +454,9 @@ PSP = ["psp-gcc", "-G%d" % SMALLDATA, GAME_OPT, "-march=allegrex", "-ffp-contrac
        # the shared code's hooks static no-ops, so the guarded code folds away
        # in the units that call them and their own units build to nothing
        "-DHALO_MCC=0", "-DHALO_CONSOLE_NO_STUBBS=1",
+       # upstream's virtual test gamepads (debug.test_gamepads), off as on the
+       # consoles (halo_port_features.h): the PSP's tests drive psp_pad.c
+       "-DHALO_CONSOLE_NO_TEST_GAMEPADS=1",
        ] + (["-DPSP_MULTIPLAYER=1"] if MULTIPLAYER else []) + (["-DPSP_MUSIC=1"] if MUSIC else []) + (["-DPSP_PADPATH=1"] if PADPATH else []) + (["-DPSP_SNDSTREAM=1"] if SNDSTREAM else []) + (["-DPSP_CLAIMFILL=1"] if CLAIMFILL else []) + CAPTURE_DEFINES + (["-DPSP_MP_COOP=1"] if MULTIPLAYER and MP_COOP else []) + (["-DPSP_MP_HOST=1"] if MULTIPLAYER and MP_HOST else []) + (["-DPSP_MAP_CHECKS=1"] if MAP_CHECKS else []) + (["-DPSP_POOLS_XBOX=1"] if POOLS_XBOX else []) + (["-DPSP_RECON_64MB=1"] if BIG_RAM else []) + (["-DPSP_DEBUG_TOOLS=1"] if DEBUG_TOOLS else []) + (["-DHALO_CONSOLE_NO_DEBUG_TOOLS=1"] if DEADDEBUG else []) + (["-DPSP_TICK_STEPS=1"] if TICK_STEPS else []) + (["-DPSP_RECON=1"] if RECON else []) + (["-DPSP_MEPROBE=1"] if MEPROBE else []) + (["-DPSP_METRICS=1"] if METRICS else []) + (["-DPSP_STACKHOT=2"] if os.environ.get("PSP_STACKHOT", "2") == "2" else []) + (["-DPSP_PGO_GENERATE=1"] if PGO == "generate" else []) + os.environ.get("PSP_CFLAGS", "").split() + [
        # The fatal asserts are compiled out, unevaluated (X10): their checks
        # and messages fill the 16 KB instruction cache, so with them gone b30's
@@ -498,6 +506,8 @@ def units():
     elif nocoop():
         game = [s for s in game if not coop_unit(s)]
     game = [s for s in game if not desktop_unit(s)]
+    if not INTERPOLATION:
+        game = [s for s in game if s != "port/linux/game/render_interpolation.c"]
     items = [(s, ninja_flags("build/linux/obj/" + s[:-2] + ".o") +
               (["-DHALO_GAME_BROWSER"] if MULTIPLAYER and s in ONLINE_GAMES_UNITS else []), []) for s in game]
     compat = ["-include", os.path.join(HERE, "psp/include/psp_compat.h")]
@@ -545,6 +555,9 @@ def units():
     # version)
     items.append((os.path.join(HERE, "psp/src/psp_chupa.c"),
                   ninja_flags("build/linux/obj/port/linux/game/pal_tags.o"), []))
+    if not INTERPOLATION:
+        items.append((os.path.join(HERE, "psp/src/psp_nointerp.c"),
+                      ninja_flags("build/linux/obj/port/linux/game/render_interpolation.o"), []))
     items.append((os.path.join(HERE, "psp/src/psp_chupa_platform.c"),
                   ninja_flags("build/linux/obj/port/linux/src/sdl_platform.o"), compat))
     # build 108: built as pal_tags.c is, the other in-place fix of a map's tags
@@ -574,7 +587,7 @@ COLD_PORT_UNITS = ("port/linux/src/port_config.c", "port/linux/src/xiso.c", "por
                    "port/linux/src/xbox_xapi.c", "port/linux/game/render_interpolation.c",
                    "port/linux/src/posix_files.c", "port/linux/src/halo_linker_common.c",
                    "port/linux/src/nv2a_psh.c", "port/linux/src/nv2a_vsh.c", "port/linux/src/gl_functions.c",
-                   "port/linux/src/bink_null.c", "port/third_party/tomlc17/tomlc17.c",
+                   "port/linux/src/bink_null.c", "port/third_party/tomlc17/tomlc17.c", "psp/src/psp_nointerp.c",
                    "port/linux/game/pal_tags.c", "psp/src/psp_campaign.c", "psp/src/psp_nocoop.c", "psp/src/psp_chupa.c",
                    "psp/src/psp_chupa_platform.c", "psp/src/psp_tag_layouts.c", "psp/src/psp_bakecheck.c",
                    # mpb1: internet play runs on its own threads, a join's
@@ -813,6 +826,7 @@ def compile_one(item):
                ["-DPSP_PADPATH=1"] if PADPATH else []) + (
                ["-DPSP_MEPROBE=1"] if MEPROBE else []) + (
                ["-DPSP_WALKAPART=1"] if WALKAPART else []) + (
+               ["-DPSP_NO_INTERPOLATION=1"] if not INTERPOLATION else []) + (
                ["-DPSP_MEXEC=1"] if MEXEC and src.endswith("psp_me.c") else []) + (
                ["-DPSP_MEVISLAND=1"] if MEVISLAND else []) + (
                ["-DPSP_METRICS=1"] if METRICS else []) + CAPTURE_DEFINES + (

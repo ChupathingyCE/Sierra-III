@@ -4947,12 +4947,18 @@ FIXES_19 = {
 	}""",
   """#ifdef HALO_PSP
 	/* off unless keep.txt names it: the PSP draws fewer frames than ticks
-	(psp_fixups.py) */
+	(psp_fixups.py); always off in a build without render_interpolation.c
+	(PSP_INTERPOLATION, psp/src/psp_nointerp.c) */
+#ifdef PSP_NO_INTERPOLATION
+	(void)read_at;
+	enabled = 0;
+#else
 	if (read_at == (unsigned long)-1)
 	{
 		read_at = 0;
 		enabled = psp_keep("interpolation");
 	}
+#endif
 #else
 	if (read_at != config_changes())
 	{
@@ -45076,6 +45082,24 @@ FIXES_V091A["source/interface/ui_widget_event_handler_functions.c#levels"] = [
 #include "stubbs_campaign.h" /* psp_fixups.py (FIXES_V091A): STUBBS_CAMPAIGN_LEVEL_COUNT */
 #endif
 struct single_player_level_entry single_player_level_data[STUBBS_CAMPAIGN_LEVEL_COUNT] = { 0 };"""),
+]
+# upstream's automated test input (debug.test_input: the scripted bot, the
+# menu scripts and the followed file; its 4 KB script buffer and its parser):
+# the PSP's tests drive the pad from psp_pad.c, so the PSP calls none of it and
+# the static parts leave the link. The bot's hold calls (network_test.c) stay
+FIXES_V091A["port/linux/src/xinput_sdl.c#testinput"] = [
+("""		test_input_menu_keys(&input);
+		test_input_debug_camera(&input);
+""", """#ifndef HALO_PSP
+		test_input_menu_keys(&input);
+		test_input_debug_camera(&input);
+#endif
+"""),
+("""		test_input_gamepad(&state->Gamepad);
+		touch_input_gamepad(&state->Gamepad);""", """#ifndef HALO_PSP
+		test_input_gamepad(&state->Gamepad);
+#endif
+		touch_input_gamepad(&state->Gamepad);"""),
 ]
 
 
