@@ -13,7 +13,7 @@ products), so every test lands on the same side of every plane.
 /* a desktop count of the walks' steps over a capture (the host build only) */
 #include <stdio.h>
 int box_collbsp_walk_id;
-static unsigned long long n_repeat, n_spheres, n_nodes3, n_leaves, n_refs, n_stack_cmp, n_match, n_nodes2, n_surfaces, n_edges_walked;
+static unsigned long long n_kept, n_kept_nodes, n_kept_leaves, n_repeat, n_spheres, n_nodes3, n_leaves, n_refs, n_stack_cmp, n_match, n_nodes2, n_surfaces, n_edges_walked;
 static unsigned long long r_rays, r_hits, r_nodes, r_split, r_leaves, r_tests, r_refs, r_matched, r_nodes2, r_surface_points;
 static void count_report(void) __attribute__((destructor));
 static void count_report(void)
@@ -23,6 +23,8 @@ static void count_report(void)
 			n_spheres, (double)n_nodes3 / n_spheres, (double)n_leaves / n_spheres, (double)n_refs / n_spheres,
 			(double)n_stack_cmp / n_spheres, (double)n_match / n_spheres, (double)n_nodes2 / n_spheres,
 			(double)n_surfaces / n_spheres, (double)n_edges_walked / n_spheres, (double)n_repeat / n_spheres);
+	if (n_kept)
+		printf("collbsp count: %llu kept sweeps; a kept sweep's leaf walk: 3D nodes %.1f, leaves %.1f\n", n_kept, (double)n_kept_nodes / n_kept, (double)n_kept_leaves / n_kept);
 	if (r_rays)
 		printf("collbsp count: %llu rays (%.1f%% hit); a ray: 3D nodes %.1f (split %.1f), leaves reached %.1f, leaf tests %.1f, references scanned %.1f, matched %.1f, 2D nodes %.1f, surface point tests %.1f\n",
 			r_rays, 100.0 * r_hits / r_rays, (double)r_nodes / r_rays, (double)r_split / r_rays, (double)r_leaves / r_rays,
@@ -662,7 +664,20 @@ int box_collbsp_sphere_kept(const struct box_collbsp *bsp, short breakable_count
 	w.designator = 0;
 	memset(w.buckets, 0, sizeof(w.buckets));
 	result->surface_count = result->edge_count = result->vertex_count = result->leaf_count = 0;
+#ifdef BOX_COLLBSP_COUNT
+	{
+		unsigned long long nodes = n_nodes3, leaves = n_leaves;
+
+		sphere3d(&w, kept->start_node);
+		n_kept++;
+		n_kept_nodes += n_nodes3 - nodes;
+		n_kept_leaves += n_leaves - leaves;
+		n_nodes3 = nodes;
+		n_leaves = leaves;
+	}
+#else
 	sphere3d(&w, kept->start_node);
+#endif
 	for (k = 0; k < kept->vertex_count; k++)
 	{
 		const float *p = bsp->vertices[kept->vertices[k]].p;

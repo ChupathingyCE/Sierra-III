@@ -55,7 +55,7 @@ static const struct box_static *find(const struct box_static *statics, unsigned 
 static int form, part;
 static float margin;
 #ifdef SWEEP_COUNT
-unsigned long long sweep_kept_sizes[5];
+unsigned long long sweep_kept_sizes[5], sweep_kept_tested[3];
 #endif
 static struct box_sweep_kept kept_saved[BOX_SWEEP_KEPT];
 static unsigned int kept_used_saved[BOX_SWEEP_KEPT], kept_clock_saved, b_last_tick;
@@ -685,6 +685,7 @@ static void stage3_report(void)
 		printf("sweepb count: margin %.2f: %u level spheres from a kept walk, %u walks kept (%.1f%% from a kept walk; the bench's passes counted each)\n",
 			margin, scratch.kept_hits, scratch.kept_walks, 100.0 * scratch.kept_hits / (scratch.kept_hits + scratch.kept_walks));
 		printf("sweepb count: %u drops of every kept walk (a BSP switch or a breakable surface broken)\n", scratch.kept_drops);
+		printf("sweepb count: %llu kept sweeps tested %.1f surfaces, edges and vertices each and kept %.1f (%.1f%% inside the sweep's sphere)\n", sweep_kept_tested[0], sweep_kept_tested[0] ? (double)sweep_kept_tested[1] / sweep_kept_tested[0] : 0.0, sweep_kept_tested[0] ? (double)sweep_kept_tested[2] / sweep_kept_tested[0] : 0.0, sweep_kept_tested[1] ? 100.0 * sweep_kept_tested[2] / sweep_kept_tested[1] : 0.0);
 		printf("sweepb count: %llu walks kept, %.1f entries a walk (surfaces, edges, vertices, leaves), the most %llu\n", sweep_kept_sizes[0], sweep_kept_sizes[0] ? (double)sweep_kept_sizes[1] / sweep_kept_sizes[0] : 0.0, sweep_kept_sizes[2]);
 
 	if (!n_level)
