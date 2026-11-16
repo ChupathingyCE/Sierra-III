@@ -54144,39 +54144,7 @@ void psp_cap_sweep_record(unsigned long tag, const void *bytes, unsigned int len
 		psp_capture_input(bytes, length);
 }
 
-/* a BSP once a file (the level's or a model's): its eight arrays named by
-count, element size and key (the array's address), then each array kept by
-reference (tag data: it stays where it is until the capture closes) */
-void psp_cap_sweep_bsp(struct collision_bsp const *bsp)
-{
-	struct tag_block const *blocks[8];
-	unsigned long table[1 + 8 * 3];
-	static const unsigned long sizes[8] = { sizeof(struct bsp3d_node), sizeof(real_plane3d), sizeof(struct collision_leaf),
-		sizeof(struct bsp2d_reference), sizeof(struct bsp2d_node), sizeof(struct collision_surface),
-		sizeof(struct collision_edge), sizeof(struct collision_vertex) };
-	int k;
-
-	blocks[0] = &bsp->bsp3d.nodes;
-	blocks[1] = &bsp->bsp3d.planes;
-	blocks[2] = &bsp->leaves;
-	blocks[3] = &bsp->bsp2d_references;
-	blocks[4] = &bsp->bsp2d.nodes;
-	blocks[5] = &bsp->surfaces;
-	blocks[6] = &bsp->edges;
-	blocks[7] = &bsp->vertices;
-	table[0] = 8;
-	for (k = 0; k < 8; k++)
-	{
-		table[1 + 3 * k] = blocks[k]->count > 0 ? (unsigned long)blocks[k]->count : 0;
-		table[2 + 3 * k] = sizes[k];
-		table[3 + 3 * k] = (unsigned long)blocks[k]->address;
-	}
-	psp_capture_static((unsigned long)bsp, table, sizeof(table));
-	for (k = 0; k < 8; k++)
-		if (blocks[k]->count > 0 && blocks[k]->address)
-			psp_capture_static_ref((unsigned long)blocks[k]->address, blocks[k]->address,
-				(unsigned int)(blocks[k]->count * sizes[k]));
-}
+void psp_cap_sweep_bsp(struct collision_bsp const *bsp); /* collision_bsp.c (FIXES_CAPTURE_SWEEP) */
 
 /* the query, at the sweep's start: its arguments, the switches its walk
 reads (the sphere walk's early-out, the objects' skip), the level's BSP key,
@@ -54468,6 +54436,50 @@ static void psp_cap_sweep_end(int mine, short count, real_point3d const *positio
 				if (object->object.first_child_object_index != NONE)
 				{
 					object_get_features_in_sphere("""),
+]
+FIXES_CAPTURE_SWEEP["source/physics/collision_bsp.c#capture"] = [
+("""boolean (collision_surface_edge_ring_continues)(""",
+ """#ifdef PSP_CAPTURE_SWEEP
+void psp_capture_static(unsigned int key, const void *bytes, unsigned int length);
+void psp_capture_static_ref(unsigned int key, const void *bytes, unsigned int length);
+
+/* a BSP once a file (the level's or a model's): its eight arrays named by
+count, element size and key (the array's address), then each array kept by
+reference (tag data: it stays where it is until the capture closes) */
+void psp_cap_sweep_bsp(struct collision_bsp const *bsp)
+{
+	struct tag_block const *blocks[8];
+	unsigned long table[1 + 8 * 3];
+	static const unsigned long sizes[8] = { sizeof(struct bsp3d_node), sizeof(real_plane3d), sizeof(struct collision_leaf),
+		sizeof(struct bsp2d_reference), sizeof(struct bsp2d_node), sizeof(struct collision_surface),
+		sizeof(struct collision_edge), sizeof(struct collision_vertex) };
+	int k;
+
+	blocks[0] = &bsp->bsp3d.nodes;
+	blocks[1] = &bsp->bsp3d.planes;
+	blocks[2] = &bsp->leaves;
+	blocks[3] = &bsp->bsp2d_references;
+	blocks[4] = &bsp->bsp2d.nodes;
+	blocks[5] = &bsp->surfaces;
+	blocks[6] = &bsp->edges;
+	blocks[7] = &bsp->vertices;
+	table[0] = 8;
+	for (k = 0; k < 8; k++)
+	{
+		table[1 + 3 * k] = blocks[k]->count > 0 ? (unsigned long)blocks[k]->count : 0;
+		table[2 + 3 * k] = sizes[k];
+		table[3 + 3 * k] = (unsigned long)blocks[k]->address;
+	}
+	psp_capture_static((unsigned long)bsp, table, sizeof(table));
+	for (k = 0; k < 8; k++)
+		if (blocks[k]->count > 0 && blocks[k]->address)
+			psp_capture_static_ref((unsigned long)blocks[k]->address, blocks[k]->address,
+				(unsigned int)(blocks[k]->count * sizes[k]));
+}
+
+#endif
+
+boolean (collision_surface_edge_ring_continues)("""),
 ]
 FIXES_CAPTURE_SWEEP["source/physics/collision_models.c#capture"] = [
 ("""	const real_matrix4x3 *matrix;
