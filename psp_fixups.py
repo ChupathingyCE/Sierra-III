@@ -45233,6 +45233,21 @@ FIXES_AIDEBUGREC["source/ai/ai_debug.h#avoidance"] = [
 #endif
 """),
 ]
+# (the record's layout checks: its size and the offsets past the member hold
+# only with it)
+FIXES_AIDEBUGREC["source/ai/actions.c#avoidance"] = [
+("""#ifndef HALO_64BIT
+typedef char actions_actor_debug_info_size_assert[""", """#if !defined(HALO_64BIT) && !(defined(HALO_PSP) && defined(HALO_CONSOLE_NO_DEBUG_TOOLS))
+typedef char actions_actor_debug_info_size_assert["""),
+]
+FIXES_AIDEBUGREC["source/ai/actor_perception.c#avoidance"] = [
+("""#ifndef HALO_64BIT
+typedef char actor_perception_debug_awareness_speed_offset_assert[""", """#if !defined(HALO_64BIT) && !(defined(HALO_PSP) && defined(HALO_CONSOLE_NO_DEBUG_TOOLS))
+typedef char actor_perception_debug_awareness_speed_offset_assert["""),
+("""#ifndef HALO_64BIT
+typedef char actor_visibility_debug_info_size_assert[""", """#if !defined(HALO_64BIT) && !(defined(HALO_PSP) && defined(HALO_CONSOLE_NO_DEBUG_TOOLS))
+typedef char actor_visibility_debug_info_size_assert["""),
+]
 FIXES_AIDEBUGREC["source/ai/actor_moving.c#avoidance"] = [
 ("""		debug_info->avoidance_data = avoidance_data;
 """, """#if !(defined(HALO_PSP) && defined(HALO_CONSOLE_NO_DEBUG_TOOLS))
