@@ -202,7 +202,7 @@ which case the answer is the same by construction (checked against the
 engine's) */
 #define STILL_SLOTS 1024
 static struct still { unsigned int asker, nth, tick, input_length, output_length; unsigned char *input, *output; } still[STILL_SLOTS];
-static unsigned long long n_still_sweeps, n_still_prev, n_still_query, n_still_whole, n_still_answer, n_still_guard, n_still_guard_answer;
+static unsigned long long n_still_sweeps, n_still_prev, n_still_query, n_still_whole, n_still_answer, n_still_guard, n_still_guard_answer, n_still_narrow, n_still_narrow_answer;
 static unsigned int still_last_tick = 0xFFFFFFFFu;
 
 static void still_report(void) __attribute__((destructor));
@@ -215,11 +215,14 @@ static void still_report(void)
 		n_still_whole, n_still_prev ? 100.0 * n_still_whole / n_still_prev : 0.0, 100.0 * n_still_whole / n_still_sweeps, n_still_answer);
 	printf("still count: the guard (query, level flags, the gathered objects' records and the members' ids unchanged): %llu (%.1f%% of all sweeps), answers equal in %llu of them\n",
 		n_still_guard, 100.0 * n_still_guard / n_still_sweeps, n_still_guard_answer);
+	printf("still count: the narrow guard (query, level flags and the gathered objects' records only; the members whose spheres miss left out): %llu (%.1f%% of all sweeps), answers equal in %llu of them\n",
+		n_still_narrow, 100.0 * n_still_narrow / n_still_sweeps, n_still_narrow_answer);
 }
 
 /* the input with each cluster member's sphere copy left out (tag 3 keeps its
 object's id): what the answer depends on, since a member's sphere only
 decides whether it is gathered, and a gathered one's record follows it */
+static int still_narrow;
 static unsigned int still_key(const unsigned char *in, unsigned int length, unsigned char *out)
 {
 	static const unsigned int sizes[10] = { 0, 8, 4, 20, 44, 36, 8, 60, 4, 4 };
@@ -238,8 +241,11 @@ static unsigned int still_key(const unsigned char *in, unsigned int length, unsi
 		memcpy(&tag, in + pos, 4);
 		if (tag > 9 || !sizes[tag] || pos + 4 + sizes[tag] > length)
 			return 0;
-		memcpy(out + used, in + pos, tag == 3 ? 8 : 4 + sizes[tag]);
-		used += tag == 3 ? 8 : 4 + sizes[tag];
+		if (!(tag == 3 && still_narrow))
+		{
+			memcpy(out + used, in + pos, tag == 3 ? 8 : 4 + sizes[tag]);
+			used += tag == 3 ? 8 : 4 + sizes[tag];
+		}
 		pos += 4 + sizes[tag];
 	}
 	return used;
@@ -323,6 +329,21 @@ static void still_count(const struct box_tick *tick)
 						q += 4 + sz[tag];
 					}
 					printf("still why: tag %u at %u (lengths %u %u)\n", tag, o, la, lb);
+				}
+				{
+					static unsigned char na[1 << 20], nb[1 << 20];
+					unsigned int ma, mb;
+
+					still_narrow = 1;
+					ma = t->input_length < sizeof(na) ? still_key(t->input, t->input_length, na) : 0;
+					mb = e->input_length < sizeof(nb) ? still_key(e->input, e->input_length, nb) : 0;
+					still_narrow = 0;
+					if (ma && ma == mb && !memcmp(na, nb, ma))
+					{
+						n_still_narrow++;
+						if (t->output_length == e->output_length && !memcmp(t->output, e->output, e->output_length))
+							n_still_narrow_answer++;
+					}
 				}
 				if (la && la == lb && !memcmp(ka, kb, la))
 				{
