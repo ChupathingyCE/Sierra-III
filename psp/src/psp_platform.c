@@ -4255,7 +4255,7 @@ static void hwprofile_report(void)
 		{
 			platform_log("partmap: %u passes; %u of 256 pages changed (%u of the 128 written, %u of the image half's hashed); a step %u us at most; the clock %u ms",
 				hwprofile.partmap_passes, pages, upper, pages - upper, hwprofile.partmap_step_us,
-				(unsigned int)(sceKernelGetSystemTimeWide() / 1000));
+				sceKernelGetSystemTimeLow() / 1000);
 			reported_passes = hwprofile.partmap_passes;
 		}
 	}

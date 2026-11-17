@@ -414,7 +414,7 @@ static void partmap_note(unsigned int page, unsigned int word, unsigned int valu
 	{
 		table->partmap_word[page] = word;
 		table->partmap_value[page] = value;
-		table->partmap_ms[page] = (unsigned int)(sceKernelGetSystemTimeWide() / 1000);
+		table->partmap_ms[page] = sceKernelGetSystemTimeLow() / 1000; /* 32-bit: the module has no 64-bit divide */
 		table->partmap_when[page] = (table->partmap_game_time << 4) | (unsigned int)(phase_current & 15);
 	}
 }
