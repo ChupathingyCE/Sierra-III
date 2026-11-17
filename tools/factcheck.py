@@ -7,10 +7,18 @@ proves the source: this finds it at its line, near it, elsewhere in the file,
 or nowhere. A fragment found nowhere means the source changed under the page:
 the bullet needs re-reading, and possibly its figure updating.
 
+With --stale it checks the other direction: every living page against
+docs/superseded.tsv, the register of values that are no longer true. A page
+that still states one, unmarked, is listed with what is true now and where
+that lives. Records (dated reviews and discussions, the lab's findings rows,
+decisions, inbox, archive, manifests) are history and exempt.
+
 Usage: tools/factcheck.py [--lab <lab checkout>] [--fix-lines] [page]
-  --lab        also check `lab:` citations against that checkout (skipped otherwise)
+       tools/factcheck.py --stale [--lab <lab checkout>]
+  --lab        also check `lab:` citations against that checkout (skipped otherwise);
+               with --stale, also scan the lab's living pages
   --fix-lines  rewrite moved citations' line numbers in place
-Exit status: 1 if any fragment is missing.
+Exit status: 1 if any fragment is missing, or with --stale any stale value is found.
 """
 import argparse
 import re
@@ -43,12 +51,56 @@ def find(lines, line, frag):
     return "missing", None
 
 
+# A line that strikes or qualifies the old value is a record of it, not a claim.
+MARKED = re.compile(r"~~|supersed|conflict|weaker|\bbroke|\bwrong\b|correct(ed|ion)|\bstale\b|withdrawn|retired", re.I)
+LIVING = {
+    "sierra": ["docs/*.md", "docs/research/*.md", "README.md", "CLAUDE.md"],
+    "lab": ["research/*.md", "research/opportunities/*.md", "research/*/*.md", "coord/briefs/*.md",
+            "coord/SHAPE.md", "coord/roles/*.md", "docs/*.md", "README.md", "CLAUDE.md"],
+}
+RECORD = re.compile(r"(^|/)(review_[^/]*|discussion_[^/]*|build_notes[^/]*|overnight_[^/]*|recon_[^/]*|handoff[^/]*|superseded\.tsv)$|"
+                    r"^research/(manifest|external|review_[^/]*)/")
+
+
+def stale(a):
+    reg = []
+    for n, row in enumerate((ROOT / "docs/superseded.tsv").read_text().split("\n"), 1):
+        if not row.strip() or row.startswith("#") or row.startswith("pattern\t"):
+            continue
+        f = row.split("\t")
+        reg.append((re.compile(f[0], re.I), f[1], f[2], n))
+    roots = [("", ROOT, LIVING["sierra"])]
+    if a.lab:
+        roots.append(("lab:", Path(a.lab), LIVING["lab"]))
+    hits = 0
+    for tag, base, globs in roots:
+        seen = set()
+        for g in globs:
+            for f in sorted(base.glob(g)):
+                rel = f.relative_to(base).as_posix()
+                if rel in seen or RECORD.search(rel):
+                    continue
+                seen.add(rel)
+                for ln, line in enumerate(f.read_text(errors="replace").split("\n"), 1):
+                    if MARKED.search(line):
+                        continue
+                    for rx, now, home, rn in reg:
+                        if rx.search(line):
+                            hits += 1
+                            print(f"STALE  {tag}{rel}:{ln}  `{rx.search(line).group(0)}`  now: {now}  ({home}; register row {rn})")
+    print(f"{hits} stale value(s) on living pages; {len(reg)} in the register")
+    return 1 if hits else 0
+
+
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument("--stale", action="store_true")
     ap.add_argument("page", nargs="?", default=str(ROOT / "docs/hardware_facts.md"))
     ap.add_argument("--lab")
     ap.add_argument("--fix-lines", action="store_true")
     a = ap.parse_args()
+    if a.stale:
+        return stale(a)
 
     page = Path(a.page)
     text = page.read_text()

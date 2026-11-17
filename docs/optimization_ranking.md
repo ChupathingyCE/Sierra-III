@@ -81,7 +81,7 @@ Build numbers point to their docs (`build_bNNN.md`, `hardware_bNNN.md`); "v7", "
   - The GE itself is busy only about a third of the frame, so **the CPU is the limit**.
 - **Memory waits (b107 [M]):**
   - 54% of the tick's cycles and 59% of drawing's wait on memory.
-  - **Two thirds of the misses are instruction fetches.** The tick's hot code is ~59 KB against a 16 KB instruction cache [E].
+  - **About 60% of the misses are instruction fetches** (by count, 68% on c20 [M]; `hardware_facts.md`'s miss-ratio bullet; corrected 2026-11-16 from "two thirds"). The tick's hot code is ~59 KB against a 16 KB instruction cache [E].
 - **The GE's own reads double the CPU's miss cost.** The ceiling on what VRAM residency could return is ≈ **36 ms of drawing a frame** [U, from the GE-serial wait shares].
 
 **Converting shares to ms** (all [U]):

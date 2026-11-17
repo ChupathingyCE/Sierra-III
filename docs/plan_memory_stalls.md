@@ -6,7 +6,7 @@ Sheepdog01, 2026-10-16: this is the high-priority speed goal. Labels: [M] measur
 
 ## The root cause
 
-**The PSP spends about half its cycles waiting on memory, and two thirds of those misses are instruction fetches.** Most of the speed work so far cut instructions or moved them to the ME, so it barely moved the clock.
+**The PSP spends about half its cycles waiting on memory, and about 60% of those misses are instruction fetches** (by count, 68% on c20 [M]; `hardware_facts.md`'s miss-ratio bullet; corrected 2026-11-16 from "two thirds"). Most of the speed work so far cut instructions or moved them to the ME, so it barely moved the clock.
 
 | What | Figure | Source |
 |---|---|---|
