@@ -41,8 +41,9 @@ PHASE_NAMES = ['other', 'tick', 'drawing', 'frame end']
 TAG_WINDOW = (0x09600000, 0x09F00000)
 # the campaign build's; the multiplayer build's starts at 0x09340000, a
 # PSP_POOLS_XBOX=1 build's (and one from before the campaign's pools were cut)
-# at 0x092A0000, one from R4 to the memory census at 0x092E4000 (psp_capacity.h)
-GAME_STATE = (0x09304000, 0x09600000)
+# at 0x092A0000, one from R4 to the memory census at 0x092E4000, one from the
+# census to B92 at 0x09304000 (psp_capacity.h)
+GAME_STATE = (0x09300000, 0x09600000)
 
 
 def load_dump(path):

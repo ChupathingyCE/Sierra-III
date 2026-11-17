@@ -68,7 +68,7 @@ that measure the arrays' peaks; the multiplayer build keeps its own pools.
 The memory census (docs/memory_census.md) sized six more of the campaign's
 arrays from their peaks in every run that logged them (long play, every
 encounter placed at once, the hand test's play), at 1.5-3 times the most:
-looping sounds 640 (peak 347), contrail points 768 (431), contrails 96
+looping sounds 640 (peak 347), contrail points 1,024 (B92: c40 fills even that), contrails 96
 (31), particle systems 32 (12), system particles 448 (244) and swarm
 components 160 (81). They give back 70,528 bytes; with the 36 KB the CPU
 part never allocated, its end comes 0x18000 lower, leaving about 8 KB
@@ -78,7 +78,7 @@ unallocated. The GPU part holds the decal vertices alone, exactly 0x28000
 requests it failed */
 #if !defined(PSP_MULTIPLAYER) && !defined(PSP_POOLS_XBOX)
 #define PSP_POOLS_SMALL 1
-#define PSP_POOLS_GAME_STATE_SAVED 0x5C000
+#define PSP_POOLS_GAME_STATE_SAVED 0x58000 /* 0x5C000 before B92's 14 KB of contrail points */
 #define PSP_POOLS_GPU_SAVED 0x8000
 #else
 #define PSP_POOLS_GAME_STATE_SAVED 0
@@ -215,7 +215,11 @@ cliffs (350 scenery objects) it stayed full for minutes (b112 run 5) */
 #define HALO_PORT_MAXIMUM_PARTICLE_SYSTEMS 32 /* (64) */
 #define HALO_PORT_MAXIMUM_SYSTEM_PARTICLES 448 /* (512) */
 #define HALO_PORT_MAXIMUM_CONTRAILS 96 /* (256) */
-#define HALO_PORT_MAXIMUM_CONTRAIL_POINTS 768 /* (1024) */
+/* the Xbox's 1,024, not the census's 768: c40's opening fills even the
+Xbox's array (the lab's b92peak1 44003757337: 682 points refused at 1,024
+on legendary), so a smaller one drew its contrails shorter than the
+original's (B92). 14 KB of the CPU part, from PSP_POOLS_GAME_STATE_SAVED */
+#define HALO_PORT_MAXIMUM_CONTRAIL_POINTS 1024
 #else
 #define HALO_PORT_MAXIMUM_PARTICLE_SYSTEMS 64
 #define HALO_PORT_MAXIMUM_SYSTEM_PARTICLES 512
