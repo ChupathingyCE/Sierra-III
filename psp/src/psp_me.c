@@ -2201,6 +2201,30 @@ held, which the firmware's own ME boot lets go of last
 (sceSysregAvcResetDisable, me_wrapper's boot) and ours never did. The ME
 then made 91 idle polls and hung in its first job */
 static int wake_fw = 0;
+/* "mewakeflush": the DDR controller's flush around the ME's release, as
+Sony's own ME boot does it (me_wrapper's boot: a flush of kind 4 before the
+release, kind 8 after, each polled to done). A real power-down sends the RAM
+through self-refresh, and the restarted ME then hung in its probe's stack
+step (the lab's mewakefw_restart_fails_1000) where a restart without a
+power-down runs clean (mewaketest_restart_clean_3000). Each poll's count is
+reported with the restart, -1 if it timed out */
+static int wake_flush = 0;
+static int wake_flush_spins[2];
+static char flush_note[96];
+#define DDR_FLUSH_REGISTER 0xBD000004u
+#define DDR_FLUSH_POLLS 1000000
+
+static int ddr_flush(unsigned int kind)
+{
+	int spins = 0;
+
+	hw(DDR_FLUSH_REGISTER) = kind;
+	__asm__ __volatile__("sync");
+	while (hw(DDR_FLUSH_REGISTER) != 0)
+		if (++spins >= DDR_FLUSH_POLLS)
+			return -1;
+	return spins;
+}
 #define WAKE_FW_RESETS 0x28u /* AW and AVC; the VME's (0x10) goes with the ME's */
 static volatile int wake_released_early = 0;
 static unsigned long long wake_early_release;
@@ -2666,6 +2690,7 @@ int psp_me_start(void)
 	wake_features = control->features | (psp_keep("mewakeprobe") ? ME_FEATURE_WAKE_PROBE : 0u);
 	wake_early = psp_keep("mewake") && !psp_keep("mewakeoff") && psp_keep("mewakeearly");
 	wake_fw = psp_keep("mewakefw");
+	wake_flush = psp_keep("mewakeflush");
 	platform_log("ME: the ME runs (firmware table %d; %u idle polls in 20 ms; its cycle counter runs at %.1f a microsecond%s; Cause %08x, after clearing DC %08x)",
 		table, control->alive - before, me_cycles_per_us, me_cycles_per_us < 1.0f ? ": ME times will read 0" : "",
 		control->cause_before, control->cause_after);
@@ -4660,7 +4685,11 @@ static int me_restart_kernel(void *unused)
 	memcpy((void *)(ME_HANDLER_BASE + stub), &__start__me_section, handler);
 	sceKernelDcacheWritebackInvalidateAll();
 	sceKernelIcacheInvalidateAll();
+	if (wake_flush)
+		wake_flush_spins[0] = ddr_flush(4);
 	reset_release();
+	if (wake_flush)
+		wake_flush_spins[1] = ddr_flush(8);
 	if (wake_fw)
 	{
 		/* only the blocks launch found running, a bit at a time as the
@@ -4767,24 +4796,30 @@ void psp_me_wake_poll(void)
 	while (control->alive == 0 && (now = sceKernelGetSystemTimeWide()) - release < WAKE_ANSWER_US)
 		sceKernelDelayThread(500);
 answered:
+	if (wake_flush)
+		snprintf(flush_note, sizeof(flush_note), "; mewakeflush: the DDR flush before the release %d polls, after %d (-1: timed out)",
+			wake_flush_spins[0], wake_flush_spins[1]);
+	else
+		flush_note[0] = '\0';
 	kcall_3(me_sysregs_kernel, me_kseg, &regs_answer);
 	if (control->alive == 0 || me_sleeps != sleeps)
 	{
 		kcall_2(me_hold_reset, me_kseg);
 		me_maybe_running = 0;
-		wake_report("ME: restart after the wake FAILED (%s; the ME's start got %s); held in reset, the main CPU runs its jobs",
+		wake_report("ME: restart after the wake FAILED (%s; the ME's start got %s)%s; held in reset, the main CPU runs its jobs",
 			control->alive == 0 ? "no idle poll within 300 ms of the reset's release" : "the PSP slept again meanwhile",
-			wake_stage(&regs_answer));
+			wake_stage(&regs_answer), flush_note);
 		return;
 	}
 	me_state = 1;
 	me_cpu_check(control, "restart");
-	wake_report("ME: restarted after wake in %lu ms (its first idle poll %lu us after the reset's release%s; %u frame ends waiting for its clients%s)",
+	wake_report("ME: restarted after wake in %lu ms (its first idle poll %lu us after the reset's release%s; %u frame ends waiting for its clients%s)%s",
 		(unsigned long)((now - wake_mark) / 1000), (unsigned long)(now - release),
 		release < wake_mark ? ", released in the kernel's wake handler" : "", wake_frames,
 		!(wake_features & ME_FEATURE_WAKE_PROBE) ? "" :
 		regs_answer.marks[2] != ME_MARK_PROBE_BASE + 0xf ? "; the probe didn't finish" :
-		regs_answer.marks[3] ? "; the probe finished, some steps read back wrong (marks)" : "; the probe's 5 steps all right");
+		regs_answer.marks[3] ? "; the probe finished, some steps read back wrong (marks)" : "; the probe's 5 steps all right",
+		flush_note);
 }
 
 /* every word the ME reads at its start, as at launch; the slots and the
