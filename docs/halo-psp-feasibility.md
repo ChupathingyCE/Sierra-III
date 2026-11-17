@@ -1,6 +1,6 @@
 # Halo CE → PSP-1000: feasibility, budget and plan
 
-Status as of 2026-10-01 (overnight update). Every figure says whether it was **measured** (on Sheepcube's Linux build or on the PSP-1000 itself), **documented** (firmware source, SDK, emulator source, or developer reports), or **estimated**.
+Status as of 2026-10-01 (overnight update). Every figure says whether it was **measured** (on a desktop's Linux build or on the PSP-1000 itself), **documented** (firmware source, SDK, emulator source, or developer reports), or **estimated**.
 
 ## Goal and targets
 
@@ -13,7 +13,7 @@ Status as of 2026-10-01 (overnight update). Every figure says whether it was **m
 
 | Bench | What it is | Caveats |
 |---|---|---|
-| Linux port on Sheepcube (5800X3D) | `tickrate` branch build, headless (null renderer, hidden window, no audio), `b30` auto-loaded, no player input | Debug build (asserts and profiler compiled in); 128-player object pools; one scene |
+| Linux port on a desktop | `tickrate` branch build, headless (null renderer, hidden window, no audio), `b30` auto-loaded, no player input | Debug build (asserts and profiler compiled in); 128-player object pools; one scene |
 | perf | Call-graph attribution to `game_tick` and `render_frame`; 40 s vs 100 s differential runs; L1-miss sampling; uprobes for exact counts | x86 to MIPS translation factors are estimates |
 | `halo_bench` v1–v3 on the PSP-1000 | Clock check (differential add chain), VFPU vs FPU, trig variants, memory latency | Microbenchmarks, not Halo code |
 | `halo_bench` v4–v6 | Media Engine bring-up (libme-core), ME memory latency, handoff cost, DMA | v4/v5 logs cut short by a missing file close; fixed in v6 |
@@ -222,7 +222,7 @@ A compile-only trial: every game source the Linux build compiles, run through **
   GCC already narrows a plain float-by-float operation written in double (the division row), so the costly cases are the ones that mix in a double literal, a double function (`sqrt`, `fabs`, `fmod`, trig) or a double variable. **Measured on hardware (v7): a double `sqrt` costs 2,390 cycles. Each 1,000 square roots a tick left in double would cost ~2.4 M cycles: 18% of the 30 Hz budget at 400 MHz, 12% of the 20 Hz budget.**
 
   **Why the x86 projection doesn't show this:** clang on x86 already turns `square_root` into a single float `sqrtss` (it knows the narrowing is exact), and SSE does the other double operations in a cycle or two. GCC for the Allegrex does neither: each becomes a software routine. So these are **hidden PSP-only costs on top of the budget model**, and the cleanup is mandatory, like the trig fix. The `sqrtf` change compiles to what the PC build already runs, so it's free and exact. The remaining promotions (`fabs`, `fmod`, literals) can only be weighed on the PSP itself (milestone 4, profiling the soft-float routines).
-- **The port's pools are 4–8× the Xbox's** (8,192 objects vs 2,048, 8,192 particles vs 1,024, …) and its object garbage collection thresholds scale with them, so the Sheepcube tick measurement may include work the Xbox never did. The PSP build uses Xbox sizes anyway; the `xbox-capacity` experiment measures the difference.
+- **The port's pools are 4–8× the Xbox's** (8,192 objects vs 2,048, 8,192 particles vs 1,024, …) and its object garbage collection thresholds scale with them, so the desktop tick measurement may include work the Xbox never did. The PSP build uses Xbox sizes anyway; the `xbox-capacity` experiment measures the difference.
 - **Clean-baseline check (measured, 2026-10-01):** a release build measures **5.53 M instructions a tick**, and the same build with Xbox-sized pools **5.53 M** (±0.04 M from perf's two-decimal percentages). The earlier dev-build figure was 5.38 M. So **neither release mode nor the oversized pools inflated the tick**; the 5.4–5.5 M figure stands. (The dev/release gap is within noise plus upstream changes since the first run.)
 - **Assertions are always evaluated in the port**, release builds included (a failed one is logged, not fatal), because a few have side effects. A PSP build could compile out the pure checks (`valid_real_*` and similar); their share of the tick is a quick perf query on the existing data.
 
@@ -643,7 +643,7 @@ Of a typical worst view: geometry 0.3–1.1 MB (densest in `d40`), textures 0.45
 
 ## Next milestones
 
-1. Run `halo_bench` v7 and v8; fold the results into the budget (v7: rows D and E; v8: the frame's GE side). On Sheepcube: the `xbox-capacity` experiment and the assertion share.
+1. Run `halo_bench` v7 and v8; fold the results into the budget (v7: rows D and E; v8: the frame's GE side). On the desktop: the `xbox-capacity` experiment and the assertion share.
 2. Compile the game for PSP with null renderer and audio. **Compiles and links (stubbed platform); linked size measured.** Next: a real PSP platform layer (files, threads, timing, memory, null D3D/DSound) and the tag-cache address (Invader, below).
 3. Baker v0: `b30` rebuilt for the PSP tag address. **Proven on desktop at `0x83000000`.** Next: the PSP address and the downsizing steps until it fits.
 4. Headless tick on the PSP. **First real per-tick cycle count**, replacing the x86 projection; report it at 30 Hz and 20 Hz. Use the hardware profiler if v7 shows it works.

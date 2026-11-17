@@ -4,7 +4,7 @@
 
 ## What played
 - **The PSP:** a stock-memory PSP-1000 on custom firmware (6.61, ARK-4), at 333 MHz, no overclock. It ran **mp3**, the port's multiplayer build: build 111's engine and renderer, plus the multiplayer work (`build_mp3.md`).
-- **The desktop:** CachyOS, running ChupathingyCE 0.7.1d-dev (commit `b78e6cfa`, OpenCE network version 24): its dedicated server, and its client as the second player.
+- **The desktop:** Linux, running ChupathingyCE 0.7.1d-dev (commit `b78e6cfa`, OpenCE network version 24): its dedicated server, and its client as the second player.
 - **The network:** the desktop's own Wi-Fi card as a hotspot, WPA2 through ARK-4's `wpa2` setting (`psp_wifi_hotspot.md`; the setup: `multiplayer_setup.md`).
 - **The map:** Blood Gulch, slayer, from the disc's maps rebuilt for the PSP. No game files are distributed.
 
