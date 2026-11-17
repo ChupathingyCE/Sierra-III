@@ -36515,6 +36515,11 @@ static void psp_aioutcome_tick(
 	short head_count = 0;
 	long now;
 	long active_encounters = 0, living = 0, stuck = 0;
+	/* "aioutcomelist": each active encounter by name and living count on
+	the survey's own line after it, to name which one an A/B leaves open */
+	static int list_on = -1;
+	char list_line[400];
+	int list_at = 0;
 	long alive[PSP_AIOUTCOME_TEAMS] = {0};
 	char alive_line[160], kill_line[320];
 	int at;
@@ -36540,6 +36545,10 @@ static void psp_aioutcome_tick(
 		{
 			active_encounters++;
 			living += count;
+			if (list_on < 0)
+				list_on = psp_keep("aioutcomelist");
+			if (list_on && list_at < (int)sizeof(list_line) - 48)
+				list_at += snprintf(list_line + list_at, sizeof(list_line) - list_at, " %s:%d", name, (int)count);
 			if (!(*flags & 1))
 			{
 				*flags |= 1;
@@ -36615,6 +36624,8 @@ static void psp_aioutcome_tick(
 		"players hit %lu (damage %.2f), hits %lu | encounters active %ld, living %ld | far actors stuck %ld",
 		now, alive_line, kill_line, psp_aioutcome_player_hit, (double)psp_aioutcome_player_damage,
 		psp_aioutcome_player_hits, active_encounters, living, stuck);
+	if (list_at)
+		platform_psp_log("aioutcome: game time %ld | active encounters:%s", now, list_line);
 }
 #endif
 
