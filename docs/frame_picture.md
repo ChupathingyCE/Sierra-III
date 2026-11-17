@@ -213,6 +213,23 @@ sierra-hw 44085373539: the same build, b40_leg1 legendary to 650 s (13,512 frame
 
 **What it says:** the objects' update leads again (15.1 ms a tick, about 3/4 of the tick), a third of it work and the rest waiting, as on c20. **b40 is the first stretch where drawing the effects is large:** 4.1 ms a frame, three-quarters of it work, not misses. That's the particles' own drawing, which the far-and-tiny thresholds (`drawing_sizing.md`) and the effects box are aimed at.
 
+## The identity check (§7 b): design (2026-11-17)
+
+**What it checks:** that the marks charge every counted event to exactly one box: none lost between marks, none counted twice, none dropped when the game folds a box's counts into its histograms. It doesn't check the prices; it checks the bookkeeping that the prices are applied to.
+
+**Two independent counts of the same events [D]:**
+- The marks: `halo_profile_box` charges each interval between consecutive marks to the box on top, with "outside any box" (box 0) taking the intervals when none is open. So the sum of `block.sum[b][m]` over all boxes is every event of measure *m* from the first mark to the last.
+- The module's sampler thread (`psp/profile/main.c`, `sampler`): every 100 ms it reads the same registers and adds their deltas to `table->count[]`. It has no part in the marks.
+
+**How it's read:**
+1. A new system call, `halo_profile_totals(out)`, returns `count[]` plus the delta since the sampler's last read: the module's total at this instant, not at its last 100 ms beat.
+2. At framepic's first fold, the game records both totals and the sum over boxes. At the exit report it records them again.
+3. For each measure (cycles, stall, asleep, I-misses, D-misses, write-backs, uncached loads and stores), the report prints the module's delta, the boxes' delta, and their difference: `framepic: identity: <measure> module <n> boxes <n> (<diff>%)`.
+
+**Pass:** each measure within 0.05%. The only slack allowed is the uncharged interval at each end: the open box's events since its last mark, a few ms against a run of minutes. Anything larger is a charging error, to be found before any table is read again. The five tables already filed stand as provisional until it passes.
+
+**Cost:** two system calls a run, outside the measured frames, so none to the frame. Built under `PSP_FRAMEPIC` with the rest; its proof is one emulator run (the counters there are the emulator's own, so it checks the arithmetic) and the next PSP framepic run.
+
 ## What changed from v0
 
 - Marks: their own system call, not `halo_profile_phase` (its four-phase mask and thread walk). The switch count is read as one value. The keep word is read once. Boxes are once-a-tick regions, ≤ ~60 marks a tick, checked in the emulator first. Collision is priced from halo_box, not marked per call. A null mark pair is subtracted.
