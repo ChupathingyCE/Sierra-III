@@ -544,12 +544,22 @@ static void bsp_features(const struct box_collbsp *bsp, const struct box_collbsp
 		from_surface(bsp, r->surfaces[k], m, height, width, object, features);
 }
 
+/* BOX_LINECOUNT: the objects' half's lookups, calls and the entries each scans
+(a linear search over the world's tables) */
+#ifdef BOX_LINECOUNT
+unsigned long long box_sweep_lcs_calls[4], box_sweep_lcs_scanned[4];
+#define LCS(kind, n) (box_sweep_lcs_calls[kind]++, box_sweep_lcs_scanned[kind] += (unsigned long long)(n))
+#else
+#define LCS(kind, n) ((void)0)
+#endif
+
 /* ---------- the objects' half */
 
 static const struct box_sweep_object *object_of(const struct box_sweep_world *w, int index)
 {
 	int k;
 
+	LCS(0, w->object_count);
 	for (k = 0; k < w->object_count; k++)
 		if (w->objects[k].index == index)
 			return &w->objects[k];
@@ -560,6 +570,11 @@ static int cluster_of(const struct box_sweep_world *w, int leaf)
 {
 	int k;
 
+	/* the map: one read, where the list is a search (the objects' half's
+	census: ~9 lookups a sweep scanning ~170 entries on b30) */
+	if (w->cluster_by_leaf && leaf >= 0 && leaf < w->cluster_by_leaf_count && w->cluster_by_leaf[leaf] != BOX_SWEEP_NO_CLUSTER)
+		return w->cluster_by_leaf[leaf];
+	LCS(1, w->leaf_count);
 	for (k = 0; k < w->leaf_count; k++)
 		if (w->leaves[k].leaf == leaf)
 			return w->leaves[k].cluster;
@@ -570,6 +585,7 @@ static const struct box_sweep_cluster *cluster_members(const struct box_sweep_wo
 {
 	int k;
 
+	LCS(2, w->cluster_count);
 	for (k = 0; k < w->cluster_count; k++)
 		if (w->clusters[k].cluster == cluster)
 			return &w->clusters[k];
@@ -580,6 +596,7 @@ static int mark(int *set, int *count, int most, int value)
 {
 	int k;
 
+	LCS(3, *count);
 	for (k = 0; k < *count; k++)
 		if (set[k] == value)
 			return 0;

@@ -101,6 +101,7 @@ struct box_sweep_object
 };
 struct box_sweep_node { const struct box_collbsp *bsp; float m[13]; /* scale, forward, left, up, position */ };
 struct box_sweep_leaf { int leaf, cluster; };
+#define BOX_SWEEP_NO_CLUSTER ((short)0x8080)
 struct box_sweep_cluster { int cluster, first, count; };      /* its objects in `members` */
 struct box_sweep_member { int object; float center[3], radius; }; /* the cluster walk's sphere copy */
 
@@ -123,6 +124,12 @@ struct box_sweep_world
 	int skip_objects; /* the engine's debug switch */
 	const struct box_sweep_leaf *leaves;
 	int leaf_count;
+	/* the level's leaf-to-cluster map, when the world has one (indexed by leaf;
+	BOX_SWEEP_NO_CLUSTER where it doesn't know): read in place of the leaves'
+	list. In the game it is the BSP's own leaf records; the bench builds it
+	from what its captures met */
+	const short *cluster_by_leaf;
+	int cluster_by_leaf_count;
 	const struct box_sweep_cluster *clusters;
 	int cluster_count;
 	const struct box_sweep_member *members;

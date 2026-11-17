@@ -55,6 +55,10 @@ static const struct box_static *find(const struct box_static *statics, unsigned 
 static int form, part;
 static float margin;
 static int packed; /* B packed (sweepp25) */
+static int leafmap; /* the level's leaf-to-cluster map (sweepb25m) */
+#define LEAF_MAP 65536
+static short leaf_map[LEAF_MAP];
+static const struct box_collbsp *leaf_map_level;
 #ifdef SWEEP_COUNT
 unsigned long long sweep_kept_sizes[5], sweep_kept_tested[3], sweep_subtree[4];
 #endif
@@ -666,6 +670,11 @@ static void sweep_tick(const struct box_tick *tick)
 		s->world.kept_packed = packed;
 		s->world.skip_objects = (int)head[12];
 		s->world.level = bsp_of(head[13]);
+		if (leafmap && s->world.level != leaf_map_level)
+		{
+			memset(leaf_map, 0x80, sizeof(leaf_map));
+			leaf_map_level = s->world.level;
+		}
 		s->world.breakable_count = (short)head[14];
 		flag_bytes = head[15];
 		if (!s->world.level || flag_bytes > sizeof(s->breakable_copy) || e->input_length < sizeof(head) + flag_bytes)
@@ -690,6 +699,10 @@ static void sweep_tick(const struct box_tick *tick)
 				leaves[leaves_count].leaf = (int)w[0];
 				leaves[leaves_count].cluster = (int)w[1];
 				leaves_count++;
+				/* the level-wide map: a leaf's cluster is the level's, so every
+				capture's record of it says the same */
+				if (leafmap && w[0] < LEAF_MAP)
+					leaf_map[w[0]] = (short)w[1];
 				break;
 			case 2: /* cluster */
 				memcpy(w, e->input + pos, 4);
@@ -811,6 +824,8 @@ static void sweep_tick(const struct box_tick *tick)
 		}
 		s->world.leaves = leaves + first_leaf;
 		s->world.leaf_count = (int)(leaves_count - first_leaf);
+		s->world.cluster_by_leaf = leafmap ? leaf_map : 0;
+		s->world.cluster_by_leaf_count = leafmap ? LEAF_MAP : 0;
 		s->world.clusters = clusters + first_cluster;
 		s->world.cluster_count = (int)(clusters_count - first_cluster);
 		s->world.members = members;
@@ -1076,6 +1091,7 @@ static int sweep0_setup(const struct box_static *statics, unsigned int count)
 {
 	margin = 0.f;
 	packed = 0;
+	leafmap = 0;
 	form = 0;
 	part = 0;
 	return sweep_setup(statics, count);
@@ -1091,6 +1107,7 @@ static int sweepa_setup(const struct box_static *statics, unsigned int count)
 {
 	margin = 0.f;
 	packed = 0;
+	leafmap = 0;
 	form = 1;
 	part = 0;
 	return sweep_setup(statics, count);
@@ -1108,6 +1125,7 @@ static int sweepf_setup(const struct box_static *statics, unsigned int count)
 {
 	margin = 0.f;
 	packed = 0;
+	leafmap = 0;
 	form = 1;
 	part = 1;
 	return sweep_setup(statics, count);
@@ -1117,6 +1135,7 @@ static int sweepl_setup(const struct box_static *statics, unsigned int count)
 {
 	margin = 0.f;
 	packed = 0;
+	leafmap = 0;
 	form = 1;
 	part = 2;
 	return sweep_setup(statics, count);
@@ -1136,6 +1155,8 @@ const struct box_adapter box_sweepl = {
 static int sweepb_margin(const struct box_static *statics, unsigned int count, float m)
 {
 	packed = 0;
+	leafmap = 0;
+	leaf_map_level = 0;
 	form = 1;
 	part = 0;
 	margin = m;
@@ -1186,7 +1207,17 @@ static void scratch_report(void)
 			box_sweep_lc_sweeps,
 			(double)box_sweep_lc_records[0] / box_sweep_lc_sweeps, (unsigned)sizeof(struct box_sweep_sphere), (double)box_sweep_lc_lines[0] / box_sweep_lc_sweeps,
 			(double)box_sweep_lc_records[1] / box_sweep_lc_sweeps, (unsigned)sizeof(struct box_sweep_cylinder), (double)box_sweep_lc_lines[1] / box_sweep_lc_sweeps,
-			(double)box_sweep_lc_records[2] / box_sweep_lc_sweeps, (unsigned)sizeof(struct box_sweep_prism), (double)box_sweep_lc_lines[2] / box_sweep_lc_sweeps);
+			(double)box_sweep_lc_records[2] / box_sweep_lc_sweeps, (unsigned)sizeof(struct box_sweep_prism), (double)box_sweep_lc_lines[2] / box_sweep_lc_sweeps);	{
+		extern unsigned long long box_sweep_lcs_calls[4], box_sweep_lcs_scanned[4];
+		static const char *const names[4] = { "object_of", "cluster_of", "cluster_members", "mark" };
+		int k;
+
+		printf("lookups a sweep:");
+		for (k = 0; k < 4; k++)
+			printf(" %s %.1f calls scanning %.1f entries", names[k], (double)box_sweep_lcs_calls[k] / box_sweep_lc_sweeps,
+				(double)box_sweep_lcs_scanned[k] / box_sweep_lc_sweeps);
+		printf("\n");
+	}
 }
 #endif
 /* B packed's own counts on a desktop run (the PSP's report has no printf):
@@ -1202,6 +1233,20 @@ static void packed_report(void)
 			scratch.packed_sweep_big, scratch.packed_sweep_noblock, BOX_SWEEP_PACKED_BLOCKS, BOX_SWEEP_PACKED_NODES);
 }
 #endif
+
+/* B25 with the level's leaf-to-cluster map in place of the leaves' search */
+static int sweepb25m_setup(const struct box_static *statics, unsigned int count)
+{
+	int r = sweepb_margin(statics, count, 0.25f);
+
+	leafmap = 1;
+	return r;
+}
+
+const struct box_adapter box_sweepb25m = {
+	"sweepb25m", kinds, 0, 0, BOX_EXACT, 0.f, 0.f, 1.1f, 30.f,
+	sweepb25m_setup, sweep_tick, sweep_run, sweep_output, sweep_compare, "sweep",
+};
 
 /* B packed at 0.25: B25 with each kept walk's 3D nodes in its asker's block */
 static int sweepp25_setup(const struct box_static *statics, unsigned int count)
