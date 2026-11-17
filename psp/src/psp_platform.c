@@ -2485,10 +2485,19 @@ heartbeat's game state survey, and a census build (PSP_RECON) or a statecrc
 run ends at the first one ("arrayfullstop" asks for that anywhere,
 "arrayfullgo" keeps any run going), so a size too small fails a proof
 instead of passing it with an enemy missing. Arrays full by design (a new
-datum takes the oldest slot) are counted, never stopped on */
+datum takes the oldest slot) are counted, never stopped on, and so is an array
+at the Xbox's own size or more that the original fills too (array_xbox_full) */
 #define ARRAY_FULL_SLOTS 32
 static struct { const void *array; char name[40]; unsigned long refused; long maximum; int exempt; } array_full[ARRAY_FULL_SLOTS];
 static int array_full_count = 0;
+/* arrays the original game overflows at its own sizes, where a refusal is
+the Xbox's behaviour and no shortfall of the port's: c40's opening fills
+both (the lab's b92peak1 44003757337, PSP_POOLS_XBOX=1, legendary and
+normal; B92) */
+static const struct { const char *name; long xbox; } array_xbox_full[] = {
+	{ "contrail point", 1024 },
+	{ "weather particles", 512 },
+};
 static long array_full_last_time = -1;
 int psp_array_full_stop = 0;   /* the tick ends the run (exit_game) */
 
@@ -2517,6 +2526,9 @@ void psp_array_refused(const char *name, const void *array, long count, long max
 		snprintf(array_full[k].name, sizeof(array_full[k].name), "%s", name ? name : "?");
 		array_full[k].refused = 0;
 		array_full[k].exempt = name && strcmp(name, "cached object render states") == 0;
+		for (int x = 0; name && x < (int)(sizeof(array_xbox_full) / sizeof(array_xbox_full[0])); x++)
+			if (strcmp(name, array_xbox_full[x].name) == 0 && maximum >= array_xbox_full[x].xbox)
+				array_full[k].exempt = 1;
 	}
 	array_full[k].maximum = maximum;
 	if (array_full[k].refused++ || array_full[k].exempt)
