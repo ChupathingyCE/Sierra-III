@@ -227,6 +227,8 @@ PADPATH = os.environ.get("PSP_PADPATH", "") == "1"
 # compiled in as the box marks: each is a flag's test in the tick and the
 # frame, so a default build leaves them out
 FRAMEPIC = os.environ.get("PSP_FRAMEPIC", "") == "1"
+if FRAMEPIC:
+    PSP_FILES.append("psp_framepic")
 # PSP_MUSIC=1 builds in the music path (psp/src/psp_music.c, Tremor and libogg,
 # FIXES_MUSIC, psp_dsound.c's music marks; keep word musicstream). The decoder
 # and its buffers take about 110 KB of program, which comes off the heap, and
