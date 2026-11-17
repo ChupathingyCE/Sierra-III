@@ -1260,7 +1260,12 @@ def link(objs, stubs):
     old_bss = "   *(.dynbss)\n   *(.bss .bss.* .gnu.linkonce.b.*)\n"
     if old_data not in text or old_bss not in text:
         sys.exit("psp_build: the SDK's linkfile.prx has changed; the Media Engine's variables can't be placed")
-    me_objects = ("*psp_ge.o", "*psp_tex.o", "*libpspgu.a:*")
+    # pspgum's .bss (gum_stack_depth, the matrix stacks) with pspgu's: the
+    # ME's replay calls sceGumMatrixMode and sceGumLoadMatrix, and left where
+    # the link put them gum_stack_depth shared a line with psp_trace.c's
+    # memory-stick lock, which the main CPU writes while the ME draws (the
+    # emulator's cache model found the line lost; the lab's bugs.md B95)
+    me_objects = ("*psp_ge.o", "*psp_tex.o", "*libpspgu.a:*", "*libpspgum.a:*")
     # PSP_MUSIC: the decoder's own variables (Tremor's, libogg's) on lines of
     # their own, apart from the GE layer's block too. The decode runs in the
     # ME's audio job and writes them (mapping0.o's counter), while the main
