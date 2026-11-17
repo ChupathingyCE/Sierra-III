@@ -54550,7 +54550,6 @@ struct psp_mv_handed
 {
 	unsigned long visible_cluster_flags[MAXIMUM_CLUSTERS_PER_STRUCTURE / LONG_BITS];
 	struct rendered_cluster rendered_clusters[MAXIMUM_RENDERED_CLUSTERS];
-	unsigned long environment_surface_flags[BIT_VECTOR_SIZE_IN_LONGS(MAXIMUM_SURFACES_PER_STRUCTURE)];
 	long objects[MAXIMUM_RENDERED_OBJECTS];
 	short rendered_cluster_count, environment_surface_count;
 	unsigned int stack_low;
@@ -54562,6 +54561,14 @@ cache back at the job's end, the record's lines with it) */
 typedef char psp_mv_out_whole_cache[sizeof(struct psp_mv_handed) > 16 * 1024 ? 1 : -1];
 static int psp_mv_edram;
 static struct psp_mv_handed *psp_mv_handed;
+/* the surfaces' bits handed back, sized to the largest BSP met so far rather
+than the engine's 131,072 surfaces (16 KB): it grows at a BSP switch and never
+shrinks, so a map's heap low sees it. Outside psp_mv_handed, it reaches main
+RAM by the same whole-cache write-back (above); the job gets its address and
+size in the record (pad_in[1], pad_in[2]), not from these, which the ME's
+cache could hold stale */
+static unsigned long *psp_mv_surface_flags;
+static unsigned int psp_mv_surface_bytes;
 
 static void psp_mv_error(long priority, char const *format, ...)
 {
@@ -54739,8 +54746,7 @@ static void psp_mv_run(void *argument)
 		out->rendered_cluster_count = psp_mv->render.rendered_cluster_count;
 		csmemcpy(out->rendered_clusters, psp_mv->render.rendered_clusters,
 			(unsigned int)psp_mv->render.rendered_cluster_count * sizeof(out->rendered_clusters[0]));
-		csmemcpy(out->environment_surface_flags, psp_mv->render.environment_surface_flags,
-			sizeof(out->environment_surface_flags));
+		csmemcpy((void *)record->pad_in[1], psp_mv->render.environment_surface_flags, record->pad_in[2]);
 		out->environment_surface_count = psp_mv->render.environment_surface_count;
 		csmemcpy(out->objects, psp_mv->objects, (unsigned int)count * sizeof(long));
 	}
@@ -54811,6 +54817,31 @@ static unsigned long psp_mv_frames, psp_mv_answers, psp_mv_late, psp_mv_wait_us,
 	psp_mv_depth_most, psp_mv_pvs;
 static unsigned long long psp_mv_cycles_clusters, psp_mv_cycles_objects, psp_mv_cycles_most;
 static unsigned long psp_mv_differ_parts[4], psp_mv_differ_lines;
+
+/* the surfaces' buffer (above) fitted to this BSP before a push: 0 when it
+can't grow, and then the main CPU makes the view itself */
+static int psp_mv_surfaces_fit(void)
+{
+	unsigned int bytes = BIT_VECTOR_SIZE_IN_BYTES(global_structure_bsp_get()->surfaces.count);
+	unsigned long *grown;
+
+	if (bytes > psp_mv_surface_bytes)
+	{
+		grown = (unsigned long *)memalign(64, (bytes + 63) & ~63u);
+		if (!grown)
+			return 0;
+		/* the C library's free, as memalign's pair: cseries.h makes free()
+		the engine's match_free, which read a header below a NULL at the
+		first grow (mvbits1: all three maps faulted in psp_mv_surfaces_fit) */
+		(free)(psp_mv_surface_flags);
+		psp_mv_surface_flags = grown;
+		psp_mv_surface_bytes = (bytes + 63) & ~63u;
+		platform_psp_log("mevisedram: the surfaces' bits handed back grow to %u bytes", psp_mv_surface_bytes);
+	}
+	psp_mv_record->pad_in[1] = (unsigned int)psp_mv_surface_flags;
+	psp_mv_record->pad_in[2] = bytes;
+	return 1;
+}
 
 static int psp_mv_start(void)
 {
@@ -54892,7 +54923,9 @@ void psp_mevis_view_begin(void)
 	__asm__ __volatile__("cfc1 %0, $31" : "=r"(control));
 	psp_mv_record->fpu_control = control;
 	psp_mv_record->done = 0;
-	if (psp_me_push_visibility(psp_mv_record, sizeof(*psp_mv_record), &psp_mv_ticket))
+	if (psp_mv_edram && !psp_mv_surfaces_fit())
+		psp_mv_refused++;
+	else if (psp_me_push_visibility(psp_mv_record, sizeof(*psp_mv_record), &psp_mv_ticket))
 		psp_mv_out = 1;
 	else
 		psp_mv_refused++;
@@ -55137,6 +55170,11 @@ int psp_mevisland_push(void)
 			stops_seen = psp_me_stops;
 			psp_mv_record->pad_in[0] = 1;
 		}
+		if (!psp_mv_surfaces_fit())
+		{
+			psp_ml_refused++;
+			return 0;
+		}
 	}
 	if (!psp_me_push_visibility_into(psp_mv_record, psp_mv_edram ? (void *)psp_mv_handed : (void *)psp_mv,
 		psp_mv_edram ? (unsigned int)sizeof(struct psp_mv_handed) : psp_ml_state_bytes, &psp_ml_ticket))
@@ -55200,6 +55238,7 @@ void psp_mevisland_collect(void)
 	{
 		psp_mv_record->pad_in[0] = 0;
 		psp_ml_drop(psp_mv_handed, sizeof(*psp_mv_handed));
+		psp_ml_drop(psp_mv_surface_flags, psp_mv_record->pad_in[2]);
 	}
 	else
 	{
@@ -55222,8 +55261,7 @@ void psp_mevisland_collect(void)
 		render.rendered_cluster_count = psp_mv_handed->rendered_cluster_count;
 		csmemcpy(render.rendered_clusters, psp_mv_handed->rendered_clusters,
 			render.rendered_cluster_count * sizeof(render.rendered_clusters[0]));
-		csmemcpy(render.environment_surface_flags, psp_mv_handed->environment_surface_flags,
-			BIT_VECTOR_SIZE_IN_BYTES(structure->surfaces.count));
+		csmemcpy(render.environment_surface_flags, psp_mv_surface_flags, psp_mv_record->pad_in[2]);
 		render.environment_surface_count = psp_mv_handed->environment_surface_count;
 	}
 	else
