@@ -213,6 +213,31 @@ sierra-hw 44085373539: the same build, b40_leg1 legendary to 650 s (13,512 frame
 
 **What it says:** the objects' update leads again (15.1 ms a tick, about 3/4 of the tick), a third of it work and the rest waiting, as on c20. **b40 is the first stretch where drawing the effects is large:** 4.1 ms a frame, three-quarters of it work, not misses. That's the particles' own drawing, which the far-and-tiny thresholds (`drawing_sizing.md`) and the effects box are aimed at.
 
+## The splits refiled at loaded prices (2026-11-17, the lead 08:0x (a))
+
+[U on M]: the prices are measured, but the GE's and the ME's duty in each box is assumed. Code and data waits are priced at the GE-35% prices (framepic-prices: P_I ~77, P_D ~75 clean to ~137 dirty, P_UL ~59) times the ME's measured toll on a miss (×1.04 copying to ×1.14 streaming; `hardware_facts.md`, line 158) where the ME ran, ×1 where it didn't. ms a sample; "left" is the stall less code and data over the ranges' ends.
+
+| Stretch | Box | Stall | Code | Data | Left |
+|---|---|---:|---:|---:|---:|
+| b30 | objects (tick) | 13.0 | 7.2-7.9 | 6.0-6.6 | −1.5 to −0.2 |
+| c20 | objects (tick) | 16.7 | 9.6-10.5 | 5.9-6.5 | −0.3 to +1.2 |
+| c40 ME on | objects (tick) | 6.9 | 4.1-4.5 | 3.1-3.4 | −1.0 to −0.3 |
+| c40 ME off | objects (tick) | 5.2 | 3.7 | 2.7 | −1.1 |
+| b40 | objects (tick) | 10.0 | 5.7-6.2 | 4.2-4.6 | −0.8 to +0.2 |
+| b30 | render: world (frame) | 4.5 | 1.9-2.1 | 3.8-4.1 | −1.7 to −1.2 |
+| b40 | render: effects (frame) | 1.0 | 0.4 | 0.9-1.0 | −0.4 to −0.3 |
+
+**What it says:**
+- **At the idle prices every box left time unexplained** (1-7 ms a tick). **At the loaded prices nearly every box goes below zero.** So the loaded prices overshoot: the GE isn't reading main RAM 35% of the time while the tick runs. Zero lies between the two ends for every box. No cause beyond code and data misses is needed; what's open is only the exact price, between quiet and fully contended.
+- **The price each box's stall implies** (its stall over code + data at the idle prices) runs 1.03-1.57×:
+  - c40 with the ME off: 1.05-1.22× (the GE alone);
+  - the ME-on tick boxes: 1.27-1.57×;
+  - c20's objects at 1.57×, the GE-35% price times the ME streaming (1.4 × 1.14 ≈ 1.60).
+
+  The ME's traffic lifts the tick's miss price by about a third over the GE's alone, which is c40's +15% objects with the ME on (the fourth table).
+- **The objects' update waits more on code than on data:** c20 code 9.6-10.5 ms a tick against data 5.9-6.5; b30 7.2-7.9 against 6.0-6.6; b40 5.7-6.2 against 4.2-4.6. **The I-cache is the objects' biggest wait,** ahead of data, on every stretch. The drawing is the other way (render world: data about twice the code).
+- **(b), the GE+ME bench, isn't needed for the split:** the code and data ranges hold within ±5% of each other whatever price applies, and only the price is open.
+
 ## The identity check (§7 b): design (2026-11-17)
 
 **What it checks:** that the marks charge every counted event to exactly one box: none lost between marks, none counted twice, none dropped when the game folds a box's counts into its histograms. It doesn't check the prices; it checks the bookkeeping that the prices are applied to.
