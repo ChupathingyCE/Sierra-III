@@ -35696,14 +35696,19 @@ int psp_keep(const char *name);
 void platform_psp_log(const char *format, ...);
 boolean network_coop_active(void);
 
-static int psp_aicad_on = -1;
+/* PSP_AIME_ME_SIDE: the ME's AI job (aime2a) writes these, so they sit on the
+lines psp_build.py keeps for the ME's words: on a line shared with the main
+CPU's variables, the ME's write-back would put back its stale copy of them
+(the lab's bugs.md B94: this array shared one with the rasterizer's viewport).
+The log's time is the main CPU's alone */
+static PSP_AIME_ME_SIDE int psp_aicad_on = -1;
 /* the identifier each slot last thought as: a new actor in a reused slot
 thinks on its first update */
-static short psp_aicad_identifier[MAXIMUM_ACTORS];
+static PSP_AIME_ME_SIDE short psp_aicad_identifier[MAXIMUM_ACTORS];
 static struct
 {
 	unsigned long updates, rested, timeslice, swarm, charging, dormant, first;
-} psp_aicad_stats;
+} psp_aicad_stats PSP_AIME_ME_SIDE;
 static long psp_aicad_logged = NONE;
 
 static boolean psp_aicad_active(
