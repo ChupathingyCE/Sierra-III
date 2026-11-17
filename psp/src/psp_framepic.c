@@ -22,6 +22,7 @@ counted, which is the emulator's check of marks a tick */
 #ifdef PSP_FRAMEPIC
 
 #include <pspkernel.h>
+#include <stdio.h>
 #include <string.h>
 #include "halo_perf_log.h"
 #include "../profile/framepic.h"
@@ -111,15 +112,23 @@ static void map_phases(void)
 	phase_box[_halo_perf_render_transparent] = BOX_RENDER_TRANSPARENT;
 	phase_box[_halo_perf_render_effects] = BOX_RENDER_EFFECTS;
 	phase_box[_halo_perf_render_hud] = BOX_RENDER_HUD;
-	phase_box[_halo_perf_render_begin] = BOX_RENDER_OTHER;
-	phase_box[_halo_perf_render_setup] = BOX_RENDER_OTHER;
-	phase_box[_halo_perf_render_lens_flares] = BOX_RENDER_OTHER;
-	phase_box[_halo_perf_render_screen_effect] = BOX_RENDER_OTHER;
-	phase_box[_halo_perf_render_end] = BOX_RENDER_OTHER;
+	/* the render's small parts (begin, setup, lens flares, the screen effect,
+	end) map to no box, so their time is the render's other work: as boxes of
+	their own they took ~10 of the ~70 marks a frame (framepic1, v1's bound
+	of ~60). So does the network, which the campaign never runs. Both stay
+	named, for a build that wants them back (framepicall) */
+	if (psp_keep("framepicall"))
+	{
+		phase_box[_halo_perf_render_begin] = BOX_RENDER_OTHER;
+		phase_box[_halo_perf_render_setup] = BOX_RENDER_OTHER;
+		phase_box[_halo_perf_render_lens_flares] = BOX_RENDER_OTHER;
+		phase_box[_halo_perf_render_screen_effect] = BOX_RENDER_OTHER;
+		phase_box[_halo_perf_render_end] = BOX_RENDER_OTHER;
+		phase_box[_halo_perf_network] = BOX_NETWORK;
+	}
 	/* sound is entered in the tick (game_sound_update) and the render
 	(sound_render, inside its own sound phase): both are this box */
 	phase_box[_halo_perf_sound] = BOX_SOUND;
-	phase_box[_halo_perf_network] = BOX_NETWORK;
 	phase_box[_halo_perf_present] = BOX_PRESENT;
 	phase_box[_halo_perf_vsync_wait] = BOX_VSYNC_WAIT;
 	phase_box[_halo_perf_occlusion_wait] = BOX_RENDER_WAIT;
@@ -293,7 +302,19 @@ static void report(const char *why)
 		ticks_total ? (double)marks_total / ticks_total : 0.0, marks_frame_most,
 		module_on ? "the counts below" : "counted only (no profiler module)");
 	if (!module_on)
+	{
+		/* which boxes the marks come from (pops count to the box they close
+		as marks_by_box only counts pushes: a push and its pop make 2) */
+		char line[256];
+		int at = 0;
+
+		for (box = 0; box < BOXES && at < (int)sizeof(line) - 40; box++)
+			if (game->marks_by_box[box])
+				at += snprintf(line + at, sizeof(line) - at, "%s%s %.1f", at ? ", " : "", box_names[box],
+					2.0 * (double)game->marks_by_box[box] / (frames_total ? (double)frames_total : 1.0));
+		platform_log("framepic: marks a frame by box (push and pop): %s", line);
 		return;
+	}
 	if (game->block.unbalanced)
 		platform_log("framepic: %u marks unbalanced (a pop with nothing open, or past %d deep)", game->block.unbalanced, FRAMEPIC_STACK);
 	for (box = 0; box < BOXES; box++)
