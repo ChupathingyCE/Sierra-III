@@ -2261,6 +2261,92 @@ static void sysregs_line(char *line, int size, const char *name, const struct me
 		regs->avc, regs->marks[0], regs->marks[1], regs->marks[2], regs->marks[3]);
 }
 
+/* "sndpart"'s claim (psp_me.h). sysmem's user call refuses partition 4
+whatever the caller's mode (800200d6 on the PSP-1000, from user code and from
+the ME library's kernel helper alike), and only its kernel export takes it.
+So the claim is halo_claim.prx's (psp/claim), loaded beside the EBOOT only
+for sndpart: it claims the whole megabyte at its start, and the game asks it
+what it got and has it give the block back at the exit. Sony's ME image isn't
+sysmem's (me_wrapper writes it without a block), so the claim reserves the
+partition from its start */
+#define ME_PARTITION_ADDRESS 0x08300000u
+#define ME_CLAIM_BYTES (960u * 1024u) /* halo_claim.prx's CLAIM_BYTES */
+int halo_claim_result(unsigned int *at); /* halo_claim.prx's system calls */
+int halo_claim_release(void);
+int halo_claim_probe(int *out);
+extern char psp_eboot_path[256];
+static int partition_claim = -1;
+
+int psp_me_claim_partition(void)
+{
+	char path[256];
+	char *slash;
+	unsigned int at = 0;
+	int status = 0, result;
+	SceUID module;
+
+	if (partition_claim >= 0)
+		return partition_claim;
+	if (psp_me_simulated())
+		return -1;
+	snprintf(path, sizeof(path), "%s", psp_eboot_path);
+	slash = strrchr(path, '/');
+	snprintf(slash ? slash + 1 : path, sizeof(path) - (slash ? (size_t)(slash + 1 - path) : 0), "halo_claim.prx");
+	module = sceKernelLoadModule(path, 0, NULL);
+	if (module >= 0)
+		module = sceKernelStartModule(module, 0, NULL, &status, NULL);
+	if (module < 0)
+	{
+		platform_log("ME: the partition's claim: %s didn't load (%08x)", path, (unsigned int)module);
+		return -1;
+	}
+	result = halo_claim_result(&at);
+	if (result < 0)
+	{
+		platform_log("ME: the partition's claim refused by sysmem (%08x), through halo_claim.prx", (unsigned int)result);
+		return -1;
+	}
+	partition_claim = result;
+	if ((at & 0x1FFFFFFFu) != ME_PARTITION_ADDRESS)
+	{
+		platform_log("ME: the partition's claim came back at %08x, not %08x: given back", at, ME_PARTITION_ADDRESS);
+		halo_claim_release();
+		partition_claim = -1;
+		return -1;
+	}
+	platform_log("ME: the partition claimed from sysmem (its bottom %u KB at %08x, block %08x, by halo_claim.prx)",
+		ME_CLAIM_BYTES / 1024, at, (unsigned int)partition_claim);
+	/* given back and claimed again here, before the window holds anything:
+	the release proven by its own result and the free sizes, not by the next
+	launch (an exit reboots, and the reboot clears sysmem) */
+	if (psp_keep("claimprobe"))
+	{
+		int r[6] = { -1, -1, -1, -1, -1, -1 };
+
+		result = halo_claim_probe(r);
+		platform_log("ME: claimprobe: partition 4's largest free block after the claim %d KB, before the probe %d KB; "
+			"given back %08x, then %d KB free; claimed again %08x, then %d KB free",
+			r[0] / 1024, r[1] / 1024, (unsigned int)r[2], r[3] / 1024, (unsigned int)r[4], r[5] / 1024);
+		if (result < 0)
+		{
+			platform_log("ME: claimprobe: the claim lost (%08x)", (unsigned int)result);
+			partition_claim = -1;
+			return -1;
+		}
+		partition_claim = result;
+		at = 0;
+		halo_claim_result(&at);
+		if ((at & 0x1FFFFFFFu) != ME_PARTITION_ADDRESS)
+		{
+			platform_log("ME: claimprobe: the claim came back at %08x, not %08x: given back", at, ME_PARTITION_ADDRESS);
+			halo_claim_release();
+			partition_claim = -1;
+			return -1;
+		}
+	}
+	return partition_claim;
+}
+
 /* HOME, or the game's own exit: the firmware reboots into the XMB and boots
 its own ME image there, and that boot waits for the ME without a time limit.
 So the ME is left as the firmware leaves it before a boot: halted, or held
@@ -2279,6 +2365,14 @@ void psp_me_exit(const char *why)
 		kcall_2(me_hold_reset, me_kseg);
 		me_maybe_running = 0;
 		platform_log("ME: held in reset for the exit (a restart may have had it running)");
+	}
+	/* the reboot clears sysmem anyway; given back so a clean exit leaves no trace */
+	if (partition_claim >= 0)
+	{
+		int freed = halo_claim_release();
+
+		platform_log("ME: the partition given back to sysmem%s (%08x)", freed < 0 ? ": refused" : "", (unsigned int)freed);
+		partition_claim = -1;
 	}
 	kcall_3(me_sysregs_kernel, me_kseg, &regs_exit);
 	sysregs_line(line, sizeof(line), "exit", &regs_exit);

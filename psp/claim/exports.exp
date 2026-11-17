@@ -1,0 +1,17 @@
+# halo_claim.prx's exports: the module's entry points, and three system calls
+# the game (user mode) makes (attribute 0x4001, as halo_profile.prx's)
+PSP_BEGIN_EXPORTS
+
+PSP_EXPORT_START(syslib, 0, 0x8000)
+PSP_EXPORT_FUNC_HASH(module_start)
+PSP_EXPORT_FUNC_HASH(module_stop)
+PSP_EXPORT_VAR_HASH(module_info)
+PSP_EXPORT_END
+
+PSP_EXPORT_START(halo_claim, 0, 0x4001)
+PSP_EXPORT_FUNC(halo_claim_result)
+PSP_EXPORT_FUNC(halo_claim_release)
+PSP_EXPORT_FUNC(halo_claim_probe)
+PSP_EXPORT_END
+
+PSP_END_EXPORTS

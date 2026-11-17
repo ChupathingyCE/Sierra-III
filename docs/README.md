@@ -299,6 +299,7 @@ Each is the walk-through of one change or branch, written for Sheepdog01's revie
 - [`review_tock159.md`](review_tock159.md): Review: tock159
 - [`review_tock160.md`](review_tock160.md): Review: tock160
 - [`review_tock161.md`](review_tock161.md): Review: tock161
+- `review_sndpart.md`: sndpart on by default, the sound tier's 880 KB window in the ME partition under halo_claim.prx's claim (2026-11-17)
 - [`review_trim125.md`](review_trim125.md): Review: the dead-weight pass (branch `trim125`)
 - [`review_txpt.md`](review_txpt.md): Review: texture pre-touch at record time (branch `txpt`, keep word `texpretouch`)
 - [`review_vehprobe.md`](review_vehprobe.md): Review: UVB, one sphere about a moving vehicle before its mass points' queries

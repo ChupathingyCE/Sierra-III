@@ -1011,6 +1011,14 @@ def link(objs, stubs):
                         os.path.join(HERE, "psp/profile/halo_profile.S"), "-o", stub], check=True)
         with open(os.path.join(OUT, "objs.rsp"), "a") as f:
             f.write('"%s"\n' % stub)
+    # halo_claim.prx's three system calls (psp/claim: the ME partition claimed
+    # for sndpart through sysmem's kernel export), linked the same way
+    for part in ("0000", "0001", "0002", "0003"):
+        stub = os.path.join(OUT, "halo_claim_%s.o" % part)
+        subprocess.run(["psp-gcc", "-G0", "-I" + SDK + "/include", "-DF_halo_claim_" + part, "-c",
+                        os.path.join(HERE, "psp/claim/halo_claim.S"), "-o", stub], check=True)
+        with open(os.path.join(OUT, "objs.rsp"), "a") as f:
+            f.write('"%s"\n' % stub)
     # build 86: the import stub for mecore's kcall.prx (psp/meaudio/kcall.S,
     # psp-build-exports -k of mecore's kernel/exports.exp), for the same
     # reason: the library's own stub is the old format, which --gc-sections

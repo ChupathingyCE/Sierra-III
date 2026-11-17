@@ -1247,6 +1247,12 @@ static const struct
 	{ "wxdead", "wxdeadoff" }, { "texavg", "texavgoff" }, { "lightcarry", "lightcarryoff" }, { "lviewcull", "lviewculloff" }, { "novfpufwd", "vfpufwd" }, { "sndedram", "sndedramoff" },
 	{ "lightringlook", "lightringlookoff" }, { "aimeobslook", "aimeobslookoff" }, { "lightfirst", "lightfirstoff" },
 	{ "sndtierback", "sndtierbackoff" }, { "drawpart", "drawpartoff" }, { "p2pass", "p2passoff" },
+	/* the sound tier's window in the ME partition, under halo_claim.prx's
+	claim of its bottom 960 KB (psp_dsound.c, sndpart): 880 KB more heap free
+	on b30 and c20, the frame no worse, every piece hashed as copied and
+	held, the claim given back at every exit (the lab's sierra-hw
+	44081373586, 44085436995) */
+	{ "sndpart", "sndpartoff" },
 	{ "mepointsclaim", "mepointsclaimoff" }, { "aimepathlook", "aimepathlookoff" }, { "aimeringlook", "aimeringlookoff" },
 	{ "aimeaudiolook", "aimeaudiolookoff" }, { "obsrayreuse", "obsrayreuseoff" },
 	/* mevisland's placement rests only on a walk time measured in the stretch
@@ -4645,6 +4651,10 @@ static int heartbeat_thread(SceSize args, void *argp)
 
 /* loads halo_crash.prx from the EBOOT's folder: a kernel-mode module that
 writes ms0:/halo/crash.txt when the game crashes (psp/crash/main.c) */
+/* the EBOOT's path, as main was given it: the helper modules sit beside it
+(halo_crash.prx, halo_profile.prx, halo_claim.prx) */
+char psp_eboot_path[256] = "ms0:/PSP/GAME/halo/EBOOT.PBP";
+
 static void load_crash_handler(const char *eboot_path)
 {
 	char path[256];
@@ -4794,6 +4804,8 @@ int main(int argc, char **argv)
 	scePowerSetClockFrequency(333, 333, 166);
 
 	load_crash_handler(argc > 0 ? argv[0] : NULL);
+	if (argc > 0 && argv[0])
+		snprintf(psp_eboot_path, sizeof(psp_eboot_path), "%s", argv[0]);
 
 	setenv("HALO_DATA_ROOT", DATA_ROOT, 1);
 	setenv("HALO_SAVE_ROOT", DATA_ROOT "/save", 1);

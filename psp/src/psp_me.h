@@ -74,6 +74,10 @@ extern volatile unsigned int psp_me_stops;
 int psp_me_simulated(void);
 /* 1 when simulated and the emulator maps [offset, offset + bytes) of the eDRAM */
 int psp_me_sim_edram_holds(unsigned int offset, unsigned int bytes);
+/* "sndpart": the whole ME partition (1,024 KB at 0x08300000) taken from
+sysmem in kernel mode, so no allocator can be handed it while the sound tier
+holds it; given back at the exit. The block's id, or < 0 (refused, or no ME) */
+int psp_me_claim_partition(void);
 
 /* The job ring (ME phase 1, keep word "meslant" turns it on): jobs handed
 to the ME without a slot of their own, collected later. Each job is a leaf:
