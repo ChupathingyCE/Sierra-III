@@ -35906,14 +35906,17 @@ FIXES_AICAD["source/ai/actor_perception.c#aicad"] = [
 # uncover, charge, avoid, search, vehicle, obey, converse), a scripted
 # command list, a combat status of "definite" or higher, known or visible
 # enemies, a target, a target seen in the last 10 s, a danger zone, damage
-# taken lately. aicad3's own exemptions hold too (the timeslice holder,
+# taken lately, or an encounter that hasn't stood down yet (its fight, its
+# post-combat search: aifarlist1, b30's beach_crack left open; "aifarnoenc"
+# is the first form, without that test). aicad3's own exemptions hold too (the timeslice holder,
 # swarms, dormant and charging actors, an actor's first update), and
 # everything aicad3 runs every tick still does (input, perception's decays,
 # emotion, the action, moving, looking, firing). A far actor out of the fight
 # reacts up to 4 ticks (133 ms) late instead of 2; Halo's perception delays
 # are hundreds of milliseconds. Only with aicad3: with aicad2 or aicad3off
-# the word does nothing (the log says so). Off by default: it plays
-# differently, so it ships only after an A/B shows it breaks nothing.
+# the word does nothing (the log says so). Off by default until the lab's
+# proof (strict, the outcome census, the PSP price) turns it on: efficiency,
+# plays the same (Sheepdog01, 2026-11-17 16:26).
 # Campaign only, as aicad3: never in the multiplayer build or a networked game
 FIXES_AIFAR = {}
 FIXES_AIFAR["source/ai/actors.c#aifar"] = [
@@ -35951,6 +35954,9 @@ head count on a line shared with the model rasterizer's local_parameters had
 the ME's write-back put a NULL there and fault render_model (the lab's bugs.md
 B94). The log's time is the main CPU's alone */
 static PSP_AIME_ME_SIDE int psp_aifar_on = -1;
+/* "aifarnoenc": the first form's test, the actor's own state only (the A/B
+side for the encounter's test below) */
+static PSP_AIME_ME_SIDE boolean psp_aifar_noenc = FALSE;
 /* each slot's answer for one tick: the ray queue asks before the actor's
 update refreshes its position and the update asks again, and both must agree */
 static PSP_AIME_ME_SIDE long psp_aifar_time[MAXIMUM_ACTORS];
@@ -35975,6 +35981,7 @@ static boolean psp_aifar_enabled(
 		psp_aifar_on = 0;
 #else
 		psp_aifar_on = psp_keep("aifar") ? 1 : 0;
+		psp_aifar_noenc = psp_keep("aifarnoenc") ? TRUE : FALSE;
 #endif
 		if (psp_aifar_on && psp_aicad_on != 3)
 			platform_psp_log("ai: aifar does nothing without aicad3 (aicad%d)", psp_aicad_on);
@@ -36003,6 +36010,15 @@ static boolean psp_aifar_engaged(
 	default:
 		break;
 	}
+	/* the encounter's own fight: until it stands down (the fight over, its
+	post-combat search done) every actor in it thinks at aicad3's rate, so
+	the end of the fight, the search and the return to guard play out as
+	without aifar wherever the player is. Resting them there left b30's
+	beach_crack's survivors where the extraction sees them and its encounter
+	open at the end (the lab's aifarlist1) */
+	if (!psp_aifar_noenc && actor->meta.encounter_index != NONE &&
+		!encounter_get(actor->meta.encounter_index)->stand_down)
+		return TRUE;
 	return actor->state.command_list_index != NONE ||
 		actor->state.combat_status >= PSP_AIFAR_COMBAT_STATUS_DEFINITE ||
 		actor->situation.known_enemies > 0 || actor->situation.visible_reachable_enemies > 0 ||
@@ -36518,6 +36534,7 @@ static void psp_aioutcome_tick(
 	/* "aioutcomelist": each active encounter by name and living count on
 	the survey's own line after it, to name which one an A/B leaves open */
 	static int list_on = -1;
+	static int actors_on = -1;
 	char list_line[400];
 	int list_at = 0;
 	long alive[PSP_AIOUTCOME_TEAMS] = {0};
@@ -36603,6 +36620,49 @@ static void psp_aioutcome_tick(
 		}
 		else if (now - psp_aioutcome_actors[index].since >= PSP_AIOUTCOME_STUCK_TICKS)
 			stuck++;
+	}
+	/* "aioutcomeactors": every 10 s, each living actor of an encounter, where
+	it is and what it's doing, and its encounter's state, to see why an A/B
+	leaves an encounter open (a recon trace; aifar's census) */
+	if (actors_on < 0)
+		actors_on = psp_keep("aioutcomeactors");
+	if (actors_on && now % 300 == 0)
+	{
+		data_iterator_new(&iterator, actor_data);
+		while ((actor = data_iterator_next(&iterator)) != NULL)
+		{
+			long object_index = actor->meta.swarm ? actor->meta.swarm_unit_index : actor->meta.unit_index;
+			struct object_datum *unit = object_index == NONE ? NULL : object_try_and_get(object_index);
+			short encounter_absolute;
+			real nearest = -1.0f;
+			short k;
+
+			if (!unit || TEST_FLAG(unit->object.damage_flags, _object_dead_bit) || actor->meta.encounter_index == NONE)
+				continue;
+			encounter_absolute = DATUM_INDEX_TO_ABSOLUTE_INDEX(actor->meta.encounter_index);
+			if (encounter_absolute < 0 || encounter_absolute >= global_scenario_get()->ai_encounters.count)
+				continue;
+			encounter = encounter_get(actor->meta.encounter_index);
+			for (k = 0; k < head_count; k++)
+			{
+				real d = distance3d(&heads[k], &unit->object.bounding_sphere_center);
+
+				if (nearest < 0.0f || d < nearest)
+					nearest = d;
+			}
+			platform_psp_log("aioutcome: game time %ld | actor %d of %s sq %d: at %.1f %.1f %.1f cluster %d, player %.1f | "
+				"mode %d action %d status %d target %d known %d active %d dormant %d | enc active %d stand_down %d post_combat %d follow %d fighting %d in_combat %d",
+				now, (int)iterator.absolute_index,
+				TAG_BLOCK_GET_ELEMENT(&global_scenario_get()->ai_encounters, encounter_absolute, struct encounter_definition)->name,
+				(int)actor->meta.squad_index,
+				(double)unit->object.bounding_sphere_center.x, (double)unit->object.bounding_sphere_center.y,
+				(double)unit->object.bounding_sphere_center.z, (int)unit->object.location.cluster_index, (double)nearest,
+				(int)actor->state.mode, (int)actor->state.action, (int)actor->state.combat_status,
+				actor->target.target_prop_index != NONE, (int)actor->situation.known_enemies,
+				(int)actor->meta.active, (int)actor->meta.dormant,
+				(int)encounter->active, (int)encounter->stand_down, (int)encounter->post_combat,
+				(int)encounter->follow_target_type, (int)encounter->current_fighting_count, (int)encounter->current_in_combat_count);
+		}
 	}
 
 	alive_line[0] = kill_line[0] = 0;
