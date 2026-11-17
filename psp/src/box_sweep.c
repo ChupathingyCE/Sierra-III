@@ -7,8 +7,19 @@ each test lands on the same side and each answer is the engine's to the bit.
 #include <string.h>
 #include <math.h>
 #include "box_sweep.h"
+
+/* three floats copied as floats: a 12-byte memcpy of float pointers is a call
+to the library's memcpy at -O2 (the code census, bench-emu 43991181316: memcpy
+the fifth-most missed code in a sweep), and these are all float triples */
+static inline void copy3(float *to, const float *from)
+{
+	to[0] = from[0];
+	to[1] = from[1];
+	to[2] = from[2];
+}
 #ifdef SWEEP_DEBUG
 #include <stdio.h>
+
 int box_sweep_debug;
 #define DBG(...) do { if (box_sweep_debug) printf(__VA_ARGS__); } while (0)
 #else
@@ -279,8 +290,8 @@ static void from_line(const float *point, const float *vector, float height, flo
 		struct box_sweep_cylinder *c = &features->cylinders[features->count[1]++];
 
 		feature_set(&c->f, object, surface, flags, breakable, material);
-		memcpy(c->base, point, 12);
-		memcpy(c->height, vector, 12);
+		copy3(c->base, point);
+		copy3(c->height, vector);
 		c->width = width;
 	}
 	if (height > 0.0f)
@@ -295,7 +306,7 @@ static void from_line(const float *point, const float *vector, float height, flo
 			c->base[0] = point[0];
 			c->base[1] = point[1];
 			c->base[2] = point[2] - height;
-			memcpy(c->height, vector, 12);
+			copy3(c->height, vector);
 			c->width = width;
 		}
 		n[0] = -vector[1];
@@ -305,13 +316,13 @@ static void from_line(const float *point, const float *vector, float height, flo
 			float d = point[0] * n[0] + point[1] * n[1];
 			float points[4][3];
 
-			memcpy(points[0], point, 12);
+			copy3(points[0], point);
 			points[1][0] = point[0] + vector[0];
 			points[1][1] = point[1] + vector[1];
 			points[1][2] = point[2] + vector[2];
-			memcpy(points[2], points[1], 12);
+			copy3(points[2], points[1]);
 			points[2][2] -= height;
-			memcpy(points[3], point, 12);
+			copy3(points[3], point);
 			points[3][2] -= height;
 			if (features->count[2] < BOX_SWEEP_FEATURES)
 			{
@@ -323,9 +334,9 @@ static void from_line(const float *point, const float *vector, float height, flo
 			{
 				float swap[3];
 
-				memcpy(swap, points[1], 12);
-				memcpy(points[1], points[3], 12);
-				memcpy(points[3], swap, 12);
+				copy3(swap, points[1]);
+				copy3(points[1], points[3]);
+				copy3(points[3], swap);
 			}
 			if (features->count[2] < BOX_SWEEP_FEATURES)
 			{
@@ -354,7 +365,7 @@ static void from_polygon(int point_count, float (*points)[3], const float *n, fl
 		return;
 	p = &features->prisms[features->count[2]++];
 	feature_set(&p->f, object, surface, flags, breakable, material);
-	memcpy(p->n, n, 12);
+	copy3(p->n, n);
 	p->d = d;
 	p->height = width;
 	p->axis = axis_left_out(p->n);
@@ -401,7 +412,7 @@ static void plane_of(const struct box_collbsp *bsp, int designated, float *n, fl
 	}
 	else
 	{
-		memcpy(n, plane, 12);
+		copy3(n, plane);
 		*d = plane[3];
 	}
 }
@@ -421,7 +432,7 @@ static int surface_polygon(const struct box_collbsp *bsp, int surface, float (*p
 		const struct box_collbsp_edge *e = &bsp->edges[edge];
 		int reverse = e->surface[1] == surface;
 
-		memcpy(points[count++], bsp->vertices[e->vertex[reverse]].p, 12);
+		copy3(points[count++], bsp->vertices[e->vertex[reverse]].p);
 		edge = e->edge[reverse];
 	}
 	while (edge != first && ring_continues(bsp, edge, count));
@@ -452,7 +463,7 @@ static void from_vertex(const struct box_collbsp *bsp, int vertex, const float *
 	if (m)
 		matrix_point(m, v->p, point);
 	else
-		memcpy(point, v->p, 12);
+		copy3(point, v->p);
 	from_point(point, height, width, object, object != -1 ? -1 : surface, s->flags, s->breakable, s->material, features);
 }
 
@@ -496,7 +507,7 @@ static void from_edge(const struct box_collbsp *bsp, int edge, const float *m, f
 		matrix_point(m, bsp->vertices[e->vertex[0]].p, point);
 	}
 	else
-		memcpy(point, bsp->vertices[e->vertex[0]].p, 12);
+		copy3(point, bsp->vertices[e->vertex[0]].p);
 	from_line(point, vector, height, width, object, object == -1 ? e->surface[0] : -1, s0->flags, s0->breakable,
 		s0->material, features);
 }
@@ -639,7 +650,7 @@ static int object_features(const struct box_sweep_world *w, unsigned int flags, 
 						{
 							float base[3];
 
-							memcpy(base, o->pill_base, 12);
+							copy3(base, o->pill_base);
 							base[2] += o->pill_height;
 							from_point(base, o->pill_height + height, o->pill_width + width, o->index, -1, 0, 0xFF, -1,
 								&scratch->features);
@@ -788,7 +799,7 @@ static int level_kept(const struct box_sweep_world *w, const float *center, floa
 		if (scratch->kept_used[slot - scratch->kept] && slot->asker != scratch->asker)
 			packed_release(scratch, slot->asker);
 		slot->asker = scratch->asker;
-		memcpy(slot->center, center, 12);
+		copy3(slot->center, center);
 		slot->radius = radius + w->kept_margin;
 		box_collbsp_sphere(w->level, w->breakable_count, w->breakable, center, slot->radius, 0, &slot->walk);
 		slot->walk.start_node = box_collbsp_split_node(w->level, center, slot->radius);
@@ -1132,7 +1143,7 @@ static int prism_vector(const struct box_sweep_prism *p, const float *point, con
 			return 0;
 	}
 	*t = t_out;
-	memcpy(n, p->n, 12);
+	copy3(n, p->n);
 	*d = p->d + p->height;
 	return 1;
 }
@@ -1158,7 +1169,7 @@ static int features_vector(const struct box_sweep_features *features, const floa
 				nearest_t = t;
 				nearest_feature = type == 0 ? &features->spheres[k].f : type == 1 ? &features->cylinders[k].f
 					: &features->prisms[k].f;
-				memcpy(nearest_n, n, 12);
+				copy3(nearest_n, n);
 				nearest_d = d;
 			}
 		}
@@ -1166,7 +1177,7 @@ static int features_vector(const struct box_sweep_features *features, const floa
 	{
 		collision->t = nearest_t;
 		along3(point, vector, nearest_t, collision->point);
-		memcpy(collision->n, nearest_n, 12);
+		copy3(collision->n, nearest_n);
 		collision->d = nearest_d;
 		collision->object = nearest_feature->object;
 		collision->surface = nearest_feature->surface;
@@ -1275,9 +1286,9 @@ static int move_point(const struct box_sweep_features *features, const float *ol
 	float position[3], velocity[3], clipped_position[3], clipped_velocity[3];
 	float clip_n[3] = { 0, 0, 0 }, clip_d = 0.f, line_point[3] = { 0, 0, 0 }, line_vector[3] = { 0, 0, 0 }, clip_point[3];
 
-	memcpy(velocity, old_velocity, 12);
-	memcpy(clipped_position, old_position, 12);
-	memcpy(clipped_velocity, old_velocity, 12);
+	copy3(velocity, old_velocity);
+	copy3(clipped_position, old_position);
+	copy3(clipped_velocity, old_velocity);
 	while (!still(clipped_velocity))
 	{
 		struct box_sweep_plane *collision = &collisions[count];
@@ -1293,13 +1304,13 @@ static int move_point(const struct box_sweep_features *features, const float *ol
 			float s = 1.0f - collision->t;
 
 			count++;
-			memcpy(position, collision->point, 12);
+			copy3(position, collision->point);
 			velocity[0] = s * velocity[0];
 			velocity[1] = s * velocity[1];
 			velocity[2] = s * velocity[2];
 			new_count = 1;
 			new_clip[0] = count - 1;
-			memcpy(clip_n, collisions[new_clip[0]].n, 12);
+			copy3(clip_n, collisions[new_clip[0]].n);
 			clip_d = collisions[new_clip[0]].d;
 			clip_velocity_to_plane(velocity, clip_n, clipped_velocity);
 			clip_position_to_plane(position, clip_n, clip_d, clipped_position);
@@ -1320,7 +1331,7 @@ static int move_point(const struct box_sweep_features *features, const float *ol
 						clipped_velocity[0] = 0.0f;
 						clipped_velocity[1] = 0.0f;
 						clipped_velocity[2] = 0.0f;
-						memcpy(clipped_position, clip_point, 12);
+						copy3(clipped_position, clip_point);
 					}
 				}
 				else if (clip_count > 1 && dot3(clipped_velocity, collisions[clip[1]].n) < -EPSILON &&
@@ -1337,18 +1348,18 @@ static int move_point(const struct box_sweep_features *features, const float *ol
 		}
 		else
 		{
-			memcpy(clipped_position, collision->point, 12);
+			copy3(clipped_position, collision->point);
 			break;
 		}
 		if (count >= most)
 			break;
 	}
 	DBG("  end: count %d clip %d still %d vel %a %a %a\n", count, clip_count, still(clipped_velocity), clipped_velocity[0], clipped_velocity[1], clipped_velocity[2]);
-	memcpy(answer->position, clipped_position, 12);
+	copy3(answer->position, clipped_position);
 	switch (clip_count)
 	{
 	case 0:
-		memcpy(answer->velocity, old_velocity, 12);
+		copy3(answer->velocity, old_velocity);
 		break;
 	case 1:
 		clip_velocity_to_plane(old_velocity, clip_n, answer->velocity);
@@ -1373,7 +1384,7 @@ static int move_point(const struct box_sweep_features *features, const float *ol
 		static const float up[3] = { 0.0f, 0.0f, 1.0f };
 
 		floor->t = last->t;
-		memcpy(floor->point, last->point, 12);
+		copy3(floor->point, last->point);
 		floor->object = -1;
 		floor->surface = -1;
 		floor->flags = 0;
@@ -1413,7 +1424,7 @@ static int move_point(const struct box_sweep_features *features, const float *ol
 		}
 		else
 		{
-			memcpy(floor->n, up, 12);
+			copy3(floor->n, up);
 			floor->d = dot3(clip_point, floor->n);
 		}
 	}
@@ -1442,6 +1453,6 @@ int box_sweep(const struct box_sweep_world *world, const struct box_sweep_query 
 	answer->position[0] = p[0] + v[0];
 	answer->position[1] = p[1] + v[1];
 	answer->position[2] = p[2] + v[2];
-	memcpy(answer->velocity, v, 12);
+	copy3(answer->velocity, v);
 	return answer->count = 0;
 }
