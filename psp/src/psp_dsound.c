@@ -1976,8 +1976,21 @@ int psp_sound_tier_mode(void)
 						psp_keep("mewake") && !psp_keep("mewakeoff") ? "mewake's restart enters Sony's image in the partition" :
 						psp_keep("partmap") || psp_keep("partmapall") || psp_keep("meddrprobe") ? "a partition probe patterns it" : NULL;
 
+					/* "sndpartnoclaim" (the lead 2026-11-17): a measuring form only.
+					User code can't make the claim (sysmem's user call refuses
+					partition 4, 800200d6), so until our own kernel module makes
+					it the window may go in unclaimed, priced by its pair, never
+					the default: nothing allocates partition 4 [the lab's
+					me_partition_sleep_read.md] and nothing writes it in play, a
+					sleep or a relaunch [partmap], and every piece is hashed as
+					copied and as held */
 					if (!refused && tier_mode == 1 && psp_me_claim_partition() < 0)
-						refused = "sysmem wouldn't give the partition";
+					{
+						if (psp_keep("sndpartnoclaim"))
+							platform_log("sound tier: sndpart without the claim (sndpartnoclaim: a measuring form, not the shipping one)");
+						else
+							refused = "sysmem wouldn't give the partition";
+					}
 					if (refused)
 						platform_log("sound tier: sndpart refused: %s", refused);
 					else
