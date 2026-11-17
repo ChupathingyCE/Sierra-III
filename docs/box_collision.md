@@ -43,6 +43,8 @@ The lab's `research/opportunities/REBUILD.md` is the spine (§3.3: "with biped m
 - **Code:** today the eight sampled functions are 23,976 B, 1.5x the 16 KB I-cache, and the port ships two walk implementations chosen per walk by its leaves (`collision_bsp.c`), so the resident set differs by section [D]. The service is one path, its target ~10-12 KB [U] (`collision.md` §2), written so the engine's walk's speed on c20's one- and two-leaf walks is kept: ONEWALK (the port's walk always) was exact and **slower on c20** on the PSP-3000 (tick +1.2%) [M].
 - **The second core:** the parallel form's queries (askers at rest, far bipeds, level-only rays) can run on the ME in the parallel phase; the ME's room is the tick schedule's to give (at 15 fps the snowfield has ~13 ms a tick free, the beach ~9 [M, `me_room_fights_*`]).
 
+- **Code budget (REBUILD §3.6): fits.** The walk's own functions run **99-248 lines a tick** on their own cache pair [E, the lab's findings `fpass2_own_pair_by_subsystem`: `collision_test_vector` 99-146 lines, ~0-14 I-misses a tick; `collision_bsp_test_sphere` 84-102 lines, 0 I-misses]. That's one stage under the I-cache's 256 lines, so its code stays resident; its wait is data. The ~24 KB above is the sampled set across both walk implementations, not one walk's lines.
+
 ## 4. Budget
 
 - **Today** [M shares, PSP-1000, tock162 b3461c1's shipping sampler; ms U on M]: collision is 13.3-18.4% of the tick (c20 14.0, a30 14.2, b30 18.4, b40 13.3): **~2.9 ms on c20, ~3.4 on a30, ~4.8-5.6 on b30's beach play, ~10 on b30's flight** (25.6% of a ~39 ms tick, the lab's s_gap §2), **~5.0 on b40's snowfield** (13.3% of 37.6 [M, b151 ledger]); the drawing's rays another 0.7-1.2 ms a frame.
