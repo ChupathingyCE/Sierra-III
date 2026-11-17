@@ -36683,18 +36683,22 @@ static void hs_thread_main(
 #endif
 	}
 """),
-("""			function->evaluate(
-				expression->index,
-				thread_index,
-				initialize);""",
- """#ifdef HALO_PSP
-			if (initialize)
-				psp_aioutcome_call(function->name); /* FIXES_RECON #aioutcome */
+("""			if (!mcc_hs_if_tail(expression->index, thread_index, initialize))
+				function->evaluate(
+					expression->index,
+					thread_index,
+					initialize);""",
+ """			if (!mcc_hs_if_tail(expression->index, thread_index, initialize))
+			{
+#ifdef HALO_PSP
+				if (initialize)
+					psp_aioutcome_call(function->name); /* FIXES_RECON #aioutcome */
 #endif
-			function->evaluate(
-				expression->index,
-				thread_index,
-				initialize);"""),
+				function->evaluate(
+					expression->index,
+					thread_index,
+					initialize);
+			}"""),
 ("""			if (script->script_type==_hs_script_startup ||
 				script->script_type==_hs_script_dormant)
 			{
