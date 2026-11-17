@@ -1247,6 +1247,12 @@ static const struct
 	{ "wxdead", "wxdeadoff" }, { "texavg", "texavgoff" }, { "lightcarry", "lightcarryoff" }, { "lviewcull", "lviewculloff" }, { "novfpufwd", "vfpufwd" }, { "sndedram", "sndedramoff" },
 	{ "lightringlook", "lightringlookoff" }, { "aimeobslook", "aimeobslookoff" }, { "lightfirst", "lightfirstoff" },
 	{ "sndtierback", "sndtierbackoff" }, { "drawpart", "drawpartoff" }, { "p2pass", "p2passoff" },
+	/* the sound tier's window in the ME partition, under halo_claim.prx's
+	claim of its bottom 960 KB (psp_dsound.c, sndpart): 880 KB more heap free
+	on b30 and c20, the frame no worse, every piece hashed as copied and
+	held, the claim given back at every exit (the lab's sierra-hw
+	44081373586, 44085436995) */
+	{ "sndpart", "sndpartoff" },
 	{ "mepointsclaim", "mepointsclaimoff" }, { "aimepathlook", "aimepathlookoff" }, { "aimeringlook", "aimeringlookoff" },
 	{ "aimeaudiolook", "aimeaudiolookoff" }, { "obsrayreuse", "obsrayreuseoff" },
 	/* mevisland's placement rests only on a walk time measured in the stretch
