@@ -313,6 +313,54 @@ struct sphere
 	int packed_miss; /* the packed walk met a side the wider walk never took */
 };
 
+/* BOX_LINECOUNT (a desktop census, the audit 18:12): the 64-byte lines a kept
+sweep's level part touches, by the structure each read is of, each line
+counted once a sweep under the first structure that reached it. With the
+caches emptied between sweeps (the crowded case) every one is a miss, so the
+split says whether the level part's crowded time is its reads or its tests */
+#ifdef BOX_LINECOUNT
+#include <stdio.h>
+#define LC_KINDS 6
+static const char *const lc_names[LC_KINDS] = { "3D nodes", "vertices", "edges", "surfaces", "planes", "kept lists" };
+static unsigned long lc_seen[1024];
+static int lc_seen_count;
+static unsigned long long lc_lines[LC_KINDS], lc_sweeps;
+static void lc_touch(int kind, const void *at, unsigned int bytes)
+{
+	unsigned long line = (unsigned long)at >> 6, last = ((unsigned long)at + bytes - 1) >> 6;
+	int k;
+
+	for (; line <= last; line++)
+	{
+		for (k = 0; k < lc_seen_count; k++)
+			if (lc_seen[k] == line)
+				break;
+		if (k < lc_seen_count || lc_seen_count >= 1024)
+			continue;
+		lc_seen[lc_seen_count++] = line;
+		lc_lines[kind]++;
+	}
+}
+static void lc_report(void) __attribute__((destructor));
+static void lc_report(void)
+{
+	int k;
+	unsigned long long all = 0;
+
+	if (!lc_sweeps)
+		return;
+	for (k = 0; k < LC_KINDS; k++)
+		all += lc_lines[k];
+	printf("linecount: %llu kept sweeps, %.1f lines a sweep:", lc_sweeps, (double)all / lc_sweeps);
+	for (k = 0; k < LC_KINDS; k++)
+		printf(" %s %.1f (%.0f%%)", lc_names[k], (double)lc_lines[k] / lc_sweeps, all ? 100.0 * lc_lines[k] / all : 0.0);
+	printf("\n");
+}
+#define LC(kind, at, bytes) lc_touch(kind, at, bytes)
+#else
+#define LC(kind, at, bytes) ((void)0)
+#endif
+
 static void add(int *count, int *list, int index)
 {
 	int k;
@@ -512,6 +560,8 @@ static void sphere3d(struct sphere *w, int index)
 		float distance = (w->center[0] * node->n[0] + w->center[1] * node->n[1] + w->center[2] * node->n[2]) - node->d;
 		int second = distance < w->radius, first_side = distance > -w->radius;
 
+		if (w->walk_only)
+			LC(0, node, sizeof(*node));
 		if (w->found)
 			return;
 		COUNT(n_nodes3);
@@ -691,6 +741,10 @@ static int sphere_kept_walk(const struct box_collbsp *bsp, short breakable_count
 	w.designator = 0;
 	memset(w.buckets, 0, sizeof(w.buckets));
 	result->surface_count = result->edge_count = result->vertex_count = result->leaf_count = 0;
+#ifdef BOX_LINECOUNT
+	lc_seen_count = 0;
+	lc_sweeps++;
+#endif
 #ifdef BOX_COLLBSP_COUNT
 	{
 		unsigned long long nodes = n_nodes3, leaves = n_leaves;
@@ -721,6 +775,9 @@ static int sphere_kept_walk(const struct box_collbsp *bsp, short breakable_count
 	for (k = 0; k < kept->vertex_count; k++)
 	{
 		const float *p = bsp->vertices[kept->vertices[k]].p;
+
+		LC(5, &kept->vertices[k], 4);
+		LC(1, p, 12);
 		float dx = p[0] - center[0], dy = p[1] - center[1], dz = p[2] - center[2];
 
 		if (dx * dx + dy * dy + dz * dz <= radius_squared)
@@ -731,6 +788,11 @@ static int sphere_kept_walk(const struct box_collbsp *bsp, short breakable_count
 		const struct box_collbsp_edge *edge = &bsp->edges[kept->edges[k]];
 		int reverse = kept->edge_reverse[k];
 		const float *p0 = bsp->vertices[edge->vertex[reverse]].p, *p1 = bsp->vertices[edge->vertex[!reverse]].p;
+
+		LC(5, &kept->edges[k], 4);
+		LC(2, edge, sizeof(*edge));
+		LC(1, p0, 12);
+		LC(1, p1, 12);
 		float along[3] = { p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2] };
 
 		if (edge_touches(p0, along, center, radius))
@@ -750,6 +812,9 @@ static int sphere_kept_walk(const struct box_collbsp *bsp, short breakable_count
 		int sign;
 		float c2[2];
 
+		LC(5, &kept->surfaces[k], 4);
+		LC(3, surface, sizeof(*surface));
+		LC(4, plane, 16);
 		e = surface->first_edge;
 		count = 0;
 		do
@@ -758,6 +823,10 @@ static int sphere_kept_walk(const struct box_collbsp *bsp, short breakable_count
 			int reverse = REVERSE(edge, s);
 			const float *p = bsp->vertices[edge->vertex[reverse]].p;
 			const float *p1 = bsp->vertices[edge->vertex[!reverse]].p;
+
+			LC(2, edge, sizeof(*edge));
+			LC(1, p, 12);
+			LC(1, p1, 12);
 			float dx = p[0] - center[0], dy = p[1] - center[1], dz = p[2] - center[2];
 			float v[3] = { p1[0] - p[0], p1[1] - p[1], p1[2] - p[2] };
 
@@ -787,6 +856,10 @@ static int sphere_kept_walk(const struct box_collbsp *bsp, short breakable_count
 				const struct box_collbsp_edge *edge = &bsp->edges[e];
 				int reverse = REVERSE(edge, s);
 				float q0[2], q1[2], v0[2], v1[2];
+
+				LC(2, edge, sizeof(*edge));
+				LC(1, bsp->vertices[edge->vertex[reverse]].p, 12);
+				LC(1, bsp->vertices[edge->vertex[!reverse]].p, 12);
 
 				project(bsp->vertices[edge->vertex[reverse]].p, axis, sign, q0);
 				project(bsp->vertices[edge->vertex[!reverse]].p, axis, sign, q1);
@@ -843,6 +916,7 @@ static void sphere3d_packed(struct sphere *w, const struct box_collbsp_packed_no
 			return;
 		}
 		node = &nodes[code];
+		LC(0, node, sizeof(*node));
 		distance = (w->center[0] * node->n[0] + w->center[1] * node->n[1] + w->center[2] * node->n[2]) - node->d;
 		second = distance < w->radius;
 		first_side = distance > -w->radius;
