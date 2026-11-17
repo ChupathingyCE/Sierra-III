@@ -124,7 +124,7 @@ sierra-hw 44058220314: a7031cf9 with the shipped recipe, b30_leg2 to 130 s legen
 
 Units, the game engine, sound, the netcode, present and the vsync wait are each under 0.1 ms. Asleep is ~0 in every box. A mark costs ~2 µs (the null pair 4.0 µs).
 
-**The instruments' cost (§7 a), off against framepic, both on hwprofile:** cinematic −0.4%, flight +0.3% (both in the noise), landing's drawing +2.0 ms, +7.4% (real; the frame +4.2%, in the noise), the beach's frame +5.5% (in the noise). So ≤ 1% holds on two of the four stretches. The marks themselves are ~0.15 ms a frame, which can't explain landing's +2 ms. The suspect is each mark's switch-count refer call, a kernel call leaving its footprint in the render's caches; `framepicnosw` leaves it out, and a three-way run decides.
+**The instruments' cost (§7 a), off against framepic, both on hwprofile:** cinematic −0.4%, flight +0.3% (both in the noise), landing's drawing +2.0 ms, +7.4% (real; the frame +4.2%, in the noise), the beach's frame +5.5% (in the noise). So ≤ 1% holds on two of the four stretches. The marks themselves are ~0.15 ms a frame, which can't explain landing's +2 ms. The suspect is each mark's switch-count refer call, a kernel call leaving its footprint in the render's caches; `framepicnosw` leaves it out, and a three-way run decides. *(Superseded 2026-11-17 by the b30 three-way below: landing's gap isn't reproduced, and the switch count is no cost.)*
 
 **Not yet read:** the identity check (§7 b), each column summed over the boxes against the module's own whole-frame counters, waits on those counters taken over the same window.
 
@@ -188,6 +188,10 @@ sierra-hw 44070031867: as the third, with `nomeaudio nomepoints` (no 'ME: starti
 | the tick's other work | tick | 0.8 | (1.0) | 0.4 | 0.2 | 0.2-0.3 | 0-0.07 |
 
 **What it says:** the ME's work takes ~21.6 ms a frame off the main CPU's render of the world (27.5 to 5.9), the whole of it work and waits the main CPU no longer does. With the ME on, the main CPU's own boxes run slower: the objects' update +1.4 ms a tick (+15%), its unexplained part up from -0.1-1.2 to 1.0-2.4 ms; render: objects +0.9 ms. [U] that is the ME contending for main RAM, which §6's prices, taken with the ME idle, don't hold. A price with the ME busy is what would turn it into a figure. **The marks' cost with the ME off, one run a side:** frame +1.8% framepic / +1.5% nosw on the opening, +1.2% / +0.0% later; the switch count is worth ~0.3 points. The ME-on run's later +12% / +20% doesn't appear with the ME off, so it was the ME's variance, not the marks.
+
+## The instruments' cost, settled: b30 three-way (PSP-1000, 2026-11-17)
+
+sierra-hw 44075240128: b30's opening bench, two runs a side, three ways (off, `framepic`, `framepic framepicnosw`); the lab's row `framepic_cost_b30_3way_1000` [M]. **The ≤ 1% done-check (§7 a) holds wherever play is the same on both sides:** cinematic frame −0.1%, flight frame −0.0%, drawing and tick within ±0.2%, all in the noise. Play parted at game time 2448, inside landing (a side's player over 5 units from off's), so landing and the beach compare different games and get no verdict. The two off runs alone differ by 12% on landing's frame (105.3 and 93.7 ms). **So the first table's 'landing +7.4%' isn't reproduced:** it was one pair on a stretch that varies that much, not the marks. `framepicnosw` buys nothing either: flight −1.9%, in the noise; cinematic +1.5%, real but the wrong way for a saving. With the null pairs' 0.3 µs a mark, that settles the switch count as no cost. **Decision:** the marks stay as built, the switch count kept, and the render's marks not merged. `framepicnosw` stays as a keep word, not the default.
 
 ## What changed from v0
 
