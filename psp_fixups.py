@@ -54429,8 +54429,8 @@ FIXES_ASKCENSUS["source/game/players.c#askcensus"] = [
 ]
 FIXES_ASKCENSUS["source/objects/objects.c#askcensus"] = [
 # site 59: asker 37, Teleport / spawn placement
-("""	if (collision_test_line(_collision_test_for_projectiles_flags, known_good_point, &object->object.position, NONE, &collision) ||
-""", """	if ((psp_ask(59), collision_test_line)(_collision_test_for_projectiles_flags, known_good_point, &object->object.position, NONE, &collision) ||
+("""	if (collision_test_line(_collision_test_for_projectiles_flags, known_good_point, &object->object.position, ignore_object_index, &collision) ||
+""", """	if ((psp_ask(59), collision_test_line)(_collision_test_for_projectiles_flags, known_good_point, &object->object.position, ignore_object_index, &collision) ||
 """),
 # site 61: asker 38, Objects' map link (reconnect)
 ("""				collision_bsp_test_sphere(
