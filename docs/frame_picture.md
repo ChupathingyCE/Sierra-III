@@ -152,6 +152,27 @@ Units, the game engine, sound, the netcode, present and the vsync wait are each 
 
 **The instruments' cost, off against framepic:** the first stretch's frame +1.0 ms, +1.3% (real); play's frame +0.5 ms, +0.8% (real), its drawing +1.1 ms, +5.2% (real). As on b30's landing, drawing carries the cost, which points at the per-mark switch-count call again. The c40 and b30 three-ways (`framepic framepicnosw`) decide it.
 
+## The third table: c40, the ME on (PSP-1000, 2026-11-17)
+
+sierra-hw 44065994276: the same build, c40's pad to its stretch end, one run a side, three ways (off, `framepic`, `framepic framepicnosw`); 7,975 frames and 8,759 ticks; the ME running on every side; the lab's row `frame_picture_c40me_1000` [M]. The framepic run's numbers (nosw's agree within 6%).
+
+| Box | Per | Mean | Work | Code wait | Data wait | Unexplained |
+|---|---|---:|---:|---:|---:|---:|
+| objects | tick | 10.3 | 3.4 | 2.9 | 1.6-3.0 | 1.0-2.4 |
+| AI (main CPU) | tick | 1.1 | 0.6 | 0.2 | 0.2-0.3 | 0.02-0.2 |
+| the tick's other work | tick | 1.0 | 0.4 | 0.2 | 0.2-0.4 | 0.02-0.2 |
+| effects | tick | 0.15 | 0.06 | 0.04 | 0.03-0.05 | 0.01-0.03 |
+| render: world | frame | 5.9 | 3.2 | 0.7 | 1.0-1.8 | 0.2-1.0 |
+| render: objects | frame | 5.4 | 2.5 | 1.1 | 0.9-1.7 | 0.1-0.9 |
+| outside any box | frame | 2.4 | 1.0 | 0.5 | 0.4-0.6 | 0.2-0.5 |
+| render: other | frame | 2.2 | 1.1 | 0.3 | 0.5-0.9 | 0-0.3 |
+| render: transparent | frame | 0.86 | 0.5 | 0.1 | 0.1-0.3 | 0-0.08 |
+| render: effects | frame | 0.53 | 0.35 | 0.06 | 0.08-0.14 | 0-0.05 |
+| vsync wait | frame | 0.50 | 0.14 | 0.18 | 0.07-0.11 | 0.05-0.09 |
+| render: HUD | frame | 0.39 | 0.18 | 0.11 | 0.04-0.08 | 0.02-0.06 |
+
+**The switch count isn't landing's cost:** the null mark pair is 2.5 µs with the switch-count call and 1.9 µs without it (`framepicnosw`), so the call is ~0.3 µs a mark, ~20 µs a frame at 62 marks. That can't make b30 landing's +2 ms. **The instruments' cost here, one run a side, no verdict:** the opening holds (frame +0.0%, tick +2.0% / +1.6%, drawing +1.5% / +0.9%); the later stretch's gaps (frame +12% framepic, +20% nosw) run the wrong way for the switch count and are within what one run a side can't separate from play varying. The b30 three-way at two runs a side is what can.
+
 ## What changed from v0
 
 - Marks: their own system call, not `halo_profile_phase` (its four-phase mask and thread walk). The switch count is read as one value. The keep word is read once. Boxes are once-a-tick regions, ≤ ~60 marks a tick, checked in the emulator first. Collision is priced from halo_box, not marked per call. A null mark pair is subtracted.
