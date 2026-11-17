@@ -1984,9 +1984,6 @@ int psp_sound_tier_mode(void)
 					{
 						part_bytes = SNDPART_MOST;
 						tier_check = 1;
-						/* the emulator's window is the block's, after the tier, so
-						the two are one stretch: its tier there too */
-						tier_mapped = 0;
 					}
 				}
 			}
@@ -2221,11 +2218,20 @@ void *psp_sound_cache_place(void *block)
 		used = stage_bytes + tier_main_bytes + (tier_mode == 2 && !tier_mapped ? tier_bytes : 0) +
 			(tier_mode == 2 ? part_bytes : 0);
 		tier_base = tier_mode == 1 || tier_mapped ? (unsigned char *)(ME_EDRAM + ME_EDRAM_SNDTIER) : base + tier_main_bytes;
-		part_base = !part_bytes ? NULL : tier_mode == 1 ? (unsigned char *)SNDPART_ME_BASE : tier_base + tier_bytes;
+		/* the emulator's window stands in on the heap, after the main tier
+		(and after the tier, when the emulator doesn't map the eDRAM): the
+		heap then takes what the PSP's does with the tier and window off it */
+		part_base = !part_bytes ? NULL : tier_mode == 1 ? (unsigned char *)SNDPART_ME_BASE :
+			base + tier_main_bytes + (tier_mapped ? 0 : tier_bytes);
 		for (k = 0; k < STAGE_SLOTS; k++)
 			stage[k].buffer = sound_block + k * STAGE_SLOT_BYTES;
-		me_lo = tier_base;
-		me_hi = part_bytes ? part_base + part_bytes : tier_base + tier_bytes;
+		/* one span over the tier and the window, whichever is lower: no
+		block of the main tier lies inside it (on the PSP the eDRAM, then the
+		partition; in the emulator the window right after the main tier), so
+		the cache's blocks are told apart by it. Anything else (a voice's
+		packet, which may be a stream's buffer) asks psp_sound_tier_holds */
+		me_lo = part_bytes && part_base < tier_base ? part_base : tier_base;
+		me_hi = part_bytes && part_base + part_bytes > tier_base + tier_bytes ? part_base + part_bytes : tier_base + tier_bytes;
 		edram_lo = me_lo;
 		edram_hi = me_hi;
 		if (part_bytes)
@@ -2898,7 +2904,8 @@ static void mute_cache_voices(struct psp_stream *const *list, unsigned long coun
 				tier_back_gap_blocks++;
 				break;
 			}
-			if (!packet->finished && packet->data >= edram_lo && packet->data < edram_hi)
+			if (!packet->finished && (tier_mode > 0 && part_bytes ? psp_sound_tier_holds(packet->data) :
+				packet->data >= edram_lo && packet->data < edram_hi))
 			{
 				/* the rescue's check: a voice it should have moved */
 				if (tier_back_counts[0] && !tier_back_missed++)
