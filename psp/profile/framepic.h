@@ -3,8 +3,8 @@ halo_profile.prx (psp/profile/main.c), which charges each mark's counters to
 the box that was open, and the game (psp/src/psp_framepic.c), which folds
 them into histograms at each tick's and frame's end. The block is the game's
 (partition 2, outside the heap), handed to the module once; the module writes
-only `acc`, `sum`, `marks`, `switched` and `unbalanced`, and only from the game
-thread's own system call, so neither side needs a lock */
+only `acc`, `sum`, `marks`, `switched`, `unbalanced`, `depth`, `self`,
+`start`, `open` and `started`, and only from the game thread's own system call, so neither side needs a lock */
 
 #ifndef PSP_FRAMEPIC_H
 #define PSP_FRAMEPIC_H
@@ -53,6 +53,13 @@ struct framepic_block
 	read after its bookkeeping, which no box is charged for; the identity
 	check (docs/frame_picture.md) adds it to the boxes' sums */
 	unsigned long long self[FRAMEPIC_MEASURES];
+	/* the module's, for the identity check: each measure's total (as
+	halo_profile_totals counts it) at the first mark, where the boxes start
+	charging; and, at each halo_profile_totals call, the span since the last
+	mark, which the next mark will charge to the box still open */
+	unsigned long long start[FRAMEPIC_MEASURES];
+	unsigned int open[FRAMEPIC_MEASURES];
+	unsigned int started;
 };
 
 #endif

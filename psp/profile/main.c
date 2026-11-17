@@ -315,6 +315,19 @@ int halo_profile_box(int box)
 			block->acc[top][k] += delta;
 			block->sum[top][k] += delta;
 		}
+	else
+	{
+		/* the identity check's start: the module's totals at the read the
+		boxes start from, so nothing before the first mark is counted
+		against them */
+		for (k = 0; k < FRAMEPIC_MEASURES; k++)
+		{
+			unsigned int r = framepic_registers[k];
+
+			block->start[k] = table->count[r] + (unsigned int)(now[k] - sampler_last[r]);
+		}
+		block->started = 1;
+	}
 	framepic_started = 1;
 	block->marks[top]++;
 	if (box == FRAMEPIC_POP)
@@ -370,6 +383,16 @@ int halo_profile_totals(unsigned long long *out)
 	profiler_read(now);
 	for (k = 0; k < COUNTERS; k++)
 		out[k] = table->count[k] + (unsigned int)(now[k] - sampler_last[k]);
+	/* the span since the last mark, from the same reads: the module has
+	counted it and no box has yet */
+	if (table->framepic_block && framepic_started)
+	{
+		struct framepic_block *block = (struct framepic_block *)table->framepic_block;
+
+		if (block->magic == FRAMEPIC_MAGIC)
+			for (k = 0; k < FRAMEPIC_MEASURES; k++)
+				block->open[k] = now[framepic_registers[k]] - framepic_last[k];
+	}
 	sceKernelCpuResumeIntr(interrupts);
 	pspSdkSetK1(k1);
 	return 0;

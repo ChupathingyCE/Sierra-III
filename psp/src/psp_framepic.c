@@ -94,17 +94,16 @@ static int module_on = 0, set_up = 0;
 static unsigned int marks_frame = 0, marks_frame_most = 0, ticks_frame = 0;
 static unsigned long long marks_total = 0, frames_total = 0, ticks_total = 0;
 static unsigned int beats = 0;
-/* the identity check (docs/frame_picture.md): the module's totals and the
-boxes' sums when the marks turn on; the report compares both deltas */
-static unsigned long long identity_module[PROFILE_COUNTERS];
-static int identity_on = 0;
+/* the identity check (docs/frame_picture.md): the module's totals since the
+first mark (the block's start, taken there by the module) against the boxes'
+sums, the marks' own spans and the span still open */
 static const unsigned char identity_registers[FRAMEPIC_MEASURES] = FRAMEPIC_REGISTERS;
 static const char *const identity_names[FRAMEPIC_MEASURES] = {
 	"cycles", "memory stall", "asleep", "I-misses", "D-misses", "write-backs", "uncached loads", "uncached stores" };
 
 static unsigned long long boxes_sum(const struct framepic_block *block, int measure)
 {
-	unsigned long long total = block->self[measure];
+	unsigned long long total = block->self[measure] + block->open[measure];
 	int box;
 
 	for (box = 0; box < FRAMEPIC_BOXES; box++)
@@ -117,14 +116,15 @@ static void identity_report(void)
 	unsigned long long now[PROFILE_COUNTERS];
 	int m;
 
-	if (!identity_on || halo_profile_totals(now) < 0)
+	if (!module_on || !game->block.started || halo_profile_totals(now) < 0)
 	{
-		platform_log("framepic: identity: not read (%s)", identity_on ? "the module's totals refused" : "no start reading");
+		platform_log("framepic: identity: not read (%s)", !module_on ? "no profiler module" :
+			!game->block.started ? "no mark yet" : "the module's totals refused");
 		return;
 	}
 	for (m = 0; m < FRAMEPIC_MEASURES; m++)
 	{
-		unsigned long long module = now[identity_registers[m]] - identity_module[identity_registers[m]];
+		unsigned long long module = now[identity_registers[m]] - game->block.start[m];
 		unsigned long long boxes = boxes_sum(&game->block, m);
 		double diff = module ? 100.0 * ((double)boxes - (double)module) / (double)module : 0.0;
 
@@ -395,8 +395,6 @@ void psp_framepic_beat(int profiler_running)
 		map_phases();
 		module_on = profiler_running;
 		game->block.want_switch = !psp_keep("framepicnosw");
-		/* before the first mark, so every box's sum starts from 0 */
-		identity_on = module_on && halo_profile_totals(identity_module) == 0;
 		halo_perf_log_on = 1;
 		platform_log("framepic: on (%d boxes, the engine's perf phases; %s; switch count at each mark %s)", BOXES,
 			module_on ? "halo_profile.prx charges each" : "no profiler module: marks counted only", game->block.want_switch ? "on" : "off (framepicnosw)");
