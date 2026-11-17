@@ -38,11 +38,29 @@ The lab's `research/opportunities/REBUILD.md` is the spine (§3.3, §4, §7 step
   - Together **1,194 a tick on b30 and 1,346 on c20**, against the I-cache's 256 lines.
   - Fetched again and again: on its own cache pair `biped_update` takes **4,847 I-misses a tick on b30 and 13,743 on c20**, ~6x and ~14x its lines a tick; `unit_update` 1,229 and 597.
 - **Fit: no. The box is cut into stages, each ≤ ~200-256 lines and resident over every biped** before the next stage runs. One call's 338-405 lines can't stay resident across bipeds, and it evicts its neighbours (the frame picture's objects' update waits more on code than on data, REBUILD §3.5).
-- **The stage cut is this box's next design question.** A first cut along the steps §3 names: the unit's control (the `unit_update` half), the physics, the move with its collision queries, and the link. The questions:
-  - **Where each step's lines fall.** Counted per function in the cache model before any code, as `cpu_cost_map.md` §4a does for the whole.
-  - **Whether a step is still over 256 and splits again.** The physics alone was ~2% of a crowded update's price as built (§8), so its lines are small; the unit half is 394-418 lines by itself, so it likely splits.
-  - **What crosses a stage boundary per biped.** It goes in a small per-biped record carried from stage to stage, rather than re-read from the datum.
-  - **The order a stage keeps** (§1's serial form: a stage over all bipeds changes when a biped sees another's this-tick values only if a later stage reads what an earlier one wrote for another biped). The hazard count in Open 1 settles it.
+- **Where the lines fall** [E, exact counts: the lab's sierra-batch 44125649004 (stagecut1, footprint per function, tock 7a7ebab3, EBOOT 60ee7972; b30_leg2 to exitat130, c20_leg2 to exitat150), findings `stagecut1_lines_by_stage`]. Every code line a footprint's calls touched, named by the function it falls in, then grouped by step. Lines a tick, **b30 / c20**, scaled to the cache model's own count; a call's lines in brackets:
+
+  | Step | `biped_update` | `unit_update` |
+  |---|---|---|
+  | the unit's control (unit_update's own body, melee, seat labels) | (in move) | 125 / 69 (64 / 30) |
+  | aiming (the euler aim, its trig) | 7 / 9 | 117 / 66 (72 / 8) |
+  | the move (biped_update_moving's own, snap facing, falling, the pill) | 164 / 219 (116 / 160) | |
+  | its collision queries (sphere features, the BSP walks, move_point) | 208 / 169 (125 / 129) | 70 / 59 (7 / 3) |
+  | the link (cluster reconnect, map reconnect and disconnect, portals) | 93 / 101 (60 / 75) | |
+  | animation | 20 / 19 (13 / 13) | |
+  | **events: functions under 1 line a call** (sounds, footsteps, deactivation, the limp body, marker lookups, the object's lighting) | **246 / 400** (26 / 23) | **83 / 178** (12 / 14) |
+  | the tick, all of it | 776 / 952 | 418 / 394 |
+
+- **What it says:**
+  - **The event paths are the largest group: 32-42% of `biped_update`'s lines a tick and 20-45% of `unit_update`'s**, run by a few calls a tick each. They can't be phased (no two calls share them in a tick), but they evict the steady stages. **The box queues them** (means: work on need) and runs them as one pass after the stages, so their lines come in once a tick and don't land between bipeds.
+  - **Every steady step but one fits 256 alone.** The unit's control (69-125), aiming (66-117), the link with animation (113-120) and the move (164-219) each fit. **The move and its queries together are 372-388**, and they interleave inside one call (collision_move_point's slide loop asks, moves, asks again), so they can't be two stages as written.
+  - **The move's cut is rounds:** the move's intent for every biped; then query round k for every biped (each biped's k-th sphere/vector test, a dependent slide waits for the next round); then the move applied. Each round's code is the query's 169-208 lines; the per-biped record carries the pill, origin, delta and the planes found. Most bipeds settle in one or two rounds (`collision_bsp_test_sphere` 2.2 calls a biped a tick on b30, 1.2 on c20) [E].
+  - **Aiming splits from the unit's control on b30** (125 + 117 + the unit's 70 query lines would be 312); on c20 aiming runs for few units (5.4 calls a tick against 37 updates) and the two fit as one.
+  - **Two copies of the sphere walk are live:** the port's dedup walk (`psp_bsp2d/3d_test_sphere`, 54-64 lines) on b30's big walks, the engine's (`bsp2d/3d_test_sphere_recursive`, 45 lines) on c20's small ones, picked by a running average of leaves (`psp_sphere_walk`, `PSP_SURFACE_DEDUP_LEAVES16`) [D]. The box carries one walk.
+  - **The object's lighting runs inside `unit_update`** (find_point_lights_for_object_in_cluster, sample_lightmap, psp_tex_light_texel: hot on b30's calls, an event on c20's) [E]. It isn't this box's ground; it goes to the box that owns object lighting, and leaves this box's budget.
+- **What crosses a stage, per biped:** the unit's control writes the desired move and facing; aiming writes the aim; the move rounds carry the pill, origin, delta and the plane list; the link reads the new position. A small record (~64-128 bytes [U]) carried from stage to stage, not re-read from the datum.
+- **Still open: the order a stage keeps** (§1's serial form). The link phased after every move means a biped's queries in round k see the others' new positions but their old cluster links; the serial form sees links updated biped by biped. The hazard count in Open 1 settles whether any query reads another biped's this-tick link, and whether a stale one plays the same (the outcome census).
+- **Next:** the stages as a code budget in §4 (each stage's line count as its ceiling), then the events queue's list from the same counts.
 - **The ceiling it chases** [E]: phasing the bipeds' update was counted at ~1.1 ms a tick on b30 and ~2.6 on c20 (§5), the largest of the code-side figures on the tick. No PSP price until a stage form is built.
 
 ## 4. Budget
