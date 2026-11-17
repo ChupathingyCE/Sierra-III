@@ -262,6 +262,8 @@ sierra-hw 44085373539: the same build, b40_leg1 legendary to 650 s (13,512 frame
 
 **v2** (builder/framepic adf4d9b5): the module takes the start reading at the first mark's own read (`block.start`). At each `halo_profile_totals` call it also records the open span from the same reads (`block.open`). The report then compares the module's totals since `start` with the boxes' sums plus `self` plus `open`. Both ends now match where the boxes start and stop charging, so the bound needs no slack. The lead lifted 'provisional' from the five tables on this arithmetic (2026-11-17 08:1x): the per-tick charging is sound. v2's run confirms that as built.
 
+**v2 passed, exactly** (PSP-3000, the lab's sierra-hw 44104100119, b30 to 60 s; findings row `framepic_identity_v2_3000`) [M]. All 48 identity lines (8 measures at each of 6 reports) read +0.000%: the module's totals equal the boxes' sums plus the marks' own spans plus the open span, count for count. At the exit that was cycles 29,290,414,049, asleep 3,248,474 and uncached stores 9,007,258. Every event the profiler counts lands in exactly one place, so the charging loses nothing and counts nothing twice. The five tables stand as measured.
+
 ## What changed from v0
 
 - Marks: their own system call, not `halo_profile_phase` (its four-phase mask and thread walk). The switch count is read as one value. The keep word is read once. Boxes are once-a-tick regions, ≤ ~60 marks a tick, checked in the emulator first. Collision is priced from halo_box, not marked per call. A null mark pair is subtracted.
