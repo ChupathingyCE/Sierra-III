@@ -36,7 +36,7 @@ The boxes, as built (the engine's perf phases; each row is exclusive of the boxe
 - **frame** (folded once a frame): the netcode, the render's other work (with its small parts: begin, setup, lens flares, the screen effect, end), its parts (world, objects, transparent, effects, HUD), sound (`game_sound_update` and `sound_render`), present, the vsync wait, the render's occlusion and texture waits. The small parts and the network (which the campaign never runs) are boxes only under `framepicall`: framepic1 counted 68-74 marks a frame with them, over the ~60 bound [E, exact count];
 - "outside any box", and "the marks", the null pair once a tick.
 
-v0's finer tick boxes (biped motion, posing, vehicles) are entered once an object, inside `objects_update`, so they would break the ~60 bound. Like collision, each is a priced column inside objects' row (halo_box's price per entity × its counted entities), not a row. Visibility, the draw list, lighting and the GE's forms run inside the render's parts and are named by them.
+`game.c`'s perf statements are stripped before its fixups are matched (`PERF_STRIP`), so under `PSP_FRAMEPIC` the tick's boxes are put back last, around the calls as the other fixups leave them (framepic1b's marks by box had none of them). v0's finer tick boxes (biped motion, posing, vehicles) are entered once an object, inside `objects_update`, so they would break the ~60 bound. Like collision, each is a priced column inside objects' row (halo_box's price per entity × its counted entities), not a row. Visibility, the draw list, lighting and the GE's forms run inside the render's parts and are named by them.
 
 ## 4. The split
 
