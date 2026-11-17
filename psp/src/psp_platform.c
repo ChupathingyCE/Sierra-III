@@ -1457,7 +1457,7 @@ static void keep_load(void)
 	platform_log("keep words, build 122's behaviour calls (opt-in, for an A/B): aihalf aihalfdistN aihalfview; campaign only: machinesfar posehalf");
 	platform_log("keep words, compromises: lodpspoff (models' detail picked at the PSP's size, not 1.76x nearer; on by default, lodpsp still accepted), lodpspall (the nearer pick with no floor for models whose lower levels lose a part); recon: lodpspscan (every model's floor logged as a map's first model is drawn)");
 	platform_log("keep words, compromises (opt-in, for an A/B): campaign only: aicad2 (each actor thinks on every other tick, staggered), aicad3 (the same, the timeslice at full rate), aifar (with aicad3: far actors out of the fight think on one tick in four); recon: aioutcome");
-	platform_log("keep words, the Media Engine's wake: opt-in: mewake (the ME started again after a sleep; mewakeoff wins over it), mewakeearly (with mewake: released in the kernel's wake handler, not at a frame end), mewakeprobe (with mewake: at the restart the ME tries each kind of job work before its loop, marked step by step), mewakefw (with mewake: the restart lets go of the AVC and AW resets launch found let go); fix off: meresetwhole (the reset register written whole); recon: mewaketest; test: mebcc1 (the ME unit word m-cid finds fastest)");
+	platform_log("keep words, the Media Engine's wake: opt-in: mewake (the ME started again after a sleep; mewakeoff wins over it), mewakeearly (with mewake: released in the kernel's wake handler, not at a frame end), mewakeprobe (with mewake: at the restart the ME tries each kind of job work before its loop, marked step by step), mewakefw (with mewake: the restart lets go of the AVC and AW resets launch found let go); mewakeflush (with mewake: the DDR controller's flush before and after the release, as Sony's ME boot does); fix off: meresetwhole (the reset register written whole); recon: mewaketest; test: mebcc1 (the ME unit word m-cid finds fastest)");
 	platform_log("keep words, the level given from an origin near the eye: restoration off: levellocaloff (the level's copies from the world's origin, as before); instrument (opt-in): geprecision (the GE's precision measured as the first frame begins: the log's geprecision lines)");
 	platform_log("keep words, see-through as the Xbox draws it: restorations off: nolevelglow (the level's self-illumination pass), seethroughpush (the port's depth nudges for surfaces that aren't decals), seethroughwrap (every map repeated), waterunfogged (added water unfogged); look call (opt-in): ditherhalf, ditherlift on by default (offsets +4; noditherlift turns it off), dithershift (detail and sky passes dithered, the pattern moved each pass) dithershiftall (every blend); recon: noglowpass nobackpass ditherprobe (the GE's rounding, logged at start-up)");
 	platform_log("keep words, build 126's: speed off: pathclearfull (a path search's whole state cleared before it, RV2), deletedwalkall (a deleted object's fix-up walks every object, RV1), aipathold (the nearby firing positions test searches first, smoothing scans from the first, RV4); checks: pathclearpoison deletedcheck aipathcheck; restorations off: weaponstateold (the HUD's weapon state left as the stack held it, RB1), aimchangeold (a still unit with no aiming limit at full aiming change, RH1)");
@@ -2435,6 +2435,8 @@ static int exit_callbacks_registered[3] = { 1, 1, 1 };
 /* back to the XMB (or ARK-4's menu), saying why in the log */
 void psp_pad_exit(void);
 
+void psp_partmap_say(const char *when);
+
 static void exit_game(const char *why)
 {
 	exiting = 1;
@@ -2459,6 +2461,7 @@ static void exit_game(const char *why)
 	the drain above (a HOME exit keeps what was written each 64 frames) */
 	if (strcmp(why, "HOME") != 0)
 		psp_pad_exit();
+	psp_partmap_say("the exit");
 	platform_log("%s: exiting", why);
 	log_flush();
 	/* the XMB gets its sleep switch back (psp_sleepguard.c) */
@@ -2639,6 +2642,7 @@ static int power_callback(int unknown, int flags, void *argument)
 			psp_io_reopen_all(0, line, sizeof(line));
 			platform_log("sleep: awake; %s", line);
 		}
+		psp_partmap_say("the wake");
 		psp_tex_resume();
 		psp_geo_resume();
 		psp_ge_inflight_room_resume();
@@ -3926,6 +3930,16 @@ static struct
 	/* "pcsampleother": a third table for the other phases; the kernel's
 	samples by phase (psp/profile/main.c) */
 	volatile unsigned int pc_tables, pc_kernel_by_phase[4];
+	/* "sleepmem": the ME partition watched by the module (psp/profile/main.c;
+	the lab's memory_stones row 1), in the module's order */
+	volatile unsigned int sleepmem_wanted, sleepmem_chunk_us, sleepmem_watches, sleepmem_us;
+	volatile unsigned int sleepmem_hash[16], sleepmem_changes[16];
+	volatile unsigned int sleepmem_word18, sleepmem_bc0, sleepmem_bc4;
+	volatile int sleepmem_kernel_free, sleepmem_kernel_free_low;
+	/* "partmap": the module's map of the ME partition (psp/profile/main.c) */
+	volatile unsigned int partmap_wanted, partmap_all, partmap_filled, partmap_passes, partmap_step_us, partmap_game_time;
+	volatile unsigned int partmap_seen[256], partmap_word[256], partmap_value[256], partmap_ms[256], partmap_when[256];
+	volatile unsigned int partmap_hash[256];
 } hwprofile __attribute__((aligned(64)));
 /* "pcsample": 512-byte bins over the program's code, the tick's and the
 drawing's (~54 KB for 3.5 MB of code); written to log/pcsample.txt every
@@ -3938,6 +3952,12 @@ static unsigned long long hwprofile_phase_last[HW_PHASES][HW_COUNTERS];
 static int partitions_reported = 0;
 static unsigned long long hwprofile_last[HW_COUNTERS];
 static int hwprofile_running = 0;
+
+/* halo_profile.prx loaded: its system calls may be made (psp_me.c's meddrkcheck) */
+int psp_hwprofile_running(void)
+{
+	return hwprofile_running;
+}
 
 /* build 46: tell the profiler what the game is doing now (the system call
 halo_profile.prx exports; psp/profile/exports.exp). Only with the module
@@ -3984,6 +4004,11 @@ static void hwprofile_start(const char *eboot_path)
 	slash = strrchr(path, '/');
 	snprintf(slash ? slash + 1 : path, sizeof(path) - (slash ? (size_t)(slash + 1 - path) : 0), "halo_profile.prx");
 	hwprofile.threads_wanted = psp_keep("hwthreads") != 0;
+	/* "sleepmem": the module watches the ME partition, a whole watch every 1.6 s */
+	hwprofile.sleepmem_wanted = psp_keep("sleepmem") != 0;
+	/* "partmap" ("partmapall" writes the lower half, Sony's ME image, too) */
+	hwprofile.partmap_wanted = psp_keep("partmap") != 0 || psp_keep("partmapall") != 0;
+	hwprofile.partmap_all = psp_keep("partmapall") != 0;
 	if (psp_keep("pcsample"))
 	{
 		extern char _ftext[], _etext[];
@@ -4156,6 +4181,29 @@ static void pc_report(void)
 	pc_write(LOG_FOLDER "/pcsample.txt", samples);
 }
 
+/* partmap's count, now and with a reason: every 36 passes from the report,
+and at the sleep, the wake and the exit (psp_sleep.c, exit_game), so a short
+stretch after a wake still says how many passes it had */
+static unsigned int partmap_reported_passes;
+
+void psp_partmap_say(const char *when)
+{
+	unsigned int k, pages = 0, upper = 0;
+
+	if (!hwprofile.partmap_wanted || !hwprofile.partmap_filled)
+		return;
+	for (k = 0; k < 256; k++)
+		if (hwprofile.partmap_seen[k])
+		{
+			pages++;
+			upper += k >= 128;
+		}
+	platform_log("partmap%s%s: %u passes; %u of 256 pages changed (%u of the 128 written, %u of the image half's hashed); a step %u us at most; the clock %u ms",
+		*when ? " at " : "", when, hwprofile.partmap_passes, pages, upper, pages - upper, hwprofile.partmap_step_us,
+		sceKernelGetSystemTimeLow() / 1000);
+	partmap_reported_passes = hwprofile.partmap_passes;
+}
+
 static void hwprofile_report(void)
 {
 	unsigned long long d[HW_COUNTERS];
@@ -4177,6 +4225,92 @@ static void hwprofile_report(void)
 		platform_log("memory partitions (1 kernel, 2 the game, 5 the borrowed 4 MB):%s", length ? line : " none reported");
 		platform_log("coprocessor 0 register 24: 0x%08x (bit 0, the firmware's test for the 04g+ boards' L2 cache: %s)",
 			hwprofile.cop0_24, hwprofile.cop0_24 & 1 ? "set" : "clear");
+	}
+	if (hwprofile.sleepmem_wanted && hwprofile.sleepmem_watches)
+	{
+		static unsigned int reported_watches, reported_changes, first_said;
+		unsigned int changed = 0, lower = 0, upper = 0;
+		char line[200];
+		int length = 0;
+
+		for (k = 0; k < 16; k++)
+		{
+			if (k < 8)
+				lower += hwprofile.sleepmem_changes[k];
+			else
+				upper += hwprofile.sleepmem_changes[k];
+			if (hwprofile.sleepmem_changes[k])
+				changed |= 1u << k;
+		}
+		if (!first_said)
+		{
+			first_said = 1;
+			platform_log("sleepmem: first watch: 0xBC000000 %08x, 0xBC000004 %08x, word +0x18 %08x",
+				hwprofile.sleepmem_bc0, hwprofile.sleepmem_bc4, hwprofile.sleepmem_word18);
+		}
+		/* a line when anything moved, and one about a minute regardless (a
+		watch is 1.6 s) */
+		if (hwprofile.sleepmem_watches != reported_watches &&
+			(lower + upper != reported_changes || hwprofile.sleepmem_watches / 36 != reported_watches / 36))
+		{
+			for (k = 0; k < 16 && length < (int)sizeof(line) - 12; k++)
+				length += snprintf(line + length, sizeof(line) - length, " %u", hwprofile.sleepmem_changes[k]);
+			platform_log("sleepmem: %u watches; chunks changed %04x (lower half %u changes, upper %u; by chunk:%s); word +0x18 %08x; kernel partition free %d KB, low %d KB; a watch %u us by the clock, a chunk at most %u us",
+				hwprofile.sleepmem_watches, changed, lower, upper, line, hwprofile.sleepmem_word18,
+				hwprofile.sleepmem_kernel_free / 1024, hwprofile.sleepmem_kernel_free_low / 1024, hwprofile.sleepmem_us, hwprofile.sleepmem_chunk_us);
+			reported_watches = hwprofile.sleepmem_watches;
+			reported_changes = lower + upper;
+		}
+	}
+	if (hwprofile.partmap_wanted && hwprofile.partmap_filled)
+	{
+		/* each page's first change, once, as it's seen; and a count about a
+		minute (a pass is 1.6 s) */
+		extern long game_time_get(void);
+		static unsigned char said[256];
+		static int said_hashes;
+		unsigned int pages = 0, upper = 0;
+
+		hwprofile.partmap_game_time = (unsigned int)game_time_get();
+		for (k = 0; k < 256; k++)
+		{
+			if (!hwprofile.partmap_seen[k])
+				continue;
+			pages++;
+			upper += k >= 128;
+			if (said[k])
+				continue;
+			said[k] = 1;
+			if (hwprofile.partmap_word[k] == 0xFFFFFFFFu)
+				platform_log("partmap: page %u (+0x%05x, the image half) changed from its first hash: first seen at %u ms, game time %u, phase %u (hash %08x)",
+					k, k * 4096, hwprofile.partmap_ms[k], hwprofile.partmap_when[k] >> 4, hwprofile.partmap_when[k] & 15,
+					hwprofile.partmap_value[k]);
+			else
+				platform_log("partmap: page %u (+0x%05x) changed: first word +0x%05x holds %08x (wanted %08x), first seen at %u ms, game time %u, phase %u",
+					k, k * 4096, hwprofile.partmap_word[k], hwprofile.partmap_value[k], hwprofile.partmap_word[k] ^ 0xC3A55A3Cu,
+					hwprofile.partmap_ms[k], hwprofile.partmap_when[k] >> 4, hwprofile.partmap_when[k] & 15);
+		}
+		if (!said_hashes)
+		{
+			/* the lower half's first hashes, so one launch can be set
+			against another: each launch takes its own, and only a
+			change within the launch is reported otherwise */
+			char line[300];
+			unsigned int row, length;
+
+			said_hashes = 1;
+			for (row = 0; row < 4; row++)
+			{
+				length = 0;
+				for (k = row * 32; k < row * 32 + 32; k++)
+					length += snprintf(line + length, sizeof(line) - length, " %08x", hwprofile.partmap_hash[k]);
+				platform_log("partmap: launch hashes, pages %u-%u:%s", row * 32, row * 32 + 31, line);
+			}
+		}
+		if (hwprofile.partmap_passes != partmap_reported_passes && hwprofile.partmap_passes / 36 != partmap_reported_passes / 36)
+			psp_partmap_say("");
+		(void)pages;
+		(void)upper;
 	}
 	for (k = 0; k < HW_COUNTERS; k++)
 	{
@@ -4613,10 +4747,12 @@ static int heartbeat_thread(SceSize args, void *argp)
 				/* build 87: the Media Engine's jobs (psp_me.c), every window */
 				extern void psp_me_report(void);
 				extern void psp_me_edram_probe(void);
+				extern void psp_me_ddr_probe(void);
 				extern void psp_me_vme_probe(void);
 
 				psp_me_report();
 				psp_me_edram_probe(); /* build 115: edramcheck */
+				psp_me_ddr_probe(); /* meddrprobe */
 				psp_me_vme_probe(); /* vmetest (psp_vme.c) */
 			}
 			{

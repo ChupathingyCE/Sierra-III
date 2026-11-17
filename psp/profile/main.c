@@ -68,6 +68,27 @@ struct totals
 	end), so the time outside the tick and the drawing is named too; the
 	kernel's samples by the phase they fell in (system calls, firmware) */
 	volatile unsigned int pc_tables, pc_kernel_by_phase[4];
+	/* "sleepmem" (memory_stones row 1): the ME partition (0x08300000-0x083FFFFF)
+	watched read-only from here, as user mode can't read it. With
+	sleepmem_wanted set before the module starts, the sampler hashes its 16
+	64 KB chunks in turn, one every 100 ms (sleepmem_step), counts each
+	chunk's changes from one watch to the next, keeps word +0x18 (the image's witness), the
+	two words at 0xBC000000/04 as the first watch saw them, and the kernel
+	partition's free space, now and its low */
+	volatile unsigned int sleepmem_wanted, sleepmem_chunk_us, sleepmem_watches, sleepmem_us;
+	volatile unsigned int sleepmem_hash[16], sleepmem_changes[16];
+	volatile unsigned int sleepmem_word18, sleepmem_bc0, sleepmem_bc4;
+	volatile int sleepmem_kernel_free, sleepmem_kernel_free_low;
+	/* "partmap" (Sheepdog01 2026-11-16 21:55: who touches the ME partition, and
+	when): the kernel writes its upper 512 KB with the ME probe's pattern
+	(word = offset ^ 0xC3A55A3C) at the first step and hashes the lower half's
+	pages (Sony's ME image, not written unless partmap_all), then re-reads 16
+	4 KB pages a step; for each page, the first change it saw (the word's
+	offset in the partition, its value, the system clock in ms, the phase and
+	the game time the game wrote) and how many reads found it changed */
+	volatile unsigned int partmap_wanted, partmap_all, partmap_filled, partmap_passes, partmap_step_us, partmap_game_time;
+	volatile unsigned int partmap_seen[256], partmap_word[256], partmap_value[256], partmap_ms[256], partmap_when[256];
+	volatile unsigned int partmap_hash[256];
 };
 
 static struct totals *table = 0;
@@ -251,6 +272,36 @@ int halo_profile_bus_probe(unsigned int *pairs, int max_pairs)
 	return count;
 }
 
+/* the system call (exports.exp, "meddrprobe"'s cross-check): one piece of the
+ME partition read from the kernel through its uncached window and compared
+with the pattern the ME filled it with (word = offset ^ 0xC3A55A3C), so a
+wrong word the ME reads back can be told from a word that really changed.
+out: [0] words wrong, [1] the first's offset, [2] its value. Returns 0, or -1
+for a piece outside the partition or a buffer outside user RAM */
+int halo_profile_ddr_check(unsigned int offset, unsigned int bytes, unsigned int *out)
+{
+	unsigned int start = (unsigned int)out & 0x1FFFFFFF, k, wrong = 0, first = 0, value = 0;
+	const volatile unsigned int *word = (const volatile unsigned int *)(0xA8300000u + offset);
+
+	if ((offset & 3) || bytes > 0x100000u || offset > 0x100000u - bytes || start < 0x08800000 ||
+		start + 12 > 0x0A000000)
+		return -1;
+	for (k = 0; k < bytes; k += 4, word++)
+	{
+		unsigned int got = *word;
+
+		if (got != ((offset + k) ^ 0xC3A55A3Cu) && !wrong++)
+		{
+			first = offset + k;
+			value = got;
+		}
+	}
+	out[0] = wrong;
+	out[1] = first;
+	out[2] = value;
+	return 0;
+}
+
 /* the system call (exports.exp): the game's thread changes phase. A system
 call arrives with k1 marking a user-mode caller, and the firmware then
 refuses the refer calls' buffers (they're on this call's kernel stack) and
@@ -305,6 +356,129 @@ static int pc_handler(void)
 	return -1;
 }
 
+/* "sleepmem": the ME partition hashed one 64 KB chunk a sampler tick, so a
+whole watch takes 1.6 s and no tick holds the game long. Read uncached
+(0xA8300000), with no cache operation: nothing here can write the range. A
+chunk's hash is a rotate-and-add over its words: any changed word changes it
+but for a vanishing chance */
+#define SLEEPMEM_BASE 0xA8300000u
+#define SLEEPMEM_CHUNK (64 * 1024)
+static unsigned int sleepmem_chunk;
+static unsigned long long sleepmem_started;
+
+static void sleepmem_step(void)
+{
+	unsigned int chunk = sleepmem_chunk;
+	const volatile unsigned int *word = (const volatile unsigned int *)(SLEEPMEM_BASE + chunk * SLEEPMEM_CHUNK);
+	const volatile unsigned int *end = word + SLEEPMEM_CHUNK / 4;
+	unsigned int hash = 0x811C9DC5u, us;
+	unsigned long long chunk_start = sceKernelGetSystemTimeWide();
+
+	if (chunk == 0)
+		sleepmem_started = chunk_start;
+	while (word < end)
+		hash = ((hash << 5) | (hash >> 27)) + *word++;
+	/* (the longest a chunk held this thread: what the game can lose to it) */
+	us = (unsigned int)(sceKernelGetSystemTimeWide() - chunk_start);
+	if (us > table->sleepmem_chunk_us)
+		table->sleepmem_chunk_us = us;
+	if (table->sleepmem_watches && hash != table->sleepmem_hash[chunk])
+		table->sleepmem_changes[chunk]++;
+	table->sleepmem_hash[chunk] = hash;
+	if (++sleepmem_chunk < 16)
+		return;
+	sleepmem_chunk = 0;
+	table->sleepmem_word18 = *(volatile unsigned int *)(SLEEPMEM_BASE + 0x18);
+	if (!table->sleepmem_watches)
+	{
+		table->sleepmem_bc0 = *(volatile unsigned int *)0xBC000000;
+		table->sleepmem_bc4 = *(volatile unsigned int *)0xBC000004;
+		table->sleepmem_kernel_free_low = 0x7FFFFFFF;
+	}
+	table->sleepmem_kernel_free = sceKernelPartitionTotalFreeMemSize(1);
+	if (table->sleepmem_kernel_free < table->sleepmem_kernel_free_low)
+		table->sleepmem_kernel_free_low = table->sleepmem_kernel_free;
+	/* (the watch's span by the clock, the sampler's 1.5 s of sleeps in it) */
+	table->sleepmem_us = (unsigned int)(sceKernelGetSystemTimeWide() - sleepmem_started);
+	table->sleepmem_watches++;
+}
+
+/* "partmap" (the table's fields say what). A step reads 16 pages, so a pass
+of all 256 takes 1.6 s; each page is read uncached, with no cache operation */
+#define PARTMAP_PATTERN 0xC3A55A3Cu
+static unsigned int partmap_next;
+
+static void partmap_note(unsigned int page, unsigned int word, unsigned int value)
+{
+	if (!table->partmap_seen[page]++)
+	{
+		table->partmap_word[page] = word;
+		table->partmap_value[page] = value;
+		table->partmap_ms[page] = sceKernelGetSystemTimeLow() / 1000; /* 32-bit: the module has no 64-bit divide */
+		table->partmap_when[page] = (table->partmap_game_time << 4) | (unsigned int)(phase_current & 15);
+	}
+}
+
+static void partmap_step(void)
+{
+	unsigned long long start = sceKernelGetSystemTimeWide();
+	unsigned int k, w, us;
+
+	if (!table->partmap_filled)
+	{
+		/* the upper half (and with partmap_all the lower) written once */
+		for (w = table->partmap_all ? 0 : 0x80000; w < 0x100000; w += 4)
+			*(volatile unsigned int *)(SLEEPMEM_BASE + w) = w ^ PARTMAP_PATTERN;
+		for (k = 0; k < 256; k++)
+		{
+			const volatile unsigned int *word = (const volatile unsigned int *)(SLEEPMEM_BASE + k * 4096);
+			unsigned int hash = 0x811C9DC5u;
+
+			for (w = 0; w < 1024; w++)
+				hash = ((hash << 5) | (hash >> 27)) + word[w];
+			table->partmap_hash[k] = hash;
+		}
+		table->partmap_filled = 1;
+		return;
+	}
+	for (k = 0; k < 16; k++)
+	{
+		unsigned int page = partmap_next, base = page * 4096;
+		const volatile unsigned int *word = (const volatile unsigned int *)(SLEEPMEM_BASE + base);
+
+		if (page >= 128 || table->partmap_all)
+		{
+			for (w = 0; w < 1024; w++)
+			{
+				unsigned int got = word[w];
+
+				if (got != ((base + w * 4) ^ PARTMAP_PATTERN))
+				{
+					partmap_note(page, base + w * 4, got);
+					break;
+				}
+			}
+		}
+		else
+		{
+			unsigned int hash = 0x811C9DC5u;
+
+			for (w = 0; w < 1024; w++)
+				hash = ((hash << 5) | (hash >> 27)) + word[w];
+			if (hash != table->partmap_hash[page])
+				partmap_note(page, 0xFFFFFFFFu, hash);
+		}
+		if (++partmap_next == 256)
+		{
+			partmap_next = 0;
+			table->partmap_passes++;
+		}
+	}
+	us = (unsigned int)(sceKernelGetSystemTimeWide() - start);
+	if (us > table->partmap_step_us)
+		table->partmap_step_us = us;
+}
+
 static int sampler(SceSize args, void *argp)
 {
 	unsigned int last[COUNTERS], now[COUNTERS], k;
@@ -313,6 +487,10 @@ static int sampler(SceSize args, void *argp)
 	profiler_read(last);
 	for (;;)
 	{
+		if (table->sleepmem_wanted)
+			sleepmem_step();
+		if (table->partmap_wanted)
+			partmap_step();
 		sceKernelDelayThread(100000);
 		profiler_read(now);
 		for (k = 0; k < COUNTERS; k++)

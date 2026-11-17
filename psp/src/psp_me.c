@@ -67,6 +67,12 @@ ships beside the EBOOT. */
 #include "psp_lanetrace.h"
 #include "psp_paths.h"   /* ms0:/halo or ms0:/halomp, and the maps */
 
+/* meddrprobe's window: the ME partition's top 64 KB (offsets in the partition),
+far above the ME image's ~502 KB and unused in play on both PSPs (sleepmem) */
+#define PSP_ME_DDR_MARK 0xDD0B0E5Au /* the check job's mark in its results[5] */
+#define PSP_ME_DDR_FIRST 0x80000u /* the lowest a fill may start: above the ME image's ~502 KB */
+#define PSP_ME_DDR_PIECE 0x1000u
+
 void platform_log(const char *format, ...);
 void psp_log_flush(void);
 int psp_keep(const char *name);
@@ -788,6 +794,61 @@ static void run_job(volatile struct me_slot *slot, int *sums, int on_me)
 	case ME_JOB_VME:
 		psp_vme_job(slot->args, slot->results, on_me);
 		break;
+	case ME_JOB_DDR:
+	{
+		/* "meddrprobe" (memory_stones row 7): can the ME write and read back
+		the ME partition's top while the game makes its syscalls? 6.61 resets
+		the DDR protection to 0xCCCCCCCC after every syscall, and nothing on
+		record says whether the ME's accesses are held to it. args: 0 fill /
+		1 check, the first byte's offset in the partition, the bytes. Through
+		the uncached window (0xA8300000), so neither CPU's cache stands
+		between the ME and main RAM, and the kernel walker (sleepmem) sees
+		what landed. Each word holds its own offset mixed with a constant.
+		Only on the ME: the main CPU is user mode and can't reach it */
+		unsigned int first = slot->args[1], bytes = slot->args[2], at, bad = 0, first_bad = 0xFFFFFFFFu, found = 0, cycles_at;
+
+		if (!on_me || first < PSP_ME_DDR_FIRST || first + bytes > 0x100000u)
+		{
+			slot->results[0] = 0xFFFFFFFFu;
+			break;
+		}
+		slot->results[3] = 0xFFFFFFFFu;
+		/* the access time, by the ME's own counter (the lead 18:4x): cycles
+		for the whole stretch, so a slow window shows as itself and not as a
+		watchdog's halt */
+		cycles_at = me_cycles();
+		for (at = first; at < first + bytes; at += 4)
+		{
+			volatile unsigned int *word = (volatile unsigned int *)(0xA8300000u + at);
+			unsigned int want = at ^ 0xC3A55A3Cu;
+
+			/* where it got to, in the slot (uncached): a job that never ends
+			says from there how far its accesses went (meddrprobe again
+			43983579216: the first fill never finished) */
+			if (!(at & 0x3F))
+				slot->results[3] = at;
+
+			if (slot->args[0] == 0)
+				*word = want;
+			else if (*word != want)
+			{
+				if (!bad++)
+				{
+					first_bad = at;
+					found = *word;
+				}
+			}
+		}
+		slot->results[0] = bad;
+		slot->results[1] = first_bad;
+		slot->results[2] = found;
+		slot->results[4] = me_cycles() - cycles_at;
+		/* the job's mark: the sound tier's copy job shares the slot and writes
+		its own results there (copied bytes, two hashes), which a check read as
+		its own once (meddrkcheck-probe 44013676791) */
+		slot->results[5] = PSP_ME_DDR_MARK ^ slot->args[1];
+		break;
+	}
 	case ME_JOB_SOUNDCOPY:
 	{
 		/* "soundedram": up to four pieces (source, destination, bytes in
@@ -2140,6 +2201,30 @@ held, which the firmware's own ME boot lets go of last
 (sceSysregAvcResetDisable, me_wrapper's boot) and ours never did. The ME
 then made 91 idle polls and hung in its first job */
 static int wake_fw = 0;
+/* "mewakeflush": the DDR controller's flush around the ME's release, as
+Sony's own ME boot does it (me_wrapper's boot: a flush of kind 4 before the
+release, kind 8 after, each polled to done). A real power-down sends the RAM
+through self-refresh, and the restarted ME then hung in its probe's stack
+step (the lab's mewakefw_restart_fails_1000) where a restart without a
+power-down runs clean (mewaketest_restart_clean_3000). Each poll's count is
+reported with the restart, -1 if it timed out */
+static int wake_flush = 0;
+static int wake_flush_spins[2];
+static char flush_note[96];
+#define DDR_FLUSH_REGISTER 0xBD000004u
+#define DDR_FLUSH_POLLS 1000000
+
+static int ddr_flush(unsigned int kind)
+{
+	int spins = 0;
+
+	hw(DDR_FLUSH_REGISTER) = kind;
+	__asm__ __volatile__("sync");
+	while (hw(DDR_FLUSH_REGISTER) != 0)
+		if (++spins >= DDR_FLUSH_POLLS)
+			return -1;
+	return spins;
+}
 #define WAKE_FW_RESETS 0x28u /* AW and AVC; the VME's (0x10) goes with the ME's */
 static volatile int wake_released_early = 0;
 static unsigned long long wake_early_release;
@@ -2699,6 +2784,7 @@ int psp_me_start(void)
 	wake_features = control->features | (psp_keep("mewakeprobe") ? ME_FEATURE_WAKE_PROBE : 0u);
 	wake_early = psp_keep("mewake") && !psp_keep("mewakeoff") && psp_keep("mewakeearly");
 	wake_fw = psp_keep("mewakefw");
+	wake_flush = psp_keep("mewakeflush");
 	platform_log("ME: the ME runs (firmware table %d; %u idle polls in 20 ms; its cycle counter runs at %.1f a microsecond%s; Cause %08x, after clearing DC %08x)",
 		table, control->alive - before, me_cycles_per_us, me_cycles_per_us < 1.0f ? ": ME times will read 0" : "",
 		control->cause_before, control->cause_after);
@@ -2790,10 +2876,10 @@ static int me_run_slot(int which, unsigned int type, const unsigned int *args, i
 			for audio jobs (about 1 ms each); b112's render jobs ran up to
 			39.6 ms on the PSP, and the one past 40 ms stopped the ME [M] */
 			/* build 115: the eDRAM probe too, which may wait behind a render job, and the VME probe on its slot */
-			if (sceKernelGetSystemTimeWide() - start > (type == ME_JOB_GE || type == ME_JOB_EDRAM || type == ME_JOB_VME ? 500000 : 40000))
+			if (sceKernelGetSystemTimeWide() - start > (type == ME_JOB_GE || type == ME_JOB_EDRAM || type == ME_JOB_VME || type == ME_JOB_DDR ? 500000 : 40000))
 			{
 				platform_log("ME: a job (type %u) not finished in %u ms (job %u; the ME at job %u, %u idle polls)", type,
-					type == ME_JOB_GE || type == ME_JOB_EDRAM || type == ME_JOB_VME ? 500 : 40, slot_request[which], slot->done, CONTROL->alive);
+					type == ME_JOB_GE || type == ME_JOB_EDRAM || type == ME_JOB_VME || type == ME_JOB_DDR ? 500 : 40, slot_request[which], slot->done, CONTROL->alive);
 				me_stash_dump("a slot job late");
 				stats[which].failures++;
 				psp_me_stop("a job timed out");
@@ -4693,7 +4779,11 @@ static int me_restart_kernel(void *unused)
 	memcpy((void *)(ME_HANDLER_BASE + stub), &__start__me_section, handler);
 	sceKernelDcacheWritebackInvalidateAll();
 	sceKernelIcacheInvalidateAll();
+	if (wake_flush)
+		wake_flush_spins[0] = ddr_flush(4);
 	reset_release();
+	if (wake_flush)
+		wake_flush_spins[1] = ddr_flush(8);
 	if (wake_fw)
 	{
 		/* only the blocks launch found running, a bit at a time as the
@@ -4800,24 +4890,30 @@ void psp_me_wake_poll(void)
 	while (control->alive == 0 && (now = sceKernelGetSystemTimeWide()) - release < WAKE_ANSWER_US)
 		sceKernelDelayThread(500);
 answered:
+	if (wake_flush)
+		snprintf(flush_note, sizeof(flush_note), "; mewakeflush: the DDR flush before the release %d polls, after %d (-1: timed out)",
+			wake_flush_spins[0], wake_flush_spins[1]);
+	else
+		flush_note[0] = '\0';
 	kcall_3(me_sysregs_kernel, me_kseg, &regs_answer);
 	if (control->alive == 0 || me_sleeps != sleeps)
 	{
 		kcall_2(me_hold_reset, me_kseg);
 		me_maybe_running = 0;
-		wake_report("ME: restart after the wake FAILED (%s; the ME's start got %s); held in reset, the main CPU runs its jobs",
+		wake_report("ME: restart after the wake FAILED (%s; the ME's start got %s)%s; held in reset, the main CPU runs its jobs",
 			control->alive == 0 ? "no idle poll within 300 ms of the reset's release" : "the PSP slept again meanwhile",
-			wake_stage(&regs_answer));
+			wake_stage(&regs_answer), flush_note);
 		return;
 	}
 	me_state = 1;
 	me_cpu_check(control, "restart");
-	wake_report("ME: restarted after wake in %lu ms (its first idle poll %lu us after the reset's release%s; %u frame ends waiting for its clients%s)",
+	wake_report("ME: restarted after wake in %lu ms (its first idle poll %lu us after the reset's release%s; %u frame ends waiting for its clients%s)%s",
 		(unsigned long)((now - wake_mark) / 1000), (unsigned long)(now - release),
 		release < wake_mark ? ", released in the kernel's wake handler" : "", wake_frames,
 		!(wake_features & ME_FEATURE_WAKE_PROBE) ? "" :
 		regs_answer.marks[2] != ME_MARK_PROBE_BASE + 0xf ? "; the probe didn't finish" :
-		regs_answer.marks[3] ? "; the probe finished, some steps read back wrong (marks)" : "; the probe's 5 steps all right");
+		regs_answer.marks[3] ? "; the probe finished, some steps read back wrong (marks)" : "; the probe's 5 steps all right",
+		flush_note);
 }
 
 /* every word the ME reads at its start, as at launch; the slots and the
@@ -5127,6 +5223,154 @@ void psp_me_edram_probe(void)
 				passes, checked, EDRAM_PROBE_PIECE / 1024, bad_pieces, hash_moved,
 				stack_lowest == 0xFFFFFFFFu ? 0 : (0x200000u - stack_lowest) / 1024);
 	}
+}
+
+/* "meddrprobe": the ME patterns the partition's top 64 KB once, then checks
+one 4 KB piece a heartbeat, so each piece is read back across seconds of the
+game's syscalls. A check that finds its pattern says the ME's reads and
+writes there aren't held to the DDR protection; the kernel walker (keep word
+sleepmem) sees the fill land as one changed chunk, the top one, and nothing
+after it. Off by default: a measurement */
+void psp_me_ddr_probe(void)
+{
+	static int asked = -1;
+	static unsigned int filled = 0, next = 0, checked = 0, bad_pieces = 0, bad_words = 0, refused = 0, slot_waits = 0;
+	static unsigned int start = 0, pieces = 0, fill_worst = 0, check_worst = 0;
+	static int burst = -1, kcheck = -1;
+	static unsigned int kbad_pieces = 0, kbad_words = 0, disagree = 0;
+	static unsigned int clashes = 0;
+	unsigned int kout[3];
+	int k;
+	static unsigned long long fill_cycles = 0, check_cycles = 0;
+	unsigned int args[3], results[ME_JOB_RESULTS] = { 0 }, first;
+
+	if (!start)
+	{
+		/* meddrstartN: the fill's first KB (default 960, the top 64 KB);
+		run 3 (43986111922, the 1000) stopped the ME at +0xf2c00-0xf3000, so a
+		start lower down finds the lowest live address above it */
+		int kb = psp_keep_number("meddrstart", 960);
+
+		if (kb < (int)(PSP_ME_DDR_FIRST / 1024))
+			kb = PSP_ME_DDR_FIRST / 1024;
+		if (kb > 1020)
+			kb = 1020;
+		start = (unsigned int)kb * 1024u & ~(PSP_ME_DDR_PIECE - 1);
+		pieces = (0x100000u - start) / PSP_ME_DDR_PIECE;
+		/* with "partmap" the kernel module wrote the pattern (psp/profile/main.c):
+		the ME only reads it back, beside the module's own reads */
+		if (psp_keep("partmap") || psp_keep("partmapall"))
+			filled = pieces;
+	}
+
+	if (asked < 0)
+		asked = psp_keep("meddrprobe") != 0;
+	if (!asked || me_state != 1)
+		return;
+	/* the sound tier hands its copies to this slot without waiting
+	(psp_sound_upload_poll, on this thread): a run on the slot while one is
+	out takes the other's place and times out (meddrprobe 43981252966: job 5
+	never started, the ME stopped). So a heartbeat with the slot busy waits */
+	if (me_mark(ME_SLOT_PROBE))
+	{
+		slot_waits++;
+		return;
+	}
+	/* meddrburstN: up to N pieces filled a report window (default 16):
+	at one a window, run 43993720269 (the 3000, from 512 KB) reached only
+	~700 KB by exitat130, short of the stop near the top */
+	if (burst < 0)
+		burst = psp_keep_number("meddrburst", 16);
+	for (k = 0; filled < pieces && k < burst; k++)
+	{
+		if (k && me_mark(ME_SLOT_PROBE))
+			return;
+		args[0] = 0;
+		args[1] = start + filled * PSP_ME_DDR_PIECE;
+		args[2] = PSP_ME_DDR_PIECE;
+		if (!psp_me_run(ME_SLOT_PROBE, ME_JOB_DDR, args, 3, results, 2000) || results[0] == 0xFFFFFFFFu)
+		{
+			volatile struct me_slot *slot = SLOT(ME_SLOT_PROBE);
+
+			if (!refused++)
+				platform_log("ME: meddrprobe: the fill's job didn't finish: the ME began job %u (asked %u), its last mark +0x%x of +0x%x-0x%x, results %08x %08x",
+					slot->begun, slot_request[ME_SLOT_PROBE], slot->results[3], args[1], args[1] + args[2], results[0], results[1]);
+			return;
+		}
+		fill_cycles += results[4];
+		if (results[4] > fill_worst)
+			fill_worst = results[4];
+		if (++filled == pieces)
+			platform_log("ME: meddrprobe: the ME partition's %u-%u KB patterned from the ME, one 4 KB piece checked a heartbeat; the fill %.3f cycles a word (the worst piece %.3f)",
+				start / 1024, 1024u, (double)fill_cycles / (pieces * (PSP_ME_DDR_PIECE / 4)), (double)fill_worst / (PSP_ME_DDR_PIECE / 4));
+	}
+	if (k)
+		return;
+	first = start + next * PSP_ME_DDR_PIECE;
+	args[0] = 1;
+	args[1] = first;
+	args[2] = PSP_ME_DDR_PIECE;
+	if (!psp_me_run(ME_SLOT_PROBE, ME_JOB_DDR, args, 3, results, 2000) || results[0] == 0xFFFFFFFFu)
+	{
+		refused++;
+		return;
+	}
+	/* a result that isn't this check's (the slot's other job's: see the
+	job's mark) is set aside and the piece checked again */
+	if (results[5] != (PSP_ME_DDR_MARK ^ first) || results[0] > PSP_ME_DDR_PIECE / 4)
+	{
+		if (!clashes++)
+			platform_log("ME: meddrprobe: a check's results weren't its own (%08x %08x %08x, mark %08x): the slot's other job's; checked again",
+				results[0], results[1], results[2], results[5]);
+		return;
+	}
+	checked++;
+	/* meddrkcheck: the same piece read from the kernel (halo_profile.prx's
+	halo_profile_ddr_check, loaded by hwprofile), so a wrong word the ME
+	read back can be told from one that really changed (meddrprobe-burst
+	43995856563: two pieces wrong from the ME, no change seen by sleepmem) */
+	if (kcheck < 0)
+	{
+		extern int psp_hwprofile_running(void); /* psp_platform.c */
+
+		kcheck = psp_keep("meddrkcheck") && psp_hwprofile_running();
+	}
+	if (kcheck)
+	{
+		int halo_profile_ddr_check(unsigned int offset, unsigned int bytes, unsigned int *out);
+
+		if (halo_profile_ddr_check(first, PSP_ME_DDR_PIECE, kout) == 0)
+		{
+			if (kout[0])
+			{
+				kbad_words += kout[0];
+				if (!kbad_pieces++)
+					platform_log("ME: meddrprobe: the kernel read the %u KB piece back %u words wrong, the first at +0x%x (0x%08x, wanted 0x%08x)",
+						first / 1024, kout[0], kout[1], kout[2], kout[1] ^ 0xC3A55A3Cu);
+			}
+			if ((kout[0] != 0) != (results[0] != 0) && !disagree++)
+				platform_log("ME: meddrprobe: the ME and the kernel disagree on the %u KB piece: %u words wrong from the ME, %u from the kernel",
+					first / 1024, results[0], kout[0]);
+		}
+	}
+	check_cycles += results[4];
+	if (results[4] > check_worst)
+		check_worst = results[4];
+	if (results[0])
+	{
+		bad_words += results[0];
+		if (!bad_pieces++)
+			platform_log("ME: meddrprobe: the partition's %u KB piece read back %u words wrong, the first at +0x%x (0x%08x, wanted 0x%08x)",
+				first / 1024, results[0], results[1], results[2], results[1] ^ 0xC3A55A3Cu);
+	}
+	next = (next + 1) % pieces;
+	if ((checked & 15) == 0)
+		platform_log("ME: meddrprobe: %u pieces checked, %u wrong (%u words), %u jobs refused, %u heartbeats waited for the slot; a check %.3f cycles a word (the worst %.3f)",
+			checked, bad_pieces, bad_words, refused, slot_waits, (double)check_cycles / (checked * (PSP_ME_DDR_PIECE / 4)),
+			(double)check_worst / (PSP_ME_DDR_PIECE / 4));
+	if ((checked & 15) == 0 && kcheck)
+		platform_log("ME: meddrprobe: from the kernel, %u pieces wrong (%u words); the two disagree on %u pieces; %u results set aside as the slot's other job's",
+			kbad_pieces, kbad_words, disagree, clashes);
 }
 
 /* the longest line platform_log writes whole (its buffer, psp_fixups.py),
