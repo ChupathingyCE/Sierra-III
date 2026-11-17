@@ -804,7 +804,7 @@ static void run_job(volatile struct me_slot *slot, int *sums, int on_me)
 		between the ME and main RAM, and the kernel walker (sleepmem) sees
 		what landed. Each word holds its own offset mixed with a constant.
 		Only on the ME: the main CPU is user mode and can't reach it */
-		unsigned int first = slot->args[1], bytes = slot->args[2], at, bad = 0, first_bad = 0xFFFFFFFFu, found = 0;
+		unsigned int first = slot->args[1], bytes = slot->args[2], at, bad = 0, first_bad = 0xFFFFFFFFu, found = 0, cycles_at;
 
 		if (!on_me || first < PSP_ME_DDR_FIRST || first + bytes > 0x100000u)
 		{
@@ -812,6 +812,10 @@ static void run_job(volatile struct me_slot *slot, int *sums, int on_me)
 			break;
 		}
 		slot->results[3] = 0xFFFFFFFFu;
+		/* the access time, by the ME's own counter (the lead 18:4x): cycles
+		for the whole stretch, so a slow window shows as itself and not as a
+		watchdog's halt */
+		cycles_at = me_cycles();
 		for (at = first; at < first + bytes; at += 4)
 		{
 			volatile unsigned int *word = (volatile unsigned int *)(0xA8300000u + at);
@@ -837,6 +841,7 @@ static void run_job(volatile struct me_slot *slot, int *sums, int on_me)
 		slot->results[0] = bad;
 		slot->results[1] = first_bad;
 		slot->results[2] = found;
+		slot->results[4] = me_cycles() - cycles_at;
 		break;
 	}
 	case ME_JOB_SOUNDCOPY:
@@ -2747,10 +2752,10 @@ static int me_run_slot(int which, unsigned int type, const unsigned int *args, i
 			for audio jobs (about 1 ms each); b112's render jobs ran up to
 			39.6 ms on the PSP, and the one past 40 ms stopped the ME [M] */
 			/* build 115: the eDRAM probe too, which may wait behind a render job, and the VME probe on its slot */
-			if (sceKernelGetSystemTimeWide() - start > (type == ME_JOB_GE || type == ME_JOB_EDRAM || type == ME_JOB_VME ? 500000 : 40000))
+			if (sceKernelGetSystemTimeWide() - start > (type == ME_JOB_GE || type == ME_JOB_EDRAM || type == ME_JOB_VME || type == ME_JOB_DDR ? 500000 : 40000))
 			{
 				platform_log("ME: a job (type %u) not finished in %u ms (job %u; the ME at job %u, %u idle polls)", type,
-					type == ME_JOB_GE || type == ME_JOB_EDRAM || type == ME_JOB_VME ? 500 : 40, slot_request[which], slot->done, CONTROL->alive);
+					type == ME_JOB_GE || type == ME_JOB_EDRAM || type == ME_JOB_VME || type == ME_JOB_DDR ? 500 : 40, slot_request[which], slot->done, CONTROL->alive);
 				me_stash_dump("a slot job late");
 				stats[which].failures++;
 				psp_me_stop("a job timed out");
@@ -5096,7 +5101,8 @@ void psp_me_ddr_probe(void)
 {
 	static int asked = -1;
 	static unsigned int filled = 0, next = 0, checked = 0, bad_pieces = 0, bad_words = 0, refused = 0, slot_waits = 0;
-	static unsigned int start = 0, pieces = 0;
+	static unsigned int start = 0, pieces = 0, fill_worst = 0, check_worst = 0;
+	static unsigned long long fill_cycles = 0, check_cycles = 0;
 	unsigned int args[3], results[ME_JOB_RESULTS] = { 0 }, first;
 
 	if (!start)
@@ -5141,9 +5147,12 @@ void psp_me_ddr_probe(void)
 					slot->begun, slot_request[ME_SLOT_PROBE], slot->results[3], args[1], args[1] + args[2], results[0], results[1]);
 			return;
 		}
+		fill_cycles += results[4];
+		if (results[4] > fill_worst)
+			fill_worst = results[4];
 		if (++filled == pieces)
-			platform_log("ME: meddrprobe: the ME partition's %u-%u KB patterned from the ME, one 4 KB piece checked a heartbeat",
-				start / 1024, 1024u);
+			platform_log("ME: meddrprobe: the ME partition's %u-%u KB patterned from the ME, one 4 KB piece checked a heartbeat; the fill %.3f cycles a word (the worst piece %.3f)",
+				start / 1024, 1024u, (double)fill_cycles / (pieces * (PSP_ME_DDR_PIECE / 4)), (double)fill_worst / (PSP_ME_DDR_PIECE / 4));
 		return;
 	}
 	first = start + next * PSP_ME_DDR_PIECE;
@@ -5156,6 +5165,9 @@ void psp_me_ddr_probe(void)
 		return;
 	}
 	checked++;
+	check_cycles += results[4];
+	if (results[4] > check_worst)
+		check_worst = results[4];
 	if (results[0])
 	{
 		bad_words += results[0];
@@ -5165,8 +5177,9 @@ void psp_me_ddr_probe(void)
 	}
 	next = (next + 1) % pieces;
 	if ((checked & 15) == 0)
-		platform_log("ME: meddrprobe: %u pieces checked, %u wrong (%u words), %u jobs refused, %u heartbeats waited for the slot",
-			checked, bad_pieces, bad_words, refused, slot_waits);
+		platform_log("ME: meddrprobe: %u pieces checked, %u wrong (%u words), %u jobs refused, %u heartbeats waited for the slot; a check %.3f cycles a word (the worst %.3f)",
+			checked, bad_pieces, bad_words, refused, slot_waits, (double)check_cycles / (checked * (PSP_ME_DDR_PIECE / 4)),
+			(double)check_worst / (PSP_ME_DDR_PIECE / 4));
 }
 
 /* the longest line platform_log writes whole (its buffer, psp_fixups.py),
