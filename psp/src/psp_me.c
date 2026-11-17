@@ -69,6 +69,7 @@ ships beside the EBOOT. */
 
 /* meddrprobe's window: the ME partition's top 64 KB (offsets in the partition),
 far above the ME image's ~502 KB and unused in play on both PSPs (sleepmem) */
+#define PSP_ME_DDR_MARK 0xDD0B0E5Au /* the check job's mark in its results[5] */
 #define PSP_ME_DDR_FIRST 0x80000u /* the lowest a fill may start: above the ME image's ~502 KB */
 #define PSP_ME_DDR_PIECE 0x1000u
 
@@ -842,6 +843,10 @@ static void run_job(volatile struct me_slot *slot, int *sums, int on_me)
 		slot->results[1] = first_bad;
 		slot->results[2] = found;
 		slot->results[4] = me_cycles() - cycles_at;
+		/* the job's mark: the sound tier's copy job shares the slot and writes
+		its own results there (copied bytes, two hashes), which a check read as
+		its own once (meddrkcheck-probe 44013676791) */
+		slot->results[5] = PSP_ME_DDR_MARK ^ slot->args[1];
 		break;
 	}
 	case ME_JOB_SOUNDCOPY:
@@ -5104,6 +5109,7 @@ void psp_me_ddr_probe(void)
 	static unsigned int start = 0, pieces = 0, fill_worst = 0, check_worst = 0;
 	static int burst = -1, kcheck = -1;
 	static unsigned int kbad_pieces = 0, kbad_words = 0, disagree = 0;
+	static unsigned int clashes = 0;
 	unsigned int kout[3];
 	int k;
 	static unsigned long long fill_cycles = 0, check_cycles = 0;
@@ -5180,6 +5186,15 @@ void psp_me_ddr_probe(void)
 		refused++;
 		return;
 	}
+	/* a result that isn't this check's (the slot's other job's: see the
+	job's mark) is set aside and the piece checked again */
+	if (results[5] != (PSP_ME_DDR_MARK ^ first) || results[0] > PSP_ME_DDR_PIECE / 4)
+	{
+		if (!clashes++)
+			platform_log("ME: meddrprobe: a check's results weren't its own (%08x %08x %08x, mark %08x): the slot's other job's; checked again",
+				results[0], results[1], results[2], results[5]);
+		return;
+	}
 	checked++;
 	/* meddrkcheck: the same piece read from the kernel (halo_profile.prx's
 	halo_profile_ddr_check, loaded by hwprofile), so a wrong word the ME
@@ -5225,8 +5240,8 @@ void psp_me_ddr_probe(void)
 			checked, bad_pieces, bad_words, refused, slot_waits, (double)check_cycles / (checked * (PSP_ME_DDR_PIECE / 4)),
 			(double)check_worst / (PSP_ME_DDR_PIECE / 4));
 	if ((checked & 15) == 0 && kcheck)
-		platform_log("ME: meddrprobe: from the kernel, %u pieces wrong (%u words); the two disagree on %u pieces",
-			kbad_pieces, kbad_words, disagree);
+		platform_log("ME: meddrprobe: from the kernel, %u pieces wrong (%u words); the two disagree on %u pieces; %u results set aside as the slot's other job's",
+			kbad_pieces, kbad_words, disagree, clashes);
 }
 
 /* the longest line platform_log writes whole (its buffer, psp_fixups.py),
