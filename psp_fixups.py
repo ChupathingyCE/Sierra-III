@@ -54412,7 +54412,9 @@ for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + 
 # boxes out of the frame picture (framepic1b's marks by box had no units, AI,
 # effects, game engine or objects). They go back here, last, around the calls
 # as the fixups above leave them: the bench's tests (FIXES_112) stay the
-# first statement under each, so a mark is never an if's body
+# first statement under each, so a mark is never an if's body. The players'
+# two updates are left unmarked (their time is the tick's other work): as
+# units entries they cost 4 marks a tick and put c40 at 60 (framepic1c)
 if os.environ.get("PSP_FRAMEPIC", "") == "1":
     FIXES.setdefault("source/game/game.c", []).extend([
 ("""#include "units/vehicles.h"
@@ -54448,12 +54450,6 @@ if os.environ.get("PSP_FRAMEPIC", "") == "1":
 		network_actors_drive();
 	HALO_PERF_END(_halo_perf_tick_ai);
 """),
-("""	players_update_before_game();
-""",
- """	HALO_PERF_BEGIN(_halo_perf_tick_units);
-	players_update_before_game();
-	HALO_PERF_END(_halo_perf_tick_units);
-"""),
 ("""#ifdef HALO_PSP
 	if (!(psp_bench_skip & PSP_SKIP_EFFECTS))
 #endif
@@ -54483,12 +54479,6 @@ if os.environ.get("PSP_FRAMEPIC", "") == "1":
 #endif
 	objects_update();
 	HALO_PERF_END(_halo_perf_tick_objects);
-"""),
-("""	players_update_after_game();
-""",
- """	HALO_PERF_BEGIN(_halo_perf_tick_units);
-	players_update_after_game();
-	HALO_PERF_END(_halo_perf_tick_units);
 """),
     ])
 
