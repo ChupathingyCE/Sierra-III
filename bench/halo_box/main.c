@@ -559,6 +559,19 @@ static int capture_files(void)
 	return count;
 }
 
+/* the FPU's traps masked first, as the game masks them (psp_platform.c,
+psp_fpu_mask_traps): an untaken FPU trap switches the PSP off (B-VFPUEXACT);
+flush to zero, as the game runs */
+static void fpu_mask_traps(void)
+{
+	unsigned int control;
+
+	__asm__ __volatile__("cfc1 %0, $31" : "=r"(control));
+	control &= ~0x00000F80u;
+	control |= 0x01000000u;
+	__asm__ __volatile__("ctc1 %0, $31" : : "r"(control));
+}
+
 int main(void)
 {
 	struct harness_options options = { 0, { 0 }, 1, 256, 91, 0 };
@@ -566,6 +579,7 @@ int main(void)
 	char *word, *rest = keep_text;
 	int file_count, k, result, spoil = 0, read_test = 0;
 
+	fpu_mask_traps();
 	pspDebugScreenInit();
 	scePowerSetClockFrequency(333, 333, 166);
 	keep_read();
