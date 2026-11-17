@@ -128,6 +128,30 @@ Units, the game engine, sound, the netcode, present and the vsync wait are each 
 
 **Not yet read:** the identity check (§7 b), each column summed over the boxes against the module's own whole-frame counters, waits on those counters taken over the same window.
 
+## The second table: c20 (PSP-1000, 2026-11-17)
+
+sierra-hw 44062045115: the same build and recipe as b30's, c20_leg2 to 150 s legendary, the whole run (2,451 frames, 4,499 ticks: 1.84 ticks a frame), two runs a side; the lab's row `frame_picture_c20_1000` [M]. Columns as b30's. The two framepic runs agree within 1% in every box over 0.1 ms.
+
+| Box | Per | Mean | Work | Code wait | Data wait | Unexplained |
+|---|---|---:|---:|---:|---:|---:|
+| objects | tick | 23.9 | 7.1 | 6.7 | 3.0-5.7 | 4.3-7.0 |
+| the tick's other work | tick | 2.9 | 1.1 | 0.6 | 0.5-1.0 | 0.3-0.8 |
+| AI (main CPU) | tick | 1.0 | 0.4 | 0.2 | 0.2-0.4 | 0.04-0.2 |
+| effects | tick | 0.48 | 0.18 | 0.11 | 0.08-0.15 | 0.04-0.11 |
+| render: world | frame | 8.4 | 4.4 | 1.2 | 1.9-3.5 | 0-1.0 |
+| outside any box | frame | 6.1 | 2.9 | 1.4 | 1.0-1.8 | 0.1-0.9 |
+| render: objects | frame | 5.5 | 2.2 | 1.4 | 1.1-2.1 | 0-0.8 |
+| render: effects | frame | 2.0 | 1.2 | 0.3 | 0.3-0.5 | 0-0.2 |
+| render: transparent | frame | 1.9 | 1.0 | 0.17 | 0.4-0.8 | 0-0.2 |
+| render: HUD | frame | 1.7 | 0.9 | 0.4 | 0.15-0.3 | 0.1-0.2 |
+| render: other | frame | 1.6 | 0.8 | 0.3 | 0.3-0.6 | 0-0.2 |
+
+Units, the game engine, sound, the netcode, present and the vsync wait are each under 0.1 ms; asleep is ~0 everywhere.
+
+**What it says:** the objects' update is ~85% of c20's tick (23.9 of ~28 ms), and over half of it is waiting: code 6.7 ms (a larger share than b30's 5.0 of 20.5), data 3.0-5.7, and 4.3-7.0 ms the prices don't explain. The unexplained part grows with the objects' load from b30 to c20. A likely cause [U] is that §6's prices were measured with the GE idle, and they rise ~1.4x at GE 35% (P_I 56 to ~77, P_D 51-98 to ~75-137). At those prices the unexplained objects part would mostly become code and data waiting. The identity check (§7 b) and a price under load are what settle it.
+
+**The instruments' cost, off against framepic:** the first stretch's frame +1.0 ms, +1.3% (real); play's frame +0.5 ms, +0.8% (real), its drawing +1.1 ms, +5.2% (real). As on b30's landing, drawing carries the cost, which points at the per-mark switch-count call again. The c40 and b30 three-ways (`framepic framepicnosw`) decide it.
+
 ## What changed from v0
 
 - Marks: their own system call, not `halo_profile_phase` (its four-phase mask and thread walk). The switch count is read as one value. The keep word is read once. Boxes are once-a-tick regions, ≤ ~60 marks a tick, checked in the emulator first. Collision is priced from halo_box, not marked per call. A null mark pair is subtracted.
