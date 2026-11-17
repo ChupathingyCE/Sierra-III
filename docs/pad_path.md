@@ -228,6 +228,10 @@ All proofs are emulator runs unless marked. Keep words: `pathrec` (`pathlog`), `
 - **The lab's tools:** `padfromlog.py <log> <out.pad|-> [<out.path>]`, `pathcheck.py <path> [<recording log>]` (§5's proof), `watchread.py name=log ...` (runs side by side per window, the census as a percentage of the first run's). Tested on a made-up log in the game's formats.
 - **Not in these slices:** the path's header holds only its format (the pad's checksum, the builds and the difficulty wait for the builder's pad header); the rig's copy of the path to the stick.
 
+### The held bench on the PSP (2026-11-17 12:4x, the builder's read; the lab's `heldaa-b30` sierra-hw 44144377915, findings `heldaa_b30_psp1000`) [M]
+
+An A/A on the PSP-1000, 62b2c457 + PSP_PADPATH=1: b30_leg2 with its pathlegs1 path (proven to the level's end), `padhold seed1 | padhold seed2`, repeat 2, to 4,500 ticks, statecrc on. **Each seed's two runs are identical in play and both seeds at every tick**, where unheld b30_leg2 runs of one build part near 2,400 (the lab's bugs.md B91). The seeds play different games from tick 0, as §2.3 wants. The hold held from tick 900 (0 ticks over the snap bound), forced the recording's kills on schedule and steered from ~4,200; the repeats' interactive time agreed within 0.1 s of ~300 s. So §2.3's reading stands on the PSP: a held pair is read whole, with the seeds' spread as its noise.
+
 ### Slice 3's results (2026-11-13 03:46, the builder's read; the lab's `padpath3` 43397924653, findings `padpath3_hold`, table `psp/sierra/findings/padpath3_watch.txt`) [E]
 
 - **Inert on its own game:** `padhold` on the path's build and seed: play and both seeds identical to the run without it over 29,208 ticks, every `hold:` line zero.
