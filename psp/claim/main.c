@@ -19,7 +19,6 @@ PSP_MODULE_INFO("halo_claim", 0x1006, 1, 0);
 PSP_NO_CREATE_MAIN_THREAD();
 
 #define ME_PARTITION 4
-#define ME_PARTITION_ADDRESS 0x08300000u
 #define ME_PARTITION_BYTES (1024u * 1024u)
 
 static SceUID claim = -1;
@@ -60,8 +59,12 @@ int module_start(SceSize args, void *argp)
 
 	(void)args;
 	(void)argp;
-	block = sceKernelAllocPartitionMemory(ME_PARTITION, "halo sndpart", PSP_SMEM_Addr, ME_PARTITION_BYTES,
-		(void *)ME_PARTITION_ADDRESS);
+	/* from the bottom, not at an address: sysmem keeps a kernel partition's
+	addresses in the cached kernel segment (0x88300000), so asking for
+	0x08300000 lies outside it (800200d9 on the PSP-3000, the partition all
+	free). The partition is exactly the block's size, so the bottom is its
+	base, and the game checks the address it got. */
+	block = sceKernelAllocPartitionMemory(ME_PARTITION, "halo sndpart", PSP_SMEM_Low, ME_PARTITION_BYTES, NULL);
 	if (block < 0)
 		claim_error = block;
 	else
