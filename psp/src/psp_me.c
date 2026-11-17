@@ -2270,23 +2270,45 @@ it without a block, so the claim reserves the whole megabyte at its start */
 #define ME_PARTITION_BYTES (1024u * 1024u)
 static SceUID partition_claim = -1;
 static int partition_claim_error = 0;
+static void *partition_claim_at = NULL;
+
+/* k1 set, the old value back: the helper runs our function in kernel mode
+but leaves k1 marking the user-mode caller that came in through its system
+call, and sysmem's user calls then refuse partition 4 as a user caller's
+(800200d6, sndpart-pair-v2's b30 on the PSP-1000). Cleared, they answer as
+for kernel code, as halo_profile.prx does for its own calls */
+static inline unsigned int k1_swap(unsigned int value)
+{
+	unsigned int old;
+
+	__asm__ volatile ("move %0, $k1\n\tmove $k1, %1" : "=&r"(old) : "r"(value));
+	return old;
+}
 
 static int partition_claim_kernel(void)
 {
+	unsigned int k1 = k1_swap(0);
 	SceUID block = sceKernelAllocPartitionMemory(ME_PARTITION, "halo sndpart", PSP_SMEM_Addr,
 		ME_PARTITION_BYTES, (void *)ME_PARTITION_ADDRESS);
 
 	if (block >= 0)
+	{
 		partition_claim = block;
+		partition_claim_at = sceKernelGetBlockHeadAddr(block);
+	}
 	else
 		partition_claim_error = block;
+	k1_swap(k1);
 	return 0;
 }
 
 static int partition_free_kernel(void)
 {
+	unsigned int k1 = k1_swap(0);
+
 	if (partition_claim >= 0 && sceKernelFreePartitionMemory(partition_claim) >= 0)
 		partition_claim = -1;
+	k1_swap(k1);
 	return 0;
 }
 
@@ -2304,7 +2326,7 @@ int psp_me_claim_partition(void)
 		platform_log("ME: the partition's claim refused by sysmem (%08x)", (unsigned int)partition_claim_error);
 		return -1;
 	}
-	at = sceKernelGetBlockHeadAddr(partition_claim);
+	at = partition_claim_at;
 	if (((unsigned int)at & 0x1FFFFFFFu) != ME_PARTITION_ADDRESS)
 	{
 		platform_log("ME: the partition's claim came back at %08x, not %08x: given back", (unsigned int)at, ME_PARTITION_ADDRESS);
