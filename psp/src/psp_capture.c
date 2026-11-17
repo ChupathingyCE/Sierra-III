@@ -77,6 +77,9 @@ static int cap_on_me(void) { return PSP_ME_WORK(); }
 
 #define NEST_MOST 8
 #define ASIDE_BYTES (64u * 1024u)
+#define STATICS_FIRST (16u * 1024u)
+#define KEYS_FIRST (8u * 1024u)
+#define REFS_FIRST (16u * 1024u)
 
 static struct
 {
@@ -89,7 +92,12 @@ static struct
 	char scratch_path[80];
 	unsigned int scratch_bytes, file_ticks, file_entities, file_first_tick;
 	unsigned char *statics;
-	unsigned int static_bytes, static_room;
+	unsigned int static_bytes, static_room, inline_bytes;
+	/* statics kept by reference (psp_capture_static_ref): written from where
+	they lie when the file is finished */
+	struct cap_ref { unsigned int key, length; const void *bytes; } *refs;
+	unsigned int ref_count, ref_room;
+	unsigned int static_failed;
 	unsigned int *keys;
 	unsigned int key_count, key_room;
 	/* the tick being made */
@@ -154,7 +162,7 @@ static int scratch_begin(void)
 	snprintf(cap.scratch_path, sizeof(cap.scratch_path), CAP_FOLDER "/%s.tmp", cap.box);
 	cap.scratch = cap_open(cap.scratch_path, 1);
 	cap.scratch_bytes = cap.file_ticks = cap.file_entities = 0;
-	cap.static_bytes = cap.key_count = 0;
+	cap.static_bytes = cap.inline_bytes = cap.key_count = cap.ref_count = 0;
 	return cap.scratch != CAP_NO_FILE;
 }
 
@@ -193,7 +201,19 @@ static void file_finish(void)
 		good = 0;
 	else
 	{
-		good = cap_write(out, &header, sizeof(header)) && (!cap.static_bytes || cap_write(out, cap.statics, cap.static_bytes));
+		unsigned int r;
+
+		good = cap_write(out, &header, sizeof(header)) && (!cap.inline_bytes || cap_write(out, cap.statics, cap.inline_bytes));
+		for (r = 0; good && r < cap.ref_count; r++)
+		{
+			struct cap1_static record;
+
+			record.key = cap.refs[r].key;
+			record.length = cap.refs[r].length;
+			good = cap_write(out, &record, sizeof(record)) && (!record.length || cap_write(out, cap.refs[r].bytes, record.length));
+			if (good && (record.length & 3u))
+				good = cap_write(out, zeros, 4u - (record.length & 3u));
+		}
 		if (good && (cap.static_bytes & 63u))
 			good = cap_write(out, zeros, 64u - (cap.static_bytes & 63u));
 		/* (between ticks, so the tick's buffer is free to copy through) */
@@ -233,6 +253,11 @@ int psp_capture_open(const struct psp_capture_plan *plan)
 	cap.tick_room = cap.plan.tick_bytes_most ? cap.plan.tick_bytes_most : 512u * 1024u;
 	cap.tick = (unsigned char *)malloc(cap.tick_room);
 	cap.aside = (unsigned char *)malloc(ASIDE_BYTES);
+	/* the statics' room taken now with the tick's: in a full heap (b30) it
+	could not grow later, and every tick that met a new static was dropped */
+	cap.statics = (unsigned char *)room_for(0, &cap.static_room, STATICS_FIRST);
+	cap.keys = (unsigned int *)room_for(0, &cap.key_room, KEYS_FIRST);
+	cap.refs = (struct cap_ref *)room_for(0, &cap.ref_room, REFS_FIRST);
 	cap.scratch = CAP_NO_FILE;
 	cap_folder();
 	if (!cap.tick || !cap.aside || !scratch_begin())
@@ -297,23 +322,61 @@ void psp_capture_static(unsigned int key, const void *bytes, unsigned int length
 	for (k = 0; k < cap.key_count; k++)
 		if (cap.keys[k] == key)
 			return;
-	grown = room_for(cap.statics, &cap.static_room, cap.static_bytes + sizeof(record) + padded);
+	grown = room_for(cap.statics, &cap.static_room, cap.inline_bytes + sizeof(record) + padded);
 	if (grown)
 		cap.statics = (unsigned char *)grown;
 	grown = room_for(cap.keys, &cap.key_room, (cap.key_count + 1) * (unsigned int)sizeof(*cap.keys));
 	if (grown)
 		cap.keys = (unsigned int *)grown;
-	if (cap.static_bytes + sizeof(record) + padded > cap.static_room || (cap.key_count + 1) * sizeof(*cap.keys) > cap.key_room)
+	if (cap.inline_bytes + sizeof(record) + padded > cap.static_room || (cap.key_count + 1) * sizeof(*cap.keys) > cap.key_room)
 	{
 		cap.over = 1; /* a tick whose static couldn't be kept is no use */
+		if (!cap.static_failed++)
+			cap_log("capture %s: no room for a static of %u bytes (key %08x): its ticks are dropped", cap.box, length, key);
 		return;
 	}
 	record.key = key;
 	record.length = length;
-	memcpy(cap.statics + cap.static_bytes, &record, sizeof(record));
-	memcpy(cap.statics + cap.static_bytes + sizeof(record), bytes, length);
-	memset(cap.statics + cap.static_bytes + sizeof(record) + length, 0, padded - length);
+	memcpy(cap.statics + cap.inline_bytes, &record, sizeof(record));
+	memcpy(cap.statics + cap.inline_bytes + sizeof(record), bytes, length);
+	memset(cap.statics + cap.inline_bytes + sizeof(record) + length, 0, padded - length);
+	cap.inline_bytes += (unsigned int)sizeof(record) + padded;
 	cap.static_bytes += (unsigned int)sizeof(record) + padded;
+	cap.keys[cap.key_count++] = key;
+}
+
+/* a static too large to copy into the heap (a level's collision BSP): kept as
+its address, and written from there when the file is finished. The bytes must
+stay where they are, unchanged, until then: tag data loaded for the map, with
+the capture closed (exitat) before the map goes */
+void psp_capture_static_ref(unsigned int key, const void *bytes, unsigned int length)
+{
+	unsigned int k, padded = (length + 3u) & ~3u;
+	void *grown;
+
+	if (!cap.open || !cap.in_tick || cap_on_me())
+		return;
+	for (k = 0; k < cap.key_count; k++)
+		if (cap.keys[k] == key)
+			return;
+	grown = room_for(cap.refs, &cap.ref_room, (cap.ref_count + 1) * (unsigned int)sizeof(*cap.refs));
+	if (grown)
+		cap.refs = (struct cap_ref *)grown;
+	grown = room_for(cap.keys, &cap.key_room, (cap.key_count + 1) * (unsigned int)sizeof(*cap.keys));
+	if (grown)
+		cap.keys = (unsigned int *)grown;
+	if ((cap.ref_count + 1) * sizeof(*cap.refs) > cap.ref_room || (cap.key_count + 1) * sizeof(*cap.keys) > cap.key_room)
+	{
+		cap.over = 1;
+		if (!cap.static_failed++)
+			cap_log("capture %s: no room to note a static by reference (key %08x): its ticks are dropped", cap.box, key);
+		return;
+	}
+	cap.refs[cap.ref_count].key = key;
+	cap.refs[cap.ref_count].length = length;
+	cap.refs[cap.ref_count].bytes = bytes;
+	cap.ref_count++;
+	cap.static_bytes += (unsigned int)sizeof(struct cap1_static) + padded;
 	cap.keys[cap.key_count++] = key;
 }
 
@@ -463,6 +526,26 @@ void psp_capture_tick_end(void)
 		cap.largest_tick = cap.tick_used;
 }
 
+/* the file being made ended now, while what its by-reference statics point
+at is still there (a BSP switch, before the old BSP is unloaded); a tick in
+progress is dropped, since its records would straddle the two files */
+void psp_capture_cut(void)
+{
+	if (!cap.open || cap_on_me())
+		return;
+	if (cap.in_tick)
+	{
+		cap.over = 1;
+		psp_capture_tick_end();
+	}
+	file_finish();
+	if (!scratch_begin())
+	{
+		cap_log("capture %s: stopped: the next scratch file can't be made", cap.box);
+		cap.open = 0;
+	}
+}
+
 void psp_capture_close(void)
 {
 	if (!cap.open || cap_on_me())
@@ -475,6 +558,7 @@ void psp_capture_close(void)
 	free(cap.tick);
 	free(cap.aside);
 	free(cap.statics);
+	free(cap.refs);
 	free(cap.keys);
 	memset(&cap, 0, sizeof(cap));
 }

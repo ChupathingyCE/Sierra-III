@@ -638,7 +638,7 @@ int harness_run(const struct box_adapter *box, const char *const *files, int fil
 		unsigned int before;
 
 		plat_step("capture %s", files[f]);
-		if (!capture_open(&c, files[f], box->name))
+		if (!capture_open(&c, files[f], box->capture ? box->capture : box->name))
 		{
 			capture_close(&c);
 			continue;

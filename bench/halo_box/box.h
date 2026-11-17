@@ -45,11 +45,18 @@ struct box_adapter
 	element they were found at */
 	int (*compare)(int i, const void *got, const void *want, unsigned int length, float *largest_absolute,
 		float *largest_relative, unsigned int *element);
+	/* optional: the capture box this one reads, when it isn't its own name (a
+	box's second form over the first's capture) */
+	const char *capture;
 };
 
 extern const struct box_adapter box_null, box_selftest, box_posing;
 /* the frame picture's prices (adapters/price.c) */
 extern const struct box_adapter box_price_imiss, box_price_dclean, box_price_ddirty, box_price_uncached;
+/* the collision service: the BSP walk's forms (adapters/collbsp.c) and the pill sweep's (adapters/sweep.c) */
+extern const struct box_adapter box_collbsp, box_collbspa, box_collbspw, box_collbspr, box_collbspb, box_collbspm,
+	box_sweep0, box_sweepa, box_sweepf, box_sweepl, box_sweepb, box_sweepb25, box_sweepb100, box_sweepb25f, box_sweepb25l,
+	box_sweepp25, box_sweepb25m;
 /* every adapter built in, ended by a null (adapters.c) */
 extern const struct box_adapter *const box_adapters[];
 

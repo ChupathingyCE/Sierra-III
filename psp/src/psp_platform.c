@@ -3467,6 +3467,9 @@ void psp_tick_account(unsigned long microseconds)
 #ifdef PSP_CAPTURE_POSING
 			plan.box = "posing";
 #endif
+#ifdef PSP_CAPTURE_SWEEP
+			plan.box = "sweep";
+#endif
 			plan.map = "-";
 			plan.bench = psp_keep("padplay") ? "pad" : "route";
 			plan.first = (unsigned int)psp_keep_number("capfirst", 300);

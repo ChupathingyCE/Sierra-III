@@ -55,6 +55,14 @@ PSP_HEAP_SIZE_KB(-1024);
 /* ---------- the report ---------- */
 
 static char log_path[64] = "ms0:/halo/log/box.txt";
+
+/* B75: where the bench is, for the watchdog. A PSP that freezes (an FPU
+trap) stops the watchdog with it; a thread that blocks or spins doesn't, so
+a stall is named in the log and a freeze leaves it silent */
+static char where_step[160] = "the start";
+static volatile const char *where_now = "the start";
+static volatile unsigned int progress;
+#define WHERE(text) (where_now = (text), progress++)
 static char pending[8192];
 static unsigned int pending_bytes;
 
@@ -109,6 +117,10 @@ void plat_step(const char *format, ...)
 	va_list list;
 
 	va_start(list, format);
+	vsnprintf(where_step, sizeof(where_step), format, list);
+	va_end(list);
+	WHERE("the step itself");
+	va_start(list, format);
 	log_line("step: ", format, list);
 	va_end(list);
 	log_flush();
@@ -120,6 +132,7 @@ unsigned int plat_now(void) { return sceKernelGetSystemTimeLow(); }
 
 void plat_empty(void)
 {
+	WHERE("emptying the caches");
 	sceKernelDcacheWritebackInvalidateAll();
 	sceKernelIcacheInvalidateAll();
 }
@@ -155,6 +168,7 @@ static void crowd_init(void)
 
 void plat_crowd(void)
 {
+	WHERE("crowding the caches");
 	unsigned int *word = crowd_data, *end = crowd_data + CROWD_BYTES / 4;
 
 	for (; word < end; word += 16)
@@ -232,6 +246,30 @@ static void ge_block(unsigned int number, int *first, int ram_lines, int ram_wid
 	}
 }
 
+/* B75: every wait on the GE bounded, and named when it runs out: the GE
+left drawing is broken off and the GE runs are left out from then on */
+static int ge_wait(const char *what, unsigned int most_us)
+{
+	unsigned int start = sceKernelGetSystemTimeLow();
+	int state;
+
+	WHERE(what);
+	while ((state = sceGeDrawSync(1)) != PSP_GE_LIST_DONE)
+	{
+		if (sceKernelGetSystemTimeLow() - start > most_us)
+		{
+			plat_out("GE: %s: no end in %u ms (state %d, mark %u); the GE broken off and left out from here",
+				what, most_us / 1000, state, (unsigned int)(sceGeGetCmd(GE_MARK) & 0xffffffu));
+			sceGeBreak(1, 0);
+			ge_ready = 0;
+			return 0;
+		}
+		sceKernelDelayThread(100);
+	}
+	WHERE("after a GE wait");
+	return 1;
+}
+
 /* microseconds for `blocks` blocks of the given shape, waited for */
 static unsigned int ge_time(unsigned int blocks, int ram_lines, int ram_width, int vram_lines, int vram_width)
 {
@@ -243,7 +281,7 @@ static unsigned int ge_time(unsigned int blocks, int ram_lines, int ram_width, i
 	for (k = 0; k < blocks; k++)
 		ge_block(k, &first, ram_lines, ram_width, vram_lines, vram_width);
 	sceGuFinish();
-	sceGuSync(GU_SYNC_FINISH, GU_SYNC_WHAT_DONE);
+	ge_wait("ge_time's list", 2000000);
 	return plat_now() - before;
 }
 
@@ -280,7 +318,7 @@ static void ge_init(void)
 	sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGBA);
 	sceGuTexFilter(GU_NEAREST, GU_NEAREST);
 	sceGuFinish();
-	sceGuSync(GU_SYNC_FINISH, GU_SYNC_WHAT_DONE);
+	ge_wait("the GE's set-up list", 2000000);
 	ge_time(64, 1, 1, 1, 1);
 	/* 256 blocks whose sprites are one pixel each, then the same with 16 lines more of one sprite or the other */
 	small = (float)ge_time(256, 1, 1, 1, 1);
@@ -361,6 +399,7 @@ void plat_ge_start(int duty, unsigned int span_us)
 	unsigned int blocks, k;
 	int first = 0;
 
+	WHERE("plat_ge_start, then the pass beside the GE");
 	if (!ge_ready || duty < 1 || duty > 100)
 		return;
 	g = &ge_shapes[duty];
@@ -389,6 +428,7 @@ int plat_ge_stop(void)
 	unsigned int k;
 	int busy;
 
+	WHERE("plat_ge_stop");
 	if (!ge_ready)
 		return 1;
 	busy = sceGeDrawSync(1) != PSP_GE_LIST_DONE;
@@ -409,7 +449,7 @@ int plat_ge_stop(void)
 		ge_stop[k][0] = 0x0f000000u; /* FINISH */
 		ge_stop[k][1] = 0x0c000000u; /* END */
 	}
-	sceGuSync(GU_SYNC_FINISH, GU_SYNC_WHAT_DONE);
+	ge_wait("plat_ge_stop's stopped list", 2000000);
 	return busy;
 }
 
@@ -559,17 +599,63 @@ static int capture_files(void)
 	return count;
 }
 
-/* the FPU's traps masked first, as the game masks them (psp_platform.c,
-psp_fpu_mask_traps): an untaken FPU trap switches the PSP off (B-VFPUEXACT);
-flush to zero, as the game runs */
+/* a PSP thread starts with the FPU's overflow, divide-by-zero and invalid
+traps on, and an untaken trap freezes the PSP and switches it off (the game
+masks them on every thread: psp/src/psp_platform.c, psp_fpu_mask_traps); a
+box's maths over a capture can meet any of them, as the game's does */
 static void fpu_mask_traps(void)
 {
 	unsigned int control;
 
 	__asm__ __volatile__("cfc1 %0, $31" : "=r"(control));
-	control &= ~0x00000F80u;
-	control |= 0x01000000u;
+	/* and FS (bit 24) set (B75): with it clear an FPU operation on a
+	denormal, or one whose result would be one, raises the unimplemented
+	operation exception, which has no enable bit and freezes the PSP as the
+	others do (halo_vfpuexact 3b142b4 met it); with it set they're flushed to
+	zero */
+	control = (control & ~0x00000F80u) | 0x01000000u;
 	__asm__ __volatile__("ctc1 %0, $31" : : "r"(control));
+}
+
+/* B75: a thread above the bench's that looks every second: 8 s with no
+progress (no step, no cache emptying, no GE start or stop) and it writes
+where the bench was, to its own line in the log, once a minute while it
+lasts. It never touches the report's buffer */
+static int watchdog(SceSize args, void *argp)
+{
+	unsigned int seen = progress, still = 0, said = 0;
+	char line[320];
+
+	(void)args;
+	(void)argp;
+	for (;;)
+	{
+		sceKernelDelayThread(1000 * 1000);
+		if (progress != seen)
+		{
+			seen = progress;
+			still = 0;
+			said = 0;
+			continue;
+		}
+		still++;
+		if (still >= 8 && (!said || still - said >= 60))
+		{
+			SceUID file = sceIoOpen(log_path, PSP_O_WRONLY | PSP_O_CREAT | PSP_O_APPEND, 0777);
+			int length = snprintf(line, sizeof(line),
+				"WATCHDOG: no progress for %u s: the last step '%.150s', then %s; GE state %d, mark %u\n",
+				still, where_step, (const char *)where_now, sceGeDrawSync(1),
+				(unsigned int)(sceGeGetCmd(GE_MARK) & 0xffffffu));
+
+			if (file >= 0)
+			{
+				sceIoWrite(file, line, length);
+				sceIoClose(file);
+			}
+			said = still;
+		}
+	}
+	return 0;
 }
 
 int main(void)
@@ -580,6 +666,12 @@ int main(void)
 	int file_count, k, result, spoil = 0, read_test = 0;
 
 	fpu_mask_traps();
+	{
+		SceUID thread = sceKernelCreateThread("halo_box watchdog", watchdog, 0x11, 16 * 1024, PSP_THREAD_ATTR_USER, 0);
+
+		if (thread >= 0)
+			sceKernelStartThread(thread, 0, 0);
+	}
 	pspDebugScreenInit();
 	scePowerSetClockFrequency(333, 333, 166);
 	keep_read();
