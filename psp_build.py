@@ -1018,10 +1018,12 @@ def link(objs, stubs):
     # (the new stub format, psp-build-exports -k: two objects, the function's
     # stub referring to the library's entry, so --gc-sections keeps both; the
     # old format's library entry was dropped as unreferenced)
-    # (build 105: a second system call, the bus-priority probe: part 0002;
-    # the frame picture's box marks: part 0003; its identity check's totals:
-    # part 0004)
-    for part in ("0000", "0001", "0002", "0003", "0004"):
+    # (build 105: a second system call, the bus-priority probe: part 0002.)
+    # Every stub listed here stays in the EBOOT whether or not it is called,
+    # so the frame picture's two (the box marks, part 0003; the identity
+    # check's totals, part 0004) are linked only in a PSP_FRAMEPIC build: the
+    # default EBOOT stays as it was without them
+    for part in ("0000", "0001", "0002") + (("0003", "0004") if FRAMEPIC else ()):
         stub = os.path.join(OUT, "halo_profile_%s.o" % part)
         subprocess.run(["psp-gcc", "-G0", "-I" + SDK + "/include", "-DF_halo_profile_" + part, "-c",
                         os.path.join(HERE, "psp/profile/halo_profile.S"), "-o", stub], check=True)
