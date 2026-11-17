@@ -5102,7 +5102,9 @@ void psp_me_ddr_probe(void)
 	static int asked = -1;
 	static unsigned int filled = 0, next = 0, checked = 0, bad_pieces = 0, bad_words = 0, refused = 0, slot_waits = 0;
 	static unsigned int start = 0, pieces = 0, fill_worst = 0, check_worst = 0;
-	static int burst = -1;
+	static int burst = -1, kcheck = -1;
+	static unsigned int kbad_pieces = 0, kbad_words = 0, disagree = 0;
+	unsigned int kout[3];
 	int k;
 	static unsigned long long fill_cycles = 0, check_cycles = 0;
 	unsigned int args[3], results[ME_JOB_RESULTS] = { 0 }, first;
@@ -5175,6 +5177,34 @@ void psp_me_ddr_probe(void)
 		return;
 	}
 	checked++;
+	/* meddrkcheck: the same piece read from the kernel (halo_profile.prx's
+	halo_profile_ddr_check, loaded by hwprofile), so a wrong word the ME
+	read back can be told from one that really changed (meddrprobe-burst
+	43995856563: two pieces wrong from the ME, no change seen by sleepmem) */
+	if (kcheck < 0)
+	{
+		extern int psp_hwprofile_running(void); /* psp_platform.c */
+
+		kcheck = psp_keep("meddrkcheck") && psp_hwprofile_running();
+	}
+	if (kcheck)
+	{
+		int halo_profile_ddr_check(unsigned int offset, unsigned int bytes, unsigned int *out);
+
+		if (halo_profile_ddr_check(first, PSP_ME_DDR_PIECE, kout) == 0)
+		{
+			if (kout[0])
+			{
+				kbad_words += kout[0];
+				if (!kbad_pieces++)
+					platform_log("ME: meddrprobe: the kernel read the %u KB piece back %u words wrong, the first at +0x%x (0x%08x, wanted 0x%08x)",
+						first / 1024, kout[0], kout[1], kout[2], kout[1] ^ 0xC3A55A3Cu);
+			}
+			if ((kout[0] != 0) != (results[0] != 0) && !disagree++)
+				platform_log("ME: meddrprobe: the ME and the kernel disagree on the %u KB piece: %u words wrong from the ME, %u from the kernel",
+					first / 1024, results[0], kout[0]);
+		}
+	}
 	check_cycles += results[4];
 	if (results[4] > check_worst)
 		check_worst = results[4];
@@ -5190,6 +5220,9 @@ void psp_me_ddr_probe(void)
 		platform_log("ME: meddrprobe: %u pieces checked, %u wrong (%u words), %u jobs refused, %u heartbeats waited for the slot; a check %.3f cycles a word (the worst %.3f)",
 			checked, bad_pieces, bad_words, refused, slot_waits, (double)check_cycles / (checked * (PSP_ME_DDR_PIECE / 4)),
 			(double)check_worst / (PSP_ME_DDR_PIECE / 4));
+	if ((checked & 15) == 0 && kcheck)
+		platform_log("ME: meddrprobe: from the kernel, %u pieces wrong (%u words); the two disagree on %u pieces",
+			kbad_pieces, kbad_words, disagree);
 }
 
 /* the longest line platform_log writes whole (its buffer, psp_fixups.py),

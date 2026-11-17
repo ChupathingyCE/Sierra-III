@@ -3933,6 +3933,12 @@ static int partitions_reported = 0;
 static unsigned long long hwprofile_last[HW_COUNTERS];
 static int hwprofile_running = 0;
 
+/* halo_profile.prx loaded: its system calls may be made (psp_me.c's meddrkcheck) */
+int psp_hwprofile_running(void)
+{
+	return hwprofile_running;
+}
+
 /* build 46: tell the profiler what the game is doing now (the system call
 halo_profile.prx exports; psp/profile/exports.exp). Only with the module
 running: before it loads, the import isn't linked */

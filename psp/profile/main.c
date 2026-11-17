@@ -262,6 +262,36 @@ int halo_profile_bus_probe(unsigned int *pairs, int max_pairs)
 	return count;
 }
 
+/* the system call (exports.exp, "meddrprobe"'s cross-check): one piece of the
+ME partition read from the kernel through its uncached window and compared
+with the pattern the ME filled it with (word = offset ^ 0xC3A55A3C), so a
+wrong word the ME reads back can be told from a word that really changed.
+out: [0] words wrong, [1] the first's offset, [2] its value. Returns 0, or -1
+for a piece outside the partition or a buffer outside user RAM */
+int halo_profile_ddr_check(unsigned int offset, unsigned int bytes, unsigned int *out)
+{
+	unsigned int start = (unsigned int)out & 0x1FFFFFFF, k, wrong = 0, first = 0, value = 0;
+	const volatile unsigned int *word = (const volatile unsigned int *)(0xA8300000u + offset);
+
+	if ((offset & 3) || bytes > 0x100000u || offset > 0x100000u - bytes || start < 0x08800000 ||
+		start + 12 > 0x0A000000)
+		return -1;
+	for (k = 0; k < bytes; k += 4, word++)
+	{
+		unsigned int got = *word;
+
+		if (got != ((offset + k) ^ 0xC3A55A3Cu) && !wrong++)
+		{
+			first = offset + k;
+			value = got;
+		}
+	}
+	out[0] = wrong;
+	out[1] = first;
+	out[2] = value;
+	return 0;
+}
+
 /* the system call (exports.exp): the game's thread changes phase. A system
 call arrives with k1 marking a user-mode caller, and the firmware then
 refuses the refer calls' buffers (they're on this call's kernel stack) and

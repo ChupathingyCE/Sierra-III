@@ -1005,7 +1005,8 @@ def link(objs, stubs):
     # stub referring to the library's entry, so --gc-sections keeps both; the
     # old format's library entry was dropped as unreferenced)
     # (build 105: a second system call, the bus-priority probe: part 0002)
-    for part in ("0000", "0001", "0002"):
+    # (meddrprobe's kernel-side check: part 0003)
+    for part in ("0000", "0001", "0002", "0003"):
         stub = os.path.join(OUT, "halo_profile_%s.o" % part)
         subprocess.run(["psp-gcc", "-G0", "-I" + SDK + "/include", "-DF_halo_profile_" + part, "-c",
                         os.path.join(HERE, "psp/profile/halo_profile.S"), "-o", stub], check=True)
