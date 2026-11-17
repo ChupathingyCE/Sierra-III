@@ -147,7 +147,7 @@ The Allegrex is a MIPS 4K-based core: in-order, single-issue, and every interloc
 - **VRAM copies of model/level bytes are worth 15.9–17 µs of tick per KB resident on b30's flight and landing.** [M] `memory_ledger.md:149` — `15.9-17 us of tick a frame per KB`.
 - **A KB moved into VRAM changes the GE's own time by 1.63 µs.** [M on E] `redesign_plan.md:310` — `1.63 µs of GE time a KB`.
 - **c20's geometry read beside the ticks costs ~12.4 µs per KB/frame.** [M/U] `lab:coord/handoff/gebus.md:15` — `~12.4 us per KB a frame`.
-- **The GE's reads inside the ticks cost b30 11.7–15.1 ms of tick a frame (16–17%), c20 5.5 (15%), d20 3.4–4.4 (7–8%).** [U on E and M] `cpu_cost_map.md:86` — `cost b30 11.7–15.1 ms a frame of tick`.
+- **The GE's reads inside the ticks cost b30 11.7–15.1 ms [superseded 2026-11-16: the GE's toll in play, measured: b30 flight's tick 5.8 ms (15%) [M]; hardware_facts.md, Bus (the toll in play)] of tick a frame (16–17%), c20 5.5 (15%), d20 3.4–4.4 (7–8%).** [U on E and M] `cpu_cost_map.md:86` — `cost b30 11.7–15.1 ms a frame of tick`.
 - **The ME's own traffic costs the tick 1.4–6.7%.** [M] `hardware_utilization.md:245` — `Its traffic costs the tick 1.4-6.7%`.
 - **ME scattered misses slow the main CPU's tick +11.9% (+6.4 to +13.3) and slow the ME itself 15%; with arithmetic between loads, +5% and −10%.** [M] `me_programme.md:33` — `the main CPU's tick +11.9%`.
 - **ME work beside the main CPU: 4.5% tick slowdown for work like the CPU's own, 10–11% for scattered misses, 1–3% when on its own eDRAM; the ME itself runs 11–15% slower while the main CPU works.** [M] `plan_m6_limits.md:11` — `slows the main CPU's tick 4.5%`; `runs 11-15% slower while the main CPU works`.
