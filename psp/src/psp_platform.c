@@ -4645,6 +4645,10 @@ static int heartbeat_thread(SceSize args, void *argp)
 
 /* loads halo_crash.prx from the EBOOT's folder: a kernel-mode module that
 writes ms0:/halo/crash.txt when the game crashes (psp/crash/main.c) */
+/* the EBOOT's path, as main was given it: the helper modules sit beside it
+(halo_crash.prx, halo_profile.prx, halo_claim.prx) */
+char psp_eboot_path[256] = "ms0:/PSP/GAME/halo/EBOOT.PBP";
+
 static void load_crash_handler(const char *eboot_path)
 {
 	char path[256];
@@ -4794,6 +4798,8 @@ int main(int argc, char **argv)
 	scePowerSetClockFrequency(333, 333, 166);
 
 	load_crash_handler(argc > 0 ? argv[0] : NULL);
+	if (argc > 0 && argv[0])
+		snprintf(psp_eboot_path, sizeof(psp_eboot_path), "%s", argv[0]);
 
 	setenv("HALO_DATA_ROOT", DATA_ROOT, 1);
 	setenv("HALO_SAVE_ROOT", DATA_ROOT "/save", 1);

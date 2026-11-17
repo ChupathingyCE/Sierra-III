@@ -2261,80 +2261,60 @@ static void sysregs_line(char *line, int size, const char *name, const struct me
 		regs->avc, regs->marks[0], regs->marks[1], regs->marks[2], regs->marks[3]);
 }
 
-/* "sndpart"'s claim (psp_me.h). sysmem's user call refuses partition 4 to
-user mode, so it's made through the library's kernel helper, where it isn't
-asked whose call it is. Sony's ME image there isn't sysmem's: me_wrapper writes
-it without a block, so the claim reserves the whole megabyte at its start */
-#define ME_PARTITION 4
+/* "sndpart"'s claim (psp_me.h). sysmem's user call refuses partition 4
+whatever the caller's mode (800200d6 on the PSP-1000, from user code and from
+the ME library's kernel helper alike), and only its kernel export takes it.
+So the claim is halo_claim.prx's (psp/claim), loaded beside the EBOOT only
+for sndpart: it claims the whole megabyte at its start, and the game asks it
+what it got and has it give the block back at the exit. Sony's ME image isn't
+sysmem's (me_wrapper writes it without a block), so the claim reserves the
+partition from its start */
 #define ME_PARTITION_ADDRESS 0x08300000u
 #define ME_PARTITION_BYTES (1024u * 1024u)
-static SceUID partition_claim = -1;
-static int partition_claim_error = 0;
-static void *partition_claim_at = NULL;
-
-/* k1 set, the old value back: the helper runs our function in kernel mode
-but leaves k1 marking the user-mode caller that came in through its system
-call, and sysmem's user calls then refuse partition 4 as a user caller's
-(800200d6, sndpart-pair-v2's b30 on the PSP-1000). Cleared, they answer as
-for kernel code, as halo_profile.prx does for its own calls */
-static inline unsigned int k1_swap(unsigned int value)
-{
-	unsigned int old;
-
-	__asm__ volatile ("move %0, $k1\n\tmove $k1, %1" : "=&r"(old) : "r"(value));
-	return old;
-}
-
-static int partition_claim_kernel(void)
-{
-	unsigned int k1 = k1_swap(0);
-	SceUID block = sceKernelAllocPartitionMemory(ME_PARTITION, "halo sndpart", PSP_SMEM_Addr,
-		ME_PARTITION_BYTES, (void *)ME_PARTITION_ADDRESS);
-
-	if (block >= 0)
-	{
-		partition_claim = block;
-		partition_claim_at = sceKernelGetBlockHeadAddr(block);
-	}
-	else
-		partition_claim_error = block;
-	k1_swap(k1);
-	return 0;
-}
-
-static int partition_free_kernel(void)
-{
-	unsigned int k1 = k1_swap(0);
-
-	if (partition_claim >= 0 && sceKernelFreePartitionMemory(partition_claim) >= 0)
-		partition_claim = -1;
-	k1_swap(k1);
-	return 0;
-}
+int halo_claim_result(unsigned int *at); /* halo_claim.prx's system calls */
+int halo_claim_release(void);
+extern char psp_eboot_path[256];
+static int partition_claim = -1;
 
 int psp_me_claim_partition(void)
 {
-	void *at;
+	char path[256];
+	char *slash;
+	unsigned int at = 0;
+	int status = 0, result;
+	SceUID module;
 
 	if (partition_claim >= 0)
 		return partition_claim;
-	if (!me_kernel_ready || psp_me_simulated())
+	if (psp_me_simulated())
 		return -1;
-	kcall_2(partition_claim_kernel, me_kseg);
-	if (partition_claim < 0)
+	snprintf(path, sizeof(path), "%s", psp_eboot_path);
+	slash = strrchr(path, '/');
+	snprintf(slash ? slash + 1 : path, sizeof(path) - (slash ? (size_t)(slash + 1 - path) : 0), "halo_claim.prx");
+	module = sceKernelLoadModule(path, 0, NULL);
+	if (module >= 0)
+		module = sceKernelStartModule(module, 0, NULL, &status, NULL);
+	if (module < 0)
 	{
-		platform_log("ME: the partition's claim refused by sysmem (%08x)", (unsigned int)partition_claim_error);
+		platform_log("ME: the partition's claim: %s didn't load (%08x)", path, (unsigned int)module);
 		return -1;
 	}
-	at = partition_claim_at;
-	if (((unsigned int)at & 0x1FFFFFFFu) != ME_PARTITION_ADDRESS)
+	result = halo_claim_result(&at);
+	if (result < 0)
 	{
-		platform_log("ME: the partition's claim came back at %08x, not %08x: given back", (unsigned int)at, ME_PARTITION_ADDRESS);
-		kcall_2(partition_free_kernel, me_kseg);
+		platform_log("ME: the partition's claim refused by sysmem (%08x), through halo_claim.prx", (unsigned int)result);
 		return -1;
 	}
-	platform_log("ME: the whole partition claimed from sysmem (%u KB at %08x, block %08x)", ME_PARTITION_BYTES / 1024,
-		(unsigned int)at, (unsigned int)partition_claim);
+	partition_claim = result;
+	if ((at & 0x1FFFFFFFu) != ME_PARTITION_ADDRESS)
+	{
+		platform_log("ME: the partition's claim came back at %08x, not %08x: given back", at, ME_PARTITION_ADDRESS);
+		halo_claim_release();
+		partition_claim = -1;
+		return -1;
+	}
+	platform_log("ME: the whole partition claimed from sysmem (%u KB at %08x, block %08x, by halo_claim.prx)",
+		ME_PARTITION_BYTES / 1024, at, (unsigned int)partition_claim);
 	return partition_claim;
 }
 
@@ -2360,8 +2340,10 @@ void psp_me_exit(const char *why)
 	/* the reboot clears sysmem anyway; given back so a clean exit leaves no trace */
 	if (partition_claim >= 0)
 	{
-		kcall_2(partition_free_kernel, me_kseg);
-		platform_log("ME: the partition given back to sysmem%s", partition_claim >= 0 ? " (refused)" : "");
+		int freed = halo_claim_release();
+
+		platform_log("ME: the partition given back to sysmem%s (%08x)", freed < 0 ? ": refused" : "", (unsigned int)freed);
+		partition_claim = -1;
 	}
 	kcall_3(me_sysregs_kernel, me_kseg, &regs_exit);
 	sysregs_line(line, sizeof(line), "exit", &regs_exit);
