@@ -63,7 +63,7 @@ B poses, for each object, only the nodes something has declared it will read thi
 
 ## 5. Means
 
-- **A (data owned and packed):** the plan replaces the tag-link walk (the top data-miss site), and the small kernel replaces a 22-24 KB code path: the node-matrix stage's own instruction cache drops its I-misses by 4,157 a tick on b30 and 5,834 on c20 [E], ~0.7-1.2 ms a tick net [U on E]; the price is the PSP's (cache work is under-priced 2-3x by the model).
+- **A (data owned and packed):** the plan replaces the tag-link walk (the top data-miss site), and the small kernel replaces a 22-24 KB code path: the node-matrix stage's own instruction cache drops its I-misses by 4,157 a tick on b30 and 5,834 on c20 [E], ~0.7-1.2 ms a tick net [U on E]; the price is the PSP's (the model's 2-3x under-pricing of cache work is one case, X10: weaker since 2026-11-12, `cpu_cost_map.md` §5).
 - **B (work on need):** only objects a reader needs this tick are posed; the never-read share (1.35 ms on b40's cliff) and, at one tick a frame, the superseded share go.
 - **C (both cores):** whole families on the ME in the parallel phase, once the ME has room (§3).
 
