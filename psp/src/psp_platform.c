@@ -3730,10 +3730,22 @@ steps in order: the console has no way to wait */
 		PSP_PGO=use build. libgcov names each file by its object's path
 		under "/pgo" (the build's -fprofile-generate=/pgo); GCOV_PREFIX_STRIP
 		drops that and GCOV_PREFIX puts the stick's folder in front */
-		static long dump_tick = -1;
+		static long dump_tick = -1, reset_tick = -1;
 
 		if (dump_tick < 0)
 			dump_tick = (long)psp_keep_number("gcovdump", 0) * 30;
+		/* "gcovresetN": the counts zeroed at N seconds, so a run counts only
+		the window from N to its gcovdump (the recipe's fight windows: a
+		quiet stretch before the window would otherwise outweigh it) */
+		if (reset_tick < 0)
+			reset_tick = (long)psp_keep_number("gcovreset", 0) * 30;
+		if (reset_tick > 0 && (long)ticks_seen == reset_tick)
+		{
+			extern void __gcov_reset(void);
+
+			__gcov_reset();
+			platform_log("gcov: the hot units' counts zeroed at tick %lu", ticks_seen);
+		}
 		if (dump_tick > 0 && (long)ticks_seen == dump_tick)
 		{
 			extern void __gcov_dump(void);
