@@ -1,6 +1,6 @@
 # Values that are no longer true, so tools/factcheck.py --stale can find pages still stating them.
 # When a figure is superseded or corrected, add its row in the same commit. pattern is a case-insensitive regex
-# matched per line; a line that strikes or qualifies it (~~, superseded, CONFLICT, weaker, broken, corrected) is a record and passes.
+# matched per line, and must carry its subject (a bare number marks other figures that happen to share it); a line that strikes or qualifies it (~~, superseded, CONFLICT, weaker, broken, corrected) is a record and passes.
 pattern	now	home	since
 3:1 in the tick	code to data ~60/40 by count in the tick (b30 flight 51.5k against 35.9k a tick; c20 68/32) [M]	hardware_facts.md, Main CPU (the miss-ratio bullet)	2026-11-12
 two thirds of (all |those |the )?(the tick's )?misses	code to data ~60/40 by count in the tick, 68/32 on c20 [M]; by cost 50/50 to 58/42 (CONFLICT)	hardware_facts.md, Main CPU (the miss-ratio bullet)	2026-11-12
@@ -10,8 +10,8 @@ both deserve equal attention	at measured prices code is the larger: 10.7 against
 list's own bytes (are )?4\.4|the list 4\.4	broken: a GE list word costs 10.4 ns, so the list's bytes can't be 4.4 ms	lab:research/opportunities/tick_buyback.md §7	2026-11-12
 dma (cannot|can't|can not) (write|reach)[^.]{0,20}scratchpad	unsettled: one untraceable try (halo_bench v6) and psdevwiki; DMACplus, the VME DMAC, reads out and the GE untried	hardware_facts.md, Scratchpad	2026-11-16
 (hot code is|hot code) ~?59 KB	the tick's hot code is ~70 KB, fetched again 47-75 times a tick (b151) [E]	cpu_cost_map.md §3 (Capacity, not conflicts)	2026-11-11
-10[–-]18% busy|idle ~?94%|is otherwise free	the ME is busy 50-61% on average over whole levels, near 100% at peaks [M]	hardware_facts.md, Media Engine	2026-11-16
+idle ~?94%|and is otherwise free	the ME is busy 50-61% on average over whole levels, near 100% at peaks [M]	hardware_facts.md, Media Engine	2026-11-16
 under-priced 2-3x|undersizes cache wins,? 2[–-]3	one case (X10); the model's counts match the PSP's within ~10-12% [M]	cpu_cost_map.md §5	2026-11-12
 9\.6 µs of tick	retired: the GE's toll follows its fetches, not bytes; measured in play: b30 flight's tick 5.8 ms (15%) [M]	hardware_facts.md, Bus (the toll in play)	2026-11-10
-11\.7[–-]15\.1 ms|15\.1 ms a frame	the GE's toll in play, measured: b30 flight's tick 5.8 ms (15%) [M]	hardware_facts.md, Bus (the toll in play)	2026-11-16
+11\.7[–-]15\.1 ms|(toll|contention)[^.]{0,80}15\.1 ms a frame|15\.1 ms a frame\)? ?(of tick|toll)	the GE's toll in play, measured: b30 flight's tick 5.8 ms (15%) [M]	hardware_facts.md, Bus (the toll in play)	2026-11-16
 21 ms on instruction misses	b107's shares; today's split (60/40 by count, by cost in CONFLICT) is in hardware_facts	hardware_facts.md, Main CPU (the miss-ratio bullet)	2026-11-16

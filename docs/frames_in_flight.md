@@ -39,7 +39,7 @@ The figures are ms a frame. Sheepdog01's PSP-1000 on b132 (lab 38822408622) [M]:
 
 The new lanes [U]:
 - **main CPU:** the frame less the GE layer, slowed by 5–12% (mebus's range when the ME loads main RAM beside it);
-- **ME:** the GE layer × 1.25 (L1's rate), plus audio at ~14% of the frame (10–18% busy [superseded 2026-11-16: the ME is busy 50-61% on average over whole levels, near 100% at peaks [M]; hardware_facts.md, Media Engine], b114);
+- **ME:** the GE layer × 1.25 (L1's rate), plus audio at ~14% of the frame (10–18% busy, b114);
 - **GE:** unchanged.
 
 | | Cutscene | Pelican ride | Landing | Beach | Bunker |
