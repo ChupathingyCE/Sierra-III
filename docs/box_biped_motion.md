@@ -30,6 +30,21 @@ The lab's `research/opportunities/REBUILD.md` is the spine (§3.3, §4, §7 step
 - **Code:** today's biped update runs 299-405 code lines a call (19-26 KB) and collision's eight sampled functions 23,976 B, each more than the 16 KB I-cache [D, E: `cpu_cost_map.md` §4a, `collision.md` finding 4]; half of c20's tick I-misses are in the bipeds' update [E]. So the box's code is written as stages that each fit (the unit's control, the physics, the move, the link), run over all bipeds stage by stage where the order allows; collision's walk is the one subsystem whose code fits as one stage.
 - **The ME:** not this box's first form. The whole biped update on the ME was counted NO-GO on b30 and 27-53% reach in c20's fights (BW, below); the ME's room at 15 fps is the tick schedule's to give (REBUILD §7 step 5), and a far biped's whole update there is S4's form (`redesign_s.md`).
 
+### 3b. Code budget (the lab's REBUILD §3.6, in force 2026-11-17)
+
+- **Lines today, the old path** [E, exact counts in the cache model; the lab's findings `fpass2_own_pair_by_subsystem` (each subsystem on its own cache pair) and `cpu_cost_map.md` §4a's bipeds row]:
+  - `biped_update`: **776 lines a tick on b30, 952 on c20**; 338 lines a call on b30, 405 on c20 (22.8 and 29.6 calls a tick).
+  - `unit_update`: **418 lines a tick on b30, 394 on c20**.
+  - Together **1,194 a tick on b30 and 1,346 on c20**, against the I-cache's 256 lines.
+  - Fetched again and again: on its own cache pair `biped_update` takes **4,847 I-misses a tick on b30 and 13,743 on c20**, ~6x and ~14x its lines a tick; `unit_update` 1,229 and 597.
+- **Fit: no. The box is cut into stages, each ≤ ~200-256 lines and resident over every biped** before the next stage runs. One call's 338-405 lines can't stay resident across bipeds, and it evicts its neighbours (the frame picture's objects' update waits more on code than on data, REBUILD §3.5).
+- **The stage cut is this box's next design question.** A first cut along the steps §3 names: the unit's control (the `unit_update` half), the physics, the move with its collision queries, and the link. The questions:
+  - **Where each step's lines fall.** Counted per function in the cache model before any code, as `cpu_cost_map.md` §4a does for the whole.
+  - **Whether a step is still over 256 and splits again.** The physics alone was ~2% of a crowded update's price as built (§8), so its lines are small; the unit half is 394-418 lines by itself, so it likely splits.
+  - **What crosses a stage boundary per biped.** It goes in a small per-biped record carried from stage to stage, rather than re-read from the datum.
+  - **The order a stage keeps** (§1's serial form: a stage over all bipeds changes when a biped sees another's this-tick values only if a later stage reads what an earlier one wrote for another biped). The hazard count in Open 1 settles it.
+- **The ceiling it chases** [E]: phasing the bipeds' update was counted at ~1.1 ms a tick on b30 and ~2.6 on c20 (§5), the largest of the code-side figures on the tick. No PSP price until a stage form is built.
+
 ## 4. Budget
 
 - **Today** [M, PSP-1000, the shipping sampler, tock162 b3461c1: the lab's findings `pcsample_c20_play1_shipping`, `pcsample_b40_route_shipping`]: collision **13.3-18.4% of the tick** (c20 14.0, a30 14.2, b30 18.4, b40 13.3), the bipeds' and units' updates **~10%** (c20 10.0, b40 9.8), the map links 4.6-8.1%. At b40's snowfield tick of 37.6 ms [M, b151 ledger] that's ~5.0 ms of collision, ~3.7 of biped and unit updates and ~1.7 of links a tick [U: the sampler's shares on another stretch's tick].
@@ -56,6 +71,7 @@ Alone, against a capture of a pad bench (one of Sheepdog01's recordings): per bi
 
 ## 8. States
 
+- 2026-11-17: REBUILD §3.6's code budget added (§3b): 1,194-1,346 lines a tick against 256, so the box is staged; the stage cut is its next design question.
 - 2026-11-11: spec started, from the world store's layout and the collision draft; waits on the pilot's price before any code.
 - 2026-11-11: the hazard's reach, first read (Open 1): half of a biped's reads of other bipeds land on ones updated earlier this tick; bipeds write other bipeds and scenery 91 times a tick.
 - 2026-11-13: slice 1 built (Sierra-III `builder/motion1`, `PSP_BOXMOTION=1`, keep words `boxmotion`, `boxmotioncheck`: the walking bipeds' physics as box code, exact against the old path, reaching 97% of b30's physics calls; the lab's findings `boxmotion_exact_play_seeds`, `boxmotion_reach`). **Priced alone [M]** (the lab's bench-hw 43508316286, PSP-3000, halo_box 7138a85, b30's beach capture from tick 2,700, 256 ticks, 2,762 biped entities, 10.8 a tick; findings `boxmotion_standalone_beach_psp3000`): **warm 3.08 µs an entity, emptied 16.3, crowded 18.1; with the GE at 50% warm 3.18, emptied 22.1, crowded 25.4** (0.03-0.27 ms a tick); 2,762 outputs compared, 0 outside the tolerance (exact). The physics step is one part of the box's ~170 µs an update (§4): warm it is under 2% of that, crowded ~15%; as with posing, the gap between warm and crowded (6x) is the cache's, so the box's working set and the two-core split decide its in-frame price.
