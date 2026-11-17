@@ -260,7 +260,7 @@ sierra-hw 44085373539: the same build, b40_leg1 legendary to 650 s (13,512 frame
 - **Without that fixed amount, the exit's gap is within 0.05%** for seven of the eight measures: cycles +0.028%, stall +0.023%, asleep +0.036%, I-misses +0.044%, D-misses +0.012%, write-backs +0.019%, uncached loads +0.041%. Uncached stores is +0.19%.
 - **What's left is the open span:** the events since the last mark, counted by the module and not yet charged to any box. It moved from report to report (cycles +1.3, +0.8, +5.3, -0.2, +1.1 M). It may be what holds up uncached stores, since the report's own logging runs inside that span [U].
 
-**v2** (builder/framepic adf4d9b5): the module takes the start reading at the first mark's own read (`block.start`). At each `halo_profile_totals` call it also records the open span from the same reads (`block.open`). The report then compares the module's totals since `start` with the boxes' sums plus `self` plus `open`. Both ends now match where the boxes start and stop charging, so the bound needs no slack. The five tables stay provisional until v2's run passes.
+**v2** (builder/framepic adf4d9b5): the module takes the start reading at the first mark's own read (`block.start`). At each `halo_profile_totals` call it also records the open span from the same reads (`block.open`). The report then compares the module's totals since `start` with the boxes' sums plus `self` plus `open`. Both ends now match where the boxes start and stop charging, so the bound needs no slack. The lead lifted 'provisional' from the five tables on this arithmetic (2026-11-17 08:1x): the per-tick charging is sound. v2's run confirms that as built.
 
 ## What changed from v0
 
