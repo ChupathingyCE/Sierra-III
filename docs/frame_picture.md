@@ -23,17 +23,20 @@ The main CPU's profiler is the block at `0xBC400000` (`PspDebugProfilerRegs`): a
 - **The marks' own cost taken out (condition 2).** Each run also takes a **null mark pair** (two marks back to back, nothing between) every tick. Its counts, times the number of marks a box made, are taken off that box and reported as their own row, "the marks".
 - **Nesting.** Boxes call each other. The module keeps a stack of open boxes, 8 deep. The counts since the last mark go to the box on top (exclusive), and each box's inclusive total is kept beside it. A box's row is exclusive.
 
+- **Where the marks are (the build, 2026-11-17):** the engine's own perf phases (`halo_perf_log.h`), compiled in under `PSP_FRAMEPIC` (`-DHALO_PERF_LOG`) and answered by `psp/src/psp_framepic.c`. Upstream already brackets each once-a-tick and once-a-frame region with them, so the box marks need no anchors of their own. The phases entered once a call or an object (collision, physics, node matrices, each object type's update, damage, functions, lights, activation, garbage) map to no box and cost one test each; the box that calls them keeps their cost.
+
 ## 3. Where the tables live, and what's reported
 
-- **The histograms are in game memory.** The module refuses tables outside user RAM, and its own memory can't hold them. They sit in one block the game takes at launch from partition 2, outside the heap, only when `framepic` is on (`halo framepic`, ~21 KB). Without the keep word it is never taken. There are 14 boxes × 6 measures × 64 log-spaced buckets × 4 bytes, plus each box's sums. The block's address is handed to the module once, as the table is today.
+- **The histograms are in game memory.** The module refuses tables outside user RAM, and its own memory can't hold them. They sit in one block the game takes at launch from partition 2, outside the heap (`halo framepic`, ~30 KB). **It is taken on both sides of the A/B** (the lead's acceptance, 01:4x): whenever a `PSP_FRAMEPIC` build runs the profiler, with `framepic` or not, so the two sides' memory is the same. There are 21 boxes × 9 measures (8 counters, and cycles again for switch-free samples) × 32 buckets (two a doubling, from 256 cycles to ~50 ms) × 4 bytes, plus each box's sums. The block's address is handed to the module once, as the table is today.
 - **Per tick and per frame.** At each tick's and frame's end the module folds each box's counts into its histograms (cycles, memory stall, asleep, I-misses, D-misses, write-backs). p50 and p99 come from them, and the means from the sums.
 - **Reported** at each heartbeat as `framepic:` lines (one a box), and once at the stretch's end as the table.
 
-The boxes (REBUILD §3.3, as the code stands; entry and exit points named on this page when the build settles them against `cpu_cost_map.md` §1):
-- **tick:** biped motion, posing, AI's main-CPU share, vehicles and other objects, effects (update and particles), the tick's other work;
-- **frame:** visibility's main-CPU side, draw list, GE lists and forms (the main CPU's part), lighting, audio's main-CPU share (`sound_render`), the frame end.
+The boxes, as built (the engine's perf phases; each row is exclusive of the boxes inside it):
+- **tick** (folded once a tick): the tick's other work, units (`units_update` and the players' updates), AI, effects, the game engine, objects (`objects_update`, with posing, biped motion and the other objects' updates inside it);
+- **frame** (folded once a frame): the netcode, the render's other work, its parts (world, objects, transparent, effects, HUD, and the rest: begin, setup, lens flares, the screen effect, end), sound (`game_sound_update` and `sound_render`), the network, present, the vsync wait, the render's occlusion and texture waits;
+- "outside any box", and "the marks", the null pair once a tick.
 
-Collision is a priced column (§2), not a row.
+v0's finer tick boxes (biped motion, posing, vehicles) are entered once an object, inside `objects_update`, so they would break the ~60 bound. Like collision, each is a priced column inside objects' row (halo_box's price per entity × its counted entities), not a row. Visibility, the draw list, lighting and the GE's forms run inside the render's parts and are named by them.
 
 ## 4. The split
 
@@ -99,5 +102,5 @@ The GE-idle prices are the ones applied, and their spread (low to high) is the r
 
 ## Open
 
-- Each box's entry and exit points, and its batch point (§2), settled in the build.
-- The switch count's word (§2): which kernel word holds `threadSwitchCount`, so a mark reads it without a refer call.
+- The switch count's word (§2): which kernel word holds `threadSwitchCount`, so a mark reads it without a refer call. Until then the mark makes the refer call (`sceKernelReferSystemStatus`), and `framepicnosw` leaves it out; the A/B and the null pair price it.
+- The GE/ME wait column (§4): the render's occlusion and texture waits and the vsync wait are rows of their own in this build, not a column of the box they sit in. The CPU's waits for the GE's finish and for an ME answer inside the port's own code (`psp_ge.c`, `psp_me.c`) aren't marked yet.

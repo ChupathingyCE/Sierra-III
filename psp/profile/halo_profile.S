@@ -3,7 +3,7 @@
 #include "pspimport.s"
 
 // Build files
-// halo_profile_0000.o halo_profile_0001.o halo_profile_0002.o 
+// halo_profile_0000.o halo_profile_0001.o halo_profile_0002.o halo_profile_0003.o 
 
 #ifdef F_halo_profile_0000
 	IMPORT_START "halo_profile",0x40090000
@@ -13,4 +13,7 @@
 #endif
 #ifdef F_halo_profile_0002
 	IMPORT_FUNC  "halo_profile",0xDBDAF524,halo_profile_bus_probe
+#endif
+#ifdef F_halo_profile_0003
+	IMPORT_FUNC  "halo_profile",0x842E8FB8,halo_profile_box
 #endif
