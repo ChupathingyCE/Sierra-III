@@ -53,7 +53,7 @@ The heartbeat's `budget:` line (`psp_platform.c` ~2668): clock = ticks + drawing
 
 - **The CPU and GE already overlap** (the GE draws behind the list as it fills): overlapping more gains ≤ 1.5 ms. The GE costs the CPU through the bus, not through waits.
 - **Moving the GE layer to the ME** is the big pipelining lever (#4), but on the PSP-3000 the ME took ~192 ms for what the main CPU does in ~60, so the CPU waited. (That ratio was the overlap and the bus, not the ME's speed: on its own the ME runs the same records at 0.45–0.92× the main CPU's time, `mekinds` [M]; see the next bullet.) Leads [D]: the replay skips the main CPU's memos (`psp_ge.c` ~12431–12469, ~7659); no VFPU on the ME (~9643); the ME shares the bus with a tick that misses heavily. Recording runs in series with the ME (two record buffers would fix it).
-- **The ME is idle ~94%** without render jobs. Node matrices or biped updates there have ceilings of −5.4 and −2.4 ms a tick on b30 [E], and the ME's own rate is 0.45–0.92× the main CPU's [M, mekinds]; what slows ME work is the bus when both run at once (F1's 2.5–3.2×), so the cost to measure is the overlap.
+- **The ME is idle ~94% [superseded 2026-11-16: the ME is busy 50-61% on average over whole levels, near 100% at peaks [M]; hardware_facts.md, Media Engine]** without render jobs. Node matrices or biped updates there have ceilings of −5.4 and −2.4 ms a tick on b30 [E], and the ME's own rate is 0.45–0.92× the main CPU's [M, mekinds]; what slows ME work is the bus when both run at once (F1's 2.5–3.2×), so the cost to measure is the overlap.
 
 ## Shelved: retry or leave
 
