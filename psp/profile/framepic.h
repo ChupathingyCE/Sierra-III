@@ -49,6 +49,10 @@ struct framepic_block
 	/* a pop with nothing open, or a push past the stack's depth */
 	unsigned int unbalanced;
 	unsigned int depth;
+	/* the module's: each mark's own span, between its first read and the
+	read after its bookkeeping, which no box is charged for; the identity
+	check (docs/frame_picture.md) adds it to the boxes' sums */
+	unsigned long long self[FRAMEPIC_MEASURES];
 };
 
 #endif

@@ -285,6 +285,10 @@ static int framepic_stack[FRAMEPIC_STACK];
 static unsigned int framepic_last[FRAMEPIC_MEASURES];
 static unsigned int framepic_switches_last;
 static int framepic_started = 0;
+/* the sampler's last read of each counter, kept here so halo_profile_totals
+can add what has run since */
+static unsigned int sampler_last[COUNTERS];
+
 static const unsigned char framepic_registers[FRAMEPIC_MEASURES] = FRAMEPIC_REGISTERS;
 
 int halo_profile_box(int box)
@@ -340,7 +344,33 @@ int halo_profile_box(int box)
 	/* the counters again after the bookkeeping, so the next box isn't
 	charged for this mark's own work beyond the reads above */
 	for (k = 0; k < FRAMEPIC_MEASURES; k++)
+	{
 		framepic_last[k] = PROFILER[1 + framepic_registers[k]];
+		block->self[k] += framepic_last[k] - now[k];
+	}
+	pspSdkSetK1(k1);
+	return 0;
+}
+
+/* the system call (exports.exp): every counter's total since the module
+started, at this instant: the sampler's total plus what has run since its
+last beat. The frame picture's identity check (docs/frame_picture.md) reads
+it at its window's two ends, against the boxes' own sums. out holds COUNTERS
+values, in the profiler's order */
+int halo_profile_totals(unsigned long long *out)
+{
+	unsigned int now[COUNTERS], k1, k;
+	int interrupts;
+
+	if (!table || !out || ((unsigned int)out & 0x1FFFFFFFu) < 0x08800000u ||
+		((unsigned int)out & 0x1FFFFFFFu) + COUNTERS * sizeof(*out) > 0x0A000000u)
+		return -1;
+	k1 = pspSdkSetK1(0);
+	interrupts = sceKernelCpuSuspendIntr();
+	profiler_read(now);
+	for (k = 0; k < COUNTERS; k++)
+		out[k] = table->count[k] + (unsigned int)(now[k] - sampler_last[k]);
+	sceKernelCpuResumeIntr(interrupts);
 	pspSdkSetK1(k1);
 	return 0;
 }
@@ -381,19 +411,24 @@ static int pc_handler(void)
 
 static int sampler(SceSize args, void *argp)
 {
-	unsigned int last[COUNTERS], now[COUNTERS], k;
+	unsigned int now[COUNTERS], k;
+	int interrupts;
 
 	(void)args; (void)argp;
-	profiler_read(last);
+	profiler_read(sampler_last);
 	for (;;)
 	{
 		sceKernelDelayThread(100000);
+		/* interrupts off, so halo_profile_totals never reads a total and its
+		last read from two different beats */
+		interrupts = sceKernelCpuSuspendIntr();
 		profiler_read(now);
 		for (k = 0; k < COUNTERS; k++)
 		{
-			table->count[k] += (unsigned int)(now[k] - last[k]);
-			last[k] = now[k];
+			table->count[k] += (unsigned int)(now[k] - sampler_last[k]);
+			sampler_last[k] = now[k];
 		}
+		sceKernelCpuResumeIntr(interrupts);
 		phase_account(-1);
 		if (table->threads_wanted)
 			threads_list();

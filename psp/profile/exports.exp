@@ -16,6 +16,8 @@ PSP_EXPORT_FUNC(halo_profile_phase)
 PSP_EXPORT_FUNC(halo_profile_bus_probe)
 # the frame picture's box marks (docs/frame_picture.md)
 PSP_EXPORT_FUNC(halo_profile_box)
+# the frame picture's identity check: the totals at an instant
+PSP_EXPORT_FUNC(halo_profile_totals)
 PSP_EXPORT_END
 
 PSP_END_EXPORTS

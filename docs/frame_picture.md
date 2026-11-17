@@ -228,7 +228,7 @@ sierra-hw 44085373539: the same build, b40_leg1 legendary to 650 s (13,512 frame
 
 **Pass:** each measure within 0.05%. The only slack allowed is the uncharged interval at each end: the open box's events since its last mark, a few ms against a run of minutes. Anything larger is a charging error, to be found before any table is read again. The five tables already filed stand as provisional until it passes.
 
-**Cost:** two system calls a run, outside the measured frames, so none to the frame. Built under `PSP_FRAMEPIC` with the rest; its proof is one emulator run (the counters there are the emulator's own, so it checks the arithmetic) and the next PSP framepic run.
+**As built** (builder/framepic, 2026-11-17): a mark's own span (its first read to the read after its bookkeeping) is charged to no box by design, so the identity is the boxes' sums **plus the marks' own** (`block.self`, new) against the module's totals. Without it, the boxes would fall short by the marks' cost (~0.2% of the frame), not an error. `halo_profile_totals` reads with interrupts off, and so does the sampler, so a total and its last read always come from one beat. The report prints one `framepic: identity:` line a measure, and "OVER 0.05%" past the bound. **Cost:** two system calls a run, outside the measured frames, so none to the frame. **Proof:** the emulator doesn't load halo_profile.prx (its framepic runs count marks only), so it proves only that the build compiles and the report says "not read". The identity itself needs one PSP framepic run (b30, one run, ~10 min).
 
 ## What changed from v0
 
