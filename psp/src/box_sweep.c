@@ -1448,6 +1448,22 @@ int box_sweep(const struct box_sweep_world *world, const struct box_sweep_query 
 		return -1;
 	if (world->part)
 		return answer->count = 0;
+#ifdef BOX_LINECOUNT
+	{
+		/* the scratch's writes (the lead 18:3x (2)): each kind's records a sweep
+		makes, and the lines they cover */
+		extern unsigned long long box_sweep_lc_records[3], box_sweep_lc_lines[3], box_sweep_lc_sweeps;
+		const unsigned int size[3] = { sizeof(struct box_sweep_sphere), sizeof(struct box_sweep_cylinder), sizeof(struct box_sweep_prism) };
+		int k;
+
+		box_sweep_lc_sweeps++;
+		for (k = 0; k < 3; k++)
+		{
+			box_sweep_lc_records[k] += (unsigned long long)scratch->features.count[k];
+			box_sweep_lc_lines[k] += ((unsigned long long)scratch->features.count[k] * size[k] + 63) / 64;
+		}
+	}
+#endif
 	if (scratch->features.count[0] || scratch->features.count[1] || scratch->features.count[2])
 		return answer->count = move_point(&scratch->features, p, v, query->most, answer);
 	answer->position[0] = p[0] + v[0];

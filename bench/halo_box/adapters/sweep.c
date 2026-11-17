@@ -1175,6 +1175,20 @@ static int sweepb100_setup(const struct box_static *statics, unsigned int count)
 	return sweepb_margin(statics, count, 1.0f);
 }
 
+#ifdef BOX_LINECOUNT
+#include <stdio.h>
+unsigned long long box_sweep_lc_records[3], box_sweep_lc_lines[3], box_sweep_lc_sweeps;
+static void scratch_report(void) __attribute__((destructor));
+static void scratch_report(void)
+{
+	if (box_sweep_lc_sweeps)
+		printf("scratchcount: %llu sweeps; a sweep writes spheres %.1f (%u B each, %.1f lines), cylinders %.1f (%u B, %.1f lines), prisms %.1f (%u B, %.1f lines)\n",
+			box_sweep_lc_sweeps,
+			(double)box_sweep_lc_records[0] / box_sweep_lc_sweeps, (unsigned)sizeof(struct box_sweep_sphere), (double)box_sweep_lc_lines[0] / box_sweep_lc_sweeps,
+			(double)box_sweep_lc_records[1] / box_sweep_lc_sweeps, (unsigned)sizeof(struct box_sweep_cylinder), (double)box_sweep_lc_lines[1] / box_sweep_lc_sweeps,
+			(double)box_sweep_lc_records[2] / box_sweep_lc_sweeps, (unsigned)sizeof(struct box_sweep_prism), (double)box_sweep_lc_lines[2] / box_sweep_lc_sweeps);
+}
+#endif
 /* B packed's own counts on a desktop run (the PSP's report has no printf):
 whether the blocks were used */
 #if !defined(__psp__) && !defined(_PSP) && !defined(__mips__)
