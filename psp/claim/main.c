@@ -27,6 +27,22 @@ static unsigned int claim_at = 0;
 /* partition 4's free size right after the claim: the game's own partition
 list is a snapshot halo_profile.prx takes once, and can't see the claim */
 static int free_after_claim = -1;
+/* how the claim is made, from the game's start argument (its keep words
+claimaddr, claimpart): 0 the whole partition from the bottom, 1 the whole
+partition at 0x88300000 by address, 2 the bottom 960 KB only. The game's own
+release is refused 80020001 for the first (the lab's sierra-hw 44069624252);
+the others ask whether sysmem frees a block made another way. */
+static int claim_mode = 0;
+
+static SceUID claim_make(void)
+{
+	if (claim_mode == 1)
+		return sceKernelAllocPartitionMemory(ME_PARTITION, "halo sndpart", PSP_SMEM_Addr, ME_PARTITION_BYTES,
+			(void *)0x88300000u);
+	if (claim_mode == 2)
+		return sceKernelAllocPartitionMemory(ME_PARTITION, "halo sndpart", PSP_SMEM_Low, ME_PARTITION_BYTES - 64u * 1024u, NULL);
+	return sceKernelAllocPartitionMemory(ME_PARTITION, "halo sndpart", PSP_SMEM_Low, ME_PARTITION_BYTES, NULL);
+}
 
 /* the system call (exports.exp): the claim's block, or the error sysmem
 gave (< 0); with `at` its head address */
@@ -59,7 +75,7 @@ int halo_claim_probe(int *out)
 	r[4] = -1;
 	if (claim < 0)
 	{
-		r[4] = sceKernelAllocPartitionMemory(ME_PARTITION, "halo sndpart", PSP_SMEM_Low, ME_PARTITION_BYTES, NULL);
+		r[4] = claim_make();
 		if (r[4] >= 0)
 		{
 			claim = r[4];
@@ -94,14 +110,14 @@ int module_start(SceSize args, void *argp)
 {
 	SceUID block;
 
-	(void)args;
-	(void)argp;
-	/* from the bottom, not at an address: sysmem keeps a kernel partition's
-	addresses in the cached kernel segment (0x88300000), so asking for
-	0x08300000 lies outside it (800200d9 on the PSP-3000, the partition all
-	free). The partition is exactly the block's size, so the bottom is its
-	base, and the game checks the address it got. */
-	block = sceKernelAllocPartitionMemory(ME_PARTITION, "halo sndpart", PSP_SMEM_Low, ME_PARTITION_BYTES, NULL);
+	if (args >= sizeof(int) && argp)
+		claim_mode = *(int *)argp;
+	/* from the bottom, not at 0x08300000: sysmem keeps a kernel partition's
+	addresses in the cached kernel segment (0x88300000), so that address lies
+	outside it (800200d9 on the PSP-3000, the partition all free). The
+	partition is exactly the block's size, so the bottom is its base, and the
+	game checks the address it got. */
+	block = claim_make();
 	if (block < 0)
 		claim_error = block;
 	else
@@ -117,6 +133,7 @@ int module_stop(SceSize args, void *argp)
 {
 	(void)args;
 	(void)argp;
-	halo_claim_release();
-	return 0;
+	/* the release's result is the stop's, so the game's keep word claimstop
+	can read it from sceKernelStopModule's status */
+	return halo_claim_release();
 }
