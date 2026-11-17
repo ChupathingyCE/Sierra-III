@@ -24,6 +24,9 @@ PSP_NO_CREATE_MAIN_THREAD();
 static SceUID claim = -1;
 static int claim_error = 0;
 static unsigned int claim_at = 0;
+/* partition 4's free size right after the claim: the game's own partition
+list is a snapshot halo_profile.prx takes once, and can't see the claim */
+static int free_after_claim = -1;
 
 /* the system call (exports.exp): the claim's block, or the error sysmem
 gave (< 0); with `at` its head address */
@@ -35,6 +38,40 @@ int halo_claim_result(unsigned int *at)
 		*at = claim_at;
 	pspSdkSetK1(k1);
 	return claim >= 0 ? claim : claim_error;
+}
+
+/* the system call (exports.exp), under the game's keep word claimprobe: the
+claim given back and made again mid-game, so a refusal at the exit can be told
+from a refusal of the call itself. out[6]: the free size after the claim at
+start, before this probe's free, the free's result, the free size after it,
+the claim's result, the free size after it. Returns the claim, or < 0. */
+int halo_claim_probe(int *out)
+{
+	unsigned int k1 = pspSdkSetK1(0);
+	int r[6], k;
+
+	r[0] = free_after_claim;
+	r[1] = sceKernelPartitionMaxFreeMemSize(ME_PARTITION);
+	r[2] = claim >= 0 ? sceKernelFreePartitionMemory(claim) : -1;
+	if (r[2] >= 0)
+		claim = -1;
+	r[3] = sceKernelPartitionMaxFreeMemSize(ME_PARTITION);
+	r[4] = -1;
+	if (claim < 0)
+	{
+		r[4] = sceKernelAllocPartitionMemory(ME_PARTITION, "halo sndpart", PSP_SMEM_Low, ME_PARTITION_BYTES, NULL);
+		if (r[4] >= 0)
+		{
+			claim = r[4];
+			claim_at = (unsigned int)sceKernelGetBlockHeadAddr(claim);
+		}
+	}
+	r[5] = sceKernelPartitionMaxFreeMemSize(ME_PARTITION);
+	if (out && ((unsigned int)out & 0x1FFFFFFFu) >= 0x08800000u && ((unsigned int)out & 0x1FFFFFFFu) < 0x0A000000u - sizeof(r))
+		for (k = 0; k < 6; k++)
+			out[k] = r[k];
+	pspSdkSetK1(k1);
+	return claim >= 0 ? claim : r[4];
 }
 
 /* the system call (exports.exp): the claim given back; 0, or sysmem's error */
@@ -72,6 +109,7 @@ int module_start(SceSize args, void *argp)
 		claim = block;
 		claim_at = (unsigned int)sceKernelGetBlockHeadAddr(block);
 	}
+	free_after_claim = sceKernelPartitionMaxFreeMemSize(ME_PARTITION);
 	return 0;
 }
 

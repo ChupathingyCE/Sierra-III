@@ -2273,6 +2273,7 @@ partition from its start */
 #define ME_PARTITION_BYTES (1024u * 1024u)
 int halo_claim_result(unsigned int *at); /* halo_claim.prx's system calls */
 int halo_claim_release(void);
+int halo_claim_probe(int *out);
 extern char psp_eboot_path[256];
 static int partition_claim = -1;
 
@@ -2315,6 +2316,34 @@ int psp_me_claim_partition(void)
 	}
 	platform_log("ME: the whole partition claimed from sysmem (%u KB at %08x, block %08x, by halo_claim.prx)",
 		ME_PARTITION_BYTES / 1024, at, (unsigned int)partition_claim);
+	/* the release at the exit was refused (80020001, the lab's sierra-hw
+	44066692364): given back and claimed again here, before the window holds
+	anything, tells a refusal of the call itself from one of the exit's */
+	if (psp_keep("claimprobe"))
+	{
+		int r[6] = { -1, -1, -1, -1, -1, -1 };
+
+		result = halo_claim_probe(r);
+		platform_log("ME: claimprobe: partition 4's largest free block after the claim %d KB, before the probe %d KB; "
+			"given back %08x, then %d KB free; claimed again %08x, then %d KB free",
+			r[0] / 1024, r[1] / 1024, (unsigned int)r[2], r[3] / 1024, (unsigned int)r[4], r[5] / 1024);
+		if (result < 0)
+		{
+			platform_log("ME: claimprobe: the claim lost (%08x)", (unsigned int)result);
+			partition_claim = -1;
+			return -1;
+		}
+		partition_claim = result;
+		at = 0;
+		halo_claim_result(&at);
+		if ((at & 0x1FFFFFFFu) != ME_PARTITION_ADDRESS)
+		{
+			platform_log("ME: claimprobe: the claim came back at %08x, not %08x: given back", at, ME_PARTITION_ADDRESS);
+			halo_claim_release();
+			partition_claim = -1;
+			return -1;
+		}
+	}
 	return partition_claim;
 }
 
