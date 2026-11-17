@@ -55023,10 +55023,12 @@ static void psp_bipedstage_run(void)
 static void psp_object_update(long object_index, short absolute_index, struct object_header_datum *header)
 """),
 ("""					if (psp_ws_asleep(i, object_header)) /* psp_fixups.py (FIXES_WS) */
+						psp_object_count(object_header->type);
 """,
- """					if (psp_bipedstage_defer(object_index, i, object_header)) /* (FIXES_BIPEDSTAGE) */
+ """					if (psp_ws_asleep(i, object_header)) /* psp_fixups.py (FIXES_WS) */
+						psp_object_count(object_header->type);
+					else if (psp_bipedstage_defer(object_index, i, object_header)) /* (FIXES_BIPEDSTAGE): after the sleep's test, so a sleeping biped stays asleep */
 						;
-					else if (psp_ws_asleep(i, object_header)) /* psp_fixups.py (FIXES_WS) */
 """),
 ("""	psp_fvp_pass(); /* psp_fixups.py (FIXES_FISSION) */
 """,
