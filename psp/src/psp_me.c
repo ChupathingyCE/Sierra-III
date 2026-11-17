@@ -2270,38 +2270,12 @@ what it got and has it give the block back at the exit. Sony's ME image isn't
 sysmem's (me_wrapper writes it without a block), so the claim reserves the
 partition from its start */
 #define ME_PARTITION_ADDRESS 0x08300000u
-#define ME_PARTITION_BYTES (1024u * 1024u)
+#define ME_CLAIM_BYTES (960u * 1024u) /* halo_claim.prx's CLAIM_BYTES */
 int halo_claim_result(unsigned int *at); /* halo_claim.prx's system calls */
 int halo_claim_release(void);
 int halo_claim_probe(int *out);
 extern char psp_eboot_path[256];
 static int partition_claim = -1;
-static SceUID claim_module = -1;
-
-/* claimstop's second claim: the module loaded and started again, as the
-first time */
-static int psp_me_claim_partition_again(const char *path)
-{
-	unsigned int at = 0;
-	int status = 0, result, mode = psp_keep("claimaddr") ? 1 : psp_keep("claimpart") ? 2 : 0;
-	SceUID module = sceKernelLoadModule(path, 0, NULL);
-
-	if (module >= 0)
-	{
-		claim_module = module;
-		module = sceKernelStartModule(module, sizeof(mode), &mode, &status, NULL);
-	}
-	result = module < 0 ? module : halo_claim_result(&at);
-	platform_log("ME: claimstop: the claim again %08x at %08x", (unsigned int)result, at);
-	if (result < 0 || (at & 0x1FFFFFFFu) != ME_PARTITION_ADDRESS)
-	{
-		if (result >= 0)
-			halo_claim_release();
-		return -1;
-	}
-	partition_claim = result;
-	return result;
-}
 
 int psp_me_claim_partition(void)
 {
@@ -2320,14 +2294,7 @@ int psp_me_claim_partition(void)
 	snprintf(slash ? slash + 1 : path, sizeof(path) - (slash ? (size_t)(slash + 1 - path) : 0), "halo_claim.prx");
 	module = sceKernelLoadModule(path, 0, NULL);
 	if (module >= 0)
-	{
-		/* how halo_claim.prx makes the claim (its claim_make): the release
-		test's variants */
-		int mode = psp_keep("claimaddr") ? 1 : psp_keep("claimpart") ? 2 : 0;
-
-		claim_module = module;
-		module = sceKernelStartModule(module, sizeof(mode), &mode, &status, NULL);
-	}
+		module = sceKernelStartModule(module, 0, NULL, &status, NULL);
 	if (module < 0)
 	{
 		platform_log("ME: the partition's claim: %s didn't load (%08x)", path, (unsigned int)module);
@@ -2347,11 +2314,11 @@ int psp_me_claim_partition(void)
 		partition_claim = -1;
 		return -1;
 	}
-	platform_log("ME: the whole partition claimed from sysmem (%u KB at %08x, block %08x, by halo_claim.prx)",
-		ME_PARTITION_BYTES / 1024, at, (unsigned int)partition_claim);
-	/* the release at the exit was refused (80020001, the lab's sierra-hw
-	44066692364): given back and claimed again here, before the window holds
-	anything, tells a refusal of the call itself from one of the exit's */
+	platform_log("ME: the partition claimed from sysmem (its bottom %u KB at %08x, block %08x, by halo_claim.prx)",
+		ME_CLAIM_BYTES / 1024, at, (unsigned int)partition_claim);
+	/* given back and claimed again here, before the window holds anything:
+	the release proven by its own result and the free sizes, not by the next
+	launch (an exit reboots, and the reboot clears sysmem) */
 	if (psp_keep("claimprobe"))
 	{
 		int r[6] = { -1, -1, -1, -1, -1, -1 };
@@ -2376,23 +2343,6 @@ int psp_me_claim_partition(void)
 			partition_claim = -1;
 			return -1;
 		}
-	}
-	/* the release from the module's own stop, in the system's thread rather
-	than through the game's system call: its result is the stop's status */
-	if (psp_keep("claimstop") && claim_module >= 0)
-	{
-		int stopped, freed = 0, again;
-
-		stopped = sceKernelStopModule(claim_module, 0, NULL, &freed, NULL);
-		if (stopped >= 0)
-			sceKernelUnloadModule(claim_module);
-		claim_module = -1;
-		partition_claim = -1;
-		platform_log("ME: claimstop: the module stopped (%08x), its release %08x; claimed again:", (unsigned int)stopped,
-			(unsigned int)freed);
-		again = psp_me_claim_partition_again(path);
-		if (again < 0)
-			return -1;
 	}
 	return partition_claim;
 }

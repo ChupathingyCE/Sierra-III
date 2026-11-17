@@ -4,7 +4,7 @@ The sound tier's window (sndpart, psp/src/psp_dsound.c) lives in the
 Media Engine's 1 MB partition at 0x08300000, which nothing allocates and
 nothing writes in play, across a sleep or at a relaunch (the lab's
 me_partition_sleep_read.md and partmap). The claim makes that so by
-contract: sysmem then can't hand the partition to anyone else. The game
+contract: sysmem then can't hand the claimed part to anyone else. The game
 can't make it itself, because sysmem's user call refuses partition 4 whatever
 the caller's mode (800200d6 on the PSP-1000), and only its kernel export
 takes it. So this module, loaded by the game only for sndpart, makes the
@@ -19,7 +19,11 @@ PSP_MODULE_INFO("halo_claim", 0x1006, 1, 0);
 PSP_NO_CREATE_MAIN_THREAD();
 
 #define ME_PARTITION 4
-#define ME_PARTITION_BYTES (1024u * 1024u)
+/* the partition's bottom 960 KB, not all of it: sysmem refuses to free a
+block that is the whole partition (80020001, mid-game and at the exit; the
+lab's sierra-hw 44069624252) but frees this one (44073328977). The sound
+window, the bottom 4 KB page aside, fits in it (psp_dsound.c, SNDPART_MOST) */
+#define CLAIM_BYTES (960u * 1024u)
 
 static SceUID claim = -1;
 static int claim_error = 0;
@@ -27,21 +31,14 @@ static unsigned int claim_at = 0;
 /* partition 4's free size right after the claim: the game's own partition
 list is a snapshot halo_profile.prx takes once, and can't see the claim */
 static int free_after_claim = -1;
-/* how the claim is made, from the game's start argument (its keep words
-claimaddr, claimpart): 0 the whole partition from the bottom, 1 the whole
-partition at 0x88300000 by address, 2 the bottom 960 KB only. The game's own
-release is refused 80020001 for the first (the lab's sierra-hw 44069624252);
-the others ask whether sysmem frees a block made another way. */
-static int claim_mode = 0;
-
 static SceUID claim_make(void)
 {
-	if (claim_mode == 1)
-		return sceKernelAllocPartitionMemory(ME_PARTITION, "halo sndpart", PSP_SMEM_Addr, ME_PARTITION_BYTES,
-			(void *)0x88300000u);
-	if (claim_mode == 2)
-		return sceKernelAllocPartitionMemory(ME_PARTITION, "halo sndpart", PSP_SMEM_Low, ME_PARTITION_BYTES - 64u * 1024u, NULL);
-	return sceKernelAllocPartitionMemory(ME_PARTITION, "halo sndpart", PSP_SMEM_Low, ME_PARTITION_BYTES, NULL);
+	/* from the bottom, not at an address: sysmem keeps a kernel partition's
+	addresses in the cached kernel segment, and refuses both 0x08300000 and
+	0x88300000 by address (800200d9 on the PSP-3000, the lab's sierra-hw
+	44063972557 and 44073328977). The bottom is the partition's base, and the
+	game checks the address it got */
+	return sceKernelAllocPartitionMemory(ME_PARTITION, "halo sndpart", PSP_SMEM_Low, CLAIM_BYTES, NULL);
 }
 
 /* the system call (exports.exp): the claim's block, or the error sysmem
@@ -110,13 +107,8 @@ int module_start(SceSize args, void *argp)
 {
 	SceUID block;
 
-	if (args >= sizeof(int) && argp)
-		claim_mode = *(int *)argp;
-	/* from the bottom, not at 0x08300000: sysmem keeps a kernel partition's
-	addresses in the cached kernel segment (0x88300000), so that address lies
-	outside it (800200d9 on the PSP-3000, the partition all free). The
-	partition is exactly the block's size, so the bottom is its base, and the
-	game checks the address it got. */
+	(void)args;
+	(void)argp;
 	block = claim_make();
 	if (block < 0)
 		claim_error = block;
@@ -133,7 +125,6 @@ int module_stop(SceSize args, void *argp)
 {
 	(void)args;
 	(void)argp;
-	/* the release's result is the stop's, so the game's keep word claimstop
-	can read it from sceKernelStopModule's status */
-	return halo_claim_release();
+	halo_claim_release();
+	return 0;
 }

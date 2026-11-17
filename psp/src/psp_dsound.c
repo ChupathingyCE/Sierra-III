@@ -1880,12 +1880,12 @@ lab's partmap runs on both PSPs and Sheepdog01's hand sleep), and nothing alloca
 from it, so the window is all of it but its first page: that page holds the
 witness word (+0x18) the ME library reads to pick its table at a restart.
 The rest of Sony's image there is entered only by mehalt's and mewake's
-paths, so sndpart is refused with either. The whole partition is claimed from
-sysmem at start (psp_me_claim_partition), so no allocator can be handed it.
+paths, so sndpart is refused with either. Its bottom 960 KB is claimed from sysmem at
+start (psp_me_claim_partition), so no allocator can be handed it.
 Every piece is hashed as copied and as held (sndedramcheck's check, always on
 with it), a mismatch failing the fill as any failed copy */
 #define SNDPART_ME_BASE (0x88300000u + 4096u) /* the window as the ME sees it, cached */
-#define SNDPART_MOST (1020ul * 1024)
+#define SNDPART_MOST (956ul * 1024) /* halo_claim.prx claims the bottom 960 KB; the first 4 KB page is Sony's */
 #define SNDPART_LEAST (64ul * 1024)
 static unsigned long part_bytes = 0;
 static unsigned char *part_base = NULL;
