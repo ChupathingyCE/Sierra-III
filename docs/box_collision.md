@@ -72,6 +72,8 @@ Alone, against a capture of its queries over a pad bench (each query's arguments
 
 ## Open
 
+- **A query's feature list isn't cleared whole** [D, the fixed-up tree at Sierra-III ce750542]: `collision_features_new` zeroes only the counts (`memset(features->count, 0, sizeof(features->count))`, `source/physics/collision_features.c:29`), not the 44 KB list. So no per-query clear sits in the write-back traffic. Checked 2026-11-16 against an outside read that assumed one (Kimi K3.1 Pro, the lab's outside round two).
+
 1. **What the working set is, per query and over the tick**: lines a query touches, distinct and evicted, on b30's beach and flight (firmware's census by structure is the start, `footprint.md`). It sizes A, and it's the figure §4's unsized rest stands on. `[enables:collision]`
 2. **B's reach**: of the pill sweeps on b30 and b40, how many have unchanged inputs and nothing in reach moved since the last answer (STILLSWEEP's census, now with the guard). `[enables:collision]`
 3. The capture's shape for queries (a query record per call) for the harness (`harness.md`): the adapter is this box's.
