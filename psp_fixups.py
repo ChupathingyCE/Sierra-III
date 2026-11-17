@@ -54830,7 +54830,10 @@ static int psp_mv_surfaces_fit(void)
 		grown = (unsigned long *)memalign(64, (bytes + 63) & ~63u);
 		if (!grown)
 			return 0;
-		free(psp_mv_surface_flags);
+		/* the port's free doesn't take NULL (mvbits1: the first grow
+		faulted at its header, 32 bytes below 0) */
+		if (psp_mv_surface_flags)
+			free(psp_mv_surface_flags);
 		psp_mv_surface_flags = grown;
 		psp_mv_surface_bytes = (bytes + 63) & ~63u;
 		platform_psp_log("mevisedram: the surfaces' bits handed back grow to %u bytes", psp_mv_surface_bytes);
