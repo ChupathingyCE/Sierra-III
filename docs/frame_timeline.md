@@ -156,7 +156,7 @@ The GE draws through most of the tick (above), and while it reads main RAM every
 **How it's counted** [U on E and M]:
 - **Bytes:** `gereadskind` on tock162 with B58's emulator fix (lab sierra-batch 41964943382, Sierra-III `geoff/gecensus` 482d95b2) [E]. It counts the GE's main-RAM bytes by kind of draw and by part: vertices (v), indices (i), the list's own bytes with the data inline in it (l), textures once a frame (o), and palettes (p). It also places each byte by where in the frame's list it comes (quarters).
 - **Overlap:** the share of each quarter of the GE's busy time that falls inside the ticks, on the PSP [M]. b30's flight uses lane-hw2's quarters (96 / 96 / 94 / 51%, sierra-hw 40718998656). c20 uses lanetrace on tock162 (77 / 90 / 87 / 56%, 41942245562). The other stretches use ledger 3's GE-in-tick share, spread evenly.
-- **Price:** GEBUS's slopes [M on E]: 9.6 µs of tick for each KB a frame of geometry (v, i, l), 1.7 µs for each KB of textures.
+- **Price:** GEBUS's slopes [M on E]: 9.6 µs of tick [superseded 2026-11-16: retired: the GE's toll follows its fetches, not bytes; measured in play: b30 flight's tick 5.8 ms (15%) [M]; hardware_facts.md, Bus (the toll in play)] for each KB a frame of geometry (v, i, l), 1.7 µs for each KB of textures.
 - **Where the GE can read from:** the GE reads only main RAM and VRAM [D]. The ME's eDRAM is private to the ME.
 
 | ms a frame of tick | b30 cinematic | b30 flight end (1802–2402) | c20 steady | d20 swamp walk | d20 flashlight on |

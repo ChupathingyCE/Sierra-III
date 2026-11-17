@@ -9,7 +9,7 @@ Sheepdog01 asked for the changes that would **significantly** raise the tick rat
 - It spends 42–65 ms a frame building lists (b108 [M]).
 - The GE works 25–30% of the clock (b113 [M]). Its own time, 79 ms in the flight and 46 on the beach, is already over a 30 fps frame (33.3 ms), and in the flight over a 15 fps one.
 - Its main-RAM reads double the CPU's miss time while it works.
-- The Media Engine mixes audio, 10–18% busy in b114's flight and beach [M], and is otherwise free.
+- ~~The Media Engine mixes audio, 10–18% busy in b114's flight and beach [M], and is otherwise free.~~ (superseded 2026-11-16: busy 50-61% on average over whole levels today, near 100% at peaks; `hardware_facts.md`, Media Engine)
 
 The aim is a pipeline: each unit works on its own stage of a different frame, and each reads from the memory nearest to it. The levers already ranked below are its pieces: L1 step 4 (the ME builds lists while the main CPU runs on), L2/X1 (VRAM for the GE's reads), L3 (AI on the ME), L5 (the full tick/draw split).
 
@@ -132,7 +132,7 @@ The flight's tick, window 4 [M]: `objects_update` 41.9 ms (bipeds 21.6 for 27 of
 
 **Why small levers can't do it.** The beach needs ~2.5× and the flight ~3.9×. The open exact levers in `optimization_ranking.md` §3 add up to roughly 8–16 ms a tick, and most of those are ceilings. Each one is 1–3% of a frame.
 
-**Where the time really goes.** The CPU waits on memory for 54–59% of its cycles, and about 60% of those misses are instruction fetches by count (68% on c20; by cost 50-67%, `hardware_facts.md`'s miss-ratio bullet; corrected 2026-11-16 from "two thirds"): the tick's hot code is ~59 KB against a 16 KB cache [M/E]. The Media Engine, a second CPU as fast as the main one (b90 [M]), is idle ~94% of the time.
+**Where the time really goes.** The CPU waits on memory for 54–59% of its cycles, and about 60% of those misses are instruction fetches by count (68% on c20; by cost 50-67%, `hardware_facts.md`'s miss-ratio bullet; corrected 2026-11-16 from "two thirds"): the tick's hot code is ~70 KB against a 16 KB cache (corrected 2026-11-16 from ~59 KB; `cpu_cost_map.md` §3) [M/E]. The Media Engine, a second CPU as fast as the main one (b90 [M]), is idle ~94% of the time.
 
 So the big levers are: **use the second CPU**, **fetch less code**, and **cut the GE's reading of main RAM**.
 

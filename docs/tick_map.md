@@ -30,7 +30,7 @@ b30's flight, the tick by function (PC sampler, PSP-3000, sierra-hw 42114568213,
 | Scripts | 1.6% | 1.3 | to come |
 | The rest (spread thin) | 14.5% | 12.2 | to come |
 
-By object kind on the same stretch (objcost, PSP-1000, sierra-hw 42141971439) [M]: object updates 34.9 ms a tick as instrumented, bipeds 24.3 of it, the moving bipeds 23.6 (~24 a tick at ~970 µs). By band (S4's census, PSP-1000, sierra-hw 42672087890) [M]: far and out of the fight 30% of biped time, in the fight at 20-40 units 36%, at 10-20 units 19%.
+By object kind on the same stretch (objcost, PSP-1000, sierra-hw 42141971439) [M]: object updates 34.9 ms a tick as instrumented, bipeds 24.3 of it, the moving bipeds 23.6 (~24 a tick at ~970 µs). **CONFLICT (2026-11-16):** the lab's `tick_buyback.md` gives the same stretch and PSP 23.0 ms at 768 µs a biped (29.9 bipeds) by another instrument; neither reconciles the two. By band (S4's census, PSP-1000, sierra-hw 42672087890) [M]: far and out of the fight 30% of biped time, in the fight at 20-40 units 36%, at 10-20 units 19%.
 
 **One consequence already** [U on M]: the AI's thinking runs on the ME (AIME), so "the AI thinks less often" frees mostly the ME, which is also over at the target (`redesign_tick_target.md` §2a), not the tick. The tick's ground is the moving bipeds' updates and the collision they call.
 

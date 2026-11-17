@@ -51,7 +51,7 @@ Build numbers point to their docs (`build_bNNN.md`, `hardware_bNNN.md`); "v7", "
 ## 1. The gap, in numbers
 
 **The reference scene is b30's beach on the PSP:**
-- **Tick:** 61.7 ms (b107 [M]).
+- **Tick:** 61.7 ms (b107 [M]; superseded 2026-11-16: today's figures are the ledger bench's, the lab's `tick_buyback.md` §8).
 - **Ticks a frame:** 1.93 in b106 [M]; the b107 log gives 1.91 over the run and 1.98 in the fight.
 - **The frame's own work (drawing):** 129 ms (b107 [M]).
 - **A displayed frame:** 3.86 fps ≈ 259 ms (b107 [M]). Computed as 1.93 × 61.7 + 129, it comes to ≈ 248 ms [U]; the conversions below use that.
@@ -86,7 +86,7 @@ Build numbers point to their docs (`build_bNNN.md`, `hardware_bNNN.md`); "v7", "
 
 **Converting shares to ms** (all [U]):
 - 1% of tick instructions ≈ 0.62 ms.
-- The tick waits ≈ 21 ms on instruction misses and ≈ 12 ms on data misses.
+- ~~The tick waits ≈ 21 ms on instruction misses and ≈ 12 ms on data misses.~~ (superseded 2026-11-16: b107's shares; today's split and its CONFLICT are in `hardware_facts.md`'s miss-ratio bullet)
 - Drawing waits ≈ 47 ms on instruction misses and ≈ 29 ms on data misses. 1% of drawing's data misses ≈ 0.3 ms.
 
 **The honest sum.** The exact tick levers below add up to roughly **8–16 ms**, and most of those numbers are ceilings. That doesn't close the beach's 29 ms. Closing it takes four things together:

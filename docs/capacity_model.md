@@ -19,7 +19,7 @@ Sheepdog01, 2026-11-04 13:44: today's lighting cost, split into models and world
 | Models' GE lighting | ambient + 2 distant + up to 2 point lights a vertex (`psp_ge.c`, `model_lighting`); a point light's reach and a spotlight's cone are worked out once for the model, at its sphere's nearest point [D] | GE | vertices drawn x lights on | unmeasured |
 | Light selection | `lights_preprocess_scene`: the lights in view, their colours, lens flares | main CPU | lights in view | 0.4–0.7% of all cycles [E, §3] |
 | The world pass, selection | `lights_render_diffuse`: per dynamic light its clusters and the level triangles it reaches | main CPU, record lane | lit lights x their surfaces | 8.1% of d20 swamp's drawing, 0.3–2.2% elsewhere [E, §3] |
-| The world pass, vertex work | `psp_ge_light_draw_body`: per triangle the light's reach at each corner (falloff, cone, facing, gel), the spotlight's split near the light (FLC), the near cut, the depth bands, the list | ME (the replay) | triangles handed over | the ME's light draws 15.1 ms a frame on d20's swamp, 10.1 on a10's middle [M, LM] |
+| The world pass, vertex work | `psp_ge_light_draw_body`: per triangle the light's reach at each corner (falloff, cone, facing, gel), the spotlight's split near the light (FLC), the near cut, the depth bands, the list | ME (the replay) | triangles handed over | the ME's light draws 15.1 ms a frame [superseded 2026-11-16: the GE's toll in play, measured: b30 flight's tick 5.8 ms (15%) [M]; hardware_facts.md, Bus (the toll in play)] on d20's swamp, 10.1 on a10's middle [M, LM] |
 | The world pass, the GE | the lit triangles drawn again over the level, additive, depth equal, the surface's own texture | GE | lit triangles, their pixels | — |
 
 **Models already use all four of the GE's lights.** Two are the distant lights from the lightmap samples, two are the object's point lights (b117) [D]. A dynamic light adds **no pass** to a model: it takes a GE light slot. What it doesn't get is its falloff or cone across the model: both are one number a model, so a Warthog lit at one end is lit all over by the reach at its nearest point [D].
@@ -95,7 +95,7 @@ The cache model's cycles in each lighting entry, inclusive of what it calls, as 
 
 **Models against world.** On b30 the models' chain outweighs the world about 7:1. Its biggest piece is the static preparation's lightmap samples, a BSP ray each, driven by scenery and bipeds (§2). On d20's swamp the world outweighs the models about 4:1, and the selection on the main CPU costs more than the pass itself. Two caveats on d20:
 - In the emulator only 15–19% of the handed draws reach the pass's loop (copy room, §2). The selection's share isn't cut by that; the pass's is, so on the PSP the pass is several times this [U].
-- In the default build the pass runs on the ME, so its share leaves the main CPU. There it is the ME's light draws: 15.1 ms a frame on d20's swamp [M, LM].
+- In the default build the pass runs on the ME, so its share leaves the main CPU. There it is the ME's light draws: 15.1 ms a frame [superseded 2026-11-16: the GE's toll in play, measured: b30 flight's tick 5.8 ms (15%) [M]; hardware_facts.md, Bus (the toll in play)] on d20's swamp [M, LM].
 
 **Vehicles.** The drive's shares are b30's. A vehicle adds one lightmap sample, one dynamic preparation and two relinks a frame (§2), so vehicles cost the CPU's lighting nothing measurable. Their cost is the GE's: 8,789 indices a vehicle a frame, times its 2–4 lights.
 
