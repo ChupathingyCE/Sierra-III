@@ -173,6 +173,22 @@ sierra-hw 44065994276: the same build, c40's pad to its stretch end, one run a s
 
 **The switch count isn't landing's cost:** the null mark pair is 2.5 µs with the switch-count call and 1.9 µs without it (`framepicnosw`), so the call is ~0.3 µs a mark, ~20 µs a frame at 62 marks. That can't make b30 landing's +2 ms. **The instruments' cost here, one run a side, no verdict:** the opening holds (frame +0.0%, tick +2.0% / +1.6%, drawing +1.5% / +0.9%); the later stretch's gaps (frame +12% framepic, +20% nosw) run the wrong way for the switch count and are within what one run a side can't separate from play varying. The b30 three-way at two runs a side is what can.
 
+## The fourth table: c40, the ME off (PSP-1000, 2026-11-17)
+
+sierra-hw 44070031867: as the third, with `nomeaudio nomepoints` (no 'ME: starting' in any log); 7,976 frames and 8,759 ticks; the lab's row `frame_picture_c40nome_1000` [M]. The framepic run, beside the third table's ME-on figures.
+
+| Box | Per | ME off | (ME on) | Work | Code wait | Data wait | Unexplained |
+|---|---|---:|---:|---:|---:|---:|---:|
+| render: world | frame | 27.5 | (5.9) | 18.0 | 3.8 | 3.0-5.6 | 0.1-2.7 |
+| objects | tick | 8.9 | (10.3) | 3.7 | 2.7 | 1.4-2.7 | -0.1-1.2 |
+| render: objects | frame | 4.5 | (5.4) | 2.3 | 0.9 | 0.8-1.6 | 0-0.5 |
+| outside any box | frame | 3.8 | (2.4) | 1.8 | 0.9 | 0.7-1.3 | 0-0.4 |
+| render: other | frame | 1.9 | (2.2) | 1.1 | 0.3 | 0.4-0.8 | 0-0.1 |
+| AI (main CPU) | tick | 1.0 | (1.1) | 0.6 | 0.2 | 0.2-0.3 | 0-0.1 |
+| the tick's other work | tick | 0.8 | (1.0) | 0.4 | 0.2 | 0.2-0.3 | 0-0.07 |
+
+**What it says:** the ME's work takes ~21.6 ms a frame off the main CPU's render of the world (27.5 to 5.9), the whole of it work and waits the main CPU no longer does. With the ME on, the main CPU's own boxes run slower: the objects' update +1.4 ms a tick (+15%), its unexplained part up from -0.1-1.2 to 1.0-2.4 ms; render: objects +0.9 ms. [U] that is the ME contending for main RAM, which §6's prices, taken with the ME idle, don't hold. A price with the ME busy is what would turn it into a figure. **The marks' cost with the ME off, one run a side:** frame +1.8% framepic / +1.5% nosw on the opening, +1.2% / +0.0% later; the switch count is worth ~0.3 points. The ME-on run's later +12% / +20% doesn't appear with the ME off, so it was the ME's variance, not the marks.
+
 ## What changed from v0
 
 - Marks: their own system call, not `halo_profile_phase` (its four-phase mask and thread walk). The switch count is read as one value. The keep word is read once. Boxes are once-a-tick regions, ≤ ~60 marks a tick, checked in the emulator first. Collision is priced from halo_box, not marked per call. A null mark pair is subtracted.
