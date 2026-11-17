@@ -14,7 +14,7 @@ Labels: [M] measured on the PSP, [E] emulator or estimate, [D] read in code or d
 
 **What changes tick to tick** (C3) [E for counts, M for times]:
 - objects: 69-73% unchanged on b30, 96-97% on b40;
-- object updates' time (PSP-1000, 42141971439): 34.9 ms a tick, 6.8 of it (19%) in updates that left the object unchanged; the moving bipeds 22.9 (~970 µs each);
+- object updates' time (PSP-1000, 42141971439): 34.9 ms a tick, 6.8 of it (19%) in updates that left the object unchanged; the moving bipeds 22.9 (~970 µs each); **Corrected 2026-11-16 (audit, after Qwen4 Max's read):** these ms come from a census build whose tick was ~47-60 ms, not the shipped 39.9 ms; as shares of that tick (object updates 58-74%), bipeds are ~16-21 ms of the shipped tick [U], so a pot sized as a share of 24.3 ms runs 15-70% high.
 - collision's queries mostly don't repeat (vectors 3-6%, reconnects under 5%); bipeds' feature-in-sphere queries do (25-46% for bipeds; 16-39% overall);
 - **b40's snowfield, timed** (PSP-3000, sierra-hw 42152471353, game time 14,100-15,300; row c3_objcost_ms_b40_snowfield) [M]: object updates 30.8 ms a tick, 6.6 (21%) leaving the object unchanged: **vehicles 3.7** (6.4 a tick at ~580 µs: gun turrets and parked vehicles), machines 0.9, weapons 0.7, scenery 0.4, bodies 0.6. Bipeds 20.0 ms (24.9 a tick); **far and out of the fight 28% of it, ~5.5 ms a tick**; in the fight 57%;
 - bipeds by distance and fight (objcost2 42146294460, shares of biped time): far and out of the fight 19% on b30's flight (~4.6 ms a tick at the PSP's 24.3), 32% on b40's snowfield, 14% on the cliff, 8% on b30's landing; in the fight at 20-40 units 30-38% everywhere; bodies without an AI 25% on the landing, 86-97% unchanged.
