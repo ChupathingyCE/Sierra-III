@@ -1,59 +1,103 @@
-# The frame picture: each box's milliseconds by cause (design v0)
+# The frame picture: each box's milliseconds by cause (design v1)
 
-Brief: the lab's `coord/briefs/frame_picture.md` (the lead, 2026-11-17). One table per stretch, on the PSP-1000: each box of the tick and the frame in ms a tick and a frame, at p50 and p99, split into **work**, **code-miss wait**, **data-miss wait** and **the rest of the memory wait** (the GE's toll and contention), with each box's miss counts by kind. Every box and lever is then ranked on the same table (REBUILD §3). This page is the design the lead accepts before anything is built; the build goes behind a switch, off by default.
+Brief: the lab's `coord/briefs/frame_picture.md` (the lead, 2026-11-17). One table per stretch, on the PSP-1000: each box of the tick and the frame in ms a tick and a frame, at p50 and p99, split into **work**, **code-miss wait**, **data-miss wait**, the memory wait the prices don't explain, **asleep**, and **waits for the GE or ME**, with each box's miss counts by kind. Every box and lever is then ranked on the same table (REBUILD §3). The build goes behind a switch, off by default.
+
+v1 answers the lead's acceptance of v0 (three conditions, 01:1x) and the eight additions from DeepSeek's cold read (or-job 44032878476, its two code claims checked by the lead, 01:0x). What changed from v0 is listed at the end.
 
 ## 1. What the hardware counts (the firmware read, 2026-11-17)
 
-The main CPU's profiler is the block at `0xBC400000`: 21 words (`PspDebugProfilerRegs`): an enable word, then 32-bit counts of system cycles, CPU cycles, cycles stalled internally, **on memory**, on the FPU and other coprocessors, on the VFPU, asleep; bus accesses, uncached loads and stores, cached loads and stores, **instruction misses, data misses, data write-backs**, COP0, FPU and VFPU instructions, and the local bus [D: halo_profile.prx and the SDK's register layout; [M] the counters move as named, `hardware_facts.md` profiler bullets].
+The main CPU's profiler is the block at `0xBC400000` (`PspDebugProfilerRegs`): an enable word, then **19 counters**. They are 32-bit counts of system cycles, CPU cycles, cycles stalled internally, **on memory**, on the FPU and other coprocessors, on the VFPU, and **asleep**. Then bus accesses, uncached loads and stores, cached loads and stores, **instruction misses, data misses, data write-backs**, COP0, FPU and VFPU instructions, and the local bus. [D: halo_profile.prx reads the 19 after the enable word, `COUNTERS` in `psp/profile/main.c`; [M] the counters move as named, `hardware_facts.md` profiler bullets.]
 
-- **Code wait and data wait are not counted apart.** There is one memory-stall count; misses are counted by kind, the cycles they cost are not. So the split is by count times a price (§4), as the brief's fallback says.
-- **No GE-bus counter** (0x48 counts; 0x4C and 0x50 read 0 with the GE busy [M], `hardware_facts.md`). The GE's toll stays an inference [U on M].
-- **The counters are the whole CPU's, not a thread's.** Sony's thread manager can keep them per thread: in its "thread mode" it copies the 21 words into a profiled thread's own save area when the thread is switched out and writes them back when it's switched in (threadman, its switch path, and `sceKernelReferThreadProfiler` / `sceKernelReferGlobalProfiler`, which hand out the block's address in thread or global mode). But the mode is chosen once, when the thread manager starts, from the kernel's debug flags, which a retail PSP doesn't set: on ours the mode is off and nothing is saved per thread [D, the lab's `docs/research/fw661/frame_picture_read.md`]. Turning it on would mean writing the thread manager's own state, so the design doesn't. Other threads' work inside a box is handled in §5 instead.
-- **Reading it** takes kernel mode (there's no user-mode clock either, `hardware_facts.md`). The port already has the path: `halo_profile.prx`'s system call `halo_profile_phase` snapshots the counters into the game's table at a phase change (4 phases today: other, tick, drawing, frame end).
+- **Code wait and data wait are not counted apart.** There is one memory-stall count. Misses are counted by kind, but the cycles they cost are not. So the split is by count times a price (§4), as the brief's fallback says.
+- **No GE-bus counter.** 0x48 counts, while 0x4C and 0x50 read 0 with the GE busy [M], `hardware_facts.md`. The GE's toll stays an inference [U on M].
+- **The counters are the whole CPU's, not a thread's.** Sony's thread manager can keep them per thread, but only in a mode chosen at its start from the kernel's debug flags, which a retail PSP doesn't set [D, the lab's `docs/research/fw661/frame_picture_read.md`]. Other threads' work inside a box is handled in §5.
+- **Reading it** takes kernel mode; there is no user-mode clock either (`hardware_facts.md`). `halo_profile.prx` is the port's kernel module.
 
-## 2. What is read where
+## 2. Marks
 
-- **A mark at each box's entry and exit, never inside its loop** (the brief's rule 2). The game calls one function, `psp_box_mark(box)` on entry and `psp_box_mark(BOX_POP)` on exit; it makes the existing system call with the box's number.
-- **Nesting.** Boxes call each other (biped motion calls the collision service). The module keeps a stack of open boxes (8 deep): a snapshot's counts since the last mark go to the box on top (exclusive), and each box's inclusive total is kept beside it. A box's row in the table is exclusive; "the rest" is everything outside any box.
-- **Per tick and per frame, not per window.** At each tick's and frame's end the module folds each box's counts for that tick into **histograms**, one per box and measure (cycles, memory stall, I-misses, D-misses, write-backs, uncached): 64 log-spaced buckets each. p50 and p99 come from them; the window means from the sums. 14 boxes × 6 measures × 64 × 4 bytes is ~21 KB, in the module's own memory, not the game's heap (85 KB free on b30).
-- **Reported** at each heartbeat as `framepic:` lines (one a box: ms a tick p50/p99 and mean, the split, misses a tick by kind) and once at the stretch's end as the table.
+- **Their own entry point.** v0 reused `halo_profile_phase`, but that call masks its argument into the four phases (`next & (PHASES - 1)`), so a box number would land in a phase. It also walks the whole thread list at every change when `hwthreads` is on (`threads_account`, up to 96 system calls). The box marks get a system call of their own, `halo_profile_box(box)`. The four phases stay as they are, read as the port reads them now, and the box stack sits beside them.
+- **What a mark reads:** the counters the split needs, and the thread-switch count as one value. The switch count is the kernel's own word, read once, not `threads_account`'s walk, and not a refer call when a word read does it; the build names which word. Whether the profiler's words can be read singly (6 of the 19: CPU cycles, memory stall, asleep, I-misses, D-misses, write-backs, plus the two uncached counts) is tested first (§7). If they can't, the mark reads all 19.
+- **The keep word is read once at launch.** `framepic` sets a flag in the game, and a mark is one load and a branch when it's off.
+- **At most ~60 marks a tick (the lead's condition 1).** A box is a **once-a-tick region**, not a function. Its marks sit where the tick enters and leaves that work as a whole, never at a per-call entry. The collision service is asked ~144 times a tick (`box_collision.md`) and biped motion 22.8, so neither is marked per call. Each is marked at its batch point where it has one. Where it has none (collision is asked from inside other boxes), it has no row of its own. Its cost stays inside its callers' rows, and beside them the page gives halo_box's standalone price per query times its counted queries, labelled as such.
+  - **Before any PSP run:** an emulator count of marks a tick per box on every stretch (an exact count, which the emulator answers truly), held to ≤ ~60 a tick.
+- **The marks' own cost taken out (condition 2).** Each run also takes a **null mark pair** (two marks back to back, nothing between) every tick. Its counts, times the number of marks a box made, are taken off that box and reported as their own row, "the marks".
+- **Nesting.** Boxes call each other. The module keeps a stack of open boxes, 8 deep. The counts since the last mark go to the box on top (exclusive), and each box's inclusive total is kept beside it. A box's row is exclusive.
 
-The boxes (REBUILD §3.3, as the code stands today; each one's entry points are settled in the build against `cpu_cost_map.md` §1 and named on this page then): **tick:** collision service, biped motion, posing, AI's main-CPU share, vehicles and other objects, effects (update and particles), the tick's other work; **frame:** visibility's main-CPU side, draw list, GE lists and forms (the main CPU's part), lighting, audio's main-CPU share (`sound_render`), the frame end; and "the rest".
+## 3. Where the tables live, and what's reported
 
-## 3. What it costs, and how that's checked
+- **The histograms are in game memory.** The module refuses tables outside user RAM, and its own memory can't hold them. They sit in one block the game takes at launch from partition 2, outside the heap, only when `framepic` is on (`halo framepic`, ~21 KB). Without the keep word it is never taken. There are 14 boxes × 6 measures × 64 log-spaced buckets × 4 bytes, plus each box's sums. The block's address is handed to the module once, as the table is today.
+- **Per tick and per frame.** At each tick's and frame's end the module folds each box's counts into its histograms (cycles, memory stall, asleep, I-misses, D-misses, write-backs). p50 and p99 come from them, and the means from the sums.
+- **Reported** at each heartbeat as `framepic:` lines (one a box), and once at the stretch's end as the table.
 
-- **A mark:** one system call and 21 uncached loads (~0.14 µs each in kernel mode [M], `hardware_facts.md`), plus the stack's bookkeeping: ~4-5 µs [U]. Two a box a tick, ~14 boxes: ~0.13 ms a tick, **~0.4% of a 33 ms frame** [U], under the brief's 1%.
-- **What ledger1 taught** (its instruments cost b30's frame +5-7% [M]): the cost isn't only the instructions but the instrument's code and data in the caches. So the price isn't estimated, it's measured: every run is an A/B in one build, `keepsets="- | framepic"`, and the uninstrumented side is the control. Over 1% → fewer marks (boxes merged) before any figure is read (the brief's fallback).
-- **The done-check:** each stretch's box rows plus "the rest" sum to within 5% of the uninstrumented side's frame on the same stretch.
+The boxes (REBUILD §3.3, as the code stands; entry and exit points named on this page when the build settles them against `cpu_cost_map.md` §1):
+- **tick:** biped motion, posing, AI's main-CPU share, vehicles and other objects, effects (update and particles), the tick's other work;
+- **frame:** visibility's main-CPU side, draw list, GE lists and forms (the main CPU's part), lighting, audio's main-CPU share (`sound_render`), the frame end.
 
-## 4. Work, code wait, data wait and the rest
+Collision is a priced column (§2), not a row.
 
-From one box's counts over a tick:
+## 4. The split
 
-- **memory wait** = the memory-stall count;
-- **code wait** = I-misses × **P_I**; **data wait** = D-misses × **P_D** + write-backs × **P_WB** + uncached accesses × **P_U**;
-- **the rest** = memory wait − code wait − data wait (the GE's toll, contention with the ME, DMA, and pricing error) [U on M];
-- **work** = cycles − memory wait (internal, FPU and VFPU stalls stay in work and are reported beside it).
+From one box's counts over a tick, with the prices from §6:
 
-**The prices are measured on the same PSP the same day,** by halo_box's counted pass (its `counters` mode reads the same counters around each entity): a kernel with only code misses, one with only data misses (clean and dirty victims), one with uncached accesses, each with the GE idle and with the GE reading main RAM (bench18's list). The GE-idle prices are the ones applied; the GE-reading prices bound how much of "the rest" the GE can explain. This is also what settles `hardware_facts.md` line 49's CONFLICT (the miss ratio by count against by cost).
+| Column | Is |
+|---|---|
+| **asleep** | the asleep count: its own column (3-16% of the clock on the stretches read so far), never in work or memory |
+| **GE/ME wait** | cycles inside the marked waits for the GE or the ME (the frame end's finish, drawing's waits on a list, a box's wait for an ME answer). These waits are marked as sub-regions, so they aren't memory stalls and can't land in the residual |
+| **code wait** | I-misses × P_I |
+| **data wait** | D-misses × P_D + uncached loads × P_UL |
+| **unexplained memory wait** ("the price residual") | the memory-stall count − code wait − data wait: the GE's toll, contention with the ME, DMA, and pricing error [U on M] |
+| **work** | cycles − memory stall − asleep − GE/ME wait (internal, FPU and VFPU stalls stay in work, reported beside it) |
+
+- **Write-backs are priced once.** A write-back's cost is inside the miss that evicts the dirty line. So P_D is the **dirty-mixed** price (measured with the box's own clean/dirty mix of victims, read from its write-back count against its D-misses), and there is no separate P_WB term. The write-back count is reported beside the split, not priced.
+- **Uncached stores** (the GE's command stream) are buffered and mostly don't stall. They aren't priced; any stall they cause stays in the residual. They are reported as a count.
+- **A range, not one number.** Each price has a low and a high bound (§6). The table gives code wait, data wait and the residual as a range over those bounds, never as a point.
+- **"Outside any box"** is its own row: the time no box had open. It is not the price residual, which is a column of every row.
 
 ## 5. Other threads
 
-The counters see the whole CPU, so the sound thread's work, or any thread that runs while a box is open, lands in that box. The module already reads the thread-switch count; each mark reads it too, and a box's tick sample that had a switch inside it is counted apart (its own histogram), so p50 and p99 are given for switch-free samples and for all. The ME isn't in these rows (its per-step read exists, `hardware_facts.md` line 249); each window's line names what the ME ran, so the main CPU's table isn't read as the whole frame.
+The counters see the whole CPU, so the sound thread, or any thread that runs while a box is open, lands in that box. Each mark reads the switch count (§2). A box's tick sample with a switch inside it goes to a second histogram, so p50 and p99 are given for switch-free samples and for all. The ME isn't in these rows (its per-step read exists, `hardware_facts.md` line 249). Each window's line names what the ME ran, so the main CPU's table isn't read as the whole frame.
 
-## 6. The runs
+## 6. The prices
 
-- **Stretches** (legendary, the design case): b30_leg2's flight and landing (window 3), b40's drive (16,600-19,400), c20's opening; and **the firing stretch**, chosen by the worker's emulator search for the densest sustained firing in a quiet area (or-job 44030538311, the master reads it).
-- **Each run** `keepsets="- | framepic"`, one PSP-1000 job a stretch, under 90 minutes. The firing stretch twice more: with the ME on and with it off (keep word `nomeaudio`, which keeps the ME stopped), so the firing's own cost is told apart from the ME's work falling back to the main CPU (Sheepdog01's AR stretch, `ar_firing_me_off_b30_1000`).
-- **Rows:** `frame_picture_<stretch>_1000` in the lab's measurements; the lead puts the table into REBUILD §3 and the cost map §1.
+halo_box's counted pass (its `counters` mode) is **re-run on the PSP-1000 the same day as the frame-picture runs**. The old prices are the PSP-3000's. It runs:
+- a kernel with only code misses (P_I);
+- a data-miss kernel at clean, half-dirty and all-dirty victims (P_D's bounds; the box's own mix picks its point);
+- an uncached-load kernel (P_UL);
+- each with the GE idle and with the GE reading main RAM (bench18's list).
 
-## 7. Build
+The GE-idle prices are the ones applied, and their spread (low to high) is the range in §4. The GE-reading prices bound how much of the residual the GE can explain.
 
-- **Switch:** `PSP_FRAMEPIC=1` builds the marks in (their calls sit in hot entry points, so a default build leaves them out); keep word `framepic` turns them on at launch. The module's side is in `halo_profile.prx` and costs nothing unless called.
-- **The prices' bench:** halo_box's counted pass, with the kernels above added as boxes.
-- **Order** (the brief): after the partition work, ahead of VRAMCODE's three-way build.
+**This does not settle `hardware_facts.md` line 49's CONFLICT** (the miss ratio by count against by cost). The price uncertainty there, 19-33 cycles over ~87k misses (5-8.7 ms), is larger than the 2.9 ms gap it would have to settle. The CONFLICT stays, and this run's range is added beside it.
+
+## 7. The runs, and the done-check
+
+- **First, an emulator run:** marks a tick per box on every stretch (§2's bound); the build doesn't go to a PSP until each is ≤ ~60.
+- **Then the single-word read test**, on the PSP: read 6 profiler words singly against all 19 in one block, 10,000 times, on a bench. Are the six's deltas the same, and what does each read cost? This decides the mark's size.
+- **Stretches** (legendary): b30_leg2's flight and landing (window 3); b40's drive (16,600-19,400); c20's opening; and **the firing stretch, c40_leg2, the window ending at tick 8,768** (~292 s; fallback a30_leg1 at tick 19,456; the lead 00:5x, chosen from the pads' own PSP logs).
+- **Each run:** `keepsets="hwprofile | hwprofile framepic"`, one PSP-1000 job a stretch, under 90 minutes. **Both sides load the profiler module (the control, addition 6),** so the A/B isolates the marks only.
+- **The firing stretch twice more:** with the ME on, and with it off. The ME-off side has to stop **all** of the ME's jobs (AI, visibility, the ring), not only audio (condition 3). `nomeaudio` alone does not stop it: the ME still starts under it for the ring's clients and the point jobs. It stays off only with `nomeaudio nomepoints` and none of `meslant`, `meringtest`, `meraysperc` (`psp_me.c`, the start gate) [D]. So the ME-off side is `nomeaudio nomepoints`, and its log is read for "ME: starting" (it must be absent) and for each job's off line. If one doesn't, the page names the keep word that holds it off, as the 055 run had it.
+- **The done-check:**
+  - (a) the instrumented side's frame against the uninstrumented side's, on the same stretch: that is the instruments' cost, and it must be ≤ 1%. Over 1%, boxes are merged before any figure is read;
+  - (b) the identity: every row's columns, summed over the rows and "outside any box", equal the module's own whole-frame counters over the same window, for every column. That catches bookkeeping errors, not prices;
+  - (c) p50 and p99 are never summed; only means are.
+- **Rows:** `frame_picture_<stretch>_1000` in the lab's measurements. The lead puts the table into REBUILD §3 and the cost map §1.
+
+## 8. Build
+
+- **Switch:** `PSP_FRAMEPIC=1` builds the marks in (their calls sit in hot entry points, so a default build leaves them out). Keep word `framepic` turns them on at launch. The module's side is in `halo_profile.prx`.
+- **The prices' bench:** halo_box's counted pass, with §6's kernels added as boxes.
+- **Order** (the lead): after sndpart over the whole partition, ahead of VRAMCODE's three-way build.
+
+## What changed from v0
+
+- Marks: their own system call, not `halo_profile_phase` (its four-phase mask and thread walk). The switch count is read as one value. The keep word is read once. Boxes are once-a-tick regions, ≤ ~60 marks a tick, checked in the emulator first. Collision is priced from halo_box, not marked per call. A null mark pair is subtracted.
+- Split: P_WB is dropped (the dirty-mixed P_D carries it). Uncached stores are not priced. Every split is a range over the price bounds. Asleep and GE/ME waits are their own columns. "Outside any box" and "the price residual" are named apart.
+- The CONFLICT on `hardware_facts.md` line 49 is no longer claimed as settled.
+- Done-check: v0's "within 5%" is replaced by the ≤ 1% instrument cost, the column identity, and no summed percentiles. The control loads `hwprofile` on both sides.
+- Prices are re-run on the PSP-1000 the same day.
+- Small fixes: 19 counters, not 21; the histograms live in a partition-2 block taken only with `framepic`; the stall columns sit beside work.
 
 ## Open
 
-- Each box's entry and exit points (§2), settled in the build.
-- Whether 21 uncached loads a mark can be cut to the 6 the split needs (cycles, memory stall, I- and D-misses, write-backs, uncached): a smaller mark, if the profiler's words can be read singly without disturbing the rest.
+- Each box's entry and exit points, and its batch point (§2), settled in the build.
+- The switch count's word (§2): which kernel word holds `threadSwitchCount`, so a mark reads it without a refer call.
