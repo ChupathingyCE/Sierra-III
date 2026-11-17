@@ -3920,6 +3920,10 @@ static struct
 	volatile unsigned int sleepmem_hash[16], sleepmem_changes[16];
 	volatile unsigned int sleepmem_word18, sleepmem_bc0, sleepmem_bc4;
 	volatile int sleepmem_kernel_free, sleepmem_kernel_free_low;
+	/* "partmap": the module's map of the ME partition (psp/profile/main.c) */
+	volatile unsigned int partmap_wanted, partmap_all, partmap_filled, partmap_passes, partmap_step_us, partmap_game_time;
+	volatile unsigned int partmap_seen[256], partmap_word[256], partmap_value[256], partmap_ms[256], partmap_when[256];
+	volatile unsigned int partmap_hash[256];
 } hwprofile __attribute__((aligned(64)));
 /* "pcsample": 512-byte bins over the program's code, the tick's and the
 drawing's (~54 KB for 3.5 MB of code); written to log/pcsample.txt every
@@ -3986,6 +3990,9 @@ static void hwprofile_start(const char *eboot_path)
 	hwprofile.threads_wanted = psp_keep("hwthreads") != 0;
 	/* "sleepmem": the module watches the ME partition, a whole watch every 1.6 s */
 	hwprofile.sleepmem_wanted = psp_keep("sleepmem") != 0;
+	/* "partmap" ("partmapall" writes the lower half, Sony's ME image, too) */
+	hwprofile.partmap_wanted = psp_keep("partmap") != 0 || psp_keep("partmapall") != 0;
+	hwprofile.partmap_all = psp_keep("partmapall") != 0;
 	if (psp_keep("pcsample"))
 	{
 		extern char _ftext[], _etext[];
@@ -4214,6 +4221,42 @@ static void hwprofile_report(void)
 				hwprofile.sleepmem_kernel_free / 1024, hwprofile.sleepmem_kernel_free_low / 1024, hwprofile.sleepmem_us, hwprofile.sleepmem_chunk_us);
 			reported_watches = hwprofile.sleepmem_watches;
 			reported_changes = lower + upper;
+		}
+	}
+	if (hwprofile.partmap_wanted && hwprofile.partmap_filled)
+	{
+		/* each page's first change, once, as it's seen; and a count about a
+		minute (a pass is 1.6 s) */
+		extern long game_time_get(void);
+		static unsigned char said[256];
+		static unsigned int reported_passes;
+		unsigned int pages = 0, upper = 0;
+
+		hwprofile.partmap_game_time = (unsigned int)game_time_get();
+		for (k = 0; k < 256; k++)
+		{
+			if (!hwprofile.partmap_seen[k])
+				continue;
+			pages++;
+			upper += k >= 128;
+			if (said[k])
+				continue;
+			said[k] = 1;
+			if (hwprofile.partmap_word[k] == 0xFFFFFFFFu)
+				platform_log("partmap: page %u (+0x%05x, the image half) changed from its first hash: first seen at %u ms, game time %u, phase %u (hash %08x)",
+					k, k * 4096, hwprofile.partmap_ms[k], hwprofile.partmap_when[k] >> 4, hwprofile.partmap_when[k] & 15,
+					hwprofile.partmap_value[k]);
+			else
+				platform_log("partmap: page %u (+0x%05x) changed: first word +0x%05x holds %08x (wanted %08x), first seen at %u ms, game time %u, phase %u",
+					k, k * 4096, hwprofile.partmap_word[k], hwprofile.partmap_value[k], hwprofile.partmap_word[k] ^ 0xC3A55A3Cu,
+					hwprofile.partmap_ms[k], hwprofile.partmap_when[k] >> 4, hwprofile.partmap_when[k] & 15);
+		}
+		if (hwprofile.partmap_passes != reported_passes && hwprofile.partmap_passes / 36 != reported_passes / 36)
+		{
+			platform_log("partmap: %u passes; %u of 256 pages changed (%u of the 128 written, %u of the image half's hashed); a step %u us at most; the clock %u ms",
+				hwprofile.partmap_passes, pages, upper, pages - upper, hwprofile.partmap_step_us,
+				(unsigned int)(sceKernelGetSystemTimeWide() / 1000));
+			reported_passes = hwprofile.partmap_passes;
 		}
 	}
 	for (k = 0; k < HW_COUNTERS; k++)

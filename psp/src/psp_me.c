@@ -5122,6 +5122,10 @@ void psp_me_ddr_probe(void)
 			kb = 1020;
 		start = (unsigned int)kb * 1024u & ~(PSP_ME_DDR_PIECE - 1);
 		pieces = (0x100000u - start) / PSP_ME_DDR_PIECE;
+		/* with "partmap" the kernel module wrote the pattern (psp/profile/main.c):
+		the ME only reads it back, beside the module's own reads */
+		if (psp_keep("partmap") || psp_keep("partmapall"))
+			filled = pieces;
 	}
 
 	if (asked < 0)
