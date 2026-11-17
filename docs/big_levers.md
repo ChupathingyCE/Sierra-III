@@ -132,7 +132,7 @@ The flight's tick, window 4 [M]: `objects_update` 41.9 ms (bipeds 21.6 for 27 of
 
 **Why small levers can't do it.** The beach needs ~2.5× and the flight ~3.9×. The open exact levers in `optimization_ranking.md` §3 add up to roughly 8–16 ms a tick, and most of those are ceilings. Each one is 1–3% of a frame.
 
-**Where the time really goes.** The CPU waits on memory for 54–59% of its cycles, and two thirds of those misses are instruction fetches: the tick's hot code is ~59 KB against a 16 KB cache [M/E]. The Media Engine, a second CPU as fast as the main one (b90 [M]), is idle ~94% of the time.
+**Where the time really goes.** The CPU waits on memory for 54–59% of its cycles, and about 60% of those misses are instruction fetches by count (68% on c20; by cost 50-67%, `hardware_facts.md`'s miss-ratio bullet; corrected 2026-11-16 from "two thirds"): the tick's hot code is ~59 KB against a 16 KB cache [M/E]. The Media Engine, a second CPU as fast as the main one (b90 [M]), is idle ~94% of the time.
 
 So the big levers are: **use the second CPU**, **fetch less code**, and **cut the GE's reading of main RAM**.
 
@@ -386,7 +386,7 @@ Even split perfectly between the main CPU and the Media Engine, the work has to 
 
 ## 6. L4: profile-guided build
 
-GCC with a profile moves every block that never runs out of the hot path, lays out branches by how they go, and inlines by real call counts. It's aimed straight at instruction misses, which are two thirds of all misses.
+GCC with a profile moves every block that never runs out of the hot path, lays out branches by how they go, and inlines by real call counts. It's aimed straight at instruction misses, about 60% of all misses by count (`hardware_facts.md`; corrected 2026-11-16 from "two thirds").
 
 **The blocker** [M, lab run 38051632134]: instrumented with `-fprofile-arcs`, the program grows from 4.56 MB to **9.25 MB** (text 3.27 → 6.01 MB, data 0.15 → 1.10, bss 1.36 → 2.58) and the heap falls from 5,952 KB to 1,152 KB. The profile run can't fit in the PSP-1000's layout. The way through:
 - the 64 MB layout (`PSP_BIG_RAM`), emulator only, with the game state moved above the tag window so the program and heap get 0x08804000–0x09600000;
