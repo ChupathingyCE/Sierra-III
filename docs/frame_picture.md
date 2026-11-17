@@ -104,6 +104,30 @@ Each held within ~2% across the warm, emptied and crowded modes. A box's P_D sit
 - **The prices' bench:** halo_box's counted pass, with §6's kernels added as boxes.
 - **Order** (the lead): after sndpart over the whole partition, ahead of VRAMCODE's three-way build.
 
+## The first table: b30 (PSP-1000, 2026-11-17)
+
+sierra-hw 44058220314: a7031cf9 with the shipped recipe, b30_leg2 to 130 s legendary, the whole run (2,233 frames, 3,899 ticks), two runs a side; the lab's row `frame_picture_b30_1000` [M]. Each box's mean a sample, in ms; the split uses the prices of §6, its data and unexplained columns as ranges over P_D's bounds. The two framepic runs agree within a few percent.
+
+| Box | Per | Mean | Work | Code wait | Data wait | Unexplained |
+|---|---|---:|---:|---:|---:|---:|
+| objects | tick | 20.5 | 7.5 | 5.0 | 3.1-5.9 | 2.0-4.8 |
+| the tick's other work | tick | 3.9 | 1.5 | 0.7 | 0.7-1.4 | 0.3-0.9 |
+| AI (main CPU) | tick | 1.6 | 0.6 | 0.4 | 0.3-0.5 | 0.1-0.4 |
+| effects | tick | 0.29 | 0.12 | 0.07 | 0.05-0.09 | 0.01-0.05 |
+| render: objects | frame | 10.7 | 4.0 | 2.8 | 2.0-3.9 | 0-1.7 |
+| render: world | frame | 9.9 | 5.4 | 1.4 | 2.1-3.6 | 0-1.1 |
+| outside any box | frame | 5.5 | 2.6 | 1.2 | 1.0-1.9 | 0-0.8 |
+| render: effects | frame | 2.1 | 1.5 | 0.2 | 0.3-0.6 | 0-0.1 |
+| render: other | frame | 1.3 | 0.6 | 0.3 | 0.3-0.5 | 0-0.2 |
+| render: HUD | frame | 1.2 | 0.6 | 0.3 | 0.1-0.2 | 0-0.2 |
+| render: transparent | frame | 0.9 | 0.6 | 0.06 | 0.1-0.3 | 0 |
+
+Units, the game engine, sound, the netcode, present and the vsync wait are each under 0.1 ms. Asleep is ~0 in every box. A mark costs ~2 µs (the null pair 4.0 µs).
+
+**The instruments' cost (§7 a), off against framepic, both on hwprofile:** cinematic −0.4%, flight +0.3% (both in the noise), landing's drawing +2.0 ms, +7.4% (real; the frame +4.2%, in the noise), the beach's frame +5.5% (in the noise). So ≤ 1% holds on two of the four stretches. The marks themselves are ~0.15 ms a frame, which can't explain landing's +2 ms. The suspect is each mark's switch-count refer call, a kernel call leaving its footprint in the render's caches; `framepicnosw` leaves it out, and a three-way run decides.
+
+**Not yet read:** the identity check (§7 b), each column summed over the boxes against the module's own whole-frame counters, waits on those counters taken over the same window.
+
 ## What changed from v0
 
 - Marks: their own system call, not `halo_profile_phase` (its four-phase mask and thread walk). The switch count is read as one value. The keep word is read once. Boxes are once-a-tick regions, ≤ ~60 marks a tick, checked in the emulator first. Collision is priced from halo_box, not marked per call. A null mark pair is subtracted.
