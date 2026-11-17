@@ -13,7 +13,7 @@ What Sheepdog01 and Claude agreed in the 2026-10-09 discussion. Labels: **[M]** 
 ## Why the game is slow on the PSP
 
 The PSP-1000's CPU mostly waits [M] (`psp_hardware_reference.md`, `memory_traffic.md`):
-- **54% of its cycles wait on memory.** Two thirds of the misses are instruction misses.
+- **54% of its cycles wait on memory.** About 60% of the misses are instruction misses by count, 68% on c20 [M] (`hardware_facts.md`'s miss-ratio bullet; corrected 2026-11-16 from "two thirds").
 - The caches are 16 KB each (instructions, data), 2-way, 64-byte lines. A miss costs about 72 cycles (216 ns), and about 424 ns while the GE is reading RAM.
 - The tick's hot code is about 59 KB, four times the instruction cache. Its misses have a long tail: half are in 46 functions (97 KB), 90% in 303 functions (294 KB) [E].
 - The Media Engine, a second 333 MHz CPU, is idle about 94% of the time [M].
