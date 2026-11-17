@@ -2261,6 +2261,61 @@ static void sysregs_line(char *line, int size, const char *name, const struct me
 		regs->avc, regs->marks[0], regs->marks[1], regs->marks[2], regs->marks[3]);
 }
 
+/* "sndpart"'s claim (psp_me.h). sysmem's user call refuses partition 4 to
+user mode, so it's made through the library's kernel helper, where it isn't
+asked whose call it is. Sony's ME image there isn't sysmem's: me_wrapper writes
+it without a block, so the claim reserves the whole megabyte at its start */
+#define ME_PARTITION 4
+#define ME_PARTITION_ADDRESS 0x08300000u
+#define ME_PARTITION_BYTES (1024u * 1024u)
+static SceUID partition_claim = -1;
+static int partition_claim_error = 0;
+
+static int partition_claim_kernel(void)
+{
+	SceUID block = sceKernelAllocPartitionMemory(ME_PARTITION, "halo sndpart", PSP_SMEM_Addr,
+		ME_PARTITION_BYTES, (void *)ME_PARTITION_ADDRESS);
+
+	if (block >= 0)
+		partition_claim = block;
+	else
+		partition_claim_error = block;
+	return 0;
+}
+
+static int partition_free_kernel(void)
+{
+	if (partition_claim >= 0 && sceKernelFreePartitionMemory(partition_claim) >= 0)
+		partition_claim = -1;
+	return 0;
+}
+
+int psp_me_claim_partition(void)
+{
+	void *at;
+
+	if (partition_claim >= 0)
+		return partition_claim;
+	if (!me_kernel_ready || psp_me_simulated())
+		return -1;
+	kcall_2(partition_claim_kernel, me_kseg);
+	if (partition_claim < 0)
+	{
+		platform_log("ME: the partition's claim refused by sysmem (%08x)", (unsigned int)partition_claim_error);
+		return -1;
+	}
+	at = sceKernelGetBlockHeadAddr(partition_claim);
+	if (((unsigned int)at & 0x1FFFFFFFu) != ME_PARTITION_ADDRESS)
+	{
+		platform_log("ME: the partition's claim came back at %08x, not %08x: given back", (unsigned int)at, ME_PARTITION_ADDRESS);
+		kcall_2(partition_free_kernel, me_kseg);
+		return -1;
+	}
+	platform_log("ME: the whole partition claimed from sysmem (%u KB at %08x, block %08x)", ME_PARTITION_BYTES / 1024,
+		(unsigned int)at, (unsigned int)partition_claim);
+	return partition_claim;
+}
+
 /* HOME, or the game's own exit: the firmware reboots into the XMB and boots
 its own ME image there, and that boot waits for the ME without a time limit.
 So the ME is left as the firmware leaves it before a boot: halted, or held
@@ -2279,6 +2334,12 @@ void psp_me_exit(const char *why)
 		kcall_2(me_hold_reset, me_kseg);
 		me_maybe_running = 0;
 		platform_log("ME: held in reset for the exit (a restart may have had it running)");
+	}
+	/* the reboot clears sysmem anyway; given back so a clean exit leaves no trace */
+	if (partition_claim >= 0)
+	{
+		kcall_2(partition_free_kernel, me_kseg);
+		platform_log("ME: the partition given back to sysmem%s", partition_claim >= 0 ? " (refused)" : "");
 	}
 	kcall_3(me_sysregs_kernel, me_kseg, &regs_exit);
 	sysregs_line(line, sizeof(line), "exit", &regs_exit);

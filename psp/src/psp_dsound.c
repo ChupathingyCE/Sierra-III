@@ -1874,14 +1874,19 @@ cache's pages run main RAM, then the eDRAM, then the partition's window, a
 boundary between each that no block crosses (lruv's fence and fence2), and the
 main tier is that much smaller: the heap's. Like the eDRAM, the window is the
 ME's alone (the main CPU in user mode reads 0xCCCCCCCC there), filled by the
-same copy job and read by the mixer on the ME through its cache. Its first
-form takes 640-1,024 KB of the partition: the ME wrote all of 512-1,024 KB in
-play (the lab's meddrprobe-burst 43995856563), but read two 4 KB pieces of
-576-640 back wrong, and that's left out until the kernel's cross-check
-explains it. Every piece is hashed as copied and as held (sndedramcheck's
-check, always on with it), a mismatch failing the fill as any failed copy */
-#define SNDPART_ME_BASE (0x88300000u + 640u * 1024u) /* the window as the ME sees it, cached */
-#define SNDPART_BYTES (384ul * 1024)
+same copy job and read by the mixer on the ME through its cache. Nothing
+else touches the partition in play, across a sleep or at a relaunch (the
+lab's partmap runs on both PSPs and Sheepdog01's hand sleep), and nothing allocates
+from it, so the window is all of it but its first page: that page holds the
+witness word (+0x18) the ME library reads to pick its table at a restart.
+The rest of Sony's image there is entered only by mehalt's and mewake's
+paths, so sndpart is refused with either. The whole partition is claimed from
+sysmem at start (psp_me_claim_partition), so no allocator can be handed it.
+Every piece is hashed as copied and as held (sndedramcheck's check, always on
+with it), a mismatch failing the fill as any failed copy */
+#define SNDPART_ME_BASE (0x88300000u + 4096u) /* the window as the ME sees it, cached */
+#define SNDPART_MOST (1020ul * 1024)
+#define SNDPART_LEAST (64ul * 1024)
 static unsigned long part_bytes = 0;
 static unsigned char *part_base = NULL;
 /* the tier's memories together, eDRAM then window: one span of addresses
@@ -1966,11 +1971,18 @@ int psp_sound_tier_mode(void)
 				tier_dma = psp_keep("sndtierdma");
 				if (psp_keep("sndpart"))
 				{
-					if (tier_dma)
-						platform_log("sound tier: sndpart refused: sndtierdma's DMA reaches the eDRAM only");
+					const char *refused = tier_dma ? "sndtierdma's DMA reaches the eDRAM only" :
+						psp_keep("mehalt") ? "mehalt enters Sony's image in the partition" :
+						psp_keep("mewake") && !psp_keep("mewakeoff") ? "mewake's restart enters Sony's image in the partition" :
+						psp_keep("partmap") || psp_keep("partmapall") || psp_keep("meddrprobe") ? "a partition probe patterns it" : NULL;
+
+					if (!refused && tier_mode == 1 && psp_me_claim_partition() < 0)
+						refused = "sysmem wouldn't give the partition";
+					if (refused)
+						platform_log("sound tier: sndpart refused: %s", refused);
 					else
 					{
-						part_bytes = SNDPART_BYTES;
+						part_bytes = SNDPART_MOST;
 						tier_check = 1;
 						/* the emulator's window is the block's, after the tier, so
 						the two are one stretch: its tier there too */
@@ -2158,8 +2170,9 @@ unsigned long psp_sound_block_bytes(void)
 	if (!psp_sound_edram_mode() && psp_sound_tier_mode())
 	{
 		/* the tier never takes more than a quarter of a megabyte's main tier */
-		if (tier_bytes + part_bytes + 256 * 1024 > cache)
-			part_bytes = 0;
+		/* the window takes what the main tier can spare above its 256 KB */
+		if (part_bytes && tier_bytes + part_bytes + 256 * 1024 > cache)
+			part_bytes = cache > tier_bytes + 256 * 1024 + SNDPART_LEAST ? (cache - tier_bytes - 256 * 1024) & ~0xFFFul : 0;
 		if (tier_bytes + 256 * 1024 > cache)
 			tier_bytes = cache > 512 * 1024 ? (cache - 256 * 1024) & ~0xFFFul : 0;
 		tier_main_bytes = cache - tier_bytes - part_bytes;
@@ -2218,7 +2231,7 @@ void *psp_sound_cache_place(void *block)
 		if (part_bytes)
 			platform_log("sound tier: sndpart: %lu KB more of the tier in the ME partition at %08x (%s), the main tier %lu KB smaller; every piece hashed as copied and as held",
 				part_bytes / 1024, (unsigned int)part_base,
-				tier_mode == 2 ? "SIMULATED: the emulator's window is main RAM" : "640-1,024 KB, the ME's cached view", part_bytes / 1024);
+				tier_mode == 2 ? "SIMULATED: the emulator's window is main RAM" : "from 4 KB, the ME's cached view", part_bytes / 1024);
 		stops_at_start = psp_me_stops;
 		platform_log("sound tier: on (%s): the cache's %lu KB as %lu KB of main RAM at %08x and %lu KB at %08x (eDRAM %lu-%lu KB), %lu KB staging; %lu KB taken from the heap%s",
 			tier_mode == 2 ? (tier_mapped ? "SIMULATED: the emulator's tier is its mapped eDRAM" : "SIMULATED: the emulator's tier is main RAM") :
