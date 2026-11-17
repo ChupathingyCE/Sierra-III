@@ -1645,8 +1645,9 @@ static unsigned long cache_lines(const void *start, unsigned long bytes, int op)
 {
 	unsigned int line, first = (unsigned int)start & ~63u, end = (unsigned int)start + bytes;
 
-	/* (the eDRAM, "soundedram": no main-RAM line holds it) */
-	if (!bytes || ((unsigned int)start & 0x40000000u) || ((unsigned int)start & 0x1FFFFFFFu) < 0x08000000u)
+	/* (the eDRAM, "soundedram": no main-RAM line holds it; sndpart's window, a
+	kernel address only the ME uses, whose own writes are all it holds) */
+	if (!bytes || ((unsigned int)start & 0xC0000000u) || ((unsigned int)start & 0x1FFFFFFFu) < 0x08000000u)
 		return 0;
 	if (op == LINES_WRITEBACK)
 		for (line = first; line < end; line += 64)
@@ -1867,6 +1868,26 @@ collected figures carry the poll's gap (a frame or more at low frame rates) */
 #define TIER_JOB_LATE_US 250000
 #define TIER_JOB_WAIT_US 2000000
 static int tier_mode = -1; /* 0 off, 1 the ME's eDRAM, 2 simulated (the emulator) */
+/* "sndpart": more of the tier in the ME partition (docs/plan_sound_edram.md,
+"sndpart"; the lab's coord/handoff/me_partition_tenant_design.md). The
+cache's pages run main RAM, then the eDRAM, then the partition's window, a
+boundary between each that no block crosses (lruv's fence and fence2), and the
+main tier is that much smaller: the heap's. Like the eDRAM, the window is the
+ME's alone (the main CPU in user mode reads 0xCCCCCCCC there), filled by the
+same copy job and read by the mixer on the ME through its cache. Its first
+form takes 640-1,024 KB of the partition: the ME wrote all of 512-1,024 KB in
+play (the lab's meddrprobe-burst 43995856563), but read two 4 KB pieces of
+576-640 back wrong, and that's left out until the kernel's cross-check
+explains it. Every piece is hashed as copied and as held (sndedramcheck's
+check, always on with it), a mismatch failing the fill as any failed copy */
+#define SNDPART_ME_BASE (0x88300000u + 640u * 1024u) /* the window as the ME sees it, cached */
+#define SNDPART_BYTES (384ul * 1024)
+static unsigned long part_bytes = 0;
+static unsigned char *part_base = NULL;
+/* the tier's memories together, eDRAM then window: one span of addresses
+that holds no main-RAM address on the PSP (0x80... to 0x88400000), and in
+the emulator one stretch of the block */
+static unsigned char *me_lo = NULL, *me_hi = NULL;
 /* mode 2 with the tier where the PSP's is: the emulator maps that part of the
 eDRAM, so the heap gives the sound block only what a PSP's takes */
 static int tier_mapped = 0;
@@ -1943,6 +1964,19 @@ int psp_sound_tier_mode(void)
 				tier_mapped = tier_mode == 2 && !psp_keep("sndtierram") && psp_me_sim_edram_holds(ME_EDRAM_SNDTIER, (unsigned int)tier_bytes);
 				tier_check = psp_keep("sndedramcheck");
 				tier_dma = psp_keep("sndtierdma");
+				if (psp_keep("sndpart"))
+				{
+					if (tier_dma)
+						platform_log("sound tier: sndpart refused: sndtierdma's DMA reaches the eDRAM only");
+					else
+					{
+						part_bytes = SNDPART_BYTES;
+						tier_check = 1;
+						/* the emulator's window is the block's, after the tier, so
+						the two are one stretch: its tier there too */
+						tier_mapped = 0;
+					}
+				}
 			}
 			else
 				platform_log("sound tier: refused: %lu KB of room, %d KB at least", kb, TIER_MIN_KB);
@@ -1957,6 +1991,12 @@ long psp_sound_tier_fence_page(void)
 	return psp_sound_tier_mode() ? (long)(tier_main_bytes >> 12) : 0;
 }
 
+/* the eDRAM's last page and the window's first (lruv's fence2), 0 without sndpart */
+long psp_sound_part_fence_page(void)
+{
+	return psp_sound_tier_mode() && part_bytes ? (long)((tier_main_bytes + tier_bytes) >> 12) : 0;
+}
+
 /* lruv's address for a block (the cache's base plus its first page's
 offset), moved into the tier when it lies past the main tier */
 void *psp_sound_tier_address(void *address)
@@ -1964,7 +2004,11 @@ void *psp_sound_tier_address(void *address)
 	unsigned char *at = (unsigned char *)address;
 
 	if (tier_mode > 0 && at >= cache_base + tier_main_bytes)
-		return tier_base + (at - (cache_base + tier_main_bytes));
+	{
+		unsigned long past = (unsigned long)(at - (cache_base + tier_main_bytes));
+
+		return past < tier_bytes || !part_bytes ? tier_base + past : part_base + (past - tier_bytes);
+	}
 	return address;
 }
 
@@ -1972,7 +2016,8 @@ int psp_sound_tier_holds(const void *address)
 {
 	const unsigned char *at = (const unsigned char *)address;
 
-	return tier_mode > 0 && at >= tier_base && at < tier_base + tier_bytes;
+	return tier_mode > 0 && ((at >= tier_base && at < tier_base + tier_bytes) ||
+		(part_bytes && at >= part_base && at < part_base + part_bytes));
 }
 
 /* sound_dsound_xbox.c's check before it queues a sound: its samples lie
@@ -1995,6 +2040,9 @@ int psp_sound_cache_holds(const void *address, long size)
 	}
 #endif
 	if (at >= cache_base && (unsigned long)size <= main_bytes && (unsigned long)(at - cache_base) <= main_bytes - size)
+		return 1;
+	if (tier_mode > 0 && part_bytes && at >= part_base && (unsigned long)size <= part_bytes &&
+		(unsigned long)(at - part_base) <= part_bytes - size)
 		return 1;
 	return tier_mode > 0 && at >= tier_base && (unsigned long)size <= tier_bytes &&
 		(unsigned long)(at - tier_base) <= tier_bytes - size;
@@ -2110,10 +2158,13 @@ unsigned long psp_sound_block_bytes(void)
 	if (!psp_sound_edram_mode() && psp_sound_tier_mode())
 	{
 		/* the tier never takes more than a quarter of a megabyte's main tier */
+		if (tier_bytes + part_bytes + 256 * 1024 > cache)
+			part_bytes = 0;
 		if (tier_bytes + 256 * 1024 > cache)
 			tier_bytes = cache > 512 * 1024 ? (cache - 256 * 1024) & ~0xFFFul : 0;
-		tier_main_bytes = cache - tier_bytes;
-		want = stage_bytes + tier_main_bytes + (tier_mode == 2 && !tier_mapped ? tier_bytes : 0);
+		tier_main_bytes = cache - tier_bytes - part_bytes;
+		want = stage_bytes + tier_main_bytes + (tier_mode == 2 && !tier_mapped ? tier_bytes : 0) +
+			(tier_mode == 2 ? part_bytes : 0);
 	}
 	else switch (psp_sound_edram_mode())
 	{
@@ -2154,12 +2205,20 @@ void *psp_sound_cache_place(void *block)
 	if (!psp_sound_edram_mode() && psp_sound_tier_mode() && tier_bytes)
 	{
 		base = sound_block + stage_bytes;
-		used = stage_bytes + tier_main_bytes + (tier_mode == 2 && !tier_mapped ? tier_bytes : 0);
+		used = stage_bytes + tier_main_bytes + (tier_mode == 2 && !tier_mapped ? tier_bytes : 0) +
+			(tier_mode == 2 ? part_bytes : 0);
 		tier_base = tier_mode == 1 || tier_mapped ? (unsigned char *)(ME_EDRAM + ME_EDRAM_SNDTIER) : base + tier_main_bytes;
+		part_base = !part_bytes ? NULL : tier_mode == 1 ? (unsigned char *)SNDPART_ME_BASE : tier_base + tier_bytes;
 		for (k = 0; k < STAGE_SLOTS; k++)
 			stage[k].buffer = sound_block + k * STAGE_SLOT_BYTES;
-		edram_lo = tier_base;
-		edram_hi = tier_base + tier_bytes;
+		me_lo = tier_base;
+		me_hi = part_bytes ? part_base + part_bytes : tier_base + tier_bytes;
+		edram_lo = me_lo;
+		edram_hi = me_hi;
+		if (part_bytes)
+			platform_log("sound tier: sndpart: %lu KB more of the tier in the ME partition at %08x (%s), the main tier %lu KB smaller; every piece hashed as copied and as held",
+				part_bytes / 1024, (unsigned int)part_base,
+				tier_mode == 2 ? "SIMULATED: the emulator's window is main RAM" : "640-1,024 KB, the ME's cached view", part_bytes / 1024);
 		stops_at_start = psp_me_stops;
 		platform_log("sound tier: on (%s): the cache's %lu KB as %lu KB of main RAM at %08x and %lu KB at %08x (eDRAM %lu-%lu KB), %lu KB staging; %lu KB taken from the heap%s",
 			tier_mode == 2 ? (tier_mapped ? "SIMULATED: the emulator's tier is its mapped eDRAM" : "SIMULATED: the emulator's tier is main RAM") :
@@ -2402,7 +2461,7 @@ static void tier_rescue(void)
 	/* the fence closed first, so the new blocks come from the main tier */
 	psp_lruv_fence_closed = 1;
 	game_lock();
-	tier_left = psp_sound_tier_rescue((unsigned long)tier_base, (unsigned long)(tier_base + tier_bytes),
+	tier_left = psp_sound_tier_rescue((unsigned long)me_lo, (unsigned long)me_hi,
 		tier_back_moved, tier_back_in_play, tier_back_counts);
 	pthread_mutex_unlock(&mixer_lock);
 	tier_back_no_room = tier_back_counts[2];
@@ -2429,7 +2488,7 @@ static void tier_back_retry(void)
 	}
 	tier_back_retries++;
 	game_lock();
-	tier_left = psp_sound_tier_rescue((unsigned long)tier_base, (unsigned long)(tier_base + tier_bytes),
+	tier_left = psp_sound_tier_rescue((unsigned long)me_lo, (unsigned long)me_hi,
 		tier_back_moved, tier_back_in_play, counts);
 	pthread_mutex_unlock(&mixer_lock);
 	tier_back_counts[0] += counts[0];
@@ -2587,7 +2646,7 @@ void psp_sound_upload_poll(void)
 	{
 		long before = tier_left;
 
-		tier_left = psp_sound_tier_drain((unsigned long)tier_base, (unsigned long)(tier_base + tier_bytes));
+		tier_left = psp_sound_tier_drain((unsigned long)me_lo, (unsigned long)me_hi);
 		if (!tier_left && before)
 			platform_log("sound tier: every sound in the eDRAM given up (%lu)", psp_sound_tier_drained);
 	}

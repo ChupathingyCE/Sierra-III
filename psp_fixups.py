@@ -34976,6 +34976,10 @@ fence on are another memory's, and whether those are closed */
 struct lruv_cache *psp_lruv_fence_cache = NULL;
 long psp_lruv_fence_page = 0;
 int psp_lruv_fence_closed = 0;
+/* "sndpart": a second boundary past the fence, between the eDRAM's pages and
+the ME partition's, which no block crosses either (0 none). It only cuts runs:
+past the fence a closed cache is never searched, so it never needs closing */
+long psp_lruv_fence2_page = 0;
 """),
 ("""		struct lruv_cache_block *block;
 
@@ -35003,6 +35007,19 @@ int psp_lruv_fence_closed = 0;
 		{
 			run += psp_lruv_fence_page - page;
 			page = psp_lruv_fence_page;
+			continue;
+		}
+		if (cache == psp_lruv_fence_cache && psp_lruv_fence2_page > 0 && page == psp_lruv_fence2_page)
+		{
+			if (run > best)
+				best = run;
+			run = 0;
+		}
+		if (cache == psp_lruv_fence_cache && psp_lruv_fence2_page > 0 && page < psp_lruv_fence2_page &&
+			psp_next > psp_lruv_fence2_page)
+		{
+			run += psp_lruv_fence2_page - page;
+			page = psp_lruv_fence2_page;
 			continue;
 		}
 		if (block_index == NONE)
@@ -35034,6 +35051,11 @@ int psp_lruv_fence_closed = 0;
 					hole_read_index = hole_write_index;
 					psp_front = psp_back = 0;
 				}
+				if (cache == psp_lruv_fence_cache && psp_lruv_fence2_page > 0 && page_index == psp_lruv_fence2_page)
+				{
+					hole_read_index = hole_write_index;
+					psp_front = psp_back = 0;
+				}
 				if (NEXT_HOLE_INDEX(hole_write_index) != hole_read_index)"""),
 # a free run that crosses the fence ends at it (blocks never cross it)
 ("""				if (locked)
@@ -35045,6 +35067,12 @@ int psp_lruv_fence_closed = 0;
 				{
 					page_count -= page_index - psp_lruv_fence_page;
 					page_index = psp_lruv_fence_page;
+				}
+				if (cache == psp_lruv_fence_cache && psp_lruv_fence2_page > 0 && page_index > psp_lruv_fence2_page &&
+					page_index - page_count < psp_lruv_fence2_page)
+				{
+					page_count -= page_index - psp_lruv_fence2_page;
+					page_index = psp_lruv_fence2_page;
 				}
 				if (locked)
 				{
@@ -35070,6 +35098,8 @@ int psp_lruv_fence_closed = 0;
 			}
 			hole_read_index = hole_write_index;
 		}
+		if (cache == psp_lruv_fence_cache && psp_lruv_fence2_page > 0 && page_index == psp_lruv_fence2_page)
+			hole_read_index = hole_write_index;
 #endif
 		if (NEXT_HOLE_INDEX(hole_write_index) != hole_read_index)"""),
 ("""		if (locked)
@@ -35083,6 +35113,12 @@ int psp_lruv_fence_closed = 0;
 		{
 			page_count -= page_index - psp_lruv_fence_page;
 			page_index = psp_lruv_fence_page;
+		}
+		if (cache == psp_lruv_fence_cache && psp_lruv_fence2_page > 0 && page_index > psp_lruv_fence2_page &&
+			page_index - page_count < psp_lruv_fence2_page)
+		{
+			page_count -= page_index - psp_lruv_fence2_page;
+			page_index = psp_lruv_fence2_page;
 		}
 #endif
 		if (locked)
@@ -35104,10 +35140,13 @@ FIXES_SNDEDRAM["source/cache/xbox_sound_cache.c#sndedram"] = [
 		extern long psp_lruv_fence_page;
 		extern int psp_lruv_fence_closed;
 		extern long psp_sound_tier_fence_page(void);
+		extern long psp_lruv_fence2_page;
+		extern long psp_sound_part_fence_page(void);
 		long fence = psp_sound_tier_fence_page();
 
 		psp_lruv_fence_cache = fence > 0 ? xbox_sound_cache_globals.cache : NULL;
 		psp_lruv_fence_page = fence;
+		psp_lruv_fence2_page = fence > 0 ? psp_sound_part_fence_page() : 0;
 		psp_lruv_fence_closed = 0;
 	}
 #endif"""),
