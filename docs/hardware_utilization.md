@@ -93,7 +93,7 @@ Collision is about half of it, which matches section 3: the tick's hottest float
 - the models' near-cut corner table (8,448 B, drawing);
 - the profiler's slots (6,144 B) and front table (512 B).
 
-The split was set at build 108 by the cache model's misses per byte (`psp_scratch.c`, `overnight_b108.md`). The tick's top miss sources today (tag window, collision) get none of it. The feasibility notes' lever (the top of each BSP in the scratchpad) was never built. **Lead:**
+The split was set at build 108 by the cache model's misses per byte (`psp_scratch.c`, `overnight_b108.md`). The tick's top miss sources today (tag window, collision) get none of it. The feasibility notes' lever (the top of each BSP in the scratchpad) was built since as SCRATCHBSP, on in the tock (corrected 2026-11-16). **Lead:**
 - re-rank the 16 KB by misses per byte on w142's cache map;
 - price the winner with a PSP pair, never the cache model (the lab's cache rule; `noscratch` is the off switch);
 - ask whether the profiler's 6.6 KB belongs there in play builds.
@@ -263,7 +263,7 @@ Per-pass figures are research's (lab `coord/handoff/render_ownership_2026-10-27.
 | Tick: collision BSP walks (about half the data misses) | main CPU | **Main CPU, with the scratchpad**; batched queries to the ME later (L3, BW) | One dot a node: memory, not maths. The ME's own cache and cheap bus traffic make batched line-of-sight a fit, once AI's share of the ME is settled against drawing's |
 | AI rays | ME ring jobs | ME (as now) | 1-3% of the ME [M] |
 | Sound | ME | ME (as now) | |
-| Geometry and textures the GE reads | VRAM where they fit | VRAM | 9.6 µs of tick a KB of geometry from main RAM [M]; the VRAM route is nearly used up (the master's second opinion) |
+| Geometry and textures the GE reads | VRAM where they fit | VRAM | ~~9.6 µs of tick a KB of geometry from main RAM [M]~~ (retired 2026-11-10: the toll follows fetches, not bytes; the measured toll: b30 flight's tick 5.8 ms, `hardware_facts.md`); the VRAM route is nearly used up (the master's second opinion) |
 
 **Plan C re-weighed with the VFPU:**
 - Full C, where the ME owns all drawing, gives up the VFPU on exactly the pass that uses it (models). It also keeps the GE's main-RAM reads beside the tick.
