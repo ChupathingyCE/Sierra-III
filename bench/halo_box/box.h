@@ -48,6 +48,8 @@ struct box_adapter
 };
 
 extern const struct box_adapter box_null, box_selftest, box_posing;
+/* the frame picture's prices (adapters/price.c) */
+extern const struct box_adapter box_price_imiss, box_price_dclean, box_price_ddirty, box_price_uncached;
 /* every adapter built in, ended by a null (adapters.c) */
 extern const struct box_adapter *const box_adapters[];
 

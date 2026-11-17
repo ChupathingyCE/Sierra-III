@@ -2465,6 +2465,15 @@ static void exit_game(const char *why)
 	the drain above (a HOME exit keeps what was written each 64 frames) */
 	if (strcmp(why, "HOME") != 0)
 		psp_pad_exit();
+#ifdef PSP_FRAMEPIC
+	{
+		extern void psp_framepic_exit(void);
+
+		/* the stretch's table (from the game's own thread only, as above) */
+		if (strcmp(why, "HOME") != 0)
+			psp_framepic_exit();
+	}
+#endif
 	platform_log("%s: exiting", why);
 	log_flush();
 	/* the XMB gets its sleep switch back (psp_sleepguard.c) */
@@ -3932,6 +3941,8 @@ static struct
 	/* "pcsampleother": a third table for the other phases; the kernel's
 	samples by phase (psp/profile/main.c) */
 	volatile unsigned int pc_tables, pc_kernel_by_phase[4];
+	/* "framepic": its block (psp_framepic.c), 0 without it */
+	volatile unsigned int framepic_block;
 } hwprofile __attribute__((aligned(64)));
 /* "pcsample": 512-byte bins over the program's code, the tick's and the
 drawing's (~54 KB for 3.5 MB of code); written to log/pcsample.txt every
@@ -4015,6 +4026,14 @@ static void hwprofile_start(const char *eboot_path)
 		platform_log("pcsample: %s (%u bins of %u bytes from %08x, %u KB)", counts ? "on" : "no room",
 			bins, 1u << PC_SHIFT, (unsigned int)_ftext, bins * (hwprofile.pc_tables ? hwprofile.pc_tables : 2) * 4 / 1024);
 	}
+#ifdef PSP_FRAMEPIC
+	{
+		/* the frame picture's block, on both sides of its A/B (psp_framepic.c) */
+		extern unsigned int psp_framepic_block(void);
+
+		hwprofile.framepic_block = psp_framepic_block();
+	}
+#endif
 	module = sceKernelLoadModule(path, 0, NULL);
 	if (module >= 0)
 		module = sceKernelStartModule(module, sizeof(address), &address, &status, NULL);
@@ -4532,6 +4551,13 @@ static int heartbeat_thread(SceSize args, void *argp)
 			platform_log("heartbeat %d: game time %ld; step %s; free %d KB; log fd %d", beat, ticks, last_step,
 				sceKernelTotalFreeMemSize() / 1024, log_descriptor);
 		hwprofile_report();
+#ifdef PSP_FRAMEPIC
+		{
+			extern void psp_framepic_beat(int profiler_running);
+
+			psp_framepic_beat(hwprofile_running);
+		}
+#endif
 		pc_report();
 		psp_lock_report(); /* build 104 */
 		{

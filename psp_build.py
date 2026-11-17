@@ -222,6 +222,13 @@ DRAWLIST = os.environ.get("PSP_DRAWLIST", "") == "1"
 # its reader is an engine function a tick's profile has no counts for and its
 # hook sits in the tick, so a default build leaves it out
 PADPATH = os.environ.get("PSP_PADPATH", "") == "1"
+# PSP_FRAMEPIC=1: the frame picture (docs/frame_picture.md; psp_framepic.c,
+# keep word framepic). The engine's own perf phases (halo_perf_log.h) are
+# compiled in as the box marks: each is a flag's test in the tick and the
+# frame, so a default build leaves them out
+FRAMEPIC = os.environ.get("PSP_FRAMEPIC", "") == "1"
+if FRAMEPIC:
+    PSP_FILES.append("psp_framepic")
 # PSP_MUSIC=1 builds in the music path (psp/src/psp_music.c, Tremor and libogg,
 # FIXES_MUSIC, psp_dsound.c's music marks; keep word musicstream). The decoder
 # and its buffers take about 110 KB of program, which comes off the heap, and
@@ -458,7 +465,7 @@ PSP = ["psp-gcc", "-G%d" % SMALLDATA, GAME_OPT, "-march=allegrex", "-ffp-contrac
        # consoles (halo_port_features.h): the PSP's tests drive psp_pad.c
        "-DHALO_CONSOLE_NO_TEST_GAMEPADS=1",
        ] + (["-DPSP_NO_INTERPOLATION=1"] if not INTERPOLATION else []) + [
-       ] + (["-DPSP_MULTIPLAYER=1"] if MULTIPLAYER else []) + (["-DPSP_CONFIGFILE=1"] if os.environ.get("PSP_CONFIGFILE", "") == "1" else []) + (["-DPSP_MUSIC=1"] if MUSIC else []) + (["-DPSP_PADPATH=1"] if PADPATH else []) + (["-DPSP_SNDSTREAM=1"] if SNDSTREAM else []) + (["-DPSP_CLAIMFILL=1"] if CLAIMFILL else []) + CAPTURE_DEFINES + (["-DPSP_MP_COOP=1"] if MULTIPLAYER and MP_COOP else []) + (["-DPSP_MP_HOST=1"] if MULTIPLAYER and MP_HOST else []) + (["-DPSP_MAP_CHECKS=1"] if MAP_CHECKS else []) + (["-DPSP_POOLS_XBOX=1"] if POOLS_XBOX else []) + (["-DPSP_RECON_64MB=1"] if BIG_RAM else []) + (["-DPSP_DEBUG_TOOLS=1"] if DEBUG_TOOLS else []) + (["-DHALO_CONSOLE_NO_DEBUG_TOOLS=1"] if DEADDEBUG else []) + (["-DPSP_TICK_STEPS=1"] if TICK_STEPS else []) + (["-DPSP_RECON=1"] if RECON else []) + (["-DPSP_MEPROBE=1"] if MEPROBE else []) + (["-DPSP_METRICS=1"] if METRICS else []) + (["-DPSP_STACKHOT=2"] if os.environ.get("PSP_STACKHOT", "2") == "2" else []) + (["-DPSP_PGO_GENERATE=1"] if PGO == "generate" else []) + os.environ.get("PSP_CFLAGS", "").split() + [
+       ] + (["-DPSP_MULTIPLAYER=1"] if MULTIPLAYER else []) + (["-DPSP_CONFIGFILE=1"] if os.environ.get("PSP_CONFIGFILE", "") == "1" else []) + (["-DPSP_MUSIC=1"] if MUSIC else []) + (["-DPSP_PADPATH=1"] if PADPATH else []) + (["-DPSP_FRAMEPIC=1"] if FRAMEPIC else []) + (["-DPSP_SNDSTREAM=1"] if SNDSTREAM else []) + (["-DPSP_CLAIMFILL=1"] if CLAIMFILL else []) + CAPTURE_DEFINES + (["-DPSP_MP_COOP=1"] if MULTIPLAYER and MP_COOP else []) + (["-DPSP_MP_HOST=1"] if MULTIPLAYER and MP_HOST else []) + (["-DPSP_MAP_CHECKS=1"] if MAP_CHECKS else []) + (["-DPSP_POOLS_XBOX=1"] if POOLS_XBOX else []) + (["-DPSP_RECON_64MB=1"] if BIG_RAM else []) + (["-DPSP_DEBUG_TOOLS=1"] if DEBUG_TOOLS else []) + (["-DHALO_CONSOLE_NO_DEBUG_TOOLS=1"] if DEADDEBUG else []) + (["-DPSP_TICK_STEPS=1"] if TICK_STEPS else []) + (["-DPSP_RECON=1"] if RECON else []) + (["-DPSP_MEPROBE=1"] if MEPROBE else []) + (["-DPSP_METRICS=1"] if METRICS else []) + (["-DPSP_STACKHOT=2"] if os.environ.get("PSP_STACKHOT", "2") == "2" else []) + (["-DPSP_PGO_GENERATE=1"] if PGO == "generate" else []) + os.environ.get("PSP_CFLAGS", "").split() + [
        # The fatal asserts are compiled out, unevaluated (X10): their checks
        # and messages fill the 16 KB instruction cache, so with them gone b30's
        # tick is 6.6% shorter on the PSP-3000 [M], and play is identical. The
@@ -843,6 +850,12 @@ def compile_one(item):
     if sa_dirs and os.environ.get("PSP_STRICTALIAS", "") == "1" and not any(
             rel.replace("\\", "/").startswith("source/%s/" % d) or rel.replace("\\", "/").startswith(d + "/") for d in sa_dirs):
         extra = extra + ["-fno-strict-aliasing"]
+    # PSP_FRAMEPIC: the engine's perf phases compiled in, except in the units
+    # psp_fixups.py strips them from (PERF_STRIP: objects.c and physics.c lose
+    # the statements and their include, and objects.c's own HALO_PERF_LOG
+    # block would then name phases it can't see)
+    if FRAMEPIC and not rel.replace("\\", "/").endswith(("source/objects/objects.c", "source/physics/physics.c")):
+        extra = extra + ["-DHALO_PERF_LOG=1"]
     cmd = PSP + flags + extra + defines + ["-include", os.path.join(HERE, "psp_post.h"), "-c", src, "-o", out]
     if src.endswith(("psp_sdl.c", "psp_libc.c", "psp_ge.c", "psp_tex.c", "psp_vfpu.c", "psp_vfpu_quat.c", "psp_vfputrig.c", "psp_menu.c", "psp_geo.c", "psp_anim.c",
                      "psp_debug.c", "psp_me.c", "psp_trace.c", "psp_crash.c", "psp_watch.c", "psp_net.c", "psp_net_adhoc.c",
@@ -866,6 +879,7 @@ def compile_one(item):
                ["-DPSP_DRAWLIST=1"] if DRAWLIST and src.endswith("psp_ge.c") else []) + (
                ["-DPSP_RECON=1"] if RECON else []) + (
                ["-DPSP_PADPATH=1"] if PADPATH else []) + (
+               ["-DPSP_FRAMEPIC=1"] if FRAMEPIC else []) + (
                ["-DPSP_MEPROBE=1"] if MEPROBE else []) + (
                ["-DPSP_WALKAPART=1"] if WALKAPART else []) + (
                ["-DPSP_MEXEC=1"] if MEXEC and src.endswith("psp_me.c") else []) + (
@@ -1004,8 +1018,10 @@ def link(objs, stubs):
     # (the new stub format, psp-build-exports -k: two objects, the function's
     # stub referring to the library's entry, so --gc-sections keeps both; the
     # old format's library entry was dropped as unreferenced)
-    # (build 105: a second system call, the bus-priority probe: part 0002)
-    for part in ("0000", "0001", "0002"):
+    # (build 105: a second system call, the bus-priority probe: part 0002;
+    # the frame picture's box marks: part 0003; its identity check's totals:
+    # part 0004)
+    for part in ("0000", "0001", "0002", "0003", "0004"):
         stub = os.path.join(OUT, "halo_profile_%s.o" % part)
         subprocess.run(["psp-gcc", "-G0", "-I" + SDK + "/include", "-DF_halo_profile_" + part, "-c",
                         os.path.join(HERE, "psp/profile/halo_profile.S"), "-o", stub], check=True)

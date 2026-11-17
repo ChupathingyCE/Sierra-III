@@ -15,6 +15,7 @@ the CPU count wraps in 13 s at 333 MHz), and the game logs the differences.
 #include <pspsysmem_kernel.h>
 #include <pspsystimer.h>
 #include <string.h>
+#include "framepic.h"
 
 PSP_MODULE_INFO("halo_profile", PSP_MODULE_KERNEL, 1, 0);
 PSP_MAIN_THREAD_ATTR(0);
@@ -68,6 +69,9 @@ struct totals
 	end), so the time outside the tick and the drawing is named too; the
 	kernel's samples by the phase they fell in (system calls, firmware) */
 	volatile unsigned int pc_tables, pc_kernel_by_phase[4];
+	/* "framepic" (docs/frame_picture.md): the game's struct framepic_block,
+	0 without it; read at each halo_profile_box call */
+	volatile unsigned int framepic_block;
 };
 
 static struct totals *table = 0;
@@ -271,6 +275,129 @@ int halo_profile_phase(int phase)
 	return 0;
 }
 
+/* the system call (exports.exp): a box opened (box >= 0) or the one on top
+closed (FRAMEPIC_POP). The counts since the last mark go to the box that
+was on top (0, "outside any box", when none was), so each box's are its own
+less the boxes it opened. Its own entry point, not halo_profile_phase: that
+one masks its argument into the four phases and, with hwthreads, walks the
+thread list at each change */
+static int framepic_stack[FRAMEPIC_STACK];
+static unsigned int framepic_last[FRAMEPIC_MEASURES];
+static unsigned int framepic_switches_last;
+static int framepic_started = 0;
+/* the sampler's last read of each counter, kept here so halo_profile_totals
+can add what has run since */
+static unsigned int sampler_last[COUNTERS];
+
+static const unsigned char framepic_registers[FRAMEPIC_MEASURES] = FRAMEPIC_REGISTERS;
+
+int halo_profile_box(int box)
+{
+	struct framepic_block *block;
+	unsigned int now[FRAMEPIC_MEASURES], k1, k;
+	int interrupts, top;
+
+	if (!table || !table->framepic_block)
+		return -1;
+	block = (struct framepic_block *)table->framepic_block;
+	if (block->magic != FRAMEPIC_MAGIC || box >= FRAMEPIC_BOXES)
+		return -1;
+	k1 = pspSdkSetK1(0);
+	interrupts = sceKernelCpuSuspendIntr();
+	for (k = 0; k < FRAMEPIC_MEASURES; k++)
+		now[k] = PROFILER[1 + framepic_registers[k]];
+	top = block->depth ? framepic_stack[block->depth - 1] : 0;
+	if (framepic_started)
+		for (k = 0; k < FRAMEPIC_MEASURES; k++)
+		{
+			unsigned int delta = now[k] - framepic_last[k];
+
+			block->acc[top][k] += delta;
+			block->sum[top][k] += delta;
+		}
+	else
+	{
+		/* the identity check's start: the module's totals at the read the
+		boxes start from, so nothing before the first mark is counted
+		against them */
+		for (k = 0; k < FRAMEPIC_MEASURES; k++)
+		{
+			unsigned int r = framepic_registers[k];
+
+			block->start[k] = table->count[r] + (unsigned int)(now[k] - sampler_last[r]);
+		}
+		block->started = 1;
+	}
+	framepic_started = 1;
+	block->marks[top]++;
+	if (box == FRAMEPIC_POP)
+	{
+		if (block->depth)
+			block->depth--;
+		else
+			block->unbalanced++;
+	}
+	else if (box >= 0 && block->depth < FRAMEPIC_STACK)
+		framepic_stack[block->depth++] = box;
+	else
+		block->unbalanced++;
+	sceKernelCpuResumeIntr(interrupts);
+	if (block->want_switch)
+	{
+		unsigned long long idle;
+		unsigned int switches;
+
+		if (system_clocks(&idle, &switches) == 0)
+		{
+			if (switches != framepic_switches_last)
+				block->switched[top] = 1;
+			framepic_switches_last = switches;
+		}
+	}
+	/* the counters again after the bookkeeping, so the next box isn't
+	charged for this mark's own work beyond the reads above */
+	for (k = 0; k < FRAMEPIC_MEASURES; k++)
+	{
+		framepic_last[k] = PROFILER[1 + framepic_registers[k]];
+		block->self[k] += framepic_last[k] - now[k];
+	}
+	pspSdkSetK1(k1);
+	return 0;
+}
+
+/* the system call (exports.exp): every counter's total since the module
+started, at this instant: the sampler's total plus what has run since its
+last beat. The frame picture's identity check (docs/frame_picture.md) reads
+it at its window's two ends, against the boxes' own sums. out holds COUNTERS
+values, in the profiler's order */
+int halo_profile_totals(unsigned long long *out)
+{
+	unsigned int now[COUNTERS], k1, k;
+	int interrupts;
+
+	if (!table || !out || ((unsigned int)out & 0x1FFFFFFFu) < 0x08800000u ||
+		((unsigned int)out & 0x1FFFFFFFu) + COUNTERS * sizeof(*out) > 0x0A000000u)
+		return -1;
+	k1 = pspSdkSetK1(0);
+	interrupts = sceKernelCpuSuspendIntr();
+	profiler_read(now);
+	for (k = 0; k < COUNTERS; k++)
+		out[k] = table->count[k] + (unsigned int)(now[k] - sampler_last[k]);
+	/* the span since the last mark, from the same reads: the module has
+	counted it and no box has yet */
+	if (table->framepic_block && framepic_started)
+	{
+		struct framepic_block *block = (struct framepic_block *)table->framepic_block;
+
+		if (block->magic == FRAMEPIC_MAGIC)
+			for (k = 0; k < FRAMEPIC_MEASURES; k++)
+				block->open[k] = now[framepic_registers[k]] - framepic_last[k];
+	}
+	sceKernelCpuResumeIntr(interrupts);
+	pspSdkSetK1(k1);
+	return 0;
+}
+
 /* the PC sampler's interrupt: the interrupted PC is still in cop0's EPC
 while the handler runs (the dispatcher returns through it); on the PSP the
 samples land in the game's known hot code, the kernel's share small */
@@ -307,19 +434,24 @@ static int pc_handler(void)
 
 static int sampler(SceSize args, void *argp)
 {
-	unsigned int last[COUNTERS], now[COUNTERS], k;
+	unsigned int now[COUNTERS], k;
+	int interrupts;
 
 	(void)args; (void)argp;
-	profiler_read(last);
+	profiler_read(sampler_last);
 	for (;;)
 	{
 		sceKernelDelayThread(100000);
+		/* interrupts off, so halo_profile_totals never reads a total and its
+		last read from two different beats */
+		interrupts = sceKernelCpuSuspendIntr();
 		profiler_read(now);
 		for (k = 0; k < COUNTERS; k++)
 		{
-			table->count[k] += (unsigned int)(now[k] - last[k]);
-			last[k] = now[k];
+			table->count[k] += (unsigned int)(now[k] - sampler_last[k]);
+			sampler_last[k] = now[k];
 		}
+		sceKernelCpuResumeIntr(interrupts);
 		phase_account(-1);
 		if (table->threads_wanted)
 			threads_list();

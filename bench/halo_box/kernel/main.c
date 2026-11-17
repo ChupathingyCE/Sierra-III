@@ -22,6 +22,15 @@ int halo_boxk_counters(unsigned int *out)
 	return COUNTERS;
 }
 
+/* the system call (exports.exp): one counter alone, by its index after the
+enable word. The frame picture's marks read 8 of the 19 singly
+(docs/frame_picture.md §7): the bench checks that a single word reads the same
+counts as the block and what each read costs */
+unsigned int halo_boxk_counter(int index)
+{
+	return index >= 0 && index < COUNTERS ? PROFILER[1 + index] : 0;
+}
+
 int module_start(SceSize args, void *argp)
 {
 	unsigned int k;
