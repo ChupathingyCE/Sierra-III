@@ -69,7 +69,7 @@ ships beside the EBOOT. */
 
 /* meddrprobe's window: the ME partition's top 64 KB (offsets in the partition),
 far above the ME image's ~502 KB and unused in play on both PSPs (sleepmem) */
-#define PSP_ME_DDR_FIRST 0xF0000u
+#define PSP_ME_DDR_FIRST 0x80000u /* the lowest a fill may start: above the ME image's ~502 KB */
 #define PSP_ME_DDR_PIECE 0x1000u
 
 void platform_log(const char *format, ...);
@@ -820,7 +820,7 @@ static void run_job(volatile struct me_slot *slot, int *sums, int on_me)
 			/* where it got to, in the slot (uncached): a job that never ends
 			says from there how far its accesses went (meddrprobe again
 			43983579216: the first fill never finished) */
-			if (!(at & 0x3FF))
+			if (!(at & 0x3F))
 				slot->results[3] = at;
 
 			if (slot->args[0] == 0)
@@ -5096,7 +5096,23 @@ void psp_me_ddr_probe(void)
 {
 	static int asked = -1;
 	static unsigned int filled = 0, next = 0, checked = 0, bad_pieces = 0, bad_words = 0, refused = 0, slot_waits = 0;
+	static unsigned int start = 0, pieces = 0;
 	unsigned int args[3], results[ME_JOB_RESULTS] = { 0 }, first;
+
+	if (!start)
+	{
+		/* meddrstartN: the fill's first KB (default 960, the top 64 KB);
+		run 3 (43986111922, the 1000) stopped the ME at +0xf2c00-0xf3000, so a
+		start lower down finds the lowest live address above it */
+		int kb = psp_keep_number("meddrstart", 960);
+
+		if (kb < (int)(PSP_ME_DDR_FIRST / 1024))
+			kb = PSP_ME_DDR_FIRST / 1024;
+		if (kb > 1020)
+			kb = 1020;
+		start = (unsigned int)kb * 1024u & ~(PSP_ME_DDR_PIECE - 1);
+		pieces = (0x100000u - start) / PSP_ME_DDR_PIECE;
+	}
 
 	if (asked < 0)
 		asked = psp_keep("meddrprobe") != 0;
@@ -5111,10 +5127,10 @@ void psp_me_ddr_probe(void)
 		slot_waits++;
 		return;
 	}
-	if (filled < 16)
+	if (filled < pieces)
 	{
 		args[0] = 0;
-		args[1] = PSP_ME_DDR_FIRST + filled * PSP_ME_DDR_PIECE;
+		args[1] = start + filled * PSP_ME_DDR_PIECE;
 		args[2] = PSP_ME_DDR_PIECE;
 		if (!psp_me_run(ME_SLOT_PROBE, ME_JOB_DDR, args, 3, results, 2000) || results[0] == 0xFFFFFFFFu)
 		{
@@ -5125,12 +5141,12 @@ void psp_me_ddr_probe(void)
 					slot->begun, slot_request[ME_SLOT_PROBE], slot->results[3], args[1], args[1] + args[2], results[0], results[1]);
 			return;
 		}
-		if (++filled == 16)
+		if (++filled == pieces)
 			platform_log("ME: meddrprobe: the ME partition's %u-%u KB patterned from the ME, one 4 KB piece checked a heartbeat",
-				PSP_ME_DDR_FIRST / 1024, PSP_ME_DDR_FIRST / 1024 + 64);
+				start / 1024, 1024u);
 		return;
 	}
-	first = PSP_ME_DDR_FIRST + next * PSP_ME_DDR_PIECE;
+	first = start + next * PSP_ME_DDR_PIECE;
 	args[0] = 1;
 	args[1] = first;
 	args[2] = PSP_ME_DDR_PIECE;
@@ -5147,7 +5163,7 @@ void psp_me_ddr_probe(void)
 			platform_log("ME: meddrprobe: the partition's %u KB piece read back %u words wrong, the first at +0x%x (0x%08x, wanted 0x%08x)",
 				first / 1024, results[0], results[1], results[2], results[1] ^ 0xC3A55A3Cu);
 	}
-	next = (next + 1) & 15;
+	next = (next + 1) % pieces;
 	if ((checked & 15) == 0)
 		platform_log("ME: meddrprobe: %u pieces checked, %u wrong (%u words), %u jobs refused, %u heartbeats waited for the slot",
 			checked, bad_pieces, bad_words, refused, slot_waits);
