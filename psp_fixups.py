@@ -45132,8 +45132,8 @@ pass took it, which every actor's seed is made from; and the seed an actor
 thinking in the tick draws from, the game's thread's (the main CPU's alone) */
 static PSP_AIME_ME_SIDE unsigned long psp_aime_seed_root;
 int psp_redoseed_on = -1; /* psp_pad.c sets it for a replay: the recording's way */
-static int psp_aime_redo_on = 0, psp_aime_redo_thread = -1;
-static unsigned long psp_aime_redo_seed;
+static PSP_AIME_ME_SIDE int psp_aime_redo_on = 0; static int psp_aime_redo_thread = -1;
+static PSP_AIME_ME_SIDE unsigned long psp_aime_redo_seed;
 int sceKernelGetThreadId(void);
 """),
 ("""		boolean psp_rest;
@@ -45153,13 +45153,8 @@ int sceKernelGetThreadId(void);
  """#endif
 #ifdef HALO_PSP
 		/* (FIXES_REDOSEED) the thinking is over: the rest of the tick's
-		update draws from the game's seed. Written only when set: the ME's
-		think-only pass reaches this too, and a store there would dirty the
-		line psp_aime_redo_on shares with the rasterizer's statics in the
-		ME's cache, whose write-back can put back the main CPU's words
-		stale (the lab's bugs.md B94's class) */
-		if (psp_aime_redo_on)
-			psp_aime_redo_on = 0;
+		update draws from the game's seed */
+		psp_aime_redo_on = 0;
 		if (psp_aime_think_only)
 			psp_aime_mark(actor_index);
 """),
