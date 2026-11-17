@@ -35696,15 +35696,26 @@ int psp_keep(const char *name);
 void platform_psp_log(const char *format, ...);
 boolean network_coop_active(void);
 
-static int psp_aicad_on = -1;
-/* the identifier each slot last thought as: a new actor in a reused slot
-thinks on its first update */
-static short psp_aicad_identifier[MAXIMUM_ACTORS];
-static struct
+/* All of aicad's state, on cache lines of its own: the ME's AI job writes it,
+and a line shared with the main CPU's variables would be written back over
+them (aifar's head count over the model rasterizer's local_parameters, the
+lab's bugs.md B94; this array shared a line with the rasterizer's viewport) */
+static struct psp_aicad_state
 {
-	unsigned long updates, rested, timeslice, swarm, charging, dormant, first;
-} psp_aicad_stats;
-static long psp_aicad_logged = NONE;
+	int on;
+	/* the identifier each slot last thought as: a new actor in a reused slot
+	thinks on its first update */
+	short identifier[MAXIMUM_ACTORS];
+	struct
+	{
+		unsigned long updates, rested, timeslice, swarm, charging, dormant, first;
+	} stats;
+	long logged;
+} __attribute__((aligned(64))) psp_aicad_state = { -1, { 0 }, { 0 }, NONE };
+#define psp_aicad_on (psp_aicad_state.on)
+#define psp_aicad_identifier (psp_aicad_state.identifier)
+#define psp_aicad_stats (psp_aicad_state.stats)
+#define psp_aicad_logged (psp_aicad_state.logged)
 
 static boolean psp_aicad_active(
 	void)
@@ -35940,21 +35951,39 @@ boolean psp_aicad_rest(
 /* 10 s since a target was last seen */
 #define PSP_AIFAR_TARGET_SEEN_TICKS 300
 
-static int psp_aifar_on = -1;
-/* each slot's answer for one tick: the ray queue asks before the actor's
-update refreshes its position and the update asks again, and both must agree */
-static long psp_aifar_time[MAXIMUM_ACTORS];
-static short psp_aifar_identifier[MAXIMUM_ACTORS];
-static boolean psp_aifar_answer[MAXIMUM_ACTORS];
-static long psp_aifar_last_time = NONE;
-static long psp_aifar_heads_time = NONE;
-static short psp_aifar_head_count;
-static real_point3d psp_aifar_heads[PSP_AIFAR_MAXIMUM_PLAYERS];
-static struct
+/* All of aifar's state, on cache lines of its own: the ME's AI job writes it,
+and the ME's cache isn't coherent with the main CPU's, so a line shared with
+the main CPU's variables is written back over them. psp_aifar_head_count beside
+the model rasterizer's local_parameters did exactly that: render_model's end
+read a NULL the ME had written back (the lab's bugs.md B94) */
+static struct psp_aifar_state
 {
-	unsigned long asked, near, engaged, rested;
-} psp_aifar_stats;
-static long psp_aifar_logged = NONE;
+	int on;
+	/* each slot's answer for one tick: the ray queue asks before the actor's
+	update refreshes its position and the update asks again, and both must agree */
+	long time[MAXIMUM_ACTORS];
+	short identifier[MAXIMUM_ACTORS];
+	boolean answer[MAXIMUM_ACTORS];
+	long last_time;
+	long heads_time;
+	short head_count;
+	real_point3d heads[PSP_AIFAR_MAXIMUM_PLAYERS];
+	struct
+	{
+		unsigned long asked, near, engaged, rested;
+	} stats;
+	long logged;
+} __attribute__((aligned(64))) psp_aifar_state = { -1, { 0 }, { 0 }, { 0 }, NONE, NONE, 0, { { 0 } }, { 0 }, NONE };
+#define psp_aifar_on (psp_aifar_state.on)
+#define psp_aifar_time (psp_aifar_state.time)
+#define psp_aifar_identifier (psp_aifar_state.identifier)
+#define psp_aifar_answer (psp_aifar_state.answer)
+#define psp_aifar_last_time (psp_aifar_state.last_time)
+#define psp_aifar_heads_time (psp_aifar_state.heads_time)
+#define psp_aifar_head_count (psp_aifar_state.head_count)
+#define psp_aifar_heads (psp_aifar_state.heads)
+#define psp_aifar_stats (psp_aifar_state.stats)
+#define psp_aifar_logged (psp_aifar_state.logged)
 
 static boolean psp_aifar_enabled(
 	void)
