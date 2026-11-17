@@ -5102,6 +5102,8 @@ void psp_me_ddr_probe(void)
 	static int asked = -1;
 	static unsigned int filled = 0, next = 0, checked = 0, bad_pieces = 0, bad_words = 0, refused = 0, slot_waits = 0;
 	static unsigned int start = 0, pieces = 0, fill_worst = 0, check_worst = 0;
+	static int burst = -1;
+	int k;
 	static unsigned long long fill_cycles = 0, check_cycles = 0;
 	unsigned int args[3], results[ME_JOB_RESULTS] = { 0 }, first;
 
@@ -5133,8 +5135,15 @@ void psp_me_ddr_probe(void)
 		slot_waits++;
 		return;
 	}
-	if (filled < pieces)
+	/* meddrburstN: up to N pieces filled a report window (default 16):
+	at one a window, run 43993720269 (the 3000, from 512 KB) reached only
+	~700 KB by exitat130, short of the stop near the top */
+	if (burst < 0)
+		burst = psp_keep_number("meddrburst", 16);
+	for (k = 0; filled < pieces && k < burst; k++)
 	{
+		if (k && me_mark(ME_SLOT_PROBE))
+			return;
 		args[0] = 0;
 		args[1] = start + filled * PSP_ME_DDR_PIECE;
 		args[2] = PSP_ME_DDR_PIECE;
@@ -5153,8 +5162,9 @@ void psp_me_ddr_probe(void)
 		if (++filled == pieces)
 			platform_log("ME: meddrprobe: the ME partition's %u-%u KB patterned from the ME, one 4 KB piece checked a heartbeat; the fill %.3f cycles a word (the worst piece %.3f)",
 				start / 1024, 1024u, (double)fill_cycles / (pieces * (PSP_ME_DDR_PIECE / 4)), (double)fill_worst / (PSP_ME_DDR_PIECE / 4));
-		return;
 	}
+	if (k)
+		return;
 	first = start + next * PSP_ME_DDR_PIECE;
 	args[0] = 1;
 	args[1] = first;
