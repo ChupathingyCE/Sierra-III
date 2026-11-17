@@ -15,6 +15,13 @@ Keep words (ms0:/halo/keep.txt):
               loads the bench's kernel module, halo_boxk
   spoil       boxselftest only: one output of its capture is written wrong,
               and the run must say which (the comparison's own proof)
+  readtest    with the kernel module: 8 of the counters read one word each
+              against the block, over the same work, and each read's cost
+              (the frame picture's marks, docs/frame_picture.md §7)
+
+The frame picture's prices are boxes with no capture: boxpriceimiss,
+boxpricedclean, boxpriceddirty, boxpriceuncached (adapters/price.c), run
+with counters.
 
 Captures: every ms0:/halo/capture file ending .cap whose header names the
 box, in name order. The null box runs without one, and the self-test box
@@ -450,6 +457,53 @@ static int counters_load(void)
 
 void plat_counters(unsigned int out[COUNTERS]) { halo_boxk_counters(out); }
 
+/* "readtest" (docs/frame_picture.md §7): the frame picture's marks read 8 of
+the 19 counters, one word each. Two questions: does a word read alone give
+the counts the block gives, over the same work; and what does a read cost.
+The work is the price box's clean walk (adapters/price.c), 100 entities */
+unsigned int halo_boxk_counter(int index); /* the module's second system call */
+
+static const int readtest_words[8] = { C_CYCLES, C_STALL_MEMORY, C_SLEEP, C_I_MISS, C_D_MISS, C_D_WRITEBACK,
+	C_UNCACHED_LOAD, C_UNCACHED_STORE };
+
+static void readtest(void)
+{
+	unsigned int block_before[COUNTERS], block_after[COUNTERS], single_before[8], single_after[8];
+	unsigned int start, block_us, single_us, k, round;
+	char line[512];
+	int at;
+
+	for (round = 0; round < 3; round++)
+	{
+		halo_boxk_counters(block_before);
+		for (k = 0; k < 100; k++)
+			box_price_dclean.run((int)k);
+		halo_boxk_counters(block_after);
+		for (k = 0; k < 8; k++)
+			single_before[k] = halo_boxk_counter(readtest_words[k]);
+		for (k = 0; k < 100; k++)
+			box_price_dclean.run((int)k);
+		for (k = 0; k < 8; k++)
+			single_after[k] = halo_boxk_counter(readtest_words[k]);
+		at = snprintf(line, sizeof(line), "readtest: round %u, the same work (100 clean walks) read by the block, then by single words:", round + 1);
+		for (k = 0; k < 8 && at < (int)sizeof(line) - 40; k++)
+			at += snprintf(line + at, sizeof(line) - at, " [%d] %u / %u", readtest_words[k],
+				block_after[readtest_words[k]] - block_before[readtest_words[k]], single_after[k] - single_before[k]);
+		plat_out("%s", line);
+	}
+	start = sceKernelGetSystemTimeLow();
+	for (k = 0; k < 10000; k++)
+		halo_boxk_counters(block_before);
+	block_us = sceKernelGetSystemTimeLow() - start;
+	start = sceKernelGetSystemTimeLow();
+	for (k = 0; k < 10000; k++)
+		for (round = 0; round < 8; round++)
+			single_before[round] = halo_boxk_counter(readtest_words[round]);
+	single_us = sceKernelGetSystemTimeLow() - start;
+	plat_out("readtest: a read of all 19 (one system call) %.3f us; 8 single words (8 system calls) %.3f us, %.3f us each",
+		block_us / 10000.0, single_us / 10000.0, single_us / 80000.0);
+}
+
 /* ---------- keep words and captures ---------- */
 
 static char keep_text[1024];
@@ -510,7 +564,7 @@ int main(void)
 	struct harness_options options = { 0, { 0 }, 1, 256, 91, 0 };
 	const struct box_adapter *box = &box_null;
 	char *word, *rest = keep_text;
-	int file_count, k, result, spoil = 0;
+	int file_count, k, result, spoil = 0, read_test = 0;
 
 	pspDebugScreenInit();
 	scePowerSetClockFrequency(333, 333, 166);
@@ -539,6 +593,8 @@ int main(void)
 			ge_fake = 1;
 		else if (!strcmp(word, "counters"))
 			options.counted = 1;
+		else if (!strcmp(word, "readtest"))
+			read_test = 1;
 	}
 	sceIoMkdir("ms0:/halo", 0777);
 	sceIoMkdir("ms0:/halo/log", 0777);
@@ -553,8 +609,14 @@ int main(void)
 		if (!ge_ready)
 			options.duty_count = 1;
 	}
-	if (options.counted)
-		options.counted = counters_load();
+	if (options.counted || read_test)
+	{
+		int loaded = counters_load();
+
+		if (read_test && loaded)
+			readtest();
+		options.counted = options.counted && loaded;
+	}
 	if (box == &box_selftest)
 	{
 		plat_step("writing the self-test box's capture%s", spoil ? ", one output spoiled (tick 210, entity 1013, element 3)" : "");
@@ -562,7 +624,7 @@ int main(void)
 		if (!selftest_capture("ms0:/halo/capture/selftest.cap", 32, 40, spoil ? 7 : -1, 13))
 			plat_out("the self-test capture couldn't be written");
 	}
-	file_count = box == &box_null ? 0 : capture_files();
+	file_count = box->no_capture ? 0 : capture_files();
 	result = harness_run(box, files, file_count, &options);
 	plat_step("halo_box: finished (%s)", result ? "not clean" : "clean");
 	sceKernelDelayThread(2 * 1000 * 1000);
