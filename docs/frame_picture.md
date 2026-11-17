@@ -193,6 +193,26 @@ sierra-hw 44070031867: as the third, with `nomeaudio nomepoints` (no 'ME: starti
 
 sierra-hw 44075240128: b30's opening bench, two runs a side, three ways (off, `framepic`, `framepic framepicnosw`); the lab's row `framepic_cost_b30_3way_1000` [M]. **The ≤ 1% done-check (§7 a) holds wherever play is the same on both sides:** cinematic frame −0.1%, flight frame −0.0%, drawing and tick within ±0.2%, all in the noise. Play parted at game time 2448, inside landing (a side's player over 5 units from off's), so landing and the beach compare different games and get no verdict. The two off runs alone differ by 12% on landing's frame (105.3 and 93.7 ms). **So the first table's 'landing +7.4%' isn't reproduced:** it was one pair on a stretch that varies that much, not the marks. `framepicnosw` buys nothing either: flight −1.9%, in the noise; cinematic +1.5%, real but the wrong way for a saving. With the null pairs' 0.3 µs a mark, that settles the switch count as no cost. **Decision:** the marks stay as built, the switch count kept, and the render's marks not merged. `framepicnosw` stays as a keep word, not the default.
 
+## The fifth table: b40 (PSP-1000, 2026-11-17)
+
+sierra-hw 44085373539: the same build, b40_leg1 legendary to 650 s (13,512 frames, 19,499 ticks), one framepic run (the cost is settled, above); the lab's row `frame_picture_b40_1000` [M].
+
+| Box | Per | Mean | Work | Code wait | Data wait | Unexplained |
+|---|---|---:|---:|---:|---:|---:|
+| objects | tick | 15.1 | 5.0 | 4.0 | 2.1-4.1 | 2.0-3.9 |
+| the tick's other work | tick | 2.3 | 1.0 | 0.4 | 0.5-0.9 | 0.05-0.5 |
+| AI (main CPU) | tick | 1.6 | 0.7 | 0.3 | 0.3-0.5 | 0.06-0.3 |
+| effects | tick | 0.12 | 0.04 | 0.03 | 0.02-0.04 | 0.01-0.03 |
+| render: world | frame | 6.3 | 3.2 | 0.9 | 1.3-2.5 | 0-0.9 |
+| render: objects | frame | 4.3 | 1.9 | 0.9 | 0.8-1.6 | 0-0.7 |
+| render: effects | frame | 4.1 | 3.1 | 0.3 | 0.4-0.8 | 0-0.3 |
+| outside any box | frame | 3.7 | 1.7 | 0.8 | 0.7-1.2 | 0-0.6 |
+| render: HUD | frame | 1.4 | 0.7 | 0.4 | 0.16-0.3 | 0.09-0.2 |
+| render: other | frame | 0.9 | 0.4 | 0.2 | 0.18-0.3 | 0.01-0.15 |
+| render: transparent | frame | 0.56 | 0.3 | 0.07 | 0.1-0.2 | 0-0.08 |
+
+**What it says:** the objects' update leads again (15.1 ms a tick, about 3/4 of the tick), a third of it work and the rest waiting, as on c20. **b40 is the first stretch where drawing the effects is large:** 4.1 ms a frame, three-quarters of it work, not misses. That's the particles' own drawing, which the far-and-tiny thresholds (`drawing_sizing.md`) and the effects box are aimed at.
+
 ## What changed from v0
 
 - Marks: their own system call, not `halo_profile_phase` (its four-phase mask and thread walk). The switch count is read as one value. The keep word is read once. Boxes are once-a-tick regions, ≤ ~60 marks a tick, checked in the emulator first. Collision is priced from halo_box, not marked per call. A null mark pair is subtracted.
