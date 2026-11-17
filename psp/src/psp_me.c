@@ -811,10 +811,17 @@ static void run_job(volatile struct me_slot *slot, int *sums, int on_me)
 			slot->results[0] = 0xFFFFFFFFu;
 			break;
 		}
+		slot->results[3] = 0xFFFFFFFFu;
 		for (at = first; at < first + bytes; at += 4)
 		{
 			volatile unsigned int *word = (volatile unsigned int *)(0xA8300000u + at);
 			unsigned int want = at ^ 0xC3A55A3Cu;
+
+			/* where it got to, in the slot (uncached): a job that never ends
+			says from there how far its accesses went (meddrprobe again
+			43983579216: the first fill never finished) */
+			if (!(at & 0x3FF))
+				slot->results[3] = at;
 
 			if (slot->args[0] == 0)
 				*word = want;
@@ -5111,8 +5118,11 @@ void psp_me_ddr_probe(void)
 		args[2] = PSP_ME_DDR_PIECE;
 		if (!psp_me_run(ME_SLOT_PROBE, ME_JOB_DDR, args, 3, results, 2000) || results[0] == 0xFFFFFFFFu)
 		{
+			volatile struct me_slot *slot = SLOT(ME_SLOT_PROBE);
+
 			if (!refused++)
-				platform_log("ME: meddrprobe: the fill's job didn't run (not on the ME, or no answer)");
+				platform_log("ME: meddrprobe: the fill's job didn't finish: the ME began job %u (asked %u), its last mark +0x%x of +0x%x-0x%x, results %08x %08x",
+					slot->begun, slot_request[ME_SLOT_PROBE], slot->results[3], args[1], args[1] + args[2], results[0], results[1]);
 			return;
 		}
 		if (++filled == 16)
