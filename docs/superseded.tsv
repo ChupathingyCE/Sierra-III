@@ -1,0 +1,11 @@
+# Values that are no longer true, so tools/factcheck.py --stale can find pages still stating them.
+# When a figure is superseded or corrected, add its row in the same commit. pattern is a case-insensitive regex
+# matched per line; a line that strikes or qualifies it (~~, superseded, CONFLICT, weaker, broken, corrected) is a record and passes.
+pattern	now	home	since
+3:1 in the tick	code to data ~60/40 by count in the tick (b30 flight 51.5k against 35.9k a tick; c20 68/32) [M]	hardware_facts.md, Main CPU (the miss-ratio bullet)	2026-11-12
+two thirds of (all |those |the )?(the tick's )?misses	code to data ~60/40 by count in the tick, 68/32 on c20 [M]; by cost 50/50 to 58/42 (CONFLICT)	hardware_facts.md, Main CPU (the miss-ratio bullet)	2026-11-12
+64/36	by cost, data misses are 39-55% of the stall, or code 58/42 on b30's flight (CONFLICT: the data miss's price)	hardware_facts.md, Main CPU (the miss-ratio bullet)	2026-11-10
+both deserve equal attention	at measured prices code is the larger: 10.7 against 7.8 ms a tick on b30's flight [U on M]	lab:research/opportunities/misses_assembled.md §2	2026-11-12
+(dma|copy|copies)[^.]{0,80}2\.3 ?[×x]|2\.3 ?[×x][^.]{0,60}(dma|miss)	DMA's toll is linear in the time it holds the bus: ×1.20 at 25% duty, ×1.38 at 50% (window means); ~×2.1 only at full duty in large blocks [M]	hardware_facts.md, Bus and contention (the DMA duty bullet)	2026-11-10
+list's own bytes 4\.4|the list 4\.4	broken: a GE list word costs 10.4 ns, so the list's bytes can't be 4.4 ms	lab:research/opportunities/tick_buyback.md §7	2026-11-12
+dma (cannot|can't|can not) (write|reach)[^.]{0,20}scratchpad	unsettled: one untraceable try (halo_bench v6) and psdevwiki; DMACplus, the VME DMAC, reads out and the GE untried	hardware_facts.md, Scratchpad	2026-11-16
