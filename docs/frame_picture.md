@@ -70,7 +70,20 @@ halo_box's counted pass (its `counters` mode) is **re-run on the PSP-1000 the sa
 
 The GE-idle prices are the ones applied, and their spread (low to high) is the range in §4. The GE-reading prices bound how much of the residual the GE can explain.
 
-**This does not settle `hardware_facts.md` line 49's CONFLICT** (the miss ratio by count against by cost). The price uncertainty there, 19-33 cycles over ~87k misses (5-8.7 ms), is larger than the 2.9 ms gap it would have to settle. The CONFLICT stays, and this run's range is added beside it.
+**The prices, measured on the PSP-1000 (2026-11-17, bench-hw 44055874064, 44056762824, 44056839732, 44056914214; the lab's rows framepic_price_*_1000) [M]:**
+
+| Price | Cycles of memory stall, GE idle | With the GE reading main RAM 35% (timed) |
+|---|---|---|
+| P_I, a code miss | 56 | ~77 |
+| P_D, a data miss with a clean victim | 51 | ~75 |
+| P_D, a data miss with a dirty victim (load or store) | 97-98 | ~137 |
+| P_UL, an uncached load | 39 | ~59 |
+
+Each held within ~2% across the warm, emptied and crowded modes. A box's P_D sits between 51 and 98 by its write-backs over its D-misses.
+
+**The mark's size, from the read test (§7) [M]:** a counter read alone gives the same counts as the block of 19 (D-misses identical, cycles within 0.25%), and a read's cost is mostly the system call (all 19 in one call 1.49 µs; one word a call 0.51 µs). So the mark stays as built: one call that reads its 8 words inside it. Each counter read is itself an uncached load, which the null pair takes out.
+
+**This does not settle `hardware_facts.md`'s CONFLICT on the miss ratio** (the miss ratio by count against by cost). The price uncertainty there, 19-33 cycles over ~87k misses (5-8.7 ms), is larger than the 2.9 ms gap it would have to settle. The CONFLICT stays, and this run's range is added beside it.
 
 ## 7. The runs, and the done-check
 
