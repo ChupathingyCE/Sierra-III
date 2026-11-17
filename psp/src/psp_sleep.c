@@ -41,6 +41,8 @@ two looks running is named; on the third its queue is stopped
 #include "psp_me.h"
 #include "psp_sleep.h"
 
+void psp_partmap_say(const char *when); /* psp_platform.c */
+
 extern int psp_keep(const char *word);
 extern int psp_keep_number(const char *prefix, int fallback);
 extern void platform_log(const char *format, ...);
@@ -142,6 +144,7 @@ int psp_sleep_suspending(void)
 	{
 		sleeps_ready++;
 		platform_log("sleep: the game stopped itself in %d ms; the PSP may sleep", waited);
+		psp_partmap_say("the sleep");
 		return 1;
 	}
 	/* withdrawn, unless the game thread has taken it: then it is stopping,
@@ -182,6 +185,7 @@ static int release_parked(int reopen)
 		psp_io_reopen_all(0, line, sizeof(line));
 		platform_log("sleep: awake; %s", line);
 	}
+	psp_partmap_say("the wake");
 	sceKernelSetEventFlag(wake_flag, 1);
 	return 1;
 }

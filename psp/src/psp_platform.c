@@ -2435,6 +2435,8 @@ static int exit_callbacks_registered[3] = { 1, 1, 1 };
 /* back to the XMB (or ARK-4's menu), saying why in the log */
 void psp_pad_exit(void);
 
+void psp_partmap_say(const char *when);
+
 static void exit_game(const char *why)
 {
 	exiting = 1;
@@ -2459,6 +2461,7 @@ static void exit_game(const char *why)
 	the drain above (a HOME exit keeps what was written each 64 frames) */
 	if (strcmp(why, "HOME") != 0)
 		psp_pad_exit();
+	psp_partmap_say("the exit");
 	platform_log("%s: exiting", why);
 	log_flush();
 	/* the XMB gets its sleep switch back (psp_sleepguard.c) */
@@ -2627,6 +2630,7 @@ static int power_callback(int unknown, int flags, void *argument)
 			psp_io_reopen_all(0, line, sizeof(line));
 			platform_log("sleep: awake; %s", line);
 		}
+		psp_partmap_say("the wake");
 		psp_tex_resume();
 		psp_geo_resume();
 		psp_ge_inflight_room_resume();
@@ -4165,6 +4169,29 @@ static void pc_report(void)
 	pc_write(LOG_FOLDER "/pcsample.txt", samples);
 }
 
+/* partmap's count, now and with a reason: every 36 passes from the report,
+and at the sleep, the wake and the exit (psp_sleep.c, exit_game), so a short
+stretch after a wake still says how many passes it had */
+static unsigned int partmap_reported_passes;
+
+void psp_partmap_say(const char *when)
+{
+	unsigned int k, pages = 0, upper = 0;
+
+	if (!hwprofile.partmap_wanted || !hwprofile.partmap_filled)
+		return;
+	for (k = 0; k < 256; k++)
+		if (hwprofile.partmap_seen[k])
+		{
+			pages++;
+			upper += k >= 128;
+		}
+	platform_log("partmap%s%s: %u passes; %u of 256 pages changed (%u of the 128 written, %u of the image half's hashed); a step %u us at most; the clock %u ms",
+		*when ? " at " : "", when, hwprofile.partmap_passes, pages, upper, pages - upper, hwprofile.partmap_step_us,
+		sceKernelGetSystemTimeLow() / 1000);
+	partmap_reported_passes = hwprofile.partmap_passes;
+}
+
 static void hwprofile_report(void)
 {
 	unsigned long long d[HW_COUNTERS];
@@ -4229,7 +4256,7 @@ static void hwprofile_report(void)
 		minute (a pass is 1.6 s) */
 		extern long game_time_get(void);
 		static unsigned char said[256];
-		static unsigned int reported_passes;
+		static int said_hashes;
 		unsigned int pages = 0, upper = 0;
 
 		hwprofile.partmap_game_time = (unsigned int)game_time_get();
@@ -4251,13 +4278,27 @@ static void hwprofile_report(void)
 					k, k * 4096, hwprofile.partmap_word[k], hwprofile.partmap_value[k], hwprofile.partmap_word[k] ^ 0xC3A55A3Cu,
 					hwprofile.partmap_ms[k], hwprofile.partmap_when[k] >> 4, hwprofile.partmap_when[k] & 15);
 		}
-		if (hwprofile.partmap_passes != reported_passes && hwprofile.partmap_passes / 36 != reported_passes / 36)
+		if (!said_hashes)
 		{
-			platform_log("partmap: %u passes; %u of 256 pages changed (%u of the 128 written, %u of the image half's hashed); a step %u us at most; the clock %u ms",
-				hwprofile.partmap_passes, pages, upper, pages - upper, hwprofile.partmap_step_us,
-				sceKernelGetSystemTimeLow() / 1000);
-			reported_passes = hwprofile.partmap_passes;
+			/* the lower half's first hashes, so one launch can be set
+			against another: each launch takes its own, and only a
+			change within the launch is reported otherwise */
+			char line[300];
+			unsigned int row, length;
+
+			said_hashes = 1;
+			for (row = 0; row < 4; row++)
+			{
+				length = 0;
+				for (k = row * 32; k < row * 32 + 32; k++)
+					length += snprintf(line + length, sizeof(line) - length, " %08x", hwprofile.partmap_hash[k]);
+				platform_log("partmap: launch hashes, pages %u-%u:%s", row * 32, row * 32 + 31, line);
+			}
 		}
+		if (hwprofile.partmap_passes != partmap_reported_passes && hwprofile.partmap_passes / 36 != partmap_reported_passes / 36)
+			psp_partmap_say("");
+		(void)pages;
+		(void)upper;
 	}
 	for (k = 0; k < HW_COUNTERS; k++)
 	{
