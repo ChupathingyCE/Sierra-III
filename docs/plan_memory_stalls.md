@@ -12,8 +12,8 @@ Sheepdog01, 2026-10-16: this is the high-priority speed goal. Labels: [M] measur
 |---|---|---|
 | Tick cycles waiting on memory | 54–56% | [M] b107 b30 beach (`overnight_b108.md`), b95 (`library_hardware_b95.md`) |
 | Drawing cycles waiting on memory | 47–59% | [M] same runs |
-| Instruction share of the misses | ~65% (tick: 5,200 of 8,060 per M cycles) | [M] b107; the cache model agrees (64%) [E] |
-| The tick's waits, in ms (b30 beach, tick 61.7 ms) | ≈ 21 ms on instruction misses, ≈ 12 ms on data misses | [U] from the shares (`optimization_ranking.md` §1) |
+| Instruction share of the misses | ~65% (tick: 5,200 of 8,060 per M cycles; superseded 2026-11-16: ~60% by count today, `hardware_facts.md`) | [M] b107; the cache model agrees (64%) [E] |
+| The tick's waits, in ms (b30 beach, tick 61.7 ms) | ≈ 21 ms on instruction misses, ≈ 12 ms on data misses (b107; superseded 2026-11-16, as above) | [U] from the shares (`optimization_ranking.md` §1) |
 | The tick's hot code | ~59 KB, against a 16 KB instruction cache | [E] |
 | Kind of miss | capacity, not conflict: the top function holds 3.2% of the misses, the top 30 about a third | [E] `overnight_b108.md` |
 | One miss | 216 ns (72 cycles) with the bus quiet; 424 ns while the GE reads main RAM | [M] `psp_hardware_reference.md` |
