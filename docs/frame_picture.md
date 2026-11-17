@@ -32,7 +32,7 @@ The main CPU's profiler is the block at `0xBC400000` (`PspDebugProfilerRegs`): a
 - **Reported** at each heartbeat as `framepic:` lines (one a box), and once at the stretch's end as the table.
 
 The boxes, as built (the engine's perf phases; each row is exclusive of the boxes inside it):
-- **tick** (folded once a tick): the tick's other work, units (`units_update` and the players' updates), AI, effects, the game engine, objects (`objects_update`, with posing, biped motion and the other objects' updates inside it);
+- **tick** (folded once a tick): the tick's other work, units (`units_update`; the players' updates before and after the game are the tick's other work, 4 marks a tick less: framepic1c), AI, effects, the game engine, objects (`objects_update`, with posing, biped motion and the other objects' updates inside it);
 - **frame** (folded once a frame): the netcode, the render's other work (with its small parts: begin, setup, lens flares, the screen effect, end), its parts (world, objects, transparent, effects, HUD), sound (`game_sound_update` and `sound_render`), present, the vsync wait, the render's occlusion and texture waits. The small parts and the network (which the campaign never runs) are boxes only under `framepicall`: framepic1 counted 68-74 marks a frame with them, over the ~60 bound [E, exact count];
 - "outside any box", and "the marks", the null pair once a tick.
 
