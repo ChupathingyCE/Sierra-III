@@ -463,7 +463,7 @@ PSP = ["psp-gcc", "-G%d" % SMALLDATA, GAME_OPT, "-march=allegrex", "-ffp-contrac
        # consoles (halo_port_features.h): the PSP's tests drive psp_pad.c
        "-DHALO_CONSOLE_NO_TEST_GAMEPADS=1",
        ] + (["-DPSP_NO_INTERPOLATION=1"] if not INTERPOLATION else []) + [
-       ] + (["-DPSP_MULTIPLAYER=1"] if MULTIPLAYER else []) + (["-DPSP_CONFIGFILE=1"] if os.environ.get("PSP_CONFIGFILE", "") == "1" else []) + (["-DPSP_MUSIC=1"] if MUSIC else []) + (["-DPSP_PADPATH=1"] if PADPATH else []) + (["-DPSP_FRAMEPIC=1", "-DHALO_PERF_LOG=1"] if FRAMEPIC else []) + (["-DPSP_SNDSTREAM=1"] if SNDSTREAM else []) + (["-DPSP_CLAIMFILL=1"] if CLAIMFILL else []) + CAPTURE_DEFINES + (["-DPSP_MP_COOP=1"] if MULTIPLAYER and MP_COOP else []) + (["-DPSP_MP_HOST=1"] if MULTIPLAYER and MP_HOST else []) + (["-DPSP_MAP_CHECKS=1"] if MAP_CHECKS else []) + (["-DPSP_POOLS_XBOX=1"] if POOLS_XBOX else []) + (["-DPSP_RECON_64MB=1"] if BIG_RAM else []) + (["-DPSP_DEBUG_TOOLS=1"] if DEBUG_TOOLS else []) + (["-DHALO_CONSOLE_NO_DEBUG_TOOLS=1"] if DEADDEBUG else []) + (["-DPSP_TICK_STEPS=1"] if TICK_STEPS else []) + (["-DPSP_RECON=1"] if RECON else []) + (["-DPSP_MEPROBE=1"] if MEPROBE else []) + (["-DPSP_METRICS=1"] if METRICS else []) + (["-DPSP_STACKHOT=2"] if os.environ.get("PSP_STACKHOT", "2") == "2" else []) + (["-DPSP_PGO_GENERATE=1"] if PGO == "generate" else []) + os.environ.get("PSP_CFLAGS", "").split() + [
+       ] + (["-DPSP_MULTIPLAYER=1"] if MULTIPLAYER else []) + (["-DPSP_CONFIGFILE=1"] if os.environ.get("PSP_CONFIGFILE", "") == "1" else []) + (["-DPSP_MUSIC=1"] if MUSIC else []) + (["-DPSP_PADPATH=1"] if PADPATH else []) + (["-DPSP_FRAMEPIC=1"] if FRAMEPIC else []) + (["-DPSP_SNDSTREAM=1"] if SNDSTREAM else []) + (["-DPSP_CLAIMFILL=1"] if CLAIMFILL else []) + CAPTURE_DEFINES + (["-DPSP_MP_COOP=1"] if MULTIPLAYER and MP_COOP else []) + (["-DPSP_MP_HOST=1"] if MULTIPLAYER and MP_HOST else []) + (["-DPSP_MAP_CHECKS=1"] if MAP_CHECKS else []) + (["-DPSP_POOLS_XBOX=1"] if POOLS_XBOX else []) + (["-DPSP_RECON_64MB=1"] if BIG_RAM else []) + (["-DPSP_DEBUG_TOOLS=1"] if DEBUG_TOOLS else []) + (["-DHALO_CONSOLE_NO_DEBUG_TOOLS=1"] if DEADDEBUG else []) + (["-DPSP_TICK_STEPS=1"] if TICK_STEPS else []) + (["-DPSP_RECON=1"] if RECON else []) + (["-DPSP_MEPROBE=1"] if MEPROBE else []) + (["-DPSP_METRICS=1"] if METRICS else []) + (["-DPSP_STACKHOT=2"] if os.environ.get("PSP_STACKHOT", "2") == "2" else []) + (["-DPSP_PGO_GENERATE=1"] if PGO == "generate" else []) + os.environ.get("PSP_CFLAGS", "").split() + [
        # The fatal asserts are compiled out, unevaluated (X10): their checks
        # and messages fill the 16 KB instruction cache, so with them gone b30's
        # tick is 6.6% shorter on the PSP-3000 [M], and play is identical. The
@@ -848,6 +848,12 @@ def compile_one(item):
     if sa_dirs and os.environ.get("PSP_STRICTALIAS", "") == "1" and not any(
             rel.replace("\\", "/").startswith("source/%s/" % d) or rel.replace("\\", "/").startswith(d + "/") for d in sa_dirs):
         extra = extra + ["-fno-strict-aliasing"]
+    # PSP_FRAMEPIC: the engine's perf phases compiled in, except in the units
+    # psp_fixups.py strips them from (PERF_STRIP: objects.c and physics.c lose
+    # the statements and their include, and objects.c's own HALO_PERF_LOG
+    # block would then name phases it can't see)
+    if FRAMEPIC and not rel.replace("\\", "/").endswith(("source/objects/objects.c", "source/physics/physics.c")):
+        extra = extra + ["-DHALO_PERF_LOG=1"]
     cmd = PSP + flags + extra + defines + ["-include", os.path.join(HERE, "psp_post.h"), "-c", src, "-o", out]
     if src.endswith(("psp_sdl.c", "psp_libc.c", "psp_ge.c", "psp_tex.c", "psp_vfpu.c", "psp_vfpu_quat.c", "psp_vfputrig.c", "psp_menu.c", "psp_geo.c", "psp_anim.c",
                      "psp_debug.c", "psp_me.c", "psp_trace.c", "psp_crash.c", "psp_watch.c", "psp_net.c", "psp_net_adhoc.c",

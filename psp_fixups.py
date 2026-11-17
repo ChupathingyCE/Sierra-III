@@ -2177,6 +2177,31 @@ STEPS = {
 # ai_update 9-14 ms), broken down. Only with PSP_TICK_STEPS=1 (psp_build.py's
 # recon builds): a step before every call in these costs ~1.3 us a call, and
 # object_update runs for every object every tick
+# PSP_FRAMEPIC (docs/frame_picture.md): the perf log's statements become
+# the frame picture's box marks. The step breadcrumbs (PSP_STEP) write a
+# call-like statement as "(PSP_STEP(...), call)", a comma expression, so the
+# hooks have to be expressions as their off form ((void)0) is, not do-while
+# statements
+if os.environ.get("PSP_FRAMEPIC", "") == "1":
+    FIXES["port/linux/include/halo_perf_log.h"] = [
+("""#define HALO_PERF_BEGIN(phase) do { if (halo_perf_log_on) halo_perf_begin(phase); } while (0)
+#define HALO_PERF_END(phase) do { if (halo_perf_log_on) halo_perf_end(phase); } while (0)
+#define HALO_PERF_RENDER_PART(phase) do { if (halo_perf_log_on) halo_perf_render_part(phase); } while (0)
+#define HALO_PERF_COUNT(counter, count) do { if (halo_perf_log_on) halo_perf_counters[counter] += (count); } while (0)""",
+"""#ifdef PSP_FRAMEPIC
+/* psp_fixups.py: expressions, as the off form is (the step breadcrumbs
+write a hook as one operand of a comma expression) */
+#define HALO_PERF_BEGIN(phase) ((void)(halo_perf_log_on && (halo_perf_begin(phase), 1)))
+#define HALO_PERF_END(phase) ((void)(halo_perf_log_on && (halo_perf_end(phase), 1)))
+#define HALO_PERF_RENDER_PART(phase) ((void)(halo_perf_log_on && (halo_perf_render_part(phase), 1)))
+#define HALO_PERF_COUNT(counter, count) ((void)(halo_perf_log_on && (halo_perf_counters[counter] += (count), 1)))
+#else
+#define HALO_PERF_BEGIN(phase) do { if (halo_perf_log_on) halo_perf_begin(phase); } while (0)
+#define HALO_PERF_END(phase) do { if (halo_perf_log_on) halo_perf_end(phase); } while (0)
+#define HALO_PERF_RENDER_PART(phase) do { if (halo_perf_log_on) halo_perf_render_part(phase); } while (0)
+#define HALO_PERF_COUNT(counter, count) do { if (halo_perf_log_on) halo_perf_counters[counter] += (count); } while (0)
+#endif"""),
+    ]
 if os.environ.get("PSP_TICK_STEPS", "") == "1":
     STEPS.update({
         "source/units/bipeds.c": [("boolean biped_update(", None), ("static void biped_update_moving(", None)],
