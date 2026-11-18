@@ -107,7 +107,21 @@ The lab's `research/opportunities/REBUILD.md` is the spine (§3.3, §4, §7 step
         - **Identity** [E: the lab's stage3xid 44313616655, findings `stage3xid_identity`]: bipedstage3 against slice 2 on b30_leg2 held, seeds 1 and 2, statecrc, strict clean.
           - Play and both random seeds are the same at all 600 ticks on both seeds, so moving each intent ahead of the earlier bipeds' solves didn't part play on this stretch.
           - The whole-state hash differs from tick 61, in the objects allocation only, outside what play reads [U: the object-mark counter, which moves with the number of collision passes (B91's fxpart2)].
-        - **c20:** stage3y 44308192908 is running.
+        - **c20, the cache model** [E: the lab's stage3y 44308192908, findings `stage3y_whole_tick`]. I-misses / D-misses / cycles a tick:
+
+          | c20_leg2, a tick | off | slice 2 | bipedstage3 |
+          |---|---|---|---|
+          | the whole tick | 41,749 / 22,299 / 5.71 M | 35,604 / 20,705 / 5.21 M | 34,121 / 23,036 / **5.36 M** |
+          | the bipeds' set | 14,123 / 6,236 / 1,683 K | 10,629 / 4,169 / 1,162 K | 8,870 / 5,335 / 1,165 K |
+
+          - **The whole tick:** -6.1% against off but **+2.9% against slice 2**. The exact sphere does its job: moves gathered again outside the sphere fall from 1,332 to 8, and I-misses fall. Its records cost D-misses (+2,331 a tick).
+          - **By function, slice 2 -> bipedstage3 (+150 K a tick):**
+            - play-dependent work +59 K (c20's play parts between the sides, as it did with slice 2);
+            - `game_time_update` +29 K (LTO's inlined staged run: the intent pass and the records);
+            - `biped_update` +17 K (the resume branches and the record copies);
+            - the rest +82 K, spread thin.
+          - **The pool:** 434 moves overflowed the 64 records (45 bipeds a tick on average).
+          - **Next, before the profile is counted:** trim the records. The physics record is read where it lies, with no copy in and out, and the pool is sized to c20's peak. Then rcount4 (a profile over all three sides), then the PSP pair, which decides.
     - **The view:** the gather reads the other bipeds' spheres as they stood at the tick's start (the frozen copy, above); the old game lets a biped see the ones updated before it this tick. Proven as plays the same (the outcome census).
   - **Aiming splits from the unit's control on b30** (125 + 117 + the unit's 70 query lines would be 312); on c20 aiming runs for few units (5.4 calls a tick against 37 updates) and the two fit as one.
   - **Two copies of the sphere walk are live:** the port's dedup walk (`psp_bsp2d/3d_test_sphere`, 54-64 lines) on b30's big walks, the engine's (`bsp2d/3d_test_sphere_recursive`, 45 lines) on c20's small ones, picked by a running average of leaves (`psp_sphere_walk`, `PSP_SURFACE_DEDUP_LEAVES16`) [D]. The box carries one walk.
