@@ -55972,7 +55972,7 @@ BIPEDMOVE_FUNCTIONS = {
 # the record's written sections go back to the datum before, and the record
 # is filled again after (the animation's state and screens, Stubbs' sprint)
 BIPEDMOVE_SYNC = {"unit_abort_animation": "psp_bms_sync_abort", "stubbs_player_sprint": "psp_bms_sync_sprint"}
-BIPEDMOVE_PRELUDE = """#include "box_world_store_biped.h" /* psp_fixups.py (BIPEDMOVE) step 1b */
+BIPEDMOVE_PRELUDE = """#include "psp_bipedmove.h" /* psp_fixups.py (BIPEDMOVE) step 1b */
 /* (BIPEDMOVE) a datum field's place: the store's record during this biped's
 intent under bipedmovestore, else the datum (box_ws_move_at) */
 #define PSP_BMS(p, field) (*(__typeof__(&(p)->field))box_ws_move_at((void *)(p), \\
