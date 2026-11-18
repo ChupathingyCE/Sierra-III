@@ -279,6 +279,9 @@ if BOXPOSING:
 # (psp/src/box_world_store.c; docs/box_biped_motion.md section 1c)
 if os.environ.get("PSP_BIPEDSTAGE", "") == "1":
     PSP_FILES.append("box_world_store")
+    # the accessor's constant map must follow the store's runs (step 1b)
+    if subprocess.run([sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "tools", "bipedmove_map.py"), "--check"]).returncode:
+        sys.exit("psp_build: psp/include/psp_bipedmove_map.h is stale: run tools/bipedmove_map.py")
 # PSP_SMALLDATA=8 (or 4): the units built with the game's flags put variables
 # of up to that many bytes in small data, read with one load from $gp instead
 # of lui and a load, so the code is shorter (lever RH5, after Halo 64's -G8).

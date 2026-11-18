@@ -13,6 +13,7 @@
 #include <string.h>
 #include "box_world_store.h"
 #include "box_world_store_biped.h"
+#include "psp_bipedmove_map.h"
 
 void platform_psp_log(const char *format, ...);
 
@@ -104,6 +105,12 @@ static int box_ws_move_map_init(void)
 			}
 			box_ws_move_map[run->datum + j] = (short)(box_ws_run_store[i] + j);
 		}
+	}
+	/* the accessor's constant table (tools/bipedmove_map.py) must be this map */
+	if (memcmp(box_ws_move_map, box_ws_move_map_c, sizeof(box_ws_move_map)))
+	{
+		platform_psp_log("box_ws: psp_bipedmove_map.h doesn't match the store's runs (rerun tools/bipedmove_map.py); the store is off");
+		return 0;
 	}
 	return 1;
 }
