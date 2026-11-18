@@ -55033,7 +55033,248 @@ FIXES_CAPTURE_SWEEP["source/physics/collision_models.c#capture"] = [
 						collision_bsp_get_features_in_sphere("""),
 ]
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_SSPR.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + list(FIXES_CHUPA090RUNS.items()) + list(FIXES_HEAPTRIM.items()) + list(FIXES_B78.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items()) + list(FIXES_AIME2A.items()) + list(FIXES_REDOSEED.items()) + (list(FIXES_STACKHOT.items()) if STACKHOT else []) + (list(FIXES_STACKHOT2.items()) if STACKHOT2 else []) + list(FIXES_PWSL.items()) + list(FIXES_SPHSL.items()) + list(FIXES_RECONLIST.items()) + list(FIXES_TP1.items()) + list(FIXES_WXDEAD.items()) + list(FIXES_AIMEMOVE.items()) + list(FIXES_PROPCRASH.items()) + list(FIXES_APCPOOL.items()) + list(FIXES_PSPTLS.items()) + list(FIXES_SNDEDRAM.items()) + list(FIXES_LIGHTFIRST.items()) + list(FIXES_DRAWPART.items()) + (list(FIXES_RECONLATE.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + list(FIXES_P2PASS.items()) + (list(FIXES_P2CENSUS.items()) if P2CENSUS else []) + list(FIXES_OBSRAY.items()) + list(FIXES_SNDWAIT.items()) + list(FIXES_FLAMEDECAL.items()) + list(FIXES_HUHINT.items()) + list(FIXES_DBLSOFT.items()) + list(FIXES_VFPUTRIG.items()) + list(FIXES_TICKCACHE.items()) + list(FIXES_STRICTALIAS.items()) + list(FIXES_SNDPERMAP.items()) + list(FIXES_RLOOP.items()) + list(FIXES_L10.items()) + list(FIXES_RLSKIP.items()) + list(FIXES_ONEWALK.items()) + (list(FIXES_POSEK.items()) if POSEK else []) + (list(FIXES_SNDSTREAM.items()) if os.environ.get("PSP_SNDSTREAM", "") == "1" else []) + list(FIXES_MOUTHCLOCK.items()) + list(FIXES_LSAME.items()) + list(FIXES_CHUPA090.items()) + list(FIXES_V091A.items()) + list(FIXES_AIDEBUGREC.items()) + (list(FIXES_AITICKOLD.items()) if AITICKOLD else []) + (list(FIXES_PADPATH.items()) if os.environ.get("PSP_PADPATH", "") == "1" else []) + list(FIXES_FARLEVEL.items()) + list(FIXES_DECALRING.items()) + list(FIXES_ARRAYFULL.items()) + (list(FIXES_DEADXBOX.items()) if DEADXBOX else []) + (list(FIXES_CAPTURE_POSING.items()) if CAPTURE == "posing" else []) + (list(FIXES_BOXPOSING.items()) if BOXPOSING else []) + (list(FIXES_ASKCENSUS.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + (list(FIXES_CAPTURE_SWEEP.items()) if CAPTURE == "sweep" else [])):
+# ---------- FIXES_B98LOG: the lab's B98 trace (PSP_B98LOG=1; recon only)
+# B98: with "aifar", b40 seed 40 faults at game time 16,283 in
+# actor_action_can_stop_conversing: a marine's external_orders names a
+# conversation whose datum is gone. From game time 15,000 to 16,900 this
+# logs every conversation's life (new, a participant added, the participants
+# reset by a begin, one removed by an actor's deletion, its end with its
+# participants), every change of an actor's external_orders.conversation_index
+# and where in the tick it was seen (before the conversations' update, after
+# it, after the encounters', after each actor's update, after the actors'
+# pass, after an end), and each tick a line for every actor naming a
+# conversation or conversing, with its rest (aicad3's and aifar's) that tick.
+# A dead conversation read in actor_action_can_stop_conversing is logged
+# (always) and read as none, so the run goes on and its log is written out.
+# Built only with PSP_B98LOG=1: a default build doesn't have it
+FIXES_B98LOG = {}
+FIXES_B98LOG["source/ai/actors.c#b98log"] = [
+("""static void actor_update_end(
+	void)
+{
+	global_updating_actor_index = NONE;
+""", """/* psp_fixups.py (FIXES_B98LOG, PSP_B98LOG=1): the lab's B98 trace */
+#define PSP_B98_FROM 15000
+#define PSP_B98_TO 16900
+static long psp_b98_seen[MAXIMUM_ACTORS];
+static short psp_b98_ident[MAXIMUM_ACTORS];
+static char psp_b98_dead[MAXIMUM_ACTORS];
+
+int psp_b98_window(
+	void)
+{
+	long now = game_time_get();
+
+	return now >= PSP_B98_FROM && now <= PSP_B98_TO;
+}
+
+int psp_b98_live(
+	long conversation_index)
+{
+	return conversation_index != NONE && datum_try_and_get(conversation_data, conversation_index) != NULL;
+}
+
+/* every actor whose conversation index changed since the last scan, or whose
+conversation has gone since: where is this scan's place in the tick, who the
+actor updating or the conversation ending */
+void psp_b98_scan(
+	const char *where,
+	long who)
+{
+	struct actor_iterator iterator;
+	struct actor_datum *actor;
+	int log = psp_b98_window();
+
+	actor_iterator_new(&iterator, FALSE);
+	while ((actor = actor_iterator_next(&iterator)) != NULL)
+	{
+		short k = DATUM_INDEX_TO_ABSOLUTE_INDEX(iterator.index);
+		long c = actor->external_orders.conversation_index;
+		int live;
+
+		if (k < 0 || k >= MAXIMUM_ACTORS)
+			continue;
+		if (psp_b98_ident[k] != actor->identifier)
+		{
+			psp_b98_ident[k] = actor->identifier;
+			psp_b98_seen[k] = NONE;
+			psp_b98_dead[k] = 0;
+		}
+		live = c != NONE && psp_b98_live(c);
+		if (c == psp_b98_seen[k] && (c == NONE || live || psp_b98_dead[k]))
+			continue;
+		if (log)
+			platform_psp_log("b98x t%ld %s %08lx a%d %08lx>%08lx L%d act%d cv%08lx",
+				(long)game_time_get(), where, (unsigned long)who, (int)k, (unsigned long)psp_b98_seen[k],
+				(unsigned long)c, live, (int)actor->state.action,
+				(unsigned long)(actor->state.action == _actor_action_converse ?
+					actor->state.action_data.converse.conversation_index : NONE));
+		psp_b98_seen[k] = c;
+		psp_b98_dead[k] = c != NONE && !live;
+	}
+}
+
+static void actor_update_end(
+	void)
+{
+	psp_b98_scan("u", global_updating_actor_index); /* (FIXES_B98LOG) */
+	global_updating_actor_index = NONE;
+"""),
+("""		psp_aicad_seen(actor_index);
+""", """		psp_aicad_seen(actor_index);
+		/* (FIXES_B98LOG) this actor's rest this tick, when it names a
+		conversation or converses */
+		if (psp_b98_window() &&
+			(actor->external_orders.conversation_index != NONE || actor->state.action == _actor_action_converse))
+		{
+			short psp_k = DATUM_INDEX_TO_ABSOLUTE_INDEX(actor_index);
+			long psp_now = game_time_get();
+			int psp_far = -1;
+
+			if (psp_k >= 0 && psp_k < MAXIMUM_ACTORS &&
+				psp_aifar_time[psp_k] == psp_now + 1 && psp_aifar_identifier[psp_k] == actor->identifier)
+				psp_far = psp_aifar_answer[psp_k];
+			platform_psp_log("b98a t%ld a%d u%08lx c%08lx L%d act%d cv%08lx r%d ph%ld far%d enc%08lx",
+				psp_now, (int)psp_k, (unsigned long)actor->meta.unit_index,
+				(unsigned long)actor->external_orders.conversation_index,
+				psp_b98_live(actor->external_orders.conversation_index), (int)actor->state.action,
+				(unsigned long)(actor->state.action == _actor_action_converse ?
+					actor->state.action_data.converse.conversation_index : NONE),
+				(int)psp_rest, (long)((psp_now + psp_k) & 3), psp_far, (unsigned long)actor->meta.encounter_index);
+		}
+"""),
+]
+FIXES_B98LOG["source/ai/ai.c#b98log"] = [
+("""			ai_conversation_update();
+			encounters_update();
+			actors_update();
+""", """			extern void psp_b98_scan(const char *where, long who); /* (FIXES_B98LOG) */
+
+			psp_b98_scan("pre", NONE);
+			ai_conversation_update();
+			psp_b98_scan("cu", NONE);
+			encounters_update();
+			psp_b98_scan("en", NONE);
+			actors_update();
+			psp_b98_scan("ac", NONE);
+"""),
+]
+FIXES_B98LOG["source/ai/actions.c#b98log"] = [
+("""	long conversation_index = actor->external_orders.conversation_index;
+	boolean result = TRUE;
+
+	if (conversation_index != NONE)
+	{""", """	long conversation_index = actor->external_orders.conversation_index;
+	boolean result = TRUE;
+
+#ifdef HALO_PSP
+	{
+		/* psp_fixups.py (FIXES_B98LOG): B98's read, logged and read as none */
+		void platform_psp_log(const char *format, ...);
+		static unsigned long psp_b98_dead_reads = 0;
+
+		if (conversation_index != NONE && !datum_try_and_get(conversation_data, conversation_index))
+		{
+			if (psp_b98_dead_reads++ < 40)
+				platform_psp_log("b98d t%ld a%d %08lx reads c%08lx, gone; act%d cv%08lx unit %08lx (%lu so far)",
+					(long)game_time_get(), (int)DATUM_INDEX_TO_ABSOLUTE_INDEX(actor_index), (unsigned long)actor_index,
+					(unsigned long)conversation_index, (int)actor->state.action,
+					(unsigned long)(actor->state.action == _actor_action_converse ?
+						actor->state.action_data.converse.conversation_index : NONE),
+					(unsigned long)actor->meta.unit_index, psp_b98_dead_reads);
+			conversation_index = NONE;
+		}
+	}
+#endif
+	if (conversation_index != NONE)
+	{"""),
+]
+FIXES_B98LOG["source/ai/ai_communication.c#b98log"] = [
+("""		conversation->creation_time = game_time_get();
+""", """		conversation->creation_time = game_time_get();
+		{
+			/* psp_fixups.py (FIXES_B98LOG) */
+			extern int psp_b98_window(void);
+			void platform_psp_log(const char *format, ...);
+
+			if (psp_b98_window())
+				platform_psp_log("b98c t%ld new %08lx s%d scripted%d",
+					(long)game_time_get(), (unsigned long)conversation_index,
+					(int)scenario_conversation_index, (int)scripted);
+		}
+"""),
+("""		conversation->actor_indices[participant_index] = selected_actor_index;
+""", """		conversation->actor_indices[participant_index] = selected_actor_index;
+		{
+			/* psp_fixups.py (FIXES_B98LOG) */
+			extern int psp_b98_window(void);
+			void platform_psp_log(const char *format, ...);
+
+			if (psp_b98_window())
+				platform_psp_log("b98c t%ld add %08lx p%d a%08lx beg%d",
+					(long)game_time_get(), (unsigned long)conversation_index, (int)participant_index,
+					(unsigned long)selected_actor_index, (int)conversation->begun);
+		}
+"""),
+("""	conversation->participant_bitmask = 0;
+""", """	{
+		/* psp_fixups.py (FIXES_B98LOG) */
+		extern int psp_b98_window(void);
+		void platform_psp_log(const char *format, ...);
+
+		if (psp_b98_window() && conversation->participant_bitmask)
+			platform_psp_log("b98c t%ld reset %08lx bm%08lx %08lx %08lx beg%d",
+				(long)game_time_get(), (unsigned long)conversation_index,
+				(unsigned long)conversation->participant_bitmask,
+				(unsigned long)conversation->actor_indices[0], (unsigned long)conversation->actor_indices[1],
+				(int)conversation->begun);
+	}
+	conversation->participant_bitmask = 0;
+"""),
+("""				conversation->participant_bitmask &= ~FLAG(participant_index);
+""", """				{
+					/* psp_fixups.py (FIXES_B98LOG) */
+					extern int psp_b98_window(void);
+					void platform_psp_log(const char *format, ...);
+
+					if (psp_b98_window())
+						platform_psp_log("b98c t%ld del %08lx p%d a%08lx bm%08lx",
+							(long)game_time_get(), (unsigned long)iterator.datum_index, (int)participant_index,
+							(unsigned long)actor_index, (unsigned long)conversation->participant_bitmask);
+				}
+				conversation->participant_bitmask &= ~FLAG(participant_index);
+"""),
+("""		recent_conversation = (struct conversation_datum *)datum_get(
+""", """		{
+			/* psp_fixups.py (FIXES_B98LOG) */
+			extern int psp_b98_window(void);
+			extern long global_updating_actor_index;
+			void platform_psp_log(const char *format, ...);
+
+			if (psp_b98_window())
+				platform_psp_log("b98c t%ld fin %08lx s%d n%d bm%08lx %08lx %08lx %08lx %08lx beg%d un%d ok%d by%08lx",
+					(long)game_time_get(), (unsigned long)conversation_index,
+					(int)conversation->scenario_conversation_index, (int)ai_conversation_participant_count(definition),
+					(unsigned long)conversation->participant_bitmask,
+					(unsigned long)conversation->actor_indices[0], (unsigned long)conversation->actor_indices[1],
+					(unsigned long)conversation->actor_indices[2], (unsigned long)conversation->actor_indices[3],
+					(int)conversation->begun, (int)unable_to_begin, (int)success,
+					(unsigned long)global_updating_actor_index);
+		}
+		recent_conversation = (struct conversation_datum *)datum_get(
+"""),
+("""		datum_delete(conversation_data, conversation_index);
+""", """		datum_delete(conversation_data, conversation_index);
+		{
+			/* psp_fixups.py (FIXES_B98LOG): who still names it */
+			extern void psp_b98_scan(const char *where, long who);
+
+			psp_b98_scan("fin", conversation_index);
+		}
+"""),
+]
+
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_SSPR.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + list(FIXES_CHUPA090RUNS.items()) + list(FIXES_HEAPTRIM.items()) + list(FIXES_B78.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items()) + list(FIXES_AIME2A.items()) + list(FIXES_REDOSEED.items()) + (list(FIXES_STACKHOT.items()) if STACKHOT else []) + (list(FIXES_STACKHOT2.items()) if STACKHOT2 else []) + list(FIXES_PWSL.items()) + list(FIXES_SPHSL.items()) + list(FIXES_RECONLIST.items()) + list(FIXES_TP1.items()) + list(FIXES_WXDEAD.items()) + list(FIXES_AIMEMOVE.items()) + list(FIXES_PROPCRASH.items()) + list(FIXES_APCPOOL.items()) + list(FIXES_PSPTLS.items()) + list(FIXES_SNDEDRAM.items()) + list(FIXES_LIGHTFIRST.items()) + list(FIXES_DRAWPART.items()) + (list(FIXES_RECONLATE.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + list(FIXES_P2PASS.items()) + (list(FIXES_P2CENSUS.items()) if P2CENSUS else []) + list(FIXES_OBSRAY.items()) + list(FIXES_SNDWAIT.items()) + list(FIXES_FLAMEDECAL.items()) + list(FIXES_HUHINT.items()) + list(FIXES_DBLSOFT.items()) + list(FIXES_VFPUTRIG.items()) + list(FIXES_TICKCACHE.items()) + list(FIXES_STRICTALIAS.items()) + list(FIXES_SNDPERMAP.items()) + list(FIXES_RLOOP.items()) + list(FIXES_L10.items()) + list(FIXES_RLSKIP.items()) + list(FIXES_ONEWALK.items()) + (list(FIXES_POSEK.items()) if POSEK else []) + (list(FIXES_SNDSTREAM.items()) if os.environ.get("PSP_SNDSTREAM", "") == "1" else []) + list(FIXES_MOUTHCLOCK.items()) + list(FIXES_LSAME.items()) + list(FIXES_CHUPA090.items()) + list(FIXES_V091A.items()) + list(FIXES_AIDEBUGREC.items()) + (list(FIXES_AITICKOLD.items()) if AITICKOLD else []) + (list(FIXES_PADPATH.items()) if os.environ.get("PSP_PADPATH", "") == "1" else []) + list(FIXES_FARLEVEL.items()) + list(FIXES_DECALRING.items()) + list(FIXES_ARRAYFULL.items()) + (list(FIXES_DEADXBOX.items()) if DEADXBOX else []) + (list(FIXES_CAPTURE_POSING.items()) if CAPTURE == "posing" else []) + (list(FIXES_BOXPOSING.items()) if BOXPOSING else []) + (list(FIXES_ASKCENSUS.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + (list(FIXES_CAPTURE_SWEEP.items()) if CAPTURE == "sweep" else []) + (list(FIXES_B98LOG.items()) if os.environ.get("PSP_B98LOG", "") == "1" else [])):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 # PSP_FRAMEPIC (docs/frame_picture.md): game.c's perf statements are
 # stripped before its anchors are matched (PERF_STRIP), which took the tick's
