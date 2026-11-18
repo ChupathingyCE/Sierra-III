@@ -30151,6 +30151,167 @@ FIXES_LSAME["source/objects/objects.c#lsame"] = [
 """),
 ]
 
+# ---------- FIXES_DAL: attached lights linked on need (lever DAL; the lights
+# box's first on-need slice, docs/box_lights.md §9). Built in by PSP_DAL=1, off
+# by default; in such a build the keep word "dal" turns it on.
+# Idea after halo-ce-vita's dark attached-light reconnect skip (BirchWoodGod,
+# his L1, docs/research/research_vita_insider16.md); the same-tick form after
+# Milenko's finding (ChupathingyCE) that on the Xbox an attached light that is
+# off isn't re-placed in the map until it turns on, and is placed the tick it
+# does. object_update re-links each updated object's attached lights
+# (FIXES_LD1: on the last tick before a frame), but only drawing reads the
+# links, and lights_preprocess_scene draws nothing of a light whose colour
+# comes out black (no rasterizer light, so no object picks it either:
+# lights_port_cluster passes over a light without one). Its colour comes from
+# the object's function value and change colour, which only the object's own
+# function step writes, so the colour worked out at the relink, through the
+# same calls on the same inputs, is the one the frame makes. The inputs are
+# the tick's: FIXES_FISSION puts a unit's, item's or projectile's values off
+# until after the walk, and object_get_function_value makes them early only
+# for a light with an intensity function, so psp_light_dark makes them first
+# itself (a colour-only light read last tick's colour otherwise). A black
+# light is disconnected and not re-linked; the relink where it isn't black
+# links it, at the head of its clusters' lists, where the old path's relink
+# puts every light it moves, so each lit light keeps its place and the lights
+# an object picks are the same. A dead biped's lights are all linked: asleep,
+# a corpse makes its functions with no relink (psp_sleeper_functions), so a
+# light of one that came up couldn't be linked in turn. Play never reads the
+# links (FIXES_LD1's note); the light pool and partition differ. Co-op: the
+# links are a client's drawing state, never sent (docs/box_lights.md §9).
+DAL = os.environ.get("PSP_DAL", "") == "1"
+FIXES_DAL = {}
+FIXES_DAL["source/objects/object_lights.c#dal"] = [
+("""void light_reconnect_to_map(
+	long light_index)
+{""", """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_DAL): 1 when the frame would draw nothing of this
+attached light, from this tick's values of what lights_preprocess_scene
+reads, through the same calls, so the answer is the frame's own */
+int psp_light_dark(long light_index)
+{
+	extern void psp_fvp_settle(long object_index); /* objects.c (FIXES_FISSION) */
+	struct light_datum *light = light_get(light_index);
+	struct point_light_definition *definition;
+	struct object_datum *object;
+	real intensity;
+	real_rgb_color color;
+
+	if (light->parent_light_index != NONE || light->object_index == NONE ||
+		TEST_FLAG(light->flags, _point_light_port_glow_bit) ||
+		!TEST_FLAG(light->flags, _point_light_connects_to_map_bit))
+		return 0;
+	object = object_try_and_get(light->object_index);
+	if (!object)
+		return 0;
+	psp_fvp_settle(light->object_index);
+	definition = light_definition_get(light->definition_index);
+	object_get_function_value(light->object_index, light->function_index, &intensity);
+	rgb_colors_interpolate_and_scale(&color, definition->color_interpolation_flags,
+		&definition->color_lower_bound, &definition->color_upper_bound,
+		light->color_function_index == NONE ? global_real_rgb_white :
+			&object->object.outgoing_change_colors[light->color_function_index],
+		intensity);
+	return color.red == 0.0f && color.green == 0.0f && color.blue == 0.0f;
+}
+
+/* 0 for a light that should be in the map's clusters and isn't: one
+psp_light_dark left off, which has nothing to disconnect */
+int psp_light_linked(long light_index)
+{
+	struct light_datum *light = light_get(light_index);
+
+	return !TEST_FLAG(light->flags, _point_light_connects_to_map_bit) ||
+		TEST_FLAG(light->flags, _point_light_connected_to_map_bit);
+}
+#endif
+
+void light_reconnect_to_map(
+	long light_index)
+{"""),
+]
+FIXES_DAL["source/objects/objects.c#dal"] = [
+("""static void object_connect_lights(long object_index, boolean disconnect, boolean reconnect);
+""", """static void object_connect_lights(long object_index, boolean disconnect, boolean reconnect);
+/* psp_fixups.py (FIXES_DAL) */
+int psp_keep(const char *name);
+void platform_psp_log(const char *format, ...);
+int psp_light_dark(long light_index); /* object_lights.c */
+int psp_light_linked(long light_index);
+static int psp_dal = -1;
+static unsigned long psp_dal_relinks, psp_dal_skipped;
+static long psp_dal_report;
+
+static int psp_dal_on(void)
+{
+	if (psp_dal < 0)
+	{
+		psp_dal = psp_keep("dal") != 0;
+		if (psp_dal)
+			platform_psp_log("dal: attached lights linked on need (a dark one left off the map)");
+	}
+	return psp_dal;
+}
+
+/* 0 for a dead biped: its lights are kept linked (FIXES_DAL's note) */
+static int psp_dal_may_skip(struct object_datum const *object)
+{
+	return !(object->object.type == _object_type_biped &&
+		TEST_FLAG(object->object.damage_flags, _object_dead_bit));
+}
+"""),
+("""				/* psp_fixups.py (FIXES_LSAME) */
+				extern int psp_light_relink(long light_index);
+
+				if (disconnect && reconnect && psp_light_relink(object->object.attachment_indices[i]))
+					continue;
+#endif
+""", """				/* psp_fixups.py (FIXES_LSAME) */
+				extern int psp_light_relink(long light_index);
+
+				/* psp_fixups.py (FIXES_DAL): a relink leaves a dark light off
+				the map and links it the tick it lights; a light left off has
+				nothing to disconnect */
+				if (psp_dal_on())
+				{
+					long psp_light = object->object.attachment_indices[i];
+					int psp_linked = psp_light_linked(psp_light);
+
+					if (game_time_get() >= psp_dal_report)
+					{
+						psp_dal_report = game_time_get() + 30 * TICKS_PER_SECOND;
+						platform_psp_log("dal: t=%ld, %lu attached-light relinks so far, %lu of them dark (left off the map)",
+							(long)game_time_get(), psp_dal_relinks, psp_dal_skipped);
+					}
+					if (disconnect && reconnect && psp_dal_may_skip(object))
+					{
+						psp_dal_relinks++;
+						if (psp_light_dark(psp_light))
+						{
+							psp_dal_skipped++;
+							if (psp_linked)
+								light_disconnect_from_map(psp_light);
+							continue;
+						}
+						if (!psp_linked)
+						{
+							light_reconnect_to_map(psp_light);
+							continue;
+						}
+					}
+					else if (disconnect && !psp_linked)
+					{
+						if (reconnect)
+							light_reconnect_to_map(psp_light);
+						continue;
+					}
+				}
+				if (disconnect && reconnect && psp_light_relink(object->object.attachment_indices[i]))
+					continue;
+#endif
+"""),
+]
+
+
 # ---------- FIXES_LD1: attached lights re-linked once a frame (lever LD1)
 # object_connect_lights re-links every updated object's attached lights to the
 # map every tick (2.57 ms a tick on b30, PSP-1000), but only drawing reads the
@@ -54941,7 +55102,7 @@ FIXES_CAPTURE_SWEEP["source/physics/collision_models.c#capture"] = [
 						collision_bsp_get_features_in_sphere("""),
 ]
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_SSPR.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + list(FIXES_CHUPA090RUNS.items()) + list(FIXES_HEAPTRIM.items()) + list(FIXES_B78.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items()) + list(FIXES_AIME2A.items()) + list(FIXES_REDOSEED.items()) + (list(FIXES_STACKHOT.items()) if STACKHOT else []) + (list(FIXES_STACKHOT2.items()) if STACKHOT2 else []) + list(FIXES_PWSL.items()) + list(FIXES_SPHSL.items()) + list(FIXES_RECONLIST.items()) + list(FIXES_TP1.items()) + list(FIXES_WXDEAD.items()) + list(FIXES_AIMEMOVE.items()) + list(FIXES_PROPCRASH.items()) + list(FIXES_APCPOOL.items()) + list(FIXES_PSPTLS.items()) + list(FIXES_SNDEDRAM.items()) + list(FIXES_LIGHTFIRST.items()) + list(FIXES_DRAWPART.items()) + (list(FIXES_RECONLATE.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + list(FIXES_P2PASS.items()) + (list(FIXES_P2CENSUS.items()) if P2CENSUS else []) + list(FIXES_OBSRAY.items()) + list(FIXES_SNDWAIT.items()) + list(FIXES_FLAMEDECAL.items()) + list(FIXES_HUHINT.items()) + list(FIXES_DBLSOFT.items()) + list(FIXES_VFPUTRIG.items()) + list(FIXES_TICKCACHE.items()) + list(FIXES_STRICTALIAS.items()) + list(FIXES_SNDPERMAP.items()) + list(FIXES_RLOOP.items()) + list(FIXES_L10.items()) + list(FIXES_RLSKIP.items()) + list(FIXES_ONEWALK.items()) + (list(FIXES_POSEK.items()) if POSEK else []) + (list(FIXES_SNDSTREAM.items()) if os.environ.get("PSP_SNDSTREAM", "") == "1" else []) + list(FIXES_MOUTHCLOCK.items()) + list(FIXES_LSAME.items()) + list(FIXES_CHUPA090.items()) + list(FIXES_V091A.items()) + list(FIXES_AIDEBUGREC.items()) + (list(FIXES_AITICKOLD.items()) if AITICKOLD else []) + (list(FIXES_PADPATH.items()) if os.environ.get("PSP_PADPATH", "") == "1" else []) + list(FIXES_FARLEVEL.items()) + list(FIXES_DECALRING.items()) + list(FIXES_ARRAYFULL.items()) + (list(FIXES_DEADXBOX.items()) if DEADXBOX else []) + (list(FIXES_CAPTURE_POSING.items()) if CAPTURE == "posing" else []) + (list(FIXES_BOXPOSING.items()) if BOXPOSING else []) + (list(FIXES_ASKCENSUS.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + (list(FIXES_CAPTURE_SWEEP.items()) if CAPTURE == "sweep" else [])):
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_SSPR.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + list(FIXES_CHUPA090RUNS.items()) + list(FIXES_HEAPTRIM.items()) + list(FIXES_B78.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items()) + list(FIXES_AIME2A.items()) + list(FIXES_REDOSEED.items()) + (list(FIXES_STACKHOT.items()) if STACKHOT else []) + (list(FIXES_STACKHOT2.items()) if STACKHOT2 else []) + list(FIXES_PWSL.items()) + list(FIXES_SPHSL.items()) + list(FIXES_RECONLIST.items()) + list(FIXES_TP1.items()) + list(FIXES_WXDEAD.items()) + list(FIXES_AIMEMOVE.items()) + list(FIXES_PROPCRASH.items()) + list(FIXES_APCPOOL.items()) + list(FIXES_PSPTLS.items()) + list(FIXES_SNDEDRAM.items()) + list(FIXES_LIGHTFIRST.items()) + list(FIXES_DRAWPART.items()) + (list(FIXES_RECONLATE.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + list(FIXES_P2PASS.items()) + (list(FIXES_P2CENSUS.items()) if P2CENSUS else []) + list(FIXES_OBSRAY.items()) + list(FIXES_SNDWAIT.items()) + list(FIXES_FLAMEDECAL.items()) + list(FIXES_HUHINT.items()) + list(FIXES_DBLSOFT.items()) + list(FIXES_VFPUTRIG.items()) + list(FIXES_TICKCACHE.items()) + list(FIXES_STRICTALIAS.items()) + list(FIXES_SNDPERMAP.items()) + list(FIXES_RLOOP.items()) + list(FIXES_L10.items()) + list(FIXES_RLSKIP.items()) + list(FIXES_ONEWALK.items()) + (list(FIXES_POSEK.items()) if POSEK else []) + (list(FIXES_SNDSTREAM.items()) if os.environ.get("PSP_SNDSTREAM", "") == "1" else []) + list(FIXES_MOUTHCLOCK.items()) + list(FIXES_LSAME.items()) + (list(FIXES_DAL.items()) if DAL else []) + list(FIXES_CHUPA090.items()) + list(FIXES_V091A.items()) + list(FIXES_AIDEBUGREC.items()) + (list(FIXES_AITICKOLD.items()) if AITICKOLD else []) + (list(FIXES_PADPATH.items()) if os.environ.get("PSP_PADPATH", "") == "1" else []) + list(FIXES_FARLEVEL.items()) + list(FIXES_DECALRING.items()) + list(FIXES_ARRAYFULL.items()) + (list(FIXES_DEADXBOX.items()) if DEADXBOX else []) + (list(FIXES_CAPTURE_POSING.items()) if CAPTURE == "posing" else []) + (list(FIXES_BOXPOSING.items()) if BOXPOSING else []) + (list(FIXES_ASKCENSUS.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + (list(FIXES_CAPTURE_SWEEP.items()) if CAPTURE == "sweep" else [])):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 # PSP_FRAMEPIC (docs/frame_picture.md): game.c's perf statements are
 # stripped before its anchors are matched (PERF_STRIP), which took the tick's

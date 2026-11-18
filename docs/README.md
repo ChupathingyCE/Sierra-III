@@ -17,6 +17,7 @@ Every write-up about the port is in this folder: design notes, measurements, pla
 - [`box_draw_list.md`](box_draw_list.md): The draw list box
 - [`box_far_level.md`](box_far_level.md): The far level as one part (the GE lists and forms box, its first far form)
 - [`box_lights.md`](box_lights.md): The Lights box
+- [`review_dal.md`](review_dal.md): Review: DAL, attached lights linked on need (the lights box's first on-need slice; branch `builder/dal2`)
 - [`box_posing.md`](box_posing.md): Box: posing, the pilot (bottleneck, 2026-11-11; v0, spec)
 - [`box_stick_reader.md`](box_stick_reader.md): Box: the stick reader (streaming)
 - [`box_world_store.md`](box_world_store.md): Box: the world store (bottleneck, 2026-11-11; v0, spec in progress)

@@ -240,3 +240,11 @@ Engine entry points the port already cuts over — this is `psp/boxes/lights.ups
 - **The light limit's −4 ms on the main CPU** is arithmetic on 8.5 ms and a count of 15 [U on M]; the size-threshold form Sheepdog01 would accept is not sized.
 - **"~600–800 µs a light"** depends on the draws-per-light ratio from a 2026-11-04 census of the *engine* build, not today's tock [U].
 - **The T1 vs `d20_flashlight_frame_tock` conflict on which unit binds d20's flashlight** is recorded above and **not resolved**; the later reading (main CPU binds) is the one I used — if it is wrong, LSPLITCPU reopens and the box's ME ceiling rises by 10–13 ms of a 91 ms frame.
+
+---
+
+## 9. Slice 1: attached lights linked on need (DAL; 2026-11-18)
+
+- **What it does:** an attached light whose colour comes out black is left off the map when it's relinked, and is linked again on the tick it lights. Off by default: `PSP_DAL=1` builds it in, and the keep word `dal` turns it on. Review: `review_dal.md`. Idea: BirchWoodGod (halo-ce-vita, his L1). Same-tick form: after Milenko's finding (ChupathingyCE) that the Xbox links an off light only once it turns on.
+- **The ceiling, from the lab's levers.tsv DAL row:** [E] only, so it's a lead, not a price. On b30, 29.6 of 50.0 attached-light relinks a tick are dark, and 92-95 of the ~100 relinks a frame are weapons' lights (LC1/LC2). That's ~1.1 ms a tick by the cache model, which wasn't reproduced. Milenko's Xbox logs (his) put this ground at 2-9 ms a tick in big games. The PSP pair decides.
+- **Co-op:** the links are a client's drawing state; no networking unit reads them [D] (`review_dal.md`, "Co-op").
