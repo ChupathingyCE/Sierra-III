@@ -55557,6 +55557,9 @@ static struct psp_bs3_record *psp_bs3_cur = NULL;
 static char psp_bs3_resume = 0;
 /* intents; stopped at the move; at the tail; over the pool; solves resumed */
 static unsigned long psp_bs3_stat[5], psp_bs3_ticks;
+/* each record's place by its biped's datum index, as the gather's slots */
+#define PSP_BS3_REC_OF 1024
+static short psp_bs3_rec_of[PSP_BS3_REC_OF];
 
 void psp_bipedstage3_reset(void)
 {
@@ -55595,9 +55598,6 @@ void psp_bipedstage3_intent(long biped_index)
 	}
 }
 
-/* each record's place by its biped's datum index, as the gather's slots */
-#define PSP_BS3_REC_OF 1024
-static short psp_bs3_rec_of[PSP_BS3_REC_OF];
 static struct psp_bs3_record *psp_bs3_find(long biped_index)
 {
 	short k = psp_bs3_rec_of[biped_index & (PSP_BS3_REC_OF - 1)];
