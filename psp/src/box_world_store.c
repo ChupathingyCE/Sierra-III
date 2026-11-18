@@ -41,6 +41,14 @@ static unsigned long box_ws_compared[BOX_WS_BIPED_RUNS], box_ws_changed[BOX_WS_B
 static const char *const box_ws_class_name[BOX_WS_CLASSES] = { "steady", "died", "parent changed" };
 static unsigned long box_ws_class_records[BOX_WS_CLASSES], box_ws_class_unit[BOX_WS_CLASSES], box_ws_class_other[BOX_WS_CLASSES];
 static unsigned long box_ws_ticks;
+/* the check across ticks (keep word wsbipedcross, 1c's design): each record
+   keeps its biped's datum index and the staged tick it was filled in; before
+   the next fill, last tick's record of the same biped is compared with its
+   datum, so a field written to it between its staged passes (damage,
+   scripts, the vehicle path) is counted, by owner and run */
+static long box_ws_slot_index[BOX_WS_BIPED_SLOTS];
+static unsigned long box_ws_slot_tick[BOX_WS_BIPED_SLOTS];
+static unsigned long box_ws_cross_records, box_ws_cross_compared[BOX_WS_BIPED_RUNS], box_ws_cross_changed[BOX_WS_BIPED_RUNS];
 
 /* the header's runs are grouped by owner in the sections' order, each
    owner's store offsets starting again at 0 */
@@ -82,8 +90,10 @@ int box_ws_biped_slots(void)
 	return box_ws_ready ? BOX_WS_BIPED_SLOTS : 0;
 }
 
-void box_ws_biped_fill(int slot, void const *datum)
+void box_ws_biped_fill(int slot, void const *datum, long index)
 {
+	box_ws_slot_index[slot] = index;
+	box_ws_slot_tick[slot] = box_ws_ticks + 1;
 	unsigned char const *from = (unsigned char const *)datum;
 	unsigned char *record = box_ws_biped[slot];
 	unsigned i;
@@ -93,6 +103,32 @@ void box_ws_biped_fill(int slot, void const *datum)
 		struct box_ws_run const *run = &box_ws_biped_runs[i];
 
 		memcpy(record + box_ws_owner_base[box_ws_run_owner[i]] + run->store, from + run->datum, run->bytes);
+	}
+}
+
+/* before this tick's fills: last tick's record of this biped, if it was
+   staged then, against its datum now */
+void box_ws_biped_cross(long index, void const *datum)
+{
+	unsigned char const *from = (unsigned char const *)datum;
+	int slot;
+	unsigned i;
+
+	for (slot = 0; slot < BOX_WS_BIPED_SLOTS; slot++)
+	{
+		if (box_ws_slot_index[slot] == index && box_ws_slot_tick[slot] == box_ws_ticks)
+			break;
+	}
+	if (slot == BOX_WS_BIPED_SLOTS)
+		return;
+	box_ws_cross_records++;
+	for (i = 0; i < BOX_WS_BIPED_RUNS; i++)
+	{
+		struct box_ws_run const *run = &box_ws_biped_runs[i];
+
+		box_ws_cross_compared[i]++;
+		if (memcmp(box_ws_biped[slot] + box_ws_owner_base[box_ws_run_owner[i]] + run->store, from + run->datum, run->bytes))
+			box_ws_cross_changed[i]++;
 	}
 }
 
@@ -161,4 +197,27 @@ void box_ws_biped_tick(void)
 			owner ? "; " : "", box_ws_class_name[owner], box_ws_class_records[owner], box_ws_class_unit[owner],
 			box_ws_class_other[owner]);
 	platform_psp_log("wsbipedcheck: by the biped's tick: %s", line);
+	if (!box_ws_cross_records)
+		return;
+	{
+		unsigned long cc[BOX_WS_OWNERS] = { 0 }, cx[BOX_WS_OWNERS] = { 0 };
+
+		for (i = 0; i < BOX_WS_BIPED_RUNS; i++)
+		{
+			cc[box_ws_run_owner[i]] += box_ws_cross_compared[i];
+			cx[box_ws_run_owner[i]] += box_ws_cross_changed[i];
+		}
+		n = 0;
+		for (owner = 0; owner < BOX_WS_OWNERS; owner++)
+			n += snprintf(line + n, sizeof(line) - n, "%s%s %lu of %lu", owner ? ", " : "", box_ws_owner_name[owner], cx[owner], cc[owner]);
+		platform_psp_log("wsbipedcross: %lu records across a tick: run copies changed between staged passes, by owner: %s", box_ws_cross_records, line);
+		n = 0;
+		line[0] = 0;
+		for (i = 0; i < BOX_WS_BIPED_RUNS && n < (int)sizeof(line) - 40; i++)
+		{
+			if (box_ws_run_owner[i] == 1 && box_ws_cross_changed[i])
+				n += snprintf(line + n, sizeof(line) - n, " unit+%u(%u B) %lu;", box_ws_biped_runs[i].datum, box_ws_biped_runs[i].bytes, box_ws_cross_changed[i]);
+		}
+		platform_psp_log("wsbipedcross: unit runs written outside the staged passes (datum offset, bytes, times):%s", n ? line : " none");
+	}
 }

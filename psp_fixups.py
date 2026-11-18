@@ -55832,13 +55832,21 @@ static int psp_bs3_on = -1;
 	with its datum after the solves, so the fields the biped passes write
 	are counted against the store's owner map */
 	if (psp_ws_check < 0)
-		psp_ws_check = psp_keep("wsbipedcheck") ? box_ws_biped_slots() : 0;
+	{
+		psp_ws_cross = psp_keep("wsbipedcross");
+		psp_ws_check = psp_keep("wsbipedcheck") || psp_ws_cross ? box_ws_biped_slots() : 0;
+	}
+	for (k = 0; psp_ws_cross && k < psp_bipedstage_count && k < psp_ws_check; k++)
+	{
+		if (psp_bipedstage_live(k, &header) && !TEST_FLAG(header->datum->object.damage_flags, _object_dead_bit))
+			box_ws_biped_cross(psp_bipedstage_index[k], header->datum);
+	}
 	for (k = 0; k < psp_bipedstage_count; k++)
 	{
 		psp_ws_filled[k] = 0;
 		if (k < psp_ws_check && psp_bipedstage_live(k, &header) && !TEST_FLAG(header->datum->object.damage_flags, _object_dead_bit))
 		{
-			box_ws_biped_fill(k, header->datum);
+			box_ws_biped_fill(k, header->datum, psp_bipedstage_index[k]);
 			psp_ws_filled[k] = 1;
 			psp_ws_parent[k] = header->datum->object.parent_object_index;
 		}
@@ -55867,7 +55875,9 @@ static int psp_bs3_on = -1;
  """int psp_bipedstage3_kept(long biped_index);
 static int psp_bs3_on = -1;
 int box_ws_biped_slots(void); /* psp/src/box_world_store.c (FIXES_BIPEDSTAGE) step 1a */
-void box_ws_biped_fill(int slot, void const *datum);
+void box_ws_biped_fill(int slot, void const *datum, long index);
+void box_ws_biped_cross(long index, void const *datum);
+static int psp_ws_cross = 0;
 void box_ws_biped_compare(int slot, void const *datum, int kind);
 void box_ws_biped_tick(void);
 static int psp_ws_check = -1;
