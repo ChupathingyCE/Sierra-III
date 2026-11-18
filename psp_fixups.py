@@ -55840,6 +55840,7 @@ static int psp_bs3_on = -1;
 		{
 			box_ws_biped_fill(k, header->datum);
 			psp_ws_filled[k] = 1;
+			psp_ws_parent[k] = header->datum->object.parent_object_index;
 		}
 	}
 """),
@@ -55851,7 +55852,9 @@ static int psp_bs3_on = -1;
 		for (k = 0; k < psp_bipedstage_count && k < psp_ws_check; k++)
 		{
 			if (psp_ws_filled[k] && psp_bipedstage_live(k, &header))
-				box_ws_biped_compare(k, header->datum);
+				box_ws_biped_compare(k, header->datum,
+					TEST_FLAG(header->datum->object.damage_flags, _object_dead_bit) ? 1 :
+					header->datum->object.parent_object_index != psp_ws_parent[k] ? 2 : 0);
 		}
 		box_ws_biped_tick();
 	}
@@ -55865,10 +55868,11 @@ static int psp_bs3_on = -1;
 static int psp_bs3_on = -1;
 int box_ws_biped_slots(void); /* psp/src/box_world_store.c (FIXES_BIPEDSTAGE) step 1a */
 void box_ws_biped_fill(int slot, void const *datum);
-void box_ws_biped_compare(int slot, void const *datum);
+void box_ws_biped_compare(int slot, void const *datum, int kind);
 void box_ws_biped_tick(void);
 static int psp_ws_check = -1;
 static unsigned char psp_ws_filled[PSP_BIPEDSTAGE_MAXIMUM];
+static long psp_ws_parent[PSP_BIPEDSTAGE_MAXIMUM];
 """),
 ],
 }

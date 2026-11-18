@@ -7,7 +7,8 @@
    the staged run fills each living biped's record after the unit pass and
    compares it with the datum after the solves: a field the biped passes
    changed is one they write, so the owner map is checked on the staged path
-   before the intent reads the store (step 1b). */
+   before the intent reads the store (step 1b). The bipeds that died or
+   entered or left a vehicle in the tick are counted apart. */
 #include <stdio.h>
 #include <string.h>
 #include "box_world_store.h"
@@ -30,8 +31,15 @@ static unsigned char box_ws_run_owner[BOX_WS_BIPED_RUNS];
 /* -1 not yet, 0 the runs don't match the sections (logged; the check stays off), 1 ready */
 static int box_ws_ready = -1;
 static unsigned char box_ws_biped[BOX_WS_BIPED_SLOTS][BOX_WS_BIPED_BYTES] __attribute__((aligned(64)));
-/* per run: the times it was compared and the times it differed */
+/* per run: the times it was compared and the times it differed, in the
+   steady case; and per class of the biped's tick (steady, died, its parent
+   changed: a vehicle entered or left), the record's run copies compared and
+   changed in unit and outside it: the moves between states are where a slot
+   goes stale (the lead, 2026-11-18 10:0x) */
 static unsigned long box_ws_compared[BOX_WS_BIPED_RUNS], box_ws_changed[BOX_WS_BIPED_RUNS];
+#define BOX_WS_CLASSES 3
+static const char *const box_ws_class_name[BOX_WS_CLASSES] = { "steady", "died", "parent changed" };
+static unsigned long box_ws_class_records[BOX_WS_CLASSES], box_ws_class_unit[BOX_WS_CLASSES], box_ws_class_other[BOX_WS_CLASSES];
 static unsigned long box_ws_ticks;
 
 /* the header's runs are grouped by owner in the sections' order, each
@@ -88,19 +96,33 @@ void box_ws_biped_fill(int slot, void const *datum)
 	}
 }
 
-void box_ws_biped_compare(int slot, void const *datum)
+/* kind: 0 steady, 1 died this tick, 2 its parent changed this tick */
+void box_ws_biped_compare(int slot, void const *datum, int kind)
 {
 	unsigned char const *from = (unsigned char const *)datum;
 	unsigned char const *record = box_ws_biped[slot];
 	unsigned i;
 
+	if (kind < 0 || kind >= BOX_WS_CLASSES)
+		kind = 0;
+	box_ws_class_records[kind]++;
 	for (i = 0; i < BOX_WS_BIPED_RUNS; i++)
 	{
 		struct box_ws_run const *run = &box_ws_biped_runs[i];
+		int differs = memcmp(record + box_ws_owner_base[box_ws_run_owner[i]] + run->store, from + run->datum, run->bytes) != 0;
 
-		box_ws_compared[i]++;
-		if (memcmp(record + box_ws_owner_base[box_ws_run_owner[i]] + run->store, from + run->datum, run->bytes))
-			box_ws_changed[i]++;
+		if (kind == 0)
+		{
+			box_ws_compared[i]++;
+			box_ws_changed[i] += differs;
+		}
+		if (differs)
+		{
+			if (box_ws_run_owner[i] == 1)
+				box_ws_class_unit[kind]++;
+			else
+				box_ws_class_other[kind]++;
+		}
 	}
 }
 
@@ -132,5 +154,11 @@ void box_ws_biped_tick(void)
 			n += snprintf(line + n, sizeof(line) - n, " %s+%u(%u B) %lu;", box_ws_owner_name[box_ws_run_owner[i]],
 				box_ws_biped_runs[i].datum, box_ws_biped_runs[i].bytes, box_ws_changed[i]);
 	}
-	platform_psp_log("wsbipedcheck: changed outside unit (datum offset, bytes, times):%s", n ? line : " none");
+	platform_psp_log("wsbipedcheck: steady, changed outside unit (datum offset, bytes, times):%s", n ? line : " none");
+	n = 0;
+	for (owner = 0; owner < BOX_WS_CLASSES; owner++)
+		n += snprintf(line + n, sizeof(line) - n, "%s%s %lu records, run copies changed in unit %lu, outside %lu",
+			owner ? "; " : "", box_ws_class_name[owner], box_ws_class_records[owner], box_ws_class_unit[owner],
+			box_ws_class_other[owner]);
+	platform_psp_log("wsbipedcheck: by the biped's tick: %s", line);
 }
