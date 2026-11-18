@@ -55052,7 +55052,7 @@ int psp_bipedstage2_begin(void)
 	{
 		psp_bs2_on = psp_keep("bipedstage2");
 		/* in hundredths of a world unit; a tick's velocity change is far under it */
-		psp_bs2_margin = psp_keep_number("bipedstage2margin", 10) * 0.01f;
+		psp_bs2_margin = psp_keep_number("bipedstage2margin", 3) * 0.01f;
 		psp_bs2_copy = psp_keep("bipedstage2copy");
 	}
 	psp_bs2_slots = 0;
