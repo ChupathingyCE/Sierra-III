@@ -55062,8 +55062,15 @@ int psp_bipedstage2_begin(void)
 
 /* the slot's list gathered and packed into the arena (the gather at the
 tick's start and bipedstage3's exact call share it) */
+/* each slot's place by its biped's datum index (low bits), so the move's take
+finds it without a scan; an entry is trusted only when the slot it names holds
+this biped in this tick (a collision or an old tick's entry falls back to the
+scan) */
+#define PSP_BS2_SLOT_OF 1024
+static short psp_bs2_slot_of[PSP_BS2_SLOT_OF];
 static void psp_bs2_pack(struct psp_bs2_slot *slot, long biped_index)
 {
+	psp_bs2_slot_of[biped_index & (PSP_BS2_SLOT_OF - 1)] = (short)(slot - psp_bs2_slot);
 	struct collision_feature_list *list = psp_stackhot_list[1];
 	unsigned long bytes[NUMBER_OF_COLLISION_FEATURE_TYPES];
 	short k;
@@ -55176,7 +55183,10 @@ static int psp_bipedstage2_take(unsigned long flags, real_point3d const *center,
 	real_vector3d d;
 	int k;
 
-	for (k = 0; k < psp_bs2_slots; k++)
+	k = psp_bs2_slot_of[biped_index & (PSP_BS2_SLOT_OF - 1)];
+	if (k >= 0 && k < psp_bs2_slots && psp_bs2_slot[k].biped_index == biped_index && !psp_bs2_slot[k].used)
+		slot = &psp_bs2_slot[k];
+	for (k = 0; !slot && k < psp_bs2_slots; k++)
 	{
 		if (psp_bs2_slot[k].biped_index == biped_index && !psp_bs2_slot[k].used)
 		{
@@ -55580,13 +55590,20 @@ void psp_bipedstage3_intent(long biped_index)
 	if (record->stop)
 	{
 		psp_bs3_stat[record->stop]++;
+		psp_bs3_rec_of[biped_index & (PSP_BS3_REC_OF - 1)] = psp_bs3_count;
 		psp_bs3_count++;
 	}
 }
 
+/* each record's place by its biped's datum index, as the gather's slots */
+#define PSP_BS3_REC_OF 1024
+static short psp_bs3_rec_of[PSP_BS3_REC_OF];
 static struct psp_bs3_record *psp_bs3_find(long biped_index)
 {
-	short k;
+	short k = psp_bs3_rec_of[biped_index & (PSP_BS3_REC_OF - 1)];
+
+	if (k >= 0 && k < psp_bs3_count && psp_bs3_rec[k].biped_index == biped_index && psp_bs3_rec[k].stop)
+		return &psp_bs3_rec[k];
 
 	for (k = 0; k < psp_bs3_count; k++)
 	{
