@@ -54947,6 +54947,55 @@ FIXES_CAPTURE_SWEEP["source/physics/collision_models.c#capture"] = [
 # leaves it out
 BIPEDSTAGE = os.environ.get("PSP_BIPEDSTAGE", "") == "1"
 FIXES_BIPEDSTAGE = {
+"source/objects/objects.c#linkcensus": [
+("""void object_reconnect_to_map(
+	long object_index,
+	struct location const *location)
+{
+""",
+ """/* (FIXES_BIPEDSTAGE) "bipedstagelinkcensus": slice 3's ground (docs/box_biped_motion.md
+§3b, the link as its own pass): for each staged biped's update, whether it
+reconnected to the map and changed its cluster, and which of its own readers
+ran after that reconnect in the same update (its children's updates, its
+lights), the ones that would move into the link pass with it */
+long psp_bslc_current = -1;
+unsigned long psp_bslc_reconnects, psp_bslc_children, psp_bslc_lights;
+
+void object_reconnect_to_map(
+	long object_index,
+	struct location const *location)
+{
+	if (object_index == psp_bslc_current)
+		psp_bslc_reconnects++;
+"""),
+("""static void object_connect_lights_with(
+	long object_index,
+	struct object_datum *object,
+	struct object_definition *object_definition,
+	boolean disconnect,
+	boolean reconnect)
+{
+""",
+ """static void object_connect_lights_with(
+	long object_index,
+	struct object_datum *object,
+	struct object_definition *object_definition,
+	boolean disconnect,
+	boolean reconnect)
+{
+	if (object_index == psp_bslc_current && psp_bslc_reconnects)
+		psp_bslc_lights++;
+"""),
+("""	boolean result = TRUE;
+	boolean elevator_sampled = FALSE;
+""",
+ """	boolean result = TRUE;
+	boolean elevator_sampled = FALSE;
+
+	if (psp_bslc_current != -1 && psp_bslc_reconnects && object->object.parent_object_index == psp_bslc_current)
+		psp_bslc_children++;
+"""),
+],
 "source/physics/collisions.c": [
 ("""short collision_move_pill(
 	unsigned long flags,
@@ -55310,6 +55359,59 @@ static void psp_object_update(long object_index, short absolute_index, struct ob
 """,
  """	psp_bipedstage_run(); /* (FIXES_BIPEDSTAGE) */
 	psp_fvp_pass(); /* psp_fixups.py (FIXES_FISSION) */
+"""),
+],
+"source/objects/objects.c#linkcensus2": [
+("""			psp_bipedstage_phase = TEST_FLAG(header->datum->object.damage_flags, _object_dead_bit) ? 0 : 2;
+			psp_object_update(psp_bipedstage_index[k], psp_bipedstage_absolute[k], header);
+""",
+ """			psp_bipedstage_phase = TEST_FLAG(header->datum->object.damage_flags, _object_dead_bit) ? 0 : 2;
+			if (psp_bslc_on < 0)
+				psp_bslc_on = psp_keep("bipedstagelinkcensus");
+			if (psp_bslc_on > 0 && psp_bipedstage_phase == 2)
+			{
+				struct location before = header->datum->object.location;
+
+				psp_bslc_current = psp_bipedstage_index[k];
+				psp_bslc_reconnects = psp_bslc_children = psp_bslc_lights = 0;
+				psp_object_update(psp_bipedstage_index[k], psp_bipedstage_absolute[k], header);
+				psp_bslc_current = -1;
+				psp_bslc_tally(&before, &header->datum->object.location);
+			}
+			else
+			psp_object_update(psp_bipedstage_index[k], psp_bipedstage_absolute[k], header);
+"""),
+("""int psp_bipedstage2_begin(void); /* collisions.c (FIXES_BIPEDSTAGE) */
+""",
+ """int psp_bipedstage2_begin(void); /* collisions.c (FIXES_BIPEDSTAGE) */
+static int psp_bslc_on = -1;
+static unsigned long psp_bslc_updates, psp_bslc_stat[8];
+
+/* updates; reconnected; the cluster changed; the leaf changed; reconnected
+more than once; children updated after it; lights connected after it */
+static void psp_bslc_tally(struct location const *before, struct location const *after)
+{
+	void platform_psp_log(const char *format, ...);
+
+	psp_bslc_updates++;
+	if (psp_bslc_reconnects)
+		psp_bslc_stat[0]++;
+	if (before->cluster_index != after->cluster_index)
+		psp_bslc_stat[1]++;
+	if (before->leaf_index != after->leaf_index)
+		psp_bslc_stat[2]++;
+	if (psp_bslc_reconnects > 1)
+		psp_bslc_stat[3]++;
+	if (psp_bslc_children)
+		psp_bslc_stat[4]++;
+	psp_bslc_stat[5] += psp_bslc_children;
+	if (psp_bslc_lights)
+		psp_bslc_stat[6]++;
+	if (psp_bslc_updates % 5000 == 0)
+		platform_psp_log("bipedstagelinkcensus: %lu staged biped updates: reconnected %lu, the cluster changed %lu, the leaf changed %lu, reconnected more than once %lu; after the reconnect: children updated in %lu (%lu children), lights connected in %lu",
+			psp_bslc_updates, psp_bslc_stat[0], psp_bslc_stat[1], psp_bslc_stat[2], psp_bslc_stat[3],
+			psp_bslc_stat[4], psp_bslc_stat[5], psp_bslc_stat[6]);
+}
 """),
 ],
 }
