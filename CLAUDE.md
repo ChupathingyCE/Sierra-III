@@ -59,28 +59,24 @@ Halo's netcode isn't lockstep (`docs/hardware_utilization.md` §6): the PSP is o
 
 The campaign build has no server: there the only line is that it plays and feels the same.
 
-## Multiplayer
+## Multiplayer (`docs/multiplayer_plan.md`, "The lab's rules for multiplayer work")
 
-- **Compatible by design; co-op is the end goal** (Sheepdog01 2026-10-30). Structural work is designed for the engine's three roles: single player, co-op host, and client (a co-op client runs no AI and no level scripts: `docs/multiplayer_plan.md` §8). Memory is planned per mode, allocated when a mode starts and freed when it ends; a unified EBOOT is the end goal. A change not yet built for network play ships campaign-only, with a `co-op:` note in its `levers.tsv` evidence saying what co-op would need; a change that can never work in a network game (a different tick rate, as L15) is single-player only, with Sheepdog01's OK.
-- **Multiplayer is a contained lane** (Sheepdog01 2026-11-12): a multiplayer session builds a client-only test build (the lab's `coord/briefs/mp_testbuild.md`, branch builder/mp091) and lays groundwork for multiplayer after 30/30, on spare usage, at the bottom of the stack. It yields to every rebuild item, works in multiplayer-only files and its own `FIXES_` groups, and changes shared code only through the lead, under the multiplayer switch, with the campaign EBOOT byte-identical as proof.
-- **Outside that lane, compatibility is kept on paper:** the campaign's work doesn't run `PSP_MULTIPLAYER=1` checks, and the code is reconciled in one pass when multiplayer work resumes. From then, a change to shared code compiles into the multiplayer build again (the lab's mpcheck batch), and a change that would cost multiplayer to help the campaign goes to Sheepdog01 first, settled case by case.
+- **Compatible by design; co-op is the end goal** (Sheepdog01 2026-10-30): structural work is designed for single player, co-op host and client. A change not yet built for network play ships campaign-only with a `co-op:` note in its `levers.tsv` evidence; one that can never work in a network game (a different tick rate, as L15) is single-player only, with Sheepdog01's OK.
+- **A contained lane** (Sheepdog01 2026-11-12): only the multiplayer session works on multiplayer, in its own files and `FIXES_` groups; outside it, compatibility is kept on paper and the campaign doesn't run `PSP_MULTIPLAYER=1` checks. Once multiplayer work resumes in full, a change that would cost multiplayer to help the campaign goes to Sheepdog01 first.
 
 ## Proper fixes, and where work runs (Sheepdog01 2026-10-27, 2026-10-28)
 
 - **Failures:** when work moved off the main CPU (the ME's jobs, the GE's lists) fails or runs long, fix it where it runs: find why it ran long, make the job fit its deadline, keep its waits bounded. Routing the hard case back to the main CPU, or switching a lever off, isn't the fix; the existing fallbacks stay as the safety net. A stopgap ships only with Sheepdog01's OK, named as one, with its proper fix tracked (the lab's bugs.md or levers.tsv) and done next.
 - **Placement:** which unit runs a job (the main CPU with its VFPU, the ME, the GE) is decided by measurement on the PSP, in either direction, judged by the overall balance between them, not by the job's own speed on one unit: a move pays when a PSP pair shows the frame faster (ticks first) with the load spread better. Moving work onto the main CPU to use the VFPU, so measured, is a placement, not a fallback.
 
-## The rebuild (Sheepdog01 2026-11-05, 2026-11-11; `docs/redesign_plan.md`)
+## The rebuild (Sheepdog01 2026-11-05, 2026-11-11)
 
-The lab's `research/opportunities/REBUILD.md` is the spine: the frame budgeted from zero as **boxes**, built forward from the spec, systematic and complete, not patches over what's built.
-- **A box** is one subsystem the game needs every frame, written as the port's own code in `psp/src/` against its own data, with a contract (what it reads, writes, and who reads it when) and a budget on every unit, per entity as well as per tick or frame. Its design page is `docs/box_<name>.md`. It may start from the engine's own code, adapted, with ChupathingyCE named in the file's header, UPSTREAM.md and the README's Credits (Sheepdog01 2026-11-18). The engine's version is switched out whole at the box's entry points when it's proven; the engine checkout stays unedited and `psp_fixups.py` holds only the cut-over.
-- **Three means make a box cheaper** than what it replaces: its data owned and packed for its walk; work done on change or on need; both cores on separate data. A change that uses none of them is a lever.
+The lab's `research/opportunities/REBUILD.md` is the spine: the frame budgeted from zero as **boxes** (one subsystem each, the port's own code in `psp/src/` with its own data, a contract and a budget on every unit), built forward from the spec, not patched over the old path. How a box is built, priced and proven: `docs/redesign_plan.md` §9. Who calls what:
 - **Budget first:** a part starts as its ceiling on each unit and stretch against the plan's frame budget (§1), and Sheepdog01's go.
-- **Priced in the frame** (Sheepdog01 2026-11-16): a box is priced by its effect in the frame, alone or with a codependent group, and broken down only where a group misses its budget. Its standalone price (over a capture of one of his pad benches, on the PSP, warm and with the caches emptied, the GE reading beside it) is a required sanity check, not a gate.
-- **Cut in under its own build switch, off by default, on the lead's call**, with no go from Sheepdog01 (Sheepdog01 2026-11-11). It's proven against the old path in two builds, old-only and new-only, each with the whole heap, on the same pad bench, so the part needn't fit beside the old path in 24 MB (Sheepdog01 2026-11-10); the old path goes at the switch-over. The switch meets "every change behind a keep word".
-- **Proven for correctness, priced once:** slices are proven in the emulator (pictures for drawing; play + seeds, or the outcome census, for the simulation), never by identity with the old path's GE stream. The multiplayer boundary still holds. A slice slower on its own isn't a rejection: the PSP prices the part at its milestone (the old layer bypassed) and at the switch-over, one pair of builds each.
-- **Levers aren't filler** (Sheepdog01 2026-11-14): work on the old path runs on a PSP only as an ask with a question, a reader and the decision it feeds, or under the next rule; an idle PSP with no such ask stays idle. Lever work is tagged `[lever]` in the lab's session files, doesn't set a session's order of work, and isn't reported as rebuild progress.
-- **Levers stay off a part's ground:** once a part has Sheepdog01's go, a lever on a ground it replaces isn't started unless it pays before the part lands and he says so (the lab's `tools/levercheck.py` names the part). Before the go, a lever there says how it fits the part.
+- **Cut in under its own build switch, off by default, on the lead's call**, with no go from Sheepdog01 (Sheepdog01 2026-11-11); proven on vs off in one build, or in two (old-only, new-only) when both paths don't fit the heap together (Sheepdog01 2026-11-16, 2026-11-10).
+- **Priced in the frame,** alone or with a codependent group; the standalone price is a sanity check, not a gate (Sheepdog01 2026-11-16).
+- **Levers aren't filler** (Sheepdog01 2026-11-14): work on the old path runs on a PSP only as an ask with a question, a reader and the decision it feeds; an idle PSP with no such ask stays idle. Lever work is tagged `[lever]` and isn't reported as rebuild progress.
+- **Levers stay off a part's ground:** once a part has Sheepdog01's go, a lever on a ground it replaces isn't started unless it pays before the part lands and he says so (the lab's `tools/levercheck.py` names the part).
 
 ## The hardware rules
 
@@ -97,13 +93,12 @@ The lab's `research/opportunities/REBUILD.md` is the spine: the frame budgeted f
 - **Only the PSP says where time goes and how long** (Sheepdog01 2026-11-09): the emulator answers correctness, play, pictures and exact counts; rankings, ceilings and budgets come from PSP runs, and an emulator time figure is a lead at most (its split of the tick by step misled: the lab's findings `combat_steps_psp_vs_emu`).
 - **The emulator dismisses on correctness and counts, never on time where it's blind** (Sheepdog01 2026-11-05): it may stop a change because play parts, a picture breaks, or an exact count shows the work it targets is too small. It may not stop one on a time figure when the cost runs through something it doesn't model (the Media Engine, interrupts and the GE's signals, DMA, contention for main RAM between the units): those are priced by a PSP pair or parked with a `revive_if`.
 
-## How AI is used here (Sheepdog01 2026-10-13, against ChupathingyCE's generative-AI policy)
+## How AI is used here (Sheepdog01 2026-10-13; `docs/ai_policy.md`)
 
-Sheepdog01 decides what to build, tests the ticks on hardware, and is responsible for it; Claude writes the code, and every commit says so (the identity above). So that a person reviews every change:
+Sheepdog01 decides what to build, tests the ticks on hardware, and is responsible for it; Claude writes the code, and every commit says so (the identity above).
 - **Each build ships with a review walk-through** (`docs/review_bNNN.md`): every change merged since the last build, its key lines and why they're there, short enough for him to read and question before testing.
 - **Comments say why, not what, and not when.** Build history belongs in commit messages and build notes: when a comment is touched, move its history out and keep the reason.
-- **Upstreaming to ChupathingyCE** (their `CONTRIBUTING.md`, "Using AI tools"): only small, self-contained changes; Sheepdog01 understands every line and can explain it in review; tested on ChupathingyCE's own desktop build, not only through the port; the pull request says plainly that it was written with Claude. Nothing goes upstream that fails one of these.
-- **Credit what we borrow** (Sheepdog01 2026-10-14): a change whose code or idea comes from another project names its source and author in the commit message ("after halo-ce-vita's path state clear, BirchWoodGod"), the build's review section and the README's Credits. `docs/research/` records where each borrowed idea came from and under what terms (`research_vita.md` records BirchWoodGod's grant for halo-ce-vita). Code from a GPL project is taken only with its author's grant, and only what that author wrote; the engine's own code adapted into a box is the exception (the rebuild, above).
+- **Upstreaming to ChupathingyCE, and crediting code or ideas borrowed from another project:** `docs/ai_policy.md`, read before either.
 
 ## Docs
 
