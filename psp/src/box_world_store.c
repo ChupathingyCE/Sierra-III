@@ -286,6 +286,18 @@ void box_ws_biped_cross(long index, void const *datum)
 	}
 	if (slot == BOX_WS_BIPED_SLOTS)
 		return;
+	/* 1c's outside-writer watch (the emulator's PSP_WATCH): one staged
+	   biped's datum, named once, so a second run can watch its runs */
+	{
+		static int named;
+
+		if (!named && box_ws_ticks >= 300)
+		{
+			named = 1;
+			platform_psp_log("wsbipedcross: watch biped %08lx datum %08lx at tick %lu",
+				(unsigned long)index, (unsigned long)(size_t)datum, box_ws_ticks);
+		}
+	}
 	box_ws_cross_records++;
 	for (i = 0; i < BOX_WS_BIPED_RUNS; i++)
 	{
