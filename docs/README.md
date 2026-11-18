@@ -59,6 +59,7 @@ Every write-up about the port is in this folder: design notes, measurements, pla
 - [`hardware_facts.md`](hardware_facts.md): Measured hardware facts
 - [`hardware_surveys.md`](hardware_surveys.md): The tick, system by system: what eight surveys found (directions 1 and 2)
 - [`hardware_utilization.md`](hardware_utilization.md): Hardware utilization: does the port use the PSP well?
+- [`fix_b98.md`](fix_b98.md): FIXES_B98: a conversation that has ended is read as none (B98's fix)
 - [`hotg.md`](hotg.md): HOTG: the program's hot variables packed by heat
 - [`hw_capabilities.md`](hw_capabilities.md): The PSP-1000's hardware: what we use, what we don't, and what to chase
 - [`levers_next_b138.md`](levers_next_b138.md): The next levers, ranked by payout (2026-10-17, after b137)
