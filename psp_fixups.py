@@ -54948,6 +54948,188 @@ FIXES_CAPTURE_SWEEP["source/physics/collision_models.c#capture"] = [
 BIPEDSTAGE = os.environ.get("PSP_BIPEDSTAGE", "") == "1"
 FIXES_BIPEDSTAGE = {
 "source/physics/collisions.c": [
+("""short collision_move_pill(
+	unsigned long flags,
+""",
+ """/* (FIXES_BIPEDSTAGE) slice 2 (docs/box_biped_motion.md §3b, a gather and a
+solve): every living staged biped's move gathered before any biped moves,
+each into its own packed list, so the gather's code runs once over all of
+them; the move then takes its list in place of walking the map again. The
+gather's sphere is the move's own grown by a margin, so this tick's change of
+velocity stays inside it: a move whose sphere isn't inside, or whose flags or
+pill differ, gathers as before, counted. A gather averages ~0.2 KB (the lab's
+findings gather1_features); a tick's fit 16 KB, one that doesn't fit gathers as
+before */
+#define PSP_BS2_SLOTS 256
+#define PSP_BS2_ARENA 16384
+struct psp_bs2_slot
+{
+	long biped_index;
+	unsigned long flags;
+	real height, width, radius;
+	real_point3d center;
+	short count[NUMBER_OF_COLLISION_FEATURE_TYPES];
+	unsigned short offset;
+	short used;
+};
+static struct psp_bs2_slot psp_bs2_slot[PSP_BS2_SLOTS];
+static unsigned char psp_bs2_arena[PSP_BS2_ARENA] __attribute__((aligned(16)));
+static int psp_bs2_on = -1, psp_bs2_slots, psp_bs2_fill, psp_bs2_peak;
+static real psp_bs2_margin;
+/* gathered, taken, no slot, flags or pill differ, sphere outside, arena full, gather refused */
+static unsigned long psp_bs2_stat[7], psp_bs2_ticks;
+extern struct collision_feature_list *psp_stackhot_list[2];
+
+int psp_bipedstage2_begin(void)
+{
+	int psp_keep(const char *name);
+	int psp_keep_number(const char *prefix, int fallback);
+
+	if (psp_bs2_on < 0)
+	{
+		psp_bs2_on = psp_keep("bipedstage2");
+		/* in hundredths of a world unit; a tick's velocity change is far under it */
+		psp_bs2_margin = psp_keep_number("bipedstage2margin", 25) * 0.01f;
+	}
+	psp_bs2_slots = 0;
+	psp_bs2_fill = 0;
+	return psp_bs2_on > 0;
+}
+
+void psp_bipedstage2_gather(long biped_index)
+{
+	struct collision_feature_list *list = psp_stackhot_list[1];
+	struct psp_bs2_slot *slot;
+	real_point3d base;
+	real_vector3d const *velocity;
+	real height, width;
+	unsigned long bytes[NUMBER_OF_COLLISION_FEATURE_TYPES];
+	short k;
+
+	if (psp_bs2_slots >= PSP_BS2_SLOTS)
+		return;
+	slot = &psp_bs2_slot[psp_bs2_slots];
+	biped_get_physics_pill(biped_index, &base, &height, &width);
+	velocity = &object_get(biped_index)->object.translational_velocity;
+	slot->center.x = base.x + velocity->i * 0.5f;
+	slot->center.y = base.y + velocity->j * 0.5f;
+	slot->center.z = height * 0.5f + (base.z + velocity->k * 0.5f);
+	slot->radius = magnitude3d(velocity) * 0.5f + height * 0.5f + width + psp_bs2_margin;
+	slot->flags = _collision_test_for_bipeds_living_flags;
+	slot->height = height;
+	slot->width = width;
+	if (!collision_get_features_in_sphere(slot->flags, &slot->center, slot->radius, height, width, biped_index, list))
+	{
+		psp_bs2_stat[6]++;
+		return;
+	}
+	bytes[_collision_feature_sphere] = list->count[_collision_feature_sphere] * sizeof(struct collision_sphere);
+	bytes[_collision_feature_cylinder] = list->count[_collision_feature_cylinder] * sizeof(struct collision_cylinder);
+	bytes[_collision_feature_prism] = list->count[_collision_feature_prism] * sizeof(struct collision_prism);
+	if (psp_bs2_fill + bytes[0] + bytes[1] + bytes[2] > PSP_BS2_ARENA)
+	{
+		psp_bs2_stat[5]++;
+		return;
+	}
+	slot->biped_index = biped_index;
+	slot->offset = (unsigned short)psp_bs2_fill;
+	slot->used = 0;
+	for (k = 0; k < NUMBER_OF_COLLISION_FEATURE_TYPES; k++)
+		slot->count[k] = list->count[k];
+	memcpy(psp_bs2_arena + psp_bs2_fill, list->spheres, bytes[_collision_feature_sphere]);
+	psp_bs2_fill += bytes[_collision_feature_sphere];
+	memcpy(psp_bs2_arena + psp_bs2_fill, list->cylinders, bytes[_collision_feature_cylinder]);
+	psp_bs2_fill += bytes[_collision_feature_cylinder];
+	memcpy(psp_bs2_arena + psp_bs2_fill, list->prisms, bytes[_collision_feature_prism]);
+	psp_bs2_fill += bytes[_collision_feature_prism];
+	psp_bs2_fill = (psp_bs2_fill + 3) & ~3;
+	psp_bs2_slots++;
+	psp_bs2_stat[0]++;
+}
+
+/* the move's list from its slot, unpacked into the shared list it would have
+walked into; FALSE: gather as before */
+static boolean psp_bipedstage2_take(unsigned long flags, real_point3d const *center, real radius,
+	real height, real width, long biped_index, struct collision_feature_list *list)
+{
+	struct psp_bs2_slot *slot = NULL;
+	unsigned char const *p;
+	real_vector3d d;
+	int k;
+
+	for (k = 0; k < psp_bs2_slots; k++)
+	{
+		if (psp_bs2_slot[k].biped_index == biped_index && !psp_bs2_slot[k].used)
+		{
+			slot = &psp_bs2_slot[k];
+			break;
+		}
+	}
+	if (!slot)
+	{
+		psp_bs2_stat[2]++;
+		return FALSE;
+	}
+	if (slot->flags != flags || slot->height != height || slot->width != width)
+	{
+		psp_bs2_stat[3]++;
+		return FALSE;
+	}
+	vector_from_points3d(center, &slot->center, &d);
+	if (magnitude3d(&d) + radius > slot->radius)
+	{
+		psp_bs2_stat[4]++;
+		return FALSE;
+	}
+	slot->used = 1;
+	p = psp_bs2_arena + slot->offset;
+	for (k = 0; k < NUMBER_OF_COLLISION_FEATURE_TYPES; k++)
+		list->count[k] = slot->count[k];
+	memcpy(list->spheres, p, slot->count[_collision_feature_sphere] * sizeof(struct collision_sphere));
+	p += slot->count[_collision_feature_sphere] * sizeof(struct collision_sphere);
+	memcpy(list->cylinders, p, slot->count[_collision_feature_cylinder] * sizeof(struct collision_cylinder));
+	p += slot->count[_collision_feature_cylinder] * sizeof(struct collision_cylinder);
+	memcpy(list->prisms, p, slot->count[_collision_feature_prism] * sizeof(struct collision_prism));
+	psp_bs2_stat[1]++;
+	return TRUE;
+}
+
+void psp_bipedstage2_end(void)
+{
+	void platform_psp_log(const char *format, ...);
+
+	if (psp_bs2_fill > psp_bs2_peak)
+		psp_bs2_peak = psp_bs2_fill;
+	psp_bs2_slots = 0;
+	if (psp_bs2_on > 0 && ++psp_bs2_ticks % 1000 == 0)
+		platform_psp_log("bipedstage2: %lu ticks: gathered %lu, taken %lu; gathered again: no slot %lu, flags or pill %lu, outside the sphere %lu; arena full %lu, gather refused %lu; arena peak %d of %d bytes",
+			psp_bs2_ticks, psp_bs2_stat[0], psp_bs2_stat[1], psp_bs2_stat[2], psp_bs2_stat[3], psp_bs2_stat[4],
+			psp_bs2_stat[5], psp_bs2_stat[6], psp_bs2_peak, PSP_BS2_ARENA);
+}
+
+short collision_move_pill(
+	unsigned long flags,
+"""),
+("""	if (collision_get_features_in_sphere(
+		flags,
+		&center,
+		magnitude3d(velocity) * 0.5f + height * 0.5f + radius,
+		height,
+		radius,
+		ignore_object_index,
+		&features))
+""",
+ """	if ((psp_bs2_slots && psp_bipedstage2_take(flags, &center, magnitude3d(velocity) * 0.5f + height * 0.5f + radius,
+			height, radius, ignore_object_index, &features)) ||
+		collision_get_features_in_sphere(
+		flags,
+		&center,
+		magnitude3d(velocity) * 0.5f + height * 0.5f + radius,
+		height,
+		radius,
+		ignore_object_index,
+		&features))
+"""),
 ("""	{
 		result = collision_move_point(
 			position,
@@ -55044,6 +55226,10 @@ static boolean psp_bipedstage_live(short k, struct object_header_datum **header)
 		TEST_FLAG((*header)->flags, _object_header_active_bit);
 }
 
+int psp_bipedstage2_begin(void); /* collisions.c (FIXES_BIPEDSTAGE) */
+void psp_bipedstage2_gather(long biped_index);
+void psp_bipedstage2_end(void);
+
 static void psp_bipedstage_run(void)
 {
 	struct object_header_datum *header;
@@ -55060,6 +55246,16 @@ static void psp_bipedstage_run(void)
 		if (psp_bipedstage_live(k, &header) && !TEST_FLAG(header->datum->object.damage_flags, _object_dead_bit))
 			unit_update(psp_bipedstage_index[k]);
 	}
+	/* slice 2: every living biped's move gathered as one pass, from the
+	world as it stands before any biped moves (collisions.c) */
+	if (psp_bipedstage2_begin())
+	{
+		for (k = 0; k < psp_bipedstage_count; k++)
+		{
+			if (psp_bipedstage_live(k, &header) && !TEST_FLAG(header->datum->object.damage_flags, _object_dead_bit))
+				psp_bipedstage2_gather(psp_bipedstage_index[k]);
+		}
+	}
 	for (k = 0; k < psp_bipedstage_count; k++)
 	{
 		if (psp_bipedstage_live(k, &header))
@@ -55069,6 +55265,7 @@ static void psp_bipedstage_run(void)
 			psp_object_count(header->type);
 		}
 	}
+	psp_bipedstage2_end();
 	psp_bipedstage_phase = 0;
 	psp_bipedstage_count = 0;
 }
