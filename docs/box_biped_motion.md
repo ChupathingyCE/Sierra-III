@@ -18,6 +18,30 @@ The lab's `research/opportunities/REBUILD.md` is the spine (§3.3, §4, §7 step
   - **serial form:** the same order, against this tick's store: exact by construction, one core;
   - **parallel form:** each biped queries the other movers at last tick's positions (the one-tick-old view, `two_core_tick.md`), so bipeds can update in any order on either core. The one-tick-old world is pursued as the two-core tick's enabler (Sheepdog01 2026-11-10 16:43, the lab's decisions.md). Not exact, so it's "plays the same" efficiency (CLAUDE.md, collision included since 2026-11-09): the multiplayer boundary asks only that the client's own biped stay well inside the host's 3.5 units (`hardware_utilization.md` §6), and play holds by side-by-sides and the outcome census (the AITICKOLD lesson, `aime_me.md` round 14: a census that holds can still lean).
 
+## 1c. How it meets the other boxes, and the order it's played out (Sheepdog01 2026-11-18 09:39; the lead 09:4x)
+
+Sheepdog01: play biped motion out, as long as it doesn't conflict with a future box or become irrelevant later. Each step below is checked against REBUILD's other rows before it's built.
+
+**The fit, one line a box:**
+- **The world store:** biped motion owns the store's biped **unit** section (`box_world_store.md` §2's v0 list: biped motion with the unit's own update) and reads **read** and **control**; it writes nothing else, and asks the walk to relink. Its packed data *is* that section, filled from the whole world map's readers (worldmap1), not a record private to the move. The bipedstage3 records go when the intent reads the store.
+- **The collision service:** biped motion is the service's first asker (the pill sweep, `box_collision.md` §1). Its gather calls the service's sphere query and nothing else, so when the service's packed level data and per-query state land, the gather moves with them. There's no second query path; the take and the arena are the asker's own memory, which the service's contract allows ("writes the answers only, into the asker's own memory").
+- **Posing:** biped motion writes the root (position, forward, up, velocity) that posing reads (`box_posing.md` §1), and is a declared reader of its own nodes (B's readers' contract: the unit's preprocess and IK). Moving posing's on-demand calls out of the move's steps (57 node-block words written under biped motion's steps today) is posing's to do, as declared reads; biped motion doesn't pose.
+- **The tick schedule:** today every form is serial, on the main CPU, against this tick's world (the exact form). Both cores wait for `two_core_tick.md`'s acceptance. The store's one-writer-a-field rule and the unit section's single owner are what that page's parallel phase needs, so nothing here has to be undone for it.
+
+**The order (Sheepdog01's, through the lead):**
+1. **Packed data, as the world store's biped section.** The three walks of the 1.1 KB datum go (the unit pass, the intent, the solve). Design below.
+2. **The pass's bookkeeping trimmed:** +622 samples on b30's PSP, the records and LTO's inlined run.
+3. **The gather through the collision service's query path** (`box_collision.md` Form A/B).
+4. **Both cores, only as the tick schedule's page designs it**, once that page is accepted.
+
+**Step 1's design: the store's biped section** (2026-11-18 09:5x) [D, the header and the store's page; sizes U until counted]:
+- **The section:** `psp/src/box_world_store.h`'s five biped structs (read 108 B, unit 168, control 68, posing 36, walk 24: 404 B a biped, generated from worldmap1's readers of every box). Held as one array per owner, indexed by a store slot a biped keeps while it lives, with its datum index in **read** (the disc's indices stay the identity: the multiplayer rule).
+- **Memory:** 404 B times the live bipeds: 12.4 KB at b30's 30.6 live, 25.9 KB at 64. The store's page budgets the heap's room as the limit, so the slot count is set from the pools' peaks (`PSP_POOLS_XBOX=1`'s census), not 256.
+- **1a, the store kept live (the store's own proof stage, its §7):** under its own build switch, the section filled from the datums at the tick's start and written back before any engine reader, with a check build that compares the store's fields against the datum after each staged pass. Proof: play and both seeds identical every tick on b30, b40, d20 and a30. Nothing reads it yet. This is the world store's first box section, so it's built as the store's code (`psp/src/box_world_store.c`), not biped motion's.
+- **1b, the intent from the store:** the intent pass written as the port's code (`psp/src/box_biped_move.c`), reading **read**, **control** and **unit** and writing **unit**, in place of the engine's pre-move steps and `biped_update_physics`' intent half. The engine's path stays as the old side, switched whole (keep word `bipedmovestore`). Exact against it (statecrc), since the arithmetic is the engine's, read from another place.
+- **1c, the solve and the unit pass from the store,** one at a time, each exact. As each moves, its datum walk goes and the fill or write-back of the fields it owned shrinks (the store's page §2: read-only fields fill on change, and a field whose every reader reads the store isn't written back).
+- **What it should buy** [U, to be counted in the cache model, then priced on the PSP]: the intent's and solve's D-misses on the datum (c20's +2,331 a tick against slice 2 is the lead) against the fill's and write-back's copies.
+
 ## 2. Data
 
 - **Per biped, the store's share** [E counts, worldmap1 through the lab's `worldlayout.py`]: 400 B in five sections (read 107, unit 167, control 66, posing 36, walk 24) against the datum's 1,152, on ~7 lines packed against the 11.3 datum lines an update touches today. Of the box's fields, biped motion's steps read 406 and write 330 over all types (the store's map, §2 of its page).
