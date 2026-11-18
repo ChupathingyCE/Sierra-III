@@ -35907,8 +35907,10 @@ FIXES_AICAD["source/ai/actor_perception.c#aicad"] = [
 # command list, a combat status of "definite" or higher, known or visible
 # enemies, a target, a target seen in the last 10 s, a danger zone, damage
 # taken lately, or an encounter that hasn't stood down yet (its fight, its
-# post-combat search: aifarlist1, b30's beach_crack left open; "aifarnoenc"
-# is the first form, without that test). aicad3's own exemptions hold too (the timeslice holder,
+# post-combat search). Far is past 20 units and past the actor's own sight
+# (aifarenc1: b30's beach_pass, woken in sight of the player and rested, was
+# left open at the end). "aifarv1" is the first form, without the sight and
+# encounter tests. aicad3's own exemptions hold too (the timeslice holder,
 # swarms, dormant and charging actors, an actor's first update), and
 # everything aicad3 runs every tick still does (input, perception's decays,
 # emotion, the action, moving, looking, firing). A far actor out of the fight
@@ -35954,9 +35956,9 @@ head count on a line shared with the model rasterizer's local_parameters had
 the ME's write-back put a NULL there and fault render_model (the lab's bugs.md
 B94). The log's time is the main CPU's alone */
 static PSP_AIME_ME_SIDE int psp_aifar_on = -1;
-/* "aifarnoenc": the first form's test, the actor's own state only (the A/B
-side for the encounter's test below) */
-static PSP_AIME_ME_SIDE boolean psp_aifar_noenc = FALSE;
+/* "aifarv1": the first form (20 units, the actor's own state only), the A/B
+side for the sight and encounter tests below */
+static PSP_AIME_ME_SIDE boolean psp_aifar_v1 = FALSE;
 /* each slot's answer for one tick: the ray queue asks before the actor's
 update refreshes its position and the update asks again, and both must agree */
 static PSP_AIME_ME_SIDE long psp_aifar_time[MAXIMUM_ACTORS];
@@ -35981,7 +35983,7 @@ static boolean psp_aifar_enabled(
 		psp_aifar_on = 0;
 #else
 		psp_aifar_on = psp_keep("aifar") ? 1 : 0;
-		psp_aifar_noenc = psp_keep("aifarnoenc") ? TRUE : FALSE;
+		psp_aifar_v1 = psp_keep("aifarv1") ? TRUE : FALSE;
 #endif
 		if (psp_aifar_on && psp_aicad_on != 3)
 			platform_psp_log("ai: aifar does nothing without aicad3 (aicad%d)", psp_aicad_on);
@@ -36012,11 +36014,9 @@ static boolean psp_aifar_engaged(
 	}
 	/* the encounter's own fight: until it stands down (the fight over, its
 	post-combat search done) every actor in it thinks at aicad3's rate, so
-	the end of the fight, the search and the return to guard play out as
-	without aifar wherever the player is. Resting them there left b30's
-	beach_crack's survivors where the extraction sees them and its encounter
-	open at the end (the lab's aifarlist1) */
-	if (!psp_aifar_noenc && actor->meta.encounter_index != NONE &&
+	the end of the fight and the search play out as without aifar wherever
+	the player is */
+	if (!psp_aifar_v1 && actor->meta.encounter_index != NONE &&
 		!encounter_get(actor->meta.encounter_index)->stand_down)
 		return TRUE;
 	return actor->state.command_list_index != NONE ||
@@ -36032,11 +36032,13 @@ static boolean psp_aifar_engaged(
 /* TRUE when the actor is far from every player's unit and out of the fight.
 With no player unit (dead, between lives) nobody counts as far */
 static boolean psp_aifar_resting(
+	long actor_index,
 	struct actor_datum *actor,
 	short absolute_index)
 {
 	long now = game_time_get();
 	boolean far;
+	real sight;
 	short k;
 
 	if (psp_aifar_last_time != NONE && now < psp_aifar_last_time)
@@ -36064,9 +36066,28 @@ static boolean psp_aifar_resting(
 	}
 	psp_aifar_stats.asked++;
 	far = psp_aifar_head_count > 0;
+	/* far is past the actor's own sight too (its definition's vision
+	distance, or its weapon's modified range, as perception takes them; the
+	skulls' scale aside): a resting actor skips its rays, so one in sight of
+	a player would notice him later. In b30 (the lab's aifarenc1)
+	beach_pass's guards, woken 30-36 units from the player, rested, came
+	into the fight knowing less and were left holding a lost target in a
+	cluster the extraction sees */
+	sight = PSP_AIFAR_DISTANCE;
+	if (!psp_aifar_v1)
+	{
+		struct actor_definition *definition = actor_definition_get(actor->meta.definition_index);
+		struct actor_variant_definition *variant = actor_combat_get_firing_variant_definition(actor_index);
+		real range = definition->perception.maximum_vision_distance;
+
+		if (variant && variant->ranged_combat.modified_vision_range > 0.0f)
+			range = variant->ranged_combat.modified_vision_range;
+		if (range > sight)
+			sight = range;
+	}
 	for (k = 0; k < psp_aifar_head_count && far; k++)
 	{
-		if (distance_squared3d(&psp_aifar_heads[k], &actor->input.position.body_position) < PSP_AIFAR_DISTANCE * PSP_AIFAR_DISTANCE)
+		if (distance_squared3d(&psp_aifar_heads[k], &actor->input.position.body_position) < sight * sight)
 			far = FALSE;
 	}
 	if (!far)
@@ -36120,7 +36141,7 @@ boolean psp_aicad_rest(
 	if (actor->meta.swarm || actor->meta.dormant || actor->state.action == _actor_action_charge ||
 		psp_aicad_identifier[absolute_index] != actor->identifier)
 		return FALSE;
-	return (phase & 1) || psp_aifar_resting(actor, absolute_index);
+	return (phase & 1) || psp_aifar_resting(actor_index, actor, absolute_index);
 }"""),
 ]
 
@@ -36549,7 +36570,7 @@ static void psp_aioutcome_tick(
 	data_iterator_new(&iterator, encounter_data);
 	while ((encounter = data_iterator_next(&iterator)) != NULL)
 	{
-		short index = iterator.absolute_index;
+		short index = DATUM_INDEX_TO_ABSOLUTE_INDEX(iterator.datum_index); /* (the iterator's absolute_index is the next slot's) */
 		short count = encounter->current_count + encounter->current_swarm_count;
 		char const *name;
 		byte *flags;
@@ -36592,7 +36613,7 @@ static void psp_aioutcome_tick(
 	data_iterator_new(&iterator, actor_data);
 	while ((actor = data_iterator_next(&iterator)) != NULL)
 	{
-		short index = iterator.absolute_index;
+		short index = DATUM_INDEX_TO_ABSOLUTE_INDEX(iterator.datum_index); /* (the iterator's absolute_index is the next slot's) */
 		long object_index = actor->meta.swarm ? actor->meta.swarm_unit_index : actor->meta.unit_index;
 		struct object_datum *unit = object_index == NONE ? NULL : object_try_and_get(object_index);
 		boolean far = head_count > 0;
@@ -36652,7 +36673,7 @@ static void psp_aioutcome_tick(
 			}
 			platform_psp_log("aioutcome: game time %ld | actor %d of %s sq %d: at %.1f %.1f %.1f cluster %d, player %.1f | "
 				"mode %d action %d status %d target %d known %d active %d dormant %d | enc active %d stand_down %d post_combat %d follow %d fighting %d in_combat %d",
-				now, (int)iterator.absolute_index,
+				now, (int)DATUM_INDEX_TO_ABSOLUTE_INDEX(iterator.datum_index),
 				TAG_BLOCK_GET_ELEMENT(&global_scenario_get()->ai_encounters, encounter_absolute, struct encounter_definition)->name,
 				(int)actor->meta.squad_index,
 				(double)unit->object.bounding_sphere_center.x, (double)unit->object.bounding_sphere_center.y,
