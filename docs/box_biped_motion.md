@@ -93,6 +93,21 @@ The lab's `research/opportunities/REBUILD.md` is the spine (§3.3, §4, §7 step
           - Against it: the records' writes and reads, and step 5's branches split across two passes.
         - **Build:** keep word `bipedstage3` (with `bipedstage bipedstage2`), off by default, under `PSP_BIPEDSTAGE`. `PSP_BIPEDSTAGE_NOINLINE=1` (recon only, never the priced build) marks `psp_bipedstage_*` and `psp_bipedstage2_*` noinline, so the pass's own cost shows under its own names in the PSP's sampler.
         - **Read first in the cache model:** the three figures over the whole tick, b30_leg2 and c20_leg2, `- | bipedstage bipedstage2 | bipedstage bipedstage2 bipedstage3`.
+        - **Built** (2026-11-18 07:1x, builder/bipedstage 00e63039). The gather's packing is shared (`psp_bs2_pack`) between the gather at the tick's start and the exact call. The exact sphere adds 1e-4 wu for rounding only.
+        - **b30, the cache model** [E, exact counts: the lab's stage3x 44308153524, findings `stage3x_whole_tick`; the staged build's own profile, cachetop 3000]. I-misses / D-misses / cycles a tick:
+
+          | b30_leg2, a tick | off | slice 2 | bipedstage3 |
+          |---|---|---|---|
+          | the whole tick | 31,268 / 23,751 / 5.25 M | 32,757 / 25,968 / 5.78 M | 29,223 / 23,686 / **5.21 M** |
+          | the bipeds' set | 7,560 / 5,492 / 1,085 K | 6,432 / 2,688 / 727 K | 5,272 / 2,710 / 652 K |
+
+          - **The whole tick:** -0.8% against off and -9.9% against slice 2. On this profile slice 2 costs the whole tick +10%; stage3b's +1% was on campaign-rc2.
+          - **The record lines** at 3,000 ticks: every one of 42,644 intents stopped at its move, and as many solves resumed. None reached the tail and none fell over the pool.
+          - **The gather:** every gathered list was taken. Of the moves gathered again, 0 were outside the sphere (slice 2: 852) and 889 had no slot [U: bipeds outside the staged set].
+        - **Identity** [E: the lab's stage3xid 44313616655, findings `stage3xid_identity`]: bipedstage3 against slice 2 on b30_leg2 held, seeds 1 and 2, statecrc, strict clean.
+          - Play and both random seeds are the same at all 600 ticks on both seeds, so moving each intent ahead of the earlier bipeds' solves didn't part play on this stretch.
+          - The whole-state hash differs from tick 61, in the objects allocation only, outside what play reads [U: the object-mark counter, which moves with the number of collision passes (B91's fxpart2)].
+        - **c20:** stage3y 44308192908 is running.
     - **The view:** the gather reads the other bipeds' spheres as they stood at the tick's start (the frozen copy, above); the old game lets a biped see the ones updated before it this tick. Proven as plays the same (the outcome census).
   - **Aiming splits from the unit's control on b30** (125 + 117 + the unit's 70 query lines would be 312); on c20 aiming runs for few units (5.4 calls a tick against 37 updates) and the two fit as one.
   - **Two copies of the sphere walk are live:** the port's dedup walk (`psp_bsp2d/3d_test_sphere`, 54-64 lines) on b30's big walks, the engine's (`bsp2d/3d_test_sphere_recursive`, 45 lines) on c20's small ones, picked by a running average of leaves (`psp_sphere_walk`, `PSP_SURFACE_DEDUP_LEAVES16`) [D]. The box carries one walk.
