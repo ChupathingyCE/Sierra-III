@@ -34,4 +34,13 @@ Each full relink of a living object's attached light also computes the light's c
 
 ## Evidence
 
-Earlier version (0f3b381, w140): see the lab's levers.tsv DAL row and measurements.tsv `dalproof*`. This version's proofs are below.
+Earlier version (0f3b381, w140): see the lab's levers.tsv DAL row and measurements.tsv `dalproof*`. It was set aside on 81 systematic a10 frames out of 4,490.
+
+This version, in the emulator [E] (the lab's dalrev1-3: sierra-batch 44374405352, 44374455188, 44380314792; one `PSP_DAL=1` build, sides `-` and `dal`):
+- **Play and both seeds identical** every tick on a10 hands off (9,000 of 9,000, six runs, `arrayfullgo`: without it a10 stops at game time 3,965 on B93's full array, both sides alike), a30_leg1 and c10_play1 (9,000), and b30_leg2 seeds 1 and 2 under padhold (3,600, strict).
+- **Strict:** 0 distinct sites on both sides.
+- **a10 pictures** (framecrc, dalproof3's method at three repeats, 4,485 frames): dal against off differs in 13-24 frames a pair; off against off differs in 15-17, dal against dal in 20-24. One frame is systematic (game time 1,284), and it sits in a window where off differs from itself run to run. That's inside the noise; dalproof5 had 81.
+- **dalcheck:** of the lights DAL left off, tested again before each frame, 0 were lit: 0 of 281,892 on a10, 310,309 on a30 and 320,049 on c10. No light is missing from a frame.
+- **Dark relinks** (counted on a frame's last tick, FIXES_LD1): a10 34%, a30 57%, c10 59%, b30 54%.
+
+The time is the PSP's to price: a padhold b30_leg2 pair, seeds 1-2, with the PC sampler (the lab's psp_queue `dal-b30pad`).
