@@ -55821,16 +55821,9 @@ static int psp_bs3_on = -1;
 			unit_update(psp_bipedstage_index[k]);
 	}
 """,
- """	psp_bipedstage_phase = 1;
-	for (k = 0; k < psp_bipedstage_count; k++)
-	{
-		if (psp_bipedstage_live(k, &header) && !TEST_FLAG(header->datum->object.damage_flags, _object_dead_bit))
-			unit_update(psp_bipedstage_index[k]);
-	}
-	/* the world store's biped section, step 1a (psp/src/box_world_store.c):
-	under wsbipedcheck each living biped's record filled here and compared
-	with its datum after the solves, so the fields the biped passes write
-	are counted against the store's owner map */
+ """	/* wsbipedcross (1c's check across ticks): before the unit pass, last
+	tick's record of each biped (refilled after its solves) against its
+	datum: what was written to it outside the staged passes */
 	if (psp_ws_check < 0)
 	{
 		psp_ws_cross = psp_keep("wsbipedcross");
@@ -55841,6 +55834,16 @@ static int psp_bs3_on = -1;
 		if (psp_bipedstage_live(k, &header) && !TEST_FLAG(header->datum->object.damage_flags, _object_dead_bit))
 			box_ws_biped_cross(psp_bipedstage_index[k], header->datum);
 	}
+	psp_bipedstage_phase = 1;
+	for (k = 0; k < psp_bipedstage_count; k++)
+	{
+		if (psp_bipedstage_live(k, &header) && !TEST_FLAG(header->datum->object.damage_flags, _object_dead_bit))
+			unit_update(psp_bipedstage_index[k]);
+	}
+	/* the world store's biped section, step 1a (psp/src/box_world_store.c):
+	under wsbipedcheck each living biped's record filled here and compared
+	with its datum after the solves, so the fields the biped passes write
+	are counted against the store's owner map */
 	for (k = 0; k < psp_bipedstage_count; k++)
 	{
 		psp_ws_filled[k] = 0;
@@ -55860,9 +55863,13 @@ static int psp_bs3_on = -1;
 		for (k = 0; k < psp_bipedstage_count && k < psp_ws_check; k++)
 		{
 			if (psp_ws_filled[k] && psp_bipedstage_live(k, &header))
+			{
 				box_ws_biped_compare(k, header->datum,
 					TEST_FLAG(header->datum->object.damage_flags, _object_dead_bit) ? 1 :
 					header->datum->object.parent_object_index != psp_ws_parent[k] ? 2 : 0);
+				if (psp_ws_cross)
+					box_ws_biped_fill(k, header->datum, psp_bipedstage_index[k]);
+			}
 		}
 		box_ws_biped_tick();
 	}
