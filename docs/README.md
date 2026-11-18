@@ -60,6 +60,7 @@ Every write-up about the port is in this folder: design notes, measurements, pla
 - [`hardware_surveys.md`](hardware_surveys.md): The tick, system by system: what eight surveys found (directions 1 and 2)
 - [`hardware_utilization.md`](hardware_utilization.md): Hardware utilization: does the port use the PSP well?
 - [`hotg.md`](hotg.md): HOTG: the program's hot variables packed by heat
+- [`sound_game_time.md`](sound_game_time.md): Sound game time: game logic that waits on sound playback (B98 b, B91; design)
 - [`hw_capabilities.md`](hw_capabilities.md): The PSP-1000's hardware: what we use, what we don't, and what to chase
 - [`levers_next_b138.md`](levers_next_b138.md): The next levers, ranked by payout (2026-10-17, after b137)
 - [`mehotg.md`](mehotg.md): MEHOTG: the ME's hottest variables packed by heat
