@@ -44,3 +44,34 @@ This version, in the emulator [E] (the lab's dalrev1-3: sierra-batch 44374405352
 - **Dark relinks** (counted on a frame's last tick, FIXES_LD1): a10 34%, a30 57%, c10 59%, b30 54%.
 
 The time is the PSP's to price: a padhold b30_leg2 pair, seeds 1-2, with the PC sampler (the lab's psp_queue `dal-b30pad`).
+
+## The cheap dark test (e8284cb8)
+
+**Why.** The first PSP pair (the lab's findings `dal_psp_b30`, read with the sampler) found the test eating the saving. In b30's tick DAL saved ~300 samples a run: `object_connect_lights_with`, `light_compute_bounding_sphere` and `find_point_lights_for_object_in_cluster`. The test cost ~390: `psp_light_dark` +270-296, FVP's `psp_fvp_settle` +76 and `psp_fvp_make` +18-40. The test runs on every relink, but only ~54% of b30's relinks are dark, so one test cost about 70% of a whole relink.
+
+**What changed.** The relink calls `psp_light_dark_fast(light, object_index, object)`:
+- It takes the light's object from the relink instead of looking it up again.
+- It reads the intensity (`outgoing_function_values[function_index]`, 1.0 for `NONE`) and the scale (the change colour, or white) directly, as `object_get_function_value` does for an index the object can have.
+- It keeps a memo per light: the definition and the exact bits of the intensity and scale it was last tested with, and the answer. While those hold, it doesn't look up the definition (a tag) or interpolate the colour (HSV for some lights).
+- It makes FVP's values early only when the object is waiting for the pass and the light reads one of them.
+- A child light, another object's light, or an index the engine reads as off takes `psp_light_dark`, the full test.
+
+**Why it's exact.** Within a map, the answer is a pure function of the definition (a tag, which doesn't change), the intensity and the scale: the same calls on the same bits give the same colour. The memo is reset in `lights_initialize_for_new_map`, so another map's tags never meet it; a checkpoint reload needs nothing, since the key is the inputs, not the light. The memo costs ~21 KB of heap in `PSP_DAL=1` builds.
+
+**Proof [E]** (the lab's dalfast1, sierra-batch 44413418298):
+- Play and both seeds identical on a10 (9,000, two runs a side), a30_leg1, c10_play1 and b30_leg2 seed 1 (strict).
+- Strict: 0 sites on every run. dalcheck: 0 lit.
+- `dalmemocheck`, which runs every memo hit the full way too: 0 answers differing.
+- The relink and dark totals equal 6ae5a5bf's, so every dark decision is the same.
+- Memo hits as a share of tests: b30 75.6%, a30 76.5%, a10 and c10 99%.
+- Values made early: b30 32% of tests, a10 21%, a30 21%, c10 12%.
+
+The counts on dalcount's runs (the lab's dalfast2, sierra-batch 44420116538), all exact as above:
+
+| Map | Tests (one a relink) | Dark | Memo hits | Values made early |
+|---|---|---|---|---|
+| b30 seed 2 | 101,434 | 53.8% | 73.6% | 33.4% |
+| c20 | 86,069 | 26.2% | 44.6% | 10.7% |
+| d20 | 18,718 | 41.9% | 39.3% | 32.9% |
+
+d20 stops at game time 1,121 on both sides (an effect array full), so its window is short. b30 stays the bench. The PSP prices it: the lab's psp_queue `dal-fast-b30pad`.
