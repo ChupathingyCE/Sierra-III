@@ -79,6 +79,11 @@ Sheepdog01: play biped motion out, as long as it doesn't conflict with a future 
       - A difference in **unit** is a write to biped motion's own section from outside its passes (damage, scripts, the vehicle path): each such writer has to write the store, or hand over through it, before the slot can stand alone.
       - A difference in **read** or **control** is expected (their writers are other boxes) and is counted, not fixed.
       - Counted by what happened to the biped since its last staged tick: stayed staged, came back from a vehicle, revived or respawned.
+    - **Read** [E: the lab's wscross2 44354386557, findings `wscross2_outside`; 7ae06356. wscross1 was invalid: its record was filled after the unit pass, so it counted the passes' own writes]:
+      - **unit** is written outside the staged passes on 0.18% / 0.02% / 0.16% of its run copies (b30 / c20 / b40): mostly the 48 B root run (+12: position, velocity, forward, up) and a few timers [U: teleports, scripts, damage pushes].
+      - **control** changes on 15-18%, written every tick by the AI and the players' input, its owner.
+      - **posing, walk and read** change rarely.
+      - So the persistent slot is viable, with a refill on change from a few named outside writers. Naming them is a watch on those runs.
     - **What it decides:** whether a field can fill on change (the store's page §2) or must fill every tick until its outside writer writes the store. Until it reads clean on b30, b40, d20 and a30, the slot is refilled every tick, as 1a does. As each moves, its datum walk goes and the fill or write-back of the fields it owned shrinks (the store's page §2: read-only fields fill on change, and a field whose every reader reads the store isn't written back).
 - **What it should buy** [U, to be counted in the cache model, then priced on the PSP]: the intent's and solve's D-misses on the datum (c20's +2,331 a tick against slice 2 is the lead) against the fill's and write-back's copies.
 
