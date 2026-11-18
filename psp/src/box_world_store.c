@@ -23,6 +23,7 @@ void platform_psp_log(const char *format, ...);
 /* the generated runs, then biped motion's additions (box_world_store_biped.h) */
 #define BOX_WS_BIPED_RUNS (BOX_WS_GEN_RUNS + BOX_WS_UNIT2_RUNS + BOX_WS_READ2_RUNS)
 #define BOX_WS_BIPED_SLOTS 64
+static int box_ws_move_map_init(void);
 
 static const char *const box_ws_owner_name[BOX_WS_OWNERS] = { "read", "unit", "posing", "walk", "control" };
 static const unsigned short box_ws_owner_size[BOX_WS_OWNERS] = {
@@ -58,6 +59,136 @@ static unsigned long box_ws_ticks;
 static long box_ws_slot_index[BOX_WS_BIPED_SLOTS];
 static unsigned long box_ws_slot_tick[BOX_WS_BIPED_SLOTS];
 static unsigned long box_ws_cross_records, box_ws_cross_compared[BOX_WS_BIPED_RUNS], box_ws_cross_changed[BOX_WS_BIPED_RUNS];
+
+/* Step 1b (docs/box_biped_motion.md section 1c): the intent reads and
+   writes one biped's record in place of its datum. The engine's code is
+   kept as it is; a build-time pass (psp_fixups.py, BIPEDMOVE) points each of
+   its datum accesses in the intent's functions at PSP_BMS, which asks
+   box_ws_move_at for the field's place: the record while a biped's intent
+   runs with keep word bipedmovestore, else the datum. The map gives every
+   datum byte's place in the record (-1 where the store doesn't hold it), so
+   any field the store holds is redirected with no table of names, and one it
+   doesn't hold stays on the datum. */
+void *box_ws_move_datum;  /* the datum whose record is live, else NULL */
+short box_ws_move_map[BOX_WS_DATUM_BYTES];
+unsigned char box_ws_move_record[BOX_WS_BIPED_BYTES] __attribute__((aligned(64)));
+/* intents run from the record; read, posing or walk runs that differed
+   from the datum at the end (bipedmovestorecheck: a write through the record
+   to a section that isn't written back, or a datum write the record missed) */
+static unsigned long box_ws_move_count, box_ws_move_check_changed[BOX_WS_BIPED_RUNS], box_ws_move_check_records;
+
+/* after the runs are known: each datum byte's place in the record; two runs
+   holding one datum byte would leave two copies, so the move refuses them */
+static int box_ws_move_map_init(void)
+{
+	unsigned i, j;
+
+	for (i = 0; i < BOX_WS_DATUM_BYTES; i++)
+		box_ws_move_map[i] = -1;
+	for (i = 0; i < BOX_WS_BIPED_RUNS; i++)
+	{
+		struct box_ws_run const *run = &box_ws_all_runs[i];
+
+		if (run->datum + run->bytes > BOX_WS_DATUM_BYTES)
+		{
+			platform_psp_log("box_ws: run at datum +%u (%u B) past the datum's %u bytes; the store is off",
+				run->datum, run->bytes, (unsigned)BOX_WS_DATUM_BYTES);
+			return 0;
+		}
+		for (j = 0; j < run->bytes; j++)
+		{
+			if (box_ws_move_map[run->datum + j] >= 0)
+			{
+				platform_psp_log("box_ws: datum +%u held by two runs; the store is off", run->datum + j);
+				return 0;
+			}
+			box_ws_move_map[run->datum + j] = (short)(box_ws_run_store[i] + j);
+		}
+	}
+	return 1;
+}
+
+/* the record filled from the datum and made live; 0 when the store's runs
+   didn't check out (the intent then runs on the datum, as before) */
+int box_ws_move_begin(void *datum)
+{
+	if (box_ws_biped_slots() == 0)
+		return 0;
+	box_ws_move_datum = datum;
+	box_ws_move_in();
+	box_ws_move_count++;
+	return 1;
+}
+
+/* the record's sections the intent writes, back to the datum: unit (with
+   biped motion's additions) and control, whose desired facing and throttle
+   the intent normalises (step 1a's census) */
+void box_ws_move_out(void)
+{
+	unsigned char *to = (unsigned char *)box_ws_move_datum;
+	unsigned i;
+
+	for (i = 0; i < BOX_WS_BIPED_RUNS; i++)
+	{
+		if (box_ws_run_owner[i] == 1 || box_ws_run_owner[i] == 4)
+			memcpy(to + box_ws_all_runs[i].datum, box_ws_move_record + box_ws_run_store[i], box_ws_all_runs[i].bytes);
+	}
+}
+
+/* the whole record from the datum: at the start, and after a helper that
+   writes the datum itself */
+void box_ws_move_in(void)
+{
+	unsigned char const *from = (unsigned char const *)box_ws_move_datum;
+	unsigned i;
+
+	for (i = 0; i < BOX_WS_BIPED_RUNS; i++)
+		memcpy(box_ws_move_record + box_ws_run_store[i], from + box_ws_all_runs[i].datum, box_ws_all_runs[i].bytes);
+}
+
+void box_ws_move_end(int check)
+{
+	unsigned char const *datum = (unsigned char const *)box_ws_move_datum;
+	unsigned i;
+
+	if (!datum)
+		return;
+	if (check)
+	{
+		unsigned long differ = 0;
+
+		box_ws_move_check_records++;
+		for (i = 0; i < BOX_WS_BIPED_RUNS; i++)
+		{
+			if (box_ws_run_owner[i] == 1 || box_ws_run_owner[i] == 4)
+				continue;
+			if (memcmp(box_ws_move_record + box_ws_run_store[i], datum + box_ws_all_runs[i].datum, box_ws_all_runs[i].bytes))
+			{
+				box_ws_move_check_changed[i]++;
+				differ++;
+			}
+		}
+		if (box_ws_move_check_records % 3000 == 0 || (differ && box_ws_move_check_records < 3000))
+		{
+			char line[400];
+			int n = 0;
+
+			line[0] = 0;
+			for (i = 0; i < BOX_WS_BIPED_RUNS && n < (int)sizeof(line) - 40; i++)
+			{
+				if (box_ws_move_check_changed[i])
+					n += snprintf(line + n, sizeof(line) - n, " %s+%u(%u B) %lu;", box_ws_owner_name[box_ws_run_owner[i]],
+						box_ws_all_runs[i].datum, box_ws_all_runs[i].bytes, box_ws_move_check_changed[i]);
+			}
+			platform_psp_log("bipedmovestorecheck: %lu intents: runs not written back that differ from the datum:%s",
+				box_ws_move_check_records, n ? line : " none");
+		}
+	}
+	box_ws_move_out();
+	box_ws_move_datum = NULL;
+	if (box_ws_move_count % 3000 == 0)
+		platform_psp_log("bipedmovestore: %lu intents run from the store", box_ws_move_count);
+}
 
 /* the header's runs are grouped by owner in the sections' order, each
    owner's store offsets starting again at 0 */
@@ -107,7 +238,7 @@ static int box_ws_init(void)
 		box_ws_run_store[BOX_WS_GEN_RUNS + BOX_WS_UNIT2_RUNS + i] =
 			BOX_WS_GEN_BYTES + sizeof(struct box_ws_biped_unit2) + box_ws_biped_read2_runs[i].store;
 	}
-	return 1;
+	return box_ws_move_map_init();
 }
 
 int box_ws_biped_slots(void)

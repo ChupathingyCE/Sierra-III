@@ -55830,6 +55830,40 @@ static int psp_bs3_on = -1;
 			if (psp_bslc_on < 0)
 """),
 ],
+"source/units/bipeds.c#bms": [
+# BIPEDMOVE (below): the record made live for one biped's intent and written
+# back where the intent ends, at its move's call, at biped_update_moving's
+# return, or (a safety) after biped_update: the anchors are bipedstage3's own
+# lines, so this key follows #bs3
+("""	psp_bs3_stat[0]++;
+	biped_update(biped_index);
+	psp_bs3_cur = NULL;
+""",
+ """	psp_bs3_stat[0]++;
+	psp_bms_start(biped_index); /* (FIXES_BIPEDSTAGE) BIPEDMOVE, step 1b */
+	biped_update(biped_index);
+	psp_bms_stop();
+	psp_bs3_cur = NULL;
+"""),
+("""	if (psp_bipedstage_phase == 3 && psp_bs3_cur && psp_bs3_cur->stop == 1)
+	{
+		psp_bs3_cur->physics = physics;
+""",
+ """	psp_bms_stop(); /* (FIXES_BIPEDSTAGE) BIPEDMOVE: the record back before the gather reads the datum */
+	if (psp_bipedstage_phase == 3 && psp_bs3_cur && psp_bs3_cur->stop == 1)
+	{
+		psp_bs3_cur->physics = physics;
+"""),
+("""		if (psp_bipedstage_phase == 3 && psp_bs3_cur && psp_bs3_cur->stop == 1)
+		{
+			psp_bs3_cur->animation = animation;
+""",
+ """		psp_bms_stop(); /* (FIXES_BIPEDSTAGE) BIPEDMOVE: an update that returned before its move goes on from the datum */
+		if (psp_bipedstage_phase == 3 && psp_bs3_cur && psp_bs3_cur->stop == 1)
+		{
+			psp_bs3_cur->animation = animation;
+"""),
+],
 "source/objects/objects.c#ws": [
 ("""	psp_bipedstage_phase = 1;
 	for (k = 0; k < psp_bipedstage_count; k++)
@@ -55910,6 +55944,123 @@ static long psp_ws_parent[PSP_BIPEDSTAGE_MAXIMUM];
 """),
 ],
 }
+# ---------- BIPEDMOVE: biped motion's step 1b (docs/box_biped_motion.md
+# section 1c, "Built"; Sheepdog01 2026-11-18 11:23, the lead 11:5x). The
+# intent's datum accesses read and write the world store's record of the
+# biped being run, under keep word bipedmovestore. The engine's text isn't
+# copied here: a pass over the fixed tree rewrites each `biped->FIELD` in
+# the intent's functions to `PSP_BMS(biped, FIELD)`, and box_ws_move_at
+# (psp/src/box_world_store_biped.h) answers each from the store's byte map:
+# the record while that biped's intent runs from the store, else the datum,
+# so with the keep word off every access lands where it did. The functions
+# are named, each with the count of accesses it rewrites, so a moved
+# upstream fails the build rather than leaving an access on the datum.
+BIPEDMOVE_FUNCTIONS = {
+    "biped_update": 48,
+    "biped_snap_facing": 1,
+    "biped_snap_facing_with": 35,
+    "biped_update_turning": 61,
+    "biped_update_moving": 111,
+    "biped_update_physics": 2,
+    "biped_get_physics_pill": 1,
+    "biped_get_physics_pill_with": 3,
+    "biped_verify_object_vectors": 12,
+    "biped_trait_gravity": 2,
+    "psp_unithoist_check": 1,
+}
+# helpers in other units that read or write the biped's datum themselves:
+# the record's written sections go back to the datum before, and the record
+# is filled again after (the animation's state and screens, Stubbs' sprint)
+BIPEDMOVE_SYNC = {"unit_abort_animation": "psp_bms_sync_abort", "stubbs_player_sprint": "psp_bms_sync_sprint"}
+BIPEDMOVE_PRELUDE = """#include "box_world_store_biped.h" /* psp_fixups.py (BIPEDMOVE) step 1b */
+/* (BIPEDMOVE) a datum field's place: the store's record during this biped's
+intent under bipedmovestore, else the datum (box_ws_move_at) */
+#define PSP_BMS(p, field) (*(__typeof__(&(p)->field))box_ws_move_at((void *)(p), \\
+	offsetof(__typeof__(*(p)), field), sizeof((p)->field)))
+static int psp_bms_on = -1, psp_bms_check = 0;
+static void psp_bms_start(long biped_index)
+{
+	int psp_keep(const char *name);
+
+	if (psp_bms_on < 0)
+	{
+		psp_bms_check = psp_keep("bipedmovestorecheck");
+		psp_bms_on = psp_bms_check || psp_keep("bipedmovestore");
+	}
+	if (psp_bms_on)
+		box_ws_move_begin(object_get_and_verify_type(biped_index, _object_mask_biped));
+}
+static void psp_bms_stop(void)
+{
+	if (box_ws_move_datum)
+		box_ws_move_end(psp_bms_check);
+}
+static void psp_bms_sync_abort(long unit_index)
+{
+	int live = box_ws_move_datum != NULL;
+
+	if (live)
+		box_ws_move_out();
+	unit_abort_animation(unit_index);
+	if (live)
+		box_ws_move_in();
+}
+static boolean psp_bms_sync_sprint(long biped_index, short *state_desired)
+{
+	int live = box_ws_move_datum != NULL;
+	boolean sprint;
+
+	if (live)
+		box_ws_move_out();
+	sprint = stubbs_player_sprint(biped_index, state_desired);
+	if (live)
+		box_ws_move_in();
+	return sprint;
+}
+"""
+BIPEDMOVE_ACCESS = re.compile(r"(?<![\w.>])biped->([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)")
+
+def _bipedmove_span(text, name):
+    """the body of the one definition of name: from its opening brace to the
+    first closing brace in the first column"""
+    found = []
+    for m in re.finditer(r"^[A-Za-z_][^\n;{]*\b%s\(" % re.escape(name), text, re.M):
+        brace, semi = text.find("\n{", m.end()), text.find(";", m.end())
+        if brace >= 0 and (semi < 0 or brace < semi):
+            end = text.find("\n}\n", brace)
+            found.append((brace, end + 3))
+    return found
+
+def biped_move_store(tree):
+    if not BIPEDSTAGE:
+        return 0
+    path = os.path.join(tree, "source/units/bipeds.c")
+    text = open(path, errors="surrogateescape").read()
+    if "PSP_BMS(" in text:
+        return 0
+    counts = {}
+    for name, expected in BIPEDMOVE_FUNCTIONS.items():
+        spans = _bipedmove_span(text, name)
+        if len(spans) != 1:
+            return check_fail("psp_fixups: BIPEDMOVE: bipeds.c: %d definitions of %s" % (len(spans), name))
+        start, end = spans[0]
+        body, n = BIPEDMOVE_ACCESS.subn(r"PSP_BMS(biped, \1)", text[start:end])
+        for helper, wrapper in BIPEDMOVE_SYNC.items():
+            body, m = re.subn(r"\b%s\(" % helper, wrapper + "(", body)
+            counts[helper] = counts.get(helper, 0) + m
+        counts[name] = n
+        if expected is not None and n != expected:
+            check_fail("psp_fixups: BIPEDMOVE: %s: expected %d datum accesses, found %d" % (name, expected, n))
+        text = text[:start] + body + text[end:]
+    for helper in BIPEDMOVE_SYNC:
+        if counts[helper] != 1:
+            check_fail("psp_fixups: BIPEDMOVE: expected one call of %s in the intent, found %d" % (helper, counts[helper]))
+    at = after_last_include(text)
+    text = text[:at] + BIPEDMOVE_PRELUDE + text[at:]
+    open(path, "w", errors="surrogateescape").write(text)
+    print("psp_fixups: BIPEDMOVE: datum accesses by function: " + ", ".join("%s %d" % kv for kv in counts.items()))
+    return sum(counts[name] for name in BIPEDMOVE_FUNCTIONS)
+
 # PSP_BIPEDSTAGE_NOINLINE=1 (recon only, never a priced build): the staged
 # passes kept out of the compiler's inlining (and LTO's, which folds the run
 # into game_time_update), so the PSP's sampler names each one's own cost
@@ -57168,6 +57319,7 @@ print("psp_fixups: the settings' help text left out in %d rows (CONFIGHELP)" % c
 print("psp_fixups: the GL renderer compiled out in %d files" % gl_never(TREE))
 print("psp_fixups: the collision user stack %s in %d files (COLLUSERS)" % ("shared, as before," if COLLUSERS_SHARED else "one a CPU (debug tools) or none", collision_users(TREE)))
 print("psp_fixups: the AI's meters and ballistic record the main CPU's alone in %d files (AIMETERS)" % ai_meters(TREE))
+print("psp_fixups: biped motion's intent through the store, %d datum accesses (BIPEDMOVE)" % biped_move_store(TREE))
 
 if CHECK_ONLY:
     for message in count_failures:
