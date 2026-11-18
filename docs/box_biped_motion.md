@@ -64,7 +64,14 @@ Sheepdog01: play biped motion out, as long as it doesn't conflict with a future 
     - **What stays on the engine's path:** riders (a parent), the dead, and a biped whose update stops short of a move; they keep bipedstage3's tail record.
     - **The old side:** keep word `bipedmovestore` off is bipedstage3 as built, switched whole at the intent pass's entry.
     - **Proof:** exact against the engine's intent (statecrc on held b30_leg2, seeds 1-2, then the four maps), since it's the engine's arithmetic in the engine's order, read from another place. Then the cache model's three figures, then the PSP.
-- **1c, the solve and the unit pass from the store,** one at a time, each exact. As each moves, its datum walk goes and the fill or write-back of the fields it owned shrinks (the store's page §2: read-only fields fill on change, and a field whose every reader reads the store isn't written back).
+- **1c, the solve and the unit pass from the store,** one at a time, each exact.
+  - **The persistent slot and its check across ticks** (2026-11-18 10:5x; from wscheck3's read) [D, U]:
+    - **The slot:** given to a biped when it's first staged and kept while it lives and stays top-level, its datum index in **read**. It's freed when the biped dies (refilled whole if the slot is reused), is deleted, or becomes a child (boards a vehicle). A biped staged again after riding gets a fresh fill, never last tick's record.
+    - **The check** (keep word `wsbipedcross`, recon only): at each fill, before overwriting, the slot's record from last tick is compared with the datum, run by run, by owner.
+      - A difference in **unit** is a write to biped motion's own section from outside its passes (damage, scripts, the vehicle path): each such writer has to write the store, or hand over through it, before the slot can stand alone.
+      - A difference in **read** or **control** is expected (their writers are other boxes) and is counted, not fixed.
+      - Counted by what happened to the biped since its last staged tick: stayed staged, came back from a vehicle, revived or respawned.
+    - **What it decides:** whether a field can fill on change (the store's page §2) or must fill every tick until its outside writer writes the store. Until it reads clean on b30, b40, d20 and a30, the slot is refilled every tick, as 1a does. As each moves, its datum walk goes and the fill or write-back of the fields it owned shrinks (the store's page §2: read-only fields fill on change, and a field whose every reader reads the store isn't written back).
 - **What it should buy** [U, to be counted in the cache model, then priced on the PSP]: the intent's and solve's D-misses on the datum (c20's +2,331 a tick against slice 2 is the lead) against the fill's and write-back's copies.
 
 ## 2. Data
