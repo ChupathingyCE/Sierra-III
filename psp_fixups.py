@@ -55095,7 +55095,7 @@ int psp_b98_stderr_line(
 	while (line[length])
 		length++;
 	sceIoWrite(fd, line, length);
-	return sceIoWrite(fd, "\n", 1);
+	return sceIoWrite(fd, "\\n", 1);
 }
 
 int psp_b98_window(
