@@ -121,7 +121,20 @@ The lab's `research/opportunities/REBUILD.md` is the spine (§3.3, §4, §7 step
             - `biped_update` +17 K (the resume branches and the record copies);
             - the rest +82 K, spread thin.
           - **The pool:** 434 moves overflowed the 64 records (45 bipeds a tick on average).
-          - **Next, before the profile is counted:** trim the records. The physics record is read where it lies, with no copy in and out, and the pool is sized to c20's peak. Then rcount4 (a profile over all three sides), then the PSP pair, which decides.
+          - ~~**Next, before the profile is counted:** trim the records. The physics record is read where it lies, with no copy in and out, and the pool is sized to c20's peak.~~ **Superseded 2026-11-18 08:1x:** a record is ~260 bytes (about 12 KB a tick on c20), worth a few hundred misses, not 2,331. The likelier cause is the datums walked again, in the intent pass and in the solve [U], which comes with the split. The PSP decides, so the profile was counted on this form: rcount4, `pgo/campaign-bipedstage3` (the lab's pgo-merge 44322593707, 66 runs; Sierra-III 6491eb8e).
+        - **b30 on the PSP** [M, PSP-3000: the lab's sierra-hw 44326885038, findings `stage3d_psp_b30`; held, seeds 1 and 2, two runs a side; the profile over all three sides]:
+
+          | b30_leg2, ms | off | slice 2 | bipedstage3 |
+          |---|---|---|---|
+          | cinematic tick | 26.6 | 26.1 (-1.7%, real) | 26.1 (-1.7%, real) |
+          | **flight tick** | 30.8 | 30.5 (-0.9%, noise) | **29.9 (-3.1%, real)** |
+          | flight frame | 88.3 | 87.6 (-0.8%, real) | 86.1 (-2.5%, real) |
+
+          - **The landing** is in the noise: bipedstage3's two runs were 29.8 and 27.0 ms. **The beach** parts in play and isn't read.
+          - **The PSP's sampler, slice 2 -> bipedstage3** (tick samples over each side's two runs):
+            - **What the exact sphere was built to cut falls:** the sphere walks -1,464, the gather's calls -499, the pill -274.
+            - **The pass's bookkeeping rises +622:** `game_time_update` +436 (LTO's inlined staged run and its records), `biped_update_moving` +186. The noinline recon build names it next.
+          - **c20:** the master's next job.
     - **The view:** the gather reads the other bipeds' spheres as they stood at the tick's start (the frozen copy, above); the old game lets a biped see the ones updated before it this tick. Proven as plays the same (the outcome census).
   - **Aiming splits from the unit's control on b30** (125 + 117 + the unit's 70 query lines would be 312); on c20 aiming runs for few units (5.4 calls a tick against 37 updates) and the two fit as one.
   - **Two copies of the sphere walk are live:** the port's dedup walk (`psp_bsp2d/3d_test_sphere`, 54-64 lines) on b30's big walks, the engine's (`bsp2d/3d_test_sphere_recursive`, 45 lines) on c20's small ones, picked by a running average of leaves (`psp_sphere_walk`, `PSP_SURFACE_DEDUP_LEAVES16`) [D]. The box carries one walk.
