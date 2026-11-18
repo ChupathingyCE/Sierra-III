@@ -55001,17 +55001,20 @@ static void psp_bipedstage_run(void)
 
 	if (!psp_bipedstage_count)
 		return;
+	/* a dead biped goes whole through psp_object_update in the second pass:
+	the corpse sleep there decides whether it updates at all, and a unit
+	part run ahead of it would update a body that sleeps */
 	psp_bipedstage_phase = 1;
 	for (k = 0; k < psp_bipedstage_count; k++)
 	{
-		if (psp_bipedstage_live(k, &header))
+		if (psp_bipedstage_live(k, &header) && !TEST_FLAG(header->datum->object.damage_flags, _object_dead_bit))
 			unit_update(psp_bipedstage_index[k]);
 	}
-	psp_bipedstage_phase = 2;
 	for (k = 0; k < psp_bipedstage_count; k++)
 	{
 		if (psp_bipedstage_live(k, &header))
 		{
+			psp_bipedstage_phase = TEST_FLAG(header->datum->object.damage_flags, _object_dead_bit) ? 0 : 2;
 			psp_object_update(psp_bipedstage_index[k], psp_bipedstage_absolute[k], header);
 			psp_object_count(header->type);
 		}
