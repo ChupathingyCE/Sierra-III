@@ -55031,6 +55031,17 @@ static real psp_bs2_margin;
 /* gathered, taken, no slot, flags differ, sphere outside, arena full, empty, pill differs */
 static unsigned long psp_bs2_stat[8], psp_bs2_ticks;
 extern struct collision_feature_list *psp_stackhot_list[2];
+/* the move's packed list read where it lies (collision_features.c's
+collision_features_test_vector reads through it for that list only), not
+copied back into the shared one; keep word bipedstage2copy copies as before */
+struct psp_bs2_view
+{
+	void const *list;
+	struct collision_sphere const *spheres;
+	struct collision_cylinder const *cylinders;
+	struct collision_prism const *prisms;
+} psp_bs2_view;
+static int psp_bs2_copy = -1;
 
 int psp_bipedstage2_begin(void)
 {
@@ -55042,6 +55053,7 @@ int psp_bipedstage2_begin(void)
 		psp_bs2_on = psp_keep("bipedstage2");
 		/* in hundredths of a world unit; a tick's velocity change is far under it */
 		psp_bs2_margin = psp_keep_number("bipedstage2margin", 10) * 0.01f;
+		psp_bs2_copy = psp_keep("bipedstage2copy");
 	}
 	psp_bs2_slots = 0;
 	psp_bs2_fill = 0;
@@ -55160,6 +55172,16 @@ static int psp_bipedstage2_take(unsigned long flags, real_point3d const *center,
 	p = psp_bs2_arena + slot->offset;
 	for (k = 0; k < NUMBER_OF_COLLISION_FEATURE_TYPES; k++)
 		list->count[k] = slot->count[k];
+	if (psp_bs2_copy <= 0)
+	{
+		psp_bs2_view.spheres = (struct collision_sphere const *)p;
+		p += slot->count[_collision_feature_sphere] * sizeof(struct collision_sphere);
+		psp_bs2_view.cylinders = (struct collision_cylinder const *)p;
+		p += slot->count[_collision_feature_cylinder] * sizeof(struct collision_cylinder);
+		psp_bs2_view.prisms = (struct collision_prism const *)p;
+		psp_bs2_view.list = list;
+		return 1;
+	}
 	memcpy(list->spheres, p, slot->count[_collision_feature_sphere] * sizeof(struct collision_sphere));
 	p += slot->count[_collision_feature_sphere] * sizeof(struct collision_sphere);
 	memcpy(list->cylinders, p, slot->count[_collision_feature_cylinder] * sizeof(struct collision_cylinder));
@@ -55360,6 +55382,38 @@ static void psp_object_update(long object_index, short absolute_index, struct ob
  """	psp_bipedstage_run(); /* (FIXES_BIPEDSTAGE) */
 	psp_fvp_pass(); /* psp_fixups.py (FIXES_FISSION) */
 """),
+],
+"source/physics/collisions.c#view": [
+("""	match_assert("c:\\\\halo\\\\SOURCE\\\\physics\\\\collisions.c", 1230, global_current_collision_user_depth > 1);
+""",
+ """	psp_bs2_view.list = NULL; /* (FIXES_BIPEDSTAGE) the move's packed list is done with */
+	match_assert("c:\\\\halo\\\\SOURCE\\\\physics\\\\collisions.c", 1230, global_current_collision_user_depth > 1);
+"""),
+],
+"source/physics/collision_features.c": [
+("""	short feature_type;
+	short feature_index;
+
+	closest_feature_type = NONE;
+""",
+ """	short feature_type;
+	short feature_index;
+	/* (FIXES_BIPEDSTAGE) a staged move's packed list, read where it lies */
+	extern struct psp_bs2_view { void const *list; struct collision_sphere const *spheres;
+		struct collision_cylinder const *cylinders; struct collision_prism const *prisms; } psp_bs2_view;
+	int psp_view = psp_bs2_view.list == features;
+	struct collision_sphere const *psp_spheres = psp_view ? psp_bs2_view.spheres : features->spheres;
+	struct collision_cylinder const *psp_cylinders = psp_view ? psp_bs2_view.cylinders : features->cylinders;
+	struct collision_prism const *psp_prisms = psp_view ? psp_bs2_view.prisms : features->prisms;
+
+	closest_feature_type = NONE;
+"""),
+("""collision_sphere_test_vector(&features->spheres[feature_index], point""", """collision_sphere_test_vector(&psp_spheres[feature_index], point"""),
+("""collision_cylinder_test_vector(&features->cylinders[feature_index], point""", """collision_cylinder_test_vector(&psp_cylinders[feature_index], point"""),
+("""collision_prism_test_vector(&features->prisms[feature_index], point""", """collision_prism_test_vector(&psp_prisms[feature_index], point"""),
+("""			feature = (struct collision_feature const *)&features->spheres[closest_feature_index];""", """			feature = (struct collision_feature const *)&psp_spheres[closest_feature_index];"""),
+("""			feature = (struct collision_feature const *)&features->cylinders[closest_feature_index];""", """			feature = (struct collision_feature const *)&psp_cylinders[closest_feature_index];"""),
+("""			feature = (struct collision_feature const *)&features->prisms[closest_feature_index];""", """			feature = (struct collision_feature const *)&psp_prisms[closest_feature_index];"""),
 ],
 "source/objects/objects.c#linkcensus2": [
 ("""			psp_bipedstage_phase = TEST_FLAG(header->datum->object.damage_flags, _object_dead_bit) ? 0 : 2;
