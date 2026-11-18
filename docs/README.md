@@ -169,6 +169,8 @@ Every write-up about the port is in this folder: design notes, measurements, pla
 - [`renderer_debugging.md`](renderer_debugging.md): Renderer debugging notes (builds 52–90)
 - [`research_application.md`](research_application.md): Applying the research (2026-10-14)
 - [`stage_state_note.md`](stage_state_note.md): Stages need a world that holds still: the shared state that walls the tick's stages
+- [`build_switches.md`](build_switches.md): Building the port, and every build switch (moved from CLAUDE.md, 2026-11-18)
+- [`install.md`](install.md): The emulator, the lab's runners, hardware runs, installing on the stick and pulling logs (moved from CLAUDE.md, 2026-11-18)
 - [`testing_pipeline.md`](testing_pipeline.md): How the project tests: the shape of the pipeline
 - [`toolchain.md`](toolchain.md): Building Sierra-III from scratch
 - [`upstream_reports.md`](upstream_reports.md): Reports for ChupathingyCE
