@@ -158,7 +158,17 @@ Sheepdog01: play biped motion out, as long as it doesn't conflict with a future 
           - **The PSP's sampler, slice 2 -> bipedstage3** (tick samples over each side's two runs):
             - **What the exact sphere was built to cut falls:** the sphere walks -1,464, the gather's calls -499, the pill -274.
             - **The pass's bookkeeping rises +622:** `game_time_update` +436 (LTO's inlined staged run and its records), `biped_update_moving` +186. The noinline recon build names it next.
-          - **c20:** the master's next job.
+        - **c20 on the PSP** [M, PSP-1000: the lab's sierra-hw 44333621199, findings `stage3d_psp_c20`; held, seeds 1 and 2, two runs a side]:
+
+          | c20_leg2, ms | off | slice 2 | bipedstage3 |
+          |---|---|---|---|
+          | **first stretch tick** | 27.0 | 26.6 (-1.6%, noise) | **26.0 (-4.0%, real)** |
+          | first stretch frame | 76.2 | 75.2 (-1.4%, noise) | 73.9 (-3.1%, real) |
+
+          - **The play stretch** parts between runs and is all in the noise.
+          - **The PSP's sampler, slice 2 -> bipedstage3:** -3,554 tick samples in all. Down: the pill -573, the walks and gathers about -1,500, `biped_update_physics` -345. Up: the bookkeeping, +1,616 (`game_time_update` +1,178, `biped_update_moving` +438). Against off, `game_time_update` is +3,985 on c20's 45 bipeds a tick.
+          - **The cache model was wrong here:** its c20 read had bipedstage3 at +2.9% against slice 2. The PSP has it faster than both slice 2 and off.
+        - **Verdict (2026-11-18 10:0x): bipedstage3 is faster than slice 2 and than off on both maps on the PSP** (b30 flight tick -3.1%, c20 first stretch -4.0%). By the pair's decision line it stays. What follows is §1c's order: the store's section (step 1), then the bookkeeping (step 2), whose largest share is c20's `game_time_update`.
     - **The view:** the gather reads the other bipeds' spheres as they stood at the tick's start (the frozen copy, above); the old game lets a biped see the ones updated before it this tick. Proven as plays the same (the outcome census).
   - **Aiming splits from the unit's control on b30** (125 + 117 + the unit's 70 query lines would be 312); on c20 aiming runs for few units (5.4 calls a tick against 37 updates) and the two fit as one.
   - **Two copies of the sphere walk are live:** the port's dedup walk (`psp_bsp2d/3d_test_sphere`, 54-64 lines) on b30's big walks, the engine's (`bsp2d/3d_test_sphere_recursive`, 45 lines) on c20's small ones, picked by a running average of leaves (`psp_sphere_walk`, `PSP_SURFACE_DEDUP_LEAVES16`) [D]. The box carries one walk.
