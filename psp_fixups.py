@@ -54947,6 +54947,56 @@ FIXES_CAPTURE_SWEEP["source/physics/collision_models.c#capture"] = [
 # leaves it out
 BIPEDSTAGE = os.environ.get("PSP_BIPEDSTAGE", "") == "1"
 FIXES_BIPEDSTAGE = {
+"source/physics/collisions.c": [
+("""	{
+		result = collision_move_point(
+			position,
+			velocity,
+			&features,
+""",
+ """	{
+		/* (FIXES_BIPEDSTAGE) "gathercensus": slice 2's gather sized, the features
+		one move's gather finds by kind, so the box's per-biped list can be packed */
+		static int psp_gc_on = -1;
+		static unsigned long psp_gc_calls, psp_gc_sum[3], psp_gc_max[3], psp_gc_bytes_max, psp_gc_bytes_sum, psp_gc_over[4];
+		int psp_keep(const char *name);
+		int psp_keep_loaded(void);
+		void platform_psp_log(const char *format, ...);
+
+		if (psp_gc_on < 0 && psp_keep_loaded())
+			psp_gc_on = psp_keep("gathercensus");
+		if (psp_gc_on > 0)
+		{
+			unsigned long bytes = 0, k;
+			for (k = 0; k < 3; k++)
+			{
+				unsigned long n = (unsigned long)features.count[k];
+				psp_gc_sum[k] += n;
+				if (n > psp_gc_max[k])
+					psp_gc_max[k] = n;
+			}
+			bytes = features.count[_collision_feature_sphere] * sizeof(struct collision_sphere) +
+				features.count[_collision_feature_cylinder] * sizeof(struct collision_cylinder) +
+				features.count[_collision_feature_prism] * sizeof(struct collision_prism);
+			psp_gc_bytes_sum += bytes;
+			if (bytes > psp_gc_bytes_max)
+				psp_gc_bytes_max = bytes;
+			psp_gc_over[bytes > 4096 ? 3 : bytes > 2048 ? 2 : bytes > 1024 ? 1 : 0]++;
+			if (++psp_gc_calls % 2000 == 0)
+				platform_psp_log("gathercensus: %lu gathers; a gather's features: spheres %lu.%02lu (max %lu), cylinders %lu.%02lu (max %lu), prisms %lu.%02lu (max %lu); bytes a gather %lu (max %lu); <=1K %lu, <=2K %lu, <=4K %lu, >4K %lu",
+					psp_gc_calls,
+					psp_gc_sum[0] / psp_gc_calls, psp_gc_sum[0] * 100 / psp_gc_calls % 100, psp_gc_max[0],
+					psp_gc_sum[1] / psp_gc_calls, psp_gc_sum[1] * 100 / psp_gc_calls % 100, psp_gc_max[1],
+					psp_gc_sum[2] / psp_gc_calls, psp_gc_sum[2] * 100 / psp_gc_calls % 100, psp_gc_max[2],
+					psp_gc_bytes_sum / psp_gc_calls, psp_gc_bytes_max,
+					psp_gc_over[0], psp_gc_over[1], psp_gc_over[2], psp_gc_over[3]);
+		}
+		result = collision_move_point(
+			position,
+			velocity,
+			&features,
+"""),
+],
 "source/objects/object_types.c": [
 ("""		struct object_type_definition *current_definition = definition->part_definitions[i];
 		if (current_definition->datum_update && current_definition->datum_update(object_index))
