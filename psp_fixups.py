@@ -30223,11 +30223,70 @@ int psp_light_linked(long light_index)
 	return !TEST_FLAG(light->flags, _point_light_connects_to_map_bit) ||
 		TEST_FLAG(light->flags, _point_light_connected_to_map_bit);
 }
+
+/* "dalcheck" (with "dal"): before each frame's lights, every attached light
+DAL left off is tested again; one that would be drawn is a light missing
+from the frame (one a hidden object's disconnect left off is the old path's
+too, and is passed over). The proof that a light is linked the tick it
+lights, which pictures can't give where they differ run to run */
+void psp_dal_frame_check(void)
+{
+	int psp_keep(const char *name);
+	void platform_psp_log(const char *format, ...);
+	static int on = -1;
+	static unsigned long checked, missed;
+	static long logged = -1;
+	long light_index;
+
+	if (on < 0)
+		on = psp_keep("dal") && psp_keep("dalcheck");
+	if (!on)
+		return;
+	for (light_index = data_next_index(light_data, NONE);
+		light_index != NONE;
+		light_index = data_next_index(light_data, light_index))
+	{
+		struct light_datum *light = light_get(light_index);
+		struct object_datum *object;
+
+		if (light->parent_light_index != NONE || light->object_index == NONE ||
+			psp_light_linked(light_index))
+			continue;
+		object = object_try_and_get(light->object_index);
+		if (!object || (TEST_FLAG(object->object.flags, _object_invisible_bit) &&
+			object_definition_get(object->definition_index)->object.model.index != NONE))
+			continue;
+		checked++;
+		if (!psp_light_dark(light_index) && ++missed <= 32)
+			platform_psp_log("dalcheck: t=%ld light %08lx of object %08lx (type %d) left off but lit",
+				(long)game_time_get(), (unsigned long)light_index, (unsigned long)light->object_index,
+				(int)object->object.type);
+	}
+	if (game_time_get() / 900 != logged)
+	{
+		logged = game_time_get() / 900;
+		platform_psp_log("dalcheck: t=%ld, lights left off checked %lu, lit %lu",
+			(long)game_time_get(), checked, missed);
+	}
+}
 #endif
 
 void light_reconnect_to_map(
 	long light_index)
 {"""),
+]
+FIXES_DAL["source/objects/object_lights.c#dalcheck"] = [
+("""	lights_port_recover();
+	/* port: the Light effects' glows, where they are drawn this frame */""",
+"""	lights_port_recover();
+#ifdef HALO_PSP
+	{
+		void psp_dal_frame_check(void); /* psp_fixups.py (FIXES_DAL) */
+
+		psp_dal_frame_check();
+	}
+#endif
+	/* port: the Light effects' glows, where they are drawn this frame */"""),
 ]
 FIXES_DAL["source/objects/objects.c#dal"] = [
 ("""static void object_connect_lights(long object_index, boolean disconnect, boolean reconnect);

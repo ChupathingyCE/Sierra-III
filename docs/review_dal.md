@@ -15,6 +15,7 @@ The lights box's first on-need slice (`docs/box_lights.md` §9). Built in by `PS
 - `object_lights.c`, `psp_light_dark`: first calls `psp_fvp_settle(light->object_index)`, then the frame's own calls (`object_get_function_value`, `rgb_colors_interpolate_and_scale` on the object's `outgoing_change_colors`). Glow lights (`_point_light_port_glow_bit`), lights that don't connect to the map, and child lights are never called dark.
 - `objects.c`, `object_connect_lights_with`: DAL's block sits ahead of LSAME's `psp_light_relink`. A light DAL left off is never passed to `light_disconnect_from_map`, because it has nothing to take out. A disconnect-only or reconnect-only call (`object_set_visibility`) on such a light reconnects or does nothing.
 - `psp_dal_may_skip`: a dead biped's lights are all linked, as in 0f3b381.
+- `psp_dal_frame_check` (keep word `dalcheck`, with `dal`): before each frame's lights, every light DAL left off is tested again, and one that would be drawn is logged (`dalcheck:`). This is the direct proof that a light is linked on the tick it lights; pictures can't give it where they differ run to run. A hidden object's lights, which the old path leaves off too, are passed over.
 
 ## Why this is the same-tick form [D]
 
