@@ -12,22 +12,31 @@
 #include <stdio.h>
 #include <string.h>
 #include "box_world_store.h"
+#include "box_world_store_biped.h"
 
 void platform_psp_log(const char *format, ...);
 
 #define BOX_WS_OWNERS 5
-#define BOX_WS_BIPED_RUNS (sizeof(box_ws_biped_runs) / sizeof(box_ws_biped_runs[0]))
+#define BOX_WS_GEN_RUNS (sizeof(box_ws_biped_runs) / sizeof(box_ws_biped_runs[0]))
+#define BOX_WS_UNIT2_RUNS (sizeof(box_ws_biped_unit2_runs) / sizeof(box_ws_biped_unit2_runs[0]))
+#define BOX_WS_READ2_RUNS (sizeof(box_ws_biped_read2_runs) / sizeof(box_ws_biped_read2_runs[0]))
+/* the generated runs, then biped motion's additions (box_world_store_biped.h) */
+#define BOX_WS_BIPED_RUNS (BOX_WS_GEN_RUNS + BOX_WS_UNIT2_RUNS + BOX_WS_READ2_RUNS)
 #define BOX_WS_BIPED_SLOTS 64
 
 static const char *const box_ws_owner_name[BOX_WS_OWNERS] = { "read", "unit", "posing", "walk", "control" };
 static const unsigned short box_ws_owner_size[BOX_WS_OWNERS] = {
 	sizeof(struct box_ws_biped_read), sizeof(struct box_ws_biped_unit), sizeof(struct box_ws_biped_posing),
 	sizeof(struct box_ws_biped_walk), sizeof(struct box_ws_biped_control) };
-#define BOX_WS_BIPED_BYTES (sizeof(struct box_ws_biped_read) + sizeof(struct box_ws_biped_unit) + \
+#define BOX_WS_GEN_BYTES (sizeof(struct box_ws_biped_read) + sizeof(struct box_ws_biped_unit) + \
 	sizeof(struct box_ws_biped_posing) + sizeof(struct box_ws_biped_walk) + sizeof(struct box_ws_biped_control))
+#define BOX_WS_BIPED_BYTES (BOX_WS_GEN_BYTES + sizeof(struct box_ws_biped_unit2) + sizeof(struct box_ws_biped_read2))
 
 static unsigned short box_ws_owner_base[BOX_WS_OWNERS];
 static unsigned char box_ws_run_owner[BOX_WS_BIPED_RUNS];
+/* every run, generated and added, with its offset in the record */
+static struct box_ws_run box_ws_all_runs[BOX_WS_BIPED_RUNS];
+static unsigned short box_ws_run_store[BOX_WS_BIPED_RUNS];
 /* -1 not yet, 0 the runs don't match the sections (logged; the check stays off), 1 ready */
 static int box_ws_ready = -1;
 static unsigned char box_ws_biped[BOX_WS_BIPED_SLOTS][BOX_WS_BIPED_BYTES] __attribute__((aligned(64)));
@@ -58,7 +67,7 @@ static int box_ws_init(void)
 	int owner = 0;
 	unsigned short base = 0;
 
-	for (i = 0; i < BOX_WS_BIPED_RUNS; i++)
+	for (i = 0; i < BOX_WS_GEN_RUNS; i++)
 	{
 		struct box_ws_run const *run = &box_ws_biped_runs[i];
 
@@ -74,11 +83,29 @@ static int box_ws_init(void)
 			break;
 		box_ws_run_owner[i] = (unsigned char)owner;
 	}
-	if (i != BOX_WS_BIPED_RUNS || owner != BOX_WS_OWNERS - 1)
+	if (i != BOX_WS_GEN_RUNS || owner != BOX_WS_OWNERS - 1)
 	{
 		platform_psp_log("box_ws: the biped runs don't match the sections (run %u of %u, owner %d); the check is off",
-			i, (unsigned)BOX_WS_BIPED_RUNS, owner);
+			i, (unsigned)BOX_WS_GEN_RUNS, owner);
 		return 0;
+	}
+	for (i = 0; i < BOX_WS_GEN_RUNS; i++)
+	{
+		box_ws_all_runs[i] = box_ws_biped_runs[i];
+		box_ws_run_store[i] = box_ws_owner_base[box_ws_run_owner[i]] + box_ws_biped_runs[i].store;
+	}
+	for (i = 0; i < BOX_WS_UNIT2_RUNS; i++)
+	{
+		box_ws_all_runs[BOX_WS_GEN_RUNS + i] = box_ws_biped_unit2_runs[i];
+		box_ws_run_owner[BOX_WS_GEN_RUNS + i] = 1;  /* unit */
+		box_ws_run_store[BOX_WS_GEN_RUNS + i] = BOX_WS_GEN_BYTES + box_ws_biped_unit2_runs[i].store;
+	}
+	for (i = 0; i < BOX_WS_READ2_RUNS; i++)
+	{
+		box_ws_all_runs[BOX_WS_GEN_RUNS + BOX_WS_UNIT2_RUNS + i] = box_ws_biped_read2_runs[i];
+		box_ws_run_owner[BOX_WS_GEN_RUNS + BOX_WS_UNIT2_RUNS + i] = 0;  /* read */
+		box_ws_run_store[BOX_WS_GEN_RUNS + BOX_WS_UNIT2_RUNS + i] =
+			BOX_WS_GEN_BYTES + sizeof(struct box_ws_biped_unit2) + box_ws_biped_read2_runs[i].store;
 	}
 	return 1;
 }
@@ -100,9 +127,9 @@ void box_ws_biped_fill(int slot, void const *datum, long index)
 
 	for (i = 0; i < BOX_WS_BIPED_RUNS; i++)
 	{
-		struct box_ws_run const *run = &box_ws_biped_runs[i];
+		struct box_ws_run const *run = &box_ws_all_runs[i];
 
-		memcpy(record + box_ws_owner_base[box_ws_run_owner[i]] + run->store, from + run->datum, run->bytes);
+		memcpy(record + box_ws_run_store[i], from + run->datum, run->bytes);
 	}
 }
 
@@ -124,10 +151,10 @@ void box_ws_biped_cross(long index, void const *datum)
 	box_ws_cross_records++;
 	for (i = 0; i < BOX_WS_BIPED_RUNS; i++)
 	{
-		struct box_ws_run const *run = &box_ws_biped_runs[i];
+		struct box_ws_run const *run = &box_ws_all_runs[i];
 
 		box_ws_cross_compared[i]++;
-		if (memcmp(box_ws_biped[slot] + box_ws_owner_base[box_ws_run_owner[i]] + run->store, from + run->datum, run->bytes))
+		if (memcmp(box_ws_biped[slot] + box_ws_run_store[i], from + run->datum, run->bytes))
 			box_ws_cross_changed[i]++;
 	}
 }
@@ -144,8 +171,8 @@ void box_ws_biped_compare(int slot, void const *datum, int kind)
 	box_ws_class_records[kind]++;
 	for (i = 0; i < BOX_WS_BIPED_RUNS; i++)
 	{
-		struct box_ws_run const *run = &box_ws_biped_runs[i];
-		int differs = memcmp(record + box_ws_owner_base[box_ws_run_owner[i]] + run->store, from + run->datum, run->bytes) != 0;
+		struct box_ws_run const *run = &box_ws_all_runs[i];
+		int differs = memcmp(record + box_ws_run_store[i], from + run->datum, run->bytes) != 0;
 
 		if (kind == 0)
 		{
@@ -188,7 +215,7 @@ void box_ws_biped_tick(void)
 	{
 		if (box_ws_run_owner[i] != 1 && box_ws_changed[i])
 			n += snprintf(line + n, sizeof(line) - n, " %s+%u(%u B) %lu;", box_ws_owner_name[box_ws_run_owner[i]],
-				box_ws_biped_runs[i].datum, box_ws_biped_runs[i].bytes, box_ws_changed[i]);
+				box_ws_all_runs[i].datum, box_ws_all_runs[i].bytes, box_ws_changed[i]);
 	}
 	platform_psp_log("wsbipedcheck: steady, changed outside unit (datum offset, bytes, times):%s", n ? line : " none");
 	n = 0;
@@ -216,7 +243,7 @@ void box_ws_biped_tick(void)
 		for (i = 0; i < BOX_WS_BIPED_RUNS && n < (int)sizeof(line) - 40; i++)
 		{
 			if (box_ws_run_owner[i] == 1 && box_ws_cross_changed[i])
-				n += snprintf(line + n, sizeof(line) - n, " unit+%u(%u B) %lu;", box_ws_biped_runs[i].datum, box_ws_biped_runs[i].bytes, box_ws_cross_changed[i]);
+				n += snprintf(line + n, sizeof(line) - n, " unit+%u(%u B) %lu;", box_ws_all_runs[i].datum, box_ws_all_runs[i].bytes, box_ws_cross_changed[i]);
 		}
 		platform_psp_log("wsbipedcross: unit runs written outside the staged passes (datum offset, bytes, times):%s", n ? line : " none");
 	}
