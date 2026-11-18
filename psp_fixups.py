@@ -55060,6 +55060,44 @@ static long psp_b98_seen[MAXIMUM_ACTORS];
 static short psp_b98_ident[MAXIMUM_ACTORS];
 static char psp_b98_dead[MAXIMUM_ACTORS];
 
+/* b98watch: each B98 line goes to its own file as it's made, so a fault
+that kills the emulator keeps it (the log's batch was lost with it in
+b98trace1 and watch1); tools/emu.sh appends the file to the run's log */
+void psp_b98_log(
+	const char *format,
+	...)
+{
+	extern int vsnprintf(char *buffer, __SIZE_TYPE__ size, const char *format, __builtin_va_list arguments);
+	int psp_b98_stderr_line(const char *line);
+	char line[400];
+	__builtin_va_list arguments;
+
+	__builtin_va_start(arguments, format);
+	vsnprintf(line, sizeof(line), format, arguments);
+	__builtin_va_end(arguments);
+	psp_b98_stderr_line(line);
+}
+
+/* its own file, ms0:/halo/b98.txt, a system call a line (nothing held in
+memory for a fault to lose) */
+int psp_b98_stderr_line(
+	const char *line)
+{
+	extern int sceIoOpen(const char *path, int flags, int mode);
+	extern int sceIoWrite(int fd, const void *data, unsigned int size);
+	static int fd = -1;
+	unsigned int length = 0;
+
+	if (fd < 0)
+		fd = sceIoOpen("ms0:/halo/b98.txt", 0x0002 | 0x0200 | 0x0400, 0777); /* write, create, truncate */
+	if (fd < 0)
+		return -1;
+	while (line[length])
+		length++;
+	sceIoWrite(fd, line, length);
+	return sceIoWrite(fd, "\n", 1);
+}
+
 int psp_b98_window(
 	void)
 {
@@ -55104,7 +55142,7 @@ void psp_b98_scan(
 		if (c == psp_b98_seen[k] && (c == NONE || live || psp_b98_dead[k]))
 			continue;
 		if (log)
-			platform_psp_log("b98x t%ld %s %08lx a%d %08lx>%08lx L%d act%d cv%08lx",
+			psp_b98_log("b98x t%ld %s %08lx a%d %08lx>%08lx L%d act%d cv%08lx",
 				(long)game_time_get(), where, (unsigned long)who, (int)k, (unsigned long)psp_b98_seen[k],
 				(unsigned long)c, live, (int)actor->state.action,
 				(unsigned long)(actor->state.action == _actor_action_converse ?
@@ -55134,7 +55172,7 @@ static void actor_update_end(
 			if (psp_k >= 0 && psp_k < MAXIMUM_ACTORS &&
 				psp_aifar_time[psp_k] == psp_now + 1 && psp_aifar_identifier[psp_k] == actor->identifier)
 				psp_far = psp_aifar_answer[psp_k];
-			platform_psp_log("b98a t%ld a%d u%08lx c%08lx L%d act%d cv%08lx r%d ph%ld far%d enc%08lx",
+			psp_b98_log("b98a t%ld a%d u%08lx c%08lx L%d act%d cv%08lx r%d ph%ld far%d enc%08lx",
 				psp_now, (int)psp_k, (unsigned long)actor->meta.unit_index,
 				(unsigned long)actor->external_orders.conversation_index,
 				psp_b98_live(actor->external_orders.conversation_index), (int)actor->state.action,
@@ -55170,13 +55208,13 @@ FIXES_B98LOG["source/ai/actions.c#b98log"] = [
 #ifdef HALO_PSP
 	{
 		/* psp_fixups.py (FIXES_B98LOG): B98's read, logged and read as none */
-		void platform_psp_log(const char *format, ...);
+		extern void psp_b98_log(const char *format, ...);
 		static unsigned long psp_b98_dead_reads = 0;
 
 		if (conversation_index != NONE && !datum_try_and_get(conversation_data, conversation_index))
 		{
 			if (psp_b98_dead_reads++ < 40)
-				platform_psp_log("b98d t%ld a%d %08lx reads c%08lx, gone; act%d cv%08lx unit %08lx (%lu so far)",
+				psp_b98_log("b98d t%ld a%d %08lx reads c%08lx, gone; act%d cv%08lx unit %08lx (%lu so far)",
 					(long)game_time_get(), (int)DATUM_INDEX_TO_ABSOLUTE_INDEX(actor_index), (unsigned long)actor_index,
 					(unsigned long)conversation_index, (int)actor->state.action,
 					(unsigned long)(actor->state.action == _actor_action_converse ?
@@ -55195,10 +55233,10 @@ FIXES_B98LOG["source/ai/ai_communication.c#b98log"] = [
 		{
 			/* psp_fixups.py (FIXES_B98LOG) */
 			extern int psp_b98_window(void);
-			void platform_psp_log(const char *format, ...);
+			extern void psp_b98_log(const char *format, ...);
 
 			if (psp_b98_window())
-				platform_psp_log("b98c t%ld new %08lx s%d scripted%d",
+				psp_b98_log("b98c t%ld new %08lx s%d scripted%d",
 					(long)game_time_get(), (unsigned long)conversation_index,
 					(int)scenario_conversation_index, (int)scripted);
 		}
@@ -55208,10 +55246,10 @@ FIXES_B98LOG["source/ai/ai_communication.c#b98log"] = [
 		{
 			/* psp_fixups.py (FIXES_B98LOG) */
 			extern int psp_b98_window(void);
-			void platform_psp_log(const char *format, ...);
+			extern void psp_b98_log(const char *format, ...);
 
 			if (psp_b98_window())
-				platform_psp_log("b98c t%ld add %08lx p%d a%08lx beg%d",
+				psp_b98_log("b98c t%ld add %08lx p%d a%08lx beg%d",
 					(long)game_time_get(), (unsigned long)conversation_index, (int)participant_index,
 					(unsigned long)selected_actor_index, (int)conversation->begun);
 		}
@@ -55220,10 +55258,10 @@ FIXES_B98LOG["source/ai/ai_communication.c#b98log"] = [
 """, """	{
 		/* psp_fixups.py (FIXES_B98LOG) */
 		extern int psp_b98_window(void);
-		void platform_psp_log(const char *format, ...);
+		extern void psp_b98_log(const char *format, ...);
 
 		if (psp_b98_window() && conversation->participant_bitmask)
-			platform_psp_log("b98c t%ld reset %08lx bm%08lx %08lx %08lx beg%d",
+			psp_b98_log("b98c t%ld reset %08lx bm%08lx %08lx %08lx beg%d",
 				(long)game_time_get(), (unsigned long)conversation_index,
 				(unsigned long)conversation->participant_bitmask,
 				(unsigned long)conversation->actor_indices[0], (unsigned long)conversation->actor_indices[1],
@@ -55235,10 +55273,10 @@ FIXES_B98LOG["source/ai/ai_communication.c#b98log"] = [
 """, """				{
 					/* psp_fixups.py (FIXES_B98LOG) */
 					extern int psp_b98_window(void);
-					void platform_psp_log(const char *format, ...);
+					extern void psp_b98_log(const char *format, ...);
 
 					if (psp_b98_window())
-						platform_psp_log("b98c t%ld del %08lx p%d a%08lx bm%08lx",
+						psp_b98_log("b98c t%ld del %08lx p%d a%08lx bm%08lx",
 							(long)game_time_get(), (unsigned long)iterator.datum_index, (int)participant_index,
 							(unsigned long)actor_index, (unsigned long)conversation->participant_bitmask);
 				}
@@ -55249,10 +55287,10 @@ FIXES_B98LOG["source/ai/ai_communication.c#b98log"] = [
 			/* psp_fixups.py (FIXES_B98LOG) */
 			extern int psp_b98_window(void);
 			extern long global_updating_actor_index;
-			void platform_psp_log(const char *format, ...);
+			extern void psp_b98_log(const char *format, ...);
 
 			if (psp_b98_window())
-				platform_psp_log("b98c t%ld fin %08lx s%d n%d bm%08lx %08lx %08lx %08lx %08lx beg%d un%d ok%d by%08lx",
+				psp_b98_log("b98c t%ld fin %08lx s%d n%d bm%08lx %08lx %08lx %08lx %08lx beg%d un%d ok%d by%08lx",
 					(long)game_time_get(), (unsigned long)conversation_index,
 					(int)conversation->scenario_conversation_index, (int)ai_conversation_participant_count(definition),
 					(unsigned long)conversation->participant_bitmask,
