@@ -47,7 +47,10 @@ Sheepdog01: play biped motion out, as long as it doesn't conflict with a future 
       - **walk:** one 20 B run at +208 [U: the map link]. The relink is made inline.
       - **control:** the desired facing and aiming vectors (+468), about 17,600 times on b30. The unit update normalises the controller's record.
     - So 1b's intent writes **unit** only and leaves those three to their hand-overs: posing's declared reads, the relink request, the control record normalised in the unit's own copy.
-    - **Next** (the lead's addition, 2026-11-18 10:0x): the bipeds that died, or whose parent changed (a vehicle entered or left), counted apart, since that's where a slot goes stale: wscheck2 on 3a0bb8aa.
+    - **Deaths and vehicles** (the lead's addition, 2026-11-18 10:0x) [E+D: the lab's wscheck2 44344541146 and wscheck3 44347056157, findings `wscheck2_transitions`, `wscheck3_vehicles`; 3a0bb8aa]:
+      - **A death** (b30 2, c20 97, b40 4 records) rewrites several times a steady tick's run copies, in unit and outside it. So a slot is refilled at a death, not patched.
+      - **No biped's parent changed** inside the passes, even over b40_leg1's warthog drive (15,000 staged ticks). That's structural [D]: the walk updates only objects with no parent (`objects_update`'s assert 416), so a rider is updated as its vehicle's child, outside the staged set. Boarding or leaving a vehicle crosses between the two paths.
+      - **So the stale case is across ticks:** a slot a biped keeps while it lives misses whatever is written to the biped outside the staged passes (riding, scripts, damage). Its test is a check across ticks, each record compared with its datum at its next fill. It's built with 1c's persistent slots.
   - **1b's design** (2026-11-18 10:1x) [D, the engine at the pin 2e5eac0 and the fixed-up tree; sizes U]:
     - **What it carries:** exactly what bipedstage3's intent pass runs today, for a living biped with no parent, up to the move's call:
       - `biped_update`'s pre-move steps: the state from the animation state, the throttle's dead zone, the air and slip tick counters, the crouch flag into the animation data, `biped_update_turning`;
