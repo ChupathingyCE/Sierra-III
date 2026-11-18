@@ -55060,40 +55060,15 @@ int psp_bipedstage2_begin(void)
 	return psp_bs2_on > 0;
 }
 
-void psp_bipedstage2_gather(long biped_index)
+/* the slot's list gathered and packed into the arena (the gather at the
+tick's start and bipedstage3's exact call share it) */
+static void psp_bs2_pack(struct psp_bs2_slot *slot, long biped_index)
 {
 	struct collision_feature_list *list = psp_stackhot_list[1];
-	struct psp_bs2_slot *slot;
-	real_point3d base;
-	real_vector3d const *velocity;
-	real height, width;
 	unsigned long bytes[NUMBER_OF_COLLISION_FEATURE_TYPES];
 	short k;
 
-	if (psp_bs2_slots >= PSP_BS2_SLOTS)
-		return;
-	slot = &psp_bs2_slot[psp_bs2_slots];
-	biped_get_physics_pill(biped_index, &base, &height, &width);
-	velocity = &object_get(biped_index)->object.translational_velocity;
-	slot->center.x = base.x + velocity->i * 0.5f;
-	slot->center.y = base.y + velocity->j * 0.5f;
-	slot->center.z = height * 0.5f + (base.z + velocity->k * 0.5f);
-	slot->radius = magnitude3d(velocity) * 0.5f + height * 0.5f + width + psp_bs2_margin;
-	{
-		/* the flags biped_update_moving gives a living biped's move */
-		struct biped_datum *biped = biped_get(biped_index);
-		struct biped_definition *definition = biped_definition_get(biped->definition_index);
-
-		if (TEST_FLAG(biped->biped.flags, _biped_no_collision_bit))
-			return;
-		slot->flags = TEST_FLAG(definition->biped.flags, _biped_passes_through_bipeds_bit) ?
-			_collision_test_for_bipeds_passthrough_living_flags : _collision_test_for_bipeds_living_flags;
-		if (biped->unit.player_index != NONE && !network_coop_player_collisions())
-			slot->flags |= FLAG(_collision_test_skip_player_bipeds_bit);
-	}
-	slot->height = height;
-	slot->width = width;
-	slot->empty = !collision_get_features_in_sphere(slot->flags, &slot->center, slot->radius, height, width, biped_index, list);
+	slot->empty = !collision_get_features_in_sphere(slot->flags, &slot->center, slot->radius, slot->height, slot->width, biped_index, list);
 	if (slot->empty)
 	{
 		slot->biped_index = biped_index;
@@ -55124,6 +55099,71 @@ void psp_bipedstage2_gather(long biped_index)
 	psp_bs2_fill = (psp_bs2_fill + 3) & ~3;
 	psp_bs2_slots++;
 	psp_bs2_stat[0]++;
+}
+
+void psp_bipedstage2_gather(long biped_index)
+{
+	struct psp_bs2_slot *slot;
+	real_point3d base;
+	real_vector3d const *velocity;
+	real height, width;
+
+	if (psp_bs2_slots >= PSP_BS2_SLOTS)
+		return;
+	slot = &psp_bs2_slot[psp_bs2_slots];
+	biped_get_physics_pill(biped_index, &base, &height, &width);
+	velocity = &object_get(biped_index)->object.translational_velocity;
+	slot->center.x = base.x + velocity->i * 0.5f;
+	slot->center.y = base.y + velocity->j * 0.5f;
+	slot->center.z = height * 0.5f + (base.z + velocity->k * 0.5f);
+	slot->radius = magnitude3d(velocity) * 0.5f + height * 0.5f + width + psp_bs2_margin;
+	{
+		/* the flags biped_update_moving gives a living biped's move */
+		struct biped_datum *biped = biped_get(biped_index);
+		struct biped_definition *definition = biped_definition_get(biped->definition_index);
+
+		if (TEST_FLAG(biped->biped.flags, _biped_no_collision_bit))
+			return;
+		slot->flags = TEST_FLAG(definition->biped.flags, _biped_passes_through_bipeds_bit) ?
+			_collision_test_for_bipeds_passthrough_living_flags : _collision_test_for_bipeds_living_flags;
+		if (biped->unit.player_index != NONE && !network_coop_player_collisions())
+			slot->flags |= FLAG(_collision_test_skip_player_bipeds_bit);
+	}
+	slot->height = height;
+	slot->width = width;
+	psp_bs2_pack(slot, biped_index);
+}
+
+/* bipedstage3: the move's own call, kept by its intent (bipeds.c), gathered as
+collision_move_pill would make its sphere, with no margin for the velocity's
+change (1e-4 wu covers rounding only). 1, handled (gathered, or no gather
+wanted: the update stopped short of a move, or the move has no collision);
+0, no record, gather as at the tick's start */
+int psp_bipedstage3_call(long biped_index, unsigned long *flags, real_point3d *position,
+	real_vector3d *velocity, real *height, real *width); /* bipeds.c (FIXES_BIPEDSTAGE) */
+int psp_bipedstage2_gather_exact(long biped_index)
+{
+	struct psp_bs2_slot *slot;
+	real_point3d position;
+	real_vector3d velocity;
+	unsigned long flags;
+	real height, width;
+	int stop = psp_bipedstage3_call(biped_index, &flags, &position, &velocity, &height, &width);
+
+	if (!stop)
+		return FALSE;
+	if (stop == 2 || !flags || psp_bs2_slots >= PSP_BS2_SLOTS)
+		return TRUE;
+	slot = &psp_bs2_slot[psp_bs2_slots];
+	slot->center.x = position.x + velocity.i * 0.5f;
+	slot->center.y = position.y + velocity.j * 0.5f;
+	slot->center.z = height * 0.5f + (position.z + velocity.k * 0.5f);
+	slot->radius = magnitude3d(&velocity) * 0.5f + height * 0.5f + width + 1e-4f;
+	slot->flags = flags;
+	slot->height = height;
+	slot->width = width;
+	psp_bs2_pack(slot, biped_index);
+	return TRUE;
 }
 
 /* the move's list from its slot, unpacked into the shared list it would have
@@ -55468,7 +55508,331 @@ static void psp_bslc_tally(struct location const *before, struct location const 
 }
 """),
 ],
+"source/objects/object_types.c#bs3": [
+("""		if (psp_bipedstage_phase == 2 && current_definition->datum_update == unit_update)
+""",
+ """		if ((psp_bipedstage_phase == 2 || psp_bipedstage_phase == 4) && current_definition->datum_update == unit_update) /* 4: bipedstage3's solve */
+"""),
+],
+"source/units/bipeds.c#bs3": [
+# the records, after struct biped_physics, before the second biped_update_physics
+("""static void biped_update_physics(
+	struct biped_physics *physics)
+{
+	real_vector2d facing = { 0.f, 0.f };
+""",
+ """/* (FIXES_BIPEDSTAGE) bipedstage3, the exact sphere (docs/box_biped_motion.md
+section 3b): a biped's update cut at its move's collision_move_pill. In the
+intent pass (objects.c's phase 3) the update runs to the call and keeps its
+locals here; the gather then makes the call's own sphere; in the solve pass
+(phase 4) the update starts again from them. A biped whose update stops short
+of a move (a rider, an early return) keeps its record at the update's tail */
+extern int psp_bipedstage_phase; /* objects.c */
+#define PSP_BS3_RECORDS 64
+struct psp_bs3_record
+{
+	long biped_index;
+	char stop; /* 1, at the move's call; 2, at the update's tail */
+	struct unit_animation_update_data animation;
+	struct biped_physics physics;
+	word in_flags;
+	unsigned long collision_flags;
+	real_point3d position;
+	real_vector3d velocity;
+	real_vector2d facing;
+};
+static struct psp_bs3_record psp_bs3_rec[PSP_BS3_RECORDS];
+static short psp_bs3_count = 0;
+static struct psp_bs3_record *psp_bs3_cur = NULL;
+static char psp_bs3_resume = 0;
+/* intents; stopped at the move; at the tail; over the pool; solves resumed */
+static unsigned long psp_bs3_stat[5], psp_bs3_ticks;
+
+void psp_bipedstage3_reset(void)
+{
+	void platform_psp_log(const char *format, ...);
+
+	psp_bs3_count = 0;
+	psp_bs3_cur = NULL;
+	psp_bs3_resume = 0;
+	if (++psp_bs3_ticks % 3000 == 0)
+		platform_psp_log("bipedstage3: %lu staged ticks: intents %lu, stopped at the move %lu, at the tail %lu, over the pool %lu; solves resumed %lu",
+			psp_bs3_ticks, psp_bs3_stat[0], psp_bs3_stat[1], psp_bs3_stat[2], psp_bs3_stat[3], psp_bs3_stat[4]);
 }
+
+boolean biped_update(long biped_index);
+void psp_bipedstage3_intent(long biped_index)
+{
+	struct psp_bs3_record *record;
+
+	if (psp_bs3_count >= PSP_BS3_RECORDS)
+	{
+		psp_bs3_stat[3]++;
+		return;
+	}
+	record = &psp_bs3_rec[psp_bs3_count];
+	record->biped_index = biped_index;
+	record->stop = 0;
+	psp_bs3_cur = record;
+	psp_bs3_stat[0]++;
+	biped_update(biped_index);
+	psp_bs3_cur = NULL;
+	if (record->stop)
+	{
+		psp_bs3_stat[record->stop]++;
+		psp_bs3_count++;
+	}
+}
+
+static struct psp_bs3_record *psp_bs3_find(long biped_index)
+{
+	short k;
+
+	for (k = 0; k < psp_bs3_count; k++)
+	{
+		if (psp_bs3_rec[k].biped_index == biped_index && psp_bs3_rec[k].stop)
+			return &psp_bs3_rec[k];
+	}
+	return NULL;
+}
+
+int psp_bipedstage3_kept(long biped_index)
+{
+	return psp_bs3_find(biped_index) != NULL;
+}
+
+/* the gather's view of a record: 1, its move's call; 2, no move; 0, none */
+int psp_bipedstage3_call(long biped_index, unsigned long *flags, real_point3d *position,
+	real_vector3d *velocity, real *height, real *width)
+{
+	struct psp_bs3_record *record = psp_bs3_find(biped_index);
+
+	if (!record)
+		return 0;
+	if (record->stop == 1)
+	{
+		*flags = record->collision_flags;
+		*position = record->position;
+		*velocity = record->velocity;
+		*height = record->physics.height;
+		*width = record->physics.width;
+	}
+	return record->stop;
+}
+
+static void biped_update_physics(
+	struct biped_physics *physics)
+{
+	real_vector2d facing = { 0.f, 0.f };
+"""),
+("""	in_flags = physics->in_flags;
+	physics->out_flags = 0;
+	if (TEST_FLAG(in_flags, _biped_physics_in_flying_bit))
+""",
+ """	if (psp_bs3_resume == 1 && psp_bs3_cur) /* (FIXES_BIPEDSTAGE) bipedstage3's solve */
+	{
+		psp_bs3_resume = 0;
+		in_flags = psp_bs3_cur->in_flags;
+		collision_flags = psp_bs3_cur->collision_flags;
+		position = psp_bs3_cur->position;
+		velocity = psp_bs3_cur->velocity;
+		facing = psp_bs3_cur->facing;
+		goto psp_bs3_resume_call;
+	}
+	in_flags = physics->in_flags;
+	physics->out_flags = 0;
+	if (TEST_FLAG(in_flags, _biped_physics_in_flying_bit))
+"""),
+("""	position = physics->position;
+	velocity = physics->new_velocity;
+	velocity.k += physics->crouch_velocity;
+	if (debug_biped_skip_collision)
+""",
+ """	position = physics->position;
+	velocity = physics->new_velocity;
+	velocity.k += physics->crouch_velocity;
+	if (psp_bipedstage_phase == 3 && psp_bs3_cur) /* (FIXES_BIPEDSTAGE) bipedstage3: the intent stops at the call */
+	{
+		psp_bs3_cur->in_flags = in_flags;
+		psp_bs3_cur->collision_flags = collision_flags;
+		psp_bs3_cur->position = position;
+		psp_bs3_cur->velocity = velocity;
+		psp_bs3_cur->facing = facing;
+		psp_bs3_cur->stop = 1;
+		return;
+	}
+psp_bs3_resume_call:
+	if (debug_biped_skip_collision)
+"""),
+("""	psp_unithoist_check(biped_index, held_biped, held_definition);
+#endif
+
+	if (TEST_FLAG(biped->object.flags, _object_at_rest_bit) &&
+		TEST_FLAG(biped->object.damage_flags, _object_dead_bit) &&
+""",
+ """	psp_unithoist_check(biped_index, held_biped, held_definition);
+#endif
+	if (psp_bs3_resume == 1 && psp_bs3_cur) /* (FIXES_BIPEDSTAGE) bipedstage3's solve: the record's physics */
+	{
+		definition = biped_definition_get(biped->definition_index);
+		physics = psp_bs3_cur->physics;
+		goto psp_bs3_resume_physics;
+	}
+
+	if (TEST_FLAG(biped->object.flags, _object_at_rest_bit) &&
+		TEST_FLAG(biped->object.damage_flags, _object_dead_bit) &&
+"""),
+("""	physics.in_flags = in_flags;
+
+	biped_update_physics(&physics);
+""",
+ """	physics.in_flags = in_flags;
+
+psp_bs3_resume_physics:
+	biped_update_physics(&physics);
+	if (psp_bipedstage_phase == 3 && psp_bs3_cur && psp_bs3_cur->stop == 1)
+	{
+		psp_bs3_cur->physics = physics;
+		return;
+	}
+"""),
+("""	biped_verify_object_vectors(biped_index, "pre-update");
+
+	animation.state_desired = _unit_state_idle;
+	animation.crouching = FALSE;
+""",
+ """	biped_verify_object_vectors(biped_index, "pre-update");
+
+	animation.state_desired = _unit_state_idle;
+	animation.crouching = FALSE;
+	if (psp_bipedstage_phase == 4 && (psp_bs3_cur = psp_bs3_find(biped_index)) != NULL) /* (FIXES_BIPEDSTAGE) bipedstage3's solve */
+	{
+		animation = psp_bs3_cur->animation;
+		psp_bs3_resume = psp_bs3_cur->stop;
+		psp_bs3_stat[4]++;
+		if (psp_bs3_resume == 1)
+			goto psp_bs3_resume_move;
+		goto psp_bs3_resume_tail;
+	}
+"""),
+("""		biped_update_moving(biped_index, &animation, psp_held_biped, psp_held_definition);
+		biped_verify_object_vectors(biped_index, "post-moving");
+""",
+ """psp_bs3_resume_move:
+		biped_update_moving(biped_index, &animation, psp_held_biped, psp_held_definition);
+		if (psp_bipedstage_phase == 3 && psp_bs3_cur && psp_bs3_cur->stop == 1)
+		{
+			psp_bs3_cur->animation = animation;
+			goto psp_bs3_out;
+		}
+		biped_verify_object_vectors(biped_index, "post-moving");
+"""),
+("""	if (unit_update_animation(biped_index, &animation)==1)
+		biped_jump(biped_index);
+""",
+ """	if (psp_bipedstage_phase == 3 && psp_bs3_cur) /* (FIXES_BIPEDSTAGE) bipedstage3: no move reached, stop at the tail */
+	{
+		psp_bs3_cur->animation = animation;
+		psp_bs3_cur->stop = 2;
+		goto psp_bs3_out;
+	}
+psp_bs3_resume_tail:
+	psp_bs3_resume = 0;
+	if (unit_update_animation(biped_index, &animation)==1)
+		biped_jump(biped_index);
+"""),
+("""	biped_verify_object_vectors(biped_index, "post-update");
+#ifdef HALO_PSP
+	psp_bspr_datum_at = psp_bspr_outer; /* psp_fixups.py (FIXES_BSPR) */
+""",
+ """	biped_verify_object_vectors(biped_index, "post-update");
+psp_bs3_out:
+	if (psp_bipedstage_phase == 4)
+		psp_bs3_cur = NULL;
+#ifdef HALO_PSP
+	psp_bspr_datum_at = psp_bspr_outer; /* psp_fixups.py (FIXES_BSPR) */
+"""),
+],
+"source/objects/objects.c#bs3": [
+("""void psp_bipedstage2_gather(long biped_index);
+void psp_bipedstage2_end(void);
+""",
+ """void psp_bipedstage2_gather(long biped_index);
+void psp_bipedstage2_end(void);
+int psp_bipedstage2_gather_exact(long biped_index); /* collisions.c (FIXES_BIPEDSTAGE) bipedstage3 */
+void psp_bipedstage3_reset(void); /* bipeds.c */
+void psp_bipedstage3_intent(long biped_index);
+int psp_bipedstage3_kept(long biped_index);
+static int psp_bs3_on = -1;
+"""),
+("""	/* slice 2: every living biped's move gathered as one pass, from the
+	world as it stands before any biped moves (collisions.c) */
+	if (psp_bipedstage2_begin())
+	{
+		for (k = 0; k < psp_bipedstage_count; k++)
+		{
+			if (psp_bipedstage_live(k, &header) && !TEST_FLAG(header->datum->object.damage_flags, _object_dead_bit))
+				psp_bipedstage2_gather(psp_bipedstage_index[k]);
+		}
+	}
+""",
+ """	/* bipedstage3: every living biped's update run to its move's call (its
+	intent), so the gather below makes each move's own sphere (bipeds.c) */
+	if (psp_bs3_on < 0)
+		psp_bs3_on = psp_keep("bipedstage3");
+	if (psp_bs3_on)
+	{
+		psp_bipedstage3_reset();
+		psp_bipedstage_phase = 3;
+		for (k = 0; k < psp_bipedstage_count; k++)
+		{
+			if (psp_bipedstage_live(k, &header) && !TEST_FLAG(header->datum->object.damage_flags, _object_dead_bit))
+				psp_bipedstage3_intent(psp_bipedstage_index[k]);
+		}
+	}
+	/* slice 2: every living biped's move gathered as one pass, from the
+	world as it stands before any biped moves (collisions.c) */
+	if (psp_bipedstage2_begin())
+	{
+		for (k = 0; k < psp_bipedstage_count; k++)
+		{
+			if (psp_bipedstage_live(k, &header) && !TEST_FLAG(header->datum->object.damage_flags, _object_dead_bit) &&
+				!(psp_bs3_on && psp_bipedstage2_gather_exact(psp_bipedstage_index[k])))
+				psp_bipedstage2_gather(psp_bipedstage_index[k]);
+		}
+	}
+"""),
+# a biped with an intent kept resumes it, dead or not (a solve before it may have killed it)
+("""			psp_bipedstage_phase = TEST_FLAG(header->datum->object.damage_flags, _object_dead_bit) ? 0 : 2;
+			if (psp_bslc_on < 0)
+""",
+ """			psp_bipedstage_phase = psp_bs3_on ? 4 : TEST_FLAG(header->datum->object.damage_flags, _object_dead_bit) ? 0 : 2;
+			if (psp_bipedstage_phase == 4 && TEST_FLAG(header->datum->object.damage_flags, _object_dead_bit) &&
+				!psp_bipedstage3_kept(psp_bipedstage_index[k]))
+				psp_bipedstage_phase = 0;
+			if (psp_bslc_on < 0)
+"""),
+],
+}
+# PSP_BIPEDSTAGE_NOINLINE=1 (recon only, never a priced build): the staged
+# passes kept out of the compiler's inlining (and LTO's, which folds the run
+# into game_time_update), so the PSP's sampler names each one's own cost
+if BIPEDSTAGE and os.environ.get("PSP_BIPEDSTAGE_NOINLINE", "") == "1":
+    _bs_noinline = [
+        ("static void psp_bipedstage_run(void)\n{", "static __attribute__((noinline)) void psp_bipedstage_run(void)\n{"),
+        ("void psp_bipedstage2_gather(long biped_index)\n{", "__attribute__((noinline)) void psp_bipedstage2_gather(long biped_index)\n{"),
+        ("int psp_bipedstage2_gather_exact(long biped_index)\n{", "__attribute__((noinline)) int psp_bipedstage2_gather_exact(long biped_index)\n{"),
+        ("static void psp_bs2_pack(struct psp_bs2_slot *slot, long biped_index)\n{", "static __attribute__((noinline)) void psp_bs2_pack(struct psp_bs2_slot *slot, long biped_index)\n{"),
+        ("static int psp_bipedstage2_take(unsigned long flags,", "static __attribute__((noinline)) int psp_bipedstage2_take(unsigned long flags,"),
+        ("void psp_bipedstage3_intent(long biped_index)\n{", "__attribute__((noinline)) void psp_bipedstage3_intent(long biped_index)\n{"),
+    ]
+    for _rel, _pairs in FIXES_BIPEDSTAGE.items():
+        _new = []
+        for _old, _text in _pairs:
+            for _a, _b in _bs_noinline:
+                _text = _text.replace(_a, _b)
+            _new.append((_old, _text))
+        FIXES_BIPEDSTAGE[_rel] = _new
 
 for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_SSPR.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + list(FIXES_CHUPA090RUNS.items()) + list(FIXES_HEAPTRIM.items()) + list(FIXES_B78.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items()) + list(FIXES_AIME2A.items()) + list(FIXES_REDOSEED.items()) + (list(FIXES_STACKHOT.items()) if STACKHOT else []) + (list(FIXES_STACKHOT2.items()) if STACKHOT2 else []) + list(FIXES_PWSL.items()) + list(FIXES_SPHSL.items()) + list(FIXES_RECONLIST.items()) + list(FIXES_TP1.items()) + list(FIXES_WXDEAD.items()) + list(FIXES_AIMEMOVE.items()) + list(FIXES_PROPCRASH.items()) + list(FIXES_APCPOOL.items()) + list(FIXES_PSPTLS.items()) + list(FIXES_SNDEDRAM.items()) + list(FIXES_LIGHTFIRST.items()) + list(FIXES_DRAWPART.items()) + (list(FIXES_RECONLATE.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + list(FIXES_P2PASS.items()) + (list(FIXES_P2CENSUS.items()) if P2CENSUS else []) + list(FIXES_OBSRAY.items()) + list(FIXES_SNDWAIT.items()) + list(FIXES_FLAMEDECAL.items()) + list(FIXES_HUHINT.items()) + list(FIXES_DBLSOFT.items()) + list(FIXES_VFPUTRIG.items()) + list(FIXES_TICKCACHE.items()) + list(FIXES_STRICTALIAS.items()) + list(FIXES_SNDPERMAP.items()) + list(FIXES_RLOOP.items()) + list(FIXES_L10.items()) + list(FIXES_RLSKIP.items()) + list(FIXES_ONEWALK.items()) + (list(FIXES_POSEK.items()) if POSEK else []) + (list(FIXES_SNDSTREAM.items()) if os.environ.get("PSP_SNDSTREAM", "") == "1" else []) + list(FIXES_MOUTHCLOCK.items()) + list(FIXES_LSAME.items()) + list(FIXES_CHUPA090.items()) + list(FIXES_V091A.items()) + list(FIXES_AIDEBUGREC.items()) + (list(FIXES_AITICKOLD.items()) if AITICKOLD else []) + (list(FIXES_PADPATH.items()) if os.environ.get("PSP_PADPATH", "") == "1" else []) + list(FIXES_FARLEVEL.items()) + list(FIXES_DECALRING.items()) + list(FIXES_ARRAYFULL.items()) + (list(FIXES_DEADXBOX.items()) if DEADXBOX else []) + (list(FIXES_CAPTURE_POSING.items()) if CAPTURE == "posing" else []) + (list(FIXES_BOXPOSING.items()) if BOXPOSING else []) + (list(FIXES_ASKCENSUS.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + (list(FIXES_CAPTURE_SWEEP.items()) if CAPTURE == "sweep" else []) + (list(FIXES_BIPEDSTAGE.items()) if BIPEDSTAGE else [])):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
