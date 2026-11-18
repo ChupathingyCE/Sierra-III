@@ -55813,6 +55813,64 @@ static int psp_bs3_on = -1;
 			if (psp_bslc_on < 0)
 """),
 ],
+"source/objects/objects.c#ws": [
+("""	psp_bipedstage_phase = 1;
+	for (k = 0; k < psp_bipedstage_count; k++)
+	{
+		if (psp_bipedstage_live(k, &header) && !TEST_FLAG(header->datum->object.damage_flags, _object_dead_bit))
+			unit_update(psp_bipedstage_index[k]);
+	}
+""",
+ """	psp_bipedstage_phase = 1;
+	for (k = 0; k < psp_bipedstage_count; k++)
+	{
+		if (psp_bipedstage_live(k, &header) && !TEST_FLAG(header->datum->object.damage_flags, _object_dead_bit))
+			unit_update(psp_bipedstage_index[k]);
+	}
+	/* the world store's biped section, step 1a (psp/src/box_world_store.c):
+	under wsbipedcheck each living biped's record filled here and compared
+	with its datum after the solves, so the fields the biped passes write
+	are counted against the store's owner map */
+	if (psp_ws_check < 0)
+		psp_ws_check = psp_keep("wsbipedcheck") ? box_ws_biped_slots() : 0;
+	for (k = 0; k < psp_bipedstage_count; k++)
+	{
+		psp_ws_filled[k] = 0;
+		if (k < psp_ws_check && psp_bipedstage_live(k, &header) && !TEST_FLAG(header->datum->object.damage_flags, _object_dead_bit))
+		{
+			box_ws_biped_fill(k, header->datum);
+			psp_ws_filled[k] = 1;
+		}
+	}
+"""),
+("""	psp_bipedstage2_end();
+	psp_bipedstage_phase = 0;
+""",
+ """	if (psp_ws_check > 0)
+	{
+		for (k = 0; k < psp_bipedstage_count && k < psp_ws_check; k++)
+		{
+			if (psp_ws_filled[k] && psp_bipedstage_live(k, &header))
+				box_ws_biped_compare(k, header->datum);
+		}
+		box_ws_biped_tick();
+	}
+	psp_bipedstage2_end();
+	psp_bipedstage_phase = 0;
+"""),
+("""int psp_bipedstage3_kept(long biped_index);
+static int psp_bs3_on = -1;
+""",
+ """int psp_bipedstage3_kept(long biped_index);
+static int psp_bs3_on = -1;
+int box_ws_biped_slots(void); /* psp/src/box_world_store.c (FIXES_BIPEDSTAGE) step 1a */
+void box_ws_biped_fill(int slot, void const *datum);
+void box_ws_biped_compare(int slot, void const *datum);
+void box_ws_biped_tick(void);
+static int psp_ws_check = -1;
+static unsigned char psp_ws_filled[PSP_BIPEDSTAGE_MAXIMUM];
+"""),
+],
 }
 # PSP_BIPEDSTAGE_NOINLINE=1 (recon only, never a priced build): the staged
 # passes kept out of the compiler's inlining (and LTO's, which folds the run

@@ -274,6 +274,11 @@ os.environ["PSP_BOXPOSING"] = "1" if BOXPOSING else "0"
 CAPTURE_DEFINES = CAPTURE_DEFINES + (["-DPSP_BOX_POSING=1"] if BOXPOSING else [])
 if BOXPOSING:
     PSP_FILES.extend(["box_posing", "psp_boxposing"])
+# PSP_BIPEDSTAGE=1 (the biped motion box's staged form, psp_fixups.py
+# FIXES_BIPEDSTAGE) builds in the world store's biped section, step 1a
+# (psp/src/box_world_store.c; docs/box_biped_motion.md section 1c)
+if os.environ.get("PSP_BIPEDSTAGE", "") == "1":
+    PSP_FILES.append("box_world_store")
 # PSP_SMALLDATA=8 (or 4): the units built with the game's flags put variables
 # of up to that many bytes in small data, read with one load from $gp instead
 # of lui and a load, so the code is shorter (lever RH5, after Halo 64's -G8).
