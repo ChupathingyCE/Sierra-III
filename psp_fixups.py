@@ -30224,6 +30224,101 @@ int psp_light_linked(long light_index)
 		TEST_FLAG(light->flags, _point_light_connected_to_map_bit);
 }
 
+/* the fast test, for a relink (object_connect_lights_with, which holds the
+light's object). The answer is a pure function of the light's definition,
+its intensity (the object's function value) and its scale (the change
+colour): the same calls on the same bits give the same colour, and a map's
+tags don't change. So each light keeps the bits it was last tested with and
+its answer, and while they hold, the definition (a tag lookup) and the
+colour (an interpolation, HSV in some) aren't read again. The object's
+values are made early (FVP's settle) only when they wait for the pass and
+the light reads one. A light this can't hold (a child light, another
+object's, an index the engine reads as off) takes psp_light_dark. The memo
+is reset with the map. "dalmemocheck" tests every hit the full way too and
+counts any that differ */
+struct psp_dal_memo
+{
+	long definition_index; /* NONE: empty */
+	unsigned long intensity, red, green, blue;
+	unsigned long dark;
+};
+static struct psp_dal_memo psp_dal_memo[MAXIMUM_LIGHTS_PER_MAP];
+unsigned long psp_dal_tests, psp_dal_hits, psp_dal_settles, psp_dal_full, psp_dal_memo_differ;
+static int psp_dal_memo_check = -1;
+
+void psp_dal_memo_reset(void)
+{
+	csmemset(psp_dal_memo, 0xFF, sizeof(psp_dal_memo));
+}
+
+int psp_light_dark_fast(long light_index, long object_index, struct object_datum *object)
+{
+	extern int psp_fvp_open;
+	extern unsigned long psp_fvp_pending[];
+	extern void psp_fvp_settle(long object_index);
+	int psp_keep(const char *name);
+	struct light_datum *light = light_get(light_index);
+	long absolute_index = DATUM_INDEX_TO_ABSOLUTE_INDEX(light_index);
+	long object_absolute = DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index);
+	short function_index = light->function_index;
+	short color_function_index = light->color_function_index;
+	struct psp_dal_memo *memo;
+	struct point_light_definition *definition;
+	real_rgb_color const *scale;
+	real_rgb_color color;
+	real intensity;
+	unsigned long bits[4];
+	int dark;
+
+	psp_dal_tests++;
+	if (light->parent_light_index != NONE || light->object_index != object_index ||
+		TEST_FLAG(light->flags, _point_light_port_glow_bit) ||
+		!TEST_FLAG(light->flags, _point_light_connects_to_map_bit) ||
+		(function_index != NONE && !VALID_INDEX(function_index, NUMBER_OF_OUTGOING_OBJECT_FUNCTIONS)) ||
+		absolute_index < 0 || absolute_index >= MAXIMUM_LIGHTS_PER_MAP)
+	{
+		psp_dal_full++;
+		return psp_light_dark(light_index);
+	}
+	/* a light that reads none of its object's values needs them made by
+	nobody */
+	if ((function_index != NONE || color_function_index != NONE) && psp_fvp_open &&
+		(unsigned long)object_absolute < MAXIMUM_OBJECTS_PER_MAP &&
+		((psp_fvp_pending[object_absolute >> 5] >> (object_absolute & 31)) & 1))
+	{
+		psp_fvp_settle(object_index);
+		psp_dal_settles++;
+	}
+	/* object_get_function_value's reads, for an index it can have */
+	intensity = function_index == NONE ? 1.f : object->object.outgoing_function_values[function_index];
+	scale = color_function_index == NONE ? global_real_rgb_white :
+		&object->object.outgoing_change_colors[color_function_index];
+	__builtin_memcpy(&bits[0], &intensity, 4);
+	__builtin_memcpy(&bits[1], scale, 12);
+	memo = &psp_dal_memo[absolute_index];
+	if (memo->definition_index == light->definition_index && memo->intensity == bits[0] &&
+		memo->red == bits[1] && memo->green == bits[2] && memo->blue == bits[3])
+	{
+		psp_dal_hits++;
+		if (psp_dal_memo_check < 0)
+			psp_dal_memo_check = psp_keep("dalmemocheck") != 0;
+		if (psp_dal_memo_check && (int)memo->dark != psp_light_dark(light_index))
+			psp_dal_memo_differ++;
+		return (int)memo->dark;
+	}
+	definition = light_definition_get(light->definition_index);
+	rgb_colors_interpolate_and_scale(&color, definition->color_interpolation_flags,
+		&definition->color_lower_bound, &definition->color_upper_bound, scale, intensity);
+	dark = color.red == 0.0f && color.green == 0.0f && color.blue == 0.0f;
+	memo->definition_index = light->definition_index;
+	memo->intensity = bits[0];
+	memo->red = bits[1];
+	memo->green = bits[2];
+	memo->blue = bits[3];
+	memo->dark = (unsigned long)dark;
+	return dark;
+}
+
 /* "dalcheck" (with "dal"): before each frame's lights, every attached light
 DAL left off is tested again; one that would be drawn is a light missing
 from the frame (one a hidden object's disconnect left off is the old path's
@@ -30288,6 +30383,18 @@ FIXES_DAL["source/objects/object_lights.c#dalcheck"] = [
 #endif
 	/* port: the Light effects' glows, where they are drawn this frame */"""),
 ]
+FIXES_DAL["source/objects/object_lights.c#dalmemo"] = [
+("""	plasma_lighting_forget(); /* port: no light of the Light effects crosses maps */
+""", """	plasma_lighting_forget(); /* port: no light of the Light effects crosses maps */
+#ifdef HALO_PSP
+	{
+		void psp_dal_memo_reset(void); /* psp_fixups.py (FIXES_DAL): another map's tags */
+
+		psp_dal_memo_reset();
+	}
+#endif
+"""),
+]
 FIXES_DAL["source/objects/objects.c#dal"] = [
 ("""static void object_connect_lights(long object_index, boolean disconnect, boolean reconnect);
 """, """static void object_connect_lights(long object_index, boolean disconnect, boolean reconnect);
@@ -30295,7 +30402,9 @@ FIXES_DAL["source/objects/objects.c#dal"] = [
 int psp_keep(const char *name);
 void platform_psp_log(const char *format, ...);
 int psp_light_dark(long light_index); /* object_lights.c */
+int psp_light_dark_fast(long light_index, long object_index, struct object_datum *object);
 int psp_light_linked(long light_index);
+extern unsigned long psp_dal_tests, psp_dal_hits, psp_dal_settles, psp_dal_full, psp_dal_memo_differ;
 static int psp_dal = -1;
 static unsigned long psp_dal_relinks, psp_dal_skipped;
 static long psp_dal_report;
@@ -30338,13 +30447,14 @@ static int psp_dal_may_skip(struct object_datum const *object)
 					if (game_time_get() >= psp_dal_report)
 					{
 						psp_dal_report = game_time_get() + 30 * TICKS_PER_SECOND;
-						platform_psp_log("dal: t=%ld, %lu attached-light relinks so far, %lu of them dark (left off the map)",
-							(long)game_time_get(), psp_dal_relinks, psp_dal_skipped);
+						platform_psp_log("dal: t=%ld, %lu attached-light relinks so far, %lu of them dark (left off the map); tests %lu: memo hits %lu, values made early %lu, the full test %lu, memo answers differing %lu (dalmemocheck)",
+							(long)game_time_get(), psp_dal_relinks, psp_dal_skipped, psp_dal_tests, psp_dal_hits,
+							psp_dal_settles, psp_dal_full, psp_dal_memo_differ);
 					}
 					if (disconnect && reconnect && psp_dal_may_skip(object))
 					{
 						psp_dal_relinks++;
-						if (psp_light_dark(psp_light))
+						if (psp_light_dark_fast(psp_light, object_index, object))
 						{
 							psp_dal_skipped++;
 							if (psp_linked)
