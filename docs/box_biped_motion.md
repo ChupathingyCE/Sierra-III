@@ -39,6 +39,15 @@ Sheepdog01: play biped motion out, as long as it doesn't conflict with a future 
 - **Memory:** 404 B times the live bipeds: 12.4 KB at b30's 30.6 live, 25.9 KB at 64. The store's page budgets the heap's room as the limit, so the slot count is set from the pools' peaks (`PSP_POOLS_XBOX=1`'s census), not 256.
 - **1a, the store kept live (the store's own proof stage, its §7):** under its own build switch, the section filled from the datums at the tick's start and written back before any engine reader, with a check build that compares the store's fields against the datum after each staged pass. Proof: play and both seeds identical every tick on b30, b40, d20 and a30. Nothing reads it yet. This is the world store's first box section, so it's built as the store's code (`psp/src/box_world_store.c`), not biped motion's.
 - **1b, the intent from the store:** the intent pass written as the port's code (`psp/src/box_biped_move.c`), reading **read**, **control** and **unit** and writing **unit**, in place of the engine's pre-move steps and `biped_update_physics`' intent half. The engine's path stays as the old side, switched whole (keep word `bipedmovestore`). Exact against it (statecrc), since the arithmetic is the engine's, read from another place.
+  - **1a's census** [E: the lab's wscheck1 44339980917, findings `wscheck1_owners`; ba01d088, keep word `wsbipedcheck`]: each staged biped's record filled after the unit pass and compared with its datum after the solves (run copies changed, b30 / c20).
+    - **unit**, biped motion's own section: 14.5% / 13.6%, as expected.
+    - **read:** almost never (76 of 767,718 on b30; rare fields only).
+    - **Three writers inside the biped passes**, each one the store's page names (§2's groups):
+      - **posing:** the bounding sphere (+80) on most records, and the animation frame indices. Posing is called from inside the move's steps.
+      - **walk:** one 20 B run at +208 [U: the map link]. The relink is made inline.
+      - **control:** the desired facing and aiming vectors (+468), about 17,600 times on b30. The unit update normalises the controller's record.
+    - So 1b's intent writes **unit** only and leaves those three to their hand-overs: posing's declared reads, the relink request, the control record normalised in the unit's own copy.
+    - **Next** (the lead's addition, 2026-11-18 10:0x): the bipeds that died, or whose parent changed (a vehicle entered or left), counted apart, since that's where a slot goes stale: wscheck2 on 3a0bb8aa.
   - **1b's design** (2026-11-18 10:1x) [D, the engine at the pin 2e5eac0 and the fixed-up tree; sizes U]:
     - **What it carries:** exactly what bipedstage3's intent pass runs today, for a living biped with no parent, up to the move's call:
       - `biped_update`'s pre-move steps: the state from the animation state, the throttle's dead zone, the air and slip tick counters, the crouch flag into the animation data, `biped_update_turning`;
