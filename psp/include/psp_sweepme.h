@@ -74,5 +74,7 @@ void psp_sweepme_checked(int same);
    matched by object and surface that moved, the farthest move in world
    units) */
 void psp_sweepme_whole_checked(int same, int unmatched, int moved, float farthest);
+/* a whole answer not taken: it names an object no longer live as that datum */
+void psp_sweepme_whole_gone(void);
 /* every record made and every job collected: the arena is free for the next tick */
 void psp_sweepme_end(void);

@@ -56957,6 +56957,37 @@ static int psp_sweepme_take(struct collision_bsp const *bsp, struct collision_bs
 	took = psp_sweepme_answer(index, bsp->bsp3d.planes.address, breakable_surface_flags_get(), &answer);
 	if (!took)
 		return 0;
+	/* a whole answer is of the world as the walk began: an object it names
+	may have been deleted since (or its slot taken by another), which the
+	live gather never names and the move's readers would follow into a dead
+	datum. Such an answer isn't taken: the engine gathers this move itself */
+	if (took == 2)
+	{
+		short kinds[3];
+		short kind, i;
+
+		kinds[0] = answer.count[0];
+		kinds[1] = answer.count[1];
+		kinds[2] = answer.count[2];
+		for (kind = 0; kind < 3; kind++)
+		{
+			unsigned char const *at = kind == 0 ? (unsigned char const *)answer.spheres :
+				kind == 1 ? (unsigned char const *)answer.cylinders : (unsigned char const *)answer.prisms;
+			unsigned size = kind == 0 ? sizeof(struct collision_sphere) :
+				kind == 1 ? sizeof(struct collision_cylinder) : sizeof(struct collision_prism);
+
+			for (i = 0; i < kinds[kind]; i++)
+			{
+				long object_index = ((struct collision_feature const *)(at + i * size))->object_index;
+
+				if (object_index != NONE && !object_header_try_and_get(object_index))
+				{
+					psp_sweepme_whole_gone();
+					return 0;
+				}
+			}
+		}
+	}
 	/* the checks hold the record's answer and play the engine's own */
 	if (took == 2 && psp_sweepme_whole_check)
 	{

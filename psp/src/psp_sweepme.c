@@ -89,7 +89,7 @@ int psp_sweepme_pending = -1;
 static unsigned long sweepme_ticks, sweepme_records_added, sweepme_full, sweepme_by_me, sweepme_taken,
 	sweepme_status[SWEEPME_STATES], sweepme_not_found, sweepme_level_changed, sweepme_breakable_changed,
 	sweepme_same, sweepme_differ;
-static unsigned long sweepme_whole_taken, sweepme_why[SWEEPME_WHYS];
+static unsigned long sweepme_whole_taken, sweepme_whole_gone, sweepme_why[SWEEPME_WHYS];
 /* sweepme2check: whole answers against the engine's gather */
 static unsigned long sweepme_whole_same, sweepme_whole_differ, sweepme_whole_moved_only, sweepme_whole_unmatched,
 	sweepme_whole_features_unmatched, sweepme_whole_features_moved, sweepme_whole_far[5];
@@ -208,8 +208,8 @@ static void psp_sweepme_report(void)
 			level_only += sweepme_why[k];
 			n += snprintf(line + n, sizeof(line) - (unsigned)n, "%s%s %lu", k > 1 ? ", " : "", why_name[k], sweepme_why[k]);
 		}
-		platform_psp_log("sweepme2: whole gathers taken %lu, the level's half alone %lu (the copy couldn't answer: %s)",
-			sweepme_whole_taken, level_only, line);
+		platform_psp_log("sweepme2: whole gathers taken %lu, the level's half alone %lu (the copy couldn't answer: %s); not taken, naming an object deleted since %lu",
+			sweepme_whole_taken - sweepme_whole_gone, level_only, line, sweepme_whole_gone);
 	}
 	if (psp_sweepme_check)
 		platform_psp_log("sweepmecheck: %lu answers taken were compared with the engine's own level half: %lu the same, %lu differ",
@@ -408,6 +408,11 @@ void psp_sweepme_checked(int same)
 		sweepme_same++;
 	else
 		sweepme_differ++;
+}
+
+void psp_sweepme_whole_gone(void)
+{
+	sweepme_whole_gone++;
 }
 
 void psp_sweepme_whole_checked(int same, int unmatched, int moved, float farthest)
