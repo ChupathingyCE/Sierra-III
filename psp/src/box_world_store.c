@@ -53,6 +53,19 @@ static int box_ws_move_claimed;
 /* -1 not yet, 0 the runs don't match the sections (logged; the check stays off), 1 ready */
 static int box_ws_ready = -1;
 static unsigned char box_ws_biped[BOX_WS_BIPED_SLOTS][BOX_WS_BIPED_BYTES] __attribute__((aligned(64)));
+/* The split of the window's cost (the lab's wssplit1; recon only): under
+   keep word bmsghost (with bipedmovestore) every fill, keep, resume, sync
+   and write-back runs as in the window, but the accessor is never pointed
+   at the record, so the window's own reads and writes stay on the datum.
+   Each copy of the record to the datum is refilled from the datum first, so
+   it writes back what's there and play stays the same. bmsghost1: the same
+   with every slot's record in slot 0's lines, so the kept set doesn't take
+   cache room. ghost - off is the fills and write-backs with the kept set;
+   ghost - ghost1 the kept set's residency; window - ghost the accessor
+   live (the record's reads against the datum lines it saves). */
+static int box_ws_ghost, box_ws_ghost1;
+static unsigned char box_ws_ghost_datum;  /* the accessor's datum while a ghost window is open: matches no datum */
+#define BOX_WS_REC(slot) box_ws_biped[box_ws_ghost1 ? 0 : (slot)]
 /* per run: the times it was compared and the times it differed, in the
    steady case; and per class of the biped's tick (steady, died, its parent
    changed: a vehicle entered or left), the record's run copies compared and
@@ -175,18 +188,22 @@ static int box_ws_move_map_init(void)
 	return 1;
 }
 
+static void box_ws_slot_in(int slot);
 static void box_ws_slot_out(int slot)
 {
 	unsigned char *to = (unsigned char *)box_ws_move_slot_datum[slot];
 	unsigned i;
 
+	if (box_ws_ghost)
+		box_ws_slot_in(slot);
+
 	for (i = 0; i < box_ws_nruns; i++)
 	{
 		if (box_ws_run_back[i])
 		{
-			memcpy(to + box_ws_all_runs[i].datum, box_ws_biped[slot] + box_ws_run_store[i], box_ws_all_runs[i].bytes);
+			memcpy(to + box_ws_all_runs[i].datum, BOX_WS_REC(slot) + box_ws_run_store[i], box_ws_all_runs[i].bytes);
 			if (box_ws_move_check)
-				memcpy(box_ws_move_shadow[slot] + box_ws_run_store[i], box_ws_biped[slot] + box_ws_run_store[i], box_ws_all_runs[i].bytes);
+				memcpy(box_ws_move_shadow[slot] + box_ws_run_store[i], BOX_WS_REC(slot) + box_ws_run_store[i], box_ws_all_runs[i].bytes);
 		}
 	}
 }
@@ -197,17 +214,17 @@ static void box_ws_slot_in(int slot)
 	unsigned i;
 
 	for (i = 0; i < box_ws_nruns; i++)
-		memcpy(box_ws_biped[slot] + box_ws_run_store[i], from + box_ws_all_runs[i].datum, box_ws_all_runs[i].bytes);
+		memcpy(BOX_WS_REC(slot) + box_ws_run_store[i], from + box_ws_all_runs[i].datum, box_ws_all_runs[i].bytes);
 	if (box_ws_move_check)
-		memcpy(box_ws_move_shadow[slot], box_ws_biped[slot], BOX_WS_BIPED_BYTES);
+		memcpy(box_ws_move_shadow[slot], BOX_WS_REC(slot), BOX_WS_BIPED_BYTES);
 }
 
 static void box_ws_move_attach(int slot)
 {
 	box_ws_move_slot = slot;
 	box_ws_move_state[slot] = 1;
-	box_ws_move_live = box_ws_biped[slot];
-	box_ws_move_datum = box_ws_move_slot_datum[slot];
+	box_ws_move_live = BOX_WS_REC(slot);
+	box_ws_move_datum = box_ws_ghost ? (void *)&box_ws_ghost_datum : box_ws_move_slot_datum[slot];
 }
 
 static int box_ws_move_detach(void)
@@ -275,10 +292,12 @@ static void box_ws_move_spans(int slot, struct box_ws_span const *spans, unsigne
 	{
 		short at = box_ws_move_map_c[spans[i].datum];
 
+		if (put && box_ws_ghost)
+			memcpy(BOX_WS_REC(slot) + at, datum + spans[i].datum, spans[i].bytes);
 		if (put)
-			memcpy(datum + spans[i].datum, box_ws_biped[slot] + at, spans[i].bytes);
+			memcpy(datum + spans[i].datum, BOX_WS_REC(slot) + at, spans[i].bytes);
 		else
-			memcpy(box_ws_biped[slot] + at, datum + spans[i].datum, spans[i].bytes);
+			memcpy(BOX_WS_REC(slot) + at, datum + spans[i].datum, spans[i].bytes);
 		if (box_ws_move_check)
 			memcpy(box_ws_move_shadow[slot] + at, datum + spans[i].datum, spans[i].bytes);
 	}
@@ -297,6 +316,17 @@ int box_ws_move_begin(void *datum, long index, int slot, int check)
 	{
 		box_ws_move_claimed = 1;
 		box_ws_move_check = check;
+		{
+			int psp_keep(const char *name);
+
+			box_ws_ghost1 = psp_keep("bmsghost1") != 0;
+			box_ws_ghost = box_ws_ghost1 || psp_keep("bmsghost");
+			if (box_ws_ghost)
+				platform_psp_log("bmsghost: the window's copies without the record read (%s)",
+					box_ws_ghost1 ? "every record in one slot's lines" : "a record a slot");
+			if (box_ws_ghost)
+				box_ws_move_check = check = 0;
+		}
 		if (check && !(box_ws_move_shadow = malloc(sizeof(*box_ws_move_shadow) * BOX_WS_BIPED_SLOTS)))
 		{
 			platform_psp_log("bipedmovestorecheck: no room for the shadow records; the check is off");
@@ -326,7 +356,9 @@ void box_ws_move_keep(void)
 		struct box_ws_span const *span = &box_ws_biped_intent_put[i];
 		short at = box_ws_move_map_c[span->datum];
 
-		memcpy((unsigned char *)box_ws_move_datum + span->datum, box_ws_move_live + at, span->bytes);
+		if (box_ws_ghost)
+			memcpy(box_ws_move_live + at, (unsigned char *)box_ws_move_slot_datum[slot] + span->datum, span->bytes);
+		memcpy((unsigned char *)box_ws_move_slot_datum[slot] + span->datum, box_ws_move_live + at, span->bytes);
 		if (box_ws_move_check)
 			memcpy(box_ws_move_shadow[slot] + at, box_ws_move_live + at, span->bytes);
 	}

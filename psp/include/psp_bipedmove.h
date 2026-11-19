@@ -61,11 +61,20 @@ static inline __attribute__((always_inline)) void *box_ws_move_at_w(void *datum,
 	return box_ws_move_at(datum, offset, size);
 }
 
+/* PSP_BMS_PLAIN (the lab's wssplit1; recon only): every access a plain
+   field access, as before the pass, the split's baseline. Only with the
+   window's keep words off: a record written back would undo the datum's
+   writes */
+#if PSP_BMS_PLAIN
+#define PSP_BMS(p, field) ((p)->field)
+#define PSP_BMSW(p, field) ((p)->field)
+#else
 /* the accessor (read, write), as psp_fixups.py's pass writes them */
 #define PSP_BMS(p, field) (*(__typeof__(&(p)->field))box_ws_move_at((void *)(p), \
 	offsetof(__typeof__(*(p)), field), sizeof((p)->field)))
 #define PSP_BMSW(p, field) (*(__typeof__(&(p)->field))box_ws_move_at_w((void *)(p), \
 	offsetof(__typeof__(*(p)), field), sizeof((p)->field)))
+#endif
 /* a call that touches the biped's datum itself, inside the window: the whole
    record (written-back runs out, all in after), the narrow ones (0
    object_translate, 1 object_start_interpolation), or the biped's delete */

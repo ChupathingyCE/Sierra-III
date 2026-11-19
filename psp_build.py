@@ -272,6 +272,9 @@ BOXPOSING = os.environ.get("PSP_BOXPOSING", "0" if MULTIPLAYER else "1") == "1"
 # psp_fixups.py reads the same switch from the environment
 os.environ["PSP_BOXPOSING"] = "1" if BOXPOSING else "0"
 CAPTURE_DEFINES = CAPTURE_DEFINES + (["-DPSP_BOX_POSING=1"] if BOXPOSING else [])
+# PSP_BMS_PLAIN=1: biped motion's accessor as plain field accesses, the
+# baseline of the window's cost split (psp/include/psp_bipedmove.h); recon only
+CAPTURE_DEFINES = CAPTURE_DEFINES + (["-DPSP_BMS_PLAIN=1"] if os.environ.get("PSP_BMS_PLAIN", "") == "1" else [])
 if BOXPOSING:
     PSP_FILES.extend(["box_posing", "psp_boxposing"])
 # PSP_BIPEDSTAGE=1 (the biped motion box's staged form, psp_fixups.py
