@@ -67,8 +67,9 @@ static unsigned long box_ws_cross_marked, box_ws_cross_unmarked_unit, box_ws_cro
 static unsigned long box_ws_cross_unmarked_run[BOX_WS_BIPED_RUNS];
 /* the unit runs the lab's wswatch2 found written by many paths outside the
    staged passes (animation, weapons, AI control and speech, map links): 39
-   bytes a biped, cheaper to refill every tick than to mark at each writer */
-static const unsigned short box_ws_every_runs[] = { 4, 76, 128, 592, 604, 920, 940, 1116 };
+   bytes a biped, and the two timers wsdirty4 left (+172, +948: 16 more),
+   cheaper to refill every tick than to mark at each writer */
+static const unsigned short box_ws_every_runs[] = { 4, 76, 128, 172, 592, 604, 920, 940, 948, 1116 };
 
 static int box_ws_run_every(unsigned datum)
 {
