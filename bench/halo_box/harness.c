@@ -20,6 +20,11 @@ is printed and subtracted.
 
 A box whose design is one walk over a tick's entities (adapter.batch) is run
 once a tick, and its figures are divided by the tick's entity count.
+
+With the Media Engine asked for (options.on_me), each mode's per-entity pass
+also runs on the ME, in each of its places (README, "On the Media Engine"): from main
+RAM; from its eDRAM; and from its eDRAM with the main CPU's own loop timed
+beside it. Every output of every such pass is checked as the main CPU's are.
 */
 #include <stdio.h>
 #include <stdlib.h>
@@ -59,6 +64,13 @@ struct figures
 	unsigned char *kind;       /* an entity's kind, in the order sampled */
 	unsigned int *call_entities; /* entities behind each timed call (1, or a tick's count) */
 	unsigned int calls_noted, calls_room;
+	/* the Media Engine's passes: its cycles a call, by place and mode */
+	struct cycle_series { unsigned int *cycles; unsigned int count, room; } me[PLACES_ME][MODES];
+	struct me_busy busy; /* the main CPU's loop beside the ME's busy-place passes */
+	/* the per-entity jobs (mejob), by place and mode: the main CPU's µs over
+	the hand-over and the wait, the ME's own cycles for the call, and the
+	main CPU's write-back before each */
+	struct cycle_series job_us[PLACES_ME][MODES], job_cycles[PLACES_ME][MODES], job_writeback[PLACES_ME][MODES];
 };
 
 struct state
@@ -73,6 +85,14 @@ struct state
 	float largest_absolute, largest_relative;
 	int owned_bytes;
 	unsigned int static_bytes, capture_bytes, setup_us;
+	/* the Media Engine */
+	unsigned int me_checked[PLACES_ME], me_outside[PLACES_ME], me_first_tick[PLACES_ME], me_first_entity[PLACES_ME];
+	int me_stopped;        /* a pass on the ME failed: no more of them */
+	unsigned int *me_cycles, me_cycles_room;
+	/* the jobs' three arrays, each on lines of its own (plat_me_jobs) */
+	unsigned int *job_arrays, job_room;
+	unsigned int me_job_checked[PLACES_ME], me_job_outside[PLACES_ME], me_job_first_tick[PLACES_ME], me_job_first_entity[PLACES_ME];
+	struct me_busy busy_alone; /* the main CPU's loop with the ME idle */
 };
 
 static void *grow(void *old, unsigned int *room, unsigned int need, unsigned int size)
@@ -147,14 +167,14 @@ static int compare_floats(const struct box_adapter *box, const void *got, const 
 	return (int)bad;
 }
 
-static void check_tick(struct state *st, const struct box_tick *tick)
+/* every output of the tick's entities against the capture's: into the
+counters given, and the first offender noted when `first_tick` isn't null */
+static void check_outputs(struct state *st, const struct box_tick *tick, unsigned int *checked, unsigned int *outside,
+	unsigned int *first_tick, unsigned int *first_entity, unsigned int *first_element)
 {
 	const struct box_adapter *box = st->box;
 	unsigned int i;
 
-	box->tick(tick);
-	if (box->batch)
-		box->run(BOX_ALL);
 	for (i = 0; i < tick->entities; i++)
 	{
 		const void *got;
@@ -162,8 +182,6 @@ static void check_tick(struct state *st, const struct box_tick *tick)
 		float absolute = 0, relative = 0;
 		int bad;
 
-		if (!box->batch)
-			box->run((int)i);
 		box->output((int)i, &got, &length);
 		if (length != tick->entity[i].output_length)
 			bad = 1;
@@ -173,18 +191,33 @@ static void check_tick(struct state *st, const struct box_tick *tick)
 			bad = box->compare((int)i, got, tick->entity[i].output, length, &absolute, &relative, &element);
 		else
 			bad = compare_floats(box, got, tick->entity[i].output, length, &absolute, &relative, &element);
-		st->checked++;
+		(*checked)++;
 		if (absolute > st->largest_absolute || absolute != absolute)
 			st->largest_absolute = absolute;
 		if (relative > st->largest_relative)
 			st->largest_relative = relative;
-		if (bad && !st->outside++)
+		if (bad && !(*outside)++ && first_tick)
 		{
-			st->first_tick = tick->tick;
-			st->first_entity = tick->entity[i].id;
-			st->first_element = length != tick->entity[i].output_length ? 0xffffffffu : element;
+			*first_tick = tick->tick;
+			*first_entity = tick->entity[i].id;
+			if (first_element)
+				*first_element = length != tick->entity[i].output_length ? 0xffffffffu : element;
 		}
 	}
+}
+
+static void check_tick(struct state *st, const struct box_tick *tick)
+{
+	const struct box_adapter *box = st->box;
+	unsigned int i;
+
+	box->tick(tick);
+	if (box->batch)
+		box->run(BOX_ALL);
+	else
+		for (i = 0; i < tick->entities; i++)
+			box->run((int)i);
+	check_outputs(st, tick, &st->checked, &st->outside, &st->first_tick, &st->first_entity, &st->first_element);
 }
 
 /* ---- the timed passes ---- */
@@ -243,6 +276,109 @@ static unsigned int pass_whole(const struct box_adapter *box, const struct box_t
 		for (i = 0; i < tick->entities; i++)
 			box->run((int)i);
 	return plat_now() - before;
+}
+
+/* ---- the Media Engine's passes ---- */
+
+static const char *const place_names[PLACES_ME] = { "ram", "edram", "edram, CPU busy" };
+
+static void *where_ram(void *function) { return function; }
+static void *where_edram(void *function) { return plat_me_where(function, PLACE_ME_EDRAM); }
+
+static void sample_cycles(struct cycle_series *s, const unsigned int *cycles, unsigned int count)
+{
+	s->cycles = (unsigned int *)grow(s->cycles, &s->room, s->count + count, sizeof(*s->cycles));
+	memcpy(s->cycles + s->count, cycles, count * sizeof(*cycles));
+	s->count += count;
+}
+
+/* the per-entity jobs (mejob): every entity of the tick handed to the ME as
+a job of its own, timed from the main CPU, in the place and mode given; the
+outputs checked after, as the passes' are */
+static void me_jobs(struct state *st, const struct box_adapter *box, struct figures *f, const struct box_tick *tick, int place,
+	int mode)
+{
+	/* three arrays of a line-rounded stride, from a line boundary */
+	unsigned int stride = (tick->entities * 4 + 63) / 64 * 16, *base, *us, *cycles, *writeback;
+	int result;
+
+	st->job_arrays = (unsigned int *)grow(st->job_arrays, &st->job_room, 3 * stride + 16, sizeof(unsigned int));
+	base = (unsigned int *)(((unsigned long)st->job_arrays + 63) & ~(unsigned long)63);
+	us = base;
+	cycles = base + stride;
+	writeback = base + 2 * stride;
+	if (st->ticks == 1)
+		plat_step("tick %u: %s box's jobs on the ME, %s, %s", tick->tick, f == &st->of_box ? box->name : "the null", place_names[place],
+			mode_names[mode]);
+	box->tick(tick);
+	if (box->me_aim)
+		box->me_aim(place == PLACE_ME_RAM ? where_ram : where_edram);
+	result = plat_me_jobs(box->run, tick->entities, mode, place, us, cycles, writeback);
+	if (box->me_aim)
+		box->me_aim(where_ram);
+	if (result < 0)
+	{
+		plat_out("ME: STOPPED at tick %u, %s box's jobs, %s, %s, entity %u: %s", tick->tick, f == &st->of_box ? box->name : "the null",
+			place_names[place], mode_names[mode], plat_me_at(),
+			result == -1 ? "the ME didn't finish (a system call, a VFPU instruction or a fault on its path?)" : "the place can't run");
+		st->me_stopped = 1;
+		return;
+	}
+	sample_cycles(&f->job_us[place][mode], us, tick->entities);
+	sample_cycles(&f->job_cycles[place][mode], cycles, tick->entities);
+	sample_cycles(&f->job_writeback[place][mode], writeback, tick->entities);
+	if (f == &st->of_box)
+		check_outputs(st, tick, &st->me_job_checked[place], &st->me_job_outside[place], &st->me_job_first_tick[place],
+			&st->me_job_first_entity[place], 0);
+}
+
+/* each mode's per-entity pass on the ME, in each place it can run; the box's
+outputs checked after each. A pass that fails names itself, and the ME's
+passes stop for the rest of the run */
+static void me_passes(struct state *st, const struct box_adapter *box, struct figures *f, const struct box_tick *tick)
+{
+	int place, mode;
+
+	if (!st->options->on_me || st->me_stopped || box->batch || !tick->entities)
+		return;
+	st->me_cycles = (unsigned int *)grow(st->me_cycles, &st->me_cycles_room, tick->entities, sizeof(*st->me_cycles));
+	for (place = 0; place < PLACES_ME && !st->me_stopped; place++)
+	{
+		if (!((st->options->on_me >> place) & 1) || (place != PLACE_ME_RAM && !plat_me_copied()))
+			continue;
+		for (mode = 0; mode < MODES && !st->me_stopped; mode++)
+		{
+			int result;
+
+			if (st->ticks == 1)
+				plat_step("tick %u: %s box on the ME, %s, %s", tick->tick, f == &st->of_box ? box->name : "the null", place_names[place],
+					mode_names[mode]);
+			box->tick(tick);
+			if (box->me_aim)
+				box->me_aim(place == PLACE_ME_RAM ? where_ram : where_edram);
+			result = plat_me_pass(box->run, box->me_place, tick->entities, mode, place, st->me_cycles,
+				place == PLACE_ME_BUSY && f == &st->of_box ? &f->busy : 0);
+			if (box->me_aim)
+				box->me_aim(where_ram);
+			if (result < 0)
+			{
+				plat_out("ME: STOPPED at tick %u, %s box, %s, %s, call %u: %s", tick->tick, f == &st->of_box ? box->name : "the null",
+					place_names[place], mode_names[mode], plat_me_at(),
+					result == -1 ? "the ME didn't finish (a system call, a VFPU instruction or a fault on its path?)"
+					: result == -3 ? "the box's data didn't fit its eDRAM room" : "the place can't run");
+				if (result == -3)
+					plat_out("ME: the box's me_place answered %d", plat_me_placed());
+				st->me_stopped = 1;
+				break;
+			}
+			sample_cycles(&f->me[place][mode], st->me_cycles, tick->entities);
+			if (f == &st->of_box)
+				check_outputs(st, tick, &st->me_checked[place], &st->me_outside[place], &st->me_first_tick[place],
+					&st->me_first_entity[place], 0);
+			if (st->options->me_jobs && place != PLACE_ME_BUSY)
+				me_jobs(st, box, f, tick, place, mode);
+		}
+	}
 }
 
 static void time_tick(struct state *st, const struct box_adapter *box, struct figures *f, const struct box_tick *tick)
@@ -327,6 +463,7 @@ static void time_tick(struct state *st, const struct box_adapter *box, struct fi
 				}
 				into->count = kept; /* the GE's list ended early: again, with a longer one */
 			}
+	me_passes(st, box, f, tick);
 }
 
 /* ---- the capture ---- */
@@ -474,6 +611,144 @@ static struct summary summarise(struct series *s)
 	return out;
 }
 
+static int by_cycles(const void *a, const void *b)
+{
+	unsigned int x = *(const unsigned int *)a, y = *(const unsigned int *)b;
+
+	return x < y ? -1 : x > y;
+}
+
+/* as summarise, over a series of counts in µs at `per_us` counts a µs; sorts in place */
+static struct summary summarise_counts(struct cycle_series *s, double per_us)
+{
+	struct summary out = { 0, 0, 0, 0, s->count };
+	double sum = 0;
+	unsigned int i, high;
+
+	if (!s->count)
+		return out;
+	for (i = 0; i < s->count; i++)
+		sum += s->cycles[i];
+	qsort(s->cycles, s->count, sizeof(*s->cycles), by_cycles);
+	high = (unsigned int)((double)s->count * 0.95);
+	if (high >= s->count)
+		high = s->count - 1;
+	out.mean = sum / s->count / per_us;
+	out.median = s->cycles[s->count / 2] / per_us;
+	out.high = s->cycles[high] / per_us;
+	out.worst = s->cycles[s->count - 1] / per_us;
+	return out;
+}
+
+/* the ME's cycles, in µs at 333 MHz */
+static struct summary summarise_cycles(struct cycle_series *s) { return summarise_counts(s, 333.0); }
+
+static void report_me(struct state *st)
+{
+	const struct harness_options *o = st->options;
+	struct figures *f = &st->of_box, *n = &st->of_null;
+	double per_tick = st->ticks ? (double)st->entities / st->ticks : 0, cpu_net[MODES];
+	int place, mode;
+
+	if (!o->on_me)
+		return;
+	/* the main CPU's own figures beside them, alone: summarised before the
+	series are sorted by the main table (summarise sorts in place, which
+	leaves the mean as it was) */
+	for (mode = 0; mode < MODES; mode++)
+	{
+		struct summary raw = summarise(&f->calls[mode][0]), harness = summarise(&n->calls[mode][0]);
+
+		cpu_net[mode] = raw.mean - harness.mean;
+	}
+	plat_out("on the Media Engine: us an entity at 333 MHz (its cycle counter), net of the null box's same pass; x CPU against the main CPU's own net mean in the mode, alone");
+	plat_out("place            mode      net mean  (raw, harness)  median   95th  worst | ms a tick net | x CPU | calls  outside");
+	for (place = 0; place < PLACES_ME; place++)
+		for (mode = 0; mode < MODES; mode++)
+		{
+			struct summary raw = summarise_cycles(&f->me[place][mode]), harness = summarise_cycles(&n->me[place][mode]);
+			double net = raw.mean - harness.mean;
+
+			if (!raw.count)
+				continue;
+			plat_out("%-16s %-8s %9.2f  (%6.2f, %6.2f)  %6.2f %6.2f %6.1f | %13.3f | %5.2f | %5u  %u", place_names[place], mode_names[mode], net,
+				raw.mean, harness.mean, raw.median - harness.median, raw.high - harness.median, raw.worst, net * per_tick / 1000.0,
+				cpu_net[mode] > 0 ? net / cpu_net[mode] : 0, raw.count, st->me_outside[place]);
+		}
+	if (st->busy_alone.lines && f->busy.lines)
+	{
+		double alone = st->busy_alone.us * 1000.0 / st->busy_alone.lines, beside = f->busy.us * 1000.0 / f->busy.lines;
+
+		static const char *const phase_names[BUSY_PHASES] = { "the copy in", "the box's calls", "the copy back", "DMACplus copy in", "DMACplus copy back" };
+		int m, p;
+
+		plat_out("the main CPU's loop (one main-RAM line a read): %.2f us per 1,000 lines with the ME idle, %.2f beside the box's busy-place passes (%+.1f%%; %u lines)",
+			alone, beside, alone > 0 ? 100.0 * (beside / alone - 1.0) : 0, f->busy.lines);
+		for (m = 0; m < MODES; m++)
+			for (p = 0; p < BUSY_PHASES; p++)
+			{
+				unsigned int n = f->busy.phase_lines[m * BUSY_PHASES + p];
+				double each = n ? f->busy.phase_us[m * BUSY_PHASES + p] * 1000.0 / n : 0;
+
+				if (n)
+					plat_out("the main CPU's loop beside the ME's %s, %s: %.2f us per 1,000 lines (%+.1f%%; %u lines)", phase_names[p],
+						mode_names[m], each, alone > 0 ? 100.0 * (each / alone - 1.0) : 0, n);
+			}
+		for (m = 0; m < MODES; m++)
+			if (f->busy.dma_passes[m])
+			{
+				double in_us = f->busy.dma_cycles[m * 2] / 333.0, back_us = f->busy.dma_cycles[m * 2 + 1] / 333.0;
+
+				plat_out("the ME's DMACplus copies, %s: %.0f bytes a way a pass over %u passes, in %.1f us (%.0f MB/s), back %.1f us (%.0f MB/s), timed by the ME's counter",
+					mode_names[m], f->busy.dma_bytes[m] / f->busy.dma_passes[m], f->busy.dma_passes[m],
+					in_us / f->busy.dma_passes[m], in_us > 0 ? f->busy.dma_bytes[m] / in_us : 0,
+					back_us / f->busy.dma_passes[m], back_us > 0 ? f->busy.dma_bytes[m] / back_us : 0);
+			}
+		if (f->busy.dma_failed)
+			plat_out("the ME's DMACplus copies: %u failed, the last with %d (-1 the channel busy, -2 the controller off, -3 timed out)",
+				f->busy.dma_failed, f->busy.dma_error);
+	}
+	if (o->me_jobs)
+	{
+		plat_out("the ME's per-entity jobs (mejob): each entity handed to the ME alone and waited for, timed from the main CPU (sceKernelGetSystemTimeLow), net of the null box's same job; the ME's own µs for the call (its counter) and the main CPU's D-cache write-back before each beside");
+		for (place = 0; place < PLACES_ME; place++)
+			for (mode = 0; mode < MODES; mode++)
+			{
+				struct summary raw = summarise_counts(&f->job_us[place][mode], 1.0), harness = summarise_counts(&n->job_us[place][mode], 1.0);
+				struct summary own = summarise_cycles(&f->job_cycles[place][mode]), own_null = summarise_cycles(&n->job_cycles[place][mode]);
+				struct summary writeback = summarise_counts(&f->job_writeback[place][mode], 1.0);
+				double net = raw.mean - harness.mean;
+
+				if (!raw.count)
+					continue;
+				plat_out("ME job, %s, %s: %u entities, net %.2f us (raw %.2f, null %.2f), median %.2f, 95th %.2f, worst %.1f; ms a tick net %.3f; x CPU %.2f; the ME's own %.2f net; write-back %.2f; outside %u",
+					place_names[place], mode_names[mode], raw.count, net, raw.mean, harness.mean, raw.median - harness.median,
+					raw.high - harness.median, raw.worst, net * per_tick / 1000.0, cpu_net[mode] > 0 ? net / cpu_net[mode] : 0,
+					own.mean - own_null.mean, writeback.mean, st->me_job_outside[place]);
+			}
+		for (place = 0; place < PLACES_ME; place++)
+			if (st->me_job_checked[place])
+			{
+				plat_out("check of the ME's jobs, %s: %u outputs compared, %u outside the tolerance", place_names[place],
+					st->me_job_checked[place], st->me_job_outside[place]);
+				if (st->me_job_outside[place])
+					plat_out("check of the ME's jobs, %s: the first is tick %u, entity %u", place_names[place], st->me_job_first_tick[place],
+						st->me_job_first_entity[place]);
+			}
+	}
+	for (place = 0; place < PLACES_ME; place++)
+		if (st->me_checked[place])
+		{
+			plat_out("check on the ME, %s: %u outputs compared, %u outside the tolerance", place_names[place], st->me_checked[place],
+				st->me_outside[place]);
+			if (st->me_outside[place])
+				plat_out("check on the ME, %s: the first is tick %u, entity %u", place_names[place], st->me_first_tick[place],
+					st->me_first_entity[place]);
+		}
+	if (st->me_stopped)
+		plat_out("on the Media Engine: the passes STOPPED (above): its figures cover the ticks before");
+}
+
 static void report(struct state *st)
 {
 	const struct box_adapter *box = st->box;
@@ -575,6 +850,7 @@ static void report(struct state *st)
 						c[C_CYCLES] > 0 ? 100.0 * c[C_STALL_MEMORY] / c[C_CYCLES] : 0, c[C_STALL_MEMORY] / (c[C_I_MISS] + c[C_D_MISS]));
 			}
 	}
+	report_me(st);
 	plat_out("check: %u outputs compared, %u outside the tolerance (%s%s%g absolute, %g relative); largest difference %g absolute, %g relative",
 		st->checked, st->outside, box->compare ? "the box's own comparison; " : "",
 		box->tolerance == BOX_EXACT ? "exact; " : box->tolerance == BOX_ABSOLUTE ? "absolute; " : "relative; ",
@@ -587,7 +863,13 @@ static void report(struct state *st)
 			plat_out("check: the first is tick %u, entity %u, element %u", st->first_tick, st->first_entity, st->first_element);
 	}
 	plat_out("twin: phases 1 warm, 2 emptied, 3 crowded: each covers %u entity runs of box %s (its per-entity pass, alone)", st->entities, box->name);
-	plat_out("==== box %s: %s ====", box->name, st->outside ? "OUTPUTS OUTSIDE THE TOLERANCE: its times mean nothing until that is fixed" : "done");
+	{
+		unsigned int me_outside = st->me_outside[0] + st->me_outside[1] + st->me_outside[2] + st->me_job_outside[0] +
+			st->me_job_outside[1] + st->me_job_outside[2];
+
+		plat_out("==== box %s: %s ====", box->name, st->outside || me_outside ? "OUTPUTS OUTSIDE THE TOLERANCE: its times mean nothing until that is fixed"
+			: st->me_stopped ? "done on the main CPU; the ME's passes stopped" : "done");
+	}
 }
 
 static void one_tick(struct state *st, const struct box_tick *tick)
@@ -611,6 +893,8 @@ int harness_run(const struct box_adapter *box, const char *const *files, int fil
 	st.options = options;
 	st.null = box_null;
 	st.null.batch = box->batch;
+	if (options->on_me)
+		plat_me_busy_alone(&st.busy_alone, 64000);
 	if (!file_count && !box->no_capture)
 		return plat_out("STOPPED: box %s needs a capture, and there is none", box->name), 1;
 	if (!file_count)
@@ -669,5 +953,6 @@ int harness_run(const struct box_adapter *box, const char *const *files, int fil
 		return plat_out("STOPPED: no tick of box %s was read", box->name), 1;
 	plat_step("the figures");
 	report(&st);
-	return st.outside != 0;
+	return st.outside != 0 || st.me_outside[0] + st.me_outside[1] + st.me_outside[2] != 0 ||
+		st.me_job_outside[0] + st.me_job_outside[1] + st.me_job_outside[2] != 0 || st.me_stopped;
 }

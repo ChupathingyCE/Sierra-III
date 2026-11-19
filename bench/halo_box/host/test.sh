@@ -40,5 +40,13 @@ python3 "$here/../../tools/cap1.py" posing "$out/posebad.cap" --wrong 5:17 > /de
 grep -q "1456 outputs compared, 0 outside" "$out/pose.txt" || { cat "$out/pose.txt"; echo "FAILED: the posing box's check line"; exit 1; }
 "$out/host" posing "$out/posebad.cap" > "$out/posebad.txt" || true
 grep -q "the first is tick 150, entity 5017, element 17" "$out/posebad.txt" || { cat "$out/posebad.txt"; echo "FAILED: the posing box's spoiled output wasn't named"; exit 1; }
-[[ ${1:-} == -v ]] && cat "$out/good.txt" "$out/bad.txt" "$out/null.txt" "$out/cut.txt"
-echo "halo_box host test: passed (good capture, spoiled capture caught, null box, cut capture refused; the capture writer: nested entities, ${#files[@]} files, a dropped tick, $want entities read back; the posing box over a made-up capture and its spoiled twin)"
+# the places on the Media Engine, stood in for here as in the emulator: every place checked, the spoiled output named on each
+HALO_BOX_ME=1 "$out/host" selftest "$out/good.cap" > "$out/me.txt" || { cat "$out/me.txt"; echo "FAILED: the ME's places over the good capture"; exit 1; }
+for place in "ram" "edram" "edram, CPU busy"; do
+	grep -q "check on the ME, $place: 3840 outputs compared, 0 outside" "$out/me.txt" || { cat "$out/me.txt"; echo "FAILED: the ME's $place check line"; exit 1; }
+done
+grep -q "ME job, ram, warm: 1280 entities" "$out/me.txt" || { cat "$out/me.txt"; echo "FAILED: the ME's per-entity jobs didn't run"; exit 1; }
+if HALO_BOX_ME=1 "$out/host" selftest "$out/bad.cap" > "$out/mebad.txt"; then cat "$out/mebad.txt"; echo "FAILED: the spoiled capture passed on the ME's places"; exit 1; fi
+[[ $(grep -c "check on the ME, .*: the first is tick 210, entity 1013" "$out/mebad.txt") == 3 ]] || { cat "$out/mebad.txt"; echo "FAILED: the spoiled output wasn't named on every ME place"; exit 1; }
+[[ ${1:-} == -v ]] && cat "$out/good.txt" "$out/bad.txt" "$out/null.txt" "$out/cut.txt" "$out/me.txt"
+echo "halo_box host test: passed (good capture, spoiled capture caught, null box, cut capture refused; the capture writer: nested entities, ${#files[@]} files, a dropped tick, $want entities read back; the posing box over a made-up capture and its spoiled twin; the ME's three places and its per-entity jobs, stood in for, checked and the spoiled output named on each)"

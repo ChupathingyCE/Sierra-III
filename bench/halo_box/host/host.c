@@ -3,6 +3,7 @@ report's arithmetic, with nothing of the PSP behind them. Its times are the
 desktop's and mean nothing. bench/halo_box/host/test.sh runs it. */
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include "../harness.h"
@@ -30,6 +31,63 @@ void plat_counters(unsigned int out[COUNTERS])
 	out[C_D_MISS] = reads;
 	out[C_STALL_MEMORY] = reads * 40;
 }
+/* the Media Engine as the emulator stands in for it (me.c): each pass here,
+the eDRAM places' room in this program's memory, so the hand-over's set-up,
+an adapter's me_place and the checks run on a desktop (HALO_BOX_ME=1) */
+#define ROOM_BYTES 0xC0000u
+static void *room;
+int plat_me_start(void *crowd_data, void (*crowd_code)(void), int want_copy)
+{
+	(void)crowd_data, (void)crowd_code, (void)want_copy;
+	room = malloc(ROOM_BYTES);
+	return room ? 2 : 0;
+}
+int plat_me_copied(void) { return room != 0; }
+void *plat_me_where(void *function, int place) { (void)place; return function; }
+int plat_me_pass(void (*run)(int), int (*place)(void *, unsigned int, int), unsigned int calls, int mode, int where,
+	unsigned int *cycles, struct me_busy *busy)
+{
+	unsigned int i;
+
+	(void)mode;
+	if (where != PLACE_ME_RAM && place && place(room, ROOM_BYTES, 0) < 0)
+		return -3;
+	for (i = 0; i < calls; i++)
+	{
+		unsigned int before = plat_now();
+
+		run((int)i);
+		cycles[i] = (plat_now() - before) * 333u;
+	}
+	if (where != PLACE_ME_RAM && place)
+		place(room, ROOM_BYTES, 1);
+	if (busy)
+	{
+		busy->us += 1;
+		busy->lines += 64;
+	}
+	return 0;
+}
+void plat_me_busy_alone(struct me_busy *into, unsigned int lines) { into->us += 1; into->lines += lines; }
+int plat_me_jobs(void (*run)(int), unsigned int calls, int mode, int where, unsigned int *us, unsigned int *cycles,
+	unsigned int *writeback_us)
+{
+	unsigned int i;
+
+	(void)mode, (void)where;
+	for (i = 0; i < calls; i++)
+	{
+		unsigned int before = plat_now();
+
+		run((int)i);
+		us[i] = plat_now() - before;
+		cycles[i] = us[i] * 333u;
+		writeback_us[i] = 0;
+	}
+	return 0;
+}
+unsigned int plat_me_at(void) { return 0; }
+int plat_me_placed(void) { return 0; }
 void plat_out(const char *format, ...)
 {
 	va_list list;
@@ -52,7 +110,7 @@ void plat_step(const char *format, ...)
 
 int main(int argc, char **argv)
 {
-	struct harness_options options = { 0, { 0, 50 }, 2, 8, 91, 1 };
+	struct harness_options options = { 0, { 0, 50 }, 2, 8, 91, 1, 0, 0 };
 	const struct box_adapter *box = 0;
 	int k;
 
@@ -65,5 +123,10 @@ int main(int argc, char **argv)
 			box = box_adapters[k];
 	if (!box)
 		return printf("no box '%s'\n", argv[1]), 2;
+	if (getenv("HALO_BOX_ME") && plat_me_start(0, 0, 1))
+	{
+		options.on_me = (1 << PLACE_ME_RAM) | (1 << PLACE_ME_EDRAM) | (1 << PLACE_ME_BUSY);
+		options.me_jobs = 1;
+	}
 	return harness_run(box, (const char *const *)argv + 2, argc - 2, &options);
 }

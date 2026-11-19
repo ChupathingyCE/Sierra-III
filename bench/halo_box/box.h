@@ -48,6 +48,17 @@ struct box_adapter
 	/* optional: the capture box this one reads, when it isn't its own name (a
 	box's second form over the first's capture) */
 	const char *capture;
+	/* optional, for the Media Engine's places (README, "On the Media
+	Engine"): re-aim any function pointer the box calls through at
+	`where(it)`, its copy in the ME's eDRAM for those places and itself
+	otherwise; called on the main CPU before each pass on the ME */
+	void (*me_aim)(void *(*where)(void *function));
+	/* optional, run on the ME before (back 0) and after (back 1) an eDRAM
+	pass, untimed: back 0 copies the tick's working set into `room` and points
+	the box at it, returning the bytes used (negative: it didn't fit); back 1
+	copies what the pass wrote back to main RAM and points the box there
+	again. No allocation and no system call: it runs on the ME */
+	int (*me_place)(void *room, unsigned int bytes, int back);
 };
 
 extern const struct box_adapter box_null, box_selftest, box_posing;

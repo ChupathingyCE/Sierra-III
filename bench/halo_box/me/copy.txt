@@ -1,0 +1,30 @@
+# The functions the Media Engine copies into its eDRAM for halo_box's eDRAM
+# places (README, "On the Media Engine"; tools/mexec.py --entry box_me_pass).
+# One name a line; the first is the copy's entry. `+name` takes the function
+# and everything it reaches by jal, found by address in the link (box_sweep.c
+# and box_collbsp.c share static names, and the reach finds what isn't
+# inlined); `-name` keeps a function out of every reach. A name not in the
+# program is left out with a line in the build's log, as is the ME check's
+# count of what the ME can't run (VFPU, system calls).
+
+# the timed pass, the copy's entry
+box_me_pass
+
+# the null box (its figure is the harness's own cost, run the same way)
+null_run
+
+# the self-test box
+selftest_run
+
+# the pill sweep (adapters/sweep.c, every form): the adapter's run, box_sweep
+# and its walks over the level's and the objects' BSPs (box_collbsp.c), and
+# the C library's helpers they call
++sweep_run
+
+# never reached on the timed path, and each would reach the C library's
+# allocator and the kernel: kept out of the copy
+-malloc
+-free
+-realloc
+-calloc
+-printf

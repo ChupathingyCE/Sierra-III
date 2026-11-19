@@ -45,7 +45,11 @@ static void price_output(int i, const void **bytes, unsigned int *length) { (voi
 static __attribute__((noinline, aligned(64))) void imiss_run(int i)
 {
 	(void)i;
+#if defined(__mips__)
 	__asm__ __volatile__(".set push\n\t.set noreorder\n\t" LINES512 ".set pop\n\t");
+#endif
+	/* the desktop test builds every adapter but runs no price box: its
+	assembler takes no MIPS directives */
 }
 
 static __attribute__((noinline)) void dclean_run(int i)

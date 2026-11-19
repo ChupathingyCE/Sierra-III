@@ -18,6 +18,17 @@ Keep words (ms0:/halo/keep.txt):
   readtest    with the kernel module: 8 of the counters read one word each
               against the block, over the same work, and each read's cost
               (the frame picture's marks, docs/frame_picture.md §7)
+  me          also run each mode's per-entity pass on the Media Engine, code
+              and data in main RAM (me.c; README, "On the Media Engine")
+  meedram     and from the ME's eDRAM (its code copied there; the box's data
+              moved by its adapter's me_place, or left in main RAM if it has
+              none)
+  mebusy      and from eDRAM with the main CPU's own loop timed beside it
+  medma       with mebusy: after each pass the ME also moves the copy's bytes by
+              DMACplus, which it drives itself, the main CPU's loop timed beside
+  mejob       with me or meedram: each entity also handed to the ME as a job
+              of its own, timed from the main CPU over the hand-over and the
+              wait, net of the null box's same job
 
 The frame picture's prices are boxes with no capture: boxpriceimiss,
 boxpricedclean, boxpriceddirty, boxpriceuncached (adapters/price.c), run
@@ -660,7 +671,7 @@ static int watchdog(SceSize args, void *argp)
 
 int main(void)
 {
-	struct harness_options options = { 0, { 0 }, 1, 256, 91, 0 };
+	struct harness_options options = { 0, { 0 }, 1, 256, 91, 0, 0, 0 };
 	const struct box_adapter *box = &box_null;
 	char *word, *rest = keep_text;
 	int file_count, k, result, spoil = 0, read_test = 0;
@@ -701,6 +712,16 @@ int main(void)
 			options.counted = 1;
 		else if (!strcmp(word, "readtest"))
 			read_test = 1;
+		else if (!strcmp(word, "me"))
+			options.on_me |= 1 << PLACE_ME_RAM;
+		else if (!strcmp(word, "meedram"))
+			options.on_me |= 1 << PLACE_ME_EDRAM;
+		else if (!strcmp(word, "mebusy"))
+			options.on_me |= 1 << PLACE_ME_BUSY;
+		else if (!strcmp(word, "medma"))
+			plat_me_dma = 1;
+		else if (!strcmp(word, "mejob"))
+			options.me_jobs = 1;
 	}
 	sceIoMkdir("ms0:/halo", 0777);
 	sceIoMkdir("ms0:/halo/log", 0777);
@@ -708,6 +729,11 @@ int main(void)
 	sceIoRemove(log_path);
 	plat_step("halo_box: box %s; CPU %d MHz, bus %d MHz", box->name, scePowerGetCpuClockFrequency(), scePowerGetBusClockFrequency());
 	crowd_init();
+	if (options.on_me)
+	{
+		if (!plat_me_start(crowd_data, crowd_code, (options.on_me & ~(1 << PLACE_ME_RAM)) != 0))
+			options.on_me = 0;
+	}
 	if (options.duty_count > 1)
 	{
 		plat_step("the GE's set-up and its two rates");
