@@ -4,7 +4,7 @@ The lab's `research/opportunities/REBUILD.md` is the spine (its row "Tick schedu
 
 Labels: [M] PSP, [E] emulator, [D] code or the link, [U] inference.
 
-**State (2026-11-19):** slice 1 designed and built (Sierra-III `builder/ticksched`, keep word `ticksched`, off by default); emulator proof below; its whole-frame PSP pair in the lab's Ready (`ticksched-held`).
+**State (2026-11-19):** slice 1 designed and built (Sierra-III `builder/ticksched`, keep word `ticksched`, off by default); emulator proof passed (§10); its whole-frame PSP pair in the lab's Ready (`ticksched-held`).
 
 ## 1. Why this slice, measured
 
@@ -127,9 +127,9 @@ Existing lines read with it: `ME: batch timing (claims)` (**the batch's pickup l
 ## 9. Proof
 
 - **Exact by construction:** the batch-first pass runs each batch job's own code on its own inputs; the drain is the same drain, later; the made-word test is never true without the pass (made is cleared at each record's add).
-- **Emulator** [E] (the ME's jobs run simulated inside the push, so the look's ME side doesn't run there; what runs is the main CPU's urgent word and `batch_job`'s new test): play and seeds identical with `sweepme` on, `ticksched` off and on, on b30_leg2, c20_leg2, d20_play1; `sweepmecheck` 0 differ; strict 0. Results in §10.
+- **Emulator** [E] (the ME's jobs run simulated inside the push, so the look's ME side doesn't run there; what runs is the main CPU's urgent word and `batch_job`'s new test): play and seeds identical with `sweepme` on, `ticksched` off and on, on b30_leg2, c20_leg2, d20_play1; `sweepmecheck` 0 differ; strict 0. Passed: §10.
 - **PSP:** the proof run (§6), then the pair.
 
 ## 10. Results
 
-(Filled as they land.)
+- **Emulator proof, 2026-11-19** [E] (the lab's sierra-batch ticksched1ida 44574542407 and ticksched1idb 44574604888, build fbd536d5, the sweepme recipe; findings `ticksched1id_identity`): play and both seeds identical with `sweepme` on, `ticksched` off against on, over 600 ticks each on b30_leg2, c20_leg2 and d20_play1, seeds 1 and 2 (6 pairs); `sweepmecheck ticksched` identical to off on all three maps, **0 differ** (b30 3,615, c20 3,891, d20 12,810 answers compared); `mebatchsimhalf ticksched` on b30 identical (records made by both CPUs interleaved: ME 2,106, here 1,568); **strict 0** on all 16 runs. The batch first sent as one job of 16 (ticksched1id 44573588252) was refused by the batch's 300-minute budget (341 estimated at the pool's 4 at once) and ran as these two halves. As §9 says, the ME side of the looks doesn't run in the emulator; the PSP proof run comes first in the pair's ask.
