@@ -63,7 +63,21 @@ static unsigned long box_ws_cross_records, box_ws_cross_compared[BOX_WS_BIPED_RU
 /* 1c's slot-dirty marks (psp_ws_dirty, below) */
 #define BOX_WS_DIRTY 1024
 static unsigned char box_ws_dirty[BOX_WS_DIRTY];
-static unsigned long box_ws_cross_marked, box_ws_cross_unmarked_unit;
+static unsigned long box_ws_cross_marked, box_ws_cross_unmarked_unit, box_ws_cross_unmarked_every;
+/* the unit runs the lab's wswatch2 found written by many paths outside the
+   staged passes (animation, weapons, AI control and speech, map links): 39
+   bytes a biped, cheaper to refill every tick than to mark at each writer */
+static const unsigned short box_ws_every_runs[] = { 4, 76, 128, 592, 604, 920, 940, 1116 };
+
+static int box_ws_run_every(unsigned datum)
+{
+	unsigned k;
+
+	for (k = 0; k < sizeof(box_ws_every_runs) / sizeof(box_ws_every_runs[0]); k++)
+		if (box_ws_every_runs[k] == datum)
+			return 1;
+	return 0;
+}
 
 /* Step 1b (docs/box_biped_motion.md section 1c): the intent reads and
    writes one biped's record in place of its datum. The engine's code is
@@ -329,7 +343,12 @@ void box_ws_biped_cross(long index, void const *datum)
 				box_ws_cross_changed[i]++;
 				/* a unit write no mark explains: a writer the watch missed */
 				if (!marked && box_ws_run_owner[i] == 1)
-					box_ws_cross_unmarked_unit++;
+				{
+					if (box_ws_run_every(run->datum))
+						box_ws_cross_unmarked_every++;
+					else
+						box_ws_cross_unmarked_unit++;
+				}
 			}
 		}
 	}
@@ -422,7 +441,7 @@ void box_ws_biped_tick(void)
 				n += snprintf(line + n, sizeof(line) - n, " unit+%u(%u B) %lu;", box_ws_all_runs[i].datum, box_ws_all_runs[i].bytes, box_ws_cross_changed[i]);
 		}
 		platform_psp_log("wsbipedcross: unit runs written outside the staged passes (datum offset, bytes, times):%s", n ? line : " none");
-		platform_psp_log("wsbipedcross: %lu of %lu records marked by an outside writer; unit run copies changed in unmarked records: %lu",
-			box_ws_cross_marked, box_ws_cross_records, box_ws_cross_unmarked_unit);
+		platform_psp_log("wsbipedcross: %lu of %lu records marked by an outside writer; unit run copies changed in unmarked records: %lu (and %lu in the runs refilled every tick)",
+			box_ws_cross_marked, box_ws_cross_records, box_ws_cross_unmarked_unit, box_ws_cross_unmarked_every);
 	}
 }
