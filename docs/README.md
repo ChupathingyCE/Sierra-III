@@ -88,6 +88,7 @@ Every write-up about the port is in this folder: design notes, measurements, pla
 - [`mevis_landing.md`](mevis_landing.md): Visibility on the Media Engine: landing mevis (option C's step 3, re-scoped)
 - [`mevis_slice2.md`](mevis_slice2.md): Visibility on the ME, slice 2: the answer ready when it's read
 - [`mexec.md`](mexec.md): MEXEC: the Media Engine's hot code run from its eDRAM
+- [`vramcode.md`](vramcode.md): VRAMCODE: the main CPU's hot code run from VRAM, the three-way build (normal / room / copy)
 - [`tgme.md`](tgme.md): TGME: the code layout coloured for both caches, the ME weighted as it runs (its copy, its jobs, the pads' windows)
 - [`plan_music_stream.md`](plan_music_stream.md): The music path: Vorbis from the stick, decoded on the ME, on a 44.1 kHz output
 - [`plan_preconvert.md`](plan_preconvert.md): PRECONVERT: model vertex buffers baked in the GE's form
