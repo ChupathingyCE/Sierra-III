@@ -20,7 +20,7 @@ left alone run them as before */
 int psp_keep(const char *name);
 void platform_log(const char *format, ...);
 
-#define VRAMCODE_TABLE_WORDS 4096
+#define VRAMCODE_TABLE_WORDS 6144
 #define VRAMCODE_MAGIC 0x56524D43u
 #define VRAMCODE_HEADER 16
 /* the room's place, fixed so the tool can write the copy's own addresses:
@@ -66,10 +66,10 @@ static void aim_callers(int on)
 	const unsigned int *t = psp_vramcode_table, *c = callers_at();
 	unsigned int k;
 
-	for (k = 0; k < t[13]; k++, c += 2)
+	for (k = 0; k < t[13]; k++, c++)
 	{
-		unsigned int *word = (unsigned int *)(base + c[0]);
-		const unsigned int *f = t + VRAMCODE_HEADER + 3 * c[1];
+		unsigned int *word = (unsigned int *)(base + ((*c & 0xFFFFFu) << 2));
+		const unsigned int *f = t + VRAMCODE_HEADER + 3 * ((*c >> 20) & 0x3FFu);
 		unsigned int to = on ? VRAMCODE_AT + f[2] : base + f[0];
 
 		*word = (*word & 0xFC000000u) | ((to >> 2) & 0x03FFFFFFu);

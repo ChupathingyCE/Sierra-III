@@ -16,8 +16,8 @@ me.txt names the functions the Media Engine runs (from the cache model's ME
 side and MEXEC's lists). The ME can't see VRAM: at VRAM's addresses it reads
 memory of its own (hardware_facts.md, VRAM). So no call the ME can make is
 ever re-aimed: the tool adds to me.txt's set everything it reaches by a direct
-call (R_MIPS_26) or a branch out of a function (R_MIPS_PC16), and a function's
-.cold part goes with it. A copy is then entered only by:
+call (R_MIPS_26) or a branch out of a function (R_MIPS_PC16), one step out
+(HOPS), and a function's .cold part goes with it. A copy is then entered only by:
   - a call (jal, or a tail call's j) in main RAM, from a function outside the
     ME's set, to the copied function's first word: re-aimed at the copy (jal
     keeps the PC's top four bits, and VRAM's 0x04xxxxxx and main RAM's
@@ -48,7 +48,8 @@ The table (32-bit words):
   per branch patch: the word's place, the trampoline's number;
   per immediate patch: the word's place, its new low 16 bits;
   per jump table: its place, its words, then the words (VRAM addresses);
-  per caller patch: the call's link address, the function's number.
+  per caller patch, one word: the call's link address / 4 in bits 0-19, the
+    function's number in bits 20-29.
 """
 import os
 import struct
@@ -63,6 +64,10 @@ VERSION = 1
 HEADER_WORDS = 16
 VRAM_AT = 0x040CC000  # psp_vramcode.c's VRAMCODE_AT
 ALIGN = 16
+# how far past the functions the ME was seen to run the set reaches by direct
+# calls: the whole closure (every error path's callees, the main loop among
+# them) took 3,082 functions and left the hot ones nothing to enter by
+HOPS = 1
 
 
 def base_name(name):
@@ -102,13 +107,8 @@ def build(elf, names, room_kb, me_names, log):
     # the ME's set: its seeds, their .cold parts, and everything they reach
     seeds = set(me_names) | {base_name(n) for n in me_names}
     me = {f["value"] for f in funcs if f["name"] in seeds or base_name(f["name"]) in seeds}
-    work = list(me)
-    while work:
-        a = work.pop()
-        for b in out_edges.get(a, ()):
-            if b not in me:
-                me.add(b)
-                work.append(b)
+    for _ in range(HOPS):
+        me |= {b for a in list(me) for b in out_edges.get(a, ())}
     for f in funcs:  # a .cold part of a function in the set
         if f["value"] not in me and base_name(f["name"]) != f["name"]:
             parent = by_name.get(base_name(f["name"]), [])
@@ -270,7 +270,9 @@ def build(elf, names, room_kb, me_names, log):
     for at, block in data_blocks:
         words += [at, len(block)] + block
     for site, k in callers:
-        words += [site, k]
+        if site >= 1 << 22 or k >= 1 << 10:
+            sys.exit("vramcode: a caller patch doesn't pack (site %#x, function %d)" % (site, k))
+        words.append((site >> 2) | (k << 20))
     entered = {}
     for _, k in callers:
         entered[k] = entered.get(k, 0) + 1
