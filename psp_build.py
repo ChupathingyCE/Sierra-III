@@ -282,6 +282,12 @@ if BOXPOSING:
 # FIXES_WSOLD; docs/box_world_store.md section 9)
 if os.environ.get("PSP_WSOLD", "") == "1":
     PSP_FILES.append("box_world_store_old")
+# PSP_SWEEPME=1: the ME's half of the pill sweep, slice 1 (the level's half of
+# the staged bipeds' gathers made on the ME by the box's code;
+# psp/src/psp_sweepme.c, psp_fixups.py FIXES_SWEEPME, docs/box_collision.md
+# section 11); keep word sweepme. Its MEXEC list is psp/layout/mexec_rbsw.txt
+if os.environ.get("PSP_SWEEPME", "") == "1":
+    PSP_FILES.extend(["box_collbsp_game", "box_sweep_game", "psp_sweepme"])
 if os.environ.get("PSP_BIPEDSTAGE", "") == "1":
     PSP_FILES.append("box_world_store")
     # the accessor's constant map must follow the store's runs (step 1b)

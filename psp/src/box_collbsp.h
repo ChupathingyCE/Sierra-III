@@ -42,6 +42,11 @@ struct box_collbsp_vertex { float p[3]; int first_edge; };
 struct box_collbsp
 {
 	struct box_collbsp_node *nodes; /* made by box_collbsp_make, the box's own */
+	/* a build with BOX_COLLBSP_TAG_NODES walks the tags' own 3D nodes (plane
+	designator, two children: 12 bytes) and their planes in place instead:
+	the game's level, whose copy at 32 bytes a node would be 1.3 MB on b30
+	(box_collision.md §11) */
+	const void *tag_nodes;
 	const float *planes;            /* four floats each */
 	const struct box_collbsp_leaf *leaves;
 	const struct box_collbsp_reference *references;

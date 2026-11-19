@@ -56475,7 +56475,257 @@ void psp_wsold_visit(long object_index, struct object_datum const *object)
 """),
 ],
 }
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_SSPR.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + list(FIXES_CHUPA090RUNS.items()) + list(FIXES_HEAPTRIM.items()) + list(FIXES_B78.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items()) + list(FIXES_AIME2A.items()) + list(FIXES_REDOSEED.items()) + (list(FIXES_STACKHOT.items()) if STACKHOT else []) + (list(FIXES_STACKHOT2.items()) if STACKHOT2 else []) + list(FIXES_PWSL.items()) + list(FIXES_SPHSL.items()) + list(FIXES_RECONLIST.items()) + list(FIXES_TP1.items()) + list(FIXES_WXDEAD.items()) + list(FIXES_AIMEMOVE.items()) + list(FIXES_PROPCRASH.items()) + list(FIXES_APCPOOL.items()) + list(FIXES_PSPTLS.items()) + list(FIXES_SNDEDRAM.items()) + list(FIXES_LIGHTFIRST.items()) + list(FIXES_DRAWPART.items()) + (list(FIXES_RECONLATE.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + list(FIXES_P2PASS.items()) + (list(FIXES_P2CENSUS.items()) if P2CENSUS else []) + list(FIXES_OBSRAY.items()) + list(FIXES_SNDWAIT.items()) + list(FIXES_FLAMEDECAL.items()) + list(FIXES_HUHINT.items()) + list(FIXES_DBLSOFT.items()) + list(FIXES_VFPUTRIG.items()) + list(FIXES_TICKCACHE.items()) + list(FIXES_STRICTALIAS.items()) + list(FIXES_SNDPERMAP.items()) + list(FIXES_RLOOP.items()) + list(FIXES_L10.items()) + list(FIXES_RLSKIP.items()) + list(FIXES_ONEWALK.items()) + (list(FIXES_POSEK.items()) if POSEK else []) + (list(FIXES_SNDSTREAM.items()) if os.environ.get("PSP_SNDSTREAM", "") == "1" else []) + list(FIXES_MOUTHCLOCK.items()) + list(FIXES_LSAME.items()) + list(FIXES_CHUPA090.items()) + list(FIXES_V091A.items()) + list(FIXES_AIDEBUGREC.items()) + (list(FIXES_AITICKOLD.items()) if AITICKOLD else []) + (list(FIXES_PADPATH.items()) if os.environ.get("PSP_PADPATH", "") == "1" else []) + list(FIXES_FARLEVEL.items()) + list(FIXES_DECALRING.items()) + list(FIXES_ARRAYFULL.items()) + (list(FIXES_DEADXBOX.items()) if DEADXBOX else []) + (list(FIXES_CAPTURE_POSING.items()) if CAPTURE == "posing" else []) + (list(FIXES_BOXPOSING.items()) if BOXPOSING else []) + (list(FIXES_ASKCENSUS.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + (list(FIXES_CAPTURE_SWEEP.items()) if CAPTURE == "sweep" else []) + (list(FIXES_BIPEDSTAGE.items()) if BIPEDSTAGE else []) + (list(FIXES_WSOLD.items()) if WSOLD else [])):
+# PSP_SWEEPME=1: the ME's half of the pill sweep, slice 1 (docs/box_collision.md
+# §11; psp/src/psp_sweepme.c, psp/include/psp_sweepme.h): the level's half of
+# each staged biped's gather (the BSP walk and the shapes made from it) made
+# by the box's code on the ME, a record a biped as its intent ends, while the
+# main CPU runs the next intents; the gather takes the record's answer in
+# place of its own level walk and makes the objects' half as before. Keep
+# word sweepme; sweepmecheck compares every answer with the engine's own.
+SWEEPME = os.environ.get("PSP_SWEEPME", "") == "1"
+FIXES_SWEEPME = {
+"source/objects/objects.c#sweepme": [
+("""int psp_bipedstage2_gather_exact(long biped_index); /* collisions.c (FIXES_BIPEDSTAGE) bipedstage3 */
+""",
+ """int psp_bipedstage2_gather_exact(long biped_index); /* collisions.c (FIXES_BIPEDSTAGE) bipedstage3 */
+void psp_sweepme_tick_begin(void); /* collisions.c (FIXES_SWEEPME) */
+void psp_sweepme_after_intent(long biped_index);
+void psp_sweepme_close(void); /* psp_sweepme.c */
+void psp_sweepme_end(void);
+"""),
+("""		psp_bipedstage3_reset();
+		psp_bipedstage_phase = 3;
+		for (k = 0; k < psp_bipedstage_count; k++)
+		{
+			if (psp_bipedstage_live(k, &header) && !TEST_FLAG(header->datum->object.damage_flags, _object_dead_bit))
+				psp_bipedstage3_intent(psp_bipedstage_index[k]);
+		}
+	}
+""",
+ """		psp_bipedstage3_reset();
+		psp_bipedstage_phase = 3;
+		psp_sweepme_tick_begin(); /* (FIXES_SWEEPME) */
+		for (k = 0; k < psp_bipedstage_count; k++)
+		{
+			if (psp_bipedstage_live(k, &header) && !TEST_FLAG(header->datum->object.damage_flags, _object_dead_bit))
+			{
+				psp_bipedstage3_intent(psp_bipedstage_index[k]);
+				/* (FIXES_SWEEPME) its level half to the ME while the next intents run */
+				psp_sweepme_after_intent(psp_bipedstage_index[k]);
+			}
+		}
+		psp_sweepme_close();
+	}
+"""),
+# every record collected once the gathers have taken them: the solves read
+# only the gathers' own lists
+("""				!(psp_bs3_on && psp_bipedstage2_gather_exact(psp_bipedstage_index[k])))
+				psp_bipedstage2_gather(psp_bipedstage_index[k]);
+		}
+	}
+""",
+ """				!(psp_bs3_on && psp_bipedstage2_gather_exact(psp_bipedstage_index[k])))
+				psp_bipedstage2_gather(psp_bipedstage_index[k]);
+		}
+	}
+	psp_sweepme_end(); /* (FIXES_SWEEPME) */
+"""),
+],
+"source/physics/collisions.c#sweepme": [
+# the gather's level half: the record's answer, when there is one for this
+# very query (psp_sweepme_find compared it word for word)
+("""#ifdef HALO_PSP
+		psp_features_calls++;
+		psp_features_mark = psp_microseconds();
+#endif
+
+		if (collision_bsp_test_sphere(
+""",
+ """#ifdef HALO_PSP
+		psp_features_calls++;
+		psp_features_mark = psp_microseconds();
+#endif
+
+		if (psp_sweepme_pending >= 0 && psp_sweepme_take(collision_bsp, &result, features))
+			; /* (FIXES_SWEEPME) the level's half, made on the ME */
+		else if (collision_bsp_test_sphere(
+"""),
+("""			collision_bsp_get_features_in_sphere(
+				collision_bsp,
+				&result,
+				NULL,
+				height,
+				width,
+				NONE,
+				features);
+		}
+#ifdef HALO_PSP
+		{
+			unsigned long now = psp_microseconds();
+
+			psp_features_bsp_us += now - psp_features_mark;
+""",
+ """			collision_bsp_get_features_in_sphere(
+				collision_bsp,
+				&result,
+				NULL,
+				height,
+				width,
+				NONE,
+				features);
+		}
+#ifdef HALO_PSP
+		if (psp_sweepme_holding)
+			psp_sweepme_compare(&result, features); /* (FIXES_SWEEPME) sweepmecheck */
+		{
+			unsigned long now = psp_microseconds();
+
+			psp_features_bsp_us += now - psp_features_mark;
+"""),
+# the record's query is the one the gather is about to ask
+("""	slot->height = height;
+	slot->width = width;
+	psp_bs2_pack(slot, biped_index);
+	return TRUE;
+}
+""",
+ """	slot->height = height;
+	slot->width = width;
+	psp_sweepme_pending = psp_sweepme_find(biped_index, &slot->center.x, slot->radius, height, width,
+		(flags & FLAG(_collision_test_structure_bit)) != 0); /* (FIXES_SWEEPME) */
+	psp_bs2_pack(slot, biped_index);
+	psp_sweepme_pending = -1;
+	return TRUE;
+}
+
+/* (FIXES_SWEEPME) the tick's batch opened on the level as the intents begin */
+void psp_sweepme_tick_begin(void)
+{
+	struct collision_bsp const *bsp = global_collision_bsp_get();
+	struct psp_sweepme_level level;
+
+	if (!psp_sweepme_on || !bsp)
+		return;
+	level.nodes = bsp->bsp3d.nodes.address;
+	level.planes = bsp->bsp3d.planes.address;
+	level.leaves = bsp->leaves.address;
+	level.references = bsp->bsp2d_references.address;
+	level.nodes2d = bsp->bsp2d.nodes.address;
+	level.surfaces = bsp->surfaces.address;
+	level.edges = bsp->edges.address;
+	level.vertices = bsp->vertices.address;
+	level.node_count = bsp->bsp3d.nodes.count;
+	level.plane_count = bsp->bsp3d.planes.count;
+	level.leaf_count = bsp->leaves.count;
+	level.reference_count = bsp->bsp2d_references.count;
+	level.node2d_count = bsp->bsp2d.nodes.count;
+	level.surface_count = bsp->surfaces.count;
+	level.edge_count = bsp->edges.count;
+	level.vertex_count = bsp->vertices.count;
+	psp_sweepme_begin(&level, breakable_surface_flags_get());
+}
+
+/* (FIXES_SWEEPME) a staged biped's move as psp_bipedstage2_gather_exact will
+gather it, the same expressions on the same floats, handed to the ME */
+void psp_sweepme_after_intent(long biped_index)
+{
+	real_point3d position, center;
+	real_vector3d velocity;
+	unsigned long flags;
+	real height, width, radius;
+
+	if (psp_sweepme_on <= 0)
+		return;
+	if (psp_bipedstage3_call(biped_index, &flags, &position, &velocity, &height, &width) != 1 || !flags)
+		return;
+	center.x = position.x + velocity.i * 0.5f;
+	center.y = position.y + velocity.j * 0.5f;
+	center.z = height * 0.5f + (position.z + velocity.k * 0.5f);
+	radius = magnitude3d(&velocity) * 0.5f + height * 0.5f + width + 1e-4f;
+	if (flags & (FLAG(_collision_test_structure_bit) | FLAG(_collision_test_media_bit) | FLAG(_collision_test_objects_bit)))
+		psp_sweepme_add(biped_index, &center.x, radius, height, width, (flags & FLAG(_collision_test_structure_bit)) != 0);
+}
+"""),
+("""#include "halo_perf_log.h" /* port: console.perf_log */
+""",
+ """#include "halo_perf_log.h" /* port: console.perf_log */
+#include "psp_sweepme.h" /* (FIXES_SWEEPME) */
+
+/* the tags' records are the box's (box_collbsp.h): read in place on the ME */
+typedef char psp_sweepme_tag_sizes[(sizeof(struct bsp3d_node) == 12 && sizeof(real_plane3d) == 16 &&
+	sizeof(struct collision_leaf) == 8 && sizeof(struct bsp2d_reference) == 4 && sizeof(struct bsp2d_node) == 20 &&
+	sizeof(struct collision_surface) == 8 && sizeof(struct collision_edge) == 12 && sizeof(struct collision_vertex) == 16 &&
+	BIT_VECTOR_SIZE_IN_BYTES(MAXIMUM_BREAKABLE_SURFACES_PER_MAP) == 4 * PSP_SWEEPME_BREAKABLE_WORDS &&
+	MAXIMUM_POINTS_PER_COLLISION_PRISM == 8) ? 1 : -1];
+
+/* sweepmecheck: the record's answer held while the engine's own level half
+runs, then compared */
+static struct psp_sweepme_answer psp_sweepme_held;
+static int psp_sweepme_holding;
+
+static boolean psp_sweepme_take(struct collision_bsp const *bsp, struct collision_bsp_test_sphere_result *result,
+	struct collision_feature_list *features)
+{
+	struct psp_sweepme_answer answer;
+	int index = psp_sweepme_pending;
+	short k;
+
+	psp_sweepme_pending = -1;
+	if (!psp_sweepme_answer(index, bsp->bsp3d.planes.address, breakable_surface_flags_get(), &answer))
+		return FALSE;
+	if (psp_sweepme_check)
+	{
+		psp_sweepme_held = answer;
+		psp_sweepme_holding = 1;
+		return FALSE;
+	}
+	result->surface_count = result->edge_count = result->vertex_count = 0;
+	result->leaf_count = answer.leaf_count;
+	for (k = 0; k < answer.leaf_count; k++)
+		result->leaf_indices[k] = answer.leaves[k];
+	features->count[_collision_feature_sphere] = answer.count[0];
+	features->count[_collision_feature_cylinder] = answer.count[1];
+	features->count[_collision_feature_prism] = answer.count[2];
+	memcpy(features->spheres, answer.spheres, answer.count[0] * sizeof(struct collision_sphere));
+	memcpy(features->cylinders, answer.cylinders, answer.count[1] * sizeof(struct collision_cylinder));
+	memcpy(features->prisms, answer.prisms, answer.count[2] * sizeof(struct collision_prism));
+	return TRUE;
+}
+
+/* a prism's bytes that mean something: up to its pad byte, then its count
+and the points it holds */
+static boolean psp_sweepme_prism_same(struct collision_prism const *a, struct collision_prism const *b)
+{
+	return !memcmp(a, b, offsetof(struct collision_prism, pad)) && a->point_count == b->point_count &&
+		a->point_count >= 0 && a->point_count <= MAXIMUM_POINTS_PER_COLLISION_PRISM &&
+		!memcmp(a->points, b->points, a->point_count * sizeof(real_point2d));
+}
+
+static void psp_sweepme_compare(struct collision_bsp_test_sphere_result const *result,
+	struct collision_feature_list const *features)
+{
+	struct psp_sweepme_answer const *a = &psp_sweepme_held;
+	struct collision_prism const *prisms = (struct collision_prism const *)a->prisms;
+	boolean same = result->leaf_count == a->leaf_count &&
+		features->count[_collision_feature_sphere] == a->count[0] &&
+		features->count[_collision_feature_cylinder] == a->count[1] &&
+		features->count[_collision_feature_prism] == a->count[2];
+	short k;
+
+	psp_sweepme_holding = 0;
+	for (k = 0; same && k < result->leaf_count; k++)
+		same = result->leaf_indices[k] == a->leaves[k];
+	same = same && !memcmp(features->spheres, a->spheres, a->count[0] * sizeof(struct collision_sphere)) &&
+		!memcmp(features->cylinders, a->cylinders, a->count[1] * sizeof(struct collision_cylinder));
+	for (k = 0; same && k < a->count[2]; k++)
+		same = psp_sweepme_prism_same(&features->prisms[k], &prisms[k]);
+	psp_sweepme_checked(same);
+}
+"""),
+],
+}
+
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_SSPR.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + list(FIXES_CHUPA090RUNS.items()) + list(FIXES_HEAPTRIM.items()) + list(FIXES_B78.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items()) + list(FIXES_AIME2A.items()) + list(FIXES_REDOSEED.items()) + (list(FIXES_STACKHOT.items()) if STACKHOT else []) + (list(FIXES_STACKHOT2.items()) if STACKHOT2 else []) + list(FIXES_PWSL.items()) + list(FIXES_SPHSL.items()) + list(FIXES_RECONLIST.items()) + list(FIXES_TP1.items()) + list(FIXES_WXDEAD.items()) + list(FIXES_AIMEMOVE.items()) + list(FIXES_PROPCRASH.items()) + list(FIXES_APCPOOL.items()) + list(FIXES_PSPTLS.items()) + list(FIXES_SNDEDRAM.items()) + list(FIXES_LIGHTFIRST.items()) + list(FIXES_DRAWPART.items()) + (list(FIXES_RECONLATE.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + list(FIXES_P2PASS.items()) + (list(FIXES_P2CENSUS.items()) if P2CENSUS else []) + list(FIXES_OBSRAY.items()) + list(FIXES_SNDWAIT.items()) + list(FIXES_FLAMEDECAL.items()) + list(FIXES_HUHINT.items()) + list(FIXES_DBLSOFT.items()) + list(FIXES_VFPUTRIG.items()) + list(FIXES_TICKCACHE.items()) + list(FIXES_STRICTALIAS.items()) + list(FIXES_SNDPERMAP.items()) + list(FIXES_RLOOP.items()) + list(FIXES_L10.items()) + list(FIXES_RLSKIP.items()) + list(FIXES_ONEWALK.items()) + (list(FIXES_POSEK.items()) if POSEK else []) + (list(FIXES_SNDSTREAM.items()) if os.environ.get("PSP_SNDSTREAM", "") == "1" else []) + list(FIXES_MOUTHCLOCK.items()) + list(FIXES_LSAME.items()) + list(FIXES_CHUPA090.items()) + list(FIXES_V091A.items()) + list(FIXES_AIDEBUGREC.items()) + (list(FIXES_AITICKOLD.items()) if AITICKOLD else []) + (list(FIXES_PADPATH.items()) if os.environ.get("PSP_PADPATH", "") == "1" else []) + list(FIXES_FARLEVEL.items()) + list(FIXES_DECALRING.items()) + list(FIXES_ARRAYFULL.items()) + (list(FIXES_DEADXBOX.items()) if DEADXBOX else []) + (list(FIXES_CAPTURE_POSING.items()) if CAPTURE == "posing" else []) + (list(FIXES_BOXPOSING.items()) if BOXPOSING else []) + (list(FIXES_ASKCENSUS.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + (list(FIXES_CAPTURE_SWEEP.items()) if CAPTURE == "sweep" else []) + (list(FIXES_BIPEDSTAGE.items()) if BIPEDSTAGE else []) + (list(FIXES_WSOLD.items()) if WSOLD else []) + (list(FIXES_SWEEPME.items()) if SWEEPME else [])):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 # PSP_FRAMEPIC (docs/frame_picture.md): game.c's perf statements are
 # stripped before its anchors are matched (PERF_STRIP), which took the tick's

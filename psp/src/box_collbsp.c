@@ -187,6 +187,28 @@ static void line_report(void)
 enum { FRONT_FACING = 1, BACK_FACING = 2, IGNORE_TWO_SIDED = 4, IGNORE_INVISIBLE = 8, IGNORE_BREAKABLE = 16 };
 enum { CONTENTS_UNKNOWN, CONTENTS_EMPTY, CONTENTS_SEMI_EMPTY, CONTENTS_SOLID };
 
+/* a 3D node with its plane: the box's own copy, or (BOX_COLLBSP_TAG_NODES)
+made from the tags' record and plane where they lie, into the walk's local */
+#ifdef BOX_COLLBSP_TAG_NODES
+static inline const struct box_collbsp_node *node_at(const struct box_collbsp *bsp, int index, struct box_collbsp_node *copy)
+{
+	const int *record = (const int *)bsp->tag_nodes + 3 * index;
+	const float *plane = bsp->planes + 4 * record[0];
+
+	copy->n[0] = plane[0];
+	copy->n[1] = plane[1];
+	copy->n[2] = plane[2];
+	copy->d = plane[3];
+	copy->child[0] = record[1];
+	copy->child[1] = record[2];
+	copy->designator = record[0];
+	copy->pad = 0;
+	return copy;
+}
+#else
+#define node_at(bsp, index, copy) ((void)(copy), &(bsp)->nodes[index])
+#endif
+
 /* global_projection3d_mappings: the two kept axes by the dropped axis and sign */
 static const short mappings[3][2][2] = { { { 2, 1 }, { 1, 2 } }, { { 0, 2 }, { 2, 0 } }, { { 1, 0 }, { 0, 1 } } };
 
@@ -556,7 +578,8 @@ static void sphere3d(struct sphere *w, int index)
 
 	while (!(index & LONG_MIN_))
 	{
-		const struct box_collbsp_node *node = &bsp->nodes[index];
+		struct box_collbsp_node node_copy;
+		const struct box_collbsp_node *node = node_at(bsp, index, &node_copy);
 		float distance = (w->center[0] * node->n[0] + w->center[1] * node->n[1] + w->center[2] * node->n[2]) - node->d;
 		int second = distance < w->radius, first_side = distance > -w->radius;
 
@@ -646,7 +669,8 @@ void box_collbsp_subtree_count(const struct box_collbsp *bsp, int index, const f
 {
 	while (!(index & LONG_MIN_))
 	{
-		const struct box_collbsp_node *node = &bsp->nodes[index];
+		struct box_collbsp_node node_copy;
+		const struct box_collbsp_node *node = node_at(bsp, index, &node_copy);
 		float distance = (center[0] * node->n[0] + center[1] * node->n[1] + center[2] * node->n[2]) - node->d;
 		int second = distance < radius, first_side = distance > -radius;
 
@@ -669,7 +693,8 @@ int box_collbsp_split_node(const struct box_collbsp *bsp, const float center[3],
 
 	while (!(index & LONG_MIN_))
 	{
-		const struct box_collbsp_node *node = &bsp->nodes[index];
+		struct box_collbsp_node node_copy;
+		const struct box_collbsp_node *node = node_at(bsp, index, &node_copy);
 		float distance = (center[0] * node->n[0] + center[1] * node->n[1] + center[2] * node->n[2]) - node->d;
 		int second = distance < radius, first_side = distance > -radius;
 
@@ -957,7 +982,8 @@ static int pack_side(struct packing *p, int index)
 {
 	while (!(index & LONG_MIN_))
 	{
-		const struct box_collbsp_node *node = &p->bsp->nodes[index];
+		struct box_collbsp_node node_copy;
+		const struct box_collbsp_node *node = node_at(p->bsp, index, &node_copy);
 		float distance = (p->center[0] * node->n[0] + p->center[1] * node->n[1] + p->center[2] * node->n[2]) - node->d;
 		int second = distance < p->radius, first_side = distance > -p->radius;
 		int at;
@@ -1132,7 +1158,8 @@ static int ray3d(struct ray *w, int index, float t0, float t1)
 
 	if (!(index & LONG_MIN_))
 	{
-		const struct box_collbsp_node *node = &bsp->nodes[index];
+		struct box_collbsp_node node_copy;
+		const struct box_collbsp_node *node = node_at(bsp, index, &node_copy);
 		float distance;
 
 		COUNT(r_nodes);
@@ -1477,7 +1504,8 @@ static int build3d(struct builder *b, int index)
 {
 	while (!(index & LONG_MIN_))
 	{
-		const struct box_collbsp_node *node = &b->g->nodes[index];
+		struct box_collbsp_node node_copy;
+		const struct box_collbsp_node *node = node_at(b->g, index, &node_copy);
 		float distance = (b->center[0] * node->n[0] + b->center[1] * node->n[1] + b->center[2] * node->n[2]) - node->d;
 		int second = distance < b->radius, first_side = distance > -b->radius;
 
@@ -1932,7 +1960,8 @@ static int descend(struct box_collbsp_memos *memos, unsigned int slot, unsigned 
 		}
 		else
 		{
-			const struct box_collbsp_node *node = &bsp->nodes[index];
+			struct box_collbsp_node node_copy;
+		const struct box_collbsp_node *node = node_at(bsp, index, &node_copy);
 
 			n = node->n;
 			pd = &node->d;

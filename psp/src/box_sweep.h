@@ -19,7 +19,9 @@ the sweep's own walk; in the game the world store will.
 
 #include "box_collbsp.h"
 
+#ifndef BOX_SWEEP_FEATURES
 #define BOX_SWEEP_FEATURES 256 /* the engine's lists hold 256 of each kind */
+#endif
 #define BOX_SWEEP_PRISM_POINTS 8
 
 /* the engine's collision flags and object fields the sweep reads, as numbers
@@ -206,6 +208,16 @@ struct box_sweep_scratch
 	int marked_clusters[BOX_COLLBSP_LIST], marked_cluster_count;
 	int marked_objects[512], marked_object_count;
 };
+
+/* the level's half of the features in a sphere (collision_get_features_in_
+sphere up to its objects: the walk, then its vertices, edges and surfaces as
+features), for the game's placement on the ME (box_collision.md §11). radius
+is the asker's, before the engine's 1/16 is added; the walk's leaves are left
+in *walk for the objects' half. The features are made only when `structure`;
+a list that reaches BOX_SWEEP_FEATURES may have been cut short */
+void box_sweep_level_features(const struct box_collbsp *level, short breakable_count, const unsigned int *breakable,
+	const float center[3], float radius, float height, float width, int structure,
+	struct box_collbsp_sphere_result *walk, struct box_sweep_features *features);
 
 /* the sweep; returns its collision count, or -1 when the world doesn't hold
 what the walk needs (an object or a cluster the capture didn't meet, a

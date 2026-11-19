@@ -1,0 +1,118 @@
+# MEXEC's list for the rebase (builder, 2026-11-11; the lab's drawhotrb, sierra-batch 43126079655:
+# the ME side of the cache map on builder/meplace 778b104, b30's flight and d20's route).
+# The ME's entry first; then every function of the GE replay's family (psp_ge*, psp_tex*,
+# model_*, defer_*, light_*, the matrix and reflection helpers, and list r2's names that the
+# rebase still has), by their ME code misses over both routes, while 192 KB holds them.
+# 95 functions, 155412 bytes; the family's misses held: 100%.
+# Not R's milestone's functions (r_call, r_part_key ...: not on the rebase), nor the ME's
+# other jobs (the AI, the sound mixer, visibility): the replay never enters them.
+psp_ge_me_replay
+psp_ge_draw_model_body
+model_geometry
+psp_tex_bind
+psp_ge_draw_level_body
+model_lighting
+__wrap_sceGeListUpdateStallAddr
+psp_ge_draw_model
+halo_matrix
+sceGuDisable
+psp_ge_model_shape
+ge_kind
+psp_ge_model_begin
+psp_ge_decal_body
+sceGuSetMatrix
+vm_redirect_me
+defer_replay
+psp_ge_model_multipurpose
+psp_ge_queue_transparent
+psp_ge_model_detail
+psp_ge_model_reflection
+abgr_from_rgb
+psp_ge_light_draw_body
+model_convert
+psp_ge_model_effect
+sceGuEnable
+sceGumMatrixMode
+sceGumUpdateMatrix
+psp_ge_decal
+psp_geo_generation
+psp_tex_average_known
+psp_ge_draw_level
+list_take
+draw_pass_angled.constprop.0
+model_get_marker_by_name
+psp_tex_size
+psp_ge_level_detail
+psp_ge_queue_level_transparent_body
+psp_ge_light_draw
+psp_tex_bind_texels
+psp_ge_shadow_draw_body
+psp_tex_palette16
+draw_pass
+light_reach
+psp_geo_baked
+psp_geo_external
+psp_ge_screen_quad
+kind_limit
+psp_ge_queue_level_transparent
+psp_ge_seethrough_meter
+psp_tex_change_mask
+psp_ge_blip
+psp_ge_contrail
+psp_ge_fog
+psp_tex_bind_lightmap
+psp_ge_light_begin
+psp_ge_text_character
+psp_ge_fog_submerged
+psp_ge_sprites
+psp_ge_model_point_light
+psp_ge_ui_space
+vm_redirect
+model_detail_pass
+psp_ge_shadow_begin
+light_emit_known.constprop.0
+psp_tex_hud_note
+light_emit.constprop.0
+psp_ge_window_target
+psp_ge_fog_planar
+psp_ge_widget_sprite
+psp_tex_has
+psp_tex_reflection_mask
+psp_ge_screen_flash
+psp_ge_sky
+psp_ge_light_gel
+psp_ge_blips_end
+psp_ge_hud_zoom
+psp_ge_shadow_draw
+psp_ge_ui_centered
+psp_ge_widget_begin
+psp_ge_widget_occlusion
+psp_tex_palette
+psp_ge_blips_begin
+psp_tex_resident
+psp_ge_text_begin
+psp_ge_shadow_end
+psp_tex_me_memo_forget
+psp_ge_widget_texture
+psp_ge_text_end
+psp_tex_average
+psp_ge_frame_window
+psp_ge_budget
+psp_tex_io_window
+psp_geo_io_window
+psp_tex_save_pending
+
+# PSP_SWEEPME=1 (docs/box_collision.md section 11): the level's half of the
+# staged bipeds' gathers, the batch's record function and everything it
+# reaches by jal (the box's walk and its shapes, box_collbsp.c and
+# box_sweep.c), so the ME runs it from eDRAM (psp_me.c re-aims the batch's
+# function pointer at its copy). The C library's wrappers stay out: on the
+# ME they go straight to the plain routines, from main RAM, and their
+# switched-on paths reach the keep words' reader
++psp_sweepme_make
+-__wrap_memset
+-__wrap_memcpy
+-claim_ask
+-psp_keep
+-platform_psp_log
+-platform_log

@@ -1267,6 +1267,25 @@ static unsigned int batch_sim_passes = 0, batch_sim_whole = 0;
 /* "meclaimold", for the simulated ME (the real one reads ME_FEATURE_CLAIM_OLD) */
 static int me_claim_old = 0;
 
+#if PSP_MEXEC
+/* On the ME: a record function MEXEC copied runs from its copy in eDRAM. A
+call through a pointer is never re-aimed by the copy (tools/mexec.py), so
+without this a batch's make ran from main RAM even with its code copied */
+static psp_me_record_fn me_mexec_aim(psp_me_record_fn fn)
+{
+	const unsigned int *t = psp_mexec_table;
+	unsigned int base, at = MEXEC_HEADER, k;
+
+	if (!mexec_entry)
+		return fn;
+	base = (unsigned int)psp_ge_me_replay - t[2];
+	for (k = 0; k < t[4]; k++, at += 3)
+		if (base + t[at] == (unsigned int)fn)
+			return (psp_me_record_fn)(ME_EDRAM + MEXEC_AT + t[at + 2]);
+	return fn;
+}
+#endif
+
 static void batch_job(const unsigned int *args, unsigned int *results, int on_me)
 {
 	struct psp_me_batch *b = (struct psp_me_batch *)args[0];
@@ -1274,6 +1293,10 @@ static void batch_job(const unsigned int *args, unsigned int *results, int on_me
 	volatile unsigned int *done = &UNCACHED(&b->done)->value, *withdrawn = &UNCACHED(&b->withdrawn)->value;
 	psp_me_record_fn make = (psp_me_record_fn)args[4];
 	unsigned char *records = (unsigned char *)args[5];
+#if PSP_MEXEC
+	if (on_me)
+		make = me_mexec_aim(make);
+#endif
 	unsigned int r = args[1], end = args[1] + args[2], bytes = args[6], made = 0, control = 0, user[ME_BATCH_ARGS], k;
 	int claim_old = on_me ? (CONTROL->features & ME_FEATURE_CLAIM_OLD) != 0 : me_claim_old;
 
