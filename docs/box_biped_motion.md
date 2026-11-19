@@ -132,6 +132,55 @@ Sheepdog01: play biped motion out, as long as it doesn't conflict with a future 
   - **Decision (the lead, 07:5xZ):** both stay off behind `bipedmovestore` as groundwork. The world store's next form must cost less than the datum lines it saves, measured. Its pieces (the per-access indirection, fill and write-back, and the kept records' residency) are priced before it is designed, and means B (records filled once a tick, read by plain pointer, the kept set sized to the D-cache or eDRAM) comes first.
 - **What it should buy** [U, to be counted in the cache model, then priced on the PSP]: the intent's and solve's D-misses on the datum (c20's +2,331 a tick against slice 2 is the lead) against the fill's and write-back's copies.
 
+## 1d. Means B: one fill, one write-back, a plain pointer (2026-11-19, the builder's worker; the lead 07:5xZ, 08:5xZ, 09:3xZ)
+
+The store page's §10 (builder/wsold 4928bf62) split 1c's cost: the copies (21 whole-record syncs and the keeps, resumes, fills and write-backs) were two thirds of it, the compiled accessor most of the rest, and the record saved ~0 D-misses. Means B is its redesign. Built on Sierra-III builder/meansb under `PSP_BMSB=1`, keep word `bmsb`, off by default; `bmsbcheck` counts outside writes into a live record.
+
+**The census** [E; the lab's msbcensus1, sierra-batch 44495706249, findings `msbcensus1_helpers`]: a recon build (`PSP_BMS_CENSUS=1`, with PSP_RECON and the emulator's tickcore) runs every part of the window under its own step label, so the per-step field counts say who touches each biped field while a record would be live. The labels: the window's own code; each synced helper and each function the window shares with other units or callers (`bms call <name>`); the record's copies; and everything from the unit pass's end to the write-back after the solves (`bms between`: posing, the gather, the object update before each solve, dead bipeds' whole updates). Two sides a stretch: the window on, so the record's own accesses leave the datum, and off. On b30_leg2 / c20_leg2, biped datum loads / stores a tick:
+- the window's own code with its callees: 1,484 / 630 and 4,800 / 1,615;
+- the helpers and shared calls: limp-noodle relax 885 / 456 and 1,278 / 515; object_translate 540 / 149 and 1,441 / 396; unit_update_animation (the tail) 287 / 28 and 713 / 56; object_start_interpolation 79 / 77 and 166 / 161; unit_destroy (c20) 44 / 12; each of the others under 10 / 5;
+- between the windows: 8,240 / 6,456 and 11,734 / 9,878.
+
+What it rules out of the record:
+- **Helpers:** object.flags, position, cluster, the sphere, the animation indices, the shield and body timers, unit.control_flags / timer / aiming_speed, unit.animation, biped.flags (start_limp_body_physics, melee, exit_seat), crouch (melee), bank and ground plane (snap_facing), angular velocity, first child, actor index.
+- **Posing and the rest between windows:** forward and up (66 / 118 loads a tick), idle ticks, the animation indices.
+- **Other bipeds in their own windows:** velocity, the bump ticks.
+
+**The record** (tools/bmsb_map.py, psp/include/psp_bmsb_map.h): **60 B, ten runs**, one line a biped.
+- Read only: definition_index, parent_object_index, the node blocks' sizes, player_index, body_stun.
+- Written: desired_facing_vector, throttle, support_surface_index, the jump recovery bytes (+1116), landing.
+- Their window accesses: ~400 a tick on b30, ~1,000 on c20 [E].
+- The stepfield counts every biped and the between label holds dead bipeds' own updates, so the census over-counts. That only removes fields; it never adds one.
+
+**The form** (psp/src/box_bmsb.c, psp/include/psp_bmsb.h, psp_fixups.py BIPEDMOVE under PSP_BMSB):
+- **Fill and write-back:** objects.c fills each living staged biped's record in one pass after the unit pass. After the solves, it writes the five written runs back in one pass, in the staged (walk) order. Nothing copies in between: no syncs and no keeps.
+- **Which functions use the record:** only the window's functions that run in no other context (16 in bipeds.c). Each takes the record pointer once at its entry (`psp_bmsb_r`), and each access is settled when it's compiled, from a constant map, to `rec + k` or `datum + k`.
+- **No compare at run time.** The build fails on a field held in part, and on a write to a field held read-only.
+- **Shared functions stay on the datum:** the functions also reached for other bipeds, other units or from outside the window (snap_facing, verify_object_vectors, get_physics_pill, flying_through_air, units.c's tail) keep the engine's datum accesses, and their fields stay out of the record.
+- **The entry:** biped_update keeps its name, so its profile and text layout still match. Its two callers (the object types' table, bipedstage3's intent) go through `psp_bmsb_biped_update`. That picks the staged slot's record, or fills a scratch record (keep word off, no slot, dead at the fill) and writes it back at the end.
+- **Deletes:** the biped's own delete writes the record back first.
+- **Size:** 64 slots x 60 B, under 4 KB.
+
+**Exact** [E; the lab's msbid1, sierra-batch 44502635785, findings `msbid1_identity`]:
+- Means B against plain: play and both seeds identical every tick on b30_leg2 held, c20_leg2 and d20_play1, seeds 1-2, 600 ticks each, strict 0. EBOOTs: plain 9217709f, means B baafe369.
+- The keep word off (the scratch path), b30 s1: identical.
+- bmsbcheck on b30 and c20 s1: identical. Its outside-write counts weren't read: it logs every 3,000 ticks and the runs were 600.
+
+**The cache model, a lead only** (the lead 09:3xZ: the model ranks and proves exactness, it doesn't gate) [E; the lab's msbcache1, sierra-batch 44504380751, findings `msbcache1_figures`; wssplit1's stretches; cycles = fetches + I x 56 + D x 51 a tick]:
+
+| | b30 tick | b30 I / D | c20 tick | c20 I / D |
+|---|---:|---:|---:|---:|
+| plain | 4.992 M | 27,213 / 23,235 | 5.170 M | 32,551 / 21,992 |
+| means B | 5.034 M (**+0.8%**) | 27,833 / 22,853 | 5.235 M (**+1.2%**) | 33,877 / 21,090 |
+| the window (1c, wssplit1) | +5.4% | | +13.6% | |
+
+- The drawing: b30 3.633 to 3.664 M (+0.8%), c20 2.675 to 2.692 M (+0.6%).
+- **D-misses:** means B is the first record form that saves them, -382 / -902 a tick (-1.6% / -4.1%). The window saved ~0.
+- **I-misses:** they rise more, +620 / +1,326 tick and +511 / +708 drawing. The text layout (w_rc1_tgc90) doesn't place box_bmsb.c or the entry wrapper, and the drawing's code moved with them [U: a layout shift, not work; a layout with the new functions placed would say].
+- **The copies are gone:** against the window, means B is 4.6 / 12.4 points of the tick cheaper.
+
+**Next:** the PSP pair decides, plain against means B on held b30_leg2 and c20_leg2, repeat 2, reader the builder (the lab's coord/psp_queue.md, `msb-held`).
+
 ## 2. Data
 
 - **Per biped, the store's share** [E counts, worldmap1 through the lab's `worldlayout.py`]: 400 B in five sections (read 107, unit 167, control 66, posing 36, walk 24) against the datum's 1,152, on ~7 lines packed against the 11.3 datum lines an update touches today. Of the box's fields, biped motion's steps read 406 and write 330 over all types (the store's map, §2 of its page).
