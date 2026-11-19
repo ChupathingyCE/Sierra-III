@@ -4095,7 +4095,12 @@ static void ksample_calls_start(void)
 	ks_calls_on = 1;
 }
 
-static void ks_count(unsigned int fn, unsigned int object, unsigned int site)
+/* inlined, so a wrapper that doesn't block needs no stack frame and ends in
+a jump to the real call: the GE's finish callback signals its flag from
+the interrupt, on the interrupt's stack (in the emulator that stack sits in
+kernel RAM, and the strict interpreter refused the frame a called counter
+put there) */
+static inline __attribute__((always_inline)) void ks_count(unsigned int fn, unsigned int object, unsigned int site)
 {
 	unsigned int phase, h, k;
 
