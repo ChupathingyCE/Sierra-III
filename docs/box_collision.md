@@ -71,6 +71,17 @@ Alone, against a capture of its queries over a pad bench (each query's arguments
 
 - 2026-11-11: spec started, from `collision.md` (its [M] rows checked) and the world store's map.
 - 2026-11-15: the askers counted (§1; askcensus1): 38 askers, 96-144 calls a tick, the ME's jobs as many as the tick.
+- 2026-11-19: line (b)'s falsifier built (§10): the sweep on the ME from eDRAM, exact in the emulator; the PSP's answer asked.
+
+## 10. On the ME: line (b)'s falsifier (2026-11-19)
+
+The direction of 2026-11-18 (the lab's `research/opportunities/direction_2026-11-18.md` §11.1) makes the pill sweep on the ME the first placement, and names what proves it wrong: **the collision walks running slower on the ME from eDRAM than on the main CPU.** Nothing of the ME's half is built before that answer (the lead, 2026-11-19 06:1xZ, item 3).
+
+- **The bench:** `bench/halo_box` with its ME places (README, "On the Media Engine"): the shipped sweep form (`boxsweep`, box_sweep0) over a capture of a pad bench, on the main CPU and on the ME in the same run, warm, emptied and crowded. On the ME from main RAM (`me`), with its code copied into eDRAM (`meedram`; the BSPs and the capture's records stay in main RAM: they're megabytes, and the game would read them there too), each entity also as a job of its own timed from the main CPU over the hand-over and the wait, net of a null job (`mejob`). Every ME output compared word for word with the capture.
+- **The copy** [D, Sierra-III builder/boxme, bench-emu 44473580092]: `+sweep_run` reaches 23 functions; with the harness's entry and the null and self-test boxes' runs, 26 functions, **24,292 bytes of code at eDRAM 256 KB** (of 192 KB of room), 48 calls re-aimed, no trampolines, no switch tables (the 13 .rodata words naming a copied function are the adapters' run pointers). **The ME check: 0 VFPU instructions, 0 syscall instructions, 0 calls into import stubs** in the copied functions; 4 calls through a register, all in the harness's pass loop (the box's run, re-aimed at its copy, and the crowding code).
+- **Correct in the emulator** [E, bench-emu 44473580092, b30_leg1 every tick from 1,800 (the lab's cap_sweep4), 24 ticks, 386 sweeps]: 0 of 1,158 outside on each of the three ME places, and 0 of 1,158 in the jobs on ram and edram; the main CPU's own 0 of 386. The emulator runs the ME's passes on the main CPU, so this proves the hand-over and the checks, not the copy and no time.
+- **The PSP's answer:** pending (the lab's `coord/psp_queue.md`, `sweepme-falsifier`). **Read:** the edram rows' `x CPU`, emptied and crowded first (the tick's real case: the game hands the ME a sweep whose data the ME hasn't touched), and the jobs' net µs against the main CPU's net mean in the same mode. At or under 1.0x: line (b) stands and the ME's half is built. Over: line (b) is wrong and the first placement is re-chosen by a whole-frame pair.
+- **Beside it** [M, PSP-3000, the lab's `boxmotion_me_edram_b30beach`]: biped motion's slice 1 ran on the ME from eDRAM at 1.36x the main CPU warm and 0.63-0.67x emptied and crowded (code and data in eDRAM there). The sweep differs: most of its work is the walks' reads of main-RAM data.
 
 ## Open
 
