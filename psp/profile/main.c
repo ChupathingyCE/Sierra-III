@@ -512,14 +512,23 @@ static const unsigned char ksample_intr_candidates[] =
 static unsigned int intr_last_calls[KSAMPLE_INTRS];
 static unsigned long long intr_last_clock[KSAMPLE_INTRS];
 
-static int ksample_intr_query(unsigned int intno, unsigned int *calls, unsigned long long *clock)
+/* the interrupt manager's switch for a handler's calls and clocks
+(ksample.h): 1 turns them on. Declared here: pspintrman_kernel.h has no
+prototype, though libpspkernel has its import */
+int sceKernelSetIntrLogging(int intno, int on);
+
+static int ksample_intr_query(unsigned int intno, PspIntrHandlerOptionParam *info)
+{
+	memset(info, 0, sizeof(*info));
+	info->size = sizeof(*info);
+	return QueryIntrHandlerInfo((SceUID)intno, -1, info);
+}
+
+static int ksample_intr_read(unsigned int intno, unsigned int *calls, unsigned long long *clock)
 {
 	PspIntrHandlerOptionParam info;
-	int result;
+	int result = ksample_intr_query(intno, &info);
 
-	memset(&info, 0, sizeof(info));
-	info.size = sizeof(info);
-	result = QueryIntrHandlerInfo((SceUID)intno, -1, &info);
 	if (result < 0)
 		return result;
 	*calls = info.calls;
@@ -527,14 +536,19 @@ static int ksample_intr_query(unsigned int intno, unsigned int *calls, unsigned 
 	return 0;
 }
 
-/* from module_start: the sources with a handler, and their counts so far */
+/* from module_start: the sources with a handler (the query answers every
+number below 68, handler or not, so the handler's address decides), each
+one's record before its logging is turned on (calls 0 and least clock
+ffffffff show it was off), then logging on and the counts from there */
 static void ksample_intr_start(void)
 {
 	unsigned int k, n = 0;
 
 	for (k = 0; k < sizeof(ksample_intr_candidates) && n < KSAMPLE_INTRS; k++)
 	{
-		int result = ksample_intr_query(ksample_intr_candidates[k], &intr_last_calls[n], &intr_last_clock[n]);
+		PspIntrHandlerOptionParam info;
+		unsigned int intno = ksample_intr_candidates[k];
+		int result = ksample_intr_query(intno, &info);
 
 		if (result < 0)
 		{
@@ -542,9 +556,38 @@ static void ksample_intr_start(void)
 				ks->intr_error = result;
 			continue;
 		}
-		ks->intr_no[n++] = ksample_intr_candidates[k];
+		if (!info.entry)
+		{
+			ks->intr_no_handler++;
+			continue;
+		}
+		ks->intr_entry[n] = info.entry;
+		ks->intr_calls_start[n] = info.calls;
+		ks->intr_min_start[n] = info.min_clock_lo;
+		result = sceKernelSetIntrLogging((int)intno, 1);
+		if (result < 0)
+		{
+			if (!ks->intr_log_error)
+				ks->intr_log_error = result;
+		}
+		else
+			ks->intr_logged++;
+		if (ksample_intr_read(intno, &intr_last_calls[n], &intr_last_clock[n]) < 0)
+			continue;
+		ks->intr_no[n++] = intno;
 	}
 	ks->intr_sources = n;
+}
+
+/* from module_stop: logging back off, as the firmware keeps it */
+static void ksample_intr_stop(void)
+{
+	unsigned int k;
+
+	if (!ks || !ks->want_intr)
+		return;
+	for (k = 0; k < ks->intr_sources && k < KSAMPLE_INTRS; k++)
+		sceKernelSetIntrLogging((int)ks->intr_no[k], 0);
 }
 
 /* each source's calls since the last read, to the phase that was running;
@@ -564,7 +607,7 @@ static void ksample_intr_account(void)
 		unsigned int calls;
 		unsigned long long clock;
 
-		if (ksample_intr_query(ks->intr_no[k], &calls, &clock) < 0)
+		if (ksample_intr_read(ks->intr_no[k], &calls, &clock) < 0)
 			continue;
 		ks->intr_calls[phase][k] += calls - intr_last_calls[k];
 		if (clock >= intr_last_clock[k])
@@ -809,6 +852,9 @@ int module_stop(SceSize args, void *argp)
 {
 	(void)args; (void)argp;
 	PROFILER[0] = 0;
+#ifdef PSP_KSAMPLE
+	ksample_intr_stop();
+#endif
 	if (table && table->pc_wanted && (int)table->pc_timer >= 0 && table->pc_timer)
 	{
 		sceSTimerStopCount((SceSysTimerId)table->pc_timer);

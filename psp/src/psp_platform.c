@@ -4024,6 +4024,111 @@ static struct ksample_block *ks_waits = 0;
 static SceUID ks_claim_lock = -1;
 
 int __real_sceKernelWaitSema(SceUID sema, int signal, SceUInt *timeout);
+int __real_sceKernelSignalSema(SceUID sema, int signal);
+SceUID __real_sceKernelGetThreadId(void);
+int __real_sceKernelReferThreadStatus(SceUID thread, SceKernelThreadInfo *info);
+
+/* "kcall": every wrapped call counted by its caller's PC, the object it
+names (a semaphore's or event flag's id, a thread's, a delay's length, the
+GE sync's mode) and the phase, so the drawing's calls into the thread
+manager and the other system calls are named and counted a frame (the
+sampler's samples only say the main thread is in the kernel). The main
+thread's calls go to a table only it writes (the heartbeat thread reads it,
+and a new entry's site is written last); every other thread's (and a user
+interrupt handler's, on its own stack) go to one count per call and phase,
+plain increments that a preemption may rarely lose. ksamplenocalls leaves
+the counting out */
+enum
+{
+	KS_DELAY, KS_DELAYCB, KS_WAITSEMA, KS_WAITSEMACB, KS_WAITFLAG, KS_WAITFLAGCB, KS_SLEEP, KS_SLEEPCB,
+	KS_WAITEND, KS_VBLANKSTART, KS_VBLANKSTARTCB, KS_VBLANK, KS_GEDRAWSYNC, KS_GELISTSYNC,
+	KS_AUDIO, KS_AUDIOPANNED, KS_AUDIOSRC,
+	KS_SIGNALSEMA, KS_POLLSEMA, KS_SETFLAG, KS_CLEARFLAG, KS_POLLFLAG, KS_WAKEUP, KS_THREADID,
+	KS_REFERTHREAD, KS_TIMELOW, KS_TIMEWIDE, KS_PRIORITY, KS_WBRANGE, KS_WBINVRANGE, KS_INVRANGE,
+	KS_WBALL, KS_WBINVALL, KS_FNS
+};
+static const char *const ks_fn_name[KS_FNS] =
+{
+	"DelayThread", "DelayThreadCB", "WaitSema", "WaitSemaCB", "WaitEventFlag", "WaitEventFlagCB", "SleepThread", "SleepThreadCB",
+	"WaitThreadEnd", "WaitVblankStart", "WaitVblankStartCB", "WaitVblank", "GeDrawSync", "GeListSync",
+	"AudioOutputBlocking", "AudioOutputPannedBlocking", "AudioSRCOutputBlocking",
+	"SignalSema", "PollSema", "SetEventFlag", "ClearEventFlag", "PollEventFlag", "WakeupThread", "GetThreadId",
+	"ReferThreadStatus", "GetSystemTimeLow", "GetSystemTimeWide", "ChangeThreadPriority", "DcacheWritebackRange",
+	"DcacheWritebackInvalidateRange", "DcacheInvalidateRange", "DcacheWritebackAll", "DcacheWritebackInvalidateAll",
+};
+/* the object is a semaphore's (1), an event flag's (2) or a thread's (3)
+id, named from the kernel when the table is written; 0 a plain number */
+static const unsigned char ks_fn_object[KS_FNS] =
+{
+	0, 0, 1, 1, 2, 2, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0,
+	1, 1, 2, 2, 2, 3, 0, 3, 0, 0, 3, 0, 0, 0, 0, 0,
+};
+#define KS_CALLS 512
+struct ks_call
+{
+	volatile unsigned int site;
+	unsigned int fn, object;
+	volatile unsigned int count[KSAMPLE_PHASES];
+};
+static struct ks_call ks_calls[KS_CALLS];
+static volatile unsigned int ks_calls_used, ks_calls_full;
+static volatile unsigned int ks_calls_other[KSAMPLE_PHASES][KS_FNS];
+static unsigned int ks_main_lo, ks_main_hi;
+static int ks_calls_on = 0;
+static char ks_main_name[32];
+
+static inline unsigned int ks_sp(void);
+
+static void ksample_calls_start(void)
+{
+	SceKernelThreadInfo info;
+	SceUID me = __real_sceKernelGetThreadId();
+
+	memset(&info, 0, sizeof(info));
+	info.size = sizeof(info);
+	if (me < 0 || __real_sceKernelReferThreadStatus(me, &info) < 0)
+		return;
+	ks_main_lo = (unsigned int)info.stack;
+	ks_main_hi = (unsigned int)info.stack + (unsigned int)info.stackSize;
+	memcpy(ks_main_name, info.name, sizeof(ks_main_name));
+	ks_main_name[sizeof(ks_main_name) - 1] = 0;
+	ks_calls_on = 1;
+}
+
+static void ks_count(unsigned int fn, unsigned int object, unsigned int site)
+{
+	unsigned int phase, h, k;
+
+	if (!ks_calls_on)
+		return;
+	phase = (unsigned int)psp_current_phase & (KSAMPLE_PHASES - 1);
+	if (ks_sp() - ks_main_lo >= ks_main_hi - ks_main_lo)
+	{
+		ks_calls_other[phase][fn]++;
+		return;
+	}
+	h = ((site >> 2) ^ (fn << 5) ^ (object * 0x9E3779B1u >> 20)) & (KS_CALLS - 1);
+	for (k = 0; k < KS_CALLS; k++, h = (h + 1) & (KS_CALLS - 1))
+	{
+		struct ks_call *c = &ks_calls[h];
+
+		if (c->site == site && c->fn == fn && c->object == object)
+		{
+			c->count[phase]++;
+			return;
+		}
+		if (!c->site)
+		{
+			c->fn = fn;
+			c->object = object;
+			c->count[phase] = 1;
+			c->site = site;
+			ks_calls_used++;
+			return;
+		}
+	}
+	ks_calls_full++;
+}
 
 static void ksample_waits_start(struct ksample_block *block)
 {
@@ -4054,10 +4159,10 @@ static volatile unsigned int *ks_slot(void)
 	for (k = 0; k < n && k < KSAMPLE_WAITERS; k++)
 		if (block->waiter[k].uid > 0 && sp - block->waiter[k].stack_lo < block->waiter[k].stack_hi - block->waiter[k].stack_lo)
 			return &block->waiter[k].site;
-	me = sceKernelGetThreadId();
+	me = __real_sceKernelGetThreadId();
 	memset(&info, 0, sizeof(info));
 	info.size = sizeof(info);
-	if (me < 0 || sceKernelReferThreadStatus(me, &info) < 0 || __real_sceKernelWaitSema(ks_claim_lock, 1, NULL) < 0)
+	if (me < 0 || __real_sceKernelReferThreadStatus(me, &info) < 0 || __real_sceKernelWaitSema(ks_claim_lock, 1, NULL) < 0)
 		return 0;
 	/* a freed slot first, so threads that come and go don't fill the table;
 	its uid is written last, so the sampler never pairs it with the old
@@ -4083,7 +4188,7 @@ static volatile unsigned int *ks_slot(void)
 	}
 	else
 		block->waiters_full++;
-	sceKernelSignalSema(ks_claim_lock, 1);
+	__real_sceKernelSignalSema(ks_claim_lock, 1);
 	return slot;
 }
 
@@ -4107,7 +4212,7 @@ static void ksample_waits_tidy(void)
 			continue;
 		memset(&info, 0, sizeof(info));
 		info.size = sizeof(info);
-		result = sceKernelReferThreadStatus(uid, &info);
+		result = __real_sceKernelReferThreadStatus(uid, &info);
 		if (result < 0 || (info.status & (PSP_THREAD_STOPPED | PSP_THREAD_KILLED)))
 		{
 			if (!block->waiters_freed)
@@ -4116,70 +4221,115 @@ static void ksample_waits_tidy(void)
 			block->waiter[k].uid = -uid;
 		}
 	}
-	sceKernelSignalSema(ks_claim_lock, 1);
+	__real_sceKernelSignalSema(ks_claim_lock, 1);
 }
 
 /* the caller's PC, written for the call's length; noinline keeps
 __builtin_return_address the wrapper's caller */
-#define KS_WAIT(real, call_args) \
-	volatile unsigned int *slot = ks_slot(); \
-	unsigned int was = slot ? *slot : 0; \
+#define KS_WAIT(fn, object, real, call_args) \
+	unsigned int site = (unsigned int)__builtin_return_address(0); \
+	volatile unsigned int *slot; \
+	unsigned int was; \
 	int result; \
+	ks_count(fn, (unsigned int)(object), site); \
+	slot = ks_slot(); \
+	was = slot ? *slot : 0; \
 	if (slot) \
-		*slot = (unsigned int)__builtin_return_address(0); \
+		*slot = site; \
 	result = real call_args; \
 	if (slot) \
 		*slot = was; \
 	return result
 
-#define KS_WRAP(name, params, call_args) \
+#define KS_WRAP(name, fn, object, params, call_args) \
 	int __real_##name params; \
-	__attribute__((noinline)) int __wrap_##name params { KS_WAIT(__real_##name, call_args); }
+	__attribute__((noinline)) int __wrap_##name params { KS_WAIT(fn, object, __real_##name, call_args); }
 
-KS_WRAP(sceKernelDelayThread, (SceUInt delay), (delay))
-KS_WRAP(sceKernelDelayThreadCB, (SceUInt delay), (delay))
-KS_WRAP(sceKernelWaitSemaCB, (SceUID sema, int signal, SceUInt *timeout), (sema, signal, timeout))
-KS_WRAP(sceKernelWaitEventFlag, (int flag, u32 bits, u32 wait, u32 *out, SceUInt *timeout), (flag, bits, wait, out, timeout))
-KS_WRAP(sceKernelWaitEventFlagCB, (int flag, u32 bits, u32 wait, u32 *out, SceUInt *timeout), (flag, bits, wait, out, timeout))
-KS_WRAP(sceKernelSleepThread, (void), ())
-KS_WRAP(sceKernelSleepThreadCB, (void), ())
-KS_WRAP(sceKernelWaitThreadEnd, (SceUID thread, SceUInt *timeout), (thread, timeout))
-KS_WRAP(sceDisplayWaitVblankStart, (void), ())
-KS_WRAP(sceDisplayWaitVblankStartCB, (void), ())
-KS_WRAP(sceDisplayWaitVblank, (void), ())
-KS_WRAP(sceAudioOutputBlocking, (int channel, int volume, void *buffer), (channel, volume, buffer))
-KS_WRAP(sceAudioOutputPannedBlocking, (int channel, int left, int right, void *buffer), (channel, left, right, buffer))
-KS_WRAP(sceAudioSRCOutputBlocking, (int volume, void *buffer), (volume, buffer))
+KS_WRAP(sceKernelDelayThread, KS_DELAY, delay, (SceUInt delay), (delay))
+KS_WRAP(sceKernelDelayThreadCB, KS_DELAYCB, delay, (SceUInt delay), (delay))
+KS_WRAP(sceKernelWaitSemaCB, KS_WAITSEMACB, sema, (SceUID sema, int signal, SceUInt *timeout), (sema, signal, timeout))
+KS_WRAP(sceKernelWaitEventFlag, KS_WAITFLAG, flag, (int flag, u32 bits, u32 wait, u32 *out, SceUInt *timeout), (flag, bits, wait, out, timeout))
+KS_WRAP(sceKernelWaitEventFlagCB, KS_WAITFLAGCB, flag, (int flag, u32 bits, u32 wait, u32 *out, SceUInt *timeout), (flag, bits, wait, out, timeout))
+KS_WRAP(sceKernelSleepThread, KS_SLEEP, 0, (void), ())
+KS_WRAP(sceKernelSleepThreadCB, KS_SLEEPCB, 0, (void), ())
+KS_WRAP(sceKernelWaitThreadEnd, KS_WAITEND, thread, (SceUID thread, SceUInt *timeout), (thread, timeout))
+KS_WRAP(sceDisplayWaitVblankStart, KS_VBLANKSTART, 0, (void), ())
+KS_WRAP(sceDisplayWaitVblankStartCB, KS_VBLANKSTARTCB, 0, (void), ())
+KS_WRAP(sceDisplayWaitVblank, KS_VBLANK, 0, (void), ())
+KS_WRAP(sceAudioOutputBlocking, KS_AUDIO, channel, (int channel, int volume, void *buffer), (channel, volume, buffer))
+KS_WRAP(sceAudioOutputPannedBlocking, KS_AUDIOPANNED, channel, (int channel, int left, int right, void *buffer), (channel, left, right, buffer))
+KS_WRAP(sceAudioSRCOutputBlocking, KS_AUDIOSRC, 0, (int volume, void *buffer), (volume, buffer))
 
 /* the semaphore's own wrapper: the claim's lock is taken through the real
 call, so a first wait can't recurse into the claim */
 __attribute__((noinline)) int __wrap_sceKernelWaitSema(SceUID sema, int signal, SceUInt *timeout)
 {
-	KS_WAIT(__real_sceKernelWaitSema, (sema, signal, timeout));
+	KS_WAIT(KS_WAITSEMA, sema, __real_sceKernelWaitSema, (sema, signal, timeout));
 }
 
 /* the GE's syncs block only when asked to wait (mode 0); a peek (1) is the
-caller's own polling and stays awake */
+caller's own polling and stays awake, counted with its mode as the object */
 int __real_sceGeDrawSync(int mode);
 int __real_sceGeListSync(int qid, int mode);
 
 __attribute__((noinline)) int __wrap_sceGeDrawSync(int mode)
 {
 	if (mode != 0)
-		return __real_sceGeDrawSync(mode);
 	{
-		KS_WAIT(__real_sceGeDrawSync, (mode));
+		ks_count(KS_GEDRAWSYNC, (unsigned int)mode, (unsigned int)__builtin_return_address(0));
+		return __real_sceGeDrawSync(mode);
+	}
+	{
+		KS_WAIT(KS_GEDRAWSYNC, mode, __real_sceGeDrawSync, (mode));
 	}
 }
 
 __attribute__((noinline)) int __wrap_sceGeListSync(int qid, int mode)
 {
 	if (mode != 0)
-		return __real_sceGeListSync(qid, mode);
 	{
-		KS_WAIT(__real_sceGeListSync, (qid, mode));
+		ks_count(KS_GELISTSYNC, (unsigned int)mode, (unsigned int)__builtin_return_address(0));
+		return __real_sceGeListSync(qid, mode);
+	}
+	{
+		KS_WAIT(KS_GELISTSYNC, mode, __real_sceGeListSync, (qid, mode));
 	}
 }
+
+/* the calls that don't block: counted only */
+#define KS_CALL(type, name, fn, object, params, call_args) \
+	type __real_##name params; \
+	__attribute__((noinline)) type __wrap_##name params \
+	{ \
+		ks_count(fn, (unsigned int)(object), (unsigned int)__builtin_return_address(0)); \
+		return __real_##name call_args; \
+	}
+#define KS_CALLV(name, fn, params, call_args) \
+	void __real_##name params; \
+	__attribute__((noinline)) void __wrap_##name params \
+	{ \
+		ks_count(fn, 0, (unsigned int)__builtin_return_address(0)); \
+		__real_##name call_args; \
+	}
+
+KS_CALL(int, sceKernelSignalSema, KS_SIGNALSEMA, sema, (SceUID sema, int signal), (sema, signal))
+KS_CALL(int, sceKernelPollSema, KS_POLLSEMA, sema, (SceUID sema, int signal), (sema, signal))
+KS_CALL(int, sceKernelSetEventFlag, KS_SETFLAG, flag, (SceUID flag, u32 bits), (flag, bits))
+KS_CALL(int, sceKernelClearEventFlag, KS_CLEARFLAG, flag, (SceUID flag, u32 bits), (flag, bits))
+KS_CALL(int, sceKernelPollEventFlag, KS_POLLFLAG, flag, (int flag, u32 bits, u32 wait, u32 *out), (flag, bits, wait, out))
+KS_CALL(int, sceKernelWakeupThread, KS_WAKEUP, thread, (SceUID thread), (thread))
+KS_CALL(SceUID, sceKernelGetThreadId, KS_THREADID, 0, (void), ())
+KS_CALL(int, sceKernelReferThreadStatus, KS_REFERTHREAD, thread, (SceUID thread, SceKernelThreadInfo *info), (thread, info))
+KS_CALL(unsigned int, sceKernelGetSystemTimeLow, KS_TIMELOW, 0, (void), ())
+KS_CALL(SceInt64, sceKernelGetSystemTimeWide, KS_TIMEWIDE, 0, (void), ())
+KS_CALL(int, sceKernelChangeThreadPriority, KS_PRIORITY, thread, (SceUID thread, int priority), (thread, priority))
+KS_CALLV(sceKernelDcacheWritebackRange, KS_WBRANGE, (const void *p, unsigned int size), (p, size))
+KS_CALLV(sceKernelDcacheWritebackInvalidateRange, KS_WBINVRANGE, (const void *p, unsigned int size), (p, size))
+KS_CALLV(sceKernelDcacheInvalidateRange, KS_INVRANGE, (const void *p, unsigned int size), (p, size))
+KS_CALLV(sceKernelDcacheWritebackAll, KS_WBALL, (void), ())
+KS_CALLV(sceKernelDcacheWritebackInvalidateAll, KS_WBINVALL, (void), ())
+#undef KS_CALL
+#undef KS_CALLV
 #undef KS_WRAP
 #undef KS_WAIT
 #endif
@@ -4247,6 +4397,8 @@ static void hwprofile_start(const char *eboot_path)
 					hwprofile.ksample_block = (unsigned int)block;
 					if (block->want_ctx)
 						ksample_waits_start(block);
+					if (!psp_keep("ksamplenocalls"))
+						ksample_calls_start();
 				}
 				else
 				{
@@ -4315,8 +4467,12 @@ awake, 1 it waits and another game thread is awake, 2 no game thread awake,
 the main thread's wait sites as "ksite <pc> <phase> <samples> <kernel>", the
 game's threads as "kwaiter <slot> <id> <stack> <name>", the interrupts as
 "kintr <number> <phase> <calls> <clocks, 16 hex digits>" and the phases' entries as
-"kentries", the module list as "kmodule <text> <size> <name>", and the last
-kernel PCs outside the bins as "kfar <pc>" (psp/sierra/ksample.py in the lab) */
+"kentries", the module list as "kmodule <text> <size> <name>", the last
+kernel PCs outside the bins as "kfar <pc>", the interrupts' logging as
+"kintrhead" and each source's record at start as "kintrinfo <number> <handler>
+<calls> <least clock>", and the counted calls as "kcallhead", "kcall <site>
+<call> <object> <calls by phase 0-3> <object's name>" (the main thread's)
+and "kcallother <call> <calls by phase>" (psp/sierra/ksample.py in the lab) */
 static void ksample_write(SceUID file)
 {
 	const struct ksample_block *block = (const struct ksample_block *)hwprofile.ksample_block;
@@ -4393,6 +4549,72 @@ static void ksample_write(SceUID file)
 	{
 		KS_ROOM(24);
 		used += (unsigned int)snprintf(chunk + used, sizeof(chunk) - used, "kfar %08x\n", block->far_pc[k]);
+	}
+	KS_ROOM(96);
+	used += (unsigned int)snprintf(chunk + used, sizeof(chunk) - used, "kintrhead logged %u error %08x nohandler %u\n",
+		block->intr_logged, (unsigned int)block->intr_log_error, block->intr_no_handler);
+	for (k = 0; k < block->intr_sources && k < KSAMPLE_INTRS; k++)
+	{
+		KS_ROOM(64);
+		used += (unsigned int)snprintf(chunk + used, sizeof(chunk) - used, "kintrinfo %u %08x %u %08x\n",
+			block->intr_no[k], block->intr_entry[k], block->intr_calls_start[k], block->intr_min_start[k]);
+	}
+	KS_ROOM(96);
+	used += (unsigned int)snprintf(chunk + used, sizeof(chunk) - used, "kcallhead on %d main %.31s used %u full %u\n",
+		ks_calls_on, ks_main_name, ks_calls_used, ks_calls_full);
+	for (k = 0; k < KS_CALLS; k++)
+	{
+		const struct ks_call *c = &ks_calls[k];
+		char name[32];
+
+		if (!c->site || c->fn >= KS_FNS)
+			continue;
+		name[0] = 0;
+		/* the object's name from the kernel, as it is now: a semaphore or
+		flag deleted since reads '-' */
+		if (ks_fn_object[c->fn] == 1)
+		{
+			SceKernelSemaInfo info;
+
+			memset(&info, 0, sizeof(info));
+			info.size = sizeof(info);
+			if (sceKernelReferSemaStatus((SceUID)c->object, &info) >= 0)
+				memcpy(name, info.name, sizeof(name));
+		}
+		else if (ks_fn_object[c->fn] == 2)
+		{
+			SceKernelEventFlagInfo info;
+
+			memset(&info, 0, sizeof(info));
+			info.size = sizeof(info);
+			if (sceKernelReferEventFlagStatus((SceUID)c->object, &info) >= 0)
+				memcpy(name, info.name, sizeof(name));
+		}
+		else if (ks_fn_object[c->fn] == 3)
+		{
+			SceKernelThreadInfo info;
+
+			memset(&info, 0, sizeof(info));
+			info.size = sizeof(info);
+			if (__real_sceKernelReferThreadStatus((SceUID)c->object, &info) >= 0)
+				memcpy(name, info.name, sizeof(name));
+		}
+		name[sizeof(name) - 1] = 0;
+		for (phase = 0; name[phase]; phase++)
+			if (name[phase] == ' ')
+				name[phase] = '_';
+		KS_ROOM(160);
+		used += (unsigned int)snprintf(chunk + used, sizeof(chunk) - used, "kcall %08x %s %08x %u %u %u %u %s\n",
+			c->site, ks_fn_name[c->fn], c->object, c->count[0], c->count[1], c->count[2], c->count[3],
+			name[0] ? name : (ks_fn_object[c->fn] ? "-" : "."));
+	}
+	for (k = 0; k < KS_FNS; k++)
+	{
+		if (!(ks_calls_other[0][k] | ks_calls_other[1][k] | ks_calls_other[2][k] | ks_calls_other[3][k]))
+			continue;
+		KS_ROOM(96);
+		used += (unsigned int)snprintf(chunk + used, sizeof(chunk) - used, "kcallother %s %u %u %u %u\n", ks_fn_name[k],
+			ks_calls_other[0][k], ks_calls_other[1][k], ks_calls_other[2][k], ks_calls_other[3][k]);
 	}
 #undef KS_ROOM
 	if (used)

@@ -237,6 +237,12 @@ KSAMPLE_WAITS = ["sceKernelDelayThread", "sceKernelDelayThreadCB", "sceKernelWai
                  "sceKernelWaitThreadEnd", "sceDisplayWaitVblankStart", "sceDisplayWaitVblankStartCB",
                  "sceDisplayWaitVblank", "sceGeDrawSync", "sceGeListSync", "sceAudioOutputBlocking",
                  "sceAudioOutputPannedBlocking", "sceAudioSRCOutputBlocking"]
+# and the calls that don't block, counted by caller ("kcall"; ksamplenocalls)
+KSAMPLE_CALLS = ["sceKernelSignalSema", "sceKernelPollSema", "sceKernelSetEventFlag", "sceKernelClearEventFlag",
+                 "sceKernelPollEventFlag", "sceKernelWakeupThread", "sceKernelGetThreadId", "sceKernelReferThreadStatus",
+                 "sceKernelGetSystemTimeLow", "sceKernelGetSystemTimeWide", "sceKernelChangeThreadPriority",
+                 "sceKernelDcacheWritebackRange", "sceKernelDcacheWritebackInvalidateRange", "sceKernelDcacheInvalidateRange",
+                 "sceKernelDcacheWritebackAll", "sceKernelDcacheWritebackInvalidateAll"]
 if FRAMEPIC:
     PSP_FILES.append("psp_framepic")
 # PSP_MUSIC=1 builds in the music path (psp/src/psp_music.c, Tremor and libogg,
@@ -1379,7 +1385,7 @@ def link(objs, stubs):
            ] + (["-Wl,--wrap=memcpy,--wrap=memset"] if CLAIMFILL else []) + (
            # PSP_KSAMPLE: the blocking calls, so the game's threads say when
            # they wait (psp_platform.c, ksample's waiter slots)
-           ["-Wl," + ",".join("--wrap=" + name for name in KSAMPLE_WAITS)] if KSAMPLE else []) + [
+           ["-Wl," + ",".join("--wrap=" + name for name in KSAMPLE_WAITS + KSAMPLE_CALLS)] if KSAMPLE else []) + [
            "@" + os.path.join(OUT, "objs.rsp"), SDK + "/lib/prxexports.o"] + (music_libs() if MUSIC else []) + LIBS + ["-o", os.path.join(OUT, "halo.elf")]
     if LTO_OBJS:
         cmd[1:1] = lto_link_flags()

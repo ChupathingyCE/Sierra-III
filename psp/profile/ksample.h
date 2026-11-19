@@ -30,12 +30,18 @@ sync, an ME handoff, the vblank).
 
 The interrupts by source: the interrupt manager's own count of each
 handler's calls (QueryIntrHandlerInfo, kernel mode), read by the prx at
-every phase change and split by phase.
+every phase change and split by phase. The manager keeps a handler's calls
+and clocks only while its logging is on, and a handler registered after the
+manager starts has it off (uofw interruptman.c: sceKernelRegisterIntrHandler
+copies the manager's default, 1 at start, into bit 15 of the handler's
+flags, and the dispatcher counts only with that bit clear), so every count
+reads 0 until it's turned on: the prx turns logging on for each source with
+a handler (sceKernelSetIntrLogging(n, 1)) and back off at module_stop.
 */
 #ifndef HALO_PROFILE_KSAMPLE_H
 #define HALO_PROFILE_KSAMPLE_H
 
-#define KSAMPLE_MAGIC 0x4B534D32u /* "KSM2": the waiter slots and the interrupt counts */
+#define KSAMPLE_MAGIC 0x4B534D33u /* "KSM3": the waiter slots, the interrupt counts with their logging on */
 #define KSAMPLE_LOW 0x08000000u /* physical: kseg0 0x88000000 and kseg1 0xA8000000 both land here */
 #define KSAMPLE_SPAN 0x00400000u
 #define KSAMPLE_PHASES 4
@@ -115,6 +121,16 @@ struct ksample_block
 	volatile unsigned int intr_calls[KSAMPLE_PHASES][KSAMPLE_INTRS];
 	volatile unsigned long long intr_clock[KSAMPLE_PHASES][KSAMPLE_INTRS];
 	volatile unsigned int phase_entries[KSAMPLE_PHASES];
+	/* the prx's, read once at start: each source's handler, its calls
+	and least clock so far (0 and ffffffff: never counted since it was
+	registered, so its logging was off), how many sources sceKernelSetIntrLogging
+	turned on and its first error (0 none), and the candidates the query
+	answered with no handler (they are not kept) */
+	volatile unsigned int intr_entry[KSAMPLE_INTRS];
+	volatile unsigned int intr_calls_start[KSAMPLE_INTRS];
+	volatile unsigned int intr_min_start[KSAMPLE_INTRS];
+	volatile unsigned int intr_logged, intr_no_handler;
+	volatile int intr_log_error;
 };
 
 #endif
