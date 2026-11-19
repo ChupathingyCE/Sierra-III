@@ -297,8 +297,13 @@ void box_ws_biped_fill(int slot, void const *datum, long index)
    it. Keyed by the datum index's low bits, so two objects that share them
    both read as marked: a false mark only costs a refill. */
 
+extern int psp_bipedstage_phase; /* objects.c (FIXES_BIPEDSTAGE): nonzero inside the staged passes */
+
 void psp_ws_dirty(long object_index)
 {
+	/* the staged passes' own writes are the record's, not an outside writer's */
+	if (psp_bipedstage_phase)
+		return;
 	box_ws_dirty[object_index & (BOX_WS_DIRTY - 1)] = 1;
 }
 
