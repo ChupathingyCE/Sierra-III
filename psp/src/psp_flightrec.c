@@ -44,7 +44,7 @@ nothing waits in memory longer than 2 s of game time, and at the exit.
 
 Measurement only: it reads the game's state, never writes it. Its engine
 hooks return at once on the Media Engine (PSP_ME_WORK) and when the word is
-off. Its memory (about 70 KB) comes from the heap when the word is first
+off. Its memory (about 100 KB, lanetrace's notes another 18) comes from the heap when the word is first
 seen; without the word every hook is one test. */
 
 #ifdef PSP_FLIGHTREC
@@ -193,7 +193,7 @@ struct fr_state
 	int have_player;
 	long last_tick;
 	/* the frames section in the making: a 20-byte head and the frame's notes */
-	unsigned char *frames;
+	unsigned char *frame_buf;
 	unsigned int frames_used;
 	unsigned int frame_note_at, frame_note_count;
 	unsigned int file_bytes, slices_written, write_failures;
@@ -545,7 +545,7 @@ static void fr_slice_close(long tick_to)
 
 	fr->ins_us[FR_INS_SLICE] += fr_clock() - t0;
 	fr->ins_calls[FR_INS_SLICE]++;
-	fr_write(fr->head, at, fr->frames, fr->frames_used, 0);
+	fr_write(fr->head, at, fr->frame_buf, fr->frames_used, 0);
 	fr->frames_used = 0;
 	fr->slices_written++;
 }
@@ -566,16 +566,16 @@ static int fr_ready(void)
 	fr = (struct fr_state *)calloc(1, sizeof(*fr));
 	if (fr)
 	{
-		fr->frames = (unsigned char *)malloc(FR_FRAMES_BYTES);
+		fr->frame_buf = (unsigned char *)malloc(FR_FRAMES_BYTES);
 		fr->head = (unsigned char *)malloc(FR_HEAD_BYTES);
 	}
-	if (!fr || !fr->frames || !fr->head || !psp_lane_flightrec_start())
+	if (!fr || !fr->frame_buf || !fr->head || !psp_lane_flightrec_start())
 	{
 		platform_log("flightrec: no room for its %u KB; off",
 			(unsigned int)((sizeof(*fr) + FR_FRAMES_BYTES + FR_HEAD_BYTES) / 1024));
 		if (fr)
 		{
-			free(fr->frames);
+			free(fr->frame_buf);
 			free(fr->head);
 			free(fr);
 		}
@@ -719,7 +719,7 @@ void psp_flightrec_lanes(const void *notes, unsigned int count)
 		fr->notes_dropped += (bytes - room) / 12;
 		bytes = room - room % 12;
 	}
-	memcpy(fr->frames + fr->frame_note_at + fr->frame_note_count * 12, notes, bytes);
+	memcpy(fr->frame_buf + fr->frame_note_at + fr->frame_note_count * 12, notes, bytes);
 	fr->frame_note_count += bytes / 12;
 }
 
@@ -736,7 +736,7 @@ void psp_flightrec_frame(unsigned long draw_us, unsigned long end_us, unsigned i
 	t0 = fr_clock();
 	if (fr->frames_used + 20 <= FR_FRAMES_BYTES)
 	{
-		head = (unsigned int *)(fr->frames + fr->frames_used);
+		head = (unsigned int *)(fr->frame_buf + fr->frames_used);
 		head[0] = (unsigned int)frame_number;
 		head[1] = t0;
 		head[2] = (unsigned int)draw_us;

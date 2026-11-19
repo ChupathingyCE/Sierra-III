@@ -28,6 +28,7 @@ Every write-up about the port is in this folder: design notes, measurements, pla
 - [`exact_state.md`](exact_state.md): What must stay exact: the state the multiplayer host reads or checks (ledger 7)
 - [`frame_map.html`](frame_map.html): the frame map as an interactive page: a stretch's frame on one timeline (main CPU, GE, ME)
 - [`frame_picture.md`](frame_picture.md): The frame picture (design v0): each box's ms a tick and a frame by cause (work, code wait, data wait, the rest), from the profiler at box boundaries
+- [`flightrec.md`](flightrec.md): The flight recorder (PSP_FLIGHTREC=1): the game's events and the engine's cost every 2 s of game time, with per-frame job spans and every instrument's own cost, for the lab's bench viewer
 - [`frame_rate_targets.md`](frame_rate_targets.md): Frame-rate targets: 15, 20 or 30 fps (analysis b87, hardware results b87 run 3)
 - [`frame_side_surveys.md`](frame_side_surveys.md): Frame-side surveys (2026-10-29)
 - [`frame_timeline.md`](frame_timeline.md): The frame timeline (ledger 3)
