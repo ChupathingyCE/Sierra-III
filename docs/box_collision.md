@@ -99,10 +99,19 @@ The lead's order of 2026-11-19 11:5xZ (the lab's coord/inbox/builder.md), on lin
 - Its proof: play parts (it's one tick old), so the outcome census plus play side-by-sides on b30_leg2, c20_leg2 and d20_play1, inside the multiplayer boundary (the player's own biped's per-tick distance from the old path's, held well under 3.0 units on the pads).
 
 **Open:**
+- **The ME check function by function** for rbsw's 12 sweep functions (`tools/mexec.py --dry` on the build's ELF), before the PSP pair.
 - **Slice 1's overlap is the intents' length.** The ME's level walks run beside the intents and the gather pass waits for any not done; if the intents are shorter than the walks on a map, the tail is waited for or taken back. The PSP pair's `sweepme:` line (made by the ME / here, taken back) says which.
 - **The in-place nodes' price on the ME** (two lines a step against the falsifier's one): read off the pair's ME cycles; a packed level form (means A) is its fix.
 
-**Results** (slice 1, Sierra-III builder/sweepme a2c38a6b): see below, as the lab's sweepmeid1 reads.
+**Results** (slice 1, Sierra-III builder/sweepme c15b130a; the lab's sierra-batch 44526892533, sweepmeid2, findings `sweepmeid2_identity`; held, 600 ticks a run, strict) [E]:
+- **Exact:** with `sweepme` on, play and both seeds identical every tick to it off on b30_leg2, c20_leg2 and d20_play1, seeds 1-2; with `sweepmecheck`, identical too; with `mebatchsimhalf` (the emulator's ring makes half of each batch, the main CPU takes the rest back: 1,020 by the ring, 2,654 here), identical. Strict 0 on all 16 runs.
+- **`sweepmecheck`: 22,316 answers compared with the engine's own level half, word for word (leaves, spheres, cylinders, prisms to their points): 0 differ** (b30 3,615, c20 12,810, d20 3,891).
+- **Records taken by the gather** (over the 300 staged ticks the last report covers): b30 3,615-3,647 of 3,674 (98.4-99.3%), c20 12,742-12,810 of 12,822 (99.4-99.9%), d20 3,891-4,065 of 4,072-4,134 (94.1-99.8%). The rest walked the level themselves, as the old path does: more than 64 leaves (b30 59, d20 84 on seed 1) or features over 960 B (b30 27, c20 12-80, d20 7-159). None cut short at 32 of a kind, no biped past the 48 records, no level or breakable change.
+- **The first build's sizes** (a2c38a6b/384c792a, sweepmeid1 44523856061, also exact, check 0 differ of 18,704): 24 leaves and 768 B took only 60% of d20's records (a third reached more than 24 leaves), and c20's ~43 records a tick overran the batch's 16 jobs at two a hand-over (4,065 made here). Hence 1.25 KB records holding 64 16-bit leaves and 960 B, and hand-overs of two for the first 16 records, then four.
+- **The copy** [D, the build's log]: MEXEC list rbsw, `+psp_sweepme_make` reaches 12 functions; the whole copy 106 functions, 160,136 B of 196,608. Its ME check (74 VFPU instructions, 8 import calls) names only the GE replay's functions list rb already copied (`model_geometry`, `psp_ge_queue_transparent`, `defer_replay`, ...); that the sweep's 12 have none is read from the falsifier's same code (0 VFPU, 0 syscalls), not yet listed function by function for this build (Open).
+- **Memory:** 60 KB of records and 2 x ~11 KB of scratch (the log's `sweepme:` line: 69 KB at the first build's 1 KB records), in a `PSP_SWEEPME=1` build.
+- **pgo:** 58 functions without counts against campaign-bipedstage3 (the new units and the cut-in); the PSP pair wants the build's own profile counted first, so neither side is priced unprofiled.
+- **Time:** none here. The emulator runs the ME's jobs inside the push on the main CPU, so "made by the ME" above is the simulated ring; the PSP pair says what the ME takes, what the main CPU saves and what it waits.
 
 ## Open
 
