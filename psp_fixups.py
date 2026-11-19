@@ -56650,10 +56650,13 @@ void psp_sweepme_after_intent(long biped_index)
 """,
  """#include "halo_perf_log.h" /* port: console.perf_log */
 #include "psp_sweepme.h" /* (FIXES_SWEEPME) */
+#include "collision_bsp_definitions.h" /* (FIXES_SWEEPME) the level's arrays */
 
-/* the tags' records are the box's (box_collbsp.h): read in place on the ME */
+/* the tags' records are the box's (box_collbsp.h): read in place on the ME
+(collision_bsp.c's own asserts hold its private leaf, 8 B, and 2D reference,
+4 B, as the packed tags have them) */
 typedef char psp_sweepme_tag_sizes[(sizeof(struct bsp3d_node) == 12 && sizeof(real_plane3d) == 16 &&
-	sizeof(struct collision_leaf) == 8 && sizeof(struct bsp2d_reference) == 4 && sizeof(struct bsp2d_node) == 20 &&
+	sizeof(struct bsp2d_node) == 20 &&
 	sizeof(struct collision_surface) == 8 && sizeof(struct collision_edge) == 12 && sizeof(struct collision_vertex) == 16 &&
 	BIT_VECTOR_SIZE_IN_BYTES(MAXIMUM_BREAKABLE_SURFACES_PER_MAP) == 4 * PSP_SWEEPME_BREAKABLE_WORDS &&
 	MAXIMUM_POINTS_PER_COLLISION_PRISM == 8) ? 1 : -1];
