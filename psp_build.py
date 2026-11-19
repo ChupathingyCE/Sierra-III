@@ -862,6 +862,9 @@ def compile_one(item):
     # block would then name phases it can't see)
     if FRAMEPIC and not rel.replace("\\", "/").endswith(("source/objects/objects.c", "source/physics/physics.c")):
         extra = extra + ["-DHALO_PERF_LOG=1"]
+    # PSP_KSAMPLE: the game's half of KSAMPLE is psp_platform.c's alone
+    if KSAMPLE and src.endswith("psp_platform.c"):
+        extra = extra + ["-DPSP_KSAMPLE=1"]
     cmd = PSP + flags + extra + defines + ["-include", os.path.join(HERE, "psp_post.h"), "-c", src, "-o", out]
     if src.endswith(("psp_sdl.c", "psp_libc.c", "psp_ge.c", "psp_tex.c", "psp_vfpu.c", "psp_vfpu_quat.c", "psp_vfputrig.c", "psp_menu.c", "psp_geo.c", "psp_anim.c",
                      "psp_debug.c", "psp_me.c", "psp_trace.c", "psp_crash.c", "psp_watch.c", "psp_net.c", "psp_net_adhoc.c",
@@ -886,7 +889,6 @@ def compile_one(item):
                ["-DPSP_RECON=1"] if RECON else []) + (
                ["-DPSP_PADPATH=1"] if PADPATH else []) + (
                ["-DPSP_FRAMEPIC=1"] if FRAMEPIC else []) + (
-               ["-DPSP_KSAMPLE=1"] if KSAMPLE and src.endswith("psp_platform.c") else []) + (
                ["-DPSP_MEPROBE=1"] if MEPROBE else []) + (
                ["-DPSP_WALKAPART=1"] if WALKAPART else []) + (
                ["-DPSP_MEXEC=1"] if MEXEC and src.endswith("psp_me.c") else []) + (
