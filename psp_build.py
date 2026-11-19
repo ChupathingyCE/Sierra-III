@@ -291,6 +291,18 @@ if BOXPOSING:
 # (psp/src/box_world_store.c; docs/box_biped_motion.md section 1c)
 if os.environ.get("PSP_BIPEDSTAGE", "") == "1":
     PSP_FILES.append("box_world_store")
+# PSP_BMSB=1 (with PSP_BIPEDSTAGE=1): biped motion's means B
+# (docs/box_biped_motion.md, "Means B"; psp/src/box_bmsb.c): the window's
+# record filled once after the unit pass, read by plain pointer, written back
+# once after the solves; keep word bmsb, off by default
+BMSB = os.environ.get("PSP_BMSB", "") == "1"
+if BMSB and os.environ.get("PSP_BIPEDSTAGE", "") != "1":
+    sys.exit("psp_build: PSP_BMSB needs PSP_BIPEDSTAGE=1 (the staged passes it fills and writes back around)")
+if BMSB and (os.environ.get("PSP_BMS_PLAIN", "") == "1" or os.environ.get("PSP_BMS_CENSUS", "") == "1"):
+    sys.exit("psp_build: PSP_BMSB doesn't build with PSP_BMS_PLAIN or PSP_BMS_CENSUS")
+if BMSB:
+    PSP_FILES.append("box_bmsb")
+CAPTURE_DEFINES = CAPTURE_DEFINES + (["-DPSP_BMSB=1"] if BMSB else [])
     # the accessor's constant map must follow the store's runs (step 1b)
     if subprocess.run([sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "tools", "bipedmove_map.py"), "--check"]).returncode:
         sys.exit("psp_build: psp/include/psp_bipedmove_map.h is stale: run tools/bipedmove_map.py")
