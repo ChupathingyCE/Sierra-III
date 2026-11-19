@@ -431,9 +431,8 @@ model, the lab's cohere162: the main CPU's format_depth undone by the ME's
 write-back) */
 /* The format's text is copied, not pointed to: on the ME a format can live in
 the ME's own RAM (its stack, or its copy of the read-only data), which the
-main CPU can't read, and the log reading such a pointer faulted b157 on c40
-(B99). The address is kept only as the kind's key, never read by the main
-CPU */
+main CPU can't read. The address is kept only as the kind's key, never read
+by the main CPU */
 #define FORMAT_REFUSED_TEXT 64
 static struct __attribute__((aligned(64)))
 {
