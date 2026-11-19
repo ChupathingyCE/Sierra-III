@@ -315,6 +315,17 @@ INTERPOLATION = os.environ.get("PSP_INTERPOLATION", "") == "1"
 MEXEC = os.environ.get("PSP_MEXEC", "")
 if MEXEC and not re.match(r"^[A-Za-z0-9_]+$", MEXEC):
     sys.exit("psp_build: PSP_MEXEC names a list in psp/layout (mexec_<name>.txt)")
+# PSP_VRAMCODE=<name>: VRAMCODE (docs/vramcode.md): psp/src/psp_vramcode.c
+# and psp_tex.c's room, and after the link tools/vramcode.py fills
+# psp_vramcode_table from psp/layout/vramcode_<name>.txt (the main CPU's hot
+# functions copied into VRAM) and psp/layout/vramcode_me.txt (what the ME runs:
+# no call it can make is re-aimed). Keep words vramroom (the room alone) and
+# vramcode (the room and the copy); a default build has neither
+VRAMCODE = os.environ.get("PSP_VRAMCODE", "")
+if VRAMCODE and not re.match(r"^[A-Za-z0-9_]+$", VRAMCODE):
+    sys.exit("psp_build: PSP_VRAMCODE names a list in psp/layout (vramcode_<name>.txt)")
+if VRAMCODE:
+    PSP_FILES.append("psp_vramcode")
 # PSP_MEVISLAND=0: leaves out the frame's visibility made on the ME (mevis's
 # copies of the visibility code, 23 KB, and the landing's hooks; keep word
 # mevisland, on by default; docs/mevis_landing.md). Built in otherwise
@@ -884,6 +895,7 @@ def compile_one(item):
                ["-DPSP_MEPROBE=1"] if MEPROBE else []) + (
                ["-DPSP_WALKAPART=1"] if WALKAPART else []) + (
                ["-DPSP_MEXEC=1"] if MEXEC and src.endswith("psp_me.c") else []) + (
+               ["-DPSP_VRAMCODE=1"] if VRAMCODE and src.endswith(("psp_tex.c", "psp_vramcode.c")) else []) + (
                ["-DPSP_MEVISLAND=1"] if MEVISLAND else []) + (
                ["-DPSP_METRICS=1"] if METRICS else []) + CAPTURE_DEFINES + (
                ["-DPSP_MUSIC=1"] if MUSIC else []) + (
@@ -1689,6 +1701,13 @@ def main():
         if not os.path.exists(lst):
             sys.exit("psp_build: PSP_MEXEC: no list " + lst)
         subprocess.run([sys.executable, os.path.join(HERE, "tools/mexec.py"), os.path.join(OUT, "halo.elf"), lst], check=True)
+    if VRAMCODE and PGO != "generate":
+        # as MEXEC's: from -q's relocations, before prxgen drops them
+        lst = os.path.join(HERE, "psp/layout/vramcode_%s.txt" % VRAMCODE)
+        me = os.path.join(HERE, "psp/layout/vramcode_me.txt")
+        if not os.path.exists(lst):
+            sys.exit("psp_build: PSP_VRAMCODE: no list " + lst)
+        subprocess.run([sys.executable, os.path.join(HERE, "tools/vramcode.py"), os.path.join(OUT, "halo.elf"), lst, me], check=True)
     subprocess.run(["psp-prxgen", os.path.join(OUT, "halo.elf"), os.path.join(OUT, "halo.prx")], check=True)
     # the title the XMB shows: the multiplayer build's is its own, so the two
     # EBOOTs installed side by side (PSP/GAME/halo, PSP/GAME/halomp) tell apart;

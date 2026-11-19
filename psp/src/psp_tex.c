@@ -604,6 +604,15 @@ void psp_tex_close(void)
 
 		vram_blip_freed = !psp_keep("benchrun") && psp_ge_blip_room_freed() ? VRAM_CACHE_START_FIXED - VRAM_CACHE_START_BLIPDEPTH : 0;
 		vram_cache_start = VRAM_CACHE_START_FIXED - vram_blip_freed;
+#if PSP_VRAMCODE
+		/* "vramroom" / "vramcode" (psp_vramcode.c): the room at the cache's
+		start, the same place for the whole run */
+		{
+			extern unsigned int psp_vramcode_room(unsigned int start);
+
+			vram_cache_start += psp_vramcode_room(vram_cache_start);
+		}
+#endif
 		arenas[0].start = 0x04000000 + VRAM_CACHE_START;
 	}
 	/* build 103: and 256 KB below that for the level's vertex copies
@@ -859,6 +868,13 @@ void psp_tex_suspend(void)
 {
 	int index;
 
+#if PSP_VRAMCODE
+	{
+		extern void psp_vramcode_suspend(void);
+
+		psp_vramcode_suspend();
+	}
+#endif
 	if (!volatile_locked)
 		return;
 	for (index = 0; index < entry_count; index++)
@@ -875,6 +891,13 @@ void psp_tex_resume(void)
 {
 	if (!ram_cache)
 		ram_cache_acquire();
+#if PSP_VRAMCODE
+	{
+		extern void psp_vramcode_resume(void);
+
+		psp_vramcode_resume();
+	}
+#endif
 }
 
 static int load(int index);
