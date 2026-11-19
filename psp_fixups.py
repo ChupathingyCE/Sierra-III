@@ -55312,7 +55312,208 @@ FIXES_B98LOG["source/ai/ai_communication.c#b98log"] = [
 """),
 ]
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_SSPR.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + list(FIXES_CHUPA090RUNS.items()) + list(FIXES_HEAPTRIM.items()) + list(FIXES_B78.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items()) + list(FIXES_AIME2A.items()) + list(FIXES_REDOSEED.items()) + (list(FIXES_STACKHOT.items()) if STACKHOT else []) + (list(FIXES_STACKHOT2.items()) if STACKHOT2 else []) + list(FIXES_PWSL.items()) + list(FIXES_SPHSL.items()) + list(FIXES_RECONLIST.items()) + list(FIXES_TP1.items()) + list(FIXES_WXDEAD.items()) + list(FIXES_AIMEMOVE.items()) + list(FIXES_PROPCRASH.items()) + list(FIXES_APCPOOL.items()) + list(FIXES_PSPTLS.items()) + list(FIXES_SNDEDRAM.items()) + list(FIXES_LIGHTFIRST.items()) + list(FIXES_DRAWPART.items()) + (list(FIXES_RECONLATE.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + list(FIXES_P2PASS.items()) + (list(FIXES_P2CENSUS.items()) if P2CENSUS else []) + list(FIXES_OBSRAY.items()) + list(FIXES_SNDWAIT.items()) + list(FIXES_FLAMEDECAL.items()) + list(FIXES_HUHINT.items()) + list(FIXES_DBLSOFT.items()) + list(FIXES_VFPUTRIG.items()) + list(FIXES_TICKCACHE.items()) + list(FIXES_STRICTALIAS.items()) + list(FIXES_SNDPERMAP.items()) + list(FIXES_RLOOP.items()) + list(FIXES_L10.items()) + list(FIXES_RLSKIP.items()) + list(FIXES_ONEWALK.items()) + (list(FIXES_POSEK.items()) if POSEK else []) + (list(FIXES_SNDSTREAM.items()) if os.environ.get("PSP_SNDSTREAM", "") == "1" else []) + list(FIXES_MOUTHCLOCK.items()) + list(FIXES_LSAME.items()) + list(FIXES_CHUPA090.items()) + list(FIXES_V091A.items()) + list(FIXES_AIDEBUGREC.items()) + (list(FIXES_AITICKOLD.items()) if AITICKOLD else []) + (list(FIXES_PADPATH.items()) if os.environ.get("PSP_PADPATH", "") == "1" else []) + list(FIXES_FARLEVEL.items()) + list(FIXES_DECALRING.items()) + list(FIXES_ARRAYFULL.items()) + (list(FIXES_DEADXBOX.items()) if DEADXBOX else []) + (list(FIXES_CAPTURE_POSING.items()) if CAPTURE == "posing" else []) + (list(FIXES_BOXPOSING.items()) if BOXPOSING else []) + (list(FIXES_ASKCENSUS.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + (list(FIXES_CAPTURE_SWEEP.items()) if CAPTURE == "sweep" else []) + (list(FIXES_B98LOG.items()) if os.environ.get("PSP_B98LOG", "") == "1" else [])):
+# ---------- FIXES_SOUNDGAMETIME: looping sounds' game state on game time ("soundgametime")
+# A looping sound's game state (game_sound.c: its state, or its deletion) took
+# sound_refresh_looping's answer, which turns TRUE when the sound manager's
+# component sounds have drained in the mixer: when a fade or a stop sound has
+# finished playing. That follows the mixer's progress (real time on the PSP,
+# the instruction clock in the emulator), so builds whose timing differs part
+# in the game state (the lab's bugs.md B91: the looping sounds record at b30
+# tick 532; findings loopwatch4). With "soundgametime" the game-state side
+# takes a deadline in game time from the tag's own numbers instead: a stop
+# ends after its fade (the fade asked for, or the tracks' fade-out or stop
+# sound, the longest) and a fake impulse sound after its loop sound's longest
+# permutation. The sound side is unchanged: sound_refresh_looping is called as
+# before, so sounds start, fade and stop as they did, only the game state no
+# longer waits on them. The deadline lives in the looping sound's datum (one
+# long more: game state, saved and hashed with it; the pool isn't on the
+# wire and no object slot moves). Design: docs/sound_game_time.md. Off by
+# default until its proof holds (the lab's call)
+FIXES_SOUNDGAMETIME = {}
+FIXES_SOUNDGAMETIME["source/sound/game_sound.c#soundgametime"] = [
+("""	real_point3d position;
+	real_vector3d forward;
+};
+
+struct game_sound_globals""", """	real_point3d position;
+	real_vector3d forward;
+#ifdef HALO_PSP
+	/* psp_fixups.py (FIXES_SOUNDGAMETIME): the game-time deadline, + 1 (0 is
+	none); the top bit marks a stop's */
+	unsigned long psp_deadline;
+#endif
+};
+
+struct game_sound_globals"""),
+("""	sizeof(struct game_looping_sound_datum) == 0x34 ? 1 : -1];""",
+ """	sizeof(struct game_looping_sound_datum) == 0x38 ? 1 : -1]; /* (FIXES_SOUNDGAMETIME: 0x34 + its deadline) */"""),
+("""static void update_potentially_audible_looping_sound(
+	long looping_sound_index,
+	struct location const *location)
+{
+	struct game_looping_sound_datum *sound = game_looping_sound_get(looping_sound_index);""",
+ """/* psp_fixups.py (FIXES_SOUNDGAMETIME): "soundgametime" (see there) */
+#define PSP_SGT_DEFAULT 0
+#define PSP_SGT_STOP 0x80000000u
+/* sound_manager.c's looping_sound_track_flags: _fade_out_at_stop_bit */
+#define PSP_SGT_FADE_OUT_AT_STOP_BIT 1
+
+static int psp_sgt_on = -1;
+
+static boolean psp_sgt_active(
+	void)
+{
+	if (psp_sgt_on < 0)
+	{
+		extern int psp_keep(const char *name);
+
+		psp_sgt_on = PSP_SGT_DEFAULT ? !psp_keep("nosoundgametime") : psp_keep("soundgametime") != 0;
+		if (psp_sgt_on)
+			platform_psp_log("sound: looping sounds' game state on game time (soundgametime)");
+	}
+	return psp_sgt_on != 0;
+}
+
+static long psp_sgt_ticks(
+	real seconds)
+{
+	return seconds > 0.0f ? (long)(seconds * TICKS_PER_SECOND + 0.5f) : 0;
+}
+
+static long psp_sgt_sound_ticks(
+	long sound_index)
+{
+	return sound_index == NONE ? 0 :
+		(long)sound_definition_get(sound_index)->longest_permutation_length * TICKS_PER_SECOND / 1000;
+}
+
+/* how long the sound manager plays a stop: the fade asked for, else each
+track's fade-out or stop sound (sound_refresh_looping's stop), the longest */
+static long psp_sgt_stop_ticks(
+	struct looping_sound_definition *definition,
+	real fade_time)
+{
+	long longest = 0;
+	short k;
+
+	if (fade_time > 0.0f)
+		return psp_sgt_ticks(fade_time);
+	for (k = 0; k < definition->tracks.count; k++)
+	{
+		struct looping_sound_track *track = TAG_BLOCK_GET_ELEMENT(&definition->tracks, k, struct looping_sound_track);
+		long ticks = 0;
+
+		if (TEST_FLAG(track->flags, PSP_SGT_FADE_OUT_AT_STOP_BIT) ||
+			(track->stop_sound.index == NONE && !TEST_FLAG(definition->flags, _looping_sound_fake_impulse_sound_bit)))
+			ticks = psp_sgt_ticks(track->fade_out_duration);
+		if (track->stop_sound.index != NONE && psp_sgt_sound_ticks(track->stop_sound.index) > ticks)
+			ticks = psp_sgt_sound_ticks(track->stop_sound.index);
+		if (ticks > longest)
+			longest = ticks;
+	}
+	return longest;
+}
+
+/* the audible path: TRUE when the sound is done (a fake impulse sound only,
+as the original's answer can be TRUE there alone) */
+static boolean psp_sgt_audible_done(
+	struct game_looping_sound_datum *sound,
+	struct looping_sound_definition *definition,
+	short refresh_state,
+	boolean mixer_done)
+{
+	long now = game_time_get();
+	long ticks = 0;
+	short k;
+
+	if (!psp_sgt_active())
+		return mixer_done;
+	if (!TEST_FLAG(definition->flags, _looping_sound_fake_impulse_sound_bit))
+	{
+		sound->psp_deadline = 0;
+		return FALSE;
+	}
+	if (refresh_state == _looping_sound_refresh_start || sound->psp_deadline == 0 || (sound->psp_deadline & PSP_SGT_STOP))
+	{
+		for (k = 0; k < definition->tracks.count; k++)
+		{
+			struct looping_sound_track *track = TAG_BLOCK_GET_ELEMENT(&definition->tracks, k, struct looping_sound_track);
+			long track_ticks = psp_sgt_sound_ticks(track->start_sound.index) + psp_sgt_sound_ticks(track->loop_sound.index);
+
+			if (track_ticks > ticks)
+				ticks = track_ticks;
+		}
+		sound->psp_deadline = (unsigned long)(now + ticks + 1);
+	}
+	if (now + 1 >= (long)sound->psp_deadline)
+	{
+		sound->psp_deadline = 0;
+		return TRUE;
+	}
+	return FALSE;
+}
+
+/* the stop path: TRUE when the stop has played out */
+static boolean psp_sgt_stop_done(
+	struct game_looping_sound_datum *sound,
+	struct looping_sound_definition *definition,
+	real fade_time,
+	boolean mixer_done)
+{
+	long now = game_time_get();
+
+	if (!psp_sgt_active())
+		return mixer_done;
+	if (!(sound->psp_deadline & PSP_SGT_STOP))
+		sound->psp_deadline = PSP_SGT_STOP | (unsigned long)(now + psp_sgt_stop_ticks(definition, fade_time) + 1);
+	if (now + 1 >= (long)(sound->psp_deadline & ~PSP_SGT_STOP))
+	{
+		sound->psp_deadline = 0;
+		return TRUE;
+	}
+	return FALSE;
+}
+
+static void update_potentially_audible_looping_sound(
+	long looping_sound_index,
+	struct location const *location)
+{
+	struct game_looping_sound_datum *sound = game_looping_sound_get(looping_sound_index);"""),
+("""			if (sound_refresh_looping(
+				sound->definition_index,
+				looping_sound_index,
+				&source,
+				refresh_state,
+				TEST_FLAG(sound->flags, _game_looping_sound_alternate_bit),
+				0.f))
+			{""", """			if (psp_sgt_audible_done(sound, definition, refresh_state, sound_refresh_looping( /* (FIXES_SOUNDGAMETIME) */
+				sound->definition_index,
+				looping_sound_index,
+				&source,
+				refresh_state,
+				TEST_FLAG(sound->flags, _game_looping_sound_alternate_bit),
+				0.f)))
+			{"""),
+("""		else if (!serviced_last_frame || sound_refresh_looping(
+			sound->definition_index,
+			looping_sound_index,
+			&source,
+			_looping_sound_refresh_stop,
+			TEST_FLAG(sound->flags, _game_looping_sound_alternate_bit),
+			TEST_FLAG(sound->flags, _game_looping_sound_unattached_stop_fixed_fadeout_bit) ? 4.f : 0.f))
+		{""", """		else if (!serviced_last_frame || psp_sgt_stop_done(sound, definition, /* (FIXES_SOUNDGAMETIME) */
+			TEST_FLAG(sound->flags, _game_looping_sound_unattached_stop_fixed_fadeout_bit) ? 4.f : 0.f,
+			sound_refresh_looping(
+			sound->definition_index,
+			looping_sound_index,
+			&source,
+			_looping_sound_refresh_stop,
+			TEST_FLAG(sound->flags, _game_looping_sound_alternate_bit),
+			TEST_FLAG(sound->flags, _game_looping_sound_unattached_stop_fixed_fadeout_bit) ? 4.f : 0.f)))
+		{"""),
+]
+
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_SSPR.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + list(FIXES_CHUPA090RUNS.items()) + list(FIXES_HEAPTRIM.items()) + list(FIXES_B78.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items()) + list(FIXES_AIME2A.items()) + list(FIXES_REDOSEED.items()) + (list(FIXES_STACKHOT.items()) if STACKHOT else []) + (list(FIXES_STACKHOT2.items()) if STACKHOT2 else []) + list(FIXES_PWSL.items()) + list(FIXES_SPHSL.items()) + list(FIXES_RECONLIST.items()) + list(FIXES_TP1.items()) + list(FIXES_WXDEAD.items()) + list(FIXES_AIMEMOVE.items()) + list(FIXES_PROPCRASH.items()) + list(FIXES_APCPOOL.items()) + list(FIXES_PSPTLS.items()) + list(FIXES_SNDEDRAM.items()) + list(FIXES_LIGHTFIRST.items()) + list(FIXES_DRAWPART.items()) + (list(FIXES_RECONLATE.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + list(FIXES_P2PASS.items()) + (list(FIXES_P2CENSUS.items()) if P2CENSUS else []) + list(FIXES_OBSRAY.items()) + list(FIXES_SNDWAIT.items()) + list(FIXES_FLAMEDECAL.items()) + list(FIXES_HUHINT.items()) + list(FIXES_DBLSOFT.items()) + list(FIXES_VFPUTRIG.items()) + list(FIXES_TICKCACHE.items()) + list(FIXES_STRICTALIAS.items()) + list(FIXES_SNDPERMAP.items()) + list(FIXES_RLOOP.items()) + list(FIXES_L10.items()) + list(FIXES_RLSKIP.items()) + list(FIXES_ONEWALK.items()) + (list(FIXES_POSEK.items()) if POSEK else []) + (list(FIXES_SNDSTREAM.items()) if os.environ.get("PSP_SNDSTREAM", "") == "1" else []) + list(FIXES_MOUTHCLOCK.items()) + list(FIXES_LSAME.items()) + list(FIXES_CHUPA090.items()) + list(FIXES_V091A.items()) + list(FIXES_AIDEBUGREC.items()) + (list(FIXES_AITICKOLD.items()) if AITICKOLD else []) + (list(FIXES_PADPATH.items()) if os.environ.get("PSP_PADPATH", "") == "1" else []) + list(FIXES_FARLEVEL.items()) + list(FIXES_DECALRING.items()) + list(FIXES_ARRAYFULL.items()) + (list(FIXES_DEADXBOX.items()) if DEADXBOX else []) + (list(FIXES_CAPTURE_POSING.items()) if CAPTURE == "posing" else []) + (list(FIXES_BOXPOSING.items()) if BOXPOSING else []) + (list(FIXES_ASKCENSUS.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + (list(FIXES_CAPTURE_SWEEP.items()) if CAPTURE == "sweep" else []) + (list(FIXES_B98LOG.items()) if os.environ.get("PSP_B98LOG", "") == "1" else []) + list(FIXES_SOUNDGAMETIME.items())):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 # PSP_FRAMEPIC (docs/frame_picture.md): game.c's perf statements are
 # stripped before its anchors are matched (PERF_STRIP), which took the tick's
