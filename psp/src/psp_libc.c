@@ -429,11 +429,18 @@ lines: with the variable alone aligned the struct was 124 bytes and the link
 put format_depth in its last word, a line both CPUs wrote (the ME's cache
 model, the lab's cohere162: the main CPU's format_depth undone by the ME's
 write-back) */
+/* The format's text is copied, not pointed to: on the ME a format can live in
+the ME's own RAM (its stack, or its copy of the read-only data), which the
+main CPU can't read, and the log reading such a pointer faulted b157 on c40
+(B99). The address is kept only as the kind's key, never read by the main
+CPU */
+#define FORMAT_REFUSED_TEXT 64
 static struct __attribute__((aligned(64)))
 {
-	const char *format[FORMAT_REFUSED_KINDS];
+	unsigned int key[FORMAT_REFUSED_KINDS];
 	unsigned int count[FORMAT_REFUSED_KINDS];
 	unsigned int other;
+	char text[FORMAT_REFUSED_KINDS][FORMAT_REFUSED_TEXT];
 } format_refused;
 _Static_assert(sizeof(format_refused) % 64 == 0, "format_refused must fill whole lines");
 
@@ -450,9 +457,17 @@ int psp_format_refused(const char *format)
 		return 0;
 	for (k = 0; k < FORMAT_REFUSED_KINDS; k++)
 	{
-		if (!format_refused.format[k])
-			format_refused.format[k] = format;
-		if (format_refused.format[k] == format)
+		if (!format_refused.key[k])
+		{
+			int i;
+
+			/* read here, on the CPU that holds the text; at most 63 bytes */
+			for (i = 0; i < FORMAT_REFUSED_TEXT - 1 && format[i]; i++)
+				format_refused.text[k][i] = format[i];
+			format_refused.text[k][i] = 0;
+			format_refused.key[k] = (unsigned int)format;
+		}
+		if (format_refused.key[k] == (unsigned int)format)
 		{
 			format_refused.count[k]++;
 			return 1;
@@ -469,8 +484,8 @@ void psp_format_refused_log(void)
 	extern void platform_log(const char *format, ...);
 	int k;
 
-	for (k = 0; k < FORMAT_REFUSED_KINDS && format_refused.format[k]; k++)
-		platform_log("ME: formatting refused %u times: [%.60s]", format_refused.count[k], format_refused.format[k]);
+	for (k = 0; k < FORMAT_REFUSED_KINDS && format_refused.key[k]; k++)
+		platform_log("ME: formatting refused %u times: [%.60s] (format at %08x)", format_refused.count[k], format_refused.text[k], format_refused.key[k]);
 	if (format_refused.other)
 		platform_log("ME: formatting refused %u more times, other formats", format_refused.other);
 }
