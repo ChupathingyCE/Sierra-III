@@ -4073,7 +4073,8 @@ struct ks_call
 static struct ks_call ks_calls[KS_CALLS];
 static volatile unsigned int ks_calls_used, ks_calls_full;
 static volatile unsigned int ks_calls_other[KSAMPLE_PHASES][KS_FNS];
-static unsigned int ks_main_lo, ks_main_hi;
+/* read by name from __wrap_sceKernelSetEventFlag's assembly too */
+__attribute__((used)) static unsigned int ks_main_lo, ks_main_hi;
 static int ks_calls_on = 0;
 static char ks_main_name[32];
 
@@ -4319,7 +4320,42 @@ __attribute__((noinline)) int __wrap_sceGeListSync(int qid, int mode)
 
 KS_CALL(int, sceKernelSignalSema, KS_SIGNALSEMA, sema, (SceUID sema, int signal), (sema, signal))
 KS_CALL(int, sceKernelPollSema, KS_POLLSEMA, sema, (SceUID sema, int signal), (sema, signal))
-KS_CALL(int, sceKernelSetEventFlag, KS_SETFLAG, flag, (SceUID flag, u32 bits), (flag, bits))
+/* the event flag's set takes no stack at all off the main thread: the GE's
+finish callback sets its flag from the interrupt, on the interrupt's stack
+(in the emulator that stack sits in kernel RAM, and the strict interpreter
+refused even the spill the inlined counter left). So the wrapper is a few
+instructions on temporaries: the main thread's call goes on to be counted,
+any other goes straight to the real call, uncounted */
+int __real_sceKernelSetEventFlag(SceUID flag, u32 bits);
+
+__attribute__((used)) static int ks_set_flag_main(SceUID flag, u32 bits, unsigned int site)
+{
+	ks_count(KS_SETFLAG, (unsigned int)flag, site);
+	return __real_sceKernelSetEventFlag(flag, bits);
+}
+
+__asm__(
+	"	.text\n"
+	"	.globl	__wrap_sceKernelSetEventFlag\n"
+	"	.type	__wrap_sceKernelSetEventFlag, @function\n"
+	"	.set	push\n"
+	"	.set	noreorder\n"
+	"__wrap_sceKernelSetEventFlag:\n"
+	"	lui	$t0, %hi(ks_main_lo)\n"
+	"	lw	$t0, %lo(ks_main_lo)($t0)\n"
+	"	lui	$t1, %hi(ks_main_hi)\n"
+	"	lw	$t1, %lo(ks_main_hi)($t1)\n"
+	"	subu	$t2, $sp, $t0\n"
+	"	subu	$t1, $t1, $t0\n"
+	"	sltu	$t2, $t2, $t1\n"
+	"	beqz	$t2, 1f\n"
+	"	move	$a2, $ra\n"
+	"	j	ks_set_flag_main\n"
+	"	nop\n"
+	"1:	j	__real_sceKernelSetEventFlag\n"
+	"	nop\n"
+	"	.set	pop\n"
+	"	.size	__wrap_sceKernelSetEventFlag, . - __wrap_sceKernelSetEventFlag\n");
 KS_CALL(int, sceKernelClearEventFlag, KS_CLEARFLAG, flag, (SceUID flag, u32 bits), (flag, bits))
 KS_CALL(int, sceKernelPollEventFlag, KS_POLLFLAG, flag, (int flag, u32 bits, u32 wait, u32 *out), (flag, bits, wait, out))
 KS_CALL(int, sceKernelWakeupThread, KS_WAKEUP, thread, (SceUID thread), (thread))
