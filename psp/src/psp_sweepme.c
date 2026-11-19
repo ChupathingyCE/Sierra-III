@@ -16,10 +16,15 @@ void platform_psp_log(const char *format, ...);
 int psp_keep(const char *name);
 void psp_me_cache_refresh(void); /* psp_me.c: on the ME, its whole cache written back and dropped */
 
-/* 48 records of 1.25 KB: c20's held bench stages ~43 a tick, b30 ~12, d20
-   ~14 (the lab's sweepmeid1); the leaves and the features' room are sized
-   from d20's, the map whose walks reach the most leaves */
-#define SWEEPME_RECORDS 48
+/* 64 records of 1.25 KB, the batch's claim table (ME_BATCH_CLAIM_RECORDS):
+   c20's held bench stages up to ~50 a tick, so 48 left ~5% of its bipeds
+   without one (the lab's sweepme_claims_psp_c20); b30 ~12, d20 ~14. The
+   leaves and the features' room are sized from d20's, the map whose walks
+   reach the most leaves */
+#define SWEEPME_RECORDS 64
+#if SWEEPME_RECORDS > ME_BATCH_CLAIM_RECORDS
+#error "SWEEPME_RECORDS outgrows the batch's claim table"
+#endif
 #define SWEEPME_RECORD_BYTES 1280
 #define SWEEPME_ROOM 960 /* the features' bytes a record holds */
 
