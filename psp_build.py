@@ -232,6 +232,11 @@ FRAMEPIC = os.environ.get("PSP_FRAMEPIC", "") == "1"
 # game's half is psp_platform.c's alone, and halo_profile.prx's Makefile reads
 # the same switch from the environment
 KSAMPLE = os.environ.get("PSP_KSAMPLE", "") == "1"
+KSAMPLE_WAITS = ["sceKernelDelayThread", "sceKernelDelayThreadCB", "sceKernelWaitSema", "sceKernelWaitSemaCB",
+                 "sceKernelWaitEventFlag", "sceKernelWaitEventFlagCB", "sceKernelSleepThread", "sceKernelSleepThreadCB",
+                 "sceKernelWaitThreadEnd", "sceDisplayWaitVblankStart", "sceDisplayWaitVblankStartCB",
+                 "sceDisplayWaitVblank", "sceGeDrawSync", "sceGeListSync", "sceAudioOutputBlocking",
+                 "sceAudioOutputPannedBlocking", "sceAudioSRCOutputBlocking"]
 if FRAMEPIC:
     PSP_FILES.append("psp_framepic")
 # PSP_MUSIC=1 builds in the music path (psp/src/psp_music.c, Tremor and libogg,
@@ -1371,7 +1376,10 @@ def link(objs, stubs):
            "--wrap=sceGuTexImage,--wrap=sceGuTexMode,--wrap=sceGuClutLoad,--wrap=sceGuClutMode,--wrap=sceGuTexFilter,"
            # build 114: list regions join the pending range (psp_ge.c, listcachedall)
            "--wrap=sceGuGetMemory",
-           ] + (["-Wl,--wrap=memcpy,--wrap=memset"] if CLAIMFILL else []) + [
+           ] + (["-Wl,--wrap=memcpy,--wrap=memset"] if CLAIMFILL else []) + (
+           # PSP_KSAMPLE: the blocking calls, so the game's threads say when
+           # they wait (psp_platform.c, ksample's waiter slots)
+           ["-Wl," + ",".join("--wrap=" + name for name in KSAMPLE_WAITS)] if KSAMPLE else []) + [
            "@" + os.path.join(OUT, "objs.rsp"), SDK + "/lib/prxexports.o"] + (music_libs() if MUSIC else []) + LIBS + ["-o", os.path.join(OUT, "halo.elf")]
     if LTO_OBJS:
         cmd[1:1] = lto_link_flags()

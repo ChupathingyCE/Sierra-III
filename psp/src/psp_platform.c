@@ -4011,6 +4011,139 @@ void psp_phase(int phase)
 #endif
 }
 
+#ifdef PSP_KSAMPLE
+/* "ksample": the kernel won't name the running thread inside the sampler's
+interrupt, so the game's threads say when they block. The link wraps the
+blocking calls (psp_build.py, PSP_KSAMPLE only); each wrapper finds its
+thread's slot by the stack it runs on (a slot is claimed at the thread's
+first wait, under a lock, its stack from the kernel), writes the caller's PC
+as the slot's site for as long as the call blocks, and puts back what was
+there (a callback's wait inside a CB wait). None of this can run on the
+Media Engine: these are system calls */
+static struct ksample_block *ks_waits = 0;
+static SceUID ks_claim_lock = -1;
+
+int __real_sceKernelWaitSema(SceUID sema, int signal, SceUInt *timeout);
+
+static void ksample_waits_start(struct ksample_block *block)
+{
+	ks_claim_lock = sceKernelCreateSema("ksample claim", 0, 1, 1, NULL);
+	if (ks_claim_lock >= 0)
+		ks_waits = block;
+}
+
+static inline unsigned int ks_sp(void)
+{
+	unsigned int sp;
+
+	__asm__ volatile ("move %0, $sp" : "=r"(sp));
+	return sp;
+}
+
+static volatile unsigned int *ks_slot(void)
+{
+	struct ksample_block *block = ks_waits;
+	unsigned int sp = ks_sp(), k, n;
+	volatile unsigned int *slot = 0;
+	SceKernelThreadInfo info;
+	SceUID me;
+
+	if (!block)
+		return 0;
+	n = block->waiters;
+	for (k = 0; k < n && k < KSAMPLE_WAITERS; k++)
+		if (block->waiter[k].uid > 0 && sp - block->waiter[k].stack_lo < block->waiter[k].stack_hi - block->waiter[k].stack_lo)
+			return &block->waiter[k].site;
+	me = sceKernelGetThreadId();
+	memset(&info, 0, sizeof(info));
+	info.size = sizeof(info);
+	if (me < 0 || sceKernelReferThreadStatus(me, &info) < 0 || __real_sceKernelWaitSema(ks_claim_lock, 1, NULL) < 0)
+		return 0;
+	n = block->waiters;
+	if (n < KSAMPLE_WAITERS)
+	{
+		struct ksample_waiter *w = &block->waiter[n];
+
+		w->stack_lo = (unsigned int)info.stack;
+		w->stack_hi = (unsigned int)info.stack + (unsigned int)info.stackSize;
+		w->site = 0;
+		memcpy(w->name, info.name, sizeof(w->name));
+		w->name[sizeof(w->name) - 1] = 0;
+		w->uid = me;
+		block->waiters = n + 1;
+		slot = &w->site;
+	}
+	else
+		block->waiters_full++;
+	sceKernelSignalSema(ks_claim_lock, 1);
+	return slot;
+}
+
+/* the caller's PC, written for the call's length; noinline keeps
+__builtin_return_address the wrapper's caller */
+#define KS_WAIT(real, call_args) \
+	volatile unsigned int *slot = ks_slot(); \
+	unsigned int was = slot ? *slot : 0; \
+	int result; \
+	if (slot) \
+		*slot = (unsigned int)__builtin_return_address(0); \
+	result = real call_args; \
+	if (slot) \
+		*slot = was; \
+	return result
+
+#define KS_WRAP(name, params, call_args) \
+	int __real_##name params; \
+	__attribute__((noinline)) int __wrap_##name params { KS_WAIT(__real_##name, call_args); }
+
+KS_WRAP(sceKernelDelayThread, (SceUInt delay), (delay))
+KS_WRAP(sceKernelDelayThreadCB, (SceUInt delay), (delay))
+KS_WRAP(sceKernelWaitSemaCB, (SceUID sema, int signal, SceUInt *timeout), (sema, signal, timeout))
+KS_WRAP(sceKernelWaitEventFlag, (int flag, u32 bits, u32 wait, u32 *out, SceUInt *timeout), (flag, bits, wait, out, timeout))
+KS_WRAP(sceKernelWaitEventFlagCB, (int flag, u32 bits, u32 wait, u32 *out, SceUInt *timeout), (flag, bits, wait, out, timeout))
+KS_WRAP(sceKernelSleepThread, (void), ())
+KS_WRAP(sceKernelSleepThreadCB, (void), ())
+KS_WRAP(sceKernelWaitThreadEnd, (SceUID thread, SceUInt *timeout), (thread, timeout))
+KS_WRAP(sceDisplayWaitVblankStart, (void), ())
+KS_WRAP(sceDisplayWaitVblankStartCB, (void), ())
+KS_WRAP(sceDisplayWaitVblank, (void), ())
+KS_WRAP(sceAudioOutputBlocking, (int channel, int volume, void *buffer), (channel, volume, buffer))
+KS_WRAP(sceAudioOutputPannedBlocking, (int channel, int left, int right, void *buffer), (channel, left, right, buffer))
+KS_WRAP(sceAudioSRCOutputBlocking, (int volume, void *buffer), (volume, buffer))
+
+/* the semaphore's own wrapper: the claim's lock is taken through the real
+call, so a first wait can't recurse into the claim */
+__attribute__((noinline)) int __wrap_sceKernelWaitSema(SceUID sema, int signal, SceUInt *timeout)
+{
+	KS_WAIT(__real_sceKernelWaitSema, (sema, signal, timeout));
+}
+
+/* the GE's syncs block only when asked to wait (mode 0); a peek (1) is the
+caller's own polling and stays awake */
+int __real_sceGeDrawSync(int mode);
+int __real_sceGeListSync(int qid, int mode);
+
+__attribute__((noinline)) int __wrap_sceGeDrawSync(int mode)
+{
+	if (mode != 0)
+		return __real_sceGeDrawSync(mode);
+	{
+		KS_WAIT(__real_sceGeDrawSync, (mode));
+	}
+}
+
+__attribute__((noinline)) int __wrap_sceGeListSync(int qid, int mode)
+{
+	if (mode != 0)
+		return __real_sceGeListSync(qid, mode);
+	{
+		KS_WAIT(__real_sceGeListSync, (qid, mode));
+	}
+}
+#undef KS_WRAP
+#undef KS_WAIT
+#endif
+
 static void hwprofile_start(const char *eboot_path)
 {
 	char path[256];
@@ -4066,19 +4199,23 @@ static void hwprofile_start(const char *eboot_path)
 					block->shift = (unsigned int)shift;
 					block->bins = bins;
 					block->counts = (unsigned int)kcounts;
-					/* the thread lookup runs in the sampler's interrupt: ksamplenoctx
-					leaves it out if the PSP ever refuses it badly */
+					/* ksamplenoctx: the blocking calls' wrappers write no slots, so
+					every sample is "not known"; ksamplenointr: no interrupt counts */
 					block->want_ctx = !psp_keep("ksamplenoctx");
+					block->want_intr = !psp_keep("ksamplenointr");
 					block->magic = KSAMPLE_MAGIC;
 					hwprofile.ksample_block = (unsigned int)block;
+					if (block->want_ctx)
+						ksample_waits_start(block);
 				}
 				else
 				{
 					free(block);
 					block = 0;
 				}
-				platform_log("ksample: %s (%u bins of %u bytes from %08x, threads %s, %u KB)", block ? "on" : "no room",
-					bins, 1u << shift, 0x80000000u | KSAMPLE_LOW, block && block->want_ctx ? "split" : "not split",
+				platform_log("ksample: %s (%u bins of %u bytes from %08x, threads %s, interrupts %s, %u KB)", block ? "on" : "no room",
+					bins, 1u << shift, 0x80000000u | KSAMPLE_LOW, block && block->want_ctx ? "split by the game's waits" : "not split",
+					block && block->want_intr ? "counted" : "not counted",
 					(unsigned int)(KSAMPLE_PHASES * KSAMPLE_CTX * bins * 4 + sizeof(struct ksample_block)) / 1024);
 			}
 #endif
@@ -4131,10 +4268,14 @@ static void bus_probe(const char *when)
 /* the counters since the last heartbeat, as shares of the CPU's cycles and
 counts a millisecond (counters in PspDebugProfilerRegs order, from systemck) */
 #ifdef PSP_KSAMPLE
-/* "ksample": after the program's bins, the kernel's: "ksample head ..." with
-the totals, "ksample <phase> <ctx> <bin> <count>" (ctx 0 the game's thread,
-1 another, 2 not known), the module list as "kmodule <text> <size> <name>",
-the threads met in the kernel as "kthread <id> <count> <name>", and the last
+/* "ksample": after the program's bins, the kernel's: "ksample head2 ..."
+with the totals, "ksample <phase> <ctx> <bin> <count>" (ctx 0 the main thread
+awake, 1 it waits and another game thread is awake, 2 no game thread awake,
+3 not known), every sample by phase and ctx as "kctx <phase> <ctx> <count>",
+the main thread's wait sites as "ksite <pc> <phase> <samples> <kernel>", the
+game's threads as "kwaiter <slot> <id> <stack> <name>", the interrupts as
+"kintr <number> <phase> <calls> <clocks, 16 hex digits>" and the phases' entries as
+"kentries", the module list as "kmodule <text> <size> <name>", and the last
 kernel PCs outside the bins as "kfar <pc>" (psp/sierra/ksample.py in the lab) */
 static void ksample_write(SceUID file)
 {
@@ -4148,12 +4289,15 @@ static void ksample_write(SceUID file)
 	counts = (const volatile unsigned int *)block->counts;
 #define KS_ROOM(n) do { if (used + (n) > sizeof(chunk)) { sceIoWrite(file, chunk, used); used = 0; } } while (0)
 	used += (unsigned int)snprintf(chunk + used, sizeof(chunk) - used,
-		"ksample head base %08x shift %u bins %u ctx %u samples %u %u %u %u kernel %u %u %u %u far %u refused %u threads %u full %u modules %u reads %u error %08x\n",
+		"ksample head2 base %08x shift %u bins %u ctx %u samples %u %u %u %u kernel %u %u %u %u far %u "
+		"kid %08x %08x game %08x waiters %u full %u sites %u full %u modules %u reads %u error %08x "
+		"intr %u sources %u error %08x\n",
 		0x80000000u | KSAMPLE_LOW, block->shift, block->bins, block->want_ctx,
 		block->phase_samples[0], block->phase_samples[1], block->phase_samples[2], block->phase_samples[3],
 		block->phase_kernel[0], block->phase_kernel[1], block->phase_kernel[2], block->phase_kernel[3],
-		block->far, block->refused, block->threads, block->threads_full, block->modules, block->module_reads,
-		(unsigned int)block->module_error);
+		block->far, (unsigned int)block->kid_interrupt, (unsigned int)block->kid_thread, (unsigned int)block->game_uid,
+		block->waiters, block->waiters_full, block->sites, block->sites_full, block->modules, block->module_reads,
+		(unsigned int)block->module_error, block->want_intr, block->intr_sources, (unsigned int)block->intr_error);
 	for (phase = 0; phase < KSAMPLE_PHASES; phase++)
 		for (ctx = 0; ctx < KSAMPLE_CTX; ctx++)
 			for (k = 0; k < block->bins; k++)
@@ -4165,17 +4309,45 @@ static void ksample_write(SceUID file)
 				KS_ROOM(48);
 				used += (unsigned int)snprintf(chunk + used, sizeof(chunk) - used, "ksample %u %u %u %u\n", phase, ctx, k, count);
 			}
+	for (phase = 0; phase < KSAMPLE_PHASES; phase++)
+		for (ctx = 0; ctx < KSAMPLE_CTX; ctx++)
+		{
+			KS_ROOM(40);
+			used += (unsigned int)snprintf(chunk + used, sizeof(chunk) - used, "kctx %u %u %u\n", phase, ctx, block->ctx_samples[phase][ctx]);
+		}
+	for (k = 0; k < block->sites && k < KSAMPLE_SITES; k++)
+		for (phase = 0; phase < KSAMPLE_PHASES; phase++)
+		{
+			if (!block->site_all[phase][k])
+				continue;
+			KS_ROOM(56);
+			used += (unsigned int)snprintf(chunk + used, sizeof(chunk) - used, "ksite %08x %u %u %u\n",
+				block->site_pc[k], phase, block->site_all[phase][k], block->site_kernel[phase][k]);
+		}
+	for (k = 0; k < block->waiters && k < KSAMPLE_WAITERS; k++)
+	{
+		KS_ROOM(96);
+		used += (unsigned int)snprintf(chunk + used, sizeof(chunk) - used, "kwaiter %u %08x %08x %.31s\n", k,
+			(unsigned int)block->waiter[k].uid, block->waiter[k].stack_hi - block->waiter[k].stack_lo, block->waiter[k].name);
+	}
+	for (k = 0; k < block->intr_sources && k < KSAMPLE_INTRS; k++)
+		for (phase = 0; phase < KSAMPLE_PHASES; phase++)
+		{
+			/* the clocks as two hex words: the libc's printf may not take a long long */
+			unsigned long long clocks = block->intr_clock[phase][k];
+
+			KS_ROOM(64);
+			used += (unsigned int)snprintf(chunk + used, sizeof(chunk) - used, "kintr %u %u %u %08x%08x\n",
+				block->intr_no[k], phase, block->intr_calls[phase][k], (unsigned int)(clocks >> 32), (unsigned int)clocks);
+		}
+	KS_ROOM(64);
+	used += (unsigned int)snprintf(chunk + used, sizeof(chunk) - used, "kentries %u %u %u %u\n",
+		block->phase_entries[0], block->phase_entries[1], block->phase_entries[2], block->phase_entries[3]);
 	for (k = 0; k < block->modules && k < KSAMPLE_MODULES; k++)
 	{
 		KS_ROOM(80);
 		used += (unsigned int)snprintf(chunk + used, sizeof(chunk) - used, "kmodule %08x %08x %.27s\n",
 			block->module[k].text_addr, block->module[k].text_size, block->module[k].name);
-	}
-	for (k = 0; k < block->threads && k < KSAMPLE_THREADS; k++)
-	{
-		KS_ROOM(80);
-		used += (unsigned int)snprintf(chunk + used, sizeof(chunk) - used, "kthread %08x %u %.31s\n",
-			(unsigned int)block->thread[k].uid, block->thread[k].count, block->thread[k].name);
 	}
 	for (k = 0; k < KSAMPLE_FAR && k < block->far; k++)
 	{
