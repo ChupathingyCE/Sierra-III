@@ -79,7 +79,7 @@ void box_ws_old_mark(long datum_index)
 	box_ws_old_list[box_ws_old_listed++] = (uint16_t)absolute;
 }
 
-int box_ws_old_marked(unsigned *absolute, unsigned capacity)
+int box_ws_old_marked(uint16_t *absolute, unsigned capacity)
 {
 	unsigned n = 0, i;
 
@@ -90,7 +90,7 @@ int box_ws_old_marked(unsigned *absolute, unsigned capacity)
 		int16_t owner = box_ws_old_biped_owner[i];
 
 		if (owner >= 0 && !(box_ws_old_bits[owner >> 5] & (1u << (owner & 31))))
-			absolute[n++] = (unsigned)owner;
+			absolute[n++] = (uint16_t)owner;
 	}
 	box_ws_old_listed = 0;
 	memset(box_ws_old_bits, 0, sizeof(box_ws_old_bits));

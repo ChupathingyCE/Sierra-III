@@ -56327,6 +56327,7 @@ FIXES_WSOLD = {
  """#include "units/bipeds.h"
 #include "physics/breakable_surfaces.h"
 #include "box_ws_old.h" /* (FIXES_WSOLD) */
+_Static_assert(BOX_WS_OLD_SLOTS >= MAXIMUM_OBJECTS_PER_MAP, "the one-tick-old copy holds every object slot");
 
 static int psp_wsold_make(long object_index, struct object_datum const *object, short type,
 	struct box_ws_old_object *record, struct box_ws_old_biped *biped_record)
@@ -56407,7 +56408,7 @@ static void psp_wsold_one(unsigned absolute, int check)
 
 void psp_wsold_refresh(void)
 {
-	static unsigned list[BOX_WS_OLD_SLOTS + BOX_WS_OLD_BIPEDS];
+	static uint16_t list[BOX_WS_OLD_SLOTS + BOX_WS_OLD_BIPEDS];
 	int state = box_ws_old_begin();
 	unsigned count, i, bipeds = 0;
 

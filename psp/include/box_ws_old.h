@@ -12,9 +12,11 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* object slots held (absolute datum index); an object past it has no record
-   and its reader takes the serial path */
-#define BOX_WS_OLD_SLOTS 1024
+/* object slots held (absolute datum index): the object array's own maximum
+   (psp_capacity.h's HALO_PORT_MAXIMUM_OBJECTS_PER_MAP; objects.c checks it
+   against the engine's at compile time), so no map can make an object the
+   copy has no slot for (d20 reaches 1,070: docs/box_world_store.md §9) */
+#define BOX_WS_OLD_SLOTS 2048
 #define BOX_WS_OLD_BIPEDS 96
 
 /* every object the sweep can meet: 32 B, two to a line */
@@ -84,7 +86,7 @@ void box_ws_old_put(unsigned absolute, struct box_ws_old_object const *object, s
 int box_ws_old_begin(void);
 /* the objects to refresh: the marked ones and every biped held (their
    records are 2 KB in all, cheaper than a mark at each of their writers) */
-int box_ws_old_marked(unsigned *absolute, unsigned capacity);
+int box_ws_old_marked(uint16_t *absolute, unsigned capacity);
 void box_ws_old_flipped(unsigned objects, unsigned bipeds, unsigned high_water);
 /* wsoldcheck: a fresh record of a live object against the copy, after the
    refresh (a change no mark caught) */
