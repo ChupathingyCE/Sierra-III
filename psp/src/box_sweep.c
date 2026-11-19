@@ -555,10 +555,119 @@ unsigned long long box_sweep_lcs_calls[4], box_sweep_lcs_scanned[4];
 
 /* ---------- the objects' half */
 
-static const struct box_sweep_object *object_of(const struct box_sweep_world *w, int index)
+#ifdef BOX_SWEEP_STORE
+#include "box_ws_old.h"
+
+/* the game's world (BOX_SWEEP_STORE): each object as the world store's
+one-tick-old copy holds it (box_ws_old.h), found by its datum index, made
+into the box's object on the walk's own frame */
+static const struct box_sweep_object *object_of(const struct box_sweep_world *w, int index, struct box_sweep_object *o)
+{
+	const struct box_ws_old_object *r = box_ws_old_object_of(index);
+
+	(void)w;
+	if (!r)
+		return 0;
+	o->index = index;
+	o->flags = r->flags;
+	o->damage_flags = r->dead ? 1u << BOX_SWEEP_OBJECT_DEAD : 0;
+	o->type = r->type;
+	copy3(o->center, r->center);
+	o->radius = r->radius;
+	o->parent = -1;
+	o->next = r->next;
+	o->first_child = r->first_child;
+	o->seen = BOX_SWEEP_SEEN_NONE;
+	o->first_node = o->node_count = 0;
+	if (r->type == BOX_SWEEP_TYPE_BIPED)
+	{
+		const struct box_ws_old_biped *b = box_ws_old_biped_of_index(index);
+
+		if (b)
+		{
+			o->parent = b->parent;
+			o->player = b->player;
+			o->seat = b->seat;
+			o->biped_flags = b->passes_through ? 1u << BOX_SWEEP_BIPED_PASSES_THROUGH : 0;
+			o->seen = b->pill_held ? BOX_SWEEP_SEEN_BIPED : BOX_SWEEP_SEEN_UNIT;
+			/* the store holds the base already raised by the height, as the
+			engine raises it before it makes the pill */
+			copy3(o->pill_base, b->pill_base);
+			o->pill_height = b->pill_height;
+			o->pill_width = b->pill_width;
+		}
+	}
+	else
+	{
+		const struct box_ws_old_model *m = &box_ws_old_models[(unsigned)index & 0xffff];
+
+		if (m->state == BOX_WS_OLD_MODEL_HELD)
+		{
+			o->seen = BOX_SWEEP_SEEN_MODEL;
+			o->first_node = m->first;
+			o->node_count = m->count;
+		}
+		else if (m->state == BOX_WS_OLD_MODEL_NO_MODEL)
+			o->seen = BOX_SWEEP_SEEN_NO_MODEL;
+	}
+	return o;
+}
+
+/* a leaf's cluster from the structure's own leaf records; -1 for no cluster
+(the engine's NONE: its list is empty) */
+static int cluster_of(const struct box_sweep_world *w, int leaf)
+{
+	unsigned int k = (unsigned int)leaf & 0x7FFFFFFFu;
+
+	if (leaf == -1 || !w->structure_leaves || k >= (unsigned int)w->structure_leaf_count)
+		return -1;
+	return *(const short *)((const unsigned char *)w->structure_leaves + 16 * k + 8);
+}
+
+/* a cluster's run in the store's members; 0 when the store doesn't hold it */
+static int cluster_run(int cluster, const int32_t **objects, int *count)
+{
+	if (cluster < 0 || cluster >= box_ws_old_cluster_count)
+		return 0;
+	*objects = box_ws_old_members + box_ws_old_clusters[cluster].first;
+	*count = box_ws_old_clusters[cluster].count;
+	return 1;
+}
+
+/* the engine's collision_bsp read where the tags hold it: its eight blocks
+(count, address, definition: 12 B each) in this order, as the cut-in's
+asserts hold them (psp_fixups.py FIXES_SWEEPME) */
+struct box_sweep_tag_block { int count; const void *address; const void *definition; };
+static void store_bsp(const void *tag, struct box_collbsp *bsp)
+{
+	const struct box_sweep_tag_block *b = (const struct box_sweep_tag_block *)tag;
+
+	bsp->nodes = 0;
+	bsp->tag_nodes = b[0].address;
+	bsp->planes = (const float *)b[1].address;
+	bsp->leaves = (const struct box_collbsp_leaf *)b[2].address;
+	bsp->references = (const struct box_collbsp_reference *)b[3].address;
+	bsp->nodes2d = (const struct box_collbsp_node2d *)b[4].address;
+	bsp->surfaces = (const struct box_collbsp_surface *)b[5].address;
+	bsp->edges = (const struct box_collbsp_edge *)b[6].address;
+	bsp->vertices = (const struct box_collbsp_vertex *)b[7].address;
+	bsp->node_count = b[0].count;
+	bsp->plane_count = b[1].count;
+	bsp->leaf_count = b[2].count;
+	bsp->reference_count = b[3].count;
+	bsp->node2d_count = b[4].count;
+	bsp->surface_count = b[5].count;
+	bsp->edge_count = b[6].count;
+	bsp->vertex_count = b[7].count;
+	bsp->form = 0;
+	bsp->bounds = 0;
+}
+#else
+static const struct box_sweep_object *object_of(const struct box_sweep_world *w, int index, struct box_sweep_object *held)
 {
 	int k;
 
+	(void)held;
 	LCS(0, w->object_count);
 	for (k = 0; k < w->object_count; k++)
 		if (w->objects[k].index == index)
@@ -591,6 +700,7 @@ static const struct box_sweep_cluster *cluster_members(const struct box_sweep_wo
 			return &w->clusters[k];
 	return 0;
 }
+#endif
 
 static int mark(int *set, int *count, int most, int value)
 {
@@ -615,35 +725,49 @@ static inline int in_sphere(const float *point, const float *center, float reach
 
 /* a model's node BSPs, each walked in its node's space */
 static int model_features(const struct box_sweep_world *w, const struct box_sweep_object *o, const float *center,
-	float radius, float height, float width, struct box_sweep_scratch *scratch)
+	float radius, float height, float width, struct box_sweep_gather *g)
 {
 	int k;
 
 	for (k = 0; k < o->node_count; k++)
 	{
+#ifdef BOX_SWEEP_STORE
+		const struct box_ws_old_node *node = &box_ws_old_nodes[o->first_node + k];
+		struct box_collbsp node_bsp;
+		const struct box_collbsp *bsp = &node_bsp;
+
+		store_bsp(node->bsp, &node_bsp);
+#else
 		const struct box_sweep_node *node = &w->nodes[o->first_node + k];
+		const struct box_collbsp *bsp = node->bsp;
+
+		if (!bsp)
+			return 0;
+#endif
 		float inverse[13], local[3];
 
-		if (!node->bsp)
-			return 0;
 		matrix_inverse(node->m, inverse);
 		matrix_point(inverse, center, local);
-		if (box_collbsp_sphere(node->bsp, 0, 0, local, inverse[0] * radius, w->any, &scratch->sphere))
-			bsp_features(node->bsp, &scratch->sphere, node->m, height, width, o->index, &scratch->features);
+		if (box_collbsp_sphere(bsp, 0, 0, local, inverse[0] * radius, w->any, &g->sphere))
+			bsp_features(bsp, &g->sphere, node->m, height, width, o->index, &g->features);
 	}
 	return 1;
 }
 
 /* object_get_features_in_sphere: the object, its children, then its next siblings */
 static int object_features(const struct box_sweep_world *w, unsigned int flags, int index, const float *center,
-	float radius, float height, float width, int ignore, struct box_sweep_scratch *scratch)
+	float radius, float height, float width, int ignore, struct box_sweep_gather *g)
 {
 	do
 	{
-		const struct box_sweep_object *o = object_of(w, index);
+		struct box_sweep_object held;
+		const struct box_sweep_object *o = object_of(w, index, &held);
 
 		if (!o)
+		{
+			g->why = BOX_SWEEP_WHY_OBJECT;
 			return 0;
+		}
 		if (index != ignore && !(o->flags & (1u << BOX_SWEEP_OBJECT_INVISIBLE)) &&
 			!(o->flags & (1u << BOX_SWEEP_OBJECT_NO_COLLISIONS)) &&
 			(!(o->damage_flags & (1u << BOX_SWEEP_OBJECT_DEAD)) || o->type != BOX_SWEEP_TYPE_BIPED))
@@ -658,8 +782,18 @@ static int object_features(const struct box_sweep_world *w, unsigned int flags, 
 					switch (o->type)
 					{
 					case BOX_SWEEP_TYPE_BIPED:
+#ifdef BOX_SWEEP_STORE
+						/* the unit's fields decide whether the pill is made at
+						all, so a seated child needs no pill */
+						if (o->seen != BOX_SWEEP_SEEN_BIPED && o->seen != BOX_SWEEP_SEEN_UNIT)
+						{
+							g->why = BOX_SWEEP_WHY_BIPED;
+							return 0;
+						}
+#else
 						if (o->seen != BOX_SWEEP_SEEN_BIPED)
 							return 0;
+#endif
 						if ((!(flags & (1u << BOX_SWEEP_TEST_SKIP_PASSTHROUGH_BIPEDS)) ||
 								!(o->biped_flags & (1u << BOX_SWEEP_BIPED_PASSES_THROUGH))) &&
 							(!(flags & (1u << BOX_SWEEP_TEST_SKIP_PLAYER_BIPEDS)) || o->player == -1) &&
@@ -667,10 +801,19 @@ static int object_features(const struct box_sweep_world *w, unsigned int flags, 
 						{
 							float base[3];
 
+#ifdef BOX_SWEEP_STORE
+							if (o->seen != BOX_SWEEP_SEEN_BIPED)
+							{
+								g->why = BOX_SWEEP_WHY_BIPED;
+								return 0;
+							}
+							copy3(base, o->pill_base);
+#else
 							copy3(base, o->pill_base);
 							base[2] += o->pill_height;
+#endif
 							from_point(base, o->pill_height + height, o->pill_width + width, o->index, -1, 0, 0xFF, -1,
-								&scratch->features);
+								&g->features);
 						}
 						break;
 					case BOX_SWEEP_TYPE_VEHICLE:
@@ -678,19 +821,28 @@ static int object_features(const struct box_sweep_world *w, unsigned int flags, 
 					case BOX_SWEEP_TYPE_MACHINE:
 					case BOX_SWEEP_TYPE_CONTROL:
 						if (o->type == BOX_SWEEP_TYPE_VEHICLE && (flags & (1u << BOX_SWEEP_TEST_USE_VEHICLE_PHYSICS)))
+						{
+							g->why = BOX_SWEEP_WHY_PHYSICS;
 							return 0; /* a vehicle's physics: not in v0 */
+						}
 						if (o->seen == BOX_SWEEP_SEEN_MODEL)
 						{
-							if (!model_features(w, o, center, radius, height, width, scratch))
+							if (!model_features(w, o, center, radius, height, width, g))
+							{
+								g->why = BOX_SWEEP_WHY_MODEL;
 								return 0;
+							}
 						}
 						else if (o->seen != BOX_SWEEP_SEEN_NO_MODEL)
+						{
+							g->why = BOX_SWEEP_WHY_MODEL;
 							return 0;
+						}
 						break;
 					}
 				}
 				if (o->first_child != -1 &&
-					!object_features(w, flags, o->first_child, center, radius, height, width, ignore, scratch))
+					!object_features(w, flags, o->first_child, center, radius, height, width, ignore, g))
 					return 0;
 			}
 		}
@@ -871,8 +1023,8 @@ static int level_kept(const struct box_sweep_world *w, const float *center, floa
 #ifdef SWEEP_COUNT
 	{
 		extern unsigned long long sweep_kept_tested[3];
-		int r = box_collbsp_sphere_kept(w->level, w->breakable_count, w->breakable, &slot->walk, center, radius, &scratch->sphere);
-		const struct box_collbsp_sphere_result *k = &slot->walk, *o = &scratch->sphere;
+		int r = box_collbsp_sphere_kept(w->level, w->breakable_count, w->breakable, &slot->walk, center, radius, &scratch->gather.sphere);
+		const struct box_collbsp_sphere_result *k = &slot->walk, *o = &scratch->gather.sphere;
 
 		sweep_kept_tested[0]++;
 		sweep_kept_tested[1] += (unsigned long long)(k->surface_count + k->edge_count + k->vertex_count);
@@ -892,7 +1044,7 @@ static int level_kept(const struct box_sweep_world *w, const float *center, floa
 				{
 					scratch->packed_used++;
 					return box_collbsp_sphere_packed(w->level, w->breakable_count, w->breakable, &slot->walk,
-						scratch->packed[k].nodes, scratch->packed[k].leaves, center, radius, &scratch->sphere);
+						scratch->packed[k].nodes, scratch->packed[k].leaves, center, radius, &scratch->gather.sphere);
 				}
 			}
 		if (owned)
@@ -900,73 +1052,125 @@ static int level_kept(const struct box_sweep_world *w, const float *center, floa
 		else
 			scratch->packed_sweep_noblock++;
 	}
-	return box_collbsp_sphere_kept(w->level, w->breakable_count, w->breakable, &slot->walk, center, radius, &scratch->sphere);
+	return box_collbsp_sphere_kept(w->level, w->breakable_count, w->breakable, &slot->walk, center, radius, &scratch->gather.sphere);
 #endif
 }
 
-/* collision_get_features_in_sphere: the level's, then the objects' in the clusters the sphere reaches */
+/* collision_get_features_in_sphere: the level's, then the objects' in the clusters the sphere reaches.
+`scratch` holds B's kept walks, read only when the world keeps them (NULL otherwise) */
 static int features_in_sphere(const struct box_sweep_world *w, unsigned int flags, const float *center, float radius,
-	float height, float width, int ignore, struct box_sweep_scratch *scratch)
+	float height, float width, int ignore, struct box_sweep_scratch *scratch, struct box_sweep_gather *g)
 {
-	struct box_sweep_features *features = &scratch->features;
+	struct box_sweep_features *features = &g->features;
 	unsigned int structure = flags & (1u << BOX_SWEEP_TEST_STRUCTURE);
 
 	features->count[0] = features->count[1] = features->count[2] = 0;
+	g->leaf_count = 0;
+	g->level_count[0] = g->level_count[1] = g->level_count[2] = 0;
+	g->why = BOX_SWEEP_WHY_NONE;
 	if (structure || (flags & ((1u << BOX_SWEEP_TEST_MEDIA) | (1u << BOX_SWEEP_TEST_OBJECTS))))
 	{
 		int objects = (flags & (1u << BOX_SWEEP_TEST_OBJECTS)) != 0;
-		struct box_collbsp_sphere_result *r = &scratch->sphere;
-		int leaves[BOX_COLLBSP_LIST], leaf_count, k;
+		struct box_collbsp_sphere_result *r = &g->sphere;
+		int k;
 
 		if (w->skip_objects)
 			objects = 0;
 		radius += 0.0625f;
-		if (w->kept_margin > 0.f && !w->any ? level_kept(w, center, radius, scratch) && structure
+#ifdef BOX_SWEEP_STORE
+		/* the game's world keeps no walks, and its build on the ME (MEXEC's
+		copy follows every call) leaves B's family out */
+		(void)scratch;
+		if (box_collbsp_sphere(w->level, w->breakable_count, w->breakable, center, radius, w->any, r) && structure)
+			bsp_features(w->level, r, 0, height, width, -1, features);
+#else
+		if (w->kept_margin > 0.f && !w->any && scratch ? level_kept(w, center, radius, scratch) && structure
 			: box_collbsp_sphere(w->level, w->breakable_count, w->breakable, center, radius, w->any, r) && structure)
 			bsp_features(w->level, r, 0, height, width, -1, features);
+#endif
 		/* the leaves kept apart: a model's walk below reuses the result */
-		leaf_count = r->leaf_count;
-		memcpy(leaves, r->leaves, sizeof(int) * (unsigned int)leaf_count);
+		g->leaf_count = r->leaf_count;
+		for (k = 0; k < r->leaf_count; k++)
+			g->leaves[k] = r->leaves[k];
+		g->level_count[0] = features->count[0];
+		g->level_count[1] = features->count[1];
+		g->level_count[2] = features->count[2];
 #ifdef SWEEP_COUNT
-		if (objects && w->kept_margin > 0.f && !w->any && scratch->kept_last && !w->skip_objects)
+		if (objects && w->kept_margin > 0.f && !w->any && scratch && scratch->kept_last && !w->skip_objects)
 		{
 			extern void sweep_leaves_census(const struct box_sweep_world *, const int *, int, const int *, int, const float *, float);
 
-			sweep_leaves_census(w, scratch->kept_last->walk.leaves, scratch->kept_last->walk.leaf_count, leaves, leaf_count, center, radius);
+			sweep_leaves_census(w, scratch->kept_last->walk.leaves, scratch->kept_last->walk.leaf_count, g->leaves,
+				g->leaf_count, center, radius);
 		}
-		scratch->kept_last = 0;
+		if (scratch)
+			scratch->kept_last = 0;
 #endif
 		if (w->part == 2)
 			objects = 0;
-		if (objects && leaf_count > 0)
+		if (objects && g->leaf_count > 0)
 		{
 			unsigned int all_types = ((1u << (BOX_SWEEP_TEST_LAST_TYPE + 1)) - (1u << BOX_SWEEP_TEST_FIRST_TYPE));
 
 			if (!(flags & all_types))
 				flags |= all_types;
-			scratch->marked_cluster_count = scratch->marked_object_count = 0;
-			for (k = 0; k < leaf_count; k++)
+			g->marked_cluster_count = g->marked_object_count = 0;
+			for (k = 0; k < g->leaf_count; k++)
 			{
-				int cluster = cluster_of(w, leaves[k]);
+				int cluster = cluster_of(w, g->leaves[k]);
+				int m, member_count;
+#ifdef BOX_SWEEP_STORE
+				const int32_t *members;
+
+				if (cluster == -1)
+					continue; /* no cluster: the engine's list for it is empty */
+#else
 				const struct box_sweep_cluster *c;
-				int m;
 
 				if (cluster == -2)
 					return 0;
-				if (!mark(scratch->marked_clusters, &scratch->marked_cluster_count, BOX_COLLBSP_LIST, cluster))
+#endif
+				if (!mark(g->marked_clusters, &g->marked_cluster_count, BOX_COLLBSP_LIST, cluster))
 					continue;
+#ifdef BOX_SWEEP_STORE
+				if (!cluster_run(cluster, &members, &member_count))
+				{
+					g->why = BOX_SWEEP_WHY_CLUSTER;
+					return 0;
+				}
+#else
 				c = cluster_members(w, cluster);
 				if (!c)
 					return 0;
-				for (m = 0; m < c->count; m++)
+				member_count = c->count;
+#endif
+				for (m = 0; m < member_count; m++)
 				{
+#ifdef BOX_SWEEP_STORE
+					/* the cluster walk's sphere test reads the object's own
+					sphere, as the copy took it with the lists */
+					int object = members[m];
+					const struct box_ws_old_object *record = box_ws_old_object_of(object);
+					float reach;
+
+					if (!record)
+					{
+						g->why = BOX_SWEEP_WHY_OBJECT;
+						return 0;
+					}
+					reach = record->radius;
+					reach += radius;
+					if (in_sphere(center, record->center, reach) &&
+#else
 					const struct box_sweep_member *member = &w->members[c->first + m];
+					int object = member->object;
 					float reach = member->radius;
 
 					reach += radius;
 					if (in_sphere(center, member->center, reach) &&
-						mark(scratch->marked_objects, &scratch->marked_object_count, 512, member->object) &&
-						!object_features(w, flags, member->object, center, radius, height, width, ignore, scratch))
+#endif
+						mark(g->marked_objects, &g->marked_object_count, 512, object) &&
+						!object_features(w, flags, object, center, radius, height, width, ignore, g))
 						return 0;
 				}
 			}
@@ -983,6 +1187,18 @@ void box_sweep_level_features(const struct box_collbsp *level, short breakable_c
 	radius += 0.0625f;
 	if (box_collbsp_sphere(level, breakable_count, breakable, center, radius, 0, walk) && structure)
 		bsp_features(level, walk, 0, height, width, -1, features);
+}
+
+int box_sweep_gather(const struct box_sweep_world *w, unsigned int flags, const float center[3], float radius,
+	float height, float width, int ignore, struct box_sweep_gather *g)
+{
+	if (features_in_sphere(w, flags, center, radius, height, width, ignore, 0, g))
+		return 2;
+	/* the objects' half the world couldn't answer: the level's alone */
+	g->features.count[0] = g->level_count[0];
+	g->features.count[1] = g->level_count[1];
+	g->features.count[2] = g->level_count[2];
+	return 1;
 }
 
 /* ---------- the clip */
@@ -1471,7 +1687,8 @@ int box_sweep(const struct box_sweep_world *world, const struct box_sweep_query 
 	center[2] = query->height * 0.5f + (p[2] + v[2] * 0.5f);
 	reach = sqrtf(length_squared3(v)) * 0.5f + query->height * 0.5f + query->radius;
 	scratch->asker = query->ignore;
-	if (!features_in_sphere(world, query->flags, center, reach, query->height, query->radius, query->ignore, scratch))
+	if (!features_in_sphere(world, query->flags, center, reach, query->height, query->radius, query->ignore, scratch,
+		&scratch->gather))
 		return -1;
 	if (world->part)
 		return answer->count = 0;
@@ -1486,13 +1703,13 @@ int box_sweep(const struct box_sweep_world *world, const struct box_sweep_query 
 		box_sweep_lc_sweeps++;
 		for (k = 0; k < 3; k++)
 		{
-			box_sweep_lc_records[k] += (unsigned long long)scratch->features.count[k];
-			box_sweep_lc_lines[k] += ((unsigned long long)scratch->features.count[k] * size[k] + 63) / 64;
+			box_sweep_lc_records[k] += (unsigned long long)scratch->gather.features.count[k];
+			box_sweep_lc_lines[k] += ((unsigned long long)scratch->gather.features.count[k] * size[k] + 63) / 64;
 		}
 	}
 #endif
-	if (scratch->features.count[0] || scratch->features.count[1] || scratch->features.count[2])
-		return answer->count = move_point(&scratch->features, p, v, query->most, answer);
+	if (scratch->gather.features.count[0] || scratch->gather.features.count[1] || scratch->gather.features.count[2])
+		return answer->count = move_point(&scratch->gather.features, p, v, query->most, answer);
 	answer->position[0] = p[0] + v[0];
 	answer->position[1] = p[1] + v[1];
 	answer->position[2] = p[2] + v[2];

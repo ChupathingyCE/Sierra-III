@@ -85,6 +85,7 @@ enum
 	BOX_SWEEP_SEEN_MODEL,
 	BOX_SWEEP_SEEN_NO_MODEL,
 	BOX_SWEEP_SEEN_PHYSICS,  /* a vehicle walked by its physics: not in v0 */
+	BOX_SWEEP_SEEN_UNIT,     /* a biped whose unit fields are known but not its pill (the store's child biped) */
 };
 struct box_sweep_object
 {
@@ -138,6 +139,11 @@ struct box_sweep_world
 	const struct box_sweep_object *objects;
 	int object_count;
 	const struct box_sweep_node *nodes;
+	/* the game's world store (box_sweep_game.c, BOX_SWEEP_STORE): the
+	structure's leaf records (16 B each, the cluster at +8), which the store's
+	form reads in place of the leaves' list */
+	const void *structure_leaves;
+	int structure_leaf_count;
 };
 
 struct box_sweep_query
@@ -162,6 +168,31 @@ own, so a sweep writes nothing shared */
 #endif
 #define BOX_SWEEP_BREAKABLE_WORDS 8 /* the engine's 256 breakable surfaces */
 struct box_sweep_kept { int asker; float center[3], radius; struct box_collbsp_sphere_result walk; };
+
+/* the gather's own memory (the features in a sphere: the level's half and the
+objects'), apart from the sweep's kept walks so a gather alone (the game's
+on the ME) holds only this */
+struct box_sweep_gather
+{
+	struct box_sweep_features features;
+	struct box_collbsp_sphere_result sphere;
+	int leaves[BOX_COLLBSP_LIST], leaf_count; /* the level walk's, kept apart from the models' walks */
+	int level_count[3]; /* the features the level's half made, before the objects' */
+	int why;            /* BOX_SWEEP_WHY_: what the world didn't hold, when the objects' half couldn't answer */
+	int marked_clusters[BOX_COLLBSP_LIST], marked_cluster_count;
+	int marked_objects[512], marked_object_count;
+};
+enum
+{
+	BOX_SWEEP_WHY_NONE,
+	BOX_SWEEP_WHY_OBJECT,  /* an object with no record */
+	BOX_SWEEP_WHY_BIPED,   /* a biped whose pill (or unit fields) the world doesn't hold */
+	BOX_SWEEP_WHY_MODEL,   /* a model whose nodes the world doesn't hold */
+	BOX_SWEEP_WHY_PHYSICS, /* a vehicle walked by its physics */
+	BOX_SWEEP_WHY_CLUSTER, /* a cluster whose list the world doesn't hold */
+	BOX_SWEEP_WHY_LEAF,    /* a leaf whose cluster the world doesn't know */
+	BOX_SWEEP_WHYS
+};
 
 /* B packed's blocks: 14 of ~2.3 KB, 32 KB in all (the lead 10:30's cap
 against the 124 KB heap floor). A block is given to the first asker that
@@ -203,10 +234,7 @@ struct box_sweep_scratch
 	short kept_breakable_count;
 	unsigned int kept_breakable[BOX_SWEEP_BREAKABLE_WORDS];
 	int asker;
-	struct box_sweep_features features;
-	struct box_collbsp_sphere_result sphere;
-	int marked_clusters[BOX_COLLBSP_LIST], marked_cluster_count;
-	int marked_objects[512], marked_object_count;
+	struct box_sweep_gather gather;
 };
 
 /* the level's half of the features in a sphere (collision_get_features_in_
@@ -218,6 +246,17 @@ a list that reaches BOX_SWEEP_FEATURES may have been cut short */
 void box_sweep_level_features(const struct box_collbsp *level, short breakable_count, const unsigned int *breakable,
 	const float center[3], float radius, float height, float width, int structure,
 	struct box_collbsp_sphere_result *walk, struct box_sweep_features *features);
+
+/* the whole gather (collision_get_features_in_sphere: the level's half, then
+the objects' in the clusters the sphere reaches), for the game's placement on
+the ME (box_collision.md §11, slice 2). radius is the asker's, before the
+engine's 1/16. 2: every feature in g->features; 1: the objects' half needs
+what the world doesn't hold (g->why), so g->features holds the level's half
+alone and g->leaves its leaves, for the asker's own objects' half; 0: the
+level walk alone would need the world (not in the store's form). A list that
+reaches BOX_SWEEP_FEATURES may have been cut short */
+int box_sweep_gather(const struct box_sweep_world *w, unsigned int flags, const float center[3], float radius,
+	float height, float width, int ignore, struct box_sweep_gather *g);
 
 /* the sweep; returns its collision count, or -1 when the world doesn't hold
 what the walk needs (an object or a cluster the capture didn't meet, a

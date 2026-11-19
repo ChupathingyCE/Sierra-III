@@ -56328,6 +56328,12 @@ FIXES_WSOLD = {
 #include "physics/breakable_surfaces.h"
 #include "box_ws_old.h" /* (FIXES_WSOLD) */
 _Static_assert(BOX_WS_OLD_SLOTS >= MAXIMUM_OBJECTS_PER_MAP, "the one-tick-old copy holds every object slot");
+_Static_assert(BOX_WS_OLD_CLUSTERS >= MAXIMUM_CLUSTERS_PER_STRUCTURE, "the copy holds every cluster");
+_Static_assert(BOX_WS_OLD_MEMBERS >= HALO_PORT_MAXIMUM_CLUSTER_REFERENCES, "the copy's members hold the partition's references");
+_Static_assert(sizeof(real_matrix4x3) == 13 * sizeof(float), "a node's matrix as the copy holds it");
+#define PSP_WSOLD_MODEL_NODES 64 /* MAXIMUM_NODES_PER_MODEL: a collision model binds no more */
+static int psp_wsold_model_make(long object_index, struct object_datum const *object, short type,
+	struct box_ws_old_node *nodes, unsigned *count);
 
 static int psp_wsold_make(long object_index, struct object_datum const *object, short type,
 	struct box_ws_old_object *record, struct box_ws_old_biped *biped_record)
@@ -56404,6 +56410,48 @@ static void psp_wsold_one(unsigned absolute, int check)
 		box_ws_old_check(absolute, &record, is_biped ? &biped_record : NULL);
 	else
 		box_ws_old_put(absolute, &record, is_biped ? &biped_record : NULL);
+	if (box_ws_old_parts)
+	{
+		struct box_ws_old_node nodes[PSP_WSOLD_MODEL_NODES];
+		unsigned count;
+		int state = psp_wsold_model_make(DATUM_INDEX_NEW(absolute, header->identifier), header->datum, header->type,
+			nodes, &count);
+
+		if (check)
+			box_ws_old_model_check(absolute, state, nodes, count);
+		else
+			box_ws_old_model_put(absolute, state, nodes, count);
+	}
+}
+
+/* each cluster's collideable list as the engine's accessors give it: the
+order the gather's cluster walk meets them in */
+static unsigned psp_wsold_cluster_list(short cluster_index, int32_t *objects)
+{
+	long reference_index, object_index;
+	unsigned count = 0;
+
+	for (object_index = cluster_get_first_collideable_object(&reference_index, cluster_index);
+		object_index != NONE && count < BOX_WS_OLD_MEMBERS;
+		object_index = cluster_get_next_collideable_object(&reference_index))
+		objects[count++] = (int32_t)object_index;
+	return count;
+}
+
+/* the clusters an object is in, marked: before it leaves them and after it
+joins its new ones, so the lists the copy takes again are every one changed */
+void psp_wsold_mark_clusters(long first_cluster_reference)
+{
+	long reference_index;
+	long cluster_index;
+
+	if (!box_ws_old_parts || first_cluster_reference == NONE)
+		return;
+	for (cluster_index = cluster_partition_get_first_cluster(&collideable_object_cluster_partition, &reference_index,
+			first_cluster_reference);
+		cluster_index != NONE;
+		cluster_index = cluster_partition_get_next_cluster(&collideable_object_cluster_partition, &reference_index))
+		box_ws_old_mark_cluster((int)cluster_index);
 }
 
 void psp_wsold_refresh(void)
@@ -56426,6 +56474,35 @@ void psp_wsold_refresh(void)
 		psp_wsold_one(list[i], 0);
 	for (i = 0; i < count; i++)
 		bipeds += box_ws_old_biped_of[list[i]] >= 0;
+	if (box_ws_old_parts)
+	{
+		static int32_t members[BOX_WS_OLD_MEMBERS];
+		struct structure_bsp const *structure_bsp = global_structure_bsp_get();
+		int clusters = structure_bsp ? (int)structure_bsp->clusters.count : 0, c;
+		unsigned taken = 0, n;
+
+		box_ws_old_clusters_begin(structure_bsp, clusters);
+		for (c = 0; c < clusters && c < BOX_WS_OLD_CLUSTERS; c++)
+		{
+			if (box_ws_old_cluster_marked(c))
+			{
+				n = psp_wsold_cluster_list((short)c, members);
+				box_ws_old_cluster_put(c, members, n);
+				taken++;
+			}
+			else
+				box_ws_old_cluster_keep(c);
+		}
+		box_ws_old_clusters_end(taken);
+		if (box_ws_old_checking)
+		{
+			for (c = 0; c < clusters && c < BOX_WS_OLD_CLUSTERS; c++)
+			{
+				n = psp_wsold_cluster_list((short)c, members);
+				box_ws_old_cluster_check(c, members, n);
+			}
+		}
+	}
 	if (box_ws_old_checking)
 	{
 		unsigned live = (unsigned)object_header_data->count;
@@ -56447,6 +56524,169 @@ void psp_wsold_visit(long object_index, struct object_datum const *object)
 		box_ws_old_visit(object_index, &record, &biped_record);
 	else
 		box_ws_old_visit(object_index, &record, NULL);
+	if (box_ws_old_parts && box_ws_old_object_of(object_index))
+	{
+		struct box_ws_old_node nodes[PSP_WSOLD_MODEL_NODES];
+		unsigned count;
+		int state = psp_wsold_model_make(object_index, object, header->type, nodes, &count);
+
+		if (state != BOX_WS_OLD_MODEL_NONE)
+			box_ws_old_model_visit((unsigned)DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index), state, nodes, count);
+	}
+}
+"""),
+# a model's live nodes, made where the node matrices' owing is known (after
+# NMSKIP's and the posing box's slots)
+("""real_matrix4x3 *object_get_node_matrices(
+	long object_index)
+{
+""",
+ """#include "physics/collision_bsp_definitions.h" /* (FIXES_WSOLD) a model's node BSPs */
+
+/* (FIXES_WSOLD) whether a read of the object's node matrices would make them
+first: their compute left out (NMSKIP's VISLAZY) or nodes the posing box owes */
+static int psp_wsold_nodes_owed(long object_index)
+{
+	unsigned long absolute = (unsigned long)object_index & 0xFFFFUL;
+
+	if (absolute < MAXIMUM_OBJECTS_PER_MAP && psp_nms_count && ((psp_nms_pending[absolute >> 5] >> (absolute & 31)) & 1))
+		return 1;
+#ifdef PSP_BOX_POSING
+	if (psp_boxb_count | psp_boxb_me.count)
+	{
+		struct psp_boxb_slot const *slot = &psp_boxb[absolute & (PSP_BOXB_SLOTS - 1)];
+
+		if (slot->object_index == object_index && (~0ull & ~slot->made))
+			return 1;
+	}
+#endif
+	return 0;
+}
+
+/* (FIXES_WSOLD) a model's live nodes for the copy: the nodes
+collision_model_get_features_in_sphere walks (a valid region, a permutation,
+a BSP with 3D nodes), its BSP and matrix each. Read without making anything:
+an object whose matrices are owed has none held (a reader can't answer), so
+taking the copy changes no compute's time */
+static int psp_wsold_model_make(long object_index, struct object_datum const *object, short type,
+	struct box_ws_old_node *nodes, unsigned *count)
+{
+	struct object_definition const *definition;
+	struct collision_model const *model;
+	real_matrix4x3 const *matrices;
+	long node_count, i;
+
+	*count = 0;
+	if (type != _object_type_vehicle && type != _object_type_scenery && type != _object_type_machine &&
+		type != _object_type_control)
+		return BOX_WS_OLD_MODEL_NONE;
+	definition = object_definition_get(object->definition_index);
+	if (definition->object.collision_model.index == NONE)
+		return BOX_WS_OLD_MODEL_NO_MODEL;
+	if (psp_wsold_nodes_owed(object_index))
+		return BOX_WS_OLD_MODEL_NOT_HELD;
+	model = collision_model_definition_get(definition->object.collision_model.index);
+	matrices = (real_matrix4x3 const *)object_header_block_get(object_index, &object->object.node_matrices);
+	node_count = object->object.node_matrices.size / (long)sizeof(real_matrix4x3);
+	if (model->nodes.count < node_count)
+		node_count = model->nodes.count;
+	for (i = 0; i < node_count; i++)
+	{
+		struct collision_node const *node = TAG_BLOCK_GET_ELEMENT(&model->nodes, i, struct collision_node);
+		struct collision_bsp const *bsp;
+		short permutation;
+
+		if (node->region_index < 0 || node->region_index >= MAXIMUM_REGIONS_PER_OBJECT)
+			continue;
+		permutation = object->object.region_permutations[node->region_index];
+		if (permutation == NONE || node->bsps.count <= 0)
+			continue;
+		permutation = PIN(permutation, 0, node->bsps.count - 1);
+		bsp = TAG_BLOCK_GET_ELEMENT(&node->bsps, permutation, struct collision_bsp);
+		if (bsp->bsp3d.nodes.count <= 0)
+			continue;
+		if (*count >= PSP_WSOLD_MODEL_NODES)
+			return BOX_WS_OLD_MODEL_NOT_HELD;
+		nodes[*count].bsp = bsp;
+		memcpy(nodes[*count].m, &matrices[i], sizeof(nodes[*count].m));
+		(*count)++;
+	}
+	return BOX_WS_OLD_MODEL_HELD;
+}
+
+real_matrix4x3 *object_get_node_matrices(
+	long object_index)
+{
+"""),
+# the clusters an object leaves and joins (the collideable partition's lists
+# change only here, through the disconnect and the reconnect)
+("""		if (TEST_FLAG(object->object.flags, _object_has_collision_model_bit) ||
+			!psp_p2q_disconnect(object_index, &object->object.first_cluster_reference_index))
+""",
+ """		if (TEST_FLAG(object->object.flags, _object_has_collision_model_bit))
+		{
+			void psp_wsold_mark_clusters(long first_cluster_reference);
+
+			psp_wsold_mark_clusters(object->object.first_cluster_reference_index); /* (FIXES_WSOLD) */
+		}
+		if (TEST_FLAG(object->object.flags, _object_has_collision_model_bit) ||
+			!psp_p2q_disconnect(object_index, &object->object.first_cluster_reference_index))
+"""),
+("""		cluster_partition_reconnect(
+			(TEST_FLAG(object_get(object_index)->object.flags, _object_has_collision_model_bit) ?
+				&collideable_object_cluster_partition :
+				&noncollideable_object_cluster_partition
+			),
+			object_index,
+			&object->object.first_cluster_reference_index,
+			&object->object.bounding_sphere_center,
+			object->object.bounding_sphere_radius,
+			&object->object.location);
+""",
+ """		cluster_partition_reconnect(
+			(TEST_FLAG(object_get(object_index)->object.flags, _object_has_collision_model_bit) ?
+				&collideable_object_cluster_partition :
+				&noncollideable_object_cluster_partition
+			),
+			object_index,
+			&object->object.first_cluster_reference_index,
+			&object->object.bounding_sphere_center,
+			object->object.bounding_sphere_radius,
+			&object->object.location);
+		if (TEST_FLAG(object->object.flags, _object_has_collision_model_bit))
+		{
+			void psp_wsold_mark_clusters(long first_cluster_reference);
+
+			psp_wsold_mark_clusters(object->object.first_cluster_reference_index); /* (FIXES_WSOLD) */
+		}
+"""),
+],
+"source/saved games/game_state.c#wsold": [
+# another world: the copy's records are of the old one
+("""#ifdef HALO_PSP
+	psp_sleep_forget();
+#endif
+	game_state_data_arrays_new_map();
+""",
+ """#ifdef HALO_PSP
+	psp_sleep_forget();
+	{ void box_ws_old_forget(void); box_ws_old_forget(); } /* (FIXES_WSOLD) */
+#endif
+	game_state_data_arrays_new_map();
+"""),
+("""		psp_bspr_forget_loaded();
+	}
+#endif
+
+	return;
+}
+""",
+ """		psp_bspr_forget_loaded();
+	}
+	{ void box_ws_old_forget(void); box_ws_old_forget(); } /* (FIXES_WSOLD) */
+#endif
+
+	return;
 }
 """),
 ],
@@ -56546,8 +56786,10 @@ void psp_sweepme_end(void);
 		psp_features_mark = psp_microseconds();
 #endif
 
-		if (psp_sweepme_pending >= 0 && psp_sweepme_take(collision_bsp, &result, features))
-			; /* (FIXES_SWEEPME) the level's half, made on the ME */
+		int psp_sweepme_took = 0;
+
+		if (psp_sweepme_pending >= 0 && (psp_sweepme_took = psp_sweepme_take(collision_bsp, &result, features)) != 0)
+			; /* (FIXES_SWEEPME) the level's half or the whole gather, made on the ME */
 		else if (collision_bsp_test_sphere(
 """),
 ("""			collision_bsp_get_features_in_sphere(
@@ -56575,13 +56817,30 @@ void psp_sweepme_end(void);
 				features);
 		}
 #ifdef HALO_PSP
-		if (psp_sweepme_holding)
+		if (psp_sweepme_holding == 1)
 			psp_sweepme_compare(&result, features); /* (FIXES_SWEEPME) sweepmecheck */
+		if (psp_sweepme_took == 2)
+			objects = FALSE; /* (FIXES_SWEEPME) slice 2: the record's list holds the objects' half too */
 		{
 			unsigned long now = psp_microseconds();
 
 			psp_features_bsp_us += now - psp_features_mark;
 """),
+# sweepme2check: the engine's whole list made, the record's compared with it
+("""		collision_log_end_time(
+			_collision_function_vector_bounds_object,
+			collision_usage_times.features.QuadPart);
+	}
+
+	return features->count[_collision_feature_sphere] != 0 ||""",
+ """		collision_log_end_time(
+			_collision_function_vector_bounds_object,
+			collision_usage_times.features.QuadPart);
+		if (psp_sweepme_holding == 2)
+			psp_sweepme_compare_whole(features); /* (FIXES_SWEEPME) sweepme2check */
+	}
+
+	return features->count[_collision_feature_sphere] != 0 ||"""),
 # the record's query is the one the gather is about to ask
 ("""	slot->height = height;
 	slot->width = width;
@@ -56591,8 +56850,7 @@ void psp_sweepme_end(void);
 """,
  """	slot->height = height;
 	slot->width = width;
-	psp_sweepme_pending = psp_sweepme_find(biped_index, &slot->center.x, slot->radius, height, width,
-		(flags & FLAG(_collision_test_structure_bit)) != 0); /* (FIXES_SWEEPME) */
+	psp_sweepme_pending = psp_sweepme_find(biped_index, &slot->center.x, slot->radius, height, width, flags); /* (FIXES_SWEEPME) */
 	psp_bs2_pack(slot, biped_index);
 	psp_sweepme_pending = -1;
 	return TRUE;
@@ -56622,6 +56880,12 @@ void psp_sweepme_tick_begin(void)
 	level.surface_count = bsp->surfaces.count;
 	level.edge_count = bsp->edges.count;
 	level.vertex_count = bsp->vertices.count;
+	{
+		struct structure_bsp const *structure_bsp = global_structure_bsp_get();
+
+		level.structure_leaves = structure_bsp ? structure_bsp->leaves.address : NULL;
+		level.structure_leaf_count = structure_bsp ? (int)structure_bsp->leaves.count : 0;
+	}
 	psp_sweepme_begin(&level, breakable_surface_flags_get());
 }
 
@@ -56643,7 +56907,7 @@ void psp_sweepme_after_intent(long biped_index)
 	center.z = height * 0.5f + (position.z + velocity.k * 0.5f);
 	radius = magnitude3d(&velocity) * 0.5f + height * 0.5f + width + 1e-4f;
 	if (flags & (FLAG(_collision_test_structure_bit) | FLAG(_collision_test_media_bit) | FLAG(_collision_test_objects_bit)))
-		psp_sweepme_add(biped_index, &center.x, radius, height, width, (flags & FLAG(_collision_test_structure_bit)) != 0);
+		psp_sweepme_add(biped_index, &center.x, radius, height, width, flags);
 }
 """),
 ("""#include "halo_perf_log.h" /* port: console.perf_log */
@@ -56660,27 +56924,51 @@ typedef char psp_sweepme_tag_sizes[(sizeof(struct bsp3d_node) == 12 && sizeof(re
 	sizeof(struct collision_surface) == 8 && sizeof(struct collision_edge) == 12 && sizeof(struct collision_vertex) == 16 &&
 	BIT_VECTOR_SIZE_IN_BYTES(MAXIMUM_BREAKABLE_SURFACES_PER_MAP) == 4 * PSP_SWEEPME_BREAKABLE_WORDS &&
 	MAXIMUM_POINTS_PER_COLLISION_PRISM == 8) ? 1 : -1];
+/* slice 2: a model's collision_bsp as eight 12-byte blocks in this order, a
+structure leaf's cluster at +8 of 16 B, and the flags and types the box tests
+by number (box_sweep.c's store form reads them so) */
+typedef char psp_sweepme_store_layouts[(sizeof(struct tag_block) == 12 &&
+	offsetof(struct collision_bsp, bsp3d.nodes) == 0 && offsetof(struct collision_bsp, bsp3d.planes) == 12 &&
+	offsetof(struct collision_bsp, leaves) == 24 && offsetof(struct collision_bsp, bsp2d_references) == 36 &&
+	offsetof(struct collision_bsp, bsp2d.nodes) == 48 && offsetof(struct collision_bsp, surfaces) == 60 &&
+	offsetof(struct collision_bsp, edges) == 72 && offsetof(struct collision_bsp, vertices) == 84 &&
+	sizeof(struct structure_leaf) == 16 && offsetof(struct structure_leaf, cluster_index) == 8 &&
+	_collision_test_structure_bit == 5 && _collision_test_media_bit == 6 && _collision_test_objects_bit == 7 &&
+	_collision_test_objects_first_type_bit == 8 && _collision_test_skip_passthrough_bipeds_bit == 21 &&
+	_collision_test_use_vehicle_physics_bit == 22 && _collision_test_skip_player_bipeds_bit == 23 &&
+	_object_invisible_bit == 0 && _object_no_collisions_bit == 24 &&
+	_object_type_biped == 0 && _object_type_vehicle == 1 && _object_type_scenery == 6 &&
+	_object_type_machine == 7 && _object_type_control == 8) ? 1 : -1];
 
 /* sweepmecheck: the record's answer held while the engine's own level half
 runs, then compared */
 static struct psp_sweepme_answer psp_sweepme_held;
 static int psp_sweepme_holding;
 
-static boolean psp_sweepme_take(struct collision_bsp const *bsp, struct collision_bsp_test_sphere_result *result,
+static int psp_sweepme_take(struct collision_bsp const *bsp, struct collision_bsp_test_sphere_result *result,
 	struct collision_feature_list *features)
 {
 	struct psp_sweepme_answer answer;
 	int index = psp_sweepme_pending;
+	int took;
 	short k;
 
 	psp_sweepme_pending = -1;
-	if (!psp_sweepme_answer(index, bsp->bsp3d.planes.address, breakable_surface_flags_get(), &answer))
-		return FALSE;
-	if (psp_sweepme_check)
+	took = psp_sweepme_answer(index, bsp->bsp3d.planes.address, breakable_surface_flags_get(), &answer);
+	if (!took)
+		return 0;
+	/* the checks hold the record's answer and play the engine's own */
+	if (took == 2 && psp_sweepme_whole_check)
+	{
+		psp_sweepme_held = answer;
+		psp_sweepme_holding = 2;
+		return 0;
+	}
+	if (took == 1 && psp_sweepme_check)
 	{
 		psp_sweepme_held = answer;
 		psp_sweepme_holding = 1;
-		return FALSE;
+		return 0;
 	}
 	result->surface_count = result->edge_count = result->vertex_count = 0;
 	result->leaf_count = answer.leaf_count;
@@ -56692,7 +56980,86 @@ static boolean psp_sweepme_take(struct collision_bsp const *bsp, struct collisio
 	memcpy(features->spheres, answer.spheres, answer.count[0] * sizeof(struct collision_sphere));
 	memcpy(features->cylinders, answer.cylinders, answer.count[1] * sizeof(struct collision_cylinder));
 	memcpy(features->prisms, answer.prisms, answer.count[2] * sizeof(struct collision_prism));
-	return TRUE;
+	return took;
+}
+
+/* sweepme2check: the record's whole list against the engine's, made on the
+live world. The same to the bit, or how far apart: each feature matched by
+kind, object and surface (in order, each once), the farthest a matched one
+moved (a sphere's centre, a cylinder's base, a prism's plane offset), and the
+features one list has and the other doesn't */
+static boolean psp_sweepme_prism_same(struct collision_prism const *a, struct collision_prism const *b);
+static float psp_sweepme_distance(real_point3d const *a, real_point3d const *b)
+{
+	real_vector3d v;
+
+	vector_from_points3d(a, b, &v);
+	return magnitude3d(&v);
+}
+
+static void psp_sweepme_compare_whole(struct collision_feature_list const *features)
+{
+	struct psp_sweepme_answer const *a = &psp_sweepme_held;
+	struct collision_sphere const *spheres = (struct collision_sphere const *)a->spheres;
+	struct collision_cylinder const *cylinders = (struct collision_cylinder const *)a->cylinders;
+	struct collision_prism const *prisms = (struct collision_prism const *)a->prisms;
+	boolean same = features->count[_collision_feature_sphere] == a->count[0] &&
+		features->count[_collision_feature_cylinder] == a->count[1] &&
+		features->count[_collision_feature_prism] == a->count[2];
+	unsigned char used[3][32];
+	int unmatched = 0, moved = 0;
+	float farthest = 0.f;
+	short kind, i, j;
+
+	psp_sweepme_holding = 0;
+	same = same && !memcmp(features->spheres, spheres, a->count[0] * sizeof(struct collision_sphere)) &&
+		!memcmp(features->cylinders, cylinders, a->count[1] * sizeof(struct collision_cylinder));
+	for (i = 0; same && i < a->count[2]; i++)
+		same = psp_sweepme_prism_same(&features->prisms[i], &prisms[i]);
+	if (same)
+	{
+		psp_sweepme_whole_checked(1, 0, 0, 0.f);
+		return;
+	}
+	memset(used, 0, sizeof(used));
+	for (kind = 0; kind < 3; kind++)
+	{
+		short live = features->count[kind], held = a->count[kind];
+
+		for (i = 0; i < live; i++)
+		{
+			/* each kind's record starts with the feature's fields */
+			struct collision_feature const *f = kind == 0 ? (struct collision_feature const *)&features->spheres[i] :
+				kind == 1 ? (struct collision_feature const *)&features->cylinders[i] :
+				(struct collision_feature const *)&features->prisms[i];
+
+			for (j = 0; j < held && j < 32; j++)
+			{
+				struct collision_feature const *g = kind == 0 ? (struct collision_feature const *)&spheres[j] :
+					kind == 1 ? (struct collision_feature const *)&cylinders[j] : (struct collision_feature const *)&prisms[j];
+				float d;
+
+				if (used[kind][j] || g->object_index != f->object_index || g->surface_index != f->surface_index)
+					continue;
+				used[kind][j] = 1;
+				d = kind == 0 ? psp_sweepme_distance(&features->spheres[i].center, &spheres[j].center) :
+					kind == 1 ? psp_sweepme_distance(&features->cylinders[i].base, &cylinders[j].base) :
+					(real)fabs(features->prisms[i].plane.d - prisms[j].plane.d);
+				if (d > 0.f)
+				{
+					moved++;
+					if (d > farthest)
+						farthest = d;
+				}
+				break;
+			}
+			if (j == held || j == 32)
+				unmatched++;
+		}
+		for (j = 0; j < held && j < 32; j++)
+			unmatched += !used[kind][j];
+	}
+	psp_sweepme_whole_checked(0, unmatched, moved, farthest);
 }
 
 /* a prism's bytes that mean something: up to its pad byte, then its count

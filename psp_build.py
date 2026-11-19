@@ -280,12 +280,16 @@ if BOXPOSING:
 # PSP_WSOLD=1: the world store's first slice, the one-tick-old copy of the
 # pill sweep's object inputs (psp/src/box_world_store_old.c; psp_fixups.py
 # FIXES_WSOLD; docs/box_world_store.md section 9)
-if os.environ.get("PSP_WSOLD", "") == "1":
+# PSP_SWEEPME=1: the ME's half of the pill sweep (the staged bipeds' gathers
+# made on the ME by the box's code; psp/src/psp_sweepme.c, psp_fixups.py
+# FIXES_SWEEPME, docs/box_collision.md section 11): slice 1, the level's half
+# (keep word sweepme), and slice 2, the whole gather from the one-tick-old
+# copy (sweepme2, which needs PSP_WSOLD=1 too: the store's unit is built in
+# either way, since slice 2's code reads its arrays, but without FIXES_WSOLD
+# the copy is never taken and slice 2 stays off). Its MEXEC list is
+# psp/layout/mexec_rbsw.txt
+if os.environ.get("PSP_WSOLD", "") == "1" or os.environ.get("PSP_SWEEPME", "") == "1":
     PSP_FILES.append("box_world_store_old")
-# PSP_SWEEPME=1: the ME's half of the pill sweep, slice 1 (the level's half of
-# the staged bipeds' gathers made on the ME by the box's code;
-# psp/src/psp_sweepme.c, psp_fixups.py FIXES_SWEEPME, docs/box_collision.md
-# section 11); keep word sweepme. Its MEXEC list is psp/layout/mexec_rbsw.txt
 if os.environ.get("PSP_SWEEPME", "") == "1":
     PSP_FILES.extend(["box_collbsp_game", "box_sweep_game", "psp_sweepme"])
 if os.environ.get("PSP_BIPEDSTAGE", "") == "1":
