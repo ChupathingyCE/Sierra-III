@@ -263,6 +263,27 @@ static void box_ws_move_check_log(unsigned long records, int force)
 	}
 }
 
+/* the narrow syncs (box_world_store_biped.h): only the named fields out and in */
+static void box_ws_move_spans(int slot, struct box_ws_span const *spans, unsigned count, int put)
+{
+	unsigned char *datum = (unsigned char *)box_ws_move_slot_datum[slot];
+	unsigned i;
+
+	for (i = 0; i < count; i++)
+	{
+		short at = box_ws_move_map_c[spans[i].datum];
+
+		if (put)
+			memcpy(datum + spans[i].datum, box_ws_biped[slot] + at, spans[i].bytes);
+		else
+			memcpy(box_ws_biped[slot] + at, datum + spans[i].datum, spans[i].bytes);
+		if (box_ws_move_check)
+			memcpy(box_ws_move_shadow[slot] + at, datum + spans[i].datum, spans[i].bytes);
+	}
+}
+
+#define BOX_WS_SPANS(a) a, (unsigned)(sizeof(a) / sizeof(a[0]))
+
 /* the intent's start: the record filled from the datum and made live in its
    slot; 0 when the store's runs didn't check out (the window then runs on
    the datum, as before) */
@@ -318,6 +339,7 @@ int box_ws_move_resume(void *datum, int slot)
 	if (slot < 0 || slot >= BOX_WS_BIPED_SLOTS || box_ws_move_state[slot] < 2 || box_ws_move_slot_datum[slot] != datum)
 		return 0;
 	box_ws_move_kept--;
+	box_ws_move_spans(slot, BOX_WS_SPANS(box_ws_biped_resume_get), 0);
 	if (box_ws_move_check)
 	{
 		box_ws_move_check_resumes++;
@@ -386,26 +408,6 @@ void box_ws_move_sync_in(int slot)
 	box_ws_move_attach(slot);
 }
 
-/* the narrow syncs (box_world_store_biped.h): only the named fields out and in */
-static void box_ws_move_spans(int slot, struct box_ws_span const *spans, unsigned count, int put)
-{
-	unsigned char *datum = (unsigned char *)box_ws_move_slot_datum[slot];
-	unsigned i;
-
-	for (i = 0; i < count; i++)
-	{
-		short at = box_ws_move_map_c[spans[i].datum];
-
-		if (put)
-			memcpy(datum + spans[i].datum, box_ws_biped[slot] + at, spans[i].bytes);
-		else
-			memcpy(box_ws_biped[slot] + at, datum + spans[i].datum, spans[i].bytes);
-		if (box_ws_move_check)
-			memcpy(box_ws_move_shadow[slot] + at, datum + spans[i].datum, spans[i].bytes);
-	}
-}
-
-#define BOX_WS_SPANS(a) a, (unsigned)(sizeof(a) / sizeof(a[0]))
 int box_ws_move_narrow_out(int which)
 {
 	int slot = box_ws_move_slot;
@@ -414,8 +416,6 @@ int box_ws_move_narrow_out(int which)
 		return slot;
 	if (which == 0)
 		box_ws_move_spans(slot, BOX_WS_SPANS(box_ws_biped_translate_put), 1);
-	else
-		box_ws_move_spans(slot, BOX_WS_SPANS(box_ws_biped_interp_put), 1);
 	return box_ws_move_detach();
 }
 

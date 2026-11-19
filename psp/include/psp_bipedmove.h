@@ -56,7 +56,7 @@ static inline __attribute__((always_inline)) void *box_ws_move_at_w(void *datum,
 	short first = box_ws_move_map_c[offset];
 
 	if (first >= 0 && box_ws_move_map_c[offset + size - 1] == first + (short)(size - 1) &&
-		box_ws_move_back_sum_c[offset + size] - box_ws_move_back_sum_c[offset] != size)
+		(unsigned)(box_ws_move_back_sum_c[offset + size] - box_ws_move_back_sum_c[offset]) != size)
 		box_ws_move_write_not_written_back();
 	return box_ws_move_at(datum, offset, size);
 }

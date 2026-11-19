@@ -82,12 +82,17 @@ static const uint16_t box_ws_biped_move_back[] = { 1060, 1120, 108, 124 };
    fields put to the datum before and got back after, not the whole record.
    Datum offset, bytes. object_translate reads the flags and writes the
    position, the flags, the cluster and the map link (the census's 28 B);
-   object_start_interpolation writes the interpolation frames. */
+   object_start_interpolation writes the interpolation frames, which nothing
+   in the window writes through the record, so they're only got back: a put
+   would write a stale copy over the datum's (the lab's winid1, d20). */
 struct box_ws_span { uint16_t datum, bytes; };
 static const struct box_ws_span box_ws_biped_translate_put[] = { { 4, 4 } };
 static const struct box_ws_span box_ws_biped_translate_get[] = { { 4, 4 }, { 12, 12 }, { 76, 4 }, { 196, 4 } };
-static const struct box_ws_span box_ws_biped_interp_put[] = { { 132, 4 } };
 static const struct box_ws_span box_ws_biped_interp_get[] = { { 132, 4 } };
+/* got back where the solve resumes the kept record: the object update
+   advances the interpolation frames just before biped_update (winid1's
+   bipedmovestorecheck, b30 and c20) */
+static const struct box_ws_span box_ws_biped_resume_get[] = { { 132, 4 } };
 /* written through to the datum where the intent ends: other bipeds' solves
    read it (the bump) before this biped's own solve */
 static const struct box_ws_span box_ws_biped_intent_put[] = { { 24, 12 } };
