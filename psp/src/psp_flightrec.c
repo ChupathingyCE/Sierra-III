@@ -37,7 +37,7 @@ call, timed, written into the file's calibration). What none of these can
 see (cache and bus disturbance, the profiler module's own sampling) shows as
 the gap to a bare run of the same held replay.
 
-The file: ms0:/halo/log/flightrec.bin, a run of records, each a 32-bit word
+The file: ms0:/halo/log/flightrec.flr, a run of records, each a 32-bit word
 (type << 24 | payload bytes) and its payload, little-endian, 4-byte aligned;
 psp/sierra/flightrec.py in the lab reads it. Written at each slice's end, so
 nothing waits in memory longer than 2 s of game time, and at the exit.
@@ -81,7 +81,7 @@ int psp_flightrec_player(short *out);
 void psp_flightrec_actors(unsigned short *by_action, int actions, unsigned short *summary);
 const char *psp_flightrec_hs_name(int index);
 
-#define FR_FILE PSP_DATA_ROOT "/log/flightrec.bin"
+#define FR_FILE PSP_DATA_ROOT "/log/flightrec.flr" /* (.bin is refused in results: push-results.sh) */
 #define FR_VERSION 1
 #define FR_SLICE_TICKS 60
 
