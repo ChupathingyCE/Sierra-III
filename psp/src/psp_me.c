@@ -1297,8 +1297,10 @@ static void batch_job(const unsigned int *args, unsigned int *results, int on_me
 	if (on_me)
 		make = me_mexec_aim(make);
 #endif
-	unsigned int r = args[1], end = args[1] + args[2], bytes = args[6], made = 0, control = 0, user[ME_BATCH_ARGS], k;
+	unsigned int r = args[1], end = args[1] + args[2], bytes = args[6] & ~63u, made = 0, control = 0, user[ME_BATCH_ARGS], k;
 	int claim_old = on_me ? (CONTROL->features & ME_FEATURE_CLAIM_OLD) != 0 : me_claim_old;
+	/* claims a record (bit 0 of the record size, which is whole lines) */
+	int claims = (args[6] & 1u) != 0, sim_alternate = 0;
 
 	for (k = 0; k < ME_BATCH_ARGS; k++)
 		user[k] = args[7 + k];
@@ -1307,7 +1309,12 @@ static void batch_job(const unsigned int *args, unsigned int *results, int on_me
 	is proven where play can be compared */
 	if (!on_me && batch_sim_half)
 	{
-		if (batch_sim_behind == b)
+		/* with claims, an ME that is behind still makes what the main
+		CPU hasn't reached: here every other record, so records made by
+		each CPU interleave */
+		if (batch_sim_behind == b && claims)
+			sim_alternate = 1;
+		else if (batch_sim_behind == b)
 			end = r;
 		else if (batch_sim_whole)
 			batch_sim_whole--;
@@ -1321,6 +1328,46 @@ static void batch_job(const unsigned int *args, unsigned int *results, int on_me
 	{
 		__asm__ __volatile__("cfc1 %0, $31" : "=r"(control));
 		__asm__ __volatile__("ctc1 %0, $31" : : "r"(args[3]));
+	}
+	if (claims)
+	{
+		volatile unsigned int *me_on = UNCACHED(&b->me_on[0]), *made_word = UNCACHED(&b->made[0]);
+		volatile unsigned int *here_on = UNCACHED(&b->here_on[0]);
+
+		/* Each record its own claim: the ME writes its claim and then
+		reads the main CPU's, the main CPU the other way round (both
+		uncached, a sync between), so at least one of them sees the
+		other's. A record the main CPU claimed is passed, and the job goes
+		on to the next: the gather reaching one record first no longer
+		hands it every record after */
+		for (; r < end; r++)
+		{
+			unsigned char *record = records + r * bytes;
+
+			if (here_on[r] || (sim_alternate && !(r & 1u)))
+			{
+				*withdrawn = *withdrawn + 1;
+				continue;
+			}
+			me_on[r] = 1;
+			__asm__ __volatile__("sync");
+			if (here_on[r])
+			{
+				me_on[r] = 0;
+				*withdrawn = *withdrawn + 1;
+				__asm__ __volatile__("sync");
+				continue;
+			}
+			make(record, user);
+			if (on_me)
+				lines_writeback((unsigned int)record, bytes);
+			__asm__ __volatile__("sync");
+			made_word[r] = 1;
+			__asm__ __volatile__("sync");
+			made++;
+			psp_me_ring_step(r);
+		}
+		r = end;
 	}
 	for (; r < end; r++)
 	{
@@ -3961,6 +4008,16 @@ int psp_me_push_points(const void *inputs, unsigned int count, void *answers, un
 /* a pushed job's answer: 1 when done (results filled, its output readable
 on this CPU), 0 if the ME failed it (stopped, too late, or the job broke a
 rule): the caller does the work itself, and must not read the output */
+/* the batches' jobs as the ring collected them: how long each can have
+waited to be picked up, and its own time (ME cycles), for the batches'
+timing line */
+static struct
+{
+	unsigned long jobs;
+	unsigned long long look_cycles, job_cycles;
+	unsigned int look_worst, job_worst;
+} batch_ring;
+
 int psp_me_wait(unsigned int ticket, unsigned int *results)
 {
 	unsigned int index = ticket & RING_MASK, start = (PSP_MEPROBE_EXPR(1), sceKernelGetSystemTimeLow()), now, looks = 0, k;
@@ -4049,6 +4106,16 @@ int psp_me_wait(unsigned int ticket, unsigned int *results)
 		ring_stats.type_worst_cycles[request->type & 15] = result->job_cycles;
 	if (result->look_cycles > ring_stats.look_worst_cycles)
 		ring_stats.look_worst_cycles = result->look_cycles;
+	if (request->type == ME_JOB_BATCH)
+	{
+		batch_ring.jobs++;
+		batch_ring.look_cycles += result->look_cycles;
+		batch_ring.job_cycles += result->job_cycles;
+		if (result->look_cycles > batch_ring.look_worst)
+			batch_ring.look_worst = result->look_cycles;
+		if (result->job_cycles > batch_ring.job_worst)
+			batch_ring.job_worst = result->job_cycles;
+	}
 	/* "lanetrace" (psp_lanetrace.c): pushed, collected, the ME's own time */
 	PSP_LANE(PSP_LANE_ME_RING, ring_push_mark[index], now, request->type,
 		me_cycles_per_us > 0.0f ? (unsigned int)((float)result->job_cycles / me_cycles_per_us) : 0);
@@ -4162,7 +4229,13 @@ static struct
 	/* waits ended because every job of the batch had ended with the record
 	not made: a claim left behind by a later job's withdrawal */
 	unsigned long stale;
+	/* the timing line: from a record's hand-over to the gather's ask, by
+	what the ask found (made, the ME on it, not begun), sum and longest in
+	us; passes whose first ask found the ME already begun on the batch */
+	unsigned long ask_n[3], ask_worst[3], passes_begun;
+	unsigned long long ask_us[3];
 } batch_stats;
+static int batch_limit_old = -1; /* "mebatchlimit": the one limit word, as before claims */
 
 
 int psp_me_batch_init(struct psp_me_batch *b, psp_me_record_fn make, void *records, unsigned char *state,
@@ -4176,7 +4249,13 @@ int psp_me_batch_init(struct psp_me_batch *b, psp_me_record_fn make, void *recor
 	memset(b, 0, sizeof(*b));
 	/* the words go through the uncached view only: no cached copy of their
 	lines may be left here to be written back over the ME's */
-	sceKernelDcacheWritebackInvalidateRange(b, 4 * sizeof(struct psp_me_batch_word));
+	if (batch_limit_old < 0)
+		batch_limit_old = psp_keep("mebatchlimit") != 0;
+	b->claims = !batch_limit_old;
+	if (b->claims && capacity > ME_BATCH_CLAIM_RECORDS)
+		return 0;
+	/* the claims' words too: the ME writes them through its uncached view */
+	sceKernelDcacheWritebackInvalidateRange(b, (unsigned int)((unsigned char *)&b->hand_us[0] - (unsigned char *)b));
 	b->make = make;
 	b->records = (unsigned char *)records;
 	b->state = state;
@@ -4196,6 +4275,7 @@ void psp_me_batch_begin(struct psp_me_batch *b)
 		batch_sim_behind = NULL;
 	batch_sim_whole = batch_sim_passes++ & 3u;
 	b->added = b->handed = b->ticket_count = 0;
+	b->asked = 0;
 	b->limit_now = 0xFFFFFFFFu;
 	UNCACHED(&b->limit)->value = 0xFFFFFFFFu;
 	UNCACHED(&b->started)->value = 0;
@@ -4209,7 +4289,7 @@ can't take it */
 static void batch_hand(struct psp_me_batch *b, unsigned int end)
 {
 	struct psp_me_job job;
-	unsigned int first = b->handed, k, ticket, control;
+	unsigned int first = b->handed, k, ticket, control, now;
 
 	if (end <= first || b->ticket_count >= ME_BATCH_TICKETS || !psp_me_ring_ready())
 		return;
@@ -4222,7 +4302,7 @@ static void batch_hand(struct psp_me_batch *b, unsigned int end)
 	job.args[3] = control;
 	job.args[4] = (unsigned int)b->make;
 	job.args[5] = (unsigned int)b->records;
-	job.args[6] = b->record_bytes;
+	job.args[6] = b->record_bytes | (b->claims ? 1u : 0u);
 	for (k = 0; k < ME_BATCH_ARGS; k++)
 		job.args[7 + k] = b->args[k];
 	job.input[0] = b->records + first * b->record_bytes;
@@ -4233,8 +4313,13 @@ static void batch_hand(struct psp_me_batch *b, unsigned int end)
 		b->refused++;
 		return;
 	}
+	now = sceKernelGetSystemTimeLow();
 	for (k = first; k < end; k++)
+	{
 		b->state[k] = BATCH_OUT;
+		if (b->claims)
+			b->hand_us[k] = now;
+	}
 	b->tickets[b->ticket_count++] = ticket;
 	b->handed = end;
 }
@@ -4248,6 +4333,15 @@ void *psp_me_batch_add(struct psp_me_batch *b, unsigned int *index)
 		batch_hand(b, b->added);
 	*index = b->added;
 	b->state[b->added] = BATCH_ADDED;
+	/* a new pass's record: no claims yet (every job of the last pass was
+	collected at its finish, so nothing on the ME reads these now) */
+	if (b->claims)
+	{
+		UNCACHED(&b->me_on[b->added])[0] = 0;
+		UNCACHED(&b->made[b->added])[0] = 0;
+		UNCACHED(&b->here_on[b->added])[0] = 0;
+		__asm__ __volatile__("sync");
+	}
 	return b->records + b->added++ * b->record_bytes;
 }
 
@@ -4261,6 +4355,121 @@ static void batch_make_here(struct psp_me_batch *b, unsigned int index)
 	b->make(b->records + index * b->record_bytes, b->args);
 	b->state[index] = BATCH_HERE;
 	b->by_main++;
+}
+
+/* the timing line's ask: from the record's hand-over to this ask, by what
+it found (0 made by the ME, 1 the ME on it, 2 not begun) */
+static void batch_ask(struct psp_me_batch *b, unsigned int index, int found)
+{
+	unsigned int us = sceKernelGetSystemTimeLow() - b->hand_us[index], k;
+
+	batch_stats.ask_n[found]++;
+	batch_stats.ask_us[found] += us;
+	if (us > batch_stats.ask_worst[found])
+		batch_stats.ask_worst[found] = us;
+	if (!b->asked)
+	{
+		b->asked = 1;
+		for (k = 0; k < b->handed; k++)
+			if (UNCACHED(&b->me_on[k])[0] || UNCACHED(&b->made[k])[0])
+			{
+				batch_stats.passes_begun++;
+				break;
+			}
+	}
+}
+
+/* with claims: a record handed over and not made by the ME is claimed
+here; if the ME holds its claim, this CPU waits for that record alone
+(bounded as below), else makes it. The ME passes every record claimed here
+and makes the rest, so an ME picked up late still makes what the gather
+hasn't reached */
+static int batch_need_claim(struct psp_me_batch *b, unsigned int index)
+{
+	volatile unsigned int *me_on = UNCACHED(&b->me_on[index]), *made = UNCACHED(&b->made[index]);
+	unsigned char *record = b->records + index * b->record_bytes;
+	unsigned int start, now, last, gap, waited;
+	int slow = 0;
+
+	if (*made)
+	{
+		batch_ask(b, index, 0);
+		goto by_me;
+	}
+	UNCACHED(&b->here_on[index])[0] = 1;
+	__asm__ __volatile__("sync");
+	if (!*me_on)
+	{
+		batch_ask(b, index, 2);
+		b->taken++;
+		batch_make_here(b, index);
+		return 0;
+	}
+	batch_ask(b, index, 1);
+	b->waits++;
+	start = last = sceKernelGetSystemTimeLow();
+	/* it ends made, or withdrawn (the ME saw this CPU's claim too) */
+	while (!*made && *me_on)
+	{
+		if (!psp_me_ring_ready())
+			break;
+		now = sceKernelGetSystemTimeLow();
+		gap = now - last;
+		if (gap > batch_stats.gap_worst_us)
+			batch_stats.gap_worst_us = gap;
+		last = now;
+		if (now - start <= BATCH_RECORD_DEADLINE_US)
+			continue;
+		if (!me_grace_off)
+		{
+			if (*made || !*me_on)
+			{
+				batch_stats.second_look++;
+				if (deadline_lines < DEADLINE_LINES)
+				{
+					deadline_lines++;
+					platform_log("ME: a batch record (%u) past %u ms by the clock (%u us), done at the look after it; this CPU was off its wait %u us just before",
+						index, BATCH_RECORD_DEADLINE_US / 1000, now - start, gap);
+				}
+				continue;
+			}
+			if (!slow)
+			{
+				slow = 1;
+				batch_stats.slow++;
+				if (deadline_lines < DEADLINE_LINES)
+				{
+					deadline_lines++;
+					platform_log("ME: a batch record (%u) still on the ME %u ms after the wait began; waiting to %u ms",
+						index, (now - start) / 1000, BATCH_RECORD_GIVEUP_US / 1000);
+					me_stash_dump("a batch record slow");
+				}
+			}
+			if (now - start <= BATCH_RECORD_GIVEUP_US)
+				continue;
+		}
+		batch_stats.late++;
+		platform_log("ME: a batch record (%u) held past %u ms; the ME is stopped", index,
+			(me_grace_off ? BATCH_RECORD_DEADLINE_US : BATCH_RECORD_GIVEUP_US) / 1000);
+		me_stash_dump("a batch record late");
+		psp_me_stop("a batch record late");
+		break;
+	}
+	waited = sceKernelGetSystemTimeLow() - start;
+	if (waited > batch_stats.wait_worst_us)
+		batch_stats.wait_worst_us = waited;
+	if (!*made)
+	{
+		b->taken++;
+		batch_make_here(b, index);
+		return 0;
+	}
+by_me:
+	__asm__ __volatile__("sync");
+	lines_drop((unsigned int)record, b->record_bytes);
+	b->state[index] = BATCH_BY_ME;
+	b->by_me++;
+	return 1;
 }
 
 int psp_me_batch_need(struct psp_me_batch *b, unsigned int index)
@@ -4289,6 +4498,8 @@ int psp_me_batch_need(struct psp_me_batch *b, unsigned int index)
 		batch_make_here(b, index);
 		return 0;
 	}
+	if (b->claims)
+		return batch_need_claim(b, index);
 	if (index >= b->limit_now)
 	{
 		batch_make_here(b, index);
@@ -5424,11 +5635,27 @@ void psp_me_report(void)
 	}
 	if (batch_stats.passes)
 	{
-		platform_log("ME: batches: %lu passes; records made by the ME %lu, here %lu (taken back %lu; jobs the ME ended at the limit %lu), waits for a record the ME was on %lu (longest %lu us, longest between two looks %lu us), hand-overs refused %lu; stale claims taken back %lu; past %u ms: done at a second look %lu, slow %lu, late %lu%s",
+		platform_log("ME: batches: %lu passes; records made by the ME %lu, here %lu (taken back %lu; jobs the ME ended at the limit, or with claims the records it passed, claimed here, %lu), waits for a record the ME was on %lu (longest %lu us, longest between two looks %lu us), hand-overs refused %lu; stale claims taken back %lu; past %u ms: done at a second look %lu, slow %lu, late %lu%s",
 			batch_stats.passes, batch_stats.by_me, batch_stats.by_main, batch_stats.taken, batch_stats.withdrawn, batch_stats.waits,
 			batch_stats.wait_worst_us, batch_stats.gap_worst_us, batch_stats.refused, batch_stats.stale, BATCH_RECORD_DEADLINE_US / 1000,
 			batch_stats.second_look, batch_stats.slow, batch_stats.late, batch_sim_half ? " (mebatchsimhalf: the simulated ME makes half of each job)" : "");
+		if (batch_stats.ask_n[0] + batch_stats.ask_n[1] + batch_stats.ask_n[2])
+		{
+			float rate = me_cycles_per_us > 0.0f ? me_cycles_per_us : 1.0f;
+			unsigned long n0 = batch_stats.ask_n[0] ? batch_stats.ask_n[0] : 1, n1 = batch_stats.ask_n[1] ? batch_stats.ask_n[1] : 1;
+			unsigned long n2 = batch_stats.ask_n[2] ? batch_stats.ask_n[2] : 1, jobs = batch_ring.jobs ? batch_ring.jobs : 1;
+
+			platform_log("ME: batch timing (claims): from hand-over to the gather's ask, made by then %lu (%lu us on average, longest %lu), the ME on it %lu (%lu, %lu), not begun %lu (%lu, %lu); passes whose first ask found the ME begun %lu of %lu; the batches' jobs %lu, picked up within %lu us a job (worst %lu), their own time %lu us (worst %lu)%s",
+				batch_stats.ask_n[0], (unsigned long)(batch_stats.ask_us[0] / n0), batch_stats.ask_worst[0],
+				batch_stats.ask_n[1], (unsigned long)(batch_stats.ask_us[1] / n1), batch_stats.ask_worst[1],
+				batch_stats.ask_n[2], (unsigned long)(batch_stats.ask_us[2] / n2), batch_stats.ask_worst[2],
+				batch_stats.passes_begun, batch_stats.passes, batch_ring.jobs,
+				(unsigned long)((float)batch_ring.look_cycles / rate / (float)jobs), (unsigned long)((float)batch_ring.look_worst / rate),
+				(unsigned long)((float)batch_ring.job_cycles / rate / (float)jobs), (unsigned long)((float)batch_ring.job_worst / rate),
+				me_state == 2 ? " (simulated: the jobs run inside the push)" : "");
+		}
 		memset(&batch_stats, 0, sizeof(batch_stats));
+		memset(&batch_ring, 0, sizeof(batch_ring));
 	}
 	if (batchtest_checked)
 	{
