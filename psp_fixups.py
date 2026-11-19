@@ -56167,7 +56167,9 @@ def _bipedmove_file(tree, path, functions, pointers, prelude, counts):
         if expected is not None and n != expected:
             check_fail("psp_fixups: BIPEDMOVE: %s: expected %d datum accesses, found %d" % (name, expected, n))
         text = text[:start] + body + text[end:]
-    at = after_last_include(text)
+    # units.c includes again below the window's functions, so its prelude
+    # (the accessor only: nothing of the engine's) goes at the top
+    at = after_last_include(text) if "psp_bms_start" in prelude else 0
     text = text[:at] + prelude + text[at:]
     open(full, "w", errors="surrogateescape").write(text)
     return text
