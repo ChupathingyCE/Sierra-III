@@ -56224,7 +56224,257 @@ if BIPEDSTAGE and os.environ.get("PSP_BIPEDSTAGE_NOINLINE", "") == "1":
             _new.append((_old, _text))
         FIXES_BIPEDSTAGE[_rel] = _new
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_SSPR.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + list(FIXES_CHUPA090RUNS.items()) + list(FIXES_HEAPTRIM.items()) + list(FIXES_B78.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items()) + list(FIXES_AIME2A.items()) + list(FIXES_REDOSEED.items()) + (list(FIXES_STACKHOT.items()) if STACKHOT else []) + (list(FIXES_STACKHOT2.items()) if STACKHOT2 else []) + list(FIXES_PWSL.items()) + list(FIXES_SPHSL.items()) + list(FIXES_RECONLIST.items()) + list(FIXES_TP1.items()) + list(FIXES_WXDEAD.items()) + list(FIXES_AIMEMOVE.items()) + list(FIXES_PROPCRASH.items()) + list(FIXES_APCPOOL.items()) + list(FIXES_PSPTLS.items()) + list(FIXES_SNDEDRAM.items()) + list(FIXES_LIGHTFIRST.items()) + list(FIXES_DRAWPART.items()) + (list(FIXES_RECONLATE.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + list(FIXES_P2PASS.items()) + (list(FIXES_P2CENSUS.items()) if P2CENSUS else []) + list(FIXES_OBSRAY.items()) + list(FIXES_SNDWAIT.items()) + list(FIXES_FLAMEDECAL.items()) + list(FIXES_HUHINT.items()) + list(FIXES_DBLSOFT.items()) + list(FIXES_VFPUTRIG.items()) + list(FIXES_TICKCACHE.items()) + list(FIXES_STRICTALIAS.items()) + list(FIXES_SNDPERMAP.items()) + list(FIXES_RLOOP.items()) + list(FIXES_L10.items()) + list(FIXES_RLSKIP.items()) + list(FIXES_ONEWALK.items()) + (list(FIXES_POSEK.items()) if POSEK else []) + (list(FIXES_SNDSTREAM.items()) if os.environ.get("PSP_SNDSTREAM", "") == "1" else []) + list(FIXES_MOUTHCLOCK.items()) + list(FIXES_LSAME.items()) + list(FIXES_CHUPA090.items()) + list(FIXES_V091A.items()) + list(FIXES_AIDEBUGREC.items()) + (list(FIXES_AITICKOLD.items()) if AITICKOLD else []) + (list(FIXES_PADPATH.items()) if os.environ.get("PSP_PADPATH", "") == "1" else []) + list(FIXES_FARLEVEL.items()) + list(FIXES_DECALRING.items()) + list(FIXES_ARRAYFULL.items()) + (list(FIXES_DEADXBOX.items()) if DEADXBOX else []) + (list(FIXES_CAPTURE_POSING.items()) if CAPTURE == "posing" else []) + (list(FIXES_BOXPOSING.items()) if BOXPOSING else []) + (list(FIXES_ASKCENSUS.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + (list(FIXES_CAPTURE_SWEEP.items()) if CAPTURE == "sweep" else []) + (list(FIXES_BIPEDSTAGE.items()) if BIPEDSTAGE else [])):
+# PSP_WSOLD=1: the world store's first slice (docs/box_world_store.md §9;
+# psp/src/box_world_store_old.c, psp/include/box_ws_old.h): the pill sweep's
+# object inputs and what biped motion reads of other bipeds, copied as the
+# object walk begins, under keep word wsold (wsoldcheck proves the copy
+# complete and counts where it parts from the live world at the sweep's
+# reads). Nothing reads the copy for play yet: the ME's sweep will.
+WSOLD = os.environ.get("PSP_WSOLD", "") == "1"
+_WSOLD_MARK = "{ void box_ws_old_mark(long datum_index); box_ws_old_mark(%s); } /* (FIXES_WSOLD) written since the copy */"
+FIXES_WSOLD = {
+"source/objects/objects.c#wsold": [
+# the walk's own updates (children are updated through here too)
+("""static boolean object_update(
+	long object_index)
+{
+	struct object_header_datum *header = object_header_get(object_index);
+""",
+ """static boolean object_update(
+	long object_index)
+{
+	struct object_header_datum *header = object_header_get(object_index);
+	""" + _WSOLD_MARK % "object_index" + """
+"""),
+# the sleep's wake marks: every writer outside an object's own update that
+# the sleep had to know of, and the parents above it
+("""		psp_wake_marked[absolute_index] = 1;
+""",
+ """		psp_wake_marked[absolute_index] = 1;
+		""" + _WSOLD_MARK % "DATUM_INDEX_NEW(absolute_index, header->identifier)" + """
+"""),
+# a new object: no record until the next copy (it didn't exist as the walk began)
+("""	return object_index;
+}
+""",
+ """	if (object_index != NONE)
+		""" + _WSOLD_MARK % "object_index" + """
+	return object_index;
+}
+"""),
+# the bounding sphere, wherever node matrices are made (on demand inside
+# another object's update too)
+("""static void object_compute_node_matrices_with(
+	long object_index,
+	struct object_datum *object,
+	struct object_definition *object_definition)
+{
+""",
+ """static void object_compute_node_matrices_with(
+	long object_index,
+	struct object_datum *object,
+	struct object_definition *object_definition)
+{
+	""" + _WSOLD_MARK % "object_index" + """
+"""),
+("""static void psp_nms_make(long object_index, struct psp_nms_entry const *entry)
+{
+""",
+ """static void psp_nms_make(long object_index, struct psp_nms_entry const *entry)
+{
+	""" + _WSOLD_MARK % "object_index" + """
+"""),
+# the child lists: the parent's first child and the siblings' next links
+("""		object_remove_from_list(&object_get(object->object.parent_object_index)->object.first_child_object_index, object_index);
+""",
+ """		""" + _WSOLD_MARK % "object->object.parent_object_index" + """
+		object_remove_from_list(&object_get(object->object.parent_object_index)->object.first_child_object_index, object_index);
+"""),
+("""		object_add_to_list(&parent_object->object.first_child_object_index, object_index);
+""",
+ """		""" + _WSOLD_MARK % "object->object.parent_object_index" + """
+		object_add_to_list(&parent_object->object.first_child_object_index, object_index);
+"""),
+("""	struct object_datum *object = object_get(object_index);
+	object->object.next_object_index = *first_object_reference;
+""",
+ """	struct object_datum *object = object_get(object_index);
+	""" + _WSOLD_MARK % "object_index" + """
+	object->object.next_object_index = *first_object_reference;
+"""),
+("""		struct object_datum *object = object_get(*first_object_reference);
+
+		if (*first_object_reference==object_index)
+""",
+ """		struct object_datum *object = object_get(*first_object_reference);
+
+		""" + _WSOLD_MARK % "*first_object_reference" + """
+		if (*first_object_reference==object_index)
+"""),
+# the copy refreshed as the walk begins: after activation, before any update
+("""	psp_fvp_begin(); /* psp_fixups.py (FIXES_FISSION) */
+#endif
+""",
+ """	psp_fvp_begin(); /* psp_fixups.py (FIXES_FISSION) */
+	psp_wsold_refresh(); /* (FIXES_WSOLD) */
+#endif
+"""),
+# the engine's side of the copy: a record made from a datum, by the
+# engine's own names, so the store's file needs no engine header
+("""#include "units/bipeds.h"
+#include "physics/breakable_surfaces.h"
+""",
+ """#include "units/bipeds.h"
+#include "physics/breakable_surfaces.h"
+#include "box_ws_old.h" /* (FIXES_WSOLD) */
+
+static int psp_wsold_make(long object_index, struct object_datum const *object, short type,
+	struct box_ws_old_object *record, struct box_ws_old_biped *biped_record)
+{
+	memset(record, 0, sizeof(*record));
+	record->center[0] = object->object.bounding_sphere_center.x;
+	record->center[1] = object->object.bounding_sphere_center.y;
+	record->center[2] = object->object.bounding_sphere_center.z;
+	record->radius = object->object.bounding_sphere_radius;
+	record->flags = object->object.flags &
+		(FLAG(_object_invisible_bit) | FLAG(_object_no_collisions_bit) | FLAG(_object_movie_star_bit));
+	record->next = object->object.next_object_index;
+	record->first_child = object->object.first_child_object_index;
+	record->identifier = (int16_t)DATUM_INDEX_TO_IDENTIFIER(object_index);
+	record->type = (uint8_t)type;
+	record->dead = TEST_FLAG(object->object.damage_flags, _object_dead_bit) ? 1 : 0;
+	if (type != _object_type_biped)
+		return 0;
+	{
+		struct biped_datum const *biped = (struct biped_datum const *)object;
+
+		memset(biped_record, 0, sizeof(*biped_record));
+		biped_record->position[0] = object->object.position.x;
+		biped_record->position[1] = object->object.position.y;
+		biped_record->position[2] = object->object.position.z;
+		biped_record->velocity[0] = object->object.translational_velocity.i;
+		biped_record->velocity[1] = object->object.translational_velocity.j;
+		biped_record->velocity[2] = object->object.translational_velocity.k;
+		biped_record->parent = object->object.parent_object_index;
+		biped_record->player = biped->unit.player_index;
+		biped_record->seat = biped->unit.parent_seat_index;
+		biped_record->passes_through = TEST_FLAG(biped->biped.flags, _biped_movement_passes_through_bipeds_bit) ? 1 : 0;
+		/* a child's pill stands on its parent's node, which reading would
+		make on demand: left to the serial path */
+		if (object->object.parent_object_index == NONE)
+		{
+			real_point3d base;
+			real height, width;
+
+			biped_get_physics_pill(object_index, &base, &height, &width);
+			biped_record->pill_base[0] = base.x;
+			biped_record->pill_base[1] = base.y;
+			biped_record->pill_base[2] = base.z + height;
+			biped_record->pill_height = height;
+			biped_record->pill_width = width;
+			biped_record->pill_held = 1;
+		}
+	}
+	return 1;
+}
+
+static void psp_wsold_one(unsigned absolute, int check)
+{
+	struct object_header_datum const *header;
+	struct box_ws_old_object record;
+	struct box_ws_old_biped biped_record;
+	int is_biped;
+
+	if (absolute >= (unsigned)object_header_data->count)
+	{
+		if (!check)
+			box_ws_old_put(absolute, NULL, NULL);
+		return;
+	}
+	header = (struct object_header_datum const *)xbox_pointer(object_header_data->data) + absolute;
+	if (!header->identifier || !header->datum)
+	{
+		if (!check)
+			box_ws_old_put(absolute, NULL, NULL);
+		return;
+	}
+	is_biped = psp_wsold_make(DATUM_INDEX_NEW(absolute, header->identifier), header->datum, header->type, &record, &biped_record);
+	if (check)
+		box_ws_old_check(absolute, &record, is_biped ? &biped_record : NULL);
+	else
+		box_ws_old_put(absolute, &record, is_biped ? &biped_record : NULL);
+}
+
+void psp_wsold_refresh(void)
+{
+	static unsigned list[BOX_WS_OLD_SLOTS + BOX_WS_OLD_BIPEDS];
+	int state = box_ws_old_begin();
+	unsigned count, i, bipeds = 0;
+
+	if (!state)
+		return;
+	if (state == 2)
+	{
+		for (count = 0; count < BOX_WS_OLD_SLOTS; count++)
+			list[count] = count;
+		box_ws_old_marked(list + count, 0);
+	}
+	else
+		count = (unsigned)box_ws_old_marked(list, sizeof(list) / sizeof(list[0]));
+	for (i = 0; i < count; i++)
+		psp_wsold_one(list[i], 0);
+	for (i = 0; i < count; i++)
+		bipeds += box_ws_old_biped_of[list[i]] >= 0;
+	if (box_ws_old_checking)
+	{
+		unsigned live = (unsigned)object_header_data->count;
+
+		for (i = 0; i < live && i < BOX_WS_OLD_SLOTS; i++)
+			psp_wsold_one(i, 1);
+	}
+	box_ws_old_flipped(count, bipeds, (unsigned)object_header_data->count);
+}
+
+/* wsoldcheck: an object the engine's sweep reads, against the copy */
+void psp_wsold_visit(long object_index, struct object_datum const *object)
+{
+	struct box_ws_old_object record;
+	struct box_ws_old_biped biped_record;
+	struct object_header_datum const *header = object_header_get(object_index);
+
+	if (psp_wsold_make(object_index, object, header->type, &record, &biped_record))
+		box_ws_old_visit(object_index, &record, &biped_record);
+	else
+		box_ws_old_visit(object_index, &record, NULL);
+}
+"""),
+],
+"source/physics/collisions.c#wsold": [
+("""	long ignore_object_index,
+	struct collision_feature_list *features)
+{
+	do
+	{
+		struct object_datum *object = object_get(object_index);
+""",
+ """	long ignore_object_index,
+	struct collision_feature_list *features)
+{
+	do
+	{
+		struct object_datum *object = object_get(object_index);
+
+		{ /* (FIXES_WSOLD) wsoldcheck: the copy against what this read finds */
+			extern int box_ws_old_checking;
+			void psp_wsold_visit(long object_index, struct object_datum const *object);
+
+			if (box_ws_old_checking && object_index != ignore_object_index)
+				psp_wsold_visit(object_index, object);
+		}
+"""),
+],
+}
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_SSPR.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + list(FIXES_CHUPA090RUNS.items()) + list(FIXES_HEAPTRIM.items()) + list(FIXES_B78.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items()) + list(FIXES_AIME2A.items()) + list(FIXES_REDOSEED.items()) + (list(FIXES_STACKHOT.items()) if STACKHOT else []) + (list(FIXES_STACKHOT2.items()) if STACKHOT2 else []) + list(FIXES_PWSL.items()) + list(FIXES_SPHSL.items()) + list(FIXES_RECONLIST.items()) + list(FIXES_TP1.items()) + list(FIXES_WXDEAD.items()) + list(FIXES_AIMEMOVE.items()) + list(FIXES_PROPCRASH.items()) + list(FIXES_APCPOOL.items()) + list(FIXES_PSPTLS.items()) + list(FIXES_SNDEDRAM.items()) + list(FIXES_LIGHTFIRST.items()) + list(FIXES_DRAWPART.items()) + (list(FIXES_RECONLATE.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + list(FIXES_P2PASS.items()) + (list(FIXES_P2CENSUS.items()) if P2CENSUS else []) + list(FIXES_OBSRAY.items()) + list(FIXES_SNDWAIT.items()) + list(FIXES_FLAMEDECAL.items()) + list(FIXES_HUHINT.items()) + list(FIXES_DBLSOFT.items()) + list(FIXES_VFPUTRIG.items()) + list(FIXES_TICKCACHE.items()) + list(FIXES_STRICTALIAS.items()) + list(FIXES_SNDPERMAP.items()) + list(FIXES_RLOOP.items()) + list(FIXES_L10.items()) + list(FIXES_RLSKIP.items()) + list(FIXES_ONEWALK.items()) + (list(FIXES_POSEK.items()) if POSEK else []) + (list(FIXES_SNDSTREAM.items()) if os.environ.get("PSP_SNDSTREAM", "") == "1" else []) + list(FIXES_MOUTHCLOCK.items()) + list(FIXES_LSAME.items()) + list(FIXES_CHUPA090.items()) + list(FIXES_V091A.items()) + list(FIXES_AIDEBUGREC.items()) + (list(FIXES_AITICKOLD.items()) if AITICKOLD else []) + (list(FIXES_PADPATH.items()) if os.environ.get("PSP_PADPATH", "") == "1" else []) + list(FIXES_FARLEVEL.items()) + list(FIXES_DECALRING.items()) + list(FIXES_ARRAYFULL.items()) + (list(FIXES_DEADXBOX.items()) if DEADXBOX else []) + (list(FIXES_CAPTURE_POSING.items()) if CAPTURE == "posing" else []) + (list(FIXES_BOXPOSING.items()) if BOXPOSING else []) + (list(FIXES_ASKCENSUS.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + (list(FIXES_CAPTURE_SWEEP.items()) if CAPTURE == "sweep" else []) + (list(FIXES_BIPEDSTAGE.items()) if BIPEDSTAGE else []) + (list(FIXES_WSOLD.items()) if WSOLD else [])):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 # PSP_FRAMEPIC (docs/frame_picture.md): game.c's perf statements are
 # stripped before its anchors are matched (PERF_STRIP), which took the tick's

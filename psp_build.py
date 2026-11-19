@@ -277,6 +277,11 @@ if BOXPOSING:
 # PSP_BIPEDSTAGE=1 (the biped motion box's staged form, psp_fixups.py
 # FIXES_BIPEDSTAGE) builds in the world store's biped section, step 1a
 # (psp/src/box_world_store.c; docs/box_biped_motion.md section 1c)
+# PSP_WSOLD=1: the world store's first slice, the one-tick-old copy of the
+# pill sweep's object inputs (psp/src/box_world_store_old.c; psp_fixups.py
+# FIXES_WSOLD; docs/box_world_store.md section 9)
+if os.environ.get("PSP_WSOLD", "") == "1":
+    PSP_FILES.append("box_world_store_old")
 if os.environ.get("PSP_BIPEDSTAGE", "") == "1":
     PSP_FILES.append("box_world_store")
     # the accessor's constant map must follow the store's runs (step 1b)
