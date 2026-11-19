@@ -1057,8 +1057,10 @@ static int level_kept(const struct box_sweep_world *w, const float *center, floa
 }
 
 /* collision_get_features_in_sphere: the level's, then the objects' in the clusters the sphere reaches.
-`scratch` holds B's kept walks, read only when the world keeps them (NULL otherwise) */
-static int features_in_sphere(const struct box_sweep_world *w, unsigned int flags, const float *center, float radius,
+`scratch` holds B's kept walks, read only when the world keeps them (NULL otherwise). Its copy of the
+leaves stays a loop: as a call to memcpy it would take the ME (the game's placement) into the library's
+wrapper, whose claims reach the kernel (the build's reach, sierra-build 44540357799) */
+static __attribute__((optimize("no-tree-loop-distribute-patterns"))) int features_in_sphere(const struct box_sweep_world *w, unsigned int flags, const float *center, float radius,
 	float height, float width, int ignore, struct box_sweep_scratch *scratch, struct box_sweep_gather *g)
 {
 	struct box_sweep_features *features = &g->features;
