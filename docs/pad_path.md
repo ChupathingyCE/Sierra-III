@@ -281,6 +281,7 @@ As §3.4, in its first form: a seat on one side only is forced after 15 ticks (t
 - **Held, with vehicles:** b40 on seeds 1-2 and posing B: 0.13-0.73 units off (mean a window), 2-5 seats taken, one vehicle fetched, 14-24 times the ride was set on the path, each from just over its 2-unit bound. c40 on seeds 1-2: held to the level's end (0.03-0.58 mean, largest 3.8), 4-6 seats taken, 2-3 fetched, 14-27 ride sets. No crash, wrong vehicle or thrown vehicle in any log.
 - **One failure, fixed on the branch:** posing B on c40 lost its vehicle at tick 44,720 ("none within 30 units" for 10,000 ticks) and walked the rest, never reaching the level's end. The search is now the whole level (a Banshee left in the air is far away); a seat not found is said once in 900 ticks.
 - **So the look alone does steer:** a driven vehicle drifts to the 2-unit bound about once every 1,000-2,000 ticks and is set back; no stick bending was needed.
+  - **Superseded for b30 (2026-11-18):** on b30_leg2's drive (4,386-9,826) the seated hold snaps back to the path 14-26 times a drive, about every 200-400 ticks, in every held run read (PSP and emulator), and every run loses the seat for 16-48 ticks around 7,120-7,160 (the lab's findings `hold_route_b30`). The look alone does not keep b30's drive held; the next steps are a tighter seat snap (`holdseatsnap50`/`holdseatsnap100`) and the seat loss's cause.
 
 ## 11. The outcome hold (design, for the lead's read; nothing built)
 
