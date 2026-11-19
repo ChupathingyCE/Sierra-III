@@ -56331,9 +56331,6 @@ _Static_assert(BOX_WS_OLD_SLOTS >= MAXIMUM_OBJECTS_PER_MAP, "the one-tick-old co
 _Static_assert(BOX_WS_OLD_CLUSTERS >= MAXIMUM_CLUSTERS_PER_STRUCTURE, "the copy holds every cluster");
 _Static_assert(BOX_WS_OLD_MEMBERS >= HALO_PORT_MAXIMUM_CLUSTER_REFERENCES, "the copy's members hold the partition's references");
 _Static_assert(sizeof(real_matrix4x3) == 13 * sizeof(float), "a node's matrix as the copy holds it");
-#define PSP_WSOLD_MODEL_NODES 64 /* MAXIMUM_NODES_PER_MODEL: a collision model binds no more */
-static int psp_wsold_model_make(long object_index, struct object_datum const *object, short type,
-	struct box_ws_old_node *nodes, unsigned *count);
 
 static int psp_wsold_make(long object_index, struct object_datum const *object, short type,
 	struct box_ws_old_object *record, struct box_ws_old_biped *biped_record)
@@ -56542,6 +56539,9 @@ void psp_wsold_visit(long object_index, struct object_datum const *object)
 {
 """,
  """#include "physics/collision_bsp_definitions.h" /* (FIXES_WSOLD) a model's node BSPs */
+#include "box_ws_old.h" /* (FIXES_WSOLD) */
+#define PSP_WSOLD_MODEL_NODES 64 /* MAXIMUM_NODES_PER_MODEL: a collision model binds no more */
+_Static_assert(PSP_WSOLD_MODEL_NODES >= MAXIMUM_NODES_PER_MODEL, "a model's live nodes");
 
 /* (FIXES_WSOLD) whether a read of the object's node matrices would make them
 first: their compute left out (NMSKIP's VISLAZY) or nodes the posing box owes */
