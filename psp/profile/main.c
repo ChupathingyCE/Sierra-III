@@ -82,6 +82,11 @@ struct totals
 };
 
 static struct totals *table = 0;
+#ifdef PSP_KSAMPLE
+/* the block, once module_start has checked it; 0 when not asked for */
+static struct ksample_block *ks = 0;
+static void ksample_intr_account(void);
+#endif
 
 /* the registers themselves (libpspdebug's profiler functions, without the
 screen printer that library drags in) */
@@ -415,9 +420,6 @@ int halo_profile_totals(unsigned long long *out)
 }
 
 #ifdef PSP_KSAMPLE
-/* the block, once module_start has checked it; 0 when not asked for */
-static struct ksample_block *ks = 0;
-
 /* who holds the CPU, from the game's waiter slots (ksample.h): the kernel
 won't name the running thread inside an interrupt, the game's threads say
 when they block. A slot read mid-change is one sample's error at most */
@@ -501,20 +503,6 @@ static void ksample_count(unsigned int epc, unsigned int phase, unsigned int ctx
 	}
 }
 
-/* the interrupt manager's record of one handler (pspintrman.h's
-PspIntrHandlerOptionParam, declared here so the kernel build needs no user
-header) */
-struct ksample_intr_info
-{
-	int size;
-	unsigned int entry, common, gp;
-	unsigned short intr_code, sub_count, intr_level, enabled;
-	unsigned int calls, field_1c;
-	unsigned int total_clock_lo, total_clock_hi;
-	unsigned int min_clock_lo, min_clock_hi, max_clock_lo, max_clock_hi;
-};
-int QueryIntrHandlerInfo(SceUID intr_code, SceUID sub_intr_code, struct ksample_intr_info *data);
-
 /* the interrupt numbers pspintrman.h names; those with a handler at start
 are kept */
 static const unsigned char ksample_intr_candidates[] =
@@ -526,7 +514,7 @@ static unsigned long long intr_last_clock[KSAMPLE_INTRS];
 
 static int ksample_intr_query(unsigned int intno, unsigned int *calls, unsigned long long *clock)
 {
-	struct ksample_intr_info info;
+	PspIntrHandlerOptionParam info;
 	int result;
 
 	memset(&info, 0, sizeof(info));
