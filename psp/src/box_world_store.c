@@ -121,7 +121,7 @@ static unsigned char box_ws_move_state[BOX_WS_BIPED_SLOTS];
 static void *box_ws_move_slot_datum[BOX_WS_BIPED_SLOTS];
 static long box_ws_move_slot_index[BOX_WS_BIPED_SLOTS];
 static int box_ws_move_slot = -1, box_ws_move_kept;
-static unsigned long box_ws_move_count, box_ws_move_flushed, box_ws_move_settled, box_ws_move_dropped;
+static unsigned long box_ws_move_count, box_ws_move_ended, box_ws_move_flushed, box_ws_move_settled, box_ws_move_dropped;
 /* bipedmovestorecheck: per slot, the datum as it stood when the record last
    agreed with it (the fill, each sync and write-back); against it, at the
    resume, the datum's runs written between the passes, and at the end, those
@@ -132,7 +132,7 @@ static unsigned char (*box_ws_move_shadow)[BOX_WS_BIPED_BYTES];
 static int box_ws_move_check;
 static unsigned long box_ws_move_check_records, box_ws_move_check_resumes, box_ws_move_check_early;
 static unsigned long box_ws_move_check_between[BOX_WS_BIPED_RUNS], box_ws_move_check_inside[BOX_WS_BIPED_RUNS],
-	box_ws_move_check_lost[BOX_WS_BIPED_RUNS];
+	box_ws_move_check_lost[BOX_WS_BIPED_RUNS], box_ws_move_check_marked[BOX_WS_BIPED_RUNS];
 
 /* after the runs are known: each datum byte's place in the record; two runs
    holding one datum byte would leave two copies, so the move refuses them */
@@ -239,13 +239,15 @@ static unsigned box_ws_move_check_datum(int slot, unsigned long *count)
 
 static void box_ws_move_check_log(unsigned long records, int force)
 {
-	static const char *const what[3] = { "between the passes", "inside the window", "lost (not written back)" };
-	unsigned long *counts[3] = { box_ws_move_check_between, box_ws_move_check_inside, box_ws_move_check_lost };
+	static const char *const what[4] = { "between the passes", "inside the window", "lost (not written back)",
+		"between the passes by a marked writer (written back first, refilled)" };
+	unsigned long *counts[4] = { box_ws_move_check_between, box_ws_move_check_inside, box_ws_move_check_lost,
+		box_ws_move_check_marked };
 	int k;
 
 	if (!force && records % 3000)
 		return;
-	for (k = 0; k < 3; k++)
+	for (k = 0; k < 4; k++)
 	{
 		char line[400];
 		int n = 0;
@@ -343,7 +345,9 @@ int box_ws_move_resume(void *datum, int slot)
 	if (box_ws_move_check)
 	{
 		box_ws_move_check_resumes++;
-		if (box_ws_move_check_datum(slot, box_ws_move_check_between) && box_ws_move_check_early++ < 20)
+		if (box_ws_move_state[slot] == 3)
+			box_ws_move_check_datum(slot, box_ws_move_check_marked);
+		else if (box_ws_move_check_datum(slot, box_ws_move_check_between) && box_ws_move_check_early++ < 20)
 			box_ws_move_check_log(box_ws_move_check_records, 1);
 	}
 	if (box_ws_move_state[slot] == 3)
@@ -380,7 +384,7 @@ void box_ws_move_end(void)
 	box_ws_slot_out(slot);
 	box_ws_move_detach();
 	box_ws_move_state[slot] = 0;
-	if (box_ws_move_count % 3000 == 0)
+	if (++box_ws_move_ended % 3000 == 0)
 		platform_psp_log("bipedmovestore: %lu windows run from the store; kept records written back by a mark %lu, after the solves %lu; windows ended by a delete %lu",
 			box_ws_move_count, box_ws_move_flushed, box_ws_move_settled, box_ws_move_dropped);
 }
