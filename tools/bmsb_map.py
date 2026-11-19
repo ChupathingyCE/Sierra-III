@@ -24,9 +24,18 @@ RECORD_LIMIT = 256
 
 # (datum offset, bytes, written by the window): the census's field list
 RUNS = [
-    (1066, 1, True),   # biped.state
-    (1113, 2, True),   # biped.airborne_ticks, slipping_ticks
-    (1124, 24, True),  # biped.crouch, bank, ground_plane
+    # read only in the window, stored by nothing else while a record is live
+    (0, 4, False),     # definition_index
+    (204, 4, False),   # object.parent_object_index
+    (412, 8, False),   # object.node_orientations.size, node_matrices.size
+    (456, 4, False),   # unit.player_index
+    (980, 4, False),   # unit.body_stun
+    # written by the window's own functions, touched by nothing else then
+    (468, 12, True),   # unit.desired_facing_vector
+    (552, 12, True),   # unit.throttle
+    (1072, 4, True),   # biped.support_surface_index
+    (1116, 3, True),   # biped.jump_recovery_timer and the bytes after it
+    (1120, 2, True),   # biped.landing
 ]
 
 def build():

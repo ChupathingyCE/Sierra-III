@@ -37,7 +37,7 @@ static unsigned char psp_bmsb_dropped[PSP_BMSB_DEPTH];
 static int psp_bmsb_on = -1, psp_bmsb_check;
 static unsigned char (*psp_bmsb_shadow)[PSP_BMSB_BYTES];
 static unsigned long psp_bmsb_ticks, psp_bmsb_filled, psp_bmsb_entered, psp_bmsb_scratched, psp_bmsb_written,
-	psp_bmsb_drops, psp_bmsb_gone, psp_bmsb_outside[PSP_BMSB_BACK_RUNS_COUNT + 1];
+	psp_bmsb_drops, psp_bmsb_gone, psp_bmsb_outside[PSP_BMSB_FILL_RUNS_COUNT];
 
 static void psp_bmsb_copy_in(unsigned char *record, unsigned char const *datum)
 {
@@ -105,7 +105,7 @@ void psp_bmsb_write_back(int slot, void *datum)
 				unsigned short const *run = psp_bmsb_fill_runs[i];
 
 				if (memcmp(psp_bmsb_shadow[slot] + run[1], (unsigned char const *)datum + run[0], run[2]))
-					psp_bmsb_outside[i < PSP_BMSB_BACK_RUNS_COUNT ? i : PSP_BMSB_BACK_RUNS_COUNT]++;
+					psp_bmsb_outside[i]++;
 			}
 		}
 		psp_bmsb_copy_out(psp_bmsb_record[slot], (unsigned char *)datum);
@@ -127,7 +127,7 @@ void psp_bmsb_end(void)
 		{
 			int i;
 
-			for (i = 0; i <= PSP_BMSB_BACK_RUNS_COUNT && i < PSP_BMSB_FILL_RUNS_COUNT; i++)
+			for (i = 0; i < PSP_BMSB_FILL_RUNS_COUNT; i++)
 				platform_psp_log("bmsbcheck: fill run %d (+%u, %u B): written outside the window %lu times",
 					i, psp_bmsb_fill_runs[i][0], psp_bmsb_fill_runs[i][2], psp_bmsb_outside[i]);
 		}
