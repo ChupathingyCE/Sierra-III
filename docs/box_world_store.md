@@ -175,3 +175,18 @@ The drawing (the frame's other phase, same runs): b30 plain 3.633 M, off 3.635, 
 - **The requirement, measured:** the cache model first, on the same five-side form against **plain** (not off), on b30_leg2 and c20_leg2, tick and drawing. It goes to the PSP only if its tick figure is under plain. Then the PSP pair is plain against means B on held b30_leg2 and c20_leg2, without statecrc, tick and drawing by stretch. The lead orders it.
 - **§9's slice** is already this shape: one refresh a tick in one pass, read by one record pointer an object, no syncs. Its cost (+1.5 to +2.1% [E]) is the refresh's datum reads, and it buys only on the ME. It waits on the falsifier, and on means B proving a record can pay on the main CPU.
 
+
+## 11. Means B built and proven (2026-11-19)
+
+Built as §10 designed it on Sierra-III builder/meansb (663ae6cb, `PSP_BMSB=1`, keep word `bmsb`). The census, the form and the figures are in docs/box_biped_motion.md §1d; here, what it says for the store.
+- **The census sets the record:** the fields only the window's own functions touch from the fill after the unit pass to the write-back after the solves.
+  - It came to **60 B, ten runs**: five read-only, five written.
+  - §10's ≤256 B target was never the limit. The helpers, posing and the other bipeds' windows touch everything else biped motion uses.
+  - The kept set is 64 x 60 B, under 4 KB.
+- **Exact** [E] on b30, c20 and d20, seeds 1-2, and with the keep word off (the lab's msbid1).
+- **The cache model, a lead only** [E] (the lab's msbcache1; the lead 09:3xZ):
+  - Tick against plain +0.8% (b30) / +1.2% (c20), where 1c's window was +5.4% / +13.6%.
+  - D-misses -1.6% / -4.1%: **the first record form that saves datum lines**, so a record can pay against §10's requirement.
+  - I-misses up more. Most of that is the text layout not placing the new code [U].
+- **The PSP pair decides** (plain against means B, held b30_leg2 and c20_leg2, repeat 2): the lab's coord/psp_queue.md, `msb-held`.
+- **For §9's slice:** means B shows a once-a-tick fill is cheap when the record holds only the window's private fields. The slice's sweep inputs are read by others (posing, the gather), so on the main CPU they'd stay on the datum. Only the ME's placement needs them copied.
