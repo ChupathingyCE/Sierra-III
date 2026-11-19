@@ -122,6 +122,14 @@ Sheepdog01: play biped motion out, as long as it doesn't conflict with a future 
       - So the persistent slot is viable, with a refill on change from a few named outside writers. Naming them is a watch on those runs.
     - **The watch that names them** (design, 2026-11-18 11:4x): the emulator's store-address watch (PSP_WATCH, being passed through batch.py by the B98/B91 hunt) on one staged biped's +12..+59, +172..+183, +932..+951 (datum offsets) between its solve and its next unit pass. Each store PC is resolved against the build's symbols and counted by function. No build change, so the play the census saw is the play watched. The writers it names each get a store write or a slot-dirty mark before slots stop refilling every tick.
     - **What it decides:** whether a field can fill on change (the store's page §2) or must fill every tick until its outside writer writes the store. Until it reads clean on b30, b40, d20 and a30, the slot is refilled every tick, as 1a does. As each moves, its datum walk goes and the fill or write-back of the fields it owned shrinks (the store's page §2: read-only fields fill on change, and a field whose every reader reads the store isn't written back).
+- **1b and the window priced on the PSP** (2026-11-19, the lab's bm1c-held, Sheepdog01's two PSPs) [M]:
+  - **Exact:** play and both seeds identical every tick under statecrc on 12 runs, with the ME's jobs live (sierra-hw 44471831576, 44476703710, 44476766018). This closes the risk of the ME reading a unit datum while its record is kept.
+  - **Slower on the tick:**
+    - 1b alone: b30 +0.5 ms on cinematic, the rest in the noise (44485152737); c20 +1.3 / +0.7 ms (44481801403).
+    - The window: b30 +0.8 / +1.1 ms on cinematic and the flight (44481846467); c20 +4.1 ms on the first stretch, +15.8% tick and +10.8% frame (44485101385).
+    - Drawing is 0.5-0.8 ms faster with the window wherever it reads.
+    - Findings rows `bm1c_*_price_*` and `bm1c_*_psp_*`.
+  - **Decision (the lead, 07:5xZ):** both stay off behind `bipedmovestore` as groundwork. The world store's next form must cost less than the datum lines it saves, measured. Its pieces (the per-access indirection, fill and write-back, and the kept records' residency) are priced before it is designed, and means B (records filled once a tick, read by plain pointer, the kept set sized to the D-cache or eDRAM) comes first.
 - **What it should buy** [U, to be counted in the cache model, then priced on the PSP]: the intent's and solve's D-misses on the datum (c20's +2,331 a tick against slice 2 is the lead) against the fill's and write-back's copies.
 
 ## 2. Data
