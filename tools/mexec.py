@@ -9,7 +9,8 @@ needs, written into the linked ELF's psp_mexec_table before psp-prxgen.
 The list holds one function name a line (# starts a comment), the hottest
 first; the first must be the ME's entry, psp_ge_me_replay. A function that
 isn't in the program, or whose name two functions share, is left out with a
-line saying so.
+line saying so. A comment line "# @room <KB>" sets the copy's room (192 KB
+without it); psp_build.py reads the same line, so psp_me.c's room matches.
 
 The ELF is the port's PRX (linked at 0 with -q, so every relocation the link
 resolved is still listed). What the copy needs, from the relocations inside
@@ -43,6 +44,7 @@ The table (32-bit words, all offsets in bytes):
   per immediate patch: the word's place, its new low 16 bits;
   per jump table: its place, its words, then the words (eDRAM addresses).
 """
+import re
 import struct
 import sys
 
@@ -264,7 +266,13 @@ def main(argv):
     if len(args) != 2:
         sys.exit(__doc__)
     elf = Elf(args[0])
-    names = [l.split("#")[0].strip() for l in open(args[1])]
+    global ROOM
+    lines = open(args[1]).read().splitlines()
+    for l in lines:
+        m = re.match(r"#\s*@room\s+(\d+)\s*$", l.strip())
+        if m:
+            ROOM = int(m.group(1)) * 1024
+    names = [l.split("#")[0].strip() for l in lines]
     names = [n for n in names if n]
     words = build(elf, names, print)
     table = [s for s in elf.symbols if s["name"] == "psp_mexec_table" and s["type"] == STT_OBJECT]

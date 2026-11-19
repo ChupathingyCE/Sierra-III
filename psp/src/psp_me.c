@@ -193,15 +193,33 @@ its eDRAM at start and runs the GE replay from the copy */
 Sized to the lists in use with room to grow (list rb fills 1,040 words): it sits
 in .data, so every word is heap the game doesn't get, and the tool refuses a
 list whose table outgrows it */
+#if PSP_MEXEC_JOBS
+/* a list with the think and the mixer (psp/layout/mexec_rbj.txt) has about
+twice rb's functions and calls between them */
+#define MEXEC_TABLE_WORDS 4096
+#else
 #define MEXEC_TABLE_WORDS 1536
+#endif
 #define MEXEC_MAGIC 0x4D455843u
 #define MEXEC_HEADER 16
 #define MEXEC_AT 0x40000u   /* eDRAM 256 KB: the resident room's start (psp_me.h) */
+#ifdef PSP_MEXEC_ROOM_KB
+/* the list's "# @room" line (psp_build.py); the sound tier starts at 800 KB */
+#define MEXEC_ROOM (PSP_MEXEC_ROOM_KB * 1024u)
+#else
 #define MEXEC_ROOM 0x30000u
+#endif
 unsigned int psp_mexec_table[MEXEC_TABLE_WORDS] = { 0x4D455830u };
 /* the replay's copy, 0 until the copy is in place; cleared at every start,
 since the eDRAM doesn't survive a sleep */
 static PSP_AIME_ME_SIDE unsigned int mexec_entry = 0;
+#if PSP_MEXEC_JOBS
+/* run_job's copy (0 when the list hasn't it): me_serve enters every slot job
+through it, so the think and the mixer run from the copy as the replay does;
+a function pointer would leave the copy for main RAM, a call made from the
+copy stays in it */
+static PSP_AIME_ME_SIDE unsigned int mexec_run = 0;
+#endif
 #endif
 
 /* The debug stash: where the ME is, in words of its own (two cache lines,
@@ -890,6 +908,11 @@ static void me_serve(volatile struct me_slot *slot, int *sums)
 		me_count(STASH_AUDIO_RANGES);
 	job_start = me_cycles();
 	me_note(STASH_SLOT_JOB);
+#if PSP_MEXEC_JOBS
+	if (mexec_run)
+		((void (*)(volatile struct me_slot *, int *, int))mexec_run)(slot, sums, 1);
+	else
+#endif
 	run_job(slot, sums, 1);
 	job_end = me_cycles();
 	me_note(STASH_SLOT_WRITE);
@@ -1709,6 +1732,11 @@ static void me_mexec_install(volatile struct me_control *control)
 	control->mexec_patches = t[5] + t[7];
 	control->mexec_sum = sum;
 	mexec_entry = copy + t[MEXEC_HEADER + 2];
+#if PSP_MEXEC_JOBS
+	for (k = 0, at = MEXEC_HEADER; k < t[4]; k++, at += 3)
+		if (base + t[at] == (unsigned int)run_job)
+			mexec_run = copy + t[at + 2];
+#endif
 	control->mexec_state = 1;
 }
 #endif
@@ -1737,6 +1765,9 @@ void meLibOnProcess(void)
 	meLibSync();
 #if PSP_MEXEC
 	mexec_entry = 0;
+#if PSP_MEXEC_JOBS
+	mexec_run = 0;
+#endif
 #endif
 	/* build 88: the cycle counter (coprocessor 0 register 9) stood still on
 	a PSP-1000 (b87: "runs at 0.0 a microsecond"), so every ME time read
