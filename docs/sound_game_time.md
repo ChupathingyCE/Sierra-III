@@ -1,7 +1,7 @@
 # Sound game time: game logic that waits on sound playback
 
 The lab's B98 (b) and B91, design first (the lead, 2026-11-18 12:0x; the
-lab's decisions.md 12:0x). Status: design. Nothing here is built yet.
+lab's decisions.md 12:0x). Status: built (FIXES_SOUNDGAMETIME) and on by default since its proof (the lab's findings sgtproof, 2026-11-18): keep word `nosoundgametime` turns it off.
 
 ## The question
 
@@ -113,3 +113,15 @@ game-state logic on its own, so this is safe in every role.
 - **The outcome census:** the lab's aioutcome census batches on b30 and b40,
   off against on, as AIFAR's were.
 - **Strict:** 0 sites.
+
+## Result (2026-11-18) [E]
+
+The lab's sierra-batch 44427343964 (sgtproof1) and 44431025474 (sgtproof2), findings sgtproof:
+
+- **The B98 pair, 256976cc and 709bdb84, each with the group (b40 seed 40, statecrc).**
+  - Word on: the looping sounds record and game sound globals are identical at all 544 checkpoints to 16,290.
+  - Word off: the record parts at 8,340, 12,150, 12,240, 12,930, 13,770 and later.
+  - Play and both seeds are identical in every run. What still differs is B91's other class: objects' non-play words, particle and hud unit interface.
+- **On against off in one build.** Play and both seeds are identical at all 16,800 ticks (b40) and all 600 ticks (b30). Only the sound records (the looping sounds record and game sound globals) and objects' non-play words differ.
+- **handb94aa's pair, fc70e7ff and 966d2903, with the group added.** It didn't part even with the word off. Adding code to both sides erases its parting, as before (loopwatch1). So it proves nothing either way.
+- **Strict:** 0 sites on b30 (four pair runs and the tock's build).

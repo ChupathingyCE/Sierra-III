@@ -55003,8 +55003,9 @@ FIXES_B98["source/ai/ai_communication.c#b98"] = [
 # before, so sounds start, fade and stop as they did, only the game state no
 # longer waits on them. The deadline lives in the looping sound's datum (one
 # long more: game state, saved and hashed with it; the pool isn't on the
-# wire and no object slot moves). Design: docs/sound_game_time.md. Off by
-# default until its proof holds (the lab's call)
+# wire and no object slot moves). Design: docs/sound_game_time.md. On by
+# default since its proof (the lab's findings sgtproof): "nosoundgametime" is
+# the original's mixer-paced answer
 FIXES_SOUNDGAMETIME = {}
 FIXES_SOUNDGAMETIME["source/sound/game_sound.c#soundgametime"] = [
 ("""	real_point3d position;
@@ -55029,7 +55030,7 @@ struct game_sound_globals"""),
 {
 	struct game_looping_sound_datum *sound = game_looping_sound_get(looping_sound_index);""",
  """/* psp_fixups.py (FIXES_SOUNDGAMETIME): "soundgametime" (see there) */
-#define PSP_SGT_DEFAULT 0
+#define PSP_SGT_DEFAULT 1
 #define PSP_SGT_STOP 0x80000000u
 /* sound_manager.c's looping_sound_track_flags: _fade_out_at_stop_bit */
 #define PSP_SGT_FADE_OUT_AT_STOP_BIT 1
