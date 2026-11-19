@@ -193,6 +193,12 @@ pass's triangle loop): the ring served at most every ~1 ms of the ME's
 clock from the start mark, and only with a ring job's stack room left */
 void psp_me_ring_look_start(void);
 void psp_me_ring_look(void);
+/* the frame's replay, before each record (geinflight): with "ticksched"
+the ring is served at pick-up points a slice apart (waiting batches first,
+a job the main CPU waits on at once) and audio every record; without it, as
+psp_me_yield. Either way the time it serves is counted for the replay's
+looks line (docs/box_tick_schedule.md) */
+void psp_me_replay_look(void);
 #ifdef PSP_RECON
 /* on the ME: where a long slot job is, for a late ring job's stash report */
 void psp_me_stash_place(unsigned int place);

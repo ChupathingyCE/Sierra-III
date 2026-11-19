@@ -124,6 +124,9 @@ struct me_control
 	/* MEXEC (docs/mexec.md), the ME at each install: 1 copied, 2 refused
 	(no table), its bytes, the words it patched, and the copy's word sum */
 	unsigned int mexec_state, mexec_bytes, mexec_patches, mexec_sum;
+	/* "ticksched": the replay's slice in ME cycles (the main CPU, set once
+	after start); a look reads it only when ring jobs wait */
+	unsigned int tick_slice_cycles;
 } __attribute__((aligned(64)));
 #define ME_FEATURE_HALT 1u
 #define ME_FEATURE_RING 2u
@@ -186,6 +189,14 @@ one actor's thinking can run past the audio job's 40 ms bound on its own
 /* "mexec" (PSP_MEXEC builds; docs/mexec.md): the ME copies its hot code into
 its eDRAM at start and runs the GE replay from the copy */
 #define ME_FEATURE_MEXEC 32768u
+/* "ticksched" (the tick schedule box, slice 1; docs/box_tick_schedule.md):
+inside the frame's replay the ring is served at pick-up points a slice of
+the ME's time apart, not at every record, and a pick-up makes the waiting
+batches' records before it runs the ring in order. The replay's code and a
+batch's (~13 KB with the ring's) don't fit the 16 KB I-cache together, so
+each job taken between two records cost both a refill (c20: the replay
++0.3-0.4 ms a job beyond the batches' own time, sweepme_claims_c20_replay) */
+#define ME_FEATURE_TICKSCHED 65536u
 
 #if PSP_MEXEC
 /* The copy's table: tools/mexec.py writes it into the linked program
@@ -1344,6 +1355,11 @@ static void batch_job(const unsigned int *args, unsigned int *results, int on_me
 		{
 			unsigned char *record = records + r * bytes;
 
+			/* made already, by a pick-up that ran this job's records ahead
+			of the ring (ticksched): only the ME marks made, and never for
+			a record it hasn't finished */
+			if (made_word[r])
+				continue;
 			if (here_on[r] || (sim_alternate && !(r & 1u)))
 			{
 				*withdrawn = *withdrawn + 1;
@@ -1415,6 +1431,9 @@ static inline volatile unsigned int *ring_sentinel(unsigned int allowance)
 	__asm__ __volatile__("move %0, $sp" : "=r"(sp));
 	return (volatile unsigned int *)((sp - allowance) & ~3u);
 }
+
+/* "ticksched" (below): a batch made ahead of the ring broke its stack check */
+static PSP_AIME_ME_SIDE unsigned int tick_first_stack_broken = 0;
 
 /* one ring job, on the ME (on_me), or on the main CPU when simulated, where
 there is no ME cache to look after and no ME cycle counter to read.
@@ -1511,6 +1530,13 @@ static __attribute__((noinline)) void ring_run(unsigned int index, int on_me, un
 	lies below it: reported, and the ring stops */
 	if (*sentinel != RING_SENTINEL)
 		status = RING_STACK;
+	/* a batch made ahead of the ring at a pick-up that broke its stack
+	allowance is reported by the next job the ring finishes */
+	if (on_me && tick_first_stack_broken)
+	{
+		tick_first_stack_broken = 0;
+		status = RING_STACK;
+	}
 	if (on_me)
 		me_note(STASH_RING_WRITE);
 	if (on_me && request->output_bytes)
@@ -1599,6 +1625,148 @@ static unsigned int me_ring_drain(unsigned int popped, unsigned int *last_look, 
 	/* anything pushed after the read above came after this moment */
 	*last_look = looked;
 	return popped;
+}
+
+/* ----- "ticksched": the replay's pick-up points (docs/box_tick_schedule.md).
+Today's replay serves the ring before every record, so each batch job pushed
+during the tick runs alone between two records: its code (the sweep's ~9 KB
+copy, the ring's ~4 KB) and the replay's evict each other in the 16 KB
+I-cache once a job. Held to a pick-up a slice apart, the jobs pushed in that
+slice run back to back, one refill a slice. A job the main CPU is already
+waiting for (ring_urgent) is picked up at the next record, so a wait grows
+by one record at most; and a pick-up makes the waiting batches' records
+first (ring_batch_first), so a long frame job ahead of them in the ring
+(mevisland's visibility) doesn't hold the tick's work */
+
+/* the main CPU while it waits in psp_me_wait: the ticket plus one, else 0.
+One writer (the main CPU), read by the ME through the uncached view */
+static struct me_ring_counter ring_urgent_storage;
+#define RING_URGENT (UNCACHED(&ring_urgent_storage)->value)
+
+/* the slice in ME cycles: "tickschedusN" (default 500 us), "tickschedrecN"
+(default 0, none) caps the records between two pick-ups as well */
+#define TICK_SLICE_US_DEFAULT 500
+/* one word to the ME: the slice's cycles in the low 24 bits (to ~50 ms),
+the record cap in the top 8 */
+static void tick_slice_set(volatile struct me_control *control)
+{
+	int us = psp_keep_number("tickschedus", TICK_SLICE_US_DEFAULT), records = psp_keep_number("tickschedrec", 0);
+	unsigned int cycles;
+
+	if (us < 0 || us > 50000)
+		us = TICK_SLICE_US_DEFAULT;
+	cycles = (unsigned int)((float)us * (me_cycles_per_us > 0.0f ? me_cycles_per_us : 333.0f));
+	if (cycles > 0x00FFFFFFu)
+		cycles = 0x00FFFFFFu;
+	control->tick_slice_cycles = cycles | ((unsigned int)(records > 255 ? 255 : records > 0 ? records : 0) << 24);
+	if (control->features & ME_FEATURE_TICKSCHED)
+		platform_log("ME: ticksched: the replay serves the ring at pick-up points %d us apart%s, waiting batches first",
+			us, records > 0 ? " (or a record cap)" : "");
+}
+
+/* the replay's looks, counted on the ME (lines of their own, written only
+there; the main CPU reads them uncached in psp_me_report): both modes count
+the time served inside the replay, so each side of an A/B has the replay's
+own time (its job less what it served) */
+struct tick_look_stats
+{
+	unsigned int served_cycles; /* inside the replay's looks: audio and the ring */
+	unsigned int looks;         /* the replay's looks (one a record) */
+	unsigned int pickups;       /* looks that ran ring jobs */
+	unsigned int ring_jobs;     /* ring jobs those ran */
+	unsigned int held;          /* looks that saw jobs waiting and left them to the slice */
+	unsigned int urgent;        /* pick-ups made early for a waiting main CPU */
+	unsigned int batch_first;   /* batch jobs whose records a pick-up made first */
+	unsigned int pad[9];
+} __attribute__((aligned(64)));
+static struct tick_look_stats tick_look PSP_AIME_ME_SIDE = { 0 };
+/* the ME's own: the clock at its last pick-up and the records since */
+static PSP_AIME_ME_SIDE unsigned int tick_pick_mark = 0, tick_records_since = 0;
+
+/* on the ME, at a pick-up: each waiting batch job's records made now, in
+the ring's order, by the job's own code; the job, when the drain reaches it,
+finds them made and passes them (batch_job). Only claims' batches: under the
+one limit word a record isn't marked made on its own */
+static void ring_batch_first(unsigned int popped, unsigned int pushed)
+{
+	volatile struct me_private *p = ME_PRIVATE;
+
+	for (; popped != pushed; popped++)
+	{
+		struct me_ring_request *request = &ring_requests[popped & RING_MASK];
+		unsigned int args[ME_RING_ARGS], results[ME_RING_RESULTS], k;
+		volatile unsigned int *sentinel;
+
+		lines_drop((unsigned int)request, sizeof(*request));
+		if (request->type != ME_JOB_BATCH || !(request->args[6] & 1u))
+			continue;
+		if (!request->args[ME_RING_ARG_CONTINUES])
+			for (k = 0; k < ME_RING_INPUTS; k++)
+				if (request->input_bytes[k])
+					lines_drop(request->input[k], request->input_bytes[k]);
+		for (k = 0; k < ME_RING_ARGS; k++)
+			args[k] = request->args[k];
+		sentinel = ring_sentinel(RING_JOB_STACK_BYTES);
+		*sentinel = RING_SENTINEL;
+		p->in_ring = 1;
+		batch_job(args, results, 1);
+		p->in_ring = 0;
+		if (*sentinel != RING_SENTINEL)
+			tick_first_stack_broken = 1;
+		tick_look.batch_first++;
+	}
+}
+
+void psp_me_replay_look(void)
+{
+	volatile struct me_private *p;
+	unsigned int began, now, pushed, slice, cap;
+	int urgent;
+
+	if (!psp_on_me())
+		return;
+	began = me_cycles();
+	tick_look.looks++;
+	if (!(CONTROL->features & ME_FEATURE_TICKSCHED))
+	{
+		psp_me_yield();
+		tick_look.served_cycles += me_cycles() - began;
+		return;
+	}
+	/* audio keeps its every-record look: its deadline is its own */
+	me_audio_now();
+	p = ME_PRIVATE;
+	pushed = RING_PUSHED;
+	tick_records_since++;
+	if (!p->ring_ready || p->in_ring || pushed == p->ring_popped)
+	{
+		tick_look.served_cycles += me_cycles() - began;
+		return;
+	}
+	now = me_cycles();
+	slice = CONTROL->tick_slice_cycles;
+	cap = slice >> 24;
+	urgent = RING_URGENT != 0;
+	if (!urgent && now - tick_pick_mark < (slice & 0x00FFFFFFu) && !(cap && tick_records_since >= cap))
+	{
+		tick_look.held++;
+		tick_look.served_cycles += me_cycles() - began;
+		return;
+	}
+	tick_look.urgent += urgent && now - tick_pick_mark < (slice & 0x00FFFFFFu) ? 1u : 0u;
+	{
+		unsigned int popped = p->ring_popped, last_look = p->ring_last_look, drain_began = me_cycles();
+
+		ring_batch_first(popped, pushed);
+		p->ring_popped = me_ring_drain(popped, &last_look, NULL);
+		p->ring_last_look = last_look;
+		tick_look.ring_jobs += p->ring_popped - popped;
+		nested_cycles_total += me_cycles() - drain_began;
+	}
+	tick_look.pickups++;
+	tick_pick_mark = me_cycles();
+	tick_records_since = 0;
+	tick_look.served_cycles += tick_pick_mark - began;
 }
 
 /* after a ring job, the ME looks at the ring every ~1.5 us instead of once
@@ -2765,7 +2933,9 @@ int psp_me_start(void)
 		(psp_keep("mefaultoff") ? ME_FEATURE_FAULT_OFF : 0u) | (psp_keep("mefaulttest") ? ME_FEATURE_FAULT_TEST : 0u) |
 		(psp_keep("menestrender") ? ME_FEATURE_NEST_RENDER : 0u) |
 		(psp_keep("aimevisleft") ? ME_FEATURE_AIME_VIS_LEFT : 0u) |
-		(psp_keep("aimeaudiolook") ? ME_FEATURE_AUDIO_LOOK : 0u) | (me_mexec_wanted() ? ME_FEATURE_MEXEC : 0u);
+		(psp_keep("aimeaudiolook") ? ME_FEATURE_AUDIO_LOOK : 0u) | (me_mexec_wanted() ? ME_FEATURE_MEXEC : 0u) |
+		(psp_keep("ticksched") && ring_on ? ME_FEATURE_TICKSCHED : 0u);
+	tick_slice_set(control);
 	wake_features = control->features | (psp_keep("mewakeprobe") ? ME_FEATURE_WAKE_PROBE : 0u);
 	wake_early = psp_keep("mewake") && !psp_keep("mewakeoff") && psp_keep("mewakeearly");
 	wake_fw = psp_keep("mewakefw");
@@ -4050,6 +4220,8 @@ int psp_me_wait(unsigned int ticket, unsigned int *results)
 		ring_stats.at_once++;
 	else
 	{
+		/* ticksched: the replay picks this job up at its next record */
+		RING_URGENT = ticket + 1;
 		while ((int)(RING_POPPED - ticket) <= 0)
 		{
 			if (looks++ % RING_WAIT_CLOCK_EVERY == 0)
@@ -4057,7 +4229,10 @@ int psp_me_wait(unsigned int ticket, unsigned int *results)
 				now = sceKernelGetSystemTimeLow();
 				/* stopped (HOME, sleep, a slot job's timeout) before this job */
 				if (me_state <= 0 || CONTROL->stop == 2)
+				{
+					RING_URGENT = 0;
 					return ring_fail(0, ticket, index);
+				}
 				if (now - ring_push_mark[index] > RING_DEADLINE_US)
 				{
 					/* as a batch record's: late only if still not done */
@@ -4071,6 +4246,7 @@ int psp_me_wait(unsigned int ticket, unsigned int *results)
 						}
 						break;
 					}
+					RING_URGENT = 0;
 					return ring_fail(1, ticket, index);
 				}
 				/* mehalt: a wake that may have been lost (me_halt_idle) */
@@ -4079,6 +4255,7 @@ int psp_me_wait(unsigned int ticket, unsigned int *results)
 			for (k = 0; k < RING_WAIT_NOPS; k++)
 				__asm__ __volatile__("nop");
 		}
+		RING_URGENT = 0;
 	}
 	/* this CPU's copies of what the ME wrote are stale: dropped (it never
 	writes these lines itself, so dropping loses nothing of its own) */
@@ -5499,6 +5676,38 @@ void psp_me_report(void)
 		if (!old_sum && me_state != 2)
 			busy_us_all = busy_us_all > nested_us ? busy_us_all - nested_us : 0;
 		nested_us_last = nested_us;
+	}
+	/* the replay's own time: its job less the cycles its looks served
+	(audio, the ring), the figure the tick schedule's slices are judged by,
+	counted the same way with ticksched off */
+	if (me_state == 1 && stats[ME_SLOT_RENDER].jobs && me_cycles_per_us > 0.0f)
+	{
+		static struct tick_look_stats seen;
+		volatile struct tick_look_stats *t = UNCACHED(&tick_look);
+		struct tick_look_stats d;
+		unsigned long jobs = stats[ME_SLOT_RENDER].jobs;
+		float rate = me_cycles_per_us;
+		unsigned long long job_cycles = stats[ME_SLOT_RENDER].me_job_cycles;
+
+		d.served_cycles = t->served_cycles - seen.served_cycles;
+		d.looks = t->looks - seen.looks;
+		d.pickups = t->pickups - seen.pickups;
+		d.ring_jobs = t->ring_jobs - seen.ring_jobs;
+		d.held = t->held - seen.held;
+		d.urgent = t->urgent - seen.urgent;
+		d.batch_first = t->batch_first - seen.batch_first;
+		seen.served_cycles += d.served_cycles;
+		seen.looks += d.looks;
+		seen.pickups += d.pickups;
+		seen.ring_jobs += d.ring_jobs;
+		seen.held += d.held;
+		seen.urgent += d.urgent;
+		seen.batch_first += d.batch_first;
+		platform_log("ME: replay looks: %lu jobs, the job %lu us, its own %lu us (served inside it %lu us: audio and the ring); %u looks, %u pick-ups running %u ring jobs, %u held to the slice, %u early for a wait, %u batch jobs made first%s",
+			jobs, (unsigned long)((float)job_cycles / rate / (float)jobs),
+			(unsigned long)((float)(job_cycles > d.served_cycles ? job_cycles - d.served_cycles : 0) / rate / (float)jobs),
+			(unsigned long)((float)d.served_cycles / rate / (float)jobs), d.looks, d.pickups, d.ring_jobs, d.held, d.urgent,
+			d.batch_first, (CONTROL->features & ME_FEATURE_TICKSCHED) ? " (ticksched)" : "");
 	}
 	busy_percent_last = window ? (float)(100.0 * (double)busy_us_all / (double)window) : 0.0f;
 	if (me_halting && length < (int)sizeof(line) - 160)
