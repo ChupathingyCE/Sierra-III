@@ -57,6 +57,9 @@ PSP_HEAP_SIZE_KB(PSP_HEAP_KB);
 #endif
 #include "psp_metrics.h"
 #include "psp_lanetrace.h"
+#ifdef PSP_KSAMPLE
+#include "../profile/ksample.h"
+#endif
 #define DATA_ROOT PSP_DATA_ROOT
 /* in a folder of its own: the game's own files (debug.txt, stderr.txt,
 gamestate.txt) are written next to each other in ms0:/halo, and a file's
@@ -3958,6 +3961,10 @@ static struct
 	volatile unsigned int pc_tables, pc_kernel_by_phase[4];
 	/* "framepic": its block (psp_framepic.c), 0 without it */
 	volatile unsigned int framepic_block;
+#ifdef PSP_KSAMPLE
+	/* "ksample": its block (psp/profile/ksample.h), 0 without it */
+	volatile unsigned int ksample_block;
+#endif
 } hwprofile __attribute__((aligned(64)));
 /* "pcsample": 512-byte bins over the program's code, the tick's and the
 drawing's (~54 KB for 3.5 MB of code); written to log/pcsample.txt every
@@ -4037,6 +4044,44 @@ static void hwprofile_start(const char *eboot_path)
 			hundreds of counts interrupts the game so often that the PSP restarts */
 			hwprofile.pc_period = (unsigned int)psp_keep_number("pcperiod", 41943);
 			hwprofile.pc_wanted = 1;
+#ifdef PSP_KSAMPLE
+			if (psp_keep("ksample"))
+			{
+				/* 4 KB bins by default (kshiftN, 8-16): coarse enough that the
+				12 tables over the kernel's 4 MB are 48 KB, fine enough to name
+				a module and part of it */
+				int shift = psp_keep_number("kshift", 12);
+				struct ksample_block *block = memalign(64, sizeof(struct ksample_block));
+				unsigned int bins, *kcounts = 0;
+
+				if (shift < 8 || shift > 16)
+					shift = 12;
+				bins = KSAMPLE_SPAN >> shift;
+				if (block)
+					kcounts = memalign(64, KSAMPLE_PHASES * KSAMPLE_CTX * bins * sizeof(unsigned int));
+				if (block && kcounts)
+				{
+					memset(block, 0, sizeof(*block));
+					memset(kcounts, 0, KSAMPLE_PHASES * KSAMPLE_CTX * bins * sizeof(unsigned int));
+					block->shift = (unsigned int)shift;
+					block->bins = bins;
+					block->counts = (unsigned int)kcounts;
+					/* the thread lookup runs in the sampler's interrupt: ksamplenoctx
+					leaves it out if the PSP ever refuses it badly */
+					block->want_ctx = !psp_keep("ksamplenoctx");
+					block->magic = KSAMPLE_MAGIC;
+					hwprofile.ksample_block = (unsigned int)block;
+				}
+				else
+				{
+					free(block);
+					block = 0;
+				}
+				platform_log("ksample: %s (%u bins of %u bytes from %08x, threads %s, %u KB)", block ? "on" : "no room",
+					bins, 1u << shift, 0x80000000u | KSAMPLE_LOW, block && block->want_ctx ? "split" : "not split",
+					(unsigned int)(KSAMPLE_PHASES * KSAMPLE_CTX * bins * 4 + sizeof(struct ksample_block)) / 1024);
+			}
+#endif
 		}
 		platform_log("pcsample: %s (%u bins of %u bytes from %08x, %u KB)", counts ? "on" : "no room",
 			bins, 1u << PC_SHIFT, (unsigned int)_ftext, bins * (hwprofile.pc_tables ? hwprofile.pc_tables : 2) * 4 / 1024);
@@ -4085,6 +4130,64 @@ static void bus_probe(const char *when)
 
 /* the counters since the last heartbeat, as shares of the CPU's cycles and
 counts a millisecond (counters in PspDebugProfilerRegs order, from systemck) */
+#ifdef PSP_KSAMPLE
+/* "ksample": after the program's bins, the kernel's: "ksample head ..." with
+the totals, "ksample <phase> <ctx> <bin> <count>" (ctx 0 the game's thread,
+1 another, 2 not known), the module list as "kmodule <text> <size> <name>",
+the threads met in the kernel as "kthread <id> <count> <name>", and the last
+kernel PCs outside the bins as "kfar <pc>" (psp/sierra/ksample.py in the lab) */
+static void ksample_write(SceUID file)
+{
+	const struct ksample_block *block = (const struct ksample_block *)hwprofile.ksample_block;
+	const volatile unsigned int *counts;
+	static char chunk[4096];
+	unsigned int used = 0, phase, ctx, k;
+
+	if (!block)
+		return;
+	counts = (const volatile unsigned int *)block->counts;
+#define KS_ROOM(n) do { if (used + (n) > sizeof(chunk)) { sceIoWrite(file, chunk, used); used = 0; } } while (0)
+	used += (unsigned int)snprintf(chunk + used, sizeof(chunk) - used,
+		"ksample head base %08x shift %u bins %u ctx %u samples %u %u %u %u kernel %u %u %u %u far %u refused %u threads %u full %u modules %u reads %u error %08x\n",
+		0x80000000u | KSAMPLE_LOW, block->shift, block->bins, block->want_ctx,
+		block->phase_samples[0], block->phase_samples[1], block->phase_samples[2], block->phase_samples[3],
+		block->phase_kernel[0], block->phase_kernel[1], block->phase_kernel[2], block->phase_kernel[3],
+		block->far, block->refused, block->threads, block->threads_full, block->modules, block->module_reads,
+		(unsigned int)block->module_error);
+	for (phase = 0; phase < KSAMPLE_PHASES; phase++)
+		for (ctx = 0; ctx < KSAMPLE_CTX; ctx++)
+			for (k = 0; k < block->bins; k++)
+			{
+				unsigned int count = counts[(phase * KSAMPLE_CTX + ctx) * block->bins + k];
+
+				if (!count)
+					continue;
+				KS_ROOM(48);
+				used += (unsigned int)snprintf(chunk + used, sizeof(chunk) - used, "ksample %u %u %u %u\n", phase, ctx, k, count);
+			}
+	for (k = 0; k < block->modules && k < KSAMPLE_MODULES; k++)
+	{
+		KS_ROOM(80);
+		used += (unsigned int)snprintf(chunk + used, sizeof(chunk) - used, "kmodule %08x %08x %.27s\n",
+			block->module[k].text_addr, block->module[k].text_size, block->module[k].name);
+	}
+	for (k = 0; k < block->threads && k < KSAMPLE_THREADS; k++)
+	{
+		KS_ROOM(80);
+		used += (unsigned int)snprintf(chunk + used, sizeof(chunk) - used, "kthread %08x %u %.31s\n",
+			(unsigned int)block->thread[k].uid, block->thread[k].count, block->thread[k].name);
+	}
+	for (k = 0; k < KSAMPLE_FAR && k < block->far; k++)
+	{
+		KS_ROOM(24);
+		used += (unsigned int)snprintf(chunk + used, sizeof(chunk) - used, "kfar %08x\n", block->far_pc[k]);
+	}
+#undef KS_ROOM
+	if (used)
+		sceIoWrite(file, chunk, used);
+}
+#endif
+
 /* "pcsample": the sampler's counts each heartbeat, and its bins to
 log/pcsample.txt every twelfth (a minute): "pcsample <phase> <bin> <count>",
 phase 1 the tick, 2 the drawing, the bin's code at base + bin << shift, the
@@ -4127,6 +4230,9 @@ static void pc_write(const char *path, unsigned int samples)
 		if (used)
 			sceIoWrite(file, chunk, used);
 	}
+#ifdef PSP_KSAMPLE
+	ksample_write(file);
+#endif
 	sceIoClose(file);
 }
 

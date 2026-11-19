@@ -227,6 +227,11 @@ PADPATH = os.environ.get("PSP_PADPATH", "") == "1"
 # compiled in as the box marks: each is a flag's test in the tick and the
 # frame, so a default build leaves them out
 FRAMEPIC = os.environ.get("PSP_FRAMEPIC", "") == "1"
+# PSP_KSAMPLE=1: KSAMPLE, the PC sampler's kernel samples binned by address,
+# phase and thread (psp/profile/ksample.h; keep word ksample). Recon only: the
+# game's half is psp_platform.c's alone, and halo_profile.prx's Makefile reads
+# the same switch from the environment
+KSAMPLE = os.environ.get("PSP_KSAMPLE", "") == "1"
 if FRAMEPIC:
     PSP_FILES.append("psp_framepic")
 # PSP_MUSIC=1 builds in the music path (psp/src/psp_music.c, Tremor and libogg,
@@ -881,6 +886,7 @@ def compile_one(item):
                ["-DPSP_RECON=1"] if RECON else []) + (
                ["-DPSP_PADPATH=1"] if PADPATH else []) + (
                ["-DPSP_FRAMEPIC=1"] if FRAMEPIC else []) + (
+               ["-DPSP_KSAMPLE=1"] if KSAMPLE and src.endswith("psp_platform.c") else []) + (
                ["-DPSP_MEPROBE=1"] if MEPROBE else []) + (
                ["-DPSP_WALKAPART=1"] if WALKAPART else []) + (
                ["-DPSP_MEXEC=1"] if MEXEC and src.endswith("psp_me.c") else []) + (

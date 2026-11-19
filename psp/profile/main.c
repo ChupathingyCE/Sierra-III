@@ -16,6 +16,9 @@ the CPU count wraps in 13 s at 333 MHz), and the game logs the differences.
 #include <pspsystimer.h>
 #include <string.h>
 #include "framepic.h"
+#ifdef PSP_KSAMPLE
+#include "ksample.h"
+#endif
 
 PSP_MODULE_INFO("halo_profile", PSP_MODULE_KERNEL, 1, 0);
 PSP_MAIN_THREAD_ATTR(0);
@@ -72,6 +75,10 @@ struct totals
 	/* "framepic" (docs/frame_picture.md): the game's struct framepic_block,
 	0 without it; read at each halo_profile_box call */
 	volatile unsigned int framepic_block;
+#ifdef PSP_KSAMPLE
+	/* "ksample" (ksample.h): the game's struct ksample_block, 0 without it */
+	volatile unsigned int ksample_block;
+#endif
 };
 
 static struct totals *table = 0;
@@ -398,6 +405,117 @@ int halo_profile_totals(unsigned long long *out)
 	return 0;
 }
 
+#ifdef PSP_KSAMPLE
+/* the block, once module_start has checked it; 0 when not asked for */
+static struct ksample_block *ks = 0;
+
+/* the kernel's sample: binned by the game's phase and by the running
+thread. The thread is asked of the kernel here, in the interrupt; a refusal
+(an interrupt-context check) is counted and the sample goes to "not known",
+so the bins stand either way */
+static void ksample_count(unsigned int epc)
+{
+	unsigned int physical = epc & 0x1FFFFFFFu, phase = (unsigned int)phase_current & 3, ctx = 2;
+
+	ks->phase_kernel[phase]++;
+	if (ks->want_ctx)
+	{
+		SceUID id = sceKernelGetThreadId();
+
+		if (id < 0)
+			ks->refused++;
+		else
+		{
+			unsigned int k, n = ks->threads;
+
+			if (game_thread >= 0)
+				ctx = id == game_thread ? 0 : 1;
+			for (k = 0; k < n; k++)
+				if (ks->thread[k].uid == id)
+					break;
+			if (k < n)
+				ks->thread[k].count++;
+			else if (n < KSAMPLE_THREADS)
+			{
+				ks->thread[n].uid = id;
+				ks->thread[n].count = 1;
+				ks->threads = n + 1;
+			}
+			else
+				ks->threads_full++;
+		}
+	}
+	if (physical - KSAMPLE_LOW < KSAMPLE_SPAN)
+		((volatile unsigned int *)ks->counts)[(phase * KSAMPLE_CTX + ctx) * ks->bins + ((physical - KSAMPLE_LOW) >> ks->shift)]++;
+	else
+	{
+		ks->far++;
+		ks->far_pc[ks->far_next++ % KSAMPLE_FAR] = epc;
+	}
+}
+
+/* the kernel's module list, for naming the bins offline: from a kernel
+thread (module_start, the sampler), with k1 cleared so the kernel's own
+modules answer too */
+static void ksample_modules(void)
+{
+	SceUID ids[KSAMPLE_MODULES];
+	int count = 0, k, n = 0, result;
+	unsigned int k1 = pspSdkSetK1(0);
+
+	result = sceKernelGetModuleIdList(ids, sizeof(ids), &count);
+	if (result < 0)
+		ks->module_error = result;
+	else
+	{
+		if (count > KSAMPLE_MODULES)
+			count = KSAMPLE_MODULES;
+		for (k = 0; k < count; k++)
+		{
+			SceKernelModuleInfo info;
+
+			memset(&info, 0, sizeof(info));
+			info.size = sizeof(info);
+			if ((result = sceKernelQueryModuleInfo(ids[k], &info)) < 0)
+			{
+				ks->module_error = result;
+				continue;
+			}
+			ks->module[n].text_addr = info.text_addr;
+			ks->module[n].text_size = info.text_size;
+			memcpy(ks->module[n].name, info.name, sizeof(ks->module[n].name));
+			ks->module[n].name[sizeof(ks->module[n].name) - 1] = 0;
+			n++;
+		}
+		ks->modules = n;
+	}
+	ks->module_reads++;
+	pspSdkSetK1(k1);
+}
+
+/* the names of threads the interrupt found, outside it */
+static void ksample_thread_names(void)
+{
+	unsigned int k, n = ks->threads;
+	unsigned int k1 = pspSdkSetK1(0);
+
+	for (k = 0; k < n; k++)
+		if (!ks->thread[k].name[0])
+		{
+			SceKernelThreadInfo info;
+
+			memset(&info, 0, sizeof(info));
+			info.size = sizeof(info);
+			if (sceKernelReferThreadStatus(ks->thread[k].uid, &info) >= 0)
+			{
+				memcpy(ks->thread[k].name, info.name, sizeof(ks->thread[k].name));
+				ks->thread[k].name[sizeof(ks->thread[k].name) - 1] = 0;
+			}
+		}
+	pspSdkSetK1(k1);
+}
+#endif
+
 /* the PC sampler's interrupt: the interrupted PC is still in cop0's EPC
 while the handler runs (the dispatcher returns through it); on the PSP the
 samples land in the game's known hot code, the kernel's share small */
@@ -407,6 +525,10 @@ static int pc_handler(void)
 
 	__asm__ volatile ("mfc0 %0, $14" : "=r"(epc));
 	table->pc_samples++;
+#ifdef PSP_KSAMPLE
+	if (ks)
+		ks->phase_samples[(unsigned int)phase_current & 3]++;
+#endif
 	offset = epc - table->pc_base;
 	if ((offset >> table->pc_shift) < table->pc_bins)
 	{
@@ -426,6 +548,10 @@ static int pc_handler(void)
 	{
 		table->pc_kernel++;
 		table->pc_kernel_by_phase[phase_current & 3]++;
+#ifdef PSP_KSAMPLE
+		if (ks)
+			ksample_count(epc);
+#endif
 	}
 	else
 		table->pc_outside++;
@@ -455,6 +581,15 @@ static int sampler(SceSize args, void *argp)
 		phase_account(-1);
 		if (table->threads_wanted)
 			threads_list();
+#ifdef PSP_KSAMPLE
+		/* every 5 s: modules loaded since (a map's codecs) join the list */
+		if (ks)
+		{
+			ksample_thread_names();
+			if (table->sequence % 50 == 0)
+				ksample_modules();
+		}
+#endif
 		table->sequence++;
 	}
 	return 0;
@@ -513,7 +648,26 @@ int module_start(SceSize args, void *argp)
 	if (table->pc_wanted && table->pc_counts >= 0x08800000 && table->pc_bins && table->pc_shift < 16 &&
 		table->pc_counts + table->pc_bins * 4 * (table->pc_tables >= 3 ? 3 : 2) <= 0x0A000000)
 	{
-		SceSysTimerId timer = sceSTimerAlloc();
+		SceSysTimerId timer;
+
+#ifdef PSP_KSAMPLE
+		/* the block is the game's: checked here once, before the interrupt
+		can use it */
+		{
+			struct ksample_block *block = (struct ksample_block *)table->ksample_block;
+			unsigned int at = (unsigned int)block & 0x1FFFFFFFu;
+
+			if (block && at >= 0x08800000u && at + sizeof(*block) <= 0x0A000000u && block->magic == KSAMPLE_MAGIC &&
+				block->shift >= 8 && block->shift <= 16 && block->bins == KSAMPLE_SPAN >> block->shift &&
+				(block->counts & 0x1FFFFFFFu) >= 0x08800000u &&
+				(block->counts & 0x1FFFFFFFu) + KSAMPLE_PHASES * KSAMPLE_CTX * block->bins * 4 <= 0x0A000000u)
+			{
+				ks = block;
+				ksample_modules();
+			}
+		}
+#endif
+		timer = sceSTimerAlloc();
 
 		table->pc_timer = (unsigned int)timer;
 		if (timer >= 0)
