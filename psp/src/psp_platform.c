@@ -726,6 +726,16 @@ windows and the per-type object lines then read 0; the heartbeat's frame and
 tick times stay. Set when keep.txt is read */
 int psp_timers_off = 0;
 
+#ifdef PSP_FLIGHTREC
+/* "flightrec" (psp_flightrec.c): each charge to the step profile also goes
+to the recorder's slice, by the main CPU's phase */
+extern volatile int psp_flightrec_on;
+void psp_flightrec_step(int slot, const char *name, unsigned int us);
+#define FLIGHTREC_STEP(slot, name, us) do { if (psp_flightrec_on) psp_flightrec_step((int)((slot) - profile_slots), (name), (us)); } while (0)
+#else
+#define FLIGHTREC_STEP(slot, name, us) do { } while (0)
+#endif
+
 #if defined(PSP_RECON) && defined(PSP_TICK_STEPS)
 /* "objsteps" (below): each step's time charged to the object being updated
 or drawn as well */
@@ -763,6 +773,7 @@ static void steps_frame_edge(void)
 		slot->microseconds += now - profile_last_time;
 		slot->calls++;
 		OBJSTEPS_CHARGE(profile_last_name, now - profile_last_time);
+		FLIGHTREC_STEP(slot, profile_last_name, now - profile_last_time);
 	}
 	profile_last_name = next ? last_step : NULL;
 	profile_last_time = now;
@@ -801,6 +812,7 @@ void psp_step(const char *name)
 			slot->microseconds += now - profile_last_time;
 			slot->calls++;
 			OBJSTEPS_CHARGE(profile_last_name, now - profile_last_time);
+			FLIGHTREC_STEP(slot, profile_last_name, now - profile_last_time);
 		}
 		profile_last_name = name;
 		profile_last_time = now;
@@ -2465,6 +2477,15 @@ static void exit_game(const char *why)
 	the drain above (a HOME exit keeps what was written each 64 frames) */
 	if (strcmp(why, "HOME") != 0)
 		psp_pad_exit();
+#ifdef PSP_FLIGHTREC
+	{
+		extern void psp_flightrec_exit(const char *why);
+
+		/* the recorder's slice in hand (the game's own thread only, as above) */
+		if (strcmp(why, "HOME") != 0)
+			psp_flightrec_exit(why);
+	}
+#endif
 #ifdef PSP_FRAMEPIC
 	{
 		extern void psp_framepic_exit(void);
@@ -3354,6 +3375,14 @@ void psp_tick_account(unsigned long microseconds)
 	static unsigned long ticks_seen = 0;
 
 	ticks_since_frame++;
+#ifdef PSP_FLIGHTREC
+	{
+		/* "flightrec" (psp_flightrec.c): the tick's time and the game's edges */
+		extern void psp_flightrec_tick(unsigned long tick_us, const char *map);
+
+		psp_flightrec_tick(microseconds, current_map);
+	}
+#endif
 	bench_tick();
 #ifdef PSP_MULTIPLAYER
 	{
@@ -3915,6 +3944,17 @@ void psp_frame_account(unsigned long microseconds)
 		extern unsigned long psp_ge_frame_number(void);
 
 		PSP_LANE_FRAME_END(psp_ge_frame_number(), (unsigned int)ticks);
+#ifdef PSP_FLIGHTREC
+		{
+			/* "flightrec" (psp_flightrec.c): the frame, after lanetrace has
+			handed it the frame's notes; steps_timed is still this frame's */
+			extern void psp_flightrec_frame(unsigned long draw_us, unsigned long end_us, unsigned int ticks,
+				unsigned long frame_number, int steps_timed);
+
+			psp_flightrec_frame(microseconds, psp_heartbeat_clock() - end_start, (unsigned int)ticks,
+				psp_ge_frame_number(), steps_timed);
+		}
+#endif
 	}
 	psp_last_frame_us = microseconds;
 	frame_count++;
@@ -3987,6 +4027,41 @@ void psp_ge_phase_mark(int phase);
 
 #ifdef PSP_RECON
 void psp_ask_phase(int phase);
+#endif
+
+#ifdef PSP_FLIGHTREC
+/* "flightrec" (psp_flightrec.c): hwprofile's totals and totals by phase as
+they stand (the module adds them ten times a second); 0 without the module */
+int psp_flightrec_hw(unsigned long long *count, unsigned long long *phase_count, unsigned int *changes)
+{
+	int k, phase;
+
+	if (!hwprofile_running)
+		return 0;
+	for (k = 0; k < HW_COUNTERS; k++)
+		count[k] = hwprofile.count[k];
+	for (phase = 0; phase < HW_PHASES; phase++)
+		for (k = 0; k < HW_COUNTERS; k++)
+			phase_count[phase * HW_COUNTERS + k] = hwprofile.phase_count[phase][k];
+	*changes = hwprofile.phase_changes;
+	return 1;
+}
+
+/* one phase call into the module, the phase unchanged: the recorder's
+calibration of what each phase change costs */
+int psp_flightrec_hw_phase_call(void)
+{
+	if (!hwprofile_running)
+		return 0;
+	halo_profile_phase(psp_current_phase);
+	return 1;
+}
+
+/* whether this frame's steps are timed (one in four, or all with stepsall) */
+int psp_flightrec_steps_timed(void)
+{
+	return steps_timed && !psp_timers_off;
+}
 #endif
 
 void psp_phase(int phase)

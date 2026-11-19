@@ -83,8 +83,35 @@ static volatile unsigned int lane_count;
 static unsigned int lane_frames, lane_window_start, lane_last_end;
 static unsigned int lane_windows;
 
+#ifdef PSP_FLIGHTREC
+/* "flightrec" (psp_flightrec.c): while it records, the notes are kept every
+frame and handed to it at the frame's end instead of opening windows here.
+Every note made is counted, so the recorder can charge their cost */
+volatile unsigned int psp_lane_calls = 0;
+static int lane_flightrec = 0;
+void psp_flightrec_lanes(const void *notes, unsigned int count);
+
+int psp_lane_flightrec_start(void)
+{
+	if (!lane_notes)
+		lane_notes = (struct lane_note *)malloc(LANE_NOTES * sizeof(*lane_notes));
+	if (!lane_notes)
+		return 0;
+	lane_word = 1;
+	lane_at = -1;
+	lane_flightrec = 1;
+	lane_count = 0;
+	psp_lane_on = 1;
+	return 1;
+}
+#endif
+
 static int lane_ready(void)
 {
+#ifdef PSP_FLIGHTREC
+	if (lane_flightrec)
+		return 0; /* the recorder has the notes: no windows of lanetrace's own */
+#endif
 	if (lane_word < 0)
 	{
 		int n = psp_keep_number("lanetrace", 0);
@@ -121,6 +148,9 @@ void psp_lane_note(unsigned int kind, unsigned int from, unsigned int t, unsigne
 	if (psp_lane_on != 1)
 		return;
 	flags = sceKernelCpuSuspendIntr();
+#ifdef PSP_FLIGHTREC
+	psp_lane_calls++;
+#endif
 	index = lane_count;
 	/* a GE span that starts within LANE_GE_JOIN_US of the last note's end,
 	that note a GE span too, extends it (kind 127 when their kinds differ:
@@ -259,6 +289,19 @@ void psp_lane_frame(unsigned long frame_number, unsigned int ticks)
 {
 	unsigned int now;
 
+#ifdef PSP_FLIGHTREC
+	if (lane_flightrec)
+	{
+		unsigned int flags = sceKernelCpuSuspendIntr();
+
+		(void)frame_number;
+		(void)ticks;
+		psp_flightrec_lanes(lane_notes, lane_count < LANE_NOTES ? lane_count : LANE_NOTES);
+		lane_count = 0;
+		sceKernelCpuResumeIntr(flags);
+		return;
+	}
+#endif
 	if (psp_lane_on == 2)
 	{
 		lane_print_some();
