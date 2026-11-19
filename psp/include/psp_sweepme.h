@@ -24,7 +24,7 @@ struct psp_sweepme_level
 };
 
 #define PSP_SWEEPME_BREAKABLE_WORDS 8 /* the engine's 256 breakable surfaces */
-#define PSP_SWEEPME_LEAVES 24         /* the walk's leaves a record holds */
+#define PSP_SWEEPME_LEAVES 64         /* the walk's leaves a record holds */
 
 extern int psp_sweepme_on;     /* -1 unread, 0 off, 1 on */
 extern int psp_sweepme_pending; /* the record the next gather takes, or -1 */
@@ -45,7 +45,7 @@ int psp_sweepme_find(long biped_index, const float center[3], float radius, floa
 struct psp_sweepme_answer
 {
 	int leaf_count;
-	const int *leaves;
+	const unsigned short *leaves;
 	short count[3]; /* spheres, cylinders, prisms, in the engine's layouts */
 	const void *spheres, *cylinders, *prisms;
 };

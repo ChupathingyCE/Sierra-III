@@ -16,11 +16,12 @@ void platform_psp_log(const char *format, ...);
 int psp_keep(const char *name);
 void psp_me_cache_refresh(void); /* psp_me.c: on the ME, its whole cache written back and dropped */
 
-/* 48 records of 1 KB: c20's held bench stages ~33 gathers a tick, b30 ~13
-   (the lab's findings gather1_features) */
+/* 48 records of 1.25 KB: c20's held bench stages ~43 a tick, b30 ~12, d20
+   ~14 (the lab's sweepmeid1); the leaves and the features' room are sized
+   from d20's, the map whose walks reach the most leaves */
 #define SWEEPME_RECORDS 48
-#define SWEEPME_RECORD_BYTES 1024
-#define SWEEPME_ROOM 768 /* the features' bytes a record holds: 98-99.8% of whole gathers fit 1 KB */
+#define SWEEPME_RECORD_BYTES 1280
+#define SWEEPME_ROOM 960 /* the features' bytes a record holds */
 
 enum { SWEEPME_NOT_MADE, SWEEPME_MADE, SWEEPME_CUT, SWEEPME_LEAVES, SWEEPME_ROOMLESS, SWEEPME_STATES };
 
@@ -35,7 +36,7 @@ struct psp_sweepme_record
 	/* out: the maker's */
 	int status, leaf_count;
 	short count[3];
-	int leaves[PSP_SWEEPME_LEAVES];
+	unsigned short leaves[PSP_SWEEPME_LEAVES]; /* a leaf index past 65,535 isn't held */
 	unsigned char features[SWEEPME_ROOM] __attribute__((aligned(4)));
 } __attribute__((aligned(64)));
 _Static_assert(sizeof(struct psp_sweepme_record) <= SWEEPME_RECORD_BYTES, "psp_sweepme_record");
@@ -97,7 +98,10 @@ static void psp_sweepme_make(void *at, const unsigned int *args)
 		r->status = SWEEPME_CUT;
 		return;
 	}
-	if (s->walk.leaf_count > PSP_SWEEPME_LEAVES)
+	for (i = 0; i < s->walk.leaf_count && i <= PSP_SWEEPME_LEAVES; i++)
+		if ((unsigned int)s->walk.leaves[i] > 0xFFFFu)
+			break;
+	if (s->walk.leaf_count > PSP_SWEEPME_LEAVES || i < s->walk.leaf_count)
 	{
 		r->status = SWEEPME_LEAVES;
 		return;
@@ -112,7 +116,7 @@ static void psp_sweepme_make(void *at, const unsigned int *args)
 	}
 	r->leaf_count = s->walk.leaf_count;
 	for (i = 0; i < s->walk.leaf_count; i++)
-		r->leaves[i] = s->walk.leaves[i];
+		r->leaves[i] = (unsigned short)s->walk.leaves[i];
 	offset = 0;
 	for (k = 0; k < 3; k++)
 	{
@@ -191,6 +195,9 @@ int psp_sweepme_add(long biped_index, const float center[3], float radius, float
 
 	if (!sweepme_open)
 		return -1;
+	/* two a hand-over while the ME has the most to gain from starting
+	   early, then four: a batch has 16 jobs, and c20 stages 40-odd */
+	sweepme_batch.chunk = sweepme_added < 16 ? 2 : 4;
 	r = (struct psp_sweepme_record *)psp_me_batch_add(&sweepme_batch, &index);
 	if (!r)
 	{
