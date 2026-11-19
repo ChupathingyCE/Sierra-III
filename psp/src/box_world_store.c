@@ -60,6 +60,10 @@ static unsigned long box_ws_ticks;
 static long box_ws_slot_index[BOX_WS_BIPED_SLOTS];
 static unsigned long box_ws_slot_tick[BOX_WS_BIPED_SLOTS];
 static unsigned long box_ws_cross_records, box_ws_cross_compared[BOX_WS_BIPED_RUNS], box_ws_cross_changed[BOX_WS_BIPED_RUNS];
+/* 1c's slot-dirty marks (psp_ws_dirty, below) */
+#define BOX_WS_DIRTY 1024
+static unsigned char box_ws_dirty[BOX_WS_DIRTY];
+static unsigned long box_ws_cross_marked, box_ws_cross_unmarked_unit;
 
 /* Step 1b (docs/box_biped_motion.md section 1c): the intent reads and
    writes one biped's record in place of its datum. The engine's code is
@@ -257,6 +261,7 @@ int box_ws_biped_slots(void)
 
 void box_ws_biped_fill(int slot, void const *datum, long index)
 {
+	box_ws_dirty[index & (BOX_WS_DIRTY - 1)] = 0;
 	box_ws_slot_index[slot] = index;
 	box_ws_slot_tick[slot] = box_ws_ticks + 1;
 	unsigned char const *from = (unsigned char const *)datum;
@@ -269,6 +274,17 @@ void box_ws_biped_fill(int slot, void const *datum, long index)
 
 		memcpy(record + box_ws_run_store[i], from + run->datum, run->bytes);
 	}
+}
+
+/* 1c's slot-dirty marks: the writers outside the staged passes that the
+   lab's wswatch1 named (damage, speech, AI orders, placement) mark their
+   object here before they write (FIXES_BIPEDSTAGE #wsdirty); a fill clears
+   it. Keyed by the datum index's low bits, so two objects that share them
+   both read as marked: a false mark only costs a refill. */
+
+void psp_ws_dirty(long object_index)
+{
+	box_ws_dirty[object_index & (BOX_WS_DIRTY - 1)] = 1;
 }
 
 /* before this tick's fills: last tick's record of this biped, if it was
@@ -299,13 +315,23 @@ void box_ws_biped_cross(long index, void const *datum)
 		}
 	}
 	box_ws_cross_records++;
-	for (i = 0; i < BOX_WS_BIPED_RUNS; i++)
 	{
-		struct box_ws_run const *run = &box_ws_all_runs[i];
+		int marked = box_ws_dirty[index & (BOX_WS_DIRTY - 1)];
 
-		box_ws_cross_compared[i]++;
-		if (memcmp(box_ws_biped[slot] + box_ws_run_store[i], from + run->datum, run->bytes))
-			box_ws_cross_changed[i]++;
+		box_ws_cross_marked += marked;
+		for (i = 0; i < BOX_WS_BIPED_RUNS; i++)
+		{
+			struct box_ws_run const *run = &box_ws_all_runs[i];
+
+			box_ws_cross_compared[i]++;
+			if (memcmp(box_ws_biped[slot] + box_ws_run_store[i], from + run->datum, run->bytes))
+			{
+				box_ws_cross_changed[i]++;
+				/* a unit write no mark explains: a writer the watch missed */
+				if (!marked && box_ws_run_owner[i] == 1)
+					box_ws_cross_unmarked_unit++;
+			}
+		}
 	}
 }
 
@@ -396,5 +422,7 @@ void box_ws_biped_tick(void)
 				n += snprintf(line + n, sizeof(line) - n, " unit+%u(%u B) %lu;", box_ws_all_runs[i].datum, box_ws_all_runs[i].bytes, box_ws_cross_changed[i]);
 		}
 		platform_psp_log("wsbipedcross: unit runs written outside the staged passes (datum offset, bytes, times):%s", n ? line : " none");
+		platform_psp_log("wsbipedcross: %lu of %lu records marked by an outside writer; unit run copies changed in unmarked records: %lu",
+			box_ws_cross_marked, box_ws_cross_records, box_ws_cross_unmarked_unit);
 	}
 }
