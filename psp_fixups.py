@@ -56167,7 +56167,8 @@ def _bipedmove_rewrite(body, pointers):
 
 # Biped motion's census (PSP_BMS_CENSUS=1, recon only; docs/box_biped_motion.md,
 # means B): the window's calls of functions that also run outside it, for
-# other bipeds or other units, each labelled for the emulator's per-step field
+# other bipeds or other units or from code outside the window (posing's
+# node orientations, an acceleration, a new biped), each labelled for the emulator's per-step field
 # counts as the synced helpers are ("c": a label, no sync). Whether it returns
 # a value. Not in other builds, whose text stays as it was.
 BIPEDMOVE_CENSUS_CALLS = {
@@ -56175,6 +56176,9 @@ BIPEDMOVE_CENSUS_CALLS = {
     "biped_flying_through_air": ("c", True, None),
     "unit_update_animation": ("c", True, None),
     "unit_animation_start_action": ("c", False, None),
+    "biped_snap_facing": ("c", False, None),
+    "biped_verify_object_vectors": ("c", False, None),
+    "psp_unithoist_check": ("c", False, None),
 }
 
 def _bipedmove_sync(body, counts):
