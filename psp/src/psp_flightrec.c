@@ -186,6 +186,7 @@ struct fr_state
 	unsigned int clock_reads;
 	/* calibration: each call's cost, in ns */
 	unsigned int cal_clock_ns, cal_intr_ns, cal_step_ns, cal_hook_ns, cal_phase_ns;
+	int cal_steps_timed;
 	/* what the tick hook last saw */
 	char map[32];
 	int in_scene, have_scene;
@@ -546,6 +547,8 @@ static void fr_slice_close(long tick_to)
 	fr->ins_us[FR_INS_SLICE] += fr_clock() - t0;
 	fr->ins_calls[FR_INS_SLICE]++;
 	fr_write(fr->head, at, fr->frame_buf, fr->frames_used, 0);
+	if (fr->slices_written < 2)
+		platform_log("flightrec: slice %u written (%u + %u bytes, game time %ld)", fr->index, at, fr->frames_used, tick_to);
 	fr->frames_used = 0;
 	fr->slices_written++;
 }
@@ -623,7 +626,7 @@ static void fr_header(void)
 #else
 		0
 #endif
-		);
+		| (fr->cal_steps_timed ? 2 : 0));
 	fr_write(record, at, NULL, 0, 1);
 	platform_log("flightrec: calibrated (ns a call): clock %u, interrupt hold %u, step %u, game hook %u, hwprofile phase %u",
 		fr->cal_clock_ns, fr->cal_intr_ns, fr->cal_step_ns, fr->cal_hook_ns, fr->cal_phase_ns);
@@ -649,11 +652,16 @@ void psp_flightrec_tick(unsigned long tick_us, const char *map)
 		return;
 	if (!fr_calibrated)
 	{
-		/* in a timed frame, so the step's cost is the timed path's */
-		if (!psp_flightrec_steps_timed())
+		/* in a timed frame, so the step's cost is the timed path's; after
+		300 ticks without one, in whatever frame this is (the header says) */
+		static int waited = 0;
+
+		fr->cal_steps_timed = psp_flightrec_steps_timed();
+		if (!fr->cal_steps_timed && ++waited < 300)
 			return;
 		fr_header();
 		fr_slice_open(tick);
+		platform_log("flightrec: recording from game time %ld (steps timed at the calibration: %d)", tick, fr->cal_steps_timed);
 	}
 	if (fr->last_tick >= 0 && tick < fr->last_tick)
 		fr_event(tick, FR_EV_TIME_BACK, 0, 0, (unsigned int)fr->last_tick);
