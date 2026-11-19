@@ -275,6 +275,15 @@ CAPTURE_DEFINES = CAPTURE_DEFINES + (["-DPSP_BOX_POSING=1"] if BOXPOSING else []
 # PSP_BMS_PLAIN=1: biped motion's accessor as plain field accesses, the
 # baseline of the window's cost split (psp/include/psp_bipedmove.h); recon only
 CAPTURE_DEFINES = CAPTURE_DEFINES + (["-DPSP_BMS_PLAIN=1"] if os.environ.get("PSP_BMS_PLAIN", "") == "1" else [])
+# PSP_BMS_CENSUS=1 (with PSP_RECON=1 and the emulator's tickcore): biped
+# motion's window, its synced helpers, the shared functions it calls and the
+# staged passes around it each run under a step label of their own, so the
+# emulator's per-step field counts say who touches each biped field while a
+# record is live (docs/box_biped_motion.md, means B's census); recon only
+BMS_CENSUS = os.environ.get("PSP_BMS_CENSUS", "") == "1"
+if BMS_CENSUS and not RECON:
+    sys.exit("psp_build: PSP_BMS_CENSUS needs PSP_RECON=1 (the object trace's table)")
+CAPTURE_DEFINES = CAPTURE_DEFINES + (["-DPSP_BMS_CENSUS=1"] if BMS_CENSUS else [])
 if BOXPOSING:
     PSP_FILES.extend(["box_posing", "psp_boxposing"])
 # PSP_BIPEDSTAGE=1 (the biped motion box's staged form, psp_fixups.py

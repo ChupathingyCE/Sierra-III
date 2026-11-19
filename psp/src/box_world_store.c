@@ -16,6 +16,17 @@
 #include "box_world_store_biped.h"
 #include "psp_bipedmove_map.h"
 
+/* biped motion's census (PSP_BMS_CENSUS, recon only): the window's copies
+   between the record and the datum under a label of their own, so the
+   emulator's per-step field counts keep them apart from the code's own
+   accesses */
+#if PSP_BMS_CENSUS
+const char *psp_step_label(const char *name);
+static void box_ws_copy_unlabel(const char **old) { psp_step_label(*old); }
+#define BMS_COPY_LABEL const char *bms_copy_old __attribute__((cleanup(box_ws_copy_unlabel))) = psp_step_label("bms copy")
+#else
+#define BMS_COPY_LABEL do { } while (0)
+#endif
 void platform_psp_log(const char *format, ...);
 
 #define BOX_WS_OWNERS 5
@@ -310,6 +321,7 @@ static void box_ws_move_spans(int slot, struct box_ws_span const *spans, unsigne
    the datum, as before) */
 int box_ws_move_begin(void *datum, long index, int slot, int check)
 {
+	BMS_COPY_LABEL;
 	if (box_ws_biped_slots() == 0 || slot < 0 || slot >= BOX_WS_BIPED_SLOTS)
 		return 0;
 	if (!box_ws_move_claimed)
@@ -346,6 +358,7 @@ int box_ws_move_begin(void *datum, long index, int slot, int check)
 /* where the intent stops: the velocity written through, the record kept */
 void box_ws_move_keep(void)
 {
+	BMS_COPY_LABEL;
 	unsigned i;
 	int slot = box_ws_move_slot;
 
@@ -370,6 +383,7 @@ void box_ws_move_keep(void)
 /* the solve's start: the kept record made live again; 0 when there's none */
 int box_ws_move_resume(void *datum, int slot)
 {
+	BMS_COPY_LABEL;
 	if (slot < 0 || slot >= BOX_WS_BIPED_SLOTS || box_ws_move_state[slot] < 2 || box_ws_move_slot_datum[slot] != datum)
 		return 0;
 	box_ws_move_kept--;
@@ -391,6 +405,7 @@ int box_ws_move_resume(void *datum, int slot)
 /* psp_bs3_out: the written-back runs to the datum, and the window closed */
 void box_ws_move_end(void)
 {
+	BMS_COPY_LABEL;
 	int slot = box_ws_move_slot;
 
 	if (slot < 0)
@@ -426,6 +441,7 @@ void box_ws_move_end(void)
    functions reached from it use the datum), the whole record in after */
 int box_ws_move_sync_out(void)
 {
+	BMS_COPY_LABEL;
 	int slot = box_ws_move_slot;
 
 	if (slot >= 0)
@@ -438,6 +454,7 @@ int box_ws_move_sync_out(void)
 
 void box_ws_move_sync_in(int slot)
 {
+	BMS_COPY_LABEL;
 	if (slot < 0)
 		return;
 	box_ws_slot_in(slot);
@@ -446,6 +463,7 @@ void box_ws_move_sync_in(int slot)
 
 int box_ws_move_narrow_out(int which)
 {
+	BMS_COPY_LABEL;
 	int slot = box_ws_move_slot;
 
 	if (slot < 0)
@@ -457,6 +475,7 @@ int box_ws_move_narrow_out(int which)
 
 void box_ws_move_narrow_in(int slot, int which)
 {
+	BMS_COPY_LABEL;
 	if (slot < 0)
 		return;
 	if (which == 0)
@@ -470,6 +489,7 @@ void box_ws_move_narrow_in(int slot, int which)
    there (the rest of the update runs on the datum, as the engine's does) */
 void box_ws_move_drop(void)
 {
+	BMS_COPY_LABEL;
 	int slot = box_ws_move_slot;
 
 	if (slot < 0)
@@ -484,6 +504,7 @@ void box_ws_move_drop(void)
    update was skipped) written back, so no write of its intent is lost */
 void box_ws_move_settle(void)
 {
+	BMS_COPY_LABEL;
 	int slot;
 
 	if (box_ws_move_slot >= 0)
@@ -506,6 +527,7 @@ void box_ws_move_settle(void)
    record's written-back runs go to the datum first, and the resume refills */
 static void box_ws_move_flush(long object_index)
 {
+	BMS_COPY_LABEL;
 	int slot;
 
 	for (slot = 0; slot < BOX_WS_BIPED_SLOTS; slot++)

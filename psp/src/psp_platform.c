@@ -769,6 +769,18 @@ static void steps_frame_edge(void)
 	steps_timed = next;
 }
 
+/* biped motion's census (PSP_BMS_CENSUS): a label for the emulator's
+   per-step counts, with none of psp_step's timing or logging, so the
+   labelled code runs as it does unlabelled; the old label comes back to be
+   restored */
+const char *psp_step_label(const char *name)
+{
+	const char *old = last_step;
+
+	last_step = name;
+	return old;
+}
+
 void psp_step(const char *name)
 {
 	unsigned int now;

@@ -75,11 +75,26 @@ static inline __attribute__((always_inline)) void *box_ws_move_at_w(void *datum,
 #define PSP_BMSW(p, field) (*(__typeof__(&(p)->field))box_ws_move_at_w((void *)(p), \
 	offsetof(__typeof__(*(p)), field), sizeof((p)->field)))
 #endif
+/* biped motion's census (PSP_BMS_CENSUS, recon only): a call made from the
+   window under a step label of its own ("bms call <name>"), so the
+   emulator's per-step field counts name what it touches of the bipeds'
+   data; outside a census build the call alone */
+#if PSP_BMS_CENSUS
+const char *psp_step_label(const char *name);
+#define PSP_BMS_CALLV(name, call) ({ const char *psp_bms_o = psp_step_label("bms call " name); call; \
+	psp_step_label(psp_bms_o); })
+#define PSP_BMS_CALL(name, call) ({ const char *psp_bms_o = psp_step_label("bms call " name); \
+	__typeof__(call) psp_bms_v = (call); psp_step_label(psp_bms_o); psp_bms_v; })
+#else
+#define PSP_BMS_CALLV(name, call) ({ call; })
+#define PSP_BMS_CALL(name, call) (call)
+#endif
 /* a call that touches the biped's datum itself, inside the window: the whole
    record (written-back runs out, all in after), the narrow ones (0
    object_translate, 1 object_start_interpolation), or the biped's delete */
-#define PSP_BMS_SYNCV(call) ({ int psp_bms_l = box_ws_move_sync_out(); call; box_ws_move_sync_in(psp_bms_l); })
-#define PSP_BMS_SYNC(call) ({ int psp_bms_l = box_ws_move_sync_out(); __typeof__(call) psp_bms_r = (call); \
+#define PSP_BMS_SYNCV(name, call) ({ int psp_bms_l = box_ws_move_sync_out(); PSP_BMS_CALLV(name, call); box_ws_move_sync_in(psp_bms_l); })
+#define PSP_BMS_SYNC(name, call) ({ int psp_bms_l = box_ws_move_sync_out(); __typeof__(call) psp_bms_r = PSP_BMS_CALL(name, call); \
 	box_ws_move_sync_in(psp_bms_l); psp_bms_r; })
-#define PSP_BMS_NARROWV(which, call) ({ int psp_bms_l = box_ws_move_narrow_out(which); call; box_ws_move_narrow_in(psp_bms_l, which); })
-#define PSP_BMS_DROPV(call) ({ box_ws_move_drop(); call; })
+#define PSP_BMS_NARROWV(name, which, call) ({ int psp_bms_l = box_ws_move_narrow_out(which); PSP_BMS_CALLV(name, call); \
+	box_ws_move_narrow_in(psp_bms_l, which); })
+#define PSP_BMS_DROPV(name, call) ({ box_ws_move_drop(); PSP_BMS_CALLV(name, call); })

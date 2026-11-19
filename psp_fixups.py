@@ -55849,7 +55849,8 @@ static int psp_bs3_on = -1;
 ("""		animation = psp_bs3_cur->animation;
 		psp_bs3_resume = psp_bs3_cur->stop;
 """,
- """		psp_bms_resume(biped, (int)(psp_bs3_cur - psp_bs3_rec)); /* (FIXES_BIPEDSTAGE) BIPEDMOVE 1c: the kept record live again */
+ """		PSP_BMS_CENSUS_ENTER(biped_index);
+		psp_bms_resume(biped, (int)(psp_bs3_cur - psp_bs3_rec)); /* (FIXES_BIPEDSTAGE) BIPEDMOVE 1c: the kept record live again */
 		animation = psp_bs3_cur->animation;
 		psp_bs3_resume = psp_bs3_cur->stop;
 """),
@@ -55906,12 +55907,20 @@ static int psp_bs3_on = -1;
 			psp_ws_parent[k] = header->datum->object.parent_object_index;
 		}
 	}
+#if PSP_BMS_CENSUS
+	/* the census (recon): what runs outside the windows, from here (means B's
+	fill) to the write-back after the solves */
+	psp_bms_between_old = psp_step_label("bms between");
+#endif
 """),
 ("""	psp_bipedstage2_end();
 	psp_bipedstage_phase = 0;
 """,
  """	/* BIPEDMOVE 1c: a kept record whose solve didn't resume it written back */
 	box_ws_move_settle();
+#if PSP_BMS_CENSUS
+	psp_step_label(psp_bms_between_old);
+#endif
 	if (psp_ws_check > 0)
 	{
 		for (k = 0; k < psp_bipedstage_count && k < psp_ws_check; k++)
@@ -55945,6 +55954,10 @@ void box_ws_move_settle(void);
 static int psp_ws_check = -1;
 static unsigned char psp_ws_filled[PSP_BIPEDSTAGE_MAXIMUM];
 static long psp_ws_parent[PSP_BIPEDSTAGE_MAXIMUM];
+#if PSP_BMS_CENSUS
+const char *psp_step_label(const char *name);
+static const char *psp_bms_between_old;
+#endif
 """),
 ],
 }
@@ -56031,6 +56044,33 @@ BIPEDMOVE_SYNC = {
 }
 BIPEDMOVE_PRELUDE = """#include "psp_bipedmove.h" /* psp_fixups.py (BIPEDMOVE) steps 1b and 1c */
 static int psp_bms_on = -1, psp_bms_check = 0;
+#if PSP_BMS_CENSUS
+/* the census (recon): the window under its own label, and the biped as the
+   object updating, so the object trace counts its loads of other objects'
+   data as another family's */
+extern volatile unsigned long psp_objtrace[8];
+static const char *psp_bms_census_old;
+static int psp_bms_census_in;
+static void psp_bms_census_enter(long biped_index)
+{
+	if (!psp_bms_census_in)
+		psp_bms_census_old = psp_step_label("bms window");
+	psp_bms_census_in = 1;
+	psp_objtrace[2] = (unsigned long)(biped_index & 0xFFFF);
+}
+static void psp_bms_census_leave(void)
+{
+	if (psp_bms_census_in)
+		psp_step_label(psp_bms_census_old);
+	psp_bms_census_in = 0;
+	psp_objtrace[2] = (unsigned long)-1;
+}
+#define PSP_BMS_CENSUS_ENTER(biped_index) psp_bms_census_enter(biped_index)
+#define PSP_BMS_CENSUS_LEAVE() psp_bms_census_leave()
+#else
+#define PSP_BMS_CENSUS_ENTER(biped_index) ((void)0)
+#define PSP_BMS_CENSUS_LEAVE() ((void)0)
+#endif
 /* the intent's start: the record filled, in the slot of its bipedstage3 record */
 static void psp_bms_start(long biped_index, int slot)
 {
@@ -56041,12 +56081,14 @@ static void psp_bms_start(long biped_index, int slot)
 		psp_bms_check = psp_keep("bipedmovestorecheck");
 		psp_bms_on = psp_bms_check || psp_keep("bipedmovestore");
 	}
+	PSP_BMS_CENSUS_ENTER(biped_index);
 	if (psp_bms_on)
 		box_ws_move_begin(object_get_and_verify_type(biped_index, _object_mask_biped), biped_index, slot, psp_bms_check);
 }
 /* the intent's end: kept for its solve when it stopped there, else written back */
 static void psp_bms_keep(int kept)
 {
+	PSP_BMS_CENSUS_LEAVE();
 	if (!box_ws_move_datum)
 		return;
 	if (kept)
@@ -56061,6 +56103,7 @@ static void psp_bms_resume(void *datum, int slot)
 }
 static void psp_bms_stop(void)
 {
+	PSP_BMS_CENSUS_LEAVE();
 	if (box_ws_move_datum)
 		box_ws_move_end();
 }
@@ -56122,9 +56165,24 @@ def _bipedmove_rewrite(body, pointers):
     out.append(body[last:])
     return "".join(out), n
 
+# Biped motion's census (PSP_BMS_CENSUS=1, recon only; docs/box_biped_motion.md,
+# means B): the window's calls of functions that also run outside it, for
+# other bipeds or other units, each labelled for the emulator's per-step field
+# counts as the synced helpers are ("c": a label, no sync). Whether it returns
+# a value. Not in other builds, whose text stays as it was.
+BIPEDMOVE_CENSUS_CALLS = {
+    "biped_get_physics_pill": ("c", False, None),
+    "biped_flying_through_air": ("c", True, None),
+    "unit_update_animation": ("c", True, None),
+    "unit_animation_start_action": ("c", False, None),
+}
+
 def _bipedmove_sync(body, counts):
     """each call of a BIPEDMOVE_SYNC helper wrapped in its sync"""
-    for helper, (kind, value, _) in BIPEDMOVE_SYNC.items():
+    calls = dict(BIPEDMOVE_SYNC)
+    if os.environ.get("PSP_BMS_CENSUS", "") == "1":
+        calls.update(BIPEDMOVE_CENSUS_CALLS)
+    for helper, (kind, value, _) in calls.items():
         out, last = [], 0
         for m in re.finditer(r"(?<![\w.>])%s\(" % helper, body):
             if m.start() < last:
@@ -56139,14 +56197,17 @@ def _bipedmove_sync(body, counts):
                     break
             call = body[m.start():k]
             if kind == "w":
-                wrapped = ("PSP_BMS_SYNC(%s)" if value else "PSP_BMS_SYNCV(%s)") % call
+                wrapped = ("PSP_BMS_SYNC(\"%s\", %s)" if value else "PSP_BMS_SYNCV(\"%s\", %s)") % (helper, call)
             elif kind == "d":
-                wrapped = "PSP_BMS_DROPV(%s)" % call
+                wrapped = "PSP_BMS_DROPV(\"%s\", %s)" % (helper, call)
+            elif kind == "c":
+                wrapped = ("PSP_BMS_CALL(\"%s\", %s)" if value else "PSP_BMS_CALLV(\"%s\", %s)") % (helper, call)
             else:
-                wrapped = "PSP_BMS_NARROWV(%s, %s)" % (kind[1], call)
+                wrapped = "PSP_BMS_NARROWV(\"%s\", %s, %s)" % (helper, kind[1], call)
             out.append(body[last:m.start()] + wrapped)
             last = k
-            counts[helper] = counts.get(helper, 0) + 1
+            key = "call " + helper if kind == "c" else helper
+            counts[key] = counts.get(key, 0) + 1
         out.append(body[last:])
         body = "".join(out)
     return body
@@ -56188,11 +56249,15 @@ def biped_move_store(tree):
     for helper, (_, _, expected) in BIPEDMOVE_SYNC.items():
         if expected is not None and counts.get(helper, 0) != expected:
             check_fail("psp_fixups: BIPEDMOVE: expected %d calls of %s in the window, found %d" % (expected, helper, counts.get(helper, 0)))
+    calls = set(BIPEDMOVE_SYNC) | set("call " + k for k in BIPEDMOVE_CENSUS_CALLS)
     print("psp_fixups: BIPEDMOVE: datum accesses by function: " + ", ".join(
-        "%s %d" % (k, v) for k, v in counts.items() if k not in BIPEDMOVE_SYNC))
+        "%s %d" % (k, v) for k, v in counts.items() if k not in calls))
     print("psp_fixups: BIPEDMOVE: calls synced: " + ", ".join(
         "%s %d" % (k, counts.get(k, 0)) for k in BIPEDMOVE_SYNC))
-    return sum(v for k, v in counts.items() if k not in BIPEDMOVE_SYNC)
+    if os.environ.get("PSP_BMS_CENSUS", "") == "1":
+        print("psp_fixups: BIPEDMOVE: calls labelled for the census: " + ", ".join(
+            "%s %d" % (k, counts.get("call " + k, 0)) for k in BIPEDMOVE_CENSUS_CALLS))
+    return sum(v for k, v in counts.items() if k not in calls)
 
 # 1c's outside writers (the lab's wswatch1_writers: damage, speech, AI orders,
 # placement), each marking its object's slot before it writes, so the
