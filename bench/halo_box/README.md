@@ -2,7 +2,7 @@
 
 Prices one box of the rebuild alone, before it is cut into the engine: the box's own code over a **capture** (the box's inputs and the old code's outputs for sampled ticks of a pad bench), in three modes, alone and beside the GE, with every output checked against the capture's. What it can't give is the in-frame price: alone, a box has both caches and the bus to itself. The modes bracket the frame from both sides; the pair of builds on a pad bench still decides.
 
-State: version 1. Proven on a desktop (`host/test.sh`) and in the emulator [E]: the null box; the self-test box, whose capture it writes, reads back and checks (1,280 outputs, 0 outside); the spoiled capture caught and named; the strict interpreter, no bad access; and the GE's lists built, stopped and waited for without a hang (the emulator's GE takes no time, so every pass there is counted "GE short", as it should be). The counters' module loads and its system call answers in the emulator, where the registers don't count (the bench notices and leaves the pass out); **the counted pass has only run with made-up counters, on a desktop.** **Not yet run on a PSP: no figure of time exists yet.** Main-CPU boxes only.
+State: version 1. Proven on a desktop (`host/test.sh`) and in the emulator [E]: the null box; the self-test box, whose capture it writes, reads back and checks (1,280 outputs, 0 outside); the spoiled capture caught and named; the strict interpreter, no bad access; and the GE's lists built, stopped and waited for without a hang (the emulator's GE takes no time, so every pass there is counted "GE short", as it should be). The counters' module loads and its system call answers in the emulator, where the registers don't count (the bench notices and leaves the pass out); **the counted pass has only run with made-up counters, on a desktop.** Since run on both PSPs (the lab's findings, `box_*` and `framepic_price_*` rows). Boxes on the Media Engine: below.
 
 ## Running it
 
@@ -69,9 +69,31 @@ The self-test box, as the first worked example [E]: 326 instructions and 102 dat
 
 Proven on a desktop (`host/test.sh`: the self-test box's records pushed through the calls with entities nested two deep, a 48 KB file cap making ten files, a tick too large for its room; the harness reads the files back and every output checks) and compiled for the PSP. Not yet run in the port.
 
-## Not in version 1
+## On the Media Engine
 
-- **Boxes that run on the Media Engine.**
+A box's per-entity pass can also run on the ME, beside the main CPU's own in the same run, every output checked against the capture word for word as the main CPU's are. The ME's side (`me.c`, `psp/src/psp_mexec_copy.h`, the harness's ME passes) was built and proven on the PSP-3000 for biped motion on `builder/mebench` (7df2027: exact on all three places; the lab's findings `boxmotion_me_ram_b30beach`, `boxmotion_me_edram_b30beach`), and is carried here unchanged, with the per-entity job form added for line (b)'s falsifier (`docs/box_collision.md` §10).
+
+| Keep word | Where and how the box's per-entity pass also runs |
+|---|---|
+| `me` | on the ME, **ram**: code and data in main RAM, as linked |
+| `meedram` | **edram**: the code copied into the ME's eDRAM; the data moved there by the adapter's `me_place`, or left in main RAM when it has none (the sweep has none: its BSPs are megabytes) |
+| `mebusy` | **edram, CPU busy**: as edram, with the main CPU's loop of main-RAM reads timed beside it |
+| `medma` | with `mebusy`: the ME also moves the copy's bytes by DMACplus after each pass (it failed on the PSP-3000: `me_drives_dmacplus_b30beach`) |
+| `mejob` | with `me` or `meedram`: each entity also handed to the ME as **a job of its own**, timed from the main CPU |
+
+Ask for each place on its own keep word (B77: three at once, with the null box's busy loop writing through a null pointer, turned a PSP-3000 off). Each of the ME's steps is written to the log before it starts.
+
+**The passes** (`me`, `meedram`, `mebusy`): the main CPU prepares the tick (`adapter->tick`), writes its D-cache back and hands the ME the whole tick through a block of uncached words. The ME empties or crowds its own caches by the mode before each entity, reads its cycle counter either side of `adapter->run(i)`, and writes its cache back at the end; the main CPU then drops its copies of the outputs and checks them. The ME's own µs an entity at 333 MHz, net of the null box's same pass, against the main CPU's net mean in the same mode (`x CPU`).
+
+**The jobs** (`mejob`): what the game would pay to hand one entity over. Per entity: the ME's caches emptied or crowded by the mode (an order of its own, untimed); the main CPU's D-cache written back (timed apart, reported as `write-back`); then the job handed over and the main CPU spinning on the uncached done word, timed by `sceKernelGetSystemTimeLow` over the hand-over and the wait. Net of the null box's same job (a hand-over that runs nothing), so the figure is the entity's work on the ME as the main CPU sees it, the ME's poll included at its average. While jobs run, the idle ME polls every 16 nops instead of every 2,000, and the main CPU spins rather than sleeps. The ME's own cycles for each job are reported beside. Every job's output is checked (`check of the ME's jobs`). The order counter and the jobs' three arrays sit on cache lines of their own: a line the main CPU wrote back while the ME held it would land over the ME's bytes.
+
+**The ME can't make system calls and has no VFPU.** The main CPU waits on the ME a bounded 5 s; a pass or job that doesn't end is named (box, place, mode, entity) and the ME's passes stop. Before that, the build checks: `tools/mexec.py` scans every function it copies for VFPU instructions, syscall instructions and calls into the import stubs, and counts the calls through a register that leave the copy, in the build's log (`mexec: the ME check over ...`).
+
+**Code in eDRAM:** `tools/mexec.py --entry box_me_pass` writes the copy's table after the link (`-Wl,-q`), from `me/copy.txt`. A line `+name` takes the function and everything it reaches by jal, by address, so the sweep's walks are taken whole although `box_sweep.c` and `box_collbsp.c` share static names; `-name` keeps a function (the allocator, `printf`) out. The copy sits at eDRAM 256 KB in 192 KB of room (`psp_me.h`'s map, the bench alone on the PSP), the data room at 512-1,280 KB. A function reached through a pointer runs on from main RAM; an adapter with `me_aim` re-aims its pointers at the copies.
+
+**The emulator** runs the ME's passes and jobs on the main CPU, timed by the clock: the hand-over's set-up, `me_place` and the checks are proven there, not the copy and not any time. The desktop test does the same (`HALO_BOX_ME=1`). Only the PSP proves the copy and gives a time.
+
+**Not here:** the GE beside a pass on the ME, and a batching box on the ME.
 
 ## The desktop test
 

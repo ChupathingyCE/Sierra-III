@@ -328,6 +328,11 @@ def build(elf, names, log, entry="psp_ge_me_replay"):
                     break
         if not pairs:
             jump_left += len(run)
+            his = [(h - f["value"], (elf.word(h) >> 16) & 31, elf.word(h) & 0xFFFF) for h, typ in rel if typ == R_MIPS_HI16]
+            los = [(l - f["value"], (elf.word(l) >> 21) & 31, elf.word(l) & 0xFFFF) for l, typ in rel if typ == R_MIPS_LO16]
+            log("mexec: a jump table of %s (%d words at %#x) left in main RAM: no lui/%%lo pair within 8 instructions "
+                "loads it; the function's HI16 (offset, reg, imm) %s, LO16 %s" % (
+                    f["name"], len(run), start, his[:12], los[:24]))
             continue
         new = EDRAM + data_at
         for h, l in pairs:
