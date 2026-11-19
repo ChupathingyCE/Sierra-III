@@ -49,4 +49,9 @@ Each slice's `I` section gives one row per instrument:
 
 ## Proofs
 
-(filled in as they come: the default build's EBOOT against the tock's, and the emulator's flightrec1 batch)
+- **A default build is byte-identical [D, built]:** the tock 34be07fc and builder/flightrec at a6ec290c and 901ad22e both give EBOOT f7dcbef1b0e6f377 on the tock's recipe without the switch (the lab's sierra-build 44576621830, 44576656158, 44578587657). Later commits touch only `psp_flightrec.c`, which a default build doesn't compile.
+- **Play is unchanged with the recording running [E]:** the lab's flightrec3 (sierra-batch 44585439212, ceedbc06, PSP_FLIGHTREC=1 + PSP_PADPATH=1 on the tock's recipe) ran held b30_leg2 seed1 to exitat80 and c20_leg2 seed1 to exitat60. Recorder off against recorder on, play and both seeds were identical on every tick (statecmp: 2,400/2,400 and 1,800/1,800), with strict 0 sites on all four runs. The recorder wrote 26 and 36 slices (179 and 253 KB, 0 write failures), and `flightrec.py` parses both into JSON.
+- **The emulator's blind spots, found here [E]:**
+  - **The step profile is empty in the emulator.** `profile.txt` has no rows, with or without the recorder (flightrec1's off runs too), and no frame there is a timed one. The recorder therefore calibrates after 300 ticks without one (the header's flag says so), and its emulator files have no tree. On the PSP the profile fills (sierra-hw 44565140172's `003_profile.txt`).
+  - **gebusy2 trips strict in the emulator.** With `gebusy2` on, strict lists range loads and stores at 0x083ffexx from gebusy_add, gebusy_ge_finish, gebusy_signal and psp_lane_note. That is the GE interrupt's code on the emulator's interrupt stack, which it puts in kernel RAM (flightrec1, flightrec2; the same family as KSAMPLE v3's). The recorder alone is strict 0. The PSP ask keeps `gebusy2` for the GE's spans.
+- **The first PSP pair:** the lab's `flightrec-b30held` (coord/psp_queue.md): bare against recorded, held b30_leg2 to the Warthog, on the PSP-3000.
