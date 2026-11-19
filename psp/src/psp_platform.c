@@ -4059,24 +4059,64 @@ static volatile unsigned int *ks_slot(void)
 	info.size = sizeof(info);
 	if (me < 0 || sceKernelReferThreadStatus(me, &info) < 0 || __real_sceKernelWaitSema(ks_claim_lock, 1, NULL) < 0)
 		return 0;
+	/* a freed slot first, so threads that come and go don't fill the table;
+	its uid is written last, so the sampler never pairs it with the old
+	thread's stack */
 	n = block->waiters;
-	if (n < KSAMPLE_WAITERS)
+	for (k = 0; k < n && k < KSAMPLE_WAITERS; k++)
+		if (block->waiter[k].uid < 0)
+			break;
+	if (k < n || n < KSAMPLE_WAITERS)
 	{
-		struct ksample_waiter *w = &block->waiter[n];
+		struct ksample_waiter *w = &block->waiter[k];
 
+		w->uid = 0;
 		w->stack_lo = (unsigned int)info.stack;
 		w->stack_hi = (unsigned int)info.stack + (unsigned int)info.stackSize;
 		w->site = 0;
 		memcpy(w->name, info.name, sizeof(w->name));
 		w->name[sizeof(w->name) - 1] = 0;
 		w->uid = me;
-		block->waiters = n + 1;
+		if (k == n)
+			block->waiters = n + 1;
 		slot = &w->site;
 	}
 	else
 		block->waiters_full++;
 	sceKernelSignalSema(ks_claim_lock, 1);
 	return slot;
+}
+
+/* the heartbeat's: a slot whose thread has ended (the kernel no longer
+knows it, or it's dormant or killed) is freed, or it would count as a game
+thread awake for the rest of the run */
+static void ksample_waits_tidy(void)
+{
+	struct ksample_block *block = ks_waits;
+	unsigned int k, n;
+
+	if (!block || __real_sceKernelWaitSema(ks_claim_lock, 1, NULL) < 0)
+		return;
+	n = block->waiters;
+	for (k = 0; k < n && k < KSAMPLE_WAITERS; k++)
+	{
+		SceKernelThreadInfo info;
+		int uid = block->waiter[k].uid, result;
+
+		if (uid <= 0)
+			continue;
+		memset(&info, 0, sizeof(info));
+		info.size = sizeof(info);
+		result = sceKernelReferThreadStatus(uid, &info);
+		if (result < 0 || (info.status & (PSP_THREAD_STOPPED | PSP_THREAD_KILLED)))
+		{
+			if (!block->waiters_freed)
+				block->freed_reason = result < 0 ? result : info.status;
+			block->waiters_freed++;
+			block->waiter[k].uid = -uid;
+		}
+	}
+	sceKernelSignalSema(ks_claim_lock, 1);
 }
 
 /* the caller's PC, written for the call's length; noinline keeps
@@ -4290,13 +4330,13 @@ static void ksample_write(SceUID file)
 #define KS_ROOM(n) do { if (used + (n) > sizeof(chunk)) { sceIoWrite(file, chunk, used); used = 0; } } while (0)
 	used += (unsigned int)snprintf(chunk + used, sizeof(chunk) - used,
 		"ksample head2 base %08x shift %u bins %u ctx %u samples %u %u %u %u kernel %u %u %u %u far %u "
-		"kid %08x %08x game %08x waiters %u full %u sites %u full %u modules %u reads %u error %08x "
+		"kid %08x %08x game %08x waiters %u full %u freed %u %08x sites %u full %u modules %u reads %u error %08x "
 		"intr %u sources %u error %08x\n",
 		0x80000000u | KSAMPLE_LOW, block->shift, block->bins, block->want_ctx,
 		block->phase_samples[0], block->phase_samples[1], block->phase_samples[2], block->phase_samples[3],
 		block->phase_kernel[0], block->phase_kernel[1], block->phase_kernel[2], block->phase_kernel[3],
 		block->far, (unsigned int)block->kid_interrupt, (unsigned int)block->kid_thread, (unsigned int)block->game_uid,
-		block->waiters, block->waiters_full, block->sites, block->sites_full, block->modules, block->module_reads,
+		block->waiters, block->waiters_full, block->waiters_freed, (unsigned int)block->freed_reason, block->sites, block->sites_full, block->modules, block->module_reads,
 		(unsigned int)block->module_error, block->want_intr, block->intr_sources, (unsigned int)block->intr_error);
 	for (phase = 0; phase < KSAMPLE_PHASES; phase++)
 		for (ctx = 0; ctx < KSAMPLE_CTX; ctx++)
@@ -4446,6 +4486,9 @@ static void pc_report(void)
 
 	if (!hwprofile_running || !hwprofile.pc_wanted)
 		return;
+#ifdef PSP_KSAMPLE
+	ksample_waits_tidy();
+#endif
 	samples = hwprofile.pc_samples;
 	now_us = sceKernelGetSystemTimeLow();
 	rate = last_us && now_us != last_us ? (unsigned int)((unsigned long long)(samples - last_samples) * 1000000u / (now_us - last_us)) : 0;

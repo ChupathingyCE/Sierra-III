@@ -614,30 +614,12 @@ static void ksample_modules(void)
 	pspSdkSetK1(k1);
 }
 
-/* the sampler's: a slot whose thread has ended is freed, or it would count
-as a game thread awake for the rest of the run */
-static void ksample_waiters_tidy(void)
+/* the sampler's: sceKernelGetThreadId's answer outside the interrupt, for
+the head line beside the interrupt's */
+static void ksample_kid_thread(void)
 {
-	unsigned int k, n = ks->waiters;
-	unsigned int k1 = pspSdkSetK1(0);
-
 	if (!ks->kid_thread)
 		ks->kid_thread = sceKernelGetThreadId();
-	if (n > KSAMPLE_WAITERS)
-		n = KSAMPLE_WAITERS;
-	for (k = 0; k < n; k++)
-	{
-		SceKernelThreadInfo info;
-		int uid = ks->waiter[k].uid;
-
-		if (uid <= 0)
-			continue;
-		memset(&info, 0, sizeof(info));
-		info.size = sizeof(info);
-		if (sceKernelReferThreadStatus(uid, &info) < 0 || (info.status & (PSP_THREAD_STOPPED | PSP_THREAD_KILLED)))
-			ks->waiter[k].uid = -uid;
-	}
-	pspSdkSetK1(k1);
 }
 #endif
 
@@ -722,7 +704,7 @@ static int sampler(SceSize args, void *argp)
 
 			ksample_intr_account();
 			pspSdkSetK1(k1);
-			ksample_waiters_tidy();
+			ksample_kid_thread();
 			if (table->sequence % 50 == 0)
 				ksample_modules();
 		}

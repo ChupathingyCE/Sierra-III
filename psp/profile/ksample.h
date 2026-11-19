@@ -90,8 +90,12 @@ struct ksample_block
 	volatile int kid_interrupt, kid_thread;
 	/* the prx's: the thread that names the phases */
 	volatile int game_uid;
-	/* the game's waiter slots (claimed under the game's lock) */
-	volatile unsigned int waiters, waiters_full;
+	/* the game's waiter slots (claimed under the game's lock; a slot whose
+	thread has ended is freed by the game's heartbeat, its uid negated, and
+	taken again by the next claim), how many were freed, and the first
+	free's reason (the refer call's error, or the thread's status) */
+	volatile unsigned int waiters, waiters_full, waiters_freed;
+	volatile int freed_reason;
 	struct ksample_waiter waiter[KSAMPLE_WAITERS];
 	/* the prx's: every sample by phase and ctx; the main thread's wait sites
 	and, by phase, every sample and the kernel's while it waited there */
