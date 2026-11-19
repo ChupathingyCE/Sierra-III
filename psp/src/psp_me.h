@@ -220,7 +220,10 @@ ME a chunk at a time while the main CPU adds more, each made by the same
 function on whichever CPU gets to it, under the main CPU's FPU control word.
 The rule: psp_me_batch_need before the main CPU reads a record's answer. It
 never waits for work the ME hasn't started: a record not handed over, or
-handed over and not begun, is made here instead (taken back).
+handed over and not begun, is made here instead (taken back). Each record has its
+own claim (the default; "mebatchlimit" keeps the one limit word, where the
+first record taken back ends every later job): a record taken back is
+passed by the ME, which makes the ones after it.
 
 A record is record_bytes (whole 64-byte lines) in the client's arena; make()
 reads and writes only its own record (and memory nobody writes meanwhile).
@@ -239,13 +242,26 @@ struct psp_me_batch_word
 	unsigned int pad[15];
 } __attribute__((aligned(64)));
 
+/* the most records a batch with claims a record holds */
+#define ME_BATCH_CLAIM_RECORDS 64
+
 struct psp_me_batch
 {
 	/* only ever through the uncached view: limit is the main CPU's (the ME
 	makes no record from it on), started and done the ME's (it claimed and
 	finished every record below them), withdrawn the ME's count of jobs it
-	ended at the limit */
+	ended at the limit (with claims: of records it passed, claimed here) */
 	struct psp_me_batch_word limit, started, done, withdrawn;
+	/* claims a record (the default; "mebatchlimit" keeps the one limit):
+	the ME's claim and its finish, and the main CPU's claim, each record's
+	own word, uncached only. A record the gather reaches before the ME no
+	longer ends every later job: the ME passes it and makes the rest */
+	unsigned int me_on[ME_BATCH_CLAIM_RECORDS] __attribute__((aligned(64)));
+	unsigned int made[ME_BATCH_CLAIM_RECORDS] __attribute__((aligned(64)));
+	unsigned int here_on[ME_BATCH_CLAIM_RECORDS] __attribute__((aligned(64)));
+	/* the main CPU's, cached: each record's hand-over time, for the timing line */
+	unsigned int hand_us[ME_BATCH_CLAIM_RECORDS] __attribute__((aligned(64)));
+	int claims, asked;
 	psp_me_record_fn make;
 	unsigned char *records;
 	unsigned char *state;       /* a byte a record, the main CPU's */
