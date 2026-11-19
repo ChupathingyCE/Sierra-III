@@ -305,7 +305,7 @@ def build(elf, names, log, entry="psp_ge_me_replay"):
         f = owner(site)
         if f is not None and typ in (R_MIPS_HI16, R_MIPS_LO16):
             text_relocs.setdefault(f["value"], []).append((site, typ))
-    imm_patches, data_blocks, jump_left = [], [], 0
+    imm_patches, data_blocks, jump_left, pointers_left = [], [], 0, 0
     data_at = total
     for run in tables:
         start, f = run[0][0], run[0][1]
@@ -328,6 +328,11 @@ def build(elf, names, log, entry="psp_ge_me_replay"):
                     break
         if not pairs:
             jump_left += len(run)
+            if all(target == g["value"] for _, g, target in run):
+                # a word naming a function's start is a pointer to it (an
+                # adapter's run, say), not a switch's: it stays as it is
+                pointers_left += len(run)
+                continue
             his = [(h - f["value"], (elf.word(h) >> 16) & 31, elf.word(h) & 0xFFFF) for h, typ in rel if typ == R_MIPS_HI16]
             los = [(l - f["value"], (elf.word(l) >> 21) & 31, elf.word(l) & 0xFFFF) for l, typ in rel if typ == R_MIPS_LO16]
             log("mexec: a jump table of %s (%d words at %#x) left in main RAM: no lui/%%lo pair within 8 instructions "
@@ -360,9 +365,10 @@ def build(elf, names, log, entry="psp_ge_me_replay"):
         words += [at, len(block)] + block
     check_me(elf, chosen, log)
     log("mexec: %d functions, %d bytes of code, %d trampolines (%d bytes in all, of %d); %d calls re-aimed at copies, "
-        "%d branches through trampolines; jump tables: %d of %d words copied (%d tables, %d immediates re-aimed), %d left in main RAM; "
+        "%d branches through trampolines; jump tables: %d of %d words copied (%d tables, %d immediates re-aimed), %d left in main RAM "
+        "(%d of them pointers to a copied function's start, not switches); "
         "other relocations left: %s" % (len(chosen), code_bytes, len(trampolines), total, ROOM, len(calls), len(branches),
-                                        jump_words - jump_left, jump_words, len(data_blocks), len(imm_patches), jump_left, ", ".join("type %d x%d" % kv for kv in sorted(other_kinds.items())) or "none"))
+                                        jump_words - jump_left, jump_words, len(data_blocks), len(imm_patches), jump_left, pointers_left, ", ".join("type %d x%d" % kv for kv in sorted(other_kinds.items())) or "none"))
     return words
 
 
