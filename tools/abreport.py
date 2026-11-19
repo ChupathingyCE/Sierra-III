@@ -34,7 +34,8 @@ usage:
   abreport.py RESULTS                      a rig results folder with keep sets: its
                                            runs.txt names each run's set; runN/log.txt
   abreport.py NAME=LOG,LOG NAME=LOG,LOG    sides given by hand (logs or their folders)
-  options: --stretches NAME:FROM-TO,...    game ticks (default: benchreport.py's b30 bench)
+  options: --stretches NAME:FROM-TO,...    game ticks (default: benchreport.py's stretches_for:
+                                           the logs' pad's own, else their map's, else b30's bench)
 
   python3 tools/abreport.py ~/results/sierra-hw/38446588223 --stretches early:300-2400,late:2400-4600
   python3 tools/abreport.py on=a/run1,a/run2 off=b/run1,b/run2 --stretches cinematic:150-570
