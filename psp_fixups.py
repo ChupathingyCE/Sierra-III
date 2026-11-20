@@ -43518,9 +43518,24 @@ at the word's looks and between perception's props (psp_me_yield_inner
 says how often), the census's step put back after it; aimeaudiolook (B60):
 an audio block near its bound mixed there too, since one actor can hold
 the ME past the audio job's 40 ms */
+#ifdef PSP_RECON
+void psp_me_look_census(int gate); /* psp_me.c: "aimelookcensus" */
+/* aimelookcensus: what stops this look at the call (0 none), counted on the
+ME; out of line, so the ME's copy holds only the call */
+static void __attribute__((noinline)) psp_aime_look_census(
+	void)
+{
+	psp_me_look_census(!(psp_aime_ring_looks || psp_aime_audio_looks) ? 1 : !psp_aime_job_now[0] ? 2 :
+		psp_aime_late_now ? 3 : (psp_aime2a_abort && *psp_aime2a_abort) ? 4 : 0);
+}
+#endif
+
 void psp_aime_ring_yield(
 	void)
 {
+#ifdef PSP_RECON
+	psp_aime_look_census();
+#endif
 	/* never once the word is up: the look after this answers it */
 	if ((psp_aime_ring_looks || psp_aime_audio_looks) && psp_aime_job_now[0] && !psp_aime_late_now &&
 		!(psp_aime2a_abort && *psp_aime2a_abort))

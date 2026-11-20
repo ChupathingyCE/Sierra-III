@@ -202,6 +202,10 @@ void psp_me_replay_look(void);
 #ifdef PSP_RECON
 /* on the ME: where a long slot job is, for a late ring job's stash report */
 void psp_me_stash_place(unsigned int place);
+/* on the ME, at each call into the AI job's look (actors.c's
+psp_aime_ring_yield): "aimelookcensus" counts it, with what stopped it at the
+call (0 none, 1 looks off, 2 the job's mark down, 3 the word late, 4 the abort) */
+void psp_me_look_census(int gate);
 #endif
 /* on the ME, from the slot job that yields: the render jobs served in its
 yields since the last take, and the longest in ME cycles; both back to 0 */

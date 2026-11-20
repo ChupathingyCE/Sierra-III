@@ -197,6 +197,11 @@ batch's (~13 KB with the ring's) don't fit the 16 KB I-cache together, so
 each job taken between two records cost both a refill (c20: the replay
 +0.3-0.4 ms a job beyond the batches' own time, sweepme_claims_c20_replay) */
 #define ME_FEATURE_TICKSCHED 65536u
+#ifdef PSP_RECON
+/* "aimelookcensus" (PSP_RECON): the AI job's looks at the ring counted
+(look_census_stats; docs/box_tick_schedule.md §11, step 0) */
+#define ME_FEATURE_LOOK_CENSUS 131072u
+#endif
 
 #if PSP_MEXEC
 /* The copy's table: tools/mexec.py writes it into the linked program
@@ -889,6 +894,10 @@ static void run_job(volatile struct me_slot *slot, int *sums, int on_me)
 	}
 }
 
+#ifdef PSP_RECON
+static void look_census_job(int begin); /* "aimelookcensus", below */
+#endif
+
 /* build 113: a slot's job run on the ME, with the cache hand-overs around it
 (meLibOnProcess's loop, and psp_me_serve_audio below) */
 static void me_serve(volatile struct me_slot *slot, int *sums)
@@ -919,6 +928,10 @@ static void me_serve(volatile struct me_slot *slot, int *sums)
 		me_count(STASH_AUDIO_RANGES);
 	job_start = me_cycles();
 	me_note(STASH_SLOT_JOB);
+#ifdef PSP_RECON
+	if (type == ME_JOB_AIME)
+		look_census_job(1);
+#endif
 #if PSP_MEXEC_JOBS
 	if (mexec_run)
 		((void (*)(volatile struct me_slot *, int *, int))mexec_run)(slot, sums, 1);
@@ -926,6 +939,10 @@ static void me_serve(volatile struct me_slot *slot, int *sums)
 #endif
 	run_job(slot, sums, 1);
 	job_end = me_cycles();
+#ifdef PSP_RECON
+	if (type == ME_JOB_AIME)
+		look_census_job(0);
+#endif
 	me_note(STASH_SLOT_WRITE);
 	/* what this job wrote, to main RAM, before saying so: the voices' lines
 	it changed and the output block, or the whole cache */
@@ -968,6 +985,192 @@ static int me_audio_sums_main[MIX_FRAMES_MAX * 2] __attribute__((aligned(64)));
 #define ME_EDRAM_STATE_ON (CONTROL->features & ME_FEATURE_EDRAM_STATE)
 #define ME_PRIVATE (ME_EDRAM_STATE_ON ? (volatile struct me_private *)(ME_EDRAM + ME_EDRAM_PRIVATE) : &me_private_main)
 #define ME_AUDIO_SUMS (ME_EDRAM_STATE_ON ? (int *)(ME_EDRAM + ME_EDRAM_PRIVATE + 0x1000) : me_audio_sums_main)
+
+#ifdef PSP_RECON
+/* "aimelookcensus" (PSP_RECON; docs/box_tick_schedule.md §11, step 0): where
+the AI job's thinking runs without a look at the ring. Every call into
+psp_aime_ring_yield (psp_me_look_census, from actors.c) and every yield
+between actors is a look; the job's start and end count as looks too. The
+counts are the ME's own, on its cached lines (as tick_look): the AI job's
+end writes the ME's cache back, and psp_me_report reads them uncached and
+moves the epoch, so the ME starts the counts again at its next AI job */
+#define LOOK_STEPS 16 /* the census's steps 0-14 (PSP_AIME_STEPS), and 15 for none */
+#define LOOK_BINS 6
+#define LOOK_MS (333u * 1000u) /* the ME's clock, ~1 ms (as INNER_GAP_CYCLES) */
+struct look_census_stats
+{
+	unsigned int epoch;        /* the main CPU's epoch these counts are for */
+	unsigned int jobs;         /* AI jobs */
+	unsigned int calls;        /* calls into psp_aime_ring_yield */
+	unsigned int gated[4];     /* stopped at the call: looks off, the job's mark down, the word late, the abort */
+	unsigned int gap;          /* in psp_me_yield_inner: under INNER_GAP_CYCLES since the last yield */
+	unsigned int low;          /* passed by for the stack */
+	unsigned int audio_only;   /* the ring not asked (aimeaudiolook's look only) */
+	unsigned int not_ready;    /* the ring not ready, or inside a ring job */
+	unsigned int idle;         /* nothing waiting */
+	unsigned int served;       /* drains run there */
+	unsigned int served_jobs;  /* ring jobs those ran */
+	unsigned int between;      /* yields between actors */
+	unsigned int stretches;    /* stretches between two looks */
+	unsigned int worst, worst_step, worst_tag; /* the longest, in ME cycles, and the step and tag it ended in */
+	unsigned int bins[LOOK_BINS]; /* stretches under 0.5, 1, 2, 5, 10 ms, and over */
+	unsigned int long_cycles[LOOK_STEPS]; /* cycles in stretches over 1 ms, by the step they ended in */
+	unsigned int long_count[LOOK_STEPS];
+	unsigned int waiting_looks; /* looks that saw ring jobs waiting */
+	unsigned int waiting_most;  /* the most seen waiting at one look */
+	unsigned int spans, span_cycles, span_worst; /* from a look that first saw jobs waiting to one after which none were */
+	unsigned int pushed;       /* ring jobs pushed while the AI job ran */
+	unsigned int run;          /* ring jobs run inside it (inside actors and between them) */
+	unsigned int job_worst_sum; /* each job's longest stretch, summed */
+	unsigned int pad[15];
+} __attribute__((aligned(64)));
+static struct look_census_stats look_census PSP_AIME_ME_SIDE = { 0 };
+static PSP_AIME_ME_SIDE unsigned int look_on = 0, look_mark = 0, look_job_worst = 0, look_wait_at = 0, look_wait_open = 0,
+	look_pushed_at = 0, look_popped_at = 0;
+static PSP_AIME_ME_SIDE int look_step = -1, look_tag = -1, look_prev_step = -1, look_prev_tag = -1;
+/* the main CPU's epoch, on a line of its own that only it writes */
+static struct
+{
+	unsigned int epoch, pad[15];
+} look_epoch_storage __attribute__((aligned(64)));
+
+/* the ring jobs waiting, as the ME sees them */
+static unsigned int look_census_waiting(void)
+{
+	volatile struct me_private *p = ME_PRIVATE;
+
+	return p->ring_ready ? RING_PUSHED - p->ring_popped : 0;
+}
+
+static void look_census_wait_close(unsigned int now)
+{
+	unsigned int d;
+
+	if (!look_wait_open)
+		return;
+	look_wait_open = 0;
+	d = now - look_wait_at;
+	look_census.spans++;
+	look_census.span_cycles += d;
+	if (d > look_census.span_worst)
+		look_census.span_worst = d;
+}
+
+/* a look: the stretch since the last one closed, and what waits */
+static void look_census_at(unsigned int now, int between)
+{
+	unsigned int d = now - look_mark, bin, s, waiting;
+	int step = look_step, tag = look_tag;
+
+	/* between actors the step is 0 already: the stretch is the actor's last step's */
+	if (between && step == 0)
+	{
+		step = look_prev_step;
+		tag = look_prev_tag;
+	}
+	s = step >= 0 && step < LOOK_STEPS - 1 ? (unsigned int)step : LOOK_STEPS - 1;
+	look_census.stretches++;
+	bin = d < LOOK_MS / 2 ? 0 : d < LOOK_MS ? 1 : d < 2 * LOOK_MS ? 2 : d < 5 * LOOK_MS ? 3 : d < 10 * LOOK_MS ? 4 : 5;
+	look_census.bins[bin]++;
+	if (d > LOOK_MS)
+	{
+		look_census.long_cycles[s] += d;
+		look_census.long_count[s]++;
+	}
+	if (d > look_census.worst)
+	{
+		look_census.worst = d;
+		look_census.worst_step = (unsigned int)step;
+		look_census.worst_tag = (unsigned int)tag;
+	}
+	if (d > look_job_worst)
+		look_job_worst = d;
+	waiting = look_census_waiting();
+	if (waiting)
+	{
+		look_census.waiting_looks++;
+		if (waiting > look_census.waiting_most)
+			look_census.waiting_most = waiting;
+		if (!look_wait_open)
+		{
+			look_wait_open = 1;
+			look_wait_at = now;
+		}
+	}
+	look_mark = now;
+}
+
+/* after a look that served (the ring, audio): the next stretch starts now */
+static void look_census_after(void)
+{
+	unsigned int now = me_cycles();
+
+	if (!look_census_waiting())
+		look_census_wait_close(now);
+	look_mark = now;
+}
+
+/* the AI job's start (1) and end (0), in me_serve */
+static void look_census_job(int begin)
+{
+	unsigned int now = me_cycles();
+	volatile struct me_private *p = ME_PRIVATE;
+
+	if (begin)
+	{
+		look_on = (CONTROL->features & ME_FEATURE_LOOK_CENSUS) != 0;
+		if (!look_on)
+			return;
+		if (look_census.epoch != UNCACHED(&look_epoch_storage)->epoch)
+		{
+			unsigned int k, *w = (unsigned int *)&look_census;
+
+			for (k = 0; k < sizeof(look_census) / sizeof(unsigned int); k++)
+				w[k] = 0;
+			look_census.epoch = UNCACHED(&look_epoch_storage)->epoch;
+		}
+		look_census.jobs++;
+		look_mark = now;
+		look_job_worst = 0;
+		look_wait_open = 0;
+		look_step = look_tag = look_prev_step = look_prev_tag = -1;
+		look_pushed_at = RING_PUSHED;
+		look_popped_at = p->ring_popped;
+		if (look_census_waiting())
+		{
+			look_wait_open = 1;
+			look_wait_at = now;
+		}
+		return;
+	}
+	if (!look_on)
+		return;
+	look_census_at(now, 0);
+	look_census_wait_close(now);
+	look_census.job_worst_sum += look_job_worst;
+	look_census.pushed += RING_PUSHED - look_pushed_at;
+	look_census.run += p->ring_popped - look_popped_at;
+	look_on = 0;
+}
+
+/* actors.c's psp_aime_ring_yield, at its start (out of line and out of the
+ME's copy): gate 0 when it goes on to psp_me_yield_inner, else what stopped
+it at the call */
+void __attribute__((noinline)) psp_me_look_census(int gate)
+{
+	if (!psp_on_me() || !look_on)
+		return;
+	look_census.calls++;
+	if (gate)
+	{
+		look_census.gated[(gate - 1) & 3]++;
+		/* the job's mark down: a drain's work inside the job, not its thinking */
+		if (gate == 2)
+			return;
+	}
+	look_census_at(me_cycles(), 0);
+}
+#endif
 
 /* the audio slot's job, if one is waiting: 1 when one was mixed. Only on
 the ME (a long job's step, psp_me_yield) */
@@ -1113,6 +1316,13 @@ void psp_me_yield_slots(void)
 
 	if (!psp_on_me())
 		return;
+#ifdef PSP_RECON
+	if (look_on && psp_aime_job_now[0])
+	{
+		look_census.between++;
+		look_census_at(me_cycles(), 1);
+	}
+#endif
 	inner_mark = me_cycles();
 	psp_me_yield();
 	aime_now = psp_aime_job_now[0];
@@ -1136,6 +1346,10 @@ void psp_me_yield_slots(void)
 		if (ran > nested_worst)
 			nested_worst = ran;
 	}
+#ifdef PSP_RECON
+	if (look_on && aime_now)
+		look_census_after();
+#endif
 	psp_aime_job_now[0] = aime_now;
 }
 
@@ -2966,6 +3180,9 @@ int psp_me_start(void)
 		(psp_keep("aimevisleft") ? ME_FEATURE_AIME_VIS_LEFT : 0u) |
 		(psp_keep("aimeaudiolook") ? ME_FEATURE_AUDIO_LOOK : 0u) | (me_mexec_wanted() ? ME_FEATURE_MEXEC : 0u) |
 		(psp_keep("ticksched") && ring_on ? ME_FEATURE_TICKSCHED : 0u);
+#ifdef PSP_RECON
+	control->features |= psp_keep("aimelookcensus") ? ME_FEATURE_LOOK_CENSUS : 0u;
+#endif
 	tick_slice_set(control);
 	wake_features = control->features | (psp_keep("mewakeprobe") ? ME_FEATURE_WAKE_PROBE : 0u);
 	wake_early = psp_keep("mewake") && !psp_keep("mewakeoff") && psp_keep("mewakeearly");
@@ -3522,7 +3739,22 @@ int psp_me_aime_guard_touched(void)
 /* where a long slot job is, for the stash's report of a late ring job */
 void psp_me_stash_place(unsigned int place)
 {
-	if (!psp_on_me() || !(CONTROL->features & ME_FEATURE_STASH))
+	if (!psp_on_me())
+		return;
+	/* aimelookcensus: the AI job's step and tag (psp_aime_step_tagged's place) */
+	if (look_on && (place >> 24) == 0x0Fu)
+	{
+		int step = (int)(signed char)(place & 0xFFu), tag = (int)(short)((place >> 8) & 0xFFFFu);
+
+		if (step != look_step || tag != look_tag)
+		{
+			look_prev_step = look_step;
+			look_prev_tag = look_tag;
+			look_step = step;
+			look_tag = tag;
+		}
+	}
+	if (!(CONTROL->features & ME_FEATURE_STASH))
 		return;
 	STASH[STASH_PLACE] = place;
 	STASH[STASH_PLACE_CLOCK] = me_cycles();
@@ -3560,6 +3792,12 @@ static void psp_me_inner_reset(void)
 	INNER_STATS->light_looks = INNER_STATS->light_jobs = INNER_STATS->light_low = 0;
 	INNER_STATS->audio = INNER_STATS->light_audio = 0;
 	memset(inner_seen, 0, sizeof(inner_seen));
+#ifdef PSP_RECON
+	sceKernelDcacheWritebackInvalidateRange(&look_census, sizeof(look_census));
+	sceKernelDcacheWritebackInvalidateRange(&look_epoch_storage, sizeof(look_epoch_storage));
+	memset((void *)UNCACHED(&look_census), 0, sizeof(look_census));
+	UNCACHED(&look_epoch_storage)->epoch = 0;
+#endif
 }
 
 void psp_me_yield_inner(int ring)
@@ -3572,12 +3810,20 @@ void psp_me_yield_inner(int ring)
 		return;
 	now = me_cycles();
 	if (now - inner_mark < INNER_GAP_CYCLES)
+	{
+#ifdef PSP_RECON
+		look_census.gap += look_on;
+#endif
 		return;
+	}
 	inner_mark = now;
 	__asm__ __volatile__("move %0, $sp" : "=r"(sp));
 	if (!aime_guard || sp < (unsigned int)aime_guard + ME_EDRAM_AIME_GUARD_BYTES + INNER_STACK_ROOM)
 	{
 		INNER_STATS->low++;
+#ifdef PSP_RECON
+		look_census.low += look_on;
+#endif
 		return;
 	}
 	p = ME_PRIVATE;
@@ -3592,9 +3838,26 @@ void psp_me_yield_inner(int ring)
 			psp_aime_step(7);
 		INNER_STATS->audio += me_audio_now();
 		psp_aime_job_now[0] = aime_now;
+#ifdef PSP_RECON
+		if (look_on)
+			look_census_after();
+#endif
 	}
 	if (!ring || !p->ring_ready || p->in_ring || RING_PUSHED == p->ring_popped)
+	{
+#ifdef PSP_RECON
+		if (look_on)
+		{
+			if (!ring)
+				look_census.audio_only++;
+			else if (!p->ring_ready || p->in_ring)
+				look_census.not_ready++;
+			else
+				look_census.idle++;
+		}
+#endif
 		return;
+	}
 	/* as psp_me_yield's drain: the jobs run here aren't the AI job, and
 	the drain stops at the collection's word */
 	aime_now = psp_aime_job_now[0];
@@ -3606,6 +3869,14 @@ void psp_me_yield_inner(int ring)
 	p->ring_popped = me_ring_drain(popped, &last_look, &SLOT(ME_SLOT_AI)->args[ME_JOB_ARGS - 1]);
 	p->ring_last_look = last_look;
 	INNER_STATS->ring_jobs += p->ring_popped - popped;
+#ifdef PSP_RECON
+	if (look_on)
+	{
+		look_census.served++;
+		look_census.served_jobs += p->ring_popped - popped;
+		look_census_after();
+	}
+#endif
 	psp_aime_job_now[0] = aime_now;
 }
 
@@ -5835,6 +6106,54 @@ void psp_me_report(void)
 		inner_seen[0] = yields;
 		inner_seen[1] = jobs;
 		inner_seen[2] = low;
+#ifdef PSP_RECON
+		/* aimelookcensus: the window's counts, when an AI job has run in it
+		(the ME starts them again at its next AI job once the epoch moves) */
+		if (CONTROL->features & ME_FEATURE_LOOK_CENSUS)
+		{
+			volatile struct look_census_stats *c = UNCACHED(&look_census);
+			unsigned int epoch = UNCACHED(&look_epoch_storage)->epoch, top[3], k, j;
+			float rate = me_cycles_per_us > 0.0f ? me_cycles_per_us : 333.0f;
+			char steps[160];
+			int at = 0;
+
+			if (c->epoch == epoch && c->jobs)
+			{
+				platform_log("ME: the AI job's looks (aimelookcensus): %u jobs; %u calls, stopped at the call: %u looks off, %u mark down, %u late, %u abort; in the yield: %u under the gap, %u low stack, %u audio only, %u ring not ready, %u nothing waiting, %u served (%u ring jobs); %u yields between actors",
+					c->jobs, c->calls, c->gated[0], c->gated[1], c->gated[2], c->gated[3], c->gap, c->low, c->audio_only,
+					c->not_ready, c->idle, c->served, c->served_jobs, c->between);
+				/* the three steps with the most time in stretches over 1 ms */
+				for (j = 0; j < 3; j++)
+				{
+					top[j] = LOOK_STEPS;
+					for (k = 0; k < LOOK_STEPS; k++)
+						if (c->long_cycles[k] && (j < 1 || k != top[0]) && (j < 2 || k != top[1]) &&
+							(top[j] == LOOK_STEPS || c->long_cycles[k] > c->long_cycles[top[j]]))
+							top[j] = k;
+					if (top[j] == LOOK_STEPS)
+						break;
+					at += snprintf(steps + at, sizeof(steps) - at, "%s step %d %lu us in %u", j ? "," : "",
+						top[j] == LOOK_STEPS - 1 ? -1 : (int)top[j], (unsigned long)((float)c->long_cycles[top[j]] / rate),
+						c->long_count[top[j]]);
+					if (at >= (int)sizeof(steps))
+						break;
+				}
+				if (!at)
+					snprintf(steps, sizeof(steps), " none");
+				platform_log("ME: the AI job's stretches without a look (aimelookcensus): %u, the longest %lu us (ended in step %d, tag %d), a job's longest %lu us on average; under 0.5/1/2/5/10 ms and over: %u/%u/%u/%u/%u/%u; over 1 ms, by the step they ended in:%s",
+					c->stretches, (unsigned long)((float)c->worst / rate), (int)c->worst_step, (int)c->worst_tag,
+					(unsigned long)((float)c->job_worst_sum / rate / (float)c->jobs), c->bins[0], c->bins[1], c->bins[2],
+					c->bins[3], c->bins[4], c->bins[5], steps);
+				platform_log("ME: the ring while the AI job ran (aimelookcensus): %u jobs pushed, %u run inside it; %u looks saw jobs waiting (at most %u); %u waits from a look that first saw jobs to one after which none were, %lu us on average, the longest %lu us",
+					c->pushed, c->run, c->waiting_looks, c->waiting_most, c->spans,
+					c->spans ? (unsigned long)((float)c->span_cycles / rate / (float)c->spans) : 0ul,
+					(unsigned long)((float)c->span_worst / rate));
+			}
+			else
+				platform_log("ME: the AI job's looks (aimelookcensus): 0 jobs on the ME since the last line");
+			UNCACHED(&look_epoch_storage)->epoch = epoch + 1;
+		}
+#endif
 		/* lightringlook's looks inside the light pass */
 		yields = INNER_STATS->light_looks;
 		jobs = INNER_STATS->light_jobs;
