@@ -27,6 +27,7 @@ arrives its surfaces are drawn in their flat colour. */
 #include <pspsuspend.h>
 #include <pspdmac.h>
 #include "psp_me.h" /* build 118: PSP_ME_WORK */
+#include "psp_native.h" /* PSP_DRAWNATIVE: the native path */
 #include "psp_paths.h"   /* ms0:/halo or ms0:/halomp, and the maps */
 #include "psp_bindblock.h"
 #include "psp_metrics.h"
@@ -2735,37 +2736,67 @@ void __wrap_sceGuTexImage(int mipmap, int width, int height, int tbw, const void
 	memo_key = 0;
 	if (ME_MEMO_HERE())
 		tex_me_memo.key = 0;
+#ifdef PSP_DRAWNATIVE
+	unsigned int *native_from = psp_native_open(); /* nativeskip */
+#endif
 	if (mipmap == 0 && texlod_frames > 0)
 		sceGuSendCommandi(0, 0xA5FFFF); /* "texlod": not one of the pack's */
 	__real_sceGuTexImage(mipmap, width, height, tbw, tbp);
+#ifdef PSP_DRAWNATIVE
+	psp_native_close(native_from);
+#endif
 }
 void __wrap_sceGuTexMode(int tpsm, int maxmips, int mc, int swizzle)
 {
 	memo_key = 0;
 	if (ME_MEMO_HERE())
 		tex_me_memo.key = 0;
+#ifdef PSP_DRAWNATIVE
+	unsigned int *native_from = psp_native_open(); /* nativeskip */
+#endif
 	__real_sceGuTexMode(tpsm, maxmips, mc, swizzle);
+#ifdef PSP_DRAWNATIVE
+	psp_native_close(native_from);
+#endif
 }
 void __wrap_sceGuClutLoad(int num_blocks, const void *cbp)
 {
 	memo_key = 0;
 	if (ME_MEMO_HERE())
 		tex_me_memo.key = 0;
+#ifdef PSP_DRAWNATIVE
+	unsigned int *native_from = psp_native_open(); /* nativeskip */
+#endif
 	__real_sceGuClutLoad(num_blocks, cbp);
+#ifdef PSP_DRAWNATIVE
+	psp_native_close(native_from);
+#endif
 }
 void __wrap_sceGuClutMode(unsigned int cpsm, unsigned int shift, unsigned int mask, unsigned int csa)
 {
 	memo_key = 0;
 	if (ME_MEMO_HERE())
 		tex_me_memo.key = 0;
+#ifdef PSP_DRAWNATIVE
+	unsigned int *native_from = psp_native_open(); /* nativeskip */
+#endif
 	__real_sceGuClutMode(cpsm, shift, mask, csa);
+#ifdef PSP_DRAWNATIVE
+	psp_native_close(native_from);
+#endif
 }
 void __wrap_sceGuTexFilter(int min, int mag)
 {
 	memo_key = 0;
 	if (ME_MEMO_HERE())
 		tex_me_memo.key = 0;
+#ifdef PSP_DRAWNATIVE
+	unsigned int *native_from = psp_native_open(); /* nativeskip */
+#endif
 	__real_sceGuTexFilter(min, mag);
+#ifdef PSP_DRAWNATIVE
+	psp_native_close(native_from);
+#endif
 }
 
 /* "bindblocks": a resident texture's bind words (its palette, mode, levels
@@ -3061,6 +3092,11 @@ static inline __attribute__((always_inline)) int tex_bind(unsigned int key, int 
 		}
 	}
 	start = address; /* where the texture starts (address moves past the palette and levels) */
+#ifdef PSP_DRAWNATIVE
+	/* nativeskip: the bind's words below (no stall moved, no list memory
+	taken) with the repeats taken back */
+	unsigned int *native_from = psp_native_open();
+#endif
 	if (palette_bytes)
 	{
 		__real_sceGuClutMode(entry->clut, 0, 0xFF, 0);
@@ -3083,6 +3119,9 @@ static inline __attribute__((always_inline)) int tex_bind(unsigned int key, int 
 		height = height > 1 ? height / 2 : 1;
 	}
 	__real_sceGuTexFilter(entry->levels > 1 ? GU_LINEAR_MIPMAP_LINEAR : GU_LINEAR, GU_LINEAR);
+#ifdef PSP_DRAWNATIVE
+	psp_native_close(native_from);
+#endif
 	if (has_alpha)
 		*has_alpha = entry->flags & 1;
 	/* the GE now has this texture (remembered from the ME's work only in the

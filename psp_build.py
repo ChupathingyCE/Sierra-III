@@ -217,6 +217,20 @@ DITHERSHIFT = os.environ.get("PSP_DITHERSHIFT", "") == "1"
 # PSP_DRAWLIST=1: the draw list box (docs/box_draw_list.md), off by default
 # until it is cut over; under it the keep word "drawlist" turns it on
 DRAWLIST = os.environ.get("PSP_DRAWLIST", "") == "1"
+# PSP_DRAWNATIVE=1: the draw list's native path (docs/box_draw_list.md §17;
+# psp/src/psp_native.c), off by default until it's priced. Slice 1, keep word
+# "nativeskip": a shadow of the GE's state that leaves out a model part's state
+# words setting what the GE already holds. Its filter sits on pspgu's state
+# setters, linked with --wrap (NATIVE_WRAPS), so a default build leaves it out
+DRAWNATIVE = os.environ.get("PSP_DRAWNATIVE", "") == "1"
+NATIVE_WRAPS = ("sceGuEnable", "sceGuDisable", "sceGuBlendFunc", "sceGuDepthMask", "sceGuDepthFunc", "sceGuDepthOffset",
+                "sceGuTexFunc", "sceGuTexWrap", "sceGuTexScale", "sceGuTexOffset", "sceGuTexLevelMode", "sceGuTexMapMode",
+                "sceGuTexProjMapMode", "sceGuTexEnvColor", "sceGuTexSlope", "sceGuFog", "sceGuMaterial",
+                "sceGuColorMaterial", "sceGuAmbient", "sceGuSpecular", "sceGuLight", "sceGuLightColor", "sceGuLightAtt",
+                "sceGuLightMode", "sceGuAlphaFunc", "sceGuFrontFace", "sceGuShadeModel", "sceGuPixelMask",
+                "sceGuSetMatrix", "sceGuBoneMatrix", "sceGuDrawArray")
+if DRAWNATIVE:
+    PSP_FILES.append("psp_native")
 # PSP_PADPATH=1: the pad path (docs/pad_path.md; psp_pad.c's second half, its
 # reader in players.c, keep words pathrec, pathlog, padwatch). A bench tool:
 # its reader is an engine function a tick's profile has no counts for and its
@@ -901,7 +915,7 @@ def compile_one(item):
     if FRAMEPIC and not rel.replace("\\", "/").endswith(("source/objects/objects.c", "source/physics/physics.c")):
         extra = extra + ["-DHALO_PERF_LOG=1"]
     cmd = PSP + flags + extra + defines + ["-include", os.path.join(HERE, "psp_post.h"), "-c", src, "-o", out]
-    if src.endswith(("psp_sdl.c", "psp_libc.c", "psp_ge.c", "psp_tex.c", "psp_vfpu.c", "psp_vfpu_quat.c", "psp_vfputrig.c", "psp_menu.c", "psp_geo.c", "psp_anim.c",
+    if src.endswith(("psp_sdl.c", "psp_libc.c", "psp_ge.c", "psp_tex.c", "psp_native.c", "psp_vfpu.c", "psp_vfpu_quat.c", "psp_vfputrig.c", "psp_menu.c", "psp_geo.c", "psp_anim.c",
                      "psp_debug.c", "psp_me.c", "psp_trace.c", "psp_crash.c", "psp_watch.c", "psp_net.c", "psp_net_adhoc.c",
                      "psp_music.c")):
         # plain C against the SDL3 headers, none of the game's MSVC prefix
@@ -921,6 +935,7 @@ def compile_one(item):
                pgo_flags(rel) if opt == "-O2" else []) + (
                ["-DPSP_DITHERSHIFT=1"] if DITHERSHIFT and src.endswith("psp_ge.c") else []) + (
                ["-DPSP_DRAWLIST=1"] if DRAWLIST and src.endswith("psp_ge.c") else []) + (
+               ["-DPSP_DRAWNATIVE=1"] if DRAWNATIVE and src.endswith(("psp_ge.c", "psp_tex.c", "psp_native.c")) else []) + (
                ["-DPSP_RECON=1"] if RECON else []) + (
                ["-DPSP_PADPATH=1"] if PADPATH else []) + (
                ["-DPSP_FRAMEPIC=1"] if FRAMEPIC else []) + (
@@ -1406,7 +1421,8 @@ def link(objs, stubs):
            "--wrap=sceGuTexImage,--wrap=sceGuTexMode,--wrap=sceGuClutLoad,--wrap=sceGuClutMode,--wrap=sceGuTexFilter,"
            # build 114: list regions join the pending range (psp_ge.c, listcachedall)
            "--wrap=sceGuGetMemory",
-           ] + (["-Wl,--wrap=memcpy,--wrap=memset"] if CLAIMFILL else []) + [
+           ] + (["-Wl,--wrap=memcpy,--wrap=memset"] if CLAIMFILL else []) + (
+           ["-Wl," + ",".join("--wrap=" + n for n in NATIVE_WRAPS)] if DRAWNATIVE else []) + [
            "@" + os.path.join(OUT, "objs.rsp"), SDK + "/lib/prxexports.o"] + (music_libs() if MUSIC else []) + LIBS + ["-o", os.path.join(OUT, "halo.elf")]
     if LTO_OBJS:
         cmd[1:1] = lto_link_flags()

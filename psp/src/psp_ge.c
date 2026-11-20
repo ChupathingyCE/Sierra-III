@@ -48,6 +48,7 @@ VRAM (16-bit color, 512 pixels a row); the on-screen log lives above them
 #include "psp_paths.h"   /* ms0:/halo or ms0:/halomp, and the maps */
 #include <stdarg.h>
 #include "psp_me.h" /* build 118: psp_on_me, PSP_ME_WORK, the submit/finish jobs */
+#include "psp_native.h" /* PSP_DRAWNATIVE: the native path */
 #include "psp_lanetrace.h"
 #include "psp_sleep.h" /* B41: the quiet points and the waits the stall reporter watches */
 
@@ -1648,6 +1649,11 @@ static void defer_replay(const defer_word *buffer, unsigned int used, int on_me)
 	if (timed)
 		replay_kinds.runs[side]++;
 	me_memo_run_start(0);
+#ifdef PSP_DRAWNATIVE
+	/* nativeskip: the GE's state where this run's words start is whatever
+	came before them, which this CPU may not have written */
+	psp_native_forget();
+#endif
 
 	while (at < used)
 	{
@@ -6825,6 +6831,9 @@ static void window_begin_list(const float *position, const float *forward, const
 #ifdef PSP_RECON
 	sc_frame_begin();
 #endif
+#ifdef PSP_DRAWNATIVE
+	psp_native_forget(); /* nativeskip: a new frame's list */
+#endif
 	taa_done = 0;
 	taa_frame++;
 	if (psp_taa_strength > 0 && psp_taa_jitter && !psp_soften && !taa_failed)
@@ -7033,6 +7042,10 @@ void psp_ge_window_begin(const float *position, const float *forward, const floa
 	rso_window();
 	if (!PSP_ME_WORK())
 		main_view_begin(position, forward, up, vertical_field_of_view);
+#ifdef PSP_DRAWNATIVE
+	if (!PSP_ME_WORK())
+		psp_native_keeps(); /* (before any of the frame's records reach the ME) */
+#endif
 	/* B41: a sleep asked is carried out at a frame's first window, before
 	anything of the frame reaches the GE layer (psp_sleep.c) */
 	if (!window_main_done && !PSP_ME_WORK())
@@ -16281,9 +16294,14 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 			}
 			if (sub)
 			{
+#ifdef PSP_DRAWNATIVE
+				/* the same two words; nativeskip's shadow stays in step past them */
+				psp_native_call_bones(sub);
+#else
 				/* BASE and CALL, as pspgu's sceGuCallList (without its stall update) */
 				sceGuSendCommandi(0x10, ((unsigned int)sub >> 8) & 0xF0000);
 				sceGuSendCommandi(0x0A, (unsigned int)sub & 0xFFFFFF);
+#endif
 				model_bone_calls++;
 			}
 			if (from_memo && batch < 64)
@@ -17541,7 +17559,13 @@ void psp_ge_draw_model(void *vertices, int vertex_count, int uncompressed, const
 #ifdef PSP_RECON
 	unsigned int *sc_from = sc_part_begin();
 #endif
+#ifdef PSP_DRAWNATIVE
+	psp_native_part(1);
+#endif
 	psp_ge_draw_model_body(vertices, vertex_count, uncompressed, indices, index_count, strip, color, base_key, u_scale, v_scale, alpha_tested);
+#ifdef PSP_DRAWNATIVE
+	psp_native_part(0);
+#endif
 #ifdef PSP_RECON
 	sc_part_end(sc_from, vertices, base_key);
 #endif
@@ -27282,6 +27306,9 @@ static void frame_end_show(void)
 			CENSUS(census_report());
 #ifdef PSP_RECON
 			sc_report();
+#endif
+#ifdef PSP_DRAWNATIVE
+			psp_native_report();
 #endif
 			replay_kinds_report(300); /* mekinds */
 			ge_reads_report(frames); /* build 115 */
