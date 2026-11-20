@@ -10,7 +10,7 @@ Each rule states its current form with one citation; its wording, history and wh
   - **One exception** (Sheepdog01 2026-10-12): the XMB art in `psp/xmb/` may use stills of his own gameplay footage (recorded from PC ChupathingyCE) under Microsoft's Game Content Usage Rules, with the README's notice. Only the exported XMB images: never the raw captures or cutouts, nothing extracted from the game's files, no Microsoft logos.
 - **No Sony firmware.** `flash0:` modules (e.g. `lowio.prx`) stay off the repo; describing them in docs is fine.
 - **Test scaffolding goes in the lab repository** (run specs, workflows, run scripts, results). This repo holds only what the port needs to build, bake and be tested by hand. Sessions that work on the lab get its name and rules from its own CLAUDE.md; `docs/testing_pipeline.md` describes its shape.
-- **Commit identity** (Sheepdog01 2026-10-10): author `Claude <noreply@anthropic.com>`, with `Co-authored-by: Sheepdog-01 <15330660+Sheepdog-01@users.noreply.github.com>` (it keeps the commits on his GitHub profile). Commits before 2026-10-10 are `Sheepdog-01`'s; leave them.
+- **Commit identity** (Sheepdog01, 2026-11-19, under ChupathingyCE's contributor rules; it replaces 2026-10-10's Claude-as-author): Claude writes the code and Sheepdog01 directs, tests and answers for it, but **commits are authored and committed as `Sheepdog-01 <15330660+Sheepdog-01@users.noreply.github.com>`**, with no `Co-Authored-By: Claude` or `Claude-Session:` lines and no session links. Commit messages, issues and pull requests use American English and the handle only: never a name, an address, a machine path or a private link. Every push goes through the lab's leak guard, which refuses the rest. The history before 2026-11-19 was carried into this repository with the same rules applied (new hashes).
 - **His handle, never his real name, in anything public or shared outside the lab** (Sheepdog01 2026-11-17): Release, write-ups for other developers, artifacts or pages shared out, and this repo once it opens: **Sheepdog01**, or the GitHub handle **Sheepdog-01**. The lab's leak guard refuses his surname here and his whole name in Release's exports; a shared doc no guard sees (a claude.ai page, say) is checked by the session that writes it. New text attributes his rulings to the handle, `(Sheepdog01, date)`; older lines naming him stay until the sweep before this repo opens, when his first name joins the guard's list.
 
 ## Builds
@@ -18,7 +18,7 @@ Each rule states its current form with one citation; its wording, history and wh
 - **Ticks and tocks** (Sheepdog01 2026-10-24):
   - **A tick** is the release candidate: the last tick, the tock's work that passed its proofs, and fixes only. Sheepdog01 hand-tests the newest tick; it gets a fresh profile, strict builds, the release checks, a review walk-through and build notes. A fix found in a tick goes into the tock the same day. A known bug is fixed before a hand run, not carried into it; hand runs have no timetable (Sheepdog01 2026-11-17).
   - **A tock** is where new work lands, proven in the lab (exactness, A/Bs, PSP pairs) but not polished, and not handed to him to play unless he asks.
-  - When a tick passes his test it's the release, and the tock becomes the next tick (polished while new work starts on the tock after it); a big win may cut a tick early. Never hold work back to wait on a test. Each shipped build is tagged `bNNN` and its zip added to the `build-archive` Release (a record, not for sharing); a build gets a Release of its own only when he chooses to share it. The lab's `psp/sierra/releases.tsv` says which builds are ticks.
+  - When a tick passes his test it's the release, and the tock becomes the next tick (polished while new work starts on the tock after it); a big win may cut a tick early. Never hold work back to wait on a test. Each build's record and zip are kept by the lab, not here: the lab's builds put no tags or Releases on this repository (Sheepdog01, 2026-11-19); a build gets a Release only when Sheepdog01 chooses to share it. The lab's `psp/sierra/releases.tsv` says which builds are ticks.
 
 ## The goals (Sheepdog01 2026-11-06; the dashboard's `goals`; `docs/redesign_tick.md`)
 
@@ -95,7 +95,7 @@ The lab's `research/opportunities/REBUILD.md` is the spine: the frame budgeted f
 
 ## How AI is used here (Sheepdog01 2026-10-13; `docs/ai_policy.md`)
 
-Sheepdog01 decides what to build, tests the ticks on hardware, and is responsible for it; Claude writes the code, and every commit says so (the identity above).
+Sheepdog01 decides what to build, tests the ticks on hardware, and is responsible for it; Claude writes the code, and the README and every pull request to ChupathingyCE say so (commits carry the handle: the identity above).
 - **Each build ships with a review walk-through** (`docs/review_bNNN.md`): every change merged since the last build, its key lines and why they're there, short enough for him to read and question before testing.
 - **Comments say why, not what, and not when.** Build history belongs in commit messages and build notes: when a comment is touched, move its history out and keep the reason.
 - **Upstreaming to ChupathingyCE, and crediting code or ideas borrowed from another project:** `docs/ai_policy.md`, read before either.
