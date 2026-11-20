@@ -44,6 +44,10 @@ no clock. */
 
 void platform_log(const char *format, ...);
 int psp_keep(const char *name);
+int psp_keep_number(const char *prefix, int fallback);
+#ifdef PSP_RECON
+int psp_ge_statecensus_holds(unsigned int cmd, unsigned int value, unsigned int *end);
+#endif
 
 struct gu_list_view { unsigned int *start, *current; int parent_context; };
 extern struct gu_list_view *gu_list; /* pspgu's (guInternal.h: GuDisplayList) */
@@ -92,11 +96,24 @@ static const unsigned char ns_kind[256] = {
 	/* (0xEA on: transfers, weights: ignored) */
 };
 
+/* "nativeskipkeepN" (an instrument): N's bits name groups of commands that
+are tracked but never dropped, to find which group a difference comes from */
+static const unsigned char ns_group_of[256] = {
+	[0x12] = 1, /* the vertex type */
+	[0xA0 ... 0xAF] = 2, [0xB8 ... 0xBF] = 2, /* texture addresses, widths, sizes */
+	[0xB0] = 3, [0xB1] = 3, [0xC0 ... 0xCA] = 3, /* palette address, texture mode, format, filter, wrap, function */
+	[0x48 ... 0x4B] = 4, /* texture scale and offset */
+	[0x50 ... 0x9B] = 5, /* the material and the lights */
+	[0x15 ... 0x28] = 6, /* the region and the enables */
+	[0x42 ... 0x47] = 7, [0x4C] = 7, [0x4D] = 7, [0xCD ... 0xD0] = 7, [0xD4 ... 0xE9] = 7, /* the rest */
+};
+static unsigned char ns_drop[256] __attribute__((aligned(64)));
+
 struct ns_shadow
 {
 	unsigned int *start, *pos; /* the list, and the place the shadow is in step to */
 	unsigned char gen, active, pad[2];
-	unsigned int dropped, sent, read, forgets, forgets_far, parts;
+	unsigned int dropped, sent, read, forgets, forgets_far, parts, check_right, check_wrong;
 	unsigned char seen[256]; /* a value is known when its byte is gen */
 	unsigned int value[256];
 } __attribute__((aligned(64)));
@@ -109,8 +126,8 @@ static struct ns_shadow ns_me PSP_AIME_ME_SIDE = { NULL, NULL, 1 };
 line of its own, so no CPU writes beside it */
 static struct __attribute__((aligned(64))) ns_words
 {
-	int on, logged;
-	int pad[14];
+	int on, logged, check;
+	int pad[13];
 } ns_words = { -1, 0 };
 
 static void ns_forget_shadow(struct ns_shadow *S)
@@ -191,6 +208,35 @@ done:
 	S->pos = end;
 }
 
+/* "nativeskipcheck" (PSP_RECON, with statecensus and gemeonoff): a word the
+shadow would leave out, asked of the census's reader first; one the GE
+doesn't hold is counted, logged and sent. 1 to leave it out */
+static int ns_held(struct ns_shadow *S, unsigned int cmd, unsigned int value, unsigned int *end)
+{
+#ifdef PSP_RECON
+	if (ns_words.check > 0)
+	{
+		int held = psp_ge_statecensus_holds(cmd, value, end);
+
+		if (held > 0)
+			S->check_right++;
+		else if (held == 0)
+		{
+			if (S->check_wrong++ < 40)
+				platform_log("nativeskipcheck: command %02X value %06X left out, the GE doesn't hold it (part %u, %u forgets)",
+					cmd, value, S->parts, S->forgets);
+			return 0;
+		}
+	}
+#else
+	(void)S;
+	(void)cmd;
+	(void)value;
+	(void)end;
+#endif
+	return 1;
+}
+
 /* the words a setter wrote from "from" on: those that set what the GE holds
 taken back, the rest moved down over them */
 static void ns_take_back(struct ns_shadow *S, unsigned int *from)
@@ -206,7 +252,7 @@ static void ns_take_back(struct ns_shadow *S, unsigned int *from)
 		{
 			unsigned int value = word & 0xFFFFFFu;
 
-			if (S->seen[cmd] == S->gen && S->value[cmd] == value)
+			if (S->seen[cmd] == S->gen && S->value[cmd] == value && ns_drop[cmd] && ns_held(S, cmd, value, from))
 			{
 				S->dropped++;
 				continue;
@@ -335,7 +381,8 @@ void __wrap_sceGuDrawArray(int prim, int vtype, int count, const void *indices, 
 	{
 		unsigned int value = (unsigned int)vtype & 0xFFFFFFu;
 
-		if (S->seen[0x12] == S->gen && S->value[0x12] == value)
+		if (S->seen[0x12] == S->gen && S->value[0x12] == value && ns_drop[0x12] &&
+			ns_held(S, 0x12, value, gu_list->current))
 		{
 			S->dropped++;
 			vtype = 0;
@@ -392,6 +439,16 @@ void psp_native_keeps(void)
 	if (ns_words.on >= 0 || psp_on_me())
 		return;
 	ns_words.on = psp_keep("nativeskip") && !psp_keep("nativeskipoff");
+	ns_words.check = psp_keep("nativeskipcheck") != 0;
+	{
+		int k, keep = psp_keep_number("nativeskipkeep", 0);
+
+		for (k = 0; k < 256; k++)
+			ns_drop[k] = ns_kind[k] == NS_TRACK && !(ns_group_of[k] && (keep >> (ns_group_of[k] - 1)) & 1);
+		sceKernelDcacheWritebackRange(ns_drop, sizeof(ns_drop));
+		if (ns_words.on && keep)
+			platform_log("GE: nativeskip: command groups %d tracked but never left out (nativeskipkeep)", keep);
+	}
 	sceKernelDcacheWritebackRange(&ns_words, sizeof(ns_words));
 	if (ns_words.on)
 		platform_log("GE: nativeskip: model parts' state words that set what the GE already holds are left out");
@@ -403,6 +460,9 @@ void psp_native_report(void)
 		return;
 	/* the ME's figures as its last job left them (the main CPU drops its
 	copies of what the ME wrote after each job) */
+	if (ns_words.check > 0)
+		platform_log("nativeskipcheck: %u words left out that the census's reader agrees the GE holds, %u it doesn't (sent)",
+			ns_main.check_right, ns_main.check_wrong);
 	platform_log("nativeskip: since the start, main CPU: %u parts, %u state words sent, %u left out, %u read of others', %u forgets (%u past %d words); ME: %u parts, %u sent, %u left out, %u read, %u forgets (%u past %d)",
 		ns_main.parts, ns_main.sent, ns_main.dropped, ns_main.read, ns_main.forgets, ns_main.forgets_far, NS_SCAN_WORDS,
 		ns_me.parts, ns_me.sent, ns_me.dropped, ns_me.read, ns_me.forgets, ns_me.forgets_far, NS_SCAN_WORDS);

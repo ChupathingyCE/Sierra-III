@@ -3975,6 +3975,32 @@ static void sc_restart(void)
 	sc_pos = gu_list->current;
 }
 
+#ifdef PSP_DRAWNATIVE
+/* "nativeskipcheck" (psp_native.c): whether the GE holds value in cmd at
+end, by this census's reader (every word since the frame's start, calls and
+jumps followed). 1 held, 0 not, -1 unknown (the census off, or the ME's
+work, which it doesn't read). Reads ahead of the part's own count, so a
+check run's census counts are not the census's */
+int psp_ge_statecensus_holds(unsigned int cmd, unsigned int value, unsigned int *end)
+{
+	struct sc_scan scan = { 0, 0, 0, 0 };
+
+	if (!sc_wanted() || !sc_pos || PSP_ME_WORK())
+		return -1;
+	if (gu_list->start != sc_list)
+	{
+		sc_resyncs++;
+		sc_restart();
+		return -1;
+	}
+	if (end < sc_pos)
+		return -1;
+	sc_read(sc_pos, end, &scan);
+	sc_pos = end;
+	return sc_known[cmd & 0xFF] && sc_shadow[cmd & 0xFF] == value;
+}
+#endif
+
 static void sc_frame_begin(void)
 {
 	if (!sc_wanted())
