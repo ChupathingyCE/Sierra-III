@@ -2,7 +2,7 @@
 
 Read-only review for the session taking on the Media Engine as a second core (`handoff_2026-10-13b.md` §2.2). Sierra-III `w119` at **`baa632c`** ("ladderreport.py…; build_b119.md (draft)"), me-core-mapper at the pin **`727421b`**, ChupathingyCE pin **`b78e6cf`** against upstream head **`f8abf21`** (2026-10-13). No commits were made. Labels as in CLAUDE.md: [D] read in code, [U] inference, [M]/[E] measured.
 
-Companion docs: `projects/sierra/research/research_brief_for_master.md` (what the research changes), `projects/sierra/research/research_blocked_list_index.md` (everything else).
+Companion docs: `research/research_brief_for_master.md` (what the research changes), `research/research_blocked_list_index.md` (everything else).
 
 ## 0. Summary
 

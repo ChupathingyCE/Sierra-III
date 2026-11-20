@@ -2,7 +2,7 @@
 
 The current summary and ceilings are in `cpu_cost_map.md`; this page keeps the detail behind them.
 
-The PSP-1000 has 16 KB instruction and 16 KB data caches and no L2; about half of play's cycles wait on memory [M]. This page collects the cache work after `plan_memory_stalls.md`, `prefetch_map.md`, `order_file.md` and `projects/sierra/research/research_icache.md`. Labels: [M] measured on a PSP, [E] emulator or cache model, [D] read in code, [U] inference. **Status: the base measured (b30, c20, d20); loop phasing's first footprints in (c20, 30 s) and its score failed its check; `nodeprefetch` and `typehdr` scored in the model (exact both; `typehdr` gains a little, `nodeprefetch` loses) and A/B'd together on a PSP-3000 (no difference the PSP can see, as predicted; `nodeprefetch` off by default, `typehdr` stays on).**
+The PSP-1000 has 16 KB instruction and 16 KB data caches and no L2; about half of play's cycles wait on memory [M]. This page collects the cache work after `plan_memory_stalls.md`, `prefetch_map.md`, `order_file.md` and `research/research_icache.md`. Labels: [M] measured on a PSP, [E] emulator or cache model, [D] read in code, [U] inference. **Status: the base measured (b30, c20, d20); loop phasing's first footprints in (c20, 30 s) and its score failed its check; `nodeprefetch` and `typehdr` scored in the model (exact both; `typehdr` gains a little, `nodeprefetch` loses) and A/B'd together on a PSP-3000 (no difference the PSP can see, as predicted; `nodeprefetch` off by default, `typehdr` stays on).**
 
 ## Where it starts (b30's beach, the cache model, game time 90–170 s) [E]
 

@@ -231,7 +231,7 @@ Sources, all read only, no code taken: uofw (github.com/uofw/uofw 28306bb, GPL: 
 
 ### 6.4 The register snapshot by our own bench (18 runs on the PSP-1000; why it stopped)
 
-- **The bench:** `bench/halo_bench16_regsnap` on branch `projects/sierra/research/regsnap`.
+- **The bench:** `bench/halo_bench16_regsnap` on branch `research/regsnap`.
   - It reads, in kernel mode and read-only, 241 documented registers in 11 blocks: memory access, system control, clock ratios, profiler, DMACplus, DMAC0/1, DDR, GE, GE eDRAM and audio. The ME reads its own short list (the clock-ratio words, its view of system control, the AVC transfer words).
   - The states, in the second run's order: before the ME starts, the ME idle, the ME streaming eDRAM, the ME streaming main RAM, the GE texturing from main RAM, the system DMAC, DMACplus into the eDRAM (the ME idle), the converter's channel playing, all of them together, the ME idle again, and last the GE texturing from VRAM.
   - Blocks whose bus clock is off are skipped. The fuse ID (0xBC100090–98) is never read.
@@ -269,7 +269,7 @@ Sources, all read only, no code taken: uofw (github.com/uofw/uofw 28306bb, GPL: 
   - **The profiler (0xBC400000 = 1: on)** counts in 0x04–0x44 in every state. Its spread scales with each state's length (30–45 s traced against ~30 ms untraced), so this run gives it no rates.
   - **So for C4:** no documented register exposes a bus priority, and nothing configurable answers to load. Whether a static word is one (DDR 0x30's per-nibble 0x11110410 is the likeliest look) can't be told by reading. Finding out takes a write, which stays Sheepdog01's call, like `sceDdrWriteMaxAllocate` (§6.3).
 
-- **Runs 3–18: what the stops need** (Sierra-III `projects/sierra/research/regsnap` d1fe984b → ccc5d1ad, one PSP-1000 run each; the PSP on AC throughout, battery 99 %, 4218 mV, 20 °C in every supply line) [M unless marked]:
+- **Runs 3–18: what the stops need** (Sierra-III `research/regsnap` d1fe984b → ccc5d1ad, one PSP-1000 run each; the PSP on AC throughout, battery 99 %, 4218 mV, 20 °C in every supply line) [M unless marked]:
   - **Each stop was the PSP switching itself off** (Sheepdog01 saw runs 2–17; run 1, unseen, ended with no answer at wall + 4 min, which a shutdown would also give). Not a freeze and not a reboot: like B47.
 
     | Run | Bench | Where it stopped, or "clean" |
@@ -302,7 +302,7 @@ Sources, all read only, no code taken: uofw (github.com/uofw/uofw 28306bb, GPL: 
   - So the register reads were never the cause, and the ME was beside it, not in it. Every regsnap stop sat in a stretch of 5–40 µs seg-0 kcalls; the blocks the trails named (eDRAM, GE, system control) are where the next long call fell.
   - **mcidclan's `kcall()`** (me-core-mapper `kernel/main.c`) [D]: a plain export of a kernel module (attribute 0x1006). It invalidates the I-cache and calls `seg | f`. It touches neither k1 nor the stack; the firmware's syscall entry sets both, as for any syscall.
 - **For C4 the values above stand** (states 0–8 of run 2, read in kcalls the PSP survived). The stops were the bench's way of reading them, not the registers.
-- **The bench:** `ctlx` in Sierra-III `projects/sierra/research/regsnap` ccc5d1ad takes a plan of spin stretches as keep words (`x<µs>` with `k` the alias, `o` interrupts off, `d` a delay in place of the stick write, `m` the ME started), so a split needs no rebuild.
+- **The bench:** `ctlx` in Sierra-III `research/regsnap` ccc5d1ad takes a plan of spin stretches as keep words (`x<µs>` with `k` the alias, `o` interrupts off, `d` a delay in place of the stick write, `m` the ME started), so a split needs no rebuild.
 
 ### 6.5 Rules for our own code in kernel mode [M from §6.4's runs; E for call lengths read in code; U where marked]
 

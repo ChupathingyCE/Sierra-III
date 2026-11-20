@@ -20,7 +20,7 @@ Labels: [M] measured on the PSP (the PSP is named), [D] read in code or notes (t
 | DMACplus | 0xBC800000 | Main RAM and the ME's eDRAM, both ways. Also main RAM to main RAM, the LCD's scan-out and the colour-space converter | Three copy channels beside the display's | The main CPU, in kernel mode |
 | The system DMAC (two controllers) | 0xBC900000, 0xBCA00000 | Main RAM, VRAM and the peripherals' request lines | 8 each, 16 in all | The kernel's dmacman (`sceDmacMemcpy` for copies) |
 
-Sources [D]: the VME's DMAC is from mcidclan's psp-media-engine-cracking-the-unknown `0x440ff000.md` (f921778), psp-media-engine-reload (006ac29) and psp-media-engine-custom-core's `vme-lib.h`/`vme-lib.c` (0197c99). DMACplus is from his me-dmacplus-drawing-transfer `dmacplus.h` (ea4a894) and Sierra-III's DMACplus probe bench (`projects/sierra/research/dmaprobe`, `bench/halo_bench15`). The system DMAC is from uofw's `src/kd/dmacman/dmacman.c` (28306bb). psdevwiki wasn't reachable from here.
+Sources [D]: the VME's DMAC is from mcidclan's psp-media-engine-cracking-the-unknown `0x440ff000.md` (f921778), psp-media-engine-reload (006ac29) and psp-media-engine-custom-core's `vme-lib.h`/`vme-lib.c` (0197c99). DMACplus is from his me-dmacplus-drawing-transfer `dmacplus.h` (ea4a894) and Sierra-III's DMACplus probe bench (`research/dmaprobe`, `bench/halo_bench15`). The system DMAC is from uofw's `src/kd/dmacman/dmacman.c` (28306bb). psdevwiki wasn't reachable from here.
 
 ## 2. The VME's DMAC (0x440ff000)
 
