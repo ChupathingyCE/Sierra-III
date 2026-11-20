@@ -1,50 +1,46 @@
 # Sierra-III
 
-**warthog-psp**: ChupathingyCE's port of Halo: Combat Evolved to the PlayStation Portable, built for the original PSP-1000 (32 MB RAM, 333 MHz). It runs the community decompilation through ChupathingyCE, and its own spin is a ground-up rebuild of the engine's frame for a 333 MHz handheld. Bring your own game files: no game data is included.
+**warthog-psp: Halo: Combat Evolved on the PlayStation Portable, built for the original PSP-1000. You supply your own game copy.**
 
-*Sierra-III ("Sierra Three") is the port's name, kept when it joined ChupathingyCE (2026-11-19).*
+[The game (chupathingyce)](https://github.com/ChupathingyCE/chupathingyce) · [Shared builds (Sierra-III-Release)](https://github.com/Sheepdog-01/Sierra-III-Release)
 
-## Where it stands
+Sierra-III is the PSP's member of the `warthog` family: a console port of the same Halo: Combat Evolved decompilation the PC builds use, run through ChupathingyCE. Its own spin is the hardware: a 333 MHz MIPS handheld with 32 MB of RAM (24 MB for the game), a 16 KB cache, a graphics chip with no shaders and a second CPU, the Media Engine, that most games leave idle. So beyond the port, it's a ground-up rebuild of the engine's frame for that machine. *Sierra-III ("Sierra Three") is the port's name, kept when it joined ChupathingyCE on 2026-11-19.*
 
-The whole campaign loads and plays on a PSP-1000, all ten maps in one session. Build 158 is the newest tick (the release candidate), and new work lands in the tock builds after it. `docs/builds.md` lists them all.
+## Status
 
-The target is a steady 30 ticks a second at 30 fps everywhere in the campaign, and it isn't there yet. On full playthroughs at Legendary, the heaviest case measured (PSP-3000, November 2026), the slowest stretches run at 7-10 fps on *Assault on the Control Room* (b40), *Halo* (a30), *Two Betrayals* (c40) and *The Truth and Reconciliation* (a50), with the game below real time there (ticks of 35-45 ms against the 33 ms a tick needs). Lighter stretches run in the teens and twenties.
-
-The work under way is a ground-up rebuild: the frame budgeted from zero, with each subsystem rewritten as the port's own code (a "box") against data laid out for the PSP. `docs/redesign_plan.md` is the plan, and `docs/cpu_cost_map.md` says where the main CPU's time goes and how each cut is priced. The engine base is ChupathingyCE. Each build's notes are `docs/build_bNNN.md`, and what it did on the PSP `docs/hardware_bNNN.md`.
-
-## Reading the code
-
-- `psp_fixups.py` holds every change made to the engine, as anchored text replacements applied to a mirror of ChupathingyCE at build time. The engine checkout itself is never edited.
-- `psp/src/` is the port's own code: the PSP platform layer (the GE renderer, the Media Engine's jobs, memory, streaming, sound, input) and the rebuild's boxes (`box_*.c`, each with its design page `docs/box_<name>.md`).
-- `psp_build.py` builds it all; `CLAUDE.md` has the build switches.
-- `docs/README.md` is the index to every write-up. Comments in the code say why, not what; a change's history is in its commit message and its review page (`docs/review_*.md`).
-
-## How it's made
-
-Sierra-III is written with an AI model, Claude. Commits are authored by Sheepdog-01, as ChupathingyCE's contributor rules ask, but the code is Claude's, and the division of work is fixed:
-
-- **Sheepdog01 decides what to build** and in what order, and every change to how the game looks or plays is his call, made after seeing both sides.
-- **Claude writes the code**, and each change carries its evidence: why it's there, what it was measured against, and whether the figure came from the PSP, the emulator, the code or inference (`[M]`, `[E]`, `[D]`, `[U]` in the docs).
-- **Every build is tested on a real PSP-1000** by Sheepdog01 before the next one is made, and speed-ups that claim to leave the game unchanged are checked tick by tick against the game's state in an emulator first.
-- **Sheepdog01 reviews every build's changes** through a walk-through of what changed and why (`docs/review_bNNN.md`).
-
-The decompilation this port is built on, and ChupathingyCE, were also made with heavy use of AI tools; ChupathingyCE's README says how it uses them, and Sierra-III follows the same principle: a person decides, reviews, tests and answers for every change.
-
-## What's here
-
-| Path | What |
+| | |
 |---|---|
-| `psp/src/` | The PSP platform layer: the GE renderer, memory, streaming caches, sound (mixed on the Media Engine), input, the launch menu, the crash handler's game side |
-| `psp_fixups.py` | Every change made to the engine, applied to a mirror of it at build time |
-| `psp_build.py` | The build: mirror, fixups, compile, link, `EBOOT.PBP` |
-| `psp/crash`, `psp/profile` | Two helper PRX modules: the crash handler, the hardware-counter profiler |
-| `bake/` | `halo-psp-bake`: turns your own Xbox disc image into the PSP's maps |
-| `tools/` | Bake helpers, the emulator harness, log and profile readers |
-| `bench/` | The hardware micro-benchmarks behind `docs/psp_hardware_reference.md` |
-| `upstream/` | Our patches to the engine and to Invader (`UPSTREAM.md`) |
-| `docs/` | The design notes, build reports and hardware findings |
+| **Target** | PSP-1000 (also tested on the PSP-3000), custom firmware: built and tested on 6.61 with ARK-4 |
+| **Campaign** | All ten maps load and play, in one session |
+| **Speed** | Not at its goal yet. The goal is 30 fps averaged over each level's play, at 30 game ticks a second. The heaviest stretches (*Assault on the Control Room*, *Halo*, *Two Betrayals*, *The Truth and Reconciliation* at Legendary) still run around 7-10 fps, below real time; lighter stretches run in the teens and twenties |
+| **Online** | In development: a client-only build that joins PC games (below) |
+| **Builds** | Build 158 is the newest tick (the release candidate); new work lands in the tock builds after it. `docs/builds.md` lists them all |
 
-## Building
+The work under way is a ground-up rebuild: the frame budgeted from zero, with each subsystem rewritten as the port's own code (a "box") against data laid out for the PSP. `docs/redesign_plan.md` is the plan, and `docs/cpu_cost_map.md` says where the main CPU's time goes and how each cut is priced. Each build's notes are `docs/build_bNNN.md`, and what it did on the PSP `docs/hardware_bNNN.md`.
+
+## What you need
+
+- A PSP running custom firmware (6.61 with ARK-4 is what it's tested on), and a Memory Stick with room for the maps.
+- **Your own copy of Halo: Combat Evolved** for the original Xbox, as a disc image. No game files are included here, and none are linked to.
+- A computer (Windows, macOS or Linux) to bake your disc into the PSP's maps, with the bake bundle that comes with each shared build.
+
+## Install
+
+**`docs/play.md` is the player's guide**, step by step from a stock PSP and your own disc to a playable game, and what to send when it goes wrong. In short:
+
+1. Bake the maps: put your disc image and the build zip in the bake bundle's two folders and double-click `Bake Halo` (`Bake Halo.cmd`, `Bake Halo.command` or `bake-halo.sh`). `bake/README.md` has the details and the command line.
+2. Copy what it puts in `COPY-TO-MEMORY-STICK` to the root of the Memory Stick: the game (`PSP/GAME/halo/`: EBOOT.PBP, the two PRX modules, `LICENSE-mecore.md`) and the baked maps (`halo/`).
+3. Start **Halo** from the XMB.
+
+## Settings on the PSP
+
+Features are switched at launch by keep words: `ms0:/halo/keep.txt`, or the launch menu (hold **L** as the game starts). `docs/play.md` walks through the menu; `docs/optimization_ranking.md` (appendix B) lists the speed-related words. Halo's own control settings apply on top.
+
+## Multiplayer
+
+**Not in the first public release (b139).** The multiplayer build is in development: it joins Halo PC's public ChupathingyCE games over the internet from its ONLINE GAMES screen, on the thirteen multiplayer maps from the disc. For now it only joins: no hosting and no PSP-to-PSP play (`docs/mp_client_only.md`). When a release carries it, it has its own zip (`halo_psp_bNNNmp.zip`), installs to `PSP/GAME/halomp` beside the campaign build, reads the same baked maps, and keeps its settings in `ms0:/halomp`. `docs/multiplayer_setup.md` covers the Wi-Fi a PSP can join, ARK-4's WPA2 setting, and playing over your own PC's hotspot and dedicated server.
+
+## Building it yourself
 
 On Linux with the pspdev toolchain, Python 3, ninja, cmake and git:
 
@@ -52,27 +48,37 @@ On Linux with the pspdev toolchain, Python 3, ninja, cmake and git:
 PSPDEV=/opt/pspdev tools/build_release.sh <output folder>
 ```
 
-It fetches the engine and the Media Engine library at the commits `upstream/pins.env` pins (once, into a cache), builds the port and its two helper modules, and writes `halo_psp_<commit>.zip`. The same commit builds the same bytes on any machine, so the EBOOT's hash can be checked against the build's notes.
+The game isn't a submodule here: `upstream/pins.env` pins ChupathingyCE (and the Media Engine library, Invader and atracdenc) at exact commits, fetched once into a cache. The engine checkout is never edited: `psp_fixups.py` applies every change to a mirror of it at build time. The build writes `halo_psp_<commit>.zip`, and the same commit builds the same bytes on any machine, so an EBOOT's hash can be checked against its build notes. **`docs/toolchain.md`** is the whole setup from a clean machine; **`docs/testing_pipeline.md`** says how the project tests.
 
-**`docs/toolchain.md`** is the whole setup from a clean machine: the packages, the toolchain, the build, baking maps from your own disc, installing, and the emulator. **`docs/testing_pipeline.md`** describes how the project tests.
+## Reading the code
 
-## Maps
+| Path | What |
+|---|---|
+| `psp/src/` | The port's own code: the PSP platform layer (the GE renderer, the Media Engine's jobs, memory, streaming, sound, input, the launch menu) and the rebuild's boxes (`box_*.c`, each with its design page `docs/box_<name>.md`) |
+| `psp_fixups.py` | Every change made to the engine, as anchored text replacements applied to the mirror |
+| `psp_build.py` | The build: mirror, fixups, compile, link, `EBOOT.PBP`; `CLAUDE.md` lists its switches |
+| `psp/crash`, `psp/profile` | Two helper PRX modules: the crash handler, the hardware-counter profiler |
+| `bake/` | `halo-psp-bake`: turns your own disc image into the PSP's maps |
+| `tools/`, `bench/` | Bake helpers, the emulator harness, log readers; the hardware micro-benchmarks behind `docs/psp_hardware_reference.md` |
+| `upstream/` | Our patches to the engine and to Invader (`UPSTREAM.md`) |
+| `docs/` | Design notes, build reports and hardware findings; `docs/README.md` is the index |
 
-The port reads maps baked for the PSP: the map itself, plus its texture, geometry and stencil packs. Make them from your own disc image with the bake bundle for your system (Windows, macOS or Linux), which comes with each release: put the disc image and the build zip in the bundle's two folders, double-click `Bake Halo` (`Bake Halo.cmd`, `Bake Halo.command` or `bake-halo.sh`), and copy what it puts in `COPY-TO-MEMORY-STICK` (the game, with its menu sound, and the maps) to the root of the Memory Stick. `bake/README.md` has the details and the command line; `bake/make_bundle.sh <out>` builds a bundle from source.
+Comments in the code say why, not what; a change's history is in its commit message and its review page (`docs/review_*.md`).
 
-## Installing
+## How it's made
 
-**`docs/play.md` is the player's guide**, step by step from a stock PSP and your own Xbox disc to a playable game: custom firmware, imaging the disc, the bake, the stick, the first launch, and what to send when it goes wrong. In short: unzip the build zip at the Memory Stick's root: `PSP/GAME/halo/` (EBOOT.PBP, the two PRX modules, `LICENSE-mecore.md`), and `halo/presets.txt` (the launch menu's test presets) when the build has one. Put the baked `halo/` folder at the stick's root. It needs custom firmware (built and tested on 6.61 with ARK-4).
+Sierra-III is written with an AI model, Claude. Commits are authored by Sheepdog-01, as ChupathingyCE's contributor rules ask, but the code is Claude's, and the division of work is fixed:
 
-## Multiplayer
+- **Sheepdog01 decides what to build** and in what order, and every change to how the game looks or plays is his call, made after seeing both sides.
+- **Claude writes the code**, and each change carries its evidence: why it's there, what it was measured against, and whether the figure came from the PSP, the emulator, the code or inference (`[M]`, `[E]`, `[D]`, `[U]` in the docs).
+- **Every build is tested on a real PSP** before the next one is made, and speed-ups that claim to leave the game unchanged are checked against the game's state in an emulator first.
+- **Sheepdog01 reviews every build's changes** through a walk-through of what changed and why (`docs/review_bNNN.md`).
 
-**Multiplayer isn't part of the first public release (b139).** The multiplayer build is in development: it joins Halo PC's public ChupathingyCE games over the internet, from its ONLINE GAMES screen, on the thirteen multiplayer maps from the disc. When a release carries it, it has its own zip (`halo_psp_bNNNmp.zip`): it installs to `PSP/GAME/halomp` beside the campaign build, reads the same baked maps, and keeps its settings in `ms0:/halomp`. It is built from `main` with `PSP_MULTIPLAYER=1`. For now it only joins: no hosting, no PSP-to-PSP play (`docs/mp_client_only.md`).
-
-`docs/multiplayer_setup.md` walks through it: the Wi-Fi a PSP can join, ARK-4's WPA2 setting, the online list, what to do when it goes wrong, and playing over your own PC's hotspot and dedicated server.
+The decompilation this port is built on, and ChupathingyCE, were also made with heavy use of AI tools; ChupathingyCE's README says how it uses them, and Sierra-III follows the same principle: a person decides, reviews, tests and answers for every change.
 
 ## History
 
-The project began on 2026-10-09 in a repository of its own, with the history before then rebuilt from the source snapshots kept for each build (builds 87 to 110; builds 1 to 86 survive only as binaries). It moved into ChupathingyCE on 2026-11-19 with its history carried over and cleaned of private details, so the commits here have new hashes. Build records and zips are kept privately by the project; a build gets a Release here only when it's shared.
+The project began on 2026-10-09 in a repository of its own, with the history before then rebuilt from the source snapshots kept for each build (builds 87 to 110; builds 1 to 86 survive only as binaries). It moved into ChupathingyCE on 2026-11-19 with its history carried over and cleaned of private details, so the commits here have new hashes. Build records and zips are kept privately by the project; a build gets a Release only when it's shared.
 
 ## Credits
 
@@ -102,3 +108,11 @@ Each borrowed change also names its source in its commit message and its build's
 The engine and the tools this builds on carry their own licences (`UPSTREAM.md`).
 
 Sierra-III was created under Microsoft's "[Game Content Usage Rules](https://www.xbox.com/en-US/developers/rules)" using assets from Halo: Combat Evolved, and it is not endorsed by or affiliated with Microsoft. The only such assets in this repository are the campaign's XMB wallpaper (`psp/xmb/campaign/PIC1.PNG`), made from stills of our own gameplay footage. Halo: Combat Evolved © Microsoft Corporation.
+
+## Links
+
+- The game: [ChupathingyCE/chupathingyce](https://github.com/ChupathingyCE/chupathingyce)
+- Shared builds and issues: [Sheepdog-01/Sierra-III-Release](https://github.com/Sheepdog-01/Sierra-III-Release)
+- The other ports: [warthog-xbox](https://github.com/ChupathingyCE/warthog-xbox), [warthog-360](https://github.com/ChupathingyCE/warthog-360), [warthog-wiiu](https://github.com/ChupathingyCE/warthog-wiiu), [warthog-ps3](https://github.com/ChupathingyCE/warthog-ps3), [warthog-switch](https://github.com/ChupathingyCE/warthog-switch), [warthog-UWP](https://github.com/ChupathingyCE/warthog-UWP); [halo-ce-vita](https://github.com/ChupathingyCE/halo-ce-vita) on the PS Vita
+
+Sierra-III is a fan project. It is not endorsed by or affiliated with Microsoft, Bungie or Sony. Halo is a trademark of Microsoft Corporation; PlayStation and PSP are trademarks of Sony Interactive Entertainment.
