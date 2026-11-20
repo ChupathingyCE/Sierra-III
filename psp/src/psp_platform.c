@@ -2508,10 +2508,13 @@ static int array_full_count = 0;
 /* arrays the original game overflows at its own sizes, where a refusal is
 the Xbox's behaviour and no shortfall of the port's: c40's opening fills
 both (the lab's b92peak1 44003757337, PSP_POOLS_XBOX=1, legendary and
-normal; B92) */
+normal; B92). b30's late game fills the widgets (B93) and d20's Flood creep
+the effects (B100), both at the Xbox's own sizes */
 static const struct { const char *name; long xbox; } array_xbox_full[] = {
 	{ "contrail point", 1024 },
 	{ "weather particles", 512 },
+	{ "widget", 64 },
+	{ "effect", 256 },
 };
 static long array_full_last_time = -1;
 int psp_array_full_stop = 0;   /* the tick ends the run (exit_game) */
