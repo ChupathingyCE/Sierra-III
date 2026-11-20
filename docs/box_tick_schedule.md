@@ -4,7 +4,7 @@ The lab's `research/opportunities/REBUILD.md` is the spine (its row "Tick schedu
 
 Labels: [M] PSP, [E] emulator, [D] code or the link, [U] inference.
 
-**State (2026-11-19):** slice 1 designed and built (Sierra-III `builder/ticksched`, keep word `ticksched`, off by default); emulator proof passed (§10); its whole-frame PSP pair in the lab's Ready (`ticksched-held`).
+**State (2026-11-20):** slice 2's step 1 built behind `ticksched2` (off), its emulator proof passed and its PSP pair asked (§11, "Slice 2, step 1: built"). **(2026-11-19):** slice 1 designed and built (Sierra-III `builder/ticksched`, keep word `ticksched`, off by default); emulator proof passed (§10); its whole-frame PSP pair in the lab's Ready (`ticksched-held`).
 
 ## 1. Why this slice, measured
 
@@ -184,3 +184,20 @@ One recon run, held b30_leg2 to 130 s with `sweepme`, 2,109 AI jobs on the ME:
 - **Ring jobs wait 3.24 ms on average while the AI job holds the ME** (longest 17.9 ms, a floor). 2,176 were pushed in that time and 2,859 run inside it.
 
 **What it decides [U on M]:** slice 2 needs no new look sites. Step 1 alone, the replay's pick-up timed from the last pick-up rather than the last yield between actors (500 µs slice, urgent at once, batches first), would serve a waiting job within ~0.5 ms of its first look, against 3.24 ms now. The long stretches outside a step (the 10.1 ms one included) are the only place a site might still pay. They're too few to build for before step 1 is priced.
+
+### Slice 2, step 1: built (2026-11-20, the builder's agent; the lead 12:1x: step 1 only, no new look sites)
+
+Sierra-III `builder/ticksched2-step1` b480d399 (on master/tock162 cd1c036b). Keep word **`ticksched2`**, off by default, off word `ticksched2off`; set only with `ticksched`'s feature bit, so `tickschedoff` turns both off. No build switch.
+
+**What changed [D, psp_me.c]:**
+- **Every look inside an actor serves the ring on slice 1's policy** (`ai_ring_look`, out of line, called from `psp_me_yield_inner` when the look wants the ring): when jobs wait, it picks them up once the tick slice (`tickschedusN`, 500 µs) has passed **since the last pick-up**, or at once when the main CPU waits on a ring job (`RING_URGENT`); otherwise it leaves them (held). A pick-up makes the waiting batches' records first (`ring_batch_first`), then drains the ring in order. The drain stops at the collection's word, as it does today, and so does the batch-first pass now (it takes the stop word; the replay passes none, so slice 1 is unchanged).
+- **The last pick-up** (`ai_pick_mark`) moves at a look's pick-up and at a yield between actors whose drain ran ring jobs (a whole-ring drain is a pick-up). A yield between actors that found the ring empty no longer restarts the ring's clock; it still restarts the 1 ms gap, which now gates only audio's inner look (unchanged) and, with `ticksched2` off, the old ring drain (unchanged).
+- **The stack:** the batch-first pass needs `RING_JOB_STACK_BYTES` + 4 KB of frames above the guard (`AI_BATCH_STACK_ROOM`, 8 KB); the drain still needs `INNER_STACK_ROOM` (40 KB). With room for the batches but not the drain, the batches are made and the rest of the ring is left for the next look (counted).
+- **No look once the late word or the abort is up:** the caller (`psp_aime_ring_yield`) tests both before it calls, unchanged.
+- **Counts** (ME-written, a 64-byte line of their own, read uncached in `psp_me_report`): `ME: the AI job's ring looks (ticksched2)` each window: looks, looks that saw jobs waiting, held to the slice, pick-ups (the µs they served, how many early for a waiting main CPU), ring jobs run, batch jobs made first, pick-ups with room for the batches only, looks with no room.
+- **The look's cost:** at each of the ~156 looks a job [M, step 0], one cached read of the ring's state and one uncached read of `RING_PUSHED` (the clock and the urgent word only when jobs wait). The old path read the clock only.
+- **The ME's copy:** none of these functions is in rbtsw's list; `ai_ring_look` is `noinline` so that LTO can't copy it into the think's copied functions through `psp_me_yield_inner`.
+
+**Emulator proof [E]** (2026-11-20; the lab's sierra-batch ticksched2ida 44790267996 and ticksched2idb 44790300441, build b480d399 on the tock's recipe with `PSP_MEXEC=rbtsw`; findings `ticksched2_identity`): play and both seeds identical with `ticksched2` off against on, 600 of 600 ticks each, on b30_leg2, c20_leg2 and d20_play1, seeds 1 and 2 (6 pairs); `sweepmecheck ticksched2` on b30 identical to off, 3,615 answers, **0 differ**; **strict 0** on all 13 runs, no crash. The ME's copy is 260,984 of its 262,144 bytes: rbtsw still fits, with ~1.1 KB to spare. As §9 says, the ME's side of the looks doesn't run in the emulator, so this proves the build and that nothing on the main CPU moved; the ME's path is the PSP pair's to prove (its runs read the new line and `ME: ring`).
+
+**The PSP pair:** the lab's `projects/sierra/coord/handoff/ticksched2_2026-11-20.md` has the ask (held b30_leg2 to 130 s and a30_leg1 to 460 s, `ticksched | ticksched ticksched2`, repeat 2).
