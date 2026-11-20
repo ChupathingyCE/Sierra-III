@@ -81,6 +81,8 @@ sceGuEnable
 +psp_native_part
 +psp_native_forget
 +psp_native_call_bones
+# (nativeskipcheck's question to the census's reader: main CPU only, and recon only)
+-psp_ge_statecensus_holds
 sceGumMatrixMode
 sceGumUpdateMatrix
 psp_ge_decal
