@@ -197,6 +197,14 @@ batch's (~13 KB with the ring's) don't fit the 16 KB I-cache together, so
 each job taken between two records cost both a refill (c20: the replay
 +0.3-0.4 ms a job beyond the batches' own time, sweepme_claims_c20_replay) */
 #define ME_FEATURE_TICKSCHED 65536u
+/* "ticksched2" (slice 2, step 1; docs/box_tick_schedule.md section 11): the
+AI job's looks inside an actor take the replay's pick-up (a slice since the
+last pick-up, at once for a waiting main CPU, the waiting batches first)
+instead of serving the ring only past a 1 ms gap that every yield between
+actors resets: on the PSP 98.3% of those looks fell under the gap and ring
+jobs waited 3.24 ms on average while the AI job held the ME
+(aimelook_census_b30). Set only with ME_FEATURE_TICKSCHED */
+#define ME_FEATURE_TICKSCHED2 131072u
 
 #if PSP_MEXEC
 /* The copy's table: tools/mexec.py writes it into the linked program
@@ -1104,17 +1112,25 @@ static PSP_AIME_ME_SIDE unsigned int nested_features = 0;
 /* the ME's clock at the AI job's last yield, between actors or inside one
 (psp_me_yield_inner) */
 static PSP_AIME_ME_SIDE unsigned int inner_mark = 0;
+/* "ticksched2": the ME's clock at the AI job's last pick-up, at a look
+inside an actor or at a yield between actors that ran ring jobs (a drain
+of the whole ring is a pick-up too), so the slice is timed from the last
+time the ring was served, not from the last actor's end */
+static PSP_AIME_ME_SIDE unsigned int ai_pick_mark = 0;
 
 void psp_me_yield_slots(void)
 {
 	volatile struct me_slot *slot;
-	unsigned int request;
+	unsigned int request, popped;
 	int aime_now;
 
 	if (!psp_on_me())
 		return;
 	inner_mark = me_cycles();
+	popped = ME_PRIVATE->ring_popped;
 	psp_me_yield();
+	if ((CONTROL->features & ME_FEATURE_TICKSCHED2) && ME_PRIVATE->ring_popped != popped)
+		ai_pick_mark = me_cycles();
 	aime_now = psp_aime_job_now[0];
 	psp_aime_job_now[0] = 0;
 	slot = SLOT(ME_SLOT_RENDER);
@@ -1685,6 +1701,8 @@ static void tick_slice_set(volatile struct me_control *control)
 	if (control->features & ME_FEATURE_TICKSCHED)
 		platform_log("ME: ticksched: the replay serves the ring at pick-up points %d us apart%s, waiting batches first",
 			us, records > 0 ? " (or a record cap)" : "");
+	if (control->features & ME_FEATURE_TICKSCHED2)
+		platform_log("ME: ticksched2: the AI job's looks inside an actor serve the ring at the same pick-up (%d us since the last, at once for a waiting main CPU, batches first)", us);
 }
 
 /* the replay's looks, counted on the ME (lines of their own, written only
@@ -1710,11 +1728,13 @@ static PSP_AIME_ME_SIDE unsigned int tick_pick_mark = 0, tick_records_since = 0;
 the ring's order, by the job's own code; the job, when the drain reaches it,
 finds them made and passes them (batch_job). Only claims' batches: under the
 one limit word a record isn't marked made on its own */
-static void ring_batch_first(unsigned int popped, unsigned int pushed)
+static void ring_batch_first(unsigned int popped, unsigned int pushed, volatile const unsigned int *stop,
+	unsigned int *made_first)
 {
 	volatile struct me_private *p = ME_PRIVATE;
 
-	for (; popped != pushed; popped++)
+	/* inside the AI job, as the drain: no batch begun once its word is up */
+	for (; popped != pushed && !(stop && *stop); popped++)
 	{
 		struct me_ring_request *request = &ring_requests[popped & RING_MASK];
 		unsigned int args[ME_RING_ARGS], results[ME_RING_RESULTS], k;
@@ -1736,7 +1756,7 @@ static void ring_batch_first(unsigned int popped, unsigned int pushed)
 		p->in_ring = 0;
 		if (*sentinel != RING_SENTINEL)
 			tick_first_stack_broken = 1;
-		tick_look.batch_first++;
+		(*made_first)++;
 	}
 }
 
@@ -1780,7 +1800,7 @@ void psp_me_replay_look(void)
 	{
 		unsigned int popped = p->ring_popped, last_look = p->ring_last_look, drain_began = me_cycles();
 
-		ring_batch_first(popped, pushed);
+		ring_batch_first(popped, pushed, NULL, &tick_look.batch_first);
 		p->ring_popped = me_ring_drain(popped, &last_look, NULL);
 		p->ring_last_look = last_look;
 		tick_look.ring_jobs += p->ring_popped - popped;
@@ -2965,7 +2985,9 @@ int psp_me_start(void)
 		(psp_keep("menestrender") ? ME_FEATURE_NEST_RENDER : 0u) |
 		(psp_keep("aimevisleft") ? ME_FEATURE_AIME_VIS_LEFT : 0u) |
 		(psp_keep("aimeaudiolook") ? ME_FEATURE_AUDIO_LOOK : 0u) | (me_mexec_wanted() ? ME_FEATURE_MEXEC : 0u) |
-		(psp_keep("ticksched") && ring_on ? ME_FEATURE_TICKSCHED : 0u);
+		(psp_keep("ticksched") && ring_on ? ME_FEATURE_TICKSCHED : 0u) |
+		(psp_keep("ticksched") && ring_on && psp_keep("ticksched2") && !psp_keep("ticksched2off") ?
+			ME_FEATURE_TICKSCHED2 : 0u);
 	tick_slice_set(control);
 	wake_features = control->features | (psp_keep("mewakeprobe") ? ME_FEATURE_WAKE_PROBE : 0u);
 	wake_early = psp_keep("mewake") && !psp_keep("mewakeoff") && psp_keep("mewakeearly");
@@ -3562,51 +3584,140 @@ static void psp_me_inner_reset(void)
 	memset(inner_seen, 0, sizeof(inner_seen));
 }
 
-void psp_me_yield_inner(int ring)
-{
-	volatile struct me_private *p;
-	unsigned int now, sp, popped, last_look;
-	int aime_now;
+/* "ticksched2": the room a pick-up inside an actor needs above the guard
+for the waiting batches alone: a batch job's allowance and the frames that
+call it (this look, ring_batch_first's copies of the args). The whole drain
+still wants INNER_STACK_ROOM (a rays or points job's allowance) */
+#define AI_BATCH_STACK_ROOM (RING_JOB_STACK_BYTES + 4 * 1024)
 
-	if (!psp_on_me())
+/* the AI job's ring looks under ticksched2, counted on the ME (a line of
+their own, read uncached in psp_me_report) */
+struct ai_look_stats
+{
+	unsigned int served_cycles; /* inside the pick-ups: the batches and the drain */
+	unsigned int looks;         /* the looks (calls with the ring wanted) */
+	unsigned int waiting;       /* looks that found ring jobs waiting */
+	unsigned int held;          /* of those, left to the slice */
+	unsigned int pickups;       /* looks that served the ring */
+	unsigned int ring_jobs;     /* ring jobs the drains ran */
+	unsigned int urgent;        /* pick-ups made early for a waiting main CPU */
+	unsigned int batch_first;   /* batch jobs whose records a pick-up made first */
+	unsigned int batch_only;    /* pick-ups with room for the batches, not the drain */
+	unsigned int low;           /* looks due with no room even for a batch */
+	unsigned int pad[6];
+} __attribute__((aligned(64)));
+static struct ai_look_stats ai_look PSP_AIME_ME_SIDE = { 0 };
+
+/* a look inside an actor (psp_me_yield_inner, the caller tested the word):
+the ring served as the replay's pick-up serves it (psp_me_replay_look):
+when the slice has passed since the last pick-up, or at once when the main
+CPU waits on a ring job; the waiting batches' records first, then the drain
+in order, which stops at the collection's word. Out of line: the think's
+code in MEXEC's copy reaches it by a call, not a copy of it */
+static __attribute__((noinline)) void ai_ring_look(void)
+{
+	volatile struct me_private *p = ME_PRIVATE;
+	volatile const unsigned int *stop;
+	unsigned int began, pushed, popped, last_look, sp, slice, since;
+	int urgent, aime_now;
+
+	ai_look.looks++;
+	if (!p->ring_ready || p->in_ring)
 		return;
-	now = me_cycles();
-	if (now - inner_mark < INNER_GAP_CYCLES)
+	pushed = RING_PUSHED;
+	if (pushed == p->ring_popped)
 		return;
-	inner_mark = now;
+	ai_look.waiting++;
+	began = me_cycles();
+	slice = CONTROL->tick_slice_cycles & 0x00FFFFFFu;
+	since = began - ai_pick_mark;
+	urgent = RING_URGENT != 0;
+	if (!urgent && since < slice)
+	{
+		ai_look.held++;
+		return;
+	}
 	__asm__ __volatile__("move %0, $sp" : "=r"(sp));
-	if (!aime_guard || sp < (unsigned int)aime_guard + ME_EDRAM_AIME_GUARD_BYTES + INNER_STACK_ROOM)
+	if (!aime_guard || sp < (unsigned int)aime_guard + ME_EDRAM_AIME_GUARD_BYTES + AI_BATCH_STACK_ROOM)
 	{
-		INNER_STATS->low++;
+		ai_look.low++;
 		return;
 	}
-	p = ME_PRIVATE;
-	INNER_STATS->yields++;
-	/* the caller tested the word: it isn't up */
-	if ((CONTROL->features & ME_FEATURE_AUDIO_LOOK) && me_audio_due(now))
-	{
-		/* the census times it as the yield's audio, as between actors */
-		aime_now = psp_aime_job_now[0];
-		psp_aime_job_now[0] = 0;
-		if (aime_now)
-			psp_aime_step(7);
-		INNER_STATS->audio += me_audio_now();
-		psp_aime_job_now[0] = aime_now;
-	}
-	if (!ring || !p->ring_ready || p->in_ring || RING_PUSHED == p->ring_popped)
-		return;
-	/* as psp_me_yield's drain: the jobs run here aren't the AI job, and
-	the drain stops at the collection's word */
+	ai_look.urgent += urgent && since < slice ? 1u : 0u;
+	/* as psp_me_yield's drain: the jobs run here aren't the AI job */
 	aime_now = psp_aime_job_now[0];
 	psp_aime_job_now[0] = 0;
 	if (aime_now)
 		psp_aime_step(7);
+	stop = &SLOT(ME_SLOT_AI)->args[ME_JOB_ARGS - 1];
 	popped = p->ring_popped;
-	last_look = p->ring_last_look;
-	p->ring_popped = me_ring_drain(popped, &last_look, &SLOT(ME_SLOT_AI)->args[ME_JOB_ARGS - 1]);
-	p->ring_last_look = last_look;
-	INNER_STATS->ring_jobs += p->ring_popped - popped;
+	ring_batch_first(popped, pushed, stop, &ai_look.batch_first);
+	if (sp >= (unsigned int)aime_guard + ME_EDRAM_AIME_GUARD_BYTES + INNER_STACK_ROOM)
+	{
+		last_look = p->ring_last_look;
+		p->ring_popped = me_ring_drain(popped, &last_look, stop);
+		p->ring_last_look = last_look;
+		ai_look.ring_jobs += p->ring_popped - popped;
+	}
+	else
+		ai_look.batch_only++;
 	psp_aime_job_now[0] = aime_now;
+	ai_look.pickups++;
+	ai_pick_mark = me_cycles();
+	ai_look.served_cycles += ai_pick_mark - began;
+}
+
+void psp_me_yield_inner(int ring)
+{
+	volatile struct me_private *p;
+	unsigned int now, sp, popped, last_look;
+	int aime_now, sched2;
+
+	if (!psp_on_me())
+		return;
+	now = me_cycles();
+	sched2 = ring && (CONTROL->features & ME_FEATURE_TICKSCHED2);
+	if (now - inner_mark >= INNER_GAP_CYCLES)
+	{
+		inner_mark = now;
+		__asm__ __volatile__("move %0, $sp" : "=r"(sp));
+		if (!aime_guard || sp < (unsigned int)aime_guard + ME_EDRAM_AIME_GUARD_BYTES + INNER_STACK_ROOM)
+			INNER_STATS->low++;
+		else
+		{
+			p = ME_PRIVATE;
+			INNER_STATS->yields++;
+			/* the caller tested the word: it isn't up */
+			if ((CONTROL->features & ME_FEATURE_AUDIO_LOOK) && me_audio_due(now))
+			{
+				/* the census times it as the yield's audio, as between actors */
+				aime_now = psp_aime_job_now[0];
+				psp_aime_job_now[0] = 0;
+				if (aime_now)
+					psp_aime_step(7);
+				INNER_STATS->audio += me_audio_now();
+				psp_aime_job_now[0] = aime_now;
+			}
+			/* ticksched2 serves the ring below, at every look */
+			if (!sched2 && ring && p->ring_ready && !p->in_ring && RING_PUSHED != p->ring_popped)
+			{
+				/* as psp_me_yield's drain: the jobs run here aren't the AI
+				job, and the drain stops at the collection's word */
+				aime_now = psp_aime_job_now[0];
+				psp_aime_job_now[0] = 0;
+				if (aime_now)
+					psp_aime_step(7);
+				popped = p->ring_popped;
+				last_look = p->ring_last_look;
+				p->ring_popped = me_ring_drain(popped, &last_look, &SLOT(ME_SLOT_AI)->args[ME_JOB_ARGS - 1]);
+				p->ring_last_look = last_look;
+				INNER_STATS->ring_jobs += p->ring_popped - popped;
+				psp_aime_job_now[0] = aime_now;
+			}
+		}
+	}
+	if (sched2)
+		ai_ring_look();
 }
 
 /* "lightringlook" (B50): the render job serves the ring between records,
@@ -5739,6 +5850,38 @@ void psp_me_report(void)
 			(unsigned long)((float)(job_cycles > d.served_cycles ? job_cycles - d.served_cycles : 0) / rate / (float)jobs),
 			(unsigned long)((float)d.served_cycles / rate / (float)jobs), d.looks, d.pickups, d.ring_jobs, d.held, d.urgent,
 			d.batch_first, (CONTROL->features & ME_FEATURE_TICKSCHED) ? " (ticksched)" : "");
+	}
+	/* the AI job's pick-ups inside its actors (ticksched2) */
+	if (me_state == 1 && (CONTROL->features & ME_FEATURE_TICKSCHED2) && me_cycles_per_us > 0.0f)
+	{
+		static struct ai_look_stats seen;
+		volatile struct ai_look_stats *t = UNCACHED(&ai_look);
+		struct ai_look_stats d;
+
+		d.served_cycles = t->served_cycles - seen.served_cycles;
+		d.looks = t->looks - seen.looks;
+		d.waiting = t->waiting - seen.waiting;
+		d.held = t->held - seen.held;
+		d.pickups = t->pickups - seen.pickups;
+		d.ring_jobs = t->ring_jobs - seen.ring_jobs;
+		d.urgent = t->urgent - seen.urgent;
+		d.batch_first = t->batch_first - seen.batch_first;
+		d.batch_only = t->batch_only - seen.batch_only;
+		d.low = t->low - seen.low;
+		seen.served_cycles += d.served_cycles;
+		seen.looks += d.looks;
+		seen.waiting += d.waiting;
+		seen.held += d.held;
+		seen.pickups += d.pickups;
+		seen.ring_jobs += d.ring_jobs;
+		seen.urgent += d.urgent;
+		seen.batch_first += d.batch_first;
+		seen.batch_only += d.batch_only;
+		seen.low += d.low;
+		platform_log("ME: the AI job's ring looks (ticksched2): %lu AI jobs; %u looks, %u saw jobs waiting, %u held to the slice, %u pick-ups (%lu us served, %u early for a wait) running %u ring jobs, %u batch jobs made first, %u with room for the batches only, %u without room",
+			(unsigned long)stats[ME_SLOT_AI].jobs, d.looks, d.waiting, d.held, d.pickups,
+			(unsigned long)((float)d.served_cycles / me_cycles_per_us), d.urgent, d.ring_jobs, d.batch_first,
+			d.batch_only, d.low);
 	}
 	busy_percent_last = window ? (float)(100.0 * (double)busy_us_all / (double)window) : 0.0f;
 	if (me_halting && length < (int)sizeof(line) - 160)
