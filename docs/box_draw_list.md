@@ -616,6 +616,8 @@ The distinction the box needs is whether a GE block can be kept and replayed whi
 
 **Both CPUs:** with `gemeon` (a default) the ME replays the parts through the same pspgu code. Each CPU has its own shadow, the ME's on `PSP_AIME_ME_SIDE` lines (only the ME writes them, as statememo's `lit_me`), chosen by `PSP_ME_WORK()`; the keep word is read once on the main CPU at the frame's first window and only read after. On the ME it's integer loads, compares and stores: no VFPU, no system call, no clock. The shadow is 1.3 KB a CPU (a value and a generation byte for each command; a forget is a counter bump).
 
+**The ME's code copy:** a PSP_DRAWNATIVE build uses MEXEC list `rbtswn` (`psp/layout/mexec_rbtswn.txt`): `rbtsw` with the wrappers and the shadow's functions taken by reach beside pspgu's setters (the ME calls a wrapper before every setter whether `nativeskip` is on or off, so both sides of an A/B run them from eDRAM), less rbt's six coldest think functions. With `rbtsw` the slice's build came to 263,112 bytes, over the copy's 256 KB room (the lab's sierra-batch 44749370278). So a PSP_DRAWNATIVE build's ME placement differs a little from the tock's: its A/B is on vs off inside it, not against the tock.
+
 **Its report:** `nativeskip: since the start, ...` every 300 frames: parts, state words sent and left out, words of others' read, and forgets, for each CPU.
 
 **Proof:** (results below as they come in, with run ids)
