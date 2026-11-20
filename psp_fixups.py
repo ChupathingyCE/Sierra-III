@@ -54948,9 +54948,9 @@ FIXES_CAPTURE_SWEEP["source/physics/collision_models.c#capture"] = [
 # all the bipeds instead of each biped's whole update evicting the last. A cache-model
 # shape for counting each pass's lines and misses against §4's ceilings: the bipeds
 # run after the other objects and their unit part before their own pre-steps, so play
-# may part from the unstaged build. Keep word bipedstage turns it on; a default build
-# leaves it out
-BIPEDSTAGE = os.environ.get("PSP_BIPEDSTAGE", "") == "1"
+# may part from the unstaged build. Keep word bipedstage turns it on (on by default,
+# bipedstageoff); the campaign build has it by default (PSP_BIPEDSTAGE=0 leaves it out)
+BIPEDSTAGE = os.environ.get("PSP_BIPEDSTAGE", "0" if os.environ.get("PSP_MULTIPLAYER", "") == "1" else "1") == "1"  # on in the campaign build, as psp_build.py sets it
 FIXES_BIPEDSTAGE = {
 "source/objects/objects.c#linkcensus": [
 ("""void object_reconnect_to_map(
@@ -56487,7 +56487,7 @@ void psp_wsold_visit(long object_index, struct object_datum const *object)
 # main CPU runs the next intents; the gather takes the record's answer in
 # place of its own level walk and makes the objects' half as before. Keep
 # word sweepme; sweepmecheck compares every answer with the engine's own.
-SWEEPME = os.environ.get("PSP_SWEEPME", "") == "1"
+SWEEPME = os.environ.get("PSP_SWEEPME", "0" if os.environ.get("PSP_MULTIPLAYER", "") == "1" else "1") == "1"  # on in the campaign build, as psp_build.py sets it
 FIXES_SWEEPME = {
 "source/objects/objects.c#sweepme": [
 ("""int psp_bipedstage2_gather_exact(long biped_index); /* collisions.c (FIXES_BIPEDSTAGE) bipedstage3 */

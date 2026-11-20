@@ -1238,7 +1238,16 @@ static const struct
 	sorted index read-only (psp_geo.c, geoindexme): both exact; b30 on the
 	PSP-3000, beach frame -1.0% and flight drawing -0.8% (mememo), flight
 	drawing -1.3% (geoindexme) (sierra-hw 41272758085) */
-	{ "mememo", "mememooff" }, { "geoindexme", "geoindexmeoff" }, { "notimers", "timerson" }, /* the AI thinks on the ME during the record, a few ms early in game time, which no player can feel (FIXES_AIME*; b30 frame -3 to -10% on the PSP) */ { "aime", "aimeoff" }, /* an attached light's relink skipped when its sphere and start cluster are unchanged: play and seeds identical, pictures within the run-to-run spread (FIXES_LSAME; the lab's lsame3-5); b30 beach frame -2.2% on the PSP-1000 */ { "lsame", "lsameoff" }, { "aime1b", "aimeoff" }, { "aime2a", "aimeoff" }, PSP_RELEASE_DEFAULTS
+	{ "mememo", "mememooff" }, { "geoindexme", "geoindexmeoff" }, { "notimers", "timerson" }, /* the AI thinks on the ME during the record, a few ms early in game time, which no player can feel (FIXES_AIME*; b30 frame -3 to -10% on the PSP) */ { "aime", "aimeoff" }, /* an attached light's relink skipped when its sphere and start cluster are unchanged: play and seeds identical, pictures within the run-to-run spread (FIXES_LSAME; the lab's lsame3-5); b30 beach frame -2.2% on the PSP-1000 */ { "lsame", "lsameoff" }, { "aime1b", "aimeoff" }, { "aime2a", "aimeoff" },
+	/* the two-core tick's first placement (the lead, 2026-11-20): the bipeds'
+	motion staged after the object walk (FIXES_BIPEDSTAGE, docs/box_biped_motion.md),
+	the level's half of their pill sweep made on the ME (psp_sweepme.c,
+	docs/box_collision.md section 11; exact, sweepmecheck 0 differ on the PSP),
+	and the replay's pick-up points (psp_me.c, ticksched; docs/box_tick_schedule.md).
+	b30's flight frame -1.0 ms on the PSP-3000, c20 flat. Only in a build with
+	PSP_BIPEDSTAGE and PSP_SWEEPME (the campaign build's default) */
+	{ "bipedstage", "bipedstageoff" }, { "bipedstage2", "bipedstageoff" }, { "bipedstage3", "bipedstageoff" },
+	{ "sweepme", "sweepmeoff" }, { "ticksched", "tickschedoff" }, PSP_RELEASE_DEFAULTS
 };
 static const struct
 {

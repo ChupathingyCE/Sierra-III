@@ -75,6 +75,8 @@ Alone, against a capture of its queries over a pad bench (each query's arguments
 
 ## 11. The ME's half of the pill sweep (2026-11-19)
 
+**On by default since 2026-11-20** (the lead: exact, real-faster on b30's flight, no worse anywhere measured; the tick schedule's slice 1 with it): `PSP_SWEEPME` and `PSP_BIPEDSTAGE` built in the campaign build, keep word `sweepme` on (off: `sweepmeoff`), ME list `rbtsw` (`docs/build_switches.md`).
+
 The lead's order of 2026-11-19 11:5xZ (the lab's coord/inbox/builder.md), on line (b)'s falsifier: from eDRAM the ME runs the sweep at x0.86-0.94 of the main CPU [M, PSP-1000, the lab's `sweepme_falsifier_beach`, `sweepme_falsifier_flight`; §10 is on Sierra-III builder/boxme until the two branches merge]. Code: `psp/src/psp_sweepme.c`, `psp/include/psp_sweepme.h`, the game's builds of the box (`psp/src/box_collbsp_game.c`, `box_sweep_game.c`), `psp_fixups.py` FIXES_SWEEPME, the MEXEC list `psp/layout/mexec_rbsw.txt`. Build switch `PSP_SWEEPME=1`, keep word `sweepme` (off by default), `sweepmecheck` its check.
 
 **What the sweep costs, by part** [M, PSP-1000/3000, cap_sweep4, the box's form A; the lab's `box_sweep_a_level_part_b30leg1every_psp1000`, `box_sweep_a_features_part_b30leg1every_psp3000`]: crowded, a sweep is ~155 µs: **the level's features (the BSP walk and the shapes made from it) ~100 µs, 65%**; the objects' half ~41 µs, 26%; the clip ~14 µs, 9%. b30's beach stages ~13-16 sweeps a tick, c20 ~33 (`gather1_features`).

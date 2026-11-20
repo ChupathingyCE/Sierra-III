@@ -144,3 +144,5 @@ Existing lines read with it: `ME: batch timing (claims)` (**the batch's pickup l
 | | first, play | | | | noise |
 
 All eight runs exited cleanly. The slice wins about 1 ms of frame on b30's flight. On c20 it's a wash: ~0.2 ms moves from the drawing into the tick on the opening, and the frame is unchanged. Whether that switches on the sweep's placement (sweepme slice 1) is the lead's call.
+
+**Switched on (the lead, 2026-11-20 00:1x):** slice 1 is on by default in the tock with the sweep's slice 1 (keep word `ticksched`, off: `tickschedoff`; Sierra-III builder/tock-sweep). **A known cost, kept:** each pick-up point costs the replay +0.3–0.5 ms a job on the ME. That's the ME's floor for now, not a reason to hold the placement. Slice 2 (the AI job's looks) is next.
