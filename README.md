@@ -1,12 +1,12 @@
 # Sierra-III
 
-Native PlayStation Portable port of Halo: Combat Evolved, built for the original PSP-1000 (32 MB RAM, 333 MHz). Based on the community decompilation. Bring your own game files: no game data is included.
+**warthog-psp**: ChupathingyCE's port of Halo: Combat Evolved to the PlayStation Portable, built for the original PSP-1000 (32 MB RAM, 333 MHz). It runs the community decompilation through ChupathingyCE, and its own spin is a ground-up rebuild of the engine's frame for a 333 MHz handheld. Bring your own game files: no game data is included.
 
-*Sierra-III ("Sierra Three") is the port's codename.*
+*Sierra-III ("Sierra Three") is the port's name, kept when it joined ChupathingyCE (2026-11-19).*
 
 ## Where it stands
 
-The whole campaign loads and plays on a PSP-1000, all ten maps in one session. Build 148 is the latest release; build 150 is the next candidate, and new work lands in the tock builds after it (build 153 as of 2026-11-16). `docs/builds.md` lists them all.
+The whole campaign loads and plays on a PSP-1000, all ten maps in one session. Build 158 is the newest tick (the release candidate), and new work lands in the tock builds after it. `docs/builds.md` lists them all.
 
 The target is a steady 30 ticks a second at 30 fps everywhere in the campaign, and it isn't there yet. On full playthroughs at Legendary, the heaviest case measured (PSP-3000, November 2026), the slowest stretches run at 7-10 fps on *Assault on the Control Room* (b40), *Halo* (a30), *Two Betrayals* (c40) and *The Truth and Reconciliation* (a50), with the game below real time there (ticks of 35-45 ms against the 33 ms a tick needs). Lighter stretches run in the teens and twenties.
 
@@ -21,7 +21,7 @@ The work under way is a ground-up rebuild: the frame budgeted from zero, with ea
 
 ## How it's made
 
-Sierra-III is written with an AI model, Claude, and every commit says so: Claude is the author and Sheepdog01 (Sheepdog-01) the co-author. The division of work is fixed:
+Sierra-III is written with an AI model, Claude. Commits are authored by Sheepdog-01, as ChupathingyCE's contributor rules ask, but the code is Claude's, and the division of work is fixed:
 
 - **Sheepdog01 decides what to build** and in what order, and every change to how the game looks or plays is his call, made after seeing both sides.
 - **Claude writes the code**, and each change carries its evidence: why it's there, what it was measured against, and whether the figure came from the PSP, the emulator, the code or inference (`[M]`, `[E]`, `[D]`, `[U]` in the docs).
@@ -72,7 +72,7 @@ The port reads maps baked for the PSP: the map itself, plus its texture, geometr
 
 ## History
 
-This repository was created on 2026-10-09. The history before then was rebuilt from the source snapshots kept for each build, one commit per snapshot, tagged by build (`b87` to `b110`). Builds 1 to 86 survive only as binaries. Every build's zip is kept in one private Release, `build-archive`; a build gets a Release of its own only when it's shared.
+The project began on 2026-10-09 in a repository of its own, with the history before then rebuilt from the source snapshots kept for each build (builds 87 to 110; builds 1 to 86 survive only as binaries). It moved into ChupathingyCE on 2026-11-19 with its history carried over and cleaned of private details, so the commits here have new hashes. Build records and zips are kept privately by the project; a build gets a Release here only when it's shared.
 
 ## Credits
 
