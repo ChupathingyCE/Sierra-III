@@ -141,6 +141,14 @@ Both paths are exact, so the choice changes no answer.
 3. **If the ME's own replay fills the wait:** the landing waits on B's level pass and the bus work (the bus census, `bus1`), which free the ME. The gathered-spheres copy is then worth pricing on its own: the ME's working set, on the PSP.
 4. **Lights' visibility** (`lights_preprocess_scene`'s `structure_visibility_find_objects` over the light partitions) can join the same job later, under the same order argument.
 
+## The collect's wait without the clock (`mlspin`, off by default)
+
+**What the PSP showed:** KSAMPLE v3 [M, PSP-3000, the lab's sierra-hw 44579027663, b30's flight, ticks 634-1897; the lab's measurements.tsv `ksample3_b30_flight_calls`] counted 995 wrapped kernel calls a frame in the drawing. 934 of them are `sceKernelGetSystemTimeLow` from one site, 0892c980. With the build's symbols (the lab's sierra-build 44679580636, the same recipe on the public hash), that site is `psp_mevisland_collect` +0x2c0: the wait's `while (!done && clock - start < PSP_ML_LATE_US)`, a system call and an uncached look at the ring on every pass. It is the likely owner of the drawing's thread-manager bin, ~5% of the drawing, ~1.4 ms a frame [U on M].
+
+**The change:** with the keep word `mlspin`, the wait looks at the ring every 64 nops (~0.2 us) and reads the clock every 16th look. The answer, the copy and the 50 ms fallback are unchanged, so play and both seeds are identical by construction; a wake comes at most ~0.2 us later.
+
+**What decides it:** the calls happen during a wait, so taking them out pays only if the main CPU's system calls and uncached looks slow the ME's walk (the bus, the kernel's own lines). The ME's finish-wait made the same change (`mefinishslow`) and measured null on b30 [M, PSP-1000, the lab's sierra-hw 41030635620; levers.tsv MF, HANDOFF 1.4]. This site is different: its wait is the visibility walk's, on b30's flight, 934 calls a frame. One held b30 pair, `- | mlspin`, prices it.
+
 ## Open questions
 
 - Whether `psp_ge_window_begin` writes anything visibility reads. Its writes are the GE layer's own [D: no object or partition writes found], but this needs checking with the emulator's write trace on the landing (mewrites, mevis's lines).

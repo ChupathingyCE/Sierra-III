@@ -57727,6 +57727,15 @@ in that span writes what visibility reads, so the answer is the main CPU's, bit
 for bit. A push the ring refuses, or an answer later than PSP_ML_LATE_US,
 has the main CPU make its own visibility there: the safety net, as before */
 #define PSP_ML_LATE_US 50000
+/* "mlspin" (KSAMPLE v3: 934 clock reads a frame in b30's drawing, all from the
+collect's wait): the wait looks at the ring every PSP_ML_SPIN_NOPS nops (~0.2 us)
+and reads the clock every PSP_ML_CLOCK_EVERY looks, not both every pass. The
+clock is a system call and each look an uncached read on the bus the ME is
+using; the answer and the 50 ms fallback are the same either way, a wake at most
+~0.2 us later */
+#define PSP_ML_SPIN_NOPS 64
+#define PSP_ML_CLOCK_EVERY 16
+static int psp_ml_spin = 0;
 int psp_me_push_visibility_into(void *record, void *answer, unsigned int answer_bytes, unsigned int *ticket); /* psp_me.c */
 void psp_me_ring_collected(unsigned int ticket); /* psp_me.c: mevisring */
 
@@ -57790,6 +57799,7 @@ int psp_mevisland_push(void)
 		psp_ml_check = psp_ml_on && psp_keep("mevislandcheck");
 		psp_ml_always = psp_ml_on && (psp_keep("mevislandalways") || psp_ml_check);
 		psp_ml_probe = psp_ml_on && psp_keep("mevisprobe");
+		psp_ml_spin = psp_ml_on && psp_keep("mlspin");
 		psp_ml_state_bytes = PSP_MV_STATE_BYTES;
 		if (psp_ml_on)
 			platform_psp_log("mevisland: the frame's visibility made on the ME and used%s",
@@ -57877,8 +57887,23 @@ void psp_mevisland_collect(void)
 	psp_ml_waiting = 0;
 	start = sceKernelGetSystemTimeLow();
 	done = psp_me_ring_done(psp_ml_ticket);
-	while (!done && sceKernelGetSystemTimeLow() - start < PSP_ML_LATE_US)
-		done = psp_me_ring_done(psp_ml_ticket);
+	if (psp_ml_spin)
+	{
+		unsigned int looks = 0;
+		int k;
+
+		while (!done)
+		{
+			for (k = 0; k < PSP_ML_SPIN_NOPS; k++)
+				__asm__ __volatile__("nop");
+			done = psp_me_ring_done(psp_ml_ticket);
+			if (!done && ++looks % PSP_ML_CLOCK_EVERY == 0 && sceKernelGetSystemTimeLow() - start >= PSP_ML_LATE_US)
+				break;
+		}
+	}
+	else
+		while (!done && sceKernelGetSystemTimeLow() - start < PSP_ML_LATE_US)
+			done = psp_me_ring_done(psp_ml_ticket);
 	waited = sceKernelGetSystemTimeLow() - start;
 	psp_ml_wait_us += waited;
 	if (waited > psp_ml_wait_worst)
