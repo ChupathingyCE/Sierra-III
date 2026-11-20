@@ -55,3 +55,12 @@ Each slice's `I` section gives one row per instrument:
   - **The step profile is empty in the emulator.** `profile.txt` has no rows, with or without the recorder (flightrec1's off runs too), and no frame there is a timed one. The recorder therefore calibrates after 300 ticks without one (the header's flag says so), and its emulator files have no tree. On the PSP the profile fills (sierra-hw 44565140172's `003_profile.txt`).
   - **gebusy2 trips strict in the emulator.** With `gebusy2` on, strict lists range loads and stores at 0x083ffexx from gebusy_add, gebusy_ge_finish, gebusy_signal and psp_lane_note. That is the GE interrupt's code on the emulator's interrupt stack, which it puts in kernel RAM (flightrec1, flightrec2; the same family as KSAMPLE v3's). The recorder alone is strict 0. The PSP ask keeps `gebusy2` for the GE's spans.
 - **The first PSP pair:** the lab's `flightrec-b30held` (coord/psp_queue.md): bare against recorded, held b30_leg2 to the Warthog, on the PSP-3000.
+
+## The first PSP pair (2026-11-19) [M]
+
+The lab's sierra-hw 44680919272, PSP-3000, ref 7ab916d6, held b30_leg2 to exitat150, one run a side: bare (`notimers`) against recorded (`flightrec gebusy2 hwprofile`); the lab's measurements.tsv `flightrec_psp_b30_first`.
+
+- **It runs on the PSP:** calibrated (clock read 562 ns, interrupt hold 121, step 113, game hook 152, hwprofile phase call 3,781), recording from game time 299, 71 slices, 723 KB written, 0 write failures. Heap free low 1,406 KB, no request failed. Both runs exited, crash.txt no. `flightrec.py` reads the file (71 slices, 54 events, frames).
+- **The tree is empty:** `steps timed at the calibration: 0`, and every slice's tree has no phases. Not a fault: `notimers` is on by default in the tock (psp_platform.c's `keep_defaults`), so no step is timed unless the run asks for `timerson`. The recorded side has to carry `timerson`.
+- **Its cost isn't read yet:** one run a side, so no verdict. The recorded side's frame was +2.0 / +6.3 / +6.3 ms (+2.9 / +7.8 / +6.1%) on the opening, flight and fight, and −3.1 ms on the beach (a stretch that varies ~10% run to run). The recorder's own instruments come to ~0.4–0.55 ms a frame. The rest of the gap is the recorded side's other words (`gebusy2`, `hwprofile`: 3.8 us a phase call) and what no instrument sees [U].
+- **Next pair:** `notimers | timerson flightrec`, two runs a side, the same stretch. The recorder alone, with its steps timed, against bare: its own cost, and the tree.
