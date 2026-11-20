@@ -2191,6 +2191,7 @@ heap, and the table would find no room. Each census still switches itself on
 at its first use, as it did with static tables, so its reports keep their
 windows */
 void psp_ge_census_start(void);
+void psp_ge_statecensus_start(void);
 void psp_tex_recon_start(void);
 void psp_me_bus_start(void);
 void psp_nodereaders_start(void); /* psp_fixups.py, FIXES_RECON #nodereaders */
@@ -2207,6 +2208,7 @@ void psp_recon_tables_start(void)
 			particle_census = psp_recon_table("particlecensus", PARTICLE_CENSUS_SLOTS * sizeof(*particle_census));
 	}
 	psp_ge_census_start();
+	psp_ge_statecensus_start();
 	psp_tex_recon_start();
 	psp_me_bus_start();
 	psp_nodereaders_start();
