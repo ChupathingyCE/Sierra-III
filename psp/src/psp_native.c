@@ -211,7 +211,12 @@ done:
 /* "nativeskipcheck" (PSP_RECON, with statecensus and gemeonoff): a word the
 shadow would leave out, asked of the census's reader first; one the GE
 doesn't hold is counted, logged and sent. 1 to leave it out */
-static int ns_held(struct ns_shadow *S, unsigned int cmd, unsigned int value, unsigned int *end)
+#ifdef PSP_RECON
+/* (out of line and out of the ME's copy: main CPU only, and recon only) */
+static int __attribute__((noinline)) ns_held(struct ns_shadow *S, unsigned int cmd, unsigned int value, unsigned int *end)
+#else
+static inline int ns_held(struct ns_shadow *S, unsigned int cmd, unsigned int value, unsigned int *end)
+#endif
 {
 #ifdef PSP_RECON
 	if (ns_words.check > 0)
