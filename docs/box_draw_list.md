@@ -630,3 +630,12 @@ The distinction the box needs is whether a GE block can be kept and replayed whi
 - **The census, a frame (gemeonoff), off to on:** b30 to 125 s, state words 3,454 to 1,680, the value already set 1,852 (54%) to 78 (5%); b40 to 300 s, 1,198 to 541, 690 (58%) to 32.5 (6%). What's left is mostly CLUT load (0xC4, an action, never dropped) and words sent again after a forget. Matrix words, addresses, calls and draws unchanged (the lab's rows `nativeskip_census_b30`, `_b40`).
 - **The ME's shadow with gemeon** (the emulator runs the ME's work on the main CPU, marked as the ME's): b30 1,511,032 of 3,919,386 state words left out (39%), b40 1,358,472 of 3,162,081 (43%), c20 393,811 of 1,274,503 (31%). Fewer than the main CPU's share: it forgets at each replayed run's start and reads past more of others' words.
 - **Time: not measured.** The emulator can't price it (the ME, the GE). The PSP pair is the lab's ask (the builder's agent's handoff, 2026-11-20).
+
+### 17.x The PSP pair (2026-11-20, builder; the lab's sierra-hw 44762486376, the PSP-1000, row `nativeskip_psp_b30`) [M]
+
+`- | nativeskip` in one build (b22db118), two runs a side, held b30_leg2 to 150 s:
+- **The ME's render job gets slower: its own time a job on the flight 24.6 → 26.6 ms (+2.0 ms, +8%)**, each side's two runs within 0.4 ms, so the gap is real.
+- The frame, drawing and the tick move within the spread on every stretch (the flight's frame −2.6 ms, but the off side's own runs are 3.8 ms apart).
+- The shadow did its work on the ME: ~62% of the model parts' state words met were left out (2.8-3.3 M a run), with 1.3-1.4 M of other code's words read and ~19,000 forgets.
+
+**So slice 1 as built costs the ME more than it saves.** Wrapping each pspgu setter, comparing, taking words back and reading the words other code wrote between parts costs more ME time than writing the repeated words did. It doesn't reach the brief's 1.5 ms. It stays off (`nativeskip` off by default), and nothing of it goes into the tock. The lesson for slice 2 (the state blocks): the saving has to come from not deciding and not writing the words at all, not from filtering them after pspgu has written them.
