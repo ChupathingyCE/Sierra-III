@@ -204,7 +204,10 @@ each job taken between two records cost both a refill (c20: the replay
 Sized to the lists in use with room to grow (list rb fills 1,040 words): it sits
 in .data, so every word is heap the game doesn't get, and the tool refuses a
 list whose table outgrows it */
-#if PSP_MEXEC_JOBS
+#if defined(PSP_MEXEC_TABLE_WORDS)
+/* the list's "# @table" line (psp_build.py): a list that fills a raised room */
+#define MEXEC_TABLE_WORDS PSP_MEXEC_TABLE_WORDS
+#elif PSP_MEXEC_JOBS
 /* a list with the think and the mixer (psp/layout/mexec_rbj.txt) has about
 twice rb's functions and calls between them */
 #define MEXEC_TABLE_WORDS 4096
