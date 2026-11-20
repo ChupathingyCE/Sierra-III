@@ -146,3 +146,25 @@ Existing lines read with it: `ME: batch timing (claims)` (**the batch's pickup l
 All eight runs exited cleanly. The slice wins about 1 ms of frame on b30's flight. On c20 it's a wash: ~0.2 ms moves from the drawing into the tick on the opening, and the frame is unchanged. Whether that switches on the sweep's placement (sweepme slice 1) is the lead's call.
 
 **Switched on (the lead, 2026-11-20 00:1x):** slice 1 is on by default in the tock with the sweep's slice 1 (keep word `ticksched`, off: `tickschedoff`; Sierra-III builder/tock-sweep). **A known cost, kept:** each pick-up point costs the replay +0.3–0.5 ms a job on the ME. That's the ME's floor for now, not a reason to hold the placement. Slice 2 (the AI job's looks) is next.
+
+## 11. Slice 2's design: the AI job's looks (DRAFT for the lead, 2026-11-20 08:0x, builder; the lead 07:4x; nothing built)
+
+**What's measured** [M, sierra-hw 44533583170, the PSP-3000, b30_leg2 held, `sweepme`; the `ME: inside the AI job's actors` line]: **1 yield a 300-frame window, 0 ring jobs, 0 looks passed by for the stack**, while the AI job runs 11-20 ms a frame (worst 31.7) and ring jobs wait 4-16 ms on average for a pick-up (worst 20-44 ms). The stack never stops a look; the looks barely happen.
+
+**Why [D, psp_me.c and psp_fixups.py on the tock]:** `psp_me_yield_inner` counts a yield only once the ME's clock is `INNER_GAP_CYCLES` (~1 ms) past `inner_mark`, and every yield *between* actors (`psp_me_yield_slots`) moves `inner_mark` to now. So an actor shorter than 1 ms never yields inside, and a long one yields only where its thinking reaches a look site (`psp_aime_ring_yield`: the collection's word's looks, perception's props, `aimepathlook`'s nodes) more than 1 ms after it started. That one yield a window says the long actors spend their time where no look site is, or the window's long actors are few. **Which one isn't known, and only the PSP can tell** (the emulator runs the ME's jobs inside the push, §9).
+
+**Step 0, a census of the looks' reach (recon, PSP, one run):** for each AI job, the calls to `psp_aime_ring_yield` and how each ended (gated off at the call, under the gap, low stack, nothing waiting, served); the longest stretch between two looks and the step tag that held it (`psp_aime_step_tag_now`); and how long ring jobs waited while the AI job held the ME (push to pick-up, by occupant). Counters on the ME's own line, read uncached, as `tick_look`. This says where looks are missing before any is added.
+
+**The slice (after step 0):**
+1. **The same pick-up as the replay's** (§3.1-3.2) at the AI job's looks: the tick slice (`tickschedusN`, 500 µs) instead of `INNER_GAP_CYCLES`'s 1 ms; at once when the main CPU waits (`RING_URGENT`); the waiting batches' records made first (`ring_batch_first`), then the drain, which stops at the collection's word as it does today. **The gap is measured from the last pick-up, not the last yield between actors**, so a run of short actors no longer resets it.
+2. **Look sites where step 0 finds the long stretches**, each placed where the thinking holds nothing a ring job reads or writes, as AIMERINGLOOK's are (the reason written at each site). The ring jobs that can run there (rays, points, poses, the sweep's batches) read last tick's copies or their own inputs (wsold, the rays' inputs), not an actor's state in the making; each new site is checked against that list.
+3. **The stack:** a batch job needs `RING_JOB_STACK_BYTES`, less than the rays' allowance the gate asks today. The batch-first pass runs when there's room for a batch even when there isn't for the whole drain.
+4. **Unchanged:** audio's look inside actors (AIMEAUDIOLOOK), the abort and the late word (no look once either is up), the ring's completion order.
+
+**Switch:** the keep word `ticksched2` (off: `ticksched2off`), off by default until its pair; under `ticksched`'s feature bit, so `tickschedoff` turns both off.
+
+**Proof:** exact by construction as slice 1 (§9: the same jobs on the same inputs, picked up earlier); the emulator for play and seeds identical with it on and off (the main CPU's side and `batch_job`), strict 0; on the PSP, `sweepmecheck ticksched ticksched2` held b30 to 130 s, 0 differ, no ring failure; then the pair, both sides in one build (`ticksched | ticksched ticksched2`), held b30_leg2 and c20_leg2, repeat 2.
+
+**Budget:** the AI job's own time (the job less what its looks served) within the off side's spread; ring pick-up latency while the AI job runs down from today's 4-16 ms average toward the slice's 0.5 ms; the frame decides.
+
+**Open for the lead:** step 0 is one PSP run (~20 min, either PSP, held b30_leg2 to exitat130, `sweepme`) with a recon build; the ask goes to the master once it's built and its emulator run is clean.
