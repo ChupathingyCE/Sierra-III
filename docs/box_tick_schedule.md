@@ -175,3 +175,12 @@ The step comes from `psp_me_stash_place`, which the recon build's step marks alr
 **Budget:** the AI job's own time (the job less what its looks served) within the off side's spread; ring pick-up latency while the AI job runs down from today's 4-16 ms average toward the slice's 0.5 ms; the frame decides.
 
 **Open for the lead:** step 0 is one PSP run (~20 min, either PSP, held b30_leg2 to exitat130, `sweepme`) with a recon build; the ask goes to the master once it's built and its emulator run is clean.
+
+### Step 0's result (2026-11-20, builder; the lab's sierra-hw 44785052822, the PSP-1000, row `aimelook_census_b30`) [M]
+
+One recon run, held b30_leg2 to 130 s with `sweepme`, 2,109 AI jobs on the ME:
+- **The looks are already there:** 156 calls a job, one every ~0.07-0.13 ms of an 11-20 ms job. Stretches without a look are almost all under 0.5 ms (356,211 of 358,283); a job's longest averages 0.82 ms. Only 66 stretches over 1 ms end outside any step and 111 in step 1, with the longest at 10.1 ms.
+- **The gap holds the ring back:** 98.3% of looks end under the 1 ms gap, and only 0.08% serve. The 13 yields a job between actors each reset the gap.
+- **Ring jobs wait 3.24 ms on average while the AI job holds the ME** (longest 17.9 ms, a floor). 2,176 were pushed in that time and 2,859 run inside it.
+
+**What it decides [U on M]:** slice 2 needs no new look sites. Step 1 alone, the replay's pick-up timed from the last pick-up rather than the last yield between actors (500 µs slice, urgent at once, batches first), would serve a waiting job within ~0.5 ms of its first look, against 3.24 ms now. The long stretches outside a step (the 10.1 ms one included) are the only place a site might still pay. They're too few to build for before step 1 is priced.
