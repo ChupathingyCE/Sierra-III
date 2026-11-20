@@ -117,7 +117,7 @@ Sheepdog01's 240 fps video of b147h (19:30) showed the armour drawn white for si
 
 Before the three sleeps, play b148 as usual on bake w148a (`$psp/halo` from b148's zip and bundle).
 
-**The three sleeps** (one session, from research's plan, `coord/handoff/mewake_2026-10-28.md` in the lab). Each can end in a hung exit that needs a battery pull, as on b124 and b132, so run them in order and **stop at the first success**.
+**The three sleeps** (one session, from research's plan, `projects/sierra/coord/handoff/mewake_2026-10-28.md` in the lab). Each can end in a hung exit that needs a battery pull, as on b124 and b132, so run them in order and **stop at the first success**.
 
 | # | keep.txt adds | Steps | What the log should say |
 |---|---|---|---|

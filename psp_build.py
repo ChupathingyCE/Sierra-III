@@ -249,7 +249,7 @@ SNDSTREAM = os.environ.get("PSP_SNDSTREAM", "") == "1"
 # them out.
 CLAIMFILL = os.environ.get("PSP_CLAIMFILL", "1") != "0"
 # PSP_CAPTURE=<box> builds a box's capture in (REBUILD.md §5; the lab's
-# research/opportunities/harness.md §7): psp/src/psp_capture.c, the writer, and
+# projects/sierra/research/opportunities/harness.md §7): psp/src/psp_capture.c, the writer, and
 # the box's hooks at the old code's entry and exit (psp_fixups.py
 # FIXES_CAPTURE_<BOX>). keep.txt's capfirstN, capeveryN, capticksN and
 # capkbN set its sampling (psp_platform.c). A recon build: never for play
@@ -334,6 +334,18 @@ INTERPOLATION = os.environ.get("PSP_INTERPOLATION", "") == "1"
 MEXEC = os.environ.get("PSP_MEXEC", "")
 if MEXEC and not re.match(r"^[A-Za-z0-9_]+$", MEXEC):
     sys.exit("psp_build: PSP_MEXEC names a list in psp/layout (mexec_<name>.txt)")
+# A list's "# @jobs" line: the ME enters every slot job (the AI's think, the
+# mixer, the replay) through run_job's copy, not only the replay through its
+# entry; "# @room <KB>": the copy's room, read by tools/mexec.py too. A list
+# without them builds psp_me.c as before
+MEXEC_DEFINES = []
+if MEXEC and os.path.exists(os.path.join(HERE, "psp/layout/mexec_%s.txt" % MEXEC)):
+    for _l in open(os.path.join(HERE, "psp/layout/mexec_%s.txt" % MEXEC)):
+        _m = re.match(r"#\s*@(jobs|room)\s*(\d*)\s*$", _l.strip())
+        if _m and _m.group(1) == "jobs":
+            MEXEC_DEFINES.append("-DPSP_MEXEC_JOBS=1")
+        elif _m and _m.group(2):
+            MEXEC_DEFINES.append("-DPSP_MEXEC_ROOM_KB=" + _m.group(2))
 # PSP_MEVISLAND=0: leaves out the frame's visibility made on the ME (mevis's
 # copies of the visibility code, 23 KB, and the landing's hooks; keep word
 # mevisland, on by default; docs/mevis_landing.md). Built in otherwise
@@ -902,7 +914,7 @@ def compile_one(item):
                ["-DPSP_FRAMEPIC=1"] if FRAMEPIC else []) + (
                ["-DPSP_MEPROBE=1"] if MEPROBE else []) + (
                ["-DPSP_WALKAPART=1"] if WALKAPART else []) + (
-               ["-DPSP_MEXEC=1"] if MEXEC and src.endswith("psp_me.c") else []) + (
+               ["-DPSP_MEXEC=1"] + MEXEC_DEFINES if MEXEC and src.endswith("psp_me.c") else []) + (
                ["-DPSP_MEVISLAND=1"] if MEVISLAND else []) + (
                ["-DPSP_METRICS=1"] if METRICS else []) + CAPTURE_DEFINES + (
                ["-DPSP_MUSIC=1"] if MUSIC else []) + (
@@ -1081,7 +1093,7 @@ def link(objs, stubs):
     #   a file name: coldfirst, then that file's hot functions in its order
     #     (one section name a line, tools/icache_order.py's order.txt); or,
     #     when its lines are placements ("*<object>(<section>)", the test
-    #     tools/codeorder.py: the call graph's order, T2), those in its order
+    #     projects/sierra/tools/codeorder.py: the call graph's order, T2), those in its order
     #     and nothing first, each function's cold part placed beside it.
     # A linker script gives each input section to the first rule that
     # matches it, so the most specific placements come first.
@@ -1279,7 +1291,12 @@ def link(objs, stubs):
     old_bss = "   *(.dynbss)\n   *(.bss .bss.* .gnu.linkonce.b.*)\n"
     if old_data not in text or old_bss not in text:
         sys.exit("psp_build: the SDK's linkfile.prx has changed; the Media Engine's variables can't be placed")
-    me_objects = ("*psp_ge.o", "*psp_tex.o", "*libpspgu.a:*")
+    # pspgum's .bss (gum_stack_depth, the matrix stacks) with pspgu's: the
+    # ME's replay calls sceGumMatrixMode and sceGumLoadMatrix, and left where
+    # the link put them gum_stack_depth shared a line with psp_trace.c's
+    # memory-stick lock, which the main CPU writes while the ME draws (the
+    # emulator's cache model found the line lost; the lab's bugs.md B95)
+    me_objects = ("*psp_ge.o", "*psp_tex.o", "*libpspgu.a:*", "*libpspgum.a:*")
     # PSP_MUSIC: the decoder's own variables (Tremor's, libogg's) on lines of
     # their own, apart from the GE layer's block too. The decode runs in the
     # ME's audio job and writes them (mapping0.o's counter), while the main

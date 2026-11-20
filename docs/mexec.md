@@ -1,6 +1,6 @@
 # MEXEC: the Media Engine's hot code run from its eDRAM
 
-R's slice 10 (`redesign_r.md` §3). The lab's `research/opportunities/me_unnamed.md`, lever 5, holds the measurements and the order; this page is the design. Labels: **[M]** PSP, **[E]** emulator, **[D]** code or docs, **[U]** inference.
+R's slice 10 (`redesign_r.md` §3). The lab's `projects/sierra/research/opportunities/me_unnamed.md`, lever 5, holds the measurements and the order; this page is the design. Labels: **[M]** PSP, **[E]** emulator, **[D]** code or docs, **[U]** inference.
 
 ## Why
 
@@ -58,3 +58,19 @@ R's slice 10 (`redesign_r.md` §3). The lab's `research/opportunities/me_unnamed
 - **Its exactness is a PSP's to prove**, as r1's and r2's were: the emulator doesn't map the ME's low eDRAM for code.
 
 **The profile's counts** (2026-11-11): a `PSP_PGO=generate` build with `PSP_MEXEC` compiles psp_me.c as MEXEC builds do, so the counts cover its `#if PSP_MEXEC` functions (strict builds refused four without them: meLibOnProcess, psp_me_report, psp_me_start, run_job), and leaves the table empty: the counting build's code outgrows the list's room (311,480 bytes over 196,608, the lab's sierra-batch 43141807668), and the table's contents don't touch the counts. A counting run never copies: the empty table refuses it.
+
+## List rbj: the think and the mixer (builder's worker, for the lever MEXEC2)
+
+- **Why they were left out:** rb's header: the replay never enters the ME's other jobs (the AI's think, the mixer, visibility), and the copy was entered only at the replay's entry, so a copied think would never have run. rb fills 144 KB of its 192 KB on the tock (sierra-build 44435038180: 94 functions, 301 calls re-aimed).
+- **What's different:** the list's `# @jobs` line builds psp_me.c with `PSP_MEXEC_JOBS`: the install finds run_job's copy in the table, and me_serve enters every slot job through it, so the think (`psp_aime_me_job` and below), the mixer (`psp_dsound_mix_split`) and the replay all start in eDRAM, and their calls among copied functions stay there. Its `# @room 256` line widens the copy to eDRAM 256-512 KB (tools/mexec.py and psp_me.c read the same number); 512-800 KB stays free, the sound tier starts at 800 KB. The table grows to 4,096 words (16 KB of `.data`, ~10 KB of heap more than rb's). A list without those lines builds as before, so `PSP_MEXEC=rb` is unchanged.
+- **How it was picked [E counts, D reach]:** the ME's main-RAM fetches by function in the cache model (the lab's tgme2g, sierra-batch 44352925716: b30_leg2's flight and beach, c20_leg2, d20_play1, held, the ME's audio and mexec on), kept to what the think or the mixer reaches by direct calls in the linked code (yields and fault paths cut), ranked by misses a byte. There the AI job is 6.6 / 3.8 / 7.6 / 2.2 M I-misses a window, capacity-bound (fully associative nearly the same), so cheaper misses, not fewer, are what the copy gives; the mixer's own are 0.07-0.12 M (the PSP's audio job fell 10% with TGME's layout alone, so the PSP may differ).
+- **Order:** rb's names first, in rb's order, so the replay's copy keeps its places and its sets; then run_job, the mixer, the think. The think and the replay don't run at once (yields aside), so their sets may overlap.
+- **Built** [D] (sierra-build 44471035344): 221 functions (3 names left out: one not in the program, two shared by several functions), 246,268 bytes of code, 12 trampolines, 246,756 bytes in all of 262,144; 973 calls re-aimed, 16 branches through trampolines, 8 jump tables copied (97 of 146 words); the table 2,826 words of 4,096; heap 5,836 KB against rb's 5,844. The rb build at the same commit (44471069381) is byte-identical to the tock d91cb8aa's own (44472063744): EBOOT adf61f8ab8bc6c11.
+- **Proof [E]:** the emulator runs the originals, so it proves the build plays the same: play and both seeds identical every tick, rb against rbj, held b30_leg2 seed1 to 130 s with mexec on (3,900 of 3,900 ticks), strict 0 on both (the lab's sierra-batch 44472106548, mexecjid). The copy's own exactness and its price are a PSP pair's (`PSP_MEXEC=rb | rbj`, held b30, statecrc on).
+
+## rbt switched into the tock's recipe (the lead, 2026-11-19 15:0xZ)
+
+- **The split** (Sierra-III builder/mexecjobs fcd54ea4): rbj cut in two, rb's 95 names first in both. `PSP_MEXEC=rbm` is rb + the mixer, `PSP_MEXEC=rbt` is rb + the think (121 of its functions). Each was priced against rb on the PSP, held, no statecrc, because rbj had made b30's flight faster but cost the beach and the ME's other jobs.
+- **rbt, held b30_leg2, PSP-3000** (sierra-hw 44542428646; the lab's `mexecsplit_rbt_b30`) [M]: faster on every stretch. The tick is -0.3 / -0.4 / -1.8 ms on the cinematic, flight and beach (beach -11.4%), and the beach's frame -5.7 ms (-10.8%), all real. The ME's audio job is -9% and the replay -4%.
+- **rbt, held c20_leg2, PSP-1000** (sierra-hw 44547529112; the lab's `mexecsplit_rbt_c20`) [M]: no real loss. The first stretch's tick is -0.5 ms (-1.8%), real; the play stretch is in the noise (rb's own two runs spread 19.8-21.7), and the ME's audio and replay jobs are flat.
+- **So the tock's recipe's `PSP_MEXEC` moves from rb to rbt** (the lead pre-decided on c20's read at 15:0xZ). rbm, the mixer's part, is closed: it didn't pay beside the replay, and it may return once its hot set is cut to fit beside the replay's. The builds behind the read were counted with campaign-rc2, as built; the next recount covers rbt's psp_me.c.

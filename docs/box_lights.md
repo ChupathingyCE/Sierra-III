@@ -11,10 +11,10 @@
 
 | # | Claim | Label | Where |
 |---|---|---|---|
-| 1 | The Lights box is **already a box in REBUILD §3.3 and has no page**; the page's scope is the level's dynamic lights **and** the flashlight, on both units | [D] | `research/opportunities/REBUILD.md:101`, `sierra/docs/box_draw_list.md:7` |
+| 1 | The Lights box is **already a box in REBUILD §3.3 and has no page**; the page's scope is the level's dynamic lights **and** the flashlight, on both units | [D] | `projects/sierra/research/opportunities/REBUILD.md:101`, `sierra/docs/box_draw_list.md:7` |
 | 2 | **The ME has no separate "light" path.** A light draw is a recorded call (`DEFER_LIGHT_DRAW`) replayed by the ME's render job and timed inside it as kind **"light draws"** — the box's ME budget is inside the draw list's render job, not beside it | [D] | `sierra/psp/src/psp_ge.c:24103`, `:1824`, `:1590` |
-| 3 | A light draw's cost is **the split** (59–65% of the light draws, T2) — not B7 (~20%, T1) — because build 103's per-corner falloff forces a split on big triangles | [M] | `research/opportunities/light_pass.md:162-163`, `:202-205` |
-| 4 | **Best priced lever so far: LSPLITCOARSE at 0.60, in and on by default** — ME light draws −13% / −25 to −28% on d20's flashlight (−5.5 / −9 to −10.1 ms a frame) | [M] | `psp/sierra/findings/levers.tsv:193`; `sierra/psp/src/psp_ge.c:906` |
+| 3 | A light draw's cost is **the split** (59–65% of the light draws, T2) — not B7 (~20%, T1) — because build 103's per-corner falloff forces a split on big triangles | [M] | `projects/sierra/research/opportunities/light_pass.md:162-163`, `:202-205` |
+| 4 | **Best priced lever so far: LSPLITCOARSE at 0.60, in and on by default** — ME light draws −13% / −25 to −28% on d20's flashlight (−5.5 / −9 to −10.1 ms a frame) | [M] | `projects/sierra/findings/levers.tsv:193`; `sierra/psp/src/psp_ge.c:906` |
 | 5 | **Upstream ships a dynamic-light limit the port does not have**: `port_dynamic_lights_choose`, `HALO_CONSOLE_LIGHT_LIMITS`, 8 diffuse / 2 specular. The PSP build does **not** define it, and its default is 0 (the Xbox's "every one") | [D] | `porttree/source/objects/object_lights.c:2355-2431`, `porttree/port/linux/src/port_config.c:211-217`, `sierra/psp_build.py:435-441` |
 | 6 | The main CPU's light work is **selection**, not the pass: on d20 7.76/8.50 ms a frame in two windows (`lights_render_diffuse` 11.5 / 15.3% of the frame) | [M] | `run-results/sierra-hw/43331666648/profile.txt:197`, `:262` |
 | 7 | The **flashlight splits on no PSP run in the workspace** (0 split triangles, 0 pieces in every 300-frame line of both census runs) — today's own numbers for the flashlight come only from the d20 flashlight runs of 2026-11-10/11 | [D, the runs] | `run-results/sierra-hw/43331666648/log.txt:1830`, `run-results/sierra-hw/43314261608/log.txt:2123` |
@@ -66,7 +66,7 @@ With the campaign defaults (`gedefer` `geinflight` `gemeon`, `sierra/psp/src/psp
 4. **Emit** into `scratch_vertices` (`light_emit_known`, `:22826`), cut pieces into `light_pieces` (`:22855`).
 5. **After the loop** (`:23974-24083`): the kept triangles into up to 7 depth bands (`LIGHT_BANDS 6` + the exact ones, `:22873`), each **copied** into the list (`memcpy`, `:24026`) and drawn with its own depth nudge; then the cut pieces. `lightmerge` replaces the bands with one draw (`:23942-23973`).
 
-T2's split of those steps on d20's flashlight [M, `psp/sierra/findings/measurements.tsv:12739`]: **cone cull + split 28.7 / 17.0 ms a frame (59 / 65%)**, reach+memo 5.9 / 2.0, lit corners+gel 2.3 / 0.8, clip+emit 2.8 / 1.1, set-up 1.6 / 0.9, **after the loop (bands, copies, draws) 7.7 / 4.2 (16%)**.
+T2's split of those steps on d20's flashlight [M, `projects/sierra/findings/measurements.tsv:12739`]: **cone cull + split 28.7 / 17.0 ms a frame (59 / 65%)**, reach+memo 5.9 / 2.0, lit corners+gel 2.3 / 0.8, clip+emit 2.8 / 1.1, set-up 1.6 / 0.9, **after the loop (bands, copies, draws) 7.7 / 4.2 (16%)**.
 
 **What the ME's copy cannot tell it:** a light's draw is kind `DEFER_LIGHT_DRAW` and `psp_ge_light_begin`/`_gel` are kinds of their own (`:1590`, `:1596`); the mekinds line is the box's ME budget line, and on d20's census the light kind is **6.2 ms a frame mean, 15.4 the most** (`sierra/docs/box_draw_list.md:336`).
 
@@ -123,7 +123,7 @@ The same two runs' own words, **per draw**: d20 `light draws 13072 (63.5 a frame
 
 ## 3. Every earlier lever on this ground (price, why it stopped, revive_if)
 
-Levercheck's ground is `lighting` (`tools/levercheck.py:44`); rows below are `psp/sierra/findings/levers.tsv` and `grounds.tsv`.
+Levercheck's ground is `lighting` (`projects/sierra/tools/levercheck.py:44`); rows below are `projects/sierra/findings/levers.tsv` and `grounds.tsv`.
 
 | Lever | What | Price (device, run) | State, why it stopped | revive_if |
 |---|---|---|---|---|

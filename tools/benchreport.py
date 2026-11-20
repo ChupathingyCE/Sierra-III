@@ -34,12 +34,13 @@ import argparse, os, re, sys
 
 NUMBER = r"(-?[0-9]+(?:\.[0-9]+)?)"
 STRETCHES = "cinematic:150-570,flight:300-2000,landing:2000-2700,beach:2700-6000,bunker:6000-8100"
-# Each map's own stretches over its pad bench, from the lab's
-# psp/sierra/findings/stretches.tsv (its "<map>-pad-<name>" rows): a log that
-# names one of these maps is read by them unless --stretches is given. b30
-# keeps the opening bench's above, which its earlier reads used. Without this,
-# a b40 or c20 pair was read by b30's windows under b30's names and never
-# by its own heavy stretches (the lab's coord/lessons.md, the audit's find).
+# A log that names no pad (a route or a hands-off run) is read by its map's
+# windows here, as before. These were cut on each map's first pads (the lab's
+# projects/sierra/findings/stretches.tsv "<map>-pad-<name>" rows, the *_play1
+# recordings) and are kept for logs without a pad so that earlier reads
+# repeat; a pad's own windows are PAD_STRETCHES below. b30 has none here: its
+# route-based reads (ledger1's cinematic, flight, landing, beach) follow the
+# route and keep the opening bench's above.
 MAP_STRETCHES = {
     "a30": "opening:300-3600,early:3600-12000,middle:12000-22000,late:22000-31318",
     "b40": "early:2521-5008,heavyA:9123-10272,heavyB:10272-11661,snowfield:13922-14876",
@@ -47,6 +48,58 @@ MAP_STRETCHES = {
     "c20": "first:300-3600,play:3600-9000",
     "c40": "opening:300-6000,early:6000-15000,banshee:15000-30000,middle:30000-45000,late:45000-57017",
     "d20": "opening:300-3000,swamp:3000-9000,interior:9000-18000,late:18000-29234",
+}
+# Each pad's own windows (game ticks), cut on that recording's own events: the
+# cutscenes, the seat changes and the first fight, read from its .path (the
+# player's seat and control by tick, the deaths he caused) in the lab's
+# projects/sierra/scripts/pads/. A replay keeps its recording's events only to the tick it
+# tracks him; a held replay (padhold) holds his route and seat, not the fight.
+# Windows stop where the pad's benches stop; past them, give --stretches.
+# Why by pad and not by map: one map's pads are different plays, and b30's
+# windows, cut on b30_play2, put b30_leg2's whole first fight into its "flight"
+# (the lab's findings b30_leg2_seat_timeline, stretches_by_pad).
+PAD_STRETCHES = {
+    # the Pelican's cutscene to 1,066, seated to 1,098; on foot 1,098-4,386
+    # (his kills 1,183-2,298 down the beach, then 2,596-3,378 and the wait at
+    # the ridge); the Warthog 4,386-9,826
+    "b30_leg2": "opening:78-634,flight:634-1098,fight:1098-2400,beach:2400-4386,warthog:4386-9826",
+    # the opening cutscene to 1,069, then on foot to the end: the first room's
+    # fight (kills 1,238-3,599), then the walk south and the second
+    "c20_leg2": "opening:300-1069,first:1069-3600,play:3600-9000",
+    # the Pelican's cutscene to 912, seated to 944; on foot to the first
+    # Warthog (16,386-19,338); on foot at the bridge 19,338-21,842; the
+    # snowfield seated, 23,899-27,924. early, heavyA and the snowfield are
+    # where b40_play1's windows lie on this route (the same ground within
+    # 3 units). The path is proven to 44,170 only
+    "b40_leg1": "opening:300-944,early:944-8128,cliff:8128-14015,heavyA:14015-16386,warthog:16386-19338,"
+                "foot2:19338-21842,snowfield:23899-27924",
+    # the opening cutscene to 6,979; on foot to the first drive 16,195-20,326
+    "c40_leg2": "opening:300-6979,early:6979-16195,drive:16195-20326,foot2:20326-23136",
+    # the opening cutscene to 881; on foot to the first drive 17,236-20,394
+    "a30_leg1": "opening:300-881,early:881-17236,drive:17236-20394",
+    # seated in the opening cutscene to 849; on foot to 19,506; a seat
+    # 19,506-19,933; on foot to the cutscene at 23,272
+    "a50_leg1": "opening:300-849,early:849-19506,foot2:19933-23272",
+    # cutscenes 1-1,484, 2,905-3,085, 12,694-12,829 and 23,027-24,327 left out
+    # of the windows; seated from 28,587
+    "d20_play1": "opening:300-1484,walk:1484-2905,swamp:3085-9000,interior:9000-12694,deep:12829-18000,"
+                 "late:18000-23027,end:24327-28587",
+    # MAP_STRETCHES' windows were cut on these and are kept, except that
+    # heavyB ("the warthog") now starts where he takes the Warthog (10,780):
+    # its first 508 ticks were on foot
+    "b40_play1": "early:2521-5008,heavyA:9123-10780,heavyB:10780-11661,snowfield:13922-14876",
+    # opening is the whole cutscene (to 6,974); banshee is 15% seated
+    "c40_play1": "opening:300-6974,early:6974-15000,banshee:15000-30000,middle:30000-45000,late:45000-57017",
+}
+# A log names its pad only by its size ("pad: replaying ms0:/halo/pad.pad,
+# N bytes": the rig copies every pad to pad.pad). The sizes of the lab's
+# projects/sierra/scripts/pads/ (all different); a re-recorded pad gets its line here.
+PAD_BYTES = {
+    4513757: "b30_leg2", 4852157: "b30_leg1", 4486369: "c20_leg2", 5577602: "c20_leg1",
+    8452169: "b40_leg1", 3392953: "b40_leg1_part", 4433040: "b40_play1", 6977168: "c40_leg2",
+    6195887: "c40_leg1", 5280736: "c40_play1", 4126153: "a30_leg1", 2661944: "a30_play1",
+    6778679: "a50_leg1", 2518401: "d20_play1", 4496913: "c10_play1",
+    505208: "b30_play1", 649592: "b30_play2", 1236152: "c20_play1",
 }
 
 
@@ -60,17 +113,38 @@ def map_of(path):
     return None
 
 
+def pad_of(path):
+    """the pad the log replays, by its size; None for a log with no replay,
+    '<N bytes>' for a pad not in PAD_BYTES"""
+    for line in open(path, errors="replace"):
+        m = re.search(r"pad: replaying \S+, (\d+) bytes", line)
+        if m:
+            size = int(m.group(1))
+            return PAD_BYTES.get(size, "%d bytes" % size)
+    return None
+
+
 def stretches_for(paths, given):
-    """the stretches to read: --stretches if given, else the logs' map's own
-    (every log naming the same map in MAP_STRETCHES), else the opening bench's;
+    """the stretches to read: --stretches if given, else the logs' pad's own
+    (every log replaying the same pad in PAD_STRETCHES), else, for logs that
+    replay no pad, their map's (MAP_STRETCHES), else the opening bench's;
     with a line saying which"""
     if given:
         return given, "as given"
+    pads = set(pad_of(p) for p in paths)
     maps = set(map_of(p) for p in paths)
+    if len(pads) == 1 and None not in pads:
+        (pad,) = pads
+        if pad in PAD_STRETCHES:
+            return PAD_STRETCHES[pad], "pad %s's own (stretches.tsv)" % pad
+        return STRETCHES, "b30's opening bench (pad %s has no stretches of its own here: give --stretches)" % pad
+    if len(pads) > 1:
+        return STRETCHES, "b30's opening bench (the logs replay %s: give --stretches)" % (
+            ", ".join(sorted(str(p) for p in pads)))
     if len(maps) == 1:
         (name,) = maps
         if name in MAP_STRETCHES:
-            return MAP_STRETCHES[name], "%s's own (stretches.tsv)" % name
+            return MAP_STRETCHES[name], "%s's own, no pad (stretches.tsv)" % name
         return STRETCHES, "b30's opening bench" + ("" if name == "b30" else " (%s has no stretches of its own here)" % name)
     return STRETCHES, "b30's opening bench (the logs name %s)" % (", ".join(sorted(str(m) for m in maps)))
 
@@ -168,7 +242,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("logs", nargs="+")
     ap.add_argument("--names", help="column names, comma separated (default: the build numbers)")
-    ap.add_argument("--stretches", default=None, help="NAME:FROM-TO game ticks, comma separated (default: the logs' map's own, else the opening bench's)")
+    ap.add_argument("--stretches", default=None, help="NAME:FROM-TO game ticks, comma separated (default: the logs' pad's own, else their map's, else the opening bench's)")
     a = ap.parse_args()
     runs = [read(log_path(p)) for p in a.logs]
     names = a.names.split(",") if a.names else ["b" + r[2]["build"] for r in runs]

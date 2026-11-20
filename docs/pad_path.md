@@ -1,6 +1,6 @@
 # The pad path: a replay that holds Sheepdog01's route on any build
 
-Design and feasibility read (the audit session, 2026-11-12; the lead's brief `drift_tolerant_replay` in the lab's `coord/briefs/`). Nothing here is built. Labels: [M] measured on a PSP, [E] emulator or count, [D] read in code or data, [U] inference.
+Design and feasibility read (the audit session, 2026-11-12; the lead's brief `drift_tolerant_replay` in the lab's `projects/sierra/coord/briefs/`). Nothing here is built. Labels: [M] measured on a PSP, [E] emulator or count, [D] read in code or data, [U] inference.
 
 ## 0. The answer
 
@@ -94,7 +94,7 @@ Why steer at all, and not snap small and often: a snap skips collision, so near 
 
 What steer can't do, and so what the snap is for: catch up when the recorded stick is already full (the clip leaves no room), a fall, a missed jump, a lift or door that wasn't there yet.
 
-**The bounds against slice 2's table** (the lab's `psp/sierra/findings/padpath2_watch.txt`, d20, per 300 ticks) [E]:
+**The bounds against slice 2's table** (the lab's `projects/sierra/findings/padpath2_watch.txt`, d20, per 300 ticks) [E]:
 
 - **Seeds slide, slowly:** the route is exact (0.000) on every variant to tick 1,800, then the seeds and the VFPU's other rounding go 0.05 → 0.5 units over about 300 ticks (seed 2: mean 0.14, max 0.36 in its first parted window; 0.53, 0.99 in the next). That is steering's ground, and 0.05 and 0.5 are the right order.
 - **A script's move looks like a jump and undoes itself:** in ticks 2,700-2,999 three variants are ~60 units off for 72 ticks and back under one unit by 3,300: the game teleported the player behind a gate the fight opens, 2.4 s later than on the recording. So **past 8 units the hold waits 150 ticks before it sets him on the path** (`holdfarN`): the game usually brings him itself, and a snap ahead of the script would put him where the level isn't ready.
@@ -232,7 +232,7 @@ All proofs are emulator runs unless marked. Keep words: `pathrec` (`pathlog`), `
 
 An A/A on the PSP-1000, 62b2c457 + PSP_PADPATH=1: b30_leg2 with its pathlegs1 path (proven to the level's end), `padhold seed1 | padhold seed2`, repeat 2, to 4,500 ticks, statecrc on. **Each seed's two runs are identical in play and both seeds at every tick**, where unheld b30_leg2 runs of one build part near 2,400 (the lab's bugs.md B91). The seeds play different games from tick 0, as §2.3 wants. The hold held from tick 900 (0 ticks over the snap bound), forced the recording's kills on schedule and steered from ~4,200; the repeats' interactive time agreed within 0.1 s of ~300 s. So §2.3's reading stands on the PSP: a held pair is read whole, with the seeds' spread as its noise.
 
-### Slice 3's results (2026-11-13 03:46, the builder's read; the lab's `padpath3` 43397924653, findings `padpath3_hold`, table `psp/sierra/findings/padpath3_watch.txt`) [E]
+### Slice 3's results (2026-11-13 03:46, the builder's read; the lab's `padpath3` 43397924653, findings `padpath3_hold`, table `projects/sierra/findings/padpath3_watch.txt`) [E]
 
 - **Inert on its own game:** `padhold` on the path's build and seed: play and both seeds identical to the run without it over 29,208 ticks, every `hold:` line zero.
 - **On foot the hold works, on every variant alike:** from the first parting (tick ~1,800) to the level's end, seeds 1-3, the VFPU's other rounding and posing B's build all sit 0.1-0.25 units off the route (mean per window), with the largest ~0.6, against 15-70 units unheld. Posing B is no worse than a seed. Cost: nearly every tick steered, and the player set on the path 1-4 times per 300 ticks, each time from about half a unit. That is the toy's "can't catch up at full stick" case: once behind a running player, only a snap closes it.

@@ -60,7 +60,9 @@ Every write-up about the port is in this folder: design notes, measurements, pla
 - [`hardware_facts.md`](hardware_facts.md): Measured hardware facts
 - [`hardware_surveys.md`](hardware_surveys.md): The tick, system by system: what eight surveys found (directions 1 and 2)
 - [`hardware_utilization.md`](hardware_utilization.md): Hardware utilization: does the port use the PSP well?
+- [`fix_b98.md`](fix_b98.md): FIXES_B98: a conversation that has ended is read as none (B98's fix)
 - [`hotg.md`](hotg.md): HOTG: the program's hot variables packed by heat
+- [`sound_game_time.md`](sound_game_time.md): Sound game time: game logic that waits on sound playback (B98 b, B91; design)
 - [`hw_capabilities.md`](hw_capabilities.md): The PSP-1000's hardware: what we use, what we don't, and what to chase
 - [`levers_next_b138.md`](levers_next_b138.md): The next levers, ranked by payout (2026-10-17, after b137)
 - [`mehotg.md`](mehotg.md): MEHOTG: the ME's hottest variables packed by heat
@@ -87,6 +89,7 @@ Every write-up about the port is in this folder: design notes, measurements, pla
 - [`mevis_landing.md`](mevis_landing.md): Visibility on the Media Engine: landing mevis (option C's step 3, re-scoped)
 - [`mevis_slice2.md`](mevis_slice2.md): Visibility on the ME, slice 2: the answer ready when it's read
 - [`mexec.md`](mexec.md): MEXEC: the Media Engine's hot code run from its eDRAM
+- [`tgme.md`](tgme.md): TGME: the code layout coloured for both caches, the ME weighted as it runs (its copy, its jobs, the pads' windows)
 - [`plan_music_stream.md`](plan_music_stream.md): The music path: Vorbis from the stick, decoded on the ME, on a 44.1 kHz output
 - [`plan_preconvert.md`](plan_preconvert.md): PRECONVERT: model vertex buffers baked in the GE's form
 - [`plan_sndstream.md`](plan_sndstream.md): Long sounds streamed (SNDSTREAMLONG): the plan
@@ -170,6 +173,9 @@ Every write-up about the port is in this folder: design notes, measurements, pla
 - [`renderer_debugging.md`](renderer_debugging.md): Renderer debugging notes (builds 52–90)
 - [`research_application.md`](research_application.md): Applying the research (2026-10-14)
 - [`stage_state_note.md`](stage_state_note.md): Stages need a world that holds still: the shared state that walls the tick's stages
+- [`ai_policy.md`](ai_policy.md): How AI is used here: review, comments, upstreaming to ChupathingyCE, crediting what we borrow (moved from CLAUDE.md, 2026-11-18)
+- [`build_switches.md`](build_switches.md): Building the port, and every build switch (moved from CLAUDE.md, 2026-11-18)
+- [`install.md`](install.md): The emulator, the lab's runners, hardware runs, installing on the stick and pulling logs (moved from CLAUDE.md, 2026-11-18)
 - [`testing_pipeline.md`](testing_pipeline.md): How the project tests: the shape of the pipeline
 - [`toolchain.md`](toolchain.md): Building Sierra-III from scratch
 - [`upstream_reports.md`](upstream_reports.md): Reports for ChupathingyCE
@@ -372,6 +378,7 @@ History: each build's notes (`build_`), its review walk-through (`review_`), its
 | b148 |  | [review](review_b148.md) |  | [notes](release_notes_b148.md) |
 | b149 |  | [review](review_b149.md) |  | [notes](release_notes_b149.md) |
 | b150 |  | [review](review_b150.md) |  | [notes](release_notes_b150.md) |
+| b158 |  | [review](review_b158.md) |  |  |
 
 ## Subfolders
 

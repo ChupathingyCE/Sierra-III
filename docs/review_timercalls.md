@@ -7,7 +7,7 @@ Labels: [M] PSP, [E] emulator, [D] code, [U] inference.
 
 The cache model under-counts the main CPU's misses against the PSP's profiler, and the gap fits the
 system calls: each one costs the firmware's lines, more where the game has turned the cache over
-since the last call (the lab's `docs/research/cache_model_plan.md`, "The firmware term" [E x M]).
+since the last call (the lab's `projects/sierra/docs/research/cache_model_plan.md`, "The firmware term" [E x M]).
 On b30 (07c778e, emulator, lab tc1 41570210005) the tick makes ~282 system calls a tick and drawing
 ~446; `notimers` takes the tick to ~45 and drawing to ~80 [E]. The callers it removes are the
 instrument timers (`psp_microseconds`, `ge_clock`, `psp_step`): `object_update` 4 sites at 21 a

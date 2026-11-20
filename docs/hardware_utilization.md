@@ -1,6 +1,6 @@
 # Hardware utilization: does the port use the PSP well?
 
-Draft: phase 1 (the survey) done; phase 2's ranked list in section 7, for Sheepdog01 before any rebuild. The hardware session's brief is in the lab (`coord/handoff/hardware_2026-10-28.md`). Labels: [M] PSP, [E] emulator or estimate, [D] code or data, [U] inference.
+Draft: phase 1 (the survey) done; phase 2's ranked list in section 7, for Sheepdog01 before any rebuild. The hardware session's brief is in the lab (`projects/sierra/coord/handoff/hardware_2026-10-28.md`). Labels: [M] PSP, [E] emulator or estimate, [D] code or data, [U] inference.
 
 ## 1. Which lane limits each map
 
@@ -98,7 +98,7 @@ The split was set at build 108 by the cache model's misses per byte (`psp_scratc
 - price the winner with a PSP pair, never the cache model (the lab's cache rule; `noscratch` is the off switch);
 - ask whether the profiler's 6.6 KB belongs there in play builds.
 
-**The ME's eDRAM** (lab `psp/sierra/findings/edram.md`):
+**The ME's eDRAM** (lab `projects/sierra/findings/edram.md`):
 - About 1,664 KB is claimable.
 - The main CPU can't load from it; only the ME or DMA can. So it is the ME's memory, and it matters to placement: an ME job's tables can live there.
 - The two big claims exclude each other: CPA, the checkpoint (1,089 KB), and R2, the sound cache (1,664 KB; rejected on the PSP as built).
@@ -250,7 +250,7 @@ So:
 - branchy scalar work goes to the ME;
 - bytes the GE reads go to VRAM.
 
-Per-pass figures are research's (lab `coord/handoff/render_ownership_2026-10-27.md` 6b, b30) unless marked.
+Per-pass figures are research's (lab `projects/sierra/coord/handoff/render_ownership_2026-10-27.md` 6b, b30) unless marked.
 
 | Job | Runs on today | Best unit | Why |
 |---|---|---|---|

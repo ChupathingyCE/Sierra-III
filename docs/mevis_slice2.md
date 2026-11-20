@@ -24,7 +24,7 @@ One run (run 3) carries the rise, and none of the paths by which the ME could sl
 
 ## levercheck, and what's different
 
-`tools/levercheck.py --ground visibility` and `--ground me-scheduling` (the lab, 2026-11-05):
+`projects/sierra/tools/levercheck.py --ground visibility` and `--ground me-scheduling` (the lab, 2026-11-05):
 - **AIMEVISLEFT** (rejected): "stretch 17.9 -> 7.2-7.7 ms but frame +5.5% cinematic, +5.8% flight on the PSP-3000 (the visibility answer later)"; revive if "the visibility answer not needed early". The answer moved later cost the frame. Slice 2 moves the work the main CPU does before the answer is needed, never the answer.
 - **MEVISPROBE** (shelved): "the main CPU waits on the ME's answer 1.65 ms a view against 0.23-0.67 off"; revive if "the ME's answer ready at the first reader without a wait (slice 2 ...)". This is that slice.
 - **MEVGATHER** (idea): visibility's inputs gathered compactly for the ME, "-1 to -3 ms of the collect's 2.8-3.8 ms wait a view". Not this slice (below: it is the next one).

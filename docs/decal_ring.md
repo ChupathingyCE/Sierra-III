@@ -8,7 +8,7 @@ Labels: **[M]** measured on a PSP, **[E]** emulator or a count, **[D]** read in 
 
 **Proof [E]:**
 - Play and both seeds are identical on b30 and b40, and the strict run is clean (`decalring_proof`, `decalring_strict_proof`).
-- b30's pictures sit inside the A/A. b40's differ in 229 frames against the A/A's 9, mostly in the drive: once the cache is full, the ring lets the marks after its turn go, where the old walk let the least recently made go, so a different few tyre marks show. Shots are in the lab's `psp/sierra/findings/shots/decalring/`.
+- b30's pictures sit inside the A/A. b40's differ in 229 frames against the A/A's 9, mostly in the drive: once the cache is full, the ring lets the marks after its turn go, where the old walk let the least recently made go, so a different few tyre marks show. Shots are in the lab's `projects/sierra/findings/shots/decalring/`.
 - In the b40 run, the ring made 5,632 blocks with 4 wraps; the old walk was used 3 times.
 
 **Price [M]** (the lab's sierra-hw 43499740294, PSP-3000, 5cba2c7, b40_play1 to 400 s, `decalringold | -`, two repeats each; findings `decalring_pair_b40_psp3000`):

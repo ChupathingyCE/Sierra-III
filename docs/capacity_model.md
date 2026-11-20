@@ -6,7 +6,7 @@ Labels: [M] measured on a PSP, [E] emulator or cache model, [D] read in code or 
 
 ## Ledger 2: lighting (started 2026-11-04)
 
-Sheepdog01, 2026-11-04 13:44: today's lighting cost, split into models and world, before the GE's hardware lights (`hw_capabilities.md` C2) are chased. Source: the light census (keep word `lightcensus`, build switch `PSP_LIGHTCENSUS=1`, branch `recon/light-census` on tock161), the lab's `findings/measurements.tsv` rows labelled LC1, and the earlier lighting levers (`tools/levercheck.py --ground lighting`).
+Sheepdog01, 2026-11-04 13:44: today's lighting cost, split into models and world, before the GE's hardware lights (`hw_capabilities.md` C2) are chased. Source: the light census (keep word `lightcensus`, build switch `PSP_LIGHTCENSUS=1`, branch `recon/light-census` on tock161), the lab's `findings/measurements.tsv` rows labelled LC1, and the earlier lighting levers (`projects/sierra/tools/levercheck.py --ground lighting`).
 
 ### 1. The jobs
 
@@ -84,7 +84,7 @@ Per draw through the loop, d20's machines look at ~92 triangles: 69% are cut for
 
 ### 3. The price [E]
 
-The cache model's cycles in each lighting entry, inclusive of what it calls, as a share of all the run's cycles (lab sierra-batch 41904126863, tock161 68a2f134, `spliteach`, the replay on the main CPU; read with the lab's `psp/sierra/lc2read.py` and the build's link map). These are shares, not milliseconds.
+The cache model's cycles in each lighting entry, inclusive of what it calls, as a share of all the run's cycles (lab sierra-batch 41904126863, tock161 68a2f134, `spliteach`, the replay on the main CPU; read with the lab's `projects/sierra/scripts/lc2read.py` and the build's link map). These are shares, not milliseconds.
 
 | Stretch | Models (static prep, dynamic prep, point samples) | Relinks (`light_reconnect_to_map`) | Scene (`lights_preprocess_scene`) | World selection (`lights_render_diffuse`) | World pass (`psp_ge_light_draw_body`) | All |
 |---|---|---|---|---|---|---|
@@ -99,7 +99,7 @@ The cache model's cycles in each lighting entry, inclusive of what it calls, as 
 
 **Vehicles.** The drive's shares are b30's. A vehicle adds one lightmap sample, one dynamic preparation and two relinks a frame (§2), so vehicles cost the CPU's lighting nothing measurable. Their cost is the GE's: 8,789 indices a vehicle a frame, times its 2–4 lights.
 
-**Relinks.** They are 3.4–3.8% of the tick on b30, d20 and the drive, and 1.9% on c20. On b30, 92–95 of the ~100 relinks a frame are weapons' attached lights, while under one weapon light a frame reaches the pass. So the relinks of lights never drawn are about 3.5% of b30's tick, if a relink costs the same whatever its carrier [U on E]. That's DAL's and LSAME's ground. `tools/levercheck.py DAL LSAME`:
+**Relinks.** They are 3.4–3.8% of the tick on b30, d20 and the drive, and 1.9% on c20. On b30, 92–95 of the ~100 relinks a frame are weapons' attached lights, while under one weapon light a frame reaches the pass. So the relinks of lights never drawn are about 3.5% of b30's tick, if a relink costs the same whatever its carrier [U on E]. That's DAL's and LSAME's ground. `projects/sierra/tools/levercheck.py DAL LSAME`:
 - **DAL [stopped]**, held: dal 0f3b381 isn't picture-exact on a10 (81 systematic frames of 4,490). Revive when the missing a10 light is found and fixed, so pictures are exact, and a gain is shown.
 - **LSAME [open]**, sized: ceiling 1.65 ms a frame on b30's flight, ~1.0 late cinematic, 0.6 d20 swamp [objl1].
 
@@ -115,7 +115,7 @@ Its cost is the GE's per-vertex time for a spot or attenuated point light, again
 
 **A projected-texture pass for the world [D, U].** Today's pass already is a GE redraw of the lit triangles. What sits on the ME is the per-vertex light (reach, cone, facing, gel) and, for the flashlight, the split that rounds the falloff and cone on big triangles (FLC). A projected pass would move the cone and the falloff into textures the GE reads through the texture matrix (the old `lightconetex` path did the cone), leaving the ME a cull and an index copy. Its price has three parts:
 - **What it removes from the ME.** The census says what the loop does: 69% of the triangles it looks at are cut for reach and 31% lit (d20's machines, both views). The flashlight's are cut by cone (28%) and reach (36%), and 54 a frame are split into 143 pieces. On d20's hands-off view that's ~8,400 triangles a frame on the PSP [U on E]. A projected pass keeps the cull (or the GE draws all ~8,400), so it removes the per-corner falloff, facing and colour on the ~31% lit, plus the split. LMC (static lights' reach kept across frames: d20 swamp ~85% of light-frames are static [E]) removes the same per-corner work without a second GE pass, and is ranked first.
-- **What it adds on the GE.** The GE has one texture a pass, so keeping the surface's own texture (B7, a restoration) ~~takes a second pass over the lit pixels into the destination alpha~~ **can't be done with a second pass into the destination alpha: the frame buffer is 5650, with none (corrected 2026-11-10, research; `psp_ge.c` `sceGuDrawBuffer(GU_PSM_5650, …)`). A projected pass keeps the surface only as its average colour (the old `lightconetex` look, B7 given up), or makes the light term in a buffer of its own that shares the depth buffer's stride (~278 KB of VRAM; the lab's `research/opportunities/light_pass.md`, option C).** The facing term needs normals in the level's vertices (kept apart today, 4 bytes a vertex).
+- **What it adds on the GE.** The GE has one texture a pass, so keeping the surface's own texture (B7, a restoration) ~~takes a second pass over the lit pixels into the destination alpha~~ **can't be done with a second pass into the destination alpha: the frame buffer is 5650, with none (corrected 2026-11-10, research; `psp_ge.c` `sceGuDrawBuffer(GU_PSM_5650, …)`). A projected pass keeps the surface only as its average colour (the old `lightconetex` look, B7 given up), or makes the light term in a buffer of its own that shares the depth buffer's stride (~278 KB of VRAM; the lab's `projects/sierra/research/opportunities/light_pass.md`, option C).** The facing term needs normals in the level's vertices (kept apart today, 4 bytes a vertex).
 - **Where it could pay.** Only where the ME binds: d20's heavy view, where the main CPU waits 14–17 ms a frame for the ME's render job (`cpu_cost_map.md` §1). On b30 under the flashlight the loop sees ~57 triangles a frame and lights none, so there's nothing to win.
 
 A projected pass is a compromise (a look change) unless the textures reproduce Halo's falloff to the 1/255. By the rule for compromises it is catalogued, not built.

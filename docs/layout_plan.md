@@ -1,6 +1,6 @@
 # The whole-frame layout plan: every system placed by unit, memory, rate and budget
 
-2026-10-30, hardware session (Sheepdog01's ask, 12:34-12:54: "look at the whole, find a spot for everything"; the brief is the lab's `coord/handoff/layout_plan_2026-10-30.md`). A plan on paper: nothing here is built or run for it. Sheepdog01 reads and rules before any rewrite starts.
+2026-10-30, hardware session (Sheepdog01's ask, 12:34-12:54: "look at the whole, find a spot for everything"; the brief is the lab's `projects/sierra/coord/handoff/layout_plan_2026-10-30.md`). A plan on paper: nothing here is built or run for it. Sheepdog01 reads and rules before any rewrite starts.
 
 Labels: [M] measured on a PSP, [E] emulator or estimate, [D] read in code or data, [U] inference. Every ms is per frame drawn unless it says "a tick". "15/30" is 15 frames and 30 ticks a second; "30/30" is 30 and 30.
 
@@ -322,7 +322,7 @@ Checked against w142 (d367e0a) [D]:
 
 - **Lanes and loads:** lab findings `timemap_lanes` (sierra-hw 40566969386), `lanes_per_frame` (40714069887, 40718998656), b149's hand play rows; `hardware_utilization.md` §1-§8; `hardware_big_moves.md`; `hardware_surveys.md`; the lab's `rank_pipelined.md` §9.
 - **Today's lessons:** music (41108776634, 41123795043, 41133871215), PDC 3b (41116735742, 41123563741, 41129823447), AIME 2a's faults (41132036291, 41142311296), the VME (41115505618, 41142248633).
-- **C:** the lab's `coord/handoff/render_ownership_2026-10-27.md` §4 and §6b; `mevis_landing.md`; hardware_utilization.md §4.
+- **C:** the lab's `projects/sierra/coord/handoff/render_ownership_2026-10-27.md` §4 and §6b; `mevis_landing.md`; hardware_utilization.md §4.
 - **PDC:** `pdc_plan.md` (research/pdcreuse).
 - **eDRAM:** the lab's `findings/edram.md`; `aime_me.md`.
 - **Multiplayer:** `multiplayer_plan.md` §4, §8; hardware_utilization.md §6.

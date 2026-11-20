@@ -54,7 +54,7 @@ b30 route to 210 s: default, default again (the noise control), `inflightkb256`;
 6 runs × (730 + 90) s ≈ 82 min, PSP-1000 (either PSP; label it):
 
 ```
-timeout 120 tools/lab.sh run sierra-hw ref=<inflightkb head> map='levels\b30\b30' route=b30_b139t2_timed maps=/bake/b139a/halo/maps init="cheat_deathless_player 1" wall=730 keep="nearauto mekinds gebusy assettrack geo2 exitat210" keepsets="- | gedefer gemeon geinflight mevram | gedefer gemeon geinflight mevram inflightkb256" repeat=2 allowmismatch=yes env="PSP_PGO=use PSP_PGO_PROFILE=campaign-w140 PSP_PGO_EXTRA=-fno-unroll-loops,-fno-peel-loops,-fno-tracer,-fno-ipa-cp-clone PSP_TEXT_LAYOUT=b132"
+timeout 120 shared/tools/lab.sh run sierra-hw ref=<inflightkb head> map='levels\b30\b30' route=b30_b139t2_timed maps=/bake/b139a/halo/maps init="cheat_deathless_player 1" wall=730 keep="nearauto mekinds gebusy assettrack geo2 exitat210" keepsets="- | gedefer gemeon geinflight mevram | gedefer gemeon geinflight mevram inflightkb256" repeat=2 allowmismatch=yes env="PSP_PGO=use PSP_PGO_PROFILE=campaign-w140 PSP_PGO_EXTRA=-fno-unroll-loops,-fno-peel-loops,-fno-tracer,-fno-ipa-cp-clone PSP_TEXT_LAYOUT=b132"
 ```
 
 Read: `tools/abreport.py` per stretch (frame, drawing, tick); the `gemeon` line's wait a run × runs ÷ 300 (expect ~0 at 256); the threads line's idle share (expect the plain side's ~1-2%). **Pass:** the frame falls on the flight and the landing beyond the repeats' spread and doesn't rise on the beach.

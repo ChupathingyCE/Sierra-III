@@ -17,11 +17,11 @@ Lab 38834044173, against b131 as built: play and both seeds identical at every c
 
 b131's ladder on the PSP-1000 ticked 10–17% slower than b130's on c10, a30, c40 and a10 [M]. Not surface bounds: c10 with and without it the same on the PSP-1000 (lab 38810074163) and in the cache model [M, E]. The cache model reproduced the rest (lab `reg131`) [E]: the same code laid out by b131's profile misses 42% more instructions on c10 and 48% on a30 than laid out by b130's; built without any profile, b131 is only 2.6% slower than b130. The profile decides where the hot code sits, and that placement is luck: worth ~18% of c10's tick for b130, two thirds of it lost for b131. §1 is the answer.
 
-## §1 The code laid out by its calls (`psp_build.py` `PSP_TEXT_LAYOUT`; the lab's `tools/codeorder.py`; `docs/order_file.md`)
+## §1 The code laid out by its calls (`psp_build.py` `PSP_TEXT_LAYOUT`; the lab's `projects/sierra/tools/codeorder.py`; `docs/order_file.md`)
 
 **What.** `docs/order_file.md` has the method. `PSP_TEXT_LAYOUT=<name>` links the code in the order a placement file of `psp/layout/` gives (`*<object>(<section>)` lines); without it, the build links as before. Two files exist:
 - **`psp/layout/b132.txt`: b132's own order, kept.** The lab's `codeorder.py --keep` wrote it from b132's link map. A build of b132 linked through it put all 8,082 code sections at b132's own addresses (lab sierra-build 38833047050) [D]. Later builds can link in b132's order whatever their own profile does.
-- The call-graph orders (the lab's `psp/sierra/layouts/`), scored in the cache model, not linked.
+- The call-graph orders (the lab's `projects/sierra/scripts/layouts/`), scored in the cache model, not linked.
 
 **Why b132 ships without one.** b132's profile placed the code well: against b131 its tick I-misses fall 3–27% on all ten maps [E, lab cm132], and its PSP-1000 ladder ticks under b130's everywhere [M, lab 38827551482]. The call-graph order (Pettis and Hansen, from every call on all ten maps) scored about the same over whole runs, not better (c10 −19.6% against b132's −14.6%; elsewhere a point or so behind) [E, lab score131]. Next: scores of the tick alone, at the build's 64-byte function steps, and an order from the temporal graph with placement by cache set (lab levers T2, TG, LK).
 

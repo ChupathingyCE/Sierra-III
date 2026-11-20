@@ -248,7 +248,7 @@ So the ME scheduler's rebuild buys on one kind of stretch only: where a heavy li
 
 B1 of `redesign_recon.md` (the master, 2026-11-05): where the main CPU binds, the ME's room goes to work moved onto it. Each candidate sized on b30's beach and on c20: its main-CPU time, what walls it, the ME time it would take, and the frame it could buy. A sizing, not a build.
 
-**The runs** [M, PSP-1000, one run a map]: Sierra-III `recon/b40tick-pcsnap` 5a34a947 (tock162 d76ff14b + the sampler's snapshots by game tick), non-strict with campaign-w162d, the ledger 3 keep set plus `pcsample pcsampleother pcsnapN`. b30's timed route, lab sierra-hw 42000782600 (exited at 4,414), the beach read between the snapshots at game time 2,731 and 3,673. c20 hands off, 42000805365 (exited at 3,541), read between 1,568 and 3,386. Each stretch's profile is one snapshot less the one before (`psp/sierra/pcsample.py --minus`; symbols from sierra-build 41974808110, same commit and switches).
+**The runs** [M, PSP-1000, one run a map]: Sierra-III `recon/b40tick-pcsnap` 5a34a947 (tock162 d76ff14b + the sampler's snapshots by game tick), non-strict with campaign-w162d, the ledger 3 keep set plus `pcsample pcsampleother pcsnapN`. b30's timed route, lab sierra-hw 42000782600 (exited at 4,414), the beach read between the snapshots at game time 2,731 and 3,673. c20 hands off, 42000805365 (exited at 3,541), read between 1,568 and 3,386. Each stretch's profile is one snapshot less the one before (`projects/sierra/scripts/pcsample.py --minus`; symbols from sierra-build 41974808110, same commit and switches).
 
 | Stretch | Frame | Tick (ticks a frame) | Drawing | Other | The ME busy (room) | Main CPU's ring pushes refused, ME busy |
 |---|---|---|---|---|---|---|
@@ -340,6 +340,6 @@ The main CPU's wait for the render slot is 9.7-13.6 ms a job, two jobs a frame: 
 
 ## Keeping it current
 
-Re-run the four stretches when the frame's shape changes (a new ME job, the replay rebuilt, frames in flight), and update the table and the "who binds" rows in the same turn as the findings (the lab's `psp/sierra/findings/measurements.tsv`, rows with source "ledger 3").
+Re-run the four stretches when the frame's shape changes (a new ME job, the replay rebuilt, frames in flight), and update the table and the "who binds" rows in the same turn as the findings (the lab's `projects/sierra/findings/measurements.tsv`, rows with source "ledger 3").
 
 Started 2026-11-04.
