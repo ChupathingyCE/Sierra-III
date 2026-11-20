@@ -25,6 +25,9 @@ syscall instructions, calls into the import stubs (system calls), and it
 counts the calls through a register (jalr) that will leave the copy.
 A comment line "# @room <KB>" sets the copy's room (192 KB
 without it); psp_build.py reads the same line, so psp_me.c's room matches.
+A comment line "# @fill" cuts the list where the room or the table fills
+(the longest head that fits, said in a line) instead of refusing it: for a
+ceiling test that names more than fits, hottest first.
 
 The ELF is the port's PRX (linked at 0 with -q, so every relocation the link
 resolved is still listed). What the copy needs, from the relocations inside
@@ -232,10 +235,45 @@ def check_me(elf, chosen, log):
     return sum(len(v) for v in vfpu.values()) + sum(syscalls.values()) + sum(imports.values())
 
 
-def build(elf, names, log, entry="psp_ge_me_replay"):
+class Over(Exception):
+    """a copy that doesn't fit its room, or a branch that can't reach its trampoline"""
+
+
+def build(elf, names, log, entry="psp_ge_me_replay", fill=False, max_words=None):
     chosen = resolve(elf, names, log)
     if not chosen or chosen[0]["name"] != entry:
         sys.exit("mexec: the list's first function must be the ME's entry, %s, and be in the program" % entry)
+    if not fill:
+        try:
+            return lay(elf, chosen, log)
+        except Over as e:
+            sys.exit(str(e))
+    # "# @fill": the longest head of the list, hottest first, whose copy fits
+    # the room and whose table fits psp_mexec_table, found by halving (a longer
+    # head never needs less of either)
+    def fits(k):
+        try:
+            words = lay(elf, chosen[:k], lambda line: None)
+        except Over:
+            return False
+        return max_words is None or len(words) <= max_words
+    if fits(len(chosen)):
+        return lay(elf, chosen, log)
+    lo, hi = 1, len(chosen)
+    if not fits(lo):
+        sys.exit("mexec: @fill: not even the entry fits the room")
+    while hi - lo > 1:
+        mid = (lo + hi) // 2
+        if fits(mid):
+            lo = mid
+        else:
+            hi = mid
+    log("mexec: @fill: the list cut after %d of its %d functions (the first left in main RAM: %s)" % (
+        lo, len(chosen), chosen[lo]["name"]))
+    return lay(elf, chosen[:lo], log)
+
+
+def lay(elf, chosen, log):
     place, at = {}, 0
     for f in chosen:
         at = (at + ALIGN - 1) // ALIGN * ALIGN
@@ -285,7 +323,7 @@ def build(elf, names, log, entry="psp_ge_me_replay"):
     for site_place, k in branches:
         reach = tramp_at + 8 * k - (site_place + 4)
         if not -0x20000 <= reach < 0x20000:
-            sys.exit("mexec: a branch at copy %#x can't reach its trampoline (%d bytes)" % (site_place, reach))
+            raise Over("mexec: a branch at copy %#x can't reach its trampoline (%d bytes)" % (site_place, reach))
     # jump tables: runs of .rodata words naming the inside of one copied
     # function. Each is copied after the trampolines, its words the eDRAM
     # addresses of the copy, and the lui/lo pair in the function that loads
@@ -351,7 +389,7 @@ def build(elf, names, log, entry="psp_ge_me_replay"):
     jump_words = sum(len(r) for r in tables)
     total = data_at
     if total > ROOM:
-        sys.exit("mexec: the copy is %d bytes, over the %d of its room: shorten the list" % (total, ROOM))
+        raise Over("mexec: the copy is %d bytes, over the %d of its room: shorten the list" % (total, ROOM))
     words = [MAGIC, VERSION, chosen[0]["value"], total, len(chosen), len(calls), len(trampolines), len(branches),
              len(imm_patches), jump_left, len(data_blocks), tramp_at] + [0] * (HEADER_WORDS - 12)
     for f in chosen:
@@ -390,17 +428,20 @@ def main(argv):
     elf = Elf(args[0])
     global ROOM
     lines = open(args[1]).read().splitlines()
+    fill = False
     for l in lines:
         m = re.match(r"#\s*@room\s+(\d+)\s*$", l.strip())
         if m:
             ROOM = int(m.group(1)) * 1024
+        if re.match(r"#\s*@fill\s*$", l.strip()):
+            fill = True
     names = [l.split("#")[0].strip() for l in lines]
     names = [n for n in names if n]
-    words = build(elf, names, print, entry)
     table = [s for s in elf.symbols if s["name"] == "psp_mexec_table" and s["type"] == STT_OBJECT]
     if len(table) != 1:
         sys.exit("mexec: psp_mexec_table isn't in the program (built without PSP_MEXEC?)")
     t = table[0]
+    words = build(elf, names, print, entry, fill, t["size"] // 4)
     if 4 * len(words) > t["size"]:
         sys.exit("mexec: the table is %d words, over psp_mexec_table's %d" % (len(words), t["size"] // 4))
     s = elf.section_at(t["value"])
