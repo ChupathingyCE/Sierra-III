@@ -102,7 +102,7 @@ Limits: the bundled Invader needs glibc 2.39+ (Ubuntu 24.04, Fedora 40, Arch/Cac
 
 ## Where the Memory Stick's time goes: sound [M]
 
-Sheepdog01's b101 run 2 (6.5 minutes in The Library): the sound cache loaded **99 MB**, against 5.2 MB of textures and 10.3 MB of geometry over the same run. **Sound is about 86% of everything read from the stick in play**, and the likely source of most of the stick lock's waits. The Library's sounds are 55 MB in all (census, `projects/sierra/research/audio/snd_census.py`): **40 MB of it is 44.1 kHz stereo (628 music permutations)**, the rest 22 kHz mono. So the cache (1 MB, now 1.125) re-reads the same sounds over and over.
+Sheepdog01's b101 run 2 (6.5 minutes in The Library): the sound cache loaded **99 MB**, against 5.2 MB of textures and 10.3 MB of geometry over the same run. **Sound is about 86% of everything read from the stick in play**, and the likely source of most of the stick lock's waits. The Library's sounds are 55 MB in all (census, `research/audio/snd_census.py`): **40 MB of it is 44.1 kHz stereo (628 music permutations)**, the rest 22 kHz mono. So the cache (1 MB, now 1.125) re-reads the same sounds over and over.
 
 The levers, largest first [E]:
 - **Music at 22 kHz** in the bake: halves the biggest stream and frees cache for the effects (needs an Xbox ADPCM re-encode in the bake: Invader's sound tool can encode; not built tonight).

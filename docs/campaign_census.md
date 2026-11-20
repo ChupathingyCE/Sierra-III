@@ -1,6 +1,6 @@
 # Campaign map census (all ten maps) — measured 2026-10-02 and 2026-10-04
 
-Source: Sheepdog01's Xbox retail maps (xiso dump), zlib-decompressed, measured with `census.py`, `deep.py`, `anim_keyframe.py` (projects/sierra/research/baker). M = measured, E = estimate.
+Source: Sheepdog01's Xbox retail maps (xiso dump), zlib-decompressed, measured with `census.py`, `deep.py`, `anim_keyframe.py` (research/baker). M = measured, E = estimate.
 
 ## Decision (Sheepdog01, 2026-10-04): the PSP-1000 is non-negotiable
 

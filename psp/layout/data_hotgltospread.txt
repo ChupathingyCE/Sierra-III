@@ -1,4 +1,4 @@
-# Lever LTO: data_hotgspread's inputs as the LTO link names them (PSP_LTO=1, projects/sierra/research/lto2 6e685b5), for hotg's
+# Lever LTO: data_hotgspread's inputs as the LTO link names them (PSP_LTO=1, research/lto2 6e685b5), for hotg's
 # re-derivation under LTO (PSP_DATA_LAYOUT=hotgltospread PSP_DATA_SPREAD=1, docs/hotg.md's step 1): an LTO unit's
 # section in the link's own object; a unit's COMMON as its variables (the LTO units are -fno-common); a numbered
 # static as every static of its name (the link numbers them anew); a variable LTO found never written as its .rodata.

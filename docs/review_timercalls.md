@@ -1,4 +1,4 @@
-# Review: the timer calls (projects/sierra/research/timercalls, 2026-11-02)
+# Review: the timer calls (research/timercalls, 2026-11-02)
 
 Lever TIMERCALLS: fewer system calls in the hot paths. Written by Claude (syscount, the master's helper); Sheepdog01 reviews.
 Labels: [M] PSP, [E] emulator, [D] code, [U] inference.

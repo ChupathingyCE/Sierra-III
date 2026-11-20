@@ -301,7 +301,7 @@ Each is the walk-through of one change or branch, written for Sheepdog01's revie
 - [`review_streamoom.md`](review_streamoom.md): Review: a level material with no room for its copy (branch `streamoom`)
 - [`review_sv.md`](review_sv.md): Review: heaproom256 (heap from the volatile block)
 - [`review_texavg.md`](review_texavg.md): Review: texavg, a missing texture drawn as its 4x4 stand-in (branch `master/texavg`, on w142 a735763
-- [`review_timercalls.md`](review_timercalls.md): Review: the timer calls (projects/sierra/research/timercalls, 2026-11-02)
+- [`review_timercalls.md`](review_timercalls.md): Review: the timer calls (research/timercalls, 2026-11-02)
 - [`review_tock158.md`](review_tock158.md): Review: tock158
 - [`review_tock159.md`](review_tock159.md): Review: tock159
 - [`review_tock160.md`](review_tock160.md): Review: tock160
@@ -381,5 +381,5 @@ History: each build's notes (`build_`), its review walk-through (`review_`), its
 
 ## Subfolders
 
-- [`projects/sierra/research/`](projects/sierra/research/): the sources behind the levers: other projects' write-ups, read and cited (`research_vita.md` records the Vita port's grant).
+- [`research/`](research/): the sources behind the levers: other projects' write-ups, read and cited (`research_vita.md` records the Vita port's grant).
 - [`for_other_ports/`](for_other_ports/): what this port learned that other PSP ports can use.

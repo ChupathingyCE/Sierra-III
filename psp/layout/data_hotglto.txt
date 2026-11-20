@@ -1,6 +1,6 @@
 # Lever HOTG for the LTO build (PSP_LTO=1 PSP_DATA_LAYOUT=hotglto): the tick's hottest small variables, hottest per byte
 # first, as the LTO link names them (an LTO unit's in its own object, *ltrans*.o). Ranked by their own lines' data misses
-# (tick and drawing) in the LTO spread build (data_hotgltospread, PSP_DATA_SPREAD=1; lab ltodata1 41577231230, projects/sierra/research/lto2
+# (tick and drawing) in the LTO spread build (data_hotgltospread, PSP_DATA_SPREAD=1; lab ltodata1 41577231230, research/lto2
 # 11e85fb) on b30's route, c20 and c10, cache model, by docs/hotg.md's thresholds (lab projects/sierra/tools/hotgderive.py): 210 inputs,
 # 3,575 B, 97.7% of the spread inputs' misses. A numbered static (psp_keep_once_.N) is numbered by the link: one that
 # moves with a code change only places a cooler word.

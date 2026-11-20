@@ -55,11 +55,11 @@ def find(lines, line, frag):
 MARKED = re.compile(r"~~|supersed|conflict|weaker|\bbroke|\bwrong\b|correct(ed|ion)|\bstale\b|withdrawn|retired", re.I)
 LIVING = {
     "sierra": ["docs/*.md", "docs/research/*.md", "README.md", "CLAUDE.md"],
-    "lab": ["projects/sierra/research/*.md", "projects/sierra/research/opportunities/*.md", "projects/sierra/research/*/*.md", "projects/sierra/coord/briefs/*.md",
+    "lab": ["research/*.md", "projects/sierra/research/opportunities/*.md", "research/*/*.md", "projects/sierra/coord/briefs/*.md",
             "shared/coord/SHAPE.md", "shared/coord/roles/*.md", "docs/*.md", "README.md", "CLAUDE.md"],
 }
 RECORD = re.compile(r"(^|/)(review_[^/]*|discussion_[^/]*|build_notes[^/]*|overnight_[^/]*|recon_[^/]*|handoff[^/]*|superseded\.tsv)$|"
-                    r"^projects/sierra/research/(manifest|external|review_[^/]*)/")
+                    r"^research/(manifest|external|review_[^/]*)/")
 
 
 def stale(a):

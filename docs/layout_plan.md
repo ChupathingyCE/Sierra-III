@@ -323,7 +323,7 @@ Checked against w142 (d367e0a) [D]:
 - **Lanes and loads:** lab findings `timemap_lanes` (sierra-hw 40566969386), `lanes_per_frame` (40714069887, 40718998656), b149's hand play rows; `hardware_utilization.md` §1-§8; `hardware_big_moves.md`; `hardware_surveys.md`; the lab's `rank_pipelined.md` §9.
 - **Today's lessons:** music (41108776634, 41123795043, 41133871215), PDC 3b (41116735742, 41123563741, 41129823447), AIME 2a's faults (41132036291, 41142311296), the VME (41115505618, 41142248633).
 - **C:** the lab's `projects/sierra/coord/handoff/render_ownership_2026-10-27.md` §4 and §6b; `mevis_landing.md`; hardware_utilization.md §4.
-- **PDC:** `pdc_plan.md` (projects/sierra/research/pdcreuse).
+- **PDC:** `pdc_plan.md` (research/pdcreuse).
 - **eDRAM:** the lab's `findings/edram.md`; `aime_me.md`.
 - **Multiplayer:** `multiplayer_plan.md` §4, §8; hardware_utilization.md §6.
 - **The scratchpad:** `psp/src/psp_scratch.c`, `psp/src/psp_platform.c` (`psp_profile_tables_take`), `psp/src/psp_ge.c` (ge_initialize).

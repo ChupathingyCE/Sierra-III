@@ -1,5 +1,5 @@
 # codeorder.py --color --link: the hottest functions placed by cache set, at the link's own alignment; PSP_TEXT_LAYOUT
-# the LTO build's (PSP_LTO=1; its code in the link's own object, halo.elf.ltrans0.ltrans.o): lab ltotg1 41575757666 (projects/sierra/research/lto2 e045aef in w152L0_tgc90), --graph trg --hot-share 90 --line-heat --me-weight 0, sections' alignment from sierra-build 41581169605
+# the LTO build's (PSP_LTO=1; its code in the link's own object, halo.elf.ltrans0.ltrans.o): lab ltotg1 41575757666 (research/lto2 e045aef in w152L0_tgc90), --graph trg --hot-share 90 --line-heat --me-weight 0, sections' alignment from sierra-build 41581169605
 *psp/src/psp_dsound.o(.text.hot.psp_dsound_mix_split)
 *psp/src/psp_dsound.o(.text.unlikely.psp_dsound_mix_split)
 *psp/src/psp_dsound.o(.text.hot.decode_block)
