@@ -351,6 +351,9 @@ def build(elf, names, log, entry="psp_ge_me_replay"):
     jump_words = sum(len(r) for r in tables)
     total = data_at
     if total > ROOM:
+        # what to cut: each copied function's bytes, in the list's order
+        for f in chosen:
+            log("mexec: in the copy: %s %d" % (f["name"], f["size"]))
         sys.exit("mexec: the copy is %d bytes, over the %d of its room: shorten the list" % (total, ROOM))
     words = [MAGIC, VERSION, chosen[0]["value"], total, len(chosen), len(calls), len(trampolines), len(branches),
              len(imm_patches), jump_left, len(data_blocks), tramp_at] + [0] * (HEADER_WORDS - 12)
