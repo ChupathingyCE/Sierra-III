@@ -588,3 +588,20 @@ The distinction the box needs is whether a GE block can be kept and replayed whi
 - **A form's state sets:** with all words, a form (its vertices and base texture) is drawn with 57-93 distinct sets; without the frame's words (fog, lights, material colours, texture and palette addresses) 9.8 (b30) and 11.6 (b40), and 26-33% of forms need only one. The most is still 261, so a word that moves every frame is left in the kept set: the shimmer's offset (0x4A/0x4B) and the glow's colour are the map's candidates. The design takes those out before it sizes the record's state blocks.
 
 **What the counts don't say:** time. With `gemeon` (the default) the ME writes these words, so their cost sits in the ME's render row (~12 ms against 33 on the flight [M], §11), not the main CPU's. The brief's stop line (under ~1.5 ms a frame of layer-2 work it can reach on the flight) needs a PSP price of that share.
+
+## 16. The native path's design (DRAFT for the lead, 2026-11-20 06:1x, builder; the brief's step 3, written while the stop test of §15 waits on the lead's call; nothing built)
+
+**What a part's draw becomes:** a call to the form's state block plus the part's live words, instead of layer 2 deciding every word every draw.
+- **The form's state block:** the words of §15's kept set (everything but fog, the lights and ambient, the material colours, texture and palette addresses, and the two words the census still found moving: the shimmer's texture offset, 0x4A/0x4B, and the glow's colour), built once a form and state set, kept as a sub-list beside R's forms in the retained ring and CALLed. The census sizes it: ~10-12 sets a form on b30 and b40, a third of forms one, so a few sets a form, keyed by the kept set's hash, with a cap and a fall back to today's path past it.
+- **The live words, written each draw:** the world matrix (relative to `ge_eye`, §15's map), fog, the lights and ambient (the object's light set), the material colours, the texture and palette addresses (each texture's resident address), the shimmer's offset and the glow, then the vertex and index addresses and the draw.
+- **The repeats:** 53-55% of today's state words set a value already held (§15). A shadow of the GE's state where the words are written drops a word that sets what's held. The shadow has to know what each CALLed block sets (a ring form's words and the state blocks), so each block carries its words' effect, worked out when it's built. **This is the first slice on its own:** exact (the GE ends each draw in the same state), no records needed, and its proof is the cheapest.
+
+**What invalidates a state block:** the form's own data (B's stamp, §10) and the inputs the map named: the frame's camera (`ge_eye`), the object's lights, game time (the glow), `taa_frame` (the shimmer), the list's room and the size floor (`pass_small`, the passes chosen by size), `in_sky`, first person, the fog's state and texture residency. Each of these is on the live side of the line above, or picks which block (the passes chosen by size pick a different set, so a different key).
+
+**Where it runs:** with `gemeon` (the default) the ME writes the model's words, so the shadow and the call live in the ME's emit. Plain integer compares and copies: no VFPU and no system call. Its code is sized against the ME's 16 KB instruction cache before it's written (§11's lesson from R).
+
+**Switches:** build switch `PSP_DRAWNATIVE` (off by default), keep words `nativeskip` (slice 1, the shadow) and `nativeblock` (slice 2, the state blocks), each with its off word.
+
+**Proof:** drawing only, so play and both seeds identical on and off (statecrc), and pictures identical (framecrc, shots) on b30 and b40; then a PSP pair on the same pad bench, both sides in one build, run by the master from the builder's ask. Slice 1's census: the same `statecensus`, whose repeats should fall to ~0 with `nativeskip` on.
+
+**Open for the lead:** whether §15's stop test needs a PSP price first, or slice 1 goes ahead and is priced at its pair.
