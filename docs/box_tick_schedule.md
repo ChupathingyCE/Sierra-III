@@ -133,3 +133,14 @@ Existing lines read with it: `ME: batch timing (claims)` (**the batch's pickup l
 ## 10. Results
 
 - **Emulator proof, 2026-11-19** [E] (the lab's sierra-batch ticksched1ida 44574542407 and ticksched1idb 44574604888, build fbd536d5, the sweepme recipe; findings `ticksched1id_identity`): play and both seeds identical with `sweepme` on, `ticksched` off against on, over 600 ticks each on b30_leg2, c20_leg2 and d20_play1, seeds 1 and 2 (6 pairs); `sweepmecheck ticksched` identical to off on all three maps, **0 differ** (b30 3,615, c20 3,891, d20 12,810 answers compared); `mebatchsimhalf ticksched` on b30 identical (records made by both CPUs interleaved: ME 2,106, here 1,568); **strict 0** on all 16 runs. The batch first sent as one job of 16 (ticksched1id 44573588252) was refused by the batch's 300-minute budget (341 estimated at the pool's 4 at once) and ran as these two halves. As §9 says, the ME side of the looks doesn't run in the emulator; the PSP proof run comes first in the pair's ask.
+
+**The held pairs [M]** (2026-11-19, `- | ticksched` on the build of 421af56b, sweepme slice 1 on in both sides, two runs a side, read with `tools/abreport.py`; the lab's measurements.tsv `ticksched_held_psp_b30`, `ticksched_held_psp_c20`):
+
+| Pair | Stretch | Frame | Drawing | Tick | Verdict |
+|---|---|---:|---:|---:|---|
+| b30_leg2, PSP-3000 (the lab's sierra-hw 44678156082) | flight | 86.8 → 85.8 (−1.1%) | 27.6 → 27.3 (−1.2%) | 28.6 → 28.4 (−0.9%) | real |
+| | opening, fight, beach | ±0–2% | | | noise |
+| c20_leg2, PSP-1000 (44678181784) | opening | 52.4 → 52.5 (+0.2%, noise) | 13.7 → 13.5 (−1.3%) | 21.1 → 21.4 (+1.0%) | drawing and tick real, frame flat |
+| | first, play | | | | noise |
+
+All eight runs exited cleanly. The slice wins about 1 ms of frame on b30's flight. On c20 it's a wash: ~0.2 ms moves from the drawing into the tick on the opening, and the frame is unchanged. Whether that switches on the sweep's placement (sweepme slice 1) is the lead's call.
