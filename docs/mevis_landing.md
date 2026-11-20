@@ -153,3 +153,5 @@ Both paths are exact, so the choice changes no answer.
 
 - Whether `psp_ge_window_begin` writes anything visibility reads. Its writes are the GE layer's own [D: no object or partition writes found], but this needs checking with the emulator's write trace on the landing (mewrites, mevis's lines).
 - The second caller of `render_window` (the mirror and the second view, render.c 509–572) runs visibility again with another camera. Landing covers the first view; the others stay on the main CPU until measured.
+
+**The pair [M], 2026-11-20:** held b30_leg2, PSP-1000, two runs a side, `- | mlspin` on its own profile (campaign-mlspin, counted with the pad path; the lab's sierra-hw 44705756214, measurements.tsv `mlspin_psp_b30`). Flight frame 82.1 → 80.1 ms and drawing 25.4 → 24.3, both in the noise: the keep-alone side's runs were 84.0 and 80.2, and the second equals mlspin's. The opening is flat. **Rejected (null), as `mefinishslow` was:** reading the clock inside this wait costs nothing the frame sees. `mlspin` stays in the code, off; the lab's grounds.tsv has its `revive_if`.
