@@ -274,6 +274,37 @@ os.environ["PSP_BOXPOSING"] = "1" if BOXPOSING else "0"
 CAPTURE_DEFINES = CAPTURE_DEFINES + (["-DPSP_BOX_POSING=1"] if BOXPOSING else [])
 if BOXPOSING:
     PSP_FILES.extend(["box_posing", "psp_boxposing"])
+# PSP_BIPEDSTAGE=1 (the biped motion box's staged form, psp_fixups.py
+# FIXES_BIPEDSTAGE) builds in the world store's biped section, step 1a
+# (psp/src/box_world_store.c; docs/box_biped_motion.md section 1c)
+# PSP_WSOLD=1: the world store's first slice, the one-tick-old copy of the
+# pill sweep's object inputs (psp/src/box_world_store_old.c; psp_fixups.py
+# FIXES_WSOLD; docs/box_world_store.md section 9)
+if os.environ.get("PSP_WSOLD", "") == "1":
+    PSP_FILES.append("box_world_store_old")
+# PSP_SWEEPME=1: the ME's half of the pill sweep, slice 1 (the level's half of
+# the staged bipeds' gathers made on the ME by the box's code;
+# psp/src/psp_sweepme.c, psp_fixups.py FIXES_SWEEPME, docs/box_collision.md
+# section 11); keep word sweepme (on by default). Its MEXEC list is psp/layout/mexec_rbtsw.txt
+# (rbt and the sweep's record function; mexec_rbsw.txt is rb's)
+# Both built in by default in the campaign build (the lead, 2026-11-20: the
+# sweep's placement switched on with the tick schedule's slice 1); =0 leaves
+# each out, the old-only side of a pair. The multiplayer build leaves them out
+# until they're built for network play (=1 builds them in there)
+SWEEPME = os.environ.get("PSP_SWEEPME", "0" if MULTIPLAYER else "1") == "1"
+BIPEDSTAGE = os.environ.get("PSP_BIPEDSTAGE", "0" if MULTIPLAYER else "1") == "1"
+if SWEEPME and not BIPEDSTAGE:
+    sys.exit("psp_build: PSP_SWEEPME=1 needs PSP_BIPEDSTAGE=1 (the sweep gathers the staged bipeds)")
+# psp_fixups.py reads the same switches from the environment
+os.environ["PSP_SWEEPME"] = "1" if SWEEPME else "0"
+os.environ["PSP_BIPEDSTAGE"] = "1" if BIPEDSTAGE else "0"
+if SWEEPME:
+    PSP_FILES.extend(["box_collbsp_game", "box_sweep_game", "psp_sweepme"])
+if BIPEDSTAGE:
+    PSP_FILES.append("box_world_store")
+    # the accessor's constant map must follow the store's runs (step 1b)
+    if subprocess.run([sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "tools", "bipedmove_map.py"), "--check"]).returncode:
+        sys.exit("psp_build: psp/include/psp_bipedmove_map.h is stale: run tools/bipedmove_map.py")
 # PSP_SMALLDATA=8 (or 4): the units built with the game's flags put variables
 # of up to that many bytes in small data, read with one load from $gp instead
 # of lui and a load, so the code is shorter (lever RH5, after Halo 64's -G8).

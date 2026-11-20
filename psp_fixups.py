@@ -54941,6 +54941,1799 @@ FIXES_CAPTURE_SWEEP["source/physics/collision_models.c#capture"] = [
 						collision_bsp_get_features_in_sphere("""),
 ]
 
+# PSP_BIPEDSTAGE=1 (the box biped motion's staged form, slice 1; docs/box_biped_motion.md
+# §3b-§4): every active biped's update deferred from the object walk and run as two
+# passes after it, the unit part (unit_update) for every biped, then the rest of each
+# biped's update with the unit part skipped, so each pass's code stays resident over
+# all the bipeds instead of each biped's whole update evicting the last. A cache-model
+# shape for counting each pass's lines and misses against §4's ceilings: the bipeds
+# run after the other objects and their unit part before their own pre-steps, so play
+# may part from the unstaged build. Keep word bipedstage turns it on (on by default,
+# bipedstageoff); the campaign build has it by default (PSP_BIPEDSTAGE=0 leaves it out)
+BIPEDSTAGE = os.environ.get("PSP_BIPEDSTAGE", "0" if os.environ.get("PSP_MULTIPLAYER", "") == "1" else "1") == "1"  # on in the campaign build, as psp_build.py sets it
+FIXES_BIPEDSTAGE = {
+"source/objects/objects.c#linkcensus": [
+("""void object_reconnect_to_map(
+	long object_index,
+	struct location const *location)
+{
+""",
+ """/* (FIXES_BIPEDSTAGE) "bipedstagelinkcensus": slice 3's ground (docs/box_biped_motion.md
+§3b, the link as its own pass): for each staged biped's update, whether it
+reconnected to the map and changed its cluster, and which of its own readers
+ran after that reconnect in the same update (its children's updates, its
+lights), the ones that would move into the link pass with it */
+long psp_bslc_current = -1;
+unsigned long psp_bslc_reconnects, psp_bslc_children, psp_bslc_lights;
+
+void object_reconnect_to_map(
+	long object_index,
+	struct location const *location)
+{
+	if (object_index == psp_bslc_current)
+		psp_bslc_reconnects++;
+"""),
+("""static void object_connect_lights_with(
+	long object_index,
+	struct object_datum *object,
+	struct object_definition *object_definition,
+	boolean disconnect,
+	boolean reconnect)
+{
+""",
+ """static void object_connect_lights_with(
+	long object_index,
+	struct object_datum *object,
+	struct object_definition *object_definition,
+	boolean disconnect,
+	boolean reconnect)
+{
+	if (object_index == psp_bslc_current && psp_bslc_reconnects)
+		psp_bslc_lights++;
+"""),
+("""	boolean result = TRUE;
+	boolean elevator_sampled = FALSE;
+""",
+ """	boolean result = TRUE;
+	boolean elevator_sampled = FALSE;
+
+	if (psp_bslc_current != -1 && psp_bslc_reconnects && object->object.parent_object_index == psp_bslc_current)
+		psp_bslc_children++;
+"""),
+],
+"source/physics/collisions.c": [
+("""short collision_move_pill(
+	unsigned long flags,
+""",
+ """/* (FIXES_BIPEDSTAGE) slice 2 (docs/box_biped_motion.md §3b, a gather and a
+solve): every living staged biped's move gathered before any biped moves,
+each into its own packed list, so the gather's code runs once over all of
+them; the move then takes its list in place of walking the map again. The
+gather's sphere is the move's own grown by a margin, so this tick's change of
+velocity stays inside it: a move whose sphere isn't inside, or whose flags or
+pill differ, gathers as before, counted. A gather averages ~0.2 KB (the lab's
+findings gather1_features); a tick's fit 32 KB (16 KB filled on b30, the lab's
+stage3), one that doesn't fit gathers as before. An empty gather is kept as
+empty: the move's own sphere, inside it, finds nothing either */
+#include "units/biped_definitions.h"
+boolean network_coop_player_collisions(void);
+#define PSP_BS2_SLOTS 256
+#define PSP_BS2_ARENA 32768
+struct psp_bs2_slot
+{
+	long biped_index;
+	unsigned long flags;
+	real height, width, radius;
+	real_point3d center;
+	short count[NUMBER_OF_COLLISION_FEATURE_TYPES];
+	unsigned short offset;
+	short used, empty;
+};
+static struct psp_bs2_slot psp_bs2_slot[PSP_BS2_SLOTS];
+static unsigned char psp_bs2_arena[PSP_BS2_ARENA] __attribute__((aligned(16)));
+static int psp_bs2_on = -1, psp_bs2_slots, psp_bs2_fill, psp_bs2_peak;
+static real psp_bs2_margin;
+/* gathered, taken, no slot, flags differ, sphere outside, arena full, empty, pill differs */
+static unsigned long psp_bs2_stat[8], psp_bs2_ticks;
+extern struct collision_feature_list *psp_stackhot_list[2];
+/* the move's packed list read where it lies (collision_features.c's
+collision_features_test_vector reads through it for that list only), not
+copied back into the shared one; keep word bipedstage2copy copies as before */
+struct psp_bs2_view
+{
+	void const *list;
+	struct collision_sphere const *spheres;
+	struct collision_cylinder const *cylinders;
+	struct collision_prism const *prisms;
+} psp_bs2_view;
+static int psp_bs2_copy = -1;
+
+int psp_bipedstage2_begin(void)
+{
+	int psp_keep(const char *name);
+	int psp_keep_number(const char *prefix, int fallback);
+
+	if (psp_bs2_on < 0)
+	{
+		psp_bs2_on = psp_keep("bipedstage2");
+		/* in hundredths of a world unit; a tick's velocity change is far under it */
+		psp_bs2_margin = psp_keep_number("bipedstage2margin", 3) * 0.01f;
+		psp_bs2_copy = psp_keep("bipedstage2copy");
+	}
+	psp_bs2_slots = 0;
+	psp_bs2_fill = 0;
+	return psp_bs2_on > 0;
+}
+
+/* the slot's list gathered and packed into the arena (the gather at the
+tick's start and bipedstage3's exact call share it) */
+/* each slot's place by its biped's datum index (low bits), so the move's take
+finds it without a scan; an entry is trusted only when the slot it names holds
+this biped in this tick (a collision or an old tick's entry falls back to the
+scan) */
+#define PSP_BS2_SLOT_OF 1024
+static short psp_bs2_slot_of[PSP_BS2_SLOT_OF];
+static void psp_bs2_pack(struct psp_bs2_slot *slot, long biped_index)
+{
+	psp_bs2_slot_of[biped_index & (PSP_BS2_SLOT_OF - 1)] = (short)(slot - psp_bs2_slot);
+	struct collision_feature_list *list = psp_stackhot_list[1];
+	unsigned long bytes[NUMBER_OF_COLLISION_FEATURE_TYPES];
+	short k;
+
+	slot->empty = !collision_get_features_in_sphere(slot->flags, &slot->center, slot->radius, slot->height, slot->width, biped_index, list);
+	if (slot->empty)
+	{
+		slot->biped_index = biped_index;
+		slot->used = 0;
+		psp_bs2_slots++;
+		psp_bs2_stat[6]++;
+		return;
+	}
+	bytes[_collision_feature_sphere] = list->count[_collision_feature_sphere] * sizeof(struct collision_sphere);
+	bytes[_collision_feature_cylinder] = list->count[_collision_feature_cylinder] * sizeof(struct collision_cylinder);
+	bytes[_collision_feature_prism] = list->count[_collision_feature_prism] * sizeof(struct collision_prism);
+	if (psp_bs2_fill + bytes[0] + bytes[1] + bytes[2] > PSP_BS2_ARENA)
+	{
+		psp_bs2_stat[5]++;
+		return;
+	}
+	slot->biped_index = biped_index;
+	slot->offset = (unsigned short)psp_bs2_fill;
+	slot->used = 0;
+	for (k = 0; k < NUMBER_OF_COLLISION_FEATURE_TYPES; k++)
+		slot->count[k] = list->count[k];
+	memcpy(psp_bs2_arena + psp_bs2_fill, list->spheres, bytes[_collision_feature_sphere]);
+	psp_bs2_fill += bytes[_collision_feature_sphere];
+	memcpy(psp_bs2_arena + psp_bs2_fill, list->cylinders, bytes[_collision_feature_cylinder]);
+	psp_bs2_fill += bytes[_collision_feature_cylinder];
+	memcpy(psp_bs2_arena + psp_bs2_fill, list->prisms, bytes[_collision_feature_prism]);
+	psp_bs2_fill += bytes[_collision_feature_prism];
+	psp_bs2_fill = (psp_bs2_fill + 3) & ~3;
+	psp_bs2_slots++;
+	psp_bs2_stat[0]++;
+}
+
+void psp_bipedstage2_gather(long biped_index)
+{
+	struct psp_bs2_slot *slot;
+	real_point3d base;
+	real_vector3d const *velocity;
+	real height, width;
+
+	if (psp_bs2_slots >= PSP_BS2_SLOTS)
+		return;
+	slot = &psp_bs2_slot[psp_bs2_slots];
+	biped_get_physics_pill(biped_index, &base, &height, &width);
+	velocity = &object_get(biped_index)->object.translational_velocity;
+	slot->center.x = base.x + velocity->i * 0.5f;
+	slot->center.y = base.y + velocity->j * 0.5f;
+	slot->center.z = height * 0.5f + (base.z + velocity->k * 0.5f);
+	slot->radius = magnitude3d(velocity) * 0.5f + height * 0.5f + width + psp_bs2_margin;
+	{
+		/* the flags biped_update_moving gives a living biped's move */
+		struct biped_datum *biped = biped_get(biped_index);
+		struct biped_definition *definition = biped_definition_get(biped->definition_index);
+
+		if (TEST_FLAG(biped->biped.flags, _biped_no_collision_bit))
+			return;
+		slot->flags = TEST_FLAG(definition->biped.flags, _biped_passes_through_bipeds_bit) ?
+			_collision_test_for_bipeds_passthrough_living_flags : _collision_test_for_bipeds_living_flags;
+		if (biped->unit.player_index != NONE && !network_coop_player_collisions())
+			slot->flags |= FLAG(_collision_test_skip_player_bipeds_bit);
+	}
+	slot->height = height;
+	slot->width = width;
+	psp_bs2_pack(slot, biped_index);
+}
+
+/* bipedstage3: the move's own call, kept by its intent (bipeds.c), gathered as
+collision_move_pill would make its sphere, with no margin for the velocity's
+change (1e-4 wu covers rounding only). 1, handled (gathered, or no gather
+wanted: the update stopped short of a move, or the move has no collision);
+0, no record, gather as at the tick's start */
+int psp_bipedstage3_call(long biped_index, unsigned long *flags, real_point3d *position,
+	real_vector3d *velocity, real *height, real *width); /* bipeds.c (FIXES_BIPEDSTAGE) */
+int psp_bipedstage2_gather_exact(long biped_index)
+{
+	struct psp_bs2_slot *slot;
+	real_point3d position;
+	real_vector3d velocity;
+	unsigned long flags;
+	real height, width;
+	int stop = psp_bipedstage3_call(biped_index, &flags, &position, &velocity, &height, &width);
+
+	if (!stop)
+		return FALSE;
+	if (stop == 2 || !flags || psp_bs2_slots >= PSP_BS2_SLOTS)
+		return TRUE;
+	slot = &psp_bs2_slot[psp_bs2_slots];
+	slot->center.x = position.x + velocity.i * 0.5f;
+	slot->center.y = position.y + velocity.j * 0.5f;
+	slot->center.z = height * 0.5f + (position.z + velocity.k * 0.5f);
+	slot->radius = magnitude3d(&velocity) * 0.5f + height * 0.5f + width + 1e-4f;
+	slot->flags = flags;
+	slot->height = height;
+	slot->width = width;
+	psp_bs2_pack(slot, biped_index);
+	return TRUE;
+}
+
+/* the move's list from its slot, unpacked into the shared list it would have
+walked into: 1, a list; 2, the gather found nothing; 0, gather as before */
+static int psp_bipedstage2_take(unsigned long flags, real_point3d const *center, real radius,
+	real height, real width, long biped_index, struct collision_feature_list *list)
+{
+	struct psp_bs2_slot *slot = NULL;
+	unsigned char const *p;
+	real_vector3d d;
+	int k;
+
+	k = psp_bs2_slot_of[biped_index & (PSP_BS2_SLOT_OF - 1)];
+	if (k >= 0 && k < psp_bs2_slots && psp_bs2_slot[k].biped_index == biped_index && !psp_bs2_slot[k].used)
+		slot = &psp_bs2_slot[k];
+	for (k = 0; !slot && k < psp_bs2_slots; k++)
+	{
+		if (psp_bs2_slot[k].biped_index == biped_index && !psp_bs2_slot[k].used)
+		{
+			slot = &psp_bs2_slot[k];
+			break;
+		}
+	}
+	if (!slot)
+	{
+		psp_bs2_stat[2]++;
+		return FALSE;
+	}
+	if (slot->flags != flags)
+	{
+		psp_bs2_stat[3]++;
+		return FALSE;
+	}
+	if (slot->height != height || slot->width != width)
+	{
+		psp_bs2_stat[7]++;
+		return FALSE;
+	}
+	vector_from_points3d(center, &slot->center, &d);
+	if (magnitude3d(&d) + radius > slot->radius)
+	{
+		psp_bs2_stat[4]++;
+		return FALSE;
+	}
+	slot->used = 1;
+	psp_bs2_stat[1]++;
+	if (slot->empty)
+		return 2;
+	p = psp_bs2_arena + slot->offset;
+	for (k = 0; k < NUMBER_OF_COLLISION_FEATURE_TYPES; k++)
+		list->count[k] = slot->count[k];
+	if (psp_bs2_copy <= 0)
+	{
+		psp_bs2_view.spheres = (struct collision_sphere const *)p;
+		p += slot->count[_collision_feature_sphere] * sizeof(struct collision_sphere);
+		psp_bs2_view.cylinders = (struct collision_cylinder const *)p;
+		p += slot->count[_collision_feature_cylinder] * sizeof(struct collision_cylinder);
+		psp_bs2_view.prisms = (struct collision_prism const *)p;
+		psp_bs2_view.list = list;
+		return 1;
+	}
+	memcpy(list->spheres, p, slot->count[_collision_feature_sphere] * sizeof(struct collision_sphere));
+	p += slot->count[_collision_feature_sphere] * sizeof(struct collision_sphere);
+	memcpy(list->cylinders, p, slot->count[_collision_feature_cylinder] * sizeof(struct collision_cylinder));
+	p += slot->count[_collision_feature_cylinder] * sizeof(struct collision_cylinder);
+	memcpy(list->prisms, p, slot->count[_collision_feature_prism] * sizeof(struct collision_prism));
+	return 1;
+}
+
+void psp_bipedstage2_end(void)
+{
+	void platform_psp_log(const char *format, ...);
+
+	if (psp_bs2_fill > psp_bs2_peak)
+		psp_bs2_peak = psp_bs2_fill;
+	psp_bs2_slots = 0;
+	if (psp_bs2_on > 0 && ++psp_bs2_ticks % 1000 == 0)
+		platform_psp_log("bipedstage2: %lu staged ticks: gathered %lu (%lu empty), taken %lu; gathered again: no slot %lu, flags %lu, pill %lu, outside the sphere %lu; arena full %lu; arena peak %d of %d bytes",
+			psp_bs2_ticks, psp_bs2_stat[0] + psp_bs2_stat[6], psp_bs2_stat[6], psp_bs2_stat[1], psp_bs2_stat[2], psp_bs2_stat[3],
+			psp_bs2_stat[7], psp_bs2_stat[4], psp_bs2_stat[5], psp_bs2_peak, PSP_BS2_ARENA);
+}
+
+short collision_move_pill(
+	unsigned long flags,
+"""),
+("""	if (collision_get_features_in_sphere(
+		flags,
+		&center,
+		magnitude3d(velocity) * 0.5f + height * 0.5f + radius,
+		height,
+		radius,
+		ignore_object_index,
+		&features))
+""",
+ """	int psp_bs2_took = psp_bs2_slots ? psp_bipedstage2_take(flags, &center, magnitude3d(velocity) * 0.5f + height * 0.5f + radius,
+		height, radius, ignore_object_index, &features) : 0;
+
+	if (psp_bs2_took == 1 || (psp_bs2_took == 0 && collision_get_features_in_sphere(
+		flags,
+		&center,
+		magnitude3d(velocity) * 0.5f + height * 0.5f + radius,
+		height,
+		radius,
+		ignore_object_index,
+		&features)))
+"""),
+("""	{
+		result = collision_move_point(
+			position,
+			velocity,
+			&features,
+""",
+ """	{
+		/* (FIXES_BIPEDSTAGE) "gathercensus": slice 2's gather sized, the features
+		one move's gather finds by kind, so the box's per-biped list can be packed */
+		static int psp_gc_on = -1;
+		static unsigned long psp_gc_calls, psp_gc_sum[3], psp_gc_max[3], psp_gc_bytes_max, psp_gc_bytes_sum, psp_gc_over[4];
+		int psp_keep(const char *name);
+		int psp_keep_loaded(void);
+		void platform_psp_log(const char *format, ...);
+
+		if (psp_gc_on < 0 && psp_keep_loaded())
+			psp_gc_on = psp_keep("gathercensus");
+		if (psp_gc_on > 0)
+		{
+			unsigned long bytes = 0, k;
+			for (k = 0; k < 3; k++)
+			{
+				unsigned long n = (unsigned long)features.count[k];
+				psp_gc_sum[k] += n;
+				if (n > psp_gc_max[k])
+					psp_gc_max[k] = n;
+			}
+			bytes = features.count[_collision_feature_sphere] * sizeof(struct collision_sphere) +
+				features.count[_collision_feature_cylinder] * sizeof(struct collision_cylinder) +
+				features.count[_collision_feature_prism] * sizeof(struct collision_prism);
+			psp_gc_bytes_sum += bytes;
+			if (bytes > psp_gc_bytes_max)
+				psp_gc_bytes_max = bytes;
+			psp_gc_over[bytes > 4096 ? 3 : bytes > 2048 ? 2 : bytes > 1024 ? 1 : 0]++;
+			if (++psp_gc_calls % 2000 == 0)
+				platform_psp_log("gathercensus: %lu gathers; a gather's features: spheres %lu.%02lu (max %lu), cylinders %lu.%02lu (max %lu), prisms %lu.%02lu (max %lu); bytes a gather %lu (max %lu); <=1K %lu, <=2K %lu, <=4K %lu, >4K %lu",
+					psp_gc_calls,
+					psp_gc_sum[0] / psp_gc_calls, psp_gc_sum[0] * 100 / psp_gc_calls % 100, psp_gc_max[0],
+					psp_gc_sum[1] / psp_gc_calls, psp_gc_sum[1] * 100 / psp_gc_calls % 100, psp_gc_max[1],
+					psp_gc_sum[2] / psp_gc_calls, psp_gc_sum[2] * 100 / psp_gc_calls % 100, psp_gc_max[2],
+					psp_gc_bytes_sum / psp_gc_calls, psp_gc_bytes_max,
+					psp_gc_over[0], psp_gc_over[1], psp_gc_over[2], psp_gc_over[3]);
+		}
+		result = collision_move_point(
+			position,
+			velocity,
+			&features,
+"""),
+],
+"source/objects/object_types.c": [
+("""		struct object_type_definition *current_definition = definition->part_definitions[i];
+		if (current_definition->datum_update && current_definition->datum_update(object_index))
+""",
+ """		struct object_type_definition *current_definition = definition->part_definitions[i];
+		extern int psp_bipedstage_phase; /* objects.c (FIXES_BIPEDSTAGE) */
+
+		if (psp_bipedstage_phase == 2 && current_definition->datum_update == unit_update)
+			continue;
+		if (current_definition->datum_update && current_definition->datum_update(object_index))
+"""),
+],
+"source/objects/objects.c": [
+("""static void psp_object_update(long object_index, short absolute_index, struct object_header_datum *header)
+""",
+ """static void psp_object_update(long object_index, short absolute_index, struct object_header_datum *header);
+/* FIXES_BIPEDSTAGE: the bipeds the walk deferred, run as two passes after it */
+#define PSP_BIPEDSTAGE_MAXIMUM 256
+int psp_bipedstage_phase = 0;
+static int psp_bipedstage_on = -1;
+static short psp_bipedstage_count = 0;
+static long psp_bipedstage_index[PSP_BIPEDSTAGE_MAXIMUM];
+static short psp_bipedstage_absolute[PSP_BIPEDSTAGE_MAXIMUM];
+
+static boolean psp_bipedstage_defer(long object_index, short absolute_index, struct object_header_datum *header)
+{
+	if (psp_bipedstage_on < 0)
+	{
+		int psp_keep(const char *name);
+
+		psp_bipedstage_on = psp_keep("bipedstage");
+	}
+	if (!psp_bipedstage_on || header->type != _object_type_biped || psp_bipedstage_count >= PSP_BIPEDSTAGE_MAXIMUM)
+		return FALSE;
+	psp_bipedstage_index[psp_bipedstage_count] = object_index;
+	psp_bipedstage_absolute[psp_bipedstage_count] = absolute_index;
+	psp_bipedstage_count++;
+	return TRUE;
+}
+
+static boolean psp_bipedstage_live(short k, struct object_header_datum **header)
+{
+	*header = (struct object_header_datum *)xbox_pointer(object_header_data->data) + psp_bipedstage_absolute[k];
+	return (*header)->identifier && DATUM_INDEX_NEW(psp_bipedstage_absolute[k], (*header)->identifier) == psp_bipedstage_index[k] &&
+		TEST_FLAG((*header)->flags, _object_header_active_bit);
+}
+
+int psp_bipedstage2_begin(void); /* collisions.c (FIXES_BIPEDSTAGE) */
+void psp_bipedstage2_gather(long biped_index);
+void psp_bipedstage2_end(void);
+
+static void psp_bipedstage_run(void)
+{
+	struct object_header_datum *header;
+	short k;
+
+	if (!psp_bipedstage_count)
+		return;
+	/* a dead biped goes whole through psp_object_update in the second pass:
+	the corpse sleep there decides whether it updates at all, and a unit
+	part run ahead of it would update a body that sleeps */
+	psp_bipedstage_phase = 1;
+	for (k = 0; k < psp_bipedstage_count; k++)
+	{
+		if (psp_bipedstage_live(k, &header) && !TEST_FLAG(header->datum->object.damage_flags, _object_dead_bit))
+			unit_update(psp_bipedstage_index[k]);
+	}
+	/* slice 2: every living biped's move gathered as one pass, from the
+	world as it stands before any biped moves (collisions.c) */
+	if (psp_bipedstage2_begin())
+	{
+		for (k = 0; k < psp_bipedstage_count; k++)
+		{
+			if (psp_bipedstage_live(k, &header) && !TEST_FLAG(header->datum->object.damage_flags, _object_dead_bit))
+				psp_bipedstage2_gather(psp_bipedstage_index[k]);
+		}
+	}
+	for (k = 0; k < psp_bipedstage_count; k++)
+	{
+		if (psp_bipedstage_live(k, &header))
+		{
+			psp_bipedstage_phase = TEST_FLAG(header->datum->object.damage_flags, _object_dead_bit) ? 0 : 2;
+			psp_object_update(psp_bipedstage_index[k], psp_bipedstage_absolute[k], header);
+			psp_object_count(header->type);
+		}
+	}
+	psp_bipedstage2_end();
+	psp_bipedstage_phase = 0;
+	psp_bipedstage_count = 0;
+}
+
+static void psp_object_update(long object_index, short absolute_index, struct object_header_datum *header)
+"""),
+("""					if (psp_ws_asleep(i, object_header)) /* psp_fixups.py (FIXES_WS) */
+						psp_object_count(object_header->type);
+""",
+ """					if (psp_ws_asleep(i, object_header)) /* psp_fixups.py (FIXES_WS) */
+						psp_object_count(object_header->type);
+					else if (psp_bipedstage_defer(object_index, i, object_header)) /* (FIXES_BIPEDSTAGE): after the sleep's test, so a sleeping biped stays asleep */
+						;
+"""),
+("""	psp_fvp_pass(); /* psp_fixups.py (FIXES_FISSION) */
+""",
+ """	psp_bipedstage_run(); /* (FIXES_BIPEDSTAGE) */
+	psp_fvp_pass(); /* psp_fixups.py (FIXES_FISSION) */
+"""),
+],
+"source/physics/collisions.c#view": [
+("""	match_assert("c:\\\\halo\\\\SOURCE\\\\physics\\\\collisions.c", 1230, global_current_collision_user_depth > 1);
+""",
+ """	psp_bs2_view.list = NULL; /* (FIXES_BIPEDSTAGE) the move's packed list is done with */
+	match_assert("c:\\\\halo\\\\SOURCE\\\\physics\\\\collisions.c", 1230, global_current_collision_user_depth > 1);
+"""),
+],
+"source/physics/collision_features.c": [
+("""	short feature_type;
+	short feature_index;
+
+	closest_feature_type = NONE;
+""",
+ """	short feature_type;
+	short feature_index;
+	/* (FIXES_BIPEDSTAGE) a staged move's packed list, read where it lies */
+	extern struct psp_bs2_view { void const *list; struct collision_sphere const *spheres;
+		struct collision_cylinder const *cylinders; struct collision_prism const *prisms; } psp_bs2_view;
+	int psp_view = psp_bs2_view.list == features;
+	struct collision_sphere const *psp_spheres = psp_view ? psp_bs2_view.spheres : features->spheres;
+	struct collision_cylinder const *psp_cylinders = psp_view ? psp_bs2_view.cylinders : features->cylinders;
+	struct collision_prism const *psp_prisms = psp_view ? psp_bs2_view.prisms : features->prisms;
+
+	closest_feature_type = NONE;
+"""),
+("""collision_sphere_test_vector(&features->spheres[feature_index], point""", """collision_sphere_test_vector(&psp_spheres[feature_index], point"""),
+("""collision_cylinder_test_vector(&features->cylinders[feature_index], point""", """collision_cylinder_test_vector(&psp_cylinders[feature_index], point"""),
+("""collision_prism_test_vector(&features->prisms[feature_index], point""", """collision_prism_test_vector(&psp_prisms[feature_index], point"""),
+("""			feature = (struct collision_feature const *)&features->spheres[closest_feature_index];""", """			feature = (struct collision_feature const *)&psp_spheres[closest_feature_index];"""),
+("""			feature = (struct collision_feature const *)&features->cylinders[closest_feature_index];""", """			feature = (struct collision_feature const *)&psp_cylinders[closest_feature_index];"""),
+("""			feature = (struct collision_feature const *)&features->prisms[closest_feature_index];""", """			feature = (struct collision_feature const *)&psp_prisms[closest_feature_index];"""),
+],
+"source/objects/objects.c#linkcensus2": [
+("""			psp_bipedstage_phase = TEST_FLAG(header->datum->object.damage_flags, _object_dead_bit) ? 0 : 2;
+			psp_object_update(psp_bipedstage_index[k], psp_bipedstage_absolute[k], header);
+""",
+ """			psp_bipedstage_phase = TEST_FLAG(header->datum->object.damage_flags, _object_dead_bit) ? 0 : 2;
+			if (psp_bslc_on < 0)
+				psp_bslc_on = psp_keep("bipedstagelinkcensus");
+			if (psp_bslc_on > 0 && psp_bipedstage_phase == 2)
+			{
+				struct location before = header->datum->object.location;
+
+				psp_bslc_current = psp_bipedstage_index[k];
+				psp_bslc_reconnects = psp_bslc_children = psp_bslc_lights = 0;
+				psp_object_update(psp_bipedstage_index[k], psp_bipedstage_absolute[k], header);
+				psp_bslc_current = -1;
+				psp_bslc_tally(&before, &header->datum->object.location);
+			}
+			else
+			psp_object_update(psp_bipedstage_index[k], psp_bipedstage_absolute[k], header);
+"""),
+("""int psp_bipedstage2_begin(void); /* collisions.c (FIXES_BIPEDSTAGE) */
+""",
+ """int psp_bipedstage2_begin(void); /* collisions.c (FIXES_BIPEDSTAGE) */
+static int psp_bslc_on = -1;
+static unsigned long psp_bslc_updates, psp_bslc_stat[8];
+
+/* updates; reconnected; the cluster changed; the leaf changed; reconnected
+more than once; children updated after it; lights connected after it */
+static void psp_bslc_tally(struct location const *before, struct location const *after)
+{
+	void platform_psp_log(const char *format, ...);
+
+	psp_bslc_updates++;
+	if (psp_bslc_reconnects)
+		psp_bslc_stat[0]++;
+	if (before->cluster_index != after->cluster_index)
+		psp_bslc_stat[1]++;
+	if (before->leaf_index != after->leaf_index)
+		psp_bslc_stat[2]++;
+	if (psp_bslc_reconnects > 1)
+		psp_bslc_stat[3]++;
+	if (psp_bslc_children)
+		psp_bslc_stat[4]++;
+	psp_bslc_stat[5] += psp_bslc_children;
+	if (psp_bslc_lights)
+		psp_bslc_stat[6]++;
+	if (psp_bslc_updates % 5000 == 0)
+		platform_psp_log("bipedstagelinkcensus: %lu staged biped updates: reconnected %lu, the cluster changed %lu, the leaf changed %lu, reconnected more than once %lu; after the reconnect: children updated in %lu (%lu children), lights connected in %lu",
+			psp_bslc_updates, psp_bslc_stat[0], psp_bslc_stat[1], psp_bslc_stat[2], psp_bslc_stat[3],
+			psp_bslc_stat[4], psp_bslc_stat[5], psp_bslc_stat[6]);
+}
+"""),
+],
+"source/objects/object_types.c#bs3": [
+("""		if (psp_bipedstage_phase == 2 && current_definition->datum_update == unit_update)
+""",
+ """		if ((psp_bipedstage_phase == 2 || psp_bipedstage_phase == 4) && current_definition->datum_update == unit_update) /* 4: bipedstage3's solve */
+"""),
+],
+"source/units/bipeds.c#bs3": [
+# the records, after struct biped_physics, before the second biped_update_physics
+("""static void biped_update_physics(
+	struct biped_physics *physics)
+{
+	real_vector2d facing = { 0.f, 0.f };
+""",
+ """/* (FIXES_BIPEDSTAGE) bipedstage3, the exact sphere (docs/box_biped_motion.md
+section 3b): a biped's update cut at its move's collision_move_pill. In the
+intent pass (objects.c's phase 3) the update runs to the call and keeps its
+locals here; the gather then makes the call's own sphere; in the solve pass
+(phase 4) the update starts again from them. A biped whose update stops short
+of a move (a rider, an early return) keeps its record at the update's tail */
+extern int psp_bipedstage_phase; /* objects.c */
+#define PSP_BS3_RECORDS 64
+struct psp_bs3_record
+{
+	long biped_index;
+	char stop; /* 1, at the move's call; 2, at the update's tail */
+	struct unit_animation_update_data animation;
+	struct biped_physics physics;
+	word in_flags;
+	unsigned long collision_flags;
+	real_point3d position;
+	real_vector3d velocity;
+	real_vector2d facing;
+};
+static struct psp_bs3_record psp_bs3_rec[PSP_BS3_RECORDS];
+static short psp_bs3_count = 0;
+static struct psp_bs3_record *psp_bs3_cur = NULL;
+static char psp_bs3_resume = 0;
+/* intents; stopped at the move; at the tail; over the pool; solves resumed */
+static unsigned long psp_bs3_stat[5], psp_bs3_ticks;
+/* each record's place by its biped's datum index, as the gather's slots */
+#define PSP_BS3_REC_OF 1024
+static short psp_bs3_rec_of[PSP_BS3_REC_OF];
+
+void psp_bipedstage3_reset(void)
+{
+	void platform_psp_log(const char *format, ...);
+
+	psp_bs3_count = 0;
+	psp_bs3_cur = NULL;
+	psp_bs3_resume = 0;
+	if (++psp_bs3_ticks % 3000 == 0)
+		platform_psp_log("bipedstage3: %lu staged ticks: intents %lu, stopped at the move %lu, at the tail %lu, over the pool %lu; solves resumed %lu",
+			psp_bs3_ticks, psp_bs3_stat[0], psp_bs3_stat[1], psp_bs3_stat[2], psp_bs3_stat[3], psp_bs3_stat[4]);
+}
+
+boolean biped_update(long biped_index);
+void psp_bipedstage3_intent(long biped_index)
+{
+	struct psp_bs3_record *record;
+
+	if (psp_bs3_count >= PSP_BS3_RECORDS)
+	{
+		psp_bs3_stat[3]++;
+		return;
+	}
+	record = &psp_bs3_rec[psp_bs3_count];
+	record->biped_index = biped_index;
+	record->stop = 0;
+	psp_bs3_cur = record;
+	psp_bs3_stat[0]++;
+	biped_update(biped_index);
+	psp_bs3_cur = NULL;
+	if (record->stop)
+	{
+		psp_bs3_stat[record->stop]++;
+		psp_bs3_rec_of[biped_index & (PSP_BS3_REC_OF - 1)] = psp_bs3_count;
+		psp_bs3_count++;
+	}
+}
+
+static struct psp_bs3_record *psp_bs3_find(long biped_index)
+{
+	short k = psp_bs3_rec_of[biped_index & (PSP_BS3_REC_OF - 1)];
+
+	if (k >= 0 && k < psp_bs3_count && psp_bs3_rec[k].biped_index == biped_index && psp_bs3_rec[k].stop)
+		return &psp_bs3_rec[k];
+
+	for (k = 0; k < psp_bs3_count; k++)
+	{
+		if (psp_bs3_rec[k].biped_index == biped_index && psp_bs3_rec[k].stop)
+			return &psp_bs3_rec[k];
+	}
+	return NULL;
+}
+
+int psp_bipedstage3_kept(long biped_index)
+{
+	return psp_bs3_find(biped_index) != NULL;
+}
+
+/* the gather's view of a record: 1, its move's call; 2, no move; 0, none */
+int psp_bipedstage3_call(long biped_index, unsigned long *flags, real_point3d *position,
+	real_vector3d *velocity, real *height, real *width)
+{
+	struct psp_bs3_record *record = psp_bs3_find(biped_index);
+
+	if (!record)
+		return 0;
+	if (record->stop == 1)
+	{
+		*flags = record->collision_flags;
+		*position = record->position;
+		*velocity = record->velocity;
+		*height = record->physics.height;
+		*width = record->physics.width;
+	}
+	return record->stop;
+}
+
+static void biped_update_physics(
+	struct biped_physics *physics)
+{
+	real_vector2d facing = { 0.f, 0.f };
+"""),
+("""	in_flags = physics->in_flags;
+	physics->out_flags = 0;
+	if (TEST_FLAG(in_flags, _biped_physics_in_flying_bit))
+""",
+ """	if (psp_bs3_resume == 1 && psp_bs3_cur) /* (FIXES_BIPEDSTAGE) bipedstage3's solve */
+	{
+		psp_bs3_resume = 0;
+		in_flags = psp_bs3_cur->in_flags;
+		collision_flags = psp_bs3_cur->collision_flags;
+		position = psp_bs3_cur->position;
+		velocity = psp_bs3_cur->velocity;
+		facing = psp_bs3_cur->facing;
+		goto psp_bs3_resume_call;
+	}
+	in_flags = physics->in_flags;
+	physics->out_flags = 0;
+	if (TEST_FLAG(in_flags, _biped_physics_in_flying_bit))
+"""),
+("""	position = physics->position;
+	velocity = physics->new_velocity;
+	velocity.k += physics->crouch_velocity;
+	if (debug_biped_skip_collision)
+""",
+ """	position = physics->position;
+	velocity = physics->new_velocity;
+	velocity.k += physics->crouch_velocity;
+	if (psp_bipedstage_phase == 3 && psp_bs3_cur) /* (FIXES_BIPEDSTAGE) bipedstage3: the intent stops at the call */
+	{
+		psp_bs3_cur->in_flags = in_flags;
+		psp_bs3_cur->collision_flags = collision_flags;
+		psp_bs3_cur->position = position;
+		psp_bs3_cur->velocity = velocity;
+		psp_bs3_cur->facing = facing;
+		psp_bs3_cur->stop = 1;
+		return;
+	}
+psp_bs3_resume_call:
+	if (debug_biped_skip_collision)
+"""),
+("""	psp_unithoist_check(biped_index, held_biped, held_definition);
+#endif
+
+	if (TEST_FLAG(biped->object.flags, _object_at_rest_bit) &&
+		TEST_FLAG(biped->object.damage_flags, _object_dead_bit) &&
+""",
+ """	psp_unithoist_check(biped_index, held_biped, held_definition);
+#endif
+	if (psp_bs3_resume == 1 && psp_bs3_cur) /* (FIXES_BIPEDSTAGE) bipedstage3's solve: the record's physics */
+	{
+		definition = biped_definition_get(biped->definition_index);
+		physics = psp_bs3_cur->physics;
+		goto psp_bs3_resume_physics;
+	}
+
+	if (TEST_FLAG(biped->object.flags, _object_at_rest_bit) &&
+		TEST_FLAG(biped->object.damage_flags, _object_dead_bit) &&
+"""),
+("""	physics.in_flags = in_flags;
+
+	biped_update_physics(&physics);
+""",
+ """	physics.in_flags = in_flags;
+
+psp_bs3_resume_physics:
+	biped_update_physics(&physics);
+	if (psp_bipedstage_phase == 3 && psp_bs3_cur && psp_bs3_cur->stop == 1)
+	{
+		psp_bs3_cur->physics = physics;
+		return;
+	}
+"""),
+("""	biped_verify_object_vectors(biped_index, "pre-update");
+
+	animation.state_desired = _unit_state_idle;
+	animation.crouching = FALSE;
+""",
+ """	biped_verify_object_vectors(biped_index, "pre-update");
+
+	animation.state_desired = _unit_state_idle;
+	animation.crouching = FALSE;
+	if (psp_bipedstage_phase == 4 && (psp_bs3_cur = psp_bs3_find(biped_index)) != NULL) /* (FIXES_BIPEDSTAGE) bipedstage3's solve */
+	{
+		animation = psp_bs3_cur->animation;
+		psp_bs3_resume = psp_bs3_cur->stop;
+		psp_bs3_stat[4]++;
+		if (psp_bs3_resume == 1)
+			goto psp_bs3_resume_move;
+		goto psp_bs3_resume_tail;
+	}
+"""),
+("""		biped_update_moving(biped_index, &animation, psp_held_biped, psp_held_definition);
+		biped_verify_object_vectors(biped_index, "post-moving");
+""",
+ """psp_bs3_resume_move:
+		biped_update_moving(biped_index, &animation, psp_held_biped, psp_held_definition);
+		if (psp_bipedstage_phase == 3 && psp_bs3_cur && psp_bs3_cur->stop == 1)
+		{
+			psp_bs3_cur->animation = animation;
+			goto psp_bs3_out;
+		}
+		biped_verify_object_vectors(biped_index, "post-moving");
+"""),
+("""	if (unit_update_animation(biped_index, &animation)==1)
+		biped_jump(biped_index);
+""",
+ """	if (psp_bipedstage_phase == 3 && psp_bs3_cur) /* (FIXES_BIPEDSTAGE) bipedstage3: no move reached, stop at the tail */
+	{
+		psp_bs3_cur->animation = animation;
+		psp_bs3_cur->stop = 2;
+		goto psp_bs3_out;
+	}
+psp_bs3_resume_tail:
+	psp_bs3_resume = 0;
+	if (unit_update_animation(biped_index, &animation)==1)
+		biped_jump(biped_index);
+"""),
+("""	biped_verify_object_vectors(biped_index, "post-update");
+#ifdef HALO_PSP
+	psp_bspr_datum_at = psp_bspr_outer; /* psp_fixups.py (FIXES_BSPR) */
+""",
+ """	biped_verify_object_vectors(biped_index, "post-update");
+psp_bs3_out:
+	if (psp_bipedstage_phase == 4)
+		psp_bs3_cur = NULL;
+#ifdef HALO_PSP
+	psp_bspr_datum_at = psp_bspr_outer; /* psp_fixups.py (FIXES_BSPR) */
+"""),
+],
+"source/objects/objects.c#bs3": [
+("""void psp_bipedstage2_gather(long biped_index);
+void psp_bipedstage2_end(void);
+""",
+ """void psp_bipedstage2_gather(long biped_index);
+void psp_bipedstage2_end(void);
+int psp_bipedstage2_gather_exact(long biped_index); /* collisions.c (FIXES_BIPEDSTAGE) bipedstage3 */
+void psp_bipedstage3_reset(void); /* bipeds.c */
+void psp_bipedstage3_intent(long biped_index);
+int psp_bipedstage3_kept(long biped_index);
+static int psp_bs3_on = -1;
+"""),
+("""	/* slice 2: every living biped's move gathered as one pass, from the
+	world as it stands before any biped moves (collisions.c) */
+	if (psp_bipedstage2_begin())
+	{
+		for (k = 0; k < psp_bipedstage_count; k++)
+		{
+			if (psp_bipedstage_live(k, &header) && !TEST_FLAG(header->datum->object.damage_flags, _object_dead_bit))
+				psp_bipedstage2_gather(psp_bipedstage_index[k]);
+		}
+	}
+""",
+ """	/* bipedstage3: every living biped's update run to its move's call (its
+	intent), so the gather below makes each move's own sphere (bipeds.c) */
+	if (psp_bs3_on < 0)
+		psp_bs3_on = psp_keep("bipedstage3");
+	if (psp_bs3_on)
+	{
+		psp_bipedstage3_reset();
+		psp_bipedstage_phase = 3;
+		for (k = 0; k < psp_bipedstage_count; k++)
+		{
+			if (psp_bipedstage_live(k, &header) && !TEST_FLAG(header->datum->object.damage_flags, _object_dead_bit))
+				psp_bipedstage3_intent(psp_bipedstage_index[k]);
+		}
+	}
+	/* slice 2: every living biped's move gathered as one pass, from the
+	world as it stands before any biped moves (collisions.c) */
+	if (psp_bipedstage2_begin())
+	{
+		for (k = 0; k < psp_bipedstage_count; k++)
+		{
+			if (psp_bipedstage_live(k, &header) && !TEST_FLAG(header->datum->object.damage_flags, _object_dead_bit) &&
+				!(psp_bs3_on && psp_bipedstage2_gather_exact(psp_bipedstage_index[k])))
+				psp_bipedstage2_gather(psp_bipedstage_index[k]);
+		}
+	}
+"""),
+# a biped with an intent kept resumes it, dead or not (a solve before it may have killed it)
+("""			psp_bipedstage_phase = TEST_FLAG(header->datum->object.damage_flags, _object_dead_bit) ? 0 : 2;
+			if (psp_bslc_on < 0)
+""",
+ """			psp_bipedstage_phase = psp_bs3_on ? 4 : TEST_FLAG(header->datum->object.damage_flags, _object_dead_bit) ? 0 : 2;
+			if (psp_bipedstage_phase == 4 && TEST_FLAG(header->datum->object.damage_flags, _object_dead_bit) &&
+				!psp_bipedstage3_kept(psp_bipedstage_index[k]))
+				psp_bipedstage_phase = 0;
+			if (psp_bslc_on < 0)
+"""),
+],
+"source/units/bipeds.c#bms": [
+# BIPEDMOVE (below): the record made live in its bipedstage3 record's slot at
+# the intent's start, kept where the intent stops (only the velocity written
+# through), made live again where the biped's solve resumes, and written back
+# at psp_bs3_out, before posing and the children read the root: the anchors
+# are bipedstage3's own lines, so this key follows #bs3
+("""	psp_bs3_stat[0]++;
+	biped_update(biped_index);
+	psp_bs3_cur = NULL;
+""",
+ """	psp_bs3_stat[0]++;
+	psp_bms_start(biped_index, psp_bs3_count); /* (FIXES_BIPEDSTAGE) BIPEDMOVE, steps 1b and 1c */
+	biped_update(biped_index);
+	psp_bms_keep(record->stop != 0);
+	psp_bs3_cur = NULL;
+"""),
+("""		animation = psp_bs3_cur->animation;
+		psp_bs3_resume = psp_bs3_cur->stop;
+""",
+ """		psp_bms_resume(biped, (int)(psp_bs3_cur - psp_bs3_rec)); /* (FIXES_BIPEDSTAGE) BIPEDMOVE 1c: the kept record live again */
+		animation = psp_bs3_cur->animation;
+		psp_bs3_resume = psp_bs3_cur->stop;
+"""),
+("""psp_bs3_out:
+	if (psp_bipedstage_phase == 4)
+		psp_bs3_cur = NULL;
+""",
+ """psp_bs3_out:
+	if (psp_bipedstage_phase == 4)
+	{
+		psp_bms_stop(); /* (FIXES_BIPEDSTAGE) BIPEDMOVE 1c: written back before posing and the children read the root */
+		psp_bs3_cur = NULL;
+	}
+"""),
+],
+"source/objects/objects.c#ws": [
+("""	psp_bipedstage_phase = 1;
+	for (k = 0; k < psp_bipedstage_count; k++)
+	{
+		if (psp_bipedstage_live(k, &header) && !TEST_FLAG(header->datum->object.damage_flags, _object_dead_bit))
+			unit_update(psp_bipedstage_index[k]);
+	}
+""",
+ """	/* wsbipedcross (1c's check across ticks): before the unit pass, last
+	tick's record of each biped (refilled after its solves) against its
+	datum: what was written to it outside the staged passes */
+	if (psp_ws_check < 0)
+	{
+		psp_ws_cross = psp_keep("wsbipedcross");
+		psp_ws_check = psp_keep("wsbipedcheck") || psp_ws_cross ? box_ws_biped_slots() : 0;
+	}
+	for (k = 0; psp_ws_cross && k < psp_bipedstage_count && k < psp_ws_check; k++)
+	{
+		if (psp_bipedstage_live(k, &header) && !TEST_FLAG(header->datum->object.damage_flags, _object_dead_bit))
+			box_ws_biped_cross(psp_bipedstage_index[k], header->datum);
+	}
+	psp_bipedstage_phase = 1;
+	for (k = 0; k < psp_bipedstage_count; k++)
+	{
+		if (psp_bipedstage_live(k, &header) && !TEST_FLAG(header->datum->object.damage_flags, _object_dead_bit))
+			unit_update(psp_bipedstage_index[k]);
+	}
+	/* the world store's biped section, step 1a (psp/src/box_world_store.c):
+	under wsbipedcheck each living biped's record filled here and compared
+	with its datum after the solves, so the fields the biped passes write
+	are counted against the store's owner map */
+	for (k = 0; k < psp_bipedstage_count; k++)
+	{
+		psp_ws_filled[k] = 0;
+		if (k < psp_ws_check && psp_bipedstage_live(k, &header) && !TEST_FLAG(header->datum->object.damage_flags, _object_dead_bit))
+		{
+			box_ws_biped_fill(k, header->datum, psp_bipedstage_index[k]);
+			psp_ws_filled[k] = 1;
+			psp_ws_parent[k] = header->datum->object.parent_object_index;
+		}
+	}
+"""),
+("""	psp_bipedstage2_end();
+	psp_bipedstage_phase = 0;
+""",
+ """	/* BIPEDMOVE 1c: a kept record whose solve didn't resume it written back */
+	box_ws_move_settle();
+	if (psp_ws_check > 0)
+	{
+		for (k = 0; k < psp_bipedstage_count && k < psp_ws_check; k++)
+		{
+			if (psp_ws_filled[k] && psp_bipedstage_live(k, &header))
+			{
+				box_ws_biped_compare(k, header->datum,
+					TEST_FLAG(header->datum->object.damage_flags, _object_dead_bit) ? 1 :
+					header->datum->object.parent_object_index != psp_ws_parent[k] ? 2 : 0);
+				if (psp_ws_cross)
+					box_ws_biped_fill(k, header->datum, psp_bipedstage_index[k]);
+			}
+		}
+		box_ws_biped_tick();
+	}
+	psp_bipedstage2_end();
+	psp_bipedstage_phase = 0;
+"""),
+("""int psp_bipedstage3_kept(long biped_index);
+static int psp_bs3_on = -1;
+""",
+ """int psp_bipedstage3_kept(long biped_index);
+static int psp_bs3_on = -1;
+int box_ws_biped_slots(void); /* psp/src/box_world_store.c (FIXES_BIPEDSTAGE) step 1a */
+void box_ws_biped_fill(int slot, void const *datum, long index);
+void box_ws_biped_cross(long index, void const *datum);
+static int psp_ws_cross = 0;
+void box_ws_biped_compare(int slot, void const *datum, int kind);
+void box_ws_biped_tick(void);
+void box_ws_move_settle(void);
+static int psp_ws_check = -1;
+static unsigned char psp_ws_filled[PSP_BIPEDSTAGE_MAXIMUM];
+static long psp_ws_parent[PSP_BIPEDSTAGE_MAXIMUM];
+"""),
+],
+}
+# ---------- BIPEDMOVE: biped motion's steps 1b and 1c (docs/box_biped_motion.md
+# section 1c, "Built"; Sheepdog01 2026-11-18 11:23, the lead 11:5x and
+# 21:3x). The window's datum accesses (the intent, then the solve and the
+# tail) read and write the world store's record of the biped being run, under
+# keep word bipedmovestore. The engine's text isn't copied here: a pass over
+# the fixed tree rewrites each `PTR->FIELD` in the window's functions to
+# `PSP_BMS(PTR, FIELD)` (`PSP_BMSW` where it's written), and box_ws_move_at
+# (psp/include/psp_bipedmove.h) answers each from the store's byte map: the
+# record while that biped's window is live, else the datum, so with the keep
+# word off every access lands where it did. The functions are named, each
+# with the count of accesses it rewrites, so a moved upstream fails the build
+# rather than leaving an access on the datum.
+# The intent (1b): bipeds.c, pointer `biped`.
+BIPEDMOVE_FUNCTIONS = {
+    "biped_update": 48,
+    "biped_snap_facing": 1,
+    "biped_snap_facing_with": 35,
+    "biped_update_turning": 61,
+    "biped_update_moving": 111,
+    "biped_update_physics": 2,
+    "biped_get_physics_pill": 1,
+    "biped_get_physics_pill_with": 3,
+    "biped_verify_object_vectors": 12,
+    "biped_trait_gravity": 2,
+    "psp_unithoist_check": 1,
+}
+# The solve and the tail (1c's window; the lab's census_phase4_unit, group 1,
+# and unit_set_animation, which unit_animation_set_state reaches): per file,
+# the pointers that name the biped, and each function's count.
+BIPEDMOVE_WINDOW = {
+    "source/units/bipeds.c": (("biped",), {
+        "biped_update_jumping": 24,
+        "biped_falling_damage": 9,
+        "biped_try_to_make_footsteps": 15,
+        "biped_falling_danger": 12,
+        "biped_check_discard": 9,
+        "biped_update_dead": 8,
+        "biped_update_airborne": 11,
+        "biped_update_landing": 8,
+        "biped_update_slipping": 3,
+        "biped_apply_rotation": 10,
+        "biped_flying_through_air": 3,
+        "biped_start_landing": 4,
+        "biped_jump": 23,
+    }),
+    "source/units/units.c": (("unit", "biped", "interpolated_unit"), {
+        "unit_update_animation": 47,
+        "unit_animation_set_state": 17,
+        "unit_set_or_test_seat_and_weapon_label": 8,
+        "unit_animation_start_action": 9,
+        "unit_set_animation": 6,
+    }),
+}
+# Calls in the window that read or write the biped's datum themselves
+# (psp_bipedmove.h): "w" the whole record (out before, in after), "n0"/"n1"
+# the narrow syncs (object_translate's 28 B, object_start_interpolation's
+# frames), "d" its delete (written back, the window ends). Each with its
+# count of calls over the window's functions, and whether it returns a value.
+BIPEDMOVE_SYNC = {
+    "unit_abort_animation": ("w", False, 1),
+    "stubbs_player_sprint": ("w", True, 1),
+    "unit_impact_melee_damage": ("w", False, 1),
+    "unit_cause_player_melee_damage": ("w", False, 1),
+    "unit_exit_seat_end": ("w", False, 2),
+    "unit_try_and_exit_seat": ("w", True, 1),
+    "biped_vehicle_speech": ("w", False, 1),
+    "mcc_seat_update": ("w", True, 1),
+    "unit_scream": ("w", True, 1),
+    "biped_limp_noodle_relax_nodes_onto_environment": ("w", True, 1),
+    "biped_start_limp_body_physics": ("w", False, 1),
+    "object_set_visibility": ("w", False, 1),
+    "unit_destroy": ("w", False, 1),
+    "unit_throw_grenade_release": ("w", False, 2),
+    "unit_cause_melee_damage": ("w", False, 1),
+    "object_cause_damage": ("w", False, 2),
+    "actor_aim_jump": ("w", True, 1),
+    "stubbs_player_melee_begin": ("w", True, 1),
+    "object_translate": ("n0", False, 1),
+    "object_start_interpolation": ("n1", False, 3),
+    "object_delete": ("d", False, 2),
+}
+BIPEDMOVE_PRELUDE = """#include "psp_bipedmove.h" /* psp_fixups.py (BIPEDMOVE) steps 1b and 1c */
+static int psp_bms_on = -1, psp_bms_check = 0;
+/* the intent's start: the record filled, in the slot of its bipedstage3 record */
+static void psp_bms_start(long biped_index, int slot)
+{
+	int psp_keep(const char *name);
+
+	if (psp_bms_on < 0)
+	{
+		psp_bms_check = psp_keep("bipedmovestorecheck");
+		psp_bms_on = psp_bms_check || psp_keep("bipedmovestore");
+	}
+	if (psp_bms_on)
+		box_ws_move_begin(object_get_and_verify_type(biped_index, _object_mask_biped), biped_index, slot, psp_bms_check);
+}
+/* the intent's end: kept for its solve when it stopped there, else written back */
+static void psp_bms_keep(int kept)
+{
+	if (!box_ws_move_datum)
+		return;
+	if (kept)
+		box_ws_move_keep();
+	else
+		box_ws_move_end();
+}
+static void psp_bms_resume(void *datum, int slot)
+{
+	if (psp_bms_on > 0)
+		box_ws_move_resume(datum, slot);
+}
+static void psp_bms_stop(void)
+{
+	if (box_ws_move_datum)
+		box_ws_move_end();
+}
+"""
+BIPEDMOVE_UNITS_PRELUDE = """#include "psp_bipedmove.h" /* psp_fixups.py (BIPEDMOVE) step 1c: the tail's animation */
+"""
+# a rewritten access written: an assignment or increment after it (past any
+# subscripts and members), an increment before it, SET_FLAG's first argument
+BIPEDMOVE_WRITE_AFTER = re.compile(r"(?:\[[^\]\n]*\](?:\.\w+)*)*\s*(?:[-+*/%|&^]|<<|>>)?=(?!=)|(?:\[[^\]\n]*\](?:\.\w+)*)*\s*(?:\+\+|--)")
+BIPEDMOVE_WRITE_BEFORE = re.compile(r"(?:\+\+|--|\bSET_FLAG\(|\bSWAP_FLAG\()\s*$")
+# an address taken is a write unless it's an argument of a call that only
+# reads it
+BIPEDMOVE_READS_ONLY = {
+    "dot_product3d", "magnitude3d", "magnitude_squared3d", "match_assert_valid_real_normal3d",
+    "match_assert_valid_real_point3d", "match_assert_valid_real_vector3d", "valid_real_vector3d_axes2",
+    "distance_squared3d", "distance3d", "point_inside_sphere", "object_get_and_verify_type",
+}
+
+def _bipedmove_span(text, name):
+    """the body of the one definition of name: from its opening brace to the
+    first closing brace in the first column"""
+    found = []
+    for m in re.finditer(r"^[A-Za-z_][^\n;{]*\b%s\(" % re.escape(name), text, re.M):
+        brace, semi = text.find("\n{", m.end()), text.find(";", m.end())
+        if brace >= 0 and (semi < 0 or brace < semi):
+            end = text.find("\n}\n", brace)
+            found.append((brace, end + 3))
+    return found
+
+def _bipedmove_callee(body, at):
+    """the function whose argument list holds position at, or None"""
+    depth = 0
+    for k in range(at - 1, -1, -1):
+        c = body[k]
+        if c == ")":
+            depth += 1
+        elif c == "(":
+            if depth == 0:
+                m = re.search(r"(\w+)\s*$", body[:k])
+                return m.group(1) if m else None
+            depth -= 1
+        elif c in ";{}" and depth == 0:
+            return None
+    return None
+
+def _bipedmove_rewrite(body, pointers):
+    """each PTR->FIELD of the biped's pointers as the accessor; the count"""
+    access = re.compile(r"(?<![\w.>])(%s)->([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)" % "|".join(pointers))
+    out, last, n = [], 0, 0
+    for m in access.finditer(body):
+        before = body[last:m.start()]
+        written = bool(BIPEDMOVE_WRITE_AFTER.match(body, m.end())) or bool(BIPEDMOVE_WRITE_BEFORE.search(body[:m.start()]))
+        lead = re.search(r"(?<!&)&\s*$", body[:m.start()])
+        if lead and not written:
+            written = _bipedmove_callee(body, m.start()) not in BIPEDMOVE_READS_ONLY
+        out.append(before + "%s(%s, %s)" % ("PSP_BMSW" if written else "PSP_BMS", m.group(1), m.group(2)))
+        last = m.end()
+        n += 1
+    out.append(body[last:])
+    return "".join(out), n
+
+def _bipedmove_sync(body, counts):
+    """each call of a BIPEDMOVE_SYNC helper wrapped in its sync"""
+    for helper, (kind, value, _) in BIPEDMOVE_SYNC.items():
+        out, last = [], 0
+        for m in re.finditer(r"(?<![\w.>])%s\(" % helper, body):
+            if m.start() < last:
+                continue
+            depth, k = 0, m.end() - 1
+            while True:
+                c = body[k]
+                depth += c == "("
+                depth -= c == ")"
+                k += 1
+                if depth == 0:
+                    break
+            call = body[m.start():k]
+            if kind == "w":
+                wrapped = ("PSP_BMS_SYNC(%s)" if value else "PSP_BMS_SYNCV(%s)") % call
+            elif kind == "d":
+                wrapped = "PSP_BMS_DROPV(%s)" % call
+            else:
+                wrapped = "PSP_BMS_NARROWV(%s, %s)" % (kind[1], call)
+            out.append(body[last:m.start()] + wrapped)
+            last = k
+            counts[helper] = counts.get(helper, 0) + 1
+        out.append(body[last:])
+        body = "".join(out)
+    return body
+
+def _bipedmove_file(tree, path, functions, pointers, prelude, counts):
+    full = os.path.join(tree, path)
+    text = open(full, errors="surrogateescape").read()
+    if "PSP_BMS(" in text:
+        return None
+    for name, expected in functions.items():
+        spans = _bipedmove_span(text, name)
+        if len(spans) != 1:
+            return check_fail("psp_fixups: BIPEDMOVE: %s: %d definitions of %s" % (path, len(spans), name))
+        start, end = spans[0]
+        body, n = _bipedmove_rewrite(text[start:end], pointers)
+        body = _bipedmove_sync(body, counts)
+        counts[name] = n
+        if expected is not None and n != expected:
+            check_fail("psp_fixups: BIPEDMOVE: %s: expected %d datum accesses, found %d" % (name, expected, n))
+        text = text[:start] + body + text[end:]
+    # units.c includes again below the window's functions, so its prelude
+    # (the accessor only: nothing of the engine's) goes at the top
+    at = after_last_include(text) if "psp_bms_start" in prelude else 0
+    text = text[:at] + prelude + text[at:]
+    open(full, "w", errors="surrogateescape").write(text)
+    return text
+
+def biped_move_store(tree):
+    if not BIPEDSTAGE:
+        return 0
+    counts = {}
+    window = BIPEDMOVE_WINDOW["source/units/bipeds.c"]
+    functions = dict(BIPEDMOVE_FUNCTIONS)
+    functions.update(window[1])
+    if _bipedmove_file(tree, "source/units/bipeds.c", functions, window[0], BIPEDMOVE_PRELUDE, counts) is None:
+        return 0
+    path = "source/units/units.c"
+    _bipedmove_file(tree, path, BIPEDMOVE_WINDOW[path][1], BIPEDMOVE_WINDOW[path][0], BIPEDMOVE_UNITS_PRELUDE, counts)
+    for helper, (_, _, expected) in BIPEDMOVE_SYNC.items():
+        if expected is not None and counts.get(helper, 0) != expected:
+            check_fail("psp_fixups: BIPEDMOVE: expected %d calls of %s in the window, found %d" % (expected, helper, counts.get(helper, 0)))
+    print("psp_fixups: BIPEDMOVE: datum accesses by function: " + ", ".join(
+        "%s %d" % (k, v) for k, v in counts.items() if k not in BIPEDMOVE_SYNC))
+    print("psp_fixups: BIPEDMOVE: calls synced: " + ", ".join(
+        "%s %d" % (k, counts.get(k, 0)) for k in BIPEDMOVE_SYNC))
+    return sum(v for k, v in counts.items() if k not in BIPEDMOVE_SYNC)
+
+# 1c's outside writers (the lab's wswatch1_writers: damage, speech, AI orders,
+# placement), each marking its object's slot before it writes, so the
+# persistent slot can refill only when one of them did
+FIXES_BIPEDSTAGE.update({'source/objects/damage.c#wsdirty': [('void object_deplete_body(\n\tlong object_index)\n{\n', 'void object_deplete_body(\n\tlong object_index)\n{\n\t{ void psp_ws_dirty(long object_index); psp_ws_dirty(object_index); } /* (FIXES_BIPEDSTAGE #wsdirty) 1c: a write outside the staged passes */\n'), ('void object_deplete_shield(\n\tlong object_index)\n{\n', 'void object_deplete_shield(\n\tlong object_index)\n{\n\t{ void psp_ws_dirty(long object_index); psp_ws_dirty(object_index); } /* (FIXES_BIPEDSTAGE #wsdirty) 1c: a write outside the staged passes */\n'), ('\treal_vector3d const *object_normal)\n{\n', '\treal_vector3d const *object_normal)\n{\n\t{ void psp_ws_dirty(long object_index); psp_ws_dirty(object_index); } /* (FIXES_BIPEDSTAGE #wsdirty) 1c: a write outside the staged passes */\n')], 'source/units/unit_dialogue.c#wsdirty': [('void unit_speak(\n\tlong unit_index,\n\tshort play_type,\n\tstruct unit_speech_item const *speech_item)\n{\n', 'void unit_speak(\n\tlong unit_index,\n\tshort play_type,\n\tstruct unit_speech_item const *speech_item)\n{\n\t{ void psp_ws_dirty(long object_index); psp_ws_dirty(unit_index); } /* (FIXES_BIPEDSTAGE #wsdirty) 1c: a write outside the staged passes */\n')], 'source/objects/objects.c#wsdirty': [('void object_reset(\n\tlong object_index)\n{\n', 'void object_reset(\n\tlong object_index)\n{\n\t{ void psp_ws_dirty(long object_index); psp_ws_dirty(object_index); } /* (FIXES_BIPEDSTAGE #wsdirty) 1c: a write outside the staged passes */\n'), ('void object_set_position(\n\tlong object_index,\n\treal_point3d const *position,\n\treal_vector3d const *forward,\n\treal_vector3d const *up)\n{\n', 'void object_set_position(\n\tlong object_index,\n\treal_point3d const *position,\n\treal_vector3d const *forward,\n\treal_vector3d const *up)\n{\n\t{ void psp_ws_dirty(long object_index); psp_ws_dirty(object_index); } /* (FIXES_BIPEDSTAGE #wsdirty) 1c: a write outside the staged passes */\n')], 'source/ai/action_obey.c#wsdirty': [('static boolean action_obey_command_begin(\n\tlong actor_index,\n\tlong unit_index,\n\tshort command_list_index,\n\tstruct obey_individual_simple_control *simple_control,\n\tstruct obey_individual_complex_control *complex_control)\n{\n', 'static boolean action_obey_command_begin(\n\tlong actor_index,\n\tlong unit_index,\n\tshort command_list_index,\n\tstruct obey_individual_simple_control *simple_control,\n\tstruct obey_individual_complex_control *complex_control)\n{\n\t{ void psp_ws_dirty(long object_index); psp_ws_dirty(unit_index); } /* (FIXES_BIPEDSTAGE #wsdirty) 1c: a write outside the staged passes */\n')]})
+
+# 1c's root writers (the lab's wsdirty3: the unmarked changes left sat on the
+# root run): marked too, and psp_ws_dirty takes marks only outside the staged
+# passes, so the passes' own calls of these leave no mark
+FIXES_BIPEDSTAGE.update({'source/objects/objects.c#wsdirty2': [('void object_translate(\n\tlong object_index,\n\treal_point3d const *new_position,\n\tstruct location const *new_location)\n{\n', 'void object_translate(\n\tlong object_index,\n\treal_point3d const *new_position,\n\tstruct location const *new_location)\n{\n\t{ void psp_ws_dirty(long object_index); psp_ws_dirty(object_index); } /* (FIXES_BIPEDSTAGE #wsdirty) 1c: a write outside the staged passes */\n')], 'source/units/bipeds.c#wsdirty': [('void biped_accelerate(\n\tlong biped_index,\n\treal_vector3d *acceleration)\n{\n', 'void biped_accelerate(\n\tlong biped_index,\n\treal_vector3d *acceleration)\n{\n\t{ void psp_ws_dirty(long object_index); psp_ws_dirty(biped_index); } /* (FIXES_BIPEDSTAGE #wsdirty) 1c: a write outside the staged passes */\n'), ('static boolean biped_jump(\n\tlong biped_index)\n{\n', 'static boolean biped_jump(\n\tlong biped_index)\n{\n\t{ void psp_ws_dirty(long object_index); psp_ws_dirty(biped_index); } /* (FIXES_BIPEDSTAGE #wsdirty) 1c: a write outside the staged passes */\n')], 'source/units/units.c#wsdirty': [('static void unit_align_facing(\n\tlong unit_index,\n\treal_vector2d const *alignment_vector)\n{\n', 'static void unit_align_facing(\n\tlong unit_index,\n\treal_vector2d const *alignment_vector)\n{\n\t{ void psp_ws_dirty(long object_index); psp_ws_dirty(unit_index); } /* (FIXES_BIPEDSTAGE #wsdirty) 1c: a write outside the staged passes */\n')]})
+
+# PSP_BIPEDSTAGE_NOINLINE=1 (recon only, never a priced build): the staged
+# passes kept out of the compiler's inlining (and LTO's, which folds the run
+# into game_time_update), so the PSP's sampler names each one's own cost
+if BIPEDSTAGE and os.environ.get("PSP_BIPEDSTAGE_NOINLINE", "") == "1":
+    _bs_noinline = [
+        ("static void psp_bipedstage_run(void)\n{", "static __attribute__((noinline)) void psp_bipedstage_run(void)\n{"),
+        ("void psp_bipedstage2_gather(long biped_index)\n{", "__attribute__((noinline)) void psp_bipedstage2_gather(long biped_index)\n{"),
+        ("int psp_bipedstage2_gather_exact(long biped_index)\n{", "__attribute__((noinline)) int psp_bipedstage2_gather_exact(long biped_index)\n{"),
+        ("static void psp_bs2_pack(struct psp_bs2_slot *slot, long biped_index)\n{", "static __attribute__((noinline)) void psp_bs2_pack(struct psp_bs2_slot *slot, long biped_index)\n{"),
+        ("static int psp_bipedstage2_take(unsigned long flags,", "static __attribute__((noinline)) int psp_bipedstage2_take(unsigned long flags,"),
+        ("void psp_bipedstage3_intent(long biped_index)\n{", "__attribute__((noinline)) void psp_bipedstage3_intent(long biped_index)\n{"),
+    ]
+    for _rel, _pairs in FIXES_BIPEDSTAGE.items():
+        _new = []
+        for _old, _text in _pairs:
+            for _a, _b in _bs_noinline:
+                _text = _text.replace(_a, _b)
+            _new.append((_old, _text))
+        FIXES_BIPEDSTAGE[_rel] = _new
+
+# PSP_WSOLD=1: the world store's first slice (docs/box_world_store.md §9;
+# psp/src/box_world_store_old.c, psp/include/box_ws_old.h): the pill sweep's
+# object inputs and what biped motion reads of other bipeds, copied as the
+# object walk begins, under keep word wsold (wsoldcheck proves the copy
+# complete and counts where it parts from the live world at the sweep's
+# reads). Nothing reads the copy for play yet: the ME's sweep will.
+WSOLD = os.environ.get("PSP_WSOLD", "") == "1"
+_WSOLD_MARK = "{ void box_ws_old_mark(long datum_index); box_ws_old_mark(%s); } /* (FIXES_WSOLD) written since the copy */"
+FIXES_WSOLD = {
+"source/objects/objects.c#wsold": [
+# the walk's own updates (children are updated through here too)
+("""static boolean object_update(
+	long object_index)
+{
+	struct object_header_datum *header = object_header_get(object_index);
+""",
+ """static boolean object_update(
+	long object_index)
+{
+	struct object_header_datum *header = object_header_get(object_index);
+	""" + _WSOLD_MARK % "object_index" + """
+"""),
+# the sleep's wake marks: every writer outside an object's own update that
+# the sleep had to know of, and the parents above it
+("""		psp_wake_marked[absolute_index] = 1;
+""",
+ """		psp_wake_marked[absolute_index] = 1;
+		""" + _WSOLD_MARK % "DATUM_INDEX_NEW(absolute_index, header->identifier)" + """
+"""),
+# a new object: no record until the next copy (it didn't exist as the walk began)
+("""	return object_index;
+}
+""",
+ """	if (object_index != NONE)
+		""" + _WSOLD_MARK % "object_index" + """
+	return object_index;
+}
+"""),
+# the bounding sphere, wherever node matrices are made (on demand inside
+# another object's update too)
+("""static void object_compute_node_matrices_with(
+	long object_index,
+	struct object_datum *object,
+	struct object_definition *object_definition)
+{
+""",
+ """static void object_compute_node_matrices_with(
+	long object_index,
+	struct object_datum *object,
+	struct object_definition *object_definition)
+{
+	""" + _WSOLD_MARK % "object_index" + """
+"""),
+("""static void psp_nms_make(long object_index, struct psp_nms_entry const *entry)
+{
+""",
+ """static void psp_nms_make(long object_index, struct psp_nms_entry const *entry)
+{
+	""" + _WSOLD_MARK % "object_index" + """
+"""),
+# the child lists: the parent's first child and the siblings' next links
+("""		object_remove_from_list(&object_get(object->object.parent_object_index)->object.first_child_object_index, object_index);
+""",
+ """		""" + _WSOLD_MARK % "object->object.parent_object_index" + """
+		object_remove_from_list(&object_get(object->object.parent_object_index)->object.first_child_object_index, object_index);
+"""),
+("""		object_add_to_list(&parent_object->object.first_child_object_index, object_index);
+""",
+ """		""" + _WSOLD_MARK % "object->object.parent_object_index" + """
+		object_add_to_list(&parent_object->object.first_child_object_index, object_index);
+"""),
+("""	struct object_datum *object = object_get(object_index);
+	object->object.next_object_index = *first_object_reference;
+""",
+ """	struct object_datum *object = object_get(object_index);
+	""" + _WSOLD_MARK % "object_index" + """
+	object->object.next_object_index = *first_object_reference;
+"""),
+("""		struct object_datum *object = object_get(*first_object_reference);
+
+		if (*first_object_reference==object_index)
+""",
+ """		struct object_datum *object = object_get(*first_object_reference);
+
+		""" + _WSOLD_MARK % "*first_object_reference" + """
+		if (*first_object_reference==object_index)
+"""),
+# the copy refreshed as the walk begins: after activation, before any update
+("""	psp_fvp_begin(); /* psp_fixups.py (FIXES_FISSION) */
+#endif
+""",
+ """	psp_fvp_begin(); /* psp_fixups.py (FIXES_FISSION) */
+	psp_wsold_refresh(); /* (FIXES_WSOLD) */
+#endif
+"""),
+# the engine's side of the copy: a record made from a datum, by the
+# engine's own names, so the store's file needs no engine header
+("""#include "units/bipeds.h"
+#include "physics/breakable_surfaces.h"
+""",
+ """#include "units/bipeds.h"
+#include "physics/breakable_surfaces.h"
+#include "box_ws_old.h" /* (FIXES_WSOLD) */
+_Static_assert(BOX_WS_OLD_SLOTS >= MAXIMUM_OBJECTS_PER_MAP, "the one-tick-old copy holds every object slot");
+
+static int psp_wsold_make(long object_index, struct object_datum const *object, short type,
+	struct box_ws_old_object *record, struct box_ws_old_biped *biped_record)
+{
+	memset(record, 0, sizeof(*record));
+	record->center[0] = object->object.bounding_sphere_center.x;
+	record->center[1] = object->object.bounding_sphere_center.y;
+	record->center[2] = object->object.bounding_sphere_center.z;
+	record->radius = object->object.bounding_sphere_radius;
+	record->flags = object->object.flags &
+		(FLAG(_object_invisible_bit) | FLAG(_object_no_collisions_bit) | FLAG(_object_movie_star_bit));
+	record->next = object->object.next_object_index;
+	record->first_child = object->object.first_child_object_index;
+	record->identifier = (int16_t)DATUM_INDEX_TO_IDENTIFIER(object_index);
+	record->type = (uint8_t)type;
+	record->dead = TEST_FLAG(object->object.damage_flags, _object_dead_bit) ? 1 : 0;
+	if (type != _object_type_biped)
+		return 0;
+	{
+		struct biped_datum const *biped = (struct biped_datum const *)object;
+
+		memset(biped_record, 0, sizeof(*biped_record));
+		biped_record->position[0] = object->object.position.x;
+		biped_record->position[1] = object->object.position.y;
+		biped_record->position[2] = object->object.position.z;
+		biped_record->velocity[0] = object->object.translational_velocity.i;
+		biped_record->velocity[1] = object->object.translational_velocity.j;
+		biped_record->velocity[2] = object->object.translational_velocity.k;
+		biped_record->parent = object->object.parent_object_index;
+		biped_record->player = biped->unit.player_index;
+		biped_record->seat = biped->unit.parent_seat_index;
+		biped_record->passes_through = TEST_FLAG(biped->biped.flags, _biped_movement_passes_through_bipeds_bit) ? 1 : 0;
+		/* a child's pill stands on its parent's node, which reading would
+		make on demand: left to the serial path */
+		if (object->object.parent_object_index == NONE)
+		{
+			real_point3d base;
+			real height, width;
+
+			biped_get_physics_pill(object_index, &base, &height, &width);
+			biped_record->pill_base[0] = base.x;
+			biped_record->pill_base[1] = base.y;
+			biped_record->pill_base[2] = base.z + height;
+			biped_record->pill_height = height;
+			biped_record->pill_width = width;
+			biped_record->pill_held = 1;
+		}
+	}
+	return 1;
+}
+
+static void psp_wsold_one(unsigned absolute, int check)
+{
+	struct object_header_datum const *header;
+	struct box_ws_old_object record;
+	struct box_ws_old_biped biped_record;
+	int is_biped;
+
+	if (absolute >= (unsigned)object_header_data->count)
+	{
+		if (!check)
+			box_ws_old_put(absolute, NULL, NULL);
+		return;
+	}
+	header = (struct object_header_datum const *)xbox_pointer(object_header_data->data) + absolute;
+	if (!header->identifier || !header->datum)
+	{
+		if (!check)
+			box_ws_old_put(absolute, NULL, NULL);
+		return;
+	}
+	is_biped = psp_wsold_make(DATUM_INDEX_NEW(absolute, header->identifier), header->datum, header->type, &record, &biped_record);
+	if (check)
+		box_ws_old_check(absolute, &record, is_biped ? &biped_record : NULL);
+	else
+		box_ws_old_put(absolute, &record, is_biped ? &biped_record : NULL);
+}
+
+void psp_wsold_refresh(void)
+{
+	static uint16_t list[BOX_WS_OLD_SLOTS + BOX_WS_OLD_BIPEDS];
+	int state = box_ws_old_begin();
+	unsigned count, i, bipeds = 0;
+
+	if (!state)
+		return;
+	if (state == 2)
+	{
+		for (count = 0; count < BOX_WS_OLD_SLOTS; count++)
+			list[count] = count;
+		box_ws_old_marked(list + count, 0);
+	}
+	else
+		count = (unsigned)box_ws_old_marked(list, sizeof(list) / sizeof(list[0]));
+	for (i = 0; i < count; i++)
+		psp_wsold_one(list[i], 0);
+	for (i = 0; i < count; i++)
+		bipeds += box_ws_old_biped_of[list[i]] >= 0;
+	if (box_ws_old_checking)
+	{
+		unsigned live = (unsigned)object_header_data->count;
+
+		for (i = 0; i < live && i < BOX_WS_OLD_SLOTS; i++)
+			psp_wsold_one(i, 1);
+	}
+	box_ws_old_flipped(count, bipeds, (unsigned)object_header_data->count);
+}
+
+/* wsoldcheck: an object the engine's sweep reads, against the copy */
+void psp_wsold_visit(long object_index, struct object_datum const *object)
+{
+	struct box_ws_old_object record;
+	struct box_ws_old_biped biped_record;
+	struct object_header_datum const *header = object_header_get(object_index);
+
+	if (psp_wsold_make(object_index, object, header->type, &record, &biped_record))
+		box_ws_old_visit(object_index, &record, &biped_record);
+	else
+		box_ws_old_visit(object_index, &record, NULL);
+}
+"""),
+],
+"source/physics/collisions.c#wsold": [
+("""	long ignore_object_index,
+	struct collision_feature_list *features)
+{
+	do
+	{
+		struct object_datum *object = object_get(object_index);
+""",
+ """	long ignore_object_index,
+	struct collision_feature_list *features)
+{
+	do
+	{
+		struct object_datum *object = object_get(object_index);
+
+		{ /* (FIXES_WSOLD) wsoldcheck: the copy against what this read finds */
+			extern int box_ws_old_checking;
+			void psp_wsold_visit(long object_index, struct object_datum const *object);
+
+			if (box_ws_old_checking && object_index != ignore_object_index)
+				psp_wsold_visit(object_index, object);
+		}
+"""),
+],
+}
+# PSP_SWEEPME=1: the ME's half of the pill sweep, slice 1 (docs/box_collision.md
+# §11; psp/src/psp_sweepme.c, psp/include/psp_sweepme.h): the level's half of
+# each staged biped's gather (the BSP walk and the shapes made from it) made
+# by the box's code on the ME, a record a biped as its intent ends, while the
+# main CPU runs the next intents; the gather takes the record's answer in
+# place of its own level walk and makes the objects' half as before. Keep
+# word sweepme; sweepmecheck compares every answer with the engine's own.
+SWEEPME = os.environ.get("PSP_SWEEPME", "0" if os.environ.get("PSP_MULTIPLAYER", "") == "1" else "1") == "1"  # on in the campaign build, as psp_build.py sets it
+FIXES_SWEEPME = {
+"source/objects/objects.c#sweepme": [
+("""int psp_bipedstage2_gather_exact(long biped_index); /* collisions.c (FIXES_BIPEDSTAGE) bipedstage3 */
+""",
+ """int psp_bipedstage2_gather_exact(long biped_index); /* collisions.c (FIXES_BIPEDSTAGE) bipedstage3 */
+void psp_sweepme_tick_begin(void); /* collisions.c (FIXES_SWEEPME) */
+void psp_sweepme_after_intent(long biped_index);
+void psp_sweepme_close(void); /* psp_sweepme.c */
+void psp_sweepme_end(void);
+"""),
+("""		psp_bipedstage3_reset();
+		psp_bipedstage_phase = 3;
+		for (k = 0; k < psp_bipedstage_count; k++)
+		{
+			if (psp_bipedstage_live(k, &header) && !TEST_FLAG(header->datum->object.damage_flags, _object_dead_bit))
+				psp_bipedstage3_intent(psp_bipedstage_index[k]);
+		}
+	}
+""",
+ """		psp_bipedstage3_reset();
+		psp_bipedstage_phase = 3;
+		psp_sweepme_tick_begin(); /* (FIXES_SWEEPME) */
+		for (k = 0; k < psp_bipedstage_count; k++)
+		{
+			if (psp_bipedstage_live(k, &header) && !TEST_FLAG(header->datum->object.damage_flags, _object_dead_bit))
+			{
+				psp_bipedstage3_intent(psp_bipedstage_index[k]);
+				/* (FIXES_SWEEPME) its level half to the ME while the next intents run */
+				psp_sweepme_after_intent(psp_bipedstage_index[k]);
+			}
+		}
+		psp_sweepme_close();
+	}
+"""),
+# every record collected once the gathers have taken them: the solves read
+# only the gathers' own lists
+("""				!(psp_bs3_on && psp_bipedstage2_gather_exact(psp_bipedstage_index[k])))
+				psp_bipedstage2_gather(psp_bipedstage_index[k]);
+		}
+	}
+""",
+ """				!(psp_bs3_on && psp_bipedstage2_gather_exact(psp_bipedstage_index[k])))
+				psp_bipedstage2_gather(psp_bipedstage_index[k]);
+		}
+	}
+	psp_sweepme_end(); /* (FIXES_SWEEPME) */
+"""),
+],
+"source/physics/collisions.c#sweepme": [
+# the gather's level half: the record's answer, when there is one for this
+# very query (psp_sweepme_find compared it word for word)
+("""#ifdef HALO_PSP
+		psp_features_calls++;
+		psp_features_mark = psp_microseconds();
+#endif
+
+		if (collision_bsp_test_sphere(
+""",
+ """#ifdef HALO_PSP
+		psp_features_calls++;
+		psp_features_mark = psp_microseconds();
+#endif
+
+		if (psp_sweepme_pending >= 0 && psp_sweepme_take(collision_bsp, &result, features))
+			; /* (FIXES_SWEEPME) the level's half, made on the ME */
+		else if (collision_bsp_test_sphere(
+"""),
+("""			collision_bsp_get_features_in_sphere(
+				collision_bsp,
+				&result,
+				NULL,
+				height,
+				width,
+				NONE,
+				features);
+		}
+#ifdef HALO_PSP
+		{
+			unsigned long now = psp_microseconds();
+
+			psp_features_bsp_us += now - psp_features_mark;
+""",
+ """			collision_bsp_get_features_in_sphere(
+				collision_bsp,
+				&result,
+				NULL,
+				height,
+				width,
+				NONE,
+				features);
+		}
+#ifdef HALO_PSP
+		if (psp_sweepme_holding)
+			psp_sweepme_compare(&result, features); /* (FIXES_SWEEPME) sweepmecheck */
+		{
+			unsigned long now = psp_microseconds();
+
+			psp_features_bsp_us += now - psp_features_mark;
+"""),
+# the record's query is the one the gather is about to ask
+("""	slot->height = height;
+	slot->width = width;
+	psp_bs2_pack(slot, biped_index);
+	return TRUE;
+}
+""",
+ """	slot->height = height;
+	slot->width = width;
+	psp_sweepme_pending = psp_sweepme_find(biped_index, &slot->center.x, slot->radius, height, width,
+		(flags & FLAG(_collision_test_structure_bit)) != 0); /* (FIXES_SWEEPME) */
+	psp_bs2_pack(slot, biped_index);
+	psp_sweepme_pending = -1;
+	return TRUE;
+}
+
+/* (FIXES_SWEEPME) the tick's batch opened on the level as the intents begin */
+void psp_sweepme_tick_begin(void)
+{
+	struct collision_bsp const *bsp = global_collision_bsp_get();
+	struct psp_sweepme_level level;
+
+	if (!psp_sweepme_on || !bsp)
+		return;
+	level.nodes = bsp->bsp3d.nodes.address;
+	level.planes = bsp->bsp3d.planes.address;
+	level.leaves = bsp->leaves.address;
+	level.references = bsp->bsp2d_references.address;
+	level.nodes2d = bsp->bsp2d.nodes.address;
+	level.surfaces = bsp->surfaces.address;
+	level.edges = bsp->edges.address;
+	level.vertices = bsp->vertices.address;
+	level.node_count = bsp->bsp3d.nodes.count;
+	level.plane_count = bsp->bsp3d.planes.count;
+	level.leaf_count = bsp->leaves.count;
+	level.reference_count = bsp->bsp2d_references.count;
+	level.node2d_count = bsp->bsp2d.nodes.count;
+	level.surface_count = bsp->surfaces.count;
+	level.edge_count = bsp->edges.count;
+	level.vertex_count = bsp->vertices.count;
+	psp_sweepme_begin(&level, breakable_surface_flags_get());
+}
+
+/* (FIXES_SWEEPME) a staged biped's move as psp_bipedstage2_gather_exact will
+gather it, the same expressions on the same floats, handed to the ME */
+void psp_sweepme_after_intent(long biped_index)
+{
+	real_point3d position, center;
+	real_vector3d velocity;
+	unsigned long flags;
+	real height, width, radius;
+
+	if (psp_sweepme_on <= 0)
+		return;
+	if (psp_bipedstage3_call(biped_index, &flags, &position, &velocity, &height, &width) != 1 || !flags)
+		return;
+	center.x = position.x + velocity.i * 0.5f;
+	center.y = position.y + velocity.j * 0.5f;
+	center.z = height * 0.5f + (position.z + velocity.k * 0.5f);
+	radius = magnitude3d(&velocity) * 0.5f + height * 0.5f + width + 1e-4f;
+	if (flags & (FLAG(_collision_test_structure_bit) | FLAG(_collision_test_media_bit) | FLAG(_collision_test_objects_bit)))
+		psp_sweepme_add(biped_index, &center.x, radius, height, width, (flags & FLAG(_collision_test_structure_bit)) != 0);
+}
+"""),
+("""#include "halo_perf_log.h" /* port: console.perf_log */
+""",
+ """#include "halo_perf_log.h" /* port: console.perf_log */
+#include "psp_sweepme.h" /* (FIXES_SWEEPME) */
+#include "collision_bsp_definitions.h" /* (FIXES_SWEEPME) the level's arrays */
+
+/* the tags' records are the box's (box_collbsp.h): read in place on the ME
+(collision_bsp.c's own asserts hold its private leaf, 8 B, and 2D reference,
+4 B, as the packed tags have them) */
+typedef char psp_sweepme_tag_sizes[(sizeof(struct bsp3d_node) == 12 && sizeof(real_plane3d) == 16 &&
+	sizeof(struct bsp2d_node) == 20 &&
+	sizeof(struct collision_surface) == 8 && sizeof(struct collision_edge) == 12 && sizeof(struct collision_vertex) == 16 &&
+	BIT_VECTOR_SIZE_IN_BYTES(MAXIMUM_BREAKABLE_SURFACES_PER_MAP) == 4 * PSP_SWEEPME_BREAKABLE_WORDS &&
+	MAXIMUM_POINTS_PER_COLLISION_PRISM == 8) ? 1 : -1];
+
+/* sweepmecheck: the record's answer held while the engine's own level half
+runs, then compared */
+static struct psp_sweepme_answer psp_sweepme_held;
+static int psp_sweepme_holding;
+
+static boolean psp_sweepme_take(struct collision_bsp const *bsp, struct collision_bsp_test_sphere_result *result,
+	struct collision_feature_list *features)
+{
+	struct psp_sweepme_answer answer;
+	int index = psp_sweepme_pending;
+	short k;
+
+	psp_sweepme_pending = -1;
+	if (!psp_sweepme_answer(index, bsp->bsp3d.planes.address, breakable_surface_flags_get(), &answer))
+		return FALSE;
+	if (psp_sweepme_check)
+	{
+		psp_sweepme_held = answer;
+		psp_sweepme_holding = 1;
+		return FALSE;
+	}
+	result->surface_count = result->edge_count = result->vertex_count = 0;
+	result->leaf_count = answer.leaf_count;
+	for (k = 0; k < answer.leaf_count; k++)
+		result->leaf_indices[k] = answer.leaves[k];
+	features->count[_collision_feature_sphere] = answer.count[0];
+	features->count[_collision_feature_cylinder] = answer.count[1];
+	features->count[_collision_feature_prism] = answer.count[2];
+	memcpy(features->spheres, answer.spheres, answer.count[0] * sizeof(struct collision_sphere));
+	memcpy(features->cylinders, answer.cylinders, answer.count[1] * sizeof(struct collision_cylinder));
+	memcpy(features->prisms, answer.prisms, answer.count[2] * sizeof(struct collision_prism));
+	return TRUE;
+}
+
+/* a prism's bytes that mean something: up to its pad byte, then its count
+and the points it holds */
+static boolean psp_sweepme_prism_same(struct collision_prism const *a, struct collision_prism const *b)
+{
+	return !memcmp(a, b, offsetof(struct collision_prism, pad)) && a->point_count == b->point_count &&
+		a->point_count >= 0 && a->point_count <= MAXIMUM_POINTS_PER_COLLISION_PRISM &&
+		!memcmp(a->points, b->points, a->point_count * sizeof(real_point2d));
+}
+
+static void psp_sweepme_compare(struct collision_bsp_test_sphere_result const *result,
+	struct collision_feature_list const *features)
+{
+	struct psp_sweepme_answer const *a = &psp_sweepme_held;
+	struct collision_prism const *prisms = (struct collision_prism const *)a->prisms;
+	boolean same = result->leaf_count == a->leaf_count &&
+		features->count[_collision_feature_sphere] == a->count[0] &&
+		features->count[_collision_feature_cylinder] == a->count[1] &&
+		features->count[_collision_feature_prism] == a->count[2];
+	short k;
+
+	psp_sweepme_holding = 0;
+	for (k = 0; same && k < result->leaf_count; k++)
+		same = result->leaf_indices[k] == a->leaves[k];
+	same = same && !memcmp(features->spheres, a->spheres, a->count[0] * sizeof(struct collision_sphere)) &&
+		!memcmp(features->cylinders, a->cylinders, a->count[1] * sizeof(struct collision_cylinder));
+	for (k = 0; same && k < a->count[2]; k++)
+		same = psp_sweepme_prism_same(&features->prisms[k], &prisms[k]);
+	psp_sweepme_checked(same);
+}
+"""),
+],
+}
+
+
 # ---------- FIXES_B98: a conversation that has ended is read as none (a fix, always on)
 # A conversation's lines end on the sound system's playback (ai_conversation_
 # line_perform: sound_scripted_dialog_is_playing, scripted_sound_time), which
@@ -55190,7 +56983,7 @@ static void update_potentially_audible_looping_sound(
 		{"""),
 ]
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_SSPR.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + list(FIXES_CHUPA090RUNS.items()) + list(FIXES_HEAPTRIM.items()) + list(FIXES_B78.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items()) + list(FIXES_AIME2A.items()) + list(FIXES_REDOSEED.items()) + (list(FIXES_STACKHOT.items()) if STACKHOT else []) + (list(FIXES_STACKHOT2.items()) if STACKHOT2 else []) + list(FIXES_PWSL.items()) + list(FIXES_SPHSL.items()) + list(FIXES_RECONLIST.items()) + list(FIXES_TP1.items()) + list(FIXES_WXDEAD.items()) + list(FIXES_AIMEMOVE.items()) + list(FIXES_PROPCRASH.items()) + list(FIXES_APCPOOL.items()) + list(FIXES_PSPTLS.items()) + list(FIXES_SNDEDRAM.items()) + list(FIXES_LIGHTFIRST.items()) + list(FIXES_DRAWPART.items()) + (list(FIXES_RECONLATE.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + list(FIXES_P2PASS.items()) + (list(FIXES_P2CENSUS.items()) if P2CENSUS else []) + list(FIXES_OBSRAY.items()) + list(FIXES_SNDWAIT.items()) + list(FIXES_FLAMEDECAL.items()) + list(FIXES_HUHINT.items()) + list(FIXES_DBLSOFT.items()) + list(FIXES_VFPUTRIG.items()) + list(FIXES_TICKCACHE.items()) + list(FIXES_STRICTALIAS.items()) + list(FIXES_SNDPERMAP.items()) + list(FIXES_RLOOP.items()) + list(FIXES_L10.items()) + list(FIXES_RLSKIP.items()) + list(FIXES_ONEWALK.items()) + (list(FIXES_POSEK.items()) if POSEK else []) + (list(FIXES_SNDSTREAM.items()) if os.environ.get("PSP_SNDSTREAM", "") == "1" else []) + list(FIXES_MOUTHCLOCK.items()) + list(FIXES_LSAME.items()) + list(FIXES_CHUPA090.items()) + list(FIXES_V091A.items()) + list(FIXES_AIDEBUGREC.items()) + (list(FIXES_AITICKOLD.items()) if AITICKOLD else []) + (list(FIXES_PADPATH.items()) if os.environ.get("PSP_PADPATH", "") == "1" else []) + list(FIXES_FARLEVEL.items()) + list(FIXES_DECALRING.items()) + list(FIXES_ARRAYFULL.items()) + (list(FIXES_DEADXBOX.items()) if DEADXBOX else []) + (list(FIXES_CAPTURE_POSING.items()) if CAPTURE == "posing" else []) + (list(FIXES_BOXPOSING.items()) if BOXPOSING else []) + (list(FIXES_ASKCENSUS.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + (list(FIXES_CAPTURE_SWEEP.items()) if CAPTURE == "sweep" else []) + list(FIXES_B98.items()) + list(FIXES_SOUNDGAMETIME.items())):
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_SSPR.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + list(FIXES_CHUPA090RUNS.items()) + list(FIXES_HEAPTRIM.items()) + list(FIXES_B78.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items()) + list(FIXES_AIME2A.items()) + list(FIXES_REDOSEED.items()) + (list(FIXES_STACKHOT.items()) if STACKHOT else []) + (list(FIXES_STACKHOT2.items()) if STACKHOT2 else []) + list(FIXES_PWSL.items()) + list(FIXES_SPHSL.items()) + list(FIXES_RECONLIST.items()) + list(FIXES_TP1.items()) + list(FIXES_WXDEAD.items()) + list(FIXES_AIMEMOVE.items()) + list(FIXES_PROPCRASH.items()) + list(FIXES_APCPOOL.items()) + list(FIXES_PSPTLS.items()) + list(FIXES_SNDEDRAM.items()) + list(FIXES_LIGHTFIRST.items()) + list(FIXES_DRAWPART.items()) + (list(FIXES_RECONLATE.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + list(FIXES_P2PASS.items()) + (list(FIXES_P2CENSUS.items()) if P2CENSUS else []) + list(FIXES_OBSRAY.items()) + list(FIXES_SNDWAIT.items()) + list(FIXES_FLAMEDECAL.items()) + list(FIXES_HUHINT.items()) + list(FIXES_DBLSOFT.items()) + list(FIXES_VFPUTRIG.items()) + list(FIXES_TICKCACHE.items()) + list(FIXES_STRICTALIAS.items()) + list(FIXES_SNDPERMAP.items()) + list(FIXES_RLOOP.items()) + list(FIXES_L10.items()) + list(FIXES_RLSKIP.items()) + list(FIXES_ONEWALK.items()) + (list(FIXES_POSEK.items()) if POSEK else []) + (list(FIXES_SNDSTREAM.items()) if os.environ.get("PSP_SNDSTREAM", "") == "1" else []) + list(FIXES_MOUTHCLOCK.items()) + list(FIXES_LSAME.items()) + list(FIXES_CHUPA090.items()) + list(FIXES_V091A.items()) + list(FIXES_AIDEBUGREC.items()) + (list(FIXES_AITICKOLD.items()) if AITICKOLD else []) + (list(FIXES_PADPATH.items()) if os.environ.get("PSP_PADPATH", "") == "1" else []) + list(FIXES_FARLEVEL.items()) + list(FIXES_DECALRING.items()) + list(FIXES_ARRAYFULL.items()) + (list(FIXES_DEADXBOX.items()) if DEADXBOX else []) + (list(FIXES_CAPTURE_POSING.items()) if CAPTURE == "posing" else []) + (list(FIXES_BOXPOSING.items()) if BOXPOSING else []) + (list(FIXES_ASKCENSUS.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + (list(FIXES_CAPTURE_SWEEP.items()) if CAPTURE == "sweep" else []) + (list(FIXES_BIPEDSTAGE.items()) if BIPEDSTAGE else []) + (list(FIXES_WSOLD.items()) if WSOLD else []) + (list(FIXES_SWEEPME.items()) if SWEEPME else []) + list(FIXES_B98.items()) + list(FIXES_SOUNDGAMETIME.items())):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 # PSP_FRAMEPIC (docs/frame_picture.md): game.c's perf statements are
 # stripped before its anchors are matched (PERF_STRIP), which took the tick's
@@ -56428,6 +58221,7 @@ print("psp_fixups: the settings' help text left out in %d rows (CONFIGHELP)" % c
 print("psp_fixups: the GL renderer compiled out in %d files" % gl_never(TREE))
 print("psp_fixups: the collision user stack %s in %d files (COLLUSERS)" % ("shared, as before," if COLLUSERS_SHARED else "one a CPU (debug tools) or none", collision_users(TREE)))
 print("psp_fixups: the AI's meters and ballistic record the main CPU's alone in %d files (AIMETERS)" % ai_meters(TREE))
+print("psp_fixups: biped motion's window (intent to tail) through the store, %d datum accesses (BIPEDMOVE)" % biped_move_store(TREE))
 
 if CHECK_ONLY:
     for message in count_failures:

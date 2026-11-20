@@ -124,6 +124,9 @@ struct me_control
 	/* MEXEC (docs/mexec.md), the ME at each install: 1 copied, 2 refused
 	(no table), its bytes, the words it patched, and the copy's word sum */
 	unsigned int mexec_state, mexec_bytes, mexec_patches, mexec_sum;
+	/* "ticksched": the replay's slice in ME cycles (the main CPU, set once
+	after start); a look reads it only when ring jobs wait */
+	unsigned int tick_slice_cycles;
 } __attribute__((aligned(64)));
 #define ME_FEATURE_HALT 1u
 #define ME_FEATURE_RING 2u
@@ -186,6 +189,14 @@ one actor's thinking can run past the audio job's 40 ms bound on its own
 /* "mexec" (PSP_MEXEC builds; docs/mexec.md): the ME copies its hot code into
 its eDRAM at start and runs the GE replay from the copy */
 #define ME_FEATURE_MEXEC 32768u
+/* "ticksched" (the tick schedule box, slice 1; docs/box_tick_schedule.md):
+inside the frame's replay the ring is served at pick-up points a slice of
+the ME's time apart, not at every record, and a pick-up makes the waiting
+batches' records before it runs the ring in order. The replay's code and a
+batch's (~13 KB with the ring's) don't fit the 16 KB I-cache together, so
+each job taken between two records cost both a refill (c20: the replay
++0.3-0.4 ms a job beyond the batches' own time, sweepme_claims_c20_replay) */
+#define ME_FEATURE_TICKSCHED 65536u
 
 #if PSP_MEXEC
 /* The copy's table: tools/mexec.py writes it into the linked program
@@ -1290,6 +1301,25 @@ static unsigned int batch_sim_passes = 0, batch_sim_whole = 0;
 /* "meclaimold", for the simulated ME (the real one reads ME_FEATURE_CLAIM_OLD) */
 static int me_claim_old = 0;
 
+#if PSP_MEXEC
+/* On the ME: a record function MEXEC copied runs from its copy in eDRAM. A
+call through a pointer is never re-aimed by the copy (tools/mexec.py), so
+without this a batch's make ran from main RAM even with its code copied */
+static psp_me_record_fn me_mexec_aim(psp_me_record_fn fn)
+{
+	const unsigned int *t = psp_mexec_table;
+	unsigned int base, at = MEXEC_HEADER, k;
+
+	if (!mexec_entry)
+		return fn;
+	base = (unsigned int)psp_ge_me_replay - t[2];
+	for (k = 0; k < t[4]; k++, at += 3)
+		if (base + t[at] == (unsigned int)fn)
+			return (psp_me_record_fn)(ME_EDRAM + MEXEC_AT + t[at + 2]);
+	return fn;
+}
+#endif
+
 static void batch_job(const unsigned int *args, unsigned int *results, int on_me)
 {
 	struct psp_me_batch *b = (struct psp_me_batch *)args[0];
@@ -1297,8 +1327,14 @@ static void batch_job(const unsigned int *args, unsigned int *results, int on_me
 	volatile unsigned int *done = &UNCACHED(&b->done)->value, *withdrawn = &UNCACHED(&b->withdrawn)->value;
 	psp_me_record_fn make = (psp_me_record_fn)args[4];
 	unsigned char *records = (unsigned char *)args[5];
-	unsigned int r = args[1], end = args[1] + args[2], bytes = args[6], made = 0, control = 0, user[ME_BATCH_ARGS], k;
+#if PSP_MEXEC
+	if (on_me)
+		make = me_mexec_aim(make);
+#endif
+	unsigned int r = args[1], end = args[1] + args[2], bytes = args[6] & ~63u, made = 0, control = 0, user[ME_BATCH_ARGS], k;
 	int claim_old = on_me ? (CONTROL->features & ME_FEATURE_CLAIM_OLD) != 0 : me_claim_old;
+	/* claims a record (bit 0 of the record size, which is whole lines) */
+	int claims = (args[6] & 1u) != 0, sim_alternate = 0;
 
 	for (k = 0; k < ME_BATCH_ARGS; k++)
 		user[k] = args[7 + k];
@@ -1307,7 +1343,12 @@ static void batch_job(const unsigned int *args, unsigned int *results, int on_me
 	is proven where play can be compared */
 	if (!on_me && batch_sim_half)
 	{
-		if (batch_sim_behind == b)
+		/* with claims, an ME that is behind still makes what the main
+		CPU hasn't reached: here every other record, so records made by
+		each CPU interleave */
+		if (batch_sim_behind == b && claims)
+			sim_alternate = 1;
+		else if (batch_sim_behind == b)
 			end = r;
 		else if (batch_sim_whole)
 			batch_sim_whole--;
@@ -1321,6 +1362,51 @@ static void batch_job(const unsigned int *args, unsigned int *results, int on_me
 	{
 		__asm__ __volatile__("cfc1 %0, $31" : "=r"(control));
 		__asm__ __volatile__("ctc1 %0, $31" : : "r"(args[3]));
+	}
+	if (claims)
+	{
+		volatile unsigned int *me_on = UNCACHED(&b->me_on[0]), *made_word = UNCACHED(&b->made[0]);
+		volatile unsigned int *here_on = UNCACHED(&b->here_on[0]);
+
+		/* Each record its own claim: the ME writes its claim and then
+		reads the main CPU's, the main CPU the other way round (both
+		uncached, a sync between), so at least one of them sees the
+		other's. A record the main CPU claimed is passed, and the job goes
+		on to the next: the gather reaching one record first no longer
+		hands it every record after */
+		for (; r < end; r++)
+		{
+			unsigned char *record = records + r * bytes;
+
+			/* made already, by a pick-up that ran this job's records ahead
+			of the ring (ticksched): only the ME marks made, and never for
+			a record it hasn't finished */
+			if (made_word[r])
+				continue;
+			if (here_on[r] || (sim_alternate && !(r & 1u)))
+			{
+				*withdrawn = *withdrawn + 1;
+				continue;
+			}
+			me_on[r] = 1;
+			__asm__ __volatile__("sync");
+			if (here_on[r])
+			{
+				me_on[r] = 0;
+				*withdrawn = *withdrawn + 1;
+				__asm__ __volatile__("sync");
+				continue;
+			}
+			make(record, user);
+			if (on_me)
+				lines_writeback((unsigned int)record, bytes);
+			__asm__ __volatile__("sync");
+			made_word[r] = 1;
+			__asm__ __volatile__("sync");
+			made++;
+			psp_me_ring_step(r);
+		}
+		r = end;
 	}
 	for (; r < end; r++)
 	{
@@ -1368,6 +1454,9 @@ static inline volatile unsigned int *ring_sentinel(unsigned int allowance)
 	__asm__ __volatile__("move %0, $sp" : "=r"(sp));
 	return (volatile unsigned int *)((sp - allowance) & ~3u);
 }
+
+/* "ticksched" (below): a batch made ahead of the ring broke its stack check */
+static PSP_AIME_ME_SIDE unsigned int tick_first_stack_broken = 0;
 
 /* one ring job, on the ME (on_me), or on the main CPU when simulated, where
 there is no ME cache to look after and no ME cycle counter to read.
@@ -1464,6 +1553,13 @@ static __attribute__((noinline)) void ring_run(unsigned int index, int on_me, un
 	lies below it: reported, and the ring stops */
 	if (*sentinel != RING_SENTINEL)
 		status = RING_STACK;
+	/* a batch made ahead of the ring at a pick-up that broke its stack
+	allowance is reported by the next job the ring finishes */
+	if (on_me && tick_first_stack_broken)
+	{
+		tick_first_stack_broken = 0;
+		status = RING_STACK;
+	}
 	if (on_me)
 		me_note(STASH_RING_WRITE);
 	if (on_me && request->output_bytes)
@@ -1552,6 +1648,148 @@ static unsigned int me_ring_drain(unsigned int popped, unsigned int *last_look, 
 	/* anything pushed after the read above came after this moment */
 	*last_look = looked;
 	return popped;
+}
+
+/* ----- "ticksched": the replay's pick-up points (docs/box_tick_schedule.md).
+Today's replay serves the ring before every record, so each batch job pushed
+during the tick runs alone between two records: its code (the sweep's ~9 KB
+copy, the ring's ~4 KB) and the replay's evict each other in the 16 KB
+I-cache once a job. Held to a pick-up a slice apart, the jobs pushed in that
+slice run back to back, one refill a slice. A job the main CPU is already
+waiting for (ring_urgent) is picked up at the next record, so a wait grows
+by one record at most; and a pick-up makes the waiting batches' records
+first (ring_batch_first), so a long frame job ahead of them in the ring
+(mevisland's visibility) doesn't hold the tick's work */
+
+/* the main CPU while it waits in psp_me_wait: the ticket plus one, else 0.
+One writer (the main CPU), read by the ME through the uncached view */
+static struct me_ring_counter ring_urgent_storage;
+#define RING_URGENT (UNCACHED(&ring_urgent_storage)->value)
+
+/* the slice in ME cycles: "tickschedusN" (default 500 us), "tickschedrecN"
+(default 0, none) caps the records between two pick-ups as well */
+#define TICK_SLICE_US_DEFAULT 500
+/* one word to the ME: the slice's cycles in the low 24 bits (to ~50 ms),
+the record cap in the top 8 */
+static void tick_slice_set(volatile struct me_control *control)
+{
+	int us = psp_keep_number("tickschedus", TICK_SLICE_US_DEFAULT), records = psp_keep_number("tickschedrec", 0);
+	unsigned int cycles;
+
+	if (us < 0 || us > 50000)
+		us = TICK_SLICE_US_DEFAULT;
+	cycles = (unsigned int)((float)us * (me_cycles_per_us > 0.0f ? me_cycles_per_us : 333.0f));
+	if (cycles > 0x00FFFFFFu)
+		cycles = 0x00FFFFFFu;
+	control->tick_slice_cycles = cycles | ((unsigned int)(records > 255 ? 255 : records > 0 ? records : 0) << 24);
+	if (control->features & ME_FEATURE_TICKSCHED)
+		platform_log("ME: ticksched: the replay serves the ring at pick-up points %d us apart%s, waiting batches first",
+			us, records > 0 ? " (or a record cap)" : "");
+}
+
+/* the replay's looks, counted on the ME (lines of their own, written only
+there; the main CPU reads them uncached in psp_me_report): both modes count
+the time served inside the replay, so each side of an A/B has the replay's
+own time (its job less what it served) */
+struct tick_look_stats
+{
+	unsigned int served_cycles; /* inside the replay's looks: audio and the ring */
+	unsigned int looks;         /* the replay's looks (one a record) */
+	unsigned int pickups;       /* looks that ran ring jobs */
+	unsigned int ring_jobs;     /* ring jobs those ran */
+	unsigned int held;          /* looks that saw jobs waiting and left them to the slice */
+	unsigned int urgent;        /* pick-ups made early for a waiting main CPU */
+	unsigned int batch_first;   /* batch jobs whose records a pick-up made first */
+	unsigned int pad[9];
+} __attribute__((aligned(64)));
+static struct tick_look_stats tick_look PSP_AIME_ME_SIDE = { 0 };
+/* the ME's own: the clock at its last pick-up and the records since */
+static PSP_AIME_ME_SIDE unsigned int tick_pick_mark = 0, tick_records_since = 0;
+
+/* on the ME, at a pick-up: each waiting batch job's records made now, in
+the ring's order, by the job's own code; the job, when the drain reaches it,
+finds them made and passes them (batch_job). Only claims' batches: under the
+one limit word a record isn't marked made on its own */
+static void ring_batch_first(unsigned int popped, unsigned int pushed)
+{
+	volatile struct me_private *p = ME_PRIVATE;
+
+	for (; popped != pushed; popped++)
+	{
+		struct me_ring_request *request = &ring_requests[popped & RING_MASK];
+		unsigned int args[ME_RING_ARGS], results[ME_RING_RESULTS], k;
+		volatile unsigned int *sentinel;
+
+		lines_drop((unsigned int)request, sizeof(*request));
+		if (request->type != ME_JOB_BATCH || !(request->args[6] & 1u))
+			continue;
+		if (!request->args[ME_RING_ARG_CONTINUES])
+			for (k = 0; k < ME_RING_INPUTS; k++)
+				if (request->input_bytes[k])
+					lines_drop(request->input[k], request->input_bytes[k]);
+		for (k = 0; k < ME_RING_ARGS; k++)
+			args[k] = request->args[k];
+		sentinel = ring_sentinel(RING_JOB_STACK_BYTES);
+		*sentinel = RING_SENTINEL;
+		p->in_ring = 1;
+		batch_job(args, results, 1);
+		p->in_ring = 0;
+		if (*sentinel != RING_SENTINEL)
+			tick_first_stack_broken = 1;
+		tick_look.batch_first++;
+	}
+}
+
+void psp_me_replay_look(void)
+{
+	volatile struct me_private *p;
+	unsigned int began, now, pushed, slice, cap;
+	int urgent;
+
+	if (!psp_on_me())
+		return;
+	began = me_cycles();
+	tick_look.looks++;
+	if (!(CONTROL->features & ME_FEATURE_TICKSCHED))
+	{
+		psp_me_yield();
+		tick_look.served_cycles += me_cycles() - began;
+		return;
+	}
+	/* audio keeps its every-record look: its deadline is its own */
+	me_audio_now();
+	p = ME_PRIVATE;
+	pushed = RING_PUSHED;
+	tick_records_since++;
+	if (!p->ring_ready || p->in_ring || pushed == p->ring_popped)
+	{
+		tick_look.served_cycles += me_cycles() - began;
+		return;
+	}
+	now = me_cycles();
+	slice = CONTROL->tick_slice_cycles;
+	cap = slice >> 24;
+	urgent = RING_URGENT != 0;
+	if (!urgent && now - tick_pick_mark < (slice & 0x00FFFFFFu) && !(cap && tick_records_since >= cap))
+	{
+		tick_look.held++;
+		tick_look.served_cycles += me_cycles() - began;
+		return;
+	}
+	tick_look.urgent += urgent && now - tick_pick_mark < (slice & 0x00FFFFFFu) ? 1u : 0u;
+	{
+		unsigned int popped = p->ring_popped, last_look = p->ring_last_look, drain_began = me_cycles();
+
+		ring_batch_first(popped, pushed);
+		p->ring_popped = me_ring_drain(popped, &last_look, NULL);
+		p->ring_last_look = last_look;
+		tick_look.ring_jobs += p->ring_popped - popped;
+		nested_cycles_total += me_cycles() - drain_began;
+	}
+	tick_look.pickups++;
+	tick_pick_mark = me_cycles();
+	tick_records_since = 0;
+	tick_look.served_cycles += tick_pick_mark - began;
 }
 
 /* after a ring job, the ME looks at the ring every ~1.5 us instead of once
@@ -2726,7 +2964,9 @@ int psp_me_start(void)
 		(psp_keep("mefaultoff") ? ME_FEATURE_FAULT_OFF : 0u) | (psp_keep("mefaulttest") ? ME_FEATURE_FAULT_TEST : 0u) |
 		(psp_keep("menestrender") ? ME_FEATURE_NEST_RENDER : 0u) |
 		(psp_keep("aimevisleft") ? ME_FEATURE_AIME_VIS_LEFT : 0u) |
-		(psp_keep("aimeaudiolook") ? ME_FEATURE_AUDIO_LOOK : 0u) | (me_mexec_wanted() ? ME_FEATURE_MEXEC : 0u);
+		(psp_keep("aimeaudiolook") ? ME_FEATURE_AUDIO_LOOK : 0u) | (me_mexec_wanted() ? ME_FEATURE_MEXEC : 0u) |
+		(psp_keep("ticksched") && ring_on ? ME_FEATURE_TICKSCHED : 0u);
+	tick_slice_set(control);
 	wake_features = control->features | (psp_keep("mewakeprobe") ? ME_FEATURE_WAKE_PROBE : 0u);
 	wake_early = psp_keep("mewake") && !psp_keep("mewakeoff") && psp_keep("mewakeearly");
 	wake_fw = psp_keep("mewakefw");
@@ -3969,6 +4209,16 @@ int psp_me_push_points(const void *inputs, unsigned int count, void *answers, un
 /* a pushed job's answer: 1 when done (results filled, its output readable
 on this CPU), 0 if the ME failed it (stopped, too late, or the job broke a
 rule): the caller does the work itself, and must not read the output */
+/* the batches' jobs as the ring collected them: how long each can have
+waited to be picked up, and its own time (ME cycles), for the batches'
+timing line */
+static struct
+{
+	unsigned long jobs;
+	unsigned long long look_cycles, job_cycles;
+	unsigned int look_worst, job_worst;
+} batch_ring;
+
 int psp_me_wait(unsigned int ticket, unsigned int *results)
 {
 	unsigned int index = ticket & RING_MASK, start = (PSP_MEPROBE_EXPR(1), sceKernelGetSystemTimeLow()), now, looks = 0, k;
@@ -4001,6 +4251,8 @@ int psp_me_wait(unsigned int ticket, unsigned int *results)
 		ring_stats.at_once++;
 	else
 	{
+		/* ticksched: the replay picks this job up at its next record */
+		RING_URGENT = ticket + 1;
 		while ((int)(RING_POPPED - ticket) <= 0)
 		{
 			if (looks++ % RING_WAIT_CLOCK_EVERY == 0)
@@ -4008,7 +4260,10 @@ int psp_me_wait(unsigned int ticket, unsigned int *results)
 				now = sceKernelGetSystemTimeLow();
 				/* stopped (HOME, sleep, a slot job's timeout) before this job */
 				if (me_state <= 0 || CONTROL->stop == 2)
+				{
+					RING_URGENT = 0;
 					return ring_fail(0, ticket, index);
+				}
 				if (now - ring_push_mark[index] > RING_DEADLINE_US)
 				{
 					/* as a batch record's: late only if still not done */
@@ -4022,6 +4277,7 @@ int psp_me_wait(unsigned int ticket, unsigned int *results)
 						}
 						break;
 					}
+					RING_URGENT = 0;
 					return ring_fail(1, ticket, index);
 				}
 				/* mehalt: a wake that may have been lost (me_halt_idle) */
@@ -4030,6 +4286,7 @@ int psp_me_wait(unsigned int ticket, unsigned int *results)
 			for (k = 0; k < RING_WAIT_NOPS; k++)
 				__asm__ __volatile__("nop");
 		}
+		RING_URGENT = 0;
 	}
 	/* this CPU's copies of what the ME wrote are stale: dropped (it never
 	writes these lines itself, so dropping loses nothing of its own) */
@@ -4057,6 +4314,16 @@ int psp_me_wait(unsigned int ticket, unsigned int *results)
 		ring_stats.type_worst_cycles[request->type & 15] = result->job_cycles;
 	if (result->look_cycles > ring_stats.look_worst_cycles)
 		ring_stats.look_worst_cycles = result->look_cycles;
+	if (request->type == ME_JOB_BATCH)
+	{
+		batch_ring.jobs++;
+		batch_ring.look_cycles += result->look_cycles;
+		batch_ring.job_cycles += result->job_cycles;
+		if (result->look_cycles > batch_ring.look_worst)
+			batch_ring.look_worst = result->look_cycles;
+		if (result->job_cycles > batch_ring.job_worst)
+			batch_ring.job_worst = result->job_cycles;
+	}
 	/* "lanetrace" (psp_lanetrace.c): pushed, collected, the ME's own time */
 	PSP_LANE(PSP_LANE_ME_RING, ring_push_mark[index], now, request->type,
 		me_cycles_per_us > 0.0f ? (unsigned int)((float)result->job_cycles / me_cycles_per_us) : 0);
@@ -4170,7 +4437,13 @@ static struct
 	/* waits ended because every job of the batch had ended with the record
 	not made: a claim left behind by a later job's withdrawal */
 	unsigned long stale;
+	/* the timing line: from a record's hand-over to the gather's ask, by
+	what the ask found (made, the ME on it, not begun), sum and longest in
+	us; passes whose first ask found the ME already begun on the batch */
+	unsigned long ask_n[3], ask_worst[3], passes_begun;
+	unsigned long long ask_us[3];
 } batch_stats;
+static int batch_limit_old = -1; /* "mebatchlimit": the one limit word, as before claims */
 
 
 int psp_me_batch_init(struct psp_me_batch *b, psp_me_record_fn make, void *records, unsigned char *state,
@@ -4184,7 +4457,13 @@ int psp_me_batch_init(struct psp_me_batch *b, psp_me_record_fn make, void *recor
 	memset(b, 0, sizeof(*b));
 	/* the words go through the uncached view only: no cached copy of their
 	lines may be left here to be written back over the ME's */
-	sceKernelDcacheWritebackInvalidateRange(b, 4 * sizeof(struct psp_me_batch_word));
+	if (batch_limit_old < 0)
+		batch_limit_old = psp_keep("mebatchlimit") != 0;
+	b->claims = !batch_limit_old;
+	if (b->claims && capacity > ME_BATCH_CLAIM_RECORDS)
+		return 0;
+	/* the claims' words too: the ME writes them through its uncached view */
+	sceKernelDcacheWritebackInvalidateRange(b, (unsigned int)((unsigned char *)&b->hand_us[0] - (unsigned char *)b));
 	b->make = make;
 	b->records = (unsigned char *)records;
 	b->state = state;
@@ -4204,6 +4483,7 @@ void psp_me_batch_begin(struct psp_me_batch *b)
 		batch_sim_behind = NULL;
 	batch_sim_whole = batch_sim_passes++ & 3u;
 	b->added = b->handed = b->ticket_count = 0;
+	b->asked = 0;
 	b->limit_now = 0xFFFFFFFFu;
 	UNCACHED(&b->limit)->value = 0xFFFFFFFFu;
 	UNCACHED(&b->started)->value = 0;
@@ -4217,7 +4497,7 @@ can't take it */
 static void batch_hand(struct psp_me_batch *b, unsigned int end)
 {
 	struct psp_me_job job;
-	unsigned int first = b->handed, k, ticket, control;
+	unsigned int first = b->handed, k, ticket, control, now;
 
 	if (end <= first || b->ticket_count >= ME_BATCH_TICKETS || !psp_me_ring_ready())
 		return;
@@ -4230,7 +4510,7 @@ static void batch_hand(struct psp_me_batch *b, unsigned int end)
 	job.args[3] = control;
 	job.args[4] = (unsigned int)b->make;
 	job.args[5] = (unsigned int)b->records;
-	job.args[6] = b->record_bytes;
+	job.args[6] = b->record_bytes | (b->claims ? 1u : 0u);
 	for (k = 0; k < ME_BATCH_ARGS; k++)
 		job.args[7 + k] = b->args[k];
 	job.input[0] = b->records + first * b->record_bytes;
@@ -4241,8 +4521,13 @@ static void batch_hand(struct psp_me_batch *b, unsigned int end)
 		b->refused++;
 		return;
 	}
+	now = sceKernelGetSystemTimeLow();
 	for (k = first; k < end; k++)
+	{
 		b->state[k] = BATCH_OUT;
+		if (b->claims)
+			b->hand_us[k] = now;
+	}
 	b->tickets[b->ticket_count++] = ticket;
 	b->handed = end;
 }
@@ -4256,6 +4541,15 @@ void *psp_me_batch_add(struct psp_me_batch *b, unsigned int *index)
 		batch_hand(b, b->added);
 	*index = b->added;
 	b->state[b->added] = BATCH_ADDED;
+	/* a new pass's record: no claims yet (every job of the last pass was
+	collected at its finish, so nothing on the ME reads these now) */
+	if (b->claims)
+	{
+		UNCACHED(&b->me_on[b->added])[0] = 0;
+		UNCACHED(&b->made[b->added])[0] = 0;
+		UNCACHED(&b->here_on[b->added])[0] = 0;
+		__asm__ __volatile__("sync");
+	}
 	return b->records + b->added++ * b->record_bytes;
 }
 
@@ -4269,6 +4563,121 @@ static void batch_make_here(struct psp_me_batch *b, unsigned int index)
 	b->make(b->records + index * b->record_bytes, b->args);
 	b->state[index] = BATCH_HERE;
 	b->by_main++;
+}
+
+/* the timing line's ask: from the record's hand-over to this ask, by what
+it found (0 made by the ME, 1 the ME on it, 2 not begun) */
+static void batch_ask(struct psp_me_batch *b, unsigned int index, int found)
+{
+	unsigned int us = sceKernelGetSystemTimeLow() - b->hand_us[index], k;
+
+	batch_stats.ask_n[found]++;
+	batch_stats.ask_us[found] += us;
+	if (us > batch_stats.ask_worst[found])
+		batch_stats.ask_worst[found] = us;
+	if (!b->asked)
+	{
+		b->asked = 1;
+		for (k = 0; k < b->handed; k++)
+			if (UNCACHED(&b->me_on[k])[0] || UNCACHED(&b->made[k])[0])
+			{
+				batch_stats.passes_begun++;
+				break;
+			}
+	}
+}
+
+/* with claims: a record handed over and not made by the ME is claimed
+here; if the ME holds its claim, this CPU waits for that record alone
+(bounded as below), else makes it. The ME passes every record claimed here
+and makes the rest, so an ME picked up late still makes what the gather
+hasn't reached */
+static int batch_need_claim(struct psp_me_batch *b, unsigned int index)
+{
+	volatile unsigned int *me_on = UNCACHED(&b->me_on[index]), *made = UNCACHED(&b->made[index]);
+	unsigned char *record = b->records + index * b->record_bytes;
+	unsigned int start, now, last, gap, waited;
+	int slow = 0;
+
+	if (*made)
+	{
+		batch_ask(b, index, 0);
+		goto by_me;
+	}
+	UNCACHED(&b->here_on[index])[0] = 1;
+	__asm__ __volatile__("sync");
+	if (!*me_on)
+	{
+		batch_ask(b, index, 2);
+		b->taken++;
+		batch_make_here(b, index);
+		return 0;
+	}
+	batch_ask(b, index, 1);
+	b->waits++;
+	start = last = sceKernelGetSystemTimeLow();
+	/* it ends made, or withdrawn (the ME saw this CPU's claim too) */
+	while (!*made && *me_on)
+	{
+		if (!psp_me_ring_ready())
+			break;
+		now = sceKernelGetSystemTimeLow();
+		gap = now - last;
+		if (gap > batch_stats.gap_worst_us)
+			batch_stats.gap_worst_us = gap;
+		last = now;
+		if (now - start <= BATCH_RECORD_DEADLINE_US)
+			continue;
+		if (!me_grace_off)
+		{
+			if (*made || !*me_on)
+			{
+				batch_stats.second_look++;
+				if (deadline_lines < DEADLINE_LINES)
+				{
+					deadline_lines++;
+					platform_log("ME: a batch record (%u) past %u ms by the clock (%u us), done at the look after it; this CPU was off its wait %u us just before",
+						index, BATCH_RECORD_DEADLINE_US / 1000, now - start, gap);
+				}
+				continue;
+			}
+			if (!slow)
+			{
+				slow = 1;
+				batch_stats.slow++;
+				if (deadline_lines < DEADLINE_LINES)
+				{
+					deadline_lines++;
+					platform_log("ME: a batch record (%u) still on the ME %u ms after the wait began; waiting to %u ms",
+						index, (now - start) / 1000, BATCH_RECORD_GIVEUP_US / 1000);
+					me_stash_dump("a batch record slow");
+				}
+			}
+			if (now - start <= BATCH_RECORD_GIVEUP_US)
+				continue;
+		}
+		batch_stats.late++;
+		platform_log("ME: a batch record (%u) held past %u ms; the ME is stopped", index,
+			(me_grace_off ? BATCH_RECORD_DEADLINE_US : BATCH_RECORD_GIVEUP_US) / 1000);
+		me_stash_dump("a batch record late");
+		psp_me_stop("a batch record late");
+		break;
+	}
+	waited = sceKernelGetSystemTimeLow() - start;
+	if (waited > batch_stats.wait_worst_us)
+		batch_stats.wait_worst_us = waited;
+	if (!*made)
+	{
+		b->taken++;
+		batch_make_here(b, index);
+		return 0;
+	}
+by_me:
+	__asm__ __volatile__("sync");
+	lines_drop((unsigned int)record, b->record_bytes);
+	b->state[index] = BATCH_BY_ME;
+	b->by_me++;
+	return 1;
 }
 
 int psp_me_batch_need(struct psp_me_batch *b, unsigned int index)
@@ -4297,6 +4706,8 @@ int psp_me_batch_need(struct psp_me_batch *b, unsigned int index)
 		batch_make_here(b, index);
 		return 0;
 	}
+	if (b->claims)
+		return batch_need_claim(b, index);
 	if (index >= b->limit_now)
 	{
 		batch_make_here(b, index);
@@ -5297,6 +5708,38 @@ void psp_me_report(void)
 			busy_us_all = busy_us_all > nested_us ? busy_us_all - nested_us : 0;
 		nested_us_last = nested_us;
 	}
+	/* the replay's own time: its job less the cycles its looks served
+	(audio, the ring), the figure the tick schedule's slices are judged by,
+	counted the same way with ticksched off */
+	if (me_state == 1 && stats[ME_SLOT_RENDER].jobs && me_cycles_per_us > 0.0f)
+	{
+		static struct tick_look_stats seen;
+		volatile struct tick_look_stats *t = UNCACHED(&tick_look);
+		struct tick_look_stats d;
+		unsigned long jobs = stats[ME_SLOT_RENDER].jobs;
+		float rate = me_cycles_per_us;
+		unsigned long long job_cycles = stats[ME_SLOT_RENDER].me_job_cycles;
+
+		d.served_cycles = t->served_cycles - seen.served_cycles;
+		d.looks = t->looks - seen.looks;
+		d.pickups = t->pickups - seen.pickups;
+		d.ring_jobs = t->ring_jobs - seen.ring_jobs;
+		d.held = t->held - seen.held;
+		d.urgent = t->urgent - seen.urgent;
+		d.batch_first = t->batch_first - seen.batch_first;
+		seen.served_cycles += d.served_cycles;
+		seen.looks += d.looks;
+		seen.pickups += d.pickups;
+		seen.ring_jobs += d.ring_jobs;
+		seen.held += d.held;
+		seen.urgent += d.urgent;
+		seen.batch_first += d.batch_first;
+		platform_log("ME: replay looks: %lu jobs, the job %lu us, its own %lu us (served inside it %lu us: audio and the ring); %u looks, %u pick-ups running %u ring jobs, %u held to the slice, %u early for a wait, %u batch jobs made first%s",
+			jobs, (unsigned long)((float)job_cycles / rate / (float)jobs),
+			(unsigned long)((float)(job_cycles > d.served_cycles ? job_cycles - d.served_cycles : 0) / rate / (float)jobs),
+			(unsigned long)((float)d.served_cycles / rate / (float)jobs), d.looks, d.pickups, d.ring_jobs, d.held, d.urgent,
+			d.batch_first, (CONTROL->features & ME_FEATURE_TICKSCHED) ? " (ticksched)" : "");
+	}
 	busy_percent_last = window ? (float)(100.0 * (double)busy_us_all / (double)window) : 0.0f;
 	if (me_halting && length < (int)sizeof(line) - 160)
 	{
@@ -5432,11 +5875,27 @@ void psp_me_report(void)
 	}
 	if (batch_stats.passes)
 	{
-		platform_log("ME: batches: %lu passes; records made by the ME %lu, here %lu (taken back %lu; jobs the ME ended at the limit %lu), waits for a record the ME was on %lu (longest %lu us, longest between two looks %lu us), hand-overs refused %lu; stale claims taken back %lu; past %u ms: done at a second look %lu, slow %lu, late %lu%s",
+		platform_log("ME: batches: %lu passes; records made by the ME %lu, here %lu (taken back %lu; jobs the ME ended at the limit, or with claims the records it passed, claimed here, %lu), waits for a record the ME was on %lu (longest %lu us, longest between two looks %lu us), hand-overs refused %lu; stale claims taken back %lu; past %u ms: done at a second look %lu, slow %lu, late %lu%s",
 			batch_stats.passes, batch_stats.by_me, batch_stats.by_main, batch_stats.taken, batch_stats.withdrawn, batch_stats.waits,
 			batch_stats.wait_worst_us, batch_stats.gap_worst_us, batch_stats.refused, batch_stats.stale, BATCH_RECORD_DEADLINE_US / 1000,
 			batch_stats.second_look, batch_stats.slow, batch_stats.late, batch_sim_half ? " (mebatchsimhalf: the simulated ME makes half of each job)" : "");
+		if (batch_stats.ask_n[0] + batch_stats.ask_n[1] + batch_stats.ask_n[2])
+		{
+			float rate = me_cycles_per_us > 0.0f ? me_cycles_per_us : 1.0f;
+			unsigned long n0 = batch_stats.ask_n[0] ? batch_stats.ask_n[0] : 1, n1 = batch_stats.ask_n[1] ? batch_stats.ask_n[1] : 1;
+			unsigned long n2 = batch_stats.ask_n[2] ? batch_stats.ask_n[2] : 1, jobs = batch_ring.jobs ? batch_ring.jobs : 1;
+
+			platform_log("ME: batch timing (claims): from hand-over to the gather's ask, made by then %lu (%lu us on average, longest %lu), the ME on it %lu (%lu, %lu), not begun %lu (%lu, %lu); passes whose first ask found the ME begun %lu of %lu; the batches' jobs %lu, picked up within %lu us a job (worst %lu), their own time %lu us (worst %lu)%s",
+				batch_stats.ask_n[0], (unsigned long)(batch_stats.ask_us[0] / n0), batch_stats.ask_worst[0],
+				batch_stats.ask_n[1], (unsigned long)(batch_stats.ask_us[1] / n1), batch_stats.ask_worst[1],
+				batch_stats.ask_n[2], (unsigned long)(batch_stats.ask_us[2] / n2), batch_stats.ask_worst[2],
+				batch_stats.passes_begun, batch_stats.passes, batch_ring.jobs,
+				(unsigned long)((float)batch_ring.look_cycles / rate / (float)jobs), (unsigned long)((float)batch_ring.look_worst / rate),
+				(unsigned long)((float)batch_ring.job_cycles / rate / (float)jobs), (unsigned long)((float)batch_ring.job_worst / rate),
+				me_state == 2 ? " (simulated: the jobs run inside the push)" : "");
+		}
 		memset(&batch_stats, 0, sizeof(batch_stats));
+		memset(&batch_ring, 0, sizeof(batch_ring));
 	}
 	if (batchtest_checked)
 	{

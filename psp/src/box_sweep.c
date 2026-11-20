@@ -975,6 +975,16 @@ static int features_in_sphere(const struct box_sweep_world *w, unsigned int flag
 	return 1;
 }
 
+void box_sweep_level_features(const struct box_collbsp *level, short breakable_count, const unsigned int *breakable,
+	const float center[3], float radius, float height, float width, int structure,
+	struct box_collbsp_sphere_result *walk, struct box_sweep_features *features)
+{
+	features->count[0] = features->count[1] = features->count[2] = 0;
+	radius += 0.0625f;
+	if (box_collbsp_sphere(level, breakable_count, breakable, center, radius, 0, walk) && structure)
+		bsp_features(level, walk, 0, height, width, -1, features);
+}
+
 /* ---------- the clip */
 
 static int sphere_vector(const struct box_sweep_sphere *s, const float *point, const float *vector, float *t, float *n, float *d)

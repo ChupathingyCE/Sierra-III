@@ -1539,15 +1539,16 @@ Engine's work (psp_libc.c): which kind of call led there */
 int psp_me_record_kind = 0;
 
 /* geinflight's frame on the ME: audio and the ring served now (both look at
-one uncached word each when there's nothing to do). psp_me_yield serves both,
-and the ring takes pushes during any GE job unless "meyieldoff" */
+one uncached word each when there's nothing to do), and the ring takes
+pushes during any GE job unless "meyieldoff". psp_me_replay_look serves
+both, the ring at pick-up points under "ticksched" */
 extern void psp_me_serve_audio(void); /* psp_me.c (build 113) */
 
 static void inflight_serve(void)
 {
 	if (!psp_on_me())
 		return;
-	psp_me_yield();
+	psp_me_replay_look();
 }
 
 /* "mekinds" (recon): each record kind's time as it's carried out, kept apart
