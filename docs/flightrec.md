@@ -64,3 +64,12 @@ The lab's sierra-hw 44680919272, PSP-3000, ref 7ab916d6, held b30_leg2 to exitat
 - **The tree is empty:** `steps timed at the calibration: 0`, and every slice's tree has no phases. Not a fault: `notimers` is on by default in the tock (psp_platform.c's `keep_defaults`), so no step is timed unless the run asks for `timerson`. The recorded side has to carry `timerson`.
 - **Its cost isn't read yet:** one run a side, so no verdict. The recorded side's frame was +2.0 / +6.3 / +6.3 ms (+2.9 / +7.8 / +6.1%) on the opening, flight and fight, and −3.1 ms on the beach (a stretch that varies ~10% run to run). The recorder's own instruments come to ~0.4–0.55 ms a frame. The rest of the gap is the recorded side's other words (`gebusy2`, `hwprofile`: 3.8 us a phase call) and what no instrument sees [U].
 - **Next pair:** `notimers | timerson flightrec`, two runs a side, the same stretch. The recorder alone, with its steps timed, against bare: its own cost, and the tree.
+
+## The recorder's cost on the PSP (2026-11-20, builder; the lab's sierra-hw 44752433999, the PSP-3000, row `flightrec_psp_b30_cost`) [M]
+
+One build (7ab916d6), `timerson` against `timerson flightrec`, two runs a side, held b30_leg2 to 150 s, read by stretch with `abreport.py`:
+- **The flight: frame 86.2 → 87.3 ms (+1.1 ms, +1.2%, real)**, drawing +0.2 ms (real), the tick unchanged.
+- The opening, the fight and the beach: in the noise (the opening's tick −0.3 ms, the beach's spread wide).
+- **The recording works on the PSP:** 75 slices, 736 KB, 0 write failures; steps timed from the calibration; the tree's phases (drawing, other, tick) filled in every slice. The record counts its own instruments at 0.5-1.1 ms a frame after the first slice (2.7 ms in it, while the calibration runs).
+
+So the recorder costs about 1% of the frame on the busiest stretch: a bench run carries it at that price, and a figure read from a recorded run is about 1 ms high on the flight. Note for readers of a pair's folder: a run without `flightrec` still has a `flightrec.flr`, the last recorded run's file left on the stick; its log has no `flightrec:` lines.
