@@ -3736,8 +3736,11 @@ int psp_me_aime_guard_touched(void)
 }
 
 #ifdef PSP_RECON
-/* where a long slot job is, for the stash's report of a late ring job */
-void psp_me_stash_place(unsigned int place)
+/* where a long slot job is, for the stash's report of a late ring job; out
+of line, so the copied step marks that call it hold only the call (inlined
+with aimelookcensus's step, the ME's copy came to 270,416 bytes, over its room:
+the lab's sierra-batch 44769632430) */
+void __attribute__((noinline)) psp_me_stash_place(unsigned int place)
 {
 	if (!psp_on_me())
 		return;
