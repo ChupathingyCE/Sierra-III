@@ -3786,6 +3786,315 @@ frame) */
 struct gu_list_view { unsigned int *start, *current; int parent_context; };
 extern struct gu_list_view *gu_list; /* pspgu's (guInternal.h: GuDisplayList) */
 
+/* ---------- the state census ("statecensus" in keep.txt; recon only)
+
+What layer 2 writes into the display list for each model part, read from the
+words themselves, to size a draw path whose records carry a part's state
+(docs/box_draw_list.md, the native path). Every word the frame writes is read
+once, so a value can be checked against the one the GE already holds; called
+lists (the retained ring's forms) are followed for that, but their words are
+the forms' own and aren't counted as the part's. Per part: its state words,
+those that set the value already set, its matrix blocks (and those that load
+the matrix already loaded), its vertex and index addresses, its calls and its
+draws. Per form (the part's vertices and base texture): the distinct state
+sets it was drawn with, all words, and with the words that move with the
+frame left out (fog, lights, material colours, texture and palette
+addresses), which is what a record could hold. Exact counts in the emulator;
+it changes nothing drawn. A part written on the ME isn't read (counted). */
+#ifdef PSP_RECON
+#define SC_FORMS 2048
+#define SC_SETS 6
+static struct sc_tables
+{
+	struct { const void *vertices; unsigned int base_key, raw[SC_SETS], kept[SC_SETS]; unsigned char raws, keeps, raw_over, kept_over; } forms[SC_FORMS];
+} *sc_table;
+static int sc_on = -1, sc_form_count = 0;
+static unsigned int *sc_pos = NULL, *sc_list = NULL;
+static unsigned int sc_shadow[256], sc_matrix_last[5][8];
+static unsigned char sc_known[256], sc_matrix_known[5][8];
+static unsigned long sc_frames = 0, sc_parts = 0, sc_state = 0, sc_same = 0, sc_blocks = 0, sc_blocks_same = 0,
+	sc_matrix_words = 0, sc_addresses = 0, sc_calls = 0, sc_draws = 0, sc_on_me = 0, sc_lost = 0, sc_resyncs = 0,
+	sc_forms_unkept = 0, sc_cmd_same[256], sc_cmd_state[256];
+
+static int sc_wanted(void)
+{
+	if (sc_on < 0)
+		sc_on = psp_keep("statecensus") && sc_table;
+	return sc_on;
+}
+
+void psp_ge_statecensus_start(void)
+{
+	if (psp_keep("statecensus"))
+		sc_table = psp_recon_table("statecensus", sizeof(*sc_table));
+}
+
+static int sc_live(unsigned int cmd)
+{
+	return (cmd >= 0xCD && cmd <= 0xCF) || /* fog */
+		(cmd >= 0x5C && cmd <= 0x9A) || /* the lights and the ambient */
+		(cmd >= 0x54 && cmd <= 0x58) || /* the material's colours */
+		(cmd >= 0xA0 && cmd <= 0xB1); /* texture and palette addresses */
+}
+
+static int sc_matrix_kind(unsigned int cmd)
+{
+	switch (cmd)
+	{
+	case 0x2A: case 0x2B: return 0; /* bones */
+	case 0x3A: case 0x3B: return 1; /* world */
+	case 0x3C: case 0x3D: return 2; /* view */
+	case 0x3E: case 0x3F: return 3; /* projection */
+	case 0x40: case 0x41: return 4; /* texture */
+	}
+	return -1;
+}
+
+struct sc_scan { int counting, depth; unsigned int raw, kept; };
+
+/* the words from..to: every one updates what the GE holds; counted when the
+part's. A jump is followed (the list's own memory blocks, and geshow3's
+jump to the list's start); a call is read to its return */
+static void sc_read(unsigned int *p, unsigned int *to, struct sc_scan *scan)
+{
+	unsigned int base = 0, view = (unsigned int)p & 0x40000000u, words = 0;
+	int run_kind = -1, run_slot = 0;
+	unsigned int run_hash = 0;
+
+	while (p != to)
+	{
+		unsigned int word, cmd, arg;
+		int kind;
+
+		if (++words > (1u << 20))
+		{
+			sc_lost++;
+			break;
+		}
+		word = *p++;
+		cmd = word >> 24;
+		arg = word & 0xFFFFFFu;
+		kind = sc_matrix_kind(cmd);
+		if (run_kind >= 0 && (kind != run_kind || (cmd & 1) == 0))
+		{
+			/* a matrix block ends: the same as the one loaded? */
+			if (scan->counting && !scan->depth)
+			{
+				sc_blocks++;
+				if (sc_matrix_known[run_kind][run_slot] && sc_matrix_last[run_kind][run_slot] == run_hash)
+					sc_blocks_same++;
+			}
+			sc_matrix_last[run_kind][run_slot] = run_hash;
+			sc_matrix_known[run_kind][run_slot] = 1;
+			run_kind = -1;
+		}
+		if (kind >= 0)
+		{
+			if ((cmd & 1) == 0)
+			{
+				run_kind = kind;
+				run_slot = kind == 0 ? (int)((arg / 12) & 7) : (int)(arg & 7);
+				run_hash = 2166136261u;
+			}
+			run_hash = (run_hash ^ word) * 16777619u;
+			if (scan->counting && !scan->depth)
+				sc_matrix_words++;
+			continue;
+		}
+		switch (cmd)
+		{
+		case 0x10: /* BASE */
+			base = (arg << 8) & 0xFF000000u;
+			continue;
+		case 0x08: /* JUMP */
+			p = (unsigned int *)(((base | arg) & ~3u) | view);
+			continue;
+		case 0x0A: /* CALL: the called list's words set what the GE holds */
+			if (scan->counting && !scan->depth)
+				sc_calls++;
+			if (scan->depth < 3)
+			{
+				scan->depth++;
+				sc_read((unsigned int *)(((base | arg) & ~3u) | view), NULL, scan);
+				scan->depth--;
+			}
+			continue;
+		case 0x0B: /* RET */
+			if (!to)
+				return;
+			continue;
+		case 0x01: case 0x02: /* vertex and index addresses: the draw's own */
+			if (scan->counting && !scan->depth)
+				sc_addresses++;
+			continue;
+		case 0x04: case 0x05: case 0x06: /* the draws */
+			if (scan->counting && !scan->depth)
+				sc_draws++;
+			continue;
+		case 0x00: case 0x0C: case 0x0E: case 0x0F: case 0xCB: case 0xCC: /* NOP, END, SIGNAL, FINISH, the texture flush and sync */
+			if (!to && cmd == 0x0C)
+				return;
+			continue;
+		}
+		if (scan->counting && !scan->depth)
+		{
+			sc_state++;
+			sc_cmd_state[cmd]++;
+			if (sc_known[cmd] && sc_shadow[cmd] == arg)
+			{
+				sc_same++;
+				sc_cmd_same[cmd]++;
+			}
+			scan->raw = (scan->raw ^ word) * 16777619u;
+			if (!sc_live(cmd))
+				scan->kept = (scan->kept ^ word) * 16777619u;
+		}
+		sc_shadow[cmd] = arg;
+		sc_known[cmd] = 1;
+	}
+	if (run_kind >= 0)
+	{
+		sc_matrix_last[run_kind][run_slot] = run_hash;
+		sc_matrix_known[run_kind][run_slot] = 1;
+	}
+}
+
+/* the list a new frame (or a new list) starts: what the GE holds is unknown */
+static void sc_restart(void)
+{
+	memset(sc_known, 0, sizeof(sc_known));
+	memset(sc_matrix_known, 0, sizeof(sc_matrix_known));
+	sc_list = gu_list->start;
+	sc_pos = gu_list->current;
+}
+
+static void sc_frame_begin(void)
+{
+	if (!sc_wanted())
+		return;
+	sc_frames++;
+	sc_restart();
+}
+
+/* before a part: the words since the last part, read for what they set */
+static unsigned int *sc_part_begin(void)
+{
+	struct sc_scan scan = { 0, 0, 0, 0 };
+
+	if (!sc_wanted() || !sc_pos)
+		return NULL;
+	if (PSP_ME_WORK())
+	{
+		sc_on_me++;
+		return NULL;
+	}
+	if (gu_list->start != sc_list)
+	{
+		sc_resyncs++;
+		sc_restart();
+	}
+	sc_read(sc_pos, gu_list->current, &scan);
+	sc_pos = gu_list->current;
+	return sc_pos;
+}
+
+static void sc_note(unsigned int *sets, unsigned char *count, unsigned char *over, unsigned int hash)
+{
+	int k;
+
+	for (k = 0; k < *count; k++)
+		if (sets[k] == hash)
+			return;
+	if (*count < SC_SETS)
+		sets[(*count)++] = hash;
+	else if (*over < 255)
+		(*over)++;
+}
+
+static void sc_part_end(unsigned int *from, const void *vertices, unsigned int base_key)
+{
+	struct sc_scan scan = { 1, 0, 2166136261u, 2166136261u };
+	int k;
+
+	if (!from || gu_list->start != sc_list)
+		return;
+	sc_parts++;
+	sc_read(from, gu_list->current, &scan);
+	sc_pos = gu_list->current;
+	for (k = 0; k < sc_form_count; k++)
+		if (sc_table->forms[k].vertices == vertices && sc_table->forms[k].base_key == base_key)
+			break;
+	if (k == sc_form_count)
+	{
+		if (sc_form_count == SC_FORMS)
+		{
+			sc_forms_unkept++;
+			return;
+		}
+		memset(&sc_table->forms[k], 0, sizeof(sc_table->forms[k]));
+		sc_table->forms[k].vertices = vertices;
+		sc_table->forms[k].base_key = base_key;
+		sc_form_count++;
+	}
+	sc_note(sc_table->forms[k].raw, &sc_table->forms[k].raws, &sc_table->forms[k].raw_over, scan.raw);
+	sc_note(sc_table->forms[k].kept, &sc_table->forms[k].keeps, &sc_table->forms[k].kept_over, scan.kept);
+}
+
+static void sc_report(void)
+{
+	char line[700];
+	int length, k, shown;
+	float frames = (float)sc_frames;
+	unsigned long raws = 0, keeps = 0, raw_max = 0, kept_max = 0, raw_over = 0, kept_over = 0, kept_one = 0;
+	unsigned char done[256] = { 0 };
+
+	if (sc_on <= 0 || !sc_frames)
+		return;
+	platform_log("statecensus: a frame over %lu frames: %.1f model parts; %.1f state words (%.1f the value already set, %.0f%%); %.1f matrix words in %.1f blocks (%.1f the matrix already loaded); %.1f vertex and index addresses; %.1f calls; %.1f draws; %lu parts on the ME not read; %lu lists lost, %lu restarts",
+		sc_frames, sc_parts / frames, sc_state / frames, sc_same / frames, sc_state ? 100.0f * sc_same / sc_state : 0.0f,
+		sc_matrix_words / frames, sc_blocks / frames, sc_blocks_same / frames, sc_addresses / frames, sc_calls / frames,
+		sc_draws / frames, sc_on_me, sc_lost, sc_resyncs);
+	for (k = 0; k < sc_form_count; k++)
+	{
+		raws += sc_table->forms[k].raws + sc_table->forms[k].raw_over;
+		keeps += sc_table->forms[k].keeps + sc_table->forms[k].kept_over;
+		if (sc_table->forms[k].raws + sc_table->forms[k].raw_over > raw_max)
+			raw_max = sc_table->forms[k].raws + sc_table->forms[k].raw_over;
+		if (sc_table->forms[k].keeps + sc_table->forms[k].kept_over > kept_max)
+			kept_max = sc_table->forms[k].keeps + sc_table->forms[k].kept_over;
+		raw_over += sc_table->forms[k].raw_over != 0;
+		kept_over += sc_table->forms[k].kept_over != 0;
+		kept_one += sc_table->forms[k].keeps == 1 && !sc_table->forms[k].kept_over;
+	}
+	platform_log("statecensus: since the start, %d forms (%lu more not kept): distinct state sets a form, all words %.2f (most %lu; %lu forms past %d), without the frame's words %.2f (most %lu; %lu forms past %d; %lu forms with one)",
+		sc_form_count, sc_forms_unkept, sc_form_count ? (float)raws / sc_form_count : 0.0f, raw_max, raw_over, SC_SETS,
+		sc_form_count ? (float)keeps / sc_form_count : 0.0f, kept_max, kept_over, SC_SETS, kept_one);
+	length = snprintf(line, sizeof(line), "statecensus: commands by words a frame (the value already set):");
+	for (shown = 0; shown < 16 && length < (int)sizeof(line) - 40; shown++)
+	{
+		unsigned long most = 0;
+		int best = -1;
+
+		for (k = 0; k < 256; k++)
+			if (!done[k] && sc_cmd_state[k] > most)
+			{
+				most = sc_cmd_state[k];
+				best = k;
+			}
+		if (best < 0)
+			break;
+		done[best] = 1;
+		length += snprintf(line + length, sizeof(line) - length, " %02X %.1f (%.1f);", best, sc_cmd_state[best] / frames,
+			sc_cmd_same[best] / frames);
+	}
+	platform_log("%s", line);
+	sc_frames = sc_parts = sc_state = sc_same = sc_blocks = sc_blocks_same = sc_matrix_words = sc_addresses = 0;
+	sc_calls = sc_draws = 0;
+	memset(sc_cmd_same, 0, sizeof(sc_cmd_same));
+	memset(sc_cmd_state, 0, sizeof(sc_cmd_state));
+}
+#endif
+
 /* geshow3: room for needed more bytes where this frame's list is. The list
 limits are the whole list's, as without geshow3, so the same draws are
 skipped for them; a list in a part beside the frame out that outgrows the
@@ -6512,6 +6821,9 @@ static void window_begin_list(const float *position, const float *forward, const
 	hud_phase = 0;
 	blip_depth_live = 0;
 	ge_kinds_frame_begin(); /* build 103 */
+#ifdef PSP_RECON
+	sc_frame_begin();
+#endif
 	taa_done = 0;
 	taa_frame++;
 	if (psp_taa_strength > 0 && psp_taa_jitter && !psp_soften && !taa_failed)
@@ -17225,7 +17537,13 @@ void psp_ge_draw_model(void *vertices, int vertex_count, int uncompressed, const
 
 	ge_category = GE_SKIP_MODELS;
 	model_part_calls++;
+#ifdef PSP_RECON
+	unsigned int *sc_from = sc_part_begin();
+#endif
 	psp_ge_draw_model_body(vertices, vertex_count, uncompressed, indices, index_count, strip, color, base_key, u_scale, v_scale, alpha_tested);
+#ifdef PSP_RECON
+	sc_part_end(sc_from, vertices, base_key);
+#endif
 	ge_category = 0;
 	ge_entry_us[1] += ge_clock() - start;
 }
@@ -26961,6 +27279,9 @@ static void frame_end_show(void)
 				multi_node_rigid_why[0], multi_node_rigid_why[1], multi_node_rigid_why[2]);
 			ge_kinds_report(); /* build 103 */
 			CENSUS(census_report());
+#ifdef PSP_RECON
+			sc_report();
+#endif
 			replay_kinds_report(300); /* mekinds */
 			ge_reads_report(frames); /* build 115 */
 			vm_report(); /* build 116 */
