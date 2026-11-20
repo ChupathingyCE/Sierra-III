@@ -3429,7 +3429,15 @@ int psp_me_submit(int which, unsigned int type, const unsigned int *args, int ar
 	submit_mark[which] = sceKernelGetSystemTimeWide();
 	if (me_state == 2)
 	{
+#ifdef PSP_RECON
+		if (type == ME_JOB_AIME)
+			look_census_job(1);
+#endif
 		run_job(slot, simulated_sums, 0);
+#ifdef PSP_RECON
+		if (type == ME_JOB_AIME)
+			look_census_job(0);
+#endif
 		last_job_us[which] = (unsigned int)(sceKernelGetSystemTimeWide() - submit_mark[which]);
 		stats[which].simulated++;
 		me_mark_set(which, 2);
