@@ -1028,6 +1028,9 @@ static struct look_census_stats look_census PSP_AIME_ME_SIDE = { 0 };
 static PSP_AIME_ME_SIDE unsigned int look_on = 0, look_mark = 0, look_job_worst = 0, look_wait_at = 0, look_wait_open = 0,
 	look_pushed_at = 0, look_popped_at = 0;
 static PSP_AIME_ME_SIDE int look_step = -1, look_tag = -1, look_prev_step = -1, look_prev_tag = -1;
+/* 1 when the job began off the ME (the emulator's simulated job, before its
+stack is the ME's): the first look starts the clock instead of closing a stretch */
+static PSP_AIME_ME_SIDE int look_fresh = 0;
 /* the main CPU's epoch, on a line of its own that only it writes */
 static struct
 {
@@ -1062,6 +1065,12 @@ static void look_census_at(unsigned int now, int between)
 	unsigned int d = now - look_mark, bin, s, waiting;
 	int step = look_step, tag = look_tag;
 
+	if (look_fresh)
+	{
+		look_fresh = 0;
+		look_mark = now;
+		return;
+	}
 	/* between actors the step is 0 already: the stretch is the actor's last step's */
 	if (between && step == 0)
 	{
@@ -1113,7 +1122,9 @@ static void look_census_after(void)
 /* the AI job's start (1) and end (0), in me_serve */
 static void look_census_job(int begin)
 {
-	unsigned int now = me_cycles();
+	/* the ME's clock only on the ME (the emulator calls this from the main CPU) */
+	int on_me = psp_on_me();
+	unsigned int now = on_me ? me_cycles() : 0;
 	volatile struct me_private *p = ME_PRIVATE;
 
 	if (begin)
@@ -1131,12 +1142,13 @@ static void look_census_job(int begin)
 		}
 		look_census.jobs++;
 		look_mark = now;
+		look_fresh = !on_me;
 		look_job_worst = 0;
 		look_wait_open = 0;
 		look_step = look_tag = look_prev_step = look_prev_tag = -1;
 		look_pushed_at = RING_PUSHED;
 		look_popped_at = p->ring_popped;
-		if (look_census_waiting())
+		if (on_me && look_census_waiting())
 		{
 			look_wait_open = 1;
 			look_wait_at = now;
@@ -1145,8 +1157,12 @@ static void look_census_job(int begin)
 	}
 	if (!look_on)
 		return;
-	look_census_at(now, 0);
-	look_census_wait_close(now);
+	if (on_me)
+	{
+		look_census_at(now, 0);
+		look_census_wait_close(now);
+	}
+	look_wait_open = 0;
 	look_census.job_worst_sum += look_job_worst;
 	look_census.pushed += RING_PUSHED - look_pushed_at;
 	look_census.run += p->ring_popped - look_popped_at;
@@ -3110,6 +3126,10 @@ int psp_me_start(void)
 		}
 		me_state = 2;
 		me_restartable = 2;
+#ifdef PSP_RECON
+		/* aimelookcensus counts the simulated AI job too (its counts, not its times) */
+		control->features = psp_keep("aimelookcensus") ? ME_FEATURE_LOOK_CENSUS : 0u;
+#endif
 		platform_log("ME: the emulator runs no ME code; each job is SIMULATED (the main CPU runs it)%s",
 			ring_on ? "; the job ring on (meslant)" : "");
 		return 1;
@@ -3252,7 +3272,15 @@ static int me_run_slot(int which, unsigned int type, const unsigned int *args, i
 	if (me_state == 2)
 	{
 		/* the emulator: the job's own code, on this CPU */
+#ifdef PSP_RECON
+		if (type == ME_JOB_AIME)
+			look_census_job(1);
+#endif
 		run_job(slot, simulated_sums, 0);
+#ifdef PSP_RECON
+		if (type == ME_JOB_AIME)
+			look_census_job(0);
+#endif
 		me_us = (unsigned long)(sceKernelGetSystemTimeWide() - start);
 		stats[which].simulated++;
 		waited = me_us;
