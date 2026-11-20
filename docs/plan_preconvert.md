@@ -175,7 +175,7 @@ I could not verify the 0.9 ms a flight frame. I did not find that figure in the 
 **Exactness**
 1. **`preconvertcheck` (new keep word, debug).** On a baked block's first draw, convert the raw copy into a scratch buffer with the run-time code, then `memcmp` the records, the batch table and the sphere values. Log `precheck: N parts, M differ`. [U] This tests the bake's arithmetic directly. Run it on every campaign map, emulator only (`tools/emu.sh`, the lab's sierra-batch).
 2. **`statecrc` against `preconvertoff`.** In one batch with `keepsets="- | preconvertoff"`, compare the per-tick `statecrc` (`docs/testing_pipeline.md:58`). The simulation must be identical, since rendering does not change game state. [U]
-3. **Shots and drawhash.** Use fixed-input batches (the README's `nearauto nomeaudio fixedseed fixedticks statecrc nomouth`, `psp/sierra/batches/README.md:23`) and compare the shots on both sides. They should be pixel-identical except for camouflaged or effect parts. If any differ, list them: they are the item-3 difference.
+3. **Shots and drawhash.** Use fixed-input batches (the README's `nearauto nomeaudio fixedseed fixedticks statecrc nomouth`, `projects/sierra/scripts/batches/README.md:23`) and compare the shots on both sides. They should be pixel-identical except for camouflaged or effect parts. If any differ, list them: they are the item-3 difference.
 4. **Plan failures.** `skin_failures` must match between baked and run-time conversion.
 
 **The count going to 0 on b30**

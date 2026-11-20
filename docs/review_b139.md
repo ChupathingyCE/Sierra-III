@@ -145,7 +145,7 @@ These are look or sound changes that are not restorations, so they are yours. Wh
 - **The buzz (`adpcmold`).** Each 36-byte Xbox ADPCM block holds its first sample in the header and 63 more in nibbles; the 64th only pads. The decoder dropped the header's sample and played the padding, so every 64th sample was held and the next skipped: a 344 Hz buzz on every ADPCM sound. After ChupathingyCE's fix (Jeff Clark, `5f3a0f98`); the bake's `soundpack.py` and `snd0.py` take the same convention, so a re-bake is needed. On the chant's own bytes block edges stepped 348 against 178 on average, 178 after [D].
 - **No melee with no weapon in the campaign (`unarmedmelee`).** The Xbox and PC block it; ChupathingyCE lets it through for multiplayer loadouts of none, which also reaches the campaign. The multiplayer build keeps upstream's rule. Upstream has since fixed it; our block can go with the next pin.
 - **Menu music (`streamnolink`).** A permutation shorter than the queue left the channel with no playing permutation, so the fill never sent the queued one and music skipped; it is now carried on, with 16 stream packets.
-- **The chant from the player's bake.** The tone is 18,396 bytes of the disc's executable; the EBOOT carries none. The bake finds it by SHA-256 (`chant.py`) and writes `chant.adp`; without it the loading screen is silent (`research/chant_provenance.md`).
+- **The chant from the player's bake.** The tone is 18,396 bytes of the disc's executable; the EBOOT carries none. The bake finds it by SHA-256 (`chant.py`) and writes `chant.adp`; without it the loading screen is silent (`projects/sierra/research/chant_provenance.md`).
 - **Instruments:** `cachedump`, `silentoverrun`, E1 and E2 (`lruvoldscan`), loop voices' loudest gain, packets that skip.
 
 ## §Sim
@@ -194,7 +194,7 @@ On the PSP-1000, newest build, logs as always:
 - The Xbox ADPCM block layout: ChupathingyCE's PC audio, Jeff Clark (`5f3a0f98`): commit, this file, README Credits.
 - The vector palette for bump maps: ChupathingyCE's `bitmaps.c` (`bake/lib/vector_palette.py`), as the relief's walk-through says.
 - The rest read ChupathingyCE's Xbox rasterizer files to restore what the Xbox draws; no code is copied from them.
-- halo-ce-vita (BirchWoodGod) and DamnationCE (xshxdex98): credited since b126, unchanged here (`research/research_vita.md`).
+- halo-ce-vita (BirchWoodGod) and DamnationCE (xshxdex98): credited since b126, unchanged here (`projects/sierra/research/research_vita.md`).
 - The unarmed melee's upstream cause is c9ee319a (MrBruh); already fixed upstream, nothing taken.
 
 ## Still open (not in b139)

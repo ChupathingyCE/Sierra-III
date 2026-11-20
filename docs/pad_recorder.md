@@ -21,7 +21,7 @@ That run had the bench guards `nomouth aimewait readswait`; Sheepdog01's recordi
 
 - `ms0:/halo/pad.pad` is read whole at the first map load; each frame takes its `seconds_elapsed` from it and each call its blob in place of the pad's.
 - **Checked as it goes:** the replay logs statecrc's play and seed hashes; a recording made with `statecrc` on carries them, and the replay names the first tick that parts (a build that changes play, or a race not yet found).
-- **The bench:** a lab route-like file (`psp/sierra/pads/`, inputs only: no game data) and `sierra-hw ... keep="padplay ..."`; the stretch's window picked from the recording's own heaviest seconds (its metrics lines).
+- **The bench:** a lab route-like file (`projects/sierra/scripts/pads/`, inputs only: no game data) and `sierra-hw ... keep="padplay ..."`; the stretch's window picked from the recording's own heaviest seconds (its metrics lines).
 
 ## Proof
 

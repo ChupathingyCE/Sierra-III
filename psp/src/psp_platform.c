@@ -1880,7 +1880,7 @@ void psp_objcost(long definition, int type, int drawing, unsigned long microseco
 
 #ifdef PSP_TICK_STEPS
 /* "objsteps" (R1 builds: PSP_TICK_STEPS=1 PSP_RECON=1; timemap's request,
-lab psp/sierra/timemap/objsteps_request.md): each step's time charged to
+lab projects/sierra/scripts/timemap/objsteps_request.md): each step's time charged to
 the object definition being updated or drawn as well as to the step, so the
 profile says what a grunt's tick or a flying Pelican's goes on. The object
 is a stack: object_update pushes itself on entry and pops on exit, so a
@@ -2478,7 +2478,7 @@ void psp_exit_game(const char *why)
 }
 
 /* The overflow hook (psp_fixups.py FIXES_ARRAYFULL; the lab's
-coord/briefs/array_overflow_hook.md): a data array with no free slot, or the
+projects/sierra/coord/briefs/array_overflow_hook.md): a data array with no free slot, or the
 object pool with no room for an object's block. The first refusal of each
 array on a map is logged at once with its caller, every one is counted for the
 heartbeat's game state survey, and a census build (PSP_RECON) or a statecrc
@@ -3917,7 +3917,7 @@ static struct
 } hwprofile __attribute__((aligned(64)));
 /* "pcsample": 512-byte bins over the program's code, the tick's and the
 drawing's (~54 KB for 3.5 MB of code); written to log/pcsample.txt every
-minute (psp/sierra/pcsample.py names the bins from the build's symbols) */
+minute (projects/sierra/scripts/pcsample.py names the bins from the build's symbols) */
 #define PC_SHIFT 9
 static unsigned int pc_report_beats = 0;
 void *memalign(size_t alignment, size_t size); /* declared as psp_dsound.c does */

@@ -35,7 +35,7 @@ On the Xbox, Chief's armour is its lit, change-coloured base, with the reflectio
 - The ME restarted but answered no job.
 - The reset register read 0x20 after our restart: the AVC block was left in reset. The firmware's own ME boot releases it last; ours never did.
 
-**The words** (research/mewake faef3c7; `psp_me.c`, `psp_platform.c`):
+**The words** (projects/sierra/research/mewake faef3c7; `psp_me.c`, `psp_platform.c`):
 - **`mewakefw`**: at the sleep, record whether the AVC block was powered; at the wake, power it, then let go of the AVC and AW resets that launch found let go, with the firmware's memory flushes around the release.
 - **`mewakeearly`**: the release happens in the kernel's wake handler, as the firmware and the ME library do. Jobs still go back at the frame's end, once the ME answers.
 - **`mewakeprobe`**: after a restart the ME checks its FPU, a cached read, a written-back write, eDRAM and a deep stack, marking each step.
@@ -117,7 +117,7 @@ Sheepdog01's 240 fps video of b147h (19:30) showed the armour drawn white for si
 
 Before the three sleeps, play b148 as usual on bake w148a (`$psp/halo` from b148's zip and bundle).
 
-**The three sleeps** (one session, from research's plan, `coord/handoff/mewake_2026-10-28.md` in the lab). Each can end in a hung exit that needs a battery pull, as on b124 and b132, so run them in order and **stop at the first success**.
+**The three sleeps** (one session, from research's plan, `projects/sierra/coord/handoff/mewake_2026-10-28.md` in the lab). Each can end in a hung exit that needs a battery pull, as on b124 and b132, so run them in order and **stop at the first success**.
 
 | # | keep.txt adds | Steps | What the log should say |
 |---|---|---|---|

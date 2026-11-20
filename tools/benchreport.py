@@ -35,11 +35,11 @@ import argparse, os, re, sys
 NUMBER = r"(-?[0-9]+(?:\.[0-9]+)?)"
 STRETCHES = "cinematic:150-570,flight:300-2000,landing:2000-2700,beach:2700-6000,bunker:6000-8100"
 # Each map's own stretches over its pad bench, from the lab's
-# psp/sierra/findings/stretches.tsv (its "<map>-pad-<name>" rows): a log that
+# projects/sierra/findings/stretches.tsv (its "<map>-pad-<name>" rows): a log that
 # names one of these maps is read by them unless --stretches is given. b30
 # keeps the opening bench's above, which its earlier reads used. Without this,
 # a b40 or c20 pair was read by b30's windows under b30's names and never
-# by its own heavy stretches (the lab's coord/lessons.md, the audit's find).
+# by its own heavy stretches (the lab's projects/sierra/coord/lessons.md, the audit's find).
 MAP_STRETCHES = {
     "a30": "opening:300-3600,early:3600-12000,middle:12000-22000,late:22000-31318",
     "b40": "early:2521-5008,heavyA:9123-10272,heavyB:10272-11661,snowfield:13922-14876",

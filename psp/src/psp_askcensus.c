@@ -1,10 +1,10 @@
 /* The askers' census ("askcensus" in keep.txt; PSP_RECON builds only): how often
 each of the game's collision askers asks, by phase, so the collision box's service
 (docs/box_collision.md) is sized by who asks how much. psp_fixups.py's
-FIXES_ASKCENSUS routes every call site the lab's read found (coord/briefs/
+FIXES_ASKCENSUS routes every call site the lab's read found (projects/sierra/coord/briefs/
 askers_read.md, or-job 43761478863: 62 sites, 38 askers) through psp_ask(site)
 on its way in. The site numbers and their askers are in the lab's
-psp/sierra/askcensus.py, which reads the log.
+projects/sierra/scripts/askcensus.py, which reads the log.
 
 It counts, it doesn't time: run it in the emulator, where the count is exact
 and the Media Engine's askers run on the main CPU and are counted with the rest.

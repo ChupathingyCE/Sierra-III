@@ -96,7 +96,7 @@ A shallow first pass, for the sweep to confirm or correct. These features exist 
 
 - **The master:** owns this page and the design; judges each ledger's findings; asks Sheepdog01 where his call is needed.
 - **Recon (Thing 2):** the PSP runs and the instruments (ledgers 2, 3 and 8), the bench round for ledger 1 (the GE features first: hardware skinning and morphing, in-list culling, call lists, DXT, mipmaps), the trial's PSP pair, and the reading for ledgers 6 and 7.
-- **API lanes and helpers** (the lab's `coord/delegation.md`): the reading sweeps (ledger 1's docs and code, ledger 2's dependencies). Their answers are drafts until checked.
+- **API lanes and helpers** (the lab's `projects/sierra/coord/delegation.md`): the reading sweeps (ledger 1's docs and code, ledger 2's dependencies). Their answers are drafts until checked.
 - **The tick and tock go on meanwhile:** the current levers (P1, P2) and tock160's release work don't wait on the recon.
 
 ## Done when

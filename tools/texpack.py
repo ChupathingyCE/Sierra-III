@@ -2,7 +2,7 @@
 
 The first slice of the asset baker (build 20): every 2D bitmap with power-of-
 two sides becomes a swizzled CLUT8 texture with a mip chain, at the
-resolution policy of research/baker/bitmap_bake.py (top mip dropped for
+resolution policy of projects/sierra/research/baker/bitmap_bake.py (top mip dropped for
 textures of 64 px and more, 512 px at most; lightmaps at full size). The
 game finds a texture by the address of its bitmap_data in the tag window,
 which is fixed for a map built for the PSP (invader-build -X 0x09600000).
@@ -1999,7 +1999,7 @@ def bake_one(m, b, cls, look=None, model_look=None, full_hud=True, meter=False, 
         idx = idx.copy()
         idx[changed] = nearest(fitted[changed][None], pal, alpha)[0]
     # 16 colours where that is no worse than the 16-bit frame buffer itself
-    # (within 1 dB of its 5650 rounding): half the bytes (research/baker)
+    # (within 1 dB of its 5650 rounding): half the bytes (projects/sierra/research/baker)
     bits = 8
     if not grid and tw >= 32 and th >= 8 and cls not in ('level (senv)', 'lightmap', 'sky', 'detail'):
         idx4, pal4, rec4, _ = make_palette(small, 16, cls, shape)

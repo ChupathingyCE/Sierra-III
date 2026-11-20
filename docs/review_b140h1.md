@@ -36,7 +36,7 @@ w140 a457800 (ringfix, texpretouch still on), PSP-3000 two runs agreeing within 
 
 - **Restarts:** the crash showed only on scripted route runs, never by hand, and texpretouch is off; if any launch dies at a level's load, keep the log (`crash.txt` names it).
 - **The menu:** boot to the menu, a level, back to the menu (the return leg is proven in the emulator only).
-- **b139's open notes** (`coord/handoff/b139_hand4_notes.md` in the lab): the light-pass door colour, flicker at range, the texture cache short on b30's hilltop / c20's door / a10, the menu ring H2/H15, the motion tracker cross.
+- **b139's open notes** (`projects/sierra/coord/handoff/b139_hand4_notes.md` in the lab): the light-pass door colour, flicker at range, the texture cache short on b30's hilltop / c20's door / a10, the menu ring H2/H15, the motion tracker cross.
 - **Sleep** (`docs/review_sleepfix.md`): not in this build; the real-sleep test waits for it.
 
 ## Not in this build

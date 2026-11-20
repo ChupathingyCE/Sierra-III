@@ -1,10 +1,10 @@
 # The tick at the target: ceilings and the gap
 
-The tick-at-target brief (the lab's `coord/handoff/tick_hw_brief_2026-11-06.md`; Sheepdog01 11:33, 11:51, 12:01-12:09): at 30 fps, each level's own average and after R, the heavy stretches' ticks must lose 50-60% (`redesign_plan.md` §1b). This page sums every ceiling per heavy stretch against that cut, by exhaustion, so the gap left is where compromises enter, stretch by stretch, for Sheepdog01 to decide. Owner: the bottleneck session. Started 2026-11-06.
+The tick-at-target brief (the lab's `projects/sierra/coord/handoff/tick_hw_brief_2026-11-06.md`; Sheepdog01 11:33, 11:51, 12:01-12:09): at 30 fps, each level's own average and after R, the heavy stretches' ticks must lose 50-60% (`redesign_plan.md` §1b). This page sums every ceiling per heavy stretch against that cut, by exhaustion, so the gap left is where compromises enter, stretch by stretch, for Sheepdog01 to decide. Owner: the bottleneck session. Started 2026-11-06.
 
 Labels: [M] measured on a PSP, [E] emulator or cache model, [D] read in code or data, [U] inference.
 
-*Brought onto the tock 2026-11-09 from `docs/cost-map` (5f1eb7d), whose history doesn't join the tock's: it was missing here, and so from the plan sessions read first. The tick side's live work is the tick30 session's (Sheepdog01 2026-11-09 15:37-15:55; the lab's `coord/handoff/tick30_2026-11-09.md`).*
+*Brought onto the tock 2026-11-09 from `docs/cost-map` (5f1eb7d), whose history doesn't join the tock's: it was missing here, and so from the plan sessions read first. The tick side's live work is the tick30 session's (Sheepdog01 2026-11-09 15:37-15:55; the lab's `projects/sierra/coord/handoff/tick30_2026-11-09.md`).*
 
 ## 1. What a heavy tick is made of
 
@@ -296,7 +296,7 @@ An audit of what the PSP offers against what the code uses (`git grep` over psp/
 
 **So the hardware angles add nothing exact to §4.** Bus priority is the one with a real ceiling, and it is a blind write.
 
-**Closed since (2026-11-07):** bus priority is no lever: the full read found no arbiter to set, and the bus is route-around only (the lab's `docs/research/bus_arbiter_closure.md`). Of the hardware angles above, none is left exact.
+**Closed since (2026-11-07):** bus priority is no lever: the full read found no arbiter to set, and the bus is route-around only (the lab's `projects/sierra/docs/research/bus_arbiter_closure.md`). Of the hardware angles above, none is left exact.
 
 **A new use for a priced function: GE morphing for small bipeds.** The GE can blend up to 8 copies of a mesh by weights, per vertex, for free on the CPU side. For bipeds drawn ~16-32 px, a decimated mesh (§3.6) baked in a dozen or two key poses a character (walk and run phases, idle, crouch, fire, dying), drawn as a morph between the two nearest keys, animates with no posing on the CPU or ME and no skinning matrices. The tick still poses the chains the simulation reads (§3.5). Memory: at ~100 vertices a decimated grunt, ~1.5-2 KB a key, ~25-40 KB a character [U]. It fills the gap between the sprite (under 16 px) and full posing (over 32 px), where a pose library would need the aim overlays (§3.5).
 

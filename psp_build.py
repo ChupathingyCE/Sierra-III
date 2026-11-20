@@ -238,7 +238,7 @@ SNDSTREAM = os.environ.get("PSP_SNDSTREAM", "") == "1"
 # them out.
 CLAIMFILL = os.environ.get("PSP_CLAIMFILL", "1") != "0"
 # PSP_CAPTURE=<box> builds a box's capture in (REBUILD.md §5; the lab's
-# research/opportunities/harness.md §7): psp/src/psp_capture.c, the writer, and
+# projects/sierra/research/opportunities/harness.md §7): psp/src/psp_capture.c, the writer, and
 # the box's hooks at the old code's entry and exit (psp_fixups.py
 # FIXES_CAPTURE_<BOX>). keep.txt's capfirstN, capeveryN, capticksN and
 # capkbN set its sampling (psp_platform.c). A recon build: never for play
@@ -970,7 +970,7 @@ def link(objs, stubs):
     #   a file name: coldfirst, then that file's hot functions in its order
     #     (one section name a line, tools/icache_order.py's order.txt); or,
     #     when its lines are placements ("*<object>(<section>)", the test
-    #     tools/codeorder.py: the call graph's order, T2), those in its order
+    #     projects/sierra/tools/codeorder.py: the call graph's order, T2), those in its order
     #     and nothing first, each function's cold part placed beside it.
     # A linker script gives each input section to the first rule that
     # matches it, so the most specific placements come first.

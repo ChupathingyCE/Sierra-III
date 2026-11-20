@@ -2,7 +2,7 @@
 
 Part B of `redesign_plan.md` (§3 B). It has no go of its own: it places what R and S hold, and is priced inside their milestones. Under the redesign rule a placement is proven for correctness in the emulator and priced on the PSP (the cache rule: never by the cache model). This page is the map B works from, and the order it decides things in.
 
-Labels: [M] measured on the PSP, [E] emulator or estimate, [D] read in code or data, [U] inference. Figures from `memory_ledger.md` §0.4 and the lab's `psp/sierra/findings/edram.md` unless named.
+Labels: [M] measured on the PSP, [E] emulator or estimate, [D] read in code or data, [U] inference. Figures from `memory_ledger.md` §0.4 and the lab's `projects/sierra/findings/edram.md` unless named.
 
 ## 1. The memories and who can read them
 
@@ -89,7 +89,7 @@ In order of what a KB buys (`memory_ledger.md` §0.5):
 
 Each placement changes only addresses, so it's exact by construction (play and both seeds identical); its price is a PSP pair.
 
-## 4b. The bus at the target frame rate (2026-11-10, chat1110; the lab's `research/opportunities/bus_toll.md`)
+## 4b. The bus at the target frame rate (2026-11-10, chat1110; the lab's `projects/sierra/research/opportunities/bus_toll.md`)
 
 - **Contention follows duty, not bytes** [M, the contention bench]: a main CPU miss costs ×1.0 when another master holds the bus 25% of the time, ×1.2 at 50%, ×2.1 at 100%. That's why the small byte cuts priced ~0 (MV14 3a, levelcompact, VMFILL, VMRANK) and the large moves paid (the copies' room's first ~550 KB, 10-25 ms of tick).
   - **Superseded 2026-11-10 (the master; the lab's findings `ge_pacing_contention_means`):** those duty figures were medians, which drop the chunks landing in the bursts. As the time the CPU pays (window means) the toll is **linear in the time a master holds the bus**: DMA ×1.38 at 50%, ×1.20 at 25%; the GE's RAM list paced with filler ×2.16 at 50%, ×1.65 at 25%. The GE fetches a vertex for every index at memory latency (bench18), so its time on the bus is set by the number of fetches, not bytes: the diets cut bytes, the copies' room removed fetches. That's the likelier reason small byte cuts priced ~0 [U on M].

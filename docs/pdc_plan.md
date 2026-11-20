@@ -121,7 +121,7 @@ The key gains the dither and blend state a part starts from, and fog.
 2. **Rigid parts** (about 60 of c10's 143): gestream frames identical with and without the keep word, play and seeds. About 2.5-3 ms of c10's ME [U].
 3. **Skinned parts:** the bone sub-lists rebuilt into fresh takes and their CALLs rewritten.
 4. **The point lights patched.**
-5. **The c10 pair on the PSP-1000:** `"- | pdcreuse"` x2, reading the ME's replay, the main CPU's wait and the key's own cost (logged since research/pdcreuse bc3513e5).
+5. **The c10 pair on the PSP-1000:** `"- | pdcreuse"` x2, reading the ME's replay, the main CPU's wait and the key's own cost (logged since projects/sierra/research/pdcreuse bc3513e5).
 
 In full, about 5.5-6.5 ms a frame of c10's ME [U]: the hits' 8.8, less the matrices, the bone rebuild, the copy, the replays and the key.
 

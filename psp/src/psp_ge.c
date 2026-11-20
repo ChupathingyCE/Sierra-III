@@ -7492,7 +7492,7 @@ had. In the carve's own steps: the carve is taken 128 KB at a time, so a
 size between them takes the rest from the textures, and b30 then draws many
 more frames with a texture missing. Smaller vertex formats (PRECONVERT) let the cache hold the same play in
 less, and this is how those bytes reach the heap; the replay of the cache at
-smaller sizes prices each map (memory_survey_b144.md, section 7, on research/memtrace until it merges) */
+smaller sizes prices each map (memory_survey_b144.md, section 7, on projects/sierra/research/memtrace until it merges) */
 #define HEAPROOM_MOST_KB 768
 unsigned int psp_heaproom_bytes(void)
 {

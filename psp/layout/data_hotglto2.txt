@@ -1,7 +1,7 @@
 # Lever HOTG for the LTO build on the tock's profile campaign-w153a (PSP_LTO=1 PSP_DATA_LAYOUT=hotglto2): the tick's hottest small variables, hottest per byte
 # first, as the LTO link names them. Ranked by their own lines' data misses (tick and drawing) in the LTO spread build
 # (data_hotgltospread, PSP_DATA_SPREAD=1; lab ltodata2 41591714730, Sierra-III w142 67f1195) on b30's route, c20 and c10,
-# cache model, by docs/hotg.md's thresholds (lab tools/hotgderive.py). A numbered static (psp_keep_once_.N) is numbered by
+# cache model, by docs/hotg.md's thresholds (lab projects/sierra/tools/hotgderive.py). A numbered static (psp_keep_once_.N) is numbered by
 # the link: one that moves with a code change only places a cooler word.
 *ltrans*.o(.data.psp_keep_once_.52)
 *port/linux/game/render_interpolation.o(.bss.interpolation_rendering)

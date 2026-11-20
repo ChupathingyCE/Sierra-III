@@ -55,4 +55,4 @@ WXDEAD, texavg, lightcarry and sndedram go in a table of their own, read before 
 
 ## Proofs
 
-See the lab's findings and coord/sessions/tock158.md for the run ids: exactness (tock158x1, tock158x2), the profile campaign-w158a, the layouts w158a_tgc90 and data_hotg158a, the strict build and the release check.
+See the lab's findings and projects/sierra/coord/sessions/tock158.md for the run ids: exactness (tock158x1, tock158x2), the profile campaign-w158a, the layouts w158a_tgc90 and data_hotg158a, the strict build and the release check.

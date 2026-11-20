@@ -8,7 +8,7 @@ The public repository (`Sheepdog-01/Sierra-III-Release`) is a separate repositor
 tools/public_export.py <commit> /tmp/public-bNNN --deny <deny-list> --pgo campaign-bNNN --gitleaks <gitleaks>
 ```
 
-- `--deny` names the deny-list file (or set `SIERRA_EXPORT_DENY`): the lab's `psp/sierra/export_deny.tsv`, one `label<TAB>regex` per line. It's kept out of this repository because it spells out exactly what must not go public. Without it the tool refuses to run.
+- `--deny` names the deny-list file (or set `SIERRA_EXPORT_DENY`): the lab's `projects/sierra/scripts/export_deny.tsv`, one `label<TAB>regex` per line. It's kept out of this repository because it spells out exactly what must not go public. Without it the tool refuses to run.
 - `<out>` must not exist and must not be inside a git work tree.
 - `--pgo` names the profile the release was built with (`pgo/<name>.tgz`); only that one goes out. Left out, the newest `campaign-bNNN` goes.
 - `tools/public_export.py - x --report --deny <deny-list>` reads the work tree as it is on disk and lists every finding, writing nothing: the quick loop while fixing text.

@@ -11,7 +11,7 @@ The drawing side's counterpart to `tick_map.md` (Sheepdog01 18:16: two maps, one
 - **The sampler:** `pcsample` with snapshots at each stretch's ends.
 - **Clean run:** 0 heap requests failed, and every kept part was written in one take.
 
-The samples are named by `psp/sierra/pcsample.py`, using the symbols of sierra-build 42717338740 (the same EBOOT, and its bins match). Functions are grouped by name: share of the drawing phase, then ms a frame at this run's drawing time.
+The samples are named by `projects/sierra/scripts/pcsample.py`, using the symbols of sierra-build 42717338740 (the same EBOOT, and its bins match). Functions are grouped by name: share of the drawing phase, then ms a frame at this run's drawing time.
 
 **What the samples count:**
 - Every thread's samples during the drawing phase (sound included). Samples in the kernel are left out.

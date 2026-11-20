@@ -46,7 +46,7 @@ All of them share one lock on one device that serves one call at a time.
 
 ## 2. What was tried on this ground
 
-(the lab's `tools/levercheck.py --ground stick-io`, and the docs)
+(the lab's `projects/sierra/tools/levercheck.py --ground stick-io`, and the docs)
 
 | Try | Result | What it teaches the box |
 |---|---|---|
