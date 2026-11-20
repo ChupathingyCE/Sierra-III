@@ -1,6 +1,6 @@
 # The frame picture: each box's milliseconds by cause (design v1)
 
-Brief: the lab's `coord/briefs/frame_picture.md` (the lead, 2026-11-17). One table per stretch, on the PSP-1000: each box of the tick and the frame in ms a tick and a frame, at p50 and p99, split into **work**, **code-miss wait**, **data-miss wait**, the memory wait the prices don't explain, **asleep**, and **waits for the GE or ME**, with each box's miss counts by kind. Every box and lever is then ranked on the same table (REBUILD §3). The build goes behind a switch, off by default.
+Brief: the lab's `projects/sierra/coord/briefs/frame_picture.md` (the lead, 2026-11-17). One table per stretch, on the PSP-1000: each box of the tick and the frame in ms a tick and a frame, at p50 and p99, split into **work**, **code-miss wait**, **data-miss wait**, the memory wait the prices don't explain, **asleep**, and **waits for the GE or ME**, with each box's miss counts by kind. Every box and lever is then ranked on the same table (REBUILD §3). The build goes behind a switch, off by default.
 
 v1 answers the lead's acceptance of v0 (three conditions, 01:1x) and the eight additions from DeepSeek's cold read (or-job 44032878476, its two code claims checked by the lead, 01:0x). What changed from v0 is listed at the end.
 
@@ -10,7 +10,7 @@ The main CPU's profiler is the block at `0xBC400000` (`PspDebugProfilerRegs`): a
 
 - **Code wait and data wait are not counted apart.** There is one memory-stall count. Misses are counted by kind, but the cycles they cost are not. So the split is by count times a price (§4), as the brief's fallback says.
 - **No GE-bus counter.** 0x48 counts, while 0x4C and 0x50 read 0 with the GE busy [M], `hardware_facts.md`. The GE's toll stays an inference [U on M].
-- **The counters are the whole CPU's, not a thread's.** Sony's thread manager can keep them per thread, but only in a mode chosen at its start from the kernel's debug flags, which a retail PSP doesn't set [D, the lab's `docs/research/fw661/frame_picture_read.md`]. Other threads' work inside a box is handled in §5.
+- **The counters are the whole CPU's, not a thread's.** Sony's thread manager can keep them per thread, but only in a mode chosen at its start from the kernel's debug flags, which a retail PSP doesn't set [D, the lab's `projects/sierra/docs/research/fw661/frame_picture_read.md`]. Other threads' work inside a box is handled in §5.
 - **Reading it** takes kernel mode; there is no user-mode clock either (`hardware_facts.md`). `halo_profile.prx` is the port's kernel module.
 
 ## 2. Marks

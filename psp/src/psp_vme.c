@@ -4,7 +4,7 @@ start, beside the ME's jobs: "vmetest", a measurement, off by default.
 The sequence and the library code below are mcidclan's (me-core-mapper's
 vme-lib.c and his mat4x4-mul-distributed sample, MIT: psp/src/vme/LICENSE.md),
 unchanged except that each firmware call is ours: the register writes Sierra-III's
-research/vme5 round 5 proved on the PSP-1000 (docs/vme_round5.md). Nothing here
+projects/sierra/research/vme5 round 5 proved on the PSP-1000 (docs/vme_round5.md). Nothing here
 calls Sony's ME firmware, a system call or the VFPU on the ME.
 
 What the job proves, per heartbeat window: the VME's 4x4 matrix-by-vector

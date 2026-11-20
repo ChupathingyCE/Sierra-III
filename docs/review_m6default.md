@@ -30,7 +30,7 @@ None of the set has been played against a ChupathingyCE server. heaproom256 is a
 ## The measured basis
 
 - **Play:** sv7 39607467321 [E]: with `nomouth`, plain, the set, and the set + inflightkb224 + heaproom256 play identically on a30 (9,000 ticks) and b30 (6,000 ticks), both seeds, every tick.
-- **Speed:** geinflight + mevram on the PSP-1000 c20 (39501638143) [M]: frame 106.2 to 80.5 ms (-24%). Tick costs and the gebus ladder are in lab `coord/handoff/gebus.md`.
+- **Speed:** geinflight + mevram on the PSP-1000 c20 (39501638143) [M]: frame 106.2 to 80.5 ms (-24%). Tick costs and the gebus ladder are in lab `projects/sierra/coord/handoff/gebus.md`.
 - **Look (TXPT):** txpt2 39616931750 [E]: b30 untextured frames, plain 23, the set 175, the set + texpretouch 30. a10: 111 to 14 (plain 16). Play matches at every tick. Cost: about +1.5 ms of drawing a frame on b30's flight (cache model).
 - **Heap (heaproom256):** sv2 39575417500, PSP 39577431764: a30's failed allocations 410 to 0, headroom +200 KB, no speed change. docs/review_sv.md.
 - **MEPOLL:** meprog1 39610034003 [E] is exact under nomouth. PSP-1000 pair 39614432308 [M], b30 route: frame -5 to -11% in all five stretches, beyond the repeats' spread, with 0 late audio blocks. This was measured only on b30 and on one PSP.

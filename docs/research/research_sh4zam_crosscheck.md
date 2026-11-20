@@ -60,7 +60,7 @@ Sheepdog01, 2026-10-17, from a chat outside the sessions: someone suggested a "S
 
 ## Read again, 2026-11-13: the routines themselves, and SH4DOW-DC (audit; Sheepdog01 23:39, 23:44)
 
-Why again: boxes are being written with their own aligned data and the VFPU's kernels are reopened (the lab's `coord/briefs/vfpu_kernels.md`), so the question is no longer "swap the engine's helpers" but "what would a kernel library for the boxes hold". SH4ZAM read at gyrovorbis/sh4zam 5b7dfc2 (2026-11-13; MIT, Falco Girgis and contributors) [D]. **No code is taken:** its `AGENTS.md` asks that routines never be copied out (the whole library as a submodule, or contributions upstream), and its code is SH4's in any case.
+Why again: boxes are being written with their own aligned data and the VFPU's kernels are reopened (the lab's `projects/sierra/coord/briefs/vfpu_kernels.md`), so the question is no longer "swap the engine's helpers" but "what would a kernel library for the boxes hold". SH4ZAM read at gyrovorbis/sh4zam 5b7dfc2 (2026-11-13; MIT, Falco Girgis and contributors) [D]. **No code is taken:** its `AGENTS.md` asks that routines never be copied out (the whole library as a submodule, or contributions upstream), and its code is SH4's in any case.
 
 **What the library is, by its routines:**
 - **XMTRX is the design.** ~150 routines around one current 4x4 matrix kept in the SH4's back bank of FP registers: load (4x4, 3x4, 3x3, transposed, unaligned), *apply* (multiply another matrix into it), store, transform a vector or point through it (one `FTRV`), `load_apply_store_3x4` (C = A x B without the matrix leaving registers), `blend_3x4(matrix, weight)` (weighted matrices accumulated in registers: CPU skinning), `invert_rigid`.

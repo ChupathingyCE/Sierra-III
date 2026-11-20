@@ -1,6 +1,6 @@
 # MEXEC: the Media Engine's hot code run from its eDRAM
 
-R's slice 10 (`redesign_r.md` §3). The lab's `research/opportunities/me_unnamed.md`, lever 5, holds the measurements and the order; this page is the design. Labels: **[M]** PSP, **[E]** emulator, **[D]** code or docs, **[U]** inference.
+R's slice 10 (`redesign_r.md` §3). The lab's `projects/sierra/research/opportunities/me_unnamed.md`, lever 5, holds the measurements and the order; this page is the design. Labels: **[M]** PSP, **[E]** emulator, **[D]** code or docs, **[U]** inference.
 
 ## Why
 

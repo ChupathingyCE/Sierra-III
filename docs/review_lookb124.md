@@ -121,4 +121,4 @@ Two smaller restorations ride along, both from the same Xbox files:
 
 ## Batches
 
-All in the lab's `psp/sierra/batches/`: `lookb124a` (38670735611), `lookb124b` (38672722971), `lookb124c` (38673819723), `lookb124d` (38674956470), `lookb124e` (38674966445), `lookb124f` (38676185405), `lookb124g` (38676317889), `lookb124h` (38676961774). The route `d20_hall_creep` is in `psp/sierra/routes/`.
+All in the lab's `projects/sierra/scripts/batches/`: `lookb124a` (38670735611), `lookb124b` (38672722971), `lookb124c` (38673819723), `lookb124d` (38674956470), `lookb124e` (38674966445), `lookb124f` (38676185405), `lookb124g` (38676317889), `lookb124h` (38676961774). The route `d20_hall_creep` is in `projects/sierra/scripts/routes/`.

@@ -36,7 +36,7 @@ NUMBER = r"(-?[0-9]+(?:\.[0-9]+)?)"
 STRETCHES = "cinematic:150-570,flight:300-2000,landing:2000-2700,beach:2700-6000,bunker:6000-8100"
 # A log that names no pad (a route or a hands-off run) is read by its map's
 # windows here, as before. These were cut on each map's first pads (the lab's
-# psp/sierra/findings/stretches.tsv "<map>-pad-<name>" rows, the *_play1
+# projects/sierra/findings/stretches.tsv "<map>-pad-<name>" rows, the *_play1
 # recordings) and are kept for logs without a pad so that earlier reads
 # repeat; a pad's own windows are PAD_STRETCHES below. b30 has none here: its
 # route-based reads (ledger1's cinematic, flight, landing, beach) follow the
@@ -52,7 +52,7 @@ MAP_STRETCHES = {
 # Each pad's own windows (game ticks), cut on that recording's own events: the
 # cutscenes, the seat changes and the first fight, read from its .path (the
 # player's seat and control by tick, the deaths he caused) in the lab's
-# psp/sierra/pads/. A replay keeps its recording's events only to the tick it
+# projects/sierra/scripts/pads/. A replay keeps its recording's events only to the tick it
 # tracks him; a held replay (padhold) holds his route and seat, not the fight.
 # Windows stop where the pad's benches stop; past them, give --stretches.
 # Why by pad and not by map: one map's pads are different plays, and b30's
@@ -93,7 +93,7 @@ PAD_STRETCHES = {
 }
 # A log names its pad only by its size ("pad: replaying ms0:/halo/pad.pad,
 # N bytes": the rig copies every pad to pad.pad). The sizes of the lab's
-# psp/sierra/pads/ (all different); a re-recorded pad gets its line here.
+# projects/sierra/scripts/pads/ (all different); a re-recorded pad gets its line here.
 PAD_BYTES = {
     4513757: "b30_leg2", 4852157: "b30_leg1", 4486369: "c20_leg2", 5577602: "c20_leg1",
     8452169: "b40_leg1", 3392953: "b40_leg1_part", 4433040: "b40_play1", 6977168: "c40_leg2",

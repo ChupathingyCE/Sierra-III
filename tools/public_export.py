@@ -113,7 +113,7 @@ RULES = [
 # ---------------------------------------------------------------------------
 # The deny-list: (label, regex) pairs, case-insensitive. Each finding fails the
 # export, wherever it is, with one exception below (ALLOW). The list itself is
-# kept outside this repository (the lab's psp/sierra/export_deny.tsv), because
+# kept outside this repository (the lab's projects/sierra/scripts/export_deny.tsv), because
 # it names exactly what must not go out; --deny or SIERRA_EXPORT_DENY points
 # here at it. Without one the export refuses to run rather than pass unchecked.
 # ---------------------------------------------------------------------------

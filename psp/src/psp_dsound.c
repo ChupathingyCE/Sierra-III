@@ -1869,7 +1869,7 @@ collected figures carry the poll's gap (a frame or more at low frame rates) */
 #define TIER_JOB_WAIT_US 2000000
 static int tier_mode = -1; /* 0 off, 1 the ME's eDRAM, 2 simulated (the emulator) */
 /* "sndpart": more of the tier in the ME partition (docs/plan_sound_edram.md,
-"sndpart"; the lab's coord/handoff/me_partition_tenant_design.md). The
+"sndpart"; the lab's projects/sierra/coord/handoff/me_partition_tenant_design.md). The
 cache's pages run main RAM, then the eDRAM, then the partition's window, a
 boundary between each that no block crosses (lruv's fence and fence2), and the
 main tier is that much smaller: the heap's. Like the eDRAM, the window is the

@@ -1,6 +1,6 @@
 # The tick's work, system by system
 
-Sheepdog01 2026-11-09 16:19: "everything needs to be questioned, analysed for gains, and justified for its cost. we need to be sure we map the existing work out, where it's been priced, and where else it might gain." This page is that map, kept current by the bottleneck session. Nothing here is ranked yet: ranking comes once every system has its section (the lab's `coord/handoff/tick30_2026-11-09.md`).
+Sheepdog01 2026-11-09 16:19: "everything needs to be questioned, analysed for gains, and justified for its cost. we need to be sure we map the existing work out, where it's been priced, and where else it might gain." This page is that map, kept current by the bottleneck session. Nothing here is ranked yet: ranking comes once every system has its section (the lab's `projects/sierra/coord/handoff/tick30_2026-11-09.md`).
 
 Labels: [M] measured on a PSP (device named), [E] emulator, [D] read in code, [U] inference. **Every price carries its scenario** (device, map, stretch, build): a price holds in one scenario, and a stop on one stretch isn't a stop everywhere.
 
@@ -10,7 +10,7 @@ How each section is built:
 - **Every lever tried on it**, with where each was priced (device × map).
 - **Where else it might gain**, and **whether its algorithm suits this machine** (in-order, 16 KB caches, misses at 55-71 cycles, one miss in flight, a second CPU, a VFPU).
 
-Reads are delegated to DeepSeek and checked by hand; the checked reads live in the lab's `research/manifest/tickmap_<system>_*.md`.
+Reads are delegated to DeepSeek and checked by hand; the checked reads live in the lab's `projects/sierra/research/manifest/tickmap_<system>_*.md`.
 
 ## The systems at a glance
 
@@ -38,7 +38,7 @@ By object kind on the same stretch (objcost, PSP-1000, sierra-hw 42141971439) [M
 
 ### 1.1 What it computes, and who reads it [D]
 
-Four families (the lab's `research/manifest/tickmap_collision_code_2026-11-09.md`; line numbers there are the port's tree after fixups):
+Four families (the lab's `projects/sierra/research/manifest/tickmap_collision_code_2026-11-09.md`; line numbers there are the port's tree after fixups):
 
 | Family | Entries | Main tick callers, and what they do with the answer |
 |---|---|---|
@@ -68,7 +68,7 @@ Four families (the lab's `research/manifest/tickmap_collision_code_2026-11-09.md
 
 ### 1.3 Every lever tried on it, and where it was priced
 
-84 levers sit on collision's ground (the lab's `research/manifest/tickmap_collision_levers_2026-11-09.md` has each with its device × map, result and stop reason; checked by hand against `levers.tsv`).
+84 levers sit on collision's ground (the lab's `projects/sierra/research/manifest/tickmap_collision_levers_2026-11-09.md` has each with its device × map, result and stop reason; checked by hand against `levers.tsv`).
 
 - **On by default, priced on the PSP:** LD1 (attached lights once a frame: b30 tick -5…-7%, PSP-3000), CW (collision loops inlined: b30 drive tick -7%, PSP-3000), UVB (vehicle physics early-out: a30 fight tick -8%, PSP-3000), P2NC, PWSL, SPHSL, RECONLIST (reconnects queued, slack-answered, made in place: each c20 tick -1…-5%, PSP-1000), BSPR (a standing biped's last answer: b30 flight -1.3 ms a frame), SMEMO, SCRATCHBSP, NC, NR, NS, T1, OBSRAY, WXDEAD, AS1.
 - **Stopped, priced on one PSP map only** (27 in all; most on b30's cinematic or flight, or c20): among them S2REUSE (the level half reused: b30 flight +0.1 ms a tick, neutral, PSP-3000), BSPDFS2 and BSPLAYOUT (the BSP's order: noise on b30), BSPW (exact faster walks: b30 neutral), MWMASS, CLUSTERPACK, BEYONDHIT, SUPRING. A stop on b30 isn't a stop on the landing, b40 or d20, whose collision share is unmeasured.
@@ -93,7 +93,7 @@ Four families (the lab's `research/manifest/tickmap_collision_code_2026-11-09.md
 
 ### 2.1 What it computes, and who reads it [D]
 
-The lab's `research/manifest/tickmap_posing_code_2026-11-09.md` (line numbers there are the port's tree after fixups).
+The lab's `projects/sierra/research/manifest/tickmap_posing_code_2026-11-09.md` (line numbers there are the port's tree after fixups).
 - **One entry,** `object_compute_node_matrices`: the pose's decode, then its overlays, scale, the type's preprocess (units add action, overlay and ping animations), interpolation from the last pose, the node-stack matrices, and the bounding sphere (copied to the port's sphere table). Units then run inverse kinematics on the hands.
 - **Called once per awake top-level object in the walk,** after its type update; children are posed by recursion. Bipeds and units pose with pre- and postprocess, vehicles and weapons with preprocess only, scenery with neither.
 - **The port's gates on the call:** `posehalf` (far resting objects every other tick), `machinesfar`, VISLAZY (undrawn scenery-kind objects made on demand), and hoisting. **Its replacements for the decode:** the loop-pose table (PSC), poses decoded ahead on the ME (pose-ahead), and VFPU quaternion maths (VFPUQD, VFPUP).
@@ -125,7 +125,7 @@ The emulator's animlod1 [E] had the same shape (under 16 px 44.7% of the flight'
 
 ### 2.3 Every lever tried on it, and where it was priced
 
-49 levers sit on posing's ground (the lab's `research/manifest/tickmap_posing_levers_2026-11-09.md`, checked with `tools/levercite.py`: 46 listed, all citations right; MC2, NB and UVBUNIT added by hand).
+49 levers sit on posing's ground (the lab's `projects/sierra/research/manifest/tickmap_posing_levers_2026-11-09.md`, checked with `projects/sierra/tools/levercite.py`: 46 listed, all citations right; MC2, NB and UVBUNIT added by hand).
 - **On by default:** PV, PA, PQ, MP (posing a frame behind on the ME), VISLAZY, AIMCACHE, VFPUQD, VFPUP, MECTX, PSC, POSEFPU, LINEHEAT. MP and POSEFPU aren't bit-exact and ship because they play the same.
 - **Priced on one PSP map only** (14): PQ (c20), WM, NPF, LEAF, VFPUQD, VFPUP, SKELBATCH (b30), MEB, LBM (b30, both PSPs), PREDEC (b30), PSC (c10), NW2 (c20), VH2 (a10). LBM (poses made only on the drawn tick and on a read) lost on b30 because bipeds' poses are read every tick; NW2 (the node walk on the ME, copied back) lost on c20.
 - **Priced only in the emulator** (19), which today's rules don't let stop anything on time: NW, PH, NMS, UNCR, PNC, ANIM2, NMR, VISLAZY, NMPRE, AIMCACHE, NMSAME, POSEW, UNSEENPOSE, RENDERTICK, LNM, NW1, MECTX, TAGHOT, ARMPASS, WORLDVIEW. **Several stopped partly for not being exact:** ANIM2 (far bipeds posed only on the drawn tick: "under gate and PSP floors; not exact"), UNSEENPOSE (undrawn units posed at the root), ARMPASS (armed bipeds' matrices after the walk: "plays differently"), LNM ("plays the same rather than exact ... not built"), WORLDVIEW. Under the netcode's boundary (Sheepdog01 17:30; posing never goes on the wire) these reopen, each with its PSP price.
@@ -147,7 +147,7 @@ The emulator's animlod1 [E] had the same shape (under 16 px 44.7% of the flight'
 
 ### 3.1 What runs where [D]
 
-The lab's `research/manifest/tickmap_ai_code_2026-11-09.md`. Under the default keep words (`aime`, `aime1b`, `aime2a`), **the AI's thinking is one Media Engine job a tick**: input, perception, situation, emotion, orders and the decision loop, with its own line-of-sight rays cast inline. `soundedram` would turn it off, but that word is opt-in. The PSP agrees: the ledger measures the AI's ME work at 19.5 ms a frame on b30's flight [M].
+The lab's `projects/sierra/research/manifest/tickmap_ai_code_2026-11-09.md`. Under the default keep words (`aime`, `aime1b`, `aime2a`), **the AI's thinking is one Media Engine job a tick**: input, perception, situation, emotion, orders and the decision loop, with its own line-of-sight rays cast inline. `soundedram` would turn it off, but that word is opt-in. The PSP agrees: the ledger measures the AI's ME work at 19.5 ms a frame on b30's flight [M].
 
 **What stays on the main CPU** (the 16.5% of the flight's tick the sampler counts as AI [M]):
 - **the control half of each actor:** action update, movement, look, combat, unit control, communication and conversation: the steps that write the unit and the world other systems read this tick;
@@ -170,7 +170,7 @@ The flight's 16.5% and the beach's ~10% differ by stretch, and the sampler group
 
 ### 3.3 Every lever tried on it, and where it was priced
 
-51 levers sit on the ai ground (the lab's `research/manifest/tickmap_ai_levers_2026-11-09.md`, checked with `tools/levercite.py`: 49 of 50 citations right, SPHSL added).
+51 levers sit on the ai ground (the lab's `projects/sierra/research/manifest/tickmap_ai_levers_2026-11-09.md`, checked with `projects/sierra/tools/levercite.py`: 49 of 50 citations right, SPHSL added).
 - **On by default, paid on the PSP:** AIME (the thinking on the ME: c20 and b30, both PSPs), AICAD (thinking at half rate, shipped as a cadence change), PWSL and SPHSL (reconnects answered by slack: c20 tick -0.6 to -2.8%), OBSRAY (obstacle rays reused: step -10.4%), PRS.
 - **Priced on one PSP map only** (most on b30, PSP-3000): AIFAR (far calm actors think 1 tick in 4: frame -1.9% cinematic, -3.4% landing; off, Sheepdog01's A/B), AITICKOLD (tick -14.5% on the beach), MESCHED, MEMEMO, CLUSTERPACK, TGME, TIMERCALLS, AUDIOCHUNK, RBK; the AIME look jobs on d20 or c10.
 - **Priced only in the emulator:** L3, RA, RC, AP, AC, MB, LPH, UNC, UNCR, PRS, LODS, UNSEENPOSE, ORPH, AIMEDRAM; never priced: ACTORSPLIT, RT1, RV3, RH, NNAI, ANIM2, MPAIM.
@@ -184,7 +184,7 @@ The flight's 16.5% and the beach's ~10% differ by stretch, and the sampler group
 
 ### 4.1 What it computes, and who reads it [D]
 
-The lab's `research/manifest/tickmap_units_code_2026-11-09.md` (line numbers there are the port's tree after fixups).
+The lab's `projects/sierra/research/manifest/tickmap_units_code_2026-11-09.md` (line numbers there are the port's tree after fixups).
 - **The object walk** visits each awake object; sleepers and resting scenery are skipped (FIXES_WS, wake-on-write). `object_update` runs the type update, damage, exported function values, the pose (§2), function values and change colours, light connection, then children.
 - **A biped's type update is `unit_update` then `biped_update`.** `unit_update`: timers, the driver's and gunner's control copy, camouflage and stun timers, aim integration, `weapon_owner_update`, seats, delayed damage into `ai_handle_damage`, dialogue, lights. `biped_update`: facing, state from animation, turning, then `biped_update_moving` → `biped_update_physics` (velocity model, `collision_move_pill`, the support-plane search, landing) → `object_translate` (disconnect and reconnect to the map), melee, footsteps, `unit_update_animation`.
 - **A vehicle's is `vehicle_update`:** steering and speed seeks, then mass-point physics unless at rest (each mass point a point walk and a ground feature query, §1.5), suspension, slipping and crash effects; a parked vehicle runs only the suspension.
@@ -207,7 +207,7 @@ The lab's `research/manifest/tickmap_units_code_2026-11-09.md` (line numbers the
 
 ### 4.3 Every lever tried on it, and where it was priced
 
-43 levers sit on object-update's ground (the lab's `research/manifest/tickmap_units_levers_2026-11-09.md`; 36 listed by the read, all citations right; DAL, FISSB, FVP, GSCHECK, HUHINT, VH2 and WT added from levers.tsv).
+43 levers sit on object-update's ground (the lab's `projects/sierra/research/manifest/tickmap_units_levers_2026-11-09.md`; 36 listed by the read, all citations right; DAL, FISSB, FVP, GSCHECK, HUHINT, VH2 and WT added from levers.tsv).
 - **On by default, paid on the PSP:** WT (wake-on-write: PSP-1000 b30 frame -3.7 to -4.8%), HUHINT (function values' phase in 32 bits: c20 frame -3-4% on both PSPs), UVB (vehicle physics early-out: a30 fight tick -8%, PSP-3000), CW (collision loops inlined: b30 drive tick -7%), P2NC (non-collideable relinks queued: c20 tick -2.4…-4.7%), LD1 (attached lights once a frame: b30 tick -5…-7%).
 - **Priced only in the emulator:** RB, RB1, BW (the whole biped update on the ME), LPH (loop phasing: the cache model said -11.5%, the real batch lost 34%), VISLAZY, MACHLINE, OBJHOT, PHASEB (bipeds stage-major: "no exact cut").
 - **Stopped for want of an exact form:** PHASEB and FISSB (stage-major and split passes). Under the netcode's boundary (Sheepdog01 17:30) a plays-the-same form is allowed; `redesign_tick_target.md` §3.9 sized it at ~1-2 ms a tick on the flight.
@@ -225,7 +225,7 @@ The lab's `research/manifest/tickmap_units_code_2026-11-09.md` (line numbers the
 
 ## 5. The smaller systems
 
-Each is a few percent of the flight's tick; together, with the rest, about 37%. Sources: the lab's `research/manifest/tickmap_small_code_2026-11-09.md` (what runs, callers, readers) and `tickmap_small_levers_2026-11-09.md` (every lever on effects, lookups, sound and micro-opt, checked: 143 of 143 citations right, CTN and NEARZ added by hand). Shares are the PC sampler's on b30's flight (PSP-3000) [M] unless named.
+Each is a few percent of the flight's tick; together, with the rest, about 37%. Sources: the lab's `projects/sierra/research/manifest/tickmap_small_code_2026-11-09.md` (what runs, callers, readers) and `tickmap_small_levers_2026-11-09.md` (every lever on effects, lookups, sound and micro-opt, checked: 143 of 143 citations right, CTN and NEARZ added by hand). Shares are the PC sampler's on b30's flight (PSP-3000) [M] unless named.
 
 ### 5.1 Effects and particles (3.4%; 1.5% on b30's beach, PSP-1000)
 
@@ -265,4 +265,4 @@ To be written once the census fills the gaps (§1.2, §2.2, §4.2: the landing, 
 - **Exact:** the vehicle double compute (§2.4); the mass-point double walk (§1.5); awake sleep candidates' checksums (§4.4).
 - **Plays the same, reopened by the netcode's boundary** (Sheepdog01 17:30, 17:52): collision's reuse, batching and tick-start views (§1.4); posing's emulator-only stops (ANIM2, UNSEENPOSE, ARMPASS, LNM, §2.3); the stage-major forms (PHASEB, FISSB, §4.3).
 - **Plays the same, open on play:** AITICKOLD's two fixes together (the outcome census s3o5 is running); the AI's cadence levers (§3.3).
-- **Untapped hardware:** particle point physics on the VME with a per-batch origin; the VFPU's approximation ops (the lab's `research/manifest/vme_vfpu_under_1607_2026-11-09.md`).
+- **Untapped hardware:** particle point physics on the VME with a per-batch origin; the VFPU's approximation ops (the lab's `projects/sierra/research/manifest/vme_vfpu_under_1607_2026-11-09.md`).

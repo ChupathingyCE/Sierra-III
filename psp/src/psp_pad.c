@@ -80,7 +80,7 @@ came back short) */
 
 /* "padlog": the recording's bytes also in the log, in hex, so an emulator
 run's recording comes back with its log (the results take no binary files):
-the lab's psp/sierra/padfromlog.py rebuilds the file */
+the lab's projects/sierra/scripts/padfromlog.py rebuilds the file */
 static void pad_log(const unsigned char *data, unsigned int bytes)
 {
 	static const char hex[] = "0123456789abcdef";

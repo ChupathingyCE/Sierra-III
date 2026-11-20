@@ -1,6 +1,6 @@
 # TGME: the code layout coloured for both caches, the ME weighted as it runs
 
-The ME's own code layout (Sheepdog01, 2026-11-18 09:10: "it does matter, and it's something I have been pushing for for a while"; the lab's decisions.md 09:13). It's recipe rung D's layout part (the lab's `coord/briefs/recipe_refresh.md`), worked now on the tock without waiting on rung C. It retires L0's zero ME weight. Labels: **[M]** PSP, **[E]** emulator or estimate, **[D]** code or data, **[U]** inference.
+The ME's own code layout (Sheepdog01, 2026-11-18 09:10: "it does matter, and it's something I have been pushing for for a while"; the lab's decisions.md 09:13). It's recipe rung D's layout part (the lab's `projects/sierra/coord/briefs/recipe_refresh.md`), worked now on the tock without waiting on rung C. It retires L0's zero ME weight. Labels: **[M]** PSP, **[E]** emulator or estimate, **[D]** code or data, **[U]** inference.
 
 ## What was there, and how current (read 2026-11-18)
 
@@ -17,7 +17,7 @@ The ME's own code layout (Sheepdog01, 2026-11-18 09:10: "it does matter, and it'
   - the ME's fetches made in MEXEC's copy go through the ME's cache at the copy's eDRAM places. Copy mode is tracked through jal/j/jr/jalr and a shadow return stack, as the copy's patches make it, so a function pointer or a call from the AI job reaches the original, as on the PSP;
   - the ME's fetches are counted by job (`ICACHE ME JOB replay|ai|ring|classify|audio|other`), and with the ME's audio on the simulated mix counts as the ME's;
   - `cachewin = "<from>-<to>"`: the instruction counts and graphs over a game window, with the caches warm before it.
-- **codeorder `--me-copy`** (lab `tools/codeorder.py`, check 4 of `test_codeorder_me.py`): the copy's functions are fixed nodes at their eDRAM sets, so a main-RAM function the ME runs is placed against the copy lines it runs beside.
+- **codeorder `--me-copy`** (lab `projects/sierra/tools/codeorder.py`, check 4 of `test_codeorder_me.py`): the copy's functions are fixed nodes at their eDRAM sets, so a main-RAM function the ME runs is placed against the copy lines it runs beside.
 
 - **A gap the model keeps:** 49 of the copy's 106 jump-table words stay in main RAM (sierra-build 44337295012's mexec line), so on the PSP those switches leave the copy. The model keeps a `jr $reg` inside its function in the copy. A small share, and in the copy's favour.
 
@@ -46,4 +46,4 @@ The other windows have the same shape (c20: replay 36.3, half of it in the copy;
 
 ## The PSP pair (queued)
 
-w_rc1_tgc90 against w_tgme2m1_tgc90 on b30_leg2 held (seeds 1 and 2, to `exitat130`, where the ME is furthest over), with hwprofile's ME job times by kind as the ME's own clock. The lab's `coord/psp_queue.md` has the command.
+w_rc1_tgc90 against w_tgme2m1_tgc90 on b30_leg2 held (seeds 1 and 2, to `exitat130`, where the ME is furthest over), with hwprofile's ME job times by kind as the ME's own clock. The lab's `projects/sierra/coord/psp_queue.md` has the command.

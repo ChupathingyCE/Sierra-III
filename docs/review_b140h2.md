@@ -39,7 +39,7 @@ Labels: [M] measured on a PSP (which one is named), [E] emulator, [D] read in co
 - **Exits and relaunches:** exitdrain covers the game's own exits, **not HOME** (the callback thread). If quitting through HOME ever freezes, keep the log (`log/NNN_log.txt` holds the last 20 launches).
 - **The menu:** boot to the menu, a level, back to the menu (the return leg is proven in the emulator only).
 - **Fights with aicad3 on**, and the cockpit glass with lodpsp on.
-- **b139's open notes** (the lab's `coord/handoff/b139_hand4_notes.md`): the light-pass door colour, flicker at range, the texture cache short on b30's hilltop / c20's door / a10, the menu ring H2/H15, the motion tracker cross.
+- **b139's open notes** (the lab's `projects/sierra/coord/handoff/b139_hand4_notes.md`): the light-pass door colour, flicker at range, the texture cache short on b30's hilltop / c20's door / a10, the menu ring H2/H15, the motion tracker cross.
 
 ## Not in this build
 

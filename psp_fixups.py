@@ -27830,7 +27830,7 @@ FIXES_RECON["source/cache/xbox_sound_cache.c#soundclass"] = [
 # tick's units of work: objects updated by type, actors updated and
 # perceiving, collision vector and sphere queries, partition relinks, node
 # matrix computes. The pairs name "workcensus", so the desktop hooks
-# (pc/chupa/sierra_hooks.py) carry them to ChupathingyCE's own build: the
+# (shared/rigs/pc/chupa/sierra_hooks.py) carry them to ChupathingyCE's own build: the
 # same counts from the original on the same stretch, so any work the PSP
 # does that the PC doesn't stands out
 FIXES_RECON["source/objects/objects.c#workcensus"] = [
@@ -28467,7 +28467,7 @@ void objects_update(
 ]
 
 # "tickcore" (recon only, with "objtrace" and the emulator's PSP_OBJTRACE_STEP):
-# the two-core tick's census (lab research/opportunities/tick_core.md). The
+# the two-core tick's census (lab projects/sierra/research/opportunities/tick_core.md). The
 # emulator classes each tick load by who last wrote the word this tick, so it
 # needs the tick's start: psp_objtrace[5] counts game_tick's calls. And the
 # AI's think reads its own unit as its own, so while an actor updates the
@@ -51323,7 +51323,7 @@ FIXES_HUHINT["source/objects/objects.c#huhint"] = [
 # why). The engine's cache is resized as each map opens (it's empty then:
 # sound_cache_close let every sound go), and the 5 s report counts the pages
 # the map has, not the boot size
-# ---------- POSEK (lab research/opportunities/posing.md, slices P1
+# ---------- POSEK (lab projects/sierra/research/opportunities/posing.md, slices P1
 # and P3): the node walk after the root reads a per-model plan instead of the model's tag
 # nodes. The old loop reads each node's links from its 156-byte tag entry (a line or two a
 # node, every object every tick) and runs the root's large block in the same loop body; the
@@ -51535,7 +51535,7 @@ void object_compute_node_matrices(
 """),
 ]
 
-# ---------- ONEWALK (lab research/opportunities/collision.md, slice
+# ---------- ONEWALK (lab projects/sierra/research/opportunities/collision.md, slice
 # C1's first step): the level sphere walk always the port's (FIXES_121's surfacetest), never
 # the engine's bsp3d_test_sphere_recursive. The choice by leaves a walk was made on the cache
 # model ("c20 walk at parity" [E]); with two walks in use, a section keeps both resident in
@@ -51557,7 +51557,7 @@ static int psp_one_walk; /* psp_fixups.py (FIXES_ONEWALK) */
  """	if (!psp_surface_test_check && !psp_one_walk && psp_walk_leaves16 <= PSP_SURFACE_DEDUP_LEAVES16)"""),
 ]
 
-# ---------- RLSKIP (lab research/opportunities/maplinks_anatomy_ds.md):
+# ---------- RLSKIP (lab projects/sierra/research/opportunities/maplinks_anatomy_ds.md):
 # a moving object's reconnect to the same clusters, in the same order, skipped: its held
 # disconnect is taken back and its references stay where they are. RECONLIST makes the same
 # reconnect in place, exactly as the engine would (new identifiers, each reference moved to
@@ -52137,7 +52137,7 @@ FIXES_VFPUTRIG["source/math/random_math.c"] = [
 # itself ticks every 10-16 ms, so a counter refreshed at each vertical blank
 # (16.7 ms) keeps the original's resolution. main.c's frame timing reads the
 # clock live (psp_milliseconds_live), as the game paces its ticks by it. The
-# firmware session's split: lab docs/research/syscall_gettickcount_split.md
+# firmware session's split: lab projects/sierra/docs/research/syscall_gettickcount_split.md
 FIXES_TICKCACHE = {}
 FIXES_TICKCACHE["port/linux/src/xbox_kernel.c#tickcache"] = [
 ("""DWORD WINAPI GetTickCount(void)
@@ -53028,7 +53028,7 @@ FIXES_CHUPA090RUNS["source/render/render_particles.c#runs"] = [
 
 
 # ---------- FIXES_ARRAYFULL: the game-state arrays' overflow hook (the lab's
-# coord/briefs/array_overflow_hook.md, the audit's spec; memory relief's step 6
+# projects/sierra/coord/briefs/array_overflow_hook.md, the audit's spec; memory relief's step 6
 # needs it before any array's size is cut). Where a data array finds no free
 # slot (datum_new's NONE) and where an object's block finds no room in the
 # object pool (object_header_new's refusal), one call to psp_platform.c, which
@@ -53112,7 +53112,7 @@ FIXES_DEADXBOX["source/rasterizer/rasterizer_transparent_geometry.c#deadxbox"] =
 ]
 
 # ---------- FIXES_CAPTURE_POSING: the posing box's capture (PSP_CAPTURE=posing;
-# docs/box_posing.md §6b, the lab's research/opportunities/REBUILD.md §5). At
+# docs/box_posing.md §6b, the lab's projects/sierra/research/opportunities/REBUILD.md §5). At
 # object_compute_node_matrices' walk, for each object it poses in a sampled
 # tick, the inputs where the walk starts (after the interpolation) and the
 # old code's outputs where the function returns, through psp/src/psp_capture.c
@@ -53295,7 +53295,7 @@ void object_compute_node_matrices(
 # ---------- FIXES_BOXPOSING: the posing box cut in (on in the campaign build,
 # PSP_BOXPOSING=0 leaves it out; the multiplayer build leaves it out unless
 # PSP_BOXPOSING=1; psp_build.py sets the switch for this script; docs/
-# box_posing.md, "The cut-in"; the lab's research/opportunities/REBUILD.md).
+# box_posing.md, "The cut-in"; the lab's projects/sierra/research/opportunities/REBUILD.md).
 # Where the capture records the box's inputs (after the decode, the overlays,
 # the scale, the type's preprocess and the interpolation), the object goes to
 # psp/src/psp_boxposing.c and the engine's walk, its root block and the
@@ -54101,7 +54101,7 @@ FIXES_BOXPOSING["source/saved games/game_state.c#boxposeb"] = [
 
 
 # ---------- FIXES_ASKCENSUS: the collision service's askers counted (PSP_RECON; keep word "askcensus";
-# the lead 14:42, lab coord/briefs/askers_read.md): every call site the worker's read found
+# the lead 14:42, lab projects/sierra/coord/briefs/askers_read.md): every call site the worker's read found
 # (or-job 43761478863, its citations checked against the port's tree at 6e15022), each
 # asked through psp_ask(site) on its way in, counted by phase (psp/src/psp_askcensus.c). Applied
 # last, so its anchors are the lines as every other group leaves them. An emulator count: exact,

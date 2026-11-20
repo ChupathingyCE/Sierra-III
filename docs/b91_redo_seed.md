@@ -40,7 +40,7 @@ The tick's owed set (B91's v1/v2 on its own branch, `tickowedold`) is left out. 
   - `aimelate7`: play parts at 89 with the fix, 79 the old way.
 
   On the PSP a late job is waited for (`aimewait`), so these happen only past the wait's bound. What remains there is the redo's world, not its seed.
-- **Sheepdog01's recordings no longer track with the fix** (b91m; replayed to their ends with their heads' init, `padplay fixedseed padend`; each checked against his own log, tools/progresscheck.py):
+- **Sheepdog01's recordings no longer track with the fix** (b91m; replayed to their ends with their heads' init, `padplay fixedseed padend`; each checked against his own log, projects/sierra/tools/progresscheck.py):
 
   | Pad | Tock: tracks Sheepdog01 to | Fix: parts from Sheepdog01 at |
   |---|---:|---:|

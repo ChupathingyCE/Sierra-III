@@ -31,7 +31,7 @@ The emulator's D-cache model (16 KB, 2-way, 64-byte lines) gained a clock and th
 | An I-miss costs 64 cycles and waits for a fill in flight | 55–70 cycles [M v7]; **the wait measured** [M, PSP-3000 bench-hw 42086540153, halo_bench16]: an I-miss right behind a fill 141.1 cycles a loop against 88 if it overlapped and 142 if the costs add; 32 cycles into the fill, 156.3 against 121 and ~159. The I-miss itself 68.9 cycles. The model's default (`PSP_DCACHE_IWAIT=1`) was right; `=0` is now only a what-if |
 | Every other instruction costs PPSSPP's estimate (1 cycle; VFPU 2; `div.s` 29) | [E]. Real FPU and VFPU latencies are longer, so real register-only stretches are, if anything, longer than modelled |
 
-The model was checked against a test program (the lab's `psp/emulators/ppsspp/tests/pftest/`). The program runs 2,048 loads per test, and every load misses:
+The model was checked against a test program (the lab's `shared/rigs/emulators/ppsspp/tests/pftest/`). The program runs 2,048 loads per test, and every load misses:
 - A load 80 register-only instructions after its base is written stalls 72 cycles.
 - With `cache 0x1E` right after the base's write, the stall goes away.
 - The same prefetch placed by `PSP_PF_INJECT` scores the same to 0.01%.
@@ -243,6 +243,6 @@ After any of these is built, score it in the model with the build's own cache ru
   ```
 
   It reads several runs as their mean a tick. `--inject` leaves out stretches shorter than `--inject-min` cycles (16), sites whose prefetch would cost more than it hides, and a second placement at the same spot: fills serialize, so it would wait for the first. It needs the ELF of the same build to read the code: the lab's build and a local one match byte for byte (EBOOT `d4de9c76198990c8` for pf123 both ways).
-- **The emulator's switches:** `PSP_DCACHE_TIMING`, `PSP_DCACHE_SITES`, `PSP_PF_INJECT` and `PSP_DCACHE_IWAIT`, on top of `PSP_DCACHE`. They are documented in the lab's `psp/emulators/ppsspp/VARIANTS.md` (item 12).
+- **The emulator's switches:** `PSP_DCACHE_TIMING`, `PSP_DCACHE_SITES`, `PSP_PF_INJECT` and `PSP_DCACHE_IWAIT`, on top of `PSP_DCACHE`. They are documented in the lab's `shared/rigs/emulators/ppsspp/VARIANTS.md` (item 12).
 - **The batch fields:** `pfmap` and `pfinject` (the lab's `batches/README.md`).
 - **Where the emulator patch lives:** the patch went into the lab's `halo-local.patch`, which the runners build. This repo's `tools/ppsspp_local_patches.diff` is the public copy and has trailed the lab's since 2026-10-10 (it lacks items 6–12). The two repos' rules disagree here: this repo's `CLAUDE.md` names `tools/ppsspp_local_patches.diff` as the emulator's patch, and the lab's says emulator patches go in the lab. The lab's is the one in use.

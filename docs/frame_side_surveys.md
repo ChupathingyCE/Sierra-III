@@ -46,11 +46,11 @@ The surveys agree that the cost is in the hand-offs between the CPUs: whole cach
 
 ## 3. Leads from other ports and PSP practice (psppriorart, priorartcheck)
 
-Most of the 20 leads are what the port already does: bone sub-lists, bind blocks, double-buffered lists, stall batching, the ME's jobs, swizzled CLUT textures, slant buckets, LOD for 272 lines. The GE's two-deep call limit, which the job asked to verify first, is already measured (lab, research/gecall). Three leads were new, and the check found:
+Most of the 20 leads are what the port already does: bone sub-lists, bind blocks, double-buffered lists, stall batching, the ME's jobs, swizzled CLUT textures, slant buckets, LOD for 272 lines. The GE's two-deep call limit, which the job asked to verify first, is already measured (lab, projects/sierra/research/gecall). Three leads were new, and the check found:
 
 | Lead | Source | Applies? | Saves |
 |---|---|---|---|
-| **The model's regions and parts walked once a frame and kept for the decal and transparent passes** | BirchWood's Halo CE Vita port, `models.c` ("walked the regions and parts once per pass ... The walk is made once"; GPL-3.0, so its code only with his grant, `research/research_vita.md` R1) | Yes: the engine at the pin walks them once a pass (`models.c` `for (pass = _render_model_pass_solid; pass<=last_pass; pass++)`). RSO already skips the walk for still objects | Main-CPU work; unmeasured: size the walk on b30's moving models first |
+| **The model's regions and parts walked once a frame and kept for the decal and transparent passes** | BirchWood's Halo CE Vita port, `models.c` ("walked the regions and parts once per pass ... The walk is made once"; GPL-3.0, so its code only with his grant, `projects/sierra/research/research_vita.md` R1) | Yes: the engine at the pin walks them once a pass (`models.c` `for (pass = _render_model_pass_solid; pass<=last_pass; pass++)`). RSO already skips the walk for still objects | Main-CPU work; unmeasured: size the walk on b30's moving models first |
 | **Decals of the same key merged into one draw** | The same port, `rasterizer_xbox_decals.c` ("790 decals went out as 25 draws, fading as 180") | Partly: same key and same colour looks exact. Moving the colour into a vertex stream works only for blend 1, since blend 2's texture-env constant comes from the colour | Part of b30's 8.4 ms of decal CPU work in the GE layer (`ge_audit.md`); the split between state and the per-quad loop isn't known |
 | **The GE's bounding-box test (BBOX)** | pspsdk, `psp_hardware_reference.md` | No: it saves GE time only, the GE idles 50-77%, and `ge_audit.md` already ruled it small | Nothing on the bound lanes |
 

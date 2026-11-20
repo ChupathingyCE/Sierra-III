@@ -1,6 +1,6 @@
 # The far level as one part (the GE lists and forms box, its first far form)
 
-The builder's page, 2026-11-12. It covers the lab's `research/opportunities/drawing_sizing.md`, "The order" item 2, and §1-§5 of "The far tiers fleshed out". The lead's ready list (`coord/sessions/lead.md` §3b) puts it first for the builder, then D1's sprites. Labels: [M] measured on the PSP, [E] emulator or estimate, [D] read in code or data, [U] inference.
+The builder's page, 2026-11-12. It covers the lab's `projects/sierra/research/opportunities/drawing_sizing.md`, "The order" item 2, and §1-§5 of "The far tiers fleshed out". The lead's ready list (`projects/sierra/coord/sessions/lead.md` §3b) puts it first for the builder, then D1's sprites. Labels: [M] measured on the PSP, [E] emulator or estimate, [D] read in code or data, [U] inference.
 
 ## What it is
 
@@ -141,6 +141,6 @@ The slices are priced alone on the PSP before integration, per REBUILD.md §5: a
 
 ## Sources
 
-- The lab's `research/opportunities/drawing_sizing.md`: "The order", "The far tiers fleshed out" §1-§5, and the census rows named.
+- The lab's `projects/sierra/research/opportunities/drawing_sizing.md`: "The order", "The far tiers fleshed out" §1-§5, and the census rows named.
 - `docs/sspr_bake.md` (the bake's pattern, meshoptimizer: Arseny Kapoulkine, MIT, vendored and credited).
 - REBUILD.md §3 and §5 (budgets, standalone prices).
