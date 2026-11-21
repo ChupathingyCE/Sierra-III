@@ -61,6 +61,7 @@ The table (32-bit words, all offsets in bytes):
   per immediate patch: the word's place, its new low 16 bits;
   per jump table: its place, its words, then the words (eDRAM addresses).
 """
+import bisect
 import re
 import struct
 import sys
@@ -268,14 +269,34 @@ def build(elf, names, log, entry="psp_ge_me_replay", fill=False, max_words=None)
             lo = mid
         else:
             hi = mid
-    log("mexec: @fill: the list cut after %d of its %d functions (the first left in main RAM: %s)" % (
-        lo, len(chosen), chosen[lo]["name"]))
+    try:
+        words = lay(elf, chosen[:lo + 1], lambda line: None)
+        why = "the table, %d words of %d" % (len(words), max_words)
+    except Over as e:
+        why = str(e)[len("mexec: "):]
+    log("mexec: @fill: the list cut after %d of its %d functions (the first left in main RAM: %s; with it, %s)" % (
+        lo, len(chosen), chosen[lo]["name"], why))
     return lay(elf, chosen[:lo], log)
 
 
 def lay(elf, chosen, log):
+    # a branch out of its own function (to a .cold part, say) goes through a
+    # trampoline after the code, and a branch reaches only 128 KB: the functions
+    # holding one are placed last, so a copy past 128 KB still reaches them.
+    # Placement only; the table keeps the list's order
+    ranges = sorted((f["value"], f["value"] + f["size"]) for f in chosen)
+    leaving = set()
+    for site, typ in elf.relocations(".text"):
+        if typ != R_MIPS_PC16:
+            continue
+        k = bisect.bisect_right(ranges, (site, 0xFFFFFFFF)) - 1
+        if k < 0 or not ranges[k][0] <= site < ranges[k][1]:
+            continue
+        target = site + 4 + (sext16(elf.word(site) & 0xFFFF) << 2)
+        if not ranges[k][0] <= target < ranges[k][1]:
+            leaving.add(ranges[k][0])
     place, at = {}, 0
-    for f in chosen:
+    for f in [g for g in chosen if g["value"] not in leaving] + [g for g in chosen if g["value"] in leaving]:
         at = (at + ALIGN - 1) // ALIGN * ALIGN
         place[f["value"]] = at
         at += f["size"]
