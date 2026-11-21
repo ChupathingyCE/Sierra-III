@@ -122,6 +122,13 @@ p is an exact count: the emulator batch below gives it (`vehfxgroup:` line, "dec
   4. Strict (`-i`) on the `vehfxgroup` side.
 - **The PSP** [M]: one pair on the drive stretch, `- | vehfxgroup`, repeat 2 (the builder's Ready line). It reads the drawing's decal share and the frame. The counts come from the emulator.
 
+### 5.1 The emulator proof (2026-11-21) [E; the lab's findings `vehfx_group_identity`]
+
+- **Exact:** on b40_leg1 to 660 s, `vehfxgroupcheck` walked 1,360,661 members of groups that tested out; today's test drew none of them and no walk left a group's path.
+- **Play and seeds:** identical at all 19,800 ticks, the word off against on, seeds 1 and 2.
+- **The whole-state hash** differs on `objects` and sometimes `particle`, from ticks 726-1,217. That comes from the run's timing, not the grouping: the check run draws exactly as the word off does, yet parts from it at the same tick and checkpoints. The decal allocations are identical at all 660 checkpoints in every pair, and `objects` and `particle` are the set known to move with the emulator's speed (review_prs.md, review_b123_flags.md) [D].
+- **The pass-over share on the drive:** 417-731 decals passed over a frame, against ~810-1,200 tested (`vehfx_decal_count`), so p ≈ 0.55 [E]. That's under the ~0.75 §4 needs for the 1 ms budget, so slice 2 is likely needed; the PSP pair prices it.
+
 ## 6. Next
 
 - Slice 2, the walked decals: the per-decal sphere test's sums made once a view (`side_x`, `side_y` and the half-angles are worked out each call today), and the kept spheres packed by slot. This is exact. It is the cost left once p is known.
