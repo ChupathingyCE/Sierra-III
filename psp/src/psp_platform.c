@@ -1233,6 +1233,12 @@ static const struct
 	-2.2 ms in the flight, -4.4 ms landing on the PSP-3000 (sierra-hw
 	40845560977) */
 	{ "mevisland", "mevislandoff" },
+	/* one more audio block ahead of the speaker, so the ME's replay isn't cut
+	to mix audio at its looks (psp_dsound.c, psp_me.c; 23 ms more delay,
+	Sheepdog01 2026-11-20): the replay -2.0 ms a job; b30's fight frame -0.6%,
+	the ticks and c20 in the noise, no more late blocks (sierra-hw 44880562683,
+	44886658462); plays the same */
+	{ "audiohold", "audioholdoff" },
 	/* the ME's model parts leave out the lighting and texture binds the GE
 	already has (psp_ge.c, mememo), and its geometry cache finds blocks in the
 	sorted index read-only (psp_geo.c, geoindexme): both exact; b30 on the
