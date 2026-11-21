@@ -99,6 +99,14 @@ largest term, bands 2^-10 .. 2^-18 of it; and the corners whose byte
 weights don't sum to 128 (the plane's affine term moves with the sum) */
 static unsigned long nearband_rel[NEARBAND_BANDS], nearband_weight_off;
 static float nearband_most_term;
+/* the bake's size (the lead 2026-11-21 02:0x): the skinned parts ever drawn
+near, keyed by their vertex buffer, each with the highest corner index the
+loop reached (+1: its vertices, at least) and its record's stride, over the
+whole run: a fixed-point copy of their positions would cost 12 bytes a
+vertex */
+#define NEARBAND_PARTS 1024
+static struct { const void *vertices; unsigned int vertex_count, stride; } nearband_part[NEARBAND_PARTS];
+static unsigned int nearband_parts, nearband_parts_full;
 static float nearband_most_depth;
 #endif
 static inline unsigned int probe_clock(void)
@@ -3710,6 +3718,19 @@ static void __attribute__((noinline, cold)) ge_kinds_report(void)
 		platform_log("GE: nearband: %.1f corner verdicts a frame; within 2^-6 of a tested plane %.1f, 2^-8 %.1f, 2^-10 %.1f, 2^-12 %.1f, 2^-14 %.1f; the deepest corner %.2f units",
 			nearband_verdicts / f, nearband_in[0] / f, nearband_in[1] / f, nearband_in[2] / f, nearband_in[3] / f, nearband_in[4] / f,
 			(double)nearband_most_depth);
+		{
+			unsigned long vertices_total = 0, record_bytes = 0;
+			unsigned int h;
+
+			for (h = 0; h < NEARBAND_PARTS; h++)
+				if (nearband_part[h].vertices)
+				{
+					vertices_total += nearband_part[h].vertex_count;
+					record_bytes += (unsigned long)nearband_part[h].vertex_count * nearband_part[h].stride;
+				}
+			platform_log("GE: nearband parts: %u skinned parts drawn near so far (by vertex buffer; %u not held), %lu vertices, their records %lu KB; a fixed-point copy of their positions %lu KB",
+				nearband_parts, nearband_parts_full, vertices_total, record_bytes / 1024, vertices_total * 12 / 1024);
+		}
 		platform_log("GE: nearband terms: against its largest slot term, within 2^-10 %.1f, 2^-12 %.1f, 2^-14 %.1f, 2^-16 %.1f, 2^-18 %.1f a frame; weights not summing to 128 %.1f; the largest term %.2f units",
 			nearband_rel[0] / f, nearband_rel[1] / f, nearband_rel[2] / f, nearband_rel[3] / f, nearband_rel[4] / f,
 			nearband_weight_off / f, (double)nearband_most_term);
@@ -16276,6 +16297,27 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 								e = fabsf(guard_y * at[2] - at[1]) / guard_y_length; if (e < d) d = e;
 								e = fabsf(guard_y * at[2] + at[1]) / guard_y_length; if (e < d) d = e;
 								nearband_verdicts++;
+								{
+									unsigned int h = ((unsigned int)vertices >> 4) & (NEARBAND_PARTS - 1), probe;
+
+									for (probe = 0; probe < NEARBAND_PARTS; probe++, h = (h + 1) & (NEARBAND_PARTS - 1))
+									{
+										if (!nearband_part[h].vertices)
+										{
+											nearband_part[h].vertices = vertices;
+											nearband_part[h].stride = (unsigned int)skin->stride;
+											nearband_parts++;
+										}
+										if (nearband_part[h].vertices == vertices)
+										{
+											if ((unsigned int)draw[t + k] + 1u > nearband_part[h].vertex_count)
+												nearband_part[h].vertex_count = (unsigned int)draw[t + k] + 1u;
+											break;
+										}
+									}
+									if (probe == NEARBAND_PARTS)
+										nearband_parts_full++;
+								}
 								for (b = 0; b < NEARBAND_BANDS; b++, width *= 0.25f)
 									if (d < width)
 										nearband_in[b]++;
