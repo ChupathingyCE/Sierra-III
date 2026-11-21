@@ -11646,6 +11646,10 @@ their direction) and puts shared corners of parts with one step on the same
 lattice point. First-person parts, the sky and see-through parts stay in
 floats: the first are seen closest, the last are read on the CPU */
 static int model14 = -1;
+/* "bakedonce": a part's place in the geometry cache is asked once, by
+psp_ge_draw_model, and handed to model_convert. Read on the main CPU with
+model14; under 0 (not read yet) counts as off */
+static int baked_once = -1;
 /* "skinwoff": every bending batch drawn at its part's slot count, as before.
 By default each draws at its own highest slot in use: the GE blends every
 weight a draw declares, zeros included, at ~60 ns a weight a vertex, and the
@@ -11769,6 +11773,11 @@ void psp_ge_model_begin(const float *node_matrices, int node_matrix_count, float
 	{
 		skinw_off = psp_keep("skinwoff");
 		sceKernelDcacheWritebackRange(&skinw_off, sizeof(skinw_off));
+	}
+	if (baked_once < 0 && !psp_on_me())
+	{
+		baked_once = psp_keep("bakedonce") != 0;
+		sceKernelDcacheWritebackRange(&baked_once, sizeof(baked_once));
 	}
 	if (DEFER_RECORDING() &&
 		defer_model_begin(node_matrices, node_matrix_count, u_scale, v_scale, ambient, light_count, light0, light1))
@@ -13751,7 +13760,7 @@ static void convert_records(void *vertices, int count, int uncompressed, struct 
 }
 
 static int model_convert(void *vertices, int count, int uncompressed, const unsigned short *indices, int index_count,
-	int strip, struct skin_part **skin)
+	int strip, struct skin_part **skin, const struct pcv_header *asked, int have_asked)
 {
 	unsigned int slot = ((unsigned int)vertices >> 4) % CONVERTED_BUFFERS, tries = 0;
 	int index;
@@ -13764,7 +13773,9 @@ static int model_convert(void *vertices, int count, int uncompressed, const unsi
 	convert_k = 0.0f;
 	if (psp_pcv_on)
 	{
-		const struct pcv_header *baked = psp_geo_baked(vertices);
+		/* have_asked: the caller asked psp_geo_baked for these vertices and
+		nothing since could have moved the answer */
+		const struct pcv_header *baked = have_asked ? asked : psp_geo_baked(vertices);
 
 		if (baked)
 			return pcv_answer(baked, count, uncompressed, index_count, strip, skin);
@@ -14006,6 +14017,13 @@ static int model_convert(void *vertices, int count, int uncompressed, const unsi
 		vm_note(vertices, (unsigned int)(count * stride)); /* vrammodels: a copy may go to VRAM */
 	}
 	return 1;
+}
+
+/* the callers that haven't asked psp_geo_baked themselves */
+static int model_convert_ask(void *vertices, int count, int uncompressed, const unsigned short *indices, int index_count,
+	int strip, struct skin_part **skin)
+{
+	return model_convert(vertices, count, uncompressed, indices, index_count, strip, skin, NULL, 0);
 }
 
 /* "preconvertcheck": a baked block against the run-time conversion of its
@@ -16718,7 +16736,7 @@ static void pass_words(void)
 
 static void psp_ge_draw_model_body(void *vertices, int vertex_count, int uncompressed, const unsigned short *indices,
 	long index_count, int strip, unsigned int color, unsigned int base_key, float u_scale, float v_scale,
-	int alpha_tested)
+	int alpha_tested, const struct pcv_header *asked, int have_asked)
 {
 	ScePspFMatrix4 model;
 	/* "nobackpass" (recon): a two-sided part's back faces left out */
@@ -16746,7 +16764,7 @@ static void psp_ge_draw_model_body(void *vertices, int vertex_count, int uncompr
 	part_start();
 	part_k14 = 0.0f;
 	convert_float_only = model_first_person || in_sky;
-	if (!model_convert(vertices, vertex_count, uncompressed, indices, (int)index_count, strip, &skin))
+	if (!model_convert(vertices, vertex_count, uncompressed, indices, (int)index_count, strip, &skin, asked, have_asked))
 		return;
 	part_k14 = convert_k;
 	part_add(4);
@@ -17226,6 +17244,10 @@ void psp_ge_draw_model(void *vertices, int vertex_count, int uncompressed, const
 	int alpha_tested)
 {
 	const struct pcv_header *level = vertices ? psp_geo_baked(vertices) : NULL;
+	/* "bakedonce": whether that answer still stands when the part is drawn
+	below. The pretouch can park and sync the frame in flight and convert the
+	part, any of which may move it, so a part that goes that way asks again */
+	int level_stands = baked_once > 0;
 
 	/* SSPR: a level the bake made (psp_geo.c locked it for the level the
 	engine picked) draws its own triangle list, after its records */
@@ -17254,6 +17276,8 @@ void psp_ge_draw_model(void *vertices, int vertex_count, int uncompressed, const
 		{
 			struct skin_part *skin;
 
+			level_stands = 0;
+
 			if (inflight_room_away)
 				inflight_room_park();
 			if (inflight_pending)
@@ -17261,7 +17285,7 @@ void psp_ge_draw_model(void *vertices, int vertex_count, int uncompressed, const
 			if (!pretouch_me_busy())
 			{
 				model_pretouches++;
-				if (!model_convert(vertices, vertex_count, uncompressed, indices, (int)index_count, strip, &skin))
+				if (!model_convert_ask(vertices, vertex_count, uncompressed, indices, (int)index_count, strip, &skin))
 					model_pretouch_missed++;
 			}
 		}
@@ -17273,7 +17297,8 @@ void psp_ge_draw_model(void *vertices, int vertex_count, int uncompressed, const
 
 	ge_category = GE_SKIP_MODELS;
 	model_part_calls++;
-	psp_ge_draw_model_body(vertices, vertex_count, uncompressed, indices, index_count, strip, color, base_key, u_scale, v_scale, alpha_tested);
+	psp_ge_draw_model_body(vertices, vertex_count, uncompressed, indices, index_count, strip, color, base_key, u_scale, v_scale, alpha_tested,
+		level, level_stands);
 	ge_category = 0;
 	ge_entry_us[1] += ge_clock() - start;
 }
@@ -18815,7 +18840,7 @@ static void psp_ge_queue_transparent_body(void *vertices, int vertex_count, int 
 	int clut_count = 0;
 
 	if (!frame_open || index_count < 3 || !vertices || !indices || !model_nodes || model_node_count <= 0 ||
-		vertex_count <= 0 || !model_convert(vertices, vertex_count, uncompressed, NULL, 0, 0, NULL))
+		vertex_count <= 0 || !model_convert_ask(vertices, vertex_count, uncompressed, NULL, 0, 0, NULL))
 		return;
 	part_k14 = 0.0f;
 	if (transparent_full())
@@ -26706,7 +26731,7 @@ static void frame_end_show(void)
 				struct skin_part *plan;
 
 				convert_float_only = converts_wanted[k].float_only;
-				model_convert(converts_wanted[k].vertices, converts_wanted[k].count, converts_wanted[k].uncompressed,
+				model_convert_ask(converts_wanted[k].vertices, converts_wanted[k].count, converts_wanted[k].uncompressed,
 					converts_wanted[k].indices, converts_wanted[k].index_count, converts_wanted[k].strip,
 					converts_wanted[k].skin ? &plan : NULL);
 			}
