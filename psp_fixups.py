@@ -54100,6 +54100,165 @@ FIXES_BOXPOSING["source/saved games/game_state.c#boxposeb"] = [
 
 
 
+# ---------- FIXES_BAKECOUNTS: three counts that size bakes of level-only answers (PSP_RECON;
+# keep words "pvscount", "shadowcount", "lightcount"; the lab's new_ground_bake brief, its
+# Ruling): the eye-region PVS against the portal walk's hull tests, the blob shadows' still
+# casters against structure_render_shadow's calls, and the dynamic lights' passes and light
+# draws by still and moving light (psp/src/psp_bakecounts.c). Applied last, so its anchors are
+# the lines as every other group leaves them. Every hook is on the main CPU: the two in
+# structure_visibility.c reach the ME's copies of the walk as nothing (MEVIS_STATE below)
+FIXES_BAKECOUNTS = {}
+FIXES_BAKECOUNTS["source/structures/structure_visibility.c#pvscount"] = [
+("""#define PSP_PORTAL_STEPS 160
+""", """#define PSP_PORTAL_STEPS 160
+#ifdef PSP_RECON
+/* psp_bakecounts.c ("pvscount"): the main CPU's walk only */
+void psp_pvscount_portal(short neighbor);
+void psp_pvscount_view(long eye_cluster, const float *eye, const float *forward, const unsigned long *visible,
+	const unsigned long *pvs, long cluster_count, int fallback);
+#endif
+"""),
+# a hull worked out for a neighbour the PVS passes: what a finer set could refuse
+("""			BIT_VECTOR_TEST_FLAG(cluster_pvs, neighbor_cluster_index))
+		{
+			struct portal_hull portal_hull;
+""", """			BIT_VECTOR_TEST_FLAG(cluster_pvs, neighbor_cluster_index))
+		{
+#ifdef PSP_RECON
+			psp_pvscount_portal(neighbor_cluster_index); /* psp_fixups.py (FIXES_BAKECOUNTS, pvscount) */
+#endif
+			struct portal_hull portal_hull;
+"""),
+# the walk's answer, before a fallback replaces it with the whole PVS
+("""	psp_pvs_fallback = psp_portal_steps > PSP_PORTAL_STEPS;
+""", """	psp_pvs_fallback = psp_portal_steps > PSP_PORTAL_STEPS;
+#ifdef PSP_RECON
+	/* psp_fixups.py (FIXES_BAKECOUNTS, pvscount) */
+	if (!structures_use_pvs_for_vs)
+		psp_pvscount_view(render.cluster_index, &render.camera.position.x, &render.camera.forward.i,
+			render.visible_cluster_flags,
+			render.cluster_index != NONE ? structure_bsp_get_cluster_pvs(structure, (short)render.cluster_index) : NULL,
+			structure->clusters.count, psp_pvs_fallback);
+#endif
+"""),
+]
+FIXES_BAKECOUNTS["source/render/render_objects.c#shadowcount"] = [
+("""	profile_enter(render_object_shadows_section);
+
+	if (render_shadows
+""", """	profile_enter(render_object_shadows_section);
+#ifdef PSP_RECON
+	{
+		void psp_shadowcount_frame(void); /* psp_fixups.py (FIXES_BAKECOUNTS, shadowcount) */
+
+		psp_shadowcount_frame();
+	}
+#endif
+
+	if (render_shadows
+"""),
+("""	structure_render_shadow(
+		&data->shadow_matrix.position,
+""", """#ifdef PSP_RECON
+	{
+		/* psp_fixups.py (FIXES_BAKECOUNTS, shadowcount): the caster and its volume */
+		int psp_shadowcount_on(void);
+		void psp_shadowcount_begin(long object_index, int type, const unsigned long *matrix, long words, float radius);
+
+		if (psp_shadowcount_on())
+			psp_shadowcount_begin(data->object_index, object_get(data->object_index)->object.type,
+				(const unsigned long *)&data->shadow_matrix, (long)(sizeof(data->shadow_matrix) / sizeof(unsigned long)),
+				data->shadow_bounding_radius);
+	}
+#endif
+	structure_render_shadow(
+		&data->shadow_matrix.position,
+"""),
+]
+FIXES_BAKECOUNTS["source/structures/structure_render.c#shadowcount"] = [
+("""		bounding_surfaces,
+		0,
+		NULL);
+
+	dynamic_triangles_index = structure_render_build_dynamic_triangles(
+""", """		bounding_surfaces,
+		0,
+		NULL);
+#ifdef PSP_RECON
+	{
+		void psp_shadowcount_surfaces(long surface_count); /* psp_fixups.py (FIXES_BAKECOUNTS, shadowcount) */
+
+		psp_shadowcount_surfaces(surface_count);
+	}
+#endif
+
+	dynamic_triangles_index = structure_render_build_dynamic_triangles(
+"""),
+]
+FIXES_BAKECOUNTS["source/objects/object_lights.c#lightcount"] = [
+("""	port_dynamic_lights_choose();
+
+	rasterizer_environment_diffuse_lights_begin();
+""", """	port_dynamic_lights_choose();
+#ifdef PSP_RECON
+	{
+		void psp_lightcount_frame(int start); /* psp_fixups.py (FIXES_BAKECOUNTS, lightcount) */
+
+		psp_lightcount_frame(1);
+	}
+#endif
+
+	rasterizer_environment_diffuse_lights_begin();
+"""),
+("""				light_port_drawn_center(light, &center);
+				structure_render_diffuse_light(
+""", """				light_port_drawn_center(light, &center);
+#ifdef PSP_RECON
+				{
+					/* psp_fixups.py (FIXES_BAKECOUNTS, lightcount): the light, what carries it, its sphere and clusters */
+					int psp_lightcount_on(void);
+					void psp_lightcount_light(long light_index, int type, const float *center, float radius,
+						short cluster_count, const short *clusters);
+
+					if (psp_lightcount_on())
+					{
+						struct object_datum *carrier = light->object_index != NONE ? object_try_and_get(light->object_index) : NULL;
+
+						psp_lightcount_light(lights_globals.scene_point_lights[light_index], carrier ? carrier->object.type : -1,
+							&center.x, radius, cluster_count, skip_clusters ? NULL : cluster_indices);
+					}
+				}
+#endif
+				structure_render_diffuse_light(
+"""),
+("""	rasterizer_environment_diffuse_lights_end();
+""", """#ifdef PSP_RECON
+	{
+		void psp_lightcount_frame(int start); /* psp_fixups.py (FIXES_BAKECOUNTS, lightcount) */
+
+		psp_lightcount_frame(0);
+	}
+#endif
+	rasterizer_environment_diffuse_lights_end();
+"""),
+]
+FIXES_BAKECOUNTS["source/rasterizer/rasterizer.c#lightcount"] = [
+("""			psp_environment_light(dynamic_triangle_buffer_index, first_triangle_index, triangle_count, vertex_buffer,
+				base_key);
+""", """#ifdef PSP_RECON
+			{
+				void psp_lightcount_draw(long triangle_count); /* psp_fixups.py (FIXES_BAKECOUNTS, lightcount) */
+
+				psp_lightcount_draw(triangle_count);
+			}
+#endif
+			psp_environment_light(dynamic_triangle_buffer_index, first_triangle_index, triangle_count, vertex_buffer,
+				base_key);
+"""),
+]
+
+
+
 # ---------- FIXES_ASKCENSUS: the collision service's askers counted (PSP_RECON; keep word "askcensus";
 # the lead 14:42, lab projects/sierra/coord/briefs/askers_read.md): every call site the worker's read found
 # (or-job 43761478863, its citations checked against the port's tree at 6e15022), each
@@ -56983,7 +57142,7 @@ static void update_potentially_audible_looping_sound(
 		{"""),
 ]
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_SSPR.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + list(FIXES_CHUPA090RUNS.items()) + list(FIXES_HEAPTRIM.items()) + list(FIXES_B78.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items()) + list(FIXES_AIME2A.items()) + list(FIXES_REDOSEED.items()) + (list(FIXES_STACKHOT.items()) if STACKHOT else []) + (list(FIXES_STACKHOT2.items()) if STACKHOT2 else []) + list(FIXES_PWSL.items()) + list(FIXES_SPHSL.items()) + list(FIXES_RECONLIST.items()) + list(FIXES_TP1.items()) + list(FIXES_WXDEAD.items()) + list(FIXES_AIMEMOVE.items()) + list(FIXES_PROPCRASH.items()) + list(FIXES_APCPOOL.items()) + list(FIXES_PSPTLS.items()) + list(FIXES_SNDEDRAM.items()) + list(FIXES_LIGHTFIRST.items()) + list(FIXES_DRAWPART.items()) + (list(FIXES_RECONLATE.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + list(FIXES_P2PASS.items()) + (list(FIXES_P2CENSUS.items()) if P2CENSUS else []) + list(FIXES_OBSRAY.items()) + list(FIXES_SNDWAIT.items()) + list(FIXES_FLAMEDECAL.items()) + list(FIXES_HUHINT.items()) + list(FIXES_DBLSOFT.items()) + list(FIXES_VFPUTRIG.items()) + list(FIXES_TICKCACHE.items()) + list(FIXES_STRICTALIAS.items()) + list(FIXES_SNDPERMAP.items()) + list(FIXES_RLOOP.items()) + list(FIXES_L10.items()) + list(FIXES_RLSKIP.items()) + list(FIXES_ONEWALK.items()) + (list(FIXES_POSEK.items()) if POSEK else []) + (list(FIXES_SNDSTREAM.items()) if os.environ.get("PSP_SNDSTREAM", "") == "1" else []) + list(FIXES_MOUTHCLOCK.items()) + list(FIXES_LSAME.items()) + list(FIXES_CHUPA090.items()) + list(FIXES_V091A.items()) + list(FIXES_AIDEBUGREC.items()) + (list(FIXES_AITICKOLD.items()) if AITICKOLD else []) + (list(FIXES_PADPATH.items()) if os.environ.get("PSP_PADPATH", "") == "1" else []) + list(FIXES_FARLEVEL.items()) + list(FIXES_DECALRING.items()) + list(FIXES_ARRAYFULL.items()) + (list(FIXES_DEADXBOX.items()) if DEADXBOX else []) + (list(FIXES_CAPTURE_POSING.items()) if CAPTURE == "posing" else []) + (list(FIXES_BOXPOSING.items()) if BOXPOSING else []) + (list(FIXES_ASKCENSUS.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + (list(FIXES_CAPTURE_SWEEP.items()) if CAPTURE == "sweep" else []) + (list(FIXES_BIPEDSTAGE.items()) if BIPEDSTAGE else []) + (list(FIXES_WSOLD.items()) if WSOLD else []) + (list(FIXES_SWEEPME.items()) if SWEEPME else []) + list(FIXES_B98.items()) + list(FIXES_SOUNDGAMETIME.items())):
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_SSPR.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + list(FIXES_CHUPA090RUNS.items()) + list(FIXES_HEAPTRIM.items()) + list(FIXES_B78.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items()) + list(FIXES_AIME2A.items()) + list(FIXES_REDOSEED.items()) + (list(FIXES_STACKHOT.items()) if STACKHOT else []) + (list(FIXES_STACKHOT2.items()) if STACKHOT2 else []) + list(FIXES_PWSL.items()) + list(FIXES_SPHSL.items()) + list(FIXES_RECONLIST.items()) + list(FIXES_TP1.items()) + list(FIXES_WXDEAD.items()) + list(FIXES_AIMEMOVE.items()) + list(FIXES_PROPCRASH.items()) + list(FIXES_APCPOOL.items()) + list(FIXES_PSPTLS.items()) + list(FIXES_SNDEDRAM.items()) + list(FIXES_LIGHTFIRST.items()) + list(FIXES_DRAWPART.items()) + (list(FIXES_RECONLATE.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + list(FIXES_P2PASS.items()) + (list(FIXES_P2CENSUS.items()) if P2CENSUS else []) + list(FIXES_OBSRAY.items()) + list(FIXES_SNDWAIT.items()) + list(FIXES_FLAMEDECAL.items()) + list(FIXES_HUHINT.items()) + list(FIXES_DBLSOFT.items()) + list(FIXES_VFPUTRIG.items()) + list(FIXES_TICKCACHE.items()) + list(FIXES_STRICTALIAS.items()) + list(FIXES_SNDPERMAP.items()) + list(FIXES_RLOOP.items()) + list(FIXES_L10.items()) + list(FIXES_RLSKIP.items()) + list(FIXES_ONEWALK.items()) + (list(FIXES_POSEK.items()) if POSEK else []) + (list(FIXES_SNDSTREAM.items()) if os.environ.get("PSP_SNDSTREAM", "") == "1" else []) + list(FIXES_MOUTHCLOCK.items()) + list(FIXES_LSAME.items()) + list(FIXES_CHUPA090.items()) + list(FIXES_V091A.items()) + list(FIXES_AIDEBUGREC.items()) + (list(FIXES_AITICKOLD.items()) if AITICKOLD else []) + (list(FIXES_PADPATH.items()) if os.environ.get("PSP_PADPATH", "") == "1" else []) + list(FIXES_FARLEVEL.items()) + list(FIXES_DECALRING.items()) + list(FIXES_ARRAYFULL.items()) + (list(FIXES_DEADXBOX.items()) if DEADXBOX else []) + (list(FIXES_CAPTURE_POSING.items()) if CAPTURE == "posing" else []) + (list(FIXES_BOXPOSING.items()) if BOXPOSING else []) + (list(FIXES_ASKCENSUS.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + (list(FIXES_BAKECOUNTS.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + (list(FIXES_CAPTURE_SWEEP.items()) if CAPTURE == "sweep" else []) + (list(FIXES_BIPEDSTAGE.items()) if BIPEDSTAGE else []) + (list(FIXES_WSOLD.items()) if WSOLD else []) + (list(FIXES_SWEEPME.items()) if SWEEPME else []) + list(FIXES_B98.items()) + list(FIXES_SOUNDGAMETIME.items())):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 # PSP_FRAMEPIC (docs/frame_picture.md): game.c's perf statements are
 # stripped before its anchors are matched (PERF_STRIP), which took the tick's
@@ -57269,6 +57428,13 @@ static struct rendered_cluster *psp_mv_rendered_cluster_get(short rendered_clust
 	return &psp_mv->render.rendered_clusters[rendered_cluster_index];
 }
 """
+
+# pvscount's hooks (FIXES_BAKECOUNTS) count the main CPU's walk only: in the ME's
+# copies they are nothing, so the ME reaches none of the census's tables
+if os.environ.get("PSP_RECON", "") == "1":
+    MEVIS_STATE["psp_pvscount_portal"] = "psp_mv_pvscount"
+    MEVIS_STATE["psp_pvscount_view"] = "psp_mv_pvscount"
+    MEVIS_HEAD += "#define psp_mv_pvscount(...) ((void)0) /* pvscount: the main CPU's walk only */\n"
 
 MEVIS_TAIL = r"""
 static void psp_mv_structure_visibility_traverse_cluster(

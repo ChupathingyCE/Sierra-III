@@ -2194,6 +2194,7 @@ void psp_ge_census_start(void);
 void psp_tex_recon_start(void);
 void psp_me_bus_start(void);
 void psp_nodereaders_start(void); /* psp_fixups.py, FIXES_RECON #nodereaders */
+void psp_bakecounts_start(void); /* psp_bakecounts.c */
 
 void psp_recon_tables_start(void)
 {
@@ -2210,6 +2211,7 @@ void psp_recon_tables_start(void)
 	psp_tex_recon_start();
 	psp_me_bus_start();
 	psp_nodereaders_start();
+	psp_bakecounts_start();
 }
 
 static void recon_counters_report(SceUID file, double seconds, unsigned long frames, unsigned long ticks)
