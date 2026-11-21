@@ -57012,7 +57012,11 @@ FIXES_DIET1["source/objects/objects.c#objlean"] = [
  """#ifdef HALO_PSP
 /* psp_fixups.py (FIXES_DIET1, OBJLEAN): object_update's short form. The same
 calls in the same order as the general function below with hoistold off; its
-statistics (the per-type clocks and accounts, the bslc census) are left out */
+statistics (the per-type clocks and accounts, the bslc census) are left out,
+and two callees that look up the object and its definition again are given
+them (damage.c's object_damage_update_with) or have their first tests made
+here (object_postprocess_node_matrices) */
+void object_damage_update_with(long object_index, struct object_datum *object, struct object_definition *object_definition);
 static boolean psp_object_update_lean(
 	long object_index)
 {
@@ -57048,7 +57052,8 @@ static boolean psp_object_update_lean(
 		object_type_update_for_type(object->object.type, object_index);
 		if (object_definition->object.collision_model.index!=NONE)
 		{
-			object_damage_update(object_index);
+			/* the object and its definition handed down: object_damage_update looks both up again */
+			object_damage_update_with(object_index, object, object_definition);
 		}
 		if (!psp_ep_defer(object_index, object))
 		{
@@ -57096,10 +57101,30 @@ static boolean psp_object_update_lean(
 		}
 
 		/* post-processing works on the pose in place, so it runs only on a
-		pose just made */
+		pose just made. object_postprocess_node_matrices' own tests, made here
+		on what this function already holds: it looks the object and its
+		definition up again, and returns at once for everything but a unit */
 		if (!psp_pose_skipped)
 		{
-			object_postprocess_node_matrices(object_index);
+			if (!TEST_FLAG(_object_mask_unit, object->object.type))
+			{
+				if (PSP_KEEP_ONCE("postgateold"))
+					object_postprocess_node_matrices(object_index);
+			}
+			else if (object_definition->object.model.index!=NONE &&
+				object_definition->object.animation_graph.index != NONE)
+			{
+				real_matrix4x3 *matrices = (real_matrix4x3 *)object_header_block_get(
+						object_index,
+						&object->object.node_matrices);
+#ifdef PSP_BOX_POSING
+				psp_boxb_in_ik = 1;
+#endif
+				object_type_postprocess_node_matrices_for_type(object->object.type, object_index, matrices);
+#ifdef PSP_BOX_POSING
+				psp_boxb_in_ik = 0;
+#endif
+			}
 		}
 	}
 
@@ -57119,6 +57144,47 @@ static boolean object_update(
 """),
 ]
 
+
+# OBJLEAN's other half: object_damage_update's body takes the object and its
+# definition from its caller. The function everyone else calls looks them up
+# and hands them on, as before; object_update's short form hands on its own.
+FIXES_DIET1["source/objects/damage.c#objlean"] = [
+("""void object_damage_update(
+	long object_index)
+{
+	struct object_datum *object = object_get(object_index);
+	struct object_definition *object_definition =
+		object_definition_get(object->definition_index);
+	long collision_model_index = object_definition->object.collision_model.index;
+""",
+ """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_DIET1, OBJLEAN): the update given the object and its
+definition; object_damage_update below looks them up for every other caller */
+void object_damage_update_with(long object_index, struct object_datum *object, struct object_definition *object_definition);
+void object_damage_update(
+	long object_index)
+{
+	struct object_datum *object = object_get(object_index);
+
+	object_damage_update_with(object_index, object, object_definition_get(object->definition_index));
+}
+
+void object_damage_update_with(
+	long object_index,
+	struct object_datum *object,
+	struct object_definition *object_definition)
+{
+#else
+void object_damage_update(
+	long object_index)
+{
+	struct object_datum *object = object_get(object_index);
+	struct object_definition *object_definition =
+		object_definition_get(object->definition_index);
+#endif
+	long collision_model_index = object_definition->object.collision_model.index;
+"""),
+]
 
 # VERIFYGATE ("verifygate"): the vector checks asked only when they run.
 # unit_update calls unit_verify_vectors ten times and biped_update and its
