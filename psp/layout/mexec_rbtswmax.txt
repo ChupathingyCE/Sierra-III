@@ -1,3 +1,10 @@
+# The closed meroom pair's record, kept as it was built, with known faults (its review,
+# mexecfill D2, Q1, Q3, Q4), fixed only if it's ever built again: the "+psp_ge_me_replay"
+# and "+run_job" lines add no reach, since both are plain lines first and tools/mexec.py
+# skips the reach of a root already taken; "docs/box_tick_schedule.md 7.1" and "The
+# copy's room" below cite nothing (the free 256-800 KB is docs/memory_ledger.md's);
+# "The C library's wrappers stay out" holds only for the "+" reaches (__wrap_memcpy is a
+# plain line); and the 8,192-word table is 32 KB of heap, a trade stated, not measured.
 # MEXEC's list rbtswmax: a ceiling test, the ME's code room raised to all of eDRAM 256-800 KB
 # (544 KB; nothing in the tock uses 512-800, docs/box_tick_schedule.md 7.1) and filled with
 # as much of the code the ME runs as fits, hottest first: rbtsw384's names in their order (the

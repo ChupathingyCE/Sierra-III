@@ -27,7 +27,10 @@ A comment line "# @room <KB>" sets the copy's room (192 KB
 without it); psp_build.py reads the same line, so psp_me.c's room matches.
 A comment line "# @fill" cuts the list where the room or the table fills
 (the longest head that fits, said in a line) instead of refusing it: for a
-ceiling test that names more than fits, hottest first.
+ceiling test that names more than fits, hottest first. A cut is said in
+a line starting "mexec: CUT", which psp_build.py carries into the build's
+summary: a cut is no error, so without it two builds' copies could differ
+with nothing in their summaries to show it.
 
 The ELF is the port's PRX (linked at 0 with -q, so every relocation the link
 resolved is still listed). What the copy needs, from the relocations inside
@@ -52,7 +55,7 @@ The table (32-bit words, all offsets in bytes):
   3 copy bytes (functions and trampolines), 4 functions, 5 call patches,
   6 trampolines, 7 branch patches, 8 immediate patches, 9 jump-table words
     left in main RAM, 10 jump tables copied, 11 the trampolines' place,
-  12-15 0;
+  12 the list's functions (4 is fewer when @fill cut the list), 13-15 0;
   then per function: link address, bytes, place in the copy;
   per call patch: the word's place in the copy, the target's place;
   per trampoline: 1 if its target is a place in the copy else 0, the target
@@ -246,7 +249,7 @@ def build(elf, names, log, entry="psp_ge_me_replay", fill=False, max_words=None)
         sys.exit("mexec: the list's first function must be the ME's entry, %s, and be in the program" % entry)
     if not fill:
         try:
-            return lay(elf, chosen, log)
+            return counted(lay(elf, chosen, log), len(chosen), log)
         except Over as e:
             sys.exit(str(e))
     # "# @fill": the longest head of the list, hottest first, whose copy fits
@@ -259,7 +262,7 @@ def build(elf, names, log, entry="psp_ge_me_replay", fill=False, max_words=None)
             return False
         return max_words is None or len(words) <= max_words
     if fits(len(chosen)):
-        return lay(elf, chosen, log)
+        return counted(lay(elf, chosen, log), len(chosen), log)
     lo, hi = 1, len(chosen)
     if not fits(lo):
         sys.exit("mexec: @fill: not even the entry fits the room")
@@ -274,9 +277,16 @@ def build(elf, names, log, entry="psp_ge_me_replay", fill=False, max_words=None)
         why = "the table, %d words of %d" % (len(words), max_words)
     except Over as e:
         why = str(e)[len("mexec: "):]
-    log("mexec: @fill: the list cut after %d of its %d functions (the first left in main RAM: %s; with it, %s)" % (
+    log("mexec: CUT: @fill copies %d of the list's %d functions (the first left in main RAM: %s; with it, %s)" % (
         lo, len(chosen), chosen[lo]["name"], why))
-    return lay(elf, chosen[:lo], log)
+    return counted(lay(elf, chosen[:lo], log), len(chosen), log)
+
+
+def counted(words, listed, log):
+    # the list's count beside the copy's, so the ME's launch line shows a cut too
+    words[12] = listed
+    log("mexec: copied %d of the list's %d functions" % (words[4], listed))
+    return words
 
 
 def lay(elf, chosen, log):
