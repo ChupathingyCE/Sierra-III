@@ -878,6 +878,10 @@ def compile_one(item):
     defines = ["-Dmain=halo_main"] if src.endswith("shell/shell_xbox.c") else []
     if src.endswith("psp_bakecheck.c"):
         defines.append("-DPSP_BAKE_FORMAT=%d" % BAKE_FORMAT)
+    # the near-vme box's own unit and psp_vme.c (its vmetest guard) test the
+    # switch but aren't among the plain-C units given it below
+    if NEARVME and src.endswith(("box_near_vme.c", "psp_vme.c")):
+        defines.append("-DPSP_NEARVME=1")
     if src.endswith("psp_platform.c"):
         defines.append("-DPSP_HEAP_KB=%d" % HEAP_KB)
         if PGO == "use":
