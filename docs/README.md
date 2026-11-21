@@ -219,6 +219,7 @@ Each is the walk-through of one change or branch, written for Sheepdog01's revie
 - [`review_aimeringlook.md`](review_aimeringlook.md): Review: aimeringlook (B50, a late point-physics job rests the ring)
 - [`review_angletint.md`](review_angletint.md): Review: angletint (see-through tints by the angle, Cortana)
 - [`review_audiofx.md`](review_audiofx.md): Review: audiofx (audio plan step 2, docs/audio_fidelity.md)
+- [`review_mixkinds.md`](review_mixkinds.md): mixkinds: one mix loop per voice kind (H1), exact, off by default until its proof
 - [`review_bakever.md`](review_bakever.md): Review: the bake check (go_live 3.4), branch `bakever`
 - [`review_bootscreen.md`](review_bootscreen.md): Review: the boot screen and a visible load (branch `bootscreen`, on `w139`)
 - [`review_boxposing.md`](review_boxposing.md): Review: the posing box cut in (`PSP_BOXPOSING=1`)

@@ -132,6 +132,11 @@ struct psp_stream
 	/* "memixold": the heard voice mixed by the per-sample loop, as before
 	(set with silent_overrun; mix_voice) */
 	int memix_old;
+	/* "mixkinds" (H1, off by default until its proof): a mono ADPCM voice
+	mixed by a loop for its kind, each run inside one decoded block, so the
+	per-frame tests that answer the same for the whole run are asked once
+	(set with silent_overrun; mix_heard) */
+	int mix_kinds;
 	/* the approximate paths (AUDIO_APPROX_*) this voice is mixed with:
 	audio_approx in play; "audiocheck" mixes each block with none and with
 	these, and measures the difference (set with silent_overrun) */
@@ -1216,7 +1221,7 @@ static int prepare_voice(struct psp_stream *stream)
 		extern int psp_keep(const char *name);
 		static int overrun = -1;
 
-		static int adpcm_old = -1, memix_old = -1;
+		static int adpcm_old = -1, memix_old = -1, mix_kinds = -1;
 
 		if (overrun < 0)
 		{
@@ -1224,12 +1229,14 @@ static int prepare_voice(struct psp_stream *stream)
 			adpcm_old = psp_keep("adpcmold") != 0;
 			audio_old = psp_keep("audioold") != 0;
 			memix_old = psp_keep("memixold") != 0;
+			mix_kinds = psp_keep("mixkinds") != 0;
 		}
 		stream->silent_overrun = overrun;
 		stream->adpcm_old = adpcm_old;
 		stream->ima_fast_old = ima_fast_old;
 		stream->approx = audio_approx;
 		stream->memix_old = memix_old;
+		stream->mix_kinds = mix_kinds;
 		if (audio_old || !game->has_3d)
 			stream->lowpass_coefficient = GAIN_ONE;
 		else if (game->hf_millibels != stream->lowpass_millibels || !stream->lowpass_coefficient)
@@ -1318,6 +1325,11 @@ static unsigned long mix_heard(struct psp_stream *stream, int *output, unsigned 
 	unsigned long done = 0, step = stream->step, channels = stream->channels;
 	int lowpass_left = *lowpass_left_io, lowpass_right = *lowpass_right_io;
 	int mono = channels == 1 && lowpass_left == lowpass_right;
+	/* H1: every heard voice in play is mono ADPCM, so the general loop's
+	tests of pcm, mono, the block, the edge and the filter answer the same
+	for a whole run inside one decoded block; a kind's loop asks them once a
+	run. A zero step would never leave its frame: the general loop keeps it */
+	int kinds = stream->mix_kinds && mono && stream->adpcm && step;
 
 	while (done < frames)
 	{
@@ -1338,6 +1350,105 @@ static unsigned long mix_heard(struct psp_stream *stream, int *output, unsigned 
 			const short *pair, *next = NULL;
 			int l0, r0, sample_left, sample_right;
 
+			if (kinds)
+			{
+				/* the run: this block's frames up to its last or the
+				packet's, whichever comes first */
+				unsigned long limit = frame | 63;
+				int *out = output + 2 * done;
+
+				if ((long)(frame >> 6) != block)
+				{
+					block = (long)(frame >> 6);
+					base = decoded_frames(stream, packet, block, decode_cycles);
+				}
+				if (limit > last)
+					limit = last;
+				if (step == 0x10000 && !fraction)
+				{
+					/* at 1:1 with no fraction the fraction stays 0: nothing
+					to interpolate, and every frame to the limit is read
+					from this block */
+					unsigned long n = limit - frame + 1;
+					const short *in = base + 2 * (frame & 63);
+					int *end;
+
+					if (n > frames - done)
+						n = frames - done;
+					end = out + 2 * n;
+					if (lowpass < GAIN_ONE)
+						for (; out < end; out += 2, in += 2)
+						{
+							lowpass_left += ((in[0] - lowpass_left) * lowpass) >> 14;
+							out[0] += (lowpass_left * (left >> 8)) >> 14;
+							out[1] += (lowpass_left * (right >> 8)) >> 14;
+							left += ramp_left;
+							right += ramp_right;
+						}
+					else
+					{
+						for (; out < end; out += 2, in += 2)
+						{
+							int sample = in[0];
+
+							out[0] += (sample * (left >> 8)) >> 14;
+							out[1] += (sample * (right >> 8)) >> 14;
+							left += ramp_left;
+							right += ramp_right;
+						}
+						/* so a filter that starts next block starts from the sound */
+						lowpass_left = in[-2];
+					}
+					frame += n;
+					done += n;
+					continue;
+				}
+				{
+					/* pitched: a frame before the limit has its next frame
+					in this block, and with no fraction the interpolation
+					adds (d * 0) >> 15 = 0, the general loop's answer without
+					one. The limit's own frame (the next across the block's
+					end, or none at the packet's last) takes the general
+					loop below */
+					int *end = output + 2 * frames;
+
+					if (lowpass < GAIN_ONE)
+						for (; out < end && frame < limit; out += 2)
+						{
+							const short *in = base + 2 * (frame & 63);
+							int l = in[0], sample = l + (((in[2] - l) * ((int)fraction >> 1)) >> 15);
+
+							lowpass_left += ((sample - lowpass_left) * lowpass) >> 14;
+							out[0] += (lowpass_left * (left >> 8)) >> 14;
+							out[1] += (lowpass_left * (right >> 8)) >> 14;
+							left += ramp_left;
+							right += ramp_right;
+							fraction += step;
+							frame += fraction >> 16;
+							fraction &= 0xFFFF;
+						}
+					else
+						for (; out < end && frame < limit; out += 2)
+						{
+							const short *in = base + 2 * (frame & 63);
+							int l = in[0], sample = l + (((in[2] - l) * ((int)fraction >> 1)) >> 15);
+
+							lowpass_left = sample;
+							out[0] += (sample * (left >> 8)) >> 14;
+							out[1] += (sample * (right >> 8)) >> 14;
+							left += ramp_left;
+							right += ramp_right;
+							fraction += step;
+							frame += fraction >> 16;
+							fraction &= 0xFFFF;
+						}
+					done = (unsigned long)(out - output) / 2;
+					/* past the limit (a step over the block's end) the next
+					block's run starts; at it, one frame of the general loop */
+					if (done >= frames || frame != limit)
+						continue;
+				}
+			}
 			if (pcm)
 			{
 				pair = pcm + frame * channels;
@@ -3011,6 +3122,9 @@ static unsigned long check_blocks = 0, check_skipped = 0, check_output_differed 
 reached a path says nothing about it */
 static unsigned long check_mono = 0, check_stereo = 0, check_pcm = 0, check_filtered = 0, check_stepped = 0,
 	check_stepped_adpcm = 0;
+/* under "mixkinds", the voice blocks that start in each of H1's kinds (plain,
+plain filtered, pitched, pitched filtered): the same reason */
+static unsigned long check_kind[4];
 
 /* "audiocheck": each block mixed without the approximate paths and with
 them, from the same voices; the block plays the approximate one, and the
@@ -3199,6 +3313,9 @@ static unsigned long mix_checked(struct psp_stream **list, unsigned long count, 
 		across each 64-frame block's end into the other buffer */
 		check_stepped += voice->step != 0x10000;
 		check_stepped_adpcm += voice->step != 0x10000 && voice->adpcm;
+		if (voice->mix_kinds && voice->channels == 1 && voice->lowpass_left == voice->lowpass_right && voice->adpcm &&
+			voice->step)
+			check_kind[(voice->step == 0x10000 && !voice->fraction ? 0 : 2) + (voice->lowpass_coefficient < GAIN_ONE)]++;
 	}
 	voices_old = psp_dsound_mix_list((void *const *)list, count, sums, check_output, frames, &clipped_old);
 	for (k = 0; k < count; k++)
@@ -3886,6 +4003,7 @@ static void audio_start(void)
 				audio_approx |= AUDIO_APPROX_CAL;
 			platform_log("audio: audiocheck: %s", audio_check ? "each block mixed with and without the approximate paths on the main CPU, the difference measured" : "no room for its copies, off");
 		}
+		platform_log("audio: mixkinds: %s", psp_keep("mixkinds") ? "a mono ADPCM voice mixed by its kind's loop, a run a decoded block (H1)" : "off, every heard voice by the one loop");
 		platform_log("audio: heard voices mixed %s%s", psp_keep("memixold") ? "by the per-sample loop, as before (memixold)" : "with the position in registers and mono voices once (MEMIX)",
 			memix_check ? "; memixcheck: each block mixed both ways on the main CPU" : psp_keep("memixcheck") ? "; memixcheck: no room for its copies, off" : "");
 		platform_log("audio: the mixer's lock %s", mixlock_old ? "held through the Media Engine's job, as before (mixlockold)" : "not held across the job: the game's side is on cache lines of its own, its changes reach the mix by a ring (MIXLOCK)");
@@ -3939,6 +4057,8 @@ void psp_audio_report(void)
 			check_blocks, check_skipped, CHECK_VOICES, check_output_differed, check_state_differed, check_first_differed);
 		platform_log("audio: memixcheck: voice blocks by path: mono %lu, stereo or unequal filters %lu, PCM %lu, filtered %lu, interpolated %lu (ADPCM, across block ends: %lu)",
 			check_mono, check_stereo, check_pcm, check_filtered, check_stepped, check_stepped_adpcm);
+		platform_log("audio: memixcheck: mixkinds %s; voice blocks by the kind they started in: plain %lu, plain filtered %lu, pitched %lu, pitched filtered %lu",
+			psp_keep("mixkinds") ? "on" : "off", check_kind[0], check_kind[1], check_kind[2], check_kind[3]);
 	}
 	platform_log("audio: of %lu voice blocks, muffled %lu, pitch moved by Doppler %lu, quieter outside a cone %lu%s",
 		fx_prepared, fx_muffled, fx_shifted, fx_coned, audio_old > 0 ? " (audioold: all off)" : "");
