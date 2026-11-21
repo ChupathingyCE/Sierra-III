@@ -9134,6 +9134,11 @@ static struct
 } bake;
 /* 0 baked, EQUAL; 1 baked, GEQUAL with STENCIL_SLACK steps; 2 the old nudge */
 static int stencil_mode = 0;
+/* "bakedraw": a draw is first looked over for a triangle with all three
+corners flagged, and bake_find is called only when there is one. Set when
+the map's bake opens (the main CPU) and written back: the draws run on the
+Media Engine too */
+static int bake_draw_first = 0;
 #define STENCIL_SLACK 2
 static unsigned long bake_substituted = 0, bake_pieces_drawn = 0, bake_layer_draws = 0, bake_layer_triangles = 0,
 	bake_old_path_triangles = 0;
@@ -9290,6 +9295,8 @@ void psp_ge_stencils_open(const char *name, unsigned int map_crc)
 		mode_word = psp_keep("stencilsnudge") ? 2 : psp_keep("stencilsslack") ? 1 : 0;
 		if (mode_word)
 			stencil_mode = mode_word;
+		bake_draw_first = psp_keep("bakedraw") != 0;
+		ge_writeback(&bake_draw_first, sizeof(bake_draw_first));
 	}
 	bake_forget();
 	snprintf(path, sizeof(path), PSP_MAPS_ROOT "/%s.pstn", name);
@@ -9544,6 +9551,23 @@ static const unsigned short *bake_substitute(struct level_stream *stream, const 
 
 	if (!w || stencil_mode == 2)
 		return indices;
+	if (bake_draw_first)
+	{
+		/* most draws hold no replaced triangle, and bake_find says so one
+		triangle at a time, a call each. Its own first test, made here over
+		the whole draw: a triangle it could find has all three corners
+		flagged, so a draw with no such triangle is the game's own list */
+		const unsigned char *flags = w->flags;
+		const unsigned short *tri = indices, *end = indices + 3 * *triangle_count;
+		unsigned int original = w->original;
+
+		for (; tri < end; tri += 3)
+			if (tri[0] < original && flags[tri[0]] && tri[1] < original && flags[tri[1]] &&
+				tri[2] < original && flags[tri[2]])
+				break;
+		if (tri == end)
+			return indices;
+	}
 	for (t = 0; t < *triangle_count; t++)
 	{
 		int r = bake_find(w, indices[3 * t], indices[3 * t + 1], indices[3 * t + 2]);
