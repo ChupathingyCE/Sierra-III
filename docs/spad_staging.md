@@ -6,6 +6,8 @@
 
 The main CPU's scratchpad (16 KB at 0x00010000) takes DMA writes [M, PSP-1000, 2026-11-21; the lab's findings `spad_dmac_into_v2_1000`, `spad_dmacplus_into_v2_1000`, bench-hw 44917686326; REBUILD.md §8b. It supersedes `hardware_facts.md`'s "DMA cannot write it", whose update goes with spadprobe2's filing]: `sceDmacMemcpy` and DMACplus channel 0x1C0 at the 0x0001xxxx and 0x4001xxxx forms, DMACplus at 3-5 µs a KB. The kernel-segment forms hang the PSP and are never used (`psp_dma_address_ok` refuses them). So the scratchpad no longer has to hold one set for the whole frame: it can be refilled between parts. The question changes from "what fits once" to "which data does one part read heavily that another part doesn't".
 
+**The ME is a source too** [M, PSP-3000, 2026-11-21; the lab's findings `spad_dmacplus_me_v21_3000`]: DMACplus's ME-side channels move eDRAM to the scratchpad and back at the user forms, 3-5 µs a KB. So a part's data can be staged by the ME from eDRAM (results the ME made there), not only fetched from main RAM by the main CPU's own DMA starts.
+
 ## What has been tried and counted already
 
 From the lab's `levercheck.py` (SCRATCHBSP, PROFHEAP, CSTPOOL, CODESPAD, SPADG, SPSTACK, SPX) and findings:
