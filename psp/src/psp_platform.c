@@ -1452,6 +1452,7 @@ static void keep_load(void)
 	the measuring off, notimers and nooverlay in one word */
 	psp_timers_off = keep_search("notimers") || keep_search("lean");
 	psp_verify_call = !keep_search("verifygate") || keep_search("verifyvectors");
+	sceKernelDcacheWritebackRange(&psp_verify_call, sizeof(psp_verify_call)); /* the ME reads it */
 	tagmemo_word = keep_search("tagmemo") != 0;
 	tagmemo_tick_only = keep_search("tagmemotick") != 0;
 	psp_tagmemo_on = tagmemo_word && !tagmemo_tick_only;

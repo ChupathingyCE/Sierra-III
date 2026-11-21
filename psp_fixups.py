@@ -56990,8 +56990,9 @@ static void update_potentially_audible_looping_sound(
 # call touches times its calls (docs/cache_work.md, section 1). Each entry here
 # is a short form of a hot function for the state play is nearly always in,
 # chosen by one branch where the general function starts; the general function
-# is kept whole and takes every other state. Each has its own keep word, off
-# by default, and is exact: the same game state tick for tick.
+# is kept whole and takes every other state. Each has its own keep word and
+# off word (docs/code_diet.md says which are on by default) and is exact: the
+# same game state tick for tick.
 #
 # OBJLEAN ("objlean"): object_update as play runs it. The general function
 # carries hoistold's second form at seven places, the per-type clocks (two to
@@ -57000,7 +57001,10 @@ static void update_potentially_audible_looping_sound(
 # alone with none of the statistics, so under the word hwprofile's per-type
 # object times and counts, machinetime's accounts and the bslc census read
 # nothing; everything that writes game state is the same call in the same
-# order.
+# order. For the same reason hoistold and postgateold switch nothing for an
+# object that takes the short form: it is the hoist's form and the
+# post-process gate's default form by construction, so a test of either
+# word needs objleanold beside it.
 FIXES_DIET1 = {}
 FIXES_DIET1["source/objects/objects.c#objlean"] = [
 ("""static boolean object_update(
@@ -57310,6 +57314,12 @@ static inline __attribute__((always_inline)) void *psp_tag_memo_get(long group_t
 {
 	const struct psp_tag_view *held = psp_tag_memo[slot];
 
+	/* a hit answers by the index alone, without tag_get's tests of the
+	base address and the group. That holds because the words are forgotten
+	wherever the instance table is set, the base address is read from the
+	instance at each call, and no group asked for here has its base cleared
+	while the map stays loaded (a structure BSP's is, and no typed getter
+	asks for one). A getter added for such a group must test the base */
 	if (__builtin_expect(held->tag_index == tag_index, 1))
 		return held->base_address;
 	return psp_tag_memo_miss(group_tag, slot, tag_index);
