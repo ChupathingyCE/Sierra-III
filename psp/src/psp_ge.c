@@ -82,6 +82,18 @@ piece). Each reading costs ~0.6 us on the PSP, so they are off unless the
 word is set: off, they read no clock and log nothing. Read at launch
 (gebusy_start) */
 static int probes_on = 0;
+#ifdef PSP_RECON
+/* recon "nearband" (the near-vme box's first step, REBUILD.md): of the near
+loop's corner verdicts, how many lie within a band of a plane the verdict
+tests (the near test's limit, NEAR_CLIP, the four side planes, their
+distances normalised), by the band's width: a VME kernel in fixed point
+would have the ME recompute those corners in float, so the counts size that
+recomputation for each fixed-point scale. Bands 2^-6 .. 2^-14 units */
+#define NEARBAND_BANDS 5
+static int nearband_on = 0;
+static unsigned long nearband_verdicts, nearband_in[NEARBAND_BANDS];
+static float nearband_most_depth;
+#endif
 static inline unsigned int probe_clock(void)
 {
 	return probes_on ? ge_clock() : 0;
@@ -3683,6 +3695,19 @@ static void __attribute__((noinline, cold)) ge_kinds_report(void)
 		slot_us / kind_frames, slot_batches / kind_frames, kind_frames);
 	near_loop_us = near_loop_batches = near_loop_triangles = near_corners_worked = slot_us = slot_batches = 0;
 	model_floor_left_out = near_parts = near_parts_whole = near_batches_whole = 0;
+#ifdef PSP_RECON
+	if (nearband_on && kind_frames)
+	{
+		float f = (float)kind_frames;
+
+		platform_log("GE: nearband: %.1f corner verdicts a frame; within 2^-6 of a tested plane %.1f, 2^-8 %.1f, 2^-10 %.1f, 2^-12 %.1f, 2^-14 %.1f; the deepest corner %.2f units",
+			nearband_verdicts / f, nearband_in[0] / f, nearband_in[1] / f, nearband_in[2] / f, nearband_in[3] / f, nearband_in[4] / f,
+			(double)nearband_most_depth);
+		nearband_verdicts = 0;
+		memset(nearband_in, 0, sizeof(nearband_in));
+		nearband_most_depth = 0.0f;
+	}
+#endif
 	near_batches_by_sphere = near_sphere_mismatches = 0;
 	model_size_floor_peak = model_size_floor;
 	model_bone_loads = model_take_bytes = model_part_calls = model_bone_calls = model_bone_sub_bytes = 0;
@@ -4319,6 +4344,9 @@ static void gebusy_start(void)
 		platform_log("GE: gereads on (what each draw makes the GE read, by where it lives: a report every 300 frames)");
 	}
 	probes_on = psp_keep("probes") ? 1 : 0; /* build 119 */
+#ifdef PSP_RECON
+	nearband_on = psp_keep("nearband") ? 1 : 0;
+#endif
 	if (probes_on)
 		platform_log("GE: probes on (the near corner loop, the level's passes, the light draw and the decal calls split by piece)");
 	me_tail_on = psp_keep("metail") ? 1 : 0;
@@ -16222,6 +16250,26 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 									memcpy(at, fpu, sizeof(at));
 							}
 							code = (camera_corner_out(at[0], at[1], at[2], limit) ? 32 : 0) | outside(at);
+#ifdef PSP_RECON
+							if (nearband_on)
+							{
+								/* the corner's least distance to a plane its verdict tests */
+								float d = fabsf(at[2] - limit), e, width = 1.0f / 64.0f;
+								int b;
+
+								e = fabsf(at[2] - NEAR_CLIP); if (e < d) d = e;
+								e = fabsf(guard_x * at[2] - at[0]) / guard_x_length; if (e < d) d = e;
+								e = fabsf(guard_x * at[2] + at[0]) / guard_x_length; if (e < d) d = e;
+								e = fabsf(guard_y * at[2] - at[1]) / guard_y_length; if (e < d) d = e;
+								e = fabsf(guard_y * at[2] + at[1]) / guard_y_length; if (e < d) d = e;
+								nearband_verdicts++;
+								for (b = 0; b < NEARBAND_BANDS; b++, width *= 0.25f)
+									if (d < width)
+										nearband_in[b]++;
+								if (fabsf(at[2]) > nearband_most_depth)
+									nearband_most_depth = fabsf(at[2]);
+							}
+#endif
 							if (draw[t + k] < CORNER_VERDICTS)
 								corner_verdict[draw[t + k]] = (unsigned short)(corner_stamp + code);
 						}
