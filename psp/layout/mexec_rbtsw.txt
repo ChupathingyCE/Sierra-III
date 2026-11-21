@@ -22,6 +22,9 @@
 # The ME fetches none of them on b30's or c20's bench stretch (the lab's cache
 # model, exact counts), so they give way before code the ME runs; where the ME
 # does reach one it runs from main RAM.
+# psp_tex_average (168 bytes) is out too: the ME fetches about one instruction
+# of it a tick there, and with it in, the sweep's last function was 144 bytes
+# past the room.
 # @fill
 psp_ge_me_replay
 psp_ge_draw_model_body
@@ -113,7 +116,6 @@ psp_ge_shadow_end
 psp_tex_me_memo_forget
 psp_ge_widget_texture
 psp_ge_text_end
-psp_tex_average
 run_job
 psp_anim_on_me
 network_coop_active
