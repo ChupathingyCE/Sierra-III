@@ -87,6 +87,9 @@ struct box_collbsp_sphere_result
 	the leaf it reaches; box_collbsp_split_node): a smaller sphere inside it
 	walks the same single-sided path there, so its walk starts there */
 	int start_node;
+	/* the walk stopped on the ME past its depth cap (box_collbsp.c): the
+	answer is incomplete, and the asker redoes it on the main CPU */
+	int deep;
 };
 
 /* the sphere: surfaces, edges and vertices it touches, leaves it is in.

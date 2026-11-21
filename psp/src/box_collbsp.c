@@ -9,6 +9,24 @@ products), so every test lands on the same side of every plane.
 #include <math.h>
 #include "box_collbsp.h"
 
+#if !defined(BOX_COLLBSP_COUNT)
+/* the sphere walks recurse a frame a split (56-64 bytes), and on the ME they
+run on a ring job's 4 KB stack, which holds ~43 nested frames past
+sphere_from's 0.8 KB; the deepest on the map ladder is 27 (a50; the lab's
+collbsp_depth_ladder) and the engine allows 128. Past the cap the walk
+stops on the ME and says so (result->deep), and the asker redoes it on the
+main CPU. Set on the main CPU before the ME's first job; the ME only reads
+it (psp_sweepme.c: 36, or 4 with the keep word walkcap4, the refusal's test) */
+#include "psp_me.h"
+int box_collbsp_me_depth_cap = 36;
+#define WALK_DEEPER(w) (++(w)->me_depth <= box_collbsp_me_depth_cap || !PSP_ME_WORK() || \
+	((w)->result->deep = (w)->found = 1, (w)->me_depth--, 0))
+#define WALK_BACK(w) ((w)->me_depth--)
+#else
+#define WALK_DEEPER(w) 1
+#define WALK_BACK(w) ((void)0)
+#endif
+
 #ifdef BOX_COLLBSP_COUNT
 /* a desktop count of the walks' steps over a capture (the host build only) */
 #include <stdio.h>
@@ -321,6 +339,7 @@ struct sphere
 	int any, found;
 	struct box_collbsp_sphere_result *result;
 	int stack[DEPTH_MOST];
+	int me_depth; /* the recursion's nesting, for the ME's cap */
 	/* form A: the stack's designators by bucket, so a reference whose plane
 	isn't on the stack is passed by without scanning it */
 	unsigned char buckets[64];
@@ -557,8 +576,11 @@ static void sphere2d(struct sphere *w, int child)
 		COUNT(n_nodes2);
 		node = &w->bsp->nodes2d[child];
 		distance = (node->n[0] * w->center2d[0] + node->n[1] * w->center2d[1]) - node->d;
-		if (distance <= w->radius)
+		if (distance <= w->radius && WALK_DEEPER(w))
+		{
 			sphere2d(w, node->child[0]);
+			WALK_BACK(w);
+		}
 		if (!(distance >= -w->radius))
 			return;
 		child = node->child[1];
@@ -596,12 +618,20 @@ static void sphere3d(struct sphere *w, int index)
 
 			w->stack[w->depth++] = front;
 			w->buckets[BUCKET(front)]++;
-			sphere3d(w, node->child[0]);
+			if (WALK_DEEPER(w))
+			{
+				sphere3d(w, node->child[0]);
+				WALK_BACK(w);
+			}
 			w->buckets[BUCKET(front)]--;
 			w->depth--;
 			w->stack[w->depth++] = back;
 			w->buckets[BUCKET(back)]++;
-			sphere3d(w, node->child[1]);
+			if (WALK_DEEPER(w))
+			{
+				sphere3d(w, node->child[1]);
+				WALK_BACK(w);
+			}
 			w->buckets[BUCKET(back)]--;
 			w->depth--;
 			return;
@@ -725,6 +755,7 @@ static int sphere_from(const struct box_collbsp *bsp, int start, short breakable
 	w.found = 0;
 	w.result = result;
 	w.depth = 0;
+	w.me_depth = 0;
 	w.seen_count = 0;
 	w.walk_only = 0;
 	w.designator = 0;
@@ -734,6 +765,7 @@ static int sphere_from(const struct box_collbsp *bsp, int start, short breakable
 	box_collbsp_walk_id++;
 #endif
 	result->surface_count = result->edge_count = result->vertex_count = result->leaf_count = 0;
+	result->deep = 0;
 	LINE_WALK_BEGIN(bsp);
 	sphere3d(&w, start);
 	LINE_WALK_END(0);
@@ -761,11 +793,13 @@ static int sphere_kept_walk(const struct box_collbsp *bsp, short breakable_count
 	w.found = 0;
 	w.result = result;
 	w.depth = 0;
+	w.me_depth = 0;
 	w.seen_count = 0;
 	w.walk_only = 1;
 	w.designator = 0;
 	memset(w.buckets, 0, sizeof(w.buckets));
 	result->surface_count = result->edge_count = result->vertex_count = result->leaf_count = 0;
+	result->deep = 0;
 #ifdef BOX_LINECOUNT
 	lc_seen_count = 0;
 	lc_sweeps++;
@@ -948,7 +982,11 @@ static void sphere3d_packed(struct sphere *w, const struct box_collbsp_packed_no
 		COUNT(n_nodes3);
 		if (first_side && second)
 		{
-			sphere3d_packed(w, nodes, leaves, node->child[0]);
+			if (WALK_DEEPER(w))
+			{
+				sphere3d_packed(w, nodes, leaves, node->child[0]);
+				WALK_BACK(w);
+			}
 			if (w->packed_miss)
 				return;
 			code = node->child[1];

@@ -42745,7 +42745,10 @@ FIXES_AIME1B["source/ai/ai.c#aime1b"] = [
 		/* psp_fixups.py (FIXES_AIME1B, "aime1b"): the world writes the
 		thinking done ahead queued, where its results land (actors.c) */
 		extern void psp_aime_collect(void);
+		extern void box_ws_me_marks_drain(void);
 
+		/* the marks the ME's thinking made (box_world_store.c) land first */
+		box_ws_me_marks_drain();
 		psp_aime_collect();
 	}
 #endif

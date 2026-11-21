@@ -13,6 +13,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include "box_world_store.h"
+#include "psp_me.h"
+
+/* the ME marks ring's counts (below, psp_ws_dirty), read by the store's report */
+static unsigned long ws_me_marks_landed, ws_me_marks_overflows;
 #include "box_world_store_biped.h"
 #include "psp_bipedmove_map.h"
 
@@ -387,6 +391,8 @@ void box_ws_move_end(void)
 	if (++box_ws_move_ended % 3000 == 0)
 		platform_psp_log("bipedmovestore: %lu windows run from the store; kept records written back by a mark %lu, after the solves %lu; windows ended by a delete %lu",
 			box_ws_move_count, box_ws_move_flushed, box_ws_move_settled, box_ws_move_dropped);
+		platform_psp_log("bipedmovestore: marks made on the ME landed at the collection %lu, rings overflowed %lu",
+			ws_me_marks_landed, ws_me_marks_overflows);
 }
 
 /* a call that reads and writes the biped's datum itself: the written-back
@@ -601,8 +607,60 @@ void box_ws_biped_fill(int slot, void const *datum, long index)
 
 extern int psp_bipedstage_phase; /* objects.c (FIXES_BIPEDSTAGE): nonzero inside the staged passes */
 
+/* the marks made on the ME (an AI write the hand-back doesn't queue, such as
+   action_obey_command_begin's, the lab's wsq1_trace): the ME mustn't write
+   box_ws_dirty, whose lines the main CPU writes and clears, so it notes the
+   index in a ring of its own, and the main CPU lands them at the AI job's
+   collection (ai_update, psp_fixups.py), before the next tick's fills read
+   the marks. Each side writes only its own count; the ME reads the main
+   CPU's, and a stale one only makes the ring look fuller. A full ring is
+   counted, and the drain then marks every slot (a false mark costs a refill) */
+#define WS_ME_MARKS 64
+static PSP_AIME_ME_SIDE struct { unsigned int made, overflowed; long index[WS_ME_MARKS]; } ws_me_marks
+	__attribute__((aligned(64)));
+static PSP_MAIN_SIDE struct { unsigned int landed, overflowed_seen; } ws_main_marks __attribute__((aligned(64)));
+static unsigned long ws_me_marks_landed, ws_me_marks_overflows;
+
+void box_ws_me_marks_drain(void)
+{
+	volatile const unsigned int *made = (volatile const unsigned int *)((unsigned int)&ws_me_marks.made | 0x40000000u);
+	volatile const unsigned int *overflowed = (volatile const unsigned int *)((unsigned int)&ws_me_marks.overflowed | 0x40000000u);
+	volatile const long *index = (volatile const long *)((unsigned int)ws_me_marks.index | 0x40000000u);
+	unsigned int now = *made, over = *overflowed;
+
+	if (over != ws_main_marks.overflowed_seen)
+	{
+		ws_main_marks.overflowed_seen = over;
+		memset(box_ws_dirty, 1, sizeof(box_ws_dirty));
+		ws_me_marks_overflows++;
+	}
+	else
+		while (ws_main_marks.landed != now)
+		{
+			box_ws_dirty[index[ws_main_marks.landed % WS_ME_MARKS] & (BOX_WS_DIRTY - 1)] = 1;
+			ws_main_marks.landed++;
+			ws_me_marks_landed++;
+		}
+	ws_main_marks.landed = now;
+}
+
 void psp_ws_dirty(long object_index)
 {
+	if (PSP_ME_WORK())
+	{
+		/* on the ME: noted for the main CPU; the flush below is the main
+		   CPU's alone (a record is never kept while the ME thinks) */
+		unsigned int landed = *(volatile const unsigned int *)((unsigned int)&ws_main_marks.landed | 0x40000000u);
+
+		if (ws_me_marks.made - landed < WS_ME_MARKS)
+		{
+			ws_me_marks.index[ws_me_marks.made % WS_ME_MARKS] = object_index;
+			ws_me_marks.made++;
+		}
+		else
+			ws_me_marks.overflowed++;
+		return;
+	}
 	if (box_ws_move_kept > 0)
 		box_ws_move_flush(object_index);
 	/* the staged passes' own writes are the record's, not an outside writer's */
