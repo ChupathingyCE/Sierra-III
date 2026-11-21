@@ -8,7 +8,7 @@
 # where they are. Not a default: the room's worth, priced against rbtsw at 256 KB on the PSP.
 # @jobs
 # @room 544
-# @table 6144
+# @table 8192
 # @fill
 # MEXEC's list rbtsw384: rbtsw in a 384 KB room (eDRAM 256-640 KB), with rbt's last three
 # think functions back in rbt's place (distance_squared3d.localalias.lto_priv.9,
