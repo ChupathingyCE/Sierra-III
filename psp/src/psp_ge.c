@@ -2986,6 +2986,54 @@ static void dither_moves_make(const ScePspIMatrix4 *matrix)
 
 #include "psp_gulist.h" /* pspgu's gu_list (guInternal.h: GuDisplayList) */
 
+/* Switches the main CPU reads from the keep words once (model_switches)
+and the Media Engine's replay only reads. They share one cache line that
+holds nothing else and is written back once, whole, with all of them set:
+written back one at a time, or beside a word either CPU writes later, a
+line could be put back with another word's stale value in it.
+  model14 (docs/design_model14.md): an opaque rigid part's vertices as
+14-byte records: u16 uv (the source's s16 + 32768, undone by the texture
+offset), s8 normal with the node in the pad byte the GE skips, s16 position
+on a power-of-two step, the part's own, folded into its model matrix. A
+step that is a power of two keeps the matrix a uniform scale (normals keep
+their direction) and puts shared corners of parts with one step on the same
+lattice point. First-person parts, the sky and see-through parts stay in
+floats: the first are seen closest, the last are read on the CPU.
+  baked_once ("bakedonce"): a part's place in the geometry cache is asked
+once, by psp_ge_draw_model, and handed to model_convert.
+  skin_own_slots (off with "skinwoff"): each bending batch draws at its own
+highest slot in use, not at its part's slot count: the GE blends every
+weight a draw declares, zeros included, at ~60 ns a weight a vertex, and
+the slots past a batch's highest hold no node of its vertices, so their
+weights are zero. 1-4 and 5-8 weights share a record layout (the texture
+coordinate starts 4 or 8 bytes in), so a batch keeps its part's class.
+  bake_draw_first ("bakedraw"): a level draw is first looked over for a
+triangle with all three corners flagged, and bake_find is called only when
+there is one.
+  gustate_on ("gustate") and gudraw_on ("gudraw"): gu_state_set's and
+gu_draw's short forms, below.
+Each is 0 until they are read, and 0 draws the old way, so a replay that
+ran before the first read would only lose the gain. All zeros also keeps
+the struct in .bss, where psp/layout's medata lists place it by name */
+static struct
+{
+	int read, model14, baked_once, skin_own_slots, bake_draw_first, gustate_on, gudraw_on;
+} model_switch __attribute__((aligned(64)));
+/* main CPU only: its callers test psp_on_me() or run at a map's opening.
+One cold function for all of them: it runs once, and its callers sit in the
+ME's code copy, where every byte takes room from code that runs each frame */
+static void __attribute__((noinline, cold)) model_switches(void)
+{
+	model_switch.model14 = psp_keep("model14");
+	model_switch.baked_once = psp_keep("bakedonce") != 0;
+	model_switch.skin_own_slots = !psp_keep("skinwoff");
+	model_switch.bake_draw_first = psp_keep("bakedraw") != 0;
+	model_switch.gustate_on = psp_keep("gustate") != 0;
+	model_switch.gudraw_on = psp_keep("gudraw") != 0;
+	model_switch.read = 1;
+	sceKernelDcacheWritebackRange(&model_switch, sizeof(model_switch));
+}
+
 /* "gustate": the GE's state switches without pspgu's two switch functions.
 sceGuEnable and sceGuDisable are a kilobyte each, a case a state, and this
 file calls them at about 170 places for a dozen states: on the Media
@@ -2995,9 +3043,7 @@ one bit of pspgu's gu_states, so those are written here from a table, in
 one small function; the two keep pspgu's own function, as every state does
 with the word off. The same words reach the GE and the same bits
 sceGuGetStatus (pspgu's sceGuEnable.c and sceGuDisable.c; the commands are
-guInternal.h's). gustate_on is read on the main CPU (psp_ge_model_begin)
-and written back; under 0 (not read yet) counts as off */
-static int gustate_on = -1;
+guInternal.h's). Its switch is model_switch.gustate_on */
 extern int gu_states; /* pspgu's (guInternal.h) */
 static const unsigned char gu_state_command[GU_MAX_STATUS] = {
 	[GU_ALPHA_TEST] = 0x22, [GU_DEPTH_TEST] = 0x23, [GU_STENCIL_TEST] = 0x24, [GU_BLEND] = 0x21,
@@ -3012,7 +3058,7 @@ static void __attribute__((noinline)) gu_state_set(int state, int on)
 {
 	unsigned int command = (unsigned int)state < GU_MAX_STATUS ? gu_state_command[state] : 0;
 
-	if (gustate_on > 0 && command)
+	if (model_switch.gustate_on > 0 && command)
 	{
 		*(gu_list->current++) = (command << 24) | (unsigned int)on;
 		if (on)
@@ -3041,10 +3087,8 @@ copies. Here the words are written at the list's current word, as
 sceGuDrawArray.c writes them, and the stall address is handed on under
 pspgu's own condition (guInternal.h's _sceGuUpdateStallAddr: the direct
 context, no object open); the matrices stay pspgum's (sceGumUpdateMatrix,
-with its flags and stacks). The same words reach the GE. gudraw_on is read
-on the main CPU (psp_ge_model_begin) and written back; under 0 (not read
-yet) counts as off, and off is pspgu's two functions */
-static int gudraw_on = -1;
+with its flags and stacks). The same words reach the GE. Its switch is
+model_switch.gudraw_on; off is pspgu's two functions */
 extern int gu_curr_context, gu_object_stack_depth, ge_list_executed[2]; /* pspgu's (guInternal.h) */
 int __wrap_sceGeListUpdateStallAddr(int qid, void *stall);
 
@@ -3052,7 +3096,7 @@ static void __attribute__((noinline)) gu_draw(int prim, int vtype, int count, co
 {
 	unsigned int *w;
 
-	if (gudraw_on <= 0)
+	if (model_switch.gudraw_on <= 0)
 	{
 		(sceGuDrawArray)(prim, vtype, count, indices, vertices);
 		return;
@@ -3078,7 +3122,7 @@ static void __attribute__((noinline)) gu_draw(int prim, int vtype, int count, co
 
 static void __attribute__((noinline)) gum_draw(int prim, int vtype, int count, const void *indices, const void *vertices)
 {
-	if (gudraw_on <= 0)
+	if (model_switch.gudraw_on <= 0)
 	{
 		(sceGumDrawArray)(prim, vtype, count, indices, vertices);
 		return;
@@ -9238,15 +9282,16 @@ static struct
 } bake;
 /* 0 baked, EQUAL; 1 baked, GEQUAL with STENCIL_SLACK steps; 2 the old nudge */
 static int stencil_mode = 0;
-/* "bakedraw": a draw is first looked over for a triangle with all three
-corners flagged, and bake_find is called only when there is one. Set when
-the map's bake opens (the main CPU) and written back: the draws run on the
-Media Engine too */
-static int bake_draw_first = 0;
 #define STENCIL_SLACK 2
-static unsigned long bake_substituted = 0, bake_pieces_drawn = 0, bake_layer_draws = 0, bake_layer_triangles = 0,
-	bake_old_path_triangles = 0;
-
+/* The bake's counts for the report. A replayed level draw adds to them on
+the Media Engine and a draw made at once adds on the main CPU, so they have
+a cache line to themselves: a line put back by one CPU carries its copy of
+everything on it, and beside a switch or any word the game reads, that
+would put a stale value back. Here it can only cost the report a count */
+static struct
+{
+	unsigned long substituted, pieces_drawn, layer_draws, layer_triangles, old_path_triangles;
+} bake_count __attribute__((aligned(64)));
 static unsigned int bake_triple_hash(unsigned int a, unsigned int b, unsigned int c)
 {
 	return (a * 73856093u) ^ (b * 19349663u) ^ (c * 83492791u);
@@ -9399,9 +9444,9 @@ void psp_ge_stencils_open(const char *name, unsigned int map_crc)
 		mode_word = psp_keep("stencilsnudge") ? 2 : psp_keep("stencilsslack") ? 1 : 0;
 		if (mode_word)
 			stencil_mode = mode_word;
-		bake_draw_first = psp_keep("bakedraw") != 0;
-		ge_writeback(&bake_draw_first, sizeof(bake_draw_first));
 	}
+	if (!model_switch.read)
+		model_switches();
 	bake_forget();
 	snprintf(path, sizeof(path), PSP_MAPS_ROOT "/%s.pstn", name);
 	file = sceIoOpen(path, PSP_O_RDONLY, 0);
@@ -9655,12 +9700,15 @@ static const unsigned short *bake_substitute(struct level_stream *stream, const 
 
 	if (!w || stencil_mode == 2)
 		return indices;
-	if (bake_draw_first)
+	if (model_switch.bake_draw_first)
 	{
 		/* most draws hold no replaced triangle, and bake_find says so one
 		triangle at a time, a call each. Its own first test, made here over
 		the whole draw: a triangle it could find has all three corners
-		flagged, so a draw with no such triangle is the game's own list */
+		flagged, so a draw with no such triangle is the game's own list.
+		The indices are a triangle list, three a triangle, as bake_find's loop
+		below reads them: every caller is one of the level's list draws (its
+		body, its shadows, its lights), and a strip never comes here */
 		const unsigned char *flags = w->flags;
 		const unsigned short *tri = indices, *end = indices + 3 * *triangle_count;
 		unsigned int original = w->original;
@@ -9705,11 +9753,11 @@ static const unsigned short *bake_substitute(struct level_stream *stream, const 
 		if (mark)
 		{
 			w->drawn_frame[r] = ge_hot.stream_frame;
-			bake_pieces_drawn += w->affected[r].count;
+			bake_count.pieces_drawn += w->affected[r].count;
 		}
 	}
 	if (mark)
-		bake_substituted += found;
+		bake_count.substituted += found;
 	*triangle_count = out;
 	return list;
 }
@@ -11741,27 +11789,6 @@ failed (the log names only the first 12 buffers, which see-through parts
 usually take) */
 static unsigned long multi_node_rigid_why[3];
 
-/* "model14" (docs/design_model14.md): an opaque rigid part's vertices as
-14-byte records: u16 uv (the source's s16 + 32768, undone by the texture
-offset), s8 normal with the node in the pad byte the GE skips, s16 position
-on a power-of-two step, the part's own, folded into its model matrix. A
-step that is a power of two keeps the matrix a uniform scale (normals keep
-their direction) and puts shared corners of parts with one step on the same
-lattice point. First-person parts, the sky and see-through parts stay in
-floats: the first are seen closest, the last are read on the CPU */
-static int model14 = -1;
-/* "bakedonce": a part's place in the geometry cache is asked once, by
-psp_ge_draw_model, and handed to model_convert. Read on the main CPU with
-model14; under 0 (not read yet) counts as off */
-static int baked_once = -1;
-/* "skinwoff": every bending batch drawn at its part's slot count, as before.
-By default each draws at its own highest slot in use: the GE blends every
-weight a draw declares, zeros included, at ~60 ns a weight a vertex, and the
-slots past a batch's highest hold no node of its vertices, so their weights
-are zero. 1-4 and 5-8 weights share a record layout (the texture coordinate
-starts 4 or 8 bytes in), so a batch keeps its part's class. Read on the main
-CPU before any replay, as model14 */
-static int skinw_off = -1;
 /* the step's exponent + 128 a converted block (0: float records) */
 static unsigned char converted_step[CONVERTED_BUFFERS];
 /* set by the caller before model_convert: the part must stay in floats */
@@ -11861,34 +11888,14 @@ static unsigned int color_from_rgb_scaled(const float *rgb, float gain)
 	return color_from_rgb(scaled);
 }
 
-/* the switches a replay on the ME reads (model14, skinwoff, bakedonce,
-gustate, gudraw): read on the main CPU by the first model, before any replay
-needs them, and written back. The ME only reads them: a lazy read there
-would write a line the main CPU may also hold. One cold function for all of
-them: it runs once, and psp_ge_model_begin sits in the ME's code copy, where
-every byte takes room from code that runs each frame */
-static int model_switches_read = 0;
-static void __attribute__((noinline, cold)) model_switches(void)
-{
-	model14 = psp_keep("model14");
-	skinw_off = psp_keep("skinwoff");
-	baked_once = psp_keep("bakedonce") != 0;
-	gustate_on = psp_keep("gustate") != 0;
-	gudraw_on = psp_keep("gudraw") != 0;
-	sceKernelDcacheWritebackRange(&model14, sizeof(model14));
-	sceKernelDcacheWritebackRange(&skinw_off, sizeof(skinw_off));
-	sceKernelDcacheWritebackRange(&baked_once, sizeof(baked_once));
-	sceKernelDcacheWritebackRange(&gustate_on, sizeof(gustate_on));
-	sceKernelDcacheWritebackRange(&gudraw_on, sizeof(gudraw_on));
-	model_switches_read = 1;
-	sceKernelDcacheWritebackRange(&model_switches_read, sizeof(model_switches_read));
-}
-
 void psp_ge_model_begin(const float *node_matrices, int node_matrix_count, float u_scale, float v_scale,
 	const float *ambient, int light_count, const float *light0, const float *light1)
 {
 	GE_BENCH_SKIP();
-	if (!model_switches_read && !psp_on_me())
+	/* the replay's switches, read on the main CPU before a replay needs them:
+	the ME only reads them (a lazy read there would write a line the main CPU
+	may also hold) */
+	if (!model_switch.read && !psp_on_me())
 		model_switches();
 	if (DEFER_RECORDING() &&
 		defer_model_begin(node_matrices, node_matrix_count, u_scale, v_scale, ambient, light_count, light0, light1))
@@ -13885,15 +13892,19 @@ static int model_convert(void *vertices, int count, int uncompressed, const unsi
 	if (psp_pcv_on)
 	{
 		/* have_asked: the caller asked psp_geo_baked for these vertices and
-		nothing since could have moved the answer */
+		nothing since could have moved the answer. Only psp_ge_draw_model
+		says so, and it withdraws it (level_stands) for a draw that
+		pretouches: a park, a sync of the frame in flight or a conversion
+		between the ask and here means asking again. A new caller passes 0
+		(model_convert_ask) unless it can show the same */
 		const struct pcv_header *baked = have_asked ? asked : psp_geo_baked(vertices);
 
 		if (baked)
 			return pcv_answer(baked, count, uncompressed, index_count, strip, skin);
 	}
-	/* read on the main CPU (psp_ge_model_begin); the ME only reads it */
-	if (model14 < 0 && !psp_on_me())
-		model14 = psp_keep("model14");
+	/* read on the main CPU; the ME only reads it */
+	if (!model_switch.read && !psp_on_me())
+		model_switches();
 	if (converted_sweep_late < 0)
 		converted_sweep_late = psp_keep("sweeplate");
 	if (skin_bound_kb < 0 && psp_keep_loaded())
@@ -14081,12 +14092,12 @@ static int model_convert(void *vertices, int count, int uncompressed, const unsi
 		*skin = part;
 	converted_count++;
 	converted_step[slot] = 0;
-	if (model14 > 0 && part && !uncompressed && !convert_float_only && count > 0)
+	if (model_switch.model14 > 0 && part && !uncompressed && !convert_float_only && count > 0)
 	{
 		model14_skinned_parts++;
 		model14_skinned_vertices += (unsigned long)count;
 	}
-	if (model14 > 0 && skin && !part && !uncompressed && !convert_float_only && count > 0)
+	if (model_switch.model14 > 0 && skin && !part && !uncompressed && !convert_float_only && count > 0)
 	{
 		/* the smallest power of two that keeps every coordinate in 16 bits */
 		float largest = 0.0f, k = 1.0f / 16777216.0f;
@@ -16128,7 +16139,7 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 			}
 			slot_us += probe_clock() - slot_start;
 			slot_batches++;
-			if (skinw_off == 0)
+			if (model_switch.skin_own_slots)
 			{
 				int top = skin->weights;
 
@@ -17356,9 +17367,13 @@ void psp_ge_draw_model(void *vertices, int vertex_count, int uncompressed, const
 {
 	const struct pcv_header *level = vertices ? psp_geo_baked(vertices) : NULL;
 	/* "bakedonce": whether that answer still stands when the part is drawn
-	below. The pretouch can park and sync the frame in flight and convert the
-	part, any of which may move it, so a part that goes that way asks again */
-	int level_stands = baked_once > 0;
+	below. Two things between here and the body can move it, both only while
+	PRETOUCHING(): the texture's pretouch (it parks and syncs the frame in
+	flight) and the part's own (the same, and it converts the part). A draw
+	that pretouches is cleared before the first of them, so it asks again.
+	Today such a draw is also recorded and returns at GE_DEFER, to ask afresh
+	when it is replayed; the clear holds if a record is ever refused */
+	int level_stands = model_switch.baked_once > 0;
 
 	/* SSPR: a level the bake made (psp_geo.c locked it for the level the
 	engine picked) draws its own triangle list, after its records */
@@ -17378,7 +17393,12 @@ void psp_ge_draw_model(void *vertices, int vertex_count, int uncompressed, const
 		model_drawn_vertices += (unsigned long)vertex_count;
 	}
 	GE_BENCH_SKIP();
-	GE_PRETOUCH(base_key, TXPT_MODEL_BASE);
+	if (PRETOUCHING())
+	{
+		level_stands = 0;
+		pretouch(base_key, TXPT_MODEL_BASE, 0);
+	}
+	/* true here only if it was above: nothing ran in between otherwise */
 	if (PRETOUCHING() && vertices && vertex_count > 0)
 	{
 		if (model_pretouch < 0)
@@ -17386,8 +17406,6 @@ void psp_ge_draw_model(void *vertices, int vertex_count, int uncompressed, const
 		if (model_pretouch && !model_converted_now(vertices))
 		{
 			struct skin_part *skin;
-
-			level_stands = 0;
 
 			if (inflight_room_away)
 				inflight_room_park();
@@ -20182,8 +20200,8 @@ static void bake_queue_layers(unsigned int stencil_key, unsigned int key, float 
 			draw->indices = kept;
 			draw->index_count = (int)kept_count * 3;
 			draw->level = 3;
-			bake_layer_draws++;
-			bake_layer_triangles += kept_count;
+			bake_count.layer_draws++;
+			bake_count.layer_triangles += kept_count;
 		}
 		if (cut_count && (draw = transparent_slot(key, u_scale, v_scale, u_offset, v_offset, blend, centroid)) != NULL)
 		{
@@ -20212,7 +20230,7 @@ static void bake_queue_layers(unsigned int stencil_key, unsigned int key, float 
 			draw->indices = NULL;
 			draw->index_count = cut_count;
 			draw->level = 4;
-			bake_layer_draws++;
+			bake_count.layer_draws++;
 		}
 	}
 }
@@ -20432,7 +20450,7 @@ static void psp_ge_queue_level_transparent_body(const void *vertices, int vertex
 		if (baked && bake_stencil_has(baked, triangle))
 			continue;
 		if (baked)
-			bake_old_path_triangles++;
+			bake_count.old_path_triangles++;
 		for (corner = 0; corner < 3; corner++)
 		{
 			int code = vertex_codes[triangle[corner]];
@@ -26895,8 +26913,8 @@ static void frame_end_show(void)
 		reset, so a bench window's line carried every earlier window's;
 		review), and the ME's part on a line of its own (512 characters) */
 		platform_log("GE: light pass mode %d: %lu triangles as the level drew them, %lu nudged draws, %lu skipped, %lu unlifted; stencil bake (mode %d): %lu wall triangles drawn as %lu pieces, %lu stencil layer draws (%lu triangles), %lu stencil triangles on the old path; level vertices %s: %lu materials at 16 bits, %lu too wide, %lu 16-bit passes (last 300 frames)",
-			light_mode, light_index_triangles, light_nudged_draws, lights_skipped, light_exact_triangles, stencil_mode, bake_substituted,
-			bake_pieces_drawn, bake_layer_draws, bake_layer_triangles, bake_old_path_triangles,
+			light_mode, light_index_triangles, light_nudged_draws, lights_skipped, light_exact_triangles, stencil_mode, bake_count.substituted,
+			bake_count.pieces_drawn, bake_count.layer_draws, bake_count.layer_triangles, bake_count.old_path_triangles,
 			level_compact > 0 ? "16-bit (levelcompact)" : "float", compact_streams, compact_refused, compact_draws);
 		if (level_local > 0)
 			platform_log("GE: the level's origin (%.0f %.0f %.0f), moved %lu times; copies moved to it %lu (%lu vertices, %lu us), left for being out of exact reach %lu (last 300 frames)",
@@ -27067,7 +27085,7 @@ static void frame_end_show(void)
 			platform_log("GE: lightmerge: merged light draws, last 300 frames: %lu", light_merged_draws);
 		light_merged_draws = 0;
 		light_index_triangles = light_nudged_draws = lights_skipped = light_exact_triangles = 0;
-		bake_substituted = bake_pieces_drawn = bake_layer_draws = bake_layer_triangles = bake_old_path_triangles = 0;
+		memset(&bake_count, 0, sizeof(bake_count));
 		compact_draws = 0;
 		/* build 90 */
 		platform_log("GE: permanent decals (%s): %lu drawn on the level's own triangles (%lu triangles), %lu the usual way (last 300 frames); planes scanned %lu, from memory %lu; %lu us a frame",
@@ -27113,7 +27131,7 @@ static void frame_end_show(void)
 			frames, draws_this_frame, textured_draws, flat_draws, triangles_this_frame, clipped_this_frame, culled_this_frame,
 			model_draws_this_frame, converted_count, reconverted_count, stream_bytes / 1024, streams_let_go, detail_passes, level_glow_passes,
 			list_peak, display_list_size, clip_peak, MAXIMUM_CUT_CORNERS, camera_forward[0], camera_forward[1], camera_forward[2]);
-		if (model14 > 0)
+		if (model_switch.model14 > 0)
 			platform_log("GE: model14: %lu parts (%lu vertices, %lu KB less than 24-byte records); see-through asks refused %lu; skinned parts at full size %lu (%lu vertices; 10 bytes less a vertex would free %lu KB)",
 				model14_parts, model14_vertices, model14_vertices * 10 / 1024, model14_refused,
 				model14_skinned_parts, model14_skinned_vertices, model14_skinned_vertices * 10 / 1024);
