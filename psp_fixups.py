@@ -57327,13 +57327,20 @@ typedef char psp_tag_view_fits[
 	offsetof(struct cache_file_tag_instance, tag_index) == offsetof(struct psp_tag_view, tag_index) &&
 	offsetof(struct cache_file_tag_instance, base_address) == offsetof(struct psp_tag_view, base_address) &&
 	sizeof(((struct cache_file_tag_instance *)0)->base_address) == sizeof(void *) ? 1 : -1];
-/* the start value: an index nothing asks for (no tag has it, and NONE is not it) */
+/* the start value's index, 0x7FFFFFFE: no ask carries it (an index's low
+half is the tag's place, and no map has 65,534 tags; NONE is 0xFFFFFFFF) */
 static const struct psp_tag_view psp_tag_never = { 0, { 0, 0 }, 0x7FFFFFFE, NULL, NULL };
 const struct psp_tag_view *psp_tag_memo[PSP_TM_COUNT] __attribute__((aligned(64))) =
 	{ [0 ... PSP_TM_COUNT - 1] = &psp_tag_never };
 
 /* every word back to the start value: the instance table is about to change
-or has changed. Written back, so the Media Engine's next read sees it */
+or has changed. Written back to main RAM here; the Media Engine reads it from
+there because it holds no copy from before: me_serve (psp_me.c) writes back
+and drops the ME's whole data cache at the start and the end of every job
+but the audio job taken by ranges, which reads the voices only, and
+psp_me_cache_refresh does the same before each replay piece (psp_ge.c,
+psp_sweepme.c). tag_get's reads of global_tag_instances on the ME rest on
+the same drops; neither holds for a job running across a map change */
 void psp_tag_memo_forget(void)
 {
 	extern int sceKernelDcacheWritebackRange(const void *p, unsigned int size);
@@ -57346,8 +57353,12 @@ void psp_tag_memo_forget(void)
 
 void * __attribute__((noinline)) psp_tag_memo_miss(long group_tag, int slot, long tag_index)
 {
+	extern int psp_tagmemo_on; /* psp_platform.c, from the keep word */
 	short absolute_index = (short)tag_index;
 
+	/* the word off: the getter's answer comes the way it always did */
+	if (!psp_tagmemo_on)
+		return tag_get(group_tag, tag_index);
 	if (cache_file_globals.tags_loaded && global_tag_instances && cache_file_globals.tag_header &&
 		absolute_index >= 0 && absolute_index < cache_file_globals.tag_header->tag_count)
 	{
@@ -57363,7 +57374,7 @@ void * __attribute__((noinline)) psp_tag_memo_miss(long group_tag, int slot, lon
 			extern volatile unsigned int psp_me_context;
 
 			/* the main CPU's work only: the ME reads the words, it never writes them */
-			if (!(psp_me_context != 0 || psp_cpu_is_me()) && PSP_KEEP_ONCE("tagmemo"))
+			if (!(psp_me_context != 0 || psp_cpu_is_me()))
 				psp_tag_memo[slot] = (const struct psp_tag_view *)instance;
 			return instance->base_address;
 		}

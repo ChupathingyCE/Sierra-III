@@ -729,6 +729,11 @@ int psp_timers_off = 0;
 vector checks are called at all. 1 until the keep words are read, so a
 check asked before then still decides for itself */
 int psp_verify_call = 1;
+/* TAGMEMO (psp_fixups.py, FIXES_DIET2): whether a typed getter's miss
+remembers its answer. A word set here and written back, not PSP_KEEP_ONCE in
+the miss: the miss also runs on the Media Engine, where a keep search and a
+static's first store don't belong. 0 until the keep words are read */
+int psp_tagmemo_on = 0;
 
 #if defined(PSP_RECON) && defined(PSP_TICK_STEPS)
 /* "objsteps" (below): each step's time charged to the object being updated
@@ -1431,6 +1436,8 @@ static void keep_load(void)
 	the measuring off, notimers and nooverlay in one word */
 	psp_timers_off = keep_search("notimers") || keep_search("lean");
 	psp_verify_call = !keep_search("verifygate") || keep_search("verifyvectors");
+	psp_tagmemo_on = keep_search("tagmemo") != 0;
+	sceKernelDcacheWritebackRange(&psp_tagmemo_on, sizeof(psp_tagmemo_on)); /* the ME reads it */
 	/* every build starts with notimers (keep_defaults above): the game's
 	instrument timers (a clock call per model part, per moving particle, per
 	physics update: ~240 system calls a tick in the tick on b30) feed only
