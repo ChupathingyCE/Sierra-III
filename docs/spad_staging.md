@@ -49,35 +49,83 @@ The emulator's cache model splits every count by the game's phase word (`psp_cur
 
 An 8 KB fill by DMACplus takes 24-40 µs at 3-5 µs a KB [M]; a data miss costs ~157-196 ns [M, `hardware_facts.md`, halo_fwbench round 2]. So a fill pays only past **~120-250 misses it takes away**, before the bus time it takes from the CPU's own misses (×1.20 at 25% duty, ×1.38 at 50% [M]) and the channel's start (a kernel call). A set the part also writes costs its write-back by DMA too. A part's set is worth the PSP bench only well past that line.
 
-## The table (to fill from spadstage1)
+## The table (spadstage1, lab sierra-batch 44924540134, 2026-11-21) [E: the cache model]
 
-Per map: b30_leg2 to 130 s, c20_leg2 to 90 s; the tock 49e336a5 + this branch, PSP_RECON PSP_TICK_STEPS PSP_SPADPHASE, the tock's profile and layouts; the ME's side apart. Counts a tick [E].
+**The answer:** in today's interleaved tick, staging a part's data takes away no more misses than a fixed 16 KB does. On b30, the whole tick's best 16 KB of lines, held statically, removes 7,204 misses a tick, against 7,362 for each part's best 8 KB filled once a run of it (+2%). On c20 the static set does better: 10,409 against 7,209. The parts are entered 29-186 times a tick, and most of their sets aren't steady (0.00-0.13: different lines each entry), so a fill per entry can't pay (a fill pays past ~120-250 misses [U on M]) and the sets aren't known ahead. A staged window pays only where a box runs a part as one pass over a known set, made ahead: the sweep records' hand-off is the candidate (the lead 2026-11-21 12:1x).
 
-### The parts
+### b30: 3900 ticks (base anatomy entries)
 
-| Map | Part | Runs a tick | Accesses a tick | Data misses a tick [E] | Share of the tick's misses | Best 8 KB of lines: misses a tick | Lines shared with other parts' best 8 KB |
+| part | entries a tick | accesses a tick | misses a tick [E] | share of the tick's misses | scratchpad accesses a tick | best 8 KB: misses a tick | its lines shared with the other parts' best 8 KB |
 |---|---|---|---|---|---|---|---|
-| b30 | whole tick | 1 | to fill from spadstage1 | to fill | 100% | to fill | - |
-| b30 | collision | to fill | to fill | to fill | to fill | to fill | to fill |
-| b30 | posing | to fill | to fill | to fill | to fill | to fill | to fill |
-| b30 | the AI (main CPU) | to fill | to fill | to fill | to fill | to fill | to fill |
-| b30 | the world store | to fill | to fill | to fill | to fill | to fill | to fill |
-| b30 | drawing (main CPU) | 1 | to fill | to fill | - | to fill | to fill |
-| c20 | (the same six) | to fill from spadstage1 | | | | | |
+| the whole tick | 1.0 | 656615 | 21731 | 100.0% | 4422 | 5116 | - |
+| the drawing (main CPU) | 1.0 | 423905 | 14771 | - | 1079 | 2773 | coll 19, pose 16, ai 31, world 4 |
+| collision | 103.8 | 132150 | 3972 | 18.3% | 2881 | 1614 | drawing 19, pose 17, ai 17, world 3 |
+| posing | 114.1 | 148992 | 3694 | 17.0% | 0 | 1640 | drawing 16, coll 17, ai 22, world 6 |
+| the AI | 28.9 | 104214 | 3812 | 17.5% | 9 | 1004 | drawing 31, coll 17, pose 22, world 14 |
+| the world store | 85.9 | 22088 | 648 | 3.0% | 0 | 331 | drawing 4, coll 3, pose 6, ai 14 |
 
-The ceilings, misses a tick [E]: static (the whole tick's best 16 KB of lines, fixed) against staged (each part's best 8 KB, filled once a run): to fill from spadstage1.
+ceilings, misses a tick [E]: static (the whole tick's best 16 KB of lines, fixed) 7204; staged (each part's best 8 KB, filled once a run of it; the drawing's too) 7362; a fill pays past ~120-250 misses [U on M]
 
-### Each part's data sets
+### b30, the whole tick: data sets by misses
 
-One table a part a map (`spadstage.py`'s output), the sets by misses:
-
-| Set | KB touched | Accesses a tick | Reads a byte a tick | Data misses a tick [E] | Its hottest 8 KB hold (accesses / misses) | Steady [E] | Known before the part [U] |
+| set | KB touched | accesses a tick | reads a byte a tick | misses a tick [E] | hottest 8 KB holds (accesses / misses) | steady | known before the part |
 |---|---|---|---|---|---|---|---|
-| to fill from spadstage1 | | | | | | | |
+| game state: objects | 828.4 | 48245 | 0.06 | 3093.7 | 20% / 25% | 0.13 | part: the objects a part visits are listed at the tick start; their neighbours are found during it |
+| (thread stacks, unnamed: 9fb0000) | 32.0 | 262305 | 8.00 | 1856.4 | 94% / 92% | 0.43 | n/a: the stack |
+| game state: object | 11.4 | 23566 | 2.02 | 887.2 | 94% / 87% | 1.00 | part: the objects a part visits are listed at the tick start; their neighbours are found during it |
+| game state: object spheres | 15.2 | 7227 | 0.46 | 680.4 | 100% / 100% | 0.24 | part: the objects a part visits are listed at the tick start; their neighbours are found during it |
+| game state: actor | 37.6 | 14441 | 0.37 | 629.0 | 64% / 42% | 0.52 | yes: a fixed array (its live entries listed at the tick start) |
+| tag window: BSP and free space | 348.4 | 19070 | 0.05 | 616.9 | 76% / 50% | 0.06 | yes: a program variable |
 
-### The candidates
+### b30, collision: data sets by misses
 
-A candidate is a set (or a set's hottest slice) of ≤8 KB that one part reads many times a byte, steady or known ahead, whose misses a run clear the fill's break-even, and that the other parts' best 8 KB don't share (so a static placement can't hold it beside theirs). To fill from spadstage1; each goes to the lead with its scenario, then one PSP bench (step 2).
+| set | KB touched | accesses a tick | reads a byte a tick | misses a tick [E] | hottest 8 KB holds (accesses / misses) | steady | known before the part |
+|---|---|---|---|---|---|---|---|
+| game state: object spheres | 8.1 | 6931 | 0.83 | 625.5 | 100% / 100% | 0.08 | part: the objects a part visits are listed at the tick start; their neighbours are found during it |
+| tags: coll | 151.6 | 7255 | 0.05 | 476.6 | 67% / 58% | 0.00 | part: the present objects' tags, known at the tick start |
+| game state: cluster collideable object reference | 7.3 | 10400 | 1.39 | 407.2 | 100% / 100% | 0.07 | yes: a fixed array (its live entries listed at the tick start) |
+| span: level bsp: bsp3d planes | 90.2 | 3564 | 0.04 | 381.4 | 66% / 63% | 0.01 | part: fixed arrays; the nodes a query walks follow its position (top levels: map load) |
+| (thread stacks, unnamed: 9fb0000) | 21.7 | 55199 | 2.49 | 373.9 | 92% / 91% | 0.03 | n/a: the stack |
+| game state: objects | 154.9 | 3630 | 0.02 | 241.2 | 43% / 58% | 0.00 | part: the objects a part visits are listed at the tick start; their neighbours are found during it |
+
+
+### c20: 2700 ticks (base anatomy entries)
+
+| part | entries a tick | accesses a tick | misses a tick [E] | share of the tick's misses | scratchpad accesses a tick | best 8 KB: misses a tick | its lines shared with the other parts' best 8 KB |
+|---|---|---|---|---|---|---|---|
+| the whole tick | 1.0 | 750604 | 25579 | 100.0% | 1927 | 8106 | - |
+| the drawing (main CPU) | 1.0 | 344667 | 10521 | - | 1356 | 1811 | coll 13, pose 22, ai 24, world 2 |
+| collision | 154.7 | 105797 | 2643 | 10.3% | 1642 | 1310 | drawing 13, pose 16, ai 15, world 7 |
+| posing | 186.1 | 210345 | 5229 | 20.4% | 2 | 2822 | drawing 22, coll 16, ai 25, world 4 |
+| the AI | 29.2 | 88266 | 3673 | 14.4% | 6 | 1020 | drawing 24, coll 15, pose 25, world 13 |
+| the world store | 85.1 | 9461 | 434 | 1.7% | 0 | 246 | drawing 2, coll 7, pose 4, ai 13 |
+
+ceilings, misses a tick [E]: static (the whole tick's best 16 KB of lines, fixed) 10409; staged (each part's best 8 KB, filled once a run of it; the drawing's too) 7209; a fill pays past ~120-250 misses [U on M]
+
+### c20, the whole tick: data sets by misses
+
+| set | KB touched | accesses a tick | reads a byte a tick | misses a tick [E] | hottest 8 KB holds (accesses / misses) | steady | known before the part |
+|---|---|---|---|---|---|---|---|
+| game state: objects | 868.7 | 67548 | 0.08 | 4677.2 | 15% / 17% | 0.17 | part: the objects a part visits are listed at the tick start; their neighbours are found during it |
+| (thread stacks, unnamed: 9fb0000) | 20.4 | 309661 | 14.84 | 2234.5 | 100% / 99% | 0.34 | n/a: the stack |
+| tag window: BSP and free space | 379.2 | 24093 | 0.06 | 1202.8 | 78% / 64% | 0.07 | yes: a program variable |
+| (program, unnamed: 8b70000) | 1.8 | 12328 | 6.64 | 766.8 | 100% / 100% | 0.78 | ?: unnamed (heap or caches) |
+| game state: object | 7.5 | 28015 | 3.65 | 758.8 | 100% / 100% | 0.95 | part: the objects a part visits are listed at the tick start; their neighbours are found during it |
+| psp_bs3_rec | 14.3 | 7248 | 0.49 | 586.3 | 73% / 77% | 0.78 | yes: a program variable |
+
+### c20, collision: data sets by misses
+
+| set | KB touched | accesses a tick | reads a byte a tick | misses a tick [E] | hottest 8 KB holds (accesses / misses) | steady | known before the part |
+|---|---|---|---|---|---|---|---|
+| (thread stacks, unnamed: 9fb0000) | 13.1 | 42992 | 3.20 | 315.0 | 99% / 99% | 0.04 | n/a: the stack |
+| sweepme_records | 55.6 | 2594 | 0.05 | 284.7 | 54% / 44% | 0.00 | yes: a program variable |
+| game state: object spheres | 2.2 | 6852 | 2.97 | 274.5 | 100% / 100% | 0.15 | part: the objects a part visits are listed at the tick start; their neighbours are found during it |
+| game state: objects | 221.3 | 2243 | 0.01 | 177.3 | 42% / 64% | 0.00 | part: the objects a part visits are listed at the tick start; their neighbours are found during it |
+| game state: cluster collideable object reference | 1.4 | 10301 | 7.32 | 159.3 | 100% / 100% | 0.19 | yes: a fixed array (its live entries listed at the tick start) |
+| psp_bs2_arena | 12.2 | 2818 | 0.23 | 155.5 | 98% / 99% | 0.01 | yes: a program variable |
+
+
+The full per-part set tables are the lab's findings rows `spad_<part>_set` and the reader's output (`projects/sierra/scripts/spadstage.py`).
 
 ## Running it
 
