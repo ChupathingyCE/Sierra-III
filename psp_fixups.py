@@ -57340,12 +57340,20 @@ and drops the ME's whole data cache at the start and the end of every job
 but the audio job taken by ranges, which reads the voices only, and
 psp_me_cache_refresh does the same before each replay piece (psp_ge.c,
 psp_sweepme.c). tag_get's reads of global_tag_instances on the ME rest on
-the same drops; neither holds for a job running across a map change */
+the same drops; neither holds for a job running across a map change, so
+that is checked here, word on or off, and said once in the log */
 void psp_tag_memo_forget(void)
 {
 	extern int sceKernelDcacheWritebackRange(const void *p, unsigned int size);
-	int slot;
+	extern int psp_me_jobs_out(void); /* psp_me.c */
+	static int told;
+	int slot, out = psp_me_jobs_out();
 
+	if (out && !told)
+	{
+		told = 1;
+		platform_psp_log("tagmemo: FAIL: the tag table changed with %d Media Engine job(s) in flight", out);
+	}
 	for (slot = 0; slot < PSP_TM_COUNT; slot++)
 		psp_tag_memo[slot] = &psp_tag_never;
 	sceKernelDcacheWritebackRange(psp_tag_memo, sizeof(psp_tag_memo));
