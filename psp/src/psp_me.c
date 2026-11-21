@@ -585,14 +585,18 @@ in jobs. Reading the block is a few uncached loads; no clock call, no VFPU */
 #define MEPROF_BINS 64 /* slot jobs by type, ring jobs at MEPROF_RING + type */
 #define MEPROF_RING 32
 /* Count, memory-wait cycles, I-misses, D-misses, write-backs, uncached
-loads and stores, cached loads and stores, local bus */
-#define MEPROF_WORDS 10
+loads and stores, cached loads and stores, local bus, bus access. Bus access
+is there because the counts can't say where an I-miss filled from: if the
+ME's eDRAM is off the system bus, its fills leave that counter alone, and the
+code misses from main RAM are what the data side's traffic doesn't explain
+(docs/meprofile.md, "Where a code miss fills from") */
+#define MEPROF_WORDS 11
 #define MEPROF_DEPTH 4 /* jobs served inside jobs: deeper ones stay in their host's */
 struct meprof_bin
 {
 	unsigned long long cycles, memory; /* a window's outgrow 32 bits */
 	unsigned int jobs, count[MEPROF_WORDS - 2];
-	unsigned int pad[3];
+	unsigned int pad[2];
 } __attribute__((aligned(64)));
 /* written only on the ME, a line a bin, each line written back as it's
 added to; the main CPU reads them uncached and keeps its own last copy, so
@@ -604,7 +608,7 @@ static struct
 {
 	unsigned int start[MEPROF_DEPTH][MEPROF_WORDS], inside[MEPROF_DEPTH][MEPROF_WORDS];
 	int depth;
-	unsigned int pad[15];
+	unsigned int pad[7];
 } meprof __attribute__((aligned(64)));
 /* the enable word as the ME first read it, plus one (1: off, 2: on); the
 ME writes it uncached once */
@@ -616,7 +620,7 @@ static inline void meprof_read(unsigned int *v)
 
 	/* PspDebugProfilerRegs after the enable word: 3 memory, 12 i_miss,
 	13 d_miss, 14 d_writeback, 8/9 uncached load/store, 10/11 cached
-	load/store, 18 local_bus */
+	load/store, 18 local_bus, 7 bus_access */
 	v[0] = me_cycles();
 	v[1] = p[1 + 3];
 	v[2] = p[1 + 12];
@@ -627,6 +631,7 @@ static inline void meprof_read(unsigned int *v)
 	v[7] = p[1 + 10];
 	v[8] = p[1 + 11];
 	v[9] = p[1 + 18];
+	v[10] = p[1 + 7];
 }
 
 static inline void meprof_enter(void)
@@ -5567,12 +5572,12 @@ void psp_me_profile_report(unsigned int frames)
 		the job's code runs from MEXEC's copy, and stays near main RAM's
 		~70-77 where it doesn't */
 		platform_log("ME: meprofile, %s %s: %.1f jobs a frame, %.2f ms a frame (memory wait %.1f%%); a frame I-misses %.0f, D-misses %.0f, write-backs %.0f, "
-			"memory wait a miss %.1f cycles; uncached loads %.0f stores %.0f, cached loads %.0f stores %.0f, local bus %.0f",
+			"memory wait a miss %.1f cycles; uncached loads %.0f stores %.0f, cached loads %.0f stores %.0f, local bus %.0f, bus access %.0f cycles",
 			best >= MEPROF_RING ? "ring" : "slot", name,
 			(float)b->jobs / f, (float)b->cycles / rate / 1000.0f / f, b->cycles ? 100.0f * (float)b->memory / (float)b->cycles : 0.0f,
 			(float)b->count[0] / f, (float)b->count[1] / f, (float)b->count[2] / f,
 			b->count[0] + b->count[1] ? (float)b->memory / (float)(b->count[0] + b->count[1]) : 0.0f,
-			(float)b->count[3] / f, (float)b->count[4] / f, (float)b->count[5] / f, (float)b->count[6] / f, (float)b->count[7] / f);
+			(float)b->count[3] / f, (float)b->count[4] / f, (float)b->count[5] / f, (float)b->count[6] / f, (float)b->count[7] / f, (float)b->count[8] / f);
 	}
 }
 #endif

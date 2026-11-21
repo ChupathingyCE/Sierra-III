@@ -4728,18 +4728,35 @@ time in no part its own split. Set only on the ME, inside a profiled job
 (psp_ge_me_replay); the block at 0xBC400000 is the ME's own there, and a
 kernel address the main CPU can't read, so psp_on_me() is tested too */
 #define ME_PROFILER ((volatile unsigned int *)0xBC400000)
-#define PART_COUNTERS 4 /* I-misses, D-misses, write-backs, memory-wait cycles */
+#define PART_COUNTERS 5 /* I-misses, D-misses, write-backs, memory-wait cycles, bus-access cycles */
 /* 64-bit: a heavy step's memory wait outgrows 32 bits over 300 frames */
 static unsigned long long ge_part_cnt[GE_PARTS][PART_COUNTERS] __attribute__((aligned(64)));
 static unsigned int part_cnt_mark[PART_COUNTERS] __attribute__((aligned(64)));
+/* each part's counted marks, and those whose code ran from MEXEC's copy:
+the counters can't say where an I-miss filled from, so a part whose own
+code is in the copy and still pays main RAM's price a miss points at the
+code it calls outside the copy (docs/meprofile.md) */
+static unsigned int ge_part_marks[GE_PARTS][2] __attribute__((aligned(64)));
 static inline void part_counters(unsigned int *out)
 {
 	/* PspDebugProfilerRegs after the enable word: 3 memory, 12 i_miss,
-	13 d_miss, 14 d_writeback */
+	13 d_miss, 14 d_writeback, 7 bus_access */
 	out[0] = ME_PROFILER[1 + 12];
 	out[1] = ME_PROFILER[1 + 13];
 	out[2] = ME_PROFILER[1 + 14];
 	out[3] = ME_PROFILER[1 + 3];
+	out[4] = ME_PROFILER[1 + 7];
+}
+/* where this mark's own code runs: the copy sits in the ME's eDRAM
+(ME_EDRAM, 0x80000000 up, 2 MB), the originals in main RAM. A bal reads the
+PC without a load, and mexec.py leaves it alone (a branch inside the
+function carries no relocation) */
+static inline int part_in_copy(void)
+{
+	unsigned int pc;
+
+	__asm__ __volatile__(".set push\n\t.set noreorder\n\tbal 1f\n\tnop\n1:\tmove %0, $31\n\t.set pop" : "=r"(pc) : : "$31");
+	return (pc & 0xFFE00000u) == ME_EDRAM;
 }
 #define ME_PART_MARK(part) do { if (me_parts_on) part_add(part); } while (0)
 #else
@@ -4775,6 +4792,8 @@ static inline void part_add(int part)
 			ge_part_cnt[part][k] += c[k] - part_cnt_mark[k];
 			part_cnt_mark[k] = c[k];
 		}
+		ge_part_marks[part][0]++;
+		ge_part_marks[part][1] += part_in_copy();
 	}
 	if (me_parts_on)
 	{
@@ -27381,9 +27400,22 @@ static void frame_end_show(void)
 								written += snprintf(parts + written, sizeof(parts) - written, "%s%d %llu/%llu/%llu/%llu", written ? ", " : "", k,
 									ge_part_cnt[k][0] / 300, ge_part_cnt[k][1] / 300, ge_part_cnt[k][2] / 300, ge_part_cnt[k][3] / 300);
 						}
-						memset(ge_part_cnt, 0, sizeof(ge_part_cnt));
 						if (written)
 							platform_log("GE: parts on the ME, counters a frame (meprofile; part: I-misses/D-misses/write-backs/memory-wait cycles): %s", parts);
+						/* its own line, so the line above reads as before: the
+						bus-access cycles and where each part's marks ran */
+						written = 0;
+						parts[0] = 0;
+						for (k = 0; k < GE_PARTS && written < (int)sizeof(parts) - 96; k++)
+						{
+							if (ge_part_marks[k][0])
+								written += snprintf(parts + written, sizeof(parts) - written, "%s%d %llu/%u/%u", written ? ", " : "", k,
+									ge_part_cnt[k][4] / 300, ge_part_marks[k][1] / 300, ge_part_marks[k][0] / 300);
+						}
+						memset(ge_part_cnt, 0, sizeof(ge_part_cnt));
+						memset(ge_part_marks, 0, sizeof(ge_part_marks));
+						if (written)
+							platform_log("GE: parts on the ME, bus and copy a frame (meprofile; part: bus-access cycles/marks from MEXEC's copy/marks): %s", parts);
 					}
 #endif
 					/* build 48: the list's cached regions and the stall updates */
