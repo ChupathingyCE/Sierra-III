@@ -50,7 +50,7 @@ The near paths sit inline in the part's body, so every part that isn't near step
 
 ## 6. The kernel, proven in vmee (2026-11-21) [E: Th6uD1nk's vmee; the lab's findings `nearvme_kernel_vmee`]
 
-`psp/src/vme/near_verdicts.vmeg.c` (vmeg), `psp/src/vme/near_verdicts.c` (its C, from vmegc `--compat fat`), `tools/nearvme_ref.c` (the same arithmetic on the host), `tools/nearvme_check.py` (the proof). The game's near loop is untouched: the ME's hand-off is the next step.
+`psp/src/vme/near_verdicts.vmeg.c` (vmeg), `psp/src/vme/near_verdicts.c` (its C, from vmegc `--compat fat`), the lab's `projects/sierra/scripts/vme/nearvme_ref.c` (the same arithmetic on the host), the lab's `projects/sierra/scripts/vme/nearvme_check.py` (the proof). The game's near loop is untouched: the ME's hand-off is the next step.
 
 ### 6.1 Its shape
 
@@ -79,7 +79,7 @@ All results are at 2^-18 units (24 bits: ±32 units), as the census asked (§4).
 
 ### 6.3 The proof
 
-- **Word for word:** vmee (`--compat fat`) against `tools/nearvme_ref.c`, which keeps the same running sums from 0, the same floors and the same 24-bit words. Stage 1's words and stage 2's plane words both count. **46 tiles, 21,010 words, 0 differ, at each scale set**: 24 synthetic tiles (3 for each slot count 1-8, positions anywhere within ±16 units, any rotation, weights summing to 128 with some 0, half of them at `guardwide`'s g = 10) and 4 realistic batches (60, 84, 100 and 120 vertices with 1-4 slots, a part ±3 units across, its bones near each other, out to 14.5 units deep), 22 tiles. **A negative control** (the cancel mask moved one word): 2,686 of 3,520 words differ, so the comparison does catch a wrong kernel.
+- **Word for word:** vmee (`--compat fat`) against the lab's `projects/sierra/scripts/vme/nearvme_ref.c`, which keeps the same running sums from 0, the same floors and the same 24-bit words. Stage 1's words and stage 2's plane words both count. **46 tiles, 21,010 words, 0 differ, at each scale set**: 24 synthetic tiles (3 for each slot count 1-8, positions anywhere within ±16 units, any rotation, weights summing to 128 with some 0, half of them at `guardwide`'s g = 10) and 4 realistic batches (60, 84, 100 and 120 vertices with 1-4 slots, a part ±3 units across, its bones near each other, out to 14.5 units deep), 22 tiles. **A negative control** (the cancel mask moved one word): 2,686 of 3,520 words differ, so the comparison does catch a wrong kernel.
 - **The setup was checked first:** his batched mat4x4 under the same vmee gave M·v for 64 of 64 values, as the PSP-1000 did.
 - **Error against a double-precision skinning of the unrounded inputs**, in units and relative to the vertex's largest slot term (the census's measure):
 
@@ -101,3 +101,10 @@ All results are at 2^-18 units (24 bits: ±32 units), as the census asked (§4).
 ### 6.5 Dink's work it uses
 
 Th6uD1nk's vme2-next-level (MIT, copyright m-c/d, Th6uD1nk; `psp/src/vme/LICENSE_vme2-next-level.md`): the vmeg language and vmegc, which wrote `near_verdicts.c`; vmee, the proof's emulator; and his batched mat4x4's cancel-masked accumulate, the form of both stages, marked in the kernel's header. The rest is Sierra-III's. The toolkit was run from a copy in a folder of its own, with `python3 -I`. **One local change to how it ran:** vmee builds its host trace program with `g++ -m32`, and the machine had no 32-bit libraries, so a wrapper dropped `-m32` (`-no-pie` keeps the static arrays under 4 GB; the program only records register writes for vmee's Python model). His mat4x4 under that build gave 64 of 64, as above.
+
+## 7. Next: the stream layout, the box's gate (2026-11-21) [D: the lead's ruling]
+
+- **The staging decides the box.** The ME's cycles a vertex are counted, not the DMAC's time, and priced against the float verdict's ~390 (§3). Two layouts to price: (a) the VME's own DMAC run from a self-feeding descriptor list made once a tile, so the ME's setup is per tile, not per vertex; (b) the transpose, the per-slot plane rows (5 × slots) held resident and each vertex streamed in once, if the VME's buffers and address generation allow it. **The box stops if no layout brings the ME under ~150 cycles a vertex, all in** (setup, the band's rechecks, the hand-off).
+- **safe32 is the default scale set.** Its band (2^-10, 25-58 corners a frame to recheck) costs the ME ~0.07 ms a frame [U]; the wide set comes back only if the band ever matters.
+- **The PSP's accumulator check** (wrap or saturate past 2^31) waits for the layout, as one ask with its question, reader and decision. It measures behaviour, not time, so its runner is generated with the clock call stripped (in the lab's wrapper; `psppower.h` never ships), which needs no go.
+- **The check's tools live in the lab** (`projects/sierra/scripts/vme/`): this repo keeps the kernel and its generated C.
