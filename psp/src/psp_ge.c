@@ -92,6 +92,13 @@ recomputation for each fixed-point scale. Bands 2^-6 .. 2^-14 units */
 #define NEARBAND_BANDS 5
 static int nearband_on = 0;
 static unsigned long nearband_verdicts, nearband_in[NEARBAND_BANDS];
+/* the lead 2026-11-21 01:3x: the error of a reordered or fixed-point sum
+follows the size of its terms (each slot's w_s * P_s.v, which cancel), not
+of the result, so each verdict's distance is also counted against its
+largest term, bands 2^-10 .. 2^-18 of it; and the corners whose byte
+weights don't sum to 128 (the plane's affine term moves with the sum) */
+static unsigned long nearband_rel[NEARBAND_BANDS], nearband_weight_off;
+static float nearband_most_term;
 static float nearband_most_depth;
 #endif
 static inline unsigned int probe_clock(void)
@@ -3703,9 +3710,15 @@ static void __attribute__((noinline, cold)) ge_kinds_report(void)
 		platform_log("GE: nearband: %.1f corner verdicts a frame; within 2^-6 of a tested plane %.1f, 2^-8 %.1f, 2^-10 %.1f, 2^-12 %.1f, 2^-14 %.1f; the deepest corner %.2f units",
 			nearband_verdicts / f, nearband_in[0] / f, nearband_in[1] / f, nearband_in[2] / f, nearband_in[3] / f, nearband_in[4] / f,
 			(double)nearband_most_depth);
+		platform_log("GE: nearband terms: against its largest slot term, within 2^-10 %.1f, 2^-12 %.1f, 2^-14 %.1f, 2^-16 %.1f, 2^-18 %.1f a frame; weights not summing to 128 %.1f; the largest term %.2f units",
+			nearband_rel[0] / f, nearband_rel[1] / f, nearband_rel[2] / f, nearband_rel[3] / f, nearband_rel[4] / f,
+			nearband_weight_off / f, (double)nearband_most_term);
 		nearband_verdicts = 0;
 		memset(nearband_in, 0, sizeof(nearband_in));
+		memset(nearband_rel, 0, sizeof(nearband_rel));
+		nearband_weight_off = 0;
 		nearband_most_depth = 0.0f;
+		nearband_most_term = 0.0f;
 	}
 #endif
 	near_batches_by_sphere = near_sphere_mismatches = 0;
@@ -16266,6 +16279,35 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 								for (b = 0; b < NEARBAND_BANDS; b++, width *= 0.25f)
 									if (d < width)
 										nearband_in[b]++;
+								{
+									/* each slot's own term on each tested plane */
+									float term = 0.0f, rel = 1.0f / 1024.0f;
+									int sl, wsum = 0;
+
+									for (sl = 0; sl < skin->weights; sl++)
+										if (record[sl])
+										{
+											const float (*row)[4] = depth_row[sl];
+											float w = record[sl] * (1.0f / 128.0f), c[3], t;
+											int ax;
+
+											wsum += record[sl];
+											for (ax = 0; ax < 3; ax++)
+												c[ax] = w * (row[ax][0] * p[0] + row[ax][1] * p[1] + row[ax][2] * p[2] + row[ax][3]);
+											t = fabsf(c[2]); if (t > term) term = t;
+											t = fabsf(guard_x * c[2] - c[0]) / guard_x_length; if (t > term) term = t;
+											t = fabsf(guard_x * c[2] + c[0]) / guard_x_length; if (t > term) term = t;
+											t = fabsf(guard_y * c[2] - c[1]) / guard_y_length; if (t > term) term = t;
+											t = fabsf(guard_y * c[2] + c[1]) / guard_y_length; if (t > term) term = t;
+										}
+									if (wsum != 128)
+										nearband_weight_off++;
+									if (term > nearband_most_term)
+										nearband_most_term = term;
+									for (b = 0; b < NEARBAND_BANDS; b++, rel *= 0.25f)
+										if (d < term * rel)
+											nearband_rel[b]++;
+								}
 								if (fabsf(at[2]) > nearband_most_depth)
 									nearband_most_depth = fabsf(at[2]);
 							}
