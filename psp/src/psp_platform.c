@@ -738,7 +738,9 @@ int psp_tagmemo_on = 0;
 the tick. Outside it (the drawing above all, where different tags are asked
 in turn) a miss goes straight to tag_get and stores nothing, so the tick
 finds its own answers again and a miss there costs what it did. A hit is a
-hit anywhere. tagmemo_word: the word itself; psp_phase moves psp_tagmemo_on */
+hit anywhere. That is the main CPU's side: the Media Engine never stores,
+whatever it reads here (psp_phase). tagmemo_word: the word itself;
+psp_phase moves psp_tagmemo_on */
 static int tagmemo_word = 0, tagmemo_tick_only = 0;
 
 #if defined(PSP_RECON) && defined(PSP_TICK_STEPS)
@@ -4050,8 +4052,11 @@ void psp_phase(int phase)
 {
 	psp_current_phase = phase;
 	/* "tagmemotick": the memo is written in the tick (phase 1) only. Not
-	written back: the Media Engine never stores an answer, and which way its
-	misses go gives the same answer either way */
+	written back, so the Media Engine may read either value at any time: it
+	is no gate there. The store is refused on the ME inside the miss itself
+	(psp_tag_memo_miss tests the CPU, not this word), and the miss's two
+	ways, tag_get and its fast test, return the same address. A change that
+	makes them differ, or lets the ME store, needs a word of the ME's own */
 	if (tagmemo_tick_only)
 		psp_tagmemo_on = tagmemo_word && phase == 1;
 	if (psp_ge_phase_ring_on)
