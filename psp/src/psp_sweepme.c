@@ -68,7 +68,7 @@ static long sweepme_biped[SWEEPME_RECORDS];
 static int sweepme_added, sweepme_open;
 int psp_sweepme_check;
 /* the ME's own: the level its cached tag lines belong to */
-static const void *sweepme_me_planes;
+static PSP_AIME_ME_SIDE const void *sweepme_me_planes = 0;
 
 int psp_sweepme_on = -1;
 int psp_sweepme_pending = -1;
