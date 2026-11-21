@@ -356,14 +356,18 @@ if MEXEC and not re.match(r"^[A-Za-z0-9_]+$", MEXEC):
     sys.exit("psp_build: PSP_MEXEC names a list in psp/layout (mexec_<name>.txt)")
 # A list's "# @jobs" line: the ME enters every slot job (the AI's think, the
 # mixer, the replay) through run_job's copy, not only the replay through its
-# entry; "# @room <KB>": the copy's room, read by tools/mexec.py too. A list
-# without them builds psp_me.c as before
+# entry; "# @room <KB>": the copy's room, read by tools/mexec.py too;
+# "# @table <words>": the table's size, for a list that outgrows the default
+# (every word is .data the heap gives up). A list without them builds
+# psp_me.c as before
 MEXEC_DEFINES = []
 if MEXEC and os.path.exists(os.path.join(HERE, "psp/layout/mexec_%s.txt" % MEXEC)):
     for _l in open(os.path.join(HERE, "psp/layout/mexec_%s.txt" % MEXEC)):
-        _m = re.match(r"#\s*@(jobs|room)\s*(\d*)\s*$", _l.strip())
+        _m = re.match(r"#\s*@(jobs|room|table)\s*(\d*)\s*$", _l.strip())
         if _m and _m.group(1) == "jobs":
             MEXEC_DEFINES.append("-DPSP_MEXEC_JOBS=1")
+        elif _m and _m.group(1) == "table" and _m.group(2):
+            MEXEC_DEFINES.append("-DPSP_MEXEC_TABLE_WORDS=" + _m.group(2))
         elif _m and _m.group(2):
             MEXEC_DEFINES.append("-DPSP_MEXEC_ROOM_KB=" + _m.group(2))
 # PSP_MEVISLAND=0: leaves out the frame's visibility made on the ME (mevis's
