@@ -211,7 +211,10 @@ otherwise), and the main CPU's wait for an audio job is AUDIO_HOLD_WAIT_US */
 Sized to the lists in use with room to grow (list rb fills 1,040 words): it sits
 in .data, so every word is heap the game doesn't get, and the tool refuses a
 list whose table outgrows it */
-#if PSP_MEXEC_JOBS
+#if defined(PSP_MEXEC_TABLE_WORDS)
+/* the list's "# @table" line (psp_build.py): a list that fills a raised room */
+#define MEXEC_TABLE_WORDS PSP_MEXEC_TABLE_WORDS
+#elif PSP_MEXEC_JOBS
 /* a list with the think and the mixer (psp/layout/mexec_rbj.txt) has about
 twice rb's functions and calls between them */
 #define MEXEC_TABLE_WORDS 4096
@@ -2719,6 +2722,8 @@ static int dmacp_start_kernel(void *param)
 		return call->result = -2;
 	if (hw(base + 0x10) & 1)
 		return call->result = -1;
+	if (!psp_dma_address_ok(call->src) || !psp_dma_address_ok(call->dst))
+		return call->result = -5; /* a kernel segment: refused before any register is written */
 	hw(DMACP_INT_TC_CLEAR) = bit;
 	hw(DMACP_INT_ERR_CLEAR) = bit;
 	interrupts = sceKernelCpuSuspendIntr();
@@ -3029,6 +3034,32 @@ int psp_meaudio_start(void)
 int psp_me_running(void)
 {
 	return me_state > 0;
+}
+
+/* how many of the ME's jobs the main CPU has asked for and not yet had
+back: the slots' and the ring's, the sound's mixing apart (it reads the
+voices only). For a main-CPU check that nothing on the ME can be reading
+what is about to change */
+int psp_me_jobs_out(void)
+{
+	int k, out = 0;
+
+	if (me_state <= 0)
+		return 0;
+	for (k = 0; k < ME_SLOTS; k++)
+	{
+		if (k == ME_SLOT_AUDIO)
+			continue;
+#ifdef ME_SLOT_MUSIC
+		if (k == ME_SLOT_MUSIC)
+			continue;
+#endif
+		if (SLOT(k)->request != SLOT(k)->done)
+			out++;
+	}
+	if (RING_PUSHED != RING_POPPED)
+		out++;
+	return out;
 }
 
 int psp_meaudio_running(void)

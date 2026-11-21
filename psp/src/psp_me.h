@@ -53,6 +53,16 @@ void psp_me_edram_probe(void);
 int psp_me_submit(int which, unsigned int type, const unsigned int *args, int arg_count);
 int psp_me_finish(int which, unsigned int *results);
 void psp_me_audio_hold_off(void);
+/* an address DMACplus or the VME's DMAC may be given: the low or uncached
+user forms (0x0xxxxxxx, 0x4xxxxxxx). Neither engine refuses a kernel
+segment as sceDmacMemcpy does: spadprobe v2 pointed DMACplus at 0x8001xxxx
+and hung the PSP-1000, and the VME's DMAC at 0x80011000 hung the ME */
+static inline int psp_dma_address_ok(unsigned int address)
+{
+	unsigned int segment = address >> 28;
+
+	return segment == 0x0u || segment == 0x4u;
+}
 int psp_me_submitted_done(int which);
 int psp_me_submitted_begun(int which);
 unsigned int psp_me_last_job_us(int which); /* the ME's own time on the slot's last job */

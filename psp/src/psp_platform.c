@@ -725,6 +725,15 @@ frame: the steps, the objects' updates, the renderer's parts). The profile
 windows and the per-type object lines then read 0; the heartbeat's frame and
 tick times stay. Set when keep.txt is read */
 int psp_timers_off = 0;
+/* VERIFYGATE (psp_fixups.py, FIXES_DIET1): whether the units' and bipeds'
+vector checks are called at all. 1 until the keep words are read, so a
+check asked before then still decides for itself */
+int psp_verify_call = 1;
+/* TAGMEMO (psp_fixups.py, FIXES_DIET2): whether a typed getter's miss
+remembers its answer. A word set here and written back, not PSP_KEEP_ONCE in
+the miss: the miss also runs on the Media Engine, where a keep search and a
+static's first store don't belong. 0 until the keep words are read */
+int psp_tagmemo_on = 0;
 
 #if defined(PSP_RECON) && defined(PSP_TICK_STEPS)
 /* "objsteps" (below): each step's time charged to the object being updated
@@ -1292,6 +1301,13 @@ static const struct
 	/* ADPCM decoded by one table lookup a sample, not the formula's data-led
 	branches (psp_dsound.c, ima_fast): exact, checked at the audio's start */
 	{ "imatable", "imatableoff" },
+	/* the code diet's short forms (docs/code_diet.md): object_update's short
+	form, the vector checks' calls made only under verifyvectors, and a typed
+	tag getter's last answer kept at its call site. Exact (play and both
+	seeds identical every tick); together c20's opening tick -3.0% and frame
+	-1.6% on the PSP-3000, the drawing +2.1% (the getters' misses while
+	drawing: the next thing to fix) */
+	{ "objlean", "objleanold" }, { "verifygate", "verifygateoff" }, { "tagmemo", "tagmemooff" },
 };
 static char keep_defaults_added[KEEP_DEFAULTS_ROOM] = "";
 /* defaults that found no room: a lever silently off would be read as on */
@@ -1432,6 +1448,9 @@ static void keep_load(void)
 	/* build 114: "lean" (E2, optimization_ranking.md): the play set-up with
 	the measuring off, notimers and nooverlay in one word */
 	psp_timers_off = keep_search("notimers") || keep_search("lean");
+	psp_verify_call = !keep_search("verifygate") || keep_search("verifyvectors");
+	psp_tagmemo_on = keep_search("tagmemo") != 0;
+	sceKernelDcacheWritebackRange(&psp_tagmemo_on, sizeof(psp_tagmemo_on)); /* the ME reads it */
 	/* every build starts with notimers (keep_defaults above): the game's
 	instrument timers (a clock call per model part, per moving particle, per
 	physics update: ~240 system calls a tick in the tick on b30) feed only
@@ -1454,6 +1473,15 @@ static void keep_load(void)
 	platform_log("keep words, continued: nearauto walldump decalnoslope vblankthrottle noboxtest detailallfar verifytags texsqueeze texvramonly colltest geoasync nudgewide decalbatch menushot geserial vramcold uvwide nooverlay meaudio nomeaudio benchrun levelcompact meclassify noskincut novblankthrottle");
 	/* build 115 */
 	platform_log("keep words, continued: iostats gereads gereadskind vramtexN edramcheck overlayfreefar inflightkbN inflightroom inflighttextold");
+	/* the code diet's short forms (psp_fixups.py, FIXES_DIET1): each says so
+	when its word is on, so a run's log shows which form it played */
+	platform_log("keep words, the code diet's short forms (on by default; off: objleanold verifygateoff tagmemooff)");
+	if (keep_search("objlean"))
+		platform_log("objlean: object_update's short form");
+	if (keep_search("verifygate"))
+		platform_log("verifygate: the vector checks are called only under verifyvectors");
+	if (keep_search("tagmemo"))
+		platform_log("tagmemo: the typed getters remember their last answer");
 	/* build 116: the restorations are on by default; these words turn each off */
 	platform_log("keep words, restorations off: overlayfreenear clearblue seethroughflat senvflat planarfogoff notint waterwhite flaresnobipeds nodither detailgrey80 flashnearest nearseatedfar nearseatcine nometers lognohold statepages");
 	/* build 117: its own restorations, each turned off by these; and the
