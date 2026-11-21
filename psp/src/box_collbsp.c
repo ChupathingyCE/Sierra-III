@@ -17,7 +17,13 @@ collbsp_depth_ladder) and the engine allows 128. Past the cap the walk
 stops on the ME and says so (result->deep), and the asker redoes it on the
 main CPU. Set on the main CPU before the ME's first job; the ME only reads
 it (psp_sweepme.c: 36, or 4 with the keep word walkcap4, the refusal's test) */
+#if defined(__psp__)
 #include "psp_me.h"
+#else
+/* the halo_box host test builds this unit with the desktop compiler, where
+nothing runs on the ME */
+#define PSP_ME_WORK() 0
+#endif
 int box_collbsp_me_depth_cap = 36;
 #define WALK_DEEPER(w) (++(w)->me_depth <= box_collbsp_me_depth_cap || !PSP_ME_WORK() || \
 	((w)->result->deep = (w)->found = 1, (w)->me_depth--, 0))

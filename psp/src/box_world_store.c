@@ -12,9 +12,21 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#if defined(__psp__)
 #include <pspkernel.h>
+#else
+/* the halo_box host test builds this unit on the desktop: no cache to write back */
+#define sceKernelDcacheWritebackRange(p, n) ((void)(p), (void)(n))
+#endif
 #include "box_world_store.h"
+#if defined(__psp__)
 #include "psp_me.h"
+#else
+/* the host test: one CPU, so every mark is the main CPU's */
+#define PSP_AIME_ME_SIDE
+#define PSP_MAIN_SIDE
+#define PSP_ME_WORK() 0
+#endif
 
 /* the ME marks ring's counts (below, psp_ws_dirty), read by the store's report */
 static unsigned long ws_me_marks_landed, ws_me_marks_overflows;

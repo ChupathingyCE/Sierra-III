@@ -42745,10 +42745,12 @@ FIXES_AIME1B["source/ai/ai.c#aime1b"] = [
 		/* psp_fixups.py (FIXES_AIME1B, "aime1b"): the world writes the
 		thinking done ahead queued, where its results land (actors.c) */
 		extern void psp_aime_collect(void);
-		extern void box_ws_me_marks_drain(void);
+		extern void box_ws_me_marks_drain(void) __attribute__((weak));
 
-		/* the marks the ME's thinking made (box_world_store.c) land first */
-		box_ws_me_marks_drain();
+		/* the marks the ME's thinking made (box_world_store.c) land first;
+		weak, as the store is linked only with PSP_BIPEDSTAGE on */
+		if (box_ws_me_marks_drain)
+			box_ws_me_marks_drain();
 		psp_aime_collect();
 	}
 #endif
