@@ -3177,6 +3177,32 @@ static int blip_depth_live; /* blipdepth (the motion sensor, below) */
 static unsigned long blip_depth_world_after;
 static unsigned long blip_depth_after_kind[KINDS], blip_depth_after_tested;
 
+#ifdef PSP_RECON
+/* recon "pnboundcount" (lever PN's tighter bound, docs/box_draw_list.md
+§11.1): for each run the near corner loop works corner by corner, whether its
+own sphere shows that the GE could clip it at the world's plane itself (every
+point past the plane, and every point the GE makes at the plane, inside the
+GE's 1920-pixel reach), so the loop could skip it with the same look; and the
+plane it would need if not. [0] every near bending batch, [1] the riding
+models' (the vehicle local player 0 sits in, its riders and what they hold).
+The planes' buckets: the world's, 2x it, 0.25, 0.5, 1 unit, past 1 */
+#define PNB_BUCKETS 6
+static int pnb_on = 0, pnb_riding = 0;
+static unsigned long pnb_corners[2], pnb_corners_pass[2], pnb_corners_norun[2], pnb_batches[2], pnb_batches_pass[2],
+	pnb_part_batches_pass[2], pnb_part_corners_pass[2], pnb_runs_mixed[2], pnb_runs_pass[2], pnb_tris_pass[2],
+	pnb_dropped_pass[2], pnb_cut_pass[2], pnb_tris[2], pnb_run_hist[2][PNB_BUCKETS], pnb_part_hist[2][PNB_BUCKETS];
+/* the ceiling of any bound: each triangle the loop looks at asked exactly
+(its corners as the loop worked them out, kept here by vertex), and the runs
+whose every triangle passes. The table is the corner verdicts' size */
+static float pnb_at[8192][3];
+static unsigned long pnb_tris_exact[2], pnb_corners_exact[2], pnb_runs_exact[2];
+/* the split (the lead 2026-11-20 19:2x): the triangles the loop cuts, and of
+them those that pass the exact test. Every corner is worked out either way
+(the test needs them), so only the cuts of passing triangles are work the GE
+could take; the corners are the rest */
+static unsigned long pnb_cut_all[2], pnb_cut_exact[2], pnb_kept_whole[2];
+static float pnb_world_near = 0.0f;
+#endif
 static void ge_kind(int kind)
 {
 	unsigned int now;
@@ -3672,6 +3698,45 @@ static void __attribute__((noinline, cold)) ge_kinds_report(void)
 		slot_us / kind_frames, slot_batches / kind_frames, kind_frames);
 	near_loop_us = near_loop_batches = near_loop_triangles = near_corners_worked = slot_us = slot_batches = 0;
 	model_floor_left_out = near_parts = near_parts_whole = near_batches_whole = 0;
+#ifdef PSP_RECON
+	if (pnb_on && kind_frames)
+	{
+		int i;
+
+		for (i = 0; i < 2; i++)
+		{
+			float f = (float)kind_frames;
+
+			platform_log("GE: pnboundcount %s: corners %.1f a frame (%.1f in runs whose own bound clears the world's plane %.4f, %.1f in batches with no runs), runs %.1f mixed, %.1f clear; batches %.1f, %.1f wholly clear by their runs, %.1f (%.1f corners) by the part's own sphere; the clear runs' triangles %.1f a frame (of the loop's %.1f), %.1f of them dropped by the loop, %.1f cut",
+				i ? "riding" : "all", pnb_corners[i] / f, pnb_corners_pass[i] / f, (double)pnb_world_near, pnb_corners_norun[i] / f,
+				pnb_runs_mixed[i] / f, pnb_runs_pass[i] / f, pnb_batches[i] / f, pnb_batches_pass[i] / f,
+				pnb_part_batches_pass[i] / f, pnb_part_corners_pass[i] / f, pnb_tris_pass[i] / f, pnb_tris[i] / f,
+				pnb_dropped_pass[i] / f, pnb_cut_pass[i] / f);
+			platform_log("GE: pnboundcount %s planes: corners by their run's plane %.1f %.1f %.1f %.1f %.1f %.1f, by their part's (its runs' most) %.1f %.1f %.1f %.1f %.1f %.1f a frame (the world's, to 2x it, 0.25, 0.5, 1, past 1 unit)",
+				i ? "riding" : "all", pnb_run_hist[i][0] / f, pnb_run_hist[i][1] / f, pnb_run_hist[i][2] / f,
+				pnb_run_hist[i][3] / f, pnb_run_hist[i][4] / f, pnb_run_hist[i][5] / f, pnb_part_hist[i][0] / f,
+				pnb_part_hist[i][1] / f, pnb_part_hist[i][2] / f, pnb_part_hist[i][3] / f, pnb_part_hist[i][4] / f,
+				pnb_part_hist[i][5] / f);
+			platform_log("GE: pnboundcount %s exact: triangles the GE could clip itself at the world's plane %.1f a frame of the loop's %.1f; runs whose every triangle could %.1f of %.1f mixed, their corners %.1f of %.1f (the ceiling of any bound per run)",
+				i ? "riding" : "all", pnb_tris_exact[i] / f, pnb_tris[i] / f, pnb_runs_exact[i] / f, pnb_runs_mixed[i] / f,
+				pnb_corners_exact[i] / f, pnb_corners[i] / f);
+			platform_log("GE: pnboundcount %s split: the loop cut %.1f triangles a frame at the world's plane, %.1f of them ones the GE could clip itself; %.1f not cut (wholly in front, or wholly behind and left out); every one's corners worked, %.1f a frame",
+				i ? "riding" : "all", pnb_cut_all[i] / f, pnb_cut_exact[i] / f, pnb_kept_whole[i] / f, pnb_corners[i] / f);
+		}
+	}
+	memset(pnb_corners, 0, sizeof(pnb_corners)); memset(pnb_corners_pass, 0, sizeof(pnb_corners_pass));
+	memset(pnb_corners_norun, 0, sizeof(pnb_corners_norun)); memset(pnb_batches, 0, sizeof(pnb_batches));
+	memset(pnb_batches_pass, 0, sizeof(pnb_batches_pass)); memset(pnb_part_batches_pass, 0, sizeof(pnb_part_batches_pass));
+	memset(pnb_part_corners_pass, 0, sizeof(pnb_part_corners_pass)); memset(pnb_runs_mixed, 0, sizeof(pnb_runs_mixed));
+	memset(pnb_runs_pass, 0, sizeof(pnb_runs_pass)); memset(pnb_tris_pass, 0, sizeof(pnb_tris_pass));
+	memset(pnb_dropped_pass, 0, sizeof(pnb_dropped_pass)); memset(pnb_cut_pass, 0, sizeof(pnb_cut_pass));
+	memset(pnb_tris, 0, sizeof(pnb_tris)); memset(pnb_run_hist, 0, sizeof(pnb_run_hist));
+	memset(pnb_part_hist, 0, sizeof(pnb_part_hist));
+	memset(pnb_tris_exact, 0, sizeof(pnb_tris_exact)); memset(pnb_corners_exact, 0, sizeof(pnb_corners_exact));
+	memset(pnb_runs_exact, 0, sizeof(pnb_runs_exact));
+	memset(pnb_cut_all, 0, sizeof(pnb_cut_all)); memset(pnb_cut_exact, 0, sizeof(pnb_cut_exact));
+	memset(pnb_kept_whole, 0, sizeof(pnb_kept_whole));
+#endif
 	near_batches_by_sphere = near_sphere_mismatches = 0;
 	model_size_floor_peak = model_size_floor;
 	model_bone_loads = model_take_bytes = model_part_calls = model_bone_calls = model_bone_sub_bytes = 0;
@@ -4308,6 +4373,11 @@ static void gebusy_start(void)
 		platform_log("GE: gereads on (what each draw makes the GE read, by where it lives: a report every 300 frames)");
 	}
 	probes_on = psp_keep("probes") ? 1 : 0; /* build 119 */
+#if defined(PSP_DRAWLIST) && defined(PSP_RECON)
+	pnb_on = psp_keep("pnboundcount") ? 1 : 0;
+	if (pnb_on)
+		platform_log("GE: pnboundcount on (the near corner loop's runs against their own bound at the world's plane, lever PN)");
+#endif
 	if (probes_on)
 		platform_log("GE: probes on (the near corner loop, the level's passes, the light draw and the decal calls split by piece)");
 	me_tail_on = psp_keep("metail") ? 1 : 0;
@@ -15865,6 +15935,122 @@ static int near_cluster_verdict(const struct skin_batch *b, int c, int weights, 
 	return !used ? 0 : inside ? 1 : beyond ? 2 : 0;
 }
 
+#if defined(PSP_DRAWLIST) && defined(PSP_RECON)
+/* pnboundcount: the nearest plane at or past `near` at which the GE could clip
+a sphere (part-space centre and radius, each used slot's image of it as
+near_cluster_verdict takes them) itself: on each side axis, either every image
+lies within the GE's reach `reach` (a slope) of the eye's axis (then every
+point of the clipped triangles does, whatever the plane), or every image's
+side reach is at most reach x the plane (then every point past the plane, and
+every point the GE makes on it, is). The radius gets sphere_inside's margin.
+A NaN gives no plane (1e9) */
+static float pnb_plane(const float *sphere, float radius, const struct skin_batch *b, int weights,
+	const float (*depth_row)[3][4], const float *scale, float near, float reach, float reach_length)
+{
+	float slab[2], plane = near;
+	int cone[2] = { 1, 1 }, slot, axis;
+
+	slab[0] = slab[1] = near;
+	for (slot = 0; slot < weights; slot++)
+	{
+		const float (*row)[4] = depth_row[slot];
+		float c[3], r;
+		int i;
+
+		if (b->node[slot] == 0xFF || scale[slot] < 0.0f)
+			continue;
+		for (i = 0; i < 3; i++)
+			c[i] = row[i][0] * sphere[0] + row[i][1] * sphere[1] + row[i][2] * sphere[2] + row[i][3];
+		r = radius * scale[slot] * 1.01f + 0.01f;
+		if (!(c[0] == c[0] && c[1] == c[1] && c[2] == c[2] && r == r))
+			return 1.0e9f;
+		for (axis = 0; axis < 2; axis++)
+		{
+			float side = fabsf(c[axis]) + r;
+
+			if (side / reach > slab[axis])
+				slab[axis] = side / reach;
+			if (!(fabsf(c[axis]) + r * reach_length <= reach * c[2]))
+				cone[axis] = 0;
+		}
+	}
+	for (axis = 0; axis < 2; axis++)
+		if (!cone[axis] && slab[axis] > plane)
+			plane = slab[axis];
+	return plane;
+}
+
+static int pnb_bucket(float plane, float near)
+{
+	return plane <= near ? 0 : plane <= 2.0f * near ? 1 : plane <= 0.25f ? 2 : plane <= 0.5f ? 3 : plane <= 1.0f ? 4 : 5;
+}
+
+/* exactly: whether the triangle's part past the plane (its corners there and
+the points on the plane where its edges cross it) lies within the reach */
+static int pnb_point_ok(const float *v, float reach)
+{
+	return fabsf(v[0]) <= reach * v[2] && fabsf(v[1]) <= reach * v[2];
+}
+
+static int pnb_triangle_ok(const float *a, const float *b, const float *c, float near, float reach)
+{
+	const float *v[3] = { a, b, c };
+	int k;
+
+	for (k = 0; k < 3; k++)
+	{
+		const float *p = v[k], *q = v[(k + 1) % 3];
+
+		if (p[2] >= near && !pnb_point_ok(p, reach))
+			return 0;
+		if ((p[2] < near) != (q[2] < near))
+		{
+			float s = (near - p[2]) / (q[2] - p[2]), m[3];
+
+			m[0] = p[0] + (q[0] - p[0]) * s;
+			m[1] = p[1] + (q[1] - p[1]) * s;
+			m[2] = near;
+			if (!pnb_point_ok(m, reach))
+				return 0;
+		}
+	}
+	return 1;
+}
+
+/* a batch's tally while the loop runs */
+struct pnb_batch
+{
+	int pass, fail, runs, which, exact;
+	unsigned long corners_exact, tris_exact;
+	float plane, part_most, reach, reach_length;
+	unsigned long run_start, corners_pass, tris, tris_pass, dropped_pass, cut_pass;
+	unsigned long cut_all, cut_exact; /* the loop's cuts, and those whose triangle the GE could clip itself */
+};
+
+static void pnb_run_close(struct pnb_batch *pb, unsigned long corners_now)
+{
+	if (pb->plane > 0.0f)
+	{
+		unsigned long corners = corners_now - pb->run_start;
+		int i;
+
+		for (i = 0; i <= pb->which; i += pb->which ? 1 : 2)
+			pnb_run_hist[i][pnb_bucket(pb->plane, NEAR_CLIP)] += corners;
+		if (pb->pass)
+			pb->corners_pass += corners;
+		if (pb->exact)
+		{
+			pb->corners_exact += corners;
+			for (i = 0; i <= pb->which; i += pb->which ? 1 : 2)
+				pnb_runs_exact[i]++;
+		}
+	}
+	pb->plane = 0.0f;
+	pb->pass = 0;
+	pb->exact = 0;
+}
+#endif
+
 static void model_geometry(void *vertices, const unsigned short *indices, long index_count, int strip,
 	struct skin_part *skin, ScePspFMatrix4 *model)
 {
@@ -16035,6 +16221,14 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 				unsigned long probe_corners = 0; /* in a register; added once below */
 
 				cut_store_begin(&pieces_store, model_cut, MAXIMUM_MODEL_CUT_CORNERS, CUT_SKIN);
+#if defined(PSP_DRAWLIST) && defined(PSP_RECON)
+				struct pnb_batch pb;
+
+				memset(&pb, 0, sizeof(pb));
+				pb.which = pnb_riding ? 1 : 0;
+				pb.reach = GUARD_PIXELS * (fov_tan_half() / (SCREEN_HEIGHT / 2));
+				pb.reach_length = sqrtf(1.0f + pb.reach * pb.reach);
+#endif
 
 				/* each vertex's verdict once a batch (build 43: worked out per
 				corner, it cost up to 6 ms a frame on the PSP in build 42) */
@@ -16095,6 +16289,29 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 							near_cluster_dropped++;
 						else
 							near_cluster_mixed++;
+#if defined(PSP_DRAWLIST) && defined(PSP_RECON)
+						if (pnb_on)
+						{
+							pnb_run_close(&pb, probe_corners);
+							pb.run_start = probe_corners;
+							if (cluster_state == 0 && c < b->cluster_count)
+							{
+								pb.plane = pnb_plane(b->clusters[c], b->clusters[c][3], b, skin->weights,
+									(const float (*)[3][4])depth_row, slot_scale, NEAR_CLIP, pb.reach, pb.reach_length);
+								pb.pass = pb.plane <= NEAR_CLIP;
+								pb.exact = 1;
+								pb.runs++;
+								if (pb.pass)
+									pnb_runs_pass[0]++, pnb_runs_pass[1] += pb.which;
+								else
+									pb.fail = 1;
+								if (pb.plane > pb.part_most)
+									pb.part_most = pb.plane;
+								pnb_runs_mixed[0]++;
+								pnb_runs_mixed[1] += pb.which;
+							}
+						}
+#endif
 					}
 					if (cluster_state == 1 && !near_cluster_check)
 					{
@@ -16199,6 +16416,10 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 									memcpy(at, fpu, sizeof(at));
 							}
 							code = (camera_corner_out(at[0], at[1], at[2], limit) ? 32 : 0) | outside(at);
+#if defined(PSP_DRAWLIST) && defined(PSP_RECON)
+							if (pnb_on && draw[t + k] < 8192)
+								memcpy(pnb_at[draw[t + k]], at, sizeof(at));
+#endif
 							if (draw[t + k] < CORNER_VERDICTS)
 								corner_verdict[draw[t + k]] = (unsigned short)(corner_stamp + code);
 						}
@@ -16208,6 +16429,33 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 					/* build 119: "nearclustercheck": the run's verdict against the triangle's own */
 					if ((cluster_state == 1 && behind) || (cluster_state == 2 && !(behind && (bits[0] & bits[1] & bits[2]))))
 						near_cluster_mismatches++;
+#if defined(PSP_DRAWLIST) && defined(PSP_RECON)
+					if (pnb_on)
+					{
+						int ok = draw[t] < 8192 && draw[t + 1] < 8192 && draw[t + 2] < 8192 &&
+							pnb_triangle_ok(pnb_at[draw[t]], pnb_at[draw[t + 1]], pnb_at[draw[t + 2]], NEAR_CLIP, pb.reach);
+
+						if (ok)
+							pb.tris_exact++;
+						else
+							pb.exact = 0;
+						pb.tris++;
+						if (behind && !(bits[0] & bits[1] & bits[2]))
+						{
+							pb.cut_all++;
+							if (ok)
+								pb.cut_exact++;
+						}
+						if (pb.pass)
+						{
+							pb.tris_pass++;
+							if (behind && (bits[0] & bits[1] & bits[2]))
+								pb.dropped_pass++;
+							else if (behind)
+								pb.cut_pass++;
+						}
+					}
+#endif
 					if (behind)
 					{
 						if (!kept)
@@ -16279,6 +16527,51 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 				}
 				if (!whole_by_sphere)
 					CENSUS(census_near(0, (long)(draw_count / 3)));
+#if defined(PSP_DRAWLIST) && defined(PSP_RECON)
+				if (pnb_on && !whole_by_sphere)
+				{
+					float part_plane = -1.0f;
+					int i;
+
+					pnb_run_close(&pb, probe_corners);
+					pnb_world_near = NEAR_CLIP;
+					if (b->radius >= 0.0f)
+					{
+						/* the part's own sphere, the same test */
+						if (!use_clusters)
+							near_slot_stretch(b, skin->weights, (const float (*)[3][4])depth_row, slot_scale);
+						part_plane = pnb_plane(b->center, b->radius, b, skin->weights, (const float (*)[3][4])depth_row,
+							slot_scale, NEAR_CLIP, pb.reach, pb.reach_length);
+					}
+					for (i = 0; i <= pb.which; i += pb.which ? 1 : 2)
+					{
+						pnb_corners[i] += probe_corners;
+						pnb_batches[i]++;
+						pnb_tris[i] += pb.tris;
+						pnb_tris_exact[i] += pb.tris_exact;
+						pnb_corners_exact[i] += pb.corners_exact;
+						if (!use_clusters)
+							pnb_corners_norun[i] += probe_corners;
+						pnb_corners_pass[i] += pb.corners_pass;
+						pnb_tris_pass[i] += pb.tris_pass;
+						pnb_dropped_pass[i] += pb.dropped_pass;
+						pnb_cut_pass[i] += pb.cut_pass;
+						pnb_cut_all[i] += pb.cut_all;
+						pnb_cut_exact[i] += pb.cut_exact;
+						pnb_kept_whole[i] += pb.tris - pb.cut_all;
+						if (use_clusters && !pb.fail)
+							pnb_batches_pass[i]++;
+						if (part_plane >= 0.0f && part_plane <= NEAR_CLIP)
+						{
+							pnb_part_batches_pass[i]++;
+							pnb_part_corners_pass[i] += probe_corners;
+						}
+						/* the part's plane: its runs' most, or its own sphere's when it has no runs */
+						pnb_part_hist[i][pnb_bucket(use_clusters ? (pb.runs ? pb.part_most : NEAR_CLIP) :
+							part_plane >= 0.0f ? part_plane : 1.0e9f, NEAR_CLIP)] += probe_corners;
+					}
+				}
+#endif
 				if (probes_on && (!whole_by_sphere || near_sphere_check))
 				{
 					near_loop_us += probe_clock() - loop_start;
