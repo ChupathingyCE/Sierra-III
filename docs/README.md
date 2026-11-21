@@ -16,13 +16,13 @@ Every write-up about the port is in this folder: design notes, measurements, pla
 - [`box_collision.md`](box_collision.md): Box: the collision service (bottleneck, 2026-11-11; v0, spec started)
 - [`box_draw_list.md`](box_draw_list.md): The draw list box
 - [`box_far_level.md`](box_far_level.md): The far level as one part (the GE lists and forms box, its first far form)
-- [`code_diet.md`](code_diet.md): The code diet: short forms of hot code for the 16 KB instruction caches (`objlean`, `verifygate`, `tagmemo`)
 - [`box_lights.md`](box_lights.md): The Lights box
 - [`box_posing.md`](box_posing.md): Box: posing, the pilot (bottleneck, 2026-11-11; v0, spec)
 - [`box_stick_reader.md`](box_stick_reader.md): Box: the stick reader (streaming)
 - [`box_tick_schedule.md`](box_tick_schedule.md): Box: the tick schedule (slice 1, the replay's pick-up points; keep word `ticksched`)
 - [`box_world_store.md`](box_world_store.md): Box: the world store (bottleneck, 2026-11-11; v0, spec in progress)
 - [`capacity_model.md`](capacity_model.md): Workload and capacity (ledger 2)
+- [`code_diet.md`](code_diet.md): The code diet: short forms of hot code for the 16 KB instruction caches (`objlean`, `verifygate`, `tagmemo`)
 - [`compromise_table.md`](compromise_table.md): What lifting the compromise freeze would buy (b30, c10, c20, d20)
 - [`direction_check_2026-11-09.md`](direction_check_2026-11-09.md): Direction check at R's milestone (2026-11-09 17:50, master)
 - [`draw_map.md`](draw_map.md): The drawing map: the main CPU's drawing by part (2026-11-09, master)
