@@ -3003,6 +3003,32 @@ int psp_me_running(void)
 	return me_state > 0;
 }
 
+/* how many of the ME's jobs the main CPU has asked for and not yet had
+back: the slots' and the ring's, the sound's mixing apart (it reads the
+voices only). For a main-CPU check that nothing on the ME can be reading
+what is about to change */
+int psp_me_jobs_out(void)
+{
+	int k, out = 0;
+
+	if (me_state <= 0)
+		return 0;
+	for (k = 0; k < ME_SLOTS; k++)
+	{
+		if (k == ME_SLOT_AUDIO)
+			continue;
+#ifdef ME_SLOT_MUSIC
+		if (k == ME_SLOT_MUSIC)
+			continue;
+#endif
+		if (SLOT(k)->request != SLOT(k)->done)
+			out++;
+	}
+	if (RING_PUSHED != RING_POPPED)
+		out++;
+	return out;
+}
+
 int psp_meaudio_running(void)
 {
 	return me_state > 0;
