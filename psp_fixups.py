@@ -56983,7 +56983,387 @@ static void update_potentially_audible_looping_sound(
 		{"""),
 ]
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_SSPR.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + list(FIXES_CHUPA090RUNS.items()) + list(FIXES_HEAPTRIM.items()) + list(FIXES_B78.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items()) + list(FIXES_AIME2A.items()) + list(FIXES_REDOSEED.items()) + (list(FIXES_STACKHOT.items()) if STACKHOT else []) + (list(FIXES_STACKHOT2.items()) if STACKHOT2 else []) + list(FIXES_PWSL.items()) + list(FIXES_SPHSL.items()) + list(FIXES_RECONLIST.items()) + list(FIXES_TP1.items()) + list(FIXES_WXDEAD.items()) + list(FIXES_AIMEMOVE.items()) + list(FIXES_PROPCRASH.items()) + list(FIXES_APCPOOL.items()) + list(FIXES_PSPTLS.items()) + list(FIXES_SNDEDRAM.items()) + list(FIXES_LIGHTFIRST.items()) + list(FIXES_DRAWPART.items()) + (list(FIXES_RECONLATE.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + list(FIXES_P2PASS.items()) + (list(FIXES_P2CENSUS.items()) if P2CENSUS else []) + list(FIXES_OBSRAY.items()) + list(FIXES_SNDWAIT.items()) + list(FIXES_FLAMEDECAL.items()) + list(FIXES_HUHINT.items()) + list(FIXES_DBLSOFT.items()) + list(FIXES_VFPUTRIG.items()) + list(FIXES_TICKCACHE.items()) + list(FIXES_STRICTALIAS.items()) + list(FIXES_SNDPERMAP.items()) + list(FIXES_RLOOP.items()) + list(FIXES_L10.items()) + list(FIXES_RLSKIP.items()) + list(FIXES_ONEWALK.items()) + (list(FIXES_POSEK.items()) if POSEK else []) + (list(FIXES_SNDSTREAM.items()) if os.environ.get("PSP_SNDSTREAM", "") == "1" else []) + list(FIXES_MOUTHCLOCK.items()) + list(FIXES_LSAME.items()) + list(FIXES_CHUPA090.items()) + list(FIXES_V091A.items()) + list(FIXES_AIDEBUGREC.items()) + (list(FIXES_AITICKOLD.items()) if AITICKOLD else []) + (list(FIXES_PADPATH.items()) if os.environ.get("PSP_PADPATH", "") == "1" else []) + list(FIXES_FARLEVEL.items()) + list(FIXES_DECALRING.items()) + list(FIXES_ARRAYFULL.items()) + (list(FIXES_DEADXBOX.items()) if DEADXBOX else []) + (list(FIXES_CAPTURE_POSING.items()) if CAPTURE == "posing" else []) + (list(FIXES_BOXPOSING.items()) if BOXPOSING else []) + (list(FIXES_ASKCENSUS.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + (list(FIXES_CAPTURE_SWEEP.items()) if CAPTURE == "sweep" else []) + (list(FIXES_BIPEDSTAGE.items()) if BIPEDSTAGE else []) + (list(FIXES_WSOLD.items()) if WSOLD else []) + (list(FIXES_SWEEPME.items()) if SWEEPME else []) + list(FIXES_B98.items()) + list(FIXES_SOUNDGAMETIME.items())):
+
+# ---------- FIXES_VEHCENSUS: what's left of the vehicles' tick (PSP_RECON; keep word "vehcensus")
+# b40's driven vehicles were the largest tick in the set (heavy-B, 19.6 ms a
+# tick for 11 of them, before DECALRING), and the box that takes them needs to
+# know which part is theirs: the vehicles' own steps, the material effects
+# their sliding mass points make (with what each carries and how big its mark
+# lands on the screen, for the far-and-tiny rule), or the riders updated
+# inside them. Counted per 300 ticks as "vehcensus:" lines, one per class: a
+# vehicle the player rides, and every other. The counts are exact in the
+# emulator; the microsecond figures are leads only (CLAUDE.md, Evidence).
+FIXES_VEHCENSUS = {}
+FIXES_VEHCENSUS["source/units/vehicles.c#vehcensus"] = [
+("""boolean vehicle_update(
+	long vehicle_index)
+{
+	/* port: (named: 32 each, as before) */""",
+"""#ifdef HALO_PSP
+#include "camera/observer.h"
+extern unsigned long psp_microseconds(void);
+extern int psp_keep(const char *name);
+extern void platform_psp_log(const char *format, ...);
+long game_time_get(void);
+struct psp_vc_class
+{
+	unsigned long updates, moving, grounded, slipping, us[5];
+	unsigned long matfx, effects, sounds, particles, decals, sized, band[4], px[4];
+	unsigned long riders, items, rider_us, rider_calls;
+	long last_definition;
+};
+int psp_vc_on = -1;
+/* the class whose slip effects are being made, else -1: material_effects.c
+and decals.c count only inside it, so footsteps and impacts stay out */
+int psp_vc_cur = -1;
+struct psp_vc_class psp_vc[2];
+static long psp_vc_from = -1;
+
+/* 0 when the player's unit rides it: his vehicle's cost is the one that
+peaked, and an AI's vehicle never slips that way (Sheepdog01 2026-11-12) */
+int psp_vc_class_of(long vehicle_index)
+{
+	long child = object_get(vehicle_index)->object.first_child_object_index;
+
+	while (child != NONE)
+	{
+		struct object_datum *object = object_get(child);
+
+		if (object->object.type == _object_type_biped &&
+			((struct unit_datum *)object)->unit.player_index != NONE)
+			return 0;
+		child = object->object.next_object_index;
+	}
+	return 1;
+}
+
+/* the screen band of something size_wu across at position: the PSP's 480
+pixels over the camera's horizontal field of view */
+int psp_vc_band(real_point3d const *position, real size_wu, int distance)
+{
+	struct observer_result const *camera = observer_get_camera(0);
+	real dx, dy, dz, d, px;
+
+	if (!camera)
+		return 3;
+	dx = position->x - camera->position.x;
+	dy = position->y - camera->position.y;
+	dz = position->z - camera->position.z;
+	d = square_root(dx * dx + dy * dy + dz * dz);
+	if (distance)
+		return d < 5.0f ? 0 : d < 15.0f ? 1 : d < 40.0f ? 2 : 3;
+	if (d < 0.01f)
+		return 0;
+	px = 240.0f * size_wu / (d * tangent(camera->field_of_view * 0.5f));
+	return px >= 32.0f ? 0 : px >= 8.0f ? 1 : px >= 2.0f ? 2 : 3;
+}
+
+static void psp_vc_report(long now)
+{
+	long ticks = now - psp_vc_from;
+	int k;
+
+	for (k = 0; k < 2 && ticks > 0; k++)
+	{
+		struct psp_vc_class *c = &psp_vc[k];
+		unsigned long m = c->moving ? c->moving : 1, u = c->updates ? c->updates : 1, r = c->rider_calls ? c->rider_calls : 1;
+		char const *name = c->last_definition != NONE && c->updates ? tag_get_name(c->last_definition) : "-";
+		char const *last = strrchr(name, '\\\\');
+		double t = (double)ticks;
+
+		if (!c->updates)
+			continue;
+		platform_psp_log("vehcensus: game time %ld, %ld ticks, %s (%s): updates %.2f a tick, moving %.2f; mass points on the ground %.2f a tick, slipping %.2f; "
+			"a moving update [E] physics %lu us, slip %lu, suspension and crash %lu, airborne %lu; an update %lu us; "
+			"slip material effects %.2f a tick (effect %.2f, sound %.2f; particles %.2f, decals %.2f, sized %.2f); "
+			"from the camera <5 %.2f, 5-15 %.2f, 15-40 %.2f, 40+ %.2f; a mark across >=32 px %.2f, 8-32 %.2f, 2-8 %.2f, <2 %.2f; "
+			"riders %.2f a tick, their items %.2f, updated in %lu us a vehicle [E]",
+			now, ticks, k ? "others" : "the player's", last ? last + 1 : name,
+			c->updates / t, c->moving / t, c->grounded / t, c->slipping / t,
+			c->us[0] / m, c->us[1] / m, c->us[2] / m, c->us[3] / m, c->us[4] / u,
+			c->matfx / t, c->effects / t, c->sounds / t, c->particles / t, c->decals / t, c->sized / t,
+			c->band[0] / t, c->band[1] / t, c->band[2] / t, c->band[3] / t,
+			c->px[0] / t, c->px[1] / t, c->px[2] / t, c->px[3] / t,
+			c->riders / t, c->items / t, c->rider_us / r);
+	}
+	memset(psp_vc, 0, sizeof(psp_vc));
+	psp_vc[0].last_definition = psp_vc[1].last_definition = NONE;
+	psp_vc_from = now;
+}
+#endif
+
+boolean vehicle_update(
+	long vehicle_index)
+{
+#ifdef HALO_PSP
+	unsigned long psp_vc_t[6] = {0};
+	int psp_vc_k = -1;
+#endif
+	/* port: (named: 32 each, as before) */"""),
+("""	profile_enter(vehicle_update_section);
+""",
+"""	profile_enter(vehicle_update_section);
+#ifdef HALO_PSP
+	if (psp_vc_on < 0)
+	{
+		psp_vc_on = psp_keep("vehcensus") != 0;
+		psp_vc[0].last_definition = psp_vc[1].last_definition = NONE;
+		if (psp_vc_on)
+			platform_psp_log("vehcensus: on");
+	}
+	if (psp_vc_on)
+	{
+		long now = game_time_get();
+
+		if (psp_vc_from < 0)
+			psp_vc_from = now;
+		else if (now - psp_vc_from >= 300)
+			psp_vc_report(now);
+		psp_vc_k = psp_vc_class_of(vehicle_index);
+		psp_vc[psp_vc_k].updates++;
+		psp_vc[psp_vc_k].last_definition = vehicle->definition_index;
+		psp_vc_t[5] = psp_microseconds();
+	}
+#endif
+"""),
+("""		switch (definition->vehicle_type)
+		{
+		case _vehicle_type_human_tank:
+			update_human_tank_physics(vehicle_index, mass_points, powered_mass_points);""",
+"""#ifdef HALO_PSP
+		if (psp_vc_k >= 0)
+			psp_vc_t[0] = psp_microseconds();
+#endif
+		switch (definition->vehicle_type)
+		{
+		case _vehicle_type_human_tank:
+			update_human_tank_physics(vehicle_index, mass_points, powered_mass_points);"""),
+("""		create_slipping_effects(vehicle_index, powered_mass_points, mass_points);
+		if (!update_suspension(vehicle_index))
+			create_crashing_effects(vehicle_index, &previous_velocity, mass_points);
+		compute_airborne_ticks(vehicle_index, mass_points, powered_mass_points);
+""",
+"""#ifdef HALO_PSP
+		if (psp_vc_k >= 0)
+		{
+			psp_vc_t[1] = psp_microseconds();
+			psp_vc_cur = psp_vc_k;
+		}
+#endif
+		create_slipping_effects(vehicle_index, powered_mass_points, mass_points);
+#ifdef HALO_PSP
+		psp_vc_cur = -1;
+		if (psp_vc_k >= 0)
+			psp_vc_t[2] = psp_microseconds();
+#endif
+		if (!update_suspension(vehicle_index))
+			create_crashing_effects(vehicle_index, &previous_velocity, mass_points);
+#ifdef HALO_PSP
+		if (psp_vc_k >= 0)
+			psp_vc_t[3] = psp_microseconds();
+#endif
+		compute_airborne_ticks(vehicle_index, mass_points, powered_mass_points);
+#ifdef HALO_PSP
+		if (psp_vc_k >= 0)
+		{
+			struct psp_vc_class *c = &psp_vc[psp_vc_k];
+			struct physics_definition *physics = physics_definition_get(definition->unit.object.physics.index);
+			short n;
+
+			psp_vc_t[4] = psp_microseconds();
+			c->moving++;
+			for (n = 0; n < 4; n++)
+				c->us[n] += psp_vc_t[n + 1] - psp_vc_t[n];
+			/* the same test create_slipping_effects makes, counted apart from
+			the effects so a vehicle without material effects still shows */
+			for (n = 0; n < physics->mass_points.count; n++)
+				if (TEST_FLAG(mass_points[n].flags, 1))
+				{
+					c->grounded++;
+					if (magnitude3d(&mass_points[n].velocity_relative_to_ground) > 0.03f)
+						c->slipping++;
+				}
+		}
+#endif
+"""),
+("""	profile_exit(vehicle_update_section);
+
+	return TRUE;
+}""",
+"""#ifdef HALO_PSP
+	if (psp_vc_k >= 0)
+		psp_vc[psp_vc_k].us[4] += psp_microseconds() - psp_vc_t[5];
+#endif
+	profile_exit(vehicle_update_section);
+
+	return TRUE;
+}"""),
+]
+FIXES_VEHCENSUS["source/effects/material_effects.c#vehcensus"] = [
+("""#include "camera/observer.h"
+#include "effects/effects.h"
+""",
+"""#include "camera/observer.h"
+#include "effects/effects.h"
+#ifdef HALO_PSP
+#include "effects/particles.h" /* psp_fixups.py (FIXES_VEHCENSUS): particle_data's count */
+#endif
+"""),
+("""	struct material_effects_definition *definition;
+
+	definition = material_effects_definition_get(definition_index);
+	if (effect_index < definition->effects.count)
+	{
+		struct material_effect *effect;
+""",
+"""	struct material_effects_definition *definition;
+#ifdef HALO_PSP
+	/* psp_fixups.py (FIXES_VEHCENSUS): a vehicle's slip effects only */
+	extern int psp_vc_cur;
+	extern struct psp_vc_class { unsigned long updates, moving, grounded, slipping, us[5];
+		unsigned long matfx, effects, sounds, particles, decals, sized, band[4], px[4];
+		unsigned long riders, items, rider_us, rider_calls; long last_definition; } psp_vc[2];
+	extern int psp_vc_band(real_point3d const *position, real size_wu, int distance);
+	struct psp_vc_class *psp_c = psp_vc_cur >= 0 ? &psp_vc[psp_vc_cur] : NULL;
+
+	if (psp_c)
+	{
+		psp_c->matfx++;
+		psp_c->band[psp_vc_band(position, 0.0f, TRUE)]++;
+	}
+#endif
+
+	definition = material_effects_definition_get(definition_index);
+	if (effect_index < definition->effects.count)
+	{
+		struct material_effect *effect;
+"""),
+("""			if (material->effect.index != NONE)
+			{
+				effect_new_unattached_from_markers(""",
+"""#ifdef HALO_PSP
+			short psp_live = particle_data ? particle_data->actual_count : 0;
+
+			if (psp_c && material->sound.index != NONE)
+				psp_c->sounds++;
+			if (psp_c && material->effect.index != NONE)
+				psp_c->effects++;
+#endif
+			if (material->effect.index != NONE)
+			{
+				effect_new_unattached_from_markers("""),
+("""			if (material->sound.index != NONE)
+			{
+				struct sound_location sound_location;
+""",
+"""#ifdef HALO_PSP
+			/* particles made less any let go for room: the dust */
+			if (psp_c && particle_data && particle_data->actual_count > psp_live)
+				psp_c->particles += particle_data->actual_count - psp_live;
+#endif
+			if (material->sound.index != NONE)
+			{
+				struct sound_location sound_location;
+"""),
+]
+FIXES_VEHCENSUS["source/effects/decals.c#vehcensus"] = [
+("""	real_rectangle2d sprite_bounds;
+	real radius;
+	short sequence_index;
+	short sprite_index;
+	short bitmap_index;
+""",
+"""	real_rectangle2d sprite_bounds;
+	real radius;
+	short sequence_index;
+	short sprite_index;
+	short bitmap_index;
+#ifdef HALO_PSP
+	/* psp_fixups.py (FIXES_VEHCENSUS): the tyre marks, and how big they land */
+	extern int psp_vc_cur;
+	extern struct psp_vc_class { unsigned long updates, moving, grounded, slipping, us[5];
+		unsigned long matfx, effects, sounds, particles, decals, sized, band[4], px[4];
+		unsigned long riders, items, rider_us, rider_calls; long last_definition; } psp_vc[2];
+	extern int psp_vc_band(real_point3d const *position, real size_wu, int distance);
+
+	if (psp_vc_cur >= 0)
+		psp_vc[psp_vc_cur].decals++;
+#endif
+"""),
+("""			radius = real_local_random_range(
+				definition->radius_lower_bound,
+				definition->radius_upper_bound) * radius_modifier;
+""",
+"""			radius = real_local_random_range(
+				definition->radius_lower_bound,
+				definition->radius_upper_bound) * radius_modifier;
+#ifdef HALO_PSP
+			if (psp_vc_cur >= 0)
+			{
+				psp_vc[psp_vc_cur].sized++;
+				psp_vc[psp_vc_cur].px[psp_vc_band(&collision->point, 2.0f * radius, FALSE)]++;
+			}
+#endif
+"""),
+]
+FIXES_VEHCENSUS["source/objects/objects.c#vehcensus"] = [
+("""		// Update children (if we have any)
+		if (object->object.first_child_object_index!=NONE)
+		{
+			object_update(object->object.first_child_object_index);
+		}
+""",
+"""		// Update children (if we have any)
+#ifdef HALO_PSP
+		/* psp_fixups.py (FIXES_VEHCENSUS): the riders updated inside a
+		vehicle's update, and the items they carry, which the per-type
+		accounts charge to the vehicle */
+		if (object->object.type == _object_type_vehicle && object->object.first_child_object_index != NONE)
+		{
+			extern int psp_vc_on;
+			extern struct psp_vc_class { unsigned long updates, moving, grounded, slipping, us[5];
+				unsigned long matfx, effects, sounds, particles, decals, sized, band[4], px[4];
+				unsigned long riders, items, rider_us, rider_calls; long last_definition; } psp_vc[2];
+			extern int psp_vc_class_of(long vehicle_index);
+			extern unsigned long psp_microseconds(void);
+
+			if (psp_vc_on > 0)
+			{
+				struct psp_vc_class *c = &psp_vc[psp_vc_class_of(object_index)];
+				long child = object->object.first_child_object_index;
+				unsigned long mark;
+
+				while (child != NONE)
+				{
+					struct object_datum *rider = object_get(child);
+					long item = rider->object.first_child_object_index;
+
+					if (TEST_FLAG(_object_mask_unit, rider->object.type))
+						c->riders++;
+					else
+						c->items++;
+					for (; item != NONE; item = object_get(item)->object.next_object_index)
+						c->items++;
+					child = rider->object.next_object_index;
+				}
+				mark = psp_microseconds();
+				object_update(object->object.first_child_object_index);
+				c->rider_us += psp_microseconds() - mark;
+				c->rider_calls++;
+			}
+			else
+				object_update(object->object.first_child_object_index);
+		}
+		else
+#endif
+		if (object->object.first_child_object_index!=NONE)
+		{
+			object_update(object->object.first_child_object_index);
+		}
+"""),
+]
+
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_SSPR.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + list(FIXES_CHUPA090RUNS.items()) + list(FIXES_HEAPTRIM.items()) + list(FIXES_B78.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items()) + list(FIXES_AIME2A.items()) + list(FIXES_REDOSEED.items()) + (list(FIXES_STACKHOT.items()) if STACKHOT else []) + (list(FIXES_STACKHOT2.items()) if STACKHOT2 else []) + list(FIXES_PWSL.items()) + list(FIXES_SPHSL.items()) + list(FIXES_RECONLIST.items()) + list(FIXES_TP1.items()) + list(FIXES_WXDEAD.items()) + list(FIXES_AIMEMOVE.items()) + list(FIXES_PROPCRASH.items()) + list(FIXES_APCPOOL.items()) + list(FIXES_PSPTLS.items()) + list(FIXES_SNDEDRAM.items()) + list(FIXES_LIGHTFIRST.items()) + list(FIXES_DRAWPART.items()) + (list(FIXES_RECONLATE.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + list(FIXES_P2PASS.items()) + (list(FIXES_P2CENSUS.items()) if P2CENSUS else []) + list(FIXES_OBSRAY.items()) + list(FIXES_SNDWAIT.items()) + list(FIXES_FLAMEDECAL.items()) + list(FIXES_HUHINT.items()) + list(FIXES_DBLSOFT.items()) + list(FIXES_VFPUTRIG.items()) + list(FIXES_TICKCACHE.items()) + list(FIXES_STRICTALIAS.items()) + list(FIXES_SNDPERMAP.items()) + list(FIXES_RLOOP.items()) + list(FIXES_L10.items()) + list(FIXES_RLSKIP.items()) + list(FIXES_ONEWALK.items()) + (list(FIXES_POSEK.items()) if POSEK else []) + (list(FIXES_SNDSTREAM.items()) if os.environ.get("PSP_SNDSTREAM", "") == "1" else []) + list(FIXES_MOUTHCLOCK.items()) + list(FIXES_LSAME.items()) + list(FIXES_CHUPA090.items()) + list(FIXES_V091A.items()) + list(FIXES_AIDEBUGREC.items()) + (list(FIXES_AITICKOLD.items()) if AITICKOLD else []) + (list(FIXES_PADPATH.items()) if os.environ.get("PSP_PADPATH", "") == "1" else []) + list(FIXES_FARLEVEL.items()) + list(FIXES_DECALRING.items()) + list(FIXES_ARRAYFULL.items()) + (list(FIXES_DEADXBOX.items()) if DEADXBOX else []) + (list(FIXES_CAPTURE_POSING.items()) if CAPTURE == "posing" else []) + (list(FIXES_BOXPOSING.items()) if BOXPOSING else []) + (list(FIXES_ASKCENSUS.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + (list(FIXES_CAPTURE_SWEEP.items()) if CAPTURE == "sweep" else []) + (list(FIXES_BIPEDSTAGE.items()) if BIPEDSTAGE else []) + (list(FIXES_WSOLD.items()) if WSOLD else []) + (list(FIXES_SWEEPME.items()) if SWEEPME else []) + list(FIXES_B98.items()) + list(FIXES_SOUNDGAMETIME.items()) + (list(FIXES_VEHCENSUS.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 # PSP_FRAMEPIC (docs/frame_picture.md): game.c's perf statements are
 # stripped before its anchors are matched (PERF_STRIP), which took the tick's
