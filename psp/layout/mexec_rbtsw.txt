@@ -245,3 +245,5 @@ quaternions_interpolate_and_normalize
 -psp_keep
 -platform_psp_log
 -platform_log
+# gustate (psp_ge.c): the state switches short form, last so the copy before it is laid as it was
+gu_state_set

@@ -2981,6 +2981,53 @@ static void dither_moves_make(const ScePspIMatrix4 *matrix)
 	}
 }
 
+struct gu_list_view { unsigned int *start, *current; int parent_context; };
+extern struct gu_list_view *gu_list; /* pspgu's (guInternal.h: GuDisplayList) */
+
+/* "gustate": the GE's state switches without pspgu's two switch functions.
+sceGuEnable and sceGuDisable are a kilobyte each, a case a state, and this
+file calls them at about 170 places for a dozen states: on the Media
+Engine their code misses about once a call. All but two states (the
+scissor, and the fragment's doubling) are one command word with 1 or 0 and
+one bit of pspgu's gu_states, so those are written here from a table, in
+one small function; the two keep pspgu's own function, as every state does
+with the word off. The same words reach the GE and the same bits
+sceGuGetStatus (pspgu's sceGuEnable.c and sceGuDisable.c; the commands are
+guInternal.h's). gustate_on is read on the main CPU (psp_ge_model_begin)
+and written back; under 0 (not read yet) counts as off */
+static int gustate_on = -1;
+extern int gu_states; /* pspgu's (guInternal.h) */
+static const unsigned char gu_state_command[GU_MAX_STATUS] = {
+	[GU_ALPHA_TEST] = 0x22, [GU_DEPTH_TEST] = 0x23, [GU_STENCIL_TEST] = 0x24, [GU_BLEND] = 0x21,
+	[GU_CULL_FACE] = 0x1d, [GU_DITHER] = 0x20, [GU_FOG] = 0x1f, [GU_CLIP_PLANES] = 0x1c,
+	[GU_TEXTURE_2D] = 0x1e, [GU_LIGHTING] = 0x17, [GU_LIGHT0] = 0x18, [GU_LIGHT1] = 0x19,
+	[GU_LIGHT2] = 0x1a, [GU_LIGHT3] = 0x1b, [GU_LINE_SMOOTH] = 0x25, [GU_PATCH_CULL_FACE] = 0x26,
+	[GU_COLOR_TEST] = 0x27, [GU_COLOR_LOGIC_OP] = 0x28, [GU_FACE_NORMAL_REVERSE] = 0x51,
+	[GU_PATCH_FACE] = 0x38, /* GU_SCISSOR_TEST and GU_FRAGMENT_2X: 0, pspgu's own */
+};
+
+static void __attribute__((noinline)) gu_state_set(int state, int on)
+{
+	unsigned int command = (unsigned int)state < GU_MAX_STATUS ? gu_state_command[state] : 0;
+
+	if (gustate_on > 0 && command)
+	{
+		*(gu_list->current++) = (command << 24) | (unsigned int)on;
+		if (on)
+			gu_states |= 1 << state;
+		else
+			gu_states &= ~(1 << state);
+		return;
+	}
+	if (on)
+		sceGuEnable(state);
+	else
+		sceGuDisable(state);
+}
+/* from here on this file's calls go through it (the two above are pspgu's) */
+#define sceGuEnable(state) gu_state_set((state), 1)
+#define sceGuDisable(state) gu_state_set((state), 0)
+
 static void dither_set(int on)
 {
 	if (on == dither_now)
@@ -3795,8 +3842,6 @@ benchrun's list in VRAM, and with "listuncached". Exact: the same words
 reach the GE. The emulator can't check the write-back (it has no caches):
 only the PSP shows whether a line was missed (a GE hang or a garbled
 frame) */
-struct gu_list_view { unsigned int *start, *current; int parent_context; };
-extern struct gu_list_view *gu_list; /* pspgu's (guInternal.h: GuDisplayList) */
 
 /* geshow3: room for needed more bytes where this frame's list is. The list
 limits are the whole list's, as without geshow3, so the same draws are
@@ -11778,6 +11823,11 @@ void psp_ge_model_begin(const float *node_matrices, int node_matrix_count, float
 	{
 		baked_once = psp_keep("bakedonce") != 0;
 		sceKernelDcacheWritebackRange(&baked_once, sizeof(baked_once));
+	}
+	if (gustate_on < 0 && !psp_on_me())
+	{
+		gustate_on = psp_keep("gustate") != 0;
+		sceKernelDcacheWritebackRange(&gustate_on, sizeof(gustate_on));
 	}
 	if (DEFER_RECORDING() &&
 		defer_model_begin(node_matrices, node_matrix_count, u_scale, v_scale, ambient, light_count, light0, light1))
