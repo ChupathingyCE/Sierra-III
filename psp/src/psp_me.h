@@ -52,6 +52,7 @@ void psp_me_edram_probe(void);
 /* build 118: a job handed over without waiting, then finished (gemeoverlap) */
 int psp_me_submit(int which, unsigned int type, const unsigned int *args, int arg_count);
 int psp_me_finish(int which, unsigned int *results);
+void psp_me_audio_hold_off(void);
 int psp_me_submitted_done(int which);
 int psp_me_submitted_begun(int which);
 unsigned int psp_me_last_job_us(int which); /* the ME's own time on the slot's last job */

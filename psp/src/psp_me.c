@@ -1005,12 +1005,13 @@ to ~7 ms on d20) and the stretch to the next look; the main CPU waits 60 ms
 for the job then, so a block mixed at the due time can't trip its deadline */
 #define AUDIO_HOLD_DUE_CYCLES (333u * 30000u)
 #define AUDIO_HOLD_WAIT_US 60000u
-/* audiohold's wait: the audio thread sleeps on this flag, which the main CPU
-sets when it sees the render job done (the block is mixed right after the
-replay, as a rule), and looks every 4 ms in case: a poll every 1 ms still
-cost b30's flight tick +0.5 ms (sierra-hw 44874847574). The main CPU's
-alone, created on first use */
-static PSP_MAIN_SIDE SceUID audio_hold_flag = -1;
+/* audiohold's wait: the audio thread sleeps on this flag, which the render
+thread sets when it collects the render job (psp_me_finish; the held block
+is mixed right after the replay, as a rule), and looks every 4 ms in case: a
+poll every 1 ms still cost b30's flight tick +0.5 ms (sierra-hw
+44874847574). Made in psp_me_start with the feature, so the setter and the
+waiter can't see two different flags; volatile, as two threads read it */
+static PSP_MAIN_SIDE volatile SceUID audio_hold_flag = -1;
 #define AUDIO_HOLD_LOOK_US 4000u
 static PSP_AIME_ME_SIDE unsigned int audio_look_request = 0, audio_look_seen = 0;
 
@@ -2994,6 +2995,8 @@ int psp_me_start(void)
 		(psp_keep("aimevisleft") ? ME_FEATURE_AIME_VIS_LEFT : 0u) |
 		(psp_keep("aimeaudiolook") ? ME_FEATURE_AUDIO_LOOK : 0u) | (psp_keep("audiohold") ? ME_FEATURE_AUDIO_HOLD : 0u) | (me_mexec_wanted() ? ME_FEATURE_MEXEC : 0u) |
 		(psp_keep("ticksched") && ring_on ? ME_FEATURE_TICKSCHED : 0u);
+	if ((control->features & ME_FEATURE_AUDIO_HOLD) && audio_hold_flag < 0)
+		audio_hold_flag = sceKernelCreateEventFlag("audiohold", 0, 0, NULL);
 	tick_slice_set(control);
 	wake_features = control->features | (psp_keep("mewakeprobe") ? ME_FEATURE_WAKE_PROBE : 0u);
 	wake_early = psp_keep("mewake") && !psp_keep("mewakeoff") && psp_keep("mewakeearly");
@@ -3102,15 +3105,15 @@ static int me_run_slot(int which, unsigned int type, const unsigned int *args, i
 				return 0;
 			}
 			/* under audiohold an audio block waits for the replay's end, up
-			to a block (its slack): polled every 100 us that was ~240 wakes of
-			the audio thread a block, taken from the game thread (b30's tick
-			+2.5 ms, sierra-hw 44871030232); every 1 ms it's a tenth of that */
+			to a block (its slack). A poll there wakes the audio thread out of
+			the game thread's time (every 100 us, b30's tick +2.5 ms, sierra-hw
+			44871030232; every 1 ms, +0.5 ms, 44874847574), so it sleeps on
+			the render's end, looking every 4 ms in case; 1 ms polls only if
+			the flag couldn't be made */
 			if (type == ME_JOB_AUDIO && (CONTROL->features & ME_FEATURE_AUDIO_HOLD))
 			{
 				SceUInt timeout = AUDIO_HOLD_LOOK_US;
 
-				if (audio_hold_flag < 0)
-					audio_hold_flag = sceKernelCreateEventFlag("audiohold", 0, 0, NULL);
 				if (audio_hold_flag < 0 ||
 					sceKernelWaitEventFlag(audio_hold_flag, 1, PSP_EVENT_WAITOR | PSP_EVENT_WAITCLEAR, NULL, &timeout) < 0 &&
 					timeout != 0)
@@ -3326,6 +3329,10 @@ static int me_finish_slot(int which, unsigned int *results)
 		waited = last_job_us[which]; /* simulated: the job's own time, run at the hand-over */
 	for (k = 0; k < ME_JOB_RESULTS; k++)
 		results[k] = slot->results[k];
+	/* audiohold: the replay is over, so the ME takes the held audio block
+	next; the audio thread looks now rather than at its 4 ms timeout */
+	if (which == ME_SLOT_RENDER && audio_hold_flag >= 0)
+		sceKernelSetEventFlag(audio_hold_flag, 1);
 	stats[which].jobs++;
 	stats[which].wait_us += waited;
 	if (waited > stats[which].wait_worst_us)
@@ -3338,9 +3345,12 @@ static int me_finish_slot(int which, unsigned int *results)
 
 /* a job handed over with psp_me_submit is done (or was run here), so
 psp_me_finish won't wait; 0 while the ME is still on it, or none is out */
-/* audiohold without its two extra blocks (psp_dsound.c couldn't get them):
-the ME mustn't hold a block for the replay's end, as nothing covers the
-wait, so the feature leaves the control word and the restart's copy of it */
+/* audiohold without its two extra blocks (psp_dsound.c couldn't get them,
+or has no channel): the ME mustn't hold a block for the replay's end, as
+nothing covers the wait, so the feature leaves the control word and the
+restart's copy of it. Safe however late it comes, though the probes may
+start the ME earlier: only the audio thread hands the ME audio jobs, and it
+calls this before its first */
 void psp_me_audio_hold_off(void)
 {
 	wake_features &= ~ME_FEATURE_AUDIO_HOLD;

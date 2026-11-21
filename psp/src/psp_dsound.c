@@ -3706,30 +3706,46 @@ static int audio_thread(SceSize arguments, void *argument)
 	{
 		extern int psp_keep(const char *word);
 
-		if (channel >= 0 && psp_keep("audiohold"))
+		if (channel < 0 && psp_keep("audiohold"))
+			psp_me_audio_hold_off(); /* nothing plays, so nothing to hold for */
+		else if (psp_keep("audiohold"))
 		{
 			int k, ok = 1;
+			unsigned int bytes = 0;
 
+			/* the 44.1 kHz blocks only where they're mixed and played */
 			for (k = 2; k < 4; k++)
 			{
 				slot_out[k] = (short *)memalign(64, sizeof(output_buffers[0]));
-				slot_44[k] = (short *)memalign(64, sizeof(output44[0]));
-				slot_full[k] = (short *)memalign(64, sizeof(output_full[0]));
-				if (!slot_out[k] || !slot_44[k] || !slot_full[k])
+				bytes += sizeof(output_buffers[0]);
+				if (!slot_out[k])
 					ok = 0;
+				if (up)
+				{
+					slot_44[k] = (short *)memalign(64, sizeof(output44[0]));
+					bytes += sizeof(output44[0]);
+					if (!slot_44[k])
+						ok = 0;
+				}
+				if (full_rate)
+				{
+					slot_full[k] = (short *)memalign(64, sizeof(output_full[0]));
+					bytes += sizeof(output_full[0]);
+					if (!slot_full[k])
+						ok = 0;
+				}
 			}
 			if (ok)
 			{
 				slots = 4;
 				primed = 0;
-				platform_log("audio: audiohold, one block more ahead of the speaker (%d ms more delay)", MIX_FRAMES * 1000 / OUTPUT_RATE);
+				platform_log("audio: audiohold, one block more ahead of the speaker (%d ms more delay; %u bytes of heap)",
+					MIX_FRAMES * 1000 / OUTPUT_RATE, bytes);
 			}
 			else
 			{
 				/* as before, and the ME told: it mustn't hold a block with no
 				extra slot to cover the wait */
-				extern void psp_me_audio_hold_off(void);
-
 				for (k = 2; k < 4; k++)
 				{
 					free(slot_out[k]);
@@ -3738,7 +3754,7 @@ static int audio_thread(SceSize arguments, void *argument)
 					slot_out[k] = slot_44[k] = slot_full[k] = NULL;
 				}
 				psp_me_audio_hold_off();
-				platform_log("audio: audiohold: no room for its two blocks; as before, and the ME doesn't hold");
+				platform_log("audio: audiohold: no room for its two blocks (%u bytes); as before, and the ME doesn't hold", bytes);
 			}
 		}
 	}
