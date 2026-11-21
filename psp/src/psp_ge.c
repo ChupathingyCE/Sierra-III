@@ -24257,6 +24257,11 @@ static int decal_square = -1;
 static unsigned long decals_small = 0, decals_offscreen = 0;
 /* build 106: decal calls with no quad on the screen, left before the bind */
 static unsigned long decals_wholly_left_out = 0;
+#ifdef PSP_RECON
+/* "decalcount" (below): the body's wholly-left-out calls, counted apart from
+the GE's own line, which another report resets */
+static unsigned long decalcount_left_out = 0;
+#endif
 /* "decalnocull": quads off the screen go through the work too (to time it) */
 static int decal_cull = -1;
 
@@ -24840,6 +24845,9 @@ static void psp_ge_decal_body(void const *vertices, int quad_count, unsigned int
 		if (!kept)
 		{
 			decals_wholly_left_out++;
+#ifdef PSP_RECON
+			decalcount_left_out++;
+#endif
 			return;
 		}
 		if (!psp_tex_bind(key, &alpha))
@@ -25199,6 +25207,121 @@ void psp_ge_decal_passed(unsigned int key)
 	if (touch)
 		GE_PRETOUCH(key, TXPT_DECAL);
 }
+
+#ifdef PSP_RECON
+/* "decalcount" (PSP_RECON; box vehfx's first step): b40's warthog drive
+spends ~2.5 ms a frame on decals, psp_ge_decal_visible alone ~1.6 ms, so the
+box needs the exact counts its test works on: per 300 frames, decals tested,
+passed, recorded, drawn by the body and left out whole by it, the live decals,
+and the tested ones by definition (tyre marks against the rest). Called from
+rasterizer_xbox_decals.c's loop (psp_fixups.py FIXES_VEHFXCOUNT) */
+#define DECALCOUNT_KINDS 16
+static int decalcount_on = -1;
+static unsigned long decalcount_tested = 0, decalcount_passed = 0, decalcount_live = 0, decalcount_live_peak = 0;
+static unsigned long decalcount_drawn_mark = 0, decalcount_frames = 0;
+static struct { long definition; int tyre; unsigned long tested, passed; } decalcount_kinds[DECALCOUNT_KINDS];
+static unsigned long decalcount_kinds_lost = 0;
+static int decalcount_slot = -1;
+
+void psp_ge_decalcount_kind(long definition_index, long live)
+{
+	int k;
+
+	if (decalcount_on < 0)
+	{
+		decalcount_on = psp_keep("decalcount") != 0;
+		if (decalcount_on)
+			platform_log("decalcount: on");
+	}
+	decalcount_slot = -1;
+	if (!decalcount_on)
+		return;
+	decalcount_live = (unsigned long)live;
+	if (decalcount_live > decalcount_live_peak)
+		decalcount_live_peak = decalcount_live;
+	/* a slot is in use once its kind is set (1 another decal, 2 a tyre mark) */
+	for (k = 0; k < DECALCOUNT_KINDS && decalcount_kinds[k].tyre && decalcount_kinds[k].definition != definition_index; k++)
+		;
+	if (k == DECALCOUNT_KINDS)
+	{
+		decalcount_kinds_lost++;
+		return;
+	}
+	if (!decalcount_kinds[k].tyre)
+	{
+		extern char *tag_get_name(long tag_index);
+		char const *name = tag_get_name(definition_index);
+
+		decalcount_kinds[k].definition = definition_index;
+		decalcount_kinds[k].tyre = name && (strstr(name, "tire") || strstr(name, "tread") || strstr(name, "tyre")) ? 2 : 1;
+	}
+	decalcount_slot = k;
+}
+
+int psp_ge_decalcount_pass(int visible)
+{
+	if (decalcount_on > 0)
+	{
+		decalcount_tested++;
+		if (visible)
+			decalcount_passed++;
+		if (decalcount_slot >= 0)
+		{
+			decalcount_kinds[decalcount_slot].tested++;
+			if (visible)
+				decalcount_kinds[decalcount_slot].passed++;
+		}
+	}
+	return visible;
+}
+
+static void decalcount_report(void)
+{
+	extern long game_time_get(void);
+	extern char *tag_get_name(long tag_index);
+	unsigned long frames = decalcount_frames ? decalcount_frames : 1, tyre_tested = 0, tyre_passed = 0;
+	char line[480];
+	int k, at = 0, shown;
+
+	if (decalcount_on <= 0)
+		return;
+	for (k = 0; k < DECALCOUNT_KINDS; k++)
+		if (decalcount_kinds[k].tyre == 2)
+		{
+			tyre_tested += decalcount_kinds[k].tested;
+			tyre_passed += decalcount_kinds[k].passed;
+		}
+	line[0] = 0;
+	for (shown = 0; shown < 4; shown++)
+	{
+		int best = -1;
+
+		for (k = 0; k < DECALCOUNT_KINDS; k++)
+			if (decalcount_kinds[k].tested && (best < 0 || decalcount_kinds[k].tested > decalcount_kinds[best].tested))
+				best = k;
+		if (best < 0)
+			break;
+		{
+			char const *name = tag_get_name(decalcount_kinds[best].definition), *last = name ? strrchr(name, '\\') : NULL;
+
+			if (at < (int)sizeof(line) - 100)
+				at += snprintf(line + at, sizeof(line) - at, "%s%s %.1f (%.1f pass)", at ? "; " : "", last ? last + 1 : (name ? name : "?"),
+					(double)decalcount_kinds[best].tested / frames, (double)decalcount_kinds[best].passed / frames);
+			decalcount_kinds[best].tested = 0; /* shown; the reset below clears the rest */
+		}
+	}
+	platform_log("decalcount: game time %ld, %lu frames: decals tested %.1f a frame, passed %.1f, recorded %.1f, drawn by the body %.1f, left out whole by it %.1f; "
+		"tyre marks tested %.1f, passed %.1f; live decals %lu (peak %lu); most tested: %s; kinds past the table %lu",
+		game_time_get(), decalcount_frames, (double)decalcount_tested / frames, (double)decalcount_passed / frames,
+		(double)decalcount_passed / frames, (double)(decals_drawn - decalcount_drawn_mark) / frames, (double)decalcount_left_out / frames,
+		(double)tyre_tested / frames, (double)tyre_passed / frames, decalcount_live, decalcount_live_peak, line, decalcount_kinds_lost);
+	decalcount_tested = decalcount_passed = decalcount_left_out = decalcount_live_peak = decalcount_kinds_lost = 0;
+	decalcount_drawn_mark = decals_drawn;
+	decalcount_frames = 0;
+	memset(decalcount_kinds, 0, sizeof(decalcount_kinds));
+	decalcount_slot = -1;
+}
+#endif
 
 void psp_ge_decal(void const *vertices, int quad_count, unsigned int key, short blend, unsigned long color,
 	int intensity, int alpha_tested, int permanent)
@@ -26698,6 +26821,11 @@ static void frame_end_show(void)
 		frame_end_us[2] += sceKernelGetSystemTimeLow() - mark;
 		win_after_us += sceKernelGetSystemTimeLow() - mark;
 	}
+#ifdef PSP_RECON
+	decalcount_frames++;
+	if (frames + 1 > 1 && (frames + 1) % 300 == 0)
+		decalcount_report();
+#endif
 	if (++frames == 1 || frames % 300 == 0)
 	{
 		platform_log("GE: sky drawn %lu times, %lu solid parts; %lu see-through draws, %lu dropped; %lu sprites; %lu HUD quads, %lu characters, %lu blips; skinned parts %lu (%lu batches, %lu KB, %lu left rigid); level see-through %lu; decals %lu; flashes %lu; shadows %lu begun, %lu requests, %lu draws; light draws %lu (%lu with a projected cone, %lu triangles outside cones skipped, %lu split near the light, %lu pieces added); bending triangles cut at the near plane %lu (%lu pieces); two-sided parts %lu; models at the near plane %lu (%lu triangles left out)",
