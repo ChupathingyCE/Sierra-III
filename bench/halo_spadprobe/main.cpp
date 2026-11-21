@@ -156,6 +156,14 @@ static void fpu_mask_traps(void)
 #define MASK24 0x007FFFFFu /* the VME's words: bit 23 clear, so they come back as written */
 
 static const u32 forms[4] = {0x00000000u, 0x40000000u, 0x80000000u, 0xA0000000u};
+/* the engine cells (DMACplus, the VME's DMAC) take only the user forms: v2's
+first run pointed DMACplus at 0x8001xxxx and hung a PSP-1000, and the VME's
+DMAC at 0x80011000 hung the ME, as neither refuses a kernel segment */
+#define ENGINE_FORMS 2
+static int engine_address_ok(u32 address)
+{
+	return (address >> 28) == 0x0u || (address >> 28) == 0x4u;
+}
 static const char *const form_names[4] = {"0x0001xxxx", "0x4001xxxx", "0x8001xxxx", "0xA001xxxx"};
 
 static inline u32 pattern(u32 seed, u32 k, u32 mask)
@@ -681,6 +689,8 @@ static struct DCell dcell __attribute__((aligned(64)));
 
 static int run_dcell(u32 channel, u32 src, u32 dst, u32 control, int scan_kram, u32 seed, u32 mask)
 {
+	if (!engine_address_ok(src) || !engine_address_ok(dst))
+		return -5; /* refused here: the engine itself wouldn't refuse it */
 	memset(&dcell, 0, sizeof(dcell));
 	dcell.channel = channel;
 	dcell.src = src;
@@ -698,7 +708,8 @@ static int run_dcell(u32 channel, u32 src, u32 dst, u32 control, int scan_kram, 
 static const char *dresult(int result)
 {
 	return result == 0 ? "ended" : result == -1 ? "the channel busy before" : result == -2 ? "the controller off" :
-		result == -3 ? "DID NOT END in 2 ms (stopped)" : result == -4 ? "ended with the error bit" : "?";
+		result == -3 ? "DID NOT END in 2 ms (stopped)" : result == -4 ? "ended with the error bit" :
+		result == -5 ? "refused: a kernel-segment address" : "?";
 }
 
 static void dregs(char *text, int size)
@@ -728,6 +739,8 @@ struct Scan
 if the kernel calls aren't there, so the cell says it didn't run */
 static int me_call_quiet(u32 op, u32 a0, u32 a1, u32 a2, u32 a3, int scan_kram)
 {
+	if (op == OP_VME && !engine_address_ok(a1))
+		return 0;
 	if (!me_ok || !kernel_ok)
 		return 0;
 	quiet.op = op;
@@ -1109,10 +1122,10 @@ static void vme_cells(void)
 			out("VME DMAC control RAM->buffer: %s; %lu of 256 arrived in the buffer", regs, (unsigned long)me_res(0));
 		}
 	}
-	for (f = 0; f < 4 && me_ok; f++)
+	for (f = 0; f < ENGINE_FORMS && me_ok; f++)
 		if (vme_into(f, ""))
 			vme_into(f, " (repeat)");
-	for (f = 0; f < 4 && me_ok; f++)
+	for (f = 0; f < ENGINE_FORMS && me_ok; f++)
 		if (vme_out(f, ""))
 			vme_out(f, " (repeat)");
 }
@@ -1211,10 +1224,10 @@ static void dplus_me_cells(void)
 	}
 	if (!controls)
 		out("DMACplus Sc2Me/Me2Sc: a control failed, so the scratchpad cells below would mean nothing; they still run");
-	for (f = 0; f < 4 && me_ok; f++)
+	for (f = 0; f < ENGINE_FORMS && me_ok; f++)
 		if (dplus_me_into(f, ""))
 			dplus_me_into(f, " (repeat)");
-	for (f = 0; f < 4 && me_ok; f++)
+	for (f = 0; f < ENGINE_FORMS && me_ok; f++)
 		if (dplus_me_out(f, ""))
 			dplus_me_out(f, " (repeat)");
 }
@@ -1293,10 +1306,10 @@ static void dplus_sc_cells(void)
 			return;
 		}
 	}
-	for (f = 0; f < 4; f++)
+	for (f = 0; f < ENGINE_FORMS; f++)
 		if (dplus_sc_into(f, ""))
 			dplus_sc_into(f, " (repeat)");
-	for (f = 0; f < 4; f++)
+	for (f = 0; f < ENGINE_FORMS; f++)
 		if (dplus_sc_out(f, ""))
 			dplus_sc_out(f, " (repeat)");
 }
