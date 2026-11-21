@@ -681,8 +681,8 @@ int psp_keep(const char *name);
 12:56). The lab's halo_box hung both PSPs waiting in sceGuSync and stopped
 when its waits became this poll (and FS was set; which cured it isn't known):
 a sync that never wakes holds the thread for good, a poll sees the list done
-and gives up after 2 s, logging it, so a lost end costs a frame's picture,
-not the game. geshow3's wait (show3_wait_finish) was bounded already; these
+and gives up after 2 s, stopping the queue and logging it, so a lost end
+costs a frame's picture, not the game. geshow3's wait (show3_wait_finish) was bounded already; these
 are the loads', the boot's, the start-up probes' and the frame's without
 geshow3. Keep word gesyncold: sceGuSync as before */
 static void ge_sync_bounded(const char *what)
@@ -702,8 +702,19 @@ static void ge_sync_bounded(const char *what)
 	{
 		if (sceKernelGetSystemTimeLow() - start > 2000000u)
 		{
+			/* the caller reuses the list's memory and the frame buffers next
+			(psp_ge_boot_start clears them), so the GE mustn't still be reading
+			them: the queue is stopped, as the frame end's settle stops one that
+			won't drain, and given 100 ms to halt */
+			PspGeBreakParam unused;
+			int stopped = sceGeBreak(1, &unused);
+			unsigned int halt = sceKernelGetSystemTimeLow();
+
+			while (stopped >= 0 && sceGeDrawSync(1) != 0 && sceKernelGetSystemTimeLow() - halt < 100000u)
+				sceKernelDelayThread(1000);
 			if (given_up++ < 8)
-				platform_log("GE: %s: the list's end never came in 2 s; gone on without it", what);
+				platform_log("GE: %s: the list's end never came in 2 s; its queue stopped%s", what,
+					stopped < 0 ? " (the stop failed)" : sceGeDrawSync(1) != 0 ? " (still busy 100 ms after)" : "");
 			return;
 		}
 		sceKernelDelayThread(100);
@@ -12888,7 +12899,16 @@ static void vm_who_note(const void *vertices, int count)
 	vm_who[low].vertices = (unsigned int)count;
 }
 #define VM_UNKNOWN(vertices, count) (vm_unknown++, vm_who_note((vertices), (count)))
-#define VM_UNKNOWN_ME(vertices, count) (vm_me_tally[VM_ENTRIES + 2]++, vm_who_note((vertices), (count)))
+/* the ME's side keeps its own notes (vm_who and vm_unknown_geo are the main
+CPU's: its draws write them and vm_report clears them), on lines of their own,
+and vm_me_fold hands them to vm_who_note once the ME is done. A frame's notes
+past the table's size are counted in the tally, not named */
+#define VM_ME_NOTES 64
+static PSP_AIME_ME_SIDE struct { const void *source; int count; } vm_me_notes[VM_ME_NOTES] __attribute__((aligned(64)));
+static PSP_AIME_ME_SIDE unsigned int vm_me_noted = 0;
+#define VM_UNKNOWN_ME(vertices, count) (vm_me_tally[VM_ENTRIES + 2]++, \
+	vm_me_noted < VM_ME_NOTES ? (void)(vm_me_notes[vm_me_noted].source = (vertices), \
+		vm_me_notes[vm_me_noted++].count = (count)) : (void)0)
 #else
 #define VM_UNKNOWN(vertices, count) ((void)0)
 #define VM_UNKNOWN_ME(vertices, count) ((void)0)
@@ -13048,6 +13068,9 @@ static void vm_me_fold(void)
 	vm_redirects += vm_me_tally[VM_ENTRIES + 1];
 #ifdef PSP_RECON
 	vm_unknown += vm_me_tally[VM_ENTRIES + 2];
+	for (k = 0; k < (int)vm_me_noted; k++)
+		vm_who_note(vm_me_notes[k].source, vm_me_notes[k].count);
+	vm_me_noted = 0;
 #endif
 	vm_me_tally[VM_ENTRIES] = vm_me_tally[VM_ENTRIES + 1] = vm_me_tally[VM_ENTRIES + 2] = 0;
 }
@@ -17760,8 +17783,9 @@ void psp_ge_draw_far(const void *block, unsigned int mask_low, unsigned int mask
 	model_lighting(1);
 	sceGuColorMaterial(GU_AMBIENT | GU_DIFFUSE);
 	/* one group a node, each with its node's matrix, so a model's moving
-	parts stay where they are near; word 14 leads to the next */
-	while (at)
+	parts stay where they are near; word 14 leads to the next. The masks hold
+	64 groups, and the mask builder and far_note stop there too */
+	while (at && group < 64)
 	{
 		const unsigned int *head = (const unsigned int *)at;
 		const float *box = (const float *)(head + 5);
