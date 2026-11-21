@@ -1477,7 +1477,7 @@ static void keep_load(void)
 	platform_log("keep words, continued: iostats gereads gereadskind vramtexN edramcheck overlayfreefar inflightkbN inflightroom inflighttextold");
 	/* the code diet's short forms (psp_fixups.py, FIXES_DIET1): each says so
 	when its word is on, so a run's log shows which form it played */
-	platform_log("keep words, the code diet's short forms (on by default; off: objleanold verifygateoff tagmemooff; opt-in: bakedraw bakedonce tagmemotick gustate bindwords)");
+	platform_log("keep words, the code diet's short forms (on by default; off: objleanold verifygateoff tagmemooff; opt-in: bakedraw bakedonce tagmemotick gustate bindwords gudraw)");
 	if (keep_search("objlean"))
 		platform_log("objlean: object_update's short form");
 	if (keep_search("verifygate"))
@@ -1490,6 +1490,8 @@ static void keep_load(void)
 		platform_log("bindwords: a sent bind's words written straight into the display list, not through pspgu's calls");
 	if (keep_search("gustate"))
 		platform_log("gustate: the GE's one-word state switches written from a table, not through pspgu's switch functions");
+	if (keep_search("gudraw"))
+		platform_log("gudraw: a draw's words written straight into the display list, not through pspgu's draw functions");
 	if (keep_search("bakedonce"))
 		platform_log("bakedonce: a model part's place in the geometry cache is asked once a draw");
 	if (keep_search("bakedraw"))

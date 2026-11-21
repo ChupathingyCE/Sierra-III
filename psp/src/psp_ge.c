@@ -2892,14 +2892,17 @@ static void vm_frame_end(void);
 static void vm_report(void);
 static void vm_level_note(void *vertices, unsigned int bytes);
 static void vm_level_move(void *from, void *to);
+/* the gate's draws are made by gum_draw and gu_draw ("gudraw", below) */
+static void gum_draw(int prim, int vtype, int count, const void *indices, const void *vertices);
+static void gu_draw(int prim, int vtype, int count, const void *indices, const void *vertices);
 #define sceGumDrawArray(p, v, c, i, d) do { if (!ge_draw_skipped()) { int ge_v_ = (v), ge_c_ = (c); \
 	const void *ge_i_ = (i), *ge_d_ = (d); if (vm_on > 0) ge_d_ = vm_redirect(ge_d_, ge_c_); \
 	if (ge_reads_on > 0) ge_reads_note(ge_v_, ge_c_, ge_i_, ge_d_); \
-	sceGumDrawArray(p, ge_v_, ge_c_, ge_i_, ge_d_); } } while (0)
+	gum_draw(p, ge_v_, ge_c_, ge_i_, ge_d_); } } while (0)
 #define sceGuDrawArray(p, v, c, i, d) do { if (!ge_draw_skipped()) { int ge_v_ = (v), ge_c_ = (c); \
 	const void *ge_i_ = (i), *ge_d_ = (d); if (vm_on > 0) ge_d_ = vm_redirect(ge_d_, ge_c_); \
 	if (ge_reads_on > 0) ge_reads_note(ge_v_, ge_c_, ge_i_, ge_d_); \
-	sceGuDrawArray(p, ge_v_, ge_c_, ge_i_, ge_d_); } } while (0)
+	gu_draw(p, ge_v_, ge_c_, ge_i_, ge_d_); } } while (0)
 /* draws stop this close to the display list's end (each draw adds its
 commands, and its copied indices and cut-up corners, to the list) */
 #define DISPLAY_LIST_MARGIN 0x3000
@@ -3026,6 +3029,63 @@ static void __attribute__((noinline)) gu_state_set(int state, int on)
 /* from here on this file's calls go through it (the two above are pspgu's) */
 #define sceGuEnable(state) gu_state_set((state), 1)
 #define sceGuDisable(state) gu_state_set((state), 0)
+
+/* "gudraw": a draw's words without pspgu's draw functions. Every draw the
+gate lets through was a sceGumDrawArray (pspgum's matrix check, then
+sceGuDrawArray) or a sceGuDrawArray: the vertex type, the two addresses and
+the primitive, then the stall address handed on. This file is those calls'
+one hot caller, at some fifty places, and on the Media Engine the chain ran
+from main RAM: sceGumDrawArray isn't in the ME's copy, so its calls reach
+the originals of sceGumUpdateMatrix and sceGuSetMatrix and not their
+copies. Here the words are written at the list's current word, as
+sceGuDrawArray.c writes them, and the stall address is handed on under
+pspgu's own condition (guInternal.h's _sceGuUpdateStallAddr: the direct
+context, no object open); the matrices stay pspgum's (sceGumUpdateMatrix,
+with its flags and stacks). The same words reach the GE. gudraw_on is read
+on the main CPU (psp_ge_model_begin) and written back; under 0 (not read
+yet) counts as off, and off is pspgu's two functions */
+static int gudraw_on = -1;
+extern int gu_curr_context, gu_object_stack_depth, ge_list_executed[2]; /* pspgu's (guInternal.h) */
+int __wrap_sceGeListUpdateStallAddr(int qid, void *stall);
+
+static void __attribute__((noinline)) gu_draw(int prim, int vtype, int count, const void *indices, const void *vertices)
+{
+	unsigned int *w;
+
+	if (gudraw_on <= 0)
+	{
+		(sceGuDrawArray)(prim, vtype, count, indices, vertices);
+		return;
+	}
+	w = gu_list->current;
+	if (vtype)
+		*w++ = (0x12u << 24) | ((unsigned int)vtype & 0xFFFFFFu);
+	if (indices)
+	{
+		*w++ = (0x10u << 24) | (((unsigned int)indices >> 8) & 0xF0000u);
+		*w++ = (0x02u << 24) | ((unsigned int)indices & 0xFFFFFFu);
+	}
+	if (vertices)
+	{
+		*w++ = (0x10u << 24) | (((unsigned int)vertices >> 8) & 0xF0000u);
+		*w++ = (0x01u << 24) | ((unsigned int)vertices & 0xFFFFFFu);
+	}
+	*w++ = (0x04u << 24) | ((((unsigned int)prim << 16) | (unsigned int)count) & 0xFFFFFFu);
+	gu_list->current = w;
+	if (gu_curr_context == GU_DIRECT && !gu_object_stack_depth)
+		__wrap_sceGeListUpdateStallAddr(ge_list_executed[0], w);
+}
+
+static void __attribute__((noinline)) gum_draw(int prim, int vtype, int count, const void *indices, const void *vertices)
+{
+	if (gudraw_on <= 0)
+	{
+		(sceGumDrawArray)(prim, vtype, count, indices, vertices);
+		return;
+	}
+	sceGumUpdateMatrix();
+	gu_draw(prim, vtype, count, indices, vertices);
+}
 
 static void dither_set(int on)
 {
@@ -11827,6 +11887,11 @@ void psp_ge_model_begin(const float *node_matrices, int node_matrix_count, float
 	{
 		gustate_on = psp_keep("gustate") != 0;
 		sceKernelDcacheWritebackRange(&gustate_on, sizeof(gustate_on));
+	}
+	if (gudraw_on < 0 && !psp_on_me())
+	{
+		gudraw_on = psp_keep("gudraw") != 0;
+		sceKernelDcacheWritebackRange(&gudraw_on, sizeof(gudraw_on));
 	}
 	if (DEFER_RECORDING() &&
 		defer_model_begin(node_matrices, node_matrix_count, u_scale, v_scale, ambient, light_count, light0, light1))

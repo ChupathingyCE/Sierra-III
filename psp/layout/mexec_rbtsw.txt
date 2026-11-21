@@ -247,3 +247,6 @@ quaternions_interpolate_and_normalize
 -platform_log
 # gustate (psp_ge.c): the state switches short form, last so the copy before it is laid as it was
 gu_state_set
+# gudraw (psp_ge.c): the draw's short form, and its matrix check's caller
+gu_draw
+gum_draw
