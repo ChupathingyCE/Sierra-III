@@ -15,6 +15,7 @@ Every write-up about the port is in this folder: design notes, measurements, pla
 - [`box_biped_motion.md`](box_biped_motion.md): Box: biped motion, with the collision service (bottleneck, 2026-11-11; v0, spec started)
 - [`box_collision.md`](box_collision.md): Box: the collision service (bottleneck, 2026-11-11; v0, spec started)
 - [`box_draw_list.md`](box_draw_list.md): The draw list box
+- [`box_near_vme.md`](box_near_vme.md): Box: the near loop's verdicts on the VME (first step: the kernel's shape, staging priced)
 - [`box_far_level.md`](box_far_level.md): The far level as one part (the GE lists and forms box, its first far form)
 - [`box_lights.md`](box_lights.md): The Lights box
 - [`box_posing.md`](box_posing.md): Box: posing, the pilot (bottleneck, 2026-11-11; v0, spec)
