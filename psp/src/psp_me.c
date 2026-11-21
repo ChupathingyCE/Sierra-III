@@ -1005,6 +1005,13 @@ to ~7 ms on d20) and the stretch to the next look; the main CPU waits 60 ms
 for the job then, so a block mixed at the due time can't trip its deadline */
 #define AUDIO_HOLD_DUE_CYCLES (333u * 30000u)
 #define AUDIO_HOLD_WAIT_US 60000u
+/* audiohold's wait: the audio thread sleeps on this flag, which the main CPU
+sets when it sees the render job done (the block is mixed right after the
+replay, as a rule), and looks every 4 ms in case: a poll every 1 ms still
+cost b30's flight tick +0.5 ms (sierra-hw 44874847574). The main CPU's
+alone, created on first use */
+static PSP_MAIN_SIDE SceUID audio_hold_flag = -1;
+#define AUDIO_HOLD_LOOK_US 4000u
 static PSP_AIME_ME_SIDE unsigned int audio_look_request = 0, audio_look_seen = 0;
 
 static int me_audio_due(unsigned int now)
@@ -3098,7 +3105,19 @@ static int me_run_slot(int which, unsigned int type, const unsigned int *args, i
 			to a block (its slack): polled every 100 us that was ~240 wakes of
 			the audio thread a block, taken from the game thread (b30's tick
 			+2.5 ms, sierra-hw 44871030232); every 1 ms it's a tenth of that */
-			sceKernelDelayThread(type == ME_JOB_AUDIO && (CONTROL->features & ME_FEATURE_AUDIO_HOLD) ? 1000 : 100);
+			if (type == ME_JOB_AUDIO && (CONTROL->features & ME_FEATURE_AUDIO_HOLD))
+			{
+				SceUInt timeout = AUDIO_HOLD_LOOK_US;
+
+				if (audio_hold_flag < 0)
+					audio_hold_flag = sceKernelCreateEventFlag("audiohold", 0, 0, NULL);
+				if (audio_hold_flag < 0 ||
+					sceKernelWaitEventFlag(audio_hold_flag, 1, PSP_EVENT_WAITOR | PSP_EVENT_WAITCLEAR, NULL, &timeout) < 0 &&
+					timeout != 0)
+					sceKernelDelayThread(1000);
+			}
+			else
+				sceKernelDelayThread(100);
 			looks++;
 		}
 		waited = (unsigned long)(sceKernelGetSystemTimeWide() - start);
@@ -3325,7 +3344,14 @@ int psp_me_submitted_done(int which)
 
 	if (which < 0 || which >= ME_SLOTS || !(state = me_mark(which)))
 		return 0;
-	return state == 2 || SLOT(which)->done == slot_request[which];
+	if (state == 2 || SLOT(which)->done == slot_request[which])
+	{
+		/* audiohold: the waiting audio block is mixed now the replay is done */
+		if (which == ME_SLOT_RENDER && audio_hold_flag >= 0)
+			sceKernelSetEventFlag(audio_hold_flag, 1);
+		return 1;
+	}
+	return 0;
 }
 
 /* the ME has started the job handed over with psp_me_submit (or it was run
