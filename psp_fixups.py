@@ -57248,7 +57248,320 @@ void biped_preprocess_node_orientations(
 ]
 
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_SSPR.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + list(FIXES_CHUPA090RUNS.items()) + list(FIXES_HEAPTRIM.items()) + list(FIXES_B78.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items()) + list(FIXES_AIME2A.items()) + list(FIXES_REDOSEED.items()) + (list(FIXES_STACKHOT.items()) if STACKHOT else []) + (list(FIXES_STACKHOT2.items()) if STACKHOT2 else []) + list(FIXES_PWSL.items()) + list(FIXES_SPHSL.items()) + list(FIXES_RECONLIST.items()) + list(FIXES_TP1.items()) + list(FIXES_WXDEAD.items()) + list(FIXES_AIMEMOVE.items()) + list(FIXES_PROPCRASH.items()) + list(FIXES_APCPOOL.items()) + list(FIXES_PSPTLS.items()) + list(FIXES_SNDEDRAM.items()) + list(FIXES_LIGHTFIRST.items()) + list(FIXES_DRAWPART.items()) + (list(FIXES_RECONLATE.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + list(FIXES_P2PASS.items()) + (list(FIXES_P2CENSUS.items()) if P2CENSUS else []) + list(FIXES_OBSRAY.items()) + list(FIXES_SNDWAIT.items()) + list(FIXES_FLAMEDECAL.items()) + list(FIXES_HUHINT.items()) + list(FIXES_DBLSOFT.items()) + list(FIXES_VFPUTRIG.items()) + list(FIXES_TICKCACHE.items()) + list(FIXES_STRICTALIAS.items()) + list(FIXES_SNDPERMAP.items()) + list(FIXES_RLOOP.items()) + list(FIXES_L10.items()) + list(FIXES_RLSKIP.items()) + list(FIXES_ONEWALK.items()) + (list(FIXES_POSEK.items()) if POSEK else []) + (list(FIXES_SNDSTREAM.items()) if os.environ.get("PSP_SNDSTREAM", "") == "1" else []) + list(FIXES_MOUTHCLOCK.items()) + list(FIXES_LSAME.items()) + list(FIXES_CHUPA090.items()) + list(FIXES_V091A.items()) + list(FIXES_AIDEBUGREC.items()) + (list(FIXES_AITICKOLD.items()) if AITICKOLD else []) + (list(FIXES_PADPATH.items()) if os.environ.get("PSP_PADPATH", "") == "1" else []) + list(FIXES_FARLEVEL.items()) + list(FIXES_DECALRING.items()) + list(FIXES_ARRAYFULL.items()) + (list(FIXES_DEADXBOX.items()) if DEADXBOX else []) + (list(FIXES_CAPTURE_POSING.items()) if CAPTURE == "posing" else []) + (list(FIXES_BOXPOSING.items()) if BOXPOSING else []) + (list(FIXES_ASKCENSUS.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + (list(FIXES_CAPTURE_SWEEP.items()) if CAPTURE == "sweep" else []) + (list(FIXES_BIPEDSTAGE.items()) if BIPEDSTAGE else []) + (list(FIXES_WSOLD.items()) if WSOLD else []) + (list(FIXES_SWEEPME.items()) if SWEEPME else []) + list(FIXES_B98.items()) + list(FIXES_SOUNDGAMETIME.items()) + list(FIXES_DIET1.items())):
+# ---------- FIXES_DIET2: the code diet, batch 2
+#
+# TAGMEMO ("tagmemo"): the typed getters remember their last answer. The lab's
+# census of the tock (dietcensus1-3) counts tag_get at 4-5.5% of the tick's
+# instructions, ~4,400 calls a tick, and three quarters of the tick's calls
+# come through the typed getters below (object_definition_get,
+# unit_definition_get, ...): a biped's update asks for its own definition, its
+# model and its animation graph more than twenty times a tick, each callee
+# again. Each getter keeps one word: the tag instance it last answered from.
+# A call loads it, compares the instance's own index with the index asked,
+# and takes its address; anything else goes to psp_tag_memo_miss
+# (cache_files.c), which makes tag_get's own fast test and, under the word,
+# remembers the instance. A hit is therefore tag_get's fast answer for that
+# index. One word, so a reader never sees half an answer; only the main CPU
+# writes it (the Media Engine has a data cache of its own: its store would
+# sit there, and its write-back could put a stale line over the main CPU's),
+# and a stale word the ME reads is still an instance that passed for that
+# getter, with the index test to decide. The words are forgotten wherever the
+# instance table is set (tag_memo_forgets below).
+FIXES_DIET2 = {}
+FIXES_DIET2["source/tag_files/tag_groups.h#tagmemo"] = [
+("""void *tag_get(long group_tag, long tag_index);
+""",
+ """void *tag_get(long group_tag, long tag_index);
+#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_DIET2, TAGMEMO): a typed getter's last answer. The
+start of a tag instance as cache_files.c has it (checked there) */
+struct psp_tag_view
+{
+	long group_tag;
+	long parent_group_tags[2];
+	long tag_index;
+	char *name;
+	void *base_address;
+};
+enum
+{
+	PSP_TM_OBJECT_DEFINITION,
+	PSP_TM_UNIT_DEFINITION,
+	PSP_TM_BIPED_DEFINITION,
+	PSP_TM_ITEM_DEFINITION,
+	PSP_TM_WEAPON_DEFINITION,
+	PSP_TM_PROJECTILE_DEFINITION,
+	PSP_TM_MODEL_DEFINITION,
+	PSP_TM_ANIMATION_GRAPH_DEFINITION,
+	PSP_TM_DEVICE_DEFINITION,
+	PSP_TM_MACHINE_DEFINITION,
+	PSP_TM_ACTOR_DEFINITION,
+	PSP_TM_ACTOR_VARIANT_DEFINITION,
+	PSP_TM_COLLISION_MODEL_DEFINITION,
+	PSP_TM_PARTICLE_DEFINITION,
+	PSP_TM_SOUND_DEFINITION,
+	PSP_TM_LOOPING_SOUND_DEFINITION,
+	PSP_TM_DAMAGE_EFFECT_DEFINITION,
+	PSP_TM_COUNT
+};
+extern const struct psp_tag_view *psp_tag_memo[PSP_TM_COUNT];
+void *psp_tag_memo_miss(long group_tag, int slot, long tag_index);
+static inline __attribute__((always_inline)) void *psp_tag_memo_get(long group_tag, int slot, long tag_index)
+{
+	const struct psp_tag_view *held = psp_tag_memo[slot];
+
+	if (__builtin_expect(held->tag_index == tag_index, 1))
+		return held->base_address;
+	return psp_tag_memo_miss(group_tag, slot, tag_index);
+}
+#endif
+"""),
+]
+FIXES_DIET2["source/cache/cache_files.c#tagmemo"] = [
+("""/* psp_fixups.py (build 106): the found-it path, then the checked original */
+static void *psp_tag_get_checked(long group_tag, long tag_index);
+""",
+ """/* psp_fixups.py (FIXES_DIET2, TAGMEMO): the getters' words and their miss.
+psp_tag_view (tag_groups.h) is the start of a tag instance */
+typedef char psp_tag_view_fits[
+	offsetof(struct cache_file_tag_instance, tag_index) == offsetof(struct psp_tag_view, tag_index) &&
+	offsetof(struct cache_file_tag_instance, base_address) == offsetof(struct psp_tag_view, base_address) &&
+	sizeof(((struct cache_file_tag_instance *)0)->base_address) == sizeof(void *) ? 1 : -1];
+/* the start value: an index nothing asks for (no tag has it, and NONE is not it) */
+static const struct psp_tag_view psp_tag_never = { 0, { 0, 0 }, 0x7FFFFFFE, NULL, NULL };
+const struct psp_tag_view *psp_tag_memo[PSP_TM_COUNT] __attribute__((aligned(64))) =
+	{ [0 ... PSP_TM_COUNT - 1] = &psp_tag_never };
+
+/* every word back to the start value: the instance table is about to change
+or has changed. Written back, so the Media Engine's next read sees it */
+void psp_tag_memo_forget(void)
+{
+	extern int sceKernelDcacheWritebackRange(const void *p, unsigned int size);
+	int slot;
+
+	for (slot = 0; slot < PSP_TM_COUNT; slot++)
+		psp_tag_memo[slot] = &psp_tag_never;
+	sceKernelDcacheWritebackRange(psp_tag_memo, sizeof(psp_tag_memo));
+}
+
+void * __attribute__((noinline)) psp_tag_memo_miss(long group_tag, int slot, long tag_index)
+{
+	short absolute_index = (short)tag_index;
+
+	if (cache_file_globals.tags_loaded && global_tag_instances && cache_file_globals.tag_header &&
+		absolute_index >= 0 && absolute_index < cache_file_globals.tag_header->tag_count)
+	{
+		struct cache_file_tag_instance *instance = &global_tag_instances[absolute_index];
+
+		/* tag_get's fast test, for an index asked with its salt: only such
+		an ask is remembered, since the getters compare the whole index */
+		if (instance->tag_index == tag_index &&
+			(instance->group_tag == group_tag || instance->parent_group_tags[0] == group_tag ||
+				instance->parent_group_tags[1] == group_tag) &&
+			instance->base_address)
+		{
+			extern volatile unsigned int psp_me_context;
+
+			/* the main CPU's work only: the ME reads the words, it never writes them */
+			if (!(psp_me_context != 0 || psp_cpu_is_me()) && PSP_KEEP_ONCE("tagmemo"))
+				psp_tag_memo[slot] = (const struct psp_tag_view *)instance;
+			return instance->base_address;
+		}
+	}
+	return tag_get(group_tag, tag_index);
+}
+
+/* psp_fixups.py (build 106): the found-it path, then the checked original */
+static void *psp_tag_get_checked(long group_tag, long tag_index);
+"""),
+]
+FIXES_DIET2["source/objects/object_definitions.h#tagmemo"] = [
+("""#define object_definition_get(index) ((struct object_definition *)tag_get(OBJECT_DEFINITION_TAG, (index)))
+""",
+ """#ifdef HALO_PSP /* psp_fixups.py (FIXES_DIET2, TAGMEMO): the last answer first (tag_groups.h) */
+#define object_definition_get(index) ((struct object_definition *)psp_tag_memo_get(OBJECT_DEFINITION_TAG, PSP_TM_OBJECT_DEFINITION, (index)))
+#else
+#define object_definition_get(index) ((struct object_definition *)tag_get(OBJECT_DEFINITION_TAG, (index)))
+#endif
+"""),
+]
+FIXES_DIET2["source/units/unit_definitions.h#tagmemo"] = [
+("""#define unit_definition_get(index) ((struct unit_definition *)tag_get(UNIT_DEFINITION_TAG, index))
+""",
+ """#ifdef HALO_PSP /* psp_fixups.py (FIXES_DIET2, TAGMEMO): the last answer first (tag_groups.h) */
+#define unit_definition_get(index) ((struct unit_definition *)psp_tag_memo_get(UNIT_DEFINITION_TAG, PSP_TM_UNIT_DEFINITION, index))
+#else
+#define unit_definition_get(index) ((struct unit_definition *)tag_get(UNIT_DEFINITION_TAG, index))
+#endif
+"""),
+]
+FIXES_DIET2["source/units/biped_definitions.h#tagmemo"] = [
+("""#define biped_definition_get(index) ((struct biped_definition *)tag_get(BIPED_DEFINITION_TAG, (index)))
+""",
+ """#ifdef HALO_PSP /* psp_fixups.py (FIXES_DIET2, TAGMEMO): the last answer first (tag_groups.h) */
+#define biped_definition_get(index) ((struct biped_definition *)psp_tag_memo_get(BIPED_DEFINITION_TAG, PSP_TM_BIPED_DEFINITION, (index)))
+#else
+#define biped_definition_get(index) ((struct biped_definition *)tag_get(BIPED_DEFINITION_TAG, (index)))
+#endif
+"""),
+]
+FIXES_DIET2["source/items/item_definitions.h#tagmemo"] = [
+("""#define item_definition_get(index) ((struct item_definition *)tag_get(ITEM_DEFINITION_TAG, index))
+""",
+ """#ifdef HALO_PSP /* psp_fixups.py (FIXES_DIET2, TAGMEMO): the last answer first (tag_groups.h) */
+#define item_definition_get(index) ((struct item_definition *)psp_tag_memo_get(ITEM_DEFINITION_TAG, PSP_TM_ITEM_DEFINITION, index))
+#else
+#define item_definition_get(index) ((struct item_definition *)tag_get(ITEM_DEFINITION_TAG, index))
+#endif
+"""),
+]
+FIXES_DIET2["source/items/weapon_definitions.h#tagmemo"] = [
+("""#define weapon_definition_get(index) ((struct weapon_definition *)tag_get(WEAPON_DEFINITION_TAG, index))
+""",
+ """#ifdef HALO_PSP /* psp_fixups.py (FIXES_DIET2, TAGMEMO): the last answer first (tag_groups.h) */
+#define weapon_definition_get(index) ((struct weapon_definition *)psp_tag_memo_get(WEAPON_DEFINITION_TAG, PSP_TM_WEAPON_DEFINITION, index))
+#else
+#define weapon_definition_get(index) ((struct weapon_definition *)tag_get(WEAPON_DEFINITION_TAG, index))
+#endif
+"""),
+]
+FIXES_DIET2["source/items/projectile_definitions.h#tagmemo"] = [
+("""#define projectile_definition_get(index) ((struct projectile_definition *)tag_get(PROJECTILE_DEFINITION_TAG, index))
+""",
+ """#ifdef HALO_PSP /* psp_fixups.py (FIXES_DIET2, TAGMEMO): the last answer first (tag_groups.h) */
+#define projectile_definition_get(index) ((struct projectile_definition *)psp_tag_memo_get(PROJECTILE_DEFINITION_TAG, PSP_TM_PROJECTILE_DEFINITION, index))
+#else
+#define projectile_definition_get(index) ((struct projectile_definition *)tag_get(PROJECTILE_DEFINITION_TAG, index))
+#endif
+"""),
+]
+FIXES_DIET2["source/models/model_definitions.h#tagmemo"] = [
+("""#define model_definition_get(index) ((struct model *)tag_get(MODELS_GROUP_TAG, index))
+""",
+ """#ifdef HALO_PSP /* psp_fixups.py (FIXES_DIET2, TAGMEMO): the last answer first (tag_groups.h) */
+#define model_definition_get(index) ((struct model *)psp_tag_memo_get(MODELS_GROUP_TAG, PSP_TM_MODEL_DEFINITION, index))
+#else
+#define model_definition_get(index) ((struct model *)tag_get(MODELS_GROUP_TAG, index))
+#endif
+"""),
+]
+FIXES_DIET2["source/models/model_animation_definitions.h#tagmemo"] = [
+("""#define animation_graph_definition_get(index) ((struct animation_graph *)tag_get(ANIMATION_GRAPH_TAG, index))
+""",
+ """#ifdef HALO_PSP /* psp_fixups.py (FIXES_DIET2, TAGMEMO): the last answer first (tag_groups.h) */
+#define animation_graph_definition_get(index) ((struct animation_graph *)psp_tag_memo_get(ANIMATION_GRAPH_TAG, PSP_TM_ANIMATION_GRAPH_DEFINITION, index))
+#else
+#define animation_graph_definition_get(index) ((struct animation_graph *)tag_get(ANIMATION_GRAPH_TAG, index))
+#endif
+"""),
+]
+FIXES_DIET2["source/devices/device_definitions.h#tagmemo"] = [
+("""#define device_definition_get(index) ((struct device_definition *)tag_get(DEVICE_DEFINITION_TAG, index))
+""",
+ """#ifdef HALO_PSP /* psp_fixups.py (FIXES_DIET2, TAGMEMO): the last answer first (tag_groups.h) */
+#define device_definition_get(index) ((struct device_definition *)psp_tag_memo_get(DEVICE_DEFINITION_TAG, PSP_TM_DEVICE_DEFINITION, index))
+#else
+#define device_definition_get(index) ((struct device_definition *)tag_get(DEVICE_DEFINITION_TAG, index))
+#endif
+"""),
+("""#define machine_definition_get(index) ((struct machine_definition *)tag_get(MACHINE_DEFINITION_TAG, index))
+""",
+ """#ifdef HALO_PSP /* psp_fixups.py (FIXES_DIET2, TAGMEMO): the last answer first (tag_groups.h) */
+#define machine_definition_get(index) ((struct machine_definition *)psp_tag_memo_get(MACHINE_DEFINITION_TAG, PSP_TM_MACHINE_DEFINITION, index))
+#else
+#define machine_definition_get(index) ((struct machine_definition *)tag_get(MACHINE_DEFINITION_TAG, index))
+#endif
+"""),
+]
+FIXES_DIET2["source/ai/actor_definitions.h#tagmemo"] = [
+("""#define actor_definition_get(index) ((struct actor_definition *)tag_get(ACTOR_DEFINITION_TAG, index))
+""",
+ """#ifdef HALO_PSP /* psp_fixups.py (FIXES_DIET2, TAGMEMO): the last answer first (tag_groups.h) */
+#define actor_definition_get(index) ((struct actor_definition *)psp_tag_memo_get(ACTOR_DEFINITION_TAG, PSP_TM_ACTOR_DEFINITION, index))
+#else
+#define actor_definition_get(index) ((struct actor_definition *)tag_get(ACTOR_DEFINITION_TAG, index))
+#endif
+"""),
+("""#define actor_variant_definition_get(index) ((struct actor_variant_definition *)tag_get(ACTOR_VARIANT_DEFINITION_TAG, index))
+""",
+ """#ifdef HALO_PSP /* psp_fixups.py (FIXES_DIET2, TAGMEMO): the last answer first (tag_groups.h) */
+#define actor_variant_definition_get(index) ((struct actor_variant_definition *)psp_tag_memo_get(ACTOR_VARIANT_DEFINITION_TAG, PSP_TM_ACTOR_VARIANT_DEFINITION, index))
+#else
+#define actor_variant_definition_get(index) ((struct actor_variant_definition *)tag_get(ACTOR_VARIANT_DEFINITION_TAG, index))
+#endif
+"""),
+]
+FIXES_DIET2["source/physics/collision_model_definitions.h#tagmemo"] = [
+("""#define collision_model_definition_get(index) ((struct collision_model *)tag_get('coll', index))
+""",
+ """#ifdef HALO_PSP /* psp_fixups.py (FIXES_DIET2, TAGMEMO): the last answer first (tag_groups.h) */
+#define collision_model_definition_get(index) ((struct collision_model *)psp_tag_memo_get('coll', PSP_TM_COLLISION_MODEL_DEFINITION, index))
+#else
+#define collision_model_definition_get(index) ((struct collision_model *)tag_get('coll', index))
+#endif
+"""),
+]
+FIXES_DIET2["source/effects/particles.h#tagmemo"] = [
+("""#define particle_definition_get(index) ((struct particle_definition *)tag_get(PARTICLE_TAG, (index)))
+""",
+ """#ifdef HALO_PSP /* psp_fixups.py (FIXES_DIET2, TAGMEMO): the last answer first (tag_groups.h) */
+#define particle_definition_get(index) ((struct particle_definition *)psp_tag_memo_get(PARTICLE_TAG, PSP_TM_PARTICLE_DEFINITION, (index)))
+#else
+#define particle_definition_get(index) ((struct particle_definition *)tag_get(PARTICLE_TAG, (index)))
+#endif
+"""),
+]
+FIXES_DIET2["source/sound/sound_definitions.h#tagmemo"] = [
+("""#define sound_definition_get(index) ((struct sound_definition *)tag_get(SOUND_DEFINITION_TAG, (index)))
+""",
+ """#ifdef HALO_PSP /* psp_fixups.py (FIXES_DIET2, TAGMEMO): the last answer first (tag_groups.h) */
+#define sound_definition_get(index) ((struct sound_definition *)psp_tag_memo_get(SOUND_DEFINITION_TAG, PSP_TM_SOUND_DEFINITION, (index)))
+#else
+#define sound_definition_get(index) ((struct sound_definition *)tag_get(SOUND_DEFINITION_TAG, (index)))
+#endif
+"""),
+("""#define looping_sound_definition_get(index) ((struct looping_sound_definition *)tag_get(LOOPING_SOUND_DEFINITION_TAG, (index)))
+""",
+ """#ifdef HALO_PSP /* psp_fixups.py (FIXES_DIET2, TAGMEMO): the last answer first (tag_groups.h) */
+#define looping_sound_definition_get(index) ((struct looping_sound_definition *)psp_tag_memo_get(LOOPING_SOUND_DEFINITION_TAG, PSP_TM_LOOPING_SOUND_DEFINITION, (index)))
+#else
+#define looping_sound_definition_get(index) ((struct looping_sound_definition *)tag_get(LOOPING_SOUND_DEFINITION_TAG, (index)))
+#endif
+"""),
+]
+FIXES_DIET2["source/objects/damage_effect_definitions.h#tagmemo"] = [
+("""#define damage_effect_definition_get(index) ((struct damage_effect_definition *)tag_get(DAMAGE_EFFECT_DEFINITION_TAG, index))
+""",
+ """#ifdef HALO_PSP /* psp_fixups.py (FIXES_DIET2, TAGMEMO): the last answer first (tag_groups.h) */
+#define damage_effect_definition_get(index) ((struct damage_effect_definition *)psp_tag_memo_get(DAMAGE_EFFECT_DEFINITION_TAG, PSP_TM_DAMAGE_EFFECT_DEFINITION, index))
+#else
+#define damage_effect_definition_get(index) ((struct damage_effect_definition *)tag_get(DAMAGE_EFFECT_DEFINITION_TAG, index))
+#endif
+"""),
+]
+
+
+def tag_memo_forgets(tree):
+    """TAGMEMO: the getters' words are forgotten wherever cache_files.c sets
+    the instance table (a map's tags loading or leaving, the menus' tags
+    joining them): each assignment is followed by the call. The count is the
+    check that none was missed."""
+    path = os.path.join(tree, "source/cache/cache_files.c")
+    text = open(path, errors="surrogateescape").read()
+    if "psp_tag_memo_miss" not in text:
+        return 0
+    pattern = re.compile(r'^([ \t]*)global_tag_instances = [^;\n]*;[ \t]*$', re.M)
+    text, count = pattern.subn(lambda m: m.group(0) + "\n" + m.group(1) + "#ifdef HALO_PSP\n" + m.group(1) +
+                               "{ extern void psp_tag_memo_forget(void); psp_tag_memo_forget(); } "
+                               "/* psp_fixups.py (TAGMEMO) */\n" + m.group(1) + "#endif", text)
+    if count != 6:
+        sys.exit("psp_fixups: TAGMEMO: %d assignments of global_tag_instances in cache_files.c, not 6: "
+                 "check each still forgets the getters' words" % count)
+    open(path, "w", errors="surrogateescape").write(text)
+    return count
+
+
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_SSPR.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + list(FIXES_CHUPA090RUNS.items()) + list(FIXES_HEAPTRIM.items()) + list(FIXES_B78.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items()) + list(FIXES_AIME2A.items()) + list(FIXES_REDOSEED.items()) + (list(FIXES_STACKHOT.items()) if STACKHOT else []) + (list(FIXES_STACKHOT2.items()) if STACKHOT2 else []) + list(FIXES_PWSL.items()) + list(FIXES_SPHSL.items()) + list(FIXES_RECONLIST.items()) + list(FIXES_TP1.items()) + list(FIXES_WXDEAD.items()) + list(FIXES_AIMEMOVE.items()) + list(FIXES_PROPCRASH.items()) + list(FIXES_APCPOOL.items()) + list(FIXES_PSPTLS.items()) + list(FIXES_SNDEDRAM.items()) + list(FIXES_LIGHTFIRST.items()) + list(FIXES_DRAWPART.items()) + (list(FIXES_RECONLATE.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + list(FIXES_P2PASS.items()) + (list(FIXES_P2CENSUS.items()) if P2CENSUS else []) + list(FIXES_OBSRAY.items()) + list(FIXES_SNDWAIT.items()) + list(FIXES_FLAMEDECAL.items()) + list(FIXES_HUHINT.items()) + list(FIXES_DBLSOFT.items()) + list(FIXES_VFPUTRIG.items()) + list(FIXES_TICKCACHE.items()) + list(FIXES_STRICTALIAS.items()) + list(FIXES_SNDPERMAP.items()) + list(FIXES_RLOOP.items()) + list(FIXES_L10.items()) + list(FIXES_RLSKIP.items()) + list(FIXES_ONEWALK.items()) + (list(FIXES_POSEK.items()) if POSEK else []) + (list(FIXES_SNDSTREAM.items()) if os.environ.get("PSP_SNDSTREAM", "") == "1" else []) + list(FIXES_MOUTHCLOCK.items()) + list(FIXES_LSAME.items()) + list(FIXES_CHUPA090.items()) + list(FIXES_V091A.items()) + list(FIXES_AIDEBUGREC.items()) + (list(FIXES_AITICKOLD.items()) if AITICKOLD else []) + (list(FIXES_PADPATH.items()) if os.environ.get("PSP_PADPATH", "") == "1" else []) + list(FIXES_FARLEVEL.items()) + list(FIXES_DECALRING.items()) + list(FIXES_ARRAYFULL.items()) + (list(FIXES_DEADXBOX.items()) if DEADXBOX else []) + (list(FIXES_CAPTURE_POSING.items()) if CAPTURE == "posing" else []) + (list(FIXES_BOXPOSING.items()) if BOXPOSING else []) + (list(FIXES_ASKCENSUS.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + (list(FIXES_CAPTURE_SWEEP.items()) if CAPTURE == "sweep" else []) + (list(FIXES_BIPEDSTAGE.items()) if BIPEDSTAGE else []) + (list(FIXES_WSOLD.items()) if WSOLD else []) + (list(FIXES_SWEEPME.items()) if SWEEPME else []) + list(FIXES_B98.items()) + list(FIXES_SOUNDGAMETIME.items()) + list(FIXES_DIET1.items()) + list(FIXES_DIET2.items())):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 # PSP_FRAMEPIC (docs/frame_picture.md): game.c's perf statements are
 # stripped before its anchors are matched (PERF_STRIP), which took the tick's
@@ -58487,6 +58800,7 @@ print("psp_fixups: the GL renderer compiled out in %d files" % gl_never(TREE))
 print("psp_fixups: the collision user stack %s in %d files (COLLUSERS)" % ("shared, as before," if COLLUSERS_SHARED else "one a CPU (debug tools) or none", collision_users(TREE)))
 print("psp_fixups: the AI's meters and ballistic record the main CPU's alone in %d files (AIMETERS)" % ai_meters(TREE))
 print("psp_fixups: biped motion's window (intent to tail) through the store, %d datum accesses (BIPEDMOVE)" % biped_move_store(TREE))
+print("psp_fixups: the typed getters' words forgotten at %d settings of the tag instance table (TAGMEMO)" % tag_memo_forgets(TREE))
 
 if CHECK_ONLY:
     for message in count_failures:
