@@ -197,6 +197,11 @@ batch's (~13 KB with the ring's) don't fit the 16 KB I-cache together, so
 each job taken between two records cost both a refill (c20: the replay
 +0.3-0.4 ms a job beyond the batches' own time, sweepme_claims_c20_replay) */
 #define ME_FEATURE_TICKSCHED 65536u
+#ifdef PSP_RECON
+/* "meprofile" (recon): the ME's own profiler counters read around each of
+its jobs (meprof_enter, meprof_leave) */
+#define ME_FEATURE_PROFILE 131072u
+#endif
 
 #if PSP_MEXEC
 /* The copy's table: tools/mexec.py writes it into the linked program
@@ -566,6 +571,113 @@ static inline unsigned int me_cycles(void)
 	return count;
 }
 
+#ifdef PSP_RECON
+/* "meprofile" (recon; docs/meprofile.md): the PSP's hardware profiler
+block at 0xBC400000 read from the ME around each slot job (me_serve) and
+each ring job (ring_run), summed by job type. The ME has a block of its own
+there, off until the ME turns it on, and its CPU cycles track the ME's
+Count (the lab's me_hw_counters), so its I-misses and D-misses are the ME's
+code and data misses. Each job's counts are its own: a job served inside
+another (audio mixed in the render job's looks, the ring drained in the AI
+job's yields) is taken off its host's, so the bins add up to the ME's time
+in jobs. Reading the block is a few uncached loads; no clock call, no VFPU */
+#define ME_PROFILER_BLOCK ((volatile unsigned int *)0xBC400000)
+#define MEPROF_BINS 64 /* slot jobs by type, ring jobs at MEPROF_RING + type */
+#define MEPROF_RING 32
+/* Count, memory-wait cycles, I-misses, D-misses, write-backs, uncached
+loads and stores, cached loads and stores, local bus */
+#define MEPROF_WORDS 10
+#define MEPROF_DEPTH 4 /* jobs served inside jobs: deeper ones stay in their host's */
+struct meprof_bin
+{
+	unsigned long long cycles, memory; /* a window's outgrow 32 bits */
+	unsigned int jobs, count[MEPROF_WORDS - 2];
+	unsigned int pad[3];
+} __attribute__((aligned(64)));
+/* written only on the ME, a line a bin, each line written back as it's
+added to; the main CPU reads them uncached and keeps its own last copy, so
+nothing is ever reset under the ME */
+static struct meprof_bin meprof_bins[MEPROF_BINS] __attribute__((aligned(64)));
+/* the ME's own: the counts at each open job's start and what the jobs
+inside it took */
+static struct
+{
+	unsigned int start[MEPROF_DEPTH][MEPROF_WORDS], inside[MEPROF_DEPTH][MEPROF_WORDS];
+	int depth;
+	unsigned int pad[15];
+} meprof __attribute__((aligned(64)));
+/* the enable word as the ME first read it, plus one (1: off, 2: on); the
+ME writes it uncached once */
+static unsigned int meprof_enable_first __attribute__((aligned(64)));
+
+static inline void meprof_read(unsigned int *v)
+{
+	volatile unsigned int *p = ME_PROFILER_BLOCK;
+
+	/* PspDebugProfilerRegs after the enable word: 3 memory, 12 i_miss,
+	13 d_miss, 14 d_writeback, 8/9 uncached load/store, 10/11 cached
+	load/store, 18 local_bus */
+	v[0] = me_cycles();
+	v[1] = p[1 + 3];
+	v[2] = p[1 + 12];
+	v[3] = p[1 + 13];
+	v[4] = p[1 + 14];
+	v[5] = p[1 + 8];
+	v[6] = p[1 + 9];
+	v[7] = p[1 + 10];
+	v[8] = p[1 + 11];
+	v[9] = p[1 + 18];
+}
+
+static inline void meprof_enter(void)
+{
+	volatile unsigned int *p = ME_PROFILER_BLOCK;
+	int d = meprof.depth++, k;
+
+	/* on at the first job, and again after a restart (a sleep may reset it) */
+	if (!p[0])
+	{
+		if (!UNCACHED(&meprof_enable_first)[0])
+			UNCACHED(&meprof_enable_first)[0] = 1;
+		p[0] = 1;
+	}
+	else if (!UNCACHED(&meprof_enable_first)[0])
+		UNCACHED(&meprof_enable_first)[0] = 2;
+	if (d >= MEPROF_DEPTH)
+		return;
+	for (k = 0; k < MEPROF_WORDS; k++)
+		meprof.inside[d][k] = 0;
+	meprof_read(meprof.start[d]);
+}
+
+static inline void meprof_leave(unsigned int bin)
+{
+	unsigned int now[MEPROF_WORDS], own[MEPROF_WORDS];
+	int d = --meprof.depth, k;
+	struct meprof_bin *b = &meprof_bins[bin & (MEPROF_BINS - 1)];
+
+	if (d >= MEPROF_DEPTH)
+		return;
+	meprof_read(now);
+	for (k = 0; k < MEPROF_WORDS; k++)
+	{
+		unsigned int took = now[k] - meprof.start[d][k];
+
+		own[k] = took - meprof.inside[d][k];
+		if (d > 0 && d <= MEPROF_DEPTH)
+			meprof.inside[d - 1][k] += took;
+	}
+	b->cycles += own[0];
+	b->memory += own[1];
+	b->jobs++;
+	for (k = 2; k < MEPROF_WORDS; k++)
+		b->count[k - 2] += own[k];
+	/* to RAM now: the main CPU reads it uncached whenever it reports */
+	__builtin_allegrex_cache(0x1B, (unsigned int)b);
+	__asm__ __volatile__("sync");
+}
+#endif
+
 static inline void me_idle(void)
 {
 	unsigned int k;
@@ -898,6 +1010,11 @@ static void me_serve(volatile struct me_slot *slot, int *sums)
 	int ranges;
 
 	start = me_cycles();
+#ifdef PSP_RECON
+	/* the cache hand-overs too: their write-backs are the job's */
+	if (control->features & ME_FEATURE_PROFILE)
+		meprof_enter();
+#endif
 	slot->begun = request;
 	me_count(STASH_SLOT_BEGUN);
 	if (control->features & ME_FEATURE_STASH)
@@ -936,6 +1053,10 @@ static void me_serve(volatile struct me_slot *slot, int *sums)
 	}
 	else
 		meLibDcacheWritebackInvalidateAll();
+#ifdef PSP_RECON
+	if (control->features & ME_FEATURE_PROFILE)
+		meprof_leave(type);
+#endif
 	slot->cycles = me_cycles() - start;
 	slot->job_cycles = job_end - job_start;
 	control->jobs++;
@@ -1472,6 +1593,10 @@ static __attribute__((noinline)) void ring_run(unsigned int index, int on_me, un
 	if (on_me)
 	{
 		start = me_cycles();
+#ifdef PSP_RECON
+		if (CONTROL->features & ME_FEATURE_PROFILE)
+			meprof_enter();
+#endif
 		me_count(STASH_RING_BEGUN);
 		me_note(STASH_RING_DROP);
 		/* the request as the main CPU wrote it back, not a copy from the last
@@ -1576,6 +1701,10 @@ static __attribute__((noinline)) void ring_run(unsigned int index, int on_me, un
 	for (k = 0; k < ME_RING_RESULTS; k++)
 		result->results[k] = results[k];
 	result->all_cycles = on_me ? me_cycles() - start : 0;
+#ifdef PSP_RECON
+	if (on_me && (CONTROL->features & ME_FEATURE_PROFILE))
+		meprof_leave(MEPROF_RING + request->type);
+#endif
 	if (on_me)
 	{
 		lines_writeback((unsigned int)result, sizeof(*result));
@@ -2001,6 +2130,10 @@ void meLibOnProcess(void)
 #endif
 	hw(ME_MARK_PROCESS) = ME_MARK_PROCESS_IN;
 	meLibSync();
+#ifdef PSP_RECON
+	/* a stop inside a job (HOME, a sleep) leaves its entry open */
+	meprof.depth = 0;
+#endif
 #if PSP_MEXEC
 	mexec_entry = 0;
 #if PSP_MEXEC_JOBS
@@ -2965,7 +3098,11 @@ int psp_me_start(void)
 		(psp_keep("menestrender") ? ME_FEATURE_NEST_RENDER : 0u) |
 		(psp_keep("aimevisleft") ? ME_FEATURE_AIME_VIS_LEFT : 0u) |
 		(psp_keep("aimeaudiolook") ? ME_FEATURE_AUDIO_LOOK : 0u) | (me_mexec_wanted() ? ME_FEATURE_MEXEC : 0u) |
-		(psp_keep("ticksched") && ring_on ? ME_FEATURE_TICKSCHED : 0u);
+		(psp_keep("ticksched") && ring_on ? ME_FEATURE_TICKSCHED : 0u)
+#ifdef PSP_RECON
+		| (psp_keep("meprofile") ? ME_FEATURE_PROFILE : 0u)
+#endif
+		;
 	tick_slice_set(control);
 	wake_features = control->features | (psp_keep("mewakeprobe") ? ME_FEATURE_WAKE_PROBE : 0u);
 	wake_early = psp_keep("mewake") && !psp_keep("mewakeoff") && psp_keep("mewakeearly");
@@ -5346,6 +5483,99 @@ float psp_me_cycles_per_us(void)
 {
 	return me_cycles_per_us;
 }
+
+#ifdef PSP_RECON
+/* meprofile's lines (psp_ge.c calls this each 300 frames): each job type's
+counts since the last call, a frame, its heaviest first. The bins only grow
+on the ME; the difference from the copy kept here is the window's. A bin is
+read uncached, word by word, so one the ME adds to meanwhile may show its
+64-bit sums a job apart (one line in many) */
+void psp_me_profile_report(unsigned int frames)
+{
+	/* static: 8 KB the stack needn't hold */
+	static struct meprof_bin last[MEPROF_BINS], now[MEPROF_BINS], d[MEPROF_BINS];
+	unsigned long long all_cycles = 0, all_memory = 0, all_i = 0, all_d = 0, all_wb = 0;
+	unsigned char shown[MEPROF_BINS];
+	float rate = me_cycles_per_us, f;
+	unsigned int first;
+	int k, w;
+
+	if (!me_state || !frames || rate <= 0.0f)
+		return;
+	f = (float)frames;
+	for (k = 0; k < MEPROF_BINS; k++)
+	{
+		volatile struct meprof_bin *b = UNCACHED(&meprof_bins[k]);
+
+		now[k].cycles = b->cycles;
+		now[k].memory = b->memory;
+		now[k].jobs = b->jobs;
+		for (w = 0; w < MEPROF_WORDS - 2; w++)
+			now[k].count[w] = b->count[w];
+		d[k].cycles = now[k].cycles - last[k].cycles;
+		d[k].memory = now[k].memory - last[k].memory;
+		d[k].jobs = now[k].jobs - last[k].jobs;
+		for (w = 0; w < MEPROF_WORDS - 2; w++)
+			d[k].count[w] = now[k].count[w] - last[k].count[w];
+		last[k] = now[k];
+		all_cycles += d[k].cycles;
+		all_memory += d[k].memory;
+		all_i += d[k].count[0];
+		all_d += d[k].count[1];
+		all_wb += d[k].count[2];
+	}
+	first = UNCACHED(&meprof_enable_first)[0];
+	/* nothing counted: simulated jobs (the emulator) never reach the block */
+	if (!all_cycles)
+		return;
+	platform_log("ME: meprofile, %u frames, the ME's jobs a frame: %.2f ms (memory wait %.1f%%), I-misses %.0f, D-misses %.0f, write-backs %.0f; "
+		"memory wait a miss %.1f cycles; enable word before the first job %s",
+		frames, (float)all_cycles / rate / 1000.0f / f, all_cycles ? 100.0f * (float)all_memory / (float)all_cycles : 0.0f,
+		(float)all_i / f, (float)all_d / f, (float)all_wb / f,
+		all_i + all_d ? (float)all_memory / (float)(all_i + all_d) : 0.0f,
+		first == 1 ? "0 (off: the ME's own block)" : first == 2 ? "1 (on)" : "not read");
+	memset(shown, 0, sizeof(shown));
+	for (;;)
+	{
+		static const char *const slot_names[32] = {
+			[ME_JOB_AUDIO] = "audio", [ME_JOB_CLASSIFY] = "classify", [ME_JOB_ANGLE] = "angle",
+			[ME_JOB_GE] = "render (the replay)", [ME_JOB_EDRAM] = "edramcheck", [ME_JOB_SOUNDCOPY] = "sound copy",
+			[ME_JOB_AIME] = "ai think", [16] = "music", [ME_JOB_VME] = "vme" };
+		static const char *const ring_names[32] = {
+			[ME_JOB_SLANT] = "slant", [ME_JOB_RINGTEST] = "ring test", [ME_JOB_PERC_RAYS] = "perception rays",
+			[ME_JOB_POSES] = "poses", [10] = "bus load", [ME_JOB_BATCH] = "batch", [ME_JOB_POINTS] = "points",
+			[ME_JOB_VISIBILITY] = "visibility" };
+		const struct meprof_bin *b;
+		const char *name;
+		char other[16];
+		int best = -1;
+
+		for (k = 0; k < MEPROF_BINS; k++)
+			if (!shown[k] && d[k].jobs && (best < 0 || d[k].cycles > d[best].cycles))
+				best = k;
+		if (best < 0)
+			break;
+		shown[best] = 1;
+		b = &d[best];
+		name = best >= MEPROF_RING ? ring_names[best - MEPROF_RING] : slot_names[best];
+		if (!name)
+		{
+			snprintf(other, sizeof(other), "type %d", best & (MEPROF_RING - 1));
+			name = other;
+		}
+		/* per bin: memory wait a miss falls toward eDRAM's ~25 cycles where
+		the job's code runs from MEXEC's copy, and stays near main RAM's
+		~70-77 where it doesn't */
+		platform_log("ME: meprofile, %s %s: %.1f jobs a frame, %.2f ms a frame (memory wait %.1f%%); a frame I-misses %.0f, D-misses %.0f, write-backs %.0f, "
+			"memory wait a miss %.1f cycles; uncached loads %.0f stores %.0f, cached loads %.0f stores %.0f, local bus %.0f",
+			best >= MEPROF_RING ? "ring" : "slot", name,
+			(float)b->jobs / f, (float)b->cycles / rate / 1000.0f / f, b->cycles ? 100.0f * (float)b->memory / (float)b->cycles : 0.0f,
+			(float)b->count[0] / f, (float)b->count[1] / f, (float)b->count[2] / f,
+			b->count[0] + b->count[1] ? (float)b->memory / (float)(b->count[0] + b->count[1]) : 0.0f,
+			(float)b->count[3] / f, (float)b->count[4] / f, (float)b->count[5] / f, (float)b->count[6] / f, (float)b->count[7] / f);
+	}
+}
+#endif
 
 #if PSP_MUSIC
 /* the next audio job decodes the block's music too (psp_dsound.c) */

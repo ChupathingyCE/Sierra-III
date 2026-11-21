@@ -9,7 +9,7 @@ The ME's own code layout (Sheepdog01, 2026-11-18 09:10: "it does matter, and it'
 - **MEXEC is on in the tock** (keep word `mexec`, list rb: 95 functions, 158 KB; `mexec.md`). The PSP's ME runs the replay's hot code from a copy in its eDRAM, so the text layout no longer places that code for the ME. The copy's sets come from the list's order. The text layout still places everything else the ME runs: the AI job (19.3 ms a frame of the ME on b30's flight, b156 [M], stretches.tsv), the audio mix (9.1 ms), the ring jobs (3.4 ms), and the replay's code that isn't copied.
 - **The cache model didn't know this:** the emulator runs the ME's jobs from the originals in main RAM, so before 2026-11-18 a `meside` run modelled the replay at its main-RAM addresses. The simulated audio job ran without `psp_me_context`, so with the ME's audio on its fetches counted as the main CPU's. The model also had no windows: a graph counted from the map's load.
 - **MEHOTG** (`mehotg.md`): its re-derived block landed on the ME's hot stack sets (mehotgr1). It's this work's second step.
-- **On the PSP, the tock has no ME miss counter.** meprofile was on R's milestone branch. The ME's own figures are hwprofile's job times by kind (replay, audio, AI, ring), the ME's own clock.
+- ~~**On the PSP, the tock has no ME miss counter.** meprofile was on R's milestone branch.~~ Superseded 2026-11-21: meprofile is back on the tock as a recon instrument, by job and by step (`meprofile.md`). The ME's own figures are hwprofile's job times by kind (replay, audio, AI, ring), the ME's own clock.
 
 ## What was built (2026-11-18)
 
