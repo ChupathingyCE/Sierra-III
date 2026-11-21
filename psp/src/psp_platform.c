@@ -1311,6 +1311,14 @@ static const struct
 	drawing no worse */
 	{ "objlean", "objleanold" }, { "verifygate", "verifygateoff" }, { "tagmemo", "tagmemooff" },
 	{ "tagmemotick", "tagmemotickoff" },
+	/* the diet's short forms on the Media Engine's replay (docs/code_diet.md):
+	pspgu's state switches, a sent bind's words and a draw's words written
+	by the port, a baked wall's draw looked over once, and a model part's
+	place in the geometry cache asked once. Exact (every display list the
+	same); the five together take 1.2 ms off the ME's 33.8 ms render job on
+	c20 on the PSP-3000 */
+	{ "gustate", "gustateoff" }, { "bindwords", "bindwordsoff" }, { "gudraw", "gudrawoff" },
+	{ "bakedraw", "bakedrawoff" }, { "bakedonce", "bakedonceoff" },
 };
 static char keep_defaults_added[KEEP_DEFAULTS_ROOM] = "";
 /* defaults that found no room: a lever silently off would be read as on */
@@ -1481,7 +1489,7 @@ static void keep_load(void)
 	platform_log("keep words, continued: iostats gereads gereadskind vramtexN edramcheck overlayfreefar inflightkbN inflightroom inflighttextold");
 	/* the code diet's short forms (psp_fixups.py, FIXES_DIET1): each says so
 	when its word is on, so a run's log shows which form it played */
-	platform_log("keep words, the code diet's short forms (on by default; off: objleanold verifygateoff tagmemooff tagmemotickoff; opt-in: bakedraw bakedonce gustate bindwords gudraw)");
+	platform_log("keep words, the code diet's short forms (on by default; off: objleanold verifygateoff tagmemooff tagmemotickoff gustateoff bindwordsoff gudrawoff bakedrawoff bakedonceoff)");
 	if (keep_search("objlean"))
 		platform_log("objlean: object_update's short form");
 	if (keep_search("verifygate"))

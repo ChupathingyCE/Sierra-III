@@ -15,16 +15,12 @@
 # The list fills its room to ~80 bytes, so a profile recounted with more hot
 # code would overflow it and the build refuse it: @fill cuts it at its coldest
 # tail instead, and says where. While it fits, the copy is the same.
-# Room for the diet's short forms while each stands beside its old form:
-# nine functions (2,964 bytes) are out of the list: psp_ge_frame_window,
-# model_get_marker_by_name, psp_tex_save_pending, psp_tex_palette, psp_ge_fog,
-# psp_ge_screen_flash, psp_ge_budget, psp_tex_io_window and psp_geo_io_window.
-# The ME fetches none of them on b30's or c20's bench stretch (the lab's cache
-# model, exact counts), so they give way before code the ME runs; where the ME
-# does reach one it runs from main RAM.
-# psp_tex_average (168 bytes) is out too: the ME fetches about one instruction
-# of it a tick there, and with it in, the sweep's last function was 144 bytes
-# past the room.
+# pspgu's sceGuEnable and sceGuDisable (2 KB) are not in the list: with gustate
+# on by default psp_ge.c's switches are gu_state_set's, and the two run only
+# for the scissor, the fragment's doubling and gustateoff, from main RAM.
+# Nine functions the ME does not fetch on b30's or c20's bench stretch (the
+# lab's cache model, exact counts) are last in the list, after the sweep's:
+# when the copy outgrows its room @fill cuts them first.
 # @fill
 psp_ge_me_replay
 psp_ge_draw_model_body
@@ -35,9 +31,8 @@ model_lighting
 __wrap_sceGeListUpdateStallAddr
 psp_ge_draw_model
 halo_matrix
-sceGuDisable
 # the code diet's short forms of pspgu's calls (docs/code_diet.md): gustate's
-# switches and gudraw's draw, beside the functions they stand in for
+# switches and gudraw's draw
 gu_state_set
 gu_draw
 gum_draw
@@ -56,7 +51,6 @@ abgr_from_rgb
 psp_ge_light_draw_body
 model_convert
 psp_ge_model_effect
-sceGuEnable
 sceGumMatrixMode
 sceGumUpdateMatrix
 psp_ge_decal
@@ -116,6 +110,7 @@ psp_ge_shadow_end
 psp_tex_me_memo_forget
 psp_ge_widget_texture
 psp_ge_text_end
+psp_tex_average
 run_job
 psp_anim_on_me
 network_coop_active
@@ -250,3 +245,13 @@ quaternions_interpolate_and_normalize
 -psp_keep
 -platform_psp_log
 -platform_log
+# not fetched by the ME on the bench stretches: last, so @fill cuts them first
+psp_ge_frame_window
+model_get_marker_by_name
+psp_tex_save_pending
+psp_tex_palette
+psp_ge_fog
+psp_ge_screen_flash
+psp_ge_budget
+psp_tex_io_window
+psp_geo_io_window
