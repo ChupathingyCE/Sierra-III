@@ -725,6 +725,10 @@ frame: the steps, the objects' updates, the renderer's parts). The profile
 windows and the per-type object lines then read 0; the heartbeat's frame and
 tick times stay. Set when keep.txt is read */
 int psp_timers_off = 0;
+/* VERIFYGATE (psp_fixups.py, FIXES_DIET1): whether the units' and bipeds'
+vector checks are called at all. 1 until the keep words are read, so a
+check asked before then still decides for itself */
+int psp_verify_call = 1;
 
 #if defined(PSP_RECON) && defined(PSP_TICK_STEPS)
 /* "objsteps" (below): each step's time charged to the object being updated
@@ -1426,6 +1430,7 @@ static void keep_load(void)
 	/* build 114: "lean" (E2, optimization_ranking.md): the play set-up with
 	the measuring off, notimers and nooverlay in one word */
 	psp_timers_off = keep_search("notimers") || keep_search("lean");
+	psp_verify_call = !keep_search("verifygate") || keep_search("verifyvectors");
 	/* every build starts with notimers (keep_defaults above): the game's
 	instrument timers (a clock call per model part, per moving particle, per
 	physics update: ~240 system calls a tick in the tick on b30) feed only
