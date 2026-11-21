@@ -118,6 +118,7 @@ Every write-up about the port is in this folder: design notes, measurements, pla
 - [`plan_memory_stalls.md`](plan_memory_stalls.md): Plan: the memory stalls, the speed work's first goal (2026-10-16)
 - [`plan_node_matrices_me.md`](plan_node_matrices_me.md): Node matrices on the Media Engine (lever NW, phase D): what the recon says
 - [`shelf.md`](shelf.md): The shelf: experiments kept for later
+- [`spad_staging.md`](spad_staging.md): Scratchpad staging: which data each part of the frame reads heavily (the count's instrument, `PSP_SPADPHASE`; its table from the lab's spadstage1)
 - [`skinbound.md`](skinbound.md): SKINBOUND: the skinning plans' bytes as a second trigger of the table's sweep
 - [`skinpack.md`](skinpack.md): SKINPACK: each skin part's room asked for before its scratch
 - [`sspr_bake.md`](sspr_bake.md): SSPR at bake: levels of detail from a pixel-error budget (step 1, rigid models)

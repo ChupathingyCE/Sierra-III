@@ -222,6 +222,95 @@ def hot_lines(p, ifetches, imisses, dmiss_pc, code_namer, elf, names, total, per
                 print('     ' + text)
 
 
+def spad_lines(dump):
+    """the anatomy's per-line file beside the dump (emu.sh's ANATOMY=1: the
+    tick phase's fills, words used and ticks touched a line), or None"""
+    path = os.path.join(os.path.dirname(os.path.abspath(dump)), 'dcanat_raw.txt.lines')
+    if not os.path.exists(path):
+        return None
+    data = open(path, 'rb').read()
+    magic, lines, ticks = struct.unpack_from('<QQQ', data, 0)
+    if magic != 0x314C414344 or lines != LINES:
+        return None
+    arrays = [memoryview(data)[24 + k * lines * 4: 24 + (k + 1) * lines * 4].cast('I') for k in range(3)]
+    return ticks, arrays  # fills, words, ticks touched
+
+
+def spad_sets(phases, totals, accesses, misses, data_namer, program_end, log, dump):
+    """spadphase's sets (a PSP_SPADPHASE build, docs/spad_staging.md): in the
+    tick and drawing phases, every data set by name with its lines touched,
+    accesses, misses and what its hottest 1/2/4/8 KB hold, then the phase's
+    hottest lines, for the lab's spadstage.py. Tags by group only. With the
+    anatomy's file (tick phase only) each set's line-ticks, fills and words
+    used too: under spadphase its 'ticks' are the counted part's entries"""
+    part = 'none'
+    for line in open(log, errors='replace'):
+        m = re.search(r'spadphase: (\w+) \(the cache model', line)
+        if m:
+            part = m.group(1)
+    anat = spad_lines(dump)
+    print('\nspadsets: part %s (the tick column is %s); anatomy %s' % (
+        part, 'that part alone' if part not in ('none', 'drawing') else
+        'the drawing, the tick counted as other' if part == 'drawing' else 'the whole tick',
+        'entries %d' % anat[0] if anat else 'absent'))
+
+    def key_of(address):
+        name, size = data_namer.name(address)
+        if name and name.startswith('tag: '):
+            group = name.rsplit('.', 1)[-1] if '.' in name else '?'
+            return 'tags: ' + group, 0
+        if name:
+            return name, size
+        return '(%s, unnamed: %06x)' % (region(address, program_end), (address >> 16) << 16), 65536
+
+    for p in (1, 2):
+        if p >= phases or not totals['accesses'][p]:
+            continue
+        sets = {}  # name: lines, accesses, misses, (accesses, misses) a line, size, line-ticks, fills, words
+        hot = []
+        for line in range(LINES):
+            a = accesses[p][line]
+            if not a:
+                continue
+            m = misses[p][line]
+            address = LO + (line << 6)
+            key, size = key_of(address)
+            row = sets.setdefault(key, [0, 0, 0, [], size, 0, 0, 0])
+            row[0] += 1
+            row[1] += a
+            row[2] += m
+            row[3].append((a, m))
+            seg = 0
+            if anat and p == 1:
+                seg = anat[1][2][line]
+                row[5] += seg
+                row[6] += anat[1][0][line]
+                row[7] += anat[1][1][line]
+            hot.append((m, a, seg, address, key))
+        ta, tm = totals['accesses'][p], max(totals['misses'][p], 1)
+        print('spadsets %s: accesses %d misses %d scratchpad %d uncached %d' % (
+            PHASE_NAMES[p], ta, totals['misses'][p], totals['scratchpad'][p], totals['uncached'][p]))
+        print('# dset phase lines accesses misses size acc_hot1K acc_hot2K acc_hot4K acc_hot8K mis_hot1K mis_hot2K mis_hot4K mis_hot8K '
+              'linesegs fills words name (hot by accesses, then by misses; linesegs: the line-ticks of the anatomy)')
+        for key, (n, a, m, per, size, seg, fills, words) in sorted(sets.items(), key=lambda kv: -kv[1][2]):
+            if a * 2000 < ta and m * 2000 < tm:
+                continue
+            by_a = sorted((x[0] for x in per), reverse=True)
+            by_m = sorted((x[1] for x in per), reverse=True)
+            print('dset %s %d %d %d %d %s %s %d %d %d %s' % (
+                PHASE_NAMES[p].replace(' ', '_'), n, a, m, size,
+                ' '.join(str(sum(by_a[:b // 64])) for b in (1024, 2048, 4096, 8192)),
+                ' '.join(str(sum(by_m[:b // 64])) for b in (1024, 2048, 4096, 8192)),
+                seg, fills, words, key))
+        # the phase's hottest lines, by misses and by accesses (512 each)
+        chosen = {h[3]: h for h in sorted(hot, reverse=True)[:512]}
+        for h in sorted(hot, key=lambda h: -h[1])[:512]:
+            chosen.setdefault(h[3], h)
+        print('# hot phase address accesses misses linesegs name')
+        for m, a, seg, address, key in sorted(chosen.values(), reverse=True):
+            print('hot %s %08x %d %d %d %s' % (PHASE_NAMES[p].replace(' ', '_'), address, a, m, seg, key))
+
+
 def main():
     if len(sys.argv) < 4:
         sys.exit(__doc__)
@@ -390,6 +479,9 @@ def main():
                 print('  %11d  %5.1f%%  misses %9d  %6d B  %s' % (f, 100.0 * f / total, m, size, key))
             if '--lines' in sys.argv and PHASE_NAMES[p] in ('tick', 'drawing'):
                 hot_lines(p, ifetches, imisses, dmiss_pc, code_namer, elf, [k for k, v in ranked[:int(sys.argv[sys.argv.index('--lines') + 1])]], total)
+    # last, so the sections above stay where their readers look for them
+    if any(name == 'psp_spad_class' for start, end, name, kind in symbols):
+        spad_sets(phases, totals, accesses, misses, data_namer, program_end, log, dump)
 
 
 if __name__ == '__main__':

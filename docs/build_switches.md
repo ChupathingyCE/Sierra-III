@@ -30,6 +30,7 @@ PSPDEV=<pspdev> tools/build_release.sh <out>
 | `PSP_DATA_SPREAD=1` | With `PSP_DATA_LAYOUT`: each placement on lines of its own, so the cache map names each one's misses; recon only |
 | `PSP_TICK_STEPS=1` | Per-step tick timing; recon only |
 | `PSP_RECON=1` | The recon censuses (`modelcensus`, `sleepcensus`, `drawcensus`, `mebusN`; `docs/recon_134.md`); recon only |
+| `PSP_SPADPHASE=1` | With `PSP_RECON=1 PSP_TICK_STEPS=1`: the phase word relabelled so the emulator's cache model counts one part of the frame alone (keep words `spadcoll`, `spadpose`, `spadai`, `spadworld`, `spaddraw`; `docs/spad_staging.md`). Its hooks sit in collision's and posing's entries, so no other build carries them; recon only |
 | `PSP_NOINLINE=psp_ge,…` | Units whose path holds a listed word compiled without inlining, so the cache map names each helper; recon only |
 | `PSP_POOLS_XBOX=1` | The Xbox's actor, prop, light and glow particle arrays and the game state as long as they need; for runs that measure the arrays' peaks |
 | `PSP_METRICS=0` | Leaves out the per-map metrics (`metrics budget`, `hitches`, `hitch`, `io`, `heap` lines; `psp/src/psp_metrics.c`), on in every other build: set it for the final release only |

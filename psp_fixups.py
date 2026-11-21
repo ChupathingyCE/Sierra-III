@@ -1971,6 +1971,65 @@ void psp_collision_user_depth_set(short depth)
 #endif
 """
 
+# ---------- spadphase's call scopes (PSP_SPADPHASE=1, recon only; psp_platform.c,
+# docs/spad_staging.md): collision and posing run inside other steps' calls,
+# so the phase word marks them by scope, not by step label. Each function
+# named gets a cleanup variable as its body's first line, whose exit runs on
+# every return. After the FIXES, so the bodies are the ones that compile
+SPAD_SCOPES = {
+    # the collision API's entries (collisions.c); the BSP walks and the
+    # object tests run beneath them
+    "source/physics/collisions.c": [(1, "boolean collision_test_sphere("), (1, "boolean collision_test_point("),
+                                    (1, "boolean collision_test_vector("), (1, "boolean collision_test_pill("),
+                                    (1, "boolean collision_test_vector_exit("),
+                                    (1, "boolean collision_get_features_in_sphere("), (1, "boolean collision_fix_pill("),
+                                    (1, "boolean collision_test_pill_new("), (1, "short collision_move_sphere("),
+                                    (1, "short collision_move_point("), (1, "short collision_move_pill(")],
+    # every pose, the update's and one made on demand, passes through it
+    # (HOIST's form; the posing box is called from inside it)
+    "source/objects/objects.c": [(2, "static void object_compute_node_matrices_with(")],
+}
+SPAD_DECLARATION = """
+#if defined(PSP_RECON) && defined(PSP_SPADPHASE)
+/* psp_fixups.py (spad_scopes; psp_platform.c) */
+int psp_spad_scope_enter(int scope);
+void psp_spad_scope_leave(int *scope);
+#define PSP_SPAD_SCOPE(scope) int psp_spad_scope_ __attribute__((cleanup(psp_spad_scope_leave), unused)) = psp_spad_scope_enter(scope)
+#endif
+"""
+
+def spad_scopes(tree):
+    if os.environ.get("PSP_SPADPHASE", "") != "1":
+        return 0
+    hooked = 0
+    for rel, functions in SPAD_SCOPES.items():
+        path = os.path.join(tree, rel)
+        text = open(path, errors="surrogateescape").read()
+        if "PSP_SPAD_SCOPE(" in text:
+            continue
+        for scope, head in functions:
+            found, position = 0, 0
+            while True:
+                start = text.find("\n" + head, position)
+                if start < 0:
+                    break
+                start += 1
+                brace, semicolon = text.find("\n{\n", start), text.find(";", start)
+                position = start + len(head)
+                if brace < 0 or (0 <= semicolon < brace):
+                    continue  # a prototype
+                at = brace + 3
+                text = text[:at] + "#if defined(PSP_RECON) && defined(PSP_SPADPHASE)\n\tPSP_SPAD_SCOPE(%d);\n#endif\n" % scope + text[at:]
+                found += 1
+            if not found:
+                return check_fail("psp_fixups: spad_scopes: %s: no definition of %s" % (rel, head))
+            hooked += found
+        first = text.index("#include")
+        line_end = text.index("\n", first) + 1
+        text = text[:line_end] + SPAD_DECLARATION + text[line_end:]
+        open(path, "w", errors="surrogateescape").write(text)
+    return hooked
+
 def collision_users(tree):
     """COLLUSERS (see there): every site to collision_usage.h's macros"""
     usage_c = os.path.join(tree, "source/physics/collision_usage.c")
@@ -58222,6 +58281,8 @@ print("psp_fixups: the GL renderer compiled out in %d files" % gl_never(TREE))
 print("psp_fixups: the collision user stack %s in %d files (COLLUSERS)" % ("shared, as before," if COLLUSERS_SHARED else "one a CPU (debug tools) or none", collision_users(TREE)))
 print("psp_fixups: the AI's meters and ballistic record the main CPU's alone in %d files (AIMETERS)" % ai_meters(TREE))
 print("psp_fixups: biped motion's window (intent to tail) through the store, %d datum accesses (BIPEDMOVE)" % biped_move_store(TREE))
+if os.environ.get("PSP_SPADPHASE", "") == "1":
+    print("psp_fixups: spadphase's call scopes hooked in %d functions" % spad_scopes(TREE))
 
 if CHECK_ONLY:
     for message in count_failures:

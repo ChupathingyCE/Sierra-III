@@ -181,6 +181,14 @@ TICK_STEPS = os.environ.get("PSP_TICK_STEPS", "") == "1"
 # draw census, psp_me.c's bus load): measuring instruments whose hooks sit in
 # hot code, so a release build carries none of them (docs/recon_134.md)
 RECON = os.environ.get("PSP_RECON", "") == "1"
+# PSP_SPADPHASE=1 (with PSP_RECON=1 and PSP_TICK_STEPS=1): the phase word
+# relabelled so the cache model counts one part of the tick alone (keep
+# words spadcoll, spadpose, spadai, spadworld, spaddraw; psp_platform.c,
+# psp_fixups.py's spad_scopes, docs/spad_staging.md). Its hooks sit in
+# collision's and posing's entries, so no other build carries them
+SPADPHASE = os.environ.get("PSP_SPADPHASE", "") == "1"
+if SPADPHASE and not (RECON and TICK_STEPS):
+    sys.exit("psp_build: PSP_SPADPHASE=1 needs PSP_RECON=1 and PSP_TICK_STEPS=1 (its parts are told apart by the tick's steps)")
 # PSP_MEPROBE=1: the "meprobe" instrument (psp_post.h, psp_me.h): the ring's
 # main-CPU calls reached by the ME's work, noted; recon only
 MEPROBE = os.environ.get("PSP_MEPROBE", "") == "1"
@@ -513,7 +521,7 @@ PSP = ["psp-gcc", "-G%d" % SMALLDATA, GAME_OPT, "-march=allegrex", "-ffp-contrac
        # consoles (halo_port_features.h): the PSP's tests drive psp_pad.c
        "-DHALO_CONSOLE_NO_TEST_GAMEPADS=1",
        ] + (["-DPSP_NO_INTERPOLATION=1"] if not INTERPOLATION else []) + [
-       ] + (["-DPSP_MULTIPLAYER=1"] if MULTIPLAYER else []) + (["-DPSP_CONFIGFILE=1"] if os.environ.get("PSP_CONFIGFILE", "") == "1" else []) + (["-DPSP_MUSIC=1"] if MUSIC else []) + (["-DPSP_PADPATH=1"] if PADPATH else []) + (["-DPSP_FRAMEPIC=1"] if FRAMEPIC else []) + (["-DPSP_SNDSTREAM=1"] if SNDSTREAM else []) + (["-DPSP_CLAIMFILL=1"] if CLAIMFILL else []) + CAPTURE_DEFINES + (["-DPSP_MP_COOP=1"] if MULTIPLAYER and MP_COOP else []) + (["-DPSP_MP_HOST=1"] if MULTIPLAYER and MP_HOST else []) + (["-DPSP_MAP_CHECKS=1"] if MAP_CHECKS else []) + (["-DPSP_POOLS_XBOX=1"] if POOLS_XBOX else []) + (["-DPSP_RECON_64MB=1"] if BIG_RAM else []) + (["-DPSP_DEBUG_TOOLS=1"] if DEBUG_TOOLS else []) + (["-DHALO_CONSOLE_NO_DEBUG_TOOLS=1"] if DEADDEBUG else []) + (["-DPSP_TICK_STEPS=1"] if TICK_STEPS else []) + (["-DPSP_RECON=1"] if RECON else []) + (["-DPSP_MEPROBE=1"] if MEPROBE else []) + (["-DPSP_METRICS=1"] if METRICS else []) + (["-DPSP_STACKHOT=2"] if os.environ.get("PSP_STACKHOT", "2") == "2" else []) + (["-DPSP_PGO_GENERATE=1"] if PGO == "generate" else []) + os.environ.get("PSP_CFLAGS", "").split() + [
+       ] + (["-DPSP_MULTIPLAYER=1"] if MULTIPLAYER else []) + (["-DPSP_CONFIGFILE=1"] if os.environ.get("PSP_CONFIGFILE", "") == "1" else []) + (["-DPSP_MUSIC=1"] if MUSIC else []) + (["-DPSP_PADPATH=1"] if PADPATH else []) + (["-DPSP_FRAMEPIC=1"] if FRAMEPIC else []) + (["-DPSP_SNDSTREAM=1"] if SNDSTREAM else []) + (["-DPSP_CLAIMFILL=1"] if CLAIMFILL else []) + CAPTURE_DEFINES + (["-DPSP_MP_COOP=1"] if MULTIPLAYER and MP_COOP else []) + (["-DPSP_MP_HOST=1"] if MULTIPLAYER and MP_HOST else []) + (["-DPSP_MAP_CHECKS=1"] if MAP_CHECKS else []) + (["-DPSP_POOLS_XBOX=1"] if POOLS_XBOX else []) + (["-DPSP_RECON_64MB=1"] if BIG_RAM else []) + (["-DPSP_DEBUG_TOOLS=1"] if DEBUG_TOOLS else []) + (["-DHALO_CONSOLE_NO_DEBUG_TOOLS=1"] if DEADDEBUG else []) + (["-DPSP_TICK_STEPS=1"] if TICK_STEPS else []) + (["-DPSP_RECON=1"] if RECON else []) + (["-DPSP_SPADPHASE=1"] if SPADPHASE else []) + (["-DPSP_MEPROBE=1"] if MEPROBE else []) + (["-DPSP_METRICS=1"] if METRICS else []) + (["-DPSP_STACKHOT=2"] if os.environ.get("PSP_STACKHOT", "2") == "2" else []) + (["-DPSP_PGO_GENERATE=1"] if PGO == "generate" else []) + os.environ.get("PSP_CFLAGS", "").split() + [
        # The fatal asserts are compiled out, unevaluated (X10): their checks
        # and messages fill the 16 KB instruction cache, so with them gone b30's
        # tick is 6.6% shorter on the PSP-3000 [M], and play is identical. The
@@ -940,7 +948,8 @@ def compile_one(item):
                ["-DPSP_SMALLDATA=1"] if SMALLDATA and src.endswith("psp_me.c") else []) + (
                # the switches their #if blocks test (psp_ge.c's debug tools)
                ["-DPSP_DEBUG_TOOLS=1"] if DEBUG_TOOLS else []) + (
-               ["-DPSP_TICK_STEPS=1"] if TICK_STEPS else []) + [
+               ["-DPSP_TICK_STEPS=1"] if TICK_STEPS else []) + (
+               ["-DPSP_SPADPHASE=1"] if SPADPHASE else []) + [
                "-c", src, "-o", out]
         if src.endswith("psp_me.c"):
             # build 86: mcidclan's me-core-mapper headers (installed beside the SDK)

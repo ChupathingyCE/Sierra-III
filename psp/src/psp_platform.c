@@ -769,6 +769,152 @@ static void steps_frame_edge(void)
 	steps_timed = next;
 }
 
+#if defined(PSP_RECON) && defined(PSP_SPADPHASE)
+/* "spadcoll", "spadpose", "spadai", "spadworld" (keep.txt; PSP_SPADPHASE=1,
+docs/spad_staging.md): the emulator's cache model splits its counts by the
+phase word alone, so to count what one part of the tick reads, the word
+says "tick" (1) only while that part runs and "other" (0) for the rest of
+the tick; drawing (2) and the frame's end (3) keep theirs. dcache.bin's
+tick column, the anatomy's per-line file and cachemap.py's sets are then
+that part's alone, with no change to the emulator. "spaddraw" makes the
+drawing the 1 instead (the tick 0), so the anatomy's per-line file, which
+reads the 1 only, covers it too.
+Collision and posing are call scopes (psp_fixups.py's spad_scopes hooks
+their entries), because they run inside other steps' calls; the AI and the
+world store are the step labels of projects/sierra/scripts/stepgroups.txt
+in the lab (ai-think + ai-serial; walk). A collision call inside an AI step
+counts as collision. The ME's work leaves the word alone: on the PSP that
+work doesn't touch the main CPU's scratchpad */
+enum { SPAD_NONE, SPAD_COLL, SPAD_POSE, SPAD_AI, SPAD_WORLD, SPAD_DRAW };
+static const char *const spad_class_names[] = {"none", "collision", "posing", "ai", "world", "drawing"};
+extern volatile int psp_current_phase;
+int psp_keep_loaded(void);
+/* the keep word's class, -1 until keep.txt is read; an ELF symbol so
+cachemap.py knows the run's tick column may be one part's */
+int psp_spad_class = -1;
+static int spad_phase, spad_label, spad_depth[3], spad_on;
+static unsigned long spad_ticks, spad_entries;
+/* a step label's class by its address (the labels are string constants):
+a direct table, so the lookup takes one load once a label is known */
+static struct
+{
+	const char *name;
+	int spad;
+} spad_labels[256];
+
+static int spad_starts(const char *name, const char *prefix)
+{
+	return strncmp(name, prefix, strlen(prefix)) == 0;
+}
+
+static int spad_label_class(const char *name)
+{
+	unsigned int slot = ((unsigned int)name >> 2) & 255;
+	int spad = SPAD_NONE;
+
+	if (spad_labels[slot].name == name)
+		return spad_labels[slot].spad;
+	/* stepgroups.txt's posing, ai-think, ai-serial and walk lines */
+	if (!strcmp(name, "object_compute_node_matrices") || !strcmp(name, "object_postprocess_node_matrices") ||
+		!strcmp(name, "psp_pose_ahead_make"))
+		spad = SPAD_POSE;
+	else if (spad_starts(name, "actor_") || spad_starts(name, "prop_") || spad_starts(name, "psp_perception_") ||
+		spad_starts(name, "psp_aime") || !strcmp(name, "ai_update") || spad_starts(name, "encounter_"))
+		spad = SPAD_AI;
+	else if (!strcmp(name, "objects_update") || !strcmp(name, "object_update") || !strcmp(name, "psp_sleepy_update") ||
+		!strcmp(name, "psp_object_count") || !strcmp(name, "psp_nms_skip") || !strcmp(name, "object_delete_recursive") ||
+		spad_starts(name, "cluster_partition_"))
+		spad = SPAD_WORLD;
+	spad_labels[slot].name = name;
+	spad_labels[slot].spad = spad;
+	return spad;
+}
+
+static void spad_resolve(void)
+{
+	static const char *const words[] = {NULL, "spadcoll", "spadpose", "spadai", "spadworld", "spaddraw"};
+	int k;
+
+	if (psp_spad_class >= 0 || !psp_keep_loaded())
+		return;
+	psp_spad_class = SPAD_NONE;
+	for (k = SPAD_COLL; k <= SPAD_DRAW; k++)
+		if (psp_keep(words[k]))
+			psp_spad_class = k;
+	if (psp_spad_class != SPAD_NONE)
+		platform_log("spadphase: %s (the cache model's tick phase is the %s's work alone)",
+			spad_class_names[psp_spad_class], spad_class_names[psp_spad_class]);
+}
+
+/* the word for where the game is now: the real phase, or for the part
+counted, 1 inside it and 0 elsewhere in the tick */
+static void spad_apply(void)
+{
+	int part, word;
+
+	if (psp_spad_class == SPAD_DRAW)
+		word = spad_phase == 2 ? 1 : spad_phase == 1 ? 0 : spad_phase;
+	else if (spad_phase != 1)
+		word = spad_phase;
+	else
+	{
+		part = spad_depth[0] ? SPAD_COLL : spad_depth[1] ? SPAD_POSE : spad_label;
+		word = part == psp_spad_class ? 1 : 0;
+	}
+	if (word == 1 && psp_current_phase != 1)
+		spad_entries++;
+	psp_current_phase = word;
+}
+
+/* from psp_phase, after it set the word */
+static void spad_phase_set(int phase)
+{
+	spad_resolve();
+	spad_on = psp_spad_class > SPAD_NONE;
+	if (!spad_on)
+		return;
+	spad_phase = phase;
+	if (phase == 1)
+	{
+		/* a tick starts in no part until its first step */
+		spad_label = SPAD_NONE;
+		spad_depth[0] = spad_depth[1] = 0;
+		if (++spad_ticks % 900 == 0)
+			platform_log("spadphase: %s: %lu ticks, %lu entries into the counted part", spad_class_names[psp_spad_class],
+				spad_ticks, spad_entries);
+	}
+	spad_apply();
+}
+
+static void spad_step(const char *name)
+{
+	if (!spad_on || spad_phase != 1)
+		return;
+	spad_label = spad_label_class(name);
+	spad_apply();
+}
+
+/* a call scope's entry and exit (psp_fixups.py's spad_scopes: a cleanup
+variable at the top of each hooked function). 1 collision, 2 posing; 0
+from the ME's work or with the count off, which the exit then ignores */
+int psp_spad_scope_enter(int scope)
+{
+	if (!spad_on || spad_phase != 1 || PSP_ME_WORK() || scope < 1 || scope > 2)
+		return 0;
+	spad_depth[scope - 1]++;
+	spad_apply();
+	return scope;
+}
+
+void psp_spad_scope_leave(int *scope)
+{
+	if (!*scope || !spad_on || spad_depth[*scope - 1] <= 0)
+		return;
+	spad_depth[*scope - 1]--;
+	spad_apply();
+}
+#endif
+
 void psp_step(const char *name)
 {
 	unsigned int now;
@@ -778,6 +924,9 @@ void psp_step(const char *name)
 	42631841189 with timerson), and its time isn't the tick's */
 	if (PSP_ME_WORK())
 		return;
+#if defined(PSP_RECON) && defined(PSP_SPADPHASE)
+	spad_step(name);
+#endif
 	if (psp_timers_off)
 	{
 		/* the step is still kept for the crash report and the crumbs */
@@ -4003,6 +4152,14 @@ void psp_ask_phase(int phase);
 
 void psp_phase(int phase)
 {
+#if defined(PSP_RECON) && defined(PSP_SPADPHASE)
+	/* the word is written once, already relabelled: a moment at the real
+	value would count as an entry into the part */
+	spad_resolve();
+	if (psp_spad_class > SPAD_NONE)
+		spad_phase_set(phase);
+	else
+#endif
 	psp_current_phase = phase;
 	if (psp_ge_phase_ring_on)
 		psp_ge_phase_mark(phase);
