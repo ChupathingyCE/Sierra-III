@@ -78,8 +78,11 @@ Register layouts and sources:
     registers.
 
 Results go to ms0:/halo/log/spadprobe.txt, one line a cell, written as it
-ends. When done it waits for the run's wall rather than quitting; by hand, X
-exits.
+ends. When done it writes "exiting" and quits by itself two seconds later (X
+quits sooner by hand). The rig's launcher mode brings its agent back after a
+program that quits, as it does after halo_box, so the run ends as "exited"
+rather than at its wall; the "exiting" line is what tells that clean end
+from a crash, since the rig reports both as a program that quit by itself.
 */
 
 #include <pspkernel.h>
@@ -1374,13 +1377,16 @@ int main(void)
 	}
 done:
 	out("done");
-	for (;;)
+	/* a short pause so the last lines are on screen for a hand run; bounded,
+	so a rig run never waits on a button that nobody presses */
+	for (k = 0; k < 20; k++)
 	{
 		sceCtrlPeekBufferPositive(&pad, 1);
 		if (pad.Buttons & PSP_CTRL_CROSS)
 			break;
 		sceKernelDelayThread(100000);
 	}
+	out("exiting");
 	sceKernelExitGame();
 	return 0;
 }
