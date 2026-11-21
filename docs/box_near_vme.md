@@ -58,7 +58,7 @@ The near paths sit inline in the part's body, so every part that isn't near step
 - **Two stages, each the batched 4x4's accumulate.** The form is Th6uD1nk's `vmegc-mat4x4-mul-batch` (vme2-next-level): pe0 `mac`, pe1 the cancel mask (`&`), pe2 `acc` of the masked values, pe3 subtracting the running sum's delayed copy and then that from the delayed MAC (`subacst` twice). No accumulator is ever reset: each result is a difference of running sums, so a carry across groups cancels.
   - **Stage 1** (`nearDots`): for each vertex, each row, each slot, the 4-wide dot product of the slot's plane row with the vertex's (x, y, z, w). Stream order (vertex, row, slot, component): the rows are one ring of 4 · 5 · G words, the vertex repeated 5 · G times by the DMAC's group mode (his sample's way), one result on each group's last word in base3.
   - **Stage 2** (`nearSum`): for each (vertex, row), Σ_s w_s · d_s over the batch's G slots, with the weights repeated 5 times by the DMAC. Stage 1's results are read where they lie, in base3, one word in four (a mode-2 ring with step 4), and the plane values go after them in base3.
-  - **G, the slot group:** 4 for batches of 1-4 slots, 8 for 5-8, unused slots with rows and weights of 0. Below 4 the delayed copy's sync read can't see its data (it needs 6 − cyc + bubbles ≥ 7; bubbles are G − 3).
+  - **G, the slot group:** 4 for batches of 1-4 slots, 8 for 5-8, unused slots with rows and weights of 0. Below 4 the delayed copy's sync read can't see its data (it needs 6 − cyc + bubbles ≥ 7; bubbles are G − 3). *Superseded 2026-11-21 (§9.1): one slot runs at G = 1 on a stage-1-only kernel; 2-3 slots at G = 4; 5-8 keep the float verdict. G = 2's stage 2 doesn't build (vmegc: bubbles −1), as this line predicted.*
 - **Opcodes:** 0x240 (`mac`), 0x0c0 (`&`), 0x250 (`acc`), 0x034 (`subacst`). None is among the 13 that fail on the PSP-1000 (`vme_capability.md` §2), and none is one `--compat fat` replaces.
 - **AGUs:** every read is mode 2 (the rings, the strided read, and the flat reads as inner0 without repeat), since the PSP-1000 matched vmee in 21 of 21 mode-2 kernels (`vme_agu_modes_psp1000`). Every write is mode 4, as in his batched kernel that was right 16 of 16 on the PSP-1000: mode 2's write AGU is unmeasured. Mode 4 isn't used for a read anywhere.
 - **Lead-ins read zeros that the kernel loads** (`nearZero`), not the tail of top0, which on a PSP holds whatever the last tile left.
@@ -96,7 +96,7 @@ All results are at 2^-18 units (24 bits: ±32 units), as the census asked (§4).
 
 - **vmee's passes,** a tile: stage 1 1,617 steps and stage 2 413 (G = 4, 19 vertices) or 393 (G = 8, 9 vertices). At the PSP's measured 72 + 2n cycles a pass (`vme_capability.md` §1) that's ~3,300 + ~900 VME cycles a tile: **~220 VME cycles a vertex at G = 4, ~460 at G = 8**, beside the ME.
 - **The staging is bigger than §3 priced, because the vertex goes in 5 · G times:** a G = 4 tile takes ~2,000 words in (1,520 of them the vertices' 20 copies, 380 weights, 80 rows, the zeros and the mask) and 31 DMAC transfers (51 at G = 8). §3 priced each record once. At ~100 ME cycles of register writes a transfer (`vme_kernels.md` §2) that's ~3,100 ME cycles a G = 4 tile, **~160 ME cycles a vertex against the float verdict's ~390** (b30's ride: ~3.0 ms for 2,564 verdicts). From eDRAM in the fast mode (2.96 cycles a word, off the bus) the words take ~6,000 DMAC cycles a tile. The buffers can't be fed during a pass, so that is VME-side time, not hidden. The repeated vertex is the shape's: an AGU can't replay one vertex for 20 groups and then move on. Fewer transfers (a vertex ring with the rows repeated instead needs a two-level read for stage 2) is the next thing to design before the hand-off. *Superseded 2026-11-21 (§8): this was the first layout's cost; the stream layout sends each vertex in G times, ten transfers and ten context switches a 96-vertex tile, ~25-52 ME cycles a vertex of staging [U].*
-- **Dink's vmeh** generates the PSP runner for the `tile` emulation, but its program sets the clocks with `scePowerSetClockFrequency` (`psppower.h`). It isn't in this repo and isn't run: a PSP check of this kernel would take that call out (no power calls; Sheepdog01 2026-11-17).
+- **Dink's vmeh** generates the PSP runner for the `tile` emulation, but its program sets the clocks with `scePowerSetClockFrequency` (`psppower.h`). It isn't in this repo and isn't run: a PSP check of this kernel would take that call out (no power calls; Sheepdog01 2026-11-17). *Superseded 2026-11-21 (Sheepdog01 08:09, the lab's decisions.md): bench and test code built on Dink's toolkit keeps what he ships, his clock call included, so a vmeh runner is generated as it is. The shipped game, this box included, still makes no power or clock call (§9.2).*
 
 ### 6.5 Dink's work it uses
 
@@ -106,7 +106,7 @@ Th6uD1nk's vme2-next-level (MIT, copyright m-c/d, Th6uD1nk; `psp/src/vme/LICENSE
 
 - **The staging decides the box.** The ME's cycles a vertex are counted, not the DMAC's time, and priced against the float verdict's ~390 (§3). Two layouts to price: (a) the VME's own DMAC run from a self-feeding descriptor list made once a tile, so the ME's setup is per tile, not per vertex; (b) the transpose, the per-slot plane rows (5 × slots) held resident and each vertex streamed in once, if the VME's buffers and address generation allow it. **The box stops if no layout brings the ME under ~150 cycles a vertex, all in** (setup, the band's rechecks, the hand-off).
 - **safe32 is the default scale set.** Its band (2^-10, 25-58 corners a frame to recheck) costs the ME ~0.07 ms a frame [U]; the wide set comes back only if the band ever matters.
-- **The PSP's accumulator check** (wrap or saturate past 2^31) waits for the layout, as one ask with its question, reader and decision. It measures behaviour, not time, so its runner is generated with the clock call stripped (in the lab's wrapper; `psppower.h` never ships), which needs no go.
+- **The PSP's accumulator check** (wrap or saturate past 2^31) waits for the layout, as one ask with its question, reader and decision. It measures behaviour, not time, so its runner is generated with the clock call stripped (in the lab's wrapper; `psppower.h` never ships), which needs no go. *Superseded 2026-11-21: the check is built into the box (keep word `nearvmeacc`, §9.4), so it runs in the box's own PSP pair with no runner; a vmeh runner, if one is made, keeps his clock call (Sheepdog01 08:09).*
 - **The check's tools live in the lab** (`projects/sierra/scripts/vme/`): this repo keeps the kernel and its generated C.
 
 ## 8. The stream layout (2026-11-21) [E: vmee; D: the toolkit's and the lab's sources; U: the ME's cycles]
@@ -163,6 +163,75 @@ The ME's cycles are counted as: a DMAC transfer ~100 (the lab's figure, `vme_ker
 
 ### 8.5 Recommendation and what's open
 
-- **Build the stream layout's hand-off on the ME** (G = 4 first): the box doesn't stop at the gate. The kernel is ready; next are the ME side (the tile state machine interleaved with the loop's other work, the context images, the sign and band tests) and the bake's copy.
+- **Build the stream layout's hand-off on the ME** (G = 4 first): the box doesn't stop at the gate. The kernel is ready; next are the ME side (the tile state machine interleaved with the loop's other work, the context images, the sign and band tests) and the bake's copy. *Done 2026-11-21 for the ME side (§9); the bake's copy is a stub (§9.3).*
 - **One PSP pair decides it**, as one ask: the ME's cycles a vertex all in on a pad bench, the stream layout against the float verdicts, with the accumulator's wrap check (§7) in the same run. The estimates above are its question; a result over ~150 stops the box.
 - **Open:** how many batches use 5-8 slots and how large the batches are (both set the tile count; a recon census, emulator counts); whether a G = 8 batch is better as two G = 4 halves added on the ME (~5 cycles a vertex) [U].
+
+## 9. The ME side (2026-11-21) [D: the code; E: vmee and the host harness; U: the ME's cycles]
+
+`psp/src/box_near_vme.c` and `.h`, behind `PSP_NEARVME=1` (`docs/build_switches.md`), off by default; the hooks in `psp_ge.c`'s near loop and replay job and in `psp_vme.c` are all under `#ifdef PSP_NEARVME`, so a default build is the same program. Unbuilt: there was no PSP toolchain where it was written, so its first compile is the lab's build (host syntax checks only, with the pspsdk headers). The lead's rulings it follows: the ME side now, G ∈ {1, 2, 4} with tiles up to 96 vertices, the float verdict for G > 4, the band at safe32's 2^-10 units, the 10 context images built once.
+
+### 9.1 The kernels, per slot count
+
+| slots in the batch | kernel | passes a tile | the vertices sent |
+|---|---|---|---|
+| 1 | `near_verdicts_g1.vmeg.c` (new): stage 1 only | 5 | once, a flat run |
+| 2, 3 | `near_verdicts.vmeg.c` at G = 4, the spare slots' rows 0 | 10 | once a used slot |
+| 4 | the same | 10 | 4 times |
+| 5-8 | none: the float verdict, as before | | |
+
+- **One slot needs no stage 2:** a one-slot corner's byte weight is 128 (§4's census), and stage 2 at weight 128 is a multiply by 128 and a shift by 7, the same word. So G = 1 is stage 1 with a ring of 4 words, five passes a tile, no weights. A one-slot corner whose weight isn't 128 (never seen in the census) goes to the float verdict.
+- **G = 2 can't be built:** vmegc refuses its stage 2 (`pe2.write: the bubbles -1`), as §6.1 predicted. Two- and three-slot batches run on the 4-slot kernel with the spare slots' rows 0, and **the box doesn't send the spare slots' vertex copies**: their words, whatever the last tile left, multiply rows of 0, and their weights multiply dots of 0 [D: integer arithmetic]. So a 2-slot tile costs the ME 2 vertex transfers, not 4. The VME's own time is the 4-slot kernel's (~211 cycles a vertex) where a G = 2 kernel would have been about half [U].
+- **The kernels are memory kernels now** (vmeg's `memory` mode): vmegc writes a builder for each context, the box builds all 11 images once (five rows at 2-4 slots, stage 2's, five rows at one slot) and loads one before each pass, so no register keeps what the last pass wrote (a loaded context is every register, 0 where the kernel writes none). `psp/src/vme/near_contexts.h` holds the builders, cut from the generated C without a change but their names.
+- **Proven in vmee** (the lab's `nearvme_check_groups.py`, a copy of `nearvme_check_stream.py` with a group per slot count; this branch's kernels):
+
+  | form | tiles | words | differ | negative control |
+  |---|---|---|---|---|
+  | G = 4 and 8, memory, safe32 (1-8 slots, synthetic and realistic) | 30 | 23,040 | 0 | 3,171 of 3,216 |
+  | the same, a second seed | 30 | 23,040 | 0 | |
+  | the same, wide | 30 | 23,040 | 0 | |
+  | G = 1, memory, safe32 and wide | 7 each | 4,032 each | 0 | 1,152 of 1,152 |
+  | G = 4, memory, the lab's own unmodified check | 30 | 23,040 | 0 | |
+
+  G = 1's error against doubles: 2^-10.70 units at safe32 (inside the band), 2^-16.30 at wide. **A memory kernel's `config` triggers its context** (his `vmeLibLoadCustomContext` and `vmeLibFinish`), so the vmeg tile's first call runs a pass before its loads; the tile drops that pass and runs row 0 again after them. The box doesn't make that pass: it loads, then loads the context and triggers, the order the direct kernels had.
+
+### 9.2 The contract
+
+- **Reads:** the batch's records in the part's vertex buffer (the position's three floats, the weight bytes), the batch's `depth_row` (its slots' camera rows, made by the loop's slot step), `guard_x`, `guard_y`, their lengths, `NEAR_CLIP` and the loop's `limit`. Its own buffers.
+- **Writes:** `corner_verdict[]` for the batch's corners (the stamp plus the verdict), through the loop's sink, and its own buffers and ledger. A corner in the band, or one the box couldn't take, keeps a waiting mark (`corner_stamp - 1`, outside the stamp's window), so the loop takes it as not worked out and its float verdict decides it, as before. Under `nearvmecheck` the sink writes the float verdict instead (play is the old path's) and counts disagreements.
+- **Who reads it, when:** the corner loop right after, in the same batch; nothing else. The box runs between the loop's slot step and its triangle loop, inside the batch; the walk also works out each run's verdict (`near_cluster_verdict`) for the loop, which takes it rather than working it out again.
+- **Where it runs:** on the ME, in the replay job (`psp_ge_me_replay`'s `args[3]`), the only place the VME is reached. Under gemesim (the emulator) it runs on the main CPU with the stand-in (`model_tile`: the kernels' arithmetic, the lab's `nearvme_ref_stream.c`). Anywhere else it declines and the float verdict works every corner out.
+- **The VME:** the box owns it for the replay job (`vmetest` is refused while `nearvme` is on). At a job's start: the bus clocks enabled (psp_vme.c's two, nothing else), the first job's wipe (vmetest's set-up) and image build, the DMAC's fast mode (config bits 8-9; `nearvmerest` keeps the rest mode). At the job's end the fast mode is cleared and the clocks disabled. **No power or clock call** (no `scePower*`, no syscon). The context load is his `vmeLibSendCustomContext` (config 0x1c, the address, control 0x0c) with the round-4 bench's length written first (256 words, the length its good loads had: `recon/vme-r4` 76ce63a0, to check against its source).
+- **The hardware rules:** what the DMAC reads (the tile's sets, the rows, the zeros, the mask, the images) is written back from the ME's cache first (`cache 0x1b`); what it writes (the plane words) is dropped from the ME's cache before the ME reads it (`cache 0x19`). Every array is whole 64-byte lines. Waits poll the status word, bounded (6 ms) and counted; one whose busy bit never shows ends only after the step's least time (72 + 2n for a pass, 2 cycles a word for a transfer), so a quick step isn't read early. A wait past its bound fails the tile to the float verdict and wipes the VME again at the next job (the existing float path is the safety net, counted, not the fix). The ME's cycle counter is read only on the ME in a job (`nvme_timing`). No VFPU, no system call, no `double` on the ME; the stand-in's 64-bit integers run only off the ME or under `nearvmecheck`.
+
+### 9.3 The tile state machine, and what's a stub
+
+- **Per batch:** the five plane rows of each used slot (`P M_s`, 5 × G × 4 words, safe32's scales) on the ME's FPU; a batch whose rows don't fit 24 bits is declined. **Per vertex** (the walk hands each corner once, marking it waiting): its position converted to fixed (2^-11), its w word, its weights (G = 4), into the filling set. **Per tile** (96 vertices, or the batch's last): a bound on its values (the rows' L1 norm × the positions' reach + the translation, under 31.5 units, else the tile goes to the float verdict), the set written back, then its steps on the VME: the rows and lead-ins when the buffers don't hold them, the weights, the vertex copies, then for each row a context and a pass (two at G = 4) and the store of its plane words. While one set runs, the ME packs the other and steps the machine every 8 vertices; it spins only when both sets are full or the batch has ended. Then the five words of each vertex: a band test on each tested plane, and the verdict from their signs.
+- **The order is the vmeg tile's**, a transfer at a time (the generated tile sends two vertex copies before one wait; the box waits for each). The host trace below checks it. **Not yet:** a context loaded during the pass before it (§9's double-buffered context, measured exact in §10's pipelined switches) would take the context loads off the VME's critical path; it changes nothing on the ME's side and is left for after the pair.
+- **The bake's fixed-point copy is a stub:** the ME converts each corner's three floats as it packs it (three multiply-adds and conversions, and four weight bytes widened), and gathers them by index. The pair prices the box with that cost in it, so a pass with the stub passes with the bake. The bake (§8.4: positions at 12 bytes, weights as 16-bit halves) takes the conversion out; laid out in each batch's walk order it would take the gather and the walk's dedupe out too [U].
+- **The memory:** ~25 KB of .bss, the ME's (the images 11 KB, the two sets 10.5 KB, the stand-in's scratch 3.4 KB, the rows and the runs' verdicts), off the heap in a `PSP_NEARVME` build only.
+
+### 9.4 The budget, and the ledger that prices it
+
+The lead's gate (§7): **the ME's cycles a vertex all in under ~150**, against the float verdict's. Per unit, a vertex [U, from §8.2's figures; the pair measures it]:
+
+| unit | G = 1 | G = 4 | what it is |
+|---|---|---|---|
+| ME | ~45-80 | ~70-115 (+ ~25-40 for the stub's conversion and gather) | rows, walk and packing, the VME's steps, waits, signs and band, the band's float verdicts |
+| VME | ~44 (5 passes of 388 elements) | ~211 (5 of 1,552 and 5 of 400) | beside the ME |
+| DMAC | ~20 words in | ~20-28 words in | beside the ME |
+| main CPU, GE | 0 | 0 | |
+
+The ledger (`near-vme:` lines in `log.txt`, with the GE's report) gives each term in ME cycles a vertex: **all in** (the batch from its rows to its last verdict, less the runs the walk works out for the loop, plus the band's float verdicts in the loop), split into rows, walk and packing, the VME's steps, waiting, signs and band, and the band's float verdicts; and **the float verdict's cycles a corner** outside the box's batches, timed the same way in the same build, so `- | nearvme` in one build reads both sides. Also the batches by slot count, the declined ones by reason, tiles, the band's share, waits (busy never seen, past their bound) and wipes. `nearvmecheck` adds the verdicts outside the band against the float verdict (**the proof: 0 disagreements**) and the VME's words against the stand-in's (off by one is the PSP's carry across passes, §6.2; off by more is a fault). `nearvmeacc` runs, at the first two jobs, two tiles whose running sums pass 2^31 by far (random, and all positive to ~2^58) and compares the VME's words with the stand-in's: the safe32 words are right if the accumulator wraps or is wide, wrong if it saturates (§10.5 measured it 64 bits wide).
+
+### 9.5 Proven on the host [E: the lab's near-vme host harness]
+
+The lab's harness builds the box's unit on the host with stand-ins only for the ME's cycle counter, its cache operations and the VME's registers (a fake that records every DMAC transfer, context load and trigger):
+
+- **The steps against the generated tile:** at 1, 2, 3 and 4 slots, the box's tile makes the same transfers (what, where, how many words, in which mode), loads the same context images word for word, and triggers the same passes, in the same order, as vmegc's tile (19, 32, 33 and 34 steps; 0 differ), the generated tile's spare-slot copies and its dropped first pass left out.
+- **The bookkeeping in the stand-in's mode:** 1,200 batches over three seeds (1-4 slots, up to 400 vertices, both guard bands, a fifth of them placed on the near pair or a side plane): 251,314 vertices, each answered exactly once; **outside the band 247,306 verdicts compared with the near loop's float verdict, 0 disagree**; to the float verdict 1.5-1.7% (of them 0.8-0.9% the band, the rest the deliberate one-slot corners not at 128); six tiles past the words' room.
+- **The stand-in against the reference:** every tile's words (3,170 tiles, 1,245,155 plane words) through the lab's `nearvme_ref_stream.c`: 0 differ. vmee matched the reference word for word (§8.3, §9.1), so the stand-in is vmee's arithmetic.
+
+### 9.6 What decides it
+
+**One PSP-1000 pair** (the lead's): the b30 pad bench, `- | nearvme` with `nearvmecheck` and `nearvmeacc` on both sides (the check makes play the old path's on both, so the sides play the same; its own work, the sink's float verdicts and the word comparison, is timed apart and kept out of the box's figures). The box goes on if its ME cycles a vertex, all in, come under ~150 with 0 disagreements and the accumulator's words right; over ~150 it stops (§7). A second pair without `nearvmecheck` then prices the frame. **Hardware risks the pair answers:** the context load's length; memory-mode images zeroing the interconnect words the wipe sets (vmee proves them; the PSP has loaded DMAC-built images exact, §10); the waits' floors; the fast mode's toll on the main CPU's misses (measured on the PSP-3000 only).

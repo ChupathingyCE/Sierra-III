@@ -190,6 +190,21 @@ void vmeLibWipe() {
   meLibSync();
 }
 
+#ifdef PSP_NEARVME
+/* the near-vme box's set-up (box_near_vme.c): the wipe vmetest's first job
+makes, its waits added to the box's ledger. On the ME only */
+void psp_vme_wipe_counted(unsigned int *count, unsigned int *bounded)
+{
+	struct vme_waits waits = { 0, 0, 0, 0 };
+
+	vme_waits_now = &waits;
+	vmeLibWipe();
+	vme_waits_now = 0;
+	*count += waits.count;
+	*bounded += waits.bounded;
+}
+#endif
+
 /* his sample's context: 4x4 matrix-by-vector, one matrix row on each of the
 four processing elements */
 static void vme_mat4x4_context(void) {
@@ -296,6 +311,14 @@ void psp_me_vme_probe(void)
 			platform_log("vme: refused: soundedram or edramcheck shares the probe slot");
 			asked = 0;
 		}
+#ifdef PSP_NEARVME
+		/* the box's buffers, rows and zeros stay in the VME between its passes */
+		if (asked && (psp_keep("nearvme") || psp_keep("nearvmecheck")))
+		{
+			platform_log("vme: refused: the near-vme box uses the VME");
+			asked = 0;
+		}
+#endif
 		if (asked)
 			platform_log("vme: vmetest on: mcidclan's mat4x4 on the VME once a heartbeat window, checked here");
 	}

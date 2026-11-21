@@ -52,7 +52,7 @@ starts 4 * NEAR_LEAD2 words early under its zero weights, stays in base3 */
 /* Stage 1, one row: each vertex's dot product with each slot's plane row,
 stream order (vertex, slot, component), so stage 2 finds a vertex's slots side
 by side. Groups of 4 words; one result on each group's last word. */
-.kernel nearDots direct {
+.kernel nearDots memory {
   .params { int row; }
   Int count = NEAR_STREAM1 - 1;
   Int lost = NEAR_LOST;
@@ -101,7 +101,7 @@ NEAR_SLOTS words (4 or 8: the delayed copy's bubbles are NEAR_SLOTS - 3, and
 a sync read needs at least one). The slot values are stage 1's results, read
 in place in base3 one word in four; the weights are in top3, as top1 keeps
 the vertices for the next row. */
-.kernel nearSum direct {
+.kernel nearSum memory {
   Int count = NEAR_STREAM2 - 1;
   Int lost = NEAR_LOST;
 
@@ -172,10 +172,41 @@ group unless it sets its own */
   };
 }
 
+/* the contexts, built once: a pass loads its own, so no register keeps
+what the last pass wrote (a loaded context is all of them, 0 where the
+kernel writes none) */
+volatile Memory nearRowContext[NEAR_ROWS];
+
 void nearVerdictsTile(void) {
   @emulate "tile" {
-    @kernel nearDots config {
+    @kernel nearDots build {
       .params = { row: 0 };
+      .memory = nearRowContext[0];
+    }
+    @kernel nearDots build {
+      .params = { row: 1 };
+      .memory = nearRowContext[1];
+    }
+    @kernel nearDots build {
+      .params = { row: 2 };
+      .memory = nearRowContext[2];
+    }
+    @kernel nearDots build {
+      .params = { row: 3 };
+      .memory = nearRowContext[3];
+    }
+    @kernel nearDots build {
+      .params = { row: 4 };
+      .memory = nearRowContext[4];
+    }
+    @kernel nearSum build {
+    }
+    /* a memory kernel's config loads its context and triggers it (vme2-next-level's
+    vmeLibLoadCustomContext, vmeLibFinish), so this call's pass runs before its loads
+    and its words are dropped: the box loads first and then triggers, which the
+    call below is */
+    @kernel nearDots config | exec {
+      .memory = nearRowContext[0];
       Transfer rowsIn = { memory: nearRow, count: NEAR_ROWS * NEAR_RING - 1 };
       Transfer maskIn = { memory: nearMask, count: 7 };
       /* the lead-ins read zeros, not whatever the last tile left */
@@ -200,51 +231,34 @@ void nearVerdictsTile(void) {
         .load { .transfer = vertexIn; .scope = global; .offsets { top[1] = NEAR_LEAD1 + i * 4; } }
       }
     }
-    @kernel nearDots exec {
+    @kernel nearDots config | exec {
+      .memory = nearRowContext[0];
     }
-    @kernel nearSum config {
-    }
-    @kernel nearSum exec {
+    @kernel nearSum config | exec {
       .store { .transfer = { ...planeOut, memory: nearPlane0 }; .scope = global; .offsets { .base3 = NEAR_PLANES + NEAR_LEAD2 + NEAR_SLOTS - 1; } }
     }
-    @kernel nearDots config {
-      .params = { row: 1 };
+    @kernel nearDots config | exec {
+      .memory = nearRowContext[1];
     }
-    @kernel nearDots exec {
-    }
-    @kernel nearSum config {
-    }
-    @kernel nearSum exec {
+    @kernel nearSum config | exec {
       .store { .transfer = { ...planeOut, memory: nearPlane1 }; .scope = global; .offsets { .base3 = NEAR_PLANES + NEAR_LEAD2 + NEAR_SLOTS - 1; } }
     }
-    @kernel nearDots config {
-      .params = { row: 2 };
+    @kernel nearDots config | exec {
+      .memory = nearRowContext[2];
     }
-    @kernel nearDots exec {
-    }
-    @kernel nearSum config {
-    }
-    @kernel nearSum exec {
+    @kernel nearSum config | exec {
       .store { .transfer = { ...planeOut, memory: nearPlane2 }; .scope = global; .offsets { .base3 = NEAR_PLANES + NEAR_LEAD2 + NEAR_SLOTS - 1; } }
     }
-    @kernel nearDots config {
-      .params = { row: 3 };
+    @kernel nearDots config | exec {
+      .memory = nearRowContext[3];
     }
-    @kernel nearDots exec {
-    }
-    @kernel nearSum config {
-    }
-    @kernel nearSum exec {
+    @kernel nearSum config | exec {
       .store { .transfer = { ...planeOut, memory: nearPlane3 }; .scope = global; .offsets { .base3 = NEAR_PLANES + NEAR_LEAD2 + NEAR_SLOTS - 1; } }
     }
-    @kernel nearDots config {
-      .params = { row: 4 };
+    @kernel nearDots config | exec {
+      .memory = nearRowContext[4];
     }
-    @kernel nearDots exec {
-    }
-    @kernel nearSum config {
-    }
-    @kernel nearSum exec {
+    @kernel nearSum config | exec {
       .store { .transfer = { ...planeOut, memory: nearPlane4 }; .scope = global; .offsets { .base3 = NEAR_PLANES + NEAR_LEAD2 + NEAR_SLOTS - 1; } }
     }
   }

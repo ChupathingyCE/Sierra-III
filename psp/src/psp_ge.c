@@ -48,6 +48,9 @@ VRAM (16-bit color, 512 pixels a row); the on-screen log lives above them
 #include "psp_paths.h"   /* ms0:/halo or ms0:/halomp, and the maps */
 #include <stdarg.h>
 #include "psp_me.h" /* build 118: psp_on_me, PSP_ME_WORK, the submit/finish jobs */
+#ifdef PSP_NEARVME
+#include "box_near_vme.h"
+#endif
 #include "psp_lanetrace.h"
 #include "psp_sleep.h" /* B41: the quiet points and the waits the stall reporter watches */
 
@@ -1985,6 +1988,10 @@ unsigned int psp_ge_me_replay(const unsigned int *args, unsigned int *results)
 	Simulated (args[3] 0), the main CPU runs it: marked as before */
 	if (!args[3])
 		psp_me_context = args[2] ? args[2] : 1;
+#ifdef PSP_NEARVME
+	/* the VME is reached only from a job on the ME (args[3]) */
+	nvme_job_begin((int)args[3]);
+#endif
 	replay_inflight = args[4] >= 2;
 	/* mememo: a job starts (simulated mechunk: a frame's first piece) */
 	if (args[4] != 3 || args[3] || args[5] == 0)
@@ -2039,6 +2046,9 @@ unsigned int psp_ge_me_replay(const unsigned int *args, unsigned int *results)
 		results[2] = (unsigned int)stall_me_qid;
 		stall_me_address = NULL;
 	}
+#ifdef PSP_NEARVME
+	nvme_job_end();
+#endif
 	/* (last: everything above is the ME's work, also when simulated) */
 	if (!args[3])
 		psp_me_context = 0;
@@ -3693,6 +3703,9 @@ static void __attribute__((noinline, cold)) ge_kinds_report(void)
 			platform_log("GE: nearclustercheck: %lu triangles disagreed with their run's verdict", near_cluster_mismatches);
 		if (skin_axis_check)
 			platform_log("GE: skinaxischeck: %lu corner sums compared with the loop's, %lu differed", skin_axis_checked, skin_axis_differ);
+#ifdef PSP_NEARVME
+		nvme_report(frames_seen);
+#endif
 		platform_log("GE: rigid near runs of %d triangles (%s): %.1f a frame kept whole, %.1f dropped whole, %.1f looked at corner by corner; %lu parts' spheres made (%lu KB)%s",
 			NEAR_CLUSTER_TRIANGLES, ge_hot.rigid_runs_full > 0 ? "off: rigidrunsfull" : "on", rigid_runs_kept / frames_seen,
 			rigid_runs_dropped / frames_seen, rigid_runs_mixed / frames_seen, rigid_runs_made, rigid_runs_bytes / 1024,
@@ -6933,6 +6946,62 @@ static inline int model_corner_out(float x, float y, float z, float limit)
 		x * camera_up[0] + y * camera_up[1] + z * camera_up[2] + ge_eye_camera[1],
 		x * camera_forward[0] + y * camera_forward[1] + z * camera_forward[2] + ge_eye_camera[2], limit);
 }
+
+#ifdef PSP_NEARVME
+/* the near-vme box's answers (box_near_vme.c), one a corner of the batch
+the near loop hands it: what the loop's float verdict needs to work a corner
+out again (nearvmecheck, the band) */
+struct near_vme_batch
+{
+	const unsigned char *vertices;
+	int stride, position_at, weights;
+	const float (*depth_row)[3][4];
+	float limit;
+};
+
+/* the near loop's float verdict for one corner: the same sums in the same
+order as its default form, so the same floats */
+static int near_vme_float_code(const struct near_vme_batch *nb, unsigned short vertex)
+{
+	const unsigned char *record = nb->vertices + nb->stride * vertex;
+	const float *p = (const float *)(record + nb->position_at);
+	float fpu[3] = { 0.0f, 0.0f, 0.0f };
+	int slot;
+
+	for (slot = 0; slot < nb->weights; slot++)
+		if (record[slot])
+		{
+			const float (*row)[4] = nb->depth_row[slot];
+
+			fpu[0] += record[slot] * (1.0f / 128.0f) * (row[0][0] * p[0] + row[0][1] * p[1] + row[0][2] * p[2] + row[0][3]);
+			fpu[1] += record[slot] * (1.0f / 128.0f) * (row[1][0] * p[0] + row[1][1] * p[1] + row[1][2] * p[2] + row[1][3]);
+			fpu[2] += record[slot] * (1.0f / 128.0f) * (row[2][0] * p[0] + row[2][1] * p[1] + row[2][2] * p[2] + row[2][3]);
+		}
+	return (camera_corner_out(fpu[0], fpu[1], fpu[2], nb->limit) ? 32 : 0) | outside(fpu);
+}
+
+/* a corner the walk marked waiting (near_vme_pending) gets the box's verdict;
+one in the band keeps the mark, so the loop works it out in float. Under
+nearvmecheck the float verdict is the one kept, so play is the old path's */
+static unsigned short near_vme_pending;
+
+static void near_vme_sink(void *context, unsigned short vertex, int code)
+{
+	if (nvme_checking())
+	{
+		unsigned int at = nvme_timing() ? nvme_cycles() : 0;
+		int float_code = near_vme_float_code((const struct near_vme_batch *)context, vertex);
+
+		if (nvme_timing())
+			nvme_note_check_cycles(nvme_cycles() - at);
+		nvme_note_check(code, float_code);
+		corner_verdict[vertex] = (unsigned short)(corner_stamp + float_code);
+		return;
+	}
+	if (code != NVME_BAND)
+		corner_verdict[vertex] = (unsigned short)(corner_stamp + code);
+}
+#endif
 
 /* a model-space point through a part's camera-relative matrix into camera
 space (build 60) */
@@ -16098,6 +16167,11 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 				/* build 119: the runs (near_cluster_verdict) */
 				float slot_scale[SKIN_SLOTS];
 				int use_clusters = 0, cluster_end = 0, cluster_state = 0;
+#ifdef PSP_NEARVME
+				int nvme_batch = 0, nvme_runs_kept = 0;
+				static signed char nvme_runs[NVME_RUNS];
+				static struct near_vme_batch nvme_near;
+#endif
 
 				/* build 118: the batch's sphere first (batch_sphere_inside): wholly
 				inside, the corner loop is skipped and the batch drawn whole */
@@ -16155,6 +16229,83 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 						use_clusters = 1;
 					}
 				}
+#ifdef PSP_NEARVME
+				/* the near-vme box: the batch's corners a run at a time, each once,
+				handed to the box before the loop (box_near_vme.c). A run kept or
+				dropped whole is passed over as the loop passes it, its verdict kept
+				for the loop. The box's verdicts land in corner_verdict; a corner it
+				leaves to the float verdict (the band) keeps the waiting mark,
+				which the loop takes as not worked out */
+				nvme_batch = 0;
+				nvme_runs_kept = 0;
+				if (!whole_by_sphere && nvme_on())
+				{
+					struct nvme_batch in;
+					int used = skin->weights;
+
+					while (used > 1 && b->node[used - 1] == 0xFF)
+						used--;
+					nvme_near.vertices = (const unsigned char *)vertices;
+					nvme_near.stride = skin->stride;
+					nvme_near.position_at = uv_at + 12;
+					nvme_near.weights = skin->weights;
+					nvme_near.depth_row = (const float (*)[3][4])depth_row;
+					nvme_near.limit = limit;
+					in.vertices = nvme_near.vertices;
+					in.stride = skin->stride;
+					in.position_at = uv_at + 12;
+					in.slots = used;
+					in.depth_row = nvme_near.depth_row;
+					in.guard_x = guard_x;
+					in.guard_y = guard_y;
+					in.guard_x_length = guard_x_length;
+					in.guard_y_length = guard_y_length;
+					in.near_clip = NEAR_CLIP;
+					in.limit = limit;
+					if (nvme_batch_begin(&in, near_vme_sink, &nvme_near))
+					{
+						int state = 0, run_end = 0;
+
+						nvme_batch = 1;
+						near_vme_pending = (unsigned short)(corner_stamp - 1);
+						for (t = 0; t + 2 < draw_count; t += 3)
+						{
+							if (use_clusters && t >= run_end)
+							{
+								int c = t / (3 * NEAR_CLUSTER_TRIANGLES);
+								unsigned int runs_at = nvme_timing() ? nvme_cycles() : 0;
+
+								run_end = (c + 1) * 3 * NEAR_CLUSTER_TRIANGLES;
+								state = c < b->cluster_count ? near_cluster_verdict(b, c, skin->weights,
+									(const float (*)[3][4])depth_row, slot_scale, limit, limit < NEAR_CLIP ? limit : NEAR_CLIP) : 0;
+								if (c < NVME_RUNS)
+								{
+									nvme_runs[c] = (signed char)state;
+									nvme_runs_kept = c + 1;
+								}
+								if (nvme_timing())
+									nvme_note_runs(nvme_cycles() - runs_at);
+							}
+							if ((state == 1 || state == 2) && !near_cluster_check)
+								continue;
+							for (k = 0; k < 3; k++)
+							{
+								unsigned short at = draw[t + k];
+								unsigned short known;
+
+								if (at >= CORNER_VERDICTS)
+									continue;
+								known = corner_verdict[at];
+								if ((known >= corner_stamp && known < corner_stamp + CORNER_STAMP_STEP) || known == near_vme_pending)
+									continue;
+								corner_verdict[at] = near_vme_pending;
+								nvme_vertex(at);
+							}
+						}
+						nvme_batch_end();
+					}
+				}
+#endif
 				for (t = 0; (!whole_by_sphere || near_sphere_check) && t + 2 < draw_count; t += 3)
 				{
 					/* build 106: each corner's verdict is its planes as bits
@@ -16172,6 +16323,11 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 						int c = t / (3 * NEAR_CLUSTER_TRIANGLES);
 
 						cluster_end = (c + 1) * 3 * NEAR_CLUSTER_TRIANGLES;
+#ifdef PSP_NEARVME
+						if (nvme_batch && c < nvme_runs_kept)
+							cluster_state = nvme_runs[c];
+						else
+#endif
 						cluster_state = c < b->cluster_count ? near_cluster_verdict(b, c, skin->weights,
 							(const float (*)[3][4])depth_row, slot_scale, limit, limit < NEAR_CLIP ? limit : NEAR_CLIP) : 0;
 						if (cluster_state == 1)
@@ -16222,6 +16378,10 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 							const float *p = (const float *)(record + uv_at + 12);
 							float at[3] = { 0.0f, 0.0f, 0.0f };
 							int axis;
+#ifdef PSP_NEARVME
+							/* the float verdict's ME cycles, both sides of the A/B */
+							unsigned int nvme_float_at = nvme_timing() ? nvme_cycles() : 0;
+#endif
 
 							probe_corners++;
 							if (on_vfpu)
@@ -16284,6 +16444,10 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 									memcpy(at, fpu, sizeof(at));
 							}
 							code = (camera_corner_out(at[0], at[1], at[2], limit) ? 32 : 0) | outside(at);
+#ifdef PSP_NEARVME
+							if (nvme_timing())
+								nvme_note_float(nvme_cycles() - nvme_float_at, nvme_batch);
+#endif
 #ifdef PSP_RECON
 							if (nearband_on)
 							{

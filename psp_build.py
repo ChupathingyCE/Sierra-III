@@ -217,6 +217,14 @@ DITHERSHIFT = os.environ.get("PSP_DITHERSHIFT", "") == "1"
 # PSP_DRAWLIST=1: the draw list box (docs/box_draw_list.md), off by default
 # until it is cut over; under it the keep word "drawlist" turns it on
 DRAWLIST = os.environ.get("PSP_DRAWLIST", "") == "1"
+# PSP_NEARVME=1: the near-vme box (docs/box_near_vme.md section 9;
+# psp/src/box_near_vme.c), off by default until it's cut over: the near
+# loop's corner verdicts on the VME from the ME's replay job. Under it the keep
+# word "nearvme" turns it on and "nearvmecheck" checks it against the float
+# verdict; its hooks sit in the near loop, so a default build leaves it out
+NEARVME = os.environ.get("PSP_NEARVME", "") == "1"
+if NEARVME:
+    PSP_FILES.append("box_near_vme")
 # PSP_PADPATH=1: the pad path (docs/pad_path.md; psp_pad.c's second half, its
 # reader in players.c, keep words pathrec, pathlog, padwatch). A bench tool:
 # its reader is an engine function a tick's profile has no counts for and its
@@ -922,6 +930,7 @@ def compile_one(item):
                ["-DPSP_DITHERSHIFT=1"] if DITHERSHIFT and src.endswith("psp_ge.c") else []) + (
                ["-DPSP_DRAWLIST=1"] if DRAWLIST and src.endswith("psp_ge.c") else []) + (
                ["-DPSP_RECON=1"] if RECON else []) + (
+               ["-DPSP_NEARVME=1"] if NEARVME else []) + (
                ["-DPSP_PADPATH=1"] if PADPATH else []) + (
                ["-DPSP_FRAMEPIC=1"] if FRAMEPIC else []) + (
                ["-DPSP_MEPROBE=1"] if MEPROBE else []) + (
@@ -1309,6 +1318,10 @@ def link(objs, stubs):
     # memory-stick lock, which the main CPU writes while the ME draws (the
     # emulator's cache model found the line lost; the lab's bugs.md B95)
     me_objects = ("*psp_ge.o", "*psp_tex.o", "*libpspgu.a:*", "*libpspgum.a:*")
+    # the near-vme box's variables are the ME's while its replay job runs, as
+    # the GE layer's are
+    if NEARVME:
+        me_objects = me_objects + ("*box_near_vme.o",)
     # PSP_MUSIC: the decoder's own variables (Tremor's, libogg's) on lines of
     # their own, apart from the GE layer's block too. The decode runs in the
     # ME's audio job and writes them (mapping0.o's counter), while the main

@@ -56,8 +56,9 @@ starts 4 * NEAR_LEAD2 words early under its zero weights, stays in base3 */
 stream order (vertex, slot, component), so stage 2 finds a vertex's slots side
 by side. Groups of 4 words; one result on each group's last word. */
 #line 55 "near_verdicts.vmeg.c"
-void nearDots(int row) {
-  volatile u32 VME_BASE_ADDR = VME_DATAPATH_BASE;
+void nearDotsBuild(void* vmegMemory, int row) {
+  meCoreMemset(vmegMemory, 0, VME_CONTEXT_WORD_COUNT*4);
+  volatile u32 VME_BASE_ADDR = (u32)vmegMemory;
   vme_pe0(agu_top(MODE), agu_mode(2), ((row * 16)) & 0xffff);
   vme_pe0(agu_top(COUNT), VME_DEF_STEP, 0x60f);
   vme_pe0(agu_top(INNER_0), agu_step(1), 0xf);
@@ -93,7 +94,14 @@ void nearDots(int row) {
   vme_icn(AGU_BASE, 0x4040);
   vme_icn(AGU_WRITE, 0x3240);
   vme_icn(SWEN, fu_on(0b0001));
+  meCoreDcacheWritebackRange(vmegMemory, VME_CONTEXT_WORD_COUNT*4);
 }
+void* nearDots(int row) {
+  static u32 vmegContext[VME_CONTEXT_WORD_COUNT] __attribute__((aligned(64)));
+  nearDotsBuild(vmegContext, row);
+  return vmegContext;
+}
+void* nearDotsContext;
 #line 97 "near_verdicts.vmeg.c"
 
 
@@ -103,8 +111,9 @@ a sync read needs at least one). The slot values are stage 1's results, read
 in place in base3 one word in four; the weights are in top3, as top1 keeps
 the vertices for the next row. */
 #line 104 "near_verdicts.vmeg.c"
-void nearSum() {
-  volatile u32 VME_BASE_ADDR = VME_DATAPATH_BASE;
+void nearSumBuild(void* vmegMemory) {
+  meCoreMemset(vmegMemory, 0, VME_CONTEXT_WORD_COUNT*4);
+  volatile u32 VME_BASE_ADDR = (u32)vmegMemory;
   vme_pe0(agu_base(MODE), agu_mode(2));
   vme_pe0(agu_base(COUNT), VME_DEF_STEP, 0x19b);
   vme_pe0(agu_base(INNER_0), agu_step(1), 0x19b);
@@ -140,7 +149,14 @@ void nearSum() {
   vme_icn(AGU_BASE, 0x3040);
   vme_icn(AGU_WRITE, 0x3240);
   vme_icn(SWEN, fu_on(0b0001));
+  meCoreDcacheWritebackRange(vmegMemory, VME_CONTEXT_WORD_COUNT*4);
 }
+void* nearSum(void* param) {
+  static u32 vmegContext[VME_CONTEXT_WORD_COUNT] __attribute__((aligned(64)));
+  nearSumBuild(vmegContext);
+  return vmegContext;
+}
+void* nearSumContext;
 #line 142 "near_verdicts.vmeg.c"
 
 
@@ -169,42 +185,47 @@ group unless it sets its own */
 VmegTransferWords vmeVarPlaneOut = { nearPlane0, 95, 3, 4, 0, 0, 0 };
 #line 173 "near_verdicts.vmeg.c"
 
-static inline void nearVerdictsTileRowsInLoad(volatile u32* memory, u32 spadOffset) {
+
+/* the contexts, built once: a pass loads its own, so no register keeps
+what the last pass wrote (a loaded context is all of them, 0 where the
+kernel writes none) */
+volatile u32 __attribute__((aligned(64))) nearRowContext[NEAR_ROWS][VME_CONTEXT_WORD_COUNT];
+static inline void nearVerdictsTile7RowsInLoad(volatile u32* memory, u32 spadOffset) {
   vme_dma(MEMORY, ADDR, useg_mem((u32)memory));
   vme_dma(ITERATION, DIMS, 79);
   vme_dma(SPAD, OFFSET, spadOffset);
   vme_dma(CTRL, VALUE, 0x40);
 }
 
-static inline void nearVerdictsTileMaskInLoad(volatile u32* memory, u32 spadOffset) {
+static inline void nearVerdictsTile7MaskInLoad(volatile u32* memory, u32 spadOffset) {
   vme_dma(MEMORY, ADDR, useg_mem((u32)memory));
   vme_dma(ITERATION, DIMS, 7);
   vme_dma(SPAD, OFFSET, spadOffset);
   vme_dma(CTRL, VALUE, 0x40);
 }
 
-static inline void nearVerdictsTileZeroIn1Load(volatile u32* memory, u32 spadOffset) {
+static inline void nearVerdictsTile7ZeroIn1Load(volatile u32* memory, u32 spadOffset) {
   vme_dma(MEMORY, ADDR, useg_mem((u32)memory));
   vme_dma(ITERATION, DIMS, 15);
   vme_dma(SPAD, OFFSET, spadOffset);
   vme_dma(CTRL, VALUE, 0x40);
 }
 
-static inline void nearVerdictsTileZeroIn2Load(volatile u32* memory, u32 spadOffset) {
+static inline void nearVerdictsTile7ZeroIn2Load(volatile u32* memory, u32 spadOffset) {
   vme_dma(MEMORY, ADDR, useg_mem((u32)memory));
   vme_dma(ITERATION, DIMS, 15);
   vme_dma(SPAD, OFFSET, spadOffset);
   vme_dma(CTRL, VALUE, 0x40);
 }
 
-static inline void nearVerdictsTileWeightInLoad(volatile u32* memory, u32 spadOffset) {
+static inline void nearVerdictsTile7WeightInLoad(volatile u32* memory, u32 spadOffset) {
   vme_dma(MEMORY, ADDR, useg_mem((u32)memory));
   vme_dma(ITERATION, DIMS, 383);
   vme_dma(SPAD, OFFSET, spadOffset);
   vme_dma(CTRL, VALUE, 0x40);
 }
 
-static inline void nearVerdictsTileVertexInLoad(volatile u32* memory, u32 spadOffset) {
+static inline void nearVerdictsTile7VertexInLoad(volatile u32* memory, u32 spadOffset) {
   vme_dma(MEMORY, ADDR, useg_mem((u32)memory));
   vme_dma(ITERATION, DIMS, 383, 0);
   vme_dma(ITERATION, STEP, 4);
@@ -213,7 +234,7 @@ static inline void nearVerdictsTileVertexInLoad(volatile u32* memory, u32 spadOf
   vme_dma(SPAD, OFFSET, spadOffset);
   vme_dma(CTRL, VALUE, 0x50);
 }
-#line 173 "near_verdicts.vmeg.c"
+#line 178 "near_verdicts.vmeg.c"
 
 static inline void vmeTransferStoreWords(const VmegTransferWords* transfer, u32 spadOffset) {
   vme_dma(MEMORY, ADDR, useg_mem((u32)transfer->memory));
@@ -224,209 +245,144 @@ static inline void vmeTransferStoreWords(const VmegTransferWords* transfer, u32 
   vme_dma(SPAD, OFFSET, spadOffset);
   vme_dma(CTRL, VALUE, 0x58);
 }
-#line 173 "near_verdicts.vmeg.c"
+#line 178 "near_verdicts.vmeg.c"
 
 
 void nearVerdictsTile(void) {
-#line 176 "near_verdicts.vmeg.c"
+#line 181 "near_verdicts.vmeg.c"
 
-#line 177 "near_verdicts.vmeg.c"
-    {
-      vmeLibEnable();
-      vmeLibSetFlow(VME_DEFAULT);
-      nearDots(0);
-#line 178 "near_verdicts.vmeg.c"
-
-#line 179 "near_verdicts.vmeg.c"
-
-#line 180 "near_verdicts.vmeg.c"
-
-      /* the lead-ins read zeros, not whatever the last tile left */
 #line 182 "near_verdicts.vmeg.c"
-
+    {
+      nearDotsBuild((void*)nearRowContext[0], 0);
 #line 183 "near_verdicts.vmeg.c"
 
 #line 184 "near_verdicts.vmeg.c"
 
-      /* each vertex once for each slot: the copies side by side */
+#line 185 "near_verdicts.vmeg.c"
+    }
+#line 186 "near_verdicts.vmeg.c"
+    {
+      nearDotsBuild((void*)nearRowContext[1], 1);
+#line 187 "near_verdicts.vmeg.c"
+
+#line 188 "near_verdicts.vmeg.c"
+
+#line 189 "near_verdicts.vmeg.c"
+    }
+#line 190 "near_verdicts.vmeg.c"
+    {
+      nearDotsBuild((void*)nearRowContext[2], 2);
+#line 191 "near_verdicts.vmeg.c"
+
 #line 192 "near_verdicts.vmeg.c"
 
+#line 193 "near_verdicts.vmeg.c"
+    }
 #line 194 "near_verdicts.vmeg.c"
-      nearVerdictsTileRowsInLoad(nearRow, VME_TOP_BUFF0_WOFF);
-      meCoreDMACPrimWaitTransferFinish();
-#line 194 "near_verdicts.vmeg.c"
-
-#line 195 "near_verdicts.vmeg.c"
-      nearVerdictsTileMaskInLoad(nearMask, VME_TOP_BUFF2_WOFF);
-      meCoreDMACPrimWaitTransferFinish();
+    {
+      nearDotsBuild((void*)nearRowContext[3], 3);
 #line 195 "near_verdicts.vmeg.c"
 
 #line 196 "near_verdicts.vmeg.c"
-      nearVerdictsTileZeroIn1Load(nearZero, VME_TOP_BUFF1_WOFF);
-      meCoreDMACPrimWaitTransferFinish();
-#line 196 "near_verdicts.vmeg.c"
 
 #line 197 "near_verdicts.vmeg.c"
-      nearVerdictsTileZeroIn2Load(nearZero, VME_TOP_BUFF3_WOFF);
-      meCoreDMACPrimWaitTransferFinish();
-#line 197 "near_verdicts.vmeg.c"
-
+    }
 #line 198 "near_verdicts.vmeg.c"
-      nearVerdictsTileWeightInLoad(nearWeight, VME_TOP_BUFF3_WOFF + 0x10);
-      meCoreDMACPrimWaitTransferFinish();
-#line 198 "near_verdicts.vmeg.c"
-
+    {
+      nearDotsBuild((void*)nearRowContext[4], 4);
 #line 199 "near_verdicts.vmeg.c"
-      nearVerdictsTileVertexInLoad(nearVertex, VME_TOP_BUFF1_WOFF + 0x10);
-      nearVerdictsTileVertexInLoad(nearVertex, VME_TOP_BUFF1_WOFF + 0x14);
-      meCoreDMACPrimWaitTransferFinish();
-      nearVerdictsTileVertexInLoad(nearVertex, VME_TOP_BUFF1_WOFF + 0x18);
-      nearVerdictsTileVertexInLoad(nearVertex, VME_TOP_BUFF1_WOFF + 0x1c);
-      meCoreDMACPrimWaitTransferFinish();
+
+#line 200 "near_verdicts.vmeg.c"
+
 #line 201 "near_verdicts.vmeg.c"
-
-#line 202 "near_verdicts.vmeg.c"
-#line 202 "near_verdicts.vmeg.c"
     }
+#line 202 "near_verdicts.vmeg.c"
+    {
+      nearSumContext = nearSum(0);
 #line 203 "near_verdicts.vmeg.c"
-    {
-      vmeLibTrigger();
-      meCoreDMACPrimWaitVMEFinish();
-#line 204 "near_verdicts.vmeg.c"
-#line 204 "near_verdicts.vmeg.c"
     }
-#line 205 "near_verdicts.vmeg.c"
-    {
-      vmeLibSetFlow(VME_DEFAULT);
-      nearSum();
-#line 206 "near_verdicts.vmeg.c"
-#line 206 "near_verdicts.vmeg.c"
-    }
-#line 207 "near_verdicts.vmeg.c"
-    {
-      vmeLibTrigger();
-      meCoreDMACPrimWaitVMEFinish();
+    /* a memory kernel's config loads its context and triggers it (vme2-next-level's
+    vmeLibLoadCustomContext, vmeLibFinish), so this call's pass runs before its loads
+    and its words are dropped: the box loads first and then triggers, which the
+    call below is */
 #line 208 "near_verdicts.vmeg.c"
-      {
-        VmegTransferWords vmeCopyVar = vmeVarPlaneOut;
-        vmeCopyVar.memory = nearPlane0;
-        vmeTransferStoreWords(&vmeCopyVar, VME_BASE_BUFF3_WOFF + 0x663);
-        meCoreDMACPrimWaitTransferFinish();
-      }
-#line 208 "near_verdicts.vmeg.c"
+    {
+      vmeLibEnable();
+      vmeLibStart();
+      vmeLibLoadCustomContext((void*)nearRowContext[0]);
+      vmeLibFinish();
+#line 209 "near_verdicts.vmeg.c"
 
-#line 209 "near_verdicts.vmeg.c"
-#line 209 "near_verdicts.vmeg.c"
-    }
 #line 210 "near_verdicts.vmeg.c"
-    {
-      vmeLibSetFlow(VME_DEFAULT);
-      nearDots(1);
+
 #line 211 "near_verdicts.vmeg.c"
 
-#line 212 "near_verdicts.vmeg.c"
-#line 212 "near_verdicts.vmeg.c"
-    }
+      /* the lead-ins read zeros, not whatever the last tile left */
 #line 213 "near_verdicts.vmeg.c"
-    {
-      vmeLibTrigger();
-      meCoreDMACPrimWaitVMEFinish();
+
 #line 214 "near_verdicts.vmeg.c"
-#line 214 "near_verdicts.vmeg.c"
-    }
+
 #line 215 "near_verdicts.vmeg.c"
-    {
-      vmeLibSetFlow(VME_DEFAULT);
-      nearSum();
-#line 216 "near_verdicts.vmeg.c"
-#line 216 "near_verdicts.vmeg.c"
-    }
-#line 217 "near_verdicts.vmeg.c"
-    {
-      vmeLibTrigger();
-      meCoreDMACPrimWaitVMEFinish();
-#line 218 "near_verdicts.vmeg.c"
-      {
-        VmegTransferWords vmeCopyVar = vmeVarPlaneOut;
-        vmeCopyVar.memory = nearPlane1;
-        vmeTransferStoreWords(&vmeCopyVar, VME_BASE_BUFF3_WOFF + 0x663);
-        meCoreDMACPrimWaitTransferFinish();
-      }
-#line 218 "near_verdicts.vmeg.c"
 
-#line 219 "near_verdicts.vmeg.c"
-#line 219 "near_verdicts.vmeg.c"
-    }
-#line 220 "near_verdicts.vmeg.c"
-    {
-      vmeLibSetFlow(VME_DEFAULT);
-      nearDots(2);
-#line 221 "near_verdicts.vmeg.c"
-
-#line 222 "near_verdicts.vmeg.c"
-#line 222 "near_verdicts.vmeg.c"
-    }
+      /* each vertex once for each slot: the copies side by side */
 #line 223 "near_verdicts.vmeg.c"
-    {
-      vmeLibTrigger();
-      meCoreDMACPrimWaitVMEFinish();
-#line 224 "near_verdicts.vmeg.c"
-#line 224 "near_verdicts.vmeg.c"
-    }
+
 #line 225 "near_verdicts.vmeg.c"
-    {
-      vmeLibSetFlow(VME_DEFAULT);
-      nearSum();
+      nearVerdictsTile7RowsInLoad(nearRow, VME_TOP_BUFF0_WOFF);
+      meCoreDMACPrimWaitTransferFinish();
+#line 225 "near_verdicts.vmeg.c"
+
 #line 226 "near_verdicts.vmeg.c"
+      nearVerdictsTile7MaskInLoad(nearMask, VME_TOP_BUFF2_WOFF);
+      meCoreDMACPrimWaitTransferFinish();
 #line 226 "near_verdicts.vmeg.c"
-    }
+
 #line 227 "near_verdicts.vmeg.c"
-    {
-      vmeLibTrigger();
-      meCoreDMACPrimWaitVMEFinish();
+      nearVerdictsTile7ZeroIn1Load(nearZero, VME_TOP_BUFF1_WOFF);
+      meCoreDMACPrimWaitTransferFinish();
+#line 227 "near_verdicts.vmeg.c"
+
 #line 228 "near_verdicts.vmeg.c"
-      {
-        VmegTransferWords vmeCopyVar = vmeVarPlaneOut;
-        vmeCopyVar.memory = nearPlane2;
-        vmeTransferStoreWords(&vmeCopyVar, VME_BASE_BUFF3_WOFF + 0x663);
-        meCoreDMACPrimWaitTransferFinish();
-      }
+      nearVerdictsTile7ZeroIn2Load(nearZero, VME_TOP_BUFF3_WOFF);
+      meCoreDMACPrimWaitTransferFinish();
 #line 228 "near_verdicts.vmeg.c"
 
 #line 229 "near_verdicts.vmeg.c"
+      nearVerdictsTile7WeightInLoad(nearWeight, VME_TOP_BUFF3_WOFF + 0x10);
+      meCoreDMACPrimWaitTransferFinish();
 #line 229 "near_verdicts.vmeg.c"
-    }
+
 #line 230 "near_verdicts.vmeg.c"
-    {
-      vmeLibSetFlow(VME_DEFAULT);
-      nearDots(3);
-#line 231 "near_verdicts.vmeg.c"
+      nearVerdictsTile7VertexInLoad(nearVertex, VME_TOP_BUFF1_WOFF + 0x10);
+      nearVerdictsTile7VertexInLoad(nearVertex, VME_TOP_BUFF1_WOFF + 0x14);
+      meCoreDMACPrimWaitTransferFinish();
+      nearVerdictsTile7VertexInLoad(nearVertex, VME_TOP_BUFF1_WOFF + 0x18);
+      nearVerdictsTile7VertexInLoad(nearVertex, VME_TOP_BUFF1_WOFF + 0x1c);
+      meCoreDMACPrimWaitTransferFinish();
+#line 232 "near_verdicts.vmeg.c"
 
-#line 232 "near_verdicts.vmeg.c"
-#line 232 "near_verdicts.vmeg.c"
-    }
 #line 233 "near_verdicts.vmeg.c"
-    {
-      vmeLibTrigger();
-      meCoreDMACPrimWaitVMEFinish();
-#line 234 "near_verdicts.vmeg.c"
-#line 234 "near_verdicts.vmeg.c"
+#line 233 "near_verdicts.vmeg.c"
     }
-#line 235 "near_verdicts.vmeg.c"
+#line 234 "near_verdicts.vmeg.c"
     {
-      vmeLibSetFlow(VME_DEFAULT);
-      nearSum();
+      vmeLibStart();
+      vmeLibLoadCustomContext((void*)nearRowContext[0]);
+      vmeLibFinish();
+#line 235 "near_verdicts.vmeg.c"
+
 #line 236 "near_verdicts.vmeg.c"
 #line 236 "near_verdicts.vmeg.c"
     }
 #line 237 "near_verdicts.vmeg.c"
     {
-      vmeLibTrigger();
-      meCoreDMACPrimWaitVMEFinish();
+      vmeLibStart();
+      vmeLibLoadCustomContext(nearSumContext);
+      vmeLibFinish();
 #line 238 "near_verdicts.vmeg.c"
       {
         VmegTransferWords vmeCopyVar = vmeVarPlaneOut;
-        vmeCopyVar.memory = nearPlane3;
+        vmeCopyVar.memory = nearPlane0;
         vmeTransferStoreWords(&vmeCopyVar, VME_BASE_BUFF3_WOFF + 0x663);
         meCoreDMACPrimWaitTransferFinish();
       }
@@ -437,8 +393,9 @@ void nearVerdictsTile(void) {
     }
 #line 240 "near_verdicts.vmeg.c"
     {
-      vmeLibSetFlow(VME_DEFAULT);
-      nearDots(4);
+      vmeLibStart();
+      vmeLibLoadCustomContext((void*)nearRowContext[1]);
+      vmeLibFinish();
 #line 241 "near_verdicts.vmeg.c"
 
 #line 242 "near_verdicts.vmeg.c"
@@ -446,35 +403,103 @@ void nearVerdictsTile(void) {
     }
 #line 243 "near_verdicts.vmeg.c"
     {
-      vmeLibTrigger();
-      meCoreDMACPrimWaitVMEFinish();
+      vmeLibStart();
+      vmeLibLoadCustomContext(nearSumContext);
+      vmeLibFinish();
 #line 244 "near_verdicts.vmeg.c"
+      {
+        VmegTransferWords vmeCopyVar = vmeVarPlaneOut;
+        vmeCopyVar.memory = nearPlane1;
+        vmeTransferStoreWords(&vmeCopyVar, VME_BASE_BUFF3_WOFF + 0x663);
+        meCoreDMACPrimWaitTransferFinish();
+      }
 #line 244 "near_verdicts.vmeg.c"
-    }
+
 #line 245 "near_verdicts.vmeg.c"
-    {
-      vmeLibSetFlow(VME_DEFAULT);
-      nearSum();
-#line 246 "near_verdicts.vmeg.c"
-#line 246 "near_verdicts.vmeg.c"
+#line 245 "near_verdicts.vmeg.c"
     }
-#line 247 "near_verdicts.vmeg.c"
+#line 246 "near_verdicts.vmeg.c"
     {
-      vmeLibTrigger();
-      meCoreDMACPrimWaitVMEFinish();
+      vmeLibStart();
+      vmeLibLoadCustomContext((void*)nearRowContext[2]);
+      vmeLibFinish();
+#line 247 "near_verdicts.vmeg.c"
+
 #line 248 "near_verdicts.vmeg.c"
+#line 248 "near_verdicts.vmeg.c"
+    }
+#line 249 "near_verdicts.vmeg.c"
+    {
+      vmeLibStart();
+      vmeLibLoadCustomContext(nearSumContext);
+      vmeLibFinish();
+#line 250 "near_verdicts.vmeg.c"
+      {
+        VmegTransferWords vmeCopyVar = vmeVarPlaneOut;
+        vmeCopyVar.memory = nearPlane2;
+        vmeTransferStoreWords(&vmeCopyVar, VME_BASE_BUFF3_WOFF + 0x663);
+        meCoreDMACPrimWaitTransferFinish();
+      }
+#line 250 "near_verdicts.vmeg.c"
+
+#line 251 "near_verdicts.vmeg.c"
+#line 251 "near_verdicts.vmeg.c"
+    }
+#line 252 "near_verdicts.vmeg.c"
+    {
+      vmeLibStart();
+      vmeLibLoadCustomContext((void*)nearRowContext[3]);
+      vmeLibFinish();
+#line 253 "near_verdicts.vmeg.c"
+
+#line 254 "near_verdicts.vmeg.c"
+#line 254 "near_verdicts.vmeg.c"
+    }
+#line 255 "near_verdicts.vmeg.c"
+    {
+      vmeLibStart();
+      vmeLibLoadCustomContext(nearSumContext);
+      vmeLibFinish();
+#line 256 "near_verdicts.vmeg.c"
+      {
+        VmegTransferWords vmeCopyVar = vmeVarPlaneOut;
+        vmeCopyVar.memory = nearPlane3;
+        vmeTransferStoreWords(&vmeCopyVar, VME_BASE_BUFF3_WOFF + 0x663);
+        meCoreDMACPrimWaitTransferFinish();
+      }
+#line 256 "near_verdicts.vmeg.c"
+
+#line 257 "near_verdicts.vmeg.c"
+#line 257 "near_verdicts.vmeg.c"
+    }
+#line 258 "near_verdicts.vmeg.c"
+    {
+      vmeLibStart();
+      vmeLibLoadCustomContext((void*)nearRowContext[4]);
+      vmeLibFinish();
+#line 259 "near_verdicts.vmeg.c"
+
+#line 260 "near_verdicts.vmeg.c"
+#line 260 "near_verdicts.vmeg.c"
+    }
+#line 261 "near_verdicts.vmeg.c"
+    {
+      vmeLibStart();
+      vmeLibLoadCustomContext(nearSumContext);
+      vmeLibFinish();
+#line 262 "near_verdicts.vmeg.c"
       {
         VmegTransferWords vmeCopyVar = vmeVarPlaneOut;
         vmeCopyVar.memory = nearPlane4;
         vmeTransferStoreWords(&vmeCopyVar, VME_BASE_BUFF3_WOFF + 0x663);
         meCoreDMACPrimWaitTransferFinish();
       }
-#line 248 "near_verdicts.vmeg.c"
+#line 262 "near_verdicts.vmeg.c"
 
-#line 249 "near_verdicts.vmeg.c"
+#line 263 "near_verdicts.vmeg.c"
       vmeLibDisable();
-#line 249 "near_verdicts.vmeg.c"
+#line 263 "near_verdicts.vmeg.c"
     }
-#line 250 "near_verdicts.vmeg.c"
+#line 264 "near_verdicts.vmeg.c"
 
 }
