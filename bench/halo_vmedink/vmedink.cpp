@@ -559,7 +559,21 @@ static int runTile(const int command, const char* const cell) {
   return cellTile(cell, planes);
 }
 
+/* an untaken FPU trap switches the PSP off, so the bench thread masks them
+as the game does (psp_platform.c's psp_fpu_mask_traps); this is the lab's
+harness, not Dink's VME code */
+static void fpu_mask_traps(void)
+{
+  unsigned int control;
+
+  __asm__ __volatile__("cfc1 %0, $31" : "=r"(control));
+  control &= ~0x00000F80u;
+  control |= 0x01000000u;
+  __asm__ __volatile__("ctc1 %0, $31" : : "r"(control));
+}
+
 int main() {
+  fpu_mask_traps();
   scePowerSetClockFrequency(333, 333, 166);
   pspDebugScreenInit();
   sceIoMkdir("ms0:/halo", 0777);
