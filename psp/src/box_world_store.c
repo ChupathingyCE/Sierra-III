@@ -619,7 +619,6 @@ extern int psp_bipedstage_phase; /* objects.c (FIXES_BIPEDSTAGE): nonzero inside
 static PSP_AIME_ME_SIDE struct { unsigned int made, overflowed; long index[WS_ME_MARKS]; } ws_me_marks
 	__attribute__((aligned(64)));
 static PSP_MAIN_SIDE struct { unsigned int landed, overflowed_seen; } ws_main_marks __attribute__((aligned(64)));
-static unsigned long ws_me_marks_landed, ws_me_marks_overflows;
 
 void box_ws_me_marks_drain(void)
 {
