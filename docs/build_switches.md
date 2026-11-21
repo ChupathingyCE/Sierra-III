@@ -29,6 +29,7 @@ PSPDEV=<pspdev> tools/build_release.sh <out>
 | `PSP_DATA_LAYOUT=none` | The SDK's data order. By default (`hotg`) the tick's hottest small variables are packed into one run after the ME's `.data` block, by `psp/layout/data_<name>.txt` (lever HOTG, `docs/hotg.md`); only data addresses move |
 | `PSP_DATA_SPREAD=1` | With `PSP_DATA_LAYOUT`: each placement on lines of its own, so the cache map names each one's misses; recon only |
 | `PSP_TICK_STEPS=1` | Per-step tick timing; recon only |
+| `PSP_POSESTEPS=1` | With `PSP_TICK_STEPS=1`: posing's pieces (decode, overlays, unit preprocess, interpolation, matrix walk) as their own steps for `objsteps` (`docs/box_posing.md` §8, §9b). A step build turns the ME's pose-ahead off, so its decode is every base pose decoded on the main CPU; recon only |
 | `PSP_RECON=1` | The recon censuses (`modelcensus`, `sleepcensus`, `drawcensus`, `mebusN`; `docs/recon_134.md`); recon only |
 | `PSP_NOINLINE=psp_ge,…` | Units whose path holds a listed word compiled without inlining, so the cache map names each helper; recon only |
 | `PSP_POOLS_XBOX=1` | The Xbox's actor, prop, light and glow particle arrays and the game state as long as they need; for runs that measure the arrays' peaks |

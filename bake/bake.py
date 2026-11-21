@@ -37,6 +37,11 @@ Options:
                                 build)
     --no-track                  skip the asset track's _track.ptex
     --keep-work                 keep the extracted tags (several GB)
+    --no-keyframes              leave the animations as the disc has them,
+                                one stored pose a frame, instead of Invader's
+                                -K keyframing: the other side of -K's A/B
+                                (docs/box_posing.md 9b); a research bake, not
+                                for play (more tag window and animation cache)
     --jobs N                    bake N maps at once (default: one per CPU, at
                                 most 4, fewer with under 8 GB of memory free;
                                 1: one after another). The maps come out the
@@ -837,6 +842,8 @@ def main():
                     help='make each palette both ways, the bake\'s own and the fast one, and log how they compare')
     ap.add_argument('--no-track', action='store_true')
     ap.add_argument('--keep-work', action='store_true')
+    ap.add_argument('--no-keyframes', action='store_true',
+                    help="the animations uncompressed, as on the disc (no -K): -K's A/B, research only")
     ap.add_argument('--force', action='store_true')
     ap.add_argument('--detail', default='')
     ap.add_argument('--sound', default='s9mono', choices=['none', 's9', 's9full', 's9mono', 's10'])
@@ -910,6 +917,12 @@ def main():
                     help="also make each palette and decal cut as the bake did before this one (scikit-learn's k-means, "
                          'Triangle), and log how they compare: the new bake\'s proof (docs/bake_changes.md)')
     a = ap.parse_args()
+    if a.no_keyframes:
+        # -K's other side: the frame data stays one pose a frame, the
+        # engine's uncompressed form, and the defaults stay in the tags
+        k = BUILD_FLAGS.index('-K')
+        del BUILD_FLAGS[k:k + 2]
+        log('animations: not keyframed (--no-keyframes): a research bake')
     if a.sound == 'none':
         a.sound = ''
     global COMPARE_OLD, PROFILE, COMPARE_PALETTES, LEVEL_SLIM, ALPHA_AUDIT, PRECONVERT, SKIN_VARIANTS, TEXFIT_CENSUS, SSPR, FAR_LEVEL

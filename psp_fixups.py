@@ -2330,6 +2330,24 @@ STEP_LABELS = {
 }
 if os.environ.get("PSP_TICK_STEPS", "") == "1":
     STEP_LABELS.update(STEP_LABELS_TICK)
+# PSP_POSESTEPS=1 (with PSP_TICK_STEPS=1): posing's pieces inside
+# object_compute_node_matrices, so objsteps splits posing on the PSP
+# (box_posing.md 8, 9b). Each label goes before a block, never before a lone
+# statement under an if or else. "pose: decode" holds the frame's choice, the
+# decode (animation_get_node_orientations) and the default pose; "pose:
+# overlays" the overlays and the scale; "pose: unit preprocess" the type's
+# preprocess (a unit's aiming and blends); "pose: interpolation"; "pose:
+# matrix walk" the products down the nodes. A step build turns the ME's
+# pose-ahead off (FIXES_135 #poseaheadon), so its decode is every base pose
+# decoded on the main CPU
+if os.environ.get("PSP_TICK_STEPS", "") == "1" and os.environ.get("PSP_POSESTEPS", "") == "1":
+    STEP_LABELS["source/objects/objects.c"] = STEP_LABELS.get("source/objects/objects.c", []) + [
+        ("\t\tworld_relative = FALSE;\n\t\tpsp_psc_locals = NULL; /* psp_fixups.py (FIXES_PSC) */\n", "pose: decode", "before"),
+        ("\t\t\tfor (overlay_index = 0; overlay_index<animation_graph->object_overlays.count; ++overlay_index)\n", "pose: overlays", "before"),
+        ("\t\tif (object_definition->object.animation_graph.index!=NONE)\n\t\t{\n\t\t\tif (PSP_KEEP_ONCE(\"hoistold\"))", "pose: unit preprocess", "before"),
+        ("\t\tif (object->object.animation.interpolation_frame_count>0)\n", "pose: interpolation", "before"),
+        ("\t\tunknown_var = 0;\n\t\tnode_stack[0] = 0;\n", "pose: matrix walk", "before"),
+    ]
 
 def step_labels(tree):
     changed = 0

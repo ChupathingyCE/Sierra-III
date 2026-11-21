@@ -104,6 +104,25 @@ def scratch_spans(log):
     return spans
 
 
+def anim_cache_spans(log):
+    """the animation cache's slots (psp_anim.c's "animations: ... cache"
+    line, the last map loaded): its block in the tag window's unused end and
+    its second block, so the frame data's lines (a compressed animation's
+    keyframes, or an uncompressed one's frames) are named apart from the
+    animation tags' own lines (frame info, flags, defaults)"""
+    spans = []
+    for line in open(log, errors='replace'):
+        m = re.search(r'animations: \d+ KB of frame data in the pack .*?: (\d+) KB at ([0-9a-f]{8}) '
+                      r'\(the tag window\'s unused end\), (\d+) KB at ([0-9a-f]{8})', line)
+        if m:
+            spans = []
+            for kb, at, name in ((m.group(1), m.group(2), 'window block'), (m.group(3), m.group(4), 'second block')):
+                if int(kb):
+                    start = int(at, 16)
+                    spans.append((start, start + int(kb) * 1024, 'animation cache: ' + name, 'a'))
+    return spans
+
+
 def scratch_topsets(log):
     """the level BSP's top levels ("scratch topset: <depth> <n|p> <lines>"):
     for each depth, the node and plane lines of every node down to it, the
@@ -233,7 +252,8 @@ def main():
     program_end = max(end for start, end, name, kind in symbols)
     spans_named = scratch_spans(log)
     topsets = scratch_topsets(log)
-    data_spans = [s for s in symbols if s[3] in 'bdgsrv' or s[3] == 'b'] + game_state_layout(log) + spans_named
+    data_spans = [s for s in symbols if s[3] in 'bdgsrv' or s[3] == 'b'] + game_state_layout(log) + spans_named + \
+        anim_cache_spans(log)
     if map_path:
         data_spans += tag_spans(map_path)
     data_namer = Namer(data_spans)
