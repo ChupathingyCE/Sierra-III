@@ -9,6 +9,26 @@ products), so every test lands on the same side of every plane.
 #include <math.h>
 #include "box_collbsp.h"
 
+#if defined(PSP_RECON) && !defined(BOX_COLLBSP_COUNT)
+/* recon: the sphere walks' deepest recursion (the box review's collision Q1:
+each split nests a frame, and on the ME the walk runs on a ring job's 4 KB
+stack), [0] every recursive walk nested together (the 3D walks and the 2D
+walks under their leaves), [1] the 3D splits alone. Each CPU keeps its own,
+the ME's on its own lines; psp_ge.c's 300-frame report reads them */
+#include "psp_me.h"
+unsigned int box_collbsp_deepest_main[2];
+PSP_AIME_ME_SIDE unsigned int box_collbsp_deepest_me[16] __attribute__((aligned(64)));
+#define RECURSE_IN(w) do { unsigned int *m_ = psp_cpu_is_me() ? box_collbsp_deepest_me : box_collbsp_deepest_main; \
+	if ((unsigned int)++(w)->rdepth > m_[0]) m_[0] = (unsigned int)(w)->rdepth; } while (0)
+#define RECURSE_OUT(w) ((w)->rdepth--)
+#define SPLIT_DEPTH(d) do { unsigned int *m_ = psp_cpu_is_me() ? box_collbsp_deepest_me : box_collbsp_deepest_main; \
+	if ((unsigned int)(d) > m_[1]) m_[1] = (unsigned int)(d); } while (0)
+#else
+#define RECURSE_IN(w) ((void)0)
+#define RECURSE_OUT(w) ((void)0)
+#define SPLIT_DEPTH(d) ((void)0)
+#endif
+
 #ifdef BOX_COLLBSP_COUNT
 /* a desktop count of the walks' steps over a capture (the host build only) */
 #include <stdio.h>
@@ -321,6 +341,9 @@ struct sphere
 	int any, found;
 	struct box_collbsp_sphere_result *result;
 	int stack[DEPTH_MOST];
+#if defined(PSP_RECON) && !defined(BOX_COLLBSP_COUNT)
+	int rdepth; /* the recursion's nesting (recon) */
+#endif
 	/* form A: the stack's designators by bucket, so a reference whose plane
 	isn't on the stack is passed by without scanning it */
 	unsigned char buckets[64];
@@ -558,7 +581,11 @@ static void sphere2d(struct sphere *w, int child)
 		node = &w->bsp->nodes2d[child];
 		distance = (node->n[0] * w->center2d[0] + node->n[1] * w->center2d[1]) - node->d;
 		if (distance <= w->radius)
+		{
+			RECURSE_IN(w);
 			sphere2d(w, node->child[0]);
+			RECURSE_OUT(w);
+		}
 		if (!(distance >= -w->radius))
 			return;
 		child = node->child[1];
@@ -596,12 +623,17 @@ static void sphere3d(struct sphere *w, int index)
 
 			w->stack[w->depth++] = front;
 			w->buckets[BUCKET(front)]++;
+			SPLIT_DEPTH(w->depth);
+			RECURSE_IN(w);
 			sphere3d(w, node->child[0]);
+			RECURSE_OUT(w);
 			w->buckets[BUCKET(front)]--;
 			w->depth--;
 			w->stack[w->depth++] = back;
 			w->buckets[BUCKET(back)]++;
+			RECURSE_IN(w);
 			sphere3d(w, node->child[1]);
+			RECURSE_OUT(w);
 			w->buckets[BUCKET(back)]--;
 			w->depth--;
 			return;
@@ -725,6 +757,9 @@ static int sphere_from(const struct box_collbsp *bsp, int start, short breakable
 	w.found = 0;
 	w.result = result;
 	w.depth = 0;
+#if defined(PSP_RECON) && !defined(BOX_COLLBSP_COUNT)
+	w.rdepth = 0;
+#endif
 	w.seen_count = 0;
 	w.walk_only = 0;
 	w.designator = 0;
@@ -761,6 +796,9 @@ static int sphere_kept_walk(const struct box_collbsp *bsp, short breakable_count
 	w.found = 0;
 	w.result = result;
 	w.depth = 0;
+#if defined(PSP_RECON) && !defined(BOX_COLLBSP_COUNT)
+	w.rdepth = 0;
+#endif
 	w.seen_count = 0;
 	w.walk_only = 1;
 	w.designator = 0;
@@ -948,7 +986,9 @@ static void sphere3d_packed(struct sphere *w, const struct box_collbsp_packed_no
 		COUNT(n_nodes3);
 		if (first_side && second)
 		{
+			RECURSE_IN(w);
 			sphere3d_packed(w, nodes, leaves, node->child[0]);
+			RECURSE_OUT(w);
 			if (w->packed_miss)
 				return;
 			code = node->child[1];

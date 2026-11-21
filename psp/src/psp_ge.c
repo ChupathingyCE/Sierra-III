@@ -3672,6 +3672,17 @@ static void __attribute__((noinline, cold)) ge_kinds_report(void)
 		slot_us / kind_frames, slot_batches / kind_frames, kind_frames);
 	near_loop_us = near_loop_batches = near_loop_triangles = near_corners_worked = slot_us = slot_batches = 0;
 	model_floor_left_out = near_parts = near_parts_whole = near_batches_whole = 0;
+#ifdef PSP_RECON
+	{
+		/* box_collbsp.c's deepest sphere walks so far, each CPU's (the ME's
+		read past the main CPU's cache: only the ME writes them) */
+		extern unsigned int box_collbsp_deepest_main[2], box_collbsp_deepest_me[16];
+		volatile unsigned int *me = (volatile unsigned int *)((unsigned int)box_collbsp_deepest_me | 0x40000000u);
+
+		platform_log("GE: collbspdepth: the sphere walks' deepest recursion so far, every walk nested %u on the main CPU, %u on the ME; "
+			"the 3D splits alone %u and %u (DEPTH_MOST 128)", box_collbsp_deepest_main[0], me[0], box_collbsp_deepest_main[1], me[1]);
+	}
+#endif
 	near_batches_by_sphere = near_sphere_mismatches = 0;
 	model_size_floor_peak = model_size_floor;
 	model_bone_loads = model_take_bytes = model_part_calls = model_bone_calls = model_bone_sub_bytes = 0;
