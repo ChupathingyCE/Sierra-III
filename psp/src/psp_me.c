@@ -197,6 +197,13 @@ batch's (~13 KB with the ring's) don't fit the 16 KB I-cache together, so
 each job taken between two records cost both a refill (c20: the replay
 +0.3-0.4 ms a job beyond the batches' own time, sweepme_claims_c20_replay) */
 #define ME_FEATURE_TICKSCHED 65536u
+/* "audiohold" (the lead 2026-11-20 22:5x, Sheepdog01 22:50: one more block of
+delay is fine): the audio thread keeps one more block ahead of the speaker
+(psp_dsound.c), so an audio block can wait for the replay's end instead of
+being mixed at its looks: the replay's look and the AI job's look mix one
+only once it has waited AUDIO_HOLD_DUE_CYCLES (a block that would run dry
+otherwise), and the main CPU's wait for an audio job is AUDIO_HOLD_WAIT_US */
+#define ME_FEATURE_AUDIO_HOLD 131072u
 
 #if PSP_MEXEC
 /* The copy's table: tools/mexec.py writes it into the linked program
@@ -993,6 +1000,11 @@ collection's word is up, and the word is tested right after the look (at
 perception's props, at its next look, ~2 ms on), so a mix delays its answer
 by about the mix alone, inside its 20 ms. Only on the ME */
 #define AUDIO_LOOK_DUE_CYCLES (333u * 4000u) /* ~4 ms of the ME's clock */
+/* audiohold's: two blocks (46 ms at 512 frames, 22,050 Hz) less the mix (up
+to ~7 ms on d20) and the stretch to the next look; the main CPU waits 60 ms
+for the job then, so a block mixed at the due time can't trip its deadline */
+#define AUDIO_HOLD_DUE_CYCLES (333u * 30000u)
+#define AUDIO_HOLD_WAIT_US 60000u
 static PSP_AIME_ME_SIDE unsigned int audio_look_request = 0, audio_look_seen = 0;
 
 static int me_audio_due(unsigned int now)
@@ -1008,7 +1020,7 @@ static int me_audio_due(unsigned int now)
 		audio_look_seen = now;
 		return 0;
 	}
-	return now - audio_look_seen >= AUDIO_LOOK_DUE_CYCLES;
+	return now - audio_look_seen >= ((CONTROL->features & ME_FEATURE_AUDIO_HOLD) ? AUDIO_HOLD_DUE_CYCLES : AUDIO_LOOK_DUE_CYCLES);
 }
 
 static unsigned int me_ring_drain(unsigned int popped, unsigned int *last_look, volatile const unsigned int *stop);
@@ -1700,7 +1712,9 @@ struct tick_look_stats
 	unsigned int held;          /* looks that saw jobs waiting and left them to the slice */
 	unsigned int urgent;        /* pick-ups made early for a waiting main CPU */
 	unsigned int batch_first;   /* batch jobs whose records a pick-up made first */
-	unsigned int pad[9];
+	unsigned int audio_inside;  /* audio blocks mixed at the replay's looks */
+	unsigned int audio_held;    /* of them, audiohold's: blocks that had waited past its due time */
+	unsigned int pad[7];
 } __attribute__((aligned(64)));
 static struct tick_look_stats tick_look PSP_AIME_ME_SIDE = { 0 };
 /* the ME's own: the clock at its last pick-up and the records since */
@@ -1756,8 +1770,15 @@ void psp_me_replay_look(void)
 		tick_look.served_cycles += me_cycles() - began;
 		return;
 	}
-	/* audio keeps its every-record look: its deadline is its own */
-	me_audio_now();
+	/* audio keeps its every-record look: its deadline is its own. Under
+	audiohold a block waits for the replay's end unless it would run dry */
+	if (!(CONTROL->features & ME_FEATURE_AUDIO_HOLD))
+		tick_look.audio_inside += (unsigned int)me_audio_now();
+	else if (me_audio_due(began) && me_audio_now())
+	{
+		tick_look.audio_inside++;
+		tick_look.audio_held++;
+	}
 	p = ME_PRIVATE;
 	pushed = RING_PUSHED;
 	tick_records_since++;
@@ -2964,7 +2985,7 @@ int psp_me_start(void)
 		(psp_keep("mefaultoff") ? ME_FEATURE_FAULT_OFF : 0u) | (psp_keep("mefaulttest") ? ME_FEATURE_FAULT_TEST : 0u) |
 		(psp_keep("menestrender") ? ME_FEATURE_NEST_RENDER : 0u) |
 		(psp_keep("aimevisleft") ? ME_FEATURE_AIME_VIS_LEFT : 0u) |
-		(psp_keep("aimeaudiolook") ? ME_FEATURE_AUDIO_LOOK : 0u) | (me_mexec_wanted() ? ME_FEATURE_MEXEC : 0u) |
+		(psp_keep("aimeaudiolook") ? ME_FEATURE_AUDIO_LOOK : 0u) | (psp_keep("audiohold") ? ME_FEATURE_AUDIO_HOLD : 0u) | (me_mexec_wanted() ? ME_FEATURE_MEXEC : 0u) |
 		(psp_keep("ticksched") && ring_on ? ME_FEATURE_TICKSCHED : 0u);
 	tick_slice_set(control);
 	wake_features = control->features | (psp_keep("mewakeprobe") ? ME_FEATURE_WAKE_PROBE : 0u);
@@ -3061,10 +3082,13 @@ static int me_run_slot(int which, unsigned int type, const unsigned int *args, i
 			for audio jobs (about 1 ms each); b112's render jobs ran up to
 			39.6 ms on the PSP, and the one past 40 ms stopped the ME [M] */
 			/* build 115: the eDRAM probe too, which may wait behind a render job, and the VME probe on its slot */
-			if (sceKernelGetSystemTimeWide() - start > (type == ME_JOB_GE || type == ME_JOB_EDRAM || type == ME_JOB_VME ? 500000 : 40000))
+			if (sceKernelGetSystemTimeWide() - start > (type == ME_JOB_GE || type == ME_JOB_EDRAM || type == ME_JOB_VME ? 500000 :
+				type == ME_JOB_AUDIO && (CONTROL->features & ME_FEATURE_AUDIO_HOLD) ? AUDIO_HOLD_WAIT_US : 40000))
 			{
 				platform_log("ME: a job (type %u) not finished in %u ms (job %u; the ME at job %u, %u idle polls)", type,
-					type == ME_JOB_GE || type == ME_JOB_EDRAM || type == ME_JOB_VME ? 500 : 40, slot_request[which], slot->done, CONTROL->alive);
+					type == ME_JOB_GE || type == ME_JOB_EDRAM || type == ME_JOB_VME ? 500 :
+					type == ME_JOB_AUDIO && (CONTROL->features & ME_FEATURE_AUDIO_HOLD) ? AUDIO_HOLD_WAIT_US / 1000 : 40,
+					slot_request[which], slot->done, CONTROL->alive);
 				me_stash_dump("a slot job late");
 				stats[which].failures++;
 				psp_me_stop("a job timed out");
@@ -5727,6 +5751,10 @@ void psp_me_report(void)
 		d.held = t->held - seen.held;
 		d.urgent = t->urgent - seen.urgent;
 		d.batch_first = t->batch_first - seen.batch_first;
+		d.audio_inside = t->audio_inside - seen.audio_inside;
+		d.audio_held = t->audio_held - seen.audio_held;
+		seen.audio_inside += d.audio_inside;
+		seen.audio_held += d.audio_held;
 		seen.served_cycles += d.served_cycles;
 		seen.looks += d.looks;
 		seen.pickups += d.pickups;
@@ -5734,11 +5762,11 @@ void psp_me_report(void)
 		seen.held += d.held;
 		seen.urgent += d.urgent;
 		seen.batch_first += d.batch_first;
-		platform_log("ME: replay looks: %lu jobs, the job %lu us, its own %lu us (served inside it %lu us: audio and the ring); %u looks, %u pick-ups running %u ring jobs, %u held to the slice, %u early for a wait, %u batch jobs made first%s",
+		platform_log("ME: replay looks: %lu jobs, the job %lu us, its own %lu us (served inside it %lu us: audio and the ring); %u looks, %u pick-ups running %u ring jobs, %u held to the slice, %u early for a wait, %u batch jobs made first; audio mixed at its looks %u (audiohold's near-dry %u)%s",
 			jobs, (unsigned long)((float)job_cycles / rate / (float)jobs),
 			(unsigned long)((float)(job_cycles > d.served_cycles ? job_cycles - d.served_cycles : 0) / rate / (float)jobs),
 			(unsigned long)((float)d.served_cycles / rate / (float)jobs), d.looks, d.pickups, d.ring_jobs, d.held, d.urgent,
-			d.batch_first, (CONTROL->features & ME_FEATURE_TICKSCHED) ? " (ticksched)" : "");
+			d.batch_first, d.audio_inside, d.audio_held, (CONTROL->features & ME_FEATURE_TICKSCHED) ? " (ticksched)" : "");
 	}
 	busy_percent_last = window ? (float)(100.0 * (double)busy_us_all / (double)window) : 0.0f;
 	if (me_halting && length < (int)sizeof(line) - 160)
