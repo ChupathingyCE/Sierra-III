@@ -1,6 +1,6 @@
 # The code diet: hot code that carries more than it needs
 
-**Status:** batch 1 and 2 (three words) on by default in the campaign build since 2026-11-21. Batch 3 (two words on the Media Engine's side) is built and in proof.
+**Status:** batch 1 and 2 (three words) on by default in the campaign build since 2026-11-21. Batch 3 (two words on the Media Engine's side and `tagmemo`'s tick-only form) is built and in proof.
 
 The PSP-1000's instruction cache holds 16 KB, 256 lines of code, on each CPU. The tick's profile is flat: no one function is the cost, the cost is how many code lines each call touches times how many calls there are, and the same answer looked up again a few lines later [E, the lab's census of the tick by function and by call site]. The code diet goes after that: for each target, a short form of the common case, with the general path kept behind it.
 
@@ -49,9 +49,10 @@ The getters also run on the Media Engine, which has its own data cache over the 
 |---|---|---|
 | `bakedraw` | A baked wall's draw is looked over once for a triangle with all three corners flagged before any triangle is looked up. Most draws hold no replaced triangle, and each of their triangles cost a lookup call that returned "none". | `bake_substitute` in `psp/src/psp_ge.c` |
 | `bakedonce` | A model part's place in the geometry cache is asked once a draw, by `psp_ge_draw_model`, and handed down to `model_convert`, which asked again for the same vertices. A part that goes through the pretouch (which can move the answer) asks again. | `psp/src/psp_ge.c` |
+| `tagmemotick` | `tagmemo`'s answers are remembered only by the tick. Outside it a miss goes straight to `tag_get` and stores nothing, so the drawing's getters (different tags asked in turn) no longer replace the tick's answers or pay for the miss function. A hit is a hit anywhere. The candidate fix for the drawing's rise above. | `psp_phase` in `psp/src/psp_platform.c` |
 
-Both are drawing-only and exact by construction; their proof is the GE's display lists hashed list by list, as well as play and seeds.
+`bakedraw` and `bakedonce` are drawing-only and exact by construction; their proof is the GE's display lists hashed list by list, as well as play and seeds.
 
 ## Co-op
 
-All five words are exact and change nothing a host or client could see. They ship in the campaign build's defaults only, as every default word does; the multiplayer build has no default words.
+All six words are exact and change nothing a host or client could see. They ship in the campaign build's defaults only, as every default word does; the multiplayer build has no default words.
