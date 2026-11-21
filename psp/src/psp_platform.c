@@ -1453,6 +1453,13 @@ static void keep_load(void)
 	platform_log("keep words, continued: nearauto walldump decalnoslope vblankthrottle noboxtest detailallfar verifytags texsqueeze texvramonly colltest geoasync nudgewide decalbatch menushot geserial vramcold uvwide nooverlay meaudio nomeaudio benchrun levelcompact meclassify noskincut novblankthrottle");
 	/* build 115 */
 	platform_log("keep words, continued: iostats gereads gereadskind vramtexN edramcheck overlayfreefar inflightkbN inflightroom inflighttextold");
+	/* the code diet's short forms (psp_fixups.py, FIXES_DIET1): each says so
+	when its word is on, so a run's log shows which form it played */
+	platform_log("keep words, the code diet's short forms (opt-in): objlean verifygate");
+	if (keep_search("objlean"))
+		platform_log("objlean: object_update's short form");
+	if (keep_search("verifygate"))
+		platform_log("verifygate: the vector checks are called only under verifyvectors");
 	/* build 116: the restorations are on by default; these words turn each off */
 	platform_log("keep words, restorations off: overlayfreenear clearblue seethroughflat senvflat planarfogoff notint waterwhite flaresnobipeds nodither detailgrey80 flashnearest nearseatedfar nearseatcine nometers lognohold statepages");
 	/* build 117: its own restorations, each turned off by these; and the
