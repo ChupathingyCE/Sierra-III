@@ -3338,6 +3338,15 @@ static int me_finish_slot(int which, unsigned int *results)
 
 /* a job handed over with psp_me_submit is done (or was run here), so
 psp_me_finish won't wait; 0 while the ME is still on it, or none is out */
+/* audiohold without its two extra blocks (psp_dsound.c couldn't get them):
+the ME mustn't hold a block for the replay's end, as nothing covers the
+wait, so the feature leaves the control word and the restart's copy of it */
+void psp_me_audio_hold_off(void)
+{
+	wake_features &= ~ME_FEATURE_AUDIO_HOLD;
+	CONTROL->features &= ~ME_FEATURE_AUDIO_HOLD;
+}
+
 int psp_me_submitted_done(int which)
 {
 	int state;

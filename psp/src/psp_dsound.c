@@ -3725,7 +3725,21 @@ static int audio_thread(SceSize arguments, void *argument)
 				platform_log("audio: audiohold, one block more ahead of the speaker (%d ms more delay)", MIX_FRAMES * 1000 / OUTPUT_RATE);
 			}
 			else
-				platform_log("audio: audiohold: no room for its two blocks; as before");
+			{
+				/* as before, and the ME told: it mustn't hold a block with no
+				extra slot to cover the wait */
+				extern void psp_me_audio_hold_off(void);
+
+				for (k = 2; k < 4; k++)
+				{
+					free(slot_out[k]);
+					free(slot_44[k]);
+					free(slot_full[k]);
+					slot_out[k] = slot_44[k] = slot_full[k] = NULL;
+				}
+				psp_me_audio_hold_off();
+				platform_log("audio: audiohold: no room for its two blocks; as before, and the ME doesn't hold");
+			}
 		}
 	}
 	if (channel < 0)
