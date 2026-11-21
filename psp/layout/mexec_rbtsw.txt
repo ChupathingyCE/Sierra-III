@@ -12,6 +12,10 @@
 # run_job, then rbj's 121 think functions; the mixer's are left out, to price each part apart.
 # @jobs
 # @room 256
+# The list fills its room to ~80 bytes, so a profile recounted with more hot
+# code would overflow it and the build refuse it: @fill cuts it at its coldest
+# tail instead, and says where. While it fits, the copy is the same.
+# @fill
 psp_ge_me_replay
 psp_ge_draw_model_body
 model_geometry
