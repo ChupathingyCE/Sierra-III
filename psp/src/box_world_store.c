@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <pspkernel.h>
 #include "box_world_store.h"
 #include "psp_me.h"
 
@@ -641,6 +642,9 @@ void box_ws_me_marks_drain(void)
 			ws_me_marks_landed++;
 		}
 	ws_main_marks.landed = now;
+	/* the ME reads landed uncached: left in this cache, the ring would look
+	   full to it after 64 marks and every later mark would overflow */
+	sceKernelDcacheWritebackRange(&ws_main_marks, sizeof(ws_main_marks));
 }
 
 void psp_ws_dirty(long object_index)
