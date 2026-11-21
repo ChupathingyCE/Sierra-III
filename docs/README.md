@@ -18,6 +18,7 @@ Every write-up about the port is in this folder: design notes, measurements, pla
 - [`box_far_level.md`](box_far_level.md): The far level as one part (the GE lists and forms box, its first far form)
 - [`box_lights.md`](box_lights.md): The Lights box
 - [`box_posing.md`](box_posing.md): Box: posing, the pilot (bottleneck, 2026-11-11; v0, spec)
+- [`box_sweep_stage.md`](box_sweep_stage.md): The sweep's records staged into the scratchpad: the count (b30 80, c20 285 misses a tick [E]) and why it stops at the count (2026-11-21)
 - [`box_stick_reader.md`](box_stick_reader.md): Box: the stick reader (streaming)
 - [`box_tick_schedule.md`](box_tick_schedule.md): Box: the tick schedule (slice 1, the replay's pick-up points; keep word `ticksched`)
 - [`box_world_store.md`](box_world_store.md): Box: the world store (bottleneck, 2026-11-11; v0, spec in progress)
