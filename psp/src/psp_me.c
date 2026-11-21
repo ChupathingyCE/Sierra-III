@@ -2693,6 +2693,8 @@ static int dmacp_start_kernel(void *param)
 		return call->result = -2;
 	if (hw(base + 0x10) & 1)
 		return call->result = -1;
+	if (!psp_dma_address_ok(call->src) || !psp_dma_address_ok(call->dst))
+		return call->result = -5; /* a kernel segment: refused before any register is written */
 	hw(DMACP_INT_TC_CLEAR) = bit;
 	hw(DMACP_INT_ERR_CLEAR) = bit;
 	interrupts = sceKernelCpuSuspendIntr();
