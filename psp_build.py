@@ -217,6 +217,14 @@ DITHERSHIFT = os.environ.get("PSP_DITHERSHIFT", "") == "1"
 # PSP_DRAWLIST=1: the draw list box (docs/box_draw_list.md), off by default
 # until it is cut over; under it the keep word "drawlist" turns it on
 DRAWLIST = os.environ.get("PSP_DRAWLIST", "") == "1"
+# PSP_VEHFX=1: the vehicle effects box (docs/box_vehfx.md; psp/src/box_vehfx.c,
+# FIXES_VEHFX), off by default until it is cut over; under it the keep word
+# "vehfxgroup" turns the grouped decal test on and "vehfxgroupcheck" runs its
+# proof. Its hooks sit in the decal walk and the engine's decal list writes,
+# so a default build leaves them out
+VEHFX = os.environ.get("PSP_VEHFX", "") == "1"
+if VEHFX:
+    PSP_FILES.append("box_vehfx")
 # PSP_PADPATH=1: the pad path (docs/pad_path.md; psp_pad.c's second half, its
 # reader in players.c, keep words pathrec, pathlog, padwatch). A bench tool:
 # its reader is an engine function a tick's profile has no counts for and its
@@ -921,6 +929,7 @@ def compile_one(item):
                pgo_flags(rel) if opt == "-O2" else []) + (
                ["-DPSP_DITHERSHIFT=1"] if DITHERSHIFT and src.endswith("psp_ge.c") else []) + (
                ["-DPSP_DRAWLIST=1"] if DRAWLIST and src.endswith("psp_ge.c") else []) + (
+               ["-DPSP_VEHFX=1"] if VEHFX and src.endswith("psp_ge.c") else []) + (
                ["-DPSP_RECON=1"] if RECON else []) + (
                ["-DPSP_PADPATH=1"] if PADPATH else []) + (
                ["-DPSP_FRAMEPIC=1"] if FRAMEPIC else []) + (

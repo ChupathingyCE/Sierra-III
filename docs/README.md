@@ -20,6 +20,7 @@ Every write-up about the port is in this folder: design notes, measurements, pla
 - [`box_posing.md`](box_posing.md): Box: posing, the pilot (bottleneck, 2026-11-11; v0, spec)
 - [`box_stick_reader.md`](box_stick_reader.md): Box: the stick reader (streaming)
 - [`box_tick_schedule.md`](box_tick_schedule.md): Box: the tick schedule (slice 1, the replay's pick-up points; keep word `ticksched`)
+- [`box_vehfx.md`](box_vehfx.md): Box: the vehicle effects (slice 1, the decals' grouped view test; `PSP_VEHFX=1`, keep words `vehfxgroup`, `vehfxgroupcheck`)
 - [`box_world_store.md`](box_world_store.md): Box: the world store (bottleneck, 2026-11-11; v0, spec in progress)
 - [`capacity_model.md`](capacity_model.md): Workload and capacity (ledger 2)
 - [`compromise_table.md`](compromise_table.md): What lifting the compromise freeze would buy (b30, c10, c20, d20)

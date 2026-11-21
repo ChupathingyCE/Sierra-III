@@ -25200,6 +25200,72 @@ void psp_ge_decal_passed(unsigned int key)
 		GE_PRETOUCH(key, TXPT_DECAL);
 }
 
+#ifdef PSP_VEHFX
+#include "box_vehfx.h"
+/* The vehicle effects box's grouped test (box_vehfx.h, docs/box_vehfx.md)
+takes the view and each decal's kept sphere from here. It stands aside
+whenever today's test wouldn't use the kept sphere (decaltestold,
+decalnocull, decaltestcheck, no view yet) and under decaltesttouch, whose
+proof marks the textures of the decals a group would pass over unread */
+void psp_vehfx_walk_begin(int active)
+{
+	static int configured = 0, touch_word = 0;
+	struct box_vehfx_view v;
+	int k;
+
+	if (!configured)
+	{
+		configured = 1;
+		touch_word = psp_keep("decaltesttouch");
+		box_vehfx_config(psp_keep("vehfxgroup"), psp_keep("vehfxgroupcheck"), psp_keep_number("vehfxrun", 16));
+	}
+	if (!active || touch_word || decal_test <= 0 || decal_cull <= 0 || decal_check != 0 || !main_view_set)
+	{
+		box_vehfx_walk_begin(NULL);
+		return;
+	}
+	for (k = 0; k < 3; k++)
+	{
+		v.eye[k] = main_view_eye[k];
+		v.right[k] = main_view_right[k];
+		v.up[k] = main_view_up[k];
+		v.forward[k] = main_view_forward[k];
+	}
+	/* as psp_ge_decal_visible makes them */
+	v.half_y = main_view_tan_half;
+	v.half_x = v.half_y * (float)SCREEN_WIDTH / SCREEN_HEIGHT;
+	v.side_x = sqrtf(1.0f + v.half_x * v.half_x);
+	v.side_y = sqrtf(1.0f + v.half_y * v.half_y);
+	box_vehfx_walk_begin(&v);
+}
+
+/* verdict: psp_ge_decal_visible's answer, or -1 when it wasn't asked. A decal
+joins a group only with the sphere today's test just used for it */
+void psp_vehfx_seen(long decal_index, unsigned int identifier, int quad_count, long next, int verdict)
+{
+	unsigned int slot = (unsigned int)decal_index & 0xFFFFu, id = (identifier << 16) | (unsigned int)(quad_count & 0xFFFF);
+	const struct decal_bound *b = slot < DECAL_BOUNDS ? &decal_bounds[slot] : NULL;
+	int joinable = b && quad_count > 0 && verdict >= 0 && b->id == id && b->radius > 0.0f;
+
+	box_vehfx_seen(decal_index, next, joinable ? b->centre : NULL, joinable ? b->radius : 0.0f, joinable, verdict);
+}
+
+static void psp_vehfx_log(void)
+{
+	struct box_vehfx_stats s;
+
+	box_vehfx_stats_take(&s);
+	if (!s.walks && !s.forgets)
+		return;
+	platform_log("vehfxgroup: a frame: groups tested %lu, out %lu, decals passed over %lu; made %lu, grown %lu, let go %lu, table full %lu; live groups %d, forgets %lu (last 300 frames)",
+		s.groups_tested / 300, s.groups_out / 300, s.decals_passed_over / 300, s.groups_made / 300, s.groups_grown / 300,
+		s.groups_let_go / 300, s.table_full, s.groups_live, s.forgets);
+	if (psp_keep("vehfxgroupcheck"))
+		platform_log("vehfxgroupcheck: members of groups tested out %lu, of them today's test drew %lu, walks off the group's path %lu (last 300 frames; both 0 is the proof)",
+			s.check_members, s.check_differ, s.check_broken);
+}
+#endif
+
 void psp_ge_decal(void const *vertices, int quad_count, unsigned int key, short blend, unsigned long color,
 	int intensity, int alpha_tested, int permanent)
 {
@@ -27222,6 +27288,9 @@ static void frame_end_show(void)
 					if (decal_check > 0)
 						platform_log("decaltestcheck: tested out %lu, of them with a quad in %lu; stale spheres %lu (since the last line)", decal_check_out, decal_check_quad_in, decal_check_stale);
 					decal_check_out = decal_check_quad_in = decal_check_stale = 0;
+#ifdef PSP_VEHFX
+					psp_vehfx_log();
+#endif
 					decals_wholly_left_out = 0;
 					decals_tested_out = 0;
 					if (decal_join > 0)
