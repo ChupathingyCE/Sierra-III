@@ -3114,7 +3114,13 @@ MEMIX's. On the main CPU only (the check keeps the block off the ME), and
 only for blocks of up to CHECK_VOICES voices */
 #define CHECK_VOICES 64
 static int memix_check = 0;
+/* the voices as they were before the block, so the second mix starts from
+the same states (CHECK_VOICES * STREAM_BYTES of heap). The states after the
+first mix are kept only as digests: a second set of copies cost c20 another
+110 KB of heap, and with both sets the level copies' arena found no room and
+the run ended at a fatal error short of its stretch */
 static unsigned char *check_copies;
+static unsigned long long check_after[CHECK_VOICES];
 static short check_output[MIX_FRAMES * OUTPUT_CHANNELS];
 static unsigned long check_blocks = 0, check_skipped = 0, check_output_differed = 0, check_state_differed = 0,
 	check_first_differed = 0;
@@ -3199,10 +3205,28 @@ static void check_energy(const short *ref, const short *alt, unsigned long frame
 	check_report_blocks++;
 }
 
+/* a voice's state as two independent 32-bit sums of its words (FNV-1a, and
+a rotating sum weighted by position), so a difference the checks would have
+seen in a byte compare is missed only if both collide. game_offset is whole
+64-byte lines and the voice is line-aligned, so it reads whole words */
+static unsigned long long check_digest(const struct psp_stream *voice)
+{
+	const unsigned int *word = (const unsigned int *)(const void *)voice;
+	unsigned long n = voice->game_offset / sizeof(unsigned int), i;
+	unsigned int a = 2166136261u, b = 0;
+
+	for (i = 0; i < n; i++)
+	{
+		a = (a ^ word[i]) * 16777619u;
+		b = ((b << 5) | (b >> 27)) + word[i] + (unsigned int)i;
+	}
+	return ((unsigned long long)a << 32) | b;
+}
+
 static unsigned long mix_approx_checked(struct psp_stream **list, unsigned long count, int *sums, short *output,
 	unsigned long frames, unsigned long *clipped)
 {
-	unsigned char *before = check_copies, *after_ref = check_copies + CHECK_VOICES * STREAM_BYTES;
+	unsigned char *before = check_copies;
 	unsigned long k, voices, clipped_ref, states = 0;
 	unsigned int approx[CHECK_VOICES];
 
@@ -3220,7 +3244,10 @@ static unsigned long mix_approx_checked(struct psp_stream **list, unsigned long 
 	psp_dsound_mix_list((void *const *)list, count, sums, output, frames, &clipped_ref);
 	for (k = 0; k < count; k++)
 	{
-		memcpy(after_ref + k * STREAM_BYTES, list[k], list[k]->game_offset);
+		/* the second mix runs with the approximate paths back on: the field
+		they set isn't a difference the mixes made */
+		list[k]->approx = approx[k];
+		check_after[k] = check_digest(list[k]);
 		memcpy(list[k], before + k * STREAM_BYTES, list[k]->game_offset);
 	}
 	voices = psp_dsound_mix_list((void *const *)list, count, sums, check_alt, frames, clipped);
@@ -3242,11 +3269,8 @@ static unsigned long mix_approx_checked(struct psp_stream **list, unsigned long 
 		}
 	}
 	for (k = 0; k < count; k++)
-	{
-		((struct psp_stream *)(after_ref + k * STREAM_BYTES))->approx = approx[k];
-		if (memcmp(after_ref + k * STREAM_BYTES, list[k], list[k]->game_offset))
+		if (check_after[k] != check_digest(list[k]))
 			states++;
-	}
 	check_approx_states += states != 0;
 	check_energy(output, check_alt, frames);
 	memcpy(output, check_alt, frames * OUTPUT_CHANNELS * sizeof(short));
@@ -3289,7 +3313,7 @@ static void audio_check_report(void)
 static unsigned long mix_checked(struct psp_stream **list, unsigned long count, int *sums, short *output,
 	unsigned long frames, unsigned long *clipped)
 {
-	unsigned char *before = check_copies, *after_old = check_copies + CHECK_VOICES * STREAM_BYTES;
+	unsigned char *before = check_copies;
 	unsigned long k, voices, voices_old, clipped_old, states = 0, differed;
 
 	if (count > CHECK_VOICES)
@@ -3320,17 +3344,16 @@ static unsigned long mix_checked(struct psp_stream **list, unsigned long count, 
 	voices_old = psp_dsound_mix_list((void *const *)list, count, sums, check_output, frames, &clipped_old);
 	for (k = 0; k < count; k++)
 	{
-		memcpy(after_old + k * STREAM_BYTES, list[k], list[k]->game_offset);
+		/* the old loop's own switch isn't a difference the mixes made */
+		list[k]->memix_old = 0;
+		check_after[k] = check_digest(list[k]);
 		memcpy(list[k], before + k * STREAM_BYTES, list[k]->game_offset);
 		list[k]->memix_old = 0;
 	}
 	voices = psp_dsound_mix_list((void *const *)list, count, sums, output, frames, clipped);
 	for (k = 0; k < count; k++)
-	{
-		((struct psp_stream *)(after_old + k * STREAM_BYTES))->memix_old = 0;
-		if (memcmp(after_old + k * STREAM_BYTES, list[k], list[k]->game_offset))
+		if (check_after[k] != check_digest(list[k]))
 			states++;
-	}
 	check_blocks++;
 	check_state_differed += states != 0;
 	differed = voices != voices_old || *clipped != clipped_old ||
@@ -3992,12 +4015,12 @@ static void audio_start(void)
 		mixlock_old = psp_keep("mixlockold") != 0;
 		if (psp_keep("memixcheck"))
 		{
-			check_copies = memalign(64, 2 * CHECK_VOICES * STREAM_BYTES);
+			check_copies = memalign(64, CHECK_VOICES * STREAM_BYTES);
 			memix_check = check_copies != NULL;
 		}
 		else if (psp_keep("audiocheck"))
 		{
-			check_copies = memalign(64, 2 * CHECK_VOICES * STREAM_BYTES);
+			check_copies = memalign(64, CHECK_VOICES * STREAM_BYTES);
 			audio_check = check_copies != NULL;
 			if (psp_keep("audiocheckcal"))
 				audio_approx |= AUDIO_APPROX_CAL;
