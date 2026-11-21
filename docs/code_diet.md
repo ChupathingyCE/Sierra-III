@@ -79,4 +79,4 @@ The replay of the frame's draws runs on the Media Engine from its code copy in e
 
 ## Co-op
 
-Every word here is exact and change nothing a host or client could see. They ship in the campaign build's defaults only, as every default word does; the multiplayer build has no default words.
+Every word here is exact and changes nothing a host or client could see. They ship in the campaign build's defaults only, as every default word does; the multiplayer build has no default words.
