@@ -1,7 +1,8 @@
 /*
-The vehicle effects box, slice 1: the decals' grouped view test
-(box_vehfx.h; docs/box_vehfx.md). Built only with PSP_VEHFX=1; keep word
-vehfxgroup turns it on, vehfxgroupcheck runs its proof. Main CPU only: the
+The vehicle effects box: the decals' grouped view test (slice 1) and the
+packed walk of a group in the view (slice 2) (box_vehfx.h; docs/box_vehfx.md).
+Built only with PSP_VEHFX=1; keep words vehfxgroup and vehfxpack turn them
+on, vehfxgroupcheck and vehfxpackcheck run their proofs. Main CPU only: the
 decal walk never runs on the ME, so nothing here needs to avoid the VFPU or
 system calls, and none are used.
 */
@@ -21,6 +22,17 @@ struct vehfx_group
 };
 
 static struct vehfx_group groups[BOX_VEHFX_GROUPS] __attribute__((aligned(64)));
+/* slice 2: each group's members in walk order, its own five lines. A member
+walked from here costs a fifth of a line's fill in place of its datum (one or
+two lines), its vertex block (one) and its kept sphere (one or two), read
+from scattered slots. The spheres are the kept ones, copied bit for bit, so
+the test on them is today's verdict */
+struct vehfx_pack
+{
+	long index[BOX_VEHFX_PACK_MAX];
+	float sphere[BOX_VEHFX_PACK_MAX][4];
+};
+static struct vehfx_pack packs[BOX_VEHFX_GROUPS] __attribute__((aligned(64)));
 /* each decal slot's group, (group << 8) | its turn, or 0xFFFF: the touch's
 way from a decal to its group. A slot left pointing at a group let go and
 made again names an older turn, so it's taken for no group; one pointing at
@@ -30,7 +42,8 @@ static unsigned char free_ids[BOX_VEHFX_GROUPS];
 static int free_count = -1; /* -1: not set up */
 
 int psp_vehfx_walk = 0;
-static int on = 0, check = 0, run_size = 16;
+int psp_vehfx_known = 0;
+static int on = 0, check = 0, run_size = 16, pack = 0, pack_check = 0;
 static struct box_vehfx_view view;
 
 /* the run being laid down: consecutive decals of this walk, each with its
@@ -39,6 +52,15 @@ static int run_count = 0;
 static long run_first;
 static float run_centre[BOX_VEHFX_RUN_MAX][3], run_radius[BOX_VEHFX_RUN_MAX];
 static unsigned short run_slot[BOX_VEHFX_RUN_MAX];
+static long run_index[BOX_VEHFX_RUN_MAX];
+
+/* the group in the view whose members the walk is going through (slice 2):
+its turn, so a group let go meanwhile isn't followed, and the next member's
+place. Under vehfxpackcheck, the verdict the decal left to the engine's body
+should get */
+static struct vehfx_group *walk_g = NULL;
+static unsigned char walk_turn;
+static int walk_pos, pack_expect = -1;
 
 /* the check: a group that tested out is walked anyway; its members must all
 be out by today's test and the walk must then reach the group's after */
@@ -68,6 +90,20 @@ void box_vehfx_config(int on_word, int check_word, int run_word)
 	on = on_word || check_word;
 	check = check_word;
 	run_size = run_word < 2 ? 2 : run_word > BOX_VEHFX_RUN_MAX ? BOX_VEHFX_RUN_MAX : run_word;
+	if (free_count < 0)
+		set_up();
+}
+
+void box_vehfx_config_pack(int pack_word, int pack_check_word)
+{
+	pack = pack_word || pack_check_word;
+	pack_check = pack_check_word;
+	if (pack)
+	{
+		on = 1;
+		if (run_size > BOX_VEHFX_PACK_MAX)
+			run_size = BOX_VEHFX_PACK_MAX;
+	}
 	if (free_count < 0)
 		set_up();
 }
@@ -112,6 +148,8 @@ void psp_vehfx_forget(void)
 	set_up();
 	run_count = 0;
 	expecting = 0;
+	walk_g = NULL;
+	pack_expect = -1;
 	stats.forgets++;
 }
 
@@ -208,6 +246,26 @@ static void close_run(long after)
 	g->radius = reach * 1.001f + 0.01f;
 	for (i = 0; i < n; i++)
 		member[run_slot[i]] = (unsigned short)(((g - groups) << 8) | g->turn);
+	if (pack)
+	{
+		/* the run comes before the group it grows, in the walk */
+		struct vehfx_pack *p = &packs[g - groups];
+		int old = g->count - n;
+
+		if (old > 0)
+		{
+			memmove(&p->index[n], &p->index[0], old * sizeof(p->index[0]));
+			memmove(&p->sphere[n][0], &p->sphere[0][0], old * sizeof(p->sphere[0]));
+		}
+		for (i = 0; i < n; i++)
+		{
+			p->index[i] = run_index[i];
+			p->sphere[i][0] = run_centre[i][0];
+			p->sphere[i][1] = run_centre[i][1];
+			p->sphere[i][2] = run_centre[i][2];
+			p->sphere[i][3] = run_radius[i];
+		}
+	}
 }
 
 void box_vehfx_walk_begin(const struct box_vehfx_view *v)
@@ -215,6 +273,15 @@ void box_vehfx_walk_begin(const struct box_vehfx_view *v)
 	if (expecting && (expect_left || expect_after != BOX_VEHFX_NONE))
 		stats.check_broken++;
 	expecting = 0;
+	/* the last list ended inside a group's members, or short of its after */
+	if (walk_g && walk_g->live && walk_g->turn == walk_turn &&
+		(walk_pos < walk_g->count || walk_g->after != BOX_VEHFX_NONE))
+		stats.pack_broken++;
+	if (pack_expect >= 0)
+		stats.pack_broken++;
+	walk_g = NULL;
+	pack_expect = -1;
+	psp_vehfx_known = 0;
 	run_count = 0;
 	psp_vehfx_walk = on && v && free_count >= 0;
 	if (psp_vehfx_walk)
@@ -224,17 +291,84 @@ void box_vehfx_walk_begin(const struct box_vehfx_view *v)
 	}
 }
 
+/* Slice 2: the members of the group in the view from walk_pos on. Each is
+tested on its own kept sphere, as today's test would; the failing ones are
+passed over unread, and the walk is left on the first that passes, its
+verdict known. Under the check, one member at a time is left to the engine's
+body, with the verdict it should get */
+static int pack_walk(long *index)
+{
+	struct vehfx_group *g = walk_g;
+	const struct vehfx_pack *p = &packs[g - groups];
+
+	if (pack_check)
+	{
+		pack_expect = !sphere_out(p->sphere[walk_pos], p->sphere[walk_pos][3]);
+		*index = p->index[walk_pos++];
+		stats.pack_members++;
+		return 0;
+	}
+	while (walk_pos < g->count)
+	{
+		const float *s = p->sphere[walk_pos];
+
+		if (!sphere_out(s, s[3]))
+		{
+			*index = p->index[walk_pos++];
+			psp_vehfx_known = 1;
+			stats.members_known++;
+			return 0;
+		}
+		walk_pos++;
+		stats.members_passed_over++;
+	}
+	*index = g->after;
+	walk_g = NULL;
+	return 1;
+}
+
 int psp_vehfx_at(long *index)
 {
 	long x = *index;
 	struct vehfx_group *g;
 	int ahead;
 
+	psp_vehfx_known = 0;
+	if (pack_expect >= 0)
+	{
+		/* the engine's body didn't report the member it was left */
+		stats.pack_broken++;
+		pack_expect = -1;
+	}
 	if (expecting && !expect_left)
 	{
 		if (x != expect_after)
 			stats.check_broken++;
 		expecting = 0;
+	}
+	if (walk_g)
+	{
+		/* the engine's body walked a member that passes and took its link:
+		that must be the next member, or the group's after past the last */
+		g = walk_g;
+		if (!g->live || g->turn != walk_turn)
+		{
+			stats.pack_broken++;
+			walk_g = NULL;
+		}
+		else if (walk_pos < g->count)
+		{
+			if (x == packs[g - groups].index[walk_pos])
+				return pack_walk(index);
+			stats.pack_broken++;
+			walk_g = NULL;
+		}
+		else
+		{
+			if (x != g->after)
+				stats.pack_broken++;
+			walk_g = NULL;
+		}
 	}
 	g = group_of((unsigned int)x & 0xFFFFu);
 	if (!g || g->first != x)
@@ -245,7 +379,14 @@ int psp_vehfx_at(long *index)
 	close_run(x);
 	stats.groups_tested++;
 	if (!sphere_out(g->centre, g->radius))
-		return 0;
+	{
+		if (!pack)
+			return 0;
+		walk_g = g;
+		walk_turn = g->turn;
+		walk_pos = g->count - ahead;
+		return pack_walk(index);
+	}
 	stats.groups_out++;
 	stats.decals_passed_over += ahead;
 	if (check)
@@ -265,6 +406,12 @@ void box_vehfx_seen(long index, long next, const float centre[3], float radius, 
 {
 	unsigned int slot = (unsigned int)index & 0xFFFFu;
 
+	if (pack_expect >= 0)
+	{
+		if (verdict != pack_expect)
+			stats.pack_differ++;
+		pack_expect = -1;
+	}
 	if (expecting && expect_left)
 	{
 		expect_left--;
@@ -284,9 +431,15 @@ void box_vehfx_seen(long index, long next, const float centre[3], float radius, 
 	run_centre[run_count][2] = centre[2];
 	run_radius[run_count] = radius;
 	run_slot[run_count] = (unsigned short)slot;
+	run_index[run_count] = index;
 	run_count++;
 	if (run_count >= run_size || next == BOX_VEHFX_NONE)
 		close_run(next);
+}
+
+void box_vehfx_view_differs(void)
+{
+	stats.pack_view_differ++;
 }
 
 void box_vehfx_stats_take(struct box_vehfx_stats *out)

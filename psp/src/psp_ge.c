@@ -6700,6 +6700,13 @@ directions are the list's, set when the window's record is carried out,
 which under geinflight is the frame before, on the ME */
 static float main_view_eye[3], main_view_forward[3], main_view_right[3], main_view_up[3], main_view_tan_half;
 static int main_view_set = 0;
+#ifdef PSP_VEHFX
+/* the decal test's frustum sides, once a view (vehfxpack): the same sums
+psp_ge_decal_visible makes each call, so the same floats, and the box's
+member test reads these very values */
+static float main_view_half_x, main_view_side_x, main_view_side_y;
+static int vehfx_sides = 0;
+#endif
 
 static void main_view_begin(const float *position, const float *forward, const float *up, float vertical_field_of_view)
 {
@@ -6723,6 +6730,11 @@ static void main_view_begin(const float *position, const float *forward, const f
 	main_view_up[1] = main_view_right[2] * forward[0] - main_view_right[0] * forward[2];
 	main_view_up[2] = main_view_right[0] * forward[1] - main_view_right[1] * forward[0];
 	main_view_tan_half = tanf(vertical_field_of_view * 0.5f);
+#ifdef PSP_VEHFX
+	main_view_half_x = main_view_tan_half * (float)SCREEN_WIDTH / SCREEN_HEIGHT;
+	main_view_side_x = sqrtf(1.0f + main_view_half_x * main_view_half_x);
+	main_view_side_y = sqrtf(1.0f + main_view_tan_half * main_view_tan_half);
+#endif
 	main_view_set = 1;
 }
 
@@ -25134,9 +25146,20 @@ int psp_ge_decal_visible(long decal_index, unsigned int identifier, void const *
 		camera[2] = d0 * main_view_forward[0] + d1 * main_view_forward[1] + d2 * main_view_forward[2];
 	}
 	half_y = main_view_tan_half;
+#ifdef PSP_VEHFX
+	if (vehfx_sides)
+	{
+		half_x = main_view_half_x;
+		side_x = main_view_side_x;
+		side_y = main_view_side_y;
+	}
+	else
+#endif
+	{
 	half_x = half_y * (float)SCREEN_WIDTH / SCREEN_HEIGHT;
 	side_x = sqrtf(1.0f + half_x * half_x);
 	side_y = sqrtf(1.0f + half_y * half_y);
+	}
 	if (camera[2] < -b->radius ||
 		camera[0] - half_x * camera[2] > b->radius * side_x || -camera[0] - half_x * camera[2] > b->radius * side_x ||
 		camera[1] - half_y * camera[2] > b->radius * side_y || -camera[1] - half_y * camera[2] > b->radius * side_y)
@@ -25206,10 +25229,13 @@ void psp_ge_decal_passed(unsigned int key)
 takes the view and each decal's kept sphere from here. It stands aside
 whenever today's test wouldn't use the kept sphere (decaltestold,
 decalnocull, decaltestcheck, no view yet) and under decaltesttouch, whose
-proof marks the textures of the decals a group would pass over unread */
+proof marks the textures of the decals a group would pass over unread.
+vehfxpack (slice 2) gives the box the frustum's sides worked out once a view
+and has psp_ge_decal_visible read the same ones; vehfxpackcheck compares
+them with the sums made as the test makes them */
 void psp_vehfx_walk_begin(int active)
 {
-	static int configured = 0, touch_word = 0;
+	static int configured = 0, touch_word = 0, pack_check_word = 0;
 	struct box_vehfx_view v;
 	int k;
 
@@ -25218,6 +25244,9 @@ void psp_vehfx_walk_begin(int active)
 		configured = 1;
 		touch_word = psp_keep("decaltesttouch");
 		box_vehfx_config(psp_keep("vehfxgroup"), psp_keep("vehfxgroupcheck"), psp_keep_number("vehfxrun", 16));
+		pack_check_word = psp_keep("vehfxpackcheck");
+		vehfx_sides = psp_keep("vehfxpack") || pack_check_word;
+		box_vehfx_config_pack(vehfx_sides, pack_check_word);
 	}
 	if (!active || touch_word || decal_test <= 0 || decal_cull <= 0 || decal_check != 0 || !main_view_set)
 	{
@@ -25236,6 +25265,14 @@ void psp_vehfx_walk_begin(int active)
 	v.half_x = v.half_y * (float)SCREEN_WIDTH / SCREEN_HEIGHT;
 	v.side_x = sqrtf(1.0f + v.half_x * v.half_x);
 	v.side_y = sqrtf(1.0f + v.half_y * v.half_y);
+	if (vehfx_sides)
+	{
+		if (pack_check_word && (v.half_x != main_view_half_x || v.side_x != main_view_side_x || v.side_y != main_view_side_y))
+			box_vehfx_view_differs();
+		v.half_x = main_view_half_x;
+		v.side_x = main_view_side_x;
+		v.side_y = main_view_side_y;
+	}
 	box_vehfx_walk_begin(&v);
 }
 
@@ -25263,6 +25300,12 @@ static void psp_vehfx_log(void)
 	if (psp_keep("vehfxgroupcheck"))
 		platform_log("vehfxgroupcheck: members of groups tested out %lu, of them today's test drew %lu, walks off the group's path %lu (last 300 frames; both 0 is the proof)",
 			s.check_members, s.check_differ, s.check_broken);
+	if (vehfx_sides)
+		platform_log("vehfxpack: a frame: members passed over %lu, sent on known to pass %lu; walks off the members' path %lu (last 300 frames)",
+			s.members_passed_over / 300, s.members_known / 300, s.pack_broken);
+	if (psp_keep("vehfxpackcheck"))
+		platform_log("vehfxpackcheck: members walked %lu, verdicts that differ %lu, walks off the members' path %lu, views whose sides differ %lu (last 300 frames; the last three 0 is the proof)",
+			s.pack_members, s.pack_differ, s.pack_broken, s.pack_view_differ);
 }
 #endif
 

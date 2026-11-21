@@ -47683,8 +47683,11 @@ long _rasterizer_decal_vertices_new(
 # show, list links and all; every engine write of a decal's link to the next,
 # and every decal deleted, lets that decal's group go first, so the walk's
 # jump is always the path it would have taken. Keep word vehfxgroup (off by
-# default), vehfxgroupcheck (its proof); a build without the switch has none
-# of it
+# default), vehfxgroupcheck (its proof). Slice 2, keep word vehfxpack (off by
+# default; vehfxpackcheck its proof): a group in the view is walked from the
+# box's own copy of its members, those today's test fails passed over and the
+# one it passes handed to the body with its verdict known, so the body skips
+# psp_ge_decal_visible for it. A build without the switch has none of it
 VEHFX = os.environ.get("PSP_VEHFX", "") == "1"
 FIXES_VEHFX = {}
 FIXES_VEHFX["source/rasterizer/xbox/rasterizer_xbox_decals.c#vehfx"] = [
@@ -47713,6 +47716,7 @@ FIXES_VEHFX["source/rasterizer/xbox/rasterizer_xbox_decals.c#vehfx"] = [
 int psp_vehfx_at(long *index);
 void psp_vehfx_seen(long decal_index, unsigned int identifier, int quad_count, long next, int verdict);
 extern int psp_vehfx_walk;
+extern int psp_vehfx_known; /* the box's packed walk: today's test known to pass this decal */
 
 void _rasterizer_decals_draw(
 	short cluster_index)
@@ -47728,7 +47732,8 @@ void _rasterizer_decals_draw(
 			vertex_data_offset"""),
 ("""psp_ge_decal_visible(decal_index, (unsigned int)(unsigned short)decal->identifier,
 				vertex_data + vertex_data_offset, decal->quad_count)""",
- """(psp_vehfx_verdict = psp_ge_decal_visible(decal_index, (unsigned int)(unsigned short)decal->identifier,
+ """(psp_vehfx_verdict = psp_vehfx_walk && psp_vehfx_known ? 1 :
+				psp_ge_decal_visible(decal_index, (unsigned int)(unsigned short)decal->identifier,
 				vertex_data + vertex_data_offset, decal->quad_count))"""),
 ("""			IDirect3DVertexBuffer8_Unlock(local_d3d_vertex_buffer);
 			decal_index = decal->next_decal_index;

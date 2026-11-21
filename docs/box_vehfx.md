@@ -1,6 +1,6 @@
-# Box: the vehicle effects (slice 1, the decals' grouped view test)
+# Box: the vehicle effects (slices 1 and 2, the decals' grouped view test and the packed walk)
 
-> **v0 (2026-11-21).** The lab's REBUILD §7 lists the box (`[box:vehfx]`, the lead 2026-11-21 02:5x). Its first step, the exact count (`vehfx_decal_count`), is done. This page covers the second step: a cheaper visibility test, made by groups and not mark by mark, and its exact proof. The build switch is `PSP_VEHFX=1`, off by default; keep words `vehfxgroup` and `vehfxgroupcheck`. Nothing here is priced on a PSP yet.
+> **v0 (2026-11-21).** The lab's REBUILD §7 lists the box (`[box:vehfx]`, the lead 2026-11-21 02:5x). Its first step, the exact count (`vehfx_decal_count`), is done. This page covers the second step: a cheaper visibility test, made by groups and not mark by mark, and its exact proof. The build switch is `PSP_VEHFX=1`, off by default; keep words `vehfxgroup` and `vehfxgroupcheck`. Nothing here is priced on a PSP yet. **Slice 2 (2026-11-21, §6):** a group in the view walked from the box's own copy of its members, keep words `vehfxpack` and `vehfxpackcheck`.
 
 ## 1. The ground
 
@@ -105,7 +105,7 @@ The sphere is the box around the members' spheres, centred, with radius max(|c�
 
 **On the drive.** Let p be the share of tested decals passed over inside out groups.
 - At p = 0.6: ~600 × 2.1 µs = 1.26 ms saved, against ~0.1 ms of group tests and notes. The decals' test and walk go ~2.1 → ~0.95 ms, and with the draws (~0.4) to **~1.35 ms a frame**, against the budget's 1 ms.
-- The budget needs p ≈ 0.75, or a cheaper walked decal (slice 2, §6).
+- The budget needs p ≈ 0.75, or a cheaper walked decal (slice 2, §6, built).
 
 p is an exact count: the emulator batch below gives it (`vehfxgroup:` line, "decals passed over" against "decalcount"'s tested). The harness's synthetic drive passes over 44% at a run of 16 (§5), but its camera and clusters are invented. Only the PSP pair prices it.
 
@@ -129,9 +129,71 @@ p is an exact count: the emulator batch below gives it (`vehfxgroup:` line, "dec
 - **The whole-state hash** differs on `objects` and sometimes `particle`, from ticks 726-1,217. That comes from the run's timing, not the grouping: the check run draws exactly as the word off does, yet parts from it at the same tick and checkpoints. The decal allocations are identical at all 660 checkpoints in every pair, and `objects` and `particle` are the set known to move with the emulator's speed (review_prs.md, review_b123_flags.md) [D].
 - **The pass-over share on the drive:** 417-731 decals passed over a frame, against ~810-1,200 tested (`vehfx_decal_count`), so p ≈ 0.55 [E]. That's under the ~0.75 §4 needs for the 1 ms budget, so slice 2 is likely needed; the PSP pair prices it.
 
-## 6. Next
+## 6. Slice 2: the walked decals cheaper (`vehfxpack`)
 
-- Slice 2, the walked decals: the per-decal sphere test's sums made once a view (`side_x`, `side_y` and the half-angles are worked out each call today), and the kept spheres packed by slot. This is exact. It is the cost left once p is known.
+The lead (2026-11-21 10:0x): with p ≈ 0.55 [E] against the 0.75 the 1 ms needs, make each walked decal cheaper. What's been tried here is §1's list; this slice adds nothing to DECALTEST's test (it is the same test) and doesn't batch draws (DB, DM, RR3: 0 of 459,025 pairs joinable exactly). It attacks `cpu_cost_map.md` §4's **Data density and layout** line (D misses; its ceiling there is sized for the objects, not the decals): a walked decal's cost is mostly the scattered lines it touches.
+
+### 6.1 What a walked decal spends today [D for what's read; U for the cost]
+
+After slice 1, ~460 decals a frame are still walked on the drive (~1,020 tested less ~556 passed over), ~265 of them pass and ~200 fail. Each one, in `_rasterizer_decals_draw`'s PSP branch (FIXES_23, with FIXES_VEHFX):
+
+| step | what it reads | lines (64 B) | cost [U] |
+|---|---|---|---|
+| `DECAL_GET` (datum_get) | the 56-byte datum: identifier, flags, bitmap, colour, intensity, quad count, definition, next (offsets 0x00-0x37) | 1, or 2 when the record crosses a line (6 of the 8 alignments a 56-byte stride takes): ~1.75, scattered (slots aren't in walk order, §2) | ~1.75 misses |
+| `decal_definition_get` (tag_get) | the definition's shader: blend, map | the drive has a few definitions (snow and ice treads): hits | a call |
+| `lruv_block_get_address` | the 32-byte vertex block's first page | 1, scattered | 1 miss + a call |
+| texture key memo | the last key | hit; `psp_tex_bitmap_key` when the bitmap differs from the last decal's (a tread's sprite is random, so often) | a call when it changes |
+| Lock, `psp_ge_active`, Unlock | — | — | three calls |
+| `psp_ge_decal_visible` | the 20-byte kept sphere | 1, or 2 in a quarter of the alignments: ~1.25, scattered | ~1.25 misses + the sums: 2 `sqrtf` (31 cycles each [M], `hardware_facts.md`), a divide, ~40 flops: ~0.3 µs |
+| `psp_vehfx_seen` | `member[slot]` (4 KB) | mostly hits | ~0.1 µs |
+
+That's ~4 scattered misses a decal. At 73 cycles a miss with the bus quiet and ~140 beside the GE reading RAM (`hardware_facts.md`), ~0.9-1.7 µs, plus ~0.3 µs of sums and ~0.2 µs of calls: **~1.4-2.2 µs**, which matches §4's ~2.1 µs (the PSP's time over the emulator's count). A decal that passes then costs `psp_ge_decal`'s ~1.5 µs (its record and the vertices' pointer for the ME).
+
+### 6.2 The candidates
+
+| | saves a walked decal [U] | exact? | cost |
+|---|---|---|---|
+| **A. the frustum's sides once a view** (the agent before's suggestion) | 2 `sqrtf` and a divide, ~70-100 cycles, ~0.2-0.3 µs a test asked | yes: the same expression on the same float, made once; Allegrex has no fused multiply-add (GCC's ISA for it is MIPS II), so the floats are the ones the test makes today. The check compares them bit for bit each walk | 3 floats |
+| **B. the group's members packed in the box's own table, walked from there** | a failing member: ~4 scattered misses and the sums become a fifth of a sequential line and ~30 flops, ~2.1 → ~0.2 µs; a passing member: `psp_ge_decal_visible` (its sphere's line, the sums) skipped, ~0.5 µs, for ~0.15 µs of the box's test | yes: the member's verdict is today's test on today's floats (its kept sphere copied bit for bit when it joined, and it can't change while it's a member, §3 point 2); a failing member skips exactly what an out group's members skip in slice 1 (§3 point 3); the order and every argument of `psp_ge_decal` are the same, so **the same GE words** | 80 KB of `.bss` in `PSP_VEHFX` builds (320 bytes a group, 255 groups), a `memmove` when a group grows backwards, runs capped at 16 |
+| C. a cheaper member test inside an in group | flops only (~0.1 µs): the cost is the misses, which B removes; a cheaper conservative test must still fall back to today's for the members it can't decide | yes, with a fallback | folded into B: not worth its own code |
+| D. consecutive members' GE words batched | — | no exact form: DB/DM's ceiling is ~0 (0 of 459,025 pairs share the mip slope); its non-exact form is DB's parked look question | not this slice |
+| E. a passing group's draw words kept between frames | up to `psp_ge_decal`'s ~1.5 µs a draw | no: a mark's intensity is rewritten from its age every tick while it fades (`decals.c` 2615, DFADE), and each frame's record lands at new list addresses, so the words aren't identical; keying them by intensity leaves a copy as dear as the record | not this slice |
+
+**Recommended and built: B with A**, as one keep word, `vehfxpack`.
+
+### 6.3 The design (`psp/src/box_vehfx.c`, `FIXES_VEHFX`)
+
+- **The pack:** each group keeps its members in walk order, `index[16]` (the full datum index) and `sphere[16][4]` (centre, radius): 320 bytes, five lines, 64-byte aligned. A run made into a group copies its members' kept spheres (`box_vehfx_seen` already has them); a run that grows a group backwards is put in front of its members. `vehfxpack` caps runs at 16 (`BOX_VEHFX_PACK_MAX`).
+- **The walk:** when a group tests in, `psp_vehfx_at` walks its members from the pack, from the decal the walk is on. A member whose sphere fails today's test is passed over without its datum, definition, vertex block, lock or kept sphere being read. At the first member that passes, the walk is left on it with `psp_vehfx_known = 1`: the engine's body reads it as today and takes the verdict as known (`FIXES_VEHFX`: `psp_vehfx_walk && psp_vehfx_known ? 1 : psp_ge_decal_visible(...)`). The body's own step to the next decal comes back to `psp_vehfx_at`, which goes on from the next member; past the last member, the walk goes to the group's `after`.
+- **The sides:** `main_view_begin` works out `half_x`, `side_x` and `side_y` once a view (in a `PSP_VEHFX` build); under `vehfxpack`, `psp_ge_decal_visible` reads them for the decals it is still asked about, and the box's view takes the same three floats, so both tests use the very same values.
+- **Why it is exact:** a group's members, in order, are the walk's own path while it lives (§3 point 1); each member's verdict is today's test on today's floats; a member that fails skips only what slice 1 already skips (§3 point 3); a member that passes reaches `psp_ge_decal` with the same arguments in the same order. So the same decals are drawn in the same order with the same GE words. The box still stands aside wherever slice 1 does.
+- **The check (`vehfxpackcheck`):** every member of a group in the view is handed to the body, which asks today's test; the box counts verdicts that differ from the pack's, steps that leave the members' path (a member not where the pack says, a group let go mid-walk, a list ending inside a group), and walks whose stored sides differ from the sums made as the test makes them. All three 0 is the proof. `vehfxpack`'s own log line counts the members passed over and sent on known a frame, and the steps off the path, which should be 0 there too.
+
+### 6.4 The price [U on §4's M and E]
+
+On the drive, at slice 1's p ≈ 0.55: of the ~460 decals walked a frame, most are members of groups in the view (~25-38 such groups, ~12 members each by `vehfx_group_identity`'s counts; the harness gives 94%): take ~85%.
+- ~170 failing members × ~1.9 µs = **~0.32 ms**;
+- ~225 passing members × ~0.45 µs = **~0.10 ms**;
+- ~70 walked decals outside a group × A's ~0.25 µs = ~0.02 ms.
+
+**~0.44 ms a frame saved.** Slice 1 alone at p ≈ 0.55 comes to ~1.45-1.5 ms (walked 460 × ~2.25 µs, group tests ~0.04, draws ~0.40, views ~0.03); **with slice 2, ~1.05 ms against the 1 ms budget** [U]. What's left is mostly the draws: each passing decal's datum, definition and vertex block (~1 µs) and `psp_ge_decal` (~1.5 µs), ~0.65 ms in all. The next cut there: the pack also holding a member's draw arguments that can't change while it's a member (its vertex address, blend, map, quad count, permanence), so only the datum's colour and intensity are read; ~0.3-0.4 µs × ~265 ≈ 0.1 ms [U].
+
+### 6.5 The proof
+
+- **Harness** (host, outside the repo; the box's own `box_vehfx.c` against today's test on §5's synthetic lists):
+  - Over 20,000 frames at runs of 8, 16 and 32 (32 capped to 16) and 300 and 3,000 units out: 0 frames whose drawn decals or their order differ, 0 "known" verdicts today's test wouldn't give, 0 steps off the path. At a run of 16 the body walks 1,136 decals a frame without the pack and 356 with it, and today's test is asked 69 times a frame instead of 1,136 (synthetic: its camera and clusters are invented).
+  - Check mode: 21.3 M members handed to the body, 0 differ, 0 broken.
+  - With `decal_delete`'s touch of the previous decal removed on purpose, the pack's walk parts from today's (23 frames of 300 differ) and counts 25 steps off the path even without the check; the check counts 20,245 verdicts that differ and 22,421 steps off the path over 3,000 frames. So both lines catch missing hooks.
+- **The emulator** [E, exact] (the builder's batch; no run here):
+  1. b40_leg1 held (padhold, seed 1) to exitat660, `PSP_VEHFX=1`, keep words `vehfxpackcheck vehfxgroupcheck`. Pass: every `vehfxpackcheck:` line reads 0 differ, 0 off the path, 0 sides differing, with members walked > 0; `vehfxgroupcheck:` still 0 and 0.
+  2. The same build, `- | vehfxgroup | vehfxpack`, statecrc, seeds 1 and 2. Pass: play and both seeds identical at every tick. The drive's `vehfxpack:` lines give the exact counts this section's price assumes (members passed over, sent on known).
+  3. Shots on the drive, `vehfxgroup | vehfxpack`: pixel-identical (the GE stream is the same).
+  4. Strict (`-i`) on the `vehfxpack` side.
+- **The PSP** [M]: one pair on the drive stretch, `vehfxgroup | vehfxpack`, repeat 2, in one build (an ask through the master). It reads the drawing's decal share and the frame.
+
+## 7. Next
+
+- Slice 3 candidate: a passing member's draw arguments from the pack (§6.4), once the PSP has priced slices 1 and 2.
 - Making (≤0.3 ms a tick): `decal_new_from_collision`, `effect_update`, `particle_new` on the drive. Not started.
 - Particles' draw (~0.8 ms a frame): not started.
 - If the run cap matters: a second level (groups of groups) for lists over ~250 decals.
