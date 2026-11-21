@@ -9159,29 +9159,28 @@ lattice point. First-person parts, the sky and see-through parts stay in
 floats: the first are seen closest, the last are read on the CPU.
   baked_once ("bakedonce"): a part's place in the geometry cache is asked
 once, by psp_ge_draw_model, and handed to model_convert.
-  skinw_off ("skinwoff"): every bending batch drawn at its part's slot
-count, as before. By default each draws at its own highest slot in use: the
-GE blends every weight a draw declares, zeros included, at ~60 ns a weight a
-vertex, and the slots past a batch's highest hold no node of its vertices,
-so their weights are zero. 1-4 and 5-8 weights share a record layout (the
-texture coordinate starts 4 or 8 bytes in), so a batch keeps its part's
-class.
+  skin_own_slots (off with "skinwoff"): each bending batch draws at its own
+highest slot in use, not at its part's slot count: the GE blends every
+weight a draw declares, zeros included, at ~60 ns a weight a vertex, and
+the slots past a batch's highest hold no node of its vertices, so their
+weights are zero. 1-4 and 5-8 weights share a record layout (the texture
+coordinate starts 4 or 8 bytes in), so a batch keeps its part's class.
   bake_draw_first ("bakedraw"): a level draw is first looked over for a
 triangle with all three corners flagged, and bake_find is called only when
 there is one.
-Until they are read (read == 0) each holds the value that draws the old
-way, so a replay that ran before the first read would only lose the gain */
+Each is 0 until they are read, and 0 draws the old way, so a replay that
+ran before the first read would only lose the gain. All zeros also keeps
+the struct in .bss, where psp/layout's medata lists place it by name */
 static struct
 {
-	int read, model14, baked_once, skinw_off, bake_draw_first;
-} model_switch __attribute__((aligned(64))) = { 0, -1, -1, -1, 0 };
-int psp_keep(const char *name);
+	int read, model14, baked_once, skin_own_slots, bake_draw_first;
+} model_switch __attribute__((aligned(64)));
 /* main CPU only: its callers test psp_on_me() or run at a map's opening */
 static void __attribute__((noinline, cold)) model_switches(void)
 {
 	model_switch.model14 = psp_keep("model14");
 	model_switch.baked_once = psp_keep("bakedonce") != 0;
-	model_switch.skinw_off = psp_keep("skinwoff");
+	model_switch.skin_own_slots = !psp_keep("skinwoff");
 	model_switch.bake_draw_first = psp_keep("bakedraw") != 0;
 	model_switch.read = 1;
 	sceKernelDcacheWritebackRange(&model_switch, sizeof(model_switch));
@@ -16034,7 +16033,7 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 			}
 			slot_us += probe_clock() - slot_start;
 			slot_batches++;
-			if (model_switch.skinw_off == 0)
+			if (model_switch.skin_own_slots)
 			{
 				int top = skin->weights;
 

@@ -20,7 +20,6 @@
 *psp_tex.o(.bss.bind_counts)
 *psp_tex.o(.bss.psp_tex_screen_pass)
 *psp_tex.o(.bss.last_frame)
-*psp_ge.o(.data.skinw_off)
 *psp_tex.o(.bss.resident_at)
 *psp_ge.o(.bss.kind_mark)
 *psp_ge.o(.bss.vm_base)
@@ -104,7 +103,6 @@
 *psp_ge.o(.bss.model_near)
 *psp_ge.o(.data.projection_fov)
 *psp_ge.o(.bss.model_detail_key)
-*psp_ge.o(.data.model14)
 *psp_ge.o(.bss.skin_strip_draws)
 *psp_ge.o(.bss.guard_y)
 *psp_ge.o(.data.bones_direct)
@@ -233,3 +231,7 @@
 *psp_ge.o(.bss.part_mark_by)
 *psp_ge.o(.bss.convert_k_by)
 *psp_ge.o(.bss.depth_row.41)
+# The replay's switches (psp_ge.c's model_switch: model14, skinwoff and the words read with them), one
+# 64-byte line of their own. Not ranked: placed by rule, last, so its alignment moves no ranked word. It
+# takes the place of .data.skinw_off and .data.model14, which were ranked above.
+*psp_ge.o(.bss.model_switch)
