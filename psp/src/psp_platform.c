@@ -1295,6 +1295,13 @@ static const struct
 	/* ADPCM decoded by one table lookup a sample, not the formula's data-led
 	branches (psp_dsound.c, ima_fast): exact, checked at the audio's start */
 	{ "imatable", "imatableoff" },
+	/* the code diet's short forms (docs/code_diet.md): object_update's short
+	form, the vector checks' calls made only under verifyvectors, and a typed
+	tag getter's last answer kept at its call site. Exact (play and both
+	seeds identical every tick); together c20's opening tick -3.0% and frame
+	-1.6% on the PSP-3000, the drawing +2.1% (the getters' misses while
+	drawing: the next thing to fix) */
+	{ "objlean", "objleanold" }, { "verifygate", "verifygateoff" }, { "tagmemo", "tagmemooff" },
 };
 static char keep_defaults_added[KEEP_DEFAULTS_ROOM] = "";
 /* defaults that found no room: a lever silently off would be read as on */
@@ -1462,7 +1469,7 @@ static void keep_load(void)
 	platform_log("keep words, continued: iostats gereads gereadskind vramtexN edramcheck overlayfreefar inflightkbN inflightroom inflighttextold");
 	/* the code diet's short forms (psp_fixups.py, FIXES_DIET1): each says so
 	when its word is on, so a run's log shows which form it played */
-	platform_log("keep words, the code diet's short forms (opt-in): objlean verifygate tagmemo bakedraw bakedonce");
+	platform_log("keep words, the code diet's short forms (on by default; off: objleanold verifygateoff tagmemooff; opt-in: bakedraw bakedonce)");
 	if (keep_search("objlean"))
 		platform_log("objlean: object_update's short form");
 	if (keep_search("verifygate"))
