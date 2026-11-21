@@ -16,10 +16,12 @@
 # code would overflow it and the build refuse it: @fill cuts it at its coldest
 # tail instead, and says where. While it fits, the copy is the same.
 # Room for the diet's short forms while each stands beside its old form:
-# psp_ge_frame_window and model_get_marker_by_name (1,980 bytes) are out of the
-# list. The ME fetches neither on b30's or c20's bench stretch (the lab's cache
+# nine functions (2,964 bytes) are out of the list: psp_ge_frame_window,
+# model_get_marker_by_name, psp_tex_save_pending, psp_tex_palette, psp_ge_fog,
+# psp_ge_screen_flash, psp_ge_budget, psp_tex_io_window and psp_geo_io_window.
+# The ME fetches none of them on b30's or c20's bench stretch (the lab's cache
 # model, exact counts), so they give way before code the ME runs; where the ME
-# does reach them they run from main RAM.
+# does reach one it runs from main RAM.
 # @fill
 psp_ge_me_replay
 psp_ge_draw_model_body
@@ -78,7 +80,6 @@ psp_ge_seethrough_meter
 psp_tex_change_mask
 psp_ge_blip
 psp_ge_contrail
-psp_ge_fog
 psp_tex_bind_lightmap
 psp_ge_light_begin
 psp_ge_text_character
@@ -97,7 +98,6 @@ psp_ge_fog_planar
 psp_ge_widget_sprite
 psp_tex_has
 psp_tex_reflection_mask
-psp_ge_screen_flash
 psp_ge_sky
 psp_ge_light_gel
 psp_ge_blips_end
@@ -106,7 +106,6 @@ psp_ge_shadow_draw
 psp_ge_ui_centered
 psp_ge_widget_begin
 psp_ge_widget_occlusion
-psp_tex_palette
 psp_ge_blips_begin
 psp_tex_resident
 psp_ge_text_begin
@@ -115,10 +114,6 @@ psp_tex_me_memo_forget
 psp_ge_widget_texture
 psp_ge_text_end
 psp_tex_average
-psp_ge_budget
-psp_tex_io_window
-psp_geo_io_window
-psp_tex_save_pending
 run_job
 psp_anim_on_me
 network_coop_active

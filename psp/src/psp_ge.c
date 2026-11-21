@@ -11861,38 +11861,35 @@ static unsigned int color_from_rgb_scaled(const float *rgb, float gain)
 	return color_from_rgb(scaled);
 }
 
+/* the switches a replay on the ME reads (model14, skinwoff, bakedonce,
+gustate, gudraw): read on the main CPU by the first model, before any replay
+needs them, and written back. The ME only reads them: a lazy read there
+would write a line the main CPU may also hold. One cold function for all of
+them: it runs once, and psp_ge_model_begin sits in the ME's code copy, where
+every byte takes room from code that runs each frame */
+static int model_switches_read = 0;
+static void __attribute__((noinline, cold)) model_switches(void)
+{
+	model14 = psp_keep("model14");
+	skinw_off = psp_keep("skinwoff");
+	baked_once = psp_keep("bakedonce") != 0;
+	gustate_on = psp_keep("gustate") != 0;
+	gudraw_on = psp_keep("gudraw") != 0;
+	sceKernelDcacheWritebackRange(&model14, sizeof(model14));
+	sceKernelDcacheWritebackRange(&skinw_off, sizeof(skinw_off));
+	sceKernelDcacheWritebackRange(&baked_once, sizeof(baked_once));
+	sceKernelDcacheWritebackRange(&gustate_on, sizeof(gustate_on));
+	sceKernelDcacheWritebackRange(&gudraw_on, sizeof(gudraw_on));
+	model_switches_read = 1;
+	sceKernelDcacheWritebackRange(&model_switches_read, sizeof(model_switches_read));
+}
+
 void psp_ge_model_begin(const float *node_matrices, int node_matrix_count, float u_scale, float v_scale,
 	const float *ambient, int light_count, const float *light0, const float *light1)
 {
 	GE_BENCH_SKIP();
-	/* model14's switch, read on the main CPU before any replay needs it, and
-	written back: the ME only reads it (a lazy read there would write a line
-	the main CPU may also hold) */
-	if (model14 < 0 && !psp_on_me())
-	{
-		model14 = psp_keep("model14");
-		sceKernelDcacheWritebackRange(&model14, sizeof(model14));
-	}
-	if (skinw_off < 0 && !psp_on_me())
-	{
-		skinw_off = psp_keep("skinwoff");
-		sceKernelDcacheWritebackRange(&skinw_off, sizeof(skinw_off));
-	}
-	if (baked_once < 0 && !psp_on_me())
-	{
-		baked_once = psp_keep("bakedonce") != 0;
-		sceKernelDcacheWritebackRange(&baked_once, sizeof(baked_once));
-	}
-	if (gustate_on < 0 && !psp_on_me())
-	{
-		gustate_on = psp_keep("gustate") != 0;
-		sceKernelDcacheWritebackRange(&gustate_on, sizeof(gustate_on));
-	}
-	if (gudraw_on < 0 && !psp_on_me())
-	{
-		gudraw_on = psp_keep("gudraw") != 0;
-		sceKernelDcacheWritebackRange(&gudraw_on, sizeof(gudraw_on));
-	}
+	if (!model_switches_read && !psp_on_me())
+		model_switches();
 	if (DEFER_RECORDING() &&
 		defer_model_begin(node_matrices, node_matrix_count, u_scale, v_scale, ambient, light_count, light0, light1))
 		return;
