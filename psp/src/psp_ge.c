@@ -3201,6 +3201,26 @@ them those that pass the exact test. Every corner is worked out either way
 (the test needs them), so only the cuts of passing triangles are work the GE
 could take; the corners are the rest */
 static unsigned long pnb_cut_all[2], pnb_cut_exact[2], pnb_kept_whole[2];
+/* recon "nearsteps" (the lead 2026-11-20 21:4x: the VME against the GE's
+clip): the near loop's ME cycles split three ways, the corners' verdicts
+(each vertex's planes, worked out the first time a triangle needs it: the
+part the VME could stream over the vertex buffer), the cuts (what the GE
+could clip itself), and the rest (the combine by index). Read with the ME's
+own cycle counter, only on the ME: the main CPU can't read CP0 (user mode),
+and in the emulator the loop is the main CPU's, so it reads 0 there. The
+ME writes these on lines of its own; the report reads them uncached */
+static int nearsteps_on = 0;
+static PSP_AIME_ME_SIDE unsigned long long ns_total, ns_vertex, ns_cut __attribute__((aligned(64)));
+static PSP_AIME_ME_SIDE unsigned long ns_loops, ns_verdicts, ns_cuts;
+static inline unsigned int ns_clock(void)
+{
+	unsigned int c = 0;
+
+	if (nearsteps_on && psp_cpu_is_me())
+		__asm__ __volatile__("mfc0 %0, $9" : "=r"(c));
+	return c;
+}
+#define NS_UNCACHED(x) (*(volatile __typeof__(x) *)((unsigned int)&(x) | 0x40000000u))
 static float pnb_world_near = 0.0f;
 #endif
 static void ge_kind(int kind)
@@ -3734,6 +3754,27 @@ static void __attribute__((noinline, cold)) ge_kinds_report(void)
 	memset(pnb_part_hist, 0, sizeof(pnb_part_hist));
 	memset(pnb_tris_exact, 0, sizeof(pnb_tris_exact)); memset(pnb_corners_exact, 0, sizeof(pnb_corners_exact));
 	memset(pnb_runs_exact, 0, sizeof(pnb_runs_exact));
+	if (nearsteps_on && kind_frames)
+	{
+		/* the ME's counts, read past the main CPU's cache; only the ME writes
+		them, so a window is the difference from the last reading */
+		static unsigned long long was_total, was_vertex, was_cut;
+		static unsigned long was_loops, was_verdicts, was_cuts;
+		unsigned long long now_total = NS_UNCACHED(ns_total), now_vertex = NS_UNCACHED(ns_vertex), now_cut = NS_UNCACHED(ns_cut);
+		unsigned long now_loops = NS_UNCACHED(ns_loops), now_verdicts = NS_UNCACHED(ns_verdicts), now_cuts = NS_UNCACHED(ns_cuts);
+		unsigned long long total = now_total - was_total, vertex = now_vertex - was_vertex, cut = now_cut - was_cut;
+		unsigned long loops = now_loops - was_loops, verdicts = now_verdicts - was_verdicts, cuts = now_cuts - was_cuts;
+		float f = (float)kind_frames;
+
+		platform_log("GE: nearsteps: the near loop on the ME %.0f cycles a frame (%.2f ms at 333 MHz [U]) in %.1f loops: "
+			"the corners' verdicts %.0f (%.1f%%, %.1f verdicts), the cuts %.0f (%.1f%%, %.1f cuts), the combine and the rest %.0f (%.1f%%)",
+			(double)total / f, (double)total / f / 333000.0, loops / f,
+			(double)vertex / f, total ? 100.0 * (double)vertex / (double)total : 0.0, verdicts / f,
+			(double)cut / f, total ? 100.0 * (double)cut / (double)total : 0.0, cuts / f,
+			(double)(total - vertex - cut) / f, total ? 100.0 * (double)(total - vertex - cut) / (double)total : 0.0);
+		was_total = now_total; was_vertex = now_vertex; was_cut = now_cut;
+		was_loops = now_loops; was_verdicts = now_verdicts; was_cuts = now_cuts;
+	}
 	memset(pnb_cut_all, 0, sizeof(pnb_cut_all)); memset(pnb_cut_exact, 0, sizeof(pnb_cut_exact));
 	memset(pnb_kept_whole, 0, sizeof(pnb_kept_whole));
 #endif
@@ -4375,6 +4416,7 @@ static void gebusy_start(void)
 	probes_on = psp_keep("probes") ? 1 : 0; /* build 119 */
 #if defined(PSP_DRAWLIST) && defined(PSP_RECON)
 	pnb_on = psp_keep("pnboundcount") ? 1 : 0;
+	nearsteps_on = psp_keep("nearsteps") ? 1 : 0;
 	if (pnb_on)
 		platform_log("GE: pnboundcount on (the near corner loop's runs against their own bound at the world's plane, lever PN)");
 #endif
@@ -16219,6 +16261,9 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 
 				unsigned int loop_start = probe_clock(); /* build 119's probe */
 				unsigned long probe_corners = 0; /* in a register; added once below */
+#ifdef PSP_RECON
+				unsigned int ns_start = ns_clock(), ns_mark, ns_v = 0, ns_c = 0, ns_nv = 0, ns_nc = 0;
+#endif
 
 				cut_store_begin(&pieces_store, model_cut, MAXIMUM_MODEL_CUT_CORNERS, CUT_SKIN);
 #if defined(PSP_DRAWLIST) && defined(PSP_RECON)
@@ -16342,6 +16387,9 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 						continue;
 					}
 
+#ifdef PSP_RECON
+					ns_mark = ns_clock();
+#endif
 					for (k = 0; k < 3; k++)
 					{
 						const unsigned char *record = (const unsigned char *)vertices + skin->stride * draw[t + k];
@@ -16422,10 +16470,16 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 #endif
 							if (draw[t + k] < CORNER_VERDICTS)
 								corner_verdict[draw[t + k]] = (unsigned short)(corner_stamp + code);
+#ifdef PSP_RECON
+							ns_nv++;
+#endif
 						}
 						bits[k] = code & 31;
 						behind |= code & 32;
 					}
+#ifdef PSP_RECON
+					ns_v += ns_clock() - ns_mark;
+#endif
 					/* build 119: "nearclustercheck": the run's verdict against the triangle's own */
 					if ((cluster_state == 1 && behind) || (cluster_state == 2 && !(behind && (bits[0] & bits[1] & bits[2]))))
 						near_cluster_mismatches++;
@@ -16455,6 +16509,9 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 								pb.cut_pass++;
 						}
 					}
+#endif
+#ifdef PSP_RECON
+					ns_mark = ns_clock();
 #endif
 					if (behind)
 					{
@@ -16516,6 +16573,10 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 								skin_cut_triangles++;
 							}
 						}
+#ifdef PSP_RECON
+						ns_c += ns_clock() - ns_mark;
+						ns_nc++;
+#endif
 						continue;
 					}
 					if (kept)
@@ -16570,6 +16631,17 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 						pnb_part_hist[i][pnb_bucket(use_clusters ? (pb.runs ? pb.part_most : NEAR_CLIP) :
 							part_plane >= 0.0f ? part_plane : 1.0e9f, NEAR_CLIP)] += probe_corners;
 					}
+				}
+#endif
+#ifdef PSP_RECON
+				if (nearsteps_on && (!whole_by_sphere || near_sphere_check) && psp_cpu_is_me())
+				{
+					ns_total += ns_clock() - ns_start;
+					ns_vertex += ns_v;
+					ns_cut += ns_c;
+					ns_loops++;
+					ns_verdicts += ns_nv;
+					ns_cuts += ns_nc;
 				}
 #endif
 				if (probes_on && (!whole_by_sphere || near_sphere_check))
