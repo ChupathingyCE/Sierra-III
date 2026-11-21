@@ -108,6 +108,13 @@ vertex */
 static struct { const void *vertices; unsigned int vertex_count, stride; } nearband_part[NEARBAND_PARTS];
 static unsigned int nearband_parts, nearband_parts_full;
 static float nearband_most_depth;
+/* the near-vme census (box_near_vme.md §8's open line): its batches by slot
+   count and by the corners each one works, so the stream layout's G and its
+   tile size are priced against the batches the game draws */
+#define NEARCENSUS_SIZES 6
+#define NEARCENSUS_SLOTS 8 /* SKIN_SLOTS, defined further down */
+static unsigned long nearcensus_batches[NEARCENSUS_SLOTS + 1], nearcensus_corners[NEARCENSUS_SLOTS + 1];
+static unsigned long nearcensus_size[NEARCENSUS_SIZES], nearcensus_most;
 #endif
 static inline unsigned int probe_clock(void)
 {
@@ -3734,6 +3741,22 @@ static void __attribute__((noinline, cold)) ge_kinds_report(void)
 		platform_log("GE: nearband terms: against its largest slot term, within 2^-10 %.1f, 2^-12 %.1f, 2^-14 %.1f, 2^-16 %.1f, 2^-18 %.1f a frame; weights not summing to 128 %.1f; the largest term %.2f units",
 			nearband_rel[0] / f, nearband_rel[1] / f, nearband_rel[2] / f, nearband_rel[3] / f, nearband_rel[4] / f,
 			nearband_weight_off / f, (double)nearband_most_term);
+		{
+			int g;
+			char by_slots[256];
+			int at = 0;
+
+			for (g = 1; g <= NEARCENSUS_SLOTS && at < (int)sizeof(by_slots) - 40; g++)
+				at += snprintf(by_slots + at, sizeof(by_slots) - at, "%s%d slots %.1f (%.1f corners)", g > 1 ? ", " : "", g,
+					nearcensus_batches[g] / f, nearcensus_corners[g] / f);
+			platform_log("GE: nearcensus: batches a frame by slot count: %s; by corners worked: <=12 %.1f, <=24 %.1f, <=48 %.1f, <=96 %.1f, <=192 %.1f, more %.1f; the largest %lu",
+				by_slots, nearcensus_size[0] / f, nearcensus_size[1] / f, nearcensus_size[2] / f, nearcensus_size[3] / f,
+				nearcensus_size[4] / f, nearcensus_size[5] / f, nearcensus_most);
+			memset(nearcensus_batches, 0, sizeof(nearcensus_batches));
+			memset(nearcensus_corners, 0, sizeof(nearcensus_corners));
+			memset(nearcensus_size, 0, sizeof(nearcensus_size));
+			nearcensus_most = 0;
+		}
 		nearband_verdicts = 0;
 		memset(nearband_in, 0, sizeof(nearband_in));
 		memset(nearband_rel, 0, sizeof(nearband_rel));
@@ -16441,6 +16464,21 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 					near_loop_triangles += (unsigned long)(draw_count / 3);
 					near_corners_worked += probe_corners;
 				}
+#ifdef PSP_RECON
+				if (nearband_on && probe_corners)
+				{
+					int g = skin->weights < 0 ? 0 : skin->weights > SKIN_SLOTS ? SKIN_SLOTS : skin->weights, z = 0;
+					unsigned long c = probe_corners;
+
+					nearcensus_batches[g]++;
+					nearcensus_corners[g] += c;
+					while (z < NEARCENSUS_SIZES - 1 && c > (12ul << z))
+						z++;
+					nearcensus_size[z]++;
+					if (c > nearcensus_most)
+						nearcensus_most = c;
+				}
+#endif
 				if (whole_by_sphere)
 				{
 					/* build 118: "nearspherecheck": the loop ran anyway, and must
