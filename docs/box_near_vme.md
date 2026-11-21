@@ -27,7 +27,12 @@ A skinned corner is Σ_s w_s·(M_s v) over the batch's bone slots, with the byte
   - the fast mode (0x310): 262 MB/s, ~0.5 ms in, but it raises a main-CPU miss ×1.33 (measured on the PSP-3000 only)
 - **The conversion:** the records hold the position as three floats, and the VME works in 24-bit fixed point. The ME would convert each corner's three floats before the VME could read them: per corner, work of the same order as the dot products it saves.
 
-**So, as staged today, the hand-off would eat most of the gain.** The budget is the verdicts off the ME's CPU with the hand-off under 1 ms at a30's peak. The fast mode alone gets the bytes near that, but not the conversion.
+**How to read these (the lead, 2026-11-21 02:0x):** the DMAC moves the data while the ME and the VME do other work, so a transfer's length is latency, hidden by double-buffering batches, not ME time. The ledger is:
+- **The ME's time saved** = the verdicts' ~3.0 ms (b30's ride) or ~4.65 ms (a30's peak), less what the ME still pays: the DMAC's setup a batch, the float-to-fixed conversion (zero with the bake below), and the band's recomputation in float (from `nearband`).
+- **Checked, not charged:** the transfers' length (~1.5 ms in and ~1 ms out at a30's peak through eDRAM, ~0.5 ms in by the fast mode) against the frame's slack, to make sure the double-buffering can hide it.
+- **Priced only by a PSP pair:** the transfers' real cost, contention for main RAM with the main CPU and the GE.
+
+As staged today, the float-to-fixed conversion alone is of the same order as the dot products it would save, so the kernel waits on the bake.
 
 ## 4. What would make it pay, and the counts it waits on
 
