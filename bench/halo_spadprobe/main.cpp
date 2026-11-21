@@ -9,8 +9,9 @@ write path, so v2 asks the other bus masters. Each into-the-scratchpad cell
 says whether the pattern arrived (read back by the CPU at 0x0001xxxx, which
 the cache never holds: v1 saw 0x4001xxxx read 0 for the CPU), the engine's
 registers after, and whether the pattern landed in one of the likely aliases
-instead: main RAM at physical 0x08011000 (kernel memory, saved and put back
-with interrupts off where the engine is started from the kernel), VRAM at
+instead: main RAM at physical 0x08011000 (kernel memory, read, and put back only where an engine changed it, with
+interrupts off around the DMACplus and VME cells; sceDmacMemcpy waits on an
+interrupt, so its cells run with them on, as v1 did), VRAM at
 0x04011000 and the ME's eDRAM at 0x11000 (the ME's own address 0 is eDRAM,
 so a ME-side engine given 0x00011000 most likely means eDRAM). Each
 out-of-the-scratchpad cell says whether the pattern reached the far side.
@@ -537,8 +538,13 @@ static inline void kram_check_restore(struct KAlias *k)
 		u32 w = ((volatile u32 *)ALIAS_KRAM_UNCACHED)[i];
 
 		k->matched += w == pattern(k->seed, i, k->mask);
-		k->changed += w != k->save[i];
-		((volatile u32 *)ALIAS_KRAM_UNCACHED)[i] = k->save[i];
+		/* kernel RAM is only read unless an engine changed it: the lead's
+		ruling, so a cell that lands nowhere writes nothing there */
+		if (w != k->save[i])
+		{
+			k->changed++;
+			((volatile u32 *)ALIAS_KRAM_UNCACHED)[i] = k->save[i];
+		}
 	}
 	__asm__ __volatile__("sync");
 }
@@ -557,6 +563,46 @@ static int kram_check_kernel(void *param)
 	int interrupts = sceKernelCpuSuspendIntr();
 
 	kram_check_restore((struct KAlias *)param);
+	sceKernelCpuResumeIntrWithSync(interrupts);
+	return 0;
+}
+
+/* a VME cell's op run with this CPU's interrupts off from the kernel-RAM
+save to its check, so nothing here runs on kernel RAM an engine may have
+just written; the wait polls the system timer, as no syscall may run */
+struct QuietCall
+{
+	u32 op, a[4];
+	int scan_kram;
+	int done;
+	u32 us;
+};
+static struct QuietCall quiet;
+static struct KAlias kalias __attribute__((aligned(64))); /* the scans' kernel-RAM window */
+#define QUIET_BOUND_US 50000u
+
+static int me_call_quiet_kernel(void *param)
+{
+	struct QuietCall *q = (struct QuietCall *)param;
+	int interrupts = sceKernelCpuSuspendIntr();
+	u32 start;
+
+	if (q->scan_kram)
+		kram_save(&kalias);
+	me_op = q->op;
+	me_arg(0) = q->a[0];
+	me_arg(1) = q->a[1];
+	me_arg(2) = q->a[2];
+	me_arg(3) = q->a[3];
+	__asm__ volatile("sync");
+	me_sequence = ++me_sequence_sent;
+	start = SYSTIME;
+	while (me_done != me_sequence_sent && SYSTIME - start < QUIET_BOUND_US)
+		;
+	q->done = me_done == me_sequence_sent;
+	q->us = SYSTIME - start;
+	if (q->scan_kram)
+		kram_check_restore(&kalias);
 	sceKernelCpuResumeIntrWithSync(interrupts);
 	return 0;
 }
@@ -632,7 +678,6 @@ static int dcell_kernel(void *param)
 }
 
 static struct DCell dcell __attribute__((aligned(64)));
-static struct KAlias kalias __attribute__((aligned(64)));
 
 static int run_dcell(u32 channel, u32 src, u32 dst, u32 control, int scan_kram, u32 seed, u32 mask)
 {
@@ -678,6 +723,29 @@ struct Scan
 	u32 edram_pattern, edram_changed;
 	int edram_done;
 };
+
+/* me_call with this CPU's interrupts off (a VME cell); falls back to nothing
+if the kernel calls aren't there, so the cell says it didn't run */
+static int me_call_quiet(u32 op, u32 a0, u32 a1, u32 a2, u32 a3, int scan_kram)
+{
+	if (!me_ok || !kernel_ok)
+		return 0;
+	quiet.op = op;
+	quiet.a[0] = a0;
+	quiet.a[1] = a1;
+	quiet.a[2] = a2;
+	quiet.a[3] = a3;
+	quiet.scan_kram = scan_kram;
+	quiet.done = 0;
+	kcall_3(me_call_quiet_kernel, CACHED_KERNEL_MASK, &quiet);
+	if (!quiet.done)
+	{
+		out("the ME didn't answer op %lu in %lu us with interrupts off: the cells that need it stop here", (unsigned long)op,
+			(unsigned long)quiet.us);
+		me_ok = 0;
+	}
+	return quiet.done;
+}
 
 static void scan_before(struct Scan *s, int kram_here, int edram_here)
 {
@@ -959,12 +1027,17 @@ static u32 vme_into(int f, const char *tag)
 	sceKernelDcacheWritebackInvalidateAll();
 	out("VME DMAC into the scratchpad as %s%s (buffer to memory, 0x48, address %08lx): calling", form_names[f], tag,
 		(unsigned long)(forms[f] | PROBE));
-	scan_before(&scan, 1, 0);
-	if (!me_call(OP_VME, 1, forms[f] | PROBE, seed, 1))
+	scan_before(&scan, 0, 0); /* the kernel-RAM window is the quiet call's */
+	kalias.seed = seed;
+	kalias.mask = MASK24;
+	if (!me_call_quiet(OP_VME, 1, forms[f] | PROBE, seed, 1, 1))
 	{
 		scan_after(&scan, seed, MASK24);
 		return 0;
 	}
+	scan.kram_pattern = kalias.matched;
+	scan.kram_changed = kalias.changed;
+	scan.kram_done = 1;
 	{
 		u32 buffer_right = me_res(1), edram_pattern = me_res(10), edram_changed = me_res(11);
 
@@ -989,7 +1062,7 @@ static u32 vme_out(int f, const char *tag)
 	sceKernelDcacheWritebackInvalidateAll();
 	out("VME DMAC out of the scratchpad as %s%s (memory to buffer, 0x40, address %08lx): calling", form_names[f], tag,
 		(unsigned long)(forms[f] | PROBE));
-	if (!me_call(OP_VME, 0, forms[f] | PROBE, seed, 1))
+	if (!me_call_quiet(OP_VME, 0, forms[f] | PROBE, seed, 1, 0))
 		return 0;
 	got = me_res(0);
 	vme_regs(regs, sizeof(regs));
