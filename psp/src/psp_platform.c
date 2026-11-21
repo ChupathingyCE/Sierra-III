@@ -1198,6 +1198,7 @@ static const struct
 	const char *word, *off;
 } keep_defaults[] = {
 	{ "gedefer", "gedeferoff" },
+	{ "vehfxgroup", "vehfxgroupoff" }, { "vehfxpack", "vehfxpackoff" },
 	{ "geinflight", "geinflightoff" },
 	{ "gemeon", "gemeonoff" },
 	{ "mevram", "mevramoff" },

@@ -217,12 +217,15 @@ DITHERSHIFT = os.environ.get("PSP_DITHERSHIFT", "") == "1"
 # PSP_DRAWLIST=1: the draw list box (docs/box_draw_list.md), off by default
 # until it is cut over; under it the keep word "drawlist" turns it on
 DRAWLIST = os.environ.get("PSP_DRAWLIST", "") == "1"
-# PSP_VEHFX=1: the vehicle effects box (docs/box_vehfx.md; psp/src/box_vehfx.c,
-# FIXES_VEHFX), off by default until it is cut over; under it the keep word
-# "vehfxgroup" turns the grouped decal test on and "vehfxgroupcheck" runs its
-# proof. Its hooks sit in the decal walk and the engine's decal list writes,
-# so a default build leaves them out
-VEHFX = os.environ.get("PSP_VEHFX", "") == "1"
+# PSP_VEHFX: the vehicle effects box (docs/box_vehfx.md; psp/src/box_vehfx.c,
+# FIXES_VEHFX), in the campaign build by default since it was priced (the
+# drive's decal drawing -2.7 ms on the PSP-1000, exact); PSP_VEHFX=0 leaves it
+# out, the old-only side of its pair. Its keep words vehfxgroup and vehfxpack
+# are on by default (vehfxgroupoff, vehfxpackoff); the checks are vehfxgroupcheck
+# and vehfxpackcheck. The multiplayer build leaves it out unless PSP_VEHFX=1
+VEHFX = os.environ.get("PSP_VEHFX", "0" if MULTIPLAYER else "1") == "1"
+# psp_fixups.py reads the same switch from the environment
+os.environ["PSP_VEHFX"] = "1" if VEHFX else "0"
 if VEHFX:
     PSP_FILES.append("box_vehfx")
 # PSP_PADPATH=1: the pad path (docs/pad_path.md; psp_pad.c's second half, its
