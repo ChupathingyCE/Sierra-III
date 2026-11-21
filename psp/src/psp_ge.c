@@ -2981,8 +2981,7 @@ static void dither_moves_make(const ScePspIMatrix4 *matrix)
 	}
 }
 
-struct gu_list_view { unsigned int *start, *current; int parent_context; };
-extern struct gu_list_view *gu_list; /* pspgu's (guInternal.h: GuDisplayList) */
+#include "psp_gulist.h" /* pspgu's gu_list (guInternal.h: GuDisplayList) */
 
 /* "gustate": the GE's state switches without pspgu's two switch functions.
 sceGuEnable and sceGuDisable are a kilobyte each, a case a state, and this
