@@ -3094,7 +3094,11 @@ static int me_run_slot(int which, unsigned int type, const unsigned int *args, i
 				psp_me_stop("a job timed out");
 				return 0;
 			}
-			sceKernelDelayThread(100);
+			/* under audiohold an audio block waits for the replay's end, up
+			to a block (its slack): polled every 100 us that was ~240 wakes of
+			the audio thread a block, taken from the game thread (b30's tick
+			+2.5 ms, sierra-hw 44871030232); every 1 ms it's a tenth of that */
+			sceKernelDelayThread(type == ME_JOB_AUDIO && (CONTROL->features & ME_FEATURE_AUDIO_HOLD) ? 1000 : 100);
 			looks++;
 		}
 		waited = (unsigned long)(sceKernelGetSystemTimeWide() - start);
