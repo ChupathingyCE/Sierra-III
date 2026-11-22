@@ -58871,7 +58871,7 @@ TICK2_FIELDS = {
         "seat_last_position", "seat_last_velocity", "seat_acceleration", "seat_desired_acceleration",
         # tier B2: the controller's hand-over
         "control_flags", "desired_facing_vector", "desired_aiming_vector", "desired_looking_vector", "throttle",
-        "aiming_speed"]),
+        "aiming_speed", "primary_trigger", "current_zoom_level"]),
     "source/objects/objects.h": ("_object_datum", [  # tier C
         "position", "translational_velocity", "forward", "up", "angular_velocity", "location",
         "bounding_sphere_center", "bounding_sphere_radius", "animation", "original_node_orientations",
