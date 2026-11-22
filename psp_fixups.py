@@ -57564,8 +57564,12 @@ static void psp_bmtrig(real turn_step, real *cosine, real *sine)
 			platform_psp_log("bmtrig: %lu turning steps made, %lu kept", psp_bmtrig_made, psp_bmtrig_kept);
 		}
 	}
-	else
-		psp_bmtrig_kept++;
+	else if (++psp_bmtrig_kept % 30000 == 0)
+	{
+		void platform_psp_log(const char *format, ...);
+
+		platform_psp_log("bmtrig: %lu turning steps made, %lu kept", psp_bmtrig_made, psp_bmtrig_kept);
+	}
 	*cosine = slot->cosine;
 	*sine = slot->sine;
 }
