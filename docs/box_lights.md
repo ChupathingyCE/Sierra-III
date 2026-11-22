@@ -121,6 +121,33 @@ The same two runs' own words, **per draw**: d20 `light draws 13072 (63.5 a frame
 
 ---
 
+### 2d. The pass's own instructions by step, d20's opening (counts, 2026-11-21; no code)
+
+[E, exact instruction counts from the emulator's cache model: the lab's sierra-batch 44976939797 (findings `dietsplit2_light_pass_lines`).] codediet/batch4 d55149dc in a `-g` build, the drawing on the main CPU (`m6off`) so each instruction's source line is named, d20's opening with nobody at the controls to 120 s. **It says where the pass's instructions are, not what they cost:** on a PSP the pass runs on the Media Engine from its copy, and misses, not instructions, are most of its time there. The counts are each function's own: `sqrtf`, `memcpy`, the list's words and pspgu's calls are callees and not in them. Line numbers are `psp/src/psp_ge.c` at d55149dc. This stretch is not §1c's flashlight window: the cone, gel and whole-triangle steps are 0.4% of the pass here, so its lights are mostly the level's point lights [U].
+
+The pass is **4,870.5 M instructions, 34.2% of the drawing's 14,231.6 M**, over 190,577 calls of `psp_ge_light_draw_body` (25,557 a call with its three callees).
+
+| Step (§1c's order) | Lines | Instructions | Of the pass | A body call |
+|---|---|---:|---:|---:|
+| 1 set-up: stream, matrices, bind | 23646-23739 and inlined helpers | 51.9 M | 1.1% | 272 |
+| 2 the triangle walk: index bounds test, the corners' source pointers | 23757-23783 | 440.0 M | 9.0% | 2,309 |
+| 3 each corner's reach through the draw's memo | 23872-23888 | 1,072.8 M | 22.0% | 5,629 |
+| 3 `light_reach` itself (16,098,504 calls, 84.5 a body call): distance and fade 51%, the packed normal 24%, facing 13%, 1 / distance 12% | 22786-22821, 12390-12401 | 820.4 M | 16.8% | 4,305 |
+| 3 the lit test, and a lit triangle's corners into camera space | 23921-23964, 6877-6893 | 885.2 M | 18.2% | 4,645 |
+| 3 gel, cone and whole-triangle tests | 23977-24036 | 17.9 M | 0.4% | 94 |
+| 4 the emit: its call, `light_emit` (3,197,989 calls, 16.8 a body call; the five plane tests 76%) and `light_emit_known` | 24055-24086, 6905-6918, 23012-23052 | 802.5 M | 16.5% | 4,211 |
+| 5 after the loop: the kept vertices' colour | 22824-22827 | 244.3 M | 5.0% | 1,282 |
+| 5 after the loop: the distance bands (nearest corner, sort, copy, draws) | 24159-24217 and inlined helpers | 511.3 M | 10.5% | 2,683 |
+| 5 texture state, the other draws, the tail | 24102-24136, 24231-24282 | 22.2 M | 0.5% | 117 |
+
+Every source line of the four functions is in a row; the body's rows sum to 3,331.7 M of its 3,333.8 M (2.1 M, 0.06%, carry no line).
+
+- **What does not depend on the camera** [D, read in the code]: which triangles a light reaches and how strongly. The walk, the reach and its memo, `light_reach` and the colours work from the light's position, radius and colour and the vertex's position and normal: **52.9% of the pass's instructions** (step 2, the two reach rows and the colour). For a light and a surface that did not move since the last frame they come out the same; in the default build nothing of them is kept from one frame to the next (the memo is cleared a draw; LMC, §4b, is the parked lever that kept a still light's lit list, and served 59% of d20's light draws from it).
+- **What does:** the corners in camera space, the emit's plane tests and cuts, and the distance bands with their depth nudges: **45.2%** (the lit-corners row, the emit and the bands). These follow the eye.
+- **Five reaches for every triangle emitted:** 16.1 M reach computations against 3.2 M emits. Most corners worked out belong to triangles the light does not reach.
+- **Instruments on the every-triangle path in this build:** none counted. The probes (`probes_on`), the census and the ring look (`psp_on_me()` is false under `m6off`) are tests that fall through; on a PSP the ring look adds a clock read every 8 triangles on the ME.
+- **Not answered here:** how many of the calls are the same light on the same surface as the frame before (the "on change" share), and the flashlight's window, where §1c's split says the cone cull and split lead. The banding is by source line from one run; the worker's read of it ran out of turns (or-job 44981882245), so the rows were summed and the lines read by the diet's session.
+
 ## 3. Every earlier lever on this ground (price, why it stopped, revive_if)
 
 Levercheck's ground is `lighting` (`projects/sierra/tools/levercheck.py:44`); rows below are `projects/sierra/findings/levers.tsv` and `grounds.tsv`.
