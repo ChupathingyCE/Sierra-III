@@ -24,6 +24,11 @@
 # lab's cache model, exact counts) are last in the list, after the sweep's:
 # when the copy outgrows its room @fill cuts them first.
 # @fill
+# Placed by the lab's projects/sierra/tools/mecopyplace.py from 3 cache-model runs: 10 small hot functions at the
+# sets where the copy's graph meets them least; the 7 functions after the holes they left are placed at the sets they
+# had, so nothing else the ME fetches moves, and each placed function keeps 2 lines of slack where it can. Derived
+# data: derive it again after a recount or a change to a placed function (docs/mexec.md).
+# @pad 512
 psp_ge_me_replay
 psp_ge_draw_model_body
 model_geometry
@@ -32,13 +37,8 @@ psp_ge_draw_level_body
 model_lighting
 __wrap_sceGeListUpdateStallAddr
 psp_ge_draw_model
-halo_matrix
-# the code diet's short forms of pspgu's calls (docs/code_diet.md): gustate's
-# switches and gudraw's draw
-gu_state_set
-gu_draw
-gum_draw
-psp_ge_model_shape
+animation_get_frame_data
+psp_ge_model_shape @60
 ge_kind
 psp_ge_model_begin
 psp_ge_decal_body
@@ -54,18 +54,17 @@ psp_ge_light_draw_body
 model_convert
 psp_ge_model_effect
 sceGumMatrixMode
-sceGumUpdateMatrix
-psp_ge_decal
-psp_geo_generation
-psp_tex_average_known
-psp_ge_draw_level
-list_take
+lines_writeback
+psp_ge_decal @52
+psp_tex_average_known @86
+__kernel_tanf
+list_take @104
 draw_pass_angled.constprop.0
 psp_tex_size
 psp_ge_level_detail
 psp_ge_queue_level_transparent_body
-psp_ge_light_draw
-psp_tex_bind_texels
+__muldf3
+psp_tex_bind_texels @39
 psp_ge_shadow_draw_body
 psp_tex_palette16
 draw_pass
@@ -86,13 +85,13 @@ psp_ge_fog_submerged
 psp_ge_sprites
 psp_ge_model_point_light
 psp_ge_ui_space
-vm_redirect
-model_detail_pass
+matrix4x3_transform_point
+model_detail_pass @109
 psp_ge_shadow_begin
 light_emit_known.constprop.0
 psp_tex_hud_note
-light_emit.constprop.0
-psp_ge_window_target
+scenario_location_underwater
+psp_ge_window_target @34
 psp_ge_fog_planar
 psp_ge_widget_sprite
 psp_tex_has
@@ -122,19 +121,46 @@ psp_model_find_marker_search
 matrix4x3_multiply
 floorf
 __wrap_memcpy
-psp_tag_block_element
+actor_combat_get_firing_variant_definition
+gu_draw @97
+object_get_orientation
+halo_matrix @108
+prop_position_refresh
+__extendsfdf2
+vm_redirect @17
+tag_get
+sceGumUpdateMatrix @29
+object_get_marker_by_name
+object_get_node_matrix
+gu_state_set @76
+psp_geo_generation @79
+prop_iterator_new
+psp_ge_draw_level @84
+collision_model_test_vector
+normalize3d.localalias.lto_priv.9
+psp_ge_light_draw @115
+prop_status_refresh
+actor_audibility_at_point.constprop.0
+light_emit.constprop.0 @85
+actor_input_update
+collision_test_vector
+actor_visibility_at_point
+matrix4x3_transform_normal
+gum_draw @88
+actor_compute_prop_unopposable
+collision_bsp_test_vector_recursive
+actor_perception_update
+actor_emotion_update
+actor_update
 psp_me_lines_out
 psp_perc_unit_slot
 matrix4x3_rotation_from_quaternion
 fabsf
 quaternion_decompress_6byte.isra.0
-scenario_location_underwater
 scenario_fog_region_get_fog_index
-lines_writeback
 object_get_velocities
 psp_object_get_all
 actor_input_sample_position.isra.0
-psp_aime_actor_seed
 game_difficulty_level_get
 scenario_get_fog_region_index
 csmemset
@@ -142,14 +168,9 @@ psp_me_aime_guard_touched
 structure_bsp_get_cluster_pvs
 actor_get_timeslice.isra.0
 datum_get
-prop_position_refresh
 psp_perception_unit_head
 plane3d_distance_to_point.localalias
-tag_get
 structure_cluster_mark
-actor_combat_get_firing_variant_definition
-object_get_marker_by_name
-psp_aime_fresh
 psp_aime_active
 object_get_origin
 psp_perception_unit_center_of_mass
@@ -164,15 +185,11 @@ actor_iterator_next
 collision_cluster_index_from_leaf
 actor_action_deny_transition
 csmemcpy
-object_get_orientation
-actor_compute_prop_unopposable
 actor_get_weapon
 actor_situation_combat_status_update
-dot_product3d.localalias
 psp_aicad_active
 actor_has_ranged_weapon
 __kernel_sinf
-actor_input_update
 actor_action_class
 animation_get_keyframe_translation
 animation_get_keyframe_rotation
@@ -184,72 +201,38 @@ actor_decision_loop
 actor_get_perception_knowledge
 psp_tag_block_element.lto_priv.9
 actor_situation_update_target_status
-prop_status_refresh
 psp_aime_think
-prop_iterator_new
 prop_iterator_next
-collision_bsp_test_vector_recursive
-__extendsfdf2
 quaternion_normalize
 psp_aime_late_check
 cosf
-distance3d.localalias.lto_priv.9
-collision_test_vector
 object_mark_function
 psp_me_ring_step
 scenario_location_from_point
 matrix4x3_inverse
 sinf
-actor_perception_update
 model_find_marker
-object_get_node_matrix
-collision_model_test_vector
 game_difficulty_get_value_by_difficulty
 collision_model_instance_new
 collision_test_line.localalias.lto_priv.2
 actor_compute_prop_target_weight
-animation_get_frame_data
-actor_emotion_update
 psp_me_nested_take
 point_from_line3d
 object_try_and_get_and_verify_type
-actor_visibility_at_point
-__muldf3
 object_get_node_matrices
-matrix4x3_transform_point
 psp_aicad_rest
 collision_bsp_test_vector
 object_test_vector
 __ledf2
 __subdf3
 actor_iterator_new
-normalize3d.localalias.lto_priv.9
 actor_perception_unreachable
-actor_update
-matrix4x3_transform_normal
-actor_audibility_at_point.constprop.0
 cluster_get_first_collideable_object
-__kernel_tanf
 psp_aime_me_job
 quaternions_interpolate_and_normalize
-
-# PSP_SWEEPME=1 (docs/box_collision.md section 11): the level's half of the
-# staged bipeds' gathers, the batch's record function and everything it
-# reaches by jal (the box's walk and its shapes, box_collbsp.c and
-# box_sweep.c), so the ME runs it from eDRAM (psp_me.c re-aims the batch's
-# function pointer at its copy). The C library's wrappers stay out: on the
-# ME they go straight to the plain routines, from main RAM, and their
-# switched-on paths reach the keep words' reader
 +psp_sweepme_make
--__wrap_memset
--__wrap_memcpy
--claim_ask
--psp_keep
--platform_psp_log
--platform_log
-# not fetched by the ME on the bench stretches: last, so @fill cuts them first
-psp_ge_frame_window
 model_get_marker_by_name
+psp_ge_frame_window
 psp_tex_save_pending
 psp_tex_palette
 psp_ge_fog
@@ -257,3 +240,14 @@ psp_ge_screen_flash
 psp_ge_budget
 psp_tex_io_window
 psp_geo_io_window
+psp_tag_block_element
+psp_aime_actor_seed
+psp_aime_fresh
+dot_product3d.localalias
+distance3d.localalias.lto_priv.9
+-__wrap_memset
+-__wrap_memcpy
+-claim_ask
+-psp_keep
+-platform_psp_log
+-platform_log
