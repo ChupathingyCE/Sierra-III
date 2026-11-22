@@ -51566,6 +51566,10 @@ boolean collision_test_sphere(
 # values, which changed nothing three visits running; an object with
 # functions or change colours is never taken. The sum is made at every visit,
 # so any write to the object ends it at once and the whole update runs again.
+# "swayleancheck" plays as the word off and counts a whole update, at a visit
+# the word would have taken, that changed a word outside the pose. It does not
+# make the pose twice to compare: a pose the Media Engine made ahead is taken
+# once, and its last bit can differ from this CPU's decode (FIXES_PSC).
 # Campaign only; co-op: nothing to adapt (the simulation's own result)
 FIXES_SWAYLEAN = {}
 FIXES_SWAYLEAN["source/objects/objects.c#swaylean"] = [
@@ -51583,7 +51587,37 @@ static struct
 } psp_sway[PSP_SWAY_SLOTS];
 static int psp_sway_mode = -1; /* 0 off, 1 on, 2 check */
 static unsigned long psp_sway_lean_visits, psp_sway_whole_visits, psp_sway_ended, psp_sway_check_wrong, psp_sway_reports;
+static unsigned long psp_sway_refused[4]; /* scenery visits never taken: attached, interpolating, functions, change colours */
+static long psp_sway_refused_definition[4] = { NONE, NONE, NONE, NONE }; /* the first definition refused for each */
 static long psp_sway_report_tick;
+
+static void psp_sway_refuse(int reason, long definition_index)
+{
+	psp_sway_refused[reason]++;
+	if (psp_sway_refused_definition[reason] == NONE)
+		psp_sway_refused_definition[reason] = definition_index;
+}
+
+static void psp_sway_report(void)
+{
+	extern void platform_psp_log(const char *format, ...);
+	int k;
+
+	if (game_time_get() - psp_sway_report_tick < 900 && game_time_get() >= psp_sway_report_tick)
+		return;
+	psp_sway_report_tick = game_time_get();
+	if (!psp_sway_reports++)
+		return;
+	platform_psp_log("swaylean: scenery visits with the pose step alone %lu, with the whole update %lu, runs ended by a change %lu, "
+		"whole updates that changed a word outside the pose %lu (counted under swayleancheck only); never taken: attached %lu, "
+		"interpolating %lu, a definition with functions %lu, with change colours %lu",
+		psp_sway_lean_visits, psp_sway_whole_visits, psp_sway_ended, psp_sway_check_wrong, psp_sway_refused[0], psp_sway_refused[1],
+		psp_sway_refused[2], psp_sway_refused[3]);
+	for (k = 2; k < 4; k++)
+		if (psp_sway_refused_definition[k] != NONE)
+			platform_psp_log("swaylean: the first definition never taken for its %s: %s", k == 2 ? "functions" : "change colours",
+				tag_get_name(psp_sway_refused_definition[k]));
+}
 
 /* the datum but its node blocks (the only blocks an object has, after its
 fixed part), the mark a pass leaves at word 2, and the bounding sphere the
@@ -51612,7 +51646,6 @@ static void psp_sway_pose(long object_index, struct object_datum *object, struct
 {
 	int skipped = psp_pose_half_skips(object_index, object);
 
-	/* the check's whole update has counted it already */
 	if (!counted && TEST_FLAG(object->object.flags, _object_garbage_bit))
 		++object_globals->active_garbage_object_count;
 	object_type_update(object_index);
@@ -51640,13 +51673,25 @@ static boolean psp_sway_lean(long object_index, short absolute_index, struct obj
 
 	if (psp_sway_mode < 0)
 		psp_sway_mode = psp_keep("swayleancheck") ? 2 : psp_keep("swaylean") ? 1 : 0;
-	if (!psp_sway_mode || header->type != _object_type_scenery || TEST_FLAG(header->flags, _object_header_do_not_update_bit) ||
-		object->object.parent_object_index != NONE || object->object.first_child_object_index != NONE ||
-		object->object.animation.interpolation_frame_count)
+	if (!psp_sway_mode || header->type != _object_type_scenery || TEST_FLAG(header->flags, _object_header_do_not_update_bit))
 		return FALSE;
+	psp_sway_report();
+	if (object->object.parent_object_index != NONE || object->object.first_child_object_index != NONE)
+	{
+		psp_sway_refuse(0, object->definition_index);
+		return FALSE;
+	}
+	if (object->object.animation.interpolation_frame_count)
+	{
+		psp_sway_refuse(1, object->definition_index);
+		return FALSE;
+	}
 	definition = object_definition_get(object->definition_index);
 	if (definition->object.functions.count || definition->object.change_colors.count)
+	{
+		psp_sway_refuse(definition->object.functions.count ? 2 : 3, object->definition_index);
 		return FALSE;
+	}
 	sum = psp_sway_sum(header, object);
 	slot = (unsigned short)absolute_index & (PSP_SWAY_SLOTS - 1);
 	if (psp_sway[slot].identifier == (unsigned short)header->identifier &&
@@ -51669,40 +51714,34 @@ static boolean psp_sway_lean(long object_index, short absolute_index, struct obj
 		psp_sway_lean_visits++;
 	else
 		psp_sway_whole_visits++;
-	if (game_time_get() - psp_sway_report_tick >= 900 || game_time_get() < psp_sway_report_tick)
-	{
-		psp_sway_report_tick = game_time_get();
-		if (psp_sway_reports++)
-			platform_psp_log("swaylean: scenery visits with the pose step alone %lu, with the whole update %lu, runs ended by a change %lu, "
-				"visits that differed from the whole update %lu (counted under swayleancheck only)",
-				psp_sway_lean_visits, psp_sway_whole_visits, psp_sway_ended, psp_sway_check_wrong);
-	}
 	if (!lean)
 		return FALSE;
 	if (psp_sway_mode == 2)
 	{
-		/* the whole update is what the run keeps; the lean visit is made
-		from the same start and compared with it, word 2 apart */
+		/* the check plays as the word off: the whole update runs, and what
+		it does to the object outside its pose is what the lean visit would
+		have left undone. The pose itself can't be checked here by making it
+		twice: a pose the Media Engine made ahead is taken once, and its
+		last bit can differ from this CPU's own decode (FIXES_PSC's note) */
 		static unsigned long *kept;
-		long words = header->data_size / 4, k, first = -1;
+		long words = header->data_size / 4, sphere = offsetof(struct object_datum, object.bounding_sphere_center) / 4, k, first = -1;
 
 		if (!kept)
-			kept = (unsigned long *)__builtin_malloc(2 * 4096);
+			kept = (unsigned long *)__builtin_malloc(4096);
 		if (!kept || words > 1024)
 			return FALSE;
 		csmemcpy(kept, object, words * 4);
 		object_update(object_index);
-		csmemcpy(kept + 1024, object, words * 4);
-		csmemcpy(object, kept, words * 4);
-		psp_sway_pose(object_index, object, definition, 1);
-		for (k = 0; k < words && first < 0; k++)
-			if (k != 2 && ((unsigned long const *)object)[k] != kept[1024 + k])
-				first = k;
-		if (first >= 0 && psp_sway_check_wrong++ < 24)
-			platform_psp_log("swayleancheck: t=%ld %s (#%08lx): word %ld is %08lx with the pose step alone, %08lx with the whole update",
-				game_time_get(), tag_get_name(object->definition_index), (unsigned long)object_index, first,
-				((unsigned long const *)object)[first], kept[1024 + first]);
-		csmemcpy(object, kept + 1024, words * 4);
+		if (psp_sway_sum(header, object) != sum)
+		{
+			for (k = 0; k < words && first < 0; k++)
+				if (k != 2 && (k < sphere || k >= sphere + 4) && ((unsigned long const *)object)[k] != kept[k])
+					first = k;
+			if (psp_sway_check_wrong++ < 24)
+				platform_psp_log("swayleancheck: t=%ld %s (#%08lx): the whole update changed word %ld outside the pose, %08lx to %08lx",
+					game_time_get(), tag_get_name(object->definition_index), (unsigned long)object_index, first,
+					first >= 0 ? kept[first] : 0UL, first >= 0 ? ((unsigned long const *)object)[first] : 0UL);
+		}
 		return TRUE;
 	}
 	psp_sway_pose(object_index, object, definition, 0);
