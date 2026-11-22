@@ -587,6 +587,14 @@ CPU's words for it: publish each stall address, and serve the ring's jobs
 between records (geinflight) */
 static int replay_inflight = 0;
 static PSP_MAIN_SIDE int replay_kinds_on = 0; /* "mekinds" (see defer_replay) */
+#ifdef PSP_RECON
+/* "meparts" (the parts timed on the ME too, part_clock) and "meprofile"
+(the ME's profiler counters, psp_me.c; with meparts, at each part's mark
+too: part_counters). Set at launch with mekinds; read by the ME */
+static PSP_MAIN_SIDE int me_parts_on = 0, me_profile_on = 0;
+/* the parts' counters on for this job: the ME's own word (part_counters) */
+static PSP_AIME_ME_SIDE int part_counters_on = 0;
+#endif
 static PSP_MAIN_SIDE int light_ring_look = 0; /* "lightringlook" (psp_ge_light_draw_body; psp_me.c) */
 static PSP_MAIN_SIDE int light_view_cull = 0; /* "lviewcull" (light_split_draws_nothing) */
 /* The flashlight's piece size as keep-word numbers (LSPLITCOARSE, the lab's
@@ -915,6 +923,18 @@ static void defer_frame_begin(void)
 					platform_log("GE: texpretouch: each recorded draw's textures read in as it is written down, for the replay's binds%s",
 						pretouch_all ? " (txptall: every texture a record names)" : "");
 				replay_kinds_on = psp_keep("mekinds") != 0;
+#ifdef PSP_RECON
+				me_parts_on = psp_keep("meparts") != 0;
+				me_profile_on = psp_keep("meprofile") != 0;
+				/* the ME reads both; its first job may come before the
+				write-back the job's hand-over makes */
+				sceKernelDcacheWritebackRange(&me_parts_on, sizeof(me_parts_on));
+				sceKernelDcacheWritebackRange(&me_profile_on, sizeof(me_profile_on));
+				if (me_parts_on)
+					platform_log("GE: meparts: the parts timed on the ME too, on its cycle counter, with the list words each writes (a line each 300 frames)");
+				if (me_parts_on && me_profile_on)
+					platform_log("GE: meparts + meprofile: the ME's profiler counters at each part's mark too (a line each 300 frames)");
+#endif
 				light_ring_look = psp_keep("lightringlook") != 0;
 				light_view_cull = psp_keep("lviewcull") != 0;
 				light_piece_factor = psp_keep_number("lightpiece", 60) / 100.0f;
@@ -1961,6 +1981,11 @@ unsigned int psp_ge_me_replay(const unsigned int *args, unsigned int *results)
 	Simulated (args[3] 0), the main CPU runs it: marked as before */
 	if (!args[3])
 		psp_me_context = args[2] ? args[2] : 1;
+#ifdef PSP_RECON
+	/* meparts + meprofile: the parts' counters, only in the ME's own job
+	(psp_me.c's me_serve has turned its profiler block on by now) */
+	part_counters_on = args[3] && me_parts_on && me_profile_on;
+#endif
 	replay_inflight = args[4] >= 2;
 	/* mememo: a job starts (simulated mechunk: a frame's first piece) */
 	if (args[4] != 3 || args[3] || args[5] == 0)
@@ -2015,6 +2040,9 @@ unsigned int psp_ge_me_replay(const unsigned int *args, unsigned int *results)
 		results[2] = (unsigned int)stall_me_qid;
 		stall_me_address = NULL;
 	}
+#ifdef PSP_RECON
+	part_counters_on = 0;
+#endif
 	/* (last: everything above is the ME's work, also when simulated) */
 	if (!args[3])
 		psp_me_context = 0;
@@ -4800,12 +4828,24 @@ static unsigned long ge_entry_us_by[2][16] __attribute__((aligned(64)));
 5 ms a frame each in b46), and decals per call. Each mark is a
 sceKernelGetSystemTimeLow call; their own cost is measured once at the
 first report (one timer reading) so the parts can be read net of it */
-#ifdef PSP_DRAWLIST
+#if defined(PSP_DRAWLIST) && defined(PSP_RECON)
+/* both: the level's split part (11), meparts' five geometry steps (from
+MP_PART), and the kept path's own steps (17-22, box_draw_list_level.inc) */
+#define GE_PARTS 23
+#define MP_PART 12
+#define GE_PART_SLOTS 24
+#elif defined(PSP_DRAWLIST)
 /* the level draw's part after the cut split in two: the index copy, slant
 sort and cut corners apart from the passes (docs/box_draw_list.md §12.1a (b)) */
 #define GE_PARTS 12
+#elif defined(PSP_RECON)
+#define GE_PARTS 16 /* meparts' five steps inside the skinned batch loop (model_geometry) */
+#define MP_PART 11
 #else
 #define GE_PARTS 11
+#endif
+#ifndef GE_PART_SLOTS
+#define GE_PART_SLOTS 16
 #endif
 /* build 53: 0 all passes; 1 base only; 2 base + lightmap; 3 lightmap on white;
 4 base + detail maps (psp_sdl.c cycles it with select + left under "passes") */
@@ -4820,8 +4860,8 @@ static int tex_level_mode = GU_TEXTURE_AUTO;
 static float tex_bias = 0.0f;
 #define SHOWCASE_BIAS_DEFAULT 8 /* quarter levels: two levels coarser, judged right on a PSP-1000 by hand (sharper levels shimmer on the hull); a bias smears the ring and the sky some, so 4 is still to be tried by hand; showcasebias0 as before */
 static int in_sky;
-static unsigned long ge_part_us_by[2][16] __attribute__((aligned(64)));
-static unsigned long ge_part_calls_by[2][16] __attribute__((aligned(64)));
+static unsigned long ge_part_us_by[2][GE_PART_SLOTS] __attribute__((aligned(64)));
+static unsigned long ge_part_calls_by[2][GE_PART_SLOTS] __attribute__((aligned(64)));
 #define ge_part_us (ge_part_us_by[PSP_ME_WORK() ? 1 : 0])
 #define ge_part_calls (ge_part_calls_by[PSP_ME_WORK() ? 1 : 0])
 static const char *const ge_part_names[GE_PARTS] = {
@@ -4831,20 +4871,129 @@ static const char *const ge_part_names[GE_PARTS] = {
 #ifdef PSP_DRAWLIST
 	, "level: index copy, slant sort, cut corners"
 #endif
+#ifdef PSP_RECON
+	/* meparts only: model_geometry's skinned batches split, so parts 7 and
+	8 keep what's left of them */
+	, "geometry: bone matrices", "geometry: near tests and lists", "geometry: draw calls",
+	"geometry: since the last mark, to the batch", "geometry: bone sub-list take"
+#endif
+#if defined(PSP_DRAWLIST) && defined(PSP_RECON)
+	/* meparts only, the level's kept path (levelkept) and the same places
+	on the old path, so both sides of its A/B split alike */
+	, "level: matrix to the decision (kept: its entry lookup)", "level: uv centre and base slope",
+	"kept: blocks CALLed and live draws", "kept: finish (entry count, stall)", "kept: matrix, cull and stamp",
+	"kept: a made draw's blocks and draws"
+#endif
 	};
 static unsigned int part_mark_by[2][16] __attribute__((aligned(64)));
 #define part_mark (part_mark_by[PSP_ME_WORK() ? 1 : 0][0])
+#ifdef PSP_RECON
+/* meparts: the list words each part writes (the cursor moved between its
+marks, bone sub-lists taken from the list included), so a part can be sized
+by its words as well as its time */
+static unsigned long ge_part_words_by[2][GE_PART_SLOTS] __attribute__((aligned(64)));
+#define part_list_at (part_mark_by[PSP_ME_WORK() ? 1 : 0][1])
+static inline unsigned int part_list_cursor(void)
+{
+	return (unsigned int)gu_list->current & ~0x40000000u;
+}
+/* on the ME ge_clock reads nothing (no system call there): meparts times
+its parts on its own cycle counter, one instruction */
+static inline unsigned int part_clock(void)
+{
+	if (me_parts_on && psp_on_me())
+	{
+		unsigned int count;
+
+		__asm__ __volatile__("mfc0 %0, $9" : "=r"(count));
+		return count;
+	}
+	return ge_clock();
+}
+/* meparts + meprofile: the ME's profiler counters at each mark, so each
+part's time splits into executing, code misses and data misses, and the
+render job's totals (psp_me.c's meprofile bin) less the parts' give the
+time in no part its own split. Set only on the ME, inside a profiled job
+(psp_ge_me_replay); the block at 0xBC400000 is the ME's own there, and a
+kernel address the main CPU can't read, so psp_on_me() is tested too */
+#define ME_PROFILER ((volatile unsigned int *)0xBC400000)
+#define PART_COUNTERS 5 /* I-misses, D-misses, write-backs, memory-wait cycles, bus-access cycles */
+/* 64-bit: a heavy step's memory wait outgrows 32 bits over 300 frames */
+static unsigned long long ge_part_cnt[GE_PARTS][PART_COUNTERS] __attribute__((aligned(64)));
+static unsigned int part_cnt_mark[PART_COUNTERS] __attribute__((aligned(64)));
+/* each part's counted marks, and those whose code ran from MEXEC's copy:
+the counters can't say where an I-miss filled from, so a part whose own
+code is in the copy and still pays main RAM's price a miss points at the
+code it calls outside the copy (docs/meprofile.md) */
+static unsigned int ge_part_marks[GE_PARTS][2] __attribute__((aligned(64)));
+static inline void part_counters(unsigned int *out)
+{
+	/* PspDebugProfilerRegs after the enable word: 3 memory, 12 i_miss,
+	13 d_miss, 14 d_writeback, 7 bus_access */
+	out[0] = ME_PROFILER[1 + 12];
+	out[1] = ME_PROFILER[1 + 13];
+	out[2] = ME_PROFILER[1 + 14];
+	out[3] = ME_PROFILER[1 + 3];
+	out[4] = ME_PROFILER[1 + 7];
+}
+/* where this mark's own code runs: the copy sits in the ME's eDRAM
+(ME_EDRAM, 0x80000000 up, 2 MB), the originals in main RAM. A bal reads the
+PC without a load, and mexec.py leaves it alone (a branch inside the
+function carries no relocation) */
+static inline int part_in_copy(void)
+{
+	unsigned int pc;
+
+	__asm__ __volatile__(".set push\n\t.set noreorder\n\tbal 1f\n\tnop\n1:\tmove %0, $31\n\t.set pop" : "=r"(pc) : : "$31");
+	return (pc & 0xFFE00000u) == ME_EDRAM;
+}
+#define ME_PART_MARK(part) do { if (me_parts_on) part_add(part); } while (0)
+#else
+#define part_clock() ge_clock()
+#define ME_PART_MARK(part) do { } while (0)
+#endif
 static inline void part_start(void)
 {
-	part_mark = ge_clock();
+	part_mark = part_clock();
+#ifdef PSP_RECON
+	if (me_parts_on)
+		part_list_at = part_list_cursor();
+	if (part_counters_on && psp_on_me())
+		part_counters(part_cnt_mark);
+#endif
 }
 static inline void part_add(int part)
 {
-	unsigned int now = ge_clock();
+	unsigned int now = part_clock();
 
 	ge_part_us[part] += now - part_mark;
 	ge_part_calls[part]++;
 	part_mark = now;
+#ifdef PSP_RECON
+	if (part_counters_on && psp_on_me())
+	{
+		unsigned int c[PART_COUNTERS];
+		int k;
+
+		part_counters(c);
+		for (k = 0; k < PART_COUNTERS; k++)
+		{
+			ge_part_cnt[part][k] += c[k] - part_cnt_mark[k];
+			part_cnt_mark[k] = c[k];
+		}
+		ge_part_marks[part][0]++;
+		ge_part_marks[part][1] += part_in_copy();
+	}
+	if (me_parts_on)
+	{
+		unsigned int at = part_list_cursor();
+
+		/* a new list or a wrap leaves the cursor behind the mark: not counted */
+		if (at > part_list_at)
+			ge_part_words_by[PSP_ME_WORK() ? 1 : 0][part] += (at - part_list_at) >> 2;
+		part_list_at = at;
+	}
+#endif
 }
 static const char *const ge_entry_names[GE_ENTRIES] = { "level draws", "model parts", "see-through models", "see-through level", "sprites", "decals", "lights", "shadows", "see-through drawing" };
 static int list_peak = 0, clip_peak = 0;
@@ -11509,7 +11658,14 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 	}
 
 #ifdef PSP_DRAWLIST
+#ifdef PSP_RECON
+	/* meparts: the decision's own step (its stamp is part 21's) */
+	level_kept_mode(&lk, stream, base_key, lightmap_key, alpha_tested, cut_count);
+	ME_PART_MARK(17);
+	if (lk.mode == LK_KEPT)
+#else
 	if (level_kept_mode(&lk, stream, base_key, lightmap_key, alpha_tested, cut_count) == LK_KEPT)
+#endif
 	{
 		/* the base's bind is the first prologue block's */
 		textured = 1;
@@ -11591,6 +11747,7 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 		compact_now = stream->compact_base ? stream : NULL;
 		pass_scale_u = pass_scale_v = 1.0f;
 #ifdef PSP_DRAWLIST
+		ME_PART_MARK(18);
 		if (lk.mode == LK_KEPT)
 		{
 			level_kept_passes(&lk, stream, draw, kept_count, cut_count, base_key, lightmap_key, alpha_tested, base_slope);
@@ -16151,6 +16308,8 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 			const unsigned short *draw = b->indices;
 			int draw_count = b->index_count;
 			int weights = skin->weights;
+
+			ME_PART_MARK(MP_PART + 3);
 			/* each slot's matrix as the depth it gives a point: its rows
 			dotted with the camera's forward direction (build 41) */
 			/* static: 16-byte aligned for the VFPU's quad loads (build 106);
@@ -16180,6 +16339,7 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 					cursor = writing;
 				}
 			}
+			ME_PART_MARK(MP_PART + 4);
 			unsigned int slot_start = probe_clock(); /* build 119's probe */
 
 			for (slot = 0; slot < skin->weights; slot++)
@@ -16227,6 +16387,7 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 					top--;
 				weights = skin->weights <= 4 || top >= 5 ? top : 5;
 			}
+			ME_PART_MARK(MP_PART + 0);
 			if (cursor)
 			{
 				/* the sub-list ends with a return; this pass calls it too */
@@ -16627,6 +16788,7 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 				if (!draw_count)
 					continue;
 			}
+			ME_PART_MARK(MP_PART + 1);
 			/* "skinstrip": a whole batch from a strip variant's block draws its
 			strip, the GE transforming each index once and a strip's triangle
 			at ~1 index where a list's takes 3. Only baked plans have strips:
@@ -16649,6 +16811,7 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 			sceGumDrawArray(GU_TRIANGLES, GU_WEIGHTS(weights) | GU_WEIGHT_8BIT | GU_TEXTURE_32BITF |
 				GU_NORMAL_8BIT | GU_VERTEX_32BITF | GU_INDEX_16BIT | GU_TRANSFORM_3D, draw_count, draw,
 				vertices);
+			ME_PART_MARK(MP_PART + 2);
 		}
 		if (near && !from_memo)
 		{
@@ -16668,6 +16831,7 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 		if (model_cut_count > 0 && model_cut_vertices)
 			sceGumDrawArray(GU_TRIANGLES, GU_TEXTURE_32BITF | GU_NORMAL_8BIT | GU_VERTEX_32BITF | GU_TRANSFORM_3D,
 				model_cut_count, NULL, model_cut_vertices);
+		ME_PART_MARK(MP_PART + 2);
 	}
 }
 
@@ -27245,6 +27409,15 @@ static void frame_end_show(void)
 			ge_kinds_report(); /* build 103 */
 			CENSUS(census_report());
 			replay_kinds_report(300); /* mekinds */
+#ifdef PSP_RECON
+			{
+				/* meprofile: the ME's counters by job (psp_me.c) */
+				extern void psp_me_profile_report(unsigned int frames);
+
+				if (me_profile_on)
+					psp_me_profile_report(300);
+			}
+#endif
 			ge_reads_report(frames); /* build 115 */
 			vm_report(); /* build 116 */
 			/* build 112: every 300 frames, with the skinning plans' heap */
@@ -27460,17 +27633,74 @@ static void frame_end_show(void)
 					/* two lines: a log line holds 512 characters */
 					for (k = 0; k < GE_PARTS && written < (int)sizeof(parts) - 80; k++)
 					{
-						if (k == 4)
+						if (k == 4 || k == 14)
 						{
-							platform_log("GE: parts, us a frame (calls a frame): %s; one timer reading %u ns", parts, timer_cost_ns);
+							if (k == 4)
+								platform_log("GE: parts, us a frame (calls a frame): %s; one timer reading %u ns", parts, timer_cost_ns);
+							else
+								platform_log("GE: parts, us a frame (calls a frame): %s", parts);
 							written = 0;
 							parts[0] = 0;
 						}
-						written += snprintf(parts + written, sizeof(parts) - written, "%s%s %lu (%lu)", k != 4 && k ? ", " : "",
+						written += snprintf(parts + written, sizeof(parts) - written, "%s%s %lu (%lu)", written ? ", " : "",
 							ge_part_names[k], ge_part_us[k] / 300, ge_part_calls[k] / 300);
 						ge_part_us[k] = ge_part_calls[k] = 0;
 					}
 					platform_log("GE: parts, us a frame (calls a frame): %s", parts);
+#ifdef PSP_RECON
+					/* meparts: the ME's own, while no frame is out with it
+					(the ME writes these lines during its job) */
+					if (me_parts_on && !inflight_me_out)
+					{
+						extern float psp_me_cycles_per_us(void);
+						float rate = psp_me_cycles_per_us();
+
+						written = 0;
+						parts[0] = 0;
+						for (k = 0; k < GE_PARTS && rate > 0.0f; k++)
+						{
+							if (k == 7 || k == 14)
+							{
+								platform_log("GE: parts on the ME (meparts), us a frame (calls a frame; list words a frame): %s", parts);
+								written = 0;
+								parts[0] = 0;
+							}
+							written += snprintf(parts + written, sizeof(parts) - written, "%s%s %.0f (%lu; %lu words)", written ? ", " : "",
+								ge_part_names[k], (float)ge_part_us_by[1][k] / rate / 300, ge_part_calls_by[1][k] / 300,
+								ge_part_words_by[1][k] / 300);
+							ge_part_us_by[1][k] = ge_part_calls_by[1][k] = 0;
+							ge_part_words_by[1][k] = 0;
+						}
+						if (written)
+							platform_log("GE: parts on the ME (meparts), us a frame (calls a frame; list words a frame): %s", parts);
+						/* with meprofile: the same parts' counters, by part
+						number (the order of the names above) */
+						written = 0;
+						parts[0] = 0;
+						for (k = 0; k < GE_PARTS && written < (int)sizeof(parts) - 96; k++)
+						{
+							if (ge_part_cnt[k][0] | ge_part_cnt[k][1] | ge_part_cnt[k][3])
+								written += snprintf(parts + written, sizeof(parts) - written, "%s%d %llu/%llu/%llu/%llu", written ? ", " : "", k,
+									ge_part_cnt[k][0] / 300, ge_part_cnt[k][1] / 300, ge_part_cnt[k][2] / 300, ge_part_cnt[k][3] / 300);
+						}
+						if (written)
+							platform_log("GE: parts on the ME, counters a frame (meprofile; part: I-misses/D-misses/write-backs/memory-wait cycles): %s", parts);
+						/* its own line, so the line above reads as before: the
+						bus-access cycles and where each part's marks ran */
+						written = 0;
+						parts[0] = 0;
+						for (k = 0; k < GE_PARTS && written < (int)sizeof(parts) - 96; k++)
+						{
+							if (ge_part_marks[k][0])
+								written += snprintf(parts + written, sizeof(parts) - written, "%s%d %llu/%u/%u", written ? ", " : "", k,
+									ge_part_cnt[k][4] / 300, ge_part_marks[k][1] / 300, ge_part_marks[k][0] / 300);
+						}
+						memset(ge_part_cnt, 0, sizeof(ge_part_cnt));
+						memset(ge_part_marks, 0, sizeof(ge_part_marks));
+						if (written)
+							platform_log("GE: parts on the ME, bus and copy a frame (meprofile; part: bus-access cycles/marks from MEXEC's copy/marks): %s", parts);
+					}
+#endif
 					/* build 48: the list's cached regions and the stall updates */
 					platform_log("GE: list: %lu regions a frame written cached (%lu KB a frame, %lu lines written back); command words %s (%lu lines a frame written back); stall updates %lu a frame, %lu passed on (%s), %.1f us each (%lu timed); decal quads under 2 pixels left out %lu, wholly off the screen %lu (since the start); decal calls with nothing on the screen %lu a frame; decals tested out before their record %lu a frame",
 						cached_takes / 300, cached_bytes / 300 / 1024, cached_lines_flushed / 300,

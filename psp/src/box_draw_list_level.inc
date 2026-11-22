@@ -243,6 +243,9 @@ static int level_kept_mode(struct lk_now *k, const struct level_stream *stream, 
 		lk_refused[LKR_MISSING]++;
 		return LK_OFF;
 	}
+	/* meparts (recon): the level's matrix, its cull and this stamp, apart
+	from the entry lookup after it (part 17) */
+	ME_PART_MARK(21);
 	k->entry = dl_entry_get(stream, base_key, k->stamp, ge_hot.stream_frame, &k->making, &failed);
 	if (failed >= 0)
 		lk_stamp_failed[lk_stamp_kind(failed)]++;
@@ -577,6 +580,8 @@ static void level_kept_passes(struct lk_now *k, const struct level_stream *strea
 		dl_block_end(&run);
 	}
 
+	/* meparts (recon): the blocks and live draws, a made draw's apart */
+	ME_PART_MARK(run.making ? 22 : 19);
 	/* the dither's and blend's memo kept with the slot, as pspgu's state is */
 	user[0] = dither_now;
 	user[1] = blend_now;
@@ -596,6 +601,7 @@ static void level_kept_passes(struct lk_now *k, const struct level_stream *strea
 	if (dl_entries_used() > lk_used_most)
 		lk_used_most = dl_entries_used();
 	dl_stall_pass();
+	ME_PART_MARK(20);
 }
 
 /* levelkeptcheck, after the old form's passes: the kept form written after
