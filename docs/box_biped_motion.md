@@ -197,7 +197,7 @@ Sheepdog01: play biped motion out, as long as it doesn't conflict with a future 
         - **What it should buy** [U, to be counted]:
           - The gather's sphere becomes the move's own, so b30's walks fall back toward the old gather's (the PSP's +682 net toward 0) and the 2% fallbacks go to the stale-record count.
           - Against it: the records' writes and reads, and step 5's branches split across two passes.
-        - **Build:** keep word `bipedstage3` (with `bipedstage bipedstage2`), off by default, under `PSP_BIPEDSTAGE`. `PSP_BIPEDSTAGE_NOINLINE=1` (recon only, never the priced build) marks `psp_bipedstage_*` and `psp_bipedstage2_*` noinline, so the pass's own cost shows under its own names in the PSP's sampler.
+        - **Build:** keep word `bipedstage3` (with `bipedstage bipedstage2`), off by default **(superseded 2026-11-21: on by default in the campaign build since 2026-11-20, `keep_defaults[]`; off word `bipedstageoff`)**, under `PSP_BIPEDSTAGE`. `PSP_BIPEDSTAGE_NOINLINE=1` (recon only, never the priced build) marks `psp_bipedstage_*` and `psp_bipedstage2_*` noinline, so the pass's own cost shows under its own names in the PSP's sampler.
         - **Read first in the cache model:** the three figures over the whole tick, b30_leg2 and c20_leg2, `- | bipedstage bipedstage2 | bipedstage bipedstage2 bipedstage3`.
         - **Built** (2026-11-18 07:1x, builder/bipedstage 00e63039). The gather's packing is shared (`psp_bs2_pack`) between the gather at the tick's start and the exact call. The exact sphere adds 1e-4 wu for rounding only.
         - **b30, the cache model** [E, exact counts: the lab's stage3x 44308153524, findings `stage3x_whole_tick`; the staged build's own profile, cachetop 3000]. I-misses / D-misses / cycles a tick:
@@ -263,6 +263,32 @@ Sheepdog01: play biped motion out, as long as it doesn't conflict with a future 
   - **The biped part doesn't gain run as one pass:** the move, its collision queries and the link stay about flat per call (b30's move 92 -> 71, c20's 105 -> 102), as §3b says: the move and its queries interleave inside one call and together pass 256 lines. That's the rounds' slice, next.
   - ~~**Open:** play parted between the sides, and b30's staged side made more `biped_update` calls a tick (16.0 -> 23.4; c20 37.2 -> 32.6) [U: a biped updated twice in a tick, or more bipeds active]~~ **Found (2026-11-18 01:0x) [D]:** the first pass ran `unit_update` for every deferred biped, bodies included, ahead of `psp_object_update`'s corpse sleep, which would have left a sleeping body alone (the world sleep, tried first as stage2b, wasn't it). A dead biped now goes whole through `psp_object_update` in the second pass (builder/bipedstage 1f1200aa); stage2c (the lab's sierra-batch 44211701376, findings `stage2c_slice1`) [E, exact counts]: b30's bipeds a tick match the old path (the census 21.7 both sides; the footprint's calls 16.0 -> 17.6); c20's play parted (36.5 against 39.0). The unit pass keeps its gain (I-misses a tick 1,339 -> 609 on b30, 1,284 -> 239 on c20); the biped part, still one walk a biped, rises on b30 (move +11%, queries +8%, link +32%: all the tick's biped misses 5,930 -> 5,880) and falls on c20 (-15% each: a biped update's misses 323 -> 269). Slice 2 takes the gather out of the walk (below).
 - **The ceiling it chases** [E]: phasing the bipeds' update was counted at ~1.1 ms a tick on b30 and ~2.6 on c20 (§5), the largest of the code-side figures on the tick. No PSP price until a stage form is built.
+
+### 3c. What every call runs without need (a read, 2026-11-21; no code)
+
+[D] Read in the engine as the port builds it (ChupathingyCE 2e5eac0 with `psp_fixups.py` applied) at tock162 b5241cc1; the line numbers are that tree's `source/units/bipeds.c` and `units.c`. The survey is the lab's or-job 44979917733 (the worker's, 138 rows over `biped_update`, its turning, moving and physics steps, `unit_update` and `unit_update_animation`); the rows below are the ones read again here line by line, and two of the survey's rows are corrected. **These are source lines, not instructions: nothing here is counted, sized or ranked.** The path read is the campaign build's default: `bipedstage`, `bipedstage2` and `bipedstage3` on (`keep_defaults[]`), `bipedmovestore` off, UNITHOIST, VERIFYGATE and TAGMEMO on, `PSP_ASSERTS_OFF`, and `PSP_DEADDEBUG`, under which `profile_enter` and `profile_exit` compile to nothing (`cseries/profile.h` 35-53).
+
+Kinds: **instrument** (a check, a log or a switch's test), **constant** (its inputs are the same over the tick or the map, worked out for every biped), **same** (cannot differ from last tick without a named event), **discarded** (worked out, and nothing on the common path reads it).
+
+| Where | What every call runs | Kind | Needed when |
+|---|---|---|---|
+| bipeds.c 3329-3339, 3354-3371 (`biped_update_physics`, around `collision_move_pill`; `psp_fixups.py` FIXES_36 `#pill`) | the pill sweep's timing log: two `psp_microseconds()` reads, the still / slow / moving sort, three counters, and a log line every 3,000 sweeps | instrument | never in play; it is built in every build, not only with the debug tools |
+| bipeds.c 5027 | `PSP_KEEP_ONCE("unithoistold")`, a static's test | instrument | settled at the first call |
+| bipeds.c 5030-5031 | the `debug_biped_skip_update` test | instrument | a debug build |
+| bipeds.c 5046, 5158, 5162, 5172, 5191, 5282; units.c 5597 and nine more in `unit_update` | 6 + 10 vector-check gates, one load and test each under VERIFYGATE | instrument | `verifyvectors` |
+| bipeds.c 4197-4200 (`biped_update_turning`) | `cosf` and `sinf` of `definition->biped.moving_turning_speed / TICKS_PER_SECOND` (the build links the single-precision pair), for every biped that is moving or turns without animating | constant | once a biped definition a map |
+| units.c 5593 | `game_engine_allow_integrated_lights(unit_index)` | constant | once a tick at most |
+| units.c 5732 | the jetpack test's `cheat.jetpack \|\| mcc_script_effect_enabled(MCC_EFFECT_JETPACK)` | constant | once a tick at most |
+| units.c 6004-6028 | `aiming_change`: `angle_between_vectors3d` (an arccosine) of this tick's aim and the last, a division and a byte store | discarded | read only by `unit_export_function_values` (units.c 1213-1214), for a unit whose tag exports the aiming change |
+| units.c 5781-5788, 5800-5807 | the two camouflage amounts of a unit that isn't camouflaged: 1/120 and 1/90 taken from 0 and clamped back to 0, two stores | same | a unit that is camouflaged or fading out |
+| bipeds.c 4435 (`biped_update_moving`) | `model_definition_get(definition->object.model.index)`, its answer unused (a word compare under TAGMEMO) | discarded | never |
+| bipeds.c 2664 (`biped_update_jumping`) | `biped_definition_get`, its answer unused; the same calls at 2610 and 2644 are already skipped under UNITHOIST (`if (!held_biped)`) | discarded | never |
+| units.c 5663-5713 | the driver's and gunner's copies: for a biped two `!= NONE` tests, the blocks never entered | discarded | a vehicle with a driver or a gunner |
+| bipeds.c 3387-3555 | the support surface's edge-ring walk, entered when the sweep found no collision and the biped has a support surface | same [U] | how often a standing biped's sweep finds nothing isn't counted: the pill log's "still N ... (X collisions each)" line would say |
+
+- **Two corrections to the survey:** `gunner_inactive_ticks` (units.c 5715-5722) does run for a biped and is read: a counter up to `CHAR_MAX`, reset by the gunner control bits, read by `biped_vehicle_speech` for the biped's own (bipeds.c 2181). And `stubbs_mode_active()` at bipeds.c 5155 runs only for a crouching biped (`animation.crouching && ...`), not on every call.
+- **What this read can't say:** every "discarded" row rests on how many of a tick's bipeds are dead, seated, asleep or not a player, which no run here has counted; and the survey's other rows (the state updates, footsteps, the animation's steps) were not read again.
+- **The correction it found on this page:** `bipedstage3` is on by default in the campaign build since 2026-11-20 (`keep_defaults[]` in `psp_platform.c`); the line under slice 3 that says "off by default" is marked.
 
 ## 4. Budget
 
