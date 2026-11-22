@@ -19,6 +19,22 @@ missed); a line `-name` keeps that function, and what only it reaches, out
 of every `+` line's reach (a debug report, say). Calls through a pointer
 aren't followed: those functions run on from main RAM.
 
+A plain line `name @<set>` places the function: its copy starts on that set
+of the Media Engine's instruction cache (0-127: the cache is 16 KB in two
+ways of 128 lines of 64 bytes, docs/hardware_facts.md, and a line's set is
+its address / 64 mod 128). The copy is otherwise laid end to end in the
+list's order, so where a function lands, and which lines it then shares a
+set with, follows from the size of everything before it; a placed function
+is padded up to its set instead, here, from the sizes as linked. So a
+list's placement holds when code before it grows or shrinks: the pad takes
+it up. Each placed function's set and pad are printed. A pad over the
+list's limit ("# @pad <bytes>", 512 without it) stops the build: the code
+before it has outgrown the room the list left, the function would start a
+whole way later, and the list is to be derived again (the lab's codeorder).
+A placed function @fill cuts is named on the CUT line, and one the program
+doesn't hold on a line starting "mexec: UNPLACED"; psp_build.py carries
+both into the build's summary.
+
 Every run also checks the copied functions for what the Media Engine can't
 run (docs/hardware_facts.md: no VFPU, no kernel): VFPU instructions,
 syscall instructions, calls into the import stubs (system calls), and it
@@ -74,6 +90,8 @@ VERSION = 1
 HEADER_WORDS = 16
 ROOM = 192 * 1024   # docs/mexec.md: eDRAM 0x40000-0x70000
 ALIGN = 64
+SETS = 128          # the ME's instruction cache: 16 KB, 2 ways, 64-byte lines (docs/hardware_facts.md)
+PAD_LIMIT = 512     # a placed function's pad, bytes ("# @pad <bytes>")
 
 R_MIPS_32, R_MIPS_26, R_MIPS_HI16, R_MIPS_LO16, R_MIPS_PC16 = 2, 4, 5, 6, 10
 EDRAM = 0x80040000  # the copy's address on the ME (docs/mexec.md)
@@ -243,8 +261,17 @@ class Over(Exception):
     """a copy that doesn't fit its room, or a branch that can't reach its trampoline"""
 
 
-def build(elf, names, log, entry="psp_ge_me_replay", fill=False, max_words=None):
+def build(elf, names, log, entry="psp_ge_me_replay", fill=False, max_words=None, sets=None):
     chosen = resolve(elf, names, log)
+    # "name @<set>": the set goes with the function (resolve() copies nothing)
+    for f in chosen:
+        f["set"] = (sets or {}).get(f["name"])
+    # a placed name the program doesn't hold (or holds twice) is at no set:
+    # its line was left out above like any other, and this line says what
+    # the placement lost (psp_build.py carries it into the build's summary)
+    lost = sorted(set(sets or {}) - set(f["name"] for f in chosen))
+    if lost:
+        log("mexec: UNPLACED: %d of the list's placed functions are not in the copy: %s" % (len(lost), ", ".join(lost)))
     if not chosen or chosen[0]["name"] != entry:
         sys.exit("mexec: the list's first function must be the ME's entry, %s, and be in the program" % entry)
     if not fill:
@@ -277,8 +304,10 @@ def build(elf, names, log, entry="psp_ge_me_replay", fill=False, max_words=None)
         why = "the table, %d words of %d" % (len(words), max_words)
     except Over as e:
         why = str(e)[len("mexec: "):]
-    log("mexec: CUT: @fill copies %d of the list's %d functions (the first left in main RAM: %s; with it, %s)" % (
-        lo, len(chosen), chosen[lo]["name"], why))
+    unplaced = [f["name"] for f in chosen[lo:] if f["set"] is not None]
+    log("mexec: CUT: @fill copies %d of the list's %d functions (the first left in main RAM: %s; with it, %s)%s" % (
+        lo, len(chosen), chosen[lo]["name"], why,
+        "; placed functions cut, left in main RAM at no set of the list's: " + ", ".join(unplaced) if unplaced else ""))
     return counted(lay(elf, chosen[:lo], log), len(chosen), log)
 
 
@@ -287,6 +316,32 @@ def counted(words, listed, log):
     words[12] = listed
     log("mexec: copied %d of the list's %d functions" % (words[4], listed))
     return words
+
+
+def places(chosen, leaving, log):
+    """each function's place in the copy and the code's end: the list's order at 64-byte steps, the functions
+    of `leaving` last, a placed function ("set") padded up to its set"""
+    place, at, pads = {}, 0, 0
+    for f in [g for g in chosen if g["value"] not in leaving] + [g for g in chosen if g["value"] in leaving]:
+        at = (at + ALIGN - 1) // ALIGN * ALIGN
+        if f.get("set") is not None:
+            # padded up to its set: the next line of the copy on it
+            pad = (f["set"] - (EDRAM + at) // ALIGN) % SETS * ALIGN
+            if pad > PAD_LIMIT:
+                sys.exit("mexec: %s is placed at set %d, and the code before it ends at set %d: a pad of %d bytes, over the "
+                         "list's %d (# @pad)%s. The code before it has outgrown the list's placement: derive the list again"
+                         % (f["name"], f["set"], (EDRAM + at) // ALIGN % SETS, pad, PAD_LIMIT,
+                            "; it holds a branch out of itself, so it is laid with the last functions"
+                            if f["value"] in leaving else ""))
+            at += pad
+            pads += pad
+            log("mexec: placed %s at set %d (the copy's 0x%x, %d bytes; pad %d)" % (f["name"], f["set"], at, f["size"], pad))
+        place[f["value"]] = at
+        at += f["size"]
+    if any(f.get("set") is not None for f in chosen):
+        log("mexec: placement: %d functions at their sets, %d bytes of pads" % (
+            sum(1 for f in chosen if f.get("set") is not None), pads))
+    return place, at
 
 
 def lay(elf, chosen, log):
@@ -305,12 +360,7 @@ def lay(elf, chosen, log):
         target = site + 4 + (sext16(elf.word(site) & 0xFFFF) << 2)
         if not ranges[k][0] <= target < ranges[k][1]:
             leaving.add(ranges[k][0])
-    place, at = {}, 0
-    for f in [g for g in chosen if g["value"] not in leaving] + [g for g in chosen if g["value"] in leaving]:
-        at = (at + ALIGN - 1) // ALIGN * ALIGN
-        place[f["value"]] = at
-        at += f["size"]
-    code_bytes = at
+    place, code_bytes = places(chosen, leaving, log)
 
     def copy_place(target):
         for f in chosen:
@@ -457,7 +507,7 @@ def main(argv):
     if len(args) != 2:
         sys.exit(__doc__)
     elf = Elf(args[0])
-    global ROOM
+    global ROOM, PAD_LIMIT
     lines = open(args[1]).read().splitlines()
     fill = False
     for l in lines:
@@ -466,13 +516,27 @@ def main(argv):
             ROOM = int(m.group(1)) * 1024
         if re.match(r"#\s*@fill\s*$", l.strip()):
             fill = True
-    names = [l.split("#")[0].strip() for l in lines]
-    names = [n for n in names if n]
+        m = re.match(r"#\s*@pad\s+(\d+)\s*$", l.strip())
+        if m:
+            PAD_LIMIT = int(m.group(1))
+    names, sets = [], {}
+    for l in lines:
+        n = l.split("#")[0].strip()
+        m = re.match(r"^([^\s@+-]\S*)\s+@(\d+)$", n)
+        if m:
+            if int(m.group(2)) >= SETS:
+                sys.exit("mexec: %s: the instruction cache has sets 0-%d" % (n, SETS - 1))
+            n = m.group(1)
+            sets[n] = int(m.group(2))
+        elif " " in n or "\t" in n:
+            sys.exit("mexec: not a list line: %s (a name, +name, -name, or 'name @<set>')" % n)
+        if n:
+            names.append(n)
     table = [s for s in elf.symbols if s["name"] == "psp_mexec_table" and s["type"] == STT_OBJECT]
     if len(table) != 1:
         sys.exit("mexec: psp_mexec_table isn't in the program (built without PSP_MEXEC?)")
     t = table[0]
-    words = build(elf, names, print, entry, fill, t["size"] // 4)
+    words = build(elf, names, print, entry, fill, t["size"] // 4, sets)
     if 4 * len(words) > t["size"]:
         sys.exit("mexec: the table is %d words, over psp_mexec_table's %d" % (len(words), t["size"] // 4))
     s = elf.section_at(t["value"])
