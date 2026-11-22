@@ -51,15 +51,29 @@ int dl_store_carve(void *region, unsigned int bytes, unsigned int slot_bytes);
 int dl_store_slots(void);
 unsigned int dl_store_slot_bytes(void);
 
-/* an entry for (key, key2) with this stamp, at frame: its index, with *making
-1 when its slot has to be written (new, or its stamp failed, *failed_word
-then the first stamp word that differed, else -1). DL_FENCED: its stamp
-failed within DL_FENCE frames of a CALL; DL_FULL: no slot free of the fence */
+/* the entry kept for (key, key2), or -1: hint first (the user's last answer for
+this key, one line read), then a window of DL_PROBE entries from the pair's
+hash, so a held draw reads two or three lines rather than every entry */
+#define DL_PROBE 4
+int dl_entry_find(const void *key, unsigned int key2, int hint);
+/* an entry for (key, key2) with this stamp, at frame (found: dl_entry_find's
+answer): its index, with *making 1 when its slot has to be written (new, or
+its stamp failed, *failed_word then the first stamp word that differed, else
+-1). DL_FENCED: its stamp failed within DL_FENCE frames of a CALL; DL_FULL: no
+entry of the pair's window free of the fence */
 #define DL_FENCED (-1)
 #define DL_FULL (-2)
-int dl_entry_get(const void *key, unsigned int key2, const unsigned int *stamp, unsigned int frame, int *making,
-	int *failed_word);
+int dl_entry_get(const void *key, unsigned int key2, const unsigned int *stamp, unsigned int frame, int found,
+	int *making, int *failed_word);
+/* entries holding a key, kept as they are taken and freed (for the report) */
 int dl_entries_used(void);
+/* DL_USER words the user keeps with an entry, on its line of hot fields (its
+own answers that the stamp is made from, as the textures' places in the
+pack); written when making */
+#define DL_USER 4
+unsigned int *dl_entry_user(int entry);
+/* the stamp an entry was made with */
+const unsigned int *dl_entry_stamp(int entry);
 
 /* one entry's blocks this frame: dl_run_start, then for each block
 "if (dl_block_begin(&run)) { pspgu's state calls } dl_block_end(&run);"
@@ -80,6 +94,26 @@ when kept, out when making). 0 when a slot outgrew its room or a kept run
 CALLed other than its blocks: the user then turns itself off */
 int dl_run_finish(struct dl_run *run, int user[2]);
 unsigned int dl_run_words(const struct dl_run *run);
+
+/* a pool of pages in main RAM for kept data of any size (dl_pool_carve hands
+it a region for good): first fit from a bitmap, a run of contiguous pages. A
+pool the GE reads is written back by its user before an address enters the
+list, and its user gives a run back only DL_FENCE frames after the last frame
+that may have named it; a pool only the CPU that writes the list reads gives
+runs back at once */
+#define DL_POOL_PAGES 512
+struct dl_pool
+{
+	unsigned char *base;
+	unsigned int page_bytes, pages, used, peak, refused;
+	unsigned int bits[DL_POOL_PAGES / 32];
+};
+int dl_pool_carve(struct dl_pool *pool, void *region, unsigned int bytes, unsigned int page_bytes);
+void *dl_pool_take(struct dl_pool *pool, unsigned int bytes);
+void dl_pool_give(struct dl_pool *pool, void *at, unsigned int bytes);
+/* the cache lines of [at, at + bytes) written back and dropped, so the GE
+reads what this CPU wrote (cache 0x1B, either CPU) */
+void dl_writeback(const void *at, unsigned int bytes);
 
 /* the emitter, straight into the list */
 void dl_draw(int prim, int vtype, int count, const void *indices, const void *vertices);

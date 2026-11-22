@@ -4209,11 +4209,25 @@ key names no texture in the pack (the bind would draw nothing and ask for
 nothing); 1: in the pack but not resident (the bind would ask for it, so the
 draw goes through the old path); otherwise the texture's resident address,
 which the prologue's words name. mark 0 only looks */
+unsigned int psp_tex_kept_at(int index, int mark, int *has_alpha);
+
 unsigned int psp_tex_kept_touch(unsigned int key, int mark, int *has_alpha)
 {
-	int index = key && entries ? find(key) : -1;
+	return psp_tex_kept_at(key && entries ? find(key) : -1, mark, has_alpha);
+}
 
-	if (index < 0)
+/* the key's place in the pack (-1: not in it), for a kept draw that keeps
+the place with its entry and asks psp_tex_kept_at by it on later frames,
+with no lookup; a place holds while psp_tex_map_opens is unchanged */
+int psp_tex_kept_find(unsigned int key)
+{
+	return key && entries ? find(key) : -1;
+}
+
+/* psp_tex_kept_touch by the pack's place */
+unsigned int psp_tex_kept_at(int index, int mark, int *has_alpha)
+{
+	if (index < 0 || !entries)
 		return 0;
 	if (!resident_at[index])
 		return 1;

@@ -27,44 +27,58 @@ extern int gum_current_mode, gum_matrix_update[4], gum_current_matrix_update;
 extern ScePspFMatrix4 *gum_current_matrix, *gum_stack_depth[4];
 typedef char dl_context_fits[sizeof(struct dl_gu_context) <= sizeof(((struct dl_gu_saved *)0)->context) ? 1 : -1];
 
-struct dl_entry
+/* an entry's hot fields, one 32-byte line: all a held draw's lookup reads
+before its stamp. The rest (the stamp, the blocks' places, the state the slot
+leaves) is the cold part beside it */
+struct dl_hot
 {
 	const void *key; /* NULL: free */
-	unsigned int key2, stamp[DL_STAMP], last_frame;
-	unsigned short block[DL_BLOCKS], words;
-	unsigned char blocks;
+	unsigned int key2, last_frame;
+	unsigned short words;
+	unsigned char blocks, pad;
+	unsigned int user[DL_USER];
+};
+typedef char dl_hot_is_a_line_half[sizeof(struct dl_hot) == 32 ? 1 : -1];
+struct dl_entry
+{
+	unsigned int stamp[DL_STAMP];
+	unsigned short block[DL_BLOCKS];
 	int exit_states, exit_context[5], exit_user[2];
 };
 
 int dl_stall_held = 0;
 static unsigned char *store;
 static unsigned int store_bytes, slot_words;
+static struct dl_hot *hot;
 static struct dl_entry *table;
 static unsigned int *slots;
-static int slot_count;
+static int slot_count, entries_used;
 
 int dl_store_carve(void *region, unsigned int bytes, unsigned int slot_bytes)
 {
-	unsigned int table_bytes = 0;
+	unsigned int hot_bytes = 0, table_bytes = 0;
 	int count;
 
 	if (store || !region || ((unsigned int)region & 63) || (slot_bytes & 63) || !slot_bytes)
 		return 0;
-	for (count = (int)(bytes / (slot_bytes + sizeof(struct dl_entry))); count > 0; count--)
+	for (count = (int)(bytes / (slot_bytes + sizeof(struct dl_entry) + sizeof(struct dl_hot))); count > 0; count--)
 	{
+		hot_bytes = ((unsigned int)count * sizeof(struct dl_hot) + 63) & ~63u;
 		table_bytes = ((unsigned int)count * sizeof(struct dl_entry) + 63) & ~63u;
-		if (table_bytes + (unsigned int)count * slot_bytes <= bytes)
+		if (hot_bytes + table_bytes + (unsigned int)count * slot_bytes <= bytes)
 			break;
 	}
 	if (count <= 0)
 		return 0;
 	store = region;
 	store_bytes = bytes;
-	table = (struct dl_entry *)store;
-	slots = (unsigned int *)(store + table_bytes);
+	hot = (struct dl_hot *)store;
+	table = (struct dl_entry *)(store + hot_bytes);
+	slots = (unsigned int *)(store + hot_bytes + table_bytes);
 	slot_count = count;
 	slot_words = slot_bytes / 4;
-	memset(table, 0, table_bytes);
+	entries_used = 0;
+	memset(store, 0, hot_bytes + table_bytes);
 	/* nothing of the region left in this CPU's cache to land over the ME's
 	writes or the GE's reads later */
 	sceKernelDcacheWritebackInvalidateRange(store, bytes);
@@ -81,30 +95,57 @@ unsigned int dl_store_slot_bytes(void)
 	return slot_words * 4;
 }
 
-int dl_entry_get(const void *key, unsigned int key2, const unsigned int *stamp, unsigned int frame, int *making,
-	int *failed_word)
+static int dl_window(const void *key, unsigned int key2)
 {
-	int i, victim = -1, diff;
+	unsigned int h = ((unsigned int)key >> 4) * 2654435761u ^ key2 * 40503u;
+
+	return (int)((h >> 8) % (unsigned int)slot_count);
+}
+
+int dl_entry_find(const void *key, unsigned int key2, int hint)
+{
+	int i, at;
+
+	if (!slot_count || !key)
+		return -1;
+	if (hint >= 0 && hint < slot_count && hot[hint].key == key && hot[hint].key2 == key2)
+		return hint;
+	for (i = 0, at = dl_window(key, key2); i < DL_PROBE && i < slot_count; i++, at = at + 1 < slot_count ? at + 1 : 0)
+		if (hot[at].key == key && hot[at].key2 == key2)
+			return at;
+	return -1;
+}
+
+int dl_entry_get(const void *key, unsigned int key2, const unsigned int *stamp, unsigned int frame, int found,
+	int *making, int *failed_word)
+{
+	int i, at, victim = -1, diff;
 
 	*failed_word = -1;
-	for (i = 0; i < slot_count; i++)
+	if (found >= 0)
 	{
-		const struct dl_entry *e = &table[i];
+		const struct dl_entry *e = &table[found];
 
-		if (e->key == key && e->key2 == key2)
+		for (diff = 0; diff < DL_STAMP && e->stamp[diff] == stamp[diff]; diff++)
+			;
+		*making = diff < DL_STAMP;
+		if (!*making)
+			return found;
+		*failed_word = diff;
+		return frame - hot[found].last_frame >= DL_FENCE ? found : DL_FENCED;
+	}
+	/* a free entry of the window first, else the one CALLed longest ago, past the fence */
+	for (i = 0, at = dl_window(key, key2); i < DL_PROBE && i < slot_count; i++, at = at + 1 < slot_count ? at + 1 : 0)
+	{
+		const struct dl_hot *h = &hot[at];
+
+		if (!h->key)
 		{
-			for (diff = 0; diff < DL_STAMP && e->stamp[diff] == stamp[diff]; diff++)
-				;
-			*making = diff < DL_STAMP;
-			if (!*making)
-				return i;
-			*failed_word = diff;
-			return frame - e->last_frame >= DL_FENCE ? i : DL_FENCED;
+			victim = at;
+			break;
 		}
-		/* a free entry first, else the one CALLed longest ago, past the fence */
-		if (frame - e->last_frame >= DL_FENCE && (victim < 0 || !e->key ||
-			(table[victim].key && e->last_frame - table[victim].last_frame > 0x80000000u)))
-			victim = i;
+		if (frame - h->last_frame >= DL_FENCE && (victim < 0 || h->last_frame - hot[victim].last_frame > 0x80000000u))
+			victim = at;
 	}
 	*making = 1;
 	return victim >= 0 ? victim : DL_FULL;
@@ -112,31 +153,39 @@ int dl_entry_get(const void *key, unsigned int key2, const unsigned int *stamp, 
 
 int dl_entries_used(void)
 {
-	int i, used = 0;
+	return entries_used;
+}
 
-	for (i = 0; i < slot_count; i++)
-		used += table[i].key != NULL;
-	return used;
+unsigned int *dl_entry_user(int entry)
+{
+	return hot[entry].user;
+}
+
+const unsigned int *dl_entry_stamp(int entry)
+{
+	return table[entry].stamp;
 }
 
 void dl_run_start(struct dl_run *run, int entry, int making, const void *key, unsigned int key2,
 	const unsigned int *stamp, unsigned int frame)
 {
-	struct dl_entry *e = &table[entry];
+	struct dl_hot *h = &hot[entry];
 
 	run->entry = entry;
 	run->making = making;
 	run->at = 0;
 	run->n = 0;
 	run->slot = slots + (unsigned int)entry * slot_words;
-	e->last_frame = frame;
+	h->last_frame = frame;
 	if (making)
 	{
 		/* a slot that outgrows its room is freed again at the finish */
-		e->key = key;
-		e->key2 = key2;
-		memcpy(e->stamp, stamp, sizeof(e->stamp));
-		e->blocks = 0;
+		if (!h->key)
+			entries_used++;
+		h->key = key;
+		h->key2 = key2;
+		memcpy(table[entry].stamp, stamp, sizeof(table[entry].stamp));
+		h->blocks = 0;
 		dl_stall_held++;
 	}
 }
@@ -181,16 +230,15 @@ void dl_block_end(struct dl_run *run)
 int dl_run_finish(struct dl_run *run, int user[2])
 {
 	struct dl_entry *e = &table[run->entry];
+	struct dl_hot *h = &hot[run->entry];
 	struct dl_gu_context *c = &gu_contexts[0];
 	int whole = 1;
 
 	if (run->making)
 	{
-		unsigned int line, end = (unsigned int)(run->slot + run->at);
-
 		whole = run->at <= (int)slot_words && run->n <= DL_BLOCKS;
-		e->blocks = (unsigned char)run->n;
-		e->words = (unsigned short)run->at;
+		h->blocks = (unsigned char)run->n;
+		h->words = (unsigned short)run->at;
 		e->exit_states = gu_states;
 		e->exit_context[0] = c->fragment_2x;
 		e->exit_context[1] = c->texture_function;
@@ -201,16 +249,17 @@ int dl_run_finish(struct dl_run *run, int user[2])
 		e->exit_user[1] = user[1];
 		/* the GE reads the slot from memory: written back before the stall
 		address can reach the CALLs that name it */
-		for (line = (unsigned int)run->slot & ~63u; line < end; line += 64)
-			__builtin_allegrex_cache(0x1B, line);
-		__asm__ volatile("sync");
+		dl_writeback(run->slot, (unsigned int)run->at * 4u);
 		dl_stall_held--;
 		if (!whole)
-			e->key = NULL;
+		{
+			h->key = NULL;
+			entries_used--;
+		}
 	}
 	else
 	{
-		whole = run->n == e->blocks;
+		whole = run->n == h->blocks;
 		gu_states = e->exit_states;
 		c->fragment_2x = e->exit_context[0];
 		c->texture_function = e->exit_context[1];
@@ -221,6 +270,84 @@ int dl_run_finish(struct dl_run *run, int user[2])
 		user[1] = e->exit_user[1];
 	}
 	return whole;
+}
+
+void dl_writeback(const void *at, unsigned int bytes)
+{
+	unsigned int line, end = (unsigned int)at + bytes;
+
+	for (line = (unsigned int)at & ~63u; line < end; line += 64)
+		__builtin_allegrex_cache(0x1B, line);
+	__asm__ volatile("sync");
+}
+
+int dl_pool_carve(struct dl_pool *pool, void *region, unsigned int bytes, unsigned int page_bytes)
+{
+	memset(pool, 0, sizeof(*pool));
+	if (!region || !page_bytes || ((unsigned int)region & 63) || (page_bytes & 63))
+		return 0;
+	pool->pages = bytes / page_bytes;
+	if (pool->pages > DL_POOL_PAGES)
+		pool->pages = DL_POOL_PAGES;
+	pool->base = region;
+	pool->page_bytes = page_bytes;
+	return (int)pool->pages;
+}
+
+static int dl_page_used(const struct dl_pool *pool, unsigned int page)
+{
+	return (int)((pool->bits[page >> 5] >> (page & 31)) & 1u);
+}
+
+void *dl_pool_take(struct dl_pool *pool, unsigned int bytes)
+{
+	unsigned int need = (bytes + pool->page_bytes - 1) / pool->page_bytes, page, run = 0, k;
+
+	if (!need || need > pool->pages)
+	{
+		pool->refused++;
+		return NULL;
+	}
+	for (page = 0; page < pool->pages; page++)
+	{
+		/* a whole word of used pages skipped at once */
+		if (!(page & 31) && pool->bits[page >> 5] == 0xFFFFFFFFu)
+		{
+			page += 31;
+			run = 0;
+			continue;
+		}
+		if (dl_page_used(pool, page))
+		{
+			run = 0;
+			continue;
+		}
+		if (++run == need)
+		{
+			unsigned int first = page + 1 - need;
+
+			for (k = first; k <= page; k++)
+				pool->bits[k >> 5] |= 1u << (k & 31);
+			pool->used += need;
+			if (pool->used > pool->peak)
+				pool->peak = pool->used;
+			return pool->base + first * pool->page_bytes;
+		}
+	}
+	pool->refused++;
+	return NULL;
+}
+
+void dl_pool_give(struct dl_pool *pool, void *at, unsigned int bytes)
+{
+	unsigned int need = (bytes + pool->page_bytes - 1) / pool->page_bytes, first, k;
+
+	if (!at || !need)
+		return;
+	first = (unsigned int)((unsigned char *)at - pool->base) / pool->page_bytes;
+	for (k = first; k < first + need && k < pool->pages; k++)
+		pool->bits[k >> 5] &= ~(1u << (k & 31));
+	pool->used -= need;
 }
 
 unsigned int dl_run_words(const struct dl_run *run)

@@ -1,11 +1,14 @@
-# MEXEC's list rbtswlk: the tock's rbtsw with the level's kept prologues
-# (PSP_DRAWLIST, keep word levelkept; docs/box_draw_list.md section 12.1a), so
-# the ME runs their decision, emitter and book from eDRAM. rbtsw's lines first,
-# in its order (its comments below), then the kept path's functions. The room
-# is codediet's 264 KB plus 4 KB (docs/memory_ledger.md, the ME's eDRAM: codediet's
-# room of 264 KB ends at 520 KB, the kept path's code takes 520-524 KB, and
-# this list's own copy ends at 524 KB); without PSP_DRAWLIST the names below
-# aren't in the program and the list is rbtsw's.
+# MEXEC's list rbtswlk: the tock's rbtsw with the level's kept prologues and
+# kept geometry (PSP_DRAWLIST, keep words levelkept, levelgeo, levelkept2;
+# docs/box_draw_list.md sections 12.1a and 12.1d), so the ME runs their
+# decision, emitter and book from eDRAM. rbtsw's lines first, in its order
+# (its comments below), then the kept path's functions, and the slant sort and
+# the uv centre's shift, which the kept path's code pushed out of the level
+# body's inlining (12.1d (g2)). The room is codediet's 264 KB plus 12 KB
+# (docs/memory_ledger.md, the ME's eDRAM: codediet's room of 264 KB ends at
+# 520 KB, the kept path's code takes 520-532 KB, and this list's own copy ends
+# at 532 KB); without PSP_DRAWLIST the names below aren't in the program and
+# the list is rbtsw's.
 # MEXEC's list rbtsw: the tock's rbt with the sweep's record function (rbsw's PSP_SWEEPME
 # lines), for the tock that runs the sweep's placement by default (the lead, 2026-11-20
 # 00:1x: sweepme slice 1 with the tick schedule's slice 1 on). rbt's lines first, in rbt's
@@ -19,7 +22,7 @@
 # beach, the ME's audio and replay jobs +3-6%). rb's 95 names first, in rb's order, then
 # run_job, then rbj's 121 think functions; the mixer's are left out, to price each part apart.
 # @jobs
-# @room 268
+# @room 276
 # The list fills its room to ~80 bytes, so a profile recounted with more hot
 # code would overflow it and the build refuse it: @fill cuts it at its coldest
 # tail instead, and says where. While it fits, the copy is the same.
@@ -286,3 +289,29 @@ dl_gu_stamp
 dl_entries_used
 psp_tex_kept_touch
 psp_tex_kept_forget
+psp_tex_kept_at
+psp_tex_kept_find
+lk_tex
+dl_entry_find
+dl_entry_user
+dl_entry_stamp
+dl_writeback
+# the kept geometry (levelgeo)
+level_geo_wanted
+level_geo_sort
+lg_entry_for
+lg_eye_at
+lg_slack
+lg_runs
+lg_kept
+lg_write
+lg_take
+lg_reclaim
+lg_free_copies
+lg_free_data
+lg_kept_copy
+dl_pool_take
+dl_pool_give
+# out of the level body's inlining once the kept path's code is in it
+angle_sort
+uv_shift

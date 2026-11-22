@@ -763,6 +763,11 @@ static unsigned int abgr_from_rgb(float const *rgb);
 void psp_ge_draw_level(const void *vertices, const void *lightmap_vertices, int vertex_count,
 	const unsigned short *indices, long triangle_count, unsigned int color,
 	unsigned int base_key, unsigned int lightmap_key, int alpha_tested);
+#ifdef PSP_DRAWLIST
+void psp_ge_draw_level_listed(const void *vertices, const void *lightmap_vertices, int vertex_count,
+	const unsigned short *indices, long triangle_count, unsigned int color,
+	unsigned int base_key, unsigned int lightmap_key, int alpha_tested, unsigned int list_version);
+#endif
 int psp_ge_contrail(void const *vertices, int vertex_count, unsigned int bitmap_key, short blend);
 void psp_ge_zoom_mask(unsigned int key, unsigned int strength);
 void psp_ge_sky(int on);
@@ -1282,11 +1287,24 @@ static unsigned int defer_bits(float value)
 	return w.u;
 }
 
+#ifdef PSP_DRAWLIST
+/* the draw list box's level draws take the main CPU's list version (the
+engine's list for the material is the same while it's unchanged:
+psp_level_list_version, psp_fixups.py's FIXES_DRAWLIST) as a 10th word */
+#define LV_PARAM , unsigned int list_version
+#define LV_ARG(x) , (x)
+#define LV_WORDS 10
+#else
+#define LV_PARAM
+#define LV_ARG(x)
+#define LV_WORDS 9
+#endif
+
 static int defer_draw_level(const void *vertices, const void *lightmap_vertices, int vertex_count,
 	const unsigned short *indices, long triangle_count, unsigned int color,
-	unsigned int base_key, unsigned int lightmap_key, int alpha_tested)
+	unsigned int base_key, unsigned int lightmap_key, int alpha_tested LV_PARAM)
 {
-	defer_word *at = defer_take(DEFER_DRAW_LEVEL, 9);
+	defer_word *at = defer_take(DEFER_DRAW_LEVEL, LV_WORDS);
 
 	at[0].p = vertices;
 	at[1].p = lightmap_vertices;
@@ -1297,6 +1315,9 @@ static int defer_draw_level(const void *vertices, const void *lightmap_vertices,
 	at[6].u = base_key;
 	at[7].u = lightmap_key;
 	at[8].i = alpha_tested;
+#ifdef PSP_DRAWLIST
+	at[9].u = list_version;
+#endif
 	return 1;
 }
 
@@ -1770,8 +1791,13 @@ static void defer_replay(const defer_word *buffer, unsigned int used, int on_me)
 			level_glow_set(w[0].u, w[1].u, w[2].u, w[3].u);
 			break;
 		case DEFER_DRAW_LEVEL:
+#ifdef PSP_DRAWLIST
+			psp_ge_draw_level_listed(w[0].p, w[1].p, w[2].i, (const unsigned short *)w[3].p, w[4].i, w[5].u, w[6].u,
+				w[7].u, w[8].i, w[9].u);
+#else
 			psp_ge_draw_level(w[0].p, w[1].p, w[2].i, (const unsigned short *)w[3].p, w[4].i, w[5].u, w[6].u, w[7].u,
 				w[8].i);
+#endif
 			break;
 		case DEFER_SKY:
 			psp_ge_sky(w[0].i);
@@ -7494,6 +7520,12 @@ struct level_stream
 	/* the point the positions of base and lightmap are given from (the world
 	minus it); low and high stay in the world */
 	float origin[3];
+#ifdef PSP_DRAWLIST
+	/* the draw list box's last entries for this stream (its kept prologue's
+	and its kept geometry's): a guess checked against the entry's key, so a
+	held draw finds its entry with one line read */
+	short lk_hint, geo_hint;
+#endif
 };
 #define LEVEL_STREAMS 512
 
@@ -11196,10 +11228,18 @@ struct lk_now
 {
 	int mode, entry, making, base_alpha, detail_runs, jumped, dither, blend;
 	unsigned int stamp[DL_STAMP], *from, pending[2];
+	short tex[6];
 	struct dl_gu_saved saved;
 };
-static int level_kept_mode(struct lk_now *k, const struct level_stream *stream, unsigned int base_key,
+static int level_kept_mode(struct lk_now *k, struct level_stream *stream, unsigned int base_key,
 	unsigned int lightmap_key, int alpha_tested, int cut_count);
+static int level_geo_wanted(long triangle_count, unsigned int list_version);
+static const unsigned short *level_geo_sort(struct level_stream *stream, unsigned int base_key,
+	const unsigned short *indices, long triangle_count, const unsigned char *bits, int dropped, long kept_count,
+	int far_possible, unsigned int lowest, unsigned int highest, unsigned int list_version,
+	const unsigned short **reference);
+static unsigned char lg_bits[ANGLE_TRIANGLES / 8];
+static void level_geo_report(void);
 static void level_kept_passes(struct lk_now *k, const struct level_stream *stream, const unsigned short *draw,
 	long kept_count, int cut_count, unsigned int base_key, unsigned int lightmap_key, int alpha_tested, float base_slope);
 static void level_kept_check(struct lk_now *k, const struct level_stream *stream, const unsigned short *draw,
@@ -11215,7 +11255,7 @@ static void level_kept_report(void);
 
 static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_vertices, int vertex_count,
 	const unsigned short *indices, long triangle_count, unsigned int color,
-	unsigned int base_key, unsigned int lightmap_key, int alpha_tested)
+	unsigned int base_key, unsigned int lightmap_key, int alpha_tested LV_PARAM)
 {
 	const unsigned short *draw = indices;
 	const unsigned short *const engine_indices = indices;
@@ -11231,6 +11271,11 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 	struct cut_store pieces_store;
 #ifdef PSP_DRAWLIST
 	struct lk_now lk;
+	/* the kept geometry's draw: the classify writes a bit a triangle (geo_bits;
+	NULL with every triangle kept) in place of copying the kept ones */
+	int geo = 0, geo_dropped = 0;
+	unsigned char *geo_bits = NULL;
+	const unsigned short *geo_reference = NULL, *geo_drawn = NULL;
 
 	lk.mode = LK_OFF;
 #endif
@@ -11318,6 +11363,14 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 		memset(vertex_codes + lowest, CODE_UNKNOWN, highest - lowest + 1);
 		level_draws_classified++;
 	}
+#ifdef PSP_DRAWLIST
+	geo = level_geo_wanted(triangle_count, list_version);
+	if (geo && !all_inside)
+	{
+		geo_bits = lg_bits;
+		memset(geo_bits, 0, (size_t)((triangle_count + 7) >> 3));
+	}
+#endif
 	/* each triangle against the camera: skipped, kept, or cut up */
 	for (index = 0; index < triangle_count && !all_inside; index++)
 	{
@@ -11349,9 +11402,18 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 				kept[3 * kept_count + 1] = triangle[1];
 				kept[3 * kept_count + 2] = triangle[2];
 			}
+#ifdef PSP_DRAWLIST
+			else if (geo_bits)
+				geo_bits[index >> 3] |= (unsigned char)(1u << (index & 7));
+#endif
 			kept_count++;
 			continue;
 		}
+#ifdef PSP_DRAWLIST
+		if (geo_bits)
+			geo_dropped = 1;
+		else
+#endif
 		if (!kept)
 		{
 			/* the first triangle left out: from here the kept ones are copied
@@ -11418,7 +11480,12 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 	back, so it read whatever an earlier frame left there: the level's
 	triangles came and went with the view (the canyon walls, the same way
 	each time the view turned). Out of the cache first, as the meters (build 39) */
+#ifdef PSP_DRAWLIST
+	/* the kept geometry writes the engine's list back when it draws it */
+	if (!kept && !geo)
+#else
 	if (!kept)
+#endif
 		ge_writeback(indices, triangle_count * 3 * sizeof(unsigned short));
 	/* build 64: sorted by slant (angle_sort; the copy, if one is made, is the
 	display list's own). Build 66: with the far triangles (past DETAIL_FAR)
@@ -11472,6 +11539,21 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 		const unsigned short *lcc_before = draw;
 #endif
 
+#ifdef PSP_DRAWLIST
+		if (geo)
+		{
+			draw = level_geo_sort(stream, base_key, indices, triangle_count, geo_bits, geo_dropped, kept_count,
+				far_possible, lowest, highest, list_version, &geo_reference);
+			if (!draw)
+				return;
+			/* the old form (levelgeocheck) draws the old way's copy, and the
+			kept form what the kept geometry chose */
+			geo_drawn = draw;
+			if (geo_reference)
+				draw = geo_reference;
+		}
+		else
+#endif
 		draw = angle_sort(stream->base, draw, kept_count, far_possible, lowest, highest);
 		angle_us += ge_clock() - angle_start;
 		LCC(lcc_sorted(stream, indices, triangle_count, kept_count, kept != NULL, draw != lcc_before, cut_count,
@@ -11612,7 +11694,8 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 #ifdef PSP_DRAWLIST
 		if (lk.mode == LK_KEPT)
 		{
-			level_kept_passes(&lk, stream, draw, kept_count, cut_count, base_key, lightmap_key, alpha_tested, base_slope);
+			level_kept_passes(&lk, stream, geo_drawn ? geo_drawn : draw, kept_count, cut_count, base_key, lightmap_key,
+				alpha_tested, base_slope);
 			goto level_passes_done;
 		}
 #endif
@@ -11776,7 +11859,8 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 		level_glow_pass(stream, draw, kept_count, &pieces_store, cut_count, base_slope, 1);
 #ifdef PSP_DRAWLIST
 		if (lk.mode == LK_CHECK)
-			level_kept_check(&lk, stream, draw, kept_count, cut_count, base_key, lightmap_key, alpha_tested, base_slope);
+			level_kept_check(&lk, stream, geo_drawn ? geo_drawn : draw, kept_count, cut_count, base_key, lightmap_key,
+				alpha_tested, base_slope);
 level_passes_done:
 #endif
 		sceGuDisable(GU_TEXTURE_2D);
@@ -11839,24 +11923,42 @@ static void level_pretouch(const void *vertices, const void *lightmap_vertices, 
 		level_pretouch_missed++;
 }
 
+#ifdef PSP_DRAWLIST
+/* list_version: the main CPU's version of the engine's list for this
+material (0: none, and the draw keeps no geometry) */
+void psp_ge_draw_level_listed(const void *vertices, const void *lightmap_vertices, int vertex_count,
+	const unsigned short *indices, long triangle_count, unsigned int color,
+	unsigned int base_key, unsigned int lightmap_key, int alpha_tested, unsigned int list_version)
+#else
 void psp_ge_draw_level(const void *vertices, const void *lightmap_vertices, int vertex_count,
 	const unsigned short *indices, long triangle_count, unsigned int color,
 	unsigned int base_key, unsigned int lightmap_key, int alpha_tested)
+#endif
 {
 	GE_PRETOUCH(base_key, TXPT_LEVEL_BASE);
 	GE_PRETOUCH(lightmap_key, TXPT_LIGHTMAP);
 	level_pretouch(vertices, lightmap_vertices, vertex_count, base_key);
 	GE_DEFER(defer_draw_level(vertices, lightmap_vertices, vertex_count, indices, triangle_count, color, base_key,
-		lightmap_key, alpha_tested)); /* build 112: gedefer */
+		lightmap_key, alpha_tested LV_ARG(list_version))); /* build 112: gedefer */
 	GE_BENCH_SKIP();
 	ge_kind(KIND_LEVEL); /* build 103 */
 	unsigned int start = ge_clock();
 
 	ge_category = GE_SKIP_LEVEL;
-	psp_ge_draw_level_body(vertices, lightmap_vertices, vertex_count, indices, triangle_count, color, base_key, lightmap_key, alpha_tested);
+	psp_ge_draw_level_body(vertices, lightmap_vertices, vertex_count, indices, triangle_count, color, base_key, lightmap_key, alpha_tested LV_ARG(list_version));
 	ge_category = 0;
 	ge_entry_us[0] += ge_clock() - start;
 }
+
+#ifdef PSP_DRAWLIST
+void psp_ge_draw_level(const void *vertices, const void *lightmap_vertices, int vertex_count,
+	const unsigned short *indices, long triangle_count, unsigned int color,
+	unsigned int base_key, unsigned int lightmap_key, int alpha_tested)
+{
+	psp_ge_draw_level_listed(vertices, lightmap_vertices, vertex_count, indices, triangle_count, color, base_key,
+		lightmap_key, alpha_tested, 0);
+}
+#endif
 
 /* ---------- objects: a model's parts, each drawn with one node's matrix
 
@@ -14338,6 +14440,7 @@ void psp_ge_pcv_report(void)
 {
 #ifdef PSP_DRAWLIST
 	level_kept_report();
+	level_geo_report();
 	if (origin_held > 0 && origin_held_frames)
 	{
 		platform_log("GE: drawlist: the origin held on a %.0f-unit grid, moved %lu times in %lu frames", (double)origin_held_cell,
