@@ -15,6 +15,12 @@
 # The list fills its room to ~80 bytes, so a profile recounted with more hot
 # code would overflow it and the build refuse it: @fill cuts it at its coldest
 # tail instead, and says where. While it fits, the copy is the same.
+# pspgu's sceGuEnable and sceGuDisable (2 KB) are not in the list: with gustate
+# on by default psp_ge.c's switches are gu_state_set's, and the two run only
+# for the scissor, the fragment's doubling and gustateoff, from main RAM.
+# Nine functions the ME does not fetch on b30's or c20's bench stretch (the
+# lab's cache model, exact counts) are last in the list, after the sweep's:
+# when the copy outgrows its room @fill cuts them first.
 # @fill
 psp_ge_me_replay
 psp_ge_draw_model_body
@@ -25,7 +31,11 @@ model_lighting
 __wrap_sceGeListUpdateStallAddr
 psp_ge_draw_model
 halo_matrix
-sceGuDisable
+# the code diet's short forms of pspgu's calls (docs/code_diet.md): gustate's
+# switches and gudraw's draw
+gu_state_set
+gu_draw
+gum_draw
 psp_ge_model_shape
 ge_kind
 psp_ge_model_begin
@@ -41,7 +51,6 @@ abgr_from_rgb
 psp_ge_light_draw_body
 model_convert
 psp_ge_model_effect
-sceGuEnable
 sceGumMatrixMode
 sceGumUpdateMatrix
 psp_ge_decal
@@ -50,7 +59,6 @@ psp_tex_average_known
 psp_ge_draw_level
 list_take
 draw_pass_angled.constprop.0
-model_get_marker_by_name
 psp_tex_size
 psp_ge_level_detail
 psp_ge_queue_level_transparent_body
@@ -69,7 +77,6 @@ psp_ge_seethrough_meter
 psp_tex_change_mask
 psp_ge_blip
 psp_ge_contrail
-psp_ge_fog
 psp_tex_bind_lightmap
 psp_ge_light_begin
 psp_ge_text_character
@@ -88,7 +95,6 @@ psp_ge_fog_planar
 psp_ge_widget_sprite
 psp_tex_has
 psp_tex_reflection_mask
-psp_ge_screen_flash
 psp_ge_sky
 psp_ge_light_gel
 psp_ge_blips_end
@@ -97,7 +103,6 @@ psp_ge_shadow_draw
 psp_ge_ui_centered
 psp_ge_widget_begin
 psp_ge_widget_occlusion
-psp_tex_palette
 psp_ge_blips_begin
 psp_tex_resident
 psp_ge_text_begin
@@ -106,11 +111,6 @@ psp_tex_me_memo_forget
 psp_ge_widget_texture
 psp_ge_text_end
 psp_tex_average
-psp_ge_frame_window
-psp_ge_budget
-psp_tex_io_window
-psp_geo_io_window
-psp_tex_save_pending
 run_job
 psp_anim_on_me
 network_coop_active
@@ -245,3 +245,13 @@ quaternions_interpolate_and_normalize
 -psp_keep
 -platform_psp_log
 -platform_log
+# not fetched by the ME on the bench stretches: last, so @fill cuts them first
+psp_ge_frame_window
+model_get_marker_by_name
+psp_tex_save_pending
+psp_tex_palette
+psp_ge_fog
+psp_ge_screen_flash
+psp_ge_budget
+psp_tex_io_window
+psp_geo_io_window
