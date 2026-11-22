@@ -10,13 +10,19 @@ around inside the Pelican, varied by 7% (hardware_b114.md). So "cinematic"
 is the PSP's fair A/B stretch; the emulator's scripted runs repeat
 everywhere. This splits a run's log
 by game time into those stretches and prints, for each, the figures the
-hardware notes compare, weighted by frames (a slow second counts for the
-frames it drew, not as one second):
+hardware notes compare. A heartbeat stands for every tick, frame and second
+since the heartbeat before it, and heartbeats are not the same length: a
+run's first 20 are a second long and the later ones five, and a phase edge
+ends one early. So each heartbeat counts for its own span, and one that
+crosses a stretch's edge is cut in proportion, which makes a stretch the same
+game time on every run wherever their heartbeats fall (cover(), below):
 
-  frame ms     by the clock: 1000 / fps, so ticks and drawing together
-  drawing ms   the heartbeats' frame time: the frame's own work, ticks left out
-  tick ms      a tick's own cost
-  fps          frames a second
+  frame ms     by the clock: the stretch's seconds over its frames, so ticks
+               and drawing together
+  drawing ms   the heartbeats' frame time: the frame's own work, ticks left
+               out, averaged over the frames
+  tick ms      a tick's own cost, averaged over the ticks
+  fps          frames a second: the stretch's frames over its seconds
   GE busy      the GE's own time a frame and its share of the clock (keep word
                gebusy; "-" without it)
 
@@ -159,10 +165,16 @@ def log_path(arg):
 
 
 def read(path):
-    """heartbeats (game time, frame ms, tick ms, fps, heap top KB), frame-end GE
-    figures (game time of the next heartbeat, frames, GE busy ms a frame, share %),
-    and the run's totals"""
+    """heartbeats (game time, frame ms, tick ms, fps, seconds, ticks), frame-end GE
+    figures (game time of the next heartbeat, frames, GE busy ms a frame, share %,
+    that heartbeat's ticks), and the run's totals.
+
+    A heartbeat's ticks are its game time less the heartbeat's before it, and
+    its seconds those ticks over its ticks a second. The first one logged has
+    no heartbeat before it in the log: it is taken as a second long, and never
+    longer than its own game time."""
     beats, ge, pending_ge = [], [], []
+    before = None    # the game time of the heartbeat before, logged or not
     totals = {"build": "?", "skipped": 0, "dropped": 0, "sound failed": None, "heap top KB": 0}
     for line in open(path, errors="replace"):
         line = re.sub(r"^\[t [0-9.]+\] ", "", line.rstrip("\n"))
@@ -175,9 +187,11 @@ def read(path):
         if m:
             g, ticks_s, tick, frame, fps, heap = (float(m.group(k)) for k in (1, 2, 3, 5, 7, 8))
             if ticks_s > 0:          # a heartbeat with no ticks is a pause or a load
-                beats.append((g, frame, tick, fps))
+                ticks = g - before if before is not None and g > before else min(g, ticks_s)
+                beats.append((g, frame, tick, fps, ticks / ticks_s, ticks))
                 for frames, busy, share in pending_ge:
-                    ge.append((g, frames, busy, share))
+                    ge.append((g, frames, busy, share, ticks))
+            before = g
             pending_ge = []
             totals["heap top KB"] = max(totals["heap top KB"], heap)
             continue
@@ -229,6 +243,48 @@ def within(beats, lo, hi, end):
     return [b for b in beats if lo <= b[0] < hi and b[0] <= end]
 
 
+def cover(rows, lo, hi, end):
+    """The part of each heartbeat (or frame-end figure) that lies in a stretch.
+
+    A row stands for the ticks up to its game time (its last field says how
+    many), so a row whose span crosses lo, or the stretch's end, is in the
+    stretch for that share of itself and no more. The end is hi, or reach()'s
+    common reach when a run stops inside the stretch. Returns the rows with a
+    share appended (0 < share <= 1): the figures below weigh by it."""
+    stop = min(hi, end)
+    out = []
+    for r in rows:
+        ticks = r[-1]
+        over = min(r[0], stop) - max(r[0] - ticks, lo)
+        if ticks > 0 and over > 0:
+            out.append(tuple(r) + (over / ticks,))
+    return out
+
+
+# The figures of a stretch, over cover()'s rows of heartbeats:
+# (game time, frame ms, tick ms, fps, seconds, ticks, share).
+def frame_ms(rows):
+    """by the clock: the stretch's seconds over its frames"""
+    frames = sum(r[3] * r[4] * r[6] for r in rows)
+    return 1000.0 * sum(r[4] * r[6] for r in rows) / frames if frames else None
+
+
+def drawing_ms(rows):
+    """the frame's own work, averaged over the frames"""
+    return weighted(rows, lambda r: r[1], lambda r: r[3] * r[4] * r[6])
+
+
+def tick_ms(rows):
+    """a tick's own cost, averaged over the ticks"""
+    return weighted(rows, lambda r: r[2], lambda r: r[5] * r[6])
+
+
+def fps_of(rows):
+    """the stretch's frames over its seconds"""
+    seconds = sum(r[4] * r[6] for r in rows)
+    return sum(r[3] * r[4] * r[6] for r in rows) / seconds if seconds else None
+
+
 def weighted(rows, value, weight):
     total = sum(weight(r) for r in rows)
     return sum(value(r) * weight(r) for r in rows) / total if total else None
@@ -269,23 +325,22 @@ def main():
         return "%s (%d-%d: cut to common reach%s)" % (name, lo, end, ", REACH DIFFERS" if differs else "")
 
     for title, pick, digits in (
-            # each heartbeat is a second: the clock's frame is the seconds over the frames
-            ("Frame by the clock, ms", lambda rows: 1000.0 * len(rows) / sum(r[3] for r in rows) if rows and sum(r[3] for r in rows) else None, 1),
-            ("The frame's own work (drawing), ms, weighted by frames", lambda rows: weighted(rows, lambda r: r[1], lambda r: r[3]), 1),
-            ("A tick's own cost, ms, weighted by frames", lambda rows: weighted(rows, lambda r: r[2], lambda r: r[3]), 1),
-            ("Frames a second", lambda rows: weighted(rows, lambda r: r[3], lambda r: 1.0), 2)):
+            ("Frame by the clock, ms", frame_ms, 1),
+            ("The frame's own work (drawing), ms, over the frames", drawing_ms, 1),
+            ("A tick's own cost, ms, over the ticks", tick_ms, 1),
+            ("Frames a second", fps_of, 2)):
         print("**%s**\n\n%s\n%s" % (title, head, rule))
         for name, lo, hi in stretches:
-            cells = [fmt(pick(within(r[0], lo, hi, reaches[name][0])), digits) for r in runs]
+            cells = [fmt(pick(cover(r[0], lo, hi, reaches[name][0])), digits) for r in runs]
             print("| %s | %s |" % (label(name, lo, hi), " | ".join(cells)))
         print()
     print("**The GE busy a frame, ms (share of the clock)**\n\n%s\n%s" % (head, rule))
     for name, lo, hi in stretches:
         cells = []
         for r in runs:
-            rows = within(r[1], lo, hi, reaches[name][0])
-            busy = weighted(rows, lambda g: g[2], lambda g: g[1])
-            share = weighted(rows, lambda g: g[3], lambda g: g[1])
+            rows = cover(r[1], lo, hi, reaches[name][0])
+            busy = weighted(rows, lambda g: g[2], lambda g: g[1] * g[5])
+            share = weighted(rows, lambda g: g[3], lambda g: g[1] * g[5])
             cells.append("-" if busy is None else "%.0f (%.0f%%)" % (busy, share))
         print("| %s | %s |" % (label(name, lo, hi), " | ".join(cells)))
     print()
