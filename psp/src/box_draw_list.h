@@ -105,8 +105,10 @@ void dl_gu_restore(const struct dl_gu_saved *saved);
 of draw commands compared; *differing 1 if any differ (*what: the first
 register, or 0x100 + a matrix, 0x105 the palette load, 0x106 the draw
 command, 0x107 the indices, 0x108 the vertices, 0x109 the draws' count),
-*unsupported 1 if a form holds a command the model doesn't follow */
+*unsupported 1 if a form holds a command the model doesn't follow; *first_draw the
+first differing draw command's number, from 1 */
 int dl_check_compare(const unsigned int *a, const unsigned int *a_end, const unsigned int *b,
-	const unsigned int *b_end, int *differing, int *what, unsigned int *a_value, unsigned int *b_value, int *unsupported);
+	const unsigned int *b_end, int *differing, int *what, unsigned int *a_value, unsigned int *b_value, int *unsupported,
+	int *first_draw);
 
 #endif

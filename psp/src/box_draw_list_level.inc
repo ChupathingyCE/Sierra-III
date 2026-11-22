@@ -569,7 +569,7 @@ static void level_kept_check(struct lk_now *k, const struct level_stream *stream
 {
 	unsigned int *old_end = gu_list->current, *kept_end, a_value = 0, b_value = 0;
 	unsigned int old_bytes = (unsigned int)((old_end - k->from) * 4);
-	int draws, differing = 0, what = 0, unsupported = 0;
+	int draws, differing = 0, what = 0, unsupported = 0, first_draw = 0;
 
 	/* a region taken or a jump made in the old form can't be taken back */
 	if (pending_start != k->pending[0] || pending_end != k->pending[1] || show3_part_jumped != k->jumped ||
@@ -586,9 +586,21 @@ static void level_kept_check(struct lk_now *k, const struct level_stream *stream
 	psp_tex_kept_forget();
 	lit_forget(2);
 	pass_scale_u = pass_scale_v = 1.0f;
+	/* the words the body wrote between the base bind and the passes, which
+	the old form holds and the kept form, written after it, otherwise
+	wouldn't: the base's slope and level mode (texture_levels_by_distance
+	writes them as it works base_slope out). Without the check they sit in
+	the list just before the first CALL */
+	{
+		int base_width = 0, base_height = 0;
+
+		psp_tex_size(base_key, &base_width, &base_height);
+		texture_levels_by_distance(stream->uv_per_unit, base_width, base_height, 1.0f, tex_bias);
+	}
 	level_kept_passes(k, stream, draw, kept_count, cut_count, base_key, lightmap_key, alpha_tested, base_slope);
 	kept_end = gu_list->current;
-	draws = dl_check_compare(k->from, old_end, old_end, kept_end, &differing, &what, &a_value, &b_value, &unsupported);
+	draws = dl_check_compare(k->from, old_end, old_end, kept_end, &differing, &what, &a_value, &b_value, &unsupported,
+		&first_draw);
 	if (differing)
 	{
 		if (what >= 0 && what < LK_WHAT && lk_check_what[what] < 65535)
@@ -598,7 +610,7 @@ static void level_kept_check(struct lk_now *k, const struct level_stream *stream
 			lk_check_first[0] = 0x10000u | (unsigned int)what;
 			lk_check_first[1] = a_value;
 			lk_check_first[2] = b_value;
-			lk_check_first[3] = (unsigned int)k->making << 16 | (unsigned int)draws;
+			lk_check_first[3] = (unsigned int)k->making << 16 | (unsigned int)first_draw << 8 | (unsigned int)(draws & 0xFF);
 		}
 	}
 	lk_checked++;
@@ -635,11 +647,11 @@ static void level_kept_report(void)
 					top[j] = i;
 					break;
 				}
-		platform_log("GE: levelkeptcheck: %lu draws checked (%lu draw commands), %lu differing, %lu unchecked, %lu with a command the check doesn't model; most often at %03x (%u), %03x (%u), %03x (%u); the first at %03x, old %06x, kept %06x (made %u, its draw %u)",
+		platform_log("GE: levelkeptcheck: %lu draws checked (%lu draw commands), %lu differing, %lu unchecked, %lu with a command the check doesn't model; most often at %03x (%u), %03x (%u), %03x (%u); the first at %03x, old %06x, kept %06x (made %u, its draw %u of %u)",
 			lk_checked, lk_check_prims, lk_check_differ, lk_check_unchecked, lk_check_unsupported,
 			top[0] & 0xFFF, top[0] >= 0 ? lk_check_what[top[0]] : 0, top[1] & 0xFFF, top[1] >= 0 ? lk_check_what[top[1]] : 0,
 			top[2] & 0xFFF, top[2] >= 0 ? lk_check_what[top[2]] : 0, lk_check_first[0] & 0xFFF, lk_check_first[1],
-			lk_check_first[2], lk_check_first[3] >> 16, lk_check_first[3] & 0xFFFF);
+			lk_check_first[2], lk_check_first[3] >> 16, (lk_check_first[3] >> 8) & 0xFF, lk_check_first[3] & 0xFF);
 		memset(lk_check_what, 0, sizeof(lk_check_what));
 		memset(lk_check_first, 0, sizeof(lk_check_first));
 	}

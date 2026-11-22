@@ -493,7 +493,8 @@ static int sim_compare(const struct dl_sim *a, const struct dl_sim *b)
 }
 
 int dl_check_compare(const unsigned int *a, const unsigned int *a_end, const unsigned int *b,
-	const unsigned int *b_end, int *differing, int *what, unsigned int *a_value, unsigned int *b_value, int *unsupported)
+	const unsigned int *b_end, int *differing, int *what, unsigned int *a_value, unsigned int *b_value, int *unsupported,
+	int *first_draw)
 {
 	int draws = 0, more_a, more_b;
 
@@ -503,6 +504,7 @@ int dl_check_compare(const unsigned int *a, const unsigned int *a_end, const uns
 	sims[1].pc = b;
 	sims[1].end = b_end;
 	*differing = 0;
+	*first_draw = 0;
 	for (;;)
 	{
 		int r;
@@ -516,6 +518,7 @@ int dl_check_compare(const unsigned int *a, const unsigned int *a_end, const uns
 		if (r && !*differing)
 		{
 			*differing = 1;
+			*first_draw = draws;
 			*what = r;
 			*a_value = r < 256 ? sims[0].regs[r] : 0;
 			*b_value = r < 256 ? sims[1].regs[r] : 0;
@@ -525,6 +528,7 @@ int dl_check_compare(const unsigned int *a, const unsigned int *a_end, const uns
 	if (!*unsupported && more_a != more_b && !*differing)
 	{
 		*differing = 1;
+		*first_draw = draws + 1;
 		*what = 0x109;
 		*a_value = *b_value = 0;
 	}
