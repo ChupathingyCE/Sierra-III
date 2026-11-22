@@ -40,7 +40,6 @@
 *psp_ge.o(.bss.ge_eye)
 *psp_ge.o(.bss.seethrough_next_doubled)
 *psp_ge.o(.data.change_color)
-*psp_tex.o(.data.bind_blocks_on)
 *psp_ge.o(.bss.stall_calls)
 *psp_ge.o(.bss.level_begun)
 *psp_tex.o(.data.memo_on)
@@ -157,7 +156,6 @@
 *psp_ge.o(.bss.passes_left_small)
 *psp_ge.o(.data.hud_v_scale)
 *psp_ge.o(.bss.seethrough_next_shader)
-*psp_tex.o(.data.hud_pin_on)
 *psp_ge.o(.data.value.48)
 *psp_ge.o(.bss.frame_level_count)
 *psp_ge.o(.data.foliage_two_pass)
@@ -235,3 +233,7 @@
 # 64-byte line of their own. Not ranked: placed by rule, last, so its alignment moves no ranked word. It
 # takes the place of .data.skinw_off and .data.model14, which were ranked above.
 *psp_ge.o(.bss.model_switch)
+# A bind's switches (psp_tex.c's tex_switch: hud_pin_on, bind_blocks_on, bind_words_on), one 64-byte line of
+# their own, placed by rule after the replay's: it takes the place of .data.bind_blocks_on and .data.hud_pin_on,
+# which were ranked above.
+*psp_tex.o(.data.tex_switch)
