@@ -254,16 +254,25 @@ quaternions_interpolate_and_normalize
 -platform_psp_log
 -platform_log
 # PSP_DRAWLIST=1 with levelkept: the level draw's kept path (psp_ge.c's
-# last section, psp_tex.c's book for a CALLed bind)
+# box_draw_list_level.inc), the box's store and emitter (box_draw_list.c) and
+# psp_tex.c's book for a CALLed bind
 level_kept_mode
 level_kept_passes
 lk_stamp_make
 lk_draw_pass_angled
 lk_draw_pass
 lk_draw
-lk_begin
-lk_end
 lk_touch
 lk_lazy
+dl_entry_get
+dl_run_start
+dl_block_begin
+dl_block_end
+dl_run_finish
+dl_draw
+dl_slope
+dl_stall_pass
+dl_gu_stamp
+dl_entries_used
 psp_tex_kept_touch
 psp_tex_kept_forget
