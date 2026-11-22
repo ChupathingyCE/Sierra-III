@@ -56995,17 +56995,24 @@ static void update_potentially_audible_looping_sound(
 # call touches times its calls (docs/cache_work.md, section 1). Each entry here
 # is a short form of a hot function for the state play is nearly always in,
 # chosen by one branch where the general function starts; the general function
-# is kept whole and takes every other state. Each has its own keep word, off
-# by default, and is exact: the same game state tick for tick.
+# is kept whole and takes every other state. Each has its own keep word and
+# off word (docs/code_diet.md says which are on by default) and is exact: the
+# same game state tick for tick.
 #
 # OBJLEAN ("objlean"): object_update as play runs it. The general function
 # carries hoistold's second form at seven places, the per-type clocks (two to
 # four clock reads and three accounts for every biped, vehicle and timed
 # machine) and the bslc census's test. The short form is FIXES_HOIST's form
-# alone with none of the statistics, so under the word hwprofile's per-type
-# object times and counts, machinetime's accounts and the bslc census read
-# nothing; everything that writes game state is the same call in the same
-# order.
+# alone with none of the statistics. It is taken only with the timers off
+# ("notimers", the campaign's default): with them on ("timerson") every object
+# takes the general function, so hwprofile's per-type object times and counts,
+# the bipeds' and vehicles' sub-accounts and machinetime's accounts read as
+# they did before the word (with the timers off the clocks read 0 either
+# way; the bslc census, a count, reads nothing under the word then).
+# Everything that writes game state is the same call in the same order. For the same reason hoistold and postgateold switch nothing for an
+# object that takes the short form: it is the hoist's form and the
+# post-process gate's default form by construction, so a test of either
+# word needs objleanold beside it.
 FIXES_DIET1 = {}
 FIXES_DIET1["source/objects/objects.c#objlean"] = [
 ("""static boolean object_update(
@@ -57022,6 +57029,7 @@ and two callees that look up the object and its definition again are given
 them (damage.c's object_damage_update_with) or have their first tests made
 here (object_postprocess_node_matrices) */
 void object_damage_update_with(long object_index, struct object_datum *object, struct object_definition *object_definition);
+extern int psp_timers_off; /* psp_platform.c: "notimers" (the campaign's default), 0 until the keep words are read */
 static boolean psp_object_update_lean(
 	long object_index)
 {
@@ -57141,7 +57149,11 @@ static boolean object_update(
 	long object_index)
 {
 #ifdef HALO_PSP
-	if (PSP_KEEP_ONCE("objlean"))
+	/* the short form carries none of the clocks, so with the timers on
+	("timerson") every object takes the general function below and its
+	per-type accounts print (the bipeds' and vehicles' type update, damage
+	and node matrices; machinetime's; the bslc census) */
+	if (psp_timers_off && PSP_KEEP_ONCE("objlean"))
 		return psp_object_update_lean(object_index);
 #endif
 	struct object_header_datum *header = object_header_get(object_index);
@@ -57315,6 +57327,12 @@ static inline __attribute__((always_inline)) void *psp_tag_memo_get(long group_t
 {
 	const struct psp_tag_view *held = psp_tag_memo[slot];
 
+	/* a hit answers by the index alone, without tag_get's tests of the
+	base address and the group. That holds because the words are forgotten
+	wherever the instance table is set, the base address is read from the
+	instance at each call, and no group asked for here has its base cleared
+	while the map stays loaded (a structure BSP's is, and no typed getter
+	asks for one). A getter added for such a group must test the base */
 	if (__builtin_expect(held->tag_index == tag_index, 1))
 		return held->base_address;
 	return psp_tag_memo_miss(group_tag, slot, tag_index);
