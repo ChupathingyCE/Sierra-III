@@ -743,7 +743,7 @@ static void ima_fast_build(void)
 				if (slow != fast || fast_row != slow_index * 8)
 					differed++;
 			}
-	ima_fast_old = psp_keep("imatableoff") != 0 || differed != 0;
+	ima_fast_old = 0 != 0 || differed != 0;
 	*(volatile int *)((unsigned int)&up_fuse_old | 0x40000000u) = psp_keep("upfuseold") != 0;
 	sceKernelDcacheWritebackRange(ima_fast, sizeof(ima_fast));
 	platform_log("audio: ADPCM decoded %s; its table checked against the formula at %lu codes, %lu differed",

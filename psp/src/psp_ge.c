@@ -1,3 +1,4 @@
+/* PRUNE-ENUMS */ enum { level_reserve_on = 1 }; enum { detail_far_old = 0 };
 /*
 PSP_GE.C
 
@@ -3028,7 +3029,7 @@ static void __attribute__((noinline, cold)) model_switches(void)
 {
 	model_switch.model14 = psp_keep("model14");
 	model_switch.baked_once = psp_keep("bakedonce") != 0;
-	model_switch.skin_own_slots = !psp_keep("skinwoff");
+	model_switch.skin_own_slots = !0;
 	model_switch.bake_draw_first = psp_keep("bakedraw") != 0;
 	model_switch.gustate_on = psp_keep("gustate") != 0;
 	model_switch.gudraw_on = psp_keep("gudraw") != 0;
@@ -3280,14 +3281,14 @@ draws now stop LIGHT_RESERVE bytes earlier; what the light pass loses is
 some light on the farthest surfaces in the fullest frames. Keep word
 "nolightreserve": as before */
 #define LIGHT_RESERVE 0x10000 /* 64 KB */
-static int light_reserve_on = -1;
+enum { light_reserve_on = 1 };
 /* "pdcmark" (a test for the emulator's pdccensus, prebuilt drawing
 commands): each change of kind leaves a NOP carrying the kind in the list,
 so the census can say whose words it counts. The GE ignores a NOP's
 argument: only the list's length changes */
 static int pdc_mark = -1;
 static unsigned long light_reserve_held = 0;
-static int ge_kind_now = KIND_OTHER, level_reserve_on = -1, level_begun = 0;
+static int ge_kind_now = KIND_OTHER, level_begun = 0;
 static unsigned int kind_mark = 0, kind_seen = 0;
 static unsigned int kind_frame_bytes[KINDS], kind_peak_bytes[KINDS], kind_frame_skips[KINDS], kind_peak_skips[KINDS];
 static unsigned long long kind_bytes[KINDS];
@@ -3408,9 +3409,9 @@ static void ge_kinds_frame_begin(void)
 	}
 	level_begun = 0;
 	if (level_reserve_on < 0)
-		level_reserve_on = !psp_keep("nolevelreserve");
+		(void)0;
 	if (light_reserve_on < 0)
-		light_reserve_on = !psp_keep("nolightreserve");
+		(void)0;
 	if (pdc_mark < 0)
 		pdc_mark = psp_keep("pdcmark");
 }
@@ -4727,7 +4728,7 @@ jitter: a triangle or cut piece wholly past one of them should draw no pixel.
 by default they are left out (clip_triangle; "cutlessoff" keeps them) */
 #define SCREEN_MARGIN_PIXELS 8.0f
 static float screen_x = 1.0f, screen_y = 1.0f;
-static int cut_less = 0, guard_wide = 0;
+enum { cut_less = 1 }; static int guard_wide = 0;
 /* recon, "cutlessmaskN": off-screen triangles and pieces
 left out only for the kinds whose bits are set in N (1 << CUT_LEVEL ...) */
 static int cut_less_mask = -1;
@@ -5173,7 +5174,7 @@ static void ge_initialize(void)
 	s changes across the screen and how t changes down it, so a surface
 	seen at a grazing angle gets a level too sharp for it: grass and dirt
 	alternate from row to row at their border (b49) */
-	tex_level_mode = psp_keep("nomip") ? GU_TEXTURE_CONST : GU_TEXTURE_AUTO;
+	tex_level_mode = 0 ? GU_TEXTURE_CONST : GU_TEXTURE_AUTO;
 	tex_bias = psp_keep("mipbias2") ? 1.0f : psp_keep("mipbias1") ? 0.5f : 0.0f;
 	sceGuTexLevelMode(tex_level_mode, tex_bias);
 	sceGuEnable(GU_FOG);
@@ -6062,7 +6063,7 @@ static int detail_off;
 int psp_ge_setting(int which, int set, int value)
 {
 	if (detail_off < 0)
-		detail_off = psp_keep("nodetail");
+		detail_off = 0;
 	if (nudge_wide < 0)
 		nudge_wide = psp_keep("nudgewide");
 	switch (which)
@@ -7124,7 +7125,7 @@ struct cut_store
 	struct cut_spill *read;
 	int read_base;
 };
-static int cut_stream = 1;
+enum { cut_stream = 1 };
 static unsigned long cut_pieces_lost = 0, cut_spill_blocks = 0;
 
 static void cut_store_begin(struct cut_store *store, float (*head)[CORNER_FLOATS], int head_room, int kind)
@@ -10390,7 +10391,7 @@ change nothing there; skipping them saves the GE the fill and the CPU the
 draws. "detailallfar": the detail passes everywhere, as before */
 #define SORT_BUCKETS (2 * ANGLE_BUCKETS)
 #define ANGLE_TRIANGLES 4096
-static int angle_buckets = -1, detail_all_far = -1, detail_far_old = -1;
+static int angle_buckets = -1, detail_all_far = -1;
 static int angle_bucketed = 0, angle_near_any = 0;
 static long angle_first[SORT_BUCKETS], angle_count[SORT_BUCKETS];
 static unsigned char angle_bucket_of[ANGLE_TRIANGLES];
@@ -10863,7 +10864,7 @@ it, where the Xbox's clamp at 1 is out of reach. A shader with no base map is
 drawn flat, and takes its glow map's own texels. "nolevelglow": left out */
 static unsigned int level_glow_key[2], level_glow_color[2];
 static unsigned long level_glow_passes = 0;
-static int level_glow_off = -1;
+enum { level_glow_off = 0 };
 
 static void level_glow_set(unsigned int primary_key, unsigned int primary_color, unsigned int secondary_key,
 	unsigned int secondary_color)
@@ -10894,7 +10895,7 @@ static unsigned char vertex_codes[65536];
 /* build 119's probe: the level's passes on the PSP, by piece (the slant
 sort has its own timer, angle_us) */
 static unsigned long level_uv_us = 0, level_base_us = 0, level_lightmap_us = 0, level_detail_us = 0, level_probe_draws = 0;
-static int box_test = -1;
+enum { box_test = 1 };
 static unsigned long budget_renderer_us = 0, budget_wait_us = 0;
 /* build 87: the same over the heartbeat's own window (benchrun's results
 need the window they name; the 300-frame figures lag it) */
@@ -11116,7 +11117,7 @@ static void level_glow_pass(const struct level_stream *stream, const unsigned sh
 
 	if (level_glow_off < 0)
 	{
-		level_glow_off = psp_keep("nolevelglow");
+		(void)0;
 		if (level_glow_off)
 			platform_log("GE: nolevelglow: level self-illumination left out");
 	}
@@ -11219,7 +11220,7 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 	ground underfoot still gets the loop. The box's corners are tested the
 	way the vertices would be. "noboxtest": the loop for every draw */
 	if (box_test < 0)
-		box_test = !psp_keep("noboxtest");
+		(void)0;
 	all_inside = 0;
 	if (box_test)
 	{
@@ -11362,7 +11363,7 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 	display list's own). Build 66: with the far triangles (past DETAIL_FAR)
 	set apart, when the draw has detail maps and reaches that far */
 	if (detail_off < 0)
-		detail_off = psp_keep("nodetail");
+		detail_off = 0;
 	if (detail_far < 0)
 		detail_far = !psp_keep("detailnear");
 	if (!detail_off && (detail_key[0] || detail_key[1]))
@@ -11449,7 +11450,7 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 	EQUAL) landed there twice: the bright dots along distant ridges. Fewer
 	pixels for the GE too. Keep words: "nocull", "cullflip" */
 	if (level_cull < 0)
-		level_cull = psp_keep("nocull") ? 0 : psp_keep("cullflip") ? 2 : 1;
+		level_cull = 0 ? 0 : psp_keep("cullflip") ? 2 : 1;
 	if (level_cull)
 	{
 		sceGuFrontFace(level_cull == 1 ? LEVEL_FRONT : (LEVEL_FRONT == GU_CW ? GU_CCW : GU_CW));
@@ -11582,7 +11583,7 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 		probe_mark = probe_clock();
 		/* passes 3 and 4: the detail maps, the same way */
 		if (detail_off < 0)
-			detail_off = psp_keep("nodetail");
+			detail_off = 0;
 		if (!detail_off && !skip_detail && (detail_key[0] || detail_key[1]) && !angle_near_any)
 			detail_passes_skipped_far++;
 		if (!detail_off && !skip_detail && (detail_key[0] || detail_key[1]) && angle_near_any)
@@ -11659,7 +11660,7 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 					int detail_count = (int)kept_count * 3;
 
 					if (detail_far_old < 0)
-						detail_far_old = psp_keep("detailfarold") != 0;
+						(void)0;
 					if (angle_bucketed && !detail_far_old)
 					{
 						long near = 0;
@@ -13603,7 +13604,7 @@ triangles are given (see-through parts aren't: they are queued with one
 matrix) */
 struct skin_batch;
 static void batch_sphere(struct skin_batch *b, const struct skin_part *skin, const void *vertices);
-static PSP_MAIN_SIDE int batch_sphere_old = -1;
+enum { batch_sphere_old = 0 };
 
 /* ---------- PRECONVERT (docs/plan_preconvert.md): the buffers the bake
 converted (tools/modelconvert.py), read as blocks into the geometry cache
@@ -13873,7 +13874,7 @@ static void convert_records(void *vertices, int count, int uncompressed, struct 
 	writes back carries a neighbouring chunk's header as it was).
 	"batchsphereold": worked out the first time it is drawn near the eye */
 	if (batch_sphere_old < 0)
-		batch_sphere_old = psp_keep("batchsphereold") != 0;
+		(void)0;
 	if (part && !batch_sphere_old)
 	{
 		int b;
@@ -14328,8 +14329,8 @@ void *psp_scratch_take(unsigned int bytes, const char *what); /* psp_scratch.c *
 /* at start, with keep.txt read: the cutting's words, and the scratchpad's buffer */
 static void cut_take(void)
 {
-	cut_stream = !psp_keep("cutstreamoff");
-	cut_less = cut_stream && !psp_keep("cutlessoff");
+	(void)0;
+	(void)0;
 	guard_wide = cut_stream && psp_keep("guardwide");
 	{
 		extern int psp_keep_number(const char *prefix, int fallback);
@@ -15636,7 +15637,7 @@ and node matrices the GE uses, and cut at the near plane and guard band as
 the level's triangles are; the pieces are drawn already bent (the model
 matrix is the identity for a bending part), their normals turned the same
 way so the GE lights them alike */
-static int skin_cut = -1;
+enum { skin_cut = 1 };
 static unsigned long skin_cut_triangles = 0, skin_cut_pieces = 0;
 
 /* one skinned corner: bent position (camera-relative, the GE's space for a
@@ -16069,7 +16070,7 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 		int from_memo = near && near_memo_complete && near_memo_skin == skin, memo_failed = 0;
 
 		if (skin_cut < 0)
-			skin_cut = !psp_keep("noskincut");
+			(void)0;
 
 		for (batch = 0; batch < skin->batch_count && !list_full(); batch++)
 		{
@@ -17200,7 +17201,7 @@ static void psp_ge_draw_model_body(void *vertices, int vertex_count, int uncompr
 	shader's back faces are then drawn with the light from the other side,
 	as the Xbox's second pass flips the normals */
 	if (model_cull < 0)
-		model_cull = psp_keep("nocull") ? 0 : psp_keep("modelflip") ? 2 : 1;
+		model_cull = 0 ? 0 : psp_keep("modelflip") ? 2 : 1;
 	sceGuFrontFace(model_cull == 2 ? (LEVEL_FRONT == GU_CW ? GU_CCW : GU_CW) : LEVEL_FRONT);
 	if (model_cull)
 		sceGuEnable(GU_CULL_FACE);
@@ -20632,7 +20633,7 @@ void psp_ge_queue_level_transparent(const void *vertices, int vertex_count, cons
 
 #define LEVEL_OVERLAY_OFFSET 24
 static int overlay_scaled = -1;
-static int overlays_off = -1;
+enum { overlays_off = 0 };
 extern volatile int psp_screenshot_requested;
 static int tdump = -1;
 static long tskip = -1; /* "tskipN" (transparent_flush_body) */
@@ -20701,9 +20702,9 @@ static void transparent_flush_body(void)
 	if (list_limit < list_bytes - HUD_RESERVE)
 		list_limit = list_bytes - HUD_RESERVE;
 	if (overlays_off < 0)
-		overlays_off = psp_keep("nooverlays");
+		(void)0;
 	if (level_cull < 0)
-		level_cull = psp_keep("nocull") ? 0 : psp_keep("cullflip") ? 2 : 1;
+		level_cull = 0 ? 0 : psp_keep("cullflip") ? 2 : 1;
 	/* build 62: the world's projection and depth slice for the world's
 	see-through parts, whatever is current. A flush can come while the
 	first-person projection is still set (no model end after the weapon's
@@ -23180,7 +23181,7 @@ reach or behind the light: dim, or skipped whole. A spotlight's triangle
 with an edge longer than a fifth of the light's radius is now split into
 four, again and again (four levels at most) where it can reach the light,
 and each piece lit at its own corners. Keep word "nolightsplit": as before */
-static int light_split_on = -1;
+enum { light_split_on = 1 };
 
 /* B7, a restoration, on by default whatever it costs (the project's call): a
 spotlight's pool drawn with the surface's own texture, as the point lights
@@ -23205,7 +23206,7 @@ triangle, a neighbour split one level less put its long edge against the
 other's two halves: a T-junction, which the GE rasterises with hairline
 gaps, dark along the seams of the flashlight's pool. Keep word
 "lightsplitold": the per-triangle split */
-static int light_split_edges = -1;
+enum { light_split_edges = 1 };
 static unsigned long light_split_triangles = 0, light_split_pieces = 0;
 
 /* "lviewcull": a triangle about to be split that draws nothing wherever the
@@ -23357,7 +23358,7 @@ static void light_split(float p[3][3], float uv[3][2], const unsigned int normal
 	if (split < 0.2f * light.radius)
 		split = 0.2f * light.radius;
 	if (light_split_edges < 0)
-		light_split_edges = !psp_keep("lightsplitold");
+		(void)0;
 	if (light_split_edges)
 	{
 		/* halve the longest edge that needs it, then the halves again: six
@@ -23813,7 +23814,7 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 		{
 			/* build 103: a large triangle split near the light */
 			if (light_split_on < 0)
-				light_split_on = !psp_keep("nolightsplit");
+				(void)0;
 			if (light_split_on)
 			{
 				float p[3][3], uv[3][2], longest = 0.0f;
@@ -23864,7 +23865,7 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 					if (light_carry < 0)
 						light_carry = psp_keep("lightcarry");
 					if (light_split_edges < 0)
-						light_split_edges = !psp_keep("lightsplitold");
+						(void)0;
 					if (light_carry_check < 0)
 						light_carry_check = psp_keep("lightcarrycheck");
 					if (light_carry_check && light_split_edges && light_spot_base())

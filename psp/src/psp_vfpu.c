@@ -687,10 +687,10 @@ void psp_vfpu_initialize(void)
 		vfpu_multiply(&a, &fpu, &fpu);
 	vfpu_us = sceKernelGetSystemTimeLow() - start;
 	sink = b.n[3][0] + fpu.n[3][0];
-	psp_vfpu_on = !psp_keep("novfpu") && worst < 1e-5f && aliased_ok;
+	psp_vfpu_on = !0 && worst < 1e-5f && aliased_ok;
 	platform_log("VFPU: matrix product checked against the FPU, worst relative difference %g%s; 2000 products %u us (FPU %u us); %s",
 		(double)worst, aliased_ok ? "" : ", WRONG in place", vfpu_us, fpu_us,
-		psp_vfpu_on ? "on" : psp_keep("novfpu") ? "off (novfpu)" : "OFF: it disagrees with the FPU");
+		psp_vfpu_on ? "on" : 0 ? "off (novfpu)" : "OFF: it disagrees with the FPU");
 	if (psp_vfpu_on && !psp_keep("novfpupose"))
 		vfpupose_initialize();
 }

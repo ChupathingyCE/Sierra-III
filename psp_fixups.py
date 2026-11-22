@@ -21173,7 +21173,7 @@ FIXES_126["source/units/units.c#aimchange"] = [
 """, """#ifdef HALO_PSP
 			/* psp_fixups.py (FIXES_126, RH1): x86's answers for a zero
 			maximum (see there) */
-			static int psp_aim_change_x86 = -1;
+			enum { psp_aim_change_x86 = 1 };
 			real psp_maximum = unit_definition->unit.aiming_velocity_maximum/TICKS_PER_SECOND;
 			real change;
 
@@ -21181,7 +21181,7 @@ FIXES_126["source/units/units.c#aimchange"] = [
 			{
 				extern int psp_keep(const char *name);
 
-				psp_aim_change_x86 = !psp_keep("aimchangeold");
+				(void)0;
 			}
 			if (psp_aim_change_x86 && !(psp_maximum > 0.f))
 				change = angle > 0.f ? 1.f : 0.f;
@@ -24370,7 +24370,7 @@ void object_type_export_function_values_for_type(short type, long object_index);
 void object_type_preprocess_node_orientations_for_type(short type, long object_index, struct real_orientation *node_orientations);
 void object_type_postprocess_node_matrices_for_type(short type, long object_index, struct real_matrix4x3 *node_matrices);
 /* objects_update's two asserts: the loop's own header holds the datum object_get returns */
-#define PSP_HOIST_OBJECT(header, index) (PSP_KEEP_ONCE("hoistold") ? object_get(index) : (header)->datum)
+#define PSP_HOIST_OBJECT(header, index) (0 ? object_get(index) : (header)->datum)
 
 #ifdef PSP_RECON
 /* "hoistcheck": a hoisted pointer against a fresh lookup (a NULL definition is the callee's own lookup) */
@@ -24426,18 +24426,18 @@ static void object_compute_node_matrices_with(
 ("""model_definition_get(object_definition->object.model.index)->nodes.count>0)""",
  """(psp_hoist_model = model_definition_get(object_definition->object.model.index))->nodes.count>0)"""),
 ("""struct model *model = model_definition_get(object_definition->object.model.index);""",
- """struct model *model = PSP_KEEP_ONCE("hoistold") ? model_definition_get(object_definition->object.model.index) : psp_hoist_model;"""),
+ """struct model *model = 0 ? model_definition_get(object_definition->object.model.index) : psp_hoist_model;"""),
 ("""animation_graph_definition_get(
 					object->object.animation.animation_graph_index);""",
  """animation_graph_definition_get(
 					object->object.animation.animation_graph_index);
 				psp_hoist_graph = animation_graph;"""),
 ("""struct animation_graph *animation_graph= animation_graph_definition_get(object_definition->object.animation_graph.index);""",
- """struct animation_graph *animation_graph= psp_hoist_graph && !PSP_KEEP_ONCE("hoistold") &&
+ """struct animation_graph *animation_graph= psp_hoist_graph && !0 &&
 					object->object.animation.animation_graph_index == object_definition->object.animation_graph.index ?
 					psp_hoist_graph : animation_graph_definition_get(object_definition->object.animation_graph.index);"""),
 ("""object_type_preprocess_node_orientations(object_index, node_orientations);""",
- """if (PSP_KEEP_ONCE("hoistold"))
+ """if (0)
 				object_type_preprocess_node_orientations(object_index, node_orientations);
 			else
 				object_type_preprocess_node_orientations_for_type(object->object.type, object_index, node_orientations);"""),
@@ -24456,7 +24456,7 @@ static void object_compute_node_matrices_with(
 	struct object_definition *object_definition = object_definition_get(object->definition_index);
 """, """	struct object_header_datum *header = object_header_get(object_index);
 	/* psp_fixups.py (FIXES_HOIST): the header's datum is what object_get returns; "hoistold" looks it up again */
-	const int psp_hoist = !PSP_KEEP_ONCE("hoistold");
+	const int psp_hoist = !0;
 	struct object_datum *object = psp_hoist ? header->datum : object_get(object_index);
 	struct object_definition *object_definition = object_definition_get(object->definition_index);
 """),
@@ -24589,7 +24589,7 @@ static void object_compute_change_colors_with(
 #endif
 """),
 ("""object_type_postprocess_node_matrices(object_index, matrices);""",
- """if (PSP_KEEP_ONCE("hoistold"))
+ """if (0)
 			object_type_postprocess_node_matrices(object_index, matrices);
 		else
 			object_type_postprocess_node_matrices_for_type(object->object.type, object_index, matrices);"""),
@@ -24770,7 +24770,7 @@ static void psp_unithoist_check(long biped_index, struct biped_datum *biped, str
 """, """		if (!psp_verify)
 		{
 			/* psp_fixups.py (FIXES_UNITHOIST): the lookup waits for a verify that runs */
-			if (PSP_KEEP_ONCE("unithoistold"))
+			if (0)
 				(void)biped_get(biped_index);
 			return;
 		}
@@ -24798,7 +24798,7 @@ static void biped_get_physics_pill_with(
 #ifdef PSP_RECON
 	psp_unithoist_check(biped_index, biped, definition);
 #endif
-	if (PSP_KEEP_ONCE("unithoistold"))
+	if (0)
 		object_get_origin(biped_index, base);
 	else
 		psp_object_get_origin_with(biped_index, (struct object_datum *)biped, base);
@@ -25039,7 +25039,7 @@ static void biped_snap_facing_with(
 	struct biped_definition *definition = biped_definition_get(biped->definition_index);
 	struct unit_animation_update_data animation;
 	/* psp_fixups.py (FIXES_UNITHOIST): handed to the helpers below, which look up when given NULL ("unithoistold") */
-	struct biped_datum *const psp_held_biped = PSP_KEEP_ONCE("unithoistold") ? NULL : biped;
+	struct biped_datum *const psp_held_biped = 0 ? NULL : biped;
 	struct biped_definition *const psp_held_definition = psp_held_biped ? definition : NULL;
 """),
 ("""		biped_snap_facing(biped_index);
@@ -25119,7 +25119,7 @@ FIXES_UNITHOIST["source/ai/actor_perception.c#unithoist"] = [
 	boolean psp_object_mark_function_with(struct object_datum *object); /* psp_fixups.py (FIXES_UNITHOIST) */
 """),
 ("""		if (object_mark_function(object_index))
-""", """		if (PSP_KEEP_ONCE("unithoistold") ? object_mark_function(object_index) : psp_object_mark_function_with(current_object))
+""", """		if (0 ? object_mark_function(object_index) : psp_object_mark_function_with(current_object))
 """),
 ]
 
@@ -29893,11 +29893,11 @@ FIXES_BONUS["source/objects/objects.c#bonus"] = [
 #ifdef HALO_PSP
 			/* psp_fixups.py (FIXES_BONUS) */
 			{
-				static int psp_bonus_old = -1;
+				enum { psp_bonus_old = 0 };
 				int psp_keep(const char *name);
 
 				if (psp_bonus_old < 0)
-					psp_bonus_old = psp_keep("bonusold") != 0;
+					(void)0;
 				if (!psp_bonus_old)
 					object->object.location.bonus = NONE;
 			}
@@ -30305,7 +30305,7 @@ void object_compute_node_matrices(
 		node_stack[0] = 0;
 #ifdef HALO_PSP
 		/* psp_fixups.py (FIXES_CACHE) */
-		const int psp_node_prefetch = PSP_KEEP_ONCE("nodeprefetch");
+		const int psp_node_prefetch = 0;
 		short psp_node_asked = 0; /* the queue's places asked for, up to here */
 
 		if (psp_node_prefetch)
@@ -38479,7 +38479,7 @@ static struct { struct cache_file_tag_instance *instances; long count; } psp_tag
 static void psp_tagsnap_refresh(void)
 {
 	if (cache_file_globals.tags_loaded && global_tag_instances && cache_file_globals.tag_header &&
-		!PSP_KEEP_ONCE("tagsnapold"))
+		!0)
 	{
 		psp_tagsnap.instances = global_tag_instances;
 		psp_tagsnap.count = cache_file_globals.tag_header->tag_count;
@@ -38504,7 +38504,7 @@ static void psp_tagsnap_check(void)
 
 	if (on < 0 && psp_keep_loaded())
 		on = psp_keep("tagsnapcheck");
-	if (on <= 0 || PSP_KEEP_ONCE("tagsnapold"))
+	if (on <= 0 || 0)
 		return;
 	loaded = cache_file_globals.tags_loaded && global_tag_instances && cache_file_globals.tag_header;
 	checked++;
@@ -38565,7 +38565,7 @@ static void psp_tagsnap_check(void)
 #ifdef PSP_RECON
 	psp_tagsnap_check();
 #endif
-	if (!psp_tags && PSP_KEEP_ONCE("tagsnapold") && cache_file_globals.tags_loaded && global_tag_instances &&
+	if (!psp_tags && 0 && cache_file_globals.tags_loaded && global_tag_instances &&
 		cache_file_globals.tag_header)
 	{
 		psp_tags = global_tag_instances;
@@ -43346,7 +43346,7 @@ static boolean psp_aime2a_active(
 			psp_aime_wait = !psp_keep("aimelateold");
 			psp_aime2a_stop_at = psp_keep_number("mestopat", 0);
 		}
-		psp_aime_move_stop = !psp_keep("aimemoveold");
+		(void)0;
 		/* the race check's write trace: the job's window its own (psp_ge.c) */
 		psp_me_window_split = psp_aime2a_check_on;
 		psp_aime2a_on = (psp_aime2a_check_on || psp_keep("aime2a") != 0) && psp_aime1b_active();
@@ -44391,7 +44391,6 @@ static boolean psp_aime2a_alike = FALSE;
 int psp_aime_pf_on = 0;
 /* 0 with "aimemoveold": an object moved in the map, or its nodes computed,
 in the ME's pass runs there as it did, unstopped (objects.c) */
-int psp_aime_move_stop = 1;
 /* 1 while the job runs, written by the job alone, on a line of its own:
 the ME's paths (marks, FPU forms, the memo's log) test it with where they
 run, so the main CPU's own work during the record never takes them */
@@ -44567,10 +44566,10 @@ FIXES_AIME2A["source/ai/actor_perception.c#aime2a"] = [
 			test_line_of_fire, ignore_object_index, ignore_vehicles);
 	if (psp_perc_ray_count > 0 && psp_perc_ray_epoch != psp_object_epoch)
 """),
-("""		if (PSP_KEEP_ONCE("unithoistold") ? object_mark_function(object_index) : psp_object_mark_function_with(current_object))
+("""		if (0 ? object_mark_function(object_index) : psp_object_mark_function_with(current_object))
 """,
  """		/* (FIXES_AIME2A: on the ME, by index, for the ME's own marks) */
-		if (PSP_KEEP_ONCE("unithoistold") || psp_work_on_me() ? object_mark_function(object_index) : psp_object_mark_function_with(current_object))
+		if (0 || psp_work_on_me() ? object_mark_function(object_index) : psp_object_mark_function_with(current_object))
 """),
 ]
 # the objects' visit marks: on the ME, in a table of its own
@@ -44727,7 +44726,7 @@ FIXES_AIMEMOVE["source/objects/objects.c#aimemove"] = [
 		while the ME's pass is out, and settles the ring jobs that read the
 		objects (the rays, the poses), which the ME can't wait for: on the ME
 		the actor thinks in the tick (aimefpu: 1b's pass stops alike) */
-		extern int psp_aime_arm, psp_aime_fpu_main, psp_aime_move_stop;
+		extern int psp_aime_arm, psp_aime_fpu_main;
 		extern void psp_aime_handback(int which);
 
 		if (psp_aime_arm && psp_aime_move_stop && (psp_work_on_me() || psp_aime_fpu_main))
@@ -44753,7 +44752,7 @@ FIXES_AIMEMOVE["source/objects/objects.c#aimemove"] += [
 	if (psp_pose_job_out)
 	{
 		/* psp_fixups.py (FIXES_AIME2A, "aime2a") */
-		extern int psp_aime_move_stop;
+		;
 
 		if (psp_aime_move_stop && psp_work_on_me())
 			return FALSE;
@@ -44768,7 +44767,7 @@ FIXES_AIMEMOVE["source/objects/objects.c#aimemove"] += [
 		return;
 	{
 		/* psp_fixups.py (FIXES_AIME2A, "aime2a"): the slots are the main CPU's */
-		extern int psp_aime_move_stop;
+		;
 
 		if (psp_aime_move_stop && psp_work_on_me())
 			return;
@@ -47964,7 +47963,7 @@ FIXES_PWSL["source/objects/objects.c#pwsl"] = [
 FIXES_TP1 = {}
 
 # what each settle site tests before its call (the settle's own first test)
-TP1_SETTLE = """extern int psp_fvp_open, psp_tp1_old;
+TP1_SETTLE = """extern int psp_fvp_open;
 	extern unsigned long psp_fvp_pending[];
 	void psp_fvp_settle(long object_index);
 #ifndef PSP_FVP_SETTLE
@@ -47985,7 +47984,7 @@ FIXES_TP1["source/objects/objects.c#tp1"] = [
 {
 	long absolute = DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index);
 	struct object_definition const *definition = object_definition_get(object->definition_index);
-""", """extern int psp_tp1_old; /* psp_fixups.py (FIXES_TP1) */
+""", """; /* psp_fixups.py (FIXES_TP1) */
 static int psp_ep_mode; /* defined with FVP's state; object_detach reads it */
 
 /* psp_fixups.py (FIXES_TP1): the skip's two refusals that need no
@@ -48030,7 +48029,6 @@ __attribute__((noinline)) static int psp_nms_skip(long object_index, struct obje
 ("""static unsigned long psp_fvp_pending[(MAXIMUM_OBJECTS_PER_MAP + 31) / 32];
 """, """unsigned long psp_fvp_pending[(MAXIMUM_OBJECTS_PER_MAP + 31) / 32]; /* the settle gates read it (FIXES_TP1) */
 /* psp_fixups.py (FIXES_TP1) */
-int psp_tp1_old = -1;
 static int psp_ep_mode = -1; /* 0 off, 1 exportpass, 2 exportcheck */
 static unsigned long psp_ep_owed[(MAXIMUM_OBJECTS_PER_MAP + 31) / 32]; /* deferred, not yet listed */
 static unsigned char psp_fvp_export[PSP_FVP_MAX]; /* per list entry: 1 the export waits, 2 check it */
@@ -48044,7 +48042,7 @@ static unsigned long psp_ep_put, psp_ep_early, psp_ep_inplace, psp_ep_checked, p
 	/* psp_fixups.py (FIXES_TP1) */
 	if (psp_tp1_old < 0 && psp_keep_loaded())
 	{
-		psp_tp1_old = psp_keep("tp1old") != 0;
+		(void)0;
 		psp_ep_mode = psp_keep("exportcheck") ? 2 : psp_keep("exportpass") ? 1 : 0;
 	}
 }
@@ -50436,7 +50434,7 @@ static unsigned long psp_p2q_made, psp_p2q_logged, psp_p2q_flushes[5];
 again, 3 a full queue, 4 an object's own clusters read */
 static void psp_p2q_flush(int why)
 {
-	extern int psp_aime_arm, psp_aime_fpu_main, psp_aime_move_stop, psp_merays_out;
+	extern int psp_aime_arm, psp_aime_fpu_main, psp_merays_out;
 	extern void psp_aime_handback(int which);
 	void psp_merays_settle(void);
 	int k;
@@ -51309,10 +51307,8 @@ FIXES_HUHINT["source/objects/objects.c#huhint"] = [
 #ifdef HALO_PSP
 	{
 		extern int psp_keep(const char *name);
-		static int old = -1;
+		enum { old = 0 };
 
-		if (old < 0)
-			old = psp_keep("huhold");
 		if (old)
 			huh = (57 * DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index) + game_time_get()) * 0.033333335f;
 		else
@@ -51522,7 +51518,7 @@ void object_compute_node_matrices(
 			psp_node_lines_prefetch(object_nodes, model, 0);
 		/* psp_fixups.py (FIXES_POSEK) */
 		int psp_posek_count = 0;
-		unsigned char const *psp_posek_pairs_now = psp_node_prefetch || PSP_KEEP_ONCE("posekold") ? NULL : psp_posek_plan(model, model_node_count, &psp_posek_count);
+		unsigned char const *psp_posek_pairs_now = psp_node_prefetch || 0 ? NULL : psp_posek_plan(model, model_node_count, &psp_posek_count);
 #endif
 """),
 ("""			next_sibling_node_index = node->next_sibling_node_index;
@@ -51660,7 +51656,7 @@ FIXES_L10["source/objects/objects.c#l10"] = [
 {
 	struct object_datum *object = object_get(object_index);
 
-	if (!TEST_FLAG(_object_mask_unit, object->object.type) && !PSP_KEEP_ONCE("postgateold"))
+	if (!TEST_FLAG(_object_mask_unit, object->object.type) && !0)
 	{
 		return;
 	}
@@ -54034,7 +54030,7 @@ short object_get_marker_by_name(
 			psp_boxb_before_ik(hand_object_index, desired_hand_index);
 #endif
 			matrix4x3_inverse(&hand_marker.node_matrix, &desired_hand_matrix);"""),
-("""		if (PSP_KEEP_ONCE("hoistold"))
+("""		if (0)
 			object_type_postprocess_node_matrices(object_index, matrices);
 		else
 			object_type_postprocess_node_matrices_for_type(object->object.type, object_index, matrices);""",
@@ -54043,7 +54039,7 @@ short object_get_marker_by_name(
 		counted as the IK's, not as a late reader's */
 		psp_boxb_in_ik = 1;
 #endif
-		if (PSP_KEEP_ONCE("hoistold"))
+		if (0)
 			object_type_postprocess_node_matrices(object_index, matrices);
 		else
 			object_type_postprocess_node_matrices_for_type(object->object.type, object_index, matrices);
@@ -57121,7 +57117,7 @@ static boolean psp_object_update_lean(
 		{
 			if (!TEST_FLAG(_object_mask_unit, object->object.type))
 			{
-				if (PSP_KEEP_ONCE("postgateold"))
+				if (0)
 					object_postprocess_node_matrices(object_index);
 			}
 			else if (object_definition->object.model.index!=NONE &&

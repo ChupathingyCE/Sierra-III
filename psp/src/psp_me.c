@@ -1325,7 +1325,7 @@ static const struct psp_me_batch *batch_sim_behind = NULL;
 taken back and the ones never handed over fall in different places each pass */
 static unsigned int batch_sim_passes = 0, batch_sim_whole = 0;
 /* "meclaimold", for the simulated ME (the real one reads ME_FEATURE_CLAIM_OLD) */
-static int me_claim_old = 0;
+enum { me_claim_old = 0 };
 
 #if PSP_MEXEC
 /* On the ME: a record function MEXEC copied runs from its copy in eDRAM. A
@@ -2306,7 +2306,7 @@ static int rays_batch = 0;
 static int me_yield_off = 0;
 /* "megraceoff": the ring's and the batches' deadlines as they were, the
 first wait past one stopping the ME (see BATCH_RECORD_DEADLINE_US) */
-static int me_grace_off = 0;
+enum { me_grace_off = 0 };
 /* a late ring job's rest (RING_DEADLINE_US says what it is): the first
 RING_REST_US; again within RING_AGAIN_US of coming back, twice the last, up
 to RING_REST_MAX_US */
@@ -2901,8 +2901,8 @@ int psp_me_start(void)
 	ring_push_drop = psp_keep("mepushdrop");
 	rays_batch = psp_keep("meraysbatch");
 	me_yield_off = psp_keep("meyieldoff");
-	me_grace_off = psp_keep("megraceoff");
-	me_claim_old = psp_keep("meclaimold");
+	(void)0;
+	(void)0;
 	ring_give_up = psp_keep("ringgiveup");
 	ring_slot_done = psp_keep("ringslotdone");
 	{

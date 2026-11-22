@@ -53,6 +53,8 @@ keep.txt is read once at start-up (psp_platform.c, keep_load); before
 that, the answer is 0 and isn't remembered */
 int psp_keep(const char *name);
 int psp_keep_loaded(void);
+/* a measuring build: switches made constant, to count the bytes their old paths hold (not for merge) */
+enum { psp_tp1_old = 0, psp_aime_move_stop = 1 };
 #define PSP_KEEP_ONCE(word) __extension__ ({ \
 	static signed char psp_keep_once_ = -1; \
 	if (psp_keep_once_ < 0 && psp_keep_loaded()) \
