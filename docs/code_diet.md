@@ -79,6 +79,20 @@ The replay of the frame's draws runs on the Media Engine from its code copy in e
 - **Room:** the copy is a full 256 KB, and a short form kept beside its old form needs room in it. With `gustate` on by default pspgu's two switch functions (2 KB) left the copy's list (`psp/layout/mexec_rbtsw.txt`); they run from main RAM for the two states the table leaves to them and under `gustateoff`. Nine functions the Media Engine does not fetch on the bench stretches are last in the list, where the build's fill cuts first when the copy outgrows its room.
 - **Earlier work:** writing the renderer's words without pspgu was tried for the main CPU's drawing and stopped: fewer instruction misses there bought no time on the PSP. On the Media Engine code misses are measured to cost (about 55 cycles each, several milliseconds of the replay a frame), which is why it was tried again there, and there it pays (the price above).
 
+## Batch 6: work that makes nothing (`peldust`; off by default)
+
+The first cuts from a census of what the tick's objects do that changes nothing ([E] the lab's rows `fightobj1_vehicles` and `fightobj1_scenery`: b30's fight, the two Pelicans and the trees).
+
+| Word | What it does | Where |
+|---|---|---|
+| `peldust` (`peldustcheck`) | A Pelican's thruster rays are not cast where they can't reach anything. `create_pelican_effect` runs on every vehicle update: for each of the 14 thruster markers it draws a direction in a 15-degree cone on the local random seed and casts a ray at the level and its water; a hit makes one dust effect and nothing else reads the ray [D]. b30's two Pelicans cast 28 rays a tick, about one in seven hits, and from the squad's landing on neither Pelican is drawn [E]. Every ray of a marker's cone lies in one sphere, so while that sphere is clear of every surface and fog plane the ray is skipped. The seed is still drawn. | `psp_fixups.py`, `FIXES_PELDUST` (`source/units/vehicles.c`) |
+
+**Why it is exact.** The skipped ray could not hit, so the same effects are made; the draw is kept, so the local seed runs the same. The sphere is the cone's own bound with a little to spare (radius 0.56 of the axis' length against 0.533), the sphere test is the port's any-hit walk (`psp_collision_test_sphere_any`, which answers yes for any surface, facing either way, and for a centre outside the level), and every fog plane of the level is tested, whichever clusters use it. `peldustcheck` casts each left-out ray anyway and counts the ones that hit: the proof is that count staying at zero with play and both seeds identical to the word off.
+
+**What is kept, and for how long.** One answer a marker: the sphere asked about is 0.25 units wider than needed, and holds while a later tick's sphere still lies inside it. A marker that moved more than 0.25 units in one update, or whose reach changed by more than 0.125, is in flight and is cast as before with no question asked, so a flying Pelican pays nothing new. Nothing is kept across a level change or a time taken back.
+
+**Not built here:** leaving out the rays and effects of a Pelican nobody can see. That one plays the same rather than being exact (dust would start when the camera turns onto it), so the exact form goes first and the PSP's price of what is left decides whether it is worth its proof.
+
 ## Co-op
 
 Every word here is exact and changes nothing a host or client could see. They ship in the campaign build's defaults only, as every default word does; the multiplayer build has no default words.
