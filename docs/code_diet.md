@@ -93,6 +93,28 @@ The first cuts from a census of what the tick's objects do that changes nothing 
 
 **Not built here:** leaving out the rays and effects of a Pelican nobody can see. That one plays the same rather than being exact (dust would start when the camera turns onto it), so the exact form goes first and the PSP's price of what is left decides whether it is worth its proof.
 
+### Cut 2, a design: animated scenery asleep (`treesleep`, not built)
+
+**What runs today [D, E].** A tree's sway is not state: an object flagged to animate automatically takes its pose's frame as (object index + game time) modulo the animation's length (`OBJECT_FRAME_INDEX_GET` in `object_compute_node_matrices`). b30's fight updates about 33 trees a tick and no word of their datums changes but the pose (the lab's row `fightobj1_scenery`). They split in two:
+- **Drawn last frame (about 15 a tick):** `psp_nms_skip` refuses them (reason 6), so their pose is made in the update on every tick, twice a frame at 15 fps.
+- **Not drawn (about 18 a tick):** `psp_nms_skip` leaves the pose out and keeps an entry holding the inputs and the tick; a reader or the renderer's list makes it from the entry (`psp_nms_make`, with `psp_nms_settle_time` standing in for the game time). Because the pose would have moved, the skip names the object in `psp_vl_moving` so the sleep check keeps it awake. It is awake only to stamp a fresh tick on its entry.
+
+**The cut.** An object that animates automatically and passes the skip's other tests (no parent or children, no interpolation running, root still and unmoved) is not kept awake for its pose and its pose is not made in its update, drawn or not. It sleeps like the rest of the scenery, off the object walk. A bit by object index marks it; a reader (`object_get_node_matrices`, `object_get_node_matrix`) or the renderer's list finds the bit and makes the pose for the tick the object's own update would last have run at, if the pose it holds is of another tick.
+
+**Which tick that is.** The game time is T all through tick T and moves on after it; the object walk visits headers in index order. So for a reader:
+- inside the walk of tick T, a tree whose index is below the walk's is at T, one above it still at T - 1;
+- anywhere else, the tick of the last walk that finished (before the walk in tick T that is T - 1, after it T, and T again while the frame is drawn, when the game time already reads T + 1).
+
+That is the tick the eager update stamps today, so every reader sees the pose it sees now.
+
+**What else the compute sets.** The bounding sphere, which collision and visibility read without the accessor. The skip already requires the root still and unmoved, and `nmskipcheck` counts a root or sphere that moved under it; the cut keeps that test and that check.
+
+**Why this can be exact where `nmskip` was called not exact.** NMS's verdict rested on the whole-state checksum (play and both seeds were identical at 9,000 of 9,000 ticks), with no control pair of two runs with the word off. Two runs of one build with the same inputs differ in that checksum by themselves: the visit stamp at +0x8 of an object's datum (the lab's lesson of 2026-11-22). So the proof here is play, both seeds, the frames and the game lists, with `treesleepcheck` making every pose eagerly as well and comparing it with the one made on demand; and one thing does differ by design and is not play: a sleeping tree nobody reads holds an old pose in the saved state, as VISLAZY's undrawn objects do.
+
+**What it can take.** At most the trees' 1.1-1.2 ms a tick on the PSP-1000 in b30's fight ([M] the lab's row `fightmap1_objects_by_type_1000`), less the poses still made for trees drawn or read: once a frame instead of once a tick. Only a PSP pair prices it.
+
+**To read before code:** the per-object double-speed test in `object_update` (a tick on which the eager update does not run must not count as the tree's last), and the three later pairs that re-anchor `psp_nms_skip`'s tests.
+
 ## Co-op
 
 Every word here is exact and changes nothing a host or client could see. They ship in the campaign build's defaults only, as every default word does; the multiplayer build has no default words.
