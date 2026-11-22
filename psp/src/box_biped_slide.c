@@ -139,7 +139,7 @@ void box_bmslide_end(void)
 	if (arena_fill > arena_peak)
 		arena_peak = arena_fill;
 	result_count = 0;
-	if (++ticks % 1000 == 0)
+	if (++ticks % 500 == 0)
 		platform_psp_log("bmslide: %lu staged ticks: slides made %lu, left inline %lu, room spent %lu; taken %lu, no result at the call %lu, inputs differ %lu; bmslidecheck compared %lu, differ %lu; arena peak %d of %d bytes",
 			ticks, stat[0], stat[1], stat[2], stat[3], stat[4], stat[5], stat[6], stat[7], arena_peak, BOX_BMSLIDE_ARENA);
 }
