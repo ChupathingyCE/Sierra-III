@@ -1,5 +1,7 @@
 # Review: aifar (far actors out of the fight think 1 tick in 4) and RENDERTICK's count
 
+**Status (2026-11-22): on by default** (Sheepdog01 2026-11-22 01:06, from the 2026-11-18 ruling: running less often where a player can't tell is efficiency, proven by its encounter census; `aifaroff` turns it off). The paragraph below is the earlier status, kept for its reasons.
+
 `aifar` is a compromise under the look rule (CLAUDE.md: AI thinking less often ships only after an A/B shows it breaks nothing), built off by default behind its keep word. With the word off nothing changes: `psp_aicad_rest` answers exactly as before. Campaign only, like aicad3: `psp_aifar_on` is 0 in the multiplayer build, and the rest test sits behind `psp_aicad_active()` (a local game, no network co-op). RENDERTICK was counted and not built (section 3).
 
 ## 1. `aifar` (lever AIFAR; `FIXES_AIFAR` in psp_fixups.py, actors.c)

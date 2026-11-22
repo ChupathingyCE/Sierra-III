@@ -1377,6 +1377,11 @@ static void keep_defaults_add(void)
 	side, and aicad2 still wins when asked */
 	if (!keep_search("aicad3off") && !keep_search("aicad2"))
 		keep_default_add("aicad3");
+	/* far actors out of the fight think on one tick in four, on top of aicad3
+	(psp_fixups.py, FIXES_AIFAR): running less often where a player can't
+	tell, proven by its encounter census; aifaroff is the other side */
+	if (!keep_search("aifaroff") && !keep_search("aicad3off") && !keep_search("aicad2"))
+		keep_default_add("aifar");
 	/* levers apart from M6 #2, so m6off and its instruments leave them on.
 	wxdead: the weather's rays skip the leaf search whose answer nothing
 	reads (exact; c10 frame -1.6% on the PSP). texavg: a texture not yet in

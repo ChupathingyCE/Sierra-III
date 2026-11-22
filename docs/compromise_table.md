@@ -24,7 +24,7 @@
 | **RA** (far actors skip their AI), gated to the flight and landing | none expected in the dropship | ~-1 to -2 | U | built; ungated it lost the beach |
 | **FX15** (`fx15`): effects' steps paired on the frame's two ticks (particles, contrails and particle systems already run once a frame) | an effect's particles from the undrawn tick come out on the drawn one, at its place; play is unchanged (play and game seed identical every tick) | ~0 (b30 has 0-3 live effects) | E | built, off; play exact, strict 0 |
 | **RENDERTICK**: the HUD, first-person weapon and antennae once a frame | none on screen (they're drawn once a frame anyway) | under -0.1 (counted: the three are ~0.2% of b30's tick, ~0.4% of c20's, and only one tick a frame of it could go) | E | counted, not built: under the bar (review_aifar.md) |
-| **AIFAR**: far actors not fighting think 1 tick in 4 | far actors out of the fight react up to 4 ticks late instead of 2 | up to -0.7 | U on E | built, off by default (`aifar`; review_aifar.md) |
+| **AIFAR**: far actors not fighting think 1 tick in 4 | far actors out of the fight react up to 4 ticks late instead of 2 | up to -0.7 | U on E | built, **on by default** since 2026-11-22 (Sheepdog01 2026-11-22 01:06: running less often where a player can't tell is efficiency, 2026-11-09, 2026-11-17); `aifaroff` turns it off; review_aifar.md |
 | **STILLSWEEP**: a standing biped skips its collision sweep | a still biped nudged by something moving reacts a tick late | -0.2 to -0.7 | U | parked |
 | **ANIM2**: far bipeds posed only on the drawn tick | nothing drawn | -0.2 to -0.4 | U | under the bar |
 
