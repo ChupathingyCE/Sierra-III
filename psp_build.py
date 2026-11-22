@@ -1705,6 +1705,21 @@ def main():
     # size the heap: from the program's end up to the game state
     size = subprocess.run(["psp-size", os.path.join(OUT, "halo.elf")], capture_output=True, text=True).stdout.splitlines()[1].split()
     program = int(size[0]) + int(size[1]) + int(size[2])
+    # PSP_FUNCSIZES=name,name: the linked size of each named function with its
+    # split-off parts (name.part.N, name.constprop.N, name.cold), for comparing
+    # two builds function by function
+    wanted = [n for n in os.environ.get("PSP_FUNCSIZES", "").split(",") if n]
+    if wanted:
+        sized = {}
+        for line in subprocess.run(["psp-nm", "-S", os.path.join(OUT, "halo.elf")], capture_output=True, text=True).stdout.splitlines():
+            part = line.split()
+            if len(part) == 4 and part[2] in "tT":
+                sized.setdefault(part[3].split(".")[0], []).append((part[3], int(part[1], 16)))
+        for name in wanted:
+            parts = sized.get(name, [])
+            print("funcsize: %s %d bytes in %d part(s)%s" % (name, sum(b for n, b in parts), len(parts),
+                  ": " + ", ".join("%s %d" % p for p in sorted(parts)) if len(parts) > 1 else ""))
+        print("funcsize: the %d named functions %d bytes" % (len(wanted), sum(b for name in wanted for n, b in sized.get(name, []))))
     # build 116: to 4 KB, not 64. With 64, a few bytes of code past a step
     # cost the heap 64 KB at once (b115 sat 0.7 KB under one). The slack
     # above the heap is STACK_RESERVE either way: b115 ran with it plus
