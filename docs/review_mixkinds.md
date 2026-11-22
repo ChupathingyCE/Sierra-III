@@ -1,6 +1,6 @@
 # Review: mixkinds (H1, one mix loop per voice kind)
 
-Keep word `mixkinds`, **off by default** until its proof (memixcheck and audiocheck in the emulator, then a PSP pair). Exact: the same samples, the same voice state after, the same decodes in the same order. Box: audio (the lab's REBUILD §3.3; the lab's `audio_me.md` H1, and the design in the lab's `sound.md`, "H1, the first step").
+Keep word `mixkinds`, **on by default** since its proof (memixcheck and audiocheck in the emulator; the PSP-1000 pair h1mix1: the ME's mixing 2,064 -> 1,344 µs a block, -35%, 104 -> 67 cycles a voice-frame [M], the frame in the noise on b30); `mixkindsoff` keeps the old loop. Exact: the same samples, the same voice state after, the same decodes in the same order. Box: audio (the lab's REBUILD §3.3; the lab's `audio_me.md` H1, and the design in the lab's `sound.md`, "H1, the first step").
 
 ## Why
 
