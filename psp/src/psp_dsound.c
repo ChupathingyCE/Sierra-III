@@ -3667,6 +3667,14 @@ static int audio_started = 0;
 static int audio_thread(SceSize arguments, void *argument)
 {
 	int channel = -1, which = 0, up = 0, full_rate = 0, src44 = 0;
+	/* the blocks by slot: two, mixed and played in turn; "audiohold" four, the
+	output a block behind the mix, so one block is held mixed beside the
+	one queued and a mix may take two blocks before the speaker runs dry
+	(psp_me.c's ME_FEATURE_AUDIO_HOLD) */
+	short *slot_out[4] = { output_buffers[0], output_buffers[1], NULL, NULL };
+	short *slot_44[4] = { output44[0], output44[1], NULL, NULL };
+	short *slot_full[4] = { output_full[0], output_full[1], NULL, NULL };
+	int slots = 2, mix_at = 0, primed = 1;
 	SceUID dump = -1;
 	unsigned long dumped = 0;
 
@@ -3695,6 +3703,61 @@ static int audio_thread(SceSize arguments, void *argument)
 	channel = src44 ? sceAudioSRCChReserve(2 * MIX_FRAMES, 44100, 2) :
 		up ? sceAudioChReserve(PSP_AUDIO_NEXT_CHANNEL, 2 * MIX_FRAMES, PSP_AUDIO_FORMAT_STEREO) :
 		sceAudioSRCChReserve(MIX_FRAMES, OUTPUT_RATE, 2);
+	{
+		extern int psp_keep(const char *word);
+
+		if (channel < 0 && psp_keep("audiohold"))
+			psp_me_audio_hold_off(); /* nothing plays, so nothing to hold for */
+		else if (psp_keep("audiohold"))
+		{
+			int k, ok = 1;
+			unsigned int bytes = 0;
+
+			/* the 44.1 kHz blocks only where they're mixed and played */
+			for (k = 2; k < 4; k++)
+			{
+				slot_out[k] = (short *)memalign(64, sizeof(output_buffers[0]));
+				bytes += sizeof(output_buffers[0]);
+				if (!slot_out[k])
+					ok = 0;
+				if (up)
+				{
+					slot_44[k] = (short *)memalign(64, sizeof(output44[0]));
+					bytes += sizeof(output44[0]);
+					if (!slot_44[k])
+						ok = 0;
+				}
+				if (full_rate)
+				{
+					slot_full[k] = (short *)memalign(64, sizeof(output_full[0]));
+					bytes += sizeof(output_full[0]);
+					if (!slot_full[k])
+						ok = 0;
+				}
+			}
+			if (ok)
+			{
+				slots = 4;
+				primed = 0;
+				platform_log("audio: audiohold, one block more ahead of the speaker (%d ms more delay; %u bytes of heap)",
+					MIX_FRAMES * 1000 / OUTPUT_RATE, bytes);
+			}
+			else
+			{
+				/* as before, and the ME told: it mustn't hold a block with no
+				extra slot to cover the wait */
+				for (k = 2; k < 4; k++)
+				{
+					free(slot_out[k]);
+					free(slot_44[k]);
+					free(slot_full[k]);
+					slot_out[k] = slot_44[k] = slot_full[k] = NULL;
+				}
+				psp_me_audio_hold_off();
+				platform_log("audio: audiohold: no room for its two blocks (%u bytes); as before, and the ME doesn't hold", bytes);
+			}
+		}
+	}
 	if (channel < 0)
 		platform_log("audio: no output channel (%08x); sound runs silent", channel);
 	else
@@ -3716,14 +3779,14 @@ static int audio_thread(SceSize arguments, void *argument)
 	for (;;)
 	{
 		/* the ME's job may have made the 44.1 kHz block whole */
-		if (!mix(output_buffers[which], full_rate ? output_full[which] : NULL, up ? output44[which] : NULL, MIX_FRAMES) &&
+		if (!mix(slot_out[mix_at], full_rate ? slot_full[mix_at] : NULL, up ? slot_44[mix_at] : NULL, MIX_FRAMES) &&
 			up)
 		{
-			upsample_full(output_buffers[which], output44[which], full_rate ? output_full[which] : NULL);
+			upsample_full(slot_out[mix_at], slot_44[mix_at], full_rate ? slot_full[mix_at] : NULL);
 		}
 		if (dump >= 0 && up)
 		{
-			sceIoWrite(dump, output44[which], sizeof(output44[which]));
+			sceIoWrite(dump, slot_44[mix_at], sizeof(output44[0]));
 			dumped += MIX_FRAMES;
 			if (dumped >= 20 * OUTPUT_RATE)
 			{
@@ -3733,13 +3796,20 @@ static int audio_thread(SceSize arguments, void *argument)
 		}
 		else if (dump >= 0)
 		{
-			sceIoWrite(dump, output_buffers[which], sizeof(output_buffers[which]));
+			sceIoWrite(dump, slot_out[mix_at], sizeof(output_buffers[0]));
 			dumped += MIX_FRAMES;
 			if (dumped >= 20 * OUTPUT_RATE)
 			{
 				sceIoClose(dump);
 				dump = -1;
 			}
+		}
+		mix_at = (mix_at + 1) % slots;
+		if (!primed)
+		{
+			/* audiohold's first block: mixed, held; the next pass plays it */
+			primed = 1;
+			continue;
 		}
 		if (channel < 0)
 			sceKernelDelayThread(MIX_FRAMES * 1000000 / OUTPUT_RATE);
@@ -3753,14 +3823,14 @@ static int audio_thread(SceSize arguments, void *argument)
 
 			if (up)
 			{
-				sceKernelDcacheWritebackRange(output44[which], sizeof(output44[which]));
+				sceKernelDcacheWritebackRange(slot_44[which], sizeof(output44[0]));
 				if (src44)
-					sceAudioSRCOutputBlocking(PSP_AUDIO_VOLUME_MAX, output44[which]);
+					sceAudioSRCOutputBlocking(PSP_AUDIO_VOLUME_MAX, slot_44[which]);
 				else
-					sceAudioOutputPannedBlocking(channel, PSP_AUDIO_VOLUME_MAX, PSP_AUDIO_VOLUME_MAX, output44[which]);
+					sceAudioOutputPannedBlocking(channel, PSP_AUDIO_VOLUME_MAX, PSP_AUDIO_VOLUME_MAX, slot_44[which]);
 			}
 			else
-				sceAudioSRCOutputBlocking(PSP_AUDIO_VOLUME_MAX, output_buffers[which]);
+				sceAudioSRCOutputBlocking(PSP_AUDIO_VOLUME_MAX, slot_out[which]);
 			now = sceKernelGetSystemTimeWide();
 			if (last_return)
 			{
@@ -3773,7 +3843,7 @@ static int audio_thread(SceSize arguments, void *argument)
 			}
 			last_return = now;
 		}
-		which ^= 1;
+		which = (which + 1) % slots;
 	}
 	return 0;
 }
