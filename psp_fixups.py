@@ -57037,7 +57037,8 @@ FIXES_BMLINK = {
 """,
  """static int psp_lights_frame = -1;
 /* (FIXES_BMLINK) only the solving biped's own link is queued: a slot, no lookup */
-#define PSP_BML 64
+/* the census put c20's peak at 58 a pass: room to spare, and a full queue is made, not refused */
+#define PSP_BML 96
 static long psp_bml_current = NONE;
 static int psp_bml_lights_on;
 static long psp_bml_lights[PSP_BML];
@@ -57226,6 +57227,18 @@ __attribute__((noinline)) void psp_bml_pass_end(void)
 	if (psp_bml_passes++ % 512 == 0)
 		psp_bml_log();
 }
+
+/* the map's totals, then counted afresh for the next */
+static void psp_bml_map_end(void)
+{
+	if (!psp_bml_passes)
+		return;
+	psp_bml_flush(6);
+	psp_bml_log();
+	psp_bml_passes = psp_bml_queued = psp_bml_made = psp_bml_on_me = psp_bml_lights_moved = psp_bml_lights_full = 0;
+	memset(psp_bml_flushes, 0, sizeof(psp_bml_flushes));
+	psp_bml_peak = 0;
+}
 #endif
 """),
 # the solving biped's own link: its partition half queued
@@ -57245,6 +57258,14 @@ __attribute__((noinline)) void psp_bml_pass_end(void)
 				object->object.bounding_sphere_radius, &object->object.location) :
 			!psp_p2q_reconnect(object_index, &object->object.bounding_sphere_center, object->object.bounding_sphere_radius,
 				&object->object.location))
+"""),
+# the map's end, before the partitions go
+("""	cluster_partition_make_invalid(&collideable_object_cluster_partition);
+	cluster_partition_make_invalid(&noncollideable_object_cluster_partition);
+""",
+ """	psp_bml_map_end(); /* (FIXES_BMLINK) */
+	cluster_partition_make_invalid(&collideable_object_cluster_partition);
+	cluster_partition_make_invalid(&noncollideable_object_cluster_partition);
 """),
 # an object's own clusters: a waiting biped's pointer is NONE until its entry is made
 ("""		psp_p2q_flush(4);
