@@ -1220,6 +1220,10 @@ static const struct
 	{ "mevram", "mevramoff" },
 	{ "texpretouch", "notexpretouch" },
 	{ "mepoll", "mepolloff" },
+	/* a mono ADPCM voice mixed by its kind's loop (psp_dsound.c, mixkinds):
+	the same operations in the same order, without the per-sample tests that
+	answer the same for a whole run; exact, and the ME's mixing a third less */
+	{ "mixkinds", "mixkindsoff" },
 	{ "geshow3", "geshow3off" }, { "geowindow", "geowindowoff" },
 	/* the dither centred for the GE's truncating writes: without it dark
 	scenes draw about 4 levels darker than the PC on every channel (a10's

@@ -28,7 +28,7 @@ void psp_me_cache_refresh(void); /* psp_me.c: on the ME, its whole cache written
 #define SWEEPME_RECORD_BYTES 1280
 #define SWEEPME_ROOM 960 /* the features' bytes a record holds */
 
-enum { SWEEPME_NOT_MADE, SWEEPME_MADE, SWEEPME_CUT, SWEEPME_LEAVES, SWEEPME_ROOMLESS, SWEEPME_STATES };
+enum { SWEEPME_NOT_MADE, SWEEPME_MADE, SWEEPME_CUT, SWEEPME_LEAVES, SWEEPME_ROOMLESS, SWEEPME_DEEP, SWEEPME_STATES };
 
 struct psp_sweepme_record
 {
@@ -97,6 +97,12 @@ static void psp_sweepme_make(void *at, const unsigned int *args)
 	}
 	box_sweep_level_features(&r->level, 256, r->breakable, r->center, r->radius, r->height, r->width, r->structure,
 		&s->walk, &s->features);
+	if (s->walk.deep)
+	{
+		/* past the ME's depth cap (box_collbsp.c): the main CPU makes it */
+		r->status = SWEEPME_DEEP;
+		return;
+	}
 	if (s->features.count[0] >= BOX_SWEEP_FEATURES || s->features.count[1] >= BOX_SWEEP_FEATURES ||
 		s->features.count[2] >= BOX_SWEEP_FEATURES)
 	{
@@ -140,10 +146,10 @@ static void psp_sweepme_make(void *at, const unsigned int *args)
 
 static void psp_sweepme_report(void)
 {
-	platform_psp_log("sweepme: %lu ticks, %lu records (%lu bipeds past the %d records); made by the ME %lu, here %lu; taken %lu; not taken: cut short %lu, too many leaves %lu, too big %lu, no record %lu, another level %lu, breakable changed %lu",
+	platform_psp_log("sweepme: %lu ticks, %lu records (%lu bipeds past the %d records); made by the ME %lu, here %lu; taken %lu; not taken: cut short %lu, too many leaves %lu, too big %lu, too deep %lu, no record %lu, another level %lu, breakable changed %lu",
 		sweepme_ticks, sweepme_records_added, sweepme_full, SWEEPME_RECORDS, sweepme_by_me,
 		sweepme_records_added - sweepme_by_me, sweepme_taken, sweepme_status[SWEEPME_CUT], sweepme_status[SWEEPME_LEAVES],
-		sweepme_status[SWEEPME_ROOMLESS], sweepme_not_found, sweepme_level_changed, sweepme_breakable_changed);
+		sweepme_status[SWEEPME_ROOMLESS], sweepme_status[SWEEPME_DEEP], sweepme_not_found, sweepme_level_changed, sweepme_breakable_changed);
 	if (psp_sweepme_check)
 		platform_psp_log("sweepmecheck: %lu answers taken were compared with the engine's own level half: %lu the same, %lu differ",
 			sweepme_same + sweepme_differ, sweepme_same, sweepme_differ);
@@ -155,6 +161,12 @@ void psp_sweepme_begin(const struct psp_sweepme_level *level, const void *breaka
 	{
 		psp_sweepme_check = psp_keep("sweepmecheck") != 0;
 		psp_sweepme_on = psp_sweepme_check || psp_keep("sweepme");
+		{
+			extern int box_collbsp_me_depth_cap;
+
+			if (psp_keep("walkcap4"))
+				box_collbsp_me_depth_cap = 4;
+		}
 		if (psp_sweepme_on && !psp_me_batch_init(&sweepme_batch, psp_sweepme_make, sweepme_records, sweepme_state,
 			SWEEPME_RECORD_BYTES, SWEEPME_RECORDS, 2, NULL))
 		{

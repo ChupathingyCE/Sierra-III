@@ -87,6 +87,13 @@ struct box_collbsp_sphere_result
 	the leaf it reaches; box_collbsp_split_node): a smaller sphere inside it
 	walks the same single-sided path there, so its walk starts there */
 	int start_node;
+	/* the walk stopped on the ME past its depth cap (box_collbsp.c): the
+	answer is incomplete, and the asker redoes it on the main CPU. In the
+	game only psp_sweepme_make walks on the ME (through
+	box_sweep_level_features), and it reads this; box_sweep's own walks are
+	called by the halo_box bench alone, on the main CPU. A new ME caller
+	must read it too, or it takes a cut walk as found */
+	int deep;
 };
 
 /* the sphere: surfaces, edges and vertices it touches, leaves it is in.
