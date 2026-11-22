@@ -1220,6 +1220,10 @@ static const struct
 	{ "mevram", "mevramoff" },
 	{ "texpretouch", "notexpretouch" },
 	{ "mepoll", "mepolloff" },
+	/* a mono ADPCM voice mixed by its kind's loop (psp_dsound.c, mixkinds):
+	the same operations in the same order, without the per-sample tests that
+	answer the same for a whole run; exact, and the ME's mixing a third less */
+	{ "mixkinds", "mixkindsoff" },
 	{ "geshow3", "geshow3off" }, { "geowindow", "geowindowoff" },
 	/* the dither centred for the GE's truncating writes: without it dark
 	scenes draw about 4 levels darker than the PC on every channel (a10's
@@ -2567,6 +2571,21 @@ transition check's end (psp_fixups.py, FIXES_TRANSITIONS) */
 void psp_exit_game(const char *why)
 {
 	exit_game(why);
+}
+
+/* an exit through the C library's exit(), not exit_game: the engine's
+halt_and_catch_fire ends in exit(0) after a fatal error (a failed allocation
+the engine can't go on without, say). The log's batch holds that error's own
+lines, and nothing else writes it, so without this the run ends with its last
+few seconds missing and nothing to say it stopped: on the emulator it reads as
+a clean exit (c20's check runs, which ended ~tick 1,600 of 3,900) */
+static void log_at_exit(void)
+{
+	if (exiting)
+		return;
+	exiting = 1;
+	platform_log("exit: the game ended through exit(), not the port's own exit (the engine's halt after a fatal error: the lines above say which)");
+	log_flush();
 }
 
 /* The overflow hook (psp_fixups.py FIXES_ARRAYFULL; the lab's
@@ -4893,6 +4912,9 @@ int main(int argc, char **argv)
 	heap_base = (char *)sbrk(0);
 	log_lock = sceKernelCreateSema("halo log", 0, 1, 1, NULL);
 	flush_lock = sceKernelCreateSema("halo log flush", 0, 1, 1, NULL);
+	/* registered before the ME's own (psp_me.c), so it runs after the ME is
+	stopped, as exit_game orders them */
+	atexit(log_at_exit);
 	/* build 88: 16 KB (was 4 KB): the exit callback formats log lines (a 512-byte
 	line plus vsnprintf's own frame) and writes files on this stack */
 	thread = sceKernelCreateThread("halo callbacks", callback_thread, 0x11, 0x4000, 0, NULL);

@@ -121,6 +121,33 @@ The same two runs' own words, **per draw**: d20 `light draws 13072 (63.5 a frame
 
 ---
 
+### 2d. The pass's own instructions by step, d20's opening (counts, 2026-11-21; no code)
+
+[E, exact instruction counts from the emulator's cache model: the lab's sierra-batch 44976939797 (findings `dietsplit2_light_pass_lines`).] codediet/batch4 d55149dc in a `-g` build, the drawing on the main CPU (`m6off`) so each instruction's source line is named, d20's opening with nobody at the controls to 120 s. **It says where the pass's instructions are, not what they cost:** on a PSP the pass runs on the Media Engine from its copy, and misses, not instructions, are most of its time there. The counts are each function's own: `sqrtf`, `memcpy`, the list's words and pspgu's calls are callees and not in them. Line numbers are `psp/src/psp_ge.c` at d55149dc. This stretch is not §1c's flashlight window: the cone, gel and whole-triangle steps are 0.4% of the pass here, so its lights are mostly the level's point lights [U].
+
+The pass is **4,870.5 M instructions, 34.2% of the drawing's 14,231.6 M**, over 190,577 calls of `psp_ge_light_draw_body` (25,557 a call with its three callees).
+
+| Step (§1c's order) | Lines | Instructions | Of the pass | A body call |
+|---|---|---:|---:|---:|
+| 1 set-up: stream, matrices, bind | 23646-23739 and inlined helpers | 51.9 M | 1.1% | 272 |
+| 2 the triangle walk: index bounds test, the corners' source pointers | 23757-23783 | 440.0 M | 9.0% | 2,309 |
+| 3 each corner's reach through the draw's memo | 23872-23888 | 1,072.8 M | 22.0% | 5,629 |
+| 3 `light_reach` itself (16,098,504 calls, 84.5 a body call): distance and fade 51%, the packed normal 24%, facing 13%, 1 / distance 12% | 22786-22821, 12390-12401 | 820.4 M | 16.8% | 4,305 |
+| 3 the lit test, and a lit triangle's corners into camera space | 23921-23964, 6877-6893 | 885.2 M | 18.2% | 4,645 |
+| 3 gel, cone and whole-triangle tests | 23977-24036 | 17.9 M | 0.4% | 94 |
+| 4 the emit: its call, `light_emit` (3,197,989 calls, 16.8 a body call; the five plane tests 76%) and `light_emit_known` | 24055-24086, 6905-6918, 23012-23052 | 802.5 M | 16.5% | 4,211 |
+| 5 after the loop: the kept vertices' colour | 22824-22827 | 244.3 M | 5.0% | 1,282 |
+| 5 after the loop: the distance bands (nearest corner, sort, copy, draws) | 24159-24217 and inlined helpers | 511.3 M | 10.5% | 2,683 |
+| 5 texture state, the other draws, the tail | 24102-24136, 24231-24282 | 22.2 M | 0.5% | 117 |
+
+Every source line of the four functions is in a row; the body's rows sum to 3,331.7 M of its 3,333.8 M (2.1 M, 0.06%, carry no line).
+
+- **What does not depend on the camera** [D, read in the code]: which triangles a light reaches and how strongly. The walk, the reach and its memo, `light_reach` and the colours work from the light's position, radius and colour and the vertex's position and normal: **52.9% of the pass's instructions** (step 2, the two reach rows and the colour). For a light and a surface that did not move since the last frame they come out the same; in the default build nothing of them is kept from one frame to the next (the memo is cleared a draw; LMC, §4b, is the parked lever that kept a still light's lit list, and served 59% of d20's light draws from it).
+- **What does:** the corners in camera space, the emit's plane tests and cuts, and the distance bands with their depth nudges: **45.2%** (the lit-corners row, the emit and the bands). These follow the eye.
+- **Five reaches for every triangle emitted:** 16.1 M reach computations against 3.2 M emits. Most corners worked out belong to triangles the light does not reach.
+- **Instruments on the every-triangle path in this build:** none counted. The probes (`probes_on`), the census and the ring look (`psp_on_me()` is false under `m6off`) are tests that fall through; on a PSP the ring look adds a clock read every 8 triangles on the ME.
+- **Not answered here:** how many of the calls are the same light on the same surface as the frame before (the "on change" share), and the flashlight's window, where §1c's split says the cone cull and split lead. The banding is by source line from one run; the worker's read of it ran out of turns (or-job 44981882245), so the rows were summed and the lines read by the diet's session.
+
 ## 3. Every earlier lever on this ground (price, why it stopped, revive_if)
 
 Levercheck's ground is `lighting` (`projects/sierra/tools/levercheck.py:44`); rows below are `projects/sierra/findings/levers.tsv` and `grounds.tsv`.
@@ -240,3 +267,40 @@ Engine entry points the port already cuts over — this is `psp/boxes/lights.ups
 - **The light limit's −4 ms on the main CPU** is arithmetic on 8.5 ms and a count of 15 [U on M]; the size-threshold form Sheepdog01 would accept is not sized.
 - **"~600–800 µs a light"** depends on the draws-per-light ratio from a 2026-11-04 census of the *engine* build, not today's tock [U].
 - **The T1 vs `d20_flashlight_frame_tock` conflict on which unit binds d20's flashlight** is recorded above and **not resolved**; the later reading (main CPU binds) is the one I used — if it is wrong, LSPLITCPU reopens and the box's ME ceiling rises by 10–13 ms of a 91 ms frame.
+
+---
+
+## 9. Slice 1, a draft: the reach on change (2026-11-21; design before code; nothing built)
+
+**Owner from 2026-11-21 22:28 (Sheepdog01): the code diet's session, design and build; the box stays the lead's as spec.** This section is written before step 1's [M] (the light kind's ME time on today's tock, from the next d20 pair's `mekinds` side); its gate below decides whether it is built at all.
+
+**What it is.** A level light that did not change since the last frame reaches the same triangles of the same level draw, as strongly. Today that is worked out again for every light draw of every frame: the triangle walk, each corner's reach through the draw's memo and `light_reach` are **47.8% of the pass's own instructions** on d20's opening, and five reaches are worked out for every triangle that is emitted (§2d [E]). Slice 1 keeps, for a light and a level draw, **the lit list**: the indices of the triangles the light reaches and each of their corners' reach, as the floats the walk produced. A frame that finds the list valid skips the walk and the reach, and goes on from the lit corners as it does today: into camera space, through the emit's plane tests and cuts, the colour and the distance bands, which follow the eye and the light's colour and are not kept.
+
+**What was tried on this ground** (the lab's `levercheck.py --ground lighting`; rows LMC, LR, LM, LPLAN): this is **LMC** ("static lights' light-pass work kept across frames"). It was built and proven exact on 2026-11-07 (0 mismatched of 35,294 checked draws on d20, play and seeds identical; **59% of d20's light draws and 48% of a10's served from kept results** [E]) and parked: on its PSP pair (d20's swamp, PSP-3000, 2 x 2) the ME's render job was no shorter (16.0-16.1 ms off, 16.5-19.1 on) and the main CPU waited ~5 us a job on it. Its revive_if: "a stretch where the main CPU waits on the ME's render job". LR (runs of 16 triangles skipped by a sphere) reaches only the 21% of d20's triangles that sit in runs wholly beyond the light [E]; LPLAN (the main CPU's surface plan kept) priced at net 0 [M]; LM (lights merged per surface) changes what the GE draws and is a later slice. **What is different now:** (1) the stretch: LMC's window held about 1.3 ms of light draws a frame by a later reading (the lab's LM row, c4), so there was little to save and its bookkeeping could cost as much; (2) the frame's path: d20's unsteered opening had the main CPU waiting 14-17 ms a frame on the render job on tock159 [M, old], which the next pair's baseline side measures again; (3) the size: the lists are sized to what is lit (about 300 bytes a kept draw, ~32 KB in all, below), not LMC's 160 KB of per-vertex reach; (4) the code: LMC's branch is in neither repository today (its commit is not in the archive's 857 branches), so the slice is written from this page in `psp/src/box_lights.c`, which the box's rules ask for in any case.
+
+**The gate (before any code).** The slice is built if step 1's [M] shows, on a stretch that can be benched, the ME's light kind at about 2 ms a frame or more **and** the main CPU waiting on the render job there. If the light kind is small on today's tock or the main CPU does not wait, this section is withdrawn and the first slice is chosen again from §3 (the light limit is a look call for Sheepdog01; LM is next by size).
+
+**Kept, and what ends it.**
+- **Key:** the light (its position, radius, cone and falloff, gel and definition, compared bit for bit with last frame's) and the level draw (the map's own vertex range and index range and its material: the map's data, not the address of a copy, which moves when the geometry cache gives a block up).
+- **Value:** the lit triangles' three indices each (6 bytes) and their three reaches (12 bytes), in the walk's order, so the emit sees the same triangles in the same order and the display list comes out the same word for word. At d20's opening's 16.8 emitted triangles a light draw [E] that is about 300 bytes a kept draw, about 19 KB for the 63.5 light draws a frame of d20's census [M, older tock]; the store's count sets the real figure.
+- **Ended by:** the light changing (the flashlight changes on every frame the player moves or turns: it is never kept, and is this box's other slice), the level changing (a map load), the store taking the block back, or `lightpiece` / `lightleast` changing. A spotlight's split path is left to the old code in slice 1: point lights only.
+- **Colour:** worked out each frame from the kept reach (the tint and the light's colour may change while its place does not).
+
+**The kept record, from the walk** [D, `psp_ge_light_draw_body` and the level streams in `psp_ge.c` at the tock; read 2026-11-22]:
+- The walk works in the level copy's frame: the body finds the draw's stream by the map's vertex pointer (`level_stream_find(vertices)`) and takes the stream's origin off the light's position before the loop. So the reach floats belong to a light position **and a stream**: the key holds the light's values, the draw's given vertex and index pointers and count, and the stream's stamp (next line).
+- A stream ends in one place, `level_stream_let_go` (the copies' budget, the carve given back, a map's end), on the main CPU, which cannot reach the ME's eDRAM to clear anything. So each stream gets **a serial number set when it is made**, and a kept list is valid only while its stream's serial is the one it was kept under. That is one more line in `psp_ge.c` (a field of `struct level_stream` and its set), listed with the hooks.
+- `bake_substitute` may swap the draw's index list for the stencil bake's pieces before the loop: the kept triangles are those of the list that was walked, and the stream's serial covers the bake's state changing with it [U: whether the bake can change under a live stream is read before code].
+- Slice 1's lights: no cone (`spot`, cosine cutoff between 0.05 and 0.999, takes the split path) and no gel (a gel light carries three reaches a corner); under the default light mode. The others take the old path untouched.
+- A kept triangle is its three vertex indices (6 bytes, so the draw's index list is not read again) and its three reaches as floats (12 bytes).
+
+**Units.** The pass runs on the ME, and so does all of this: the light reaches the ME as its begin record's own values (`psp_ge_light_begin`'s position, forward, colour, radius and the two cosines, then `psp_ge_light_gel`; `psp_ge.c`'s `light` is set from them as the record is replayed [D]), so the ME compares those values with a kept list's key itself. **The main CPU does nothing new and no record changes** (corrected 2026-11-21 23:5x: the first draft asked the main CPU for an "unchanged" word; it isn't needed, the key is the values). The kept lists are written and read by the ME only: no line is shared with the main CPU. The ME's code is `box_lights.c`'s, free of VFPU and system calls, in the ME's copy (its room from eDRAM 520-800 KB through `memory_ledger.md`, as the draw list's Tier 1).
+
+**Where the kept lists live (the lead, 2026-11-21 23:4x): in the ME's eDRAM, in a table of the box's own.** The draw list's store (`box_draw_list.md` §12.1a) is for what the GE CALLs: display-list blocks, in main RAM, in slots freed by the GE's fence. A lit list is the ME's working data: the GE never reads it, and nothing the light pass sends the GE can be CALLed again, since it follows the eye. So it needs no fence, it does not wait on that store's interface, and the ME reads its own eDRAM at about a third of main RAM's cost a line under load (the figures in LSPLITMEMO's revive_if, the lab's `grounds.tsv`: 27 cycles a line against 77). **About 32 KB of the 280 free at 520-800 KB**, claimed through `memory_ledger.md` in the commit that builds it, placed with the copy's 264 KB room and the draw list's Tier 1 growth of the copy (2-3 KB) in view. The store's invalidation stamps are borrowed where they fit (the level stream's identity is the same question there); its storage is not.
+
+**Hooks in `psp_ge.c`** (the only lines outside `box_lights.c`; under the build switch `PSP_BOXLIGHTS`, off by default): a level stream's serial number where the stream is made, and two in `psp_ge_light_draw_body`: (1) before the triangle walk: ask the box for this light's lit list of this draw and, if it has one, run the lit-triangle part of the loop over it; (2) after a walk that found none: hand the box the lit triangles and reaches it just worked out, to keep if the light's values are the ones it saw last frame. Nothing in the record path, `psp_ge_light_begin` or the main CPU's selection changes.
+
+**Proof.** In the emulator: a check word that walks anyway and compares the kept list with the walk's (0 differ), play and both seeds identical, and every game list identical between the old-only and the new-only build. On the PSP: old-only against new-only on the same bench, d20's unsteered opening first; priced in the frame, with the ME's light kind (`mekinds`) and the main CPU's wait beside it.
+
+**Budget (provisional until step 1).** §4a's 3.0 ms mean and 5.0 at the most of the ME stand as the proposal. If the kept lists serve the 59% of light draws LMC served, and those draws lose the 48% of their instructions that the walk and the reach are, the pass's instructions fall by about 28% on d20 [U on E: instructions, not time; misses are most of the ME's time and the kept list is read in place of the level's indices, vertices and normals, which is where a gain in misses would come from, unmeasured].
+
+**Not in slice 1:** the flashlight, the split, the camera-side half (45% of the pass's instructions), LM's merge, the light limit, and anything the GE draws differently.
