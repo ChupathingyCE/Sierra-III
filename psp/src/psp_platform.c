@@ -1319,6 +1319,14 @@ static const struct
 	drawing no worse */
 	{ "objlean", "objleanold" }, { "verifygate", "verifygateoff" }, { "tagmemo", "tagmemooff" },
 	{ "tagmemotick", "tagmemotickoff" },
+	/* the diet's short forms on the Media Engine's replay (docs/code_diet.md):
+	pspgu's state switches, a sent bind's words and a draw's words written
+	by the port, a baked wall's draw looked over once, and a model part's
+	place in the geometry cache asked once. Exact (every display list the
+	same); the five together take 1.2 ms off the ME's 33.8 ms render job on
+	c20 on the PSP-3000 */
+	{ "gustate", "gustateoff" }, { "bindwords", "bindwordsoff" }, { "gudraw", "gudrawoff" },
+	{ "bakedraw", "bakedrawoff" }, { "bakedonce", "bakedonceoff" },
 };
 static char keep_defaults_added[KEEP_DEFAULTS_ROOM] = "";
 /* defaults that found no room: a lever silently off would be read as on */
@@ -1460,6 +1468,7 @@ static void keep_load(void)
 	the measuring off, notimers and nooverlay in one word */
 	psp_timers_off = keep_search("notimers") || keep_search("lean");
 	psp_verify_call = !keep_search("verifygate") || keep_search("verifyvectors");
+	sceKernelDcacheWritebackRange(&psp_verify_call, sizeof(psp_verify_call)); /* the ME reads it */
 	tagmemo_word = keep_search("tagmemo") != 0;
 	tagmemo_tick_only = keep_search("tagmemotick") != 0;
 	psp_tagmemo_on = tagmemo_word && !tagmemo_tick_only;
@@ -1488,7 +1497,7 @@ static void keep_load(void)
 	platform_log("keep words, continued: iostats gereads gereadskind vramtexN edramcheck overlayfreefar inflightkbN inflightroom inflighttextold");
 	/* the code diet's short forms (psp_fixups.py, FIXES_DIET1): each says so
 	when its word is on, so a run's log shows which form it played */
-	platform_log("keep words, the code diet's short forms (on by default; off: objleanold verifygateoff tagmemooff tagmemotickoff; opt-in: bakedraw bakedonce)");
+	platform_log("keep words, the code diet's short forms (on by default; off: objleanold verifygateoff tagmemooff tagmemotickoff gustateoff bindwordsoff gudrawoff bakedrawoff bakedonceoff)");
 	if (keep_search("objlean"))
 		platform_log("objlean: object_update's short form");
 	if (keep_search("verifygate"))
@@ -1497,6 +1506,12 @@ static void keep_load(void)
 		platform_log("tagmemo: the typed getters remember their last answer");
 	if (keep_search("tagmemotick"))
 		platform_log("tagmemotick: the getters' answers are remembered in the tick only");
+	if (keep_search("bindwords"))
+		platform_log("bindwords: a sent bind's words written straight into the display list, not through pspgu's calls");
+	if (keep_search("gustate"))
+		platform_log("gustate: the GE's one-word state switches written from a table, not through pspgu's switch functions");
+	if (keep_search("gudraw"))
+		platform_log("gudraw: a draw's words written straight into the display list, not through pspgu's draw functions");
 	if (keep_search("bakedonce"))
 		platform_log("bakedonce: a model part's place in the geometry cache is asked once a draw");
 	if (keep_search("bakedraw"))

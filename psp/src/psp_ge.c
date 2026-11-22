@@ -2895,14 +2895,17 @@ static void vm_frame_end(void);
 static void vm_report(void);
 static void vm_level_note(void *vertices, unsigned int bytes);
 static void vm_level_move(void *from, void *to);
+/* the gate's draws are made by gum_draw and gu_draw ("gudraw", below) */
+static void gum_draw(int prim, int vtype, int count, const void *indices, const void *vertices);
+static void gu_draw(int prim, int vtype, int count, const void *indices, const void *vertices);
 #define sceGumDrawArray(p, v, c, i, d) do { if (!ge_draw_skipped()) { int ge_v_ = (v), ge_c_ = (c); \
 	const void *ge_i_ = (i), *ge_d_ = (d); if (vm_on > 0) ge_d_ = vm_redirect(ge_d_, ge_c_); \
 	if (ge_reads_on > 0) ge_reads_note(ge_v_, ge_c_, ge_i_, ge_d_); \
-	sceGumDrawArray(p, ge_v_, ge_c_, ge_i_, ge_d_); } } while (0)
+	gum_draw(p, ge_v_, ge_c_, ge_i_, ge_d_); } } while (0)
 #define sceGuDrawArray(p, v, c, i, d) do { if (!ge_draw_skipped()) { int ge_v_ = (v), ge_c_ = (c); \
 	const void *ge_i_ = (i), *ge_d_ = (d); if (vm_on > 0) ge_d_ = vm_redirect(ge_d_, ge_c_); \
 	if (ge_reads_on > 0) ge_reads_note(ge_v_, ge_c_, ge_i_, ge_d_); \
-	sceGuDrawArray(p, ge_v_, ge_c_, ge_i_, ge_d_); } } while (0)
+	gu_draw(p, ge_v_, ge_c_, ge_i_, ge_d_); } } while (0)
 /* draws stop this close to the display list's end (each draw adds its
 commands, and its copied indices and cut-up corners, to the list) */
 #define DISPLAY_LIST_MARGIN 0x3000
@@ -2982,6 +2985,155 @@ static void dither_moves_make(const ScePspIMatrix4 *matrix)
 			for (column = 0; column < 4; column++)
 				to[row * 4 + column] = from[((row + places[k][1]) & 3) * 4 + ((column + places[k][0]) & 3)];
 	}
+}
+
+#include "psp_gulist.h" /* pspgu's gu_list (guInternal.h: GuDisplayList) */
+
+/* Switches the main CPU reads from the keep words once (model_switches)
+and the Media Engine's replay only reads. They share one cache line that
+holds nothing else and is written back once, whole, with all of them set:
+written back one at a time, or beside a word either CPU writes later, a
+line could be put back with another word's stale value in it.
+  model14 (docs/design_model14.md): an opaque rigid part's vertices as
+14-byte records: u16 uv (the source's s16 + 32768, undone by the texture
+offset), s8 normal with the node in the pad byte the GE skips, s16 position
+on a power-of-two step, the part's own, folded into its model matrix. A
+step that is a power of two keeps the matrix a uniform scale (normals keep
+their direction) and puts shared corners of parts with one step on the same
+lattice point. First-person parts, the sky and see-through parts stay in
+floats: the first are seen closest, the last are read on the CPU.
+  baked_once ("bakedonce"): a part's place in the geometry cache is asked
+once, by psp_ge_draw_model, and handed to model_convert.
+  skin_own_slots (off with "skinwoff"): each bending batch draws at its own
+highest slot in use, not at its part's slot count: the GE blends every
+weight a draw declares, zeros included, at ~60 ns a weight a vertex, and
+the slots past a batch's highest hold no node of its vertices, so their
+weights are zero. 1-4 and 5-8 weights share a record layout (the texture
+coordinate starts 4 or 8 bytes in), so a batch keeps its part's class.
+  bake_draw_first ("bakedraw"): a level draw is first looked over for a
+triangle with all three corners flagged, and bake_find is called only when
+there is one.
+  gustate_on ("gustate") and gudraw_on ("gudraw"): gu_state_set's and
+gu_draw's short forms, below.
+Each is 0 until they are read, and 0 draws the old way, so a replay that
+ran before the first read would only lose the gain. All zeros also keeps
+the struct in .bss, where psp/layout's medata lists place it by name */
+static struct
+{
+	int read, model14, baked_once, skin_own_slots, bake_draw_first, gustate_on, gudraw_on;
+} __attribute__((aligned(64))) model_switch; /* the type's alignment: a whole line, as bake_count */
+_Static_assert(sizeof(model_switch) == 64, "model_switch fills a cache line");
+/* main CPU only (psp_keep waits on a semaphore and the write-back is a
+system call): each caller tests psp_on_me().
+One cold function for all of them: it runs once, and its callers sit in the
+ME's code copy, where every byte takes room from code that runs each frame */
+static void __attribute__((noinline, cold)) model_switches(void)
+{
+	model_switch.model14 = psp_keep("model14");
+	model_switch.baked_once = psp_keep("bakedonce") != 0;
+	model_switch.skin_own_slots = !psp_keep("skinwoff");
+	model_switch.bake_draw_first = psp_keep("bakedraw") != 0;
+	model_switch.gustate_on = psp_keep("gustate") != 0;
+	model_switch.gudraw_on = psp_keep("gudraw") != 0;
+	model_switch.read = 1;
+	sceKernelDcacheWritebackRange(&model_switch, sizeof(model_switch));
+}
+
+/* "gustate": the GE's state switches without pspgu's two switch functions.
+sceGuEnable and sceGuDisable are a kilobyte each, a case a state, and this
+file calls them at about 170 places for a dozen states: on the Media
+Engine their code misses about once a call. All but two states (the
+scissor, and the fragment's doubling) are one command word with 1 or 0 and
+one bit of pspgu's gu_states, so those are written here from a table, in
+one small function; the two keep pspgu's own function, as every state does
+with the word off. The same words reach the GE and the same bits
+sceGuGetStatus (pspgu's sceGuEnable.c and sceGuDisable.c; the commands are
+guInternal.h's). Its switch is model_switch.gustate_on */
+extern int gu_states; /* pspgu's (guInternal.h) */
+static const unsigned char gu_state_command[GU_MAX_STATUS] = {
+	[GU_ALPHA_TEST] = 0x22, [GU_DEPTH_TEST] = 0x23, [GU_STENCIL_TEST] = 0x24, [GU_BLEND] = 0x21,
+	[GU_CULL_FACE] = 0x1d, [GU_DITHER] = 0x20, [GU_FOG] = 0x1f, [GU_CLIP_PLANES] = 0x1c,
+	[GU_TEXTURE_2D] = 0x1e, [GU_LIGHTING] = 0x17, [GU_LIGHT0] = 0x18, [GU_LIGHT1] = 0x19,
+	[GU_LIGHT2] = 0x1a, [GU_LIGHT3] = 0x1b, [GU_LINE_SMOOTH] = 0x25, [GU_PATCH_CULL_FACE] = 0x26,
+	[GU_COLOR_TEST] = 0x27, [GU_COLOR_LOGIC_OP] = 0x28, [GU_FACE_NORMAL_REVERSE] = 0x51,
+	[GU_PATCH_FACE] = 0x38, /* GU_SCISSOR_TEST and GU_FRAGMENT_2X: 0, pspgu's own */
+};
+
+static void __attribute__((noinline)) gu_state_set(int state, int on)
+{
+	unsigned int command = (unsigned int)state < GU_MAX_STATUS ? gu_state_command[state] : 0;
+
+	if (model_switch.gustate_on > 0 && command)
+	{
+		*(gu_list->current++) = (command << 24) | (unsigned int)on;
+		if (on)
+			gu_states |= 1 << state;
+		else
+			gu_states &= ~(1 << state);
+		return;
+	}
+	if (on)
+		sceGuEnable(state);
+	else
+		sceGuDisable(state);
+}
+/* from here on this file's calls go through it (the two above are pspgu's) */
+#define sceGuEnable(state) gu_state_set((state), 1)
+#define sceGuDisable(state) gu_state_set((state), 0)
+
+/* "gudraw": a draw's words without pspgu's draw functions. Every draw the
+gate lets through was a sceGumDrawArray (pspgum's matrix check, then
+sceGuDrawArray) or a sceGuDrawArray: the vertex type, the two addresses and
+the primitive, then the stall address handed on. This file is those calls'
+one hot caller, at some fifty places, and on the Media Engine the chain ran
+from main RAM: sceGumDrawArray isn't in the ME's copy, so its calls reach
+the originals of sceGumUpdateMatrix and sceGuSetMatrix and not their
+copies. Here the words are written at the list's current word, as
+sceGuDrawArray.c writes them, and the stall address is handed on under
+pspgu's own condition (guInternal.h's _sceGuUpdateStallAddr: the direct
+context, no object open); the matrices stay pspgum's (sceGumUpdateMatrix,
+with its flags and stacks). The same words reach the GE. Its switch is
+model_switch.gudraw_on; off is pspgu's two functions */
+extern int gu_curr_context, gu_object_stack_depth, ge_list_executed[2]; /* pspgu's (guInternal.h) */
+int __wrap_sceGeListUpdateStallAddr(int qid, void *stall);
+
+static void __attribute__((noinline)) gu_draw(int prim, int vtype, int count, const void *indices, const void *vertices)
+{
+	unsigned int *w;
+
+	if (model_switch.gudraw_on <= 0)
+	{
+		(sceGuDrawArray)(prim, vtype, count, indices, vertices);
+		return;
+	}
+	w = gu_list->current;
+	if (vtype)
+		*w++ = (0x12u << 24) | ((unsigned int)vtype & 0xFFFFFFu);
+	if (indices)
+	{
+		*w++ = (0x10u << 24) | (((unsigned int)indices >> 8) & 0xF0000u);
+		*w++ = (0x02u << 24) | ((unsigned int)indices & 0xFFFFFFu);
+	}
+	if (vertices)
+	{
+		*w++ = (0x10u << 24) | (((unsigned int)vertices >> 8) & 0xF0000u);
+		*w++ = (0x01u << 24) | ((unsigned int)vertices & 0xFFFFFFu);
+	}
+	*w++ = (0x04u << 24) | ((((unsigned int)prim << 16) | (unsigned int)count) & 0xFFFFFFu);
+	gu_list->current = w;
+	if (gu_curr_context == GU_DIRECT && !gu_object_stack_depth)
+		__wrap_sceGeListUpdateStallAddr(ge_list_executed[0], w);
+}
+
+static void __attribute__((noinline)) gum_draw(int prim, int vtype, int count, const void *indices, const void *vertices)
+{
+	if (model_switch.gudraw_on <= 0)
+	{
+		(sceGumDrawArray)(prim, vtype, count, indices, vertices);
+		return;
+	}
+	sceGumUpdateMatrix();
+	gu_draw(prim, vtype, count, indices, vertices);
 }
 
 static void dither_set(int on)
@@ -3798,8 +3950,6 @@ benchrun's list in VRAM, and with "listuncached". Exact: the same words
 reach the GE. The emulator can't check the write-back (it has no caches):
 only the PSP shows whether a line was missed (a GE hang or a garbled
 frame) */
-struct gu_list_view { unsigned int *start, *current; int parent_context; };
-extern struct gu_list_view *gu_list; /* pspgu's (guInternal.h: GuDisplayList) */
 
 /* geshow3: room for needed more bytes where this frame's list is. The list
 limits are the whole list's, as without geshow3, so the same draws are
@@ -9173,50 +9323,6 @@ static struct
 	unsigned long substituted, pieces_drawn, layer_draws, layer_triangles, old_path_triangles;
 } __attribute__((aligned(64))) bake_count;
 _Static_assert(sizeof(bake_count) == 64, "bake_count fills a cache line");
-/* Switches the main CPU reads from the keep words once (model_switches)
-and the Media Engine's replay only reads. They share one cache line that
-holds nothing else and is written back once, whole, with all of them set:
-written back one at a time, or beside a word either CPU writes later, a
-line could be put back with another word's stale value in it.
-  model14 (docs/design_model14.md): an opaque rigid part's vertices as
-14-byte records: u16 uv (the source's s16 + 32768, undone by the texture
-offset), s8 normal with the node in the pad byte the GE skips, s16 position
-on a power-of-two step, the part's own, folded into its model matrix. A
-step that is a power of two keeps the matrix a uniform scale (normals keep
-their direction) and puts shared corners of parts with one step on the same
-lattice point. First-person parts, the sky and see-through parts stay in
-floats: the first are seen closest, the last are read on the CPU.
-  baked_once ("bakedonce"): a part's place in the geometry cache is asked
-once, by psp_ge_draw_model, and handed to model_convert.
-  skin_own_slots (off with "skinwoff"): each bending batch draws at its own
-highest slot in use, not at its part's slot count: the GE blends every
-weight a draw declares, zeros included, at ~60 ns a weight a vertex, and
-the slots past a batch's highest hold no node of its vertices, so their
-weights are zero. 1-4 and 5-8 weights share a record layout (the texture
-coordinate starts 4 or 8 bytes in), so a batch keeps its part's class.
-  bake_draw_first ("bakedraw"): a level draw is first looked over for a
-triangle with all three corners flagged, and bake_find is called only when
-there is one.
-Each is 0 until they are read, and 0 draws the old way, so a replay that
-ran before the first read would only lose the gain. All zeros also keeps
-the struct in .bss, where psp/layout's medata lists place it by name */
-static struct
-{
-	int read, model14, baked_once, skin_own_slots, bake_draw_first;
-} __attribute__((aligned(64))) model_switch; /* the type's alignment: a whole line, as bake_count */
-_Static_assert(sizeof(model_switch) == 64, "model_switch fills a cache line");
-/* main CPU only (psp_keep waits on a semaphore and the write-back is a
-system call): each caller tests psp_on_me() */
-static void __attribute__((noinline, cold)) model_switches(void)
-{
-	model_switch.model14 = psp_keep("model14");
-	model_switch.baked_once = psp_keep("bakedonce") != 0;
-	model_switch.skin_own_slots = !psp_keep("skinwoff");
-	model_switch.bake_draw_first = psp_keep("bakedraw") != 0;
-	model_switch.read = 1;
-	sceKernelDcacheWritebackRange(&model_switch, sizeof(model_switch));
-}
-
 static unsigned int bake_triple_hash(unsigned int a, unsigned int b, unsigned int c)
 {
 	return (a * 73856093u) ^ (b * 19349663u) ^ (c * 83492791u);
