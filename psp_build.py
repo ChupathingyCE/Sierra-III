@@ -345,6 +345,12 @@ os.environ["PSP_BMLINK"] = "1" if BMLINK else "0"
 # default until its PSP price; keep word bmtoggleoff
 BMTOGGLE = os.environ.get("PSP_BMTOGGLE", "") == "1"
 os.environ["PSP_BMTOGGLE"] = "1" if BMTOGGLE else "0"
+# PSP_BMTRIG=1: biped motion's turning step (docs/box_biped_motion.md section
+# 4b; psp_fixups.py FIXES_BMTRIG): the turn's double-precision cosine and sine
+# kept by the step's bits instead of worked out for every biped every tick.
+# Exact by construction. Off by default until its PSP price; keep word bmtrigoff
+BMTRIG = os.environ.get("PSP_BMTRIG", "") == "1"
+os.environ["PSP_BMTRIG"] = "1" if BMTRIG else "0"
 # PSP_SMALLDATA=8 (or 4): the units built with the game's flags put variables
 # of up to that many bytes in small data, read with one load from $gp instead
 # of lui and a load, so the code is shorter (lever RH5, after Halo 64's -G8).
