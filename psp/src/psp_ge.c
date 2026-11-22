@@ -3547,10 +3547,12 @@ static int census_wanted(void)
 first draw the level's loads have taken the heap, and it would find no room.
 The census itself still starts at its first draw, so its windows count the
 frames they did as statics */
+static void lcc_start(void); /* levelchunkcount (psp_lcc.inc) */
 void psp_ge_census_start(void)
 {
 	if (psp_keep("drawcensus"))
 		draw_census = psp_recon_table("drawcensus", sizeof(*draw_census));
+	lcc_start();
 }
 
 static void census_near(int rigid, long triangles)
@@ -11205,6 +11207,12 @@ static void level_kept_check(struct lk_now *k, const struct level_stream *stream
 static void level_kept_report(void);
 #endif
 
+#ifdef PSP_RECON
+#include "psp_lcc.inc"
+#else
+#define LCC(call) ((void)0)
+#endif
+
 static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_vertices, int vertex_count,
 	const unsigned short *indices, long triangle_count, unsigned int color,
 	unsigned int base_key, unsigned int lightmap_key, int alpha_tested)
@@ -11225,6 +11233,10 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 	struct lk_now lk;
 
 	lk.mode = LK_OFF;
+#endif
+#ifdef PSP_RECON
+	const long engine_triangles = triangle_count;
+	int lcc_show2 = 0;
 #endif
 
 	if (!frame_open || triangle_count <= 0 || !vertices || !indices || vertex_count <= 0 || list_full())
@@ -11395,6 +11407,7 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 	/* build 87: the ME classifies the same range again ("meclassify") */
 	if (!all_inside)
 		me_classify_measure(stream, lowest, highest);
+	LCC(lcc_classified(stream, base_key, engine_indices, engine_triangles, indices, triangle_count, all_inside));
 	if (cut_count > clip_peak)
 		clip_peak = cut_count;
 	if (kept_count + cut_count == 0 && !pieces_store.dropped)
@@ -11449,14 +11462,20 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 			return;
 		memcpy(copy, draw, kept_count * 3 * sizeof(unsigned short));
 		draw = copy;
+		LCC(lcc_show2 = 1);
 		show2_index_copies++;
 		show2_index_bytes += kept_count * 3 * sizeof(unsigned short);
 	}
 	{
 		unsigned int angle_start = ge_clock();
+#ifdef PSP_RECON
+		const unsigned short *lcc_before = draw;
+#endif
 
 		draw = angle_sort(stream->base, draw, kept_count, far_possible, lowest, highest);
 		angle_us += ge_clock() - angle_start;
+		LCC(lcc_sorted(stream, indices, triangle_count, kept_count, kept != NULL, draw != lcc_before, cut_count,
+			far_possible, lcc_show2));
 		/* build 89: the pieces cut at the eye are near by definition: with
 		every kept triangle past the detail fade, the detail passes were
 		skipped for them too (the ground at the feet lost its detail map when
@@ -26554,6 +26573,7 @@ void psp_ge_frame_window(char *text, int size)
 void psp_ge_frame_end(void)
 {
 	rso_stamp++;
+	LCC(lcc_poll()); /* levelchunkcount's finished window, logged from the main CPU */
 	/* geinflight: the frame waits, written down whole, for the next frame's
 	first call */
 	if (INFLIGHT_RECORDING())
