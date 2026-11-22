@@ -59328,6 +59328,8 @@ lights' flush made at the off, [6] anything read between, [7] in the solve
 for the staged biped, [8] bipeds, [9] other kinds; [10] abandoned, [11]
 pairs in all; [12] [0]'s reads between, [13] [0]'s location reads between */
 static unsigned long psp_bmr_tgn[16];
+/* the children's updates entered in the solve, by object type, and the lights' connects */
+static unsigned long psp_bmr_child_in[16], psp_bmr_lights_in;
 
 static void psp_bmr_hot_set(void)
 {
@@ -59614,6 +59616,10 @@ static void psp_bmr_log(void)
 	platform_psp_log("bmreaders: the link's own partition calls (walk, clusters, reconnect, disconnect; collideable / noncollideable / other): %lu/%lu/%lu %lu/%lu/%lu %lu/%lu/%lu %lu/%lu/%lu",
 		psp_bmr_link_ops[0][0], psp_bmr_link_ops[0][1], psp_bmr_link_ops[0][2], psp_bmr_link_ops[1][0], psp_bmr_link_ops[1][1], psp_bmr_link_ops[1][2],
 		psp_bmr_link_ops[2][0], psp_bmr_link_ops[2][1], psp_bmr_link_ops[2][2], psp_bmr_link_ops[3][0], psp_bmr_link_ops[3][1], psp_bmr_link_ops[3][2]);
+	platform_psp_log("bmreaders: children's updates entered: biped %lu, vehicle %lu, weapon %lu, equipment %lu, garbage %lu, projectile %lu, scenery %lu, machine %lu, control %lu, light fixture %lu, placeholder %lu, sound scenery %lu, other %lu; lights' connects %lu",
+		psp_bmr_child_in[0], psp_bmr_child_in[1], psp_bmr_child_in[2], psp_bmr_child_in[3], psp_bmr_child_in[4], psp_bmr_child_in[5], psp_bmr_child_in[6],
+		psp_bmr_child_in[7], psp_bmr_child_in[8], psp_bmr_child_in[9], psp_bmr_child_in[10], psp_bmr_child_in[11],
+		psp_bmr_child_in[12] + psp_bmr_child_in[13] + psp_bmr_child_in[14] + psp_bmr_child_in[15], psp_bmr_lights_in);
 	platform_psp_log("bmreaders: toggles: pairs %lu; on-off-on same cluster %lu (lights flushed at the off %lu, read between %lu with %lu reads, %lu of them location; the solving biped's own %lu: bipeds %lu, other kinds %lu); on-off-on new cluster %lu; on-off-off %lu; off-off-on %lu; off-off-off %lu; abandoned %lu",
 		psp_bmr_tgn[11], psp_bmr_tgn[0], psp_bmr_tgn[5], psp_bmr_tgn[6], psp_bmr_tgn[12], psp_bmr_tgn[13], psp_bmr_tgn[7], psp_bmr_tgn[8], psp_bmr_tgn[9],
 		psp_bmr_tgn[1], psp_bmr_tgn[2], psp_bmr_tgn[3], psp_bmr_tgn[4], psp_bmr_tgn[10]);
@@ -59783,7 +59789,12 @@ static boolean object_update(long object_index)
 		return psp_bmr_object_update_inner(object_index);
 	saved = psp_bmr_ctx;
 	if (object_index != psp_bmr_cur && saved != psp_bmr_dead && saved != psp_bmr_none)
+	{
+		struct object_header_datum const *child = object_header_try_and_get(object_index);
+
+		psp_bmr_child_in[child && child->type < 15 ? child->type : 15]++;
 		psp_bmr_set_ctx(psp_bmr_child);
+	}
 	result = psp_bmr_object_update_inner(object_index);
 	if (psp_bmr_ctx != saved)
 		psp_bmr_set_ctx(saved);
@@ -59800,6 +59811,7 @@ static void object_connect_lights_with(long object_index, struct object_datum *o
 		return;
 	}
 	saved = psp_bmr_ctx;
+	psp_bmr_lights_in++;
 	psp_bmr_set_ctx(psp_bmr_lights);
 	psp_bmr_lights_inner(object_index, object, object_definition, disconnect, reconnect);
 	psp_bmr_set_ctx(saved);
