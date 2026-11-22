@@ -734,6 +734,14 @@ remembers its answer. A word set here and written back, not PSP_KEEP_ONCE in
 the miss: the miss also runs on the Media Engine, where a keep search and a
 static's first store don't belong. 0 until the keep words are read */
 int psp_tagmemo_on = 0;
+/* TAGMEMOTICK ("tagmemotick"): the getters' answers are remembered only by
+the tick. Outside it (the drawing above all, where different tags are asked
+in turn) a miss goes straight to tag_get and stores nothing, so the tick
+finds its own answers again and a miss there costs what it did. A hit is a
+hit anywhere. That is the main CPU's side: the Media Engine never stores,
+whatever it reads here (psp_phase). tagmemo_word: the word itself;
+psp_phase moves psp_tagmemo_on */
+static int tagmemo_word = 0, tagmemo_tick_only = 0;
 
 #if defined(PSP_RECON) && defined(PSP_TICK_STEPS)
 /* "objsteps" (below): each step's time charged to the object being updated
@@ -1303,11 +1311,14 @@ static const struct
 	{ "imatable", "imatableoff" },
 	/* the code diet's short forms (docs/code_diet.md): object_update's short
 	form, the vector checks' calls made only under verifyvectors, and a typed
-	tag getter's last answer kept at its call site. Exact (play and both
-	seeds identical every tick); together c20's opening tick -3.0% and frame
-	-1.6% on the PSP-3000, the drawing +2.1% (the getters' misses while
-	drawing: the next thing to fix) */
+	tag getter's last answer kept at its call site, written by the tick only
+	(the drawing's getters ask different tags in turn and would replace the
+	tick's answers). Exact (play and both seeds identical every tick); the
+	first three together c20's opening tick -3.0% and frame -1.6% on the
+	PSP-3000, and the tick-only form c20's play tick -1.6 ms there with the
+	drawing no worse */
 	{ "objlean", "objleanold" }, { "verifygate", "verifygateoff" }, { "tagmemo", "tagmemooff" },
+	{ "tagmemotick", "tagmemotickoff" },
 };
 static char keep_defaults_added[KEEP_DEFAULTS_ROOM] = "";
 /* defaults that found no room: a lever silently off would be read as on */
@@ -1449,7 +1460,9 @@ static void keep_load(void)
 	the measuring off, notimers and nooverlay in one word */
 	psp_timers_off = keep_search("notimers") || keep_search("lean");
 	psp_verify_call = !keep_search("verifygate") || keep_search("verifyvectors");
-	psp_tagmemo_on = keep_search("tagmemo") != 0;
+	tagmemo_word = keep_search("tagmemo") != 0;
+	tagmemo_tick_only = keep_search("tagmemotick") != 0;
+	psp_tagmemo_on = tagmemo_word && !tagmemo_tick_only;
 	sceKernelDcacheWritebackRange(&psp_tagmemo_on, sizeof(psp_tagmemo_on)); /* the ME reads it */
 	/* every build starts with notimers (keep_defaults above): the game's
 	instrument timers (a clock call per model part, per moving particle, per
@@ -1475,13 +1488,19 @@ static void keep_load(void)
 	platform_log("keep words, continued: iostats gereads gereadskind vramtexN edramcheck overlayfreefar inflightkbN inflightroom inflighttextold");
 	/* the code diet's short forms (psp_fixups.py, FIXES_DIET1): each says so
 	when its word is on, so a run's log shows which form it played */
-	platform_log("keep words, the code diet's short forms (on by default; off: objleanold verifygateoff tagmemooff)");
+	platform_log("keep words, the code diet's short forms (on by default; off: objleanold verifygateoff tagmemooff tagmemotickoff; opt-in: bakedraw bakedonce)");
 	if (keep_search("objlean"))
 		platform_log("objlean: object_update's short form");
 	if (keep_search("verifygate"))
 		platform_log("verifygate: the vector checks are called only under verifyvectors");
 	if (keep_search("tagmemo"))
 		platform_log("tagmemo: the typed getters remember their last answer");
+	if (keep_search("tagmemotick"))
+		platform_log("tagmemotick: the getters' answers are remembered in the tick only");
+	if (keep_search("bakedonce"))
+		platform_log("bakedonce: a model part's place in the geometry cache is asked once a draw");
+	if (keep_search("bakedraw"))
+		platform_log("bakedraw: a baked wall's draw is looked over once before any triangle is looked up");
 	/* build 116: the restorations are on by default; these words turn each off */
 	platform_log("keep words, restorations off: overlayfreenear clearblue seethroughflat senvflat planarfogoff notint waterwhite flaresnobipeds nodither detailgrey80 flashnearest nearseatedfar nearseatcine nometers lognohold statepages");
 	/* build 117: its own restorations, each turned off by these; and the
@@ -4053,6 +4072,14 @@ void psp_ask_phase(int phase);
 void psp_phase(int phase)
 {
 	psp_current_phase = phase;
+	/* "tagmemotick": the memo is written in the tick (phase 1) only. Not
+	written back, so the Media Engine may read either value at any time: it
+	is no gate there. The store is refused on the ME inside the miss itself
+	(psp_tag_memo_miss tests the CPU, not this word), and the miss's two
+	ways, tag_get and its fast test, return the same address. A change that
+	makes them differ, or lets the ME store, needs a word of the ME's own */
+	if (tagmemo_tick_only)
+		psp_tagmemo_on = tagmemo_word && phase == 1;
 	if (psp_ge_phase_ring_on)
 		psp_ge_phase_mark(phase);
 	/* "lanetrace" (psp_lanetrace.c) */
