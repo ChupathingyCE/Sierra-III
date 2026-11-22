@@ -932,7 +932,7 @@ def compile_one(item):
                pgo_flags(rel) if opt == "-O2" else []) + (
                ["-DPSP_DITHERSHIFT=1"] if DITHERSHIFT and src.endswith("psp_ge.c") else []) + (
                ["-DPSP_DRAWLIST=1"] if DRAWLIST and src.endswith("psp_ge.c") else []) + (
-               ["-DPSP_BOXLIGHTS=1"] if BOXLIGHTS and src.endswith("psp_ge.c") else []) + (
+               ["-DPSP_BOXLIGHTS=1"] if BOXLIGHTS and src.endswith(("psp_ge.c", "psp_me.c")) else []) + (
                ["-DPSP_RECON=1"] if RECON else []) + (
                ["-DPSP_PADPATH=1"] if PADPATH else []) + (
                ["-DPSP_FRAMEPIC=1"] if FRAMEPIC else []) + (

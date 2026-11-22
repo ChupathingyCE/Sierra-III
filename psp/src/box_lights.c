@@ -6,19 +6,18 @@ Media Engine, or on the main CPU when the emulator plays the ME's part. So no
 VFPU, no system call and no log line; the counts are left in main RAM, on
 lines of their own that only that side writes, for the main CPU to print. */
 #include <string.h>
-#include <malloc.h>
 #include "psp_me.h"
 #include "box_lights.h"
 
 extern void platform_log(const char *format, ...);
 
-/* The store: 128 KB of the ME's eDRAM at 520 KB, above its code copy's room
-and below the sound tier (psp_me.h; docs/memory_ledger.md). A table of keys,
-then the lit triangles, filled from the start; when either is full the whole
-store is cleared and fills again: a light that stays is kept again two frames
-on. */
-#define BOX_LIGHTS_AT 0x82000u
-#define BOX_LIGHTS_BYTES 0x20000u
+/* The store: 128 KB of the ME's eDRAM at 656 KB, above its code copy's room
+and below the sound tier (psp_me.h's ME_EDRAM_LIGHTS; docs/memory_ledger.md).
+A table of keys, then the lit triangles, filled from the start; when either
+is full the whole store is cleared and fills again: a light that stays is
+kept again two frames on. */
+#define BOX_LIGHTS_AT ME_EDRAM_LIGHTS
+#define BOX_LIGHTS_BYTES (ME_EDRAM_LIGHTS_END - ME_EDRAM_LIGHTS)
 #define BOX_LIGHTS_SLOTS 256 /* a power of two */
 #define BOX_LIGHTS_PROBES 4
 #define BOX_LIGHTS_LONGEST 4095 /* triangles in one list */
@@ -85,7 +84,7 @@ static struct box_lights_store *store_get(void)
 		if (!state.twin && !state.twin_tried)
 		{
 			state.twin_tried = 1;
-			state.twin = memalign(64, BOX_LIGHTS_BYTES);
+			state.twin = __builtin_malloc(BOX_LIGHTS_BYTES);
 		}
 		store = state.twin;
 	}

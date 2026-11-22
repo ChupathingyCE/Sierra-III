@@ -169,6 +169,12 @@ the room the layout plan leaves free above MIST's reserve, PDC and
 MEVGATHER, up to AIME's data. Moving the tier is these two lines */
 #define ME_EDRAM_SNDTIER 0xC8000u
 #define ME_EDRAM_SNDTIER_END ME_EDRAM_AIME_DATA
+/* the lighting box's kept reach (box_lights.c; a PSP_BOXLIGHTS=1 build): 128 KB
+at 656 KB, above the code copy's room (256 KB up, as long as its list's
+"# @room" says: psp_me.c refuses a room that reaches this) and below the
+sound tier */
+#define ME_EDRAM_LIGHTS 0xA4000u
+#define ME_EDRAM_LIGHTS_END 0xC4000u
 /* ME_JOB_SOUNDCOPY's check hash, word by word, the same on both CPUs */
 #define PSP_ME_HASH_START 0x811C9DC5u
 static inline unsigned int psp_me_hash(unsigned int hash, unsigned int word)

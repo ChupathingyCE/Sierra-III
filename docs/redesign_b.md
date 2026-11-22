@@ -10,7 +10,7 @@ Labels: [M] measured on the PSP, [E] emulator or estimate, [D] read in code or d
 |---|---|---|---|---|---|
 | Main RAM (user) | 24 MB | yes | yes | yes | heap, tag window (9 MB), geometry cache (1,280 KB +), texture RAM cache (~2.5 MB), the frame list (768 KB), the record buffer (128-224 KB) |
 | VRAM | 2 MB | yes | **no** | yes | frame and depth buffers 816 KB (fixed), textures 616 KB (2-16 free), model copies 616 KB (mevram; 11-32 free on the busy maps) |
-| The ME's eDRAM | 2 MB | DMA only | yes | **no** | 0-256 KB reserved; **256-800 KB free (544)**; 800-1,456 the sound tier; 1,456-2,048 the AI job's data and stack |
+| The ME's eDRAM | 2 MB | DMA only | yes | **no** | 0-256 KB reserved; **256-800 KB free (544)** [corrected 2026-11-22: the ME's code copy takes 256-512 KB, so 288 KB is free at 512-800 on the tock; `memory_ledger.md`]; 800-1,456 the sound tier; 1,456-2,048 the AI job's data and stack |
 | Scratchpad | 16 KB | yes | **no** | yes | the level collision BSP's top 304 nodes (SCRATCHBSP), the profiler's slots and table (6.6 KB) |
 
 The tightest single place is c20's heap: 160 KB at the top, largest block 182 KB [E].

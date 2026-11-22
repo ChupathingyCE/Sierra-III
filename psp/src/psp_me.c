@@ -233,6 +233,10 @@ twice rb's functions and calls between them */
 /* the copy ends flush against the sound tier at most: a raised room that
 crossed it would have the tier's loads overwrite the ME's code */
 typedef char mexec_room_below_sndtier[(MEXEC_AT + MEXEC_ROOM <= ME_EDRAM_SNDTIER) ? 1 : -1];
+#ifdef PSP_BOXLIGHTS
+/* nor may it reach the lighting box's kept reach (psp_me.h) */
+typedef char mexec_room_below_lights[(MEXEC_AT + MEXEC_ROOM <= ME_EDRAM_LIGHTS) ? 1 : -1];
+#endif
 unsigned int psp_mexec_table[MEXEC_TABLE_WORDS] = { 0x4D455830u };
 /* the replay's copy, 0 until the copy is in place; cleared at every start,
 since the eDRAM doesn't survive a sleep */
