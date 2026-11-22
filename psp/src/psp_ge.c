@@ -3018,8 +3018,10 @@ the struct in .bss, where psp/layout's medata lists place it by name */
 static struct
 {
 	int read, model14, baked_once, skin_own_slots, bake_draw_first, gustate_on, gudraw_on;
-} model_switch __attribute__((aligned(64)));
-/* main CPU only: its callers test psp_on_me() or run at a map's opening.
+} __attribute__((aligned(64))) model_switch; /* the type's alignment: a whole line, as bake_count */
+_Static_assert(sizeof(model_switch) == 64, "model_switch fills a cache line");
+/* main CPU only (psp_keep waits on a semaphore and the write-back is a
+system call): each caller tests psp_on_me().
 One cold function for all of them: it runs once, and its callers sit in the
 ME's code copy, where every byte takes room from code that runs each frame */
 static void __attribute__((noinline, cold)) model_switches(void)
@@ -9287,11 +9289,15 @@ static int stencil_mode = 0;
 the Media Engine and a draw made at once adds on the main CPU, so they have
 a cache line to themselves: a line put back by one CPU carries its copy of
 everything on it, and beside a switch or any word the game reads, that
-would put a stale value back. Here it can only cost the report a count */
+would put a stale value back. Here it can only cost the report a count.
+The alignment is the type's, so the struct is a whole line long: on the
+variable alone it would fix where the struct starts and leave the rest of
+its line to whatever the link put next */
 static struct
 {
 	unsigned long substituted, pieces_drawn, layer_draws, layer_triangles, old_path_triangles;
-} bake_count __attribute__((aligned(64)));
+} __attribute__((aligned(64))) bake_count;
+_Static_assert(sizeof(bake_count) == 64, "bake_count fills a cache line");
 static unsigned int bake_triple_hash(unsigned int a, unsigned int b, unsigned int c)
 {
 	return (a * 73856093u) ^ (b * 19349663u) ^ (c * 83492791u);
@@ -9445,7 +9451,7 @@ void psp_ge_stencils_open(const char *name, unsigned int map_crc)
 		if (mode_word)
 			stencil_mode = mode_word;
 	}
-	if (!model_switch.read)
+	if (!model_switch.read && !psp_on_me())
 		model_switches();
 	bake_forget();
 	snprintf(path, sizeof(path), PSP_MAPS_ROOT "/%s.pstn", name);
