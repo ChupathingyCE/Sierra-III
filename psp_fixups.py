@@ -51589,6 +51589,10 @@ static int psp_sway_mode = -1; /* 0 off, 1 on, 2 check */
 static unsigned long psp_sway_lean_visits, psp_sway_whole_visits, psp_sway_ended, psp_sway_check_wrong, psp_sway_reports;
 static unsigned long psp_sway_refused[4]; /* scenery visits never taken: attached, interpolating, functions, change colours */
 static long psp_sway_refused_definition[4] = { NONE, NONE, NONE, NONE }; /* the first definition refused for each */
+/* under swayleancheck only: of the visits refused for functions [0] or change
+colours [1], those to an object still for three visits, and the whole updates
+among them that changed a word outside the pose: whether each test is needed */
+static unsigned long psp_sway_refused_still[2], psp_sway_refused_wrong[2];
 static long psp_sway_report_tick;
 
 static void psp_sway_refuse(int reason, long definition_index)
@@ -51613,6 +51617,10 @@ static void psp_sway_report(void)
 		"interpolating %lu, a definition with functions %lu, with change colours %lu",
 		psp_sway_lean_visits, psp_sway_whole_visits, psp_sway_ended, psp_sway_check_wrong, psp_sway_refused[0], psp_sway_refused[1],
 		psp_sway_refused[2], psp_sway_refused[3]);
+	if (psp_sway_mode == 2)
+		platform_psp_log("swayleancheck: of the visits never taken, to an object still for three visits: functions %lu, of them whole updates "
+			"that changed a word outside the pose %lu; change colours %lu, of them %lu",
+			psp_sway_refused_still[0], psp_sway_refused_wrong[0], psp_sway_refused_still[1], psp_sway_refused_wrong[1]);
 	for (k = 2; k < 4; k++)
 		if (psp_sway_refused_definition[k] != NONE)
 			platform_psp_log("swaylean: the first definition never taken for its %s: %s", k == 2 ? "functions" : "change colours",
@@ -51669,7 +51677,7 @@ static boolean psp_sway_lean(long object_index, short absolute_index, struct obj
 	struct object_datum *object = (struct object_datum *)header->datum;
 	struct object_definition const *definition;
 	unsigned long sum;
-	int slot, lean;
+	int slot, lean, refused = -1;
 
 	if (psp_sway_mode < 0)
 		psp_sway_mode = psp_keep("swayleancheck") ? 2 : psp_keep("swaylean") ? 1 : 0;
@@ -51689,8 +51697,11 @@ static boolean psp_sway_lean(long object_index, short absolute_index, struct obj
 	definition = object_definition_get(object->definition_index);
 	if (definition->object.functions.count || definition->object.change_colors.count)
 	{
-		psp_sway_refuse(definition->object.functions.count ? 2 : 3, object->definition_index);
-		return FALSE;
+		refused = definition->object.functions.count ? 0 : 1;
+		psp_sway_refuse(2 + refused, object->definition_index);
+		/* the check follows these too, counted apart, and plays them as the word off does */
+		if (psp_sway_mode != 2)
+			return FALSE;
 	}
 	sum = psp_sway_sum(header, object);
 	slot = (unsigned short)absolute_index & (PSP_SWAY_SLOTS - 1);
@@ -51702,7 +51713,7 @@ static boolean psp_sway_lean(long object_index, short absolute_index, struct obj
 	}
 	else
 	{
-		if (psp_sway[slot].same >= 3)
+		if (psp_sway[slot].same >= 3 && refused < 0)
 			psp_sway_ended++;
 		psp_sway[slot].sum = sum;
 		psp_sway[slot].identifier = (unsigned short)header->identifier;
@@ -51710,7 +51721,9 @@ static boolean psp_sway_lean(long object_index, short absolute_index, struct obj
 		psp_sway[slot].same = 1;
 	}
 	lean = psp_sway[slot].same >= 3;
-	if (lean)
+	if (refused >= 0)
+		psp_sway_refused_still[refused] += lean;
+	else if (lean)
 		psp_sway_lean_visits++;
 	else
 		psp_sway_whole_visits++;
@@ -51737,9 +51750,10 @@ static boolean psp_sway_lean(long object_index, short absolute_index, struct obj
 			for (k = 0; k < words && first < 0; k++)
 				if (k != 2 && (k < sphere || k >= sphere + 4) && ((unsigned long const *)object)[k] != kept[k])
 					first = k;
-			if (psp_sway_check_wrong++ < 24)
-				platform_psp_log("swayleancheck: t=%ld %s (#%08lx): the whole update changed word %ld outside the pose, %08lx to %08lx",
-					game_time_get(), tag_get_name(object->definition_index), (unsigned long)object_index, first,
+			if ((refused < 0 ? psp_sway_check_wrong++ : psp_sway_refused_wrong[refused]++) < 24)
+				platform_psp_log("swayleancheck: t=%ld %s (#%08lx)%s: the whole update changed word %ld outside the pose, %08lx to %08lx",
+					game_time_get(), tag_get_name(object->definition_index), (unsigned long)object_index,
+					refused < 0 ? "" : refused ? " (never taken: change colours)" : " (never taken: functions)", first,
 					first >= 0 ? kept[first] : 0UL, first >= 0 ? ((unsigned long const *)object)[first] : 0UL);
 		}
 		return TRUE;
