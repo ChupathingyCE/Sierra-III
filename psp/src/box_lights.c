@@ -11,15 +11,20 @@ lines of their own that only that side writes, for the main CPU to print. */
 
 extern void platform_log(const char *format, ...);
 
-/* The store: 128 KB of the ME's eDRAM at 656 KB, above its code copy's room
-and below the sound tier (psp_me.h's ME_EDRAM_LIGHTS; docs/memory_ledger.md).
-A table of keys, then the lit triangles, filled from the start; when either
-is full the whole store is cleared and fills again: a light that stays is
-kept again two frames on. */
+/* The store: 192 KB of the ME's eDRAM at 608 KB, above its code copy's room
+and up to the sound tier (psp_me.h's ME_EDRAM_LIGHTS; docs/memory_ledger.md).
+A table of keys, then the lit triangles, filled from the start. The table is
+sized for a frame's light draws at a third full (d20's swamp asks 159 a
+frame): at more than half, keys that find their probes taken turn each other
+out every frame and are never seen twice. A key that finds only kept lists in
+its probes is turned away, and when that or the triangles' room says the
+store is full of lists nobody asks for, the whole store is cleared and fills
+again: a light that stays is kept again two frames on. */
 #define BOX_LIGHTS_AT ME_EDRAM_LIGHTS
 #define BOX_LIGHTS_BYTES (ME_EDRAM_LIGHTS_END - ME_EDRAM_LIGHTS)
-#define BOX_LIGHTS_SLOTS 256 /* a power of two */
-#define BOX_LIGHTS_PROBES 4
+#define BOX_LIGHTS_SLOTS 512 /* a power of two */
+#define BOX_LIGHTS_PROBES 8
+#define BOX_LIGHTS_TURNED 64 /* keys turned away before the store is cleared */
 #define BOX_LIGHTS_LONGEST 4095 /* triangles in one list */
 #define BOX_LIGHTS_MAGIC 0x4C495431u
 
@@ -28,6 +33,7 @@ typedef char box_lights_below_the_sound_tier[(BOX_LIGHTS_AT + BOX_LIGHTS_BYTES <
 struct box_lights_slot
 {
 	struct box_lights_key key;
+	unsigned int hash;    /* the key's, compared first */
 	unsigned int first;   /* its triangles' place in the store */
 	unsigned short count; /* how many */
 	unsigned short state; /* 0 empty, 1 seen once, 2 kept */
@@ -55,6 +61,7 @@ enum
 	COUNT_CHECKED,  /* lightkeepcheck: kept lists compared with the walk's */
 	COUNT_DIFFERED,
 	COUNT_USED,     /* triangles in the store now */
+	COUNT_TURNED,   /* no slot: every probe held a kept list */
 	COUNT_REFUSED,  /* and BOX_LIGHTS_REASONS after it */
 	COUNTS = COUNT_REFUSED + BOX_LIGHTS_REASONS
 };
@@ -68,7 +75,7 @@ static struct
 {
 	struct box_lights_store *twin; /* the emulator's, when it maps no eDRAM there */
 	struct box_lights_slot *collecting;
-	unsigned int collected;
+	unsigned int collected, turned;
 	int cleared, overflowed, twin_tried;
 } state __attribute__((aligned(64)));
 
@@ -107,6 +114,7 @@ static void store_clear(struct box_lights_store *store)
 {
 	memset(store->slots, 0, sizeof(store->slots));
 	store->used = 0;
+	state.turned = 0;
 	counts[COUNT_CLEARED]++;
 	counts[COUNT_USED] = 0;
 }
@@ -124,7 +132,7 @@ static unsigned int key_hash(const struct box_lights_key *key)
 int box_lights_begin(const struct box_lights_key *key, const struct box_lights_triangle **kept, long *kept_count)
 {
 	struct box_lights_store *store = store_get();
-	struct box_lights_slot *slot, *empty = NULL;
+	struct box_lights_slot *slot, *empty = NULL, *once = NULL;
 	unsigned int at, probe;
 
 	if (!store)
@@ -147,8 +155,12 @@ int box_lights_begin(const struct box_lights_key *key, const struct box_lights_t
 				empty = slot;
 			continue;
 		}
-		if (memcmp(&slot->key, key, sizeof(*key)))
+		if (slot->hash != at || memcmp(&slot->key, key, sizeof(*key)))
+		{
+			if (slot->state == 1 && !once)
+				once = slot;
 			continue;
+		}
 		if (slot->state == 2 && slot->first <= store->used && slot->count <= store->used - slot->first)
 		{
 			counts[COUNT_SERVED]++;
@@ -165,10 +177,19 @@ int box_lights_begin(const struct box_lights_key *key, const struct box_lights_t
 	}
 	if (!empty)
 	{
-		empty = &store->slots[at & (BOX_LIGHTS_SLOTS - 1)];
+		/* a key seen once and not again gives its slot up; a kept list does not */
+		if (!once)
+		{
+			counts[COUNT_TURNED]++;
+			if (++state.turned >= BOX_LIGHTS_TURNED)
+				store_clear(store);
+			return BOX_LIGHTS_WALK;
+		}
+		empty = once;
 		counts[COUNT_REPLACED]++;
 	}
 	empty->key = *key;
+	empty->hash = at;
 	empty->first = 0;
 	empty->count = 0;
 	empty->state = 1;
@@ -254,11 +275,12 @@ void box_lights_report(void)
 		!counts[COUNT_REFUSED + BOX_LIGHTS_GEL] && !counts[COUNT_REFUSED + BOX_LIGHTS_BAKE] && !counts[COUNT_REFUSED + BOX_LIGHTS_MODE])
 		return;
 	platform_log("lights box: light draws asked %lu, served from a kept list %lu, lists kept %lu, first sightings %lu, "
-		"slots replaced %lu, the store cleared %lu times, walks cut short or lists too long %lu, %lu of %lu triangles in the store; "
+		"slots replaced %lu, turned away with their probes full of kept lists %lu, the store cleared %lu times, "
+		"walks cut short or lists too long %lu, %lu of %lu triangles in the store; "
 		"not asked: spotlights %lu, gels %lu, a baked copy %lu, another mode %lu, out of the store's reach %lu; "
 		"lightkeepcheck: %lu kept lists compared with the walk, %lu differed",
 		counts[COUNT_ASKED], counts[COUNT_SERVED], counts[COUNT_KEPT], counts[COUNT_FIRST], counts[COUNT_REPLACED],
-		counts[COUNT_CLEARED], counts[COUNT_SHORT], counts[COUNT_USED], (unsigned long)BOX_LIGHTS_ROOM,
+		counts[COUNT_TURNED], counts[COUNT_CLEARED], counts[COUNT_SHORT], counts[COUNT_USED], (unsigned long)BOX_LIGHTS_ROOM,
 		counts[COUNT_REFUSED + BOX_LIGHTS_SPOT], counts[COUNT_REFUSED + BOX_LIGHTS_GEL], counts[COUNT_REFUSED + BOX_LIGHTS_BAKE],
 		counts[COUNT_REFUSED + BOX_LIGHTS_MODE], counts[COUNT_NO_STORE], counts[COUNT_CHECKED], counts[COUNT_DIFFERED]);
 }
