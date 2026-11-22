@@ -230,6 +230,9 @@ twice rb's functions and calls between them */
 #else
 #define MEXEC_ROOM 0x30000u
 #endif
+/* the copy ends flush against the sound tier at most: a raised room that
+crossed it would have the tier's loads overwrite the ME's code */
+typedef char mexec_room_below_sndtier[(MEXEC_AT + MEXEC_ROOM <= ME_EDRAM_SNDTIER) ? 1 : -1];
 unsigned int psp_mexec_table[MEXEC_TABLE_WORDS] = { 0x4D455830u };
 /* the replay's copy, 0 until the copy is in place; cleared at every start,
 since the eDRAM doesn't survive a sleep */
@@ -2838,7 +2841,8 @@ static int me_mexec_wanted(void)
 	for (k = 0; k < sizeof(sharers) / sizeof(sharers[0]); k++)
 		if (psp_keep(sharers[k]))
 		{
-			platform_log("ME: mexec refused: %s shares eDRAM 256-448 KB", sharers[k]);
+			platform_log("ME: mexec refused: %s shares eDRAM %u-%u KB, the copy's room", sharers[k],
+				MEXEC_AT / 1024, (MEXEC_AT + MEXEC_ROOM) / 1024);
 			return 0;
 		}
 	if (psp_mexec_table[0] != MEXEC_MAGIC)
@@ -2846,8 +2850,11 @@ static int me_mexec_wanted(void)
 		platform_log("ME: mexec refused: the build's table is empty (tools/mexec.py didn't run)");
 		return 0;
 	}
-	platform_log("ME: mexec: %u functions, %u bytes into eDRAM at %u KB (%u calls, %u branches, %u jump-table addresses re-aimed; %u jump tables copied, %u words left in main RAM)",
-		psp_mexec_table[4], psp_mexec_table[3], MEXEC_AT / 1024, psp_mexec_table[5], psp_mexec_table[7], psp_mexec_table[8],
+	/* the list's count beside the copy's (word 12, tools/mexec.py), so an
+	@fill cut shows in the launch line: printed, not tested, since a test
+	would add a branch the profile hasn't counted */
+	platform_log("ME: mexec: %u of the list's %u functions, %u bytes into eDRAM at %u KB of a %u KB room (%u calls, %u branches, %u jump-table addresses re-aimed; %u jump tables copied, %u words left in main RAM)",
+		psp_mexec_table[4], psp_mexec_table[12], psp_mexec_table[3], MEXEC_AT / 1024, MEXEC_ROOM / 1024, psp_mexec_table[5], psp_mexec_table[7], psp_mexec_table[8],
 		psp_mexec_table[10], psp_mexec_table[9]);
 	return 1;
 #else

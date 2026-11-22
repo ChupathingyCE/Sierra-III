@@ -1710,8 +1710,10 @@ def main():
     # above the heap is STACK_RESERVE either way: b115 ran with it plus
     # 0.7 KB, and "free" in the heartbeat (138 KB in b115) is what's left of it
     heap = (HEAP_CEILING - PROGRAM_BASE - program - STACK_RESERVE) // 1024 // 4 * 4
-    print("program %.2f MB (text %d, data %d, bss %d); heap %d KB; %d symbols stubbed (stubbed_symbols.txt)"
-          % (program / 1048576, int(size[0]), int(size[1]), int(size[2]), heap, len(stubs)))
+    # the build's summary line (the lab's build log carries the last "program"
+    # line); printed after MEXEC's table so it can say what the copy took
+    summary = ("program %.2f MB (text %d, data %d, bss %d); heap %d KB; %d symbols stubbed (stubbed_symbols.txt)"
+               % (program / 1048576, int(size[0]), int(size[1]), int(size[2]), heap, len(stubs)))
     if heap != HEAP_KB:
         HEAP_KB = heap
         src = os.path.join(HERE, "psp/src/psp_platform.c")
@@ -1735,7 +1737,17 @@ def main():
         lst = os.path.join(HERE, "psp/layout/mexec_%s.txt" % MEXEC)
         if not os.path.exists(lst):
             sys.exit("psp_build: PSP_MEXEC: no list " + lst)
-        subprocess.run([sys.executable, os.path.join(HERE, "tools/mexec.py"), os.path.join(OUT, "halo.elf"), lst], check=True)
+        r = subprocess.run([sys.executable, os.path.join(HERE, "tools/mexec.py"), os.path.join(OUT, "halo.elf"), lst],
+                           stdout=subprocess.PIPE, text=True)
+        sys.stdout.write(r.stdout)
+        if r.returncode:
+            sys.exit(r.returncode)
+        # an @fill cut succeeds, so the summary says it: two builds whose
+        # copies differ then differ in the line a reader compares
+        cut = [l for l in r.stdout.splitlines() if l.startswith("mexec: CUT")]
+        copied = [l for l in r.stdout.splitlines() if l.startswith("mexec: copied ")]
+        summary += "; " + (cut[-1] if cut else copied[-1] if copied else "mexec: no count from tools/mexec.py")
+    print(summary)
     subprocess.run(["psp-prxgen", os.path.join(OUT, "halo.elf"), os.path.join(OUT, "halo.prx")], check=True)
     # the title the XMB shows: the multiplayer build's is its own, so the two
     # EBOOTs installed side by side (PSP/GAME/halo, PSP/GAME/halomp) tell apart;
