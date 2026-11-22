@@ -31,6 +31,12 @@ static int level_kept = -1, level_kept_checking = 0, lk_dead = 0, lk_bindblocks 
 static unsigned long lk_draws, lk_made, lk_called, lk_blocks_called, lk_refused[LKR_KINDS], lk_stamp_failed[LKS_KINDS],
 	lk_words_most, lk_live_words, lk_checked, lk_check_prims, lk_check_differ, lk_check_unchecked, lk_check_unsupported;
 static int lk_used_most;
+/* the check's differences by what differs (a register, 0x100-0x109 as
+dl_check_compare names them), and the first one's values: kept as counts the
+main CPU's report prints, since the ME's log keeps a line's words only */
+#define LK_WHAT 0x110
+static unsigned short lk_check_what[LK_WHAT];
+static unsigned int lk_check_first[4];
 
 static int level_kept_on(void)
 {
@@ -563,7 +569,6 @@ static void level_kept_check(struct lk_now *k, const struct level_stream *stream
 {
 	unsigned int *old_end = gu_list->current, *kept_end, a_value = 0, b_value = 0;
 	unsigned int old_bytes = (unsigned int)((old_end - k->from) * 4);
-	static int logged = 0;
 	int draws, differing = 0, what = 0, unsupported = 0;
 
 	/* a region taken or a jump made in the old form can't be taken back */
@@ -584,11 +589,17 @@ static void level_kept_check(struct lk_now *k, const struct level_stream *stream
 	level_kept_passes(k, stream, draw, kept_count, cut_count, base_key, lightmap_key, alpha_tested, base_slope);
 	kept_end = gu_list->current;
 	draws = dl_check_compare(k->from, old_end, old_end, kept_end, &differing, &what, &a_value, &b_value, &unsupported);
-	if (differing && logged < 8)
+	if (differing)
 	{
-		logged++;
-		platform_log("GE: levelkeptcheck: a level draw (base %08x) differs at its draw %d, %03x: old %06x, kept %06x",
-			base_key, draws, what, a_value, b_value);
+		if (what >= 0 && what < LK_WHAT && lk_check_what[what] < 65535)
+			lk_check_what[what]++;
+		if (!lk_check_first[0])
+		{
+			lk_check_first[0] = 0x10000u | (unsigned int)what;
+			lk_check_first[1] = a_value;
+			lk_check_first[2] = b_value;
+			lk_check_first[3] = (unsigned int)k->making << 16 | (unsigned int)draws;
+		}
 	}
 	lk_checked++;
 	lk_check_prims += (unsigned long)draws;
@@ -612,8 +623,26 @@ static void level_kept_report(void)
 		lk_stamp_failed[LKS_TEXTURES], lk_stamp_failed[LKS_PASSES], lk_stamp_failed[LKS_DETAIL_SCALE],
 		lk_stamp_failed[LKS_FOG], lk_stamp_failed[LKS_MODES], lk_stamp_failed[LKS_CONTEXT], lk_stamp_failed[LKS_MAP]);
 	if (level_kept_checking)
-		platform_log("GE: levelkeptcheck: %lu draws checked (%lu draw commands), %lu differing, %lu unchecked, %lu with a command the check doesn't model",
-			lk_checked, lk_check_prims, lk_check_differ, lk_check_unchecked, lk_check_unsupported);
+	{
+		int top[3] = { -1, -1, -1 }, i, j;
+
+		for (i = 0; i < LK_WHAT; i++)
+			for (j = 0; j < 3; j++)
+				if (lk_check_what[i] && (top[j] < 0 || lk_check_what[i] > lk_check_what[top[j]]))
+				{
+					if (j < 2)
+						memmove(&top[j + 1], &top[j], (size_t)(2 - j) * sizeof(top[0]));
+					top[j] = i;
+					break;
+				}
+		platform_log("GE: levelkeptcheck: %lu draws checked (%lu draw commands), %lu differing, %lu unchecked, %lu with a command the check doesn't model; most often at %03x (%u), %03x (%u), %03x (%u); the first at %03x, old %06x, kept %06x (made %u, its draw %u)",
+			lk_checked, lk_check_prims, lk_check_differ, lk_check_unchecked, lk_check_unsupported,
+			top[0] & 0xFFF, top[0] >= 0 ? lk_check_what[top[0]] : 0, top[1] & 0xFFF, top[1] >= 0 ? lk_check_what[top[1]] : 0,
+			top[2] & 0xFFF, top[2] >= 0 ? lk_check_what[top[2]] : 0, lk_check_first[0] & 0xFFF, lk_check_first[1],
+			lk_check_first[2], lk_check_first[3] >> 16, lk_check_first[3] & 0xFFFF);
+		memset(lk_check_what, 0, sizeof(lk_check_what));
+		memset(lk_check_first, 0, sizeof(lk_check_first));
+	}
 	lk_draws = lk_made = lk_called = lk_blocks_called = lk_live_words = 0;
 	memset(lk_refused, 0, sizeof(lk_refused));
 	memset(lk_stamp_failed, 0, sizeof(lk_stamp_failed));
