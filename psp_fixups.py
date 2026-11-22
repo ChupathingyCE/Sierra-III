@@ -59780,6 +59780,35 @@ void object_reconnect_to_map(long object_index, struct location const *location)
 	}
 }
 
+/* a child's update entered: its stage is the child's until it returns */
+static int psp_bmr_child_begin(long object_index)
+{
+	int saved = psp_bmr_ctx;
+
+	if (object_index != psp_bmr_cur && saved != psp_bmr_dead && saved != psp_bmr_none && saved != psp_bmr_child)
+	{
+		struct object_header_datum const *child = object_header_try_and_get(object_index);
+
+		psp_bmr_child_in[child && child->type < 15 ? child->type : 15]++;
+		psp_bmr_set_ctx(psp_bmr_child);
+	}
+	return saved;
+}
+
+static boolean psp_object_update_lean(long object_index)
+{
+	int saved;
+	boolean result;
+
+	if (!psp_bmr_live)
+		return psp_bmr_lean_inner(object_index);
+	saved = psp_bmr_child_begin(object_index);
+	result = psp_bmr_lean_inner(object_index);
+	if (psp_bmr_ctx != saved)
+		psp_bmr_set_ctx(saved);
+	return result;
+}
+
 static boolean object_update(long object_index)
 {
 	int saved;
@@ -59787,14 +59816,7 @@ static boolean object_update(long object_index)
 
 	if (!psp_bmr_live)
 		return psp_bmr_object_update_inner(object_index);
-	saved = psp_bmr_ctx;
-	if (object_index != psp_bmr_cur && saved != psp_bmr_dead && saved != psp_bmr_none)
-	{
-		struct object_header_datum const *child = object_header_try_and_get(object_index);
-
-		psp_bmr_child_in[child && child->type < 15 ? child->type : 15]++;
-		psp_bmr_set_ctx(psp_bmr_child);
-	}
+	saved = psp_bmr_child_begin(object_index);
 	result = psp_bmr_object_update_inner(object_index);
 	if (psp_bmr_ctx != saved)
 		psp_bmr_set_ctx(saved);
@@ -59910,6 +59932,9 @@ def biped_readers(tree):
         "void psp_bmr_reconnect_inner(long object_index, struct location const *location);\n", "")
     text = _bmr_wrap(text, "object_update", "psp_bmr_object_update_inner",
         "static boolean object_update(long object_index);\nstatic boolean psp_bmr_object_update_inner(long object_index);\n", "")
+    # objlean (on by default) updates children through psp_object_update_lean itself
+    text = _bmr_wrap(text, "psp_object_update_lean", "psp_bmr_lean_inner",
+        "static boolean psp_object_update_lean(long object_index);\nstatic boolean psp_bmr_lean_inner(long object_index);\n", "")
     text = _bmr_wrap(text, "object_connect_lights_with", "psp_bmr_lights_inner",
         "static void psp_bmr_lights_inner(long object_index, struct object_datum *object, struct object_definition *object_definition, boolean disconnect, boolean reconnect);\n", "")
     # the solve loop's hooks are called before the runtime is defined
