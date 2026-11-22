@@ -114,7 +114,18 @@ evicted them; the HUD then lost parts until they were read again, and at
 low frame rates the budget was spent before the HUD's turn. 1: pinned.
 "hudpinoff": as before */
 static unsigned char *hud_pinned = NULL;
-static int hud_pin_on = -1;
+/* The three keep words a bind reads on either CPU ("hudpinoff", "bindblocks",
+"bindwords"; each word's own comment is where it is used), a whole cache line
+of their own: tex_keeps_settle sets them on the main CPU as a pack opens and
+writes the line back once, and nothing writes it again. Alone on its line, it
+can't be put back with another word's stale value in it, and writing it back
+puts back nothing but itself (as psp_ge.c's model_switch). Under 0 is "not
+settled yet"; each use tests for it as it did when these were three ints */
+static struct
+{
+	int hud_pin_on, bind_blocks_on, bind_words_on;
+} __attribute__((aligned(64))) tex_switch = { -1, -1, -1 }; /* the type's alignment: a whole line */
+_Static_assert(sizeof(tex_switch) == 64, "tex_switch fills a cache line");
 static void tex_keeps_settle(void);
 static void hud_pin_list_forget(void); /* hudpinme, below */
 static unsigned long hud_misses = 0, hud_reads_past_budget = 0, hud_untextured = 0;
@@ -2794,7 +2805,6 @@ struct bind_block
 	int index;
 	unsigned int address, frame;
 };
-static int bind_blocks_on = -1;
 static unsigned int (*bind_block_words)[BIND_BLOCK_WORDS] = NULL;
 /* "bindwords": a sent bind's words written straight into the display list
 here, not through pspgu's calls. A bind that the memo doesn't leave out is
@@ -2806,26 +2816,25 @@ words for a block and a host test against pspgu), so the GE's list is the
 same byte for byte. Unlike bindblocks there is no block, slot or table:
 nothing is shared, so it runs on the Media Engine as well. The one thing
 the calls keep that this doesn't is the context's texture_mode, which
-nothing reads (as bindblocks) */
-static int bind_words_on = -1;
+nothing reads (as bindblocks). Its switch is tex_switch.bind_words_on */
 
 /* the keep words a bind reads, settled on the main CPU as a pack opens: a
 replay on the ME may make a pack's first bind, and must not search the keep
 list or allocate */
 static void tex_keeps_settle(void)
 {
-	if (hud_pin_on < 0)
-		hud_pin_on = !psp_keep("hudpinoff");
-	if (bind_blocks_on < 0)
+	if (tex_switch.hud_pin_on < 0)
+		tex_switch.hud_pin_on = !psp_keep("hudpinoff");
+	if (tex_switch.bind_blocks_on < 0)
 	{
-		bind_blocks_on = psp_keep("bindblocks");
-		if (bind_blocks_on && !(bind_block_words = memalign(64, BIND_BLOCKS * sizeof(*bind_block_words))))
-			bind_blocks_on = 0;
+		tex_switch.bind_blocks_on = psp_keep("bindblocks");
+		if (tex_switch.bind_blocks_on && !(bind_block_words = memalign(64, BIND_BLOCKS * sizeof(*bind_block_words))))
+			tex_switch.bind_blocks_on = 0;
 	}
-	if (bind_words_on < 0)
+	if (tex_switch.bind_words_on < 0)
 	{
-		bind_words_on = psp_keep("bindwords") != 0;
-		sceKernelDcacheWritebackRange(&bind_words_on, sizeof(bind_words_on)); /* the ME reads it; under 0 counts as off */
+		tex_switch.bind_words_on = psp_keep("bindwords") != 0;
+		sceKernelDcacheWritebackRange(&tex_switch, sizeof(tex_switch)); /* the ME reads the line; under 0 counts as off */
 	}
 }
 static struct bind_block bind_block_meta[BIND_BLOCKS];
@@ -2990,11 +2999,11 @@ static inline __attribute__((always_inline)) int tex_bind(unsigned int key, int 
 		else if (psp_tex_standin == 1 || (psp_tex_standin == 2 && binding_lightmap))
 			return bind_standin(entry, has_alpha);
 	}
-	if (hud_pin_on < 0)
-		hud_pin_on = !psp_keep("hudpinoff");
+	if (tex_switch.hud_pin_on < 0)
+		tex_switch.hud_pin_on = !psp_keep("hudpinoff");
 	if (!resident_at[index])
 	{
-		int screen = psp_tex_screen_pass, past_budget = screen && hud_pin_on > 0;
+		int screen = psp_tex_screen_pass, past_budget = screen && tex_switch.hud_pin_on > 0;
 
 		if (PSP_ME_WORK())
 		{
@@ -3023,7 +3032,7 @@ static inline __attribute__((always_inline)) int tex_bind(unsigned int key, int 
 			return 0;
 		}
 	}
-	if (psp_tex_screen_pass && hud_pin_on > 0 && hud_pinned && !PSP_ME_WORK())
+	if (psp_tex_screen_pass && tex_switch.hud_pin_on > 0 && hud_pinned && !PSP_ME_WORK())
 		hud_pinned[index] = 1;
 	frame_set_mark(index);
 	if (bind_counts && bind_counts[index] < 65535)
@@ -3054,13 +3063,13 @@ static inline __attribute__((always_inline)) int tex_bind(unsigned int key, int 
 		tex_reads_note(index, address, entry->size, palette_bytes);
 	if (texlod_on())
 		texlod_mark(index);
-	if (bind_blocks_on < 0)
+	if (tex_switch.bind_blocks_on < 0)
 	{
-		bind_blocks_on = psp_keep("bindblocks");
-		if (bind_blocks_on && !(bind_block_words = memalign(64, BIND_BLOCKS * sizeof(*bind_block_words))))
-			bind_blocks_on = 0;
+		tex_switch.bind_blocks_on = psp_keep("bindblocks");
+		if (tex_switch.bind_blocks_on && !(bind_block_words = memalign(64, BIND_BLOCKS * sizeof(*bind_block_words))))
+			tex_switch.bind_blocks_on = 0;
 	}
-	if (bind_blocks_on && !PSP_ME_WORK())
+	if (tex_switch.bind_blocks_on && !PSP_ME_WORK())
 	{
 		const unsigned int *block = bind_block(index, entry, address, palette_bytes);
 
@@ -3079,7 +3088,7 @@ static inline __attribute__((always_inline)) int tex_bind(unsigned int key, int 
 		}
 	}
 	start = address; /* where the texture starts (address moves past the palette and levels) */
-	if (bind_words_on > 0)
+	if (tex_switch.bind_words_on > 0)
 	{
 		unsigned int *w = gu_list->current;
 
@@ -3464,9 +3473,9 @@ void psp_tex_pretouch(unsigned int key, int kind, int resident_only)
 	{
 		if (hud_pin_me < 0)
 			hud_pin_me = !psp_keep("hudpinmeold");
-		if (hud_pin_on < 0)
-			hud_pin_on = !psp_keep("hudpinoff");
-		hud = hud_pin_me > 0 && hud_pin_on > 0;
+		if (tex_switch.hud_pin_on < 0)
+			tex_switch.hud_pin_on = !psp_keep("hudpinoff");
+		hud = hud_pin_me > 0 && tex_switch.hud_pin_on > 0;
 		resident_only = 0;
 		if (hud)
 			hud_pretouched++;
@@ -4086,7 +4095,7 @@ void psp_tex_frame_end(void)
 	}
 	if (entries && frame % 300 == 0)
 		platform_log("textures, the HUD's and the screen's (%s): %lu missing when drawn (%lu read past the frame's budget), %lu drawn untextured; recorded for the Media Engine (%s): %lu marked, %lu past the ceiling, %lu refused room; read back at a frame's start %lu, refused %lu (%d pinned, %u KB, %u KB of them resident)",
-			hud_pin_on > 0 ? "pinned" : "hudpinoff", hud_misses, hud_reads_past_budget, hud_untextured,
+			tex_switch.hud_pin_on > 0 ? "pinned" : "hudpinoff", hud_misses, hud_reads_past_budget, hud_untextured,
 			hud_pin_me > 0 ? "hudpinme" : hud_pin_me == 0 ? "hudpinmeold" : "none yet", hud_pretouched, hud_pretouch_past_ceiling,
 			hud_pretouch_refused, hud_frame_start_loads, hud_frame_start_refused, hud_pin_count, hud_pin_kb(0), hud_pin_kb(1));
 	if (entries && frame % 300 == 0)
@@ -4095,7 +4104,7 @@ void psp_tex_frame_end(void)
 		census_report();
 	if (entries)
 		texlod_frame_end(frame);
-	if (entries && frame % 300 == 0 && bind_blocks_on > 0)
+	if (entries && frame % 300 == 0 && tex_switch.bind_blocks_on > 0)
 	{
 		platform_log("textures: bindblocks: %lu binds a frame CALLed a ready block, %lu blocks made a frame, %lu times every slot in use (last 300 frames)",
 			bind_blocks_called / 300, bind_blocks_made / 300, bind_blocks_full);

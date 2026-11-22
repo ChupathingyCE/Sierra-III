@@ -28,7 +28,10 @@ against the first side and a verdict:
                 levels; 'geometry: sspr: not used: the pack has no levels')
 
 The figures are benchreport.py's (the same reader): the frame by the clock,
-the frame's own work (drawing) and a tick's own cost, ms, weighted by frames.
+the frame's own work (drawing) over the frames and a tick's own cost over the
+ticks, ms. Each heartbeat counts for its own span and is cut in proportion at
+a stretch's edges, so a stretch is the same game time on every run wherever
+the runs' heartbeats fall: an edge may sit anywhere.
 
 usage:
   abreport.py RESULTS                      a rig results folder with keep sets: its
@@ -46,13 +49,9 @@ import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from benchreport import log_path, reach, read, stretches_for, weighted, within  # noqa: E402  (the same reader as the bench tables)
+from benchreport import cover, drawing_ms, frame_ms, log_path, reach, read, stretches_for, tick_ms, within  # noqa: E402  (the same reader as the bench tables)
 
-METRICS = (
-    ("Frame by the clock, ms", lambda rows: 1000.0 * len(rows) / sum(r[3] for r in rows) if rows and sum(r[3] for r in rows) else None),
-    ("Drawing, ms", lambda rows: weighted(rows, lambda r: r[1], lambda r: r[3])),
-    ("Tick, ms", lambda rows: weighted(rows, lambda r: r[2], lambda r: r[3])),
-)
+METRICS = (("Frame by the clock, ms", frame_ms), ("Drawing, ms", drawing_ms), ("Tick, ms", tick_ms))
 HEAP_FAILED = re.compile(r"^heap: .*?(\d+) requests failed")
 LOG_DROPPED = re.compile(r"^\(log: (\d+) lines dropped")
 NOT_USED = re.compile(r": not used(:|$| )")
@@ -247,7 +246,7 @@ def main():
         figures = {}   # (metric, side) -> [one figure a run]
         for metric, pick in METRICS:
             for n in names:
-                figures[metric, n] = [v for v in (pick(within(run, lo, hi, end)) for run in beats[n]) if v is not None]
+                figures[metric, n] = [v for v in (pick(cover(run, lo, hi, end)) for run in beats[n]) if v is not None]
         if not any(figures.values()):
             continue
         # A stretch the runs only graze (they end inside it, or a beat or two
