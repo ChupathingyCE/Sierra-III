@@ -29,6 +29,7 @@ arrives its surfaces are drawn in their flat colour. */
 #include "psp_me.h" /* build 118: PSP_ME_WORK */
 #include "psp_paths.h"   /* ms0:/halo or ms0:/halomp, and the maps */
 #include "psp_bindblock.h"
+#include "psp_gulist.h"
 #include "psp_metrics.h"
 
 void platform_log(const char *format, ...);
@@ -2795,6 +2796,18 @@ struct bind_block
 };
 static int bind_blocks_on = -1;
 static unsigned int (*bind_block_words)[BIND_BLOCK_WORDS] = NULL;
+/* "bindwords": a sent bind's words written straight into the display list
+here, not through pspgu's calls. A bind that the memo doesn't leave out is
+a sceGuClutMode, a sceGuClutLoad, a sceGuTexMode, a sceGuTexImage a level
+and a sceGuTexFilter: 6 to 13 calls into as many small functions, each
+elsewhere in memory, 180-325 times a frame on c20 on the PSP. The words
+are theirs, in their order (pspsdk's sources; psp_bindblock.h has the same
+words for a block and a host test against pspgu), so the GE's list is the
+same byte for byte. Unlike bindblocks there is no block, slot or table:
+nothing is shared, so it runs on the Media Engine as well. The one thing
+the calls keep that this doesn't is the context's texture_mode, which
+nothing reads (as bindblocks) */
+static int bind_words_on = -1;
 
 /* the keep words a bind reads, settled on the main CPU as a pack opens: a
 replay on the ME may make a pack's first bind, and must not search the keep
@@ -2808,6 +2821,11 @@ static void tex_keeps_settle(void)
 		bind_blocks_on = psp_keep("bindblocks");
 		if (bind_blocks_on && !(bind_block_words = memalign(64, BIND_BLOCKS * sizeof(*bind_block_words))))
 			bind_blocks_on = 0;
+	}
+	if (bind_words_on < 0)
+	{
+		bind_words_on = psp_keep("bindwords") != 0;
+		sceKernelDcacheWritebackRange(&bind_words_on, sizeof(bind_words_on)); /* the ME reads it; under 0 counts as off */
 	}
 }
 static struct bind_block bind_block_meta[BIND_BLOCKS];
@@ -3061,6 +3079,47 @@ static inline __attribute__((always_inline)) int tex_bind(unsigned int key, int 
 		}
 	}
 	start = address; /* where the texture starts (address moves past the palette and levels) */
+	if (bind_words_on > 0)
+	{
+		unsigned int *w = gu_list->current;
+
+		if (palette_bytes)
+		{
+			/* sceGuClutMode(clut, 0, 0xFF, 0); sceGuClutLoad(palette_bytes / 32, address) */
+			*w++ = (0xC5u << 24) | (((unsigned int)entry->clut | (0xFFu << 8)) & 0xFFFFFFu);
+			*w++ = (0xB0u << 24) | (address & 0xFFFFFFu);
+			*w++ = (0xB1u << 24) | ((address >> 8) & 0xF0000u);
+			*w++ = (0xC4u << 24) | ((palette_bytes / 32) & 0xFFFFFFu);
+		}
+		/* sceGuTexMode(psm, levels - 1, 0, 1) and its flush */
+		*w++ = (0xC2u << 24) | ((((unsigned int)(entry->levels - 1) << 16) | 1u) & 0xFFFFFFu);
+		*w++ = (0xC3u << 24) | ((unsigned int)entry->psm & 0xFFFFFFu);
+		*w++ = 0xCBu << 24;
+		address += palette_bytes;
+		width = entry->width;
+		height = entry->height;
+		for (level = 0; level < entry->levels; level++)
+		{
+			unsigned int bytes = entry->psm == GU_PSM_T4 ? (width + 1) / 2 : width * TEXEL_BYTES(entry);
+			unsigned int row = ((bytes < 16 ? 16 : bytes) + 15) & ~15u, rows = (height + 7) & ~7u;
+			unsigned int tbw = entry->psm == GU_PSM_T4 ? row * 2 : row / TEXEL_BYTES(entry);
+
+			/* sceGuTexImage(level, width, height, tbw, address) and its flush */
+			*w++ = ((0xA0u + (unsigned int)level) << 24) | (address & 0xFFFFFFu);
+			*w++ = ((0xA8u + (unsigned int)level) << 24) | ((((address >> 8) & 0x0F0000u) | tbw) & 0xFFFFFFu);
+			*w++ = ((0xB8u + (unsigned int)level) << 24) |
+				(((bind_block_exponent(height) << 8) | bind_block_exponent(width)) & 0xFFFFFFu);
+			*w++ = 0xCBu << 24;
+			address += row * rows;
+			width = width > 1 ? width / 2 : 1;
+			height = height > 1 ? height / 2 : 1;
+		}
+		/* sceGuTexFilter(levels > 1 ? GU_LINEAR_MIPMAP_LINEAR : GU_LINEAR, GU_LINEAR) */
+		*w++ = (0xC6u << 24) |
+			(((unsigned int)(entry->levels > 1 ? GU_LINEAR_MIPMAP_LINEAR : GU_LINEAR) | (GU_LINEAR << 8)) & 0xFFFFFFu);
+		gu_list->current = w;
+		goto bound;
+	}
 	if (palette_bytes)
 	{
 		__real_sceGuClutMode(entry->clut, 0, 0xFF, 0);
@@ -3083,6 +3142,7 @@ static inline __attribute__((always_inline)) int tex_bind(unsigned int key, int 
 		height = height > 1 ? height / 2 : 1;
 	}
 	__real_sceGuTexFilter(entry->levels > 1 ? GU_LINEAR_MIPMAP_LINEAR : GU_LINEAR, GU_LINEAR);
+bound:
 	if (has_alpha)
 		*has_alpha = entry->flags & 1;
 	/* the GE now has this texture (remembered from the ME's work only in the
