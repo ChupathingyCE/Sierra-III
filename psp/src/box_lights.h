@@ -58,11 +58,11 @@ void box_lights_end(int walked_whole);
 void box_lights_refused(int reason);
 void box_lights_checked(int differed);
 /* "lightkinds", a count only: each light draw by its light's form (0 a point
-light, 1 one with a gel, 2 a spotlight) and by whether the light, the draw
-and the copy have been seen before as they are. world is the light's place
-before the copy's origin is taken from it */
+light, 1 one with a gel, 2 a spotlight) and by whether the light and the
+material's copy it lights are as they were. world is the light's place before
+the copy's origin is taken from it; copy_slot the copy's place in the table */
 void box_lights_kind(int form, const float *world, const float *forward, float radius, float falloff, float cutoff,
-	const void *stream, unsigned int serial, const float *origin, const void *indices, long count, int baked);
+	int copy_slot, unsigned int serial, const float *origin, int baked);
 /* the main CPU's, every 300 frames: the counts as a log line */
 void box_lights_report(void);
 

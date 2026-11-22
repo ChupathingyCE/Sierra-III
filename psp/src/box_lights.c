@@ -272,30 +272,21 @@ void box_lights_checked(int differed)
 /* ---------- "lightkinds": what a bake could take, counted
 
 A light is still when its nine words (place in the world, direction, radius,
-cone) have been seen before; a copy is the same when that light has lit it
-before with its place in memory, its serial and its origin as they are; an
-index list is the same when that light has lit these indices before (a list
-of the triangles in view is new whenever the camera moves, though the light
-and the copy's vertices are as they were). A light that moves or whose radius is animated shows new words
-at every draw. The tables forget: a light seen once gives its entry up first,
-so moving lights don't push the still ones out. */
-#define KIND_LIGHTS 128
-#define KIND_PAIRS 2048 /* a power of two */
-#define KIND_PROBES 8
-enum { KIND_NEW, KIND_SAME, KIND_LIST, KIND_COPY, KIND_DRAW, KIND_OUTCOMES };
+cone) have been seen before. A copy is a material's: the same for a light when
+that light last lit it with its serial and origin as they are now, remade
+when they differ, new when the light has not lit that material's copy yet.
+Each light has a row with a mark for every copy slot, so nothing is lost to a
+full table; a light seen once gives its row up first, so lights that move do
+not push the still ones out. */
+#define KIND_LIGHTS 64
+#define KIND_COPIES 512 /* psp_ge.c's LEVEL_STREAMS */
+enum { KIND_NEW, KIND_SAME, KIND_COPY, KIND_DRAW, KIND_OUTCOMES };
 static struct
 {
 	unsigned int words[9], hash, seen;
 } kind_light[KIND_LIGHTS];
-static struct
-{
-	unsigned int light, indices, count, copy; /* indices 0: empty */
-} kind_pair[KIND_PAIRS];
-static struct
-{
-	unsigned int light, stream, copy; /* stream 0: empty */
-} kind_copy[KIND_PAIRS];
-static unsigned long kinds[24] __attribute__((aligned(64))); /* [3 forms][5 outcomes], then baked copies, lights forgotten, pairs replaced */
+static unsigned short kind_copy[KIND_LIGHTS][KIND_COPIES]; /* 0: not lit by this light yet; else the copy's hash with its top bit set */
+static unsigned long kinds[16] __attribute__((aligned(64))); /* [3 forms][4 outcomes], then baked copies, rows given up by a light seen more than once, copies out of range */
 static unsigned int kind_next;
 
 static unsigned int words_hash(const unsigned int *word, int count)
@@ -309,9 +300,10 @@ static unsigned int words_hash(const unsigned int *word, int count)
 }
 
 void box_lights_kind(int form, const float *world, const float *forward, float radius, float falloff, float cutoff,
-	const void *stream, unsigned int serial, const float *origin, const void *indices, long count, int baked)
+	int copy_slot, unsigned int serial, const float *origin, int baked)
 {
-	unsigned int words[9], copy_words[5], hash, copy, at, probe, k;
+	unsigned int words[9], copy_words[4], hash, k;
+	unsigned short copy;
 	int outcome, found = -1;
 
 	if (!pass_side())
@@ -322,17 +314,21 @@ void box_lights_kind(int form, const float *world, const float *forward, float r
 	memcpy(&words[7], &falloff, sizeof(float));
 	memcpy(&words[8], &cutoff, sizeof(float));
 	hash = words_hash(words, 9);
-	copy_words[0] = (unsigned int)stream;
-	copy_words[1] = serial;
-	memcpy(&copy_words[2], origin, 3 * sizeof(float));
-	copy = words_hash(copy_words, 5);
-	kinds[15] += baked != 0;
+	copy_words[0] = serial;
+	memcpy(&copy_words[1], origin, 3 * sizeof(float));
+	copy = (unsigned short)(words_hash(copy_words, 4) | 0x8000u);
+	kinds[12] += baked != 0;
+	if (copy_slot < 0 || copy_slot >= KIND_COPIES)
+	{
+		kinds[14]++;
+		return;
+	}
 	for (k = 0; k < KIND_LIGHTS && found < 0; k++)
 		if (kind_light[k].seen && kind_light[k].hash == hash && !memcmp(kind_light[k].words, words, sizeof(words)))
 			found = (int)k;
 	if (found < 0)
 	{
-		/* a new light takes an empty entry, else one seen once, else the next in turn */
+		/* a new light takes an empty row, else one seen once, else the next in turn */
 		for (k = 0; k < KIND_LIGHTS && found < 0; k++)
 			if (!kind_light[k].seen)
 				found = (int)k;
@@ -340,85 +336,24 @@ void box_lights_kind(int form, const float *world, const float *forward, float r
 			if (kind_light[(kind_next + k) % KIND_LIGHTS].seen == 1)
 				found = (int)((kind_next + k) % KIND_LIGHTS);
 		if (found < 0)
+		{
 			found = (int)(kind_next % KIND_LIGHTS);
-		if (kind_light[found].seen)
-			kinds[16]++;
+			kinds[13]++;
+		}
 		kind_next = (unsigned int)found + 1;
 		memcpy(kind_light[found].words, words, sizeof(words));
 		kind_light[found].hash = hash;
 		kind_light[found].seen = 1;
+		memset(kind_copy[found], 0, sizeof(kind_copy[found]));
 		outcome = KIND_NEW;
 	}
 	else
 	{
 		if (kind_light[found].seen < 0x7FFFFFFF)
 			kind_light[found].seen++;
-		outcome = KIND_DRAW;
+		outcome = !kind_copy[found][copy_slot] ? KIND_DRAW : kind_copy[found][copy_slot] == copy ? KIND_SAME : KIND_COPY;
 	}
-	/* the light on this copy, then on this index list; both are kept for a new light too */
-	{
-		int copy_seen = 0, copy_same = 0, list_seen = 0;
-
-		at = hash ^ ((unsigned int)stream >> 2) * 2654435761u;
-		for (probe = 0; probe < KIND_PROBES; probe++)
-		{
-			unsigned int slot = (at + probe) & (KIND_PAIRS - 1);
-
-			if (kind_copy[slot].stream == (unsigned int)stream && kind_copy[slot].light == hash)
-			{
-				copy_seen = 1;
-				copy_same = kind_copy[slot].copy == copy;
-				kind_copy[slot].copy = copy;
-				break;
-			}
-			if (!kind_copy[slot].stream)
-			{
-				kind_copy[slot].light = hash;
-				kind_copy[slot].stream = (unsigned int)stream;
-				kind_copy[slot].copy = copy;
-				break;
-			}
-		}
-		if (probe == KIND_PROBES)
-		{
-			unsigned int slot = at & (KIND_PAIRS - 1);
-
-			kind_copy[slot].light = hash;
-			kind_copy[slot].stream = (unsigned int)stream;
-			kind_copy[slot].copy = copy;
-			kinds[17]++;
-		}
-		at = (hash ^ ((unsigned int)indices >> 2) * 2654435761u ^ (unsigned int)count * 40503u);
-		for (probe = 0; probe < KIND_PROBES; probe++)
-		{
-			unsigned int slot = (at + probe) & (KIND_PAIRS - 1);
-
-			if (kind_pair[slot].indices == (unsigned int)indices && kind_pair[slot].light == hash && kind_pair[slot].count == (unsigned int)count)
-			{
-				list_seen = kind_pair[slot].copy == copy;
-				kind_pair[slot].copy = copy;
-				break;
-			}
-			if (!kind_pair[slot].indices)
-				break;
-		}
-		if (probe == KIND_PROBES)
-		{
-			probe = 0;
-			kinds[18]++;
-		}
-		if (!list_seen)
-		{
-			unsigned int slot = (at + probe) & (KIND_PAIRS - 1);
-
-			kind_pair[slot].light = hash;
-			kind_pair[slot].indices = (unsigned int)indices;
-			kind_pair[slot].count = (unsigned int)count;
-			kind_pair[slot].copy = copy;
-		}
-		if (outcome != KIND_NEW)
-			outcome = !copy_seen ? KIND_DRAW : !copy_same ? KIND_COPY : list_seen ? KIND_SAME : KIND_LIST;
-	}
+	kind_copy[found][copy_slot] = copy;
 	kinds[(form < 0 || form > 2 ? 0 : form) * KIND_OUTCOMES + outcome]++;
 }
 
@@ -428,15 +363,15 @@ void box_lights_report(void)
 		unsigned long all = 0;
 		int k;
 
-		for (k = 0; k < 15; k++)
+		for (k = 0; k < 12; k++)
 			all += kinds[k];
 		if (all)
-			platform_log("lights box: lightkinds: light draws by the light's form, each as (the light's words new | still, on the same copy and "
-				"index list | still, the same copy, another index list | still, the copy remade | still, a copy new to it): "
-				"point lights %lu | %lu | %lu | %lu | %lu; with a gel %lu | %lu | %lu | %lu | %lu; spotlights %lu | %lu | %lu | %lu | %lu; "
-				"of all, on a baked copy %lu; lights forgotten %lu, copy pairs replaced %lu, list pairs replaced %lu",
+			platform_log("lights box: lightkinds: light draws by the light's form, each as (the light's words new | still, on a copy as it "
+				"last lit it | still, the copy remade since | still, a material's copy it had not lit): point lights %lu | %lu | %lu | %lu; "
+				"with a gel %lu | %lu | %lu | %lu; spotlights %lu | %lu | %lu | %lu; of all, on a baked copy %lu; "
+				"still lights' rows given up %lu, copies out of range %lu",
 				kinds[0], kinds[1], kinds[2], kinds[3], kinds[4], kinds[5], kinds[6], kinds[7], kinds[8], kinds[9], kinds[10], kinds[11],
-				kinds[12], kinds[13], kinds[14], kinds[15], kinds[16], kinds[17], kinds[18]);
+				kinds[12], kinds[13], kinds[14]);
 	}
 	if (!counts[COUNT_ASKED] && !counts[COUNT_NO_STORE] && !counts[COUNT_REFUSED + BOX_LIGHTS_SPOT] &&
 		!counts[COUNT_REFUSED + BOX_LIGHTS_GEL] && !counts[COUNT_REFUSED + BOX_LIGHTS_BAKE] && !counts[COUNT_REFUSED + BOX_LIGHTS_MODE])

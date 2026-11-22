@@ -23721,7 +23721,7 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 			light_kinds = psp_keep("lightkinds");
 		if (light_kinds)
 			box_lights_kind(light.gel ? 1 : spot ? 2 : 0, light.position, light.forward, light.radius, light.cosine_falloff,
-				light.cosine_cutoff, stream, stream->serial, stream->origin, indices, triangle_count, stream->bake != 0);
+				light.cosine_cutoff, (int)(stream - level_streams), stream->serial, stream->origin, stream->bake != 0);
 	}
 #endif
 	/* the light from the copy's origin, as its positions are
