@@ -16,6 +16,8 @@ PSPDEV=<pspdev> tools/build_release.sh <out>
 
 **How the build works:** `psp_build.py` mirrors the engine into `<out>/tree`. `psp_fixups.py` then applies anchored (old, new) text pairs to that mirror: `FIXES_*` are lists or dicts per build, written against ChupathingyCE (the only engine base since halo-ce-universal retired: `UPSTREAM.md`). Then it compiles (hot engine `-O2`, cold units `-Os`), links, sizes the heap from the program's end, and packs `EBOOT.PBP`. A link map (`halo.map`) is written every link. The engine checkout itself is never edited.
 
+Keep words that need no build switch are in `optimization_ranking.md`, appendix B (the mixer's `mixkinds`, H1, among them: `review_mixkinds.md`).
+
 **Build switches (environment):**
 
 | Switch | What it does |
