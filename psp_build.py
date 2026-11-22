@@ -305,6 +305,18 @@ if BIPEDSTAGE:
     # the accessor's constant map must follow the store's runs (step 1b)
     if subprocess.run([sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "tools", "bipedmove_map.py"), "--check"]).returncode:
         sys.exit("psp_build: psp/include/psp_bipedmove_map.h is stale: run tools/bipedmove_map.py")
+# PSP_BMSLIDE=1: biped motion's slide, stage 5a (docs/box_biped_motion.md
+# section 4b; psp/src/box_biped_slide.c, psp_fixups.py FIXES_BMSLIDE): every
+# staged biped's slide made as one pass before the solves. Off by default
+# until its PSP price; built in, keep word bmslideoff leaves the pass out and
+# bmslidecheck compares every result with the inline slide
+BMSLIDE = os.environ.get("PSP_BMSLIDE", "") == "1"
+if BMSLIDE and not BIPEDSTAGE:
+    sys.exit("psp_build: PSP_BMSLIDE=1 needs PSP_BIPEDSTAGE=1 (the slide reads the staged intents and gathers)")
+# psp_fixups.py reads the same switch from the environment
+os.environ["PSP_BMSLIDE"] = "1" if BMSLIDE else "0"
+if BMSLIDE:
+    PSP_FILES.append("box_biped_slide")
 # PSP_SMALLDATA=8 (or 4): the units built with the game's flags put variables
 # of up to that many bytes in small data, read with one load from $gp instead
 # of lui and a load, so the code is shorter (lever RH5, after Halo 64's -G8).

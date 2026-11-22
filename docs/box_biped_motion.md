@@ -305,7 +305,7 @@ Sheepdog01: play biped motion out, as long as it doesn't conflict with a future 
   - **The object's lighting, leaving the box:** `sample_lightmap` 8 / 8, `find_point_lights_for_object_in_cluster` (hot on b30, 17 on c20), `psp_tex_light_texel`, `object_get_self_illumination` 7 / 7, `_texture_cache_bitmap_get_hardware_format` 5 / 5: the object lighting's box takes them, with their budget.
 - **Memory:** the store's 400 B a biped is the store's; the collision service's packed copies are this box's own, to size from the slices (`collision.md` §3's ledger row).
 
-### 4b. The solve cut into stages (design, 2026-11-21; the lead's order 19:3x; no code yet)
+### 4b. The solve cut into stages (design, 2026-11-21; the lead's order 19:3x; 5a built, below)
 
 The solve is the first cut: 219 / 256 lines a call, ~674 / ~976 a tick, the largest pass on both maps by lines and by I-misses (§4's table). The unit pass is the second cut. **Figures** [E, exact counts, from bipedstage1's footprints read with the lab's `stage_read.py`; b30 / c20]:
 - **Lines a call carry over between windows**, so the stages are sized on them.
@@ -408,7 +408,12 @@ S4 also holds every dead biped's whole update: 15.2 / 35.7 calls a tick against 
 3. 5b+5d as one stage per biped.
 4. The events pass.
 
-Each step goes behind its keep word under `PSP_BIPEDSTAGE`, with statecrc against the tock, and is priced in the frame.
+Each step goes behind its keep word under `PSP_BIPEDSTAGE`, with statecrc against the tock, and is priced in the frame. *(The lead, 2026-11-21 20:2x: each slice under its own build switch, off by default; 5b+5d as one exact stage; the dead and the limp body on their own exact paths; the order 5a, the reader census, 5c, 5b+5d, the events; 5a is the first PSP price, in the frame on the live window, old-only against new-only.)*
+
+**5a, status (2026-11-21): built, emulator proof running.** Build switch `PSP_BMSLIDE=1` (`psp/src/box_biped_slide.c`, `FIXES_BMSLIDE`), keep words `bmslideoff` and `bmslidecheck`. What the build's read found [D, the fixed tree at the pin]:
+- **5a is pure.** `collision_move_point`, `collision_features_test_vector` and the sphere, cylinder and prism tests write only their outputs (the new position and velocity, the planes array, locals); their asserts format a message only when they fail. The collision-user push and pop are no-ops outside `PSP_DEBUG_TOOLS`, and 5a doesn't touch them. The pass reads the intent's record (`psp_bipedstage3_call`) and the gather's slot without writing either (the take's lookup as a read-only copy), points `psp_bs2_view` at the list and puts it back, and writes only its result. The list's counts go into a small holder of its own, not the shared list.
+- **No discard by damage is needed:** the solve resumes its call from the intent's record (position, velocity, flags and pill in `psp_bs3_rec`), which nothing writes after the intent, so another biped's damage can't change the call's inputs; `psp_ws_dirty` refills the store's record, not those. The guard is stronger than a dirty mark anyway: a result is taken only by a call whose every input is the same bit for bit, with its slot still the one the take would pick, and the take's own writes (the slot used, its count, the shared list's counts, the view) are made as the take makes them. Anything else slides inline.
+- **The take stays in the solve, cut to a lookup:** the solve's `collision_move_pill` looks its result up by datum index and skips the sphere, the take's tests and the slide. The dead (whole updates, phase 0) and the limp body never get a result; their calls slide inline.
 
 **Earlier tries on this ground** (`levercheck.py --ground object-update`, `reconnect`, `partition`, 2026-11-21):
 - **PHASEB stopped before code** (2026-11-04): no exact stage cut worth building. Moving ends in `object_translate`, which later objects' collision reads; the airborne branch draws the global seed; footsteps allocate; the animation feeds the children's node matrices. Its revive_if: an exact stage worth ≥1% of b30's or c20's tick, or Sheepdog01's OK for the plays-the-same form, which the 2026-11-09 rulings made the session's call.
