@@ -79,7 +79,7 @@ The replay of the frame's draws runs on the Media Engine from its code copy in e
 - **Room:** the copy is a full 256 KB, and a short form kept beside its old form needs room in it. With `gustate` on by default pspgu's two switch functions (2 KB) left the copy's list (`psp/layout/mexec_rbtsw.txt`); they run from main RAM for the two states the table leaves to them and under `gustateoff`. Nine functions the Media Engine does not fetch on the bench stretches are last in the list, where the build's fill cuts first when the copy outgrows its room.
 - **Earlier work:** writing the renderer's words without pspgu was tried for the main CPU's drawing and stopped: fewer instruction misses there bought no time on the PSP. On the Media Engine code misses are measured to cost (about 55 cycles each, several milliseconds of the replay a frame), which is why it was tried again there, and there it pays (the price above).
 
-## Batch 6: work that makes nothing (`peldust`; off by default)
+## Batch 6: work that makes nothing (`peldust`, `swaylean`; off by default)
 
 The first cuts from a census of what the tick's objects do that changes nothing ([E] the lab's rows `fightobj1_vehicles` and `fightobj1_scenery`: b30's fight, the two Pelicans and the trees).
 
@@ -95,7 +95,19 @@ The first cuts from a census of what the tick's objects do that changes nothing 
 
 **Not built here:** leaving out the rays and effects of a Pelican nobody can see. That one plays the same rather than being exact (dust would start when the camera turns onto it), so the exact form goes first and the PSP's price of what is left decides whether it is worth its proof.
 
-### Cut 2, a design: animated scenery asleep (`treesleep`, not built)
+### Cut 2, built: scenery whose update changes nothing but its pose (`swaylean`; off by default)
+
+| Word | What it does | Where |
+|---|---|---|
+| `swaylean` (`swayleancheck`) | A scenery object whose datum (the node blocks and the bounding sphere left out) was the same at its last three visits gets the pose step alone instead of its whole update: the garbage count, the type's own update, the pose exactly as the update makes it (the half-pose and vislazy's tests first), the lights' reconnect under the update's own test, and the post-process of a pose just made. The damage update, the exports and the function values are left out; an object whose definition has functions or change colours is never taken. The sum is made at every visit, so any write to the object ends the run and the whole update comes back at once. | `psp_fixups.py`, `FIXES_SWAYLEAN` (`source/objects/objects.c`, in the sleep check) |
+
+**Where it is large [E]** (the lab's row `swaycensus1_awake_scenery`): c10 updates 237 scenery objects a tick, hands off, 173 of them lily pads no frame draws; b30's fight 33; d20 11, c40 8, c20 1. It does not change how many poses are made: c10 still makes 183 a tick (an animated root moves the sphere that collision and visibility read), which is the posing box's ground.
+
+**Why it should be exact.** It is the sleep check's own rule, with the pose taken out of what must hold still: an object whose update changed nothing three visits running is not updated. `swayleancheck` runs the whole update at every lean visit, makes the lean visit from the same start, and compares every word but the visit mark. Its record is 512 slots of 8 bytes, by object index.
+
+**No proof and no price yet.**
+
+### Cut 2, the first design: animated scenery asleep (`treesleep`, not built)
 
 **What runs today [D, E].** A tree's sway is not state: an object flagged to animate automatically takes its pose's frame as (object index + game time) modulo the animation's length (`OBJECT_FRAME_INDEX_GET` in `object_compute_node_matrices`). b30's fight updates about 33 trees a tick and no word of their datums changes but the pose (the lab's row `fightobj1_scenery`). They split in two (the counts are read off the poses that change, 12-15 a tick, against the 33 updates [U]):
 - **Drawn last frame (about 15 a tick):** `psp_nms_skip` refuses them (reason 6), so their pose is made in the update on every tick, twice a frame at 15 fps.

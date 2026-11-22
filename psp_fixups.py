@@ -51466,6 +51466,193 @@ static void create_pelican_effect(
 ]
 
 
+# ---------- FIXES_SWAYLEAN: scenery whose update changes nothing but its
+# pose gets the pose step alone (lever SWAYLEAN; keep word "swaylean", off by
+# default; "swayleancheck" runs the whole update beside it and compares).
+# A tree's or a lily pad's sway is not state: an object that animates by
+# itself takes its frame from its index and the game time. Its pose moves, so
+# the sleep check never finds it still and its whole update runs every tick:
+# c10 runs 237 such updates a tick, 173 of them for lily pads no frame draws,
+# b30's fight 33 (the lab's rows swaycensus1_awake_scenery, fightobj1_scenery).
+# Here a scenery object whose datum, the node blocks and the bounding sphere
+# left out, was the same at its last three visits is taken as the sleep check
+# takes a sleeper, but for its pose: the visit counts garbage, runs the type's
+# own update (a scripted animation's hold), the pose step exactly as the
+# update makes it (the half-pose and vislazy's tests first), the lights'
+# reconnect under the update's own test, and the post-process of a pose just
+# made. What it leaves out is the damage update, the exports and the function
+# values, which changed nothing three visits running; an object with
+# functions or change colours is never taken. The sum is made at every visit,
+# so any write to the object ends it at once and the whole update runs again.
+# Campaign only; co-op: nothing to adapt (the simulation's own result)
+FIXES_SWAYLEAN = {}
+FIXES_SWAYLEAN["source/objects/objects.c#swaylean"] = [
+("""static void psp_sleepy_update(long object_index, short absolute_index, struct object_header_datum *header, int may_sleep)
+{
+""",
+ """#if defined(HALO_PSP) && !defined(PSP_MULTIPLAYER)
+/* psp_fixups.py (FIXES_SWAYLEAN): "swaylean" (see there) */
+#define PSP_SWAY_SLOTS 512
+static struct
+{
+	unsigned long sum; /* of the datum's fixed part, as the last visit found it */
+	unsigned short identifier;
+	unsigned char absolute_high, same; /* visits running that found that sum */
+} psp_sway[PSP_SWAY_SLOTS];
+static int psp_sway_mode = -1; /* 0 off, 1 on, 2 check */
+static unsigned long psp_sway_lean_visits, psp_sway_whole_visits, psp_sway_ended, psp_sway_check_wrong, psp_sway_reports;
+static long psp_sway_report_tick;
+
+/* the datum but its node blocks (the only blocks an object has, after its
+fixed part), the mark a pass leaves at word 2, and the bounding sphere the
+pose step sets */
+static unsigned long psp_sway_sum(struct object_header_datum const *header, struct object_datum const *object)
+{
+	unsigned long const *word = (unsigned long const *)object;
+	long end = header->data_size, sphere = offsetof(struct object_datum, object.bounding_sphere_center) / 4, k;
+	unsigned long sum = 0x9E3779B9UL;
+
+	if (object->object.original_node_orientations.size > 0 && object->object.original_node_orientations.offset < end)
+		end = object->object.original_node_orientations.offset;
+	if (object->object.node_orientations.size > 0 && object->object.node_orientations.offset < end)
+		end = object->object.node_orientations.offset;
+	if (object->object.node_matrices.size > 0 && object->object.node_matrices.offset < end)
+		end = object->object.node_matrices.offset;
+	end /= 4;
+	for (k = 0; k < end; k++)
+		if (k != 2 && (k < sphere || k >= sphere + 4))
+			sum = ((sum << 5) | (sum >> 27)) ^ word[k] ^ (unsigned long)k;
+	return sum;
+}
+
+/* the pose step and what follows it, as object_update has them */
+static void psp_sway_pose(long object_index, struct object_datum *object, struct object_definition const *definition, int counted)
+{
+	int skipped = psp_pose_half_skips(object_index, object);
+
+	/* the check's whole update has counted it already */
+	if (!counted && TEST_FLAG(object->object.flags, _object_garbage_bit))
+		++object_globals->active_garbage_object_count;
+	object_type_update(object_index);
+	if (!TEST_FLAG(object->object.flags, _object_do_not_recompute_node_matrices_bit) && !skipped &&
+		!(psp_nms_open && TEST_FLAG(PSP_NMS_TYPES, object->object.type) && psp_nms_may(object_index, object) &&
+			(skipped = psp_nms_skip(object_index, object)) != 0))
+		object_compute_node_matrices(object_index);
+	if (TEST_FLAG(object->object.flags, _object_dynamic_lighting_recompute_bit) &&
+		(!TEST_FLAG(object->object.flags, _object_invisible_bit) || definition->object.model.index == NONE) &&
+		!psp_lights_defer(object_index))
+		object_connect_lights(object_index, TRUE, TRUE);
+	if (!skipped)
+		object_postprocess_node_matrices(object_index);
+}
+
+/* TRUE when the visit was made here and object_update must not run */
+static boolean psp_sway_lean(long object_index, short absolute_index, struct object_header_datum *header)
+{
+	extern int psp_keep(const char *name);
+	extern void platform_psp_log(const char *format, ...);
+	struct object_datum *object = (struct object_datum *)header->datum;
+	struct object_definition const *definition;
+	unsigned long sum;
+	int slot, lean;
+
+	if (psp_sway_mode < 0)
+		psp_sway_mode = psp_keep("swayleancheck") ? 2 : psp_keep("swaylean") ? 1 : 0;
+	if (!psp_sway_mode || header->type != _object_type_scenery || TEST_FLAG(header->flags, _object_header_do_not_update_bit) ||
+		object->object.parent_object_index != NONE || object->object.first_child_object_index != NONE ||
+		object->object.animation.interpolation_frame_count)
+		return FALSE;
+	definition = object_definition_get(object->definition_index);
+	if (definition->object.functions.count || definition->object.change_colors.count)
+		return FALSE;
+	sum = psp_sway_sum(header, object);
+	slot = (unsigned short)absolute_index & (PSP_SWAY_SLOTS - 1);
+	if (psp_sway[slot].identifier == (unsigned short)header->identifier &&
+		psp_sway[slot].absolute_high == (unsigned char)((unsigned short)absolute_index >> 9) && psp_sway[slot].sum == sum)
+	{
+		if (psp_sway[slot].same < 255)
+			psp_sway[slot].same++;
+	}
+	else
+	{
+		if (psp_sway[slot].same >= 3)
+			psp_sway_ended++;
+		psp_sway[slot].sum = sum;
+		psp_sway[slot].identifier = (unsigned short)header->identifier;
+		psp_sway[slot].absolute_high = (unsigned char)((unsigned short)absolute_index >> 9);
+		psp_sway[slot].same = 1;
+	}
+	lean = psp_sway[slot].same >= 3;
+	if (lean)
+		psp_sway_lean_visits++;
+	else
+		psp_sway_whole_visits++;
+	if (game_time_get() - psp_sway_report_tick >= 900 || game_time_get() < psp_sway_report_tick)
+	{
+		psp_sway_report_tick = game_time_get();
+		if (psp_sway_reports++)
+			platform_psp_log("swaylean: scenery visits with the pose step alone %lu, with the whole update %lu, runs ended by a change %lu, "
+				"visits that differed from the whole update %lu (counted under swayleancheck only)",
+				psp_sway_lean_visits, psp_sway_whole_visits, psp_sway_ended, psp_sway_check_wrong);
+	}
+	if (!lean)
+		return FALSE;
+	if (psp_sway_mode == 2)
+	{
+		/* the whole update is what the run keeps; the lean visit is made
+		from the same start and compared with it, word 2 apart */
+		static unsigned long *kept;
+		long words = header->data_size / 4, k, first = -1;
+
+		if (!kept)
+			kept = (unsigned long *)__builtin_malloc(2 * 4096);
+		if (!kept || words > 1024)
+			return FALSE;
+		csmemcpy(kept, object, words * 4);
+		object_update(object_index);
+		csmemcpy(kept + 1024, object, words * 4);
+		csmemcpy(object, kept, words * 4);
+		psp_sway_pose(object_index, object, definition, 1);
+		for (k = 0; k < words && first < 0; k++)
+			if (k != 2 && ((unsigned long const *)object)[k] != kept[1024 + k])
+				first = k;
+		if (first >= 0 && psp_sway_check_wrong++ < 24)
+			platform_psp_log("swayleancheck: t=%ld %s (#%08lx): word %ld is %08lx with the pose step alone, %08lx with the whole update",
+				game_time_get(), tag_get_name(object->definition_index), (unsigned long)object_index, first,
+				((unsigned long const *)object)[first], kept[1024 + first]);
+		csmemcpy(object, kept + 1024, words * 4);
+		return TRUE;
+	}
+	psp_sway_pose(object_index, object, definition, 0);
+	return TRUE;
+}
+#else
+#define psp_sway_lean(object_index, absolute_index, header) FALSE
+#endif
+
+static void psp_sleepy_update(long object_index, short absolute_index, struct object_header_datum *header, int may_sleep)
+{
+"""),
+("""		psp_objects_restless_skipped++;
+		object_update(object_index);
+		return;
+""",
+ """		psp_objects_restless_skipped++;
+		if (!psp_sway_lean(object_index, absolute_index, header)) /* psp_fixups.py (FIXES_SWAYLEAN) */
+			object_update(object_index);
+		return;
+"""),
+("""	else
+		object_update(object_index);
+	{
+		/* psp_fixups.py (FIXES_NMSKIP, vislazy): a skipped compute of a""",
+ """	else if (!psp_sway_lean(object_index, absolute_index, header)) /* psp_fixups.py (FIXES_SWAYLEAN) */
+		object_update(object_index);
+	{
+		/* psp_fixups.py (FIXES_NMSKIP, vislazy): a skipped compute of a"""),
+]
+
+
 # ---------- FIXES_HUHINT: function values' phase in 32 bits (recon's find,
 # research recon/enum32 64e09eb4; keep word "huhold" is the engine's form, for
 # the A/B). object_compute_function_values_with's phase,
@@ -57775,7 +57962,7 @@ def tag_memo_forgets(tree):
     return count
 
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_SSPR.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + list(FIXES_CHUPA090RUNS.items()) + list(FIXES_HEAPTRIM.items()) + list(FIXES_B78.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items()) + list(FIXES_AIME2A.items()) + list(FIXES_REDOSEED.items()) + (list(FIXES_STACKHOT.items()) if STACKHOT else []) + (list(FIXES_STACKHOT2.items()) if STACKHOT2 else []) + list(FIXES_PWSL.items()) + list(FIXES_SPHSL.items()) + list(FIXES_RECONLIST.items()) + list(FIXES_TP1.items()) + list(FIXES_WXDEAD.items()) + list(FIXES_AIMEMOVE.items()) + list(FIXES_PROPCRASH.items()) + list(FIXES_APCPOOL.items()) + list(FIXES_PSPTLS.items()) + list(FIXES_SNDEDRAM.items()) + list(FIXES_LIGHTFIRST.items()) + list(FIXES_DRAWPART.items()) + (list(FIXES_RECONLATE.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + list(FIXES_P2PASS.items()) + (list(FIXES_P2CENSUS.items()) if P2CENSUS else []) + list(FIXES_OBSRAY.items()) + list(FIXES_SNDWAIT.items()) + list(FIXES_FLAMEDECAL.items()) + list(FIXES_PELDUST.items()) + list(FIXES_HUHINT.items()) + list(FIXES_DBLSOFT.items()) + list(FIXES_VFPUTRIG.items()) + list(FIXES_TICKCACHE.items()) + list(FIXES_STRICTALIAS.items()) + list(FIXES_SNDPERMAP.items()) + list(FIXES_RLOOP.items()) + list(FIXES_L10.items()) + list(FIXES_RLSKIP.items()) + list(FIXES_ONEWALK.items()) + (list(FIXES_POSEK.items()) if POSEK else []) + (list(FIXES_SNDSTREAM.items()) if os.environ.get("PSP_SNDSTREAM", "") == "1" else []) + list(FIXES_MOUTHCLOCK.items()) + list(FIXES_LSAME.items()) + list(FIXES_CHUPA090.items()) + list(FIXES_V091A.items()) + list(FIXES_AIDEBUGREC.items()) + (list(FIXES_AITICKOLD.items()) if AITICKOLD else []) + (list(FIXES_PADPATH.items()) if os.environ.get("PSP_PADPATH", "") == "1" else []) + list(FIXES_FARLEVEL.items()) + list(FIXES_DECALRING.items()) + list(FIXES_ARRAYFULL.items()) + (list(FIXES_DEADXBOX.items()) if DEADXBOX else []) + (list(FIXES_CAPTURE_POSING.items()) if CAPTURE == "posing" else []) + (list(FIXES_BOXPOSING.items()) if BOXPOSING else []) + (list(FIXES_ASKCENSUS.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + (list(FIXES_CAPTURE_SWEEP.items()) if CAPTURE == "sweep" else []) + (list(FIXES_BIPEDSTAGE.items()) if BIPEDSTAGE else []) + (list(FIXES_WSOLD.items()) if WSOLD else []) + (list(FIXES_SWEEPME.items()) if SWEEPME else []) + list(FIXES_B98.items()) + list(FIXES_SOUNDGAMETIME.items()) + list(FIXES_DIET1.items()) + list(FIXES_DIET2.items())):
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_SSPR.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + list(FIXES_CHUPA090RUNS.items()) + list(FIXES_HEAPTRIM.items()) + list(FIXES_B78.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items()) + list(FIXES_AIME2A.items()) + list(FIXES_REDOSEED.items()) + (list(FIXES_STACKHOT.items()) if STACKHOT else []) + (list(FIXES_STACKHOT2.items()) if STACKHOT2 else []) + list(FIXES_PWSL.items()) + list(FIXES_SPHSL.items()) + list(FIXES_RECONLIST.items()) + list(FIXES_TP1.items()) + list(FIXES_WXDEAD.items()) + list(FIXES_AIMEMOVE.items()) + list(FIXES_PROPCRASH.items()) + list(FIXES_APCPOOL.items()) + list(FIXES_PSPTLS.items()) + list(FIXES_SNDEDRAM.items()) + list(FIXES_LIGHTFIRST.items()) + list(FIXES_DRAWPART.items()) + (list(FIXES_RECONLATE.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + list(FIXES_P2PASS.items()) + (list(FIXES_P2CENSUS.items()) if P2CENSUS else []) + list(FIXES_OBSRAY.items()) + list(FIXES_SNDWAIT.items()) + list(FIXES_FLAMEDECAL.items()) + list(FIXES_PELDUST.items()) + list(FIXES_HUHINT.items()) + list(FIXES_DBLSOFT.items()) + list(FIXES_VFPUTRIG.items()) + list(FIXES_TICKCACHE.items()) + list(FIXES_STRICTALIAS.items()) + list(FIXES_SNDPERMAP.items()) + list(FIXES_RLOOP.items()) + list(FIXES_L10.items()) + list(FIXES_RLSKIP.items()) + list(FIXES_ONEWALK.items()) + (list(FIXES_POSEK.items()) if POSEK else []) + (list(FIXES_SNDSTREAM.items()) if os.environ.get("PSP_SNDSTREAM", "") == "1" else []) + list(FIXES_MOUTHCLOCK.items()) + list(FIXES_LSAME.items()) + list(FIXES_CHUPA090.items()) + list(FIXES_V091A.items()) + list(FIXES_AIDEBUGREC.items()) + (list(FIXES_AITICKOLD.items()) if AITICKOLD else []) + (list(FIXES_PADPATH.items()) if os.environ.get("PSP_PADPATH", "") == "1" else []) + list(FIXES_FARLEVEL.items()) + list(FIXES_DECALRING.items()) + list(FIXES_ARRAYFULL.items()) + (list(FIXES_DEADXBOX.items()) if DEADXBOX else []) + (list(FIXES_CAPTURE_POSING.items()) if CAPTURE == "posing" else []) + (list(FIXES_BOXPOSING.items()) if BOXPOSING else []) + (list(FIXES_ASKCENSUS.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + (list(FIXES_CAPTURE_SWEEP.items()) if CAPTURE == "sweep" else []) + (list(FIXES_BIPEDSTAGE.items()) if BIPEDSTAGE else []) + (list(FIXES_WSOLD.items()) if WSOLD else []) + (list(FIXES_SWEEPME.items()) if SWEEPME else []) + list(FIXES_B98.items()) + list(FIXES_SOUNDGAMETIME.items()) + list(FIXES_DIET1.items()) + list(FIXES_DIET2.items()) + list(FIXES_SWAYLEAN.items())):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 # PSP_FRAMEPIC (docs/frame_picture.md): game.c's perf statements are
 # stripped before its anchors are matched (PERF_STRIP), which took the tick's
