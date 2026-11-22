@@ -109,7 +109,17 @@ The first cuts from a census of what the tick's objects do that changes nothing 
 
 **Why it should be exact.** It is the sleep check's own rule, with the pose taken out of what must hold still: an object whose update changed nothing three visits running is not updated. `swayleancheck` runs the whole update at every lean visit, makes the lean visit from the same start, and compares every word but the visit mark. Its record is 512 slots of 8 bytes, by object index.
 
-**No proof and no price yet.**
+**Proof [E].** Exact at the level of every object's datum (the lab's row `swaylean2_proof`): word on against word off, the only word that differs in any object is word 2, the mark a pass leaves; play and both seeds identical on c10, d20 and b30; the check counted 0 of 621,538 lean visits on c10 whose whole update changed a word outside the pose. The change-colour test is not what keeps it exact (`swaylean3_census`: 0 of 344,456 visits to still change-colour scenery on b30, a30 and d20).
+
+**Price [M]: rejected as built.** PSP-3000, c10 hands off, one build, the word alone against off, two runs a side (`diet6_pair_c10_3000`): the tick 15.3 to 16.3 ms (+6.6%), the frame +4.5%, drawing +1.8%, every gap real. It stays off by default.
+
+**Why it runs long [D; U on M].** The lean visit leaves out almost nothing and adds a pass over the datum:
+- **What it leaves out is already early exits.** `object_update` after the type's update is the damage update, the exports, the pose, the function values, the change colours, the lights and the post-process. The word takes only definitions with no functions and no change colours, which are the objects whose function and colour steps return at their first test; the scenery type adds no export of its own, and the object's export tests four mode fields; and the damage update of an undamaged object reads a few flags and returns (at its first line when the definition has no collision model). What is left to save is a handful of calls, on the order of 100-200 cycles a visit [D estimate].
+- **What it adds is the stillness test.** The sum reads every word of the datum's fixed part, 424 bytes (106 words, seven cache lines), at every visit, with two range tests a word: about 1,000 cycles of loop, and the lines of the datum the update itself never reads, at 57-73 cycles each with the bus quiet and about twice that beside the Media Engine's reads (`hardware_facts.md`). With the slot's compare, the refusals' tests and the report's clock read, about 1,300-1,800 cycles a visit [D estimate].
+- **The two agree with the price.** +1.0 ms a tick over c10's ~218 lean visits is +4.6 us, about 1,530 cycles a visit [M ÷ E count].
+- **Drawing's +1.8% [U].** The datum words are identical, so nothing draws differently. Each tick the sum pulls ~90 KB of datums through a 16 KB cache and reads main RAM while the Media Engine does; with ~1.6 ticks a frame that is the likeliest source of 0.3 ms, and it is not split further here.
+
+**What this closes and what it leaves.** No form of this cut pays, however stillness is known: for the objects it may take, the update outside the pose is a few percent at most of a visit that costs thousands of cycles in its pose (c10's scenery updates were 7.0-7.5 ms a tick on a PSP-1000 for 553-555 of them, about 13 us or 4,300 cycles each [M, 2026-10-29, the lab's `scenery_update_per_tick`]). The cost on this ground is the pose itself: c10 still makes 183 a tick, 105 of them only because an animated root moves the bounding sphere, 173 of the updates for lily pads no frame draws. That is the posing box's ground (`vislazy`'s root-and-sphere rule), not this cut's.
 
 ### Cut 2, the first design: animated scenery asleep (`treesleep`, not built)
 
