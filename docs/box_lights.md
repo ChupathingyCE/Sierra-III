@@ -352,3 +352,19 @@ Engine entry points the port already cuts over — this is `psp/boxes/lights.ups
 **The line** (every 300 frames): `lights box: light draws asked, served from a kept list, lists kept, first sightings, slots replaced, the store cleared, walks cut short, triangles in the store; not asked: spotlights, gels, a baked copy, another mode, out of the store's reach; lightkeepcheck: compared, differed`.
 
 **Not yet**: its functions are not in the ME's code copy (they run from main RAM; the pass's body, which is in the copy, grows by the hooks), and nothing is measured. Proof and price follow section 9: the check and old against new in the emulator, then d20 unsteered on the PSP-1000 without `statecrc`, one build, `- | lightkeep | mekinds`, which also gives the main CPU's wait on the render job.
+
+## 12. Slice 1's proof in the emulator (2026-11-22)
+
+One batch, two builds of the same commit: without `PSP_BOXLIGHTS` (the old path alone) and with it (word off, `lightkeep`, `lightkeepcheck`), to 3,900 ticks hands off (the lab's row `lightkeep1_proof`) [E, exact counts].
+
+| Map | Light draws asked | Served from a kept list | Kept lists compared with the walk | Differed | Not asked |
+|---|---:|---:|---:|---:|---|
+| d20 | 185,603 | 89,542 (48%) | 89,542 | 0 | a baked copy 4,234 |
+| a10 | 8,014 | 3,337 (42%) | 3,337 | 0 | gels 28,305 |
+| c20 | 5,514 | 87 (2%) | 87 | 0 | gels 23,850, a baked copy 5,031 |
+
+- **Exact where it serves.** Every kept list the check compared was the walk's own, bit for bit. On d20 the play, both seeds and every game list are identical with the word on, with the check, and with the word off; the old-path build plays the same too (its lists differ from the new build's in their addresses only: the same word and draw counts in all 1,947).
+- **a10, one list open.** Play and seeds are identical, the word on and the check drew the same lists as each other, and the word off parted from both at one list (6 draws of 344) and in the hashes after it, with the pictures the same. The check draws from the walk as the off side does, so the word is not the likely cause; the off side is being run twice more.
+- **It serves half of d20's light draws, and that is the next thing to look at.** 95 light draws a game frame are asked and 46 are served. The rest are first sightings whose key is never seen again before its slot is taken (94,324 first sightings, 92,815 slots replaced, 1,732 lists kept): a light whose place, direction, radius or cone changes every frame, or a copy whose serial does. Which word of the key moves is not counted yet; a light that only flickers in radius would need the reach kept by its inner part, a copy rebuilt each frame would need its key by content.
+- **Gels and baked copies are outside this slice** and are most of a10's and c20's light draws.
+- **The ME's code copy.** With the hooks, the pass's body grows and the copy holds 214 of the list's 223 functions (219 without the box): five more run from main RAM in this build, on both sides of its pair.
