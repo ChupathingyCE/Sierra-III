@@ -10,7 +10,7 @@ Labels: [M] measured on the PSP, [E] emulator or estimate, [D] read in code or d
 |---|---|---|---|---|---|
 | Main RAM (user) | 24 MB | yes | yes | yes | heap, tag window (9 MB), geometry cache (1,280 KB +), texture RAM cache (~2.5 MB), the frame list (768 KB), the record buffer (128-224 KB) |
 | VRAM | 2 MB | yes | **no** | yes | frame and depth buffers 816 KB (fixed), textures 616 KB (2-16 free), model copies 616 KB (mevram; 11-32 free on the busy maps) |
-| The ME's eDRAM | 2 MB | DMA only | yes | **no** | 0-256 KB reserved; **256-800 KB free (544)**; 800-1,456 the sound tier; 1,456-2,048 the AI job's data and stack |
+| The ME's eDRAM | 2 MB | DMA only | yes | **no** | 0-256 KB reserved; **256-800 KB free (544)** (superseded 2026-11-21: 280 KB at 520-800 KB; the ME's code copy holds 256-520, `memory_ledger.md` §0.4); 800-1,456 the sound tier; 1,456-2,048 the AI job's data and stack |
 | Scratchpad | 16 KB | yes | **no** | yes | the level collision BSP's top 304 nodes (SCRATCHBSP), the profiler's slots and table (6.6 KB) |
 
 The tightest single place is c20's heap: 160 KB at the top, largest block 182 KB [E].
@@ -47,7 +47,9 @@ Its rule: a table hot across the whole tick that fits (`cpu_cost_map.md` §4). I
 
 The ranking is by misses per byte on the new shape's cache map, once S's design page fixes its tables; the winner gets a PSP pair. The profiler's 6.6 KB is the first room to take: in a play build it has no reason to be there.
 
-### 3.2 The eDRAM's free 544 KB (256-800): the ME's working sets
+### 3.2 The eDRAM's free room (544 KB at 256-800, superseded: 280 KB at 520-800): the ME's working sets
+
+**Superseded 2026-11-21:** the ME's code copy holds 256-520 KB (`memory_ledger.md` §0.4), so 280 KB is free; the claims below were sized against the 544.
 
 Only the ME reads it, so it's for what R and S put on the ME:
 

@@ -217,7 +217,7 @@ The redesign's ledger 8 (`redesign_recon.md`): the pool slots and bytes each ent
 
 ### 3. How many the room would hold, by map
 
-Ledger 4's heap room at the top (§0.2, shipped build, tock162), turned into entities if the game state's arrays and objects pool grew into it (an entity takes no heap of its own, §1): room / bytes in all [U on E]. The machine-wide stores beside it: user RAM outside the heap 70 KB (largest 28), and the ME's eDRAM 544 KB at 256-800 KB (main-CPU game state there would pay the ME bus on every access: not priced).
+Ledger 4's heap room at the top (§0.2, shipped build, tock162), turned into entities if the game state's arrays and objects pool grew into it (an entity takes no heap of its own, §1): room / bytes in all [U on E]. The machine-wide stores beside it: user RAM outside the heap 70 KB (largest 28), and the ME's eDRAM 544 KB at 256-800 KB (superseded 2026-11-21: 280 KB at 520-800 KB; the ME's code copy holds 256-520, `memory_ledger.md` §0.4) (main-CPU game state there would pay the ME bus on every access: not priced).
 
 | Map (ledger 4 run) | Heap room (KB) | Actors in view (9.2 KB) | Actors spread (7.5 KB) | Warthogs (4.8 KB) | Projectiles (696 B) | Particles (112 B) | Lights (148 B) |
 |---|---:|---:|---:|---:|---:|---:|---:|

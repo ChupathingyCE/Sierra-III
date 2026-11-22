@@ -187,7 +187,7 @@ The GE draws through most of the tick (above), and while it reads main RAM every
 - **Index lists are about as dense.** VRAMIDX's 153–234 KB of live lists carry ~410 KB a frame, worth up to ~3.8 ms.
 - **On the other maps the room is worth less.** On c20, 200 KB takes all 128 KB a frame of vertex reads: ~1.0 ms. On d20, 200 KB takes 43–47% of 108–148 KB: ~0.5 ms.
 
-**Where the room would come from:** nowhere, today. Ledger 4 (`memory_ledger.md` §0.4) has 13–48 KB of VRAM free in all: 2–16 in the textures' share and 11–32 in the copies' share, with the frame and depth buffers' 816 KB fixed. The eDRAM's 544 KB at 256–800 KB is the machine's largest free block, but the GE can't read it. The ME, which writes the list, can't see VRAM [D]. So keeping the overlap and moving the bytes needs VRAM freed first:
+**Where the room would come from:** nowhere, today. Ledger 4 (`memory_ledger.md` §0.4) has 13–48 KB of VRAM free in all: 2–16 in the textures' share and 11–32 in the copies' share, with the frame and depth buffers' 816 KB fixed. The eDRAM's 544 KB at 256–800 KB (superseded 2026-11-21: 280 KB at 520-800 KB; the ME's code copy holds 256-520, `memory_ledger.md` §0.4) is the machine's largest free block, but the GE can't read it. The ME, which writes the list, can't see VRAM [D]. So keeping the overlap and moving the bytes needs VRAM freed first:
 - **Trading the textures' share:** closed on b30 (VRSP: untextured frames ×10, frame in the noise).
 - **Shrinking the copies:** MV14 measured a loss; MVDIET was dropped.
 - **Scanning the display out of main RAM:** rejected on arithmetic [U]. It would put ~16 MB/s of steady reads on the bus, more than the GE's geometry reads (~11 MB/s on the flight).

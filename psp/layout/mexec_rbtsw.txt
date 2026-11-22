@@ -11,10 +11,12 @@
 # beach, the ME's audio and replay jobs +3-6%). rb's 95 names first, in rb's order, then
 # run_job, then rbj's 121 think functions; the mixer's are left out, to price each part apart.
 # @jobs
-# @room 256
-# The list fills its room to ~80 bytes, so a profile recounted with more hot
-# code would overflow it and the build refuse it: @fill cuts it at its coldest
-# tail instead, and says where. While it fits, the copy is the same.
+# @room 264
+# The room is eDRAM 256-520 KB (docs/memory_ledger.md's ME eDRAM row is its
+# other home: change both together). 264 holds every function of the list with
+# the placed functions' pads and two cache lines of slack; a profile recounted
+# with more hot code would overflow it and the build refuse it, so @fill cuts
+# the list at its coldest tail instead, and says where.
 # pspgu's sceGuEnable and sceGuDisable (2 KB) are not in the list: with gustate
 # on by default psp_ge.c's switches are gu_state_set's, and the two run only
 # for the scissor, the fragment's doubling and gustateoff, from main RAM.

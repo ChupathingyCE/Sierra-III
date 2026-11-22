@@ -183,7 +183,7 @@ This is SSPR (R's slice 9) brought forward as its own path: a bake step and the 
 - **The AI pass, the ring jobs** (poses ahead, perception rays, particle points): pointer chasing, BSP walks, small batches.
 - **Where it could still pay, if such work lands on the ME:** VMETEX (bulk texture repacking, ~0 ME beside it [M]) and VMEDMACOPY's bulk copies.
 - **A CPU-side lever it turned up, PCMBAKE** (recon's pcmcensus1, sierra-batch 42304370871 [E × M]; row `pcmbake_sizing`): the most-decoded sound permutations baked to PCM per map (chosen by decodes per KB, music left out), read from the eDRAM in place of decoding. Exact if the bake uses the game's own decoder. b30: 544 KB covers 34.6% of decodes, 1,200 KB 47.5%; d20's swamp 14.1% / 22.2% (its heard set is wide). **The ME it frees: b30's beach ~2.0 ms a frame at 544 KB, ~2.8 at 1,200; d20's walk ~0.6 / ~1.0** [U on M].
-  - **It competes for the eDRAM's free 544 KB** with MECODE (120-230 KB for ~1-1.6 ms an AI pass), R's ME state and MEVGATHER (`redesign_b.md` §3.2). MECODE buys more per KB, so PCMBAKE takes what's left (~150-350 KB on B's likely fit) unless the sound tier (800-1,456 KB) itself goes to PCM. B places it.
+  - **It competes for the eDRAM's free 544 KB** (superseded 2026-11-21: 280 KB at 520-800 KB; the ME's code copy holds 256-520, `memory_ledger.md` §0.4) with MECODE (120-230 KB for ~1-1.6 ms an AI pass), R's ME state and MEVGATHER (`redesign_b.md` §3.2). MECODE buys more per KB, so PCMBAKE takes what's left (~150-350 KB on B's likely fit) unless the sound tier (800-1,456 KB) itself goes to PCM. B places it.
 
 ### 3.8 What the AI costs, by whom
 

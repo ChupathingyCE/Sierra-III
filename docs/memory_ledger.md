@@ -80,13 +80,13 @@ Heap 5,764 KB. "Top" is the heap's highest point; room = 5,764 - top; "free low"
 | Volatile: texture RAM cache | 2,784 KB less the carve (2,528 at 256) | b30 15 MB read over the route, 948 evicted | the carve's loser | [E] |
 | Volatile: glyph sheet | 32 KB | | | [D] |
 | **Tag window** | 9,216 KB | tags: b40 5,944, a50 5,362, c10 5,278 ... c20 2,998 KB (the map file; the BSP takes the rest) | its free span above | [E] |
-| **ME eDRAM** (2,048 KB; tock162 defaults [D], `psp_me.h`) | 0-192 left as found; 192-208 recon scratch; 208-256 the ME's private state (opt-in); **256-800 KB free (544)**; 800-1,456 the sound tier (656, full: 2,036-2,048 of the cache occupied); 1,456-1,504 the AI job's data (48); 1,504-2,048 its stack (544) | the stack's depth: ~192 KB+ on b30 and d20 [M, aime2a2 at w14x, edram.md]; not remeasured here | **544 KB at 256-800**, minus MIST's reservation (unpinned) | [D] + [M] |
+| **ME eDRAM** (2,048 KB; tock162 defaults [D], `psp_me.h`; the copy's room from its list's `# @room`, `psp_me.c` MEXEC_AT and MEXEC_ROOM) | 0-192 mevis's state and walk stack (MEVISEDRAM, on by default; `mevisedramoff`); 192-208 recon scratch; 208-256 the ME's private state (opt-in); 256-520 the ME's code copy (MEXEC, list rbtsw's `# @room 264`); **520-800 KB free (280)**; 800-1,456 the sound tier (656, full: 2,036-2,048 of the cache occupied); 1,456-1,504 the AI job's data (48); 1,504-2,048 its stack (544) | the stack's depth: ~192 KB+ on b30 and d20 [M, aime2a2 at w14x, edram.md]; not remeasured here | **280 KB at 520-800**, minus MIST's reservation (unpinned; its pin is checked against the copy's 256-520 too) | [D] + [M] |
 | **Scratchpad** | 16,384 B | 16,384 used (BSP top nodes, the profiler's slots and table) | 0 | [E], the start-up lines |
 
 ### 0.5 What a KB buys now (the order of §2.5, revised)
 
 1. **c20's heap** (160 KB at the top, largest block 182) is now the tightest, not a10 (344). Anything the full set adds to c20 sizes against that.
-2. **The eDRAM's 544 KB at 256-800 KB** is the largest free block in the machine: PDC (~240), L1 (~190) and CSTPOOL (64-80) fit beside each other (edram.md's claims), once MIST's table address is pinned. MUSICSTREAM's region (1,184-1,456) now overlaps the sound tier: it needs a new place if `PSP_MUSIC` returns.
+2. **The eDRAM's 280 KB at 520-800 KB** is free on every map (this point's 544 KB at 256-800 is superseded, 2026-11-21: the ME's code copy holds 256-520). Of edram.md's claims PDC (~240) fits there alone, or L1 (~190) beside CSTPOOL (64-80); the three no longer fit beside each other. MIST's table address is pinned first. MUSICSTREAM's region (1,184-1,456) now overlaps the sound tier: it needs a new place if `PSP_MUSIC` returns.
 3. **The geometry cache's second region** works where the tag window has room (c20's 1.2 MB is mostly idle in its opening); a10, a30, a50, b40 have none.
 4. **User RAM outside the heap is down to 70 KB** (largest 28): a new thread stack or outside-heap block has to come from the heap.
 5. Arrays: the only trims left with margin are small (contrail point has 103; the full arrays, objects, render states and effect, are full by the Xbox's design).
