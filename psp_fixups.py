@@ -57036,7 +57036,7 @@ FIXES_BMLINK = {
 ("""static int psp_lights_frame = -1;
 """,
  """static int psp_lights_frame = -1;
-/* (FIXES_BMLINK) only the solving biped's own link is queued: a slot, no lookup */
+/* (FIXES_BMLINK) only the solving biped's own link is queued */
 /* the census put c20's peak at 58 a pass: room to spare, and a full queue is made, not refused */
 #define PSP_BML 96
 static long psp_bml_current = NONE;
@@ -57090,7 +57090,10 @@ static struct psp_bml_entry
 	long reconnect;
 } psp_bml[PSP_BML];
 int psp_bml_count; /* cluster_partitions.c's entry points test it */
-static int psp_bml_on = -1, psp_bml_slot = -1; /* the solving biped's waiting entry */
+static int psp_bml_on = -1;
+/* a bit an object with a link waiting: its update may span two loops (the
+result pass, PSP_BMRESULT, then its tail), so the test is the object's own */
+static unsigned long psp_bml_waiting[(MAXIMUM_OBJECTS_PER_MAP + 31) / 32];
 static int psp_bml_peak;
 static unsigned long psp_bml_passes, psp_bml_queued, psp_bml_made, psp_bml_on_me, psp_bml_flushes[7];
 
@@ -57132,12 +57135,13 @@ __attribute__((noinline)) void psp_bml_flush(int why)
 		psp_merays_settle();
 	/* emptied first, so the partition calls below don't come back here */
 	psp_bml_count = 0;
-	psp_bml_slot = -1;
 	psp_bml_flushes[why]++;
 	for (k = 0; k < n; k++)
 	{
 		struct psp_bml_entry *entry = &psp_bml[k];
+		long absolute = DATUM_INDEX_TO_ABSOLUTE_INDEX(entry->datum_index);
 
+		psp_bml_waiting[absolute >> 5] &= ~(1ul << (absolute & 31));
 		cluster_partition_disconnect(&collideable_object_cluster_partition, entry->datum_index, &entry->chain);
 		if (entry->reconnect)
 		{
@@ -57153,13 +57157,16 @@ __attribute__((noinline)) void psp_bml_flush(int why)
 disconnect leaves it) */
 static int psp_bml_disconnect(long object_index, long *first_cluster_reference)
 {
+	long absolute = DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index);
 	struct psp_bml_entry *entry;
 
-	if (psp_bml_slot >= 0)
+	if (absolute < 0 || absolute >= MAXIMUM_OBJECTS_PER_MAP)
+		return 0;
+	if (psp_bml_waiting[absolute >> 5] & (1ul << (absolute & 31)))
 		psp_bml_flush(3);
 	if (psp_bml_count == PSP_BML)
 		psp_bml_flush(4);
-	psp_bml_slot = psp_bml_count;
+	psp_bml_waiting[absolute >> 5] |= 1ul << (absolute & 31);
 	entry = &psp_bml[psp_bml_count++];
 	if (psp_bml_count > psp_bml_peak)
 		psp_bml_peak = psp_bml_count;
@@ -57172,15 +57179,15 @@ static int psp_bml_disconnect(long object_index, long *first_cluster_reference)
 }
 #define PSP_BML_DISCONNECT(i, r) ((i) == psp_bml_current && psp_bml_disconnect((i), (r)))
 
-/* 1: the reconnect queued with what it reads now, in its disconnect's entry;
-0 when that entry was made already (the reconnect is made now) */
+/* 1: the reconnect queued with what it reads now, in its disconnect's entry
+(the last, since nothing between them queues); 0 when that entry was made
+already (the reconnect is made now) */
 static int psp_bml_reconnect(long object_index, real_point3d const *center, real radius, struct location const *location)
 {
-	struct psp_bml_entry *entry;
+	struct psp_bml_entry *entry = psp_bml_count ? &psp_bml[psp_bml_count - 1] : NULL;
 
-	if (psp_bml_slot < 0 || psp_bml[psp_bml_slot].datum_index != object_index)
+	if (!entry || entry->datum_index != object_index || entry->reconnect)
 		return 0;
-	entry = &psp_bml[psp_bml_slot];
 	entry->center = *center;
 	entry->radius = radius;
 	entry->location = *location;
@@ -57197,7 +57204,6 @@ static void psp_bml_begin(long biped_index)
 		psp_bml_lights_on = psp_bml_on && !psp_keep("bmlightsoff");
 	}
 	psp_bml_current = psp_bml_on ? biped_index : NONE;
-	psp_bml_slot = -1;
 }
 
 /* the pass's end: the links, then the lights in the bipeds' order */
@@ -57578,6 +57584,169 @@ static void biped_update_turning(
 """),
 ],
 }
+
+
+# ---------- FIXES_BMRESULT: biped motion's result and tail, 5b+5d (PSP_BMRESULT=1;
+# off by default; docs/box_biped_motion.md §4b (iii), the lead 2026-11-22 04:4x).
+# Every living staged biped's solve (its update resumed at the move: the
+# result, the link, biped_update's tail, unit_update_animation) run as one
+# pass, ahead of each biped's object tail (damage, node matrices, values,
+# lights, children), which the per-biped loop then runs as before. The pass
+# takes the steps of object_update's head that come before the type update
+# (the garbage count, the animation's interpolation step, the half-rate pose
+# decision), so they keep their place before the solve, and the loop skips
+# them for a biped the pass solved. Plays the same, not exact: the bipeds'
+# draws of the global seed and their allocations change order against the
+# children's (PHASEB's stop), and a later biped's solve sees an earlier one
+# before its tail. Its proof is side-by-sides and the outcome census, inside
+# the multiplayer boundary (§4b). Keep word: bmresultoff. Needs PSP_BIPEDSTAGE
+BMRESULT = os.environ.get("PSP_BMRESULT", "") == "1"
+FIXES_BMRESULT = {
+"source/objects/objects.c#bmresult": [
+("""static int psp_lights_frame = -1;
+""",
+ """static int psp_lights_frame = -1;
+/* (FIXES_BMRESULT) the biped whose head and solve the result pass ran, and
+its pose decision, while the loop runs its tail */
+static long psp_bmres_cur = NONE;
+static int psp_bmres_cur_pose;
+"""),
+# psp_object_update_lean's head
+("""		if (TEST_FLAG(object->object.flags, _object_garbage_bit))
+		{
+			++object_globals->active_garbage_object_count;
+		}
+
+		if (object->object.animation.interpolation_frame_count)
+		{
+			if (++object->object.animation.interpolation_frame_index>=""",
+ """		if (object_index != psp_bmres_cur && TEST_FLAG(object->object.flags, _object_garbage_bit)) /* (FIXES_BMRESULT) */
+		{
+			++object_globals->active_garbage_object_count;
+		}
+
+		if (object_index != psp_bmres_cur && object->object.animation.interpolation_frame_count)
+		{
+			if (++object->object.animation.interpolation_frame_index>="""),
+("""		psp_pose_skipped = psp_pose_half_skips(object_index, object);
+
+		object_type_update_for_type(object->object.type, object_index);
+		if (object_definition->object.collision_model.index!=NONE)""",
+ """		psp_pose_skipped = object_index == psp_bmres_cur ? psp_bmres_cur_pose : psp_pose_half_skips(object_index, object);
+
+		if (object_index != psp_bmres_cur) /* (FIXES_BMRESULT) solved in the result pass */
+			object_type_update_for_type(object->object.type, object_index);
+		if (object_definition->object.collision_model.index!=NONE)"""),
+# object_update's head
+("""		if (TEST_FLAG(object->object.flags, _object_garbage_bit))
+		{
+			++object_globals->active_garbage_object_count;
+		}
+
+		if (object->object.animation.interpolation_frame_count)
+		{
+			match_assert(""",
+ """		if (object_index != psp_bmres_cur && TEST_FLAG(object->object.flags, _object_garbage_bit)) /* (FIXES_BMRESULT) */
+		{
+			++object_globals->active_garbage_object_count;
+		}
+
+		if (object_index != psp_bmres_cur && object->object.animation.interpolation_frame_count)
+		{
+			match_assert("""),
+("""		int psp_pose_skipped = psp_pose_half_skips(object_index, object);""",
+ """		int psp_pose_skipped = object_index == psp_bmres_cur ? psp_bmres_cur_pose : psp_pose_half_skips(object_index, object);"""),
+("""			if (psp_hoist)
+				object_type_update_for_type(object->object.type, object_index);
+			else
+				object_type_update(object_index);""",
+ """			if (object_index == psp_bmres_cur) /* (FIXES_BMRESULT) solved in the result pass */
+				;
+			else if (psp_hoist)
+				object_type_update_for_type(object->object.type, object_index);
+			else
+				object_type_update(object_index);"""),
+# the pass
+("""static void psp_bipedstage_run(void)
+""",
+ """/* (FIXES_BMRESULT) 5b+5d: each living biped's head steps and solve, in the
+bipeds' order, before any biped's object tail; its slot says the loop is to
+skip them */
+static int psp_bmres_on = -1;
+static unsigned char psp_bmres_done[PSP_BIPEDSTAGE_MAXIMUM];
+static unsigned char psp_bmres_pose[PSP_BIPEDSTAGE_MAXIMUM];
+static unsigned long psp_bmres_solved, psp_bmres_passes;
+static int psp_bs3_on;
+
+static __attribute__((noinline)) void psp_bmres_pass(void)
+{
+	struct object_header_datum *header;
+	short k;
+
+	if (psp_bmres_on < 0)
+		psp_bmres_on = !psp_keep("bmresultoff");
+	for (k = 0; k < psp_bipedstage_count; k++)
+		psp_bmres_done[k] = 0;
+	if (!psp_bmres_on || !psp_bs3_on)
+		return;
+	psp_bipedstage_phase = 4;
+	for (k = 0; k < psp_bipedstage_count; k++)
+	{
+		struct object_datum *object;
+		long biped_index = psp_bipedstage_index[k];
+
+		if (!psp_bipedstage_live(k, &header) || TEST_FLAG(header->datum->object.damage_flags, _object_dead_bit) ||
+			TEST_FLAG(header->flags, _object_header_do_not_update_bit))
+			continue;
+		object = header->datum;
+@@LINKBEGIN@@		if (TEST_FLAG(object->object.flags, _object_garbage_bit))
+			++object_globals->active_garbage_object_count;
+		if (object->object.animation.interpolation_frame_count &&
+			++object->object.animation.interpolation_frame_index >= object->object.animation.interpolation_frame_count)
+			object->object.animation.interpolation_frame_count = 0;
+		psp_bmres_pose[k] = (unsigned char)psp_pose_half_skips(biped_index, object);
+		object_type_update_for_type(object->object.type, biped_index);
+		psp_bmres_done[k] = 1;
+		psp_bmres_solved++;
+	}
+@@LINKEND@@	if (psp_bmres_passes++ % 1024 == 0)
+		platform_psp_log("bmresult: %lu passes, %lu bipeds solved ahead of their tails", psp_bmres_passes, psp_bmres_solved);
+}
+
+static void psp_bipedstage_run(void)
+"""),
+("""	for (k = 0; k < psp_bipedstage_count; k++)
+	{
+		if (psp_bipedstage_live(k, &header))
+		{
+			psp_bipedstage_phase = psp_bs3_on ? 4 :""",
+ """	psp_bmres_pass(); /* (FIXES_BMRESULT) */
+	for (k = 0; k < psp_bipedstage_count; k++)
+	{
+		if (psp_bipedstage_live(k, &header))
+		{
+			psp_bipedstage_phase = psp_bs3_on ? 4 :"""),
+("""			if (psp_bslc_on < 0)
+				psp_bslc_on = psp_keep("bipedstagelinkcensus");
+""",
+ """			/* (FIXES_BMRESULT) a biped the pass solved, dead since or not, has only its tail left */
+			psp_bmres_cur = psp_bmres_done[k] ? psp_bipedstage_index[k] : NONE;
+			psp_bmres_cur_pose = psp_bmres_pose[k];
+			if (psp_bslc_on < 0)
+				psp_bslc_on = psp_keep("bipedstagelinkcensus");
+"""),
+("""			psp_object_count(header->type);
+""",
+ """			psp_object_count(header->type);
+			psp_bmres_cur = NONE; /* (FIXES_BMRESULT) */
+"""),
+],
+}
+_res = FIXES_BMRESULT["source/objects/objects.c#bmresult"]
+for _i, (_o, _n) in enumerate(_res):
+    if "@@LINKBEGIN@@" in _n:
+        _res[_i] = (_o, _n.replace("@@LINKBEGIN@@", "\t\tpsp_bml_begin(biped_index); /* (FIXES_BMLINK) its link queued as in the loop */\n" if BMLINK else "")
+                         .replace("@@LINKEND@@", "\tpsp_bml_begin(NONE);\n" if BMLINK else ""))
 
 
 # ---------- FIXES_B98: a conversation that has ended is read as none (a fix, always on)
@@ -58444,7 +58613,7 @@ def tag_memo_forgets(tree):
     return count
 
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_SSPR.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + list(FIXES_CHUPA090RUNS.items()) + list(FIXES_HEAPTRIM.items()) + list(FIXES_B78.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items()) + list(FIXES_AIME2A.items()) + list(FIXES_REDOSEED.items()) + (list(FIXES_STACKHOT.items()) if STACKHOT else []) + (list(FIXES_STACKHOT2.items()) if STACKHOT2 else []) + list(FIXES_PWSL.items()) + list(FIXES_SPHSL.items()) + list(FIXES_RECONLIST.items()) + list(FIXES_TP1.items()) + list(FIXES_WXDEAD.items()) + list(FIXES_AIMEMOVE.items()) + list(FIXES_PROPCRASH.items()) + list(FIXES_APCPOOL.items()) + list(FIXES_PSPTLS.items()) + list(FIXES_SNDEDRAM.items()) + list(FIXES_LIGHTFIRST.items()) + list(FIXES_DRAWPART.items()) + (list(FIXES_RECONLATE.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + list(FIXES_P2PASS.items()) + (list(FIXES_P2CENSUS.items()) if P2CENSUS else []) + list(FIXES_OBSRAY.items()) + list(FIXES_SNDWAIT.items()) + list(FIXES_FLAMEDECAL.items()) + list(FIXES_HUHINT.items()) + list(FIXES_DBLSOFT.items()) + list(FIXES_VFPUTRIG.items()) + list(FIXES_TICKCACHE.items()) + list(FIXES_STRICTALIAS.items()) + list(FIXES_SNDPERMAP.items()) + list(FIXES_RLOOP.items()) + list(FIXES_L10.items()) + list(FIXES_RLSKIP.items()) + list(FIXES_ONEWALK.items()) + (list(FIXES_POSEK.items()) if POSEK else []) + (list(FIXES_SNDSTREAM.items()) if os.environ.get("PSP_SNDSTREAM", "") == "1" else []) + list(FIXES_MOUTHCLOCK.items()) + list(FIXES_LSAME.items()) + list(FIXES_CHUPA090.items()) + list(FIXES_V091A.items()) + list(FIXES_AIDEBUGREC.items()) + (list(FIXES_AITICKOLD.items()) if AITICKOLD else []) + (list(FIXES_PADPATH.items()) if os.environ.get("PSP_PADPATH", "") == "1" else []) + list(FIXES_FARLEVEL.items()) + list(FIXES_DECALRING.items()) + list(FIXES_ARRAYFULL.items()) + (list(FIXES_DEADXBOX.items()) if DEADXBOX else []) + (list(FIXES_CAPTURE_POSING.items()) if CAPTURE == "posing" else []) + (list(FIXES_BOXPOSING.items()) if BOXPOSING else []) + (list(FIXES_ASKCENSUS.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + (list(FIXES_CAPTURE_SWEEP.items()) if CAPTURE == "sweep" else []) + (list(FIXES_BIPEDSTAGE.items()) if BIPEDSTAGE else []) + (list(FIXES_WSOLD.items()) if WSOLD else []) + (list(FIXES_SWEEPME.items()) if SWEEPME else []) + list(FIXES_B98.items()) + list(FIXES_SOUNDGAMETIME.items()) + list(FIXES_DIET1.items()) + list(FIXES_DIET2.items()) + (list(FIXES_BMSLIDE.items()) if BMSLIDE else []) + (list(FIXES_BMLINK.items()) if BMLINK else []) + (list(FIXES_BMTOGGLE.items()) if BMTOGGLE else []) + (list(FIXES_BMTRIG.items()) if BMTRIG else [])):
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_SSPR.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + list(FIXES_CHUPA090RUNS.items()) + list(FIXES_HEAPTRIM.items()) + list(FIXES_B78.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items()) + list(FIXES_AIME2A.items()) + list(FIXES_REDOSEED.items()) + (list(FIXES_STACKHOT.items()) if STACKHOT else []) + (list(FIXES_STACKHOT2.items()) if STACKHOT2 else []) + list(FIXES_PWSL.items()) + list(FIXES_SPHSL.items()) + list(FIXES_RECONLIST.items()) + list(FIXES_TP1.items()) + list(FIXES_WXDEAD.items()) + list(FIXES_AIMEMOVE.items()) + list(FIXES_PROPCRASH.items()) + list(FIXES_APCPOOL.items()) + list(FIXES_PSPTLS.items()) + list(FIXES_SNDEDRAM.items()) + list(FIXES_LIGHTFIRST.items()) + list(FIXES_DRAWPART.items()) + (list(FIXES_RECONLATE.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + list(FIXES_P2PASS.items()) + (list(FIXES_P2CENSUS.items()) if P2CENSUS else []) + list(FIXES_OBSRAY.items()) + list(FIXES_SNDWAIT.items()) + list(FIXES_FLAMEDECAL.items()) + list(FIXES_HUHINT.items()) + list(FIXES_DBLSOFT.items()) + list(FIXES_VFPUTRIG.items()) + list(FIXES_TICKCACHE.items()) + list(FIXES_STRICTALIAS.items()) + list(FIXES_SNDPERMAP.items()) + list(FIXES_RLOOP.items()) + list(FIXES_L10.items()) + list(FIXES_RLSKIP.items()) + list(FIXES_ONEWALK.items()) + (list(FIXES_POSEK.items()) if POSEK else []) + (list(FIXES_SNDSTREAM.items()) if os.environ.get("PSP_SNDSTREAM", "") == "1" else []) + list(FIXES_MOUTHCLOCK.items()) + list(FIXES_LSAME.items()) + list(FIXES_CHUPA090.items()) + list(FIXES_V091A.items()) + list(FIXES_AIDEBUGREC.items()) + (list(FIXES_AITICKOLD.items()) if AITICKOLD else []) + (list(FIXES_PADPATH.items()) if os.environ.get("PSP_PADPATH", "") == "1" else []) + list(FIXES_FARLEVEL.items()) + list(FIXES_DECALRING.items()) + list(FIXES_ARRAYFULL.items()) + (list(FIXES_DEADXBOX.items()) if DEADXBOX else []) + (list(FIXES_CAPTURE_POSING.items()) if CAPTURE == "posing" else []) + (list(FIXES_BOXPOSING.items()) if BOXPOSING else []) + (list(FIXES_ASKCENSUS.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + (list(FIXES_CAPTURE_SWEEP.items()) if CAPTURE == "sweep" else []) + (list(FIXES_BIPEDSTAGE.items()) if BIPEDSTAGE else []) + (list(FIXES_WSOLD.items()) if WSOLD else []) + (list(FIXES_SWEEPME.items()) if SWEEPME else []) + list(FIXES_B98.items()) + list(FIXES_SOUNDGAMETIME.items()) + list(FIXES_DIET1.items()) + list(FIXES_DIET2.items()) + (list(FIXES_BMSLIDE.items()) if BMSLIDE else []) + (list(FIXES_BMLINK.items()) if BMLINK else []) + (list(FIXES_BMTOGGLE.items()) if BMTOGGLE else []) + (list(FIXES_BMTRIG.items()) if BMTRIG else []) + (list(FIXES_BMRESULT.items()) if BMRESULT else [])):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 # PSP_FRAMEPIC (docs/frame_picture.md): game.c's perf statements are
 # stripped before its anchors are matched (PERF_STRIP), which took the tick's

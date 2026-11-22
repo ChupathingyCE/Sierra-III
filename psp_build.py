@@ -351,6 +351,15 @@ os.environ["PSP_BMTOGGLE"] = "1" if BMTOGGLE else "0"
 # Exact by construction. Off by default until its PSP price; keep word bmtrigoff
 BMTRIG = os.environ.get("PSP_BMTRIG", "") == "1"
 os.environ["PSP_BMTRIG"] = "1" if BMTRIG else "0"
+# PSP_BMRESULT=1: biped motion's result and tail, 5b+5d (docs/box_biped_motion.md
+# section 4b (iii); psp_fixups.py FIXES_BMRESULT): every living staged biped's
+# solve run as one pass ahead of the bipeds' object tails. Plays the same, not
+# exact (the seeds' draws change order). Off by default until its PSP price;
+# keep word bmresultoff
+BMRESULT = os.environ.get("PSP_BMRESULT", "") == "1"
+if BMRESULT and not BIPEDSTAGE:
+    sys.exit("psp_build: PSP_BMRESULT=1 needs PSP_BIPEDSTAGE=1 (the pass runs the staged solves)")
+os.environ["PSP_BMRESULT"] = "1" if BMRESULT else "0"
 # PSP_SMALLDATA=8 (or 4): the units built with the game's flags put variables
 # of up to that many bytes in small data, read with one load from $gp instead
 # of lui and a load, so the code is shorter (lever RH5, after Halo 64's -G8).
