@@ -293,7 +293,9 @@ Sheepdog01: play biped motion out, as long as it doesn't conflict with a future 
   | the four together | | | | 16,285 / 28,606 (the rest of the main CPU: 14,248 / 16,660) |
 
   Every pass but the intent on b30 and the gather on c20 is over the 256-line cache. The **solve is the largest by both lines and misses**: its hot body is biped_update's moving and physics halves, the partition's reconnect (`cluster_partition_reconnect` 45 lines a tick on b30, `object_reconnect_to_map` 27) and the vector query (`collision_features_test_vector` 37), with 357 lines a tick of events under a line a call. The unit pass is mostly `unit_update` (78 / 70), aiming (`unit_euler_aiming_update` 37 / 34) and the units' vector queries (`structure_test_vector`, `collision_bsp_test_vector_recursive`, `collision_test_vector`: ~78 on b30), which are the collision service's. The staged run as one entry misses 13,680 / 21,100 lines a tick on its own cache pair. The per-pass pairs didn't count (each nested entry read 0 calls), so the passes' alone figures need the next census to time each pass as its own top entry.
-- **The price per pass, beside the counts (bipedprice1)** [U on M; lab sierra-hw 44961966895, the PSP-1000, b30_leg2 held seed1 over ticks ~2,430-3,800, the PC sampler, rows `bipedprice1_*`]: without collision **1.84 ms a tick, ~395 µs per live biped**. The window held only 4-5 live bipeds (19-22 counted with the corpses), so it isn't the case the budget is sized on, and the lead's ruling (2026-11-21) keeps ~395 µs as a first figure only. The box sizes on a window where the fight is live (15 or more live bipeds, held, before b30_leg2's two runs part at ~2,700). By the census's intents a tick, b30_leg2's beach averages ~12 staged bipeds, c20_leg2 ~34. Three notes from that price:
+  - **b30's window is the fight's wind-down** (the lead, 2026-11-21): 2,400-3,810 holds 4-9 live bipeds, so b30's lines a tick and I-misses a tick above are the wind-down's. Lines a call carry over. The live window (game ticks ~1,100-1,800, ~17.8 staged a tick) is bipedstage2's (the lab's sierra-batch 44974457437, b30 only), whose figures replace b30's here.
+  - **The solve's cut into stages: §4b.**
+- **The price per pass, beside the counts (bipedprice1)** [U on M; lab sierra-hw 44961966895, the PSP-1000, b30_leg2 held seed1 over ticks ~2,430-3,800, the PC sampler, rows `bipedprice1_*`]: without collision **1.84 ms a tick, ~395 µs per live biped**. The window held only 4-5 live bipeds (19-22 counted with the corpses), so it isn't the case the budget is sized on, and the lead's ruling (2026-11-21) keeps ~395 µs as a first figure only. The box sizes on a window where the fight is live (15 or more live bipeds, held, before b30_leg2's two runs part at ~2,700). ~~By the census's intents a tick, b30_leg2's beach averages ~12 staged bipeds, c20_leg2 ~34.~~ *(Corrected 2026-11-21, the lead: b30_leg2 has ~9 staged bipeds a tick over 2,000-3,000 and 4-9 over 2,400-3,800, the fight's wind-down; the live window, game ticks ~1,100-1,800, has ~17.8 staged a tick [E] (17.9 / 18.0 on the PSP [M]; row `b30leg2_live_window`). c20_leg2 ~34. So bipedprice1's ~395 µs a live biped is the wind-down's.)* Three notes from that price:
   - **Posing and node matrices, 0.80-0.89 ms a tick, are the largest piece**, but they're an upper bound over every object and belong to the posing box (`box_posing.md`), not this one.
   - **Collision, 1.75-1.96 ms a tick for every caller plus 0.58-0.68 for the sphere walks, is over the collision service's 1.2 ms.** It goes on the collision box's line, not here.
   - **The unit pass (0.39-0.56 ms) and the solve (0.38-0.46, the intent inlined) are this box's own ground**, and its first cut comes from the table above: the solve's body and the unit pass are each over 256 lines a tick on both maps.
@@ -302,6 +304,123 @@ Sheepdog01: play biped motion out, as long as it doesn't conflict with a future 
   - **Alternate copies of steady work, not events:** the second sphere walk (the engine's recursive walk on b30, the port's on c20: 27 / 46, gone with the box's one walk), aiming on c20 (24, stage 2), and the vector queries a few units make (`collision_test_vector` and the BSP's vector walk, ~35 / ~50 in `biped_update` and 59-70 in `unit_update`: line of sight and aim). The vector queries go to the collision service as a queued batch beside the sweep's rounds, not to the events pass.
   - **The object's lighting, leaving the box:** `sample_lightmap` 8 / 8, `find_point_lights_for_object_in_cluster` (hot on b30, 17 on c20), `psp_tex_light_texel`, `object_get_self_illumination` 7 / 7, `_texture_cache_bitmap_get_hardware_format` 5 / 5: the object lighting's box takes them, with their budget.
 - **Memory:** the store's 400 B a biped is the store's; the collision service's packed copies are this box's own, to size from the slices (`collision.md` §3's ledger row).
+
+### 4b. The solve cut into stages (design, 2026-11-21; the lead's order 19:3x; no code yet)
+
+The solve is the first cut: 219 / 256 lines a call, ~674 / ~976 a tick, the largest pass on both maps by lines and by I-misses (§4's table). The unit pass is the second cut. **Figures** [E, exact counts, from bipedstage1's footprints read with the lab's `stage_read.py`; b30 / c20]:
+- **Lines a call carry over between windows**, so the stages are sized on them.
+- **Lines a tick on b30 are the wind-down's** (4-9 live bipeds), to be replaced by bipedstage2's live window. c20's are its leg2 window (34.2 staged a tick).
+- A stage's lines are the sum of whole functions' S4 lines. Where a stage takes part of `biped_update`, `biped_update_moving` or `biped_update_physics`, the split of that function's S4 lines between stages is **[U]**: the footprint names functions, not source lines. The first build's own per-stage footprints replace it.
+
+**What the solve runs today, per staged biped, in order** [D: the engine at the pin 2e5eac0 and `FIXES_BIPEDSTAGE`]:
+1. **The slide.** The move is resumed at its call: the take (the biped's packed list), `collision_move_pill` (inlined into `biped_update_physics` in this build) and `collision_move_point`'s slide, which tests vectors against the list (`collision_features_test_vector`).
+2. **The result.** `biped_update_physics` reads the slide's planes: the ground plane, the landing velocity, slipping. A crouched player trying to stand gets a second, small gather and a vector test.
+3. **The move's tail.** `biped_update_moving` calls `object_translate`: disconnect, position, reconnect. The reconnect is `cluster_partition_reconnect`, the slack walk of clusters and portals, and the activation turned off and on. Then the biped's own fields are set (support surface, pathfinding point, velocity, flags, ground plane), followed by landing, jumping, the melee impact's vector tests, the bump, falling damage, and the ground and rest flags.
+4. **`biped_update`'s tail.** Dead, airborne, landing or slipping; melee; footsteps; falling danger; discard. Then `unit_update_animation`.
+5. **`object_update`'s tail, outside S4's count:** damage, function values, node matrices, lights, children.
+
+S4 also holds every dead biped's whole update: 15.2 / 35.7 calls a tick against 11.6 / 34.2 intents, so ~3.6 / ~1.5 a tick [E]. It holds the limp body too.
+
+**The stages, in run order** (lines a call / lines a tick, b30 / c20 [E]; the per-biped columns are [D]):
+
+| Stage | Functions (S4 lines a call) | Lines a call | Lines a tick | vs 256 / 200 | Reads, writes per biped | Hands to the next |
+|---|---|---|---|---|---|---|
+| **5a. the slide** | `psp_bipedstage2_take` 4.6 / 5.8, `collision_move_point` 10.9 / 12.3, `collision_features_test_vector` 19.2 / 20.6, `memcpy` 2.5 / 3.2 | **~37 / ~42** | ~67 / ~72 | fits / fits | reads the intent's record (flags, pill, position, velocity) and its packed list; writes only its result, into the tick's arena | the result: count, end position and velocity, the planes hit (44 B each, up to 16), the bumped object |
+| **5b. the result** | `biped_update_physics` 23.3 / 29.7, `biped_update_moving` 22.3 / 29.7 (post-move only [U]), `object_translate` 2.3 / 2.9 (the position) | **~48 / ~62** | ~74 / ~110 | fits / fits | reads the result; writes the unit section (ground plane, flags, velocity, support surface, pathfinding point, position); the bump and the melee impact write other objects; the stand test and the melee read the partition | a link request: the biped, its sphere's centre and radius at this point, the location if given (~24 B) |
+| **5c. the link** | `cluster_partition_reconnect` 27.4 / 34.6, `object_reconnect_to_map` 14.6 / 18.9, `object_disconnect_from_map` 7.8 / 9.8, `cluster_partition_disconnect` 2.3 / 2.9; and the events that are its own (below): the slack walk 22 / 32 a tick, activation off and on 27 / 44 a tick | **~52 / ~66** with those beside it | ~134 / ~170 | fits / fits | reads the request; writes the biped's location and header cluster, the partition's lists, the active flag | nothing per biped: its links |
+| **5d. the tail** | `biped_update` 24.8 / 25.8 (post-move only [U]), `unit_update_animation` 11.1 / 11.5, `animation_update_internal` 4.3 / 4.1 (c20: `unit_set_or_test_seat_and_weapon_label` 2.2) | **~40 / ~44** | ~77 / ~97 | fits / fits | its own unit section and animation; draws the global seed (airborne), makes footsteps' effects, takes damage | event requests |
+| **5e. the events** | below | | the rest | none: once a tick | | |
+
+- **The four steady stages hold 177 / 214 of the solve's 219 / 256 lines a call.** The rest is events (31.5 / 30.4 a call) and small helpers.
+- **Each stage fits the 256-line cache alone, and the 200 ceiling, on both maps' lines a tick.** b30's live window has to confirm that.
+
+**Where the order is forced** [D unless marked]:
+- **5a after the gather and the intent:** it needs the record and the list. It reads nothing another biped writes this tick: the list was packed from the world before any solve, and the record was made in the intent pass. **So 5a can run over every biped as one pass.**
+- **5b after 5a.** Its cross-biped readers:
+  - the stand test's gather: `biped_update_physics` → `collision_get_features_in_sphere`, 213 / 3,608 calls over the run [E: the run's `calledges.txt`];
+  - the melee impact's vector tests: 0 / 185 calls;
+  - the bump and the falling damage, which write into others.
+
+  Each reads the collideable partition, or another object as it stands.
+- **5c after 5b's position, carrying the sphere it had there.** The reconnect places the biped by its bounding sphere's centre as last posed, not by the new position (`object_reconnect_to_map`). Posing on demand later in the solve rewrites the sphere (1a's +80), so a deferred reconnect carries the sphere and location it had, as P2NC's queue does.
+- **The link's readers go after 5c.** By linkcensus1 [E: the lab's measurements `linkcensus1`, sierra-batch 44234362373], the children update after the reconnect on 100% / 10.2% of updates, and the lights connect on 52% / 53%. Both read the biped's own links, in `object_update`'s tail after `biped_update`.
+- **5d after 5b:** it reads the flags and the ground plane. It also reads its own location (the discard's cluster test) and the partition (footsteps' effects make decals).
+- **Shared state:** the partition's lists are the only shared structure the steady path writes. The bump, the melee and the damage are rare writes into other bipeds.
+
+**Exactness, boundary by boundary** (the reference is today's staged tock; statecrc is the proof tool):
+- **5a over every biped: exact by construction, under two conditions** [U until read]:
+  - 5a is pure: it writes only its arena result, no datum and no global.
+  - A result is thrown away when its biped's inputs change before 5b reads them. An earlier biped's damage or death is the case, and the store's `psp_ws_dirty` marks already name those writers. That biped then moves inline at its turn.
+  - To read before building: that `collision_move_point` and `collision_features_test_vector` write nothing but their outputs (the collision-user depth is set and restored around them).
+- **5c deferred past 5b: exact only in P2NC's form** (levers.tsv P2NC, in).
+  - The requests are queued in order, each with its sphere and location.
+  - The queue is flushed before any read or write of the collideable partition: a gather, a vector test, `objects_in_sphere`, another object's reconnect, a child's reconnect. It's also flushed before any read of a queued biped's location or active flag.
+  - That keeps every list's order, which play reads. RLSKIP showed it: the order is read by collision's walks and `objects_in_sphere`'s limit, and a skip parted play on c20 and b30. BW's line says the same: relinks change play.
+  - **Its worth is the flush rate.** On b30 every update's children read the links, so the queue gains only if the children and the lights move into 5c with the link.
+- **Children and lights in 5c:** each biped's children's update (held weapons) and its lights' connect move from its `object_update` tail to after every biped's 5b-5d. **Exact only if** a held weapon's update reads no other biped's tail and draws nothing from the global seed [U]: the reader census below.
+- **5b and 5d as separate passes: not exact as written.** Both draw the global seed or allocate. 5b has falling damage's effects and landing. 5d has the airborne branch's seeded impulse (`biped_update_airborne`), footsteps' material effects and the animation's permutations.
+  - Running 5b for every biped and then 5d reorders the draws (j5b, k5b, j5d, k5d against j5b, j5d, k5b, k5d), so the seeds part. That's PHASEB's stop ("the airborne branch draws the global seed; footsteps make material effects").
+  - **(i) 5b+5d as one stage per biped:** ~88 / ~106 lines a call, ~151 / ~207 a tick [E]. Under 256, but c20 is over the 200 ceiling. Exact.
+  - **(ii) Split, with 5b's draws and allocations queued to 5e in biped-major order:** exact only where nothing later in the tick reads what a draw made [U].
+  - **(iii) Split as plays-the-same:** the seeds part, and the proof is side-by-sides and the outcome census. It stays inside the multiplayer boundary: nothing here goes on the wire, and the client's own movement doesn't change, only which random numbers the bipeds' effects take.
+  - **Proposed: (i) first.** (iii) only if 5b+5d's own footprint on the live window passes 200, with that named as the measured reason.
+- **The frozen view instead of the flush (5c):** the solve's partition readers read the world store's copy of the clusters' lists as the walk began (wsold, `box_world_store.md` §12). That plays the same with no flush, but it shows a later biped the earlier ones at their old links: WORLDVIEW's ground, pursued as the two-core tick's enabler (Sheepdog01 2026-11-10).
+
+**The events: S4's functions under a line a call** (357 / 588 lines a tick), grouped by caller from the run's `calledges.txt` [E; callers over the whole run]:
+
+| Group | Lines a tick | Home |
+|---|---|---|
+| the link in disguise: the slack walk (`psp_sphsl_portal`, `psp_sphsl_recursive`, `sphere_intersects_cluster_portal`), cluster lookups, `object_get_location` | 44 / 66 | 5c, steady |
+| activation off and on (`object_deactivate`, `object_activate`, `object_connect_lights_with`, `cluster_partition_disconnect_now`, the light's sphere) | 24 / 37 | 5c, steady (below) |
+| markers (`object_get_marker_by_name` and the model's lookups; their top caller is `object_connect_lights_with`) | 21 / 29 | with the lights: steady |
+| gathers again (the features and sphere walks) | 60 / 88 | not the slide's: the take's fallback (its share to count), the stand test, `compute_ground_plane` [U: its caller], the limp body |
+| vector queries (`collision_test_vector` and the BSP's and models' vector tests) | 45 / 53 | events: sound occlusion (`source_audible` → `collision_test_vector`) and the limp body; the melee impact is rare |
+| sounds (`sound_new_impulse`, `source_audible`, permutations, the cache) | 36 / 70 | 5e |
+| animation state, footsteps, material effects | 27 / 33 | 5e (state changes from `unit_update_animation`: 398 / 3,246 calls over the run) |
+| posing on demand (`box_posing_make`, node matrices, matrix helpers) | 28 / 39 | the posing box's declared reads |
+| allocation, memory, tags | 26 / 38 | with their callers |
+| the limp body (`biped_limp_noodle_relax_nodes_onto_environment`) | 9 / 9 | the dead path (below) |
+| the closed record forms' syncs (`box_ws_move_*`, `psp_ws_dirty`) | 5 / 3 | step 2's bookkeeping |
+| other (c20: the rotation's trig, damage, decals) | 25 / 104 | to read |
+
+- **Steady work in disguise: ~89 / ~132 lines a tick** (the link, the activation, the lights' markers). It belongs to 5c, which is why 5c reaches ~134 / ~170.
+- **The activation toggle** [D, E]: an object that deactivates automatically is deactivated at every disconnect and reactivated at the reconnect when its cluster is in the players' view. On c20 that's 114,518 deactivations and 114,510 activations over the run, against 72,167 reconnects by `object_reconnect_to_map` (the rest are machines and others). With ~99% of reconnects to the same cluster (linkcensus1), most toggles undo themselves. That's a means-B candidate inside 5c [U: who reads the flag between the two].
+- **The limp body is a burst, not steady:** 120 / 544 calls over the run, each running ~190 / ~315 slides. `collision_move_point` takes 22,626 / 171,544 calls from it against the move's 8,586 / 56,513 [E]. Dead bipeds go whole through the solve today; they take their own path, not a stage.
+
+**The hand-overs, against the closed record forms.** REBUILD (2026-11-19) closed record forms on the main CPU: 1b, the window and means B were exact and all slower on the PSP. Its revive_if is a record shown cheaper than the datum lines it replaces. So:
+- Each hand-over is a stage's own output, written once and read once by the next stage while it's warm. No copy of the datum is made: 5b and 5d read and write the biped's datum in place (the store's section once step 1 lands).
+- **The sizes** [U]: 5a's result is ~24 B plus 44 B a plane hit, ~70-110 B at one or two planes (planes a move: to count). 5b's link request is ~24 B. 5d's event requests are smaller.
+- At c20's 34 bipeds a tick that's ~3-4 KB beside the gather's ~5.5 KB arena. That's under the 16 KB D-cache, against the window's 34.5 KB of kept records.
+
+**What needs a census.**
+- **The per-pass alone census isn't needed for the design.** The stages' lines come from whole functions' footprints. It is needed for the [U] splits inside `biped_update`, `biped_update_moving` and `biped_update_physics`: the first build's per-stage FOOTPRINT entries and CACHESPLIT pairs give it, each stage its own top entry under `PSP_BIPEDSTAGE_NOINLINE=1`. bipedstage1's pairs read 0 because its passes were nested.
+- **The reader census, before 5c's queue and the children's move are built** (emulator, counts, no PSP). For each staged biped, from its 5b to the end of the solve pass, count:
+  - reads and writes of the collideable partition (the flush rate);
+  - reads of a queued biped's location or active flag;
+  - global-seed draws and allocations, by stage;
+  - the children's and lights' updates' reads of other bipeds.
+
+  It's a keep word in the staged run, as linkcensus1 was.
+
+**Order of building** (proposal):
+1. 5a: exact, small, and it takes the slide off the walk.
+2. The reader census, then 5c with its flush queue.
+3. 5b+5d as one stage per biped.
+4. The events pass.
+
+Each step goes behind its keep word under `PSP_BIPEDSTAGE`, with statecrc against the tock, and is priced in the frame.
+
+**Earlier tries on this ground** (`levercheck.py --ground object-update`, `reconnect`, `partition`, 2026-11-21):
+- **PHASEB stopped before code** (2026-11-04): no exact stage cut worth building. Moving ends in `object_translate`, which later objects' collision reads; the airborne branch draws the global seed; footsteps allocate; the animation feeds the children's node matrices. Its revive_if: an exact stage worth ≥1% of b30's or c20's tick, or Sheepdog01's OK for the plays-the-same form, which the 2026-11-09 rulings made the session's call.
+- **FISSB parked:** its exact pieces were small.
+- **RLSKIP shelved:** the lists' order is read; revive_if under S.
+- **BW stopped:** relinks change play.
+- **In:** P2NC (the queued, flushed form, on the non-collideable partition: 5c's model), and RECONLIST and SPHSL (the reconnect in place, and its slack walk: already in 5c's lines).
+- **Open:** WORLDVIEW (the frozen view).
+- **What's different here:**
+  - 5a is a pure stage on a list frozen before any solve. That didn't exist before slice 2's gather, and it reorders no write.
+  - 5c is P2NC's exact form applied to the collideable partition, with its worth set by the reader census.
+  - 5b and 5d stay together where PHASEB's seed and allocation order would part them.
 
 ## 5. Means
 
