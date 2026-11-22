@@ -132,7 +132,7 @@ struct psp_stream
 	/* "memixold": the heard voice mixed by the per-sample loop, as before
 	(set with silent_overrun; mix_voice) */
 	int memix_old;
-	/* "mixkinds" (H1, off by default until its proof): a mono ADPCM voice
+	/* "mixkinds" (H1, on by default; mixkindsoff for the old loop): a mono ADPCM voice
 	mixed by a loop for its kind, each run inside one decoded block, so the
 	per-frame tests that answer the same for the whole run are asked once
 	(set with silent_overrun; mix_heard) */
