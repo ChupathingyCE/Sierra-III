@@ -80,7 +80,7 @@ Heap 5,764 KB. "Top" is the heap's highest point; room = 5,764 - top; "free low"
 | Volatile: texture RAM cache | 2,784 KB less the carve (2,528 at 256) | b30 15 MB read over the route, 948 evicted | the carve's loser | [E] |
 | Volatile: glyph sheet | 32 KB | | | [D] |
 | **Tag window** | 9,216 KB | tags: b40 5,944, a50 5,362, c10 5,278 ... c20 2,998 KB (the map file; the BSP takes the rest) | its free span above | [E] |
-| **ME eDRAM** (2,048 KB; tock162 defaults [D], `psp_me.h`) | 0-192 left as found; 192-208 recon scratch; 208-256 the ME's private state (opt-in); **256-800 KB free (544)**; 800-1,456 the sound tier (656, full: 2,036-2,048 of the cache occupied); 1,456-1,504 the AI job's data (48); 1,504-2,048 its stack (544) | the stack's depth: ~192 KB+ on b30 and d20 [M, aime2a2 at w14x, edram.md]; not remeasured here | **544 KB at 256-800**, minus MIST's reservation (unpinned) | [D] + [M] |
+| **ME eDRAM** (2,048 KB; tock162 defaults [D], `psp_me.h`) | 0-192 left as found; 192-208 recon scratch; 208-256 the ME's private state (opt-in); **256-800 KB free (544)** (in a `PSP_BOXLIGHTS=1` build 520-648 is the lighting box's kept reach, 128 KB: `box_lights.md` section 11); 800-1,456 the sound tier (656, full: 2,036-2,048 of the cache occupied); 1,456-1,504 the AI job's data (48); 1,504-2,048 its stack (544) | the stack's depth: ~192 KB+ on b30 and d20 [M, aime2a2 at w14x, edram.md]; not remeasured here | **544 KB at 256-800**, minus MIST's reservation (unpinned) | [D] + [M] |
 | **Scratchpad** | 16,384 B | 16,384 used (BSP top nodes, the profiler's slots and table) | 0 | [E], the start-up lines |
 
 ### 0.5 What a KB buys now (the order of §2.5, revised)

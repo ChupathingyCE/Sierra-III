@@ -48,6 +48,9 @@ VRAM (16-bit color, 512 pixels a row); the on-screen log lives above them
 #include "psp_paths.h"   /* ms0:/halo or ms0:/halomp, and the maps */
 #include <stdarg.h>
 #include "psp_me.h" /* build 118: psp_on_me, PSP_ME_WORK, the submit/finish jobs */
+#ifdef PSP_BOXLIGHTS
+#include "box_lights.h" /* the lighting box: a still light's reach kept (docs/box_lights.md) */
+#endif
 #include "psp_lanetrace.h"
 #include "psp_sleep.h" /* B41: the quiet points and the waits the stall reporter watches */
 
@@ -7467,6 +7470,11 @@ struct level_stream
 	/* the point the positions of base and lightmap are given from (the world
 	minus it); low and high stay in the world */
 	float origin[3];
+#ifdef PSP_BOXLIGHTS
+	/* the number these copies were made under: what the lighting box kept of
+	them (box_lights.h) holds only while it is the same */
+	unsigned int serial;
+#endif
 };
 #define LEVEL_STREAMS 512
 
@@ -9955,6 +9963,13 @@ static struct level_stream *level_stream_get(const void *vertices, const void *l
 		int total = count + (stream->bake ? (int)stream->bake->added : 0);
 
 		stream->base = stream_alloc(total * sizeof(struct ge_vertex), (void **)&stream->base);
+#ifdef PSP_BOXLIGHTS
+		{
+			static unsigned int level_stream_serials = 0;
+
+			stream->serial = ++level_stream_serials;
+		}
+#endif
 		stream->lightmap = lightmap_vertices ? stream_alloc(total * sizeof(struct ge_vertex), (void **)&stream->lightmap) : NULL;
 		/* build 111: in the copies' arena too (not VRAM: the CPU reads these) */
 		stream->normals = copy_alloc(total * sizeof(unsigned int), (void **)&stream->normals);
@@ -22805,6 +22820,11 @@ static unsigned int light_memo_gel_tag[LIGHT_MEMO];
 static float light_memo_gel[LIGHT_MEMO][3];
 static unsigned int light_memo_draw = 0;
 static int light_memo_check = -1; /* keep.txt's "lightmemocheck" */
+#ifdef PSP_BOXLIGHTS
+/* the lighting box's kept reach: keep.txt's "lightkeep" (1), off by default;
+"lightkeepcheck" (2) walks as before and compares each kept list with the walk's */
+static int light_keep = -1;
+#endif
 static unsigned long light_memo_checks = 0, light_memo_mismatches = 0;
 
 static float light_reach(const float *p, unsigned int packed_normal, int cone_in_vertex)
@@ -23782,7 +23802,60 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 
 	if (ring_look)
 		psp_me_ring_look_start();
+#ifdef PSP_BOXLIGHTS
+	/* the lighting box: a light that is where it was reaches the same
+	triangles of this draw as strongly. Its reach reads the light's place
+	from the copy's origin, its direction, radius and cone, and each vertex's
+	place and normal in the copy: the key. With a kept list the loop runs
+	over the lit triangles alone and joins the walk's own code where a lit
+	triangle's corners go to the camera */
+	const struct box_lights_triangle *lit = NULL;
+	long lit_count = 0, lit_checked = 0, walk_count = triangle_count;
+	int lit_way = BOX_LIGHTS_WALK, lit_check = 0, lit_differed = 0;
+
+	if (light_keep < 0)
+		light_keep = psp_keep("lightkeepcheck") ? 2 : psp_keep("lightkeep") ? 1 : 0;
+	if (light_keep)
+	{
+		if (spot)
+			box_lights_refused(BOX_LIGHTS_SPOT);
+		else if (light.gel)
+			box_lights_refused(BOX_LIGHTS_GEL);
+		else if (stream->bake)
+			box_lights_refused(BOX_LIGHTS_BAKE);
+		else if (whole || light_mode != 2 || light_memo_check)
+			box_lights_refused(BOX_LIGHTS_MODE);
+		else
+		{
+			extern unsigned int psp_geo_generation(const void *ptr);
+			struct box_lights_key key;
+
+			memcpy(&key.light[0], light.position, 3 * sizeof(float));
+			memcpy(&key.light[3], light.forward, 3 * sizeof(float));
+			memcpy(&key.light[6], &light.radius, sizeof(float));
+			memcpy(&key.light[7], &light.cosine_falloff, sizeof(float));
+			memcpy(&key.light[8], &light.cosine_cutoff, sizeof(float));
+			memcpy(key.origin, stream->origin, 3 * sizeof(float));
+			key.stream = (unsigned int)stream;
+			key.serial = stream->serial;
+			key.indices = (unsigned int)indices;
+			key.count = (unsigned int)triangle_count;
+			key.generation = psp_geo_generation(indices);
+			lit_way = box_lights_begin(&key, &lit, &lit_count);
+			if (lit_way == BOX_LIGHTS_KEPT && light_keep == 2)
+			{
+				/* the check: the walk as before, its lit triangles compared with the kept ones */
+				lit_way = BOX_LIGHTS_WALK;
+				lit_check = 1;
+			}
+			if (lit_way == BOX_LIGHTS_KEPT)
+				walk_count = lit_count;
+		}
+	}
+	for (index = 0; index < walk_count && kept_count < SCRATCH_TRIANGLES; index++)
+#else
 	for (index = 0; index < triangle_count && kept_count < SCRATCH_TRIANGLES; index++)
+#endif
 	{
 		const unsigned short *triangle = indices + 3 * index;
 
@@ -23795,6 +23868,29 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 		int corner;
 		const float *source[3];
 
+#ifdef PSP_BOXLIGHTS
+		if (lit_way == BOX_LIGHTS_KEPT)
+		{
+			/* a kept lit triangle: its corners and their reach as the walk
+			left them, and each corner's memo slot as the walk would leave it
+			(the camera's place is worked out through it below) */
+			triangle = lit[index].vertex;
+			for (corner = 0; corner < 3; corner++)
+			{
+				unsigned int vertex = triangle[corner], tag = (light_memo_draw << 16) | vertex;
+				struct light_memo_entry *memo = &light_memo[vertex & (LIGHT_MEMO - 1)];
+
+				reach[corner] = lit[index].reach[corner];
+				if (memo->tag != tag)
+				{
+					memo->tag = tag;
+					memo->reach = reach[corner];
+					memo->camera_known = 0;
+				}
+			}
+			goto lit_triangle;
+		}
+#endif
 		if (triangle[0] >= vertex_count || triangle[1] >= vertex_count || triangle[2] >= vertex_count)
 		{
 			near_clip = near_saved;
@@ -23945,6 +24041,18 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 		probe_looked++;
 		if (reach[0] <= 0.0f && reach[1] <= 0.0f && reach[2] <= 0.0f)
 			continue;
+#ifdef PSP_BOXLIGHTS
+		if (lit_way == BOX_LIGHTS_COLLECT)
+			box_lights_add(triangle, reach);
+		else if (lit_check)
+		{
+			if (lit_checked >= lit_count || memcmp(lit[lit_checked].vertex, triangle, 3 * sizeof(unsigned short)) ||
+				memcmp(lit[lit_checked].reach, reach, sizeof(reach)))
+				lit_differed = 1;
+			lit_checked++;
+		}
+	lit_triangle:
+#endif
 		probe_lit++;
 		for (corner = 0; corner < 3; corner++)
 		{
@@ -24095,6 +24203,13 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 		light_triangles_lit += probe_lit;
 	}
 	near_clip = near_saved;
+#ifdef PSP_BOXLIGHTS
+	/* a walk cut short at the scratch's end keeps nothing, and is compared as far as it went */
+	if (lit_way == BOX_LIGHTS_COLLECT)
+		box_lights_end(index >= triangle_count);
+	else if (lit_check)
+		box_lights_checked(lit_differed || (index >= triangle_count && lit_checked != lit_count));
+#endif
 	if (!kept_count && !cut_count && !whole_count && !light_pieces.dropped)
 		return;
 	/* the light's colour, times the surface's average colour for a projected cone */
@@ -26888,6 +27003,9 @@ static void frame_end_show(void)
 			sky_draws, sky_parts, transparent_drawn, transparent_dropped, sprites_queued, hud_quads, text_characters,
 			blips_drawn, skinned_parts, skin_batches, skin_bytes / 1024, skin_failures, level_transparent_draws, decals_drawn, flashes_drawn, shadow_begins, shadow_requests, shadows_drawn, lights_drawn, light_cone_draws, light_cone_skipped, light_split_triangles, light_split_pieces, skin_cut_triangles, skin_cut_pieces, two_sided_draws, near_models, near_triangles_dropped);
 		platform_log("GE: cut pieces lost to a full cut buffer %lu (since the start)", cut_pieces_lost);
+#ifdef PSP_BOXLIGHTS
+		box_lights_report();
+#endif
 		if (light_view_cull)
 			platform_log("GE: lviewcull: %lu triangles left out before the split wholly past a view plane, %lu facing away (since the start)",
 				light_view_culled, light_back_culled);

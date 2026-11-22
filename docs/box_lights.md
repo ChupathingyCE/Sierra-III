@@ -330,3 +330,25 @@ Engine entry points the port already cuts over — this is `psp/boxes/lights.ups
 - §4's budget was written against 6.2 ms a frame of light draws on d20 (the census mean). On this stretch of today's tock it is 31.4 ms: the budget's ME row needs this stretch beside the census one before a ceiling is set.
 - §7's question 4 (the swamp's point lights against the flashlight): this run is unsteered, the flashlight off, so the 31.4 ms is the level's own lights.
 - §9's slice 1 skips the walk and the reach for a light that has not changed, 47.8% of the light pass's instructions in the model [E]: up to about 15 ms of the 31.4 [U on M x E]. Its gate asked for 2 ms a frame.
+
+## 11. Slice 1 as built: the kept reach (2026-11-22)
+
+**The form** (the lead, 2026-11-22): the reach kept while a light is still, section 9's design. Trimming each draw to its cone was the other candidate; d20's swamp has no cone to trim to: the PSP's own count there is 0 of 96,130 light draws with a projected cone [M, the lab's sierra-hw 45010621417]. Its lights are point lights.
+
+**Where it is.** `psp/src/box_lights.c` and `box_lights.h`, built in by `PSP_BOXLIGHTS=1` (off by default), turned on by the keep word `lightkeep` (off by default). The hooks in `psp_ge.c`, all under the build switch: a level copy's serial number where its vertices are allocated; in `psp_ge_light_draw_body`, the question before the triangle walk, the kept triangle's branch at the top of the loop, the lit triangle handed over after the reach test, the list's end after the loop; and the counts' line in the frame-end report.
+
+**The key**, compared word for word: the light's position from the copy's origin, its direction, radius and two cosines (what `light_reach` reads); the copy's origin, its slot and its serial number (its vertices and normals); the draw's index list by its address, its triangle count and the geometry cache's generation at that address (`psp_geo_generation`, which changes with every load into a block; 0 for the map's own data).
+
+**What is kept**: each lit triangle's three vertex indices and three reaches, in the walk's order (20 bytes). A list is kept at a key's second sighting: the first only records the key, so a light that moves, whose key never comes twice, keeps nothing. A walk cut short at the scratch's end keeps nothing.
+
+**With a kept list** the loop runs over the lit triangles alone. Each corner's memo slot is set as the walk would set it, and the triangle joins the walk's own code where its corners go to the camera: the same functions on the same values from there on, so the display list comes out the same.
+
+**Left to the walk** (each counted): a spotlight (its cone cull and split), a gel (three reaches a corner), a copy with stencil bake pieces (the bake swaps the index list a draw and reads it whole to do so), another light mode, and `lightmemocheck`. A point light with a cone fade but no spot path is kept: its reach has no term from the eye.
+
+**The store**: 128 KB of the ME's eDRAM at 520 KB (`memory_ledger.md`), not section 9's 32: the swamp's 163 light draws a frame at the opening's ~17 lit triangles a draw need about 55 KB of triangles and 12 KB of keys [U on M x E]. 256 keys and 5,580 triangles; when either runs out the store is cleared and fills again. Written and read only where the pass runs. A PSP's main CPU running the pass itself (the fallback) cannot reach the store and walks as before. The emulator uses the same range when it maps it, and the heap otherwise.
+
+**The check**: `lightkeepcheck` asks for the kept list, walks anyway, and compares the walk's lit triangles with the kept ones bit for bit, in order and in number.
+
+**The line** (every 300 frames): `lights box: light draws asked, served from a kept list, lists kept, first sightings, slots replaced, the store cleared, walks cut short, triangles in the store; not asked: spotlights, gels, a baked copy, another mode, out of the store's reach; lightkeepcheck: compared, differed`.
+
+**Not yet**: its functions are not in the ME's code copy (they run from main RAM; the pass's body, which is in the copy, grows by the hooks), and nothing is measured. Proof and price follow section 9: the check and old against new in the emulator, then d20 unsteered on the PSP-1000 without `statecrc`, one build, `- | lightkeep | mekinds`, which also gives the main CPU's wait on the render job.
