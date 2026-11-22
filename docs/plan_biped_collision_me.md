@@ -41,6 +41,7 @@ Branch `lititems123` (from `w122`). The recon instrument `pillreach` (`767feb7`,
 - The walk's data misses come from the tag window (the BSP's nodes, planes, leaves, references, surfaces, edges and vertices: a node is 12 bytes, its plane 16 bytes in another array, a surface's edges 24 bytes each, all read by index) and from `psp_surfaces_seen`, the dedup table (0.49 M) [E].
 - About 35% of the walk's estimated time is data misses; ~55% is instructions [E].
 - a50's sweeps by speed (the `bipeds: pill sweeps` line, same runs): after the opening, ~70% "slow" (under 0.01 wu a tick horizontally), ~9% still, ~21% moving. Still and slow sweeps cost ~40% of a moving one in the emulator's time; the walk dominates either way [E].
+  - That log line builds only with `PSP_TICK_STEPS=1` since 2026-11-21 (its clock reads sat in every biped's move): a re-measure needs that switch.
 - **`pillreach`** (lab 38616332979, batch `lititems123c`): how far a sweep reaches, and a per-biped cache of three margins played alongside. Results at the end of this document.
 
 ## 2. What a biped's physics reads and writes, per tick [D]
