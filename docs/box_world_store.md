@@ -202,3 +202,17 @@ The lead's order of 2026-11-19 11:5xZ: after bm1c-held and msb-held (the record 
   - **each collision model's live nodes' matrices** (the nodes that reach a BSP: the lab's `collnodes1_collision_node_sets`), refreshed where node matrices are made (`object_compute_node_matrices_with`, `psp_nms_make`, both already marks). Its size is from that census, not guessed: open.
 - **When the ME reads it:** the copy is taken as the walk begins and nothing writes it until the next tick's walk, so slice 2's records can be handed as early as the intents end (as slice 1's are) or earlier, with the main CPU writing datums meanwhile, no lock (§9's rule).
 - **Its proof** (slice 2, not exact): the outcome census and play side-by-sides on b30_leg2, c20_leg2 and d20_play1 against the build with `sweepme` off; the copy's reach at the sweep (§9: 0.11-6.72% of visits part, almost all spheres of objects already updated in the tick) is where play can part.
+
+## 13. The count before the rewrite: `PSP_TICK2=1` (2026-11-22)
+
+The lab's tick rewrite plan (Sheepdog01 2026-11-22) makes the store the one owner of the bipeds' motion, collision-query and posing state: those fields leave the engine's datum structs, so old code that touches them can't compile. Slice 0 is the count of that old code, taken before any of it is rewritten.
+
+- **The switch:** `PSP_TICK2=1` runs `psp_fixups.py`'s `tick2_poison` over the mirror. Each owned field keeps its place and size in its struct under the name `tick2_owned_<field>`, so the layout, every `sizeof` and every static assertion stay as they were and the only compile errors are touches of the old names. The build stops before the link; `compile_errors.txt` is its output.
+- **The fields, in three tiers by how far a struct is shared** [D]:
+  - **A, `_biped_datum`, whole** (27 fields; bipeds only).
+  - **B, `_unit_datum`** (shared with vehicles): motion's own (`aiming_vector`, `aiming_velocity`, `looking_vector`, `looking_velocity`, `animation`, `mouth_aperture`, the four seat motion fields) and the controller's hand-over (`control_flags`, the three desired vectors, `throttle`, `aiming_speed`).
+  - **C, `_object_datum`** (shared with every object type): `position`, `translational_velocity`, `forward`, `up`, `angular_velocity`, `location`, the bounding sphere, `animation` and the three node block references.
+- **Left out:** `object.flags` and `unit.flags` (their motion bits are named with the list), damage and vitality, the family links, function values and colours, speech, weapons and seats' indices.
+- **What it can't see:** reads by raw offset from a datum pointer, whole-datum copies, and code the campaign build doesn't compile.
+- **State:** the pass is built; the list is the lab's to read from the build's errors.
+

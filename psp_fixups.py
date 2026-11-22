@@ -58874,6 +58874,64 @@ print("psp_fixups: the AI's meters and ballistic record the main CPU's alone in 
 print("psp_fixups: biped motion's window (intent to tail) through the store, %d datum accesses (BIPEDMOVE)" % biped_move_store(TREE))
 print("psp_fixups: the typed getters' words forgotten at %d settings of the tag instance table (TAGMEMO)" % tag_memo_forgets(TREE))
 
+# PSP_TICK2=1: the tick rewrite's count (slice 0; the lab's tick_rewrite_plan,
+# docs/box_world_store.md section 13). The fields the world store will own
+# for bipeds lose their names in the engine's datum structs, so every old
+# line that touches one fails to compile, and the compiler's errors are the
+# list of what the rewrite has to move, route or delete. A field keeps its
+# place and size under another name: the layout and every sizeof stay as
+# they were, so the only errors are touches. This build never links.
+# Tiers: A the biped section (the bipeds' alone), B the unit section's
+# motion, posing and control fields (shared with vehicles), C the object
+# section's root, link and pose fields (shared with every object type).
+TICK2 = os.environ.get("PSP_TICK2", "") == "1"
+TICK2_PREFIX = "tick2_owned_"
+TICK2_FIELDS = {
+    "source/units/bipeds.h": ("_biped_datum", [  # tier A, whole
+        "flags", "landing_recovery_counter", "landing_recovery_time", "state", "elevator_ticks",
+        "elevator_object_index", "support_surface_index", "pathfinding_surface_index", "pathfinding_point",
+        "last_pathfinding_attempt_time", "last_pathfinding_surface_index", "impact_target_object_index",
+        "last_falling_communication_time", "bump_object_index", "bump_ticks", "airborne_ticks", "slipping_ticks",
+        "stop_ticks", "jump_recovery_timer", "player_melee_ticks", "player_melee_attack_tick", "landing",
+        "crouch", "bank", "ground_plane", "limp_body_current_relaxation_iterations",
+        "limp_body_max_relaxation_iterations"]),
+    "source/units/units.h": ("_unit_datum", [
+        # tier B1: motion's own
+        "aiming_vector", "aiming_velocity", "looking_vector", "looking_velocity", "animation", "mouth_aperture",
+        "seat_last_position", "seat_last_velocity", "seat_acceleration", "seat_desired_acceleration",
+        # tier B2: the controller's hand-over
+        "control_flags", "desired_facing_vector", "desired_aiming_vector", "desired_looking_vector", "throttle",
+        "aiming_speed"]),
+    "source/objects/objects.h": ("_object_datum", [  # tier C
+        "position", "translational_velocity", "forward", "up", "angular_velocity", "location",
+        "bounding_sphere_center", "bounding_sphere_radius", "animation", "original_node_orientations",
+        "node_orientations", "node_matrices"]),
+}
+def tick2_poison(tree):
+    if not TICK2:
+        return 0
+    import re
+    done = 0
+    for rel, (struct, fields) in TICK2_FIELDS.items():
+        path = os.path.join(tree, rel)
+        text = open(path, errors="surrogateescape").read()
+        m = re.search(r"\nstruct %s\n\{\n(.*?)\n\};" % struct, text, re.S)
+        if not m:
+            check_fail("psp_fixups: TICK2: struct %s not found in %s" % (struct, rel))
+            continue
+        body = m.group(1)
+        for field in fields:
+            # the member's declaration: its name, then an array bound or the semicolon
+            body, n = re.subn(r"(?m)^(\t[^\n;]*?[ \*])%s((?:\[[^\]\n]*\])*;)" % field,
+                              lambda d: d.group(1) + TICK2_PREFIX + field + d.group(2), body)
+            if n != 1:
+                check_fail("psp_fixups: TICK2: %s.%s is declared %d times in %s, expected once" % (struct, field, n, rel))
+            done += n
+        if not CHECK_ONLY:
+            open(path, "w", errors="surrogateescape").write(text[:m.start(1)] + body + text[m.end(1):])
+    return done
+print("psp_fixups: the tick rewrite's count: %d datum fields without their names (TICK2)" % tick2_poison(TREE))
+
 if CHECK_ONLY:
     for message in count_failures:
         print(message)
