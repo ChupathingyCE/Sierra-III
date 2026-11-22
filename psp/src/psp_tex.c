@@ -4139,3 +4139,48 @@ void psp_tex_frame_end(void)
 	frame++;
 	frame_loaded = 0;
 }
+
+#ifdef PSP_DRAWLIST
+/* The level's kept prologues (psp_ge.c, docs/box_draw_list.md §12.1a) hold a
+pass's bind words and are CALLed again on later frames, so a CALL has to do
+what a bind does besides its words: mark the texture in this frame's set, so
+it isn't evicted for not being bound, and count it as the bind would. 0: the
+key names no texture in the pack (the bind would draw nothing and ask for
+nothing); 1: in the pack but not resident (the bind would ask for it, so the
+draw goes through the old path); otherwise the texture's resident address,
+which the prologue's words name. mark 0 only looks */
+unsigned int psp_tex_kept_touch(unsigned int key, int mark, int *has_alpha)
+{
+	int index = key && entries ? find(key) : -1;
+
+	if (index < 0)
+		return 0;
+	if (!resident_at[index])
+		return 1;
+	if (has_alpha)
+		*has_alpha = entries[index].flags & 1;
+	if (mark)
+	{
+		TXC_BOUND(index);
+		frame_set_mark(index);
+		if (bind_counts && bind_counts[index] < 65535)
+			bind_counts[index]++;
+		if (texline_me && PSP_ME_WORK())
+		{
+			(*texline_me)++;
+			(*texline_me_copy)++;
+		}
+		if (texlod_on())
+			texlod_mark(index);
+	}
+	return resident_at[index];
+}
+
+/* after a CALL the GE's texture is the prologue's last bind, which neither
+memo names */
+void psp_tex_kept_forget(void)
+{
+	tex_me_memo.key = 0;
+	memo_key = 0;
+}
+#endif

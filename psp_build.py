@@ -215,7 +215,8 @@ METRICS = os.environ.get("PSP_METRICS", "1") != "0"
 # engine's defines
 DITHERSHIFT = os.environ.get("PSP_DITHERSHIFT", "") == "1"
 # PSP_DRAWLIST=1: the draw list box (docs/box_draw_list.md), off by default
-# until it is cut over; under it the keep word "drawlist" turns it on
+# until it is cut over; under it the keep word "drawlist" turns it on, and
+# "levelkept" the level's kept prologues (psp_tex.c gives their binds' book)
 DRAWLIST = os.environ.get("PSP_DRAWLIST", "") == "1"
 # PSP_PADPATH=1: the pad path (docs/pad_path.md; psp_pad.c's second half, its
 # reader in players.c, keep words pathrec, pathlog, padwatch). A bench tool:
@@ -924,7 +925,7 @@ def compile_one(item):
                ["-DPSP_MP_HOST=1"] if MULTIPLAYER and MP_HOST else []) + (
                pgo_flags(rel) if opt == "-O2" else []) + (
                ["-DPSP_DITHERSHIFT=1"] if DITHERSHIFT and src.endswith("psp_ge.c") else []) + (
-               ["-DPSP_DRAWLIST=1"] if DRAWLIST and src.endswith("psp_ge.c") else []) + (
+               ["-DPSP_DRAWLIST=1"] if DRAWLIST and src.endswith(("psp_ge.c", "psp_tex.c")) else []) + (
                ["-DPSP_RECON=1"] if RECON else []) + (
                ["-DPSP_PADPATH=1"] if PADPATH else []) + (
                ["-DPSP_FRAMEPIC=1"] if FRAMEPIC else []) + (
