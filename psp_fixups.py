@@ -59107,6 +59107,808 @@ print("psp_fixups: the AI's meters and ballistic record the main CPU's alone in 
 print("psp_fixups: biped motion's window (intent to tail) through the store, %d datum accesses (BIPEDMOVE)" % biped_move_store(TREE))
 print("psp_fixups: the typed getters' words forgotten at %d settings of the tag instance table (TAGMEMO)" % tag_memo_forgets(TREE))
 
+# ---------- PSP_BMREADERS (recon only): biped motion's reader census
+# (docs/box_biped_motion.md section 4b; the lead 2026-11-21 20:2x). Before 5c's
+# queue is built: between each staged biped's link (its disconnect and
+# reconnect in object_translate) and the end of the solve pass, who reads or
+# writes the collideable partition, who reads a linked biped's location,
+# header cluster or active flag, how many global-seed draws and allocations
+# each stage makes, what its children (held weapons) and lights read; and for
+# every disconnect and reconnect of an object that deactivates automatically,
+# whether anything reads its active flag between the off and the on. Counts
+# only: every probe returns what it was given, so play is as without it. The
+# runtime is appended to objects.c; the passes below route each direct read
+# of object.location and of the header's active bit and cluster through a
+# probe named by its file and line (the field's address names the object),
+# and name the call site of each partition walk.
+BMREADERS = os.environ.get("PSP_BMREADERS", "") == "1"
+
+BMREADERS_PRELUDE = """#ifdef HALO_PSP
+/* psp_fixups.py (PSP_BMREADERS): the reader census's probes */
+extern int psp_bmr_hot, psp_bmr_live;
+extern const char *psp_bmr_site;
+void *psp_bmr_probe(void const *p, int kind, const char *site);
+#define PSP_BMR_P(p, k, s) ({ __typeof__(p) psp_bmr_v_ = (p); psp_bmr_hot ? (__typeof__(p))psp_bmr_probe(psp_bmr_v_, (k), (s)) : psp_bmr_v_; })
+#define PSP_BMR_SITE(s) (psp_bmr_live && !psp_bmr_site ? (void)(psp_bmr_site = (s)) : (void)0)
+#else
+#define psp_bmr_hot 0
+#define psp_bmr_probe(p, k, s) ((void *)(p))
+#define PSP_BMR_P(p, k, s) (p)
+#define PSP_BMR_SITE(s) ((void)0)
+#endif
+"""
+
+BMREADERS_WALKS = ("cluster_get_first_collideable_object", "cluster_get_first_noncollideable_object",
+    "cluster_partition_get_first_datum", "object_get_first_cluster", "cluster_partition_get_first_cluster")
+
+def _bmr_primary_start(text, end):
+    """where the primary expression ending at end (exclusive) starts: an
+    identifier, a call or a parenthesised expression, with indexes"""
+    k = end
+    while True:
+        while k > 0 and text[k - 1] in " \t":
+            k -= 1
+        if k > 0 and text[k - 1] in ")]":
+            close, opener, depth = text[k - 1], "(" if text[k - 1] == ")" else "[", 0
+            j = k - 1
+            while j >= 0:
+                if text[j] == close:
+                    depth += 1
+                elif text[j] == opener:
+                    depth -= 1
+                    if depth == 0:
+                        break
+                j -= 1
+            if j < 0:
+                return None
+            k = j
+            m = re.search(r"[A-Za-z_]\w*$", text[:k])
+            if m and not re.match(r"(if|while|for|switch|return|sizeof)$", m.group(0)):
+                k = m.start()
+            elif opener == "[":
+                continue
+            return k
+        m = re.search(r"[A-Za-z_]\w*$", text[:k])
+        if not m:
+            return None
+        return m.start()
+
+def _bmr_line(text, at):
+    return text.count("\n", 0, at) + 1
+
+def biped_readers_rewrite(path, text):
+    """the probes into one file's text; the counts by kind"""
+    counts = {"location": 0, "active": 0, "cluster": 0, "bms": 0, "walk": 0, "missed": 0}
+    def site(at):
+        return '"%s:%d"' % (path[len("source/"):], _bmr_line(text, at))
+    edits = []  # (start, end, replacement), applied from the end
+    for m in re.finditer(r"->object\.location\b", text):
+        start = _bmr_primary_start(text, m.start())
+        if start is None or text[start - 2:start] in ("->",) or text[start - 1:start] == ".":
+            counts["missed"] += 1
+            continue
+        after = text[m.end():m.end() + 40]
+        lead = text[:start].rstrip()
+        if re.match(r"\s*=(?!=)", after):
+            kind = 1
+        elif lead.endswith("&"):
+            kind = 2
+        else:
+            kind = 0
+        edits.append((start, m.end(), "(*PSP_BMR_P(&%s, %d, %s))" % (text[start:m.end()], kind, site(m.start()))))
+        counts["location"] += 1
+    for m in re.finditer(r"->flags,\s*_object_header_active_bit\b", text):
+        start = _bmr_primary_start(text, m.start())
+        if start is None:
+            counts["missed"] += 1
+            continue
+        lead = text[:start].rstrip()
+        kind = 4 if lead.endswith("SET_FLAG(") else 3
+        edits.append((start, m.start(), "PSP_BMR_P(%s, %d, %s)" % (text[start:m.start()], kind, site(m.start()))))
+        counts["active"] += 1
+    for m in re.finditer(r"\b(\w*header\w*)->cluster_index\b", text):
+        kind = 6 if re.match(r"\s*=(?!=)", text[m.end():m.end() + 8]) else 5
+        edits.append((m.start(1), m.end(1), "PSP_BMR_P(%s, %d, %s)" % (m.group(1), kind, site(m.start()))))
+        counts["cluster"] += 1
+    for m in re.finditer(r"(?<![&\w])PSP_BMS\((\w+),\s*object\.location\b", text):
+        depth, j = 0, m.start() + len("PSP_BMS")
+        while j < len(text):
+            if text[j] == "(":
+                depth += 1
+            elif text[j] == ")":
+                depth -= 1
+                if depth == 0:
+                    break
+            j += 1
+        edits.append((m.start(), j + 1, "(psp_bmr_hot ? (void)psp_bmr_probe((void const *)0, 7, %s) : (void)0, %s)" % (site(m.start()), text[m.start():j + 1])))
+        counts["bms"] += 1
+    for name in BMREADERS_WALKS:
+        for m in re.finditer(r"(?<![\w>.])%s\(" % name, text):
+            line_start = text.rfind("\n", 0, m.start()) + 1
+            line = text[line_start:m.start()]
+            if re.match(r"^\s*((static|extern|__inline__|__inline)\s+)*(long|short|void|boolean)\s+\**$", line) or line == "":
+                continue
+            edits.append((m.start(), m.end() - 1, "(PSP_BMR_SITE(%s), %s)" % (site(m.start()), name)))
+            counts["walk"] += 1
+    edits.sort()
+    for a, b in zip(edits, edits[1:]):
+        if b[0] < a[1]:
+            sys.exit("psp_fixups: PSP_BMREADERS: %s: overlapping probes at lines %d and %d" % (path, _bmr_line(text, a[0]), _bmr_line(text, b[0])))
+    for start, end, new in reversed(edits):
+        text = text[:start] + new + text[end:]
+    return text, counts
+
+def _bmr_wrap(text, name, inner, prototype, wrapper):
+    """the one definition of name renamed inner, with its prototype before it
+    and the wrapper, which takes the name, after it"""
+    spans = _bipedmove_span(text, name)
+    if len(spans) != 1:
+        return check_fail("psp_fixups: PSP_BMREADERS: %d definitions of %s" % (len(spans), name)) and text
+    brace, end = spans[0]
+    head = [m for m in re.finditer(r"^[A-Za-z_][^\n;{]*\b%s\(" % re.escape(name), text, re.M) if m.start() < brace][-1]
+    at = head.start() + head.group(0).rindex(name)
+    return text[:head.start()] + prototype + text[head.start():at] + inner + text[at + len(name):end] + wrapper + text[end:]
+
+def _bmr_anchor(text, path, old, new):
+    if text.count(old) != 1:
+        check_fail("psp_fixups: PSP_BMREADERS: %s: anchor not found once: %r" % (path, old[:70]))
+        return text
+    return text.replace(old, new)
+
+BMREADERS_RUNTIME = r"""
+#ifdef HALO_PSP
+/* ---------- psp_fixups.py (PSP_BMREADERS, recon only): biped motion's reader
+census (docs/box_biped_motion.md section 4b). The solve pass's staged bipeds
+in order; a biped is linked at the end of its own reconnect (object_translate),
+and from there to the pass's end a deferred link would be queued. Four shadow
+queues, each a request a link, flushed by the events their form must flush on:
+q0 every event as the pass runs today; q1 not those of the children's updates
+and the lights' connects (moved into the link pass, after the flush); q2 also
+not reads of the location or header cluster (written at the link point, only
+the lists deferred); q3 also not other objects' partition writes (queued in
+order behind the links). Counts only: nothing here changes what the game
+computes. Keep word bmreaders */
+#include <stddef.h>
+void platform_psp_log(const char *format, ...);
+unsigned long get_random_seed(void);
+long game_time_get(void);
+
+#define PSP_BMR_NQ 4
+#define PSP_BMR_SLOTS 1024
+#define PSP_BMR_STAGED 256
+enum { psp_bmr_none, psp_bmr_5b, psp_bmr_link, psp_bmr_5d, psp_bmr_tail, psp_bmr_child, psp_bmr_lights, psp_bmr_dead, psp_bmr_ctxs };
+static const char *const psp_bmr_ctx_name[psp_bmr_ctxs + 2] = { "between", "5b", "link", "5d", "tail", "child", "lights", "dead", "-", "toggle" };
+/* events: 0 a collideable walk, 1 a linked biped's clusters read, 2 another
+object's collideable write, 3 a linked biped's location or cluster read, 4
+its active flag read, 5 a write of its fields by another */
+#define PSP_BMR_EVENTS 6
+static const char *const psp_bmr_event_name[PSP_BMR_EVENTS] = { "walk", "clusters", "write", "location", "active", "fieldwrite" };
+
+int psp_bmr_hot, psp_bmr_live;
+const char *psp_bmr_site;
+static int psp_bmr_on = -1;
+static long psp_bmr_cur = -1;
+static int psp_bmr_ctx, psp_bmr_cur_slot = -1;
+static unsigned long psp_bmr_seed;
+struct psp_bmr_staged
+{
+	long index;
+	void const *datum, *header;
+	unsigned char state; /* 0 not run yet, 1 running, 2 done */
+	unsigned char pending; /* a bit a queue */
+};
+static struct psp_bmr_staged psp_bmr_st[PSP_BMR_STAGED];
+static int psp_bmr_stn, psp_bmr_pending[PSP_BMR_NQ], psp_bmr_pass_flushes[PSP_BMR_NQ];
+static unsigned long psp_bmr_passes, psp_bmr_bipeds, psp_bmr_links, psp_bmr_open_links;
+static unsigned long psp_bmr_flushes[PSP_BMR_NQ], psp_bmr_flushed[PSP_BMR_NQ], psp_bmr_endflush[PSP_BMR_NQ], psp_bmr_endflushed[PSP_BMR_NQ], psp_bmr_clean[PSP_BMR_NQ];
+static unsigned long psp_bmr_trig[PSP_BMR_NQ][PSP_BMR_EVENTS][psp_bmr_ctxs];
+static unsigned long psp_bmr_draws[psp_bmr_ctxs], psp_bmr_draws_lost, psp_bmr_allocs[psp_bmr_ctxs], psp_bmr_link_ops[4][3];
+struct psp_bmr_slot
+{
+	const char *site;
+	unsigned char kind, ctx, state, type;
+	unsigned char pend, used;
+	unsigned long count;
+};
+static struct psp_bmr_slot psp_bmr_slots[PSP_BMR_SLOTS];
+static unsigned long psp_bmr_slots_lost;
+struct psp_bmr_array { struct data_array const *data; unsigned long count[psp_bmr_ctxs]; };
+static struct psp_bmr_array psp_bmr_arrays[48];
+/* the activation toggle: one disconnect's off waiting for its reconnect */
+static struct
+{
+	long index;
+	struct object_header_datum const *header;
+	int armed, was_active, off_active, cluster, lights, solve, type;
+	unsigned long between[8], others;
+} psp_bmr_tg = { -1 };
+/* pairs: [0] on, off, on, same cluster; [1] on, off, on, new cluster; [2] on,
+off, stays off; [3] off, off, on; [4] off, off, off; then for [0]: [5] the
+lights' flush made at the off, [6] anything read between, [7] in the solve
+for the staged biped, [8] bipeds, [9] other kinds; [10] abandoned, [11]
+pairs in all; [12] [0]'s reads between, [13] [0]'s location reads between */
+static unsigned long psp_bmr_tgn[16];
+
+static void psp_bmr_hot_set(void)
+{
+	psp_bmr_hot = psp_bmr_live || psp_bmr_tg.armed;
+}
+
+static int psp_bmr_enabled(void)
+{
+	if (psp_bmr_on < 0)
+		psp_bmr_on = psp_keep("bmreaders") != 0;
+	return psp_bmr_on;
+}
+
+static void psp_bmr_record(const char *site, int kind, int ctx, int state, int type, int pend)
+{
+	unsigned long h = ((unsigned long)site >> 2) ^ ((unsigned long)kind * 2654435761u) ^ ((unsigned long)ctx << 7) ^ ((unsigned long)state << 11) ^ ((unsigned long)type << 13) ^ ((unsigned long)pend << 17);
+	int probe;
+
+	for (probe = 0; probe < 32; probe++)
+	{
+		struct psp_bmr_slot *slot = &psp_bmr_slots[(h + probe) & (PSP_BMR_SLOTS - 1)];
+
+		if (!slot->used)
+		{
+			slot->used = 1;
+			slot->site = site;
+			slot->kind = kind;
+			slot->ctx = ctx;
+			slot->state = state;
+			slot->type = type;
+			slot->pend = pend;
+		}
+		if (slot->site == site && slot->kind == kind && slot->ctx == ctx && slot->state == state && slot->type == type && slot->pend == pend)
+		{
+			slot->count++;
+			return;
+		}
+	}
+	psp_bmr_slots_lost++;
+}
+
+/* the global seed's draws since the last look, each one step of its generator */
+static void psp_bmr_draws_to(int ctx)
+{
+	unsigned long now = get_random_seed(), s = psp_bmr_seed;
+	unsigned long n;
+
+	for (n = 0; n < 50000 && s != now; n++)
+		s = s * 1664525ul + 1013904223ul;
+	if (s == now)
+		psp_bmr_draws[ctx] += n;
+	else
+		psp_bmr_draws_lost++;
+	psp_bmr_seed = now;
+}
+
+static void psp_bmr_set_ctx(int ctx)
+{
+	psp_bmr_draws_to(psp_bmr_ctx);
+	psp_bmr_ctx = ctx;
+}
+
+static void psp_bmr_flush(int q, int event)
+{
+	int i;
+
+	psp_bmr_flushes[q]++;
+	psp_bmr_pass_flushes[q]++;
+	psp_bmr_flushed[q] += psp_bmr_pending[q];
+	psp_bmr_trig[q][event][psp_bmr_ctx]++;
+	for (i = 0; i < psp_bmr_stn; i++)
+		psp_bmr_st[i].pending &= ~(1 << q);
+	psp_bmr_pending[q] = 0;
+}
+
+static void psp_bmr_event(int event, struct psp_bmr_staged const *entry)
+{
+	int q, moved = psp_bmr_ctx == psp_bmr_child || psp_bmr_ctx == psp_bmr_lights;
+
+	for (q = 0; q < PSP_BMR_NQ; q++)
+	{
+		if ((q >= 1 && moved) || (q >= 2 && event == 3) || (q >= 3 && event == 2))
+			continue;
+		if (entry ? (entry->pending & (1 << q)) != 0 : psp_bmr_pending[q] != 0)
+			psp_bmr_flush(q, event);
+	}
+}
+
+static int psp_bmr_find(void const *datum, void const *header, long index)
+{
+	int i;
+
+	for (i = 0; i < psp_bmr_stn; i++)
+		if ((datum && psp_bmr_st[i].datum == datum) || (header && psp_bmr_st[i].header == header) || (index != NONE && psp_bmr_st[i].index == index))
+			return i;
+	return -1;
+}
+
+/* kinds: 0 location read, 1 location written, 2 its address taken, 3 active
+flag read, 4 written, 5 header cluster read, 6 written, 7 the biped's own
+location through the store's accessor (bipeds.c, units.c) */
+void *psp_bmr_probe(void const *p, int kind, const char *site)
+{
+	void const *datum = NULL, *header = NULL;
+	int i;
+
+	if (psp_work_on_me())
+		return (void *)p;
+	if (kind <= 2)
+		datum = (char const *)p - offsetof(struct object_datum, object.location);
+	else if (kind != 7)
+		header = p;
+	if (psp_bmr_tg.armed && header && header == (void const *)psp_bmr_tg.header)
+	{
+		psp_bmr_tg.between[kind]++;
+		psp_bmr_record(site, kind, psp_bmr_ctxs + 1, 3, psp_bmr_tg.type, 0);
+	}
+	if (psp_bmr_tg.armed && datum && datum == (void const *)psp_bmr_tg.header->datum)
+	{
+		psp_bmr_tg.between[kind]++;
+		psp_bmr_record(site, kind, psp_bmr_ctxs + 1, 3, psp_bmr_tg.type, 0);
+	}
+	if (!psp_bmr_live || psp_bmr_ctx == psp_bmr_link || psp_bmr_ctx == psp_bmr_none)
+		return (void *)p;
+	i = kind == 7 ? psp_bmr_cur_slot : psp_bmr_find(datum, header, NONE);
+	if (i >= 0)
+	{
+		struct psp_bmr_staged const *entry = &psp_bmr_st[i];
+		int state = entry->index == psp_bmr_cur ? 1 : entry->state;
+
+		psp_bmr_record(site, kind, psp_bmr_ctx, state, _object_type_biped, entry->pending & 1);
+		if (entry->pending)
+			psp_bmr_event(kind == 3 ? 4 : (kind == 1 || kind == 4 || kind == 6) ? 5 : 3, entry);
+	}
+	return (void *)p;
+}
+
+/* kinds: 0 a cluster's walk begun, 1 an object's clusters read, 2 a
+reconnect, 3 a disconnect; classes: 0 collideable, 1 noncollideable, 2 other */
+void psp_bmr_part(void const *partition, int kind, long datum_index, long first_reference)
+{
+	int class = partition == (void const *)&collideable_object_cluster_partition ? 0 :
+		partition == (void const *)&noncollideable_object_cluster_partition ? 1 : 2;
+	const char *site = psp_bmr_site ? psp_bmr_site : "-";
+	int i = -1, type = 255;
+
+	psp_bmr_site = NULL;
+	if (psp_work_on_me())
+		return;
+	if (psp_bmr_ctx == psp_bmr_link)
+	{
+		psp_bmr_link_ops[kind][class]++;
+		return;
+	}
+	if (psp_bmr_ctx == psp_bmr_none)
+		return;
+	if (kind >= 2 && class < 2)
+	{
+		struct object_header_datum const *header = object_header_try_and_get(datum_index);
+
+		type = header ? header->type : 254;
+		i = psp_bmr_find(NULL, NULL, datum_index);
+	}
+	else if (kind == 1 && class == 0)
+	{
+		for (i = psp_bmr_stn - 1; i >= 0; i--)
+			if (((struct object_datum const *)psp_bmr_st[i].datum)->object.first_cluster_reference_index == first_reference)
+				break;
+	}
+	psp_bmr_record(site, 10 + kind * 3 + class, psp_bmr_ctx, i < 0 ? 3 : psp_bmr_st[i].index == psp_bmr_cur ? 1 : psp_bmr_st[i].state, type,
+		i >= 0 ? psp_bmr_st[i].pending & 1 : 0);
+	if (class != 0)
+		return;
+	if (kind == 0)
+		psp_bmr_event(0, NULL);
+	else if (kind == 1)
+	{
+		if (i >= 0 && psp_bmr_st[i].pending)
+			psp_bmr_event(1, &psp_bmr_st[i]);
+	}
+	else
+		psp_bmr_event(2, NULL);
+}
+
+void psp_bmr_alloc(struct data_array const *data)
+{
+	int i;
+
+	if (psp_work_on_me() || psp_bmr_ctx == psp_bmr_none)
+		return;
+	psp_bmr_allocs[psp_bmr_ctx]++;
+	for (i = 0; i < 48; i++)
+	{
+		if (!psp_bmr_arrays[i].data)
+			psp_bmr_arrays[i].data = data;
+		if (psp_bmr_arrays[i].data == data)
+		{
+			psp_bmr_arrays[i].count[psp_bmr_ctx]++;
+			return;
+		}
+	}
+}
+
+static void psp_bmr_biped_begin(long index)
+{
+	short k;
+
+	if (!psp_bmr_live)
+	{
+		if (!psp_bmr_enabled())
+			return;
+		psp_bmr_live = 1;
+		psp_bmr_hot_set();
+		psp_bmr_stn = 0;
+		for (k = 0; k < psp_bipedstage_count && psp_bmr_stn < PSP_BMR_STAGED; k++)
+		{
+			struct object_header_datum *header;
+
+			if (!psp_bipedstage_live(k, &header))
+				continue;
+			psp_bmr_st[psp_bmr_stn].index = psp_bipedstage_index[k];
+			psp_bmr_st[psp_bmr_stn].header = header;
+			psp_bmr_st[psp_bmr_stn].datum = header->datum;
+			psp_bmr_st[psp_bmr_stn].state = 0;
+			psp_bmr_st[psp_bmr_stn].pending = 0;
+			psp_bmr_stn++;
+		}
+		for (k = 0; k < PSP_BMR_NQ; k++)
+			psp_bmr_pending[k] = psp_bmr_pass_flushes[k] = 0;
+		psp_bmr_seed = get_random_seed();
+		psp_bmr_ctx = psp_bmr_none;
+		psp_bmr_passes++;
+	}
+	psp_bmr_cur = index;
+	psp_bmr_cur_slot = psp_bmr_find(NULL, NULL, index);
+	if (psp_bmr_cur_slot >= 0)
+		psp_bmr_st[psp_bmr_cur_slot].state = 1;
+	psp_bmr_bipeds++;
+	psp_bmr_set_ctx(psp_bipedstage_phase == 4 ? psp_bmr_5b : psp_bmr_dead);
+}
+
+static void psp_bmr_biped_end(void)
+{
+	if (!psp_bmr_live)
+		return;
+	if (psp_bmr_ctx == psp_bmr_link)
+		psp_bmr_open_links++;
+	psp_bmr_set_ctx(psp_bmr_none);
+	if (psp_bmr_cur_slot >= 0)
+		psp_bmr_st[psp_bmr_cur_slot].state = 2;
+	psp_bmr_cur = -1;
+	psp_bmr_cur_slot = -1;
+}
+
+/* bipeds.c, at the end of a solving biped's update */
+void psp_bmr_solve_tail(void)
+{
+	if (psp_bmr_live && psp_bmr_ctx != psp_bmr_link && psp_bmr_ctx != psp_bmr_dead)
+		psp_bmr_set_ctx(psp_bmr_tail);
+}
+
+static void psp_bmr_log(void)
+{
+	int q, c, i, told;
+
+	platform_psp_log("bmreaders: game tick %ld: solve passes %lu, staged updates %lu, links %lu (a disconnect left open %lu)",
+		game_time_get(), psp_bmr_passes, psp_bmr_bipeds, psp_bmr_links, psp_bmr_open_links);
+	for (q = 0; q < PSP_BMR_NQ; q++)
+	{
+		platform_psp_log("bmreaders: q%d: flushes %lu (links flushed %lu), at the pass's end %lu (%lu), passes with no flush before the end %lu",
+			q, psp_bmr_flushes[q], psp_bmr_flushed[q], psp_bmr_endflush[q], psp_bmr_endflushed[q], psp_bmr_clean[q]);
+		for (i = 0; i < PSP_BMR_EVENTS; i++)
+			for (c = 0; c < psp_bmr_ctxs; c++)
+				if (psp_bmr_trig[q][i][c])
+					platform_psp_log("bmreaders: q%d trigger %s in %s: %lu", q, psp_bmr_event_name[i], psp_bmr_ctx_name[c], psp_bmr_trig[q][i][c]);
+	}
+	platform_psp_log("bmreaders: draws: 5b %lu, link %lu, 5d %lu, tail %lu, child %lu, lights %lu, dead %lu, between %lu, not found %lu; allocations: 5b %lu, link %lu, 5d %lu, tail %lu, child %lu, lights %lu, dead %lu",
+		psp_bmr_draws[1], psp_bmr_draws[2], psp_bmr_draws[3], psp_bmr_draws[4], psp_bmr_draws[5], psp_bmr_draws[6], psp_bmr_draws[7], psp_bmr_draws[0], psp_bmr_draws_lost,
+		psp_bmr_allocs[1], psp_bmr_allocs[2], psp_bmr_allocs[3], psp_bmr_allocs[4], psp_bmr_allocs[5], psp_bmr_allocs[6], psp_bmr_allocs[7]);
+	for (i = 0; i < 48 && psp_bmr_arrays[i].data; i++)
+		platform_psp_log("bmreaders: allocations from %s: 5b %lu, link %lu, 5d %lu, tail %lu, child %lu, lights %lu, dead %lu", psp_bmr_arrays[i].data->name,
+			psp_bmr_arrays[i].count[1], psp_bmr_arrays[i].count[2], psp_bmr_arrays[i].count[3], psp_bmr_arrays[i].count[4],
+			psp_bmr_arrays[i].count[5], psp_bmr_arrays[i].count[6], psp_bmr_arrays[i].count[7]);
+	platform_psp_log("bmreaders: the link's own partition calls (walk, clusters, reconnect, disconnect; collideable / noncollideable / other): %lu/%lu/%lu %lu/%lu/%lu %lu/%lu/%lu %lu/%lu/%lu",
+		psp_bmr_link_ops[0][0], psp_bmr_link_ops[0][1], psp_bmr_link_ops[0][2], psp_bmr_link_ops[1][0], psp_bmr_link_ops[1][1], psp_bmr_link_ops[1][2],
+		psp_bmr_link_ops[2][0], psp_bmr_link_ops[2][1], psp_bmr_link_ops[2][2], psp_bmr_link_ops[3][0], psp_bmr_link_ops[3][1], psp_bmr_link_ops[3][2]);
+	platform_psp_log("bmreaders: toggles: pairs %lu; on-off-on same cluster %lu (lights flushed at the off %lu, read between %lu with %lu reads, %lu of them location; the solving biped's own %lu: bipeds %lu, other kinds %lu); on-off-on new cluster %lu; on-off-off %lu; off-off-on %lu; off-off-off %lu; abandoned %lu",
+		psp_bmr_tgn[11], psp_bmr_tgn[0], psp_bmr_tgn[5], psp_bmr_tgn[6], psp_bmr_tgn[12], psp_bmr_tgn[13], psp_bmr_tgn[7], psp_bmr_tgn[8], psp_bmr_tgn[9],
+		psp_bmr_tgn[1], psp_bmr_tgn[2], psp_bmr_tgn[3], psp_bmr_tgn[4], psp_bmr_tgn[10]);
+	/* the sites, largest first, at most 120 lines */
+	for (told = 0; told < 120; told++)
+	{
+		struct psp_bmr_slot *best = NULL;
+
+		for (i = 0; i < PSP_BMR_SLOTS; i++)
+		{
+			struct psp_bmr_slot *slot = &psp_bmr_slots[i];
+
+			if (slot->used == 1 && (!best || slot->count > best->count))
+				best = slot;
+		}
+		if (!best)
+			break;
+		platform_psp_log("bmreaders: site %s kind %d in %s target %d type %d pending %d: %lu",
+			best->site, best->kind, psp_bmr_ctx_name[best->ctx], best->state, best->type, best->pend, best->count);
+		best->used = 2; /* listed: left out of the rest of this listing */
+	}
+	for (i = 0; i < PSP_BMR_SLOTS; i++)
+		if (psp_bmr_slots[i].used == 2)
+			psp_bmr_slots[i].used = 1;
+	platform_psp_log("bmreaders: (the sites' counts are the run's so far; slots lost %lu)", psp_bmr_slots_lost);
+}
+
+static void psp_bmr_pass_end(void)
+{
+	int q;
+
+	if (!psp_bmr_live)
+		return;
+	psp_bmr_draws_to(psp_bmr_ctx);
+	for (q = 0; q < PSP_BMR_NQ; q++)
+	{
+		if (psp_bmr_pending[q])
+		{
+			psp_bmr_endflush[q]++;
+			psp_bmr_endflushed[q] += psp_bmr_pending[q];
+		}
+		if (!psp_bmr_pass_flushes[q])
+			psp_bmr_clean[q]++;
+	}
+	psp_bmr_live = 0;
+	psp_bmr_ctx = psp_bmr_none;
+	psp_bmr_hot_set();
+	if (psp_bmr_passes % 300 == 0)
+		psp_bmr_log();
+}
+
+void object_disconnect_from_map(long object_index)
+{
+	struct object_header_datum *header;
+	int mine;
+
+	if (!psp_bmr_enabled())
+	{
+		psp_bmr_disconnect_inner(object_index);
+		return;
+	}
+	header = object_header_get(object_index);
+	if (psp_bmr_tg.armed)
+	{
+		psp_bmr_tgn[10]++;
+		psp_bmr_tg.armed = 0;
+		psp_bmr_hot_set();
+	}
+	psp_bmr_tg.index = NONE;
+	if (header->datum->object.parent_object_index == NONE && TEST_FLAG(header->flags, _object_header_automatically_deactivate_bit))
+	{
+		long absolute_index = DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index);
+		int b;
+
+		psp_bmr_tg.index = object_index;
+		psp_bmr_tg.header = header;
+		psp_bmr_tg.type = header->type;
+		psp_bmr_tg.was_active = TEST_FLAG(header->flags, _object_header_active_bit) != 0;
+		psp_bmr_tg.cluster = header->cluster_index;
+		psp_bmr_tg.lights = absolute_index >= 0 && absolute_index < MAXIMUM_OBJECTS_PER_MAP &&
+			(psp_lights_pending[absolute_index >> 5] & PSP_LIGHTS_BIT(absolute_index)) != 0;
+		psp_bmr_tg.solve = psp_bmr_live && object_index == psp_bmr_cur;
+		for (b = 0; b < 8; b++)
+			psp_bmr_tg.between[b] = 0;
+	}
+	mine = psp_bmr_live && object_index == psp_bmr_cur &&
+		(psp_bmr_ctx == psp_bmr_5b || psp_bmr_ctx == psp_bmr_5d || psp_bmr_ctx == psp_bmr_tail);
+	if (mine)
+		psp_bmr_set_ctx(psp_bmr_link);
+	psp_bmr_disconnect_inner(object_index);
+	if (psp_bmr_tg.index == object_index)
+	{
+		psp_bmr_tg.off_active = TEST_FLAG(header->flags, _object_header_active_bit) != 0;
+		psp_bmr_tg.armed = 1;
+		psp_bmr_hot_set();
+	}
+}
+
+void object_reconnect_to_map(long object_index, struct location const *location)
+{
+	struct object_header_datum *header;
+	int toggled;
+
+	if (!psp_bmr_enabled())
+	{
+		psp_bmr_reconnect_inner(object_index, location);
+		return;
+	}
+	toggled = psp_bmr_tg.armed && psp_bmr_tg.index == object_index;
+	if (toggled)
+	{
+		psp_bmr_tg.armed = 0;
+		psp_bmr_hot_set();
+	}
+	psp_bmr_reconnect_inner(object_index, location);
+	header = object_header_try_and_get(object_index);
+	if (toggled && header)
+	{
+		int on = TEST_FLAG(header->flags, _object_header_active_bit) != 0;
+		int same = header->cluster_index == psp_bmr_tg.cluster;
+		unsigned long reads = psp_bmr_tg.between[0] + psp_bmr_tg.between[2] + psp_bmr_tg.between[3] + psp_bmr_tg.between[5] + psp_bmr_tg.between[7];
+
+		psp_bmr_tgn[11]++;
+		if (psp_bmr_tg.was_active && psp_bmr_tg.off_active)
+			psp_bmr_tgn[10]++; /* the off didn't clear it: counted with the abandoned */
+		else if (psp_bmr_tg.was_active && on && same)
+		{
+			psp_bmr_tgn[0]++;
+			psp_bmr_tgn[5] += psp_bmr_tg.lights;
+			psp_bmr_tgn[6] += reads != 0;
+			psp_bmr_tgn[12] += reads;
+			psp_bmr_tgn[13] += psp_bmr_tg.between[0] + psp_bmr_tg.between[2] + psp_bmr_tg.between[7];
+			psp_bmr_tgn[7] += psp_bmr_tg.solve;
+			psp_bmr_tgn[psp_bmr_tg.type == _object_type_biped ? 8 : 9]++;
+		}
+		else if (psp_bmr_tg.was_active && on)
+			psp_bmr_tgn[1]++;
+		else if (psp_bmr_tg.was_active)
+			psp_bmr_tgn[2]++;
+		else if (on)
+			psp_bmr_tgn[3]++;
+		else
+			psp_bmr_tgn[4]++;
+	}
+	if (psp_bmr_live && object_index == psp_bmr_cur && psp_bmr_ctx == psp_bmr_link)
+	{
+		int q;
+
+		if (psp_bmr_cur_slot >= 0)
+		{
+			for (q = 0; q < PSP_BMR_NQ; q++)
+				if (!(psp_bmr_st[psp_bmr_cur_slot].pending & (1 << q)))
+					psp_bmr_pending[q]++;
+			psp_bmr_st[psp_bmr_cur_slot].pending = (1 << PSP_BMR_NQ) - 1;
+		}
+		psp_bmr_links++;
+		psp_bmr_set_ctx(psp_bmr_5d);
+	}
+}
+
+static boolean object_update(long object_index)
+{
+	int saved;
+	boolean result;
+
+	if (!psp_bmr_live)
+		return psp_bmr_object_update_inner(object_index);
+	saved = psp_bmr_ctx;
+	if (object_index != psp_bmr_cur && saved != psp_bmr_dead && saved != psp_bmr_none)
+		psp_bmr_set_ctx(psp_bmr_child);
+	result = psp_bmr_object_update_inner(object_index);
+	if (psp_bmr_ctx != saved)
+		psp_bmr_set_ctx(saved);
+	return result;
+}
+
+static void object_connect_lights_with(long object_index, struct object_datum *object, struct object_definition *object_definition, boolean disconnect, boolean reconnect)
+{
+	int saved;
+
+	if (!psp_bmr_live || psp_bmr_ctx == psp_bmr_link || psp_bmr_ctx == psp_bmr_dead || psp_bmr_ctx == psp_bmr_none)
+	{
+		psp_bmr_lights_inner(object_index, object, object_definition, disconnect, reconnect);
+		return;
+	}
+	saved = psp_bmr_ctx;
+	psp_bmr_set_ctx(psp_bmr_lights);
+	psp_bmr_lights_inner(object_index, object, object_definition, disconnect, reconnect);
+	psp_bmr_set_ctx(saved);
+}
+#endif
+"""
+
+def biped_readers(tree):
+    if not BMREADERS:
+        return 0
+    totals = {}
+    files = 0
+    for root, _, names in os.walk(os.path.join(tree, "source")):
+        for name in sorted(names):
+            if not name.endswith(".c"):
+                continue
+            full = os.path.join(root, name)
+            rel = os.path.relpath(full, tree).replace(os.sep, "/")
+            text = open(full, errors="surrogateescape").read()
+            if "PSP_BMR_P(" in text or "psp_bmr_probe" in text:
+                return 0
+            new, counts = biped_readers_rewrite(rel, text)
+            if new != text:
+                open(full, "w", errors="surrogateescape").write(BMREADERS_PRELUDE + new)
+                files += 1
+                for k, v in counts.items():
+                    totals[k] = totals.get(k, 0) + v
+    # the partition's entries
+    path = "source/structures/cluster_partitions.c"
+    full = os.path.join(tree, path)
+    text = open(full, errors="surrogateescape").read()
+    decl = "extern int psp_bmr_live;\nvoid psp_bmr_part(void const *partition, int kind, long datum_index, long first_reference);\n"
+    text = _bmr_anchor(text, path, """long cluster_partition_get_first_cluster(
+	struct cluster_partition const *partition,
+	long *reference_index,
+	long first_cluster_reference)
+{
+""", decl + """long cluster_partition_get_first_cluster(
+	struct cluster_partition const *partition,
+	long *reference_index,
+	long first_cluster_reference)
+{
+	if (psp_bmr_live)
+		psp_bmr_part(partition, 1, NONE, first_cluster_reference); /* psp_fixups.py (PSP_BMREADERS) */
+""")
+    text = _bmr_anchor(text, path, """	/* psp_fixups.py (FIXES_RECONLIST): another datum's held disconnect first */
+""", """	if (psp_bmr_live)
+		psp_bmr_part(partition, 2, datum_index, NONE); /* psp_fixups.py (PSP_BMREADERS) */
+	/* psp_fixups.py (FIXES_RECONLIST): another datum's held disconnect first */
+""")
+    text = _bmr_anchor(text, path, """	psp_rl_flush();
+	if (psp_rl.on < 0)
+""", """	if (psp_bmr_live)
+		psp_bmr_part(partition, 3, datum_index, NONE); /* psp_fixups.py (PSP_BMREADERS) */
+	psp_rl_flush();
+	if (psp_rl.on < 0)
+""")
+    text = _bmr_anchor(text, path, """	psp_rl_flush(); /* psp_fixups.py (FIXES_RECONLIST): a list read sees the held disconnect made */
+""", """	if (psp_bmr_live)
+		psp_bmr_part(partition, 0, NONE, NONE); /* psp_fixups.py (PSP_BMREADERS) */
+	psp_rl_flush(); /* psp_fixups.py (FIXES_RECONLIST): a list read sees the held disconnect made */
+""")
+    open(full, "w", errors="surrogateescape").write(text)
+    # allocations
+    path = "source/memory/data.c"
+    full = os.path.join(tree, path)
+    text = open(full, errors="surrogateescape").read()
+    for head in ("long datum_new_at_index(\n\tstruct data_array *data,\n\tlong index)\n{\n", "long datum_new(\n\tstruct data_array *data)\n{\n"):
+        text = _bmr_anchor(text, path, head, head + "\tif (psp_bmr_live)\n\t\tpsp_bmr_alloc(data); /* psp_fixups.py (PSP_BMREADERS) */\n")
+    text = _bmr_anchor(text, path, "long datum_new_at_index(\n", "extern int psp_bmr_live;\nvoid psp_bmr_alloc(struct data_array const *data);\nlong datum_new_at_index(\n")
+    open(full, "w", errors="surrogateescape").write(text)
+    # the end of a solving biped's update
+    path = "source/units/bipeds.c"
+    full = os.path.join(tree, path)
+    text = open(full, errors="surrogateescape").read()
+    stop = "\t\tpsp_bms_stop(); /* (FIXES_BIPEDSTAGE) BIPEDMOVE 1c: written back before posing and the children read the root */\n"
+    text = _bmr_anchor(text, path, stop, stop + "\t\t{ void psp_bmr_solve_tail(void); psp_bmr_solve_tail(); } /* psp_fixups.py (PSP_BMREADERS) */\n")
+    open(full, "w", errors="surrogateescape").write(text)
+    # objects.c: the pass's hooks, the wrappers and the runtime
+    path = "source/objects/objects.c"
+    full = os.path.join(tree, path)
+    text = open(full, errors="surrogateescape").read()
+    text = _bmr_anchor(text, path, """			else
+			psp_object_update(psp_bipedstage_index[k], psp_bipedstage_absolute[k], header);
+""", """			else
+			{
+				psp_bmr_biped_begin(psp_bipedstage_index[k]); /* psp_fixups.py (PSP_BMREADERS) */
+				psp_object_update(psp_bipedstage_index[k], psp_bipedstage_absolute[k], header);
+				psp_bmr_biped_end();
+			}
+""")
+    text = _bmr_anchor(text, path, "\tbox_ws_move_settle();\n", "\tpsp_bmr_pass_end(); /* psp_fixups.py (PSP_BMREADERS) */\n\tbox_ws_move_settle();\n")
+    text = _bmr_wrap(text, "object_disconnect_from_map", "psp_bmr_disconnect_inner",
+        "void psp_bmr_disconnect_inner(long object_index);\n", "")
+    text = _bmr_wrap(text, "object_reconnect_to_map", "psp_bmr_reconnect_inner",
+        "void psp_bmr_reconnect_inner(long object_index, struct location const *location);\n", "")
+    text = _bmr_wrap(text, "object_update", "psp_bmr_object_update_inner",
+        "static boolean object_update(long object_index);\nstatic boolean psp_bmr_object_update_inner(long object_index);\n", "")
+    text = _bmr_wrap(text, "object_connect_lights_with", "psp_bmr_lights_inner",
+        "static void psp_bmr_lights_inner(long object_index, struct object_datum *object, struct object_definition *object_definition, boolean disconnect, boolean reconnect);\n", "")
+    # the solve loop's hooks are called before the runtime is defined
+    text = _bmr_anchor(text, path, "static void psp_bipedstage_run(void)\n",
+        "static void psp_bmr_biped_begin(long index);\nstatic void psp_bmr_biped_end(void);\nstatic void psp_bmr_pass_end(void);\nstatic void psp_bipedstage_run(void)\n")
+    text += BMREADERS_RUNTIME
+    open(full, "w", errors="surrogateescape").write(text)
+    print("psp_fixups: PSP_BMREADERS: probes in %d files: %s" % (files, ", ".join("%s %d" % kv for kv in sorted(totals.items()))))
+    return files
+biped_readers(TREE)
+
 if CHECK_ONLY:
     for message in count_failures:
         print(message)

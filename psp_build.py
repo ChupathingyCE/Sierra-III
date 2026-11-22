@@ -317,6 +317,16 @@ if BMSLIDE and not BIPEDSTAGE:
 os.environ["PSP_BMSLIDE"] = "1" if BMSLIDE else "0"
 if BMSLIDE:
     PSP_FILES.append("box_biped_slide")
+# PSP_BMREADERS=1 (recon only): biped motion's reader census (docs/box_biped_motion.md
+# section 4b; psp_fixups.py biped_readers): who reads the collideable partition,
+# a moved biped's location and active flag, and the global seed, between each
+# staged biped's link and the end of the solve pass, and what the activation's
+# off and on between a disconnect and its reconnect are read by. Keep word
+# bmreaders turns the counts on; a default build leaves them out
+BMREADERS = os.environ.get("PSP_BMREADERS", "") == "1"
+if BMREADERS and not BIPEDSTAGE:
+    sys.exit("psp_build: PSP_BMREADERS=1 needs PSP_BIPEDSTAGE=1 (it counts the staged solve pass)")
+os.environ["PSP_BMREADERS"] = "1" if BMREADERS else "0"
 # PSP_SMALLDATA=8 (or 4): the units built with the game's flags put variables
 # of up to that many bytes in small data, read with one load from $gp instead
 # of lui and a load, so the code is shorter (lever RH5, after Halo 64's -G8).
