@@ -7,24 +7,23 @@ For an A/B in the emulator: the same map, the same route.txt (so the player
 stands at the same spot looking the same way) and no input, one build each.
 The game's own clock (ticks) lines the runs up; each stretch shows the tick's
 and the frame's average ms and the frames a second, A then B."""
-import argparse, re
+import argparse, os, sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from benchreport import cover, drawing_ms, fps_of, read, tick_ms  # noqa: E402  (the same reader as the bench tables)
 
 
 def series(path):
-    out = []
-    for line in open(path, errors='replace'):
-        m = re.search(r'heartbeat: game time (\d+) .*tick ([0-9.]+) ms avg.*frame ([0-9.]+) ms avg, [0-9.]+ max, ([0-9.]+) fps', line)
-        if m:
-            out.append((int(m.group(1)), float(m.group(2)), float(m.group(3)), float(m.group(4))))
-    return out
+    return read(path)[0]
 
 
 def window(s, a, b):
-    sel = [x for x in s if a <= x[0] < b]
-    if not sel:
+    """the tick's and the frame's ms and the fps over game ticks a..b, each
+    heartbeat counted for its own span and cut at the edges (benchreport.cover)"""
+    rows = cover(s, a, b, b)
+    if tick_ms(rows) is None or fps_of(rows) is None:
         return None
-    n = len(sel)
-    return tuple(sum(x[k] for x in sel) / n for k in (1, 2, 3))
+    return tick_ms(rows), drawing_ms(rows), fps_of(rows)
 
 
 def main():

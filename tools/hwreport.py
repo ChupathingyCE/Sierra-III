@@ -22,6 +22,12 @@ and profile.txt beside it when there is one) and prints:
                   free block's low point. A map's "ends" figures replace its
                   "so far" ones
 
+A heartbeat stands for the seconds since the one before it, and heartbeats
+are not the same length (a run's first 20 are a second long, the later ones
+five), so a mean counts each for its own span: the tick over its ticks, the
+frame over its frames, fps as frames over seconds, and the other lines'
+figures over each heartbeat's seconds. The percentiles are of heartbeats.
+
 Every figure is over the heartbeats in play: game time past --from (default
 150 ticks, after the load) and before --to, on a map other than the menu's
 (ui), and with the game running (a heartbeat with no ticks is the pause menu
@@ -205,6 +211,12 @@ def read_log(path, run):
                                       "cpu MHz", "free KB", "heap top KB"), 1):
                 beat[name] = float(m.group(k))
             beat["map"] = run.maps[-1] if run.maps else "?"
+            # its own span: the ticks since the heartbeat before (a second's worth when game
+            # time went back or this is the first), and the seconds those ticks took
+            before = run.beats[-1] if run.beats else None
+            span = beat["game time"] - before["game time"] if before and before["map"] == beat["map"] else -1
+            beat["ticks"] = span if span > 0 else min(beat["game time"], beat["ticks/s"])
+            beat["seconds"] = beat["ticks"] / beat["ticks/s"] if beat["ticks/s"] > 0 else 0.0
             run.beats.append(beat)
             peak(run, "heap top KB", beat["heap top KB"])
             continue
@@ -266,6 +278,12 @@ def mean(values):
     values = list(values)
     return sum(values) / len(values) if values else None
 
+def spanned(beats, key, weight):
+    """the mean of a heartbeat figure with each heartbeat counted for its own span"""
+    rows = [(b[key], weight(b)) for b in beats if key in b]
+    total = sum(w for _, w in rows)
+    return sum(v * w for v, w in rows) / total if total else mean(v for v, _ in rows)
+
 def percentile(values, p):
     values = sorted(values)
     if not values:
@@ -282,13 +300,16 @@ def summary(run, a):
     out["heartbeats left out: no ticks"] = len(in_play(run, a, paused=True))
     # each heartbeat's own ticks (a checkpoint revert or a new map sends game time back)
     out["game time covered, s"] = sum(max(0.0, b["game time"] - p["game time"]) for p, b in zip(beats, beats[1:])) / 30.0
-    for name, key in (("tick ms, mean", "tick ms"), ("frame ms, mean", "frame ms"), ("fps, mean", "fps")):
-        out[name] = mean(b[key] for b in beats)
+    seconds = lambda b: b["seconds"]
+    frames = lambda b: b["fps"] * b["seconds"]
+    out["tick ms, mean"] = spanned(beats, "tick ms", lambda b: b["ticks"])
+    out["frame ms, mean"] = spanned(beats, "frame ms", frames)
+    out["fps, mean"] = spanned(beats, "fps", seconds)
     out["tick ms, median"] = percentile([b["tick ms"] for b in beats], 50)
     out["tick ms, 90th percentile"] = percentile([b["tick ms"] for b in beats], 90)
     out["tick max ms, 90th percentile"] = percentile([b["tick max ms"] for b in beats], 90)
     out["fps, 10th percentile"] = percentile([b["fps"] for b in beats], 10)
-    out["ticks/s, mean"] = mean(b["ticks/s"] for b in beats)
+    out["ticks/s, mean"] = spanned(beats, "ticks/s", seconds)
     keys = []
     for b in beats:
         keys += [k for k in b if k not in keys and isinstance(b[k], float)]
@@ -296,11 +317,11 @@ def summary(run, a):
     for title, names in groups:
         for n in names:
             if n in keys and n != "frame ms":
-                out["%s: %s" % (title, n)] = mean(b[n] for b in beats if n in b)
+                out["%s: %s" % (title, n)] = spanned(beats, n, frames if n.endswith(" a frame") or n.endswith(" ms") else seconds)
     for prefix in ("hw ", "objects ", "thread "):
         for k in keys:
             if k.startswith(prefix):
-                out[k] = mean(b[k] for b in beats if k in b)
+                out[k] = spanned(beats, k, seconds)
     for k, v in sorted(run.peaks.items()):
         out["peak " + k] = v
     return out
