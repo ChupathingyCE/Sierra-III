@@ -7823,8 +7823,10 @@ FIXES_36["source/units/bipeds.c#pill"] = [
 	}
 """,
  """	{
-#ifdef HALO_PSP
-		/* timed, by whether the biped is moving (psp_fixups.py) */
+#if defined(HALO_PSP) && defined(PSP_TICK_STEPS)
+		/* timed, by whether the biped is moving (psp_fixups.py): an
+		instrument, so recon builds only (PSP_TICK_STEPS=1): its two clock
+		reads and log sat in the move of every biped in every build */
 		static unsigned long psp_pill_us[3], psp_pill_count[3], psp_pill_hits[3];
 		unsigned long psp_mark = psp_microseconds();
 		/* "still": little horizontal movement (gravity pulls every standing
@@ -7845,7 +7847,7 @@ FIXES_36["source/units/bipeds.c#pill"] = [
 			&clipped_velocity,
 			16,
 			collisions);
-#ifdef HALO_PSP
+#if defined(HALO_PSP) && defined(PSP_TICK_STEPS)
 		psp_pill_us[psp_still] += psp_microseconds() - psp_mark;
 		psp_pill_count[psp_still]++;
 		psp_pill_hits[psp_still] += collision_count;

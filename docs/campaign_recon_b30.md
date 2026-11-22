@@ -75,7 +75,7 @@ What that points at, all fidelity-free:
 
 - `objects_update` by type now splits bipeds like vehicles: `(of the bipeds: type update, damage, node matrices)`.
 - Breadcrumb steps inside `biped_update`, `biped_update_moving`, `unit_update`, `unit_update_animation`, `object_update`, `actor_update`, `actor_perception_update`, `actor_perception_refresh` (profile.txt shows each callee's "time until the next step"). **Recon builds only** (`PSP_TICK_STEPS=1`): a step costs ~1.3 µs and `object_update` runs for every object every tick.
-- `bipeds: pill sweeps: moving N at N us (...), slow ..., still ...` every 3,000 sweeps, and `collision: features in sphere: N calls; BSP walk N us each (N leaves), features N us (N ... made into shapes), objects N us (N objects walked)` every 6,000 gathers — in every build, cheap. (Build 45 as shipped to Sheepdog01 logs the earlier two-way form, `BSP N us each` = walk + shapes together.)
+- `bipeds: pill sweeps: moving N at N us (...), slow ..., still ...` every 3,000 sweeps (since 2026-11-21 only with `PSP_TICK_STEPS=1`: its clock reads sat in every biped's move, which the 5a pair prices), and `collision: features in sphere: N calls; BSP walk N us each (N leaves), features N us (N ... made into shapes), objects N us (N objects walked)` every 6,000 gathers — in every build, cheap. (Build 45 as shipped to Sheepdog01 logs the earlier two-way form, `BSP N us each` = walk + shapes together.)
 - Game-state survey names are copied (some callers pass stack buffers; the b30 log showed garbage names).
 - Assert-like macros (`match_assert_valid_*`, `vassert`) are excluded from breadcrumb insertion.
 
