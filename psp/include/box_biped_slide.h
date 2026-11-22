@@ -18,11 +18,12 @@ FIXES_BMSLIDE in collisions.c) makes the slide and hands it here.
 compiles) */
 #define BOX_BMSLIDE_PLANES 16
 #define BOX_BMSLIDE_PLANE_BYTES 44
-/* one result a staged biped (the staged pass's own limit) */
-#define BOX_BMSLIDE_RESULTS 256
-/* a move hits one or two planes as a rule (~70-110 B a result, §4b); a tick
-that fills this leaves its later bipeds to slide inline, counted */
-#define BOX_BMSLIDE_ARENA 8192
+/* sized from the census's peaks with room to spare (about 60 living staged
+bipeds a tick on c20, planes 2,992 bytes), not the staged pass's limit of 256:
+the store comes out of the heap. A tick past either leaves its later bipeds
+to slide inline, counted as room spent, which is exact */
+#define BOX_BMSLIDE_RESULTS 80
+#define BOX_BMSLIDE_ARENA 4096
 
 struct box_bmslide_call
 {

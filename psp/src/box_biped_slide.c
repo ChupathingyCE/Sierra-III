@@ -10,11 +10,11 @@ void platform_psp_log(const char *format, ...);
 static struct box_bmslide_result results[BOX_BMSLIDE_RESULTS];
 static unsigned char arena[BOX_BMSLIDE_ARENA] __attribute__((aligned(16)));
 static unsigned char scratch[BOX_BMSLIDE_PLANES * BOX_BMSLIDE_PLANE_BYTES] __attribute__((aligned(16)));
-static int result_count, arena_fill, arena_peak;
+static int result_count, arena_fill, arena_peak, result_peak;
 /* each result's place by its biped's datum index (low bits), so the solve
 finds it without a scan; an entry is trusted only when the result it names
 holds this biped this tick */
-#define RESULT_OF 1024
+#define RESULT_OF 512
 static short result_of[RESULT_OF];
 /* made, left inline, room spent, taken, no result at the call, inputs differ,
 compared, compared and differ */
@@ -138,8 +138,10 @@ void box_bmslide_end(void)
 {
 	if (arena_fill > arena_peak)
 		arena_peak = arena_fill;
+	if (result_count > result_peak)
+		result_peak = result_count;
 	result_count = 0;
 	if (++ticks % 500 == 0)
-		platform_psp_log("bmslide: %lu staged ticks: slides made %lu, left inline %lu, room spent %lu; taken %lu, no result at the call %lu, inputs differ %lu; bmslidecheck compared %lu, differ %lu; arena peak %d of %d bytes",
-			ticks, stat[0], stat[1], stat[2], stat[3], stat[4], stat[5], stat[6], stat[7], arena_peak, BOX_BMSLIDE_ARENA);
+		platform_psp_log("bmslide: %lu staged ticks: slides made %lu, left inline %lu, room spent %lu; taken %lu, no result at the call %lu, inputs differ %lu; bmslidecheck compared %lu, differ %lu; arena peak %d of %d bytes, results peak %d of %d",
+			ticks, stat[0], stat[1], stat[2], stat[3], stat[4], stat[5], stat[6], stat[7], arena_peak, BOX_BMSLIDE_ARENA, result_peak, BOX_BMSLIDE_RESULTS);
 }
