@@ -146,6 +146,13 @@ actor_decision_loop
 object_test_vector
 tag_get
 gum_draw @92
+actor_compute_prop_unopposable
+psp_aime_think_actor
+collision_bsp_test_vector_recursive
+collision_test_vector
+actor_perception_update
+actor_emotion_update
+actor_update
 psp_me_lines_out
 psp_perc_unit_slot
 matrix4x3_rotation_from_quaternion
@@ -224,13 +231,6 @@ quaternions_interpolate_and_normalize
 +psp_sweepme_make
 model_get_marker_by_name
 psp_ge_frame_window
-actor_compute_prop_unopposable
-psp_aime_think_actor
-collision_bsp_test_vector_recursive
-collision_test_vector
-actor_perception_update
-actor_emotion_update
-actor_update
 psp_tag_block_element
 psp_aime_actor_seed
 psp_aime_fresh
