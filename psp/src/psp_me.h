@@ -52,6 +52,7 @@ void psp_me_edram_probe(void);
 /* build 118: a job handed over without waiting, then finished (gemeoverlap) */
 int psp_me_submit(int which, unsigned int type, const unsigned int *args, int arg_count);
 int psp_me_finish(int which, unsigned int *results);
+void psp_me_audio_hold_off(void);
 /* an address DMACplus or the VME's DMAC may be given: the low or uncached
 user forms (0x0xxxxxxx, 0x4xxxxxxx). Neither engine refuses a kernel
 segment as sceDmacMemcpy does: spadprobe v2 pointed DMACplus at 0x8001xxxx
