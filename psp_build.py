@@ -327,6 +327,24 @@ BMREADERS = os.environ.get("PSP_BMREADERS", "") == "1"
 if BMREADERS and not BIPEDSTAGE:
     sys.exit("psp_build: PSP_BMREADERS=1 needs PSP_BIPEDSTAGE=1 (it counts the staged solve pass)")
 os.environ["PSP_BMREADERS"] = "1" if BMREADERS else "0"
+# PSP_BMLINK=1: biped motion's link, stage 5c (docs/box_biped_motion.md section
+# 4b; psp_fixups.py FIXES_BMLINK): a solving biped's relink in the collideable
+# partition's lists queued in order and made at the next reader of those lists
+# or the solve pass's end, its location and header cluster written at once as
+# before; and its lights' connect moved to the pass's end. Off by default until
+# its PSP price; keep words bmlinkoff (neither) and bmlightsoff (the lights
+# stay in the biped's tail)
+BMLINK = os.environ.get("PSP_BMLINK", "") == "1"
+if BMLINK and not BIPEDSTAGE:
+    sys.exit("psp_build: PSP_BMLINK=1 needs PSP_BIPEDSTAGE=1 (the queue is open only in the staged solve pass)")
+os.environ["PSP_BMLINK"] = "1" if BMLINK else "0"
+# PSP_BMTOGGLE=1: biped motion's activation toggle (docs/box_biped_motion.md
+# section 4b; psp_fixups.py FIXES_BMTOGGLE): an object that deactivates
+# automatically and is active keeps its active flag through object_translate's
+# disconnect and reconnect when the reconnect would turn it on again. Off by
+# default until its PSP price; keep word bmtoggleoff
+BMTOGGLE = os.environ.get("PSP_BMTOGGLE", "") == "1"
+os.environ["PSP_BMTOGGLE"] = "1" if BMTOGGLE else "0"
 # PSP_SMALLDATA=8 (or 4): the units built with the game's flags put variables
 # of up to that many bytes in small data, read with one load from $gp instead
 # of lui and a load, so the code is shorter (lever RH5, after Halo 64's -G8).

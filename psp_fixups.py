@@ -57002,6 +57002,481 @@ if BMSLIDE and os.environ.get("PSP_BIPEDSTAGE_NOINLINE", "") == "1":
             "void psp_bipedstage5a_slide(long biped_index)\n{", "__attribute__((noinline)) void psp_bipedstage5a_slide(long biped_index)\n{"))
 
 
+# ---------- FIXES_BMLINK: biped motion's link, stage 5c (PSP_BMLINK=1; off by
+# default; docs/box_biped_motion.md §4b, the reader census and the lead's calls
+# 2026-11-21 20:2x, 2026-11-22 01:2x). In the staged solve pass, the solving
+# biped's own disconnect and reconnect in the collideable partition's lists
+# are queued in order, each with the sphere and location it had at its link,
+# and made later through the same partition calls, so RECONLIST's in-place
+# make and SPHSL answer them as before. Everything else the link does (the
+# location, the header cluster, the activation, the flags) is still done at
+# the link. The queue is made before anything reads or writes that
+# partition's lists (cluster_partitions.c's entry points: a list read,
+# another object's relink, a reset or copy, the game state saved), before an
+# object's own clusters are read (its pointer is NONE while it waits), when
+# the same biped moves again, when it's full, and at the pass's end. That
+# keeps every list's order, which play reads (RLSKIP, BW). P2NC's full form
+# flushed on every link because 5d's discard test reads the biped's own
+# cluster; with the location written at once, the census put the flushes at
+# 3.7% of links. Its lights' connect, on the tick before a frame, moves from
+# its update's tail to the pass's end, after every biped's: the lights read
+# only their biped's location and nodes, touch only the light partition and
+# draw nothing, and only drawing reads the light links (LD1). Keep words:
+# bmlinkoff (neither), bmlightsoff (the lights stay in the tail). Needs
+# PSP_BIPEDSTAGE (psp_build.py checks)
+BMLINK = os.environ.get("PSP_BMLINK", "") == "1"
+FIXES_BMLINK = {
+"source/objects/objects.c#bmlink": [
+# the solving biped and the lights it leaves to the pass's end, before LD1's defer reads them
+("""static int psp_lights_frame = -1;
+""",
+ """static int psp_lights_frame = -1;
+/* (FIXES_BMLINK) only the solving biped's own link is queued: a slot, no lookup */
+#define PSP_BML 64
+static long psp_bml_current = NONE;
+static int psp_bml_lights_on;
+static long psp_bml_lights[PSP_BML];
+static int psp_bml_light_count;
+static unsigned long psp_bml_lights_moved, psp_bml_lights_full;
+"""),
+("""	if (!psp_lights_frame || psp_lights_link_tick)
+	{
+		psp_lights_pending[absolute_index >> 5] &= ~PSP_LIGHTS_BIT(absolute_index);
+		return 0;
+	}
+""",
+ """	if (!psp_lights_frame || psp_lights_link_tick)
+	{
+		/* (FIXES_BMLINK) the solving biped's link left to the pass's end, as
+		pending as LD1 leaves it, so a deactivation before then makes it */
+		if (object_index == psp_bml_current && psp_bml_lights_on)
+		{
+			if (psp_bml_light_count < PSP_BML)
+			{
+				psp_bml_lights[psp_bml_light_count++] = object_index;
+				psp_lights_pending[absolute_index >> 5] |= PSP_LIGHTS_BIT(absolute_index);
+				return 1;
+			}
+			psp_bml_lights_full++;
+		}
+		psp_lights_pending[absolute_index >> 5] &= ~PSP_LIGHTS_BIT(absolute_index);
+		return 0;
+	}
+"""),
+# the queue, after P2NC's (its model)
+("""	psp_p2q_waiting[absolute >> 5] |= 1ul << (absolute & 31);
+	return 1;
+}
+#endif
+""",
+ """	psp_p2q_waiting[absolute >> 5] |= 1ul << (absolute & 31);
+	return 1;
+}
+
+/* (FIXES_BMLINK) stage 5c's queue: see psp_fixups.py */
+static struct psp_bml_entry
+{
+	long datum_index;
+	long chain; /* the disconnect's references */
+	real_point3d center;
+	real radius;
+	struct location location;
+	long reconnect;
+} psp_bml[PSP_BML];
+int psp_bml_count; /* cluster_partitions.c's entry points test it */
+static int psp_bml_on = -1, psp_bml_slot = -1; /* the solving biped's waiting entry */
+static int psp_bml_peak;
+static unsigned long psp_bml_passes, psp_bml_queued, psp_bml_made, psp_bml_on_me, psp_bml_flushes[7];
+
+static void psp_bml_log(void)
+{
+	void platform_psp_log(const char *format, ...);
+
+	platform_psp_log("bmlink: %lu passes, %lu links queued, %lu made; queues made at the pass's end %lu, by a list read %lu, "
+		"another object's relink %lu, the biped moved again %lu, full %lu, an object's own clusters read %lu, "
+		"a reset, copy or save %lu; peak %d of %d; refused on the ME %lu; lights moved to the pass's end %lu (full %lu)",
+		psp_bml_passes, psp_bml_queued, psp_bml_made, psp_bml_flushes[0], psp_bml_flushes[1], psp_bml_flushes[2],
+		psp_bml_flushes[3], psp_bml_flushes[4], psp_bml_flushes[5], psp_bml_flushes[6], psp_bml_peak, PSP_BML,
+		psp_bml_on_me, psp_bml_lights_moved, psp_bml_lights_full);
+}
+
+/* why: 0 the pass's end, 1 a list read, 2 another object's relink, 3 the
+biped moved again, 4 full, 5 an object's own clusters read, 6 a reset, copy
+or save */
+__attribute__((noinline)) void psp_bml_flush(int why)
+{
+	extern int psp_aime_arm, psp_aime_fpu_main, psp_aime_move_stop, psp_merays_out;
+	extern void psp_aime_handback(int which);
+	void psp_merays_settle(void);
+	int k, n = psp_bml_count;
+
+	if (!n)
+		return;
+	/* as a link in place: the ME's readers of the lists finish first */
+	if (psp_aime_arm && psp_aime_move_stop && (psp_work_on_me() || psp_aime_fpu_main))
+		psp_aime_handback(34);
+	/* the lists are written only on the CPU that queued them; counted, as
+	a reader there would see them before the queue */
+	if (psp_work_on_me())
+	{
+		psp_bml_on_me++;
+		return;
+	}
+	if (psp_merays_out)
+		psp_merays_settle();
+	/* emptied first, so the partition calls below don't come back here */
+	psp_bml_count = 0;
+	psp_bml_slot = -1;
+	psp_bml_flushes[why]++;
+	for (k = 0; k < n; k++)
+	{
+		struct psp_bml_entry *entry = &psp_bml[k];
+
+		cluster_partition_disconnect(&collideable_object_cluster_partition, entry->datum_index, &entry->chain);
+		if (entry->reconnect)
+		{
+			cluster_partition_reconnect(&collideable_object_cluster_partition, entry->datum_index,
+				&object_get(entry->datum_index)->object.first_cluster_reference_index, &entry->center, entry->radius,
+				&entry->location);
+		}
+	}
+	psp_bml_made += n;
+}
+
+/* 1: the solving biped's disconnect queued (its pointer cleared, as the
+disconnect leaves it) */
+static int psp_bml_disconnect(long object_index, long *first_cluster_reference)
+{
+	struct psp_bml_entry *entry;
+
+	if (psp_bml_slot >= 0)
+		psp_bml_flush(3);
+	if (psp_bml_count == PSP_BML)
+		psp_bml_flush(4);
+	psp_bml_slot = psp_bml_count;
+	entry = &psp_bml[psp_bml_count++];
+	if (psp_bml_count > psp_bml_peak)
+		psp_bml_peak = psp_bml_count;
+	entry->datum_index = object_index;
+	entry->chain = *first_cluster_reference;
+	entry->reconnect = 0;
+	*first_cluster_reference = NONE;
+	psp_bml_queued++;
+	return 1;
+}
+#define PSP_BML_DISCONNECT(i, r) ((i) == psp_bml_current && psp_bml_disconnect((i), (r)))
+
+/* 1: the reconnect queued with what it reads now, in its disconnect's entry;
+0 when that entry was made already (the reconnect is made now) */
+static int psp_bml_reconnect(long object_index, real_point3d const *center, real radius, struct location const *location)
+{
+	struct psp_bml_entry *entry;
+
+	if (psp_bml_slot < 0 || psp_bml[psp_bml_slot].datum_index != object_index)
+		return 0;
+	entry = &psp_bml[psp_bml_slot];
+	entry->center = *center;
+	entry->radius = radius;
+	entry->location = *location;
+	entry->reconnect = 1;
+	return 1;
+}
+#define PSP_BML_RECONNECT(i, c, r, l) ((i) == psp_bml_current && psp_bml_reconnect((i), (c), (r), (l)))
+
+static void psp_bml_begin(long biped_index)
+{
+	if (psp_bml_on < 0)
+	{
+		psp_bml_on = !psp_keep("bmlinkoff");
+		psp_bml_lights_on = psp_bml_on && !psp_keep("bmlightsoff");
+	}
+	psp_bml_current = psp_bml_on ? biped_index : NONE;
+	psp_bml_slot = -1;
+}
+
+/* the pass's end: the links, then the lights in the bipeds' order */
+__attribute__((noinline)) void psp_bml_pass_end(void)
+{
+	int k;
+
+	psp_bml_current = NONE;
+	if (psp_bml_on <= 0)
+		return;
+	psp_bml_flush(0);
+	for (k = 0; k < psp_bml_light_count; k++)
+	{
+		long object_index = psp_bml_lights[k];
+		struct object_header_datum const *header =
+			(struct object_header_datum const *)datum_try_and_get(object_header_data, object_index);
+
+		/* a biped deleted since keeps no pending link (LD1 clears it at its
+		deactivation; a slot made anew isn't this biped) */
+		if (header && header->datum)
+		{
+			psp_lights_flush(object_index);
+			psp_bml_lights_moved++;
+		}
+	}
+	psp_bml_light_count = 0;
+	if (psp_bml_passes++ % 512 == 0)
+		psp_bml_log();
+}
+#endif
+"""),
+# the solving biped's own link: its partition half queued
+("""		if (TEST_FLAG(object->object.flags, _object_has_collision_model_bit) ||
+			!psp_p2q_disconnect(object_index, &object->object.first_cluster_reference_index))
+""",
+ """		if (TEST_FLAG(object->object.flags, _object_has_collision_model_bit) ?
+			!PSP_BML_DISCONNECT(object_index, &object->object.first_cluster_reference_index) : /* (FIXES_BMLINK) */
+			!psp_p2q_disconnect(object_index, &object->object.first_cluster_reference_index))
+"""),
+("""		if (TEST_FLAG(object->object.flags, _object_has_collision_model_bit) ||
+			!psp_p2q_reconnect(object_index, &object->object.bounding_sphere_center, object->object.bounding_sphere_radius,
+				&object->object.location))
+""",
+ """		if (TEST_FLAG(object->object.flags, _object_has_collision_model_bit) ?
+			!PSP_BML_RECONNECT(object_index, &object->object.bounding_sphere_center, /* (FIXES_BMLINK) */
+				object->object.bounding_sphere_radius, &object->object.location) :
+			!psp_p2q_reconnect(object_index, &object->object.bounding_sphere_center, object->object.bounding_sphere_radius,
+				&object->object.location))
+"""),
+# an object's own clusters: a waiting biped's pointer is NONE until its entry is made
+("""		psp_p2q_flush(4);
+#endif
+""",
+ """		psp_p2q_flush(4);
+	if (psp_bml_count &&
+		TEST_FLAG(object_get(object_get_ultimate_parent(object_index))->object.flags, _object_has_collision_model_bit))
+		psp_bml_flush(5); /* (FIXES_BMLINK) */
+#endif
+"""),
+# the pass
+("""			if (psp_bslc_on < 0)
+				psp_bslc_on = psp_keep("bipedstagelinkcensus");
+""",
+ """			psp_bml_begin(psp_bipedstage_phase ? psp_bipedstage_index[k] : NONE); /* (FIXES_BMLINK) a dead biped's link made at once */
+			if (psp_bslc_on < 0)
+				psp_bslc_on = psp_keep("bipedstagelinkcensus");
+"""),
+("""	box_ws_move_settle();
+	if (psp_ws_check > 0)
+""",
+ """	psp_bml_pass_end(); /* (FIXES_BMLINK) before the store's write-back and the walk go on */
+	box_ws_move_settle();
+	if (psp_ws_check > 0)
+"""),
+],
+"source/structures/cluster_partitions.c#bmlink": [
+("""static void psp_rl_flush(void); /* psp_fixups.py (FIXES_RECONLIST) */
+""",
+ """static void psp_rl_flush(void); /* psp_fixups.py (FIXES_RECONLIST) */
+/* (FIXES_BMLINK) the solving bipeds' queued links (objects.c) are made before
+the collideable partition's lists are next read or written, and before
+RECONLIST's held disconnect, which comes after them */
+extern int psp_bml_count;
+void psp_bml_flush(int why);
+#define PSP_BML_TOUCH(p, why) ((void)(psp_bml_count && (p) == &collideable_object_cluster_partition && (psp_bml_flush(why), 0)))
+"""),
+("""void cluster_partition_make_valid(
+	struct cluster_partition *partition)
+{
+#ifdef HALO_PSP
+""",
+ """void cluster_partition_make_valid(
+	struct cluster_partition *partition)
+{
+#ifdef HALO_PSP
+	PSP_BML_TOUCH(partition, 6); /* (FIXES_BMLINK) */
+"""),
+("""void cluster_partition_make_invalid(
+	struct cluster_partition *partition)
+{
+#ifdef HALO_PSP
+""",
+ """void cluster_partition_make_invalid(
+	struct cluster_partition *partition)
+{
+#ifdef HALO_PSP
+	PSP_BML_TOUCH(partition, 6); /* (FIXES_BMLINK) */
+"""),
+("""void cluster_partition_delete(
+	struct cluster_partition *partition)
+{
+#ifdef HALO_PSP
+""",
+ """void cluster_partition_delete(
+	struct cluster_partition *partition)
+{
+#ifdef HALO_PSP
+	PSP_BML_TOUCH(partition, 6); /* (FIXES_BMLINK) */
+"""),
+("""	struct cluster_partition const *source)
+{
+#ifdef HALO_PSP
+	psp_rl_flush(); /* psp_fixups.py (FIXES_RECONLIST) */
+""",
+ """	struct cluster_partition const *source)
+{
+#ifdef HALO_PSP
+	PSP_BML_TOUCH(source, 6); /* (FIXES_BMLINK) */
+	PSP_BML_TOUCH(result, 6);
+	psp_rl_flush(); /* psp_fixups.py (FIXES_RECONLIST) */
+"""),
+("""#ifdef HALO_PSP
+	psp_rl_flush(); /* psp_fixups.py (FIXES_RECONLIST) */
+#endif
+	return reference_list_get_next_datum_index(partition->data_reference_data, reference_index);
+""",
+ """#ifdef HALO_PSP
+	PSP_BML_TOUCH(partition, 1); /* (FIXES_BMLINK) */
+	psp_rl_flush(); /* psp_fixups.py (FIXES_RECONLIST) */
+#endif
+	return reference_list_get_next_datum_index(partition->data_reference_data, reference_index);
+"""),
+("""void psp_rl_game_state_saving(void)
+{
+""",
+ """void psp_rl_game_state_saving(void)
+{
+	if (psp_bml_count)
+		psp_bml_flush(6); /* (FIXES_BMLINK) */
+"""),
+("""	/* psp_fixups.py (FIXES_RECONLIST): another datum's held disconnect first */
+""",
+ """	PSP_BML_TOUCH(partition, 2); /* (FIXES_BMLINK) */
+	/* psp_fixups.py (FIXES_RECONLIST): another datum's held disconnect first */
+"""),
+("""	long *first_cluster_reference)
+{
+	psp_rl_flush();
+	if (psp_rl.on < 0)
+""",
+ """	long *first_cluster_reference)
+{
+	PSP_BML_TOUCH(partition, 2); /* (FIXES_BMLINK) */
+	psp_rl_flush();
+	if (psp_rl.on < 0)
+"""),
+("""	psp_rl_flush(); /* psp_fixups.py (FIXES_RECONLIST): a list read sees the held disconnect made */
+""",
+ """	PSP_BML_TOUCH(partition, 1); /* (FIXES_BMLINK) */
+	psp_rl_flush(); /* psp_fixups.py (FIXES_RECONLIST): a list read sees the held disconnect made */
+"""),
+],
+}
+
+
+# ---------- FIXES_BMTOGGLE: biped motion's activation toggle (PSP_BMTOGGLE=1;
+# off by default; docs/box_biped_motion.md §4b, the reader census). An object
+# that deactivates automatically is turned off at every disconnect and on
+# again at the reconnect when its cluster is in the players' view: in
+# object_translate, which nothing runs between, that toggle mostly undoes
+# itself (the census: 5,692 / 137,012 on-off-on pairs to the same cluster on
+# b30 / c20, nothing reading the flag between). For an object that is active,
+# can be activated and has no parent, the off holds its flag: the off's other
+# work is still done (LD1's light link, FISSION's values, NMSKIP's read; its
+# wake mark is made again at the reconnect's start), and the reconnect makes
+# the off only where it wouldn't turn the object on again, before its
+# deleted-when-deactivated test. The flag ends each translate as before.
+# Pairs outside object_translate (items.c's inventory writes read the flag
+# between) and any while AIME queues activations keep the old path. Keep
+# word: bmtoggleoff
+BMTOGGLE = os.environ.get("PSP_BMTOGGLE", "") == "1"
+FIXES_BMTOGGLE = {
+"source/objects/objects.c#bmtoggle": [
+("""void object_activate(
+	long object_index)
+{
+""",
+ """/* (FIXES_BMTOGGLE) the object whose off is held through its translate */
+static long psp_bmt_object = NONE;
+static int psp_bmt_on = -1;
+static unsigned long psp_bmt_held, psp_bmt_made, psp_bmt_logged;
+
+static long psp_bmt_may(long object_index, struct object_datum const *object)
+{
+	extern int psp_aime_arm;
+	struct object_header_datum const *header = object_header_get(object_index);
+
+	if (psp_bmt_on < 0)
+		psp_bmt_on = !psp_keep("bmtoggleoff");
+	if (!psp_bmt_on || psp_aime_arm ||
+		!TEST_FLAG(header->flags, _object_header_automatically_deactivate_bit) ||
+		!TEST_FLAG(header->flags, _object_header_active_bit) ||
+		TEST_FLAG(object->object.flags, _object_cannot_be_activated_bit) ||
+		object->object.parent_object_index != NONE)
+		return NONE;
+	return object_index;
+}
+
+void object_activate(
+	long object_index)
+{
+"""),
+("""		PSP_FVP_SETTLE(object_index); /* FIXES_TP1 */
+	}
+	PSP_NMS_READ(object_index); /* psp_fixups.py (FIXES_NMSKIP) */
+""",
+ """		PSP_FVP_SETTLE(object_index); /* FIXES_TP1 */
+	}
+	PSP_NMS_READ(object_index); /* psp_fixups.py (FIXES_NMSKIP) */
+	if (object_index == psp_bmt_object) /* (FIXES_BMTOGGLE) the flag held to the reconnect */
+	{
+		if (psp_bmt_held++ % 20000 == 0)
+		{
+			void platform_psp_log(const char *format, ...);
+
+			platform_psp_log("bmtoggle: %lu offs held through a translate, %lu made at the reconnect",
+				psp_bmt_held, psp_bmt_made);
+		}
+		return;
+	}
+"""),
+("""			if (header->cluster_index==NONE || !BIT_VECTOR_TEST_FLAG(players_get_combined_pvs(), header->cluster_index))
+			{
+""",
+ """			if (header->cluster_index==NONE || !BIT_VECTOR_TEST_FLAG(players_get_combined_pvs(), header->cluster_index))
+			{
+				if (object_index == psp_bmt_object) /* (FIXES_BMTOGGLE) it stays off: the held off made */
+				{
+					psp_bmt_object = NONE;
+					psp_bmt_made++;
+					SET_FLAG(header->flags, _object_header_active_bit, FALSE);
+				}
+"""),
+("""			else
+			{
+				object_activate(object_index);
+			}
+""",
+ """			else if (object_index == psp_bmt_object) /* (FIXES_BMTOGGLE) on again: its flag never went off */
+			{
+				psp_bmt_object = NONE;
+			}
+			else
+			{
+				object_activate(object_index);
+			}
+"""),
+("""	object_disconnect_from_map(object_index);
+	object->object.position = *new_position;
+	object_reconnect_to_map(object_index, new_location);
+""",
+ """	{
+		long psp_bmt_was = psp_bmt_object; /* (FIXES_BMTOGGLE) */
+
+		psp_bmt_object = psp_bmt_may(object_index, object);
+		object_disconnect_from_map(object_index);
+		object->object.position = *new_position;
+		object_reconnect_to_map(object_index, new_location);
+		psp_bmt_object = psp_bmt_was;
+	}
+"""),
+],
+}
+
+
 # ---------- FIXES_B98: a conversation that has ended is read as none (a fix, always on)
 # A conversation's lines end on the sound system's playback (ai_conversation_
 # line_perform: sound_scripted_dialog_is_playing, scripted_sound_time), which
@@ -57866,7 +58341,7 @@ def tag_memo_forgets(tree):
     return count
 
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_SSPR.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + list(FIXES_CHUPA090RUNS.items()) + list(FIXES_HEAPTRIM.items()) + list(FIXES_B78.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items()) + list(FIXES_AIME2A.items()) + list(FIXES_REDOSEED.items()) + (list(FIXES_STACKHOT.items()) if STACKHOT else []) + (list(FIXES_STACKHOT2.items()) if STACKHOT2 else []) + list(FIXES_PWSL.items()) + list(FIXES_SPHSL.items()) + list(FIXES_RECONLIST.items()) + list(FIXES_TP1.items()) + list(FIXES_WXDEAD.items()) + list(FIXES_AIMEMOVE.items()) + list(FIXES_PROPCRASH.items()) + list(FIXES_APCPOOL.items()) + list(FIXES_PSPTLS.items()) + list(FIXES_SNDEDRAM.items()) + list(FIXES_LIGHTFIRST.items()) + list(FIXES_DRAWPART.items()) + (list(FIXES_RECONLATE.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + list(FIXES_P2PASS.items()) + (list(FIXES_P2CENSUS.items()) if P2CENSUS else []) + list(FIXES_OBSRAY.items()) + list(FIXES_SNDWAIT.items()) + list(FIXES_FLAMEDECAL.items()) + list(FIXES_HUHINT.items()) + list(FIXES_DBLSOFT.items()) + list(FIXES_VFPUTRIG.items()) + list(FIXES_TICKCACHE.items()) + list(FIXES_STRICTALIAS.items()) + list(FIXES_SNDPERMAP.items()) + list(FIXES_RLOOP.items()) + list(FIXES_L10.items()) + list(FIXES_RLSKIP.items()) + list(FIXES_ONEWALK.items()) + (list(FIXES_POSEK.items()) if POSEK else []) + (list(FIXES_SNDSTREAM.items()) if os.environ.get("PSP_SNDSTREAM", "") == "1" else []) + list(FIXES_MOUTHCLOCK.items()) + list(FIXES_LSAME.items()) + list(FIXES_CHUPA090.items()) + list(FIXES_V091A.items()) + list(FIXES_AIDEBUGREC.items()) + (list(FIXES_AITICKOLD.items()) if AITICKOLD else []) + (list(FIXES_PADPATH.items()) if os.environ.get("PSP_PADPATH", "") == "1" else []) + list(FIXES_FARLEVEL.items()) + list(FIXES_DECALRING.items()) + list(FIXES_ARRAYFULL.items()) + (list(FIXES_DEADXBOX.items()) if DEADXBOX else []) + (list(FIXES_CAPTURE_POSING.items()) if CAPTURE == "posing" else []) + (list(FIXES_BOXPOSING.items()) if BOXPOSING else []) + (list(FIXES_ASKCENSUS.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + (list(FIXES_CAPTURE_SWEEP.items()) if CAPTURE == "sweep" else []) + (list(FIXES_BIPEDSTAGE.items()) if BIPEDSTAGE else []) + (list(FIXES_WSOLD.items()) if WSOLD else []) + (list(FIXES_SWEEPME.items()) if SWEEPME else []) + list(FIXES_B98.items()) + list(FIXES_SOUNDGAMETIME.items()) + list(FIXES_DIET1.items()) + list(FIXES_DIET2.items()) + (list(FIXES_BMSLIDE.items()) if BMSLIDE else [])):
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_SSPR.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + list(FIXES_CHUPA090RUNS.items()) + list(FIXES_HEAPTRIM.items()) + list(FIXES_B78.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items()) + list(FIXES_AIME2A.items()) + list(FIXES_REDOSEED.items()) + (list(FIXES_STACKHOT.items()) if STACKHOT else []) + (list(FIXES_STACKHOT2.items()) if STACKHOT2 else []) + list(FIXES_PWSL.items()) + list(FIXES_SPHSL.items()) + list(FIXES_RECONLIST.items()) + list(FIXES_TP1.items()) + list(FIXES_WXDEAD.items()) + list(FIXES_AIMEMOVE.items()) + list(FIXES_PROPCRASH.items()) + list(FIXES_APCPOOL.items()) + list(FIXES_PSPTLS.items()) + list(FIXES_SNDEDRAM.items()) + list(FIXES_LIGHTFIRST.items()) + list(FIXES_DRAWPART.items()) + (list(FIXES_RECONLATE.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + list(FIXES_P2PASS.items()) + (list(FIXES_P2CENSUS.items()) if P2CENSUS else []) + list(FIXES_OBSRAY.items()) + list(FIXES_SNDWAIT.items()) + list(FIXES_FLAMEDECAL.items()) + list(FIXES_HUHINT.items()) + list(FIXES_DBLSOFT.items()) + list(FIXES_VFPUTRIG.items()) + list(FIXES_TICKCACHE.items()) + list(FIXES_STRICTALIAS.items()) + list(FIXES_SNDPERMAP.items()) + list(FIXES_RLOOP.items()) + list(FIXES_L10.items()) + list(FIXES_RLSKIP.items()) + list(FIXES_ONEWALK.items()) + (list(FIXES_POSEK.items()) if POSEK else []) + (list(FIXES_SNDSTREAM.items()) if os.environ.get("PSP_SNDSTREAM", "") == "1" else []) + list(FIXES_MOUTHCLOCK.items()) + list(FIXES_LSAME.items()) + list(FIXES_CHUPA090.items()) + list(FIXES_V091A.items()) + list(FIXES_AIDEBUGREC.items()) + (list(FIXES_AITICKOLD.items()) if AITICKOLD else []) + (list(FIXES_PADPATH.items()) if os.environ.get("PSP_PADPATH", "") == "1" else []) + list(FIXES_FARLEVEL.items()) + list(FIXES_DECALRING.items()) + list(FIXES_ARRAYFULL.items()) + (list(FIXES_DEADXBOX.items()) if DEADXBOX else []) + (list(FIXES_CAPTURE_POSING.items()) if CAPTURE == "posing" else []) + (list(FIXES_BOXPOSING.items()) if BOXPOSING else []) + (list(FIXES_ASKCENSUS.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + (list(FIXES_CAPTURE_SWEEP.items()) if CAPTURE == "sweep" else []) + (list(FIXES_BIPEDSTAGE.items()) if BIPEDSTAGE else []) + (list(FIXES_WSOLD.items()) if WSOLD else []) + (list(FIXES_SWEEPME.items()) if SWEEPME else []) + list(FIXES_B98.items()) + list(FIXES_SOUNDGAMETIME.items()) + list(FIXES_DIET1.items()) + list(FIXES_DIET2.items()) + (list(FIXES_BMSLIDE.items()) if BMSLIDE else []) + (list(FIXES_BMLINK.items()) if BMLINK else []) + (list(FIXES_BMTOGGLE.items()) if BMTOGGLE else [])):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 # PSP_FRAMEPIC (docs/frame_picture.md): game.c's perf statements are
 # stripped before its anchors are matched (PERF_STRIP), which took the tick's
