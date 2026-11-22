@@ -56998,10 +56998,13 @@ static void update_potentially_audible_looping_sound(
 # carries hoistold's second form at seven places, the per-type clocks (two to
 # four clock reads and three accounts for every biped, vehicle and timed
 # machine) and the bslc census's test. The short form is FIXES_HOIST's form
-# alone with none of the statistics, so under the word hwprofile's per-type
-# object times and counts, machinetime's accounts and the bslc census read
-# nothing; everything that writes game state is the same call in the same
-# order. For the same reason hoistold and postgateold switch nothing for an
+# alone with none of the statistics. It is taken only with the timers off
+# ("notimers", the campaign's default): with them on ("timerson") every object
+# takes the general function, so hwprofile's per-type object times and counts,
+# the bipeds' and vehicles' sub-accounts and machinetime's accounts read as
+# they did before the word (with the timers off the clocks read 0 either
+# way; the bslc census, a count, reads nothing under the word then).
+# Everything that writes game state is the same call in the same order. For the same reason hoistold and postgateold switch nothing for an
 # object that takes the short form: it is the hoist's form and the
 # post-process gate's default form by construction, so a test of either
 # word needs objleanold beside it.
@@ -57021,6 +57024,7 @@ and two callees that look up the object and its definition again are given
 them (damage.c's object_damage_update_with) or have their first tests made
 here (object_postprocess_node_matrices) */
 void object_damage_update_with(long object_index, struct object_datum *object, struct object_definition *object_definition);
+extern int psp_timers_off; /* psp_platform.c: "notimers" (the campaign's default), 0 until the keep words are read */
 static boolean psp_object_update_lean(
 	long object_index)
 {
@@ -57140,7 +57144,11 @@ static boolean object_update(
 	long object_index)
 {
 #ifdef HALO_PSP
-	if (PSP_KEEP_ONCE("objlean"))
+	/* the short form carries none of the clocks, so with the timers on
+	("timerson") every object takes the general function below and its
+	per-type accounts print (the bipeds' and vehicles' type update, damage
+	and node matrices; machinetime's; the bslc census) */
+	if (psp_timers_off && PSP_KEEP_ONCE("objlean"))
 		return psp_object_update_lean(object_index);
 #endif
 	struct object_header_datum *header = object_header_get(object_index);
