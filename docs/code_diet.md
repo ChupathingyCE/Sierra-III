@@ -95,13 +95,13 @@ The first cuts from a census of what the tick's objects do that changes nothing 
 
 ### Cut 2, a design: animated scenery asleep (`treesleep`, not built)
 
-**What runs today [D, E].** A tree's sway is not state: an object flagged to animate automatically takes its pose's frame as (object index + game time) modulo the animation's length (`OBJECT_FRAME_INDEX_GET` in `object_compute_node_matrices`). b30's fight updates about 33 trees a tick and no word of their datums changes but the pose (the lab's row `fightobj1_scenery`). They split in two:
+**What runs today [D, E].** A tree's sway is not state: an object flagged to animate automatically takes its pose's frame as (object index + game time) modulo the animation's length (`OBJECT_FRAME_INDEX_GET` in `object_compute_node_matrices`). b30's fight updates about 33 trees a tick and no word of their datums changes but the pose (the lab's row `fightobj1_scenery`). They split in two (the counts are read off the poses that change, 12-15 a tick, against the 33 updates [U]):
 - **Drawn last frame (about 15 a tick):** `psp_nms_skip` refuses them (reason 6), so their pose is made in the update on every tick, twice a frame at 15 fps.
 - **Not drawn (about 18 a tick):** `psp_nms_skip` leaves the pose out and keeps an entry holding the inputs and the tick; a reader or the renderer's list makes it from the entry (`psp_nms_make`, with `psp_nms_settle_time` standing in for the game time). Because the pose would have moved, the skip names the object in `psp_vl_moving` so the sleep check keeps it awake. It is awake only to stamp a fresh tick on its entry.
 
 **The cut.** An object that animates automatically and passes the skip's other tests (no parent or children, no interpolation running, root still and unmoved) is not kept awake for its pose and its pose is not made in its update, drawn or not. It sleeps like the rest of the scenery, off the object walk. A bit by object index marks it; a reader (`object_get_node_matrices`, `object_get_node_matrix`) or the renderer's list finds the bit and makes the pose for the tick the object's own update would last have run at, if the pose it holds is of another tick.
 
-**Which tick that is.** The game time is T all through tick T and moves on after it; the object walk visits headers in index order. So for a reader:
+**Which tick that is [D].** The game time is T all through tick T and moves on after it (`game_time_update`: the tick, then the interpolation's copy, then the count); the object walk visits headers in index order. So for a reader:
 - inside the walk of tick T, a tree whose index is below the walk's is at T, one above it still at T - 1;
 - anywhere else, the tick of the last walk that finished (before the walk in tick T that is T - 1, after it T, and T again while the frame is drawn, when the game time already reads T + 1).
 
