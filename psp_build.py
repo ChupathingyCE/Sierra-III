@@ -1747,6 +1747,8 @@ def main():
         cut = [l for l in r.stdout.splitlines() if l.startswith("mexec: CUT")]
         copied = [l for l in r.stdout.splitlines() if l.startswith("mexec: copied ")]
         summary += "; " + (cut[-1] if cut else copied[-1] if copied else "mexec: no count from tools/mexec.py")
+        # a placed function the copy doesn't hold: the list's placement is short of it
+        summary += "".join("; " + l for l in r.stdout.splitlines() if l.startswith("mexec: UNPLACED"))
     print(summary)
     subprocess.run(["psp-prxgen", os.path.join(OUT, "halo.elf"), os.path.join(OUT, "halo.prx")], check=True)
     # the title the XMB shows: the multiplayer build's is its own, so the two
