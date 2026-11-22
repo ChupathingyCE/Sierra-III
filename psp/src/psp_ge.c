@@ -23713,6 +23713,17 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 	stream = level_stream_find(vertices);
 	if (!stream)
 		return;
+#ifdef PSP_BOXLIGHTS
+	{
+		static int light_kinds = -1;
+
+		if (light_kinds < 0)
+			light_kinds = psp_keep("lightkinds");
+		if (light_kinds)
+			box_lights_kind(light.gel ? 1 : spot ? 2 : 0, light.position, light.forward, light.radius, light.cosine_falloff,
+				light.cosine_cutoff, stream, stream->serial, stream->origin, indices, triangle_count, stream->bake != 0);
+	}
+#endif
 	/* the light from the copy's origin, as its positions are
 	(psp_ge_light_draw puts it back) */
 	level_frame(stream->origin);
