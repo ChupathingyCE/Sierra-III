@@ -15,17 +15,21 @@ into the list. "levelkeptcheck" writes each kept draw both ways and compares
 what the GE would draw */
 
 unsigned int psp_tex_kept_touch(unsigned int key, int mark, int *has_alpha);
+unsigned int psp_tex_kept_words(unsigned int key);
 void psp_tex_kept_forget(void);
 extern int psp_tex_standin;
 extern PSP_MAIN_SIDE unsigned long psp_tex_map_opens;
 extern int gu_curr_context, gu_object_stack_depth;
 
 /* why a draw went the old way, or why its stamp failed */
-enum { LKR_OTHER, LKR_CUT, LKR_MISSING, LKR_FENCED, LKR_FULL, LKR_KINDS };
+enum { LKR_OTHER, LKR_CUT, LKR_MISSING, LKR_FENCED, LKR_FULL, LKR_ROOM, LKR_KINDS };
 enum { LKS_TEXTURES, LKS_PASSES, LKS_DETAIL_SCALE, LKS_FOG, LKS_MODES, LKS_CONTEXT, LKS_MAP, LKS_KINDS };
-/* a slot holds a draw's blocks: at most ~1,380 bytes for base, lightmap, two
-detail maps and two glow maps with eight levels each, so 2 KB never overflows */
-#define LK_SLOT_LEAST 2048
+/* a slot is 1 KB by default: the largest prologue the emulator met was 188
+words (levelkeptproof1), and one that might not fit is refused before it's
+written (lk_words_most_for); the worst case, eight levels on every one of
+six textures, is ~1,380 bytes */
+#define LK_SLOT_LEAST 512
+#define LK_SLOT_DEFAULT 1024
 
 static int level_kept = -1, level_kept_checking = 0, lk_dead = 0, lk_bindblocks = 0;
 static unsigned long lk_draws, lk_made, lk_called, lk_blocks_called, lk_refused[LKR_KINDS], lk_stamp_failed[LKS_KINDS],
@@ -51,7 +55,8 @@ static int level_kept_on(void)
 
 /* the store, taken from the display list's end as the GE starts: the words
 it holds are words the list would have held, and the list's fullest frame
-must still leave 64 KB beside it on every map; "levelkeptkbN" its size,
+must still leave 64 KB beside it on every map (b40's fullest frame, 643 KB
+with the list at 704, leaves 77 beside 48 KB); "levelkeptkbN" its size,
 "levelkeptslotN" a slot's bytes */
 static void level_kept_carve(void)
 {
@@ -61,9 +66,9 @@ static void level_kept_carve(void)
 
 	if (!level_kept_on() || !display_list || dl_store_slots())
 		return;
-	bytes = (unsigned int)psp_keep_number("levelkeptkb", 64);
+	bytes = (unsigned int)psp_keep_number("levelkeptkb", 48);
 	bytes = (bytes < 16 ? 16 : bytes > 256 ? 256 : bytes) * 1024u;
-	slot = (unsigned int)psp_keep_number("levelkeptslot", LK_SLOT_LEAST);
+	slot = (unsigned int)psp_keep_number("levelkeptslot", LK_SLOT_DEFAULT);
 	slot = ((slot < LK_SLOT_LEAST ? LK_SLOT_LEAST : slot > 8192 ? 8192 : slot) + 63) & ~63u;
 	if (bytes > (unsigned int)display_list_size / 4)
 	{
@@ -179,6 +184,33 @@ static int lk_stamp_kind(int word)
 		word < 25 ? LKS_MODES : word < 31 ? LKS_CONTEXT : LKS_MAP;
 }
 
+/* the most words a draw's blocks can take, from the stamp: each bind's
+(psp_tex_kept_words) and each block's state at its most (the calls in
+level_kept_passes, with pspgu's words a call: the fog and the blend 3, the
+material colour 3, the offset and scale 2, the rest 1) and its RET */
+static unsigned int lk_words_most_for(const struct lk_now *k)
+{
+	const unsigned int *s = k->stamp;
+	unsigned int words = 0, details = 0;
+	int lightmap = s[3] > 1, glows = (s[9] > 1) + (s[11] > 1), j;
+
+	for (j = 0; j < 12; j += 2)
+		if (s[j + 1] > 1)
+			words += psp_tex_kept_words(s[j]);
+	words += 5 + 1; /* the base's state */
+	words += 3 + (lightmap ? 13 : 0) + 1; /* the base's close, the lightmap's state */
+	if (k->detail_runs)
+	{
+		details = (s[5] > 1) + (s[7] > 1);
+		words += 8 + (details ? details : 1) * (15 + 1);
+	}
+	if (glows)
+		words += 12 + 14 + 2;
+	if (glows || k->detail_runs || lightmap)
+		words += 16 + 1; /* the last close */
+	return words;
+}
+
 /* the decision, at the draw's base bind: whether its passes go the kept way
 (LK_KEPT), both ways for the check (LK_CHECK), or as before (LK_OFF) */
 static int level_kept_mode(struct lk_now *k, const struct level_stream *stream, unsigned int base_key,
@@ -217,6 +249,11 @@ static int level_kept_mode(struct lk_now *k, const struct level_stream *stream, 
 	if (k->entry < 0)
 	{
 		lk_refused[k->entry == DL_FENCED ? LKR_FENCED : LKR_FULL]++;
+		return LK_OFF;
+	}
+	if (k->making && lk_words_most_for(k) > dl_store_slot_bytes() / 4)
+	{
+		lk_refused[LKR_ROOM]++;
 		return LK_OFF;
 	}
 	k->mode = level_kept_checking ? LK_CHECK : LK_KEPT;
@@ -629,10 +666,10 @@ static void level_kept_report(void)
 {
 	if (level_kept <= 0)
 		return;
-	platform_log("GE: levelkept: %lu level draws in the last 300 frames, %lu made and %lu CALLed (%lu blocks, %lu live words; largest prologue %lu words; %d of %d slots used at most); the old way: other %lu, cut corners %lu, a texture missing %lu, fenced %lu, store full %lu; stamps failed by textures %lu, passes %lu, detail scale %lu, fog %lu, modes %lu, pspgu %lu, map %lu",
+	platform_log("GE: levelkept: %lu level draws in the last 300 frames, %lu made and %lu CALLed (%lu blocks, %lu live words; largest prologue %lu words; %d of %d slots used at most); the old way: other %lu, cut corners %lu, a texture missing %lu, fenced %lu, store full %lu, a slot too small %lu; stamps failed by textures %lu, passes %lu, detail scale %lu, fog %lu, modes %lu, pspgu %lu, map %lu",
 		lk_draws, lk_made, lk_called, lk_blocks_called, lk_live_words, lk_words_most, lk_used_most, dl_store_slots(),
 		lk_refused[LKR_OTHER], lk_refused[LKR_CUT], lk_refused[LKR_MISSING], lk_refused[LKR_FENCED], lk_refused[LKR_FULL],
-		lk_stamp_failed[LKS_TEXTURES], lk_stamp_failed[LKS_PASSES], lk_stamp_failed[LKS_DETAIL_SCALE],
+		lk_refused[LKR_ROOM], lk_stamp_failed[LKS_TEXTURES], lk_stamp_failed[LKS_PASSES], lk_stamp_failed[LKS_DETAIL_SCALE],
 		lk_stamp_failed[LKS_FOG], lk_stamp_failed[LKS_MODES], lk_stamp_failed[LKS_CONTEXT], lk_stamp_failed[LKS_MAP]);
 	if (level_kept_checking)
 	{

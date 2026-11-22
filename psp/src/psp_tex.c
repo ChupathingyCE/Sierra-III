@@ -4236,6 +4236,16 @@ unsigned int psp_tex_kept_touch(unsigned int key, int mark, int *has_alpha)
 	return resident_at[index];
 }
 
+/* the most words a bind of this key writes (psp_bindblock.h's count: 8 and
+4 a level), so a kept prologue that would outgrow its slot is refused before
+it's written; 0 for a key not in the pack */
+unsigned int psp_tex_kept_words(unsigned int key)
+{
+	int index = key && entries ? find(key) : -1;
+
+	return index < 0 ? 0 : 8u + 4u * entries[index].levels;
+}
+
 /* after a CALL the GE's texture is the prologue's last bind, which neither
 memo names */
 void psp_tex_kept_forget(void)
