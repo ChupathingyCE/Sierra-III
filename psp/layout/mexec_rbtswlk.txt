@@ -307,7 +307,9 @@ lg_kept
 lg_write
 lg_take
 lg_reclaim
-lg_free_copies
+lg_retire
+lg_retired_free
+lg_free_copy_now
 lg_free_data
 lg_kept_copy
 dl_pool_take

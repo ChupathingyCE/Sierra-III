@@ -797,13 +797,23 @@ struct lg_entry
 {
 	const void *stream; /* NULL: free */
 	unsigned int key, last_frame, list_version, stamp[LG_STAMP];
-	unsigned short *copy, *retired;
-	unsigned int copy_bytes, retired_bytes, retired_frame;
+	unsigned short *copy;
+	unsigned int copy_bytes;
 	unsigned char *me; /* chunk records, then a bucket a triangle */
 	unsigned int me_bytes;
 	unsigned short totals[SORT_BUCKETS];
 	unsigned char drawn, used;
 };
+
+/* copies replaced, given back in order once DL_FENCE frames have passed */
+#define LG_RETIRED 256
+struct lg_retired
+{
+	unsigned short *at;
+	unsigned int bytes, frame;
+};
+static struct lg_retired lg_retired[LG_RETIRED];
+static unsigned int lg_retired_first, lg_retired_count;
 
 static int level_geo = -1, lg_margin = 0;
 static struct lg_entry *lg_table;
@@ -937,16 +947,46 @@ static void lg_free_data(struct lg_entry *e)
 	e->me_bytes = 0;
 }
 
-/* the copies' pages given back: the retired ones past the fence, and with
-all a free or evicted entry's (only past the fence: its last draw's frame) */
-static void lg_free_copies(struct lg_entry *e, unsigned int frame, int all)
+/* the replaced copies whose fence has passed, given back */
+static void lg_retired_free(unsigned int frame)
 {
-	if (e->retired && frame - e->retired_frame >= DL_FENCE)
+	while (lg_retired_count)
 	{
-		dl_pool_give(&lg_copies, e->retired, e->retired_bytes);
-		e->retired = NULL;
+		struct lg_retired *r = &lg_retired[lg_retired_first];
+
+		if (frame - r->frame < DL_FENCE)
+			break;
+		dl_pool_give(&lg_copies, r->at, r->bytes);
+		lg_retired_first = (lg_retired_first + 1) % LG_RETIRED;
+		lg_retired_count--;
 	}
-	if (all && e->copy)
+}
+
+/* an entry's copy given up: it may still be read by the GE until DL_FENCE
+frames on, so it waits in the ring (0: the ring full, and the copy stays) */
+static int lg_retire(struct lg_entry *e, unsigned int frame)
+{
+	struct lg_retired *r;
+
+	if (!e->copy)
+		return 1;
+	lg_retired_free(frame);
+	if (lg_retired_count == LG_RETIRED)
+		return 0;
+	r = &lg_retired[(lg_retired_first + lg_retired_count) % LG_RETIRED];
+	r->at = e->copy;
+	r->bytes = e->copy_bytes;
+	r->frame = frame;
+	lg_retired_count++;
+	e->copy = NULL;
+	e->drawn = LG_NONE;
+	return 1;
+}
+
+/* an entry drawn last DL_FENCE frames ago or more: its copy back at once */
+static void lg_free_copy_now(struct lg_entry *e)
+{
+	if (e->copy)
 	{
 		dl_pool_give(&lg_copies, e->copy, e->copy_bytes);
 		e->copy = NULL;
@@ -964,18 +1004,18 @@ static int lg_reclaim(struct dl_pool *pool, unsigned int frame, const struct lg_
 	{
 		struct lg_entry *e = &lg_table[i];
 
-		if (pool == &lg_copies)
-			lg_free_copies(e, frame, 0);
 		if (e == keep || !e->stream || frame - e->last_frame < DL_FENCE ||
 			!(pool == &lg_copies ? e->copy != NULL : e->me != NULL))
 			continue;
 		if (!oldest || e->last_frame - oldest->last_frame > 0x80000000u)
 			oldest = e;
 	}
+	if (pool == &lg_copies)
+		lg_retired_free(frame);
 	if (!oldest)
 		return 0;
 	if (pool == &lg_copies)
-		lg_free_copies(oldest, frame, 1);
+		lg_free_copy_now(oldest);
 	else
 	{
 		lg_free_data(oldest);
@@ -1042,13 +1082,7 @@ static struct lg_entry *lg_entry_for(struct level_stream *stream, unsigned int k
 	if (victim->stream)
 	{
 		lg_free_data(victim);
-		lg_free_copies(victim, frame, 1);
-		if (victim->retired)
-		{
-			/* its last draw was past the fence, and so was the retiring */
-			dl_pool_give(&lg_copies, victim->retired, victim->retired_bytes);
-			victim->retired = NULL;
-		}
+		lg_free_copy_now(victim);
 	}
 	memset(victim, 0, sizeof(*victim));
 	victim->stream = stream;
@@ -1260,7 +1294,7 @@ static const unsigned short *level_geo_sort(struct level_stream *stream, unsigne
 		lg_refused[LGR_FULL]++;
 		goto old_way;
 	}
-	lg_free_copies(e, frame, 0);
+	lg_retired_free(frame);
 	valid = e->me && e->list_version == list_version && !memcmp(e->stamp, stamp, sizeof(stamp));
 	need = (unsigned int)(chunk_count * sizeof(struct lg_chunk) + triangle_count);
 	if (!valid)
@@ -1282,14 +1316,7 @@ static const unsigned short *level_geo_sort(struct level_stream *stream, unsigne
 		memset(e->me, 0, chunk_count * sizeof(struct lg_chunk));
 		memcpy(e->stamp, stamp, sizeof(stamp));
 		e->list_version = list_version;
-		lg_free_copies(e, frame, 0);
-		if (e->copy && !e->retired)
-		{
-			e->retired = e->copy;
-			e->retired_bytes = e->copy_bytes;
-			e->retired_frame = frame;
-			e->copy = NULL;
-		}
+		lg_retire(e, frame);
 		e->drawn = LG_NONE;
 	}
 	e->last_frame = frame;
@@ -1390,14 +1417,7 @@ static const unsigned short *level_geo_sort(struct level_stream *stream, unsigne
 		used += totals[b] != 0;
 	memcpy(e->totals, totals, sizeof(totals));
 	/* the copy this one replaces, given back past the fence */
-	lg_free_copies(e, frame, 0);
-	if (e->copy && !e->retired)
-	{
-		e->retired = e->copy;
-		e->retired_bytes = e->copy_bytes;
-		e->retired_frame = frame;
-		e->copy = NULL;
-	}
+	lg_retire(e, frame);
 	e->drawn = LG_NONE;
 	if (used <= 1 && !dropped)
 	{
