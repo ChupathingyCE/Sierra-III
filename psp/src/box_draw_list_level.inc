@@ -771,8 +771,9 @@ for levelkeptcheck's comparison.
 
 Its data: the entries, and the per-triangle buckets and chunk records (read
 only by the CPU that writes the list), and the sorted copies' pages (read by
-the GE), all carved from the display list's end beside Tier 1's store:
-"levelgeokbN" the copies' pool (64 KB), "levelgeomekbN" the buckets' (32 KB).
+the GE), carved from the display list's end beside Tier 1's store:
+"levelgeokbN" the copies' pool (64 KB); the entries and the buckets' pool
+("levelgeomekbN", 32 KB) in a heap block of their own.
 No VFPU instruction and no system call: the ME runs it */
 
 #define LG_ENTRIES 128
@@ -877,8 +878,8 @@ static void lg_edges(void)
 static void level_geo_carve(void)
 {
 	extern int psp_keep_number(const char *prefix, int fallback);
-	unsigned int copies, me, table, bytes;
-	unsigned char *at;
+	unsigned int copies, me, table;
+	unsigned char *own;
 
 	if (!level_geo_on() || !display_list || lg_table)
 		return;
@@ -887,28 +888,38 @@ static void level_geo_carve(void)
 	me = (unsigned int)psp_keep_number("levelgeomekb", 32);
 	me = (me < 8 ? 8 : me > 64 ? 64 : me) * 1024u;
 	table = ((unsigned int)LG_ENTRIES * sizeof(struct lg_entry) + 63) & ~63u;
-	bytes = table + me + copies;
-	if (bytes > (unsigned int)display_list_size / 4)
+	if (copies > (unsigned int)display_list_size / 4)
 	{
-		platform_log("GE: levelgeo: a %u KB store is more than a quarter of the %d KB list: off", bytes / 1024,
+		platform_log("GE: levelgeo: a %u KB pool is more than a quarter of the %d KB list: off", copies / 1024,
 			display_list_size / 1024);
 		level_geo = 0;
 		return;
 	}
-	at = (unsigned char *)display_list + display_list_size - bytes;
-	lg_table = (struct lg_entry *)at;
+	/* the entries and the buckets, which only the CPU that writes the list
+	reads, in a heap block of their own: the list's arena keeps only what
+	the GE reads (levelkeptroom3: all of it from the list left b40 and c20
+	under the 64 KB margin) */
+	own = memalign(64, table + me);
+	if (!own)
+	{
+		platform_log("GE: levelgeo: no %u KB of heap for its entries and buckets: off", (table + me) / 1024);
+		level_geo = 0;
+		return;
+	}
+	lg_table = (struct lg_entry *)own;
 	memset(lg_table, 0, table);
-	dl_pool_carve(&lg_me, at + table, me, LG_ME_PAGE);
-	dl_pool_carve(&lg_copies, at + table + me, copies, LG_COPY_PAGE);
-	sceKernelDcacheWritebackInvalidateRange(at, bytes);
-	display_list_size -= (int)bytes;
+	dl_pool_carve(&lg_me, own + table, me, LG_ME_PAGE);
+	sceKernelDcacheWritebackInvalidateRange(own, table + me);
+	dl_pool_carve(&lg_copies, (unsigned char *)display_list + display_list_size - copies, copies, LG_COPY_PAGE);
+	sceKernelDcacheWritebackInvalidateRange((unsigned char *)display_list + display_list_size - copies, copies);
+	display_list_size -= (int)copies;
 	lg_edges();
 	/* the edges, the pools' bounds and the table's place, as the CPU that
 	replays (the ME) will read them */
 	sceKernelDcacheWritebackAll();
-	platform_log("GE: levelgeo%s: its store is the display list's last %u KB (the list now %d KB): %d entries, the buckets' pool %u KB, the copies' %u KB%s",
-		level_geo_checking ? " (with its check)" : "", bytes / 1024, display_list_size / 1024, LG_ENTRIES, me / 1024,
-		copies / 1024, lg_margin ? ", with a bucket margin" : "");
+	platform_log("GE: levelgeo%s: the copies' pool is the display list's last %u KB (the list now %d KB); %d entries and the buckets' pool of %u KB in %u KB of heap%s",
+		level_geo_checking ? " (with its check)" : "", copies / 1024, display_list_size / 1024, LG_ENTRIES, me / 1024,
+		(table + me) / 1024, lg_margin ? ", with a bucket margin" : "");
 	if (lg_margin)
 		platform_log("GE: levelgeo: levelbucketmargin%d: a held bucket may be up to %d%% of a bucket off its edge (not exact)",
 			lg_margin, lg_margin);
@@ -1102,32 +1113,54 @@ static const float *lg_eye_at(unsigned short frame16, unsigned int frame)
 	return lg_ring_eye[at];
 }
 
-/* one kept triangle's buckets' slack in the stream's frame: |d| sin of the
-angle to the nearer edge of its bucket (d the eye to its centre, n its
-normal; the bucket is the angle between them), worked out from the angle's
-cosine and sine with the edges' (no library call), less 2e-4 of a radian's
-sine for the floats; and its corners' distance from the detail fade */
-static void lg_slack(const struct ge_vertex *base, const unsigned short *triangle, int bucket, int far_possible,
-	float far_d, float *bangle, float *bfar)
+/* one kept triangle's bucket, by angle_bucket_one's very expressions (the
+same bits: levelgeocheck compares them), and from the same edges, normal and
+centre its buckets' slack in the stream's frame: |d| sin of the angle to the
+nearer edge of its bucket (d the eye to its centre, n its normal; the bucket
+is the angle between them), worked out from the angle's cosine and sine with
+the edges' (no library call), less 2e-4 of a radian's sine for the floats;
+and its corners' distance from the detail fade */
+static int lg_bucket_slack(const struct ge_vertex *stream, const unsigned short *triangle, int far_possible,
+	float far_squared, float far_d, float *bangle, float *bfar)
 {
-	const struct ge_vertex *a = &base[triangle[0]], *p = &base[triangle[1]], *q = &base[triangle[2]];
 	float ex = level_eye[0], ey = level_eye[1], ez = level_eye[2];
+	const struct ge_vertex *a = &stream[triangle[0]], *p = &stream[triangle[1]], *q = &stream[triangle[2]];
 	float e1[3] = { p->x - a->x, p->y - a->y, p->z - a->z }, e2[3] = { q->x - a->x, q->y - a->y, q->z - a->z };
 	float n[3] = { e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0] };
-	float d[3] = { a->x - ex + (e1[0] + e2[0]) * (1.0f / 3.0f), a->y - ey + (e1[1] + e2[1]) * (1.0f / 3.0f),
-		a->z - ez + (e1[2] + e2[2]) * (1.0f / 3.0f) };
+	float da[3] = { a->x - ex, a->y - ey, a->z - ez };
+	float d[3] = { da[0] + e1[0] * (1.0f / 3.0f) + e2[0] * (1.0f / 3.0f), da[1] + e1[1] * (1.0f / 3.0f) + e2[1] * (1.0f / 3.0f),
+		da[2] + e1[2] * (1.0f / 3.0f) + e2[2] * (1.0f / 3.0f) };
+	float dot = n[0] * d[0] + n[1] * d[1] + n[2] * d[2];
 	float nn = n[0] * n[0] + n[1] * n[1] + n[2] * n[2], dd = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
-	int b = bucket % ANGLE_BUCKETS;
+	float lengths = nn * dd, sa = 0.0f, sp = 0.0f, sq = 0.0f;
+	int bucket = 0, b, far = 0;
 
+	if (lengths > 0.0f)
+	{
+		float ratio_limit = dot * dot;
+
+		while (bucket < ANGLE_BUCKETS - 1 && lengths > ratio_limit * angle_factor[bucket] * angle_factor[bucket] * 1.41421356f)
+			bucket++;
+	}
+	if (far_possible)
+	{
+		float dp[3] = { p->x - ex, p->y - ey, p->z - ez }, dq[3] = { q->x - ex, q->y - ey, q->z - ez };
+
+		sa = da[0] * da[0] + da[1] * da[1] + da[2] * da[2];
+		sp = dp[0] * dp[0] + dp[1] * dp[1] + dp[2] * dp[2];
+		sq = dq[0] * dq[0] + dq[1] * dq[1] + dq[2] * dq[2];
+		/* angle_bucket_one's test, its corners' distances made in full here for the slack */
+		far = sa > far_squared && sp > far_squared && sq > far_squared;
+	}
+	b = bucket;
 	if (nn <= 0.0f)
 		*bangle = 1e30f; /* no normal: bucket 0 wherever the eye is */
 	else if (dd <= 0.0f)
 		*bangle = 0.0f;
 	else
 	{
-		float dot = n[0] * d[0] + n[1] * d[1] + n[2] * d[2];
 		float x[3] = { n[1] * d[2] - n[2] * d[1], n[2] * d[0] - n[0] * d[2], n[0] * d[1] - n[1] * d[0] };
-		float inverse = 1.0f / sqrtf(nn * dd), c = fabsf(dot) * inverse;
+		float inverse = 1.0f / sqrtf(lengths), c = fabsf(dot) * inverse;
 		float s = sqrtf(x[0] * x[0] + x[1] * x[1] + x[2] * x[2]) * inverse, room = 1.0f, r;
 
 		if (b > 0 && (r = s * lg_lo_c[b - 1] - c * lg_lo_s[b - 1]) < room)
@@ -1140,21 +1173,16 @@ static void lg_slack(const struct ge_vertex *base, const unsigned short *triangl
 	*bfar = 1e30f;
 	if (far_possible)
 	{
-		const struct ge_vertex *corner[3] = { a, p, q };
-		int k;
+		float ga = fabsf(sqrtf(sa) - far_d), gp = fabsf(sqrtf(sp) - far_d), gq = fabsf(sqrtf(sq) - far_d);
 
-		for (k = 0; k < 3; k++)
-		{
-			float cx = corner[k]->x - ex, cy = corner[k]->y - ey, cz = corner[k]->z - ez;
-			float gap = fabsf(sqrtf(cx * cx + cy * cy + cz * cz) - far_d);
-
-			if (gap < *bfar)
-				*bfar = gap;
-		}
+		*bfar = ga < gp ? ga : gp;
+		if (gq < *bfar)
+			*bfar = gq;
 		*bfar -= 1e-4f + far_d * 1e-6f;
 		if (*bfar < 0.0f)
 			*bfar = 0.0f;
 	}
+	return far ? bucket + ANGLE_BUCKETS : bucket;
 }
 
 /* angle_sort's runs and counts from a draw's bucket totals */
@@ -1374,12 +1402,10 @@ static const unsigned short *level_geo_sort(struct level_stream *stream, unsigne
 
 				if (!((mask >> (t - first)) & 1u))
 					continue;
-				bucket = angle_bucket_one(stream->base, indices + 3 * t, level_eye[0], level_eye[1], level_eye[2], fp,
-					detail_far_squared);
+				bucket = lg_bucket_slack(stream->base, indices + 3 * t, fp, detail_far_squared, far_d, &sa, &sf);
 				if (!(c->state & 1) || c->mask != mask || buckets[t] != bucket)
 					changed = 1;
 				buckets[t] = (unsigned char)bucket;
-				lg_slack(stream->base, indices + 3 * t, bucket, fp, far_d, &sa, &sf);
 				if (sa < bangle)
 					bangle = sa;
 				if (sf < bfar)

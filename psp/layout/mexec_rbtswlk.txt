@@ -301,7 +301,7 @@ level_geo_wanted
 level_geo_sort
 lg_entry_for
 lg_eye_at
-lg_slack
+lg_bucket_slack
 lg_runs
 lg_kept
 lg_write
