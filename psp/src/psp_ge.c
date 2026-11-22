@@ -4830,10 +4830,14 @@ sceKernelGetSystemTimeLow call; their own cost is measured once at the
 first report (one timer reading) so the parts can be read net of it */
 #if defined(PSP_DRAWLIST) && defined(PSP_RECON)
 /* both: the level's split part (11), meparts' five geometry steps (from
-MP_PART), and the kept path's own steps (17-22, box_draw_list_level.inc) */
-#define GE_PARTS 23
+MP_PART), the kept path's own steps (17-22, box_draw_list_level.inc) and the
+level draw's ground split by step (23-26) */
+#define GE_PARTS 27
 #define MP_PART 12
-#define GE_PART_SLOTS 24
+#define GE_PART_SLOTS 32
+/* the level draw's own steps split finer (23-26): part 0 keeps the index
+range scan, 11 the cut corners, 3 the passes; the draw's tail is 26's */
+#define LEVEL_SPLIT 1
 #elif defined(PSP_DRAWLIST)
 /* the level draw's part after the cut split in two: the index copy, slant
 sort and cut corners apart from the passes (docs/box_draw_list.md §12.1a (b)) */
@@ -4882,7 +4886,9 @@ static const char *const ge_part_names[GE_PARTS] = {
 	on the old path, so both sides of its A/B split alike */
 	, "level: matrix to the decision (kept: its entry lookup)", "level: uv centre and base slope",
 	"kept: blocks CALLed and live draws", "kept: finish (entry count, stall)", "kept: matrix, cull and stamp",
-	"kept: a made draw's blocks and draws"
+	"kept: a made draw's blocks and draws",
+	"level: stream fetch and bake (part 0 is then the index range scan)", "level: index list copy (geshow2) and write-back",
+	"level: slant sort (part 11 is then the cut corners)", "level: the tail (submerged, decal record, world; part 3 is then the passes)"
 #endif
 	};
 static unsigned int part_mark_by[2][16] __attribute__((aligned(64)));
@@ -11399,6 +11405,7 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 			vertex_count = stream->count;
 		}
 	}
+	ME_PART_MARK(23);
 	for (index = 0; index < triangle_count * 3; index++)
 	{
 		unsigned int vertex = indices[index];
@@ -11601,6 +11608,7 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 		show2_index_copies++;
 		show2_index_bytes += kept_count * 3 * sizeof(unsigned short);
 	}
+	ME_PART_MARK(24);
 	{
 		unsigned int angle_start = ge_clock();
 
@@ -11613,6 +11621,7 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 		if (cut_count > fog_pieces || pieces_store.dropped > fog_dropped)
 			angle_near_any = 1;
 	}
+	ME_PART_MARK(25);
 	/* build 66: the cut corners as GE vertices, once for the base passes and
 	once for the lightmap's */
 	if (cut_count > 0)
@@ -11917,6 +11926,10 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 			level_kept_check(&lk, stream, draw, kept_count, cut_count, base_key, lightmap_key, alpha_tested, base_slope);
 level_passes_done:
 #endif
+#ifdef LEVEL_SPLIT
+		/* meparts: the passes end here (a kept draw's, 0: its own are 19-22) */
+		ME_PART_MARK(3);
+#endif
 		sceGuDisable(GU_TEXTURE_2D);
 		sceGuTexLevelMode(tex_level_mode, tex_bias);
 		if (submerged_density > 0.0f)
@@ -11943,7 +11956,11 @@ level_passes_done:
 	sceGuDisable(GU_CULL_FACE);
 	draws_this_frame++;
 	triangles_this_frame += kept_count;
+#ifdef LEVEL_SPLIT
+	part_add(26);
+#else
 	part_add(3);
+#endif
 }
 
 /* "levelpretouch" (on; levelpretouchoff): a level draw without its copy
@@ -27633,7 +27650,7 @@ static void frame_end_show(void)
 					/* two lines: a log line holds 512 characters */
 					for (k = 0; k < GE_PARTS && written < (int)sizeof(parts) - 80; k++)
 					{
-						if (k == 4 || k == 14)
+						if (k == 4 || k == 14 || k == 21)
 						{
 							if (k == 4)
 								platform_log("GE: parts, us a frame (calls a frame): %s; one timer reading %u ns", parts, timer_cost_ns);
@@ -27659,7 +27676,7 @@ static void frame_end_show(void)
 						parts[0] = 0;
 						for (k = 0; k < GE_PARTS && rate > 0.0f; k++)
 						{
-							if (k == 7 || k == 14)
+							if (k == 7 || k == 14 || k == 21)
 							{
 								platform_log("GE: parts on the ME (meparts), us a frame (calls a frame; list words a frame): %s", parts);
 								written = 0;
