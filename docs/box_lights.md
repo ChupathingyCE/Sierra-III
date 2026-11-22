@@ -21,6 +21,7 @@
 | 8 | **No `psp/boxes/lights.upstream` exists, and no box page of any kind yet** — §5b's manifest has to be written with the page | [D] | `sierra/psp/` listing (only `presets.txt`), no `*.upstream` found |
 | 9 | Measured dynamic lights a frame: **d20 up to 10.4 mean / 15 the most** (one window), **c10 beach 1.5 mean**, c20 0.5–2.5 | [M] | `run-results/sierra-hw/43331666648/log.txt:1809`, `:3432`, `run-results/sierra-hw/43314261608/log.txt:4919` |
 | 10 | `lights_preprocess_scene` (the box's main-CPU selection) sits **before** the ME's collect and before `lights_render_diffuse`; the ME's answer for visibility is collected at its start (`psp_mevisland_collect` is called just before it) | [D] | `porttree/source/render/render.c:522-525`, `porttree/source/objects/object_lights.c:1410` |
+| 11 | **On today's tock the ME spends more than half of d20's render job on light draws: 31.4 ms a frame of 56.8**, 163 draws a frame at 193 us each, once the level opens up (1.4-2.7 ms in the opening). The largest single kind on the ME there; level draws are 13.8 ms | [M] | §10; the lab's row `diet5_mekinds_d20_3000` |
 
 ---
 
@@ -304,3 +305,28 @@ Engine entry points the port already cuts over — this is `psp/boxes/lights.ups
 **Budget (provisional until step 1).** §4a's 3.0 ms mean and 5.0 at the most of the ME stand as the proposal. If the kept lists serve the 59% of light draws LMC served, and those draws lose the 48% of their instructions that the walk and the reach are, the pass's instructions fall by about 28% on d20 [U on E: instructions, not time; misses are most of the ME's time and the kept list is read in place of the level's indices, vertices and normals, which is where a gain in misses would come from, unmeasured].
 
 **Not in slice 1:** the flashlight, the split, the camera-side half (45% of the pass's instructions), LM's merge, the light limit, and anything the GE draws differently.
+
+---
+
+## 10. The first measurement on today's tock (2026-11-22)
+
+**What ran [M].** d20 unsteered to 120 s on a PSP-3000, the tock's code at 610e9013 under its counted profile, two runs with `mekinds` (the ME's cycle counter around each record kind, a line every 300 frames) and two without. The lab's row `diet5_mekinds_d20_3000`.
+
+| 300 frames | All kinds, ms a frame | Light draws | Level draws | Audio and ring | Model parts |
+|---|---|---|---|---|---|
+| 1 | 17.1 | 1.4 | 5.7 | 3.2 | 2.3 |
+| 2 | 21.5 | 2.7 | 6.0 | 4.5 | 1.3 |
+| 3 | 43.8 | 24.0 | 9.6 | 2.6 | 2.5 |
+| 4 | 56.8 | 31.4 | 13.8 | 3.4 | 2.3 |
+| 5 | 56.8 | 31.4 | 13.8 | 3.3 | 2.3 |
+
+- In the last two windows a frame makes **163 light draws at 193 us each** and 58 level draws at 237 us. Light begin, gel faces and model point lights are under 0.1 ms together: the cost is the draws.
+- The two runs agree within 0.2% in every window.
+- Without the timer the render job is 55.3 ms there, so the timer adds about 1.5 ms.
+
+**What it does not show.** Whether the main CPU waits on that job. In these runs it did not (5 us a job): the frame was 148-204 ms with 123-141 ms of it ticks, so the tick bound it. The runs carried `statecrc`, and how much of that tick is the state's hashing was not measured [U]. The only measured wait on d20 is tock159's 14-17 ms a frame (§2).
+
+**What it changes here.**
+- §4's budget was written against 6.2 ms a frame of light draws on d20 (the census mean). On this stretch of today's tock it is 31.4 ms: the budget's ME row needs this stretch beside the census one before a ceiling is set.
+- §7's question 4 (the swamp's point lights against the flashlight): this run is unsteered, the flashlight off, so the 31.4 ms is the level's own lights.
+- §9's slice 1 skips the walk and the reach for a light that has not changed, 47.8% of the light pass's instructions in the model [E]: up to about 15 ms of the 31.4 [U on M x E]. Its gate asked for 2 ms a frame.
