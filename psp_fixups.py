@@ -60059,33 +60059,60 @@ static void *tick2_proof_room(long bytes)
 		memset(room, 0, bytes);
 	return room;
 }
-/* an overflow chunk from the heap, not the pool, so the pool holds only the old build's blocks */
-static boolean tick2_proof_take(void **reference, long size)
-{
-	*reference = memalign(16, size);
-	return *reference != NULL;
-}
-static void tick2_proof_give(void **reference)
-{
-	free(*reference);
-	*reference = NULL;
-}
 /* the moved bytes' places, written with the pattern */
 static void tick2_proof_fill(struct object_datum *object)
 {
 	memset(object->object.tick2_proof_root, %d, sizeof(object->object.tick2_proof_root));%s
 }
 """ % (TICK2_PROOF_BYTE, "\n\tmemset(object->object.tick2_proof_anim, %d, sizeof(object->object.tick2_proof_anim));" % TICK2_PROOF_BYTE if TICK2_ANIM else ""))
-    text, took = re.subn(r"memory_pool_block_allocate\(object_memory_pool, \(void \*\*\)&([\w>\-]*chunk\[\w+\]),", r"tick2_proof_take((void **)&\1,", text)
-    text, gave = re.subn(r"memory_pool_block_free\(object_memory_pool, \(void \*\*\)&([\w>\-]*chunk\[\w+\])\)", r"tick2_proof_give((void **)&\1)", text)
-    if took < 1 or took != gave:
-        check_fail("psp_fixups: TICK2 proof: %d chunk takes, %d gives" % (took, gave))
-        return 0
     if not CHECK_ONLY:
         open(objects_c, "w", errors="surrogateescape").write(text)
-    print("psp_fixups: TICK2 proof: the store outside the pool, %d overflow chunk sites on the heap" % took)
+    print("psp_fixups: TICK2 proof: the store outside the pool")
     return 1
 print("psp_fixups: the world store's proof form: %s (TICK2 proof)" % ("on" if tick2_proof_cut(TREE) else "off"))
+
+# every section's overflow chunks through one pair: counted for the census (the churn the PSP prices at
+# the milestone), and from the heap in the proof form so the pool holds only the old build's blocks
+def tick2_chunk_cut(tree):
+    if not TICK2_ROOT:
+        return 0
+    import re
+    objects_c = os.path.join(tree, "source/objects/objects.c")
+    text = open(objects_c, errors="surrogateescape").read()
+    first = "struct tick2_store *tick2_store; /* TICK2 root */\n"
+    if text.count(first) != 1:
+        check_fail("psp_fixups: TICK2 chunks: the store's pointer matches %d times" % text.count(first))
+        return 0
+    text, took = re.subn(r"memory_pool_block_allocate\(object_memory_pool, (\(void \*\*\)&[\w>\-]*chunk\[\w+\]),", r"tick2_chunk_take(\1,", text)
+    text, gave = re.subn(r"memory_pool_block_free\(object_memory_pool, (\(void \*\*\)&[\w>\-]*chunk\[\w+\])\)", r"tick2_chunk_give(\1)", text)
+    sections = 1 + TICK2_UNIT + TICK2_POSE
+    if took != sections or gave != sections:
+        check_fail("psp_fixups: TICK2 chunks: %d takes and %d gives, not %d" % (took, gave, sections))
+        return 0
+    text = text.replace(first, first + r"""/* an overflow chunk of any section (TICK2 chunks) */
+static boolean tick2_chunk_take(void **reference, long size)
+{%s
+	tick2_gc.chunks_taken++;
+	return TRUE;
+}
+static void tick2_chunk_give(void **reference)
+{%s
+	tick2_gc.chunks_returned++;
+}
+""" % (("""
+	*reference = memalign(16, size); /* the proof form: from the heap, so the pool holds only the old build's blocks */
+	if (!*reference)
+		return FALSE;""", """
+	free(*reference);
+	*reference = NULL;""") if TICK2_PROOF else ("""
+	if (!memory_pool_block_allocate(object_memory_pool, reference, size))
+		return FALSE;""", """
+	memory_pool_block_free(object_memory_pool, reference);""")))
+    if not CHECK_ONLY:
+        open(objects_c, "w", errors="surrogateescape").write(text)
+    print("psp_fixups: TICK2 chunks: %d sections' overflow chunks counted%s" % (sections, ", from the heap" if TICK2_PROOF else ""))
+    return 1
+tick2_chunk_cut(TREE)
 
 # PSP_GCCOUNT=1 (and every PSP_TICK2=root build): what the collector did on each map,
 # so slice 1's two builds can be held to the same deletions (spec section 18.3), with
@@ -60116,6 +60143,11 @@ def tick2_gccount(tree):
 					tick2_gc.low_node_bytes = tick2_gc.nodes_live * (long)sizeof(real_matrix4x3) + tick2_gc.orient_live * 2 * (long)sizeof(real_orientation);
 					tick2_gc.low_spare = tick2_gc_spare_now();
 					tick2_gc.low_chunks = tick2_gc_pose_chunks_now();
+					/* each section's live count here: the ship form sizes its tables by these (the lead, 15:2x) */
+					tick2_gc.low_objects = data->actual_count;
+					tick2_gc.low_units = tick2_gc.units_live;
+					tick2_gc.low_nodes = tick2_gc.nodes_live;
+					tick2_gc.low_orient = tick2_gc.orient_live;
 				}
 				if (!tick2_gc.contiguous_low || memory_pool_get_contiguous_free_size(object_memory_pool) < tick2_gc.contiguous_low)
 					tick2_gc.contiguous_low = memory_pool_get_contiguous_free_size(object_memory_pool);
@@ -60148,7 +60180,8 @@ static long object_header_new(
 """), ("\nboolean debug_object_garbage_collection;\n", """
 boolean debug_object_garbage_collection;
 static struct { long deleted, pool_peak, live_peak, free_low, units_live, units_peak, nodes_live, nodes_peak, orient_live, orient_peak,
-	low_contiguous, low_node_bytes, low_spare, low_chunks, contiguous_low; } tick2_gc; /* TICK2 gccount */
+	low_contiguous, low_node_bytes, low_spare, low_chunks, contiguous_low,
+	low_objects, low_units, low_nodes, low_orient, chunks_taken, chunks_returned; } tick2_gc; /* TICK2 gccount */
 
 static long tick2_gc_spare_now(void); /* after the store's code */
 static long tick2_gc_pose_chunks_now(void);
@@ -60204,6 +60237,8 @@ void psp_tick2_gc_report(const char *label, int level_end)
 	platform_psp_log("gccount (%s): at the pool's low: free %ld KB, the tail (contiguous) %ld KB, live node blocks as the old layout holds them %ld KB, the store's spare the collector counts %ld KB, node overflow chunks %ld; the tail's low %ld KB",
 		label, tick2_gc.free_low / 1024, tick2_gc.low_contiguous / 1024, tick2_gc.low_node_bytes / 1024, tick2_gc.low_spare / 1024,
 		tick2_gc.low_chunks, tick2_gc.contiguous_low / 1024);
+	platform_psp_log("gccount (%s): live at the pool's low: objects (ROOT records) %ld, units %ld, nodes %ld, interpolating nodes %ld; overflow chunks taken %ld, returned %ld",
+		label, tick2_gc.low_objects, tick2_gc.low_units, tick2_gc.low_nodes, tick2_gc.low_orient, tick2_gc.chunks_taken, tick2_gc.chunks_returned);
 #ifdef TICK2_POSE_CHUNK
 	if (tick2_pose_store)
 	{ /* TICK2 pose: the node arenas, and their overflow (spec section 35's report) */
