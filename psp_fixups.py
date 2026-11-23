@@ -58981,8 +58981,8 @@ TICK2_PROOF = os.environ.get("PSP_TICK2_PROOF", "") == "1"
 TICK2_PROOF_BYTE = 0xA5
 if TICK2_PROOF and os.environ.get("PSP_BIG_RAM", "") != "1":
     check_fail("psp_fixups: PSP_TICK2_PROOF=1 needs PSP_BIG_RAM=1 (the store's room outside the pool)")
-if TICK2_PROOF and TICK2_UNIT:
-    check_fail("psp_fixups: PSP_TICK2_PROOF=1 is built for root and anim so far, not unit or pose")
+if TICK2_PROOF and TICK2_POSE:
+    check_fail("psp_fixups: PSP_TICK2_PROOF=1 is built for root, anim and unit so far, not pose")
 # what leaves each datum: the record's 84 bytes less the pointer that stays (none in the proof form)
 TICK2_ROOT_SHRINK = 0 if TICK2_PROOF else 0x50
 # the store's capacity in records (spec section 23: the worst map's peak, 1,121 objects, and a margin)
@@ -59573,7 +59573,9 @@ def tick2_unit_cut(tree):
     if not m or m.group(1).count("\tstruct unit_animation animation;\n") != 1:
         check_fail("psp_fixups: TICK2 unit: _unit_datum's animation field isn't one line in units.h")
     elif not CHECK_ONLY:
-        body = m.group(1).replace("\tstruct unit_animation animation;\n", "")
+        body = m.group(1).replace("\tstruct unit_animation animation;\n",
+            "\tunsigned char tick2_proof_unit[sizeof(struct unit_animation)] __attribute__((aligned(__alignof__(struct unit_animation)))); /* TICK2 proof */\n"
+            if TICK2_PROOF else "")
         open(units_h, "w", errors="surrogateescape").write(text[:m.start(1)] + body + text[m.end(1):])
     # every touch: x->unit.animation (x a name or a call such as unit_get(i)), and biped motion's window
     touch = re.compile(r"\b([A-Za-z_]\w*(?:\([^()]*\))?)->unit\.animation\b")
@@ -59661,14 +59663,14 @@ def tick2_unit_cut(tree):
     path = os.path.join(tree, "source/objects/object_types.c")
     text = open(path, errors="surrogateescape").read()
     rows = re.compile(r"(\n\t\"(unit|biped|vehicle)\", '\w{4}', )0x([0-9A-Fa-f]+)(,)")
-    text, sized = rows.subn(lambda m: "%s0x%X%s" % (m.group(1), int(m.group(3), 16) - (TICK2_UNIT_END - TICK2_UNIT_AT), m.group(4)), text)
+    text, sized = rows.subn(lambda m: "%s0x%X%s" % (m.group(1), int(m.group(3), 16) - (0 if TICK2_PROOF else TICK2_UNIT_END - TICK2_UNIT_AT), m.group(4)), text)
     if sized != 3:
         check_fail("psp_fixups: TICK2 unit: %d unit-family sizes in object_types.c, not 3" % sized)
     elif not CHECK_ONLY:
         open(path, "w", errors="surrogateescape").write(text)
     # the engine's layout checks on unit-family datums past the field, already moved for ROOT and
     # ANIM: absolute (unit, biped, vehicle) and relative to _unit_datum; one inside it fails
-    shrink = TICK2_UNIT_END - TICK2_UNIT_AT
+    shrink = 0 if TICK2_PROOF else TICK2_UNIT_END - TICK2_UNIT_AT # the proof form keeps the old layout
     moved = [0]
     def shift(at, end, after_cuts):
         def fix(m):
@@ -60039,7 +60041,7 @@ def tick2_proof_cut(tree):
         return 0
     text = text.replace(carve, '\t\tmemory_pool_initialize(object_memory_pool, "objects", OBJECT_MEMORY_POOL_SIZE); /* TICK2 proof */\n'
                                '\t\ttick2_roots = (struct tick2_root *)tick2_proof_room(bytes);\n')
-    text = text.replace(fill, "\t\t\tmemset(header->datum, 0, size);\n\t\t\ttick2_proof_fill((struct object_datum *)header->datum); /* TICK2 proof */\n"
+    text = text.replace(fill, "\t\t\tmemset(header->datum, 0, size);\n\t\t\ttick2_proof_fill(header); /* TICK2 proof */\n"
                               "\t\t\tstruct tick2_root *record = tick2_record_take(); /* TICK2 root */\n")
     text = text.replace(first, first + r"""void *memalign(size_t alignment, size_t size); /* as the port declares it further down */
 void free(void *pointer);
@@ -60060,11 +60062,17 @@ static void *tick2_proof_room(long bytes)
 	return room;
 }
 /* the moved bytes' places, written with the pattern */
-static void tick2_proof_fill(struct object_datum *object)
+static void tick2_proof_fill(struct object_header_datum *header)
 {
-	memset(object->object.tick2_proof_root, %d, sizeof(object->object.tick2_proof_root));%s
+	struct object_datum *object = (struct object_datum *)header->datum;
+
+	memset(object->object.tick2_proof_root, %d, sizeof(object->object.tick2_proof_root));%s%s
 }
-""" % (TICK2_PROOF_BYTE, "\n\tmemset(object->object.tick2_proof_anim, %d, sizeof(object->object.tick2_proof_anim));" % TICK2_PROOF_BYTE if TICK2_ANIM else ""))
+""" % (TICK2_PROOF_BYTE,
+       "\n\tmemset(object->object.tick2_proof_anim, %d, sizeof(object->object.tick2_proof_anim));" % TICK2_PROOF_BYTE if TICK2_ANIM else "",
+       "\n\tif (header->type == _object_type_biped || header->type == _object_type_vehicle)\n"
+       "\t\tmemset(((struct unit_datum *)object)->unit.tick2_proof_unit, %d, sizeof(((struct unit_datum *)object)->unit.tick2_proof_unit));" % TICK2_PROOF_BYTE
+       if TICK2_UNIT else ""))
     if not CHECK_ONLY:
         open(objects_c, "w", errors="surrogateescape").write(text)
     print("psp_fixups: TICK2 proof: the store outside the pool")
