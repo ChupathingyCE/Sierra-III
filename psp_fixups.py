@@ -59183,7 +59183,7 @@ static unsigned long psp_object_checksum_datum(struct object_header_datum const 
          "ledger2 leg, d20_play1 and c10_play1; a10 and d40 from tick_c5_memory_sheet.md); past them the store overflows (spec 27) */\n"
          "static long tick2_slots_for_map(const char *name)\n{\n"
          "\tstatic const struct { char map[4]; short slots; } table[] = {\n"
-         "\t\t{\"a10\", 432}, {\"a30\", 784}, {\"a50\", 1408}, {\"b30\", 1296}, {\"b40\", 1184},\n"
+         "\t\t{\"a10\", 432}, {\"a30\", 944}, {\"a50\", 1408}, {\"b30\", 1296}, {\"b40\", 1184},\n"
          "\t\t{\"c10\", 1440}, {\"c20\", 896}, {\"c40\", 1088}, {\"d20\", 1296}, {\"d40\", 528}};\n"
          "\tconst char *last = name;\n\tconst char *c;\n\tunsigned k;\n\n"
          "\tfor (c = name; c && *c; c++)\n\t\tif (*c == '\\\\' || *c == '/')\n\t\t\tlast = c + 1;\n"
