@@ -59594,6 +59594,51 @@ static void psp_device_trace(const char *what, short group_index, real value, vo
     text = text[:first_def] + "\n" + prelude + text[first_def + 1:]
     if not CHECK_ONLY:
         open(path, "w", errors="surrogateescape").write(text)
+    # every tick, a hash of every object's animation state (in the datum, or ANIM's record under
+    # PSP_TICK2=anim): the play hash leaves it out, so a part there shows only once play parts
+    path = os.path.join(tree, "source/objects/objects.c")
+    text = open(path, errors="surrogateescape").read()
+    where = "(*tick2_anim_of(object->object.root))" if TICK2_ANIM else "object->object.animation"
+    text += """
+/* SEEDTRACE: the animation states' hash for statecrc's line (game_state.c) */
+void psp_objects_anim_hash_log(long tick)
+{
+	unsigned long hash = 2166136261UL;
+	long index;
+
+	for (index = data_next_index(object_header_data, NONE); index != NONE; index = data_next_index(object_header_data, index))
+	{
+		struct object_header_datum *header = (struct object_header_datum *)datum_get(object_header_data, index);
+		struct object_datum *object = (struct object_datum *)header->datum;
+		unsigned long const *word;
+		unsigned k;
+
+		if (!object)
+			continue;
+		word = (unsigned long const *)&%s;
+		hash = (hash ^ (unsigned long)DATUM_INDEX_TO_ABSOLUTE_INDEX(index)) * 16777619UL;
+		for (k = 0; k < sizeof(struct object_animation_state) / 4; k++)
+			hash = (hash ^ word[k]) * 16777619UL;
+		if (tick >= psp_seedtrace_first_anim && tick <= psp_seedtrace_first_anim + 10 && psp_seedtrace_first_anim >= 0)
+			platform_psp_log("animtrace: tick %%ld, object %%ld (%%s), %%08lx %%08lx %%08lx", tick, (long)DATUM_INDEX_TO_ABSOLUTE_INDEX(index),
+				tag_get_name(object->definition_index), word[0], word[1], word[2]);
+	}
+	platform_psp_log("animsum: tick %%ld %%08lx", tick, hash);
+}
+""" % where
+    text = text.replace("psp_seedtrace_first_anim", "psp_seedtrace_first")
+    text = text.replace("\nvoid psp_objects_anim_hash_log(long tick)\n", "\nextern long psp_seedtrace_first; /* random_math.c */\nvoid psp_objects_anim_hash_log(long tick)\n", 1)
+    if not CHECK_ONLY:
+        open(path, "w", errors="surrogateescape").write(text)
+    path = os.path.join(tree, "source/saved games/game_state.c")
+    text = open(path, errors="surrogateescape").read()
+    old = "\t\tpsp_objects_play_dump(tick);\n"
+    if text.count(old) != 1:
+        check_fail("psp_fixups: SEEDTRACE: statecrc's play dump matches %d times" % text.count(old))
+        return 0
+    text = text.replace(old, old + "\t\t{ extern void psp_objects_anim_hash_log(long tick); psp_objects_anim_hash_log(tick); } /* SEEDTRACE */\n")
+    if not CHECK_ONLY:
+        open(path, "w", errors="surrogateescape").write(text)
     return 1
 print("psp_fixups: the local seed's tracer: %s (SEEDTRACE)" % ("on" if seed_trace(TREE) else "off"))
 
