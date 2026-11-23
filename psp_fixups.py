@@ -59293,12 +59293,12 @@ static unsigned long psp_object_checksum_datum(struct object_header_datum const 
          ("#define TICK2_COLLECTOR_SPARE() TICK2_STORE_SPARE()\n" if TICK2_SPARE_READ else
           "#define TICK2_COLLECTOR_SPARE() 0L /* the pool as it is (PSP_TICK2_SPARE=1: plus the store's spare) */\n") +
          "char *main_get_map_name(void);\n"
-         "/* the store's records for a map: the larger of its peaks on today's tock and in C5, + 15%%, rounded up to 16 (the lab's census27: every\n"
-         "ledger2 leg, d20_play1 and c10_play1; a10 and d40 from tick_c5_memory_sheet.md); past them the store overflows (spec 27) */\n"
+         "/* the store's records for a map: its live objects at the object pool's low (spec section 36, tick2census2); a map without a\n"
+         "bench keeps census27's and C5's peak + 15%%, rounded up to 16; past them the store overflows (spec 27) */\n"
          "static long tick2_slots_for_map(const char *name)\n{\n"
          "\tstatic const struct { char map[4]; short slots; } table[] = {\n"
-         "\t\t{\"a10\", 432}, {\"a30\", 944}, {\"a50\", 1408}, {\"b30\", 1296}, {\"b40\", 1184},\n"
-         "\t\t{\"c10\", 1440}, {\"c20\", 896}, {\"c40\", 1088}, {\"d20\", 1296}, {\"d40\", 528}};\n"
+         "\t\t{\"a10\", 398}, {\"a30\", 673}, {\"a50\", 1408}, {\"b30\", 965}, {\"b40\", 1184},\n"
+         "\t\t{\"c10\", 1440}, {\"c20\", 623}, {\"c40\", 1088}, {\"d20\", 1124}, {\"d40\", 453}};\n"
          "\tconst char *last = name;\n\tconst char *c;\n\tunsigned k;\n\n"
          "\tfor (c = name; c && *c; c++)\n\t\tif (*c == '\\\\' || *c == '/')\n\t\t\tlast = c + 1;\n"
          "\tfor (k = 0; last && k < sizeof(table) / sizeof(table[0]); k++)\n"
@@ -59892,15 +59892,16 @@ def tick2_pose_cut(tree):
          "\t\tlong orient_nodes = tick2_table_for_map(main_get_map_name(), 3); /* TICK2 pose */\n")
     once(objects_c, "\nstatic long tick2_slots_for_map(const char *name)\n",
          r"""
-/* the unit and node tables per map (spec section 35): units at the larger of census27's (via tick2unit1b's
-gccount) and C5's peak + 15%%, rounded to 16; nodes at the larger peak, no margin (overflow takes the rest);
-the orientation run at half the nodes until the census' peak of nodes on types that interpolate */
+/* the unit and node tables per map (spec section 36, the lead 2026-11-23 15:2x): each at its live count at the
+object pool's low, where a reserved but unused byte is the only cost (tick2census2), overflow chunks taking the
+rest; a map without a bench keeps its whole-map figure (units at census27's and C5's peak + 15%%, nodes at the
+peak), its orientation run at half its nodes until it gets one */
 static long tick2_table_for_map(const char *name, int which)
 {
 	static const struct { char map[4]; short units, nodes, orient_nodes; } table[] = {
-		{"a10", 96, 2084, 1042}, {"a30", 160, 3977, 1988}, {"a50", 96, 3229, 1614}, {"b30", 112, 3588, 1794},
-		{"b40", 176, 3836, 1918}, {"c10", 16, 2793, 1396}, {"c20", 80, 2623, 1311}, {"c40", 208, 4751, 2375},
-		{"d20", 96, 3231, 1615}, {"d40", 48, 1476, 738}};
+		{"a10", 75, 2083, 1372}, {"a30", 67, 2279, 1556}, {"a50", 96, 3229, 1614}, {"b30", 34, 2267, 917},
+		{"b40", 176, 3836, 1918}, {"c10", 16, 2793, 1396}, {"c20", 68, 2376, 1464}, {"c40", 208, 4751, 2375},
+		{"d20", 66, 3228, 1767}, {"d40", 30, 1471, 932}};
 	const char *last = name;
 	const char *c;
 	unsigned k;
