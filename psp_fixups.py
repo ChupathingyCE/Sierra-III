@@ -60168,7 +60168,9 @@ long tick2_sc_note(long object_index, char const *file, int line);
         at = text.index(head)
         end = text.index("\n}\n", at) + 3
         body = text[at:end].replace(head.split("(")[0].split()[-1] + "(", inner + "(", 1)
-        return text[:at] + body + wrapper + text[end:]
+        # the wrapper's prototype first: the renamed body may call the old name (object_update recurses on children)
+        proto = wrapper.split("\n{", 1)[0].strip() + ";\n"
+        return text[:at] + proto + body + wrapper + text[end:]
     c = wrap(c, "void objects_update(\n\tvoid)\n{", "tick2_sc_objects_update", r"""
 void objects_update(
 	void)
