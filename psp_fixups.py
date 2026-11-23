@@ -59789,7 +59789,29 @@ def datum_raw_reads(tree):
         return 0
     if not CHECK_ONLY:
         open(path, "w", errors="surrogateescape").write(text.replace(old, new))
-    return 1
+    # perception's views onto a unit datum (the decompile's padded structs: a fixed byte offset in
+    # every layout): read the fields at those offsets in the old layout by name (spec section 28;
+    # a30 under PSP_TICK2=anim parted on the first, bugs.md 2026-11-23). +0x3D0 is the unit's
+    # feign_death_timer (the view names it parent_seat_index); +0xB6 is damage_flags' low byte;
+    # +0x68 is owner_team_index. The same bytes in the old build.
+    path = os.path.join(tree, "source/ai/actor_perception.c")
+    text = open(path, errors="surrogateescape").read()
+    pairs = [
+        ("((struct actor_perception_unit_view *)unit)\n\t\t\t\t\t\t->parent_seat_index == 0",
+         "unit->unit.feign_death_timer == 0 /* psp_fixups.py: the view's +0x3D0 */"),
+        ("target_unit->active_region_flags,",
+         "(byte)((struct unit_datum *)target_unit)->object.damage_flags, /* psp_fixups.py: the view's +0xB6 */"),
+        ("responsible_unit->team))",
+         "((struct unit_datum *)responsible_unit)->object.owner_team_index)) /* psp_fixups.py: the view's +0x68 */"),
+    ]
+    for old, new in pairs:
+        if text.count(old) != 1:
+            check_fail("psp_fixups: a perception view's read matches %d times: %r" % (text.count(old), old[:50]))
+            return 0
+        text = text.replace(old, new)
+    if not CHECK_ONLY:
+        open(path, "w", errors="surrogateescape").write(text)
+    return 4
 print("psp_fixups: the engine's raw datum reads read from the structure: %d" % datum_raw_reads(TREE))
 
 # PSP_SEEDTRACE=1: who draws the local random seed. With "seedtraceN", each draw
