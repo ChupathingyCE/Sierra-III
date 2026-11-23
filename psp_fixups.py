@@ -60125,6 +60125,198 @@ static void tick2_chunk_give(void **reference)
     return 1
 tick2_chunk_cut(TREE)
 
+# PSP_TICK2_STALECENSUS=1 (with PSP_GCCOUNT=1; the posing pass's first step, spec section 33): on the old
+# path, every read of an object's node matrices or markers inside objects_update, by file and line, split
+# by whether the object read was already posed this tick (the old loop gave the reader this tick's pose;
+# (B), the batch after motion, would give it last tick's) and whether it read its own. Reads of an object
+# not yet posed this tick read last tick's pose in both forms, so they're counted apart. Not counted: reads
+# straight through object_header_block_get (8 sites, mostly the compute's own) and reads on the ME.
+TICK2_STALECENSUS = os.environ.get("PSP_TICK2_STALECENSUS", "") == "1"
+def tick2_stale_census_cut(tree):
+    if not TICK2_STALECENSUS:
+        return 0
+    if not TICK2_GCCOUNT:
+        check_fail("psp_fixups: PSP_TICK2_STALECENSUS=1 needs PSP_GCCOUNT=1 (its report rides the collector's)")
+        return 0
+    objects_h = os.path.join(tree, "source/objects/objects.h")
+    objects_c = os.path.join(tree, "source/objects/objects.c")
+    h = open(objects_h, errors="surrogateescape").read()
+    c = open(objects_c, errors="surrogateescape").read()
+    proto = "short object_get_marker_by_name(long object_index, char const *name, struct object_marker *markers, short maximum_marker_count);\n"
+    if h.count(proto) != 1:
+        check_fail("psp_fixups: TICK2 stale census: the marker getter's prototype matches %d times" % h.count(proto))
+        return 0
+    h = h.replace(proto, proto + r"""/* TICK2 stale census: each read counted by its file and line (the definitions in objects.c name these in parentheses) */
+long tick2_sc_note(long object_index, char const *file, int line);
+#define object_get_node_matrices(o) ((object_get_node_matrices)(tick2_sc_note((o), __FILE__, __LINE__)))
+#define object_get_node_matrix(o, n) ((object_get_node_matrix)(tick2_sc_note((o), __FILE__, __LINE__), (n)))
+#define object_get_marker_by_name(o, a, b, k) ((object_get_marker_by_name)(tick2_sc_note((o), __FILE__, __LINE__), (a), (b), (k)))
+""")
+    defs = [("real_matrix4x3 *object_get_node_matrices(\n", "real_matrix4x3 *(object_get_node_matrices)(\n"),
+            ("real_matrix4x3 *object_get_node_matrix(\n", "real_matrix4x3 *(object_get_node_matrix)(\n"),
+            ("short object_get_marker_by_name(\n", "short (object_get_marker_by_name)(\n")]
+    for old, new in defs:
+        if c.count(old) != 1:
+            check_fail("psp_fixups: TICK2 stale census: %r matches %d times" % (old[:40], c.count(old)))
+            return 0
+        c = c.replace(old, new)
+    # the wrapped functions: each definition renamed, its wrapper after it under the old name
+    def wrap(text, head, inner, wrapper):
+        if text.count(head) != 1:
+            check_fail("psp_fixups: TICK2 stale census: %r matches %d times" % (head[:50], text.count(head)))
+            return None
+        at = text.index(head)
+        end = text.index("\n}\n", at) + 3
+        body = text[at:end].replace(head.split("(")[0].split()[-1] + "(", inner + "(", 1)
+        return text[:at] + body + wrapper + text[end:]
+    c = wrap(c, "void objects_update(\n\tvoid)\n{", "tick2_sc_objects_update", r"""
+void objects_update(
+	void)
+{ /* TICK2 stale census: the update phase, its poses marked */
+	tick2_sc_begin();
+	tick2_sc_objects_update();
+	tick2_sc_end();
+}
+""")
+    if c is None: return 0
+    c = c.replace("void tick2_sc_objects_update(\n\tvoid)\n{", "static void tick2_sc_objects_update(\n\tvoid)\n{", 1)
+    c = wrap(c, "static boolean object_update(\n\tlong object_index)\n{", "tick2_sc_object_update", r"""
+static boolean object_update(
+	long object_index)
+{ /* TICK2 stale census: whose update a read is in */
+	long was = tick2_sc_current;
+	boolean result;
+
+	tick2_sc_current = object_index;
+	result = tick2_sc_object_update(object_index);
+	tick2_sc_current = was;
+	return result;
+}
+""")
+    if c is None: return 0
+    c = wrap(c, "static void psp_object_update(long object_index, short absolute_index, struct object_header_datum *header)\n{",
+             "tick2_sc_psp_object_update", r"""
+static void psp_object_update(long object_index, short absolute_index, struct object_header_datum *header)
+{ /* TICK2 stale census: the port's update path, its object current too */
+	long was = tick2_sc_current;
+
+	tick2_sc_current = object_index;
+	tick2_sc_psp_object_update(object_index, absolute_index, header);
+	tick2_sc_current = was;
+}
+""")
+    if c is None: return 0
+    c = wrap(c, "static void object_compute_node_matrices_with(\n\tlong object_index,\n\tstruct object_datum *object,\n\tstruct object_definition *object_definition)\n{",
+             "tick2_sc_compute_with", r"""
+static void object_compute_node_matrices_with(
+	long object_index,
+	struct object_datum *object,
+	struct object_definition *object_definition)
+{ /* TICK2 stale census: a pose's own reads aren't readers, and the object is posed this tick from here */
+	tick2_sc_posing++;
+	tick2_sc_compute_with(object_index, object, object_definition);
+	tick2_sc_posing--;
+	tick2_sc_mark(object_index);
+}
+""")
+    if c is None: return 0
+    first = "\nboolean debug_object_garbage_collection;\n"
+    if c.count(first) != 1:
+        check_fail("psp_fixups: TICK2 stale census: the collector's flag matches %d times" % c.count(first))
+        return 0
+    c = c.replace(first, r"""
+/* TICK2 stale census (spec section 33) */
+#define TICK2_SC_SITES 512
+static struct { char const *file; int line; unsigned long own_fresh, other_fresh, other_unposed; } tick2_sc_site[TICK2_SC_SITES];
+static unsigned char tick2_sc_posed[MAXIMUM_OBJECTS_PER_MAP / 8 + 1];
+static int tick2_sc_in, tick2_sc_posing;
+static long tick2_sc_current = NONE;
+static unsigned long tick2_sc_ticks, tick2_sc_lost;
+
+static void tick2_sc_begin(void)
+{
+	memset(tick2_sc_posed, 0, sizeof(tick2_sc_posed));
+	tick2_sc_in = 1;
+	tick2_sc_ticks++;
+}
+static void tick2_sc_end(void)
+{
+	tick2_sc_in = 0;
+}
+static void tick2_sc_mark(long object_index)
+{
+	long k = object_index & 0xFFFF;
+
+	if (tick2_sc_in && object_index != NONE && k < MAXIMUM_OBJECTS_PER_MAP)
+		tick2_sc_posed[k >> 3] |= (unsigned char)(1 << (k & 7));
+}
+long tick2_sc_note(long object_index, char const *file, int line)
+{
+	long k = object_index & 0xFFFF;
+	unsigned long h;
+	int probes, fresh;
+
+	if (!tick2_sc_in || tick2_sc_posing || object_index == NONE || k >= MAXIMUM_OBJECTS_PER_MAP)
+		return object_index;
+	fresh = (tick2_sc_posed[k >> 3] >> (k & 7)) & 1;
+	h = ((unsigned long)file * 31UL + (unsigned long)line) % TICK2_SC_SITES;
+	for (probes = 0; probes < TICK2_SC_SITES; probes++, h = (h + 1) % TICK2_SC_SITES)
+		if (!tick2_sc_site[h].file || (tick2_sc_site[h].file == file && tick2_sc_site[h].line == line))
+			break;
+	if (probes == TICK2_SC_SITES)
+	{
+		tick2_sc_lost++;
+		return object_index;
+	}
+	tick2_sc_site[h].file = file;
+	tick2_sc_site[h].line = line;
+	if (!fresh)
+		tick2_sc_site[h].other_unposed++;
+	else if (object_index == tick2_sc_current)
+		tick2_sc_site[h].own_fresh++;
+	else
+		tick2_sc_site[h].other_fresh++;
+	return object_index;
+}
+void platform_psp_log(const char *format, ...);
+static void tick2_sc_report(const char *label, int level_end)
+{
+	int k, shown = 0;
+
+	platform_psp_log("stalecensus (%s): %lu ticks; reads (B) would make a tick old, by site: own after its pose | another's after its pose | (another's not yet posed, old in both); %lu reads past the table",
+		label, tick2_sc_ticks, tick2_sc_lost);
+	for (k = 0; k < TICK2_SC_SITES; k++)
+		if (tick2_sc_site[k].file && (tick2_sc_site[k].own_fresh || tick2_sc_site[k].other_fresh || tick2_sc_site[k].other_unposed))
+		{
+			char const *name = tick2_sc_site[k].file, *c;
+
+			for (c = name; *c; c++)
+				if (*c == '/' || *c == '\\')
+					name = c + 1;
+			platform_psp_log("stalecensus (%s): %s:%d %lu | %lu | (%lu)", label, name, tick2_sc_site[k].line,
+				tick2_sc_site[k].own_fresh, tick2_sc_site[k].other_fresh, tick2_sc_site[k].other_unposed);
+			shown++;
+		}
+	platform_psp_log("stalecensus (%s): %d sites", label, shown);
+	if (level_end)
+	{
+		memset(tick2_sc_site, 0, sizeof(tick2_sc_site));
+		tick2_sc_ticks = tick2_sc_lost = 0;
+	}
+}
+""" + first)
+    # the report with the collector's
+    tail = "\tif (level_end)\n\t\tmemset(&tick2_gc, 0, sizeof(tick2_gc));\n"
+    if c.count(tail) != 1:
+        check_fail("psp_fixups: TICK2 stale census: the collector's report end matches %d times" % c.count(tail))
+        return 0
+    c = c.replace(tail, "\ttick2_sc_report(label, level_end); /* TICK2 stale census */\n" + tail)
+    if not CHECK_ONLY:
+        open(objects_h, "w", errors="surrogateescape").write(h)
+        open(objects_c, "w", errors="surrogateescape").write(c)
+    print("psp_fixups: TICK2 stale census: node matrix and marker reads counted inside objects_update")
+    return 1
+
 # PSP_GCCOUNT=1 (and every PSP_TICK2=root build): what the collector did on each map,
 # so slice 1's two builds can be held to the same deletions (spec section 18.3), with
 # the pool's peak and the peak of live objects. One line a map and one each minute.
@@ -60379,6 +60571,7 @@ void psp_tick2_gc_report(const char *label, int level_end)
         open(objects_c, "w", errors="surrogateescape").write(text)
     return 1
 print("psp_fixups: the collector's line per map: %s (TICK2 gccount)" % ("on" if tick2_gccount(TREE) else "off"))
+tick2_stale_census_cut(TREE) # after the collector's report it rides
 
 # The engine's one read of a datum by a raw offset (spec section 28): a door's
 # automatic test asks whether a unit is dead through byte 0xb6 of its datum,
