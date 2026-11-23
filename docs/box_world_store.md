@@ -232,3 +232,28 @@ The first section the store owns for every object type: the object's root (`posi
 - **Step 1a** (the same records with the datum's layout unchanged, a union in the fields' place) was proven exact against the tock on b30_leg2, c20_leg2, a10 and d40 [E]. It isn't kept: step 1b is the shrunken datum above.
 - **Biped motion's window** (`bipedmovestore`, off by default) can't run in this build: its store and byte map are laid out on the old biped datum. Its accessors are plain datum accesses here (where every access lands today with the word off) and the word logs that it's off. Slice 1's store takes its ground.
 - **Opt-in checks that read raw datum words** (funccheck, exportcheck, wakecheck): funccheck and exportcheck update an object on trial and put its datum back. Since 2026-11-23 they put its ROOT record back too, and its ANIM record under `PSP_TICK2=anim`, so their trials no longer leak into play. Their comparisons still cover the datum's words alone, which is where the functions they test live. wakecheck only reads: its sum includes the records (`psp_object_checksum`), but when it names the words that changed it lists only the datum's, so a miss inside a record shows as "no word of its first bytes changed".
+
+## 15. Step 1c-2's design: the unit's animation (draft for the lead, 2026-11-23)
+
+Step 1c-1 (`PSP_TICK2=anim`, §14 and the lab's spec §31) moves `object.animation` out of the datum and into ANIM's array, indexed by ROOT's slot. Step 1c-2 does the same for `unit.animation`. This section is the design, written before any code; the lead rules on the open questions. [D] means read in the code; [U] means inference.
+
+**What moves.** `struct unit_animation` is 72 bytes, on bipeds and vehicles only [D]. Every write and read is in units.c (209 touches), bipeds.c (25), and six in the AI and the director's camera [D]. Its readers fall in two groups:
+- **Posing** (`unit_preprocess_node_orientations`, 34 touches) reads the action, overlay and soft-ping animations, the aiming and looking screens (index, euler flag, bounds), the emotion, and the seat and weapon indices [D].
+- **Motion and the unit update** (`unit_update_animation`, `unit_animation_set_state`, bipeds.c) read and write the state, the desired state, the base seat and the flags. The AI reads the state [D].
+
+The struct is also passed by address in nine places [D]: `unit_animation_busy` (five calls; it reads only the state), `unit_animation_aiming_screen`, `unit_animation_vehicle_ik`, posing's local pointer, and one argument of the animation update.
+
+**Open question 1: whole now, or split by writer now.** Spec v1.1 item 2 splits unit.animation by writer: BIPED takes motion's part, ANIM takes posing's. BIPED doesn't exist yet, so a split now would park motion's fields somewhere temporary, and the nine by-address helpers would need rewriting to take two parts. **Recommendation: move the struct whole into ANIM's unit record in 1c-2.** The helpers keep working unchanged on the record's address, so the proof stays the cheap exact one. Motion's fields (state, desired state, base seat, flags; about 8 bytes) then move from ANIM to BIPED in the step that builds BIPED, with each by-address helper rewritten then. That step has to touch them anyway.
+
+**Open question 2: how a unit record is found.** A full slot-parallel array (like 1c-1's) costs every slot 72 bytes. On a30 that's 944 × 72 = 66 KB, against the roughly 9 KB that a30's 131 units (C5's census: 125 bipeds, 6 vehicles) give back. That's 57 KB worse on the tightest map, so it breaks §18's zero-net rule [U, from the table's counts]. Options:
+- **(a) A unit index in ROOT's record (recommended).** ROOT's record gets a 2-byte unit index (it has room before its 16-byte rounding; check against `sizeof(struct tick2_root)` at build). ANIM's unit records are an array sized per map by peak live units + 15%, with a free stack and 16-record overflow chunks like ROOT's. One inline function turns a record into its unit index, the way `tick2_slot_of` does for slots, so the form can change in one place. Cost: one more load per access, from ROOT's line, which the accessor has usually just read.
+- (b) The slot-parallel array, with the 57 KB found elsewhere. Rejected on bytes unless the lead wants the single key badly enough to pay it.
+- (c) A pointer in the datum, like 1b's. It works, but it's the second pointer the lead turned down for 1c-1.
+
+**What 1c-2 needs before code:**
+1. **A per-map unit census:** each map's peak live units (bipeds + vehicles), for the table. The gccount line gains a peak-units count, so census27's runs can be read again cheaply. C5's counts are from one tick each, not peaks.
+2. **§28's literal sweep for unit.animation's old offsets** (its byte range in the unit datum, word indices included), in the port's text and the engine's, before the proof is traced (spec §31).
+3. **Layout:** unit datum sizes drop by 72 bytes. The engine's layout checks past the field move by 72 more; one inside it fails the build. Same two-run shift as 1c-1, plus a third run for unit-family datums only.
+4. **Proof:** as 1c-1. The old build against `PSP_TICK2=unit` (which implies anim and root) on the six maps, a30 included, with the per-tick animation hash from the tracer (`animsum`), which now covers the unit records too.
+
+1c-2 starts once 1c-1 is exact on a30.
