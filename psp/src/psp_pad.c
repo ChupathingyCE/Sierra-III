@@ -580,11 +580,12 @@ alone.
 Seats are held as state, since the vehicle's place is the world's and not
 his: where the recording sits and the replay doesn't, PATH_SEAT_TICKS on,
 he is put in that seat of the nearest vehicle that has it free and that
-the game would let the player into (not dead, not closed to him by the
-scripts: "holdanyseat" takes any, as it did), the
-vehicle first set where the recording's stood when it isn't within 3
-units (from anywhere in the level: within 30 only, posing B's build lost
-c40's Banshee and walked the rest; the lab's padpath7); where the replay sits and the recording doesn't, he is let out.
+the game would let the player into: not dead, and not closed to him by the
+scripts ("holdanyseat" takes any, as it did). That vehicle is first set
+where the recording's stood when it isn't within 3 units (it's sought in
+the whole level: within 30 only, posing B's build lost c40's Banshee and
+walked the rest; the lab's padpath7). Where the replay sits and the
+recording doesn't, he is let out.
 Seated on both sides, the look is set as on foot (which is the steering,
 for a driver) and what he rides is set on the path, with its axes and
 velocity, past "holdseatsnapN" hundredths of a unit (200). "holdnoseat":
@@ -619,6 +620,7 @@ int psp_path_seat(int seat, const float *position, const float *forward, const f
 int psp_path_unseat(void);
 const char *psp_path_seat_name(void);
 unsigned long psp_path_seat_passed_over(void);
+void psp_path_seat_map_start(void);
 void psp_path_root_set(const float *position, const float *forward, const float *up, const float *velocity);
 int psp_path_kill_one(int encounter, int squad, const float *near); /* ai.c (psp_fixups.py) */
 
@@ -852,6 +854,7 @@ static void path_map_check(void)
 		return;
 	path_generation = psp_map_generation;
 	path_sum.window = -1;
+	psp_path_seat_map_start();
 	if (path_mode & 1)
 	{
 		unsigned char head[PATH_HEAD_BYTES] = { 'P', 'T', 'H', PATH_VERSION, PATH_POINT_BYTES, PATH_KILL_BYTES, 0, 0 };
@@ -1153,7 +1156,7 @@ static void path_hold(const struct psp_path_state *now, const struct psp_path_st
 			{
 				if (did == 0)
 					path_seat_said = now->game_time;
-				platform_log("hold: tick %ld, the path %s (seat %d): %s%s%s (%lu vehicles passed over so far: the player may not enter them)",
+				platform_log("hold: tick %ld, the path %s (seat %d): %s%s%s (%lu vehicles passed over this map: the player may not enter them)",
 					now->game_time, then->seat == -1 ? "is on foot" : "is seated",
 					(int)then->seat, did == 1 ? "seated in the vehicle there" : did == 2 ? "a vehicle fetched to the path, and seated" :
 					did == 3 ? "let out of his seat" : "no vehicle in the level with that seat free that he may enter: left on foot, parted from the recording",

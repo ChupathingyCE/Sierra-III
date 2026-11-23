@@ -2870,11 +2870,13 @@ void psp_path_snap(const float *position, const float *velocity)
 }
 
 /* the pad path's seats ("padhold", psp_pad.c): the local player put in the
-seat his recording has him in. The nearest vehicle whose seat he can take
-is the one, when it stands within 3 units of where the recording's stood
-(1); failing that the nearest in the level is first set there, as the
-recording's stood (2: an AI or a fight left it elsewhere, or he left a
-Banshee in the air); 0 when the level has none with that seat free. The seat is taken at once, as the scripts seat a unit */
+seat his recording has him in. The nearest vehicle whose seat is free and
+that the game would let the player into (not dead, not closed to him by the
+scripts; "holdanyseat" takes any) is the one, when it stands within 3 units
+of where the recording's stood (1); failing that the nearest in the level is
+first set there, as the recording's stood (2: an AI or a fight left it
+elsewhere, or he left a Banshee in the air); 0 when the level has none. The
+seat is taken at once, as the scripts seat a unit */
 static void psp_path_axes(const float *forward_in, const float *up_in, real_vector3d *forward, real_vector3d *up)
 {
 	/* the path keeps the axes in 8 bits each: made unit and square again */
@@ -2900,9 +2902,9 @@ static void psp_path_axes(const float *forward_in, const float *up_in, real_vect
 	cross_product3d(forward, &right, up);
 }
 
-/* what the last psp_path_seat took, for the hold's log: the vehicle's tag
-name ("" when it took none), and how many vehicles it passed over because
-the player may not enter them */
+/* for the hold's log: the vehicle the last psp_path_seat took ("" when it
+took none), and how many vehicles the searches have passed over since the
+map started because the player may not enter them */
 static long psp_path_seat_definition = NONE;
 static unsigned long psp_path_seat_closed = 0;
 const char *psp_path_seat_name(void)
@@ -2914,6 +2916,10 @@ const char *psp_path_seat_name(void)
 unsigned long psp_path_seat_passed_over(void)
 {
 	return psp_path_seat_closed;
+}
+void psp_path_seat_map_start(void)
+{
+	psp_path_seat_closed = 0;
 }
 
 int psp_path_seat(int seat, const float *position, const float *forward_in, const float *up_in)
