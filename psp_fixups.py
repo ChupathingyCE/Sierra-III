@@ -58962,7 +58962,9 @@ TICK2_ROOT = os.environ.get("PSP_TICK2", "") == "root"
 # what leaves each datum: the record's 84 bytes less the pointer that stays
 TICK2_ROOT_SHRINK = 0x50
 # the store's capacity in records (spec section 23: the worst map's peak, 1,121 objects, and a margin)
+# a map not in the table; and the free stack's room, past the table's largest count (c10's 1,440)
 TICK2_STORE_SLOTS = int(os.environ.get("PSP_TICK2_SLOTS", "1280"))
+TICK2_STORE_MOST = 1536
 # the root run's place in object_datum (definition_index, then _object_datum's flags and magic number)
 TICK2_ROOT_AT, TICK2_ROOT_END = 0x0C, 0x0C + 0x54
 # the collector's line per map (its deletions, the pool's peak, peak live objects): on the
@@ -59095,8 +59097,10 @@ def tick2_root_cut(tree):
     once(os.path.join(tree, "source/objects/objects.h"), "\nstruct _object_datum\n{\n",
          "\n/* the world store's ROOT record (TICK2 root) */\nstruct tick2_root\n{\n" + TICK2_ROOT_DECL +
          "};\nextern struct tick2_root *tick2_roots;\n"
-         "/* the store's records at most (a map not in tick2_slots_for_map's table); each map takes its own count */\n"
+         "/* the store's records for a map not in tick2_slots_for_map's table; each map takes its own count, never past\n"
+         "TICK2_STORE_MOST, the free stack's room */\n"
          "#define TICK2_STORE_SLOTS %d\n"
+         "#define TICK2_STORE_MOST %d\n"
          "/* past this map's records, overflow chunks of 64 as object pool blocks, given back when empty (spec section 27) */\n"
          "#define TICK2_CHUNK 64\n"
          "#define TICK2_CHUNKS (MAXIMUM_OBJECTS_PER_MAP / TICK2_CHUNK)\n"
@@ -59104,12 +59108,12 @@ def tick2_root_cut(tree):
          "\tstruct tick2_root *chunk[TICK2_CHUNKS]; /* the pool's block references: compaction rewrites them */\n"
          "\tstruct tick2_root *chunk_was[TICK2_CHUNKS]; /* where each chunk was when its records were handed out */\n"
          "\tunsigned long chunk_free[TICK2_CHUNKS][TICK2_CHUNK / 32];\n"
-         "\tshort free_records[TICK2_STORE_SLOTS];\n};\n"
+         "\tshort free_records[TICK2_STORE_MOST];\n};\n"
          "extern struct tick2_store *tick2_store; /* game state, after the records */\n"
          "#define tick2_free_count (tick2_store->free_count)\n"
          "#define tick2_free_low (tick2_store->free_low)\n"
          "#define tick2_free_records (tick2_store->free_records)\n"
-         "\nstruct _object_datum\n{\n" % TICK2_STORE_SLOTS)
+         "\nstruct _object_datum\n{\n" % (TICK2_STORE_SLOTS, TICK2_STORE_MOST))
     path = os.path.join(tree, "source/objects/objects.h")
     text = open(path, errors="surrogateescape").read()
     m = re.search(r"\nstruct _object_datum\n\{\n(.*?)\n\};", text, re.S)
@@ -59188,7 +59192,7 @@ static unsigned long psp_object_checksum_datum(struct object_header_datum const 
          "\tconst char *last = name;\n\tconst char *c;\n\tunsigned k;\n\n"
          "\tfor (c = name; c && *c; c++)\n\t\tif (*c == '\\\\' || *c == '/')\n\t\t\tlast = c + 1;\n"
          "\tfor (k = 0; last && k < sizeof(table) / sizeof(table[0]); k++)\n"
-         "\t\tif (!strcmp(last, table[k].map))\n\t\t\treturn table[k].slots;\n"
+         "\t\tif (!strcmp(last, table[k].map))\n\t\t\treturn table[k].slots < TICK2_STORE_MOST ? table[k].slots : TICK2_STORE_MOST;\n"
          "\treturn TICK2_STORE_SLOTS;\n}\n"
          + TICK2_STORE_CODE)
     # a new map starts with every record free
