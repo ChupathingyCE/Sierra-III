@@ -58946,7 +58946,9 @@ def tick2_root_cut(tree):
             "\tunion { struct tick2_root *root; char tick2_root_was[sizeof(struct tick2_root)]; }; /* TICK2 root */\n")
         open(path, "w", errors="surrogateescape").write(text[:m.start(1)] + body + text[m.end(1):])
     # every touch written x->object.<field> or x.object.<field>
-    pattern = re.compile(r"((?:->|\.)object\.)(%s)\b" % "|".join(TICK2_ROOT_FIELDS))
+    pattern = re.compile(r"((?:->|\.)\s*object\.)(%s)\b" % "|".join(TICK2_ROOT_FIELDS))
+    # biped motion's window (BIPEDMOVE) held its own copy of these fields: the record is their one home now
+    window = re.compile(r"PSP_BMSW?\((\w+), object\.(%s)((?:\.\w+)*)\)" % "|".join(TICK2_ROOT_FIELDS))
     touched = 0
     for root, dirs, files in os.walk(os.path.join(tree, "source")):
         for name in files:
@@ -58955,6 +58957,8 @@ def tick2_root_cut(tree):
             path = os.path.join(root, name)
             text = open(path, errors="surrogateescape").read()
             text, n = pattern.subn(r"\1root->\2", text)
+            text, n2 = window.subn(r"\1->object.root->\2\3", text)
+            n += n2
             if n and not CHECK_ONLY:
                 open(path, "w", errors="surrogateescape").write(text)
             touched += n
