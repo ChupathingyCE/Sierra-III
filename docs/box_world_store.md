@@ -279,13 +279,13 @@ That's 116 bytes a node. Every live object has at least one node; at each map's 
 **Allocation.** Node runs vary in length but are fixed for an object's life, and the small ones churn (projectiles, effects, items: one node each; most objects have one node). Proposed:
 1. **Free lists by run length** (1 to 64 nodes), each a stack of free runs; a new object takes an exact fit first.
 2. **A bump tail** for a run with no free fit.
-3. **Compaction where the pool already compacts** (the four `memory_pool_compact` sites, where datum pointers are already invalid). Runs slide down and their slots' index entries are rewritten, which is one store a moved run, because nothing else holds an arena address across a compaction [U: to check the render interpolation's copy of the previous tick's matrices and any port table holding node pointers (`psp_nms_*`, which the spec deletes in the new build)].
+3. **Compaction where the pool already compacts** (the four `memory_pool_compact` sites, where datum pointers are already invalid). Runs slide down and their slots' index entries are rewritten, one store a moved run. Nothing holds an arena address across a compaction. The render interpolation (`port/linux/game/render_interpolation.c`) keeps copies, not pointers [D, 2026-11-23]: each tick it copies the object's matrices into its own records (three snapshots), sized from `node_matrices.size`. It reads the live block by reference at its two drawing sites. So it needs POSE's count and run accessors, and holds no address. `psp_nms_*`'s tables are deleted in the new build (spec §13 item 4).
 4. **Overflow:** chunks of 64 nodes as pool blocks, as ROOT's (§14); a run never spans chunks (the largest is 40 nodes).
 
 **Sizing:** per map, by peak live nodes + 15%, in the store's table beside the record counts. That needs a peak-node count on the gccount line (C5's figures are single ticks, not peaks).
 
 **What POSE's step needs before code:**
 1. The peak-nodes census (the gccount line).
-2. The render interpolation's read: where it keeps the previous tick's matrices, and whether it holds pointers into the node blocks across ticks [D, to read].
+2. ~~The render interpolation's read~~ done: it copies, and holds no addresses (above).
 3. §28's literal sweep for the three block references and any fixed node-block offsets or sizes.
 4. **Proof:** exact against the old build on the six maps, with the C4 trace (`PSP_C4TRACE=1`, `c4pose`) as a second view of the pose, since any slip shows there first.
