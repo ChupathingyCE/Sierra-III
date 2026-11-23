@@ -58978,6 +58978,23 @@ def tick2_root_cut(tree):
 """, """		tick2_roots = (struct tick2_root *)game_state_malloc("tick2 root", NULL, MAXIMUM_OBJECTS_PER_MAP * sizeof(struct tick2_root)); /* TICK2 root */
 		object_memory_pool = game_state_memory_pool_new("objects", OBJECT_MEMORY_POOL_SIZE - MAXIMUM_OBJECTS_PER_MAP * sizeof(struct tick2_root));
 """)
+    # the sleep's checksum reads the datum's words (psp_object_checksum): the record's go in after them,
+    # so a root that changes still wakes its object
+    once(objects_c, "static unsigned long psp_object_checksum(struct object_header_datum const *header)\n{",
+         """static unsigned long psp_object_checksum_datum(struct object_header_datum const *header);
+static unsigned long psp_object_checksum(struct object_header_datum const *header)
+{ /* TICK2 root */
+	unsigned long sum = psp_object_checksum_datum(header);
+	unsigned long const *word = (unsigned long const *)((struct object_datum const *)header->datum)->object.root;
+	unsigned k;
+
+	for (k = 0; k < sizeof(struct tick2_root) / 4; k++)
+		sum = (sum ^ word[k]) * 33UL;
+	return sum;
+}
+
+static unsigned long psp_object_checksum_datum(struct object_header_datum const *header)
+{""")
     once(objects_c, "\nboolean debug_object_garbage_collection;\n",
          "\nboolean debug_object_garbage_collection;\nstruct tick2_root *tick2_roots; /* TICK2 root */\n")
     return touched
