@@ -59179,7 +59179,7 @@ static unsigned long psp_object_checksum_datum(struct object_header_datum const 
          "/* the store's free records: free pool to the collector (TICK2 root) */\n"
          "#define TICK2_STORE_SPARE() ((long)(tick2_free_count + tick2_chunk_free_records()) * (long)sizeof(struct tick2_root))\n"
          "char *main_get_map_name(void);\n"
-         "/* the store's records for a map: its peak of live objects on today's tock + 15%%, rounded up to 16 (the lab's census27: every\n"
+         "/* the store's records for a map: the larger of its peaks on today's tock and in C5, + 15%%, rounded up to 16 (the lab's census27: every\n"
          "ledger2 leg, d20_play1 and c10_play1; a10 and d40 from tick_c5_memory_sheet.md); past them the store overflows (spec 27) */\n"
          "static long tick2_slots_for_map(const char *name)\n{\n"
          "\tstatic const struct { char map[4]; short slots; } table[] = {\n"
