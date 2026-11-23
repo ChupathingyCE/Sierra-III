@@ -8049,21 +8049,26 @@ void psp_game_state_hash_tick(long tick)
 			{
 				long block, blocks;
 
-				if (strcmp(psp_state_records[k].name, "actor"))
+				/* "stateblocksprop": the AI's props instead of its actors */
+				static const char *blocks_of = NULL;
+
+				if (!blocks_of)
+					blocks_of = psp_keep("stateblocksprop") ? "prop" : "actor";
+				if (strcmp(psp_state_records[k].name, blocks_of))
 					continue;
 				blocks = psp_state_records[k].size / 64;
 				for (block = 0; block < blocks; block++)
 				{
 					if (length > 440)
 					{
-						platform_psp_log("state: blocks of actor at tick %ld:%s", tick, line);
+						platform_psp_log("state: blocks of %s at tick %ld:%s", blocks_of, tick, line);
 						length = 0;
 					}
 					length += snprintf(line + length, sizeof(line) - length, " %ld:%08lx", block,
 						psp_state_hash((const char *)psp_state_records[k].pointer + block * 64, 64));
 				}
 				if (length)
-					platform_psp_log("state: blocks of actor at tick %ld:%s", tick, line);
+					platform_psp_log("state: blocks of %s at tick %ld:%s", blocks_of, tick, line);
 				length = 0;
 				{
 					/* "stateblockrawB": that block's bytes too, word by word */
@@ -8078,7 +8083,7 @@ void psp_game_state_hash_tick(long tick)
 
 						for (w = 0; w < 16; w++)
 							length += snprintf(line + length, sizeof(line) - length, " %08lx", word[w]);
-						platform_psp_log("state: block %ld of actor at tick %ld:%s", raw, tick, line);
+						platform_psp_log("state: block %ld of %s at tick %ld:%s", raw, blocks_of, tick, line);
 						length = 0;
 					}
 				}
