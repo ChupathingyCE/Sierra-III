@@ -2900,6 +2900,22 @@ static void psp_path_axes(const float *forward_in, const float *up_in, real_vect
 	cross_product3d(forward, &right, up);
 }
 
+/* what the last psp_path_seat took, for the hold's log: the vehicle's tag
+name ("" when it took none), and how many vehicles it passed over because
+the player may not enter them */
+static long psp_path_seat_definition = NONE;
+static unsigned long psp_path_seat_closed = 0;
+const char *psp_path_seat_name(void)
+{
+	extern char *tag_get_name(long tag_index);
+
+	return psp_path_seat_definition == NONE ? "" : tag_get_name(psp_path_seat_definition);
+}
+unsigned long psp_path_seat_passed_over(void)
+{
+	return psp_path_seat_closed;
+}
+
 int psp_path_seat(int seat, const float *position, const float *forward_in, const float *up_in)
 {
 	long unit_index = psp_local_unit(NULL);
@@ -2907,7 +2923,14 @@ int psp_path_seat(int seat, const float *position, const float *forward_in, cons
 	struct object_datum *vehicle;
 	long best_index = NONE;
 	float best = 0.f;
+	/* only a vehicle the game would let the player into: not dead, and not
+	one the scripts closed to him (a level's enemy Banshees). The hold sat him
+	in the nearest vehicle with the seat free, whatever it was, and a replay
+	then rode a vehicle the recording never had. "holdanyseat": as before */
+	extern int psp_keep(const char *name);
+	int any = psp_keep("holdanyseat");
 
+	psp_path_seat_definition = NONE;
 	if (unit_index == NONE || seat < 0 || unit_get(unit_index)->object.parent_object_index != NONE)
 		return 0;
 	object_iterator_new(&iterator, FLAG(_object_type_vehicle), 0);
@@ -2921,6 +2944,12 @@ int psp_path_seat(int seat, const float *position, const float *forward_in, cons
 			unit_definition_get(vehicle->definition_index)->unit.seats.count <= seat ||
 			!unit_can_enter_seat(unit_index, iterator.index, (short)seat, NULL))
 			continue;
+		if (!any && (TEST_FLAG(vehicle->object.damage_flags, _object_dead_bit) ||
+			TEST_FLAG(unit_get(iterator.index)->unit.flags, _unit_not_enterable_by_player_bit)))
+		{
+			psp_path_seat_closed++;
+			continue;
+		}
 		if (best_index == NONE || distance < best)
 		{
 			best_index = iterator.index;
@@ -2929,6 +2958,7 @@ int psp_path_seat(int seat, const float *position, const float *forward_in, cons
 	}
 	if (best_index == NONE)
 		return 0;
+	psp_path_seat_definition = object_get(best_index)->definition_index;
 	if (best > 3.f * 3.f)
 	{
 		real_point3d point;
