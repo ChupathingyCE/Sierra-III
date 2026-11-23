@@ -59422,7 +59422,25 @@ def tick2_gccount(tree):
 			}
 """), ("\nboolean debug_object_garbage_collection;\n", """
 boolean debug_object_garbage_collection;
-static struct { long deleted, pool_peak, live_peak, free_low; } tick2_gc; /* TICK2 gccount */
+static struct { long deleted, pool_peak, live_peak, free_low, units_live, units_peak, nodes_live, nodes_peak; } tick2_gc; /* TICK2 gccount */
+
+/* the census for the store's unit and node tables (the lab's spec sections 32 and 35): an object counts
+from its node block's allocation (a unit by its type) until its datum is freed */
+static void tick2_gc_census(struct object_header_datum const *header, long sign)
+{
+	struct object_datum const *object = (struct object_datum const *)header->datum;
+	long nodes = object ? object->object.node_matrices.size / (long)sizeof(real_matrix4x3) : 0;
+
+	if (nodes <= 0)
+		return;
+	tick2_gc.nodes_live += sign * nodes;
+	if (header->type == _object_type_biped || header->type == _object_type_vehicle)
+		tick2_gc.units_live += sign;
+	if (tick2_gc.nodes_live > tick2_gc.nodes_peak)
+		tick2_gc.nodes_peak = tick2_gc.nodes_live;
+	if (tick2_gc.units_live > tick2_gc.units_peak)
+		tick2_gc.units_peak = tick2_gc.units_live;
+}
 void platform_psp_log(const char *format, ...);
 
 /* psp_loading.c at a map's end, psp_platform.c each minute */
@@ -59445,19 +59463,31 @@ void psp_tick2_gc_report(const char *label, int level_end)
 	if (!object_memory_pool || !object_header_data)
 		return;
 	{
-		platform_psp_log("gccount (%s): the collector deleted %ld; pool %ld KB, peak %ld KB in use, free low %ld KB; live objects peak %ld; store %ld records (%ld KB), peak %ld KB live; overflow records taken %ld, peak %ld",
+		platform_psp_log("gccount (%s): the collector deleted %ld; pool %ld KB, peak %ld KB in use, free low %ld KB; live objects peak %ld; store %ld records (%ld KB), peak %ld KB live; overflow records taken %ld, peak %ld; units peak %ld, nodes peak %ld",
 			label, tick2_gc.deleted, object_memory_pool->size / 1024, tick2_gc.pool_peak / 1024, tick2_gc.free_low / 1024,
-			tick2_gc.live_peak, records, store / 1024, store_peak / 1024, overflow_taken, overflow_peak);
+			tick2_gc.live_peak, records, store / 1024, store_peak / 1024, overflow_taken, overflow_peak,
+			tick2_gc.units_peak, tick2_gc.nodes_peak);
 	}
 	if (level_end)
 		memset(&tick2_gc, 0, sizeof(tick2_gc));
 }
+"""), ("\t\tblock->offset = original_size;\n", """		block->offset = original_size;
+		if (block_reference_offset == offsetof(struct object_datum, object.node_matrices))
+			tick2_gc_census(object_header, 1); /* TICK2 gccount */
 """)]
     for old, new in pairs:
         if text.count(old) != 1:
             check_fail("psp_fixups: TICK2 gccount: an anchor matches %d times in objects.c: %r" % (text.count(old), old[:60]))
             return 0
         text = text.replace(old, new)
+    # a freed datum leaves the census (each free of an object's datum, the failed creation's included)
+    for free in ("memory_pool_block_free(object_memory_pool, (void**)&object_header->datum);",
+                 "memory_pool_block_free(object_memory_pool, (void**)&header->datum);"):
+        who = free.split("&")[1].split("->")[0]
+        if not text.count(free):
+            check_fail("psp_fixups: TICK2 gccount: no datum free %r" % free)
+            return 0
+        text = text.replace(free, "tick2_gc_census(%s, -1); /* TICK2 gccount */ %s" % (who, free))
     if not CHECK_ONLY:
         open(objects_c, "w", errors="surrogateescape").write(text)
     return 1
