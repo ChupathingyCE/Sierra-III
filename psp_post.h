@@ -145,3 +145,6 @@ void psp_meprobe_report(void);
 #define PSP_MEPROBE_EXPR(site) 0
 #define PSP_MEPROBE_REPORT() 0
 #endif
+
+/* datum fields the port reads from files that can't see their structures: units.c makes them from the structures (psp_fixups.py), so they move with a datum's layout */
+extern const long psp_datum_unit_timer, psp_datum_item_owned, psp_datum_biped_bytes;
