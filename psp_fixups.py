@@ -59352,6 +59352,27 @@ static unsigned long psp_object_checksum_datum(struct object_header_datum const 
                 open(path, "w", errors="surrogateescape").write(new)
     print("psp_fixups: TICK2 root: %d datum sizes and %d layout checks moved (0x%X past the root%s)" %
           (sized, moved[0], TICK2_ROOT_SHRINK, ", 0x%X past the animation" % TICK2_SHRINK if TICK2_ANIM else ""))
+    # the checks that update an object on trial and put its datum back (exportcheck, funccheck) put its
+    # record back too: the datum's copy holds only the pointer
+    keep_anim = "\t\tstruct object_animation_state kept_anim = *tick2_anim_of(%s->object.root);\n" if TICK2_ANIM else ""
+    back_anim = "\t\t*tick2_anim_of(%s->object.root) = kept_anim;\n" if TICK2_ANIM else ""
+    for old, record, then in (
+            ("\tcsmemcpy(kept, object, size);\n\tobject_type_export_function_values(object_index);\n",
+             "object", "\tcsmemcpy(object, kept, size);\n}\n"),
+            ("\tcsmemcpy(held, word, count * 4);\n\tpsp_sleeper_functions(object_index);\n",
+             "((struct object_datum *)word)", "\tcsmemcpy(word, held, count * 4);\n\tpsp_func_checked[type]++;\n")):
+        text = open(objects_c, errors="surrogateescape").read()
+        if text.count(old) != 1 or text.count(then) != 1:
+            check_fail("psp_fixups: TICK2 root: a trial update's put-back matches %d and %d times" % (text.count(old), text.count(then)))
+            continue
+        first, rest = old.split("\n", 1)
+        text = text.replace(old, first + "\n\tstruct tick2_root kept_root = *%s->object.root; /* TICK2 root: the record put back too */\n" % record +
+            (keep_anim.replace("\t\t", "\t", 1) % record if keep_anim else "") + rest)
+        last, tail = then.split("\n", 1)
+        text = text.replace(then, last + "\n\t*%s->object.root = kept_root; /* TICK2 root */\n" % record +
+            (back_anim.replace("\t\t", "\t", 1) % record if back_anim else "") + tail)
+        if not CHECK_ONLY:
+            open(objects_c, "w", errors="surrogateescape").write(text)
     # the collector's tests count the store's spare records as free pool
     text = open(objects_c, errors="surrogateescape").read()
     start = text.find("\nvoid objects_garbage_collection(")
