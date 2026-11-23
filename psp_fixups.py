@@ -60033,7 +60033,7 @@ def tick2_proof_cut(tree):
     carve = ('\t\tmemory_pool_initialize(object_memory_pool, "objects", OBJECT_MEMORY_POOL_SIZE - bytes);\n'
              '\t\ttick2_roots = (struct tick2_root *)((char *)(object_memory_pool + 1) + OBJECT_MEMORY_POOL_SIZE - bytes);\n')
     fill = "\t\t\tmemset(header->datum, 0, size);\n\t\t\tstruct tick2_root *record = tick2_record_take(); /* TICK2 root */\n"
-    first = "\nstatic long tick2_chunk_free_records(void)\n"
+    first = "struct tick2_store *tick2_store; /* TICK2 root */\n" # before the store's first chunk take
     if text.count(carve) != 1 or text.count(fill) != 1 or text.count(first) != 1:
         check_fail("psp_fixups: TICK2 proof: anchors %d/%d/%d" % (text.count(carve), text.count(fill), text.count(first)))
         return 0
@@ -60041,8 +60041,8 @@ def tick2_proof_cut(tree):
                                '\t\ttick2_roots = (struct tick2_root *)tick2_proof_room(bytes);\n')
     text = text.replace(fill, "\t\t\tmemset(header->datum, 0, size);\n\t\t\ttick2_proof_fill((struct object_datum *)header->datum); /* TICK2 proof */\n"
                               "\t\t\tstruct tick2_root *record = tick2_record_take(); /* TICK2 root */\n")
-    text = text.replace(first, r"""
-#include <malloc.h>
+    text = text.replace(first, first + r"""void *memalign(size_t alignment, size_t size); /* as the port declares it further down */
+void free(void *pointer);
 /* TICK2 proof: the store's room, one heap block kept at the largest map's size */
 static void *tick2_proof_room(long bytes)
 {
@@ -60075,7 +60075,7 @@ static void tick2_proof_fill(struct object_datum *object)
 {
 	memset(object->object.tick2_proof_root, %d, sizeof(object->object.tick2_proof_root));%s
 }
-""" % (TICK2_PROOF_BYTE, "\n\tmemset(object->object.tick2_proof_anim, %d, sizeof(object->object.tick2_proof_anim));" % TICK2_PROOF_BYTE if TICK2_ANIM else "") + first)
+""" % (TICK2_PROOF_BYTE, "\n\tmemset(object->object.tick2_proof_anim, %d, sizeof(object->object.tick2_proof_anim));" % TICK2_PROOF_BYTE if TICK2_ANIM else ""))
     text, took = re.subn(r"memory_pool_block_allocate\(object_memory_pool, \(void \*\*\)&([\w>\-]*chunk\[\w+\]),", r"tick2_proof_take((void **)&\1,", text)
     text, gave = re.subn(r"memory_pool_block_free\(object_memory_pool, \(void \*\*\)&([\w>\-]*chunk\[\w+\])\)", r"tick2_proof_give((void **)&\1)", text)
     if took < 1 or took != gave:
