@@ -32,4 +32,6 @@ The check: `grep -nE '0x[0-9A-Fa-f]{2,4} */ *4|(byte|char) \*\)[^;]{0,60}\+ *(0x
 - [E] tick2root6 (the lab's sierra-batch 45119859571): exact on a10, d40, b30 and c20; d20 overflowed 38 records with the same deletions.
 - [E] d20 parted at tick 1,135 in device groups (tick2root6r, 45185417617), from the sleep checksum's literal offsets above; fixed at be0dcdd9.
 - [E] tick2root7 (45187897160): exact on four; d20 still parted: the sleep's literals were real bugs but not its cause.
-- [E] tick2root7d (45193358949): the device groups' trace: a door's group set open at tick 1,131 under root only, from the engine's raw read above. Fixed; tick2root8 proves it.
+- [E] tick2root7d (45193358949): the device groups' trace: a door's group set open at tick 1,131 under root only, from the engine's raw read above. Fixed at cb636b18.
+- [E] tick2root8 (45196779341): the old side identical to tick2root7's (the door's fix is exact for it); root parted on b30 and d20 from tick 0, because the census' counts (1,296) overran the free stack's 1,280. Fixed at 6d32bda0 (room 1,536, counts clamped).
+- [E] **tick2root9 (45201040108): exact on all five** (a10, d40, b30, c20, d20): play and both seeds at every tick. The collector deleted the same on both sides (11 on d20, none elsewhere), with no overflow on the census' table. The pool's free low, old against new: d20 149 against 127 KB, b30 364 against 330, c20 424 against 396, a10 551 against 543, d40 621 against 609.
