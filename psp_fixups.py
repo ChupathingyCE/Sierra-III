@@ -56085,7 +56085,7 @@ BIPEDMOVE_SYNC = {
 # PSP_TICK2=root: the window's store is laid out on the old biped datum, so it never goes live there
 # and its accessors are plain datum accesses (psp_bipedmove.h); slice 1's store takes its ground
 BIPEDMOVE_ROOT_MARK = ("#define PSP_TICK2_ROOT 1 /* psp_fixups.py (TICK2 root) */\n"
-                       if os.environ.get("PSP_TICK2", "") in ("root", "anim") else "")
+                       if os.environ.get("PSP_TICK2", "") in ("root", "anim", "unit") else "")
 BIPEDMOVE_PRELUDE = BIPEDMOVE_ROOT_MARK + """#include "psp_bipedmove.h" /* psp_fixups.py (BIPEDMOVE) steps 1b and 1c */
 static int psp_bms_on = -1, psp_bms_check = 0;
 /* the intent's start: the record filled, in the slot of its bipedstage3 record */
@@ -58963,10 +58963,13 @@ print("psp_fixups: the tick rewrite's count: %d datum fields without their names
 # collector counts the store's spare records as free pool: it trips where it
 # trips today (spec section 23). Runs after every FIXES group, on the text as
 # they left it.
-TICK2_ROOT = os.environ.get("PSP_TICK2", "") in ("root", "anim")
+TICK2_ROOT = os.environ.get("PSP_TICK2", "") in ("root", "anim", "unit")
 # PSP_TICK2=anim (step 1c-1): the ANIM section too, its records in a second array that shares
 # ROOT's slot (spec section 30; the lead's design (b), 2026-11-23)
-TICK2_ANIM = os.environ.get("PSP_TICK2", "") == "anim"
+TICK2_ANIM = os.environ.get("PSP_TICK2", "") in ("anim", "unit")
+# PSP_TICK2=unit (step 1c-2): unit.animation too, whole, in a unit section found by a 2-byte
+# unit index in ROOT's record (spec section 32; the lead's ruling, 2026-11-23)
+TICK2_UNIT = os.environ.get("PSP_TICK2", "") == "unit"
 # what leaves each datum: the record's 84 bytes less the pointer that stays
 TICK2_ROOT_SHRINK = 0x50
 # the store's capacity in records (spec section 23: the worst map's peak, 1,121 objects, and a margin)
@@ -59154,7 +59157,8 @@ def tick2_root_cut(tree):
             open(path, "w", errors="surrogateescape").write(text.replace(old, new))
     # the record, and the union that keeps the datum's layout
     once(os.path.join(tree, "source/objects/objects.h"), "\nstruct _object_datum\n{\n",
-         "\n/* the world store's ROOT record (TICK2 root) */\nstruct tick2_root\n{\n" + TICK2_ROOT_DECL + (
+         "\n/* the world store's ROOT record (TICK2 root) */\nstruct tick2_root\n{\n" + TICK2_ROOT_DECL +
+         ("\tunsigned short unit_slot; /* TICK2 unit: the unit section's index, TICK2_UNIT_NONE if not a unit */\n#define TICK2_UNIT_NONE 0xFFFF\n" if TICK2_UNIT else "") + (
          "};\nextern struct tick2_root *tick2_roots;\n"
          "/* the store's records for a map not in tick2_slots_for_map's table; each map takes its own count, never past\n"
          "TICK2_STORE_MOST, the free stack's room */\n"
@@ -59223,7 +59227,7 @@ def tick2_root_cut(tree):
 
 			if (record)
 			{
-				memset(record, 0, sizeof(*record));
+				memset(record, 0, sizeof(*record));%s
 				((struct object_datum *)header->datum)->object.root = record;%s
 			}
 			else
@@ -59232,7 +59236,8 @@ def tick2_root_cut(tree):
 				datum_delete(data, index);
 				return NONE;
 			}
-""" % ("\n\t\t\t\tmemset(tick2_anim_of(record), 0, sizeof(struct object_animation_state)); /* TICK2 anim */"
+""" % ("\n\t\t\t\trecord->unit_slot = TICK2_UNIT_NONE; /* TICK2 unit */" if TICK2_UNIT else "",
+       "\n\t\t\t\tmemset(tick2_anim_of(record), 0, sizeof(struct object_animation_state)); /* TICK2 anim */"
        if TICK2_ANIM else ""))
     # the sleep's checksum reads the datum's words (psp_object_checksum): the record's go in after them,
     # so a root that changes still wakes its object
@@ -59397,6 +59402,274 @@ static unsigned long psp_object_checksum_datum(struct object_header_datum const 
             open(objects_c, "w", errors="surrogateescape").write(text[:start] + body + text[end:])
     return touched
 print("psp_fixups: the world store's ROOT: %d touches through the record (TICK2 root)" % tick2_root_cut(TREE))
+
+# PSP_TICK2=unit (step 1c-2): unit.animation (72 bytes, bipeds and vehicles) leaves the unit
+# datum whole for the unit section: an array carved per map with ROOT's records, found by the
+# 2-byte unit index ROOT's record holds, with 16-record overflow chunks from the object pool as
+# ROOT's (the lab's spec section 32). The nine helpers that take the struct by address take the
+# record's; motion's part moves to BIPED with BIPED. Runs after the root cut.
+# unit.animation's place in the old unit datum (struct unit_datum: _unit_datum from 0x1A4)
+TICK2_UNIT_AT, TICK2_UNIT_END = 0x248, 0x248 + 0x48
+TICK2_UNIT_BASE = 0x1A4
+# the unit section's records per map until the census sets a table (spec section 32: peak units + 15%)
+TICK2_UNIT_SLOTS = int(os.environ.get("PSP_TICK2_UNIT_SLOTS", "256"))
+TICK2_UNIT_DECL = r"""
+/* the world store's unit section (TICK2 unit): each unit's animation, at the index its ROOT record holds */
+#define TICK2_UNIT_CHUNK 16
+#define TICK2_UNIT_CHUNKS (MAXIMUM_OBJECTS_PER_MAP / TICK2_UNIT_CHUNK)
+#define TICK2_UNIT_MOST 512
+struct tick2_unit_store
+{
+	long slots, free_count, free_low, overflow_taken, overflow_live, overflow_peak;
+	struct unit_animation *chunk[TICK2_UNIT_CHUNKS]; /* the pool's block references: compaction rewrites them */
+	struct unit_animation *chunk_was[TICK2_UNIT_CHUNKS];
+	unsigned long chunk_free[TICK2_UNIT_CHUNKS]; /* a bit a record, the low 16 */
+	short free_records[TICK2_UNIT_MOST];
+};
+extern struct tick2_unit_store *tick2_unit_store;
+extern struct unit_animation *tick2_unit_anims;
+/* one inline way from a record to its unit's animation: the map's records first, then
+slots + 16 * chunk + place in the overflow chunks */
+static inline struct unit_animation *tick2_unit_anim_of(const struct tick2_root *record)
+{
+	long slot = record->unit_slot;
+
+	if (slot < tick2_unit_store->slots)
+		return &tick2_unit_anims[slot];
+	slot -= tick2_unit_store->slots;
+	return tick2_unit_store->chunk[slot / TICK2_UNIT_CHUNK] + slot % TICK2_UNIT_CHUNK;
+}
+"""
+TICK2_UNIT_CODE = r"""
+struct tick2_unit_store *tick2_unit_store; /* TICK2 unit */
+struct unit_animation *tick2_unit_anims; /* TICK2 unit */
+
+/* a unit's record: the map's own, else a free one in an overflow chunk, else a new chunk */
+static unsigned short tick2_unit_take(void)
+{
+	struct tick2_unit_store *store = tick2_unit_store;
+	long c, k;
+
+	if (store->free_count > 0)
+	{
+		unsigned short slot = (unsigned short)store->free_records[--store->free_count];
+
+		if (store->free_count < store->free_low)
+			store->free_low = store->free_count;
+		return slot;
+	}
+	for (c = 0; c < TICK2_UNIT_CHUNKS; c++)
+		if (store->chunk[c] && (store->chunk_free[c] & 0xFFFFUL))
+			break;
+	if (c == TICK2_UNIT_CHUNKS)
+	{
+		for (c = 0; c < TICK2_UNIT_CHUNKS && store->chunk[c]; c++)
+			;
+		if (c == TICK2_UNIT_CHUNKS || !memory_pool_block_allocate(object_memory_pool, (void **)&store->chunk[c],
+			TICK2_UNIT_CHUNK * (long)sizeof(struct unit_animation)))
+			return TICK2_UNIT_NONE;
+		store->chunk_was[c] = store->chunk[c];
+		store->chunk_free[c] = 0xFFFFUL;
+	}
+	for (k = 0; !(store->chunk_free[c] & (1UL << k)); k++)
+		;
+	store->chunk_free[c] &= ~(1UL << k);
+	store->overflow_taken++;
+	if (++store->overflow_live > store->overflow_peak)
+		store->overflow_peak = store->overflow_live;
+	return (unsigned short)(store->slots + c * TICK2_UNIT_CHUNK + k);
+}
+
+static void tick2_unit_give(struct tick2_root *record)
+{
+	struct tick2_unit_store *store = tick2_unit_store;
+	long slot = record->unit_slot, c, k;
+
+	if (slot == TICK2_UNIT_NONE)
+		return;
+	record->unit_slot = TICK2_UNIT_NONE;
+	if (slot < store->slots)
+	{
+		store->free_records[store->free_count++] = (short)slot;
+		return;
+	}
+	slot -= store->slots;
+	c = slot / TICK2_UNIT_CHUNK;
+	k = slot % TICK2_UNIT_CHUNK;
+	store->chunk_free[c] |= 1UL << k;
+	store->overflow_live--;
+	if ((store->chunk_free[c] & 0xFFFFUL) == 0xFFFFUL)
+	{
+		memory_pool_block_free(object_memory_pool, (void **)&store->chunk[c]);
+		store->chunk[c] = store->chunk_was[c] = NULL;
+	}
+}
+
+static long tick2_unit_chunk_free_records(void)
+{
+	long c, k, n = 0;
+
+	for (c = 0; tick2_unit_store && c < TICK2_UNIT_CHUNKS; c++)
+		if (tick2_unit_store->chunk[c])
+			for (k = 0; k < TICK2_UNIT_CHUNK; k++)
+				n += (tick2_unit_store->chunk_free[c] >> k) & 1;
+	return n;
+}
+
+/* after the pool's compaction: a unit's slot names its chunk, not its address, so only the
+chunk references need settling (the pool rewrote them) */
+static void tick2_unit_rebase(void)
+{
+	long c;
+
+	for (c = 0; tick2_unit_store && c < TICK2_UNIT_CHUNKS; c++)
+		tick2_unit_store->chunk_was[c] = tick2_unit_store->chunk[c];
+}
+"""
+def tick2_unit_cut(tree):
+    if not TICK2_UNIT:
+        return 0
+    import re
+    def once(path, old, new):
+        text = open(path, errors="surrogateescape").read()
+        if text.count(old) != 1:
+            check_fail("psp_fixups: TICK2 unit: an anchor matches %d times in %s: %r" % (text.count(old), path, old[:60]))
+            return
+        if not CHECK_ONLY:
+            open(path, "w", errors="surrogateescape").write(text.replace(old, new))
+    units_h = os.path.join(tree, "source/units/units.h")
+    objects_c = os.path.join(tree, "source/objects/objects.c")
+    # the section's declarations after struct unit_animation; the field leaves _unit_datum
+    once(units_h, "\nstruct unit_animation_update_data\n", TICK2_UNIT_DECL + "\nstruct unit_animation_update_data\n")
+    text = open(units_h, errors="surrogateescape").read()
+    m = re.search(r"\nstruct _unit_datum\n\{\n(.*?)\n\};", text, re.S)
+    if not m or m.group(1).count("\tstruct unit_animation animation;\n") != 1:
+        check_fail("psp_fixups: TICK2 unit: _unit_datum's animation field isn't one line in units.h")
+    elif not CHECK_ONLY:
+        body = m.group(1).replace("\tstruct unit_animation animation;\n", "")
+        open(units_h, "w", errors="surrogateescape").write(text[:m.start(1)] + body + text[m.end(1):])
+    # every touch: x->unit.animation (x a name or a call such as unit_get(i)), and biped motion's window
+    touch = re.compile(r"\b([A-Za-z_]\w*(?:\([^()]*\))?)->unit\.animation\b")
+    window = re.compile(r"PSP_BMSW?\((\w+), unit\.animation((?:\.\w+)*)\)")
+    touched = 0
+    for root, dirs, files in os.walk(os.path.join(tree, "source")):
+        for name in files:
+            if not name.endswith((".c", ".h")):
+                continue
+            path = os.path.join(root, name)
+            text = open(path, errors="surrogateescape").read()
+            text, n = touch.subn(r"(*tick2_unit_anim_of(\1->object.root))", text)
+            text, n2 = window.subn(r"(*tick2_unit_anim_of(\1->object.root))\2", text)
+            if n + n2 and not CHECK_ONLY:
+                open(path, "w", errors="surrogateescape").write(text)
+            touched += n + n2
+    # the section's code, after the store's
+    once(objects_c, "\nstatic long tick2_chunk_free_records(void)\n", TICK2_UNIT_CODE + "\nstatic long tick2_chunk_free_records(void)\n")
+    # carved per map after ROOT's records, ANIM's and the store; every unit record free
+    once(objects_c, "\t\tlong bytes = (slots * TICK2_RECORD_BYTES + (long)sizeof(struct tick2_store) + 15) & ~15L;\n",
+         "\t\tlong unit_slots = %d; /* TICK2 unit: until the census' table */\n"
+         "\t\tlong bytes = (slots * TICK2_RECORD_BYTES + (long)sizeof(struct tick2_store) +\n"
+         "\t\t\tunit_slots * (long)sizeof(struct unit_animation) + (long)sizeof(struct tick2_unit_store) + 15) & ~15L;\n" % TICK2_UNIT_SLOTS)
+    once(objects_c, "\t\ttick2_free_count = tick2_free_low = slots;\n",
+         "\t\ttick2_free_count = tick2_free_low = slots;\n"
+         "\t\t/* TICK2 unit: the unit section after the store, every record free */\n"
+         "\t\ttick2_unit_store = (struct tick2_unit_store *)(tick2_store + 1);\n"
+         "\t\tmemset(tick2_unit_store, 0, sizeof(*tick2_unit_store));\n"
+         "\t\ttick2_unit_anims = (struct unit_animation *)(tick2_unit_store + 1);\n"
+         "\t\ttick2_unit_store->slots = unit_slots;\n"
+         "\t\tfor (k = 0; k < unit_slots; k++)\n"
+         "\t\t\ttick2_unit_store->free_records[k] = (short)(unit_slots - 1 - k);\n"
+         "\t\ttick2_unit_store->free_count = tick2_unit_store->free_low = unit_slots;\n")
+    # a unit takes its record when object_new gives it its type; a failed take fails the creation
+    once(objects_c, "\t\t\tobject_header->type = object_definition->object.type;\n",
+         "\t\t\tobject_header->type = object_definition->object.type;\n"
+         "\t\t\tif (object_header->type == _object_type_biped || object_header->type == _object_type_vehicle)\n"
+         "\t\t\t{ /* TICK2 unit */\n"
+         "\t\t\t\tobject->object.root->unit_slot = tick2_unit_take();\n"
+         "\t\t\t\tif (object->object.root->unit_slot == TICK2_UNIT_NONE)\n"
+         "\t\t\t\t\tsuccess = FALSE;\n"
+         "\t\t\t\telse\n"
+         "\t\t\t\t\tmemset(tick2_unit_anim_of(object->object.root), 0, sizeof(struct unit_animation));\n"
+         "\t\t\t}\n")
+    # and gives it back with its ROOT record
+    text = open(objects_c, errors="surrogateescape").read()
+    gives = re.findall(r"\t*tick2_record_give\((.*?)\); /\* TICK2 root \*/\n", text)
+    if len(gives) != 2:
+        check_fail("psp_fixups: TICK2 unit: %d ROOT gives, not 2" % len(gives))
+    elif not CHECK_ONLY:
+        text = re.sub(r"(\t*)tick2_record_give\((.*?)\); /\* TICK2 root \*/\n",
+                      lambda m: "%stick2_unit_give(%s); /* TICK2 unit */\n%stick2_record_give(%s); /* TICK2 root */\n" % (m.group(1), m.group(2), m.group(1), m.group(2)), text)
+        open(objects_c, "w", errors="surrogateescape").write(text)
+    # the compactions settle the unit chunks too; the collector counts the unit section's spare
+    text = open(objects_c, errors="surrogateescape").read()
+    compacts = text.count("tick2_overflow_rebase(); /* TICK2 root */ }")
+    if compacts < 4:
+        check_fail("psp_fixups: TICK2 unit: %d compactions" % compacts)
+    elif not CHECK_ONLY:
+        text = text.replace("tick2_overflow_rebase(); /* TICK2 root */ }", "tick2_overflow_rebase(); tick2_unit_rebase(); /* TICK2 root, unit */ }")
+        open(objects_c, "w", errors="surrogateescape").write(text)
+    once(objects_c, "#define TICK2_STORE_SPARE() ((long)(tick2_free_count + tick2_chunk_free_records()) * TICK2_RECORD_BYTES)",
+         "#define TICK2_STORE_SPARE() ((long)(tick2_free_count + tick2_chunk_free_records()) * TICK2_RECORD_BYTES + \\\n"
+         "\t(tick2_unit_store ? (long)(tick2_unit_store->free_count + tick2_unit_chunk_free_records()) * (long)sizeof(struct unit_animation) : 0))")
+    # the sleep's checksum and the trial updates' put-back cover the unit's record
+    once(objects_c, "\tfor (k = 0; k < sizeof(struct object_animation_state) / 4; k++)\n\t\tsum = (sum ^ word[k]) * 33UL;\n\treturn sum;\n",
+         "\tfor (k = 0; k < sizeof(struct object_animation_state) / 4; k++)\n\t\tsum = (sum ^ word[k]) * 33UL;\n"
+         "\tif (((struct object_datum const *)header->datum)->object.root->unit_slot != TICK2_UNIT_NONE)\n"
+         "\t{ /* TICK2 unit */\n"
+         "\t\tword = (unsigned long const *)tick2_unit_anim_of(((struct object_datum const *)header->datum)->object.root);\n"
+         "\t\tfor (k = 0; k < sizeof(struct unit_animation) / 4; k++)\n\t\t\tsum = (sum ^ word[k]) * 33UL;\n\t}\n\treturn sum;\n")
+    text = open(objects_c, errors="surrogateescape").read()
+    for record in ("object", "((struct object_datum *)word)"):
+        keep = "\tstruct tick2_root kept_root = *%s->object.root; /* TICK2 root: the record put back too */\n" % record
+        back = "\t*%s->object.root = kept_root; /* TICK2 root */\n" % record
+        if text.count(keep) != 1 or text.count(back) != 1:
+            check_fail("psp_fixups: TICK2 unit: a trial update's put-back for %s matches %d/%d" % (record, text.count(keep), text.count(back)))
+            continue
+        text = text.replace(keep, keep + "\tstruct unit_animation kept_unit;\n\tint kept_is_unit = %s->object.root->unit_slot != TICK2_UNIT_NONE; /* TICK2 unit */\n\n"
+                            "\tif (kept_is_unit)\n\t\tkept_unit = *tick2_unit_anim_of(%s->object.root);\n" % (record, record))
+        text = text.replace(back, back + "\tif (kept_is_unit)\n\t\t*tick2_unit_anim_of(%s->object.root) = kept_unit; /* TICK2 unit */\n" % record)
+    if not CHECK_ONLY:
+        open(objects_c, "w", errors="surrogateescape").write(text)
+    # unit datum sizes: unit, biped and vehicle rows lose 0x48 more
+    path = os.path.join(tree, "source/objects/object_types.c")
+    text = open(path, errors="surrogateescape").read()
+    rows = re.compile(r"(\n\t\"(unit|biped|vehicle)\", '\w{4}', )0x([0-9A-Fa-f]+)(,)")
+    text, sized = rows.subn(lambda m: "%s0x%X%s" % (m.group(1), int(m.group(3), 16) - (TICK2_UNIT_END - TICK2_UNIT_AT), m.group(4)), text)
+    if sized != 3:
+        check_fail("psp_fixups: TICK2 unit: %d unit-family sizes in object_types.c, not 3" % sized)
+    elif not CHECK_ONLY:
+        open(path, "w", errors="surrogateescape").write(text)
+    # the engine's layout checks on unit-family datums past the field, already moved for ROOT and
+    # ANIM: absolute (unit, biped, vehicle) and relative to _unit_datum; one inside it fails
+    shrink = TICK2_UNIT_END - TICK2_UNIT_AT
+    moved = [0]
+    def shift(at, end, after_cuts):
+        def fix(m):
+            value = int(m.group(2), 16)
+            # the checks were already moved by the cuts before the unit's field; compare in the new layout
+            at_now, end_now = at - after_cuts, end - after_cuts
+            if at_now <= value < end_now and "sizeof" not in m.group(1):
+                check_fail("psp_fixups: TICK2 unit: a layout check inside unit.animation: %s" % m.group(0))
+            if value < end_now:
+                return m.group(0)
+            moved[0] += 1
+            return "%s0x%X%s" % (m.group(1), value - shrink, m.group(3))
+        return fix
+    absolute = re.compile(r"((?:offsetof|sizeof)\(struct (?:unit|biped|vehicle)_datum\b[^\]\n]*?== )0x([0-9A-Fa-f]+)(\s*\?\s*1\s*:\s*-1)")
+    relative = re.compile(r"((?:offsetof|sizeof)\(struct _unit_datum\b[^\]\n]*?== )0x([0-9A-Fa-f]+)(\s*\?\s*1\s*:\s*-1)")
+    for root, dirs, files in os.walk(os.path.join(tree, "source")):
+        for name in files:
+            if not name.endswith((".c", ".h")):
+                continue
+            path = os.path.join(root, name)
+            text = open(path, errors="surrogateescape").read()
+            new = absolute.sub(shift(TICK2_UNIT_AT, TICK2_UNIT_END, TICK2_SHRINK), text)
+            new = relative.sub(shift(TICK2_UNIT_AT - TICK2_UNIT_BASE, TICK2_UNIT_END - TICK2_UNIT_BASE, 0), new)
+            if new != text and not CHECK_ONLY:
+                open(path, "w", errors="surrogateescape").write(new)
+    print("psp_fixups: TICK2 unit: %d unit-family sizes and %d layout checks moved by 0x%X more" % (sized, moved[0], shrink))
+    return touched
+print("psp_fixups: the world store's unit section: %d touches through the unit index (TICK2 unit)" % tick2_unit_cut(TREE))
 
 # PSP_GCCOUNT=1 (and every PSP_TICK2=root build): what the collector did on each map,
 # so slice 1's two builds can be held to the same deletions (spec section 18.3), with
