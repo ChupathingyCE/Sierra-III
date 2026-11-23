@@ -59481,6 +59481,7 @@ def seed_trace(tree):
 int psp_keep_number(const char *prefix, int fallback);
 void platform_psp_log(const char *format, ...);
 extern volatile unsigned int psp_me_context;
+long psp_seedtrace_first = -2; /* the global seed's tracer starts once the local one has read its keep word */
 
 unsigned long *__attribute__((noinline)) get_global_local_random_seed_address(
 	void)
@@ -59490,7 +59491,7 @@ unsigned long *__attribute__((noinline)) get_global_local_random_seed_address(
 	long tick;
 
 	if (first == -2)
-		first = psp_keep_number("seedtrace", -1);
+		psp_seedtrace_first = first = psp_keep_number("seedtrace", -1);
 	if (first >= 0 && !psp_me_context)
 	{ /* never from the Media Engine (no kernel there): its stack sits below 16 MB */
 		unsigned int sp;
@@ -59520,13 +59521,15 @@ unsigned long *__attribute__((noinline)) get_global_local_random_seed_address(
 		int psp_keep_number(const char *prefix, int fallback);
 		void platform_psp_log(const char *format, ...);
 		extern volatile unsigned int psp_me_context;
-		static long first = -2;
+		extern long psp_seedtrace_first; /* set by the local seed's first draw in a game: none at boot */
 		static long draws;
 		long tick;
+		unsigned int sp;
 
-		if (first == -2)
-			first = psp_keep_number("seedtrace", -1);
-		if (first >= 0 && !psp_me_context && (tick = game_time_get()) >= first && tick <= first + 10)
+		/* the AI thinking ahead draws it on the Media Engine (no kernel there): never from there */
+		__asm__ ("move %0, $sp" : "=r"(sp));
+		if (psp_seedtrace_first >= 0 && !psp_me_context && (sp & 0x1FFFFFFFu) >= 0x01000000u &&
+			(tick = game_time_get()) >= psp_seedtrace_first && tick <= psp_seedtrace_first + 10)
 			platform_psp_log("seedtrace: global: tick %ld, draw %ld, from %08lx, seed %08lx", tick, draws++,
 				(unsigned long)__builtin_return_address(0), random_math_globals.global_random_seed);
 	}
