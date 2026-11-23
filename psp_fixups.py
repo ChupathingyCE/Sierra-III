@@ -59713,8 +59713,9 @@ TICK2_POSE_DECL = r"""
 /* the world store's node arenas (TICK2 pose): each object's node blocks, at the runs its ROOT record names.
 Two runs, as object_new makes the blocks: matrices for every node, and the two orientation arrays only for
 the types that interpolate (_object_mask_cannot_interpolate's types have none) */
-#define TICK2_POSE_CHUNK 64
-#define TICK2_POSE_CHUNKS 64
+#define TICK2_POSE_CHUNK 64 /* a chunk's span in the node index (its capacity is TICK2_POSE_GRAIN up to this) */
+#define TICK2_POSE_GRAIN 16 /* a chunk holds the run that opens it, rounded up to this (the lead, 2026-11-23 16:4x) */
+#define TICK2_POSE_CHUNKS 256
 #define TICK2_POSE_RUN_MOST 64
 #define TICK2_POSE_MATRICES 1 /* the blocks an object has */
 #define TICK2_POSE_ORIENTATIONS 2
@@ -59724,8 +59725,8 @@ struct tick2_pose_run
 	long nodes, stride, arrays, bump, live, live_peak, overflow_taken, overflow_live, overflow_peak;
 	unsigned char *base; /* the arena's arrays, one after the other, each nodes * stride */
 	unsigned short free_head[TICK2_POSE_RUN_MOST + 1]; /* a free run's next is in its first element */
-	unsigned char *chunk[TICK2_POSE_CHUNKS]; /* the pool's block references (each its arrays of TICK2_POSE_CHUNK) */
-	short chunk_bump[TICK2_POSE_CHUNKS], chunk_live[TICK2_POSE_CHUNKS];
+	unsigned char *chunk[TICK2_POSE_CHUNKS]; /* the pool's block references (each its arrays of chunk_cap nodes) */
+	short chunk_bump[TICK2_POSE_CHUNKS], chunk_live[TICK2_POSE_CHUNKS], chunk_cap[TICK2_POSE_CHUNKS];
 };
 struct tick2_pose_store
 {
@@ -59743,7 +59744,7 @@ static void *tick2_pose_at(struct tick2_pose_run const *run, long first, long ar
 	if (first < run->nodes)
 		return run->base + (array * run->nodes + first) * run->stride;
 	first -= run->nodes;
-	return run->chunk[first / TICK2_POSE_CHUNK] + (array * TICK2_POSE_CHUNK + first % TICK2_POSE_CHUNK) * run->stride;
+	return run->chunk[first / TICK2_POSE_CHUNK] + (array * run->chunk_cap[first / TICK2_POSE_CHUNK] + first % TICK2_POSE_CHUNK) * run->stride;
 }
 
 /* a run of nodes: a free one of its length, else the arena's tail, else an overflow chunk's */
@@ -59774,16 +59775,19 @@ static unsigned short tick2_pose_take(struct tick2_pose_run *run, long count)
 		return first;
 	}
 	for (c = 0; c < TICK2_POSE_CHUNKS; c++)
-		if (run->chunk[c] && run->chunk_bump[c] + count <= TICK2_POSE_CHUNK)
+		if (run->chunk[c] && run->chunk_bump[c] + count <= run->chunk_cap[c])
 			break;
 	if (c == TICK2_POSE_CHUNKS)
 	{
+		long cap = (count + TICK2_POSE_GRAIN - 1) & ~(long)(TICK2_POSE_GRAIN - 1);
+
 		for (c = 0; c < TICK2_POSE_CHUNKS && run->chunk[c]; c++)
 			;
 		if (c == TICK2_POSE_CHUNKS ||
-			!memory_pool_block_allocate(object_memory_pool, (void **)&run->chunk[c], run->arrays * TICK2_POSE_CHUNK * run->stride))
+			!memory_pool_block_allocate(object_memory_pool, (void **)&run->chunk[c], run->arrays * cap * run->stride))
 			return TICK2_POSE_NONE;
 		run->chunk_bump[c] = run->chunk_live[c] = 0;
+		run->chunk_cap[c] = (short)cap;
 	}
 	run->chunk_bump[c] += (short)count;
 	run->chunk_live[c] += (short)count;
@@ -59811,7 +59815,7 @@ static void tick2_pose_give_run(struct tick2_pose_run *run, long first, long cou
 	{ /* a chunk with no live run goes back to the pool (its tail is only reused once it's empty) */
 		memory_pool_block_free(object_memory_pool, (void **)&run->chunk[first]);
 		run->chunk[first] = NULL;
-		run->chunk_bump[first] = run->chunk_live[first] = 0;
+		run->chunk_bump[first] = run->chunk_live[first] = run->chunk_cap[first] = 0;
 	}
 }
 
@@ -59838,7 +59842,7 @@ static long tick2_pose_run_spare(struct tick2_pose_run const *run)
 
 	for (c = 0; c < TICK2_POSE_CHUNKS; c++)
 		if (run->chunk[c])
-			spare += (TICK2_POSE_CHUNK - run->chunk_live[c]) * run->arrays * run->stride;
+			spare += (run->chunk_cap[c] - run->chunk_live[c]) * run->arrays * run->stride;
 	return spare;
 }
 
@@ -60155,6 +60159,7 @@ def tick2_gccount(tree):
 					tick2_gc.low_units = tick2_gc.units_live;
 					tick2_gc.low_nodes = tick2_gc.nodes_live;
 					tick2_gc.low_orient = tick2_gc.orient_live;
+					tick2_gc_sections_now(data->actual_count);
 				}
 				if (!tick2_gc.contiguous_low || memory_pool_get_contiguous_free_size(object_memory_pool) < tick2_gc.contiguous_low)
 					tick2_gc.contiguous_low = memory_pool_get_contiguous_free_size(object_memory_pool);
@@ -60171,6 +60176,74 @@ static long tick2_gc_spare_now(void)
 	return 0;
 #endif
 }
+/* each section's bytes now (spec section 36, the lead 16:4x): held (its table and its chunks), of those the
+empty slots, and the old layout's bytes for the same live counts (the moved fields, which the old pool held in
+the datums). A datum loses only multiples of 4 (80, 12, 72, 52 or 64 a node), and the pool rounds a block to 4,
+so the pool's rounding gives every moved byte back [D]. Rows: ROOT and ANIM records (one slot each; their old
+bytes are the 80 and 12 that left the datum, the rest is the slot's indexes), the unit section, the matrices,
+the orientations, the store's own headers */
+static void tick2_gc_sections_now(long objects)
+{
+	long k, c = 0, held = 0, empty = 0;
+
+	for (k = 0; k < 6; k++)
+		tick2_gc.low_held[k] = tick2_gc.low_empty[k] = tick2_gc.low_old[k] = 0;
+	tick2_gc.low_chunk_blocks = 0;
+#ifdef TICK2_STORE_SLOTS
+	if (!tick2_store)
+		return;
+	for (c = held = 0; c < TICK2_CHUNKS; c++)
+		if (tick2_store->chunk[c])
+			held++, tick2_gc.low_chunk_blocks++;
+	held = tick2_store->slots + held * TICK2_CHUNK;
+	tick2_gc.low_held[0] = held * TICK2_RECORD_BYTES;
+	tick2_gc.low_empty[0] = (held - objects) * TICK2_RECORD_BYTES;
+	tick2_gc.low_old[0] = objects * (0x50L + (TICK2_RECORD_BYTES - (long)sizeof(struct tick2_root))); /* ROOT's 80, ANIM's 12 where it's cut */
+	tick2_gc.low_held[5] = (long)sizeof(struct tick2_store);
+#endif
+#ifdef TICK2_UNIT_CHUNK
+	if (tick2_unit_store)
+	{
+		for (c = held = 0; c < TICK2_UNIT_CHUNKS; c++)
+			if (tick2_unit_store->chunk[c])
+				held++, tick2_gc.low_chunk_blocks++;
+		held = tick2_unit_store->slots + held * TICK2_UNIT_CHUNK;
+		tick2_gc.low_held[1] = held * (long)sizeof(struct unit_animation);
+		tick2_gc.low_empty[1] = (held - tick2_gc.units_live) * (long)sizeof(struct unit_animation);
+		tick2_gc.low_old[1] = tick2_gc.units_live * (long)sizeof(struct unit_animation);
+		tick2_gc.low_held[5] += (long)sizeof(struct tick2_unit_store);
+	}
+#endif
+#ifdef TICK2_POSE_GRAIN
+	if (tick2_pose_store)
+	{
+		struct tick2_pose_run const *runs[2] = { &tick2_pose_store->matrices, &tick2_pose_store->orientations };
+		long r;
+
+		for (r = 0; r < 2; r++)
+		{
+			long each = runs[r]->arrays * runs[r]->stride;
+
+			held = runs[r]->nodes;
+			empty = runs[r]->nodes - runs[r]->live;
+			for (c = 0; c < TICK2_POSE_CHUNKS; c++)
+				if (runs[r]->chunk[c])
+				{
+					held += runs[r]->chunk_cap[c];
+					empty += runs[r]->chunk_cap[c] - runs[r]->chunk_live[c];
+					tick2_gc.low_chunk_blocks++;
+				}
+			tick2_gc.low_held[2 + r] = held * each;
+			tick2_gc.low_empty[2 + r] = empty * each;
+		}
+		tick2_gc.low_old[2] = tick2_gc.nodes_live * (long)sizeof(real_matrix4x3);
+		tick2_gc.low_old[3] = tick2_gc.orient_live * 2 * (long)sizeof(real_orientation);
+		tick2_gc.low_held[5] += (long)sizeof(struct tick2_pose_store);
+	}
+#endif
+	(void)c, (void)held, (void)empty, (void)objects;
+}
+
 static long tick2_gc_pose_chunks_now(void)
 {
 	long chunks = 0;
@@ -60188,7 +60261,9 @@ static long object_header_new(
 boolean debug_object_garbage_collection;
 static struct { long deleted, pool_peak, live_peak, free_low, units_live, units_peak, nodes_live, nodes_peak, orient_live, orient_peak,
 	low_contiguous, low_node_bytes, low_spare, low_chunks, contiguous_low,
-	low_objects, low_units, low_nodes, low_orient, chunks_taken, chunks_returned; } tick2_gc; /* TICK2 gccount */
+	low_objects, low_units, low_nodes, low_orient, chunks_taken, chunks_returned,
+	low_held[6], low_empty[6], low_old[6], low_chunk_blocks; } tick2_gc; /* TICK2 gccount */
+static void tick2_gc_sections_now(long objects); /* after the store's code */
 
 static long tick2_gc_spare_now(void); /* after the store's code */
 static long tick2_gc_pose_chunks_now(void);
@@ -60246,6 +60321,19 @@ void psp_tick2_gc_report(const char *label, int level_end)
 		tick2_gc.low_chunks, tick2_gc.contiguous_low / 1024);
 	platform_psp_log("gccount (%s): live at the pool's low: objects (ROOT records) %ld, units %ld, nodes %ld, interpolating nodes %ld; overflow chunks taken %ld, returned %ld",
 		label, tick2_gc.low_objects, tick2_gc.low_units, tick2_gc.low_nodes, tick2_gc.low_orient, tick2_gc.chunks_taken, tick2_gc.chunks_returned);
+	{ /* each section's bytes at the pool's low: held (empty) against the old layout's, in bytes */
+		static const char *const names[6] = { "ROOT+ANIM records", "unit", "matrices", "orientations", "-", "store headers" };
+		long k, held = 0, old = 0;
+
+		for (k = 0; k < 6; k++)
+			held += tick2_gc.low_held[k], old += tick2_gc.low_old[k];
+		platform_psp_log("gccount (%s): bytes at the pool's low, held (of them empty) / the old layout's: %s %ld (%ld) / %ld; %s %ld (%ld) / %ld; %s %ld (%ld) / %ld; %s %ld (%ld) / %ld; %s %ld; chunk blocks %ld; all %ld / %ld, over by %ld",
+			label, names[0], tick2_gc.low_held[0], tick2_gc.low_empty[0], tick2_gc.low_old[0],
+			names[1], tick2_gc.low_held[1], tick2_gc.low_empty[1], tick2_gc.low_old[1],
+			names[2], tick2_gc.low_held[2], tick2_gc.low_empty[2], tick2_gc.low_old[2],
+			names[3], tick2_gc.low_held[3], tick2_gc.low_empty[3], tick2_gc.low_old[3],
+			names[5], tick2_gc.low_held[5], tick2_gc.low_chunk_blocks, held, old, held - old);
+	}
 #ifdef TICK2_POSE_CHUNK
 	if (tick2_pose_store)
 	{ /* TICK2 pose: the node arenas, and their overflow (spec section 35's report) */
