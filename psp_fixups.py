@@ -59973,6 +59973,72 @@ void psp_objects_anim_hash_log(long tick)
     return 1
 print("psp_fixups: the local seed's tracer: %s (SEEDTRACE)" % ("on" if seed_trace(TREE) else "off"))
 
+# PSP_SEEDTRACE=1 too: "proptraceN" watches prop N (absolute index) through perception's refresh
+# in seedtraceN's window: each refresh of it logs its caller, the refreshing actor, its unit and
+# that unit's place now, and the prop's position fields before and after, by name (the bugs.md
+# entry of 2026-11-23: a30's prop 22 parts first under PSP_TICK2=anim)
+def prop_trace(tree):
+    if os.environ.get("PSP_SEEDTRACE", "") != "1":
+        return 0
+    path = os.path.join(tree, "source/ai/actor_perception.c")
+    text = open(path, errors="surrogateescape").read()
+    old = "void prop_status_refresh(\n\tlong actor_index,\n\tlong prop_index,\n\tstruct actor_position_data *position)\n{"
+    if text.count(old) != 1:
+        check_fail("psp_fixups: SEEDTRACE: prop_status_refresh's definition matches %d times" % text.count(old))
+        return 0
+    text = text.replace(old, "static void prop_status_refresh_body(\n\tlong actor_index,\n\tlong prop_index,\n\tstruct actor_position_data *position)\n{")
+    place = "->object.root->position" if TICK2_ROOT else "->object.position"
+    text += """
+/* SEEDTRACE: prop_status_refresh with "proptraceN" watched (psp_fixups.py's prop_trace) */
+static void psp_prop_trace(const char *when, long actor_index, long prop_index, struct actor_position_data const *position, void *from)
+{
+	struct prop_datum const *prop = prop_get(prop_index);
+	real_point3d const *unit_at = NULL;
+	unsigned long const *w;
+
+	if (prop->unit_index != NONE && object_try_and_get_and_verify_type(prop->unit_index, _object_mask_unit))
+		unit_at = &((struct unit_datum *)object_get(prop->unit_index))%(place)s;
+	platform_psp_log("proptrace: tick %%ld %%s, actor %%08lx, prop %%08lx, unit %%08lx at %%.4f %%.4f %%.4f, from %%08lx",
+		(long)game_time_get(), when, (unsigned long)actor_index, (unsigned long)prop_index, (unsigned long)prop->unit_index,
+		unit_at ? unit_at->x : 0.0f, unit_at ? unit_at->y : 0.0f, unit_at ? unit_at->z : 0.0f, (unsigned long)from);
+	platform_psp_log("proptrace:   body %%.4f %%.4f %%.4f, mass %%.4f %%.4f %%.4f, path %%.4f %%.4f %%.4f, head %%.4f %%.4f %%.4f, distance %%.4f, lighting %%d",
+		prop->body_position.x, prop->body_position.y, prop->body_position.z,
+		prop->center_of_mass.x, prop->center_of_mass.y, prop->center_of_mass.z,
+		prop->pathfinding_point.x, prop->pathfinding_point.y, prop->pathfinding_point.z,
+		prop->head_position.x, prop->head_position.y, prop->head_position.z, prop->distance, (int)prop->lighting);
+	w = (unsigned long const *)&position->head_position;
+	platform_psp_log("proptrace:   the actor's head %%08lx %%08lx %%08lx", w[0], w[1], w[2]);
+}
+
+void prop_status_refresh(
+	long actor_index,
+	long prop_index,
+	struct actor_position_data *position)
+{
+	static long watched = -2;
+	extern long psp_seedtrace_first; /* random_math.c */
+	long tick;
+	int watch;
+
+	if (watched == -2)
+		watched = psp_keep_number("proptrace", -1);
+	tick = game_time_get();
+	watch = watched >= 0 && psp_seedtrace_first >= 0 && tick >= psp_seedtrace_first && tick <= psp_seedtrace_first + 10 &&
+		DATUM_INDEX_TO_ABSOLUTE_INDEX(prop_index) == watched;
+	if (watch)
+		psp_prop_trace("before", actor_index, prop_index, position, __builtin_return_address(0));
+	prop_status_refresh_body(actor_index, prop_index, position);
+	if (watch)
+		psp_prop_trace("after", actor_index, prop_index, position, __builtin_return_address(0));
+}
+""" % {"place": place}
+    if "int psp_keep_number(const char *prefix, int fallback);" not in text:
+        text = text.replace("\nstatic void psp_prop_trace(", "\nint psp_keep_number(const char *prefix, int fallback);\nstatic void psp_prop_trace(", 1)
+    if not CHECK_ONLY:
+        open(path, "w", errors="surrogateescape").write(text)
+    return 1
+print("psp_fixups: perception's prop tracer: %s (SEEDTRACE)" % ("on" if prop_trace(TREE) else "off"))
+
 # PSP_C4TRACE=1: C4's play-the-same trace (the lab's tick_rewrite_plan.md §9). With
 # "c4traceN" (and "c4spanM", 900 ticks by default), each live biped at each tick's end
 # from tick N logs its discrete state (identifier, dead, parent, held weapon) and its
