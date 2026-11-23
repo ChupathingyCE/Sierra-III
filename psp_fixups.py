@@ -59348,6 +59348,60 @@ void psp_tick2_gc_report(const char *label, int level_end)
     return 1
 print("psp_fixups: the collector's line per map: %s (TICK2 gccount)" % ("on" if tick2_gccount(TREE) else "off"))
 
+# PSP_SEEDTRACE=1: who draws the local random seed. With "seedtraceN", each draw
+# from tick N to N + 10 logs its caller and the seed it found, so two builds'
+# logs can be set side by side and the first draw that differs named (with the
+# batch's linkmap). A bench tool whose test sits on every draw, so a default
+# build leaves it out.
+def seed_trace(tree):
+    if os.environ.get("PSP_SEEDTRACE", "") != "1":
+        return 0
+    path = os.path.join(tree, "source/math/random_math.c")
+    text = open(path, errors="surrogateescape").read()
+    old = """unsigned long *get_global_local_random_seed_address(
+	void)
+{
+	return &random_math_globals.global_local_random_seed;
+}
+"""
+    new = """long game_time_get(void);
+int psp_keep_number(const char *prefix, int fallback);
+void platform_psp_log(const char *format, ...);
+extern volatile unsigned int psp_me_context;
+
+unsigned long *__attribute__((noinline)) get_global_local_random_seed_address(
+	void)
+{
+	static long first = -2;
+	static long draws;
+	long tick;
+
+	if (first == -2)
+		first = psp_keep_number("seedtrace", -1);
+	if (first >= 0 && !psp_me_context)
+	{ /* never from the Media Engine (no kernel there): its stack sits below 16 MB */
+		unsigned int sp;
+
+		__asm__ ("move %0, $sp" : "=r"(sp));
+		if ((sp & 0x1FFFFFFFu) < 0x01000000u)
+			return &random_math_globals.global_local_random_seed;
+	}
+	else
+		return &random_math_globals.global_local_random_seed;
+	if ((tick = game_time_get()) >= first && tick <= first + 10)
+		platform_psp_log("seedtrace: tick %ld, draw %ld, from %08lx, seed %08lx", tick, draws++,
+			(unsigned long)__builtin_return_address(0), random_math_globals.global_local_random_seed);
+	return &random_math_globals.global_local_random_seed;
+}
+"""
+    if text.count(old) != 1:
+        check_fail("psp_fixups: SEEDTRACE: the local seed's address function matches %d times" % text.count(old))
+        return 0
+    if not CHECK_ONLY:
+        open(path, "w", errors="surrogateescape").write(text.replace(old, new))
+    return 1
+print("psp_fixups: the local seed's tracer: %s (SEEDTRACE)" % ("on" if seed_trace(TREE) else "off"))
+
 if CHECK_ONLY:
     for message in count_failures:
         print(message)
