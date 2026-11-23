@@ -257,3 +257,35 @@ The struct is also passed by address in nine places [D]: `unit_animation_busy` (
 4. **Proof:** as 1c-1. The old build against `PSP_TICK2=unit` (which implies anim and root) on the six maps, a30 included, with the per-tick animation hash from the tracer (`animsum`), which now covers the unit records too.
 
 1c-2 starts once 1c-1 is exact on a30.
+
+## 16. POSE's design: the node arena (draft for the lead, 2026-11-23)
+
+POSE takes each object's node data out of its datum's pool block and puts it in an arena in the store. This is the design, written before any code, for when step 1c is exact on all six maps (the lab's spec §33). [D] means read in the code, [U] inference, [E] the emulator.
+
+**What moves** [D]. Each object holds three header blocks inside its datum's pool block, reached by `struct object_header_block_reference` (a size and an offset from the datum):
+- `node_matrices`: one 52-byte `real_matrix4x3` a node (the scale, then the 4x3);
+- `node_orientations` and `original_node_orientations`: one 32-byte `real_orientation` a node each.
+
+That's 116 bytes a node. Every live object has at least one node; at each map's fullest tick there are 2,623-4,751 nodes, holding 128-512 KB of the pool (spec §17, the memory sheet [E]). The touches are few: `node_matrices` 28 in 12 files, the two orientation blocks 9 in 2 files, and `object_get_node_matrices` 8 calls in 5 files [D]. The node count is set at creation from the model and never changes during an object's life.
+
+**The index: slot-parallel** (the lead's rule: what every object has goes by slot). A 4-byte entry per slot: the first node's index in the arena (2 bytes; the worst map's peak is 4,751 nodes, well under 65,535) and the count (1 byte; the most is 40). One inline function, `tick2_nodes_of(record)`, goes from a record to its run, through `tick2_slot_of`.
+
+**The arena's form** (spec §15 item 6, §17 item 2). The matrices' 4x3 part is three 16-byte quads, 48 bytes a node, from a 16-byte-aligned base. Each node's scale is 4 bytes in a side array, and the orientations are 32 bytes each, so every run stays quad-aligned with no padding. **Open question 1, the scale split.** `real_matrix4x3` is used by type throughout: 38 header declarations take a `real_matrix4x3 *`, and the node block is passed to the maths as one. Two ways:
+- **(a) POSE keeps 52-byte matrices for now** (the type unchanged, every reader unchanged, an exact proof). The posing pass converts to the 48 + 4 form in its own scratch where it uses `lv.q`. Cost: the arena isn't quad-aligned, so the pass's quad loads come from its scratch, not the arena.
+- **(b) The split now:** the arena holds 48-byte quads and a scale array, and every reader takes the pair. It's more rewriting, but it's the form the rulings settled.
+
+**Recommendation: (a) for POSE's first step**, so the step's proof stays exact and cheap, then (b) inside the posing pass once its counters show whether quad loads from the arena pay. This is the same "move whole, then split" as 1c-2.
+
+**Allocation.** Node runs vary in length but are fixed for an object's life, and the small ones churn (projectiles, effects, items: one node each; most objects have one node). Proposed:
+1. **Free lists by run length** (1 to 64 nodes), each a stack of free runs; a new object takes an exact fit first.
+2. **A bump tail** for a run with no free fit.
+3. **Compaction where the pool already compacts** (the four `memory_pool_compact` sites, where datum pointers are already invalid). Runs slide down and their slots' index entries are rewritten, which is one store a moved run, because nothing else holds an arena address across a compaction [U: to check the render interpolation's copy of the previous tick's matrices and any port table holding node pointers (`psp_nms_*`, which the spec deletes in the new build)].
+4. **Overflow:** chunks of 64 nodes as pool blocks, as ROOT's (§14); a run never spans chunks (the largest is 40 nodes).
+
+**Sizing:** per map, by peak live nodes + 15%, in the store's table beside the record counts. That needs a peak-node count on the gccount line (C5's figures are single ticks, not peaks).
+
+**What POSE's step needs before code:**
+1. The peak-nodes census (the gccount line).
+2. The render interpolation's read: where it keeps the previous tick's matrices, and whether it holds pointers into the node blocks across ticks [D, to read].
+3. §28's literal sweep for the three block references and any fixed node-block offsets or sizes.
+4. **Proof:** exact against the old build on the six maps, with the C4 trace (`PSP_C4TRACE=1`, `c4pose`) as a second view of the pose, since any slip shows there first.
