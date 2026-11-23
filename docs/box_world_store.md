@@ -216,3 +216,15 @@ The lab's tick rewrite plan (Sheepdog01 2026-11-22) makes the store the one owne
 - **What it can't see:** reads by raw offset from a datum pointer, whole-datum copies, and code the campaign build doesn't compile.
 - **State:** the pass is built; the list is the lab's to read from the build's errors.
 
+
+## 14. The store's ROOT section: `PSP_TICK2=root` (slice 1, step 1, 2026-11-22)
+
+The first section the store owns for every object type: the object's root (`position`, `translational_velocity`, `forward`, `up`, `angular_velocity`, `location`, the bounding sphere), 84 bytes a record (the lab's `tick_store_spec_v1.md` §17-18, §23).
+
+- **Where it lives:** `tick2_roots`, one record per object slot, indexed by the datum's absolute index, made by one `game_state_malloc` beside the object pool. The game state is full, so the pool's size is cut by the array (2,048 records, 168 KB). A datum keeps one pointer to its record, set in `object_header_new` after the datum's memset.
+- **What the engine sees** (`psp_fixups.py` `tick2_root_cut`): every `x->object.<field>` and `x.object.<field>` touch becomes `x->object.root-><field>` (1,097 touches at the 0.9.1a pin, biped motion's window macros included). The eight fields leave `_object_datum`, so every datum is 80 bytes smaller: the 16 datum sizes in `object_types.c` and the engine's layout checks past the root run (20 at the pin) move by 0x50. A layout check inside the run stops the build.
+- **The collector** (spec §23): its pool tests in `objects_garbage_collection` read the pool's free size plus the store's spare records (`TICK2_STORE_SPARE()`: the records not held by a live object), so its thresholds trip where they trip today, short by the pointer each live object keeps (4 bytes, ~4 KB at 1,000 objects) [D].
+- **The sleep's checksum** reads the record's words after the datum's, so a root that changes still wakes its object.
+- **The collector's line** (`gccount`, on with this switch, and on the old build with `PSP_GCCOUNT=1`): at each map's end and each minute, the collector's deletions, the pool's peak in use, the peak of live objects and the store's peak bytes. The two builds are held to the same deletions on the ledger legs (spec §18.3).
+- **Step 1a** (the same records with the datum's layout unchanged, a union in the fields' place) was proven exact against the tock on b30_leg2, c20_leg2, a10 and d40 [E]. It isn't kept: step 1b is the shrunken datum above.
+- **Opt-in checks that read raw datum words** (funccheck, exportcheck, wakecheck) don't read the record yet: not trusted on this build until they do.

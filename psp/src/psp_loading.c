@@ -40,6 +40,7 @@ extern unsigned long psp_ge_draws_shown(void);
 #poolpeaks, so linked weakly): measured where a level ends and begins */
 extern void psp_heap_map(const char *label);
 extern void psp_pool_peaks_report(const char *label, int level_end) __attribute__((weak));
+extern void psp_tick2_gc_report(const char *label, int level_end) __attribute__((weak));
 
 static struct
 {
@@ -244,6 +245,8 @@ static void loading_begin(const char *map_name, int with_chant)
 	snprintf(label, sizeof(label), "leaving for %s", map_name ? map_name : "?");
 	if (psp_pool_peaks_report)
 		psp_pool_peaks_report(label, 1);
+	if (psp_tick2_gc_report)
+		psp_tick2_gc_report(label, 1);
 	PSP_METRICS_HEAP_MAP_LEAVING(label);
 	memset(&loading, 0, sizeof(loading));
 	loading.active = 1;

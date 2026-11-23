@@ -3493,6 +3493,11 @@ void psp_tick_account(unsigned long microseconds)
 
 			if (psp_pool_peaks_report)
 				psp_pool_peaks_report("every 60 s", 0);
+			/* "gccount": the collector's line (PSP_GCCOUNT=1 or PSP_TICK2=root builds only) */
+			extern void psp_tick2_gc_report(const char *label, int level_end) __attribute__((weak));
+
+			if (psp_tick2_gc_report)
+				psp_tick2_gc_report("every 60 s", 0);
 		}
 	}
 

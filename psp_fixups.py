@@ -58932,14 +58932,23 @@ def tick2_poison(tree):
     return done
 print("psp_fixups: the tick rewrite's count: %d datum fields without their names (TICK2)" % tick2_poison(TREE))
 
-# PSP_TICK2=root: the world store's ROOT section, step 1a (the lab's
-# tick_store_spec_v1.md). The object datum's root fields are read and written
-# in the store's record, reached through one pointer in the datum. The
-# datum's layout is unchanged (the eight fields become a union with that
-# pointer), so every datum size and offset check holds; the record array is
-# game state, and the object pool gives up the bytes it takes (the game
-# state is full). Runs after every FIXES group, on the text as they left it.
+# PSP_TICK2=root: the world store's ROOT section (the lab's
+# tick_store_spec_v1.md, step 1b). The object datum's root fields are read and
+# written in the store's record, reached through one pointer in the datum, and
+# the datum shrinks by what left it: every type's datum size and the engine's
+# offset checks on object-family datums move with it. The record array is game
+# state out of the object pool's bytes (the game state is full), so the
+# collector counts the store's spare records as free pool: it trips where it
+# trips today (spec section 23). Runs after every FIXES group, on the text as
+# they left it.
 TICK2_ROOT = os.environ.get("PSP_TICK2", "") == "root"
+# what leaves each datum: the record's 84 bytes less the pointer that stays
+TICK2_ROOT_SHRINK = 0x50
+# the root run's place in object_datum (definition_index, then _object_datum's flags and magic number)
+TICK2_ROOT_AT, TICK2_ROOT_END = 0x0C, 0x0C + 0x54
+# the collector's line per map (its deletions, the pool's peak, peak live objects): on the
+# root build, and on the old build with PSP_GCCOUNT=1 for the other side of the pair
+TICK2_GCCOUNT = TICK2_ROOT or os.environ.get("PSP_GCCOUNT", "") == "1"
 TICK2_ROOT_FIELDS = ["position", "translational_velocity", "forward", "up", "angular_velocity", "location",
                      "bounding_sphere_center", "bounding_sphere_radius"]
 TICK2_ROOT_DECL = """	real_point3d position;
@@ -58973,7 +58982,7 @@ def tick2_root_cut(tree):
         check_fail("psp_fixups: TICK2 root: _object_datum's root fields aren't one run in objects.h")
     elif not CHECK_ONLY:
         body = m.group(1).replace(TICK2_ROOT_DECL,
-            "\tunion { struct tick2_root *root; char tick2_root_was[sizeof(struct tick2_root)]; }; /* TICK2 root */\n")
+            "\tstruct tick2_root *root; /* TICK2 root: the fields live in the store's record */\n")
         open(path, "w", errors="surrogateescape").write(text[:m.start(1)] + body + text[m.end(1):])
     # every touch written x->object.<field> or x.object.<field>
     pattern = re.compile(r"((?:->|\.)\s*object\.)(%s)\b" % "|".join(TICK2_ROOT_FIELDS))
@@ -59026,9 +59035,120 @@ static unsigned long psp_object_checksum(struct object_header_datum const *heade
 static unsigned long psp_object_checksum_datum(struct object_header_datum const *header)
 {""")
     once(objects_c, "\nboolean debug_object_garbage_collection;\n",
-         "\nboolean debug_object_garbage_collection;\nstruct tick2_root *tick2_roots; /* TICK2 root */\n")
+         "\nboolean debug_object_garbage_collection;\nstruct tick2_root *tick2_roots; /* TICK2 root */\n"
+         "/* the store's records not held by a live object: free pool to the collector (TICK2 root) */\n"
+         "#define TICK2_STORE_SPARE() ((long)(MAXIMUM_OBJECTS_PER_MAP - object_header_data->actual_count) * (long)sizeof(struct tick2_root))\n")
+    # every type's datum size, one literal per row of object_types.c
+    path = os.path.join(tree, "source/objects/object_types.c")
+    text = open(path, errors="surrogateescape").read()
+    rows = re.compile(r"(\n\t\"\w+\", '\w{4}', )0x([0-9A-Fa-f]+)(,)")
+    text, sized = rows.subn(lambda m: "%s0x%X%s" % (m.group(1), int(m.group(2), 16) - TICK2_ROOT_SHRINK, m.group(3)), text)
+    if sized != 16:
+        check_fail("psp_fixups: TICK2 root: %d datum sizes in object_types.c, not 16" % sized)
+    elif not CHECK_ONLY:
+        open(path, "w", errors="surrogateescape").write(text)
+    # the engine's layout checks on object-family datums: past the root run they move with it;
+    # one inside it would be checking a field that left
+    family = "object|unit|biped|vehicle|item|weapon|equipment|garbage|projectile|scenery|sound_scenery|device|machine|control|light_fixture|placeholder"
+    check = re.compile(r"((?:offsetof|sizeof)\(struct (?:%s)_datum\b[^\]\n]*?== )0x([0-9A-Fa-f]+)( \? 1 : -1)" % family)
+    relative = re.compile(r"(?<![+] )((?:offsetof|sizeof)\(struct _object_datum\b[^\]\n]*?== )0x([0-9A-Fa-f]+)( \? 1 : -1)")
+    moved = [0]
+    def shift(at, end):
+        def fix(m):
+            value = int(m.group(2), 16)
+            if at <= value < end and "sizeof" not in m.group(1):
+                check_fail("psp_fixups: TICK2 root: a layout check inside the root run: %s" % m.group(0))
+            if value < end:
+                return m.group(0)
+            moved[0] += 1
+            return "%s0x%X%s" % (m.group(1), value - TICK2_ROOT_SHRINK, m.group(3))
+        return fix
+    for root, dirs, files in os.walk(os.path.join(tree, "source")):
+        for name in files:
+            if not name.endswith((".c", ".h")):
+                continue
+            path = os.path.join(root, name)
+            text = open(path, errors="surrogateescape").read()
+            new = check.sub(shift(TICK2_ROOT_AT, TICK2_ROOT_END), text)
+            new = relative.sub(shift(TICK2_ROOT_AT - 4, TICK2_ROOT_END - 4), new)
+            if new != text and not CHECK_ONLY:
+                open(path, "w", errors="surrogateescape").write(new)
+    print("psp_fixups: TICK2 root: %d datum sizes and %d layout checks moved by 0x%X" % (sized, moved[0], TICK2_ROOT_SHRINK))
+    # the collector's tests count the store's spare records as free pool
+    text = open(objects_c, errors="surrogateescape").read()
+    start = text.find("\nvoid objects_garbage_collection(")
+    end = text.find("\n}\n", start)
+    if start < 0 or end < 0:
+        check_fail("psp_fixups: TICK2 root: objects_garbage_collection not found")
+    else:
+        body = text[start:end]
+        reads = 0
+        for read in ("memory_pool_get_contiguous_free_size(object_memory_pool)", "memory_pool_get_free_size(object_memory_pool)"):
+            reads += body.count(read)
+            body = body.replace(read, "(%s + TICK2_STORE_SPARE())" % read)
+        print("psp_fixups: TICK2 root: the collector reads the store's spare at %d pool tests" % reads)
+        if reads < 6:
+            check_fail("psp_fixups: TICK2 root: only %d pool reads in the collector" % reads)
+        elif not CHECK_ONLY:
+            open(objects_c, "w", errors="surrogateescape").write(text[:start] + body + text[end:])
     return touched
 print("psp_fixups: the world store's ROOT: %d touches through the record (TICK2 root)" % tick2_root_cut(TREE))
+
+# PSP_GCCOUNT=1 (and every PSP_TICK2=root build): what the collector did on each map,
+# so slice 1's two builds can be held to the same deletions (spec section 18.3), with
+# the pool's peak and the peak of live objects. One line a map and one each minute.
+def tick2_gccount(tree):
+    if not TICK2_GCCOUNT:
+        return 0
+    objects_c = os.path.join(tree, "source/objects/objects.c")
+    text = open(objects_c, errors="surrogateescape").read()
+    pairs = [("""					object_delete_immediately(object_index);
+					collected_count++;
+""", """					object_delete_immediately(object_index);
+					collected_count++;
+					tick2_gc.deleted++; /* TICK2 gccount */
+"""), ("""			header->data_size = size;
+			memset(header->datum, 0, size);
+""", """			header->data_size = size;
+			memset(header->datum, 0, size);
+			{ /* TICK2 gccount: the map's peaks */
+				long in_use = memory_pool_get_used_size(object_memory_pool);
+
+				if (in_use > tick2_gc.pool_peak)
+					tick2_gc.pool_peak = in_use;
+				if (data->actual_count > tick2_gc.live_peak)
+					tick2_gc.live_peak = data->actual_count;
+			}
+"""), ("\nboolean debug_object_garbage_collection;\n", """
+boolean debug_object_garbage_collection;
+static struct { long deleted, pool_peak, live_peak; } tick2_gc; /* TICK2 gccount */
+void platform_psp_log(const char *format, ...);
+
+/* psp_loading.c at a map's end, psp_platform.c each minute */
+void psp_tick2_gc_report(const char *label, int level_end)
+{
+	long store = 0;
+#ifdef TICK2_STORE_SPARE
+	store = (long)MAXIMUM_OBJECTS_PER_MAP * (long)sizeof(struct tick2_root);
+#endif
+	if (!object_memory_pool || !object_header_data)
+		return;
+	platform_psp_log("gccount (%s): the collector deleted %ld; pool %ld KB, peak %ld KB in use; live objects peak %ld; store %ld KB, peak %ld KB live",
+		label, tick2_gc.deleted, (memory_pool_get_used_size(object_memory_pool) + memory_pool_get_free_size(object_memory_pool)) / 1024, tick2_gc.pool_peak / 1024,
+		tick2_gc.live_peak, store / 1024, store ? tick2_gc.live_peak * (long)(store / MAXIMUM_OBJECTS_PER_MAP) / 1024 : 0);
+	if (level_end)
+		memset(&tick2_gc, 0, sizeof(tick2_gc));
+}
+""")]
+    for old, new in pairs:
+        if text.count(old) != 1:
+            check_fail("psp_fixups: TICK2 gccount: an anchor matches %d times in objects.c: %r" % (text.count(old), old[:60]))
+            return 0
+        text = text.replace(old, new)
+    if not CHECK_ONLY:
+        open(objects_c, "w", errors="surrogateescape").write(text)
+    return 1
+print("psp_fixups: the collector's line per map: %s (TICK2 gccount)" % ("on" if tick2_gccount(TREE) else "off"))
 
 if CHECK_ONLY:
     for message in count_failures:
