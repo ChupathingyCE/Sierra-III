@@ -59357,6 +59357,25 @@ void psp_tick2_gc_report(const char *label, int level_end)
     return 1
 print("psp_fixups: the collector's line per map: %s (TICK2 gccount)" % ("on" if tick2_gccount(TREE) else "off"))
 
+# The engine's one read of a datum by a raw offset (spec section 28): a door's
+# automatic test asks whether a unit is dead through byte 0xb6 of its datum,
+# which is object.damage_flags, and bit 2, which is _object_dead_bit (the
+# decompile named it _object_function2_active_bit). Read from the structure, so
+# it holds in every layout (PSP_TICK2's smaller datums parted d20 here: a door
+# opened for a unit the old build skipped). The same byte in the old build.
+def datum_raw_reads(tree):
+    path = os.path.join(tree, "source/devices/device_machines.c")
+    text = open(path, errors="surrogateescape").read()
+    old = "TEST_FLAG(*((byte *)unit + 0xb6), _object_function2_active_bit)"
+    new = "TEST_FLAG(unit->object.damage_flags, _object_dead_bit)"
+    if text.count(old) != 1:
+        check_fail("psp_fixups: a door's dead test by raw offset matches %d times" % text.count(old))
+        return 0
+    if not CHECK_ONLY:
+        open(path, "w", errors="surrogateescape").write(text.replace(old, new))
+    return 1
+print("psp_fixups: the engine's raw datum reads read from the structure: %d" % datum_raw_reads(TREE))
+
 # PSP_SEEDTRACE=1: who draws the local random seed. With "seedtraceN", each draw
 # from tick N to N + 10 logs its caller and the seed it found, so two builds'
 # logs can be set side by side and the first draw that differs named (with the

@@ -11,7 +11,7 @@ What slice 1 changes, why, and where to look. The store's design is `docs/box_wo
 
 ## Literal offsets and sizes into datums (spec §28)
 
-A field found by a number is invisible to the compiler and to a layout pass. d20 parted because the sleep's checksum skipped words at old-layout offsets. Every one found in `psp_fixups.py`, `psp_post.h` and `psp/` is listed here, with what replaced it:
+A field found by a number is invisible to the compiler and to a layout pass. d20 parted because the sleep's checksum skipped words at old-layout offsets. Every one found in `psp_fixups.py`, `psp_post.h`, `psp/` and the engine's own text is listed here, with what replaced it:
 
 | Where | Was | Now |
 |---|---|---|
@@ -19,6 +19,7 @@ A field found by a number is invisible to the compiler and to a layout pass. d20
 | The checksum rules, the sleep checks (itemsleepcheck, weapontrack, the debug compares): a weapon's last-owned stamp | `0x1B4 / 4` | `psp_datum_item_owned / 4` (units.c: `offsetof(struct item_datum, item.last_owned_time)`) |
 | The biped's kept tail (bspr: object_types.c, collision_bsp.c, bipeds.c, objects.c): the biped datum's size, the tail's start and the datum size set at load | `0x480` | `psp_datum_biped_bytes` (units.c: `sizeof(struct biped_datum)`) |
 | The sleep's sums and checks: the datum's visit stamp passed over | word `2` | `PSP_DATUM_STAMP_WORD` (psp_post.h: `offsetof(struct object_datum, object.magic_number) / 4`) |
+| The engine's door test (device_machines.c, ChupathingyCE's own text): a dead unit can't open a door | `*((byte *)unit + 0xb6)`, bit `_object_function2_active_bit` | `unit->object.damage_flags`, `_object_dead_bit` (`datum_raw_reads`). This one parted d20 (the lab's tick2root7d: a door opened at tick 1,131 under root, from a byte of another field) |
 
 Also found and left, with why:
 - **The 2,048- and 2,560-byte caps** on the sleep's copies and sums: buffer sizes, not offsets.
@@ -30,4 +31,5 @@ The check: `grep -nE '0x[0-9A-Fa-f]{2,4} */ *4|(byte|char) \*\)[^;]{0,60}\+ *(0x
 
 - [E] tick2root6 (the lab's sierra-batch 45119859571): exact on a10, d40, b30 and c20; d20 overflowed 38 records with the same deletions.
 - [E] d20 parted at tick 1,135 in device groups (tick2root6r, 45185417617), from the sleep checksum's literal offsets above; fixed at be0dcdd9.
-- [E] tick2root7 (45187897160): all five, after the fix. (read: see the lab's findings tick2root7_*)
+- [E] tick2root7 (45187897160): exact on four; d20 still parted: the sleep's literals were real bugs but not its cause.
+- [E] tick2root7d (45193358949): the device groups' trace: a door's group set open at tick 1,131 under root only, from the engine's raw read above. Fixed; tick2root8 proves it.
