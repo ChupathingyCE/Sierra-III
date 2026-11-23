@@ -60044,8 +60044,7 @@ def tick2_proof_cut(tree):
                                '\t\ttick2_roots = (struct tick2_root *)tick2_proof_room(bytes);\n')
     text = text.replace(fill, "\t\t\tmemset(header->datum, 0, size);\n\t\t\ttick2_proof_fill(header); /* TICK2 proof */\n"
                               "\t\t\tstruct tick2_root *record = tick2_record_take(); /* TICK2 root */\n")
-    text = text.replace(first, first + r"""void *memalign(size_t alignment, size_t size); /* as the port declares it further down */
-/* TICK2 proof: the store's room, one heap block kept at the largest map's size */
+    text = text.replace(first, first + r"""/* TICK2 proof: the store's room, one heap block kept at the largest map's size */
 static void *tick2_proof_room(long bytes)
 {
 	static void *room;
@@ -60054,7 +60053,7 @@ static void *tick2_proof_room(long bytes)
 	if (bytes > room_bytes)
 	{
 		(free)(room); /* the C library's: cseries.h's free is the debug heap's */
-		room = memalign(64, bytes);
+		room = calloc(1, bytes); /* the C library's, as the port's own heap blocks are */
 		room_bytes = room ? bytes : 0;
 	}
 	if (room)
@@ -60108,10 +60107,10 @@ static void tick2_chunk_give(void **reference)
 	tick2_gc.chunks_returned++;
 }
 """ % (("""
-	*reference = memalign(16, size); /* the proof form: from the heap, so the pool holds only the old build's blocks */
+	*reference = calloc(1, size); /* the proof form: from the C library's heap, so the pool holds only the old build's blocks */
 	if (!*reference)
 		return FALSE;""", """
-	(free)(*reference); /* the C library's, as memalign's: cseries.h's free is the debug heap's */
+	(free)(*reference); /* the C library's, as calloc's: cseries.h's free is the debug heap's */
 	*reference = NULL;""") if TICK2_PROOF else ("""
 	if (!memory_pool_block_allocate(object_memory_pool, reference, size))
 		return FALSE;""", """
