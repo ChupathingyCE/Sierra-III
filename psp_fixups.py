@@ -58981,8 +58981,6 @@ TICK2_PROOF = os.environ.get("PSP_TICK2_PROOF", "") == "1"
 TICK2_PROOF_BYTE = 0xA5
 if TICK2_PROOF and os.environ.get("PSP_BIG_RAM", "") != "1":
     check_fail("psp_fixups: PSP_TICK2_PROOF=1 needs PSP_BIG_RAM=1 (the store's room outside the pool)")
-if TICK2_PROOF and TICK2_POSE:
-    check_fail("psp_fixups: PSP_TICK2_PROOF=1 is built for root, anim and unit so far, not pose")
 # what leaves each datum: the record's 84 bytes less the pointer that stays (none in the proof form)
 TICK2_ROOT_SHRINK = 0 if TICK2_PROOF else 0x50
 # the store's capacity in records (spec section 23: the worst map's peak, 1,121 objects, and a margin)
@@ -59851,6 +59849,56 @@ static long tick2_pose_spare_bytes(void)
 	return tick2_pose_store ? tick2_pose_run_spare(&tick2_pose_store->matrices) + tick2_pose_run_spare(&tick2_pose_store->orientations) : 0;
 }
 """
+# PSP_TICK2_PROOF=1's part for POSE: the datum grows by each node block as the old layout's does (the same
+# realloc, the same offset), its bytes written with the pattern; readers still use the arena, so a reader that
+# reaches a node block through the datum reads the pattern and parts at once
+TICK2_POSE_PROOF_GROW = r"""		{ /* TICK2 proof: the datum grows as the old layout's does, its block patterned; readers use the arena */
+			short original_size = object_header->data_size;
+
+			if (!memory_pool_block_reallocate(object_memory_pool, (void **)&object_header->datum, size + object_header->data_size))
+				return FALSE;
+			object_header->data_size += size;
+			object = (struct object_datum *)object_header->datum;
+			block = (struct object_header_block_reference *)((byte *)object + block_reference_offset);
+			block->offset = original_size;
+			memset((byte *)object + original_size, 0xA5, size);
+		}
+"""
+# the proof form's sleep checksum: the datum as it stands (the old layout's size and blocks), each node block's
+# place filled from the arena, so the checksum covers the old build's bytes exactly
+TICK2_POSE_PROOF_VIRTUAL = r"""/* TICK2 pose, the proof form: the datum at its old size, each node block's place filled from the arena */
+static struct object_header_datum const *tick2_pose_virtual(struct object_header_datum const *header)
+{
+	static unsigned char buffer[2048 + 640 + 64] __attribute__((aligned(16)));
+	static struct object_header_datum fake;
+	struct object_datum const *object = (struct object_datum const *)header->datum;
+	struct tick2_root const *record = object ? object->object.root : NULL;
+	struct object_header_block_reference const *refs[3];
+	static const int blocks[3] = { TICK2_POSE_MATRICES, TICK2_POSE_ORIENTATIONS, TICK2_POSE_ORIGINALS };
+	long cap = (long)sizeof(buffer) - 64, at, k;
+
+	if (!record || record->pose_first == TICK2_POSE_NONE || !record->pose_count)
+		return header;
+	refs[0] = &object->object.node_matrices;
+	refs[1] = &object->object.node_orientations;
+	refs[2] = &object->object.original_node_orientations;
+	at = header->data_size < cap ? header->data_size : cap;
+	memcpy(buffer, header->datum, at);
+	for (k = 0; k < 3; k++)
+		if ((record->pose_blocks & blocks[k]) && refs[k]->offset > 1 && refs[k]->offset < at)
+		{
+			long bytes = refs[k]->size;
+
+			if (bytes > at - refs[k]->offset)
+				bytes = at - refs[k]->offset;
+			memcpy(buffer + refs[k]->offset, tick2_pose_block(record, blocks[k]), bytes);
+		}
+	fake = *header;
+	fake.datum = (void *)buffer;
+	fake.data_size = (short)at;
+	return &fake;
+}
+"""
 def tick2_pose_cut(tree):
     if not TICK2_POSE:
         return 0
@@ -59951,7 +59999,8 @@ static long tick2_table_for_map(const char *name, int which)
          "\t\tif (count != object->object.root->pose_count)\n"
          "\t\t\treturn FALSE;\n"
          "\t\tobject->object.root->pose_blocks |= (unsigned char)which;\n"
-         "\t\tblock->offset = 1; /* the getter's sign of a block held elsewhere (a datum's own start at 0 is never a block) */\n"
+         + (TICK2_POSE_PROOF_GROW if TICK2_PROOF else
+         "\t\tblock->offset = 1; /* the getter's sign of a block held elsewhere (a datum's own start at 0 is never a block) */\n") +
          "\t\tblock->size = (short)size;\n"
          "\t\tmemset(tick2_pose_block(object->object.root, which), 0, size);\n"
          "\t\tif (which == TICK2_POSE_MATRICES)\n"
@@ -59983,7 +60032,7 @@ static long tick2_table_for_map(const char *name, int which)
     once(objects_c, "\tunsigned long sum = psp_object_checksum_datum(header);\n",
          "\tunsigned long sum = psp_object_checksum_datum(tick2_pose_virtual(header)); /* TICK2 pose */\n")
     once(objects_c, "static unsigned long psp_object_checksum_datum(struct object_header_datum const *header);\n",
-         "static unsigned long psp_object_checksum_datum(struct object_header_datum const *header);\n" + r"""/* TICK2 pose: the datum as the old build laid it out for the sleep's checksum: its own bytes up to its
+         "static unsigned long psp_object_checksum_datum(struct object_header_datum const *header);\n" + (TICK2_POSE_PROOF_VIRTUAL if TICK2_PROOF else r"""/* TICK2 pose: the datum as the old build laid it out for the sleep's checksum: its own bytes up to its
 type's size, its node blocks in the order they were made, then the blocks made after them, so the
 checksum covers the same bytes (to its 2,048-byte cap, less what the store took out of the datum) */
 static struct object_header_datum const *tick2_pose_virtual(struct object_header_datum const *header)
@@ -60026,7 +60075,7 @@ static struct object_header_datum const *tick2_pose_virtual(struct object_header
 	fake.data_size = (short)at;
 	return &fake;
 }
-""")
+"""))
     print("psp_fixups: TICK2 pose: the node blocks in the store's arena (%d nodes a map by default)" % TICK2_POSE_NODES)
     return 1
 print("psp_fixups: the world store's node arena: %s (TICK2 pose)" % ("on" if tick2_pose_cut(TREE) else "off"))
