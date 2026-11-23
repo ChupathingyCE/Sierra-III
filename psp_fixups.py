@@ -59663,6 +59663,94 @@ void psp_objects_anim_hash_log(long tick)
     return 1
 print("psp_fixups: the local seed's tracer: %s (SEEDTRACE)" % ("on" if seed_trace(TREE) else "off"))
 
+# PSP_C4TRACE=1: C4's play-the-same trace (the lab's tick_rewrite_plan.md §9). With
+# "c4traceN" (and "c4spanM", 900 ticks by default), each live biped at each tick's end
+# from tick N logs its discrete state (identifier, dead, parent, held weapon) and its
+# position, velocity and forward as float bits; with "c4pose" too, each node's position
+# relative to the biped and its forward and up vectors. tools/c4cmp.py compares two
+# builds' traces by field. The node block is read raw (no posing on demand), as the
+# tick left it. A bench tool, so a default build leaves it out.
+def c4_trace(tree):
+    if os.environ.get("PSP_C4TRACE", "") != "1":
+        return 0
+    root = "object->object.root->" if TICK2_ROOT else "object->object."
+    path = os.path.join(tree, "source/objects/objects.c")
+    text = open(path, errors="surrogateescape").read()
+    text += """
+/* C4TRACE: each live biped's state at a tick's end (game_state.c, psp_game_state_hash_tick) */
+void psp_c4_trace_tick(long tick)
+{
+	static long first = -2, span = 900;
+	static int pose = 0;
+	long index;
+
+	if (first == -2)
+	{
+		first = psp_keep_number("c4trace", -1);
+		span = psp_keep_number("c4span", 900);
+		pose = psp_keep("c4pose");
+		if (first >= 0)
+			platform_psp_log("c4trace: ticks %%ld to %%ld, pose %%s", first, first + span - 1, pose ? "on" : "off");
+	}
+	if (first < 0 || tick < first || tick >= first + span)
+		return;
+	for (index = data_next_index(object_header_data, NONE); index != NONE; index = data_next_index(object_header_data, index))
+	{
+		struct object_header_datum *header = (struct object_header_datum *)datum_get(object_header_data, index);
+		struct object_datum *object = (struct object_datum *)header->datum;
+		struct unit_datum *unit = (struct unit_datum *)object;
+		long weapon = NONE;
+		unsigned long const *p, *v, *f;
+
+		if (!object || header->type != _object_type_biped)
+			continue;
+		if (unit->unit.current_weapon_index >= 0 && unit->unit.current_weapon_index < MAXIMUM_WEAPONS_PER_UNIT)
+			weapon = unit->unit.weapon_object_indices[unit->unit.current_weapon_index];
+		p = (unsigned long const *)&%(root)sposition;
+		v = (unsigned long const *)&%(root)stranslational_velocity;
+		f = (unsigned long const *)&%(root)sforward;
+		platform_psp_log("c4: %%ld %%08lx %%d %%08lx %%08lx | %%08lx %%08lx %%08lx | %%08lx %%08lx %%08lx | %%08lx %%08lx %%08lx", tick,
+			(unsigned long)index, TEST_FLAG(object->object.damage_flags, _object_dead_bit) ? 1 : 0,
+			(unsigned long)object->object.parent_object_index, (unsigned long)weapon,
+			p[0], p[1], p[2], v[0], v[1], v[2], f[0], f[1], f[2]);
+		if (pose && object->object.node_matrices.size > 0)
+		{
+			real_matrix4x3 const *nodes = (real_matrix4x3 const *)object_header_block_get(index, &object->object.node_matrices);
+			long count = object->object.node_matrices.size / (long)sizeof(real_matrix4x3), k;
+			real_point3d const *origin = &%(root)sposition;
+
+			for (k = 0; k < count; k++)
+			{
+				real relative[3];
+				unsigned long const *r = (unsigned long const *)relative, *nf = (unsigned long const *)&nodes[k].forward,
+					*nu = (unsigned long const *)&nodes[k].up;
+
+				relative[0] = nodes[k].position.x - origin->x;
+				relative[1] = nodes[k].position.y - origin->y;
+				relative[2] = nodes[k].position.z - origin->z;
+				platform_psp_log("c4n: %%ld %%08lx %%ld | %%08lx %%08lx %%08lx | %%08lx %%08lx %%08lx | %%08lx %%08lx %%08lx", tick,
+					(unsigned long)index, k, r[0], r[1], r[2], nf[0], nf[1], nf[2], nu[0], nu[1], nu[2]);
+			}
+		}
+	}
+}
+""" % {"root": root}
+    if "int psp_keep_number(const char *prefix, int fallback);" not in text:
+        text = text.replace("\nvoid psp_c4_trace_tick(long tick)\n", "\nint psp_keep_number(const char *prefix, int fallback);\nvoid psp_c4_trace_tick(long tick)\n", 1)
+    if not CHECK_ONLY:
+        open(path, "w", errors="surrogateescape").write(text)
+    path = os.path.join(tree, "source/saved games/game_state.c")
+    text = open(path, errors="surrogateescape").read()
+    old = "void psp_game_state_hash_tick(long tick)\n{\n\tstatic int asked = -1;\n\tchar line[1024];\n\tint length = 0, k;\n\n"
+    if text.count(old) != 1:
+        check_fail("psp_fixups: C4TRACE: psp_game_state_hash_tick's start matches %d times" % text.count(old))
+        return 0
+    text = text.replace(old, old + "\t{ extern void psp_c4_trace_tick(long tick); psp_c4_trace_tick(tick); } /* C4TRACE */\n")
+    if not CHECK_ONLY:
+        open(path, "w", errors="surrogateescape").write(text)
+    return 1
+print("psp_fixups: C4's play trace: %s (C4TRACE)" % ("on" if c4_trace(TREE) else "off"))
+
 if CHECK_ONLY:
     for message in count_failures:
         print(message)
