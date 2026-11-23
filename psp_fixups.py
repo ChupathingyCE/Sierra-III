@@ -60034,6 +60034,69 @@ void prop_status_refresh(
 """ % {"place": place}
     if "int psp_keep_number(const char *prefix, int fallback);" not in text:
         text = text.replace("\nstatic void psp_prop_trace(", "\nint psp_keep_number(const char *prefix, int fallback);\nstatic void psp_prop_trace(", 1)
+    # and a watch on the prop's whole record across the AI's tick: before and after each actor's
+    # update, and at the tick's start (a change found there was made outside the AI)
+    text += """
+/* SEEDTRACE: proptraceN's whole record, compared with its last copy; a change names the stretch */
+void psp_prop_watch(const char *what, long actor_index)
+{
+	static long watched = -2;
+	static unsigned char kept[sizeof(struct prop_datum)];
+	static long kept_tick = -1;
+	extern long psp_seedtrace_first; /* random_math.c */
+	long tick = game_time_get(), k, index;
+	struct prop_datum const *prop;
+	unsigned char const *now;
+
+	if (watched == -2)
+		watched = psp_keep_number("proptrace", -1);
+	if (watched < 0 || psp_seedtrace_first < 0 || tick < psp_seedtrace_first - 4 || tick > psp_seedtrace_first + 10 ||
+		watched >= prop_data->maximum_count)
+		return;
+	index = watched;
+	if (!((struct datum_header const *)((char const *)xbox_pointer(prop_data->data) + prop_data->size * index))->identifier)
+		return;
+	prop = (struct prop_datum const *)((char const *)xbox_pointer(prop_data->data) + prop_data->size * index);
+	now = (unsigned char const *)prop;
+	if (kept_tick >= 0)
+		for (k = 0; k < (long)sizeof(kept); k += 4)
+			if (memcmp(kept + k, now + k, 4))
+			{
+				unsigned long was, is;
+
+				memcpy(&was, kept + k, 4);
+				memcpy(&is, now + k, 4);
+				platform_psp_log("propwatch: tick %ld %s %08lx: +%ld %08lx -> %08lx (body %.4f %.4f %.4f, path %.4f %.4f %.4f)",
+					tick, what, (unsigned long)actor_index, k, was, is, prop->body_position.x, prop->body_position.y,
+					prop->body_position.z, prop->pathfinding_point.x, prop->pathfinding_point.y, prop->pathfinding_point.z);
+			}
+	memcpy(kept, now, sizeof(kept));
+	kept_tick = tick;
+}
+"""
+    if not CHECK_ONLY:
+        open(path, "w", errors="surrogateescape").write(text)
+    path = os.path.join(tree, "source/ai/actors.c")
+    text = open(path, errors="surrogateescape").read()
+    old = """		else if (actor->state.mode > _actor_mode_braindead)
+		{
+			actor_update(iterator.index);
+		}
+	}
+"""
+    new = """		else if (actor->state.mode > _actor_mode_braindead)
+		{
+			psp_prop_watch("before actor", iterator.index); /* SEEDTRACE */
+			actor_update(iterator.index);
+			psp_prop_watch("after actor", iterator.index); /* SEEDTRACE */
+		}
+	}
+	psp_prop_watch("after the actors", NONE); /* SEEDTRACE */
+"""
+    if text.count(old) != 1:
+        check_fail("psp_fixups: SEEDTRACE: the actors' update loop matches %d times" % text.count(old))
+        return 0
+    text = text.replace(old, new).replace("\nvoid actors_update(", "\nvoid psp_prop_watch(const char *what, long actor_index); /* SEEDTRACE */\nvoid actors_update(", 1)
     if not CHECK_ONLY:
         open(path, "w", errors="surrogateescape").write(text)
     return 1
