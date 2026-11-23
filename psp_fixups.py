@@ -58989,6 +58989,12 @@ TICK2_SHRINK = sum(cut[2] for cut in TICK2_CUTS)
 # the collector's line per map (its deletions, the pool's peak, peak live objects): on the
 # root build, and on the old build with PSP_GCCOUNT=1 for the other side of the pair
 TICK2_GCCOUNT = TICK2_ROOT or os.environ.get("PSP_GCCOUNT", "") == "1"
+# the collector's input (the lead, 2026-11-23 14:4x): the store is carved from the pool's tail, and its
+# spare records and nodes are not tail a request can use, so by default the collector reads the pool as it
+# is (it collects and compacts when the real tail runs short, where the old build might not: plays the same,
+# not exact). PSP_TICK2_SPARE=1 keeps the earlier form, the pool's free plus the store's spare, which
+# matches the old build's tests but can leave the tail short (tick2pose1's ARRAY FULL)
+TICK2_SPARE_READ = os.environ.get("PSP_TICK2_SPARE", "") == "1"
 TICK2_ROOT_FIELDS = ["position", "translational_velocity", "forward", "up", "angular_velocity", "location",
                      "bounding_sphere_center", "bounding_sphere_radius"]
 TICK2_ROOT_DECL = """	real_point3d position;
@@ -59269,7 +59275,9 @@ static unsigned long psp_object_checksum_datum(struct object_header_datum const 
          "struct tick2_store *tick2_store; /* TICK2 root */\n"
          + ("struct object_animation_state *tick2_anims; /* TICK2 anim */\n" if TICK2_ANIM else "") +
          "/* the store's free records: free pool to the collector (TICK2 root) */\n"
-         "#define TICK2_STORE_SPARE() ((long)(tick2_free_count + tick2_chunk_free_records()) * TICK2_RECORD_BYTES)\n"
+         "#define TICK2_STORE_SPARE() ((long)(tick2_free_count + tick2_chunk_free_records()) * TICK2_RECORD_BYTES)\n" +
+         ("#define TICK2_COLLECTOR_SPARE() TICK2_STORE_SPARE()\n" if TICK2_SPARE_READ else
+          "#define TICK2_COLLECTOR_SPARE() 0L /* the pool as it is (PSP_TICK2_SPARE=1: plus the store's spare) */\n") +
          "char *main_get_map_name(void);\n"
          "/* the store's records for a map: the larger of its peaks on today's tock and in C5, + 15%%, rounded up to 16 (the lab's census27: every\n"
          "ledger2 leg, d20_play1 and c10_play1; a10 and d40 from tick_c5_memory_sheet.md); past them the store overflows (spec 27) */\n"
@@ -59399,7 +59407,7 @@ static unsigned long psp_object_checksum_datum(struct object_header_datum const 
         reads = 0
         for read in ("memory_pool_get_contiguous_free_size(object_memory_pool)", "memory_pool_get_free_size(object_memory_pool)"):
             reads += body.count(read)
-            body = body.replace(read, "(%s + TICK2_STORE_SPARE())" % read)
+            body = body.replace(read, "(%s + TICK2_COLLECTOR_SPARE())" % read)
         print("psp_fixups: TICK2 root: the collector reads the store's spare at %d pool tests" % reads)
         if reads < 6:
             check_fail("psp_fixups: TICK2 root: only %d pool reads in the collector" % reads)
