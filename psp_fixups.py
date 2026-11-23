@@ -59510,8 +59510,34 @@ unsigned long *__attribute__((noinline)) get_global_local_random_seed_address(
     if text.count(old) != 1:
         check_fail("psp_fixups: SEEDTRACE: the local seed's address function matches %d times" % text.count(old))
         return 0
+    text = text.replace(old, new)
+    # the global seed's draws too, in the same window (a30 under PSP_TICK2=anim parts on it first)
+    gold = """		"you should not be using global random(); use local random() instead");
+"""
+    gnew = """		"you should not be using global random(); use local random() instead");
+	{ /* SEEDTRACE: the global seed's draws, in seedtraceN's window */
+		long game_time_get(void);
+		int psp_keep_number(const char *prefix, int fallback);
+		void platform_psp_log(const char *format, ...);
+		extern volatile unsigned int psp_me_context;
+		static long first = -2;
+		static long draws;
+		long tick;
+
+		if (first == -2)
+			first = psp_keep_number("seedtrace", -1);
+		if (first >= 0 && !psp_me_context && (tick = game_time_get()) >= first && tick <= first + 10)
+			platform_psp_log("seedtrace: global: tick %ld, draw %ld, from %08lx, seed %08lx", tick, draws++,
+				(unsigned long)__builtin_return_address(0), random_math_globals.global_random_seed);
+	}
+"""
+    if text.count(gold) != 1:
+        check_fail("psp_fixups: SEEDTRACE: the global seed's address function matches %d times" % text.count(gold))
+        return 0
+    # its callers named: the address function kept out of line
+    text = text.replace(gold, gnew).replace("unsigned long *get_global_random_seed_address(", "unsigned long *__attribute__((noinline)) get_global_random_seed_address(", 1)
     if not CHECK_ONLY:
-        open(path, "w", errors="surrogateescape").write(text.replace(old, new))
+        open(path, "w", errors="surrogateescape").write(text)
     # and every change to a device group's value in the same window, with its caller
     path = os.path.join(tree, "source/devices/devices.c")
     text = open(path, errors="surrogateescape").read()
