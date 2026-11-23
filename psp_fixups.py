@@ -60023,13 +60023,48 @@ def tick2_gccount(tree):
 				if (in_use > tick2_gc.pool_peak)
 					tick2_gc.pool_peak = in_use;
 				if (!tick2_gc.free_low || memory_pool_get_free_size(object_memory_pool) < tick2_gc.free_low)
+				{ /* the pool at its low: what the store holds against it (the lead, 2026-11-23 14:3x) */
 					tick2_gc.free_low = memory_pool_get_free_size(object_memory_pool);
+					tick2_gc.low_contiguous = memory_pool_get_contiguous_free_size(object_memory_pool);
+					tick2_gc.low_node_bytes = tick2_gc.nodes_live * (long)sizeof(real_matrix4x3) + tick2_gc.orient_live * 2 * (long)sizeof(real_orientation);
+					tick2_gc.low_spare = tick2_gc_spare_now();
+					tick2_gc.low_chunks = tick2_gc_pose_chunks_now();
+				}
+				if (!tick2_gc.contiguous_low || memory_pool_get_contiguous_free_size(object_memory_pool) < tick2_gc.contiguous_low)
+					tick2_gc.contiguous_low = memory_pool_get_contiguous_free_size(object_memory_pool);
 				if (data->actual_count > tick2_gc.live_peak)
 					tick2_gc.live_peak = data->actual_count;
 			}
+"""), ("\nstatic long object_header_new(\n", """
+/* the store's spare the collector's tests count as free pool, and the node overflow chunks held, now */
+static long tick2_gc_spare_now(void)
+{
+#ifdef TICK2_STORE_SLOTS
+	return tick2_store ? TICK2_STORE_SPARE() : 0;
+#else
+	return 0;
+#endif
+}
+static long tick2_gc_pose_chunks_now(void)
+{
+	long chunks = 0;
+#ifdef TICK2_POSE_CHUNK
+	long c;
+
+	for (c = 0; tick2_pose_store && c < TICK2_POSE_CHUNKS; c++)
+		chunks += (tick2_pose_store->matrices.chunk[c] != NULL) + (tick2_pose_store->orientations.chunk[c] != NULL);
+#endif
+	return chunks;
+}
+
+static long object_header_new(
 """), ("\nboolean debug_object_garbage_collection;\n", """
 boolean debug_object_garbage_collection;
-static struct { long deleted, pool_peak, live_peak, free_low, units_live, units_peak, nodes_live, nodes_peak, orient_live, orient_peak; } tick2_gc; /* TICK2 gccount */
+static struct { long deleted, pool_peak, live_peak, free_low, units_live, units_peak, nodes_live, nodes_peak, orient_live, orient_peak,
+	low_contiguous, low_node_bytes, low_spare, low_chunks, contiguous_low; } tick2_gc; /* TICK2 gccount */
+
+static long tick2_gc_spare_now(void); /* after the store's code */
+static long tick2_gc_pose_chunks_now(void);
 
 /* the census for the store's unit and node tables (the lab's spec sections 32 and 35): an object counts
 from its node block's allocation (a unit by its type) until its datum is freed */
@@ -60079,6 +60114,9 @@ void psp_tick2_gc_report(const char *label, int level_end)
 			tick2_gc.live_peak, records, store / 1024, store_peak / 1024, overflow_taken, overflow_peak,
 			tick2_gc.units_peak, tick2_gc.nodes_peak, tick2_gc.orient_peak);
 	}
+	platform_psp_log("gccount (%s): at the pool's low: free %ld KB, the tail (contiguous) %ld KB, live node blocks as the old layout holds them %ld KB, the store's spare the collector counts %ld KB, node overflow chunks %ld; the tail's low %ld KB",
+		label, tick2_gc.free_low / 1024, tick2_gc.low_contiguous / 1024, tick2_gc.low_node_bytes / 1024, tick2_gc.low_spare / 1024,
+		tick2_gc.low_chunks, tick2_gc.contiguous_low / 1024);
 #ifdef TICK2_POSE_CHUNK
 	if (tick2_pose_store)
 	{ /* TICK2 pose: the node arenas, and their overflow (spec section 35's report) */
