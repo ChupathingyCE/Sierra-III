@@ -58972,8 +58972,19 @@ TICK2_ANIM = os.environ.get("PSP_TICK2", "") in ("anim", "unit", "pose")
 TICK2_UNIT = os.environ.get("PSP_TICK2", "") in ("unit", "pose")
 # PSP_TICK2=pose (POSE's first step): the node blocks too, in the store's node arena (spec section 35)
 TICK2_POSE = os.environ.get("PSP_TICK2", "") == "pose"
-# what leaves each datum: the record's 84 bytes less the pointer that stays
-TICK2_ROOT_SHRINK = 0x50
+# PSP_TICK2_PROOF=1 (with PSP_BIG_RAM=1; the lead, 2026-11-23 14:4x): the proof form. The store is outside
+# the object pool and every datum keeps its old size, the moved bytes left in place as unnamed padding
+# filled with a fixed pattern, so the pool holds blocks of the old build's sizes in its order and the
+# collector's tests match the old build's by construction (the ship form's don't: they read a smaller
+# pool). A reader that still lands on a moved field by a literal offset reads the pattern and parts at once.
+TICK2_PROOF = os.environ.get("PSP_TICK2_PROOF", "") == "1"
+TICK2_PROOF_BYTE = 0xA5
+if TICK2_PROOF and os.environ.get("PSP_BIG_RAM", "") != "1":
+    check_fail("psp_fixups: PSP_TICK2_PROOF=1 needs PSP_BIG_RAM=1 (the store's room outside the pool)")
+if TICK2_PROOF and TICK2_UNIT:
+    check_fail("psp_fixups: PSP_TICK2_PROOF=1 is built for root and anim so far, not unit or pose")
+# what leaves each datum: the record's 84 bytes less the pointer that stays (none in the proof form)
+TICK2_ROOT_SHRINK = 0 if TICK2_PROOF else 0x50
 # the store's capacity in records (spec section 23: the worst map's peak, 1,121 objects, and a margin)
 # a map not in the table; and the free stack's room, past the table's largest count (c10's 1,440)
 TICK2_STORE_SLOTS = int(os.environ.get("PSP_TICK2_SLOTS", "1280"))
@@ -58984,7 +58995,7 @@ TICK2_ROOT_AT, TICK2_ROOT_END = 0x0C, 0x0C + 0x54
 TICK2_ANIM_AT, TICK2_ANIM_END = 0x7C, 0x7C + 0x0C
 # the runs that leave the datum, each with what it takes from the layout after it
 TICK2_CUTS = [(TICK2_ROOT_AT, TICK2_ROOT_END, TICK2_ROOT_SHRINK)] + \
-    ([(TICK2_ANIM_AT, TICK2_ANIM_END, TICK2_ANIM_END - TICK2_ANIM_AT)] if TICK2_ANIM else [])
+    ([(TICK2_ANIM_AT, TICK2_ANIM_END, 0 if TICK2_PROOF else TICK2_ANIM_END - TICK2_ANIM_AT)] if TICK2_ANIM else [])
 TICK2_SHRINK = sum(cut[2] for cut in TICK2_CUTS)
 # the collector's line per map (its deletions, the pool's peak, peak live objects): on the
 # root build, and on the old build with PSP_GCCOUNT=1 for the other side of the pair
@@ -59197,11 +59208,14 @@ def tick2_root_cut(tree):
         check_fail("psp_fixups: TICK2 root: _object_datum's root fields aren't one run in objects.h")
     elif not CHECK_ONLY:
         body = m.group(1).replace(TICK2_ROOT_DECL,
-            "\tstruct tick2_root *root; /* TICK2 root: the fields live in the store's record */\n")
+            "\tstruct tick2_root *root; /* TICK2 root: the fields live in the store's record */\n" +
+            ("\tunsigned char tick2_proof_root[0x50]; /* TICK2 proof: the old layout's bytes, a fixed pattern */\n" if TICK2_PROOF else ""))
         if TICK2_ANIM:
             if body.count(TICK2_ANIM_FIELD) != 1:
                 check_fail("psp_fixups: TICK2 anim: _object_datum's animation field isn't one line in objects.h")
-            body = body.replace(TICK2_ANIM_FIELD, "")
+            body = body.replace(TICK2_ANIM_FIELD,
+                "\tunsigned char tick2_proof_anim[sizeof(struct object_animation_state)] __attribute__((aligned(__alignof__(struct object_animation_state)))); /* TICK2 proof */\n"
+                if TICK2_PROOF else "")
         open(path, "w", errors="surrogateescape").write(text[:m.start(1)] + body + text[m.end(1):])
     # every touch written x->object.<field> or x.object.<field>
     pattern = re.compile(r"((?:->|\.)\s*object\.)(%s)\b" % "|".join(TICK2_ROOT_FIELDS))
@@ -60007,6 +60021,71 @@ static struct object_header_datum const *tick2_pose_virtual(struct object_header
     print("psp_fixups: TICK2 pose: the node blocks in the store's arena (%d nodes a map by default)" % TICK2_POSE_NODES)
     return 1
 print("psp_fixups: the world store's node arena: %s (TICK2 pose)" % ("on" if tick2_pose_cut(TREE) else "off"))
+
+# PSP_TICK2_PROOF=1: the store's room and its overflow chunks from the heap, the pool at its full size,
+# and each new datum's padding written with the pattern
+def tick2_proof_cut(tree):
+    if not (TICK2_PROOF and TICK2_ROOT):
+        return 0
+    import re
+    objects_c = os.path.join(tree, "source/objects/objects.c")
+    text = open(objects_c, errors="surrogateescape").read()
+    carve = ('\t\tmemory_pool_initialize(object_memory_pool, "objects", OBJECT_MEMORY_POOL_SIZE - bytes);\n'
+             '\t\ttick2_roots = (struct tick2_root *)((char *)(object_memory_pool + 1) + OBJECT_MEMORY_POOL_SIZE - bytes);\n')
+    fill = "\t\t\tmemset(header->datum, 0, size);\n\t\t\tstruct tick2_root *record = tick2_record_take(); /* TICK2 root */\n"
+    first = "\nstatic long tick2_chunk_free_records(void)\n"
+    if text.count(carve) != 1 or text.count(fill) != 1 or text.count(first) != 1:
+        check_fail("psp_fixups: TICK2 proof: anchors %d/%d/%d" % (text.count(carve), text.count(fill), text.count(first)))
+        return 0
+    text = text.replace(carve, '\t\tmemory_pool_initialize(object_memory_pool, "objects", OBJECT_MEMORY_POOL_SIZE); /* TICK2 proof */\n'
+                               '\t\ttick2_roots = (struct tick2_root *)tick2_proof_room(bytes);\n')
+    text = text.replace(fill, "\t\t\tmemset(header->datum, 0, size);\n\t\t\ttick2_proof_fill((struct object_datum *)header->datum); /* TICK2 proof */\n"
+                              "\t\t\tstruct tick2_root *record = tick2_record_take(); /* TICK2 root */\n")
+    text = text.replace(first, r"""
+#include <malloc.h>
+/* TICK2 proof: the store's room, one heap block kept at the largest map's size */
+static void *tick2_proof_room(long bytes)
+{
+	static void *room;
+	static long room_bytes;
+
+	if (bytes > room_bytes)
+	{
+		free(room);
+		room = memalign(64, bytes);
+		room_bytes = room ? bytes : 0;
+	}
+	if (room)
+		memset(room, 0, bytes);
+	return room;
+}
+/* an overflow chunk from the heap, not the pool, so the pool holds only the old build's blocks */
+static boolean tick2_proof_take(void **reference, long size)
+{
+	*reference = memalign(16, size);
+	return *reference != NULL;
+}
+static void tick2_proof_give(void **reference)
+{
+	free(*reference);
+	*reference = NULL;
+}
+/* the moved bytes' places, written with the pattern */
+static void tick2_proof_fill(struct object_datum *object)
+{
+	memset(object->object.tick2_proof_root, %d, sizeof(object->object.tick2_proof_root));%s
+}
+""" % (TICK2_PROOF_BYTE, "\n\tmemset(object->object.tick2_proof_anim, %d, sizeof(object->object.tick2_proof_anim));" % TICK2_PROOF_BYTE if TICK2_ANIM else "") + first)
+    text, took = re.subn(r"memory_pool_block_allocate\(object_memory_pool, \(void \*\*\)&([\w>\-]*chunk\[\w+\]),", r"tick2_proof_take((void **)&\1,", text)
+    text, gave = re.subn(r"memory_pool_block_free\(object_memory_pool, \(void \*\*\)&([\w>\-]*chunk\[\w+\])\)", r"tick2_proof_give((void **)&\1)", text)
+    if took < 1 or took != gave:
+        check_fail("psp_fixups: TICK2 proof: %d chunk takes, %d gives" % (took, gave))
+        return 0
+    if not CHECK_ONLY:
+        open(objects_c, "w", errors="surrogateescape").write(text)
+    print("psp_fixups: TICK2 proof: the store outside the pool, %d overflow chunk sites on the heap" % took)
+    return 1
+print("psp_fixups: the world store's proof form: %s (TICK2 proof)" % ("on" if tick2_proof_cut(TREE) else "off"))
 
 # PSP_GCCOUNT=1 (and every PSP_TICK2=root build): what the collector did on each map,
 # so slice 1's two builds can be held to the same deletions (spec section 18.3), with
