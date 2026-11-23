@@ -56085,7 +56085,7 @@ BIPEDMOVE_SYNC = {
 # PSP_TICK2=root: the window's store is laid out on the old biped datum, so it never goes live there
 # and its accessors are plain datum accesses (psp_bipedmove.h); slice 1's store takes its ground
 BIPEDMOVE_ROOT_MARK = ("#define PSP_TICK2_ROOT 1 /* psp_fixups.py (TICK2 root) */\n"
-                       if os.environ.get("PSP_TICK2", "") in ("root", "anim", "unit") else "")
+                       if os.environ.get("PSP_TICK2", "") in ("root", "anim", "unit", "pose") else "")
 BIPEDMOVE_PRELUDE = BIPEDMOVE_ROOT_MARK + """#include "psp_bipedmove.h" /* psp_fixups.py (BIPEDMOVE) steps 1b and 1c */
 static int psp_bms_on = -1, psp_bms_check = 0;
 /* the intent's start: the record filled, in the slot of its bipedstage3 record */
@@ -58963,13 +58963,15 @@ print("psp_fixups: the tick rewrite's count: %d datum fields without their names
 # collector counts the store's spare records as free pool: it trips where it
 # trips today (spec section 23). Runs after every FIXES group, on the text as
 # they left it.
-TICK2_ROOT = os.environ.get("PSP_TICK2", "") in ("root", "anim", "unit")
+TICK2_ROOT = os.environ.get("PSP_TICK2", "") in ("root", "anim", "unit", "pose")
 # PSP_TICK2=anim (step 1c-1): the ANIM section too, its records in a second array that shares
 # ROOT's slot (spec section 30; the lead's design (b), 2026-11-23)
-TICK2_ANIM = os.environ.get("PSP_TICK2", "") in ("anim", "unit")
+TICK2_ANIM = os.environ.get("PSP_TICK2", "") in ("anim", "unit", "pose")
 # PSP_TICK2=unit (step 1c-2): unit.animation too, whole, in a unit section found by a 2-byte
 # unit index in ROOT's record (spec section 32; the lead's ruling, 2026-11-23)
-TICK2_UNIT = os.environ.get("PSP_TICK2", "") == "unit"
+TICK2_UNIT = os.environ.get("PSP_TICK2", "") in ("unit", "pose")
+# PSP_TICK2=pose (POSE's first step): the node blocks too, in the store's node arena (spec section 35)
+TICK2_POSE = os.environ.get("PSP_TICK2", "") == "pose"
 # what leaves each datum: the record's 84 bytes less the pointer that stays
 TICK2_ROOT_SHRINK = 0x50
 # the store's capacity in records (spec section 23: the worst map's peak, 1,121 objects, and a margin)
@@ -59158,7 +59160,9 @@ def tick2_root_cut(tree):
     # the record, and the union that keeps the datum's layout
     once(os.path.join(tree, "source/objects/objects.h"), "\nstruct _object_datum\n{\n",
          "\n/* the world store's ROOT record (TICK2 root) */\nstruct tick2_root\n{\n" + TICK2_ROOT_DECL +
-         ("\tunsigned short unit_slot; /* TICK2 unit: the unit section's index, TICK2_UNIT_NONE if not a unit */\n#define TICK2_UNIT_NONE 0xFFFF\n" if TICK2_UNIT else "") + (
+         ("\tunsigned short unit_slot; /* TICK2 unit: the unit section's index, TICK2_UNIT_NONE if not a unit */\n#define TICK2_UNIT_NONE 0xFFFF\n" if TICK2_UNIT else "") +
+         ("\tunsigned short pose_first; /* TICK2 pose: the object's first node in the arena (past its nodes, an overflow chunk's) */\n"
+          "\tunsigned char pose_count; /* its nodes, 0 for none */\n\tunsigned char pose_blocks; /* which of its three node blocks it has */\n" if TICK2_POSE else "") + (
          "};\nextern struct tick2_root *tick2_roots;\n"
          "/* the store's records for a map not in tick2_slots_for_map's table; each map takes its own count, never past\n"
          "TICK2_STORE_MOST, the free stack's room */\n"
@@ -59672,6 +59676,314 @@ def tick2_unit_cut(tree):
     return touched
 print("psp_fixups: the world store's unit section: %d touches through the unit index (TICK2 unit)" % tick2_unit_cut(TREE))
 
+# PSP_TICK2=pose (POSE's first step, the lab's spec section 35): each object's three node blocks
+# (its node matrices, 52 bytes a node, and its two orientation arrays, 32 bytes a node each) leave
+# its datum's pool block for the store's node arena, three arrays indexed by node. An object's
+# run of nodes is found through its ROOT record (first node, count). The arena is sized at the
+# map's peak nodes with no margin; a run that doesn't fit takes 64-node overflow chunks from the
+# pool, as ROOT's records do. object_header_block_get finds the three blocks there, so every reader
+# reads the same values; the sleep's checksum covers them as the datum's bytes did.
+TICK2_POSE_NODES = int(os.environ.get("PSP_TICK2_NODES", "4096"))
+TICK2_POSE_DECL = r"""
+/* the world store's node arena (TICK2 pose): each object's node blocks, at the run its ROOT record names */
+#define TICK2_POSE_CHUNK 64
+#define TICK2_POSE_CHUNKS 64
+#define TICK2_POSE_RUN_MOST 64
+#define TICK2_POSE_MATRICES 1 /* the blocks an object has */
+#define TICK2_POSE_ORIENTATIONS 2
+#define TICK2_POSE_ORIGINALS 4
+struct tick2_pose_chunk
+{
+	real_matrix4x3 matrices[TICK2_POSE_CHUNK];
+	real_orientation orientations[TICK2_POSE_CHUNK];
+	real_orientation originals[TICK2_POSE_CHUNK];
+};
+struct tick2_pose_store
+{
+	long nodes, bump, live, live_peak, overflow_taken, overflow_live, overflow_peak;
+	unsigned short free_head[TICK2_POSE_RUN_MOST + 1]; /* a free run's next is in its first matrix */
+	struct tick2_pose_chunk *chunk[TICK2_POSE_CHUNKS]; /* the pool's block references */
+	short chunk_bump[TICK2_POSE_CHUNKS], chunk_live[TICK2_POSE_CHUNKS];
+};
+extern struct tick2_pose_store *tick2_pose_store;
+extern real_matrix4x3 *tick2_pose_matrices;
+extern real_orientation *tick2_pose_orientations, *tick2_pose_originals;
+#define TICK2_POSE_NONE 0xFFFF
+"""
+TICK2_POSE_CODE = r"""
+struct tick2_pose_store *tick2_pose_store; /* TICK2 pose */
+real_matrix4x3 *tick2_pose_matrices; /* TICK2 pose */
+real_orientation *tick2_pose_orientations, *tick2_pose_originals; /* TICK2 pose */
+
+/* a run of nodes: a free one of its length, else the arena's tail, else an overflow chunk's */
+static unsigned short tick2_pose_take(long count)
+{
+	struct tick2_pose_store *store = tick2_pose_store;
+	long c;
+
+	if (count <= 0 || count > TICK2_POSE_RUN_MOST)
+		return TICK2_POSE_NONE;
+	if (store->free_head[count] != TICK2_POSE_NONE)
+	{
+		unsigned short first = store->free_head[count];
+
+		store->free_head[count] = (unsigned short)*(unsigned long *)&tick2_pose_matrices[first];
+		store->live += count;
+		if (store->live > store->live_peak)
+			store->live_peak = store->live;
+		return first;
+	}
+	if (store->bump + count <= store->nodes)
+	{
+		unsigned short first = (unsigned short)store->bump;
+
+		store->bump += count;
+		store->live += count;
+		if (store->live > store->live_peak)
+			store->live_peak = store->live;
+		return first;
+	}
+	for (c = 0; c < TICK2_POSE_CHUNKS; c++)
+		if (store->chunk[c] && store->chunk_bump[c] + count <= TICK2_POSE_CHUNK)
+			break;
+	if (c == TICK2_POSE_CHUNKS)
+	{
+		for (c = 0; c < TICK2_POSE_CHUNKS && store->chunk[c]; c++)
+			;
+		if (c == TICK2_POSE_CHUNKS ||
+			!memory_pool_block_allocate(object_memory_pool, (void **)&store->chunk[c], (long)sizeof(struct tick2_pose_chunk)))
+			return TICK2_POSE_NONE;
+		store->chunk_bump[c] = store->chunk_live[c] = 0;
+	}
+	store->chunk_bump[c] += (short)count;
+	store->chunk_live[c] += (short)count;
+	store->overflow_taken += count;
+	store->overflow_live += count;
+	if (store->overflow_live > store->overflow_peak)
+		store->overflow_peak = store->overflow_live;
+	return (unsigned short)(store->nodes + c * TICK2_POSE_CHUNK + store->chunk_bump[c] - count);
+}
+
+static void tick2_pose_give(struct tick2_root *record)
+{
+	struct tick2_pose_store *store = tick2_pose_store;
+	long first = record->pose_first, count = record->pose_count;
+
+	record->pose_first = TICK2_POSE_NONE;
+	record->pose_count = 0;
+	record->pose_blocks = 0;
+	if (first == TICK2_POSE_NONE || count <= 0)
+		return;
+	if (first < store->nodes)
+	{
+		*(unsigned long *)&tick2_pose_matrices[first] = store->free_head[count];
+		store->free_head[count] = (unsigned short)first;
+		store->live -= count;
+		return;
+	}
+	first = (first - store->nodes) / TICK2_POSE_CHUNK;
+	store->overflow_live -= count;
+	if ((store->chunk_live[first] -= (short)count) <= 0)
+	{ /* a chunk with no live run goes back to the pool (its tail is only reused once it's empty) */
+		memory_pool_block_free(object_memory_pool, (void **)&store->chunk[first]);
+		store->chunk[first] = NULL;
+		store->chunk_bump[first] = store->chunk_live[first] = 0;
+	}
+}
+
+/* a node block's place: the arena's, or an overflow chunk's */
+static void *tick2_pose_block(struct tick2_root const *record, int which)
+{
+	long first = record->pose_first;
+
+	if (first < tick2_pose_store->nodes)
+		return which == TICK2_POSE_MATRICES ? (void *)&tick2_pose_matrices[first] :
+			which == TICK2_POSE_ORIENTATIONS ? (void *)&tick2_pose_orientations[first] : (void *)&tick2_pose_originals[first];
+	first -= tick2_pose_store->nodes;
+	{
+		struct tick2_pose_chunk *chunk = tick2_pose_store->chunk[first / TICK2_POSE_CHUNK];
+		long k = first % TICK2_POSE_CHUNK;
+
+		return which == TICK2_POSE_MATRICES ? (void *)&chunk->matrices[k] :
+			which == TICK2_POSE_ORIENTATIONS ? (void *)&chunk->orientations[k] : (void *)&chunk->originals[k];
+	}
+}
+
+static long tick2_pose_spare_bytes(void)
+{
+	long c, spare;
+
+	if (!tick2_pose_store)
+		return 0;
+	spare = (tick2_pose_store->nodes - tick2_pose_store->live) * (long)(sizeof(real_matrix4x3) + 2 * sizeof(real_orientation));
+	for (c = 0; c < TICK2_POSE_CHUNKS; c++)
+		if (tick2_pose_store->chunk[c])
+			spare += (TICK2_POSE_CHUNK - tick2_pose_store->chunk_live[c]) * (long)(sizeof(real_matrix4x3) + 2 * sizeof(real_orientation));
+	return spare;
+}
+"""
+def tick2_pose_cut(tree):
+    if not TICK2_POSE:
+        return 0
+    import re
+    def once(path, old, new):
+        text = open(path, errors="surrogateescape").read()
+        if text.count(old) != 1:
+            check_fail("psp_fixups: TICK2 pose: an anchor matches %d times in %s: %r" % (text.count(old), path, old[:60]))
+            return
+        if not CHECK_ONLY:
+            open(path, "w", errors="surrogateescape").write(text.replace(old, new))
+    objects_h = os.path.join(tree, "source/objects/objects.h")
+    objects_c = os.path.join(tree, "source/objects/objects.c")
+    # the declarations after the store's (objects.h knows real_matrix4x3 and real_orientation)
+    once(objects_h, "\nstruct _object_datum\n{\n", TICK2_POSE_DECL + "\nstruct _object_datum\n{\n")
+    once(objects_c, "\nstatic long tick2_chunk_free_records(void)\n", TICK2_POSE_CODE + "\nstatic long tick2_chunk_free_records(void)\n")
+    # a new record has no run
+    once(objects_c, "\t\t\t\trecord->unit_slot = TICK2_UNIT_NONE; /* TICK2 unit */",
+         "\t\t\t\trecord->unit_slot = TICK2_UNIT_NONE; /* TICK2 unit */\n\t\t\t\trecord->pose_first = TICK2_POSE_NONE; /* TICK2 pose */")
+    # carved after the unit section, per map at its peak nodes
+    once(objects_c, "\t\t\tunit_slots * (long)sizeof(struct unit_animation) + (long)sizeof(struct tick2_unit_store) + 15) & ~15L;\n",
+         "\t\t\tunit_slots * (long)sizeof(struct unit_animation) + (long)sizeof(struct tick2_unit_store) +\n"
+         "\t\t\tnodes * (long)(sizeof(real_matrix4x3) + 2 * sizeof(real_orientation)) + (long)sizeof(struct tick2_pose_store) + 15) & ~15L;\n")
+    once(objects_c, "\t\ttick2_unit_store->free_count = tick2_unit_store->free_low = unit_slots;\n",
+         "\t\ttick2_unit_store->free_count = tick2_unit_store->free_low = unit_slots;\n"
+         "\t\t/* TICK2 pose: the node arena after the unit section: its matrices, then both orientation arrays */\n"
+         "\t\ttick2_pose_store = (struct tick2_pose_store *)(tick2_unit_anims + unit_slots);\n"
+         "\t\tmemset(tick2_pose_store, 0, sizeof(*tick2_pose_store));\n"
+         "\t\ttick2_pose_store->nodes = nodes;\n"
+         "\t\tfor (k = 0; k <= TICK2_POSE_RUN_MOST; k++)\n"
+         "\t\t\ttick2_pose_store->free_head[k] = TICK2_POSE_NONE;\n"
+         "\t\ttick2_pose_matrices = (real_matrix4x3 *)(tick2_pose_store + 1);\n"
+         "\t\ttick2_pose_orientations = (real_orientation *)(tick2_pose_matrices + nodes);\n"
+         "\t\ttick2_pose_originals = tick2_pose_orientations + nodes;\n")
+    # the per-map tables: nodes at the measured peak (no margin), units at peak + 15% rounded to 16
+    once(objects_c, "\t\tlong unit_slots = %d; /* TICK2 unit: until the census' table */\n" % TICK2_UNIT_SLOTS,
+         "\t\tlong unit_slots = tick2_table_for_map(main_get_map_name(), 1); /* TICK2 unit, spec section 35 */\n"
+         "\t\tlong nodes = tick2_table_for_map(main_get_map_name(), 2); /* TICK2 pose */\n")
+    once(objects_c, "\nstatic long tick2_slots_for_map(const char *name)\n",
+         r"""
+/* the unit and node tables per map (spec section 35): units at the larger of census27's (via tick2unit1b's
+gccount) and C5's peak + 15%%, rounded to 16; nodes at the larger peak, no margin (overflow takes the rest) */
+static long tick2_table_for_map(const char *name, int which)
+{
+	static const struct { char map[4]; short units, nodes; } table[] = {
+		{"a10", 96, 2084}, {"a30", 160, 3977}, {"a50", 96, 3229}, {"b30", 112, 3588}, {"b40", 176, 3836},
+		{"c10", 16, 2793}, {"c20", 80, 2623}, {"c40", 208, 4751}, {"d20", 96, 3231}, {"d40", 48, 1476}};
+	const char *last = name;
+	const char *c;
+	unsigned k;
+
+	for (c = name; c && *c; c++)
+		if (*c == '\\' || *c == '/')
+			last = c + 1;
+	for (k = 0; last && k < sizeof(table) / sizeof(table[0]); k++)
+		if (!strcmp(last, table[k].map))
+			return which == 1 ? table[k].units : table[k].nodes;
+	return which == 1 ? %d : %d;
+}
+""" % (TICK2_UNIT_SLOTS, TICK2_POSE_NODES) + "\nstatic long tick2_slots_for_map(const char *name)\n")
+    # the node blocks: taken from the arena, not the datum; found there by the block getter
+    once(objects_c, "\tmatch_assert(\"c:\\\\halo\\\\SOURCE\\\\objects\\\\objects.c\", 2459, size>=0);\n",
+         "\tmatch_assert(\"c:\\\\halo\\\\SOURCE\\\\objects\\\\objects.c\", 2459, size>=0);\n"
+         "\tif (block_reference_offset == offsetof(struct object_datum, object.node_matrices) ||\n"
+         "\t\tblock_reference_offset == offsetof(struct object_datum, object.node_orientations) ||\n"
+         "\t\tblock_reference_offset == offsetof(struct object_datum, object.original_node_orientations))\n"
+         "\t{ /* TICK2 pose: the node blocks in the arena; the reference keeps the size the readers count by */\n"
+         "\t\tstruct object_datum *object = (struct object_datum *)object_header->datum;\n"
+         "\t\tstruct object_header_block_reference *block = (struct object_header_block_reference *)((byte *)object + block_reference_offset);\n"
+         "\t\tint which = block_reference_offset == offsetof(struct object_datum, object.node_matrices) ? TICK2_POSE_MATRICES :\n"
+         "\t\t\tblock_reference_offset == offsetof(struct object_datum, object.node_orientations) ? TICK2_POSE_ORIENTATIONS : TICK2_POSE_ORIGINALS;\n"
+         "\t\tlong count = which == TICK2_POSE_MATRICES ? size / (long)sizeof(real_matrix4x3) : size / (long)sizeof(real_orientation);\n\n"
+         "\t\tif (object->object.root->pose_first == TICK2_POSE_NONE)\n"
+         "\t\t{\n"
+         "\t\t\tobject->object.root->pose_first = tick2_pose_take(count);\n"
+         "\t\t\tif (object->object.root->pose_first == TICK2_POSE_NONE)\n"
+         "\t\t\t\treturn FALSE;\n"
+         "\t\t\tobject->object.root->pose_count = (unsigned char)count;\n"
+         "\t\t}\n"
+         "\t\tif (count != object->object.root->pose_count)\n"
+         "\t\t\treturn FALSE;\n"
+         "\t\tobject->object.root->pose_blocks |= (unsigned char)which;\n"
+         "\t\tblock->offset = 1; /* the getter's sign of a block held elsewhere (a datum's own start at 0 is never a block) */\n"
+         "\t\tblock->size = (short)size;\n"
+         "\t\tmemset(tick2_pose_block(object->object.root, which), 0, size);\n"
+         "\t\tif (which == TICK2_POSE_MATRICES)\n"
+         "\t\t\ttick2_gc_census(object_header, 1); /* TICK2 gccount */\n"
+         "\t\treturn TRUE;\n"
+         "\t}\n")
+    once(objects_c, "\tmatch_assert(\"c:\\\\halo\\\\SOURCE\\\\objects\\\\objects.c\", 2443, reference->offset>0);\n",
+         "\tif (reference == &object->object.node_matrices)\n"
+         "\t\treturn tick2_pose_block(object->object.root, TICK2_POSE_MATRICES); /* TICK2 pose */\n"
+         "\tif (reference == &object->object.node_orientations)\n"
+         "\t\treturn tick2_pose_block(object->object.root, TICK2_POSE_ORIENTATIONS); /* TICK2 pose */\n"
+         "\tif (reference == &object->object.original_node_orientations)\n"
+         "\t\treturn tick2_pose_block(object->object.root, TICK2_POSE_ORIGINALS); /* TICK2 pose */\n"
+         "\tmatch_assert(\"c:\\\\halo\\\\SOURCE\\\\objects\\\\objects.c\", 2443, reference->offset>0);\n")
+    # a deleted object's run goes back with its records
+    text = open(objects_c, errors="surrogateescape").read()
+    n = text.count("tick2_unit_give(")
+    if n < 3:
+        check_fail("psp_fixups: TICK2 pose: %d unit gives" % n)
+    elif not CHECK_ONLY:
+        text = re.sub(r"(\t*)tick2_unit_give\((.*?)\); /\* TICK2 unit \*/\n",
+                      lambda m: "%stick2_pose_give(%s); /* TICK2 pose */\n%stick2_unit_give(%s); /* TICK2 unit */\n" % (m.group(1), m.group(2), m.group(1), m.group(2)), text)
+        open(objects_c, "w", errors="surrogateescape").write(text)
+    # the collector counts the arena's spare, as the pool's free bytes it replaced
+    once(objects_c, "\t(tick2_unit_store ? (long)(tick2_unit_store->free_count + tick2_unit_chunk_free_records()) * (long)sizeof(struct unit_animation) : 0))",
+         "\t(tick2_unit_store ? (long)(tick2_unit_store->free_count + tick2_unit_chunk_free_records()) * (long)sizeof(struct unit_animation) : 0) + \\\n"
+         "\ttick2_pose_spare_bytes())")
+    # the sleep's checksum: the datum as it was laid out, with its node blocks after its own size
+    once(objects_c, "\tunsigned long sum = psp_object_checksum_datum(header);\n",
+         "\tunsigned long sum = psp_object_checksum_datum(tick2_pose_virtual(header)); /* TICK2 pose */\n")
+    once(objects_c, "static unsigned long psp_object_checksum_datum(struct object_header_datum const *header);\n",
+         "static unsigned long psp_object_checksum_datum(struct object_header_datum const *header);\n" + r"""/* TICK2 pose: the datum as the old build laid it out for the sleep's checksum: its own bytes up to its
+type's size, its node blocks in the order they were made, then the blocks made after them, so the
+checksum covers the same bytes (to its 2,048-byte cap, less what the store took out of the datum) */
+static struct object_header_datum const *tick2_pose_virtual(struct object_header_datum const *header)
+{
+	static unsigned char buffer[2048 + 640 + 64] __attribute__((aligned(16)));
+	static struct object_header_datum fake;
+	struct object_datum const *object = (struct object_datum const *)header->datum;
+	struct tick2_root const *record = object ? object->object.root : NULL;
+	long base, at, cap, nodes, k;
+	static const int blocks[3] = { TICK2_POSE_MATRICES, TICK2_POSE_ORIENTATIONS, TICK2_POSE_ORIGINALS };
+
+	if (!record || record->pose_first == TICK2_POSE_NONE || !record->pose_count)
+		return header;
+	base = object_type_definition_get(header->type)->game_datum_size;
+	cap = (long)sizeof(buffer) - 64;
+	at = base < header->data_size ? base : header->data_size;
+	memcpy(buffer, header->datum, at);
+	nodes = record->pose_count;
+	for (k = 0; k < 3 && at < cap; k++)
+		if (record->pose_blocks & blocks[k])
+		{
+			long bytes = nodes * (long)(k ? sizeof(real_orientation) : sizeof(real_matrix4x3));
+
+			if (bytes > cap - at)
+				bytes = cap - at;
+			memcpy(buffer + at, tick2_pose_block(record, blocks[k]), bytes);
+			at += bytes;
+		}
+	if (at < cap && header->data_size > base)
+	{
+		long bytes = header->data_size - base;
+
+		if (bytes > cap - at)
+			bytes = cap - at;
+		memcpy(buffer + at, (unsigned char const *)header->datum + base, bytes);
+		at += bytes;
+	}
+	fake = *header;
+	fake.datum = (void *)buffer;
+	fake.data_size = (short)at;
+	return &fake;
+}
+""")
+    print("psp_fixups: TICK2 pose: the node blocks in the store's arena (%d nodes a map by default)" % TICK2_POSE_NODES)
+    return 1
+print("psp_fixups: the world store's node arena: %s (TICK2 pose)" % ("on" if tick2_pose_cut(TREE) else "off"))
+
 # PSP_GCCOUNT=1 (and every PSP_TICK2=root build): what the collector did on each map,
 # so slice 1's two builds can be held to the same deletions (spec section 18.3), with
 # the pool's peak and the peak of live objects. One line a map and one each minute.
@@ -59747,6 +60059,19 @@ void psp_tick2_gc_report(const char *label, int level_end)
 			tick2_gc.live_peak, records, store / 1024, store_peak / 1024, overflow_taken, overflow_peak,
 			tick2_gc.units_peak, tick2_gc.nodes_peak);
 	}
+#ifdef TICK2_POSE_CHUNK
+	if (tick2_pose_store)
+	{ /* TICK2 pose: the node arena, and its overflow (spec section 35's report) */
+		long c, chunks = 0;
+
+		for (c = 0; c < TICK2_POSE_CHUNKS; c++)
+			chunks += tick2_pose_store->chunk[c] != NULL;
+		platform_psp_log("gccount (%s): node arena %ld nodes (%ld KB), %ld live now, peak %ld; overflow nodes taken %ld, peak %ld, chunks now %ld; free low %ld KB, %ld KB over the collector's 102",
+			label, tick2_pose_store->nodes, tick2_pose_store->nodes * (long)(sizeof(real_matrix4x3) + 2 * sizeof(real_orientation)) / 1024,
+			tick2_pose_store->live, tick2_pose_store->live_peak, tick2_pose_store->overflow_taken, tick2_pose_store->overflow_peak, chunks,
+			tick2_gc.free_low / 1024, tick2_gc.free_low / 1024 - 102);
+	}
+#endif
 	if (level_end)
 		memset(&tick2_gc, 0, sizeof(tick2_gc));
 }
