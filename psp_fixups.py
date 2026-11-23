@@ -59162,6 +59162,7 @@ def tick2_root_cut(tree):
          "\n/* the world store's ROOT record (TICK2 root) */\nstruct tick2_root\n{\n" + TICK2_ROOT_DECL +
          ("\tunsigned short unit_slot; /* TICK2 unit: the unit section's index, TICK2_UNIT_NONE if not a unit */\n#define TICK2_UNIT_NONE 0xFFFF\n" if TICK2_UNIT else "") +
          ("\tunsigned short pose_first; /* TICK2 pose: the object's first node in the arena (past its nodes, an overflow chunk's) */\n"
+          "\tunsigned short pose_orient; /* its first node in the orientation run, TICK2_POSE_NONE if its type has none */\n"
           "\tunsigned char pose_count; /* its nodes, 0 for none */\n\tunsigned char pose_blocks; /* which of its three node blocks it has */\n" if TICK2_POSE else "") + (
          "};\nextern struct tick2_root *tick2_roots;\n"
          "/* the store's records for a map not in tick2_slots_for_map's table; each map takes its own count, never past\n"
@@ -59685,141 +59686,141 @@ print("psp_fixups: the world store's unit section: %d touches through the unit i
 # reads the same values; the sleep's checksum covers them as the datum's bytes did.
 TICK2_POSE_NODES = int(os.environ.get("PSP_TICK2_NODES", "4096"))
 TICK2_POSE_DECL = r"""
-/* the world store's node arena (TICK2 pose): each object's node blocks, at the run its ROOT record names */
+/* the world store's node arenas (TICK2 pose): each object's node blocks, at the runs its ROOT record names.
+Two runs, as object_new makes the blocks: matrices for every node, and the two orientation arrays only for
+the types that interpolate (_object_mask_cannot_interpolate's types have none) */
 #define TICK2_POSE_CHUNK 64
 #define TICK2_POSE_CHUNKS 64
 #define TICK2_POSE_RUN_MOST 64
 #define TICK2_POSE_MATRICES 1 /* the blocks an object has */
 #define TICK2_POSE_ORIENTATIONS 2
 #define TICK2_POSE_ORIGINALS 4
-struct tick2_pose_chunk
+struct tick2_pose_run
 {
-	real_matrix4x3 matrices[TICK2_POSE_CHUNK];
-	real_orientation orientations[TICK2_POSE_CHUNK];
-	real_orientation originals[TICK2_POSE_CHUNK];
+	long nodes, stride, arrays, bump, live, live_peak, overflow_taken, overflow_live, overflow_peak;
+	unsigned char *base; /* the arena's arrays, one after the other, each nodes * stride */
+	unsigned short free_head[TICK2_POSE_RUN_MOST + 1]; /* a free run's next is in its first element */
+	unsigned char *chunk[TICK2_POSE_CHUNKS]; /* the pool's block references (each its arrays of TICK2_POSE_CHUNK) */
+	short chunk_bump[TICK2_POSE_CHUNKS], chunk_live[TICK2_POSE_CHUNKS];
 };
 struct tick2_pose_store
 {
-	long nodes, bump, live, live_peak, overflow_taken, overflow_live, overflow_peak;
-	unsigned short free_head[TICK2_POSE_RUN_MOST + 1]; /* a free run's next is in its first matrix */
-	struct tick2_pose_chunk *chunk[TICK2_POSE_CHUNKS]; /* the pool's block references */
-	short chunk_bump[TICK2_POSE_CHUNKS], chunk_live[TICK2_POSE_CHUNKS];
+	struct tick2_pose_run matrices, orientations;
 };
 extern struct tick2_pose_store *tick2_pose_store;
-extern real_matrix4x3 *tick2_pose_matrices;
-extern real_orientation *tick2_pose_orientations, *tick2_pose_originals;
 #define TICK2_POSE_NONE 0xFFFF
 """
 TICK2_POSE_CODE = r"""
 struct tick2_pose_store *tick2_pose_store; /* TICK2 pose */
-real_matrix4x3 *tick2_pose_matrices; /* TICK2 pose */
-real_orientation *tick2_pose_orientations, *tick2_pose_originals; /* TICK2 pose */
+
+/* a node's element in one of a run's arrays: the arena's, or an overflow chunk's */
+static void *tick2_pose_at(struct tick2_pose_run const *run, long first, long array)
+{
+	if (first < run->nodes)
+		return run->base + (array * run->nodes + first) * run->stride;
+	first -= run->nodes;
+	return run->chunk[first / TICK2_POSE_CHUNK] + (array * TICK2_POSE_CHUNK + first % TICK2_POSE_CHUNK) * run->stride;
+}
 
 /* a run of nodes: a free one of its length, else the arena's tail, else an overflow chunk's */
-static unsigned short tick2_pose_take(long count)
+static unsigned short tick2_pose_take(struct tick2_pose_run *run, long count)
 {
-	struct tick2_pose_store *store = tick2_pose_store;
 	long c;
 
 	if (count <= 0 || count > TICK2_POSE_RUN_MOST)
 		return TICK2_POSE_NONE;
-	if (store->free_head[count] != TICK2_POSE_NONE)
+	if (run->free_head[count] != TICK2_POSE_NONE)
 	{
-		unsigned short first = store->free_head[count];
+		unsigned short first = run->free_head[count];
 
-		store->free_head[count] = (unsigned short)*(unsigned long *)&tick2_pose_matrices[first];
-		store->live += count;
-		if (store->live > store->live_peak)
-			store->live_peak = store->live;
+		run->free_head[count] = (unsigned short)*(unsigned long *)tick2_pose_at(run, first, 0);
+		run->live += count;
+		if (run->live > run->live_peak)
+			run->live_peak = run->live;
 		return first;
 	}
-	if (store->bump + count <= store->nodes)
+	if (run->bump + count <= run->nodes)
 	{
-		unsigned short first = (unsigned short)store->bump;
+		unsigned short first = (unsigned short)run->bump;
 
-		store->bump += count;
-		store->live += count;
-		if (store->live > store->live_peak)
-			store->live_peak = store->live;
+		run->bump += count;
+		run->live += count;
+		if (run->live > run->live_peak)
+			run->live_peak = run->live;
 		return first;
 	}
 	for (c = 0; c < TICK2_POSE_CHUNKS; c++)
-		if (store->chunk[c] && store->chunk_bump[c] + count <= TICK2_POSE_CHUNK)
+		if (run->chunk[c] && run->chunk_bump[c] + count <= TICK2_POSE_CHUNK)
 			break;
 	if (c == TICK2_POSE_CHUNKS)
 	{
-		for (c = 0; c < TICK2_POSE_CHUNKS && store->chunk[c]; c++)
+		for (c = 0; c < TICK2_POSE_CHUNKS && run->chunk[c]; c++)
 			;
 		if (c == TICK2_POSE_CHUNKS ||
-			!memory_pool_block_allocate(object_memory_pool, (void **)&store->chunk[c], (long)sizeof(struct tick2_pose_chunk)))
+			!memory_pool_block_allocate(object_memory_pool, (void **)&run->chunk[c], run->arrays * TICK2_POSE_CHUNK * run->stride))
 			return TICK2_POSE_NONE;
-		store->chunk_bump[c] = store->chunk_live[c] = 0;
+		run->chunk_bump[c] = run->chunk_live[c] = 0;
 	}
-	store->chunk_bump[c] += (short)count;
-	store->chunk_live[c] += (short)count;
-	store->overflow_taken += count;
-	store->overflow_live += count;
-	if (store->overflow_live > store->overflow_peak)
-		store->overflow_peak = store->overflow_live;
-	return (unsigned short)(store->nodes + c * TICK2_POSE_CHUNK + store->chunk_bump[c] - count);
+	run->chunk_bump[c] += (short)count;
+	run->chunk_live[c] += (short)count;
+	run->overflow_taken += count;
+	run->overflow_live += count;
+	if (run->overflow_live > run->overflow_peak)
+		run->overflow_peak = run->overflow_live;
+	return (unsigned short)(run->nodes + c * TICK2_POSE_CHUNK + run->chunk_bump[c] - count);
+}
+
+static void tick2_pose_give_run(struct tick2_pose_run *run, long first, long count)
+{
+	if (first == TICK2_POSE_NONE || count <= 0)
+		return;
+	if (first < run->nodes)
+	{
+		*(unsigned long *)tick2_pose_at(run, first, 0) = run->free_head[count];
+		run->free_head[count] = (unsigned short)first;
+		run->live -= count;
+		return;
+	}
+	first = (first - run->nodes) / TICK2_POSE_CHUNK;
+	run->overflow_live -= count;
+	if ((run->chunk_live[first] -= (short)count) <= 0)
+	{ /* a chunk with no live run goes back to the pool (its tail is only reused once it's empty) */
+		memory_pool_block_free(object_memory_pool, (void **)&run->chunk[first]);
+		run->chunk[first] = NULL;
+		run->chunk_bump[first] = run->chunk_live[first] = 0;
+	}
 }
 
 static void tick2_pose_give(struct tick2_root *record)
 {
-	struct tick2_pose_store *store = tick2_pose_store;
-	long first = record->pose_first, count = record->pose_count;
-
-	record->pose_first = TICK2_POSE_NONE;
+	tick2_pose_give_run(&tick2_pose_store->matrices, record->pose_first, record->pose_count);
+	tick2_pose_give_run(&tick2_pose_store->orientations, record->pose_orient, record->pose_count);
+	record->pose_first = record->pose_orient = TICK2_POSE_NONE;
 	record->pose_count = 0;
 	record->pose_blocks = 0;
-	if (first == TICK2_POSE_NONE || count <= 0)
-		return;
-	if (first < store->nodes)
-	{
-		*(unsigned long *)&tick2_pose_matrices[first] = store->free_head[count];
-		store->free_head[count] = (unsigned short)first;
-		store->live -= count;
-		return;
-	}
-	first = (first - store->nodes) / TICK2_POSE_CHUNK;
-	store->overflow_live -= count;
-	if ((store->chunk_live[first] -= (short)count) <= 0)
-	{ /* a chunk with no live run goes back to the pool (its tail is only reused once it's empty) */
-		memory_pool_block_free(object_memory_pool, (void **)&store->chunk[first]);
-		store->chunk[first] = NULL;
-		store->chunk_bump[first] = store->chunk_live[first] = 0;
-	}
 }
 
-/* a node block's place: the arena's, or an overflow chunk's */
+/* a node block's place */
 static void *tick2_pose_block(struct tick2_root const *record, int which)
 {
-	long first = record->pose_first;
+	if (which == TICK2_POSE_MATRICES)
+		return tick2_pose_at(&tick2_pose_store->matrices, record->pose_first, 0);
+	return tick2_pose_at(&tick2_pose_store->orientations, record->pose_orient, which == TICK2_POSE_ORIGINALS);
+}
 
-	if (first < tick2_pose_store->nodes)
-		return which == TICK2_POSE_MATRICES ? (void *)&tick2_pose_matrices[first] :
-			which == TICK2_POSE_ORIENTATIONS ? (void *)&tick2_pose_orientations[first] : (void *)&tick2_pose_originals[first];
-	first -= tick2_pose_store->nodes;
-	{
-		struct tick2_pose_chunk *chunk = tick2_pose_store->chunk[first / TICK2_POSE_CHUNK];
-		long k = first % TICK2_POSE_CHUNK;
+static long tick2_pose_run_spare(struct tick2_pose_run const *run)
+{
+	long c, spare = (run->nodes - run->live) * run->arrays * run->stride;
 
-		return which == TICK2_POSE_MATRICES ? (void *)&chunk->matrices[k] :
-			which == TICK2_POSE_ORIENTATIONS ? (void *)&chunk->orientations[k] : (void *)&chunk->originals[k];
-	}
+	for (c = 0; c < TICK2_POSE_CHUNKS; c++)
+		if (run->chunk[c])
+			spare += (TICK2_POSE_CHUNK - run->chunk_live[c]) * run->arrays * run->stride;
+	return spare;
 }
 
 static long tick2_pose_spare_bytes(void)
 {
-	long c, spare;
-
-	if (!tick2_pose_store)
-		return 0;
-	spare = (tick2_pose_store->nodes - tick2_pose_store->live) * (long)(sizeof(real_matrix4x3) + 2 * sizeof(real_orientation));
-	for (c = 0; c < TICK2_POSE_CHUNKS; c++)
-		if (tick2_pose_store->chunk[c])
-			spare += (TICK2_POSE_CHUNK - tick2_pose_store->chunk_live[c]) * (long)(sizeof(real_matrix4x3) + 2 * sizeof(real_orientation));
-	return spare;
+	return tick2_pose_store ? tick2_pose_run_spare(&tick2_pose_store->matrices) + tick2_pose_run_spare(&tick2_pose_store->orientations) : 0;
 }
 """
 def tick2_pose_cut(tree):
@@ -59840,35 +59841,42 @@ def tick2_pose_cut(tree):
     once(objects_c, "\nstatic long tick2_chunk_free_records(void)\n", TICK2_POSE_CODE + "\nstatic long tick2_chunk_free_records(void)\n")
     # a new record has no run
     once(objects_c, "\t\t\t\trecord->unit_slot = TICK2_UNIT_NONE; /* TICK2 unit */",
-         "\t\t\t\trecord->unit_slot = TICK2_UNIT_NONE; /* TICK2 unit */\n\t\t\t\trecord->pose_first = TICK2_POSE_NONE; /* TICK2 pose */")
+         "\t\t\t\trecord->unit_slot = TICK2_UNIT_NONE; /* TICK2 unit */\n\t\t\t\trecord->pose_first = record->pose_orient = TICK2_POSE_NONE; /* TICK2 pose */")
     # carved after the unit section, per map at its peak nodes
     once(objects_c, "\t\t\tunit_slots * (long)sizeof(struct unit_animation) + (long)sizeof(struct tick2_unit_store) + 15) & ~15L;\n",
          "\t\t\tunit_slots * (long)sizeof(struct unit_animation) + (long)sizeof(struct tick2_unit_store) +\n"
-         "\t\t\tnodes * (long)(sizeof(real_matrix4x3) + 2 * sizeof(real_orientation)) + (long)sizeof(struct tick2_pose_store) + 15) & ~15L;\n")
+         "\t\t\tnodes * (long)sizeof(real_matrix4x3) + orient_nodes * 2 * (long)sizeof(real_orientation) + (long)sizeof(struct tick2_pose_store) + 15) & ~15L;\n")
     once(objects_c, "\t\ttick2_unit_store->free_count = tick2_unit_store->free_low = unit_slots;\n",
          "\t\ttick2_unit_store->free_count = tick2_unit_store->free_low = unit_slots;\n"
-         "\t\t/* TICK2 pose: the node arena after the unit section: its matrices, then both orientation arrays */\n"
+         "\t\t/* TICK2 pose: the node arenas after the unit section: the matrices, then both orientation arrays */\n"
          "\t\ttick2_pose_store = (struct tick2_pose_store *)(tick2_unit_anims + unit_slots);\n"
          "\t\tmemset(tick2_pose_store, 0, sizeof(*tick2_pose_store));\n"
-         "\t\ttick2_pose_store->nodes = nodes;\n"
+         "\t\ttick2_pose_store->matrices.nodes = nodes;\n"
+         "\t\ttick2_pose_store->matrices.stride = (long)sizeof(real_matrix4x3);\n"
+         "\t\ttick2_pose_store->matrices.arrays = 1;\n"
+         "\t\ttick2_pose_store->matrices.base = (unsigned char *)(tick2_pose_store + 1);\n"
+         "\t\ttick2_pose_store->orientations.nodes = orient_nodes;\n"
+         "\t\ttick2_pose_store->orientations.stride = (long)sizeof(real_orientation);\n"
+         "\t\ttick2_pose_store->orientations.arrays = 2;\n"
+         "\t\ttick2_pose_store->orientations.base = tick2_pose_store->matrices.base + nodes * (long)sizeof(real_matrix4x3);\n"
          "\t\tfor (k = 0; k <= TICK2_POSE_RUN_MOST; k++)\n"
-         "\t\t\ttick2_pose_store->free_head[k] = TICK2_POSE_NONE;\n"
-         "\t\ttick2_pose_matrices = (real_matrix4x3 *)(tick2_pose_store + 1);\n"
-         "\t\ttick2_pose_orientations = (real_orientation *)(tick2_pose_matrices + nodes);\n"
-         "\t\ttick2_pose_originals = tick2_pose_orientations + nodes;\n")
+         "\t\t\ttick2_pose_store->matrices.free_head[k] = tick2_pose_store->orientations.free_head[k] = TICK2_POSE_NONE;\n")
     # the per-map tables: nodes at the measured peak (no margin), units at peak + 15% rounded to 16
     once(objects_c, "\t\tlong unit_slots = %d; /* TICK2 unit: until the census' table */\n" % TICK2_UNIT_SLOTS,
          "\t\tlong unit_slots = tick2_table_for_map(main_get_map_name(), 1); /* TICK2 unit, spec section 35 */\n"
-         "\t\tlong nodes = tick2_table_for_map(main_get_map_name(), 2); /* TICK2 pose */\n")
+         "\t\tlong nodes = tick2_table_for_map(main_get_map_name(), 2); /* TICK2 pose */\n"
+         "\t\tlong orient_nodes = tick2_table_for_map(main_get_map_name(), 3); /* TICK2 pose */\n")
     once(objects_c, "\nstatic long tick2_slots_for_map(const char *name)\n",
          r"""
 /* the unit and node tables per map (spec section 35): units at the larger of census27's (via tick2unit1b's
-gccount) and C5's peak + 15%%, rounded to 16; nodes at the larger peak, no margin (overflow takes the rest) */
+gccount) and C5's peak + 15%%, rounded to 16; nodes at the larger peak, no margin (overflow takes the rest);
+the orientation run at half the nodes until the census' peak of nodes on types that interpolate */
 static long tick2_table_for_map(const char *name, int which)
 {
-	static const struct { char map[4]; short units, nodes; } table[] = {
-		{"a10", 96, 2084}, {"a30", 160, 3977}, {"a50", 96, 3229}, {"b30", 112, 3588}, {"b40", 176, 3836},
-		{"c10", 16, 2793}, {"c20", 80, 2623}, {"c40", 208, 4751}, {"d20", 96, 3231}, {"d40", 48, 1476}};
+	static const struct { char map[4]; short units, nodes, orient_nodes; } table[] = {
+		{"a10", 96, 2084, 1042}, {"a30", 160, 3977, 1988}, {"a50", 96, 3229, 1614}, {"b30", 112, 3588, 1794},
+		{"b40", 176, 3836, 1918}, {"c10", 16, 2793, 1396}, {"c20", 80, 2623, 1311}, {"c40", 208, 4751, 2375},
+		{"d20", 96, 3231, 1615}, {"d40", 48, 1476, 738}};
 	const char *last = name;
 	const char *c;
 	unsigned k;
@@ -59878,10 +59886,10 @@ static long tick2_table_for_map(const char *name, int which)
 			last = c + 1;
 	for (k = 0; last && k < sizeof(table) / sizeof(table[0]); k++)
 		if (!strcmp(last, table[k].map))
-			return which == 1 ? table[k].units : table[k].nodes;
-	return which == 1 ? %d : %d;
+			return which == 1 ? table[k].units : which == 2 ? table[k].nodes : table[k].orient_nodes;
+	return which == 1 ? %d : which == 2 ? %d : %d;
 }
-""" % (TICK2_UNIT_SLOTS, TICK2_POSE_NODES) + "\nstatic long tick2_slots_for_map(const char *name)\n")
+""" % (TICK2_UNIT_SLOTS, TICK2_POSE_NODES, TICK2_POSE_NODES // 2) + "\nstatic long tick2_slots_for_map(const char *name)\n")
     # the node blocks: taken from the arena, not the datum; found there by the block getter
     once(objects_c, "\tmatch_assert(\"c:\\\\halo\\\\SOURCE\\\\objects\\\\objects.c\", 2459, size>=0);\n",
          "\tmatch_assert(\"c:\\\\halo\\\\SOURCE\\\\objects\\\\objects.c\", 2459, size>=0);\n"
@@ -59894,12 +59902,20 @@ static long tick2_table_for_map(const char *name, int which)
          "\t\tint which = block_reference_offset == offsetof(struct object_datum, object.node_matrices) ? TICK2_POSE_MATRICES :\n"
          "\t\t\tblock_reference_offset == offsetof(struct object_datum, object.node_orientations) ? TICK2_POSE_ORIENTATIONS : TICK2_POSE_ORIGINALS;\n"
          "\t\tlong count = which == TICK2_POSE_MATRICES ? size / (long)sizeof(real_matrix4x3) : size / (long)sizeof(real_orientation);\n\n"
-         "\t\tif (object->object.root->pose_first == TICK2_POSE_NONE)\n"
+         "\t\tif (which == TICK2_POSE_MATRICES && object->object.root->pose_first == TICK2_POSE_NONE)\n"
          "\t\t{\n"
-         "\t\t\tobject->object.root->pose_first = tick2_pose_take(count);\n"
+         "\t\t\tobject->object.root->pose_first = tick2_pose_take(&tick2_pose_store->matrices, count);\n"
          "\t\t\tif (object->object.root->pose_first == TICK2_POSE_NONE)\n"
          "\t\t\t\treturn FALSE;\n"
          "\t\t\tobject->object.root->pose_count = (unsigned char)count;\n"
+         "\t\t}\n"
+         "\t\telse if (which != TICK2_POSE_MATRICES && object->object.root->pose_orient == TICK2_POSE_NONE)\n"
+         "\t\t{ /* both orientation blocks share one run; the matrices came first and set the count */\n"
+         "\t\t\tif (count != object->object.root->pose_count)\n"
+         "\t\t\t\treturn FALSE;\n"
+         "\t\t\tobject->object.root->pose_orient = tick2_pose_take(&tick2_pose_store->orientations, count);\n"
+         "\t\t\tif (object->object.root->pose_orient == TICK2_POSE_NONE)\n"
+         "\t\t\t\treturn FALSE;\n"
          "\t\t}\n"
          "\t\tif (count != object->object.root->pose_count)\n"
          "\t\t\treturn FALSE;\n"
@@ -60013,7 +60029,7 @@ def tick2_gccount(tree):
 			}
 """), ("\nboolean debug_object_garbage_collection;\n", """
 boolean debug_object_garbage_collection;
-static struct { long deleted, pool_peak, live_peak, free_low, units_live, units_peak, nodes_live, nodes_peak; } tick2_gc; /* TICK2 gccount */
+static struct { long deleted, pool_peak, live_peak, free_low, units_live, units_peak, nodes_live, nodes_peak, orient_live, orient_peak; } tick2_gc; /* TICK2 gccount */
 
 /* the census for the store's unit and node tables (the lab's spec sections 32 and 35): an object counts
 from its node block's allocation (a unit by its type) until its datum is freed */
@@ -60025,6 +60041,10 @@ static void tick2_gc_census(struct object_header_datum const *header, long sign)
 	if (nodes <= 0)
 		return;
 	tick2_gc.nodes_live += sign * nodes;
+	if (!TEST_FLAG(_object_mask_cannot_interpolate, header->type))
+		tick2_gc.orient_live += sign * nodes;
+	if (tick2_gc.orient_live > tick2_gc.orient_peak)
+		tick2_gc.orient_peak = tick2_gc.orient_live;
 	if (header->type == _object_type_biped || header->type == _object_type_vehicle)
 		tick2_gc.units_live += sign;
 	if (tick2_gc.nodes_live > tick2_gc.nodes_peak)
@@ -60054,22 +60074,29 @@ void psp_tick2_gc_report(const char *label, int level_end)
 	if (!object_memory_pool || !object_header_data)
 		return;
 	{
-		platform_psp_log("gccount (%s): the collector deleted %ld; pool %ld KB, peak %ld KB in use, free low %ld KB; live objects peak %ld; store %ld records (%ld KB), peak %ld KB live; overflow records taken %ld, peak %ld; units peak %ld, nodes peak %ld",
+		platform_psp_log("gccount (%s): the collector deleted %ld; pool %ld KB, peak %ld KB in use, free low %ld KB; live objects peak %ld; store %ld records (%ld KB), peak %ld KB live; overflow records taken %ld, peak %ld; units peak %ld, nodes peak %ld, interpolating nodes peak %ld",
 			label, tick2_gc.deleted, object_memory_pool->size / 1024, tick2_gc.pool_peak / 1024, tick2_gc.free_low / 1024,
 			tick2_gc.live_peak, records, store / 1024, store_peak / 1024, overflow_taken, overflow_peak,
-			tick2_gc.units_peak, tick2_gc.nodes_peak);
+			tick2_gc.units_peak, tick2_gc.nodes_peak, tick2_gc.orient_peak);
 	}
 #ifdef TICK2_POSE_CHUNK
 	if (tick2_pose_store)
-	{ /* TICK2 pose: the node arena, and its overflow (spec section 35's report) */
-		long c, chunks = 0;
+	{ /* TICK2 pose: the node arenas, and their overflow (spec section 35's report) */
+		struct tick2_pose_run const *runs[2] = { &tick2_pose_store->matrices, &tick2_pose_store->orientations };
+		long r, c;
 
-		for (c = 0; c < TICK2_POSE_CHUNKS; c++)
-			chunks += tick2_pose_store->chunk[c] != NULL;
-		platform_psp_log("gccount (%s): node arena %ld nodes (%ld KB), %ld live now, peak %ld; overflow nodes taken %ld, peak %ld, chunks now %ld; free low %ld KB, %ld KB over the collector's 102",
-			label, tick2_pose_store->nodes, tick2_pose_store->nodes * (long)(sizeof(real_matrix4x3) + 2 * sizeof(real_orientation)) / 1024,
-			tick2_pose_store->live, tick2_pose_store->live_peak, tick2_pose_store->overflow_taken, tick2_pose_store->overflow_peak, chunks,
-			tick2_gc.free_low / 1024, tick2_gc.free_low / 1024 - 102);
+		for (r = 0; r < 2; r++)
+		{
+			long chunks = 0;
+
+			for (c = 0; c < TICK2_POSE_CHUNKS; c++)
+				chunks += runs[r]->chunk[c] != NULL;
+			platform_psp_log("gccount (%s): node arena (%s) %ld nodes (%ld KB), %ld live now, peak %ld; overflow nodes taken %ld, peak %ld, chunks now %ld",
+				label, r ? "orientations" : "matrices", runs[r]->nodes, runs[r]->nodes * runs[r]->arrays * runs[r]->stride / 1024,
+				runs[r]->live, runs[r]->live_peak, runs[r]->overflow_taken, runs[r]->overflow_peak, chunks);
+		}
+		platform_psp_log("gccount (%s): node arenas: free low %ld KB, %ld KB over the collector's 102",
+			label, tick2_gc.free_low / 1024, tick2_gc.free_low / 1024 - 102);
 	}
 #endif
 	if (level_end)
