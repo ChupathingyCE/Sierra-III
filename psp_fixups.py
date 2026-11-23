@@ -58902,6 +58902,83 @@ def tick2_poison(tree):
     return done
 print("psp_fixups: the tick rewrite's count: %d datum fields without their names (TICK2)" % tick2_poison(TREE))
 
+# PSP_TICK2=root: the world store's ROOT section, step 1a (the lab's
+# tick_store_spec_v1.md). The object datum's root fields are read and written
+# in the store's record, reached through one pointer in the datum. The
+# datum's layout is unchanged (the eight fields become a union with that
+# pointer), so every datum size and offset check holds; the record array is
+# game state, and the object pool gives up the bytes it takes (the game
+# state is full). Runs after every FIXES group, on the text as they left it.
+TICK2_ROOT = os.environ.get("PSP_TICK2", "") == "root"
+TICK2_ROOT_FIELDS = ["position", "translational_velocity", "forward", "up", "angular_velocity", "location",
+                     "bounding_sphere_center", "bounding_sphere_radius"]
+TICK2_ROOT_DECL = """	real_point3d position;
+	real_vector3d translational_velocity;
+	real_vector3d forward;
+	real_vector3d up;
+	real_vector3d angular_velocity;
+	struct location location;
+	real_point3d bounding_sphere_center;
+	real bounding_sphere_radius;
+"""
+def tick2_root_cut(tree):
+    if not TICK2_ROOT:
+        return 0
+    import re
+    def once(path, old, new):
+        text = open(path, errors="surrogateescape").read()
+        if text.count(old) != 1:
+            check_fail("psp_fixups: TICK2 root: an anchor matches %d times in %s: %r" % (text.count(old), path, old[:60]))
+            return
+        if not CHECK_ONLY:
+            open(path, "w", errors="surrogateescape").write(text.replace(old, new))
+    # the record, and the union that keeps the datum's layout
+    once(os.path.join(tree, "source/objects/objects.h"), "\nstruct _object_datum\n{\n",
+         "\n/* the world store's ROOT record (TICK2 root) */\nstruct tick2_root\n{\n" + TICK2_ROOT_DECL +
+         "};\nextern struct tick2_root *tick2_roots;\n\nstruct _object_datum\n{\n")
+    path = os.path.join(tree, "source/objects/objects.h")
+    text = open(path, errors="surrogateescape").read()
+    m = re.search(r"\nstruct _object_datum\n\{\n(.*?)\n\};", text, re.S)
+    if not m or m.group(1).count(TICK2_ROOT_DECL) != 1:
+        check_fail("psp_fixups: TICK2 root: _object_datum's root fields aren't one run in objects.h")
+    elif not CHECK_ONLY:
+        body = m.group(1).replace(TICK2_ROOT_DECL,
+            "\tunion { struct tick2_root *root; char tick2_root_was[sizeof(struct tick2_root)]; }; /* TICK2 root */\n")
+        open(path, "w", errors="surrogateescape").write(text[:m.start(1)] + body + text[m.end(1):])
+    # every touch written x->object.<field> or x.object.<field>
+    pattern = re.compile(r"((?:->|\.)object\.)(%s)\b" % "|".join(TICK2_ROOT_FIELDS))
+    touched = 0
+    for root, dirs, files in os.walk(os.path.join(tree, "source")):
+        for name in files:
+            if not name.endswith((".c", ".h")):
+                continue
+            path = os.path.join(root, name)
+            text = open(path, errors="surrogateescape").read()
+            text, n = pattern.subn(r"\1root->\2", text)
+            if n and not CHECK_ONLY:
+                open(path, "w", errors="surrogateescape").write(text)
+            touched += n
+    # the record's life is the datum's; the array is game state, out of the pool's bytes
+    objects_c = os.path.join(tree, "source/objects/objects.c")
+    once(objects_c, """			header->data_size = size;
+			memset(header->datum, 0, size);
+""", """			header->data_size = size;
+			memset(header->datum, 0, size);
+			{ /* TICK2 root: the datum's record, by the object's slot */
+				struct tick2_root *record = &tick2_roots[index & 0xFFFF];
+				memset(record, 0, sizeof(*record));
+				((struct object_datum *)header->datum)->object.root = record;
+			}
+""")
+    once(objects_c, """		object_memory_pool = game_state_memory_pool_new("objects", OBJECT_MEMORY_POOL_SIZE);
+""", """		tick2_roots = (struct tick2_root *)game_state_malloc("tick2 root", NULL, MAXIMUM_OBJECTS_PER_MAP * sizeof(struct tick2_root)); /* TICK2 root */
+		object_memory_pool = game_state_memory_pool_new("objects", OBJECT_MEMORY_POOL_SIZE - MAXIMUM_OBJECTS_PER_MAP * sizeof(struct tick2_root));
+""")
+    once(objects_c, "\nboolean debug_object_garbage_collection;\n",
+         "\nboolean debug_object_garbage_collection;\nstruct tick2_root *tick2_roots; /* TICK2 root */\n")
+    return touched
+print("psp_fixups: the world store's ROOT: %d touches through the record (TICK2 root)" % tick2_root_cut(TREE))
+
 if CHECK_ONLY:
     for message in count_failures:
         print(message)
