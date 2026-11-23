@@ -59749,9 +59749,10 @@ void psp_tick2_gc_report(const char *label, int level_end)
 	if (level_end)
 		memset(&tick2_gc, 0, sizeof(tick2_gc));
 }
-"""), ("\t\tblock->offset = original_size;\n", """		block->offset = original_size;
+"""), ("\t\tblock->size = size;\n", """		block->size = size;
+		/* TICK2 gccount: counted once the reference holds its size (the census reads it) */
 		if (block_reference_offset == offsetof(struct object_datum, object.node_matrices))
-			tick2_gc_census(object_header, 1); /* TICK2 gccount */
+			tick2_gc_census(object_header, 1);
 """)]
     for old, new in pairs:
         if text.count(old) != 1:
