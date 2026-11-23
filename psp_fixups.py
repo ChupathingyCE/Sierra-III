@@ -59203,11 +59203,14 @@ void psp_tick2_gc_report(const char *label, int level_end)
 	long store = 0;
 	long store_peak = 0, records = 0;
 #ifdef TICK2_STORE_SLOTS
-	records = tick2_store->slots;
-	store = records * (long)sizeof(struct tick2_root);
-	store_peak = (long)(tick2_store->slots - tick2_free_low) * (long)sizeof(struct tick2_root);
-	if (level_end)
-		tick2_free_low = tick2_free_count;
+	if (tick2_store)
+	{ /* set at the first map's start; a report before it ("leaving for" the first map) has no store */
+		records = tick2_store->slots;
+		store = records * (long)sizeof(struct tick2_root);
+		store_peak = (long)(tick2_store->slots - tick2_free_low) * (long)sizeof(struct tick2_root);
+		if (level_end)
+			tick2_free_low = tick2_free_count;
+	}
 #endif
 	if (!object_memory_pool || !object_header_data)
 		return;
