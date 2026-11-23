@@ -4025,7 +4025,7 @@ visits (object_mark_function), so a visible object's changed every frame.
 Until build 44 only objects off screen ever slept */
 static unsigned long psp_checksum_word(struct psp_checksum_rules const *rules, long index, unsigned long value)
 {
-	if (index == 2 || index == rules->whole_skip || (index >= rules->aim_first && index < rules->aim_end) ||
+	if (index == PSP_DATUM_STAMP_WORD || index == rules->whole_skip || (index >= rules->aim_first && index < rules->aim_end) ||
 		(index >= rules->functions_first && index < rules->functions_end) ||
 		(index >= rules->colours_first && index < rules->colours_end))
 		return 0;
@@ -4197,7 +4197,7 @@ static unsigned long psp_object_checksum(struct object_header_datum const *heade
 		return psp_object_checksum_reference(header);
 	psp_checksum_rules_for(header, &rules);
 	/* the touched ranges, in order */
-	touched[count][0] = 2; touched[count][1] = 3; count++;
+	touched[count][0] = PSP_DATUM_STAMP_WORD; touched[count][1] = PSP_DATUM_STAMP_WORD + 1; count++;
 #define PSP_TOUCHED(first, end) if ((first) >= 0 && (end) > (first)) { touched[count][0] = (first); touched[count][1] = (end); count++; }
 	PSP_TOUCHED(rules.half_skip, rules.half_skip + 1);
 	PSP_TOUCHED(rules.whole_skip, rules.whole_skip + 1);
@@ -4678,7 +4678,7 @@ static void psp_sleepy_update(long object_index, short absolute_index, struct ob
 		if (between_index == absolute_index && between_identifier == header->identifier)
 		{
 			for (w = 0; w < count; w++)
-				if (between[w] != ((unsigned long const *)header->datum)[w] && w != 2 && psp_vehicle_sleep_reports++ < 40)
+				if (between[w] != ((unsigned long const *)header->datum)[w] && w != PSP_DATUM_STAMP_WORD && psp_vehicle_sleep_reports++ < 40)
 					platform_psp_log("sleep: %s changed between ticks: word %ld (byte %ld) %08lx -> %08lx (quiet %d, checksum %s)",
 						tag_get_name(object->definition_index), w, w * 4, between[w], ((unsigned long const *)header->datum)[w],
 						psp_sleep[absolute_index].quiet, psp_sleep[absolute_index].checksum == before ? "same" : "differs");
@@ -4827,7 +4827,7 @@ static void psp_sleepy_update(long object_index, short absolute_index, struct ob
 		}
 		for (word = 0; word < count; word++)
 		{
-			if (copy[word] != ((unsigned long const *)header->datum)[word] && word != 2 && word != (header->type == _object_type_vehicle ? psp_datum_unit_timer / 4 : -1))
+			if (copy[word] != ((unsigned long const *)header->datum)[word] && word != PSP_DATUM_STAMP_WORD && word != (header->type == _object_type_vehicle ? psp_datum_unit_timer / 4 : -1))
 			{
 				if (game_time_get() > 150 && (psp_sleep_reports++ & 0) == 0)
 					platform_psp_log("sleep: %s stays awake: word %ld (byte %ld) of %d changed, %08lx -> %08lx",
@@ -20221,7 +20221,7 @@ static void psp_func_check_sleeper(long object_index, struct object_header_datum
 	csmemcpy(held, word, count * 4);
 	psp_sleeper_functions(object_index);
 	for (w = 0; w < count && first < 0; w++)
-		if (w != 2 && held[w] != word[w])
+		if (w != PSP_DATUM_STAMP_WORD && held[w] != word[w])
 			first = w;
 	if (first >= 0 && named_count < 16)
 	{
@@ -20302,7 +20302,7 @@ static void psp_sleepy_update(long object_index, short absolute_index, struct ob
 				after = psp_family_checksum(header);
 				psp_items_sleep_checked++;
 				for (word = 0; word < count && first < 0; word++)
-					if (word != 2 && word != psp_datum_item_owned / 4 && asleep[word] != ((unsigned long const *)header->datum)[word])
+					if (word != PSP_DATUM_STAMP_WORD && word != psp_datum_item_owned / 4 && asleep[word] != ((unsigned long const *)header->datum)[word])
 						first = word;
 				/* a checksum that moved while sleeping would leave the datum
 				as the update makes it is a wake, not a change: the sleeping
@@ -20321,7 +20321,7 @@ static void psp_sleepy_update(long object_index, short absolute_index, struct ob
 						platform_psp_log("sleep: itemsleepcheck: %s changed while asleep (t=%ld, checksum %08lx -> %08lx)",
 							tag_get_name(sleeper->definition_index), game_time_get(), before, after);
 						for (word = 0; word < count && shown < 12; word++)
-							if (word != 2 && word != psp_datum_item_owned / 4 && asleep[word] != ((unsigned long const *)header->datum)[word])
+							if (word != PSP_DATUM_STAMP_WORD && word != psp_datum_item_owned / 4 && asleep[word] != ((unsigned long const *)header->datum)[word])
 							{
 								platform_psp_log("sleep: itemsleepcheck:   word %ld (byte 0x%lx) asleep %08lx, updated %08lx",
 									word, word * 4, asleep[word], ((unsigned long const *)header->datum)[word]);
@@ -26540,7 +26540,7 @@ static void psp_wake_miss_words(struct object_header_datum const *header, short 
 		return;
 	}
 	for (w = 0; w < count && told < 8; w++)
-		if (w != 2 && was[w] != now[w])
+		if (w != PSP_DATUM_STAMP_WORD && was[w] != now[w])
 		{
 			platform_psp_log("wakecheck:   word %ld (byte 0x%lx) of %d: %08lx -> %08lx", w, w * 4, header->data_size, was[w], now[w]);
 			told++;
@@ -39953,7 +39953,7 @@ static void __attribute__((noinline, cold)) psp_sleep_debug_between(short absolu
 	if (between_index == absolute_index && between_identifier == header->identifier)
 	{
 		for (w = 0; w < count; w++)
-			if (between[w] != ((unsigned long const *)header->datum)[w] && w != 2 && psp_vehicle_sleep_reports++ < 40)
+			if (between[w] != ((unsigned long const *)header->datum)[w] && w != PSP_DATUM_STAMP_WORD && psp_vehicle_sleep_reports++ < 40)
 				platform_psp_log("sleep: %s changed between ticks: word %ld (byte %ld) %08lx -> %08lx (quiet %d, checksum %s)",
 					tag_get_name(object->definition_index), w, w * 4, between[w], ((unsigned long const *)header->datum)[w],
 					psp_sleep[absolute_index].quiet, psp_sleep[absolute_index].checksum == before ? "same" : "differs");
@@ -39996,7 +39996,7 @@ static void __attribute__((noinline, cold)) psp_item_sleep_check_update(long obj
 	after = psp_family_checksum(header);
 	psp_items_sleep_checked++;
 	for (word = 0; word < count && first < 0; word++)
-		if (word != 2 && word != psp_datum_item_owned / 4 && asleep[word] != ((unsigned long const *)header->datum)[word])
+		if (word != PSP_DATUM_STAMP_WORD && word != psp_datum_item_owned / 4 && asleep[word] != ((unsigned long const *)header->datum)[word])
 			first = word;
 	/* a checksum that moved while sleeping would leave the datum
 	as the update makes it is a wake, not a change: the sleeping
@@ -40015,7 +40015,7 @@ static void __attribute__((noinline, cold)) psp_item_sleep_check_update(long obj
 			platform_psp_log("sleep: itemsleepcheck: %s changed while asleep (t=%ld, checksum %08lx -> %08lx)",
 				tag_get_name(sleeper->definition_index), game_time_get(), before, after);
 			for (word = 0; word < count && shown < 12; word++)
-				if (word != 2 && word != psp_datum_item_owned / 4 && asleep[word] != ((unsigned long const *)header->datum)[word])
+				if (word != PSP_DATUM_STAMP_WORD && word != psp_datum_item_owned / 4 && asleep[word] != ((unsigned long const *)header->datum)[word])
 				{
 					platform_psp_log("sleep: itemsleepcheck:   word %ld (byte 0x%lx) asleep %08lx, updated %08lx",
 						word, word * 4, asleep[word], ((unsigned long const *)header->datum)[word]);
@@ -40124,7 +40124,7 @@ static void __attribute__((noinline, cold)) psp_sleep_debug_update(long object_i
 		}
 		for (word = 0; word < count; word++)
 		{
-			if (copy[word] != ((unsigned long const *)header->datum)[word] && word != 2 && word != (header->type == _object_type_vehicle ? psp_datum_unit_timer / 4 : -1))
+			if (copy[word] != ((unsigned long const *)header->datum)[word] && word != PSP_DATUM_STAMP_WORD && word != (header->type == _object_type_vehicle ? psp_datum_unit_timer / 4 : -1))
 			{
 				if (game_time_get() > 150 && (psp_sleep_reports++ & 0) == 0)
 					platform_psp_log("sleep: %s stays awake: word %ld (byte %ld) of %d changed, %08lx -> %08lx",
@@ -40187,7 +40187,7 @@ static void psp_sleepy_update(long object_index, short absolute_index, struct ob
 		if (between_index == absolute_index && between_identifier == header->identifier)
 		{
 			for (w = 0; w < count; w++)
-				if (between[w] != ((unsigned long const *)header->datum)[w] && w != 2 && psp_vehicle_sleep_reports++ < 40)
+				if (between[w] != ((unsigned long const *)header->datum)[w] && w != PSP_DATUM_STAMP_WORD && psp_vehicle_sleep_reports++ < 40)
 					platform_psp_log("sleep: %s changed between ticks: word %ld (byte %ld) %08lx -> %08lx (quiet %d, checksum %s)",
 						tag_get_name(object->definition_index), w, w * 4, between[w], ((unsigned long const *)header->datum)[w],
 						psp_sleep[absolute_index].quiet, psp_sleep[absolute_index].checksum == before ? "same" : "differs");
@@ -40226,7 +40226,7 @@ static void psp_sleepy_update(long object_index, short absolute_index, struct ob
 				after = psp_family_checksum(header);
 				psp_items_sleep_checked++;
 				for (word = 0; word < count && first < 0; word++)
-					if (word != 2 && word != psp_datum_item_owned / 4 && asleep[word] != ((unsigned long const *)header->datum)[word])
+					if (word != PSP_DATUM_STAMP_WORD && word != psp_datum_item_owned / 4 && asleep[word] != ((unsigned long const *)header->datum)[word])
 						first = word;
 				/* a checksum that moved while sleeping would leave the datum
 				as the update makes it is a wake, not a change: the sleeping
@@ -40245,7 +40245,7 @@ static void psp_sleepy_update(long object_index, short absolute_index, struct ob
 						platform_psp_log("sleep: itemsleepcheck: %s changed while asleep (t=%ld, checksum %08lx -> %08lx)",
 							tag_get_name(sleeper->definition_index), game_time_get(), before, after);
 						for (word = 0; word < count && shown < 12; word++)
-							if (word != 2 && word != psp_datum_item_owned / 4 && asleep[word] != ((unsigned long const *)header->datum)[word])
+							if (word != PSP_DATUM_STAMP_WORD && word != psp_datum_item_owned / 4 && asleep[word] != ((unsigned long const *)header->datum)[word])
 							{
 								platform_psp_log("sleep: itemsleepcheck:   word %ld (byte 0x%lx) asleep %08lx, updated %08lx",
 									word, word * 4, asleep[word], ((unsigned long const *)header->datum)[word]);
@@ -40354,7 +40354,7 @@ static void psp_sleepy_update(long object_index, short absolute_index, struct ob
 		}
 		for (word = 0; word < count; word++)
 		{
-			if (copy[word] != ((unsigned long const *)header->datum)[word] && word != 2 && word != (header->type == _object_type_vehicle ? psp_datum_unit_timer / 4 : -1))
+			if (copy[word] != ((unsigned long const *)header->datum)[word] && word != PSP_DATUM_STAMP_WORD && word != (header->type == _object_type_vehicle ? psp_datum_unit_timer / 4 : -1))
 			{
 				if (game_time_get() > 150 && (psp_sleep_reports++ & 0) == 0)
 					platform_psp_log("sleep: %s stays awake: word %ld (byte %ld) of %d changed, %08lx -> %08lx",

@@ -150,6 +150,7 @@ Every write-up about the port is in this folder: design notes, measurements, pla
 - [`psp_wifi_hotspot.md`](psp_wifi_hotspot.md): PSP Wi-Fi via the desktop hotspot (Linux, NetworkManager)
 - [`review_mpb1.md`](review_mpb1.md): Review: mpb1, the ONLINE GAMES screen (branch `mpbrowse`)
 - [`review_mpb2.md`](review_mpb2.md): Review: mpb2, internet play made to explain itself (branch `mpbrowse`)
+- [`review_tick2_slice1.md`](review_tick2_slice1.md): Review: the world store's slice 1 (`PSP_TICK2=root`): the root leaves the datum, the store's records, and every literal datum offset replaced
 - [`review_mpb3.md`](review_mpb3.md): Review: mpb3 (branch `mpbrowse`, `7f0dc04`)
 - [`review_mpb4.md`](review_mpb4.md): Review: mpb4, the multiplayer work on b135 (branch `mp135`)
 

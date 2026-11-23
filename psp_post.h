@@ -148,3 +148,5 @@ void psp_meprobe_report(void);
 
 /* datum fields the port reads from files that can't see their structures: units.c makes them from the structures (psp_fixups.py), so they move with a datum's layout */
 extern const long psp_datum_unit_timer, psp_datum_item_owned, psp_datum_biped_bytes;
+/* the datum's visit stamp (object.magic_number), which the sleep's sums and checks pass over */
+#define PSP_DATUM_STAMP_WORD ((long)(offsetof(struct object_datum, object.magic_number) / 4))
