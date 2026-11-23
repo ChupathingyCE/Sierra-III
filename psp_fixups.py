@@ -58971,6 +58971,107 @@ TICK2_ROOT_DECL = """	real_point3d position;
 	real_point3d bounding_sphere_center;
 	real bounding_sphere_radius;
 """
+TICK2_STORE_CODE = r"""
+/* a record: this map's own, else a free one in an overflow chunk, else a new chunk from the pool */
+static struct tick2_root *tick2_record_take(void)
+{
+	long c, k;
+
+	if (tick2_free_count > 0)
+	{
+		struct tick2_root *record = &tick2_roots[tick2_free_records[--tick2_free_count]];
+
+		if (tick2_free_count < tick2_free_low)
+			tick2_free_low = tick2_free_count;
+		return record;
+	}
+	for (c = 0; c < TICK2_CHUNKS; c++)
+		if (tick2_store->chunk[c] && (tick2_store->chunk_free[c][0] | tick2_store->chunk_free[c][1]))
+			break;
+	if (c == TICK2_CHUNKS)
+	{
+		for (c = 0; c < TICK2_CHUNKS && tick2_store->chunk[c]; c++)
+			;
+		if (c == TICK2_CHUNKS || !memory_pool_block_allocate(object_memory_pool, (void **)&tick2_store->chunk[c],
+			TICK2_CHUNK * (long)sizeof(struct tick2_root)))
+			return NULL;
+		tick2_store->chunk_was[c] = tick2_store->chunk[c];
+		tick2_store->chunk_free[c][0] = tick2_store->chunk_free[c][1] = 0xFFFFFFFFUL;
+	}
+	for (k = 0; !(tick2_store->chunk_free[c][k >> 5] & (1UL << (k & 31))); k++)
+		;
+	tick2_store->chunk_free[c][k >> 5] &= ~(1UL << (k & 31));
+	tick2_store->overflow_taken++;
+	if (++tick2_store->overflow_live > tick2_store->overflow_peak)
+		tick2_store->overflow_peak = tick2_store->overflow_live;
+	return &tick2_store->chunk[c][k];
+}
+
+static void tick2_record_give(struct tick2_root *record)
+{
+	long c;
+
+	if (record >= tick2_roots && record < tick2_roots + tick2_store->slots)
+	{
+		tick2_free_records[tick2_free_count++] = (short)(record - tick2_roots);
+		return;
+	}
+	for (c = 0; c < TICK2_CHUNKS; c++)
+		if (tick2_store->chunk[c] && record >= tick2_store->chunk[c] && record < tick2_store->chunk[c] + TICK2_CHUNK)
+		{
+			long k = record - tick2_store->chunk[c];
+
+			tick2_store->chunk_free[c][k >> 5] |= 1UL << (k & 31);
+			tick2_store->overflow_live--;
+			if (tick2_store->chunk_free[c][0] == 0xFFFFFFFFUL && tick2_store->chunk_free[c][1] == 0xFFFFFFFFUL)
+			{
+				memory_pool_block_free(object_memory_pool, (void **)&tick2_store->chunk[c]);
+				tick2_store->chunk[c] = tick2_store->chunk_was[c] = NULL;
+			}
+			return;
+		}
+}
+
+static long tick2_chunk_free_records(void)
+{
+	long c, k, n = 0;
+
+	for (c = 0; tick2_store && c < TICK2_CHUNKS; c++)
+		if (tick2_store->chunk[c])
+			for (k = 0; k < TICK2_CHUNK; k++)
+				n += (tick2_store->chunk_free[c][k >> 5] >> (k & 31)) & 1;
+	return n;
+}
+
+/* after the pool's compaction: the records in a chunk that moved are reached at its new place */
+static void tick2_overflow_rebase(void)
+{
+	long c, i, moved = 0;
+
+	for (c = 0; c < TICK2_CHUNKS; c++)
+		moved |= tick2_store->chunk[c] != tick2_store->chunk_was[c];
+	if (!moved)
+		return;
+	for (i = data_next_index(object_header_data, NONE); i != NONE; i = data_next_index(object_header_data, i))
+	{
+		struct object_header_datum *header = (struct object_header_datum *)datum_get(object_header_data, i);
+		struct tick2_root **root;
+
+		if (!header->datum)
+			continue;
+		root = &((struct object_datum *)header->datum)->object.root;
+		for (c = 0; c < TICK2_CHUNKS; c++)
+			if (tick2_store->chunk[c] != tick2_store->chunk_was[c] &&
+				*root >= tick2_store->chunk_was[c] && *root < tick2_store->chunk_was[c] + TICK2_CHUNK)
+			{
+				*root = tick2_store->chunk[c] + (*root - tick2_store->chunk_was[c]);
+				break;
+			}
+	}
+	for (c = 0; c < TICK2_CHUNKS; c++)
+		tick2_store->chunk_was[c] = tick2_store->chunk[c];
+}
+"""
 def tick2_root_cut(tree):
     if not TICK2_ROOT:
         return 0
@@ -58988,7 +59089,14 @@ def tick2_root_cut(tree):
          "};\nextern struct tick2_root *tick2_roots;\n"
          "/* the store's records at most (a map not in tick2_slots_for_map's table); each map takes its own count */\n"
          "#define TICK2_STORE_SLOTS %d\n"
-         "struct tick2_store { long slots, free_count, free_low; short free_records[TICK2_STORE_SLOTS]; };\n"
+         "/* past this map's records, overflow chunks of 64 as object pool blocks, given back when empty (spec section 27) */\n"
+         "#define TICK2_CHUNK 64\n"
+         "#define TICK2_CHUNKS (MAXIMUM_OBJECTS_PER_MAP / TICK2_CHUNK)\n"
+         "struct tick2_store\n{\n\tlong slots, free_count, free_low, overflow_taken, overflow_live, overflow_peak;\n"
+         "\tstruct tick2_root *chunk[TICK2_CHUNKS]; /* the pool's block references: compaction rewrites them */\n"
+         "\tstruct tick2_root *chunk_was[TICK2_CHUNKS]; /* where each chunk was when its records were handed out */\n"
+         "\tunsigned long chunk_free[TICK2_CHUNKS][TICK2_CHUNK / 32];\n"
+         "\tshort free_records[TICK2_STORE_SLOTS];\n};\n"
          "extern struct tick2_store *tick2_store; /* game state, after the records */\n"
          "#define tick2_free_count (tick2_store->free_count)\n"
          "#define tick2_free_low (tick2_store->free_low)\n"
@@ -59026,17 +59134,15 @@ def tick2_root_cut(tree):
 			memset(header->datum, 0, size);
 """, """			header->data_size = size;
 			memset(header->datum, 0, size);
-			if (tick2_free_count > 0)
-			{ /* TICK2 root: the datum's record, from the store's free stack */
-				struct tick2_root *record = &tick2_roots[tick2_free_records[--tick2_free_count]];
+			struct tick2_root *record = tick2_record_take(); /* TICK2 root */
 
-				if (tick2_free_count < tick2_free_low)
-					tick2_free_low = tick2_free_count;
+			if (record)
+			{
 				memset(record, 0, sizeof(*record));
 				((struct object_datum *)header->datum)->object.root = record;
 			}
 			else
-			{ /* TICK2 root: the store is full */
+			{ /* TICK2 root: no record and no room in the pool for a chunk: the pool is full */
 				memory_pool_block_free(object_memory_pool, (void**)&header->datum);
 				datum_delete(data, index);
 				return NONE;
@@ -59063,7 +59169,7 @@ static unsigned long psp_object_checksum_datum(struct object_header_datum const 
          "\nboolean debug_object_garbage_collection;\nstruct tick2_root *tick2_roots; /* TICK2 root */\n"
          "struct tick2_store *tick2_store; /* TICK2 root */\n"
          "/* the store's free records: free pool to the collector (TICK2 root) */\n"
-         "#define TICK2_STORE_SPARE() ((long)tick2_free_count * (long)sizeof(struct tick2_root))\n"
+         "#define TICK2_STORE_SPARE() ((long)(tick2_free_count + tick2_chunk_free_records()) * (long)sizeof(struct tick2_root))\n"
          "char *main_get_map_name(void);\n"
          "/* the store's records for a map: C5's peak of live objects there + 10%% (the lab's tick_c5_memory_sheet.md) */\n"
          "static long tick2_slots_for_map(const char *name)\n{\n"
@@ -59075,9 +59181,7 @@ static unsigned long psp_object_checksum_datum(struct object_header_datum const 
          "\tfor (k = 0; last && k < sizeof(table) / sizeof(table[0]); k++)\n"
          "\t\tif (!strcmp(last, table[k].map))\n\t\t\treturn table[k].slots;\n"
          "\treturn TICK2_STORE_SLOTS;\n}\n"
-         "/* free objects: the store's records bind before the datum array's slots */\n"
-         "#define TICK2_FREE_OBJECTS() (MAXIMUM_OBJECTS_PER_MAP - object_header_data->actual_count < tick2_free_count ? \\\n"
-         "\tMAXIMUM_OBJECTS_PER_MAP - object_header_data->actual_count : tick2_free_count)\n")
+         + TICK2_STORE_CODE)
     # a new map starts with every record free
     once(objects_c, "\tdata_make_valid(object_header_data);\n\tobject_name_list_clear();\n",
          """\tdata_make_valid(object_header_data);
@@ -59089,6 +59193,7 @@ static unsigned long psp_object_checksum_datum(struct object_header_datum const 
 		memory_pool_initialize(object_memory_pool, "objects", OBJECT_MEMORY_POOL_SIZE - bytes);
 		tick2_roots = (struct tick2_root *)((char *)(object_memory_pool + 1) + OBJECT_MEMORY_POOL_SIZE - bytes);
 		tick2_store = (struct tick2_store *)(tick2_roots + slots);
+		memset(tick2_store, 0, sizeof(*tick2_store));
 		tick2_store->slots = slots;
 		for (k = 0; k < slots; k++)
 			tick2_free_records[k] = (short)(slots - 1 - k);
@@ -59101,14 +59206,22 @@ static unsigned long psp_object_checksum_datum(struct object_header_datum const 
 	{
 		memory_pool_block_free(object_memory_pool, (void**)&object_header->datum);""", """	if (object_header->datum)
 	{
-		tick2_free_records[tick2_free_count++] = (short)(((struct object_datum *)object_header->datum)->object.root - tick2_roots); /* TICK2 root */
+		tick2_record_give(((struct object_datum *)object_header->datum)->object.root); /* TICK2 root */
 		memory_pool_block_free(object_memory_pool, (void**)&object_header->datum);""")
     once(objects_c, """			if (header->datum)
 			{
 				memory_pool_block_free(object_memory_pool, (void**)&header->datum);""", """			if (header->datum)
 			{
-				tick2_free_records[tick2_free_count++] = (short)(((struct object_datum *)header->datum)->object.root - tick2_roots); /* TICK2 root */
+				tick2_record_give(((struct object_datum *)header->datum)->object.root); /* TICK2 root */
 				memory_pool_block_free(object_memory_pool, (void**)&header->datum);""")
+    text = open(objects_c, errors="surrogateescape").read()
+    compacts = text.count("memory_pool_compact(object_memory_pool);")
+    if compacts < 4:
+        check_fail("psp_fixups: TICK2 root: %d compactions of the object pool, not 4 or more" % compacts)
+    elif not CHECK_ONLY:
+        open(objects_c, "w", errors="surrogateescape").write(text.replace("memory_pool_compact(object_memory_pool);",
+            "{ memory_pool_compact(object_memory_pool); tick2_overflow_rebase(); /* TICK2 root */ }"))
+    print("psp_fixups: TICK2 root: %d compactions rebase the overflow chunks' records" % compacts)
     # every type's datum size, one literal per row of object_types.c
     path = os.path.join(tree, "source/objects/object_types.c")
     text = open(path, errors="surrogateescape").read()
@@ -59157,9 +59270,7 @@ static unsigned long psp_object_checksum_datum(struct object_header_datum const 
         for read in ("memory_pool_get_contiguous_free_size(object_memory_pool)", "memory_pool_get_free_size(object_memory_pool)"):
             reads += body.count(read)
             body = body.replace(read, "(%s + TICK2_STORE_SPARE())" % read)
-        frees = body.count("MAXIMUM_OBJECTS_PER_MAP-object_header_data->actual_count")
-        body = body.replace("MAXIMUM_OBJECTS_PER_MAP-object_header_data->actual_count", "TICK2_FREE_OBJECTS()")
-        print("psp_fixups: TICK2 root: the collector reads the store's spare at %d pool tests and its free records at %d" % (reads, frees))
+        print("psp_fixups: TICK2 root: the collector reads the store's spare at %d pool tests" % reads)
         if reads < 6:
             check_fail("psp_fixups: TICK2 root: only %d pool reads in the collector" % reads)
         elif not CHECK_ONLY:
@@ -59189,23 +59300,27 @@ def tick2_gccount(tree):
 
 				if (in_use > tick2_gc.pool_peak)
 					tick2_gc.pool_peak = in_use;
+				if (!tick2_gc.free_low || memory_pool_get_free_size(object_memory_pool) < tick2_gc.free_low)
+					tick2_gc.free_low = memory_pool_get_free_size(object_memory_pool);
 				if (data->actual_count > tick2_gc.live_peak)
 					tick2_gc.live_peak = data->actual_count;
 			}
 """), ("\nboolean debug_object_garbage_collection;\n", """
 boolean debug_object_garbage_collection;
-static struct { long deleted, pool_peak, live_peak; } tick2_gc; /* TICK2 gccount */
+static struct { long deleted, pool_peak, live_peak, free_low; } tick2_gc; /* TICK2 gccount */
 void platform_psp_log(const char *format, ...);
 
 /* psp_loading.c at a map's end, psp_platform.c each minute */
 void psp_tick2_gc_report(const char *label, int level_end)
 {
 	long store = 0;
-	long store_peak = 0, records = 0;
+	long store_peak = 0, records = 0, overflow_taken = 0, overflow_peak = 0;
 #ifdef TICK2_STORE_SLOTS
 	if (tick2_store)
 	{ /* set at the first map's start; a report before it ("leaving for" the first map) has no store */
 		records = tick2_store->slots;
+		overflow_taken = tick2_store->overflow_taken;
+		overflow_peak = tick2_store->overflow_peak;
 		store = records * (long)sizeof(struct tick2_root);
 		store_peak = (long)(tick2_store->slots - tick2_free_low) * (long)sizeof(struct tick2_root);
 		if (level_end)
@@ -59215,11 +59330,9 @@ void psp_tick2_gc_report(const char *label, int level_end)
 	if (!object_memory_pool || !object_header_data)
 		return;
 	{
-		long size = memory_pool_get_used_size(object_memory_pool) + memory_pool_get_free_size(object_memory_pool);
-
-		platform_psp_log("gccount (%s): the collector deleted %ld; pool %ld KB, peak %ld KB in use, free low %ld KB; live objects peak %ld; store %ld records (%ld KB), peak %ld KB live",
-			label, tick2_gc.deleted, size / 1024, tick2_gc.pool_peak / 1024, (size - tick2_gc.pool_peak) / 1024,
-			tick2_gc.live_peak, records, store / 1024, store_peak / 1024);
+		platform_psp_log("gccount (%s): the collector deleted %ld; pool %ld KB, peak %ld KB in use, free low %ld KB; live objects peak %ld; store %ld records (%ld KB), peak %ld KB live; overflow records taken %ld, peak %ld",
+			label, tick2_gc.deleted, object_memory_pool->size / 1024, tick2_gc.pool_peak / 1024, tick2_gc.free_low / 1024,
+			tick2_gc.live_peak, records, store / 1024, store_peak / 1024, overflow_taken, overflow_peak);
 	}
 	if (level_end)
 		memset(&tick2_gc, 0, sizeof(tick2_gc));
