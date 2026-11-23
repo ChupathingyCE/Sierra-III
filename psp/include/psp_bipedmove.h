@@ -34,12 +34,18 @@ void box_ws_move_settle(void);
    box_ws_move_map (built at launch from the same runs) checks the table. */
 static inline __attribute__((always_inline)) void *box_ws_move_at(void *datum, unsigned offset, unsigned size)
 {
+#ifdef PSP_TICK2_ROOT
+	/* the map is the old biped datum's: the window never goes live in this build */
+	(void)size;
+	return (unsigned char *)datum + offset;
+#else
 	short first = box_ws_move_map_c[offset];
 
 	if (first >= 0 && box_ws_move_map_c[offset + size - 1] == first + (short)(size - 1) &&
 		datum == box_ws_move_datum && datum)
 		return box_ws_move_live + first;
 	return (unsigned char *)datum + offset;
+#endif
 }
 
 /* A write's place: as box_ws_move_at, and the build fails where the field is
@@ -53,12 +59,18 @@ void box_ws_move_write_not_written_back(void)
 	__attribute__((error("PSP_BMSW: a write to a field the store holds but doesn't write back (box_ws_biped_move_back)")));
 static inline __attribute__((always_inline)) void *box_ws_move_at_w(void *datum, unsigned offset, unsigned size)
 {
+#ifdef PSP_TICK2_ROOT
+	/* the map is the old biped datum's: the window never goes live in this build */
+	(void)size;
+	return (unsigned char *)datum + offset;
+#else
 	short first = box_ws_move_map_c[offset];
 
 	if (first >= 0 && box_ws_move_map_c[offset + size - 1] == first + (short)(size - 1) &&
 		(unsigned)(box_ws_move_back_sum_c[offset + size] - box_ws_move_back_sum_c[offset]) != size)
 		box_ws_move_write_not_written_back();
 	return box_ws_move_at(datum, offset, size);
+#endif
 }
 
 /* the accessor (read, write), as psp_fixups.py's pass writes them */

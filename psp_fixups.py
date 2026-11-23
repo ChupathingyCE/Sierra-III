@@ -56069,7 +56069,11 @@ BIPEDMOVE_SYNC = {
     "object_start_interpolation": ("n1", False, 3),
     "object_delete": ("d", False, 2),
 }
-BIPEDMOVE_PRELUDE = """#include "psp_bipedmove.h" /* psp_fixups.py (BIPEDMOVE) steps 1b and 1c */
+# PSP_TICK2=root: the window's store is laid out on the old biped datum, so it never goes live there
+# and its accessors are plain datum accesses (psp_bipedmove.h); slice 1's store takes its ground
+BIPEDMOVE_ROOT_MARK = ("#define PSP_TICK2_ROOT 1 /* psp_fixups.py (TICK2 root) */\n"
+                       if os.environ.get("PSP_TICK2", "") == "root" else "")
+BIPEDMOVE_PRELUDE = BIPEDMOVE_ROOT_MARK + """#include "psp_bipedmove.h" /* psp_fixups.py (BIPEDMOVE) steps 1b and 1c */
 static int psp_bms_on = -1, psp_bms_check = 0;
 /* the intent's start: the record filled, in the slot of its bipedstage3 record */
 static void psp_bms_start(long biped_index, int slot)
@@ -56080,6 +56084,11 @@ static void psp_bms_start(long biped_index, int slot)
 	{
 		psp_bms_check = psp_keep("bipedmovestorecheck");
 		psp_bms_on = psp_bms_check || psp_keep("bipedmovestore");
+#ifdef PSP_TICK2_ROOT
+		if (psp_bms_on)
+			platform_psp_log("bipedmovestore: not in a PSP_TICK2=root build (its store is the old datum's layout); off");
+		psp_bms_on = psp_bms_check = 0;
+#endif
 	}
 	if (psp_bms_on)
 		box_ws_move_begin(object_get_and_verify_type(biped_index, _object_mask_biped), biped_index, slot, psp_bms_check);
@@ -56105,7 +56114,7 @@ static void psp_bms_stop(void)
 		box_ws_move_end();
 }
 """
-BIPEDMOVE_UNITS_PRELUDE = """#include "psp_bipedmove.h" /* psp_fixups.py (BIPEDMOVE) step 1c: the tail's animation */
+BIPEDMOVE_UNITS_PRELUDE = BIPEDMOVE_ROOT_MARK + """#include "psp_bipedmove.h" /* psp_fixups.py (BIPEDMOVE) step 1c: the tail's animation */
 """
 # a rewritten access written: an assignment or increment after it (past any
 # subscripts and members), an increment before it, SET_FLAG's first argument
@@ -59050,8 +59059,8 @@ static unsigned long psp_object_checksum_datum(struct object_header_datum const 
     # the engine's layout checks on object-family datums: past the root run they move with it;
     # one inside it would be checking a field that left
     family = "object|unit|biped|vehicle|item|weapon|equipment|garbage|projectile|scenery|sound_scenery|device|machine|control|light_fixture|placeholder"
-    check = re.compile(r"((?:offsetof|sizeof)\(struct (?:%s)_datum\b[^\]\n]*?== )0x([0-9A-Fa-f]+)( \? 1 : -1)" % family)
-    relative = re.compile(r"(?<![+] )((?:offsetof|sizeof)\(struct _object_datum\b[^\]\n]*?== )0x([0-9A-Fa-f]+)( \? 1 : -1)")
+    check = re.compile(r"((?:offsetof|sizeof)\(struct (?:%s)_datum\b[^\]\n]*?== )0x([0-9A-Fa-f]+)(\s*\?\s*1\s*:\s*-1)" % family)
+    relative = re.compile(r"(?<![+] )((?:offsetof|sizeof)\(struct _object_datum\b[^\]\n]*?== )0x([0-9A-Fa-f]+)(\s*\?\s*1\s*:\s*-1)")
     moved = [0]
     def shift(at, end):
         def fix(m):
