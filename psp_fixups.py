@@ -58986,9 +58986,9 @@ def tick2_root_cut(tree):
     once(os.path.join(tree, "source/objects/objects.h"), "\nstruct _object_datum\n{\n",
          "\n/* the world store's ROOT record (TICK2 root) */\nstruct tick2_root\n{\n" + TICK2_ROOT_DECL +
          "};\nextern struct tick2_root *tick2_roots;\n"
-         "/* the store's records: the worst map's peak of live objects (1,121, a50) and a margin */\n"
+         "/* the store's records at most (a map not in tick2_slots_for_map's table); each map takes its own count */\n"
          "#define TICK2_STORE_SLOTS %d\n"
-         "struct tick2_store { long free_count, free_low; short free_records[TICK2_STORE_SLOTS]; };\n"
+         "struct tick2_store { long slots, free_count, free_low; short free_records[TICK2_STORE_SLOTS]; };\n"
          "extern struct tick2_store *tick2_store; /* game state, after the records */\n"
          "#define tick2_free_count (tick2_store->free_count)\n"
          "#define tick2_free_low (tick2_store->free_low)\n"
@@ -59042,11 +59042,6 @@ def tick2_root_cut(tree):
 				return NONE;
 			}
 """)
-    once(objects_c, """		object_memory_pool = game_state_memory_pool_new("objects", OBJECT_MEMORY_POOL_SIZE);
-""", """		tick2_roots = (struct tick2_root *)game_state_malloc("tick2 root", NULL, TICK2_STORE_SLOTS * sizeof(struct tick2_root) + sizeof(struct tick2_store)); /* TICK2 root */
-		tick2_store = (struct tick2_store *)(tick2_roots + TICK2_STORE_SLOTS);
-		object_memory_pool = game_state_memory_pool_new("objects", OBJECT_MEMORY_POOL_SIZE - TICK2_STORE_SLOTS * sizeof(struct tick2_root) - sizeof(struct tick2_store));
-""")
     # the sleep's checksum reads the datum's words (psp_object_checksum): the record's go in after them,
     # so a root that changes still wakes its object
     once(objects_c, "static unsigned long psp_object_checksum(struct object_header_datum const *header)\n{",
@@ -59069,18 +59064,35 @@ static unsigned long psp_object_checksum_datum(struct object_header_datum const 
          "struct tick2_store *tick2_store; /* TICK2 root */\n"
          "/* the store's free records: free pool to the collector (TICK2 root) */\n"
          "#define TICK2_STORE_SPARE() ((long)tick2_free_count * (long)sizeof(struct tick2_root))\n"
+         "char *main_get_map_name(void);\n"
+         "/* the store's records for a map: C5's peak of live objects there + 10%% (the lab's tick_c5_memory_sheet.md) */\n"
+         "static long tick2_slots_for_map(const char *name)\n{\n"
+         "\tstatic const struct { char map[4]; short slots; } table[] = {\n"
+         "\t\t{\"a10\", 410}, {\"a30\", 897}, {\"a50\", 1233}, {\"b30\", 1192}, {\"b40\", 898},\n"
+         "\t\t{\"c10\", 1057}, {\"c20\", 689}, {\"c40\", 733}, {\"d20\", 1086}, {\"d40\", 491}};\n"
+         "\tconst char *last = name;\n\tconst char *c;\n\tunsigned k;\n\n"
+         "\tfor (c = name; c && *c; c++)\n\t\tif (*c == '\\\\' || *c == '/')\n\t\t\tlast = c + 1;\n"
+         "\tfor (k = 0; last && k < sizeof(table) / sizeof(table[0]); k++)\n"
+         "\t\tif (!strcmp(last, table[k].map))\n\t\t\treturn table[k].slots;\n"
+         "\treturn TICK2_STORE_SLOTS;\n}\n"
          "/* free objects: the store's records bind before the datum array's slots */\n"
          "#define TICK2_FREE_OBJECTS() (MAXIMUM_OBJECTS_PER_MAP - object_header_data->actual_count < tick2_free_count ? \\\n"
          "\tMAXIMUM_OBJECTS_PER_MAP - object_header_data->actual_count : tick2_free_count)\n")
     # a new map starts with every record free
     once(objects_c, "\tdata_make_valid(object_header_data);\n\tobject_name_list_clear();\n",
          """\tdata_make_valid(object_header_data);
-	{ /* TICK2 root: every record free */
+	{ /* TICK2 root: this map's records carved from the empty pool's tail, every one free (spec section 26) */
+		long slots = tick2_slots_for_map(main_get_map_name());
+		long bytes = (slots * (long)sizeof(struct tick2_root) + (long)sizeof(struct tick2_store) + 15) & ~15L;
 		long k;
 
-		for (k = 0; k < TICK2_STORE_SLOTS; k++)
-			tick2_free_records[k] = (short)(TICK2_STORE_SLOTS - 1 - k);
-		tick2_free_count = tick2_free_low = TICK2_STORE_SLOTS;
+		memory_pool_initialize(object_memory_pool, "objects", OBJECT_MEMORY_POOL_SIZE - bytes);
+		tick2_roots = (struct tick2_root *)((char *)(object_memory_pool + 1) + OBJECT_MEMORY_POOL_SIZE - bytes);
+		tick2_store = (struct tick2_store *)(tick2_roots + slots);
+		tick2_store->slots = slots;
+		for (k = 0; k < slots; k++)
+			tick2_free_records[k] = (short)(slots - 1 - k);
+		tick2_free_count = tick2_free_low = slots;
 	}
 	object_name_list_clear();
 """)
@@ -59189,18 +59201,23 @@ void platform_psp_log(const char *format, ...);
 void psp_tick2_gc_report(const char *label, int level_end)
 {
 	long store = 0;
-	long store_peak = 0;
+	long store_peak = 0, records = 0;
 #ifdef TICK2_STORE_SLOTS
-	store = (long)TICK2_STORE_SLOTS * (long)sizeof(struct tick2_root);
-	store_peak = (long)(TICK2_STORE_SLOTS - tick2_free_low) * (long)sizeof(struct tick2_root);
+	records = tick2_store->slots;
+	store = records * (long)sizeof(struct tick2_root);
+	store_peak = (long)(tick2_store->slots - tick2_free_low) * (long)sizeof(struct tick2_root);
 	if (level_end)
 		tick2_free_low = tick2_free_count;
 #endif
 	if (!object_memory_pool || !object_header_data)
 		return;
-	platform_psp_log("gccount (%s): the collector deleted %ld; pool %ld KB, peak %ld KB in use; live objects peak %ld; store %ld KB, peak %ld KB live",
-		label, tick2_gc.deleted, (memory_pool_get_used_size(object_memory_pool) + memory_pool_get_free_size(object_memory_pool)) / 1024, tick2_gc.pool_peak / 1024,
-		tick2_gc.live_peak, store / 1024, store_peak / 1024);
+	{
+		long size = memory_pool_get_used_size(object_memory_pool) + memory_pool_get_free_size(object_memory_pool);
+
+		platform_psp_log("gccount (%s): the collector deleted %ld; pool %ld KB, peak %ld KB in use, free low %ld KB; live objects peak %ld; store %ld records (%ld KB), peak %ld KB live",
+			label, tick2_gc.deleted, size / 1024, tick2_gc.pool_peak / 1024, (size - tick2_gc.pool_peak) / 1024,
+			tick2_gc.live_peak, records, store / 1024, store_peak / 1024);
+	}
 	if (level_end)
 		memset(&tick2_gc, 0, sizeof(tick2_gc));
 }
