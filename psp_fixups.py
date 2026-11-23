@@ -59407,6 +59407,59 @@ unsigned long *__attribute__((noinline)) get_global_local_random_seed_address(
         return 0
     if not CHECK_ONLY:
         open(path, "w", errors="surrogateescape").write(text.replace(old, new))
+    # and every change to a device group's value in the same window, with its caller
+    path = os.path.join(tree, "source/devices/devices.c")
+    text = open(path, errors="surrogateescape").read()
+    hooks = [("""	group = datum_get(device_groups_data, group_index);
+	group->actual_value = actual_value;
+""", """	group = datum_get(device_groups_data, group_index);
+	psp_device_trace("actual", group_index, actual_value, __builtin_return_address(0)); /* SEEDTRACE */
+	group->actual_value = actual_value;
+"""), ("""	boolean changed = FALSE;
+
+	if (desired_value < 0.0f)
+		desired_value = 0.0f;
+	else if (desired_value > 1.0f)
+		desired_value = 1.0f;
+""", """	boolean changed = FALSE;
+
+	psp_device_trace("desired", group_index, desired_value, __builtin_return_address(0)); /* SEEDTRACE */
+	if (desired_value < 0.0f)
+		desired_value = 0.0f;
+	else if (desired_value > 1.0f)
+		desired_value = 1.0f;
+""")]
+    for old, new in hooks:
+        if text.count(old) != 1:
+            check_fail("psp_fixups: SEEDTRACE: a device group setter matches %d times" % text.count(old))
+            return 0
+        text = text.replace(old, new)
+    prelude = """long game_time_get(void);
+int psp_keep_number(const char *prefix, int fallback);
+void platform_psp_log(const char *format, ...);
+
+/* SEEDTRACE: a device group's value set, in seedtraceN's window */
+static void psp_device_trace(const char *what, short group_index, real value, void *from)
+{
+	static long first = -2;
+	long tick;
+
+	if (first == -2)
+		first = psp_keep_number("seedtrace", -1);
+	if (first >= 0 && (tick = game_time_get()) >= first && tick <= first + 10)
+		platform_psp_log("devicetrace: tick %ld, %s, group %d, value %08lx, from %08lx", tick, what, (int)group_index,
+			*(unsigned long *)&value, (unsigned long)from);
+}
+
+"""
+    anchor = "void device_group_set_actual_value(\n"
+    if text.count(anchor) < 1:
+        check_fail("psp_fixups: SEEDTRACE: no device_group_set_actual_value")
+        return 0
+    first_def = text.index("\nvoid device_group_set_actual_value(\n\tshort group_index,\n\treal actual_value)\n{")
+    text = text[:first_def] + "\n" + prelude + text[first_def + 1:]
+    if not CHECK_ONLY:
+        open(path, "w", errors="surrogateescape").write(text)
     return 1
 print("psp_fixups: the local seed's tracer: %s (SEEDTRACE)" % ("on" if seed_trace(TREE) else "off"))
 
