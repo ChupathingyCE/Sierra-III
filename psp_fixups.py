@@ -59443,8 +59443,8 @@ TICK2_UNIT_SLOTS = int(os.environ.get("PSP_TICK2_UNIT_SLOTS", "256"))
 TICK2_UNIT_DECL = r"""
 /* the world store's unit section (TICK2 unit): each unit's animation, at the index its ROOT record holds */
 #define TICK2_UNIT_CHUNK 16
-#define TICK2_UNIT_CHUNKS (MAXIMUM_OBJECTS_PER_MAP / TICK2_UNIT_CHUNK)
-#define TICK2_UNIT_MOST 512
+#define TICK2_UNIT_CHUNKS 32 /* 512 units past a map's table, well over the census's (tick2ship2: one chunk at most) */
+#define TICK2_UNIT_MOST 256 /* the unit table's free stack: the largest table is c40's 208 */
 struct tick2_unit_store
 {
 	long slots, free_count, free_low, overflow_taken, overflow_live, overflow_peak;
@@ -59715,7 +59715,7 @@ Two runs, as object_new makes the blocks: matrices for every node, and the two o
 the types that interpolate (_object_mask_cannot_interpolate's types have none) */
 #define TICK2_POSE_CHUNK 64 /* a chunk's span in the node index (its capacity is TICK2_POSE_GRAIN up to this) */
 #define TICK2_POSE_GRAIN 16 /* a chunk holds the run that opens it, rounded up to this (the lead, 2026-11-23 16:4x) */
-#define TICK2_POSE_CHUNKS 256
+#define TICK2_POSE_CHUNKS 64 /* a run's chunks: the census's most is ~20 (tick2ship2), so 3x that; past it a take would refuse */
 #define TICK2_POSE_RUN_MOST 64
 #define TICK2_POSE_MATRICES 1 /* the blocks an object has */
 #define TICK2_POSE_ORIENTATIONS 2
@@ -59899,13 +59899,15 @@ def tick2_pose_cut(tree):
 /* the unit and node tables per map (spec section 36, the lead 2026-11-23 15:2x): each at its live count at the
 object pool's low, where a reserved but unused byte is the only cost (tick2census2), overflow chunks taking the
 rest; a map without a bench keeps its whole-map figure (units at census27's and C5's peak + 15%%, nodes at the
-peak), its orientation run at half its nodes until it gets one */
+peak), its orientation run at half its nodes until it gets one. The node runs on the six benched maps are at 95%%
+of the census's counts (the lead 17:1x): the ship's low falls at another moment from the census's, so a table at
+the census's count held empty slots there; the census logs both moments so the margin is a measured figure */
 static long tick2_table_for_map(const char *name, int which)
 {
 	static const struct { char map[4]; short units, nodes, orient_nodes; } table[] = {
-		{"a10", 75, 2083, 1372}, {"a30", 67, 2279, 1556}, {"a50", 96, 3229, 1614}, {"b30", 34, 2267, 917},
-		{"b40", 176, 3836, 1918}, {"c10", 16, 2793, 1396}, {"c20", 68, 2376, 1464}, {"c40", 208, 4751, 2375},
-		{"d20", 66, 3228, 1767}, {"d40", 30, 1471, 932}};
+		{"a10", 75, 1979, 1303}, {"a30", 67, 2165, 1478}, {"a50", 96, 3229, 1614}, {"b30", 34, 2154, 871},
+		{"b40", 176, 3836, 1918}, {"c10", 16, 2793, 1396}, {"c20", 68, 2257, 1391}, {"c40", 208, 4751, 2375},
+		{"d20", 66, 3067, 1679}, {"d40", 30, 1397, 885}};
 	const char *last = name;
 	const char *c;
 	unsigned k;
@@ -60354,6 +60356,7 @@ def tick2_gccount(tree):
 					tick2_gc.low_nodes = tick2_gc.nodes_live;
 					tick2_gc.low_orient = tick2_gc.orient_live;
 					tick2_gc_sections_now(data->actual_count);
+					tick2_gc.low_time = game_time_get(); /* where the low falls, against the census's moment */
 				}
 				if (!tick2_gc.contiguous_low || memory_pool_get_contiguous_free_size(object_memory_pool) < tick2_gc.contiguous_low)
 					tick2_gc.contiguous_low = memory_pool_get_contiguous_free_size(object_memory_pool);
@@ -60456,7 +60459,7 @@ boolean debug_object_garbage_collection;
 static struct { long deleted, pool_peak, live_peak, free_low, units_live, units_peak, nodes_live, nodes_peak, orient_live, orient_peak,
 	low_contiguous, low_node_bytes, low_spare, low_chunks, contiguous_low,
 	low_objects, low_units, low_nodes, low_orient, chunks_taken, chunks_returned,
-	low_held[6], low_empty[6], low_old[6], low_chunk_blocks; } tick2_gc; /* TICK2 gccount */
+	low_held[6], low_empty[6], low_old[6], low_chunk_blocks, low_time; } tick2_gc; /* TICK2 gccount */
 static void tick2_gc_sections_now(long objects); /* after the store's code */
 
 static long tick2_gc_spare_now(void); /* after the store's code */
@@ -60513,8 +60516,8 @@ void psp_tick2_gc_report(const char *label, int level_end)
 	platform_psp_log("gccount (%s): at the pool's low: free %ld KB, the tail (contiguous) %ld KB, live node blocks as the old layout holds them %ld KB, the store's spare the collector counts %ld KB, node overflow chunks %ld; the tail's low %ld KB",
 		label, tick2_gc.free_low / 1024, tick2_gc.low_contiguous / 1024, tick2_gc.low_node_bytes / 1024, tick2_gc.low_spare / 1024,
 		tick2_gc.low_chunks, tick2_gc.contiguous_low / 1024);
-	platform_psp_log("gccount (%s): live at the pool's low: objects (ROOT records) %ld, units %ld, nodes %ld, interpolating nodes %ld; overflow chunks taken %ld, returned %ld",
-		label, tick2_gc.low_objects, tick2_gc.low_units, tick2_gc.low_nodes, tick2_gc.low_orient, tick2_gc.chunks_taken, tick2_gc.chunks_returned);
+	platform_psp_log("gccount (%s): live at the pool's low (game time %ld): objects (ROOT records) %ld, units %ld, nodes %ld, interpolating nodes %ld; overflow chunks taken %ld, returned %ld",
+		label, tick2_gc.low_time, tick2_gc.low_objects, tick2_gc.low_units, tick2_gc.low_nodes, tick2_gc.low_orient, tick2_gc.chunks_taken, tick2_gc.chunks_returned);
 	{ /* each section's bytes at the pool's low: held (empty) against the old layout's, in bytes */
 		static const char *const names[6] = { "ROOT+ANIM records", "unit", "matrices", "orientations", "-", "store headers" };
 		long k, held = 0, old = 0;
