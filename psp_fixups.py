@@ -56080,7 +56080,7 @@ BIPEDMOVE_SYNC = {
 # PSP_TICK2=root: the window's store is laid out on the old biped datum, so it never goes live there
 # and its accessors are plain datum accesses (psp_bipedmove.h); slice 1's store takes its ground
 BIPEDMOVE_ROOT_MARK = ("#define PSP_TICK2_ROOT 1 /* psp_fixups.py (TICK2 root) */\n"
-                       if os.environ.get("PSP_TICK2", "") == "root" else "")
+                       if os.environ.get("PSP_TICK2", "") in ("root", "anim") else "")
 BIPEDMOVE_PRELUDE = BIPEDMOVE_ROOT_MARK + """#include "psp_bipedmove.h" /* psp_fixups.py (BIPEDMOVE) steps 1b and 1c */
 static int psp_bms_on = -1, psp_bms_check = 0;
 /* the intent's start: the record filled, in the slot of its bipedstage3 record */
@@ -58958,7 +58958,10 @@ print("psp_fixups: the tick rewrite's count: %d datum fields without their names
 # collector counts the store's spare records as free pool: it trips where it
 # trips today (spec section 23). Runs after every FIXES group, on the text as
 # they left it.
-TICK2_ROOT = os.environ.get("PSP_TICK2", "") == "root"
+TICK2_ROOT = os.environ.get("PSP_TICK2", "") in ("root", "anim")
+# PSP_TICK2=anim (step 1c-1): the ANIM section too, its records in a second array that shares
+# ROOT's slot (spec section 30; the lead's design (b), 2026-11-23)
+TICK2_ANIM = os.environ.get("PSP_TICK2", "") == "anim"
 # what leaves each datum: the record's 84 bytes less the pointer that stays
 TICK2_ROOT_SHRINK = 0x50
 # the store's capacity in records (spec section 23: the worst map's peak, 1,121 objects, and a margin)
@@ -58967,6 +58970,12 @@ TICK2_STORE_SLOTS = int(os.environ.get("PSP_TICK2_SLOTS", "1280"))
 TICK2_STORE_MOST = 1536
 # the root run's place in object_datum (definition_index, then _object_datum's flags and magic number)
 TICK2_ROOT_AT, TICK2_ROOT_END = 0x0C, 0x0C + 0x54
+# the animation field's place in object_datum (struct object_animation_state, 12 bytes): all of it leaves
+TICK2_ANIM_AT, TICK2_ANIM_END = 0x7C, 0x7C + 0x0C
+# the runs that leave the datum, each with what it takes from the layout after it
+TICK2_CUTS = [(TICK2_ROOT_AT, TICK2_ROOT_END, TICK2_ROOT_SHRINK)] + \
+    ([(TICK2_ANIM_AT, TICK2_ANIM_END, TICK2_ANIM_END - TICK2_ANIM_AT)] if TICK2_ANIM else [])
+TICK2_SHRINK = sum(cut[2] for cut in TICK2_CUTS)
 # the collector's line per map (its deletions, the pool's peak, peak live objects): on the
 # root build, and on the old build with PSP_GCCOUNT=1 for the other side of the pair
 TICK2_GCCOUNT = TICK2_ROOT or os.environ.get("PSP_GCCOUNT", "") == "1"
@@ -58980,6 +58989,51 @@ TICK2_ROOT_DECL = """	real_point3d position;
 	struct location location;
 	real_point3d bounding_sphere_center;
 	real bounding_sphere_radius;
+"""
+# PSP_TICK2=anim: the ANIM section's array, and the one way from a record to its slot
+TICK2_ANIM_DECL = r"""/* the ANIM section (TICK2 anim): an object's animation state, at its record's slot */
+extern struct object_animation_state *tick2_anims;
+/* one record in every section: a chunk holds its 64 ROOT records, then their 64 ANIM records */
+#define TICK2_RECORD_BYTES ((long)(sizeof(struct tick2_root) + sizeof(struct object_animation_state)))
+long tick2_overflow_slot(const struct tick2_root *record);
+/* the store's key: a record's slot, the same index in every section (the map's records first,
+then slots + 64 * chunk + place in the overflow chunks) */
+static inline long tick2_slot_of(const struct tick2_root *record)
+{
+	unsigned long slot = (unsigned long)(record - tick2_roots);
+
+	return slot < (unsigned long)tick2_store->slots ? (long)slot : tick2_overflow_slot(record);
+}
+static inline struct object_animation_state *tick2_anim_of(const struct tick2_root *record)
+{
+	long slot = tick2_slot_of(record);
+
+	if (slot < tick2_store->slots)
+		return &tick2_anims[slot];
+	slot -= tick2_store->slots;
+	return (struct object_animation_state *)(tick2_store->chunk[slot / TICK2_CHUNK] + TICK2_CHUNK) + slot % TICK2_CHUNK;
+}
+"""
+TICK2_ANIM_FIELD = "\tstruct object_animation_state animation;\n"
+TICK2_ANIM_CODE = r"""
+/* an overflow record's slot (the inline tick2_slot_of's far side): slots + 64 * its chunk + its place */
+long tick2_overflow_slot(const struct tick2_root *record)
+{
+	long c;
+	static int told;
+
+	for (c = 0; c < TICK2_CHUNKS; c++)
+		if (tick2_store->chunk[c] && record >= tick2_store->chunk[c] && record < tick2_store->chunk[c] + TICK2_CHUNK)
+			return tick2_store->slots + c * TICK2_CHUNK + (record - tick2_store->chunk[c]);
+	if (!told++)
+	{
+		void platform_psp_log(const char *format, ...);
+
+		platform_psp_log("tick2: a record %p in no section", (const void *)record);
+	}
+	return 0;
+}
+
 """
 TICK2_STORE_CODE = r"""
 /* a record: this map's own, else a free one in an overflow chunk, else a new chunk from the pool */
@@ -59003,7 +59057,7 @@ static struct tick2_root *tick2_record_take(void)
 		for (c = 0; c < TICK2_CHUNKS && tick2_store->chunk[c]; c++)
 			;
 		if (c == TICK2_CHUNKS || !memory_pool_block_allocate(object_memory_pool, (void **)&tick2_store->chunk[c],
-			TICK2_CHUNK * (long)sizeof(struct tick2_root)))
+			TICK2_CHUNK * TICK2_RECORD_BYTES))
 			return NULL;
 		tick2_store->chunk_was[c] = tick2_store->chunk[c];
 		tick2_store->chunk_free[c][0] = tick2_store->chunk_free[c][1] = 0xFFFFFFFFUL;
@@ -59095,7 +59149,7 @@ def tick2_root_cut(tree):
             open(path, "w", errors="surrogateescape").write(text.replace(old, new))
     # the record, and the union that keeps the datum's layout
     once(os.path.join(tree, "source/objects/objects.h"), "\nstruct _object_datum\n{\n",
-         "\n/* the world store's ROOT record (TICK2 root) */\nstruct tick2_root\n{\n" + TICK2_ROOT_DECL +
+         "\n/* the world store's ROOT record (TICK2 root) */\nstruct tick2_root\n{\n" + TICK2_ROOT_DECL + (
          "};\nextern struct tick2_root *tick2_roots;\n"
          "/* the store's records for a map not in tick2_slots_for_map's table; each map takes its own count, never past\n"
          "TICK2_STORE_MOST, the free stack's room */\n"
@@ -59113,7 +59167,9 @@ def tick2_root_cut(tree):
          "#define tick2_free_count (tick2_store->free_count)\n"
          "#define tick2_free_low (tick2_store->free_low)\n"
          "#define tick2_free_records (tick2_store->free_records)\n"
-         "\nstruct _object_datum\n{\n" % (TICK2_STORE_SLOTS, TICK2_STORE_MOST))
+         % (TICK2_STORE_SLOTS, TICK2_STORE_MOST)) +
+         (TICK2_ANIM_DECL if TICK2_ANIM else "#define TICK2_RECORD_BYTES ((long)sizeof(struct tick2_root))\n") +
+         "\nstruct _object_datum\n{\n")
     path = os.path.join(tree, "source/objects/objects.h")
     text = open(path, errors="surrogateescape").read()
     m = re.search(r"\nstruct _object_datum\n\{\n(.*?)\n\};", text, re.S)
@@ -59122,11 +59178,17 @@ def tick2_root_cut(tree):
     elif not CHECK_ONLY:
         body = m.group(1).replace(TICK2_ROOT_DECL,
             "\tstruct tick2_root *root; /* TICK2 root: the fields live in the store's record */\n")
+        if TICK2_ANIM:
+            if body.count(TICK2_ANIM_FIELD) != 1:
+                check_fail("psp_fixups: TICK2 anim: _object_datum's animation field isn't one line in objects.h")
+            body = body.replace(TICK2_ANIM_FIELD, "")
         open(path, "w", errors="surrogateescape").write(text[:m.start(1)] + body + text[m.end(1):])
     # every touch written x->object.<field> or x.object.<field>
     pattern = re.compile(r"((?:->|\.)\s*object\.)(%s)\b" % "|".join(TICK2_ROOT_FIELDS))
     # biped motion's window (BIPEDMOVE) held its own copy of these fields: the record is their one home now
     window = re.compile(r"PSP_BMSW?\((\w+), object\.(%s)((?:\.\w+)*)\)" % "|".join(TICK2_ROOT_FIELDS))
+    anim = re.compile(r"\b(\w+->(?:object\.)?)object\.animation\b")
+    anim_window = re.compile(r"PSP_BMSW?\((\w+), object\.animation((?:\.\w+)*)\)")
     touched = 0
     for root, dirs, files in os.walk(os.path.join(tree, "source")):
         for name in files:
@@ -59137,6 +59199,12 @@ def tick2_root_cut(tree):
             text, n = pattern.subn(r"\1root->\2", text)
             text, n2 = window.subn(r"\1->object.root->\2\3", text)
             n += n2
+            if TICK2_ANIM:
+                # x->object.animation, and scenery's x->object.object.animation: through the record's slot
+                text, n2 = anim.subn(r"(*tick2_anim_of(\1object.root))", text)
+                n += n2
+                text, n2 = anim_window.subn(r"(*tick2_anim_of(\1->object.root))\2", text)
+                n += n2
             if n and not CHECK_ONLY:
                 open(path, "w", errors="surrogateescape").write(text)
             touched += n
@@ -59151,7 +59219,7 @@ def tick2_root_cut(tree):
 			if (record)
 			{
 				memset(record, 0, sizeof(*record));
-				((struct object_datum *)header->datum)->object.root = record;
+				((struct object_datum *)header->datum)->object.root = record;%s
 			}
 			else
 			{ /* TICK2 root: no record and no room in the pool for a chunk: the pool is full */
@@ -59159,7 +59227,8 @@ def tick2_root_cut(tree):
 				datum_delete(data, index);
 				return NONE;
 			}
-""")
+""" % ("\n\t\t\t\tmemset(tick2_anim_of(record), 0, sizeof(struct object_animation_state)); /* TICK2 anim */"
+       if TICK2_ANIM else ""))
     # the sleep's checksum reads the datum's words (psp_object_checksum): the record's go in after them,
     # so a root that changes still wakes its object
     once(objects_c, "static unsigned long psp_object_checksum(struct object_header_datum const *header)\n{",
@@ -59171,17 +59240,21 @@ static unsigned long psp_object_checksum(struct object_header_datum const *heade
 	unsigned k;
 
 	for (k = 0; k < sizeof(struct tick2_root) / 4; k++)
-		sum = (sum ^ word[k]) * 33UL;
+		sum = (sum ^ word[k]) * 33UL;%s
 	return sum;
 }
 
 static unsigned long psp_object_checksum_datum(struct object_header_datum const *header)
-{""")
+{""" % ("""
+	word = (unsigned long const *)tick2_anim_of(((struct object_datum const *)header->datum)->object.root); /* TICK2 anim */
+	for (k = 0; k < sizeof(struct object_animation_state) / 4; k++)
+		sum = (sum ^ word[k]) * 33UL;""" if TICK2_ANIM else ""))
     once(objects_c, "\nboolean debug_object_garbage_collection;\n",
          "\nboolean debug_object_garbage_collection;\nstruct tick2_root *tick2_roots; /* TICK2 root */\n"
          "struct tick2_store *tick2_store; /* TICK2 root */\n"
+         + ("struct object_animation_state *tick2_anims; /* TICK2 anim */\n" if TICK2_ANIM else "") +
          "/* the store's free records: free pool to the collector (TICK2 root) */\n"
-         "#define TICK2_STORE_SPARE() ((long)(tick2_free_count + tick2_chunk_free_records()) * (long)sizeof(struct tick2_root))\n"
+         "#define TICK2_STORE_SPARE() ((long)(tick2_free_count + tick2_chunk_free_records()) * TICK2_RECORD_BYTES)\n"
          "char *main_get_map_name(void);\n"
          "/* the store's records for a map: the larger of its peaks on today's tock and in C5, + 15%%, rounded up to 16 (the lab's census27: every\n"
          "ledger2 leg, d20_play1 and c10_play1; a10 and d40 from tick_c5_memory_sheet.md); past them the store overflows (spec 27) */\n"
@@ -59194,18 +59267,18 @@ static unsigned long psp_object_checksum_datum(struct object_header_datum const 
          "\tfor (k = 0; last && k < sizeof(table) / sizeof(table[0]); k++)\n"
          "\t\tif (!strcmp(last, table[k].map))\n\t\t\treturn table[k].slots < TICK2_STORE_MOST ? table[k].slots : TICK2_STORE_MOST;\n"
          "\treturn TICK2_STORE_SLOTS;\n}\n"
-         + TICK2_STORE_CODE)
+         + TICK2_STORE_CODE + (TICK2_ANIM_CODE if TICK2_ANIM else ""))
     # a new map starts with every record free
     once(objects_c, "\tdata_make_valid(object_header_data);\n\tobject_name_list_clear();\n",
          """\tdata_make_valid(object_header_data);
 	{ /* TICK2 root: this map's records carved from the empty pool's tail, every one free (spec section 26) */
 		long slots = tick2_slots_for_map(main_get_map_name());
-		long bytes = (slots * (long)sizeof(struct tick2_root) + (long)sizeof(struct tick2_store) + 15) & ~15L;
+		long bytes = (slots * TICK2_RECORD_BYTES + (long)sizeof(struct tick2_store) + 15) & ~15L;
 		long k;
 
 		memory_pool_initialize(object_memory_pool, "objects", OBJECT_MEMORY_POOL_SIZE - bytes);
 		tick2_roots = (struct tick2_root *)((char *)(object_memory_pool + 1) + OBJECT_MEMORY_POOL_SIZE - bytes);
-		tick2_store = (struct tick2_store *)(tick2_roots + slots);
+%s
 		memset(tick2_store, 0, sizeof(*tick2_store));
 		tick2_store->slots = slots;
 		for (k = 0; k < slots; k++)
@@ -59213,7 +59286,9 @@ static unsigned long psp_object_checksum_datum(struct object_header_datum const 
 		tick2_free_count = tick2_free_low = slots;
 	}
 	object_name_list_clear();
-""")
+""" % ("\t\ttick2_anims = (struct object_animation_state *)(tick2_roots + slots); /* TICK2 anim: ANIM's array after ROOT's */\n"
+       "\t\ttick2_store = (struct tick2_store *)(tick2_anims + slots);" if TICK2_ANIM else
+       "\t\ttick2_store = (struct tick2_store *)(tick2_roots + slots);"))
     # a deleted object's record goes back on the stack
     once(objects_c, """	if (object_header->datum)
 	{
@@ -59239,7 +59314,7 @@ static unsigned long psp_object_checksum_datum(struct object_header_datum const 
     path = os.path.join(tree, "source/objects/object_types.c")
     text = open(path, errors="surrogateescape").read()
     rows = re.compile(r"(\n\t\"\w+\", '\w{4}', )0x([0-9A-Fa-f]+)(,)")
-    text, sized = rows.subn(lambda m: "%s0x%X%s" % (m.group(1), int(m.group(2), 16) - TICK2_ROOT_SHRINK, m.group(3)), text)
+    text, sized = rows.subn(lambda m: "%s0x%X%s" % (m.group(1), int(m.group(2), 16) - TICK2_SHRINK, m.group(3)), text)
     if sized != 16:
         check_fail("psp_fixups: TICK2 root: %d datum sizes in object_types.c, not 16" % sized)
     elif not CHECK_ONLY:
@@ -59250,15 +59325,20 @@ static unsigned long psp_object_checksum_datum(struct object_header_datum const 
     check = re.compile(r"((?:offsetof|sizeof)\(struct (?:%s)_datum\b[^\]\n]*?== )0x([0-9A-Fa-f]+)(\s*\?\s*1\s*:\s*-1)" % family)
     relative = re.compile(r"(?<![+] )((?:offsetof|sizeof)\(struct _object_datum\b[^\]\n]*?== )0x([0-9A-Fa-f]+)(\s*\?\s*1\s*:\s*-1)")
     moved = [0]
-    def shift(at, end):
+    def shift(base):
+        # base: 0 for the family's absolute offsets, 4 for _object_datum's (after definition_index)
         def fix(m):
             value = int(m.group(2), 16)
-            if at <= value < end and "sizeof" not in m.group(1):
-                check_fail("psp_fixups: TICK2 root: a layout check inside the root run: %s" % m.group(0))
-            if value < end:
+            by = 0
+            for at, end, shrink in TICK2_CUTS:
+                if at - base <= value < end - base and "sizeof" not in m.group(1):
+                    check_fail("psp_fixups: TICK2 root: a layout check inside a run that left: %s" % m.group(0))
+                if value >= end - base:
+                    by += shrink
+            if not by:
                 return m.group(0)
             moved[0] += 1
-            return "%s0x%X%s" % (m.group(1), value - TICK2_ROOT_SHRINK, m.group(3))
+            return "%s0x%X%s" % (m.group(1), value - by, m.group(3))
         return fix
     for root, dirs, files in os.walk(os.path.join(tree, "source")):
         for name in files:
@@ -59266,11 +59346,12 @@ static unsigned long psp_object_checksum_datum(struct object_header_datum const 
                 continue
             path = os.path.join(root, name)
             text = open(path, errors="surrogateescape").read()
-            new = check.sub(shift(TICK2_ROOT_AT, TICK2_ROOT_END), text)
-            new = relative.sub(shift(TICK2_ROOT_AT - 4, TICK2_ROOT_END - 4), new)
+            new = check.sub(shift(0), text)
+            new = relative.sub(shift(4), new)
             if new != text and not CHECK_ONLY:
                 open(path, "w", errors="surrogateescape").write(new)
-    print("psp_fixups: TICK2 root: %d datum sizes and %d layout checks moved by 0x%X" % (sized, moved[0], TICK2_ROOT_SHRINK))
+    print("psp_fixups: TICK2 root: %d datum sizes and %d layout checks moved (0x%X past the root%s)" %
+          (sized, moved[0], TICK2_ROOT_SHRINK, ", 0x%X past the animation" % TICK2_SHRINK if TICK2_ANIM else ""))
     # the collector's tests count the store's spare records as free pool
     text = open(objects_c, errors="surrogateescape").read()
     start = text.find("\nvoid objects_garbage_collection(")
