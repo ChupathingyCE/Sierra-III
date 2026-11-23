@@ -59737,7 +59737,7 @@ void psp_c4_trace_tick(long tick)
 		long weapon = NONE;
 		unsigned long const *p, *v, *f;
 
-		if (!object || header->type != _object_type_biped)
+		if (!object || (header->type != _object_type_biped && header->type != _object_type_vehicle))
 			continue;
 		if (unit->unit.current_weapon_index >= 0 && unit->unit.current_weapon_index < MAXIMUM_WEAPONS_PER_UNIT)
 			weapon = unit->unit.weapon_object_indices[unit->unit.current_weapon_index];
