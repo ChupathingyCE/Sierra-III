@@ -59656,7 +59656,8 @@ def tick2_unit_cut(tree):
             return "%s0x%X%s" % (m.group(1), value - shrink, m.group(3))
         return fix
     absolute = re.compile(r"((?:offsetof|sizeof)\(struct (?:unit|biped|vehicle)_datum\b[^\]\n]*?== )0x([0-9A-Fa-f]+)(\s*\?\s*1\s*:\s*-1)")
-    relative = re.compile(r"((?:offsetof|sizeof)\(struct _unit_datum\b[^\]\n]*?== )0x([0-9A-Fa-f]+)(\s*\?\s*1\s*:\s*-1)")
+    # (not the second term of a check that adds offsetof(struct unit_datum, unit): the absolute form has it)
+    relative = re.compile(r"(?<![+] )((?:offsetof|sizeof)\(struct _unit_datum\b[^\]\n]*?== )0x([0-9A-Fa-f]+)(\s*\?\s*1\s*:\s*-1)")
     for root, dirs, files in os.walk(os.path.join(tree, "source")):
         for name in files:
             if not name.endswith((".c", ".h")):
