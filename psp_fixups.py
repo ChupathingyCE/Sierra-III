@@ -62547,6 +62547,108 @@ static void object_compute_node_matrices_with(
     return 1
 tick2_stamps_cut(TREE)
 
+# PSP_BPCOUNT=1 (lane B part 3, the lab's tick_store_biped_plan.md "Old-layer losses"; keep word "bpcount"): collision's
+# broad-phase walks counted. Every walk over a cluster's collideable objects (collision_test_point,
+# collision_test_vector, psp_collision_test_vector_quiet, collision_get_features_in_sphere split into biped motion's
+# pill gathers and the rest, psp_vehprobe_reach_empty): clusters walked, objects met, and for the sphere gathers the
+# objects past the packed broad phase. A line a site each 300 ticks, the window's totals and a tick's average. Counts
+# only: the walk is the requirement on the collision box (an index that meets only near objects), priced with it.
+BPCOUNT = os.environ.get("PSP_BPCOUNT", "") == "1"
+BP_SITES = ("point", "vector", "vector_quiet", "sphere_pill", "sphere_other", "vehprobe")
+BP_HEAD = r"""
+/* PSP_BPCOUNT (psp_fixups.py): collision's broad-phase walks counted, a line a site each 300 ticks */
+static unsigned long psp_bp_counts[6][3]; /* clusters walked, objects met, objects past the broad phase */
+static int psp_bp_on = -1;
+static long psp_bp_window = -1;
+static void psp_bp_report(long tick)
+{
+	static char const *const names[6] = { "point", "vector", "vector_quiet", "sphere_pill", "sphere_other", "vehprobe" };
+	void platform_psp_log(const char *format, ...);
+	int k;
+
+	for (k = 0; k < 6; k++)
+		platform_psp_log("bpcount: ticks %ld-%ld %s: clusters %lu (%.1f a tick), objects met %lu (%.1f a tick), past the broad phase %lu (%.1f a tick)",
+			tick - 300, tick - 1, names[k], psp_bp_counts[k][0], psp_bp_counts[k][0] / 300.0f, psp_bp_counts[k][1], psp_bp_counts[k][1] / 300.0f,
+			psp_bp_counts[k][2], psp_bp_counts[k][2] / 300.0f);
+	memset(psp_bp_counts, 0, sizeof(psp_bp_counts));
+}
+static int psp_bp_cluster(int site)
+{
+	extern long game_time_get(void);
+
+	if (psp_bp_on < 0)
+		psp_bp_on = PSP_KEEP_ONCE("bpcount") ? 1 : 0;
+	if (psp_bp_on && !psp_work_on_me())
+	{
+		long window = game_time_get() / 300;
+
+		if (window != psp_bp_window)
+		{
+			if (psp_bp_window >= 0 && window == psp_bp_window + 1)
+				psp_bp_report(window * 300);
+			else
+				memset(psp_bp_counts, 0, sizeof(psp_bp_counts));
+			psp_bp_window = window;
+		}
+		psp_bp_counts[site][0]++;
+	}
+	return site;
+}
+#define PSP_BP_COUNT(site, what) (psp_bp_on > 0 && !psp_work_on_me() ? (psp_bp_counts[site][what]++, 1) : 1)
+"""
+def bpcount_cut(tree):
+    if not BPCOUNT:
+        return 0
+    cp = os.path.join(tree, "source/physics/collisions.c")
+    c = open(cp, errors="surrogateescape").read()
+    sphere_site = "(psp_sr_on_pill ? 3 : 4)" if SWEEPREUSE else "4"
+    funcs = (("\nboolean collision_test_point(\n", "0"), ("\nboolean collision_test_vector(\n", "1"),
+             ("\nshort psp_collision_test_vector_quiet(\n", "2"), ("\nboolean collision_get_features_in_sphere(\n", sphere_site),
+             ("\nboolean psp_vehprobe_reach_empty(\n", "5"))
+    head = "for (object_index = cluster_get_first_collideable_object("
+    total = 0
+    for name, site in funcs:
+        if c.count(name) != 1:
+            check_fail("psp_fixups: BPCOUNT: %s matches %d times" % (name.strip(), c.count(name)))
+            return 0
+        f0 = c.index(name)
+        f1 = c.index("\n}\n", f0)
+        body = c[f0:f1]
+        n = body.count(head)
+        if n < 1:
+            check_fail("psp_fixups: BPCOUNT: no cluster walk in %s" % name.strip())
+            return 0
+        out, at = "", 0
+        while True:
+            i = body.find(head, at)
+            if i < 0:
+                break
+            j = body.find("object_index != NONE;", i)
+            if j < 0:
+                check_fail("psp_fixups: BPCOUNT: a walk in %s has no end test" % name.strip())
+                return 0
+            out += body[at:i] + "for (object_index = (psp_bp_cluster(%s), cluster_get_first_collideable_object)(" % site + \
+                body[i + len(head):j] + "object_index != NONE && PSP_BP_COUNT(%s, 1);" % site
+            at = j + len("object_index != NONE;")
+        body = out + body[at:]
+        if site == sphere_site:
+            past = "\t\t\t\t\t\t\tpsp_features_objects++;\n"
+            if body.count(past) != 1:
+                check_fail("psp_fixups: BPCOUNT: the sphere gather's past count matches %d times" % body.count(past))
+                return 0
+            body = body.replace(past, past + "\t\t\t\t\t\t\t(void)PSP_BP_COUNT(%s, 2);\n" % sphere_site)
+        c = c[:f0] + body + c[f1:]
+        total += n
+    first = c.index("\nboolean collision_test_point(\n")
+    c = c[:first] + BP_HEAD + c[first:]
+    if SWEEPREUSE and c.index("int psp_sr_on_pill;") > c.index(BP_HEAD):
+        c = c.replace(BP_HEAD, BP_HEAD + "extern int psp_sr_on_pill;\n", 1)
+    if not CHECK_ONLY:
+        open(cp, "w", errors="surrogateescape").write(c)
+    print("psp_fixups: BPCOUNT: %d cluster walks in collision counted (keep word bpcount)" % total)
+    return total
+bpcount_cut(TREE)
+
 # PSP_TICK2=biped (slice 1's BIPED line 1 and CONTROL, the lab's spec section 34; the cut sheet in the lab's
 # tick_store_biped_plan.md): the unit datum's 96-byte span from desired_facing_vector to throttle (CONTROL's
 # facing, aiming and looking requests and throttle, interleaved with motion's aim and look vectors and their
