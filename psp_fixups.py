@@ -62020,7 +62020,7 @@ boolean psp_sr_try(long biped_index, unsigned long flags, real_point3d const *po
 	if (r->biped_index != biped_index || r->tick != tick - 1 || r->flags != flags || r->height != height || r->width != width ||
 		memcmp(&r->position, position, sizeof(*position)) || memcmp(&r->velocity, velocity, sizeof(*velocity)))
 		return FALSE;
-	if (r->bsp != global_structure_bsp_index || r->breakable != psp_sr_breakable(tick) || r->cluster_count < 0)
+	if (r->bsp != global_structure_bsp_index || r->breakable != psp_sr_breakable(tick) || r->cluster_count <= 0) /* none recorded: its objects unchecked (tick2sr1) */
 	{
 		psp_sr_counts[2]++;
 		return FALSE;
@@ -62888,6 +62888,11 @@ def fpw_trace(tree):
             check_fail("psp_fixups: FPWTRACE: an anchor matches %d times" % text.count(anchor))
             return 0
         text = text.replace(anchor, what, 1)
+    sat = "\tstruct first_person_weapon *first_person_weapon= first_person_weapon_get(local_player_index);\n\n\tif (first_person_weapon->weapon_index!=NONE)\n\t{\n\t\tstruct weapon_datum *weapon= weapon_get(first_person_weapon->weapon_index);\n\n\t\tif (TEST_FLAG(weapon->weapon.flags, _weapon_overheated_bit))\n"
+    if text.count(sat) != 1:
+        check_fail("psp_fixups: FPWTRACE: the setter's head matches %d times" % text.count(sat))
+        return 0
+    text = text.replace(sat, sat.replace("\n\n\tif (first_person_weapon->weapon_index!=NONE)", "\n" + log.replace("\t\t{", "\t{") % '"fpwtrace: player %d asks state %d (now %d) at tick %ld: unit %lx weapon %lx", (int)local_player_index, (int)new_state, (int)first_person_weapon->state, game_time_get(), (unsigned long)first_person_weapon->unit_index, (unsigned long)first_person_weapon->weapon_index' + "\n\tif (first_person_weapon->weapon_index!=NONE)", 1), 1)
     upath = os.path.join(tree, "source/units/units.c")
     utext = open(upath, errors="surrogateescape").read()
     head = "static void unit_ready_desired_weapon(\n\tlong unit_index,\n\tboolean immediate)\n{\n\tstruct unit_datum *unit = unit_get(unit_index);\n\tstruct unit_definition *unit_definition = unit_definition_get(unit->definition_index);\n\tlong desired_weapon_index = unit_get_desired_weapon_index(unit_index);\n\tlong current_weapon_index = unit_get_current_weapon_index(unit_index);\n"
