@@ -59469,7 +59469,7 @@ static unsigned long psp_object_checksum_datum(struct object_header_datum const 
 STORECOUNT = os.environ.get("PSP_STORECOUNT", "") == "1"
 TICK2_SC_WRAP = r"""
 #define TICK2_STORECOUNT_ON 1
-extern volatile unsigned long tick2_storecount[2][3]; /* section (0 ANIM, 1 unit), [record in eDRAM, answer in eDRAM, answer in main RAM] */
+extern volatile unsigned long tick2_storecount[3][3]; /* section (0 ANIM, 1 unit, 2 POSE's node blocks), [record in eDRAM, answer in eDRAM, answer in main RAM] */
 extern volatile unsigned int psp_me_context;
 static inline int tick2_sc_on_me(void)
 {
@@ -59498,7 +59498,7 @@ static inline struct object_animation_state *tick2_anim_of(const struct tick2_ro
 	return answer;
 }
 """
-    TICK2_STORE_CODE = TICK2_STORE_CODE + "\nvolatile unsigned long tick2_storecount[2][3]; /* PSP_STORECOUNT */\n"
+    TICK2_STORE_CODE = TICK2_STORE_CODE + "\nvolatile unsigned long tick2_storecount[3][3]; /* PSP_STORECOUNT */\n"
 
 print("psp_fixups: the world store's ROOT: %d touches through the record (TICK2 root)" % tick2_root_cut(TREE))
 
@@ -60039,6 +60039,15 @@ static long tick2_pose_spare_bytes(void)
 	return tick2_pose_store ? tick2_pose_run_spare(&tick2_pose_store->matrices) + tick2_pose_run_spare(&tick2_pose_store->orientations) : 0;
 }
 """
+if STORECOUNT:
+    # POSE's node blocks counted as ANIM's and the unit section's are (the lead 2026-11-23 23:4x: the ME's reads of node
+    # matrices for aim and sight, by where they land); an undeclared tick2_sc_count fails the compile, not the count
+    TICK2_POSE_CODE = TICK2_POSE_CODE.replace("static void *tick2_pose_block(struct tick2_root const *record, int which)\n{",
+        "static void *tick2_pose_block_raw(struct tick2_root const *record, int which)\n{", 1).replace(
+        "\treturn tick2_pose_at(&tick2_pose_store->orientations, record->pose_orient, which == TICK2_POSE_ORIGINALS);\n}\n",
+        "\treturn tick2_pose_at(&tick2_pose_store->orientations, record->pose_orient, which == TICK2_POSE_ORIGINALS);\n}\n"
+        "static void *tick2_pose_block(struct tick2_root const *record, int which)\n{\n"
+        "\tvoid *answer = tick2_pose_block_raw(record, which);\n\n\ttick2_sc_count(2, record, answer);\n\treturn answer;\n}\n", 1)
 # PSP_TICK2_PROOF=1's part for POSE: the datum grows by each node block as the old layout's does (the same
 # realloc, the same offset), its bytes written with the pattern; readers still use the arena, so a reader that
 # reaches a node block through the datum reads the pattern and parts at once
@@ -60737,9 +60746,10 @@ void platform_psp_log(const char *format, ...);
 void psp_tick2_gc_report(const char *label, int level_end)
 {
 #ifdef TICK2_STORECOUNT_ON
-	platform_psp_log("storecount (%s): on the ME, ANIM: %lu reads (record in eDRAM %lu), the answer in eDRAM %lu, in main RAM %lu; unit section: %lu reads (record in eDRAM %lu), the answer in eDRAM %lu, in main RAM %lu",
+	platform_psp_log("storecount (%s): on the ME, ANIM: %lu reads (record in eDRAM %lu), the answer in eDRAM %lu, in main RAM %lu; unit section: %lu reads (record in eDRAM %lu), the answer in eDRAM %lu, in main RAM %lu; POSE's node blocks: %lu reads (record in eDRAM %lu), the answer in eDRAM %lu, in main RAM %lu",
 		label, tick2_storecount[0][1] + tick2_storecount[0][2], tick2_storecount[0][0], tick2_storecount[0][1], tick2_storecount[0][2],
-		tick2_storecount[1][1] + tick2_storecount[1][2], tick2_storecount[1][0], tick2_storecount[1][1], tick2_storecount[1][2]);
+		tick2_storecount[1][1] + tick2_storecount[1][2], tick2_storecount[1][0], tick2_storecount[1][1], tick2_storecount[1][2],
+		tick2_storecount[2][1] + tick2_storecount[2][2], tick2_storecount[2][0], tick2_storecount[2][1], tick2_storecount[2][2]);
 #endif
 	long store = 0;
 	long store_peak = 0, records = 0, overflow_taken = 0, overflow_peak = 0;
