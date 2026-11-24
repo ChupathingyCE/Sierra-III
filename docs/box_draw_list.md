@@ -577,7 +577,7 @@ The distinction the box needs is whether a GE block can be kept and replayed whi
 
 **Unfinished in this draft.** The b40/a30 columns of §1 and the weighted-by-frames means are owed (I used unweighted window means and said so); §2's µs-a-blip arithmetic is mine on the lab's two counters and should be re-derived by the audit; §4's ceiling is an upper bound, not a price.
 
-## 15. The replay replaced, not trimmed: what it does by kind and where each part goes (2026-11-24 17:1x CST, builder2; draft 1; draft 2 18:1x, against §12.1a-d on builder/drawlist-l1)
+## 15. The replay replaced, not trimmed: what it does by kind and where each part goes (2026-11-24 17:1x CST, builder2; draft 1; draft 2 17:5x, against §12.1a-d on builder/drawlist-l1)
 
 **Why this section** (Sheepdog01 2026-11-24 16:42, 16:48, 16:50; the lead 16:5x; the lab's `briefs/me_relief.md`, last section): the ME's render job replays the frame's records into GE words every frame. It is the ME's load on b30's live fight: 31.2-38.6 ms a frame, one job a frame. On the per-second clock at 30 fps that is 116% of the ME alone (the lab's CURRENT.md, "ME by kind" [M], mekinds1 45497754325, the PSP-1000, today's tock fbbd786e). The done condition is no per-frame replay of unchanged drawing: the ME's drawing is the changed records' words plus the frame list, at or under ~12 ms a frame (§4). Sheepdog01's question (16:48) is whether the replay can go without a large cost in replacing what it does. The table below is the answer, row by row. The VRAM side of the memory column is counted (vramset1, §15.4); the baked lists' own size is still owed.
 
@@ -611,7 +611,7 @@ The split by kind is from the 2026-11-22 tock (2374f97c, `timerson mekinds`), th
 | **Screen quads, light draws, text** | 1.5 | **Yes** | Immediate | ~1.5 | none |
 | **All** | **33.2** | | | **~12-16 [U]** | the level's store (~150 KB) + R's store |
 
-**The verdict, as of draft 2 (2026-11-24 18:1x, corrected against builder/drawlist-l1's §12.1a-d) [U on M]:** the replay can go, at about the budget, but not as cheaply as draft 1 said, and the cost is time on the level, not memory. Of the 33.2 ms:
+**The verdict, as of draft 2 (2026-11-24 17:5x, corrected against builder/drawlist-l1's §12.1a-d) [U on M]:** the replay can go, at about the budget, but not as cheaply as draft 1 said, and the cost is time on the level, not memory. Of the 33.2 ms:
 - About 6.2 ms is the ring's jobs served inside the job, not drawing. They leave with the ring's scheduler.
 - The far level (4.1), the per-instance overhead (1.8), the unchanged half of the model parts and the see-through words are static, and their CALLed forms are cheap [U].
 - About 4 ms (decals, effects, screen, HUD) is per frame by nature and stays immediate.
@@ -644,7 +644,7 @@ So the new form's estimate is ~12-16 ms against the ~12 budget. The level's tier
 
 ### 15.5 The slices, in the box's order (each cut in under its own build switch, off by default)
 
-1. **The level: slice L2's PSP price first** (builder/drawlist-l1 7154667d: Tier 2 and the one copy, built and exact, `- | levelkept2`, §12.1d (g)'s ask), then Tier 3. ~~The whole map's pass words by cluster~~ (superseded 18:1x: the store is sized by use and measured, levelkeptroom4).
+1. **The level: slice L2's PSP price first** (builder/drawlist-l1 7154667d: Tier 2 and the one copy, built and exact, `- | levelkept2`, §12.1d (g)'s ask), then Tier 3. ~~The whole map's pass words by cluster~~ (superseded 17:5x: the store is sized by use and measured, levelkeptroom4).
 2. **The far level's lists CALLed whole.**
 3. **The frame list's record an instance** (§11's piece 2), with R's forms CALLed for every part, changed or not.
 4. **The see-through sort over CALLed forms.**
