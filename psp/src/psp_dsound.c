@@ -44,6 +44,12 @@ void platform_log(const char *format, ...);
 void psp_vfpu_sincosf(float angle, float *sine, float *cosine); /* psp_vfputrig.c */
 
 #define OUTPUT_RATE 22050
+/* "snd16k" (L4, the lab's briefs/audio_lean.md): the mix made at 16 kHz and
+the converter's channel set to it, so the mixing costs the ME 16,000 / 22,050
+of a block's frames. Decoding doesn't scale with it. Refused beside the paths
+built for 22,050 Hz: audio44 and musadpcm (a doubled block), the music stream
+(its blocks fixed at twice the mix) and sndcheck (its filters set for 22,050) */
+static int output_rate = OUTPUT_RATE;
 #define OUTPUT_CHANNELS 2
 #define MIX_FRAMES 512
 #define MAXIMUM_STREAM_PACKETS 64
@@ -107,6 +113,10 @@ struct psp_stream
 	so the mix itself is integers only and can run on the Media Engine */
 	unsigned long step;
 	int target_left, target_right;
+	/* "sndfloor" (L1): this block's gains and the last's all under the floor
+	(1/256 of full scale), so the mixer advances the voice as a silent one
+	(set by prepare_voice) */
+	int quiet;
 	/* build 87: frames this voice had nothing queued to play while the game
 	still had it playing (written by the mixer, on either CPU): a gap, if
 	the game then queues more (b86's run 2: regular breaks heard with
@@ -410,7 +420,7 @@ static void mix_apply(const struct mix_command *command)
 			{
 				gap_records[gap_record_count].context = (long)stream->context;
 				gap_records[gap_record_count].sound_class = command->sound_class;
-				gap_records[gap_record_count].dry_ms = stream->dry_frames * 1000 / OUTPUT_RATE;
+				gap_records[gap_record_count].dry_ms = stream->dry_frames * 1000 / output_rate;
 				gap_records[gap_record_count].frame_ms = psp_last_frame_us / 1000;
 			}
 			gap_record_count++;
@@ -1202,7 +1212,7 @@ static int lowpass_coefficient(LONG millibels)
 	if (gain < 0.05f)
 		gain = 0.05f;
 	g2 = gain * gain;
-	c = cosf(2.0f * 3.14159265f * 5000.0f / OUTPUT_RATE);
+	c = cosf(2.0f * 3.14159265f * 5000.0f / output_rate);
 	p = 1.0f - g2 * c;
 	/* b = 1 - a, the smaller root of (1 - g2) b^2 - 2 p b + (1 - g2) = 0 */
 	b = (p - sqrtf(p * p - (1.0f - g2) * (1.0f - g2))) / (1.0f - g2);
@@ -1211,6 +1221,8 @@ static int lowpass_coefficient(LONG millibels)
 
 /* build 86: a voice's step and gains for the next block, on the main CPU
 (floats and its maths library); 0 when it won't play (paused, nothing queued) */
+static int snd_floor = 0;
+
 static int prepare_voice(struct psp_stream *stream)
 {
 	struct stream_game *game = GAME_OF(stream);
@@ -1225,6 +1237,9 @@ static int prepare_voice(struct psp_stream *stream)
 
 		if (overrun < 0)
 		{
+			snd_floor = psp_keep("sndfloor") ? GAIN_ONE / 256 : 0;
+			if (snd_floor)
+				platform_log("audio: sndfloor on (voices under %d of %d both sides, this block and the last, advanced silent)", snd_floor, GAIN_ONE);
 			overrun = psp_keep("silentoverrun") != 0;
 			adpcm_old = psp_keep("adpcmold") != 0;
 			audio_old = psp_keep("audioold") != 0;
@@ -1255,16 +1270,27 @@ static int prepare_voice(struct psp_stream *stream)
 			fx_shifted++;
 		}
 #ifndef PSP_DBLSOFT_OFF
-		/* rate * 65536 / OUTPUT_RATE in 32 bits (a doubled rate passes 2^32
-		shifted): the whole part of rate / OUTPUT_RATE, shifted, plus the
+		/* rate * 65536 / output_rate in 32 bits (a doubled rate passes 2^32
+		shifted): the whole part of rate / output_rate, shifted, plus the
 		remainder's share, which is the same floor (FIXES_DBLSOFT, dsoft3: the
 		64-bit divide was a libgcc call on every stream's update) */
-		stream->step = ((rate / OUTPUT_RATE) << 16) + ((rate % OUTPUT_RATE) << 16) / OUTPUT_RATE;
+		stream->step = ((rate / output_rate) << 16) + ((rate % output_rate) << 16) / output_rate;
 #else
-		stream->step = (unsigned long)(((unsigned long long)rate << 16) / OUTPUT_RATE);
+		stream->step = (unsigned long)(((unsigned long long)rate << 16) / output_rate);
 #endif
 	}
-	voice_gains(game, &stream->target_left, &stream->target_right);
+	{
+		/* the ramp starts at last block's targets (the mixer's gains are them
+		by now) and ends at this block's: all four under the floor */
+		int most = stream->target_left > stream->target_right ? stream->target_left : stream->target_right;
+
+		voice_gains(game, &stream->target_left, &stream->target_right);
+		if (stream->target_left > most)
+			most = stream->target_left;
+		if (stream->target_right > most)
+			most = stream->target_right;
+		stream->quiet = snd_floor > 0 && stream->gains_valid && most < snd_floor;
+	}
 	if (stream->target_left > stream->peak_gain)
 		stream->peak_gain = stream->target_left;
 	stream->prepared_blocks++;
@@ -1552,7 +1578,7 @@ static int mix_voice(struct psp_stream *stream, int *output, unsigned long frame
 	ramp_right = ((target_right - stream->current_right) << 8) / (int)frames;
 	stream->current_left = target_left;
 	stream->current_right = target_right;
-	if (MUSIC_BLOCK(stream) || (!target_left && !target_right && !left && !right))
+	if (MUSIC_BLOCK(stream) || stream->quiet || (!target_left && !target_right && !left && !right))
 	{
 		/* silent: just advance, and never past the end of what's queued.
 		A voice that runs out inside the block stops at the end, as a heard
@@ -3258,7 +3284,7 @@ static unsigned long mix_approx_checked(struct psp_stream **list, unsigned long 
 
 		for (i = 0; i < frames; i++, phase++)
 		{
-			int tone = (int)(33.0f * sinf(6.2831853f * 1000.0f * (float)(phase % OUTPUT_RATE) / (float)OUTPUT_RATE));
+			int tone = (int)(33.0f * sinf(6.2831853f * 1000.0f * (float)(phase % output_rate) / (float)output_rate));
 
 			for (c = 0; c < OUTPUT_CHANNELS; c++)
 			{
@@ -3839,10 +3865,20 @@ static int audio_thread(SceSize arguments, void *argument)
 		41211384661) and this one took back 6.3% of it (41213051173).
 		"audio44ordinary" keeps the ordinary channel */
 		src44 = up && !psp_keep("audio44ordinary");
+		if (psp_keep("snd16k"))
+		{
+			if (up || psp_keep("musicstream") || psp_keep("sndcheck"))
+				platform_log("audio: snd16k refused (audio44, musadpcm, musicstream or sndcheck is on): the mix stays at %d Hz", OUTPUT_RATE);
+			else
+			{
+				output_rate = 16000;
+				sceKernelDcacheWritebackRange(&output_rate, sizeof(output_rate));
+			}
+		}
 	}
 	channel = src44 ? sceAudioSRCChReserve(2 * MIX_FRAMES, 44100, 2) :
 		up ? sceAudioChReserve(PSP_AUDIO_NEXT_CHANNEL, 2 * MIX_FRAMES, PSP_AUDIO_FORMAT_STEREO) :
-		sceAudioSRCChReserve(MIX_FRAMES, OUTPUT_RATE, 2);
+		sceAudioSRCChReserve(MIX_FRAMES, output_rate, 2);
 	{
 		extern int psp_keep(const char *word);
 
@@ -3880,7 +3916,7 @@ static int audio_thread(SceSize arguments, void *argument)
 				slots = 4;
 				primed = 0;
 				platform_log("audio: audiohold, one block more ahead of the speaker (%d ms more delay; %u bytes of heap)",
-					MIX_FRAMES * 1000 / OUTPUT_RATE, bytes);
+					MIX_FRAMES * 1000 / output_rate, bytes);
 			}
 			else
 			{
@@ -3901,8 +3937,8 @@ static int audio_thread(SceSize arguments, void *argument)
 	if (channel < 0)
 		platform_log("audio: no output channel (%08x); sound runs silent", channel);
 	else
-		platform_log("audio: %d Hz stereo, %d samples a block (%d ms)%s", OUTPUT_RATE, MIX_FRAMES,
-			MIX_FRAMES * 1000 / OUTPUT_RATE, up ? (src44 ? "; the 44.1 kHz block on the converter's channel at 44,100 Hz" : "; the 44.1 kHz block on an ordinary channel (audio44ordinary)") : "");
+		platform_log("audio: %d Hz stereo, %d samples a block (%d ms)%s", output_rate, MIX_FRAMES,
+			MIX_FRAMES * 1000 / output_rate, up ? (src44 ? "; the 44.1 kHz block on the converter's channel at 44,100 Hz" : "; the 44.1 kHz block on an ordinary channel (audio44ordinary)") : "");
 	if (channel >= 0 && up)
 		platform_log("audio: %s", full_rate ? "to 44,100 Hz by the half-band filter, stereo 44.1 kHz voices mixed at 44,100 Hz (musadpcm)" :
 			"to 44,100 Hz by the half-band filter (audio44)");
@@ -3928,7 +3964,7 @@ static int audio_thread(SceSize arguments, void *argument)
 		{
 			sceIoWrite(dump, slot_44[mix_at], sizeof(output44[0]));
 			dumped += MIX_FRAMES;
-			if (dumped >= 20 * OUTPUT_RATE)
+			if (dumped >= 20 * output_rate)
 			{
 				sceIoClose(dump);
 				dump = -1;
@@ -3938,7 +3974,7 @@ static int audio_thread(SceSize arguments, void *argument)
 		{
 			sceIoWrite(dump, slot_out[mix_at], sizeof(output_buffers[0]));
 			dumped += MIX_FRAMES;
-			if (dumped >= 20 * OUTPUT_RATE)
+			if (dumped >= 20 * output_rate)
 			{
 				sceIoClose(dump);
 				dump = -1;
@@ -3952,7 +3988,7 @@ static int audio_thread(SceSize arguments, void *argument)
 			continue;
 		}
 		if (channel < 0)
-			sceKernelDelayThread(MIX_FRAMES * 1000000 / OUTPUT_RATE);
+			sceKernelDelayThread(MIX_FRAMES * 1000000 / output_rate);
 		else
 		{
 			/* the output takes a block once the one before has started
@@ -3974,7 +4010,7 @@ static int audio_thread(SceSize arguments, void *argument)
 			now = sceKernelGetSystemTimeWide();
 			if (last_return)
 			{
-				unsigned long gap = (unsigned long)(now - last_return), block = MIX_FRAMES * 1000000 / OUTPUT_RATE;
+				unsigned long gap = (unsigned long)(now - last_return), block = MIX_FRAMES * 1000000 / output_rate;
 
 				if (gap > block + 3000)
 					late_blocks++;
@@ -4055,7 +4091,7 @@ void psp_audio_report(void)
 #endif
 	if (!mix_blocks)
 		return;
-	unsigned long block_us = MIX_FRAMES * 1000000 / OUTPUT_RATE, average = mix_microseconds / mix_blocks;
+	unsigned long block_us = MIX_FRAMES * 1000000 / output_rate, average = mix_microseconds / mix_blocks;
 	unsigned long permille = average * 1000 / block_us;
 
 	platform_log("audio: mixing %lu us a block of %lu us (%lu.%lu%% of the CPU), %lu.%lu voices on average, %lu at most; worst block %lu us, lock wait %lu us; %lu of %lu blocks late (longest gap %lu us), %lu at the 16-bit limit; sounds stopped by the game before their end %lu (some normally: a trigger let go)",
@@ -4086,8 +4122,8 @@ void psp_audio_report(void)
 	platform_log("audio: of %lu voice blocks, muffled %lu, pitch moved by Doppler %lu, quieter outside a cone %lu%s",
 		fx_prepared, fx_muffled, fx_shifted, fx_coned, audio_old > 0 ? " (audioold: all off)" : "");
 	platform_log("audio: the game waited for the mixer's lock %lu times, %lu us in all, %lu at most; voices that ran dry and were then fed more (a gap heard) %lu, %lu ms of silence in all, the longest %lu ms",
-		game_lock_waits, game_lock_wait_us, game_lock_worst_us, dry_gaps, dry_gap_frames * 1000 / OUTPUT_RATE,
-		dry_gap_worst * 1000 / OUTPUT_RATE);
+		game_lock_waits, game_lock_wait_us, game_lock_worst_us, dry_gaps, dry_gap_frames * 1000 / output_rate,
+		dry_gap_worst * 1000 / output_rate);
 	platform_log("audio: mixlock%s: %lu of the game's %lu calls into the mixer came while the Media Engine mixed (each would have waited for the lock until the job ended); %lu commands queued, the ring %lu of %d at most, %lu waits for room in it",
 		mixlock_old ? " (mixlockold: the lock held through the job)" : "", would_waits, game_calls, commands_queued, ring_fullest, MIX_COMMANDS,
 		ring_full_waits);
@@ -4982,7 +5018,7 @@ void psp_dsound_loop_stop(void *voice)
 		struct psp_stream *stream = stream_from_interface((IDirectSoundStream *)voice);
 
 		platform_log("audio: a loop voice stopped after %lu ms mixed in %lu blocks prepared (%s, frequency %lu, gain %d at the end, %d at its loudest, of %d)",
-			stream->mixed_frames * 1000 / OUTPUT_RATE, stream->prepared_blocks, loop_voice_index(voice) < 0 ? "heap" : "static slot",
+			stream->mixed_frames * 1000 / output_rate, stream->prepared_blocks, loop_voice_index(voice) < 0 ? "heap" : "static slot",
 			(unsigned long)GAME_OF(stream)->frequency, stream->target_left, stream->peak_gain, GAIN_ONE);
 	}
 	DirectSoundStopStream((LPDIRECTSOUNDSTREAM)voice);
