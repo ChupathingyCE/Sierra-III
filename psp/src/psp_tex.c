@@ -2731,7 +2731,9 @@ static void __attribute__((noinline, cold)) tex_reads_note(int index, unsigned i
 	unsigned int palette_bytes)
 {
 	int first = 1;
+	extern void psp_ge_set_texture(unsigned int address, unsigned int bytes);
 
+	psp_ge_set_texture(address, size);
 	if ((address & 0x0F000000u) == 0x04000000u)
 		return; /* VRAM: not main RAM's */
 	if (reads_frame_of && index < READS_INDICES)

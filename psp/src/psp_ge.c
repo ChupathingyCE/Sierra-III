@@ -2881,6 +2881,15 @@ come (gk_note, with the report below). The texture side is psp_tex.c's */
 enum { GK_VERTICES, GK_INDICES, GK_TEXTURES, GK_ONCE, GK_PALETTES, GK_LIST, GK_PARTS };
 static int gk_on = 0;
 static void gk_note(int part, unsigned int bytes, unsigned int address);
+/* "gesetkind" (with gereadskind): the GE's working set a frame by kind, VRAM
+and main RAM both, so the draw list's layout can put in VRAM what the GE reads
+most (bus_toll.md §4, the lab's). Bytes read, and the distinct buffers' bytes:
+a buffer (its address and size) counted once a frame, under the kind that
+drew it first. Emulator counts: the replay runs on the main CPU there */
+enum { GS_VERTICES, GS_INDICES, GS_TEXTURES, GS_PARTS };
+static int gs_on = 0;
+static unsigned int gs_frame = 1;
+static void gs_note(int part, int vram, unsigned int bytes, unsigned int address);
 static unsigned int gk_frame_ram = 0, gk_last_frame_ram = 0, gk_seen = 0;
 unsigned int psp_ge_reads_frame = 0; /* psp_tex.c: a texture's first bind in the frame being carried out */
 /* build 116: "vrammodelsN": a model buffer's VRAM copy, when it has one
@@ -3399,6 +3408,7 @@ static void ge_kinds_frame_begin(void)
 		gk_frame_ram = 0;
 		gk_seen = 0;
 		psp_ge_reads_frame++;
+		gs_frame++;
 	}
 	if (!PSP_ME_WORK())
 	{
@@ -4463,6 +4473,12 @@ static void gebusy_start(void)
 	}
 	if (gk_on)
 		platform_log("GE: gereadskind on (the GE's main-RAM bytes by kind, part, place and quarter of the list)");
+	if (gk_on && psp_keep("gesetkind"))
+	{
+		extern void gs_start(void);
+
+		gs_start();
+	}
 	if (ge_reads_on)
 	{
 		gr_table_alloc();
@@ -8488,6 +8504,8 @@ static void ge_reads_note(int vtype, int count, const void *indices, const void 
 	as the list grows (ge_kind) */
 	if (gk_on && place != GR_VRAM && place != GR_LIST)
 		gk_note(GK_VERTICES, bytes, (unsigned int)vertices);
+	if (gs_on)
+		gs_note(GS_VERTICES, place == GR_VRAM, bytes, (unsigned int)vertices);
 	if (indices && isize)
 	{
 		int index_place = gr_place((unsigned int)indices);
@@ -8496,6 +8514,8 @@ static void ge_reads_note(int vtype, int count, const void *indices, const void 
 		gr_place_bytes[index_place] += (unsigned int)count * (unsigned int)isize;
 		if (gk_on && index_place != GR_VRAM && index_place != GR_LIST)
 			gk_note(GK_INDICES, (unsigned int)count * (unsigned int)isize, (unsigned int)indices);
+		if (gs_on)
+			gs_note(GS_INDICES, index_place == GR_VRAM, (unsigned int)count * (unsigned int)isize, (unsigned int)indices);
 	}
 	/* only buffers that could be held go in the table: this frame's data in
 	the list is new every frame (its addresses would fill the table), and
@@ -8590,6 +8610,112 @@ static void __attribute__((noinline, cold)) gk_report(unsigned long span)
 	memset(gk_frames, 0, sizeof(gk_frames));
 }
 
+#define GS_SLOTS 8192
+#define GS_PROBES 16
+static struct gs_slot { unsigned int address, bytes, frame; } *gs_table = NULL;
+static unsigned long long gs_read[KINDS][2][GS_PARTS], gs_set[KINDS][2][GS_PARTS];
+static unsigned long gs_full = 0;
+static const char gs_part_letters[GS_PARTS] = { 'v', 'i', 't' };
+
+void __attribute__((noinline, cold)) gs_start(void)
+{
+	gs_table = calloc(GS_SLOTS, sizeof(*gs_table));
+	gs_on = gs_table ? 1 : 0;
+	if (gs_on)
+		platform_log("GE: gesetkind on (the GE's working set a frame by kind, VRAM and main RAM, read and distinct)");
+}
+
+/* a slot from an earlier frame counts as empty, and nothing is taken out
+within a frame, so a probe stops at the first one */
+static void gs_note(int part, int vram, unsigned int bytes, unsigned int address)
+{
+	int kind = ge_kind_now, where = vram ? 0 : 1, n;
+	unsigned int h;
+
+	if (!bytes)
+		return;
+	gs_read[kind][where][part] += bytes;
+	h = ((address >> 4) ^ (bytes * 2654435761u) ^ ((unsigned int)part << 28)) & (GS_SLOTS - 1);
+	for (n = 0; n < GS_PROBES; n++, h = (h + 1) & (GS_SLOTS - 1))
+	{
+		struct gs_slot *slot = &gs_table[h];
+
+		if (slot->frame != gs_frame)
+		{
+			slot->address = address;
+			slot->bytes = bytes;
+			slot->frame = gs_frame;
+			gs_set[kind][where][part] += bytes;
+			return;
+		}
+		if (slot->address == address && slot->bytes == bytes)
+			return;
+	}
+	gs_full++; /* counted as distinct: the set's an upper bound by these bytes */
+	gs_set[kind][where][part] += bytes;
+}
+
+/* psp_tex.c: every texture bind sent, VRAM or main RAM (texels and palette) */
+void psp_ge_set_texture(unsigned int address, unsigned int bytes)
+{
+	if (gs_on)
+		gs_note(GS_TEXTURES, (address & 0x0F000000u) == 0x04000000u, bytes, address);
+}
+
+/* a line a kind: KB a frame read (v vertices, i indices, t textures at every
+bind) and distinct, in VRAM and in main RAM; then the whole frame's */
+void __attribute__((noinline, cold)) gs_report(unsigned long span)
+{
+	char line[600];
+	unsigned long long all[2][2][GS_PARTS];
+	int k, w, j, at;
+
+	memset(all, 0, sizeof(all));
+	for (k = 0; k < KINDS; k++)
+	{
+		unsigned long long any = 0;
+
+		for (w = 0; w < 2; w++)
+			for (j = 0; j < GS_PARTS; j++)
+			{
+				any += gs_read[k][w][j];
+				all[0][w][j] += gs_read[k][w][j];
+				all[1][w][j] += gs_set[k][w][j];
+			}
+		if (!any)
+			continue;
+		at = snprintf(line, sizeof(line), "gesetkind: %s KB a frame:", kind_names[k]);
+		for (w = 0; w < 2 && at < (int)sizeof(line) - 1; w++)
+		{
+			at += snprintf(line + at, sizeof(line) - at, " %s read", w ? "main RAM" : "VRAM");
+			for (j = 0; j < GS_PARTS && at < (int)sizeof(line) - 1; j++)
+				at += snprintf(line + at, sizeof(line) - at, " %c %.1f", gs_part_letters[j], gs_read[k][w][j] / 1024.0 / span);
+			at += snprintf(line + at, sizeof(line) - at, ", distinct");
+			for (j = 0; j < GS_PARTS && at < (int)sizeof(line) - 1; j++)
+				at += snprintf(line + at, sizeof(line) - at, " %c %.1f", gs_part_letters[j], gs_set[k][w][j] / 1024.0 / span);
+			at += snprintf(line + at, sizeof(line) - at, ";");
+		}
+		platform_log("%s", line);
+	}
+	at = snprintf(line, sizeof(line), "gesetkind: the frame, KB:");
+	for (w = 0; w < 2 && at < (int)sizeof(line) - 1; w++)
+	{
+		at += snprintf(line + at, sizeof(line) - at, " %s read", w ? "main RAM" : "VRAM");
+		for (j = 0; j < GS_PARTS && at < (int)sizeof(line) - 1; j++)
+			at += snprintf(line + at, sizeof(line) - at, " %c %.1f", gs_part_letters[j], all[0][w][j] / 1024.0 / span);
+		at += snprintf(line + at, sizeof(line) - at, ", distinct");
+		for (j = 0; j < GS_PARTS && at < (int)sizeof(line) - 1; j++)
+			at += snprintf(line + at, sizeof(line) - at, " %c %.1f", gs_part_letters[j], all[1][w][j] / 1024.0 / span);
+		at += snprintf(line + at, sizeof(line) - at, ";");
+	}
+	if (at < (int)sizeof(line) - 1)
+		snprintf(line + at, sizeof(line) - at, " over %lu frames, %lu notes past the table", span, gs_full);
+	platform_log("%s", line);
+	memset(gs_read, 0, sizeof(gs_read));
+	memset(gs_set, 0, sizeof(gs_set));
+	gs_full = 0;
+}
+
 static void __attribute__((noinline, cold)) ge_reads_report(unsigned long frames_now)
 {
 	extern long psp_game_time_peek(void);
@@ -8609,6 +8735,12 @@ static void __attribute__((noinline, cold)) ge_reads_report(unsigned long frames
 	platform_log("%s", line);
 	if (gk_on)
 		gk_report(span);
+	if (gs_on)
+	{
+		extern void gs_report(unsigned long span);
+
+		gs_report(span);
+	}
 	at = snprintf(line, sizeof(line), "gereads: vertex KB a frame by kind:");
 	for (k = 0; k < KINDS && at < (int)sizeof(line) - 1; k++)
 		if (gr_kind_bytes[k])
