@@ -61123,6 +61123,137 @@ long tick2_pp_read(long object_index, char const *file, int line);
     return 1
 tick2_posepass_cut(TREE)
 
+
+# PSP_POSECENSUS=1 (the lead 2026-11-23 21:2x: the parting census for c20's posing-pass shift): every node and marker
+# getter read is hashed by its call site (file and line) into a per-tick sum, the object's datum index with what the
+# getter answered; at each tick's end one line a site ("posecensus: T file:line reads hash"). Built into both sides of a
+# comparison (the old build and the pass), so tools/posecensuscmp.py names the first tick each site's answers differ
+# and statecmp the first field of play to part after it. With the pass it composes with posepassread's wrappers
+# (the read is posed first, then hashed). An emulator instrument only: never in a PSP build.
+POSECENSUS = os.environ.get("PSP_POSECENSUS", "") == "1"
+def posecensus_cut(tree):
+    if not POSECENSUS:
+        return 0
+    objects_c = os.path.join(tree, "source/objects/objects.c")
+    objects_h = os.path.join(tree, "source/objects/objects.h")
+    game_c = os.path.join(tree, "source/game/game.c")
+    c = open(objects_c, errors="surrogateescape").read()
+    h = open(objects_h, errors="surrogateescape").read()
+    g = open(game_c, errors="surrogateescape").read()
+    pp = "long tick2_pp_read(long object_index, char const *file, int line);\n"
+    into = "tick2_pp_read((o), __FILE__, __LINE__)" if pp in h else "(o)"
+    if pp in h:
+        for line in ("#define object_get_node_matrices(o) ((object_get_node_matrices)(tick2_pp_read((o), __FILE__, __LINE__)))\n",
+                     "#define object_get_node_matrix(o, n) ((object_get_node_matrix)(tick2_pp_read((o), __FILE__, __LINE__), (n)))\n",
+                     "#define object_get_marker_by_name(o, a, b, k) ((object_get_marker_by_name)(tick2_pp_read((o), __FILE__, __LINE__), (a), (b), (k)))\n"):
+            if h.count(line) != 1:
+                check_fail("psp_fixups: POSECENSUS: posepass's wrapper %r matches %d times" % (line[:44], h.count(line)))
+                return 0
+            h = h.replace(line, "")
+    else:
+        for old, new in [("real_matrix4x3 *object_get_node_matrices(\n", "real_matrix4x3 *(object_get_node_matrices)(\n"),
+                         ("real_matrix4x3 *object_get_node_matrix(\n", "real_matrix4x3 *(object_get_node_matrix)(\n"),
+                         ("short object_get_marker_by_name(\n", "short (object_get_marker_by_name)(\n")]:
+            if c.count(old) != 1:
+                check_fail("psp_fixups: POSECENSUS: %r matches %d times" % (old[:40], c.count(old)))
+                return 0
+            c = c.replace(old, new)
+    proto = "short object_get_marker_by_name(long object_index, char const *name, struct object_marker *markers, short maximum_marker_count);\n"
+    if h.count(proto) != 1:
+        check_fail("psp_fixups: POSECENSUS: the marker getter's prototype matches %d times" % h.count(proto))
+        return 0
+    h = h.replace(proto, proto + ("""/* POSECENSUS: every getter read hashed by its call site, per tick (psp_fixups.py) */
+real_matrix4x3 *psp_pc_m(char const *file, int line, long object_index, real_matrix4x3 *answer);
+short psp_pc_k(char const *file, int line, long object_index, struct object_marker *markers, short count);
+#define object_get_node_matrices(o) (psp_pc_m(__FILE__, __LINE__, (o), (object_get_node_matrices)(INTO)))
+#define object_get_node_matrix(o, n) (psp_pc_m(__FILE__, __LINE__, (o), (object_get_node_matrix)(INTO, (n))))
+#define object_get_marker_by_name(o, a, b, k) (psp_pc_k(__FILE__, __LINE__, (o), (b), (object_get_marker_by_name)(INTO, (a), (b), (k))))
+""").replace("INTO", into))
+    c += r"""
+/* POSECENSUS (psp_fixups.py): a per-tick sum of each call site's answers. A sum, so the order of reads within a tick
+(which the pass changes) doesn't count, only what was read and what it answered */
+#define PSP_PC_SITES 256
+static struct { char const *file; int line; unsigned long reads, hash; } psp_pc_site[PSP_PC_SITES];
+static int psp_pc_on = -1;
+static unsigned long psp_pc_lost;
+static unsigned long psp_pc_fnv(unsigned long h, void const *p, int n)
+{
+	unsigned char const *b = p;
+
+	while (n--)
+		h = (h ^ *b++) * 16777619UL;
+	return h;
+}
+static void psp_pc_note(char const *file, int line, long object_index, void const *answer, int bytes)
+{
+	extern int psp_keep(const char *word);
+	unsigned long k, h;
+
+	if (psp_pc_on < 0)
+		psp_pc_on = psp_keep("posecensus") ? 1 : 0;
+	if (!psp_pc_on)
+		return;
+	k = ((unsigned long)(size_t)file * 31 + (unsigned long)line) % PSP_PC_SITES;
+	while (psp_pc_site[k].file && (psp_pc_site[k].file != file || psp_pc_site[k].line != line))
+		if (++k == PSP_PC_SITES)
+			k = 0, psp_pc_lost++;
+	if (psp_pc_lost > PSP_PC_SITES)
+		return;
+	psp_pc_site[k].file = file;
+	psp_pc_site[k].line = line;
+	h = psp_pc_fnv(2166136261UL, &object_index, sizeof object_index);
+	if (answer)
+		h = psp_pc_fnv(h, answer, bytes);
+	psp_pc_site[k].reads++;
+	psp_pc_site[k].hash += h;
+}
+real_matrix4x3 *psp_pc_m(char const *file, int line, long object_index, real_matrix4x3 *answer)
+{
+	psp_pc_note(file, line, object_index, answer, sizeof *answer);
+	return answer;
+}
+short psp_pc_k(char const *file, int line, long object_index, struct object_marker *markers, short count)
+{
+	short i;
+
+	if (count <= 0)
+		psp_pc_note(file, line, object_index, NULL, 0);
+	for (i = 0; i < count; i++)
+		psp_pc_note(file, line, object_index, &markers[i].matrix, sizeof markers[i].matrix);
+	return count;
+}
+void psp_pc_tick_end(long tick)
+{
+	void platform_psp_log(const char *format, ...);
+	int k;
+
+	if (psp_pc_on <= 0)
+		return;
+	for (k = 0; k < PSP_PC_SITES; k++)
+		if (psp_pc_site[k].reads)
+		{
+			char const *name = strrchr(psp_pc_site[k].file, '/');
+
+			platform_psp_log("posecensus: %ld %s:%d %lu %08lx", tick, name ? name + 1 : psp_pc_site[k].file,
+				psp_pc_site[k].line, psp_pc_site[k].reads, psp_pc_site[k].hash);
+			psp_pc_site[k].reads = psp_pc_site[k].hash = 0;
+		}
+}
+"""
+    gh = next((x for x in ("\t\t(PSP_STEP(\"psp_game_state_hash_tick\"), psp_game_state_hash_tick(game_time_get()));\n",
+                           "\t\tpsp_game_state_hash_tick(game_time_get());\n") if g.count(x) == 1), "\t\tpsp_game_state_hash_tick(game_time_get());\n")
+    if g.count(gh) != 1:
+        check_fail("psp_fixups: POSECENSUS: game.c's tick-end hook matches %d times" % g.count(gh))
+        return 0
+    g = g.replace(gh, gh + "\t\t{ extern void psp_pc_tick_end(long tick); psp_pc_tick_end(game_time_get()); } /* POSECENSUS */\n")
+    if not CHECK_ONLY:
+        open(objects_c, "w", errors="surrogateescape").write(c)
+        open(objects_h, "w", errors="surrogateescape").write(h)
+        open(game_c, "w", errors="surrogateescape").write(g)
+    print("psp_fixups: POSECENSUS: every node and marker read hashed by call site, per tick")
+    return 1
+posecensus_cut(TREE)
+
 # The engine's one read of a datum by a raw offset (spec section 28): a door's
 # automatic test asks whether a unit is dead through byte 0xb6 of its datum,
 # which is object.damage_flags, and bit 2, which is _object_dead_bit (the
