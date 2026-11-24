@@ -62868,9 +62868,27 @@ def fpw_trace(tree):
 \t\t\t\t\t(int)first_person_weapon->rendered);
 \t\t}
 """ + at, 1)
+    # the ready message: whom it reaches, and when the first-person weapon is made
+    log = "\t\t{ extern long game_time_get(void); void platform_psp_log(const char *format, ...); if (game_time_get() <= 6) platform_psp_log(%s); } /* FPWTRACE */\n"
+    send = "void first_person_weapon_message_from_weapon(\n\tlong weapon_index,\n\tshort message_type)\n{\n\tshort local_player_index= first_person_weapon_index_from_weapon_index(weapon_index);\n"
+    made = "\t\t\t\t\t\t\tfirst_person_weapon->weapon_index= weapon_index;\n"
+    for anchor, what in ((send, send + log % '"fpwtrace: message %d from weapon %lx at tick %ld reaches local player %d (caller %p)", (int)message_type, (unsigned long)weapon_index, game_time_get(), (int)local_player_index, __builtin_return_address(0)'),
+                         (made, made + log % '"fpwtrace: player %d\'s first-person weapon made for weapon %lx at tick %ld", (int)local_player_index, (unsigned long)weapon_index, game_time_get()')):
+        if text.count(anchor) != 1:
+            check_fail("psp_fixups: FPWTRACE: an anchor matches %d times" % text.count(anchor))
+            return 0
+        text = text.replace(anchor, what, 1)
+    upath = os.path.join(tree, "source/units/units.c")
+    utext = open(upath, errors="surrogateescape").read()
+    head = "static void unit_ready_desired_weapon(\n\tlong unit_index,\n\tboolean immediate)\n{\n\tstruct unit_datum *unit = unit_get(unit_index);\n\tstruct unit_definition *unit_definition = unit_definition_get(unit->definition_index);\n\tlong desired_weapon_index = unit_get_desired_weapon_index(unit_index);\n\tlong current_weapon_index = unit_get_current_weapon_index(unit_index);\n"
+    if utext.count(head) != 1:
+        check_fail("psp_fixups: FPWTRACE: unit_ready_desired_weapon's head matches %d times" % utext.count(head))
+        return 0
+    utext = utext.replace(head, head + log.replace("\t\t{", "\t{") % '"fpwtrace: unit %lx readies weapon %lx (current %lx) at tick %ld, immediate %d (caller %p)", (unsigned long)unit_index, (unsigned long)desired_weapon_index, (unsigned long)current_weapon_index, game_time_get(), (int)immediate, __builtin_return_address(0)', 1)
     if not CHECK_ONLY:
         open(path, "w", errors="surrogateescape").write(text)
-    print("psp_fixups: FPWTRACE: the first-person idle draw's inputs logged to tick 6")
+        open(upath, "w", errors="surrogateescape").write(utext)
+    print("psp_fixups: FPWTRACE: the first-person idle draw's inputs logged to tick 6, and the ready message's path")
     return 1
 fpw_trace(TREE)
 
