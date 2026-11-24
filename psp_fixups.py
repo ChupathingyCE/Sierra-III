@@ -61510,95 +61510,189 @@ tick2_hoist_cut(TREE)
 # both touched: a read or a write each, so 0 is safe and more is a list to refine. A line every 300 ticks.
 MOTIONCROSS = os.environ.get("PSP_MOTIONCROSS", "") == "1"
 MOTIONCROSS_CODE = r"""
-/* PSP_MOTIONCROSS (tick_store_biped_plan.md, the motion pass): the solve's two parts' touches, per object a tick */
+/* PSP_MOTIONCROSS (tick_store_biped_plan.md, the motion pass): the solve's two parts' touches, per object a tick.
+mcross2: a staged biped's own parts are kept apart from other bipeds' touches of it, and each part is checked for
+whether it changed the biped's motion fields (the root's position to bounding sphere, the datum's flags and
+damage flags), so a crossing reads as "real" only where the part on the far side changed what the other touched */
 #define PSP_MC_OBJECTS 2048
+#define PSP_MC_STAGE 256
+#define PSP_MC_SITES 24
+struct psp_mc_watch { unsigned char root[offsetof(struct tick2_root, unit_slot)]; unsigned long flags, damage_flags; };
 static short psp_mc_k = -1, psp_mc_part = 0;
 static long psp_mc_self = -1;
-static short psp_mc_min2[PSP_MC_OBJECTS], psp_mc_max1[PSP_MC_OBJECTS];
+static short psp_mc_min2[PSP_MC_OBJECTS], psp_mc_max1[PSP_MC_OBJECTS], psp_mc_pos[PSP_MC_OBJECTS];
 static unsigned short psp_mc_stamp[PSP_MC_OBJECTS], psp_mc_tick = 1;
 static long psp_mc_list[PSP_MC_OBJECTS];
 static short psp_mc_listed;
-static unsigned long psp_mc_ticks, psp_mc_cross_ticks, psp_mc_cross, psp_mc_cross_self, psp_mc_by_type[16], psp_mc_touches[3];
-static void psp_mc_mark(long object_index, int part)
+static unsigned char psp_mc_chg1[PSP_MC_STAGE], psp_mc_chg2[PSP_MC_STAGE];
+static struct psp_mc_watch psp_mc_snap;
+static unsigned long psp_mc_ticks, psp_mc_a, psp_mc_a_real, psp_mc_b, psp_mc_b_real, psp_mc_other, psp_mc_by_type[16];
+static unsigned long psp_mc_moved1, psp_mc_moved2, psp_mc_parts;
+static struct { void *site; unsigned long count; } psp_mc_sites[2][PSP_MC_SITES];
+static void psp_mc_list_add(long object_index)
 {
 	long at = object_index & 0xFFFF;
 
-	if (at >= PSP_MC_OBJECTS)
-		return;
 	if (psp_mc_stamp[at] != psp_mc_tick)
 	{
 		psp_mc_stamp[at] = psp_mc_tick;
 		psp_mc_min2[at] = 0x7FFF;
 		psp_mc_max1[at] = -1;
+		psp_mc_pos[at] = -1;
 		if (psp_mc_listed < PSP_MC_OBJECTS)
 			psp_mc_list[psp_mc_listed++] = object_index;
 	}
-	if (part == 1 && psp_mc_k > psp_mc_max1[at])
-		psp_mc_max1[at] = psp_mc_k;
-	if (part == 2 && psp_mc_k < psp_mc_min2[at])
-		psp_mc_min2[at] = psp_mc_k;
 }
-long psp_mc_touch(long object_index)
+static void psp_mc_site(int which, void *site)
 {
-	if (psp_mc_k >= 0 && psp_bipedstage_phase == 4 && object_index != NONE && object_index != psp_mc_self)
+	int n;
+
+	for (n = 0; n < PSP_MC_SITES && psp_mc_sites[which][n].site && psp_mc_sites[which][n].site != site; n++);
+	if (n < PSP_MC_SITES)
 	{
-		psp_mc_touches[psp_mc_part]++;
-		psp_mc_mark(object_index, psp_mc_part);
+		psp_mc_sites[which][n].site = site;
+		psp_mc_sites[which][n].count++;
+	}
+}
+long __attribute__((noinline)) psp_mc_touch(long object_index)
+{
+	if (psp_mc_k >= 0 && psp_bipedstage_phase == 4 && object_index != NONE && object_index != psp_mc_self &&
+		(object_index & 0xFFFF) < PSP_MC_OBJECTS)
+	{
+		long at = object_index & 0xFFFF;
+
+		psp_mc_list_add(object_index);
+		if (psp_mc_part == 1 && psp_mc_k > psp_mc_max1[at])
+			psp_mc_max1[at] = psp_mc_k;
+		if (psp_mc_part == 2 && psp_mc_k < psp_mc_min2[at])
+			psp_mc_min2[at] = psp_mc_k;
+		/* the sites that make a crossing with a staged biped: a move touching one whose part 2 has run (A),
+		a part 2 touching one whose move hasn't (B) */
+		if (psp_mc_pos[at] >= 0 && psp_mc_part == 1 && psp_mc_pos[at] < psp_mc_k)
+			psp_mc_site(0, __builtin_return_address(0));
+		if (psp_mc_pos[at] >= 0 && psp_mc_part == 2 && psp_mc_pos[at] > psp_mc_k)
+			psp_mc_site(1, __builtin_return_address(0));
 	}
 	return object_index;
 }
+static int psp_mc_take(long object_index, struct psp_mc_watch *watch)
+{
+	struct object_header_datum *header = (struct object_header_datum *)datum_try_and_get(object_header_data, object_index);
+
+	if (!header || !header->datum || !header->datum->object.root)
+		return 0;
+	memcpy(watch->root, header->datum->object.root, sizeof(watch->root));
+	watch->flags = header->datum->object.flags;
+	watch->damage_flags = header->datum->object.damage_flags;
+	return 1;
+}
+static int psp_mc_changed(long object_index, struct psp_mc_watch const *before)
+{
+	struct psp_mc_watch now;
+
+	if (!psp_mc_take(object_index, &now))
+		return 1; /* gone in its part: deleted is a change */
+	return memcmp(&now, before, sizeof(now)) != 0;
+}
+static void psp_mc_close_part2(void)
+{
+	if (psp_mc_k >= 0 && psp_mc_part == 2 && psp_mc_k < PSP_MC_STAGE)
+	{
+		psp_mc_chg2[psp_mc_k] = (unsigned char)psp_mc_changed(psp_mc_self, &psp_mc_snap);
+		psp_mc_moved2 += psp_mc_chg2[psp_mc_k];
+	}
+}
 static void psp_mc_begin(short k, long biped_index)
 {
+	short n;
+
+	psp_mc_close_part2();
+	if (k == 0 || psp_mc_k < 0)
+	{
+		/* every staged biped's place in the list, known before any part runs */
+		for (n = 0; n < psp_bipedstage_count && n < PSP_MC_STAGE; n++)
+		{
+			long at = psp_bipedstage_index[n] & 0xFFFF;
+
+			if (at < PSP_MC_OBJECTS)
+			{
+				psp_mc_list_add(psp_bipedstage_index[n]);
+				psp_mc_pos[at] = n;
+			}
+			psp_mc_chg1[n] = psp_mc_chg2[n] = 0;
+		}
+	}
 	psp_mc_k = k;
 	psp_mc_part = 1;
 	psp_mc_self = biped_index;
-	psp_mc_mark(biped_index, 1);
+	psp_mc_parts++;
+	if (!psp_mc_take(biped_index, &psp_mc_snap))
+		psp_mc_k = -1;
 }
 void psp_mc_part2(void)
 {
 	if (psp_mc_k >= 0 && psp_bipedstage_phase == 4 && psp_mc_part == 1)
 	{
+		if (psp_mc_k < PSP_MC_STAGE)
+		{
+			psp_mc_chg1[psp_mc_k] = (unsigned char)psp_mc_changed(psp_mc_self, &psp_mc_snap);
+			psp_mc_moved1 += psp_mc_chg1[psp_mc_k];
+		}
 		psp_mc_part = 2;
-		psp_mc_mark(psp_mc_self, 2);
+		psp_mc_take(psp_mc_self, &psp_mc_snap);
 	}
 }
 void platform_psp_log(const char *format, ...);
 static void psp_mc_end(void)
 {
 	short n;
-	unsigned long crossed = 0;
 
+	psp_mc_close_part2();
 	psp_mc_k = -1;
 	psp_mc_part = 0;
 	psp_mc_self = -1;
 	for (n = 0; n < psp_mc_listed; n++)
 	{
 		long at = psp_mc_list[n] & 0xFFFF;
+		short pos = psp_mc_pos[at];
 
-		if (psp_mc_min2[at] < psp_mc_max1[at])
+		if (pos >= 0 && pos < PSP_MC_STAGE)
+		{
+			if (psp_mc_max1[at] > pos)
+			{
+				psp_mc_a++;
+				psp_mc_a_real += psp_mc_chg2[pos];
+			}
+			if (psp_mc_min2[at] < pos)
+			{
+				psp_mc_b++;
+				psp_mc_b_real += psp_mc_chg1[pos];
+			}
+		}
+		else if (psp_mc_min2[at] < psp_mc_max1[at])
 		{
 			struct object_header_datum *header = (struct object_header_datum *)datum_try_and_get(object_header_data, psp_mc_list[n]);
 
-			crossed++;
-			if (header && header->type == _object_type_biped)
-				psp_mc_cross_self++;
+			psp_mc_other++;
 			psp_mc_by_type[header ? header->type & 15 : 15]++;
 		}
 	}
 	psp_mc_listed = 0;
 	if (++psp_mc_tick == 0)
 		psp_mc_tick = 1;
-	psp_mc_ticks++;
-	psp_mc_cross += crossed;
-	if (crossed)
-		psp_mc_cross_ticks++;
-	if (psp_mc_ticks % 300 == 0)
+	if (++psp_mc_ticks % 300 == 0)
 	{
-		platform_psp_log("motioncross: %lu ticks; ticks with a crossing %lu, objects crossing %lu (bipeds %lu; by type 0-11: %lu %lu %lu %lu %lu %lu %lu %lu %lu %lu %lu %lu); touches part 1 %lu, part 2 %lu",
-			psp_mc_ticks, psp_mc_cross_ticks, psp_mc_cross, psp_mc_cross_self,
+		int which, k;
+
+		platform_psp_log("motioncross: %lu ticks, %lu solves (moves that changed the biped %lu, post-move parts that did %lu); "
+			"A (a later move touched a biped whose post-move part ran) %lu, real %lu; B (a post-move part touched a biped not yet moved) %lu, real %lu; "
+			"other objects crossing %lu (by type 0-11: %lu %lu %lu %lu %lu %lu %lu %lu %lu %lu %lu %lu)",
+			psp_mc_ticks, psp_mc_parts, psp_mc_moved1, psp_mc_moved2, psp_mc_a, psp_mc_a_real, psp_mc_b, psp_mc_b_real, psp_mc_other,
 			psp_mc_by_type[0], psp_mc_by_type[1], psp_mc_by_type[2], psp_mc_by_type[3], psp_mc_by_type[4], psp_mc_by_type[5],
-			psp_mc_by_type[6], psp_mc_by_type[7], psp_mc_by_type[8], psp_mc_by_type[9], psp_mc_by_type[10], psp_mc_by_type[11],
-			psp_mc_touches[1], psp_mc_touches[2]);
+			psp_mc_by_type[6], psp_mc_by_type[7], psp_mc_by_type[8], psp_mc_by_type[9], psp_mc_by_type[10], psp_mc_by_type[11]);
+		for (which = 0; which < 2; which++)
+			for (k = 0; k < PSP_MC_SITES && psp_mc_sites[which][k].site; k++)
+				platform_psp_log("motioncross site %c: %p %lu", which ? 'B' : 'A', psp_mc_sites[which][k].site, psp_mc_sites[which][k].count);
 	}
 }
 """
