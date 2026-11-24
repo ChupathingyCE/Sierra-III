@@ -61992,6 +61992,58 @@ def tick2_span_cut(tree):
         return 0
     c = c.replace(sum_old, sum_new)
     if TICK2_PROOF:
+        # the proof form's watch on the span's old bytes (the lead 2026-11-24 02:2x): at each objects_update, every
+        # unit's patterned span in its datum is checked; a write that reached it without the record is logged with
+        # its tick, object and the throttle on both sides (8 at most)
+        nms = "\tpsp_nms_open = psp_nms_begin(); /* psp_fixups.py (FIXES_NMSKIP) */\n"
+        if c.count(nms) != 1:
+            check_fail("psp_fixups: TICK2 biped: objects_update's NMSKIP anchor matches %d times" % c.count(nms))
+            return 0
+        c = c.replace(nms, nms + "\ttick2_proof_span_check(); /* TICK2 biped proof */\n")
+        store_code = "\nstatic long tick2_chunk_free_records(void)\n"
+        if c.count(store_code) != 1:
+            check_fail("psp_fixups: TICK2 biped: the store's code anchor matches %d times" % c.count(store_code))
+            return 0
+        c = c.replace(store_code, r"""
+/* TICK2 biped proof: the span's old bytes in each unit's datum still hold the pattern */
+static void tick2_proof_span_check(void)
+{
+	static int told;
+	struct object_iterator iterator;
+	struct object_datum *object;
+
+	if (told >= 8)
+		return;
+	object_iterator_new(&iterator, _object_mask_all, 0);
+	for (object = (struct object_datum *)object_iterator_next(&iterator); object;
+		object = (struct object_datum *)object_iterator_next(&iterator))
+	{
+		struct unit_datum *unit = (struct unit_datum *)object;
+		unsigned char const *bytes;
+		unsigned k;
+
+		if (object->object.type != _object_type_biped && object->object.type != _object_type_vehicle)
+			continue;
+		bytes = unit->unit.tick2_proof_span;
+		for (k = 0; k < sizeof(unit->unit.tick2_proof_span) && bytes[k] == %d; k++)
+			;
+		if (k < sizeof(unit->unit.tick2_proof_span))
+		{
+			real_vector3d datum_throttle, record_throttle = (*tick2_unit_span_of(unit->object.root)).throttle;
+			extern long game_time_get(void);
+			void platform_psp_log(const char *format, ...);
+
+			memcpy(&datum_throttle, bytes + offsetof(struct tick2_unit_span, throttle), sizeof(datum_throttle));
+			platform_psp_log("proofspan: tick %%ld, object %%lx type %%d (player %%ld): the span's datum bytes written from +%%u; throttle: datum %%.3f %%.3f %%.3f, record %%.3f %%.3f %%.3f",
+				game_time_get(), (unsigned long)iterator.index, (int)object->object.type, (long)unit->unit.player_index, k,
+				datum_throttle.i, datum_throttle.j, datum_throttle.k, record_throttle.i, record_throttle.j, record_throttle.k);
+			memset(unit->unit.tick2_proof_span, %d, sizeof(unit->unit.tick2_proof_span)); /* told once a write */
+			if (++told >= 8)
+				return;
+		}
+	}
+}
+""" % (TICK2_PROOF_BYTE, TICK2_PROOF_BYTE) + store_code)
         fill = "sizeof(((struct unit_datum *)object)->unit.tick2_proof_unit));"
         if c.count(fill) != 1:
             check_fail("psp_fixups: TICK2 biped: the proof fill matches %d times" % c.count(fill))
