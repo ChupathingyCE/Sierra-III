@@ -60849,11 +60849,15 @@ static unsigned char tick2_pp_dead[MAXIMUM_OBJECTS_PER_MAP / 8 + 1]; /* deleted 
 static unsigned long tick2_pp_early; /* touchorder: roots whose tail ran at a touch, ahead of phase 2 */
 static unsigned char tick2_pp_touched[MAXIMUM_OBJECTS_PER_MAP / 8 + 1]; /* posed on touch this tick */
 static unsigned char tick2_pp_seen[MAXIMUM_OBJECTS_PER_MAP / 8 + 1]; /* listed this tick: the biped stage updates its bipeds in more than one pass */
+static unsigned char tick2_pp_busy[MAXIMUM_OBJECTS_PER_MAP / 8 + 1]; /* a root's phase-1 update under way: its own and its children's reads of it come in here */
+static unsigned char tick2_pp_done[MAXIMUM_OBJECTS_PER_MAP / 8 + 1]; /* a listed root's first phase-1 update has returned: old had it whole by now */
 static boolean object_update(long object_index);
 /* the old-order rule (spec section 33; the lead 2026-11-23 22:3x; "touchorder"): a phase-1 read of another object's
-pose (a touch or a getter) gives old's answer by its loop order. If phase 1 has already reached the object's root, old
+pose (a touch or a getter) gives old's answer by its loop order. If phase 1 has finished the object's root's update, old
 had updated it whole by now, IK included, so its root's tail runs now and phase 2 skips it; if not, old would read it at
-last tick's pose, so it's left as it stands */
+last tick's pose, so it's left as it stands. "Finished", not "reached": a root's own motion and its children's updates
+read the root while its update is under way, and old poses it only after them (tick2touch4 parted c20 at tick 38 on
+"reached": the tail ran in the middle of its own root's motion) */
 static void tick2_pp_old_order(long object_index)
 {
 	long root = object_index, at;
@@ -60865,8 +60869,8 @@ static void tick2_pp_old_order(long object_index)
 		walk = object_try_and_get(root);
 	}
 	at = root & 0xFFFF;
-	if (!walk || at >= MAXIMUM_OBJECTS_PER_MAP || !((tick2_pp_seen[at >> 3] >> (at & 7)) & 1) ||
-		((tick2_pp_dead[at >> 3] >> (at & 7)) & 1))
+	if (!walk || at >= MAXIMUM_OBJECTS_PER_MAP || !((tick2_pp_done[at >> 3] >> (at & 7)) & 1) ||
+		((tick2_pp_busy[at >> 3] >> (at & 7)) & 1) || ((tick2_pp_dead[at >> 3] >> (at & 7)) & 1))
 		return;
 	tick2_pp_phase = 2;
 	object_update(root);
@@ -61047,6 +61051,8 @@ static void tick2_pp_begin(void)
 	tick2_pp_count = tick2_pp_elev_count = 0;
 	memset(tick2_pp_touched, 0, sizeof(tick2_pp_touched));
 	memset(tick2_pp_seen, 0, sizeof(tick2_pp_seen));
+	memset(tick2_pp_busy, 0, sizeof(tick2_pp_busy));
+	memset(tick2_pp_done, 0, sizeof(tick2_pp_done));
 	memset(tick2_pp_dead, 0, sizeof(tick2_pp_dead));
 	tick2_pp_phase = 1;
 	tick2_pp_ticks++;
@@ -61196,15 +61202,37 @@ def tick2_posepass_cut(tree):
 	/* TICK2 posepass: phase 1 lists each root it reaches, for phase 2's tails; past the list, a root's subtree
 	runs both phases at once, as the old build */
 	if (tick2_pp_phase == 1 && object_get(object_index)->object.parent_object_index == NONE &&
-		!((tick2_pp_seen[(object_index & 0xFFFF) >> 3] >> (object_index & 7)) & 1))
+		!((tick2_pp_busy[(object_index & 0xFFFF) >> 3] >> (object_index & 7)) & 1))
 	{
-		tick2_pp_seen[(object_index & 0xFFFF) >> 3] |= (unsigned char)(1 << (object_index & 7));
+		long k = object_index & 0xFFFF;
+		unsigned char bit = (unsigned char)(1 << (k & 7));
+
+		/* a root's later pass (the biped stage's second) is phase 1 again, but the old-order rule keys on the first */
+		if ((tick2_pp_seen[k >> 3] & bit))
+		{
+			boolean result;
+
+			tick2_pp_busy[k >> 3] |= bit;
+			result = object_update(object_index);
+			tick2_pp_busy[k >> 3] &= (unsigned char)~bit;
+			return result;
+		}
+		tick2_pp_seen[k >> 3] |= bit;
 		/* the keep word "posepassinline" (the lead's control, 2026-11-23 19:4x): every root takes the inline path, so
 		both phases run back to back at the old moment through the new gates, and the build must be exact against old */
 		if (tick2_pp_count < TICK2_PP_MOST && !PSP_KEEP_ONCE("posepassinline"))
 		{
-			tick2_pp_roots[tick2_pp_count++] = (unsigned short)(object_index & 0xFFFF);
+			boolean result;
+
+			tick2_pp_roots[tick2_pp_count++] = (unsigned short)k;
 			tick2_pp_listed++;
+			/* its motion and its children's updates run under busy: the old-order rule leaves its pose alone until
+			they return (old poses it only after them), then a read finds it done */
+			tick2_pp_busy[k >> 3] |= bit;
+			result = object_update(object_index);
+			tick2_pp_busy[k >> 3] &= (unsigned char)~bit;
+			tick2_pp_done[k >> 3] |= bit;
+			return result;
 		}
 		else
 		{
