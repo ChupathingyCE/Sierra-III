@@ -62145,6 +62145,17 @@ void psp_sr_store(long biped_index, unsigned long flags, real_point3d const *pos
          "static struct psp_sr_near psp_sr_near_list[PSP_SR_NEAR];\nstatic short psp_sr_near_count; /* -1: too many */\n"
          "static unsigned long psp_sr_cen[5]; /* candidates, keepable, of them wrong, near objects changed, too many */\n"
          "static int psp_sr_census(void) { return PSP_KEEP_ONCE(\"sweepreusecensus\"); }\n"
+         "static real_point3d psp_sr_center; /* the gather's sphere */\nstatic real psp_sr_radius;\n"
+         "/* the gather's own filter and reach (object_get_features_in_sphere's), the biped left out */\n"
+         "static int psp_sr_in_reach(long object_index, real_point3d const *center, real radius, long ignore)\n{\n"
+         "\tstruct object_datum *o = object_get(object_index);\n\n"
+         "\tif (object_index == ignore || TEST_FLAG(o->object.flags, _object_invisible_bit) || TEST_FLAG(o->object.flags, _object_no_collisions_bit) ||\n"
+         "\t\t(TEST_FLAG(o->object.damage_flags, _object_dead_bit) && o->object.type == _object_type_biped))\n\t\treturn 0;\n"
+         "\treturn point_in_sphere(center, &o->object.root->bounding_sphere_center, o->object.root->bounding_sphere_radius + radius);\n}\n"
+         "static int psp_sr_pose_differs(struct psp_sr_near const *n)\n{\n"
+         "\tstruct tick2_root const *root = object_get(n->index)->object.root;\n\n"
+         "\treturn memcmp(&n->position, &root->position, sizeof(root->position)) || memcmp(&n->forward, &root->forward, sizeof(root->forward)) ||\n"
+         "\t\tmemcmp(&n->up, &root->up, sizeof(root->up));\n}\n"
          "static void psp_sr_near_add(long object_index)\n{\n\tif (psp_sr_near_count >= 0 && psp_sr_near_count < PSP_SR_NEAR)\n\t{\n"
          "\t\tstruct tick2_root const *root = object_get(object_index)->object.root;\n"
          "\t\tstruct psp_sr_near *n = &psp_sr_near_list[psp_sr_near_count++];\n\n"
@@ -62152,7 +62163,7 @@ void psp_sr_store(long biped_index, unsigned long flags, real_point3d const *pos
          "\telse\n\t\tpsp_sr_near_count = -1;\n}\n"
          "struct psp_sr_record\n{\n", "the record's head"),
         ("\tshort clusters[PSP_SR_CLUSTERS];\n\tstruct collision_plane planes[PSP_SR_PLANES];\n};",
-         "\tshort clusters[PSP_SR_CLUSTERS];\n\tshort near_count;\n\tstruct psp_sr_near near[PSP_SR_NEAR];\n\tstruct collision_plane planes[PSP_SR_PLANES];\n};", "the record's tail"),
+         "\tshort clusters[PSP_SR_CLUSTERS];\n\tshort near_count;\n\tstruct psp_sr_near near[PSP_SR_NEAR];\n\treal_point3d center;\n\treal radius;\n\tstruct collision_plane planes[PSP_SR_PLANES];\n};", "the record's tail"),
         ("\tpsp_sr_on_pill = 1;\n\tpsp_sr_met = 0;\n\tpsp_sr_cluster_count = 0;\n}\n",
          "\tpsp_sr_on_pill = 1;\n\tpsp_sr_met = 0;\n\tpsp_sr_cluster_count = 0;\n\tpsp_sr_near_count = 0;\n}\n", "psp_sr_begin"),
         ("\t\t\ttick, psp_sr_counts[0], psp_sr_counts[1], psp_sr_counts[2], psp_sr_counts[3], psp_sr_counts[4], psp_sr_counts[5]);\n",
@@ -62174,16 +62185,18 @@ void psp_sr_store(long biped_index, unsigned long flags, real_point3d const *pos
          "\t\t\t{\n\t\t\t\tpsp_sr_cen[1]++;\n\t\t\t\tif (differs)\n\t\t\t\t\tpsp_sr_cen[2]++;\n\t\t\t}\n"
          "\t\t\telse\n\t\t\t\tpsp_sr_cen[3]++;\n\t\t}\n", "the store's census"),
         ("\tif (psp_sr_met || psp_sr_cluster_count < 0 || *count > PSP_SR_PLANES)\n\t\treturn;\n",
-         "\tif ((!psp_sr_census() && (psp_sr_met || psp_sr_cluster_count < 0)) || *count > PSP_SR_PLANES)\n\t\treturn;\n"
+         "\tif (psp_sr_cluster_count <= 0 || psp_sr_near_count < 0 || *count > PSP_SR_PLANES)\n\t\treturn;\n"
+         "\tr->center = psp_sr_center;\n\tr->radius = psp_sr_radius;\n"
          "\tr->near_count = psp_sr_near_count;\n\tif (psp_sr_near_count > 0)\n"
          "\t\tmemcpy(r->near, psp_sr_near_list, psp_sr_near_count * sizeof(struct psp_sr_near));\n", "the store's keep"),
         ("\t\t\t\t\t\t\tobject_get_features_in_sphere(\n\t\t\t\t\t\t\t\tflags,\n\t\t\t\t\t\t\t\tobject_index,\n\t\t\t\t\t\t\t\tcenter,\n\t\t\t\t\t\t\t\tradius,\n\t\t\t\t\t\t\t\theight,\n\t\t\t\t\t\t\t\twidth,\n\t\t\t\t\t\t\t\tignore_object_index,\n\t\t\t\t\t\t\t\tfeatures);\n",
-         "\t\t\t\t\t\t\t{ /* PSP_SWEEPREUSE census: an object adding features is a near one */\n"
-         "\t\t\t\t\t\t\tlong psp_sr_had = features->count[0] + features->count[1] + features->count[2];\n"
+         "\t\t\t\t\t\t\t{ /* PSP_SWEEPREUSE: an object in reach past the gather's filter is a near one */\n"
+         "\t\t\t\t\t\t\tif (psp_sr_on_pill && psp_sr_in_reach(object_index, center, radius, ignore_object_index))\n"
+         "\t\t\t\t\t\t\t\tpsp_sr_near_add(object_index);\n"
          "\t\t\t\t\t\t\tobject_get_features_in_sphere(\n\t\t\t\t\t\t\t\tflags,\n\t\t\t\t\t\t\t\tobject_index,\n\t\t\t\t\t\t\t\tcenter,\n\t\t\t\t\t\t\t\tradius,\n\t\t\t\t\t\t\t\theight,\n\t\t\t\t\t\t\t\twidth,\n\t\t\t\t\t\t\t\tignore_object_index,\n\t\t\t\t\t\t\t\tfeatures);\n"
-         "\t\t\t\t\t\t\tif (psp_sr_on_pill && object_index != ignore_object_index &&\n"
-         "\t\t\t\t\t\t\t\tfeatures->count[0] + features->count[1] + features->count[2] != psp_sr_had)\n"
-         "\t\t\t\t\t\t\t\tpsp_sr_near_add(object_index);\n\t\t\t\t\t\t\t}\n", "the gather's object call"),
+         "\t\t\t\t\t\t\t}\n", "the gather's object call"),
+        ("if (psp_sr_on_pill) psp_sr_cluster(cluster_index); /* PSP_SWEEPREUSE */",
+         "if (psp_sr_on_pill) { psp_sr_center = *center; psp_sr_radius = radius; psp_sr_cluster(cluster_index); } /* PSP_SWEEPREUSE */", "the cluster hook's sphere"),
         ("\tshort sr_clusters[PSP_SR_CLUSTERS], sr_cluster_count; /* SWEEPREUSE: the gather's clusters */\n",
          "\tshort sr_clusters[PSP_SR_CLUSTERS], sr_cluster_count; /* SWEEPREUSE: the gather's clusters */\n"
          "\tshort sr_near_count;\n\tstruct psp_sr_near sr_near[PSP_SR_NEAR];\n", "bipedstage2's slot near list"),
@@ -62194,8 +62207,23 @@ void psp_sr_store(long biped_index, unsigned long flags, real_point3d const *pos
          "\t\t\tmemcpy(slot->sr_near, psp_sr_near_list, psp_sr_near_count * sizeof(struct psp_sr_near));\n"
          "\t\tpsp_sr_on_pill = on;\n\t\tpsp_sr_met = met;\n\t\tpsp_sr_cluster_count = count;\n\t\tpsp_sr_near_count = near;\n", "bipedstage2's gather keep"),
         ("\t\tpsp_sr_met += slot->sr_met;\n\t}\n",
-         "\t\tpsp_sr_met += slot->sr_met;\n\t\tpsp_sr_near_count = slot->sr_near_count;\n\t\tif (slot->sr_near_count > 0)\n"
+         "\t\tpsp_sr_met += slot->sr_met;\n\t\tpsp_sr_center = slot->center;\n\t\tpsp_sr_radius = slot->radius;\n\t\tpsp_sr_near_count = slot->sr_near_count;\n\t\tif (slot->sr_near_count > 0)\n"
          "\t\t\tmemcpy(psp_sr_near_list, slot->sr_near, slot->sr_near_count * sizeof(struct psp_sr_near));\n\t}\n", "bipedstage2's take near"),
+    )
+    census = census + (
+        ("\tfor (k = 0; k < r->cluster_count; k++)\n\t{\n\t\tlong reference_index;\n\n\t\tif (cluster_get_first_collideable_object(&reference_index, r->clusters[k]) != NONE)\n\t\t{\n\t\t\tpsp_sr_counts[2]++;\n\t\t\tpsp_sr_counts[3]++;\n\t\t\treturn FALSE;\n\t\t}\n\t}\n",
+         "\t{ /* the guard (the builder 09:3x): every object in reach of the kept sphere past the gather's filter is a kept one, unmoved, and every kept one is met */\n"
+         "\t\tunsigned long met = 0;\n\n"
+         "\t\tfor (k = 0; k < r->cluster_count; k++)\n\t\t{\n\t\t\tlong reference_index, object_index;\n\n"
+         "\t\t\tfor (object_index = cluster_get_first_collideable_object(&reference_index, r->clusters[k]); object_index != NONE;\n"
+         "\t\t\t\tobject_index = cluster_get_next_collideable_object(&reference_index))\n\t\t\t{\n\t\t\t\tint n;\n\n"
+         "\t\t\t\tif (!psp_sr_in_reach(object_index, &r->center, r->radius, biped_index))\n\t\t\t\t\tcontinue;\n"
+         "\t\t\t\tfor (n = 0; n < r->near_count && r->near[n].index != object_index; n++)\n\t\t\t\t\t;\n"
+         "\t\t\t\tif (n == r->near_count || psp_sr_pose_differs(&r->near[n]))\n\t\t\t\t{\n"
+         "\t\t\t\t\tpsp_sr_counts[2]++;\n\t\t\t\t\tpsp_sr_counts[3]++;\n\t\t\t\t\treturn FALSE;\n\t\t\t\t}\n"
+         "\t\t\t\tmet |= 1ul << n;\n\t\t\t}\n\t\t}\n"
+         "\t\tif (met != (r->near_count ? (1ul << r->near_count) - 1 : 0))\n\t\t{\n\t\t\tpsp_sr_counts[2]++;\n\t\t\tpsp_sr_counts[3]++;\n\t\t\treturn FALSE;\n\t\t}\n\t}\n",
+         "the try's guard"),
     )
     for old, new, what in census:
         if c.count(old) != 1:
