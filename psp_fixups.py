@@ -21989,6 +21989,7 @@ void psp_pose_me_make(const unsigned int *args, unsigned int *results)
 static struct psp_pose_ahead *psp_pose_ahead_slots;
 static unsigned char *psp_pose_ahead_arena;
 static short psp_pose_ahead_listed[PSP_POSE_SLOTS];
+static unsigned long psp_pose_ahead_miss[7]; /* the take's misses by reason */
 static int psp_pose_ahead_count, psp_pose_ahead_mode = -1; /* 0 off, 1 on, 2 on and checked */
 static unsigned long psp_pose_ahead_used, psp_pose_ahead_made, psp_pose_ahead_unwritten, psp_pose_ahead_full,
 	psp_pose_ahead_checked, psp_pose_ahead_differed, psp_pose_ahead_ticks;
@@ -22242,6 +22243,10 @@ static void psp_pose_ahead_make(void)
 			psp_pose_ahead_made, psp_pose_job_poses, psp_pose_job_jobs, psp_pose_job_failed, psp_pose_ahead_used,
 			psp_pose_ahead_checked, psp_pose_ahead_differed, psp_pose_ahead_unwritten, psp_pose_ahead_full,
 			PSP_POSE_ARENA / 1024);
+	if (psp_pose_ahead_ticks % 900 == 0)
+		platform_psp_log("poseahead: not taken: no guess %lu, guess replaced this tick %lu, still on the ME %lu, another animation %lu, frame: one behind the guess %lu, one ahead %lu, other %lu",
+			psp_pose_ahead_miss[0], psp_pose_ahead_miss[1], psp_pose_ahead_miss[2], psp_pose_ahead_miss[3],
+			psp_pose_ahead_miss[4], psp_pose_ahead_miss[5], psp_pose_ahead_miss[6]);
 }
 
 /* psp_fixups.py (FIXES_130 #posepredict) */"""),
@@ -40882,7 +40887,20 @@ static void psp_posefpu_make(struct model const *model, struct animation const *
 	}
 	if (slot->state != 2 || slot->object_index != object_index || slot->model != model ||
 		slot->animation != animation || slot->frame != frame)
+	{
+		/* why a pose wasn't taken (the lead 2026-11-23 21:3x: the ME's pose-ahead under the posing pass) */
+		if (slot->object_index != object_index || !slot->state)
+			psp_pose_ahead_miss[0]++; /* no guess for this object (another's slot, or none listed) */
+		else if (slot->state == 1)
+			psp_pose_ahead_miss[1]++; /* listed again this tick before this pose: the guess was replaced */
+		else if (slot->state == 3)
+			psp_pose_ahead_miss[2]++; /* still being made on the ME */
+		else if (slot->animation != animation || slot->model != model)
+			psp_pose_ahead_miss[3]++; /* the animation changed */
+		else
+			psp_pose_ahead_miss[frame == slot->frame - 1 ? 4 : frame == slot->frame + 1 ? 5 : 6]++; /* the frame: one behind the guess, one ahead, other */
 		return FALSE;
+	}
 	if (psp_pose_ahead_mode == 2)
 	{
 		/* (FIXES_POSEFPU) checked against what a stand-in would make */
