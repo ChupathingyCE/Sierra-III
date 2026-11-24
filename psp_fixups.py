@@ -61286,6 +61286,59 @@ long tick2_pp_read(long object_index, char const *file, int line);
     return 1
 tick2_posepass_cut(TREE)
 
+# PSP_TICK2_HOIST=1 (the lead 2026-11-23 22:5x, spec section 16's hoist rule): a section's record is reached once per
+# object per function, its pointer held in a local, not once per field. posepair2a's PC samples (sierra-hw 45323181775)
+# put the store's cost in its callers, where an accessor is inlined at every field. The local starts empty and is
+# filled at the first use, so it's worked out exactly where the old text first worked it out, and never earlier (a
+# record a function checks before it reads stays unread); the base variable must not be reassigned in the function
+TICK2_HOIST = os.environ.get("PSP_TICK2_HOIST", "") == "1"
+TICK2_HOIST_SITES = [
+    ("source/units/units.c", "unit_preprocess_node_orientations", "unit"),
+    ("source/units/units.c", "unit_update_animation", "unit"),
+    ("source/objects/objects.c", "object_compute_node_matrices_with", "object"),
+    ("source/objects/objects.c", "psp_nms_skip", "object"),
+]
+def tick2_hoist_cut(tree):
+    if not TICK2_HOIST:
+        return 0
+    if not TICK2_ANIM:
+        check_fail("psp_fixups: PSP_TICK2_HOIST=1 needs PSP_TICK2=anim or later")
+        return 0
+    total = 0
+    for rel, name, base in TICK2_HOIST_SITES:
+        path = os.path.join(tree, rel)
+        text = open(path, errors="surrogateescape").read()
+        m = re.search(r"\n[^\n#/*][^\n;]*\b%s\(\n?(?:[^;{]*?)\)\n\{\n" % re.escape(name), text)
+        if not m:
+            check_fail("psp_fixups: TICK2 hoist: %s's head isn't found in %s" % (name, rel))
+            return 0
+        start = m.end()
+        end = text.find("\n}\n", start)
+        body = text[start:end]
+        if re.search(r"(?<![\w>.])%s\s*=[^=]" % base, body) and base == "object":
+            check_fail("psp_fixups: TICK2 hoist: %s reassigns %s" % (name, base))
+            return 0
+        if base == "unit" and len(re.findall(r"(?<![\w>.])unit\s*=[^=]", body)) != 1:
+            check_fail("psp_fixups: TICK2 hoist: %s assigns unit %d times, not once" % (name, len(re.findall(r"(?<![\w>.])unit\s*=[^=]", body))))
+            return 0
+        decls = ""
+        for accessor, kind, local in (("tick2_unit_anim_of", "struct unit_animation", "tick2_h_unit"),
+                                      ("tick2_anim_of", "struct object_animation_state", "tick2_h_anim")):
+            use = "(*%s(%s->object.root))" % (accessor, base)
+            n = body.count(use)
+            if n < 2:
+                continue
+            body = body.replace(use, "(*(%s ? %s : (%s = %s(%s->object.root))))" % (local, local, local, accessor, base))
+            decls += "\t%s *%s = NULL; /* TICK2 hoist: the section's record, worked out at its first use */\n" % (kind, local)
+            total += n
+        if decls:
+            text = text[:start] + decls + body + text[end:]
+            if not CHECK_ONLY:
+                open(path, "w", errors="surrogateescape").write(text)
+    print("psp_fixups: TICK2 hoist: %d section reads through a local, not the accessor each time" % total)
+    return 1
+tick2_hoist_cut(TREE)
+
 
 # PSP_POSECENSUS=1 (the lead 2026-11-23 21:2x: the parting census for c20's posing-pass shift): every node and marker
 # getter read is hashed by its call site (file and line) into a per-tick sum, the object's datum index with what the
