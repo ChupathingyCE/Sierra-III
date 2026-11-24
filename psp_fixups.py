@@ -61899,7 +61899,9 @@ def sweepreuse_cut(tree):
     cp = os.path.join(tree, "source/physics/collisions.c")
     b = open(bp, errors="surrogateescape").read()
     c = open(cp, errors="surrogateescape").read()
-    call = "\t\tcollision_count = (psp_ask(1), collision_move_pill)(\n"
+    # the call as the pad path wraps it (PSP_PADPATH) or plain
+    call = next((c for c in ("\t\tcollision_count = (psp_ask(1), collision_move_pill)(\n", "\t\tcollision_count = collision_move_pill(\n")
+                 if b.count(c) == 1), "\t\tcollision_count = collision_move_pill(\n")
     end = "\t\t\t16,\n\t\t\tcollisions);\n"
     if b.count(call) != 1:
         check_fail("psp_fixups: SWEEPREUSE: the pill's call matches %d times" % b.count(call))
@@ -62257,11 +62259,11 @@ static void tick2_proof_span_check(void)
 			;
 		if (k < sizeof(unit->unit.tick2_proof_span))
 		{
-			real_vector3d datum_throttle, record_throttle = (*tick2_unit_span_of(unit->object.root)).throttle;
+			real_vector3d datum_throttle, record_throttle = tick2_unit_ctl_of(unit->object.root)->throttle;
 			extern long game_time_get(void);
 			void platform_psp_log(const char *format, ...);
 
-			memcpy(&datum_throttle, bytes + offsetof(struct tick2_unit_span, throttle), sizeof(datum_throttle));
+			memcpy(&datum_throttle, bytes + %d /* throttle, in the span's old order */, sizeof(datum_throttle));
 			platform_psp_log("proofspan: tick %%ld, object %%lx type %%d (player %%ld): the span's datum bytes written from +%%u; throttle: datum %%.3f %%.3f %%.3f, record %%.3f %%.3f %%.3f",
 				game_time_get(), (unsigned long)iterator.index, (int)object->object.type, (long)unit->unit.player_index, k,
 				datum_throttle.i, datum_throttle.j, datum_throttle.k, record_throttle.i, record_throttle.j, record_throttle.k);
@@ -62271,7 +62273,7 @@ static void tick2_proof_span_check(void)
 		}
 	}
 }
-""" % (TICK2_PROOF_BYTE, TICK2_PROOF_BYTE) + store_code)
+""" % (TICK2_PROOF_BYTE, 12 * TICK2_SPAN_FIELDS.index("throttle"), TICK2_PROOF_BYTE) + store_code)
         fill = "sizeof(((struct unit_datum *)object)->unit.tick2_proof_unit));"
         if c.count(fill) != 1:
             check_fail("psp_fixups: TICK2 biped: the proof fill matches %d times" % c.count(fill))
