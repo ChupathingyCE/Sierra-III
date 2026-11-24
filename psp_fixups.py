@@ -62134,6 +62134,74 @@ void psp_sr_store(long biped_index, unsigned long flags, real_point3d const *pos
             check_fail("psp_fixups: SWEEPREUSE: %s matches %d times" % (what, c.count(old)))
             return 0
         c = c.replace(old, new, 1)
+    # keep word "sweepreusecensus" (the lead 2026-11-24 08:4x, (a)'s census): the guard a working reuse needs, counted, not
+    # used. A sweep whose inputs, BSP and breakables match the kept one is a candidate; it is keepable when the gather's
+    # near objects (those adding features, the biped left out) are the same objects with the same root position, forward
+    # and up; wrong when a keepable one's answer differs. bipedstage2's slot carries its gather's list like its clusters
+    census = (
+        ("struct psp_sr_record\n{\n",
+         "#define PSP_SR_NEAR 8 /* gathers meeting more near objects can't be kept */\n"
+         "struct psp_sr_near { long index; real_point3d position; real_vector3d forward, up; };\n"
+         "static struct psp_sr_near psp_sr_near_list[PSP_SR_NEAR];\nstatic short psp_sr_near_count; /* -1: too many */\n"
+         "static unsigned long psp_sr_cen[5]; /* candidates, keepable, of them wrong, near objects changed, too many */\n"
+         "static int psp_sr_census(void) { return PSP_KEEP_ONCE(\"sweepreusecensus\"); }\n"
+         "static void psp_sr_near_add(long object_index)\n{\n\tif (psp_sr_near_count >= 0 && psp_sr_near_count < PSP_SR_NEAR)\n\t{\n"
+         "\t\tstruct tick2_root const *root = object_get(object_index)->object.root;\n"
+         "\t\tstruct psp_sr_near *n = &psp_sr_near_list[psp_sr_near_count++];\n\n"
+         "\t\tn->index = object_index;\n\t\tn->position = root->position;\n\t\tn->forward = root->forward;\n\t\tn->up = root->up;\n\t}\n"
+         "\telse\n\t\tpsp_sr_near_count = -1;\n}\n"
+         "struct psp_sr_record\n{\n", "the record's head"),
+        ("\tshort clusters[PSP_SR_CLUSTERS];\n\tstruct collision_plane planes[PSP_SR_PLANES];\n};",
+         "\tshort clusters[PSP_SR_CLUSTERS];\n\tshort near_count;\n\tstruct psp_sr_near near[PSP_SR_NEAR];\n\tstruct collision_plane planes[PSP_SR_PLANES];\n};", "the record's tail"),
+        ("\tpsp_sr_on_pill = 1;\n\tpsp_sr_met = 0;\n\tpsp_sr_cluster_count = 0;\n}\n",
+         "\tpsp_sr_on_pill = 1;\n\tpsp_sr_met = 0;\n\tpsp_sr_cluster_count = 0;\n\tpsp_sr_near_count = 0;\n}\n", "psp_sr_begin"),
+        ("\t\t\ttick, psp_sr_counts[0], psp_sr_counts[1], psp_sr_counts[2], psp_sr_counts[3], psp_sr_counts[4], psp_sr_counts[5]);\n",
+         "\t\t\ttick, psp_sr_counts[0], psp_sr_counts[1], psp_sr_counts[2], psp_sr_counts[3], psp_sr_counts[4], psp_sr_counts[5]);\n"
+         "\t\tif (psp_sr_census())\n\t\t\tplatform_psp_log(\"sweepreusecensus: tick %ld: pill sweeps %lu; the same inputs %lu; near objects unchanged %lu (wrong %lu); changed %lu; too many %lu\",\n"
+         "\t\t\t\ttick, psp_sr_counts[0], psp_sr_cen[0], psp_sr_cen[1], psp_sr_cen[2], psp_sr_cen[3], psp_sr_cen[4]);\n", "the report"),
+        ("\tif (r->bsp != global_structure_bsp_index || r->breakable != psp_sr_breakable(tick) || r->cluster_count <= 0)",
+         "\tif (psp_sr_census() && r->bsp == global_structure_bsp_index && r->breakable == psp_sr_breakable(tick))\n\t{\n"
+         "\t\tpsp_sr_cen[0]++;\n\t\tpsp_sr_candidate = r;\n\t\treturn FALSE;\n\t}\n"
+         "\tif (r->bsp != global_structure_bsp_index || r->breakable != psp_sr_breakable(tick) || r->cluster_count <= 0)", "the try's census"),
+        ("\t\tstruct psp_sr_record *was = psp_sr_candidate;\n\n",
+         "\t\tstruct psp_sr_record *was = psp_sr_candidate;\n\n"
+         "\t\tif (psp_sr_census())\n\t\t{\n"
+         "\t\t\tint differs = was->count != *count || memcmp(&was->clipped_position, clipped_position, sizeof(*clipped_position)) ||\n"
+         "\t\t\t\tmemcmp(&was->clipped_velocity, clipped_velocity, sizeof(*clipped_velocity)) ||\n"
+         "\t\t\t\t(*count > 0 && memcmp(was->planes, collisions, *count * sizeof(*collisions)));\n\n"
+         "\t\t\tif (was->near_count < 0 || psp_sr_near_count < 0)\n\t\t\t\tpsp_sr_cen[4]++;\n"
+         "\t\t\telse if (was->near_count == psp_sr_near_count && !memcmp(was->near, psp_sr_near_list, psp_sr_near_count * sizeof(struct psp_sr_near)))\n"
+         "\t\t\t{\n\t\t\t\tpsp_sr_cen[1]++;\n\t\t\t\tif (differs)\n\t\t\t\t\tpsp_sr_cen[2]++;\n\t\t\t}\n"
+         "\t\t\telse\n\t\t\t\tpsp_sr_cen[3]++;\n\t\t}\n", "the store's census"),
+        ("\tif (psp_sr_met || psp_sr_cluster_count < 0 || *count > PSP_SR_PLANES)\n\t\treturn;\n",
+         "\tif ((!psp_sr_census() && (psp_sr_met || psp_sr_cluster_count < 0)) || *count > PSP_SR_PLANES)\n\t\treturn;\n"
+         "\tr->near_count = psp_sr_near_count;\n\tif (psp_sr_near_count > 0)\n"
+         "\t\tmemcpy(r->near, psp_sr_near_list, psp_sr_near_count * sizeof(struct psp_sr_near));\n", "the store's keep"),
+        ("\t\t\t\t\t\t\tobject_get_features_in_sphere(\n\t\t\t\t\t\t\t\tflags,\n\t\t\t\t\t\t\t\tobject_index,\n\t\t\t\t\t\t\t\tcenter,\n\t\t\t\t\t\t\t\tradius,\n\t\t\t\t\t\t\t\theight,\n\t\t\t\t\t\t\t\twidth,\n\t\t\t\t\t\t\t\tignore_object_index,\n\t\t\t\t\t\t\t\tfeatures);\n",
+         "\t\t\t\t\t\t\t{ /* PSP_SWEEPREUSE census: an object adding features is a near one */\n"
+         "\t\t\t\t\t\t\tlong psp_sr_had = features->count[0] + features->count[1] + features->count[2];\n"
+         "\t\t\t\t\t\t\tobject_get_features_in_sphere(\n\t\t\t\t\t\t\t\tflags,\n\t\t\t\t\t\t\t\tobject_index,\n\t\t\t\t\t\t\t\tcenter,\n\t\t\t\t\t\t\t\tradius,\n\t\t\t\t\t\t\t\theight,\n\t\t\t\t\t\t\t\twidth,\n\t\t\t\t\t\t\t\tignore_object_index,\n\t\t\t\t\t\t\t\tfeatures);\n"
+         "\t\t\t\t\t\t\tif (psp_sr_on_pill && object_index != ignore_object_index &&\n"
+         "\t\t\t\t\t\t\t\tfeatures->count[0] + features->count[1] + features->count[2] != psp_sr_had)\n"
+         "\t\t\t\t\t\t\t\tpsp_sr_near_add(object_index);\n\t\t\t\t\t\t\t}\n", "the gather's object call"),
+        ("\tshort sr_clusters[PSP_SR_CLUSTERS], sr_cluster_count; /* SWEEPREUSE: the gather's clusters */\n",
+         "\tshort sr_clusters[PSP_SR_CLUSTERS], sr_cluster_count; /* SWEEPREUSE: the gather's clusters */\n"
+         "\tshort sr_near_count;\n\tstruct psp_sr_near sr_near[PSP_SR_NEAR];\n", "bipedstage2's slot near list"),
+        ("\t\tshort count = psp_sr_cluster_count;\n\n\t\tpsp_sr_on_pill = 1;\n\t\tpsp_sr_met = 0;\n\t\tpsp_sr_cluster_count = 0;\n",
+         "\t\tshort count = psp_sr_cluster_count, near = psp_sr_near_count;\n\n\t\tpsp_sr_on_pill = 1;\n\t\tpsp_sr_met = 0;\n\t\tpsp_sr_cluster_count = 0;\n\t\tpsp_sr_near_count = 0;\n", "bipedstage2's gather save"),
+        ("\t\tslot->sr_met = psp_sr_met;\n\t\tpsp_sr_on_pill = on;\n\t\tpsp_sr_met = met;\n\t\tpsp_sr_cluster_count = count;\n",
+         "\t\tslot->sr_met = psp_sr_met;\n\t\tslot->sr_near_count = psp_sr_near_count;\n\t\tif (psp_sr_near_count > 0)\n"
+         "\t\t\tmemcpy(slot->sr_near, psp_sr_near_list, psp_sr_near_count * sizeof(struct psp_sr_near));\n"
+         "\t\tpsp_sr_on_pill = on;\n\t\tpsp_sr_met = met;\n\t\tpsp_sr_cluster_count = count;\n\t\tpsp_sr_near_count = near;\n", "bipedstage2's gather keep"),
+        ("\t\tpsp_sr_met += slot->sr_met;\n\t}\n",
+         "\t\tpsp_sr_met += slot->sr_met;\n\t\tpsp_sr_near_count = slot->sr_near_count;\n\t\tif (slot->sr_near_count > 0)\n"
+         "\t\t\tmemcpy(psp_sr_near_list, slot->sr_near, slot->sr_near_count * sizeof(struct psp_sr_near));\n\t}\n", "bipedstage2's take near"),
+    )
+    for old, new, what in census:
+        if c.count(old) != 1:
+            check_fail("psp_fixups: SWEEPREUSE census: %s matches %d times" % (what, c.count(old)))
+            return 0
+        c = c.replace(old, new, 1)
     if not CHECK_ONLY:
         open(bp, "w", errors="surrogateescape").write(b)
         open(cp, "w", errors="surrogateescape").write(c)
