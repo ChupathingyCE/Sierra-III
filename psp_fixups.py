@@ -59463,6 +59463,43 @@ static unsigned long psp_object_checksum_datum(struct object_header_datum const 
         elif not CHECK_ONLY:
             open(objects_c, "w", errors="surrogateescape").write(text[:start] + body + text[end:])
     return touched
+# PSP_STORECOUNT=1 (the lead 2026-11-23 22:4x: the ME AI job's reads into the store's sections, emulator only): each
+# ANIM and unit-section accessor call made on the Media Engine is counted by section and by where the record and the
+# answer lie (eDRAM, where the ME's own copies are, or main RAM straight), for the collector's report every 60 s
+STORECOUNT = os.environ.get("PSP_STORECOUNT", "") == "1"
+TICK2_SC_WRAP = r"""
+#define TICK2_STORECOUNT_ON 1
+extern volatile unsigned long tick2_storecount[2][3]; /* section (0 ANIM, 1 unit), [record in eDRAM, answer in eDRAM, answer in main RAM] */
+extern volatile unsigned int psp_me_context;
+static inline int tick2_sc_on_me(void)
+{
+	unsigned int sp;
+
+	__asm__ ("move %0, $sp" : "=r"(sp));
+	return psp_me_context != 0 || (sp & 0x1FFFFFFFu) < 0x01000000u;
+}
+static inline void tick2_sc_count(int section, const void *record, const void *answer)
+{
+	if (!tick2_sc_on_me())
+		return;
+	if (((unsigned long)record & 0x1F000000u) == 0x04000000u)
+		tick2_storecount[section][0]++;
+	tick2_storecount[section][((unsigned long)answer & 0x1F000000u) == 0x04000000u ? 1 : 2]++;
+}
+"""
+if STORECOUNT:
+    TICK2_ANIM_DECL = TICK2_ANIM_DECL.replace("static inline struct object_animation_state *tick2_anim_of(",
+        "static inline struct object_animation_state *tick2_anim_of_raw(") + TICK2_SC_WRAP + r"""
+static inline struct object_animation_state *tick2_anim_of(const struct tick2_root *record)
+{
+	struct object_animation_state *answer = tick2_anim_of_raw(record);
+
+	tick2_sc_count(0, record, answer);
+	return answer;
+}
+"""
+    TICK2_STORE_CODE = TICK2_STORE_CODE + "\nvolatile unsigned long tick2_storecount[2][3]; /* PSP_STORECOUNT */\n"
+
 print("psp_fixups: the world store's ROOT: %d touches through the record (TICK2 root)" % tick2_root_cut(TREE))
 
 # PSP_TICK2=unit (step 1c-2): unit.animation (72 bytes, bipeds and vehicles) leaves the unit
@@ -59502,6 +59539,19 @@ static inline struct unit_animation *tick2_unit_anim_of(const struct tick2_root 
 	return tick2_unit_store->chunk[slot / TICK2_UNIT_CHUNK] + slot % TICK2_UNIT_CHUNK;
 }
 """
+if STORECOUNT:
+    TICK2_UNIT_DECL = TICK2_UNIT_DECL.replace("static inline struct unit_animation *tick2_unit_anim_of(",
+        "static inline struct unit_animation *tick2_unit_anim_of_raw(") + r"""
+static inline struct unit_animation *tick2_unit_anim_of(const struct tick2_root *record)
+{
+	struct unit_animation *answer = tick2_unit_anim_of_raw(record);
+
+	tick2_sc_count(1, record, answer);
+	return answer;
+}
+"""
+
+
 TICK2_UNIT_CODE = r"""
 struct tick2_unit_store *tick2_unit_store; /* TICK2 unit */
 struct unit_animation *tick2_unit_anims; /* TICK2 unit */
@@ -60686,6 +60736,11 @@ void platform_psp_log(const char *format, ...);
 /* psp_loading.c at a map's end, psp_platform.c each minute */
 void psp_tick2_gc_report(const char *label, int level_end)
 {
+#ifdef TICK2_STORECOUNT_ON
+	platform_psp_log("storecount (%s): on the ME, ANIM: %lu reads (record in eDRAM %lu), the answer in eDRAM %lu, in main RAM %lu; unit section: %lu reads (record in eDRAM %lu), the answer in eDRAM %lu, in main RAM %lu",
+		label, tick2_storecount[0][1] + tick2_storecount[0][2], tick2_storecount[0][0], tick2_storecount[0][1], tick2_storecount[0][2],
+		tick2_storecount[1][1] + tick2_storecount[1][2], tick2_storecount[1][0], tick2_storecount[1][1], tick2_storecount[1][2]);
+#endif
 	long store = 0;
 	long store_peak = 0, records = 0, overflow_taken = 0, overflow_peak = 0;
 #ifdef TICK2_STORE_SLOTS
