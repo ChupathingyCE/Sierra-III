@@ -62275,6 +62275,15 @@ TICK2_SPAN_HOIST_SITES = [
     ("source/units/bipeds.c", "biped_update", "biped"),
     ("source/units/units.c", "unit_preprocess_node_orientations", "unit"),
 ]
+# BIPED lines 2 (contact) and 3 (pathfinding): the biped datum's tail (the plan's cut sheet, the builder 2026-11-24 10:4x),
+# its datum bytes kept under new names (unused) so nothing shifts, its values in the unit section's record
+TICK2_BIP2_FIELDS = (("char", "landing_recovery_counter"), ("char", "landing_recovery_time"), ("char", "state"), ("char", "elevator_ticks"),
+    ("long", "elevator_object_index"), ("long", "support_surface_index"), ("long", "bump_object_index"), ("char", "bump_ticks"),
+    ("char", "airborne_ticks"), ("char", "slipping_ticks"), ("char", "stop_ticks"), ("char", "jump_recovery_timer"),
+    ("char", "player_melee_ticks"), ("char", "player_melee_attack_tick"), ("short", "landing"), ("real", "bank"),
+    ("real_plane3d", "ground_plane"), ("byte", "limp_body_current_relaxation_iterations"), ("byte", "limp_body_max_relaxation_iterations"))
+TICK2_BIP3_FIELDS = (("long", "pathfinding_surface_index"), ("real_point3d", "pathfinding_point"), ("long", "last_pathfinding_attempt_time"),
+    ("long", "last_pathfinding_surface_index"), ("long", "impact_target_object_index"), ("long", "last_falling_communication_time"))
 def tick2_span_cut(tree):
     if not TICK2_BIPED:
         return 0
@@ -62311,7 +62320,10 @@ def tick2_span_cut(tree):
     h = h.replace(store, "\n/* TICK2 biped: the span that left _unit_datum, as spec section 34's two lines, and the unit section's record */\n"
                   "struct tick2_unit_ctl /* CONTROL: the requests and throttle */\n{\n" + ctl + "};\n"
                   "struct tick2_unit_bip1 /* BIPED line 1: motion's aim and look */\n{\n" + bip1 + "};\n"
-                  "struct tick2_unit_rec\n{\n\tstruct unit_animation animation;\n\tstruct tick2_unit_ctl ctl;\n\tstruct tick2_unit_bip1 bip1;\n};\n" + store)
+                  "struct tick2_unit_bip2 /* BIPED line 2: contact, the ground and landing */\n{\n" + "".join("\t%s %s;\n" % f for f in TICK2_BIP2_FIELDS) + "};\n"
+                  "struct tick2_unit_bip3 /* BIPED line 3: pathfinding */\n{\n" + "".join("\t%s %s;\n" % f for f in TICK2_BIP3_FIELDS) + "};\n"
+                  "struct tick2_unit_rec\n{\n\tstruct unit_animation animation;\n\tstruct tick2_unit_ctl ctl;\n\tstruct tick2_unit_bip1 bip1;\n"
+                  "\tstruct tick2_unit_bip2 bip2;\n\tstruct tick2_unit_bip3 bip3;\n};\n" + store)
     for old, new in (("\tstruct unit_animation *chunk[TICK2_UNIT_CHUNKS];", "\tstruct tick2_unit_rec *chunk[TICK2_UNIT_CHUNKS];"),
                      ("\tstruct unit_animation *chunk_was[TICK2_UNIT_CHUNKS];", "\tstruct tick2_unit_rec *chunk_was[TICK2_UNIT_CHUNKS];"),
                      ("extern struct unit_animation *tick2_unit_anims;", "extern struct tick2_unit_rec *tick2_unit_anims;")):
@@ -62331,7 +62343,9 @@ def tick2_span_cut(tree):
         "static inline struct unit_animation *%s(const struct tick2_root *record)\n{\n\treturn &tick2_unit_rec_of(record)->animation;\n}\n"
         "/* TICK2 biped: each line's one way in */\n"
         "static inline struct tick2_unit_ctl *tick2_unit_ctl_of(const struct tick2_root *record)\n{\n\treturn &tick2_unit_rec_of(record)->ctl;\n}\n"
-        "static inline struct tick2_unit_bip1 *tick2_unit_bip1_of(const struct tick2_root *record)\n{\n\treturn &tick2_unit_rec_of(record)->bip1;\n}\n" % name)
+        "static inline struct tick2_unit_bip1 *tick2_unit_bip1_of(const struct tick2_root *record)\n{\n\treturn &tick2_unit_rec_of(record)->bip1;\n}\n"
+        "static inline struct tick2_unit_bip2 *tick2_unit_bip2_of(const struct tick2_root *record)\n{\n\treturn &tick2_unit_rec_of(record)->bip2;\n}\n"
+        "static inline struct tick2_unit_bip3 *tick2_unit_bip3_of(const struct tick2_root *record)\n{\n\treturn &tick2_unit_rec_of(record)->bip3;\n}\n" % name)
     if not CHECK_ONLY:
         open(units_h, "w", errors="surrogateescape").write(h)
     # the unit section's code: its arrays, sizes, take, checksum and trial put-backs hold the whole record
@@ -62465,6 +62479,12 @@ static void tick2_proof_span_check(void)
         check_fail("psp_fixups: TICK2 biped: _biped_datum's crouch matches %d times" % bh.count(crouch_line))
         return 0
     bh = bh.replace(crouch_line, "\tshort landing;\n" + ("\tunsigned char tick2_proof_crouch[4] __attribute__((aligned(4))); /* TICK2 proof */\n" if TICK2_PROOF else "") + "\treal bank;\n")
+    for ty, f in TICK2_BIP2_FIELDS + TICK2_BIP3_FIELDS:
+        decl = "\t%s %s;\n" % (ty, f)
+        if bh.count(decl) != 1:
+            check_fail("psp_fixups: TICK2 biped: _biped_datum's %s matches %d times" % (f, bh.count(decl)))
+            return 0
+        bh = bh.replace(decl, "\t%s tick2_old_%s; /* TICK2 biped: in line %s's record */\n" % (ty, f, 2 if (ty, f) in TICK2_BIP2_FIELDS else 3))
     if not CHECK_ONLY:
         open(bipeds_h, "w", errors="surrogateescape").write(bh)
     crouch_touch = re.compile(r"\b([A-Za-z_]\w*(?:\([^()]*\))?)->biped\.crouch\b")
@@ -62489,12 +62509,38 @@ static void tick2_proof_span_check(void)
                         "\t\t\t\t\t{\n\t\t\t\t\t\tvoid tick2_proof_crouch_fill(void *datum);\n\n\t\t\t\t\t\ttick2_proof_crouch_fill(object);\n\t\t\t\t\t}\n")
         bc = open(path, errors="surrogateescape").read()
         bc += "\n/* TICK2 proof: the biped's old crouch bytes patterned at its making (objects.c calls it) */\n" \
-              "void tick2_proof_crouch_fill(void *datum)\n{\n\tmemset(((struct biped_datum *)datum)->biped.tick2_proof_crouch, %d, 4);\n}\n" % TICK2_PROOF_BYTE
+              "void tick2_proof_crouch_fill(void *datum)\n{\n\tmemset(((struct biped_datum *)datum)->biped.tick2_proof_crouch, %d, 4);\n" % TICK2_PROOF_BYTE + \
+              "".join("\tmemset(&((struct biped_datum *)datum)->biped.tick2_old_%s, %d, sizeof(((struct biped_datum *)datum)->biped.tick2_old_%s));\n"
+                      % (f, TICK2_PROOF_BYTE, f) for _, f in TICK2_BIP2_FIELDS + TICK2_BIP3_FIELDS) + "}\n"
         if not CHECK_ONLY:
             open(path, "w", errors="surrogateescape").write(bc)
         if not CHECK_ONLY:
             open(objects_c, "w", errors="surrogateescape").write(oc)
     print("psp_fixups: TICK2 biped: crouch's 14 touches through BIPED line 1")
+    tail2 = "|".join(f for _, f in TICK2_BIP2_FIELDS)
+    tail3 = "|".join(f for _, f in TICK2_BIP3_FIELDS)
+    tail_touch = re.compile(r"\b([A-Za-z_]\w*(?:\([^()]*\))?)->biped\.(%s|%s)\b" % (tail2, tail3))
+    tail_window = re.compile(r"PSP_BMSW?\((\w+), biped\.(%s|%s)((?:\.\w+)*)\)" % (tail2, tail3))
+    tail_left = re.compile(r"(?<![\w>])biped\.(%s|%s)\b" % (tail2, tail3))
+    bip3_names = set(f for _, f in TICK2_BIP3_FIELDS)
+    def tail_line(f):
+        return "bip3" if f in bip3_names else "bip2"
+    tail_n = 0
+    for root, dirs, files in os.walk(os.path.join(tree, "source")):
+        for fname in files:
+            if not fname.endswith((".c", ".h")):
+                continue
+            tpath = os.path.join(root, fname)
+            text = open(tpath, errors="surrogateescape").read()
+            text, n1 = tail_touch.subn(lambda m: "(*tick2_unit_%s_of(%s->object.root)).%s" % (tail_line(m.group(2)), m.group(1), m.group(2)), text)
+            text, n2 = tail_window.subn(lambda m: "(*tick2_unit_%s_of(%s->object.root)).%s%s" % (tail_line(m.group(2)), m.group(1), m.group(2), m.group(3)), text)
+            stray = tail_left.findall(text)
+            if stray:
+                check_fail("psp_fixups: TICK2 biped: lines 2-3 touches left in %s (%s)" % (tpath, ", ".join(sorted(set(stray)))))
+            if n1 + n2 and not CHECK_ONLY:
+                open(tpath, "w", errors="surrogateescape").write(text)
+            tail_n += n1 + n2
+    print("psp_fixups: TICK2 biped: lines 2 and 3, %d touches through their records" % tail_n)
     rest = "control_flags|aiming_speed|current_zoom_level"
     rest_touch = re.compile(r"\b([A-Za-z_]\w*(?:\([^()]*\))?)->unit\.(%s)\b" % rest)
     rest_window = re.compile(r"PSP_BMSW?\((\w+), unit\.(%s)\)" % rest)
@@ -62600,7 +62646,7 @@ static void tick2_proof_span_check(void)
             body = text[start:end]
             sets = [s.start() for s in re.finditer(r"(?<![\w>.])%s\s*=[^=]" % base, body)]
             locals_ = ""
-            for line in ("ctl", "bip1"):
+            for line in ("ctl", "bip1", "bip2", "bip3"):
                 use = "(*tick2_unit_%s_of(%s->object.root))" % (line, base)
                 first = body.find(use)
                 if first < 0:
