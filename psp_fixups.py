@@ -60814,6 +60814,10 @@ void tick2_pp_touch(long object_index)
 	if (tick2_pp_phase != 1 || object_index == NONE || k >= MAXIMUM_OBJECTS_PER_MAP ||
 		((tick2_pp_touched[k >> 3] >> (k & 7)) & 1))
 		return;
+	/* the control (posepassinline): every root's tail runs in its own update, so nothing is stale and a pose here
+	would undo a pose's IK already made (tick2pass3 parted a30 that way) */
+	if (PSP_KEEP_ONCE("posepassinline"))
+		return;
 	/* only an object whose nodes are made: one still inside object_new is posed there (its own pose-now) */
 	object = object_try_and_get(object_index);
 	if (!object || !object->object.root || object->object.root->pose_first == TICK2_POSE_NONE || !object->object.root->pose_count)
