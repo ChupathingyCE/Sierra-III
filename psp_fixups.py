@@ -62779,6 +62779,306 @@ def sr_reach_cut(tree):
     return 1
 sr_reach_cut(TREE)
 
+# PSP_COLLINDEX=1 (the collision box's objects' index, step 1: docs/box_collision.md section 12.5; needs PSP_TICK2_STAMPS=1,
+# whose change sites patch it; keep word "collindexshadow"): the index built and patched beside the cluster lists, answering
+# nothing. At biped and other sphere gathers and at rays it works out the index's query (cells visited, entries scanned,
+# candidates) and checks that every object the cluster walk passes its broad phase is among the candidates (a miss is a
+# bug), and that the index's sphere for it is the object's own (a stale one names a sphere write no change site sees).
+# A line a site each 300 ticks. The cell size is PSP_COLLINDEX_CELL (world units, default 2).
+COLLINDEX = os.environ.get("PSP_COLLINDEX", "") == "1"
+COLLINDEX_CELL = float(os.environ.get("PSP_COLLINDEX_CELL", "2"))
+CI_CODE = r"""
+/* PSP_COLLINDEX (psp_fixups.py): the collision box's objects' index, in shadow (docs/box_collision.md section 12) */
+#define PSP_CI_CELL @CELL@f
+#define PSP_CI_BUCKETS 1024
+struct psp_ci_entry
+{
+	real_point3d c;
+	real r;
+	short cx, cy, next;
+	unsigned char in, large;
+};
+static struct psp_ci_entry psp_ci[MAXIMUM_OBJECTS_PER_MAP];
+static short psp_ci_head[PSP_CI_BUCKETS], psp_ci_large = -1;
+static int psp_ci_on = -1, psp_ci_ready;
+unsigned long psp_ci_me_dirty;
+/* sets made, moves across cells, removes, rebuilds, rebuilds for the ME */
+unsigned long psp_ci_upd[5];
+static short *psp_ci_list(struct psp_ci_entry const *e)
+{
+	return e->large ? &psp_ci_large : &psp_ci_head[((unsigned)(e->cx * 73856093) ^ (unsigned)(e->cy * 19349663)) & (PSP_CI_BUCKETS - 1)];
+}
+static void psp_ci_unlink(short k)
+{
+	short *at = psp_ci_list(&psp_ci[k]);
+
+	while (*at >= 0 && *at != k)
+		at = &psp_ci[*at].next;
+	if (*at == k)
+		*at = psp_ci[k].next;
+	psp_ci[k].in = 0;
+}
+static short psp_ci_cell(real v)
+{
+	real q = v / PSP_CI_CELL;
+	long i = (long)q;
+
+	if ((real)i > q)
+		i--;
+	return (short)(i < -32000 ? -32000 : i > 32000 ? 32000 : i);
+}
+static void psp_ci_set(long object_index, real_point3d const *c, real r)
+{
+	short k = (short)DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index);
+	struct psp_ci_entry *e;
+	short cx = psp_ci_cell(c->x), cy = psp_ci_cell(c->y);
+	unsigned char large = r > PSP_CI_CELL * 0.5f;
+
+	if (k < 0 || k >= MAXIMUM_OBJECTS_PER_MAP)
+		return;
+	e = &psp_ci[k];
+	psp_ci_upd[0]++;
+	if (e->in && e->large == large && (large || (e->cx == cx && e->cy == cy)))
+	{
+		e->c = *c;
+		e->r = r;
+		return;
+	}
+	if (e->in)
+	{
+		psp_ci_unlink(k);
+		psp_ci_upd[1]++;
+	}
+	e->c = *c;
+	e->r = r;
+	e->cx = cx;
+	e->cy = cy;
+	e->large = large;
+	e->next = *psp_ci_list(e);
+	*psp_ci_list(e) = k;
+	e->in = 1;
+}
+static void psp_ci_remove(long object_index)
+{
+	short k = (short)DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index);
+
+	if (k >= 0 && k < MAXIMUM_OBJECTS_PER_MAP && psp_ci[k].in)
+	{
+		psp_ci_unlink(k);
+		psp_ci_upd[2]++;
+	}
+}
+static void psp_ci_rebuild(void)
+{
+	struct object_iterator iterator;
+	struct object_datum *object;
+	int k;
+
+	for (k = 0; k < PSP_CI_BUCKETS; k++)
+		psp_ci_head[k] = -1;
+	psp_ci_large = -1;
+	for (k = 0; k < MAXIMUM_OBJECTS_PER_MAP; k++)
+		psp_ci[k].in = 0;
+	object_iterator_new(&iterator, _object_mask_all, 0);
+	for (object = (struct object_datum *)object_iterator_next(&iterator); object; object = (struct object_datum *)object_iterator_next(&iterator))
+		if (TEST_FLAG(object->object.flags, _object_connected_to_map_bit) && object->object.parent_object_index == NONE &&
+			TEST_FLAG(object->object.flags, _object_has_collision_model_bit))
+			psp_ci_set(iterator.index, &object->object.root->bounding_sphere_center, object->object.root->bounding_sphere_radius);
+	psp_ci_upd[3]++;
+	psp_ci_ready = 1;
+}
+/* 1 when the shadow is asked for and current (rebuilt after a map, a revert or a change made on the ME) */
+static int psp_ci_live(void)
+{
+	static long last_tick = -1;
+	long tick = game_time_get();
+
+	if (psp_ci_on < 0)
+		psp_ci_on = PSP_KEEP_ONCE("collindexshadow") ? 1 : 0;
+	if (!psp_ci_on || psp_work_on_me())
+		return 0;
+	if (tick < last_tick)
+		psp_ci_ready = 0;
+	last_tick = tick;
+	if (TICK2_CS_UNCACHED(psp_ci_me_dirty))
+	{
+		TICK2_CS_UNCACHED(psp_ci_me_dirty) = 0;
+		psp_ci_upd[4]++;
+		psp_ci_ready = 0;
+	}
+	if (!psp_ci_ready)
+		psp_ci_rebuild();
+	return 1;
+}
+void psp_ci_forget(void)
+{
+	psp_ci_ready = 0;
+}
+/* the census: by site (0 the biped pill gathers, 1 other sphere gathers, 2 rays) queries, cells visited, entries scanned,
+candidates (in the cells asked for), the large list's entries, the walk's passes checked, missed, stale */
+static unsigned long psp_ci_cen[3][8];
+static long psp_ci_window = -1;
+static void psp_ci_report(long tick)
+{
+	static char const *const names[3] = { "sphere_pill", "sphere_other", "vector" };
+	int k;
+
+	for (k = 0; k < 3; k++)
+		platform_psp_log("collindex: cell %.1f ticks %ld-%ld %s: queries %lu, cells %lu, scanned %lu, candidates %lu, large %lu; the walk's passes %lu, missed %lu, stale %lu",
+			PSP_CI_CELL, tick - 300, tick - 1, names[k], psp_ci_cen[k][0], psp_ci_cen[k][1], psp_ci_cen[k][2], psp_ci_cen[k][3],
+			psp_ci_cen[k][4], psp_ci_cen[k][5], psp_ci_cen[k][6], psp_ci_cen[k][7]);
+	platform_psp_log("collindex: cell %.1f ticks %ld-%ld updates: sets %lu, cell moves %lu, removes %lu, rebuilds %lu (for the ME %lu)",
+		PSP_CI_CELL, tick - 300, tick - 1, psp_ci_upd[0], psp_ci_upd[1], psp_ci_upd[2], psp_ci_upd[3], psp_ci_upd[4]);
+	memset(psp_ci_cen, 0, sizeof(psp_ci_cen));
+	memset(psp_ci_upd, 0, sizeof(psp_ci_upd));
+}
+static void psp_ci_window_check(void)
+{
+	long window = game_time_get() / 300;
+
+	if (window != psp_ci_window)
+	{
+		if (psp_ci_window >= 0 && window == psp_ci_window + 1)
+			psp_ci_report(window * 300);
+		psp_ci_window = window;
+	}
+}
+/* a query over the cells [x0, x1] x [y0, y1] of the grid, and the large list */
+static void psp_ci_query(int site, real x0, real x1, real y0, real y1)
+{
+	short cx0 = psp_ci_cell(x0 - PSP_CI_CELL * 0.5f), cx1 = psp_ci_cell(x1 + PSP_CI_CELL * 0.5f);
+	short cy0 = psp_ci_cell(y0 - PSP_CI_CELL * 0.5f), cy1 = psp_ci_cell(y1 + PSP_CI_CELL * 0.5f);
+	unsigned long *n = psp_ci_cen[site];
+	short k;
+	long cx, cy;
+
+	n[0]++;
+	if ((long)(cx1 - cx0 + 1) * (cy1 - cy0 + 1) > 4096) /* a ray across the level: counted, not walked */
+	{
+		n[1] += 4096;
+		return;
+	}
+	for (cx = cx0; cx <= cx1; cx++)
+		for (cy = cy0; cy <= cy1; cy++)
+		{
+			n[1]++;
+			for (k = psp_ci_head[((unsigned)(cx * 73856093) ^ (unsigned)(cy * 19349663)) & (PSP_CI_BUCKETS - 1)]; k >= 0; k = psp_ci[k].next)
+			{
+				n[2]++;
+				if (psp_ci[k].cx == cx && psp_ci[k].cy == cy)
+					n[3]++;
+			}
+		}
+	for (k = psp_ci_large; k >= 0; k = psp_ci[k].next)
+		n[4]++;
+}
+static void psp_ci_bounds(int site, long object_index, real x0, real x1, real y0, real y1)
+{
+	short k = (short)DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index);
+	struct object_datum const *object = object_get(object_index);
+	struct psp_ci_entry const *e;
+	unsigned long *n = psp_ci_cen[site];
+
+	n[5]++;
+	if (k < 0 || k >= MAXIMUM_OBJECTS_PER_MAP || !psp_ci[k].in)
+	{
+		n[6]++;
+		return;
+	}
+	e = &psp_ci[k];
+	if (!e->large && (e->cx < psp_ci_cell(x0 - PSP_CI_CELL * 0.5f) || e->cx > psp_ci_cell(x1 + PSP_CI_CELL * 0.5f) ||
+		e->cy < psp_ci_cell(y0 - PSP_CI_CELL * 0.5f) || e->cy > psp_ci_cell(y1 + PSP_CI_CELL * 0.5f)))
+		n[6]++;
+	if (memcmp(&e->c, &object->object.root->bounding_sphere_center, sizeof(e->c)) || e->r != object->object.root->bounding_sphere_radius)
+		n[7]++;
+}
+void psp_ci_sphere_query(int site, real_point3d const *center, real radius)
+{
+	if (!psp_ci_live())
+		return;
+	psp_ci_window_check();
+	psp_ci_query(site, center->x - radius, center->x + radius, center->y - radius, center->y + radius);
+}
+int psp_ci_sphere_pass(int site, long object_index, real_point3d const *center, real radius)
+{
+	if (psp_ci_on > 0 && !psp_work_on_me())
+		psp_ci_bounds(site, object_index, center->x - radius, center->x + radius, center->y - radius, center->y + radius);
+	return 1;
+}
+void psp_ci_ray_query(real_point3d const *p, real_vector3d const *v)
+{
+	if (!psp_ci_live())
+		return;
+	psp_ci_window_check();
+	psp_ci_query(2, MIN(p->x, p->x + v->i), MAX(p->x, p->x + v->i), MIN(p->y, p->y + v->j), MAX(p->y, p->y + v->j));
+}
+int psp_ci_ray_pass(long object_index, real_point3d const *p, real_vector3d const *v)
+{
+	if (psp_ci_on > 0 && !psp_work_on_me())
+		psp_ci_bounds(2, object_index, MIN(p->x, p->x + v->i), MAX(p->x, p->x + v->i), MIN(p->y, p->y + v->j), MAX(p->y, p->y + v->j));
+	return 1;
+}
+"""
+def collindex_cut(tree):
+    if not COLLINDEX:
+        return 0
+    if not TICK2_STAMPS:
+        check_fail("psp_fixups: PSP_COLLINDEX=1 needs PSP_TICK2_STAMPS=1 (its change sites)")
+        return 0
+    op = os.path.join(tree, "source/objects/objects.c")
+    cp = os.path.join(tree, "source/physics/collisions.c")
+    o = open(op, errors="surrogateescape").read()
+    c = open(cp, errors="surrogateescape").read()
+    def one(text, old, new, what, start=0, end=None):
+        end = len(text) if end is None else end
+        if text.count(old, start, end) != 1:
+            check_fail("psp_fixups: COLLINDEX: %s matches %d times" % (what, text.count(old, start, end)))
+            return text
+        i = text.index(old, start, end)
+        return text[:i] + new + text[i + len(old):]
+    o = one(o, "static void tick2_cs_all(void)\n{\n", CI_CODE.replace("@CELL@", repr(COLLINDEX_CELL)) + "static void tick2_cs_all(void)\n{\n", "the stamps' head")
+    for old, new, what in (
+        ("\ttick2_cs_stamp_list(tick2_cs_held.clusters, tick2_cs_held.count, tick2_cs_held.object_index);\n\ttick2_cs_held.object_index = NONE;\n\ttick2_cs_counts[3]++;\n",
+         "\tif (psp_ci_on > 0)\n\t\tpsp_ci_remove(tick2_cs_held.object_index); /* PSP_COLLINDEX */\n"
+         "\ttick2_cs_stamp_list(tick2_cs_held.clusters, tick2_cs_held.count, tick2_cs_held.object_index);\n\ttick2_cs_held.object_index = NONE;\n\ttick2_cs_counts[3]++;\n", "the held settle"),
+        ("\ttick2_cs_counts[1]++;\n\ttick2_cs_stamp_list(clusters, count, object_index);\n",
+         "\ttick2_cs_counts[1]++;\n\tif (psp_ci_on > 0) /* PSP_COLLINDEX */\n\t\tpsp_ci_set(object_index, &object->object.root->bounding_sphere_center, object->object.root->bounding_sphere_radius);\n"
+         "\ttick2_cs_stamp_list(clusters, count, object_index);\n", "the changed reconnect"),
+        ("\ttick2_cs_counts[2]++;\n",
+         "\ttick2_cs_counts[2]++;\n\tif (psp_ci_on > 0) /* PSP_COLLINDEX */\n\t\tpsp_ci_set(object_index, &object->object.root->bounding_sphere_center, object->object.root->bounding_sphere_radius);\n", "the pose's sphere"),
+        ("\tpsp_posek_forget(); /* psp_fixups.py (FIXES_POSEK): the plans name this map's models */\n",
+         "\tpsp_posek_forget(); /* psp_fixups.py (FIXES_POSEK): the plans name this map's models */\n\t{\n\t\tvoid psp_ci_forget(void);\n\n\t\tpsp_ci_forget(); /* PSP_COLLINDEX */\n\t}\n", "the new map"),
+    ):
+        o = one(o, old, new, what)
+    # a change made on the ME: the index rebuilt before its next query
+    n_me = o.count("\t\tTICK2_CS_UNCACHED(tick2_cs_me_dirty) = 1;\n")
+    if n_me != 3:
+        check_fail("psp_fixups: COLLINDEX: %d ME marks, not 3" % n_me)
+    o = o.replace("\t\tTICK2_CS_UNCACHED(tick2_cs_me_dirty) = 1;\n", "\t\tTICK2_CS_UNCACHED(tick2_cs_me_dirty) = 1;\n\t\tTICK2_CS_UNCACHED(psp_ci_me_dirty) = 1; /* PSP_COLLINDEX */\n")
+    # the sites in collisions.c
+    decl = ("/* PSP_COLLINDEX: objects.c's shadow index */\nvoid psp_ci_sphere_query(int site, real_point3d const *center, real radius);\n"
+            "int psp_ci_sphere_pass(int site, long object_index, real_point3d const *center, real radius);\n"
+            "void psp_ci_ray_query(real_point3d const *p, real_vector3d const *v);\nint psp_ci_ray_pass(long object_index, real_point3d const *p, real_vector3d const *v);\n")
+    site = "(psp_sr_on_pill ? 0 : 1)"
+    head = "\nboolean collision_test_vector(\n"
+    c = one(c, head, "\n" + decl + head[1:], "collision_test_vector's head")
+    v0 = c.index(head); v1 = c.index("\n}\n", v0)
+    c = one(c, "\t\t\tstructure_cluster_marker_begin();\n", "\t\t\tpsp_ci_ray_query(point, vector); /* PSP_COLLINDEX */\n\t\t\tstructure_cluster_marker_begin();\n", "the ray's marker", v0, v1)
+    v0 = c.index(head); v1 = c.index("\n}\n", v0)
+    c = one(c, "\t\t\t\t\t\t\tpsp_sphere_may_cross(walk_inline, object_index, point, vector) &&\n",
+            "\t\t\t\t\t\t\tpsp_sphere_may_cross(walk_inline, object_index, point, vector) && psp_ci_ray_pass(object_index, point, vector) &&\n", "the ray's broad phase", v0, v1)
+    head = "\nboolean collision_get_features_in_sphere(\n"
+    g0 = c.index(head); g1 = c.index("\n}\n", g0)
+    c = one(c, "\t\t\tstructure_cluster_marker_begin();\n", "\t\t\tpsp_ci_sphere_query(%s, center, radius); /* PSP_COLLINDEX */\n\t\t\tstructure_cluster_marker_begin();\n" % site, "the gather's marker", g0, g1)
+    g0 = c.index(head); g1 = c.index("\n}\n", g0)
+    c = one(c, "\t\t\t\t\t\t\tpsp_features_objects++;\n", "\t\t\t\t\t\t\tpsp_features_objects++;\n\t\t\t\t\t\t\t(void)psp_ci_sphere_pass(%s, object_index, center, radius); /* PSP_COLLINDEX */\n" % site, "the gather's pass", g0, g1)
+    if not CHECK_ONLY:
+        open(op, "w", errors="surrogateescape").write(o)
+        open(cp, "w", errors="surrogateescape").write(c)
+    print("psp_fixups: COLLINDEX: the objects' index in shadow, cell %.1f (keep word collindexshadow)" % COLLINDEX_CELL)
+    return 1
+collindex_cut(TREE)
+
 # PSP_BPCOUNT=1 (lane B part 3, the lab's tick_store_biped_plan.md "Old-layer losses"; keep word "bpcount"): collision's
 # broad-phase walks counted. Every walk over a cluster's collideable objects (collision_test_point,
 # collision_test_vector, psp_collision_test_vector_quiet, collision_get_features_in_sphere split into biped motion's
