@@ -60850,21 +60850,59 @@ tick2_stale_census_cut(TREE) # after the collector's report it rides
 TICK2_POSEPASS = os.environ.get("PSP_TICK2_POSEPASS", "") == "1"
 TICK2_PP_CODE = r"""
 /* TICK2 posing pass (spec section 33) */
-int tick2_pp_phase; /* 0: one pass, as the old build; 1: motion; 2: the tails */
+int tick2_pp_phase; /* 0: one pass, as the old build; 1: motion; 2: the tails; 3: a tree's pose at a read (touchorder) */
 #define TICK2_PP_MOST 1536
 static unsigned short tick2_pp_roots[TICK2_PP_MOST]; /* the roots' absolute indices: the handle is rebuilt from the header in phase 2 (the lead's heap menu (a), 2026-11-23 21:2x) */
 static long tick2_pp_count;
 static unsigned char tick2_pp_skip[MAXIMUM_OBJECTS_PER_MAP / 8 + 1]; /* psp_pose_half_skips' answer, from phase 1, a bit an object */
 static unsigned char tick2_pp_dead[MAXIMUM_OBJECTS_PER_MAP / 8 + 1]; /* deleted in phase 1: no tail, even if its slot is reused that tick */
-static unsigned long tick2_pp_early; /* touchorder: roots whose tail ran at a touch, ahead of phase 2 */
+static unsigned long tick2_pp_early; /* touchorder: roots whose tree was posed at a read (phase 3), ahead of phase 2 */
 static unsigned char tick2_pp_touched[MAXIMUM_OBJECTS_PER_MAP / 8 + 1]; /* posed on touch this tick */
 static unsigned char tick2_pp_seen[MAXIMUM_OBJECTS_PER_MAP / 8 + 1]; /* listed this tick: the biped stage updates its bipeds in more than one pass */
 static unsigned char tick2_pp_busy[MAXIMUM_OBJECTS_PER_MAP / 8 + 1]; /* a root's phase-1 update under way: its own and its children's reads of it come in here */
 static unsigned char tick2_pp_done[MAXIMUM_OBJECTS_PER_MAP / 8 + 1]; /* a listed root's first phase-1 update has returned: old had it whole by now */
+static unsigned char tick2_pp_posed[MAXIMUM_OBJECTS_PER_MAP / 8 + 1]; /* posed (and post-processed) in phase 3: phase 2 runs the rest of its tail */
+/* the pose gate's test. Phase 3 poses the objects it reaches, except one still inside object_new (no node blocks
+yet: object_new poses it there), and marks them; phase 2 then skips their pose and post-processing, which phase 3
+made at the read, and runs the rest of their tails (function values, lights, the elevator's riders) at its own time */
+static int tick2_pp_posed_early(long object_index)
+{
+	long k = object_index & 0xFFFF;
+	struct object_datum *object;
+
+	if (k >= MAXIMUM_OBJECTS_PER_MAP)
+		return 0;
+	if (tick2_pp_phase == 2)
+		return (tick2_pp_posed[k >> 3] >> (k & 7)) & 1;
+	if (tick2_pp_phase != 3)
+		return 0;
+	object = object_try_and_get(object_index);
+	if (!object || !object->object.root || object->object.root->pose_first == TICK2_POSE_NONE || !object->object.root->pose_count)
+		return 1;
+	tick2_pp_posed[k >> 3] |= (unsigned char)(1 << (k & 7));
+	return 0;
+}
+/* a root's later phase-1 pass moves it again: its tree's early pose no longer stands, so phase 2 poses it */
+static void tick2_pp_unpose(long object_index)
+{
+	while (object_index != NONE)
+	{
+		long k = object_index & 0xFFFF;
+		struct object_datum *object = object_try_and_get(object_index);
+
+		if (!object || k >= MAXIMUM_OBJECTS_PER_MAP)
+			return;
+		tick2_pp_posed[k >> 3] &= (unsigned char)~(1 << (k & 7));
+		tick2_pp_unpose(object->object.first_child_object_index);
+		object_index = object->object.parent_object_index != NONE ? object->object.next_object_index : NONE;
+	}
+}
 static boolean object_update(long object_index);
 /* the old-order rule (spec section 33; the lead 2026-11-23 22:3x; "touchorder"): a phase-1 read of another object's
 pose (a touch or a getter) gives old's answer by its loop order. If phase 1 has finished the object's root's update, old
-had updated it whole by now, IK included, so its root's tail runs now and phase 2 skips it; if not, old would read it at
+had updated it whole by now, IK included, so its root's tree is posed now (phase 3: the pose and its post-processing
+only; the rest of the tail waits for phase 2, because a whole tail run inside another object's read made and removed
+lights under it: tick2pc4's crash); if not, old would read it at
 last tick's pose, so it's left as it stands. "Finished", not "reached": a root's own motion and its children's updates
 read the root while its update is under way, and old poses it only after them (tick2touch4 parted c20 at tick 38 on
 "reached": the tail ran in the middle of its own root's motion) */
@@ -60882,10 +60920,11 @@ static void tick2_pp_old_order(long object_index)
 	if (!walk || at >= MAXIMUM_OBJECTS_PER_MAP || !((tick2_pp_done[at >> 3] >> (at & 7)) & 1) ||
 		((tick2_pp_busy[at >> 3] >> (at & 7)) & 1) || ((tick2_pp_dead[at >> 3] >> (at & 7)) & 1))
 		return;
-	tick2_pp_phase = 2;
+	if ((tick2_pp_posed[at >> 3] >> (at & 7)) & 1)
+		return;
+	tick2_pp_phase = 3;
 	object_update(root);
 	tick2_pp_phase = 1;
-	tick2_pp_dead[at >> 3] |= (unsigned char)(1 << (at & 7)); /* its tail is done: phase 2 skips it */
 	tick2_pp_early++;
 }
 #define TICK2_PP_ELEVATORS 64
@@ -60899,7 +60938,7 @@ static int tick2_pp_half_skips(long object_index, struct object_datum *object)
 	long k = object_index & 0xFFFF;
 	int skipped;
 
-	if (tick2_pp_phase == 2 && k < MAXIMUM_OBJECTS_PER_MAP)
+	if (tick2_pp_phase >= 2 && k < MAXIMUM_OBJECTS_PER_MAP)
 		return (tick2_pp_skip[k >> 3] >> (k & 7)) & 1;
 	skipped = psp_pose_half_skips(object_index, object);
 	if (tick2_pp_phase == 1 && k < MAXIMUM_OBJECTS_PER_MAP)
@@ -60918,7 +60957,7 @@ static boolean tick2_pp_elevator(long object_index, boolean machine, real_point3
 
 	if (!machine)
 		return FALSE;
-	if (tick2_pp_phase == 2)
+	if (tick2_pp_phase >= 2)
 	{
 		for (k = 0; k < tick2_pp_elev_count; k++)
 			if (tick2_pp_elev[k].object_index == object_index)
@@ -61063,6 +61102,7 @@ static void tick2_pp_begin(void)
 	memset(tick2_pp_seen, 0, sizeof(tick2_pp_seen));
 	memset(tick2_pp_busy, 0, sizeof(tick2_pp_busy));
 	memset(tick2_pp_done, 0, sizeof(tick2_pp_done));
+	memset(tick2_pp_posed, 0, sizeof(tick2_pp_posed));
 	memset(tick2_pp_dead, 0, sizeof(tick2_pp_dead));
 	tick2_pp_phase = 1;
 	tick2_pp_ticks++;
@@ -61096,7 +61136,7 @@ void tick2_pp_deleted(long object_index)
 void platform_psp_log(const char *format, ...);
 void tick2_pp_report(const char *label, int level_end)
 {
-	platform_psp_log("posepass (%s): %lu ticks; roots listed %lu (%lu a tick), run inline past the list %lu, gone by phase 2 %lu; elevators past the table %lu; posed on touch %lu (%lu a hundred ticks); tails run at a touch (touchorder) %lu, counted in gone",
+	platform_psp_log("posepass (%s): %lu ticks; roots listed %lu (%lu a tick), run inline past the list %lu, gone by phase 2 %lu; elevators past the table %lu; posed on touch %lu (%lu a hundred ticks); trees posed at a read (touchorder) %lu",
 		label, tick2_pp_ticks, tick2_pp_listed, tick2_pp_ticks ? tick2_pp_listed / tick2_pp_ticks : 0,
 		tick2_pp_inline, tick2_pp_gone, tick2_pp_elev_lost, tick2_pp_touches, tick2_pp_ticks ? tick2_pp_touches * 100 / tick2_pp_ticks : 0,
 		tick2_pp_early);
@@ -61163,17 +61203,17 @@ def tick2_posepass_cut(tree):
             return None
         a = body.index(start)
         b = body.index(end, a) + len(end)
-        return body[:a] + "\t\tif (tick2_pp_phase != 2) /* TICK2 posepass: motion is phase 1's */\n\t\t{\n" + body[a:b] + "\t\t}\n" + body[b:]
+        return body[:a] + "\t\tif (tick2_pp_phase < 2) /* TICK2 posepass: motion is phase 1's */\n\t\t{\n" + body[a:b] + "\t\t}\n" + body[b:]
     common = [
         ("\t\tif (TEST_FLAG(object->object.flags, _object_garbage_bit))",
-         "\t\tif (tick2_pp_phase != 2 && TEST_FLAG(object->object.flags, _object_garbage_bit)) /* TICK2 posepass */"),
+         "\t\tif (tick2_pp_phase < 2 && TEST_FLAG(object->object.flags, _object_garbage_bit)) /* TICK2 posepass */"),
         ("\t\tif ((*tick2_anim_of(object->object.root)).interpolation_frame_count)",
-         "\t\tif (tick2_pp_phase != 2 && (*tick2_anim_of(object->object.root)).interpolation_frame_count) /* TICK2 posepass */"),
+         "\t\tif (tick2_pp_phase < 2 && (*tick2_anim_of(object->object.root)).interpolation_frame_count) /* TICK2 posepass */"),
         ("elevator_sampled = object->object.type == _object_type_machine &&\n",
          "elevator_sampled = tick2_pp_elevator(object_index, object->object.type == _object_type_machine, &elevator_sample) /* TICK2 posepass */ &&\n"),
         ("if (!TEST_FLAG(object->object.flags, _object_do_not_recompute_node_matrices_bit) && !psp_pose_skipped &&",
-         "if (tick2_pp_phase != 1 && !TEST_FLAG(object->object.flags, _object_do_not_recompute_node_matrices_bit) && !psp_pose_skipped && /* TICK2 posepass */"),
-        ("\t\tif (elevator_sampled)\n", "\t\tif (tick2_pp_phase != 1 && elevator_sampled) /* TICK2 posepass */\n"),
+         "if (tick2_pp_phase != 1 && !tick2_pp_posed_early(object_index) && !TEST_FLAG(object->object.flags, _object_do_not_recompute_node_matrices_bit) && !psp_pose_skipped && /* TICK2 posepass */"),
+        ("\t\tif (elevator_sampled)\n", "\t\tif ((tick2_pp_phase == 0 || tick2_pp_phase == 2) && elevator_sampled) /* TICK2 posepass */\n"),
     ]
     # the lean path
     lean = body_of(c, "static boolean psp_object_update_lean(\n\tlong object_index)\n{")
@@ -61183,11 +61223,11 @@ def tick2_posepass_cut(tree):
         ("\t\t\tmachine_elevator_sample(object_index, &elevator_sample);\n", "\t\t\tTRUE;\n"),
         ("\t\tpsp_pose_skipped = psp_pose_half_skips(object_index, object);\n", "\t\tpsp_pose_skipped = tick2_pp_half_skips(object_index, object); /* TICK2 posepass */\n"),
         ("\t\tif (!(psp_fvp_open && psp_fvp_put_off(object_index, object)))\n",
-         "\t\tif (tick2_pp_phase != 1 && !(psp_fvp_open && psp_fvp_put_off(object_index, object))) /* TICK2 posepass */\n"),
+         "\t\tif ((tick2_pp_phase == 0 || tick2_pp_phase == 2) && !(psp_fvp_open && psp_fvp_put_off(object_index, object))) /* TICK2 posepass */\n"),
         ("\t\tif (TEST_FLAG(object->object.flags, _object_dynamic_lighting_recompute_bit) &&\n",
-         "\t\tif (tick2_pp_phase != 1 && TEST_FLAG(object->object.flags, _object_dynamic_lighting_recompute_bit) && /* TICK2 posepass */\n"),
+         "\t\tif ((tick2_pp_phase == 0 || tick2_pp_phase == 2) && TEST_FLAG(object->object.flags, _object_dynamic_lighting_recompute_bit) && /* TICK2 posepass */\n"),
         ("\t\tif (!psp_pose_skipped)\n\t\t{\n\t\t\tif (!TEST_FLAG(_object_mask_unit",
-         "\t\tif (tick2_pp_phase != 1 && !psp_pose_skipped) /* TICK2 posepass */\n\t\t{\n\t\t\tif (!TEST_FLAG(_object_mask_unit"),
+         "\t\tif (tick2_pp_phase != 1 && !tick2_pp_posed_early(object_index) && !psp_pose_skipped) /* TICK2 posepass */\n\t\t{\n\t\t\tif (!TEST_FLAG(_object_mask_unit"),
     ], "the lean path")
     if body is None: return 0
     body = wrap(body, "\t\tobject_type_update_for_type(object->object.type, object_index);\n",
@@ -61203,11 +61243,11 @@ def tick2_posepass_cut(tree):
         ("\t\t\tmachine_elevator_sample(object_index, &elevator_sample);\n", "\t\t\tTRUE;\n"),
         ("\t\tint psp_pose_skipped = psp_pose_half_skips(object_index, object);\n", "\t\tint psp_pose_skipped = tick2_pp_half_skips(object_index, object); /* TICK2 posepass */\n"),
         ("\t\tif (psp_fvp_open && psp_fvp_put_off(object_index, object)) /* psp_fixups.py (FIXES_FISSION) */\n",
-         "\t\tif (tick2_pp_phase == 1 || (psp_fvp_open && psp_fvp_put_off(object_index, object))) /* psp_fixups.py (FIXES_FISSION); TICK2 posepass */\n"),
+         "\t\tif (tick2_pp_phase == 1 || tick2_pp_phase == 3 || (psp_fvp_open && psp_fvp_put_off(object_index, object))) /* psp_fixups.py (FIXES_FISSION); TICK2 posepass */\n"),
         ("\t\tif (\n\t\t\tTEST_FLAG(object->object.flags, _object_dynamic_lighting_recompute_bit) &&",
-         "\t\tif (tick2_pp_phase != 1 && /* TICK2 posepass */\n\t\t\tTEST_FLAG(object->object.flags, _object_dynamic_lighting_recompute_bit) &&"),
+         "\t\tif ((tick2_pp_phase == 0 || tick2_pp_phase == 2) && /* TICK2 posepass */\n\t\t\tTEST_FLAG(object->object.flags, _object_dynamic_lighting_recompute_bit) &&"),
         ("\t\tif (!psp_pose_skipped)\n\t\t\tobject_postprocess_node_matrices(object_index);",
-         "\t\tif (tick2_pp_phase != 1 && !psp_pose_skipped) /* TICK2 posepass */\n\t\t\tobject_postprocess_node_matrices(object_index);"),
+         "\t\tif (tick2_pp_phase != 1 && !tick2_pp_posed_early(object_index) && !psp_pose_skipped) /* TICK2 posepass */\n\t\t\tobject_postprocess_node_matrices(object_index);"),
         (head, head + r"""
 	/* TICK2 posepass: phase 1 lists each root it reaches, for phase 2's tails; past the list, a root's subtree
 	runs both phases at once, as the old build */
@@ -61222,6 +61262,8 @@ def tick2_posepass_cut(tree):
 		{
 			boolean result;
 
+			if ((tick2_pp_posed[k >> 3] & bit))
+				tick2_pp_unpose(object_index);
 			tick2_pp_busy[k >> 3] |= bit;
 			result = object_update(object_index);
 			tick2_pp_busy[k >> 3] &= (unsigned char)~bit;
