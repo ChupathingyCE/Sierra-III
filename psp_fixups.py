@@ -60736,6 +60736,259 @@ void psp_tick2_gc_report(const char *label, int level_end)
 print("psp_fixups: the collector's line per map: %s (TICK2 gccount)" % ("on" if tick2_gccount(TREE) else "off"))
 tick2_stale_census_cut(TREE) # after the collector's report it rides
 
+# PSP_TICK2_POSEPASS=1 (with PSP_TICK2=pose; spec section 33, the lead 2026-11-23 16:4x and 18:4x): the posing pass.
+# Both update paths (object_update and the port's lean path) end with the same tail after motion: the pose, the
+# elevator's carry, function values and colours, lights, the children's updates, then postprocess. Phase 1 (the
+# loop) runs each object's motion and its children's, skipping the tail's pose-dependent work, and lists each root
+# it reaches; phase 2 (after every loop of objects_update) walks the list and runs each root's tail, children's
+# tails inside it, so parents still come before children and IK still follows its pose. The pose's skip
+# decisions and the elevator's pre-move sample are taken once in phase 1 and kept for phase 2. A collision
+# instance that reaches an object not yet posed this tick poses it first (pose-on-touch, counted). Off, the two
+# phases are one, as the old build.
+TICK2_POSEPASS = os.environ.get("PSP_TICK2_POSEPASS", "") == "1"
+TICK2_PP_CODE = r"""
+/* TICK2 posing pass (spec section 33) */
+int tick2_pp_phase; /* 0: one pass, as the old build; 1: motion; 2: the tails */
+#define TICK2_PP_MOST 1536
+static long tick2_pp_roots[TICK2_PP_MOST];
+static long tick2_pp_count;
+static unsigned char tick2_pp_skip[MAXIMUM_OBJECTS_PER_MAP]; /* psp_pose_half_skips' answer, from phase 1 */
+static unsigned char tick2_pp_touched[MAXIMUM_OBJECTS_PER_MAP / 8 + 1]; /* posed on touch this tick */
+static unsigned char tick2_pp_seen[MAXIMUM_OBJECTS_PER_MAP / 8 + 1]; /* listed this tick: the biped stage updates its bipeds in more than one pass */
+#define TICK2_PP_ELEVATORS 64
+static struct { long object_index; real_point3d sample; } tick2_pp_elev[TICK2_PP_ELEVATORS];
+static long tick2_pp_elev_count;
+static unsigned long tick2_pp_ticks, tick2_pp_listed, tick2_pp_inline, tick2_pp_elev_lost, tick2_pp_touches;
+
+/* the pose's half-skip, decided once: phase 1 decides and keeps it, phase 2 reads it */
+static int tick2_pp_half_skips(long object_index, struct object_datum *object)
+{
+	long k = object_index & 0xFFFF;
+	int skipped;
+
+	if (tick2_pp_phase == 2 && k < MAXIMUM_OBJECTS_PER_MAP)
+		return tick2_pp_skip[k];
+	skipped = psp_pose_half_skips(object_index, object);
+	if (tick2_pp_phase == 1 && k < MAXIMUM_OBJECTS_PER_MAP)
+		tick2_pp_skip[k] = (unsigned char)skipped;
+	return skipped;
+}
+/* the elevator's sample before it moves: taken in phase 1, read back for the carry in phase 2 */
+static boolean tick2_pp_elevator(long object_index, boolean machine, real_point3d *sample)
+{
+	long k;
+
+	if (!machine)
+		return FALSE;
+	if (tick2_pp_phase == 2)
+	{
+		for (k = 0; k < tick2_pp_elev_count; k++)
+			if (tick2_pp_elev[k].object_index == object_index)
+			{
+				*sample = tick2_pp_elev[k].sample;
+				return TRUE;
+			}
+		return FALSE;
+	}
+	if (!machine_elevator_sample(object_index, sample))
+		return FALSE;
+	if (tick2_pp_phase == 1)
+	{
+		if (tick2_pp_elev_count < TICK2_PP_ELEVATORS)
+		{
+			tick2_pp_elev[tick2_pp_elev_count].object_index = object_index;
+			tick2_pp_elev[tick2_pp_elev_count].sample = *sample;
+			tick2_pp_elev_count++;
+		}
+		else
+			tick2_pp_elev_lost++;
+	}
+	return TRUE;
+}
+/* a collision instance reaching an object's nodes in phase 1: posed first, once a tick (the lead 17:5x) */
+void tick2_pp_touch(long object_index)
+{
+	long k = object_index & 0xFFFF;
+
+	if (tick2_pp_phase != 1 || object_index == NONE || k >= MAXIMUM_OBJECTS_PER_MAP ||
+		((tick2_pp_touched[k >> 3] >> (k & 7)) & 1))
+		return;
+	tick2_pp_touched[k >> 3] |= (unsigned char)(1 << (k & 7));
+	object_compute_node_matrices(object_index);
+	tick2_pp_touches++;
+}
+static void tick2_pp_begin(void)
+{
+	tick2_pp_count = tick2_pp_elev_count = 0;
+	memset(tick2_pp_touched, 0, sizeof(tick2_pp_touched));
+	memset(tick2_pp_seen, 0, sizeof(tick2_pp_seen));
+	tick2_pp_phase = 1;
+	tick2_pp_ticks++;
+}
+static boolean object_update(long object_index);
+static void tick2_pp_run(void)
+{
+	long k;
+
+	tick2_pp_phase = 2;
+	for (k = 0; k < tick2_pp_count; k++)
+		object_update(tick2_pp_roots[k]);
+	tick2_pp_phase = 0;
+}
+void platform_psp_log(const char *format, ...);
+void tick2_pp_report(const char *label, int level_end)
+{
+	platform_psp_log("posepass (%s): %lu ticks; roots listed %lu (%.1f a tick), run inline past the list %lu; elevators past the table %lu; posed on touch %lu (%.2f a tick)",
+		label, tick2_pp_ticks, tick2_pp_listed, tick2_pp_ticks ? (double)tick2_pp_listed / tick2_pp_ticks : 0.0,
+		tick2_pp_inline, tick2_pp_elev_lost, tick2_pp_touches, tick2_pp_ticks ? (double)tick2_pp_touches / tick2_pp_ticks : 0.0);
+	if (level_end)
+		tick2_pp_ticks = tick2_pp_listed = tick2_pp_inline = tick2_pp_elev_lost = tick2_pp_touches = 0;
+}
+"""
+def tick2_posepass_cut(tree):
+    if not TICK2_POSEPASS:
+        return 0
+    if not TICK2_POSE:
+        check_fail("psp_fixups: PSP_TICK2_POSEPASS=1 needs PSP_TICK2=pose")
+        return 0
+    if TICK2_STALECENSUS:
+        check_fail("psp_fixups: PSP_TICK2_POSEPASS=1 and PSP_TICK2_STALECENSUS=1 both wrap object_update; one at a time")
+        return 0
+    objects_c = os.path.join(tree, "source/objects/objects.c")
+    objects_h = os.path.join(tree, "source/objects/objects.h")
+    collision_c = os.path.join(tree, "source/physics/collision_models.c")
+    c = open(objects_c, errors="surrogateescape").read()
+    def body_of(text, head):
+        if text.count(head) != 1:
+            check_fail("psp_fixups: TICK2 posepass: %r matches %d times" % (head[:50], text.count(head)))
+            return None
+        at = text.index(head)
+        return at, text.index("\n}\n", at) + 3
+    def gate(body, pairs, name):
+        for old, new in pairs:
+            if body.count(old) != 1:
+                check_fail("psp_fixups: TICK2 posepass: in %s, %r matches %d times" % (name, old[:60], body.count(old)))
+                return None
+            body = body.replace(old, new)
+        return body
+    def wrap(body, start, end, name):
+        if body.count(start) != 1 or body.count(end) != 1:
+            check_fail("psp_fixups: TICK2 posepass: in %s, the motion's ends match %d/%d" % (name, body.count(start), body.count(end)))
+            return None
+        a = body.index(start)
+        b = body.index(end, a) + len(end)
+        return body[:a] + "\t\tif (tick2_pp_phase != 2) /* TICK2 posepass: motion is phase 1's */\n\t\t{\n" + body[a:b] + "\t\t}\n" + body[b:]
+    common = [
+        ("\t\tif (TEST_FLAG(object->object.flags, _object_garbage_bit))",
+         "\t\tif (tick2_pp_phase != 2 && TEST_FLAG(object->object.flags, _object_garbage_bit)) /* TICK2 posepass */"),
+        ("\t\tif ((*tick2_anim_of(object->object.root)).interpolation_frame_count)",
+         "\t\tif (tick2_pp_phase != 2 && (*tick2_anim_of(object->object.root)).interpolation_frame_count) /* TICK2 posepass */"),
+        ("elevator_sampled = object->object.type == _object_type_machine &&\n",
+         "elevator_sampled = tick2_pp_elevator(object_index, object->object.type == _object_type_machine, &elevator_sample) /* TICK2 posepass */ &&\n"),
+        ("if (!TEST_FLAG(object->object.flags, _object_do_not_recompute_node_matrices_bit) && !psp_pose_skipped &&",
+         "if (tick2_pp_phase != 1 && !TEST_FLAG(object->object.flags, _object_do_not_recompute_node_matrices_bit) && !psp_pose_skipped && /* TICK2 posepass */"),
+        ("\t\tif (elevator_sampled)\n", "\t\tif (tick2_pp_phase != 1 && elevator_sampled) /* TICK2 posepass */\n"),
+    ]
+    # the lean path
+    lean = body_of(c, "static boolean psp_object_update_lean(\n\tlong object_index)\n{")
+    if lean is None: return 0
+    body = c[lean[0]:lean[1]]
+    body = gate(body, common + [
+        ("\t\t\tmachine_elevator_sample(object_index, &elevator_sample);\n", "\t\t\tTRUE;\n"),
+        ("\t\tpsp_pose_skipped = psp_pose_half_skips(object_index, object);\n", "\t\tpsp_pose_skipped = tick2_pp_half_skips(object_index, object); /* TICK2 posepass */\n"),
+        ("\t\tif (!(psp_fvp_open && psp_fvp_put_off(object_index, object)))\n",
+         "\t\tif (tick2_pp_phase != 1 && !(psp_fvp_open && psp_fvp_put_off(object_index, object))) /* TICK2 posepass */\n"),
+        ("\t\tif (TEST_FLAG(object->object.flags, _object_dynamic_lighting_recompute_bit) &&\n",
+         "\t\tif (tick2_pp_phase != 1 && TEST_FLAG(object->object.flags, _object_dynamic_lighting_recompute_bit) && /* TICK2 posepass */\n"),
+        ("\t\tif (!psp_pose_skipped)\n\t\t{\n\t\t\tif (!TEST_FLAG(_object_mask_unit",
+         "\t\tif (tick2_pp_phase != 1 && !psp_pose_skipped) /* TICK2 posepass */\n\t\t{\n\t\t\tif (!TEST_FLAG(_object_mask_unit"),
+    ], "the lean path")
+    if body is None: return 0
+    body = wrap(body, "\t\tobject_type_update_for_type(object->object.type, object_index);\n",
+                "\t\t\tobject_type_export_function_values_for_type(object->object.type, object_index);\n\t\t}\n", "the lean path")
+    if body is None: return 0
+    c = c[:lean[0]] + body + c[lean[1]:]
+    # object_update
+    head = "static boolean object_update(\n\tlong object_index)\n{"
+    main = body_of(c, head)
+    if main is None: return 0
+    body = c[main[0]:main[1]]
+    body = gate(body, common + [
+        ("\t\t\tmachine_elevator_sample(object_index, &elevator_sample);\n", "\t\t\tTRUE;\n"),
+        ("\t\tint psp_pose_skipped = psp_pose_half_skips(object_index, object);\n", "\t\tint psp_pose_skipped = tick2_pp_half_skips(object_index, object); /* TICK2 posepass */\n"),
+        ("\t\tif (psp_fvp_open && psp_fvp_put_off(object_index, object)) /* psp_fixups.py (FIXES_FISSION) */\n",
+         "\t\tif (tick2_pp_phase == 1 || (psp_fvp_open && psp_fvp_put_off(object_index, object))) /* psp_fixups.py (FIXES_FISSION); TICK2 posepass */\n"),
+        ("\t\tif (\n\t\t\tTEST_FLAG(object->object.flags, _object_dynamic_lighting_recompute_bit) &&",
+         "\t\tif (tick2_pp_phase != 1 && /* TICK2 posepass */\n\t\t\tTEST_FLAG(object->object.flags, _object_dynamic_lighting_recompute_bit) &&"),
+        ("\t\tif (!psp_pose_skipped)\n\t\t\tobject_postprocess_node_matrices(object_index);",
+         "\t\tif (tick2_pp_phase != 1 && !psp_pose_skipped) /* TICK2 posepass */\n\t\t\tobject_postprocess_node_matrices(object_index);"),
+        (head, head + r"""
+	/* TICK2 posepass: phase 1 lists each root it reaches, for phase 2's tails; past the list, a root's subtree
+	runs both phases at once, as the old build */
+	if (tick2_pp_phase == 1 && object_get(object_index)->object.parent_object_index == NONE &&
+		!((tick2_pp_seen[(object_index & 0xFFFF) >> 3] >> (object_index & 7)) & 1))
+	{
+		tick2_pp_seen[(object_index & 0xFFFF) >> 3] |= (unsigned char)(1 << (object_index & 7));
+		if (tick2_pp_count < TICK2_PP_MOST)
+		{
+			tick2_pp_roots[tick2_pp_count++] = object_index;
+			tick2_pp_listed++;
+		}
+		else
+		{
+			boolean result;
+
+			tick2_pp_inline++;
+			tick2_pp_phase = 0;
+			result = object_update(object_index);
+			tick2_pp_phase = 1;
+			return result;
+		}
+	}"""),
+    ], "object_update")
+    if body is None: return 0
+    body = wrap(body, "\t\t\tif (psp_hoist)\n\t\t\t\tobject_type_update_for_type(object->object.type, object_index);\n",
+                "\t\t\telse\n\t\t\t\tobject_type_export_function_values(object_index);\n", "object_update")
+    if body is None: return 0
+    c = c[:main[0]] + body + c[main[1]:]
+    # the helpers before the lean path (machine_elevator_sample and psp_pose_half_skips are declared by then)
+    lean_head = "static boolean psp_object_update_lean(\n\tlong object_index)\n{"
+    c = c.replace(lean_head, TICK2_PP_CODE + "\n" + lean_head, 1)
+    # the driver: phase 1 around every loop of objects_update, phase 2 before NMSKIP closes
+    for old, new in [("\tpsp_nms_open = psp_nms_begin(); /* psp_fixups.py (FIXES_NMSKIP) */\n",
+                      "\tpsp_nms_open = psp_nms_begin(); /* psp_fixups.py (FIXES_NMSKIP) */\n\ttick2_pp_begin(); /* TICK2 posepass: phase 1 */\n"),
+                     ("\tpsp_nmr_in_update = 0;\n", "\ttick2_pp_run(); /* TICK2 posepass: phase 2, the tails */\n\tpsp_nmr_in_update = 0;\n"),
+                     ("\ttick2_sc_report(label, level_end); /* TICK2 stale census */\n" if TICK2_STALECENSUS else
+                      "\tif (level_end)\n\t\tmemset(&tick2_gc, 0, sizeof(tick2_gc));\n",
+                      "\ttick2_pp_report(label, level_end); /* TICK2 posepass */\n\tif (level_end)\n\t\tmemset(&tick2_gc, 0, sizeof(tick2_gc));\n")]:
+        if c.count(old) != 1:
+            check_fail("psp_fixups: TICK2 posepass: %r matches %d times" % (old[:50], c.count(old)))
+            return 0
+        c = c.replace(old, new)
+    # the report needs its declaration before the collector's report, which sits earlier in the file
+    first = "\nboolean debug_object_garbage_collection;\n"
+    if c.count(first) != 1:
+        check_fail("psp_fixups: TICK2 posepass: the collector's flag matches %d times" % c.count(first))
+        return 0
+    c = c.replace(first, "\nvoid tick2_pp_report(const char *label, int level_end); /* TICK2 posepass */" + first)
+    # collision: pose-on-touch
+    h = open(objects_h, errors="surrogateescape").read()
+    hp = "real_matrix4x3 *object_get_node_matrices(long object_index);\n"
+    k = open(collision_c, errors="surrogateescape").read()
+    ks = "\t\tinstance->matrices = object_get_node_matrices(object_index);\n"
+    if h.count(hp) != 1 or k.count(ks) != 1:
+        check_fail("psp_fixups: TICK2 posepass: collision anchors %d/%d" % (h.count(hp), k.count(ks)))
+        return 0
+    h = h.replace(hp, hp + "void tick2_pp_touch(long object_index); /* TICK2 posepass: a stale object posed on touch */\n")
+    k = k.replace(ks, "\t\ttick2_pp_touch(object_index); /* TICK2 posepass: posed first if it's stale (the lead 17:5x) */\n" + ks)
+    if not CHECK_ONLY:
+        open(objects_c, "w", errors="surrogateescape").write(c)
+        open(objects_h, "w", errors="surrogateescape").write(h)
+        open(collision_c, "w", errors="surrogateescape").write(k)
+    print("psp_fixups: TICK2 posepass: the poses in a pass after objects_update's loops")
+    return 1
+tick2_posepass_cut(TREE)
+
 # The engine's one read of a datum by a raw offset (spec section 28): a door's
 # automatic test asks whether a unit is dead through byte 0xb6 of its datum,
 # which is object.damage_flags, and bit 2, which is _object_dead_bit (the
