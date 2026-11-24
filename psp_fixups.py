@@ -62839,6 +62839,41 @@ void psp_c4_trace_tick(long tick)
     return 1
 print("psp_fixups: C4's play trace: %s (C4TRACE)" % ("on" if c4_trace(TREE) else "off"))
 
+# PSP_FPWTRACE=1 (the builder 2026-11-24, emulator only): the inputs of the first-person weapon's idle
+# draw for the first six ticks (state, autoaim, zoom, push-back, the position and turning springs and the
+# render facing), so the old build and the store's proof form set side by side name which input differs
+# when the proof form's local seed parts at tick 1 (tick2bipedproof5: no write reached the span's old bytes)
+def fpw_trace(tree):
+    if os.environ.get("PSP_FPWTRACE", "") != "1":
+        return 0
+    path = os.path.join(tree, "source/interface/first_person_weapons.c")
+    text = open(path, errors="surrogateescape").read()
+    at = "\t\tif (player_control_get_autoaim_level(local_player_index)!=0.0f ||\n"
+    if text.count(at) != 1:
+        check_fail("psp_fixups: FPWTRACE: the idle test matches %d times" % text.count(at))
+        return 0
+    text = text.replace(at, """\t\t{ /* FPWTRACE */
+\t\t\textern long game_time_get(void);
+\t\t\tvoid platform_psp_log(const char *format, ...);
+
+\t\t\tif (game_time_get() <= 6)
+\t\t\t\tplatform_psp_log("fpwtrace: tick %ld, player %d: state %d, ticks idle %d until pose %d, autoaim %.9g, zoom %d, push %.9g, position %.9g %.9g, turning %.9g %.9g, facing %.9g %.9g, last %.9g %.9g, rendered %d",
+\t\t\t\t\tgame_time_get(), (int)local_player_index, (int)first_person_weapon->state, (int)first_person_weapon->ticks_idle,
+\t\t\t\t\t(int)first_person_weapon->ticks_until_pose, (double)player_control_get_autoaim_level(local_player_index),
+\t\t\t\t\t(int)player_control_get_zoom_level(local_player_index), (double)first_person_weapon->firing_push_back,
+\t\t\t\t\t(double)first_person_weapon->position.i, (double)first_person_weapon->position.j,
+\t\t\t\t\t(double)first_person_weapon->turning.i, (double)first_person_weapon->turning.j,
+\t\t\t\t\t(double)first_person_weapon->render_facing.yaw, (double)first_person_weapon->render_facing.pitch,
+\t\t\t\t\t(double)first_person_weapon->last_render_facing.yaw, (double)first_person_weapon->last_render_facing.pitch,
+\t\t\t\t\t(int)first_person_weapon->rendered);
+\t\t}
+""" + at, 1)
+    if not CHECK_ONLY:
+        open(path, "w", errors="surrogateescape").write(text)
+    print("psp_fixups: FPWTRACE: the first-person idle draw's inputs logged to tick 6")
+    return 1
+fpw_trace(TREE)
+
 if CHECK_ONLY:
     for message in count_failures:
         print(message)
