@@ -61513,6 +61513,57 @@ void psp_pc_tick_end(long tick)
     return 1
 posecensus_cut(TREE)
 
+# PSP_PRODCOUNT=1 (the lead 2026-11-23 23:1x: the node-matrix product by unit, before 2a is built; emulator only):
+# every matrix4x3_multiply counted by the unit that runs it (the main CPU's VFPU, its FPU, the ME's FPU), with a line
+# each 1,800 ticks
+PRODCOUNT = os.environ.get("PSP_PRODCOUNT", "") == "1"
+def prodcount_cut(tree):
+    if not PRODCOUNT:
+        return 0
+    path = os.path.join(tree, "source/math/matrix_math.c")
+    t = open(path, errors="surrogateescape").read()
+    a = "\t{\n\t\tpsp_vfpu_matrix4x3_multiply(a, b, result);\n\t\treturn;\n\t}\n#endif\n\t{\n\treal const *a_elements = a->n[0];\n"
+    if t.count(a) != 1:
+        check_fail("psp_fixups: PRODCOUNT: matrix4x3_multiply's dispatch matches %d times" % t.count(a))
+        return 0
+    t = t.replace(a, """\t{
+\t\tpsp_prod_count[0]++;
+\t\tpsp_prod_report();
+\t\tpsp_vfpu_matrix4x3_multiply(a, b, result);
+\t\treturn;
+\t}
+\tpsp_prod_count[(psp_me_context || psp_cpu_is_me()) ? 2 : 1]++;
+#endif
+\t{
+\treal const *a_elements = a->n[0];
+""")
+    head = "void matrix4x3_multiply(\n"
+    if t.count(head) != 1:
+        check_fail("psp_fixups: PRODCOUNT: matrix4x3_multiply's head matches %d times" % t.count(head))
+        return 0
+    t = t.replace(head, r"""/* PSP_PRODCOUNT (psp_fixups.py): node and other matrix products by the unit that ran them */
+volatile unsigned long psp_prod_count[3]; /* the main CPU's VFPU, its FPU, the ME's FPU */
+static void psp_prod_report(void)
+{
+	extern long game_time_get(void);
+	void platform_psp_log(const char *format, ...);
+	static long last = -1;
+	long now = game_time_get();
+
+	if (now > 0 && now % 1800 == 0 && now != last)
+	{
+		last = now;
+		platform_psp_log("prodcount: tick %ld, matrix products: the main CPU's VFPU %lu, its FPU %lu, the ME's FPU %lu",
+			now, psp_prod_count[0], psp_prod_count[1], psp_prod_count[2]);
+	}
+}
+""" + head)
+    if not CHECK_ONLY:
+        open(path, "w", errors="surrogateescape").write(t)
+    print("psp_fixups: PRODCOUNT: matrix products counted by unit")
+    return 1
+prodcount_cut(TREE)
+
 # The engine's one read of a datum by a raw offset (spec section 28): a door's
 # automatic test asks whether a unit is dead through byte 0xb6 of its datum,
 # which is object.damage_flags, and bit 2, which is _object_dead_bit (the
