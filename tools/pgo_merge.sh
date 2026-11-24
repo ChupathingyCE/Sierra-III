@@ -26,27 +26,53 @@ command -v psp-gcov-tool >/dev/null || { echo "pgo_merge: psp-gcov-tool not on P
 here=$(cd "$(dirname "$0")/.." && pwd)
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 
-# each run's weight goes in at its merge (gcov-tool's merge -w): its
-# rewrite -s fails on the top-N value counters (an internal error in
-# __gcov_topn_counter_op, GCC 15.2), so the first run waits for the second
-i=0 first_weight=1
+# Weights. psp-gcov-tool's merge -w takes whole numbers (w1,w2), and the first
+# set's weight must stay 1: with w1 above 1 it first merges the first set into
+# itself (w1-1 times), which turns its top-N value counters into the in-memory
+# form, then reads them again as on-disk data, and stops in
+# gcov_read_counter_mem (an internal error, GCC 15.2; pgo-merge 45463888645).
+# Its rewrite -s fails on the same counters (__gcov_topn_counter_op). So each
+# weight becomes a whole number of units (a tenth of the smallest weight), the
+# lightest run goes first at 1 and is merged with a copy of itself for its
+# other units, and every other run comes in as the second set with its units.
+specs=() weights=() min=
 for spec in "$@"; do
-    i=$((i + 1))
     archive=$spec weight=1
     if [[ $spec =~ ^(.*):([0-9]+(\.[0-9]+)?)$ ]]; then archive=${BASH_REMATCH[1]} weight=${BASH_REMATCH[2]}; fi
+    awk -v w="$weight" 'BEGIN { exit !(w > 0) }' || { echo "pgo_merge: $archive: a weight must be above 0" >&2; exit 1; }
+    specs+=("$archive") weights+=("$weight")
+    if [[ -z $min ]] || awk -v a="$weight" -v b="$min" 'BEGIN { exit !(a < b) }'; then min=$weight; fi
+done
+weighted=0
+for weight in "${weights[@]}"; do [[ $weight == "$min" ]] || weighted=1; done
+units() {   # <weight>: whole units of a tenth of the smallest weight (10 for the smallest); 1 each when all weigh the same
+    if (( weighted )); then awk -v w="$1" -v m="$min" 'BEGIN { n = int(w * 10 / m + 0.5); print (n < 1 ? 1 : n) }'; else echo 1; fi
+}
+first=0
+for ((n = 1; n < ${#specs[@]}; n++)); do
+    awk -v a="${weights[n]}" -v b="${weights[first]}" 'BEGIN { exit !(a < b) }' && first=$n
+done
+order=("$first")
+for ((n = 0; n < ${#specs[@]}; n++)); do (( n == first )) || order+=("$n"); done
+i=0
+for n in "${order[@]}"; do
+    i=$((i + 1))
+    u=$(units "${weights[n]}")
     mkdir "$work/run$i"
-    tar xzf "$archive" -C "$work/run$i"
+    tar xzf "${specs[n]}" -C "$work/run$i"
     if (( i == 1 )); then
         mv "$work/run1" "$work/merged"
-        first_weight=$weight
+        if (( u > 1 )); then
+            cp -r "$work/merged" "$work/self"
+            psp-gcov-tool merge -w "1,$((u - 1))" "$work/merged" "$work/self" -o "$work/next"
+            rm -rf "$work/merged" "$work/self"; mv "$work/next" "$work/merged"
+        fi
     else
-        psp-gcov-tool merge -w "$first_weight,$weight" "$work/merged" "$work/run$i" -o "$work/next"
-        first_weight=1
+        psp-gcov-tool merge -w "1,$u" "$work/merged" "$work/run$i" -o "$work/next"
         rm -rf "$work/merged" "$work/run$i"; mv "$work/next" "$work/merged"
     fi
-    echo "pgo_merge: $i: $archive (weight $weight)"
+    echo "pgo_merge: $i: ${specs[n]} (weight ${weights[n]}, $u units)"
 done
-[[ $first_weight == 1 ]] || { echo "pgo_merge: a weight needs a second run to merge with" >&2; exit 1; }
 
 mkdir -p "$here/pgo"
 (cd "$work/merged" && tar czf "$here/pgo/$name.tgz" -- *)   # names as the earlier profiles have them, no ./
