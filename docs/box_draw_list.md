@@ -576,3 +576,60 @@ The distinction the box needs is whether a GE block can be kept and replayed whi
 6. **What `nohud` actually removes.** The keep word exists but only at `hud_render_weapon_interface`'s door (`psp_fixups.py:4902`, `PSP_KEEP_ONCE("nohud")` → `return`), so no existing A/B prices the whole HUD or the sensor; a `nohud`-style word in `hud_draw_screen` and a `noblips` word in `motion_sensor_draw_screen` would give the frame-level price of each, and are the cheapest way to check §1's figures against the frame (2 runs, one keep word each).
 
 **Unfinished in this draft.** The b40/a30 columns of §1 and the weighted-by-frames means are owed (I used unweighted window means and said so); §2's µs-a-blip arithmetic is mine on the lab's two counters and should be re-derived by the audit; §4's ceiling is an upper bound, not a price.
+
+## 15. The replay replaced, not trimmed: what it does by kind and where each part goes (2026-11-24 17:3x CST, builder2; draft 1)
+
+**Why this section** (Sheepdog01 2026-11-24 16:42, 16:48, 16:50; the lead 16:5x; the lab's `briefs/me_relief.md`, last section): the ME's render job replays the frame's records into GE words every frame. It is the ME's load on b30's live fight: 31.2-38.6 ms a frame, one job a frame. On the per-second clock at 30 fps that is 116% of the ME alone (the lab's CURRENT.md, "ME by kind" [M], mekinds1 45497754325, the PSP-1000, today's tock fbbd786e). The done condition is no per-frame replay of unchanged drawing: the ME's drawing is the changed records' words plus the frame list, at or under ~12 ms a frame (§4). Sheepdog01's question (16:48) is whether the replay can go without a large cost in replacing what it does. The table below is the answer, row by row. The memory column waits on the VRAM census (vramset1, below).
+
+### 15.1 What the replay does on b30's fight, by kind [M]
+
+The split by kind is from the 2026-11-22 tock (2374f97c, `timerson mekinds`), the 300 frames ending at game time ~1,690-1,700 of b30_leg2's fight. Source: the lab's sierra-hw 44999171521, both runs on the PSP-1000, which agree within 0.1 ms. Today's tock wasn't split by kind (mekinds1 ran without timers): its render job is 30.8-31.5 ms over the same stretch's late part, against 33.2 here. Read the shares; the timers inflate the small kinds. A by-kind run on today's tock is owed before the page's budget split is final (one PSP run, `timerson mekinds`).
+
+| Kind (the replay's own names) | ms a frame | Count a frame, µs each |
+|---|---:|---|
+| Level draws | 7.5 | 14.2, 530 |
+| Audio and ring served inside the job | 6.2 | (the ring's jobs; audio only 0.13: audio_served_inside_b30fight_1000) |
+| Model part draws | 5.6 | 38.8, 145 |
+| Far level | 4.1 | 94, 43 |
+| See-through: queued 1.4, its flush 1.2, the level's 0.7 | 3.3 | 18 + 1.9 |
+| Per-instance overhead: model begin 0.8, shape 0.7, multipurpose 0.2, reflection and effect 0.2 | 1.8 | 113 begins, 226 shapes |
+| Decals 1.1, shadows 0.6, sprites 0.5, blips 0.4, contrails 0.1 | 2.7 | 20 + 6 + 41 + 58 + 6 |
+| Screen quads 0.7, light draws 0.7, text 0.1 | 1.5 | 19 + 4 + 17 |
+| **All** | **33.2** | |
+
+### 15.2 The core table: each kind, whether it must happen every frame, its new home and its new cost
+
+| Kind | Today ms [M] | Every frame? | New home | New cost, ME ms a frame | New memory |
+|---|---:|---|---|---:|---|
+| **Level draws** (passes written again: binds, pass state, indices, ~1,300 words a draw, §12.1) | 7.5 | **No.** Only the kept or cut triangles and their slant buckets follow the camera (§12.1, the lead's read) | **Baked cluster lists, CALLed** (L2 as the lead defines it): each cluster's passes baked once at load into a list; the frame emits a CALL per visible cluster and, where a cluster crosses a plane, the cut part only | ~0.5-1.5 [U]: 14 CALLs plus the crossing clusters' cut triangles (8 of 9 draws on the beach are classified, §12.1; how many triangles cross is owed, an exact count [E]) | The baked lists: ~1,300 words (5.2 KB) a draw at today's draws, for every cluster the map has, not just the visible ones. **The map's whole size is owed** (an exact count [E]): main RAM unless vramset1 says the GE reads them most |
+| **Audio and ring served inside** | 6.2 | Not drawing | The ME's loop and the audio job, as the ring's scheduler places them (box_tick_schedule.md §7a, step 1) | 0 to the render job; the same work elsewhere | none |
+| **Model part draws** (rigid and bending parts, the near corner loop inside) | 5.6 | **Changed instances only.** Unchanged: 12-31% of instance words (§10.7 [E]) | **R's forms, CALLed, with a per-instance frame list** (matrices, bones, lights; v1, §11). The near corner loop stays for near bending parts (PN parked, §11.1) | ~3-4 [U]: R measured forms ~25-30% cheaper per part drawn (§11.1); the corner loop's ~5.6 ms on the ride is b30's flight's, not the fight's (the fight's near work is owed, v1count's count) | R's form store: 128-256 KB (§2, §11), shared with the texture cache's room (`box_ge_lists.md` §4) |
+| **Far level** (far clusters as one part each) | 4.1 | **No**: the far forms are baked; only the visible set changes | Baked far lists CALLed whole, one CALL a visible far cluster | ~0.3 [U]: 94 CALLs at ~3 µs | The far forms are already baked (the far level's own pack); none new [D] |
+| **See-through** (queued draws, their sort, the flush) | 3.3 | **The order, yes** (back to front from the eye); the draws' words no | The sort on the main CPU's list; each draw a CALL of its form; the flush stays immediate | ~1.5 [U]: the flush (1.2) and the sorted CALLs | none beyond the forms' |
+| **Per-instance overhead** (begin, shape, multipurpose, reflection, effect) | 1.8 | Per drawn instance | The frame list's one record an instance (§11's piece 2) | ~0.5 [U]: ~113 records at ~4 µs | a record an instance: ~100-250 a frame (§2) |
+| **Decals, shadows, sprites, blips, contrails** | 2.7 | **Yes**: they move, appear and fade | **Immediate**, as now (on the ME, or on the main CPU's list where a PSP pair says so); decals' empty calls already cut where they put nothing on screen (§12.2) | ~2.7 | none |
+| **Screen quads, light draws, text** | 1.5 | **Yes** | Immediate | ~1.5 | none |
+| **All** | **33.2** | | | **~10-13 [U]** | the baked level lists (owed) + R's store |
+
+**The verdict, as of this draft [U on M]:** the replay can go, and what replaces it is cheap in time. Of the 33.2 ms, about 17-19 ms are static work re-encoded every frame: the level (7.5), the far level (4.1), the per-instance overhead (1.8), the unchanged part of the model parts, and the see-through words. Another 6.2 ms aren't drawing (the ring's jobs served inside). About 4 ms (decals, effects, screen, HUD) is per-frame by nature. The new form's estimate is ~10-13 ms, about the budget (§4: ~12). **The cost to answer is memory, not time:** the baked level lists for the whole map. Their size is the first count owed. Where they live (main RAM, which the GE already reads 1.6-2.2 MB a frame of on b30 [M, ge_main_ram_reads_by_part_b30], or VRAM) is vramset1's answer.
+
+### 15.3 Why R kept the replay as a stage, and why B reused only 12-31%
+
+- **R** captured each part's GE words once (its forms and their 256 KB ring) but drew them **inside the old replay**: every part, every frame, through the old layer's chain, a record decoded and a touch made per part. What R drew got ~25-30% cheaper, but the job stayed (48.4 -> 48.1 ms on b30 [M, rmil2]; §11). The forms hold. Their place in the old replay is what this page removes: here the frame list CALLs them, with no record to decode for an unchanged instance.
+- **B** reused an instance's words when it was bitwise unchanged. **Most words belong to what changes**: posed units and what they hold (bipeds 0-22% unchanged in a fight, §5). The origin following the eye changed every word until `ge_eye` was held (§10.3). **And the level wasn't an instance**: B never touched the level's 7.5 ms or the far level's 4.1, the two largest drawing kinds here. This page's forms don't ask whether an instance is unchanged. They take the static work out of the frame altogether (baked lists), and leave the changed half only its frame list's words.
+
+### 15.4 Memory: the room the baked forms need, and where it is (owed in part)
+
+- **The general heap's lowest free:** c20 686 KB [E], after the ME-partition claim (the lab's CURRENT.md, tick2emuclaim1 on b579f2b9). This replaces the old "no heap to spare" lesson: heap figures from before 2026-11-24 09:50 were ~670-810 KB too pessimistic (the same register).
+- **RAM outside the heap:** owed from the memory map [D] (`docs/psp_hardware_reference.md`, the launch's partition claims): whether the user partition's unclaimed room or the ME's partition can take the baked lists.
+- **VRAM by need:** vramset1 (the lab's sierra-batch 45505789944; Sierra-III builder2/geset 1704ab8f, keep word `gesetkind`) counts the GE's working set a frame by kind on b30, c20 and d20, in VRAM and in main RAM, bytes read and distinct buffers, with the far forms on. VRAM then holds what the GE reads most a byte, and the baked lists go where the census puts them.
+- **The fixed 816 KB of buffers** (bus_toll.md §4 [D]): the frame and depth buffers, which no form can move. VRAM's other ~1.2 MB is today split 616 KB of model copies and 616 KB of texture cache (13-48 KB free). The census decides that split again.
+
+### 15.5 The slices, in the box's order (each cut in under its own build switch, off by default)
+
+1. **The level's baked cluster lists, CALLed** (L2): the count first [E, exact]: the whole map's pass words by cluster, and a frame's crossing clusters and their cut triangles. Then the build, proven by pictures and play and seeds identical (drawing only).
+2. **The far level's lists CALLed whole.**
+3. **The frame list's record an instance** (§11's piece 2), with R's forms CALLed for every part, changed or not.
+4. **The see-through sort over CALLed forms.**
+
+What stays immediate (decals, effects, screen, HUD) is the GE lists box's to keep cheap, not this box's to bake.
