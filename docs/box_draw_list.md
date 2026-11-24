@@ -579,7 +579,7 @@ The distinction the box needs is whether a GE block can be kept and replayed whi
 
 ## 15. The replay replaced, not trimmed: what it does by kind and where each part goes (2026-11-24 17:1x CST, builder2; draft 1)
 
-**Why this section** (Sheepdog01 2026-11-24 16:42, 16:48, 16:50; the lead 16:5x; the lab's `briefs/me_relief.md`, last section): the ME's render job replays the frame's records into GE words every frame. It is the ME's load on b30's live fight: 31.2-38.6 ms a frame, one job a frame. On the per-second clock at 30 fps that is 116% of the ME alone (the lab's CURRENT.md, "ME by kind" [M], mekinds1 45497754325, the PSP-1000, today's tock fbbd786e). The done condition is no per-frame replay of unchanged drawing: the ME's drawing is the changed records' words plus the frame list, at or under ~12 ms a frame (§4). Sheepdog01's question (16:48) is whether the replay can go without a large cost in replacing what it does. The table below is the answer, row by row. The memory column waits on the VRAM census (vramset1, below).
+**Why this section** (Sheepdog01 2026-11-24 16:42, 16:48, 16:50; the lead 16:5x; the lab's `briefs/me_relief.md`, last section): the ME's render job replays the frame's records into GE words every frame. It is the ME's load on b30's live fight: 31.2-38.6 ms a frame, one job a frame. On the per-second clock at 30 fps that is 116% of the ME alone (the lab's CURRENT.md, "ME by kind" [M], mekinds1 45497754325, the PSP-1000, today's tock fbbd786e). The done condition is no per-frame replay of unchanged drawing: the ME's drawing is the changed records' words plus the frame list, at or under ~12 ms a frame (§4). Sheepdog01's question (16:48) is whether the replay can go without a large cost in replacing what it does. The table below is the answer, row by row. The VRAM side of the memory column is counted (vramset1, §15.4); the baked lists' own size is still owed.
 
 ### 15.1 What the replay does on b30's fight, by kind [M]
 
@@ -622,7 +622,17 @@ The split by kind is from the 2026-11-22 tock (2374f97c, `timerson mekinds`), th
 
 - **The general heap's lowest free:** c20 686 KB [E], after the ME-partition claim (the lab's CURRENT.md, tick2emuclaim1 on b579f2b9). This replaces the old "no heap to spare" lesson: heap figures from before 2026-11-24 09:50 were ~670-810 KB too pessimistic (the same register).
 - **RAM outside the heap:** owed from the memory map [D] (`docs/psp_hardware_reference.md`, the launch's partition claims): whether the user partition's unclaimed room or the ME's partition can take the baked lists.
-- **VRAM by need:** vramset1 (the lab's sierra-batch 45505789944; Sierra-III builder2/geset 1704ab8f, keep word `gesetkind`) counts the GE's working set a frame by kind on b30, c20 and d20, in VRAM and in main RAM, bytes read and distinct buffers, with the far forms on. VRAM then holds what the GE reads most a byte, and the baked lists go where the census puts them.
+- **VRAM by need (counted, 2026-11-24 17:4x) [E]:** vramset1 (the lab's sierra-batch 45505789944; Sierra-III builder2/geset 1704ab8f, keep word `gesetkind`) counts the GE's working set a frame by kind, the far forms on, in VRAM and in main RAM: bytes read (textures at every bind, an upper bound) and distinct buffers (once a frame). Play and both seeds are identical with it on and off. Source: the lab's CURRENT.md, "The GE's working set".
+
+  | Map | Distinct a frame, VRAM + main RAM | Level, VRAM / RAM | Models, VRAM / RAM | Lights' textures |
+  |---|---|---|---|---|
+  | b30_leg2 | 1,547 + 1,609 KB | 361 / 955 (read 1.4 / 1.9x a byte) | 813 / 330 (3.1 / 2.1x) | under 1 KB |
+  | c20_leg2 | 798 + 1,340 | 253 / 838 (1.9 / 3.0x) | 421 / 182 (2.8 / 3.1x) | 5 KB, read 104x |
+  | d20_play1 | 877 + 1,024 | 357 / 442 (2.3 / 2.5x) | 396 / 250 (2.5 / 1.9x) | 44 KB, read 22x |
+
+  - **The GE's distinct set is 1.9-3.2 MB a frame.** VRAM has ~1.2 MB after its fixed buffers, so most of the set stays in main RAM whatever the split.
+  - **VRAM by need:** the lights' small textures first (read 22-918 times a byte, under 44 KB). Then the models' geometry (2.5-3.1x, most of it in VRAM already) and the level's textures (1.9-3.0x, today in main RAM).
+  - **The baked lists belong in main RAM:** a CALLed list is read once a frame (1.0x). On the PSP the bus cost per main-RAM byte is bus_toll.md §3's to price.
 - **The fixed 816 KB of buffers** (bus_toll.md §4 [D]): the frame and depth buffers, which no form can move. VRAM's other ~1.2 MB is today split 616 KB of model copies and 616 KB of texture cache (13-48 KB free). The census decides that split again.
 
 ### 15.5 The slices, in the box's order (each cut in under its own build switch, off by default)
