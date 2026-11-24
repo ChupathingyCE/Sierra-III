@@ -60861,6 +60861,11 @@ void tick2_pp_touch(long object_index)
 	would undo a pose's IK already made (tick2pass3 parted a30 that way) */
 	if (PSP_KEEP_ONCE("posepassinline"))
 		return;
+	/* "posetouchoff" (the lead 2026-11-23 21:5x: give the touch whichever form matches old's answer): no pose on touch,
+	so the collision test reads the matrices as they stand, last tick's pose with its IK for an object not yet reached,
+	as old's inline order leaves an object later in the loop */
+	if (PSP_KEEP_ONCE("posetouchoff"))
+		return;
 	/* only an object whose nodes are made: one still inside object_new is posed there (its own pose-now) */
 	object = object_try_and_get(object_index);
 	if (!object || !object->object.root || object->object.root->pose_first == TICK2_POSE_NONE || !object->object.root->pose_count)
