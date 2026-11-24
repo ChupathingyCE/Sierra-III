@@ -109,6 +109,20 @@ Existing lines read with it: `ME: batch timing (claims)` (**the batch's pickup l
 2. **Slice 3: the ring's order.** Per-entry done words, so tick work (batches, rays, poses) is taken ahead of frame work with a later reader (mevisland's visibility); or the visibility walk looking at the ring between clusters (AIMEVISLEFT's lesson: leaving it to the loop cost the frame +5.5%, `levers.tsv`).
 3. **The code's residency** (§3.3): the ring's code into the ME's copy, the sweep's hot loops placed against the replay's sets.
 
+## 7a. The ME lane's step 1: the pick-up wait cut (builder2, 2026-11-24, design before code)
+
+The lab's brief `coord/briefs/me_relief.md` (Sheepdog01 2026-11-24 14:57: the ME's load is cut first) puts the scheduler first, because **every later ME placement waits behind the pick-up**. The figures are quoted from the lab's `findings/CURRENT.md` (the ME rows: busy and pick-up wait on b30's live fight, posepair2a [M]); the by-kind split on today's tock is the lab's PSP ask `mekinds1` (step 0).
+
+**What holds a job up, as far as is known [D, U]:** a ring job waits for the occupant the ME is running to reach a point that looks at the ring. The replay looks every few records (slice 1). The light pass looks at its own ring points. **The AI job's yields run no ring jobs** (0 in a window, `sweepme_cause_b30` [M]) for 11-20 ms a job, worst 31.7. Audio blocks are served everywhere. The ring is FIFO, so frame work with a later reader (mevisland's visibility) sits ahead of tick work. An 8.5 ms average with a 32-33 ms worst is the shape of the AI job's length, not the replay's spacing [U].
+
+**The order, each its own switch, exact by construction (the ring's jobs run their own code on their own inputs; only when they run moves):**
+1. **A census first, no behaviour change** (keep word `mewaitwho`): for every ring job, its wait from push to pick-up, charged to the occupant running when it was pushed (render, AI, lights, audio, visibility, idle), and the kind of job that waited (batch, ray, pose, visibility). One PSP run beside `mekinds1`'s, or folded into it if the build carries both. It turns the [U] above into the ranking slices 2 and 3 are ordered by.
+2. **Slice 2: the AI job's yields serve the ring** (§7 item 1): the replay's pick-up (the slice, the urgent word, batches first) at the AI job's looks, under its abort word. The AI job's own state is untouched by a ring job (the ring's jobs read last tick's world: requirement 1). Proof: play and seeds identical in the emulator (where the ME runs inside the push, so this proves the main CPU's side); on the PSP, the pick-up wait and the AI job's time before and after, and the ME alive.
+3. **Slice 3: tick work ahead of frame work** (§7 item 2): per-entry done words so a batch, ray or pose is taken before a waiting visibility job. The completion order stays push order for readers that need it (popped stays one counter, per its readers).
+4. **MESCHED's classes and admission** (the lab's levers.tsv MESCHED, steps 3+): audio a hard deadline, the ring soft, the replay chunked, background in bounded slices, admission against the ~75% ceiling [U, `layout_plan.md` §1]. It comes after 2-3 because it is a policy over the pick-up points they add. Its prerequisite hazard (the ME's sp inside the main thread's stack at a fault) is checked first.
+
+**Measured by:** the pick-up wait (average and worst) and the ME's busy share on b30's live fight, the PSP-1000, before and after each slice, both sides on the lab's `recipe.env`. **Proof standard:** play exact; on the PSP no missed audio block, the ME alive to the end.
+
 ## 8. What it replaces, and earlier tries (levercheck)
 
 - **Replaces:** `inflight_serve`'s `psp_me_yield` before every record (geinflight, `review_geinflight.md`), under the keep word.
