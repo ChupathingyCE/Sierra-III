@@ -61701,6 +61701,138 @@ static void psp_prod_report(void)
     return 1
 prodcount_cut(TREE)
 
+# PSP_COLLCENSUS=1, keep word "collcensus" (the lead 2026-11-23 23:4x, revision 2's next collection; emulator only):
+# biped motion's pill sweep counted against last tick's (the same biped's inputs and answer), and its gather's object
+# half (objects met in the clusters, past the broad phase, and of those the ones that give no features: what a tighter
+# broad phase would skip), with a line each 300 ticks
+COLLCENSUS = os.environ.get("PSP_COLLCENSUS", "") == "1"
+def collcensus_cut(tree):
+    if not COLLCENSUS:
+        return 0
+    bp = os.path.join(tree, "source/units/bipeds.c")
+    cp = os.path.join(tree, "source/physics/collisions.c")
+    b = open(bp, errors="surrogateescape").read()
+    c = open(cp, errors="surrogateescape").read()
+    call = "\t\tcollision_count = (psp_ask(1), collision_move_pill)(\n"
+    if b.count(call) != 1:
+        check_fail("psp_fixups: COLLCENSUS: the pill's call matches %d times" % b.count(call))
+        return 0
+    end = "\t\t\t16,\n\t\t\tcollisions);\n"
+    at = b.index(call)
+    if b.find(end, at) < 0:
+        check_fail("psp_fixups: COLLCENSUS: the pill's call has no end")
+        return 0
+    e = b.index(end, at) + len(end)
+    b = b[:at] + "\t\tpsp_cc_pill = 1; /* PSP_COLLCENSUS */\n" + b[at:e] + \
+        "\t\tpsp_cc_pill = 0; /* PSP_COLLCENSUS */\n\t\tpsp_cc_sweep(physics->biped_index, collision_flags, &position, &velocity, physics->height, physics->width, collision_count, &clipped_position, &clipped_velocity, collisions);\n" + b[e:]
+    decl = "\n/* PSP_COLLCENSUS (psp_fixups.py) */\nextern int psp_cc_pill;\nvoid psp_cc_sweep(long biped_index, unsigned long flags, real_point3d const *position, real_vector3d const *velocity, real height, real width, short count, real_point3d const *clipped_position, real_vector3d const *clipped_velocity, struct collision_plane const *collisions);\n"
+    inc = b.index("\n", b.rindex("#include", 0, at)) + 1
+    b = b[:inc] + decl + b[inc:]
+    # the gather: objects met, past the broad phase, and with no features
+    met = "#endif\n\t\t\t\t\t{\n\t\t\t\t\t\t/* port: (the far ones passed over on a packed copy\n"
+    feat = "\t\t\t\t\t\t\tpsp_features_objects++;\n#endif\n\t\t\t\t\t\t\tobject_get_features_in_sphere(\n"
+    fend = "\t\t\t\t\t\t\t\tignore_object_index,\n\t\t\t\t\t\t\t\tfeatures);\n\t\t\t\t\t\t}\n"
+    if c.count(met) != 1 or c.count(feat) != 1:
+        check_fail("psp_fixups: COLLCENSUS: the gather's anchors match %d/%d times" % (c.count(met), c.count(feat)))
+        return 0
+    c = c.replace(met, met[:-len("\t\t\t\t\t\t/* port: (the far ones passed over on a packed copy\n")] +
+                  "\t\t\t\t\t\tif (psp_cc_pill) psp_cc[6]++; /* PSP_COLLCENSUS: an object met in the clusters */\n" +
+                  "\t\t\t\t\t\t/* port: (the far ones passed over on a packed copy\n")
+    fa = c.index(feat)
+    if c.find(fend, fa) < 0:
+        check_fail("psp_fixups: COLLCENSUS: the object features call has no end")
+        return 0
+    fe = c.index(fend, fa) + len(fend) - len("\t\t\t\t\t\t}\n")
+    c = c[:fa] + "\t\t\t\t\t\t\tshort psp_cc_before = psp_cc_pill ? psp_cc_features(features) : 0; /* PSP_COLLCENSUS */\n" + c[fa:fe] + \
+        "\t\t\t\t\t\t\tif (psp_cc_pill)\n\t\t\t\t\t\t\t{\n\t\t\t\t\t\t\t\tshort psp_cc_after = psp_cc_features(features);\n\n" \
+        "\t\t\t\t\t\t\t\tpsp_cc[7]++;\n\t\t\t\t\t\t\t\tif (psp_cc_after == psp_cc_before)\n\t\t\t\t\t\t\t\t\tpsp_cc[8]++;\n" \
+        "\t\t\t\t\t\t\t\tpsp_cc[10] += psp_cc_after - psp_cc_before;\n\t\t\t\t\t\t\t}\n" + c[fe:]
+    head = "boolean collision_get_features_in_sphere(\n"
+    if c.count(head) != 1:
+        check_fail("psp_fixups: COLLCENSUS: collision_get_features_in_sphere matches %d times" % c.count(head))
+        return 0
+    c = c.replace(head, r"""/* PSP_COLLCENSUS (psp_fixups.py): the pill sweep against last tick's, and its gather's object half */
+int psp_cc_pill; /* 1 while biped motion's pill sweep runs */
+unsigned long psp_cc[12]; /* 0 sweeps, 1 same inputs as last tick, 2 of them the same answer, 3 the same answer from new inputs,
+	6 objects met in the clusters, 7 past the broad phase, 8 of them with no features, 10 object features (4, 5, 9, 11 unused) */
+static short psp_cc_features(struct collision_feature_list const *features)
+{
+	return features->count[_collision_feature_sphere] + features->count[_collision_feature_cylinder] + features->count[_collision_feature_prism];
+}
+static unsigned long psp_cc_hash(unsigned long h, void const *data, unsigned long size)
+{
+	unsigned char const *p = (unsigned char const *)data;
+
+	while (size--)
+		h = (h ^ *p++) * 16777619u;
+	return h;
+}
+#define PSP_CC_SLOTS 2048
+#define PSP_CC_TURNS 4 /* a biped's sweeps a tick, matched by their order */
+static struct { long tick; unsigned char turns; unsigned long in[PSP_CC_TURNS], out[PSP_CC_TURNS]; } psp_cc_was[PSP_CC_SLOTS], psp_cc_now[PSP_CC_SLOTS];
+void psp_cc_sweep(long biped_index, unsigned long flags, real_point3d const *position, real_vector3d const *velocity, real height, real width,
+	short count, real_point3d const *clipped_position, real_vector3d const *clipped_velocity, struct collision_plane const *collisions)
+{
+	extern long game_time_get(void);
+	void platform_psp_log(const char *format, ...);
+	static long last_report = -1;
+	long tick = game_time_get(), k = biped_index & (PSP_CC_SLOTS - 1);
+	unsigned long in = 2166136261u, out = 2166136261u;
+	int turn;
+
+	if (!PSP_KEEP_ONCE("collcensus"))
+		return;
+	in = psp_cc_hash(in, &flags, sizeof(flags));
+	in = psp_cc_hash(in, position, sizeof(*position));
+	in = psp_cc_hash(in, velocity, sizeof(*velocity));
+	in = psp_cc_hash(in, &height, sizeof(height));
+	in = psp_cc_hash(in, &width, sizeof(width));
+	out = psp_cc_hash(out, &count, sizeof(count));
+	out = psp_cc_hash(out, clipped_position, sizeof(*clipped_position));
+	out = psp_cc_hash(out, clipped_velocity, sizeof(*clipped_velocity));
+	if (count > 0)
+		out = psp_cc_hash(out, collisions, (unsigned long)(count < 16 ? count : 16) * sizeof(*collisions));
+	if (psp_cc_now[k].tick != tick)
+	{
+		psp_cc_was[k] = psp_cc_now[k];
+		psp_cc_now[k].tick = tick;
+		psp_cc_now[k].turns = 0;
+	}
+	turn = psp_cc_now[k].turns;
+	psp_cc[0]++;
+	if (turn < PSP_CC_TURNS)
+	{
+		psp_cc_now[k].in[turn] = in;
+		psp_cc_now[k].out[turn] = out;
+		psp_cc_now[k].turns++;
+		if (psp_cc_was[k].tick == tick - 1 && turn < psp_cc_was[k].turns)
+		{
+			if (psp_cc_was[k].in[turn] == in)
+			{
+				psp_cc[1]++;
+				if (psp_cc_was[k].out[turn] == out)
+					psp_cc[2]++;
+			}
+			else if (psp_cc_was[k].out[turn] == out)
+				psp_cc[3]++;
+		}
+	}
+	if (tick > 0 && tick % 300 == 0 && tick != last_report)
+	{
+		last_report = tick;
+		platform_psp_log("collcensus: tick %ld: pill sweeps %lu, same inputs as the biped's last tick %lu, of them the same answer %lu; the same answer from new inputs %lu; the gather's objects met %lu, past the broad phase %lu, of them with no features %lu; object features %lu",
+			tick, psp_cc[0], psp_cc[1], psp_cc[2], psp_cc[3], psp_cc[6], psp_cc[7], psp_cc[8], psp_cc[10]);
+	}
+}
+
+""" + head, 1)
+    if not CHECK_ONLY:
+        open(bp, "w", errors="surrogateescape").write(b)
+        open(cp, "w", errors="surrogateescape").write(c)
+    print("psp_fixups: COLLCENSUS: the pill sweep and its gather counted")
+    return 1
+collcensus_cut(TREE)
+
 # The engine's one read of a datum by a raw offset (spec section 28): a door's
 # automatic test asks whether a unit is dead through byte 0xb6 of its datum,
 # which is object.damage_flags, and bit 2, which is _object_dead_bit (the
