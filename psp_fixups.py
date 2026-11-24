@@ -62191,7 +62191,7 @@ def tick2_span_cut(tree):
         check_fail("psp_fixups: TICK2 biped: struct tick2_unit_store matches %d times" % h.count(store))
         return 0
     ctl = "".join("\treal_vector3d %s;\n" % f for f in TICK2_CTL_FIELDS)
-    bip1 = "".join("\treal_vector3d %s;\n" % f for f in TICK2_BIP1_FIELDS)
+    bip1 = "".join("\treal_vector3d %s;\n" % f for f in TICK2_BIP1_FIELDS) + "\treal crouch; /* from the biped datum (the cut sheet's BIPED 1) */\n"
     h = h.replace(store, "\n/* TICK2 biped: the span that left _unit_datum, as spec section 34's two lines, and the unit section's record */\n"
                   "struct tick2_unit_ctl /* CONTROL: the requests and throttle */\n{\n" + ctl + "};\n"
                   "struct tick2_unit_bip1 /* BIPED line 1: motion's aim and look */\n{\n" + bip1 + "};\n"
@@ -62247,7 +62247,7 @@ def tick2_span_cut(tree):
                "\t\tif (header->type == _object_type_biped && TEST_FLAG(checked->object.damage_flags, _object_dead_bit))\n"
                "\t\t{\n"
                "\t\t\tservo_first = offsetof(struct tick2_unit_rec, bip1) / 4; /* the aim and look servo: BIPED line 1 whole */\n"
-               "\t\t\tservo_end = (offsetof(struct tick2_unit_rec, bip1) + sizeof(struct tick2_unit_bip1) + 3) / 4;\n"
+               "\t\t\tservo_end = (offsetof(struct tick2_unit_rec, bip1) + offsetof(struct tick2_unit_bip1, crouch) + 3) / 4; /* the four vectors: crouch is no servo */\n"
                "\t\t}\n"
                "\t\tword = (unsigned long const *)tick2_unit_rec_of(checked->object.root);\n"
                "\t\tfor (k = 0; k < sizeof(struct tick2_unit_rec) / 4; k++)\n"
@@ -62341,6 +62341,38 @@ static void tick2_proof_span_check(void)
     u = u.replace(servo, "const long psp_unit_aim_bytes[2] = { 0, 0 }; /* TICK2 biped: the servo is in the unit section's record, whose checksum leaves it out */")
     if not CHECK_ONLY:
         open(units_c, "w", errors="surrogateescape").write(u)
+    # crouch leaves the biped datum for BIPED line 1 (the cut sheet: biped.crouch, 14 touches, all in bipeds.c)
+    bipeds_h = os.path.join(tree, "source/units/bipeds.h")
+    bh = open(bipeds_h, errors="surrogateescape").read()
+    crouch_line = "\tshort landing;\n\treal crouch;\n\treal bank;\n"
+    if bh.count(crouch_line) != 1:
+        check_fail("psp_fixups: TICK2 biped: _biped_datum's crouch matches %d times" % bh.count(crouch_line))
+        return 0
+    bh = bh.replace(crouch_line, "\tshort landing;\n" + ("\tunsigned char tick2_proof_crouch[4] __attribute__((aligned(4))); /* TICK2 proof */\n" if TICK2_PROOF else "") + "\treal bank;\n")
+    if not CHECK_ONLY:
+        open(bipeds_h, "w", errors="surrogateescape").write(bh)
+    crouch_touch = re.compile(r"\b([A-Za-z_]\w*(?:\([^()]*\))?)->biped\.crouch\b")
+    crouch_window = re.compile(r"PSP_BMSW?\((\w+), biped\.crouch\)")
+    path = os.path.join(tree, "source/units/bipeds.c")
+    text = open(path, errors="surrogateescape").read()
+    text, c1 = crouch_touch.subn(lambda m: "(*tick2_unit_bip1_of(%s->object.root)).crouch" % m.group(1), text)
+    text, c2 = crouch_window.subn(lambda m: "(*tick2_unit_bip1_of(%s->object.root)).crouch" % m.group(1), text)
+    if c1 + c2 != 14 or re.search(r"\bbiped\.crouch\b", text):
+        check_fail("psp_fixups: TICK2 biped: crouch's touches %d, not 14, or some left" % (c1 + c2))
+        return 0
+    if not CHECK_ONLY:
+        open(path, "w", errors="surrogateescape").write(text)
+    if TICK2_PROOF:
+        oc = open(objects_c, errors="surrogateescape").read()
+        made = "\t\t\t\t\tmemset(((struct unit_datum *)object)->unit.tick2_proof_span, %d, sizeof(((struct unit_datum *)object)->unit.tick2_proof_span));\n" % TICK2_PROOF_BYTE
+        if oc.count(made) != 1:
+            check_fail("psp_fixups: TICK2 biped: the proof's span fill at the making matches %d times" % oc.count(made))
+            return 0
+        oc = oc.replace(made, made + "\t\t\t\t\tif (object_header->type == _object_type_biped)\n"
+                        "\t\t\t\t\t\tmemset(((struct biped_datum *)object)->biped.tick2_proof_crouch, %d, 4);\n" % TICK2_PROOF_BYTE)
+        if not CHECK_ONLY:
+            open(objects_c, "w", errors="surrogateescape").write(oc)
+    print("psp_fixups: TICK2 biped: crouch's 14 touches through BIPED line 1")
     # every touch: x->unit.<field> (x a name or a call) and biped motion's window
     fields = "|".join(TICK2_SPAN_FIELDS)
     touch = re.compile(r"\b([A-Za-z_]\w*(?:\([^()]*\))?)->unit\.(%s)\b" % fields)
@@ -62368,7 +62400,7 @@ static void tick2_proof_span_check(void)
     path = os.path.join(tree, "source/objects/object_types.c")
     text = open(path, errors="surrogateescape").read()
     rows = re.compile(r"(\n\t\"(unit|biped|vehicle)\", '\w{4}', )0x([0-9A-Fa-f]+)(,)")
-    text, sized = rows.subn(lambda m: "%s0x%X%s" % (m.group(1), int(m.group(3), 16) - shrink, m.group(4)), text)
+    text, sized = rows.subn(lambda m: "%s0x%X%s" % (m.group(1), int(m.group(3), 16) - shrink - (4 if m.group(2) == "biped" and not TICK2_PROOF else 0), m.group(4)), text)
     if sized != 3:
         check_fail("psp_fixups: TICK2 biped: %d unit-family sizes in object_types.c, not 3" % sized)
     elif not CHECK_ONLY:
