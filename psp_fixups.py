@@ -62248,6 +62248,305 @@ void psp_sr_store(long biped_index, unsigned long flags, real_point3d const *pos
     return 1
 sweepreuse_cut(TREE)
 
+# PSP_TICK2_STAMPS=1 (lane B, part 1 and 2; the lab's spec section 37 in the form read against the code,
+# tick_store_biped_plan.md "The stamps, read against the code"; needs PSP_TICK2 and PSP_SWEEPREUSE): a stamp on
+# each cluster, set where a collideable object really changes there (a reconnect that moves it, its clusters or
+# its bounding sphere; a new or deleted object; a pose that writes a different sphere), and the sweep reuse's
+# guard reads the stamps of its kept clusters instead of walking them. The engine moves an object only by
+# disconnecting and reconnecting it, and biped motion does that for every awake biped every tick, moved or not,
+# so a reconnect stamps only when something differs. A stamp keeps the last stamp's order, its object, and the
+# last stamp's order by any other object, so a biped's own moves never refuse its own repeat. The kept near
+# objects (at most 8) keep their pose hashes, checked without a walk: rotation in place writes forward and up
+# directly. Keep word "sweepreusestampcensus" works out both guards for every candidate, sweeps anyway, and
+# counts each guard's passes and wrong answers.
+TICK2_STAMPS = os.environ.get("PSP_TICK2_STAMPS", "") == "1"
+TICK2_CS_CODE = r"""
+#include "reference_lists.h" /* TICK2 stamps: the cluster references' chain */
+/* TICK2 stamps (psp_fixups.py PSP_TICK2_STAMPS): a stamp on each cluster, set where a collideable object really
+changes there, so a part asking "did anything here change since I looked" reads a few words, not the cluster */
+#define TICK2_CS_CLUSTERS 512 /* MAXIMUM_CLUSTERS_PER_STRUCTURE */
+#define TICK2_CS_HELD 32 /* MAXIMUM_CLUSTERS_PER_OBJECT */
+struct tick2_cstamp
+{
+	unsigned long last; /* the last stamp's order */
+	unsigned long other; /* the last stamp's order by an object other than who */
+	long who; /* the last stamp's object */
+};
+struct tick2_cstamp tick2_cstamps[TICK2_CS_CLUSTERS];
+unsigned long tick2_cs_seq = 1; /* the stamps' order: one more each stamp */
+unsigned long tick2_cs_floor; /* a reader's look older than this sees everything changed */
+unsigned long tick2_cs_me_dirty; /* set (uncached) by a change made on the Media Engine */
+unsigned long tick2_cs_counts[5]; /* reconnects unchanged, changed; poses with a new sphere; holds settled; changes on the ME */
+static struct
+{
+	long object_index; /* NONE: none held */
+	real_point3d position, center;
+	real radius;
+	short count; /* -1: more clusters than held */
+	short clusters[TICK2_CS_HELD];
+} tick2_cs_held = { NONE };
+#define TICK2_CS_UNCACHED(x) (*(volatile unsigned long *)((unsigned long)&(x) | 0x40000000u))
+static void tick2_cs_all(void)
+{
+	tick2_cs_floor = ++tick2_cs_seq;
+}
+static void tick2_cs_stamp(short cluster_index, long who)
+{
+	struct tick2_cstamp *s;
+
+	if (cluster_index < 0 || cluster_index >= TICK2_CS_CLUSTERS)
+	{
+		tick2_cs_all();
+		return;
+	}
+	s = &tick2_cstamps[cluster_index];
+	if (s->who != who)
+	{
+		s->other = s->last;
+		s->who = who;
+	}
+	s->last = ++tick2_cs_seq;
+}
+static short tick2_cs_chain(struct object_datum const *object, short *clusters)
+{
+	long reference = object->object.first_cluster_reference_index;
+	short count = 0;
+
+	while (reference != NONE)
+	{
+		long cluster = reference_list_get_next_datum_index(collideable_object_cluster_partition.cluster_reference_data, &reference);
+
+		if (count >= TICK2_CS_HELD)
+			return -1;
+		clusters[count++] = (short)cluster;
+	}
+	return count;
+}
+static void tick2_cs_stamp_list(short const *clusters, short count, long who)
+{
+	short k;
+
+	if (count < 0)
+	{
+		tick2_cs_all();
+		return;
+	}
+	for (k = 0; k < count; k++)
+		tick2_cs_stamp(clusters[k], who);
+}
+/* the held disconnect's clusters, stamped: it wasn't reconnected unchanged (deleted, made a child, or moved) */
+static void tick2_cs_settle_held(void)
+{
+	if (tick2_cs_held.object_index == NONE)
+		return;
+	tick2_cs_stamp_list(tick2_cs_held.clusters, tick2_cs_held.count, tick2_cs_held.object_index);
+	tick2_cs_held.object_index = NONE;
+	tick2_cs_counts[3]++;
+}
+/* a reader's call before it reads the stamps */
+void tick2_cs_settle(void)
+{
+	tick2_cs_settle_held();
+	if (TICK2_CS_UNCACHED(tick2_cs_me_dirty))
+	{
+		TICK2_CS_UNCACHED(tick2_cs_me_dirty) = 0;
+		tick2_cs_all();
+	}
+}
+static int tick2_cs_watched(struct object_datum const *object)
+{
+	return object->object.parent_object_index == NONE && TEST_FLAG(object->object.flags, _object_has_collision_model_bit);
+}
+/* at a disconnect: what the object was, and where */
+static void tick2_cs_before(long object_index, struct object_datum const *object)
+{
+	if (psp_work_on_me())
+	{
+		TICK2_CS_UNCACHED(tick2_cs_me_dirty) = 1;
+		return;
+	}
+	tick2_cs_settle_held();
+	if (!tick2_cs_watched(object))
+		return;
+	tick2_cs_held.object_index = object_index;
+	tick2_cs_held.position = object->object.root->position;
+	tick2_cs_held.center = object->object.root->bounding_sphere_center;
+	tick2_cs_held.radius = object->object.root->bounding_sphere_radius;
+	tick2_cs_held.count = tick2_cs_chain(object, tick2_cs_held.clusters);
+}
+/* at a reconnect: unchanged (the same place, sphere and clusters as its disconnect) stamps nothing */
+static void tick2_cs_after(long object_index, struct object_datum const *object)
+{
+	short clusters[TICK2_CS_HELD], count;
+
+	if (psp_work_on_me())
+	{
+		TICK2_CS_UNCACHED(tick2_cs_me_dirty) = 1;
+		return;
+	}
+	if (!tick2_cs_watched(object))
+		return;
+	count = tick2_cs_chain(object, clusters);
+	if (tick2_cs_held.object_index == object_index && count >= 0 && count == tick2_cs_held.count &&
+		!memcmp(clusters, tick2_cs_held.clusters, count * sizeof(short)) &&
+		!memcmp(&tick2_cs_held.position, &object->object.root->position, sizeof(real_point3d)) &&
+		!memcmp(&tick2_cs_held.center, &object->object.root->bounding_sphere_center, sizeof(real_point3d)) &&
+		!memcmp(&tick2_cs_held.radius, &object->object.root->bounding_sphere_radius, sizeof(real)))
+	{
+		tick2_cs_held.object_index = NONE;
+		tick2_cs_counts[0]++;
+		return;
+	}
+	tick2_cs_settle_held();
+	tick2_cs_counts[1]++;
+	tick2_cs_stamp_list(clusters, count, object_index);
+}
+/* at a pose that wrote a different bounding sphere: the object's own clusters (no reconnect follows) */
+static void tick2_cs_sphere(long object_index)
+{
+	struct object_datum const *object = object_get(object_index);
+	short clusters[TICK2_CS_HELD];
+
+	if (psp_work_on_me())
+	{
+		TICK2_CS_UNCACHED(tick2_cs_me_dirty) = 1;
+		return;
+	}
+	if (!TEST_FLAG(object->object.flags, _object_connected_to_map_bit) || !tick2_cs_watched(object))
+		return;
+	tick2_cs_counts[2]++;
+	tick2_cs_stamp_list(clusters, tick2_cs_chain(object, clusters), object_index);
+}
+"""
+def tick2_stamps_cut(tree):
+    if not TICK2_STAMPS:
+        return 0
+    if not TICK2_ROOT or not SWEEPREUSE:
+        check_fail("psp_fixups: PSP_TICK2_STAMPS=1 needs PSP_TICK2 (the store's root) and PSP_SWEEPREUSE=1 (its first reader)")
+        return 0
+    op = os.path.join(tree, "source/objects/objects.c")
+    cp = os.path.join(tree, "source/physics/collisions.c")
+    o = open(op, errors="surrogateescape").read()
+    c = open(cp, errors="surrogateescape").read()
+    def one(text, old, new, what):
+        if text.count(old) != 1:
+            check_fail("psp_fixups: TICK2 stamps: %s matches %d times" % (what, text.count(old)))
+            return text
+        return text.replace(old, new, 1)
+    # the stamps, ahead of the disconnect's definition
+    o = one(o, "void object_disconnect_from_map(\n\tlong object_index)\n{\n",
+            TICK2_CS_CODE + "\nvoid object_disconnect_from_map(\n\tlong object_index)\n{\n", "the disconnect's head")
+    o = one(o, "\tmatch_assert(\"c:\\\\halo\\\\SOURCE\\\\objects\\\\objects.c\", 958, TEST_FLAG(object->object.flags, _object_connected_to_map_bit));\n",
+            "\tmatch_assert(\"c:\\\\halo\\\\SOURCE\\\\objects\\\\objects.c\", 958, TEST_FLAG(object->object.flags, _object_connected_to_map_bit));\n"
+            "\ttick2_cs_before(object_index, object); /* TICK2 stamps */\n", "the disconnect's assert")
+    o = one(o, "\t\t\t&object->object.root->location);\n\n\t\tif (TEST_FLAG(header->flags, _object_header_automatically_deactivate_bit))",
+            "\t\t\t&object->object.root->location);\n\t\ttick2_cs_after(object_index, object); /* TICK2 stamps */\n\n"
+            "\t\tif (TEST_FLAG(header->flags, _object_header_automatically_deactivate_bit))", "the reconnect's partition step")
+    # every pose goes through object_compute_node_matrices_with (the posing box is called inside it): a wrapper
+    # compares the sphere around it
+    head = "static void object_compute_node_matrices_with(\n\tlong object_index,\n\tstruct object_datum *object,\n\tstruct object_definition *object_definition)\n{\n"
+    if o.count(head) != 1:
+        check_fail("psp_fixups: TICK2 stamps: the pose's definition matches %d times" % o.count(head))
+    else:
+        at = o.index(head)
+        end = o.index("\n}\n", at) + 3
+        body = o[at:end].replace("object_compute_node_matrices_with(", "object_compute_node_matrices_with_cs(", 1)
+        o = o[:at] + "static void object_compute_node_matrices_with_cs(long object_index, struct object_datum *object, struct object_definition *object_definition);\n" + \
+            body + r"""/* TICK2 stamps: a pose that writes a different bounding sphere stamps the object's clusters */
+static void object_compute_node_matrices_with(
+	long object_index,
+	struct object_datum *object,
+	struct object_definition *object_definition)
+{
+	real_point3d center = object->object.root->bounding_sphere_center;
+	real radius = object->object.root->bounding_sphere_radius;
+
+	object_compute_node_matrices_with_cs(object_index, object, object_definition);
+	object = object_get(object_index);
+	if (memcmp(&center, &object->object.root->bounding_sphere_center, sizeof(center)) ||
+		memcmp(&radius, &object->object.root->bounding_sphere_radius, sizeof(radius)))
+		tick2_cs_sphere(object_index);
+}
+""" + o[end:]
+    # the guard: the stamps of the kept clusters and the kept near objects' hashes, no walk
+    walk_guard_head = "\t{ /* the guard (the builder 09:3x): every object in reach of the kept sphere past the gather's filter is a kept one, unmoved, and every kept one is met */\n"
+    if c.count(walk_guard_head) != 1:
+        check_fail("psp_fixups: TICK2 stamps: the walk guard matches %d times" % c.count(walk_guard_head))
+        return 0
+    g0 = c.index(walk_guard_head)
+    g1 = c.index("\n\t}\n", g0) + 4
+    walk = c[g0:g1]
+    # the walk guard as a function (the census's other side); its refusals return 0
+    walk_fn = walk.replace("\t\t\t\t\tpsp_sr_counts[2]++;\n\t\t\t\t\tpsp_sr_counts[3]++;\n\t\t\t\t\treturn FALSE;\n", "\t\t\t\t\treturn 0;\n") \
+                  .replace("\t\t\tpsp_sr_counts[2]++;\n\t\t\tpsp_sr_counts[3]++;\n\t\t\treturn FALSE;\n", "\t\t\treturn 0;\n")
+    if "psp_sr_counts" in walk_fn:
+        check_fail("psp_fixups: TICK2 stamps: the walk guard's refusals weren't all found")
+        return 0
+    c = c[:g0] + (
+        "\tswitch (psp_sr_guard(r, biped_index)) /* TICK2 stamps */\n\t{\n"
+        "\tcase 0:\n\t\tpsp_sr_counts[2]++;\n\t\tpsp_sr_counts[3]++;\n\t\treturn FALSE;\n"
+        "\tcase 2: /* sweepreusestampcensus: sweep anyway, both guards' answers checked */\n\t\tpsp_sr_candidate = r;\n\t\treturn FALSE;\n\t}\n") + c[g1:]
+    guard_fns = (
+        "extern struct tick2_cstamp { unsigned long last, other; long who; } tick2_cstamps[]; /* objects.c's */\n"
+        "extern unsigned long tick2_cs_seq, tick2_cs_floor, tick2_cs_counts[5];\nvoid tick2_cs_settle(void);\n"
+        "static unsigned long psp_sr_gather_seq; /* the stamps' order when the gather the answer rests on was made */\n"
+        "static unsigned long psp_sr_stc[8]; /* candidates: both pass, stamps only, walk only, neither; wrong: stamps, walk */\n"
+        "static int psp_sr_stc_stamps, psp_sr_stc_walk; /* the census's verdicts for the candidate in hand */\n"
+        "static int psp_sr_walk_ok(struct psp_sr_record *r, long biped_index)\n{\n\tint k;\n\n" + walk_fn +
+        "\treturn 1;\n}\n"
+        "static int psp_sr_stamps_ok(struct psp_sr_record *r, long biped_index)\n{\n\tint k;\n\n"
+        "\ttick2_cs_settle();\n"
+        "\tif (r->seq < tick2_cs_floor)\n\t\treturn 0;\n"
+        "\tfor (k = 0; k < r->cluster_count; k++)\n\t{\n"
+        "\t\tshort cluster = r->clusters[k];\n\n"
+        "\t\tif (cluster < 0 || cluster >= 512)\n\t\t\treturn 0;\n"
+        "\t\tif (tick2_cstamps[cluster].last > r->seq &&\n"
+        "\t\t\t(tick2_cstamps[cluster].who != biped_index || tick2_cstamps[cluster].other > r->seq))\n\t\t\treturn 0;\n\t}\n"
+        "\tfor (k = 0; k < r->near_count; k++)\n\t\tif (psp_sr_pose_differs(&r->near[k]))\n\t\t\treturn 0;\n"
+        "\treturn 1;\n}\n"
+        "static int psp_sr_guard(struct psp_sr_record *r, long biped_index)\n{\n"
+        "\tif (PSP_KEEP_ONCE(\"sweepreusestampcensus\"))\n\t{\n"
+        "\t\tpsp_sr_stc_stamps = psp_sr_stamps_ok(r, biped_index);\n\t\tpsp_sr_stc_walk = psp_sr_walk_ok(r, biped_index);\n"
+        "\t\tpsp_sr_stc[psp_sr_stc_stamps ? (psp_sr_stc_walk ? 0 : 1) : (psp_sr_stc_walk ? 2 : 3)]++;\n\t\treturn 2;\n\t}\n"
+        "\treturn psp_sr_stamps_ok(r, biped_index);\n}\n")
+    for old, new, what in (
+        ("struct psp_sr_record\n{\n\tlong biped_index, tick;\n", "struct psp_sr_record\n{\n\tlong biped_index, tick;\n\tunsigned long seq; /* TICK2 stamps: the gather's order */\n", "the record's head"),
+        ("boolean psp_sr_try(long biped_index,", guard_fns + "boolean psp_sr_try(long biped_index,", "the try's definition"),
+        ("\tpsp_sr_on_pill = 1;\n\tpsp_sr_met = 0;\n\tpsp_sr_cluster_count = 0;\n\tpsp_sr_near_count = 0;\n}\n",
+         "\tpsp_sr_on_pill = 1;\n\tpsp_sr_met = 0;\n\tpsp_sr_cluster_count = 0;\n\tpsp_sr_near_count = 0;\n\ttick2_cs_settle();\n\tpsp_sr_gather_seq = tick2_cs_seq; /* TICK2 stamps */\n}\n", "psp_sr_begin"),
+        ("\tr->tick = tick;\n\tr->flags = flags;\n", "\tr->tick = tick;\n\tr->seq = psp_sr_gather_seq; /* TICK2 stamps */\n\tr->flags = flags;\n", "the store's keep"),
+        ("\tshort sr_clusters[PSP_SR_CLUSTERS], sr_cluster_count; /* SWEEPREUSE: the gather's clusters */\n",
+         "\tshort sr_clusters[PSP_SR_CLUSTERS], sr_cluster_count; /* SWEEPREUSE: the gather's clusters */\n\tunsigned long sr_seq; /* TICK2 stamps: the gather's order */\n", "bipedstage2's slot"),
+        ("\t\tpsp_sr_on_pill = 1;\n\t\tpsp_sr_met = 0;\n\t\tpsp_sr_cluster_count = 0;\n\t\tpsp_sr_near_count = 0;\n",
+         "\t\tpsp_sr_on_pill = 1;\n\t\tpsp_sr_met = 0;\n\t\tpsp_sr_cluster_count = 0;\n\t\tpsp_sr_near_count = 0;\n\t\ttick2_cs_settle();\n\t\tslot->sr_seq = tick2_cs_seq; /* TICK2 stamps */\n", "bipedstage2's gather"),
+        ("\t\tpsp_sr_met += slot->sr_met;\n", "\t\tpsp_sr_met += slot->sr_met;\n\t\tpsp_sr_gather_seq = slot->sr_seq; /* TICK2 stamps */\n", "bipedstage2's take"),
+        ("\t\tstruct psp_sr_record *was = psp_sr_candidate;\n\n",
+         "\t\tstruct psp_sr_record *was = psp_sr_candidate;\n\n"
+         "\t\tif (PSP_KEEP_ONCE(\"sweepreusestampcensus\")) /* TICK2 stamps */\n\t\t{\n"
+         "\t\t\tint differs = was->count != *count || memcmp(&was->clipped_position, clipped_position, sizeof(*clipped_position)) ||\n"
+         "\t\t\t\tmemcmp(&was->clipped_velocity, clipped_velocity, sizeof(*clipped_velocity)) ||\n"
+         "\t\t\t\t(*count > 0 && memcmp(was->planes, collisions, *count * sizeof(*collisions)));\n\n"
+         "\t\t\tif (differs && psp_sr_stc_stamps)\n\t\t\t\tpsp_sr_stc[4]++;\n"
+         "\t\t\tif (differs && psp_sr_stc_walk)\n\t\t\t\tpsp_sr_stc[5]++;\n\t\t}\n", "the store's check"),
+        ("\tpsp_sr_counts[0]++;\n\tif (PSP_KEEP_ONCE(\"sweepreuseoff\")",
+         "\t{ /* TICK2 stamps: a game state from another time (a revert, a new map) sees everything changed */\n"
+         "\t\tstatic long last_tick;\n\n\t\tif (tick < last_tick)\n\t\t\ttick2_cs_floor = ++tick2_cs_seq;\n\t\tlast_tick = tick;\n\t}\n"
+         "\tpsp_sr_counts[0]++;\n\tif (PSP_KEEP_ONCE(\"sweepreuseoff\")", "the try's count"),
+        ("\t\t\ttick, psp_sr_counts[0], psp_sr_counts[1], psp_sr_counts[2], psp_sr_counts[3], psp_sr_counts[4], psp_sr_counts[5]);\n",
+         "\t\t\ttick, psp_sr_counts[0], psp_sr_counts[1], psp_sr_counts[2], psp_sr_counts[3], psp_sr_counts[4], psp_sr_counts[5]);\n"
+         "\t\tplatform_psp_log(\"sweepreusestamps: tick %ld: candidates both pass %lu, stamps only %lu, walk only %lu, neither %lu; wrong: stamps %lu, walk %lu; \"\n"
+         "\t\t\t\"reconnects unchanged %lu, changed %lu; poses with a new sphere %lu; holds settled %lu; order %lu\",\n"
+         "\t\t\ttick, psp_sr_stc[0], psp_sr_stc[1], psp_sr_stc[2], psp_sr_stc[3], psp_sr_stc[4], psp_sr_stc[5],\n"
+         "\t\t\ttick2_cs_counts[0], tick2_cs_counts[1], tick2_cs_counts[2], tick2_cs_counts[3], tick2_cs_seq);\n", "the report"),
+    ):
+        c = one(c, old, new, what)
+    if not CHECK_ONLY:
+        open(op, "w", errors="surrogateescape").write(o)
+        open(cp, "w", errors="surrogateescape").write(c)
+    print("psp_fixups: TICK2 stamps: a stamp on each cluster; the sweep reuse's guard reads them, no walk")
+    return 1
+tick2_stamps_cut(TREE)
+
 # PSP_TICK2=biped (slice 1's BIPED line 1 and CONTROL, the lab's spec section 34; the cut sheet in the lab's
 # tick_store_biped_plan.md): the unit datum's 96-byte span from desired_facing_vector to throttle (CONTROL's
 # facing, aiming and looking requests and throttle, interleaved with motion's aim and look vectors and their
