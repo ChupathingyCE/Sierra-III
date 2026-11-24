@@ -63544,6 +63544,19 @@ static void tick2_proof_span_check(void)
                     return 0
                 text = text.replace(base, "(unsigned char *)tick2_unit_bip3_of(biped->object.root) + first")
                 n2 += 1
+            # biped_reset clears the whole biped section (csmemset), which cleared these fields in the datum: their
+            # records are cleared with it, field by field, crouch's too (tick2l23bis3: landing left set after the
+            # player's reset made its animation step a tick early on c20)
+            if fname == "bipeds.c":
+                reset = "\tcsmemset(&biped->biped, 0, sizeof(biped->biped));\n"
+                if text.count(reset) != 1:
+                    check_fail("psp_fixups: TICK2 biped: biped_reset's clear matches %d times" % text.count(reset))
+                    return 0
+                cleared = "".join("\tmemset(&(*tick2_unit_%s_of(biped->object.root)).%s, 0, sizeof((*tick2_unit_%s_of(biped->object.root)).%s));\n"
+                                  % (tail_line(f), f, tail_line(f), f) for _, f in tick2_tail(TICK2_BIP2_FIELDS + TICK2_BIP3_FIELDS))
+                text = text.replace(reset, reset + "\t/* TICK2 biped: the fields the clear reached, in their records */\n" + cleared +
+                                    "\t(*tick2_unit_bip1_of(biped->object.root)).crouch = 0;\n")
+                n2 += 1
             stray = tail_left.findall(text)
             if stray:
                 check_fail("psp_fixups: TICK2 biped: lines 2-3 touches left in %s (%s)" % (tpath, ", ".join(sorted(set(stray)))))
