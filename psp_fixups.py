@@ -61744,6 +61744,79 @@ def motioncross_cut(tree):
     return 1
 motioncross_cut(TREE)
 
+# PSP_TICK2_MOTIONPASS=1 (lab tick_store_biped_plan.md, "The motion pass", M2; the lead 2026-11-24 13:4x: a
+# plays-the-same change): the staged bipeds' solves split at the move. Every biped with a move runs it, in the
+# stage's order (phase 4), then every biped runs the rest of its update and object_update's tail (phase 5), so
+# each part's code runs back to back for all bipeds. Post-move reads of other bipeds (the held weapon's aim
+# assist, the AI's helpers) then see every biped moved: at most one move's difference (tick2mcross2), the
+# pre-approved class. The BIPEDMOVE record is written back at the move's end and not kept into phase 5.
+# Keep word "motionpassoff": the build runs the stage as before (the exactness check).
+TICK2_MOTIONPASS = os.environ.get("PSP_TICK2_MOTIONPASS", "") == "1"
+def motionpass_cut(tree):
+    if not TICK2_MOTIONPASS:
+        return 0
+    files = {k: os.path.join(tree, v) for k, v in (("objects", "source/objects/objects.c"),
+        ("types", "source/objects/object_types.c"), ("bipeds", "source/units/bipeds.c"))}
+    text = {k: open(v, errors="surrogateescape").read() for k, v in files.items()}
+    pairs = [
+        ("types", "(psp_bipedstage_phase == 2 || psp_bipedstage_phase == 4) && current_definition->datum_update == unit_update",
+                  "(psp_bipedstage_phase == 2 || psp_bipedstage_phase == 4 || psp_bipedstage_phase == 5) && current_definition->datum_update == unit_update"),
+        ("bipeds", "\tif (psp_bipedstage_phase == 4 && (psp_bs3_cur = psp_bs3_find(biped_index)) != NULL) /* (FIXES_BIPEDSTAGE) bipedstage3's solve */\n",
+                   "\tif ((psp_bipedstage_phase == 4 || psp_bipedstage_phase == 5) && (psp_bs3_cur = psp_bs3_find(biped_index)) != NULL) /* (FIXES_BIPEDSTAGE) bipedstage3's solve; 5: the motion pass's rest */\n"),
+        ("bipeds", "\t\tif (psp_bs3_resume == 1)\n\t\t\tgoto psp_bs3_resume_move;\n",
+                   "\t\tif (psp_bs3_resume == 1)\n\t\t\tgoto psp_bs3_resume_move;\n\t\tif (psp_bs3_resume == 3) /* TICK2 motion pass: the rest after the move */\n\t\t\tgoto psp_bs3_resume_post;\n"),
+        ("bipeds", "\t\tbiped_verify_object_vectors(biped_index, \"post-moving\");\n",
+                   "\t\tif (psp_bipedstage_phase == 4 && psp_bs3_cur && psp_bs4_moving) /* TICK2 motion pass: stop after the move */\n"
+                   "\t\t{\n\t\t\tpsp_bs3_cur->animation = animation;\n\t\t\tpsp_bs3_cur->stop = 3;\n\t\t\tgoto psp_bs3_out;\n\t\t}\n"
+                   "psp_bs3_resume_post:\n\t\tpsp_bs3_resume = 0;\n"
+                   "\t\tbiped_verify_object_vectors(biped_index, \"post-moving\");\n"),
+        ("bipeds", "\tif (psp_bipedstage_phase == 4)\n\t{\n\t\tpsp_bms_stop();",
+                   "\tif (psp_bipedstage_phase == 4 || psp_bipedstage_phase == 5)\n\t{\n\t\tpsp_bms_stop();"),
+        ("bipeds", "static char psp_bs3_resume = 0;\n",
+                   "static char psp_bs3_resume = 0;\n"
+                   "static int psp_bs4_moving = 0; /* TICK2 motion pass: inside psp_bipedstage4_move */\n"),
+        ("bipeds", "int psp_bipedstage3_kept(long biped_index)\n{\n\treturn psp_bs3_find(biped_index) != NULL;\n}\n",
+                   "int psp_bipedstage3_kept(long biped_index)\n{\n\treturn psp_bs3_find(biped_index) != NULL;\n}\n"
+                   "/* TICK2 motion pass: the move alone, stopped after it (psp_bs3_out writes the BIPEDMOVE record back) */\n"
+                   "int psp_bipedstage4_move(long biped_index)\n{\n"
+                   "\tstruct psp_bs3_record *record = psp_bs3_find(biped_index);\n\n"
+                   "\tif (!record || record->stop != 1)\n\t\treturn 0;\n"
+                   "\tpsp_bs4_moving = 1;\n\tbiped_update(biped_index);\n\tpsp_bs4_moving = 0;\n\treturn 1;\n}\n"),
+        ("objects", "\t\t\tpsp_bipedstage_phase = psp_bs3_on ? 4 : ",
+                    "\t\t\tpsp_bipedstage_phase = psp_bs3_on ? (psp_motion5 ? 5 : 4) : "),
+        ("objects", "\t\t\tif (psp_bipedstage_phase == 4 && TEST_FLAG(header->datum->object.damage_flags, _object_dead_bit) &&",
+                    "\t\t\tif ((psp_bipedstage_phase == 4 || psp_bipedstage_phase == 5) && TEST_FLAG(header->datum->object.damage_flags, _object_dead_bit) &&"),
+        ("objects", "\tpsp_sweepme_end(); /* (FIXES_SWEEPME) */\n",
+                    "\tpsp_sweepme_end(); /* (FIXES_SWEEPME) */\n"
+                    "\t/* TICK2 motion pass (tick_store_biped_plan.md, M2): every move first, in the stage's order; then the\n"
+                    "\tloop below runs each biped's rest as phase 5. \"motionpassoff\": as before */\n"
+                    "\tif (psp_motionpass_on < 0)\n\t\tpsp_motionpass_on = !psp_keep(\"motionpassoff\");\n"
+                    "\tpsp_motion5 = 0;\n"
+                    "\tif (psp_bs3_on && psp_motionpass_on)\n\t{\n"
+                    "\t\tfor (k = 0; k < psp_bipedstage_count; k++)\n\t\t{\n"
+                    "\t\t\tif (psp_bipedstage_live(k, &header))\n\t\t\t{\n"
+                    "\t\t\t\tpsp_bipedstage_phase = 4;\n"
+                    "\t\t\t\tpsp_bipedstage4_move(psp_bipedstage_index[k]);\n\t\t\t}\n\t\t}\n"
+                    "\t\tpsp_motion5 = 1;\n\t}\n"),
+        ("objects", "\t/* BIPEDMOVE 1c: a kept record whose solve didn't resume it written back */\n",
+                    "\tpsp_motion5 = 0; /* TICK2 motion pass */\n\t/* BIPEDMOVE 1c: a kept record whose solve didn't resume it written back */\n"),
+        ("objects", "static short psp_bipedstage_absolute[PSP_BIPEDSTAGE_MAXIMUM];\n",
+                    "static short psp_bipedstage_absolute[PSP_BIPEDSTAGE_MAXIMUM];\n"
+                    "static int psp_motionpass_on = -1, psp_motion5 = 0; /* TICK2 motion pass */\n"
+                    "int psp_bipedstage4_move(long biped_index); /* bipeds.c (TICK2 motion pass) */\n"),
+    ]
+    for key, old, new in pairs:
+        if text[key].count(old) != 1:
+            check_fail("psp_fixups: PSP_TICK2_MOTIONPASS: in %s, %r matches %d times" % (key, old[:60], text[key].count(old)))
+            return 0
+        text[key] = text[key].replace(old, new)
+    if not CHECK_ONLY:
+        for key, path in files.items():
+            open(path, "w", errors="surrogateescape").write(text[key])
+    print("psp_fixups: PSP_TICK2_MOTIONPASS: the biped solves split at the move (keep word motionpassoff)")
+    return 1
+motionpass_cut(TREE)
+
 
 # PSP_POSECENSUS=1 (the lead 2026-11-23 21:2x: the parting census for c20's posing-pass shift): every node and marker
 # getter read is hashed by its call site (file and line) into a per-tick sum, the object's datum index with what the
