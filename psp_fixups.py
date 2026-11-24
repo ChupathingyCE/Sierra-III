@@ -62436,8 +62436,14 @@ static void tick2_proof_span_check(void)
         if oc.count(made) != 1:
             check_fail("psp_fixups: TICK2 biped: the proof's span fill at the making matches %d times" % oc.count(made))
             return 0
+        # objects.c doesn't see the biped datum: the fill is bipeds.c's (tick2crouchp1's build)
         oc = oc.replace(made, made + "\t\t\t\t\tif (object_header->type == _object_type_biped)\n"
-                        "\t\t\t\t\t\tmemset(((struct biped_datum *)object)->biped.tick2_proof_crouch, %d, 4);\n" % TICK2_PROOF_BYTE)
+                        "\t\t\t\t\t{\n\t\t\t\t\t\tvoid tick2_proof_crouch_fill(void *datum);\n\n\t\t\t\t\t\ttick2_proof_crouch_fill(object);\n\t\t\t\t\t}\n")
+        bc = open(path, errors="surrogateescape").read()
+        bc += "\n/* TICK2 proof: the biped's old crouch bytes patterned at its making (objects.c calls it) */\n" \
+              "void tick2_proof_crouch_fill(void *datum)\n{\n\tmemset(((struct biped_datum *)datum)->biped.tick2_proof_crouch, %d, 4);\n}\n" % TICK2_PROOF_BYTE
+        if not CHECK_ONLY:
+            open(path, "w", errors="surrogateescape").write(bc)
         if not CHECK_ONLY:
             open(objects_c, "w", errors="surrogateescape").write(oc)
     print("psp_fixups: TICK2 biped: crouch's 14 touches through BIPED line 1")
