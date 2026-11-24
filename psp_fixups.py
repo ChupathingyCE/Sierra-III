@@ -62103,12 +62103,37 @@ void psp_sr_store(long biped_index, unsigned long flags, real_point3d const *pos
 	if (*count > 0)
 		memcpy(r->planes, collisions, *count * sizeof(*collisions));
 	r->cluster_count = psp_sr_cluster_count;
-	memcpy(r->clusters, psp_sr_cluster_list, psp_sr_cluster_count * sizeof(short));
+	if (psp_sr_cluster_count > 0) /* -1: too many, none copied */
+		memcpy(r->clusters, psp_sr_cluster_list, psp_sr_cluster_count * sizeof(short));
 	r->biped_index = biped_index;
 	psp_sr_counts[4]++;
 }
 
 """ + head, 1)
+    # bipedstage2 serves a tick's later moves from the gather it made at the tick's start, so those moves walk
+    # no clusters and the guard had none to check (tick2fpw3: every repeat refused once 0 clusters refused):
+    # the slot keeps its own gather's clusters and objects met (a larger sphere, so a superset) and a take
+    # hands them to the move's record
+    for old, new, what in (
+        ("\tshort used, empty;\n};\nstatic struct psp_bs2_slot psp_bs2_slot[PSP_BS2_SLOTS];",
+         "\tshort used, empty;\n\tshort sr_clusters[PSP_SR_CLUSTERS], sr_cluster_count; /* SWEEPREUSE: the gather's clusters */\n\tint sr_met;\n};\n"
+         "static struct psp_bs2_slot psp_bs2_slot[PSP_BS2_SLOTS];", "bipedstage2's slot"),
+        ("\tslot->empty = !collision_get_features_in_sphere(slot->flags, &slot->center, slot->radius, slot->height, slot->width, biped_index, list);\n",
+         "\t{ /* SWEEPREUSE: the gather's clusters and objects, kept with the slot */\n"
+         "\t\tint on = psp_sr_on_pill, met = psp_sr_met;\n\t\tshort count = psp_sr_cluster_count;\n\n"
+         "\t\tpsp_sr_on_pill = 1;\n\t\tpsp_sr_met = 0;\n\t\tpsp_sr_cluster_count = 0;\n"
+         "\t\tslot->empty = !collision_get_features_in_sphere(slot->flags, &slot->center, slot->radius, slot->height, slot->width, biped_index, list);\n"
+         "\t\tslot->sr_cluster_count = psp_sr_cluster_count;\n\t\tif (psp_sr_cluster_count > 0)\n"
+         "\t\t\tmemcpy(slot->sr_clusters, psp_sr_cluster_list, psp_sr_cluster_count * sizeof(short));\n\t\tslot->sr_met = psp_sr_met;\n"
+         "\t\tpsp_sr_on_pill = on;\n\t\tpsp_sr_met = met;\n\t\tpsp_sr_cluster_count = count;\n\t}\n", "bipedstage2's gather"),
+        ("\tslot->used = 1;\n\tpsp_bs2_stat[1]++;\n",
+         "\tslot->used = 1;\n\tpsp_bs2_stat[1]++;\n\tif (psp_sr_on_pill) /* SWEEPREUSE: the move's walk is the slot's */\n\t{\n"
+         "\t\tpsp_sr_cluster_count = slot->sr_cluster_count;\n\t\tif (slot->sr_cluster_count > 0)\n"
+         "\t\t\tmemcpy(psp_sr_cluster_list, slot->sr_clusters, slot->sr_cluster_count * sizeof(short));\n\t\tpsp_sr_met += slot->sr_met;\n\t}\n", "bipedstage2's take")):
+        if c.count(old) != 1:
+            check_fail("psp_fixups: SWEEPREUSE: %s matches %d times" % (what, c.count(old)))
+            return 0
+        c = c.replace(old, new, 1)
     if not CHECK_ONLY:
         open(bp, "w", errors="surrogateescape").write(b)
         open(cp, "w", errors="surrogateescape").write(c)
@@ -62288,8 +62313,23 @@ static void tick2_proof_span_check(void)
         if c.count(fill) != 1:
             check_fail("psp_fixups: TICK2 biped: the proof fill matches %d times" % c.count(fill))
             return 0
-        c = c.replace(fill, fill + "\n\tif (header->type == _object_type_biped || header->type == _object_type_vehicle)\n"
-                      "\t\tmemset(((struct unit_datum *)object)->unit.tick2_proof_span, %d, sizeof(((struct unit_datum *)object)->unit.tick2_proof_span));" % TICK2_PROOF_BYTE)
+        # the unit fills move to the making, where the type is known: at allocation the header's type is still
+        # the slot's last (0, a biped, for a fresh one), so a weapon took the unit's pattern (tick2fpw3: its
+        # first-person weapon refused the ready state); the pattern now goes on bipeds and vehicles only
+        guarded = ("\tif (header->type == _object_type_biped || header->type == _object_type_vehicle)\n"
+                   "\t\tmemset(((struct unit_datum *)object)->unit.tick2_proof_unit, %d, sizeof(((struct unit_datum *)object)->unit.tick2_proof_unit));\n" % TICK2_PROOF_BYTE)
+        if c.count(guarded) != 1:
+            check_fail("psp_fixups: TICK2 biped: the proof's unit fill matches %d times" % c.count(guarded))
+            return 0
+        c = c.replace(guarded, "")
+        made = "\t\t\t\telse\n\t\t\t\t\tmemset(tick2_unit_rec_of(object->object.root), 0, sizeof(struct tick2_unit_rec));\n"
+        if c.count(made) != 1:
+            check_fail("psp_fixups: TICK2 biped: the unit record's making matches %d times" % c.count(made))
+            return 0
+        c = c.replace(made, "\t\t\t\telse\n\t\t\t\t{\n\t\t\t\t\tmemset(tick2_unit_rec_of(object->object.root), 0, sizeof(struct tick2_unit_rec));\n"
+                      "\t\t\t\t\tmemset(((struct unit_datum *)object)->unit.tick2_proof_unit, %d, sizeof(((struct unit_datum *)object)->unit.tick2_proof_unit)); /* TICK2 proof */\n"
+                      "\t\t\t\t\tmemset(((struct unit_datum *)object)->unit.tick2_proof_span, %d, sizeof(((struct unit_datum *)object)->unit.tick2_proof_span));\n"
+                      "\t\t\t\t}\n" % (TICK2_PROOF_BYTE, TICK2_PROOF_BYTE))
     if not CHECK_ONLY:
         open(objects_c, "w", errors="surrogateescape").write(c)
     # build 106's servo range for the datum's words: empty now
