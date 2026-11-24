@@ -61396,6 +61396,53 @@ static unsigned long psp_pc_lost;
 the game time each object's matrices were last computed, and each node or marker read counted by where it's read
 (collision, drawing, the rest) and the object's type, and how many of them found matrices not computed this tick */
 long psp_pc_posed[2048];
+/* "slice1census" (the lead 2026-11-23 23:2x, revision 2): (b) pose decodes that repeat a (model, animation, frame)
+already decoded this tick or last; (c) poses no getter read before the object's next pose */
+static int psp_s1_on = -1;
+static unsigned char psp_s1_read[2048];
+static unsigned long psp_s1_poses, psp_s1_unread, psp_s1_decodes, psp_s1_same_tick, psp_s1_last_tick;
+static struct { const void *model, *animation; short frame; long tick; } psp_s1_seen[1024];
+static int psp_s1_is_on(void)
+{
+	extern int psp_keep(const char *word);
+
+	if (psp_s1_on < 0)
+		psp_s1_on = psp_keep("slice1census") ? 1 : 0;
+	return psp_s1_on;
+}
+void psp_s1_decode(const void *model, const void *animation, short frame)
+{
+	unsigned long h;
+	long now;
+
+	if (!psp_s1_is_on())
+		return;
+	now = game_time_get();
+	h = ((unsigned long)(size_t)model * 31 + (unsigned long)(size_t)animation * 7 + (unsigned long)frame) % 1024;
+	psp_s1_decodes++;
+	if (psp_s1_seen[h].model == model && psp_s1_seen[h].animation == animation && psp_s1_seen[h].frame == frame)
+	{
+		if (psp_s1_seen[h].tick == now)
+			psp_s1_same_tick++;
+		else if (psp_s1_seen[h].tick == now - 1)
+			psp_s1_last_tick++;
+	}
+	psp_s1_seen[h].model = model;
+	psp_s1_seen[h].animation = animation;
+	psp_s1_seen[h].frame = frame;
+	psp_s1_seen[h].tick = now;
+}
+void psp_s1_posed(long object_index)
+{
+	long k = object_index & 2047;
+
+	if (!psp_s1_is_on())
+		return;
+	psp_s1_poses++;
+	if (psp_pc_posed[k] && !psp_s1_read[k])
+		psp_s1_unread++;
+	psp_s1_read[k] = 0;
+}
 static unsigned long psp_pc_stale_reads[3][NUMBER_OF_OBJECT_TYPES], psp_pc_stale_stale[3][NUMBER_OF_OBJECT_TYPES];
 static unsigned long psp_pc_fnv(unsigned long h, void const *p, int n)
 {
@@ -61414,6 +61461,8 @@ static void psp_pc_note(char const *file, int line, long object_index, void cons
 		psp_pc_on = psp_keep("posecensus") ? 1 : 0;
 	if (psp_pc_stale_on < 0)
 		psp_pc_stale_on = psp_keep("stalereads") ? 1 : 0;
+	if (psp_s1_on > 0 && object_index != NONE)
+		psp_s1_read[object_index & 2047] = 1;
 	if (psp_pc_stale_on && object_index != NONE)
 	{
 		struct object_header_datum *header = object_header_try_and_get(object_index);
@@ -61465,6 +61514,9 @@ void psp_pc_tick_end(long tick)
 	void platform_psp_log(const char *format, ...);
 	int k;
 
+	if (psp_s1_on > 0 && tick % 900 == 0 && tick)
+		platform_psp_log("slice1census: tick %ld: decodes %lu, repeating one made this tick %lu, last tick %lu; poses %lu, of them followed by another pose with no read between %lu",
+			tick, psp_s1_decodes, psp_s1_same_tick, psp_s1_last_tick, psp_s1_poses, psp_s1_unread);
 	if (psp_pc_stale_on > 0 && tick % 900 == 0 && tick)
 	{
 		static char const *const where_name[3] = { "collision", "drawing", "the rest" };
@@ -61498,7 +61550,12 @@ void psp_pc_tick_end(long tick)
     if c.count(cw) != 1:
         check_fail("psp_fixups: POSECENSUS: object_compute_node_matrices_with's head matches %d times" % c.count(cw))
         return 0
-    c = c.replace(cw, cw + "\t{ extern long psp_pc_posed[2048]; psp_pc_posed[object_index & 2047] = game_time_get(); } /* POSECENSUS stalereads */\n")
+    c = c.replace(cw, cw + "\t{ extern void psp_s1_posed(long object_index); psp_s1_posed(object_index); } /* POSECENSUS slice1census */\n\t{ extern long psp_pc_posed[2048]; psp_pc_posed[object_index & 2047] = game_time_get(); } /* POSECENSUS stalereads */\n")
+    tk = "\tunsigned long start, nested;\n\tboolean taken;\n\n\tif (psp_pose_time < 0 && psp_keep_loaded())"
+    if c.count(tk) != 1:
+        check_fail("psp_fixups: POSECENSUS: the pose take's head matches %d times" % c.count(tk))
+        return 0
+    c = c.replace(tk, "\tunsigned long start, nested;\n\tboolean taken;\n\n\t{ extern void psp_s1_decode(const void *model, const void *animation, short frame); psp_s1_decode(model, animation, frame); } /* POSECENSUS slice1census: every pose asked for */\n\tif (psp_pose_time < 0 && psp_keep_loaded())")
     gh = next((x for x in ("\t\t(PSP_STEP(\"psp_game_state_hash_tick\"), psp_game_state_hash_tick(game_time_get()));\n",
                            "\t\tpsp_game_state_hash_tick(game_time_get());\n") if g.count(x) == 1), "\t\tpsp_game_state_hash_tick(game_time_get());\n")
     if g.count(gh) != 1:
