@@ -60868,6 +60868,19 @@ void tick2_pp_touch(long object_index)
 	tick2_pp_touched[k >> 3] |= (unsigned char)(1 << (k & 7));
 	object_compute_node_matrices(object_index);
 	tick2_pp_touches++;
+	{
+		/* "touchlog" (the lead 2026-11-23 21:5x: name the object c20's collision test reads at its parting): each touch
+		pose with its game time, the object's tag and type */
+		static int touchlog = -1;
+		void platform_psp_log(const char *format, ...);
+		extern int psp_keep(const char *name);
+
+		if (touchlog < 0)
+			touchlog = psp_keep("touchlog") ? 1 : 0;
+		if (touchlog)
+			platform_psp_log("touch: tick %ld object %08lx %s type %d", (long)game_time_get(), (unsigned long)object_index,
+				tag_get_name(object->definition_index), (int)object_header_get(object_index)->type);
+	}
 }
 /* the experiment posepassread (the lead, 2026-11-23 20:3x): in phase 1 a getter read of an object not yet posed
 this tick poses it first, its parent chain root down, so the read sees this tick's pose but for IK (a phase-1 pose
@@ -61223,8 +61236,13 @@ short psp_pc_k(char const *file, int line, long object_index, struct object_mark
 (which the pass changes) doesn't count, only what was read and what it answered */
 #define PSP_PC_SITES 256
 static struct { char const *file; int line; unsigned long reads, hash; } psp_pc_site[PSP_PC_SITES];
-static int psp_pc_on = -1;
+static int psp_pc_on = -1, psp_pc_stale_on = -1;
 static unsigned long psp_pc_lost;
+/* "stalereads" (the lead 2026-11-23 21:5x: does the posing pass leave scenery's matrices stale where they're read?):
+the game time each object's matrices were last computed, and each node or marker read counted by where it's read
+(collision, drawing, the rest) and the object's type, and how many of them found matrices not computed this tick */
+long psp_pc_posed[2048];
+static unsigned long psp_pc_stale_reads[3][NUMBER_OF_OBJECT_TYPES], psp_pc_stale_stale[3][NUMBER_OF_OBJECT_TYPES];
 static unsigned long psp_pc_fnv(unsigned long h, void const *p, int n)
 {
 	unsigned char const *b = p;
@@ -61240,6 +61258,23 @@ static void psp_pc_note(char const *file, int line, long object_index, void cons
 
 	if (psp_pc_on < 0)
 		psp_pc_on = psp_keep("posecensus") ? 1 : 0;
+	if (psp_pc_stale_on < 0)
+		psp_pc_stale_on = psp_keep("stalereads") ? 1 : 0;
+	if (psp_pc_stale_on && object_index != NONE)
+	{
+		struct object_header_datum *header = object_header_try_and_get(object_index);
+		char const *base = strrchr(file, '/');
+		int where;
+
+		base = base ? base + 1 : file;
+		where = !strncmp(base, "collision", 9) ? 0 : !strncmp(base, "render", 6) ? 1 : 2;
+		if (header && header->type < NUMBER_OF_OBJECT_TYPES)
+		{
+			psp_pc_stale_reads[where][header->type]++;
+			if (psp_pc_posed[object_index & 2047] != game_time_get())
+				psp_pc_stale_stale[where][header->type]++;
+		}
+	}
 	if (!psp_pc_on)
 		return;
 	k = ((unsigned long)(size_t)file * 31 + (unsigned long)line) % PSP_PC_SITES;
@@ -61276,6 +61311,22 @@ void psp_pc_tick_end(long tick)
 	void platform_psp_log(const char *format, ...);
 	int k;
 
+	if (psp_pc_stale_on > 0 && tick % 900 == 0 && tick)
+	{
+		static char const *const where_name[3] = { "collision", "drawing", "the rest" };
+		int w, t;
+
+		for (w = 0; w < 3; w++)
+		{
+			char line[512];
+			int at = 0;
+
+			for (t = 0; t < NUMBER_OF_OBJECT_TYPES; t++)
+				if (psp_pc_stale_reads[w][t])
+					at += snprintf(line + at, sizeof(line) - at, " type %d %lu/%lu", t, psp_pc_stale_stale[w][t], psp_pc_stale_reads[w][t]);
+			platform_psp_log("stalereads: tick %ld, %s: stale/reads by object type (6 scenery, 7 machine, 8 control, 9 light fixture, 10 placeholder, 11 sound scenery):%s", tick, where_name[w], at ? line : " none");
+		}
+	}
 	if (psp_pc_on <= 0)
 		return;
 	for (k = 0; k < PSP_PC_SITES; k++)
@@ -61289,6 +61340,11 @@ void psp_pc_tick_end(long tick)
 		}
 }
 """
+    cw = "static void object_compute_node_matrices_with(\n\tlong object_index,\n\tstruct object_datum *object,\n\tstruct object_definition *object_definition)\n{\n"
+    if c.count(cw) != 1:
+        check_fail("psp_fixups: POSECENSUS: object_compute_node_matrices_with's head matches %d times" % c.count(cw))
+        return 0
+    c = c.replace(cw, cw + "\t{ extern long psp_pc_posed[2048]; psp_pc_posed[object_index & 2047] = game_time_get(); } /* POSECENSUS stalereads */\n")
     gh = next((x for x in ("\t\t(PSP_STEP(\"psp_game_state_hash_tick\"), psp_game_state_hash_tick(game_time_get()));\n",
                            "\t\tpsp_game_state_hash_tick(game_time_get());\n") if g.count(x) == 1), "\t\tpsp_game_state_hash_tick(game_time_get());\n")
     if g.count(gh) != 1:
