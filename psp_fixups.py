@@ -62141,7 +62141,16 @@ void psp_sr_store(long biped_index, unsigned long flags, real_point3d const *pos
     census = (
         ("struct psp_sr_record\n{\n",
          "#define PSP_SR_NEAR 8 /* gathers meeting more near objects can't be kept */\n"
-         "struct psp_sr_near { long index; real_point3d position; real_vector3d forward, up; };\n"
+         "/* an object's root position, forward and up as two hashes (12 B, not 40: tick2sr3's c20 ran out of heap with the poses kept whole) */\n"
+         "struct psp_sr_near { long index; unsigned long h1, h2; };\n"
+         "static void psp_sr_pose_hash(long object_index, unsigned long *h1, unsigned long *h2)\n{\n"
+         "\tstruct tick2_root const *root = object_get(object_index)->object.root;\n"
+         "\tunsigned long const *w = (unsigned long const *)&root->position;\n"
+         "\tunsigned long a = 2166136261u, b = 0x9E3779B9u;\n\tint k;\n\n"
+         "\tfor (k = 0; k < 3; k++)\n\t{\n\t\ta = (a ^ w[k]) * 16777619u;\n\t\tb = (b ^ w[k]) * 0x85EBCA6Bu + 0xC2B2AE35u;\n\t}\n"
+         "\tw = (unsigned long const *)&root->forward;\n"
+         "\tfor (k = 0; k < 6; k++) /* forward and up, next to each other in the root record */\n\t{\n\t\ta = (a ^ w[k]) * 16777619u;\n\t\tb = (b ^ w[k]) * 0x85EBCA6Bu + 0xC2B2AE35u;\n\t}\n"
+         "\t*h1 = a;\n\t*h2 = b;\n}\n"
          "static struct psp_sr_near psp_sr_near_list[PSP_SR_NEAR];\nstatic short psp_sr_near_count; /* -1: too many */\n"
          "static unsigned long psp_sr_cen[5]; /* candidates, keepable, of them wrong, near objects changed, too many */\n"
          "static int psp_sr_census(void) { return PSP_KEEP_ONCE(\"sweepreusecensus\"); }\n"
@@ -62153,13 +62162,10 @@ void psp_sr_store(long biped_index, unsigned long flags, real_point3d const *pos
          "\t\t(TEST_FLAG(o->object.damage_flags, _object_dead_bit) && o->object.type == _object_type_biped))\n\t\treturn 0;\n"
          "\treturn point_in_sphere(center, &o->object.root->bounding_sphere_center, o->object.root->bounding_sphere_radius + radius);\n}\n"
          "static int psp_sr_pose_differs(struct psp_sr_near const *n)\n{\n"
-         "\tstruct tick2_root const *root = object_get(n->index)->object.root;\n\n"
-         "\treturn memcmp(&n->position, &root->position, sizeof(root->position)) || memcmp(&n->forward, &root->forward, sizeof(root->forward)) ||\n"
-         "\t\tmemcmp(&n->up, &root->up, sizeof(root->up));\n}\n"
+         "\tunsigned long h1, h2;\n\n\tpsp_sr_pose_hash(n->index, &h1, &h2);\n\treturn h1 != n->h1 || h2 != n->h2;\n}\n"
          "static void psp_sr_near_add(long object_index)\n{\n\tif (psp_sr_near_count >= 0 && psp_sr_near_count < PSP_SR_NEAR)\n\t{\n"
-         "\t\tstruct tick2_root const *root = object_get(object_index)->object.root;\n"
          "\t\tstruct psp_sr_near *n = &psp_sr_near_list[psp_sr_near_count++];\n\n"
-         "\t\tn->index = object_index;\n\t\tn->position = root->position;\n\t\tn->forward = root->forward;\n\t\tn->up = root->up;\n\t}\n"
+         "\t\tn->index = object_index;\n\t\tpsp_sr_pose_hash(object_index, &n->h1, &n->h2);\n\t}\n"
          "\telse\n\t\tpsp_sr_near_count = -1;\n}\n"
          "struct psp_sr_record\n{\n", "the record's head"),
         ("\tshort clusters[PSP_SR_CLUSTERS];\n\tstruct collision_plane planes[PSP_SR_PLANES];\n};",
@@ -62199,16 +62205,21 @@ void psp_sr_store(long biped_index, unsigned long flags, real_point3d const *pos
          "if (psp_sr_on_pill) { psp_sr_center = *center; psp_sr_radius = radius; psp_sr_cluster(cluster_index); } /* PSP_SWEEPREUSE */", "the cluster hook's sphere"),
         ("\tshort sr_clusters[PSP_SR_CLUSTERS], sr_cluster_count; /* SWEEPREUSE: the gather's clusters */\n",
          "\tshort sr_clusters[PSP_SR_CLUSTERS], sr_cluster_count; /* SWEEPREUSE: the gather's clusters */\n"
-         "\tshort sr_near_count;\n\tstruct psp_sr_near sr_near[PSP_SR_NEAR];\n", "bipedstage2's slot near list"),
+         "", "bipedstage2's slot near list"),
+        ("static struct psp_bs2_slot psp_bs2_slot[PSP_BS2_SLOTS];",
+         "static struct psp_bs2_slot psp_bs2_slot[PSP_BS2_SLOTS];\n"
+         "/* SWEEPREUSE: the near lists of the first 32 slots only (a tick uses ~14-28; a slot past them keeps none, so its moves aren't kept) */\n"
+         "#define PSP_BS2_SR 32\nstatic struct { short count; struct psp_sr_near near[PSP_SR_NEAR]; } psp_bs2_sr[PSP_BS2_SR];", "bipedstage2's near side array"),
         ("\t\tshort count = psp_sr_cluster_count;\n\n\t\tpsp_sr_on_pill = 1;\n\t\tpsp_sr_met = 0;\n\t\tpsp_sr_cluster_count = 0;\n",
          "\t\tshort count = psp_sr_cluster_count, near = psp_sr_near_count;\n\n\t\tpsp_sr_on_pill = 1;\n\t\tpsp_sr_met = 0;\n\t\tpsp_sr_cluster_count = 0;\n\t\tpsp_sr_near_count = 0;\n", "bipedstage2's gather save"),
         ("\t\tslot->sr_met = psp_sr_met;\n\t\tpsp_sr_on_pill = on;\n\t\tpsp_sr_met = met;\n\t\tpsp_sr_cluster_count = count;\n",
-         "\t\tslot->sr_met = psp_sr_met;\n\t\tslot->sr_near_count = psp_sr_near_count;\n\t\tif (psp_sr_near_count > 0)\n"
-         "\t\t\tmemcpy(slot->sr_near, psp_sr_near_list, psp_sr_near_count * sizeof(struct psp_sr_near));\n"
+         "\t\tslot->sr_met = psp_sr_met;\n\t\tif (slot - psp_bs2_slot < PSP_BS2_SR)\n\t\t{\n"
+         "\t\t\tpsp_bs2_sr[slot - psp_bs2_slot].count = psp_sr_near_count;\n\t\t\tif (psp_sr_near_count > 0)\n"
+         "\t\t\t\tmemcpy(psp_bs2_sr[slot - psp_bs2_slot].near, psp_sr_near_list, psp_sr_near_count * sizeof(struct psp_sr_near));\n\t\t}\n"
          "\t\tpsp_sr_on_pill = on;\n\t\tpsp_sr_met = met;\n\t\tpsp_sr_cluster_count = count;\n\t\tpsp_sr_near_count = near;\n", "bipedstage2's gather keep"),
         ("\t\tpsp_sr_met += slot->sr_met;\n\t}\n",
-         "\t\tpsp_sr_met += slot->sr_met;\n\t\tpsp_sr_center = slot->center;\n\t\tpsp_sr_radius = slot->radius;\n\t\tpsp_sr_near_count = slot->sr_near_count;\n\t\tif (slot->sr_near_count > 0)\n"
-         "\t\t\tmemcpy(psp_sr_near_list, slot->sr_near, slot->sr_near_count * sizeof(struct psp_sr_near));\n\t}\n", "bipedstage2's take near"),
+         "\t\tpsp_sr_met += slot->sr_met;\n\t\tpsp_sr_center = slot->center;\n\t\tpsp_sr_radius = slot->radius;\n\t\tpsp_sr_near_count = slot - psp_bs2_slot < PSP_BS2_SR ? psp_bs2_sr[slot - psp_bs2_slot].count : -1;\n\t\tif (psp_sr_near_count > 0)\n"
+         "\t\t\tmemcpy(psp_sr_near_list, psp_bs2_sr[slot - psp_bs2_slot].near, psp_sr_near_count * sizeof(struct psp_sr_near));\n\t}\n", "bipedstage2's take near"),
     )
     census = census + (
         ("\tfor (k = 0; k < r->cluster_count; k++)\n\t{\n\t\tlong reference_index;\n\n\t\tif (cluster_get_first_collideable_object(&reference_index, r->clusters[k]) != NONE)\n\t\t{\n\t\t\tpsp_sr_counts[2]++;\n\t\t\tpsp_sr_counts[3]++;\n\t\t\treturn FALSE;\n\t\t}\n\t}\n",
