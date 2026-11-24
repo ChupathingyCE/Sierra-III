@@ -1999,6 +1999,9 @@ with it), a mismatch failing the fill as any failed copy */
 #define SNDPART_MOST (956ul * 1024) /* halo_claim.prx claims the bottom 960 KB; the first 4 KB page is Sony's */
 #define SNDPART_LEAST (64ul * 1024)
 static unsigned long part_bytes = 0;
+/* the emulator's window in the partition it claimed, as on the PSP (an emulator
+with the lab's partition patch), not standing in on the heap */
+static int part_claimed = 0;
 static unsigned char *part_base = NULL;
 /* the tier's memories together, eDRAM then window: one span of addresses
 that holds no main-RAM address on the PSP (0x80... to 0x88400000), and in
@@ -2102,6 +2105,9 @@ int psp_sound_tier_mode(void)
 						else
 							refused = "sysmem wouldn't give the partition";
 					}
+					/* the emulator: the claim where it can be made, else the heap's stand-in */
+					if (!refused && tier_mode == 2 && psp_me_claim_partition() >= 0)
+						part_claimed = 1;
 					if (refused)
 						platform_log("sound tier: sndpart refused: %s", refused);
 					else
@@ -2298,7 +2304,7 @@ unsigned long psp_sound_block_bytes(void)
 			tier_bytes = cache > 512 * 1024 ? (cache - 256 * 1024) & ~0xFFFul : 0;
 		tier_main_bytes = cache - tier_bytes - part_bytes;
 		want = stage_bytes + tier_main_bytes + (tier_mode == 2 && !tier_mapped ? tier_bytes : 0) +
-			(tier_mode == 2 ? part_bytes : 0);
+			(tier_mode == 2 && !part_claimed ? part_bytes : 0);
 	}
 	else switch (psp_sound_edram_mode())
 	{
@@ -2340,12 +2346,12 @@ void *psp_sound_cache_place(void *block)
 	{
 		base = sound_block + stage_bytes;
 		used = stage_bytes + tier_main_bytes + (tier_mode == 2 && !tier_mapped ? tier_bytes : 0) +
-			(tier_mode == 2 ? part_bytes : 0);
+			(tier_mode == 2 && !part_claimed ? part_bytes : 0);
 		tier_base = tier_mode == 1 || tier_mapped ? (unsigned char *)(ME_EDRAM + ME_EDRAM_SNDTIER) : base + tier_main_bytes;
 		/* the emulator's window stands in on the heap, after the main tier
 		(and after the tier, when the emulator doesn't map the eDRAM): the
 		heap then takes what the PSP's does with the tier and window off it */
-		part_base = !part_bytes ? NULL : tier_mode == 1 ? (unsigned char *)SNDPART_ME_BASE :
+		part_base = !part_bytes ? NULL : tier_mode == 1 || part_claimed ? (unsigned char *)SNDPART_ME_BASE :
 			base + tier_main_bytes + (tier_mapped ? 0 : tier_bytes);
 		for (k = 0; k < STAGE_SLOTS; k++)
 			stage[k].buffer = sound_block + k * STAGE_SLOT_BYTES;
@@ -2361,7 +2367,7 @@ void *psp_sound_cache_place(void *block)
 		if (part_bytes)
 			platform_log("sound tier: sndpart: %lu KB more of the tier in the ME partition at %08x (%s), the main tier %lu KB smaller; every piece hashed as copied and as held",
 				part_bytes / 1024, (unsigned int)part_base,
-				tier_mode == 2 ? "SIMULATED: the emulator's window is main RAM" : "from 4 KB, the ME's cached view", part_bytes / 1024);
+				tier_mode == 2 && !part_claimed ? "SIMULATED: the emulator's window is main RAM" : tier_mode == 2 ? "SIMULATED: the emulator's claimed partition" : "from 4 KB, the ME's cached view", part_bytes / 1024);
 		stops_at_start = psp_me_stops;
 		platform_log("sound tier: on (%s): the cache's %lu KB as %lu KB of main RAM at %08x and %lu KB at %08x (eDRAM %lu-%lu KB), %lu KB staging; %lu KB taken from the heap%s",
 			tier_mode == 2 ? (tier_mapped ? "SIMULATED: the emulator's tier is its mapped eDRAM" : "SIMULATED: the emulator's tier is main RAM") :

@@ -2591,8 +2591,8 @@ int psp_me_claim_partition(void)
 
 	if (partition_claim >= 0)
 		return partition_claim;
-	if (psp_me_simulated())
-		return -1;
+	/* the emulator tries it too: one with the lab's partition patch grants it where
+	the PSP does, one without refuses it and the window stands in on the heap */
 	snprintf(path, sizeof(path), "%s", psp_eboot_path);
 	slash = strrchr(path, '/');
 	snprintf(slash ? slash + 1 : path, sizeof(path) - (slash ? (size_t)(slash + 1 - path) : 0), "halo_claim.prx");
