@@ -60791,6 +60791,7 @@ static unsigned short tick2_pp_roots[TICK2_PP_MOST]; /* the roots' absolute indi
 static long tick2_pp_count;
 static unsigned char tick2_pp_skip[MAXIMUM_OBJECTS_PER_MAP / 8 + 1]; /* psp_pose_half_skips' answer, from phase 1, a bit an object */
 static unsigned char tick2_pp_dead[MAXIMUM_OBJECTS_PER_MAP / 8 + 1]; /* deleted in phase 1: no tail, even if its slot is reused that tick */
+static unsigned long tick2_pp_early; /* touchorder: roots whose tail ran at a touch, ahead of phase 2 */
 static unsigned char tick2_pp_touched[MAXIMUM_OBJECTS_PER_MAP / 8 + 1]; /* posed on touch this tick */
 static unsigned char tick2_pp_seen[MAXIMUM_OBJECTS_PER_MAP / 8 + 1]; /* listed this tick: the biped stage updates its bipeds in more than one pass */
 #define TICK2_PP_ELEVATORS 64
@@ -60866,6 +60867,32 @@ void tick2_pp_touch(long object_index)
 	as old's inline order leaves an object later in the loop */
 	if (PSP_KEEP_ONCE("posetouchoff"))
 		return;
+	/* "touchorder" (2026-11-24, c20's second parting: neither always posing nor never posing gives old's answer, which
+	depends on old's loop order): a touched object whose root phase 1 has already reached is one old had updated whole
+	by now, IK included, so its root's tail runs now and phase 2 skips it; one not yet reached old would read at last
+	tick's pose, so it's left as it stands */
+	if (PSP_KEEP_ONCE("touchorder"))
+	{
+		static boolean object_update(long object_index);
+		long root = object_index, at;
+		struct object_datum *walk = object_try_and_get(root);
+
+		while (walk && walk->object.parent_object_index != NONE)
+		{
+			root = walk->object.parent_object_index;
+			walk = object_try_and_get(root);
+		}
+		at = root & 0xFFFF;
+		if (!walk || at >= MAXIMUM_OBJECTS_PER_MAP || !((tick2_pp_seen[at >> 3] >> (at & 7)) & 1) ||
+			((tick2_pp_dead[at >> 3] >> (at & 7)) & 1))
+			return;
+		tick2_pp_phase = 2;
+		object_update(root);
+		tick2_pp_phase = 1;
+		tick2_pp_dead[at >> 3] |= (unsigned char)(1 << (at & 7)); /* its tail is done: phase 2 skips it */
+		tick2_pp_early++;
+		return;
+	}
 	/* only an object whose nodes are made: one still inside object_new is posed there (its own pose-now) */
 	object = object_try_and_get(object_index);
 	if (!object || !object->object.root || object->object.root->pose_first == TICK2_POSE_NONE || !object->object.root->pose_count)
@@ -60985,9 +61012,10 @@ void tick2_pp_deleted(long object_index)
 void platform_psp_log(const char *format, ...);
 void tick2_pp_report(const char *label, int level_end)
 {
-	platform_psp_log("posepass (%s): %lu ticks; roots listed %lu (%lu a tick), run inline past the list %lu, gone by phase 2 %lu; elevators past the table %lu; posed on touch %lu (%lu a hundred ticks)",
+	platform_psp_log("posepass (%s): %lu ticks; roots listed %lu (%lu a tick), run inline past the list %lu, gone by phase 2 %lu; elevators past the table %lu; posed on touch %lu (%lu a hundred ticks); tails run at a touch (touchorder) %lu, counted in gone",
 		label, tick2_pp_ticks, tick2_pp_listed, tick2_pp_ticks ? tick2_pp_listed / tick2_pp_ticks : 0,
-		tick2_pp_inline, tick2_pp_gone, tick2_pp_elev_lost, tick2_pp_touches, tick2_pp_ticks ? tick2_pp_touches * 100 / tick2_pp_ticks : 0);
+		tick2_pp_inline, tick2_pp_gone, tick2_pp_elev_lost, tick2_pp_touches, tick2_pp_ticks ? tick2_pp_touches * 100 / tick2_pp_ticks : 0,
+		tick2_pp_early);
 	{
 		int k, pass;
 
@@ -61013,7 +61041,7 @@ void tick2_pp_report(const char *label, int level_end)
 	}
 	if (level_end)
 	{
-		tick2_pp_ticks = tick2_pp_listed = tick2_pp_inline = tick2_pp_elev_lost = tick2_pp_touches = tick2_pp_gone = 0;
+		tick2_pp_ticks = tick2_pp_listed = tick2_pp_inline = tick2_pp_elev_lost = tick2_pp_touches = tick2_pp_gone = tick2_pp_early = 0;
 		memset(tick2_pp_site, 0, sizeof(tick2_pp_site));
 		tick2_pp_sites_lost = 0;
 	}
