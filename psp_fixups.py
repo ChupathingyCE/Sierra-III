@@ -59722,7 +59722,9 @@ struct tick2_pose_run
 {
 	long nodes, stride, arrays, bump, live, live_peak, overflow_taken, overflow_live, overflow_peak;
 	unsigned char *base; /* the arena's arrays, one after the other, each nodes * stride */
-	unsigned short free_head[TICK2_POSE_RUN_MOST + 1]; /* a free run's next is in its first element */
+	unsigned char *free_bits; /* a bit a node of the arena, set while it's in a free run (carved per map) */
+	unsigned short free_head[TICK2_POSE_RUN_MOST + 1]; /* free runs by length: next, previous and length in a run's first element */
+	unsigned short big_head; /* merged free runs longer than TICK2_POSE_RUN_MOST */
 	unsigned char *chunk[TICK2_POSE_CHUNKS]; /* the pool's block references (each its arrays of chunk_cap nodes) */
 	short chunk_bump[TICK2_POSE_CHUNKS], chunk_live[TICK2_POSE_CHUNKS], chunk_cap[TICK2_POSE_CHUNKS];
 };
@@ -59745,22 +59747,81 @@ static void *tick2_pose_at(struct tick2_pose_run const *run, long first, long ar
 	return run->chunk[first / TICK2_POSE_CHUNK] + (array * run->chunk_cap[first / TICK2_POSE_CHUNK] + first % TICK2_POSE_CHUNK) * run->stride;
 }
 
-/* a run of nodes: a free one of its length, else the arena's tail, else an overflow chunk's */
-static unsigned short tick2_pose_take(struct tick2_pose_run *run, long count)
+/* the arena's allocator (the lead, 2026-11-23 17:5x): best fit, the remainder listed again, and a freed run merged
+with its free neighbours before it's listed, so freed space isn't held for one length (tested on the host over 2,000,000
+random takes and gives: no overlap, every free run listed once and merged, the counts consistent) */
+static unsigned short *tick2_pose_word(struct tick2_pose_run const *run, long node)
 {
-	long c;
+	return (unsigned short *)(run->base + node * run->stride);
+}
+static unsigned short *tick2_pose_list(struct tick2_pose_run *run, long length)
+{
+	return length <= TICK2_POSE_RUN_MOST ? &run->free_head[length] : &run->big_head;
+}
+static void tick2_pose_bits(struct tick2_pose_run *run, long first, long count, int set)
+{
+	long k;
 
-	if (count <= 0 || count > TICK2_POSE_RUN_MOST)
-		return TICK2_POSE_NONE;
-	if (run->free_head[count] != TICK2_POSE_NONE)
+	for (k = first; k < first + count; k++)
+		if (set)
+			run->free_bits[k >> 3] |= (unsigned char)(1 << (k & 7));
+		else
+			run->free_bits[k >> 3] &= (unsigned char)~(1 << (k & 7));
+}
+static int tick2_pose_is_free(struct tick2_pose_run const *run, long node)
+{
+	return node >= 0 && node < run->bump && ((run->free_bits[node >> 3] >> (node & 7)) & 1);
+}
+/* a free run's first element holds next, previous and length; its last holds the length again */
+static void tick2_pose_link(struct tick2_pose_run *run, long first, long length)
+{
+	unsigned short *head = tick2_pose_list(run, length), *w = tick2_pose_word(run, first);
+
+	w[0] = *head;
+	w[1] = TICK2_POSE_NONE;
+	w[2] = (unsigned short)length;
+	tick2_pose_word(run, first + length - 1)[4] = (unsigned short)length;
+	if (*head != TICK2_POSE_NONE)
+		tick2_pose_word(run, *head)[1] = (unsigned short)first;
+	*head = (unsigned short)first;
+	tick2_pose_bits(run, first, length, 1);
+}
+static void tick2_pose_unlink(struct tick2_pose_run *run, long first)
+{
+	unsigned short *w = tick2_pose_word(run, first);
+	long length = w[2];
+
+	if (w[1] != TICK2_POSE_NONE)
+		tick2_pose_word(run, w[1])[0] = w[0];
+	else
+		*tick2_pose_list(run, length) = w[0];
+	if (w[0] != TICK2_POSE_NONE)
+		tick2_pose_word(run, w[0])[1] = w[1];
+	tick2_pose_bits(run, first, length, 0);
+}
+/* the smallest free run at least as long, its remainder listed again; else the tail */
+static unsigned short tick2_pose_take_arena(struct tick2_pose_run *run, long count)
+{
+	long length, best = TICK2_POSE_NONE, best_length = 0;
+
+	for (length = count; length <= TICK2_POSE_RUN_MOST && best == TICK2_POSE_NONE; length++)
+		if (run->free_head[length] != TICK2_POSE_NONE)
+			best = run->free_head[length], best_length = length;
+	if (best == TICK2_POSE_NONE)
 	{
-		unsigned short first = run->free_head[count];
+		unsigned short at;
 
-		run->free_head[count] = (unsigned short)*(unsigned long *)tick2_pose_at(run, first, 0);
+		for (at = run->big_head; at != TICK2_POSE_NONE; at = tick2_pose_word(run, at)[0])
+			if (tick2_pose_word(run, at)[2] >= count && (best == TICK2_POSE_NONE || tick2_pose_word(run, at)[2] < best_length))
+				best = at, best_length = tick2_pose_word(run, at)[2];
+	}
+	if (best != TICK2_POSE_NONE)
+	{
+		tick2_pose_unlink(run, best);
+		if (best_length > count)
+			tick2_pose_link(run, best + count, best_length - count);
 		run->live += count;
-		if (run->live > run->live_peak)
-			run->live_peak = run->live;
-		return first;
+		return (unsigned short)best;
 	}
 	if (run->bump + count <= run->nodes)
 	{
@@ -59768,9 +59829,53 @@ static unsigned short tick2_pose_take(struct tick2_pose_run *run, long count)
 
 		run->bump += count;
 		run->live += count;
-		if (run->live > run->live_peak)
-			run->live_peak = run->live;
 		return first;
+	}
+	return TICK2_POSE_NONE;
+}
+/* a run given back, merged with its free neighbours; one that reaches the tail shortens it */
+static void tick2_pose_give_arena(struct tick2_pose_run *run, long first, long count)
+{
+	run->live -= count;
+	if (tick2_pose_is_free(run, first - 1))
+	{
+		long left = tick2_pose_word(run, first - 1)[4];
+
+		tick2_pose_unlink(run, first - left);
+		first -= left;
+		count += left;
+	}
+	if (first + count == run->bump)
+	{
+		run->bump = first;
+		return;
+	}
+	if (tick2_pose_is_free(run, first + count))
+	{
+		long right = tick2_pose_word(run, first + count)[2];
+
+		tick2_pose_unlink(run, first + count);
+		count += right;
+	}
+	tick2_pose_link(run, first, count);
+}
+
+/* a run of nodes: the arena's best free run or its tail, else an overflow chunk's */
+static unsigned short tick2_pose_take(struct tick2_pose_run *run, long count)
+{
+	long c;
+
+	if (count <= 0 || count > TICK2_POSE_RUN_MOST)
+		return TICK2_POSE_NONE;
+	{
+		unsigned short first = tick2_pose_take_arena(run, count);
+
+		if (first != TICK2_POSE_NONE)
+		{
+			if (run->live > run->live_peak)
+				run->live_peak = run->live;
+			return first;
+		}
 	}
 	for (c = 0; c < TICK2_POSE_CHUNKS; c++)
 		if (run->chunk[c] && run->chunk_bump[c] + count <= run->chunk_cap[c])
@@ -59802,9 +59907,7 @@ static void tick2_pose_give_run(struct tick2_pose_run *run, long first, long cou
 		return;
 	if (first < run->nodes)
 	{
-		*(unsigned long *)tick2_pose_at(run, first, 0) = run->free_head[count];
-		run->free_head[count] = (unsigned short)first;
-		run->live -= count;
+		tick2_pose_give_arena(run, first, count);
 		return;
 	}
 	first = (first - run->nodes) / TICK2_POSE_CHUNK;
@@ -59921,7 +60024,8 @@ def tick2_pose_cut(tree):
     # carved after the unit section, per map at its peak nodes
     once(objects_c, "\t\t\tunit_slots * (long)sizeof(struct unit_animation) + (long)sizeof(struct tick2_unit_store) + 15) & ~15L;\n",
          "\t\t\tunit_slots * (long)sizeof(struct unit_animation) + (long)sizeof(struct tick2_unit_store) +\n"
-         "\t\t\tnodes * (long)sizeof(real_matrix4x3) + orient_nodes * 2 * (long)sizeof(real_orientation) + (long)sizeof(struct tick2_pose_store) + 15) & ~15L;\n")
+         "\t\t\tnodes * (long)sizeof(real_matrix4x3) + orient_nodes * 2 * (long)sizeof(real_orientation) + (long)sizeof(struct tick2_pose_store) +\n"
+         "\t\t\t((nodes + 31) / 32 + (orient_nodes + 31) / 32) * 4 + 15) & ~15L;\n")
     once(objects_c, "\t\ttick2_unit_store->free_count = tick2_unit_store->free_low = unit_slots;\n",
          "\t\ttick2_unit_store->free_count = tick2_unit_store->free_low = unit_slots;\n"
          "\t\t/* TICK2 pose: the node arenas after the unit section: the matrices, then both orientation arrays */\n"
@@ -59936,7 +60040,12 @@ def tick2_pose_cut(tree):
          "\t\ttick2_pose_store->orientations.arrays = 2;\n"
          "\t\ttick2_pose_store->orientations.base = tick2_pose_store->matrices.base + nodes * (long)sizeof(real_matrix4x3);\n"
          "\t\tfor (k = 0; k <= TICK2_POSE_RUN_MOST; k++)\n"
-         "\t\t\ttick2_pose_store->matrices.free_head[k] = tick2_pose_store->orientations.free_head[k] = TICK2_POSE_NONE;\n")
+         "\t\t\ttick2_pose_store->matrices.free_head[k] = tick2_pose_store->orientations.free_head[k] = TICK2_POSE_NONE;\n"
+         "\t\ttick2_pose_store->matrices.big_head = tick2_pose_store->orientations.big_head = TICK2_POSE_NONE;\n"
+         "\t\t/* each run's free bitmap after the orientation arrays, a word-rounded bit a node, all clear */\n"
+         "\t\ttick2_pose_store->matrices.free_bits = tick2_pose_store->orientations.base + orient_nodes * 2 * (long)sizeof(real_orientation);\n"
+         "\t\ttick2_pose_store->orientations.free_bits = tick2_pose_store->matrices.free_bits + (nodes + 31) / 32 * 4;\n"
+         "\t\tmemset(tick2_pose_store->matrices.free_bits, 0, ((nodes + 31) / 32 + (orient_nodes + 31) / 32) * 4);\n")
     # the per-map tables: nodes at the measured peak (no margin), units at peak + 15% rounded to 16
     once(objects_c, "\t\tlong unit_slots = %d; /* TICK2 unit: until the census' table */\n" % TICK2_UNIT_SLOTS,
          "\t\tlong unit_slots = tick2_table_for_map(main_get_map_name(), 1); /* TICK2 unit, spec section 35 */\n"
@@ -59947,15 +60056,15 @@ def tick2_pose_cut(tree):
 /* the unit and node tables per map (spec section 36, the lead 2026-11-23 15:2x): each at its live count at the
 object pool's low, where a reserved but unused byte is the only cost (tick2census2), overflow chunks taking the
 rest; a map without a bench keeps its whole-map figure (units at census27's and C5's peak + 15%%, nodes at the
-peak), its orientation run at half its nodes until it gets one. The node runs on the six benched maps are at 95%%
-of the census's counts (the lead 17:1x): the ship's low falls at another moment from the census's, so a table at
-the census's count held empty slots there; the census logs both moments so the margin is a measured figure */
+peak), its orientation run at half its nodes until it gets one. The node runs are at the census's counts: at 95%%
+(tick2ship3) the empties at the low didn't shrink and the low fell at the census's own moment, so they were the free
+lists' fragmentation, not a later moment (the lead 17:5x) */
 static long tick2_table_for_map(const char *name, int which)
 {
 	static const struct { char map[4]; short units, nodes, orient_nodes; } table[] = {
-		{"a10", 75, 1979, 1303}, {"a30", 67, 2165, 1478}, {"a50", 96, 3229, 1614}, {"b30", 34, 2154, 871},
-		{"b40", 176, 3836, 1918}, {"c10", 16, 2793, 1396}, {"c20", 68, 2257, 1391}, {"c40", 208, 4751, 2375},
-		{"d20", 66, 3067, 1679}, {"d40", 30, 1397, 885}};
+		{"a10", 75, 2083, 1372}, {"a30", 67, 2279, 1556}, {"a50", 96, 3229, 1614}, {"b30", 34, 2267, 917},
+		{"b40", 176, 3836, 1918}, {"c10", 16, 2793, 1396}, {"c20", 68, 2376, 1464}, {"c40", 208, 4751, 2375},
+		{"d20", 66, 3228, 1767}, {"d40", 30, 1471, 932}};
 	const char *last = name;
 	const char *c;
 	unsigned k;
