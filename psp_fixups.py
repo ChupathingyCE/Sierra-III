@@ -60826,6 +60826,66 @@ void tick2_pp_touch(long object_index)
 	object_compute_node_matrices(object_index);
 	tick2_pp_touches++;
 }
+/* the experiment posepassread (the lead, 2026-11-23 20:3x): in phase 1 a getter read of an object not yet posed
+this tick poses it first, its parent chain root down, so the read sees this tick's pose but for IK (a phase-1 pose
+has none); counted by file and line, with how many of the objects posed were units (whose IK the read lacks) */
+#define TICK2_PP_SITES 256
+static struct { char const *file; int line; unsigned long reads, posed, posed_units; } tick2_pp_site[TICK2_PP_SITES];
+static int tick2_pp_posing; /* inside a read's poses: their own reads don't pose again */
+static unsigned long tick2_pp_sites_lost;
+long tick2_pp_read(long object_index, char const *file, int line)
+{
+	long chain[16], count = 0, at, k = object_index & 0xFFFF;
+	unsigned long h;
+	int probes;
+
+	if (tick2_pp_phase != 1 || tick2_pp_posing || object_index == NONE || k >= MAXIMUM_OBJECTS_PER_MAP ||
+		!PSP_KEEP_ONCE("posepassread"))
+		return object_index;
+	/* the chain up to the root, then posed root down: a child's pose reads its parent's */
+	for (at = object_index; at != NONE && count < 16; )
+	{
+		struct object_datum *object = object_try_and_get(at);
+
+		if (!object)
+			break;
+		chain[count++] = at;
+		at = object->object.parent_object_index;
+	}
+	h = ((unsigned long)file * 31UL + (unsigned long)line) % TICK2_PP_SITES;
+	for (probes = 0; probes < TICK2_PP_SITES; probes++, h = (h + 1) % TICK2_PP_SITES)
+		if (!tick2_pp_site[h].file || (tick2_pp_site[h].file == file && tick2_pp_site[h].line == line))
+			break;
+	if (probes == TICK2_PP_SITES)
+		tick2_pp_sites_lost++;
+	else
+	{
+		tick2_pp_site[h].file = file;
+		tick2_pp_site[h].line = line;
+		tick2_pp_site[h].reads++;
+	}
+	tick2_pp_posing = 1;
+	while (count > 0)
+	{
+		long index = chain[--count], j = index & 0xFFFF;
+		struct object_datum *object = object_try_and_get(index);
+
+		if (!object || j >= MAXIMUM_OBJECTS_PER_MAP || ((tick2_pp_touched[j >> 3] >> (j & 7)) & 1) ||
+			!object->object.root || object->object.root->pose_first == TICK2_POSE_NONE || !object->object.root->pose_count)
+			continue;
+		tick2_pp_touched[j >> 3] |= (unsigned char)(1 << (j & 7));
+		object_compute_node_matrices(index);
+		if (probes < TICK2_PP_SITES)
+		{
+			tick2_pp_site[h].posed++;
+			if (TEST_FLAG(_object_mask_unit, object->object.type))
+				tick2_pp_site[h].posed_units++;
+		}
+	}
+	tick2_pp_posing = 0;
+	return object_index;
+}
+
 static void tick2_pp_begin(void)
 {
 	tick2_pp_count = tick2_pp_elev_count = 0;
@@ -60853,8 +60913,35 @@ void tick2_pp_report(const char *label, int level_end)
 	platform_psp_log("posepass (%s): %lu ticks; roots listed %lu (%lu a tick), run inline past the list %lu, gone by phase 2 %lu; elevators past the table %lu; posed on touch %lu (%lu a hundred ticks)",
 		label, tick2_pp_ticks, tick2_pp_listed, tick2_pp_ticks ? tick2_pp_listed / tick2_pp_ticks : 0,
 		tick2_pp_inline, tick2_pp_gone, tick2_pp_elev_lost, tick2_pp_touches, tick2_pp_ticks ? tick2_pp_touches * 100 / tick2_pp_ticks : 0);
+	{
+		int k, pass;
+
+		/* the reads posepassread posed for, by site; projectiles.c's first (the lead's suspect), then the rest */
+		for (pass = 0; pass < 2; pass++)
+			for (k = 0; k < TICK2_PP_SITES; k++)
+				if (tick2_pp_site[k].file && tick2_pp_site[k].posed)
+				{
+					char const *name = tick2_pp_site[k].file, *c;
+					int projectile;
+
+					for (c = name; *c; c++)
+						if (*c == '/' || *c == '\\')
+							name = c + 1;
+					projectile = !strncmp(name, "projectile", 10);
+					if (projectile != !pass)
+						continue;
+					platform_psp_log("posepassread (%s): %s:%d reads %lu, objects posed %lu, of them units without their IK %lu",
+						label, name, tick2_pp_site[k].line, tick2_pp_site[k].reads, tick2_pp_site[k].posed, tick2_pp_site[k].posed_units);
+				}
+		if (tick2_pp_sites_lost)
+			platform_psp_log("posepassread (%s): %lu reads past the site table", label, tick2_pp_sites_lost);
+	}
 	if (level_end)
+	{
 		tick2_pp_ticks = tick2_pp_listed = tick2_pp_inline = tick2_pp_elev_lost = tick2_pp_touches = tick2_pp_gone = 0;
+		memset(tick2_pp_site, 0, sizeof(tick2_pp_site));
+		tick2_pp_sites_lost = 0;
+	}
 }
 """
 def tick2_posepass_cut(tree):
@@ -60994,6 +61081,23 @@ def tick2_posepass_cut(tree):
         check_fail("psp_fixups: TICK2 posepass: collision anchors %d/%d" % (h.count(hp), k.count(ks)))
         return 0
     h = h.replace(hp, hp + "void tick2_pp_touch(long object_index); /* TICK2 posepass: a stale object posed on touch */\n")
+    proto = "short object_get_marker_by_name(long object_index, char const *name, struct object_marker *markers, short maximum_marker_count);\n"
+    if h.count(proto) != 1:
+        check_fail("psp_fixups: TICK2 posepass: the marker getter's prototype matches %d times" % h.count(proto))
+        return 0
+    h = h.replace(proto, proto + r"""/* TICK2 posepass, the experiment posepassread: every getter read goes through tick2_pp_read by file and line */
+long tick2_pp_read(long object_index, char const *file, int line);
+#define object_get_node_matrices(o) ((object_get_node_matrices)(tick2_pp_read((o), __FILE__, __LINE__)))
+#define object_get_node_matrix(o, n) ((object_get_node_matrix)(tick2_pp_read((o), __FILE__, __LINE__), (n)))
+#define object_get_marker_by_name(o, a, b, k) ((object_get_marker_by_name)(tick2_pp_read((o), __FILE__, __LINE__), (a), (b), (k)))
+""")
+    for old, new in [("real_matrix4x3 *object_get_node_matrices(\n", "real_matrix4x3 *(object_get_node_matrices)(\n"),
+                     ("real_matrix4x3 *object_get_node_matrix(\n", "real_matrix4x3 *(object_get_node_matrix)(\n"),
+                     ("short object_get_marker_by_name(\n", "short (object_get_marker_by_name)(\n")]:
+        if c.count(old) != 1:
+            check_fail("psp_fixups: TICK2 posepass: %r matches %d times" % (old[:40], c.count(old)))
+            return 0
+        c = c.replace(old, new)
     k = k.replace(ks, "\t\ttick2_pp_touch(object_index); /* TICK2 posepass: posed first if it's stale (the lead 17:5x) */\n" + ks)
     if not CHECK_ONLY:
         open(objects_c, "w", errors="surrogateescape").write(c)
