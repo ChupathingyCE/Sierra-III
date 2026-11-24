@@ -60882,6 +60882,42 @@ static int tick2_pp_posed_early(long object_index)
 	tick2_pp_posed[k >> 3] |= (unsigned char)(1 << (k & 7));
 	return 0;
 }
+/* "parentfirst" (the lead 2026-11-24 01:0x, (b)): old poses a parent before its children update, so phase 1 poses a
+parent's own nodes there; phase 2 then leaves that pose as made and runs the parent's post-processing (after its
+children's, as old) on the half-skip or NMSKIP answer phase 1 kept */
+static unsigned char tick2_pp_parent[MAXIMUM_OBJECTS_PER_MAP / 8 + 1]; /* posed in phase 1, before its children */
+static unsigned char tick2_pp_parent_skip[MAXIMUM_OBJECTS_PER_MAP / 8 + 1]; /* that pose was skipped (half-skip or NMSKIP) */
+static unsigned long tick2_pp_parents; /* parents posed before their children, for the report */
+static void tick2_pp_parent_done(long object_index, int skipped)
+{
+	long k = object_index & 0xFFFF;
+	unsigned char bit = (unsigned char)(1 << (k & 7));
+
+	if (k >= MAXIMUM_OBJECTS_PER_MAP)
+		return;
+	tick2_pp_parent[k >> 3] |= bit;
+	if (skipped)
+		tick2_pp_parent_skip[k >> 3] |= bit;
+	else
+		tick2_pp_parent_skip[k >> 3] &= (unsigned char)~bit;
+	tick2_pp_parents++;
+}
+/* the pose gate's second test: in a tail, a parent posed in phase 1 is posed already */
+static int tick2_pp_parent_posed(long object_index)
+{
+	long k = object_index & 0xFFFF;
+
+	return tick2_pp_phase >= 2 && k < MAXIMUM_OBJECTS_PER_MAP && ((tick2_pp_parent[k >> 3] >> (k & 7)) & 1);
+}
+/* the post-processing gate's skip: phase 1's answer for a parent it posed, else this call's */
+static int tick2_pp_skip_of(long object_index, int skipped)
+{
+	long k = object_index & 0xFFFF;
+
+	if (tick2_pp_phase >= 2 && k < MAXIMUM_OBJECTS_PER_MAP && ((tick2_pp_parent[k >> 3] >> (k & 7)) & 1))
+		return (tick2_pp_parent_skip[k >> 3] >> (k & 7)) & 1;
+	return skipped;
+}
 /* a root's later phase-1 pass moves it again: its tree's early pose no longer stands, so phase 2 poses it */
 static void tick2_pp_unpose(long object_index)
 {
@@ -61103,6 +61139,7 @@ static void tick2_pp_begin(void)
 	memset(tick2_pp_busy, 0, sizeof(tick2_pp_busy));
 	memset(tick2_pp_done, 0, sizeof(tick2_pp_done));
 	memset(tick2_pp_posed, 0, sizeof(tick2_pp_posed));
+	memset(tick2_pp_parent, 0, sizeof(tick2_pp_parent));
 	memset(tick2_pp_dead, 0, sizeof(tick2_pp_dead));
 	tick2_pp_phase = 1;
 	tick2_pp_ticks++;
@@ -61136,10 +61173,10 @@ void tick2_pp_deleted(long object_index)
 void platform_psp_log(const char *format, ...);
 void tick2_pp_report(const char *label, int level_end)
 {
-	platform_psp_log("posepass (%s): %lu ticks; roots listed %lu (%lu a tick), run inline past the list %lu, gone by phase 2 %lu; elevators past the table %lu; posed on touch %lu (%lu a hundred ticks); trees posed at a read (touchorder) %lu",
+	platform_psp_log("posepass (%s): %lu ticks; roots listed %lu (%lu a tick), run inline past the list %lu, gone by phase 2 %lu; elevators past the table %lu; posed on touch %lu (%lu a hundred ticks); trees posed at a read (touchorder) %lu; parents posed before their children (parentfirst) %lu",
 		label, tick2_pp_ticks, tick2_pp_listed, tick2_pp_ticks ? tick2_pp_listed / tick2_pp_ticks : 0,
 		tick2_pp_inline, tick2_pp_gone, tick2_pp_elev_lost, tick2_pp_touches, tick2_pp_ticks ? tick2_pp_touches * 100 / tick2_pp_ticks : 0,
-		tick2_pp_early);
+		tick2_pp_early, tick2_pp_parents);
 	{
 		int k, pass;
 
@@ -61165,7 +61202,7 @@ void tick2_pp_report(const char *label, int level_end)
 	}
 	if (level_end)
 	{
-		tick2_pp_ticks = tick2_pp_listed = tick2_pp_inline = tick2_pp_elev_lost = tick2_pp_touches = tick2_pp_gone = tick2_pp_early = 0;
+		tick2_pp_ticks = tick2_pp_listed = tick2_pp_inline = tick2_pp_elev_lost = tick2_pp_touches = tick2_pp_gone = tick2_pp_early = tick2_pp_parents = 0;
 		memset(tick2_pp_site, 0, sizeof(tick2_pp_site));
 		tick2_pp_sites_lost = 0;
 	}
@@ -61204,6 +61241,17 @@ def tick2_posepass_cut(tree):
         a = body.index(start)
         b = body.index(end, a) + len(end)
         return body[:a] + "\t\tif (tick2_pp_phase < 2) /* TICK2 posepass: motion is phase 1's */\n\t\t{\n" + body[a:b] + "\t\t}\n" + body[b:]
+    TICK2_PP_PARENT_FIRST = (
+        "\t\t/* TICK2 posepass, \"parentfirst\": old poses a parent before its children update, so phase 1 poses its\n"
+        "\t\town nodes here; its post-processing, after its children's, stays in phase 2's tail */\n"
+        "\t\tif (tick2_pp_phase == 1 && object->object.first_child_object_index != NONE && PSP_KEEP_ONCE(\"parentfirst\"))\n"
+        "\t\t{\n"
+        "\t\t\tif (!TEST_FLAG(object->object.flags, _object_do_not_recompute_node_matrices_bit) && !psp_pose_skipped &&\n"
+        "\t\t\t\t!(psp_nms_open && TEST_FLAG(PSP_NMS_TYPES, object->object.type) && psp_nms_may(object_index, object) &&\n"
+        "\t\t\t\t\t(psp_pose_skipped = psp_nms_skip(object_index, object)) != 0))\n"
+        "\t\t\t\t%s;\n"
+        "\t\t\ttick2_pp_parent_done(object_index, psp_pose_skipped);\n"
+        "\t\t}\n")
     common = [
         ("\t\tif (TEST_FLAG(object->object.flags, _object_garbage_bit))",
          "\t\tif (tick2_pp_phase < 2 && TEST_FLAG(object->object.flags, _object_garbage_bit)) /* TICK2 posepass */"),
@@ -61212,7 +61260,7 @@ def tick2_posepass_cut(tree):
         ("elevator_sampled = object->object.type == _object_type_machine &&\n",
          "elevator_sampled = tick2_pp_elevator(object_index, object->object.type == _object_type_machine, &elevator_sample) /* TICK2 posepass */ &&\n"),
         ("if (!TEST_FLAG(object->object.flags, _object_do_not_recompute_node_matrices_bit) && !psp_pose_skipped &&",
-         "if (tick2_pp_phase != 1 && !tick2_pp_posed_early(object_index) && !TEST_FLAG(object->object.flags, _object_do_not_recompute_node_matrices_bit) && !psp_pose_skipped && /* TICK2 posepass */"),
+         "if (tick2_pp_phase != 1 && !tick2_pp_posed_early(object_index) && !tick2_pp_parent_posed(object_index) && !TEST_FLAG(object->object.flags, _object_do_not_recompute_node_matrices_bit) && !psp_pose_skipped && /* TICK2 posepass */"),
         ("\t\tif (elevator_sampled)\n", "\t\tif ((tick2_pp_phase == 0 || tick2_pp_phase == 2) && elevator_sampled) /* TICK2 posepass */\n"),
     ]
     # the lean path
@@ -61227,7 +61275,9 @@ def tick2_posepass_cut(tree):
         ("\t\tif (TEST_FLAG(object->object.flags, _object_dynamic_lighting_recompute_bit) &&\n",
          "\t\tif ((tick2_pp_phase == 0 || tick2_pp_phase == 2) && TEST_FLAG(object->object.flags, _object_dynamic_lighting_recompute_bit) && /* TICK2 posepass */\n"),
         ("\t\tif (!psp_pose_skipped)\n\t\t{\n\t\t\tif (!TEST_FLAG(_object_mask_unit",
-         "\t\tif (tick2_pp_phase != 1 && !tick2_pp_posed_early(object_index) && !psp_pose_skipped) /* TICK2 posepass */\n\t\t{\n\t\t\tif (!TEST_FLAG(_object_mask_unit"),
+         "\t\tif (tick2_pp_phase != 1 && !tick2_pp_posed_early(object_index) && !tick2_pp_skip_of(object_index, psp_pose_skipped)) /* TICK2 posepass */\n\t\t{\n\t\t\tif (!TEST_FLAG(_object_mask_unit"),
+        ("\t\tif (object->object.first_child_object_index!=NONE)\n\t\t{\n\t\t\tpsp_object_update_lean(object->object.first_child_object_index);",
+         TICK2_PP_PARENT_FIRST % "object_compute_node_matrices_with(object_index, object, object_definition)" + "\t\tif (object->object.first_child_object_index!=NONE)\n\t\t{\n\t\t\tpsp_object_update_lean(object->object.first_child_object_index);"),
     ], "the lean path")
     if body is None: return 0
     body = wrap(body, "\t\tobject_type_update_for_type(object->object.type, object_index);\n",
@@ -61247,7 +61297,9 @@ def tick2_posepass_cut(tree):
         ("\t\tif (\n\t\t\tTEST_FLAG(object->object.flags, _object_dynamic_lighting_recompute_bit) &&",
          "\t\tif ((tick2_pp_phase == 0 || tick2_pp_phase == 2) && /* TICK2 posepass */\n\t\t\tTEST_FLAG(object->object.flags, _object_dynamic_lighting_recompute_bit) &&"),
         ("\t\tif (!psp_pose_skipped)\n\t\t\tobject_postprocess_node_matrices(object_index);",
-         "\t\tif (tick2_pp_phase != 1 && !tick2_pp_posed_early(object_index) && !psp_pose_skipped) /* TICK2 posepass */\n\t\t\tobject_postprocess_node_matrices(object_index);"),
+         "\t\tif (tick2_pp_phase != 1 && !tick2_pp_posed_early(object_index) && !tick2_pp_skip_of(object_index, psp_pose_skipped)) /* TICK2 posepass */\n\t\t\tobject_postprocess_node_matrices(object_index);"),
+        ("\t\t// Update children (if we have any)\n",
+         TICK2_PP_PARENT_FIRST % "psp_hoist ? object_compute_node_matrices_with(object_index, object, object_definition) : object_compute_node_matrices(object_index)" + "\t\t// Update children (if we have any)\n"),
         (head, head + r"""
 	/* TICK2 posepass: phase 1 lists each root it reaches, for phase 2's tails; past the list, a root's subtree
 	runs both phases at once, as the old build */
