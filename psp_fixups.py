@@ -61897,6 +61897,17 @@ TICK2_SPAN_FIELDS = ("desired_facing_vector", "desired_aiming_vector", "aiming_v
                      "desired_looking_vector", "looking_vector", "looking_velocity", "throttle")
 # the span's place in the old unit datum (struct unit_datum: _unit_datum from 0x1A4)
 TICK2_SPAN_AT, TICK2_SPAN_END = 0x1D4, 0x1D4 + 0x60
+# the functions whose span reads repeat most (b30's hot motion and the unit's update; counted in the fixed tree)
+TICK2_SPAN_HOIST_SITES = [
+    ("source/units/units.c", "unit_verify_vectors", "unit"),
+    ("source/units/units.c", "unit_update", "unit"),
+    ("source/units/bipeds.c", "biped_update_moving", "biped"),
+    ("source/units/bipeds.c", "biped_update_turning", "biped"),
+    ("source/units/units.c", "unit_vectors_are_valid", "unit"),
+    ("source/units/vehicles.c", "vehicle_update", "vehicle"),
+    ("source/units/bipeds.c", "biped_update", "biped"),
+    ("source/units/units.c", "unit_preprocess_node_orientations", "unit"),
+]
 def tick2_span_cut(tree):
     if not TICK2_BIPED:
         return 0
@@ -62052,7 +62063,35 @@ def tick2_span_cut(tree):
             new = relative.sub(shift(TICK2_SPAN_AT - TICK2_UNIT_BASE, TICK2_SPAN_END - TICK2_UNIT_BASE), new)
             if new != text and not CHECK_ONLY:
                 open(path, "w", errors="surrogateescape").write(new)
-    print("psp_fixups: TICK2 biped: %d sizes and %d layout checks moved by 0x%X, %d of the store's sizes widened" % (sized, moved[0], shrink, n_size))
+    # the hoist rule (spec section 16.x) on the span's accessor, where the reads repeat: one local a function,
+    # filled at its first use; a base assigned after its first use is refused
+    hoisted = 0
+    if TICK2_HOIST:
+        for rel, name, base in TICK2_SPAN_HOIST_SITES:
+            path = os.path.join(tree, rel)
+            text = open(path, errors="surrogateescape").read()
+            m = re.search(r"\n[^\n#/*][^\n;]*\b%s\(\n?(?:[^;{]*?)\)\n\{\n" % re.escape(name), text)
+            if not m:
+                check_fail("psp_fixups: TICK2 biped hoist: %s's head isn't found in %s" % (name, rel))
+                return 0
+            start = m.end()
+            end = text.find("\n}\n", start)
+            body = text[start:end]
+            use = "(*tick2_unit_span_of(%s->object.root))" % base
+            first = body.find(use)
+            sets = [s.start() for s in re.finditer(r"(?<![\w>.])%s\s*=[^=]" % base, body)]
+            if first < 0 or len(sets) > 1 or (sets and sets[0] > first):
+                check_fail("psp_fixups: TICK2 biped hoist: %s: %d uses, %s assigned %d times (the last after its first use: %s)" %
+                           (name, body.count(use), base, len(sets), bool(sets and sets[-1] > first)))
+                return 0
+            n = body.count(use)
+            body = body.replace(use, "(*(tick2_h_span ? tick2_h_span : (tick2_h_span = tick2_unit_span_of(%s->object.root))))" % base)
+            body = "\tstruct tick2_unit_span *tick2_h_span = NULL; /* TICK2 hoist: the span's record, worked out at its first use */\n" + body
+            text = text[:start] + body + text[end:]
+            if not CHECK_ONLY:
+                open(path, "w", errors="surrogateescape").write(text)
+            hoisted += n
+    print("psp_fixups: TICK2 biped: %d sizes and %d layout checks moved by 0x%X, %d of the store's sizes widened, %d span reads hoisted" % (sized, moved[0], shrink, n_size, hoisted))
     return touched
 print("psp_fixups: the world store's span (TICK2 biped): %d touches through the unit index" % tick2_span_cut(TREE))
 
