@@ -60857,6 +60857,8 @@ static long tick2_pp_count;
 static unsigned char tick2_pp_skip[MAXIMUM_OBJECTS_PER_MAP / 8 + 1]; /* psp_pose_half_skips' answer, from phase 1, a bit an object */
 static unsigned char tick2_pp_dead[MAXIMUM_OBJECTS_PER_MAP / 8 + 1]; /* deleted in phase 1: no tail, even if its slot is reused that tick */
 static unsigned long tick2_pp_early; /* touchorder: roots whose tree was posed at a read (phase 3), ahead of phase 2 */
+static unsigned long tick2_pp_presolve[2]; /* touchorder posing a staged biped after its intent, before its solve: [0] in the intents and gather, [1] in the solves */
+int psp_bipedstage_unsolved(long object_index); /* objects.c (FIXES_BIPEDSTAGE), the motion pass's census */
 static unsigned char tick2_pp_touched[MAXIMUM_OBJECTS_PER_MAP / 8 + 1]; /* posed on touch this tick */
 static unsigned char tick2_pp_seen[MAXIMUM_OBJECTS_PER_MAP / 8 + 1]; /* listed this tick: the biped stage updates its bipeds in more than one pass */
 static unsigned char tick2_pp_busy[MAXIMUM_OBJECTS_PER_MAP / 8 + 1]; /* a root's phase-1 update under way: its own and its children's reads of it come in here */
@@ -60958,6 +60960,14 @@ static void tick2_pp_old_order(long object_index)
 		return;
 	if ((tick2_pp_posed[at >> 3] >> (at & 7)) & 1)
 		return;
+	/* the motion pass's census (tick_store_biped_plan.md, "The motion pass"): under bipedstage3 a staged biped's
+	first update returns at its intent, so "done" can come before its solve; counted, by stage phase */
+	{
+		int unsolved = psp_bipedstage_unsolved(root);
+
+		if (unsolved)
+			tick2_pp_presolve[unsolved == 4]++;
+	}
 	tick2_pp_phase = 3;
 	object_update(root);
 	tick2_pp_phase = 1;
@@ -61173,10 +61183,10 @@ void tick2_pp_deleted(long object_index)
 void platform_psp_log(const char *format, ...);
 void tick2_pp_report(const char *label, int level_end)
 {
-	platform_psp_log("posepass (%s): %lu ticks; roots listed %lu (%lu a tick), run inline past the list %lu, gone by phase 2 %lu; elevators past the table %lu; posed on touch %lu (%lu a hundred ticks); trees posed at a read (touchorder) %lu; parents posed before their children (parentfirst) %lu",
+	platform_psp_log("posepass (%s): %lu ticks; roots listed %lu (%lu a tick), run inline past the list %lu, gone by phase 2 %lu; elevators past the table %lu; posed on touch %lu (%lu a hundred ticks); trees posed at a read (touchorder) %lu, of them staged bipeds between intent and solve %lu in the intents, %lu in the solves (the motion census); parents posed before their children (parentfirst) %lu",
 		label, tick2_pp_ticks, tick2_pp_listed, tick2_pp_ticks ? tick2_pp_listed / tick2_pp_ticks : 0,
 		tick2_pp_inline, tick2_pp_gone, tick2_pp_elev_lost, tick2_pp_touches, tick2_pp_ticks ? tick2_pp_touches * 100 / tick2_pp_ticks : 0,
-		tick2_pp_early, tick2_pp_parents);
+		tick2_pp_early, tick2_pp_presolve[0], tick2_pp_presolve[1], tick2_pp_parents);
 	{
 		int k, pass;
 
@@ -61203,6 +61213,7 @@ void tick2_pp_report(const char *label, int level_end)
 	if (level_end)
 	{
 		tick2_pp_ticks = tick2_pp_listed = tick2_pp_inline = tick2_pp_elev_lost = tick2_pp_touches = tick2_pp_gone = tick2_pp_early = tick2_pp_parents = 0;
+		tick2_pp_presolve[0] = tick2_pp_presolve[1] = 0;
 		memset(tick2_pp_site, 0, sizeof(tick2_pp_site));
 		tick2_pp_sites_lost = 0;
 	}
@@ -61410,6 +61421,25 @@ long tick2_pp_read(long object_index, char const *file, int line);
         check_fail("psp_fixups: TICK2 posepass: object_header_delete's anchor matches %d times" % c.count(dd))
         return 0
     c = c.replace(dd, "\t{ extern void tick2_pp_deleted(long object_index); tick2_pp_deleted(object_index); } /* TICK2 posepass: no tail for a root deleted in phase 1 */\n" + dd)
+    # the motion pass's census: which staged bipeds haven't run their solve yet (tick_store_biped_plan.md)
+    for old, new in [
+        ("static short psp_bipedstage_absolute[PSP_BIPEDSTAGE_MAXIMUM];\n",
+         "static short psp_bipedstage_absolute[PSP_BIPEDSTAGE_MAXIMUM];\n"
+         "static long psp_bipedstage_k = -1; /* TICK2 posepass: the solve under way (the motion census) */\n"
+         "/* 3 in the intents and gather for any staged root, 4 in the solves for one later in the list; else 0 */\n"
+         "int psp_bipedstage_unsolved(long object_index)\n{\n\tint k;\n\n"
+         "\tif (psp_bipedstage_phase != 3 && !(psp_bipedstage_phase == 4 && psp_bipedstage_k >= 0))\n\t\treturn 0;\n"
+         "\tfor (k = psp_bipedstage_phase == 4 ? psp_bipedstage_k + 1 : 0; k < psp_bipedstage_count; k++)\n"
+         "\t\tif (psp_bipedstage_index[k] == object_index)\n\t\t\treturn psp_bipedstage_phase;\n\treturn 0;\n}\n"),
+        ("\t\t\tpsp_bipedstage_phase = psp_bs3_on ? 4 : ",
+         "\t\t\tpsp_bipedstage_k = k; /* TICK2 posepass: the motion census */\n\t\t\tpsp_bipedstage_phase = psp_bs3_on ? 4 : "),
+        ("\t/* BIPEDMOVE 1c: a kept record whose solve didn't resume it written back */\n",
+         "\tpsp_bipedstage_k = -1; /* TICK2 posepass: the motion census */\n\t/* BIPEDMOVE 1c: a kept record whose solve didn't resume it written back */\n"),
+    ]:
+        if c.count(old) != 1:
+            check_fail("psp_fixups: TICK2 posepass: the motion census's anchor %r matches %d times" % (old[:50], c.count(old)))
+            return 0
+        c = c.replace(old, new)
     if not CHECK_ONLY:
         open(objects_c, "w", errors="surrogateescape").write(c)
         open(objects_h, "w", errors="surrogateescape").write(h)
