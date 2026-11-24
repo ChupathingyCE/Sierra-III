@@ -60792,6 +60792,31 @@ static long tick2_pp_count;
 static unsigned char tick2_pp_skip[MAXIMUM_OBJECTS_PER_MAP / 8 + 1]; /* psp_pose_half_skips' answer, from phase 1, a bit an object */
 static unsigned char tick2_pp_dead[MAXIMUM_OBJECTS_PER_MAP / 8 + 1]; /* deleted in phase 1: no tail, even if its slot is reused that tick */
 static unsigned long tick2_pp_early; /* touchorder: roots whose tail ran at a touch, ahead of phase 2 */
+static boolean object_update(long object_index);
+/* the old-order rule (spec section 33; the lead 2026-11-23 22:3x; "touchorder"): a phase-1 read of another object's
+pose (a touch or a getter) gives old's answer by its loop order. If phase 1 has already reached the object's root, old
+had updated it whole by now, IK included, so its root's tail runs now and phase 2 skips it; if not, old would read it at
+last tick's pose, so it's left as it stands */
+static void tick2_pp_old_order(long object_index)
+{
+	long root = object_index, at;
+	struct object_datum *walk = object_try_and_get(root);
+
+	while (walk && walk->object.parent_object_index != NONE)
+	{
+		root = walk->object.parent_object_index;
+		walk = object_try_and_get(root);
+	}
+	at = root & 0xFFFF;
+	if (!walk || at >= MAXIMUM_OBJECTS_PER_MAP || !((tick2_pp_seen[at >> 3] >> (at & 7)) & 1) ||
+		((tick2_pp_dead[at >> 3] >> (at & 7)) & 1))
+		return;
+	tick2_pp_phase = 2;
+	object_update(root);
+	tick2_pp_phase = 1;
+	tick2_pp_dead[at >> 3] |= (unsigned char)(1 << (at & 7)); /* its tail is done: phase 2 skips it */
+	tick2_pp_early++;
+}
 static unsigned char tick2_pp_touched[MAXIMUM_OBJECTS_PER_MAP / 8 + 1]; /* posed on touch this tick */
 static unsigned char tick2_pp_seen[MAXIMUM_OBJECTS_PER_MAP / 8 + 1]; /* listed this tick: the biped stage updates its bipeds in more than one pass */
 #define TICK2_PP_ELEVATORS 64
@@ -60867,30 +60892,10 @@ void tick2_pp_touch(long object_index)
 	as old's inline order leaves an object later in the loop */
 	if (PSP_KEEP_ONCE("posetouchoff"))
 		return;
-	/* "touchorder" (2026-11-24, c20's second parting: neither always posing nor never posing gives old's answer, which
-	depends on old's loop order): a touched object whose root phase 1 has already reached is one old had updated whole
-	by now, IK included, so its root's tail runs now and phase 2 skips it; one not yet reached old would read at last
-	tick's pose, so it's left as it stands */
+	/* "touchorder": the old-order rule (spec section 33) */
 	if (PSP_KEEP_ONCE("touchorder"))
 	{
-		static boolean object_update(long object_index);
-		long root = object_index, at;
-		struct object_datum *walk = object_try_and_get(root);
-
-		while (walk && walk->object.parent_object_index != NONE)
-		{
-			root = walk->object.parent_object_index;
-			walk = object_try_and_get(root);
-		}
-		at = root & 0xFFFF;
-		if (!walk || at >= MAXIMUM_OBJECTS_PER_MAP || !((tick2_pp_seen[at >> 3] >> (at & 7)) & 1) ||
-			((tick2_pp_dead[at >> 3] >> (at & 7)) & 1))
-			return;
-		tick2_pp_phase = 2;
-		object_update(root);
-		tick2_pp_phase = 1;
-		tick2_pp_dead[at >> 3] |= (unsigned char)(1 << (at & 7)); /* its tail is done: phase 2 skips it */
-		tick2_pp_early++;
+		tick2_pp_old_order(object_index);
 		return;
 	}
 	/* only an object whose nodes are made: one still inside object_new is posed there (its own pose-now) */
@@ -60927,8 +60932,16 @@ long tick2_pp_read(long object_index, char const *file, int line)
 	unsigned long h;
 	int probes;
 
-	if (tick2_pp_phase != 1 || tick2_pp_posing || object_index == NONE || k >= MAXIMUM_OBJECTS_PER_MAP ||
-		!PSP_KEEP_ONCE("posepassread"))
+	if (tick2_pp_phase != 1 || tick2_pp_posing || object_index == NONE || k >= MAXIMUM_OBJECTS_PER_MAP)
+		return object_index;
+	if (PSP_KEEP_ONCE("touchorder")) /* the old-order rule, for a getter's read as for a touch */
+	{
+		tick2_pp_posing = 1; /* the tail's own reads take the rule no further */
+		tick2_pp_old_order(object_index);
+		tick2_pp_posing = 0;
+		return object_index;
+	}
+	if (!PSP_KEEP_ONCE("posepassread"))
 		return object_index;
 	/* the chain up to the root, then posed root down: a child's pose reads its parent's */
 	for (at = object_index; at != NONE && count < 16; )
@@ -61190,7 +61203,7 @@ def tick2_posepass_cut(tree):
     if h.count(proto) != 1:
         check_fail("psp_fixups: TICK2 posepass: the marker getter's prototype matches %d times" % h.count(proto))
         return 0
-    if TICK2_REPORT:
+    if True:  # the wrappers carry the old-order rule (touchorder), so every pass build has them (2026-11-24)
       h = h.replace(proto, proto + r"""/* TICK2 posepass, the experiment posepassread: every getter read goes through tick2_pp_read by file and line */
 long tick2_pp_read(long object_index, char const *file, int line);
 #define object_get_node_matrices(o) ((object_get_node_matrices)(tick2_pp_read((o), __FILE__, __LINE__)))
