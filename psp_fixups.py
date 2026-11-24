@@ -62157,6 +62157,7 @@ int psp_keep_number(const char *prefix, int fallback);
 void platform_psp_log(const char *format, ...);
 extern volatile unsigned int psp_me_context;
 long psp_seedtrace_first = -2; /* the global seed's tracer starts once the local one has read its keep word */
+void *psp_seedtrace_outer; /* real_local_random_range's own caller, when it was the one that drew */
 
 unsigned long *__attribute__((noinline)) get_global_local_random_seed_address(
 	void)
@@ -62178,8 +62179,10 @@ unsigned long *__attribute__((noinline)) get_global_local_random_seed_address(
 	else
 		return &random_math_globals.global_local_random_seed;
 	if ((tick = game_time_get()) >= first && tick <= first + 10)
-		platform_psp_log("seedtrace: tick %ld, draw %ld, from %08lx, seed %08lx", tick, draws++,
-			(unsigned long)__builtin_return_address(0), random_math_globals.global_local_random_seed);
+		platform_psp_log("seedtrace: tick %ld, draw %ld, from %08lx, seed %08lx, outer %08lx", tick, draws++,
+			(unsigned long)__builtin_return_address(0), random_math_globals.global_local_random_seed,
+			(unsigned long)psp_seedtrace_outer);
+	psp_seedtrace_outer = 0;
 	return &random_math_globals.global_local_random_seed;
 }
 """
@@ -62187,6 +62190,17 @@ unsigned long *__attribute__((noinline)) get_global_local_random_seed_address(
         check_fail("psp_fixups: SEEDTRACE: the local seed's address function matches %d times" % text.count(old))
         return 0
     text = text.replace(old, new)
+    # one level up: real_local_random_range's caller (the draw's "from" is inside it)
+    rpath = os.path.join(tree, "source/math/real_math.h")
+    rtext = open(rpath, errors="surrogateescape").read()
+    rold = "\treal result= real_seed_random_range(get_global_local_random_seed_address(), lower_bound, upper_bound);\n"
+    if rtext.count(rold) != 1:
+        check_fail("psp_fixups: SEEDTRACE: real_local_random_range's draw matches %d times" % rtext.count(rold))
+        return 0
+    rtext = rtext.replace(rold, "\treal result;\n\t{ extern void *psp_seedtrace_outer; psp_seedtrace_outer = __builtin_return_address(0); } /* SEEDTRACE */\n"
+                          "\tresult = real_seed_random_range(get_global_local_random_seed_address(), lower_bound, upper_bound);\n")
+    if not CHECK_ONLY:
+        open(rpath, "w", errors="surrogateescape").write(rtext)
     # the global seed's draws too, in the same window (a30 under PSP_TICK2=anim parts on it first)
     gold = """		"you should not be using global random(); use local random() instead");
 """
