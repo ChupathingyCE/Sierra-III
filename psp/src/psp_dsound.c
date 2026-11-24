@@ -3526,6 +3526,164 @@ static int full_on_me = -1; /* "audio44main" keeps the 44.1 kHz work on this CPU
 void psp_me_audio_full(void *const *list, unsigned long count, short *out44, short *full);
 int psp_me_audio_full_done(unsigned long *heard);
 
+#ifdef PSP_RECON
+/* "voicecensus" (PSP_RECON): what the lean sound levers would cut (audio_lean
+L1-L4), counted on the main CPU from each block's prepared list before it is
+mixed. It only reads the records, so play and sound don't change. A heard
+voice is counted at the block's frames, its decode at the source frames its
+step covers; its gain is the larger of where the ramp starts and ends, on the
+mixer's own scale (GAIN_ONE full scale, after distance, cone, the direct path
+and the master volume). Distance is the game's offset to the listener, before
+DirectSound's distance factor. Every line is a running total */
+#define CENSUS_GAINS 5
+#define CENSUS_BANDS 7
+#define CENSUS_HIST 41
+static const int census_gain_at[CENSUS_GAINS] = { 16, 32, 64, 128, 256 };
+static const float census_band_at[CENSUS_BANDS - 2] = { 1.0f, 2.0f, 5.0f, 15.0f, 40.0f };
+static const unsigned long census_cap_at[3] = { 12, 16, 20 };
+static int census_on = -1;
+static unsigned long census_blocks, census_listed, census_silent, census_music, census_heard, census_vf, census_dec;
+static unsigned long census_stereo, census_pcm;
+static unsigned long census_gain_n[CENSUS_GAINS], census_gain_vf[CENSUS_GAINS], census_gain_dec[CENSUS_GAINS];
+static unsigned long census_band_vf[CENSUS_BANDS], census_band_dec[CENSUS_BANDS], census_band_quiet[CENSUS_BANDS];
+static unsigned long census_kind_vf[5], census_kind_dec[5];
+static unsigned long census_hist[CENSUS_HIST];
+static unsigned long census_cap_blocks[3], census_cap_vf[3], census_cap_loud[3];
+
+static void voice_census(struct psp_stream *const *list, unsigned long count, unsigned long frames)
+{
+	static int gains[VOICE_LIST_MAX];
+	unsigned long k, heard = 0;
+
+	if (census_on < 0)
+	{
+		extern int psp_keep(const char *word);
+
+		census_on = psp_keep("voicecensus") != 0;
+		if (census_on)
+			platform_log("voicecensus: on; gains on the scale %d = full; thresholds 16 32 64 128 256; bands <1 <2 <5 <15 <40 >=40 2d (game units); caps 12 16 20",
+				GAIN_ONE);
+	}
+	if (!census_on)
+		return;
+	census_blocks++;
+	census_listed += count;
+	for (k = 0; k < count; k++)
+	{
+		const struct psp_stream *stream = list[k];
+		const struct stream_game *game = GAME_OF(stream);
+		int from_left = stream->gains_valid ? stream->current_left : stream->target_left;
+		int from_right = stream->gains_valid ? stream->current_right : stream->target_right;
+		int gain = stream->target_left;
+		unsigned long dec = 0, g, band, kind;
+
+		if (MUSIC_BLOCK(stream))
+		{
+			census_music++;
+			continue;
+		}
+		if (stream->target_right > gain)
+			gain = stream->target_right;
+		if (from_left > gain)
+			gain = from_left;
+		if (from_right > gain)
+			gain = from_right;
+		if (!gain)
+		{
+			census_silent++;
+			continue;
+		}
+		gains[heard++] = gain;
+		if (stream->adpcm)
+			dec = (unsigned long)(((unsigned long long)stream->step * frames + stream->fraction) >> 16);
+		census_heard++;
+		census_vf += frames;
+		census_dec += dec;
+		census_stereo += stream->channels != 1;
+		census_pcm += !stream->adpcm;
+		for (g = 0; g < CENSUS_GAINS; g++)
+			if (gain < census_gain_at[g])
+			{
+				census_gain_n[g]++;
+				census_gain_vf[g] += frames;
+				census_gain_dec[g] += dec;
+			}
+		band = CENSUS_BANDS - 1;
+		if (game->has_3d && game->mode != DS3DMODE_DISABLE)
+		{
+			float offset[3], distance;
+			int axis;
+
+			for (axis = 0; axis < 3; axis++)
+				offset[axis] = game->mode == DS3DMODE_HEADRELATIVE ? game->position[axis] :
+					game->position[axis] - listener.position[axis];
+			distance = sqrtf(dot3(offset, offset));
+			for (band = 0; band < CENSUS_BANDS - 2 && distance >= census_band_at[band]; band++)
+				;
+		}
+		census_band_vf[band] += frames;
+		census_band_dec[band] += dec;
+		census_band_quiet[band] += gain < 64;
+		if (stream->mix_kinds && stream->channels == 1 && stream->lowpass_left == stream->lowpass_right && stream->adpcm &&
+			stream->step)
+			kind = (stream->step == 0x10000 && !stream->fraction ? 0 : 2) + (stream->lowpass_coefficient < GAIN_ONE);
+		else
+			kind = 4;
+		census_kind_vf[kind] += frames;
+		census_kind_dec[kind] += dec;
+	}
+	census_hist[heard < CENSUS_HIST ? heard : CENSUS_HIST - 1]++;
+	/* the loudest first, for the caps */
+	for (k = 1; k < heard; k++)
+	{
+		int value = gains[k];
+		unsigned long j = k;
+
+		for (; j > 0 && gains[j - 1] < value; j--)
+			gains[j] = gains[j - 1];
+		gains[j] = value;
+	}
+	for (k = 0; k < 3; k++)
+		if (heard > census_cap_at[k])
+		{
+			unsigned long j;
+
+			census_cap_blocks[k]++;
+			census_cap_vf[k] += (heard - census_cap_at[k]) * frames;
+			for (j = census_cap_at[k]; j < heard; j++)
+				census_cap_loud[k] += gains[j] >= 256;
+		}
+	if (!(census_blocks & 255))
+	{
+		char hist[CENSUS_HIST * 12], *at = hist;
+
+		platform_log("voicecensus: blocks %lu frames %lu listed %lu music %lu silent %lu heard %lu vf %lu dec %lu stereo %lu pcm %lu",
+			census_blocks, frames, census_listed, census_music, census_silent, census_heard, census_vf, census_dec, census_stereo,
+			census_pcm);
+		platform_log("voicecensus gain: n/vf/dec <16 %lu %lu %lu <32 %lu %lu %lu <64 %lu %lu %lu <128 %lu %lu %lu <256 %lu %lu %lu",
+			census_gain_n[0], census_gain_vf[0], census_gain_dec[0], census_gain_n[1], census_gain_vf[1], census_gain_dec[1],
+			census_gain_n[2], census_gain_vf[2], census_gain_dec[2], census_gain_n[3], census_gain_vf[3], census_gain_dec[3],
+			census_gain_n[4], census_gain_vf[4], census_gain_dec[4]);
+		platform_log("voicecensus band: vf/dec/quiet64 <1 %lu %lu %lu <2 %lu %lu %lu <5 %lu %lu %lu <15 %lu %lu %lu <40 %lu %lu %lu >=40 %lu %lu %lu 2d %lu %lu %lu factor %.3f",
+			census_band_vf[0], census_band_dec[0], census_band_quiet[0], census_band_vf[1], census_band_dec[1], census_band_quiet[1],
+			census_band_vf[2], census_band_dec[2], census_band_quiet[2], census_band_vf[3], census_band_dec[3], census_band_quiet[3],
+			census_band_vf[4], census_band_dec[4], census_band_quiet[4], census_band_vf[5], census_band_dec[5], census_band_quiet[5],
+			census_band_vf[6], census_band_dec[6], census_band_quiet[6], (double)listener.distance_factor);
+		platform_log("voicecensus kind: vf/dec plain %lu %lu plainf %lu %lu pitched %lu %lu pitchedf %lu %lu general %lu %lu",
+			census_kind_vf[0], census_kind_dec[0], census_kind_vf[1], census_kind_dec[1], census_kind_vf[2], census_kind_dec[2],
+			census_kind_vf[3], census_kind_dec[3], census_kind_vf[4], census_kind_dec[4]);
+		platform_log("voicecensus cap: blocks/vf/loud64 12 %lu %lu %lu 16 %lu %lu %lu 20 %lu %lu %lu",
+			census_cap_blocks[0], census_cap_vf[0], census_cap_loud[0], census_cap_blocks[1], census_cap_vf[1], census_cap_loud[1],
+			census_cap_blocks[2], census_cap_vf[2], census_cap_loud[2]);
+		*at = 0;
+		for (k = 0; k < CENSUS_HIST; k++)
+			if (census_hist[k])
+				at += sprintf(at, " %lu:%lu", k, census_hist[k]);
+		platform_log("voicecensus hist:%s", hist);
+	}
+}
+#endif
+
 static int mix(short *output, short *full, short *out44, unsigned long frames)
 {
 	static int sums[MIX_FRAMES * OUTPUT_CHANNELS] __attribute__((aligned(64)));
@@ -3607,6 +3765,9 @@ static int mix(short *output, short *full, short *out44, unsigned long frames)
 	/* the marks ride the mixer's job: the ME then takes its whole cache
 	hand-over (the sets are past the ranges' reach) */
 	music_job = music_marks && psp_music_prepare();
+#endif
+#ifdef PSP_RECON
+	voice_census(list, count, frames);
 #endif
 	if (full_on_me < 0)
 	{
