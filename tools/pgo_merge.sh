@@ -26,15 +26,13 @@ command -v psp-gcov-tool >/dev/null || { echo "pgo_merge: psp-gcov-tool not on P
 here=$(cd "$(dirname "$0")/.." && pwd)
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 
-# Weights. psp-gcov-tool's merge -w takes whole numbers (w1,w2), and the first
-# set's weight must stay 1: with w1 above 1 it first merges the first set into
-# itself (w1-1 times), which turns its top-N value counters into the in-memory
-# form, then reads them again as on-disk data, and stops in
-# gcov_read_counter_mem (an internal error, GCC 15.2; pgo-merge 45463888645).
-# Its rewrite -s fails on the same counters (__gcov_topn_counter_op). So each
-# weight becomes a whole number of units (a tenth of the smallest weight), the
-# lightest run goes first at 1 and is merged with a copy of itself for its
-# other units, and every other run comes in as the second set with its units.
+# Weights. psp-gcov-tool stops in gcov_read_counter_mem (an internal error,
+# GCC 15.2) on any merge -w other than 1,1 once the counts hold top-N value
+# counters, as every counting build's do (pgo-merge 45463888645 and
+# 45465973340 with weights; 45466822990 the same runs unweighted, fine), and
+# its rewrite -s fails on them too (__gcov_topn_counter_op). So a weight is
+# whole units, a tenth of the smallest weight each, and a run of n units is
+# merged n times at 1,1 (a merge of a few hundred units takes a few minutes).
 specs=() weights=() min=
 for spec in "$@"; do
     archive=$spec weight=1
@@ -61,16 +59,15 @@ for n in "${order[@]}"; do
     mkdir "$work/run$i"
     tar xzf "${specs[n]}" -C "$work/run$i"
     if (( i == 1 )); then
-        mv "$work/run1" "$work/merged"
-        if (( u > 1 )); then
-            cp -r "$work/merged" "$work/self"
-            psp-gcov-tool merge -w "1,$((u - 1))" "$work/merged" "$work/self" -o "$work/next"
-            rm -rf "$work/merged" "$work/self"; mv "$work/next" "$work/merged"
-        fi
-    else
-        psp-gcov-tool merge -w "1,$u" "$work/merged" "$work/run$i" -o "$work/next"
-        rm -rf "$work/merged" "$work/run$i"; mv "$work/next" "$work/merged"
+        cp -r "$work/run1" "$work/merged"
+        u=$((u - 1))
     fi
+    for ((c = 0; c < u; c++)); do
+        psp-gcov-tool merge "$work/merged" "$work/run$i" -o "$work/next"
+        rm -rf "$work/merged"; mv "$work/next" "$work/merged"
+    done
+    rm -rf "$work/run$i"
+    u=$(units "${weights[n]}")
     echo "pgo_merge: $i: ${specs[n]} (weight ${weights[n]}, $u units)"
 done
 
