@@ -63291,6 +63291,97 @@ def collindex_cut(tree):
     return 1
 collindex_cut(TREE)
 
+# PSP_COLLSORT=1 (the objects' index, step 2: docs/box_collision.md section 12.5; keep word "collsortwalk"): does the
+# order the objects' half visits objects change any answer? Under the keep word the sphere gather and the ray collect
+# the objects that pass their broad phase and their mark, sort them by absolute index, and only then run each one's
+# test. Play and both seeds per tick against the walk as it is say whether the index may return its candidates in
+# its own order and stay exact. Needs PSP_SWEEPREUSE=1 (the anchors are the slice head's).
+COLLSORT = os.environ.get("PSP_COLLSORT", "") == "1"
+CS_HEAD = r"""
+/* PSP_COLLSORT (psp_fixups.py): the objects' half of a query in absolute-index order, under keep word collsortwalk */
+#define PSP_CS_MOST 256
+static int psp_cs_on(void)
+{
+	static int on = -1;
+
+	if (on < 0)
+		on = PSP_KEEP_ONCE("collsortwalk") ? 1 : 0;
+	return on && !psp_work_on_me();
+}
+static void psp_cs_sort(long *list, int n)
+{
+	int i, j;
+
+	for (i = 1; i < n; i++)
+	{
+		long v = list[i];
+
+		for (j = i; j > 0 && DATUM_INDEX_TO_ABSOLUTE_INDEX(list[j - 1]) > DATUM_INDEX_TO_ABSOLUTE_INDEX(v); j--)
+			list[j] = list[j - 1];
+		list[j] = v;
+	}
+}
+static unsigned long psp_cs_counts[3]; /* queries collected, objects collected, objects past a full list (tested at once) */
+"""
+def collsort_cut(tree):
+    if not COLLSORT:
+        return 0
+    if not SWEEPREUSE:
+        check_fail("psp_fixups: PSP_COLLSORT=1 needs PSP_SWEEPREUSE=1 (its anchors)")
+        return 0
+    cp = os.path.join(tree, "source/physics/collisions.c")
+    c = open(cp, errors="surrogateescape").read()
+    def span(name):
+        a = c.index(name); return a, c.index("\n}\n", a)
+    def one(old, new, what, a, b):
+        if c.count(old, a, b) != 1:
+            check_fail("psp_fixups: COLLSORT: %s matches %d times" % (what, c.count(old, a, b)))
+            return c
+        i = c.index(old, a, b)
+        return c[:i] + new + c[i + len(old):]
+    c = c.replace("\nboolean collision_test_vector(\n", CS_HEAD + "\nboolean collision_test_vector(\n", 1)
+    # the ray
+    a, b = span("\nboolean collision_test_vector(\n")
+    c = one("\t\t\tstructure_cluster_marker_begin();\n",
+            "\t\t\tlong psp_cs_list[PSP_CS_MOST]; /* PSP_COLLSORT */\n\t\t\tint psp_cs_n = 0, psp_cs = psp_cs_on();\n\n\t\t\tstructure_cluster_marker_begin();\n", "the ray's marker", a, b)
+    a, b = span("\nboolean collision_test_vector(\n")
+    c = one("\t\t\t\t\t\t\tobject_mark_function(object_index) &&\n\t\t\t\t\t\t\tobject_test_vector(\n",
+            "\t\t\t\t\t\t\tobject_mark_function(object_index) &&\n"
+            "\t\t\t\t\t\t\t(psp_cs && psp_cs_n < PSP_CS_MOST ? (psp_cs_list[psp_cs_n++] = object_index, 0) : (psp_cs ? (psp_cs_counts[2]++, 1) : 1)) && /* PSP_COLLSORT */\n"
+            "\t\t\t\t\t\t\tobject_test_vector(\n", "the ray's test", a, b)
+    a, b = span("\nboolean collision_test_vector(\n")
+    c = one("\t\t\tobject_marker_end();\n",
+            "\t\t\tif (psp_cs) /* PSP_COLLSORT: the collected objects, in absolute-index order */\n\t\t\t{\n\t\t\t\tint k;\n\n"
+            "\t\t\t\tpsp_cs_counts[0]++;\n\t\t\t\tpsp_cs_counts[1] += psp_cs_n;\n\t\t\t\tpsp_cs_sort(psp_cs_list, psp_cs_n);\n"
+            "\t\t\t\tfor (k = 0; k < psp_cs_n; k++)\n"
+            "\t\t\t\t\tif (object_test_vector(psp_cs_list[k], flags, bsp_flags, point, vector, ignore_object_index, collision))\n\t\t\t\t\t\thit = TRUE;\n\t\t\t}\n"
+            "\t\t\tobject_marker_end();\n", "the ray's marker end", a, b)
+    # the sphere gather
+    body = ("\t\t\t\t\t\t\t{ /* PSP_SWEEPREUSE: an object in reach past the gather's filter is a near one */\n"
+            "\t\t\t\t\t\t\tif (psp_sr_on_pill && psp_sr_in_reach(object_index, center, radius, ignore_object_index))\n"
+            "\t\t\t\t\t\t\t\tpsp_sr_near_add(object_index);\n"
+            "\t\t\t\t\t\t\tobject_get_features_in_sphere(\n\t\t\t\t\t\t\t\tflags,\n\t\t\t\t\t\t\t\tobject_index,\n\t\t\t\t\t\t\t\tcenter,\n\t\t\t\t\t\t\t\tradius,\n"
+            "\t\t\t\t\t\t\t\theight,\n\t\t\t\t\t\t\t\twidth,\n\t\t\t\t\t\t\t\tignore_object_index,\n\t\t\t\t\t\t\t\tfeatures);\n\t\t\t\t\t\t\t}\n")
+    a, b = span("\nboolean collision_get_features_in_sphere(\n")
+    c = one("\t\t\tstructure_cluster_marker_begin();\n",
+            "\t\t\tlong psp_cs_list[PSP_CS_MOST]; /* PSP_COLLSORT */\n\t\t\tint psp_cs_n = 0, psp_cs = psp_cs_on();\n\n\t\t\tstructure_cluster_marker_begin();\n", "the gather's marker", a, b)
+    a, b = span("\nboolean collision_get_features_in_sphere(\n")
+    c = one(body, "\t\t\t\t\t\t\tif (psp_cs && psp_cs_n < PSP_CS_MOST) /* PSP_COLLSORT */\n\t\t\t\t\t\t\t\tpsp_cs_list[psp_cs_n++] = object_index;\n"
+            "\t\t\t\t\t\t\telse\n\t\t\t\t\t\t\t{\n\t\t\t\t\t\t\tif (psp_cs)\n\t\t\t\t\t\t\t\tpsp_cs_counts[2]++;\n" + body + "\t\t\t\t\t\t\t}\n", "the gather's body", a, b)
+    a, b = span("\nboolean collision_get_features_in_sphere(\n")
+    c = one("\t\t\tobject_marker_end();\n",
+            "\t\t\tif (psp_cs) /* PSP_COLLSORT: the collected objects, in absolute-index order */\n\t\t\t{\n\t\t\t\tint k;\n\n"
+            "\t\t\t\tpsp_cs_counts[0]++;\n\t\t\t\tpsp_cs_counts[1] += psp_cs_n;\n\t\t\t\tpsp_cs_sort(psp_cs_list, psp_cs_n);\n"
+            "\t\t\t\tfor (k = 0; k < psp_cs_n; k++)\n\t\t\t\t{\n\t\t\t\t\tlong object_index = psp_cs_list[k];\n\n" + body.replace("\t\t\t\t\t\t\t", "\t\t\t\t\t", ) + "\t\t\t\t}\n"
+            "\t\t\t\tif ((psp_cs_counts[0] & 0x3FFF) == 0)\n\t\t\t\t{\n\t\t\t\t\tvoid platform_psp_log(const char *format, ...);\n\n"
+            "\t\t\t\t\tplatform_psp_log(\"collsortwalk: queries %lu, objects sorted %lu, past a full list %lu\", psp_cs_counts[0], psp_cs_counts[1], psp_cs_counts[2]);\n\t\t\t\t}\n\t\t\t}\n"
+            "\t\t\tobject_marker_end();\n", "the gather's marker end", a, b)
+    if not CHECK_ONLY:
+        open(cp, "w", errors="surrogateescape").write(c)
+    print("psp_fixups: COLLSORT: the objects' half in absolute-index order under keep word collsortwalk")
+    return 1
+collsort_cut(TREE)
+
 # PSP_BPCOUNT=1 (lane B part 3, the lab's tick_store_biped_plan.md "Old-layer losses"; keep word "bpcount"): collision's
 # broad-phase walks counted. Every walk over a cluster's collideable objects (collision_test_point,
 # collision_test_vector, psp_collision_test_vector_quiet, collision_get_features_in_sphere split into biped motion's
