@@ -36505,6 +36505,22 @@ static void psp_aioutcome_damage(
 	{
 		psp_aioutcome_player_hit++;
 		psp_aioutcome_player_damage += fraction;
+		/* "playerhitlog": each of the first 40 hits on the player, by game time and by who fired, so a picture at
+		that tick can be labelled (Sheepdog01 2026-11-23 20:36: why c20's player gets hit more under the pass) */
+		static int playerhitlog = -1;
+		extern int psp_keep(const char *word);
+
+		if (playerhitlog < 0)
+			playerhitlog = psp_keep("playerhitlog") ? 1 : 0;
+		if (playerhitlog && psp_aioutcome_player_hit <= 40)
+		{
+			struct object_datum *responsible = responsible_unit_index != NONE ? object_try_and_get(responsible_unit_index) : NULL;
+
+			platform_psp_log("playerhit: game time %ld, hit %lu, by %s (team %d), damage %.3f",
+				game_time_get(), psp_aioutcome_player_hit,
+				responsible ? tag_get_name(responsible->definition_index) : "none",
+				responsible ? (int)responsible->object.owner_team_index : -1, (double)fraction);
+		}
 	}
 	else if (responsible_unit_index != NONE && unit_get(responsible_unit_index)->unit.player_index != NONE)
 		psp_aioutcome_player_hits++;
