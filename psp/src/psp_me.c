@@ -378,6 +378,7 @@ struct me_ring_result
 	unsigned int look_cycles; /* from the ME's last look that found the ring empty to the job's start: how
 	                          long the job can have waited to be picked up (under mehalt the time halted
 	                          before the wake counts too, so only the polling ME's figure is tight) */
+	unsigned int who;         /* "mewaitwho" (PSP_RECON): the job type the ME ran at the wait's start (high byte) and at the pick-up (low) */
 	unsigned int results[ME_RING_RESULTS];
 } __attribute__((aligned(64)));
 
@@ -902,16 +903,30 @@ static void run_job(volatile struct me_slot *slot, int *sums, int on_me)
 	}
 }
 
+/* "mewaitwho" (PSP_RECON; the lab's ME lane, step 1's census): what the ME is running, as a slot job's type
+(ME_OCC_LOOP for its own loop), so a ring job's wait can be charged to the job that held the ME when the
+wait began and the one that picked it up */
+#define ME_OCC_LOOP 31u
+#if PSP_RECON
+static PSP_AIME_ME_SIDE unsigned int me_occ_now = ME_OCC_LOOP, me_occ_at_look = ME_OCC_LOOP;
+#endif
+
 /* build 113: a slot's job run on the ME, with the cache hand-overs around it
 (meLibOnProcess's loop, and psp_me_serve_audio below) */
 static void me_serve(volatile struct me_slot *slot, int *sums)
 {
+#if PSP_RECON
+	unsigned int occ_was = me_occ_now;
+#endif
 	volatile struct me_control *control = CONTROL;
 	unsigned int request = slot->request, start, job_start, job_end, type = slot->type;
 	int ranges;
 
 	start = me_cycles();
 	slot->begun = request;
+#if PSP_RECON
+	me_occ_now = type & 31u;
+#endif
 	me_count(STASH_SLOT_BEGUN);
 	if (control->features & ME_FEATURE_STASH)
 		STASH[STASH_SLOTS_IN] |= 1u << (type & 31);
@@ -959,6 +974,9 @@ static void me_serve(volatile struct me_slot *slot, int *sums)
 	__asm__ __volatile__("sync");
 	slot->done = request;
 	__asm__ __volatile__("sync");
+#if PSP_RECON
+	me_occ_now = occ_was;
+#endif
 }
 
 /* The ME's own state: with "meedramstate" in its eDRAM (psp_me.h's map), so
@@ -1599,6 +1617,11 @@ static __attribute__((noinline)) void ring_run(unsigned int index, int on_me, un
 	result->status = status;
 	result->job_cycles = job_end - job_start;
 	result->look_cycles = look_cycles;
+#if PSP_RECON
+	result->who = on_me ? (me_occ_at_look << 8) | me_occ_now : 0;
+#else
+	result->who = 0;
+#endif
 	for (k = 0; k < ME_RING_RESULTS; k++)
 		result->results[k] = results[k];
 	result->all_cycles = on_me ? me_cycles() - start : 0;
@@ -1673,6 +1696,9 @@ static unsigned int me_ring_drain(unsigned int popped, unsigned int *last_look, 
 		psp_aime_answer_point(7);
 	/* anything pushed after the read above came after this moment */
 	*last_look = looked;
+#if PSP_RECON
+	me_occ_at_look = me_occ_now; /* "mewaitwho": the next job's wait begins under this occupant */
+#endif
 	return popped;
 }
 
@@ -3487,6 +3513,62 @@ static struct
 	run inside the AI job's yield holds off its look at the word) */
 	unsigned long type_jobs[16], type_worst_cycles[16];
 } ring_stats;
+#if PSP_RECON
+/* "mewaitwho": ring jobs' waits by (the occupant at the wait's start, the one at the pick-up), and by the
+waiting job's type; a report each ring window */
+#define ME_WAITWHO_PAIRS 24
+static struct { unsigned int key; unsigned long jobs; unsigned long long cycles; unsigned int worst; } me_waitwho[ME_WAITWHO_PAIRS];
+static unsigned long long me_waitwho_type[16];
+static unsigned long me_waitwho_type_jobs[16], me_waitwho_other;
+static int me_waitwho_on = -1;
+static void psp_me_waitwho_add(unsigned int who, unsigned int type, unsigned int cycles)
+{
+	int k;
+
+	if (me_waitwho_on < 0)
+		me_waitwho_on = psp_keep("mewaitwho");
+	if (!me_waitwho_on)
+		return;
+	me_waitwho_type[type & 15] += cycles;
+	me_waitwho_type_jobs[type & 15]++;
+	for (k = 0; k < ME_WAITWHO_PAIRS; k++)
+		if (me_waitwho[k].jobs == 0 || me_waitwho[k].key == who)
+		{
+			me_waitwho[k].key = who;
+			me_waitwho[k].jobs++;
+			me_waitwho[k].cycles += cycles;
+			if (cycles > me_waitwho[k].worst)
+				me_waitwho[k].worst = cycles;
+			return;
+		}
+	me_waitwho_other++;
+}
+static void psp_me_waitwho_report(float rate)
+{
+	char line[512];
+	int k, at;
+
+	if (me_waitwho_on <= 0)
+		return;
+	at = snprintf(line, sizeof(line), "ME: waitwho: the ring's waits by (occupant at the wait's start > at the pick-up), jobs, us a job, worst us:");
+	for (k = 0; k < ME_WAITWHO_PAIRS && me_waitwho[k].jobs && at < (int)sizeof(line) - 48; k++)
+		at += snprintf(line + at, sizeof(line) - at, " %u>%u %lu %lu %lu;", me_waitwho[k].key >> 8, me_waitwho[k].key & 0xFF, me_waitwho[k].jobs,
+			(unsigned long)((float)me_waitwho[k].cycles / rate / (float)me_waitwho[k].jobs), (unsigned long)((float)me_waitwho[k].worst / rate));
+	if (me_waitwho_other)
+		snprintf(line + at, sizeof(line) - at, " more pairs %lu jobs", me_waitwho_other);
+	platform_log("%s", line);
+	at = snprintf(line, sizeof(line), "ME: waitwho: by the waiting job's type, jobs and us a job:");
+	for (k = 0; k < 16 && at < (int)sizeof(line) - 32; k++)
+		if (me_waitwho_type_jobs[k])
+			at += snprintf(line + at, sizeof(line) - at, " %d: %lu %lu;", k, me_waitwho_type_jobs[k],
+				(unsigned long)((float)me_waitwho_type[k] / rate / (float)me_waitwho_type_jobs[k]));
+	platform_log("%s", line);
+	memset(me_waitwho, 0, sizeof(me_waitwho));
+	memset(me_waitwho_type, 0, sizeof(me_waitwho_type));
+	memset(me_waitwho_type_jobs, 0, sizeof(me_waitwho_type_jobs));
+	me_waitwho_other = 0;
+}
+#endif
 
 int psp_me_ring_ready(void)
 {
@@ -4420,6 +4502,9 @@ int psp_me_wait(unsigned int ticket, unsigned int *results)
 	ring_stats.job_cycles += result->job_cycles;
 	ring_stats.all_cycles += result->all_cycles;
 	ring_stats.look_cycles += result->look_cycles;
+#if PSP_RECON
+	psp_me_waitwho_add(result->who, request->type, result->look_cycles);
+#endif
 	ring_stats.type_jobs[request->type & 15]++;
 	if (result->job_cycles > ring_stats.type_worst_cycles[request->type & 15])
 		ring_stats.type_worst_cycles[request->type & 15] = result->job_cycles;
@@ -5799,6 +5884,9 @@ void psp_me_report(void)
 					lead = ";";
 				}
 		}
+#if PSP_RECON
+		psp_me_waitwho_report(rate);
+#endif
 		memset(&ring_stats, 0, sizeof(ring_stats));
 	}
 	/* the jobs collected by polling (mevisring): their own time, which a
