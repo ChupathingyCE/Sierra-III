@@ -63134,10 +63134,12 @@ sr_reach_cut(TREE)
 COLLINDEX = os.environ.get("PSP_COLLINDEX", "") == "1"
 COLLINDEX_CELL = float(os.environ.get("PSP_COLLINDEX_CELL", "2"))
 COLLINDEX_LAYERS = int(os.environ.get("PSP_COLLINDEX_LAYERS", "6"))
+COLLINDEX_RAYSTEP = os.environ.get("PSP_COLLINDEX_RAYSTEP", "") == "1"
 CI_CODE = r"""
 /* PSP_COLLINDEX (psp_fixups.py): the collision box's objects' index, in shadow (docs/box_collision.md section 12) */
 #define PSP_CI_CELL @CELL@f
 #define PSP_CI_BUCKETS 1024
+#define PSP_CI_RAYSTEP @RAYSTEP@
 #define PSP_CI_LAYERS @LAYERS@ /* layer L: radii up to PSP_CI_CELL * 2^L / 2, in cells of PSP_CI_CELL * 2^L */
 struct psp_ci_entry
 {
@@ -63413,17 +63415,158 @@ int psp_ci_sphere_pass(int site, long object_index, real_point3d const *center, 
 		psp_ci_bounds(site, object_index, center->x - radius, center->x + radius, center->y - radius, center->y + radius);
 	return 1;
 }
+/* PSP_COLLINDEX_RAYSTEP: a ray stepped through each layer's cells. A sphere of a layer fits within half a cell of its own
+cell, so a ray that reaches it passes through that cell's 3x3 block: the cells the ray crosses and their neighbours */
+static int psp_ci_seg_hits_box(real x0, real y0, real x1, real y1, real bx0, real by0, real bx1, real by1)
+{
+	real t0 = 0.0f, t1 = 1.0f, d[2] = { x1 - x0, y1 - y0 }, p[2] = { x0, y0 }, lo[2] = { bx0, by0 }, hi[2] = { bx1, by1 };
+	int a;
+
+	for (a = 0; a < 2; a++)
+	{
+		if (d[a] == 0.0f)
+		{
+			if (p[a] < lo[a] || p[a] > hi[a])
+				return 0;
+		}
+		else
+		{
+			real ta = (lo[a] - p[a]) / d[a], tb = (hi[a] - p[a]) / d[a];
+
+			if (ta > tb)
+			{
+				real t = ta;
+
+				ta = tb;
+				tb = t;
+			}
+			if (ta > t0)
+				t0 = ta;
+			if (tb < t1)
+				t1 = tb;
+			if (t0 > t1)
+				return 0;
+		}
+	}
+	return 1;
+}
+#define PSP_CI_SEEN 512
+static void psp_ci_ray_cells(unsigned long *n, real x0, real y0, real x1, real y1)
+{
+	static long seen[PSP_CI_SEEN];
+	int layer;
+
+	for (layer = 0; layer < PSP_CI_LAYERS; layer++)
+	{
+		real size = psp_ci_size(layer);
+		long cx = psp_ci_cell_at(layer, x0), cy = psp_ci_cell_at(layer, y0);
+		long ex = psp_ci_cell_at(layer, x1), ey = psp_ci_cell_at(layer, y1);
+		long steps = (ex > cx ? ex - cx : cx - ex) + (ey > cy ? ey - cy : cy - ey) + 1, used = 0, s, k;
+		int sx = ex > cx ? 1 : -1, sy = ey > cy ? 1 : -1;
+		real dx = x1 - x0, dy = y1 - y0;
+		real tx = dx != 0.0f ? (((real)(cx + (sx > 0)) * size - x0) / dx) : 2.0f, ty = dy != 0.0f ? (((real)(cy + (sy > 0)) * size - y0) / dy) : 2.0f;
+		real ddx = dx != 0.0f ? size / (dx < 0 ? -dx : dx) : 2.0f, ddy = dy != 0.0f ? size / (dy < 0 ? -dy : dy) : 2.0f;
+
+		if (steps > 4096)
+		{
+			n[1] += 4096;
+			continue;
+		}
+		for (s = 0; s < steps; s++)
+		{
+			long ox, oy;
+
+			for (ox = -1; ox <= 1; ox++)
+				for (oy = -1; oy <= 1; oy++)
+				{
+					long key = (((cx + ox) & 0xFFFF) << 16) | ((cy + oy) & 0xFFFF);
+
+					for (k = 0; k < used && seen[k] != key; k++)
+						;
+					if (k < used)
+						continue;
+					if (used < PSP_CI_SEEN)
+						seen[used++] = key;
+					n[1]++;
+					for (k = psp_ci_head[psp_ci_hash(layer, cx + ox, cy + oy)]; k >= 0; k = psp_ci[k].next)
+					{
+						n[2]++;
+						if (psp_ci[k].layer == layer && psp_ci[k].cx == cx + ox && psp_ci[k].cy == cy + oy)
+							n[3]++;
+					}
+				}
+			if (cx == ex && cy == ey)
+				break;
+			if (tx < ty)
+			{
+				tx += ddx;
+				cx += sx;
+			}
+			else
+			{
+				ty += ddy;
+				cy += sy;
+			}
+		}
+		used = 0;
+	}
+}
 void psp_ci_ray_query(real_point3d const *p, real_vector3d const *v)
 {
 	if (!psp_ci_live())
 		return;
 	psp_ci_window_check();
+#if PSP_CI_RAYSTEP
+	{
+		unsigned long *n = psp_ci_cen[2];
+		real reach = MAX(v->i < 0 ? -v->i : v->i, v->j < 0 ? -v->j : v->j), top = 0.5f;
+		short k;
+		int j;
+
+		for (j = 0; j < 8 && reach > top; j++)
+			top *= 2.0f;
+		psp_ci_reach[2][j]++;
+		n[0]++;
+		psp_ci_ray_cells(n, p->x, p->y, p->x + v->i, p->y + v->j);
+		for (k = psp_ci_large; k >= 0; k = psp_ci[k].next)
+			n[4]++;
+	}
+#else
 	psp_ci_query(2, MIN(p->x, p->x + v->i), MAX(p->x, p->x + v->i), MIN(p->y, p->y + v->j), MAX(p->y, p->y + v->j));
+#endif
 }
 int psp_ci_ray_pass(long object_index, real_point3d const *p, real_vector3d const *v)
 {
 	if (psp_ci_on > 0 && !psp_work_on_me())
+	{
+#if PSP_CI_RAYSTEP
+		/* covered when the ray crosses the 3x3 block of cells around the object's own */
+		short k = (short)DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index);
+		struct object_datum const *object = object_get(object_index);
+		unsigned long *n = psp_ci_cen[2];
+		struct psp_ci_entry const *e;
+
+		n[5]++;
+		if (k < 0 || k >= MAXIMUM_OBJECTS_PER_MAP || !psp_ci[k].in)
+		{
+			n[6]++;
+			return 1;
+		}
+		e = &psp_ci[k];
+		if (!e->large)
+		{
+			real size = psp_ci_size(e->layer);
+
+			if (!psp_ci_seg_hits_box(p->x, p->y, p->x + v->i, p->y + v->j, (real)(e->cx - 1) * size, (real)(e->cy - 1) * size,
+				(real)(e->cx + 2) * size, (real)(e->cy + 2) * size))
+				n[6]++;
+		}
+		if (memcmp(&e->c, &object->object.root->bounding_sphere_center, sizeof(e->c)) || e->r != object->object.root->bounding_sphere_radius)
+			n[7]++;
+#else
 		psp_ci_bounds(2, object_index, MIN(p->x, p->x + v->i), MAX(p->x, p->x + v->i), MIN(p->y, p->y + v->j), MAX(p->y, p->y + v->j));
+#endif
+	}
 	return 1;
 }
 """
@@ -63444,7 +63587,7 @@ def collindex_cut(tree):
             return text
         i = text.index(old, start, end)
         return text[:i] + new + text[i + len(old):]
-    o = one(o, "static void tick2_cs_all(void)\n{\n", CI_CODE.replace("@CELL@", repr(COLLINDEX_CELL)).replace("@LAYERS@", str(COLLINDEX_LAYERS)) + "static void tick2_cs_all(void)\n{\n", "the stamps' head")
+    o = one(o, "static void tick2_cs_all(void)\n{\n", CI_CODE.replace("@CELL@", repr(COLLINDEX_CELL)).replace("@LAYERS@", str(COLLINDEX_LAYERS)).replace("@RAYSTEP@", "1" if COLLINDEX_RAYSTEP else "0") + "static void tick2_cs_all(void)\n{\n", "the stamps' head")
     for old, new, what in (
         ("\ttick2_cs_stamp_list(tick2_cs_held.clusters, tick2_cs_held.count, tick2_cs_held.object_index);\n\ttick2_cs_held.object_index = NONE;\n\ttick2_cs_counts[3]++;\n",
          "\tif (psp_ci_on > 0)\n\t\tpsp_ci_remove(tick2_cs_held.object_index); /* PSP_COLLINDEX */\n"
