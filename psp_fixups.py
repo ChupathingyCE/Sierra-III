@@ -62519,9 +62519,10 @@ static void tick2_proof_span_check(void)
     print("psp_fixups: TICK2 biped: crouch's 14 touches through BIPED line 1")
     tail2 = "|".join(f for _, f in TICK2_BIP2_FIELDS)
     tail3 = "|".join(f for _, f in TICK2_BIP3_FIELDS)
-    tail_touch = re.compile(r"\b([A-Za-z_]\w*(?:\([^()]*\))?)->biped\.(%s|%s)\b" % (tail2, tail3))
+    tail_touch = re.compile(r"(\(\(struct \w+ \*\)[A-Za-z_]\w*\)|\b[A-Za-z_]\w*(?:\([^()]*\))?)->biped\.(%s|%s)\b" % (tail2, tail3))
     tail_window = re.compile(r"PSP_BMSW?\((\w+), biped\.(%s|%s)((?:\.\w+)*)\)" % (tail2, tail3))
-    tail_left = re.compile(r"(?<![\w>])biped\.(%s|%s)\b" % (tail2, tail3))
+    # anything left: a touch in any form, or a raw range over the moved fields (tick2l23build1's compile found both)
+    tail_left = re.compile(r"\bbiped\.(%s|%s)\b|_biped_datum, (?:%s|%s)\b" % (tail2, tail3, tail2, tail3))
     bip3_names = set(f for _, f in TICK2_BIP3_FIELDS)
     def tail_line(f):
         return "bip3" if f in bip3_names else "bip2"
@@ -62532,8 +62533,27 @@ static void tick2_proof_span_check(void)
                 continue
             tpath = os.path.join(root, fname)
             text = open(tpath, errors="surrogateescape").read()
+            # a field's type taken through a null datum (FIXES_AIME's held values): the record's own struct type
+            text, n0 = re.subn(r"\(\(struct biped_datum \*\)0\)->biped\.(%s|%s)\b" % (tail2, tail3),
+                               lambda m: "((struct tick2_unit_%s *)0)->%s" % (tail_line(m.group(1)), m.group(1)), text)
             text, n1 = tail_touch.subn(lambda m: "(*tick2_unit_%s_of(%s->object.root)).%s" % (tail_line(m.group(2)), m.group(1), m.group(2)), text)
+            n1 += n0
             text, n2 = tail_window.subn(lambda m: "(*tick2_unit_%s_of(%s->object.root)).%s%s" % (tail_line(m.group(2)), m.group(1), m.group(2), m.group(3)), text)
+            # FIXES_WAKE's byte range over the pathfinding fields: the same four, in the same order, in line 3's record
+            if fname == "bipeds.c":
+                wake = (("offsetof(struct _biped_datum, pathfinding_surface_index)", "offsetof(struct tick2_unit_bip3, pathfinding_surface_index)"),
+                        ("offsetof(struct _biped_datum, last_pathfinding_surface_index)", "offsetof(struct tick2_unit_bip3, last_pathfinding_surface_index)"))
+                for old, new in wake:
+                    if text.count(old) != 1:
+                        check_fail("psp_fixups: TICK2 biped: the wake's range (%s) matches %d times" % (old, text.count(old)))
+                        return 0
+                    text = text.replace(old, new)
+                base = "(unsigned char *)&biped->biped + first"
+                if text.count(base) != 2:
+                    check_fail("psp_fixups: TICK2 biped: the wake's base matches %d times, not 2" % text.count(base))
+                    return 0
+                text = text.replace(base, "(unsigned char *)tick2_unit_bip3_of(biped->object.root) + first")
+                n2 += 1
             stray = tail_left.findall(text)
             if stray:
                 check_fail("psp_fixups: TICK2 biped: lines 2-3 touches left in %s (%s)" % (tpath, ", ".join(sorted(set(stray)))))
