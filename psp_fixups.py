@@ -63263,6 +63263,11 @@ TICK2_BIP2_FIELDS = (("char", "landing_recovery_counter"), ("char", "landing_rec
     ("real_plane3d", "ground_plane"), ("byte", "limp_body_current_relaxation_iterations"), ("byte", "limp_body_max_relaxation_iterations"))
 TICK2_BIP3_FIELDS = (("long", "pathfinding_surface_index"), ("real_point3d", "pathfinding_point"), ("long", "last_pathfinding_attempt_time"),
     ("long", "last_pathfinding_surface_index"), ("long", "impact_target_object_index"), ("long", "last_falling_communication_time"))
+# a census switch for finding a parting (tick2l23 parted from old): PSP_TICK2_TAIL=<field>,<field> moves only those of
+# lines 2-3's fields into the records (the rest stay in the datum, the records' copies unused); unset, all of them
+TICK2_TAIL_MOVE = set(w for w in os.environ.get("PSP_TICK2_TAIL", "").split(",") if w) or None
+def tick2_tail(fields):
+    return tuple(f for f in fields if TICK2_TAIL_MOVE is None or f[1] in TICK2_TAIL_MOVE)
 def tick2_span_cut(tree):
     if not TICK2_BIPED:
         return 0
@@ -63458,7 +63463,7 @@ static void tick2_proof_span_check(void)
         check_fail("psp_fixups: TICK2 biped: _biped_datum's crouch matches %d times" % bh.count(crouch_line))
         return 0
     bh = bh.replace(crouch_line, "\tshort landing;\n" + ("\tunsigned char tick2_proof_crouch[4] __attribute__((aligned(4))); /* TICK2 proof */\n" if TICK2_PROOF else "") + "\treal bank;\n")
-    for ty, f in TICK2_BIP2_FIELDS + TICK2_BIP3_FIELDS:
+    for ty, f in tick2_tail(TICK2_BIP2_FIELDS + TICK2_BIP3_FIELDS):
         decl = "\t%s %s;\n" % (ty, f)
         if bh.count(decl) != 1:
             check_fail("psp_fixups: TICK2 biped: _biped_datum's %s matches %d times" % (f, bh.count(decl)))
@@ -63490,14 +63495,14 @@ static void tick2_proof_span_check(void)
         bc += "\n/* TICK2 proof: the biped's old crouch bytes patterned at its making (objects.c calls it) */\n" \
               "void tick2_proof_crouch_fill(void *datum)\n{\n\tmemset(((struct biped_datum *)datum)->biped.tick2_proof_crouch, %d, 4);\n" % TICK2_PROOF_BYTE + \
               "".join("\tmemset(&((struct biped_datum *)datum)->biped.tick2_old_%s, %d, sizeof(((struct biped_datum *)datum)->biped.tick2_old_%s));\n"
-                      % (f, TICK2_PROOF_BYTE, f) for _, f in TICK2_BIP2_FIELDS + TICK2_BIP3_FIELDS) + "}\n"
+                      % (f, TICK2_PROOF_BYTE, f) for _, f in tick2_tail(TICK2_BIP2_FIELDS + TICK2_BIP3_FIELDS)) + "}\n"
         if not CHECK_ONLY:
             open(path, "w", errors="surrogateescape").write(bc)
         if not CHECK_ONLY:
             open(objects_c, "w", errors="surrogateescape").write(oc)
     print("psp_fixups: TICK2 biped: crouch's 14 touches through BIPED line 1")
-    tail2 = "|".join(f for _, f in TICK2_BIP2_FIELDS)
-    tail3 = "|".join(f for _, f in TICK2_BIP3_FIELDS)
+    tail2 = "|".join(f for _, f in tick2_tail(TICK2_BIP2_FIELDS)) or "tick2_none"
+    tail3 = "|".join(f for _, f in tick2_tail(TICK2_BIP3_FIELDS)) or "tick2_none"
     tail_touch = re.compile(r"(\(\(struct \w+ \*\)[A-Za-z_]\w*\)|\b[A-Za-z_]\w*(?:\([^()]*\))?)->biped\.(%s|%s)\b" % (tail2, tail3))
     tail_window = re.compile(r"PSP_BMSW?\((\w+), biped\.(%s|%s)((?:\.\w+)*)\)" % (tail2, tail3))
     # anything left: a touch in any form, or a raw range over the moved fields (tick2l23build1's compile found both)
@@ -63519,7 +63524,7 @@ static void tick2_proof_span_check(void)
             n1 += n0
             text, n2 = tail_window.subn(lambda m: "(*tick2_unit_%s_of(%s->object.root)).%s%s" % (tail_line(m.group(2)), m.group(1), m.group(2), m.group(3)), text)
             # FIXES_WAKE's byte range over the pathfinding fields: the same four, in the same order, in line 3's record
-            if fname == "bipeds.c":
+            if fname == "bipeds.c" and "pathfinding_surface_index" in tail3.split("|"):
                 wake = (("offsetof(struct _biped_datum, pathfinding_surface_index)", "offsetof(struct tick2_unit_bip3, pathfinding_surface_index)"),
                         ("offsetof(struct _biped_datum, last_pathfinding_surface_index)", "offsetof(struct tick2_unit_bip3, last_pathfinding_surface_index)"))
                 for old, new in wake:
