@@ -61501,6 +61501,155 @@ def tick2_hoist_cut(tree):
     return 1
 tick2_hoist_cut(TREE)
 
+# PSP_MOTIONCROSS=1 (a census build; lab tick_store_biped_plan.md, "The motion pass", M2): would the biped solve
+# split at the move? Part 1 of a staged biped's solve runs from its resume at the move to biped_update_moving's
+# return; part 2 is the rest (the landing and airborne states, melee, footsteps, discard, the animation tail, and
+# object_update's own tail). Splitting runs every part 1 before every part 2, so a part 2 of biped j and a part 1
+# of a later biped k swap order. The census marks every object a part touches through the object getters (and each
+# biped's own datum by both its parts) and counts, per tick, the objects some j's part 2 and some later k's part 1
+# both touched: a read or a write each, so 0 is safe and more is a list to refine. A line every 300 ticks.
+MOTIONCROSS = os.environ.get("PSP_MOTIONCROSS", "") == "1"
+MOTIONCROSS_CODE = r"""
+/* PSP_MOTIONCROSS (tick_store_biped_plan.md, the motion pass): the solve's two parts' touches, per object a tick */
+#define PSP_MC_OBJECTS 2048
+static short psp_mc_k = -1, psp_mc_part = 0;
+static long psp_mc_self = -1;
+static short psp_mc_min2[PSP_MC_OBJECTS], psp_mc_max1[PSP_MC_OBJECTS];
+static unsigned short psp_mc_stamp[PSP_MC_OBJECTS], psp_mc_tick = 1;
+static long psp_mc_list[PSP_MC_OBJECTS];
+static short psp_mc_listed;
+static unsigned long psp_mc_ticks, psp_mc_cross_ticks, psp_mc_cross, psp_mc_cross_self, psp_mc_by_type[16], psp_mc_touches[3];
+static void psp_mc_mark(long object_index, int part)
+{
+	long at = object_index & 0xFFFF;
+
+	if (at >= PSP_MC_OBJECTS)
+		return;
+	if (psp_mc_stamp[at] != psp_mc_tick)
+	{
+		psp_mc_stamp[at] = psp_mc_tick;
+		psp_mc_min2[at] = 0x7FFF;
+		psp_mc_max1[at] = -1;
+		if (psp_mc_listed < PSP_MC_OBJECTS)
+			psp_mc_list[psp_mc_listed++] = object_index;
+	}
+	if (part == 1 && psp_mc_k > psp_mc_max1[at])
+		psp_mc_max1[at] = psp_mc_k;
+	if (part == 2 && psp_mc_k < psp_mc_min2[at])
+		psp_mc_min2[at] = psp_mc_k;
+}
+long psp_mc_touch(long object_index)
+{
+	if (psp_mc_k >= 0 && psp_bipedstage_phase == 4 && object_index != NONE && object_index != psp_mc_self)
+	{
+		psp_mc_touches[psp_mc_part]++;
+		psp_mc_mark(object_index, psp_mc_part);
+	}
+	return object_index;
+}
+static void psp_mc_begin(short k, long biped_index)
+{
+	psp_mc_k = k;
+	psp_mc_part = 1;
+	psp_mc_self = biped_index;
+	psp_mc_mark(biped_index, 1);
+}
+void psp_mc_part2(void)
+{
+	if (psp_mc_k >= 0 && psp_bipedstage_phase == 4 && psp_mc_part == 1)
+	{
+		psp_mc_part = 2;
+		psp_mc_mark(psp_mc_self, 2);
+	}
+}
+void platform_psp_log(const char *format, ...);
+static void psp_mc_end(void)
+{
+	short n;
+	unsigned long crossed = 0;
+
+	psp_mc_k = -1;
+	psp_mc_part = 0;
+	psp_mc_self = -1;
+	for (n = 0; n < psp_mc_listed; n++)
+	{
+		long at = psp_mc_list[n] & 0xFFFF;
+
+		if (psp_mc_min2[at] < psp_mc_max1[at])
+		{
+			struct object_header_datum *header = (struct object_header_datum *)datum_try_and_get(object_header_data, psp_mc_list[n]);
+
+			crossed++;
+			if (header && header->type == _object_type_biped)
+				psp_mc_cross_self++;
+			psp_mc_by_type[header ? header->type & 15 : 15]++;
+		}
+	}
+	psp_mc_listed = 0;
+	if (++psp_mc_tick == 0)
+		psp_mc_tick = 1;
+	psp_mc_ticks++;
+	psp_mc_cross += crossed;
+	if (crossed)
+		psp_mc_cross_ticks++;
+	if (psp_mc_ticks % 300 == 0)
+	{
+		platform_psp_log("motioncross: %lu ticks; ticks with a crossing %lu, objects crossing %lu (bipeds %lu; by type 0-11: %lu %lu %lu %lu %lu %lu %lu %lu %lu %lu %lu %lu); touches part 1 %lu, part 2 %lu",
+			psp_mc_ticks, psp_mc_cross_ticks, psp_mc_cross, psp_mc_cross_self,
+			psp_mc_by_type[0], psp_mc_by_type[1], psp_mc_by_type[2], psp_mc_by_type[3], psp_mc_by_type[4], psp_mc_by_type[5],
+			psp_mc_by_type[6], psp_mc_by_type[7], psp_mc_by_type[8], psp_mc_by_type[9], psp_mc_by_type[10], psp_mc_by_type[11],
+			psp_mc_touches[1], psp_mc_touches[2]);
+	}
+}
+"""
+def motioncross_cut(tree):
+    if not MOTIONCROSS:
+        return 0
+    objects_c = os.path.join(tree, "source/objects/objects.c")
+    objects_h = os.path.join(tree, "source/objects/objects.h")
+    bipeds_c = os.path.join(tree, "source/units/bipeds.c")
+    c = open(objects_c, errors="surrogateescape").read()
+    h = open(objects_h, errors="surrogateescape").read()
+    b = open(bipeds_c, errors="surrogateescape").read()
+    names = ("object_get_and_verify_type", "object_try_and_get_and_verify_type", "psp_object_get_all")
+    end = "\n#endif // __OBJECTS_H"
+    if h.count(end) != 1:
+        check_fail("psp_fixups: PSP_MOTIONCROSS: objects.h's end matches %d times" % h.count(end))
+        return 0
+    h = h.replace(end, "\n/* PSP_MOTIONCROSS: every getter's object counted by the motion census (objects.c) */\nlong psp_mc_touch(long object_index);\n" +
+        "".join("#define %s(i, ...) %s(psp_mc_touch(i), ##__VA_ARGS__)\n" % (n, n) for n in names) + end)
+    for n in names:
+        # the definitions and the prototypes in objects.c, by the parenthesized name, so the macro leaves them alone
+        hits = len(re.findall(r"(?m)^void \*%s\(" % n, c))
+        if hits < 1:
+            check_fail("psp_fixups: PSP_MOTIONCROSS: %s's definition not found" % n)
+            return 0
+        c = re.sub(r"(?m)^void \*%s\(" % n, "void *(%s)(" % n, c)
+    for old, new in [
+        ("static short psp_bipedstage_absolute[PSP_BIPEDSTAGE_MAXIMUM];\n",
+         "static short psp_bipedstage_absolute[PSP_BIPEDSTAGE_MAXIMUM];\n" + MOTIONCROSS_CODE),
+        ("\t\t\tpsp_bipedstage_phase = psp_bs3_on ? 4 : ",
+         "\t\t\tif (psp_bs3_on)\n\t\t\t\tpsp_mc_begin(k, psp_bipedstage_index[k]); /* PSP_MOTIONCROSS */\n\t\t\tpsp_bipedstage_phase = psp_bs3_on ? 4 : "),
+        ("\t/* BIPEDMOVE 1c: a kept record whose solve didn't resume it written back */\n",
+         "\tpsp_mc_end(); /* PSP_MOTIONCROSS */\n\t/* BIPEDMOVE 1c: a kept record whose solve didn't resume it written back */\n"),
+    ]:
+        if c.count(old) != 1:
+            check_fail("psp_fixups: PSP_MOTIONCROSS: %r matches %d times" % (old[:50], c.count(old)))
+            return 0
+        c = c.replace(old, new)
+    old = "\t\tbiped_update_moving(biped_index, &animation, psp_held_biped, psp_held_definition);\n"
+    if b.count(old) != 1:
+        check_fail("psp_fixups: PSP_MOTIONCROSS: biped_update_moving's call matches %d times" % b.count(old))
+        return 0
+    b = b.replace(old, old + "\t\t{ extern void psp_mc_part2(void); psp_mc_part2(); } /* PSP_MOTIONCROSS: the solve's part 2 from here */\n")
+    if not CHECK_ONLY:
+        open(objects_c, "w", errors="surrogateescape").write(c)
+        open(objects_h, "w", errors="surrogateescape").write(h)
+        open(bipeds_c, "w", errors="surrogateescape").write(b)
+    print("psp_fixups: PSP_MOTIONCROSS: the motion census (the solve's two parts' touches)")
+    return 1
+motioncross_cut(TREE)
+
 
 # PSP_POSECENSUS=1 (the lead 2026-11-23 21:2x: the parting census for c20's posing-pass shift): every node and marker
 # getter read is hashed by its call site (file and line) into a per-tick sum, the object's datum index with what the
