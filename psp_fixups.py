@@ -60847,6 +60847,8 @@ static long tick2_pp_count;
 static unsigned char tick2_pp_skip[MAXIMUM_OBJECTS_PER_MAP / 8 + 1]; /* psp_pose_half_skips' answer, from phase 1, a bit an object */
 static unsigned char tick2_pp_dead[MAXIMUM_OBJECTS_PER_MAP / 8 + 1]; /* deleted in phase 1: no tail, even if its slot is reused that tick */
 static unsigned long tick2_pp_early; /* touchorder: roots whose tail ran at a touch, ahead of phase 2 */
+static unsigned char tick2_pp_touched[MAXIMUM_OBJECTS_PER_MAP / 8 + 1]; /* posed on touch this tick */
+static unsigned char tick2_pp_seen[MAXIMUM_OBJECTS_PER_MAP / 8 + 1]; /* listed this tick: the biped stage updates its bipeds in more than one pass */
 static boolean object_update(long object_index);
 /* the old-order rule (spec section 33; the lead 2026-11-23 22:3x; "touchorder"): a phase-1 read of another object's
 pose (a touch or a getter) gives old's answer by its loop order. If phase 1 has already reached the object's root, old
@@ -60872,8 +60874,6 @@ static void tick2_pp_old_order(long object_index)
 	tick2_pp_dead[at >> 3] |= (unsigned char)(1 << (at & 7)); /* its tail is done: phase 2 skips it */
 	tick2_pp_early++;
 }
-static unsigned char tick2_pp_touched[MAXIMUM_OBJECTS_PER_MAP / 8 + 1]; /* posed on touch this tick */
-static unsigned char tick2_pp_seen[MAXIMUM_OBJECTS_PER_MAP / 8 + 1]; /* listed this tick: the biped stage updates its bipeds in more than one pass */
 #define TICK2_PP_ELEVATORS 64
 static struct { long object_index; real_point3d sample; } tick2_pp_elev[TICK2_PP_ELEVATORS];
 static long tick2_pp_elev_count;
