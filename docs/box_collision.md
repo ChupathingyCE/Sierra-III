@@ -72,6 +72,7 @@ Alone, against a capture of its queries over a pad bench (each query's arguments
 - 2026-11-11: spec started, from `collision.md` (its [M] rows checked) and the world store's map.
 - 2026-11-15: the askers counted (§1; askcensus1): 38 askers, 96-144 calls a tick, the ME's jobs as many as the tick.
 - 2026-11-19: the ME's half of the pill sweep designed (§11) and its slice 1 built (`PSP_SWEEPME=1`): the level's half of the staged bipeds' gathers on the ME, exact.
+- 2026-11-24: the objects' index designed (§12; builder2, for the lead), from bpcount1's count of the broad phase's walk (~2,100 objects a tick on b30, c20 and a30, rays the largest share).
 
 ## 11. The ME's half of the pill sweep (2026-11-19)
 
@@ -131,6 +132,55 @@ The ME box review of the tock's sweep (the lab's `coord/reviews/box-sweepme_cd1c
 - **Q1, fixed** [D]: `sweepme_me_planes` (`psp_sweepme.c`), the level's plane array the ME's half last refreshed its cache for, is written only on the ME (at a BSP switch) but sat in plain .bss beside main-CPU words written every gather (`psp_sweepme_check`, `psp_sweepme_on`, `psp_sweepme_pending`). A line holding both would let either CPU's write-back put back a stale copy of the other's word: a missed cache refresh after a BSP switch, or a lost `pending`. It now carries `PSP_AIME_ME_SIDE` (the ME's own 64-byte lines, `psp_me.h`). Layout-dependent and rare, so no run shows it; play and both seeds can't move, as no value changes.
 - **D6/Q2, noted** [D]: the record's leaf copy loops `i < leaf_count && i <= PSP_SWEEPME_LEAVES`, one past the record's 64 leaves when a walk finds more. The read stays inside the walk's own 256-entry list and the record is then refused (`SWEEPME_LEAVES`), so nothing plays differently; the bound should be `<`, checked against `leaf_count` first, when the record is next touched.
 - **D7, noted** [D]: the record function runs under the ring's 4 KB job-stack allowance (`RING_JOB_STACK_BYTES`), and the sentinel is read at the next ring job, not at the batch's end. A deeper path through `box_sweep` (the recursion in `sphere3d`) could pass it and be reported as `RING_STACK` late. No run has reached it; the stack's depth on the PSP is the evidence to get when the record grows.
+
+## 12. The objects' index (builder2, 2026-11-24, design before code; the lead 12:1x)
+
+**Why:** the objects' half of every query walks the engine's cluster lists, and a cluster holds every collideable object in it however far from the query. Counted (the lab's bpcount1, sierra-batch 45454727059 [E]; its findings rows): the broad phase meets **~2,100 objects a tick on b30, c20 and a30** (793 on d20). **Rays are the largest share** (b30 1,246, c20 942, a30 1,351), then biped motion's pill gathers (b30 653, of which 22.6 pass the packed broad phase, 3.5%; c20 1,156, 5.5%). a30's clusters hold 59-74 objects each. The same coarseness made the sweep reuse's cluster stamp too blunt (stampcen2: 0.7% of b30's repeats passed against the walk's 97%) and sets what its reach guard tests a change against (reachcen1: 376 watcher tests a tick on b30, 2,300 on c20). These are old-layer losses (the lab's REBUILD §10, #2 and the stampcen2 row): the index is the part that removes them.
+
+**What it is:** a spatial index of the collideable objects, kept by the service and patched where an object really changes. It answers every query's objects' half ("which objects may touch this sphere / this segment") and nothing else. The level's half (the BSP walks) stays as §2-§5 have it. The engine's cluster partition stays too: perception, visibility, the drawing and the lights still walk it (`actor_perception.c`, `structure_visibility.c`, `render_objects.c`), so the index lives beside it, written at the same sites.
+
+### 12.1 Contract
+
+- **Reads:** each collideable root object's bounding sphere (the world store's ROOT record), and at query time only, for the candidates the index returns, the flags the queries' filters read (collision model, invisible, no collisions, a dead biped).
+- **Writes:** its own cells only, at the change sites the stamps found (the lab's `tick_store_biped_plan.md`, "The stamps, read against the code"): a reconnect whose position, sphere or clusters differ from its disconnect's; a new object's connect; a deleted or newly attached object's disconnect; a pose that writes a different bounding sphere (every pose passes `object_compute_node_matrices_with`). On b30 that is ~26 changes a tick, on c20 ~94 (reachcen1's counts) [E]. An unchanged reconnect, which biped motion makes for every awake biped every tick, writes nothing.
+- **Who asks:** every walk bpcount1 counted: `collision_test_point`, `collision_test_vector`, `psp_collision_test_vector_quiet`, `collision_get_features_in_sphere` and `psp_vehprobe_reach_empty`. They take the index's candidates in place of the cluster walk, then filter and test as today.
+- **When:** written in the serial phase on the main CPU. A change made on the ME (point physics' ME entry) can't write main-RAM cells safely, so it is queued: a small uncached ring of (object, old sphere, new sphere) the main CPU applies at the next query or the phase's end. The stamps today mark "everything changed" instead, so how many ME changes a tick there are is an open count (12.6, item 3). Queries read only (per-query marks, §5 C), so the parallel form's queries can read the index on either core against a world that isn't moving.
+
+### 12.2 Data
+
+- **A loose grid in x and y** (the levels are mostly horizontal; z is the query's own test). An object lives in the one cell its sphere's center falls in. A query visits every cell within its radius plus the cell layer's largest object radius, so a move inside a cell rewrites only the object's sphere in place (no list change), and a move across cells is one unlink and one link.
+- **Two layers by radius:** objects up to half a cell's size in the grid; larger ones (vehicles' and scenery's big spheres) in a short list every query tests. The split keeps a cell's loose margin small. The cell size comes from the census (12.5 step 1), not from a guess.
+- **Hashed, not a full grid:** cells by (cx, cy) hashed into a fixed table (1,024 buckets [U], one 4 B head each), so the memory doesn't depend on the level's extent. A bucket collision only adds candidates the filter then drops; it never loses one.
+- **Each entry 20 B, packed for the query's read:** the sphere (center, radius: 16 B, the walk's packed copy `psp_object_spheres` today), the object's 2 B absolute index, a 2 B next link. At the store's peak of ~1,121 objects a map (the lab's spec §23) that is ~22 KB, plus 4 KB of heads. It replaces `psp_object_spheres` (the broad phase's copy, ~18 KB at that peak), so the heap's net is ~+8 KB [U, before the census sizes the table]. That is a cost the lab's heap rule asks to be paid from what the store frees, per map.
+- **Order:** a cell's list is in insertion order. The cluster walk's order (leaves, then each cluster's reference list, most recently connected first) isn't kept: 12.4 says why that matters and how it's proven.
+
+### 12.3 Means
+
+- **Work on change** (§5 B): the index is patched on the ~26-94 real changes a tick, never rebuilt per query (Form B's lesson, §8: blocks rebuilt for the level cost ~1 ms each).
+- **A smaller working set** (§5 A): a query reads a few cells' packed spheres instead of every object in its clusters. For b30's pill gathers, it meets roughly the objects in reach plus a cell's margin, against 653 a tick now [U until the census counts it].
+- **It serves the reuse:** the sweep reuse's reach guard watches cells in place of clusters, so a change tests only the answers kept near it (c20's 2,300 watcher tests a tick fall with the cell size [U]).
+
+### 12.4 Proof
+
+- **Exactness hangs on order.** The answers' feature lists are built in the order the objects are visited. If the solve's result depends on that order (the pill's plane order, the first hit at equal distances), an index visiting them differently isn't bit-exact. Then the serial form is "plays the same" within the multiplayer boundary, proven by play and the outcome census, and the multiplayer boundary's hit reports stay true (the client picks the region it saw hit). Whether order matters is measured, not assumed (12.5 step 2).
+- **No object lost, by construction and by check:** every object the cluster walk would pass to the filter must be among the index's candidates. The shadow build (12.5 step 1) checks that on every query and counts any miss. One miss is a bug, not a tolerance.
+
+### 12.5 Steps
+
+1. **Shadow index and census** (emulator; `PSP_COLLINDEX=1`, keep word `collindexshadow`): the index built and patched beside the cluster lists, answering nothing. On every query it counts candidates, cells visited and the superset check's misses, against the walk's objects met and passed (bpcount's sites), plus histograms of query radius and object radius by layer. Exact by construction (play and seeds identical to off). It sets the cell size and the layer split. b30, c20, d20, a30.
+2. **Order, measured:** a build that sorts the cluster walk's objects by absolute index, against the walk as it is, play and seeds per tick. Identical: order doesn't matter on these stretches, and the index can return candidates sorted by absolute index and be exact. Parting: the serial form is plays-the-same, and the census comes with it.
+3. **Sphere gathers served from the index** (its switch on: biped pill gathers and the other sphere gathers), then **rays** (a segment stepped through the grid's cells, with the large layer tested once), then point tests and the vehicle probe. Each one proven alone against the walk, then together.
+4. **The PSP pair:** old-only against the index on, b30_leg2 and c20_leg2 on the 1000, one build where the heap holds both, with its own profile recount.
+
+### 12.6 Budget, and what's open
+
+- **Budget:** the objects' half within the box's v0 2.2 ms a tick (§4). The cluster walk's own time was never measured [U]; at a few tens of cycles an object met and ~2,100 met a tick, plus their misses, it is roughly 0.2-0.6 ms a tick on b30 [U]. The index's target is under 0.15 ms a tick on b30's window for queries and updates together, priced on the PSP at step 4. The reuse it enables (srreach1) is priced separately.
+- **Open:**
+  1. Cell size and layer split, from step 1's radii.
+  2. Whether the solve depends on visit order, from step 2.
+  3. How many changes a tick are made on the ME (the stamps' `tick2_cs_counts[4]`, never printed): it sizes 12.1's ring.
+  4. The filter's flags change without a change site (an object made invisible, a biped dying where it stands). The index doesn't need them, but the sweep reuse's reach guard does: count them before the guard leaves the census (reachcen1's 0 wrong says not on b30 and c20).
+  5. Rays as long as the AI's sight lines cross many empty cells. Step 1 counts cells a ray would visit. If long rays dominate, a coarser second grid for rays is the next form.
 
 ## Open
 
