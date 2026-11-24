@@ -185,6 +185,13 @@ The ME box review of the tock's sweep (the lab's `coord/reviews/box-sweepme_cd1c
 - **Against the walk** (the lab's CURRENT.md, the index's row): cell 2 reads below the walk's objects met on a30 and c20, and **above it on b30** (and d20 at cell 1). **Cause: rays**, queried by their 2D bounding box at every layer (this design's, not an old layer): a b30 ray reads ~2x a pill gather's entries, and a30's rays are mostly 8 to over 64 units wide. Cell 2 is also the largest size tried, so the minimum may lie past it.
 - **Next (asked of the lead):** rays stepped cell by cell through each layer (step 3's form, brought into the shadow), and base cells 2, 4 and 8, under the same rule.
 
+### 12.5c Step 1's answer (collindex3 to collindex5, the lab's sierra-batches 45472728021, 45475127541, 45481036948 [E]; builder2 2026-11-24 14:3x CST)
+
+- **Rays stepped cell by cell** (`PSP_COLLINDEX_RAYSTEP`): a ray visits, in each layer, the cells it crosses and the neighbours it passes within half a cell of (a layer's spheres lie within half a cell of their own cell). The first try took each cell's full 3x3 block and read more than the bounding box did (collindex3); the half-cell test fixed it.
+- **8,192 buckets** (`PSP_COLLINDEX_BUCKETS`, 16 KB of heads): at 1,024, 26-73% of the entries a query scanned belonged to other cells in the same bucket (collindex3).
+- **By the lead's rule, base cell 2** (6 layers: cells of 2 to 64 world units). It reads **18-64% of what the cluster walk meets** on b30, c20, a30 and d20 (the lab's CURRENT.md, the index's row), with **0 missed and 0 stale** at every size and map. Cells looked up a tick (one hash and one head load each) run ~1,200-2,500. They aren't in the rule's count, and step 4's PSP pair prices them with the rest.
+- **12.6's open items 1, 3, 4 and 5 are answered** for these stretches: cell size and layers above; no change made on the ME; no sphere written outside a change site (0 stale); long rays stepped.
+
 ### 12.6 Budget, and what's open
 
 - **Budget:** the objects' half within the box's v0 2.2 ms a tick (§4). The cluster walk's own time was never measured [U]; at a few tens of cycles an object met and ~2,100 met a tick, plus their misses, it is roughly 0.2-0.6 ms a tick on b30 [U]. The index's target is under 0.15 ms a tick on b30's window for queries and updates together, priced on the PSP at step 4. The reuse it enables (srreach1) is priced separately.
