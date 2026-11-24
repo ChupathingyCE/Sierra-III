@@ -62071,7 +62071,17 @@ void psp_sr_store(long biped_index, unsigned long flags, real_point3d const *pos
 		if (was->count != *count || memcmp(&was->clipped_position, clipped_position, sizeof(*clipped_position)) ||
 			memcmp(&was->clipped_velocity, clipped_velocity, sizeof(*clipped_velocity)) ||
 			(*count > 0 && memcmp(was->planes, collisions, *count * sizeof(*collisions))))
-			psp_sr_counts[5]++;
+		{
+			void platform_psp_log(const char *format, ...);
+
+			if (psp_sr_counts[5]++ < 8)
+				platform_psp_log("sweepreuse: wrong at tick %ld, biped %lx: count %d against %d; position %s, velocity %s, planes %s; clusters %d",
+					tick, (unsigned long)biped_index, (int)was->count, (int)*count,
+					memcmp(&was->clipped_position, clipped_position, sizeof(*clipped_position)) ? "differs" : "same",
+					memcmp(&was->clipped_velocity, clipped_velocity, sizeof(*clipped_velocity)) ? "differs" : "same",
+					was->count != *count ? "-" : (*count > 0 && memcmp(was->planes, collisions, *count * sizeof(*collisions))) ? "differ" : "same",
+					(int)was->cluster_count);
+		}
 	}
 	if (psp_sr_turn_now >= PSP_SR_TURNS)
 		return;
