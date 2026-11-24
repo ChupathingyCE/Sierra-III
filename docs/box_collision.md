@@ -192,6 +192,12 @@ The ME box review of the tock's sweep (the lab's `coord/reviews/box-sweepme_cd1c
 - **By the lead's rule, base cell 2** (6 layers: cells of 2 to 64 world units). It reads **18-64% of what the cluster walk meets** on b30, c20, a30 and d20 (the lab's CURRENT.md, the index's row), with **0 missed and 0 stale** at every size and map. Cells looked up a tick (one hash and one head load each) run ~1,200-2,500. They aren't in the rule's count, and step 4's PSP pair prices them with the rest.
 - **12.6's open items 1, 3, 4 and 5 are answered** for these stretches: cell size and layers above; no change made on the ME; no sphere written outside a change site (0 stale); long rays stepped.
 
+### 12.5d Step 2: visit order changes answers (collsort1, collsort1b, the lab's sierra-batches 45481544567, 45483254642 [E]; builder2 2026-11-24 14:4x CST)
+
+- With the objects' half taken in absolute-index order (`PSP_COLLSORT`, keep word `collsortwalk`) against the walk as it is, **play parts on c20 (from tick 2,511) and d20 (from tick 705)**. It is identical on b30, a30, a10 and d40, though a10 and d40 make too few queries to be a strong test.
+- **So the engine's answers depend on visit order**: features are listed in the order objects are met, and a ray keeps the first of equal hits. The served index is a **plays-the-same change** (12.4), proven by play and the outcome census on the combat legs inside the multiplayer boundary (the client's biped within the host's tolerance; hit reports true). Exactness would need the cluster lists' own order reproduced, which is an old layer's order, not a requirement (the lab's decisions.md 2026-11-24 10:36).
+- **Next, step 3:** the sphere gathers served from the index under a switch, candidates in the index's own order: play and the outcome census against the walk, then rays.
+
 ### 12.6 Budget, and what's open
 
 - **Budget:** the objects' half within the box's v0 2.2 ms a tick (§4). The cluster walk's own time was never measured [U]; at a few tens of cycles an object met and ~2,100 met a tick, plus their misses, it is roughly 0.2-0.6 ms a tick on b30 [U]. The index's target is under 0.15 ms a tick on b30's window for queries and updates together, priced on the PSP at step 4. The reuse it enables (srreach1) is priced separately.
