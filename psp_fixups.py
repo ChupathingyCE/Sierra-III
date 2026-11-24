@@ -63864,6 +63864,159 @@ def collindex_serve_cut(tree):
     return 1
 collindex_serve_cut(TREE)
 
+# PSP_COLLINDEX_SERVERAY=1 (the objects' index, step 3's rays: docs/box_collision.md section 12.5; needs
+# PSP_COLLINDEX_SERVE=1, whose entries carry the object's whole index; keep word "collindexserveray"): collision_test_vector
+# takes its objects from the index in place of the cluster lists. The candidates are the census's stepped ray (each layer's
+# cells the ray crosses, and a neighbour only where the ray passes within half a cell of it, deduped), then the large list;
+# they go through the walk's own sphere test, mark and object_test_vector, and the nearest hit wins as before, so only
+# ties and visit order can part (a plays-the-same change). The cluster walk still runs for its marks. On the ME, when the
+# index isn't live, past 256 candidates, 4,096 steps or 512 cells in a layer, the ray walks the clusters as before (counted).
+COLLINDEX_SERVERAY = os.environ.get("PSP_COLLINDEX_SERVERAY", "") == "1"
+SERVERAY_CODE = r"""
+/* PSP_COLLINDEX_SERVERAY (psp_fixups.py): the rays' objects from the index */
+static unsigned long psp_ci_rayserved[3]; /* rays served, objects handed, rays walked instead */
+int psp_ci_serveray_on(void)
+{
+	static int on = -1;
+
+	if (on < 0)
+	{
+		on = PSP_KEEP_ONCE("collindexserveray") ? 1 : 0;
+		if (on)
+			psp_ci_on = 1; /* the index kept at the change sites from the start */
+	}
+	return on && !psp_work_on_me();
+}
+static int psp_ci_ray_walk(void)
+{
+	psp_ci_rayserved[2]++;
+	return -1;
+}
+/* the objects a ray from p along v may reach, into out (psp_ci_ray_cells' cells): their count, or -1 to walk the clusters */
+int psp_ci_serve_ray(real_point3d const *p, real_vector3d const *v, long *out, int most)
+{
+	static long seen[PSP_CI_SEEN];
+	real x0 = p->x, y0 = p->y, x1 = p->x + v->i, y1 = p->y + v->j;
+	int layer, n = 0;
+	short e;
+
+	tick2_cs_settle_held(); /* a deleted object's entry leaves first */
+	if (!psp_ci_live())
+		return psp_ci_ray_walk();
+	for (layer = 0; layer < PSP_CI_LAYERS; layer++)
+	{
+		real size = psp_ci_size(layer);
+		long cx = psp_ci_cell_at(layer, x0), cy = psp_ci_cell_at(layer, y0);
+		long ex = psp_ci_cell_at(layer, x1), ey = psp_ci_cell_at(layer, y1);
+		long steps = (ex > cx ? ex - cx : cx - ex) + (ey > cy ? ey - cy : cy - ey) + 1, used = 0, s, j;
+		int sx = ex > cx ? 1 : -1, sy = ey > cy ? 1 : -1;
+		real dx = x1 - x0, dy = y1 - y0;
+		real tx = dx != 0.0f ? (((real)(cx + (sx > 0)) * size - x0) / dx) : 2.0f, ty = dy != 0.0f ? (((real)(cy + (sy > 0)) * size - y0) / dy) : 2.0f;
+		real ddx = dx != 0.0f ? size / (dx < 0 ? -dx : dx) : 2.0f, ddy = dy != 0.0f ? size / (dy < 0 ? -dy : dy) : 2.0f;
+
+		if (steps > 4096)
+			return psp_ci_ray_walk();
+		for (s = 0; s < steps; s++)
+		{
+			long ox, oy;
+
+			for (ox = -1; ox <= 1; ox++)
+				for (oy = -1; oy <= 1; oy++)
+				{
+					long key = (((cx + ox) & 0xFFFF) << 16) | ((cy + oy) & 0xFFFF);
+
+					if ((ox || oy) && !psp_ci_seg_hits_box(x0, y0, x1, y1, ((real)(cx + ox) - 0.5f) * size, ((real)(cy + oy) - 0.5f) * size,
+						((real)(cx + ox) + 1.5f) * size, ((real)(cy + oy) + 1.5f) * size))
+						continue;
+					for (j = 0; j < used && seen[j] != key; j++)
+						;
+					if (j < used)
+						continue;
+					if (used >= PSP_CI_SEEN)
+						return psp_ci_ray_walk();
+					seen[used++] = key;
+					for (e = psp_ci_head[psp_ci_hash(layer, cx + ox, cy + oy)]; e >= 0; e = psp_ci[e].next)
+						if (psp_ci[e].layer == layer && psp_ci[e].cx == cx + ox && psp_ci[e].cy == cy + oy)
+						{
+							if (n >= most)
+								return psp_ci_ray_walk();
+							out[n++] = psp_ci[e].index;
+						}
+				}
+			if (cx == ex && cy == ey)
+				break;
+			if (tx < ty)
+			{
+				tx += ddx;
+				cx += sx;
+			}
+			else
+			{
+				ty += ddy;
+				cy += sy;
+			}
+		}
+	}
+	for (e = psp_ci_large; e >= 0; e = psp_ci[e].next)
+	{
+		if (n >= most)
+			return psp_ci_ray_walk();
+		out[n++] = psp_ci[e].index;
+	}
+	psp_ci_rayserved[0]++;
+	psp_ci_rayserved[1] += n;
+	if ((psp_ci_rayserved[0] & 0x3FFF) == 0)
+		platform_psp_log("collindexserveray: rays served %lu, objects handed %lu, walked instead %lu",
+			psp_ci_rayserved[0], psp_ci_rayserved[1], psp_ci_rayserved[2]);
+	return n;
+}
+"""
+def collindex_serveray_cut(tree):
+    if not COLLINDEX_SERVERAY:
+        return 0
+    if not COLLINDEX_SERVE:
+        check_fail("psp_fixups: PSP_COLLINDEX_SERVERAY=1 needs PSP_COLLINDEX_SERVE=1 (and PSP_COLLINDEX=1)")
+        return 0
+    op = os.path.join(tree, "source/objects/objects.c")
+    cp = os.path.join(tree, "source/physics/collisions.c")
+    o = open(op, errors="surrogateescape").read()
+    c = open(cp, errors="surrogateescape").read()
+    def one(text, old, new, what, a=0, b=None):
+        b = len(text) if b is None else b
+        if text.count(old, a, b) != 1:
+            check_fail("psp_fixups: COLLINDEX_SERVERAY: %s matches %d times" % (what, text.count(old, a, b)))
+            return text
+        i = text.index(old, a, b)
+        return text[:i] + new + text[i + len(old):]
+    o = one(o, "\nvoid object_disconnect_from_map(\n\tlong object_index)\n{\n", "\n" + SERVERAY_CODE + "\nvoid object_disconnect_from_map(\n\tlong object_index)\n{\n", "the disconnect's head")
+    head = "\nboolean collision_test_vector(\n"
+    c = one(c, head, "\n/* PSP_COLLINDEX_SERVERAY: objects.c's index */\nint psp_ci_serveray_on(void);\nint psp_ci_serve_ray(real_point3d const *p, real_vector3d const *v, long *out, int most);\n" + head[1:], "the ray's head")
+    def span():
+        a = c.index(head); return a, c.index("\n}\n", a)
+    a, b = span()
+    c = one(c, "\t\t\tpsp_ci_ray_query(point, vector); /* PSP_COLLINDEX */\n",
+            "\t\t\tlong psp_cir_list[256]; /* PSP_COLLINDEX_SERVERAY */\n\t\t\tint psp_cir = psp_ci_serveray_on() ? psp_ci_serve_ray(point, vector, psp_cir_list, 256) : -1;\n\n"
+            "\t\t\tpsp_ci_ray_query(point, vector); /* PSP_COLLINDEX */\n", "the ray's query", a, b)
+    a, b = span()
+    c = one(c, "\t\t\t\t\tfor (object_index = cluster_get_first_collideable_object(&reference_index, cluster_index);\n\t\t\t\t\t\tobject_index != NONE;\n\t\t\t\t\t\tobject_index = psp_next_collideable(walk_inline, &reference_index))\n",
+            "\t\t\t\t\tif (psp_cir < 0) /* PSP_COLLINDEX_SERVERAY: the clusters' objects only when the index didn't answer */\n"
+            "\t\t\t\t\tfor (object_index = cluster_get_first_collideable_object(&reference_index, cluster_index);\n\t\t\t\t\t\tobject_index != NONE;\n\t\t\t\t\t\tobject_index = psp_next_collideable(walk_inline, &reference_index))\n", "the ray's object loop", a, b)
+    a, b = span()
+    served = ("\t\t\tif (psp_cir >= 0) /* PSP_COLLINDEX_SERVERAY: the index's objects, through the walk's own tests */\n\t\t\t{\n"
+              "\t\t\t\tboolean walk_inline = psp_objwalk_inline();\n\t\t\t\tint k;\n\n"
+              "\t\t\t\tfor (k = 0; k < psp_cir; k++)\n\t\t\t\t{\n\t\t\t\t\tlong object_index = psp_cir_list[k];\n\n"
+              "\t\t\t\t\tif (psp_sphere_may_cross(walk_inline, object_index, point, vector) &&\n"
+              "\t\t\t\t\t\tobject_mark_function(object_index) &&\n"
+              "\t\t\t\t\t\tobject_test_vector(object_index, flags, bsp_flags, point, vector, ignore_object_index, collision))\n"
+              "\t\t\t\t\t\thit = TRUE;\n\t\t\t\t}\n\t\t\t}\n")
+    c = one(c, "\t\t\tobject_marker_end();\n", served + "\t\t\tobject_marker_end();\n", "the ray's marker end", a, b)
+    if not CHECK_ONLY:
+        open(op, "w", errors="surrogateescape").write(o)
+        open(cp, "w", errors="surrogateescape").write(c)
+    print("psp_fixups: COLLINDEX_SERVERAY: the rays' objects from the index under keep word collindexserveray")
+    return 1
+collindex_serveray_cut(TREE)
+
 # PSP_BPCOUNT=1 (lane B part 3, the lab's tick_store_biped_plan.md "Old-layer losses"; keep word "bpcount"): collision's
 # broad-phase walks counted. Every walk over a cluster's collideable objects (collision_test_point,
 # collision_test_vector, psp_collision_test_vector_quiet, collision_get_features_in_sphere split into biped motion's
