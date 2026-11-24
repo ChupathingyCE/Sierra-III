@@ -62787,16 +62787,18 @@ sr_reach_cut(TREE)
 # A line a site each 300 ticks. The cell size is PSP_COLLINDEX_CELL (world units, default 2).
 COLLINDEX = os.environ.get("PSP_COLLINDEX", "") == "1"
 COLLINDEX_CELL = float(os.environ.get("PSP_COLLINDEX_CELL", "2"))
+COLLINDEX_LAYERS = int(os.environ.get("PSP_COLLINDEX_LAYERS", "6"))
 CI_CODE = r"""
 /* PSP_COLLINDEX (psp_fixups.py): the collision box's objects' index, in shadow (docs/box_collision.md section 12) */
 #define PSP_CI_CELL @CELL@f
 #define PSP_CI_BUCKETS 1024
+#define PSP_CI_LAYERS @LAYERS@ /* layer L: radii up to PSP_CI_CELL * 2^L / 2, in cells of PSP_CI_CELL * 2^L */
 struct psp_ci_entry
 {
 	real_point3d c;
 	real r;
 	short cx, cy, next;
-	unsigned char in, large;
+	unsigned char in, large, layer;
 };
 static struct psp_ci_entry psp_ci[MAXIMUM_OBJECTS_PER_MAP];
 static short psp_ci_head[PSP_CI_BUCKETS], psp_ci_large = -1;
@@ -62804,9 +62806,17 @@ static int psp_ci_on = -1, psp_ci_ready;
 unsigned long psp_ci_me_dirty;
 /* sets made, moves across cells, removes, rebuilds, rebuilds for the ME */
 unsigned long psp_ci_upd[5];
+static unsigned psp_ci_hash(int layer, long cx, long cy)
+{
+	return ((unsigned)(cx * 73856093) ^ (unsigned)(cy * 19349663) ^ (unsigned)(layer * 83492791)) & (PSP_CI_BUCKETS - 1);
+}
 static short *psp_ci_list(struct psp_ci_entry const *e)
 {
-	return e->large ? &psp_ci_large : &psp_ci_head[((unsigned)(e->cx * 73856093) ^ (unsigned)(e->cy * 19349663)) & (PSP_CI_BUCKETS - 1)];
+	return e->large ? &psp_ci_large : &psp_ci_head[psp_ci_hash(e->layer, e->cx, e->cy)];
+}
+static real psp_ci_size(int layer)
+{
+	return PSP_CI_CELL * (real)(1 << layer);
 }
 static void psp_ci_unlink(short k)
 {
@@ -62818,27 +62828,36 @@ static void psp_ci_unlink(short k)
 		*at = psp_ci[k].next;
 	psp_ci[k].in = 0;
 }
-static short psp_ci_cell(real v)
+static short psp_ci_cell_at(int layer, real v)
 {
-	real q = v / PSP_CI_CELL;
+	real q = v / psp_ci_size(layer);
 	long i = (long)q;
 
 	if ((real)i > q)
 		i--;
 	return (short)(i < -32000 ? -32000 : i > 32000 ? 32000 : i);
 }
+static int psp_ci_layer_of(real r)
+{
+	int layer = 0;
+
+	while (layer < PSP_CI_LAYERS && r > psp_ci_size(layer) * 0.5f)
+		layer++;
+	return layer; /* PSP_CI_LAYERS: the large list */
+}
 static void psp_ci_set(long object_index, real_point3d const *c, real r)
 {
 	short k = (short)DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index);
 	struct psp_ci_entry *e;
-	short cx = psp_ci_cell(c->x), cy = psp_ci_cell(c->y);
-	unsigned char large = r > PSP_CI_CELL * 0.5f;
+	int layer = psp_ci_layer_of(r);
+	unsigned char large = layer >= PSP_CI_LAYERS;
+	short cx = large ? 0 : psp_ci_cell_at(layer, c->x), cy = large ? 0 : psp_ci_cell_at(layer, c->y);
 
 	if (k < 0 || k >= MAXIMUM_OBJECTS_PER_MAP)
 		return;
 	e = &psp_ci[k];
 	psp_ci_upd[0]++;
-	if (e->in && e->large == large && (large || (e->cx == cx && e->cy == cy)))
+	if (e->in && e->large == large && (large || (e->layer == layer && e->cx == cx && e->cy == cy)))
 	{
 		e->c = *c;
 		e->r = r;
@@ -62854,6 +62873,7 @@ static void psp_ci_set(long object_index, real_point3d const *c, real r)
 	e->cx = cx;
 	e->cy = cy;
 	e->large = large;
+	e->layer = (unsigned char)layer;
 	e->next = *psp_ci_list(e);
 	*psp_ci_list(e) = k;
 	e->in = 1;
@@ -62917,6 +62937,7 @@ void psp_ci_forget(void)
 /* the census: by site (0 the biped pill gathers, 1 other sphere gathers, 2 rays) queries, cells visited, entries scanned,
 candidates (in the cells asked for), the large list's entries, the walk's passes checked, missed, stale */
 static unsigned long psp_ci_cen[3][8];
+static unsigned long psp_ci_reach[3][9]; /* queries by their width in x or y: a sphere's diameter, a ray's extent */
 static long psp_ci_window = -1;
 static void psp_ci_report(long tick)
 {
@@ -62929,8 +62950,34 @@ static void psp_ci_report(long tick)
 			psp_ci_cen[k][4], psp_ci_cen[k][5], psp_ci_cen[k][6], psp_ci_cen[k][7]);
 	platform_psp_log("collindex: cell %.1f ticks %ld-%ld updates: sets %lu, cell moves %lu, removes %lu, rebuilds %lu (for the ME %lu)",
 		PSP_CI_CELL, tick - 300, tick - 1, psp_ci_upd[0], psp_ci_upd[1], psp_ci_upd[2], psp_ci_upd[3], psp_ci_upd[4]);
+	{
+		/* the index as it stands: objects by layer, and by radius (bins up to 0.25, 0.5, 1, 2, 4, 8, 16, 32 world units, past 32) */
+		unsigned long layers[PSP_CI_LAYERS + 1] = { 0 }, bins[9] = { 0 };
+		char line[256];
+		int n = 0, j;
+
+		for (k = 0; k < MAXIMUM_OBJECTS_PER_MAP; k++)
+			if (psp_ci[k].in)
+			{
+				real r = psp_ci[k].r, top = 0.25f;
+
+				layers[psp_ci[k].large ? PSP_CI_LAYERS : psp_ci[k].layer]++;
+				for (j = 0; j < 8 && r > top; j++)
+					top *= 2.0f;
+				bins[j]++;
+			}
+		for (j = 0; j <= PSP_CI_LAYERS; j++)
+			n += snprintf(line + n, sizeof(line) - n, " %lu", layers[j]);
+		platform_psp_log("collindex: cell %.1f tick %ld: objects by layer (cells %.1f up, the large list last):%s; by radius (<=0.25 .5 1 2 4 8 16 32 >32): %lu %lu %lu %lu %lu %lu %lu %lu %lu",
+			PSP_CI_CELL, tick, PSP_CI_CELL, line, bins[0], bins[1], bins[2], bins[3], bins[4], bins[5], bins[6], bins[7], bins[8]);
+		for (k = 0; k < 3; k++)
+			platform_psp_log("collindex: cell %.1f ticks %ld-%ld %s: query width in x or y (<=0.5 1 2 4 8 16 32 64 >64): %lu %lu %lu %lu %lu %lu %lu %lu %lu",
+				PSP_CI_CELL, tick - 300, tick - 1, names[k], psp_ci_reach[k][0], psp_ci_reach[k][1], psp_ci_reach[k][2], psp_ci_reach[k][3],
+				psp_ci_reach[k][4], psp_ci_reach[k][5], psp_ci_reach[k][6], psp_ci_reach[k][7], psp_ci_reach[k][8]);
+	}
 	memset(psp_ci_cen, 0, sizeof(psp_ci_cen));
 	memset(psp_ci_upd, 0, sizeof(psp_ci_upd));
+	memset(psp_ci_reach, 0, sizeof(psp_ci_reach));
 }
 static void psp_ci_window_check(void)
 {
@@ -62943,32 +62990,42 @@ static void psp_ci_window_check(void)
 		psp_ci_window = window;
 	}
 }
-/* a query over the cells [x0, x1] x [y0, y1] of the grid, and the large list */
+/* a query over [x0, x1] x [y0, y1]: in each layer, the cells within half a cell of it; then the large list */
 static void psp_ci_query(int site, real x0, real x1, real y0, real y1)
 {
-	short cx0 = psp_ci_cell(x0 - PSP_CI_CELL * 0.5f), cx1 = psp_ci_cell(x1 + PSP_CI_CELL * 0.5f);
-	short cy0 = psp_ci_cell(y0 - PSP_CI_CELL * 0.5f), cy1 = psp_ci_cell(y1 + PSP_CI_CELL * 0.5f);
 	unsigned long *n = psp_ci_cen[site];
+	int layer, j;
 	short k;
 	long cx, cy;
+	real reach = MAX(x1 - x0, y1 - y0), top = 0.5f;
 
+	for (j = 0; j < 8 && reach > top; j++)
+		top *= 2.0f;
+	psp_ci_reach[site][j]++;
 	n[0]++;
-	if ((long)(cx1 - cx0 + 1) * (cy1 - cy0 + 1) > 4096) /* a ray across the level: counted, not walked */
+	for (layer = 0; layer < PSP_CI_LAYERS; layer++)
 	{
-		n[1] += 4096;
-		return;
-	}
-	for (cx = cx0; cx <= cx1; cx++)
-		for (cy = cy0; cy <= cy1; cy++)
+		real half = psp_ci_size(layer) * 0.5f;
+		short cx0 = psp_ci_cell_at(layer, x0 - half), cx1 = psp_ci_cell_at(layer, x1 + half);
+		short cy0 = psp_ci_cell_at(layer, y0 - half), cy1 = psp_ci_cell_at(layer, y1 + half);
+
+		if ((long)(cx1 - cx0 + 1) * (cy1 - cy0 + 1) > 4096) /* a ray across the level: counted, not walked */
 		{
-			n[1]++;
-			for (k = psp_ci_head[((unsigned)(cx * 73856093) ^ (unsigned)(cy * 19349663)) & (PSP_CI_BUCKETS - 1)]; k >= 0; k = psp_ci[k].next)
-			{
-				n[2]++;
-				if (psp_ci[k].cx == cx && psp_ci[k].cy == cy)
-					n[3]++;
-			}
+			n[1] += 4096;
+			continue;
 		}
+		for (cx = cx0; cx <= cx1; cx++)
+			for (cy = cy0; cy <= cy1; cy++)
+			{
+				n[1]++;
+				for (k = psp_ci_head[psp_ci_hash(layer, cx, cy)]; k >= 0; k = psp_ci[k].next)
+				{
+					n[2]++;
+					if (psp_ci[k].layer == layer && psp_ci[k].cx == cx && psp_ci[k].cy == cy)
+						n[3]++;
+				}
+			}
+	}
 	for (k = psp_ci_large; k >= 0; k = psp_ci[k].next)
 		n[4]++;
 }
@@ -62986,9 +63043,14 @@ static void psp_ci_bounds(int site, long object_index, real x0, real x1, real y0
 		return;
 	}
 	e = &psp_ci[k];
-	if (!e->large && (e->cx < psp_ci_cell(x0 - PSP_CI_CELL * 0.5f) || e->cx > psp_ci_cell(x1 + PSP_CI_CELL * 0.5f) ||
-		e->cy < psp_ci_cell(y0 - PSP_CI_CELL * 0.5f) || e->cy > psp_ci_cell(y1 + PSP_CI_CELL * 0.5f)))
-		n[6]++;
+	if (!e->large)
+	{
+		real half = psp_ci_size(e->layer) * 0.5f;
+
+		if (e->cx < psp_ci_cell_at(e->layer, x0 - half) || e->cx > psp_ci_cell_at(e->layer, x1 + half) ||
+			e->cy < psp_ci_cell_at(e->layer, y0 - half) || e->cy > psp_ci_cell_at(e->layer, y1 + half))
+			n[6]++;
+	}
 	if (memcmp(&e->c, &object->object.root->bounding_sphere_center, sizeof(e->c)) || e->r != object->object.root->bounding_sphere_radius)
 		n[7]++;
 }
@@ -63036,7 +63098,7 @@ def collindex_cut(tree):
             return text
         i = text.index(old, start, end)
         return text[:i] + new + text[i + len(old):]
-    o = one(o, "static void tick2_cs_all(void)\n{\n", CI_CODE.replace("@CELL@", repr(COLLINDEX_CELL)) + "static void tick2_cs_all(void)\n{\n", "the stamps' head")
+    o = one(o, "static void tick2_cs_all(void)\n{\n", CI_CODE.replace("@CELL@", repr(COLLINDEX_CELL)).replace("@LAYERS@", str(COLLINDEX_LAYERS)) + "static void tick2_cs_all(void)\n{\n", "the stamps' head")
     for old, new, what in (
         ("\ttick2_cs_stamp_list(tick2_cs_held.clusters, tick2_cs_held.count, tick2_cs_held.object_index);\n\ttick2_cs_held.object_index = NONE;\n\ttick2_cs_counts[3]++;\n",
          "\tif (psp_ci_on > 0)\n\t\tpsp_ci_remove(tick2_cs_held.object_index); /* PSP_COLLINDEX */\n"
@@ -63075,7 +63137,7 @@ def collindex_cut(tree):
     if not CHECK_ONLY:
         open(op, "w", errors="surrogateescape").write(o)
         open(cp, "w", errors="surrogateescape").write(c)
-    print("psp_fixups: COLLINDEX: the objects' index in shadow, cell %.1f (keep word collindexshadow)" % COLLINDEX_CELL)
+    print("psp_fixups: COLLINDEX: the objects' index in shadow, cell %.1f, %d layers (keep word collindexshadow)" % (COLLINDEX_CELL, COLLINDEX_LAYERS))
     return 1
 collindex_cut(TREE)
 
