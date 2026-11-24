@@ -61885,16 +61885,239 @@ void psp_cc_sweep(long biped_index, unsigned long flags, real_point3d const *pos
     return 1
 collcensus_cut(TREE)
 
+# PSP_SWEEPREUSE=1 (slice 1's sweep reuse, the lead 2026-11-24 00:3x; tick2coll1: 35% of b30's pill sweeps repeat the
+# same biped's last-tick inputs and every one got the same answer): biped motion's pill sweep takes last tick's answer
+# when its inputs are byte-identical to that biped's sweep of the same order last tick and nothing its answer rests on
+# can have changed: the same BSP, no breakable surface changed since, last tick's gather met no objects and the clusters
+# it walked still hold none. On when built; keep word "sweepreuseoff" turns it off, "sweepreusecheck" sweeps anyway
+# and counts any answer the reuse would have got wrong. A line each 300 ticks.
+SWEEPREUSE = os.environ.get("PSP_SWEEPREUSE", "") == "1"
+def sweepreuse_cut(tree):
+    if not SWEEPREUSE:
+        return 0
+    bp = os.path.join(tree, "source/units/bipeds.c")
+    cp = os.path.join(tree, "source/physics/collisions.c")
+    b = open(bp, errors="surrogateescape").read()
+    c = open(cp, errors="surrogateescape").read()
+    call = "\t\tcollision_count = (psp_ask(1), collision_move_pill)(\n"
+    end = "\t\t\t16,\n\t\t\tcollisions);\n"
+    if b.count(call) != 1:
+        check_fail("psp_fixups: SWEEPREUSE: the pill's call matches %d times" % b.count(call))
+        return 0
+    at = b.index(call)
+    if b.find(end, at) < 0:
+        check_fail("psp_fixups: SWEEPREUSE: the pill's call has no end")
+        return 0
+    e = b.index(end, at) + len(end)
+    args = "physics->biped_index, collision_flags, &position, &velocity, physics->height, physics->width, &collision_count, &clipped_position, &clipped_velocity, collisions"
+    b = b[:at] + ("\t\tif (!psp_sr_try(%s)) /* PSP_SWEEPREUSE */\n\t\t{\n\t\tpsp_sr_begin();\n" % args) + b[at:e] + \
+        ("\t\tpsp_sr_store(%s);\n\t\t}\n" % args) + b[e:]
+    inc = b.index("\n", b.rindex("#include", 0, at)) + 1
+    b = b[:inc] + ("\n/* PSP_SWEEPREUSE (psp_fixups.py) */\n"
+                   "boolean psp_sr_try(long biped_index, unsigned long flags, real_point3d const *position, real_vector3d const *velocity, real height, real width, short *count, real_point3d *clipped_position, real_vector3d *clipped_velocity, struct collision_plane *collisions);\n"
+                   "void psp_sr_begin(void);\n"
+                   "void psp_sr_store(long biped_index, unsigned long flags, real_point3d const *position, real_vector3d const *velocity, real height, real width, short *count, real_point3d *clipped_position, real_vector3d *clipped_velocity, struct collision_plane *collisions);\n") + b[inc:]
+    cl = "\t\t\t\tif (structure_cluster_mark(cluster_index))\n\t\t\t\t{\n"
+    met = "\t\t\t\t\t\t/* port: (the far ones passed over on a packed copy\n"
+    head = "boolean collision_get_features_in_sphere(\n"
+    for anchor_, name in ((met, "the object loop"), (head, "the gather's head")):
+        if c.count(anchor_) != 1:
+            check_fail("psp_fixups: SWEEPREUSE: %s matches %d times in collisions.c" % (name, c.count(anchor_)))
+            return 0
+    # the cluster mark inside the sphere gather (another gather in the file has the same lines)
+    g0 = c.index(head)
+    g1 = c.index("\n}\n", g0)
+    if c.count(cl, g0, g1) != 1:
+        check_fail("psp_fixups: SWEEPREUSE: the sphere gather's cluster mark matches %d times" % c.count(cl, g0, g1))
+        return 0
+    ci = c.index(cl, g0, g1) + len(cl)
+    c = c[:ci] + "\t\t\t\t\tif (psp_sr_on_pill) psp_sr_cluster(cluster_index); /* PSP_SWEEPREUSE */\n" + c[ci:]
+    c = c.replace(met, "\t\t\t\t\t\tif (psp_sr_on_pill) psp_sr_met++; /* PSP_SWEEPREUSE: an object in a walked cluster */\n" + met)
+    c = c.replace(head, r"""/* PSP_SWEEPREUSE (psp_fixups.py): biped motion's pill sweep takes last tick's answer when nothing it rests on changed */
+#define PSP_SR_SLOTS 64 /* bipeds, by their index's low bits (tagged: a clash only means no reuse) */
+#define PSP_SR_TURNS 2 /* a biped's sweeps a tick, matched by their order */
+#define PSP_SR_PLANES 2 /* answers with more planes aren't kept */
+#define PSP_SR_CLUSTERS 8 /* gathers walking more clusters aren't kept */
+struct psp_sr_record
+{
+	long biped_index, tick;
+	unsigned long flags, breakable;
+	real_point3d position, clipped_position;
+	real_vector3d velocity, clipped_velocity;
+	real height, width;
+	short bsp, count, cluster_count;
+	short clusters[PSP_SR_CLUSTERS];
+	struct collision_plane planes[PSP_SR_PLANES];
+};
+static struct psp_sr_record psp_sr_records[PSP_SR_SLOTS][PSP_SR_TURNS];
+static struct { long biped_index, tick; int turn; } psp_sr_turns[PSP_SR_SLOTS];
+int psp_sr_on_pill; /* 1 while a kept sweep's gather runs */
+int psp_sr_met;
+static short psp_sr_cluster_list[PSP_SR_CLUSTERS], psp_sr_cluster_count; /* -1: too many */
+static unsigned long psp_sr_counts[6]; /* sweeps, reused, inputs the same but refused, of them for objects, kept, wrong in the check */
+static struct psp_sr_record *psp_sr_candidate; /* sweepreusecheck: the answer the reuse would have given */
+static int psp_sr_turn_now;
+static void psp_sr_cluster(short cluster_index)
+{
+	if (psp_sr_cluster_count >= 0 && psp_sr_cluster_count < PSP_SR_CLUSTERS)
+		psp_sr_cluster_list[psp_sr_cluster_count++] = cluster_index;
+	else
+		psp_sr_cluster_count = -1;
+}
+static unsigned long psp_sr_breakable(long tick)
+{
+	static long hashed = -1;
+	static unsigned long hash;
+
+	if (tick != hashed)
+	{
+		byte const *bits = breakable_surface_flags_get();
+		int k;
+
+		hash = 2166136261u;
+		for (k = 0; k < MAXIMUM_BREAKABLE_SURFACES_PER_MAP / 8; k++)
+			hash = (hash ^ bits[k]) * 16777619u;
+		hashed = tick;
+	}
+	return hash;
+}
+static int psp_sr_turn(long biped_index, long tick)
+{
+	long k = biped_index & (PSP_SR_SLOTS - 1);
+
+	if (psp_sr_turns[k].biped_index != biped_index || psp_sr_turns[k].tick != tick)
+	{
+		psp_sr_turns[k].biped_index = biped_index;
+		psp_sr_turns[k].tick = tick;
+		psp_sr_turns[k].turn = 0;
+	}
+	return psp_sr_turns[k].turn++;
+}
+boolean psp_sr_try(long biped_index, unsigned long flags, real_point3d const *position, real_vector3d const *velocity, real height, real width,
+	short *count, real_point3d *clipped_position, real_vector3d *clipped_velocity, struct collision_plane *collisions)
+{
+	extern long game_time_get(void);
+	void platform_psp_log(const char *format, ...);
+	static long last_report = -1;
+	long tick = game_time_get();
+	struct psp_sr_record *r;
+	int k;
+
+	psp_sr_candidate = NULL;
+	psp_sr_turn_now = psp_sr_turn(biped_index, tick);
+	if (tick > 0 && tick % 300 == 0 && tick != last_report)
+	{
+		last_report = tick;
+		platform_psp_log("sweepreuse: tick %ld: pill sweeps %lu, reused %lu; the same inputs refused %lu (for objects %lu); kept %lu; wrong in the check %lu",
+			tick, psp_sr_counts[0], psp_sr_counts[1], psp_sr_counts[2], psp_sr_counts[3], psp_sr_counts[4], psp_sr_counts[5]);
+	}
+	psp_sr_counts[0]++;
+	if (PSP_KEEP_ONCE("sweepreuseoff") || psp_sr_turn_now >= PSP_SR_TURNS)
+		return FALSE;
+	r = &psp_sr_records[biped_index & (PSP_SR_SLOTS - 1)][psp_sr_turn_now];
+	if (r->biped_index != biped_index || r->tick != tick - 1 || r->flags != flags || r->height != height || r->width != width ||
+		memcmp(&r->position, position, sizeof(*position)) || memcmp(&r->velocity, velocity, sizeof(*velocity)))
+		return FALSE;
+	if (r->bsp != global_structure_bsp_index || r->breakable != psp_sr_breakable(tick) || r->cluster_count < 0)
+	{
+		psp_sr_counts[2]++;
+		return FALSE;
+	}
+	for (k = 0; k < r->cluster_count; k++)
+	{
+		long reference_index;
+
+		if (cluster_get_first_collideable_object(&reference_index, r->clusters[k]) != NONE)
+		{
+			psp_sr_counts[2]++;
+			psp_sr_counts[3]++;
+			return FALSE;
+		}
+	}
+	if (PSP_KEEP_ONCE("sweepreusecheck"))
+	{
+		psp_sr_candidate = r;
+		return FALSE;
+	}
+	*count = r->count;
+	*clipped_position = r->clipped_position;
+	*clipped_velocity = r->clipped_velocity;
+	if (r->count > 0)
+		memcpy(collisions, r->planes, r->count * sizeof(*collisions));
+	r->tick = tick;
+	psp_sr_counts[1]++;
+	return TRUE;
+}
+void psp_sr_begin(void)
+{
+	psp_sr_on_pill = 1;
+	psp_sr_met = 0;
+	psp_sr_cluster_count = 0;
+}
+void psp_sr_store(long biped_index, unsigned long flags, real_point3d const *position, real_vector3d const *velocity, real height, real width,
+	short *count, real_point3d *clipped_position, real_vector3d *clipped_velocity, struct collision_plane *collisions)
+{
+	extern long game_time_get(void);
+	long tick = game_time_get();
+	struct psp_sr_record *r;
+
+	psp_sr_on_pill = 0;
+	if (psp_sr_candidate)
+	{
+		struct psp_sr_record *was = psp_sr_candidate;
+
+		if (was->count != *count || memcmp(&was->clipped_position, clipped_position, sizeof(*clipped_position)) ||
+			memcmp(&was->clipped_velocity, clipped_velocity, sizeof(*clipped_velocity)) ||
+			(*count > 0 && memcmp(was->planes, collisions, *count * sizeof(*collisions))))
+			psp_sr_counts[5]++;
+	}
+	if (psp_sr_turn_now >= PSP_SR_TURNS)
+		return;
+	r = &psp_sr_records[biped_index & (PSP_SR_SLOTS - 1)][psp_sr_turn_now];
+	r->biped_index = NONE;
+	if (psp_sr_met || psp_sr_cluster_count < 0 || *count > PSP_SR_PLANES)
+		return;
+	r->tick = tick;
+	r->flags = flags;
+	r->position = *position;
+	r->velocity = *velocity;
+	r->height = height;
+	r->width = width;
+	r->bsp = global_structure_bsp_index;
+	r->breakable = psp_sr_breakable(tick);
+	r->count = *count;
+	r->clipped_position = *clipped_position;
+	r->clipped_velocity = *clipped_velocity;
+	if (*count > 0)
+		memcpy(r->planes, collisions, *count * sizeof(*collisions));
+	r->cluster_count = psp_sr_cluster_count;
+	memcpy(r->clusters, psp_sr_cluster_list, psp_sr_cluster_count * sizeof(short));
+	r->biped_index = biped_index;
+	psp_sr_counts[4]++;
+}
+
+""" + head, 1)
+    if not CHECK_ONLY:
+        open(bp, "w", errors="surrogateescape").write(b)
+        open(cp, "w", errors="surrogateescape").write(c)
+    print("psp_fixups: SWEEPREUSE: biped motion's pill sweep keeps its answer for a repeat")
+    return 1
+sweepreuse_cut(TREE)
+
 # PSP_TICK2=biped (slice 1's BIPED line 1 and CONTROL, the lab's spec section 34; the cut sheet in the lab's
 # tick_store_biped_plan.md): the unit datum's 96-byte span from desired_facing_vector to throttle (CONTROL's
 # facing, aiming and looking requests and throttle, interleaved with motion's aim and look vectors and their
 # velocities, BIPED line 1's) leaves the datum for the unit section's record, which becomes the unit's
-# animation and the span (struct tick2_unit_rec), found by the same unit index. Every touch reads through
-# tick2_unit_span_of. Runs after the other store cuts, on their text. The two records split later (spec
-# section 34's lines); the span moves whole here because its fields lie interleaved.
+# animation and spec section 34's two lines (struct tick2_unit_rec: CONTROL's tick2_unit_ctl and BIPED line 1's
+# tick2_unit_bip1), found by the same unit index. Every touch reads through its line's accessor. Runs after the
+# other store cuts, on their text. The span leaves the datum in one cut because its fields lie interleaved.
 TICK2_BIPED = os.environ.get("PSP_TICK2", "") == "biped"
 TICK2_SPAN_FIELDS = ("desired_facing_vector", "desired_aiming_vector", "aiming_vector", "aiming_velocity",
                      "desired_looking_vector", "looking_vector", "looking_velocity", "throttle")
+# spec section 34's lines: the span splits by writer. CONTROL (the requests and throttle: the input side's, settled once
+# at motion's start) and BIPED line 1 (motion's aim and look vectors and their velocities)
+TICK2_CTL_FIELDS = ("desired_facing_vector", "desired_aiming_vector", "desired_looking_vector", "throttle")
+TICK2_BIP1_FIELDS = ("aiming_vector", "aiming_velocity", "looking_vector", "looking_velocity")
 # the span's place in the old unit datum (struct unit_datum: _unit_datum from 0x1A4)
 TICK2_SPAN_AT, TICK2_SPAN_END = 0x1D4, 0x1D4 + 0x60
 # the functions whose span reads repeat most (b30's hot motion and the unit's update; counted in the fixed tree)
@@ -61930,8 +62153,12 @@ def tick2_span_cut(tree):
     if h.count(store) != 1:
         check_fail("psp_fixups: TICK2 biped: struct tick2_unit_store matches %d times" % h.count(store))
         return 0
-    h = h.replace(store, "\n/* TICK2 biped: the span that left _unit_datum, and the unit section's record */\nstruct tick2_unit_span\n{\n" + lines +
-                  "};\nstruct tick2_unit_rec\n{\n\tstruct unit_animation animation;\n\tstruct tick2_unit_span span;\n};\n" + store)
+    ctl = "".join("\treal_vector3d %s;\n" % f for f in TICK2_CTL_FIELDS)
+    bip1 = "".join("\treal_vector3d %s;\n" % f for f in TICK2_BIP1_FIELDS)
+    h = h.replace(store, "\n/* TICK2 biped: the span that left _unit_datum, as spec section 34's two lines, and the unit section's record */\n"
+                  "struct tick2_unit_ctl /* CONTROL: the requests and throttle */\n{\n" + ctl + "};\n"
+                  "struct tick2_unit_bip1 /* BIPED line 1: motion's aim and look */\n{\n" + bip1 + "};\n"
+                  "struct tick2_unit_rec\n{\n\tstruct unit_animation animation;\n\tstruct tick2_unit_ctl ctl;\n\tstruct tick2_unit_bip1 bip1;\n};\n" + store)
     for old, new in (("\tstruct unit_animation *chunk[TICK2_UNIT_CHUNKS];", "\tstruct tick2_unit_rec *chunk[TICK2_UNIT_CHUNKS];"),
                      ("\tstruct unit_animation *chunk_was[TICK2_UNIT_CHUNKS];", "\tstruct tick2_unit_rec *chunk_was[TICK2_UNIT_CHUNKS];"),
                      ("extern struct unit_animation *tick2_unit_anims;", "extern struct tick2_unit_rec *tick2_unit_anims;")):
@@ -61949,8 +62176,9 @@ def tick2_span_cut(tree):
     h = h[:acc.start()] + "static inline struct tick2_unit_rec *tick2_unit_rec_of(const struct tick2_root *record)\n{\n\tlong slot = record->unit_slot;" + h[acc.end():]
     h = h.replace(tail, tail +
         "static inline struct unit_animation *%s(const struct tick2_root *record)\n{\n\treturn &tick2_unit_rec_of(record)->animation;\n}\n"
-        "/* TICK2 biped: the span's one way in */\n"
-        "static inline struct tick2_unit_span *tick2_unit_span_of(const struct tick2_root *record)\n{\n\treturn &tick2_unit_rec_of(record)->span;\n}\n" % name)
+        "/* TICK2 biped: each line's one way in */\n"
+        "static inline struct tick2_unit_ctl *tick2_unit_ctl_of(const struct tick2_root *record)\n{\n\treturn &tick2_unit_rec_of(record)->ctl;\n}\n"
+        "static inline struct tick2_unit_bip1 *tick2_unit_bip1_of(const struct tick2_root *record)\n{\n\treturn &tick2_unit_rec_of(record)->bip1;\n}\n" % name)
     if not CHECK_ONLY:
         open(units_h, "w", errors="surrogateescape").write(h)
     # the unit section's code: its arrays, sizes, take, checksum and trial put-backs hold the whole record
@@ -61981,8 +62209,8 @@ def tick2_span_cut(tree):
                "\t\tunsigned servo_first = ~0u, servo_end = 0;\n\n"
                "\t\tif (header->type == _object_type_biped && TEST_FLAG(checked->object.damage_flags, _object_dead_bit))\n"
                "\t\t{\n"
-               "\t\t\tservo_first = (offsetof(struct tick2_unit_rec, span) + offsetof(struct tick2_unit_span, aiming_vector)) / 4;\n"
-               "\t\t\tservo_end = (offsetof(struct tick2_unit_rec, span) + offsetof(struct tick2_unit_span, looking_velocity) + sizeof(real_vector3d) + 3) / 4;\n"
+               "\t\t\tservo_first = offsetof(struct tick2_unit_rec, bip1) / 4; /* the aim and look servo: BIPED line 1 whole */\n"
+               "\t\t\tservo_end = (offsetof(struct tick2_unit_rec, bip1) + sizeof(struct tick2_unit_bip1) + 3) / 4;\n"
                "\t\t}\n"
                "\t\tword = (unsigned long const *)tick2_unit_rec_of(checked->object.root);\n"
                "\t\tfor (k = 0; k < sizeof(struct tick2_unit_rec) / 4; k++)\n"
@@ -62065,6 +62293,8 @@ static void tick2_proof_span_check(void)
     fields = "|".join(TICK2_SPAN_FIELDS)
     touch = re.compile(r"\b([A-Za-z_]\w*(?:\([^()]*\))?)->unit\.(%s)\b" % fields)
     window = re.compile(r"PSP_BMSW?\((\w+), unit\.(%s)((?:\.\w+)*)\)" % fields)
+    def line_of(field):
+        return "ctl" if field in TICK2_CTL_FIELDS else "bip1"
     left = re.compile(r"\bunit\.(%s)\b" % fields)
     touched = 0
     for root, dirs, files in os.walk(os.path.join(tree, "source")):
@@ -62073,8 +62303,8 @@ static void tick2_proof_span_check(void)
                 continue
             path = os.path.join(root, fname)
             text = open(path, errors="surrogateescape").read()
-            text, n = touch.subn(r"(*tick2_unit_span_of(\1->object.root)).\2", text)
-            text, n2 = window.subn(r"(*tick2_unit_span_of(\1->object.root)).\2\3", text)
+            text, n = touch.subn(lambda m: "(*tick2_unit_%s_of(%s->object.root)).%s" % (line_of(m.group(2)), m.group(1), m.group(2)), text)
+            text, n2 = window.subn(lambda m: "(*tick2_unit_%s_of(%s->object.root)).%s%s" % (line_of(m.group(2)), m.group(1), m.group(2), m.group(3)), text)
             stray = left.findall(text)
             if stray:
                 check_fail("psp_fixups: TICK2 biped: %d span touches left in %s (%s)" % (len(stray), path, ", ".join(sorted(set(stray)))))
@@ -62129,20 +62359,27 @@ static void tick2_proof_span_check(void)
             start = m.end()
             end = text.find("\n}\n", start)
             body = text[start:end]
-            use = "(*tick2_unit_span_of(%s->object.root))" % base
-            first = body.find(use)
             sets = [s.start() for s in re.finditer(r"(?<![\w>.])%s\s*=[^=]" % base, body)]
-            if first < 0 or len(sets) > 1 or (sets and sets[0] > first):
-                check_fail("psp_fixups: TICK2 biped hoist: %s: %d uses, %s assigned %d times (the last after its first use: %s)" %
-                           (name, body.count(use), base, len(sets), bool(sets and sets[-1] > first)))
+            locals_ = ""
+            for line in ("ctl", "bip1"):
+                use = "(*tick2_unit_%s_of(%s->object.root))" % (line, base)
+                first = body.find(use)
+                if first < 0:
+                    continue
+                if len(sets) > 1 or (sets and sets[0] > first):
+                    check_fail("psp_fixups: TICK2 biped hoist: %s: %s assigned %d times (the last after its first %s use: %s)" %
+                               (name, base, len(sets), line, bool(sets and sets[-1] > first)))
+                    return 0
+                hoisted += body.count(use)
+                body = body.replace(use, "(*(tick2_h_%s ? tick2_h_%s : (tick2_h_%s = tick2_unit_%s_of(%s->object.root))))" % (line, line, line, line, base))
+                locals_ += "\tstruct tick2_unit_%s *tick2_h_%s = NULL; /* TICK2 hoist: the line's record, worked out at its first use */\n" % (line, line)
+            if not locals_:
+                check_fail("psp_fixups: TICK2 biped hoist: %s has no line reads on %s" % (name, base))
                 return 0
-            n = body.count(use)
-            body = body.replace(use, "(*(tick2_h_span ? tick2_h_span : (tick2_h_span = tick2_unit_span_of(%s->object.root))))" % base)
-            body = "\tstruct tick2_unit_span *tick2_h_span = NULL; /* TICK2 hoist: the span's record, worked out at its first use */\n" + body
+            body = locals_ + body
             text = text[:start] + body + text[end:]
             if not CHECK_ONLY:
                 open(path, "w", errors="surrogateescape").write(text)
-            hoisted += n
     print("psp_fixups: TICK2 biped: %d sizes and %d layout checks moved by 0x%X, %d of the store's sizes widened, %d span reads hoisted" % (sized, moved[0], shrink, n_size, hoisted))
     return touched
 print("psp_fixups: the world store's span (TICK2 biped): %d touches through the unit index" % tick2_span_cut(TREE))
