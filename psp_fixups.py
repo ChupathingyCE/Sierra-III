@@ -60937,7 +60937,9 @@ def tick2_posepass_cut(tree):
 		!((tick2_pp_seen[(object_index & 0xFFFF) >> 3] >> (object_index & 7)) & 1))
 	{
 		tick2_pp_seen[(object_index & 0xFFFF) >> 3] |= (unsigned char)(1 << (object_index & 7));
-		if (tick2_pp_count < TICK2_PP_MOST)
+		/* the keep word "posepassinline" (the lead's control, 2026-11-23 19:4x): every root takes the inline path, so
+		both phases run back to back at the old moment through the new gates, and the build must be exact against old */
+		if (tick2_pp_count < TICK2_PP_MOST && !PSP_KEEP_ONCE("posepassinline"))
 		{
 			tick2_pp_roots[tick2_pp_count++] = object_index;
 			tick2_pp_listed++;
