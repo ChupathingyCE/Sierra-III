@@ -56119,7 +56119,7 @@ BIPEDMOVE_SYNC = {
 # PSP_TICK2=root: the window's store is laid out on the old biped datum, so it never goes live there
 # and its accessors are plain datum accesses (psp_bipedmove.h); slice 1's store takes its ground
 BIPEDMOVE_ROOT_MARK = ("#define PSP_TICK2_ROOT 1 /* psp_fixups.py (TICK2 root) */\n"
-                       if os.environ.get("PSP_TICK2", "") in ("root", "anim", "unit", "pose") else "")
+                       if os.environ.get("PSP_TICK2", "") in ("root", "anim", "unit", "pose", "biped") else "")
 BIPEDMOVE_PRELUDE = BIPEDMOVE_ROOT_MARK + """#include "psp_bipedmove.h" /* psp_fixups.py (BIPEDMOVE) steps 1b and 1c */
 static int psp_bms_on = -1, psp_bms_check = 0;
 /* the intent's start: the record filled, in the slot of its bipedstage3 record */
@@ -58997,15 +58997,15 @@ print("psp_fixups: the tick rewrite's count: %d datum fields without their names
 # collector counts the store's spare records as free pool: it trips where it
 # trips today (spec section 23). Runs after every FIXES group, on the text as
 # they left it.
-TICK2_ROOT = os.environ.get("PSP_TICK2", "") in ("root", "anim", "unit", "pose")
+TICK2_ROOT = os.environ.get("PSP_TICK2", "") in ("root", "anim", "unit", "pose", "biped")
 # PSP_TICK2=anim (step 1c-1): the ANIM section too, its records in a second array that shares
 # ROOT's slot (spec section 30; the lead's design (b), 2026-11-23)
-TICK2_ANIM = os.environ.get("PSP_TICK2", "") in ("anim", "unit", "pose")
+TICK2_ANIM = os.environ.get("PSP_TICK2", "") in ("anim", "unit", "pose", "biped")
 # PSP_TICK2=unit (step 1c-2): unit.animation too, whole, in a unit section found by a 2-byte
 # unit index in ROOT's record (spec section 32; the lead's ruling, 2026-11-23)
-TICK2_UNIT = os.environ.get("PSP_TICK2", "") in ("unit", "pose")
+TICK2_UNIT = os.environ.get("PSP_TICK2", "") in ("unit", "pose", "biped")
 # PSP_TICK2=pose (POSE's first step): the node blocks too, in the store's node arena (spec section 35)
-TICK2_POSE = os.environ.get("PSP_TICK2", "") == "pose"
+TICK2_POSE = os.environ.get("PSP_TICK2", "") in ("pose", "biped")
 # PSP_TICK2_PROOF=1 (with PSP_BIG_RAM=1; the lead, 2026-11-23 14:4x): the proof form. The store is outside
 # the object pool and every datum keeps its old size, the moved bytes left in place as unnamed padding
 # filled with a fixed pattern, so the pool holds blocks of the old build's sizes in its order and the
@@ -61884,6 +61884,177 @@ void psp_cc_sweep(long biped_index, unsigned long flags, real_point3d const *pos
     print("psp_fixups: COLLCENSUS: the pill sweep and its gather counted")
     return 1
 collcensus_cut(TREE)
+
+# PSP_TICK2=biped (slice 1's BIPED line 1 and CONTROL, the lab's spec section 34; the cut sheet in the lab's
+# tick_store_biped_plan.md): the unit datum's 96-byte span from desired_facing_vector to throttle (CONTROL's
+# facing, aiming and looking requests and throttle, interleaved with motion's aim and look vectors and their
+# velocities, BIPED line 1's) leaves the datum for the unit section's record, which becomes the unit's
+# animation and the span (struct tick2_unit_rec), found by the same unit index. Every touch reads through
+# tick2_unit_span_of. Runs after the other store cuts, on their text. The two records split later (spec
+# section 34's lines); the span moves whole here because its fields lie interleaved.
+TICK2_BIPED = os.environ.get("PSP_TICK2", "") == "biped"
+TICK2_SPAN_FIELDS = ("desired_facing_vector", "desired_aiming_vector", "aiming_vector", "aiming_velocity",
+                     "desired_looking_vector", "looking_vector", "looking_velocity", "throttle")
+# the span's place in the old unit datum (struct unit_datum: _unit_datum from 0x1A4)
+TICK2_SPAN_AT, TICK2_SPAN_END = 0x1D4, 0x1D4 + 0x60
+def tick2_span_cut(tree):
+    if not TICK2_BIPED:
+        return 0
+    import re
+    units_h = os.path.join(tree, "source/units/units.h")
+    units_c = os.path.join(tree, "source/units/units.c")
+    objects_c = os.path.join(tree, "source/objects/objects.c")
+    h = open(units_h, errors="surrogateescape").read()
+    # the span leaves _unit_datum (eight lines in order); the proof form keeps its bytes as padding
+    lines = "".join("\treal_vector3d %s;\n" % f for f in TICK2_SPAN_FIELDS)
+    m = re.search(r"\nstruct _unit_datum\n\{\n(.*?)\n\};", h, re.S)
+    if not m or m.group(1).count(lines) != 1:
+        check_fail("psp_fixups: TICK2 biped: _unit_datum's span isn't eight lines in order in units.h")
+        return 0
+    body = m.group(1).replace(lines, "\tunsigned char tick2_proof_span[%d] __attribute__((aligned(4))); /* TICK2 proof */\n" % (TICK2_SPAN_END - TICK2_SPAN_AT)
+                              if TICK2_PROOF else "")
+    h = h[:m.start(1)] + body + h[m.end(1):]
+    # the record: the unit's animation and the span
+    store = "\nstruct tick2_unit_store\n{\n"
+    if h.count(store) != 1:
+        check_fail("psp_fixups: TICK2 biped: struct tick2_unit_store matches %d times" % h.count(store))
+        return 0
+    h = h.replace(store, "\n/* TICK2 biped: the span that left _unit_datum, and the unit section's record */\nstruct tick2_unit_span\n{\n" + lines +
+                  "};\nstruct tick2_unit_rec\n{\n\tstruct unit_animation animation;\n\tstruct tick2_unit_span span;\n};\n" + store)
+    for old, new in (("\tstruct unit_animation *chunk[TICK2_UNIT_CHUNKS];", "\tstruct tick2_unit_rec *chunk[TICK2_UNIT_CHUNKS];"),
+                     ("\tstruct unit_animation *chunk_was[TICK2_UNIT_CHUNKS];", "\tstruct tick2_unit_rec *chunk_was[TICK2_UNIT_CHUNKS];"),
+                     ("extern struct unit_animation *tick2_unit_anims;", "extern struct tick2_unit_rec *tick2_unit_anims;")):
+        if h.count(old) != 1:
+            check_fail("psp_fixups: TICK2 biped: %r matches %d times in units.h" % (old, h.count(old)))
+            return 0
+        h = h.replace(old, new)
+    # the accessor (or its STORECOUNT _raw form) becomes the record's; the old name answers the animation in it
+    acc = re.search(r"static inline struct unit_animation \*(tick2_unit_anim_of(?:_raw)?)\(const struct tick2_root \*record\)\n\{\n\tlong slot = record->unit_slot;", h)
+    tail = "\treturn tick2_unit_store->chunk[slot / TICK2_UNIT_CHUNK] + slot % TICK2_UNIT_CHUNK;\n}\n"
+    if not acc or h.count(tail) != 1:
+        check_fail("psp_fixups: TICK2 biped: the unit section's accessor isn't found")
+        return 0
+    name = acc.group(1)
+    h = h[:acc.start()] + "static inline struct tick2_unit_rec *tick2_unit_rec_of(const struct tick2_root *record)\n{\n\tlong slot = record->unit_slot;" + h[acc.end():]
+    h = h.replace(tail, tail +
+        "static inline struct unit_animation *%s(const struct tick2_root *record)\n{\n\treturn &tick2_unit_rec_of(record)->animation;\n}\n"
+        "/* TICK2 biped: the span's one way in */\n"
+        "static inline struct tick2_unit_span *tick2_unit_span_of(const struct tick2_root *record)\n{\n\treturn &tick2_unit_rec_of(record)->span;\n}\n" % name)
+    if not CHECK_ONLY:
+        open(units_h, "w", errors="surrogateescape").write(h)
+    # the unit section's code: its arrays, sizes, take, checksum and trial put-backs hold the whole record
+    c = open(objects_c, errors="surrogateescape").read()
+    n_size = c.count("sizeof(struct unit_animation)")
+    c = c.replace("sizeof(struct unit_animation)", "sizeof(struct tick2_unit_rec)")
+    pairs = [
+        ("struct unit_animation *tick2_unit_anims; /* TICK2 unit */", "struct tick2_unit_rec *tick2_unit_anims; /* TICK2 unit, biped */", 1),
+        ("tick2_unit_anims = (struct unit_animation *)(tick2_unit_store + 1);", "tick2_unit_anims = (struct tick2_unit_rec *)(tick2_unit_store + 1);", 1),
+        ("memset(tick2_unit_anim_of(object->object.root), 0, sizeof(struct tick2_unit_rec));", "memset(tick2_unit_rec_of(object->object.root), 0, sizeof(struct tick2_unit_rec));", 1),
+        ("\tstruct unit_animation kept_unit;\n", "\tstruct tick2_unit_rec kept_unit;\n", 2),
+    ]
+    for old, new, count in pairs:
+        if c.count(old) != count:
+            check_fail("psp_fixups: TICK2 biped: %r matches %d times in objects.c, not %d" % (old[:60], c.count(old), count))
+            return 0
+        c = c.replace(old, new)
+    c, n_kept = re.subn(r"kept_unit = \*tick2_unit_anim_of\(", "kept_unit = *tick2_unit_rec_of(", c)
+    c, n_back = re.subn(r"\*tick2_unit_anim_of\(([^;]*?)\) = kept_unit;", r"*tick2_unit_rec_of(\1) = kept_unit;", c)
+    if n_kept != 2 or n_back != 2:
+        check_fail("psp_fixups: TICK2 biped: the trial put-backs match %d/%d" % (n_kept, n_back))
+        return 0
+    # the sleep's checksum: the record's words, but a dead biped's aim and look servo left out, as the datum's
+    # words were (build 106: psp_unit_aim_bytes, now empty: the servo isn't in the datum)
+    sum_old = ("\t\tword = (unsigned long const *)tick2_unit_anim_of(((struct object_datum const *)header->datum)->object.root);\n"
+               "\t\tfor (k = 0; k < sizeof(struct tick2_unit_rec) / 4; k++)\n\t\t\tsum = (sum ^ word[k]) * 33UL;\n")
+    sum_new = ("\t\tstruct object_datum const *checked = (struct object_datum const *)header->datum; /* TICK2 biped */\n"
+               "\t\tunsigned servo_first = ~0u, servo_end = 0;\n\n"
+               "\t\tif (header->type == _object_type_biped && TEST_FLAG(checked->object.damage_flags, _object_dead_bit))\n"
+               "\t\t{\n"
+               "\t\t\tservo_first = (offsetof(struct tick2_unit_rec, span) + offsetof(struct tick2_unit_span, aiming_vector)) / 4;\n"
+               "\t\t\tservo_end = (offsetof(struct tick2_unit_rec, span) + offsetof(struct tick2_unit_span, looking_velocity) + sizeof(real_vector3d) + 3) / 4;\n"
+               "\t\t}\n"
+               "\t\tword = (unsigned long const *)tick2_unit_rec_of(checked->object.root);\n"
+               "\t\tfor (k = 0; k < sizeof(struct tick2_unit_rec) / 4; k++)\n"
+               "\t\t\tif (k < servo_first || k >= servo_end)\n\t\t\t\tsum = (sum ^ word[k]) * 33UL;\n")
+    if c.count(sum_old) != 1:
+        check_fail("psp_fixups: TICK2 biped: the checksum's unit record matches %d times" % c.count(sum_old))
+        return 0
+    c = c.replace(sum_old, sum_new)
+    if TICK2_PROOF:
+        fill = "sizeof(((struct unit_datum *)object)->unit.tick2_proof_unit));"
+        if c.count(fill) != 1:
+            check_fail("psp_fixups: TICK2 biped: the proof fill matches %d times" % c.count(fill))
+            return 0
+        c = c.replace(fill, fill + "\n\tif (header->type == _object_type_biped || header->type == _object_type_vehicle)\n"
+                      "\t\tmemset(((struct unit_datum *)object)->unit.tick2_proof_span, %d, sizeof(((struct unit_datum *)object)->unit.tick2_proof_span));" % TICK2_PROOF_BYTE)
+    if not CHECK_ONLY:
+        open(objects_c, "w", errors="surrogateescape").write(c)
+    # build 106's servo range for the datum's words: empty now
+    u = open(units_c, errors="surrogateescape").read()
+    servo = "const long psp_unit_aim_bytes[2] =\n{\n\toffsetof(struct unit_datum, unit.aiming_vector),\n\toffsetof(struct unit_datum, unit.looking_velocity) + sizeof(real_vector3d)\n};"
+    if u.count(servo) != 1:
+        check_fail("psp_fixups: TICK2 biped: psp_unit_aim_bytes matches %d times" % u.count(servo))
+        return 0
+    u = u.replace(servo, "const long psp_unit_aim_bytes[2] = { 0, 0 }; /* TICK2 biped: the servo is in the unit section's record, whose checksum leaves it out */")
+    if not CHECK_ONLY:
+        open(units_c, "w", errors="surrogateescape").write(u)
+    # every touch: x->unit.<field> (x a name or a call) and biped motion's window
+    fields = "|".join(TICK2_SPAN_FIELDS)
+    touch = re.compile(r"\b([A-Za-z_]\w*(?:\([^()]*\))?)->unit\.(%s)\b" % fields)
+    window = re.compile(r"PSP_BMSW?\((\w+), unit\.(%s)((?:\.\w+)*)\)" % fields)
+    left = re.compile(r"\bunit\.(%s)\b" % fields)
+    touched = 0
+    for root, dirs, files in os.walk(os.path.join(tree, "source")):
+        for fname in files:
+            if not fname.endswith((".c", ".h")):
+                continue
+            path = os.path.join(root, fname)
+            text = open(path, errors="surrogateescape").read()
+            text, n = touch.subn(r"(*tick2_unit_span_of(\1->object.root)).\2", text)
+            text, n2 = window.subn(r"(*tick2_unit_span_of(\1->object.root)).\2\3", text)
+            stray = left.findall(text)
+            if stray:
+                check_fail("psp_fixups: TICK2 biped: %d span touches left in %s (%s)" % (len(stray), path, ", ".join(sorted(set(stray)))))
+            if n + n2 and not CHECK_ONLY:
+                open(path, "w", errors="surrogateescape").write(text)
+            touched += n + n2
+    # unit datum sizes: unit, biped and vehicle rows lose the span
+    shrink = 0 if TICK2_PROOF else TICK2_SPAN_END - TICK2_SPAN_AT
+    path = os.path.join(tree, "source/objects/object_types.c")
+    text = open(path, errors="surrogateescape").read()
+    rows = re.compile(r"(\n\t\"(unit|biped|vehicle)\", '\w{4}', )0x([0-9A-Fa-f]+)(,)")
+    text, sized = rows.subn(lambda m: "%s0x%X%s" % (m.group(1), int(m.group(3), 16) - shrink, m.group(4)), text)
+    if sized != 3:
+        check_fail("psp_fixups: TICK2 biped: %d unit-family sizes in object_types.c, not 3" % sized)
+    elif not CHECK_ONLY:
+        open(path, "w", errors="surrogateescape").write(text)
+    # the layout checks past the span, in today's layout (the object part's cuts and the unit section's already made)
+    moved = [0]
+    def shift(at_now, end_now):
+        def fix(m):
+            value = int(m.group(2), 16)
+            if at_now <= value < end_now and "sizeof" not in m.group(1):
+                check_fail("psp_fixups: TICK2 biped: a layout check inside the span: %s" % m.group(0))
+            if value < end_now:
+                return m.group(0)
+            moved[0] += 1
+            return "%s0x%X%s" % (m.group(1), value - shrink, m.group(3))
+        return fix
+    absolute = re.compile(r"((?:offsetof|sizeof)\(struct (?:unit|biped|vehicle)_datum\b[^\]\n]*?== )0x([0-9A-Fa-f]+)(\s*\?\s*1\s*:\s*-1)")
+    relative = re.compile(r"(?<![+] )((?:offsetof|sizeof)\(struct _unit_datum\b[^\]\n]*?== )0x([0-9A-Fa-f]+)(\s*\?\s*1\s*:\s*-1)")
+    for root, dirs, files in os.walk(os.path.join(tree, "source")):
+        for fname in files:
+            if not fname.endswith((".c", ".h")):
+                continue
+            path = os.path.join(root, fname)
+            text = open(path, errors="surrogateescape").read()
+            new = absolute.sub(shift(TICK2_SPAN_AT - TICK2_SHRINK, TICK2_SPAN_END - TICK2_SHRINK), text)
+            new = relative.sub(shift(TICK2_SPAN_AT - TICK2_UNIT_BASE, TICK2_SPAN_END - TICK2_UNIT_BASE), new)
+            if new != text and not CHECK_ONLY:
+                open(path, "w", errors="surrogateescape").write(new)
+    print("psp_fixups: TICK2 biped: %d sizes and %d layout checks moved by 0x%X, %d of the store's sizes widened" % (sized, moved[0], shrink, n_size))
+    return touched
+print("psp_fixups: the world store's span (TICK2 biped): %d touches through the unit index" % tick2_span_cut(TREE))
 
 # The engine's one read of a datum by a raw offset (spec section 28): a door's
 # automatic test asks whether a unit is dead through byte 0xb6 of its datum,
