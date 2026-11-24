@@ -63135,10 +63135,13 @@ COLLINDEX = os.environ.get("PSP_COLLINDEX", "") == "1"
 COLLINDEX_CELL = float(os.environ.get("PSP_COLLINDEX_CELL", "2"))
 COLLINDEX_LAYERS = int(os.environ.get("PSP_COLLINDEX_LAYERS", "6"))
 COLLINDEX_RAYSTEP = os.environ.get("PSP_COLLINDEX_RAYSTEP", "") == "1"
+COLLINDEX_BUCKETS = int(os.environ.get("PSP_COLLINDEX_BUCKETS", "8192"))
+if COLLINDEX_BUCKETS & (COLLINDEX_BUCKETS - 1):
+    check_fail("psp_fixups: PSP_COLLINDEX_BUCKETS must be a power of two")
 CI_CODE = r"""
 /* PSP_COLLINDEX (psp_fixups.py): the collision box's objects' index, in shadow (docs/box_collision.md section 12) */
 #define PSP_CI_CELL @CELL@f
-#define PSP_CI_BUCKETS 1024
+#define PSP_CI_BUCKETS @BUCKETS@
 #define PSP_CI_RAYSTEP @RAYSTEP@
 #define PSP_CI_LAYERS @LAYERS@ /* layer L: radii up to PSP_CI_CELL * 2^L / 2, in cells of PSP_CI_CELL * 2^L */
 struct psp_ci_entry
@@ -63481,6 +63484,10 @@ static void psp_ci_ray_cells(unsigned long *n, real x0, real y0, real x1, real y
 				{
 					long key = (((cx + ox) & 0xFFFF) << 16) | ((cy + oy) & 0xFFFF);
 
+					/* a neighbour only when the ray passes within half a cell of it, where its layer's spheres can reach */
+					if ((ox || oy) && !psp_ci_seg_hits_box(x0, y0, x1, y1, ((real)(cx + ox) - 0.5f) * size, ((real)(cy + oy) - 0.5f) * size,
+						((real)(cx + ox) + 1.5f) * size, ((real)(cy + oy) + 1.5f) * size))
+						continue;
 					for (k = 0; k < used && seen[k] != key; k++)
 						;
 					if (k < used)
@@ -63540,7 +63547,7 @@ int psp_ci_ray_pass(long object_index, real_point3d const *p, real_vector3d cons
 	if (psp_ci_on > 0 && !psp_work_on_me())
 	{
 #if PSP_CI_RAYSTEP
-		/* covered when the ray crosses the 3x3 block of cells around the object's own */
+		/* covered when the ray passes within half a cell of the object's own cell */
 		short k = (short)DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index);
 		struct object_datum const *object = object_get(object_index);
 		unsigned long *n = psp_ci_cen[2];
@@ -63557,8 +63564,8 @@ int psp_ci_ray_pass(long object_index, real_point3d const *p, real_vector3d cons
 		{
 			real size = psp_ci_size(e->layer);
 
-			if (!psp_ci_seg_hits_box(p->x, p->y, p->x + v->i, p->y + v->j, (real)(e->cx - 1) * size, (real)(e->cy - 1) * size,
-				(real)(e->cx + 2) * size, (real)(e->cy + 2) * size))
+			if (!psp_ci_seg_hits_box(p->x, p->y, p->x + v->i, p->y + v->j, ((real)e->cx - 0.5f) * size, ((real)e->cy - 0.5f) * size,
+				((real)e->cx + 1.5f) * size, ((real)e->cy + 1.5f) * size))
 				n[6]++;
 		}
 		if (memcmp(&e->c, &object->object.root->bounding_sphere_center, sizeof(e->c)) || e->r != object->object.root->bounding_sphere_radius)
@@ -63587,7 +63594,7 @@ def collindex_cut(tree):
             return text
         i = text.index(old, start, end)
         return text[:i] + new + text[i + len(old):]
-    o = one(o, "static void tick2_cs_all(void)\n{\n", CI_CODE.replace("@CELL@", repr(COLLINDEX_CELL)).replace("@LAYERS@", str(COLLINDEX_LAYERS)).replace("@RAYSTEP@", "1" if COLLINDEX_RAYSTEP else "0") + "static void tick2_cs_all(void)\n{\n", "the stamps' head")
+    o = one(o, "static void tick2_cs_all(void)\n{\n", CI_CODE.replace("@CELL@", repr(COLLINDEX_CELL)).replace("@LAYERS@", str(COLLINDEX_LAYERS)).replace("@RAYSTEP@", "1" if COLLINDEX_RAYSTEP else "0").replace("@BUCKETS@", str(COLLINDEX_BUCKETS)) + "static void tick2_cs_all(void)\n{\n", "the stamps' head")
     for old, new, what in (
         ("\ttick2_cs_stamp_list(tick2_cs_held.clusters, tick2_cs_held.count, tick2_cs_held.object_index);\n\ttick2_cs_held.object_index = NONE;\n\ttick2_cs_counts[3]++;\n",
          "\tif (psp_ci_on > 0)\n\t\tpsp_ci_remove(tick2_cs_held.object_index); /* PSP_COLLINDEX */\n"
