@@ -62291,13 +62291,22 @@ def tick2_span_cut(tree):
         return 0
     body = m.group(1).replace(lines, "\tunsigned char tick2_proof_span[%d] __attribute__((aligned(4))); /* TICK2 proof */\n" % (TICK2_SPAN_END - TICK2_SPAN_AT)
                               if TICK2_PROOF else "")
+    # CONTROL's remainder (the plan, 2026-11-24 10:4x): control_flags, aiming_speed and current_zoom_level move to
+    # CONTROL's record; their datum bytes stay under new names (dead; the proof form's pattern), so nothing shifts
+    for decl, name in (("\tunsigned long control_flags;\n", "control_flags"), ("\tchar aiming_speed;\n", "aiming_speed"),
+                       ("\tchar current_zoom_level;\n", "current_zoom_level")):
+        if body.count(decl) != 1:
+            check_fail("psp_fixups: TICK2 biped: _unit_datum's %s matches %d times" % (name, body.count(decl)))
+            return 0
+        body = body.replace(decl, decl.replace(name, "tick2_old_" + name).rstrip("\n") + " /* TICK2 biped: in CONTROL's record */\n")
     h = h[:m.start(1)] + body + h[m.end(1):]
     # the record: the unit's animation and the span
     store = "\nstruct tick2_unit_store\n{\n"
     if h.count(store) != 1:
         check_fail("psp_fixups: TICK2 biped: struct tick2_unit_store matches %d times" % h.count(store))
         return 0
-    ctl = "".join("\treal_vector3d %s;\n" % f for f in TICK2_CTL_FIELDS)
+    ctl = "".join("\treal_vector3d %s;\n" % f for f in TICK2_CTL_FIELDS) + \
+        "\tunsigned long control_flags; /* CONTROL's remainder */\n\tchar aiming_speed;\n\tchar current_zoom_level;\n"
     bip1 = "".join("\treal_vector3d %s;\n" % f for f in TICK2_BIP1_FIELDS) + "\treal crouch; /* from the biped datum (the cut sheet's BIPED 1) */\n"
     h = h.replace(store, "\n/* TICK2 biped: the span that left _unit_datum, as spec section 34's two lines, and the unit section's record */\n"
                   "struct tick2_unit_ctl /* CONTROL: the requests and throttle */\n{\n" + ctl + "};\n"
@@ -62486,6 +62495,39 @@ static void tick2_proof_span_check(void)
         if not CHECK_ONLY:
             open(objects_c, "w", errors="surrogateescape").write(oc)
     print("psp_fixups: TICK2 biped: crouch's 14 touches through BIPED line 1")
+    rest = "control_flags|aiming_speed|current_zoom_level"
+    rest_touch = re.compile(r"\b([A-Za-z_]\w*(?:\([^()]*\))?)->unit\.(%s)\b" % rest)
+    rest_window = re.compile(r"PSP_BMSW?\((\w+), unit\.(%s)\)" % rest)
+    rest_left = re.compile(r"(?<![\w])unit\.(%s)\b" % rest)
+    rest_n = 0
+    for root, dirs, files in os.walk(os.path.join(tree, "source")):
+        for fname in files:
+            if not fname.endswith((".c", ".h")):
+                continue
+            rpath = os.path.join(root, fname)
+            text = open(rpath, errors="surrogateescape").read()
+            text, n1 = rest_touch.subn(lambda m: "(*tick2_unit_ctl_of(%s->object.root)).%s" % (m.group(1), m.group(2)), text)
+            text, n2 = rest_window.subn(lambda m: "(*tick2_unit_ctl_of(%s->object.root)).%s" % (m.group(1), m.group(2)), text)
+            if rest_left.search(text):
+                check_fail("psp_fixups: TICK2 biped: CONTROL's remainder touched left in %s" % rpath)
+            if n1 + n2 and not CHECK_ONLY:
+                open(rpath, "w", errors="surrogateescape").write(text)
+            rest_n += n1 + n2
+    if rest_n != 67:
+        check_fail("psp_fixups: TICK2 biped: CONTROL's remainder: %d touches, not 67" % rest_n)
+        return 0
+    if TICK2_PROOF:
+        oc = open(objects_c, errors="surrogateescape").read()
+        span_fill = "\t\t\t\t\tmemset(((struct unit_datum *)object)->unit.tick2_proof_span, %d, sizeof(((struct unit_datum *)object)->unit.tick2_proof_span));\n" % TICK2_PROOF_BYTE
+        if oc.count(span_fill) != 1:
+            check_fail("psp_fixups: TICK2 biped: the span fill for CONTROL's remainder matches %d times" % oc.count(span_fill))
+            return 0
+        oc = oc.replace(span_fill, span_fill + "".join(
+            "\t\t\t\t\tmemset(&((struct unit_datum *)object)->unit.tick2_old_%s, %d, sizeof(((struct unit_datum *)object)->unit.tick2_old_%s));\n"
+            % (f, TICK2_PROOF_BYTE, f) for f in ("control_flags", "aiming_speed", "current_zoom_level")))
+        if not CHECK_ONLY:
+            open(objects_c, "w", errors="surrogateescape").write(oc)
+    print("psp_fixups: TICK2 biped: CONTROL's remainder, %d touches through CONTROL" % rest_n)
     # every touch: x->unit.<field> (x a name or a call) and biped motion's window
     fields = "|".join(TICK2_SPAN_FIELDS)
     touch = re.compile(r"\b([A-Za-z_]\w*(?:\([^()]*\))?)->unit\.(%s)\b" % fields)
