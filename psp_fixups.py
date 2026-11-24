@@ -60758,7 +60758,7 @@ static unsigned char tick2_pp_seen[MAXIMUM_OBJECTS_PER_MAP / 8 + 1]; /* listed t
 #define TICK2_PP_ELEVATORS 64
 static struct { long object_index; real_point3d sample; } tick2_pp_elev[TICK2_PP_ELEVATORS];
 static long tick2_pp_elev_count;
-static unsigned long tick2_pp_ticks, tick2_pp_listed, tick2_pp_inline, tick2_pp_elev_lost, tick2_pp_touches;
+static unsigned long tick2_pp_ticks, tick2_pp_listed, tick2_pp_inline, tick2_pp_elev_lost, tick2_pp_touches, tick2_pp_gone;
 
 /* the pose's half-skip, decided once: phase 1 decides and keeps it, phase 2 reads it */
 static int tick2_pp_half_skips(long object_index, struct object_datum *object)
@@ -60809,9 +60809,14 @@ static boolean tick2_pp_elevator(long object_index, boolean machine, real_point3
 void tick2_pp_touch(long object_index)
 {
 	long k = object_index & 0xFFFF;
+	struct object_datum *object;
 
 	if (tick2_pp_phase != 1 || object_index == NONE || k >= MAXIMUM_OBJECTS_PER_MAP ||
 		((tick2_pp_touched[k >> 3] >> (k & 7)) & 1))
+		return;
+	/* only an object whose nodes are made: one still inside object_new is posed there (its own pose-now) */
+	object = object_try_and_get(object_index);
+	if (!object || !object->object.root || object->object.root->pose_first == TICK2_POSE_NONE || !object->object.root->pose_count)
 		return;
 	tick2_pp_touched[k >> 3] |= (unsigned char)(1 << (k & 7));
 	object_compute_node_matrices(object_index);
@@ -60832,17 +60837,20 @@ static void tick2_pp_run(void)
 
 	tick2_pp_phase = 2;
 	for (k = 0; k < tick2_pp_count; k++)
-		object_update(tick2_pp_roots[k]);
+		if (object_try_and_get(tick2_pp_roots[k])) /* a root deleted in phase 1 (a projectile that detonated) has no tail */
+			object_update(tick2_pp_roots[k]);
+		else
+			tick2_pp_gone++;
 	tick2_pp_phase = 0;
 }
 void platform_psp_log(const char *format, ...);
 void tick2_pp_report(const char *label, int level_end)
 {
-	platform_psp_log("posepass (%s): %lu ticks; roots listed %lu (%.1f a tick), run inline past the list %lu; elevators past the table %lu; posed on touch %lu (%.2f a tick)",
-		label, tick2_pp_ticks, tick2_pp_listed, tick2_pp_ticks ? (double)tick2_pp_listed / tick2_pp_ticks : 0.0,
-		tick2_pp_inline, tick2_pp_elev_lost, tick2_pp_touches, tick2_pp_ticks ? (double)tick2_pp_touches / tick2_pp_ticks : 0.0);
+	platform_psp_log("posepass (%s): %lu ticks; roots listed %lu (%lu a tick), run inline past the list %lu, gone by phase 2 %lu; elevators past the table %lu; posed on touch %lu (%lu a hundred ticks)",
+		label, tick2_pp_ticks, tick2_pp_listed, tick2_pp_ticks ? tick2_pp_listed / tick2_pp_ticks : 0,
+		tick2_pp_inline, tick2_pp_gone, tick2_pp_elev_lost, tick2_pp_touches, tick2_pp_ticks ? tick2_pp_touches * 100 / tick2_pp_ticks : 0);
 	if (level_end)
-		tick2_pp_ticks = tick2_pp_listed = tick2_pp_inline = tick2_pp_elev_lost = tick2_pp_touches = 0;
+		tick2_pp_ticks = tick2_pp_listed = tick2_pp_inline = tick2_pp_elev_lost = tick2_pp_touches = tick2_pp_gone = 0;
 }
 """
 def tick2_posepass_cut(tree):
