@@ -59013,7 +59013,10 @@ TICK2_CUTS = [(TICK2_ROOT_AT, TICK2_ROOT_END, TICK2_ROOT_SHRINK)] + \
 TICK2_SHRINK = sum(cut[2] for cut in TICK2_CUTS)
 # the collector's line per map (its deletions, the pool's peak, peak live objects): on the
 # root build, and on the old build with PSP_GCCOUNT=1 for the other side of the pair
-TICK2_GCCOUNT = TICK2_ROOT or os.environ.get("PSP_GCCOUNT", "") == "1"
+# PSP_TICK2_REPORT=0 (the lead's heap menu (b1), 2026-11-23 21:2x): the store's reports, its census and the pass's
+# posepassread reader stay out of the build (a ship build's ~7.5 KB); on by default, so the lab's runs keep them
+TICK2_REPORT = os.environ.get("PSP_TICK2_REPORT", "1") != "0"
+TICK2_GCCOUNT = (TICK2_ROOT and TICK2_REPORT) or os.environ.get("PSP_GCCOUNT", "") == "1"
 # the collector's input (the lead, 2026-11-23 14:4x): the store is carved from the pool's tail, and its
 # spare records and nodes are not tail a request can use, so by default the collector reads the pool as it
 # is (it collects and compacts when the real tail runs short, where the old build might not: plays the same,
@@ -60276,15 +60279,15 @@ def tick2_chunk_cut(tree):
     if took != sections or gave != sections:
         check_fail("psp_fixups: TICK2 chunks: %d takes and %d gives, not %d" % (took, gave, sections))
         return 0
-    text = text.replace(first, first + r"""/* an overflow chunk of any section (TICK2 chunks) */
+    text = text.replace(first, first + ("#define TICK2_GC_COUNT(f) (tick2_gc.f++)\n" if TICK2_GCCOUNT else "#define TICK2_GC_COUNT(f) ((void)0)\n") + r"""/* an overflow chunk of any section (TICK2 chunks) */
 static boolean tick2_chunk_take(void **reference, long size)
 {%s
-	tick2_gc.chunks_taken++;
+	TICK2_GC_COUNT(chunks_taken);
 	return TRUE;
 }
 static void tick2_chunk_give(void **reference)
 {%s
-	tick2_gc.chunks_returned++;
+	TICK2_GC_COUNT(chunks_returned);
 }
 """ % (("""
 	*reference = calloc(1, size); /* the proof form: from the C library's heap, so the pool holds only the old build's blocks */
@@ -60766,9 +60769,10 @@ TICK2_PP_CODE = r"""
 /* TICK2 posing pass (spec section 33) */
 int tick2_pp_phase; /* 0: one pass, as the old build; 1: motion; 2: the tails */
 #define TICK2_PP_MOST 1536
-static long tick2_pp_roots[TICK2_PP_MOST];
+static unsigned short tick2_pp_roots[TICK2_PP_MOST]; /* the roots' absolute indices: the handle is rebuilt from the header in phase 2 (the lead's heap menu (a), 2026-11-23 21:2x) */
 static long tick2_pp_count;
-static unsigned char tick2_pp_skip[MAXIMUM_OBJECTS_PER_MAP]; /* psp_pose_half_skips' answer, from phase 1 */
+static unsigned char tick2_pp_skip[MAXIMUM_OBJECTS_PER_MAP / 8 + 1]; /* psp_pose_half_skips' answer, from phase 1, a bit an object */
+static unsigned char tick2_pp_dead[MAXIMUM_OBJECTS_PER_MAP / 8 + 1]; /* deleted in phase 1: no tail, even if its slot is reused that tick */
 static unsigned char tick2_pp_touched[MAXIMUM_OBJECTS_PER_MAP / 8 + 1]; /* posed on touch this tick */
 static unsigned char tick2_pp_seen[MAXIMUM_OBJECTS_PER_MAP / 8 + 1]; /* listed this tick: the biped stage updates its bipeds in more than one pass */
 #define TICK2_PP_ELEVATORS 64
@@ -60783,10 +60787,15 @@ static int tick2_pp_half_skips(long object_index, struct object_datum *object)
 	int skipped;
 
 	if (tick2_pp_phase == 2 && k < MAXIMUM_OBJECTS_PER_MAP)
-		return tick2_pp_skip[k];
+		return (tick2_pp_skip[k >> 3] >> (k & 7)) & 1;
 	skipped = psp_pose_half_skips(object_index, object);
 	if (tick2_pp_phase == 1 && k < MAXIMUM_OBJECTS_PER_MAP)
-		tick2_pp_skip[k] = (unsigned char)skipped;
+	{
+		if (skipped)
+			tick2_pp_skip[k >> 3] |= (unsigned char)(1 << (k & 7));
+		else
+			tick2_pp_skip[k >> 3] &= (unsigned char)~(1 << (k & 7));
+	}
 	return skipped;
 }
 /* the elevator's sample before it moves: taken in phase 1, read back for the carry in phase 2 */
@@ -60907,6 +60916,7 @@ static void tick2_pp_begin(void)
 	tick2_pp_count = tick2_pp_elev_count = 0;
 	memset(tick2_pp_touched, 0, sizeof(tick2_pp_touched));
 	memset(tick2_pp_seen, 0, sizeof(tick2_pp_seen));
+	memset(tick2_pp_dead, 0, sizeof(tick2_pp_dead));
 	tick2_pp_phase = 1;
 	tick2_pp_ticks++;
 }
@@ -60917,11 +60927,24 @@ static void tick2_pp_run(void)
 
 	tick2_pp_phase = 2;
 	for (k = 0; k < tick2_pp_count; k++)
-		if (object_try_and_get(tick2_pp_roots[k])) /* a root deleted in phase 1 (a projectile that detonated) has no tail */
-			object_update(tick2_pp_roots[k]);
-		else
+	{
+		long index = tick2_pp_roots[k];
+		struct datum_header *header = (struct datum_header *)((byte *)object_header_data->data + object_header_data->size * index);
+
+		/* a root deleted in phase 1 (a projectile that detonated) has no tail, nor has an object that took its slot */
+		if (((tick2_pp_dead[index >> 3] >> (index & 7)) & 1) || !header->identifier)
 			tick2_pp_gone++;
+		else
+			object_update(((long)(unsigned short)header->identifier << 16) | index);
+	}
 	tick2_pp_phase = 0;
+}
+void tick2_pp_deleted(long object_index)
+{
+	long k = object_index & 0xFFFF;
+
+	if (tick2_pp_phase == 1 && k < MAXIMUM_OBJECTS_PER_MAP)
+		tick2_pp_dead[k >> 3] |= (unsigned char)(1 << (k & 7));
 }
 void platform_psp_log(const char *format, ...);
 void tick2_pp_report(const char *label, int level_end)
@@ -61048,7 +61071,7 @@ def tick2_posepass_cut(tree):
 		both phases run back to back at the old moment through the new gates, and the build must be exact against old */
 		if (tick2_pp_count < TICK2_PP_MOST && !PSP_KEEP_ONCE("posepassinline"))
 		{
-			tick2_pp_roots[tick2_pp_count++] = object_index;
+			tick2_pp_roots[tick2_pp_count++] = (unsigned short)(object_index & 0xFFFF);
 			tick2_pp_listed++;
 		}
 		else
@@ -61072,12 +61095,14 @@ def tick2_posepass_cut(tree):
     lean_head = "static boolean psp_object_update_lean(\n\tlong object_index)\n{"
     c = c.replace(lean_head, TICK2_PP_CODE + "\n" + lean_head, 1)
     # the driver: phase 1 around every loop of objects_update, phase 2 before NMSKIP closes
-    for old, new in [("\tpsp_nms_open = psp_nms_begin(); /* psp_fixups.py (FIXES_NMSKIP) */\n",
-                      "\tpsp_nms_open = psp_nms_begin(); /* psp_fixups.py (FIXES_NMSKIP) */\n\ttick2_pp_begin(); /* TICK2 posepass: phase 1 */\n"),
-                     ("\tpsp_nmr_in_update = 0;\n", "\ttick2_pp_run(); /* TICK2 posepass: phase 2, the tails */\n\tpsp_nmr_in_update = 0;\n"),
-                     ("\ttick2_sc_report(label, level_end); /* TICK2 stale census */\n" if TICK2_STALECENSUS else
+    pairs = [("\tpsp_nms_open = psp_nms_begin(); /* psp_fixups.py (FIXES_NMSKIP) */\n",
+              "\tpsp_nms_open = psp_nms_begin(); /* psp_fixups.py (FIXES_NMSKIP) */\n\ttick2_pp_begin(); /* TICK2 posepass: phase 1 */\n"),
+             ("\tpsp_nmr_in_update = 0;\n", "\ttick2_pp_run(); /* TICK2 posepass: phase 2, the tails */\n\tpsp_nmr_in_update = 0;\n")]
+    if TICK2_GCCOUNT: # the pass's report rides the collector's (none in a PSP_TICK2_REPORT=0 build)
+        pairs.append(("\ttick2_sc_report(label, level_end); /* TICK2 stale census */\n" if TICK2_STALECENSUS else
                       "\tif (level_end)\n\t\tmemset(&tick2_gc, 0, sizeof(tick2_gc));\n",
-                      "\ttick2_pp_report(label, level_end); /* TICK2 posepass */\n\tif (level_end)\n\t\tmemset(&tick2_gc, 0, sizeof(tick2_gc));\n")]:
+                      "\ttick2_pp_report(label, level_end); /* TICK2 posepass */\n\tif (level_end)\n\t\tmemset(&tick2_gc, 0, sizeof(tick2_gc));\n"))
+    for old, new in pairs:
         if c.count(old) != 1:
             check_fail("psp_fixups: TICK2 posepass: %r matches %d times" % (old[:50], c.count(old)))
             return 0
@@ -61101,7 +61126,8 @@ def tick2_posepass_cut(tree):
     if h.count(proto) != 1:
         check_fail("psp_fixups: TICK2 posepass: the marker getter's prototype matches %d times" % h.count(proto))
         return 0
-    h = h.replace(proto, proto + r"""/* TICK2 posepass, the experiment posepassread: every getter read goes through tick2_pp_read by file and line */
+    if TICK2_REPORT:
+      h = h.replace(proto, proto + r"""/* TICK2 posepass, the experiment posepassread: every getter read goes through tick2_pp_read by file and line */
 long tick2_pp_read(long object_index, char const *file, int line);
 #define object_get_node_matrices(o) ((object_get_node_matrices)(tick2_pp_read((o), __FILE__, __LINE__)))
 #define object_get_node_matrix(o, n) ((object_get_node_matrix)(tick2_pp_read((o), __FILE__, __LINE__), (n)))
@@ -61115,6 +61141,11 @@ long tick2_pp_read(long object_index, char const *file, int line);
             return 0
         c = c.replace(old, new)
     k = k.replace(ks, "\t\ttick2_pp_touch(object_index); /* TICK2 posepass: posed first if it's stale (the lead 17:5x) */\n" + ks)
+    dd = "\tdatum_delete(data, object_index);\n\tobject_header->datum = NULL;\n"
+    if c.count(dd) != 1:
+        check_fail("psp_fixups: TICK2 posepass: object_header_delete's anchor matches %d times" % c.count(dd))
+        return 0
+    c = c.replace(dd, "\t{ extern void tick2_pp_deleted(long object_index); tick2_pp_deleted(object_index); } /* TICK2 posepass: no tail for a root deleted in phase 1 */\n" + dd)
     if not CHECK_ONLY:
         open(objects_c, "w", errors="surrogateescape").write(c)
         open(objects_h, "w", errors="surrogateescape").write(h)
