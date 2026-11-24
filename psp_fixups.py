@@ -61600,7 +61600,7 @@ posecensus_cut(TREE)
 
 # PSP_PRODCOUNT=1 (the lead 2026-11-23 23:1x: the node-matrix product by unit, before 2a is built; emulator only):
 # every matrix4x3_multiply counted by the unit that runs it (the main CPU's VFPU, its FPU, the ME's FPU), with a line
-# each 1,800 ticks
+# each 300 ticks (a run cut at exitat60 ends before tick 1,800)
 PRODCOUNT = os.environ.get("PSP_PRODCOUNT", "") == "1"
 def prodcount_cut(tree):
     if not PRODCOUNT:
@@ -61635,7 +61635,7 @@ static void psp_prod_report(void)
 	static long last = -1;
 	long now = game_time_get();
 
-	if (now > 0 && now % 1800 == 0 && now != last)
+	if (now > 0 && now % 300 == 0 && now != last)
 	{
 		last = now;
 		platform_psp_log("prodcount: tick %ld, matrix products: the main CPU's VFPU %lu, its FPU %lu, the ME's FPU %lu",
