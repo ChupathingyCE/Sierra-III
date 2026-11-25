@@ -827,6 +827,13 @@ static unsigned char lg_bits[ANGLE_TRIANGLES / 8];
 static unsigned long lg_draws, lg_whole, lg_written_pool, lg_written_list, lg_engine, lg_old, lg_refused[LGR_KINDS],
 	lg_chunks, lg_chunks_held, lg_triangles, lg_triangles_held, lg_one_copy, lg_copies_peak_kb,
 	lg_me_peak_kb, lg_checked, lg_check_buckets, lg_check_copy, lg_check_runs, lg_check_kept;
+/* L2's retry, step 1 (the lab's briefs/me_relief.md, the lead 2026-11-25 02:2x): each copy written, by the first
+reason the held one didn't hold, and each copy written to the list by why the pool didn't take it. The stamp's words
+by index: 0 source, 1 count, 2 original count, 3 bake, 4-6 origin, 7 the textures' mode, 8 triangles, 9 the maps
+opened, 10 the stencil */
+#define LGW_STAMP 11
+static unsigned long lg_why_stamp[LGW_STAMP], lg_why_version, lg_why_data, lg_why_none, lg_why_kept, lg_why_far,
+	lg_why_bucket, lg_why_other, lg_list_large, lg_list_refused;
 
 static int level_geo_on(void)
 {
@@ -1284,6 +1291,7 @@ static const unsigned short *level_geo_sort(struct level_stream *stream, unsigne
 	int fp = detail_all_far ? 0 : far_possible, changed, used, b, valid, k, last_frame_seen = -1;
 	float far_d = fp ? sqrtf(detail_far_squared) : 0.0f, m = 0.0f;
 	const unsigned short *drawn;
+	int why_new = -1, any_kept = 0, any_far = 0, any_bucket = 0; /* L2's retry: why a copy is written */
 
 	*reference = NULL;
 	lg_draws++;
@@ -1328,6 +1336,13 @@ static const unsigned short *level_geo_sort(struct level_stream *stream, unsigne
 	if (!valid)
 	{
 		/* a new list or stream: nothing of the old one holds */
+		if (!e->me)
+			why_new = LGW_STAMP + 1;
+		else if (e->list_version != list_version)
+			why_new = LGW_STAMP;
+		else
+			for (why_new = 0; why_new < LGW_STAMP - 1 && e->stamp[why_new] == stamp[why_new]; why_new++)
+				;
 		if (!e->me || e->me_bytes < need || e->me_bytes > 2 * need + 1024)
 		{
 			lg_free_data(e);
@@ -1394,7 +1409,12 @@ static const unsigned short *level_geo_sort(struct level_stream *stream, unsigne
 		/* bucketed again, from this frame */
 		{
 			float bangle = 1e30f, bfar = 1e30f;
+			int same_kept = (c->state & 1) && c->mask == mask;
 
+			if ((c->state & 1) && !same_kept)
+				any_kept = 1;
+			else if (same_kept && ((c->state >> 1) & 1) != (unsigned int)fp)
+				any_far = 1;
 			for (t = first; t < end; t++)
 			{
 				float sa, sf;
@@ -1403,6 +1423,8 @@ static const unsigned short *level_geo_sort(struct level_stream *stream, unsigne
 				if (!((mask >> (t - first)) & 1u))
 					continue;
 				bucket = lg_bucket_slack(stream->base, indices + 3 * t, fp, detail_far_squared, far_d, &sa, &sf);
+				if (same_kept && buckets[t] != bucket)
+					any_bucket = 1;
 				if (!(c->state & 1) || c->mask != mask || buckets[t] != bucket)
 					changed = 1;
 				buckets[t] = (unsigned char)bucket;
@@ -1435,6 +1457,23 @@ static const unsigned short *level_geo_sort(struct level_stream *stream, unsigne
 			drawn = e->copy;
 		goto done;
 	}
+	/* L2's retry: the first reason the held copy didn't hold */
+	if (why_new == LGW_STAMP + 1)
+		lg_why_data++;
+	else if (why_new == LGW_STAMP)
+		lg_why_version++;
+	else if (why_new >= 0)
+		lg_why_stamp[why_new]++;
+	else if (e->drawn == LG_NONE)
+		lg_why_none++;
+	else if (any_kept)
+		lg_why_kept++;
+	else if (any_far)
+		lg_why_far++;
+	else if (any_bucket)
+		lg_why_bucket++;
+	else
+		lg_why_other++;
 	memset(totals, 0, sizeof(totals));
 	for (t = 0; t < triangle_count; t++)
 		if (lg_kept(bits, t))
@@ -1473,6 +1512,10 @@ static const unsigned short *level_geo_sort(struct level_stream *stream, unsigne
 		{
 			/* the pool full, the old copy not yet past the fence, or a large
 			draw: the copy in the list, as the slant sort writes it */
+			if (kept_count > LG_COPY_MOST)
+				lg_list_large++;
+			else
+				lg_list_refused++;
 			out = (unsigned short *)list_take((int)(bytes + 3) & ~3);
 			if (!out)
 				goto old_way;
@@ -1600,6 +1643,13 @@ static void level_geo_report(void)
 		lg_refused[LGR_UNLISTED], lg_refused[LGR_EYE], lg_chunks_held, lg_chunks, lg_triangles_held, lg_triangles, lg_one_copy, used,
 		LG_ENTRIES, lg_copies.used * LG_COPY_PAGE / 1024, lg_copies_peak_kb, lg_copies.refused,
 		lg_me.used * LG_ME_PAGE / 1024, lg_me_peak_kb, lg_me.refused);
+	platform_log("GE: levelgeowhy: copies written, by the first reason: no data held %lu, the list's version %lu, the stamp's words 0-10 %lu %lu %lu %lu %lu %lu %lu %lu %lu %lu %lu, drawn the old way before %lu, the kept set changed %lu, the far test flipped %lu, buckets moved %lu, other %lu; to the list: too large %lu, the pool refused %lu",
+		lg_why_data, lg_why_version, lg_why_stamp[0], lg_why_stamp[1], lg_why_stamp[2], lg_why_stamp[3], lg_why_stamp[4],
+		lg_why_stamp[5], lg_why_stamp[6], lg_why_stamp[7], lg_why_stamp[8], lg_why_stamp[9], lg_why_stamp[10], lg_why_none,
+		lg_why_kept, lg_why_far, lg_why_bucket, lg_why_other, lg_list_large, lg_list_refused);
+	memset(lg_why_stamp, 0, sizeof(lg_why_stamp));
+	lg_why_version = lg_why_data = lg_why_none = lg_why_kept = lg_why_far = lg_why_bucket = lg_why_other = 0;
+	lg_list_large = lg_list_refused = 0;
 	if (level_geo_checking)
 		platform_log("GE: levelgeocheck: %lu draws checked: %lu buckets differing, %lu copies differing, %lu runs differing, %lu kept sets differing",
 			lg_checked, lg_check_buckets, lg_check_copy, lg_check_runs, lg_check_kept);
