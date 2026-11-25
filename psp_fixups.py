@@ -58880,6 +58880,108 @@ print("psp_fixups: the AI's meters and ballistic record the main CPU's alone in 
 print("psp_fixups: biped motion's window (intent to tail) through the store, %d datum accesses (BIPEDMOVE)" % biped_move_store(TREE))
 print("psp_fixups: the typed getters' words forgotten at %d settings of the tag instance table (TAGMEMO)" % tag_memo_forgets(TREE))
 
+# PSP_FIELDREAD=1: a bench tool for reading which field two runs part in (the lab's audio_lean step 1, the lead
+# 2026-11-25 02:4x). statecrc's "stateblocksN" dumps one record's 64-byte block hashes at tick N, the actor's alone;
+# with "stateblocksany" it dumps each record a "blocksof_<name>" word names (spaces as underscores: blocksof_objects,
+# blocksof_hud_unit_interface), each with a line giving its base address and size, and "stateblockrawB" gives block B
+# of each. "stateobjectmap" adds the object pool's map at the same tick: each object's absolute index, type, datum
+# address, size and tag, so a block of "objects" (the object memory pool, every object's datum; "object" is the
+# header array) that parts names its object and the offset in its datum. A bench tool, so a default build leaves it out.
+FIELDREAD_WANTS = r"""
+/* PSP_FIELDREAD (psp_fixups.py): which records "stateblocksN" dumps. With "stateblocksany", each a "blocksof_<name>"
+word names (the record's name, spaces as underscores); without it, the actor as before */
+static int psp_fieldread_wants(const char *name)
+{
+	char word[64] = "blocksof_";
+	int n;
+
+	if (!psp_keep("stateblocksany"))
+		return strcmp(name, "actor") == 0;
+	for (n = 9; name[n - 9] && n < (int)sizeof(word) - 1; n++)
+		word[n] = name[n - 9] == ' ' ? '_' : name[n - 9];
+	word[n] = 0;
+	return psp_keep(word);
+}
+
+void psp_game_state_hash_tick(long tick)
+"""
+FIELDREAD_OBJECTS = r"""
+/* PSP_FIELDREAD: "stateobjectmap" with "stateblocksN" (game_state.c's statecrc block): each object's datum at tick N, as
+" absolute:type:address:size:tag", so a block of the object pool that parts between two runs names its object and the
+offset in its struct object_datum. Lines kept under the log's 512 bytes */
+void psp_objects_where_dump(long tick)
+{
+	struct object_iterator iterator;
+	struct object_datum *object;
+	char line[480];
+	int length = 0;
+
+	object_iterator_new(&iterator, _object_mask_all, 0);
+	while ((object = (struct object_datum *)object_iterator_next(&iterator)) != NULL)
+	{
+		struct object_header_datum const *header = object_header_get(iterator.index);
+		char const *tag = tag_get_name(object->definition_index);
+		int at, end;
+
+		if (length > 360)
+		{
+			platform_psp_log("state: objects at tick %ld:%s", tick, line);
+			length = 0;
+		}
+		length += snprintf(line + length, sizeof(line) - length, " %ld:%d:%08lx:%d:",
+			(long)DATUM_INDEX_TO_ABSOLUTE_INDEX(iterator.index), (int)header->type, (unsigned long)object, (int)header->data_size);
+		/* the tag's last 40 characters, spaces as underscores */
+		for (end = 0; tag[end]; end++)
+			;
+		for (at = end > 40 ? end - 40 : 0; tag[at] && length < (int)sizeof(line) - 1; at++)
+			line[length++] = tag[at] == ' ' ? '_' : tag[at];
+		line[length] = 0;
+	}
+	if (length)
+		platform_psp_log("state: objects at tick %ld:%s", tick, line);
+}
+"""
+def field_read(tree):
+    if os.environ.get("PSP_FIELDREAD", "") != "1":
+        return 0
+    game_state_c = os.path.join(tree, "source/saved games/game_state.c")
+    objects_c = os.path.join(tree, "source/objects/objects.c")
+    g = open(game_state_c, errors="surrogateescape").read()
+    c = open(objects_c, errors="surrogateescape").read()
+    def swap(text, old, new, where):
+        if text.count(old) != 1:
+            check_fail("psp_fixups: FIELDREAD: %s's anchor %r matches %d times" % (where, old[:60], text.count(old)))
+            return None
+        return text.replace(old, new)
+    g = swap(g, "\nvoid psp_game_state_hash_tick(long tick)\n", FIELDREAD_WANTS, "the hash's head")
+    if g is None: return 0
+    # the dump's section: from its tick test to the records' 30-tick test, every "actor" there is the record's name
+    a = g.index("\t\tif (tick == blocks_at)\n")
+    b = g.index("\t\tif (tick % 30 && !(records_from >= 0", a)
+    part = g[a:b]
+    for old, new in (("\t\t\t\tif (strcmp(psp_state_records[k].name, \"actor\"))\n\t\t\t\t\tcontinue;\n",
+                      "\t\t\t\tif (!psp_fieldread_wants(psp_state_records[k].name))\n\t\t\t\t\tcontinue;\n"
+                      "\t\t\t\tplatform_psp_log(\"state: blocks of %s at tick %ld base %08lx size %ld\", psp_state_records[k].name, tick,\n"
+                      "\t\t\t\t\t(unsigned long)psp_state_records[k].pointer, (long)psp_state_records[k].size);\n"),
+                     ("\"state: blocks of actor at tick %ld:%s\", tick, line", "\"state: blocks of %s at tick %ld:%s\", psp_state_records[k].name, tick, line"),
+                     ("\"state: block %ld of actor at tick %ld:%s\", raw, tick, line", "\"state: block %ld of %s at tick %ld:%s\", raw, psp_state_records[k].name, tick, line")):
+        want = 2 if "blocks of actor" in old else 1
+        if part.count(old) != want:
+            check_fail("psp_fixups: FIELDREAD: the dump's %r matches %d times, not %d" % (old[:50], part.count(old), want))
+            return 0
+        part = part.replace(old, new)
+    part += ("\t\tif (tick == blocks_at && psp_keep(\"stateobjectmap\"))\n\t\t{\n"
+             "\t\t\textern void psp_objects_where_dump(long tick); /* objects.c (psp_fixups.py, PSP_FIELDREAD) */\n\n"
+             "\t\t\tpsp_objects_where_dump(tick);\n\t\t}\n")
+    g = g[:a] + part + g[b:]
+    c += FIELDREAD_OBJECTS
+    if not CHECK_ONLY:
+        open(game_state_c, "w", errors="surrogateescape").write(g)
+        open(objects_c, "w", errors="surrogateescape").write(c)
+    print("psp_fixups: FIELDREAD: stateblocks names any record (stateblocksany, blocksof_<name>), stateobjectmap maps the pool")
+    return 1
+field_read(TREE)
+
 if CHECK_ONLY:
     for message in count_failures:
         print(message)
