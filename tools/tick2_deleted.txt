@@ -56,12 +56,16 @@ psp_bipedstage2_gather_exact	staged	physics/collisions.c (FIXES_BIPEDSTAGE)	4
 psp_bipedstage2_take	staged	physics/collisions.c (FIXES_BIPEDSTAGE)	4
 psp_bipedstage2_end	staged	physics/collisions.c (FIXES_BIPEDSTAGE)	4
 psp_bs2_pack	staged	physics/collisions.c (FIXES_BIPEDSTAGE)	4
-psp_bipedstage3_reset	staged	units/bipeds.c (FIXES_BIPEDSTAGE)	4
-psp_bipedstage3_intent	staged	units/bipeds.c (FIXES_BIPEDSTAGE)	4
-psp_bipedstage3_kept	staged	units/bipeds.c (FIXES_BIPEDSTAGE)	4
-psp_bipedstage3_call	staged	units/bipeds.c (FIXES_BIPEDSTAGE)	4
-psp_bs3_find	staged	units/bipeds.c (FIXES_BIPEDSTAGE)	4
 psp_bslc_tally	staged	objects/objects.c (FIXES_BIPEDSTAGE, the link census)	4
+# the intent's cut and its record: task 4's new pass calls the intent and the
+# solve through a boundary "until task 5", so these five go with biped_update
+# (the lead 2026-11-25 13:3x, the lab's decisions.md; box_world_store.md 18).
+# Still on the list: they count as present until task 5's code deletes them.
+psp_bipedstage3_reset	staged	units/bipeds.c (FIXES_BIPEDSTAGE; the intent's cut, until task 5)	5
+psp_bipedstage3_intent	staged	units/bipeds.c (FIXES_BIPEDSTAGE; the intent's cut, until task 5)	5
+psp_bipedstage3_kept	staged	units/bipeds.c (FIXES_BIPEDSTAGE; the intent's cut, until task 5)	5
+psp_bipedstage3_call	staged	units/bipeds.c (FIXES_BIPEDSTAGE; the intent's cut, until task 5)	5
+psp_bs3_find	staged	units/bipeds.c (FIXES_BIPEDSTAGE; the intent's cut, until task 5)	5
 
 # the node-matrix walk (task 3). Callers outside the tick go to
 # store_node_matrices(slot) (spec §5): projectiles.c, ai/action_obey.c,
