@@ -65259,6 +65259,119 @@ def tick2_posenew_count_cut(tree):
     return 1
 tick2_posenew_count_cut(TREE)
 
+# PSP_TICK2_POSENEW=1, step 5, item 2, second piece (docs/box_world_store.md section 17 'item 2, second piece'): the
+# engine's block reads are the record's. Every object_header_block_get(I, &X->object.F) left in source/ and port/
+# after the move cuts (13 on slice 1's recipe: objects.c 9, render_interpolation.c 2, the limp body, units.c; 14 with
+# C4TRACE's pose dump), F one of the three node references, becomes the store's block by record: store_pose_matrices /
+# _orientations / _originals(X->object.root), objects.h inlines of tick2_pose_block, and the limp body's
+# store_pose_limp_matrices, a writer's form marked "until task 5" (it leaves with the limp body). Exact by
+# construction: for the three references the getter returns tick2_pose_block(header(I)->datum->object.root, F's
+# block), and X is header(I)->datum at every read (object_get(I), header->datum, unit_get(I), or the caller's
+# object_get(I) passed in: each (X, I) pair read in the tree, TICK2_POSENEW_BLOCK_PAIRS; a pair not in it refuses
+# until it's read). None becomes the settling accessor (store_node_matrices): each read is posing's own writer or a
+# raw read (the last tick's pose under render interpolation, B's marker getter, whose caller has made what it reads, C4TRACE's dump),
+# and a settle or the drawn pose there would change what it reads. A read left in another shape refuses, as does a
+# total under 13. The reads in psp/src/store_pose.c's copies (B's make, the root check, NMSKIP's snapshot) are the next
+# piece's, rewritten in objects.c ahead of the move cuts. The last cut, after the count cut.
+TICK2_POSENEW_BLOCK_AFTER = "extern struct tick2_pose_store *tick2_pose_store;\n#define TICK2_POSE_NONE 0xFFFF\n"
+TICK2_POSENEW_BLOCK_INLINES = r"""/* TICK2 posenew step 5, item 2 (docs/box_world_store.md section 17 'item 2, second piece'): an object's node
+blocks are its record's runs in the arena (tick2_pose_block, psp/src/store_pose.c: what the block getter returned for
+the three references). These are posing's own writers and the raw reads; a reader that wants the pose made uses
+store_node_matrices / store_node_matrix, which settle */
+void *tick2_pose_block(struct tick2_root const *record, int which);
+static inline real_matrix4x3 *store_pose_matrices(struct tick2_root const *record)
+{
+	return (real_matrix4x3 *)tick2_pose_block(record, TICK2_POSE_MATRICES);
+}
+static inline real_orientation *store_pose_orientations(struct tick2_root const *record)
+{
+	return (real_orientation *)tick2_pose_block(record, TICK2_POSE_ORIENTATIONS);
+}
+static inline real_orientation *store_pose_originals(struct tick2_root const *record)
+{
+	return (real_orientation *)tick2_pose_block(record, TICK2_POSE_ORIGINALS);
+}
+/* the limp body writes every node: its writer's form, until task 5 (it leaves with the limp body) */
+static inline real_matrix4x3 *store_pose_limp_matrices(struct tick2_root const *record)
+{
+	return (real_matrix4x3 *)tick2_pose_block(record, TICK2_POSE_MATRICES);
+}
+"""
+TICK2_POSENEW_BLOCK_NAMES = {"node_matrices": "store_pose_matrices", "node_orientations": "store_pose_orientations",
+                             "original_node_orientations": "store_pose_originals"}
+TICK2_POSENEW_BLOCK_LIMP = "source/units/biped_limp_noodle.c"
+TICK2_POSENEW_BLOCK_READ = (r"object_header_block_get\(\s*(\w+),\s*&(\w+|object_get\((\w+)\))->object\."
+                            r"(node_matrices|node_orientations|original_node_orientations)\s*\)")
+# (file, X, I) for a plain-name X, each read in the tree: X is I's datum there. object_get(I) needs no row
+TICK2_POSENEW_BLOCK_PAIRS = {
+    ("source/objects/objects.c", "object", "object_index"),  # object_get(object_index), header->datum, or the
+                                                             # caller's object_get(object_index) (anim_pose_gather,
+                                                             # store_pose_now_cs from store_pose_now_with's callers)
+    ("source/objects/objects.c", "object", "index"),  # C4TRACE's dump: header->datum of the header at index
+    ("source/units/biped_limp_noodle.c", "object", "biped_index"),  # object_get(biped_index)
+    ("source/units/units.c", "unit", "unit_index")}  # unit_get(unit_index)
+TICK2_POSENEW_BLOCK_LEFT = r"object_header_block_get\([^;]*\b(node_matrices|node_orientations|original_node_orientations)\b"
+TICK2_POSENEW_BLOCK_READS = 13  # at least: slice 1's recipe without C4TRACE
+def tick2_posenew_block_cut(tree):
+    if not TICK2_POSENEW or STORECOUNT:
+        return 0
+    objects_h = os.path.join(tree, "source/objects/objects.h")
+    h = open(objects_h, errors="surrogateescape").read()
+    if "store_pose_matrices" in h or h.count(TICK2_POSENEW_BLOCK_AFTER) != 1:
+        check_fail("psp_fixups: TICK2 posenew step 5 (item 2, block reads): objects.h's TICK2_POSE_NONE anchor matches "
+                   "%d times, or store_pose_matrices is already there" % h.count(TICK2_POSENEW_BLOCK_AFTER))
+        return 0
+    h = h.replace(TICK2_POSENEW_BLOCK_AFTER, TICK2_POSENEW_BLOCK_AFTER + TICK2_POSENEW_BLOCK_INLINES)
+    count, changed, refused = 0, {}, []
+    for top in ("source", "port"):
+        for root, dirs, names in os.walk(os.path.join(tree, top)):
+            for name in names:
+                if not name.endswith((".c", ".h")):
+                    continue
+                path = os.path.join(root, name)
+                rel = os.path.relpath(path, tree).replace(os.sep, "/")
+                text = h if path == objects_h else open(path, errors="surrogateescape").read()
+                if "object_header_block_get" not in text:
+                    continue
+                def one(m, rel=rel):
+                    index, owner, got, field = m.group(1), m.group(2), m.group(3), m.group(4)
+                    if got is not None and got != index:
+                        refused.append("%s: object_get(%s) with index %s" % (rel, got, index))
+                    elif got is None and (rel, owner, index) not in TICK2_POSENEW_BLOCK_PAIRS:
+                        refused.append("%s: %s with index %s (a pair not read: read it and add it to "
+                                       "TICK2_POSENEW_BLOCK_PAIRS)" % (rel, owner, index))
+                    accessor = TICK2_POSENEW_BLOCK_NAMES[field]
+                    if rel == TICK2_POSENEW_BLOCK_LIMP:
+                        if field != "node_matrices":
+                            refused.append("%s: the limp body reads %s" % (rel, field))
+                        accessor = "store_pose_limp_matrices"
+                    return "%s(%s->object.root)" % (accessor, owner)
+                text, k = re.subn(TICK2_POSENEW_BLOCK_READ, one, text)
+                if refused:
+                    check_fail("psp_fixups: TICK2 posenew step 5 (item 2, block reads): " + refused[0])
+                    return 0
+                left = re.findall(TICK2_POSENEW_BLOCK_LEFT, tick2_posenew_code_only(text))
+                if left:
+                    check_fail("psp_fixups: TICK2 posenew step 5 (item 2, block reads): %s reads the %s block in a shape "
+                               "the cut doesn't know" % (rel, left[0]))
+                    return 0
+                if k:
+                    count += k
+                    changed[path] = text
+    if count < TICK2_POSENEW_BLOCK_READS:
+        check_fail("psp_fixups: TICK2 posenew step 5 (item 2, block reads): %d block reads rewritten, fewer than slice "
+                   "1's %d (a cut removed one: read it and set the floor)" % (count, TICK2_POSENEW_BLOCK_READS))
+        return 0
+    h = changed.pop(objects_h, h)
+    if not CHECK_ONLY:
+        for path, text in changed.items():
+            open(path, "w", errors="surrogateescape").write(text)
+        open(objects_h, "w", errors="surrogateescape").write(h)
+    print("psp_fixups: TICK2 posenew step 5 (item 2): the engine's block reads are the record's, %d reads in %d files"
+          % (count, len(changed)))
+    return 1
+tick2_posenew_block_cut(TREE)
+
 if CHECK_ONLY:
     for message in count_failures:
         print(message)
