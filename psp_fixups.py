@@ -60346,6 +60346,13 @@ print("psp_fixups: the world store's proof form: %s (TICK2 proof)" % ("on" if ti
 
 # every section's overflow chunks through one pair: counted for the census (the churn the PSP prices at
 # the milestone), and from the heap in the proof form so the pool holds only the old build's blocks
+def tick2_chunk_calls(text):
+    """a section's pool calls for its overflow chunks, as the pair's: (text, takes, gives). Step 5's move
+    (tick2_posenew_move_cut) reads POSE's code as this left it in objects.c"""
+    import re
+    text, took = re.subn(r"memory_pool_block_allocate\(object_memory_pool, (\(void \*\*\)&[\w>\-]*chunk\[\w+\]),", r"tick2_chunk_take(\1,", text)
+    text, gave = re.subn(r"memory_pool_block_free\(object_memory_pool, (\(void \*\*\)&[\w>\-]*chunk\[\w+\])\)", r"tick2_chunk_give(\1)", text)
+    return text, took, gave
 def tick2_chunk_cut(tree):
     if not TICK2_ROOT:
         return 0
@@ -60356,8 +60363,7 @@ def tick2_chunk_cut(tree):
     if text.count(first) != 1:
         check_fail("psp_fixups: TICK2 chunks: the store's pointer matches %d times" % text.count(first))
         return 0
-    text, took = re.subn(r"memory_pool_block_allocate\(object_memory_pool, (\(void \*\*\)&[\w>\-]*chunk\[\w+\]),", r"tick2_chunk_take(\1,", text)
-    text, gave = re.subn(r"memory_pool_block_free\(object_memory_pool, (\(void \*\*\)&[\w>\-]*chunk\[\w+\])\)", r"tick2_chunk_give(\1)", text)
+    text, took, gave = tick2_chunk_calls(text)
     sections = 1 + TICK2_UNIT + TICK2_POSE
     if took != sections or gave != sections:
         check_fail("psp_fixups: TICK2 chunks: %d takes and %d gives, not %d" % (took, gave, sections))
@@ -64601,6 +64607,81 @@ def tick2_posenew_demand_cut(tree):
     print("psp_fixups: TICK2 posenew step 4: posing on demand is the store's (%d names), the 7 posing names poisoned" % count)
     return 1
 tick2_posenew_demand_cut(TREE)
+
+# PSP_TICK2_POSENEW=1, step 5, item 1 (docs/box_world_store.md section 17 step 5, accepted by the lead 2026-11-25 07:5x
+# with Q1 (b)): the store's posing code moves to psp/src/store_pose.c, piece by piece, each moved verbatim, so each is
+# exact by construction. This piece is POSE's arena allocator: TICK2_POSE_CODE, as tick2_pose_cut put it in objects.c
+# and tick2_chunk_cut routed its pool calls. objects.c loses the text and keeps the four declarations its callers need
+# (the take in object_new, the give where an object goes, the block getter, the collector's spare count), and the two
+# overflow-chunk calls the allocator makes lose their static. store_pose.c holds the same text, those four functions'
+# static dropped, between its two markers, and the cut refuses if the two differ, so TICK2_POSE_CODE can't change and
+# leave the file behind. psp/src units aren't LTO units (psp_build.py lto_unit), so until the accessors move beside it
+# the block getter is a call across units [U: the pair prices it]. PSP_STORECOUNT=1 (an emulator census that wraps
+# the block getter) isn't built with step 5. The last cut, after step 4's.
+TICK2_POSENEW_STORE_POSE_C = os.path.join(os.path.dirname(os.path.abspath(__file__)), "psp", "src", "store_pose.c")
+TICK2_POSENEW_MOVED_BEGIN = "/* ---- moved from objects.c (psp_fixups.py TICK2_POSE_CODE, after tick2_chunk_calls): begin ---- */\n"
+TICK2_POSENEW_MOVED_END = "/* ---- moved from objects.c: end ---- */\n"
+TICK2_POSENEW_MOVED_EXPORTS = ("static unsigned short tick2_pose_take(struct tick2_pose_run *run, long count)\n",
+                               "static void tick2_pose_give(struct tick2_root *record)\n",
+                               "static void *tick2_pose_block(struct tick2_root const *record, int which)\n",
+                               "static long tick2_pose_spare_bytes(void)\n")
+TICK2_POSENEW_MOVED_DECL = r"""
+/* TICK2 posenew step 5: POSE's arena allocator is the store's, in psp/src/store_pose.c (moved verbatim) */
+unsigned short tick2_pose_take(struct tick2_pose_run *run, long count);
+void tick2_pose_give(struct tick2_root *record);
+void *tick2_pose_block(struct tick2_root const *record, int which);
+long tick2_pose_spare_bytes(void);
+"""
+TICK2_POSENEW_CHUNK_CALLS = ("static boolean tick2_chunk_take(void **reference, long size)\n",
+                             "static void tick2_chunk_give(void **reference)\n")
+def tick2_posenew_moved_text():
+    """the allocator as objects.c holds it, and as store_pose.c must hold it (its four exports' static dropped)"""
+    in_tree, took, gave = tick2_chunk_calls(TICK2_POSE_CODE)
+    if took != 1 or gave != 1:
+        check_fail("psp_fixups: TICK2 posenew step 5: TICK2_POSE_CODE has %d chunk takes and %d gives, not 1" % (took, gave))
+        return None, None
+    moved = in_tree
+    for head in TICK2_POSENEW_MOVED_EXPORTS:
+        if moved.count(head) != 1:
+            check_fail("psp_fixups: TICK2 posenew step 5: TICK2_POSE_CODE has %r %d times" % (head.strip(), moved.count(head)))
+            return None, None
+        moved = moved.replace(head, head[len("static "):])
+    return in_tree, moved
+def tick2_posenew_move_cut(tree):
+    if not TICK2_POSENEW:
+        return 0
+    if STORECOUNT:
+        check_fail("psp_fixups: TICK2 posenew step 5: PSP_STORECOUNT=1 wraps the block getter step 5 moves; build it without PSP_TICK2_POSENEW")
+        return 0
+    in_tree, moved = tick2_posenew_moved_text()
+    if in_tree is None:
+        return 0
+    objects_c = os.path.join(tree, "source/objects/objects.c")
+    c = open(objects_c, errors="surrogateescape").read()
+    if c.count(in_tree) != 1:
+        check_fail("psp_fixups: TICK2 posenew step 5: POSE's allocator is in objects.c %d times as TICK2_POSE_CODE put it "
+                   "(a later cut edited it: move that edit into TICK2_POSE_CODE)" % c.count(in_tree))
+        return 0
+    store = open(TICK2_POSENEW_STORE_POSE_C, errors="surrogateescape").read()
+    if store.count(TICK2_POSENEW_MOVED_BEGIN) != 1 or store.count(TICK2_POSENEW_MOVED_END) != 1:
+        check_fail("psp_fixups: TICK2 posenew step 5: psp/src/store_pose.c's moved-text markers aren't there once each")
+        return 0
+    held = store[store.index(TICK2_POSENEW_MOVED_BEGIN) + len(TICK2_POSENEW_MOVED_BEGIN):store.index(TICK2_POSENEW_MOVED_END)]
+    if held != moved:
+        check_fail("psp_fixups: TICK2 posenew step 5: psp/src/store_pose.c's allocator isn't TICK2_POSE_CODE's "
+                   "(the two must change together)")
+        return 0
+    c = c.replace(in_tree, TICK2_POSENEW_MOVED_DECL)
+    for head in TICK2_POSENEW_CHUNK_CALLS:
+        if c.count(head) != 1:
+            check_fail("psp_fixups: TICK2 posenew step 5: %r is in objects.c %d times" % (head.strip(), c.count(head)))
+            return 0
+        c = c.replace(head, head[len("static "):])
+    if not CHECK_ONLY:
+        open(objects_c, "w", errors="surrogateescape").write(c)
+    print("psp_fixups: TICK2 posenew step 5: POSE's arena allocator moved to psp/src/store_pose.c (%d lines)" % in_tree.count("\n"))
+    return 1
+tick2_posenew_move_cut(TREE)
 
 if CHECK_ONLY:
     for message in count_failures:

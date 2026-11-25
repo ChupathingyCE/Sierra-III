@@ -614,6 +614,11 @@ def units():
     if not INTERPOLATION:
         items.append((os.path.join(HERE, "psp/src/psp_nointerp.c"),
                       ninja_flags("build/linux/obj/port/linux/game/render_interpolation.o"), []))
+    # slice 1's task 3, step 5 (PSP_TICK2_POSENEW=1; psp_fixups.py tick2_posenew_move_cut): the world store's
+    # posing code, moved out of objects.c, built as objects.c is (its flags, the fixed-up objects.h)
+    if os.environ.get("PSP_TICK2_POSENEW", "") == "1":
+        items.append((os.path.join(HERE, "psp/src/store_pose.c"),
+                      ninja_flags("build/linux/obj/source/objects/objects.o"), []))
     items.append((os.path.join(HERE, "psp/src/psp_chupa_platform.c"),
                   ninja_flags("build/linux/obj/port/linux/src/sdl_platform.o"), compat))
     # build 108: built as pal_tags.c is, the other in-place fix of a map's tags
