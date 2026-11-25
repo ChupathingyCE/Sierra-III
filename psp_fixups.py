@@ -64454,6 +64454,77 @@ def tick2_posenew_store_cut(tree):
     return 1
 tick2_posenew_store_cut(TREE)
 
+# PSP_TICK2_POSENEW=1, step 3 (docs/box_world_store.md section 17): outside readers take a pose through the store's
+# accessors only. The engine's two getters' bodies become store_node_matrices and store_node_matrix (step 1's
+# thunks go), and every call, macro and the address taken in object_attach_to_node follow the name, in
+# source/ and port/ alike: 38 calls in 17 files in the fixed-up tree (section 17 read ~33 in 15 at the pin). Exact
+# by construction: the same bodies at the same sites, so the readers' note (__builtin_return_address) still names
+# the caller, not a thunk. The answer is const (spec section 9): the engine builds with -w, so a reader holding it
+# in a plain pointer only warns; the one function pointer that takes the getter gets the const type (GCC 14 refuses
+# incompatible pointer types). The last cut, after step 2's, so it renames the text every other cut has written.
+TICK2_POSENEW_READ_RENAMES = [("object_get_node_matrices", "store_node_matrices"),
+                              ("object_get_node_matrix", "store_node_matrix")]
+def tick2_posenew_read_cut(tree):
+    if not TICK2_POSENEW:
+        return 0
+    objects_c = os.path.join(tree, "source/objects/objects.c")
+    objects_h = os.path.join(tree, "source/objects/objects.h")
+    c = open(objects_c, errors="surrogateescape").read()
+    h = open(objects_h, errors="surrogateescape").read()
+    def drop(text, piece, where):
+        if text.count(piece) != 1:
+            check_fail("psp_fixups: TICK2 posenew step 3: %s's anchor %r matches %d times" % (where, piece[:60], text.count(piece)))
+            return None
+        return text.replace(piece, "")
+    # step 1's thunks and the getters' own prototypes go; step 1's const prototypes are the accessors'
+    c = drop(c, TICK2_POSENEW_ACCESSORS, "the step 1 accessors")
+    if c is None: return 0
+    for proto in ("real_matrix4x3 *object_get_node_matrices(long object_index);\n",
+                  "real_matrix4x3 *object_get_node_matrix(long object_index, short node_index);\n"):
+        h = drop(h, proto, "objects.h")
+        if h is None: return 0
+    pointer = "\treal_matrix4x3 *(*get_node_matrix)(\n\t\tlong,\n\t\tshort) = object_get_node_matrix;\n"
+    if c.count(pointer) != 1:
+        check_fail("psp_fixups: TICK2 posenew step 3: the attach's getter pointer matches %d times" % c.count(pointer))
+        return 0
+    c = c.replace(pointer, pointer.replace("real_matrix4x3 *(*", "real_matrix4x3 const *(*"))
+    # every name in the engine and the port
+    count, files = 0, 0
+    for top in ("source", "port"):
+        for root, dirs, names in os.walk(os.path.join(tree, top)):
+            for name in names:
+                if not name.endswith((".c", ".h")):
+                    continue
+                path = os.path.join(root, name)
+                text = c if path == objects_c else h if path == objects_h else open(path, errors="surrogateescape").read()
+                if "object_get_node_matri" not in text:
+                    continue
+                renamed = text
+                for old, now in TICK2_POSENEW_READ_RENAMES:
+                    renamed, k = re.subn(r"\b%s\b" % old, now, renamed)
+                    count += k
+                files += 1
+                if path == objects_c:
+                    c = renamed
+                elif path == objects_h:
+                    h = renamed
+                elif not CHECK_ONLY:
+                    open(path, "w", errors="surrogateescape").write(renamed)
+    # the definitions answer const, plain or in parentheses (posepass's and POSECENSUS's wrappers)
+    c, k = re.subn(r"^real_matrix4x3 \*(\(?store_node_matri(?:ces|x)\)?\(\n)", r"real_matrix4x3 const *\1", c, flags=re.M)
+    if k != 2:
+        check_fail("psp_fixups: TICK2 posenew step 3: %d accessor definitions made const, not 2" % k)
+        return 0
+    if "object_get_node_matri" in c or "object_get_node_matri" in h:
+        check_fail("psp_fixups: TICK2 posenew step 3: a getter's name is left in objects.c or objects.h")
+        return 0
+    if not CHECK_ONLY:
+        open(objects_c, "w", errors="surrogateescape").write(c)
+        open(objects_h, "w", errors="surrogateescape").write(h)
+    print("psp_fixups: TICK2 posenew step 3: the getters are the store's accessors, %d names in %d files" % (count, files))
+    return 1
+tick2_posenew_read_cut(TREE)
+
 if CHECK_ONLY:
     for message in count_failures:
         print(message)
