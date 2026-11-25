@@ -64525,6 +64525,83 @@ def tick2_posenew_read_cut(tree):
     return 1
 tick2_posenew_read_cut(TREE)
 
+# PSP_TICK2_POSENEW=1, step 4 (docs/box_world_store.md section 17): posing on demand is the store's, and task 2's
+# seven posing names are gone and poisoned. The port's demand code (FIXES_BOXPOSING's psp_box_pose, means B's
+# psp_boxb_settle, FIXES_NMSKIP's psp_nms_settle and psp_nms_settle_absolute) takes the store's names with its bodies
+# unchanged, and so does every test that reaches it: the accessors' store_pose_settle_in, the make before an object
+# leaves the walk, B's make ahead of the IK, the settle-all before a saved state and the hash, the marker getter's
+# partial read (B's nodes, then NMSKIP's, as before: no reason read to change it) and the limp body's psp_boxb_whole
+# (task 5 takes it). The names live in objects.c alone; the walk's three went in step 2. Then objects.h poisons all
+# seven (#pragma GCC poison), so a reference in any unit that includes it fails the compile: done-when 2's count is
+# the build itself. Exact by construction (same bodies, same sites, same noinline, so the readers' note and B's site
+# note still name the reader). The last cut, after step 3's.
+TICK2_POSENEW_DEMAND_RENAMES = [("psp_nms_settle_absolute", "store_pose_make_skipped_at"),
+                                ("psp_nms_settle", "store_pose_make_skipped"),
+                                ("psp_boxb_settle", "store_pose_make_nodes"),
+                                ("psp_box_pose", "store_pose_box")]
+TICK2_POSENEW_POISONED = ("object_compute_node_matrices", "object_compute_node_matrices_with",
+                          "object_compute_node_matrices_recursive", "psp_box_pose", "psp_boxb_settle", "psp_nms_settle",
+                          "psp_nms_settle_absolute")
+TICK2_POSENEW_POISON = ("#ifdef HALO_PSP\n/* TICK2 posenew step 4 (slice 1's task 3; docs/box_world_store.md section 17): the "
+    "engine's walk and the port's posing on demand are gone from this build, and only the store poses. A reference to any of "
+    "them fails the compile (Sierra-III tools/tick2_deleted.txt; the lab's slice1_finish done-when 2) */\n"
+    "#pragma GCC poison %s\n#pragma GCC poison %s\n#endif\n\n") % (" ".join(TICK2_POSENEW_POISONED[:3]),
+                                                                   " ".join(TICK2_POSENEW_POISONED[3:]))
+TICK2_POSENEW_SETTLE_NOTE = "store_pose_settle is the one place a read makes them."
+TICK2_POSENEW_SETTLE_NOTE_NOW = ("store_pose_settle is the one place an outside read makes them; the store's own reads (an object leaving\n"
+    "the walk, B ahead of the IK, the settle-all, the marker getter's partial read) call the same makes,\n"
+    "store_pose_make_skipped and store_pose_make_nodes.")
+def tick2_posenew_code_only(text):
+    """C text with its comments, strings and character constants blanked: a poisoned name counts only in code"""
+    return re.sub(r"/\*.*?\*/|//[^\n]*|\"(?:\\.|[^\"\\\n])*\"|'(?:\\.|[^'\\\n])*'", " ", text, flags=re.S)
+def tick2_posenew_demand_cut(tree):
+    if not TICK2_POSENEW:
+        return 0
+    objects_c = os.path.join(tree, "source/objects/objects.c")
+    objects_h = os.path.join(tree, "source/objects/objects.h")
+    c = open(objects_c, errors="surrogateescape").read()
+    h = open(objects_h, errors="surrogateescape").read()
+    count = 0
+    for old, now in TICK2_POSENEW_DEMAND_RENAMES:
+        if re.search(r"\b%s\b" % now, c):
+            check_fail("psp_fixups: TICK2 posenew step 4: the store's name %s is already in objects.c" % now)
+            return 0
+        c, k = re.subn(r"\b%s\b" % old, now, c)
+        if k == 0:
+            check_fail("psp_fixups: TICK2 posenew step 4: %s isn't in objects.c" % old)
+            return 0
+        count += k
+    if c.count(TICK2_POSENEW_SETTLE_NOTE) != 1:
+        check_fail("psp_fixups: TICK2 posenew step 4: store_pose_settle's note matches %d times" % c.count(TICK2_POSENEW_SETTLE_NOTE))
+        return 0
+    c = c.replace(TICK2_POSENEW_SETTLE_NOTE, TICK2_POSENEW_SETTLE_NOTE_NOW)
+    # no code reference to the seven is left in the engine or the port, before they're poisoned
+    names = re.compile(r"\b(?:%s)\b" % "|".join(TICK2_POSENEW_POISONED))
+    left = []
+    for top in ("source", "port"):
+        for root, dirs, files in os.walk(os.path.join(tree, top)):
+            for name in files:
+                if not name.endswith((".c", ".h")):
+                    continue
+                path = os.path.join(root, name)
+                text = c if path == objects_c else h if path == objects_h else open(path, errors="surrogateescape").read()
+                for hit in names.findall(tick2_posenew_code_only(text)):
+                    left.append("%s: %s" % (os.path.relpath(path, tree), hit))
+    if left:
+        check_fail("psp_fixups: TICK2 posenew step 4: %d references left to poison: %s" % (len(left), ", ".join(left[:8])))
+        return 0
+    guard = "\n#endif // __OBJECTS_H"
+    if h.count(guard) != 1:
+        check_fail("psp_fixups: TICK2 posenew step 4: objects.h's closing guard matches %d times" % h.count(guard))
+        return 0
+    h = h.replace(guard, "\n" + TICK2_POSENEW_POISON + guard.lstrip("\n"))
+    if not CHECK_ONLY:
+        open(objects_c, "w", errors="surrogateescape").write(c)
+        open(objects_h, "w", errors="surrogateescape").write(h)
+    print("psp_fixups: TICK2 posenew step 4: posing on demand is the store's (%d names), the 7 posing names poisoned" % count)
+    return 1
+tick2_posenew_demand_cut(TREE)
+
 if CHECK_ONLY:
     for message in count_failures:
         print(message)
