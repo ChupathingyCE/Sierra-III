@@ -7,7 +7,10 @@ piece 1: bipedstage2's block moved here out of collisions.c, verbatim, read from
 (psp_fixups.py tick2_collnew_move_cut refuses the build if the text here and the text it takes out differ). The six
 names it defines are renamed at every call (store_coll_begin, _gather, _gather_margin, _take, _end, the static
 _pack); nothing else changes, so play is exact by construction. Piece 2 (after the moved block) is the store's biped
-pass in place of the run (objects.c); the move's take (collision_move_pill) stays where it is until piece 3.
+pass in place of the run (objects.c). Piece 3 (after the pass's markers' block) is the physics' two entries:
+store_coll_move, collision_move_pill as the cuts before left it with the take, moved verbatim (tick2_collnew_movecall_cut
+refuses the build if it differs), and store_coll_stand, the stand test's two engine calls; the view's type is the
+header's.
 
 What the table is, already as section 18 asks: dense in gather order (psp_bs2_slot, psp_bs2_slots), a biped-to-position
 map (psp_bs2_slot_of), the reach guard's fields on positions 0-31 (each entry's sr_clusters, sr_seq and sr_met, and
@@ -24,6 +27,7 @@ Built only with PSP_TICK2_COLLNEW=1 (psp_build.py), as collisions.c is: its flag
 #include "math/real_math.h"
 #include "physics/collisions.h"
 #include "physics/collision_features.h"
+#include "physics/collision_usage.h" /* the move's collision user stack (piece 3) */
 #include "objects/objects.h"
 #include "units/bipeds.h"
 #include "psp_sweepme.h" /* the ME's gather record the exact gather names (FIXES_SWEEPME) */
@@ -70,13 +74,7 @@ extern struct collision_feature_list *psp_stackhot_list[2];
 /* the move's packed list read where it lies (collision_features.c's
 collision_features_test_vector reads through it for that list only), not
 copied back into the shared one; keep word bipedstage2copy copies as before */
-struct psp_bs2_view
-{
-	void const *list;
-	struct collision_sphere const *spheres;
-	struct collision_cylinder const *cylinders;
-	struct collision_prism const *prisms;
-} psp_bs2_view;
+struct psp_bs2_view psp_bs2_view; /* its type: psp/include/store_coll.h (TICK2 collnew, piece 3) */
 static int psp_bs2_copy = -1;
 
 int store_coll_begin(void)
@@ -366,4 +364,146 @@ void store_biped_pass(void)
 	psp_sweepme_end(); /* (FIXES_SWEEPME) */
 	store_biped_solve_until_task5();
 	store_coll_end();
+}
+
+/* ---- moved from collisions.c (collision_move_pill with the take, as every cut before left it): begin ---- */
+short store_coll_move(
+	unsigned long flags,
+	real_point3d const *position,
+	real_vector3d const *velocity,
+	real height,
+	real radius,
+	long ignore_object_index,
+	real_point3d *clipped_position,
+	real_vector3d *clipped_velocity,
+	short maximum_collision_count,
+	struct collision_plane *collisions)
+{
+	short result = FALSE;
+	/* psp_fixups.py (FIXES_STACKHOT2): level 1's shared list */
+	extern struct collision_feature_list *psp_stackhot_list[2];
+#define features (*psp_stackhot_list[1])
+	real_point3d center;
+
+	match_assert("c:\\halo\\SOURCE\\physics\\collisions.c", 1214, COLLISION_USER_DEPTH < MAXIMUM_COLLISION_USER_STACK_DEPTH);
+	COLLISION_USER_PUSH(7);
+
+	center.x = position->x + velocity->i * 0.5f;
+	center.y = position->y + velocity->j * 0.5f;
+	center.z = height * 0.5f + (position->z + velocity->k * 0.5f);
+
+	int psp_bs2_took = psp_bs2_slots ? store_coll_take(flags, &center, magnitude3d(velocity) * 0.5f + height * 0.5f + radius,
+		height, radius, ignore_object_index, &features) : 0;
+
+	if (psp_bs2_took == 1 || (psp_bs2_took == 0 && collision_get_features_in_sphere(
+		flags,
+		&center,
+		magnitude3d(velocity) * 0.5f + height * 0.5f + radius,
+		height,
+		radius,
+		ignore_object_index,
+		&features)))
+	{
+		/* (FIXES_BIPEDSTAGE) "gathercensus": slice 2's gather sized, the features
+		one move's gather finds by kind, so the box's per-biped list can be packed */
+		static int psp_gc_on = -1;
+		static unsigned long psp_gc_calls, psp_gc_sum[3], psp_gc_max[3], psp_gc_bytes_max, psp_gc_bytes_sum, psp_gc_over[4];
+		int psp_keep(const char *name);
+		int psp_keep_loaded(void);
+		void platform_psp_log(const char *format, ...);
+
+		if (psp_gc_on < 0 && psp_keep_loaded())
+			psp_gc_on = psp_keep("gathercensus");
+		if (psp_gc_on > 0)
+		{
+			unsigned long bytes = 0, k;
+			for (k = 0; k < 3; k++)
+			{
+				unsigned long n = (unsigned long)features.count[k];
+				psp_gc_sum[k] += n;
+				if (n > psp_gc_max[k])
+					psp_gc_max[k] = n;
+			}
+			bytes = features.count[_collision_feature_sphere] * sizeof(struct collision_sphere) +
+				features.count[_collision_feature_cylinder] * sizeof(struct collision_cylinder) +
+				features.count[_collision_feature_prism] * sizeof(struct collision_prism);
+			psp_gc_bytes_sum += bytes;
+			if (bytes > psp_gc_bytes_max)
+				psp_gc_bytes_max = bytes;
+			psp_gc_over[bytes > 4096 ? 3 : bytes > 2048 ? 2 : bytes > 1024 ? 1 : 0]++;
+			if (++psp_gc_calls % 2000 == 0)
+				platform_psp_log("gathercensus: %lu gathers; a gather's features: spheres %lu.%02lu (max %lu), cylinders %lu.%02lu (max %lu), prisms %lu.%02lu (max %lu); bytes a gather %lu (max %lu); <=1K %lu, <=2K %lu, <=4K %lu, >4K %lu",
+					psp_gc_calls,
+					psp_gc_sum[0] / psp_gc_calls, psp_gc_sum[0] * 100 / psp_gc_calls % 100, psp_gc_max[0],
+					psp_gc_sum[1] / psp_gc_calls, psp_gc_sum[1] * 100 / psp_gc_calls % 100, psp_gc_max[1],
+					psp_gc_sum[2] / psp_gc_calls, psp_gc_sum[2] * 100 / psp_gc_calls % 100, psp_gc_max[2],
+					psp_gc_bytes_sum / psp_gc_calls, psp_gc_bytes_max,
+					psp_gc_over[0], psp_gc_over[1], psp_gc_over[2], psp_gc_over[3]);
+		}
+		result = collision_move_point(
+			position,
+			velocity,
+			&features,
+			clipped_position,
+			clipped_velocity,
+			maximum_collision_count,
+			collisions);
+	}
+	else
+	{
+		add_vectors3d(
+			(real_vector3d const *)position,
+			velocity,
+			(real_vector3d *)clipped_position);
+		*clipped_velocity = *velocity;
+	}
+
+	psp_bs2_view.list = NULL; /* (FIXES_BIPEDSTAGE) the move's packed list is done with */
+	match_assert("c:\\halo\\SOURCE\\physics\\collisions.c", 1230, COLLISION_USER_DEPTH > 1);
+	COLLISION_USER_POP();
+
+	return result;
+}
+#undef features /* psp_fixups.py (FIXES_STACKHOT2) */
+/* ---- moved from collisions.c: the move: finish ---- */
+
+/* piece 3: the stand test of a crouched biped trying to stand (biped_update_physics), the engine's two calls in the
+same order on the same list (level 0's, FIXES_STACKHOT2): the world's features in the standing pill's sphere, then the
+standing vector against them. TRUE when it meets something (the caller sets cannot-stand, as the engine did). The
+standing height is the caller's expression, collision_height_standing - 2 * collision_radius, passed in; the
+engine made it only after a gather found something, which reads nothing it writes. Until task 5 */
+boolean store_coll_stand(unsigned long flags, real_point3d const *center, real radius, real width,
+	long biped_index, real_point3d const *position, real standing_height)
+{
+	extern struct collision_feature_list *psp_stackhot_list[2];
+#define features (*psp_stackhot_list[0])
+	boolean result = FALSE;
+
+	if (collision_get_features_in_sphere(
+		flags,
+		center,
+		radius,
+		0.f,
+		width,
+		biped_index,
+		&features))
+	{
+		real_vector3d standing_vector;
+		struct collision_plane collision;
+
+		scale_vector3d(
+			global_up3d,
+			standing_height,
+			&standing_vector);
+		if (collision_features_test_vector(
+			&features,
+			position,
+			&standing_vector,
+			&collision))
+		{
+			result = TRUE;
+		}
+	}
+#undef features
+	return result;
 }

@@ -65950,6 +65950,10 @@ TICK2_COLLNEW_SWEEPME = ("/* (FIXES_SWEEPME) the tick's batch opened on the leve
 TICK2_COLLNEW_CALL_DECL = ("int psp_bipedstage3_call(long biped_index, unsigned long *flags, real_point3d *position,\n"
                            "\treal_vector3d *velocity, real *height, real *width); /* bipeds.c (FIXES_BIPEDSTAGE) */\n")
 TICK2_COLLNEW_VIEW = ("struct psp_bs2_view\n{\n", "} psp_bs2_view;\n")
+# piece 3: the copy defines the view's variable only; its type and declaration are store_coll.h's, between these markers
+TICK2_COLLNEW_VIEW_VAR = "struct psp_bs2_view psp_bs2_view; /* its type: psp/include/store_coll.h (TICK2 collnew, piece 3) */\n"
+TICK2_COLLNEW_VIEW_H_BEGIN = "/* ---- moved from collisions.c (FIXES_BIPEDSTAGE's view of a taken list): begin ---- */\n"
+TICK2_COLLNEW_VIEW_H_FINISH = "/* ---- moved from collisions.c: the view: finish ---- */\n"
 TICK2_COLLNEW_RENAMES = (("psp_bipedstage2_begin", "store_coll_begin"),
                          ("psp_bipedstage2_gather_exact", "store_coll_gather"),
                          ("psp_bipedstage2_gather", "store_coll_gather_margin"),
@@ -65977,7 +65981,8 @@ TICK2_COLLNEW_SR_EXPORTS = ("static struct psp_sr_near psp_sr_near_list[PSP_SR_N
                             "static void psp_sr_slot_watch_set(int slot, short const *clusters, short count, long biped_index, real_point3d const *center, real radius)\n")
 TICK2_COLLNEW_KEPT_HEAD = """/* TICK2 collnew (slice 1's task 4, piece 1; docs/box_world_store.md section 18): bipedstage2's gather table, its
 gathers, its take and the tick's start and end are the store's, in psp/src/store_coll.c (moved verbatim, named
-store_coll_*; declared in psp/include/store_coll.h). The move reads the view and the table's count from there.
+store_coll_*; declared in psp/include/store_coll.h, with the view's type). The biped's move, with its take, is
+store_coll_move there too (piece 3); collision_move_pill below is the engine's for its other callers.
 SWEEPME's two intent-side entries stay here, with the exact call's declaration they read */
 #include "units/biped_definitions.h"
 """
@@ -66011,15 +66016,17 @@ def tick2_collnew_texts(c):
             check_fail("psp_fixups: TICK2 collnew: %s is in bipedstage2's block %d times, not 1" % (name, block.count(text)))
             return None
     view = block[block.index(TICK2_COLLNEW_VIEW[0]):block.index(TICK2_COLLNEW_VIEW[1]) + len(TICK2_COLLNEW_VIEW[1])]
+    # piece 3: the view's type is the table's header's (store_coll.h, held there as the tree's text); the copy keeps
+    # the variable, collisions.c and collision_features.c read both through the header
     view_type = view[:-len(TICK2_COLLNEW_VIEW[1])] + "};\nextern struct psp_bs2_view psp_bs2_view;\n"
-    kept = TICK2_COLLNEW_KEPT_HEAD + view_type + TICK2_COLLNEW_CALL_DECL + "\n" + tick2_collnew_rename(sweepme)
-    moved = tick2_collnew_rename(block.replace(sweepme, ""))
+    kept = TICK2_COLLNEW_KEPT_HEAD + TICK2_COLLNEW_CALL_DECL + "\n" + tick2_collnew_rename(sweepme)
+    moved = tick2_collnew_rename(block.replace(sweepme, "").replace(view, TICK2_COLLNEW_VIEW_VAR))
     for head in TICK2_COLLNEW_EXPORTS:
         if moved.count(head) != 1:
             check_fail("psp_fixups: TICK2 collnew: the gather table's copy has %r %d times" % (head.strip(), moved.count(head)))
             return None
         moved = moved.replace(head, head[len("static "):])
-    return block, kept, moved
+    return block, kept, moved, view_type
 def tick2_collnew_held(path, begin, finish, what):
     text = open(path, errors="surrogateescape").read()
     if text.count(begin) != 1 or text.count(finish) != 1 or text.index(finish) < text.index(begin):
@@ -66042,7 +66049,14 @@ def tick2_collnew_move_cut(tree):
     texts = tick2_collnew_texts(c)
     if texts is None:
         return 0
-    block, kept, moved = texts
+    block, kept, moved, view_type = texts
+    held = tick2_collnew_held(TICK2_COLLNEW_H, TICK2_COLLNEW_VIEW_H_BEGIN, TICK2_COLLNEW_VIEW_H_FINISH, "store_coll.h's view")
+    if held is None:
+        return 0
+    if held != view_type:
+        check_fail("psp_fixups: TICK2 collnew: psp/include/store_coll.h's view type isn't the tree's (bipedstage2's "
+                   "psp_bs2_view changed: copy it into the header)")
+        return 0
     held = tick2_collnew_held(TICK2_COLLNEW_C, TICK2_COLLNEW_BEGIN, TICK2_COLLNEW_FINISH, "psp/src/store_coll.c")
     if held is None:
         return 0
@@ -66185,6 +66199,173 @@ def tick2_collnew_pass_cut(tree):
           "the intent %d lines, the solve %d lines, verbatim" % (intent.count("\n"), solve.count("\n")))
     return 1
 tick2_collnew_pass_cut(TREE)
+
+# PSP_TICK2_COLLNEW=1, piece 3 (docs/box_world_store.md section 18 'The code plan'; the lead 13:3x, Q2 (i)): the
+# biped's physics (the engine's, until task 5) reaches collision through the store's two entries. Its move calls
+# store_coll_move, collision_move_pill as the cuts before left it (the take from the gather table, the live gather when
+# the take refuses, gathercensus, the move, the view cleared), moved verbatim into psp/src/store_coll.c and renamed;
+# the move's only caller in play is biped_update_physics (collision_debug.c's and collision_move_sphere's are the
+# debug draw's, which runs outside the pass with the table empty, so the take never served them). collisions.c keeps
+# collision_move_pill as the engine's (the take, the census and the view's clear taken out) for those callers, and no
+# longer names the table. Its stand test (crouched, trying to stand: a gather on level 0's list, then a vector
+# against it) calls store_coll_stand, the same two calls in the same order on the same list, the standing height
+# passed in as the same expression. Until task 5 both take the engine's arguments (the caller is the engine's
+# physics; task 5's stage passes the slot). The features view becomes the table's: its type goes to store_coll.h
+# (piece 1's texts), collision_features.c reads it through the header in place of its own inline declaration. The cut
+# refuses unless every text it edits is there once, the file's copy is the tree's, and nothing it moves is left.
+TICK2_COLLNEW_MOVE_HEAD = "short collision_move_pill(\n"
+TICK2_COLLNEW_MOVE_END = "#undef features /* psp_fixups.py (FIXES_STACKHOT2) */\n"
+TICK2_COLLNEW_MOVE_BEGIN = "/* ---- moved from collisions.c (collision_move_pill with the take, as every cut before left it): begin ---- */\n"
+TICK2_COLLNEW_MOVE_FINISH = "/* ---- moved from collisions.c: the move: finish ---- */\n"
+TICK2_COLLNEW_MOVE_TAKE = ("\tint psp_bs2_took = psp_bs2_slots ? store_coll_take(flags, &center, magnitude3d(velocity) * 0.5f + height * 0.5f + radius,\n"
+                           "\t\theight, radius, ignore_object_index, &features) : 0;\n\n")
+TICK2_COLLNEW_MOVE_IF = ("\tif (psp_bs2_took == 1 || (psp_bs2_took == 0 && collision_get_features_in_sphere(\n",
+                         "\tif (collision_get_features_in_sphere(\n")
+TICK2_COLLNEW_MOVE_IF_END = ("\t\t&features)))\n", "\t\t&features))\n")
+TICK2_COLLNEW_MOVE_CENSUS = ("\t\t/* (FIXES_BIPEDSTAGE) \"gathercensus\": slice 2's gather sized, the features\n",
+                             "\t\tresult = collision_move_point(\n")
+TICK2_COLLNEW_MOVE_CLEAR = "\tpsp_bs2_view.list = NULL; /* (FIXES_BIPEDSTAGE) the move's packed list is done with */\n"
+TICK2_COLLNEW_MOVE_NOTE = ("/* TICK2 collnew (piece 3): the engine's move for its other callers (the debug draw, collision_move_sphere);\n"
+                           "the biped's is store_coll_move (psp/src/store_coll.c), with the gather table's take */\n")
+# the two entries' declarations: store_coll.h's lines, the same text in bipeds.c (which doesn't include the header)
+TICK2_COLLNEW_MOVE_DECLS = ("short store_coll_move(unsigned long flags, real_point3d const *position, real_vector3d const *velocity,\n"
+                            "\treal height, real radius, long ignore_object_index, real_point3d *clipped_position,\n"
+                            "\treal_vector3d *clipped_velocity, short maximum_collision_count, struct collision_plane *collisions);\n"
+                            "boolean store_coll_stand(unsigned long flags, real_point3d const *center, real radius, real width,\n"
+                            "\tlong biped_index, real_point3d const *position, real standing_height);\n")
+TICK2_COLLNEW_BIPEDS_DECL = ("static void biped_update_physics(\n",
+                             "/* TICK2 collnew (piece 3): the physics' two collision entries, the store's (psp/src/store_coll.c,\n"
+                             "declared in psp/include/store_coll.h), until task 5 */\n" + TICK2_COLLNEW_MOVE_DECLS +
+                             "static void biped_update_physics(\n")
+TICK2_COLLNEW_BIPEDS_MOVE = ("\t\tcollision_count = collision_move_pill(\n",
+                             "\t\tcollision_count = store_coll_move( /* TICK2 collnew: the store's move with its take, until task 5 */\n")
+TICK2_COLLNEW_BIPEDS_STAND = (
+    "\t\t\t\tif (collision_get_features_in_sphere(\n"
+    "\t\t\t\t\tTEST_FLAG(physics->in_flags, _biped_physics_in_dead_bit) ?\n"
+    "\t\t\t\t\t\t_collision_test_for_bipeds_dead_flags :\n"
+    "\t\t\t\t\t\t_collision_test_for_bipeds_living_flags,\n"
+    "\t\t\t\t\t&center,\n"
+    "\t\t\t\t\tradius,\n"
+    "\t\t\t\t\t0.f,\n"
+    "\t\t\t\t\tdefinition->biped.collision_radius,\n"
+    "\t\t\t\t\tphysics->biped_index,\n"
+    "\t\t\t\t\t&features))\n"
+    "\t\t\t\t{\n"
+    "\t\t\t\t\treal_vector3d standing_vector;\n"
+    "\t\t\t\t\tstruct collision_plane collision;\n"
+    "\n"
+    "\t\t\t\t\tscale_vector3d(\n"
+    "\t\t\t\t\t\tglobal_up3d,\n"
+    "\t\t\t\t\t\tdefinition->biped.collision_height_standing -\n"
+    "\t\t\t\t\t\t\t2.f * definition->biped.collision_radius,\n"
+    "\t\t\t\t\t\t&standing_vector);\n"
+    "\t\t\t\t\tif (collision_features_test_vector(\n"
+    "\t\t\t\t\t\t&features,\n"
+    "\t\t\t\t\t\t&physics->new_position,\n"
+    "\t\t\t\t\t\t&standing_vector,\n"
+    "\t\t\t\t\t\t&collision))\n"
+    "\t\t\t\t\t{\n"
+    "\t\t\t\t\t\tSET_FLAG(physics->out_flags, _biped_physics_out_cannot_stand_bit, TRUE);\n"
+    "\t\t\t\t\t}\n"
+    "\t\t\t\t}\n",
+    "\t\t\t\tif (store_coll_stand( /* TICK2 collnew: the store's stand test, the engine's two calls, until task 5 */\n"
+    "\t\t\t\t\tTEST_FLAG(physics->in_flags, _biped_physics_in_dead_bit) ?\n"
+    "\t\t\t\t\t\t_collision_test_for_bipeds_dead_flags :\n"
+    "\t\t\t\t\t\t_collision_test_for_bipeds_living_flags,\n"
+    "\t\t\t\t\t&center,\n"
+    "\t\t\t\t\tradius,\n"
+    "\t\t\t\t\tdefinition->biped.collision_radius,\n"
+    "\t\t\t\t\tphysics->biped_index,\n"
+    "\t\t\t\t\t&physics->new_position,\n"
+    "\t\t\t\t\tdefinition->biped.collision_height_standing -\n"
+    "\t\t\t\t\t\t2.f * definition->biped.collision_radius))\n"
+    "\t\t\t\t{\n"
+    "\t\t\t\t\tSET_FLAG(physics->out_flags, _biped_physics_out_cannot_stand_bit, TRUE);\n"
+    "\t\t\t\t}\n")
+TICK2_COLLNEW_FEATURES_VIEW = (
+    "\t/* (FIXES_BIPEDSTAGE) a staged move's packed list, read where it lies */\n"
+    "\textern struct psp_bs2_view { void const *list; struct collision_sphere const *spheres;\n"
+    "\t\tstruct collision_cylinder const *cylinders; struct collision_prism const *prisms; } psp_bs2_view;\n",
+    "\t/* (FIXES_BIPEDSTAGE) a staged move's packed list, read where it lies (the view: the gather table's, store_coll.h) */\n")
+TICK2_COLLNEW_FEATURES_FN = ("boolean collision_features_test_vector(\n",
+                             "#include \"store_coll.h\" /* TICK2 collnew (piece 3): the gather table's view (psp/include) */\n"
+                             "boolean collision_features_test_vector(\n")
+def tick2_collnew_move_texts(c):
+    """collision_move_pill as collisions.c holds it, what collisions.c keeps (the engine's), and the store's copy"""
+    if c.count(TICK2_COLLNEW_MOVE_HEAD) != 1:
+        check_fail("psp_fixups: TICK2 collnew move: collision_move_pill's head is in collisions.c %d times, not 1"
+                   % c.count(TICK2_COLLNEW_MOVE_HEAD))
+        return None
+    start = c.index(TICK2_COLLNEW_MOVE_HEAD)
+    if TICK2_COLLNEW_MOVE_END not in c[start:]:
+        check_fail("psp_fixups: TICK2 collnew move: collision_move_pill's STACKHOT2 #undef doesn't follow it")
+        return None
+    move = c[start:c.index(TICK2_COLLNEW_MOVE_END, start) + len(TICK2_COLLNEW_MOVE_END)]
+    for name, text in (("the take", TICK2_COLLNEW_MOVE_TAKE), ("the take's if", TICK2_COLLNEW_MOVE_IF[0]),
+                       ("the if's close", TICK2_COLLNEW_MOVE_IF_END[0]), ("gathercensus", TICK2_COLLNEW_MOVE_CENSUS[0]),
+                       ("the move's call", TICK2_COLLNEW_MOVE_CENSUS[1]), ("the view's clear", TICK2_COLLNEW_MOVE_CLEAR)):
+        if move.count(text) != 1:
+            check_fail("psp_fixups: TICK2 collnew move: %s is in collision_move_pill %d times, not 1" % (name, move.count(text)))
+            return None
+    census = move[move.index(TICK2_COLLNEW_MOVE_CENSUS[0]):move.index(TICK2_COLLNEW_MOVE_CENSUS[1])]
+    if move.index(TICK2_COLLNEW_MOVE_CENSUS[0]) > move.index(TICK2_COLLNEW_MOVE_CENSUS[1]) or not census.endswith("\t\t}\n"):
+        check_fail("psp_fixups: TICK2 collnew move: gathercensus isn't the block just before the move's call")
+        return None
+    if len(re.findall(r"\bcollision_move_pill\b", move)) != 1:
+        check_fail("psp_fixups: TICK2 collnew move: collision_move_pill names itself inside its body")
+        return None
+    copy = move.replace(TICK2_COLLNEW_MOVE_HEAD, "short store_coll_move(\n")
+    engine = (move.replace(TICK2_COLLNEW_MOVE_TAKE, "").replace(*TICK2_COLLNEW_MOVE_IF).replace(*TICK2_COLLNEW_MOVE_IF_END)
+              .replace(census, "").replace(TICK2_COLLNEW_MOVE_CLEAR, ""))
+    return move, TICK2_COLLNEW_MOVE_NOTE + engine, copy
+def tick2_collnew_movecall_cut(tree):
+    if not TICK2_COLLNEW or not TICK2_POSENEW or not TICK2_BIPED or os.environ.get("PSP_BIPEDSTAGE_NOINLINE", "") == "1":
+        return 0  # the move cut has said why
+    paths = {name: os.path.join(tree, "source", name) for name in
+             ("physics/collisions.c", "units/bipeds.c", "physics/collision_features.c")}
+    c, b, f = (open(paths[name], errors="surrogateescape").read() for name in
+               ("physics/collisions.c", "units/bipeds.c", "physics/collision_features.c"))
+    texts = tick2_collnew_move_texts(c)
+    if texts is None:
+        return 0
+    move, engine, copy = texts
+    held = tick2_collnew_held(TICK2_COLLNEW_C, TICK2_COLLNEW_MOVE_BEGIN, TICK2_COLLNEW_MOVE_FINISH, "store_coll.c's move")
+    if held is None:
+        return 0
+    if held != copy:
+        check_fail("psp_fixups: TICK2 collnew move: psp/src/store_coll.c's store_coll_move isn't collision_move_pill as the "
+                   "cuts before left it (regenerate the file's copy from the tree)")
+        return 0
+    if open(TICK2_COLLNEW_H, errors="surrogateescape").read().count(TICK2_COLLNEW_MOVE_DECLS) != 1:
+        check_fail("psp_fixups: TICK2 collnew move: psp/include/store_coll.h doesn't declare the two entries as bipeds.c will")
+        return 0
+    for name, text, edits in (("bipeds.c", b, (TICK2_COLLNEW_BIPEDS_MOVE, TICK2_COLLNEW_BIPEDS_STAND)),
+                              ("collision_features.c", f, (TICK2_COLLNEW_FEATURES_VIEW, TICK2_COLLNEW_FEATURES_FN))):
+        for old, new in edits:
+            if text.count(old) != 1:
+                check_fail("psp_fixups: TICK2 collnew move: %s has %r %d times, not 1" % (name, old.splitlines()[0].strip(), text.count(old)))
+                return 0
+    if not b.count(TICK2_COLLNEW_BIPEDS_DECL[0]):
+        check_fail("psp_fixups: TICK2 collnew move: bipeds.c has no biped_update_physics to declare the entries before")
+        return 0
+    c = c.replace(move, engine)
+    b = b.replace(*TICK2_COLLNEW_BIPEDS_MOVE).replace(*TICK2_COLLNEW_BIPEDS_STAND).replace(*TICK2_COLLNEW_BIPEDS_DECL, 1)
+    f = f.replace(*TICK2_COLLNEW_FEATURES_VIEW).replace(*TICK2_COLLNEW_FEATURES_FN)
+    for name, text, gone in (("collisions.c", c, ("store_coll_take", "psp_bs2_slots", "psp_bs2_view", "psp_bs2_took")),
+                             ("bipeds.c", b, ("collision_move_pill(",)),
+                             ("collision_features.c", f, ("struct psp_bs2_view {",))):
+        for word in gone:
+            if re.search(r"\b%s" % re.escape(word), re.sub(r"/\*.*?\*/", "", text, flags=re.S)):
+                check_fail("psp_fixups: TICK2 collnew move: %s still names %s" % (name, word))
+                return 0
+    if not CHECK_ONLY:
+        for name, text in (("physics/collisions.c", c), ("units/bipeds.c", b), ("physics/collision_features.c", f)):
+            open(paths[name], "w", errors="surrogateescape").write(text)
+    print("psp_fixups: TICK2 collnew (task 4, piece 3): the physics' move and stand test call store_coll_move / _stand "
+          "until task 5 (the move %d lines moved verbatim; collisions.c's engine move %d lines); the view's type is store_coll.h's"
+          % (copy.count("\n"), engine.count("\n")))
+    return 1
+tick2_collnew_movecall_cut(TREE)
 
 if CHECK_ONLY:
     for message in count_failures:

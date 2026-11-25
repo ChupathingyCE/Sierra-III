@@ -3,8 +3,8 @@ store_coll.h: the world store's collision gather table (slice 1's task 4)
 
 docs/box_world_store.md section 18, 'The code plan', piece 1 (the lead 2026-11-25 13:3x): bipedstage2's gather table
 and its code are the store's, in psp/src/store_coll.c, moved verbatim out of collisions.c (psp_fixups.py
-tick2_collnew_move_cut, PSP_TICK2_COLLNEW=1). Both collisions.c (where the sweep reuse's bounds were) and
-store_coll.c include this. The includer has the engine's math and collision headers in hand first.
+tick2_collnew_move_cut, PSP_TICK2_COLLNEW=1). collisions.c (where the sweep reuse's bounds were), store_coll.c and
+(piece 3) collision_features.c include this. The includer has the engine's math and collision headers in hand first.
 
 The table: one entry a gathered biped, dense in gather order (the run's order, the walk's), a biped-to-position map
 beside it, and the sweep reuse's reach guard's fields on positions 0-31 (its slot mask stays collisions.c's). A slot
@@ -28,6 +28,28 @@ int store_coll_take(unsigned long flags, real_point3d const *center, real radius
 	real height, real width, long biped_index, struct collision_feature_list *list); /* 1 list, 2 empty, 0 gather live */
 void store_coll_end(void);                        /* the tick's end, its log line each 1000 ticks */
 extern int psp_bs2_slots;                         /* the table's count this tick; the move takes only when nonzero */
+
+/* piece 3: the biped physics' two collision entries (the engine's physics calls them until task 5, with its own
+arguments; task 5's stage passes the slot). The move is collision_move_pill as the cuts before left it, with the
+table's take; the stand test is the engine's gather on level 0's list and its vector, in the same order */
+short store_coll_move(unsigned long flags, real_point3d const *position, real_vector3d const *velocity,
+	real height, real radius, long ignore_object_index, real_point3d *clipped_position,
+	real_vector3d *clipped_velocity, short maximum_collision_count, struct collision_plane *collisions);
+boolean store_coll_stand(unsigned long flags, real_point3d const *center, real radius, real width,
+	long biped_index, real_point3d const *position, real standing_height);
+
+/* the view of a taken list: the move's list read where it lies in the arena (collision_features_test_vector reads
+through it for that list only); the variable is store_coll.c's, its type the tree's (psp_fixups.py checks it) */
+/* ---- moved from collisions.c (FIXES_BIPEDSTAGE's view of a taken list): begin ---- */
+struct psp_bs2_view
+{
+	void const *list;
+	struct collision_sphere const *spheres;
+	struct collision_cylinder const *cylinders;
+	struct collision_prism const *prisms;
+};
+extern struct psp_bs2_view psp_bs2_view;
+/* ---- moved from collisions.c: the view: finish ---- */
 
 /* the sweep reuse's names the gather and the take read and write, collisions.c's (the cut drops their static) */
 extern int psp_sr_on_pill, psp_sr_met;
