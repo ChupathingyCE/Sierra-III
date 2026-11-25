@@ -31,6 +31,11 @@ Moved so far:
   the box on the record's words and means B's fill. objects.c keeps the engine half, store_pose_box_gather (the
   plan, the flags, the want), and the census (psp_nmr_on, psp_nmr_read), which lose their static. The ME's names are
   kept; B's slot is still keyed by object_index & 255.
+- Item 2's third piece (section 17; psp_fixups.py tick2_posenew_copy_reads): the copies' block and count reads are
+  the record's, as item 2 made every read left in the tree: B's make, the skip check's root and NMSKIP's catch-up
+  snapshot read store_pose_matrices / _orientations(object->object.root) and store_node_count, not the block getter
+  and node_matrices.size. These six lines are the only ones here not verbatim from objects.c; the cuts make the same
+  edits to the text they compare, each found once.
 */
 
 #include <stdio.h>
@@ -393,8 +398,8 @@ __attribute__((noinline)) void store_pose_make_nodes(long object_index, unsigned
 	}
 	object = object_get(object_index);
 	slot->made = psp_box_posing_make(slot->plan,
-		(float const *)object_header_block_get(object_index, &object->object.node_orientations),
-		(float *)object_header_block_get(object_index, &object->object.node_matrices), before, want & slot->all);
+		(float const *)store_pose_orientations(object->object.root),
+		(float *)store_pose_matrices(object->object.root), before, want & slot->all);
 	psp_boxb_changed = 1;
 	if (psp_boxb_in_ik)
 	{
@@ -843,14 +848,14 @@ __attribute__((noinline)) int psp_nms_skip(long object_index, struct object_datu
 	if (psp_nms_check)
 	{
 		/* made as before; the skip's claims checked against it */
-		real_matrix4x3 root = ((real_matrix4x3 *)object_header_block_get(object_index, &object->object.node_matrices))[0];
+		real_matrix4x3 root = ((real_matrix4x3 *)store_pose_matrices(object->object.root))[0];
 		real_point3d center = object->object.root->bounding_sphere_center;
 		real radius = object->object.root->bounding_sphere_radius;
 		unsigned long start = psp_microseconds();
 
 		store_pose_now(object_index);
 		psp_nms_skip_us += psp_microseconds() - start;
-		if (csmemcmp(&root, object_header_block_get(object_index, &object->object.node_matrices), sizeof(root)) ||
+		if (csmemcmp(&root, store_pose_matrices(object->object.root), sizeof(root)) ||
 			csmemcmp(&center, &object->object.root->bounding_sphere_center, sizeof(center)) ||
 			radius != object->object.root->bounding_sphere_radius)
 		{
@@ -967,8 +972,8 @@ __attribute__((noinline)) static void store_pose_make_skipped_at(long absolute, 
 	/* the compute already made where the skip would have been is what the
 	reader sees; the catch-up is made, compared, and taken back */
 	object = object_get(entry.object_index);
-	nodes = (real_matrix4x3 *)object_header_block_get(entry.object_index, &object->object.node_matrices);
-	size = MIN((long)object->object.node_matrices.size, (long)(MAXIMUM_NODES_PER_MODEL * sizeof(real_matrix4x3)));
+	nodes = (real_matrix4x3 *)store_pose_matrices(object->object.root);
+	size = MIN((long)store_node_count(object->object.root) * (long)sizeof(real_matrix4x3), (long)(MAXIMUM_NODES_PER_MODEL * sizeof(real_matrix4x3)));
 	csmemcpy(psp_nms_kept, nodes, size);
 	center = object->object.root->bounding_sphere_center;
 	radius = object->object.root->bounding_sphere_radius;

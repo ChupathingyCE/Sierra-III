@@ -64745,6 +64745,46 @@ TICK2_POSENEW_BOXB_FORWARD = "static void psp_boxb_for_me(void);\n"
 # the count's definition stays in objects.c (the lead 2026-11-25 09:0x): the file's copy declares it in its place
 TICK2_POSENEW_BOXB_COUNT = ("int psp_boxb_count = 0;\n",
                             "extern int psp_boxb_count; /* defined in objects.c (the lead 2026-11-25 09:0x) */\n")
+# step 5, item 2, third piece (docs/box_world_store.md section 17 'item 2, third piece'): the block and count reads
+# inside the moved copies are the record's, as item 2's first two pieces made every read left in the tree. Each
+# (name, old, new) is found once in the file's copy as the move would make it, and edited there; objects.c's text
+# isn't touched (means B's block is checked against its hunk, so the edit can't run on the tree ahead of the cut), and
+# the copy leaves objects.c whole. Exact as the two pieces are: X is header(I)->datum at each read (B's make:
+# object_get(object_index); the skip's root check: its callers' header->datum or object_get(object_index), both
+# objects.c's update; NMSKIP's snapshot: object_get(entry.object_index)), so store_pose_matrices / _orientations
+# (X->object.root) is the getter's own return, and store_node_count(X->object.root) * 52 is node_matrices.size
+# (object_header_block_allocate sets both from one count). Every read stays raw: B's make writes the nodes, and the
+# root check and the snapshot compare what the block holds, so none settles. After the edits a copy with a block
+# read by the getter or a node_matrices.size read left refuses the build, so an upstream edit can't bring one back.
+TICK2_POSENEW_COPY_BOXB_READS = (
+    ("B's make's orientations", "(float const *)object_header_block_get(object_index, &object->object.node_orientations),",
+     "(float const *)store_pose_orientations(object->object.root),"),
+    ("B's make's nodes", "(float *)object_header_block_get(object_index, &object->object.node_matrices), before,",
+     "(float *)store_pose_matrices(object->object.root), before,"))
+TICK2_POSENEW_COPY_NMS_READS = (
+    ("the skip check's root", "real_matrix4x3 root = ((real_matrix4x3 *)object_header_block_get(object_index, &object->object.node_matrices))[0];",
+     "real_matrix4x3 root = ((real_matrix4x3 *)store_pose_matrices(object->object.root))[0];"),
+    ("the skip check's compare", "if (csmemcmp(&root, object_header_block_get(object_index, &object->object.node_matrices), sizeof(root)) ||",
+     "if (csmemcmp(&root, store_pose_matrices(object->object.root), sizeof(root)) ||"),
+    ("the catch-up check's snapshot", "nodes = (real_matrix4x3 *)object_header_block_get(entry.object_index, &object->object.node_matrices);",
+     "nodes = (real_matrix4x3 *)store_pose_matrices(object->object.root);"),
+    ("the catch-up check's size", "size = MIN((long)object->object.node_matrices.size, (long)(MAXIMUM_NODES_PER_MODEL * sizeof(real_matrix4x3)));",
+     "size = MIN((long)store_node_count(object->object.root) * (long)sizeof(real_matrix4x3), "
+     "(long)(MAXIMUM_NODES_PER_MODEL * sizeof(real_matrix4x3)));"))
+TICK2_POSENEW_COPY_LEFT = r"\bobject_header_block_get\(|\bnode_matrices\.size\b"
+def tick2_posenew_copy_reads(moved, edits, what):
+    """the file's copy with its block and count reads the record's (each edit's text found once), or None"""
+    for name, old, new in edits:
+        if moved.count(old) != 1:
+            check_fail("psp_fixups: TICK2 posenew step 5 (item 2): %s's %s is in its copy %d times, not 1" % (what, name, moved.count(old)))
+            return None
+        moved = moved.replace(old, new)
+    left = re.search(TICK2_POSENEW_COPY_LEFT, tick2_posenew_code_only(moved))
+    if left:
+        check_fail("psp_fixups: TICK2 posenew step 5 (item 2): %s's copy still reads %s (an upstream edit added it: add "
+                   "it to the copy's reads)" % (what, left.group(0)))
+        return None
+    return moved
 def tick2_posenew_boxb_texts():
     """means B's block as objects.c holds it (from #ifdef to #endif), the declarations objects.c keeps in its place,
     and the file's copy (the block's inside, the exports' static dropped)"""
@@ -64778,6 +64818,9 @@ def tick2_posenew_boxb_texts():
                    % moved.count(TICK2_POSENEW_BOXB_COUNT[0]))
         return None
     moved = moved.replace(*TICK2_POSENEW_BOXB_COUNT)
+    moved = tick2_posenew_copy_reads(moved, TICK2_POSENEW_COPY_BOXB_READS, "means B's slot table")
+    if moved is None:
+        return None
     return block, decl, moved
 def tick2_posenew_boxb_move_cut(tree):
     if not TICK2_POSENEW or STORECOUNT:
@@ -64927,6 +64970,9 @@ def tick2_posenew_nms_texts(c):
                    % moved.count(TICK2_POSENEW_NMS_COUNT[0]))
         return None
     moved = moved.replace(*TICK2_POSENEW_NMS_COUNT)
+    moved = tick2_posenew_copy_reads(moved, TICK2_POSENEW_COPY_NMS_READS, "NMSKIP's tables")
+    if moved is None:
+        return None
     return block, kept, moved
 def tick2_posenew_nms_move_cut(tree):
     if not TICK2_POSENEW or STORECOUNT:
@@ -65167,8 +65213,9 @@ tick2_posenew_pose_move_cut(TREE)
 # the census guards the record (a datum whose record wasn't taken is freed with root NULL). The one read that ran
 # after tick2_pose_give is the census at an object's end, which zeroes pose_count: its call moves ahead of the
 # gives at both ends (object_header_delete and the map's end). It reads the header's type and the datum, and the
-# gives don't write them, so the move changes only what it counts. The two reads in psp/src/store_pose.c's copies
-# (NMSKIP's MIN and the proof form's compare) are the next piece's, with the guard that compares the copies.
+# gives don't write them, so the move changes only what it counts. NMSKIP's MIN in psp/src/store_pose.c's copy is
+# the copy's own edit (tick2_posenew_copy_reads, item 2's third piece); the proof form's compare
+# (tick2_pose_count_check) reads the reference itself and goes when the references do.
 # The last cut, after the last piece's.
 TICK2_POSENEW_COUNT_INLINE = r"""/* TICK2 posenew step 5, item 2 (docs/box_world_store.md section 17): an object's node count is its record's, the
 count object_header_block_allocate keeps with its matrices (their block's size / 52) */
@@ -65271,8 +65318,9 @@ tick2_posenew_count_cut(TREE)
 # until it's read). None becomes the settling accessor (store_node_matrices): each read is posing's own writer or a
 # raw read (the last tick's pose under render interpolation, B's marker getter, whose caller has made what it reads, C4TRACE's dump),
 # and a settle or the drawn pose there would change what it reads. A read left in another shape refuses, as does a
-# total under 13. The reads in psp/src/store_pose.c's copies (B's make, the root check, NMSKIP's snapshot) are the next
-# piece's, rewritten in objects.c ahead of the move cuts. The last cut, after the count cut.
+# total under 13. The reads in psp/src/store_pose.c's copies (B's make, the root check, NMSKIP's snapshot) are the
+# copies' own edits, made as the move cuts make the copies (tick2_posenew_copy_reads, item 2's third piece). The last
+# cut, after the count cut.
 TICK2_POSENEW_BLOCK_AFTER = "extern struct tick2_pose_store *tick2_pose_store;\n#define TICK2_POSE_NONE 0xFFFF\n"
 TICK2_POSENEW_BLOCK_INLINES = r"""/* TICK2 posenew step 5, item 2 (docs/box_world_store.md section 17 'item 2, second piece'): an object's node
 blocks are its record's runs in the arena (tick2_pose_block, psp/src/store_pose.c: what the block getter returned for
