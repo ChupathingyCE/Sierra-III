@@ -1237,9 +1237,15 @@ static int prepare_voice(struct psp_stream *stream)
 
 		if (overrun < 0)
 		{
-			snd_floor = psp_keep("sndfloor") ? GAIN_ONE / 256 : 0;
+			/* on by default since the lab's 2026-11-25 08:0x ruling (the
+			one word it parts, the object marker's stamp, is read by no
+			outcome); "sndflooroff" turns it off, "sndfloor" is still read
+			and changes nothing */
+			snd_floor = psp_keep("sndflooroff") ? 0 : GAIN_ONE / 256;
 			if (snd_floor)
-				platform_log("audio: sndfloor on (voices under %d of %d both sides, this block and the last, advanced silent)", snd_floor, GAIN_ONE);
+				platform_log("audio: sndfloor on (voices under %d of %d both sides, this block and the last, advanced silent; sndflooroff turns it off)", snd_floor, GAIN_ONE);
+			else
+				platform_log("audio: sndfloor off (sndflooroff)");
 			overrun = psp_keep("silentoverrun") != 0;
 			adpcm_old = psp_keep("adpcmold") != 0;
 			audio_old = psp_keep("audioold") != 0;
