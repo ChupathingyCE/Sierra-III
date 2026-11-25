@@ -65849,6 +65849,177 @@ def tick2_posenew_members_cut(tree):
     return 1
 tick2_posenew_members_cut(TREE)
 
+# PSP_TICK2_COLLNEW=1, slice 1's task 4, piece 1 (docs/box_world_store.md section 18 'The code plan'; the lead
+# 2026-11-25 13:3x): bipedstage2's gather table and its code move out of collisions.c into the store's own unit,
+# psp/src/store_coll.c, verbatim, read from the tree as every cut before left it (SWEEPREUSE, the stamps, SR_REACH and
+# SWEEPME all edit inside the block, so its hunk isn't its text). The table is already what section 18 asks for: dense
+# in gather order (psp_bs2_slot[psp_bs2_slots++]), with a biped-to-position map (psp_bs2_slot_of) and the reach guard's
+# fields on positions 0-31 (sr_clusters, sr_seq, sr_met; psp_bs2_sr's near lists; the 512-cluster slot mask stays
+# collisions.c's, set by psp_sr_slot_watch_set at the gather and read at the take). The move renames six names, in the
+# copy and at every call: the exact gather is store_coll_gather, the take store_coll_take, the pack store_coll_pack,
+# the margin gather (the run's fallback when the intent left no record, as old-only's) store_coll_gather_margin, the
+# tick's start and end store_coll_begin / _end. Their code is the same text, so play is exact by construction; the
+# calls stay where they are (the run's three loops, the move's take) until pieces 2 and 3. collisions.c keeps
+# SWEEPME's two intent-side entries (the ME's half rides the intent pass, 13:3x), the exact call's declaration they
+# read, and the view's type with the variable declared; the sweep reuse's bounds and near entry go to
+# psp/include/store_coll.h, which both units include, and the guard's names the copy reads lose their static. The cut
+# refuses unless every text it edits is in the tree once, the file's copy is the tree's, and no old name is left.
+# Cost [U]: the guard's names and psp_bs2_slots are reached across units now (psp/src is built as collisions.c is, LTO
+# with it, LTO_LIKE_UNITS); piece 5's pair prices it. The last cut, after the members'.
+TICK2_COLLNEW = os.environ.get("PSP_TICK2_COLLNEW", "") == "1"
+TICK2_COLLNEW_DIR = os.path.dirname(os.path.abspath(__file__))
+TICK2_COLLNEW_C = os.path.join(TICK2_COLLNEW_DIR, "psp", "src", "store_coll.c")
+TICK2_COLLNEW_H = os.path.join(TICK2_COLLNEW_DIR, "psp", "include", "store_coll.h")
+TICK2_COLLNEW_BEGIN = "/* ---- moved from collisions.c (FIXES_BIPEDSTAGE's slice 2 block, as every cut before left it): begin ---- */\n"
+TICK2_COLLNEW_FINISH = "/* ---- moved from collisions.c: the gather table: finish ---- */\n"
+TICK2_COLLNEW_H_BEGIN = "/* ---- moved from collisions.c (SWEEPREUSE's bounds and near entry): begin ---- */\n"
+TICK2_COLLNEW_H_FINISH = "/* ---- moved from collisions.c: the sweep reuse's bounds: finish ---- */\n"
+TICK2_COLLNEW_HEAD = "/* (FIXES_BIPEDSTAGE) slice 2 (docs/box_biped_motion.md §3b, a gather and a\n"
+TICK2_COLLNEW_TAIL = "\nshort collision_move_pill(\n"
+# SWEEPME's two entries in the block, from the first's comment to the take's: collisions.c keeps them
+TICK2_COLLNEW_SWEEPME = ("/* (FIXES_SWEEPME) the tick's batch opened on the level as the intents begin */\n",
+                         "/* the move's list from its slot, unpacked into the shared list it would have\n")
+# the exact call's declaration, which SWEEPME's after-intent entry reads too: in both units
+TICK2_COLLNEW_CALL_DECL = ("int psp_bipedstage3_call(long biped_index, unsigned long *flags, real_point3d *position,\n"
+                           "\treal_vector3d *velocity, real *height, real *width); /* bipeds.c (FIXES_BIPEDSTAGE) */\n")
+TICK2_COLLNEW_VIEW = ("struct psp_bs2_view\n{\n", "} psp_bs2_view;\n")
+TICK2_COLLNEW_RENAMES = (("psp_bipedstage2_begin", "store_coll_begin"),
+                         ("psp_bipedstage2_gather_exact", "store_coll_gather"),
+                         ("psp_bipedstage2_gather", "store_coll_gather_margin"),
+                         ("psp_bipedstage2_take", "store_coll_take"),
+                         ("psp_bipedstage2_end", "store_coll_end"),
+                         ("psp_bs2_pack", "store_coll_pack"))
+# the copy's lines whose names collisions.c still reads: `static ` dropped
+TICK2_COLLNEW_EXPORTS = ("static int psp_bs2_on = -1, psp_bs2_slots, psp_bs2_fill, psp_bs2_peak;\n",
+                         "static int store_coll_take(unsigned long flags,")
+# the sweep reuse's bounds and near entry, moved to the header (four lines, one run)
+TICK2_COLLNEW_SR_DEFS = ("#define PSP_SR_CLUSTERS 8 /* gathers walking more clusters aren't kept */\n"
+                         "#define PSP_SR_NEAR 8 /* gathers meeting more near objects can't be kept */\n"
+                         "/* an object's root position, forward and up as two hashes (12 B, not 40: tick2sr3's c20 ran out of heap with the poses kept whole) */\n"
+                         "struct psp_sr_near { long index; unsigned long h1, h2; };\n")
+TICK2_COLLNEW_SR_INCLUDE = '#include "store_coll.h" /* TICK2 collnew: the sweep reuse\'s bounds and the gather table\'s names (psp/include) */\n'
+# the guard's names the copy reads (declared in store_coll.h): `static ` dropped in collisions.c
+TICK2_COLLNEW_SR_EXPORTS = ("static struct psp_sr_near psp_sr_near_list[PSP_SR_NEAR];\n",
+                            "static short psp_sr_near_count; /* -1: too many */\n",
+                            "static real_point3d psp_sr_center; /* the gather's sphere */\n",
+                            "static real psp_sr_radius;\n",
+                            "static short psp_sr_cluster_list[PSP_SR_CLUSTERS], psp_sr_cluster_count; /* -1: too many */\n",
+                            "static unsigned long psp_sr_gather_seq; /* the stamps' order when the gather the answer rests on was made */\n",
+                            "static unsigned char psp_sr_slot_dead[32];\n",
+                            "static int psp_sr_reach_inherit; /* the dead mark a move's record takes from the slot it was served from */\n",
+                            "static void psp_sr_slot_watch_set(int slot, short const *clusters, short count, long biped_index, real_point3d const *center, real radius)\n")
+TICK2_COLLNEW_KEPT_HEAD = """/* TICK2 collnew (slice 1's task 4, piece 1; docs/box_world_store.md section 18): bipedstage2's gather table, its
+gathers, its take and the tick's start and end are the store's, in psp/src/store_coll.c (moved verbatim, named
+store_coll_*; declared in psp/include/store_coll.h). The move reads the view and the table's count from there.
+SWEEPME's two intent-side entries stay here, with the exact call's declaration they read */
+#include "units/biped_definitions.h"
+"""
+TICK2_COLLNEW_OBJECTS_DECLS = (("int store_coll_begin(void); /* collisions.c (FIXES_BIPEDSTAGE) */\n",
+                                "int store_coll_begin(void); /* psp/src/store_coll.c (TICK2 collnew) */\n"),
+                               ("int store_coll_gather(long biped_index); /* collisions.c (FIXES_BIPEDSTAGE) bipedstage3 */\n",
+                                "int store_coll_gather(long biped_index); /* psp/src/store_coll.c (TICK2 collnew) bipedstage3 */\n"))
+def tick2_collnew_rename(text):
+    for old, new in TICK2_COLLNEW_RENAMES:
+        text = re.sub(r"\b%s\b" % old, new, text)
+    return text
+def tick2_collnew_texts(c):
+    """bipedstage2's block as collisions.c holds it, what collisions.c keeps in its place, and the file's copy"""
+    if c.count(TICK2_COLLNEW_HEAD) != 1:
+        check_fail("psp_fixups: TICK2 collnew: bipedstage2's block's head is in collisions.c %d times, not 1 (PSP_TICK2_COLLNEW "
+                   "builds on PSP_TICK2=biped's defaults: the stage, bipedstage2 and 3, SWEEPME, SWEEPREUSE, SR_REACH)" % c.count(TICK2_COLLNEW_HEAD))
+        return None
+    start = c.index(TICK2_COLLNEW_HEAD)
+    if TICK2_COLLNEW_TAIL not in c[start:]:
+        check_fail("psp_fixups: TICK2 collnew: collision_move_pill doesn't follow bipedstage2's block")
+        return None
+    block = c[start:c.index(TICK2_COLLNEW_TAIL, start) + 1]
+    first, last = TICK2_COLLNEW_SWEEPME
+    if block.count(first) != 1 or block.count(last) != 1 or block.index(last) < block.index(first):
+        check_fail("psp_fixups: TICK2 collnew: SWEEPME's two entries aren't in bipedstage2's block once, before the take")
+        return None
+    sweepme = block[block.index(first):block.index(last)]
+    for name, text in (("the exact call's declaration", TICK2_COLLNEW_CALL_DECL), ("the view's head", TICK2_COLLNEW_VIEW[0]),
+                       ("the view's tail", TICK2_COLLNEW_VIEW[1])):
+        if block.count(text) != 1:
+            check_fail("psp_fixups: TICK2 collnew: %s is in bipedstage2's block %d times, not 1" % (name, block.count(text)))
+            return None
+    view = block[block.index(TICK2_COLLNEW_VIEW[0]):block.index(TICK2_COLLNEW_VIEW[1]) + len(TICK2_COLLNEW_VIEW[1])]
+    view_type = view[:-len(TICK2_COLLNEW_VIEW[1])] + "};\nextern struct psp_bs2_view psp_bs2_view;\n"
+    kept = TICK2_COLLNEW_KEPT_HEAD + view_type + TICK2_COLLNEW_CALL_DECL + "\n" + tick2_collnew_rename(sweepme)
+    moved = tick2_collnew_rename(block.replace(sweepme, ""))
+    for head in TICK2_COLLNEW_EXPORTS:
+        if moved.count(head) != 1:
+            check_fail("psp_fixups: TICK2 collnew: the gather table's copy has %r %d times" % (head.strip(), moved.count(head)))
+            return None
+        moved = moved.replace(head, head[len("static "):])
+    return block, kept, moved
+def tick2_collnew_held(path, begin, finish, what):
+    text = open(path, errors="surrogateescape").read()
+    if text.count(begin) != 1 or text.count(finish) != 1 or text.index(finish) < text.index(begin):
+        check_fail("psp_fixups: TICK2 collnew: %s's moved-text markers aren't there once each" % what)
+        return None
+    return text[text.index(begin) + len(begin):text.index(finish)]
+def tick2_collnew_move_cut(tree):
+    if not TICK2_COLLNEW:
+        return 0
+    if not TICK2_POSENEW or not TICK2_BIPED:
+        check_fail("psp_fixups: TICK2 collnew: PSP_TICK2_COLLNEW=1 builds on PSP_TICK2=biped with PSP_TICK2_POSENEW=1 (slice 1's task 4 after task 3)")
+        return 0
+    if os.environ.get("PSP_BIPEDSTAGE_NOINLINE", "") == "1":
+        check_fail("psp_fixups: TICK2 collnew: PSP_BIPEDSTAGE_NOINLINE=1 edits the heads the move renames; build it without PSP_TICK2_COLLNEW")
+        return 0
+    collisions_c = os.path.join(tree, "source/physics/collisions.c")
+    objects_c = os.path.join(tree, "source/objects/objects.c")
+    c = open(collisions_c, errors="surrogateescape").read()
+    o = open(objects_c, errors="surrogateescape").read()
+    texts = tick2_collnew_texts(c)
+    if texts is None:
+        return 0
+    block, kept, moved = texts
+    held = tick2_collnew_held(TICK2_COLLNEW_C, TICK2_COLLNEW_BEGIN, TICK2_COLLNEW_FINISH, "psp/src/store_coll.c")
+    if held is None:
+        return 0
+    if held != moved:
+        check_fail("psp_fixups: TICK2 collnew: psp/src/store_coll.c's gather table isn't collisions.c's as the cuts before left "
+                   "it (an earlier cut changed the block: regenerate the file's copy from the tree)")
+        return 0
+    held = tick2_collnew_held(TICK2_COLLNEW_H, TICK2_COLLNEW_H_BEGIN, TICK2_COLLNEW_H_FINISH, "psp/include/store_coll.h")
+    if held is None:
+        return 0
+    if c.count(TICK2_COLLNEW_SR_DEFS) != 1 or held != TICK2_COLLNEW_SR_DEFS:
+        check_fail("psp_fixups: TICK2 collnew: the sweep reuse's bounds are in collisions.c %d times, and store_coll.h's copy "
+                   "is%s theirs" % (c.count(TICK2_COLLNEW_SR_DEFS), "" if held == TICK2_COLLNEW_SR_DEFS else "n't"))
+        return 0
+    c = c.replace(block, kept)
+    c = c.replace(TICK2_COLLNEW_SR_DEFS, TICK2_COLLNEW_SR_INCLUDE)
+    for head in TICK2_COLLNEW_SR_EXPORTS:
+        if c.count(head) != 1:
+            check_fail("psp_fixups: TICK2 collnew: the guard's %r is in collisions.c %d times, not 1" % (head.strip(), c.count(head)))
+            return 0
+        c = c.replace(head, head[len("static "):])
+    c = tick2_collnew_rename(c)
+    o = tick2_collnew_rename(o)
+    for old, new in TICK2_COLLNEW_OBJECTS_DECLS:
+        if o.count(old) != 1:
+            check_fail("psp_fixups: TICK2 collnew: objects.c's declaration %r is there %d times, not 1" % (old.strip(), o.count(old)))
+            return 0
+        o = o.replace(old, new)
+    calls = {}
+    for old, new in TICK2_COLLNEW_RENAMES:
+        for name, text in (("collisions.c", c), ("objects.c", o)):
+            if re.search(r"\b%s\b" % old, text):
+                check_fail("psp_fixups: TICK2 collnew: %s still names %s" % (name, old))
+                return 0
+        calls[new] = len(re.findall(r"\b%s\(" % new, c)) + len(re.findall(r"\b%s\(" % new, o))
+    if not CHECK_ONLY:
+        open(collisions_c, "w", errors="surrogateescape").write(c)
+        open(objects_c, "w", errors="surrogateescape").write(o)
+    print("psp_fixups: TICK2 collnew (task 4, piece 1): bipedstage2's gather table moved to psp/src/store_coll.c (%d lines; "
+          "collisions.c keeps %d); calls left in the tree: %s" % (moved.count("\n"), kept.count("\n"),
+          ", ".join("%s %d" % kv for kv in sorted(calls.items()))))
+    return 1
+tick2_collnew_move_cut(TREE)
+
 if CHECK_ONLY:
     for message in count_failures:
         print(message)

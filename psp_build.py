@@ -659,6 +659,12 @@ def units():
         items.append((os.path.join(HERE, "psp/src/store_pose.c"),
                       ninja_flags("build/linux/obj/source/objects/objects.o"),
                       ["-DPSP_TICK2_PROOF=1"] if os.environ.get("PSP_TICK2_PROOF", "") == "1" else []))
+    # slice 1's task 4, piece 1 (PSP_TICK2_COLLNEW=1; psp_fixups.py tick2_collnew_move_cut): the store's collision
+    # gather table, moved out of collisions.c, built as collisions.c is (its flags, the fixed-up headers; its own
+    # header in psp/include, which collisions.c includes too)
+    if os.environ.get("PSP_TICK2_COLLNEW", "") == "1":
+        items.append((os.path.join(HERE, "psp/src/store_coll.c"),
+                      ninja_flags("build/linux/obj/source/physics/collisions.o"), []))
     items.append((os.path.join(HERE, "psp/src/psp_chupa_platform.c"),
                   ninja_flags("build/linux/obj/port/linux/src/sdl_platform.o"), compat))
     # build 108: built as pal_tags.c is, the other in-place fix of a map's tags
@@ -817,8 +823,11 @@ LTO_DIRS = [w for w in os.environ.get("PSP_LTO_UNITS", "").split(",") if w]
 # (the moved variables' data places, the moved functions' text places), $gp
 # reach between the two units and inlining across the cut. None of psp/src's
 # reasons to stay out holds for it: it defines no ME variable the link script
-# places by object name, no --wrap'd function and no ".set noat" assembly
-LTO_LIKE_UNITS = {"psp/src/store_pose.c": "source/objects/objects.c"}
+# places by object name, no --wrap'd function and no ".set noat" assembly.
+# Task 4's piece 1 (PSP_TICK2_COLLNEW=1) moves the collision gather table out of
+# collisions.c into psp/src/store_coll.c on the same rule
+LTO_LIKE_UNITS = {"psp/src/store_pose.c": "source/objects/objects.c",
+                  "psp/src/store_coll.c": "source/physics/collisions.c"}
 LTO_OBJECT = "*ltrans*.o"
 LTO_OBJS = set()   # the LTO units' objects, filled in by main()
 WRAPPED = []       # the link's --wrap'd names, for lto_report()
