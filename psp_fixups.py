@@ -64297,6 +64297,163 @@ def fpw_trace(tree):
     return 1
 fpw_trace(TREE)
 
+# PSP_TICK2_POSENEW=1, step 2 (slice 1's task 3; docs/box_world_store.md section 17): the walk's call sites to the
+# store. The engine's walk (object_compute_node_matrices, _with, _recursive) is renamed into the store's posing at
+# every site in the engine, and its body is split in two: the orientation gather (decode, the pose tables, overlays,
+# scale, the preprocess, interpolation), which is animation's code and stays engine code behind the store until slice
+# 3 (anim_pose_gather), and the pose itself, the store's (the hand-over and epoch prologue, the box's kernel through
+# psp_box_pose, the sphere's copies). Under box posing the walk's own node loop was never reached (the box's goto went
+# past it), so it goes with no change to what runs. Last of all the fixups, after every one that edits the pose's
+# definition (the hoist, POSECENSUS, the stamps' sphere wrapper), so it takes their text as they leave it.
+TICK2_POSENEW_STORAGE = ("\treal_orientation cannot_interpolate_node_orientations_storage[MAXIMUM_NODES_PER_MODEL];\n"
+    "\tshort node_stack[MAXIMUM_NODES_PER_MODEL];\n\treal_matrix4x3 center_matrix;\n\treal_matrix4x3 offset_matrix;\n"
+    "\treal_matrix4x3 node_matrix;\n\treal_matrix4x3 object_translation_matrix;\n\treal_matrix4x3 object_rotation_matrix;\n"
+    "\treal_point3d center;\n\treal_matrix4x3 parent_node_matrix_no_scale_no_mirror;\n#ifdef HALO_PSP\n"
+    "\tstruct psp_pose_frame *psp_pose_slot = NULL;\n\tboolean psp_pose_found = FALSE;\n\tboolean psp_root_valid = FALSE;\n"
+    "#endif\n\n\tstruct model *psp_hoist_model = NULL;\n\tstruct animation_graph *psp_hoist_graph = NULL;\n\t\n"
+    "\treal_matrix4x3 *object_nodes = (real_matrix4x3 *)object_header_block_get(object_index, &object->object.node_matrices);\n"
+    "\treal_orientation *node_orientations =\n\t\tTEST_FLAG(_object_mask_cannot_interpolate, object->object.type) ?\n"
+    "\t\tcannot_interpolate_node_orientations_storage :\n"
+    "\t\t(real_orientation *)object_header_block_get(object_index, &object->object.node_orientations);\n\n")
+TICK2_POSENEW_TEST = ("\t/* port: a model without nodes is placed like no model (a map's count) */\n"
+    "\tif (object_definition->object.model.index!=NONE &&\n"
+    "\t\t(psp_hoist_model = model_definition_get(object_definition->object.model.index))->nodes.count>0)\n\t{\n")
+TICK2_POSENEW_BOXCALL = ("#ifdef PSP_BOX_POSING\n\t\tpsp_box_pose(object_index, object, object_definition, model, model_node_count, "
+    "node_orientations, world_relative,\n\t\t\tobject_node_matrix, object_nodes);\n\t\tgoto psp_box_posed;\n#endif\n")
+TICK2_POSENEW_POSED = "#ifdef PSP_BOX_POSING\npsp_box_posed: ;\n#endif\n"
+TICK2_POSENEW_HOISTED = "\tstruct object_animation_state *tick2_h_anim = NULL; /* TICK2 hoist: the section's record, worked out at its first use */\n"
+TICK2_POSENEW_GATHER_HEAD = r"""/* TICK2 posenew step 2: until slice 3: ANIM. The engine's orientation gather, boundary code the store's pose calls:
+the animation's decode (the pose tables, pose-ahead, prediction), the object's overlays, its scale, its type's
+preprocess (a unit's aim and look) and interpolation, as the walk gathered them, in the same order. What the box's
+kernel takes comes back in *in; a model without nodes comes back as no model, as the walk placed it */
+struct anim_pose_in
+{
+	struct model *model;
+	real_orientation *orientations;
+	real_matrix4x3 *parent;
+	short node_count;
+	boolean world_relative;
+};
+
+static void anim_pose_gather(
+	long object_index,
+	struct object_datum *object,
+	struct object_definition *object_definition,
+	real_orientation *cannot_interpolate_node_orientations_storage,
+	struct anim_pose_in *in)
+{
+%s	struct model *psp_hoist_model = NULL;
+	struct animation_graph *psp_hoist_graph = NULL;
+	real_orientation *node_orientations =
+		TEST_FLAG(_object_mask_cannot_interpolate, object->object.type) ?
+		cannot_interpolate_node_orientations_storage :
+		(real_orientation *)object_header_block_get(object_index, &object->object.node_orientations);
+
+	in->model = NULL;
+	in->orientations = NULL;
+	in->parent = NULL;
+	in->node_count = 0;
+	in->world_relative = FALSE;
+"""
+TICK2_POSENEW_GATHER_TAIL = r"""		in->model = model;
+		in->orientations = node_orientations;
+		in->parent = object_node_matrix;
+		in->node_count = model_node_count;
+		in->world_relative = world_relative;
+	}
+}
+
+"""
+TICK2_POSENEW_POSE_HEAD = r"""/* TICK2 posenew step 2: the store's pose, made now (the walk's sites: an object's own update, placement and the
+setters that pose at once, each eager as section 17 ruled). The hand-over and the epoch first (a pose writes what the
+ME's pass and perception's rays read), then the gather, then the box's kernel into the node block, which also writes
+the bounding sphere; then the sphere's copies */
+static void %s(
+	long object_index,
+	struct object_datum *object,
+	struct object_definition *object_definition)
+{
+"""
+TICK2_POSENEW_POSE_MIDDLE = r"""	real_orientation cannot_interpolate_node_orientations_storage[MAXIMUM_NODES_PER_MODEL];
+	real_matrix4x3 *object_nodes = (real_matrix4x3 *)object_header_block_get(object_index, &object->object.node_matrices);
+	struct anim_pose_in in;
+
+	anim_pose_gather(object_index, object, object_definition, cannot_interpolate_node_orientations_storage, &in);
+	psp_box_pose(object_index, object, object_definition, in.model, in.node_count, in.orientations, in.world_relative,
+		in.parent, object_nodes);
+"""
+TICK2_POSENEW_RENAMES = [("object_compute_node_matrices_with_cs", "store_pose_now_cs"),
+                         ("object_compute_node_matrices_with", "store_pose_now_with"),
+                         ("object_compute_node_matrices_recursive", "store_pose_now_family"),
+                         ("object_compute_node_matrices", "store_pose_now")]
+def tick2_posenew_store_cut(tree):
+    if not TICK2_POSENEW:
+        return 0
+    if not BOXPOSING:
+        check_fail("psp_fixups: TICK2 posenew step 2 needs PSP_BOXPOSING=1 (the box's kernel is the store's pose)")
+        return 0
+    objects_c = os.path.join(tree, "source/objects/objects.c")
+    c = open(objects_c, errors="surrogateescape").read()
+    def once(text, piece, where):
+        if text.count(piece) != 1:
+            check_fail("psp_fixups: TICK2 posenew step 2: %s's anchor %r matches %d times" % (where, piece[:60], text.count(piece)))
+            return False
+        return True
+    # the pose's body: the stamps wrapper's inner function where the stamps are built, else the pose itself
+    inner = "object_compute_node_matrices_with_cs" if "static void object_compute_node_matrices_with_cs(\n" in c else \
+        "object_compute_node_matrices_with"
+    head = "static void %s(\n\tlong object_index,\n\tstruct object_datum *object,\n\tstruct object_definition *object_definition)\n{\n" % inner
+    if not once(c, head, "the pose's head"):
+        return 0
+    b0 = c.index(head) + len(head)
+    b1 = c.index("\n}\n", b0) + 3
+    body = c[b0:b1]
+    if not body.endswith("\n\treturn;\n}\n"):
+        check_fail("psp_fixups: TICK2 posenew step 2: the pose's body doesn't end where it's read to")
+        return 0
+    hoisted = TICK2_POSENEW_HOISTED if TICK2_POSENEW_HOISTED in body else ""
+    body = body.replace(TICK2_POSENEW_HOISTED, "")
+    for piece, where in ((TICK2_POSENEW_STORAGE, "the walk's locals"), (TICK2_POSENEW_TEST, "the model test"),
+                         (TICK2_POSENEW_BOXCALL, "the box's call"), (TICK2_POSENEW_POSED, "the box's label")):
+        if not once(body, piece, where):
+            return 0
+    prologue = body[:body.index(TICK2_POSENEW_STORAGE)]
+    gather = body[body.index(TICK2_POSENEW_TEST) + len(TICK2_POSENEW_TEST):body.index(TICK2_POSENEW_BOXCALL)]
+    epilogue = body[body.index(TICK2_POSENEW_POSED) + len(TICK2_POSENEW_POSED):body.rindex("\n\treturn;\n}\n")]
+    if "tick2_h_anim" in prologue + epilogue or "object_nodes" in gather or "goto" in gather:
+        check_fail("psp_fixups: TICK2 posenew step 2: the gather and the pose don't part where the walk's text says")
+        return 0
+    new = (TICK2_POSENEW_GATHER_HEAD % hoisted + TICK2_POSENEW_TEST + gather +
+           TICK2_POSENEW_GATHER_TAIL + TICK2_POSENEW_POSE_HEAD % inner + prologue + TICK2_POSENEW_POSE_MIDDLE + epilogue + "}\n")
+    # the forward declaration the stamps put ahead of the body stays; the body goes whole
+    c = c[:c.index(head)] + new + c[b1:]
+    # the walk's names, at every call and definition in the engine, are the store's
+    count = 0
+    for root, dirs, files in os.walk(os.path.join(tree, "source")):
+        for name in files:
+            if not name.endswith((".c", ".h")):
+                continue
+            path = os.path.join(root, name)
+            text = c if path == objects_c else open(path, errors="surrogateescape").read()
+            if "object_compute_node_matrices" not in text:
+                continue
+            renamed = text
+            for old, now in TICK2_POSENEW_RENAMES:
+                renamed, k = re.subn(r"\b%s(?=\s*\()" % old, now, renamed)
+                count += k
+            if path == objects_c:
+                c = renamed
+            elif renamed != text and not CHECK_ONLY:
+                open(path, "w", errors="surrogateescape").write(renamed)
+    if re.search(r"^[^/*\n]*\bobject_compute_node_matrices\w*\s*\(", c, re.M):
+        check_fail("psp_fixups: TICK2 posenew step 2: a walk call is left in objects.c")
+        return 0
+    if not CHECK_ONLY:
+        open(objects_c, "w", errors="surrogateescape").write(c)
+    print("psp_fixups: TICK2 posenew step 2: the walk's %d calls and definitions are the store's pose; the gather is animation's" % count)
+    return 1
+tick2_posenew_store_cut(TREE)
+
 if CHECK_ONLY:
     for message in count_failures:
         print(message)
