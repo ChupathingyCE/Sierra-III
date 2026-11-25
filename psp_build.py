@@ -1561,6 +1561,114 @@ def smalldata_report(r):
     if unknown:
         sys.exit("psp_build: PSP_SMALLDATA: relocations psp-prxgen keeps and the PSP's loader doesn't take: " + ", ".join(unknown))
 
+DISASSEMBLY = []   # the final halo.elf's psp-objdump -d, made once (lto_report, posenew_gp_report)
+
+def disassembly():
+    if not DISASSEMBLY:
+        DISASSEMBLY.append(subprocess.run(["psp-objdump", "-d", "--no-show-raw-insn", os.path.join(OUT, "halo.elf")],
+                                          capture_output=True, text=True, check=True).stdout)
+    return DISASSEMBLY[0]
+
+# PSP_TICK2_POSENEW=1, step 5: the two counts objects.c defines so its readers
+# reach them through $gp (the lead 2026-11-25 09:0x, kept 09:3x, decisions.md;
+# docs/box_world_store.md 'Written (09:2x)', "Open, at compile"). The ruling's
+# compile check, read from the linked program: each load or store reaching a
+# count, by the function it's in, is either $gp-relative (off(gp), or an
+# address built from gp) or through an address a lui built. A lui access is
+# printed, not refused: it goes to the lead before the pair (09:3x).
+POSENEW_GP_COUNTS = ("psp_nms_count", "psp_boxb_count")
+MIPS_MEM = re.compile(r"^\s*[0-9a-f]+:\s+(l[bhw]u?|s[bhw]|lwc1|swc1|ll|sc|lwl|lwr|swl|swr)\s+\$?(\w+),(-?\d+)\(\$?(\w+)\)")
+MIPS_LUI = re.compile(r"^\s*[0-9a-f]+:\s+lui\s+\$?(\w+),(0x[0-9a-f]+|\d+)")
+MIPS_ADDIU = re.compile(r"^\s*[0-9a-f]+:\s+(?:addiu|ori)\s+\$?(\w+),\$?(\w+),(-?(?:0x[0-9a-f]+|\d+))")
+MIPS_MOVE = re.compile(r"^\s*[0-9a-f]+:\s+move\s+\$?(\w+),\$?(\w+)\s*$")
+MIPS_WRITES = re.compile(r"^\s*[0-9a-f]+:\s+(\S+)\s+\$?(\w+)")
+# mnemonics whose first operand isn't a register they write
+MIPS_NO_DEST = re.compile(r"^(s[bhw]|swc1|swl|swr|b\w*|j|jr|jalr?|t\w+|mt\w+|ctc1|cache|sync|nop|break|syscall|eret)$")
+
+def posenew_gp_report():
+    """the 09:3x check: how objects.c's readers (and every other function)
+    reach psp_nms_count and psp_boxb_count in the linked program. Returns the
+    summary's piece: per count, the accesses through $gp / through lui"""
+    elf = os.path.join(OUT, "halo.elf")
+    syms = {}
+    try:
+        nm = subprocess.run(["psp-nm", elf], capture_output=True, text=True).stdout
+    except OSError:
+        nm = ""
+    for line in nm.splitlines():
+        p = line.split()
+        if len(p) == 3 and p[2] in POSENEW_GP_COUNTS + ("_gp",):
+            syms[p[2]] = int(p[0], 16)
+    missing = [n for n in POSENEW_GP_COUNTS + ("_gp",) if n not in syms]
+    if missing:
+        print("posenew gp: not in halo.elf's symbols (psp-nm): %s; the check is unread" % ", ".join(missing))
+        return "posenew gp: unread (no %s)" % ", ".join(missing)
+    gp = syms["_gp"]
+    where = {syms[n]: n for n in POSENEW_GP_COUNTS}
+    found = {n: {"gp": {}, "lui": {}} for n in POSENEW_GP_COUNTS}
+    fn, regs = "?", {}
+    for line in disassembly().splitlines():
+        m = re.match(r"^[0-9a-f]+ <([^>]+)>:$", line)
+        if m:
+            fn, regs = m.group(1), {}
+            continue
+        m = MIPS_MEM.match(line)
+        if m:
+            op, dest, off, base = m.group(1), m.group(2), int(m.group(3)), m.group(4)
+            kind, addr = None, None
+            if base == "gp":
+                kind, addr = "gp", gp + off
+            elif base in regs:
+                kind, addr = regs[base][0], regs[base][1] + off
+            if addr in where:
+                by = found[where[addr]][kind]
+                by[fn] = by.get(fn, 0) + 1
+            if not MIPS_NO_DEST.match(op):
+                regs.pop(dest, None)
+            continue
+        m = MIPS_LUI.match(line)
+        if m:
+            regs[m.group(1)] = ("lui", (int(m.group(2), 0) << 16) & 0xffffffff)
+            continue
+        m = MIPS_ADDIU.match(line)
+        if m:
+            dest, src, imm = m.group(1), m.group(2), int(m.group(3), 0)
+            if src == "gp":
+                regs[dest] = ("gp", gp + imm)
+            elif src in regs:
+                regs[dest] = (regs[src][0], (regs[src][1] + imm) & 0xffffffff)
+            else:
+                regs.pop(dest, None)
+            continue
+        m = MIPS_MOVE.match(line)
+        if m:
+            if m.group(2) in regs:
+                regs[m.group(1)] = regs[m.group(2)]
+            else:
+                regs.pop(m.group(1), None)
+            continue
+        m = MIPS_WRITES.match(line)
+        if m and not MIPS_NO_DEST.match(m.group(1)):
+            regs.pop(m.group(2), None)
+    parts, lui_seen = [], []
+    for n in POSENEW_GP_COUNTS:
+        g, l = found[n]["gp"], found[n]["lui"]
+        print("posenew gp: %s at 0x%08x (_gp%+d): %d access(es) gp-relative in %d function(s), %d through lui in %d" %
+              (n, syms[n], syms[n] - gp, sum(g.values()), len(g), sum(l.values()), len(l)))
+        for kind, by in (("gp", g), ("lui", l)):
+            for f, k in sorted(by.items(), key=lambda kv: (-kv[1], kv[0])):
+                print("  %-3s %3d  %s" % (kind, k, f))
+        if not g and not l:
+            # objects.c reads both counts every tick: none found is the parse failing, not a clean result
+            print("posenew gp: %s: no access found; the disassembly's format isn't what this reads, the check is unread" % n)
+        parts.append("%s %d gp/%d lui" % (n, sum(g.values()), sum(l.values())))
+        if l:
+            lui_seen.append(n)
+    if lui_seen:
+        print("posenew gp: %s reached through lui in the functions above: objects.c's readers among them go to the lead "
+              "before the pair (decisions.md 09:3x)" % ", ".join(lui_seen))
+    return "posenew gp: " + ", ".join(parts)
+
 def lto_report(r):
     """checks that the link did what PSP_LTO asks, and reports its code.
     1. The LTO units' code came out of the link's own object: without the
@@ -1591,8 +1699,7 @@ def lto_report(r):
     def in_lto(addr):
         i = bisect.bisect_right(starts, addr) - 1
         return i >= 0 and addr < lto_code[i][1]
-    dis = subprocess.run(["psp-objdump", "-d", "--no-show-raw-insn", os.path.join(OUT, "halo.elf")],
-                         capture_output=True, text=True, check=True).stdout
+    dis = disassembly()
     real = set(WRAPPED)
     bypass, caller = set(), "?"
     for line in dis.splitlines():
@@ -1786,6 +1893,9 @@ def main():
         assert r.returncode == 0, r.stderr[-2000:]
     if LTO_OBJS:
         lto_report(r)
+    if os.environ.get("PSP_TICK2_POSENEW", "") == "1":
+        # step 5's $gp check on the counts (decisions.md 09:3x), in the line a reader compares
+        summary += "; " + posenew_gp_report()
     subprocess.run(["psp-fixup-imports", os.path.join(OUT, "halo.elf")], check=True)
     if MEXEC and PGO == "generate":
         # a counting build: psp_me.c is compiled as MEXEC builds it, so the
