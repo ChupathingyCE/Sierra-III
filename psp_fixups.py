@@ -64803,6 +64803,140 @@ def tick2_posenew_boxb_move_cut(tree):
     return 1
 tick2_posenew_boxb_move_cut(TREE)
 
+# PSP_TICK2_POSENEW=1, step 5, item 1, third piece (docs/box_world_store.md section 17 'third piece'): NMSKIP's tables
+# and their ME copy move to psp/src/store_pose.c, verbatim: the owed computes' entries, free list and bits
+# (psp_nms_pending, psp_nms_count), the root table, the ME's copy (psp_nms_me, made by psp_nms_pending_for_me), vislazy's
+# drawn sets and site table, the skip, the drop, the note, the make (store_pose_make_skipped / _at), the close, forget,
+# and the game state's save and load. The text is read from objects.c itself, not from FIXES_NMSKIP's hunk: six later
+# fixups edit inside the block (means B's block and its four calls, the record words object.root-> and tick2_anim_of,
+# FIXES_TP1's psp_nms_may, the TICK2 hoist, store_pose_now, FIXES_AIME2A's hand-back), so the hunk's text isn't in the
+# tree. The block runs from its head comment to psp_nms_game_state_loading's closing brace, each anchor found once.
+# What stays in objects.c, in the block's place: the PSP_NMS_TYPES line (the compute's end and the objects' loop read
+# it); means B's kept block, which the second piece left inside this one (tick2_posenew_boxb_texts' declarations, found
+# by their text); a declaration block for the moved names objects.c reads; and FIXES_TP1's insertion, from psp_tp1_old's
+# declaration to psp_nms_may's end (psp_ep_mode's tentative definition is FVP's state, and psp_nms_may is always-inline
+# in the objects' loop, so moving it would make a per-object test a call across units). The file's copy is the rest,
+# joined, with `static` dropped on the lines whose names objects.c reads (six functions, the switches' line, vislazy's
+# switch line and drawn set, the counters' line), and objects.c's forward declaration of psp_nms_forget loses its
+# static. The cut refuses if the file's text between its third marker pair isn't that text, so any edit upstream to
+# the block refuses the build until the copy is regenerated from the tree. Still keyed by absolute index (section 17
+# 'first piece'), every ME name kept. Exact by construction. Cost [U]: the six exported functions were noinline
+# already, so the loop's calls aren't new, but LTO no longer sees into them, and psp_nms_may's four reads and the loop's
+# psp_nms_open test reach another unit's globals; the pair prices it. The last cut, after means B's.
+TICK2_POSENEW_NMS_BEGIN = "/* ---- moved from objects.c (FIXES_NMSKIP's block as every cut before this one left it, read from the tree): begin ---- */\n"
+TICK2_POSENEW_NMS_FINISH = "/* ---- moved from objects.c: NMSKIP's tables: finish ---- */\n"
+TICK2_POSENEW_NMS_HEAD = "/* psp_fixups.py (FIXES_NMSKIP): the computes left out until the frame's\n"
+TICK2_POSENEW_NMS_LAST = "void psp_nms_game_state_loading(void)\n{\n"
+TICK2_POSENEW_NMS_TYPES = "#define PSP_NMS_TYPES "
+TICK2_POSENEW_NMS_TP1 = ("extern int psp_tp1_old; /* psp_fixups.py (FIXES_TP1) */\n",
+                         "static __inline__ __attribute__((always_inline)) int psp_nms_may(long object_index, struct object_datum const *object)\n")
+# the lines whose names objects.c still reads: `static ` dropped in the file's copy
+TICK2_POSENEW_NMS_EXPORTS = ("static int psp_nms_on = -1, psp_nms_check = 0, psp_nms_open = 0;\n",
+                             "static int psp_vl_on = 0, psp_vl_ticked = 0;\n",
+                             "static unsigned long psp_vl_drawn[(MAXIMUM_OBJECTS_PER_MAP + 31) / 32];\n",
+                             "static unsigned long psp_nms_ticks, psp_nms_last_ticks, psp_nms_seen,",
+                             "__attribute__((noinline)) static int psp_nms_begin(void)\n",
+                             "__attribute__((noinline)) static int psp_nms_skip(long object_index, struct object_datum *object)\n",
+                             "__attribute__((noinline)) static void psp_nms_drop(long object_index)\n",
+                             "__attribute__((noinline)) static void psp_nms_note(long object_index, struct object_datum const *object)\n",
+                             "__attribute__((noinline)) static void psp_nms_close(void)\n",
+                             "static void psp_nms_forget(void)\n")
+TICK2_POSENEW_NMS_DECL = r"""/* TICK2 posenew step 5: NMSKIP's tables, their ME copy, vislazy's sets and their code are the store's, in
+psp/src/store_pose.c (moved verbatim, read from this file as the cuts before left it); the reads that stay here use
+these (psp_nms_settle_time, psp_nms_count, psp_nms_pending, psp_nms_me, store_pose_make_skipped and psp_nms_forget
+are declared at the file's head) */
+extern int psp_nms_on, psp_nms_check, psp_nms_open;
+extern int psp_vl_on, psp_vl_ticked;
+extern long psp_vl_moving;
+extern unsigned long psp_vl_drawn[(MAXIMUM_OBJECTS_PER_MAP + 31) / 32];
+extern unsigned long psp_nms_ticks, psp_nms_last_ticks, psp_nms_seen, psp_nms_skipped, psp_nms_superseded,
+	psp_nms_read, psp_nms_frame_end, psp_nms_stale, psp_nms_refused[7], psp_nms_gate_wrong,
+	psp_nms_made_differs, psp_nms_made_checked, psp_nms_skip_us, psp_nms_check_reports;
+int psp_nms_begin(void);
+int psp_nms_skip(long object_index, struct object_datum *object);
+void psp_nms_drop(long object_index);
+void psp_nms_note(long object_index, struct object_datum const *object);
+void psp_nms_close(void);
+
+"""
+TICK2_POSENEW_NMS_FORWARD = "static void psp_nms_forget(void);\n"
+def tick2_posenew_nms_texts(c):
+    """NMSKIP's block as objects.c holds it (the head comment to psp_nms_game_state_loading's closing brace), what
+    objects.c keeps in its place, and the file's copy (the rest, joined, the exports' static dropped)"""
+    if c.count(TICK2_POSENEW_NMS_HEAD) != 1 or c.count(TICK2_POSENEW_NMS_LAST) != 1 or \
+            c.index(TICK2_POSENEW_NMS_LAST) < c.index(TICK2_POSENEW_NMS_HEAD):
+        check_fail("psp_fixups: TICK2 posenew step 5: NMSKIP's block's head (%d) or psp_nms_game_state_loading (%d) "
+                   "isn't in objects.c once, in order" % (c.count(TICK2_POSENEW_NMS_HEAD), c.count(TICK2_POSENEW_NMS_LAST)))
+        return None
+    start = c.index(TICK2_POSENEW_NMS_HEAD)
+    block = c[start:c.index("\n}\n", c.index(TICK2_POSENEW_NMS_LAST)) + 3]
+    boxb = tick2_posenew_boxb_texts()
+    if boxb is None:
+        return None
+    spans = []
+    for name, first, last in (("the PSP_NMS_TYPES line", TICK2_POSENEW_NMS_TYPES, "\n"),
+                              ("FIXES_TP1's insertion", TICK2_POSENEW_NMS_TP1[0], None),
+                              ("means B's kept block", boxb[1], "")):
+        if block.count(first) != 1:
+            check_fail("psp_fixups: TICK2 posenew step 5: %s is in NMSKIP's block %d times, not 1" % (name, block.count(first)))
+            return None
+        at = block.index(first)
+        if last is None:
+            if block.count(TICK2_POSENEW_NMS_TP1[1]) != 1 or block.index(TICK2_POSENEW_NMS_TP1[1]) < at:
+                check_fail("psp_fixups: TICK2 posenew step 5: psp_nms_may isn't in NMSKIP's block once, after psp_tp1_old")
+                return None
+            end = block.index("\n}\n", block.index(TICK2_POSENEW_NMS_TP1[1])) + 3
+        elif last:
+            end = block.index(last, at) + len(last)
+        else:
+            end = at + len(first)
+        spans.append((at, end))
+    kept = block[spans[0][0]:spans[0][1]] + block[spans[2][0]:spans[2][1]] + TICK2_POSENEW_NMS_DECL + \
+        block[spans[1][0]:spans[1][1]]
+    moved, at = "", 0
+    for s, e in sorted(spans):
+        if s < at:
+            check_fail("psp_fixups: TICK2 posenew step 5: the pieces objects.c keeps overlap in NMSKIP's block")
+            return None
+        moved, at = moved + block[at:s], e
+    moved += block[at:]
+    for head in TICK2_POSENEW_NMS_EXPORTS:
+        if moved.count(head) != 1:
+            check_fail("psp_fixups: TICK2 posenew step 5: NMSKIP's moved text has %r %d times" % (head.strip(), moved.count(head)))
+            return None
+        moved = moved.replace(head, head.replace("static ", "", 1))
+    return block, kept, moved
+def tick2_posenew_nms_move_cut(tree):
+    if not TICK2_POSENEW or STORECOUNT:
+        return 0
+    objects_c = os.path.join(tree, "source/objects/objects.c")
+    c = open(objects_c, errors="surrogateescape").read()
+    texts = tick2_posenew_nms_texts(c)
+    if texts is None:
+        return 0
+    block, kept, moved = texts
+    if c.count(TICK2_POSENEW_NMS_FORWARD) != 1:
+        check_fail("psp_fixups: TICK2 posenew step 5: psp_nms_forget's forward declaration is in objects.c %d times"
+                   % c.count(TICK2_POSENEW_NMS_FORWARD))
+        return 0
+    store = open(TICK2_POSENEW_STORE_POSE_C, errors="surrogateescape").read()
+    if store.count(TICK2_POSENEW_NMS_BEGIN) != 1 or store.count(TICK2_POSENEW_NMS_FINISH) != 1:
+        check_fail("psp_fixups: TICK2 posenew step 5: psp/src/store_pose.c's NMSKIP markers aren't there once each")
+        return 0
+    held = store[store.index(TICK2_POSENEW_NMS_BEGIN) + len(TICK2_POSENEW_NMS_BEGIN):store.index(TICK2_POSENEW_NMS_FINISH)]
+    if held != moved:
+        check_fail("psp_fixups: TICK2 posenew step 5: psp/src/store_pose.c's NMSKIP tables aren't objects.c's as the cuts "
+                   "before left them (an earlier cut changed the block: regenerate the file's copy from the tree)")
+        return 0
+    c = c.replace(block, kept)
+    c = c.replace(TICK2_POSENEW_NMS_FORWARD, TICK2_POSENEW_NMS_FORWARD[len("static "):])
+    if not CHECK_ONLY:
+        open(objects_c, "w", errors="surrogateescape").write(c)
+    print("psp_fixups: TICK2 posenew step 5: NMSKIP's tables moved to psp/src/store_pose.c (%d lines; objects.c keeps %d)"
+          % (moved.count("\n"), kept.count("\n")))
+    return 1
+tick2_posenew_nms_move_cut(TREE)
+
 if CHECK_ONLY:
     for message in count_failures:
         print(message)
