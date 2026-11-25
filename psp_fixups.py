@@ -64615,8 +64615,9 @@ tick2_posenew_demand_cut(TREE)
 # (the take in object_new, the give where an object goes, the block getter, the collector's spare count), and the two
 # overflow-chunk calls the allocator makes lose their static. store_pose.c holds the same text, those four functions'
 # static dropped, between its two markers, and the cut refuses if the two differ, so TICK2_POSE_CODE can't change and
-# leave the file behind. psp/src units aren't LTO units (psp_build.py lto_unit), so until the accessors move beside it
-# the block getter is a call across units [U: the pair prices it]. PSP_STORECOUNT=1 (an emulator census that wraps
+# leave the file behind. Under PSP_LTO=1 store_pose.c is an LTO unit when objects.c is one (psp_build.py
+# LTO_LIKE_UNITS, the lead 2026-11-25 09:1x), so the block getter can still inline across the cut [U: the link map
+# shows it]. PSP_STORECOUNT=1 (an emulator census that wraps
 # the block getter) isn't built with step 5. The last cut, after step 4's.
 TICK2_POSENEW_STORE_POSE_C = os.path.join(os.path.dirname(os.path.abspath(__file__)), "psp", "src", "store_pose.c")
 TICK2_POSENEW_MOVED_BEGIN = "/* ---- moved from objects.c (psp_fixups.py TICK2_POSE_CODE, after tick2_chunk_calls): begin ---- */\n"

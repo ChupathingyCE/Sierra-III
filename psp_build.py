@@ -756,7 +756,7 @@ ASSERTS_OFF_UNITS = [w for w in os.environ.get("PSP_ASSERTS_OFF_UNITS", "").spli
 # - psp/src and the port's units: the link script places the ME's variables
 #   by object name (psp_ge.o, psp_tex.o), and the --wrap'd functions'
 #   wrappers live there, so those objects stay what the script and the
-#   wrapping expect;
+#   wrapping expect (but LTO_LIKE_UNITS, an engine unit's code moved there);
 # - a unit with ".set noat" assembly: it needs compile_one's retry without
 #   -mno-explicit-relocs, and an LTO unit's assembly is only assembled at
 #   the link, where the retry can't reach.
@@ -768,6 +768,17 @@ ASSERTS_OFF_UNITS = [w for w in os.environ.get("PSP_ASSERTS_OFF_UNITS", "").spli
 LTO = os.environ.get("PSP_LTO", "") == "1"
 LTO_COPY_UNITS = ("port/linux/game/msvc_comdat.c", "source/hs/object_lists.c")
 LTO_DIRS = [w for w in os.environ.get("PSP_LTO_UNITS", "").split(",") if w]
+# A psp/src unit made of an engine unit's moved code is built as that unit is,
+# LTO with it (LTO_LIKE_UNITS: the moved unit, the unit it came from). Slice 1's
+# task 3, step 5 (PSP_TICK2_POSENEW=1) moves the store's posing code out of
+# objects.c into psp/src/store_pose.c; under PSP_LTO=1 objects.c's code comes
+# out of the link's one partition, so store_pose.c's must too (the lead
+# 2026-11-25 09:1x), or the move costs what the layouts place by LTO_OBJECT
+# (the moved variables' data places, the moved functions' text places), $gp
+# reach between the two units and inlining across the cut. None of psp/src's
+# reasons to stay out holds for it: it defines no ME variable the link script
+# places by object name, no --wrap'd function and no ".set noat" assembly
+LTO_LIKE_UNITS = {"psp/src/store_pose.c": "source/objects/objects.c"}
 LTO_OBJECT = "*ltrans*.o"
 LTO_OBJS = set()   # the LTO units' objects, filled in by main()
 WRAPPED = []       # the link's --wrap'd names, for lto_report()
@@ -780,6 +791,9 @@ def lto_unit(rel):
     r = rel.replace("\\", "/")
     if r in LTO_COPY_UNITS:
         return LTO
+    if r in LTO_LIKE_UNITS:
+        return (lto_unit(LTO_LIKE_UNITS[r]) and
+                ".set noat" not in open(os.path.join(HERE, r), errors="surrogateescape").read())
     if not LTO or not r.startswith("source/") or cold_code(r) or any(w in r for w in NOINLINE_UNITS):
         return False
     if LTO_DIRS and not any(r.startswith("source/%s/" % d) for d in LTO_DIRS):
