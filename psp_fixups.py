@@ -58942,8 +58942,8 @@ print("psp_fixups: the typed getters' words forgotten at %d settings of the tag 
 # section's root, link and pose fields (shared with every object type).
 TICK2 = os.environ.get("PSP_TICK2", "") == "1"
 # slice 1's parts on by default under PSP_TICK2=biped (the lead 2026-11-24: the sweep reuse's reach guard, srreach1,
-# 13:2x; the motion pass, mpprice1, 15:1x), each still off with its switch at 0 (PSP_SWEEPREUSE=0 ...) or its keep
-# word at run time (sweepreuseoff, motionpassoff); outside a biped build each stays opt-in at 1
+# 13:2x), each still off with its switch at 0 (PSP_SWEEPREUSE=0 ...) or its keep word at run time (sweepreuseoff);
+# outside a biped build each stays opt-in at 1. The motion pass left these defaults 2026-11-25 (TICK2_MOTIONPASS)
 def slice1_default(name):
     value = os.environ.get(name, "")
     return value == "1" or (value == "" and os.environ.get("PSP_TICK2", "") == "biped")
@@ -61871,7 +61871,11 @@ motioncross_cut(TREE)
 # assist, the AI's helpers) then see every biped moved: at most one move's difference (tick2mcross2), the
 # pre-approved class. The BIPEDMOVE record is written back at the move's end and not kept into phase 5.
 # Keep word "motionpassoff": the build runs the stage as before (the exactness check).
-TICK2_MOTIONPASS = slice1_default("PSP_TICK2_MOTIONPASS")
+# Off by default since 2026-11-25 (the lab's lead, 10:0x, on killread4's confirm): M2 reorders the bipeds' cluster
+# relinks (every move before any rest), which parted c20_leg2 at tick 1260 (an infection form's pop met another
+# first candidate), and relink order is order that shows in play. Opt-in at 1 in any build; motionpassoff still
+# turns it off at run time in a build that has it.
+TICK2_MOTIONPASS = os.environ.get("PSP_TICK2_MOTIONPASS", "") == "1"
 def motionpass_cut(tree):
     if not TICK2_MOTIONPASS:
         return 0
