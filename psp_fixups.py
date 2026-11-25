@@ -60521,6 +60521,126 @@ static void tick2_proof_fill(struct object_header_datum *header)
     return 1
 print("psp_fixups: the world store's proof form: %s (TICK2 proof)" % ("on" if tick2_proof_cut(TREE) else "off"))
 
+# The proof form's "hudsounds" (task 4 piece 5, the lead 15:5x (5) (a); box_world_store.md 18 'Read (16:5x)'):
+# at the stateblocks tick, each of hud_states[0].last_sound_handles' 12 handles that isn't NONE, with the
+# definition_index of the datum whose whole 32 bits it is in 'sounds' (sound_manager.c, impulse sounds, not game
+# state) and in 'object looping sounds' (game_sound.c, game state). The 0xf121 word at the hud unit interface's
+# +0x28 is entry 0, declared long, so the code names no array: hud_play_sound writes either by the HUD tag's
+# entry, and this says which side holds each live handle and what it plays, with no tag read. It reads only
+# (datum_try_and_get, each array checked present and valid first, so no assert fires) and logs; the keep word
+# and the stateblocks tick both asked, so a proof run without the word is the same build doing the same work.
+# In both proof builds (it reads no tick2 field), never the ship form.
+TICK2_HUDSOUNDS_STATE = "\t\tif (tick % 30 && !(records_from >= 0 && tick >= records_from && tick < records_from + 48))\n"
+TICK2_HUDSOUNDS_APPEND = {
+    "source/interface/hud_unit.c": r"""
+#ifdef HALO_PSP
+/* TICK2 proof "hudsounds" (psp_fixups.py, tick2_hudsounds_cut): hud_states[0]'s last sound handles, each live one
+with its definition in the impulse sounds (sound_manager.c) and the object looping sounds (game_sound.c) where
+its 32 bits name a live datum; "off" where the array isn't there, "none" where no live datum has those bits */
+void platform_psp_log(const char *format, ...);
+long psp_hudsounds_impulse_definition(long handle, int *present); /* sound_manager.c */
+long psp_hudsounds_looping_definition(long handle, int *present); /* game_sound.c */
+static void psp_hudsounds_text(char *text, unsigned size, int present, long definition)
+{
+	if (!present)
+		snprintf(text, size, "off");
+	else if (definition == NONE)
+		snprintf(text, size, "none");
+	else
+		snprintf(text, size, "%08lx", (unsigned long)definition);
+}
+void psp_hudsounds_dump(long tick)
+{
+	long k, live = 0;
+
+	if (!unit_hud_globals)
+	{
+		platform_psp_log("state: hud sounds at tick %ld: no hud unit interface", tick);
+		return;
+	}
+	for (k = 0; k < (long)NUMBEROF(unit_hud_globals->hud_states[0].last_sound_handles); k++)
+	{
+		long handle = unit_hud_globals->hud_states[0].last_sound_handles[k], impulse, looping;
+		int impulse_present, looping_present;
+		char impulse_text[16], looping_text[16];
+
+		if (handle == NONE)
+			continue;
+		live++;
+		impulse = psp_hudsounds_impulse_definition(handle, &impulse_present);
+		looping = psp_hudsounds_looping_definition(handle, &looping_present);
+		psp_hudsounds_text(impulse_text, sizeof(impulse_text), impulse_present, impulse);
+		psp_hudsounds_text(looping_text, sizeof(looping_text), looping_present, looping);
+		platform_psp_log("state: hud sounds at tick %ld: entry %ld handle %08lx sounds %s object looping sounds %s",
+			tick, k, (unsigned long)handle, impulse_text, looping_text);
+	}
+	platform_psp_log("state: hud sounds at tick %ld: %ld of %ld entries live (sound_flags %04x)", tick, live,
+		(long)NUMBEROF(unit_hud_globals->hud_states[0].last_sound_handles), (unsigned)unit_hud_globals->hud_states[0].sound_flags);
+}
+#endif
+""",
+    "source/sound/sound_manager.c": r"""
+#ifdef HALO_PSP
+/* TICK2 proof "hudsounds" (psp_fixups.py, tick2_hudsounds_cut): the definition of the impulse sound whose whole
+handle (salt and index) is this one, NONE if none; *present 0 when the array isn't made or valid. Reads only */
+long psp_hudsounds_impulse_definition(long handle, int *present)
+{
+	struct sound_datum *sound;
+
+	*present = sound_data && sound_data->valid;
+	if (!*present || handle == NONE || !(handle >> 16))
+		return NONE;
+	sound = (struct sound_datum *)datum_try_and_get(sound_data, handle);
+	return sound ? sound->definition_index : NONE;
+}
+#endif
+""",
+    "source/sound/game_sound.c": r"""
+#ifdef HALO_PSP
+/* TICK2 proof "hudsounds" (psp_fixups.py, tick2_hudsounds_cut): the definition of the object looping sound whose
+whole handle (salt and index) is this one, NONE if none; *present 0 when the array isn't made or valid. Reads only */
+long psp_hudsounds_looping_definition(long handle, int *present)
+{
+	struct game_looping_sound_datum *sound;
+
+	*present = game_looping_sound_data && game_looping_sound_data->valid;
+	if (!*present || handle == NONE || !(handle >> 16))
+		return NONE;
+	sound = (struct game_looping_sound_datum *)datum_try_and_get(game_looping_sound_data, handle);
+	return sound ? sound->definition_index : NONE;
+}
+#endif
+""",
+}
+def tick2_hudsounds_cut(tree):
+    if not (TICK2_PROOF and TICK2_ROOT):
+        return 0
+    game_state_c = os.path.join(tree, "source/saved games/game_state.c")
+    g = open(game_state_c, errors="surrogateescape").read()
+    if g.count(TICK2_HUDSOUNDS_STATE) != 1:
+        check_fail("psp_fixups: TICK2 hudsounds: statecrc's every-30-ticks test is in game_state.c %d times"
+                   % g.count(TICK2_HUDSOUNDS_STATE))
+        return 0
+    # inside statecrc's tick, after the stateblocks dump and before the 30-tick return, where blocks_at is in scope
+    g = g.replace(TICK2_HUDSOUNDS_STATE, "\t\tif (tick == blocks_at && psp_keep(\"hudsounds\")) /* TICK2 proof */\n"
+                  "\t\t{\n\t\t\textern void psp_hudsounds_dump(long tick); /* hud_unit.c (psp_fixups.py) */\n\n"
+                  "\t\t\tpsp_hudsounds_dump(tick);\n\t\t}\n" + TICK2_HUDSOUNDS_STATE)
+    texts = {}
+    for name, append in TICK2_HUDSOUNDS_APPEND.items():
+        path = os.path.join(tree, name)
+        text = open(path, errors="surrogateescape").read()
+        if "psp_hudsounds_" in text:
+            check_fail("psp_fixups: TICK2 hudsounds: %s already holds the dump" % name)
+            return 0
+        texts[path] = text + append
+    if not CHECK_ONLY:
+        open(game_state_c, "w", errors="surrogateescape").write(g)
+        for path, text in texts.items():
+            open(path, "w", errors="surrogateescape").write(text)
+    print("psp_fixups: TICK2 hudsounds: hud_states[0]'s sound handles and their definitions at the stateblocks tick")
+    return 1
+tick2_hudsounds_cut(TREE)
+
 # every section's overflow chunks through one pair: counted for the census (the churn the PSP prices at
 # the milestone), and from the heap in the proof form so the pool holds only the old build's blocks
 def tick2_chunk_calls(text):
