@@ -64277,6 +64277,60 @@ def kill_read(tree):
             return 0
     text = text.replace(at, at.replace("\n\n", "\n\t{ void psp_kill_damage(struct damage_data const *damage, long object_index, short node_index, short region_index, short material_index); psp_kill_damage(damage, object_index, node_index, region_index, material_index); } /* KILLREAD */\n\n", 1), 1)
     text = text.replace(dead, dead + "\t\t{ extern long game_time_get(void); int psp_kill_in(long tick); void platform_psp_log(const char *format, ...); if (psp_kill_in(game_time_get())) platform_psp_log(\"kk: %ld %08lx %d\", game_time_get(), (unsigned long)object_index, (int)object->object.type); } /* KILLREAD */\n", 1)
+    # killread2 (the lead 08:47): the area damage's candidates. ka: each area_of_effect_cause_damage in the
+    # window as objects_in_sphere returns (tag, count, the global seed as the blast enters, flags, epicenter);
+    # kc: each area_of_effect_cause_damage_to_object call in order (chain 0 is objects_in_sphere's list,
+    # 1 a child or its next), at its end: handle, type, the bounding sphere center the rays aim at, blocked,
+    # infection form, the pop's draw (bf800000 = -1.0f: no draw), can damage, damaged, flags, the seed after.
+    # Logging only: the draw's value is kept in a local as the comparison takes it.
+    sphere = "\t\tobject_indices,\n\t\tNUMBEROF(object_indices));\n\tif (object_count > 0)\n"
+    local = "\tstruct collision_result direct_collision;\n\tboolean can_damage;\n\n"
+    draw = "\t\t\t\treal_seed_random(get_global_random_seed_address()) <\n\t\t\t\t\tinfection_form_toughness * 0.25f)\n"
+    tail = "\tif (damage_next_object)\n\t{\n\t\tlong next_object_index = object->object.next_object_index;\n"
+    for anchor in (sphere, local, draw, tail):
+        if text.count(anchor) != 1:
+            check_fail("psp_fixups: KILLREAD: a damage.c candidate anchor matches %d times" % text.count(anchor))
+            return 0
+    text = text.replace(sphere, sphere.replace("\tif (object_count > 0)\n", "\t{ void psp_kill_blast(struct damage_data const *damage, short object_count); psp_kill_blast(damage, object_count); } /* KILLREAD */\n\tif (object_count > 0)\n"), 1)
+    text = text.replace(local, local.replace("\n\n", "\n\treal psp_kill_draw = -1.f; /* KILLREAD */\n\n"), 1)
+    text = text.replace(draw, draw.replace("real_seed_random(get_global_random_seed_address()) <", "(psp_kill_draw = real_seed_random(get_global_random_seed_address())) < /* KILLREAD */"), 1)
+    text = text.replace(tail, "\t{ void psp_kill_candidate(struct damage_data const *damage, long object_index, int chain, real_point3d const *center, int blocked, int infection_form, real draw, int can_damage, int did_damage); psp_kill_candidate(damage, object_index, damage_next_object ? 1 : 0, &%sbounding_sphere_center, collision_blocked ? 1 : 0, infection_form ? 1 : 0, psp_kill_draw, can_damage ? 1 : 0, did_damage ? 1 : 0); } /* KILLREAD */\n" % root + tail, 1)
+    text += r"""
+/* KILLREAD: the area damage's blast and candidates (killread2) */
+void psp_kill_blast(struct damage_data const *damage, short object_count)
+{
+	extern long game_time_get(void);
+	char *tag_get_name(long tag_index);
+	int psp_kill_in(long tick);
+	void platform_psp_log(const char *format, ...);
+	long tick = game_time_get();
+	unsigned long const *e;
+
+	if (!psp_kill_in(tick))
+		return;
+	e = (unsigned long const *)&damage->epicenter;
+	platform_psp_log("ka: %ld %s %d | %08lx %08lx %08lx | %08lx %08lx %08lx", tick,
+		damage->definition_index != NONE ? tag_get_name(damage->definition_index) : "none", (int)object_count,
+		(unsigned long)*get_global_random_seed_address(), (unsigned long)damage->flags, (unsigned long)damage->owner_object_index,
+		e[0], e[1], e[2]);
+}
+
+void psp_kill_candidate(struct damage_data const *damage, long object_index, int chain, real_point3d const *center, int blocked, int infection_form, real draw, int can_damage, int did_damage)
+{
+	extern long game_time_get(void);
+	int psp_kill_in(long tick);
+	void platform_psp_log(const char *format, ...);
+	long tick = game_time_get();
+	unsigned long const *c = (unsigned long const *)center;
+	unsigned long d = *(unsigned long const *)&draw;
+
+	if (!psp_kill_in(tick))
+		return;
+	platform_psp_log("kc: %ld %08lx %d %d | %08lx %08lx %08lx | %d %d %08lx %d %d | %08lx %08lx", tick,
+		(unsigned long)object_index, (int)object_get(object_index)->object.type, chain, c[0], c[1], c[2],
+		blocked, infection_form, d, can_damage, did_damage, (unsigned long)damage->flags, (unsigned long)*get_global_random_seed_address());
+}
+"""
     text += r"""
 /* KILLREAD: the kill's field read (psp_fixups.py kill_read) */
 static long psp_kill_first = -2, psp_kill_span = 30;
