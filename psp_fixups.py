@@ -64245,6 +64245,151 @@ void psp_c4_trace_tick(long tick)
     return 1
 print("psp_fixups: C4's play trace: %s (C4TRACE)" % ("on" if c4_trace(TREE) else "off"))
 
+# PSP_KILLREAD=1 (the builder 2026-11-25, emulator only; the lead's 08:0x ruling on c20's 1260 parting):
+# the field read on a kill. With "killreadN" (and "killspanM", 30 ticks by default), from tick N:
+#   kd: each object_cause_damage the host deals (after the owner check): the victim, its type and dead
+#       flag, the damage's tag, owner object, player and team, flags, scale and multiplier bits, the
+#       node, region and material, the victim's body and shield vitality bits as it enters, the epicenter;
+#   kk: each object whose dead bit object_deplete_body sets;
+#   ko: at each tick's end, every object that can move or hurt (not scenery, controls, light fixtures,
+#       placeholders or sound scenery): its type, definition, damage flags, parent, body and shield
+#       vitality bits, position and velocity bits.
+# And from tick 0 to the window's end:
+#   kg: each collector run (its mode, the pool's free and contiguous bytes, live objects, active garbage);
+#   kgd: each object it deletes (index, type);
+#   kf: each object_new that makes nothing (OUT OF OBJECTS), with the tag.
+# Two builds' logs set side by side name the hit the kill came from, its source, and whether the collector
+# or a refused creation took something away first. A bench tool whose tests sit in damage and the collector,
+# so a default build leaves it out.
+def kill_read(tree):
+    if os.environ.get("PSP_KILLREAD", "") != "1":
+        return 0
+    root = "object->object.root->" if TICK2_ROOT else "object->object."
+    edits = []
+    # damage.c: the window, the damage line and the death line
+    path = os.path.join(tree, "source/objects/damage.c")
+    text = open(path, errors="surrogateescape").read()
+    at = "\tdamage_data_validate_owner(damage);\n\n\tdamage_effect = damage_effect_definition_get(damage->definition_index);\n"
+    dead = "\t\tSET_FLAG(damage_flags, _object_dead_bit, TRUE);\n\t\tobject->object.damage_flags = damage_flags;\n"
+    for anchor in (at, dead):
+        if text.count(anchor) != 1:
+            check_fail("psp_fixups: KILLREAD: a damage.c anchor matches %d times" % text.count(anchor))
+            return 0
+    text = text.replace(at, at.replace("\n\n", "\n\t{ void psp_kill_damage(struct damage_data const *damage, long object_index, short node_index, short region_index, short material_index); psp_kill_damage(damage, object_index, node_index, region_index, material_index); } /* KILLREAD */\n\n", 1), 1)
+    text = text.replace(dead, dead + "\t\t{ extern long game_time_get(void); int psp_kill_in(long tick); void platform_psp_log(const char *format, ...); if (psp_kill_in(game_time_get())) platform_psp_log(\"kk: %ld %08lx %d\", game_time_get(), (unsigned long)object_index, (int)object->object.type); } /* KILLREAD */\n", 1)
+    text += r"""
+/* KILLREAD: the kill's field read (psp_fixups.py kill_read) */
+static long psp_kill_first = -2, psp_kill_span = 30;
+
+static void psp_kill_load(void)
+{
+	int psp_keep_loaded(void);
+	int psp_keep_number(const char *prefix, int fallback);
+	void platform_psp_log(const char *format, ...);
+
+	if (psp_kill_first != -2 || !psp_keep_loaded())
+		return;
+	psp_kill_first = psp_keep_number("killread", -1);
+	psp_kill_span = psp_keep_number("killspan", 30);
+	if (psp_kill_first >= 0)
+		platform_psp_log("killread: ticks %ld to %ld; the collector's runs and refused creations from tick 0", psp_kill_first, psp_kill_first + psp_kill_span - 1);
+}
+
+/* inside the window */
+int psp_kill_in(long tick)
+{
+	psp_kill_load();
+	return psp_kill_first >= 0 && tick >= psp_kill_first && tick < psp_kill_first + psp_kill_span;
+}
+
+/* from tick 0 to the window's end */
+int psp_kill_upto(long tick)
+{
+	psp_kill_load();
+	return psp_kill_first >= 0 && tick < psp_kill_first + psp_kill_span;
+}
+
+void psp_kill_damage(struct damage_data const *damage, long object_index, short node_index, short region_index, short material_index)
+{
+	extern long game_time_get(void);
+	char *tag_get_name(long tag_index);
+	void platform_psp_log(const char *format, ...);
+	long tick = game_time_get();
+	struct object_datum *object;
+	unsigned long const *e, *s, *v;
+
+	if (!psp_kill_in(tick))
+		return;
+	object = object_get(object_index);
+	e = (unsigned long const *)&damage->epicenter;
+	s = (unsigned long const *)&damage->scale;
+	v = (unsigned long const *)&object->object.body_vitality;
+	platform_psp_log("kd: %ld %08lx %d %d | %s | %08lx %08lx %d %08lx | %08lx %08lx | %d %d %d | %08lx %08lx | %08lx %08lx %08lx", tick,
+		(unsigned long)object_index, (int)object->object.type, TEST_FLAG(object->object.damage_flags, _object_dead_bit) ? 1 : 0,
+		damage->definition_index != NONE ? tag_get_name(damage->definition_index) : "none",
+		(unsigned long)damage->owner_object_index, (unsigned long)damage->owner_player_index, (int)damage->owner_team_index,
+		(unsigned long)damage->flags, s[0], *(unsigned long const *)&damage->multiplier,
+		(int)node_index, (int)region_index, (int)material_index, v[0], v[1], e[0], e[1], e[2]);
+}
+"""
+    edits.append((path, text))
+    # objects.c: the collector's runs and deletions, the refused creation, and the objects at a tick's end
+    path = os.path.join(tree, "source/objects/objects.c")
+    text = open(path, errors="surrogateescape").read()
+    run = "\tif (garbage_collect_mode!=NONE)\n\t{\n\t\tlong garbage_collect_mode_wide;\n"
+    gone = "\t\t\t\t\tobject_set_garbage(object_index, FALSE);\n\t\t\t\t\tobject_delete_immediately(object_index);\n"
+    out = "\"OUT OF OBJECTS: cannot create %s\",\n\t\t\ttag_name_strip_path(tag_get_name(definition_index)));\n"
+    for anchor in (run, gone, out):
+        if text.count(anchor) != 1:
+            check_fail("psp_fixups: KILLREAD: an objects.c anchor matches %d times" % text.count(anchor))
+            return 0
+    log = "{ extern long game_time_get(void); int psp_kill_upto(long tick); void platform_psp_log(const char *format, ...); if (psp_kill_upto(game_time_get())) platform_psp_log(%s); } /* KILLREAD */\n"
+    text = text.replace(run, "\t" + log.replace("if (psp_kill_upto(", "if (garbage_collect_mode!=NONE && psp_kill_upto(") % ('"kg: %ld mode %ld free %ld contiguous %ld objects %ld active garbage %ld", game_time_get(), (long)garbage_collect_mode, (long)memory_pool_get_free_size(object_memory_pool), (long)memory_pool_get_contiguous_free_size(object_memory_pool), (long)object_header_data->actual_count, (long)object_globals->active_garbage_object_count') + run, 1)
+    text = text.replace(gone, "\t\t\t\t\t" + log % ('"kgd: %ld %08lx %d", game_time_get(), (unsigned long)object_index, (int)header->type') + gone, 1)
+    text = text.replace(out, out + "\t\t" + log % ('"kf: %ld %s", game_time_get(), tag_get_name(definition_index)'), 1)
+    text += """
+/* KILLREAD: every object that can move or hurt, at a tick's end inside the window (game_state.c, psp_game_state_hash_tick) */
+void psp_kill_trace_tick(long tick)
+{
+	int psp_kill_in(long tick);
+	void platform_psp_log(const char *format, ...);
+	long index;
+
+	if (!psp_kill_in(tick))
+		return;
+	for (index = data_next_index(object_header_data, NONE); index != NONE; index = data_next_index(object_header_data, index))
+	{
+		struct object_header_datum *header = (struct object_header_datum *)datum_get(object_header_data, index);
+		struct object_datum *object = (struct object_datum *)header->datum;
+		unsigned long const *p, *v, *b;
+
+		if (!object || header->type == _object_type_scenery || header->type == _object_type_control || header->type == _object_type_light_fixture ||
+			header->type == _object_type_placeholder || header->type == _object_type_sound_scenery)
+			continue;
+		p = (unsigned long const *)&%(root)sposition;
+		v = (unsigned long const *)&%(root)stranslational_velocity;
+		b = (unsigned long const *)&object->object.body_vitality;
+		platform_psp_log("ko: %%ld %%08lx %%d %%08lx %%04x %%08lx | %%08lx %%08lx | %%08lx %%08lx %%08lx | %%08lx %%08lx %%08lx", tick,
+			(unsigned long)index, (int)header->type, (unsigned long)object->definition_index, (unsigned)object->object.damage_flags,
+			(unsigned long)object->object.parent_object_index, b[0], b[1], p[0], p[1], p[2], v[0], v[1], v[2]);
+	}
+}
+""" % {"root": root}
+    edits.append((path, text))
+    # game_state.c: the object line at each tick's end, beside C4's
+    path = os.path.join(tree, "source/saved games/game_state.c")
+    text = open(path, errors="surrogateescape").read()
+    old = "void psp_game_state_hash_tick(long tick)\n{\n\tstatic int asked = -1;\n\tchar line[1024];\n\tint length = 0, k;\n\n"
+    if text.count(old) != 1:
+        check_fail("psp_fixups: KILLREAD: psp_game_state_hash_tick's start matches %d times" % text.count(old))
+        return 0
+    edits.append((path, text.replace(old, old + "\t{ extern void psp_kill_trace_tick(long tick); psp_kill_trace_tick(tick); } /* KILLREAD */\n", 1)))
+    if not CHECK_ONLY:
+        for path, text in edits:
+            open(path, "w", errors="surrogateescape").write(text)
+    return 1
+print("psp_fixups: the kill's field read: %s (KILLREAD)" % ("on" if kill_read(TREE) else "off"))
+
 # PSP_FPWTRACE=1 (the builder 2026-11-24, emulator only): the inputs of the first-person weapon's idle
 # draw for the first six ticks (state, autoaim, zoom, push-back, the position and turning springs and the
 # render facing), so the old build and the store's proof form set side by side name which input differs
