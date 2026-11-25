@@ -8049,11 +8049,12 @@ void psp_game_state_hash_tick(long tick)
 			{
 				long block, blocks;
 
-				/* "stateblocksprop": the AI's props instead of its actors */
+				/* "stateblocksprop": the AI's props instead of its actors; "stateblockshud":
+				the hud unit interface's (the lead 13:2x: addresses or values) */
 				static const char *blocks_of = NULL;
 
 				if (!blocks_of)
-					blocks_of = psp_keep("stateblocksprop") ? "prop" : "actor";
+					blocks_of = psp_keep("stateblocksprop") ? "prop" : psp_keep("stateblockshud") ? "hud unit interface" : "actor";
 				if (strcmp(psp_state_records[k].name, blocks_of))
 					continue;
 				blocks = psp_state_records[k].size / 64;
@@ -8073,9 +8074,13 @@ void psp_game_state_hash_tick(long tick)
 				{
 					/* "stateblockrawB": that block's bytes too, word by word */
 					extern int psp_keep_number(const char *prefix, int fallback); /* psp_platform.c */
-					long raw = psp_keep_number("stateblockraw", -1);
+					long raw = psp_keep_number("stateblockraw", -1), last;
 
-					if (raw >= 0 && raw < blocks)
+					/* "stateblocksdump": every block's bytes, the first 128 (8 KB) */
+					last = psp_keep("stateblocksdump") ? (blocks < 128 ? blocks : 128) - 1 : raw;
+					if (last > raw && raw < 0)
+						raw = 0;
+					for (; raw >= 0 && raw <= last && raw < blocks; raw++)
 					{
 						const unsigned long *word = (const unsigned long *)((const char *)psp_state_records[k].pointer +
 							((4 - ((unsigned long)psp_state_records[k].pointer & 3)) & 3) + raw * 64);
@@ -60305,6 +60310,142 @@ static struct object_header_datum const *tick2_pose_virtual(struct object_header
     return 1
 print("psp_fixups: the world store's node arena: %s (TICK2 pose)" % ("on" if tick2_pose_cut(TREE) else "off"))
 
+# The proof form's statecrc (the lead 12:0x (1), 14:3x (1)): psp_state_hash (game_state.c, FIXES_36) hashes some
+# of a live datum's words as what they mean, from a table of (address, word) objects.c builds once a tick before
+# the first hash, so the objects record parts only where the old build's meaning would. Both builds of the proof
+# form hash the record pointer (+0xc, object.root) as its slot: it is a heap address there (tick2_proof_room, the
+# chunks' calloc), and a heap address moves with whatever the build puts before the heap (posenew6: 0x8F00 higher
+# in POSENEW, every object). POSENEW's members cut adds its pattern run's three words (tick2's references, rebuilt
+# by tick2_proof_refs) at TICK2_PROOF_HASH_MORE. The dumps (stateblockraw, statefull) stay raw: they show the
+# bytes as they are. The ship form is untouched: its records are in the pool, whose addresses both builds share.
+TICK2_PROOF_HASH_ANCHOR = "struct tick2_store *tick2_store; /* TICK2 root */\n"
+TICK2_PROOF_HASH_MORE = "\t\t/* TICK2 proof: the datum's other words to stand in */\n"
+TICK2_PROOF_HASH_BUILD = r"""/* TICK2 proof: statecrc's words to stand in (game_state.c's psp_state_hash), each an address and the word hashed
+there, by address (the headers' order isn't the pool's); built once a tick before the first hash. A word off a
+word boundary (none expected: the pool's blocks are word-aligned) is left out, so it hashes raw and parts, and is
+logged once */
+#define TICK2_PROOF_HASH_WORDS (4 * MAXIMUM_OBJECTS_PER_MAP) /* the record pointer, and posenew's run of three */
+#define TICK2_PROOF_ROOT_SLOT 0x52000000UL /* a slot's tag, so slot 0 and a null pointer don't hash alike */
+#define TICK2_PROOF_ROOT_POISON 0xBAD0B0BAUL /* a pointer to no record, or into one: the record parts */
+unsigned long tick2_proof_hash_words[TICK2_PROOF_HASH_WORDS][2];
+static int tick2_proof_hash_order(const void *a, const void *b)
+{
+	unsigned long x = ((unsigned long const *)a)[0], y = ((unsigned long const *)b)[0];
+
+	return x < y ? -1 : x > y;
+}
+/* the record pointer as the store's key (the lead 14:3x (1)): the map's records first, then slots + 64 * chunk +
+place in the overflow chunks; null as itself; a pointer outside every block, or off a record's start, poisoned */
+static unsigned long tick2_proof_root_word(struct tick2_root const *root)
+{
+	unsigned long at = (unsigned long)root, size = (unsigned long)sizeof(struct tick2_root), base;
+	long c;
+
+	if (!root)
+		return 0;
+	if (!tick2_store || !tick2_roots)
+		return TICK2_PROOF_ROOT_POISON;
+	base = (unsigned long)tick2_roots;
+	if (at >= base && at < base + (unsigned long)tick2_store->slots * size)
+		return (at - base) % size ? TICK2_PROOF_ROOT_POISON : TICK2_PROOF_ROOT_SLOT | (at - base) / size;
+	for (c = 0; c < TICK2_CHUNKS; c++)
+	{
+		base = (unsigned long)tick2_store->chunk[c];
+		if (base && at >= base && at < base + TICK2_CHUNK * size)
+			return (at - base) % size ? TICK2_PROOF_ROOT_POISON :
+				TICK2_PROOF_ROOT_SLOT | ((unsigned long)tick2_store->slots + c * TICK2_CHUNK + (at - base) / size);
+	}
+	return TICK2_PROOF_ROOT_POISON;
+}
+long tick2_proof_hash_build(void)
+{
+	void platform_psp_log(const char *format, ...);
+	static int told = 0, poisoned = 0;
+	long i, count = 0;
+
+	for (i = data_next_index(object_header_data, NONE); i != NONE && count + 4 <= TICK2_PROOF_HASH_WORDS;
+		i = data_next_index(object_header_data, i))
+	{
+		struct object_header_datum const *header = (struct object_header_datum const *)datum_get(object_header_data, i);
+		struct object_datum const *object = (struct object_datum const *)header->datum;
+		unsigned long at;
+
+		if (!object || header->data_size < (long)(offsetof(struct object_datum, object.root) + sizeof(object->object.root)))
+			continue;
+		at = (unsigned long)&object->object.root;
+		if (at & 3)
+		{
+			if (!told++)
+				platform_psp_log("TICK2 proof: object %08lx's datum is off a word boundary, hashed raw", (unsigned long)i);
+			continue;
+		}
+		tick2_proof_hash_words[count][0] = at;
+		tick2_proof_hash_words[count][1] = tick2_proof_root_word(object->object.root);
+		if (tick2_proof_hash_words[count][1] == TICK2_PROOF_ROOT_POISON && !poisoned++)
+			platform_psp_log("TICK2 proof: object %08lx's record pointer %p is in no record, hashed poisoned",
+				(unsigned long)i, (const void *)object->object.root);
+		count++;
+""" + TICK2_PROOF_HASH_MORE + r"""	}
+	qsort(tick2_proof_hash_words, count, sizeof(tick2_proof_hash_words[0]), tick2_proof_hash_order);
+	return count;
+}
+"""
+TICK2_PROOF_STATE_HASH = r"""static unsigned long psp_state_hash(const void *start, long bytes)
+{
+	/* from the first whole word (an allocation can start anywhere, and an
+	unaligned word load faults on the PSP) */
+	unsigned long skip = (4 - ((unsigned long)start & 3)) & 3;
+	const unsigned long *word = (const unsigned long *)((const char *)start + skip);
+	unsigned long hash = 2166136261UL;
+	long k;
+
+	for (k = 0; k < (bytes - (long)skip) / 4; k++)
+		hash = (hash ^ word[k]) * 16777619UL;
+	return hash;
+}
+"""
+TICK2_PROOF_STATE_HASH_PROOF = r"""/* TICK2 proof (the lead 12:0x (1), 14:3x (1)): a live datum's words in objects.c's table are hashed as the
+word it gives (the record pointer as its slot; posenew's pattern run as tick2's three words), so the objects record
+and the whole hash part only where the old build's meaning would. The table, by address, is built once a tick
+before the first hash (psp_game_state_hash_tick) */
+extern unsigned long tick2_proof_hash_words[][2]; /* objects.c: each word's address, then the word hashed */
+long tick2_proof_hash_build(void);
+static long tick2_proof_hash_count = 0;
+static unsigned long psp_state_hash(const void *start, long bytes)
+{
+	/* from the first whole word (an allocation can start anywhere, and an
+	unaligned word load faults on the PSP) */
+	unsigned long skip = (4 - ((unsigned long)start & 3)) & 3;
+	const unsigned long *word = (const unsigned long *)((const char *)start + skip);
+	unsigned long hash = 2166136261UL, first = (unsigned long)word;
+	long k, next, low = 0, high = tick2_proof_hash_count;
+
+	/* the first word to stand in at or after the range's first */
+	while (low < high)
+	{
+		long middle = (low + high) / 2;
+
+		if (tick2_proof_hash_words[middle][0] < first)
+			low = middle + 1;
+		else
+			high = middle;
+	}
+	next = low;
+	for (k = 0; k < (bytes - (long)skip) / 4; k++)
+	{
+		unsigned long value = word[k], at = first + 4 * (unsigned long)k;
+
+		while (next < tick2_proof_hash_count && tick2_proof_hash_words[next][0] < at)
+			next++; /* none expected: the table holds word-aligned addresses only */
+		if (next < tick2_proof_hash_count && tick2_proof_hash_words[next][0] == at)
+			value = tick2_proof_hash_words[next++][1];
+		hash = (hash ^ value) * 16777619UL;
+	}
+	return hash;
+}
+"""
+TICK2_PROOF_STATE_FIRST = "\t\tplatform_psp_log(\"state: tick %ld %08lx play %08lx seeds %08lx %08lx\", tick,\n"
+
 # PSP_TICK2_PROOF=1: the store's room and its overflow chunks from the heap, the pool at its full size,
 # and each new datum's padding written with the pattern
 def tick2_proof_cut(tree):
@@ -60352,9 +60493,23 @@ static void tick2_proof_fill(struct object_header_datum *header)
        "\n\tif (header->type == _object_type_biped || header->type == _object_type_vehicle)\n"
        "\t\tmemset(((struct unit_datum *)object)->unit.tick2_proof_unit, %d, sizeof(((struct unit_datum *)object)->unit.tick2_proof_unit));" % TICK2_PROOF_BYTE
        if TICK2_UNIT else ""))
+    # statecrc's words that stand in for a datum's own (the lead 12:0x (1), 14:3x (1)), in both builds of the
+    # proof form: the record pointer as its slot here, posenew's pattern run as tick2's words (its members cut)
+    text = text.replace(TICK2_PROOF_HASH_ANCHOR, TICK2_PROOF_HASH_ANCHOR + TICK2_PROOF_HASH_BUILD)
+    game_state_c = os.path.join(tree, "source/saved games/game_state.c")
+    g = open(game_state_c, errors="surrogateescape").read()
+    for old, name in ((TICK2_PROOF_STATE_HASH, "statecrc's psp_state_hash"), (TICK2_PROOF_STATE_FIRST, "statecrc's first hash line")):
+        if g.count(old) != 1:
+            check_fail("psp_fixups: TICK2 proof: %s is in game_state.c %d times as the proof form's hash was written "
+                       "from (rewrite this cut to match)" % (name, g.count(old)))
+            return 0
+    g = g.replace(TICK2_PROOF_STATE_HASH, TICK2_PROOF_STATE_HASH_PROOF)
+    g = g.replace(TICK2_PROOF_STATE_FIRST, "\t\ttick2_proof_hash_count = tick2_proof_hash_build(); /* TICK2 proof: "
+                  "the words before the first hash */\n" + TICK2_PROOF_STATE_FIRST)
     if not CHECK_ONLY:
         open(objects_c, "w", errors="surrogateescape").write(text)
-    print("psp_fixups: TICK2 proof: the store outside the pool")
+        open(game_state_c, "w", errors="surrogateescape").write(g)
+    print("psp_fixups: TICK2 proof: the store outside the pool, statecrc hashing each record pointer as its slot")
     return 1
 print("psp_fixups: the world store's proof form: %s (TICK2 proof)" % ("on" if tick2_proof_cut(TREE) else "off"))
 
@@ -65627,47 +65782,6 @@ static void tick2_proof_refs(struct object_header_datum const *header, struct ob
 		}
 }
 
-/* statecrc (game_state.c) hashes each live datum's pattern run as these words: the run's address, then its three
-words as tick2 holds them, by address (the headers' order isn't the pool's), built once a tick before the first
-hash. The objects record and the whole hash then part only where tick2's bytes would. A run off a word boundary
-(none expected: the pool's blocks are word-aligned) is left out, so it hashes raw and parts, and is logged once */
-unsigned long tick2_proof_hash_runs[MAXIMUM_OBJECTS_PER_MAP][4];
-static int tick2_proof_hash_order(const void *a, const void *b)
-{
-	unsigned long x = ((unsigned long const *)a)[0], y = ((unsigned long const *)b)[0];
-
-	return x < y ? -1 : x > y;
-}
-long tick2_proof_hash_build(void)
-{
-	static int told = 0;
-	long i, count = 0;
-
-	for (i = data_next_index(object_header_data, NONE); i != NONE && count < MAXIMUM_OBJECTS_PER_MAP;
-		i = data_next_index(object_header_data, i))
-	{
-		struct object_header_datum const *header = (struct object_header_datum const *)datum_get(object_header_data, i);
-		struct object_header_block_reference refs[3];
-		unsigned long at;
-
-		if (!header->datum || header->data_size < (long)(offsetof(struct object_datum, object.tick2_proof_pose) + sizeof(refs)))
-			continue;
-		at = (unsigned long)((char const *)header->datum + offsetof(struct object_datum, object.tick2_proof_pose));
-		if (at & 3)
-		{
-			if (!told++)
-				platform_psp_log("TICK2 proof: object %08lx's pattern run is off a word boundary, hashed raw", (unsigned long)i);
-			continue;
-		}
-		tick2_proof_refs(header, refs);
-		tick2_proof_hash_runs[count][0] = at;
-		memcpy(&tick2_proof_hash_runs[count][1], refs, sizeof(refs));
-		count++;
-	}
-	qsort(tick2_proof_hash_runs, count, sizeof(tick2_proof_hash_runs[0]), tick2_proof_hash_order);
-	return count;
-}
-
 /* TICK2 pose, the proof form: the datum at its old size, the old layout's three node block references written
 where they were (tick2_proof_refs), each node block's place filled from the arena. The checksum covers tick2's
 bytes */
@@ -65705,69 +65819,27 @@ static struct object_header_datum const *tick2_pose_virtual(struct object_header
 	return &fake;
 }
 """
-# The proof form's statecrc (the lead 12:0x (1)): psp_state_hash (game_state.c, FIXES_36) hashes each live datum's
-# pattern run as tick2's words, tick2_proof_hash_build's runs (objects.c, above) made once a tick before the first
-# hash, so the objects record is a detector again and the rebuild the sleep checksum relies on is checked by it.
-# The dumps (stateblockraw, statefull) stay raw: they show the bytes as they are.
-TICK2_POSENEW_STATE_HASH = r"""static unsigned long psp_state_hash(const void *start, long bytes)
-{
-	/* from the first whole word (an allocation can start anywhere, and an
-	unaligned word load faults on the PSP) */
-	unsigned long skip = (4 - ((unsigned long)start & 3)) & 3;
-	const unsigned long *word = (const unsigned long *)((const char *)start + skip);
-	unsigned long hash = 2166136261UL;
-	long k;
-
-	for (k = 0; k < (bytes - (long)skip) / 4; k++)
-		hash = (hash ^ word[k]) * 16777619UL;
-	return hash;
-}
-"""
-TICK2_POSENEW_STATE_HASH_PROOF = r"""/* TICK2 posenew, the proof form (the lead 12:0x (1)): each live datum's pattern run is hashed as tick2's three
-words there, the node block references rebuilt from the record by objects.c (tick2_proof_refs, the sleep checksum
-copy's rebuild), so the objects record and the whole hash part only where tick2's bytes would. The runs, by
-address, are built once a tick before the first hash (psp_game_state_hash_tick) */
-extern unsigned long tick2_proof_hash_runs[][4]; /* objects.c: each run's address, then its three words */
-long tick2_proof_hash_build(void);
-static long tick2_proof_hash_count = 0;
-static unsigned long psp_state_hash(const void *start, long bytes)
-{
-	/* from the first whole word (an allocation can start anywhere, and an
-	unaligned word load faults on the PSP) */
-	unsigned long skip = (4 - ((unsigned long)start & 3)) & 3;
-	const unsigned long *word = (const unsigned long *)((const char *)start + skip);
-	unsigned long hash = 2166136261UL, first = (unsigned long)word;
-	long k, run, low = 0, high = tick2_proof_hash_count;
-
-	/* the first run that ends after the range's first word (a block can start inside one) */
-	while (low < high)
-	{
-		long middle = (low + high) / 2;
-
-		if (tick2_proof_hash_runs[middle][0] + 12 <= first)
-			low = middle + 1;
-		else
-			high = middle;
-	}
-	run = low;
-	for (k = 0; k < (bytes - (long)skip) / 4; k++)
-	{
-		unsigned long value = word[k], at = first + 4 * (unsigned long)k;
-
-		if (run < tick2_proof_hash_count && at >= tick2_proof_hash_runs[run][0])
+# The proof form's statecrc (the lead 12:0x (1)): each live datum's pattern run is hashed as tick2's three words,
+# rebuilt by tick2_proof_refs (the sleep checksum copy's rebuild, so the hash checks it), added to tick2_proof_cut's
+# table of words to stand in (objects.c; TICK2_PROOF_HASH_BUILD) at its TICK2_PROOF_HASH_MORE
+TICK2_POSENEW_HASH_REFS = "static void tick2_proof_refs(struct object_header_datum const *header, struct object_header_block_reference refs[3]);\n"
+TICK2_POSENEW_HASH_RUN = r"""		if (header->data_size >= (long)(offsetof(struct object_datum, object.tick2_proof_pose) + 3 * sizeof(struct object_header_block_reference)))
 		{
-			unsigned long w = (at - tick2_proof_hash_runs[run][0]) / 4; /* runs are word-aligned, so 0 to 2 */
+			/* TICK2 posenew proof: the pattern run as tick2's three words */
+			struct object_header_block_reference refs[3];
+			unsigned long words[3];
+			int w;
 
-			value = tick2_proof_hash_runs[run][1 + w];
-			if (w == 2)
-				run++;
+			at = (unsigned long)((char const *)object + offsetof(struct object_datum, object.tick2_proof_pose));
+			tick2_proof_refs(header, refs);
+			memcpy(words, refs, sizeof(words));
+			for (w = 0; w < 3; w++, count++)
+			{
+				tick2_proof_hash_words[count][0] = at + 4 * w;
+				tick2_proof_hash_words[count][1] = words[w];
+			}
 		}
-		hash = (hash ^ value) * 16777619UL;
-	}
-	return hash;
-}
 """
-TICK2_POSENEW_STATE_FIRST = "\t\tplatform_psp_log(\"state: tick %ld %08lx play %08lx seeds %08lx %08lx\", tick,\n"
 def tick2_posenew_members_cut(tree):
     if not TICK2_POSE_MEMBERS:
         return 0
@@ -65787,14 +65859,12 @@ def tick2_posenew_members_cut(tree):
                        "was written from (an earlier cut changed it: rewrite this cut to match)"
                        % (name, "h" if text is h else "c", text.count(old)))
             return 0
-    game_state_c = os.path.join(tree, "source/saved games/game_state.c")
-    g = open(game_state_c, errors="surrogateescape").read() if TICK2_PROOF else ""
     if TICK2_PROOF:
-        for old, name in ((TICK2_POSENEW_STATE_HASH, "statecrc's psp_state_hash"),
-                          (TICK2_POSENEW_STATE_FIRST, "statecrc's first hash line")):
-            if g.count(old) != 1:
-                check_fail("psp_fixups: TICK2 posenew step 5 (item 2, the members): %s is in game_state.c %d times as "
-                           "the proof form's hash was written from (rewrite this cut to match)" % (name, g.count(old)))
+        for old, name in ((TICK2_PROOF_HASH_MORE, "the proof form's hash table's place for more words"),
+                          ("long tick2_proof_hash_build(void)\n{\n", "the proof form's hash table's build")):
+            if c.count(old) != 1:
+                check_fail("psp_fixups: TICK2 posenew step 5 (item 2, the members): %s is in objects.c %d times as "
+                           "the pattern run's words were written from (rewrite this cut to match)" % (name, c.count(old)))
                 return 0
     # the members' place, checked where the cut put it: the proof form's run at the old offset, the ship form's datum
     # ending where they began
@@ -65818,9 +65888,8 @@ def tick2_posenew_members_cut(tree):
         c = c.replace(TICK2_POSENEW_MEMBERS_FILL, TICK2_POSENEW_MEMBERS_FILL +
             "\tmemset(object->object.tick2_proof_pose, %d, sizeof(object->object.tick2_proof_pose)); /* TICK2 posenew */\n"
             % TICK2_PROOF_BYTE)
-        g = g.replace(TICK2_POSENEW_STATE_HASH, TICK2_POSENEW_STATE_HASH_PROOF)
-        g = g.replace(TICK2_POSENEW_STATE_FIRST, "\t\ttick2_proof_hash_count = tick2_proof_hash_build(); /* TICK2 posenew proof: "
-                      "the runs before the first hash */\n" + TICK2_POSENEW_STATE_FIRST)
+        c = c.replace(TICK2_PROOF_HASH_MORE, TICK2_PROOF_HASH_MORE + TICK2_POSENEW_HASH_RUN)
+        c = c.replace("long tick2_proof_hash_build(void)\n{\n", TICK2_POSENEW_HASH_REFS + "long tick2_proof_hash_build(void)\n{\n")
     # no member is named in code anywhere left, store_pose.c included
     store = open(TICK2_POSENEW_STORE_POSE_C, errors="surrogateescape").read()
     for top in ("source", "port", None):
@@ -65841,8 +65910,6 @@ def tick2_posenew_members_cut(tree):
     if not CHECK_ONLY:
         open(objects_h, "w", errors="surrogateescape").write(h)
         open(objects_c, "w", errors="surrogateescape").write(c)
-        if TICK2_PROOF:
-            open(game_state_c, "w", errors="surrogateescape").write(g)
     print("psp_fixups: TICK2 posenew step 5 (item 2): the datum's node block references are out (%s)"
           % ("the proof form's pattern run, statecrc hashing it as tick2's words" if TICK2_PROOF else "0x%X bytes, the sizes and checks moved" %
              (TICK2_POSE_MEMBERS_END - TICK2_POSE_MEMBERS_AT)))
