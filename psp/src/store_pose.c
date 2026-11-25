@@ -36,6 +36,11 @@ Moved so far:
   snapshot read store_pose_matrices / _orientations(object->object.root) and store_node_count, not the block getter
   and node_matrices.size. These six lines are the only ones here not verbatim from objects.c; the cuts make the same
   edits to the text they compare, each found once.
+- Item 2's fourth piece (section 17; psp_fixups.py tick2_posenew_take_cut): object_new's three
+  object_header_block_allocate calls are one store_pose_take, written from the allocate's pose branch (which goes,
+  with the block getter's three tests). The datum's side of each block (the reference's words until the members go,
+  the proof form's grown datum, the census) stays objects.c's, tick2_pose_datum_block, called back between the
+  takes. The cut refuses unless objects.c holds the texts this was written from once each.
 */
 
 #include <stdio.h>
@@ -1168,7 +1173,8 @@ static __inline__ __attribute__((always_inline)) struct tick2_root *tick2_record
 #ifdef PSP_TICK2_PROOF
 /* the proof form (psp_build.py defines PSP_TICK2_PROOF for this unit): while the datum keeps its node_matrices
 reference (item 2 takes it out), the record's count is that reference's size in matrices, since
-object_header_block_allocate sets both from one count; the first object where they differ is logged */
+store_pose_take sets both from one count (the size by objects.c's tick2_pose_datum_block); the first object where
+they differ is logged */
 static void tick2_pose_count_check(long object_index, struct tick2_root const *record)
 {
 	static boolean logged = FALSE;
@@ -1301,3 +1307,47 @@ void store_pose_box(struct tick2_root *record, long object_index, void const *pl
 }
 #endif
 /* ---- moved from objects.c: the settle, the accessors and the box's store half: finish ---- */
+
+/* ---- item 2's fourth piece (section 17; psp_fixups.py tick2_posenew_take_cut): a new object's node blocks ---- */
+/* objects.c (tick2_posenew_take_cut, defined there): a node block's side in the datum, once its run is taken and its
+bit set, before it's zeroed: the reference's words as object_header_block_allocate's pose branch wrote them (until the
+members go), the proof form's datum grown by the block as the old layout's is, and the census with the matrices.
+FALSE only in the proof form, when the pool has no room for the growth */
+boolean tick2_pose_datum_block(long object_index, int which, long size);
+
+/* object_new's node blocks, in one call (section 17 step 5 (1)): the steps object_header_block_allocate's pose branch
+made over object_new's three calls, in their order and with their refusals. The matrices' run (refused: FALSE and
+nothing more), its count and its block bit, the datum's side, the block zeroed; then, for a type that interpolates,
+the one orientation run both orientation blocks share, and for each block its bit, the datum's side, the zero. The
+branch's other tests can't fail here: the record is new (both runs NONE) and both counts are count. The datum's
+side is called back between the takes, so the proof form's pool grows keep their place among them: a pool refusal
+after the matrices' run returns before the orientations' take, as the allocate's did */
+boolean store_pose_take(long object_index, long count, boolean interpolates)
+{
+	struct tick2_root *record = tick2_record_of_index(object_index);
+	static const int orientation_blocks[2] = { TICK2_POSE_ORIENTATIONS, TICK2_POSE_ORIGINALS };
+	int k;
+
+	record->pose_first = tick2_pose_take(&tick2_pose_store->matrices, count);
+	if (record->pose_first == TICK2_POSE_NONE)
+		return FALSE;
+	record->pose_count = (unsigned char)count;
+	record->pose_blocks |= (unsigned char)TICK2_POSE_MATRICES;
+	if (!tick2_pose_datum_block(object_index, TICK2_POSE_MATRICES, count * (long)sizeof(real_matrix4x3)))
+		return FALSE;
+	memset(tick2_pose_block(record, TICK2_POSE_MATRICES), 0, count * (long)sizeof(real_matrix4x3));
+	if (!interpolates)
+		return TRUE;
+	record->pose_orient = tick2_pose_take(&tick2_pose_store->orientations, count);
+	if (record->pose_orient == TICK2_POSE_NONE)
+		return FALSE;
+	for (k = 0; k < 2; k++)
+	{
+		record->pose_blocks |= (unsigned char)orientation_blocks[k];
+		if (!tick2_pose_datum_block(object_index, orientation_blocks[k], count * (long)sizeof(real_orientation)))
+			return FALSE;
+		memset(tick2_pose_block(record, orientation_blocks[k]), 0, count * (long)sizeof(real_orientation));
+	}
+	return TRUE;
+}
+/* ---- item 2's fourth piece: finish ---- */

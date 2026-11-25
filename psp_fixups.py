@@ -60069,6 +60069,8 @@ TICK2_POSE_PROOF_GROW = r"""		{ /* TICK2 proof: the datum grows as the old layou
 			memset((byte *)object + original_size, 0xA5, size);
 		}
 """
+# the ship form's reference: the block is the arena's, the size kept for the readers that count by it
+TICK2_POSE_SHIP_REFERENCE = "\t\tblock->offset = 1; /* the getter's sign of a block held elsewhere (a datum's own start at 0 is never a block) */\n"
 # the proof form's sleep checksum: the datum as it stands (the old layout's size and blocks), each node block's
 # place filled from the arena, so the checksum covers the old build's bytes exactly
 TICK2_POSE_PROOF_VIRTUAL = r"""/* TICK2 pose, the proof form: the datum at its old size, each node block's place filled from the arena */
@@ -60104,6 +60106,51 @@ static struct object_header_datum const *tick2_pose_virtual(struct object_header
 	return &fake;
 }
 """
+# object_header_block_allocate's pose branch (the node blocks taken from the arena, not the datum) and the block
+# getter's three tests (found there): module constants so POSENEW's take cut (item 2's fourth piece, the last
+# fixup) reads in the tree exactly the text this cut wrote, the form's own
+TICK2_POSE_ALLOCATE_BRANCH = (
+         "\tif (block_reference_offset == offsetof(struct object_datum, object.node_matrices) ||\n"
+         "\t\tblock_reference_offset == offsetof(struct object_datum, object.node_orientations) ||\n"
+         "\t\tblock_reference_offset == offsetof(struct object_datum, object.original_node_orientations))\n"
+         "\t{ /* TICK2 pose: the node blocks in the arena; the reference keeps the size the readers count by */\n"
+         "\t\tstruct object_datum *object = (struct object_datum *)object_header->datum;\n"
+         "\t\tstruct object_header_block_reference *block = (struct object_header_block_reference *)((byte *)object + block_reference_offset);\n"
+         "\t\tint which = block_reference_offset == offsetof(struct object_datum, object.node_matrices) ? TICK2_POSE_MATRICES :\n"
+         "\t\t\tblock_reference_offset == offsetof(struct object_datum, object.node_orientations) ? TICK2_POSE_ORIENTATIONS : TICK2_POSE_ORIGINALS;\n"
+         "\t\tlong count = which == TICK2_POSE_MATRICES ? size / (long)sizeof(real_matrix4x3) : size / (long)sizeof(real_orientation);\n\n"
+         "\t\tif (which == TICK2_POSE_MATRICES && object->object.root->pose_first == TICK2_POSE_NONE)\n"
+         "\t\t{\n"
+         "\t\t\tobject->object.root->pose_first = tick2_pose_take(&tick2_pose_store->matrices, count);\n"
+         "\t\t\tif (object->object.root->pose_first == TICK2_POSE_NONE)\n"
+         "\t\t\t\treturn FALSE;\n"
+         "\t\t\tobject->object.root->pose_count = (unsigned char)count;\n"
+         "\t\t}\n"
+         "\t\telse if (which != TICK2_POSE_MATRICES && object->object.root->pose_orient == TICK2_POSE_NONE)\n"
+         "\t\t{ /* both orientation blocks share one run; the matrices came first and set the count */\n"
+         "\t\t\tif (count != object->object.root->pose_count)\n"
+         "\t\t\t\treturn FALSE;\n"
+         "\t\t\tobject->object.root->pose_orient = tick2_pose_take(&tick2_pose_store->orientations, count);\n"
+         "\t\t\tif (object->object.root->pose_orient == TICK2_POSE_NONE)\n"
+         "\t\t\t\treturn FALSE;\n"
+         "\t\t}\n"
+         "\t\tif (count != object->object.root->pose_count)\n"
+         "\t\t\treturn FALSE;\n"
+         "\t\tobject->object.root->pose_blocks |= (unsigned char)which;\n"
+         + (TICK2_POSE_PROOF_GROW if TICK2_PROOF else TICK2_POSE_SHIP_REFERENCE) +
+         "\t\tblock->size = (short)size;\n"
+         "\t\tmemset(tick2_pose_block(object->object.root, which), 0, size);\n"
+         "\t\tif (which == TICK2_POSE_MATRICES)\n"
+         "\t\t\ttick2_gc_census(object_header, 1); /* TICK2 gccount */\n"
+         "\t\treturn TRUE;\n"
+         "\t}\n")
+TICK2_POSE_GETTER_TESTS = (
+         "\tif (reference == &object->object.node_matrices)\n"
+         "\t\treturn tick2_pose_block(object->object.root, TICK2_POSE_MATRICES); /* TICK2 pose */\n"
+         "\tif (reference == &object->object.node_orientations)\n"
+         "\t\treturn tick2_pose_block(object->object.root, TICK2_POSE_ORIENTATIONS); /* TICK2 pose */\n"
+         "\tif (reference == &object->object.original_node_orientations)\n"
+         "\t\treturn tick2_pose_block(object->object.root, TICK2_POSE_ORIGINALS); /* TICK2 pose */\n")
 def tick2_pose_cut(tree):
     if not TICK2_POSE:
         return 0
@@ -60182,50 +60229,9 @@ static long tick2_table_for_map(const char *name, int which)
 """ % (TICK2_UNIT_SLOTS, TICK2_POSE_NODES, TICK2_POSE_NODES // 2) + "\nstatic long tick2_slots_for_map(const char *name)\n")
     # the node blocks: taken from the arena, not the datum; found there by the block getter
     once(objects_c, "\tmatch_assert(\"c:\\\\halo\\\\SOURCE\\\\objects\\\\objects.c\", 2459, size>=0);\n",
-         "\tmatch_assert(\"c:\\\\halo\\\\SOURCE\\\\objects\\\\objects.c\", 2459, size>=0);\n"
-         "\tif (block_reference_offset == offsetof(struct object_datum, object.node_matrices) ||\n"
-         "\t\tblock_reference_offset == offsetof(struct object_datum, object.node_orientations) ||\n"
-         "\t\tblock_reference_offset == offsetof(struct object_datum, object.original_node_orientations))\n"
-         "\t{ /* TICK2 pose: the node blocks in the arena; the reference keeps the size the readers count by */\n"
-         "\t\tstruct object_datum *object = (struct object_datum *)object_header->datum;\n"
-         "\t\tstruct object_header_block_reference *block = (struct object_header_block_reference *)((byte *)object + block_reference_offset);\n"
-         "\t\tint which = block_reference_offset == offsetof(struct object_datum, object.node_matrices) ? TICK2_POSE_MATRICES :\n"
-         "\t\t\tblock_reference_offset == offsetof(struct object_datum, object.node_orientations) ? TICK2_POSE_ORIENTATIONS : TICK2_POSE_ORIGINALS;\n"
-         "\t\tlong count = which == TICK2_POSE_MATRICES ? size / (long)sizeof(real_matrix4x3) : size / (long)sizeof(real_orientation);\n\n"
-         "\t\tif (which == TICK2_POSE_MATRICES && object->object.root->pose_first == TICK2_POSE_NONE)\n"
-         "\t\t{\n"
-         "\t\t\tobject->object.root->pose_first = tick2_pose_take(&tick2_pose_store->matrices, count);\n"
-         "\t\t\tif (object->object.root->pose_first == TICK2_POSE_NONE)\n"
-         "\t\t\t\treturn FALSE;\n"
-         "\t\t\tobject->object.root->pose_count = (unsigned char)count;\n"
-         "\t\t}\n"
-         "\t\telse if (which != TICK2_POSE_MATRICES && object->object.root->pose_orient == TICK2_POSE_NONE)\n"
-         "\t\t{ /* both orientation blocks share one run; the matrices came first and set the count */\n"
-         "\t\t\tif (count != object->object.root->pose_count)\n"
-         "\t\t\t\treturn FALSE;\n"
-         "\t\t\tobject->object.root->pose_orient = tick2_pose_take(&tick2_pose_store->orientations, count);\n"
-         "\t\t\tif (object->object.root->pose_orient == TICK2_POSE_NONE)\n"
-         "\t\t\t\treturn FALSE;\n"
-         "\t\t}\n"
-         "\t\tif (count != object->object.root->pose_count)\n"
-         "\t\t\treturn FALSE;\n"
-         "\t\tobject->object.root->pose_blocks |= (unsigned char)which;\n"
-         + (TICK2_POSE_PROOF_GROW if TICK2_PROOF else
-         "\t\tblock->offset = 1; /* the getter's sign of a block held elsewhere (a datum's own start at 0 is never a block) */\n") +
-         "\t\tblock->size = (short)size;\n"
-         "\t\tmemset(tick2_pose_block(object->object.root, which), 0, size);\n"
-         "\t\tif (which == TICK2_POSE_MATRICES)\n"
-         "\t\t\ttick2_gc_census(object_header, 1); /* TICK2 gccount */\n"
-         "\t\treturn TRUE;\n"
-         "\t}\n")
+         "\tmatch_assert(\"c:\\\\halo\\\\SOURCE\\\\objects\\\\objects.c\", 2459, size>=0);\n" + TICK2_POSE_ALLOCATE_BRANCH)
     once(objects_c, "\tmatch_assert(\"c:\\\\halo\\\\SOURCE\\\\objects\\\\objects.c\", 2443, reference->offset>0);\n",
-         "\tif (reference == &object->object.node_matrices)\n"
-         "\t\treturn tick2_pose_block(object->object.root, TICK2_POSE_MATRICES); /* TICK2 pose */\n"
-         "\tif (reference == &object->object.node_orientations)\n"
-         "\t\treturn tick2_pose_block(object->object.root, TICK2_POSE_ORIENTATIONS); /* TICK2 pose */\n"
-         "\tif (reference == &object->object.original_node_orientations)\n"
-         "\t\treturn tick2_pose_block(object->object.root, TICK2_POSE_ORIGINALS); /* TICK2 pose */\n"
-         "\tmatch_assert(\"c:\\\\halo\\\\SOURCE\\\\objects\\\\objects.c\", 2443, reference->offset>0);\n")
+         TICK2_POSE_GETTER_TESTS + "\tmatch_assert(\"c:\\\\halo\\\\SOURCE\\\\objects\\\\objects.c\", 2443, reference->offset>0);\n")
     # a deleted object's run goes back with its records
     text = open(objects_c, errors="surrogateescape").read()
     n = text.count("tick2_unit_give(")
@@ -65218,7 +65224,7 @@ tick2_posenew_pose_move_cut(TREE)
 # (tick2_pose_count_check) reads the reference itself and goes when the references do.
 # The last cut, after the last piece's.
 TICK2_POSENEW_COUNT_INLINE = r"""/* TICK2 posenew step 5, item 2 (docs/box_world_store.md section 17): an object's node count is its record's, the
-count object_header_block_allocate keeps with its matrices (their block's size / 52) */
+count store_pose_take keeps with its matrices (their block's size / 52) */
 static inline long store_node_count(struct tick2_root const *record)
 {
 	return record->pose_count;
@@ -65419,6 +65425,121 @@ def tick2_posenew_block_cut(tree):
           % (count, len(changed)))
     return 1
 tick2_posenew_block_cut(TREE)
+
+# PSP_TICK2_POSENEW=1, step 5, item 2, fourth piece (docs/box_world_store.md section 17 'item 2, fourth piece'):
+# object_new's three object_header_block_allocate calls become one store_pose_take(object_index, count,
+# interpolates) (psp/src/store_pose.c), and the allocate's pose branch and the block getter's three tests go (after
+# the block cut the getter has no caller, and object_new's three were the allocate's only node-block calls).
+# Exact by construction, in both forms: store_pose_take makes the branch's steps over the three calls in their
+# order, with their refusals: the matrices' run (refused: FALSE, nothing more), its count, its block bit, then
+# the datum's side, then the block zeroed; for a type that interpolates the one orientation run both blocks share,
+# then for each block its bit, the datum's side, the zero. The datum's side stays objects.c's,
+# tick2_pose_datum_block, called back by the store after each block's take: the reference's words as the branch
+# wrote them (the ship form's offset 1 and size, kept until the members go, so the sleep checksum's bytes don't
+# change; the proof form's datum grown by the block as the old layout's was, by the branch's own text,
+# TICK2_POSE_PROOF_GROW), and the census with the matrices. So the pool's reallocations and the arena's takes keep
+# their interleaving and their early exits: a proof form pool refusal after the matrices' run returns before the
+# orientations' take, as it did. The branch's tests that can't fail here go: the record is new (pose_first and
+# pose_orient NONE) and both counts are node_count. The last fixup, after the block cut.
+TICK2_POSENEW_TAKE_OLD_NEW = (
+    "\t\t\tif (node_count>0 &&\n\t\t\t\tobject_header_block_allocate(\n\t\t\t\tobject_index,\n"
+    "\t\t\t\toffsetof(struct object_datum, object.node_matrices),\n\t\t\t\tsizeof(struct real_matrix4x3) * node_count))\n"
+    "\t\t\t{\n\t\t\t\tif (!TEST_FLAG(_object_mask_cannot_interpolate, object_definition->object.type) &&\n\t\t\t\t\t(\n"
+    "\t\t\t\t\t\t!object_header_block_allocate(\n\t\t\t\t\t\t\tobject_index,\n"
+    "\t\t\t\t\t\t\toffsetof(struct object_datum, object.node_orientations),\n"
+    "\t\t\t\t\t\t\tsizeof(struct real_orientation) * node_count\n\t\t\t\t\t\t) ||\n"
+    "\t\t\t\t\t\t!object_header_block_allocate(\n\t\t\t\t\t\t\tobject_index,\n"
+    "\t\t\t\t\t\t\toffsetof(struct object_datum, object.original_node_orientations),\n"
+    "\t\t\t\t\t\t\tsizeof(struct real_orientation) * node_count\n\t\t\t\t\t\t)\n\t\t\t\t\t)\n\t\t\t\t)\n"
+    "\t\t\t\t{\n\t\t\t\t\tsuccess = FALSE;\n\t\t\t\t}\n\t\t\t}\n\t\t\telse\t\n\t\t\t{\n\t\t\t\tsuccess = FALSE;\n\t\t\t}\n")
+TICK2_POSENEW_TAKE_NEW = r"""			/* TICK2 posenew step 5, item 2 (docs/box_world_store.md section 17 'item 2, fourth piece'): the node blocks
+			are the store's runs, taken in one call in the order and with the refusals of the three allocates this
+			replaces: the matrices, then, for a type that interpolates, both orientation blocks */
+			if (!(node_count>0 &&
+				store_pose_take(
+					object_index,
+					node_count,
+					!TEST_FLAG(_object_mask_cannot_interpolate, object_definition->object.type))))
+			{
+				success = FALSE;
+			}
+"""
+TICK2_POSENEW_TAKE_ALLOCATE_HEAD = "boolean object_header_block_allocate(\n\tlong object_index,\n"
+TICK2_POSENEW_TAKE_STORE = "boolean store_pose_take(long object_index, long count, boolean interpolates)\n{\n"
+def tick2_posenew_take_datum_block():
+    """objects.c's side of a node block, called back by store_pose_take: the branch's own lines for the form"""
+    form = TICK2_POSE_PROOF_GROW if TICK2_PROOF else TICK2_POSE_SHIP_REFERENCE
+    form = "".join(line[1:] if line.startswith("\t") else line for line in form.splitlines(True))
+    return (r"""/* TICK2 posenew step 5, item 2 (docs/box_world_store.md section 17 'item 2, fourth piece'): a new object's node
+blocks are taken by the store, in one call from object_new (psp/src/store_pose.c) */
+boolean store_pose_take(long object_index, long count, boolean interpolates);
+/* a node block's side in the datum, called back by store_pose_take once the block's run is taken and its bit set,
+before it's zeroed, as object_header_block_allocate's pose branch had it: the reference's words (until the members
+go), """ + ("the datum grown by the block as the old layout's is (the proof form; FALSE if the pool has no room), "
+            if TICK2_PROOF else "") + r"""and the census with the matrices */
+boolean tick2_pose_datum_block(long object_index, int which, long size)
+{
+	struct object_header_datum *object_header = object_header_get(object_index);
+	struct object_datum *object = (struct object_datum *)object_header->datum;
+	short block_reference_offset = which == TICK2_POSE_MATRICES ? offsetof(struct object_datum, object.node_matrices) :
+		which == TICK2_POSE_ORIENTATIONS ? offsetof(struct object_datum, object.node_orientations) :
+		offsetof(struct object_datum, object.original_node_orientations);
+	struct object_header_block_reference *block = (struct object_header_block_reference *)((byte *)object + block_reference_offset);
+
+""" + form + r"""	block->size = (short)size;
+	if (which == TICK2_POSE_MATRICES)
+		tick2_gc_census(object_header, 1); /* TICK2 gccount */
+	return TRUE;
+}
+
+""")
+TICK2_POSENEW_TAKE_LEFT = (r"object_header_block_allocate\([^;]*\b(node_matrices|node_orientations|original_node_orientations)\b",
+                           TICK2_POSENEW_BLOCK_LEFT)
+def tick2_posenew_take_cut(tree):
+    if not TICK2_POSENEW or STORECOUNT:
+        return 0
+    objects_c = os.path.join(tree, "source/objects/objects.c")
+    c = open(objects_c, errors="surrogateescape").read()
+    for name, text in (("object_new's three allocates", TICK2_POSENEW_TAKE_OLD_NEW),
+                       ("the allocate's pose branch", TICK2_POSE_ALLOCATE_BRANCH),
+                       ("the block getter's three tests", TICK2_POSE_GETTER_TESTS),
+                       ("the allocate's head", TICK2_POSENEW_TAKE_ALLOCATE_HEAD)):
+        if c.count(text) != 1:
+            check_fail("psp_fixups: TICK2 posenew step 5 (item 2, the take): %s is in objects.c %d times as the piece was "
+                       "written from (an earlier cut changed it: rewrite store_pose_take and this cut to match)"
+                       % (name, c.count(text)))
+            return 0
+    store = open(TICK2_POSENEW_STORE_POSE_C, errors="surrogateescape").read()
+    if store.count(TICK2_POSENEW_TAKE_STORE) != 1:
+        check_fail("psp_fixups: TICK2 posenew step 5 (item 2, the take): psp/src/store_pose.c defines store_pose_take %d "
+                   "times, not once" % store.count(TICK2_POSENEW_TAKE_STORE))
+        return 0
+    c = c.replace(TICK2_POSENEW_TAKE_OLD_NEW, TICK2_POSENEW_TAKE_NEW)
+    c = c.replace(TICK2_POSE_ALLOCATE_BRANCH, "")
+    c = c.replace(TICK2_POSE_GETTER_TESTS, "")
+    c = c.replace(TICK2_POSENEW_TAKE_ALLOCATE_HEAD, tick2_posenew_take_datum_block() + TICK2_POSENEW_TAKE_ALLOCATE_HEAD)
+    # no node block is allocated or read through the datum's references anywhere left
+    for top in ("source", "port"):
+        for root, dirs, names in os.walk(os.path.join(tree, top)):
+            for name in names:
+                if not name.endswith((".c", ".h")):
+                    continue
+                path = os.path.join(root, name)
+                text = c if path == objects_c else open(path, errors="surrogateescape").read()
+                if "object_header_block_" not in text:
+                    continue
+                for pattern in TICK2_POSENEW_TAKE_LEFT:
+                    left = re.findall(pattern, tick2_posenew_code_only(text))
+                    if left:
+                        check_fail("psp_fixups: TICK2 posenew step 5 (item 2, the take): %s still allocates or reads the "
+                                   "%s block through the datum" % (os.path.relpath(path, tree), left[0]))
+                        return 0
+    if not CHECK_ONLY:
+        open(objects_c, "w", errors="surrogateescape").write(c)
+    print("psp_fixups: TICK2 posenew step 5 (item 2): object_new's node blocks are one store_pose_take; the allocate's "
+          "pose branch and the block getter's tests are gone")
+    return 1
+tick2_posenew_take_cut(TREE)
 
 if CHECK_ONLY:
     for message in count_failures:
