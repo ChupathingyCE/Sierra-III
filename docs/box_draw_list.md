@@ -583,7 +583,7 @@ The distinction the box needs is whether a GE block can be kept and replayed whi
 
 ### 15.1 What the replay does on b30's fight, by kind [M]
 
-The split by kind is from the 2026-11-22 tock (2374f97c, `timerson mekinds`), the 300 frames ending at game time ~1,690-1,700 of b30_leg2's fight. Source: the lab's sierra-hw 44999171521, both runs on the PSP-1000, which agree within 0.1 ms. Today's tock wasn't split by kind (mekinds1 ran without timers): its render job is 30.8-31.5 ms over the same stretch's late part, against 33.2 here. Read the shares; the timers inflate the small kinds. A by-kind run on today's tock is owed before the page's budget split is final (one PSP run, `timerson mekinds`).
+The split by kind is from the 2026-11-22 tock (2374f97c, `timerson mekinds`), the 300 frames ending at game time ~1,690-1,700 of b30_leg2's fight. Source: the lab's sierra-hw 44999171521, both runs on the PSP-1000, which agree within 0.1 ms. Today's tock wasn't split by kind (mekinds1 ran without timers): its render job is 30.8-31.5 ms over the same stretch's late part, against 33.2 here. Read the shares; the timers inflate the small kinds. **Checked on today's tock (2026-11-24 18:1x) [M]:** mekinds2 (the lab's sierra-hw 45514615028, the PSP-1000, fbbd786e, `timerson mekinds`, the 300 frames ending at game time 1,623) gives 33.0 ms. Each kind is within 0.3 ms of the table but two: the far level is 0.8 ms less (3.3) and the served ring 0.4 more (6.6). The table holds.
 
 | Kind (the replay's own names) | ms a frame | Count a frame, µs each |
 |---|---:|---|
