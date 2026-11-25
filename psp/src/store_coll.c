@@ -6,8 +6,8 @@ engine's cut behind a boundary until task 5; the gather table, the gathers and t
 piece 1: bipedstage2's block moved here out of collisions.c, verbatim, read from the tree as every cut before left it
 (psp_fixups.py tick2_collnew_move_cut refuses the build if the text here and the text it takes out differ). The six
 names it defines are renamed at every call (store_coll_begin, _gather, _gather_margin, _take, _end, the static
-_pack); nothing else changes, so play is exact by construction. The calls stay where they are until pieces 2 and 3:
-the run's three loops (objects.c) and the move's take (collision_move_pill).
+_pack); nothing else changes, so play is exact by construction. Piece 2 (after the moved block) is the store's biped
+pass in place of the run (objects.c); the move's take (collision_move_pill) stays where it is until piece 3.
 
 What the table is, already as section 18 asks: dense in gather order (psp_bs2_slot, psp_bs2_slots), a biped-to-position
 map (psp_bs2_slot_of), the reach guard's fields on positions 0-31 (each entry's sr_clusters, sr_seq and sr_met, and
@@ -333,3 +333,37 @@ void store_coll_end(void)
 }
 
 /* ---- moved from collisions.c: the gather table: finish ---- */
+
+/* piece 2: the store's biped pass, in place of psp_bipedstage_run at the walk's end (psp_fixups.py
+tick2_collnew_pass_cut). The intent and the solve are the engine's, until task 5: the run's text before and after
+its gather, verbatim in objects.c. The gather loop between them is the run's, over the same list in the same order,
+with the run's own test (store_biped_alive_until_task5); a biped whose intent left no record (store_coll_gather
+returns 0), or every biped when bipedstage3 is off, gathers by the margin, as old-only does */
+int store_biped_intent_until_task5(int *intents); /* objects.c (TICK2 collnew), until task 5 */
+long store_biped_alive_until_task5(short k);
+void store_biped_solve_until_task5(void);
+
+void store_biped_pass(void)
+{
+	long biped_index;
+	int intents = 0, count;
+	short k;
+
+	count = store_biped_intent_until_task5(&intents);
+	if (!count)
+		return;
+	/* slice 2: every living biped's move gathered as one pass, from the
+	world as it stands before any biped moves */
+	if (store_coll_begin())
+	{
+		for (k = 0; k < count; k++)
+		{
+			biped_index = store_biped_alive_until_task5(k);
+			if (biped_index != NONE && !(intents && store_coll_gather(biped_index)))
+				store_coll_gather_margin(biped_index);
+		}
+	}
+	psp_sweepme_end(); /* (FIXES_SWEEPME) */
+	store_biped_solve_until_task5();
+	store_coll_end();
+}

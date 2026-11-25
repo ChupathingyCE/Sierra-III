@@ -66020,6 +66020,105 @@ def tick2_collnew_move_cut(tree):
     return 1
 tick2_collnew_move_cut(TREE)
 
+# PSP_TICK2_COLLNEW=1, piece 2 (docs/box_world_store.md section 18 'The code plan'; the lead 13:3x: the intent and the
+# solve stay the engine's cut behind a boundary until task 5, the gather is the store's): the store's biped pass,
+# store_biped_pass (psp/src/store_coll.c), in place of psp_bipedstage_run at the walk's end. The run's text, read from
+# the tree as the cuts before left it, is cut at its gather: what comes before (wsbipedcross's check, the unit parts,
+# wsbipedcheck's fill, bipedstage3's intents with SWEEPME's level half after each) is store_biped_intent_until_task5,
+# what comes after (the solves through psp_object_update with the link census, BIPEDMOVE 1c's settle, wsbipedcheck's
+# compare) is store_biped_solve_until_task5, both verbatim; the gather loop and SWEEPME's end are the pass's own,
+# the same text over store_biped_alive_until_task5 (the run's own test: live and not dead). The walk's defer stays
+# its hook, the list objects.c's. One order moves: the run's last two lines (the phase and the count to 0) now run
+# before store_coll_end, which reads neither (it logs and zeroes the table's own counts). The cut refuses unless the
+# run's head, gather and tail are the texts it expects, once each, and its call is there once.
+TICK2_COLLNEW_PASS_HEAD = ("static void psp_bipedstage_run(void)\n{\n\tstruct object_header_datum *header;\n\tshort k;\n\n"
+                           "\tif (!psp_bipedstage_count)\n\t\treturn;\n")
+TICK2_COLLNEW_PASS_GATHER = ("\t/* slice 2: every living biped's move gathered as one pass, from the\n"
+                             "\tworld as it stands before any biped moves (collisions.c) */\n"
+                             "\tif (store_coll_begin())\n\t{\n"
+                             "\t\tfor (k = 0; k < psp_bipedstage_count; k++)\n\t\t{\n"
+                             "\t\t\tif (psp_bipedstage_live(k, &header) && !TEST_FLAG(header->datum->object.damage_flags, _object_dead_bit) &&\n"
+                             "\t\t\t\t!(psp_bs3_on && store_coll_gather(psp_bipedstage_index[k])))\n"
+                             "\t\t\t\tstore_coll_gather_margin(psp_bipedstage_index[k]);\n"
+                             "\t\t}\n\t}\n"
+                             "\tpsp_sweepme_end(); /* (FIXES_SWEEPME) */\n")
+TICK2_COLLNEW_PASS_TAIL = "\tstore_coll_end();\n\tpsp_bipedstage_phase = 0;\n\tpsp_bipedstage_count = 0;\n}\n"
+TICK2_COLLNEW_PASS_CALL = ("\tpsp_bipedstage_run(); /* (FIXES_BIPEDSTAGE) */\n",
+                           "\tstore_biped_pass(); /* TICK2 collnew: the store's biped pass (psp/src/store_coll.c) */\n")
+TICK2_COLLNEW_PASS_INTENT = r"""/* TICK2 collnew (slice 1's task 4, piece 2; docs/box_world_store.md section 18): until task 5: the engine's two
+halves of the store's biped pass (store_biped_pass, psp/src/store_coll.c), cut out of FIXES_BIPEDSTAGE's run at its
+gather, verbatim. The walk's defer is the pass's hook and the list stays here. The intent: the unit parts, then each
+living biped's update run to its move's call with the ME's level half after it. It returns the staged count (0:
+none, nothing run) and sets *intents when bipedstage3 ran them, which the gather reads */
+void store_biped_pass(void);
+int store_biped_intent_until_task5(int *intents)
+{
+	struct object_header_datum *header;
+	short k;
+
+	if (!psp_bipedstage_count)
+		return 0;
+"""
+TICK2_COLLNEW_PASS_INTENT_END = "\t*intents = psp_bs3_on;\n\treturn psp_bipedstage_count;\n}\n"
+TICK2_COLLNEW_PASS_ALIVE = r"""
+/* the gather's test, the run's own: staged biped k's index if it's live and not dead, else NONE */
+long store_biped_alive_until_task5(short k)
+{
+	struct object_header_datum *header;
+
+	return psp_bipedstage_live(k, &header) && !TEST_FLAG(header->datum->object.damage_flags, _object_dead_bit) ?
+		psp_bipedstage_index[k] : NONE;
+}
+
+/* the solve: each staged biped's update resumed at its move (phase 4; 2 or 0 without bipedstage3), counted, then
+the kept records' settle and wsbipedcheck's compare; the list emptied for the next tick */
+void store_biped_solve_until_task5(void)
+{
+	struct object_header_datum *header;
+	short k;
+
+"""
+TICK2_COLLNEW_PASS_SOLVE_END = "\tpsp_bipedstage_phase = 0;\n\tpsp_bipedstage_count = 0;\n}\n"
+TICK2_COLLNEW_PASS_NAMES = ("store_biped_pass", "store_biped_intent_until_task5", "store_biped_alive_until_task5",
+                            "store_biped_solve_until_task5")
+def tick2_collnew_pass_cut(tree):
+    if not TICK2_COLLNEW or not TICK2_POSENEW or not TICK2_BIPED or os.environ.get("PSP_BIPEDSTAGE_NOINLINE", "") == "1":
+        return 0  # the move cut has said why
+    objects_c = os.path.join(tree, "source/objects/objects.c")
+    o = open(objects_c, errors="surrogateescape").read()
+    for name, text in (("the run's head", TICK2_COLLNEW_PASS_HEAD), ("the run's call", TICK2_COLLNEW_PASS_CALL[0])):
+        if o.count(text) != 1:
+            check_fail("psp_fixups: TICK2 collnew pass: %s is in objects.c %d times, not 1" % (name, o.count(text)))
+            return 0
+    for name in TICK2_COLLNEW_PASS_NAMES:
+        if re.search(r"\b%s\b" % name, o):
+            check_fail("psp_fixups: TICK2 collnew pass: objects.c already names %s" % name)
+            return 0
+    start = o.index(TICK2_COLLNEW_PASS_HEAD)
+    end = o.index("\n}\n", start) + 3
+    run = o[start:end]
+    if run.count(TICK2_COLLNEW_PASS_GATHER) != 1 or not run.endswith(TICK2_COLLNEW_PASS_TAIL):
+        check_fail("psp_fixups: TICK2 collnew pass: psp_bipedstage_run's gather (%d times) or tail (%s) isn't the text the pass "
+                   "replaces (the store's gather loop in psp/src/store_coll.c is written from it: change both)"
+                   % (run.count(TICK2_COLLNEW_PASS_GATHER), "there" if run.endswith(TICK2_COLLNEW_PASS_TAIL) else "not there"))
+        return 0
+    gather = run.index(TICK2_COLLNEW_PASS_GATHER)
+    intent = run[len(TICK2_COLLNEW_PASS_HEAD):gather]
+    solve = run[gather + len(TICK2_COLLNEW_PASS_GATHER):-len(TICK2_COLLNEW_PASS_TAIL)]
+    halves = (TICK2_COLLNEW_PASS_INTENT + intent + TICK2_COLLNEW_PASS_INTENT_END + TICK2_COLLNEW_PASS_ALIVE + solve +
+              TICK2_COLLNEW_PASS_SOLVE_END)
+    o = o[:start] + halves + o[end:]
+    o = o.replace(*TICK2_COLLNEW_PASS_CALL)
+    if re.search(r"\bpsp_bipedstage_run\b", o):
+        check_fail("psp_fixups: TICK2 collnew pass: objects.c still names psp_bipedstage_run")
+        return 0
+    if not CHECK_ONLY:
+        open(objects_c, "w", errors="surrogateescape").write(o)
+    print("psp_fixups: TICK2 collnew (task 4, piece 2): the store's biped pass in place of psp_bipedstage_run; until task 5: "
+          "the intent %d lines, the solve %d lines, verbatim" % (intent.count("\n"), solve.count("\n")))
+    return 1
+tick2_collnew_pass_cut(TREE)
+
 if CHECK_ONLY:
     for message in count_failures:
         print(message)
