@@ -60315,7 +60315,9 @@ print("psp_fixups: the world store's node arena: %s (TICK2 pose)" % ("on" if tic
 # the first hash, so the objects record parts only where the old build's meaning would. Both builds of the proof
 # form hash the record pointer (+0xc, object.root) as its slot: it is a heap address there (tick2_proof_room, the
 # chunks' calloc), and a heap address moves with whatever the build puts before the heap (posenew6: 0x8F00 higher
-# in POSENEW, every object). POSENEW's members cut adds its pattern run's three words (tick2's references, rebuilt
+# in POSENEW, every object). Both hash the visit stamp (object.magic_number, PSP_DATUM_STAMP_WORD) as 0, as the
+# play hash and the sleep's checks pass over it (the lead 15:3x (1), posenew8: the marker passes' count differs, play
+# doesn't read it). POSENEW's members cut adds its pattern run's three words (tick2's references, rebuilt
 # by tick2_proof_refs) at TICK2_PROOF_HASH_MORE. The dumps (stateblockraw, statefull) stay raw: they show the
 # bytes as they are. The ship form is untouched: its records are in the pool, whose addresses both builds share.
 TICK2_PROOF_HASH_ANCHOR = "struct tick2_store *tick2_store; /* TICK2 root */\n"
@@ -60324,7 +60326,7 @@ TICK2_PROOF_HASH_BUILD = r"""/* TICK2 proof: statecrc's words to stand in (game_
 there, by address (the headers' order isn't the pool's); built once a tick before the first hash. A word off a
 word boundary (none expected: the pool's blocks are word-aligned) is left out, so it hashes raw and parts, and is
 logged once */
-#define TICK2_PROOF_HASH_WORDS (4 * MAXIMUM_OBJECTS_PER_MAP) /* the record pointer, and posenew's run of three */
+#define TICK2_PROOF_HASH_WORDS (5 * MAXIMUM_OBJECTS_PER_MAP) /* the stamp, the record pointer, posenew's run of three */
 #define TICK2_PROOF_ROOT_SLOT 0x52000000UL /* a slot's tag, so slot 0 and a null pointer don't hash alike */
 #define TICK2_PROOF_ROOT_POISON 0xBAD0B0BAUL /* a pointer to no record, or into one: the record parts */
 unsigned long tick2_proof_hash_words[TICK2_PROOF_HASH_WORDS][2];
@@ -60363,7 +60365,7 @@ long tick2_proof_hash_build(void)
 	static int told = 0, poisoned = 0;
 	long i, count = 0;
 
-	for (i = data_next_index(object_header_data, NONE); i != NONE && count + 4 <= TICK2_PROOF_HASH_WORDS;
+	for (i = data_next_index(object_header_data, NONE); i != NONE && count + 5 <= TICK2_PROOF_HASH_WORDS;
 		i = data_next_index(object_header_data, i))
 	{
 		struct object_header_datum const *header = (struct object_header_datum const *)datum_get(object_header_data, i);
@@ -60379,6 +60381,12 @@ long tick2_proof_hash_build(void)
 				platform_psp_log("TICK2 proof: object %08lx's datum is off a word boundary, hashed raw", (unsigned long)i);
 			continue;
 		}
+		/* the visit stamp (object.magic_number, word PSP_DATUM_STAMP_WORD) as 0 (the lead 15:3x (1), posenew8): the
+		engine writes it once a collision or render marking pass and play never reads it, so the play hash and the
+		sleep's checks already pass over it, and the whole hash now does too */
+		tick2_proof_hash_words[count][0] = (unsigned long)object + 4 * (unsigned long)PSP_DATUM_STAMP_WORD;
+		tick2_proof_hash_words[count][1] = 0;
+		count++;
 		tick2_proof_hash_words[count][0] = at;
 		tick2_proof_hash_words[count][1] = tick2_proof_root_word(object->object.root);
 		if (tick2_proof_hash_words[count][1] == TICK2_PROOF_ROOT_POISON && !poisoned++)
