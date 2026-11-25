@@ -59031,9 +59031,17 @@ TICK2_STORE_MOST = 1536
 TICK2_ROOT_AT, TICK2_ROOT_END = 0x0C, 0x0C + 0x54
 # the animation field's place in object_datum (struct object_animation_state, 12 bytes): all of it leaves
 TICK2_ANIM_AT, TICK2_ANIM_END = 0x7C, 0x7C + 0x0C
+# the three node block references at _object_datum's end (original_node_orientations, node_orientations,
+# node_matrices, 4 bytes each): they leave with POSENEW's members cut (step 5, item 2's piece 3, docs/box_world_store.md
+# section 17 'item 2, the members out'), as the switches that run that cut have it (TICK2_POSENEW, not STORECOUNT)
+TICK2_POSE_MEMBERS = TICK2_POSE and os.environ.get("PSP_TICK2_POSENEW", "") == "1" and \
+    os.environ.get("PSP_STORECOUNT", "") != "1"
+TICK2_POSE_MEMBERS_AT, TICK2_POSE_MEMBERS_END = 0x198, 0x198 + 0x0C
 # the runs that leave the datum, each with what it takes from the layout after it
 TICK2_CUTS = [(TICK2_ROOT_AT, TICK2_ROOT_END, TICK2_ROOT_SHRINK)] + \
-    ([(TICK2_ANIM_AT, TICK2_ANIM_END, 0 if TICK2_PROOF else TICK2_ANIM_END - TICK2_ANIM_AT)] if TICK2_ANIM else [])
+    ([(TICK2_ANIM_AT, TICK2_ANIM_END, 0 if TICK2_PROOF else TICK2_ANIM_END - TICK2_ANIM_AT)] if TICK2_ANIM else []) + \
+    ([(TICK2_POSE_MEMBERS_AT, TICK2_POSE_MEMBERS_END, 0 if TICK2_PROOF else TICK2_POSE_MEMBERS_END - TICK2_POSE_MEMBERS_AT)]
+     if TICK2_POSE_MEMBERS else [])
 TICK2_SHRINK = sum(cut[2] for cut in TICK2_CUTS)
 # the collector's line per map (its deletions, the pool's peak, peak live objects): on the
 # root build, and on the old build with PSP_GCCOUNT=1 for the other side of the pair
@@ -65540,6 +65548,168 @@ def tick2_posenew_take_cut(tree):
           "pose branch and the block getter's tests are gone")
     return 1
 tick2_posenew_take_cut(TREE)
+
+# TICK2 posenew step 5, item 2's piece 3 (docs/box_world_store.md section 17 'item 2, the members out'): the datum's
+# three node block references go. The ship form drops their 12 bytes (TICK2_CUTS' third run: every type's size and the
+# layout checks past them moved by 0xC in tick2_root_cut, the unit and span cuts after it by TICK2_SHRINK); the proof
+# form keeps them as an unnamed run of the pattern (spec 36). What still touched them goes: tick2_pose_datum_block's
+# reference writes (the proof form keeps its grow, the census stays), the allocate's census line (no caller since
+# the take cut), and the proof form's sleep checksum, which now writes the old words into its copy of the datum from
+# the record (the datum grows only by its node blocks, in their order, so the offsets are the datum's size less the
+# blocks'): the checksum covers the bytes tick2's does. The last fixup, after the take cut.
+TICK2_POSENEW_MEMBERS_DECL = ("\tstruct object_header_block_reference original_node_orientations;\n"
+                              "\tstruct object_header_block_reference node_orientations;\n"
+                              "\tstruct object_header_block_reference node_matrices;\n};\n")
+TICK2_POSENEW_MEMBERS_DATUM = "struct object_datum\n{\n\tlong definition_index;\n\tstruct _object_datum object;\n};\n"
+TICK2_POSENEW_MEMBERS_CENSUS = ("\t\t/* TICK2 gccount: counted once the reference holds its size (the census reads it) */\n"
+                                "\t\tif (block_reference_offset == offsetof(struct object_datum, object.node_matrices))\n"
+                                "\t\t\ttick2_gc_census(object_header, 1);\n")
+TICK2_POSENEW_MEMBERS_FILL = ("static void tick2_proof_fill(struct object_header_datum *header)\n{\n"
+                              "\tstruct object_datum *object = (struct object_datum *)header->datum;\n\n")
+TICK2_POSENEW_MEMBERS_LEFT = r"\bobject\s*\.\s*(node_matrices|node_orientations|original_node_orientations)\b"
+def tick2_posenew_members_datum_block():
+    """tick2_pose_datum_block with the members out: the proof form's grow (its pattern, no reference), the census"""
+    return (r"""/* TICK2 posenew step 5, item 2 (docs/box_world_store.md section 17 'item 2, fourth piece'): a new object's node
+blocks are taken by the store, in one call from object_new (psp/src/store_pose.c) */
+boolean store_pose_take(long object_index, long count, boolean interpolates);
+/* a node block's side in the datum, called back by store_pose_take once the block's run is taken and its bit set,
+before it's zeroed: """ + ("the datum grown by the block as the old layout's is (FALSE if the pool has no room), "
+                          if TICK2_PROOF else "") + r"""the census with the matrices. The datum has no reference to
+write since the members went (section 17 'item 2, the members out') */
+boolean tick2_pose_datum_block(long object_index, int which, long size)
+{
+	struct object_header_datum *object_header = object_header_get(object_index);
+
+""" + (r"""	{ /* TICK2 proof: the datum grows as the old layout's does, its block patterned; readers use the arena */
+		short original_size = object_header->data_size;
+
+		if (!memory_pool_block_reallocate(object_memory_pool, (void **)&object_header->datum, size + object_header->data_size))
+			return FALSE;
+		object_header->data_size += size;
+		memset((byte *)object_header->datum + original_size, 0xA5, size);
+	}
+""" if TICK2_PROOF else "\t(void)size;\n") + r"""	if (which == TICK2_POSE_MATRICES)
+		tick2_gc_census(object_header, 1); /* TICK2 gccount */
+	return TRUE;
+}
+
+""")
+TICK2_POSENEW_MEMBERS_VIRTUAL = r"""/* TICK2 pose, the proof form: the datum at its old size, the old layout's three node block references written
+where they were (the datum holds the pattern there since the members went: section 17 'item 2, the members out'),
+each node block's place filled from the arena. The datum grows only by its node blocks, in the order store_pose_take
+calls back (matrices, orientations, originals), each at the datum's size then, so their offsets are the datum's
+size less theirs, and an object with none has the references' zeros. The checksum covers tick2's bytes */
+static struct object_header_datum const *tick2_pose_virtual(struct object_header_datum const *header)
+{
+	static unsigned char buffer[2048 + 640 + 64] __attribute__((aligned(16)));
+	static struct object_header_datum fake;
+	struct object_datum const *object = (struct object_datum const *)header->datum;
+	struct tick2_root const *record = object ? object->object.root : NULL;
+	struct object_header_block_reference refs[3]; /* the old layout's order: originals, orientations, matrices */
+	static const int blocks[3] = { TICK2_POSE_MATRICES, TICK2_POSE_ORIENTATIONS, TICK2_POSE_ORIGINALS };
+	static const int place[3] = { 2, 1, 0 };
+	long cap = (long)sizeof(buffer) - 64, at, k, nodes, offset;
+
+	if (!object)
+		return header;
+	memset(refs, 0, sizeof(refs));
+	nodes = record && record->pose_first != TICK2_POSE_NONE ? record->pose_count : 0;
+	offset = header->data_size;
+	for (k = 0; k < 3; k++)
+		if (nodes && (record->pose_blocks & blocks[k]))
+			offset -= nodes * (long)(k ? sizeof(real_orientation) : sizeof(real_matrix4x3));
+	for (k = 0; k < 3; k++)
+		if (nodes && (record->pose_blocks & blocks[k]))
+		{
+			refs[place[k]].size = (short)(nodes * (long)(k ? sizeof(real_orientation) : sizeof(real_matrix4x3)));
+			refs[place[k]].offset = (short)offset;
+			offset += refs[place[k]].size;
+		}
+	at = header->data_size < cap ? header->data_size : cap;
+	memcpy(buffer, header->datum, at);
+	if ((long)(offsetof(struct object_datum, object.tick2_proof_pose) + sizeof(refs)) <= at)
+		memcpy(buffer + offsetof(struct object_datum, object.tick2_proof_pose), refs, sizeof(refs));
+	for (k = 0; k < 3; k++)
+		if (nodes && (record->pose_blocks & blocks[k]) && refs[place[k]].offset > 1 && refs[place[k]].offset < at)
+		{
+			long bytes = refs[place[k]].size;
+
+			if (bytes > at - refs[place[k]].offset)
+				bytes = at - refs[place[k]].offset;
+			memcpy(buffer + refs[place[k]].offset, tick2_pose_block(record, blocks[k]), bytes);
+		}
+	fake = *header;
+	fake.datum = (void *)buffer;
+	fake.data_size = (short)at;
+	return &fake;
+}
+"""
+def tick2_posenew_members_cut(tree):
+    if not TICK2_POSE_MEMBERS:
+        return 0
+    objects_h = os.path.join(tree, "source/objects/objects.h")
+    objects_c = os.path.join(tree, "source/objects/objects.c")
+    h = open(objects_h, errors="surrogateescape").read()
+    c = open(objects_c, errors="surrogateescape").read()
+    texts = [(h, "the three members", TICK2_POSENEW_MEMBERS_DECL), (h, "object_datum", TICK2_POSENEW_MEMBERS_DATUM),
+             (c, "tick2_pose_datum_block as the take cut wrote it", tick2_posenew_take_datum_block()),
+             (c, "the allocate's census line", TICK2_POSENEW_MEMBERS_CENSUS)]
+    if TICK2_PROOF:
+        texts += [(c, "the proof form's sleep checksum copy", TICK2_POSE_PROOF_VIRTUAL),
+                  (c, "the proof form's fill", TICK2_POSENEW_MEMBERS_FILL)]
+    for text, name, old in texts:
+        if text.count(old) != 1:
+            check_fail("psp_fixups: TICK2 posenew step 5 (item 2, the members): %s is in objects.%s %d times as the piece "
+                       "was written from (an earlier cut changed it: rewrite this cut to match)"
+                       % (name, "h" if text is h else "c", text.count(old)))
+            return 0
+    # the members' place, checked where the cut put it: the proof form's run at the old offset, the ship form's datum
+    # ending where they began
+    before = sum(shrink for at, end, shrink in TICK2_CUTS if end <= TICK2_POSE_MEMBERS_AT)
+    if TICK2_PROOF:
+        h = h.replace(TICK2_POSENEW_MEMBERS_DECL,
+            "\tunsigned char tick2_proof_pose[3 * sizeof(struct object_header_block_reference)] "
+            "__attribute__((aligned(__alignof__(struct object_header_block_reference)))); /* TICK2 proof: the node block references' bytes */\n};\n")
+        check = ("typedef char tick2_pose_members_at[offsetof(struct object_datum, object.tick2_proof_pose) == 0x%X &&\n"
+                 "\tsizeof(struct object_datum) == 0x%X ? 1 : -1]; /* TICK2 posenew: the members' run, the old layout's */\n"
+                 % (TICK2_POSE_MEMBERS_AT, TICK2_POSE_MEMBERS_END))
+    else:
+        h = h.replace(TICK2_POSENEW_MEMBERS_DECL, "};\n")
+        check = ("typedef char tick2_pose_members_at[sizeof(struct object_datum) == 0x%X ? 1 : -1]; "
+                 "/* TICK2 posenew: the datum ends where the members began */\n" % (TICK2_POSE_MEMBERS_AT - before))
+    h = h.replace(TICK2_POSENEW_MEMBERS_DATUM, TICK2_POSENEW_MEMBERS_DATUM + check)
+    c = c.replace(tick2_posenew_take_datum_block(), tick2_posenew_members_datum_block())
+    c = c.replace(TICK2_POSENEW_MEMBERS_CENSUS, "")
+    if TICK2_PROOF:
+        c = c.replace(TICK2_POSE_PROOF_VIRTUAL, TICK2_POSENEW_MEMBERS_VIRTUAL)
+        c = c.replace(TICK2_POSENEW_MEMBERS_FILL, TICK2_POSENEW_MEMBERS_FILL +
+            "\tmemset(object->object.tick2_proof_pose, %d, sizeof(object->object.tick2_proof_pose)); /* TICK2 posenew */\n"
+            % TICK2_PROOF_BYTE)
+    # no member is named in code anywhere left, store_pose.c included
+    store = open(TICK2_POSENEW_STORE_POSE_C, errors="surrogateescape").read()
+    for top in ("source", "port", None):
+        walk = [(TICK2_POSENEW_STORE_POSE_C, None)] if top is None else \
+            [(os.path.join(root, name), None) for root, dirs, names in os.walk(os.path.join(tree, top)) for name in names]
+        for path, _ in walk:
+            if not path.endswith((".c", ".h")):
+                continue
+            text = c if path == objects_c else h if path == objects_h else store if top is None else \
+                open(path, errors="surrogateescape").read()
+            if "node_" not in text:
+                continue
+            left = re.findall(TICK2_POSENEW_MEMBERS_LEFT, tick2_posenew_code_only(text))
+            if left:
+                check_fail("psp_fixups: TICK2 posenew step 5 (item 2, the members): %s still names the datum's %s"
+                           % (os.path.relpath(path, tree) if top else "psp/src/store_pose.c", left[0]))
+                return 0
+    if not CHECK_ONLY:
+        open(objects_h, "w", errors="surrogateescape").write(h)
+        open(objects_c, "w", errors="surrogateescape").write(c)
+    print("psp_fixups: TICK2 posenew step 5 (item 2): the datum's node block references are out (%s)"
+          % ("the proof form's pattern run" if TICK2_PROOF else "0x%X bytes, the sizes and checks moved" %
+             (TICK2_POSE_MEMBERS_END - TICK2_POSE_MEMBERS_AT)))
+    return 1
+tick2_posenew_members_cut(TREE)
 
 if CHECK_ONLY:
     for message in count_failures:

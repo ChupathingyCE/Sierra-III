@@ -1170,25 +1170,6 @@ static __inline__ __attribute__((always_inline)) struct tick2_root *tick2_record
 	return tick2_datum_of_index(object_index)->object.root;
 }
 
-#ifdef PSP_TICK2_PROOF
-/* the proof form (psp_build.py defines PSP_TICK2_PROOF for this unit): while the datum keeps its node_matrices
-reference (item 2 takes it out), the record's count is that reference's size in matrices, since
-store_pose_take sets both from one count (the size by objects.c's tick2_pose_datum_block); the first object where
-they differ is logged */
-static void tick2_pose_count_check(long object_index, struct tick2_root const *record)
-{
-	static boolean logged = FALSE;
-	short size = tick2_datum_of_index(object_index)->object.node_matrices.size;
-
-	if (!logged && record->pose_count != size / (short)sizeof(real_matrix4x3))
-	{
-		logged = TRUE;
-		platform_psp_log("tick2 posenew: object %08lx's record counts %d nodes, its node_matrices reference %d",
-			(unsigned long)object_index, (int)record->pose_count, (int)(size / (short)sizeof(real_matrix4x3)));
-	}
-}
-#endif
-
 /* the accessors, keyed by record (section 17 'last piece'): the census, the settle, the interpolated pose, then the
 block, in objects.c's order. The block is tick2_pose_block(record, TICK2_POSE_MATRICES), the block getter's own
 return for &node_matrices, so the pointer is the same; the record is found again after the settle, as objects.c's
@@ -1209,9 +1190,6 @@ real_matrix4x3 const *store_node_matrices(
 	{
 		struct tick2_root *record = tick2_record_of_index(object_index);
 
-#ifdef PSP_TICK2_PROOF
-		tick2_pose_count_check(object_index, record);
-#endif
 		return (real_matrix4x3 *)tick2_pose_block(record, TICK2_POSE_MATRICES);
 	}
 }
@@ -1227,13 +1205,10 @@ real_matrix4x3 const *store_node_matrix(
 	/* port: a node the object has no matrix for (an index a map's data
 	gave) is its first node, which every object has, not whatever lies
 	past its matrices. TICK2 posenew step 5: bound by the record's count,
-	which is node_matrices.size / 52 (the proof form compares them) */
+	which was node_matrices.size / 52 until the members went */
 	{
 		struct tick2_root const *record = tick2_record_of_index(object_index);
 
-#ifdef PSP_TICK2_PROOF
-		tick2_pose_count_check(object_index, record);
-#endif
 		if (node_index < 0 ||
 			node_index >= record->pose_count)
 		{
@@ -1310,8 +1285,8 @@ void store_pose_box(struct tick2_root *record, long object_index, void const *pl
 
 /* ---- item 2's fourth piece (section 17; psp_fixups.py tick2_posenew_take_cut): a new object's node blocks ---- */
 /* objects.c (tick2_posenew_take_cut, defined there): a node block's side in the datum, once its run is taken and its
-bit set, before it's zeroed: the reference's words as object_header_block_allocate's pose branch wrote them (until the
-members go), the proof form's datum grown by the block as the old layout's is, and the census with the matrices.
+bit set, before it's zeroed: the proof form's datum grown by the block as the old layout's is, and the census with
+the matrices (the reference's words went with the members: section 17 'item 2, the members out').
 FALSE only in the proof form, when the pool has no room for the growth */
 boolean tick2_pose_datum_block(long object_index, int which, long size);
 
