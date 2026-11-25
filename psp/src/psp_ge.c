@@ -2884,12 +2884,18 @@ static void gk_note(int part, unsigned int bytes, unsigned int address);
 /* "gesetkind" (with gereadskind): the GE's working set a frame by kind, VRAM
 and main RAM both, so the draw list's layout can put in VRAM what the GE reads
 most (bus_toll.md §4, the lab's). Bytes read, and the distinct buffers' bytes:
-a buffer (its address and size) counted once a frame, under the kind that
-drew it first. Emulator counts: the replay runs on the main CPU there */
+a buffer (its address) counted once a frame at the largest size any draw
+reached in it, under the kind that drew it first. An indexed draw's vertices
+are sized by the vertices its indices reach, not by its index count (the
+first census, vramset1, took the count: its distinct sizes ran ~40% over
+on the models). Three places: VRAM past the fixed buffers, main RAM, and
+the fixed 816 KB of frame and depth buffers (a buffer read as a texture).
+Emulator counts: the replay runs on the main CPU there */
 enum { GS_VERTICES, GS_INDICES, GS_TEXTURES, GS_PARTS };
+enum { GS_VRAM, GS_RAM, GS_FIXED, GS_PLACES };
 static int gs_on = 0;
 static unsigned int gs_frame = 1;
-static void gs_note(int part, int vram, unsigned int bytes, unsigned int address);
+static void gs_note(int part, int vram, unsigned int read, unsigned int bytes, unsigned int address);
 static unsigned int gk_frame_ram = 0, gk_last_frame_ram = 0, gk_seen = 0;
 unsigned int psp_ge_reads_frame = 0; /* psp_tex.c: a texture's first bind in the frame being carried out */
 /* build 116: "vrammodelsN": a model buffer's VRAM copy, when it has one
@@ -8505,7 +8511,24 @@ static void ge_reads_note(int vtype, int count, const void *indices, const void 
 	if (gk_on && place != GR_VRAM && place != GR_LIST)
 		gk_note(GK_VERTICES, bytes, (unsigned int)vertices);
 	if (gs_on)
-		gs_note(GS_VERTICES, place == GR_VRAM, bytes, (unsigned int)vertices);
+	{
+		/* read: the draw's vertices as the GE fetches them; distinct: the
+		vertices its indices reach in the buffer */
+		unsigned int reach = bytes;
+
+		if (indices && isize)
+		{
+			unsigned int most = 0;
+			int k;
+
+			if (isize == 2)
+				for (k = 0; k < count; k++) { if (((const unsigned short *)indices)[k] > most) most = ((const unsigned short *)indices)[k]; }
+			else
+				for (k = 0; k < count; k++) { if (((const unsigned char *)indices)[k] > most) most = ((const unsigned char *)indices)[k]; }
+			reach = (most + 1) * (unsigned int)vsize;
+		}
+		gs_note(GS_VERTICES, place == GR_VRAM, bytes, reach, (unsigned int)vertices);
+	}
 	if (indices && isize)
 	{
 		int index_place = gr_place((unsigned int)indices);
@@ -8515,7 +8538,8 @@ static void ge_reads_note(int vtype, int count, const void *indices, const void 
 		if (gk_on && index_place != GR_VRAM && index_place != GR_LIST)
 			gk_note(GK_INDICES, (unsigned int)count * (unsigned int)isize, (unsigned int)indices);
 		if (gs_on)
-			gs_note(GS_INDICES, index_place == GR_VRAM, (unsigned int)count * (unsigned int)isize, (unsigned int)indices);
+			gs_note(GS_INDICES, index_place == GR_VRAM, (unsigned int)count * (unsigned int)isize,
+				(unsigned int)count * (unsigned int)isize, (unsigned int)indices);
 	}
 	/* only buffers that could be held go in the table: this frame's data in
 	the list is new every frame (its addresses would fill the table), and
@@ -8613,29 +8637,35 @@ static void __attribute__((noinline, cold)) gk_report(unsigned long span)
 #define GS_SLOTS 8192
 #define GS_PROBES 16
 static struct gs_slot { unsigned int address, bytes, frame; } *gs_table = NULL;
-static unsigned long long gs_read[KINDS][2][GS_PARTS], gs_set[KINDS][2][GS_PARTS];
+static unsigned long long gs_read[KINDS][GS_PLACES][GS_PARTS], gs_set[KINDS][GS_PLACES][GS_PARTS];
 static unsigned long gs_full = 0;
 static const char gs_part_letters[GS_PARTS] = { 'v', 'i', 't' };
+static const char *const gs_place_names[GS_PLACES] = { "VRAM", "main RAM", "fixed buffers" };
+/* the frame, display and depth buffers: VRAM's first 816 KB (FRAME_BYTES x 3) */
+#define GS_FIXED_END (3u * FRAME_BYTES)
 
 void __attribute__((noinline, cold)) gs_start(void)
 {
 	gs_table = calloc(GS_SLOTS, sizeof(*gs_table));
 	gs_on = gs_table ? 1 : 0;
 	if (gs_on)
-		platform_log("GE: gesetkind on (the GE's working set a frame by kind, VRAM and main RAM, read and distinct)");
+		platform_log("GE: gesetkind on (the GE's working set a frame by kind, VRAM, main RAM and the fixed buffers, read and distinct; vertices by their indices' reach)");
 }
 
 /* a slot from an earlier frame counts as empty, and nothing is taken out
-within a frame, so a probe stops at the first one */
-static void gs_note(int part, int vram, unsigned int bytes, unsigned int address)
+within a frame, so a probe stops at the first one. A buffer is its address:
+a later draw reaching further into it adds only what it reaches past the
+first (counted under its own kind) */
+static void gs_note(int part, int vram, unsigned int read, unsigned int bytes, unsigned int address)
 {
-	int kind = ge_kind_now, where = vram ? 0 : 1, n;
+	int kind = ge_kind_now, n;
+	int where = !vram ? GS_RAM : (address & 0x001FFFFFu) < GS_FIXED_END ? GS_FIXED : GS_VRAM;
 	unsigned int h;
 
 	if (!bytes)
 		return;
-	gs_read[kind][where][part] += bytes;
-	h = ((address >> 4) ^ (bytes * 2654435761u) ^ ((unsigned int)part << 28)) & (GS_SLOTS - 1);
+	gs_read[kind][where][part] += read;
+	h = ((((address >> 4) ^ ((unsigned int)part << 28)) * 2654435761u) >> 19) & (GS_SLOTS - 1);
 	for (n = 0; n < GS_PROBES; n++, h = (h + 1) & (GS_SLOTS - 1))
 	{
 		struct gs_slot *slot = &gs_table[h];
@@ -8648,8 +8678,15 @@ static void gs_note(int part, int vram, unsigned int bytes, unsigned int address
 			gs_set[kind][where][part] += bytes;
 			return;
 		}
-		if (slot->address == address && slot->bytes == bytes)
+		if (slot->address == address)
+		{
+			if (bytes > slot->bytes)
+			{
+				gs_set[kind][where][part] += bytes - slot->bytes;
+				slot->bytes = bytes;
+			}
 			return;
+		}
 	}
 	gs_full++; /* counted as distinct: the set's an upper bound by these bytes */
 	gs_set[kind][where][part] += bytes;
@@ -8659,15 +8696,16 @@ static void gs_note(int part, int vram, unsigned int bytes, unsigned int address
 void psp_ge_set_texture(unsigned int address, unsigned int bytes)
 {
 	if (gs_on)
-		gs_note(GS_TEXTURES, (address & 0x0F000000u) == 0x04000000u, bytes, address);
+		gs_note(GS_TEXTURES, (address & 0x0F000000u) == 0x04000000u, bytes, bytes, address);
 }
 
 /* a line a kind: KB a frame read (v vertices, i indices, t textures at every
-bind) and distinct, in VRAM and in main RAM; then the whole frame's */
+bind) and distinct, in VRAM, main RAM and the fixed buffers; then the whole
+frame's */
 void __attribute__((noinline, cold)) gs_report(unsigned long span)
 {
-	char line[600];
-	unsigned long long all[2][2][GS_PARTS];
+	char line[800];
+	unsigned long long all[2][GS_PLACES][GS_PARTS];
 	int k, w, j, at;
 
 	memset(all, 0, sizeof(all));
@@ -8675,7 +8713,7 @@ void __attribute__((noinline, cold)) gs_report(unsigned long span)
 	{
 		unsigned long long any = 0;
 
-		for (w = 0; w < 2; w++)
+		for (w = 0; w < GS_PLACES; w++)
 			for (j = 0; j < GS_PARTS; j++)
 			{
 				any += gs_read[k][w][j];
@@ -8685,9 +8723,9 @@ void __attribute__((noinline, cold)) gs_report(unsigned long span)
 		if (!any)
 			continue;
 		at = snprintf(line, sizeof(line), "gesetkind: %s KB a frame:", kind_names[k]);
-		for (w = 0; w < 2 && at < (int)sizeof(line) - 1; w++)
+		for (w = 0; w < GS_PLACES && at < (int)sizeof(line) - 1; w++)
 		{
-			at += snprintf(line + at, sizeof(line) - at, " %s read", w ? "main RAM" : "VRAM");
+			at += snprintf(line + at, sizeof(line) - at, " %s read", gs_place_names[w]);
 			for (j = 0; j < GS_PARTS && at < (int)sizeof(line) - 1; j++)
 				at += snprintf(line + at, sizeof(line) - at, " %c %.1f", gs_part_letters[j], gs_read[k][w][j] / 1024.0 / span);
 			at += snprintf(line + at, sizeof(line) - at, ", distinct");
@@ -8698,9 +8736,9 @@ void __attribute__((noinline, cold)) gs_report(unsigned long span)
 		platform_log("%s", line);
 	}
 	at = snprintf(line, sizeof(line), "gesetkind: the frame, KB:");
-	for (w = 0; w < 2 && at < (int)sizeof(line) - 1; w++)
+	for (w = 0; w < GS_PLACES && at < (int)sizeof(line) - 1; w++)
 	{
-		at += snprintf(line + at, sizeof(line) - at, " %s read", w ? "main RAM" : "VRAM");
+		at += snprintf(line + at, sizeof(line) - at, " %s read", gs_place_names[w]);
 		for (j = 0; j < GS_PARTS && at < (int)sizeof(line) - 1; j++)
 			at += snprintf(line + at, sizeof(line) - at, " %c %.1f", gs_part_letters[j], all[0][w][j] / 1024.0 / span);
 		at += snprintf(line + at, sizeof(line) - at, ", distinct");
