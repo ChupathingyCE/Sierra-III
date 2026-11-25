@@ -66367,6 +66367,121 @@ def tick2_collnew_movecall_cut(tree):
     return 1
 tick2_collnew_movecall_cut(TREE)
 
+# PSP_TICK2_COLLNEW=1, piece 4 (docs/box_world_store.md section 18 'The code plan'; the lead 13:3x: task 4 deletes the
+# defer, the run, bs2's gather, take and pack, and the link census): the ten staged-sweep names of
+# tools/tick2_deleted.txt's task 4 are gone from the build and poisoned in objects.h, so a reference in any unit that
+# includes it fails the compile (done-when 2's count is the build itself, as posenew step 4's seven). Pieces 1 and 2
+# took six of them and the run (store_coll_*, store_biped_pass). Of the last three, two are the pass's own now and take
+# its names with their bodies unchanged: the walk's defer is the store's single entry in the walk, store_biped_hook
+# (after the sleep's test, the list in the walk's order, objects.c's), and the staged slot's live test, which only the
+# engine's halves and the gather's test read, is store_biped_live_until_task5. The third, the link census
+# ("bipedstagelinkcensus", slice 3's ground, a keep that's off by default and counted only in phase 2, which
+# bipedstage3 never runs), is deleted whole: its tally and its counts, the solve's census branch (the update it wraps
+# is the branch's other arm, the same call), and its three counting hooks in object_reconnect_to_map,
+# object_update_with and object_connect_lights_with, which only the tally read. Exact by construction under the
+# default keeps: the census's arm never ran, and the hooks only counted. The cut refuses unless each text it deletes is
+# there once, and no code anywhere (the engine, the port, psp/src, psp/include) names the ten or the census after it.
+# The last cut, after piece 3's.
+TICK2_COLLNEW_DELETED = ("psp_bipedstage_defer", "psp_bipedstage_live", "psp_bipedstage_run", "psp_bipedstage2_begin",
+                         "psp_bipedstage2_gather", "psp_bipedstage2_gather_exact", "psp_bipedstage2_take",
+                         "psp_bipedstage2_end", "psp_bs2_pack", "psp_bslc_tally")
+TICK2_COLLNEW_HOOK_RENAMES = (("psp_bipedstage_defer", "store_biped_hook"),
+                              ("psp_bipedstage_live", "store_biped_live_until_task5"))
+# the census's state, from its comment to its counts (objects.c, ahead of object_reconnect_to_map)
+TICK2_COLLNEW_CENSUS_STATE = ("/* (FIXES_BIPEDSTAGE) \"bipedstagelinkcensus\": slice 3's ground (docs/box_biped_motion.md\n",
+                              "unsigned long psp_bslc_reconnects, psp_bslc_children, psp_bslc_lights;\n\n")
+TICK2_COLLNEW_CENSUS_HOOKS = ("\tif (object_index == psp_bslc_current)\n\t\tpsp_bslc_reconnects++;\n",
+                              "\tif (psp_bslc_current != -1 && psp_bslc_reconnects && object->object.parent_object_index == psp_bslc_current)\n"
+                              "\t\tpsp_bslc_children++;\n",
+                              "\tif (object_index == psp_bslc_current && psp_bslc_reconnects)\n\t\tpsp_bslc_lights++;\n")
+# the tally with its counts, from the keep's switch to the tally's close (ahead of the gather's declarations)
+TICK2_COLLNEW_CENSUS_TALLY = ("static int psp_bslc_on = -1;\n", "static void psp_bslc_tally(")
+TICK2_COLLNEW_CENSUS_SOLVE = (
+    "\t\t\tif (psp_bslc_on < 0)\n"
+    "\t\t\t\tpsp_bslc_on = psp_keep(\"bipedstagelinkcensus\");\n"
+    "\t\t\tif (psp_bslc_on > 0 && psp_bipedstage_phase == 2)\n"
+    "\t\t\t{\n"
+    "\t\t\t\tstruct location before = header->datum->object.root->location;\n"
+    "\n"
+    "\t\t\t\tpsp_bslc_current = psp_bipedstage_index[k];\n"
+    "\t\t\t\tpsp_bslc_reconnects = psp_bslc_children = psp_bslc_lights = 0;\n"
+    "\t\t\t\tpsp_object_update(psp_bipedstage_index[k], psp_bipedstage_absolute[k], header);\n"
+    "\t\t\t\tpsp_bslc_current = -1;\n"
+    "\t\t\t\tpsp_bslc_tally(&before, &header->datum->object.root->location);\n"
+    "\t\t\t}\n"
+    "\t\t\telse\n"
+    "\t\t\tpsp_object_update(psp_bipedstage_index[k], psp_bipedstage_absolute[k], header);\n",
+    "\t\t\tpsp_object_update(psp_bipedstage_index[k], psp_bipedstage_absolute[k], header);\n")
+TICK2_COLLNEW_POISON = ("#ifdef HALO_PSP\n/* TICK2 collnew piece 4 (slice 1's task 4; docs/box_world_store.md section 18): the staged "
+    "sweeps' deferred run, gather, take and pack and the link census are gone from this build; the store's biped pass and "
+    "gather table are the bipeds' collision. A reference to any of them fails the compile (Sierra-III tools/tick2_deleted.txt; "
+    "the lab's slice1_finish done-when 2) */\n"
+    "#pragma GCC poison %s\n#pragma GCC poison %s\n#endif\n\n") % (" ".join(TICK2_COLLNEW_DELETED[:5]),
+                                                                   " ".join(TICK2_COLLNEW_DELETED[5:]))
+def tick2_collnew_delete_cut(tree):
+    if not TICK2_COLLNEW or not TICK2_POSENEW or not TICK2_BIPED or os.environ.get("PSP_BIPEDSTAGE_NOINLINE", "") == "1":
+        return 0  # the move cut has said why
+    objects_c = os.path.join(tree, "source/objects/objects.c")
+    objects_h = os.path.join(tree, "source/objects/objects.h")
+    o = open(objects_c, errors="surrogateescape").read()
+    h = open(objects_h, errors="surrogateescape").read()
+    for old, now in TICK2_COLLNEW_HOOK_RENAMES:
+        if re.search(r"\b%s\b" % now, o):
+            check_fail("psp_fixups: TICK2 collnew piece 4: the store's name %s is already in objects.c" % now)
+            return 0
+        o, k = re.subn(r"\b%s\b" % old, now, o)
+        if k == 0:
+            check_fail("psp_fixups: TICK2 collnew piece 4: %s isn't in objects.c" % old)
+            return 0
+    deleted = 0
+    for name, (first, last) in (("the census's state", TICK2_COLLNEW_CENSUS_STATE), ("the census's tally", TICK2_COLLNEW_CENSUS_TALLY)):
+        if o.count(first) != 1 or o.count(last) != 1 or o.index(last) < o.index(first):
+            check_fail("psp_fixups: TICK2 collnew piece 4: %s's ends aren't in objects.c once each, in order" % name)
+            return 0
+        start = o.index(first)
+        end = o.index(last) + len(last) if last.endswith("\n") else o.index("\n}\n", o.index(last)) + 3
+        deleted += o[start:end].count("\n")
+        o = o[:start] + o[end:]
+    for text in TICK2_COLLNEW_CENSUS_HOOKS + (TICK2_COLLNEW_CENSUS_SOLVE[0],):
+        if o.count(text) != 1:
+            check_fail("psp_fixups: TICK2 collnew piece 4: objects.c has %r %d times, not 1" % (text.splitlines()[0].strip(), o.count(text)))
+            return 0
+        deleted += text.count("\n")
+    for text in TICK2_COLLNEW_CENSUS_HOOKS:
+        o = o.replace(text, "")
+    o = o.replace(*TICK2_COLLNEW_CENSUS_SOLVE)
+    deleted -= 1
+    # no code reference to the ten or the census is left in the engine, the port or the store's units, before the poison
+    names = re.compile(r"\b(?:%s|psp_bslc_\w+)\b" % "|".join(TICK2_COLLNEW_DELETED))
+    left = []
+    for top in (os.path.join(tree, "source"), os.path.join(tree, "port"), os.path.join(TICK2_COLLNEW_DIR, "psp", "src"),
+                os.path.join(TICK2_COLLNEW_DIR, "psp", "include")):
+        for root, dirs, files in os.walk(top):
+            for name in files:
+                if not name.endswith((".c", ".h")):
+                    continue
+                path = os.path.join(root, name)
+                text = o if path == objects_c else h if path == objects_h else open(path, errors="surrogateescape").read()
+                for hit in names.findall(tick2_posenew_code_only(text)):
+                    left.append("%s: %s" % (path, hit))
+    if left:
+        check_fail("psp_fixups: TICK2 collnew piece 4: %d references left to poison: %s" % (len(left), ", ".join(left[:8])))
+        return 0
+    guard = "\n#endif // __OBJECTS_H"
+    if h.count(guard) != 1 or h.count(TICK2_POSENEW_POISON) != 1:
+        check_fail("psp_fixups: TICK2 collnew piece 4: objects.h's closing guard (%d) or posenew's poison (%d) isn't there once"
+                   % (h.count(guard), h.count(TICK2_POSENEW_POISON)))
+        return 0
+    h = h.replace(guard, "\n" + TICK2_COLLNEW_POISON + guard.lstrip("\n"))
+    if not CHECK_ONLY:
+        open(objects_c, "w", errors="surrogateescape").write(o)
+        open(objects_h, "w", errors="surrogateescape").write(h)
+    print("psp_fixups: TICK2 collnew (task 4, piece 4): the defer and the live test are the pass's (store_biped_hook, "
+          "store_biped_live_until_task5), the link census deleted (%d lines), the %d staged-sweep names poisoned"
+          % (deleted, len(TICK2_COLLNEW_DELETED)))
+    return 1
+tick2_collnew_delete_cut(TREE)
+
 if CHECK_ONLY:
     for message in count_failures:
         print(message)
