@@ -64683,6 +64683,126 @@ def tick2_posenew_move_cut(tree):
     return 1
 tick2_posenew_move_cut(TREE)
 
+# PSP_TICK2_POSENEW=1, step 5, item 1, second piece (docs/box_world_store.md section 17 step 5): means B's slot table
+# moves to psp/src/store_pose.c, verbatim: the slots (psp_boxb, psp_boxb_count), the ME's copy (psp_boxb_me, made by
+# psp_boxb_for_me, read by psp_boxb_me_lacks and psp_boxb_me_read), the site note, the make (store_pose_make_nodes),
+# the whole read, the settle-all and the hash's, forget, the make ahead of the IK and the tick's end with its log. The
+# text is FIXES_BOXPOSING's means-B block as that hunk emits it, with step 4's renames, so it's read from the hunk
+# here and not copied: the cut refuses if objects.c doesn't hold it exactly once (a later cut edited it) or the file's
+# text between its second marker pair differs. The file's copy drops `static` on the lines whose names objects.c still
+# reads (store_pose_box's slot and counters, psp_boxb_want's switches, the IK's flag, and the two readers' macros,
+# which expand in objects.c); the site table and the site note stay static. objects.c keeps a declaration block in the
+# block's place: the slot struct, the ME copy's struct and the two macros, each the block's own text, then the moved
+# names declared; and its forward declaration of psp_boxb_for_me loses its static. The slot is still keyed by
+# object_index & 255 (absolute index, section 17 'first piece': a slot by record would change which owing poses
+# collide), and the ME's names are kept (the ME's reads, psp_boxb_me_lacks from collisions.c, by name). Exact by
+# construction. Cost [U]: the macros' make and the ME read are calls across units (psp/src isn't LTO); the pair prices
+# them. The last cut, after the allocator's.
+TICK2_POSENEW_BOXB_BEGIN = "/* ---- moved from objects.c (psp_fixups.py FIXES_BOXPOSING means B's slot table, after step 4's renames): begin ---- */\n"
+TICK2_POSENEW_BOXB_FINISH = "/* ---- moved from objects.c: means B's slot table: finish ---- */\n"
+TICK2_POSENEW_BOXB_HEAD = "#ifdef PSP_BOX_POSING\n/* psp_fixups.py (FIXES_BOXPOSING, means B; docs/box_posing.md §1b). A slot an\n"
+TICK2_POSENEW_BOXB_TAIL = "\tcsmemset(psp_boxb_site_nodes, 0, sizeof(psp_boxb_site_nodes));\n}\n#endif\n"
+# the lines whose names objects.c still reads: `static ` dropped in the file's copy
+TICK2_POSENEW_BOXB_EXPORTS = ("static struct psp_boxb_slot psp_boxb[PSP_BOXB_SLOTS];\n",
+                              "static int psp_boxb_on = -1, psp_boxb_check = 0, psp_boxb_changed = 1;\n",
+                              "static struct psp_boxb_me_copy psp_boxb_me __attribute__((aligned(64)));\n",
+                              "static unsigned long psp_boxb_ticks, psp_boxb_poses, psp_boxb_owing_poses,",
+                              "static int psp_boxb_in_ik = 0;\n",
+                              "static void psp_boxb_for_me(void)\n",
+                              "__attribute__((noinline)) static void psp_boxb_me_read(long object_index, unsigned long long want)\n",
+                              "__attribute__((noinline)) static void store_pose_make_nodes(long object_index, unsigned long long want, void *site)\n",
+                              "static void psp_boxb_settle_all(void)\n",
+                              "static void psp_boxb_before_ik(long object_index, short node)\n",
+                              "static void psp_boxb_tick_end(void)\n")
+# the pieces of the block objects.c keeps, each from its first line to its last
+TICK2_POSENEW_BOXB_KEPT = (("/* psp_fixups.py (FIXES_BOXPOSING, means B;", "\tvoid const *plan;\n};\n"),
+                           ("/* the ME's copy (the AI's pass, the rays)", "\tunsigned long long made[PSP_BOXB_SLOTS];\n};\n"),
+                           ("/* every reader's test, in line:", "== (long)(index)))\n"))
+TICK2_POSENEW_BOXB_DECL = r"""/* TICK2 posenew step 5: means B's slot table, its ME copy and their code are the store's, in psp/src/store_pose.c
+(moved verbatim); the reads that stay here use these */
+extern struct psp_boxb_slot psp_boxb[PSP_BOXB_SLOTS];
+extern int psp_boxb_count;
+extern int psp_boxb_on, psp_boxb_check, psp_boxb_changed;
+extern struct psp_boxb_me_copy psp_boxb_me;
+extern unsigned long psp_boxb_poses, psp_boxb_owing_poses, psp_boxb_nodes_all, psp_boxb_nodes_made, psp_boxb_busy,
+	psp_boxb_drawn_whole, psp_boxb_dead_or_held;
+extern int psp_boxb_in_ik;
+void psp_boxb_for_me(void);
+int psp_boxb_me_lacks(long object_index, unsigned long long want);
+void psp_boxb_me_read(long object_index, unsigned long long want);
+void store_pose_make_nodes(long object_index, unsigned long long want, void *site);
+void psp_boxb_whole(long object_index);
+void psp_boxb_settle_all(void);
+void psp_boxb_hash_settle(void);
+void psp_boxb_forget(void);
+void psp_boxb_before_ik(long object_index, short node);
+void psp_boxb_tick_end(void);
+"""
+TICK2_POSENEW_BOXB_FORWARD = "static void psp_boxb_for_me(void);\n"
+def tick2_posenew_boxb_texts():
+    """means B's block as objects.c holds it (from #ifdef to #endif), the declarations objects.c keeps in its place,
+    and the file's copy (the block's inside, the exports' static dropped)"""
+    hunks = [new for old, new in FIXES_BOXPOSING["source/objects/objects.c#boxposeb"] if TICK2_POSENEW_BOXB_HEAD in new]
+    if len(hunks) != 1:
+        check_fail("psp_fixups: TICK2 posenew step 5: means B's block is in %d FIXES_BOXPOSING hunks, not 1" % len(hunks))
+        return None
+    hunk = hunks[0]
+    if hunk.count(TICK2_POSENEW_BOXB_TAIL) != 1:
+        check_fail("psp_fixups: TICK2 posenew step 5: means B's block's tail is in its hunk %d times" % hunk.count(TICK2_POSENEW_BOXB_TAIL))
+        return None
+    block = hunk[hunk.index(TICK2_POSENEW_BOXB_HEAD):hunk.index(TICK2_POSENEW_BOXB_TAIL) + len(TICK2_POSENEW_BOXB_TAIL)]
+    for old, now in TICK2_POSENEW_DEMAND_RENAMES:
+        block = re.sub(r"\b%s\b" % old, now, block)
+    inside = block[len("#ifdef PSP_BOX_POSING\n"):-len("#endif\n")]
+    kept = []
+    for first, last in TICK2_POSENEW_BOXB_KEPT:
+        if inside.count(first) != 1 or inside.count(last) != 1 or inside.index(last) < inside.index(first):
+            check_fail("psp_fixups: TICK2 posenew step 5: means B's kept piece %r isn't in the block once" % first)
+            return None
+        kept.append(inside[inside.index(first):inside.index(last) + len(last)])
+    decl = "#ifdef PSP_BOX_POSING\n" + kept[0] + kept[1] + TICK2_POSENEW_BOXB_DECL + kept[2] + "#endif\n"
+    moved = inside
+    for head in TICK2_POSENEW_BOXB_EXPORTS:
+        if moved.count(head) != 1:
+            check_fail("psp_fixups: TICK2 posenew step 5: means B's block has %r %d times" % (head.strip(), moved.count(head)))
+            return None
+        moved = moved.replace(head, head.replace("static ", "", 1))
+    return block, decl, moved
+def tick2_posenew_boxb_move_cut(tree):
+    if not TICK2_POSENEW or STORECOUNT:
+        return 0
+    texts = tick2_posenew_boxb_texts()
+    if texts is None:
+        return 0
+    block, decl, moved = texts
+    objects_c = os.path.join(tree, "source/objects/objects.c")
+    c = open(objects_c, errors="surrogateescape").read()
+    if c.count(block) != 1:
+        check_fail("psp_fixups: TICK2 posenew step 5: means B's block is in objects.c %d times as FIXES_BOXPOSING put it "
+                   "(a later cut edited it: move that edit into the hunk)" % c.count(block))
+        return 0
+    if c.count(TICK2_POSENEW_BOXB_FORWARD) != 1:
+        check_fail("psp_fixups: TICK2 posenew step 5: psp_boxb_for_me's forward declaration is in objects.c %d times"
+                   % c.count(TICK2_POSENEW_BOXB_FORWARD))
+        return 0
+    store = open(TICK2_POSENEW_STORE_POSE_C, errors="surrogateescape").read()
+    if store.count(TICK2_POSENEW_BOXB_BEGIN) != 1 or store.count(TICK2_POSENEW_BOXB_FINISH) != 1:
+        check_fail("psp_fixups: TICK2 posenew step 5: psp/src/store_pose.c's means-B markers aren't there once each")
+        return 0
+    held = store[store.index(TICK2_POSENEW_BOXB_BEGIN) + len(TICK2_POSENEW_BOXB_BEGIN):store.index(TICK2_POSENEW_BOXB_FINISH)]
+    if held != moved:
+        check_fail("psp_fixups: TICK2 posenew step 5: psp/src/store_pose.c's means-B slot table isn't FIXES_BOXPOSING's "
+                   "(the two must change together)")
+        return 0
+    c = c.replace(block, decl)
+    c = c.replace(TICK2_POSENEW_BOXB_FORWARD, TICK2_POSENEW_BOXB_FORWARD[len("static "):])
+    if not CHECK_ONLY:
+        open(objects_c, "w", errors="surrogateescape").write(c)
+    print("psp_fixups: TICK2 posenew step 5: means B's slot table moved to psp/src/store_pose.c (%d lines; objects.c keeps %d)"
+          % (block.count("\n"), decl.count("\n")))
+    return 1
+tick2_posenew_boxb_move_cut(TREE)
+
 if CHECK_ONLY:
     for message in count_failures:
         print(message)
