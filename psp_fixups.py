@@ -65156,6 +65156,109 @@ def tick2_posenew_pose_move_cut(tree):
     return 1
 tick2_posenew_pose_move_cut(TREE)
 
+# PSP_TICK2_POSENEW=1, step 5, item 2, first piece (docs/box_world_store.md section 17 'item 2, first piece'): the
+# node count is the record's. Every read of node_matrices.size left in the tree after item 1 (13 in 12 files: the
+# port's seven lighting files, render_interpolation.c, device_machines.c, collision_models.c, the limp body, and
+# objects.c's census and the readers' note; 15 with C4TRACE's pose dump) becomes store_node_count(record), objects.h's inline of
+# record->pose_count. Exact by construction: object_header_block_allocate sets pose_count = size / 52 in the same
+# call that sets the matrices' size (the record taken at 0, a size a whole number of matrices, at most
+# TICK2_POSE_RUN_MOST = 64 nodes, so the byte holds it), and nothing else writes either until tick2_pose_give. Two
+# reads change shape with it: "size < sizeof(real_matrix4x3)" is "count < 1" (the size is 0 or a whole matrix), and
+# the census guards the record (a datum whose record wasn't taken is freed with root NULL). The one read that ran
+# after tick2_pose_give is the census at an object's end, which zeroes pose_count: its call moves ahead of the
+# gives at both ends (object_header_delete and the map's end). It reads the header's type and the datum, and the
+# gives don't write them, so the move changes only what it counts. The two reads in psp/src/store_pose.c's copies
+# (NMSKIP's MIN and the proof form's compare) are the next piece's, with the guard that compares the copies.
+# The last cut, after the last piece's.
+TICK2_POSENEW_COUNT_INLINE = r"""/* TICK2 posenew step 5, item 2 (docs/box_world_store.md section 17): an object's node count is its record's, the
+count object_header_block_allocate keeps with its matrices (their block's size / 52) */
+static inline long store_node_count(struct tick2_root const *record)
+{
+	return record->pose_count;
+}
+"""
+TICK2_POSENEW_COUNT_AFTER = "\tunsigned char pose_blocks; /* which of its three node blocks it has */\n};\n"
+TICK2_POSENEW_COUNT_CENSUS = ("\tlong nodes = object ? object->object.node_matrices.size / (long)sizeof(real_matrix4x3) : 0;\n",
+    "\tlong nodes = object && object->object.root ? store_node_count(object->object.root) : 0; /* TICK2 posenew step 5: the "
+    "record's count; a datum freed before its record was taken has none */\n")
+# the census's call at an object's end, ahead of the gives (tick2_pose_give zeroes the count it reads)
+TICK2_POSENEW_COUNT_ENDS = tuple((
+    "%(t)stick2_pose_give(((struct object_datum *)%(h)s->datum)->object.root); /* TICK2 pose */\n"
+    "%(t)stick2_unit_give(((struct object_datum *)%(h)s->datum)->object.root); /* TICK2 unit */\n"
+    "%(t)stick2_record_give(((struct object_datum *)%(h)s->datum)->object.root); /* TICK2 root */\n"
+    "%(t)stick2_gc_census(%(h)s, -1); /* TICK2 gccount */ memory_pool_block_free(object_memory_pool, (void**)&%(h)s->datum);\n" % k,
+    "%(t)stick2_gc_census(%(h)s, -1); /* TICK2 gccount; TICK2 posenew step 5: ahead of the gives, while the record holds its count */\n"
+    "%(t)stick2_pose_give(((struct object_datum *)%(h)s->datum)->object.root); /* TICK2 pose */\n"
+    "%(t)stick2_unit_give(((struct object_datum *)%(h)s->datum)->object.root); /* TICK2 unit */\n"
+    "%(t)stick2_record_give(((struct object_datum *)%(h)s->datum)->object.root); /* TICK2 root */\n"
+    "%(t)smemory_pool_block_free(object_memory_pool, (void**)&%(h)s->datum);\n" % k)
+    for k in ({"t": "\t\t", "h": "object_header"}, {"t": "\t\t\t\t", "h": "header"}))
+# the reads' shapes; the owner is a plain name or object_get(name). Slice 1's recipe has 13 reads; C4TRACE's dump
+# (appended to objects.c, PSP_C4TRACE=1) adds "> 0" and "/ (long)", and NWB's check (a group slice 1 leaves off) the
+# MIN of bytes, which stays bytes. A read in any other shape refuses the build, so none is left behind
+TICK2_POSENEW_COUNT_OWNER = r"(\w+|object_get\(\w+\))->object\.node_matrices\.size"
+TICK2_POSENEW_COUNT_SHAPES = (
+    (TICK2_POSENEW_COUNT_OWNER + r" < sizeof\(real_matrix4x3\)", r"store_node_count(\1->object.root) < 1"),
+    (TICK2_POSENEW_COUNT_OWNER + r" > 0\b", r"store_node_count(\1->object.root) > 0"),
+    (r"MIN\(\(long\)" + TICK2_POSENEW_COUNT_OWNER + ", ", r"MIN((long)store_node_count(\1->object.root) * (long)sizeof(real_matrix4x3), "),
+    (r"\((short|unsigned short)\)\(" + TICK2_POSENEW_COUNT_OWNER + r" / \(short\)sizeof\(real_matrix4x3\)\)",
+     r"(\1)store_node_count(\2->object.root)"),
+    (TICK2_POSENEW_COUNT_OWNER + r" / \((?:short|long)\)sizeof\(real_matrix4x3\)", r"store_node_count(\1->object.root)"))
+TICK2_POSENEW_COUNT_READS = 13  # at least: slice 1's recipe without C4TRACE
+def tick2_posenew_count_cut(tree):
+    if not TICK2_POSENEW or STORECOUNT:
+        return 0
+    objects_c = os.path.join(tree, "source/objects/objects.c")
+    objects_h = os.path.join(tree, "source/objects/objects.h")
+    c = open(objects_c, errors="surrogateescape").read()
+    h = open(objects_h, errors="surrogateescape").read()
+    if "store_node_count" in h or h.count(TICK2_POSENEW_COUNT_AFTER) != 1:
+        check_fail("psp_fixups: TICK2 posenew step 5 (item 2): objects.h's pose_blocks anchor matches %d times, or "
+                   "store_node_count is already there" % h.count(TICK2_POSENEW_COUNT_AFTER))
+        return 0
+    h = h.replace(TICK2_POSENEW_COUNT_AFTER, TICK2_POSENEW_COUNT_AFTER + TICK2_POSENEW_COUNT_INLINE)
+    for name, (old, new) in (("the census's read", TICK2_POSENEW_COUNT_CENSUS),
+                             ("the census at object_header_delete", TICK2_POSENEW_COUNT_ENDS[0]),
+                             ("the census at the map's end", TICK2_POSENEW_COUNT_ENDS[1])):
+        if c.count(old) != 1:
+            check_fail("psp_fixups: TICK2 posenew step 5 (item 2): %s matches %d times in objects.c" % (name, c.count(old)))
+            return 0
+        c = c.replace(old, new)
+    # every other read, in the engine and the port
+    count, files, changed = 1, 0, {}
+    for top in ("source", "port"):
+        for root, dirs, names in os.walk(os.path.join(tree, top)):
+            for name in names:
+                if not name.endswith((".c", ".h")):
+                    continue
+                path = os.path.join(root, name)
+                text = c if path == objects_c else open(path, errors="surrogateescape").read()
+                if "node_matrices.size" not in text:
+                    continue
+                for pattern, now in TICK2_POSENEW_COUNT_SHAPES:
+                    text, k = re.subn(pattern, now, text)
+                    count += k
+                left = re.findall(r"[^\n]*\bnode_matrices\.size\b[^\n]*", tick2_posenew_code_only(text))
+                if left:
+                    check_fail("psp_fixups: TICK2 posenew step 5 (item 2): %s reads node_matrices.size in a shape the cut "
+                               "doesn't know: %s" % (os.path.relpath(path, tree), left[0].strip()))
+                    return 0
+                files += 1
+                changed[path] = text
+    if count < TICK2_POSENEW_COUNT_READS:
+        check_fail("psp_fixups: TICK2 posenew step 5 (item 2): %d node count reads rewritten, fewer than slice 1's %d (a "
+                   "cut removed one: read it and set the floor)" % (count, TICK2_POSENEW_COUNT_READS))
+        return 0
+    c = changed.pop(objects_c, c)
+    if not CHECK_ONLY:
+        for path, text in changed.items():
+            open(path, "w", errors="surrogateescape").write(text)
+        open(objects_c, "w", errors="surrogateescape").write(c)
+        open(objects_h, "w", errors="surrogateescape").write(h)
+    print("psp_fixups: TICK2 posenew step 5 (item 2): the node count is the record's, %d reads in %d files" % (count, files))
+    return 1
+tick2_posenew_count_cut(TREE)
+
 if CHECK_ONLY:
     for message in count_failures:
         print(message)
