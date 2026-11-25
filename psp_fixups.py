@@ -3814,6 +3814,89 @@ void psp_director_fly(float x, float y, float z, float fx, float fy, float fz)
 '''
 
 
+# ---------- FIXES_DRAWLIST (PSP_DRAWLIST=1 only; docs/box_draw_list.md §12.1d
+# (b), form (i)): the main CPU's version of each level material's index list,
+# carried in the level draw's record, so the draw list box's kept geometry
+# knows the list is the one its buckets were made from without reading it.
+# The engine builds a material's list from its surfaces' visible bits alone
+# (structure_render_dynamic_triangles_from_bitvector: each set surface in
+# ascending order, one triangle a surface), so the list is unchanged while
+# the bits of the words that hold its surfaces are. Each word's bits are
+# kept as they were last seen with the sequence number of their last change;
+# a material's version is the largest over its words (words shared with a
+# neighbour can only make it change more often)
+if os.environ.get("PSP_DRAWLIST", "") == "1":
+    APPEND["source/structures/structure_render.c"] = r"""
+#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_DRAWLIST): the list version of the material whose
+vertex_buffer member this is; 0 when it can't be told */
+static unsigned long psp_list_seen[BIT_VECTOR_SIZE_IN_LONGS(MAXIMUM_SURFACES_PER_STRUCTURE)];
+static unsigned long psp_list_changed[BIT_VECTOR_SIZE_IN_LONGS(MAXIMUM_SURFACES_PER_STRUCTURE)];
+static unsigned long psp_list_sequence = 1;
+static struct structure_bsp const *psp_list_bsp = NULL;
+typedef char psp_list_bits_are_a_bit_vector[sizeof(render.environment_surface_flags) == sizeof(psp_list_seen) ? 1 : -1];
+
+unsigned int psp_level_list_version(struct vertex_buffer const *vertex_buffer)
+{
+	struct structure_bsp const *bsp = global_structure_bsp_get();
+	struct structure_material const *material = (struct structure_material const *)
+		((char const *)vertex_buffer - __builtin_offsetof(struct structure_material, vertices));
+	long first = material->first_surface_index, count = material->surface_count, word, last;
+	unsigned long version = 0;
+
+	if (bsp != psp_list_bsp)
+	{
+		/* a bit means another surface: every word changes */
+		long all;
+
+		psp_list_bsp = bsp;
+		psp_list_sequence++;
+		for (all = 0; all < BIT_VECTOR_SIZE_IN_LONGS(MAXIMUM_SURFACES_PER_STRUCTURE); all++)
+		{
+			psp_list_seen[all] = render.environment_surface_flags[all];
+			psp_list_changed[all] = psp_list_sequence;
+		}
+	}
+	if (count <= 0 || first < 0 || first + count > MAXIMUM_SURFACES_PER_STRUCTURE)
+		return 0;
+	last = (first + count - 1) >> LONG_BITS_BITS;
+	for (word = first >> LONG_BITS_BITS; word <= last; word++)
+	{
+		unsigned long bits = render.environment_surface_flags[word];
+
+		if (bits != psp_list_seen[word])
+		{
+			psp_list_seen[word] = bits;
+			psp_list_changed[word] = ++psp_list_sequence;
+		}
+		if (psp_list_changed[word] > version)
+			version = psp_list_changed[word];
+	}
+	return (unsigned int)version;
+}
+#endif
+"""
+    _draw_primitives = "source/rasterizer/xbox/rasterizer_xbox_draw_primitives.c"
+    _old_call = """	psp_ge_draw_level(vertices, lightmap_vertices, vertex_buffer->count,
+		(const unsigned short *)buffer->triangles + 3 * first_triangle_index, triangle_count, color,
+		base_key, lightmap_vertices ? lightmap_key : 0, alpha_tested);
+}"""
+    assert APPEND[_draw_primitives].count(_old_call) == 1
+    APPEND[_draw_primitives] = APPEND[_draw_primitives].replace(_old_call, """	{
+		/* psp_fixups.py (FIXES_DRAWLIST): with the list's version, made
+		here, after every way out, so each version the main CPU makes
+		belongs to a draw the replay sees */
+		extern unsigned int psp_level_list_version(struct vertex_buffer const *vertex_buffer);
+		extern void psp_ge_draw_level_listed(const void *vertices, const void *lightmap_vertices, int vertex_count,
+			const unsigned short *indices, long triangle_count, unsigned int color,
+			unsigned int base_key, unsigned int lightmap_key, int alpha_tested, unsigned int list_version);
+
+		psp_ge_draw_level_listed(vertices, lightmap_vertices, vertex_buffer->count,
+			(const unsigned short *)buffer->triangles + 3 * first_triangle_index, triangle_count, color,
+			base_key, lightmap_vertices ? lightmap_key : 0, alpha_tested, psp_level_list_version(vertex_buffer));
+	}
+}""")
+
 def appended(tree):
     for rel, code in APPEND.items():
         path = os.path.join(tree, rel)

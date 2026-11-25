@@ -4208,3 +4208,72 @@ void psp_tex_frame_end(void)
 	frame++;
 	frame_loaded = 0;
 }
+
+#ifdef PSP_DRAWLIST
+/* The level's kept prologues (psp_ge.c, docs/box_draw_list.md §12.1a) hold a
+pass's bind words and are CALLed again on later frames, so a CALL has to do
+what a bind does besides its words: mark the texture in this frame's set, so
+it isn't evicted for not being bound, and count it as the bind would. 0: the
+key names no texture in the pack (the bind would draw nothing and ask for
+nothing); 1: in the pack but not resident (the bind would ask for it, so the
+draw goes through the old path); otherwise the texture's resident address,
+which the prologue's words name. mark 0 only looks */
+unsigned int psp_tex_kept_at(int index, int mark, int *has_alpha);
+
+unsigned int psp_tex_kept_touch(unsigned int key, int mark, int *has_alpha)
+{
+	return psp_tex_kept_at(key && entries ? find(key) : -1, mark, has_alpha);
+}
+
+/* the key's place in the pack (-1: not in it), for a kept draw that keeps
+the place with its entry and asks psp_tex_kept_at by it on later frames,
+with no lookup; a place holds while psp_tex_map_opens is unchanged */
+int psp_tex_kept_find(unsigned int key)
+{
+	return key && entries ? find(key) : -1;
+}
+
+/* psp_tex_kept_touch by the pack's place */
+unsigned int psp_tex_kept_at(int index, int mark, int *has_alpha)
+{
+	if (index < 0 || !entries)
+		return 0;
+	if (!resident_at[index])
+		return 1;
+	if (has_alpha)
+		*has_alpha = entries[index].flags & 1;
+	if (mark)
+	{
+		TXC_BOUND(index);
+		frame_set_mark(index);
+		if (bind_counts && bind_counts[index] < 65535)
+			bind_counts[index]++;
+		if (texline_me && PSP_ME_WORK())
+		{
+			(*texline_me)++;
+			(*texline_me_copy)++;
+		}
+		if (texlod_on())
+			texlod_mark(index);
+	}
+	return resident_at[index];
+}
+
+/* the most words a bind of this key writes (psp_bindblock.h's count: 8 and
+4 a level), so a kept prologue that would outgrow its slot is refused before
+it's written; 0 for a key not in the pack */
+unsigned int psp_tex_kept_words(unsigned int key)
+{
+	int index = key && entries ? find(key) : -1;
+
+	return index < 0 ? 0 : 8u + 4u * entries[index].levels;
+}
+
+/* after a CALL the GE's texture is the prologue's last bind, which neither
+memo names */
+void psp_tex_kept_forget(void)
+{
+	tex_me_memo.key = 0;
+	memo_key = 0;
+}
+#endif

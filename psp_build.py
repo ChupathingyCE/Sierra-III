@@ -215,8 +215,13 @@ METRICS = os.environ.get("PSP_METRICS", "1") != "0"
 # engine's defines
 DITHERSHIFT = os.environ.get("PSP_DITHERSHIFT", "") == "1"
 # PSP_DRAWLIST=1: the draw list box (docs/box_draw_list.md), off by default
-# until it is cut over; under it the keep word "drawlist" turns it on
+# until it is cut over; under it the keep word "drawlist" turns it on, and
+# "levelkept" the level's kept prologues (psp_tex.c gives their binds' book)
 DRAWLIST = os.environ.get("PSP_DRAWLIST", "") == "1"
+if DRAWLIST:
+    # the kept blocks' store, emitter and check (psp/src/box_draw_list.c); the
+    # level's use of them is compiled inside psp_ge.c (box_draw_list_level.inc)
+    PSP_FILES.append("box_draw_list")
 # PSP_PADPATH=1: the pad path (docs/pad_path.md; psp_pad.c's second half, its
 # reader in players.c, keep words pathrec, pathlog, padwatch). A bench tool:
 # its reader is an engine function a tick's profile has no counts for and its
@@ -907,7 +912,7 @@ def compile_one(item):
     cmd = PSP + flags + extra + defines + ["-include", os.path.join(HERE, "psp_post.h"), "-c", src, "-o", out]
     if src.endswith(("psp_sdl.c", "psp_libc.c", "psp_ge.c", "psp_tex.c", "psp_vfpu.c", "psp_vfpu_quat.c", "psp_vfputrig.c", "psp_menu.c", "psp_geo.c", "psp_anim.c",
                      "psp_debug.c", "psp_me.c", "psp_trace.c", "psp_crash.c", "psp_watch.c", "psp_net.c", "psp_net_adhoc.c",
-                     "psp_music.c")):
+                     "psp_music.c", "box_draw_list.c")):
         # plain C against the SDL3 headers, none of the game's MSVC prefix
         # (build 110: the launch menu, the crash handler's side, the overlay
         # and the load trace's wrappers for size; the rest for speed)
@@ -924,7 +929,7 @@ def compile_one(item):
                ["-DPSP_MP_HOST=1"] if MULTIPLAYER and MP_HOST else []) + (
                pgo_flags(rel) if opt == "-O2" else []) + (
                ["-DPSP_DITHERSHIFT=1"] if DITHERSHIFT and src.endswith("psp_ge.c") else []) + (
-               ["-DPSP_DRAWLIST=1"] if DRAWLIST and src.endswith("psp_ge.c") else []) + (
+               ["-DPSP_DRAWLIST=1"] if DRAWLIST and src.endswith(("psp_ge.c", "psp_tex.c", "box_draw_list.c")) else []) + (
                ["-DPSP_RECON=1"] if RECON else []) + (
                ["-DPSP_PADPATH=1"] if PADPATH else []) + (
                ["-DPSP_FRAMEPIC=1"] if FRAMEPIC else []) + (
