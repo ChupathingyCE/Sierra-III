@@ -14,7 +14,8 @@ from collections import defaultdict
 
 DATUM = re.compile(r"state: datum of object ([0-9a-f]{8}) at tick (\d+), word (\d+):((?: [0-9a-f]{8})+)")
 DEFN = re.compile(r"state: definition ([0-9a-f]{8}) is (.*)")
-OBJS = re.compile(r"state: objects at tick (\d+):((?: [0-9a-f]{8} [0-9a-f]{8} [0-9a-f]{8})+)")
+# each object: index, definition, play hash, whole hash (psp_fixups.py, objects.c's psp_objects_play_dump)
+OBJS = re.compile(r"state: objects at tick (\d+):((?: [0-9a-f]{8} [0-9a-f]{8} [0-9a-f]{8} [0-9a-f]{8})+)")
 
 
 def load(path):
@@ -35,7 +36,7 @@ def load(path):
             m = OBJS.search(line)
             if m:
                 parts = m.group(2).split()
-                for k in range(0, len(parts), 3):
+                for k in range(0, len(parts), 4):
                     defs[parts[k]] = parts[k + 1]
     return datums, names, defs
 
