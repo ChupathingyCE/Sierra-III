@@ -352,4 +352,65 @@ The lab's `briefs/slice1_finish.md` task 3 and spec §5: `store_pose_settle(slot
 - **Recipe note for the pair:** `psp_box_pose` (`.text.hot` and `.text.unlikely`, `w_tgme2m1_tgc90` lines 419-420) and `psp_nms_settle_absolute` (`.text.hot`, line 783) lose their places and their campaign-rungc2 counts under the new names. Step 2's and step 3's handicaps grow by these two, named in the predict as [U].
 - Applied on the engine at 2e5eac00 with slice 1's recipe, then with posepass too: 13 names in both, no code reference to the 7 left, the poison before objects.h's closing guard. Not compiled: the runner's build is the first, and the fast tier's ask follows.
 
+**Step 5's design (2026-11-25 07:5x, the builder; for the lead, before any code): POSE's arena replaces the node blocks, and the store's posing code moves to `psp/src`.** The lead's 07:17 asked for it: §16 open question 1 (a) (52-byte matrices first), the store's posing code in `psp/src`, reading and writing the arena with no `object_get`, and a heap check per map. Read in the fixed-up tree (the engine at 2e5eac00, slice 1's recipe plus POSENEW steps 1-4) [D]:
+- **The arena is already built.** `PSP_TICK2=pose` (spec §35; `biped` implies it, so every slice 1 build has it) already holds every object's node blocks in the store. The matrices are 52 bytes a node, which is §16 Q1 (a) as built. The two orientation arrays are 32 bytes a node each, and only the types that interpolate have them. The arena is carved from the object pool's tail per map at `tick2_table_for_map`'s counts. A run that doesn't fit takes 64-node overflow chunks from the pool, and the allocator is best fit with freed runs merged. So step 5 makes no new arena. **What's left of the node blocks** is the datum's tie to them:
+  - the three `object_header_block_reference`s, the last 12 bytes of `_object_datum` (objects.h 399-401). Their offset is 1, the sign of a block held elsewhere, and their size is the one readers count by;
+  - the three tests in `object_header_block_allocate` and `object_header_block_get`;
+  - **47 touches of the three names in 13 files:** objects.c 32 (its own 16 included), the port's seven lighting files one each, render_interpolation.c 3, the limp body 2, and device_machines.c, collision_models.c and units.c one each. Of these, 15 read `.size` only.
+- **(1) The references leave the datum** (12 bytes a datum). The count is the record's `pose_count` and the blocks it has are `pose_blocks`, both there since §35.
+  - The 15 size reads become `store_node_count(record)`. Every read of a block becomes the store's accessors (`store_node_matrices` / `store_node_matrix`, const) or, for posing's own writers, a writer's form kept inside the store.
+  - The limp body writes every node. It gets a writer's accessor marked "until task 5", since it leaves with the limp body.
+  - `object_new`'s three `object_header_block_allocate` calls (objects.c 8293-8309) become one `store_pose_take(record, count, interpolates)`. The block getter loses its three tests.
+  - Every datum past `_object_datum` moves by 0xC: the same shift as ROOT's 0x50 (the 16 sizes in object_types.c, the layout checks past it), and a check inside the run fails the build. Any touch left of the three names then fails to compile: the member is gone. The names can't be poisoned, because `skinning->node_matrices`, `group->node_matrices` and the first-person weapon use them too.
+- **(2) The store's posing code moves to `psp/src/store_pose.c`** (new; `psp/src` units already include the fixed-up objects.h, e.g. `psp_nointerp.c`). It holds:
+  - the arena's allocator (the `tick2_pose_*` text the fixups emit into objects.c today);
+  - B's slot table and its ME copy, and NMSKIP's tables and their ME copy;
+  - `store_pose_box`, `store_pose_make_nodes`, `store_pose_make_skipped` / `_at`, `store_pose_settle` / `_in`, and the two accessors.
+
+  They reach the arena by the record's runs (`tick2_pose_at`), not by `object_get` and `object_header_block_get`. Today's pair is `object_get(index)`, then the getter's own `object_header_get`, then its three compares. What stays engine-side is `anim_pose_gather` ("until slice 3: ANIM") and `store_pose_now`'s prologue, which reads the datum (scale, flags, the parent). The store calls them across the boundary by object index, as today.
+- **(3) The ME's names are kept**, so its layouts place them as now: `psp_boxb_me`, `psp_nms_me`, `psp_nms_pending`, `psp_nms_count`, `psp_nms_settle_time` (data_hotg091rb's lines), and `psp_boxb_me_read` (mexec_rbtsw's list) [D for the lists; that they hold across the move is U until the link map]. The ME reads the same copies at the same hand-overs. It shares this data, so step 5 is priced by the short PSP pair, which already waits on it.
+
+**Open question 1: how the store finds a record from an object index without `object_get`.** The engine calls every accessor with an index.
+- **(a) A store table by absolute index:** a 2-byte slot per object (2,048 × 2 = 4 KB, carved with the store), written where the record is taken and cleared where it's given. It holds slots, not pointers, because compaction moves overflow chunks' records. It costs one load fewer than (b) [U].
+- **(b) Recommended for step 5:** one inline at the boundary, `tick2_record_of_index(index)`: the header's datum's `root`. That's two dependent loads, what `object_get` plus `->object.root` costs today. On the PSP, `object_get` is already `header->datum` with no type check (FIXES_HANDLES OBJALL) [D]. It costs no bytes. Everything inside `psp/src` then takes the record. Only the boundary reads the header, and the pass walks records by slot with no index at all.
+
+The reason for (b) is the heap. The lightest map gets almost nothing back from the references, the heap's free low is 13 KB on a30 (spec §16), and (a)'s load is a lead until the pass's counters price it. (a) stays a candidate then.
+
+**Open question 2: the 4,096-node default.** A map with no row in the table (any map but the ten campaign maps) reserves 4,096 matrix nodes and 2,048 orientation nodes: **338 KB, 33% of the 1 MB object pool**, whatever it uses. It has done so since §35, so it isn't step 5's to change. A smaller default (e.g. 512 / 256, the overflow chunks taking the rest) is a sizing change for the lead to place, not folded in here.
+
+**The heap check per map** [D: the table's counts, the PSP's 32-bit sizes, `HALO_PORT_OBJECT_MEMORY_POOL_SIZE` 0x100000; the old pool's blocks are exact-sized, since memory_pool.c rounds nothing]. The node blocks it frees are the table's nodes × 52 plus its orientation nodes × 64. The arena is those bytes plus a fixed part: the two runs' headers (1,632 B) and their free bitmaps. "Refs back" is step 5's 12 B a datum at the map's record count (peak live objects + 15%), an upper bound:
+
+| map | nodes / orient. | node blocks freed | arena | fixed | arena, % of pool | refs back (at most) |
+|---|---|---|---|---|---|---|
+| a10 | 2,083 / 1,372 | 191.5 KB | 193.5 KB | 2.0 KB | 18.9% | 5.1 KB |
+| a30 | 2,279 / 1,556 | 213.0 | 215.0 | 2.1 | 21.0% | 11.1 |
+| a50 | 3,229 / 1,614 | 264.8 | 267.0 | 2.2 | 26.1% | 16.5 |
+| b30 | 2,267 / 917 | 172.4 | 174.4 | 2.0 | 17.0% | 15.2 |
+| b40 | 3,836 / 1,918 | 314.7 | 317.0 | 2.3 | 31.0% | 13.9 |
+| c10 | 2,793 / 1,396 | 229.1 | 231.2 | 2.1 | 22.6% | 16.9 |
+| c20 | 2,376 / 1,464 | 212.2 | 214.2 | 2.1 | 20.9% | 10.5 |
+| c40 | 4,751 / 2,375 | 389.7 | 392.2 | 2.5 | 38.3% | 12.8 |
+| d20 | 3,228 / 1,767 | 274.4 | 276.6 | 2.2 | 27.0% | 15.2 (13.2 at 1,124 objects, tick2ship2's low) |
+| d40 | 1,471 / 932 | 132.9 | 134.8 | 1.9 | 13.2% | 6.2 |
+| default | 4,096 / 2,048 | 336.0 | 338.3 | 2.3 | 33.0% | 15.0 (1,280 records) |
+
+**What the table says:**
+- At the table's counts the arena is the node blocks byte for byte plus 1.9-2.5 KB. The table counts nodes at the pool's low, so at the low the arena is full and the pool is 2 KB short of the old pool's low. That is §35's standing cost, already paid in every slice 1 run.
+- Step 5 gives back 12 B a live object. That's 13.2 KB on d20 at its low, the same 12 B an object as the store's standing cost (spec §16: the record pointer plus 8 B of slot indexes), so the pose section no longer adds to it.
+- The 2 KB is covered on every map with more than ~200 live objects at the low. On d40 (528 records) and a10 (432) it's covered only if over ~170-200 objects live there [U: their lows aren't read].
+- Under (b), step 5 adds nothing to the pool. Under (a), the 4 KB table comes out of the same give-back: 9.2 KB net on d20, but a loss on a map whose low has under ~340 objects.
+- **Read on the build, not taken on paper:** the gccount line's pool low per map, step 5 against tick2 at the same head. Expected: more free by 12 B × the objects live at the low [U].
+
+**Proof:**
+- Before the cut, §28's literal sweep for the 12 bytes: the three references' offsets in every datum type, and their sizes, in the port's text and the engine's.
+- The fast tier on b30 and c20, both seeds: old-only, tick2 with POSENEW and without step 5, and step 5. Play and seeds exact, with `c4pose`, `boxposebcheck` and the state CRC. The sleep's checksum (`tick2_pose_virtual`) lays the datum out at its type's size, so it covers 12 fewer bytes. Those bytes are set once in `object_new` and never change [D], so no wake should change [U until the run].
+- Then the short PSP pair on b30's fight against old-only, its predict naming the recipe handicap: `store_pose.c`'s functions are new to campaign-rungc2 and the text layout, beside steps 2-4's renames.
+
+**Order:**
+1. `store_pose.c` with the code moved and keyed by record, the references kept (exact by construction, one compile).
+2. The references out, the 47 touches to the store, the 0xC shift.
+3. The proof.
+
+It starts after the lead rules. If posenew2 places c20's tick-1260 parting on the cut (steps 1-4), that fix comes first.
+
 **Code order once ruled:** POSE's three words, `store_pose_settle` and the two accessors; then the 19 walk sites (the update's own pose to the pass, the helper deleted, the 16 others to `store_pose_settle`); then the 18 port read tests and the two getters to the accessors; then the deletions with their poisons; then the proof.
