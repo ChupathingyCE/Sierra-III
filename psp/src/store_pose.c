@@ -284,7 +284,7 @@ struct psp_boxb_slot
 };
 struct psp_boxb_slot psp_boxb[PSP_BOXB_SLOTS];
 /* the slots owing, read in line by every reader: 0, no test */
-int psp_boxb_count = 0;
+extern int psp_boxb_count; /* defined in objects.c (the lead 2026-11-25 09:0x) */
 int psp_boxb_on = -1, psp_boxb_check = 0, psp_boxb_changed = 1;
 /* the ME's copy (the AI's pass, the rays), made at each hand-over and at the
 objects' loop's end, on whole lines of its own: a node made after it isn't
@@ -557,7 +557,7 @@ struct psp_nms_root
 };
 long psp_nms_settle_time = NONE;
 /* read in line by the accessors: no left-out computes, no test */
-int psp_nms_count = 0;
+extern int psp_nms_count; /* defined in objects.c (the lead 2026-11-25 09:0x) */
 unsigned long psp_nms_pending[(MAXIMUM_OBJECTS_PER_MAP + 31) / 32];
 /* the Media Engine's rays' copy of the two (collisions.c, vislazy), made at
 each hand-over (psp_nms_pending_for_me): the count in [0], the bits from

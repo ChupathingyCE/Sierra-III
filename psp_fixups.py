@@ -64721,7 +64721,9 @@ TICK2_POSENEW_BOXB_KEPT = (("/* psp_fixups.py (FIXES_BOXPOSING, means B;", "\tvo
 TICK2_POSENEW_BOXB_DECL = r"""/* TICK2 posenew step 5: means B's slot table, its ME copy and their code are the store's, in psp/src/store_pose.c
 (moved verbatim); the reads that stay here use these */
 extern struct psp_boxb_slot psp_boxb[PSP_BOXB_SLOTS];
-extern int psp_boxb_count;
+/* the slots owing, read in line by every reader here: defined in this file, declared extern in store_pose.c (the lead
+2026-11-25 09:0x), so this file's readers reach it gp-relative */
+int psp_boxb_count = 0;
 extern int psp_boxb_on, psp_boxb_check, psp_boxb_changed;
 extern struct psp_boxb_me_copy psp_boxb_me;
 extern unsigned long psp_boxb_poses, psp_boxb_owing_poses, psp_boxb_nodes_all, psp_boxb_nodes_made, psp_boxb_busy,
@@ -64739,6 +64741,9 @@ void psp_boxb_before_ik(long object_index, short node);
 void psp_boxb_tick_end(void);
 """
 TICK2_POSENEW_BOXB_FORWARD = "static void psp_boxb_for_me(void);\n"
+# the count's definition stays in objects.c (the lead 2026-11-25 09:0x): the file's copy declares it in its place
+TICK2_POSENEW_BOXB_COUNT = ("int psp_boxb_count = 0;\n",
+                            "extern int psp_boxb_count; /* defined in objects.c (the lead 2026-11-25 09:0x) */\n")
 def tick2_posenew_boxb_texts():
     """means B's block as objects.c holds it (from #ifdef to #endif), the declarations objects.c keeps in its place,
     and the file's copy (the block's inside, the exports' static dropped)"""
@@ -64767,6 +64772,11 @@ def tick2_posenew_boxb_texts():
             check_fail("psp_fixups: TICK2 posenew step 5: means B's block has %r %d times" % (head.strip(), moved.count(head)))
             return None
         moved = moved.replace(head, head.replace("static ", "", 1))
+    if moved.count(TICK2_POSENEW_BOXB_COUNT[0]) != 1:
+        check_fail("psp_fixups: TICK2 posenew step 5: means B's block defines psp_boxb_count %d times, not 1"
+                   % moved.count(TICK2_POSENEW_BOXB_COUNT[0]))
+        return None
+    moved = moved.replace(*TICK2_POSENEW_BOXB_COUNT)
     return block, decl, moved
 def tick2_posenew_boxb_move_cut(tree):
     if not TICK2_POSENEW or STORECOUNT:
@@ -64845,6 +64855,9 @@ TICK2_POSENEW_NMS_DECL = r"""/* TICK2 posenew step 5: NMSKIP's tables, their ME 
 psp/src/store_pose.c (moved verbatim, read from this file as the cuts before left it); the reads that stay here use
 these (psp_nms_settle_time, psp_nms_count, psp_nms_pending, psp_nms_me, store_pose_make_skipped and psp_nms_forget
 are declared at the file's head) */
+/* the owed computes, read in line by the accessors and the loop here: defined in this file, declared extern in
+store_pose.c (the lead 2026-11-25 09:0x), so this file's readers reach it gp-relative */
+int psp_nms_count = 0;
 extern int psp_nms_on, psp_nms_check, psp_nms_open;
 extern int psp_vl_on, psp_vl_ticked;
 extern long psp_vl_moving;
@@ -64860,6 +64873,9 @@ void psp_nms_close(void);
 
 """
 TICK2_POSENEW_NMS_FORWARD = "static void psp_nms_forget(void);\n"
+# the count's definition stays in objects.c (the lead 2026-11-25 09:0x): the file's copy declares it in its place
+TICK2_POSENEW_NMS_COUNT = ("int psp_nms_count = 0;\n",
+                           "extern int psp_nms_count; /* defined in objects.c (the lead 2026-11-25 09:0x) */\n")
 def tick2_posenew_nms_texts(c):
     """NMSKIP's block as objects.c holds it (the head comment to psp_nms_game_state_loading's closing brace), what
     objects.c keeps in its place, and the file's copy (the rest, joined, the exports' static dropped)"""
@@ -64905,6 +64921,11 @@ def tick2_posenew_nms_texts(c):
             check_fail("psp_fixups: TICK2 posenew step 5: NMSKIP's moved text has %r %d times" % (head.strip(), moved.count(head)))
             return None
         moved = moved.replace(head, head.replace("static ", "", 1))
+    if moved.count(TICK2_POSENEW_NMS_COUNT[0]) != 1:
+        check_fail("psp_fixups: TICK2 posenew step 5: NMSKIP's moved text defines psp_nms_count %d times, not 1"
+                   % moved.count(TICK2_POSENEW_NMS_COUNT[0]))
+        return None
+    moved = moved.replace(*TICK2_POSENEW_NMS_COUNT)
     return block, kept, moved
 def tick2_posenew_nms_move_cut(tree):
     if not TICK2_POSENEW or STORECOUNT:
