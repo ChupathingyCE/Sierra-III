@@ -71,10 +71,13 @@ static int psp_bs2_on = -1, psp_bs2_slots, psp_bs2_fill, psp_bs2_peak;
 static real psp_bs2_margin;
 /* gathered, taken, no slot, flags differ, sphere outside, arena full, empty, pill differs */
 static unsigned long psp_bs2_stat[8], psp_bs2_ticks;
-/* the take's map: each kept entry's position by its biped's absolute index (MAXIMUM_OBJECTS_PER_MAP bytes; positions
-0-255 fit a byte), set on a kept pack, so two bipeds never share it and the take reads it once. It's trusted when the
-position is under the count and holds this handle: a stale one from an earlier tick fails that, and no clearing is
-needed */
+/* the take's map: each entry's position, keyed by its biped's absolute index (DATUM_INDEX_TO_ABSOLUTE_INDEX, under
+MAXIMUM_OBJECTS_PER_MAP, so MAXIMUM_OBJECTS_PER_MAP bytes; positions 0-255 fit a byte; two live bipeds never share a
+key), so the take reads it once, with no scan. The pack writes it first, before the gather, so before the empty
+outcome and the arena-full return, as the moved copy wrote its low-bits map: an arena-full entry's position is the
+count. The take trusts it only when the position is under the count, holds this handle and is unused (!used): a stale
+position from an earlier tick, an arena-full one and a second take in the tick all read no entry, as the moved copy's
+scan did, so the map is exact and no clearing is needed */
 static unsigned char psp_bs2_slot_of[MAXIMUM_OBJECTS_PER_MAP];
 extern struct collision_feature_list *psp_stackhot_list[2];
 /* the move's packed list read where it lies (collision_features.c's collision_features_test_vector reads through it
@@ -102,8 +105,8 @@ int store_coll_begin(void)
 
 /* the entry's list gathered (the engine's query into level 1's shared list, the boundary until slice 2) and packed
 into the arena by value. Around the query, the sweep reuse's four gather words are one saved block, opened before it
-and closed after it in today's order: settle, order, query, clusters, met, watch, near list. Kept (counted, mapped)
-unless the arena is full, which leaves the entry at the count, unkept */
+and closed after it in today's order: settle, order, query, clusters, met, watch, near list. Mapped first (the take's
+map, above); kept (counted) unless the arena is full, which leaves the entry at the count, unkept */
 static void store_coll_pack(struct store_coll_entry *entry, long biped_index)
 {
 	struct collision_feature_list *list = psp_stackhot_list[1];
@@ -112,6 +115,8 @@ static void store_coll_pack(struct store_coll_entry *entry, long biped_index)
 	unsigned long bytes[NUMBER_OF_COLLISION_FEATURE_TYPES];
 	short k;
 
+	if (absolute < MAXIMUM_OBJECTS_PER_MAP) /* always, for a biped's handle */
+		psp_bs2_slot_of[absolute] = (unsigned char)position;
 	{ /* SWEEPREUSE: the gather's clusters and objects, kept with the entry */
 		int on = psp_sr_on_pill, met = psp_sr_met;
 		short count = psp_sr_cluster_count, near = psp_sr_near_count;
@@ -163,8 +168,6 @@ static void store_coll_pack(struct store_coll_entry *entry, long biped_index)
 	}
 	entry->biped_index = biped_index;
 	entry->used = 0;
-	if (absolute < MAXIMUM_OBJECTS_PER_MAP) /* always, for a biped's handle */
-		psp_bs2_slot_of[absolute] = (unsigned char)position;
 	psp_bs2_slots++;
 	psp_bs2_stat[entry->empty ? 6 : 0]++;
 }

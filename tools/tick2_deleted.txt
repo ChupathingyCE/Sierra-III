@@ -46,7 +46,16 @@ biped_limp_noodle_nodes_valid	limp	units/biped_limp_noodle.c (static)	5
 # the staged sweeps (task 4): FIXES_BIPEDSTAGE's deferred run, gather and solve.
 # Not here: the sweep reuse (psp_sr_*, PSP_SWEEPREUSE), kept or replaced by
 # something no slower (task 4), and collision_move_pill, the engine's
-# collision over the level's data (collision_move_sphere's too), slice 2's
+# collision over the level's data (collision_move_sphere's too), slice 2's.
+# collisions.c's six bodies (psp_bipedstage2_* and psp_bs2_pack) left it in
+# piece 1, moved verbatim into psp/src/store_coll.c as store_coll_*. Five of
+# them (store_coll_begin, _gather, _pack, _take, _end) are no longer that copy:
+# c2c0dd5c rewrote them as the store's own code, the moved copy kept only as
+# the control psp/control/store_coll_moved.txt (not built), and they count as
+# gone once the lead takes c2c0dd5c on code (the lead 2026-11-25 16:2x, the
+# lab's decisions.md; box_world_store.md 18). The margin gather
+# (store_coll_gather_margin) keeps the moved body but its two entry lines:
+# task 5's, with the intent's cut below.
 psp_bipedstage_run	staged	objects/objects.c (psp_fixups FIXES_BIPEDSTAGE)	4
 psp_bipedstage_defer	staged	objects/objects.c (static; FIXES_BIPEDSTAGE)	4
 psp_bipedstage_live	staged	objects/objects.c (static; FIXES_BIPEDSTAGE)	4
