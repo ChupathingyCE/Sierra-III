@@ -12,9 +12,14 @@ tick_store_spec_v1.md sets the rules this skeleton follows:
 - The IK after the pose (section 13 item 1b): held weapons follow hands, so
   an object's postprocess runs inside the pass, after its parent and its own
   pose.
-- No posing outside the pass (section 15 item 2): a setter that lands after
-  the pass marks a want; the settle at the tick's end poses the wanted objects
-  in one batch. Readers never pose. Exceptional settles are counted.
+- No posing outside the store (spec section 5, which supersedes section 15
+  item 2's "readers never pose"; docs/box_world_store.md section 17, the lead
+  2026-11-25 01:06): store_pose_settle and this pass are the only code that
+  poses. A reader takes a pose through store_node_matrices or
+  store_node_matrix, which settle a stale pose first; a setter poses at once
+  through store_pose_settle (eager, until the slice that owns every input of
+  the pose prices marking). The ME never poses: an owed read there hands the
+  actor back. Exceptional settles are counted.
 - POSE's first form (section 35): the arena holds 52-byte matrices; the pass
   works in its own 16-byte-aligned scratch (48-byte quads plus the scale) and
   writes 52 bytes back.

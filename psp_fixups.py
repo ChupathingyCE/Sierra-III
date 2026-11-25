@@ -61454,6 +61454,100 @@ long tick2_pp_read(long object_index, char const *file, int line);
     return 1
 tick2_posepass_cut(TREE)
 
+# PSP_TICK2_POSENEW=1 (with PSP_TICK2=pose or biped; slice 1's task 3, docs/box_world_store.md section 17, ruled by the
+# lead 2026-11-25 01:06): posing as the store's code, in the design's order. Step 1, here: the store's entry points.
+# store_pose_settle makes the owed nodes a reader wants, store_node_matrices and store_node_matrix settle and answer,
+# and the engine's two getters settle through store_pose_settle, so every read settles in one place. Exact by
+# construction: the same two tests in the same order at each getter (the node getter's left-out compute is now made
+# after its node index is checked, which reads only the block's size). Next steps: the walk's 19 sites to the store,
+# the getters' ~33 callers to the accessors, then the engine's walk and demand code deleted with their poisons.
+TICK2_POSENEW = os.environ.get("PSP_TICK2_POSENEW", "") == "1"
+TICK2_POSENEW_CODE = r"""
+/* TICK2 posenew (slice 1's task 3; docs/box_world_store.md section 17): the store's posing entry points.
+A pose is owed two ways, each kept in a side table of the store's (not a word in every record: section 17's note):
+- a compute FIXES_NMSKIP left out, with its inputs as the skip found them, so the make reads what the eager compute
+  would have read even if they changed since;
+- means B's nodes a living biped's pose didn't make, made from the orientations that pose was given.
+store_pose_settle is the one place a read makes them. On the ME the copy taken at the last hand-over decides, and an
+owed read hands the actor back to the main CPU (psp_nms_me, psp_boxb_me): the ME never poses */
+static inline __attribute__((always_inline)) void store_pose_settle_in(long object_index, unsigned long long want)
+{
+	PSP_NMS_READ(object_index); /* FIXES_NMSKIP's owed compute, whole */
+#ifdef PSP_BOX_POSING
+	PSP_BOXB_READ(object_index, want); /* means B's owed nodes, those wanted and their parents */
+#endif
+}
+
+void store_pose_settle(long object_index, unsigned long long want)
+{
+	store_pose_settle_in(object_index, want);
+}
+"""
+TICK2_POSENEW_ACCESSORS = r"""
+/* TICK2 posenew: the store's accessors, a pose settled for what's read. Until step 3 they answer through the engine's
+getters, which settle by store_pose_settle_in. The getters' names are in parentheses so posepass's read wrappers (macros
+in objects.h) don't run a second time for a call that came through an accessor */
+real_matrix4x3 const *store_node_matrices(long object_index)
+{
+	return (object_get_node_matrices)(object_index);
+}
+
+real_matrix4x3 const *store_node_matrix(long object_index, short node_index)
+{
+	return (object_get_node_matrix)(object_index, node_index);
+}
+"""
+def tick2_posenew_cut(tree):
+    if not TICK2_POSENEW:
+        return 0
+    if not TICK2_POSE:
+        check_fail("psp_fixups: PSP_TICK2_POSENEW=1 needs PSP_TICK2=pose or biped")
+        return 0
+    objects_c = os.path.join(tree, "source/objects/objects.c")
+    objects_h = os.path.join(tree, "source/objects/objects.h")
+    c = open(objects_c, errors="surrogateescape").read()
+    h = open(objects_h, errors="surrogateescape").read()
+    def swap(text, old, new, where):
+        if text.count(old) != 1:
+            check_fail("psp_fixups: TICK2 posenew: %s's anchor %r matches %d times" % (where, old[:60], text.count(old)))
+            return None
+        return text.replace(old, new)
+    nms = "\tPSP_NMS_READ(object_index); /* psp_fixups.py (FIXES_NMSKIP) */\n"
+    whole = ("real_matrix4x3 *%sobject_get_node_matrices%s(\n\tlong object_index)\n{\n"
+             "\t/* psp_fixups.py (FIXES_134 #nmreaders) */\n\tif (psp_nmr_on > 0)\n"
+             "\t\tpsp_nmr_read(object_index, __builtin_return_address(0));\n" + nms)
+    whole = whole % (("(", ")") if TICK2_POSEPASS else ("", ""))
+    one = whole.replace("object_get_node_matrices", "object_get_node_matrix").replace(
+        "\tlong object_index)\n", "\tlong object_index,\n\tshort node_index)\n")
+    # the entry points before the first getter, which follows the NMSKIP and B tables and their read tests
+    c = swap(c, whole, TICK2_POSENEW_CODE + "\n" + whole[:-len(nms)], "the matrices getter")
+    if c is None: return 0
+    c = swap(c, "#ifdef PSP_BOX_POSING\n\tPSP_BOXB_READ(object_index, ~0ull); /* the whole block: every owed node */\n#endif\n",
+             "\tstore_pose_settle_in(object_index, ~0ull); /* TICK2 posenew: every owed node */\n", "the matrices getter")
+    if c is None: return 0
+    c = swap(c, one, one[:-len(nms)], "the node getter")
+    if c is None: return 0
+    c = swap(c, "#ifdef PSP_BOX_POSING\n\tPSP_BOXB_READ(object_index, 1ull << node_index); /* the node and its parents */\n#endif\n",
+             "\tstore_pose_settle_in(object_index, 1ull << node_index); /* TICK2 posenew: the node and its parents */\n", "the node getter")
+    if c is None: return 0
+    # the accessors after the node getter's body
+    at = c.index(one[:-len(nms)])
+    end = c.index("\n}\n", at) + 3
+    c = c[:end] + TICK2_POSENEW_ACCESSORS + c[end:]
+    h = swap(h, "real_matrix4x3 *object_get_node_matrices(long object_index);\n",
+             "real_matrix4x3 *object_get_node_matrices(long object_index);\n"
+             "/* TICK2 posenew: the store's posing entry points (docs/box_world_store.md section 17) */\n"
+             "void store_pose_settle(long object_index, unsigned long long want);\n"
+             "real_matrix4x3 const *store_node_matrices(long object_index);\n"
+             "real_matrix4x3 const *store_node_matrix(long object_index, short node_index);\n", "objects.h")
+    if h is None: return 0
+    if not CHECK_ONLY:
+        open(objects_c, "w", errors="surrogateescape").write(c)
+        open(objects_h, "w", errors="surrogateescape").write(h)
+    print("psp_fixups: TICK2 posenew: the store's posing entry points; the engine's two getters settle through them")
+    return 1
+tick2_posenew_cut(TREE)
+
 # PSP_TICK2_HOIST=1 (the lead 2026-11-23 22:5x, spec section 16's hoist rule): a section's record is reached once per
 # object per function, its pointer held in a local, not once per field. posepair2a's PC samples (sierra-hw 45323181775)
 # put the store's cost in its callers, where an accessor is inlined at every field. The local starts empty and is
