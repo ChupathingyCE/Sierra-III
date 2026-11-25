@@ -577,7 +577,7 @@ The distinction the box needs is whether a GE block can be kept and replayed whi
 
 **Unfinished in this draft.** The b40/a30 columns of §1 and the weighted-by-frames means are owed (I used unweighted window means and said so); §2's µs-a-blip arithmetic is mine on the lab's two counters and should be re-derived by the audit; §4's ceiling is an upper bound, not a price.
 
-## 15. The replay replaced, not trimmed: what it does by kind and where each part goes (2026-11-24 17:1x CST, builder2; draft 1; draft 2 17:5x, against §12.1a-d on builder/drawlist-l1; draft 3 2026-11-25 00:1x, the builder: the census read again, the 816 KB line, L2's form put to the lead; draft 4 01:0x: RAM outside the heap, the memory column's sum, R's store in main RAM)
+## 15. The replay replaced, not trimmed: what it does by kind and where each part goes (2026-11-24 17:1x CST, builder2; draft 1; draft 2 17:5x, against §12.1a-d on builder/drawlist-l1; draft 3 2026-11-25 00:1x, the builder: the census read again, the 816 KB line, L2's form put to the lead; draft 4 00:5x: RAM outside the heap, the memory column's sum, R's store in main RAM)
 
 **Why this section** (Sheepdog01 2026-11-24 16:42, 16:48, 16:50; the lead 16:5x; the lab's `briefs/me_relief.md`, last section): the ME's render job replays the frame's records into GE words every frame. It is the ME's load on b30's live fight: 31.2-38.6 ms a frame, one job a frame. On the per-second clock at 30 fps that is 116% of the ME alone (the lab's CURRENT.md, "ME by kind" [M], mekinds1 45497754325, the PSP-1000, today's tock fbbd786e). The done condition is no per-frame replay of unchanged drawing: the ME's drawing is the changed records' words plus the frame list, at or under ~12 ms a frame (§4). Sheepdog01's question (16:48) is whether the replay can go without a large cost in replacing what it does. The table below is the answer, row by row. The memory column is in §15.4: VRAM by need (vramset1; vramset2 corrects its sizes), RAM outside the heap read from the memory map (none of it can take the lists), and the column's sum against the general heap's low.
 
@@ -628,7 +628,7 @@ So the new form's estimate is ~12-16 ms against the ~12 budget. The level's tier
 ### 15.4 Memory: the room the baked forms need, and where it is
 
 - **The general heap's lowest free:** c20 686 KB [E], after the ME-partition claim (the lab's CURRENT.md, tick2emuclaim1 on b579f2b9). This replaces the old "no heap to spare" lesson: heap figures from before 2026-11-24 09:50 were ~670-810 KB too pessimistic (the same register).
-- **RAM outside the heap (2026-11-25 01:0x, the builder; Sheepdog01's 11-24 16:50 question) [D at the tock 1c7ad138 unless marked]: none of it can take the baked lists, so they come out of the general heap.** A CALLed list must be somewhere the GE reads and the store's writer can write, for the whole map. Place by place:
+- **RAM outside the heap (2026-11-25 00:5x, the builder; Sheepdog01's 11-24 16:50 question) [D at the tock 1c7ad138 unless marked]: none of it can take the baked lists, so they come out of the general heap.** A CALLed list must be somewhere the GE reads and the store's writer can write, for the whole map. Place by place:
 
   | Place | Size | Today | Room for the lists |
   |---|---:|---|---|
