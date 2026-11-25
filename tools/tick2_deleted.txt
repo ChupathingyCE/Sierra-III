@@ -1,0 +1,77 @@
+# tick2_deleted.txt: the engine code slice 1 deletes from the new-only build
+# (the lab's briefs/slice1_finish.md, done-when 1 and task 2; spec v1 §1 and §5).
+# Read from the code [D], 2026-11-25: the engine at UPSTREAM.md's pin
+# (ChupathingyCE 2e5eac00) and psp_fixups.py at 964b2469, slice 1's head.
+# tools/tick2_deleted.py <link map> reports each name found in the map.
+#
+# One symbol a line: name, group, where it's defined, the task that deletes it.
+# A name absent from the map is either deleted or inlined into a caller: the
+# map can't tell them apart, so done-when 2 (each name poisoned with
+# #pragma GCC poison in the new-only build: 0 references) is the other half
+# of the proof. Names the engine reaches only through these (the update's own
+# static helpers) are listed so the work list is whole.
+#
+# name	group	defined in	task
+
+# the bipeds' motion (task 5): biped_update and the code only it reaches
+biped_update	motion	units/bipeds.c	5
+biped_update_moving	motion	units/bipeds.c (static)	5
+biped_update_physics	motion	units/bipeds.c (static; psp_fixups FIXES_BIPEDSTAGE reenters it)	5
+biped_update_airborne	motion	units/bipeds.c (static; only biped_update)	5
+biped_update_landing	motion	units/bipeds.c (static; only biped_update)	5
+biped_update_slipping	motion	units/bipeds.c (static; only biped_update)	5
+biped_update_jumping	motion	units/bipeds.c (static; only biped_update_moving)	5
+biped_update_turning	motion	units/bipeds.c (static; only biped_update)	5
+biped_update_dead	motion	units/bipeds.c (static; only biped_update)	5
+biped_start_landing	motion	units/bipeds.c (static; only biped_update_moving)	5
+biped_jump	motion	units/bipeds.c (static; biped_update, biped_update_jumping)	5
+biped_try_to_make_footsteps	motion	units/bipeds.c (static; only biped_update)	5
+biped_falling_danger	motion	units/bipeds.c (static; only biped_update)	5
+biped_trait_gravity	motion	units/bipeds.c (static; only biped_update_physics)	5
+biped_bumped_object	motion	units/bipeds.c (static; only biped_update_moving)	5
+biped_falling_damage	motion	units/bipeds.c (static; only biped_update_moving)	5
+biped_vehicle_speech	motion	units/bipeds.c (static; only biped_update)	5
+biped_check_discard	motion	units/bipeds.c (static; only biped_update)	5
+
+# the limp body (task 5); units.c (slice 3's) calls start and stop: an accessor until then
+biped_start_limp_body_physics	limp	units/bipeds.c (called from units.c)	5
+biped_stop_limp_body_physics	limp	units/bipeds.c (called from units.c, biped_accelerate)	5
+biped_limp_noodle_get_max_relaxation_iterations	limp	units/biped_limp_noodle.c	5
+biped_limp_noodle_relax_nodes_onto_environment	limp	units/biped_limp_noodle.c	5
+biped_limp_noodle_valid_joint_rotation	limp	units/biped_limp_noodle.c (static)	5
+biped_limp_noodle_move_relax_and_constrain_positions	limp	units/biped_limp_noodle.c (static)	5
+biped_limp_noodle_adjust_orientations	limp	units/biped_limp_noodle.c (static)	5
+biped_limp_noodle_nodes_valid	limp	units/biped_limp_noodle.c (static)	5
+
+# the staged sweeps (task 4): FIXES_BIPEDSTAGE's deferred run, gather and solve.
+# Not here: the sweep reuse (psp_sr_*, PSP_SWEEPREUSE), kept or replaced by
+# something no slower (task 4), and collision_move_pill, the engine's
+# collision over the level's data (collision_move_sphere's too), slice 2's
+psp_bipedstage_run	staged	objects/objects.c (psp_fixups FIXES_BIPEDSTAGE)	4
+psp_bipedstage_defer	staged	objects/objects.c (static; FIXES_BIPEDSTAGE)	4
+psp_bipedstage_live	staged	objects/objects.c (static; FIXES_BIPEDSTAGE)	4
+psp_bipedstage2_begin	staged	physics/collisions.c (FIXES_BIPEDSTAGE)	4
+psp_bipedstage2_gather	staged	physics/collisions.c (FIXES_BIPEDSTAGE)	4
+psp_bipedstage2_gather_exact	staged	physics/collisions.c (FIXES_BIPEDSTAGE)	4
+psp_bipedstage2_take	staged	physics/collisions.c (FIXES_BIPEDSTAGE)	4
+psp_bipedstage2_end	staged	physics/collisions.c (FIXES_BIPEDSTAGE)	4
+psp_bs2_pack	staged	physics/collisions.c (FIXES_BIPEDSTAGE)	4
+psp_bipedstage3_reset	staged	units/bipeds.c (FIXES_BIPEDSTAGE)	4
+psp_bipedstage3_intent	staged	units/bipeds.c (FIXES_BIPEDSTAGE)	4
+psp_bipedstage3_kept	staged	units/bipeds.c (FIXES_BIPEDSTAGE)	4
+psp_bipedstage3_call	staged	units/bipeds.c (FIXES_BIPEDSTAGE)	4
+psp_bs3_find	staged	units/bipeds.c (FIXES_BIPEDSTAGE)	4
+psp_bslc_tally	staged	objects/objects.c (FIXES_BIPEDSTAGE, the link census)	4
+
+# the node-matrix walk (task 3). Callers outside the tick go to
+# store_node_matrices(slot) (spec §5): projectiles.c, ai/action_obey.c,
+# units.c and bipeds.c call these today [D]
+object_compute_node_matrices	walk	objects/objects.c	3
+object_compute_node_matrices_with	walk	objects/objects.c (static; psp_fixups)	3
+object_compute_node_matrices_recursive	walk	objects/objects.c	3
+
+# posing on demand (task 3; spec §5): only store_pose_settle(slot) poses
+psp_box_pose	demand	objects/objects.c (static; FIXES_BOXPOSING)	3
+psp_boxb_settle	demand	objects/objects.c (static; FIXES_BOXPOSING means B)	3
+psp_nms_settle	demand	objects/objects.c (FIXES_NMSKIP: object_get_node_matrices' settle)	3
+psp_nms_settle_absolute	demand	objects/objects.c (static; FIXES_NMSKIP)	3
