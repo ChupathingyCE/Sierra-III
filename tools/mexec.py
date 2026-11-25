@@ -12,7 +12,8 @@ The list holds one function name a line (# starts a comment), the hottest
 first; the first must be the ME's entry, psp_ge_me_replay unless --entry
 names another. A function that
 isn't in the program, or whose name two functions share, is left out with a
-line saying so. A line `+name` takes the function and every function it
+line saying so, and one line starting "mexec: MISSING" counts them all (0
+too), which psp_build.py carries into the build's summary. A line `+name` takes the function and every function it
 reaches by jal or j, found by address in the link (so a static function
 whose name another unit shares is still taken, and nothing inlined is
 missed); a line `-name` keeps that function, and what only it reaches, out
@@ -167,11 +168,15 @@ def resolve(elf, names, log):
             by_addr.setdefault(sym["value"], sym)
     relocs26 = sorted(site for site, typ in elf.relocations(".text") if typ == R_MIPS_26)
 
+    missing = []
+
     def one(name):
         found = funcs.get(name, [])
         if len(found) != 1:
             log("mexec: %s left out: %s" % (name, "not in the program" if not found else
                                               "%d functions share the name" % len(found)))
+            if name not in missing:
+                missing.append(name)
             return None
         return found[0]
 
@@ -205,6 +210,12 @@ def resolve(elf, names, log):
                 seen.add(h["value"])
                 queue.append(h)
         log("mexec: +%s reaches %d functions" % (f["name"], reached))
+    # every name left out, in one line, 0 included: psp_build.py carries it into
+    # the build's summary, so a list naming a function the build renamed or lost
+    # is seen in the line a reader compares (the lab's decisions.md 2026-11-25
+    # 09:1x: a pair's predict names each one, or 0)
+    log("mexec: MISSING %d of the list's %d names%s" % (len(missing), len(names),
+                                                       ": " + ", ".join(missing) if missing else ""))
     return chosen
 
 
