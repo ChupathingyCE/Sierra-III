@@ -2,18 +2,20 @@
 store_coll.c: the world store's collision gather table (slice 1's task 4)
 
 docs/box_world_store.md section 18, 'The code plan' (the lead 2026-11-25 13:3x: the intent and the solve stay the
-engine's cut behind a boundary until task 5; the gather table, the gathers and the take are the store's). This is
-piece 1: bipedstage2's block moved here out of collisions.c, verbatim, read from the tree as every cut before left it
-(psp_fixups.py tick2_collnew_move_cut refuses the build if the text here and the text it takes out differ). The six
-names it defines are renamed at every call (store_coll_begin, _gather, _gather_margin, _take, _end, the static
-_pack); nothing else changes, so play is exact by construction. Piece 2 (after the moved block) is the store's biped
+engine's cut behind a boundary until task 5; the gather table, the gathers and the take are the store's). Piece 1
+moved bipedstage2's block here out of collisions.c, verbatim, under six new names at every call (store_coll_begin,
+_gather, _gather_margin, _take, _end, the static _pack). The gather table is now the store's own code, written new
+over its own table (section 18, 'The gather and the take rewritten'): struct store_coll_entry, the table's names
+static, the take's map by absolute index with no scan. The moved copy is the control,
+psp/control/store_coll_moved.txt, not built (psp_fixups.py tick2_collnew_move_cut refuses the build if the tree's
+block and the control differ). Piece 2 (after the gather table) is the store's biped
 pass in place of the run (objects.c). Piece 3 (after the pass's markers' block) is the physics' two entries:
 store_coll_move, collision_move_pill as the cuts before left it with the take, moved verbatim (tick2_collnew_movecall_cut
 refuses the build if it differs), and store_coll_stand, the stand test's two engine calls; the view's type is the
 header's.
 
-What the table is, already as section 18 asks: dense in gather order (psp_bs2_slot, psp_bs2_slots), a biped-to-position
-map (psp_bs2_slot_of), the reach guard's fields on positions 0-31 (each entry's sr_clusters, sr_seq and sr_met, and
+What the table is, as section 18 asks: dense in gather order (store_coll_entries, psp_bs2_slots), a biped-to-position
+map by absolute index (psp_bs2_slot_of), the reach guard's fields on positions 0-31 (each entry's sr_clusters, sr_seq and sr_met, and
 psp_bs2_sr's near lists); the guard's 512-cluster slot mask stays collisions.c's, set at the gather
 (psp_sr_slot_watch_set) and read at the take (psp_sr_slot_dead). A slot holds the world as the gather phase saw it
 until its move takes it, by the four checks (this biped and unused, the flags, the pill, the sphere inside); a refusal
@@ -33,50 +35,54 @@ Built only with PSP_TICK2_COLLNEW=1 (psp_build.py), as collisions.c is: its flag
 #include "psp_sweepme.h" /* the ME's gather record the exact gather names (FIXES_SWEEPME) */
 #include "store_coll.h"
 
-/* ---- moved from collisions.c (FIXES_BIPEDSTAGE's slice 2 block, as every cut before left it): begin ---- */
-/* (FIXES_BIPEDSTAGE) slice 2 (docs/box_biped_motion.md §3b, a gather and a
-solve): every living staged biped's move gathered before any biped moves,
-each into its own packed list, so the gather's code runs once over all of
-them; the move then takes its list in place of walking the map again. The
-gather's sphere is the move's own grown by a margin, so this tick's change of
-velocity stays inside it: a move whose sphere isn't inside, or whose flags or
-pill differ, gathers as before, counted. A gather averages ~0.2 KB (the lab's
-findings gather1_features); a tick's fit 32 KB (16 KB filled on b30, the lab's
-stage3), one that doesn't fit gathers as before. An empty gather is kept as
-empty: the move's own sphere, inside it, finds nothing either */
+/* ---- the store's gather table, written new (docs/box_world_store.md section 18, 'The gather and the take rewritten';
+its control, the moved copy, is psp/control/store_coll_moved.txt): begin ---- */
+/* bipedstage2's slice 2 (docs/box_biped_motion.md §3b): every living staged biped's move gathered before any biped
+moves, each into its own packed list, and the move takes its list in place of walking the map again. The gather's
+sphere is the move's own grown by a margin (the margin gather) or by 1e-4 wu (the exact gather, from the intent's
+kept call), so this tick's change of velocity stays inside it. A move whose flags or pill differ, or whose sphere
+isn't inside, gathers live, counted. A tick's lists fit 32 KB (16 KB filled on b30, the lab's stage3); one that
+doesn't fit gathers live. An empty gather is kept as empty: the move's own sphere, inside it, finds nothing either.
+Nothing outside this unit names the table; the view is the engine's reader's (collision_features.c) until task 5 */
 #include "units/biped_definitions.h"
 boolean network_coop_player_collisions(void);
-#define PSP_BS2_SLOTS 256
-#define PSP_BS2_ARENA 32768
-struct psp_bs2_slot
+#define PSP_BS2_SLOTS 256 /* the table's cap: entries, dense in gather order */
+#define PSP_BS2_ARENA 32768 /* the packed lists' bytes */
+struct store_coll_entry
 {
-	long biped_index;
-	unsigned long flags;
-	real height, width, radius;
+	long biped_index; /* the handle it was gathered for */
+	unsigned long flags; /* the move's test flags */
+	real height, width, radius; /* the pill, and the gather's sphere */
 	real_point3d center;
-	short count[NUMBER_OF_COLLISION_FEATURE_TYPES];
-	unsigned short offset;
-	short used, empty;
+	short count[NUMBER_OF_COLLISION_FEATURE_TYPES]; /* the packed list's counts by kind */
+	unsigned short offset; /* its place in the arena */
+	short used, empty; /* taken this tick; the gather found nothing */
 	short sr_clusters[PSP_SR_CLUSTERS], sr_cluster_count; /* SWEEPREUSE: the gather's clusters */
 	unsigned long sr_seq; /* TICK2 stamps: the gather's order */
 	int sr_met;
 };
-static struct psp_bs2_slot psp_bs2_slot[PSP_BS2_SLOTS];
-/* SWEEPREUSE: the near lists of the first 32 slots only (a tick uses ~14-28; a slot past them keeps none, so its moves aren't kept) */
+static struct store_coll_entry store_coll_entries[PSP_BS2_SLOTS];
+/* SWEEPREUSE: the near lists of the first 32 entries only (a tick uses ~14-28; an entry past them keeps none, so its
+moves aren't kept) */
 #define PSP_BS2_SR 32
 static struct { short count; struct psp_sr_near near[PSP_SR_NEAR]; } psp_bs2_sr[PSP_BS2_SR];
 static unsigned char psp_bs2_arena[PSP_BS2_ARENA] __attribute__((aligned(16)));
-int psp_bs2_on = -1, psp_bs2_slots, psp_bs2_fill, psp_bs2_peak;
+static int psp_bs2_on = -1, psp_bs2_slots, psp_bs2_fill, psp_bs2_peak;
 static real psp_bs2_margin;
 /* gathered, taken, no slot, flags differ, sphere outside, arena full, empty, pill differs */
 static unsigned long psp_bs2_stat[8], psp_bs2_ticks;
+/* the take's map: each kept entry's position by its biped's absolute index (MAXIMUM_OBJECTS_PER_MAP bytes; positions
+0-255 fit a byte), set on a kept pack, so two bipeds never share it and the take reads it once. It's trusted when the
+position is under the count and holds this handle: a stale one from an earlier tick fails that, and no clearing is
+needed */
+static unsigned char psp_bs2_slot_of[MAXIMUM_OBJECTS_PER_MAP];
 extern struct collision_feature_list *psp_stackhot_list[2];
-/* the move's packed list read where it lies (collision_features.c's
-collision_features_test_vector reads through it for that list only), not
-copied back into the shared one; keep word bipedstage2copy copies as before */
+/* the move's packed list read where it lies (collision_features.c's collision_features_test_vector reads through it
+for that list only), not copied back into the shared one; keep word bipedstage2copy copies as before */
 struct psp_bs2_view psp_bs2_view; /* its type: psp/include/store_coll.h (TICK2 collnew, piece 3) */
 static int psp_bs2_copy = -1;
 
+/* the tick's start: the three keep words, read once; the table emptied. Nonzero when the table is on */
 int store_coll_begin(void)
 {
 	int psp_keep(const char *name);
@@ -94,22 +100,19 @@ int store_coll_begin(void)
 	return psp_bs2_on > 0;
 }
 
-/* the slot's list gathered and packed into the arena (the gather at the
-tick's start and bipedstage3's exact call share it) */
-/* each slot's place by its biped's datum index (low bits), so the move's take
-finds it without a scan; an entry is trusted only when the slot it names holds
-this biped in this tick (a collision or an old tick's entry falls back to the
-scan) */
-#define PSP_BS2_SLOT_OF 1024
-static short psp_bs2_slot_of[PSP_BS2_SLOT_OF];
-static void store_coll_pack(struct psp_bs2_slot *slot, long biped_index)
+/* the entry's list gathered (the engine's query into level 1's shared list, the boundary until slice 2) and packed
+into the arena by value. Around the query, the sweep reuse's four gather words are one saved block, opened before it
+and closed after it in today's order: settle, order, query, clusters, met, watch, near list. Kept (counted, mapped)
+unless the arena is full, which leaves the entry at the count, unkept */
+static void store_coll_pack(struct store_coll_entry *entry, long biped_index)
 {
-	psp_bs2_slot_of[biped_index & (PSP_BS2_SLOT_OF - 1)] = (short)(slot - psp_bs2_slot);
 	struct collision_feature_list *list = psp_stackhot_list[1];
+	int position = (int)(entry - store_coll_entries);
+	unsigned long absolute = (unsigned long)DATUM_INDEX_TO_ABSOLUTE_INDEX(biped_index);
 	unsigned long bytes[NUMBER_OF_COLLISION_FEATURE_TYPES];
 	short k;
 
-	{ /* SWEEPREUSE: the gather's clusters and objects, kept with the slot */
+	{ /* SWEEPREUSE: the gather's clusters and objects, kept with the entry */
 		int on = psp_sr_on_pill, met = psp_sr_met;
 		short count = psp_sr_cluster_count, near = psp_sr_near_count;
 
@@ -118,66 +121,64 @@ static void store_coll_pack(struct psp_bs2_slot *slot, long biped_index)
 		psp_sr_cluster_count = 0;
 		psp_sr_near_count = 0;
 		tick2_cs_settle();
-		slot->sr_seq = tick2_cs_seq; /* TICK2 stamps */
-		slot->empty = !collision_get_features_in_sphere(slot->flags, &slot->center, slot->radius, slot->height, slot->width, biped_index, list);
-		slot->sr_cluster_count = psp_sr_cluster_count;
+		entry->sr_seq = tick2_cs_seq; /* TICK2 stamps */
+		entry->empty = !collision_get_features_in_sphere(entry->flags, &entry->center, entry->radius, entry->height, entry->width, biped_index, list);
+		entry->sr_cluster_count = psp_sr_cluster_count;
 		if (psp_sr_cluster_count > 0)
-			memcpy(slot->sr_clusters, psp_sr_cluster_list, psp_sr_cluster_count * sizeof(short));
-		slot->sr_met = psp_sr_met;
-		psp_sr_slot_watch_set((int)(slot - psp_bs2_slot), slot->sr_clusters, psp_sr_cluster_count, biped_index, &slot->center, slot->radius); /* PSP_SR_REACH */
-		if (slot - psp_bs2_slot < PSP_BS2_SR)
+			memcpy(entry->sr_clusters, psp_sr_cluster_list, psp_sr_cluster_count * sizeof(short));
+		entry->sr_met = psp_sr_met;
+		psp_sr_slot_watch_set(position, entry->sr_clusters, psp_sr_cluster_count, biped_index, &entry->center, entry->radius); /* PSP_SR_REACH */
+		if (position < PSP_BS2_SR)
 		{
-			psp_bs2_sr[slot - psp_bs2_slot].count = psp_sr_near_count;
+			psp_bs2_sr[position].count = psp_sr_near_count;
 			if (psp_sr_near_count > 0)
-				memcpy(psp_bs2_sr[slot - psp_bs2_slot].near, psp_sr_near_list, psp_sr_near_count * sizeof(struct psp_sr_near));
+				memcpy(psp_bs2_sr[position].near, psp_sr_near_list, psp_sr_near_count * sizeof(struct psp_sr_near));
 		}
 		psp_sr_on_pill = on;
 		psp_sr_met = met;
 		psp_sr_cluster_count = count;
 		psp_sr_near_count = near;
 	}
-	if (slot->empty)
+	if (!entry->empty)
 	{
-		slot->biped_index = biped_index;
-		slot->used = 0;
-		psp_bs2_slots++;
-		psp_bs2_stat[6]++;
-		return;
+		bytes[_collision_feature_sphere] = list->count[_collision_feature_sphere] * sizeof(struct collision_sphere);
+		bytes[_collision_feature_cylinder] = list->count[_collision_feature_cylinder] * sizeof(struct collision_cylinder);
+		bytes[_collision_feature_prism] = list->count[_collision_feature_prism] * sizeof(struct collision_prism);
+		if (psp_bs2_fill + bytes[0] + bytes[1] + bytes[2] > PSP_BS2_ARENA)
+		{
+			psp_bs2_stat[5]++;
+			return;
+		}
+		entry->offset = (unsigned short)psp_bs2_fill;
+		for (k = 0; k < NUMBER_OF_COLLISION_FEATURE_TYPES; k++)
+			entry->count[k] = list->count[k];
+		memcpy(psp_bs2_arena + psp_bs2_fill, list->spheres, bytes[_collision_feature_sphere]);
+		psp_bs2_fill += bytes[_collision_feature_sphere];
+		memcpy(psp_bs2_arena + psp_bs2_fill, list->cylinders, bytes[_collision_feature_cylinder]);
+		psp_bs2_fill += bytes[_collision_feature_cylinder];
+		memcpy(psp_bs2_arena + psp_bs2_fill, list->prisms, bytes[_collision_feature_prism]);
+		psp_bs2_fill += bytes[_collision_feature_prism];
+		/* rounded to 4 bytes: the rounding decides "arena full", a take verdict */
+		psp_bs2_fill = (psp_bs2_fill + 3) & ~3;
 	}
-	bytes[_collision_feature_sphere] = list->count[_collision_feature_sphere] * sizeof(struct collision_sphere);
-	bytes[_collision_feature_cylinder] = list->count[_collision_feature_cylinder] * sizeof(struct collision_cylinder);
-	bytes[_collision_feature_prism] = list->count[_collision_feature_prism] * sizeof(struct collision_prism);
-	if (psp_bs2_fill + bytes[0] + bytes[1] + bytes[2] > PSP_BS2_ARENA)
-	{
-		psp_bs2_stat[5]++;
-		return;
-	}
-	slot->biped_index = biped_index;
-	slot->offset = (unsigned short)psp_bs2_fill;
-	slot->used = 0;
-	for (k = 0; k < NUMBER_OF_COLLISION_FEATURE_TYPES; k++)
-		slot->count[k] = list->count[k];
-	memcpy(psp_bs2_arena + psp_bs2_fill, list->spheres, bytes[_collision_feature_sphere]);
-	psp_bs2_fill += bytes[_collision_feature_sphere];
-	memcpy(psp_bs2_arena + psp_bs2_fill, list->cylinders, bytes[_collision_feature_cylinder]);
-	psp_bs2_fill += bytes[_collision_feature_cylinder];
-	memcpy(psp_bs2_arena + psp_bs2_fill, list->prisms, bytes[_collision_feature_prism]);
-	psp_bs2_fill += bytes[_collision_feature_prism];
-	psp_bs2_fill = (psp_bs2_fill + 3) & ~3;
+	entry->biped_index = biped_index;
+	entry->used = 0;
+	if (absolute < MAXIMUM_OBJECTS_PER_MAP) /* always, for a biped's handle */
+		psp_bs2_slot_of[absolute] = (unsigned char)position;
 	psp_bs2_slots++;
-	psp_bs2_stat[0]++;
+	psp_bs2_stat[entry->empty ? 6 : 0]++;
 }
 
 void store_coll_gather_margin(long biped_index)
 {
-	struct psp_bs2_slot *slot;
+	struct store_coll_entry *slot;
 	real_point3d base;
 	real_vector3d const *velocity;
 	real height, width;
 
 	if (psp_bs2_slots >= PSP_BS2_SLOTS)
 		return;
-	slot = &psp_bs2_slot[psp_bs2_slots];
+	slot = &store_coll_entries[psp_bs2_slots];
 	biped_get_physics_pill(biped_index, &base, &height, &width);
 	velocity = &object_get(biped_index)->object.root->translational_velocity;
 	slot->center.x = base.x + velocity->i * 0.5f;
@@ -201,16 +202,16 @@ void store_coll_gather_margin(long biped_index)
 	store_coll_pack(slot, biped_index);
 }
 
-/* bipedstage3: the move's own call, kept by its intent (bipeds.c), gathered as
-collision_move_pill would make its sphere, with no margin for the velocity's
-change (1e-4 wu covers rounding only). 1, handled (gathered, or no gather
-wanted: the update stopped short of a move, or the move has no collision);
-0, no record, gather as at the tick's start */
+/* bipedstage3: the move's own call, kept by its intent (bipeds.c), gathered as collision_move_pill would make its
+sphere, with no margin for the velocity's change (1e-4 wu covers rounding only). The sphere's four expressions are
+psp_sweepme_after_intent's (collisions.c), character for character, since the ME's answer is matched on those floats.
+1, handled (gathered, or no gather wanted: the update stopped short of a move, or the move has no collision); 0, no
+record, gather by the margin */
 int psp_bipedstage3_call(long biped_index, unsigned long *flags, real_point3d *position,
 	real_vector3d *velocity, real *height, real *width); /* bipeds.c (FIXES_BIPEDSTAGE) */
 int store_coll_gather(long biped_index)
 {
-	struct psp_bs2_slot *slot;
+	struct store_coll_entry *entry;
 	real_point3d position;
 	real_vector3d velocity;
 	unsigned long flags;
@@ -221,102 +222,99 @@ int store_coll_gather(long biped_index)
 		return FALSE;
 	if (stop == 2 || !flags || psp_bs2_slots >= PSP_BS2_SLOTS)
 		return TRUE;
-	slot = &psp_bs2_slot[psp_bs2_slots];
-	slot->center.x = position.x + velocity.i * 0.5f;
-	slot->center.y = position.y + velocity.j * 0.5f;
-	slot->center.z = height * 0.5f + (position.z + velocity.k * 0.5f);
-	slot->radius = magnitude3d(&velocity) * 0.5f + height * 0.5f + width + 1e-4f;
-	slot->flags = flags;
-	slot->height = height;
-	slot->width = width;
-	psp_sweepme_pending = psp_sweepme_find(biped_index, &slot->center.x, slot->radius, height, width,
+	entry = &store_coll_entries[psp_bs2_slots];
+	entry->center.x = position.x + velocity.i * 0.5f;
+	entry->center.y = position.y + velocity.j * 0.5f;
+	entry->center.z = height * 0.5f + (position.z + velocity.k * 0.5f);
+	entry->radius = magnitude3d(&velocity) * 0.5f + height * 0.5f + width + 1e-4f;
+	entry->flags = flags;
+	entry->height = height;
+	entry->width = width;
+	psp_sweepme_pending = psp_sweepme_find(biped_index, &entry->center.x, entry->radius, height, width,
 		(flags & FLAG(_collision_test_structure_bit)) != 0); /* (FIXES_SWEEPME) */
-	store_coll_pack(slot, biped_index);
+	store_coll_pack(entry, biped_index);
 	psp_sweepme_pending = -1;
 	return TRUE;
 }
 
-/* the move's list from its slot, unpacked into the shared list it would have
-walked into: 1, a list; 2, the gather found nothing; 0, gather as before */
+/* the move's list from its entry: 1, a list (the view, or with bipedstage2copy unpacked into the caller's list); 2,
+the gather found nothing; 0, gather live. The entry is found in one read of the map; the four checks keep their order
+and their counters (no entry, flags, pill, sphere outside) */
 int store_coll_take(unsigned long flags, real_point3d const *center, real radius,
 	real height, real width, long biped_index, struct collision_feature_list *list)
 {
-	struct psp_bs2_slot *slot = NULL;
+	struct store_coll_entry *entry;
 	unsigned char const *p;
 	real_vector3d d;
+	unsigned long absolute = (unsigned long)DATUM_INDEX_TO_ABSOLUTE_INDEX(biped_index);
+	int position = absolute < MAXIMUM_OBJECTS_PER_MAP ? psp_bs2_slot_of[absolute] : PSP_BS2_SLOTS;
 	int k;
 
-	k = psp_bs2_slot_of[biped_index & (PSP_BS2_SLOT_OF - 1)];
-	if (k >= 0 && k < psp_bs2_slots && psp_bs2_slot[k].biped_index == biped_index && !psp_bs2_slot[k].used)
-		slot = &psp_bs2_slot[k];
-	for (k = 0; !slot && k < psp_bs2_slots; k++)
-	{
-		if (psp_bs2_slot[k].biped_index == biped_index && !psp_bs2_slot[k].used)
-		{
-			slot = &psp_bs2_slot[k];
-			break;
-		}
-	}
-	if (!slot)
+	/* a biped packs at most once a tick, so the unused entry holding this handle is this one or none */
+	if (position >= psp_bs2_slots || store_coll_entries[position].biped_index != biped_index ||
+		store_coll_entries[position].used)
 	{
 		psp_bs2_stat[2]++;
 		return FALSE;
 	}
-	if (slot->flags != flags)
+	entry = &store_coll_entries[position];
+	if (entry->flags != flags)
 	{
 		psp_bs2_stat[3]++;
 		return FALSE;
 	}
-	if (slot->height != height || slot->width != width)
+	if (entry->height != height || entry->width != width)
 	{
 		psp_bs2_stat[7]++;
 		return FALSE;
 	}
-	vector_from_points3d(center, &slot->center, &d);
-	if (magnitude3d(&d) + radius > slot->radius)
+	vector_from_points3d(center, &entry->center, &d);
+	if (magnitude3d(&d) + radius > entry->radius)
 	{
 		psp_bs2_stat[4]++;
 		return FALSE;
 	}
-	slot->used = 1;
+	entry->used = 1;
 	psp_bs2_stat[1]++;
-	if (psp_sr_on_pill) /* SWEEPREUSE: the move's walk is the slot's */
+	if (psp_sr_on_pill) /* SWEEPREUSE: the move's walk is the entry's; the guard's hand-over words */
 	{
-		psp_sr_cluster_count = slot->sr_cluster_count;
-		if (slot->sr_cluster_count > 0)
-			memcpy(psp_sr_cluster_list, slot->sr_clusters, slot->sr_cluster_count * sizeof(short));
-		psp_sr_met += slot->sr_met;
-		psp_sr_gather_seq = slot->sr_seq; /* TICK2 stamps */
-		psp_sr_reach_inherit = slot - psp_bs2_slot < 32 ? psp_sr_slot_dead[slot - psp_bs2_slot] : 1; /* PSP_SR_REACH */
-		psp_sr_center = slot->center;
-		psp_sr_radius = slot->radius;
-		psp_sr_near_count = slot - psp_bs2_slot < PSP_BS2_SR ? psp_bs2_sr[slot - psp_bs2_slot].count : -1;
+		psp_sr_cluster_count = entry->sr_cluster_count;
+		if (entry->sr_cluster_count > 0)
+			memcpy(psp_sr_cluster_list, entry->sr_clusters, entry->sr_cluster_count * sizeof(short));
+		psp_sr_met += entry->sr_met;
+		psp_sr_gather_seq = entry->sr_seq; /* TICK2 stamps */
+		psp_sr_reach_inherit = position < 32 ? psp_sr_slot_dead[position] : 1; /* PSP_SR_REACH */
+		psp_sr_center = entry->center;
+		psp_sr_radius = entry->radius;
+		psp_sr_near_count = position < PSP_BS2_SR ? psp_bs2_sr[position].count : -1;
 		if (psp_sr_near_count > 0)
-			memcpy(psp_sr_near_list, psp_bs2_sr[slot - psp_bs2_slot].near, psp_sr_near_count * sizeof(struct psp_sr_near));
+			memcpy(psp_sr_near_list, psp_bs2_sr[position].near, psp_sr_near_count * sizeof(struct psp_sr_near));
 	}
-	if (slot->empty)
+	if (entry->empty)
 		return 2;
-	p = psp_bs2_arena + slot->offset;
+	p = psp_bs2_arena + entry->offset;
 	for (k = 0; k < NUMBER_OF_COLLISION_FEATURE_TYPES; k++)
-		list->count[k] = slot->count[k];
+		list->count[k] = entry->count[k];
 	if (psp_bs2_copy <= 0)
 	{
 		psp_bs2_view.spheres = (struct collision_sphere const *)p;
-		p += slot->count[_collision_feature_sphere] * sizeof(struct collision_sphere);
+		p += entry->count[_collision_feature_sphere] * sizeof(struct collision_sphere);
 		psp_bs2_view.cylinders = (struct collision_cylinder const *)p;
-		p += slot->count[_collision_feature_cylinder] * sizeof(struct collision_cylinder);
+		p += entry->count[_collision_feature_cylinder] * sizeof(struct collision_cylinder);
 		psp_bs2_view.prisms = (struct collision_prism const *)p;
 		psp_bs2_view.list = list;
 		return 1;
 	}
-	memcpy(list->spheres, p, slot->count[_collision_feature_sphere] * sizeof(struct collision_sphere));
-	p += slot->count[_collision_feature_sphere] * sizeof(struct collision_sphere);
-	memcpy(list->cylinders, p, slot->count[_collision_feature_cylinder] * sizeof(struct collision_cylinder));
-	p += slot->count[_collision_feature_cylinder] * sizeof(struct collision_cylinder);
-	memcpy(list->prisms, p, slot->count[_collision_feature_prism] * sizeof(struct collision_prism));
+	memcpy(list->spheres, p, entry->count[_collision_feature_sphere] * sizeof(struct collision_sphere));
+	p += entry->count[_collision_feature_sphere] * sizeof(struct collision_sphere);
+	memcpy(list->cylinders, p, entry->count[_collision_feature_cylinder] * sizeof(struct collision_cylinder));
+	p += entry->count[_collision_feature_cylinder] * sizeof(struct collision_cylinder);
+	memcpy(list->prisms, p, entry->count[_collision_feature_prism] * sizeof(struct collision_prism));
 	return 1;
 }
 
+/* the tick's end: the fill's peak, the table emptied, and the log line every 1,000 ticks (its text and its seven
+counters' order are what the readers parse, on both sides) */
 void store_coll_end(void)
 {
 	void platform_psp_log(const char *format, ...);
@@ -330,7 +328,7 @@ void store_coll_end(void)
 			psp_bs2_stat[7], psp_bs2_stat[4], psp_bs2_stat[5], psp_bs2_peak, PSP_BS2_ARENA);
 }
 
-/* ---- moved from collisions.c: the gather table: finish ---- */
+/* ---- the store's gather table: finish ---- */
 
 /* piece 2: the store's biped pass, in place of psp_bipedstage_run at the walk's end (psp_fixups.py
 tick2_collnew_pass_cut). The intent and the solve are the engine's, until task 5: the run's text before and after

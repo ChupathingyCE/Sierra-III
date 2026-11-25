@@ -2,8 +2,9 @@
 store_coll.h: the world store's collision gather table (slice 1's task 4)
 
 docs/box_world_store.md section 18, 'The code plan', piece 1 (the lead 2026-11-25 13:3x): bipedstage2's gather table
-and its code are the store's, in psp/src/store_coll.c, moved verbatim out of collisions.c (psp_fixups.py
-tick2_collnew_move_cut, PSP_TICK2_COLLNEW=1). collisions.c (where the sweep reuse's bounds were), store_coll.c and
+and its code are the store's, in psp/src/store_coll.c: moved out of collisions.c (psp_fixups.py
+tick2_collnew_move_cut, PSP_TICK2_COLLNEW=1), then written new over the store's own table (section 18, 'The gather
+and the take rewritten'; the moved copy is psp/control/store_coll_moved.txt, the cut's control). collisions.c (where the sweep reuse's bounds were), store_coll.c and
 (piece 3) collision_features.c include this. The includer has the engine's math and collision headers in hand first.
 
 The table: one entry a gathered biped, dense in gather order (the run's order, the walk's), a biped-to-position map
@@ -27,7 +28,7 @@ void store_coll_gather_margin(long biped_index);  /* the margin gather, where th
 int store_coll_take(unsigned long flags, real_point3d const *center, real radius,
 	real height, real width, long biped_index, struct collision_feature_list *list); /* 1 list, 2 empty, 0 gather live */
 void store_coll_end(void);                        /* the tick's end, its log line each 1000 ticks */
-extern int psp_bs2_slots;                         /* the table's count this tick; the move takes only when nonzero */
+/* the table itself (entries, count, arena, map) is store_coll.c's statics: nothing outside it names them */
 
 /* piece 3: the biped physics' two collision entries (the engine's physics calls them until task 5, with its own
 arguments; task 5's stage passes the slot). The move is collision_move_pill as the cuts before left it, with the

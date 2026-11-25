@@ -65945,6 +65945,9 @@ TICK2_COLLNEW = os.environ.get("PSP_TICK2_COLLNEW", "") == "1"
 TICK2_COLLNEW_DIR = os.path.dirname(os.path.abspath(__file__))
 TICK2_COLLNEW_C = os.path.join(TICK2_COLLNEW_DIR, "psp", "src", "store_coll.c")
 TICK2_COLLNEW_H = os.path.join(TICK2_COLLNEW_DIR, "psp", "include", "store_coll.h")
+# the gather and the take rewritten (section 18, 16:1x): store_coll.c's gather table is the store's own code; the
+# moved copy is kept as text, not built, and the tree's block is compared with it, so an upstream edit still refuses
+TICK2_COLLNEW_CONTROL = os.path.join(TICK2_COLLNEW_DIR, "psp", "control", "store_coll_moved.txt")
 TICK2_COLLNEW_BEGIN = "/* ---- moved from collisions.c (FIXES_BIPEDSTAGE's slice 2 block, as every cut before left it): begin ---- */\n"
 TICK2_COLLNEW_FINISH = "/* ---- moved from collisions.c: the gather table: finish ---- */\n"
 TICK2_COLLNEW_H_BEGIN = "/* ---- moved from collisions.c (SWEEPREUSE's bounds and near entry): begin ---- */\n"
@@ -66065,12 +66068,16 @@ def tick2_collnew_move_cut(tree):
         check_fail("psp_fixups: TICK2 collnew: psp/include/store_coll.h's view type isn't the tree's (bipedstage2's "
                    "psp_bs2_view changed: copy it into the header)")
         return 0
-    held = tick2_collnew_held(TICK2_COLLNEW_C, TICK2_COLLNEW_BEGIN, TICK2_COLLNEW_FINISH, "psp/src/store_coll.c")
+    held = tick2_collnew_held(TICK2_COLLNEW_CONTROL, TICK2_COLLNEW_BEGIN, TICK2_COLLNEW_FINISH, "psp/control/store_coll_moved.txt")
     if held is None:
         return 0
     if held != moved:
-        check_fail("psp_fixups: TICK2 collnew: psp/src/store_coll.c's gather table isn't collisions.c's as the cuts before left "
-                   "it (an earlier cut changed the block: regenerate the file's copy from the tree)")
+        check_fail("psp_fixups: TICK2 collnew: psp/control/store_coll_moved.txt isn't collisions.c's gather table as the cuts "
+                   "before left it (an earlier cut changed the block: regenerate the control from the tree and read "
+                   "psp/src/store_coll.c's gather table against it)")
+        return 0
+    if open(TICK2_COLLNEW_C, errors="surrogateescape").read().count(TICK2_COLLNEW_BEGIN):
+        check_fail("psp_fixups: TICK2 collnew: psp/src/store_coll.c holds the moved copy's marker; the copy is the control's only")
         return 0
     held = tick2_collnew_held(TICK2_COLLNEW_H, TICK2_COLLNEW_H_BEGIN, TICK2_COLLNEW_H_FINISH, "psp/include/store_coll.h")
     if held is None:
@@ -66103,7 +66110,7 @@ def tick2_collnew_move_cut(tree):
     if not CHECK_ONLY:
         open(collisions_c, "w", errors="surrogateescape").write(c)
         open(objects_c, "w", errors="surrogateescape").write(o)
-    print("psp_fixups: TICK2 collnew (task 4, piece 1): bipedstage2's gather table moved to psp/src/store_coll.c (%d lines; "
+    print("psp_fixups: TICK2 collnew (task 4, piece 1): bipedstage2's gather table out to the store's (the control's %d lines; "
           "collisions.c keeps %d); calls left in the tree: %s" % (moved.count("\n"), kept.count("\n"),
           ", ".join("%s %d" % kv for kv in sorted(calls.items()))))
     return 1
