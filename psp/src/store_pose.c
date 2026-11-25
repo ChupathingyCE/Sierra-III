@@ -25,8 +25,12 @@ Moved so far:
   the note, the make (store_pose_make_skipped / _at), the close, forget, and the game state's save and load. The lines
   whose names objects.c still reads lose their static; objects.c keeps the PSP_NMS_TYPES line, FIXES_TP1's psp_nms_may
   (always-inline in the objects' loop) and the names declared. Still keyed by absolute index.
-To move (the same section's list): store_pose_box, store_pose_settle / _in and the two accessors, keyed by record (the
-record found at the boundary from the header's datum's root, Q1 (b)), the ME's names kept.
+- The last piece (section 17 'last piece'; the cut tick2_posenew_pose_move_cut): store_pose_settle / _in verbatim
+  (with PSP_NMS_READ's definition, which objects.c keeps too, the same text), the two accessors keyed by record
+  (tick2_record_of_index, the header's datum's root, Q1 (b)), and store_pose_box's store half: means B's release,
+  the box on the record's words and means B's fill. objects.c keeps the engine half, store_pose_box_gather (the
+  plan, the flags, the want), and the census (psp_nmr_on, psp_nmr_read), which lose their static. The ME's names are
+  kept; B's slot is still keyed by object_index & 255.
 */
 
 #include <stdio.h>
@@ -37,6 +41,10 @@ record found at the boundary from the header's datum's root, Q1 (b)), the ME's n
 #include "game/game.h"
 #include "models/model_animation_definitions.h"
 #include "models/model_definitions.h"
+/* the last piece's accessors read the header's datum by datum_get's found-it path inline (psp_datum_get_inline),
+as objects.c does, and log by error() as objects.c's did */
+#include "memory/data.h"
+#include "cseries/errors.h"
 
 /* the port's log (port/linux/src/sdl_platform.c), as objects.c declares it */
 void platform_psp_log(const char *format, ...);
@@ -1100,3 +1108,191 @@ void psp_nms_game_state_loading(void)
 #endif
 }
 /* ---- moved from objects.c: NMSKIP's tables: finish ---- */
+
+/* ---- moved from objects.c (the settle verbatim, the two accessors keyed by record, store_pose_box's store half): begin ---- */
+/* objects.c (FIXES_134 #nmreaders, defined there): the readers' census, the accessors' first effect */
+extern int psp_nmr_on;
+void psp_nmr_read(long object_index, void *site);
+/* the port's interpolated pose while a frame is drawn (port/linux/include/halo_linux_source_fixups.h) */
+struct real_matrix4x3 *render_interpolation_object_node_matrices(long object_index);
+
+/* objects.c's head (FIXES_NMSKIP), the same text: the settle's whole owed compute */
+#define PSP_NMS_READ(index) do { \
+		unsigned long psp_nms_absolute = (unsigned long)(index) & 0xFFFFUL; \
+		if (psp_nms_absolute < MAXIMUM_OBJECTS_PER_MAP && (psp_work_on_me() ? \
+			(psp_nms_me[0] && ((psp_nms_me[16 + (psp_nms_absolute >> 5)] >> (psp_nms_absolute & 31)) & 1)) : \
+			(psp_nms_count && ((psp_nms_pending[psp_nms_absolute >> 5] >> (psp_nms_absolute & 31)) & 1)))) \
+			store_pose_make_skipped(index, __builtin_return_address(0)); \
+	} while (0)
+
+/* TICK2 posenew (slice 1's task 3; docs/box_world_store.md section 17): the store's posing entry points.
+A pose is owed two ways, each kept in a side table of the store's (not a word in every record: section 17's note):
+- a compute FIXES_NMSKIP left out, with its inputs as the skip found them, so the make reads what the eager compute
+  would have read even if they changed since;
+- means B's nodes a living biped's pose didn't make, made from the orientations that pose was given.
+store_pose_settle is the one place an outside read makes them; the store's own reads (an object leaving
+the walk, B ahead of the IK, the settle-all, the marker getter's partial read) call the same makes,
+store_pose_make_skipped and store_pose_make_nodes. On the ME the copy taken at the last hand-over decides, and an
+owed read hands the actor back to the main CPU (psp_nms_me, psp_boxb_me): the ME never poses */
+static inline __attribute__((always_inline)) void store_pose_settle_in(long object_index, unsigned long long want)
+{
+	PSP_NMS_READ(object_index); /* FIXES_NMSKIP's owed compute, whole */
+#ifdef PSP_BOX_POSING
+	PSP_BOXB_READ(object_index, want); /* means B's owed nodes, those wanted and their parents */
+#endif
+}
+
+void store_pose_settle(long object_index, unsigned long long want)
+{
+	store_pose_settle_in(object_index, want);
+}
+
+/* the object's datum and its record by its index (section 17 Q1 (b)): the header's datum and its root, the loads
+the block getter makes (objects.c object_header_block_get under HDRBLK, object_get's psp_object_get_all), through
+datum_get's found-it path inline as objects.c reads it */
+static __inline__ __attribute__((always_inline)) struct object_datum *tick2_datum_of_index(long object_index)
+{
+	return (struct object_datum *)((struct object_header_datum *)psp_datum_get_inline(object_header_data, object_index))->datum;
+}
+
+static __inline__ __attribute__((always_inline)) struct tick2_root *tick2_record_of_index(long object_index)
+{
+	return tick2_datum_of_index(object_index)->object.root;
+}
+
+#ifdef PSP_TICK2_PROOF
+/* the proof form (psp_build.py defines PSP_TICK2_PROOF for this unit): while the datum keeps its node_matrices
+reference (item 2 takes it out), the record's count is that reference's size in matrices, since
+object_header_block_allocate sets both from one count; the first object where they differ is logged */
+static void tick2_pose_count_check(long object_index, struct tick2_root const *record)
+{
+	static boolean logged = FALSE;
+	short size = tick2_datum_of_index(object_index)->object.node_matrices.size;
+
+	if (!logged && record->pose_count != size / (short)sizeof(real_matrix4x3))
+	{
+		logged = TRUE;
+		platform_psp_log("tick2 posenew: object %08lx's record counts %d nodes, its node_matrices reference %d",
+			(unsigned long)object_index, (int)record->pose_count, (int)(size / (short)sizeof(real_matrix4x3)));
+	}
+}
+#endif
+
+/* the accessors, keyed by record (section 17 'last piece'): the census, the settle, the interpolated pose, then the
+block, in objects.c's order. The block is tick2_pose_block(record, TICK2_POSE_MATRICES), the block getter's own
+return for &node_matrices, so the pointer is the same; the record is found again after the settle, as objects.c's
+object_get was */
+real_matrix4x3 const *store_node_matrices(
+	long object_index)
+{
+	/* psp_fixups.py (FIXES_134 #nmreaders) */
+	if (psp_nmr_on > 0)
+		psp_nmr_read(object_index, __builtin_return_address(0));
+	store_pose_settle_in(object_index, ~0ull); /* TICK2 posenew: every owed node */
+	/* while a frame is drawn, the pose between the last two ticks
+	(port/linux/game/render_interpolation.c) */
+	real_matrix4x3 *interpolated = render_interpolation_object_node_matrices(object_index);
+
+	if (interpolated)
+		return interpolated;
+	{
+		struct tick2_root *record = tick2_record_of_index(object_index);
+
+#ifdef PSP_TICK2_PROOF
+		tick2_pose_count_check(object_index, record);
+#endif
+		return (real_matrix4x3 *)tick2_pose_block(record, TICK2_POSE_MATRICES);
+	}
+}
+
+real_matrix4x3 const *store_node_matrix(
+	long object_index,
+	short node_index)
+{
+	/* psp_fixups.py (FIXES_134 #nmreaders) */
+	if (psp_nmr_on > 0)
+		psp_nmr_read(object_index, __builtin_return_address(0));
+	match_assert("c:\\halo\\SOURCE\\objects\\objects.c", 1060, object_has_node(object_index, node_index));
+	/* port: a node the object has no matrix for (an index a map's data
+	gave) is its first node, which every object has, not whatever lies
+	past its matrices. TICK2 posenew step 5: bound by the record's count,
+	which is node_matrices.size / 52 (the proof form compares them) */
+	{
+		struct tick2_root const *record = tick2_record_of_index(object_index);
+
+#ifdef PSP_TICK2_PROOF
+		tick2_pose_count_check(object_index, record);
+#endif
+		if (node_index < 0 ||
+			node_index >= record->pose_count)
+		{
+			static boolean logged = FALSE;
+
+			if (!logged)
+			{
+				logged = TRUE;
+				error(_error_silent, "object %08lx has no node #%d: its first node is used",
+					(unsigned long)object_index, node_index);
+			}
+			node_index = 0;
+		}
+	}
+	store_pose_settle_in(object_index, 1ull << node_index); /* TICK2 posenew: the node and its parents */
+
+	{
+		real_matrix4x3 *interpolated = render_interpolation_object_node_matrices(object_index);
+
+		if (interpolated)
+			return &interpolated[node_index];
+	}
+	return &((real_matrix4x3 *)tick2_pose_block(tick2_record_of_index(object_index), TICK2_POSE_MATRICES))[node_index];
+}
+
+#ifdef PSP_BOX_POSING
+/* the box (psp/src/box_posing.c), as objects.c declares it */
+unsigned long long psp_box_posing_pose(const void *plan, unsigned int flags, const float *position, const float *forward,
+	const float *up, float scale, const float *parent, const float *orientations, float *nodes, float *sphere,
+	unsigned long long want);
+unsigned long long psp_box_posing_all(const void *plan);
+
+/* store_pose_box's store half (section 17 'last piece'): objects.c's store_pose_box_gather makes the plan, the flags
+and means B's want (read ahead of the release: psp_boxb_want's busy test reads a slot held by another object, what
+it saw after the release) and passes the record, its scale and the pose's inputs. Here, in objects.c's order: means
+B's release of the object's own slot, the box on the record's words, and means B's fill. No object_get: object_index
+rides along only as B's key (absolute index, section 17 'first piece') */
+void store_pose_box(struct tick2_root *record, long object_index, void const *plan, unsigned long flags, real scale,
+	real_matrix4x3 const *parent, real_orientation const *node_orientations, real_matrix4x3 *object_nodes,
+	unsigned long long want)
+{
+	/* means B: a new pose replaces what the last one owed */
+	struct psp_boxb_slot *slot = &psp_boxb[(unsigned long)object_index & (PSP_BOXB_SLOTS - 1)];
+	unsigned long long made, all;
+
+	if (slot->object_index == object_index)
+	{
+		slot->object_index = NONE;
+		psp_boxb_count--;
+		psp_boxb_changed = 1;
+	}
+	made = psp_box_posing_pose(plan, flags, &record->position.x, &record->forward.i, &record->up.i,
+		scale, (float const *)parent, (float const *)node_orientations, (float *)object_nodes,
+		&record->bounding_sphere_center.x, want);
+	if (~want)
+	{
+		all = psp_box_posing_all(plan);
+		psp_boxb_nodes_all += __builtin_popcountll(all);
+		psp_boxb_nodes_made += __builtin_popcountll(made & all);
+		if ((made & all) != all)
+		{
+			psp_boxb_owing_poses++;
+			slot->made = made;
+			slot->all = all;
+			slot->plan = plan;
+			slot->object_index = object_index;
+			psp_boxb_count++;
+			psp_boxb_changed = 1;
+		}
+	}
+}
+#endif
+/* ---- moved from objects.c: the settle, the accessors and the box's store half: finish ---- */

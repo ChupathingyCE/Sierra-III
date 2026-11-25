@@ -652,10 +652,13 @@ def units():
         items.append((os.path.join(HERE, "psp/src/psp_nointerp.c"),
                       ninja_flags("build/linux/obj/port/linux/game/render_interpolation.o"), []))
     # slice 1's task 3, step 5 (PSP_TICK2_POSENEW=1; psp_fixups.py tick2_posenew_move_cut): the world store's
-    # posing code, moved out of objects.c, built as objects.c is (its flags, the fixed-up objects.h)
+    # posing code, moved out of objects.c, built as objects.c is (its flags, the fixed-up objects.h). The proof
+    # form (PSP_TICK2_PROOF=1, which the fixups read to shape objects.c's text) is a define here, since the file
+    # is Sierra-III's own: its accessors compare the record's node count with the datum's reference while both stand
     if os.environ.get("PSP_TICK2_POSENEW", "") == "1":
         items.append((os.path.join(HERE, "psp/src/store_pose.c"),
-                      ninja_flags("build/linux/obj/source/objects/objects.o"), []))
+                      ninja_flags("build/linux/obj/source/objects/objects.o"),
+                      ["-DPSP_TICK2_PROOF=1"] if os.environ.get("PSP_TICK2_PROOF", "") == "1" else []))
     items.append((os.path.join(HERE, "psp/src/psp_chupa_platform.c"),
                   ninja_flags("build/linux/obj/port/linux/src/sdl_platform.o"), compat))
     # build 108: built as pal_tags.c is, the other in-place fix of a map's tags
@@ -938,8 +941,11 @@ def compile_one(item):
     # PSP_REUSE: keep an object only when it is newer than its source. Build
     # 46 shipped with a stale psp_tex.o (reused without this check, so an
     # edit to psp_tex.c never reached the EBOOT): the learned-binds file was
-    # written without "vramranked", as the first version did
-    if (os.environ.get("PSP_REUSE") and os.path.exists(obj) and not src.endswith(("psp_platform.c", "psp_bakecheck.c"))
+    # written without "vramranked", as the first version did. store_pose.c
+    # is never reused either: its proof form is a define (PSP_TICK2_PROOF),
+    # not an edit to its text
+    if (os.environ.get("PSP_REUSE") and os.path.exists(obj)
+            and not src.endswith(("psp_platform.c", "psp_bakecheck.c", "psp/src/store_pose.c"))
             and os.path.getmtime(obj) > os.path.getmtime(os.path.join(TREE, src))):
         return src, 0, "", obj
     # PGO: the object named relative to the tree (the compiler's directory),

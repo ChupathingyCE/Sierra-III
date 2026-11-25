@@ -64959,6 +64959,203 @@ def tick2_posenew_nms_move_cut(tree):
     return 1
 tick2_posenew_nms_move_cut(TREE)
 
+# PSP_TICK2_POSENEW=1, step 5, item 1, last piece (docs/box_world_store.md section 17 'last piece', the lead 2026-11-25
+# 09:3x and 09:47): store_pose_settle / _in, the two accessors and store_pose_box's store half move to
+# psp/src/store_pose.c, keyed by record. Unlike pieces 1-3 this isn't all verbatim, so the guard has two halves.
+# Verbatim, read from the tree: the settle (its head comment to store_pose_settle's end) and PSP_NMS_READ's definition
+# (objects.c keeps it for its own readers; the settle needs it), each in the file's fourth marker pair exactly once.
+# Rewritten, so checked against the text they were written from: the accessors (store_node_matrices,
+# store_node_matrix) and store_pose_box's means-B tail must be in objects.c exactly as TICK2_POSENEW_POSE_OLD_* hold
+# them, so an upstream edit refuses the build until the file's rewrite follows it. The accessors in the file find the
+# record by tick2_record_of_index (the header's datum's root, the getter's own loads) and the block by
+# tick2_pose_block(record, TICK2_POSE_MATRICES), the getter's own return for &node_matrices, so the pointer is the
+# same; store_node_matrix's bound is record->pose_count, node_matrices.size / 52 by object_header_block_allocate
+# (compared in the proof form). store_pose_box splits in two: objects.c keeps the engine half, store_pose_box_gather
+# (the plan, the flags, the want), and the file's store_pose_box(record, ...) does B's release, the box on the
+# record's words and B's fill. The want now runs ahead of the release, so psp_boxb_want's busy test becomes "held by
+# another object" (!= NONE && != object_index), which is what it saw after the release: the release writes only the
+# slot's index, psp_boxb_count and psp_boxb_changed, and the want reads none of them but the slot's index. The census
+# (psp_nmr_on, psp_nmr_read) loses static. Exact by construction. The last cut, after NMSKIP's.
+TICK2_POSENEW_POSE_BEGIN = "/* ---- moved from objects.c (the settle verbatim, the two accessors keyed by record, store_pose_box's store half): begin ---- */\n"
+TICK2_POSENEW_POSE_FINISH = "/* ---- moved from objects.c: the settle, the accessors and the box's store half: finish ---- */\n"
+TICK2_POSENEW_POSE_NMS_READ = ("#define PSP_NMS_READ(index) do { \\\n", "\t} while (0)\n")
+TICK2_POSENEW_POSE_SETTLE = ("/* TICK2 posenew (slice 1's task 3; docs/box_world_store.md section 17): the store's posing entry points.\n",
+                             "void store_pose_settle(long object_index, unsigned long long want)\n{\n\tstore_pose_settle_in(object_index, want);\n}\n")
+TICK2_POSENEW_POSE_OLD_MATRICES = r"""real_matrix4x3 const *store_node_matrices(
+	long object_index)
+{
+	/* psp_fixups.py (FIXES_134 #nmreaders) */
+	if (psp_nmr_on > 0)
+		psp_nmr_read(object_index, __builtin_return_address(0));
+	store_pose_settle_in(object_index, ~0ull); /* TICK2 posenew: every owed node */
+	/* while a frame is drawn, the pose between the last two ticks
+	(port/linux/game/render_interpolation.c) */
+	real_matrix4x3 *interpolated = render_interpolation_object_node_matrices(object_index);
+
+	if (interpolated)
+		return interpolated;
+	return (real_matrix4x3 *)object_header_block_get(object_index, &object_get(object_index)->object.node_matrices);
+}
+"""
+TICK2_POSENEW_POSE_OLD_MATRIX = r"""real_matrix4x3 const *store_node_matrix(
+	long object_index,
+	short node_index)
+{
+	/* psp_fixups.py (FIXES_134 #nmreaders) */
+	if (psp_nmr_on > 0)
+		psp_nmr_read(object_index, __builtin_return_address(0));
+	match_assert("c:\\halo\\SOURCE\\objects\\objects.c", 1060, object_has_node(object_index, node_index));
+	/* port: a node the object has no matrix for (an index a map's data
+	gave) is its first node, which every object has, not whatever lies
+	past its matrices */
+	{
+		struct object_datum *object = object_get(object_index);
+
+		if (node_index < 0 ||
+			node_index >= object->object.node_matrices.size / (short)sizeof(real_matrix4x3))
+		{
+			static boolean logged = FALSE;
+
+			if (!logged)
+			{
+				logged = TRUE;
+				error(_error_silent, "object %08lx has no node #%d: its first node is used",
+					(unsigned long)object_index, node_index);
+			}
+			node_index = 0;
+		}
+	}
+	store_pose_settle_in(object_index, 1ull << node_index); /* TICK2 posenew: the node and its parents */
+
+	{
+		real_matrix4x3 *interpolated = render_interpolation_object_node_matrices(object_index);
+
+		if (interpolated)
+			return &interpolated[node_index];
+	}
+	return &((real_matrix4x3 *)object_header_block_get(object_index, &object_get(object_index)->object.node_matrices))[node_index];
+}
+"""
+TICK2_POSENEW_POSE_LEFT = ("/* TICK2 posenew step 5: store_pose_settle / _in and the two accessors (store_node_matrices, store_node_matrix)\n"
+                           "are the store's, in psp/src/store_pose.c, keyed by record (objects.h declares them) */\n")
+TICK2_POSENEW_POSE_OLD_BOX_TAIL = r"""	{
+		/* means B: a new pose replaces what the last one owed */
+		struct psp_boxb_slot *slot = &psp_boxb[(unsigned long)object_index & (PSP_BOXB_SLOTS - 1)];
+		unsigned long long want, made, all;
+
+		if (slot->object_index == object_index)
+		{
+			slot->object_index = NONE;
+			psp_boxb_count--;
+			psp_boxb_changed = 1;
+		}
+		want = model ? psp_boxb_want(object_index, object, object_definition, model, plan) : ~0ull;
+		made = psp_box_posing_pose(plan, flags, &object->object.root->position.x, &object->object.root->forward.i, &object->object.root->up.i,
+			object->object.scale, (float const *)parent, (float const *)node_orientations, (float *)object_nodes,
+			&object->object.root->bounding_sphere_center.x, want);
+		if (~want)
+		{
+			all = psp_box_posing_all(plan);
+			psp_boxb_nodes_all += __builtin_popcountll(all);
+			psp_boxb_nodes_made += __builtin_popcountll(made & all);
+			if ((made & all) != all)
+			{
+				psp_boxb_owing_poses++;
+				slot->made = made;
+				slot->all = all;
+				slot->plan = plan;
+				slot->object_index = object_index;
+				psp_boxb_count++;
+				psp_boxb_changed = 1;
+			}
+		}
+	}
+}
+"""
+TICK2_POSENEW_POSE_GATHER_TAIL = r"""	/* TICK2 posenew step 5 (docs/box_world_store.md section 17 'last piece'): means B's want is read here, ahead of
+	the slot's release (psp_boxb_want's busy test reads a slot held by another object, what it saw after the release),
+	and the store's half (psp/src/store_pose.c) releases the slot, poses the record's words and fills the slot */
+	store_pose_box(object->object.root, object_index, plan, flags, object->object.scale, parent, node_orientations,
+		object_nodes, model ? psp_boxb_want(object_index, object, object_definition, model, plan) : ~0ull);
+}
+"""
+TICK2_POSENEW_POSE_BOX_COMMENT = "/* one object through the box. Means A: the plan is the definition's, made the\n"
+TICK2_POSENEW_POSE_BOX_DECL = r"""/* TICK2 posenew step 5: the store's half of a box pose, in psp/src/store_pose.c (means B's release, the box on the
+record's words, means B's fill); store_pose_box_gather below is the engine's half */
+void store_pose_box(struct tick2_root *record, long object_index, void const *plan, unsigned long flags, real scale,
+	real_matrix4x3 const *parent, real_orientation const *node_orientations, real_matrix4x3 *object_nodes,
+	unsigned long long want);
+
+"""
+# (old, new) edits in objects.c, each anchor found once
+TICK2_POSENEW_POSE_EDITS = (
+    ("store_pose_box's head", "static void store_pose_box(\n\tlong object_index,\n", "static void store_pose_box_gather(\n\tlong object_index,\n"),
+    ("store_pose_box's call", "\tstore_pose_box(object_index, object, object_definition, in.model, in.node_count, in.orientations, in.world_relative,\n",
+     "\tstore_pose_box_gather(object_index, object, object_definition, in.model, in.node_count, in.orientations, in.world_relative,\n"),
+    ("psp_boxb_want's busy test", "\tif (psp_boxb[absolute & (PSP_BOXB_SLOTS - 1)].object_index != NONE)\n\t{\n\t\tpsp_boxb_busy++;\n",
+     "\tif (psp_boxb[absolute & (PSP_BOXB_SLOTS - 1)].object_index != NONE &&\n"
+     "\t\tpsp_boxb[absolute & (PSP_BOXB_SLOTS - 1)].object_index != object_index)\n"
+     "\t{ /* TICK2 posenew step 5: held by another object (its own slot is released after this, in store_pose_box) */\n"
+     "\t\tpsp_boxb_busy++;\n"),
+    ("psp_nmr_on's definition", "static int psp_nmr_on = -1;\n", "int psp_nmr_on = -1; /* read by store_pose.c's accessors */\n"),
+    ("psp_nmr_read's head", "static void psp_nmr_read(long object_index, void *site)\n", "void psp_nmr_read(long object_index, void *site)\n"))
+def tick2_posenew_pose_texts(c):
+    """PSP_NMS_READ's definition and the settle as objects.c holds them (the file's copy holds both verbatim), after
+    checking that the texts the file's rewrite was written from are in objects.c once each"""
+    first, last = TICK2_POSENEW_POSE_NMS_READ
+    if c.count(first) != 1:
+        check_fail("psp_fixups: TICK2 posenew step 5: PSP_NMS_READ is defined in objects.c %d times, not 1" % c.count(first))
+        return None
+    at = c.index(first)
+    nms_read = c[at:c.index(last, at) + len(last)]
+    first, last = TICK2_POSENEW_POSE_SETTLE
+    if c.count(first) != 1 or c.count(last) != 1 or c.index(last) < c.index(first):
+        check_fail("psp_fixups: TICK2 posenew step 5: the settle's head (%d) or store_pose_settle (%d) isn't in objects.c "
+                   "once, in order" % (c.count(first), c.count(last)))
+        return None
+    settle = c[c.index(first):c.index(last) + len(last)]
+    for name, text in (("store_node_matrices", settle + "\n" + TICK2_POSENEW_POSE_OLD_MATRICES),
+                       ("store_node_matrix", TICK2_POSENEW_POSE_OLD_MATRIX),
+                       ("store_pose_box's means-B tail", TICK2_POSENEW_POSE_OLD_BOX_TAIL),
+                       ("store_pose_box's head comment", TICK2_POSENEW_POSE_BOX_COMMENT)) + \
+            tuple((name, old) for name, old, new in TICK2_POSENEW_POSE_EDITS):
+        if c.count(text) != 1:
+            check_fail("psp_fixups: TICK2 posenew step 5: %s is in objects.c %d times as the last piece was written from "
+                       "(an earlier cut changed it: rewrite psp/src/store_pose.c's copy to match)" % (name, c.count(text)))
+            return None
+    return nms_read, settle
+def tick2_posenew_pose_move_cut(tree):
+    if not TICK2_POSENEW or STORECOUNT:
+        return 0
+    objects_c = os.path.join(tree, "source/objects/objects.c")
+    c = open(objects_c, errors="surrogateescape").read()
+    texts = tick2_posenew_pose_texts(c)
+    if texts is None:
+        return 0
+    nms_read, settle = texts
+    store = open(TICK2_POSENEW_STORE_POSE_C, errors="surrogateescape").read()
+    if store.count(TICK2_POSENEW_POSE_BEGIN) != 1 or store.count(TICK2_POSENEW_POSE_FINISH) != 1:
+        check_fail("psp_fixups: TICK2 posenew step 5: psp/src/store_pose.c's last-piece markers aren't there once each")
+        return 0
+    held = store[store.index(TICK2_POSENEW_POSE_BEGIN) + len(TICK2_POSENEW_POSE_BEGIN):store.index(TICK2_POSENEW_POSE_FINISH)]
+    if held.count(nms_read) != 1 or held.count(settle) != 1:
+        check_fail("psp_fixups: TICK2 posenew step 5: psp/src/store_pose.c's last piece holds PSP_NMS_READ %d times and the "
+                   "settle %d times as objects.c has them, not once each (regenerate them from the tree)"
+                   % (held.count(nms_read), held.count(settle)))
+        return 0
+    c = c.replace(settle + "\n" + TICK2_POSENEW_POSE_OLD_MATRICES, TICK2_POSENEW_POSE_LEFT)
+    c = c.replace(TICK2_POSENEW_POSE_OLD_MATRIX, "")
+    c = c.replace(TICK2_POSENEW_POSE_OLD_BOX_TAIL, TICK2_POSENEW_POSE_GATHER_TAIL)
+    c = c.replace(TICK2_POSENEW_POSE_BOX_COMMENT, TICK2_POSENEW_POSE_BOX_DECL + TICK2_POSENEW_POSE_BOX_COMMENT)
+    for name, old, new in TICK2_POSENEW_POSE_EDITS:
+        c = c.replace(old, new)
+    if not CHECK_ONLY:
+        open(objects_c, "w", errors="surrogateescape").write(c)
+    print("psp_fixups: TICK2 posenew step 5: the settle, the two accessors (keyed by record) and store_pose_box's store "
+          "half moved to psp/src/store_pose.c")
+    return 1
+tick2_posenew_pose_move_cut(TREE)
+
 if CHECK_ONLY:
     for message in count_failures:
         print(message)
