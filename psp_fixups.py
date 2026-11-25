@@ -64283,7 +64283,13 @@ def kill_read(tree):
     # 1 a child or its next), at its end: handle, type, the bounding sphere center the rays aim at, blocked,
     # infection form, the pop's draw (bf800000 = -1.0f: no draw), can damage, damaged, flags, the seed after.
     # Logging only: the draw's value is kept in a local as the comparison takes it.
-    sphere = "\t\tobject_indices,\n\t\tNUMBEROF(object_indices));\n\tif (object_count > 0)\n"
+    # killread3 (the lead 09:2x): where the candidates' order comes from. objects_in_sphere keeps its start
+    # cluster and structure_clusters_in_sphere's list (psp_kill_sphere, a copy, every call); as the blast
+    # returns, kl: that start cluster and the cluster list in order; kp: each candidate in objects_in_sphere's
+    # order with its own location cluster and where objects_in_clusters_by_indices found it (the list's
+    # slot, the cluster, 0 collideable / 1 not, the place in that cluster's list), re-walked read-only at
+    # once, as the query walked them (its own walk flushed the held disconnects just before).
+    sphere ="\t\tobject_indices,\n\t\tNUMBEROF(object_indices));\n\tif (object_count > 0)\n"
     local = "\tstruct collision_result direct_collision;\n\tboolean can_damage;\n\n"
     draw = "\t\t\t\treal_seed_random(get_global_random_seed_address()) <\n\t\t\t\t\tinfection_form_toughness * 0.25f)\n"
     tail = "\tif (damage_next_object)\n\t{\n\t\tlong next_object_index = object->object.next_object_index;\n"
@@ -64291,20 +64297,41 @@ def kill_read(tree):
         if text.count(anchor) != 1:
             check_fail("psp_fixups: KILLREAD: a damage.c candidate anchor matches %d times" % text.count(anchor))
             return 0
-    text = text.replace(sphere, sphere.replace("\tif (object_count > 0)\n", "\t{ void psp_kill_blast(struct damage_data const *damage, short object_count); psp_kill_blast(damage, object_count); } /* KILLREAD */\n\tif (object_count > 0)\n"), 1)
+    text = text.replace(sphere, sphere.replace("\tif (object_count > 0)\n", "\t{ void psp_kill_blast(struct damage_data const *damage, short object_count, long const *object_indices); psp_kill_blast(damage, object_count, object_indices); } /* KILLREAD */\n\tif (object_count > 0)\n"), 1)
     text = text.replace(local, local.replace("\n\n", "\n\treal psp_kill_draw = -1.f; /* KILLREAD */\n\n"), 1)
     text = text.replace(draw, draw.replace("real_seed_random(get_global_random_seed_address()) <", "(psp_kill_draw = real_seed_random(get_global_random_seed_address())) < /* KILLREAD */"), 1)
     text = text.replace(tail, "\t{ void psp_kill_candidate(struct damage_data const *damage, long object_index, int chain, real_point3d const *center, int blocked, int infection_form, real draw, int can_damage, int did_damage); psp_kill_candidate(damage, object_index, damage_next_object ? 1 : 0, &%sbounding_sphere_center, collision_blocked ? 1 : 0, infection_form ? 1 : 0, psp_kill_draw, can_damage ? 1 : 0, did_damage ? 1 : 0); } /* KILLREAD */\n" % root + tail, 1)
     text += r"""
-/* KILLREAD: the area damage's blast and candidates (killread2) */
-void psp_kill_blast(struct damage_data const *damage, short object_count)
+/* KILLREAD: the area damage's blast and candidates (killread2), the clusters they came from (killread3) */
+#define PSP_KILL_CLUSTERS 64
+static short psp_kill_start = -1, psp_kill_cluster_count, psp_kill_clusters[PSP_KILL_CLUSTERS];
+
+/* objects_in_sphere's start cluster and cluster list, the last call's (a copy, every call) */
+void psp_kill_sphere(short start, short cluster_count, short const *clusters)
+{
+	short k;
+
+	psp_kill_start = start;
+	psp_kill_cluster_count = cluster_count;
+	for (k = 0; k < cluster_count && k < PSP_KILL_CLUSTERS; k++)
+		psp_kill_clusters[k] = clusters[k];
+}
+
+void psp_kill_blast(struct damage_data const *damage, short object_count, long const *object_indices)
 {
 	extern long game_time_get(void);
 	char *tag_get_name(long tag_index);
 	int psp_kill_in(long tick);
 	void platform_psp_log(const char *format, ...);
+	long cluster_get_first_noncollideable_object(long *reference_index, short cluster_index);
+	long cluster_get_next_noncollideable_object(long *reference_index);
+	long cluster_get_first_collideable_object(long *reference_index, short cluster_index);
+	long cluster_get_next_collideable_object(long *reference_index);
 	long tick = game_time_get();
 	unsigned long const *e;
+	char line[PSP_KILL_CLUSTERS * 8 + 1];
+	int length = 0;
+	short k, n;
 
 	if (!psp_kill_in(tick))
 		return;
@@ -64313,6 +64340,48 @@ void psp_kill_blast(struct damage_data const *damage, short object_count)
 		damage->definition_index != NONE ? tag_get_name(damage->definition_index) : "none", (int)object_count,
 		(unsigned long)*get_global_random_seed_address(), (unsigned long)damage->flags, (unsigned long)damage->owner_object_index,
 		e[0], e[1], e[2]);
+	/* kl: the start cluster, the list's length, the list in order (its first PSP_KILL_CLUSTERS) */
+	for (k = 0; k < psp_kill_cluster_count && k < PSP_KILL_CLUSTERS; k++)
+	{
+		/* " %d" by hand: a cluster index is 0..MAXIMUM_CLUSTERS_PER_STRUCTURE-1, or negative */
+		char digits[8];
+		int value = psp_kill_clusters[k], count = 0;
+
+		line[length++] = ' ';
+		if (value < 0)
+			line[length++] = '-', value = -value;
+		do
+			digits[count++] = (char)('0' + value % 10), value /= 10;
+		while (value && count < (int)sizeof(digits));
+		while (count)
+			line[length++] = digits[--count];
+	}
+	line[length] = 0;
+	platform_psp_log("kl: %ld %d %d |%s", tick, (int)psp_kill_start, (int)psp_kill_cluster_count, line);
+	/* kp: each candidate, where objects_in_clusters_by_indices met it first (clusters in the list's
+	order, each cluster's collideable list and then its other list, as the query walks them) */
+	for (n = 0; n < object_count; n++)
+	{
+		struct object_datum *object = object_get(object_indices[n]);
+		short slot = -1, cluster = -1, which = -1, place = -1;
+
+		for (k = 0; k < psp_kill_cluster_count && k < PSP_KILL_CLUSTERS && slot < 0; k++)
+		{
+			long reference, index;
+			short at;
+
+			for (at = 0, index = cluster_get_first_collideable_object(&reference, psp_kill_clusters[k]);
+				index != NONE && slot < 0; index = cluster_get_next_collideable_object(&reference), at++)
+				if (index == object_indices[n])
+					slot = k, cluster = psp_kill_clusters[k], which = 0, place = at;
+			for (at = 0, index = cluster_get_first_noncollideable_object(&reference, psp_kill_clusters[k]);
+				index != NONE && slot < 0; index = cluster_get_next_noncollideable_object(&reference), at++)
+				if (index == object_indices[n])
+					slot = k, cluster = psp_kill_clusters[k], which = 1, place = at;
+		}
+		platform_psp_log("kp: %ld %d %08lx %d | %d %d %d %d", tick, (int)n, (unsigned long)object_indices[n],
+			(int)PSP_KILL_ROOTlocation.cluster_index, (int)slot, (int)cluster, (int)which, (int)place);
+	}
 }
 
 void psp_kill_candidate(struct damage_data const *damage, long object_index, int chain, real_point3d const *center, int blocked, int infection_form, real draw, int can_damage, int did_damage)
@@ -64330,7 +64399,7 @@ void psp_kill_candidate(struct damage_data const *damage, long object_index, int
 		(unsigned long)object_index, (int)object_get(object_index)->object.type, chain, c[0], c[1], c[2],
 		blocked, infection_form, d, can_damage, did_damage, (unsigned long)damage->flags, (unsigned long)*get_global_random_seed_address());
 }
-"""
+""".replace("PSP_KILL_ROOT", root)
     text += r"""
 /* KILLREAD: the kill's field read (psp_fixups.py kill_read) */
 static long psp_kill_first = -2, psp_kill_span = 30;
@@ -64393,10 +64462,13 @@ void psp_kill_damage(struct damage_data const *damage, long object_index, short 
     run = "\tif (garbage_collect_mode!=NONE)\n\t{\n\t\tlong garbage_collect_mode_wide;\n"
     gone = "\t\t\t\t\tobject_set_garbage(object_index, FALSE);\n\t\t\t\t\tobject_delete_immediately(object_index);\n"
     out = "\"OUT OF OBJECTS: cannot create %s\",\n\t\t\ttag_name_strip_path(tag_get_name(definition_index)));\n"
-    for anchor in (run, gone, out):
+    # killread3: objects_in_sphere's cluster list, kept for the blast's kl/kp lines (damage.c's psp_kill_sphere)
+    query = "\tobject_count_in_clusters = objects_in_clusters_by_indices(\n\t\tclass_flags,\n\t\tcluster_count,\n\t\tcluster_indices,\n\t\tNUMBEROF(temporary_object_indices),\n\t\ttemporary_object_indices);\n"
+    for anchor in (run, gone, out, query):
         if text.count(anchor) != 1:
             check_fail("psp_fixups: KILLREAD: an objects.c anchor matches %d times" % text.count(anchor))
             return 0
+    text = text.replace(query, query + "\t{ void psp_kill_sphere(short start, short cluster_count, short const *clusters); psp_kill_sphere(location->cluster_index, cluster_count, cluster_indices); } /* KILLREAD */\n", 1)
     log = "{ extern long game_time_get(void); int psp_kill_upto(long tick); void platform_psp_log(const char *format, ...); if (psp_kill_upto(game_time_get())) platform_psp_log(%s); } /* KILLREAD */\n"
     text = text.replace(run, "\t" + log.replace("if (psp_kill_upto(", "if (garbage_collect_mode!=NONE && psp_kill_upto(") % ('"kg: %ld mode %ld free %ld contiguous %ld objects %ld active garbage %ld", game_time_get(), (long)garbage_collect_mode, (long)memory_pool_get_free_size(object_memory_pool), (long)memory_pool_get_contiguous_free_size(object_memory_pool), (long)object_header_data->actual_count, (long)object_globals->active_garbage_object_count') + run, 1)
     text = text.replace(gone, "\t\t\t\t\t" + log % ('"kgd: %ld %08lx %d", game_time_get(), (unsigned long)object_index, (int)header->type') + gone, 1)
