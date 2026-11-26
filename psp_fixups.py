@@ -65059,10 +65059,14 @@ collindex_serveray_cut(TREE)
 # are one run, and a cell met before is in the last step's block, an O(1) test made before the box test;
 # (3) a layer with no entries is skipped, by a count a layer kept where an entry is linked, unlinked and rebuilt.
 # Without the list the 512-cell fallback goes; the 256 candidates and 4,096 steps stay. Without the keep word the
-# ray is the old one (the counts are still kept), so a pair can A/B it on one build.
+# ray is the old one (the counts are still kept), so a pair can A/B it on one build. The ray now steps by the
+# direction's sign (the old ex > cx ? 1 : -1 stepped back where a ray stays in one column or row going the positive way,
+# and missed entries). The gathers' small fix rides in the same build (the lead 2026-11-26 17:1x), keep word
+# "collindexgatherfast": psp_ci_serve_sphere_fast, the same candidates in the same order, an empty layer skipped and a
+# layer's four cells by one reciprocal (its 1,024-cell fallback no longer read for an empty layer).
 COLLINDEX_RAYFAST = os.environ.get("PSP_COLLINDEX_RAYFAST", "") == "1"
-RAYFAST_CODE = r"""
-/* PSP_COLLINDEX_RAYFAST (psp_fixups.py): the served ray's per-cell work cut */
+FASTHELP_CODE = r"""
+/* PSP_COLLINDEX_RAYFAST (psp_fixups.py): the served queries' per-cell work cut, rays (collindexrayfast) and gathers (collindexgatherfast) */
 static int psp_ci_rayfast_on(void)
 {
 	static int on = -1;
@@ -65075,6 +65079,88 @@ static int psp_ci_rayfast_on(void)
 	}
 	return on;
 }
+static int psp_ci_gatherfast_on(void)
+{
+	static int on = -1;
+
+	if (on < 0)
+	{
+		on = PSP_KEEP_ONCE("collindexgatherfast") ? 1 : 0;
+		if (on)
+			platform_psp_log("collindexgatherfast: the served gather's fast form on (empty layers skipped, cells by the size's reciprocal)");
+	}
+	return on;
+}
+/* psp_ci_cell_at's cell from v already scaled by the size's reciprocal */
+static long psp_ci_cell_q(real q)
+{
+	long i = (long)q;
+
+	if ((real)i > q)
+		i--;
+	return i < -32000 ? -32000 : i > 32000 ? 32000 : i;
+}
+/* psp_ci_serve_sphere's candidates in its order, a layer with no entries skipped and a layer's four cells by one reciprocal */
+static int psp_ci_serve_sphere_fast(real_point3d const *c, real r, long *out, int most)
+{
+	int layer, n = 0;
+	short k;
+	long cx, cy;
+
+	tick2_cs_settle_held(); /* a deleted object's entry leaves first */
+	if (!psp_ci_live())
+		return psp_ci_serve_walk();
+	for (layer = 0; layer < psp_ci_nl; layer++)
+	{
+		real size, inv, half;
+		long cx0, cx1, cy0, cy1;
+
+		if (!psp_ci_layer_n[layer]) /* no entries in the layer: no candidates */
+			continue;
+		size = psp_ci_size(layer);
+		inv = 1.0f / size; /* exact: the size is a power of two */
+		half = size * 0.5f;
+		cx0 = psp_ci_cell_q((c->x - r - half) * inv);
+		cx1 = psp_ci_cell_q((c->x + r + half) * inv);
+		cy0 = psp_ci_cell_q((c->y - r - half) * inv);
+		cy1 = psp_ci_cell_q((c->y + r + half) * inv);
+		if ((cx1 - cx0 + 1) * (cy1 - cy0 + 1) > 1024)
+			return psp_ci_serve_walk();
+		for (cx = cx0; cx <= cx1; cx++)
+			for (cy = cy0; cy <= cy1; cy++)
+			{
+				if (psp_ci_bits) /* collindexbits: a clear bit, no entry of this layer in the cell's buckets */
+				{
+					unsigned i = psp_ci_occ_bit(layer, cx, cy);
+
+					if (!((psp_ci_occ[layer][i >> 5] >> (i & 31)) & 1))
+						continue;
+				}
+				for (k = psp_ci_serve_head(layer, cx, cy); k >= 0; k = psp_ci[k].next)
+					if (psp_ci[k].layer == layer && psp_ci[k].cx == cx && psp_ci[k].cy == cy)
+					{
+						if (n >= most)
+							return psp_ci_serve_walk();
+						out[n++] = psp_ci[k].index;
+					}
+			}
+	}
+	for (k = psp_ci_large; k >= 0; k = psp_ci[k].next)
+	{
+		if (n >= most)
+			return psp_ci_serve_walk();
+		out[n++] = psp_ci[k].index;
+	}
+	psp_ci_served[0]++;
+	psp_ci_served[1] += n;
+	if ((psp_ci_served[0] & 0x3FFF) == 0)
+		platform_psp_log("collindexserve: gathers served %lu, objects handed %lu, walked instead %lu (bits %d, layers %d, cache %d)",
+			psp_ci_served[0], psp_ci_served[1], psp_ci_served[2], psp_ci_bits, psp_ci_nl, psp_ci_caching ? PSP_CI_CACHE : 0);
+	return n;
+}
+"""
+RAYFAST_CODE = r"""
+/* PSP_COLLINDEX_RAYFAST (psp_fixups.py): the served ray's per-cell work cut */
 /* psp_ci_seg_hits_box with the direction's reciprocals (idx, idy; unused where dx, dy is 0) */
 static int psp_ci_seg_hits_box_r(real x0, real y0, real dx, real dy, real idx, real idy, real bx0, real by0, real bx1, real by1)
 {
@@ -65125,15 +65211,6 @@ static int psp_ci_seg_hits_box_r(real x0, real y0, real dx, real dy, real idx, r
 			return 0;
 	}
 	return 1;
-}
-/* psp_ci_cell_at's cell from v already scaled by the size's reciprocal */
-static long psp_ci_cell_q(real q)
-{
-	long i = (long)q;
-
-	if ((real)i > q)
-		i--;
-	return i < -32000 ? -32000 : i > 32000 ? 32000 : i;
 }
 static int psp_ci_serve_ray_fast(real_point3d const *p, real_vector3d const *v, long *out, int most)
 {
@@ -65261,7 +65338,19 @@ def collindex_rayfast_cut(tree):
             "\te->in = 1;\n\tpsp_ci_changed();\n\tif (!large) /* PSP_COLLINDEX_RAYFAST */\n\t\tpsp_ci_layer_n[layer]++;\n", "the set's link")
     o = one(o, "\tmemset(psp_ci_occ, 0, sizeof(psp_ci_occ));\n\tpsp_ci_changed();\n",
             "\tmemset(psp_ci_occ, 0, sizeof(psp_ci_occ));\n\tmemset(psp_ci_layer_n, 0, sizeof(psp_ci_layer_n)); /* PSP_COLLINDEX_RAYFAST */\n\tpsp_ci_changed();\n", "the rebuild's clear")
+    # the helpers and the gather's fast form before the gather (which comes before the ray), the ray's before the ray
+    ghead = "int psp_ci_serve_sphere(real_point3d const *c, real r, long *out, int most)\n{\n"
     head = "int psp_ci_serve_ray(real_point3d const *p, real_vector3d const *v, long *out, int most)\n{\n"
+    if o.count(ghead) != 1 or o.count(head) != 1 or o.index(ghead) > o.index(head):
+        check_fail("psp_fixups: COLLINDEX_RAYFAST: the gather's and the ray's heads are not once each, the gather first")
+        return 0
+    o = one(o, ghead, FASTHELP_CODE[1:] + ghead, "the served gather's head")
+    a = o.index(ghead)
+    b = o.index("\n}\n", a)
+    # the gather's fast form only where the index is live, so its keep word is never read on the ME
+    o = one(o, "\tif (!psp_ci_live())\n\t\treturn psp_ci_serve_walk();\n",
+            "\tif (!psp_ci_live())\n\t\treturn psp_ci_serve_walk();\n"
+            "\tif (psp_ci_gatherfast_on()) /* PSP_COLLINDEX_RAYFAST */\n\t\treturn psp_ci_serve_sphere_fast(c, r, out, most);\n", "the served gather's live test", a, b)
     o = one(o, head, RAYFAST_CODE[1:] + head, "the served ray's head")
     a = o.index(head)
     b = o.index("\n}\n", a)
@@ -65270,7 +65359,7 @@ def collindex_rayfast_cut(tree):
             "\ttick2_cs_settle_held(); /* a deleted object's entry leaves first */\n", "the served ray's settle", a, b)
     if not CHECK_ONLY:
         open(op, "w", errors="surrogateescape").write(o)
-    print("psp_fixups: COLLINDEX_RAYFAST: the served ray's per-cell work cut under keep word collindexrayfast")
+    print("psp_fixups: COLLINDEX_RAYFAST: the served queries' per-cell work cut under keep words collindexrayfast (rays) and collindexgatherfast (gathers)")
     return 1
 collindex_rayfast_cut(TREE)
 
