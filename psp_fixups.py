@@ -68335,6 +68335,7 @@ TICK2_MOTIONNEW_PASS_DECLS = ("void psp_sweepme_tick_begin(void); /* collisions.
                               "void psp_sweepme_after_intent(long biped_index);\n",
                               "void psp_sweepme_close(void); /* psp_sweepme.c */\n",
                               "void psp_sweepme_end(void);\n",
+                              "void store_coll_gather_margin(long biped_index);\n",
                               "void psp_bipedstage3_reset(void); /* bipeds.c */\n",
                               "void psp_bipedstage3_intent(long biped_index);\n",
                               "int psp_bipedstage3_kept(long biped_index);\n",
@@ -68418,7 +68419,7 @@ def tick2_motionnew_pass_cut(tree):
                    % (len(re.findall(TICK2_MOTIONNEW_PASS_LIVE, o)), len(re.findall(TICK2_MOTIONNEW_PASS_LIVE_OLD, o))))
         return 0
     o = re.sub(TICK2_MOTIONNEW_PASS_LIVE_OLD, "store_biped_live", o)
-    # 2. the eight declarations out
+    # 2. the nine declarations out
     for text in TICK2_MOTIONNEW_PASS_DECLS:
         if o.count(text) != 1:
             check_fail("psp_fixups: TICK2 motionnew pass: objects.c has %r %d times, not 1 (the boundary's declarations "
@@ -68534,11 +68535,10 @@ TICK2_MOTIONNEW_DELETE_UNITS_DECL = ("void store_biped_limp_start(long biped_ind
 TICK2_MOTIONNEW_DELETE_NET_DECL = ("void store_biped_limp_stop(long biped_index); /* psp/src/store_motion.c (TICK2 "
                                    "motionnew): the limp body's */\n")
 # the names' scan and the poison (this cut's second half): every task-5 row of tools/tick2_deleted.txt (four tab columns,
-# the fourth 5), less store_coll_gather_margin, whose row stays until clause 10's count picks (i): no code in the tree's
-# source/ and port/ or in psp/src and psp/include may name one of them, and objects.h poisons them
+# the fourth 5), store_coll_gather_margin among them since the pool count picked clause 10's (i) (row t5pool_never_over):
+# no code in the tree's source/ and port/ or in psp/src and psp/include may name one of them, and objects.h poisons them
 TICK2_MOTIONNEW_DELETED_TXT = os.path.join(TICK2_COLLNEW_DIR, "tools", "tick2_deleted.txt")
-TICK2_MOTIONNEW_DELETED_KEEP = "store_coll_gather_margin"  # unpoisoned until the count picks: its branch isn't read
-TICK2_MOTIONNEW_DELETED_COUNT = 39
+TICK2_MOTIONNEW_DELETED_COUNT = 40
 TICK2_MOTIONNEW_POISON_HEAD = ("#ifdef HALO_PSP\n/* TICK2 motionnew (slice 1's task 5; docs/box_world_store.md section 19 part 8):\n"
     "biped_update and the code only it reaches, the limp body and bipedstage3's cut are gone from this build; the store's\n"
     "I, G and M (psp/src/store_motion.c) are the bipeds' motion. A reference to any of them fails the compile (Sierra-III\n"
@@ -68548,13 +68548,13 @@ TICK2_MOTIONNEW_SCAN_EXTRA = r"\b(?:psp_bs3_\w+|PSP_BS3_\w+|psp_bms_\w+|psp_reac
 TICK2_MOTIONNEW_COND = re.compile(r"^[ \t]*#[ \t]*(if|ifdef|ifndef|elif|else|endif)\b(.*?)[ \t]*$")
 TICK2_MOTIONNEW_SWITCH = ("#ifdef PSP_TICK2_MOTIONNEW", "#ifndef PSP_TICK2_MOTIONNEW")
 def tick2_motionnew_deleted():
-    """tools/tick2_deleted.txt's task-5 names, less the margin gather's"""
+    """tools/tick2_deleted.txt's task-5 names"""
     names = []
     for line in open(TICK2_MOTIONNEW_DELETED_TXT, errors="surrogateescape"):
         if line.startswith("#") or not line.strip():
             continue
         columns = line.rstrip("\n").split("\t")
-        if len(columns) >= 4 and columns[3] == "5" and columns[0] != TICK2_MOTIONNEW_DELETED_KEEP:
+        if len(columns) >= 4 and columns[3] == "5":
             names.append(columns[0])
     return names
 def tick2_motionnew_on_side(text, what):
@@ -68786,15 +68786,14 @@ def tick2_motionnew_delete_cut(tree):
         return 0
     n = n.replace("biped_stop_limp_body_physics(", "store_biped_limp_stop(")
     n = n.replace(net_include, net_include + TICK2_MOTIONNEW_DELETE_NET_DECL)
-    # the names: the task-5 rows of tools/tick2_deleted.txt, less the margin gather's, whose branch clause 10's count
-    # hasn't picked; then no code anywhere the port builds names one, before objects.h poisons them
+    # the names: the task-5 rows of tools/tick2_deleted.txt; then no code anywhere the port builds names one, before
+    # objects.h poisons them
     deleted = tick2_motionnew_deleted()
     objects_h = os.path.join(tree, "source/objects/objects.h")
     oh = open(objects_h, errors="surrogateescape").read()
     if len(deleted) != TICK2_MOTIONNEW_DELETED_COUNT:
-        check_fail('psp_fixups: TICK2 motionnew delete cut: tools/tick2_deleted.txt\'s task-5 names, less %s, are %d, '
-                   "not %d (the list moved: read it)" % (TICK2_MOTIONNEW_DELETED_KEEP, len(deleted),
-                                                         TICK2_MOTIONNEW_DELETED_COUNT))
+        check_fail("psp_fixups: TICK2 motionnew delete cut: tools/tick2_deleted.txt's task-5 names are %d, not %d (the "
+                   "list moved: read it)" % (len(deleted), TICK2_MOTIONNEW_DELETED_COUNT))
         return 0
     left = tick2_motionnew_left(tree, {bipeds_c: b, bipeds_h: h, noodle_h: nh, noodle_c: nc, collisions_c: c, units_c: u,
                                        net_c: n, objects_h: oh}, deleted)

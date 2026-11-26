@@ -172,6 +172,8 @@ static void store_coll_pack(struct store_coll_entry *entry, long biped_index)
 	psp_bs2_stat[entry->empty ? 6 : 0]++;
 }
 
+#ifndef PSP_TICK2_MOTIONNEW
+/* off the switch only: clause 10's branch (i) (the lead 2026-11-26 00:2x (2); the pool count, row t5pool_never_over) takes the margin gather out of the on form, whose G gathers from the INTENT entries alone; its one caller is the pass's #else side */
 void store_coll_gather_margin(long biped_index)
 {
 	struct store_coll_entry *slot;
@@ -205,7 +207,6 @@ void store_coll_gather_margin(long biped_index)
 	store_coll_pack(slot, biped_index);
 }
 
-#ifndef PSP_TICK2_MOTIONNEW
 /* off the switch only: task 5's delete cut deletes bipedstage3 (psp_bipedstage3_call is poisoned) and the pass's G is
 store_coll_gather_intent below; this gather's one caller is the pass's #else side */
 /* bipedstage3: the move's own call, kept by its intent (bipeds.c), gathered as collision_move_pill would make its

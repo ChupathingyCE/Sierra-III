@@ -14,9 +14,11 @@ psp_sweepme_after_intent each make today, on the same floats, so the take's verd
 its counted fallback (Part 9, taken 00:3x (5)). What M reads after the call (the physics' record, the animation's
 update data, the facing) is M's own table by the same n, written with I's code; G's walk doesn't touch it.
 
-64 entries, old-only's pool (clause 10, ruled 00:2x (2): branch (i) if no tick goes over it on the six maps, both
-seeds). A 65th intent gets no entry and writes nothing past the table; it is counted, and the proof reads the count
-at 0. A biped with no entry gets M's whole update (store_motion_update), as old-only ran biped_update whole for it.
+64 entries, old-only's pool: clause 10's branch (i), ruled 00:2x (2) and picked by the pool count (the lab's row
+t5pool_never_over: no tick over it on the six maps, both seeds). A 65th intent gets no entry and writes nothing
+past the table: store_intent_open counts it (over the pool) and returns -1, and the proof reads the count at 0. If
+one came, M would run that biped's whole update at its turn (store_motion_update, the dead biped's path), its move
+gathering live: the on form has no margin gather (store_coll.c).
 
 Censuses: bipedstage3's five counters (intents; stopped at the move; at the tail; over the pool; solves resumed) are
 re-earned as this file's line, with the pool's three the ruling asks (ticks over it, intents past it, the peak a

@@ -95,10 +95,9 @@ store_biped_live_until_task5	staged	objects/objects.c (static; tick2_collnew, ps
 store_biped_intent_until_task5	staged	objects/objects.c (tick2_collnew; the intent, verbatim)	5
 store_biped_alive_until_task5	staged	objects/objects.c (tick2_collnew; the run's own test)	5
 store_biped_solve_until_task5	staged	objects/objects.c (tick2_collnew; the solve, verbatim)	5
-# the margin gather is task 5's only on clause 10's branch (i), no tick over the
-# pool: if the count picks (ii), this row comes off in the same commit, unpoisoned
-# (the lead 2026-11-26 00:2x (2), 00:3x (2))
-# not poisoned by the delete cut until the count picks (i)
+# the margin gather, task 5's on clause 10's branch (i): the pool count read no tick
+# over the pool on six maps, both seeds (the lab's row t5pool_never_over; the lead
+# 2026-11-26 00:2x (2), 10:5x (2)), so the delete cut poisons it with the rest
 store_coll_gather_margin	staged	psp/src/store_coll.c (the moved body but its two entry lines; the margin gather)	5
 
 # the node-matrix walk (task 3). Callers outside the tick go to
