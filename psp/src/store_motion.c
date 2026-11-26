@@ -651,6 +651,262 @@ static void store_intent_turning(long biped_index, struct biped_datum *biped, st
 	}
 }
 
+/* I's physics to the move's call: biped_update_physics (bipeds.c 2896-3188 in the ship form at ff2bb9fb) from its
+   locals to bipedstage3's stop just before the move, the same tests and the same float expressions in the same order,
+   over M's entry and the call's three outputs. In place of the stop (3179-3188) it writes what bipedstage3's record
+   took: M's entry's in-flags and facing, and the call's flags, position and velocity. Left out: the resume branch
+   (2913-2922: the resume is M's), and the two flag blocks the PSP build never compiles (2988-2990 and 3007-3033:
+   psp_build.py's CHUPA_FLAGS_DROPPED, and bipeds.c isn't in ONLINE_GAMES_UNITS). clipped_position, clipped_velocity,
+   collisions and collision_count are dropped: they're the call's, past the stop. The engine's locals position and
+   velocity are call_position and call_velocity here (the parameters have their names). store_intent_moving calls it;
+   nothing calls it yet */
+static void store_intent_physics(struct biped_physics *physics, struct store_motion *motion, unsigned long *flags,
+	real_point3d *position, real_vector3d *velocity)
+{
+	real_vector2d facing = { 0.f, 0.f };
+	boolean climbing = TEST_FLAG(physics->in_flags, _biped_physics_in_climb_anything_bit);
+	word in_flags;
+	real_point3d call_position;
+	real_vector3d call_velocity;
+	unsigned long collision_flags;
+
+	match_assert_valid_real_point3d("c:\\halo\\SOURCE\\units\\bipeds.c", 0xBCC, &physics->position);
+	match_assert_valid_real_vector3d("c:\\halo\\SOURCE\\units\\bipeds.c", 0xBCD, &physics->velocity);
+
+	in_flags = physics->in_flags;
+	physics->out_flags = 0;
+	if (TEST_FLAG(in_flags, _biped_physics_in_flying_bit))
+	{
+		real_vector3d up;
+		real_vector3d left;
+		real_vector3d desired_velocity;
+		real_vector3d acceleration;
+		real_vector3d direction;
+		real_vector3d velocity_change;
+
+		biped_build_flying_axes(&physics->forward, &left, &up);
+		desired_velocity.i = physics->forward.i * physics->movement_desired.i +
+			left.i * physics->movement_desired.j +
+			up.i * physics->movement_desired.k;
+		desired_velocity.j = physics->forward.j * physics->movement_desired.i +
+			left.j * physics->movement_desired.j +
+			up.j * physics->movement_desired.k;
+		desired_velocity.k = physics->forward.k * physics->movement_desired.i +
+			left.k * physics->movement_desired.j +
+			up.k * physics->movement_desired.k;
+		scale_vector3d(&desired_velocity, 1.f - physics->movement_penalty, &desired_velocity);
+		acceleration.i = desired_velocity.i - physics->velocity.i;
+		acceleration.j = desired_velocity.j - physics->velocity.j;
+		acceleration.k = desired_velocity.k - physics->velocity.k;
+		direction = acceleration;
+		if (normalize3d(&direction) > physics->acceleration_maximum)
+			scale_vector3d(&direction, physics->acceleration_maximum, &velocity_change);
+		else
+			velocity_change = acceleration;
+		add_vectors3d(&velocity_change, &physics->velocity, &physics->new_velocity);
+		SET_FLAG(physics->out_flags, _biped_physics_out_airborne_bit, TRUE);
+		SET_FLAG(physics->out_flags, _biped_physics_out_slipping_bit, FALSE);
+	}
+	else if (TEST_FLAG(in_flags, _biped_physics_in_absolute_movement_bit))
+	{
+		physics->new_velocity.k = physics->movement_desired.k;
+		facing.i = physics->new_velocity.i =
+			physics->movement_desired.i * physics->forward.i -
+			physics->forward.j * physics->movement_desired.j;
+		facing.j = physics->new_velocity.j =
+			physics->movement_desired.j * physics->forward.i +
+			physics->movement_desired.i * physics->forward.j;
+	}
+	else if (TEST_FLAG(in_flags, _biped_physics_in_airborne_bit))
+	{
+		real_vector2d desired_velocity;
+		real_vector2d acceleration;
+		real_vector2d direction;
+		real_vector2d velocity_change;
+
+		desired_velocity.i = physics->movement_desired.i * physics->forward.i -
+			physics->forward.j * physics->movement_desired.j;
+		desired_velocity.j = physics->movement_desired.j * physics->forward.i +
+			physics->movement_desired.i * physics->forward.j;
+		scale_vector2d(&desired_velocity, 1.f - physics->movement_penalty, &desired_velocity);
+		acceleration.i = desired_velocity.i - physics->velocity.i;
+		acceleration.j = desired_velocity.j - physics->velocity.j;
+		direction = acceleration;
+		if (normalize2d(&direction) > physics->airborne_acceleration_maximum)
+			scale_vector2d(&direction, physics->airborne_acceleration_maximum, &velocity_change);
+		else
+			velocity_change = acceleration;
+		physics->new_velocity.i = velocity_change.i + physics->velocity.i;
+		physics->new_velocity.j = velocity_change.j + physics->velocity.j;
+		/* the game browser's gravity variant isn't in the PSP build (psp_build.py drops the flag) */
+		physics->new_velocity.k = physics->velocity.k - global_gravity;
+		physics->out_flags = TEST_FLAG(in_flags, _biped_physics_in_slipping_bit) ?
+			FLAG(_biped_physics_out_slipping_bit) : 0;
+	}
+	else
+	{
+		real speed = magnitude3d(&physics->movement_desired);
+		real_vector3d const *ground_normal = &physics->ground_plane.n;
+		real_vector3d move_direction;
+
+		if (TEST_FLAG(in_flags, _biped_physics_in_climb_anything_bit))
+		{
+			real_vector3d forward = physics->aiming;
+			real_vector3d left;
+
+			/* Stubbs's hand-on-a-wall frame isn't in the PSP build (psp_build.py drops the flag) */
+			cross_product3d(ground_normal, &forward, &left);
+			if (normalize3d(&left) == 0.f)
+			{
+				cross_product3d(ground_normal, global_up3d, &left);
+				if (normalize3d(&left) == 0.f)
+				{
+					cross_product3d(ground_normal, global_forward3d, &left);
+					normalize3d(&left);
+				}
+			}
+			cross_product3d(&left, ground_normal, &forward);
+			normalize3d(&forward);
+
+			move_direction.i = forward.i * physics->movement_desired.i +
+				left.i * physics->movement_desired.j;
+			move_direction.j = forward.j * physics->movement_desired.i +
+				left.j * physics->movement_desired.j;
+			move_direction.k = forward.k * physics->movement_desired.i +
+				left.k * physics->movement_desired.j +
+				physics->movement_desired.k;
+			normalize3d(&move_direction);
+		}
+		else if (ground_normal->k > _real_epsilon)
+		{
+			move_direction.i = facing.i =
+				physics->movement_desired.i * physics->forward.i -
+				physics->forward.j * physics->movement_desired.j;
+			move_direction.j = facing.j =
+				physics->movement_desired.j * physics->forward.i +
+				physics->movement_desired.i * physics->forward.j;
+			move_direction.k = physics->movement_desired.k -
+				(move_direction.j * ground_normal->j + move_direction.i * ground_normal->i) /
+				ground_normal->k;
+			normalize3d(&move_direction);
+		}
+		else
+		{
+			real_vector3d forward = physics->aiming;
+			real_vector3d left;
+
+			cross_product3d(global_up3d, &physics->aiming, &left);
+			normalize3d(&left);
+			point_from_line3d(
+				(real_point3d *)&forward,
+				ground_normal,
+				-dot_product3d(&forward, ground_normal),
+				(real_point3d *)&forward);
+			point_from_line3d(
+				(real_point3d *)&left,
+				ground_normal,
+				-dot_product3d(&left, ground_normal),
+				(real_point3d *)&left);
+			facing.i = physics->movement_desired.i * physics->forward.i -
+				physics->forward.j * physics->movement_desired.j;
+			facing.j = physics->movement_desired.j * physics->forward.i +
+				physics->movement_desired.i * physics->forward.j;
+			move_direction.i = forward.i * physics->movement_desired.i +
+				left.i * physics->movement_desired.j;
+			move_direction.j = forward.j * physics->movement_desired.i +
+				left.j * physics->movement_desired.j;
+			move_direction.k = forward.k * physics->movement_desired.i +
+				left.k * physics->movement_desired.j +
+				physics->movement_desired.k;
+			if (!climbing)
+				move_direction.k *= 5.f;
+			normalize3d(&move_direction);
+		}
+
+		if (!TEST_FLAG(in_flags, _biped_physics_in_climb_anything_bit))
+		{
+			if (move_direction.k <= physics->downhill_k1)
+			{
+				speed *= physics->downhill_velocity_scale;
+			}
+			else if (move_direction.k < physics->downhill_k0)
+			{
+				speed *= (move_direction.k - physics->downhill_k0) *
+					(physics->downhill_velocity_scale - 1.f) /
+					(physics->downhill_k1 - physics->downhill_k0) + 1.f;
+			}
+			else if (move_direction.k >= physics->uphill_k1)
+			{
+				speed *= physics->uphill_velocity_scale;
+			}
+			else if (move_direction.k > physics->uphill_k0)
+			{
+				speed *= (move_direction.k - physics->uphill_k0) *
+					(physics->uphill_velocity_scale - 1.f) /
+					(physics->uphill_k1 - physics->uphill_k0) + 1.f;
+			}
+		}
+
+		{
+			real_vector3d desired_velocity;
+			real_vector3d acceleration;
+			real_vector3d direction;
+			real_vector3d velocity_change;
+			boolean slipping = FALSE;
+
+			scale_vector3d(&move_direction, speed * (1.f - physics->movement_penalty), &desired_velocity);
+			acceleration.i = desired_velocity.i - physics->velocity.i;
+			acceleration.j = desired_velocity.j - physics->velocity.j;
+			acceleration.k = desired_velocity.k - physics->velocity.k;
+			direction = acceleration;
+			if (normalize3d(&direction) > physics->acceleration_maximum)
+			{
+				if (!TEST_FLAG(in_flags, _biped_physics_in_climb_anything_bit))
+					slipping = TEST_FLAG(in_flags, _biped_physics_in_slipping_bit);
+				scale_vector3d(&direction, physics->acceleration_maximum, &velocity_change);
+			}
+			else
+			{
+				velocity_change = acceleration;
+			}
+
+			velocity_change.i -= ground_normal->i * (1.f / 128.f);
+			velocity_change.j -= ground_normal->j * (1.f / 128.f);
+			velocity_change.k -= ground_normal->k * (1.f / 128.f);
+			physics->out_flags = slipping ? FLAG(_biped_physics_out_slipping_bit) : 0;
+			add_vectors3d(&velocity_change, &physics->velocity, &physics->new_velocity);
+			if (TEST_FLAG(physics->out_flags, _biped_physics_out_slipping_bit))
+				physics->new_velocity.k -= global_gravity;
+		}
+	}
+
+	if (TEST_FLAG(physics->in_flags, _biped_physics_in_no_collision_bit))
+	{
+		collision_flags = 0;
+	}
+	else if (TEST_FLAG(physics->in_flags, _biped_physics_in_dead_bit))
+	{
+		collision_flags = _collision_test_for_bipeds_dead_flags;
+	}
+	else
+	{
+		collision_flags = TEST_FLAG(physics->in_flags, _biped_physics_in_pass_through_bipeds_bit) ?
+			_collision_test_for_bipeds_passthrough_living_flags :
+			_collision_test_for_bipeds_living_flags;
+		if (TEST_FLAG(physics->in_flags, _biped_physics_in_pass_through_players_bit))
+			collision_flags |= FLAG(_collision_test_skip_player_bipeds_bit);
+	}
+
+	call_position = physics->position;
+	call_velocity = physics->new_velocity;
+	call_velocity.k += physics->crouch_velocity;
+	motion->in_flags = in_flags;
+	motion->facing = facing;
+	*flags = collision_flags;
+	*position = call_position;
+	*velocity = call_velocity;
+}
+
 /* I's move build to the call: biped_update_moving (bipeds.c 4297 on in the ship form) and biped_update_physics up to
    the move's call (bipedstage3's stop 1, 3302-3304), the next piece's (the coder's brief). It fills M's entry (the
    physics record, the in-flags, the facing) and the call's flags, position and velocity, and returns 1 at the call;
