@@ -65050,6 +65050,230 @@ def collindex_serveray_cut(tree):
     return 1
 collindex_serveray_cut(TREE)
 
+# PSP_COLLINDEX_RAYFAST=1 (the served ray's per-cell work cut, docs/box_collision.md section 12.7 part 8; needs
+# PSP_COLLINDEX_SERVERAY=1 and a power-of-two PSP_COLLINDEX_CELL; keep word "collindexrayfast"): psp_ci_serve_ray hands
+# the same candidates in the same order with less work a cell, from the lab's findings/collraycode_2026-11-26.md:
+# (1) the direction's reciprocals once a ray, so neither the slab test nor the stepping's setup divides (the cell of a
+# point is a multiply by the size's reciprocal, exact for a power-of-two size, so the cells are cell_at's);
+# (2) no list of kept cells: a ray's cells move one way in x and one way in y, so the steps whose 3x3 block holds a cell
+# are one run, and a cell met before is in the last step's block, an O(1) test made before the box test;
+# (3) a layer with no entries is skipped, by a count a layer kept where an entry is linked, unlinked and rebuilt.
+# Without the list the 512-cell fallback goes; the 256 candidates and 4,096 steps stay. Without the keep word the
+# ray is the old one (the counts are still kept), so a pair can A/B it on one build.
+COLLINDEX_RAYFAST = os.environ.get("PSP_COLLINDEX_RAYFAST", "") == "1"
+RAYFAST_CODE = r"""
+/* PSP_COLLINDEX_RAYFAST (psp_fixups.py): the served ray's per-cell work cut */
+static int psp_ci_rayfast_on(void)
+{
+	static int on = -1;
+
+	if (on < 0)
+	{
+		on = PSP_KEEP_ONCE("collindexrayfast") ? 1 : 0;
+		if (on)
+			platform_psp_log("collindexrayfast: the served ray's fast form on (reciprocals, no kept-cell list, empty layers skipped)");
+	}
+	return on;
+}
+/* psp_ci_seg_hits_box with the direction's reciprocals (idx, idy; unused where dx, dy is 0) */
+static int psp_ci_seg_hits_box_r(real x0, real y0, real dx, real dy, real idx, real idy, real bx0, real by0, real bx1, real by1)
+{
+	real t0 = 0.0f, t1 = 1.0f, ta, tb, t;
+
+	if (dx == 0.0f)
+	{
+		if (x0 < bx0 || x0 > bx1)
+			return 0;
+	}
+	else
+	{
+		ta = (bx0 - x0) * idx;
+		tb = (bx1 - x0) * idx;
+		if (ta > tb)
+		{
+			t = ta;
+			ta = tb;
+			tb = t;
+		}
+		if (ta > t0)
+			t0 = ta;
+		if (tb < t1)
+			t1 = tb;
+		if (t0 > t1)
+			return 0;
+	}
+	if (dy == 0.0f)
+	{
+		if (y0 < by0 || y0 > by1)
+			return 0;
+	}
+	else
+	{
+		ta = (by0 - y0) * idy;
+		tb = (by1 - y0) * idy;
+		if (ta > tb)
+		{
+			t = ta;
+			ta = tb;
+			tb = t;
+		}
+		if (ta > t0)
+			t0 = ta;
+		if (tb < t1)
+			t1 = tb;
+		if (t0 > t1)
+			return 0;
+	}
+	return 1;
+}
+/* psp_ci_cell_at's cell from v already scaled by the size's reciprocal */
+static long psp_ci_cell_q(real q)
+{
+	long i = (long)q;
+
+	if ((real)i > q)
+		i--;
+	return i < -32000 ? -32000 : i > 32000 ? 32000 : i;
+}
+static int psp_ci_serve_ray_fast(real_point3d const *p, real_vector3d const *v, long *out, int most)
+{
+	real x0 = p->x, y0 = p->y, x1 = p->x + v->i, y1 = p->y + v->j;
+	real dx = x1 - x0, dy = y1 - y0;
+	real idx = dx != 0.0f ? 1.0f / dx : 0.0f, idy = dy != 0.0f ? 1.0f / dy : 0.0f; /* the ray's divides */
+	real adx = idx < 0 ? -idx : idx, ady = idy < 0 ? -idy : idy;
+	int layer, n = 0;
+	short e;
+
+	tick2_cs_settle_held(); /* a deleted object's entry leaves first */
+	if (!psp_ci_live())
+		return psp_ci_ray_walk();
+	for (layer = 0; layer < psp_ci_nl; layer++)
+	{
+		real size, inv, tx, ty, ddx, ddy;
+		long cx, cy, ex, ey, steps, s, pcx = 0, pcy = 0;
+		int sx, sy, first = 1;
+
+		if (!psp_ci_layer_n[layer]) /* no entries in the layer: no candidates */
+			continue;
+		size = psp_ci_size(layer);
+		inv = 1.0f / size; /* exact: the size is a power of two */
+		cx = psp_ci_cell_q(x0 * inv);
+		cy = psp_ci_cell_q(y0 * inv);
+		ex = psp_ci_cell_q(x1 * inv);
+		ey = psp_ci_cell_q(y1 * inv);
+		steps = (ex > cx ? ex - cx : cx - ex) + (ey > cy ? ey - cy : cy - ey) + 1;
+		sx = dx > 0.0f ? 1 : -1; /* the direction's sign: the old ex > cx stepped back where the ray stays in a column */
+		sy = dy > 0.0f ? 1 : -1;
+		tx = dx != 0.0f ? ((real)(cx + (sx > 0)) * size - x0) * idx : 2.0f;
+		ty = dy != 0.0f ? ((real)(cy + (sy > 0)) * size - y0) * idy : 2.0f;
+		ddx = dx != 0.0f ? size * adx : 2.0f;
+		ddy = dy != 0.0f ? size * ady : 2.0f;
+		if (steps > 4096)
+			return psp_ci_ray_walk();
+		for (s = 0; s < steps; s++)
+		{
+			long ox, oy;
+
+			for (ox = -1; ox <= 1; ox++)
+				for (oy = -1; oy <= 1; oy++)
+				{
+					long gx = cx + ox, gy = cy + oy;
+
+					/* met before: the steps whose block holds a cell are one run, so it was in the last step's block */
+					if (!first && gx - pcx <= 1 && pcx - gx <= 1 && gy - pcy <= 1 && pcy - gy <= 1)
+						continue;
+					/* a neighbour only when the ray passes within half a cell of it, where its layer's spheres can reach */
+					if ((ox || oy) && !psp_ci_seg_hits_box_r(x0, y0, dx, dy, idx, idy, ((real)gx - 0.5f) * size, ((real)gy - 0.5f) * size,
+						((real)gx + 1.5f) * size, ((real)gy + 1.5f) * size))
+						continue;
+					if (psp_ci_bits) /* collindexbits: a clear bit, no entry of this layer in the cell's buckets */
+					{
+						unsigned i = psp_ci_occ_bit(layer, gx, gy);
+
+						if (!((psp_ci_occ[layer][i >> 5] >> (i & 31)) & 1))
+							continue;
+					}
+					for (e = psp_ci_serve_head(layer, gx, gy); e >= 0; e = psp_ci[e].next)
+						if (psp_ci[e].layer == layer && psp_ci[e].cx == gx && psp_ci[e].cy == gy)
+						{
+							if (n >= most)
+								return psp_ci_ray_walk();
+							out[n++] = psp_ci[e].index;
+						}
+				}
+			first = 0;
+			pcx = cx;
+			pcy = cy;
+			if (cx == ex && cy == ey)
+				break;
+			if (tx < ty)
+			{
+				tx += ddx;
+				cx += sx;
+			}
+			else
+			{
+				ty += ddy;
+				cy += sy;
+			}
+		}
+	}
+	for (e = psp_ci_large; e >= 0; e = psp_ci[e].next)
+	{
+		if (n >= most)
+			return psp_ci_ray_walk();
+		out[n++] = psp_ci[e].index;
+	}
+	psp_ci_rayserved[0]++;
+	psp_ci_rayserved[1] += n;
+	if ((psp_ci_rayserved[0] & 0x3FFF) == 0)
+		platform_psp_log("collindexserveray: rays served %lu, objects handed %lu, walked instead %lu (bits %d, layers %d, cache %d)",
+			psp_ci_rayserved[0], psp_ci_rayserved[1], psp_ci_rayserved[2], psp_ci_bits, psp_ci_nl, psp_ci_caching ? PSP_CI_CACHE : 0);
+	return n;
+}
+"""
+def collindex_rayfast_cut(tree):
+    if not COLLINDEX_RAYFAST:
+        return 0
+    if not COLLINDEX_SERVERAY:
+        check_fail("psp_fixups: PSP_COLLINDEX_RAYFAST=1 needs PSP_COLLINDEX_SERVERAY=1 (and PSP_COLLINDEX_SERVE=1, PSP_COLLINDEX=1)")
+        return 0
+    import math
+    if COLLINDEX_CELL <= 0 or math.frexp(COLLINDEX_CELL)[0] != 0.5:
+        check_fail("psp_fixups: PSP_COLLINDEX_RAYFAST=1 needs a power-of-two PSP_COLLINDEX_CELL (its cells are a multiply by the size's reciprocal)")
+        return 0
+    op = os.path.join(tree, "source/objects/objects.c")
+    o = open(op, errors="surrogateescape").read()
+    def one(text, old, new, what, a=0, b=None):
+        b = len(text) if b is None else b
+        if text.count(old, a, b) != 1:
+            check_fail("psp_fixups: COLLINDEX_RAYFAST: %s matches %d times" % (what, text.count(old, a, b)))
+            return text
+        i = text.index(old, a, b)
+        return text[:i] + new + text[i + len(old):]
+    # the count a layer: linked in psp_ci_set, unlinked in psp_ci_unlink, cleared with the bits in psp_ci_rebuild
+    o = one(o, "static short psp_ci_head[PSP_CI_BUCKETS], psp_ci_large = -1;\n",
+            "static short psp_ci_head[PSP_CI_BUCKETS], psp_ci_large = -1;\n"
+            "static unsigned short psp_ci_layer_n[PSP_CI_LAYERS]; /* PSP_COLLINDEX_RAYFAST: the entries a layer, the large list's not counted */\n", "the index's heads")
+    o = one(o, "\tpsp_ci[k].in = 0;\n\tpsp_ci_changed();\n",
+            "\tpsp_ci[k].in = 0;\n\tpsp_ci_changed();\n\tif (!psp_ci[k].large) /* PSP_COLLINDEX_RAYFAST */\n\t\tpsp_ci_layer_n[psp_ci[k].layer]--;\n", "the unlink")
+    o = one(o, "\te->in = 1;\n\tpsp_ci_changed();\n",
+            "\te->in = 1;\n\tpsp_ci_changed();\n\tif (!large) /* PSP_COLLINDEX_RAYFAST */\n\t\tpsp_ci_layer_n[layer]++;\n", "the set's link")
+    o = one(o, "\tmemset(psp_ci_occ, 0, sizeof(psp_ci_occ));\n\tpsp_ci_changed();\n",
+            "\tmemset(psp_ci_occ, 0, sizeof(psp_ci_occ));\n\tmemset(psp_ci_layer_n, 0, sizeof(psp_ci_layer_n)); /* PSP_COLLINDEX_RAYFAST */\n\tpsp_ci_changed();\n", "the rebuild's clear")
+    head = "int psp_ci_serve_ray(real_point3d const *p, real_vector3d const *v, long *out, int most)\n{\n"
+    o = one(o, head, RAYFAST_CODE[1:] + head, "the served ray's head")
+    a = o.index(head)
+    b = o.index("\n}\n", a)
+    o = one(o, "\ttick2_cs_settle_held(); /* a deleted object's entry leaves first */\n",
+            "\tif (psp_ci_rayfast_on()) /* PSP_COLLINDEX_RAYFAST */\n\t\treturn psp_ci_serve_ray_fast(p, v, out, most);\n"
+            "\ttick2_cs_settle_held(); /* a deleted object's entry leaves first */\n", "the served ray's settle", a, b)
+    if not CHECK_ONLY:
+        open(op, "w", errors="surrogateescape").write(o)
+    print("psp_fixups: COLLINDEX_RAYFAST: the served ray's per-cell work cut under keep word collindexrayfast")
+    return 1
+collindex_rayfast_cut(TREE)
+
 # PSP_TICK2=biped (slice 1's BIPED line 1 and CONTROL, the lab's spec section 34; the cut sheet in the lab's
 # tick_store_biped_plan.md): the unit datum's 96-byte span from desired_facing_vector to throttle (CONTROL's
 # facing, aiming and looking requests and throttle, interleaved with motion's aim and look vectors and their
