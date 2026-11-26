@@ -68882,6 +68882,31 @@ def tick2_motionnew_bench_cut(tree):
     return 1
 tick2_motionnew_bench_cut(TREE)
 
+# PSP_CALLTRACE=1 with PSP_TICK2_COLLNEW=1, either form (the lead 2026-11-26 11:4x (2)): since task 4 piece 3 the
+# biped's move is psp/src/store_coll.c's store_coll_move (collision_move_pill moved verbatim and renamed; bipeds.c's
+# physics calls it off form, store_motion.c's on form), so CALLTRACE_QUERIES' wrap of collisions.c's collision_move_pill
+# no longer sees it. This writes a copy of store_coll.c into the tree at the same relative path with store_coll_move
+# wrapped by that query's own lines, logged under the engine's name so a trace's move lines compare with those before
+# piece 3; psp_build.py compiles the copy in its place
+TICK2_COLLNEW_TRACE_SRC = os.path.join(TICK2_COLLNEW_DIR, "psp", "src", "store_coll.c")
+def calltrace_store_move_cut(tree):
+    if not (CALLTRACE and TICK2_COLLNEW):
+        return 0
+    text = open(TICK2_COLLNEW_TRACE_SRC, errors="surrogateescape").read()
+    pre, post = next((q[3], q[4]) for q in CALLTRACE_QUERIES if q[1] == "collision_move_pill")
+    got = calltrace_wrap(text, "psp/src/store_coll.c", "store_coll_move", CALLTRACE_IN, pre, post)
+    if got is None:
+        return 0
+    text, start = got
+    text = text[:start] + CALLTRACE_PRELUDE + "\n" + text[start:]
+    if not CHECK_ONLY:
+        os.makedirs(os.path.join(tree, "psp", "src"), exist_ok=True)
+        open(os.path.join(tree, "psp", "src", "store_coll.c"), "w", errors="surrogateescape").write(text)
+    print("psp_fixups: CALLTRACE: psp/src/store_coll.c copied into the tree, store_coll_move wrapped as the move query "
+          "(collision_move_pill)")
+    return 1
+calltrace_store_move_cut(TREE)
+
 if CHECK_ONLY:
     for message in count_failures:
         print(message)

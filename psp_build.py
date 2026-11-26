@@ -675,7 +675,10 @@ def units():
     # slice 1's task 5: the bipeds' motion stages (store_motion.c), built as bipeds.c is, whose code they replace;
     # store_coll.c's G is under the same define (motionnew, above)
     if os.environ.get("PSP_TICK2_COLLNEW", "") == "1":
-        items.append((os.path.join(HERE, "psp/src/store_coll.c"),
+        # the copy psp_fixups.py's calltrace_store_move_cut writes, named relative to the tree so its object, LTO
+        # partner (LTO_LIKE_UNITS) and profile name are the original's
+        trace = os.environ.get("PSP_CALLTRACE", "") == "1"
+        items.append(("psp/src/store_coll.c" if trace else os.path.join(HERE, "psp/src/store_coll.c"),
                       ninja_flags("build/linux/obj/source/physics/collisions.o"), motionnew))
     if motionnew:
         # the bench copy psp_fixups.py's tick2_motionnew_bench_cut writes, named relative to the tree so its object,
