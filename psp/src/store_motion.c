@@ -43,15 +43,23 @@ Built with PSP_TICK2_MOTIONNEW=1 (psp_build.py), as bipeds.c is.
 #include "mcc_seats.h" /* port: port/linux/game/mcc_seats.c */
 #include "stubbs_mode.h" /* port: port/linux/game/stubbs_mode.c */
 #include "stubbs_player.h" /* port: port/linux/game/stubbs_player.c */
+#include "ai/ai_debug.h" /* M's helpers: ai_debug_describe_actor (bipeds.c 281) */
+#include "ai/ai.h" /* M's helpers: ai_handle_bump (bipeds.c 282) */
 #include "ai/actors.h"
 #include "cseries/errors.h" /* M's physics tail: error, _error_silent (bipeds.c 284) */
 #include "cutscene/cinematics.h"
+#include "cutscene/recorded_animations.h" /* M's helpers: recorded_animation_controlling_unit (bipeds.c 287) */
 #include "devices/device_definitions.h" /* machine_definition_get (bipeds.c 288) */
 #include "devices/devices.h" /* _machine_never_appears_locked_bit (bipeds.c 289) */
+#include "effects/material_effects.h" /* M's helpers: material_effect_visible, material_effect_new_from_point (bipeds.c 290) */
+#include "game/cheats.h" /* M's helpers: cheat (bipeds.c 291) */
+#include "game/game_engine.h" /* M's helpers: game_engine_running (bipeds.c 293) */
 #include "game/game_globals.h"
+#include "game/player_rumble.h" /* M's helpers: rumble_player_impulse, struct rumble_definition (bipeds.c 295) */
 #include "game/players.h"
 #include "models/model_animation_definitions.h"
 #include "models/model_definitions.h"
+#include "objects/damage.h" /* M's helpers: damage_data_new, object_cause_damage, struct damage_data (bipeds.c 301) */
 #include "physics/collision_bsp.h" /* M's physics tail: collision_surface_edge_ring_continues, collision_bsp_valid_surface_index (bipeds.c 308) */
 #include "physics/collision_bsp_definitions.h" /* PSP_DESIGNATOR (bipeds.c 239) */
 #include "physics/collision_debug.h" /* collision_debug_repeat and the rest (bipeds.c 310) */
@@ -59,6 +67,7 @@ Built with PSP_TICK2_MOTIONNEW=1 (psp_build.py), as bipeds.c is.
 #include "physics/collision_usage.h" /* COLLISION_USER_PUSH and POP, COLLISION_USER_DEPTH, MAXIMUM_COLLISION_USER_STACK_DEPTH (bipeds.c 314) */
 #include "scenario/scenario.h"
 #include "network_coop.h" /* port: port/linux/game/network_coop.c */
+#include "mcc_script_effects.h" /* M's helpers: mcc_script_effect_enabled, mcc_script_effects_bump, MCC_EFFECT_JETPACK (bipeds.c 321) */
 #include "mcc_movement.h" /* port: MCC weapon-authored movement penalties */
 #include "store_motion.h"
 #include "store_coll.h" /* M's physics tail: store_coll_move, store_coll_stand (piece 3's, store_coll.c) */
@@ -1469,6 +1478,7 @@ skipped the build's assignments and its tails read none of them (Part 1), so M's
 whole crossing. The tails are the next pieces' (the coder's), declared here with their contracts. */
 
 extern boolean debug_biped_physics, debug_biped_skip_collision; /* bipeds.c 506, 508 */
+boolean network_objects_may_delete(long object_index);          /* psp_campaign.c 303 (as bipeds.c 374) */
 void platform_psp_log(const char *format, ...);                 /* psp_platform.c 82 (as bipeds.c 264) */
 unsigned long psp_microseconds(void);                           /* psp_platform.c 2800 (as bipeds.c 265) */
 /* PSP_SWEEPREUSE (psp_fixups.py), as bipeds.c 329-331: collisions.c's */
@@ -2007,23 +2017,412 @@ static void store_motion_call(struct biped_physics *physics, real_vector2d facin
 	return;
 }
 
-/* biped_start_landing (bipeds.c, on the delete list: only biped_update_moving called it); the next piece's */
-static void store_motion_landing(
+/* bipeds.c's material effect constants (its constants block at 382-390 in the ship form at ff2bb9fb), which
+   store_motion.h's held text doesn't reach: the jump's two footsteps name _material_effect_biped_jump */
+enum
+{
+	_material_effect_biped_walk = 0,
+	_material_effect_biped_run,
+	_material_effect_biped_sliding,
+	_material_effect_biped_shuffle,
+	_material_effect_biped_jump,
+	_material_effect_biped_jump_land,
+};
+
+/* biped_make_footstep (bipeds.c 2276-2311 in the ship form at ff2bb9fb), not on tools/tick2_deleted.txt yet, but
+   every caller is (biped_jump, biped_try_to_make_footsteps, biped_update_landing, biped_update_slipping). The same
+   body; the calls between the six helpers are M's names */
+static void store_motion_footstep(
 	long biped_index,
-	real landing_velocity);
-/* biped_update_jumping (bipeds.c, on the delete list: only biped_update_moving called it); the next piece's */
-static void store_motion_jumping(
-	long biped_index,
-	struct unit_animation_update_data *animation);
-/* biped_bumped_object (bipeds.c, on the delete list: only biped_update_moving called it); the next piece's */
+	short event_index,
+	short contact_point_index)
+{
+	struct biped_datum *biped = biped_get(biped_index);
+	struct biped_definition *definition = biped_definition_get(biped->definition_index);
+
+	match_assert("c:\\halo\\SOURCE\\units\\bipeds.c", 3965, COLLISION_USER_DEPTH < MAXIMUM_COLLISION_USER_STACK_DEPTH);
+	COLLISION_USER_PUSH(_collision_user_bipeds);
+
+	if (contact_point_index<definition->biped.contact_points.count &&
+		definition->biped.material_effects.index!=NONE &&
+		material_effect_visible(&biped->object.root->bounding_sphere_center))
+	{
+		struct biped_contact_point *contact_point = TAG_BLOCK_GET_ELEMENT(
+			&definition->biped.contact_points,
+			contact_point_index,
+			struct biped_contact_point);
+		struct object_marker marker;
+
+		if (object_get_marker_by_name(biped_index, contact_point->marker_name, &marker, 1))
+		{
+			material_effect_new_from_point(
+				definition->biped.material_effects.index,
+				event_index,
+				&marker.matrix.position,
+				0.f);
+		}
+	}
+
+	match_assert("c:\\halo\\SOURCE\\units\\bipeds.c", 3982, COLLISION_USER_DEPTH > 1);
+	COLLISION_USER_POP();
+
+	return;
+}
+/* biped_jump (bipeds.c 2144-2226 in the ship form at ff2bb9fb), on the delete list: only biped_update's chain called
+   it (biped_update 5150, which store_motion_tail carries, and biped_update_jumping). The
+   same body; the HALO_GAME_BROWSER block (2175-2179) goes, never defined on the PSP; PSP_BMS(W)(biped, X) is
+   biped->X; PSP_BMS_SYNC (2206, 2211) goes, its call bare; and biped_make_footstep (2220, 2221) is
+   store_motion_footstep */
+static boolean store_motion_jump(
+	long biped_index)
+{
+	{ void psp_ws_dirty(long object_index); psp_ws_dirty(biped_index); } /* (FIXES_BIPEDSTAGE #wsdirty) 1c: a write outside the staged passes */
+	struct biped_datum *biped = biped_get(biped_index);
+	struct biped_definition *definition = biped_definition_get(biped->definition_index);
+	boolean jumped = FALSE;
+
+	if (!TEST_FLAG(biped->biped.flags, _biped_airborne_bit) &&
+		(*tick2_unit_bip2_of(biped->object.root)).landing!=1)
+	{
+		long actor_index;
+		real_vector3d jump_velocity;
+		real jump_magnitude;
+
+		jumped = TRUE;
+		jump_magnitude = definition->biped.jump_velocity;
+		if (biped->unit.player_index!=NONE)
+		{
+			struct game_globals_player_information *player_information =
+				TAG_BLOCK_GET_ELEMENT(
+					&scenario_get_game_globals()->player_information,
+					0,
+					struct game_globals_player_information);
+
+			jump_magnitude *=
+				1.f - biped->unit.body_stun*player_information->stun_turning_penalty;
+		}
+		/* port: MCC's host-approved jump also applies to client prediction. */
+		if ((cheat.super_jump || mcc_script_effect_enabled(MCC_EFFECT_SUPER_JUMP)) && biped->unit.player_index!=NONE)
+			jump_magnitude *= 4.f;
+
+		jump_velocity = biped->object.root->translational_velocity;
+		{
+			real upward_velocity =
+				jump_velocity.i*biped->object.root->up.i +
+				(jump_velocity.k*biped->object.root->up.k +
+				jump_velocity.j*biped->object.root->up.j);
+
+			if (upward_velocity<jump_magnitude)
+			{
+				real velocity_delta = jump_magnitude-upward_velocity;
+
+				jump_velocity.i += biped->object.root->up.i*velocity_delta;
+				jump_velocity.j += biped->object.root->up.j*velocity_delta;
+				jump_velocity.k += biped->object.root->up.k*velocity_delta;
+			}
+		}
+
+		actor_index = biped->unit.swarm_actor_index;
+		if (actor_index==NONE)
+			actor_index = biped->unit.actor_index;
+		if (actor_index!=NONE)
+		{
+			boolean leap = (*tick2_unit_anim_of(biped->object.root)).state==_unit_state_leap_start ||
+				(*tick2_unit_anim_of(biped->object.root)).state==_unit_state_leap_airborne;
+
+			jumped = actor_aim_jump(
+				actor_index,
+				biped_index,
+				leap,
+				jump_magnitude,
+				&jump_velocity);
+		}
+
+		if (jumped)
+		{
+			biped->object.root->translational_velocity = jump_velocity;
+			SET_FLAG(biped->biped.flags, _biped_airborne_bit, TRUE);
+			(*tick2_unit_bip2_of(biped->object.root)).jump_recovery_timer = 0;
+			(*tick2_unit_bip2_of(biped->object.root)).support_surface_index = NONE;
+			store_motion_footstep(biped_index, _material_effect_biped_jump, 0);
+			store_motion_footstep(biped_index, _material_effect_biped_jump, 1);
+		}
+	}
+
+	return jumped;
+}
+/* biped_bumped_object (bipeds.c 766-820 in the ship form at ff2bb9fb), on the delete list: only biped_update_moving
+   called it. The same body */
 static void store_motion_bumped(
 	long biped_index,
 	long object_index,
-	real_vector3d const *old_velocity);
-/* biped_falling_damage (bipeds.c, on the delete list: only biped_update_moving called it); the next piece's */
+	real_vector3d const *old_velocity)
+{
+	struct biped_datum *biped = biped_get(biped_index);
+	char bump_ticks;
+
+	biped_definition_get(biped->definition_index);
+	bump_ticks = (*tick2_unit_bip2_of(biped->object.root)).bump_ticks;
+	if (bump_ticks < 0)
+	{
+		if (object_index == NONE)
+			(*tick2_unit_bip2_of(biped->object.root)).bump_ticks = bump_ticks + 1;
+		else
+			(*tick2_unit_bip2_of(biped->object.root)).bump_ticks = -15;
+	}
+	else if (object_index != NONE)
+	{
+		struct object_datum *object = object_get(object_index);
+
+		ai_handle_bump(biped_index, object_index, old_velocity);
+		if (biped->unit.player_index != NONE ||
+			recorded_animation_controlling_unit(biped_index))
+		{
+			if ((*tick2_unit_bip2_of(biped->object.root)).bump_object_index != object_index)
+			{
+				(*tick2_unit_bip2_of(biped->object.root)).bump_object_index = object_index;
+				(*tick2_unit_bip2_of(biped->object.root)).bump_ticks = 0;
+			}
+			else
+			{
+				(*tick2_unit_bip2_of(biped->object.root)).bump_ticks++;
+				if ((*tick2_unit_bip2_of(biped->object.root)).bump_ticks > 3)
+				{
+					/* port: MCC handles local/remote ownership without the local-only helper. */
+					if (!mcc_script_effects_bump(biped_index, object_index) &&
+						object->object.type == _object_type_biped && cheat.bump_possession)
+					{
+						short local_player_index = unit_get_local_player_index(biped_index);
+
+						if (local_player_index != NONE)
+						{
+							(*tick2_unit_bip2_of(((struct biped_datum *)object)->object.root)).bump_ticks = -15;
+							players_set_local_player_unit(local_player_index, object_index);
+						}
+					}
+					(*tick2_unit_bip2_of(biped->object.root)).bump_ticks = -15;
+				}
+			}
+		}
+	}
+
+	return;
+}
+/* biped_falling_damage (bipeds.c 822-903 in the ship form at ff2bb9fb), on the delete list: only biped_update_moving
+   called it. The same body; the HALO_GAME_BROWSER block (842-848) is 847's line alone, "if (!immune)", never defined
+   on the PSP; PSP_BMS(biped, X) is biped->X; and the window wrappers (861's and 873's PSP_BMS_SYNCV, 897's
+   PSP_BMS_DROPV) go, their calls bare */
 static void store_motion_falling_damage(
 	long biped_index,
-	real collision_velocity);
+	real collision_velocity)
+{
+	struct biped_datum *biped = biped_get(biped_index);
+	struct biped_definition *definition = biped_definition_get(biped->definition_index);
+	struct game_globals_falling_damage *falling_damage = TAG_BLOCK_GET_ELEMENT(
+		&scenario_get_game_globals()->falling_damage,
+		0,
+		struct game_globals_falling_damage);
+	boolean immune =
+		TEST_FLAG(biped->unit.flags, _unit_no_falling_damage_bit) ||
+		TEST_FLAG(definition->biped.flags, _biped_immune_to_falling_damage_bit);
+	real falling_velocity = biped->object.root->translational_velocity.k;
+
+	/* port: MCC clients predict only the effect received from the host. */
+	if (!(cheat.jetpack || mcc_script_effect_enabled(MCC_EFFECT_JETPACK)) || biped->unit.player_index == NONE)
+	{
+		if (collision_velocity > falling_damage->runtime_minimum_damage_velocity)
+		{
+			if (!immune)
+			{
+				struct damage_data damage;
+
+				damage_data_new(&damage, falling_damage->falling_damage.index);
+				damage.scale =
+					(collision_velocity - falling_damage->runtime_minimum_damage_velocity) /
+					(falling_damage->runtime_maximum_damage_velocity -
+						falling_damage->runtime_minimum_damage_velocity);
+				damage.scale = PIN(
+					damage.scale,
+					0.f,
+					1.f);
+				object_cause_damage(&damage, biped_index, NONE, NONE, NONE, NULL);
+			}
+		}
+		else if (!TEST_FLAG(definition->biped.flags, _biped_flying_bit) &&
+			falling_velocity <
+				-falling_damage->runtime_maximum_falling_velocity)
+		{
+			if (!immune && !TEST_FLAG(biped->object.damage_flags, _object_dead_bit))
+			{
+				struct damage_data damage;
+
+				damage_data_new(&damage, falling_damage->maximum_distance_damage.index);
+				object_cause_damage(&damage, biped_index, NONE, NONE, NONE, NULL);
+			}
+
+			/* (port: not the host's biped on a client, which the host erases:
+			the delete was refused, and logged as done) */
+			if (!game_engine_running() &&
+				TEST_FLAG(biped->object.flags, _object_outside_of_map_bit) &&
+				player_index_from_unit_index(biped_index) == NONE &&
+				network_objects_may_delete(biped_index))
+			{
+				long actor_index = biped->unit.swarm_actor_index;
+
+				if (actor_index == NONE)
+					actor_index = biped->unit.actor_index;
+				error(
+					_error_silent,
+					"WARNING: biped %s (%s) fell outside world and was erased",
+					tag_name_strip_path(tag_get_name(biped->definition_index)),
+					ai_debug_describe_actor(
+						actor_index,
+						biped_index,
+						TRUE,
+						temporary,
+						256));
+				object_delete(biped_index);
+			}
+		}
+	}
+
+	return;
+}
+/* biped_start_landing (bipeds.c 919-968 in the ship form at ff2bb9fb), on the delete list: only biped_update_moving
+   called it. The same body; PSP_BMS(biped, X) is biped->X (924) */
+static void store_motion_landing(
+	long biped_index,
+	real landing_velocity)
+{
+	struct biped_datum *biped = biped_get(biped_index);
+	struct biped_definition *definition = biped_definition_get(biped->definition_index);
+	real minimum_soft_landing_velocity =
+		definition->biped.minimum_soft_landing_velocity * (1.f / TICKS_PER_SECOND);
+	real minimum_hard_landing_velocity =
+		definition->biped.minimum_hard_landing_velocity * (1.f / TICKS_PER_SECOND);
+
+	short landing_type;
+	real velocity;
+	real velocity_range;
+	real recovery_time;
+
+	if (landing_velocity < minimum_soft_landing_velocity)
+		return;
+
+	if (landing_velocity < minimum_hard_landing_velocity)
+	{
+		velocity = landing_velocity - minimum_soft_landing_velocity;
+		velocity_range =
+			minimum_hard_landing_velocity - minimum_soft_landing_velocity;
+		recovery_time = definition->biped.maximum_soft_landing_time;
+		landing_type = 0;
+	}
+	else
+	{
+		velocity = landing_velocity;
+		velocity_range =
+			definition->biped.maximum_hard_landing_velocity *
+				(1.f / TICKS_PER_SECOND) - minimum_hard_landing_velocity;
+		recovery_time = definition->biped.maximum_hard_landing_time;
+		landing_type = 1;
+	}
+
+	recovery_time *= TICKS_PER_SECOND;
+	if (velocity_range > 0.f)
+	{
+		velocity /= velocity_range;
+		velocity = PIN(velocity, 0.f, 1.f);
+		(*tick2_unit_bip2_of(biped->object.root)).landing = landing_type;
+		(*tick2_unit_bip2_of(biped->object.root)).landing_recovery_counter = 0;
+		(*tick2_unit_bip2_of(biped->object.root)).landing_recovery_time =
+			(char)(long)(recovery_time * velocity);
+	}
+
+	return;
+}
+/* biped_update_jumping (bipeds.c 2539-2618 in the ship form at ff2bb9fb), on the delete list: only
+   biped_update_moving called it. The same body; PSP_BMS(W)(biped, X) is biped->X; and biped_jump (2555) is
+   store_motion_jump */
+static void store_motion_jumping(
+	long biped_index,
+	struct unit_animation_update_data *animation)
+{
+	struct biped_datum *biped = biped_get(biped_index);
+
+	biped_definition_get(biped->definition_index);
+	if (!TEST_FLAG(biped->biped.flags, _biped_airborne_bit) &&
+		(*tick2_unit_bip2_of(biped->object.root)).landing != 1)
+	{
+		if ((*tick2_unit_bip2_of(biped->object.root)).jump_recovery_timer < SCHAR_MAX)
+			++(*tick2_unit_bip2_of(biped->object.root)).jump_recovery_timer;
+
+		if (TEST_FLAG((*tick2_unit_ctl_of(biped->object.root)).control_flags, _unit_control_jump_bit) &&
+			(*tick2_unit_bip2_of(biped->object.root)).jump_recovery_timer > 5)
+		{
+			store_motion_jump(biped_index);
+		}
+	}
+
+	/* port: MCC clients use replicated campaign state, not local cheat permissions. */
+	if ((cheat.jetpack || mcc_script_effect_enabled(MCC_EFFECT_JETPACK)) && biped->unit.player_index != NONE)
+	{
+		struct player_datum *player = player_get(biped->unit.player_index);
+		boolean impulse = FALSE;
+
+		if (TEST_FLAG((*tick2_unit_ctl_of(biped->object.root)).control_flags, _unit_control_weapon_primary_trigger_bit) &&
+			TEST_FLAG((*tick2_unit_ctl_of(biped->object.root)).control_flags, _unit_control_throw_grenade_bit))
+		{
+			real forward_velocity = MAX(
+				0.f,
+				dot_product3d(
+					&biped->object.root->translational_velocity,
+					&(*tick2_unit_bip1_of(biped->object.root)).aiming_vector));
+			real acceleration_scale = PIN(forward_velocity * 0.71428573f, 0.f, 1.f);
+			real_vector3d lateral_velocity;
+
+			point_from_line3d(
+				(real_point3d *)&biped->object.root->translational_velocity,
+				&(*tick2_unit_bip1_of(biped->object.root)).aiming_vector,
+				-forward_velocity,
+				(real_point3d *)&lateral_velocity);
+			point_from_line3d(
+				(real_point3d *)&biped->object.root->translational_velocity,
+				&lateral_velocity,
+				0.8f - 1.f,
+				(real_point3d *)&biped->object.root->translational_velocity);
+			point_from_line3d(
+				(real_point3d *)&biped->object.root->translational_velocity,
+				&(*tick2_unit_bip1_of(biped->object.root)).aiming_vector,
+				acceleration_scale * 0.04f -
+					acceleration_scale * acceleration_scale * 0.05f + 0.01f,
+				(real_point3d *)&biped->object.root->translational_velocity);
+			SET_FLAG(biped->biped.flags, _biped_airborne_bit, TRUE);
+			impulse = TRUE;
+		}
+
+		if (!impulse &&
+			TEST_FLAG((*tick2_unit_ctl_of(biped->object.root)).control_flags, _unit_control_crouch_modifier_bit) &&
+			TEST_FLAG(biped->biped.flags, _biped_airborne_bit))
+		{
+			real_vector3d *velocity = &biped->object.root->translational_velocity;
+
+			scale_vector3d(velocity, 0.8f - 1.f, velocity);
+		}
+
+		if (player->local_player_index != NONE && impulse)
+		{
+			struct rumble_definition rumble;
+
+			csmemset(&rumble, 0, sizeof(rumble));
+			rumble.motors[0].scale = 1.f;
+			rumble.motors[0].duration = 0.3f;
+			rumble.motors[0].transition_function = 3;
+			rumble_player_impulse(player->local_player_index, &rumble, 1.f, 1.f);
+		}
+	}
+
+	return;
+}
 
 /* _moving's tail: biped_update_moving from the return of its biped_update_physics(&physics) call to its end
    (4660-4831 in the ship form at ff2bb9fb; the old comment's 4792 and 4956 were another form's), on M's physics record
