@@ -625,3 +625,62 @@ static void store_intent_turning(long biped_index, struct biped_datum *biped, st
 		}
 	}
 }
+
+/* I's move build to the call: biped_update_moving (bipeds.c 4297 on in the ship form) and biped_update_physics up to
+   the move's call (bipedstage3's stop 1, 3302-3304), the next piece's (the coder's brief). It fills M's entry (the
+   physics record, the in-flags, the facing) and the call's flags, position and velocity, and returns 1 at the call;
+   0 where the build stops short, which is _moving's dead biped at rest alone (4324-4329), never one of I's living
+   bipeds. Declared here so the driver names its contract; defined with the build */
+static int store_intent_moving(long biped_index, struct biped_datum *biped, struct biped_definition *definition,
+	struct unit_animation_update_data *animation, struct store_motion *motion, unsigned long *flags,
+	real_point3d *position, real_vector3d *velocity);
+
+/* I's driver for staged biped k: biped_update's opening and bipedstage3's intent (psp_bipedstage3_intent; both on
+   the delete list) over I's functions, in their order. The open comes first, as bipedstage3 counted an intent before
+   its update ran: over the pool nothing runs (bipedstage3 ran no update for it either; M's piece names the rest). The
+   debug skip returns before the owner is set, as biped_update's did, and keeps nothing. Then the owner, the
+   pre-update verify and the animation's opening values, the head, turning for a biped not dead with its verify, and
+   the move's build to the call. The intent is kept at the call (stop 1) or, for a rider, at the tail (stop 2), with
+   the animation in M's entry either way (bipedstage3's record took it at both stops). Left out:
+   profile_enter(biped_update_section), which goes with biped_update, and BIPEDMOVE's psp_bms_start/_keep, which do
+   nothing under PSP_TICK2_ROOT (psp_bms_on is 0 there, so the window never opens) */
+void store_intent_run(short k, long biped_index)
+{
+	struct biped_datum *biped;
+	struct biped_definition *definition;
+	struct store_motion *motion;
+	void *const *outer;
+	short n = store_intent_open(biped_index);
+
+	if (n < 0)
+		return;
+	if (debug_biped_skip_update)
+		return;
+	biped = biped_get(biped_index);
+	definition = biped_definition_get(biped->definition_index);
+	motion = &store_motions[n];
+	outer = store_motion_owner_set(biped_index);
+	biped_verify_object_vectors(biped_index, "pre-update");
+
+	motion->animation.state_desired = _unit_state_idle;
+	motion->animation.crouching = FALSE;
+	if (!store_intent_head(biped_index, biped, definition, &motion->animation))
+	{
+		store_intent_keep(k, n, 2, 0, NULL, NULL, 0.f, 0.f);
+	}
+	else
+	{
+		unsigned long flags;
+		real_point3d position;
+		real_vector3d velocity;
+
+		if (!TEST_FLAG(biped->object.damage_flags, _object_dead_bit))
+		{
+			store_intent_turning(biped_index, biped, definition, &motion->animation);
+			biped_verify_object_vectors(biped_index, "post-turning");
+		}
+		if (store_intent_moving(biped_index, biped, definition, &motion->animation, motion, &flags, &position, &velocity))
+			store_intent_keep(k, n, 1, flags, &position, &velocity, motion->physics.height, motion->physics.width);
+	}
+	store_motion_owner_put(outer);
+}

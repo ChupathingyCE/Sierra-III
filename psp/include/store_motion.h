@@ -77,6 +77,9 @@ short store_intent_open(long biped_index);
 /* I's last act for staged biped k: its entry n kept, the sphere made, the ME given its half, k mapped to n */
 void store_intent_keep(short k, short n, int stop, unsigned long flags, real_point3d const *position,
 	real_vector3d const *velocity, real height, real width);
+/* I for staged biped k: biped_update to its move's call (stop 1) or, for a rider, to its tail (stop 2), kept as entry n
+   with the animation and the physics record in M's */
+void store_intent_run(short k, long biped_index);
 /* staged biped k's entry, or NULL (dead, no intent kept, or over the pool) */
 struct store_intent const *store_intent_of(short k);
 /* after M: the tick's counts, and the log line */
