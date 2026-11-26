@@ -67721,6 +67721,469 @@ def emo_trace(tree):
     return 1
 emo_trace(TREE)
 
+# PSP_LOFTRACE=1 (the builder 2026-11-25, the lead's 21:4x (3): emotions3397 found actor e3620001's block parting at
+# tick 3397's end, tick2 setting moving_into_player_line_of_fire and moving_into_fire_timer 22, old-only neither; one
+# writer, actor_emotion_update's line-of-fire check). That check as read, on whichever CPU runs it, and its inputs as
+# they stand at the tick's end on the main CPU. With the keep words "lofactorK loffromF loftraceT" (K the actor's
+# absolute index, its datum index's low 16 bits: e3620001 is lofactor1), for game time F to T:
+#   at the check, a record per step, made by the CPU running it (the Media Engine's on lines of their own,
+#     PSP_AIME_ME_SIDE): begin (the timer before, the definition's flags, the actor's vehicle, combat status, target
+#     type, control.moving, the flag before, control.moving_towards_vector, input body_position), friend (each prop the
+#     loop considers: index, unit, the attacking answer, player, shooting, unit_effect and its decay, the prop's
+#     body_position, the attack vector: unit_get_aiming_vector's for a player), block (the blockage, the vector to the
+#     aim line, its squared length, and whether the blockage test wrote that vector: its early exits leave it unset),
+#     gate (the moving direction's length and the direction normalized), move (the secondary blockage, the future
+#     point), dot (the dot, the threshold, the squared length again), end (the timer after, the flag, the crouch
+#     flags); each record with its tick, its CPU (1 the ME's work in the emulator, psp_me_context; 2 the ME itself)
+#     and its pass (1 the thinking done ahead, psp_aime_think_only; 2 aime2a's job; 4 the main CPU's like-for-like);
+#   at the tick's end (before its state lines, game.c, on the main CPU), the records made since, "lof: <tick> <main|me>
+#     cpuN passN <step> ...", the ME's only when aime2a's job isn't out (after its collection, which invalidates the
+#     main CPU's cache), then for F - 1 to T the inputs as they stand: "lof: <tick> state actor ..." and a "state
+#     prop" line for each prop the check would consider (the prop's fields; the unit's aim, its root position when it
+#     has no parent, its last unit effect and when).
+# Floats as their bits. Reads only, and writes its own statics; nothing when the keep words aren't given. Off by
+# default, a bench tool; refused with PSP_CALLTRACE=1 (the same state lines' call). Runs after EMOTRACE.
+LOFTRACE = os.environ.get("PSP_LOFTRACE", "") == "1"
+LOFTRACE_DECL = r"""
+/* LOFTRACE (psp_fixups.py, PSP_LOFTRACE=1): the line-of-fire check as read (see there) */
+void psp_lof_begin(long actor_index, unsigned long flags);
+boolean psp_lof_friend(long actor_index, long prop_index, boolean attacking, real_vector3d const *attack_vector);
+void psp_lof_block(short blockage, real_point3d const *source, real_vector3d const *vector, real_point3d const *friend_position,
+	real_vector3d const *to_line);
+real psp_lof_gate(real length, real_vector3d const *direction);
+void psp_lof_move(short secondary, real_point3d const *future);
+void psp_lof_dot(real dot, real threshold, real_vector3d const *to_line);
+void psp_lof_end(long actor_index);
+"""
+LOFTRACE_CORE = r"""
+/* LOFTRACE (psp_fixups.py, PSP_LOFTRACE=1): actor_emotion_update's line-of-fire check as read, on whichever CPU runs
+it, and its inputs at the tick's end (see there) */
+void platform_psp_log(const char *format, ...);
+int psp_keep_number(const char *prefix, int fallback);
+void psp_log_flush(void);
+int psp_lof_pass(void); /* actors.c */
+int psp_lof_job_out(void); /* actors.c */
+#define PSP_LOF_RECORDS 64
+struct psp_lof_record
+{
+	long tick;
+	short kind, cpu, pass, a;
+	long b, c;
+	unsigned long w[11];
+};
+struct psp_lof_side
+{
+	long on, count, dropped, spare;
+	struct psp_lof_record records[PSP_LOF_RECORDS];
+};
+/* each CPU's own records: the ME's on the lines aime2a's job may write (PSP_AIME_ME_SIDE), read and cleared by the main
+CPU only while the job isn't out */
+static struct psp_lof_side psp_lof_main;
+static struct psp_lof_side psp_lof_me PSP_AIME_ME_SIDE;
+/* the keep words, read once on the main CPU at the first tick's end, before any pass can record */
+static long psp_lof_slot = -2, psp_lof_from = -1, psp_lof_to = -1, psp_lof_lines;
+
+/* the batch written every 16 of these lines (lesson c4-logdrop) */
+static void psp_lof_logged(void)
+{
+	if (++psp_lof_lines % 16 == 0)
+		psp_log_flush();
+}
+#define PSP_LOF_LOG(...) (platform_psp_log(__VA_ARGS__), psp_lof_logged())
+
+static unsigned long psp_lof_bits(real value)
+{
+	union
+	{
+		real f;
+		unsigned long u;
+	} v;
+
+	v.f = value;
+	return v.u;
+}
+
+static struct psp_lof_side *psp_lof_here(void)
+{
+	return psp_work_on_me() ? &psp_lof_me : &psp_lof_main;
+}
+
+static struct psp_lof_record *psp_lof_add(int kind, int a)
+{
+	struct psp_lof_side *side = psp_lof_here();
+	struct psp_lof_record *r;
+	int k;
+
+	if (!side->on)
+		return NULL;
+	if (side->count >= PSP_LOF_RECORDS)
+	{
+		side->dropped++;
+		return NULL;
+	}
+	r = &side->records[side->count++];
+	r->tick = game_time_get();
+	r->kind = (short)kind;
+	r->a = (short)a;
+	r->cpu = (short)((psp_me_context ? 1 : 0) | (psp_cpu_is_me() ? 2 : 0));
+	r->pass = (short)psp_lof_pass();
+	r->b = r->c = 0;
+	for (k = 0; k < 11; k++)
+		r->w[k] = 0;
+	return r;
+}
+
+static void psp_lof_vector(unsigned long *w, real const *v)
+{
+	w[0] = psp_lof_bits(v[0]);
+	w[1] = psp_lof_bits(v[1]);
+	w[2] = psp_lof_bits(v[2]);
+}
+
+void psp_lof_begin(long actor_index, unsigned long flags)
+{
+	struct psp_lof_side *side;
+	struct actor_datum *actor;
+	struct psp_lof_record *r;
+	long tick;
+
+	if (psp_lof_slot < 0)
+		return;
+	side = psp_lof_here();
+	side->on = 0;
+	tick = game_time_get();
+	if (DATUM_INDEX_TO_ABSOLUTE_INDEX(actor_index) != psp_lof_slot || tick < psp_lof_from || tick > psp_lof_to)
+		return;
+	side->on = 1;
+	actor = actor_get(actor_index);
+	r = psp_lof_add(0, actor->emotions.moving_into_fire_timer);
+	if (!r)
+		return;
+	r->b = actor_index;
+	r->c = (long)flags;
+	r->w[0] = (unsigned long)actor->input.vehicle_index;
+	r->w[1] = (unsigned long)actor->state.combat_status;
+	r->w[2] = (unsigned long)actor->target.target_type;
+	r->w[3] = (actor->control.moving ? 1 : 0) | (actor->emotions.moving_into_player_line_of_fire ? 2 : 0);
+	psp_lof_vector(&r->w[4], &actor->control.moving_towards_vector.i);
+	psp_lof_vector(&r->w[7], &actor->input.position.body_position.x);
+}
+
+boolean psp_lof_friend(long actor_index, long prop_index, boolean attacking, real_vector3d const *attack_vector)
+{
+	struct psp_lof_record *r;
+	struct prop_datum *prop;
+
+	(void)actor_index;
+	if (psp_lof_slot < 0 || !psp_lof_here()->on || (r = psp_lof_add(1, attacking ? 1 : 0)) == NULL)
+		return attacking;
+	prop = prop_get(prop_index);
+	r->b = prop_index;
+	r->c = prop->unit_index;
+	r->w[0] = prop->player ? 1 : 0;
+	r->w[1] = prop->shooting ? 1 : 0;
+	r->w[2] = (unsigned long)prop->unit_effect;
+	r->w[3] = (unsigned long)prop->unit_effect_decay_ticks;
+	psp_lof_vector(&r->w[4], &prop->body_position.x);
+	/* (set by the answer for a player always, for another only when it attacks) */
+	if (prop->player || attacking)
+		psp_lof_vector(&r->w[7], &attack_vector->i);
+	return attacking;
+}
+
+void psp_lof_block(short blockage, real_point3d const *source, real_vector3d const *vector, real_point3d const *friend_position,
+	real_vector3d const *to_line)
+{
+	struct psp_lof_record *r;
+	real_vector2d planar;
+	real horizontal, projection, distance, dx, dy;
+	int wrote = 0;
+
+	if (psp_lof_slot < 0 || !psp_lof_here()->on || (r = psp_lof_add(2, blockage)) == NULL)
+		return;
+	/* the blockage test's own early exits, again (actor_perception_aiming_vector_test_blockage): past both, it wrote
+	the vector; before either, the caller's vector is whatever its stack held */
+	planar.i = vector->i;
+	planar.j = vector->j;
+	horizontal = magnitude2d(&planar);
+	if (!(_real_epsilon > fabs(horizontal)))
+	{
+		planar.i *= 1.0f / horizontal;
+		planar.j *= 1.0f / horizontal;
+		dx = friend_position->x - source->x;
+		dy = friend_position->y - source->y;
+		projection = dx * planar.i + dy * planar.j;
+		distance = square_root(dx * dx + dy * dy) * 0.8660254f;
+		wrote = projection > distance ? 2 : 1;
+	}
+	psp_lof_vector(&r->w[0], &to_line->i);
+	r->w[3] = psp_lof_bits(magnitude_squared3d(to_line));
+	r->w[4] = (unsigned long)wrote;
+}
+
+real psp_lof_gate(real length, real_vector3d const *direction)
+{
+	struct psp_lof_record *r;
+
+	if (psp_lof_slot < 0 || !psp_lof_here()->on || (r = psp_lof_add(3, 0)) == NULL)
+		return length;
+	r->w[0] = psp_lof_bits(length);
+	psp_lof_vector(&r->w[1], &direction->i);
+	return length;
+}
+
+void psp_lof_move(short secondary, real_point3d const *future)
+{
+	struct psp_lof_record *r;
+
+	if (psp_lof_slot < 0 || !psp_lof_here()->on || (r = psp_lof_add(4, secondary)) == NULL)
+		return;
+	psp_lof_vector(&r->w[0], &future->x);
+}
+
+void psp_lof_dot(real dot, real threshold, real_vector3d const *to_line)
+{
+	struct psp_lof_record *r;
+
+	if (psp_lof_slot < 0 || !psp_lof_here()->on || (r = psp_lof_add(5, 0)) == NULL)
+		return;
+	r->w[0] = psp_lof_bits(dot);
+	r->w[1] = psp_lof_bits(threshold);
+	r->w[2] = psp_lof_bits(magnitude_squared3d(to_line));
+}
+
+void psp_lof_end(long actor_index)
+{
+	struct psp_lof_side *side;
+	struct actor_datum *actor;
+	struct psp_lof_record *r;
+
+	if (psp_lof_slot < 0 || !(side = psp_lof_here())->on)
+		return;
+	actor = actor_get(actor_index);
+	r = psp_lof_add(6, actor->emotions.moving_into_fire_timer);
+	if (r)
+	{
+		r->w[0] = actor->emotions.moving_into_player_line_of_fire ? 1 : 0;
+		r->w[1] = (actor->emotions.crouch_blocking_line_of_fire ? 1 : 0) |
+			(actor->emotions.crouch_blocking_player_line_of_fire ? 2 : 0) | (actor->emotions.crouch_friends_in_line_of_fire ? 4 : 0);
+	}
+	side->on = 0;
+}
+
+static void psp_lof_dump(struct psp_lof_side *side, const char *name)
+{
+	long k;
+
+	for (k = 0; k < side->count; k++)
+	{
+		struct psp_lof_record const *r = &side->records[k];
+		unsigned long const *w = r->w;
+
+		switch (r->kind)
+		{
+		case 0:
+			PSP_LOF_LOG("lof: %ld %s cpu%d pass%d begin %08lx timer %d flags %08lx vehicle %08lx combat %ld target %ld moving %lu lof %lu toward %08lx %08lx %08lx body %08lx %08lx %08lx",
+				r->tick, name, r->cpu, r->pass, (unsigned long)r->b, r->a, (unsigned long)r->c, w[0], (long)w[1], (long)w[2], w[3] & 1,
+				w[3] >> 1, w[4], w[5], w[6], w[7], w[8], w[9]);
+			break;
+		case 1:
+			PSP_LOF_LOG("lof: %ld %s cpu%d pass%d friend %08lx unit %08lx attacking %d player %lu shooting %lu effect %ld decay %ld body %08lx %08lx %08lx aim %08lx %08lx %08lx",
+				r->tick, name, r->cpu, r->pass, (unsigned long)r->b, (unsigned long)r->c, r->a, w[0], w[1], (long)(short)w[2],
+				(long)(short)w[3], w[4], w[5], w[6], w[7], w[8], w[9]);
+			break;
+		case 2:
+			PSP_LOF_LOG("lof: %ld %s cpu%d pass%d block %d toline %08lx %08lx %08lx mag2 %08lx wrote %lu",
+				r->tick, name, r->cpu, r->pass, r->a, w[0], w[1], w[2], w[3], w[4]);
+			break;
+		case 3:
+			PSP_LOF_LOG("lof: %ld %s cpu%d pass%d gate length %08lx dir %08lx %08lx %08lx",
+				r->tick, name, r->cpu, r->pass, w[0], w[1], w[2], w[3]);
+			break;
+		case 4:
+			PSP_LOF_LOG("lof: %ld %s cpu%d pass%d move second %d future %08lx %08lx %08lx",
+				r->tick, name, r->cpu, r->pass, r->a, w[0], w[1], w[2]);
+			break;
+		case 5:
+			PSP_LOF_LOG("lof: %ld %s cpu%d pass%d dot %08lx threshold %08lx mag2 %08lx",
+				r->tick, name, r->cpu, r->pass, w[0], w[1], w[2]);
+			break;
+		default:
+			PSP_LOF_LOG("lof: %ld %s cpu%d pass%d end timer %d lof %lu crouch %lu",
+				r->tick, name, r->cpu, r->pass, r->a, w[0], w[1]);
+			break;
+		}
+	}
+	if (side->dropped)
+		PSP_LOF_LOG("lof: %ld %s dropped %ld", game_time_get(), name, side->dropped);
+	side->count = side->dropped = 0;
+}
+
+/* the tick's end, before its state lines (game.c), on the main CPU */
+void psp_lof_point(void)
+{
+	struct data_iterator iterator;
+	struct actor_datum *actor;
+	long tick;
+
+	if (psp_me_context || psp_cpu_is_me())
+		return;
+	if (psp_lof_slot == -2)
+	{
+		psp_lof_slot = psp_keep_number("lofactor", -1);
+		psp_lof_from = psp_keep_number("loffrom", 0);
+		psp_lof_to = psp_keep_number("loftrace", -1);
+		if (psp_lof_slot < 0 || psp_lof_to < 0)
+			psp_lof_slot = -1;
+		else
+			PSP_LOF_LOG("loftrace: actor slot %ld, game time %ld to %ld; %d records a CPU a tick, %d bytes each", psp_lof_slot, psp_lof_from,
+				psp_lof_to, PSP_LOF_RECORDS, (int)sizeof(struct psp_lof_record));
+	}
+	if (psp_lof_slot < 0)
+		return;
+	tick = game_time_get();
+	psp_lof_dump(&psp_lof_main, "main");
+	if (!psp_lof_job_out())
+		psp_lof_dump(&psp_lof_me, "me");
+	else if (psp_lof_me.count)
+		PSP_LOF_LOG("lof: %ld me out %ld", tick, psp_lof_me.count);
+	if (tick < psp_lof_from - 1 || tick > psp_lof_to || !actor_data || !actor_data->valid || !ai_globals ||
+		!ai_globals->ai_initialized_for_map)
+		return;
+	data_iterator_new(&iterator, actor_data);
+	while ((actor = (struct actor_datum *)data_iterator_next(&iterator)) != NULL)
+	{
+		long actor_index = iterator.datum_index;
+		struct prop_iterator props;
+		struct prop_datum *prop;
+
+		if (DATUM_INDEX_TO_ABSOLUTE_INDEX(actor_index) != psp_lof_slot)
+			continue;
+		PSP_LOF_LOG("lof: %ld state actor %08lx timer %d lof %d moving %d vehicle %08lx combat %d target %d toward %08lx %08lx %08lx body %08lx %08lx %08lx",
+			tick, (unsigned long)actor_index, (int)actor->emotions.moving_into_fire_timer,
+			actor->emotions.moving_into_player_line_of_fire ? 1 : 0, actor->control.moving ? 1 : 0,
+			(unsigned long)actor->input.vehicle_index, (int)actor->state.combat_status, (int)actor->target.target_type,
+			psp_lof_bits(actor->control.moving_towards_vector.i), psp_lof_bits(actor->control.moving_towards_vector.j),
+			psp_lof_bits(actor->control.moving_towards_vector.k), psp_lof_bits(actor->input.position.body_position.x),
+			psp_lof_bits(actor->input.position.body_position.y), psp_lof_bits(actor->input.position.body_position.z));
+		prop_iterator_new(&props, actor_index);
+		while ((prop = prop_iterator_next(&props)) != NULL)
+		{
+			real_vector3d aim = { 0.0f, 0.0f, 0.0f };
+			real_point3d origin = { 0.0f, 0.0f, 0.0f };
+			long parent = NONE, effect_type = NONE, effect_time = NONE;
+
+			if (prop->state < _prop_state_becoming_unacknowledged || prop->state > _prop_state_acknowledged || prop->enemy ||
+				prop->dead || prop->swarm || !(prop->player || prop->vehicle_index == NONE))
+				continue;
+			if (prop->player && prop->unit_index != NONE)
+			{
+				struct unit_datum *unit = unit_get(prop->unit_index);
+
+				unit_get_aiming_vector(prop->unit_index, &aim);
+				parent = unit->object.parent_object_index;
+				if (parent == NONE)
+					object_get_origin(prop->unit_index, &origin);
+				effect_type = unit->unit.last_unit_effect_type;
+				effect_time = unit->unit.game_time_at_last_unit_effect;
+			}
+			PSP_LOF_LOG("lof: %ld state prop %08lx unit %08lx player %d shooting %d effect %d decay %d body %08lx %08lx %08lx aim %08lx %08lx %08lx origin %08lx %08lx %08lx parent %08lx lastfx %ld at %ld",
+				tick, (unsigned long)props.index, (unsigned long)prop->unit_index, prop->player ? 1 : 0, prop->shooting ? 1 : 0,
+				(int)prop->unit_effect, (int)prop->unit_effect_decay_ticks, psp_lof_bits(prop->body_position.x),
+				psp_lof_bits(prop->body_position.y), psp_lof_bits(prop->body_position.z), psp_lof_bits(aim.i), psp_lof_bits(aim.j),
+				psp_lof_bits(aim.k), psp_lof_bits(origin.x), psp_lof_bits(origin.y), psp_lof_bits(origin.z), (unsigned long)parent,
+				effect_type, effect_time);
+		}
+	}
+}
+"""
+LOFTRACE_ACCESS = r"""
+/* LOFTRACE (psp_fixups.py, PSP_LOFTRACE=1): the pass a line-of-fire record is made in (1 the thinking done ahead, 2
+aime2a's job, 4 the main CPU's like-for-like pass), and whether aime2a's job is out (actor_perception.c) */
+int psp_lof_pass(void)
+{
+	return (psp_aime_think_only ? 1 : 0) | (psp_aime_job_now[0] ? 2 : 0) | (psp_aime2a_alike ? 4 : 0);
+}
+
+int psp_lof_job_out(void)
+{
+	return psp_aime2a_out ? 1 : 0;
+}
+"""
+
+def lof_trace(tree):
+    if not LOFTRACE:
+        return 0
+    if CALLTRACE:
+        check_fail("psp_fixups: LOFTRACE: PSP_CALLTRACE=1 edits the same state lines' call; build one tracer at a time")
+        return 0
+    texts = {}
+    def get(rel):
+        if rel not in texts:
+            texts[rel] = open(os.path.join(tree, rel), errors="surrogateescape").read()
+        return texts[rel]
+    rel = "source/ai/actor_perception.c"
+    text = get(rel)
+    head = re.compile(r"\nvoid actor_emotion_update\(\s*long actor_index\)\s*\{")
+    tail = "\n\tif (actor->emotions.defensive_crouch_timer > 0)"
+    found = head.findall(text)
+    if len(found) != 1:
+        check_fail("psp_fixups: LOFTRACE: actor_emotion_update's definition matches %d times" % len(found))
+        return 0
+    start = head.search(text).start()
+    end = text.find(tail, start)
+    if end < 0 or end - start > 20000:
+        check_fail("psp_fixups: LOFTRACE: actor_emotion_update's crouch timer isn't found after its start")
+        return 0
+    body = text[start:end]
+    # (pattern, replacement), each matching once in the check, in order
+    cuts = [
+        (r"\n(\t+)if \(definition->flags &\s*\(FLAG\(_actor_definition_crouch_in_line_of_fire_bit\) \|",
+         lambda m: "\n%spsp_lof_begin(actor_index, (unsigned long)definition->flags); /* LOFTRACE */%s" % (m.group(1), m.group(0))),
+        (r"if \(actor_perception_friend_prop_is_attacking\(\s*actor_index,\s*iterator\.index,\s*&friend_attack_vector\)\)",
+         lambda m: "if (psp_lof_friend(actor_index, iterator.index, actor_perception_friend_prop_is_attacking(actor_index, "
+                   "iterator.index, &friend_attack_vector), &friend_attack_vector)) /* LOFTRACE */"),
+        (r"\n(\t+)if \(blockage >= 1\)",
+         lambda m: "\n%spsp_lof_block(blockage, &prop->body_position, &friend_attack_vector, &actor->input.position.body_position, "
+                   "&vector_to_line_of_fire); /* LOFTRACE */%s" % (m.group(1), m.group(0))),
+        (r"if \(normalize3d\(&movement_direction\) > 0\.0f\)",
+         lambda m: "if (psp_lof_gate(normalize3d(&movement_direction), &movement_direction) > 0.0f) /* LOFTRACE */"),
+        (r"\n(\t+)if \(secondary_blockage >= 1\)",
+         lambda m: "\n%spsp_lof_move(secondary_blockage, &future_point); /* LOFTRACE */%s" % (m.group(1), m.group(0))),
+        (r"\n(\t+)if \(dot > threshold\)",
+         lambda m: "\n%spsp_lof_dot(dot, threshold, &vector_to_line_of_fire); /* LOFTRACE */%s" % (m.group(1), m.group(0))),
+        (r"actor->emotions\.moving_into_fire_timer--;\s*\}\n",
+         lambda m: m.group(0) + "\tpsp_lof_end(actor_index); /* LOFTRACE */\n"),
+    ]
+    for pattern, repl in cuts:
+        body, n = re.subn(pattern, repl, body)
+        if n != 1:
+            check_fail("psp_fixups: LOFTRACE: actor_emotion_update's %r matches %d times" % (pattern[:40], n))
+            return 0
+    texts[rel] = text[:start] + "\n" + LOFTRACE_DECL + body + text[end:] + LOFTRACE_CORE
+    rel = "source/ai/actors.c"
+    for name in ("psp_aime_think_only = TRUE;", "psp_aime2a_out = TRUE;", "psp_aime2a_alike = TRUE;"):
+        if name not in get(rel):
+            check_fail("psp_fixups: LOFTRACE: actors.c has no %r" % name)
+            return 0
+    texts[rel] = get(rel) + LOFTRACE_ACCESS
+    # the tick's end, before its state lines (game.c); after EMOTRACE's call when both are built
+    rel = "source/game/game.c"
+    end_call = '(PSP_STEP("psp_game_state_hash_tick"), psp_game_state_hash_tick(game_time_get()));'
+    decl = "extern void psp_game_state_hash_tick(long tick); /* game_state.c (psp_fixups.py, build 112) */\n"
+    if get(rel).count(end_call) != 1 or get(rel).count(decl) != 1:
+        check_fail("psp_fixups: LOFTRACE: game.c's state lines' call (%d) or its declaration (%d) isn't there once" %
+                   (get(rel).count(end_call), get(rel).count(decl)))
+        return 0
+    texts[rel] = get(rel).replace(end_call, 'psp_lof_point(); /* LOFTRACE */\n\t\t' + end_call).replace(
+        decl, decl + "\t\textern void psp_lof_point(void); /* actor_perception.c (psp_fixups.py, PSP_LOFTRACE=1) */\n")
+    if not CHECK_ONLY:
+        for rel, text in texts.items():
+            open(os.path.join(tree, rel), "w", errors="surrogateescape").write(text)
+    print("psp_fixups: LOFTRACE: the line-of-fire check as read: 7 points in actor_emotion_update, its inputs at game.c's state lines")
+    return 1
+lof_trace(TREE)
+
 if CHECK_ONLY:
     for message in count_failures:
         print(message)
