@@ -64718,6 +64718,173 @@ def collindex_cut(tree):
     return 1
 collindex_cut(TREE)
 
+# PSP_COLLINDEX_SERVE=1 (the objects' index served, docs/box_collision.md section 12.7 part 8; needs PSP_COLLINDEX=1; keep
+# word "collindexserve"): the sphere gathers take their objects from the index in place of the cluster lists, in the
+# index's current form (collindexbits, collindexwide, collindexcache as set). Carried from builder2/serve f1e886e1 onto
+# the census above: the cluster walk still runs for its marks and the sweep reuse's cluster hooks, without its object
+# loop; the index's candidates go through the walk's own broad phase, mark and features. A served query counts nothing a
+# cell (its head read is collindexcache's answer or the table's, no census line), so a pair prices the index, not the
+# census. The census (collindexshadow) gets its own gate here, so a serving build runs without it. On the ME, when the
+# index isn't live, past 256 candidates or past 1,024 cells in a layer, a gather walks the clusters as before (counted).
+# A plays-the-same change (visit order changes answers, 12.5d): proven by play and both seeds against the walk.
+COLLINDEX_SERVE = os.environ.get("PSP_COLLINDEX_SERVE", "") == "1"
+SERVE_CODE = r"""
+/* PSP_COLLINDEX_SERVE (psp_fixups.py): the sphere gathers' objects from the index */
+static unsigned long psp_ci_served[3]; /* gathers served, objects handed, gathers walked instead */
+int psp_ci_serve_on(void)
+{
+	static int on = -1;
+
+	if (on < 0)
+		on = PSP_KEEP_ONCE("collindexserve") ? 1 : 0;
+	return on && !psp_work_on_me();
+}
+/* a cell's head for a served query: collindexcache's kept answer while the change count is unchanged, else the table's
+(then kept); nothing counted */
+static short psp_ci_serve_head(int layer, long cx, long cy)
+{
+	unsigned h = psp_ci_hash(layer, cx, cy);
+	struct psp_ci_cached *c;
+
+	if (!psp_ci_caching)
+		return psp_ci_head[h];
+	c = &psp_ci_cache[h & (PSP_CI_CACHE - 1)];
+	if (c->count != psp_ci_changes || c->layer != layer || c->cx != cx || c->cy != cy)
+	{
+		c->count = psp_ci_changes;
+		c->layer = (unsigned char)layer;
+		c->cx = (short)cx;
+		c->cy = (short)cy;
+		c->head = psp_ci_head[h];
+	}
+	return c->head;
+}
+static int psp_ci_serve_walk(void)
+{
+	psp_ci_served[2]++;
+	return -1;
+}
+/* the objects that may reach the box [c - r, c + r] in x and y, into out: their count, or -1 to walk the clusters */
+int psp_ci_serve_sphere(real_point3d const *c, real r, long *out, int most)
+{
+	int layer, n = 0;
+	short k;
+	long cx, cy;
+
+	tick2_cs_settle_held(); /* a deleted object's entry leaves first */
+	if (!psp_ci_live())
+		return psp_ci_serve_walk();
+	for (layer = 0; layer < psp_ci_nl; layer++)
+	{
+		real half = psp_ci_size(layer) * 0.5f;
+		short cx0 = psp_ci_cell_at(layer, c->x - r - half), cx1 = psp_ci_cell_at(layer, c->x + r + half);
+		short cy0 = psp_ci_cell_at(layer, c->y - r - half), cy1 = psp_ci_cell_at(layer, c->y + r + half);
+
+		if ((long)(cx1 - cx0 + 1) * (cy1 - cy0 + 1) > 1024)
+			return psp_ci_serve_walk();
+		for (cx = cx0; cx <= cx1; cx++)
+			for (cy = cy0; cy <= cy1; cy++)
+			{
+				if (psp_ci_bits) /* collindexbits: a clear bit, no entry of this layer in the cell's buckets */
+				{
+					unsigned i = psp_ci_occ_bit(layer, cx, cy);
+
+					if (!((psp_ci_occ[layer][i >> 5] >> (i & 31)) & 1))
+						continue;
+				}
+				for (k = psp_ci_serve_head(layer, cx, cy); k >= 0; k = psp_ci[k].next)
+					if (psp_ci[k].layer == layer && psp_ci[k].cx == cx && psp_ci[k].cy == cy)
+					{
+						if (n >= most)
+							return psp_ci_serve_walk();
+						out[n++] = psp_ci[k].index;
+					}
+			}
+	}
+	for (k = psp_ci_large; k >= 0; k = psp_ci[k].next)
+	{
+		if (n >= most)
+			return psp_ci_serve_walk();
+		out[n++] = psp_ci[k].index;
+	}
+	psp_ci_served[0]++;
+	psp_ci_served[1] += n;
+	if ((psp_ci_served[0] & 0x3FFF) == 0)
+		platform_psp_log("collindexserve: gathers served %lu, objects handed %lu, walked instead %lu (bits %d, layers %d, cache %d)",
+			psp_ci_served[0], psp_ci_served[1], psp_ci_served[2], psp_ci_bits, psp_ci_nl, psp_ci_caching ? PSP_CI_CACHE : 0);
+	return n;
+}
+"""
+def collindex_serve_cut(tree):
+    if not COLLINDEX_SERVE:
+        return 0
+    if not COLLINDEX:
+        check_fail("psp_fixups: PSP_COLLINDEX_SERVE=1 needs PSP_COLLINDEX=1")
+        return 0
+    if BPCOUNT:
+        check_fail("psp_fixups: PSP_COLLINDEX_SERVE=1 isn't built with PSP_BPCOUNT=1 (its count wraps the gather's object loop)")
+        return 0
+    op = os.path.join(tree, "source/objects/objects.c")
+    cp = os.path.join(tree, "source/physics/collisions.c")
+    o = open(op, errors="surrogateescape").read()
+    c = open(cp, errors="surrogateescape").read()
+    def one(text, old, new, what, a=0, b=None, times=1):
+        b = len(text) if b is None else b
+        if text.count(old, a, b) != times:
+            check_fail("psp_fixups: COLLINDEX_SERVE: %s matches %d times, not %d" % (what, text.count(old, a, b), times))
+            return text
+        return text[:a] + text[a:b].replace(old, new) + text[b:]
+    # the entries keep the object's whole index, so a candidate is handed as the walk would hand it
+    o = one(o, "\tshort cx, cy, next;\n\tunsigned char in, large, layer;\n};\n",
+            "\tshort cx, cy, next;\n\tunsigned char in, large, layer;\n\tlong index; /* PSP_COLLINDEX_SERVE */\n};\n", "the entry")
+    o = one(o, "\te->c = *c;\n\te->r = r;\n\te->cx = cx;\n", "\te->c = *c;\n\te->r = r;\n\te->index = object_index;\n\te->cx = cx;\n", "the entry's set")
+    o = one(o, "\t\te->r = r;\n\t\treturn;\n", "\t\te->r = r;\n\t\te->index = object_index;\n\t\treturn;\n", "the entry's in-place set")
+    # the census apart from the index: collindexshadow gates the census's queries and checks, either word keeps the index
+    o = one(o, "static int psp_ci_on = -1, psp_ci_ready, psp_ci_bits;",
+            "static int psp_ci_census = 1; /* PSP_COLLINDEX_SERVE: the census (collindexshadow) apart from the index */\n"
+            "static int psp_ci_on = -1, psp_ci_ready, psp_ci_bits;", "the index's flags")
+    o = one(o, "\t\tpsp_ci_on = PSP_KEEP_ONCE(\"collindexshadow\") ? 1 : 0;\n",
+            "\t\tpsp_ci_census = PSP_KEEP_ONCE(\"collindexshadow\") ? 1 : 0;\n"
+            "\t\tpsp_ci_on = psp_ci_census || PSP_KEEP_ONCE(\"collindexserve\") ? 1 : 0; /* PSP_COLLINDEX_SERVE */\n", "the index's keep word")
+    o = one(o, "\tif (!psp_ci_live())\n\t\treturn;\n", "\tif (!psp_ci_live() || !psp_ci_census) /* PSP_COLLINDEX_SERVE: the census's own word */\n\t\treturn;\n",
+            "the census's queries", times=2)
+    o = one(o, "\tif (psp_ci_on > 0 && !psp_work_on_me())\n", "\tif (psp_ci_on > 0 && psp_ci_census && !psp_work_on_me()) /* PSP_COLLINDEX_SERVE */\n",
+            "the census's checks", times=2)
+    o = one(o, "\nvoid object_disconnect_from_map(\n\tlong object_index)\n{\n", "\n" + SERVE_CODE + "\nvoid object_disconnect_from_map(\n\tlong object_index)\n{\n", "the disconnect's head")
+    head = "\nboolean collision_get_features_in_sphere(\n"
+    c = one(c, head, "\n/* PSP_COLLINDEX_SERVE: objects.c's index */\nint psp_ci_serve_on(void);\nint psp_ci_serve_sphere(real_point3d const *c, real r, long *out, int most);\n" + head[1:], "the gather's head")
+    def span():
+        a = c.index(head); return a, c.index("\n}\n", a)
+    a, b = span()
+    c = one(c, "\t\t\tpsp_ci_sphere_query((psp_sr_on_pill ? 0 : 1), center, radius); /* PSP_COLLINDEX */\n",
+            "\t\t\tlong psp_cis_list[256]; /* PSP_COLLINDEX_SERVE */\n\t\t\tint psp_cis = psp_ci_serve_on() ? psp_ci_serve_sphere(center, radius, psp_cis_list, 256) : -1;\n\n"
+            "\t\t\tpsp_ci_sphere_query((psp_sr_on_pill ? 0 : 1), center, radius); /* PSP_COLLINDEX */\n", "the gather's query", a, b)
+    a, b = span()
+    c = one(c, "\t\t\t\t\tfor (object_index = cluster_get_first_collideable_object(\n\t\t\t\t\t\t\t&reference_index,\n\t\t\t\t\t\t\tcluster_index);\n",
+            "\t\t\t\t\tif (psp_cis < 0) /* PSP_COLLINDEX_SERVE: the clusters' objects only when the index didn't answer */\n"
+            "\t\t\t\t\tfor (object_index = cluster_get_first_collideable_object(\n\t\t\t\t\t\t\t&reference_index,\n\t\t\t\t\t\t\tcluster_index);\n", "the gather's object loop", a, b)
+    body = ("\t\t\t\t\t\t\t{ /* PSP_SWEEPREUSE: an object in reach past the gather's filter is a near one */\n"
+            "\t\t\t\t\t\t\tif (psp_sr_on_pill && psp_sr_in_reach(object_index, center, radius, ignore_object_index))\n"
+            "\t\t\t\t\t\t\t\tpsp_sr_near_add(object_index);\n"
+            "\t\t\t\t\t\t\tobject_get_features_in_sphere(\n\t\t\t\t\t\t\t\tflags,\n\t\t\t\t\t\t\t\tobject_index,\n\t\t\t\t\t\t\t\tcenter,\n\t\t\t\t\t\t\t\tradius,\n"
+            "\t\t\t\t\t\t\t\theight,\n\t\t\t\t\t\t\t\twidth,\n\t\t\t\t\t\t\t\tignore_object_index,\n\t\t\t\t\t\t\t\tfeatures);\n\t\t\t\t\t\t\t}\n")
+    a, b = span()
+    if c.count(body, a, b) != 1:
+        check_fail("psp_fixups: COLLINDEX_SERVE: the gather's body matches %d times" % c.count(body, a, b))
+        return 0
+    served = ("\t\t\tif (psp_cis >= 0) /* PSP_COLLINDEX_SERVE: the index's objects, through the walk's own tests */\n\t\t\t{\n\t\t\t\tint k;\n\n"
+              "\t\t\t\tfor (k = 0; k < psp_cis; k++)\n\t\t\t\t{\n\t\t\t\t\tlong object_index = psp_cis_list[k];\n\n"
+              "\t\t\t\t\tif (psp_sr_on_pill)\n\t\t\t\t\t\tpsp_sr_met++;\n"
+              "\t\t\t\t\tif (psp_sphere_may_touch(object_index, center, radius) && object_mark_function(object_index))\n\t\t\t\t\t{\n"
+              "\t\t\t\t\t\tpsp_features_objects++;\n" + body.replace("\t\t\t\t\t\t\t", "\t\t\t\t\t\t") + "\t\t\t\t\t}\n\t\t\t\t}\n\t\t\t}\n")
+    c = one(c, "\t\t\tobject_marker_end();\n", served + "\t\t\tobject_marker_end();\n", "the gather's marker end", a, b)
+    if not CHECK_ONLY:
+        open(op, "w", errors="surrogateescape").write(o)
+        open(cp, "w", errors="surrogateescape").write(c)
+    print("psp_fixups: COLLINDEX_SERVE: the sphere gathers' objects from the index under keep word collindexserve")
+    return 1
+collindex_serve_cut(TREE)
+
 # PSP_TICK2=biped (slice 1's BIPED line 1 and CONTROL, the lab's spec section 34; the cut sheet in the lab's
 # tick_store_biped_plan.md): the unit datum's 96-byte span from desired_facing_vector to throttle (CONTROL's
 # facing, aiming and looking requests and throttle, interleaved with motion's aim and look vectors and their
