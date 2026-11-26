@@ -67001,7 +67001,7 @@ tick2_collnew_delete_cut(TREE)
 # solve, so they're refused under it (Part 8). Step 3 writes the stages a piece at a time: until I, M and the delete
 # cut are all in, the switch refuses, so no run reads a half-written form as task 5's.
 TICK2_MOTIONNEW = os.environ.get("PSP_TICK2_MOTIONNEW", "") == "1"
-TICK2_MOTIONNEW_WRITTEN = ("the INTENT table and G",)  # step 3's pieces in; the refusal goes with the last
+TICK2_MOTIONNEW_WRITTEN = ("the INTENT table and G", "struct biped_physics to store_motion.h and M's table")  # step 3's pieces in
 def tick2_motionnew_check():
     if not TICK2_MOTIONNEW:
         return 0
@@ -67015,10 +67015,41 @@ def tick2_motionnew_check():
         check_fail("psp_fixups: TICK2 motionnew: M2 needs the engine's solve: PSP_TICK2_MOTIONPASS and PSP_MOTIONCROSS "
                    "are refused under PSP_TICK2_MOTIONNEW=1 (docs/box_world_store.md section 19 part 8)")
         return 0
-    check_fail("psp_fixups: TICK2 motionnew: task 5's stages are being written (in: %s; still to come: I's code, M, "
-               "the delete cut); PSP_TICK2_MOTIONNEW=1 builds once they're all in" % ", ".join(TICK2_MOTIONNEW_WRITTEN))
-    return 0
-tick2_motionnew_check()
+    return 1
+TICK2_MOTIONNEW_OK = tick2_motionnew_check()  # the pieces' cuts run only on it; the refusal is at this file's end
+
+# step 3, second piece: struct biped_physics, the move's record, to psp/include/store_motion.h, so store_motion.c can
+# hold it in M's table by n. The header holds bipeds.c's text between these markers; the cut checks the tree's is that
+# text, once, and puts the header's include in its place (as collnew's view type went to store_coll.h)
+TICK2_MOTIONNEW_H = os.path.join(TICK2_COLLNEW_DIR, "psp", "include", "store_motion.h")
+TICK2_MOTIONNEW_PHYS_BEGIN = "/* ---- moved from bipeds.c (struct biped_physics, the move's record): begin ---- */\n"
+TICK2_MOTIONNEW_PHYS_FINISH = "/* ---- moved from bipeds.c: struct biped_physics: finish ---- */\n"
+TICK2_MOTIONNEW_PHYS_INCLUDE = ('#include "store_motion.h" /* TICK2 motionnew: struct biped_physics, moved there (psp/include) '
+                                'with the INTENT table\'s names */\n')
+def tick2_motionnew_physics_cut(tree):
+    if not TICK2_MOTIONNEW_OK:
+        return 0  # the check has said why
+    bipeds_c = os.path.join(tree, "source/units/bipeds.c")
+    b = open(bipeds_c, errors="surrogateescape").read()
+    held = tick2_collnew_held(TICK2_MOTIONNEW_H, TICK2_MOTIONNEW_PHYS_BEGIN, TICK2_MOTIONNEW_PHYS_FINISH,
+                              "psp/include/store_motion.h's struct biped_physics")
+    if held is None:
+        return 0
+    if not held.startswith("struct biped_physics\n{\n") or not held.endswith("\n};\n"):
+        check_fail("psp_fixups: TICK2 motionnew: store_motion.h's held text isn't one struct biped_physics definition")
+        return 0
+    if b.count(held) != 1 or b.count("struct biped_physics\n{") != 1 or b.count(TICK2_MOTIONNEW_PHYS_INCLUDE):
+        check_fail("psp_fixups: TICK2 motionnew: bipeds.c has store_motion.h's struct biped_physics %d times and a "
+                   "definition %d times, not once each (an earlier cut or the pin changed it: copy the tree's text into "
+                   "the header), or the include already" % (b.count(held), b.count("struct biped_physics\n{")))
+        return 0
+    b = b.replace(held, TICK2_MOTIONNEW_PHYS_INCLUDE)
+    if not CHECK_ONLY:
+        open(bipeds_c, "w", errors="surrogateescape").write(b)
+    print("psp_fixups: TICK2 motionnew (task 5, step 3): struct biped_physics is store_motion.h's (%d lines moved), "
+          "bipeds.c includes it" % held.count("\n"))
+    return 1
+tick2_motionnew_physics_cut(TREE)
 
 # PSP_CALLTRACE=1 (the builder 2026-11-25, the lead's 19:4x (1): oldonly3397's marine e603000b parts from old-only in
 # tick 3397's choice). One object's tick, in call order. With the keep words "calltraceN" and "ctobjK" (K the object's
@@ -68238,6 +68269,17 @@ def lof_trace(tree):
     print("psp_fixups: LOFTRACE: the line-of-fire check as read: 7 points in actor_emotion_update, its inputs at game.c's state lines")
     return 1
 lof_trace(TREE)
+
+# PSP_TICK2_MOTIONNEW=1 while step 3 is being written: every piece's cut above has run (so a form check exercises
+# them), and the build refuses here, naming the pieces in, so no run reads a half-written form as task 5's. It goes
+# with the delete cut, the last piece
+def tick2_motionnew_written():
+    if not TICK2_MOTIONNEW_OK:
+        return 0
+    check_fail("psp_fixups: TICK2 motionnew: task 5's stages are being written (in: %s; still to come: I's code, M, "
+               "the delete cut); PSP_TICK2_MOTIONNEW=1 builds once they're all in" % "; ".join(TICK2_MOTIONNEW_WRITTEN))
+    return 0
+tick2_motionnew_written()
 
 if CHECK_ONLY:
     for message in count_failures:

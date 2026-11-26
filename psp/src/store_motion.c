@@ -31,9 +31,20 @@ Built with PSP_TICK2_MOTIONNEW=1 (psp_build.py), as bipeds.c is.
 #include "math/real_math.h"
 #include "physics/collisions.h"
 #include "psp_sweepme.h"
+#include "units/units.h" /* struct unit_animation_update_data, M's table's */
 #include "store_motion.h"
 
 static struct store_intent store_intents[STORE_INTENT_ENTRIES];
+/* M's own table by the same n (Part 7): bipedstage3's record less what G reads. I's code writes it at the call, M
+reads it; G's walk never touches these lines */
+struct store_motion
+{
+	struct unit_animation_update_data animation;
+	struct biped_physics physics;
+	word in_flags;
+	real_vector2d facing;
+};
+static struct store_motion store_motions[STORE_INTENT_ENTRIES];
 static unsigned char store_intent_map[STORE_INTENT_STAGED];
 static short store_intent_count;   /* entries kept this tick */
 static char store_intent_over;     /* this tick went over the pool */
@@ -107,6 +118,11 @@ struct store_intent const *store_intent_of(short k)
 	unsigned char n = (unsigned short)k < STORE_INTENT_STAGED ? store_intent_map[k] : STORE_INTENT_NONE;
 
 	return n == STORE_INTENT_NONE ? NULL : &store_intents[n];
+}
+
+struct store_motion *store_motion_at(short n)
+{
+	return (unsigned short)n < STORE_INTENT_ENTRIES ? &store_motions[n] : NULL;
 }
 
 void store_intent_end(void)

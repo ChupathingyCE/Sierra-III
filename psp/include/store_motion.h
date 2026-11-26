@@ -21,6 +21,55 @@ struct store_intent
 	real radius;
 };
 
+/* The move's record, which I builds and M reads after the call: bipeds.c's own text, held here so store_motion.c can
+   hold it in M's table. psp_fixups.py's tick2_motionnew_physics_cut checks bipeds.c's text is this, character for
+   character, and puts this header's include in its place; edit it only by copying the tree's. */
+/* ---- moved from bipeds.c (struct biped_physics, the move's record): begin ---- */
+struct biped_physics
+{
+	long biped_index;
+	word in_flags;
+	word pad6;
+	real_point3d position;
+	real_vector3d forward;
+	real_vector3d aiming;
+	real_vector3d velocity;
+	real crouch_velocity;
+	real_vector3d movement_desired;
+	real movement_penalty;
+	real acceleration_maximum;
+	real airborne_acceleration_maximum;
+	real height;
+	real width;
+	real ground_tangential_velocity_max;
+	real ground_tangential_angle;
+	real minimum_normal_k;
+	real downhill_k0;
+	real downhill_k1;
+	real downhill_velocity_scale;
+	real uphill_k0;
+	real uphill_k1;
+	real uphill_velocity_scale;
+	real_plane3d ground_plane;
+	long existing_support_surface_index;
+	real gravity;
+	long bumped_object_index;
+	long elevator_object_index;
+	word out_flags;
+	word padA2;
+	long support_surface_index;
+	long stick_surface_index;
+	real_point3d new_position;
+	real_vector3d new_velocity;
+	real landing_velocity;
+	real collision_velocity;
+};
+/* ---- moved from bipeds.c: struct biped_physics: finish ---- */
+
+/* M's own entry for intent n (store_motion.c): what M reads after the call. NULL past the pool */
+struct store_motion;
+struct store_motion *store_motion_at(short n);
+
 /* I's head: the table emptied, every staged position mapped to no entry */
 void store_intent_begin(void);
 /* the next entry's place n for this biped's intent, or -1 over the pool (counted; nothing written) */
