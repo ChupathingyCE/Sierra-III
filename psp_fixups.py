@@ -67023,11 +67023,16 @@ TICK2_MOTIONNEW_OK = tick2_motionnew_check()  # the pieces' cuts run only on it;
 
 # step 3, second piece: struct biped_physics, the move's record, to psp/include/store_motion.h, so store_motion.c can
 # hold it in M's table by n. The header holds bipeds.c's text between these markers; the cut checks the tree's is that
-# text, once, and puts the header's include in its place (as collnew's view type went to store_coll.h)
-TICK2_MOTIONNEW_H = os.path.join(TICK2_COLLNEW_DIR, "psp", "include", "store_motion.h")
-TICK2_MOTIONNEW_PHYS_BEGIN = "/* ---- moved from bipeds.c (struct biped_physics, the move's record): begin ---- */\n"
-TICK2_MOTIONNEW_PHYS_FINISH = "/* ---- moved from bipeds.c: struct biped_physics: finish ---- */\n"
-TICK2_MOTIONNEW_PHYS_INCLUDE = ('#include "store_motion.h" /* TICK2 motionnew: struct biped_physics, moved there (psp/include) '
+# text, once, and puts the header's include in its place (as collnew's view type went to store_coll.h). Since the
+# sixth piece's read (or-job 45783394502, the lab's row t5s3_bipeds_private) the text is bipeds.c's enums, macros and
+# structures from the biped states to the vehicle's datum, struct biped_physics among them: I's and M's code, carried
+# from bipeds.c, uses them, and no header declares them (each engine unit has its own)
+TICK2_MOTIONNEW_H =os.path.join(TICK2_COLLNEW_DIR, "psp", "include", "store_motion.h")
+TICK2_MOTIONNEW_PHYS_BEGIN = "/* ---- moved from bipeds.c (its enums, macros and structures, struct biped_physics among them): begin ---- */\n"
+TICK2_MOTIONNEW_PHYS_FINISH = "/* ---- moved from bipeds.c: its enums, macros and structures: finish ---- */\n"
+TICK2_MOTIONNEW_PHYS_FIRST = "enum\n{\n\tbiped_state_idle = 0,\n"  # the held text's first lines
+TICK2_MOTIONNEW_PHYS_LAST = "struct vehicle_runtime_datum\n{\n"     # and its last definition's
+TICK2_MOTIONNEW_PHYS_INCLUDE = ('#include "store_motion.h" /* TICK2 motionnew: bipeds.c\'s types, struct biped_physics among them, moved there (psp/include) '
                                 'with the INTENT table\'s names */\n')
 def tick2_motionnew_physics_cut(tree):
     if not TICK2_MOTIONNEW_OK:
@@ -67035,11 +67040,13 @@ def tick2_motionnew_physics_cut(tree):
     bipeds_c = os.path.join(tree, "source/units/bipeds.c")
     b = open(bipeds_c, errors="surrogateescape").read()
     held = tick2_collnew_held(TICK2_MOTIONNEW_H, TICK2_MOTIONNEW_PHYS_BEGIN, TICK2_MOTIONNEW_PHYS_FINISH,
-                              "psp/include/store_motion.h's struct biped_physics")
+                              "psp/include/store_motion.h's bipeds.c types")
     if held is None:
         return 0
-    if not held.startswith("struct biped_physics\n{\n") or not held.endswith("\n};\n"):
-        check_fail("psp_fixups: TICK2 motionnew: store_motion.h's held text isn't one struct biped_physics definition")
+    if (not held.startswith(TICK2_MOTIONNEW_PHYS_FIRST) or not held.endswith("\n};\n")
+            or held.count("struct biped_physics\n{\n") != 1 or held.count(TICK2_MOTIONNEW_PHYS_LAST) != 1):
+        check_fail("psp_fixups: TICK2 motionnew: store_motion.h's held text isn't bipeds.c's types from the biped states "
+                   "to struct vehicle_runtime_datum, with one struct biped_physics")
         return 0
     if b.count(held) != 1 or b.count("struct biped_physics\n{") != 1 or b.count(TICK2_MOTIONNEW_PHYS_INCLUDE):
         check_fail("psp_fixups: TICK2 motionnew: bipeds.c has store_motion.h's struct biped_physics %d times and a "
@@ -67049,8 +67056,8 @@ def tick2_motionnew_physics_cut(tree):
     b = b.replace(held, TICK2_MOTIONNEW_PHYS_INCLUDE)
     if not CHECK_ONLY:
         open(bipeds_c, "w", errors="surrogateescape").write(b)
-    print("psp_fixups: TICK2 motionnew (task 5, step 3): struct biped_physics is store_motion.h's (%d lines moved), "
-          "bipeds.c includes it" % held.count("\n"))
+    print("psp_fixups: TICK2 motionnew (task 5, step 3): bipeds.c's enums, macros and structures, struct biped_physics "
+          "among them, are store_motion.h's (%d lines moved), bipeds.c includes it" % held.count("\n"))
     return 1
 tick2_motionnew_physics_cut(TREE)
 

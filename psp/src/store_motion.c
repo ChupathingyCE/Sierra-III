@@ -45,6 +45,16 @@ Built with PSP_TICK2_MOTIONNEW=1 (psp_build.py), as bipeds.c is.
 #include "stubbs_player.h" /* port: port/linux/game/stubbs_player.c */
 #include "store_motion.h"
 
+#ifdef HALO_PSP
+/* bipeds.c's verify gate (psp_fixups.py's FIXES_DIET1, VERIFYGATE: bipeds.c 2027-2035 in the ship form), so I's and
+   M's calls ask the check only when bipeds.c's own calls would (psp_verify_call: psp_platform.c, from the keep words).
+   Without it every call here ran the function, which then tests "verifyvectors" and returns (the lab's row
+   t5s3_bipeds_private) */
+extern int psp_verify_call;
+#define biped_verify_object_vectors(biped_index, state) \
+	((void)(psp_verify_call && (biped_verify_object_vectors((biped_index), (state)), 1)))
+#endif
+
 static struct store_intent store_intents[STORE_INTENT_ENTRIES];
 /* M's own table by the same n (Part 7): bipedstage3's record less what G reads. I's code writes it at the call, M
 reads it; G's walk never touches these lines */

@@ -21,10 +21,105 @@ struct store_intent
 	real radius;
 };
 
-/* The move's record, which I builds and M reads after the call: bipeds.c's own text, held here so store_motion.c can
-   hold it in M's table. psp_fixups.py's tick2_motionnew_physics_cut checks bipeds.c's text is this, character for
-   character, and puts this header's include in its place; edit it only by copying the tree's. */
-/* ---- moved from bipeds.c (struct biped_physics, the move's record): begin ---- */
+/* bipeds.c's own enums, macros and structures, from the biped states to the vehicle's datum, with struct biped_physics
+   (the move's record, which I builds and M reads after the call) among them: held here so store_motion.c can hold the
+   record in M's table and its code, carried from bipeds.c, has the names that code uses (the states, the move's in and
+   out bits, the frame infos, the vehicle's datum: no header declares them, each engine unit has its own). Only bipeds.c
+   and store_motion.c include this header. psp_fixups.py's tick2_motionnew_physics_cut checks bipeds.c's text is this,
+   character for character, and puts this header's include in its place; edit it only by copying the tree's. */
+/* ---- moved from bipeds.c (its enums, macros and structures, struct biped_physics among them): begin ---- */
+enum
+{
+	biped_state_idle = 0,
+	biped_state_moving,
+	biped_state_unknown,
+	NUMBER_OF_BIPED_STATES,
+};
+
+enum
+{
+	_biped_physics_in_airborne_bit = 0,
+	_biped_physics_in_slipping_bit,
+	_biped_physics_in_crouched_bit,
+	_biped_physics_in_trying_to_stand_bit,
+	_biped_physics_in_flying_bit,
+	_biped_physics_in_absolute_movement_bit,
+	_biped_physics_in_no_collision_bit,
+	_biped_physics_in_dead_bit,
+	_biped_physics_in_pass_through_bipeds_bit,
+	_biped_physics_in_climb_anything_bit,
+	/* port: a player's, in a co-op game without player collisions: the other
+	players' bipeds are not in its way (network_coop_player_collisions) */
+	_biped_physics_in_pass_through_players_bit,
+};
+
+enum
+{
+	_biped_physics_out_airborne_bit = 0,
+	_biped_physics_out_slipping_bit,
+	_biped_physics_out_cannot_stand_bit,
+	_biped_physics_out_splatter_bit,
+	_biped_physics_out_volatile_collision_bit,
+};
+
+enum
+{
+	_unit_melee_attack_none = 0,
+	_unit_melee_attack_starting,
+	_unit_melee_attack_dangerous,
+	_unit_melee_attack_impact,
+	_unit_melee_attack_continuous,
+};
+
+enum
+{
+	_animation_frame_info_none = 0,
+	_animation_frame_info_xy_translation,
+	_animation_frame_info_xy_translation_yaw_rotation,
+	_animation_frame_info_xyz_translation_yaw_rotation,
+	NUMBER_OF_ANIMATION_FRAME_INFO_TYPES,
+};
+
+enum
+{
+	_collision_surface_two_sided_bit = 0,
+	_collision_surface_invisible_bit,
+	_collision_surface_climbable_bit,
+	_collision_surface_breakable_bit,
+};
+
+/* ---------- macros */
+
+#define BIPED_CLIMBING_SNAP_ANGLE ((real)(10.0*M_PI/180.0))
+#define MINIMUM_SLIPPING_FOOTSTEP_VELOCITY_SQUARED (1.f/900.f)
+
+/* ---------- structures */
+
+struct biped_contact_point
+{
+	byte unused[32];
+	char marker_name[32];
+};
+
+struct game_globals_falling_damage
+{
+	long falling_unused[2];
+	real falling_distance_lower_bound;
+	real falling_distance_upper_bound;
+	struct tag_reference falling_damage;
+	long terminal_velocity_unused[2];
+	real maximum_distance;
+	struct tag_reference maximum_distance_damage;
+	struct tag_reference vehicle_hit_environment_damage_effect;
+	struct tag_reference vehicle_killed_unit_damage_effect;
+	struct tag_reference vehicle_collision_damage;
+	struct tag_reference flaming_death_damage;
+	long unused7c[4];
+	real runtime_maximum_falling_velocity;
+	real runtime_minimum_damage_velocity;
+	real runtime_maximum_damage_velocity;
+};
+
 struct biped_physics
 {
 	long biped_index;
@@ -64,7 +159,41 @@ struct biped_physics
 	real landing_velocity;
 	real collision_velocity;
 };
-/* ---- moved from bipeds.c: struct biped_physics: finish ---- */
+
+struct animation_frame_info_dx_dy
+{
+	real dx;
+	real dy;
+};
+
+struct animation_frame_info_dx_dy_dyaw
+{
+	real dx;
+	real dy;
+	real dyaw;
+};
+
+struct animation_frame_info_dx_dy_dz_dyaw
+{
+	real dx;
+	real dy;
+	real dz;
+	real dyaw;
+};
+
+struct vehicle_runtime_datum
+{
+	long definition_index;
+	struct _object_datum object;
+	struct _unit_datum unit;
+	struct
+	{
+		word flags;
+		short reserved;
+		byte airborne_ticks;
+	} vehicle;
+};
+/* ---- moved from bipeds.c: its enums, macros and structures: finish ---- */
 
 /* M's own entry for intent n (store_motion.c): what M reads after the call. NULL past the pool */
 struct store_motion;
