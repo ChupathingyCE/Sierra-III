@@ -67070,8 +67070,8 @@ tick2_motionnew_physics_cut(TREE)
 # tick 3397's choice). One object's tick, in call order. With the keep words "calltraceN" and "ctobjK" (K the object's
 # absolute index, the datum index's low 16 bits: e603000b is ctobj11), from the thinking done ahead for game time N
 # (game_time.c runs psp_aime_update after tick N-1 has counted) to tick N's end, before its state lines (with
-# "ctspanM", each of the M ticks N to N+M-1 the same, in its own window; with no "ctobjK", the local player's unit at tick N's
-# window, or the first biped if there is none, kept by its absolute index through the span: the lead 2026-11-26 11:46 (2)'s 300-tick move query), the log has
+# "ctspanM", each of the M ticks N to N+M-1 the same, in its own window; with no "ctobjK", the local player's unit, asked at each
+# window until there is one and then kept by its absolute index through the span (a window before it traces the first biped): the lead 2026-11-26 11:46 (2)'s 300-tick move query), the log has
 # "ct: <seq> ..." lines in the order the engine ran them:
 #   every step of a seed (seed_random, real_seed_random: out of line, so the return address is the drawing caller), the
 #     seed (L the local, G the global, O another: the thinking's own, sound's), its value before and after, and the
@@ -67181,7 +67181,7 @@ void psp_ct_mark(const char *where)
 /* the window opens at game time N's first trace point (the thinking ahead, or the tick) */
 void psp_ct_begin(const char *where)
 {
-	long tick, index;
+	long tick, index, target;
 	struct object_header_datum *header;
 	struct object_datum *object;
 
@@ -67206,24 +67206,25 @@ void psp_ct_begin(const char *where)
 		return;
 	}
 	psp_ct_object = NONE;
-	/* no ctobj word: the local player's unit at the first window (mq1, sierra-batch 45878597999: the table's first biped,
-	a marine, isn't updated after tick 0, so 300 ticks held one move query), else the first biped; either is kept by its
-	absolute index for the rest of the span */
-	if (psp_ct_target < 0)
+	/* no ctobj word: the local player's unit, asked at each window until there is one and then kept by its absolute
+	index for the rest of the span (mq1, sierra-batch 45878597999: the table's first biped, a marine, isn't updated
+	after tick 0; mq2, 45883887159: at tick 0's window the player has no unit yet, so a first biped kept from there held
+	the marine all 300 ticks); a window before the player has a unit traces the first biped, not kept */
+	target = psp_ct_target;
+	if (target < 0)
 	{
 		long player_index = local_player_get_player_index(0);
 		long unit_index = player_index != NONE ? player_get(player_index)->unit_index : NONE;
 
 		if (unit_index != NONE)
-			psp_ct_target = DATUM_INDEX_TO_ABSOLUTE_INDEX(unit_index);
+			psp_ct_target = target = DATUM_INDEX_TO_ABSOLUTE_INDEX(unit_index);
 	}
 	for (index = data_next_index(object_header_data, NONE); index != NONE; index = data_next_index(object_header_data, index))
-		if (psp_ct_target < 0 ? ((struct object_header_datum *)datum_get(object_header_data, index))->type == _object_type_biped :
-			DATUM_INDEX_TO_ABSOLUTE_INDEX(index) == psp_ct_target)
+		if (target < 0 ? ((struct object_header_datum *)datum_get(object_header_data, index))->type == _object_type_biped :
+			DATUM_INDEX_TO_ABSOLUTE_INDEX(index) == target)
 		{
 			psp_ct_object = index;
-			if (psp_ct_target < 0)
-				psp_ct_target = DATUM_INDEX_TO_ABSOLUTE_INDEX(index);
+			break;
 		}
 	psp_ct_live = 1;
 	psp_ct_depth = 0;
