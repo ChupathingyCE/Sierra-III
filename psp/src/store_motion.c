@@ -16,7 +16,7 @@ update data, the facing) is M's own table by the same n, written with I's code; 
 
 64 entries, old-only's pool (clause 10, ruled 00:2x (2): branch (i) if no tick goes over it on the six maps, both
 seeds). A 65th intent gets no entry and writes nothing past the table; it is counted, and the proof reads the count
-at 0. What M does for a biped with no entry is M's piece's to name.
+at 0. A biped with no entry gets M's whole update (store_motion_update), as old-only ran biped_update whole for it.
 
 Censuses: bipedstage3's five counters (intents; stopped at the move; at the tail; over the pool; solves resumed) are
 re-earned as this file's line, with the pool's three the ruling asks (ticks over it, intents past it, the peak a
@@ -55,13 +55,16 @@ struct store_motion
 	word in_flags;
 	real_vector2d facing;
 };
-static struct store_motion store_motions[STORE_INTENT_ENTRIES];
+static struct store_motion store_motions[STORE_INTENT_ENTRIES + 1]; /* and the spare: M's whole update's (M below) */
 static unsigned char store_intent_map[STORE_INTENT_STAGED];
 static short store_intent_count;   /* entries kept this tick */
 static char store_intent_over;     /* this tick went over the pool */
 /* staged ticks; intents opened; kept at the move, at the tail; over the pool: intents, ticks; the peak a tick */
 static unsigned long store_intent_ticks, store_intent_stat[5];
 static short store_intent_peak;
+/* M's (M's design part 6): resumed at the call, at the tail; whole with no intent: alive, dead; whole with an intent
+   not its own; whole outside the pass; the whole update's build stopped short */
+static unsigned long store_motion_stat[7];
 
 void store_intent_begin(void)
 {
@@ -157,6 +160,13 @@ void store_intent_end(void)
 			store_intent_ticks, store_intent_stat[0], store_intent_stat[1], store_intent_stat[2], store_intent_stat[3],
 			store_intent_stat[4], store_intent_peak, STORE_INTENT_ENTRIES, psp_sweepme_at[0], psp_sweepme_at[1],
 			psp_sweepme_at[2]);
+	/* M's line beside I's, so the run's last lines hold both. The proof reads them against each other: resumed at
+	   the call = kept at the move, at the tail = kept at the tail; whole and alive <= the intents over the pool (a
+	   biped can die between); not its own and outside the pass 0. bipedstage3's "solves resumed" is the first two */
+	if (new_line || store_intent_ticks % 1000 == 0)
+		platform_psp_log("store_motion: %lu staged ticks: resumed at the call %lu, at the tail %lu; whole with no intent: alive %lu, dead %lu; whole with an intent not its own %lu; whole outside the pass %lu; whole stopped short of the call %lu",
+			store_intent_ticks, store_motion_stat[0], store_motion_stat[1], store_motion_stat[2], store_motion_stat[3],
+			store_motion_stat[4], store_motion_stat[5], store_motion_stat[6]);
 	store_intent_count = 0;
 }
 
@@ -193,6 +203,11 @@ static inline void store_motion_owner_put(void *const *outer)
 {
 	psp_bspr_datum_at = outer;
 }
+
+/* biped_update from the pre-update verify to the move's call, I's and M's whole update's (defined after the driver,
+   store_intent_run) */
+static int store_intent_body(long biped_index, struct biped_datum *biped, struct biped_definition *definition,
+	struct store_motion *motion, unsigned long *flags, real_point3d *position, real_vector3d *velocity);
 
 /* biped_vehicle_speech (bipeds.c 2176-2268, on the delete list: only biped_update's rider branch called it), the
    same tests in the same order on the biped I holds (it looked the biped up again by index: the same datum) */
@@ -637,19 +652,23 @@ static int store_intent_moving(long biped_index, struct biped_datum *biped, stru
 
 /* I's driver for staged biped k: biped_update's opening and bipedstage3's intent (psp_bipedstage3_intent; both on
    the delete list) over I's functions, in their order. The open comes first, as bipedstage3 counted an intent before
-   its update ran: over the pool nothing runs (bipedstage3 ran no update for it either; M's piece names the rest). The
-   debug skip returns before the owner is set, as biped_update's did, and keeps nothing. Then the owner, the
-   pre-update verify and the animation's opening values, the head, turning for a biped not dead with its verify, and
-   the move's build to the call. The intent is kept at the call (stop 1) or, for a rider, at the tail (stop 2), with
-   the animation in M's entry either way (bipedstage3's record took it at both stops). Left out:
-   profile_enter(biped_update_section), which goes with biped_update, and BIPEDMOVE's psp_bms_start/_keep, which do
-   nothing under PSP_TICK2_ROOT (psp_bms_on is 0 there, so the window never opens) */
+   its update ran: over the pool nothing runs (bipedstage3 ran no update for it either: M runs its whole update). The
+   debug skip returns before the owner is set, as biped_update's did, and keeps nothing. Then the owner around
+   store_intent_body (below: biped_update from the pre-update verify to the move's call, the part M's whole update
+   shares), and the keep at the stop the body gives: at the call (stop 1) or, for a rider, at the tail (stop 2), with
+   the animation in M's entry either way (bipedstage3's record took it at both stops); a build stopped short (0)
+   keeps nothing, as a record with no stop was bipedstage3's. Left out: profile_enter(biped_update_section), which
+   goes with biped_update, and BIPEDMOVE's psp_bms_start/_keep, which do nothing under PSP_TICK2_ROOT (psp_bms_on is
+   0 there, so the window never opens) */
 void store_intent_run(short k, long biped_index)
 {
 	struct biped_datum *biped;
-	struct biped_definition *definition;
 	struct store_motion *motion;
 	void *const *outer;
+	unsigned long flags = 0;
+	real_point3d position;
+	real_vector3d velocity;
+	int stop;
 	short n = store_intent_open(biped_index);
 
 	if (n < 0)
@@ -657,30 +676,142 @@ void store_intent_run(short k, long biped_index)
 	if (debug_biped_skip_update)
 		return;
 	biped = biped_get(biped_index);
-	definition = biped_definition_get(biped->definition_index);
 	motion = &store_motions[n];
 	outer = store_motion_owner_set(biped_index);
-	biped_verify_object_vectors(biped_index, "pre-update");
+	stop = store_intent_body(biped_index, biped, biped_definition_get(biped->definition_index), motion, &flags,
+		&position, &velocity);
+	if (stop)
+		store_intent_keep(k, n, stop, flags, &position, &velocity, motion->physics.height, motion->physics.width);
+	store_motion_owner_put(outer);
+}
 
+/* biped_update from the pre-update verify (5052) to the move's call: the animation's opening values (idle, not
+   crouching), the head, turning with its post-turning verify for a biped not dead, and the move's build, into motion.
+   Returns the stop: 1 at the call (flags, position and velocity are the call's, M's entry holds the physics record,
+   the in-flags and the facing); 2 for a rider (no move: the turn goes on at the tail); 0 where the build stops short
+   (_moving's dead biped at rest, 4324-4329: the turn goes on after the move, at 5178). I keeps 1 and 2 as an intent;
+   M's whole update (store_motion_update) goes on from the same stop over the spare entry. The owner is the caller's */
+static int store_intent_body(long biped_index, struct biped_datum *biped, struct biped_definition *definition,
+	struct store_motion *motion, unsigned long *flags, real_point3d *position, real_vector3d *velocity)
+{
+	biped_verify_object_vectors(biped_index, "pre-update");
 	motion->animation.state_desired = _unit_state_idle;
 	motion->animation.crouching = FALSE;
 	if (!store_intent_head(biped_index, biped, definition, &motion->animation))
+		return 2;
+	if (!TEST_FLAG(biped->object.damage_flags, _object_dead_bit))
 	{
-		store_intent_keep(k, n, 2, 0, NULL, NULL, 0.f, 0.f);
+		store_intent_turning(biped_index, biped, definition, &motion->animation);
+		biped_verify_object_vectors(biped_index, "post-turning");
+	}
+	return store_intent_moving(biped_index, biped, definition, &motion->animation, motion, flags, position, velocity);
+}
+
+/* ---- M, the motion (step 3, M's design: box_world_store.md 19 'M's design', parts 1, 2, 4 and 6) ----
+M is bipedstage3's solve as the store's own code, over I's tables: biped_update's resume (5056-5064) and its three
+labels, as three entry points: (a) at the call (stop 1: the physics tail, _moving's tail, then biped_update's tail
+from the post-moving verify), (b) after the move (5178, only the whole update's build stopped short reaches it), and
+(c) the tail (5273, stop 2, the rider). Only the record's fields cross from I to M: every goto of old-only's resume
+skipped the build's assignments and its tails read none of them (Part 1), so M's entry and the intent's flags are the
+whole crossing. The tails are the next pieces' (the coder's), declared here with their contracts. */
+
+/* the physics tail, biped_update_physics from the move's call (3315) to its end (3849), on M's physics record: the
+   debug skip's plane or the reuse's try, store_coll_move with G's take and the reuse's store, and the clip and the
+   record's outputs. Its five locals come in made as old-only's resume made them (3039-3047): in_flags and facing
+   M's entry's, collision_flags the intent's (or the whole update's own build's), position and velocity made again
+   from the record (3302-3304, in the caller); climbing it works out from physics->in_flags at its head, as 3026 did.
+   It writes the record and the caller's position and velocity as the tail wrote its locals. The next piece's */
+static void store_motion_call(struct biped_physics *physics, word in_flags, real_vector2d facing,
+	unsigned long collision_flags, real_point3d *position, real_vector3d *velocity);
+
+/* _moving's tail, biped_update_moving from the call's return (4792) to its end (4956), on M's physics record after
+   store_motion_call: the elevator, the record's outputs to the datum, landing, jumping, bumps and falling damage
+   (biped_start_landing, biped_update_jumping, biped_jump, biped_bumped_object, biped_falling_damage come with it).
+   The biped and definition are the held pair (4319 looked the definition up again: the same answer); the build's
+   movement_scale and in_flags locals are never read (the tail reads physics.in_flags, 4943, 4948). The next piece's */
+static void store_motion_moved(long biped_index, struct biped_datum *biped, struct biped_definition *definition,
+	struct unit_animation_update_data *animation, struct biped_physics *physics);
+
+/* biped_update's tail: with moved, from the post-moving verify (5178) through dead/air/land/slip, the melee,
+   footsteps, falling danger and the discard (5264) and on; without (a rider, stop 2), from 5273 alone: then
+   unit_update_animation with the animation, biped_jump on 1, the idle ticks and the post-update verify (5288). The
+   biped and definition are the held pair. The next pieces' (the limp body first: biped_update_dead calls it) */
+static void store_motion_tail(long biped_index, struct biped_datum *biped, struct biped_definition *definition,
+	struct unit_animation_update_data *animation, int moved);
+
+short store_motion_cur = -1; /* the pass's staged position for the biped it updates, -1 outside the pass */
+/* the spare entry (the table's 65th) is the whole update's: never mapped, never read by G, written and read in one
+   biped's turn. A nested whole update would share it; it would come in as an intent not its own (cur is the outer
+   biped's), counted, and the proof reads that count at 0 */
+#define STORE_MOTION_SPARE STORE_INTENT_ENTRIES
+
+/* M from a stop: (a) for 1, (b) for 0, (c) for 2. position and velocity are made again from the record by 3302-3304's
+   three expressions: nothing writes the record between 3304 and bipedstage3's copy of it (3313, 4786-4788), so the
+   same operands give the same floats, and one add can't contract */
+static void store_motion_from(long biped_index, struct biped_datum *biped, struct biped_definition *definition,
+	struct store_motion *motion, int stop, unsigned long collision_flags)
+{
+	if (stop == 1)
+	{
+		real_point3d position = motion->physics.position;
+		real_vector3d velocity = motion->physics.new_velocity;
+
+		velocity.k += motion->physics.crouch_velocity;
+		store_motion_call(&motion->physics, motion->in_flags, motion->facing, collision_flags, &position, &velocity);
+		store_motion_moved(biped_index, biped, definition, &motion->animation, &motion->physics);
+	}
+	store_motion_tail(biped_index, biped, definition, &motion->animation, stop != 2);
+}
+
+/* the biped's datum_update (object_types.c 310 retargets here with the delete cut): biped_update's signature, TRUE
+   always. The debug skip first, as biped_update's (no owner, nothing counted). Then the owner. A biped the pass is
+   updating whose staged position holds its own intent resumes it: the pre-update verify again (a kept biped gets it
+   twice a tick, once in I and once here, as on old-only), the animation the entry's, and M from the intent's stop.
+   Any other case is the whole update, counted by kind: no intent (alive: over the pool; dead: phase 0, no record),
+   an intent not its own (0 expected), or outside the pass (0 expected). It runs store_intent_body into the spare
+   entry, so the pre-update verify runs once, and M from the body's stop, with the build's own flags at the call; its
+   move gathers live (G has no entry for it: the take finds no slot, and store_coll_move queries the world). The
+   opening values I's body writes are written over by the entry's animation, so a resume doesn't write them.
+   psp_bms_resume/_stop and profile_enter/_exit go, as in I */
+boolean store_motion_update(long biped_index)
+{
+	struct biped_datum *biped;
+	struct biped_definition *definition;
+	struct store_intent const *intent;
+	void *const *outer;
+
+	if (debug_biped_skip_update)
+		return TRUE;
+	biped = biped_get(biped_index);
+	definition = biped_definition_get(biped->definition_index);
+	intent = store_motion_cur >= 0 ? store_intent_of(store_motion_cur) : NULL;
+	outer = store_motion_owner_set(biped_index);
+	if (intent && intent->biped_index == biped_index)
+	{
+		biped_verify_object_vectors(biped_index, "pre-update");
+		store_motion_stat[intent->stop == 1 ? 0 : 1]++;
+		store_motion_from(biped_index, biped, definition, &store_motions[intent - store_intents], intent->stop,
+			intent->flags);
 	}
 	else
 	{
-		unsigned long flags;
+		struct store_motion *motion = &store_motions[STORE_MOTION_SPARE];
+		unsigned long flags = 0;
 		real_point3d position;
 		real_vector3d velocity;
+		int stop;
 
-		if (!TEST_FLAG(biped->object.damage_flags, _object_dead_bit))
-		{
-			store_intent_turning(biped_index, biped, definition, &motion->animation);
-			biped_verify_object_vectors(biped_index, "post-turning");
-		}
-		if (store_intent_moving(biped_index, biped, definition, &motion->animation, motion, &flags, &position, &velocity))
-			store_intent_keep(k, n, 1, flags, &position, &velocity, motion->physics.height, motion->physics.width);
+		if (store_motion_cur < 0)
+			store_motion_stat[5]++;
+		else if (intent)
+			store_motion_stat[4]++;
+		else
+			store_motion_stat[TEST_FLAG(biped->object.damage_flags, _object_dead_bit) ? 3 : 2]++;
+		stop = store_intent_body(biped_index, biped, definition, motion, &flags, &position, &velocity);
+		if (stop == 0)
+			store_motion_stat[6]++;
+		store_motion_from(biped_index, biped, definition, motion, stop, flags);
 	}
 	store_motion_owner_put(outer);
+	return TRUE;
 }

@@ -67003,7 +67003,8 @@ tick2_collnew_delete_cut(TREE)
 TICK2_MOTIONNEW = os.environ.get("PSP_TICK2_MOTIONNEW", "") == "1"
 TICK2_MOTIONNEW_WRITTEN = ("the INTENT table and G", "struct biped_physics to store_motion.h and M's table",
                            "I's head (biped_update's, to turning)", "I's turning (biped_update_turning's)",
-                           "I's driver (biped_update's opening and bipedstage3's intent)")  # step 3's pieces in
+                           "I's driver (biped_update's opening and bipedstage3's intent)",
+                           "M's driver (store_motion_update: the three entry points, the whole update, M's counts)")  # step 3's pieces in
 def tick2_motionnew_check():
     if not TICK2_MOTIONNEW:
         return 0
@@ -68303,7 +68304,7 @@ def tick2_motionnew_written():
     if not TICK2_MOTIONNEW_OK:
         return 0
     check_fail("psp_fixups: TICK2 motionnew: task 5's stages are being written (in: %s; still to come: "
-               "I's move build to the call, M, the delete cut); PSP_TICK2_MOTIONNEW=1 builds once they're all in" % "; ".join(TICK2_MOTIONNEW_WRITTEN))
+               "I's move build to the call, M's tails, the delete cut); PSP_TICK2_MOTIONNEW=1 builds once they're all in" % "; ".join(TICK2_MOTIONNEW_WRITTEN))
     return 0
 tick2_motionnew_written()
 

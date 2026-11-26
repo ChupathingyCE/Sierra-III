@@ -82,8 +82,16 @@ void store_intent_keep(short k, short n, int stop, unsigned long flags, real_poi
 void store_intent_run(short k, long biped_index);
 /* staged biped k's entry, or NULL (dead, no intent kept, or over the pool) */
 struct store_intent const *store_intent_of(short k);
-/* after M: the tick's counts, and the log line */
+/* after M: the tick's counts, and the log lines (I's and M's) */
 void store_intent_end(void);
+
+/* M: the biped's datum_update (object_types.c 310's, with the delete cut), biped_update's signature, TRUE always. It
+   resumes the intent at staged position store_motion_cur when that intent is this biped's, and runs the whole update
+   otherwise (counted by kind) */
+boolean store_motion_update(long biped_index);
+/* the pass's staged position for the biped it is updating: set before each staged biped's update, -1 after and
+   outside the pass */
+extern short store_motion_cur;
 
 /* bipeds.c's helpers that I and M call and that stay (each has callers past biped_update): their static goes by
    psp_fixups.py's tick2_motionnew_helpers_cut, so store_motion.c reaches them; LTO (LTO_LIKE_UNITS) still inlines
