@@ -44,15 +44,22 @@ Built with PSP_TICK2_MOTIONNEW=1 (psp_build.py), as bipeds.c is.
 #include "stubbs_mode.h" /* port: port/linux/game/stubbs_mode.c */
 #include "stubbs_player.h" /* port: port/linux/game/stubbs_player.c */
 #include "ai/actors.h"
+#include "cseries/errors.h" /* M's physics tail: error, _error_silent (bipeds.c 284) */
 #include "cutscene/cinematics.h"
+#include "devices/device_definitions.h" /* machine_definition_get (bipeds.c 288) */
+#include "devices/devices.h" /* _machine_never_appears_locked_bit (bipeds.c 289) */
 #include "game/game_globals.h"
 #include "game/players.h"
 #include "models/model_animation_definitions.h"
 #include "models/model_definitions.h"
+#include "physics/collision_bsp.h" /* M's physics tail: collision_surface_edge_ring_continues, collision_bsp_valid_surface_index (bipeds.c 308) */
+#include "physics/collision_bsp_definitions.h" /* PSP_DESIGNATOR (bipeds.c 239) */
+#include "physics/collision_debug.h" /* collision_debug_repeat and the rest (bipeds.c 310) */
 #include "scenario/scenario.h"
 #include "network_coop.h" /* port: port/linux/game/network_coop.c */
 #include "mcc_movement.h" /* port: MCC weapon-authored movement penalties */
 #include "store_motion.h"
+#include "store_coll.h" /* M's physics tail: store_coll_move, store_coll_stand (piece 3's, store_coll.c) */
 
 #ifdef HALO_PSP
 /* bipeds.c's verify gate (psp_fixups.py's FIXES_DIET1, VERIFYGATE: bipeds.c 2027-2035 in the ship form), so I's and
@@ -1459,14 +1466,544 @@ from the post-moving verify), (b) after the move (5178, only the whole update's 
 skipped the build's assignments and its tails read none of them (Part 1), so M's entry and the intent's flags are the
 whole crossing. The tails are the next pieces' (the coder's), declared here with their contracts. */
 
-/* the physics tail, biped_update_physics from the move's call (3315) to its end (3849), on M's physics record: the
-   debug skip's plane or the reuse's try, store_coll_move with G's take and the reuse's store, and the clip and the
-   record's outputs. Its five locals come in made as old-only's resume made them (3039-3047): in_flags and facing
-   M's entry's, collision_flags the intent's (or the whole update's own build's), position and velocity made again
-   from the record (3302-3304, in the caller); climbing it works out from physics->in_flags at its head, as 3026 did.
-   It writes the record and the caller's position and velocity as the tail wrote its locals. The next piece's */
-static void store_motion_call(struct biped_physics *physics, word in_flags, real_vector2d facing,
-	unsigned long collision_flags, real_point3d *position, real_vector3d *velocity);
+extern boolean debug_biped_physics, debug_biped_skip_collision; /* bipeds.c 506, 508 */
+void platform_psp_log(const char *format, ...);                 /* psp_platform.c 82 (as bipeds.c 264) */
+unsigned long psp_microseconds(void);                           /* psp_platform.c 2800 (as bipeds.c 265) */
+/* PSP_SWEEPREUSE (psp_fixups.py), as bipeds.c 329-331: collisions.c's */
+boolean psp_sr_try(long biped_index, unsigned long flags, real_point3d const *position, real_vector3d const *velocity, real height, real width, short *count, real_point3d *clipped_position, real_vector3d *clipped_velocity, struct collision_plane *collisions);
+void psp_sr_begin(void);
+void psp_sr_store(long biped_index, unsigned long flags, real_point3d const *position, real_vector3d const *velocity, real height, real width, short *count, real_point3d *clipped_position, real_vector3d *clipped_velocity, struct collision_plane *collisions);
+
+/* M's physics tail: biped_update_physics's from the move's call (the psp_bs3_resume_call: label) to its end, on M's
+   physics record. The engine's lines 2896-2911 and 3189-3724 in the ship form at ff2bb9fb: the same tests and the same
+   float expressions in the same order, so the game computes bit-for-bit the same values. Its inputs: facing M's entry's
+   (I left it there), collision_flags the intent's or the whole update's own build's, and position and velocity made
+   again from the record by store_motion_from, as 3176-3178 made them; climbing it works out from physics->in_flags at
+   its head, as 2900 did. Position and velocity come by value (the tail only reads them: the engine's `position.` and
+   `&velocity` stay as they are), and there's no in_flags: the tail never reads the local past the label, only
+   physics->in_flags. It returns nothing: the engine's tail writes only physics->... Left out: the census, psp_pill_reach
+   (3221-3223: the design's part 5 leaves it out of M); the Stubbs wall block (3490-3513) and its climber_wall (3459),
+   which psp_build.py's CHUPA_FLAGS_DROPPED never compiles for the PSP (it drops -DHALO_MAP_LIST) and nothing else
+   reads; and FIXES_STACKHOT2's features with psp_stackhot_list and its #undef (3697-3699, 3725), since collnew's stand
+   test replaced the engine's two calls and nothing in the function reads them. PSP_BMS(biped, X) is biped->X (3688,
+   3690). The pill-sweep timer's counters and their "bipeds: pill sweeps" line are this call's now (3210-3220 and
+   3240-3257, kept whole: the move is priced by them). store_motion_from calls it */
+static void store_motion_call(struct biped_physics *physics, real_vector2d facing, unsigned long collision_flags,
+	real_point3d position, real_vector3d velocity)
+{
+	boolean climbing = TEST_FLAG(physics->in_flags, _biped_physics_in_climb_anything_bit);
+	real_point3d clipped_position;
+	real_vector3d clipped_velocity;
+	struct collision_plane collisions[16];
+	short collision_count;
+
+	match_assert_valid_real_point3d("c:\\halo\\SOURCE\\units\\bipeds.c", 0xBCC, &physics->position);
+	match_assert_valid_real_vector3d("c:\\halo\\SOURCE\\units\\bipeds.c", 0xBCD, &physics->velocity);
+
+	if (debug_biped_skip_collision)
+	{
+		collisions[0].t = 0.f;
+		collisions[0].point = physics->position;
+		collisions[0].plane.n = *global_up3d;
+		collisions[0].plane.d = -position.z;
+		collisions[0].object_index = physics->biped_index;
+		collisions[0].surface_index = NONE;
+		collisions[0].flags = 0;
+		collisions[0].breakable_surface_index = 0;
+		collisions[0].material_index = NONE;
+		clipped_velocity = velocity;
+		clipped_position.x = position.x + clipped_velocity.i;
+		clipped_position.y = position.y + clipped_velocity.j;
+		clipped_position.z = position.z;
+		clipped_velocity.k = 0.f;
+		collision_count = 1;
+	}
+	else
+	{
+#ifdef HALO_PSP
+		/* timed, by whether the biped is moving (psp_fixups.py) */
+		static unsigned long psp_pill_us[3], psp_pill_count[3], psp_pill_hits[3];
+		unsigned long psp_mark = psp_microseconds();
+		/* "still": little horizontal movement (gravity pulls every standing
+		biped into its ground plane each tick, so the vertical part is never
+		zero): 2 under 0.001 wu a tick, 1 under 0.01, 0 moving */
+		float psp_speed2 = velocity.i * velocity.i + velocity.j * velocity.j;
+		int psp_still = TEST_FLAG(physics->in_flags, _biped_physics_in_airborne_bit) ? 0 :
+			psp_speed2 < 1e-6f ? 2 : psp_speed2 < 1e-4f ? 1 : 0;
+#endif
+		if (!psp_sr_try(physics->biped_index, collision_flags, &position, &velocity, physics->height, physics->width, &collision_count, &clipped_position, &clipped_velocity, collisions)) /* PSP_SWEEPREUSE */
+		{
+		psp_sr_begin();
+		collision_count = store_coll_move( /* TICK2 collnew: the store's move with its take, until task 5 */
+			collision_flags,
+			&position,
+			&velocity,
+			physics->height,
+			physics->width,
+			physics->biped_index,
+			&clipped_position,
+			&clipped_velocity,
+			16,
+			collisions);
+		psp_sr_store(physics->biped_index, collision_flags, &position, &velocity, physics->height, physics->width, &collision_count, &clipped_position, &clipped_velocity, collisions);
+		}
+#ifdef HALO_PSP
+		psp_pill_us[psp_still] += psp_microseconds() - psp_mark;
+		psp_pill_count[psp_still]++;
+		psp_pill_hits[psp_still] += collision_count;
+		if (psp_pill_count[0] + psp_pill_count[1] + psp_pill_count[2] >= 3000)
+		{
+			platform_psp_log("bipeds: pill sweeps: moving %lu at %lu us (%.1f collisions each), slow %lu at %lu us (%.1f), still %lu at %lu us (%.1f)",
+				psp_pill_count[0], psp_pill_count[0] ? psp_pill_us[0] / psp_pill_count[0] : 0,
+				psp_pill_count[0] ? (double)psp_pill_hits[0] / psp_pill_count[0] : 0.0,
+				psp_pill_count[1], psp_pill_count[1] ? psp_pill_us[1] / psp_pill_count[1] : 0,
+				psp_pill_count[1] ? (double)psp_pill_hits[1] / psp_pill_count[1] : 0.0,
+				psp_pill_count[2], psp_pill_count[2] ? psp_pill_us[2] / psp_pill_count[2] : 0,
+				psp_pill_count[2] ? (double)psp_pill_hits[2] / psp_pill_count[2] : 0.0);
+			memset(psp_pill_us, 0, sizeof(psp_pill_us));
+			memset(psp_pill_count, 0, sizeof(psp_pill_count));
+			memset(psp_pill_hits, 0, sizeof(psp_pill_hits));
+		}
+#endif
+	}
+
+	if (debug_biped_physics &&
+		object_get(physics->biped_index)->object.owner_player_index != NONE)
+	{
+		collision_debug_repeat = TRUE;
+		collision_debug_point = position;
+		collision_debug_vector = velocity;
+		collision_debug_length = 1.0f;
+		collision_debug_width = physics->width;
+		collision_debug_height = physics->height;
+	}
+
+	SET_FLAG(physics->out_flags, _biped_physics_out_splatter_bit, collision_count >= 16);
+	physics->stick_surface_index = NONE;
+	if (!collision_count && physics->existing_support_surface_index != NONE)
+	{
+		struct collision_bsp *bsp = global_collision_bsp_get();
+		long best_surface_index = NONE;
+		real best_distance_squared = REAL_MAX;
+
+		if (VALID_INDEX(physics->existing_support_surface_index, bsp->surfaces.count))
+		{
+			struct collision_surface *surface = TAG_BLOCK_GET_ELEMENT(
+				&bsp->surfaces,
+				physics->existing_support_surface_index,
+				struct collision_surface);
+			long edge_index = surface->first_edge_index;
+			short edge_count = 0;
+			real_plane3d plane;
+			real_plane3d best_plane;
+			real best_velocity_dot;
+			real_point3d point;
+			real distance;
+
+			bsp3d_get_plane_from_designator(&bsp->bsp3d, PSP_DESIGNATOR(surface->plane_designator), &plane);
+			distance = -(plane.n.i * clipped_position.x +
+				plane.n.j * clipped_position.y +
+				plane.n.k * clipped_position.z -
+				plane.d);
+			point.x = plane.n.i * distance + clipped_position.x;
+			point.y = plane.n.j * distance + clipped_position.y;
+			point.z = plane.n.k * distance + clipped_position.z;
+
+			do
+			{
+				struct collision_edge *edge;
+				boolean reverse;
+				long neighbor_surface_index;
+
+				/* port: the surface's ring of edges ends as
+				collision_surface_edge_ring_continues says, or at an edge
+				whose vertices aren't the bsp's (a map's indices; the
+				retail rings all close within 3 to 8 edges) */
+				if (!collision_surface_edge_ring_continues(bsp, edge_index, edge_count++))
+				{
+					break;
+				}
+				edge = TAG_BLOCK_GET_ELEMENT(
+					&bsp->edges,
+					edge_index,
+					struct collision_edge);
+				if (!VALID_INDEX(edge->vertex_indices[0], bsp->vertices.count) ||
+					!VALID_INDEX(edge->vertex_indices[1], bsp->vertices.count))
+				{
+					static boolean reported = FALSE;
+
+					if (!reported)
+					{
+						reported = TRUE;
+						error(_error_silent, "collision edge #%ld's vertices are not the bsp's", edge_index);
+					}
+					break;
+				}
+				reverse = physics->existing_support_surface_index == edge->surface_indices[1];
+				neighbor_surface_index = edge->surface_indices[!reverse];
+
+				/* port: (and a neighbor that is no surface of the bsp's is
+				none) */
+				if (neighbor_surface_index != NONE &&
+					collision_bsp_valid_surface_index(bsp, neighbor_surface_index))
+				{
+					struct collision_surface *neighbor_surface = TAG_BLOCK_GET_ELEMENT(
+						&bsp->surfaces,
+						neighbor_surface_index,
+						struct collision_surface);
+
+					if (TEST_FLAG(physics->in_flags, _biped_physics_in_climb_anything_bit) ||
+						TEST_FLAG(neighbor_surface->flags, _collision_surface_climbable_bit))
+					{
+						real velocity_dot;
+
+						bsp3d_get_plane_from_designator(
+							&bsp->bsp3d,
+							PSP_DESIGNATOR(neighbor_surface->plane_designator),
+							&plane);
+						velocity_dot = dot_product3d(&plane.n, &clipped_velocity);
+						if (velocity_dot > 0.f &&
+							plane.n.i * clipped_position.x +
+								plane.n.j * clipped_position.y +
+								plane.n.k * clipped_position.z -
+								plane.d > physics->width * -0.5f)
+						{
+							struct collision_vertex *vertex0 = TAG_BLOCK_GET_ELEMENT(
+								&bsp->vertices,
+								edge->vertex_indices[0],
+								struct collision_vertex);
+							struct collision_vertex *vertex1 = TAG_BLOCK_GET_ELEMENT(
+								&bsp->vertices,
+								edge->vertex_indices[1],
+								struct collision_vertex);
+							real_vector3d edge_vector;
+							real_point3d closest_point;
+							real t;
+							real distance_squared;
+
+							vector_from_points3d(&vertex0->point, &vertex1->point, &edge_vector);
+							t = ((point.x - vertex0->point.x) * edge_vector.i +
+								(point.y - vertex0->point.y) * edge_vector.j +
+								(point.z - vertex0->point.z) * edge_vector.k) /
+								magnitude_squared3d(&edge_vector);
+							if (t < 0.f)
+								closest_point = vertex0->point;
+							else if (t > 1.f)
+								closest_point = vertex1->point;
+							else
+								point_from_line3d(&vertex0->point, &edge_vector, t, &closest_point);
+
+							distance_squared = distance_squared3d(&point, &closest_point);
+							if (distance_squared < best_distance_squared)
+							{
+								best_distance_squared = distance_squared;
+								best_surface_index = neighbor_surface_index;
+								best_plane = plane;
+								best_velocity_dot = velocity_dot;
+							}
+						}
+					}
+				}
+
+				edge_index = edge->edge_indices[reverse];
+			}
+			while (edge_index != surface->first_edge_index);
+
+			if (best_surface_index != NONE &&
+				best_distance_squared <= (physics->width * 2.f) * (physics->width * 2.f) &&
+				best_velocity_dot <= 1.6f / TICKS_PER_SECOND)
+			{
+				distance = best_plane.n.i * clipped_position.x +
+					best_plane.n.j * clipped_position.y +
+					best_plane.n.k * clipped_position.z -
+					(best_plane.d + physics->width);
+				if (!(fabs(distance) > physics->width * 0.5f))
+				{
+					real new_velocity_dot = dot_product3d(&best_plane.n, &clipped_velocity);
+
+					clipped_position.x = best_plane.n.i * -distance + clipped_position.x;
+					clipped_position.y = best_plane.n.j * -distance + clipped_position.y;
+					clipped_position.z = best_plane.n.k * -distance + clipped_position.z;
+					if (new_velocity_dot > -1.f / TICKS_PER_SECOND)
+					{
+						point_from_line3d(
+							(real_point3d *)&clipped_velocity,
+							&best_plane.n,
+							-(new_velocity_dot + 1.f / TICKS_PER_SECOND),
+							(real_point3d *)&clipped_velocity);
+					}
+
+					collisions[0].t = 0.f;
+					collisions[0].point.x = best_plane.n.i * -physics->width + clipped_position.x;
+					collisions[0].point.y = best_plane.n.j * -physics->width + clipped_position.y;
+					collisions[0].point.z = best_plane.n.k * -physics->width + clipped_position.z;
+					collisions[0].plane = best_plane;
+					collisions[0].object_index = NONE;
+					collisions[0].surface_index = best_surface_index;
+					collisions[0].flags = 0;
+					collisions[0].breakable_surface_index = 0;
+					collisions[0].material_index = NONE;
+					collision_count = 1;
+					physics->stick_surface_index = best_surface_index;
+				}
+			}
+		}
+	}
+
+	{
+		real magnitude_squared = facing.j * facing.j + facing.i * facing.i;
+
+		if (magnitude_squared > _real_epsilon * _real_epsilon)
+		{
+			real inverse_magnitude = 1.0 / square_root(magnitude_squared);
+
+			facing.i *= inverse_magnitude;
+			facing.j *= inverse_magnitude;
+		}
+	}
+
+	{
+		short best_collision_index = NONE;
+		boolean best_walkable = FALSE;
+		boolean best_stuck = FALSE;
+		real best_normal_k = -REAL_MAX;
+		real best_velocity_dot = -REAL_MAX;
+
+		if (!TEST_FLAG(physics->in_flags, _biped_physics_in_flying_bit))
+		{
+			short collision_index;
+
+			for (collision_index = 0; collision_index < collision_count; collision_index++)
+			{
+				struct collision_plane *collision = &collisions[collision_index];
+				boolean walkable =
+					!TEST_FLAG(physics->in_flags, _biped_physics_in_dead_bit) &&
+					(climbing || TEST_FLAG(collision->flags, _collision_surface_climbable_bit));
+				boolean stuck =
+					physics->stick_surface_index != NONE &&
+					best_collision_index != NONE &&
+					collisions[best_collision_index].surface_index == physics->stick_surface_index;
+				real velocity_dot = -dot_product3d(&collision->plane.n, &physics->new_velocity);
+				boolean better;
+
+				if (walkable)
+				{
+					if (!climbing && collision->plane.n.i * facing.i + collision->plane.n.j * facing.j > 0.5f)
+						better = FALSE;
+					else if (!best_walkable || stuck)
+						better = TRUE;
+					else if (best_stuck)
+						better = FALSE;
+					else
+						better = velocity_dot > best_velocity_dot;
+				}
+				else
+				{
+					better = !best_walkable && collision->plane.n.k > best_normal_k;
+				}
+
+				if (better)
+				{
+					best_velocity_dot = velocity_dot;
+					best_walkable = walkable;
+					best_collision_index = collision_index;
+					best_stuck = stuck;
+					best_normal_k = collision->plane.n.k;
+				}
+
+				if (!TEST_FLAG(physics->out_flags, _biped_physics_out_volatile_collision_bit) &&
+					(TEST_FLAG(collision->flags, _collision_surface_breakable_bit) ||
+					(collision->object_index != NONE &&
+					!TEST_FLAG(_object_mask_scenery, object_get_type(collision->object_index)))))
+				{
+					SET_FLAG(physics->out_flags, _biped_physics_out_volatile_collision_bit, TRUE);
+				}
+			}
+		}
+
+		if (best_collision_index != NONE)
+		{
+			struct collision_plane *collision = &collisions[best_collision_index];
+			real_plane3d plane = collision->plane;
+			boolean supported = TRUE;
+			real velocity_dot = -dot_product3d(&plane.n, &velocity);
+
+			if (!best_walkable && !best_stuck)
+			{
+				if (best_normal_k < physics->minimum_normal_k)
+				{
+					supported = FALSE;
+				}
+				else if (TEST_FLAG(physics->in_flags, _biped_physics_in_airborne_bit) &&
+					physics->ground_tangential_velocity_max < REAL_MAX)
+				{
+					real_vector3d tangential_velocity;
+					real maximum = physics->ground_tangential_velocity_max;
+
+					point_from_line3d(
+						(real_point3d *)&velocity,
+						&plane.n,
+						velocity_dot,
+						(real_point3d *)&tangential_velocity);
+					if (magnitude_squared3d(&tangential_velocity) > maximum * maximum &&
+						velocity_dot / magnitude3d(&velocity) < physics->ground_tangential_angle)
+					{
+						supported = FALSE;
+					}
+				}
+			}
+
+			if (supported)
+			{
+				SET_FLAG(physics->out_flags, _biped_physics_out_airborne_bit, FALSE);
+				physics->ground_plane = collision->plane;
+				physics->support_surface_index = collision->surface_index;
+				if (physics->support_surface_index == NONE ||
+					physics->support_surface_index != physics->stick_surface_index)
+				{
+					physics->landing_velocity = -dot_product3d(&velocity, &physics->ground_plane.n);
+				}
+				else
+				{
+					physics->landing_velocity = 0.f;
+				}
+			}
+			else
+			{
+				SET_FLAG(physics->out_flags, _biped_physics_out_airborne_bit, TRUE);
+				physics->ground_plane = depths_of_hell;
+				physics->support_surface_index = NONE;
+				physics->landing_velocity = 0.f;
+			}
+		}
+		else
+		{
+			SET_FLAG(physics->out_flags, _biped_physics_out_airborne_bit, TRUE);
+			physics->ground_plane = depths_of_hell;
+			physics->support_surface_index = NONE;
+			physics->landing_velocity = 0.f;
+		}
+	}
+
+	{
+		long bumped_object_index = NONE;
+		short bumped_object_type;
+		real bumped_speed_squared;
+		short collision_index;
+
+		for (collision_index = 0; collision_index < collision_count; collision_index++)
+		{
+			long object_index = collisions[collision_index].object_index;
+
+			if (object_index != NONE)
+			{
+				struct object_datum *object = object_get(object_index);
+				real_vector3d relative_velocity;
+				real speed_squared;
+				boolean bump;
+
+				relative_velocity.i = object->object.root->translational_velocity.i - clipped_velocity.i;
+				relative_velocity.j = object->object.root->translational_velocity.j - clipped_velocity.j;
+				relative_velocity.k = object->object.root->translational_velocity.k - clipped_velocity.k;
+				speed_squared = magnitude_squared3d(&relative_velocity);
+				if (bumped_object_index == NONE)
+					bump = TRUE;
+				else if (bumped_object_type == _object_type_vehicle)
+					bump = object->object.type == _object_type_vehicle && speed_squared > bumped_speed_squared;
+				else
+					bump = object->object.type == _object_type_vehicle || speed_squared > bumped_speed_squared;
+
+				if (bump)
+				{
+					bumped_object_type = object->object.type;
+					bumped_speed_squared = speed_squared;
+					bumped_object_index = object_index;
+				}
+			}
+		}
+		physics->bumped_object_index = bumped_object_index;
+	}
+
+	physics->elevator_object_index = NONE;
+	{
+		short collision_index;
+
+		for (collision_index = 0; collision_index < collision_count; collision_index++)
+		{
+			long object_index = collisions[collision_index].object_index;
+
+			if (object_index != NONE)
+			{
+				struct object_datum *machine = object_try_and_get_and_verify_type(
+					object_index,
+					_object_mask_machine);
+
+				if (machine)
+				{
+					struct machine_definition *machine_definition =
+						machine_definition_get(machine->definition_index);
+
+					if (TEST_FLAG(machine_definition->machine.flags, _machine_never_appears_locked_bit) &&
+						machine_definition->machine.elevator_node_index != NONE)
+					{
+						physics->elevator_object_index = object_index;
+					}
+				}
+			}
+		}
+	}
+
+	physics->new_position = clipped_position;
+	physics->new_velocity = clipped_velocity;
+	{
+		real_vector3d velocity_delta;
+
+		velocity_delta.i = clipped_velocity.i - velocity.i;
+		velocity_delta.j = clipped_velocity.j - velocity.j;
+		velocity_delta.k = clipped_velocity.k - velocity.k;
+		physics->collision_velocity = magnitude3d(&velocity_delta);
+	}
+	physics->new_velocity.k -= physics->crouch_velocity;
+
+	if (TEST_FLAG(physics->in_flags, _biped_physics_in_crouched_bit) &&
+		TEST_FLAG(physics->in_flags, _biped_physics_in_trying_to_stand_bit))
+	{
+		struct biped_datum *biped = biped_get(physics->biped_index);
+
+		if (biped->unit.player_index != NONE)
+		{
+			struct biped_definition *definition = biped_definition_get(biped->definition_index);
+
+			if (!TEST_FLAG(definition->biped.flags, _biped_pill_centered_at_origin_bit) &&
+				!TEST_FLAG(definition->biped.flags, _biped_spherical_bit))
+			{
+				real radius = definition->biped.collision_height_standing * 0.5f;
+				real_point3d center = physics->new_position;
+
+				center.z += radius;
+				if (store_coll_stand( /* TICK2 collnew: the store's stand test, the engine's two calls, until task 5 */
+					TEST_FLAG(physics->in_flags, _biped_physics_in_dead_bit) ?
+						_collision_test_for_bipeds_dead_flags :
+						_collision_test_for_bipeds_living_flags,
+					&center,
+					radius,
+					definition->biped.collision_radius,
+					physics->biped_index,
+					&physics->new_position,
+					definition->biped.collision_height_standing -
+						2.f * definition->biped.collision_radius))
+				{
+					SET_FLAG(physics->out_flags, _biped_physics_out_cannot_stand_bit, TRUE);
+				}
+			}
+		}
+	}
+
+	match_assert_valid_real_point3d("c:\\halo\\SOURCE\\units\\bipeds.c", 0xF10, &physics->new_position);
+	match_assert_valid_real_vector3d("c:\\halo\\SOURCE\\units\\bipeds.c", 0xF11, &physics->new_velocity);
+
+	return;
+}
 
 /* _moving's tail, biped_update_moving from the call's return (4792) to its end (4956), on M's physics record after
    store_motion_call: the elevator, the record's outputs to the datum, landing, jumping, bumps and falling damage
@@ -1501,7 +2038,7 @@ static void store_motion_from(long biped_index, struct biped_datum *biped, struc
 		real_vector3d velocity = motion->physics.new_velocity;
 
 		velocity.k += motion->physics.crouch_velocity;
-		store_motion_call(&motion->physics, motion->in_flags, motion->facing, collision_flags, &position, &velocity);
+		store_motion_call(&motion->physics, motion->facing, collision_flags, position, velocity);
 		store_motion_moved(biped_index, biped, definition, &motion->animation, &motion->physics);
 	}
 	store_motion_tail(biped_index, biped, definition, &motion->animation, stop != 2);
