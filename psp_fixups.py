@@ -2217,6 +2217,10 @@ if os.environ.get("PSP_TICK_STEPS", "") == "1":
         # object's set-up) under the accounting's name
         "source/objects/objects.c": [("static boolean object_update(", None), ("void objects_update(", None)],
     })
+    # task 5 (PSP_TICK2_MOTIONNEW=1) deletes both bipeds.c functions: the on form marks I's and M's instead, in the
+    # copy of psp/src/store_motion.c that tick2_motionnew_bench_cut writes into the tree (this file's end)
+    if os.environ.get("PSP_TICK2_MOTIONNEW", "") == "1":
+        del STEPS["source/units/bipeds.c"]
     # prop_status_refresh's calls are assignments, which the call pattern
     # can't see: labelled steps split it instead
     STEP_LABELS_TICK = {
@@ -67019,18 +67023,6 @@ def tick2_motionnew_check():
         check_fail("psp_fixups: TICK2 motionnew: M2 needs the engine's solve: PSP_TICK2_MOTIONPASS and PSP_MOTIONCROSS "
                    "are refused under PSP_TICK2_MOTIONNEW=1 (docs/box_world_store.md section 19 part 8)")
         return 0
-    # their cuts run before the delete and would trace a body that's then gone: refuse, never cut nothing silently
-    # (CALLTRACE is defined below this function; read from the environment)
-    if os.environ.get("PSP_CALLTRACE", "") == "1":
-        check_fail("psp_fixups: TICK2 motionnew: PSP_CALLTRACE and PSP_TICK_STEPS scope on biped_update and biped_update_moving, "
-                   "which task 5 deletes: refused under PSP_TICK2_MOTIONNEW=1 until they're retargeted to I and M "
-                   "(docs/box_world_store.md section 19 part 8)")
-        return 0
-    if os.environ.get("PSP_TICK_STEPS", "") == "1":
-        check_fail("psp_fixups: TICK2 motionnew: PSP_CALLTRACE and PSP_TICK_STEPS scope on biped_update and biped_update_moving, "
-                   "which task 5 deletes: refused under PSP_TICK2_MOTIONNEW=1 until they're retargeted to I and M "
-                   "(docs/box_world_store.md section 19 part 8)")
-        return 0
     return 1
 TICK2_MOTIONNEW_OK = tick2_motionnew_check()  # the pieces' cuts run only on it; the refusal is at this file's end
 
@@ -67384,6 +67376,13 @@ CALLTRACE_INNER = (("source/units/bipeds.c", ("biped_snap_facing", "biped_snap_f
                                                "biped_update_moving", "biped_update_physics", "biped_apply_rotation",
                                                "biped_accelerate", "biped_fix_position")),
                    ("source/units/units.c", ("unit_control", "unit_align_facing", "unit_clip_to_aiming_bounds")))
+# task 5 (PSP_TICK2_MOTIONNEW=1) deletes biped_update and four of the inner names: the on form keeps bipeds.c's other
+# four and units.c's, and wraps I's and M's in the copy of psp/src/store_motion.c (tick2_motionnew_bench_cut)
+if TICK2_MOTIONNEW:
+    CALLTRACE_SCOPES = tuple(s for s in CALLTRACE_SCOPES if s[0] != "source/units/bipeds.c")
+    CALLTRACE_INNER = tuple((rel, tuple(n for n in names if n not in ("biped_update_turning", "biped_update_moving",
+                                                                   "biped_update_physics", "biped_apply_rotation")))
+                            for rel, names in CALLTRACE_INNER)
 # the queries: the file, the name, whether a form may lack it, and the inputs and answer logged
 # (the answer's struct only on a hit, the rest of it is the caller's; the BSP results' heads, not their lists)
 CALLTRACE_QUERIES = (
@@ -68819,6 +68818,69 @@ def tick2_motionnew_delete_cut(tree):
              len(deleted)))
     return 1
 tick2_motionnew_delete_cut(TREE)
+
+# PSP_CALLTRACE=1 or PSP_TICK_STEPS=1 on the on form (the lead 2026-11-26 10:5x (1), 11:0x (3)): I and M are
+# psp/src/store_motion.c, Sierra-III's own text, which no cut edits. This writes a copy of it into the tree at the
+# same relative path, marked for TICK_STEPS (breadcrumbs' per-call markers, in the functions biped_update and
+# biped_update_moving became) and wrapped for CALLTRACE (biped_update's scope as I's and M's entries, the inner
+# writers as their I and M functions); psp_build.py compiles the copy in its place
+TICK2_MOTIONNEW_BENCH_SRC = os.path.join(TICK2_COLLNEW_DIR, "psp", "src", "store_motion.c")
+TICK2_MOTIONNEW_BENCH_STEPS = ("void store_intent_run(", "static int store_intent_body(", "static int store_intent_moving(",
+                                "boolean store_motion_update(", "static void store_motion_from(",
+                                "static void store_motion_moved(", "static void store_motion_tail(")
+TICK2_MOTIONNEW_BENCH_SCOPES = ("store_intent_run", "store_motion_update")
+TICK2_MOTIONNEW_BENCH_INNER = ("store_intent_turning", "store_intent_moving", "store_intent_physics", "store_motion_call",
+                                "store_motion_moved", "store_motion_rotation")
+def tick2_motionnew_bench_cut(tree):
+    if not TICK2_MOTIONNEW_OK or not (CALLTRACE or os.environ.get("PSP_TICK_STEPS", "") == "1"):
+        return 0
+    text = open(TICK2_MOTIONNEW_BENCH_SRC, errors="surrogateescape").read()
+    marked = 0
+    if os.environ.get("PSP_TICK_STEPS", "") == "1":
+        for head in TICK2_MOTIONNEW_BENCH_STEPS:
+            start, end = definition(text, head)
+            body = CALL.sub(step_call, text[start:end])
+            if "PSP_STEP(" not in body:
+                check_fail("psp_fixups: TICK2 motionnew bench: %s marks nothing" % head.split("(")[0].split()[-1])
+                return 0
+            unseen = unmarked_calls(body)
+            if unseen:
+                print("psp_fixups: steps: %s %s: calls the markers don't see (their time goes to the step before, unless STEP_LABELS gives them one): %s"
+                      % ("psp/src/store_motion.c", head.split("(")[0].split()[-1], ", ".join(unseen)))
+            text = text[:start] + body + text[end:]
+            marked += 1
+        text = declare_step(text)
+    wrapped = 0
+    if CALLTRACE:
+        firsts = []
+        for name in TICK2_MOTIONNEW_BENCH_SCOPES:
+            got = calltrace_wrap(text, "psp/src/store_motion.c", name, CALLTRACE_SCOPE % "biped_index",
+                                 'psp_ct_enter("%s>", biped_index);' % name, 'psp_ct_leave("%s<");' % name)
+            if got is None:
+                return 0
+            text, start = got
+            firsts.append(start)
+            wrapped += 1
+        for name in TICK2_MOTIONNEW_BENCH_INNER:
+            found = calltrace_find(text, name)
+            first = found[0][3].split(",")[0] if len(found) == 1 else ""
+            index = re.findall(r"\w+", first)[-1] if re.match(r"\s*long\s+\w+\s*$", first) else "0"
+            got = calltrace_wrap(text, "psp/src/store_motion.c", name, CALLTRACE_IN,
+                                 'psp_ct_enter("%s>", %s);' % (name, index), 'psp_ct_leave("%s<");' % name)
+            if got is None:
+                return 0
+            text, start = got
+            firsts.append(start)
+            wrapped += 1
+        at = min(firsts)
+        text = text[:at] + CALLTRACE_PRELUDE + "\n" + text[at:]
+    if not CHECK_ONLY:
+        os.makedirs(os.path.join(tree, "psp", "src"), exist_ok=True)
+        open(os.path.join(tree, "psp", "src", "store_motion.c"), "w", errors="surrogateescape").write(text)
+    print("psp_fixups: TICK2 motionnew bench: psp/src/store_motion.c copied into the tree, %d functions marked "
+          "(TICK_STEPS), %d wrapped (CALLTRACE)" % (marked, wrapped))
+    return 1
+tick2_motionnew_bench_cut(TREE)
 
 if CHECK_ONLY:
     for message in count_failures:

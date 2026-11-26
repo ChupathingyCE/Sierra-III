@@ -674,7 +674,10 @@ def units():
         items.append((os.path.join(HERE, "psp/src/store_coll.c"),
                       ninja_flags("build/linux/obj/source/physics/collisions.o"), motionnew))
     if motionnew:
-        items.append((os.path.join(HERE, "psp/src/store_motion.c"),
+        # the bench copy psp_fixups.py's tick2_motionnew_bench_cut writes, named relative to the tree so its object,
+        # LTO partner (LTO_LIKE_UNITS) and profile name are the original's
+        bench = os.environ.get("PSP_CALLTRACE", "") == "1" or TICK_STEPS
+        items.append(("psp/src/store_motion.c" if bench else os.path.join(HERE, "psp/src/store_motion.c"),
                       ninja_flags("build/linux/obj/source/units/bipeds.o"), motionnew))
     items.append((os.path.join(HERE, "psp/src/psp_chupa_platform.c"),
                   ninja_flags("build/linux/obj/port/linux/src/sdl_platform.o"), compat))
