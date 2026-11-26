@@ -899,3 +899,49 @@ The design section task 5's check asks for, written in parts as the lead's addit
 - **M to next tick's I:** ROOT, lines 2 and 3, and the datum's flag bits (above).
 
 *What Part 3 leaves to the parts after it:* the ME's half's place and the gather's sphere (Part 7); each step's order against C2's checklist (Part 5; Part 6 found it the same order at the level of the steps); the stages' code and I-misses (Part 4's count, t5count1, asked 23:35); and E, which stays empty until Part 6's three [U]s are read.
+
+**Part 5 (2026-11-25 23:59, the builder): C2's checklist checked step by step against the code. Its order holds at every step it lists. Three of its lines are corrected. Its three gaps are read: the physics adds one live query the checklist doesn't name, and bipedstage's order gives two death cases where today's staged run isn't old-only's order. Nothing is changed here; both go to the lead.** [D: tree /tmp/lz/tick2 (fixups at 66f3e688, `PSP_TICK2=biped`): bipeds.c `biped_update` 5069-5346, `biped_update_moving` 4342-4990, `biped_update_physics` 3053-3895; units.c `unit_update` 5590-6440, `unit_damage_aftermath` 7111-7468; damage.c 605-654; objects.c `psp_bipedstage_run` 10911-11030; object_types.c 846-869. A call lister (`/tmp/p5tools/calls.py <file> <from> <to>`) gave each function's calls and conditions in source order. The checklist is the staged import's lines 87-162 [archive, as_of 2026-11-24]. No run.]
+
+*The checklist's three orders, step by step:*
+
+| C2's list | Its steps | Against the code |
+|---|---|---|
+| `biped_update` (8 steps) | verify; the seated branch; on foot: snap, turning unless dead, moving, then one of dead/air/land/slip; the player's melee; footsteps, scream, discard; animation, jump; idle; verify | The same order, 5097-5333. **Two corrections.** First, steps 4-5 (the player's melee, then footsteps, scream and discard) sit inside the on-foot branch (5144-5310), so a seated biped runs none of them. Only step 6 is outside it. Second, the checklist skips the on-foot head: the facing settle (5148-5155), the state from the animation (5157-5175), the throttle zeroed (5177), the airborne and slipping counters (5180-5198) and crouch (5200-5207). That head runs between the snap and turning. It touches only the biped's own fields and has no outside effect; it is already Part 3's I. The airborne state's two draws are one global (2588, `real_seed_random_range` on the global seed) and one local (2602) |
+| `biped_update_moving` (8) | the aiming vector, the pill; the build (Stubbs' abort and snap, the speeds, the MCC hook, the leaping test); the physics; the translate; landing and jumping; the melee's reach; the bump; falling damage | The same order, 4383-4983. The checklist misses two steps between the physics and the translate: the elevator's kept object (4837-4848, own line 2) and a suspended unit's freeze (4850-4856: position kept, velocity zeroed, not airborne). Both touch its own record only |
+| `unit_update` (9) | the lights' permission, verify; running blind; death and weapons; the MCC hooks, a sound; aiming, then looking; the grenade's three stages, the light's power; owner, seat, `ai_handle_damage`; continuous melee, dialogue; illumination, flame, night vision | The same order, 5600-6372. **One correction: `unit_died` is not unit_update's death branch.** It runs there only when a feign death's timer runs out with no vitality left (5834-5848). A real death is `unit_damage_aftermath` (units.c 7464) inside whoever dealt the damage, and the dead bit is set at that call (damage.c 620). **So a death lands in the killer's turn:** another biped's M (a melee impact, a player's melee, a keyed melee), a projectile's update elsewhere in the walk, the biped's own falling damage in M, or its own flame in U (6305) |
+
+*Gap 1: `biped_update_physics`'s branches* (3053-3895, its calls in order):
+1. The input build, one of four by in_flags: flying (`biped_build_flying_axes`), absolute movement, airborne (`biped_trait_gravity`, the game rules' multiplier), or ground (climbing, slope speeds by k, slipping). It touches its own record, plus `object_get` of the owner on Stubbs' climb (3169). No outside effect.
+2. The collision flags: no collision, dead (`_collision_test_for_bipeds_dead_flags`), or living, with pass-through players.
+3. The move: `psp_sr_try` (the reuse), else `collision_move_pill` on the gathered list, then `psp_sr_store` (3381-3395). This is where G's answer is taken.
+4. The support surface's edge ring when nothing was hit (3430-3600). It reads the structure BSP only.
+5. The collision choice (3620-3757): walkable, stuck, the ground plane, the landing velocity. It reads each hit object's type (3689, `object_get_type`, for the volatile bit).
+6. The bump pick (3766-3796): each hit object's ROOT velocity (3777) and type. That is R: another object's state, read at this biped's turn (Part 3 has it).
+7. The elevator pick (3803-3826): a hit machine's definition.
+8. **A crouched player trying to stand (3840-3889):** `collision_get_features_in_sphere` with the bipeds' flags at the new position, then `collision_features_test_vector`, which sets cannot-stand. **This is a live query of the world at M's turn, outside G's gather**, on level 0's shared list (STACKHOT2). Both the checklist ("`biped_update_physics` makes none of these calls by name") and Part 6's table miss it. It ties the step to M's turn (R). It runs only for a player, crouched, with stand held, so it is rare; Part 4's count will show whether it registers.
+
+So the physics adds four things to M's reads of other objects: the hit objects' types and velocities (5, 6), the machines (7) and step 8's query. None of them writes outside the biped's own record and the reuse's table. **Part 3's M row stands, with step 8 added.**
+
+*Gap 2: bipedstage's reordering, against old-only* (objects.c 10911-11030; object_types.c 860):
+- **Old-only:** each biped, in the walk's order, runs `unit_update` and then `biped_update` whole.
+- **Today (slice 1's staged run):**
+  - (phase 1) `unit_update` for every staged biped alive at the start;
+  - (phase 3) every living biped's intent, up to its move's call;
+  - the gather;
+  - (phase 4) each staged biped in order: a kept record resumes its move and rest, with `unit_update` skipped (object_types.c 860). A dead biped with no kept record runs whole (`unit_update` and `biped_update`, phase 0, where the corpse sleep decides).
+- **So biped k's U and I run before the M of every biped j<k.** j's M writes positions, velocities, damage and deaths. k reads positions and velocities (the bump) only in its own M, so those are fine. Damage and deaths are not. Part 3's point that I writes ROOT is the other direction, and it is kept.
+- **Case D1: a biped killed between its intent and its move**, by an earlier biped's M (a melee impact, a player's melee, a keyed melee at the animation's key frame). Its kept record resumes, because 10990-10993 sends a dead biped whole only when it has no record. So its move runs as it was built while alive: living collision flags, no dead in_flag (4811), the turning it already ran (5210) and its throttle. On old-only its whole update runs dead: no turning, the dead flags, then `biped_update_dead`. Nothing refuses the record: `psp_bs3_find` checks only the index and the stop. **So today's order parts from old-only's here, unless play happens not to show it** [U: how often. box_biped_motion.md §3b named "a death" as an [U] stale-record case and never counted it].
+- **Case D2: a biped killed in the unit pass after its own `unit_update` has run**, by a later biped's continuous melee damage (6274) or by its own flame (6305). Its intent is skipped because it is dead (10965), so it has no kept record, and phase 4 sends it whole. **Its `unit_update` then runs a second time this tick:** timers, stun, camouflage, the grenade's stage, dialogue and illumination [D, by this reading. The corpse sleep's test for a biped (`psp_object_update` 11033-) isn't read here].
+- An earlier killer in U is the same as old-only: if i<j kills j in phase 1, j skips U, then runs whole and dead, once.
+- **For the new stages:** I, G and M keep bipedstage's order (Part 3), so D1 and D2 come with them. Two forms would match old-only, and neither changes another biped's order:
+  - (a) at M, a biped that is dead but has a record built alive runs its intent again, dead, before its move. Its gathered list is then not its sphere's, so it gathers live as a fallback.
+  - (b) U records which bipeds it ran, and the whole update after a death in U skips the unit part for those bipeds.
+  
+  Both are offered, not taken. Whether old-only's order or today's staged order is the bar here is the lead's call. §3b's proof was statecrc on held replays, and which of its maps had deaths isn't read.
+
+*Gap 3: c20's deaths.* The archive's figures (97 deaths in c20's staged ticks, 2 in b30's [archive, gapcensus]) aren't this build's, and counting them again needs a run. From the code: every death lands in its killer's turn (above), so D1 and D2 are the only cases that change the order. Counting each takes a run, with a tick counter at 10990 (a dead biped with a kept record) and at phase 0 for a biped U already ran. It goes to the lead with D1 and D2 and isn't queued.
+
+*What Part 5 changes in the earlier parts:*
+- Part 3's M row gains step 8's query.
+- Part 6's table gains step 8, as "can't queue" (R).
+- **Clause 3 is answered:** C2's order, checked, holds in every stage, and each of its steps has a place. D1 and D2 are the only places where the order isn't old-only's, and they are the lead's question.
