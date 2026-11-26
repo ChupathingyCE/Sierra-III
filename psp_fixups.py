@@ -66721,6 +66721,550 @@ def tick2_collnew_delete_cut(tree):
     return 1
 tick2_collnew_delete_cut(TREE)
 
+# PSP_CALLTRACE=1 (the builder 2026-11-25, the lead's 19:4x (1): oldonly3397's marine e603000b parts from old-only in
+# tick 3397's choice). One object's tick, in call order. With the keep words "calltraceN" and "ctobjK" (K the object's
+# absolute index, the datum index's low 16 bits: e603000b is ctobj11), from the thinking done ahead for game time N
+# (game_time.c runs psp_aime_update after tick N-1 has counted) to tick N's end, before its state lines, the log has
+# "ct: <seq> ..." lines in the order the engine ran them:
+#   every step of a seed (seed_random, real_seed_random: out of line, so the return address is the drawing caller), the
+#     seed (L the local, G the global, O another: the thinking's own, sound's), its value before and after, and the
+#     outer caller when the step ran inside one of random_math.c's five draws (seed_random_range and the rest), anywhere
+#     in the tick, with the depth below;
+#   the object's own updates (biped_update, unit_update), its actor's (actor_update, by meta.unit_index), and inside them
+#     the facing writers CALLTRACE_INNER names, each entered (">") and left ("<");
+#   inside those, each collision query (CALLTRACE_QUERIES: the seven public tests and moves) with its inputs and its
+#     answer, and each kept answer asked (FIXES_BSPR's ray and sphere takes; the sweep reuse's psp_sr_try where the form
+#     builds it), with what it gave;
+#   at each step of its actor's update, the actor's action and mode, whether the step is the thinking done ahead and
+#     whether this tick's thinking was done ahead, and a hash of each part of the actor; every action change;
+#   every change to the object's forward or its desired facing (the store's CONTROL record under PSP_TICK2=biped),
+#     named by the two trace points it fell between.
+# Never logs or writes from the Media Engine (no kernel there): a step run there isn't in the trace. Off by default, a
+# bench tool: in the traced build alone the seed's steps are out of line and the named functions have a wrapper.
+CALLTRACE = os.environ.get("PSP_CALLTRACE", "") == "1"
+CALLTRACE_CORE = r"""
+/* CALLTRACE (psp_fixups.py, PSP_CALLTRACE=1): one object's tick in call order (see there) */
+void platform_psp_log(const char *format, ...);
+int psp_keep_number(const char *prefix, int fallback);
+extern volatile unsigned int psp_me_context;
+int psp_ct_live; /* in the traced window: set on the main CPU, which alone writes it (the ME only reads) */
+int psp_ct_depth; /* inside the traced object's update, its actor's, or a function they call that is traced */
+long psp_ct_object = NONE; /* the traced object, found at the window's start */
+long psp_ct_seq;
+void *psp_ct_outer; /* a draw's caller, while random_math.c's draw runs the seed's step (random_math.c) */
+static long psp_ct_tick = -2, psp_ct_target = -1;
+static unsigned long psp_ct_facing[6];
+static const char *psp_ct_where = "begin";
+
+/* the batch written every 16 of the trace's lines (the game thread's own write, as at a frame's end), so one tick's
+trace never fills the 32 KB batch, which would drop lines (psp_platform.c; the lab's lesson c4-logdrop) */
+void psp_log_flush(void);
+static long psp_ct_lines;
+void psp_ct_logged(void)
+{
+	if (++psp_ct_lines % 16 == 0)
+		psp_log_flush();
+}
+#define PSP_CT_LOG(...) (platform_psp_log(__VA_ARGS__), psp_ct_logged())
+
+/* the main CPU in the window: never the Media Engine, whose stack sits below 16 MB */
+int psp_ct_main(void)
+{
+	unsigned int sp;
+
+	if (!psp_ct_live || psp_me_context)
+		return 0;
+	__asm__ ("move %0, $sp" : "=r"(sp));
+	return (sp & 0x1FFFFFFFu) >= 0x01000000u;
+}
+
+/* the object's forward and, for a unit, its desired facing, as bits */
+static int psp_ct_read(unsigned long *out)
+{
+	struct object_header_datum *header;
+	struct object_datum *object;
+	unsigned long const *f;
+	int k;
+
+	for (k = 0; k < 6; k++)
+		out[k] = 0;
+	if (psp_ct_object == NONE ||
+		(header = (struct object_header_datum *)datum_try_and_get(object_header_data, psp_ct_object)) == NULL ||
+		(object = (struct object_datum *)header->datum) == NULL)
+		return 0;
+	f = (unsigned long const *)&@FORWARD@;
+	out[0] = f[0], out[1] = f[1], out[2] = f[2];
+	if (header->type == _object_type_biped || header->type == _object_type_vehicle)
+	{
+		f = (unsigned long const *)&@DESIRED@;
+		out[3] = f[0], out[4] = f[1], out[5] = f[2];
+	}
+	return 1;
+}
+
+/* a change to either since the last trace point, named by the two points */
+void psp_ct_watch(const char *where)
+{
+	unsigned long now[6];
+	int k, changed = 0;
+
+	if (!psp_ct_main())
+		return;
+	psp_ct_read(now);
+	for (k = 0; k < 6; k++)
+		changed |= now[k] != psp_ct_facing[k];
+	if (changed)
+	{
+		platform_psp_log("ct: %ld facing between %s and %s: forward %08lx %08lx %08lx desired %08lx %08lx %08lx", psp_ct_seq++,
+			psp_ct_where, where, now[0], now[1], now[2], now[3], now[4], now[5]);
+		for (k = 0; k < 6; k++)
+			psp_ct_facing[k] = now[k];
+	}
+	psp_ct_where = where;
+}
+
+void psp_ct_mark(const char *where)
+{
+	if (!psp_ct_main())
+		return;
+	platform_psp_log("ct: %ld mark %s depth %d", psp_ct_seq++, where, psp_ct_depth);
+	psp_ct_watch(where);
+}
+
+/* the window opens at game time N's first trace point (the thinking ahead, or the tick) */
+void psp_ct_begin(const char *where)
+{
+	long tick, index;
+	struct object_header_datum *header;
+	struct object_datum *object;
+
+	if (psp_me_context)
+		return;
+	if (psp_ct_tick == -2)
+	{
+		psp_ct_tick = psp_keep_number("calltrace", -1);
+		psp_ct_target = psp_keep_number("ctobj", -1);
+		if (psp_ct_tick >= 0)
+			platform_psp_log("calltrace: tick %ld, object %ld", psp_ct_tick, psp_ct_target);
+	}
+	if (psp_ct_tick < 0 || (tick = game_time_get()) != psp_ct_tick)
+		return;
+	if (psp_ct_live)
+	{
+		psp_ct_mark(where);
+		return;
+	}
+	psp_ct_object = NONE;
+	for (index = data_next_index(object_header_data, NONE); index != NONE; index = data_next_index(object_header_data, index))
+		if (DATUM_INDEX_TO_ABSOLUTE_INDEX(index) == psp_ct_target)
+			psp_ct_object = index;
+	psp_ct_live = 1;
+	psp_ct_depth = 0;
+	psp_ct_seq = 0;
+	psp_ct_outer = 0;
+	psp_ct_where = where;
+	psp_ct_read(psp_ct_facing);
+	header = psp_ct_object == NONE ? NULL : (struct object_header_datum *)datum_get(object_header_data, psp_ct_object);
+	object = header ? (struct object_datum *)header->datum : NULL;
+	platform_psp_log("ct: begin tick %ld at %s, object %08lx (%s), forward %08lx %08lx %08lx desired %08lx %08lx %08lx", tick, where,
+		(unsigned long)psp_ct_object, object ? tag_get_name(object->definition_index) : "none", psp_ct_facing[0], psp_ct_facing[1],
+		psp_ct_facing[2], psp_ct_facing[3], psp_ct_facing[4], psp_ct_facing[5]);
+}
+
+/* and closes at the tick's end, before its state lines */
+void psp_ct_end(void)
+{
+	if (!psp_ct_live || psp_me_context)
+		return;
+	psp_ct_watch("end");
+	platform_psp_log("ct: end tick %ld, %ld lines, depth %d", game_time_get(), psp_ct_seq, psp_ct_depth);
+	psp_ct_live = 0;
+}
+
+/* a traced function entered and left (its callers have asked psp_ct_main) */
+void psp_ct_enter(const char *where, long index)
+{
+	platform_psp_log("ct: %ld %s %08lx depth %d", psp_ct_seq++, where, (unsigned long)index, psp_ct_depth);
+	psp_ct_depth++;
+	psp_ct_watch(where);
+}
+
+void psp_ct_leave(const char *where)
+{
+	psp_ct_watch(where);
+	psp_ct_depth--;
+	platform_psp_log("ct: %ld %s depth %d", psp_ct_seq++, where, psp_ct_depth);
+}
+
+/* a seed's step (random_math.c): kind L, G or O, the seed before and after, the caller */
+void psp_ct_draw(int kind, unsigned long before, unsigned long after, void *from)
+{
+	if (!psp_ct_main())
+		return;
+	platform_psp_log("ct: %ld draw %c %08lx -> %08lx from %08lx outer %08lx depth %d", psp_ct_seq++, kind, before, after,
+		(unsigned long)from, (unsigned long)psp_ct_outer, psp_ct_depth);
+	psp_ct_watch("draw");
+}
+
+/* words as hex, eight a line, each line named by its query's number */
+void psp_ct_words(long seq, const char *what, const void *start, long words)
+{
+	unsigned long const *w = (unsigned long const *)start;
+	char line[8 * 9 + 1];
+	long k, j, n;
+
+	for (k = 0; k < words; k += 8)
+	{
+		n = words - k < 8 ? words - k : 8;
+		for (j = 0; j < n; j++)
+		{
+			unsigned long value = w[k + j];
+			int d;
+
+			for (d = 0; d < 8; d++)
+				line[9 * j + d] = "0123456789abcdef"[(value >> (28 - 4 * d)) & 15];
+			line[9 * j + 8] = ' ';
+		}
+		line[9 * n - 1] = 0;
+		platform_psp_log("ct: %ld %s +%ld: %s", seq, what, k, line);
+	}
+}
+
+/* a collision query's inputs, its number returned for the answer's lines */
+long psp_ct_query(const char *name, unsigned long flags, long ignore, const void *a, long an, const void *b, long bn,
+	const void *c, long cn)
+{
+	long seq = psp_ct_seq++;
+
+	platform_psp_log("ct: %ld query %s flags %08lx ignore %08lx depth %d", seq, name, flags, (unsigned long)ignore, psp_ct_depth);
+	if (an > 0)
+		psp_ct_words(seq, "in", a, an);
+	if (bn > 0)
+		psp_ct_words(seq, "in2", b, bn);
+	if (cn > 0)
+		psp_ct_words(seq, "in3", c, cn);
+	return seq;
+}
+
+void psp_ct_answer(long seq, const char *name, long answer, const void *a, long an, const void *b, long bn)
+{
+	platform_psp_log("ct: %ld answer %s %ld", seq, name, answer);
+	if (an > 0)
+		psp_ct_words(seq, "out", a, an);
+	if (bn > 0)
+		psp_ct_words(seq, "out2", b, bn);
+	psp_ct_watch(name);
+}
+"""
+# each file's declarations, ahead of its first wrapper
+CALLTRACE_PRELUDE = r"""
+/* CALLTRACE (psp_fixups.py, PSP_CALLTRACE=1): objects.c's tracer */
+extern int psp_ct_live, psp_ct_depth;
+extern long psp_ct_object;
+int psp_ct_main(void);
+void psp_ct_mark(const char *where);
+void psp_ct_enter(const char *where, long index);
+void psp_ct_leave(const char *where);
+long psp_ct_query(const char *name, unsigned long flags, long ignore, const void *a, long an, const void *b, long bn,
+	const void *c, long cn);
+void psp_ct_answer(long seq, const char *name, long answer, const void *a, long an, const void *b, long bn);
+void psp_ct_words(long seq, const char *what, const void *start, long words);
+"""
+# the actor's side (actors.c, ahead of actor_update): is this the traced object's actor, and its line at each step
+CALLTRACE_ACTOR = r"""
+void psp_ct_watch(const char *where);
+extern long psp_ct_seq;
+void platform_psp_log(const char *format, ...);
+void psp_ct_logged(void);
+#define PSP_CT_LOG(...) (platform_psp_log(__VA_ARGS__), psp_ct_logged())
+
+static unsigned long psp_ct_hash(const void *start, unsigned long bytes)
+{
+	const unsigned char *b = (const unsigned char *)start;
+	unsigned long hash = 2166136261UL;
+
+	while (bytes--)
+		hash = (hash ^ *b++) * 16777619UL;
+	return hash;
+}
+
+static int psp_ct_actor_is(long actor_index)
+{
+	struct actor_datum *actor = actor_get(actor_index);
+
+	return actor && !actor->meta.swarm && actor->meta.unit_index == psp_ct_object;
+}
+
+static void psp_ct_ai(long actor_index, const char *where)
+{
+	struct actor_datum *actor;
+
+	if (!psp_ct_live || !psp_ct_main() || !psp_ct_actor_is(actor_index))
+		return;
+	actor = actor_get(actor_index);
+	platform_psp_log("ct: %ld ai %s actor %08lx action %d mode %d think %d fresh %d | state %08lx situation %08lx target %08lx "
+		"emotions %08lx firing %08lx orders %08lx control %08lx output %08lx", psp_ct_seq++, where, (unsigned long)actor_index,
+		(int)actor->state.action, (int)actor->state.mode, (int)(psp_aime_think_only != 0), (int)(psp_aime_fresh(actor_index) != 0),
+		psp_ct_hash(&actor->state, sizeof(actor->state)), psp_ct_hash(&actor->situation, sizeof(actor->situation)),
+		psp_ct_hash(&actor->target, sizeof(actor->target)), psp_ct_hash(&actor->emotions, sizeof(actor->emotions)),
+		psp_ct_hash(&actor->firing_positions, sizeof(actor->firing_positions)), psp_ct_hash(&actor->orders, sizeof(actor->orders)),
+		psp_ct_hash(&actor->control, sizeof(actor->control)), psp_ct_hash(&actor->output, sizeof(actor->output)));
+	psp_ct_watch(where);
+}
+
+/* actions.c's actor_action_change */
+void psp_ct_action(long actor_index, long from, long to)
+{
+	if (!psp_ct_live || !psp_ct_main() || !psp_ct_actor_is(actor_index))
+		return;
+	platform_psp_log("ct: %ld action %08lx %ld -> %ld", psp_ct_seq++, (unsigned long)actor_index, from, to);
+	psp_ct_watch("actor_action_change");
+}
+"""
+CALLTRACE_CORE = CALLTRACE_CORE.replace('platform_psp_log("ct:', 'PSP_CT_LOG("ct:')
+CALLTRACE_ACTOR = CALLTRACE_ACTOR.replace('platform_psp_log("ct:', 'PSP_CT_LOG("ct:')
+CALLTRACE_SCOPE = "psp_ct_live && %s == psp_ct_object && psp_ct_main()"
+CALLTRACE_IN = "psp_ct_live && psp_ct_depth > 0 && psp_ct_main()"
+CALLTRACE_SCOPES = (("source/units/bipeds.c", "biped_update"), ("source/units/units.c", "unit_update"))
+# the facing's writers in a living biped's update (bipeds.c, units.c), by a scan of the writes in the fixed-up tree
+CALLTRACE_INNER = (("source/units/bipeds.c", ("biped_snap_facing", "biped_snap_facing_with", "biped_update_turning",
+                                               "biped_update_moving", "biped_update_physics", "biped_apply_rotation",
+                                               "biped_accelerate", "biped_fix_position")),
+                   ("source/units/units.c", ("unit_control", "unit_align_facing", "unit_clip_to_aiming_bounds")))
+# the queries: the file, the name, whether a form may lack it, and the inputs and answer logged
+# (the answer's struct only on a hit, the rest of it is the caller's; the BSP results' heads, not their lists)
+CALLTRACE_QUERIES = (
+    ("source/physics/collisions.c", "collision_test_point", False,
+     'psp_ct_n = psp_ct_query("collision_test_point", flags, ignore_object_index, point, 3, 0, 0, 0, 0);',
+     'psp_ct_answer(psp_ct_n, "collision_test_point", (long)psp_ct_r, 0, 0, 0, 0);'),
+    ("source/physics/collisions.c", "collision_test_vector", False,
+     'psp_ct_n = psp_ct_query("collision_test_vector", flags, ignore_object_index, point, 3, vector, 3, 0, 0);',
+     'psp_ct_answer(psp_ct_n, "collision_test_vector", (long)psp_ct_r, collision, psp_ct_r ? (long)(sizeof(*collision) / 4) : 0, 0, 0);'),
+    ("source/physics/collisions.c", "collision_test_pill", False,
+     'real psp_ct_s[1];\n\t\tpsp_ct_s[0] = radius;\n\t\tpsp_ct_n = psp_ct_query("collision_test_pill", flags, ignore_object_index, point, 3, vector, 3, psp_ct_s, 1);',
+     'psp_ct_answer(psp_ct_n, "collision_test_pill", (long)psp_ct_r, collision, psp_ct_r ? (long)(sizeof(*collision) / 4) : 0, 0, 0);'),
+    ("source/physics/collisions.c", "collision_test_pill_new", False,
+     'real psp_ct_s[1];\n\t\tpsp_ct_s[0] = radius;\n\t\tpsp_ct_n = psp_ct_query("collision_test_pill_new", flags, ignore_object_index, point, 3, vector, 3, psp_ct_s, 1);',
+     'psp_ct_answer(psp_ct_n, "collision_test_pill_new", (long)psp_ct_r, collision, psp_ct_r ? (long)(sizeof(*collision) / 4) : 0, 0, 0);'),
+    ("source/physics/collisions.c", "collision_fix_pill", False,
+     'real psp_ct_s[3];\n\t\tpsp_ct_s[0] = distance, psp_ct_s[1] = height, psp_ct_s[2] = width;\n\t\tpsp_ct_n = psp_ct_query("collision_fix_pill", flags, ignore_object_index, old_position, 3, psp_ct_s, 3, 0, 0);',
+     'psp_ct_answer(psp_ct_n, "collision_fix_pill", (long)psp_ct_r, new_position, psp_ct_r ? 3 : 0, 0, 0);'),
+    ("source/physics/collisions.c", "collision_move_pill", False,
+     'real psp_ct_s[3];\n\t\tpsp_ct_s[0] = height, psp_ct_s[1] = radius, psp_ct_s[2] = (real)maximum_collision_count;\n\t\tpsp_ct_n = psp_ct_query("collision_move_pill", flags, ignore_object_index, position, 3, velocity, 3, psp_ct_s, 3);',
+     'psp_ct_answer(psp_ct_n, "collision_move_pill", (long)psp_ct_r, clipped_position, 3, clipped_velocity, 3);\n'
+     '\t\tif (psp_ct_r > 0)\n\t\t\tpsp_ct_words(psp_ct_n, "planes", collisions, (long)psp_ct_r * (long)(sizeof(*collisions) / 4));'),
+    ("source/physics/collisions.c", "collision_move_sphere", False,
+     'real psp_ct_s[2];\n\t\tpsp_ct_s[0] = radius, psp_ct_s[1] = (real)maximum_collision_count;\n\t\tpsp_ct_n = psp_ct_query("collision_move_sphere", flags, ignore_object_index, position, 3, velocity, 3, psp_ct_s, 2);',
+     'psp_ct_answer(psp_ct_n, "collision_move_sphere", (long)psp_ct_r, clipped_position, 3, clipped_velocity, 3);\n'
+     '\t\tif (psp_ct_r > 0)\n\t\t\tpsp_ct_words(psp_ct_n, "planes", collisions, (long)psp_ct_r * (long)(sizeof(*collisions) / 4));'),
+    ("source/physics/collisions.c", "psp_sr_try", True,
+     'real psp_ct_s[2];\n\t\tpsp_ct_s[0] = height, psp_ct_s[1] = width;\n\t\tpsp_ct_n = psp_ct_query("psp_sr_try", flags, biped_index, position, 3, velocity, 3, psp_ct_s, 2);',
+     'long psp_ct_c = psp_ct_r ? (long)*count : 0;\n'
+     '\t\tpsp_ct_answer(psp_ct_n, "psp_sr_try", (long)psp_ct_r, psp_ct_r ? (const void *)clipped_position : 0, psp_ct_r ? 3 : 0, psp_ct_r ? (const void *)clipped_velocity : 0, psp_ct_r ? 3 : 0);\n'
+     '\t\tif (psp_ct_c > 0)\n\t\t\tpsp_ct_words(psp_ct_n, "planes", collisions, psp_ct_c * (long)(sizeof(*collisions) / 4));'),
+    ("source/physics/collision_bsp.c", "psp_bspr_ray_take", False,
+     'real psp_ct_s[1];\n\t\tpsp_ct_s[0] = maximum_t;\n\t\tpsp_ct_n = psp_ct_query("psp_bspr_ray_take", flags, (long)breakable_surface_count, point, 3, vector, 3, psp_ct_s, 1);',
+     'long psp_ct_v = psp_ct_r ? (long)*return_value : 0;\n'
+     '\t\tpsp_ct_answer(psp_ct_n, "psp_bspr_ray_take", (long)psp_ct_r, &psp_ct_v, psp_ct_r ? 1 : 0, result, psp_ct_r ? 6 : 0);'),
+    ("source/physics/collision_bsp.c", "psp_bspr_sphere_take", False,
+     'real psp_ct_s[1];\n\t\tpsp_ct_s[0] = radius;\n\t\tpsp_ct_n = psp_ct_query("psp_bspr_sphere_take", 0, (long)breakable_surface_count, center, 3, psp_ct_s, 1, 0, 0);',
+     'long psp_ct_c[4];\n'
+     '\t\tpsp_ct_c[0] = result->surface_count, psp_ct_c[1] = result->edge_count, psp_ct_c[2] = result->vertex_count, psp_ct_c[3] = result->leaf_count;\n'
+     '\t\tpsp_ct_answer(psp_ct_n, "psp_bspr_sphere_take", (long)psp_ct_r, psp_ct_c, psp_ct_r ? 4 : 0, 0, 0);'),
+)
+# random_math.c's five draws, whose caller is the step's outer caller
+CALLTRACE_DRAWS = ("seed_random_range", "real_seed_random_range", "seed_random_direction3d", "seed_random_orientation",
+                   "seed_random_vector_in_cone3d")
+CALLTRACE_STEPS = (
+    ("unsigned short seed_random(\n\tunsigned long *seed)\n{\n\t*seed = *seed*RANDOM_A+RANDOM_C;\n\treturn *seed>>16;\n}\n",
+     "unsigned short __attribute__((noinline)) seed_random(\n\tunsigned long *seed)\n{\n\tunsigned long psp_ct_before = *seed;\n\n"
+     "\t*seed = *seed*RANDOM_A+RANDOM_C;\n\tif (psp_ct_live)\n\t\tpsp_ct_draw(psp_ct_kind(seed), psp_ct_before, *seed, __builtin_return_address(0));\n"
+     "\treturn *seed>>16;\n}\n"),
+    ("real real_seed_random(\n\tunsigned long *seed)\n{\n\t*seed = *seed*RANDOM_A+RANDOM_C;\n\treturn (real)(*seed>>16)/65535.0f;\n}\n",
+     "real __attribute__((noinline)) real_seed_random(\n\tunsigned long *seed)\n{\n\tunsigned long psp_ct_before = *seed;\n\n"
+     "\t*seed = *seed*RANDOM_A+RANDOM_C;\n\tif (psp_ct_live)\n\t\tpsp_ct_draw(psp_ct_kind(seed), psp_ct_before, *seed, __builtin_return_address(0));\n"
+     "\treturn (real)(*seed>>16)/65535.0f;\n}\n"))
+CALLTRACE_STEP_PRELUDE = r"""/* CALLTRACE (psp_fixups.py, PSP_CALLTRACE=1): the seed's steps traced (objects.c) */
+extern int psp_ct_live;
+extern void *psp_ct_outer;
+int psp_ct_main(void);
+void psp_ct_draw(int kind, unsigned long before, unsigned long after, void *from);
+
+static int psp_ct_kind(unsigned long *seed)
+{
+	return seed == &random_math_globals.global_local_random_seed ? 'L' : seed == &random_math_globals.global_random_seed ? 'G' : 'O';
+}
+
+"""
+
+def calltrace_find(text, name):
+    """The definitions of name in text: (start of its head, the name's place, the closing parenthesis, the parameters).
+    A definition's head is a type ending the name's line, or alone on the line above; its parameters close with ')'
+    and a line '{'."""
+    found = []
+    head = re.compile(r"(?:static\s+|inline\s+)*[A-Za-z_][\w \t\*]*[ \t\*]")
+    for m in re.finditer(r"(?m)^(.*?)\b%s\(" % re.escape(name), text):
+        prefix = m.group(1)
+        if prefix and not head.fullmatch(prefix):
+            continue
+        depth, k = 1, m.end()
+        while depth and k < len(text):
+            depth += {"(": 1, ")": -1}.get(text[k], 0)
+            k += 1
+        close = k - 1
+        params = text[m.end():close]
+        if ";" in params or "{" in params or not text.startswith("\n{", close + 1):
+            continue
+        start = m.start()
+        if not prefix:
+            above = text.rfind("\n", 0, m.start() - 1) + 1
+            line = text[above:m.start() - 1]
+            if not head.fullmatch(line + " ") or line.strip() in ("return", "else"):
+                continue
+            start = above
+        found.append((start, m.start() + len(prefix), close, params))
+    return found
+
+def calltrace_wrap(text, path, name, in_expr, pre, post, noinline=False, optional=False):
+    """name's body renamed psp_ct_body_<name> and made static, and a wrapper under name in front of it, which runs pre
+    and post around the body's call when in_expr holds. None when the one definition isn't found (refused unless
+    optional)."""
+    defs = calltrace_find(text, name)
+    if len(defs) != 1:
+        if not (optional and not defs):
+            check_fail("psp_fixups: CALLTRACE: %s's definition is in %s %d times" % (name, path, len(defs)))
+        return None
+    start, at, close, params = defs[0]
+    head = text[start:at]
+    ret = " ".join(re.sub(r"\b(?:static|inline)\b", " ", head).split())
+    names = [] if params.strip() in ("", "void") else [re.findall(r"\w+", p)[-1] for p in params.split(",")]
+    void = ret == "void"
+    body = "psp_ct_body_" + name
+    wrapper = head
+    if noinline:
+        wrapper = head.rstrip() + " __attribute__((noinline))" + ("\n" if head.endswith("\n") else " ")
+    code = ("static %s %s(%s);\n" % (ret, body, params) + wrapper + name + "(" + params + ")\n{\n"
+            "\tconst int psp_ct_in = %s;\n\tlong psp_ct_n = 0;\n" % in_expr + ("" if void else "\t%s psp_ct_r;\n" % ret) +
+            "\n\tif (psp_ct_in)\n\t{\n\t\t%s\n\t}\n" % pre +
+            "\t%s%s(%s);\n" % ("" if void else "psp_ct_r = ", body, ", ".join(names)) +
+            "\tif (psp_ct_in)\n\t{\n\t\t%s\n\t}\n\t(void)psp_ct_n;\n" % post + ("" if void else "\treturn psp_ct_r;\n") +
+            "}\n/* (CALLTRACE: %s's own body) */\nstatic %s\n%s(" % (name, ret, body))
+    return text[:start] + code + text[at + len(name) + 1:], start
+
+def call_trace(tree):
+    if not CALLTRACE:
+        return 0
+    if os.environ.get("PSP_SEEDTRACE", "") == "1":
+        check_fail("psp_fixups: CALLTRACE: PSP_SEEDTRACE=1 edits the same seed functions; build one tracer at a time")
+        return 0
+    texts, firsts = {}, {}
+    def get(rel):
+        if rel not in texts:
+            texts[rel] = open(os.path.join(tree, rel), errors="surrogateescape").read()
+        return texts[rel]
+    def wrap(rel, name, in_expr, pre, post, noinline=False, optional=False):
+        got = calltrace_wrap(get(rel), rel, name, in_expr, pre, post, noinline, optional)
+        if got is None:
+            return 0
+        texts[rel], start = got
+        firsts[rel] = min(firsts.get(rel, start), start)
+        return 1
+    count = 0
+    # the core, after C4TRACE's (objects.c)
+    forward = "object->object.root->forward" if TICK2_ROOT else "object->object.forward"
+    desired = ("tick2_unit_ctl_of(object->object.root)->desired_facing_vector" if TICK2_BIPED else
+               "((struct unit_datum *)object)->unit.desired_facing_vector")
+    texts["source/objects/objects.c"] = get("source/objects/objects.c") + CALLTRACE_CORE.replace("@FORWARD@", forward).replace("@DESIRED@", desired)
+    # the window: opened by the thinking ahead (ai.c) and the tick (game.c), a mark at each of the tick's steps, closed
+    # before the state lines
+    rel = "source/ai/ai.c"
+    old = "void psp_aime_update(\n\tvoid)\n{\n"
+    if get(rel).count(old) != 1:
+        check_fail("psp_fixups: CALLTRACE: psp_aime_update's head matches %d times" % get(rel).count(old))
+        return 0
+    texts[rel] = get(rel).replace(old, old + '\t{ extern void psp_ct_begin(const char *where); psp_ct_begin("psp_aime_update"); } /* CALLTRACE */\n')
+    rel = "source/game/game.c"
+    old = "void game_tick(\n\tvoid)\n{\n\treal seconds_per_tick;\n\n"
+    end = '(PSP_STEP("psp_game_state_hash_tick"), psp_game_state_hash_tick(game_time_get()));'
+    text = get(rel)
+    if text.count(old) != 1 or text.count(end) != 1:
+        check_fail("psp_fixups: CALLTRACE: game_tick's head (%d) or its state lines' call (%d) isn't there once" % (text.count(old), text.count(end)))
+        return 0
+    at = text.index(old)
+    close = text.index("\n}\n", at)
+    steps = re.subn(r'\(PSP_STEP\("(\w+)"\), ', lambda m: m.group(0) + 'psp_ct_mark("%s"), ' % m.group(1), text[at:close])
+    if steps[1] < 20 or end.replace("), ", "), psp_ct_mark(\"psp_game_state_hash_tick\"), ", 1) not in steps[0]:
+        check_fail("psp_fixups: CALLTRACE: game_tick has %d steps, the state lines' call not among them" % steps[1])
+        return 0
+    body = steps[0].replace(end.replace("), ", "), psp_ct_mark(\"psp_game_state_hash_tick\"), ", 1),
+                            end.replace("), ", "), psp_ct_end(), ", 1))
+    body = body.replace(old, old + '\tpsp_ct_begin("game_tick"); /* CALLTRACE */\n')
+    texts[rel] = (text[:at] + "/* CALLTRACE (psp_fixups.py, PSP_CALLTRACE=1): objects.c's tracer */\n"
+                  "void psp_ct_begin(const char *where);\nvoid psp_ct_mark(const char *where);\nvoid psp_ct_end(void);\n\n" + body + text[close:])
+    # the seed's two steps, and random_math.c's five draws naming their caller
+    rel = "source/math/random_math.c"
+    for old, new in CALLTRACE_STEPS:
+        if get(rel).count(old) != 1:
+            check_fail("psp_fixups: CALLTRACE: a seed step matches %d times" % get(rel).count(old))
+            return 0
+        texts[rel] = get(rel).replace(old, new)
+    texts[rel] = get(rel).replace(CALLTRACE_STEPS[0][1], CALLTRACE_STEP_PRELUDE + CALLTRACE_STEPS[0][1])
+    for name in CALLTRACE_DRAWS:
+        count += wrap(rel, name, "psp_ct_live && psp_ct_main()",
+                      "if (!psp_ct_outer)\n\t\t{\n\t\t\tpsp_ct_outer = __builtin_return_address(0);\n\t\t\tpsp_ct_n = 1;\n\t\t}",
+                      "if (psp_ct_n)\n\t\t\tpsp_ct_outer = 0;", noinline=True)
+    # the object's updates, its actor's, and the facing's writers inside them
+    for rel, name in CALLTRACE_SCOPES:
+        index = re.findall(r"\w+", calltrace_find(get(rel), name)[0][3])[-1] if len(calltrace_find(get(rel), name)) == 1 else "0"
+        count += wrap(rel, name, CALLTRACE_SCOPE % index, 'psp_ct_enter("%s>", %s);' % (name, index), 'psp_ct_leave("%s<");' % name)
+    for rel, names in CALLTRACE_INNER:
+        for name in names:
+            found = calltrace_find(get(rel), name)
+            first = found[0][3].split(",")[0] if len(found) == 1 else ""
+            index = re.findall(r"\w+", first)[-1] if re.match(r"\s*long\s+\w+\s*$", first) else "0"
+            count += wrap(rel, name, CALLTRACE_IN, 'psp_ct_enter("%s>", %s);' % (name, index), 'psp_ct_leave("%s<");' % name)
+    for rel, name, optional, pre, post in CALLTRACE_QUERIES:
+        count += wrap(rel, name, CALLTRACE_IN, pre, post, optional=optional)
+    # the actor: a line at each step of actor_update, and each action change
+    rel = "source/ai/actors.c"
+    found = calltrace_find(get(rel), "actor_update")
+    if len(found) != 1:
+        check_fail("psp_fixups: CALLTRACE: actor_update's definition is in actors.c %d times" % len(found))
+        return 0
+    text = get(rel)
+    at = found[0][0]
+    close = text.index("\n}\n", at)
+    # one compound statement a step, as some are an if's body without braces
+    marked = re.subn(r"(?m)^(\t+)((actor_\w+)\(actor_index\);)$", r'\1{ psp_ct_ai(actor_index, "\3"); \2 } /* CALLTRACE */', text[at:close])
+    if marked[1] < 12:
+        check_fail("psp_fixups: CALLTRACE: actor_update has %d steps of the actor" % marked[1])
+        return 0
+    texts[rel] = text[:at] + marked[0] + text[close:]
+    count += wrap(rel, "actor_update", "psp_ct_live && psp_ct_main() && psp_ct_actor_is(actor_index)",
+                  'psp_ct_enter("actor_update>", actor_index);', 'psp_ct_ai(actor_index, "actor_update<");\n\t\tpsp_ct_leave("actor_update<");')
+    rel = "source/ai/actions.c"
+    old = ("void actor_action_change(\n\tlong actor_index,\n\tlong new_action_type,\n\tstruct action_state_data *new_action_data)\n{\n"
+           "\tstruct actor_datum *actor = actor_get(actor_index);\n\tvoid (*handler)(\n\t\tlong actor_index);\n\n")
+    if get(rel).count(old) != 1:
+        check_fail("psp_fixups: CALLTRACE: actor_action_change's head matches %d times" % get(rel).count(old))
+        return 0
+    texts[rel] = get(rel).replace(old, old + "\t{ extern void psp_ct_action(long actor_index, long from, long to); "
+                                  "psp_ct_action(actor_index, actor->state.action, new_action_type); } /* CALLTRACE */\n")
+    # each wrapped file's declarations ahead of its first wrapper; actors.c's own lines with them
+    for rel, start in firsts.items():
+        text = texts[rel]
+        extra = CALLTRACE_PRELUDE if rel != "source/math/random_math.c" else ""
+        if rel == "source/ai/actors.c":
+            extra += CALLTRACE_ACTOR
+        texts[rel] = text[:start] + extra + "\n" + text[start:]
+    if not CHECK_ONLY:
+        for rel, text in texts.items():
+            open(os.path.join(tree, rel), "w", errors="surrogateescape").write(text)
+    print("psp_fixups: CALLTRACE: one object's tick in call order: %d functions wrapped, the seed's 2 steps out of line, "
+          "game_tick's %d steps marked, actor_update's %d" % (count, steps[1], marked[1]))
+    return 1
+call_trace(TREE)
+
 if CHECK_ONLY:
     for message in count_failures:
         print(message)
