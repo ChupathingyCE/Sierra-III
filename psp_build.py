@@ -615,8 +615,14 @@ def units():
         items.append((s, ninja_flags("build/linux/obj/" + s[:-2] + ".o"), compat))
     items.append(("port/third_party/tomlc17/tomlc17.c", ninja_flags("build/linux/obj/port/third_party/tomlc17/tomlc17.o"), []))
     memory_flags = ninja_flags("build/linux/obj/port/linux/src/xbox_memory.o")
+    # slice 1's task 5 (PSP_TICK2_MOTIONNEW=1; docs/box_world_store.md section 19 step 3): the switch's units are
+    # given its define here, where their flags are made; psp_sweepme.c's G find by place is built only under it, so
+    # no other build's text moves (motionnew1, sierra-batch 45849583031: a define in compile_one's plain-C branch
+    # never reached this unit, which compiles through the engine's, and psp_sweepme_find_at went unlinked)
+    motionnew = ["-DPSP_TICK2_MOTIONNEW=1"] if os.environ.get("PSP_TICK2_MOTIONNEW", "") == "1" else []
     for name in PSP_FILES:
-        items.append((os.path.join(HERE, "psp/src/%s.c" % name), memory_flags, compat))
+        items.append((os.path.join(HERE, "psp/src/%s.c" % name), memory_flags,
+                      compat + (motionnew if name == "psp_sweepme" else [])))
     if nocoop():
         items.append((os.path.join(HERE, "psp/src/psp_nocoop.c"),
                       ninja_flags("build/linux/obj/source/networking/network_game_globals.o"), []))
@@ -662,9 +668,8 @@ def units():
     # slice 1's task 4, piece 1 (PSP_TICK2_COLLNEW=1; psp_fixups.py tick2_collnew_move_cut): the store's collision
     # gather table, moved out of collisions.c, built as collisions.c is (its flags, the fixed-up headers; its own
     # header in psp/include, which collisions.c includes too)
-    # slice 1's task 5 (PSP_TICK2_MOTIONNEW=1; docs/box_world_store.md section 19 step 3): the bipeds' motion
-    # stages, built as bipeds.c is, whose code they replace; store_coll.c's G is under the same define
-    motionnew = ["-DPSP_TICK2_MOTIONNEW=1"] if os.environ.get("PSP_TICK2_MOTIONNEW", "") == "1" else []
+    # slice 1's task 5: the bipeds' motion stages (store_motion.c), built as bipeds.c is, whose code they replace;
+    # store_coll.c's G is under the same define (motionnew, above)
     if os.environ.get("PSP_TICK2_COLLNEW", "") == "1":
         items.append((os.path.join(HERE, "psp/src/store_coll.c"),
                       ninja_flags("build/linux/obj/source/physics/collisions.o"), motionnew))
@@ -1020,10 +1025,7 @@ def compile_one(item):
                ["-DPSP_SMALLDATA=1"] if SMALLDATA and src.endswith("psp_me.c") else []) + (
                # the switches their #if blocks test (psp_ge.c's debug tools)
                ["-DPSP_DEBUG_TOOLS=1"] if DEBUG_TOOLS else []) + (
-               ["-DPSP_TICK_STEPS=1"] if TICK_STEPS else []) + (
-               # slice 1's task 5: G's find by place (built only under the switch, so no other build's text moves)
-               ["-DPSP_TICK2_MOTIONNEW=1"] if os.environ.get("PSP_TICK2_MOTIONNEW", "") == "1" and
-               src.endswith("psp_sweepme.c") else []) + [
+               ["-DPSP_TICK_STEPS=1"] if TICK_STEPS else []) + [
                "-c", src, "-o", out]
         if src.endswith("psp_me.c"):
             # build 86: mcidclan's me-core-mapper headers (installed beside the SDK)
