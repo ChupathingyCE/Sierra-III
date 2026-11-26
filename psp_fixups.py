@@ -60536,6 +60536,248 @@ static unsigned long psp_state_hash(const void *start, long bytes)
 }
 """
 TICK2_PROOF_STATE_FIRST = "\t\tplatform_psp_log(\"state: tick %ld %08lx play %08lx seeds %08lx %08lx\", tick,\n"
+# The proof form's "statepoolN" (the lead 19:4x (2), row close2910_dump2910): the objects record is the pool's header
+# and its OBJECT_MEMORY_POOL_SIZE bytes, more than the live datums statefullall dumps, so for 30 ticks from tick N it is
+# hashed by region with statecrc's own hash (the stand-ins and the ray mask): the pool's header; the live datums' blocks
+# (block header, datum, slack), which an object header owns; the other live blocks (the ship form's overflow chunks
+# and node arenas; none expected in the proof form, whose chunks are the heap's); the gaps between live blocks; the
+# tail after the last block; and the store's carve past the pool's size (the ship form's records; 0 bytes in the
+# proof form). Each tick also logs each datum block's datum hash in pool order, the blocks' layout (offset, owner,
+# type, size) when it changes, and the words outside the datums' bodies by 256-byte page (every nonzero word of a
+# page at the window's first tick, and of a page whose words changed since the tick before), so the reader rebuilds
+# those words at every tick on both sides and names the first that differs: offset, both values, owner. It reads
+# only, from the main CPU's statecrc tick, after the hash table is built; the keep word gates it, so a proof run
+# without the word is the same build doing the same work.
+TICK2_PROOF_POOL_CALL = "\t\tpsp_objects_play_dump(tick);\n"
+TICK2_PROOF_POOL_SPLIT = r"""
+#ifdef HALO_PSP
+/* TICK2 proof: "statepoolN" (psp_fixups.py, tick2_proof_cut; the lead 19:4x (2)): for 30 ticks from tick N, the
+objects record by region, hashed by statecrc's hash; each datum block's datum hash; the layout when it changes; and
+the words outside the datums' bodies, by page, where they changed */
+struct psp_pool_datum
+{
+	unsigned long at; /* the block */
+	long index, size, type;
+};
+static int psp_pool_datum_order(const void *a, const void *b)
+{
+	unsigned long x = ((struct psp_pool_datum const *)a)->at, y = ((struct psp_pool_datum const *)b)->at;
+
+	return x < y ? -1 : x > y;
+}
+static unsigned long psp_pool_nonzero(const void *start, long bytes)
+{
+	unsigned long const *word = (unsigned long const *)start;
+	unsigned long n = 0;
+	long k;
+
+	for (k = 0; k < bytes / 4; k++)
+		n += word[k] != 0;
+	return n;
+}
+#define PSP_POOL_PAGE 256
+#define PSP_POOL_WINDOW 30
+void psp_objects_pool_split(long tick, unsigned long (*hash)(const void *start, long bytes))
+{
+	void platform_psp_log(const char *format, ...);
+	extern int psp_keep_number(const char *prefix, int fallback); /* psp_platform.c */
+	static long first = -2, count_most = 0;
+	static unsigned long layout_was = 0, *page_was = NULL;
+	static struct psp_pool_datum *datums = NULL;
+	struct memory_pool const *pool = object_memory_pool;
+	unsigned long start, base, end, carve, at, cursor;
+	unsigned long head, whole, datum_hash = 2166136261UL, other_hash = 2166136261UL, gap_hash = 2166136261UL, layout = 2166136261UL;
+	unsigned long datum_bytes = 0, other_bytes = 0, gap_bytes = 0, gap_nonzero = 0, tail_hash, tail_nonzero, carve_hash;
+	long count = 0, datum_count = 0, other_count = 0, gap_count = 0, d, i, pages, page, order = 0;
+	struct memory_pool_block const *block;
+	char line[512];
+	int length = 0;
+
+	if (first == -2)
+	{
+		first = psp_keep_number("statepool", -1);
+		if (first >= 0)
+		{
+			count_most = MAXIMUM_OBJECTS_PER_MAP;
+			datums = (struct psp_pool_datum *)calloc(count_most, sizeof(*datums)); /* the C library's, as the store's room */
+			page_was = (unsigned long *)calloc((sizeof(struct memory_pool) + OBJECT_MEMORY_POOL_SIZE) / PSP_POOL_PAGE + 1,
+				sizeof(*page_was));
+			platform_psp_log("state: the objects pool by region for ticks %ld to %ld (statepool%ld)%s", first,
+				first + PSP_POOL_WINDOW - 1, first, datums && page_was ? "" : ", no room: not logged");
+		}
+	}
+	if (first < 0 || tick < first || tick >= first + PSP_POOL_WINDOW || !datums || !page_was || !pool || !object_header_data)
+		return;
+	/* the live datums' blocks, by address */
+	for (i = data_next_index(object_header_data, NONE); i != NONE && count < count_most; i = data_next_index(object_header_data, i))
+	{
+		struct object_header_datum const *header = (struct object_header_datum const *)datum_get(object_header_data, i);
+
+		if (!header->datum)
+			continue;
+		datums[count].at = (unsigned long)((struct memory_pool_block const *)header->datum - 1);
+		datums[count].index = i;
+		datums[count].size = header->data_size;
+		datums[count].type = header->type;
+		count++;
+	}
+	qsort(datums, count, sizeof(*datums), psp_pool_datum_order);
+	start = (unsigned long)pool;
+	base = (unsigned long)pool->base_address;
+	carve = base + (unsigned long)pool->size;
+	end = base + (unsigned long)OBJECT_MEMORY_POOL_SIZE;
+	head = hash(pool, (long)(base - start));
+	whole = hash(pool, (long)(end - start));
+	/* the blocks in the pool's order (by address: a new block goes after the last, compaction keeps the order) */
+	cursor = base;
+	d = 0;
+	for (block = pool->first_block; block; block = block->next_block)
+	{
+		at = (unsigned long)block;
+		if (at < cursor)
+			order++; /* out of address order: the regions below overlap */
+		if (at > cursor)
+		{
+			gap_hash = (gap_hash ^ hash((const void *)cursor, (long)(at - cursor))) * 16777619UL;
+			gap_nonzero += psp_pool_nonzero((const void *)cursor, (long)(at - cursor));
+			gap_bytes += at - cursor;
+			gap_count++;
+		}
+		while (d < count && datums[d].at < at)
+			d++;
+		if (d < count && datums[d].at == at)
+		{
+			datum_hash = (datum_hash ^ hash(block, block->size)) * 16777619UL;
+			datum_bytes += block->size;
+			datum_count++;
+			layout = (((layout ^ (at - start)) * 16777619UL ^ (unsigned long)datums[d].index) * 16777619UL ^
+				(unsigned long)block->size) * 16777619UL;
+		}
+		else
+		{
+			other_hash = (other_hash ^ hash(block, block->size)) * 16777619UL;
+			other_bytes += block->size;
+			other_count++;
+			layout = (((layout ^ (at - start)) * 16777619UL ^ (unsigned long)block->reference) * 16777619UL ^
+				(unsigned long)block->size) * 16777619UL;
+		}
+		cursor = at + block->size;
+	}
+	if (cursor > carve)
+		cursor = carve;
+	tail_hash = hash((const void *)cursor, (long)(carve - cursor));
+	tail_nonzero = psp_pool_nonzero((const void *)cursor, (long)(carve - cursor));
+	carve_hash = hash((const void *)carve, (long)(end - carve));
+	platform_psp_log("state: pool at tick %ld: whole %08lx head %08lx datums %08lx %ld %lu other %08lx %ld %lu gaps %08lx %ld %lu %lu "
+		"tail %08lx %lu %lu store %08lx %lu free %ld order %ld", tick, whole, head, datum_hash, datum_count, datum_bytes,
+		other_hash, other_count, other_bytes, gap_hash, gap_count, gap_bytes, gap_nonzero, tail_hash, carve - cursor,
+		tail_nonzero, carve_hash, end - carve, (long)pool->free_size, order);
+	/* the layout, when it changes: each block's offset in the record, its owner (an object's index and type, or
+	"o" and the reference it was taken for) and its size */
+	if (tick == first || layout != layout_was)
+	{
+		d = 0;
+		for (block = pool->first_block; block; block = block->next_block)
+		{
+			at = (unsigned long)block;
+			if (length > 400)
+			{
+				platform_psp_log("state: pool layout at tick %ld:%s", tick, line);
+				length = 0;
+			}
+			while (d < count && datums[d].at < at)
+				d++;
+			if (d < count && datums[d].at == at)
+				length += snprintf(line + length, sizeof(line) - length, " %lx:%08lx:%ld:%lx", at - start,
+					(unsigned long)datums[d].index, datums[d].type, (unsigned long)block->size);
+			else
+				length += snprintf(line + length, sizeof(line) - length, " %lx:o:%08lx:%lx", at - start,
+					(unsigned long)block->reference, (unsigned long)block->size);
+		}
+		if (length)
+			platform_psp_log("state: pool layout at tick %ld:%s", tick, line);
+		length = 0;
+		platform_psp_log("state: pool layout at tick %ld ends: %ld blocks", tick, datum_count + other_count);
+	}
+	layout_was = layout;
+	/* each datum block's datum (its header's data_size from the block's end of header), by statecrc's hash, in
+	the pool's order */
+	d = 0;
+	for (block = pool->first_block; block; block = block->next_block)
+	{
+		at = (unsigned long)block;
+		while (d < count && datums[d].at < at)
+			d++;
+		if (!(d < count && datums[d].at == at))
+			continue;
+		if (length > 440)
+		{
+			platform_psp_log("state: pool datums at tick %ld:%s", tick, line);
+			length = 0;
+		}
+		length += snprintf(line + length, sizeof(line) - length, " %08lx", hash(block + 1, datums[d].size));
+	}
+	if (length)
+		platform_psp_log("state: pool datums at tick %ld:%s", tick, line);
+	length = 0;
+	/* the words outside the datums' bodies, by 256-byte page from the record's start: a datum's body words count as
+	0 in its page's hash and are never listed (the datums line covers them); a page is listed, every nonzero word
+	with its offset in the record, at the window's first tick if any is nonzero, and after it when its hash changed
+	(an empty list: every listed word went to 0) */
+	pages = (long)((end - start + PSP_POOL_PAGE - 1) / PSP_POOL_PAGE);
+	d = 0;
+	for (page = 0; page < pages; page++)
+	{
+		unsigned long from = start + (unsigned long)page * PSP_POOL_PAGE, to = from + PSP_POOL_PAGE, page_hash = 2166136261UL;
+		unsigned long nonzero = 0;
+		int listed = 0;
+
+		if (to > end)
+			to = end;
+		for (at = from; at < to; at += 4)
+		{
+			unsigned long value;
+
+			while (d < count && datums[d].at + sizeof(struct memory_pool_block) + (unsigned long)datums[d].size <= at)
+				d++;
+			value = d < count && at >= datums[d].at + sizeof(struct memory_pool_block) ? 0 : *(unsigned long const *)at;
+			page_hash = (page_hash ^ value) * 16777619UL;
+			nonzero += value != 0;
+		}
+		if (tick == first ? !nonzero : page_hash == page_was[page])
+		{
+			page_was[page] = page_hash;
+			continue;
+		}
+		page_was[page] = page_hash;
+		/* the page's words again, listed (d is back at the page's first datum) */
+		while (d > 0 && datums[d - 1].at + sizeof(struct memory_pool_block) + (unsigned long)datums[d - 1].size > from)
+			d--;
+		length = snprintf(line, sizeof(line), "state: pool page %lx at tick %ld:", from - start, tick);
+		for (at = from; at < to; at += 4)
+		{
+			unsigned long value;
+
+			while (d < count && datums[d].at + sizeof(struct memory_pool_block) + (unsigned long)datums[d].size <= at)
+				d++;
+			value = d < count && at >= datums[d].at + sizeof(struct memory_pool_block) ? 0 : *(unsigned long const *)at;
+			if (!value)
+				continue;
+			if (length > 440)
+			{
+				platform_psp_log("%s", line);
+				length = snprintf(line, sizeof(line), "state: pool page %lx at tick %ld:", from - start, tick);
+			}
+			length += snprintf(line + length, sizeof(line) - length, " %lx:%08lx", at - start, value);
+			listed++;
+		}
+		platform_psp_log("%s%s", line, listed ? "" : " (none)");
+		length = 0;
+	}
+	platform_psp_log("state: pool at tick %ld ends", tick);
+}
+#endif
+"""
 TICK2_PROOF_BSPR_STRUCT = "struct psp_bspr_state\n{\n\tstruct psp_bspr_sphere_slot spheres[PSP_BSPR_SPHERES];\n" \
     "\tstruct psp_bspr_ray_slot rays[PSP_BSPR_RAYS];\n};\n"
 TICK2_PROOF_BSPR_RAYS = r"""
@@ -60607,6 +60849,15 @@ static void tick2_proof_fill(struct object_header_datum *header)
     g = g.replace(TICK2_PROOF_STATE_HASH, TICK2_PROOF_STATE_HASH_PROOF)
     g = g.replace(TICK2_PROOF_STATE_FIRST, "\t\ttick2_proof_hash_count = tick2_proof_hash_build(); /* TICK2 proof: "
                   "the words before the first hash */\n" + TICK2_PROOF_STATE_FIRST)
+    # "statepoolN" (the lead 19:4x (2)): the objects record by region, after the objects' own lines, with this hash
+    if g.count(TICK2_PROOF_POOL_CALL) != 1:
+        check_fail("psp_fixups: TICK2 proof: the objects' dump call is in game_state.c %d times, so statepool has no "
+                   "place" % g.count(TICK2_PROOF_POOL_CALL))
+        return 0
+    g = g.replace(TICK2_PROOF_POOL_CALL, TICK2_PROOF_POOL_CALL +
+                  "\t\t{\n\t\t\textern void psp_objects_pool_split(long tick, unsigned long (*hash)(const void *start, long bytes));"
+                  " /* objects.c (TICK2 proof) */\n\n\t\t\tpsp_objects_pool_split(tick, psp_state_hash); /* statepoolN */\n\t\t}\n")
+    text += TICK2_PROOF_POOL_SPLIT
     # the ray slots' place in a biped's tail, from FIXES_BSPR's struct (applied with FIXES, before this cut), so
     # the mask follows the struct if it changes (the lead 18:3x (3))
     collision_bsp_c = os.path.join(tree, "source/physics/collision_bsp.c")
@@ -60621,7 +60872,7 @@ static void tick2_proof_fill(struct object_header_datum *header)
         open(game_state_c, "w", errors="surrogateescape").write(g)
         open(collision_bsp_c, "w", errors="surrogateescape").write(b)
     print("psp_fixups: TICK2 proof: the store outside the pool, statecrc hashing each record pointer as its slot "
-          "and each biped's two ray slots as 0")
+          "and each biped's two ray slots as 0; statepoolN the objects record by region")
     return 1
 print("psp_fixups: the world store's proof form: %s (TICK2 proof)" % ("on" if tick2_proof_cut(TREE) else "off"))
 
