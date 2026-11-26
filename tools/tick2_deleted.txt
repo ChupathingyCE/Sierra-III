@@ -35,6 +35,8 @@ biped_check_discard	motion	units/bipeds.c (static; only biped_update)	5
 # reached only from biped_update_dead and _airborne (box_world_store.md 19 part 8;
 # the lead 2026-11-26 00:3x (2), the lab's decisions.md)
 biped_apply_rotation	motion	units/bipeds.c (static; only biped_update_dead, biped_update_airborne)	5
+# every caller on the list (biped_jump, _try_to_make_footsteps, _update_landing, _update_slipping); store_motion_footstep is its copy
+biped_make_footstep	motion	units/bipeds.c (static; only deleted callers)	5
 
 # the limp body (task 5); units.c (slice 3's) calls start and stop: an accessor until then
 biped_start_limp_body_physics	limp	units/bipeds.c (called from units.c)	5
@@ -45,6 +47,7 @@ biped_limp_noodle_valid_joint_rotation	limp	units/biped_limp_noodle.c (static)	5
 biped_limp_noodle_move_relax_and_constrain_positions	limp	units/biped_limp_noodle.c (static)	5
 biped_limp_noodle_adjust_orientations	limp	units/biped_limp_noodle.c (static)	5
 biped_limp_noodle_nodes_valid	limp	units/biped_limp_noodle.c (static)	5
+validate_real_vector3d_axes3	limp	units/biped_limp_noodle.c (only the noodle; store_limp_validate_axes3 is its copy)	5
 
 # the staged sweeps (task 4): FIXES_BIPEDSTAGE's deferred run, gather and solve.
 # Not here: the sweep reuse (psp_sr_*, PSP_SWEEPREUSE), kept or replaced by
@@ -95,6 +98,7 @@ store_biped_solve_until_task5	staged	objects/objects.c (tick2_collnew; the solve
 # the margin gather is task 5's only on clause 10's branch (i), no tick over the
 # pool: if the count picks (ii), this row comes off in the same commit, unpoisoned
 # (the lead 2026-11-26 00:2x (2), 00:3x (2))
+# not poisoned by the delete cut until the count picks (i)
 store_coll_gather_margin	staged	psp/src/store_coll.c (the moved body but its two entry lines; the margin gather)	5
 
 # the node-matrix walk (task 3). Callers outside the tick go to

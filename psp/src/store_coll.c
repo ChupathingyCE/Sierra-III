@@ -205,6 +205,9 @@ void store_coll_gather_margin(long biped_index)
 	store_coll_pack(slot, biped_index);
 }
 
+#ifndef PSP_TICK2_MOTIONNEW
+/* off the switch only: task 5's delete cut deletes bipedstage3 (psp_bipedstage3_call is poisoned) and the pass's G is
+store_coll_gather_intent below; this gather's one caller is the pass's #else side */
 /* bipedstage3: the move's own call, kept by its intent (bipeds.c), gathered as collision_move_pill would make its
 sphere, with no margin for the velocity's change (1e-4 wu covers rounding only). The sphere's four expressions are
 psp_sweepme_after_intent's (collisions.c), character for character, since the ME's answer is matched on those floats.
@@ -239,6 +242,7 @@ int store_coll_gather(long biped_index)
 	psp_sweepme_pending = -1;
 	return TRUE;
 }
+#endif
 
 #ifdef PSP_TICK2_MOTIONNEW
 #include "store_motion.h"

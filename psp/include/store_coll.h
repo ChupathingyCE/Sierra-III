@@ -23,7 +23,9 @@ struct psp_sr_near { long index; unsigned long h1, h2; };
 
 /* the table's entries, psp/src/store_coll.c's */
 int store_coll_begin(void);                       /* the tick's table emptied: nonzero when bipedstage2 is on */
+#ifndef PSP_TICK2_MOTIONNEW
 int store_coll_gather(long biped_index);          /* the exact gather, from the intent's kept call: 0, no record */
+#endif
 void store_coll_gather_margin(long biped_index);  /* the margin gather, where the intent left no record */
 int store_coll_take(unsigned long flags, real_point3d const *center, real radius,
 	real height, real width, long biped_index, struct collision_feature_list *list); /* 1 list, 2 empty, 0 gather live */

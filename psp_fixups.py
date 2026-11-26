@@ -66998,22 +66998,9 @@ tick2_collnew_delete_cut(TREE)
 # bipeds' motion as the store's passes, I, G and M in psp/src/store_motion.c, with biped_update and the code only it
 # reaches deleted by tick2_motionnew_delete_cut at this file's end. Read as == "1", like COLLNEW; =0 off. It builds on
 # slice 1's task 4 (COLLNEW) and needs SWEEPME (I gives the ME its level half). M2 and MOTIONCROSS need the engine's
-# solve, so they're refused under it (Part 8). Step 3 writes the stages a piece at a time: until I, M and the delete
-# cut are all in, the switch refuses, so no run reads a half-written form as task 5's.
+# solve, so they're refused under it (Part 8). Step 3 was written the stages a piece at a time, the switch refusing
+# until they were all in; the delete cut's second half (the names' scan and the poison) is the last, and it builds.
 TICK2_MOTIONNEW = os.environ.get("PSP_TICK2_MOTIONNEW", "") == "1"
-TICK2_MOTIONNEW_WRITTEN = ("the INTENT table and G", "struct biped_physics to store_motion.h and M's table",
-                           "I's head (biped_update's, to turning)", "I's turning (biped_update_turning's)",
-                           "I's driver (biped_update's opening and bipedstage3's intent)",
-                           "M's driver (store_motion_update: the three entry points, the whole update, M's counts)",
-                           "I's move build to the call (biped_update_moving's and biped_update_physics's)",
-                           "M's physics tail (biped_update_physics's from the call)",
-                           "_moving's tail (biped_update_moving's from the call)",
-                           "M's helpers (landing, jumping and the jump, bumps, falling damage, the footstep)",
-                           "biped_update's tail (and its eight helpers)",
-                           "the limp body (store_biped_limp_start, _stop and the noodle)",
-                           "the pass (store_biped_pass's I, G and M, objects.c's four, the biped's entry)",
-                           "the delete cut's deletions (bipeds.c's 21, the blocks, the declarations, the four limp callers "
-                           "the store's)")  # step 3's pieces in
 def tick2_motionnew_check():
     if not TICK2_MOTIONNEW:
         return 0
@@ -68495,17 +68482,17 @@ def tick2_motionnew_pass_cut(tree):
     return 1
 tick2_motionnew_pass_cut(TREE)
 
-# PSP_TICK2_MOTIONNEW=1, step 3's delete cut, its first half (docs/box_world_store.md section 19, part 8 and the work
-# list's rows; modelled on task 4's tick2_collnew_delete_cut): biped_update and the code only it reaches are deleted, and
-# the callers that stay are the store's. bipeds.c loses BIPEDMOVE's statics and the two constants' enums (they did nothing
-# under PSP_TICK2_ROOT, only the intent and biped_update called them, and store_motion.c has copies), the trait's block,
-# the pill census and bipedstage3 (its record, pool and entry: only biped_update_physics and the gather read them), five
+# PSP_TICK2_MOTIONNEW=1, step 3's delete cut (docs/box_world_store.md section 19, part 8 and the work list's rows;
+# modelled on task 4's tick2_collnew_delete_cut): biped_update and the code only it reaches are deleted, and the callers
+# that stay are the store's. bipeds.c loses BIPEDMOVE's statics and the two constants' enums (they did nothing under
+# PSP_TICK2_ROOT, only the intent and biped_update called them, and store_motion.c has copies), the trait's block, the
+# pill census and bipedstage3 (its record, pool and entry: only biped_update_physics and the gather read them), five
 # prototypes, the profile section and the 21 functions whose text the store's I, G and M carry under their names; the
 # noodle's include and its header's declarations go, and biped_limp_noodle.c keeps only a comment after bipeds.h. The four
 # limp callers that stay point at the store's store_biped_limp_start and _stop (store_motion.h 240-241): units.c's two,
-# network_objects.c's and biped_accelerate's. The names' scan and objects.h's poison are the second half's; the switch
-# still refuses after this half (tick2_motionnew_written, at this file's end). Exact by construction: each text is there
-# once, and the store holds the same text under its names.
+# network_objects.c's and biped_accelerate's. Then no code names any of tools/tick2_deleted.txt's task-5 names, and
+# objects.h poisons them, so a reference in a unit that includes it fails the build. Exact by construction: each text is
+# there once, and the store holds the same text under its names.
 TICK2_MOTIONNEW_DELETE_HEADS = ("void biped_start_limp_body_physics(\n", "void biped_stop_limp_body_physics(\n",
                                 "static void biped_bumped_object(\n", "static void biped_falling_damage(\n",
                                 "static void biped_start_landing(\n", "static void biped_apply_rotation(\n",
@@ -68541,6 +68528,98 @@ TICK2_MOTIONNEW_DELETE_UNITS_DECL = ("void store_biped_limp_start(long biped_ind
                                      "motionnew): the limp body's */\nvoid store_biped_limp_stop(long biped_index);\n")
 TICK2_MOTIONNEW_DELETE_NET_DECL = ("void store_biped_limp_stop(long biped_index); /* psp/src/store_motion.c (TICK2 "
                                    "motionnew): the limp body's */\n")
+# the names' scan and the poison (this cut's second half): every task-5 row of tools/tick2_deleted.txt (four tab columns,
+# the fourth 5), less store_coll_gather_margin, whose row stays until clause 10's count picks (i): no code in the tree's
+# source/ and port/ or in psp/src and psp/include may name one of them, and objects.h poisons them
+TICK2_MOTIONNEW_DELETED_TXT = os.path.join(TICK2_COLLNEW_DIR, "tools", "tick2_deleted.txt")
+TICK2_MOTIONNEW_DELETED_KEEP = "store_coll_gather_margin"  # unpoisoned until the count picks: its branch isn't read
+TICK2_MOTIONNEW_DELETED_COUNT = 39
+TICK2_MOTIONNEW_POISON_HEAD = ("#ifdef HALO_PSP\n/* TICK2 motionnew (slice 1's task 5; docs/box_world_store.md section 19 part 8):\n"
+    "biped_update and the code only it reaches, the limp body and bipedstage3's cut are gone from this build; the store's\n"
+    "I, G and M (psp/src/store_motion.c) are the bipeds' motion. A reference to any of them fails the compile (Sierra-III\n"
+    "tools/tick2_deleted.txt; the lab's slice1_finish done-when 2) */\n")
+# bipeds.c's own names: its BIPEDMOVE's and the pill census's, which the cut deletes, and the profile section's
+TICK2_MOTIONNEW_SCAN_EXTRA = r"\b(?:psp_bs3_\w+|PSP_BS3_\w+|psp_bms_\w+|psp_reach\w*|psp_pill_reach|biped_update_section)\b"
+TICK2_MOTIONNEW_COND = re.compile(r"^[ \t]*#[ \t]*(if|ifdef|ifndef|elif|else|endif)\b(.*?)[ \t]*$")
+TICK2_MOTIONNEW_SWITCH = ("#ifdef PSP_TICK2_MOTIONNEW", "#ifndef PSP_TICK2_MOTIONNEW")
+def tick2_motionnew_deleted():
+    """tools/tick2_deleted.txt's task-5 names, less the margin gather's"""
+    names = []
+    for line in open(TICK2_MOTIONNEW_DELETED_TXT, errors="surrogateescape"):
+        if line.startswith("#") or not line.strip():
+            continue
+        columns = line.rstrip("\n").split("\t")
+        if len(columns) >= 4 and columns[3] == "5" and columns[0] != TICK2_MOTIONNEW_DELETED_KEEP:
+            names.append(columns[0])
+    return names
+def tick2_motionnew_on_side(text, what):
+    """text with PSP_TICK2_MOTIONNEW's off side dropped: each #ifndef PSP_TICK2_MOTIONNEW group whole (to its #endif, or to
+    its #else, keeping what follows) and the #else part of each #ifdef PSP_TICK2_MOTIONNEW group, nesting tracked over the
+    #if/#ifdef/#ifndef/#endif lines; every branch of any other #if group is read (a name there still builds in some
+    form); None if another #if line names the switch"""
+    out = []
+    levels = []  # [its lines go out, the switch's group's word (ifdef, ifndef) or None, the enclosing level's went out]
+    for line in text.splitlines(True):
+        m = TICK2_MOTIONNEW_COND.match(line.rstrip("\n"))
+        if m is not None:
+            word, rest = m.group(1), m.group(2)
+            if word in ("ifdef", "ifndef") and line.rstrip("\n") in TICK2_MOTIONNEW_SWITCH:
+                outer = all(level[0] for level in levels)
+                levels.append([outer if word == "ifdef" else False, word, outer])
+                continue
+            if word in ("if", "ifdef", "ifndef", "elif") and "PSP_TICK2_MOTIONNEW" in rest:
+                check_fail("psp_fixups: TICK2 motionnew delete cut: %s's #%s line names PSP_TICK2_MOTIONNEW, which the scan "
+                           "reads only as an #ifdef or #ifndef group" % (what, word))
+                return None
+            if word in ("if", "ifdef", "ifndef"):
+                kept = all(level[0] for level in levels)
+                levels.append([kept, None, kept])
+            elif word in ("else", "elif") and levels:
+                # past the switch's #ifdef, the off side (out); past its #ifndef, the on side; another group's branches
+                # are all read
+                levels[-1][0] = levels[-1][2] and levels[-1][1] != "ifdef"
+            elif word == "endif":
+                if not levels:
+                    check_fail("psp_fixups: TICK2 motionnew delete cut: %s's #endif closes no #if" % what)
+                    return None
+                levels.pop()
+            continue
+        if all(level[0] for level in levels):
+            out.append(line)
+    if levels:
+        check_fail("psp_fixups: TICK2 motionnew delete cut: %s's #if isn't closed" % what)
+        return None
+    return "".join(out)
+def tick2_motionnew_left(tree, texts, names):
+    """every code reference to one of the names in the tree's source/ and port/ (as this cut leaves them: texts holds its
+    edits) and in psp/src and psp/include (their off side dropped), "path: name" a hit; None if a file's #if lines can't
+    be read (the refusal is said)"""
+    found = re.compile(r"\b(?:%s)\b" % "|".join(names))
+    psp = (os.path.join(TICK2_COLLNEW_DIR, "psp", "src"), os.path.join(TICK2_COLLNEW_DIR, "psp", "include"))
+    bipeds_c = os.path.join(tree, "source/units/bipeds.c")
+    left = []
+    for top in (os.path.join(tree, "source"), os.path.join(tree, "port")) + psp:
+        for root, dirs, files in os.walk(top):
+            for name in sorted(files):
+                if not name.endswith((".c", ".h")):
+                    continue
+                path = os.path.join(root, name)
+                text = texts.get(path)
+                if text is None:
+                    text = open(path, errors="surrogateescape").read()
+                if top in psp:
+                    text = tick2_motionnew_on_side(text, os.path.relpath(path, TICK2_COLLNEW_DIR))
+                    if text is None:
+                        return None
+                text = tick2_posenew_code_only(text)
+                where = os.path.relpath(path, TICK2_COLLNEW_DIR if top in psp else tree)
+                for hit in found.findall(text) + (re.findall(TICK2_MOTIONNEW_SCAN_EXTRA, text) if path == bipeds_c else []):
+                    left.append("%s: %s" % (where, hit))
+    return left
+def tick2_motionnew_poison(names):
+    """objects.h's block: the comment, then the names eight to a #pragma GCC poison line"""
+    return TICK2_MOTIONNEW_POISON_HEAD + "".join("#pragma GCC poison %s\n" % " ".join(names[at:at + 8])
+                                                 for at in range(0, len(names), 8)) + "#endif\n\n"
 def tick2_motionnew_span(text, first, last, after, what):
     """first's start (there once, at a line start) through the end of the first whole line equal to last (with its \n)
     after after (None: first itself); None if it isn't there once, so the caller refuses with what"""
@@ -68702,27 +68781,40 @@ def tick2_motionnew_delete_cut(tree):
         return 0
     n = n.replace("biped_stop_limp_body_physics(", "store_biped_limp_stop(")
     n = n.replace(net_include, net_include + TICK2_MOTIONNEW_DELETE_NET_DECL)
+    # the names: the task-5 rows of tools/tick2_deleted.txt, less the margin gather's, whose branch clause 10's count
+    # hasn't picked; then no code anywhere the port builds names one, before objects.h poisons them
+    deleted = tick2_motionnew_deleted()
+    objects_h = os.path.join(tree, "source/objects/objects.h")
+    oh = open(objects_h, errors="surrogateescape").read()
+    if len(deleted) != TICK2_MOTIONNEW_DELETED_COUNT:
+        check_fail('psp_fixups: TICK2 motionnew delete cut: tools/tick2_deleted.txt\'s task-5 names, less %s, are %d, '
+                   "not %d (the list moved: read it)" % (TICK2_MOTIONNEW_DELETED_KEEP, len(deleted),
+                                                         TICK2_MOTIONNEW_DELETED_COUNT))
+        return 0
+    left = tick2_motionnew_left(tree, {bipeds_c: b, bipeds_h: h, noodle_h: nh, noodle_c: nc, collisions_c: c, units_c: u,
+                                       net_c: n, objects_h: oh}, deleted)
+    if left is None:
+        return 0
+    if left:
+        check_fail("psp_fixups: TICK2 motionnew delete cut: %d code references left to poison: %s"
+                   % (len(left), ", ".join(left[:8])))
+        return 0
+    guard = "\n#endif // __OBJECTS_H"
+    if oh.count(guard) != 1 or oh.count(TICK2_COLLNEW_POISON) != 1:
+        check_fail("psp_fixups: TICK2 motionnew delete cut: objects.h's closing guard (%d) or collnew's poison (%d) isn't "
+                   "there once" % (oh.count(guard), oh.count(TICK2_COLLNEW_POISON)))
+        return 0
+    oh = oh.replace(guard, "\n" + tick2_motionnew_poison(deleted) + guard.lstrip("\n"))
     if not CHECK_ONLY:
         for path, text in ((bipeds_c, b), (bipeds_h, h), (noodle_h, nh), (noodle_c, nc), (collisions_c, c), (units_c, u),
-                           (net_c, n)):
+                           (net_c, n), (objects_h, oh)):
             open(path, "w", errors="surrogateescape").write(text)
     print("psp_fixups: TICK2 motionnew (task 5, the delete cut): biped_update and the code only it reaches deleted "
-          "(bipeds.c %d lines, the noodle %d, collisions.c %d), the limp body's four callers the store's"
-          % (bipeds_before - b.count("\n"), noodle_before - nc.count("\n"), collisions_before - c.count("\n")))
+          "(bipeds.c %d lines, the noodle %d, collisions.c %d), the limp body's four callers the store's, %d names poisoned"
+          % (bipeds_before - b.count("\n"), noodle_before - nc.count("\n"), collisions_before - c.count("\n"),
+             len(deleted)))
     return 1
 tick2_motionnew_delete_cut(TREE)
-
-# PSP_TICK2_MOTIONNEW=1 while step 3 is being written: every piece's cut above has run (so a form check exercises
-# them), and the build refuses here, naming the pieces in, so no run reads a half-written form as task 5's. It goes
-# with the delete cut, the last piece
-def tick2_motionnew_written():
-    if not TICK2_MOTIONNEW_OK:
-        return 0
-    check_fail("psp_fixups: TICK2 motionnew: task 5's stages are being written (in: %s; still to come: "
-               "the delete cut's names scan and poison); PSP_TICK2_MOTIONNEW=1 builds once they're all in"
-               % "; ".join(TICK2_MOTIONNEW_WRITTEN))
-    return 0
-tick2_motionnew_written()
 
 if CHECK_ONLY:
     for message in count_failures:
