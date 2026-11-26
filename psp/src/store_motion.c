@@ -55,6 +55,8 @@ Built with PSP_TICK2_MOTIONNEW=1 (psp_build.py), as bipeds.c is.
 #include "physics/collision_bsp.h" /* M's physics tail: collision_surface_edge_ring_continues, collision_bsp_valid_surface_index (bipeds.c 308) */
 #include "physics/collision_bsp_definitions.h" /* PSP_DESIGNATOR (bipeds.c 239) */
 #include "physics/collision_debug.h" /* collision_debug_repeat and the rest (bipeds.c 310) */
+#include "physics/collision_models.h" /* _moving's tail: collision_model_instance_new, collision_model_test_vector (bipeds.c 312) */
+#include "physics/collision_usage.h" /* COLLISION_USER_PUSH and POP, COLLISION_USER_DEPTH, MAXIMUM_COLLISION_USER_STACK_DEPTH (bipeds.c 314) */
 #include "scenario/scenario.h"
 #include "network_coop.h" /* port: port/linux/game/network_coop.c */
 #include "mcc_movement.h" /* port: MCC weapon-authored movement penalties */
@@ -2005,13 +2007,216 @@ static void store_motion_call(struct biped_physics *physics, real_vector2d facin
 	return;
 }
 
-/* _moving's tail, biped_update_moving from the call's return (4792) to its end (4956), on M's physics record after
-   store_motion_call: the elevator, the record's outputs to the datum, landing, jumping, bumps and falling damage
-   (biped_start_landing, biped_update_jumping, biped_jump, biped_bumped_object, biped_falling_damage come with it).
-   The biped and definition are the held pair (4319 looked the definition up again: the same answer); the build's
-   movement_scale and in_flags locals are never read (the tail reads physics.in_flags, 4943, 4948). The next piece's */
+/* biped_start_landing (bipeds.c, on the delete list: only biped_update_moving called it); the next piece's */
+static void store_motion_landing(
+	long biped_index,
+	real landing_velocity);
+/* biped_update_jumping (bipeds.c, on the delete list: only biped_update_moving called it); the next piece's */
+static void store_motion_jumping(
+	long biped_index,
+	struct unit_animation_update_data *animation);
+/* biped_bumped_object (bipeds.c, on the delete list: only biped_update_moving called it); the next piece's */
+static void store_motion_bumped(
+	long biped_index,
+	long object_index,
+	real_vector3d const *old_velocity);
+/* biped_falling_damage (bipeds.c, on the delete list: only biped_update_moving called it); the next piece's */
+static void store_motion_falling_damage(
+	long biped_index,
+	real collision_velocity);
+
+/* _moving's tail: biped_update_moving from the return of its biped_update_physics(&physics) call to its end
+   (4660-4831 in the ship form at ff2bb9fb; the old comment's 4792 and 4956 were another form's), on M's physics record
+   after store_motion_call: the elevator's ticks and its object, the record's outputs to the datum (the position, the
+   velocity, the flags, the ground plane), landing, jumping, the melee impact, bumps and falling damage. The engine's
+   tests, float expressions and order are kept as they are, so the game computes bit-for-bit the same values. biped and
+   definition are the held pair (the engine looked neither up here: biped_update_moving's own were the driver's). Left
+   out: the old pass's stop 1 (4660-4664, "psp_bipedstage_phase == 3 && psp_bs3_cur && psp_bs3_cur->stop == 1"), which
+   M's driver is now (store_motion_from).
+   Renamed: the hoist's lookups (4668-4676, 4699-4701, 4724, 4731, 4734, 4760, 4791), each looked up once into line2
+   and line3 as store_intent_moving looks its line2 up: nothing in the range moves a record, and the hoist's cache
+   held across the same calls there; the record's fields, physics->X for the engine's physics.X (so
+   &physics.position is &physics->position); PSP_BMS(biped, X) and PSP_BMSW(biped, X), the datum's own field under
+   PSP_TICK2_ROOT (psp_bipedmove.h 37-40, 62-65), biped->X; the two window wrappers, PSP_BMS_NARROWV (4697) and
+   PSP_BMS_SYNCV (4789-4797), whose calls stay bare, as the window never goes live under ROOT (box_ws_move_slot
+   stays < 0, as t5s3-moving2 did with PSP_BMS_SYNC); and the four helpers take M's names: biped_start_landing,
+   biped_update_jumping, biped_bumped_object and biped_falling_damage are store_motion_landing, store_motion_jumping,
+   store_motion_bumped and store_motion_falling_damage, with their arguments as they are. The build's movement_scale
+   and in_flags locals are never read here (the tail reads physics->in_flags, 4817 and 4822: the engine's
+   movement_scale and in_flags were the build's). The four helpers are the next piece's, declared above.
+   store_motion_from calls it */
 static void store_motion_moved(long biped_index, struct biped_datum *biped, struct biped_definition *definition,
-	struct unit_animation_update_data *animation, struct biped_physics *physics);
+	struct unit_animation_update_data *animation, struct biped_physics *physics)
+{
+	struct tick2_unit_bip2 *line2 = tick2_unit_bip2_of(biped->object.root);
+	struct tick2_unit_bip3 *line3 = tick2_unit_bip3_of(biped->object.root);
+
+	if (physics->elevator_object_index == NONE)
+	{
+		if (line2->elevator_ticks <= 0)
+			line2->elevator_object_index = NONE;
+		else
+			--line2->elevator_ticks;
+	}
+	else
+	{
+		line2->elevator_object_index = physics->elevator_object_index;
+		line2->elevator_ticks = 60;
+	}
+
+	if (TEST_FLAG(biped->unit.flags, _unit_suspended_bit))
+	{
+		physics->new_position = physics->position;
+		SET_FLAG(physics->out_flags, _biped_physics_out_airborne_bit, FALSE);
+		physics->new_velocity = *global_zero_vector3d;
+		physics->velocity = *global_zero_vector3d;
+	}
+
+	{
+		real_point3d new_biped_position = physics->new_position;
+		word out_flags = physics->out_flags;
+
+		if (!TEST_FLAG(
+			definition->biped.flags,
+			_biped_pill_centered_at_origin_bit))
+		{
+			new_biped_position.z -= physics->width;
+		}
+		object_translate(biped_index, &new_biped_position, NULL);
+
+		line2->support_surface_index = physics->support_surface_index;
+		line3->pathfinding_point = new_biped_position;
+		line3->pathfinding_surface_index = NONE;
+		biped->object.root->translational_velocity = physics->new_velocity;
+		if (!animation->crouching &&
+			TEST_FLAG(out_flags, _biped_physics_out_cannot_stand_bit))
+		{
+			animation->crouching = TRUE;
+		}
+
+		SET_FLAG(
+			biped->biped.flags,
+			_biped_airborne_bit,
+			TEST_FLAG(out_flags, _biped_physics_out_airborne_bit));
+		SET_FLAG(
+			biped->biped.flags,
+			_biped_slipping_bit,
+			TEST_FLAG(out_flags, _biped_physics_out_slipping_bit));
+		SET_FLAG(
+			biped->biped.flags,
+			_biped_movement_passes_through_bipeds_bit,
+			TEST_FLAG(
+				definition->biped.flags,
+				_biped_passes_through_bipeds_bit));
+
+		line2->ground_plane = physics->ground_plane;
+		if (physics->landing_velocity > 0.f)
+			store_motion_landing(biped_index, physics->landing_velocity);
+		if (!TEST_FLAG(out_flags, _biped_physics_out_cannot_stand_bit))
+			store_motion_jumping(biped_index, animation);
+
+		if (biped->unit.melee_attack_state == _unit_melee_attack_impact &&
+			line3->impact_target_object_index != NONE)
+		{
+			struct object_datum *target = object_get(
+				line3->impact_target_object_index);
+			real_vector3d melee_vector;
+
+			match_assert(
+				"c:\\halo\\SOURCE\\units\\bipeds.c",
+				0x87A,
+				COLLISION_USER_DEPTH <
+					MAXIMUM_COLLISION_USER_STACK_DEPTH);
+			COLLISION_USER_PUSH(_collision_user_bipeds);
+
+			vector_from_points3d(
+				&physics->position,
+				&physics->new_position,
+				&melee_vector);
+			if (fast_vector_intersects_sphere(
+				&physics->position,
+				&melee_vector,
+				&target->object.root->bounding_sphere_center,
+				target->object.root->bounding_sphere_radius))
+			{
+				struct collision_model_instance instance;
+				struct collision_model_test_vector_result vector_result;
+				struct collision_result collision;
+
+				if (collision_model_instance_new(
+					&instance,
+					line3->impact_target_object_index) &&
+					collision_model_test_vector(
+						&instance,
+						FLAG(_collision_test_front_facing_surfaces_bit) |
+							FLAG(_collision_test_back_facing_surfaces_bit),
+						&physics->position,
+						&melee_vector,
+						&vector_result) &&
+					!collision_test_vector(
+						_collision_test_for_bipeds_passthrough_living_flags,
+						&physics->position,
+						&melee_vector,
+						biped_index,
+						&collision))
+				{
+					real_point3d collision_point;
+					real_plane3d collision_plane;
+
+					point_from_line3d(
+						&physics->position,
+						&melee_vector,
+						vector_result.bsp_result.t,
+						&collision_point);
+					matrix4x3_transform_plane(
+						&instance.matrices[vector_result.node_index],
+						vector_result.bsp_result.plane,
+						&collision_plane);
+					if (vector_result.bsp_result.plane_designator < 0)
+						plane3d_negate(&collision_plane, &collision_plane);
+					unit_impact_melee_damage(
+						biped_index,
+						line3->impact_target_object_index,
+						vector_result.node_index,
+						vector_result.region_index,
+						vector_result.bsp_result.material_index,
+						&collision_point,
+						&collision_plane.n,
+						&collision.location);
+				}
+			}
+
+			match_assert(
+				"c:\\halo\\SOURCE\\units\\bipeds.c",
+				0x8A5,
+				COLLISION_USER_DEPTH > 1);
+			COLLISION_USER_POP();
+		}
+
+		store_motion_bumped(
+			biped_index,
+			physics->bumped_object_index,
+			&physics->velocity);
+		store_motion_falling_damage(biped_index, physics->landing_velocity);
+
+		SET_FLAG(
+			biped->object.flags,
+			_object_on_ground_bit,
+			!TEST_FLAG(physics->in_flags, _biped_physics_in_flying_bit) &&
+				!TEST_FLAG(biped->biped.flags, _biped_airborne_bit));
+		SET_FLAG(
+			biped->object.flags,
+			_object_at_rest_bit,
+			!TEST_FLAG(physics->in_flags, _biped_physics_in_flying_bit) &&
+				!TEST_FLAG(biped->biped.flags, _biped_airborne_bit) &&
+				!TEST_FLAG(out_flags, _biped_physics_out_volatile_collision_bit) &&
+				magnitude_squared3d(&biped->object.root->translational_velocity) < 0.0001f);
+		if (TEST_FLAG(biped->object.flags, _object_on_ground_bit))
+			biped->object.root->angular_velocity = *global_zero_vector3d;
+	}
+
+	return;
+}
 
 /* biped_update's tail: with moved, from the post-moving verify (5178) through dead/air/land/slip, the melee,
    footsteps, falling danger and the discard (5264) and on; without (a rider, stop 2), from 5273 alone: then

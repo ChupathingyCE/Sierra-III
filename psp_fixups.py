@@ -67006,7 +67006,8 @@ TICK2_MOTIONNEW_WRITTEN = ("the INTENT table and G", "struct biped_physics to st
                            "I's driver (biped_update's opening and bipedstage3's intent)",
                            "M's driver (store_motion_update: the three entry points, the whole update, M's counts)",
                            "I's move build to the call (biped_update_moving's and biped_update_physics's)",
-                           "M's physics tail (biped_update_physics's from the call)")  # step 3's pieces in
+                           "M's physics tail (biped_update_physics's from the call)",
+                           "_moving's tail (biped_update_moving's from the call)")  # step 3's pieces in
 def tick2_motionnew_check():
     if not TICK2_MOTIONNEW:
         return 0
@@ -68315,7 +68316,8 @@ def tick2_motionnew_written():
     if not TICK2_MOTIONNEW_OK:
         return 0
     check_fail("psp_fixups: TICK2 motionnew: task 5's stages are being written (in: %s; still to come: "
-               "_moving's and biped_update's tails, the limp body, the delete cut); PSP_TICK2_MOTIONNEW=1 builds once they're all in" % "; ".join(TICK2_MOTIONNEW_WRITTEN))
+               "M's four helpers (landing, jumping, bumps, falling damage), biped_update's tail, the limp body, the "
+               "delete cut); PSP_TICK2_MOTIONNEW=1 builds once they're all in" % "; ".join(TICK2_MOTIONNEW_WRITTEN))
     return 0
 tick2_motionnew_written()
 
