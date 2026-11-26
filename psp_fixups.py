@@ -67069,7 +67069,9 @@ tick2_motionnew_physics_cut(TREE)
 # PSP_CALLTRACE=1 (the builder 2026-11-25, the lead's 19:4x (1): oldonly3397's marine e603000b parts from old-only in
 # tick 3397's choice). One object's tick, in call order. With the keep words "calltraceN" and "ctobjK" (K the object's
 # absolute index, the datum index's low 16 bits: e603000b is ctobj11), from the thinking done ahead for game time N
-# (game_time.c runs psp_aime_update after tick N-1 has counted) to tick N's end, before its state lines, the log has
+# (game_time.c runs psp_aime_update after tick N-1 has counted) to tick N's end, before its state lines (with
+# "ctspanM", each of the M ticks N to N+M-1 the same, in its own window; with no "ctobjK", the first biped at tick N's
+# window, kept by its absolute index through the span: the lead 2026-11-26 11:46 (2)'s 300-tick move query), the log has
 # "ct: <seq> ..." lines in the order the engine ran them:
 #   every step of a seed (seed_random, real_seed_random: out of line, so the return address is the drawing caller), the
 #     seed (L the local, G the global, O another: the thinking's own, sound's), its value before and after, and the
@@ -67097,7 +67099,7 @@ int psp_ct_depth; /* inside the traced object's update, its actor's, or a functi
 long psp_ct_object = NONE; /* the traced object, found at the window's start */
 long psp_ct_seq;
 void *psp_ct_outer; /* a draw's caller, while random_math.c's draw runs the seed's step (random_math.c) */
-static long psp_ct_tick = -2, psp_ct_target = -1;
+static long psp_ct_tick = -2, psp_ct_target = -1, psp_ct_span = 1;
 static unsigned long psp_ct_facing[6];
 static const char *psp_ct_where = "begin";
 
@@ -67189,10 +67191,14 @@ void psp_ct_begin(const char *where)
 	{
 		psp_ct_tick = psp_keep_number("calltrace", -1);
 		psp_ct_target = psp_keep_number("ctobj", -1);
+		/* "ctspanM": M ticks from N, each its own window (the lead 2026-11-26 11:46 (2): the move query's 300 ticks) */
+		psp_ct_span = psp_keep_number("ctspan", 1);
+		if (psp_ct_span < 1)
+			psp_ct_span = 1;
 		if (psp_ct_tick >= 0)
-			platform_psp_log("calltrace: tick %ld, object %ld", psp_ct_tick, psp_ct_target);
+			platform_psp_log("calltrace: tick %ld, object %ld, span %ld", psp_ct_tick, psp_ct_target, psp_ct_span);
 	}
-	if (psp_ct_tick < 0 || (tick = game_time_get()) != psp_ct_tick)
+	if (psp_ct_tick < 0 || (tick = game_time_get()) < psp_ct_tick || tick >= psp_ct_tick + psp_ct_span)
 		return;
 	if (psp_ct_live)
 	{
@@ -67201,8 +67207,14 @@ void psp_ct_begin(const char *where)
 	}
 	psp_ct_object = NONE;
 	for (index = data_next_index(object_header_data, NONE); index != NONE; index = data_next_index(object_header_data, index))
-		if (DATUM_INDEX_TO_ABSOLUTE_INDEX(index) == psp_ct_target)
+		/* no ctobj word: the first biped at the first window, kept by its absolute index for the rest of the span */
+		if (psp_ct_target < 0 ? ((struct object_header_datum *)datum_get(object_header_data, index))->type == _object_type_biped :
+			DATUM_INDEX_TO_ABSOLUTE_INDEX(index) == psp_ct_target)
+		{
 			psp_ct_object = index;
+			if (psp_ct_target < 0)
+				psp_ct_target = DATUM_INDEX_TO_ABSOLUTE_INDEX(index);
+		}
 	psp_ct_live = 1;
 	psp_ct_depth = 0;
 	psp_ct_seq = 0;
