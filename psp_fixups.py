@@ -67516,6 +67516,189 @@ def call_trace(tree):
     return 1
 call_trace(TREE)
 
+# PSP_EMOTRACE=1 (the builder 2026-11-25, the lead's 20:5x (2): calltrace3397 found actor e3620001's emotions block
+# already parted when its tick 3397 began, and the block is in neither the play hash nor C4). Every actor's emotions,
+# twice a tick, so the first actor, tick and pass that part are found. With the keep word "emotraceN", for game time 0
+# to N:
+#   at the tick's end, before its state lines (game.c), "emo: <tick> end <actor> <hash>", one line per live actor (the
+#     datum index, the FNV-1a hash of its actor_datum's emotions block, padding included), then "emo: <tick> end tally
+#     <count> <hash>" over all of them;
+#   after the next tick's thinking done ahead (game_time.c's psp_aime_update, the game time already the next tick's,
+#     so its lines carry that tick), the same tally, and a line for each actor whose block that pass changed (or that
+#     is new in its slot): "emo: <tick> ahead <actor> <hash>"; no line means the thinking ahead left it as it was;
+#   with "emoactorK" and "emowordsM" (K the actor's absolute index, its datum index's low 16 bits: e3620001 is
+#     emoactor1), at both points from game time M, its block as words, eight a line, "emo: <tick> <end|ahead> words
+#     <actor> +<word>: ...";
+#   once, the block's size and each field's byte offset, read from ai/actors.h, so a word names its field.
+# Reads only; logs from the main CPU alone (refused on the Media Engine: a pass run there is seen only by its effect,
+# at the next point). Off by default, a bench tool; refused with PSP_CALLTRACE=1 (the same state lines' call).
+EMOTRACE = os.environ.get("PSP_EMOTRACE", "") == "1"
+EMOTRACE_CORE = r"""
+/* EMOTRACE (psp_fixups.py, PSP_EMOTRACE=1): every actor's emotions, twice a tick (see there) */
+void platform_psp_log(const char *format, ...);
+int psp_keep_number(const char *prefix, int fallback);
+void psp_log_flush(void);
+extern volatile unsigned int psp_me_context;
+static long psp_emo_last = -2, psp_emo_actor = -1, psp_emo_from = -1, psp_emo_lines;
+static unsigned long psp_emo_hashes[MAXIMUM_ACTORS], psp_emo_ids[MAXIMUM_ACTORS];
+
+/* the batch written every 16 of these lines (the game thread's own write), so a tick's lines never fill the 32 KB
+batch, which would drop lines (psp_platform.c; the lab's lesson c4-logdrop) */
+static void psp_emo_logged(void)
+{
+	if (++psp_emo_lines % 16 == 0)
+		psp_log_flush();
+}
+#define PSP_EMO_LOG(...) (platform_psp_log(__VA_ARGS__), psp_emo_logged())
+
+static unsigned long psp_emo_hash(const void *start, unsigned long bytes)
+{
+	const unsigned char *b = (const unsigned char *)start;
+	unsigned long hash = 2166136261UL;
+
+	while (bytes--)
+		hash = (hash ^ *b++) * 16777619UL;
+	return hash;
+}
+
+static void psp_emo_words(long tick, const char *where, unsigned long index, const void *start, long words)
+{
+	unsigned long const *w = (unsigned long const *)start;
+	char line[8 * 9 + 1];
+	long k, j, n;
+
+	for (k = 0; k < words; k += 8)
+	{
+		n = words - k < 8 ? words - k : 8;
+		for (j = 0; j < n; j++)
+		{
+			unsigned long value = w[k + j];
+			int d;
+
+			for (d = 0; d < 8; d++)
+				line[9 * j + d] = "0123456789abcdef"[(value >> (28 - 4 * d)) & 15];
+			line[9 * j + 8] = ' ';
+		}
+		line[9 * n - 1] = 0;
+		PSP_EMO_LOG("emo: %ld %s words %08lx +%ld: %s", tick, where, index, k, line);
+	}
+}
+
+/* ahead 0: the tick's end; 1: after the next tick's thinking done ahead */
+void psp_emo_point(int ahead)
+{
+	struct data_iterator iterator;
+	struct actor_datum *actor;
+	unsigned long tally = 2166136261UL, count = 0;
+	const char *where = ahead ? "ahead" : "end";
+	long tick;
+
+	if (psp_me_context)
+		return;
+	if (psp_emo_last == -2)
+	{
+		psp_emo_last = psp_keep_number("emotrace", -1);
+		psp_emo_actor = psp_keep_number("emoactor", -1);
+		psp_emo_from = psp_keep_number("emowords", -1);
+		if (psp_emo_last >= 0)
+		{
+			PSP_EMO_LOG("emotrace: ticks 0 to %ld, actor slot %ld's words from %ld; emotions %d bytes, padding included", psp_emo_last,
+				psp_emo_actor, psp_emo_from, (int)sizeof(struct actor_emotion_data));
+@LAYOUT@		}
+	}
+	if (psp_emo_last < 0 || !actor_data || !actor_data->valid || !ai_globals || !ai_globals->ai_initialized_for_map)
+		return;
+	tick = game_time_get();
+	if (tick < 0 || tick > psp_emo_last)
+		return;
+	data_iterator_new(&iterator, actor_data);
+	while ((actor = (struct actor_datum *)data_iterator_next(&iterator)) != NULL)
+	{
+		unsigned long index = (unsigned long)iterator.datum_index;
+		long slot = DATUM_INDEX_TO_ABSOLUTE_INDEX(iterator.datum_index);
+		unsigned long hash = psp_emo_hash(&actor->emotions, sizeof(actor->emotions));
+
+		count++;
+		tally = (tally ^ index ^ hash) * 16777619UL;
+		if (!ahead || psp_emo_ids[slot] != index || psp_emo_hashes[slot] != hash)
+			PSP_EMO_LOG("emo: %ld %s %08lx %08lx", tick, where, index, hash);
+		psp_emo_ids[slot] = index;
+		psp_emo_hashes[slot] = hash;
+		if (slot == psp_emo_actor && psp_emo_from >= 0 && tick >= psp_emo_from)
+			psp_emo_words(tick, where, index, &actor->emotions, (long)(sizeof(actor->emotions) / 4));
+	}
+	PSP_EMO_LOG("emo: %ld %s tally %lu %08lx", tick, where, count, tally);
+}
+"""
+
+def emotions_fields(header):
+    """ai/actors.h's struct actor_emotion_data, its fields' names in order (None if not found)"""
+    m = re.search(r"\nstruct actor_emotion_data\n\{\n(.*?)\n\};\n", header, re.S)
+    if not m:
+        return None
+    names = []
+    for line in m.group(1).split("\n"):
+        f = re.match(r"\s*(?:unsigned\s+)?\w+\s+(\w+);\s*$", line)
+        if not f:
+            return None
+        names.append(f.group(1))
+    return names
+
+def emo_trace(tree):
+    if not EMOTRACE:
+        return 0
+    if CALLTRACE:
+        check_fail("psp_fixups: EMOTRACE: PSP_CALLTRACE=1 edits the same state lines' call; build one tracer at a time")
+        return 0
+    texts = {}
+    def get(rel):
+        if rel not in texts:
+            texts[rel] = open(os.path.join(tree, rel), errors="surrogateescape").read()
+        return texts[rel]
+    names = emotions_fields(get("source/ai/actors.h"))
+    if not names or len(names) < 20:
+        check_fail("psp_fixups: EMOTRACE: ai/actors.h's struct actor_emotion_data isn't read (%r)" % (names,))
+        return 0
+    # the offsets, four fields a line (the longest names run 35 characters: the log line stays short)
+    layout = ""
+    for k in range(0, len(names), 4):
+        part = names[k:k + 4]
+        layout += ('\t\t\tPSP_EMO_LOG("emotrace: fields%s"%s);\n' %
+                   ("".join(" %s@%%d" % n for n in part),
+                    "".join(", (int)__builtin_offsetof(struct actor_emotion_data, %s)" % n for n in part)))
+    rel = "source/ai/actors.c"
+    if get(rel).count("struct data_array *actor_data;\n") != 1:
+        check_fail("psp_fixups: EMOTRACE: actors.c's actor_data isn't defined there once")
+        return 0
+    texts[rel] = get(rel) + EMOTRACE_CORE.replace("@LAYOUT@", layout)
+    # the tick's end, before its state lines (game.c)
+    rel = "source/game/game.c"
+    end = '(PSP_STEP("psp_game_state_hash_tick"), psp_game_state_hash_tick(game_time_get()));'
+    decl = "extern void psp_game_state_hash_tick(long tick); /* game_state.c (psp_fixups.py, build 112) */\n"
+    if get(rel).count(end) != 1 or get(rel).count(decl) != 1:
+        check_fail("psp_fixups: EMOTRACE: game.c's state lines' call (%d) or its declaration (%d) isn't there once" %
+                   (get(rel).count(end), get(rel).count(decl)))
+        return 0
+    texts[rel] = get(rel).replace(end, 'psp_emo_point(0); /* EMOTRACE */\n\t\t' + end).replace(
+        decl, decl + "\t\textern void psp_emo_point(int ahead); /* actors.c (psp_fixups.py, PSP_EMOTRACE=1) */\n")
+    # after the next tick's thinking done ahead (game_time.c)
+    rel = "source/game/game_time.c"
+    old = '(PSP_STEP("psp_aime_update"), psp_aime_update());\n'
+    if get(rel).count(old) != 1:
+        check_fail("psp_fixups: EMOTRACE: game_time.c's psp_aime_update call matches %d times" % get(rel).count(old))
+        return 0
+    at = get(rel).index(old) + len(old)
+    indent = re.search(r"\n(\t*)\(PSP_STEP\(\"psp_aime_update\"\)", get(rel)).group(1)
+    texts[rel] = (get(rel)[:at] + indent + "{ extern void psp_emo_point(int ahead); psp_emo_point(1); } /* EMOTRACE (psp_fixups.py) */\n" +
+                  get(rel)[at:])
+    if not CHECK_ONLY:
+        for rel, text in texts.items():
+            open(os.path.join(tree, rel), "w", errors="surrogateescape").write(text)
+    print("psp_fixups: EMOTRACE: every actor's emotions twice a tick: %d fields, at game.c's state lines and after psp_aime_update"
+          % len(names))
+    return 1
+emo_trace(TREE)
+
 if CHECK_ONLY:
     for message in count_failures:
         print(message)
