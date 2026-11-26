@@ -67758,6 +67758,7 @@ void psp_lof_end(long actor_index);
 LOFTRACE_CORE = r"""
 /* LOFTRACE (psp_fixups.py, PSP_LOFTRACE=1): actor_emotion_update's line-of-fire check as read, on whichever CPU runs
 it, and its inputs at the tick's end (see there) */
+#include "ai_globals.h" /* the tick-end read's ai_globals: actor_perception.c doesn't include it (lof3397's build, sierra-batch 45755147351) */
 void platform_psp_log(const char *format, ...);
 int psp_keep_number(const char *prefix, int fallback);
 void psp_log_flush(void);
