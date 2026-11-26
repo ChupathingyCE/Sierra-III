@@ -362,6 +362,64 @@ void store_coll_end(void)
 
 /* ---- the store's gather table: finish ---- */
 
+#ifdef PSP_TICK2_MOTIONNEW
+/* the store's biped pass (slice 1's task 5; docs/box_world_store.md section 19, M's design part 4), called at the
+walk's end as task 4's was: the unit parts, then I (each living biped's update to its move's call, kept as its
+intent, the ME's level half handed over at each keep), G (each intent's gather, from the world as it stands before
+any biped moves; no margin gather: clause 10's branch (i), the lead 2026-11-26 00:2x (2)), the ME's end, M (each
+staged biped's datum_update, store_motion_update, with store_motion_cur its staged position: it resumes the biped's
+intent, or runs its whole update), the settle, and the tick's ends, I's last because M reads its entries. The phase
+is old-only's with bipedstage3 on: 4, or 0 for a dead biped with no intent, whose unit part runs whole (object_types.c) */
+int store_biped_units(void); /* objects.c (TICK2 motionnew): the staged list's four */
+long store_biped_at(short k, int *dead);
+void store_biped_update(short k, int phase);
+void store_biped_settle(void);
+void psp_sweepme_tick_begin(void); /* collisions.c (FIXES_SWEEPME) */
+
+void store_biped_pass(void)
+{
+	long biped_index;
+	int count, dead;
+	short k;
+
+	count = store_biped_units();
+	if (!count)
+		return;
+	store_intent_begin();
+	psp_sweepme_tick_begin(); /* (FIXES_SWEEPME) */
+	for (k = 0; k < count; k++)
+	{
+		biped_index = store_biped_at(k, &dead);
+		if (biped_index != NONE && !dead)
+			store_intent_run(k, biped_index);
+	}
+	psp_sweepme_close(); /* (FIXES_SWEEPME) */
+	/* slice 2: every living biped's move gathered as one pass, from the
+	world as it stands before any biped moves */
+	if (store_coll_begin())
+	{
+		for (k = 0; k < count; k++)
+		{
+			biped_index = store_biped_at(k, &dead);
+			if (biped_index != NONE && !dead)
+				store_coll_gather_intent(k);
+		}
+	}
+	psp_sweepme_end(); /* (FIXES_SWEEPME) */
+	for (k = 0; k < count; k++)
+	{
+		biped_index = store_biped_at(k, &dead);
+		if (biped_index == NONE)
+			continue;
+		store_motion_cur = k;
+		store_biped_update(k, dead && !store_intent_of(k) ? 0 : 4);
+		store_motion_cur = -1;
+	}
+	store_biped_settle();
+	store_coll_end();
+	store_intent_end();
+}
+#else
 /* piece 2: the store's biped pass, in place of psp_bipedstage_run at the walk's end (psp_fixups.py
 tick2_collnew_pass_cut). The intent and the solve are the engine's, until task 5: the run's text before and after
 its gather, verbatim in objects.c. The gather loop between them is the run's, over the same list in the same order,
@@ -395,6 +453,7 @@ void store_biped_pass(void)
 	store_biped_solve_until_task5();
 	store_coll_end();
 }
+#endif
 
 /* ---- moved from collisions.c (collision_move_pill with the take, as every cut before left it): begin ---- */
 short store_coll_move(

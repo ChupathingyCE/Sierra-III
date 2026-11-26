@@ -67010,7 +67010,8 @@ TICK2_MOTIONNEW_WRITTEN = ("the INTENT table and G", "struct biped_physics to st
                            "_moving's tail (biped_update_moving's from the call)",
                            "M's helpers (landing, jumping and the jump, bumps, falling damage, the footstep)",
                            "biped_update's tail (and its eight helpers)",
-                           "the limp body (store_biped_limp_start, _stop and the noodle)")  # step 3's pieces in
+                           "the limp body (store_biped_limp_start, _stop and the noodle)",
+                           "the pass (store_biped_pass's I, G and M, objects.c's four, the biped's entry)")  # step 3's pieces in
 def tick2_motionnew_check():
     if not TICK2_MOTIONNEW:
         return 0
@@ -68311,6 +68312,174 @@ def tick2_motionnew_helpers_cut(tree):
           % (len(TICK2_MOTIONNEW_HELPERS), ", ".join(t.split()[2].rstrip("(") for t, _ in TICK2_MOTIONNEW_HELPERS)))
     return 1
 tick2_motionnew_helpers_cut(TREE)
+
+# step 3, piece 6's first half (docs/box_world_store.md section 19, M's design part 4, "The entry and the pass"): the
+# store's biped pass (psp/src/store_coll.c, under the switch) becomes the store's five stages over I, G and M, so
+# objects.c's task-4 boundary (the three functions that ran the engine's bipedstage3 intent and the solve through
+# psp_object_update, collnew's piece 2) goes and four functions over the staged list take its place: store_biped_units
+# (the unit parts and the bench fills, the boundary's text verbatim, the staged count returned), store_biped_at (the
+# live test's, the index or NONE with the dead bit read for the caller), store_biped_update (one staged biped's
+# psp_object_update and count in the phase the pass gives) and store_biped_settle (the settle and wsbipedcheck's
+# compare, verbatim, the list emptied). The list stays here (the walk's hook writes it and it's static). object_types.c
+# 310's biped datum_update becomes store_motion_update, so M is the biped's update. It deletes no engine function: that
+# is the delete cut, the next piece, which finds no references left once this is in.
+TICK2_MOTIONNEW_PASS_LIVE_OLD = r"\bstore_biped_live_until_task5\b"
+TICK2_MOTIONNEW_PASS_LIVE = r"\bstore_biped_live\b"
+TICK2_MOTIONNEW_PASS_DECLS = ("void psp_sweepme_tick_begin(void); /* collisions.c (FIXES_SWEEPME) */\n",
+                              "void psp_sweepme_after_intent(long biped_index);\n",
+                              "void psp_sweepme_close(void); /* psp_sweepme.c */\n",
+                              "void psp_sweepme_end(void);\n",
+                              "void psp_bipedstage3_reset(void); /* bipeds.c */\n",
+                              "void psp_bipedstage3_intent(long biped_index);\n",
+                              "int psp_bipedstage3_kept(long biped_index);\n",
+                              "static int psp_bs3_on = -1;\n")
+TICK2_MOTIONNEW_PASS_START = "/* TICK2 collnew (slice 1's task 4, piece 2;"
+TICK2_MOTIONNEW_PASS_END = "\tpsp_bipedstage_phase = 0;\n\tpsp_bipedstage_count = 0;\n}\n"
+TICK2_MOTIONNEW_PASS_HALVES = ("int store_biped_intent_until_task5(int *intents)\n{",
+                               "long store_biped_alive_until_task5(short k)\n{",
+                               "void store_biped_solve_until_task5(void)\n{")
+# UNITS: the unit parts from their count test through the bench fill loop's closing brace, which ends just before the
+# bipedstage3 comment that opens the intent (the span between the two anchors is the part, taken as it stands)
+TICK2_MOTIONNEW_PASS_UNITS_FIRST = "\tif (!psp_bipedstage_count)\n\t\treturn 0;\n"
+TICK2_MOTIONNEW_PASS_UNITS_AFTER = "\t/* bipedstage3: every living biped's update run to its move's call (its\n"
+# SETTLE: from the settle's note through the list's emptying, the solve's closing } left to the settle's own
+TICK2_MOTIONNEW_PASS_SETTLE_FIRST = "\t/* BIPEDMOVE 1c: a kept record whose solve didn't resume it written back */\n"
+TICK2_MOTIONNEW_PASS_SETTLE_LAST = "\tpsp_bipedstage_phase = 0;\n\tpsp_bipedstage_count = 0;\n"
+TICK2_MOTIONNEW_PASS_HEAD = r"""/* TICK2 motionnew (slice 1's task 5, the pass; docs/box_world_store.md section 19, M's design part 4): the staged
+list's four, for the store's biped pass (store_biped_pass, psp/src/store_coll.c), in place of task 4's boundary. The
+list stays here (the walk's hook writes it, and it's static). The unit parts and the bench fills, and the settle with
+wsbipedcheck's compare, are the boundary's text verbatim; the intent and the solve are the store's I and M now */
+void store_biped_pass(void);
+
+/* the unit parts (phase 1) and wsbipedcross's and wsbipedcheck's fills: the staged count, 0 for none (nothing run) */
+int store_biped_units(void)
+{
+	struct object_header_datum *header;
+	short k;
+
+"""
+TICK2_MOTIONNEW_PASS_AT = r"""	return psp_bipedstage_count;
+}
+
+/* staged biped k's index if it's live (*dead its dead bit), else NONE */
+long store_biped_at(short k, int *dead)
+{
+	struct object_header_datum *header;
+
+	if (!store_biped_live(k, &header))
+		return NONE;
+	*dead = TEST_FLAG(header->datum->object.damage_flags, _object_dead_bit) ? 1 : 0;
+	return psp_bipedstage_index[k];
+}
+
+/* M's turn for staged biped k: its update in the given phase (4, or 0 for a dead biped with no intent), counted */
+void store_biped_update(short k, int phase)
+{
+	struct object_header_datum *header;
+
+	if (!store_biped_live(k, &header))
+		return;
+	psp_bipedstage_phase = phase;
+	psp_object_update(psp_bipedstage_index[k], psp_bipedstage_absolute[k], header);
+	psp_object_count(header->type);
+}
+
+/* after M: the kept records' settle and wsbipedcheck's compare; the list emptied for the next tick */
+void store_biped_settle(void)
+{
+	struct object_header_datum *header;
+	short k;
+
+"""
+TICK2_MOTIONNEW_PASS_TAIL = "}\n"
+TICK2_MOTIONNEW_PASS_ENTRY_OLD = "\tbiped_adjust_placement, biped_new, biped_place, biped_delete, biped_update,\n"
+TICK2_MOTIONNEW_PASS_ENTRY = "\tbiped_adjust_placement, biped_new, biped_place, biped_delete, store_motion_update,\n"
+TICK2_MOTIONNEW_PASS_ENTRY_AT = "struct object_type_definition biped_data_definition =\n"
+TICK2_MOTIONNEW_PASS_ENTRY_DECL = ("boolean store_motion_update(long biped_index); /* psp/src/store_motion.c (TICK2 motionnew): "
+                                    "M's entry, biped_update's */\n\n")
+TICK2_MOTIONNEW_PASS_LEFT = r"\b(?:store_biped_(?:intent|alive|solve|live)_until_task5|psp_bipedstage3_\w+|psp_bs3_on|psp_sweepme_\w+)\b"
+def tick2_motionnew_pass_cut(tree):
+    if not TICK2_MOTIONNEW_OK:
+        return 0
+    objects_c = os.path.join(tree, "source/objects/objects.c")
+    object_types_c = os.path.join(tree, "source/objects/object_types.c")
+    o = open(objects_c, errors="surrogateescape").read()
+    t = open(object_types_c, errors="surrogateescape").read()
+    # 1. the live test's rename
+    if re.search(TICK2_MOTIONNEW_PASS_LIVE, o) or not re.search(TICK2_MOTIONNEW_PASS_LIVE_OLD, o):
+        check_fail("psp_fixups: TICK2 motionnew pass: objects.c's live test is store_biped_live %d times and "
+                   "store_biped_live_until_task5 %d times, not 1 and more than none (already cut, or renamed)"
+                   % (len(re.findall(TICK2_MOTIONNEW_PASS_LIVE, o)), len(re.findall(TICK2_MOTIONNEW_PASS_LIVE_OLD, o))))
+        return 0
+    o = re.sub(TICK2_MOTIONNEW_PASS_LIVE_OLD, "store_biped_live", o)
+    # 2. the eight declarations out
+    for text in TICK2_MOTIONNEW_PASS_DECLS:
+        if o.count(text) != 1:
+            check_fail("psp_fixups: TICK2 motionnew pass: objects.c has %r %d times, not 1 (the boundary's declarations "
+                       "moved: read them)" % (text, o.count(text)))
+            return 0
+        o = o.replace(text, "")
+    # 3. the boundary out, the four in
+    if o.count(TICK2_MOTIONNEW_PASS_START) != 1:
+        check_fail("psp_fixups: TICK2 motionnew pass: objects.c has the boundary's opening comment %d times, not 1"
+                   % o.count(TICK2_MOTIONNEW_PASS_START))
+        return 0
+    start = o.index(TICK2_MOTIONNEW_PASS_START)
+    end = o.find(TICK2_MOTIONNEW_PASS_END, start)
+    if end < 0:
+        check_fail("psp_fixups: TICK2 motionnew pass: no list emptying and closing brace after the boundary's opening "
+                   "comment in objects.c (the solve's end moved: read it)")
+        return 0
+    end += len(TICK2_MOTIONNEW_PASS_END)
+    span = o[start:end]
+    for head in TICK2_MOTIONNEW_PASS_HALVES:
+        if span.count(head) != 1:
+            check_fail("psp_fixups: TICK2 motionnew pass: the boundary's %r is in its span %d times, not 1"
+                       % (head.split("(")[0], span.count(head)))
+            return 0
+    if span.count(TICK2_MOTIONNEW_PASS_UNITS_FIRST) != 1 or span.count(TICK2_MOTIONNEW_PASS_UNITS_AFTER) != 1:
+        check_fail("psp_fixups: TICK2 motionnew pass: the unit parts' first line (%d) or the intent's comment after them "
+                   "(%d) isn't in the span once" % (span.count(TICK2_MOTIONNEW_PASS_UNITS_FIRST),
+                                                    span.count(TICK2_MOTIONNEW_PASS_UNITS_AFTER)))
+        return 0
+    units = span[span.index(TICK2_MOTIONNEW_PASS_UNITS_FIRST):span.index(TICK2_MOTIONNEW_PASS_UNITS_AFTER)]
+    if not units.endswith("\n\t}\n"):
+        check_fail("psp_fixups: TICK2 motionnew pass: the unit parts don't end with the bench fill loop's closing brace")
+        return 0
+    if span.count(TICK2_MOTIONNEW_PASS_SETTLE_FIRST) != 1 or span.count(TICK2_MOTIONNEW_PASS_SETTLE_LAST) != 1:
+        check_fail("psp_fixups: TICK2 motionnew pass: the settle's first line (%d) or the list's emptying (%d) isn't in "
+                   "the span once" % (span.count(TICK2_MOTIONNEW_PASS_SETTLE_FIRST),
+                                      span.count(TICK2_MOTIONNEW_PASS_SETTLE_LAST)))
+        return 0
+    settle_at = span.index(TICK2_MOTIONNEW_PASS_SETTLE_FIRST)
+    if settle_at < span.index(TICK2_MOTIONNEW_PASS_UNITS_AFTER):
+        check_fail("psp_fixups: TICK2 motionnew pass: the settle comes before the unit parts in the span")
+        return 0
+    settle = span[settle_at:span.index(TICK2_MOTIONNEW_PASS_SETTLE_LAST, settle_at) + len(TICK2_MOTIONNEW_PASS_SETTLE_LAST)]
+    o = (o[:start] + TICK2_MOTIONNEW_PASS_HEAD + units + TICK2_MOTIONNEW_PASS_AT + settle + TICK2_MOTIONNEW_PASS_TAIL +
+         o[end:])
+    # 4. the biped's entry
+    if t.count(TICK2_MOTIONNEW_PASS_ENTRY_OLD) != 1 or t.count(TICK2_MOTIONNEW_PASS_ENTRY_AT) != 1:
+        check_fail("psp_fixups: TICK2 motionnew pass: object_types.c's biped entry line (%d) or its definition's line (%d) "
+                   "isn't there once" % (t.count(TICK2_MOTIONNEW_PASS_ENTRY_OLD), t.count(TICK2_MOTIONNEW_PASS_ENTRY_AT)))
+        return 0
+    t = t.replace(TICK2_MOTIONNEW_PASS_ENTRY_OLD, TICK2_MOTIONNEW_PASS_ENTRY)
+    t = t.replace(TICK2_MOTIONNEW_PASS_ENTRY_AT, TICK2_MOTIONNEW_PASS_ENTRY_DECL + TICK2_MOTIONNEW_PASS_ENTRY_AT)
+    # the code, comments out, names none of the boundary's or the engine's run anymore
+    left = sorted(set(re.findall(TICK2_MOTIONNEW_PASS_LEFT, tick2_posenew_code_only(o))))
+    if left:
+        check_fail("psp_fixups: TICK2 motionnew pass: objects.c's code still names %s" % ", ".join(left))
+        return 0
+    if re.search(r"\bbiped_update\b", tick2_posenew_code_only(t)):
+        check_fail("psp_fixups: TICK2 motionnew pass: object_types.c's code still names biped_update")
+        return 0
+    if not CHECK_ONLY:
+        open(objects_c, "w", errors="surrogateescape").write(o)
+        open(object_types_c, "w", errors="surrogateescape").write(t)
+    print("psp_fixups: TICK2 motionnew (task 5, the pass): objects.c's boundary is the staged list's four "
+          "(store_biped_units, _at, _update, _settle), the biped's datum_update store_motion_update")
+    return 1
+tick2_motionnew_pass_cut(TREE)
 
 # PSP_TICK2_MOTIONNEW=1 while step 3 is being written: every piece's cut above has run (so a form check exercises
 # them), and the build refuses here, naming the pieces in, so no run reads a half-written form as task 5's. It goes
