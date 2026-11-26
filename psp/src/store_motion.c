@@ -57,9 +57,12 @@ Built with PSP_TICK2_MOTIONNEW=1 (psp_build.py), as bipeds.c is.
 #include "game/game_globals.h"
 #include "game/player_rumble.h" /* M's helpers: rumble_player_impulse, struct rumble_definition (bipeds.c 295) */
 #include "game/players.h"
+#include "interface/first_person_weapons.h" /* M's tail: first_person_weapon_message_from_unit (bipeds.c 297) */
+#include "items/weapons.h" /* M's tail: weapon_prevents_melee_attack, weapon_stop_reload, weapon_get_first_person_animation_time and the melee's enums (bipeds.c 298) */
 #include "models/model_animation_definitions.h"
 #include "models/model_definitions.h"
 #include "objects/damage.h" /* M's helpers: damage_data_new, object_cause_damage, struct damage_data (bipeds.c 301) */
+#include "units/biped_limp_noodle.h" /* M's dead: biped_limp_noodle_relax_nodes_onto_environment (bipeds.c 302) */
 #include "physics/collision_bsp.h" /* M's physics tail: collision_surface_edge_ring_continues, collision_bsp_valid_surface_index (bipeds.c 308) */
 #include "physics/collision_bsp_definitions.h" /* PSP_DESIGNATOR (bipeds.c 239) */
 #include "physics/collision_debug.h" /* collision_debug_repeat and the rest (bipeds.c 310) */
@@ -219,6 +222,7 @@ tick2_motionnew_helpers_cut, and store_motion.h declares them; helpers only bipe
 list and come here, rewritten as I's own. */
 
 extern boolean debug_biped_skip_update, rider_ejection; /* bipeds.c 633, 636 */
+extern boolean debug_biped_limp_body_disable;            /* bipeds.c 509: M's dead tests it, as biped_update_dead did */
 real network_distributed_rider_ejection_up(void);        /* port: network_distributed.c (as bipeds.c 378) */
 extern const long psp_datum_biped_bytes;                 /* units.c (FIXES_BSPR): the datum's size, its tail after */
 extern void *const *psp_bspr_datum_at;                   /* collision_bsp.c (FIXES_BSPR): the turn's owner */
@@ -2029,6 +2033,13 @@ enum
 	_material_effect_biped_jump_land,
 };
 
+/* bipeds.c's melee action enum (its constants block at 392-395 in the ship form at ff2bb9fb), which store_motion.h's
+   held text doesn't reach: biped_update's tail names _unit_animation_action_melee */
+enum
+{
+	_unit_animation_action_melee = 7,
+};
+
 /* biped_make_footstep (bipeds.c 2276-2311 in the ship form at ff2bb9fb), not on tools/tick2_deleted.txt yet, but
    every caller is (biped_jump, biped_try_to_make_footsteps, biped_update_landing, biped_update_slipping). The same
    body; the calls between the six helpers are M's names */
@@ -2617,12 +2628,520 @@ static void store_motion_moved(long biped_index, struct biped_datum *biped, stru
 	return;
 }
 
-/* biped_update's tail: with moved, from the post-moving verify (5178) through dead/air/land/slip, the melee,
-   footsteps, falling danger and the discard (5264) and on; without (a rider, stop 2), from 5273 alone: then
-   unit_update_animation with the animation, biped_jump on 1, the idle ticks and the post-update verify (5288). The
-   biped and definition are the held pair. The next pieces' (the limp body first: biped_update_dead calls it) */
+/* biped_apply_rotation (bipeds.c 1399-1425 in the ship form at ff2bb9fb), on the delete list: only biped_update_dead
+   and _airborne called it. The same body */
+static void store_motion_rotation(
+	long biped_index)
+{
+	struct biped_datum *biped = biped_get(biped_index);
+	real_vector3d axis = biped->object.root->angular_velocity;
+	real angle = normalize3d(&axis);
+	real cosine = (real)cos(angle);
+	real sine = (real)sin(angle);
+
+	rotate_vector_about_axis(&biped->object.root->forward, &axis, sine, cosine);
+	normalize3d(&biped->object.root->forward);
+	{
+		real_vector3d rotated_up = biped->object.root->up;
+		real_vector3d left;
+
+		rotate_vector_about_axis(&rotated_up, &axis, sine, cosine);
+		cross_product3d(&biped->object.root->forward, &rotated_up, &left);
+		cross_product3d(&left, &biped->object.root->forward, &biped->object.root->up);
+		if (normalize3d(&biped->object.root->up)==0.f)
+		{
+			biped->object.root->forward = *global_forward3d;
+			biped->object.root->up = *global_up3d;
+		}
+	}
+
+	return;
+}
+
+/* biped_falling_danger (bipeds.c 1989-2048 in the ship form at ff2bb9fb), on the delete list: only biped_update's
+   tail called it. The same body; the held pair's lookups and FIXES_UNITHOIST's check go (the pair is always passed,
+   never NULL, so it needs no lookup); PSP_BMS(biped, X) is biped->X; and the window wrapper (2043) goes, its call
+   bare */
+static void store_motion_falling_danger(
+	long biped_index,
+	struct biped_datum *biped,
+	struct biped_definition *definition)
+{
+	if (!TEST_FLAG(biped->object.damage_flags, _object_dead_bit) &&
+		!(definition->biped.flags &
+			(FLAG(_biped_flying_bit) | FLAG(_biped_immune_to_falling_damage_bit))) &&
+		!TEST_FLAG(biped->unit.flags, _unit_no_falling_damage_bit) &&
+		biped->unit.actor_index!=NONE &&
+		(*tick2_unit_anim_of(biped->object.root)).state!=_unit_state_ai_impulse)
+	{
+		long game_time = game_time_get();
+
+		if ((*tick2_unit_bip2_of(biped->object.root)).airborne_ticks>30 &&
+			((*tick2_unit_bip3_of(biped->object.root)).last_falling_communication_time==NONE ||
+			(*tick2_unit_bip3_of(biped->object.root)).last_falling_communication_time+15<game_time))
+		{
+			struct game_globals_falling_damage *falling_damage = TAG_BLOCK_GET_ELEMENT(
+				&scenario_get_game_globals()->falling_damage,
+				0,
+				struct game_globals_falling_damage);
+			boolean dangerous = TRUE;
+			real_point3d ground_point;
+
+			(*tick2_unit_bip3_of(biped->object.root)).last_falling_communication_time = game_time;
+			if (biped_find_ground_surface(
+				biped_index,
+				global_down3d,
+				6.f,
+				&ground_point,
+				NULL)!=NONE)
+			{
+				real_point3d origin;
+
+				object_get_origin(biped_index, &origin);
+				if (biped->object.root->translational_velocity.k>0.f ||
+					(origin.z-ground_point.z)*global_gravity*2.f +
+					biped->object.root->translational_velocity.k*
+					biped->object.root->translational_velocity.k <
+					falling_damage->runtime_maximum_damage_velocity*
+					falling_damage->runtime_maximum_damage_velocity)
+				{
+					dangerous = FALSE;
+				}
+			}
+
+			if (dangerous)
+				unit_scream(biped_index, _unit_scream_falling);
+		}
+	}
+
+	return;
+}
+
+/* biped_update_dead (bipeds.c 2228-2274 in the ship form at ff2bb9fb), on the delete list: only biped_update's tail
+   called it. The same body; the held pair's lookups and FIXES_UNITHOIST's check go (the pair is always passed, never
+   NULL); PSP_BMS(biped, X) is biped->X; the window wrapper (2245) goes, its call bare, and that call keeps the limp
+   noodle's engine name until the limp piece, which retargets it; biped_apply_rotation (2256) is store_motion_rotation;
+   and biped_snap_facing (2265) is biped_snap_facing_with on the pair */
+static void store_motion_dead(
+	long biped_index,
+	struct biped_datum *biped,
+	struct biped_definition *definition,
+	struct unit_animation_update_data *animation)
+{
+	if (TEST_FLAG(biped->biped.flags, _biped_limp_body_physics_active_bit) &&
+		(*tick2_unit_bip2_of(biped->object.root)).limp_body_current_relaxation_iterations <
+			(*tick2_unit_bip2_of(biped->object.root)).limp_body_max_relaxation_iterations)
+	{
+		if (!debug_biped_limp_body_disable)
+			biped_limp_noodle_relax_nodes_onto_environment(biped_index);
+		biped_verify_object_vectors(biped_index, "post-limp-noodle");
+		animation->crouching = FALSE;
+
+		return;
+	}
+
+	if ((*tick2_unit_bip2_of(biped->object.root)).airborne_ticks>=3 &&
+		!TEST_FLAG(definition->biped.flags, _biped_has_no_dying_airborne_bit))
+	{
+		if ((*tick2_unit_anim_of(biped->object.root)).state==_unit_state_dying_airborne)
+			store_motion_rotation(biped_index);
+		animation->state_desired = _unit_state_dying_airborne;
+		biped_verify_object_vectors(biped_index, "post-dying-airborne");
+	}
+	else
+	{
+		if ((*tick2_unit_anim_of(biped->object.root)).state==_unit_state_dying_airborne)
+		{
+			(*tick2_unit_bip2_of(biped->object.root)).bank = 0.f;
+			biped_snap_facing_with(biped_index, biped, definition);
+		}
+		animation->state_desired = _unit_state_dying;
+		biped_verify_object_vectors(biped_index, "post-dying");
+	}
+
+	animation->crouching = FALSE;
+
+	return;
+}
+
+/* biped_try_to_make_footsteps (bipeds.c 2313-2408 in the ship form at ff2bb9fb), on the delete list: only
+   biped_update's tail called it. The same body; the held pair's lookup, FIXES_UNITHOIST's check and the definition's
+   lookup go (the pair is always passed, never NULL); biped_make_footstep (2358, 2359, 2376, 2391, 2392) is
+   store_motion_footstep. Its jump to no_footstep (2374, the label 2383) is the engine's as it is */
+static void store_motion_footsteps(
+	long biped_index,
+	struct biped_datum *biped)
+{
+	boolean air_contact;
+	boolean moving;
+
+	moving = FALSE;
+	air_contact = FALSE;
+
+	switch ((*tick2_unit_anim_of(biped->object.root)).state)
+	{
+	case _unit_state_turn_left:
+	case _unit_state_turn_right:
+		air_contact = TRUE;
+		break;
+
+	case _unit_state_move_front:
+	case _unit_state_move_back:
+	case _unit_state_move_left:
+	case _unit_state_move_right:
+		if (magnitude_squared3d(&(*tick2_unit_ctl_of(biped->object.root)).throttle)>0.25f)
+			moving = TRUE;
+		break;
+	}
+
+	if ((*tick2_anim_of(biped->object.root)).state.index!=NONE)
+	{
+		struct animation_graph *animation_graph = animation_graph_definition_get(
+			(*tick2_anim_of(biped->object.root)).animation_graph_index);
+		struct animation *animation = TAG_BLOCK_GET_ELEMENT(
+			&animation_graph->animations,
+			(*tick2_anim_of(biped->object.root)).state.index,
+			struct animation);
+
+		if (air_contact)
+		{
+			if ((*tick2_anim_of(biped->object.root)).state.frame_index==0)
+			{
+				store_motion_footstep(biped_index, _material_effect_biped_shuffle, 0);
+				store_motion_footstep(biped_index, _material_effect_biped_shuffle, 1);
+			}
+		}
+		else if (moving &&
+			(animation->private_left_foot_frame_index ||
+			animation->private_right_foot_frame_index))
+		{
+			short frame_index = (*tick2_anim_of(biped->object.root)).state.frame_index;
+			boolean right_foot;
+
+			if (frame_index==animation->private_left_foot_frame_index)
+				right_foot = FALSE;
+			else if (frame_index==animation->private_right_foot_frame_index)
+				right_foot = TRUE;
+			else
+				goto no_footstep;
+
+			store_motion_footstep(
+				biped_index,
+				(*tick2_unit_anim_of(biped->object.root)).base_seat_index==_unit_base_seat_stand,
+				right_foot!=FALSE);
+		}
+	}
+
+no_footstep:
+	switch ((*tick2_unit_bip2_of(biped->object.root)).state)
+	{
+	case biped_state_idle:
+		if ((*tick2_unit_bip2_of(biped->object.root)).stop_ticks>0)
+		{
+			if (++(*tick2_unit_bip2_of(biped->object.root)).stop_ticks>3)
+			{
+				store_motion_footstep(biped_index, _material_effect_biped_shuffle, 0);
+				store_motion_footstep(biped_index, _material_effect_biped_shuffle, 1);
+				(*tick2_unit_bip2_of(biped->object.root)).stop_ticks = 0;
+			}
+		}
+		break;
+
+	case biped_state_moving:
+		(*tick2_unit_bip2_of(biped->object.root)).stop_ticks = 1;
+		break;
+
+	default:
+		(*tick2_unit_bip2_of(biped->object.root)).stop_ticks = 0;
+		break;
+	}
+
+	return;
+}
+
+/* biped_update_airborne (bipeds.c 2410-2478 in the ship form at ff2bb9fb), on the delete list: only biped_update's
+   tail called it. The same body; the held pair's lookups and FIXES_UNITHOIST's check go (the pair is always passed,
+   never NULL); PSP_BMS(biped, X) is biped->X; biped_apply_rotation (2456) is store_motion_rotation; its jump to
+   axis_ready (2441, the label 2448) is the engine's as it is */
+static void store_motion_airborne(
+	long biped_index,
+	struct biped_datum *biped,
+	struct biped_definition *definition,
+	struct unit_animation_update_data *animation)
+{
+	boolean flying = FALSE;
+
+	if (biped_flying_through_air(biped_index))
+	{
+		flying = TRUE;
+		if (TEST_FLAG(definition->biped.flags, _biped_rotate_while_airborne_bit))
+		{
+			if ((*tick2_unit_anim_of(biped->object.root)).state!=_unit_state_melee_airborne &&
+				(*tick2_unit_anim_of(biped->object.root)).state!=_unit_state_leap_melee)
+			{
+				real impulse = real_seed_random_range(
+					get_global_random_seed_address(),
+					0.052359879f,
+					0.08726646f);
+				real_vector3d axis;
+
+				if (biped->object.root->up.k<0.8f)
+				{
+					cross_product3d(&biped->object.root->up, global_up3d, &axis);
+					if (normalize3d(&axis)>0.f)
+						goto axis_ready;
+				}
+
+				{
+					vector3d_from_angle(&axis, real_random_range(0.f, 2.f*_pi));
+				}
+
+			axis_ready:
+				point_from_line3d(
+					(real_point3d *)&biped->object.root->angular_velocity,
+					&axis,
+					impulse,
+					(real_point3d *)&biped->object.root->angular_velocity);
+			}
+
+			store_motion_rotation(biped_index);
+		}
+	}
+
+	match_assert(
+		"c:\\halo\\SOURCE\\units\\bipeds.c",
+		2687,
+		TEST_FLAG(biped->biped.flags, _biped_airborne_bit));
+
+	if ((*tick2_unit_anim_of(biped->object.root)).state==_unit_state_leap_start ||
+		(*tick2_unit_anim_of(biped->object.root)).state==_unit_state_leap_airborne)
+	{
+		animation->state_desired = _unit_state_leap_airborne;
+	}
+	else if ((*tick2_unit_anim_of(biped->object.root)).state==_unit_state_airborne || flying)
+	{
+		animation->state_desired = _unit_state_airborne;
+	}
+
+	biped_verify_object_vectors(biped_index, "post-airborne");
+
+	return;
+}
+
+/* biped_update_landing (bipeds.c 2480-2512 in the ship form at ff2bb9fb), on the delete list: only biped_update's
+   tail called it. The same body; the held pair's lookup, FIXES_UNITHOIST's check and the definition's lookup go (the
+   pair is always passed, never NULL); and biped_make_footstep (2501, 2502) is store_motion_footstep */
+static void store_motion_landed(
+	long biped_index,
+	struct biped_datum *biped,
+	struct unit_animation_update_data *animation)
+{
+	if (++(*tick2_unit_bip2_of(biped->object.root)).landing_recovery_counter>=(*tick2_unit_bip2_of(biped->object.root)).landing_recovery_time)
+		(*tick2_unit_bip2_of(biped->object.root)).landing = NONE;
+
+	if (!cinematic_in_progress() &&
+		((*tick2_unit_bip2_of(biped->object.root)).landing_recovery_counter==2 ||
+		((*tick2_unit_bip2_of(biped->object.root)).landing==NONE &&
+		(*tick2_unit_bip2_of(biped->object.root)).landing_recovery_time<2)))
+	{
+		store_motion_footstep(biped_index, _material_effect_biped_jump_land, 0);
+		store_motion_footstep(biped_index, _material_effect_biped_jump_land, 1);
+	}
+
+	animation->state_desired = (*tick2_unit_bip2_of(biped->object.root)).landing==1
+		? _unit_state_land_hard
+		: _unit_state_land_soft;
+
+	biped_verify_object_vectors(biped_index, "post-landing");
+
+	return;
+}
+
+/* biped_update_slipping (bipeds.c 2514-2537 in the ship form at ff2bb9fb), on the delete list: only biped_update's
+   tail called it. The same body; the held pair's lookup, FIXES_UNITHOIST's check and the definition's lookup go (the
+   pair is always passed, never NULL); and biped_make_footstep (2530, 2531) is store_motion_footstep */
+static void store_motion_slipping(
+	long biped_index,
+	struct biped_datum *biped,
+	struct unit_animation_update_data *animation)
+{
+	if ((*tick2_unit_bip2_of(biped->object.root)).slipping_ticks>3 &&
+		magnitude_squared3d(&biped->object.root->translational_velocity)>MINIMUM_SLIPPING_FOOTSTEP_VELOCITY_SQUARED)
+	{
+		store_motion_footstep(biped_index, _material_effect_biped_sliding, 0);
+		store_motion_footstep(biped_index, _material_effect_biped_sliding, 1);
+	}
+
+	biped_verify_object_vectors(biped_index, "post-slipping");
+
+	return;
+}
+
+/* biped_check_discard (bipeds.c 4856-4896 in the ship form at ff2bb9fb), on the delete list: only biped_update's
+   tail called it. The same body; the held pair's lookup and FIXES_UNITHOIST's check go (the pair is always passed,
+   never NULL); PSP_BMS(biped, X) is biped->X; and the window wrapper (4892) goes, its call bare */
+static boolean store_motion_discard(
+	long biped_index,
+	struct biped_datum *biped)
+{
+	/* port: not the host's biped on a client, which the host erases: the
+	delete was refused, and logged as done every tick as it fell */
+	if (!game_engine_running() &&
+		(TEST_FLAG(biped->object.flags, _object_outside_of_map_bit) ||
+		biped->object.root->location.cluster_index==NONE) &&
+		biped->object.root->position.z<-2000.f &&
+		network_objects_may_delete(biped_index))
+	{
+		long actor_index = biped->unit.swarm_actor_index;
+
+		if (actor_index==NONE)
+			actor_index = biped->unit.actor_index;
+
+		error(
+			_error_silent,
+			"WARNING: biped %s (%s) is in a bad place (%.1f %.1f %.1f), erasing",
+			tag_name_strip_path(tag_get_name(biped->definition_index)),
+			ai_debug_describe_actor(
+				actor_index,
+				biped_index,
+				TRUE,
+				temporary,
+				256),
+			biped->object.root->position.x,
+			biped->object.root->position.y,
+			biped->object.root->position.z);
+		object_delete(biped_index);
+	}
+
+	return FALSE;
+}
+
+/* biped_update's tail: biped_update from the post-moving verify to the post-update verify (5052-5138 and 5149-5162 in
+   the ship form at ff2bb9fb; the old comment's 5178-5288 were another form's), on M's animation record: when moved
+   (stop 1, or the whole update's build reached the move), dead/air/land/slip, the player's melee, the footsteps, the
+   falling danger and the discard; then, always, the animation, the jump on its 1, the idle ticks and the verify. The
+   biped and definition are the held pair. moved is 0 for a rider (stop 2: the engine's vehicle branch never reaches
+   5052). The engine's tests, float expressions and order are kept as they are, so the game computes bit-for-bit the
+   same values. Left out: the engine's two labels and the pass's stops (5139-5148: the else's brace, bipedstage3's stop
+   at the tail, psp_bs3_resume_tail and psp_bs3_resume = 0) and 5163-5175 (psp_bs3_out, psp_bms_stop, FIXES_BSPR's
+   put-back, which store_motion_owner_put is, profile_exit and return TRUE): M's driver holds them.
+   Renamed: the hoist's lookups (5062, 5073, 5076, 5085, 5100, 5105, 5106, 5112, 5113, 5114, 5123, 5124, 5125, 5131,
+   5133), each looked up once into control and line2 as store_intent_moving looks its line2 up: nothing in the range
+   moves a record; PSP_BMS(biped, X) and PSP_BMSW(biped, X), the datum's own field under PSP_TICK2_ROOT
+   (psp_bipedmove.h 37-40, 62-65), biped->X; the window wrappers (5121, 5132), whose calls stay bare, as the window
+   never goes live under ROOT; the HALO_GAME_BROWSER block (5091-5096), never defined on the PSP; &animation, M's
+   record's, passed as a pointer (5149); and the eight calls take M's names and parameters: biped_update_dead,
+   biped_update_airborne, biped_update_landing, biped_update_slipping, biped_try_to_make_footsteps,
+   biped_falling_danger, biped_check_discard and biped_jump are store_motion_dead, _airborne, _landed, _slipping,
+   _footsteps, _falling_danger, _discard and _jump. store_motion_from calls it */
 static void store_motion_tail(long biped_index, struct biped_datum *biped, struct biped_definition *definition,
-	struct unit_animation_update_data *animation, int moved);
+	struct unit_animation_update_data *animation, int moved)
+{
+	struct tick2_unit_ctl *control = tick2_unit_ctl_of(biped->object.root);
+	struct tick2_unit_bip2 *line2 = tick2_unit_bip2_of(biped->object.root);
+
+	if (moved)
+	{
+		biped_verify_object_vectors(biped_index, "post-moving");
+
+		if (TEST_FLAG(biped->object.damage_flags, _object_dead_bit))
+		{
+			store_motion_dead(biped_index, biped, definition, animation);
+		}
+		else if (TEST_FLAG(biped->biped.flags, _biped_airborne_bit))
+		{
+			store_motion_airborne(biped_index, biped, definition, animation);
+		}
+		else if (line2->landing!=NONE)
+		{
+			store_motion_landed(biped_index, biped, animation);
+		}
+		else if (TEST_FLAG(biped->biped.flags, _biped_slipping_bit))
+		{
+			store_motion_slipping(biped_index, biped, animation);
+		}
+
+		biped_verify_object_vectors(biped_index, "post-dead/air/land/slip");
+
+		if (!line2->player_melee_ticks)
+		{
+			if (biped->unit.player_index!=NONE &&
+				TEST_FLAG(control->control_flags, _unit_control_use_equipment_bit))
+			{
+				long weapon_index = unit_inventory_get_weapon(
+					biped_index,
+					unit_get(biped_index)->unit.current_weapon_index);
+
+				/* with no weapon, weapon_prevents_melee_attack(NONE) is TRUE:
+				an unarmed player cannot melee, as in the retail game */
+				if (!weapon_prevents_melee_attack(weapon_index) &&
+					control->current_zoom_level==NONE)
+				{
+					short melee_speedup_ticks;
+
+					unit_animation_start_action(biped_index, _unit_animation_action_melee);
+					weapon_stop_reload(weapon_index);
+					first_person_weapon_message_from_unit(
+						biped_index,
+						_first_person_weapon_message_melee);
+					line2->player_melee_ticks = weapon_get_first_person_animation_time(
+						weapon_index,
+						_weapon_first_person_animation_time_frame_count,
+						_first_person_weapon_animation_melee,
+						NONE);
+					line2->player_melee_attack_tick = line2->player_melee_ticks -
+						weapon_get_first_person_animation_time(
+							weapon_index,
+							_weapon_first_person_animation_time_private_key_frame,
+							_first_person_weapon_animation_melee,
+							NONE);
+
+					melee_speedup_ticks = line2->player_melee_ticks >> 2;
+					line2->player_melee_ticks -= melee_speedup_ticks;
+					line2->player_melee_attack_tick -= melee_speedup_ticks;
+				}
+				/* port: Stubbs mode's melee, his hands (port/linux/game/stubbs_player.c) */
+				else if (stubbs_mode_active())
+				{
+					short ticks, attack_tick;
+
+					if (stubbs_player_melee_begin(biped_index, &ticks, &attack_tick))
+					{
+						line2->player_melee_ticks = (char)ticks;
+						line2->player_melee_attack_tick = (char)attack_tick;
+					}
+				}
+			}
+		}
+		else
+		{
+			if (line2->player_melee_ticks==line2->player_melee_attack_tick)
+				unit_cause_player_melee_damage(biped_index);
+			--line2->player_melee_ticks;
+		}
+
+		store_motion_footsteps(biped_index, biped);
+		store_motion_falling_danger(biped_index, biped, definition);
+		store_motion_discard(biped_index, biped);
+	}
+
+	if (unit_update_animation(biped_index, animation)==1)
+		store_motion_jump(biped_index);
+
+	if (TEST_FLAG(biped->object.damage_flags, _object_dead_bit) &&
+		TEST_FLAG(biped->object.flags, _object_at_rest_bit))
+	{
+		++biped->object.idle_ticks;
+	}
+	else
+	{
+		biped->object.idle_ticks = 0;
+	}
+
+	biped_verify_object_vectors(biped_index, "post-update");
+
+	return;
+}
 
 short store_motion_cur = -1; /* the pass's staged position for the biped it updates, -1 outside the pass */
 /* the spare entry (the table's 65th) is the whole update's: never mapped, never read by G, written and read in one
