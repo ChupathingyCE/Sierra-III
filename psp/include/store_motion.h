@@ -234,6 +234,12 @@ long biped_find_ground_surface(long biped_index, real_vector3d const *direction,
 void biped_get_physics_pill_with(long biped_index, struct biped_datum *biped, struct biped_definition *definition,
 	real_point3d *base, real *height, real *width);
 
+/* the limp body's start and stop (bipeds.c biped_start_ / _stop_limp_body_physics, the store's copies in
+   store_motion.c): for the four callers that stay (units.c 4372 and 10621, network_objects.c 852, biped_accelerate),
+   which the delete cut points here */
+void store_biped_limp_start(long biped_index);
+void store_biped_limp_stop(long biped_index);
+
 /* G (store_coll.c): staged biped k's gather from its entry. TRUE handled (gathered, or no gather wanted), FALSE no
    entry */
 int store_coll_gather_intent(short k);

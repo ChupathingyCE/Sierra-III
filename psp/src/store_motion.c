@@ -62,10 +62,10 @@ Built with PSP_TICK2_MOTIONNEW=1 (psp_build.py), as bipeds.c is.
 #include "models/model_animation_definitions.h"
 #include "models/model_definitions.h"
 #include "objects/damage.h" /* M's helpers: damage_data_new, object_cause_damage, struct damage_data (bipeds.c 301) */
-#include "units/biped_limp_noodle.h" /* M's dead: biped_limp_noodle_relax_nodes_onto_environment (bipeds.c 302) */
 #include "physics/collision_bsp.h" /* M's physics tail: collision_surface_edge_ring_continues, collision_bsp_valid_surface_index (bipeds.c 308) */
 #include "physics/collision_bsp_definitions.h" /* PSP_DESIGNATOR (bipeds.c 239) */
 #include "physics/collision_debug.h" /* collision_debug_repeat and the rest (bipeds.c 310) */
+#include "physics/collision_features.h" /* the limp body: struct collision_feature_list, collision_get_features_in_sphere, collision_test_sphere, collision_move_point (bipeds.c 311) */
 #include "physics/collision_models.h" /* _moving's tail: collision_model_instance_new, collision_model_test_vector (bipeds.c 312) */
 #include "physics/collision_usage.h" /* COLLISION_USER_PUSH and POP, COLLISION_USER_DEPTH, MAXIMUM_COLLISION_USER_STACK_DEPTH (bipeds.c 314) */
 #include "scenario/scenario.h"
@@ -2628,6 +2628,828 @@ static void store_motion_moved(long biped_index, struct biped_datum *biped, stru
 	return;
 }
 
+/* the limp body (bipeds.c biped_start_limp_body_physics and _stop_, and biped_limp_noodle.c's six), on the
+   delete list: only biped_accelerate, units.c (4372, 10621) and network_objects.c (852) call the start and the stop,
+   and only biped_update_dead called the relax (bipeds.c 2245). The same text with the store's names, because the
+   delete cut poisons the engine's in objects.h, which this file includes, and the noodle's
+   validate_real_vector3d_axes3 is only the noodle's (static here as store_limp_validate_axes3, so it never meets
+   the engine's). The start and the stop stay public in store_motion.h for those four callers, which the delete cut
+   points here; store_limp_relax is store_motion_dead's. point_from_line3d is real_math.h's inline here as in the
+   noodle's own unit: neither defines real_math.h's external-point-from-line3d switch, so the file adds no define */
+/* ---- the limp body, moved from biped_limp_noodle.c 87-855 and bipeds.c 724-764 (the ship form at ff2bb9fb): begin ---- */
+/* ---------- constants */
+
+enum
+{
+	_joint_type_ball_and_socket = 0,
+	_joint_type_hinge,
+	_joint_type_no_movement,
+	NUMBER_OF_NODE_BLOCK_FLAGS,
+};
+
+/* ---------- macros */
+
+
+
+/* ---------- structures */
+
+struct animation_graph_node
+{
+	char name[TAG_STRING_LENGTH + 1];
+	short next_sibling_node_index;
+	short first_child_node_index;
+	short parent_node_index;
+	word pad;
+	unsigned long flags;
+	real_vector3d base_vector;
+	real range;
+	long pad1;
+};
+
+/* ---------- prototypes */
+
+static boolean store_limp_valid_joint_rotation(
+	long biped_index,
+	long node_index,
+	real_matrix4x3 *node_matrices,
+	real_point3d *current_world_position,
+	real_point3d const *new_world_position,
+	unsigned long *moved_node_flags);
+static void store_limp_move_relax_and_constrain_positions(
+	long biped_index,
+	real_matrix4x3 *node_matrices);
+static void store_limp_adjust_orientations(
+	long biped_index,
+	real_matrix4x3 *node_matrices,
+	long node_count,
+	real_point3d const *last_positions);
+static boolean store_limp_nodes_valid(
+	long biped_index,
+	struct animation_graph const *animation_graph);
+/* ---------- globals */
+
+static struct collision_feature_list features;
+static real_point3d last_positions[MAXIMUM_NODES_PER_ANIMATION];
+
+/* ---------- public code */
+
+static long store_limp_max_iterations(
+	long biped_index)
+{
+	return 20;
+}
+
+/* ---------- private code */
+
+static boolean store_limp_valid_joint_rotation(
+	long biped_index,
+	long node_index,
+	real_matrix4x3 *node_matrices,
+	real_point3d *current_world_position,
+	real_point3d const *new_world_position,
+	unsigned long *moved_node_flags)
+{
+	boolean moved = FALSE;
+	struct biped_datum *biped = biped_get(biped_index);
+	struct biped_definition *definition = biped_definition_get(biped->definition_index);
+	struct animation_graph *animation_graph = animation_graph_definition_get(
+		definition->object.animation_graph.index);
+	struct animation_graph_node *node = TAG_BLOCK_GET_ELEMENT(
+		&animation_graph->nodes,
+		node_index,
+		struct animation_graph_node);
+	struct animation_graph_node *parent_node = TAG_BLOCK_GET_ELEMENT(
+		&animation_graph->nodes,
+		node->parent_node_index,
+		struct animation_graph_node);
+	real collision_radius = animation_graph->limp_body_node_collision_radius;
+
+	if (realcmp(collision_radius, 0.f) ||
+		collision_radius < 0.f ||
+		collision_radius > 0.07f)
+	{
+		collision_radius = 0.03f;
+	}
+
+	if (node->parent_node_index &&
+		!TEST_FLAG(parent_node->flags, _joint_type_no_movement))
+	{
+		real_vector3d current_direction;
+		real_vector3d desired_direction;
+		real_vector3d rotation_axis;
+		real rotation_cosine;
+
+		vector_from_points3d(
+			&node_matrices[node->parent_node_index].position,
+			&node_matrices[node_index].position,
+			&current_direction);
+		vector_from_points3d(
+			&node_matrices[node->parent_node_index].position,
+			new_world_position,
+			&desired_direction);
+		normalize3d(&current_direction);
+		normalize3d(&desired_direction);
+		cross_product3d(&current_direction, &desired_direction, &rotation_axis);
+		normalize3d(&rotation_axis);
+		rotation_cosine = dot_product3d(&current_direction, &desired_direction);
+
+		if (!realcmp(rotation_cosine, 1.f))
+		{
+			real rotation_angle = arccosine(rotation_cosine);
+			real_matrix4x3 parent_inverse;
+			real_matrix4x3 grandparent_inverse;
+			real_vector3d local_rotation_axis;
+			real_vector3d parent_axis;
+
+			matrix4x3_inverse(&node_matrices[node->parent_node_index], &parent_inverse);
+			matrix4x3_inverse(
+				&node_matrices[parent_node->parent_node_index],
+				&grandparent_inverse);
+			matrix4x3_transform_vector(
+				&parent_inverse,
+				&rotation_axis,
+				&local_rotation_axis);
+			parent_axis = node_matrices[node->parent_node_index].forward;
+			matrix4x3_transform_vector(
+				&grandparent_inverse,
+				&parent_axis,
+				&parent_axis);
+
+			if (TEST_FLAG(parent_node->flags, _joint_type_hinge))
+			{
+				real_vector3d plane_normal = node_matrices[node->parent_node_index].up;
+				real_plane3d plane;
+				real projection_distance;
+				real_point3d rotate_to_position;
+				real_vector3d rotate_to_direction;
+				real_vector3d local_rotate_to_direction;
+
+				plane3d_from_point_and_normal(
+					&plane,
+					&node_matrices[node->parent_node_index].position,
+					&plane_normal);
+				projection_distance =
+					plane3d_distance_to_point(&plane, new_world_position) * -1.f;
+				point_from_line3d(
+					new_world_position,
+					&plane_normal,
+					projection_distance,
+					&rotate_to_position);
+
+				vector_from_points3d(
+					&node_matrices[node->parent_node_index].position,
+					&rotate_to_position,
+					&rotate_to_direction);
+				normalize3d(&rotate_to_direction);
+				matrix4x3_transform_vector(
+					&parent_inverse,
+					&rotate_to_direction,
+					&local_rotate_to_direction);
+
+				if (!realcmp(dot_product3d(&parent_node->base_vector, &local_rotate_to_direction), 1.f))
+				{
+					BIT_VECTOR_SET_FLAG(moved_node_flags, node_index, TRUE);
+					if (current_world_position->z >= rotate_to_position.z &&
+						!collision_test_sphere(
+							&rotate_to_position,
+							collision_radius,
+							biped_index))
+					{
+						*current_world_position = rotate_to_position;
+					}
+					moved = TRUE;
+				}
+			}
+			else
+			{
+				real constraint_cosine;
+
+				rotate_vector_about_axis(
+					&parent_axis,
+					&local_rotation_axis,
+					sine(rotation_angle),
+					rotation_cosine);
+				constraint_cosine = dot_product3d(&parent_node->base_vector, &parent_axis);
+				if (!realcmp(constraint_cosine, 1.f) &&
+					fabs(arccosine(constraint_cosine)) < parent_node->range &&
+					current_world_position->z > new_world_position->z)
+				{
+					BIT_VECTOR_SET_FLAG(moved_node_flags, node_index, TRUE);
+					moved = TRUE;
+					*current_world_position = *new_world_position;
+				}
+			}
+		}
+	}
+
+	if ((TEST_FLAG(parent_node->flags, _joint_type_no_movement) || !moved) &&
+		BIT_VECTOR_TEST_FLAG(moved_node_flags, node->parent_node_index) &&
+		current_world_position->z > new_world_position->z)
+	{
+		BIT_VECTOR_SET_FLAG(moved_node_flags, node_index, TRUE);
+		*current_world_position = *new_world_position;
+		moved = TRUE;
+	}
+
+	return moved;
+}
+
+static void store_limp_move_relax_and_constrain_positions(
+	long biped_index,
+	real_matrix4x3 *node_matrices)
+{
+	struct biped_datum *biped = biped_get(biped_index);
+	struct biped_definition *definition = biped_definition_get(biped->definition_index);
+	struct animation_graph *animation_graph = animation_graph_definition_get(
+		definition->object.animation_graph.index);
+	real collision_radius = animation_graph->limp_body_node_collision_radius;
+	byte total_iterations;
+	byte current_iteration;
+	real relaxation_fraction;
+	unsigned long moved_node_flags[BIT_VECTOR_SIZE_IN_LONGS(MAXIMUM_NODES_PER_ANIMATION)];
+	short node_queue[MAXIMUM_NODES_PER_ANIMATION];
+	real_vector3d velocity;
+	struct collision_plane collision_planes[10];
+	long iteration;
+
+	match_assert(
+		"c:\\halo\\SOURCE\\units\\biped_limp_noodle.c",
+		319,
+		COLLISION_USER_DEPTH < MAXIMUM_COLLISION_USER_STACK_DEPTH);
+	COLLISION_USER_PUSH(_collision_user_limp_body_physics);
+
+	if (realcmp(collision_radius, 0.f) ||
+		collision_radius < 0.f ||
+		collision_radius > 0.07f)
+	{
+		collision_radius = 0.03f;
+	}
+
+	total_iterations = (*tick2_unit_bip2_of(biped->object.root)).limp_body_max_relaxation_iterations;
+	if (total_iterations <= 0 || total_iterations >= 30)
+		return;
+
+	current_iteration = (*tick2_unit_bip2_of(biped->object.root)).limp_body_current_relaxation_iterations;
+	relaxation_fraction =
+		(real)(current_iteration + 1) /
+		(real)total_iterations;
+	if (realcmp(relaxation_fraction, 0.f))
+		return;
+	if (current_iteration >= total_iterations)
+		goto collision_user_end;
+
+	collision_get_features_in_sphere(
+		_collision_test_for_bipeds_dead_flags |
+			FLAG(_collision_test_ignore_invisible_surfaces_bit),
+		&biped->object.root->position,
+		biped->object.root->bounding_sphere_radius + 0.0625f,
+		0.f,
+		collision_radius,
+		biped_index,
+		&features);
+	csmemset(moved_node_flags, 0, sizeof(moved_node_flags));
+
+	for (iteration = 0; iteration < 4; iteration++)
+	{
+		short queue_head = 0;
+		short queue_tail = 1;
+
+		node_queue[0] = 0;
+		do
+		{
+			short node_index = node_queue[queue_head++];
+			struct animation_graph_node *node = TAG_BLOCK_GET_ELEMENT(
+				&animation_graph->nodes,
+				node_index,
+				struct animation_graph_node);
+
+			if (node_index)
+			{
+				real_point3d *position;
+				real_point3d *parent_position;
+				real_vector3d segment;
+
+				set_real_vector3d(
+					&velocity,
+					0.f,
+					0.f,
+					relaxation_fraction * -0.032086615f);
+				position = &node_matrices[node_index].position;
+				parent_position = &node_matrices[node->parent_node_index].position;
+				vector_from_points3d(parent_position, position, &segment);
+
+				if (!iteration &&
+					!collision_test_sphere(
+						position,
+						collision_radius,
+						biped_index))
+				{
+					real_point3d moved_position;
+					real_vector3d moved_velocity;
+
+					collision_move_point(
+						position,
+						&velocity,
+						&features,
+						&moved_position,
+						&moved_velocity,
+						3,
+						collision_planes);
+					if (realcmp(moved_velocity.i, 0.f) &&
+						realcmp(moved_velocity.j, 0.f))
+					{
+						store_limp_valid_joint_rotation(
+							biped_index,
+							node_index,
+							node_matrices,
+							position,
+							&moved_position,
+							moved_node_flags);
+					}
+				}
+
+				{
+					real_point3d ray_origin;
+					struct collision_result collision;
+
+					vector_from_points3d(parent_position, position, &segment);
+					point_from_line3d(parent_position, &segment, -0.015f, &ray_origin);
+					scale_vector3d(&segment, 1.03f, &segment);
+
+					if (collision_test_vector(
+						_collision_test_for_bipeds_dead_flags |
+							FLAG(_collision_test_ignore_invisible_surfaces_bit),
+						&ray_origin,
+						&segment,
+						biped_index,
+						&collision))
+					{
+						boolean embedded[2];
+						real push_distance[2];
+						long endpoint_index;
+						long embedded_count;
+
+						embedded[0] = collision_test_sphere(
+							position,
+							0.03f,
+							biped_index);
+						embedded[1] = collision_test_sphere(
+							parent_position,
+							0.03f,
+							biped_index);
+						embedded_count = embedded[0] + embedded[1];
+
+						if (embedded_count)
+						{
+							if (embedded_count == 2)
+							{
+								for (endpoint_index = 0; endpoint_index < 2; endpoint_index++)
+								{
+									push_distance[endpoint_index] = vector_intersect_plane3d(
+										endpoint_index == 0 ? position : parent_position,
+										&collision.plane.n,
+										&collision.plane);
+									if (push_distance[endpoint_index] != 0.f)
+									{
+										push_distance[endpoint_index] +=
+											collision_radius * 2.5f;
+									}
+								}
+							}
+							else
+							{
+								for (endpoint_index = 0; endpoint_index < 2; endpoint_index++)
+								{
+									if (embedded[endpoint_index])
+									{
+										push_distance[endpoint_index] = vector_intersect_plane3d(
+											endpoint_index == 0 ? position : parent_position,
+											&collision.plane.n,
+											&collision.plane);
+										if (push_distance[endpoint_index] != 0.f)
+										{
+											push_distance[endpoint_index] +=
+												collision_radius * 2.5f;
+										}
+									}
+									else
+									{
+										push_distance[endpoint_index] = 0.f;
+									}
+								}
+							}
+
+							for (endpoint_index = 0; endpoint_index < 2; endpoint_index++)
+							{
+								if (!realcmp(push_distance[endpoint_index], 0.f))
+								{
+									point_from_line3d(
+										endpoint_index == 0 ? position : parent_position,
+										&collision.plane.n,
+										relaxation_fraction * push_distance[endpoint_index],
+										endpoint_index == 0 ? position : parent_position);
+								}
+							}
+						}
+					}
+				}
+
+				vector_from_points3d(parent_position, position, &segment);
+				{
+					struct model *model = model_definition_get(
+						definition->object.model.index);
+					struct model_node *model_node = TAG_BLOCK_GET_ELEMENT(
+						&model->nodes,
+						node_index,
+						struct model_node);
+					real rest_distance = model_node->node_distance_from_parent;
+					real distance = distance3d(position, parent_position);
+
+					if (!(rest_distance <= 0.f || rest_distance > 10.f) &&
+						distance >= 0.f &&
+						distance < 20.f &&
+						!realcmp(distance, 0.f))
+					{
+						if (!realcmp(rest_distance, 0.f) &&
+							rest_distance != distance &&
+							!realcmp(distance, 0.f))
+						{
+							real correction = (rest_distance - distance) / distance;
+
+							if (node->parent_node_index)
+							{
+								real half_correction = correction * 0.5f;
+
+								scale_vector3d(&segment, -half_correction, &velocity);
+								collision_move_point(
+									parent_position,
+									&velocity,
+									&features,
+									parent_position,
+									&velocity,
+									3,
+									collision_planes);
+								scale_vector3d(&segment, half_correction, &velocity);
+								collision_move_point(
+									position,
+									&velocity,
+									&features,
+									position,
+									&velocity,
+									3,
+									collision_planes);
+							}
+							else
+							{
+								scale_vector3d(&segment, correction, &velocity);
+								if (collision_test_sphere(
+									position,
+									collision_radius,
+									biped_index))
+								{
+									goto next_node;
+								}
+								collision_move_point(
+									position,
+									&velocity,
+									&features,
+									position,
+									&velocity,
+									3,
+									collision_planes);
+							}
+						}
+					}
+					else
+					{
+						/* port: no more than node_queue holds (a map's links,
+						which could go in a loop) */
+						if (node->next_sibling_node_index != NONE && queue_tail < (short)NUMBEROF(node_queue))
+							node_queue[queue_tail++] = node->next_sibling_node_index;
+						if (node->first_child_node_index != NONE && queue_tail < (short)NUMBEROF(node_queue))
+							node_queue[queue_tail++] = node->first_child_node_index;
+						continue;
+					}
+				}
+			}
+
+next_node:
+			/* port: no more than node_queue holds (a map's links, which could
+			go in a loop) */
+			if (node->next_sibling_node_index != NONE && queue_tail < (short)NUMBEROF(node_queue))
+				node_queue[queue_tail++] = node->next_sibling_node_index;
+			if (node->first_child_node_index != NONE && queue_tail < (short)NUMBEROF(node_queue))
+				node_queue[queue_tail++] = node->first_child_node_index;
+		}
+		while (queue_head != queue_tail);
+	}
+
+collision_user_end:
+	match_assert(
+		"c:\\halo\\SOURCE\\units\\biped_limp_noodle.c",
+		530,
+		COLLISION_USER_DEPTH > 1);
+	COLLISION_USER_POP();
+
+	return;
+}
+
+static void store_limp_validate_axes3(
+	real_vector3d *forward,
+	real_vector3d *left,
+	real_vector3d *up)
+{
+	match_assert("c:\\halo\\SOURCE\\units\\biped_limp_noodle.c", 535, forward);
+	match_assert("c:\\halo\\SOURCE\\units\\biped_limp_noodle.c", 535, left);
+	match_assert("c:\\halo\\SOURCE\\units\\biped_limp_noodle.c", 535, up);
+
+	if (normalize3d(forward) == 0.f)
+		*forward = *global_forward3d;
+	if (normalize3d(up) == 0.f)
+		*up = *global_up3d;
+
+	cross_product3d(up, forward, left);
+	if (normalize3d(left) == 0.f)
+		*left = *global_left3d;
+
+	cross_product3d(forward, left, up);
+	if (normalize3d(up) == 0.f)
+		*up = *global_up3d;
+
+	cross_product3d(up, forward, left);
+	if (normalize3d(left) == 0.f)
+		*left = *global_left3d;
+
+	return;
+}
+
+static void store_limp_adjust_orientations(
+	long biped_index,
+	real_matrix4x3 *node_matrices,
+	long node_count,
+	real_point3d const *last_positions)
+{
+	struct biped_datum *biped = biped_get(biped_index);
+	struct biped_definition *definition = biped_definition_get(biped->definition_index);
+	struct animation_graph *animation_graph = animation_graph_definition_get(
+		definition->object.animation_graph.index);
+	long node_index;
+
+	for (node_index = 0; node_index < animation_graph->nodes.count; node_index++)
+	{
+		struct animation_graph_node *node;
+		struct animation_graph_node *parent_node;
+		real_vector3d last_direction;
+		real_vector3d current_direction;
+		real_vector3d rotation_axis;
+		real rotation_cosine;
+		real rotation_angle;
+
+		if (!node_index)
+			continue;
+
+		node = TAG_BLOCK_GET_ELEMENT(
+			&animation_graph->nodes,
+			node_index,
+			struct animation_graph_node);
+		parent_node = TAG_BLOCK_GET_ELEMENT(
+			&animation_graph->nodes,
+			node->parent_node_index,
+			struct animation_graph_node);
+		if (TEST_FLAG(parent_node->flags, _joint_type_no_movement))
+			continue;
+
+		vector_from_points3d(
+			&last_positions[node->parent_node_index],
+			&last_positions[node_index],
+			&last_direction);
+		vector_from_points3d(
+			&node_matrices[node->parent_node_index].position,
+			&node_matrices[node_index].position,
+			&current_direction);
+		normalize3d(&last_direction);
+		normalize3d(&current_direction);
+		cross_product3d(&last_direction, &current_direction, &rotation_axis);
+		normalize3d(&rotation_axis);
+		rotation_cosine = dot_product3d(&current_direction, &last_direction);
+		if (fabs(rotation_cosine - 1.f) < _real_epsilon)
+			continue;
+
+		rotation_angle = arccosine(rotation_cosine);
+		if (fabs(rotation_angle) < _real_epsilon ||
+			!(fabs(rotation_angle) < 0.78539819f))
+		{
+			continue;
+		}
+
+		if (!valid_real_vector3d_axes3(
+			&node_matrices[node->parent_node_index].forward,
+			&node_matrices[node->parent_node_index].left,
+			&node_matrices[node->parent_node_index].up))
+		{
+			store_limp_validate_axes3(
+				&node_matrices[node->parent_node_index].forward,
+				&node_matrices[node->parent_node_index].left,
+				&node_matrices[node->parent_node_index].up);
+		}
+
+		rotate_vector_about_axis(
+			&node_matrices[node->parent_node_index].forward,
+			&rotation_axis,
+			sine(rotation_angle),
+			rotation_cosine);
+		rotate_vector_about_axis(
+			&node_matrices[node->parent_node_index].up,
+			&rotation_axis,
+			sine(rotation_angle),
+			rotation_cosine);
+		normalize3d(&node_matrices[node->parent_node_index].forward);
+		normalize3d(&node_matrices[node->parent_node_index].up);
+		cross_product3d(
+			&node_matrices[node->parent_node_index].up,
+			&node_matrices[node->parent_node_index].forward,
+			&node_matrices[node->parent_node_index].left);
+		normalize3d(&node_matrices[node->parent_node_index].left);
+
+		if (!valid_real_vector3d_axes3(
+			&node_matrices[node->parent_node_index].forward,
+			&node_matrices[node->parent_node_index].left,
+			&node_matrices[node->parent_node_index].up))
+		{
+			store_limp_validate_axes3(
+				&node_matrices[node->parent_node_index].forward,
+				&node_matrices[node->parent_node_index].left,
+				&node_matrices[node->parent_node_index].up);
+		}
+	}
+
+	return;
+}
+
+static boolean store_limp_relax(
+	long biped_index)
+{
+	struct biped_datum *biped = biped_get(biped_index);
+	struct biped_definition *definition = biped_definition_get(biped->definition_index);
+	struct animation_graph *animation_graph = animation_graph_definition_get(
+		definition->object.animation_graph.index);
+	struct object_datum *object = object_get(biped_index);
+#ifdef PSP_BOX_POSING
+	/* psp_fixups.py (FIXES_BOXPOSING, means B): the body reads and moves
+	every node: an owed one is made first (a pose owes nothing once dead, but
+	this tick's may be the last made alive) */
+	void psp_boxb_whole(long object_index);
+
+	psp_boxb_whole(biped_index);
+#endif
+	real_matrix4x3 *node_matrices = (real_matrix4x3 *)store_pose_limp_matrices(object->object.root);
+	boolean relaxation_complete =
+		(*tick2_unit_bip2_of(biped->object.root)).limp_body_current_relaxation_iterations >=
+		(*tick2_unit_bip2_of(biped->object.root)).limp_body_max_relaxation_iterations;
+
+	/* port: a graph whose nodes don't fit the biped is done relaxing (a
+	map's counts and links) */
+	if (!relaxation_complete &&
+		!store_limp_nodes_valid(biped_index, animation_graph))
+	{
+		relaxation_complete = TRUE;
+	}
+
+	if (!relaxation_complete)
+	{
+		long node_index;
+		/* port: the limp body poses the graph's nodes, in the biped's node
+		matrices, which are its model's. A Halo PC map's graph may have
+		more nodes than its model (beavercreek_rev_beta's cyborg's has 20,
+		its model 19), which Halo PC's engine posed past the matrices: such
+		a body is posed in a copy of them with the graph's every node, the
+		extra ones where their parents are, and the model's taken back */
+		long model_node_count = definition->object.model.index == NONE ? 1 :
+			model_definition_get(definition->object.model.index)->nodes.count;
+		real_matrix4x3 padded_matrices[MAXIMUM_NODES_PER_ANIMATION];
+		real_matrix4x3 *limp_matrices = node_matrices;
+
+		if (animation_graph->nodes.count > model_node_count &&
+			animation_graph->nodes.count <= MAXIMUM_NODES_PER_ANIMATION)
+		{
+			csmemcpy(padded_matrices, node_matrices, model_node_count * sizeof(real_matrix4x3));
+			for (node_index = model_node_count; node_index < animation_graph->nodes.count; node_index++)
+			{
+				short parent_index = TAG_BLOCK_GET_ELEMENT(&animation_graph->nodes, node_index,
+					struct animation_graph_node)->parent_node_index;
+
+				padded_matrices[node_index] = padded_matrices[parent_index >= 0 && parent_index < node_index ?
+					parent_index : 0];
+			}
+			limp_matrices = padded_matrices;
+		}
+
+		for (node_index = 0; node_index < animation_graph->nodes.count; node_index++)
+		{
+			last_positions[node_index] =
+				limp_matrices[node_index].position;
+		}
+
+		store_limp_move_relax_and_constrain_positions(biped_index, limp_matrices);
+		store_limp_adjust_orientations(
+			biped_index,
+			limp_matrices,
+			animation_graph->nodes.count,
+			last_positions);
+		if (limp_matrices != node_matrices)
+			csmemcpy(node_matrices, padded_matrices, model_node_count * sizeof(real_matrix4x3));
+
+		if ((*tick2_unit_bip2_of(biped->object.root)).limp_body_current_relaxation_iterations < CHAR_MAX)
+			(*tick2_unit_bip2_of(biped->object.root)).limp_body_current_relaxation_iterations++;
+	}
+
+	return relaxation_complete;
+}
+
+/* port: TRUE when the graph's nodes fit last_positions, node_queue and the
+biped's node matrices, and every link names one of them (a map's counts and
+indices). The relaxation walks them without checking. Released bipeds have at
+most 41 nodes, as many as their models, and no bad links. */
+static boolean store_limp_nodes_valid(
+	long biped_index,
+	struct animation_graph const *animation_graph)
+{
+	static boolean reported = FALSE;
+	struct object_datum *object = object_get(biped_index);
+	long node_count = animation_graph->nodes.count;
+	boolean valid = node_count > 0 &&
+		node_count <= MAXIMUM_NODES_PER_ANIMATION &&
+		node_count <= store_node_count(object->object.root);
+	long node_index;
+
+	for (node_index = 0; valid && node_index < node_count; node_index++)
+	{
+		struct animation_graph_node *node = TAG_BLOCK_GET_ELEMENT(
+			&animation_graph->nodes,
+			node_index,
+			struct animation_graph_node);
+
+		if ((node->next_sibling_node_index != NONE && !VALID_INDEX(node->next_sibling_node_index, node_count)) ||
+			(node->first_child_node_index != NONE && !VALID_INDEX(node->first_child_node_index, node_count)) ||
+			(node_index && !VALID_INDEX(node->parent_node_index, node_count)))
+		{
+			valid = FALSE;
+		}
+	}
+
+	if (!valid && !reported)
+	{
+		reported = TRUE;
+		error(_error_silent, "### ERROR %s has %ld animation nodes or a bad node link; its body doesn't relax",
+			tag_get_name(object->definition_index), node_count);
+	}
+
+	return valid;
+}
+
+void store_biped_limp_start(
+	long biped_index)
+{
+	struct biped_datum *biped = biped_get(biped_index);
+	boolean uses_limp_body_physics = TEST_FLAG(
+		biped_definition_get(biped->definition_index)->biped.flags,
+		_biped_uses_limp_body_physics_bit);
+
+	if (!debug_biped_limp_body_disable &&
+		uses_limp_body_physics &&
+		TEST_FLAG(biped->object.flags, _object_at_rest_bit) &&
+		!TEST_FLAG(biped->biped.flags, _biped_airborne_bit) &&
+		!TEST_FLAG(biped->biped.flags, _biped_limp_body_physics_active_bit))
+	{
+		(*tick2_unit_bip2_of(biped->object.root)).limp_body_current_relaxation_iterations = 0;
+		(*tick2_unit_bip2_of(biped->object.root)).limp_body_max_relaxation_iterations =
+			(byte)store_limp_max_iterations(biped_index);
+		SET_FLAG(biped->object.flags, _object_do_not_recompute_node_matrices_bit, TRUE);
+		SET_FLAG(biped->biped.flags, _biped_limp_body_physics_active_bit, TRUE);
+	}
+
+	return;
+}
+
+void store_biped_limp_stop(
+	long biped_index)
+{
+	struct biped_datum *biped;
+	struct biped_definition *definition;
+
+	biped = biped_get(biped_index);
+	definition = biped_definition_get(biped->definition_index);
+	if (TEST_FLAG(definition->biped.flags, _biped_uses_limp_body_physics_bit) &&
+		TEST_FLAG(biped->biped.flags, _biped_limp_body_physics_active_bit))
+	{
+		SET_FLAG(biped->object.flags, _object_do_not_recompute_node_matrices_bit, FALSE);
+		SET_FLAG(biped->biped.flags, _biped_limp_body_physics_active_bit, FALSE);
+	}
+
+	return;
+}
+/* ---- the limp body: finish ---- */
+
 /* biped_apply_rotation (bipeds.c 1399-1425 in the ship form at ff2bb9fb), on the delete list: only biped_update_dead
    and _airborne called it. The same body */
 static void store_motion_rotation(
@@ -2719,9 +3541,9 @@ static void store_motion_falling_danger(
 
 /* biped_update_dead (bipeds.c 2228-2274 in the ship form at ff2bb9fb), on the delete list: only biped_update's tail
    called it. The same body; the held pair's lookups and FIXES_UNITHOIST's check go (the pair is always passed, never
-   NULL); PSP_BMS(biped, X) is biped->X; the window wrapper (2245) goes, its call bare, and that call keeps the limp
-   noodle's engine name until the limp piece, which retargets it; biped_apply_rotation (2256) is store_motion_rotation;
-   and biped_snap_facing (2265) is biped_snap_facing_with on the pair */
+   NULL); PSP_BMS(biped, X) is biped->X; the window wrapper (2245) goes, its call bare, and that call is the store's
+   own copy now, store_limp_relax; biped_apply_rotation (2256) is store_motion_rotation; and biped_snap_facing (2265)
+   is biped_snap_facing_with on the pair */
 static void store_motion_dead(
 	long biped_index,
 	struct biped_datum *biped,
@@ -2733,7 +3555,7 @@ static void store_motion_dead(
 			(*tick2_unit_bip2_of(biped->object.root)).limp_body_max_relaxation_iterations)
 	{
 		if (!debug_biped_limp_body_disable)
-			biped_limp_noodle_relax_nodes_onto_environment(biped_index);
+			store_limp_relax(biped_index);
 		biped_verify_object_vectors(biped_index, "post-limp-noodle");
 		animation->crouching = FALSE;
 
