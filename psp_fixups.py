@@ -67011,7 +67011,9 @@ TICK2_MOTIONNEW_WRITTEN = ("the INTENT table and G", "struct biped_physics to st
                            "M's helpers (landing, jumping and the jump, bumps, falling damage, the footstep)",
                            "biped_update's tail (and its eight helpers)",
                            "the limp body (store_biped_limp_start, _stop and the noodle)",
-                           "the pass (store_biped_pass's I, G and M, objects.c's four, the biped's entry)")  # step 3's pieces in
+                           "the pass (store_biped_pass's I, G and M, objects.c's four, the biped's entry)",
+                           "the delete cut's deletions (bipeds.c's 21, the blocks, the declarations, the four limp callers "
+                           "the store's)")  # step 3's pieces in
 def tick2_motionnew_check():
     if not TICK2_MOTIONNEW:
         return 0
@@ -67024,6 +67026,18 @@ def tick2_motionnew_check():
     if TICK2_MOTIONPASS or MOTIONCROSS:
         check_fail("psp_fixups: TICK2 motionnew: M2 needs the engine's solve: PSP_TICK2_MOTIONPASS and PSP_MOTIONCROSS "
                    "are refused under PSP_TICK2_MOTIONNEW=1 (docs/box_world_store.md section 19 part 8)")
+        return 0
+    # their cuts run before the delete and would trace a body that's then gone: refuse, never cut nothing silently
+    # (CALLTRACE is defined below this function; read from the environment)
+    if os.environ.get("PSP_CALLTRACE", "") == "1":
+        check_fail("psp_fixups: TICK2 motionnew: PSP_CALLTRACE and PSP_TICK_STEPS scope on biped_update and biped_update_moving, "
+                   "which task 5 deletes: refused under PSP_TICK2_MOTIONNEW=1 until they're retargeted to I and M "
+                   "(docs/box_world_store.md section 19 part 8)")
+        return 0
+    if os.environ.get("PSP_TICK_STEPS", "") == "1":
+        check_fail("psp_fixups: TICK2 motionnew: PSP_CALLTRACE and PSP_TICK_STEPS scope on biped_update and biped_update_moving, "
+                   "which task 5 deletes: refused under PSP_TICK2_MOTIONNEW=1 until they're retargeted to I and M "
+                   "(docs/box_world_store.md section 19 part 8)")
         return 0
     return 1
 TICK2_MOTIONNEW_OK = tick2_motionnew_check()  # the pieces' cuts run only on it; the refusal is at this file's end
@@ -68481,6 +68495,223 @@ def tick2_motionnew_pass_cut(tree):
     return 1
 tick2_motionnew_pass_cut(TREE)
 
+# PSP_TICK2_MOTIONNEW=1, step 3's delete cut, its first half (docs/box_world_store.md section 19, part 8 and the work
+# list's rows; modelled on task 4's tick2_collnew_delete_cut): biped_update and the code only it reaches are deleted, and
+# the callers that stay are the store's. bipeds.c loses BIPEDMOVE's statics and the two constants' enums (they did nothing
+# under PSP_TICK2_ROOT, only the intent and biped_update called them, and store_motion.c has copies), the trait's block,
+# the pill census and bipedstage3 (its record, pool and entry: only biped_update_physics and the gather read them), five
+# prototypes, the profile section and the 21 functions whose text the store's I, G and M carry under their names; the
+# noodle's include and its header's declarations go, and biped_limp_noodle.c keeps only a comment after bipeds.h. The four
+# limp callers that stay point at the store's store_biped_limp_start and _stop (store_motion.h 240-241): units.c's two,
+# network_objects.c's and biped_accelerate's. The names' scan and objects.h's poison are the second half's; the switch
+# still refuses after this half (tick2_motionnew_written, at this file's end). Exact by construction: each text is there
+# once, and the store holds the same text under its names.
+TICK2_MOTIONNEW_DELETE_HEADS = ("void biped_start_limp_body_physics(\n", "void biped_stop_limp_body_physics(\n",
+                                "static void biped_bumped_object(\n", "static void biped_falling_damage(\n",
+                                "static void biped_start_landing(\n", "static void biped_apply_rotation(\n",
+                                "static void biped_falling_danger(\n", "static void biped_vehicle_speech(\n",
+                                "static boolean biped_jump(\n", "static void biped_update_dead(\n",
+                                "static void biped_make_footstep(\n", "static void biped_try_to_make_footsteps(\n",
+                                "static void biped_update_airborne(\n", "static void biped_update_landing(\n",
+                                "static void biped_update_slipping(\n", "static void biped_update_jumping(\n",
+                                "static void biped_update_physics(\n", "static void biped_update_turning(\n",
+                                "static void biped_update_moving(\n", "static boolean biped_check_discard(\n",
+                                "boolean biped_update(\n")  # the 21 functions, in bipeds.c's order
+TICK2_MOTIONNEW_DELETE_PROTOTYPES = (
+    "static void biped_make_footstep(\n\tlong biped_index,\n\tshort event_index,\n\tshort contact_point_index);\n"
+    "static void biped_bumped_object(\n\tlong biped_index,\n\tlong object_index,\n\treal_vector3d const *old_velocity);\n"
+    "static void biped_falling_damage(\n\tlong biped_index,\n\treal collision_velocity);\n"
+    "static void biped_start_landing(\n\tlong biped_index,\n\treal landing_velocity);\n"
+    "static void biped_update_jumping(\n\tlong biped_index,\n\tstruct unit_animation_update_data *animation);\n",
+    "static void biped_update_physics(\n\tstruct biped_physics *physics);\n")
+TICK2_MOTIONNEW_DELETE_PROFILE = 'static struct profile_section biped_update_section = {"biped_update", NONE, TRUE};\n'
+TICK2_MOTIONNEW_DELETE_H = (
+    "void biped_stop_limp_body_physics(\n\tlong biped_index);\n"
+    "void biped_start_limp_body_physics(\n\tlong biped_index);\n\n",
+    "boolean biped_update(\n\tlong biped_index);\n")
+TICK2_MOTIONNEW_DELETE_NOODLE_H = (
+    "long biped_limp_noodle_get_max_relaxation_iterations(\n\tlong biped_index);\n\n"
+    "void validate_real_vector3d_axes3(\n\treal_vector3d *forward,\n\treal_vector3d *left,\n\treal_vector3d *up);\n\n"
+    "boolean biped_limp_noodle_relax_nodes_onto_environment(\n\tlong biped_index);\n\n")
+TICK2_MOTIONNEW_DELETE_NOODLE_C = ('\n/* TICK2 motionnew (slice 1\'s task 5, the delete cut): the limp body is the store\'s, psp/src/store_motion.c '
+                                   '(store_biped_limp_start, _stop and store_limp_*, the same text under its names) */\n')
+TICK2_MOTIONNEW_DELETE_BS3 = ("int psp_bipedstage3_call(long biped_index, unsigned long *flags, real_point3d *position,\n"
+                              "\treal_vector3d *velocity, real *height, real *width); /* bipeds.c (FIXES_BIPEDSTAGE) */\n")
+TICK2_MOTIONNEW_DELETE_UNITS_DECL = ("void store_biped_limp_start(long biped_index); /* psp/src/store_motion.c (TICK2 "
+                                     "motionnew): the limp body's */\nvoid store_biped_limp_stop(long biped_index);\n")
+TICK2_MOTIONNEW_DELETE_NET_DECL = ("void store_biped_limp_stop(long biped_index); /* psp/src/store_motion.c (TICK2 "
+                                   "motionnew): the limp body's */\n")
+def tick2_motionnew_span(text, first, last, after, what):
+    """first's start (there once, at a line start) through the end of the first whole line equal to last (with its \n)
+    after after (None: first itself); None if it isn't there once, so the caller refuses with what"""
+    found = []
+    at = text.find(first)
+    while at >= 0:
+        if not at or text[at - 1] == "\n":
+            found.append(at)
+        at = text.find(first, at + 1)
+    if len(found) != 1:
+        return None
+    at = found[0]
+    then = at if after is None else text.find(after, at)
+    if then < 0:
+        return None
+    end = text.find("\n" + last, then)
+    if end < 0:
+        return None
+    return at, end + len(last) + 1
+def tick2_motionnew_function(text, head):
+    """a definition's span: of head's line-start occurrences, the one whose next "\n{\n" comes before its next ");\n"
+    (refuse unless exactly one is), through the first "\n}\n" after it, plus a following blank line if there is one"""
+    found = []
+    at = text.find(head)
+    while at >= 0:
+        if not at or text[at - 1] == "\n":
+            found.append(at)
+        at = text.find(head, at + 1)
+    opens = [at for at in found
+             if text.find("\n{\n", at) >= 0 and (text.find(");\n", at, text.find("\n{\n", at)) < 0)]
+    if len(opens) != 1:
+        return None
+    at = opens[0]
+    end = text.find("\n}\n", at)
+    if end < 0:
+        return None
+    end += 3
+    return at, end + 1 if text.startswith("\n", end) else end
+def tick2_motionnew_delete_cut(tree):
+    if not TICK2_MOTIONNEW_OK:
+        return 0
+    bipeds_c = os.path.join(tree, "source/units/bipeds.c")
+    b = open(bipeds_c, errors="surrogateescape").read()
+    bipeds_before = b.count("\n")
+    for what, first, last, after, blank in (
+            ("BIPEDMOVE's statics", "static int psp_bms_on = -1, psp_bms_check = 0;\n", "}\n", "static void psp_bms_stop(void)\n", 0),
+            ("the two enums", "enum\n{\n\t_material_effect_biped_walk = 0,\n", "};\n", "\t_unit_animation_action_melee = 7,\n", 1),
+            ("the trait's block", "#ifdef HALO_GAME_BROWSER\n/* port: a Bomb game type's gravity trait", "#endif\n",
+             "static real biped_trait_gravity(\n", 0),
+            ("the pill census", '#if defined(HALO_PSP) && PSP_DEBUG_TOOLS\n/* psp_fixups.py (FIXES_123L): "pillreach"', "#endif\n",
+             "static void psp_pill_reach(\n", 0),
+            ("bipedstage3", "/* (FIXES_BIPEDSTAGE) bipedstage3, the exact sphere", "}\n", "int psp_bipedstage3_call(", 0)):
+        span = tick2_motionnew_span(b, first, last, after, what)
+        if span is None:
+            check_fail("psp_fixups: TICK2 motionnew delete cut: bipeds.c's %s isn't there once, its ends in order" % what)
+            return 0
+        if what == "the pill census" and re.search(r"(?m)^[ \t]*#[ \t]*if",
+                                                   b[b.index("\nstatic void psp_pill_reach(\n", span[0]):span[1]]):
+            check_fail("psp_fixups: TICK2 motionnew delete cut: an #if between psp_pill_reach( and the pill census's "
+                       "#endif: the span would end at its #endif, not the census's")
+            return 0
+        b = b[:span[0]] + b[span[1]:]
+        if blank:
+            if not b.startswith("\n", span[0]):
+                check_fail("psp_fixups: TICK2 motionnew delete cut: bipeds.c has no blank line after %s to drop" % what)
+                return 0
+            b = b[:span[0]] + b[span[0] + 1:]
+    for what, text in (("the five prototypes", TICK2_MOTIONNEW_DELETE_PROTOTYPES[0]),
+                       ("biped_update_physics's prototype", TICK2_MOTIONNEW_DELETE_PROTOTYPES[1]),
+                       ("the profile section", TICK2_MOTIONNEW_DELETE_PROFILE),
+                       ("the noodle's include", '#include "units/biped_limp_noodle.h"\n')):
+        if b.count(text) != 1:
+            check_fail("psp_fixups: TICK2 motionnew delete cut: bipeds.c has %s %d times, not 1" % (what, b.count(text)))
+            return 0
+        b = b.replace(text, "")
+    for head in TICK2_MOTIONNEW_DELETE_HEADS:
+        span = tick2_motionnew_function(b, head)
+        if span is None:
+            check_fail("psp_fixups: TICK2 motionnew delete cut: bipeds.c hasn't one definition of %s, or no close"
+                       % head.split("(")[0].split()[-1])
+            return 0
+        b = b[:span[0]] + b[span[1]:]
+    # the fourth limp caller: biped_accelerate's, the store's (bipeds.c includes store_motion.h)
+    if b.count("biped_stop_limp_body_physics(") != 1:
+        check_fail("psp_fixups: TICK2 motionnew delete cut: bipeds.c has %d limp stops left, not 1"
+                   % b.count("biped_stop_limp_body_physics("))
+        return 0
+    b = b.replace("biped_stop_limp_body_physics(", "store_biped_limp_stop(")
+    for name in ("biped_stop_limp_body_physics", "biped_start_limp_body_physics"):
+        if re.search(r"\b%s\b" % name, tick2_posenew_code_only(b)):
+            check_fail("psp_fixups: TICK2 motionnew delete cut: bipeds.c still names %s" % name)
+            return 0
+    bipeds_h = os.path.join(tree, "source/units/bipeds.h")
+    h = open(bipeds_h, errors="surrogateescape").read()
+    for what, text in (("the limp body's two declarations", TICK2_MOTIONNEW_DELETE_H[0]),
+                       ("biped_update's declaration", TICK2_MOTIONNEW_DELETE_H[1])):
+        if h.count(text) != 1:
+            check_fail("psp_fixups: TICK2 motionnew delete cut: bipeds.h has %s %d times, not 1" % (what, h.count(text)))
+            return 0
+        h = h.replace(text, "")
+    noodle_h = os.path.join(tree, "source/units/biped_limp_noodle.h")
+    nh = open(noodle_h, errors="surrogateescape").read()
+    if nh.count(TICK2_MOTIONNEW_DELETE_NOODLE_H) != 1:
+        check_fail("psp_fixups: TICK2 motionnew delete cut: biped_limp_noodle.h has the three declarations %d times, not 1"
+                   % nh.count(TICK2_MOTIONNEW_DELETE_NOODLE_H))
+        return 0
+    nh = nh.replace(TICK2_MOTIONNEW_DELETE_NOODLE_H, "")
+    noodle_c = os.path.join(tree, "source/units/biped_limp_noodle.c")
+    nc = open(noodle_c, errors="surrogateescape").read()
+    noodle_before = nc.count("\n")
+    noodle_include = '#include "units/bipeds.h"\n'
+    if nc.count(noodle_include) != 1:
+        check_fail("psp_fixups: TICK2 motionnew delete cut: biped_limp_noodle.c has its bipeds.h include %d times, not 1"
+                   % nc.count(noodle_include))
+        return 0
+    at = nc.index(noodle_include) + len(noodle_include)
+    for text in ("boolean biped_limp_noodle_relax_nodes_onto_environment(", "void validate_real_vector3d_axes3("):
+        if nc.count(text, at) != 1:
+            check_fail("psp_fixups: TICK2 motionnew delete cut: biped_limp_noodle.c's rest has %s %d times, not 1"
+                       % (text.split("(")[0].split()[-1], nc.count(text, at)))
+            return 0
+    nc = nc[:at] + TICK2_MOTIONNEW_DELETE_NOODLE_C
+    collisions_c = os.path.join(tree, "source/physics/collisions.c")
+    c = open(collisions_c, errors="surrogateescape").read()
+    collisions_before = c.count("\n")
+    if c.count(TICK2_MOTIONNEW_DELETE_BS3) != 1 or c.count("void psp_sweepme_tick_begin(void)\n") != 1:
+        check_fail("psp_fixups: TICK2 motionnew delete cut: collisions.c has the exact call's declaration %d times and "
+                   "the tick's begin %d, not 1 each" % (c.count(TICK2_MOTIONNEW_DELETE_BS3),
+                                                        c.count("void psp_sweepme_tick_begin(void)\n")))
+        return 0
+    c = c.replace(TICK2_MOTIONNEW_DELETE_BS3, "")
+    span = tick2_motionnew_span(c, "/* (FIXES_SWEEPME) a staged biped's move as store_coll_gather will", "}\n",
+                                "void psp_sweepme_after_intent(long biped_index)\n", "the after-intent")
+    if span is None:
+        check_fail("psp_fixups: TICK2 motionnew delete cut: collisions.c's after-intent isn't there once, its ends in order")
+        return 0
+    c = c[:span[0]] + c[span[1]:]
+    units_c = os.path.join(tree, "source/units/units.c")
+    u = open(units_c, errors="surrogateescape").read()
+    for old, now in (("biped_stop_limp_body_physics(", "store_biped_limp_stop("),
+                     ("biped_start_limp_body_physics(", "store_biped_limp_start(")):
+        if u.count(old) != 1:
+            check_fail("psp_fixups: TICK2 motionnew delete cut: units.c has %s %d times, not 1" % (old, u.count(old)))
+            return 0
+        u = u.replace(old, now)
+    units_include = '#include "bipeds.h"\n'
+    if u.count(units_include) != 1 or u.count(TICK2_MOTIONNEW_DELETE_UNITS_DECL):
+        check_fail("psp_fixups: TICK2 motionnew delete cut: units.c has its bipeds.h include %d times (not 1) or the "
+                   "store's limp declarations %d (not 0)" % (u.count(units_include),
+                                                            u.count(TICK2_MOTIONNEW_DELETE_UNITS_DECL)))
+        return 0
+    u = u.replace(units_include, units_include + TICK2_MOTIONNEW_DELETE_UNITS_DECL)
+    net_c = os.path.join(tree, "port/linux/game/network_objects.c")
+    n = open(net_c, errors="surrogateescape").read()
+    net_include = '#include "units/bipeds.h"\n'
+    if n.count("biped_stop_limp_body_physics(") != 1 or n.count(net_include) != 1:
+        check_fail("psp_fixups: TICK2 motionnew delete cut: network_objects.c has the limp stop %d times and its bipeds.h "
+                   "include %d, not 1 each" % (n.count("biped_stop_limp_body_physics("), n.count(net_include)))
+        return 0
+    n = n.replace("biped_stop_limp_body_physics(", "store_biped_limp_stop(")
+    n = n.replace(net_include, net_include + TICK2_MOTIONNEW_DELETE_NET_DECL)
+    if not CHECK_ONLY:
+        for path, text in ((bipeds_c, b), (bipeds_h, h), (noodle_h, nh), (noodle_c, nc), (collisions_c, c), (units_c, u),
+                           (net_c, n)):
+            open(path, "w", errors="surrogateescape").write(text)
+    print("psp_fixups: TICK2 motionnew (task 5, the delete cut): biped_update and the code only it reaches deleted "
+          "(bipeds.c %d lines, the noodle %d, collisions.c %d), the limp body's four callers the store's"
+          % (bipeds_before - b.count("\n"), noodle_before - nc.count("\n"), collisions_before - c.count("\n")))
+    return 1
+tick2_motionnew_delete_cut(TREE)
+
 # PSP_TICK2_MOTIONNEW=1 while step 3 is being written: every piece's cut above has run (so a form check exercises
 # them), and the build refuses here, naming the pieces in, so no run reads a half-written form as task 5's. It goes
 # with the delete cut, the last piece
@@ -68488,7 +68719,7 @@ def tick2_motionnew_written():
     if not TICK2_MOTIONNEW_OK:
         return 0
     check_fail("psp_fixups: TICK2 motionnew: task 5's stages are being written (in: %s; still to come: "
-               "the delete cut); PSP_TICK2_MOTIONNEW=1 builds once they're all in"
+               "the delete cut's names scan and poison); PSP_TICK2_MOTIONNEW=1 builds once they're all in"
                % "; ".join(TICK2_MOTIONNEW_WRITTEN))
     return 0
 tick2_motionnew_written()
