@@ -67721,6 +67721,34 @@ def emo_trace(tree):
     return 1
 emo_trace(TREE)
 
+# The line-of-fire check's aim-line vector, zeroed (every build, old-only and tick2 alike; the lead 2026-11-25 23:1x (1),
+# as 18:3x (1)). actor_emotion_update declares real_vector3d vector_to_line_of_fire with no initialiser and hands it to
+# actor_perception_aiming_vector_test_blockage, which writes it only past its first two early exits (no horizontal aim;
+# the friend not past 0.866 of the distance along the aim); the caller reads it anyway, in the gate
+# (magnitude_squared3d < 1.0) and, when the move step finds a blockage, in the dot test and its threshold. So the flag
+# moving_into_player_line_of_fire was decided by leftover stack bytes, which differ by build and by trace (lof3397b:
+# rows lof3397b_controls, lof3397b_toline_unwritten). Zero is what the early exit means: no line to the player (mag2 0,
+# threshold 0, dot 0, the flag clear). The rest of the check was read for the same fault and none found:
+# friend_attack_vector is written on every path that returns TRUE (the player's aim, or actor_attacking_target's two
+# TRUE paths) and read only then; attack_vector is written and read only under has_target_vector; movement_direction,
+# future_point, secondary_blockage, dot and threshold are each written before they're read; the blockage test's own
+# locals likewise, and its third exit (blockage 0 on height) comes after the vector is written.
+def lof_zero(tree):
+    rel = "source/ai/actor_perception.c"
+    path = os.path.join(tree, rel)
+    text = open(path, errors="surrogateescape").read()
+    old = "\treal_vector3d vector_to_line_of_fire;\n"
+    new = "\treal_vector3d vector_to_line_of_fire = { 0.0f, 0.0f, 0.0f }; /* psp_fixups.py (lof_zero): the blockage test's early exits leave it unwritten */\n"
+    n = text.count(old)
+    if n != 1:
+        check_fail("psp_fixups: lof_zero: vector_to_line_of_fire's declaration matches %d times" % n)
+        return 0
+    if not CHECK_ONLY:
+        open(path, "w", errors="surrogateescape").write(text.replace(old, new))
+    print("psp_fixups: lof_zero: the line-of-fire check's aim-line vector zeroed at its declaration")
+    return 1
+lof_zero(TREE)
+
 # PSP_LOFTRACE=1 (the builder 2026-11-25, the lead's 21:4x (3): emotions3397 found actor e3620001's block parting at
 # tick 3397's end, tick2 setting moving_into_player_line_of_fire and moving_into_fire_timer 22, old-only neither; one
 # writer, actor_emotion_update's line-of-fire check). That check as read, on whichever CPU runs it, and its inputs as
