@@ -43,6 +43,15 @@ Built with PSP_TICK2_MOTIONNEW=1 (psp_build.py), as bipeds.c is.
 #include "mcc_seats.h" /* port: port/linux/game/mcc_seats.c */
 #include "stubbs_mode.h" /* port: port/linux/game/stubbs_mode.c */
 #include "stubbs_player.h" /* port: port/linux/game/stubbs_player.c */
+#include "ai/actors.h"
+#include "cutscene/cinematics.h"
+#include "game/game_globals.h"
+#include "game/players.h"
+#include "models/model_animation_definitions.h"
+#include "models/model_definitions.h"
+#include "scenario/scenario.h"
+#include "network_coop.h" /* port: port/linux/game/network_coop.c */
+#include "mcc_movement.h" /* port: MCC weapon-authored movement penalties */
 #include "store_motion.h"
 
 #ifdef HALO_PSP
@@ -907,14 +916,483 @@ static void store_intent_physics(struct biped_physics *physics, struct store_mot
 	*velocity = call_velocity;
 }
 
-/* I's move build to the call: biped_update_moving (bipeds.c 4297 on in the ship form) and biped_update_physics up to
-   the move's call (bipedstage3's stop 1, 3302-3304), the next piece's (the coder's brief). It fills M's entry (the
-   physics record, the in-flags, the facing) and the call's flags, position and velocity, and returns 1 at the call;
-   0 where the build stops short, which is _moving's dead biped at rest alone (4324-4329), never one of I's living
-   bipeds. Declared here so the driver names its contract; defined with the build */
+/* I's move build to the call: biped_update_moving (bipeds.c 4171-4664 in the ship form at ff2bb9fb) from its top to
+   its stop just before the move, over the biped and definition the driver holds, then store_intent_physics above, which
+   is the move's call: biped_update_physics up to bipedstage3's stop 1, the same tests and the same float expressions in
+   the same order. It fills M's entry (the physics record, the in-flags, the facing) and the call's flags, position and
+   velocity, and returns 1 at the call; 0 where the build stops short, which is _moving's dead biped at rest alone
+   (4198-4203), never one of I's living bipeds. Left out: the held pair's lookups (4187, 4205) and PSP_RECON's check
+   (4188-4190): the driver holds both, so there's no lookup to check against; the bipedstage3 resume branch (4191-4196,
+   M's), and the hoist's locals (4177-4180): the records are looked up once each here, the record's address and no more,
+   and nothing in the range moves one. The physics record the build fills is M's entry's (motion->physics), and
+   store_intent_physics writes the in-flags and the facing beside it in M's table. store_intent_body calls it */
 static int store_intent_moving(long biped_index, struct biped_datum *biped, struct biped_definition *definition,
 	struct unit_animation_update_data *animation, struct store_motion *motion, unsigned long *flags,
-	real_point3d *position, real_vector3d *velocity);
+	real_point3d *position, real_vector3d *velocity)
+{
+	real movement_scale;
+	word in_flags;
+	struct biped_physics *physics = &motion->physics;
+	struct tick2_unit_ctl *control = tick2_unit_ctl_of(biped->object.root);
+	struct tick2_unit_bip1 *line1 = tick2_unit_bip1_of(biped->object.root);
+	struct tick2_unit_bip2 *line2 = tick2_unit_bip2_of(biped->object.root);
+	struct unit_animation *anim = tick2_unit_anim_of(biped->object.root);
+	struct object_animation_state *object_anim = tick2_anim_of(biped->object.root);
+
+	if (TEST_FLAG(biped->object.flags, _object_at_rest_bit) &&
+		TEST_FLAG(biped->object.damage_flags, _object_dead_bit) &&
+		TEST_FLAG(anim->flags, _unit_animation_ignore_translation_bit))
+	{
+		return 0;
+	}
+
+	physics->biped_index = biped_index;
+	physics->in_flags = 0;
+	physics->forward = biped->object.root->forward;
+	if (TEST_FLAG(definition->unit.flags, _unit_simple_creature_bit))
+		physics->aiming = biped->object.root->forward;
+	else
+		unit_get_aiming_vector(biped_index, &physics->aiming);
+
+	physics->velocity = biped->object.root->translational_velocity;
+	physics->crouch_velocity = 0.f;
+	physics->acceleration_maximum = 0.0053333333f;
+	physics->airborne_acceleration_maximum = 0.f;
+	biped_get_physics_pill_with(biped_index, biped, definition, &physics->position, &physics->height, &physics->width);
+	physics->minimum_normal_k = definition->biped.runtime_minimum_normal_k;
+	physics->downhill_k0 = definition->biped.runtime_downhill_k0;
+	physics->downhill_k1 = definition->biped.runtime_downhill_k1;
+	physics->downhill_velocity_scale = definition->biped.downhill_velocity_scale;
+	physics->uphill_k0 = definition->biped.runtime_uphill_k0;
+	physics->uphill_k1 = definition->biped.runtime_uphill_k1;
+	physics->uphill_velocity_scale = definition->biped.uphill_velocity_scale;
+	physics->ground_plane = line2->ground_plane;
+	physics->ground_tangential_velocity_max = REAL_MAX;
+	physics->ground_tangential_angle = 0.f;
+	physics->existing_support_surface_index = line2->support_surface_index;
+
+	if (line2->landing == 1)
+	{
+		physics->movement_desired.i = 0.f;
+		physics->movement_desired.j = 0.f;
+		physics->movement_desired.k = 0.f;
+		physics->movement_penalty = 1.f;
+	}
+	else
+	{
+		movement_scale = 1.f;
+		if (TEST_FLAG(definition->biped.flags, _biped_random_speed_increase_bit) &&
+			!control->aiming_speed)
+		{
+			unsigned long stagger_ordinal = (unsigned long)biped_index % 137;
+			real difficulty = game_difficulty_get_value(
+				_game_difficulty_value_infection_forms);
+
+			movement_scale =
+				difficulty * ((real)stagger_ordinal * 0.00729927f) + 1.f;
+		}
+
+		if (!TEST_FLAG(definition->biped.flags, _biped_flying_bit) ||
+			TEST_FLAG(biped->object.damage_flags, _object_dead_bit))
+		{
+			real throttle_x = control->throttle.i;
+			real throttle_y = control->throttle.j;
+
+			if (throttle_x != 0.f || throttle_y != 0.f ||
+				control->throttle.k != 0.f)
+			{
+				boolean stunned = biped->unit.body_stun > 0.2f;
+				char movement_base;
+
+				if (definition->unit.stunned_movement_threshold > 0.f &&
+					biped->object.recent_body_damage >
+						definition->unit.stunned_movement_threshold)
+				{
+					stunned = TRUE;
+				}
+
+				movement_base = stunned ? _unit_state_stunned_move_front :
+					_unit_state_move_front;
+				if (fabs(throttle_x) >= fabs(throttle_y))
+				{
+					animation->state_desired = throttle_x >= 0.f ?
+						movement_base : movement_base + 1;
+				}
+				else
+				{
+					animation->state_desired = throttle_y >= 0.f ?
+						movement_base + 2 : movement_base + 3;
+				}
+				/* port: Stubbs mode's sprint (port/linux/game/stubbs_player.c) */
+				if (stubbs_mode_active())
+					stubbs_player_sprint(biped_index, &animation->state_desired);
+			}
+		}
+		else
+		{
+			animation->state_desired = _unit_state_idle;
+		}
+
+		physics->movement_desired = *global_zero_vector3d;
+		if (object_anim->state.index != NONE &&
+			(TEST_FLAG(biped->object.damage_flags, _object_dead_bit) ||
+			!TEST_FLAG(definition->biped.flags, _biped_flying_bit)) &&
+			!TEST_FLAG(
+				anim->flags,
+				_unit_animation_ignore_translation_bit))
+		{
+			struct animation_graph *animation_graph;
+			struct animation *animation_definition;
+			real dy = 0.f;
+			real dyaw = 0.f;
+
+			model_definition_get(definition->object.model.index);
+			animation_graph = animation_graph_definition_get(
+				object_anim->animation_graph_index);
+			animation_definition = TAG_BLOCK_GET_ELEMENT(
+				&animation_graph->animations,
+				object_anim->state.index,
+				struct animation);
+
+			switch (animation_definition->frame_info_type)
+			{
+			case _animation_frame_info_xy_translation:
+				{
+					struct animation_frame_info_dx_dy const *frame_info =
+						(struct animation_frame_info_dx_dy const *)animation_get_frame_info(
+							animation_definition,
+							object_anim->state.frame_index,
+							sizeof(struct animation_frame_info_dx_dy));
+
+					physics->movement_desired.i = frame_info->dx;
+					dy = frame_info->dy;
+				}
+				break;
+
+			case _animation_frame_info_xy_translation_yaw_rotation:
+				{
+					struct animation_frame_info_dx_dy_dyaw const *frame_info =
+						(struct animation_frame_info_dx_dy_dyaw const *)animation_get_frame_info(
+							animation_definition,
+							object_anim->state.frame_index,
+							sizeof(struct animation_frame_info_dx_dy_dyaw));
+
+					physics->movement_desired.i = frame_info->dx;
+					dy = frame_info->dy;
+					physics->movement_desired.j = frame_info->dy;
+					dyaw = frame_info->dyaw;
+				}
+				break;
+
+			case _animation_frame_info_xyz_translation_yaw_rotation:
+				{
+					struct animation_frame_info_dx_dy_dz_dyaw const *frame_info =
+						(struct animation_frame_info_dx_dy_dz_dyaw const *)animation_get_frame_info(
+							animation_definition,
+							object_anim->state.frame_index,
+							sizeof(struct animation_frame_info_dx_dy_dz_dyaw));
+
+					physics->movement_desired.i = frame_info->dx;
+					dy = frame_info->dy;
+					physics->movement_desired.j = frame_info->dy;
+					physics->movement_desired.k = frame_info->dz;
+					dyaw = frame_info->dyaw;
+				}
+				break;
+			}
+
+			physics->movement_desired.i *= movement_scale;
+			physics->movement_desired.j = dy * movement_scale;
+			physics->movement_desired.k *= movement_scale;
+
+			if (!(fabs(dyaw) < _real_epsilon))
+			{
+				real_vector3d rotated_forward;
+				real sine_value = (real)sin(dyaw);
+				real cosine_value = (real)cos(dyaw);
+
+				rotated_forward = biped->object.root->forward;
+				rotate_vector_about_axis(
+					&rotated_forward,
+					&biped->object.root->up,
+					sine_value,
+					cosine_value);
+				if (TEST_FLAG(
+					control->control_flags,
+					_unit_control_exact_facing_bit) &&
+					(anim->state == _unit_state_turn_left ||
+					anim->state == _unit_state_turn_right) &&
+					dot_product3d(
+						&biped->object.root->forward,
+						&control->desired_facing_vector) > 0.5f)
+				{
+					real_vector3d old_cross;
+					real_vector3d new_cross;
+
+					cross_product3d(
+						&control->desired_facing_vector,
+						&biped->object.root->forward,
+						&old_cross);
+					cross_product3d(
+						&control->desired_facing_vector,
+						&rotated_forward,
+						&new_cross);
+					if (dot_product3d(&old_cross, &biped->object.root->up) *
+						dot_product3d(&new_cross, &biped->object.root->up) <= 0.f)
+					{
+						rotated_forward = control->desired_facing_vector;
+						unit_abort_animation(biped_index);
+					}
+				}
+
+				biped->object.root->forward = rotated_forward;
+				biped_snap_facing_with(biped_index, biped, definition);
+			}
+		}
+
+		if (!TEST_FLAG(definition->biped.flags, _biped_flying_bit) ||
+			TEST_FLAG(biped->object.damage_flags, _object_dead_bit))
+		{
+			if (!TEST_FLAG(definition->biped.flags, _biped_uses_player_physics_bit) ||
+				anim->state == _unit_state_user_animation)
+			{
+				if (!TEST_FLAG(biped->biped.flags, _biped_slipping_bit) &&
+					!TEST_FLAG(biped->biped.flags, _biped_airborne_bit))
+				{
+					biped->object.root->translational_velocity.i =
+						physics->movement_desired.i;
+					biped->object.root->translational_velocity.j =
+						physics->movement_desired.j;
+					physics->acceleration_maximum = REAL_MAX;
+				}
+			}
+			else
+			{
+				struct game_globals_player_information *player_information =
+					TAG_BLOCK_GET_ELEMENT(
+						&scenario_get_game_globals()->player_information,
+						0,
+						struct game_globals_player_information);
+				struct game_globals_player_information player_information_block;
+				real body_stun_scale = 1.f;
+				real crouch;
+				real uncrouch;
+				real stun_scale;
+				real forward_speed;
+				real sideways_speed;
+				real acceleration;
+
+				if (cinematic_in_progress() ||
+					TEST_FLAG(
+						definition->biped.flags,
+						_biped_uses_old_player_physics_bit))
+				{
+					player_information_block = *player_information;
+					player_information = &player_information_block;
+					player_information_block.walking_speed = 0.51200002f;
+					player_information_block.run_forward_speed = 2.25f;
+					player_information_block.run_backward_speed = 2.f;
+					player_information_block.run_sideways_speed = 2.f;
+					player_information_block.run_acceleration = 0.31999999f;
+				}
+
+				if (biped->unit.player_index != NONE)
+				{
+					body_stun_scale =
+						player_get(biped->unit.player_index)->speed_multiplier;
+				}
+
+				crouch = line1->crouch;
+				uncrouch = 1.f - crouch;
+				stun_scale =
+					-(player_information->stun_movement_penalty *
+						biped->unit.body_stun - 1.f) *
+					body_stun_scale * movement_scale;
+				if (control->throttle.i <= 0.f)
+				{
+					forward_speed = player_information->sneak_backward_speed;
+					sideways_speed = player_information->run_backward_speed;
+				}
+				else
+				{
+					forward_speed = player_information->sneak_forward_speed;
+					sideways_speed = player_information->run_forward_speed;
+				}
+
+				forward_speed = sideways_speed * uncrouch + forward_speed * crouch;
+				sideways_speed = player_information->run_sideways_speed * uncrouch +
+					player_information->sneak_sideways_speed * crouch;
+				acceleration = player_information->run_acceleration * uncrouch +
+					player_information->sneak_acceleration * crouch;
+				if (anim->base_seat_index == _unit_base_seat_alert)
+				{
+					forward_speed = control->throttle.i <= 0.f ?
+						0.f : player_information->walking_speed;
+					sideways_speed = 0.f;
+				}
+
+				physics->acceleration_maximum = acceleration / TICKS_PER_SECOND;
+				physics->movement_desired.i =
+					control->throttle.i * stun_scale * forward_speed /
+					TICKS_PER_SECOND;
+				physics->movement_desired.j =
+					control->throttle.j * stun_scale * sideways_speed /
+					TICKS_PER_SECOND;
+				physics->movement_desired.k = 0.f;
+				/* port: MCC-only input scaling; legacy player physics is unchanged. */
+				mcc_movement_apply(biped_index, &physics->movement_desired);
+				physics->airborne_acceleration_maximum =
+					player_information->airborne_acceleration / TICKS_PER_SECOND;
+				if (!TEST_FLAG(
+					control->control_flags,
+					_unit_control_look_dont_turn_bit))
+				{
+					physics->forward = control->desired_facing_vector;
+				}
+
+				if (game_players_are_double_speed())
+				{
+					scale_vector3d(
+						&physics->movement_desired,
+						player_information->double_speed_multiplier,
+						&physics->movement_desired);
+				}
+			}
+		}
+		else
+		{
+			real deceleration_scale =
+				1.f - MIN(magnitude3d(&control->throttle), 1.f);
+			real crouch_modifier = 1.f;
+			real acceleration;
+
+			if (definition->biped.flying_crouch_velocity_modifier > 0.f)
+			{
+				if (line1->crouch == 1.f)
+				{
+					crouch_modifier =
+						definition->biped.flying_crouch_velocity_modifier;
+				}
+				else if (line1->crouch > 0.f)
+				{
+					crouch_modifier =
+						(definition->biped.flying_crouch_velocity_modifier - 1.f) *
+						line1->crouch + 1.f;
+				}
+			}
+
+			physics->movement_desired.i =
+				definition->biped.flying_velocity * crouch_modifier * movement_scale;
+			physics->movement_desired.j =
+				definition->biped.flying_sidestep_velocity * crouch_modifier *
+				movement_scale;
+			physics->movement_desired.k =
+				definition->biped.flying_sidestep_velocity * crouch_modifier *
+				movement_scale;
+			acceleration = (1.f - deceleration_scale) *
+				definition->biped.flying_acceleration +
+				definition->biped.flying_deceleration * deceleration_scale;
+			physics->movement_desired.i *=
+				control->throttle.i / TICKS_PER_SECOND;
+			physics->movement_desired.j *=
+				control->throttle.j / TICKS_PER_SECOND;
+			physics->movement_desired.k *=
+				control->throttle.k / TICKS_PER_SECOND;
+			physics->acceleration_maximum =
+				acceleration * crouch_modifier * movement_scale /
+				TICKS_PER_SECOND;
+			physics->airborne_acceleration_maximum =
+				physics->acceleration_maximum;
+		}
+
+		if (TEST_FLAG(biped->biped.flags, _biped_airborne_bit) &&
+			line2->airborne_ticks < 22 &&
+			biped->unit.actor_index != NONE &&
+			actor_is_leaping(biped->unit.actor_index))
+		{
+			physics->ground_tangential_velocity_max = 0.1f;
+			physics->ground_tangential_angle = 0.5f;
+		}
+
+		physics->movement_penalty = 0.f;
+	}
+
+	{
+		real crouch_delta;
+		real crouch_transition_velocity =
+			definition->biped.runtime_crouch_transition_velocity;
+
+		if (anim->base_seat_index == _unit_base_seat_crouch)
+		{
+			crouch_delta = 1.f - line1->crouch;
+			if (crouch_delta <= crouch_transition_velocity)
+			{
+				line1->crouch = 1.f;
+			}
+			else
+			{
+				crouch_delta = crouch_transition_velocity;
+				line1->crouch += crouch_transition_velocity;
+			}
+		}
+		else
+		{
+			crouch_delta = -line1->crouch;
+			if (crouch_delta >= -crouch_transition_velocity)
+			{
+				line1->crouch = 0.f;
+			}
+			else
+			{
+				crouch_delta = -crouch_transition_velocity;
+				line1->crouch -= crouch_transition_velocity;
+			}
+		}
+
+		if (fabs(crouch_delta) > 0.01f &&
+			TEST_FLAG(biped->biped.flags, _biped_airborne_bit))
+		{
+			physics->crouch_velocity =
+				(definition->biped.collision_height_standing -
+					definition->biped.collision_height_crouching) * crouch_delta;
+		}
+	}
+
+	in_flags = physics->in_flags;
+	if (line1->crouch != 0.f)
+	{
+		SET_FLAG(in_flags, _biped_physics_in_crouched_bit, TRUE);
+		if (!animation->crouching)
+			SET_FLAG(in_flags, _biped_physics_in_trying_to_stand_bit, TRUE);
+	}
+	if (TEST_FLAG(biped->biped.flags, _biped_airborne_bit))
+		SET_FLAG(in_flags, _biped_physics_in_airborne_bit, TRUE);
+	if (TEST_FLAG(biped->biped.flags, _biped_slipping_bit))
+		SET_FLAG(in_flags, _biped_physics_in_slipping_bit, TRUE);
+	if (TEST_FLAG(biped->biped.flags, _biped_absolute_movement_bit))
+		SET_FLAG(in_flags, _biped_physics_in_absolute_movement_bit, TRUE);
+	if (TEST_FLAG(biped->biped.flags, _biped_no_collision_bit))
+		SET_FLAG(in_flags, _biped_physics_in_no_collision_bit, TRUE);
+	if (TEST_FLAG(biped->object.damage_flags, _object_dead_bit))
+		SET_FLAG(in_flags, _biped_physics_in_dead_bit, TRUE);
+	if (TEST_FLAG(definition->biped.flags, _biped_flying_bit) &&
+		!TEST_FLAG(biped->object.damage_flags, _object_dead_bit))
+	{
+		SET_FLAG(in_flags, _biped_physics_in_flying_bit, TRUE);
+	}
+	if (TEST_FLAG(definition->biped.flags, _biped_passes_through_bipeds_bit))
+		SET_FLAG(in_flags, _biped_physics_in_pass_through_bipeds_bit, TRUE);
+	if (biped->unit.player_index != NONE && !network_coop_player_collisions())
+		SET_FLAG(in_flags, _biped_physics_in_pass_through_players_bit, TRUE);
+	if (TEST_FLAG(definition->biped.flags, _biped_climbs_anything_bit) &&
+		!TEST_FLAG(biped->object.damage_flags, _object_dead_bit))
+	{
+		SET_FLAG(in_flags, _biped_physics_in_climb_anything_bit, TRUE);
+	}
+	physics->in_flags = in_flags;
+	store_intent_physics(physics, motion, flags, position, velocity);
+	return 1;
+}
 
 /* I's driver for staged biped k: biped_update's opening and bipedstage3's intent (psp_bipedstage3_intent; both on
    the delete list) over I's functions, in their order. The open comes first, as bipedstage3 counted an intent before

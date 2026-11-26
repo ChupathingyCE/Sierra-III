@@ -231,6 +231,8 @@ void biped_snap_facing_with(long biped_index, struct biped_datum *biped, struct 
 void biped_verify_object_vectors(long biped_index, char const *state);
 long biped_find_ground_surface(long biped_index, real_vector3d const *direction, real distance, real_point3d *point,
 	real_vector3d *normal);
+void biped_get_physics_pill_with(long biped_index, struct biped_datum *biped, struct biped_definition *definition,
+	real_point3d *base, real *height, real *width);
 
 /* G (store_coll.c): staged biped k's gather from its entry. TRUE handled (gathered, or no gather wanted), FALSE no
    entry */
