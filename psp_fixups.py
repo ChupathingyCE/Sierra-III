@@ -60358,7 +60358,11 @@ print("psp_fixups: the world store's node arena: %s (TICK2 pose)" % ("on" if tic
 # in POSENEW, every object). Both hash the visit stamp (object.magic_number, PSP_DATUM_STAMP_WORD) as 0, as the
 # play hash and the sleep's checks pass over it (the lead 15:3x (1), posenew8: the marker passes' count differs, play
 # doesn't read it). POSENEW's members cut adds its pattern run's three words (tick2's references, rebuilt
-# by tick2_proof_refs) at TICK2_PROOF_HASH_MORE. The dumps (stateblockraw, statefull) stay raw: they show the
+# by tick2_proof_refs) at TICK2_PROOF_HASH_MORE. Both hash a biped's two BSPR ray slots (FIXES_BSPR's tail,
+# psp_bspr_state.rays, +0x620 to +0x6e8 at this writing, the place read from the struct in collision_bsp.c) as 0:
+# a cache of the last ray asked, carried named (the lead 18:3x (2)/(3)), that the sleepers' checksum skips with the
+# whole tail; it held a different ray on the two sides (piece5dump, row piece5dump_fields_named). The sphere slots
+# hash raw: no dump showed them part. The dumps (stateblockraw, statefull) stay raw: they show the
 # bytes as they are. The ship form is untouched: its records are in the pool, whose addresses both builds share.
 TICK2_PROOF_HASH_ANCHOR = "struct tick2_store *tick2_store; /* TICK2 root */\n"
 TICK2_PROOF_HASH_MORE = "\t\t/* TICK2 proof: the datum's other words to stand in */\n"
@@ -60370,6 +60374,13 @@ logged once */
 #define TICK2_PROOF_ROOT_SLOT 0x52000000UL /* a slot's tag, so slot 0 and a null pointer don't hash alike */
 #define TICK2_PROOF_ROOT_POISON 0xBAD0B0BAUL /* a pointer to no record, or into one: the record parts */
 unsigned long tick2_proof_hash_words[TICK2_PROOF_HASH_WORDS][2];
+/* the ranges hashed as 0, each its first address and the address after it, by address: a biped's two BSPR ray slots
+(FIXES_BSPR's psp_bspr_state.rays, in its tail after psp_datum_biped_bytes; the lead 18:3x (2)/(3)), a cache of the
+last ray asked, carried named, that the sleepers' checksum skips with the whole tail; collision_bsp.c gives their
+place, from the struct */
+extern long const tick2_proof_bspr_rays_first, tick2_proof_bspr_rays_bytes;
+unsigned long tick2_proof_hash_skips[MAXIMUM_OBJECTS_PER_MAP][2];
+long tick2_proof_hash_skip_count;
 static int tick2_proof_hash_order(const void *a, const void *b)
 {
 	unsigned long x = ((unsigned long const *)a)[0], y = ((unsigned long const *)b)[0];
@@ -60405,6 +60416,7 @@ long tick2_proof_hash_build(void)
 	static int told = 0, poisoned = 0;
 	long i, count = 0;
 
+	tick2_proof_hash_skip_count = 0;
 	for (i = data_next_index(object_header_data, NONE); i != NONE && count + 5 <= TICK2_PROOF_HASH_WORDS;
 		i = data_next_index(object_header_data, i))
 	{
@@ -60433,8 +60445,20 @@ long tick2_proof_hash_build(void)
 			platform_psp_log("TICK2 proof: object %08lx's record pointer %p is in no record, hashed poisoned",
 				(unsigned long)i, (const void *)object->object.root);
 		count++;
+		/* the biped's two ray slots, when it has the tail (bspsame on); they sit after the datum's own words, so no
+		word above is in them */
+		if (header->type == _object_type_biped && header->data_size >= psp_datum_biped_bytes + 640 &&
+			tick2_proof_hash_skip_count < MAXIMUM_OBJECTS_PER_MAP)
+		{
+			tick2_proof_hash_skips[tick2_proof_hash_skip_count][0] =
+				(unsigned long)object + psp_datum_biped_bytes + tick2_proof_bspr_rays_first;
+			tick2_proof_hash_skips[tick2_proof_hash_skip_count][1] =
+				tick2_proof_hash_skips[tick2_proof_hash_skip_count][0] + tick2_proof_bspr_rays_bytes;
+			tick2_proof_hash_skip_count++;
+		}
 """ + TICK2_PROOF_HASH_MORE + r"""	}
 	qsort(tick2_proof_hash_words, count, sizeof(tick2_proof_hash_words[0]), tick2_proof_hash_order);
+	qsort(tick2_proof_hash_skips, tick2_proof_hash_skip_count, sizeof(tick2_proof_hash_skips[0]), tick2_proof_hash_order);
 	return count;
 }
 """
@@ -60457,6 +60481,8 @@ word it gives (the record pointer as its slot; posenew's pattern run as tick2's 
 and the whole hash part only where the old build's meaning would. The table, by address, is built once a tick
 before the first hash (psp_game_state_hash_tick) */
 extern unsigned long tick2_proof_hash_words[][2]; /* objects.c: each word's address, then the word hashed */
+extern unsigned long tick2_proof_hash_skips[][2]; /* objects.c: ranges hashed as 0 (a biped's ray slots), first and after */
+extern long tick2_proof_hash_skip_count;
 long tick2_proof_hash_build(void);
 static long tick2_proof_hash_count = 0;
 static unsigned long psp_state_hash(const void *start, long bytes)
@@ -60466,7 +60492,7 @@ static unsigned long psp_state_hash(const void *start, long bytes)
 	unsigned long skip = (4 - ((unsigned long)start & 3)) & 3;
 	const unsigned long *word = (const unsigned long *)((const char *)start + skip);
 	unsigned long hash = 2166136261UL, first = (unsigned long)word;
-	long k, next, low = 0, high = tick2_proof_hash_count;
+	long k, next, low = 0, high = tick2_proof_hash_count, range;
 
 	/* the first word to stand in at or after the range's first */
 	while (low < high)
@@ -60479,6 +60505,19 @@ static unsigned long psp_state_hash(const void *start, long bytes)
 			high = middle;
 	}
 	next = low;
+	/* the first range hashed as 0 that ends after the range's first */
+	low = 0;
+	high = tick2_proof_hash_skip_count;
+	while (low < high)
+	{
+		long middle = (low + high) / 2;
+
+		if (tick2_proof_hash_skips[middle][1] <= first)
+			low = middle + 1;
+		else
+			high = middle;
+	}
+	range = low;
 	for (k = 0; k < (bytes - (long)skip) / 4; k++)
 	{
 		unsigned long value = word[k], at = first + 4 * (unsigned long)k;
@@ -60487,12 +60526,26 @@ static unsigned long psp_state_hash(const void *start, long bytes)
 			next++; /* none expected: the table holds word-aligned addresses only */
 		if (next < tick2_proof_hash_count && tick2_proof_hash_words[next][0] == at)
 			value = tick2_proof_hash_words[next++][1];
+		while (range < tick2_proof_hash_skip_count && tick2_proof_hash_skips[range][1] <= at)
+			range++;
+		if (range < tick2_proof_hash_skip_count && at >= tick2_proof_hash_skips[range][0])
+			value = 0;
 		hash = (hash ^ value) * 16777619UL;
 	}
 	return hash;
 }
 """
 TICK2_PROOF_STATE_FIRST = "\t\tplatform_psp_log(\"state: tick %ld %08lx play %08lx seeds %08lx %08lx\", tick,\n"
+TICK2_PROOF_BSPR_STRUCT = "struct psp_bspr_state\n{\n\tstruct psp_bspr_sphere_slot spheres[PSP_BSPR_SPHERES];\n" \
+    "\tstruct psp_bspr_ray_slot rays[PSP_BSPR_RAYS];\n};\n"
+TICK2_PROOF_BSPR_RAYS = r"""
+#ifdef HALO_PSP
+/* TICK2 proof (psp_fixups.py, tick2_proof_cut): where a biped's two ray slots sit in its tail, for statecrc's
+mask (objects.c, tick2_proof_hash_build): rays[0] and rays[1], 0x1a0 and 0xc8 at this writing */
+long const tick2_proof_bspr_rays_first = (long)offsetof(struct psp_bspr_state, rays);
+long const tick2_proof_bspr_rays_bytes = (long)sizeof(((struct psp_bspr_state *)0)->rays);
+#endif
+"""
 
 # PSP_TICK2_PROOF=1: the store's room and its overflow chunks from the heap, the pool at its full size,
 # and each new datum's padding written with the pattern
@@ -60554,10 +60607,21 @@ static void tick2_proof_fill(struct object_header_datum *header)
     g = g.replace(TICK2_PROOF_STATE_HASH, TICK2_PROOF_STATE_HASH_PROOF)
     g = g.replace(TICK2_PROOF_STATE_FIRST, "\t\ttick2_proof_hash_count = tick2_proof_hash_build(); /* TICK2 proof: "
                   "the words before the first hash */\n" + TICK2_PROOF_STATE_FIRST)
+    # the ray slots' place in a biped's tail, from FIXES_BSPR's struct (applied with FIXES, before this cut), so
+    # the mask follows the struct if it changes (the lead 18:3x (3))
+    collision_bsp_c = os.path.join(tree, "source/physics/collision_bsp.c")
+    b = open(collision_bsp_c, errors="surrogateescape").read()
+    if b.count(TICK2_PROOF_BSPR_STRUCT) != 1:
+        check_fail("psp_fixups: TICK2 proof: FIXES_BSPR's psp_bspr_state is in collision_bsp.c %d times, "
+                   "so the ray slots' mask has no place" % b.count(TICK2_PROOF_BSPR_STRUCT))
+        return 0
+    b += TICK2_PROOF_BSPR_RAYS
     if not CHECK_ONLY:
         open(objects_c, "w", errors="surrogateescape").write(text)
         open(game_state_c, "w", errors="surrogateescape").write(g)
-    print("psp_fixups: TICK2 proof: the store outside the pool, statecrc hashing each record pointer as its slot")
+        open(collision_bsp_c, "w", errors="surrogateescape").write(b)
+    print("psp_fixups: TICK2 proof: the store outside the pool, statecrc hashing each record pointer as its slot "
+          "and each biped's two ray slots as 0")
     return 1
 print("psp_fixups: the world store's proof form: %s (TICK2 proof)" % ("on" if tick2_proof_cut(TREE) else "off"))
 
