@@ -678,8 +678,16 @@ def units():
         # the copy psp_fixups.py's calltrace_store_move_cut writes, named relative to the tree so its object, LTO
         # partner (LTO_LIKE_UNITS) and profile name are the original's
         trace = os.environ.get("PSP_CALLTRACE", "") == "1"
+        # PSP_SPLITMARK=1 (an instrument build for the cache model's split, never a ship form; the lab's split6 ask):
+        # the pass is store_mark.c's, in four noinline parts a split lists by name; store_coll.c's own is renamed by
+        # the define, so its text, its lines and its other functions' profiles stay as they are
+        mark = os.environ.get("PSP_SPLITMARK", "") == "1"
         items.append(("psp/src/store_coll.c" if trace else os.path.join(HERE, "psp/src/store_coll.c"),
-                      ninja_flags("build/linux/obj/source/physics/collisions.o"), motionnew))
+                      ninja_flags("build/linux/obj/source/physics/collisions.o"),
+                      motionnew + (["-Dstore_biped_pass=store_biped_pass_unmarked"] if mark else [])))
+        if mark:
+            items.append((os.path.join(HERE, "psp/src/store_mark.c"),
+                          ninja_flags("build/linux/obj/source/physics/collisions.o"), motionnew + ["-DPSP_SPLITMARK=1"]))
     if motionnew:
         # the bench copy psp_fixups.py's tick2_motionnew_bench_cut writes, named relative to the tree so its object,
         # LTO partner (LTO_LIKE_UNITS) and profile name are the original's
@@ -851,6 +859,7 @@ LTO_DIRS = [w for w in os.environ.get("PSP_LTO_UNITS", "").split(",") if w]
 # in place of bipeds.c's
 LTO_LIKE_UNITS = {"psp/src/store_pose.c": "source/objects/objects.c",
                   "psp/src/store_coll.c": "source/physics/collisions.c",
+                  "psp/src/store_mark.c": "source/physics/collisions.c",  # PSP_SPLITMARK=1's pass, as store_coll.c
                   "psp/src/store_motion.c": "source/units/bipeds.c"}
 LTO_OBJECT = "*ltrans*.o"
 LTO_OBJS = set()   # the LTO units' objects, filled in by main()
