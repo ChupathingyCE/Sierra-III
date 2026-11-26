@@ -39,6 +39,12 @@ int psp_sweepme_add(long biped_index, const float center[3], float radius, float
 void psp_sweepme_close(void);
 /* the record of this biped whose query is this one, bit for bit; -1 none */
 int psp_sweepme_find(long biped_index, const float center[3], float radius, float height, float width, int structure);
+/* PSP_TICK2_MOTIONNEW=1 (slice 1's task 5, Part 9's O(1) find): the same answer, the record looked up at the place
+   psp_sweepme_add gave (or -1, none); a place not this biped's falls back to the scan. Counted: by place, no place,
+   a place not its own (0 expected: a biped is added at most once a tick) */
+int psp_sweepme_find_at(int place, long biped_index, const float center[3], float radius, float height, float width,
+	int structure);
+extern unsigned long psp_sweepme_at[3];
 /* the record's answer, made and readable here (waited for, or made here);
    NULL when it can't stand for the engine's walk (cut short, too many
    leaves, another level, a breakable surface changed since) */

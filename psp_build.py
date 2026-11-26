@@ -662,9 +662,15 @@ def units():
     # slice 1's task 4, piece 1 (PSP_TICK2_COLLNEW=1; psp_fixups.py tick2_collnew_move_cut): the store's collision
     # gather table, moved out of collisions.c, built as collisions.c is (its flags, the fixed-up headers; its own
     # header in psp/include, which collisions.c includes too)
+    # slice 1's task 5 (PSP_TICK2_MOTIONNEW=1; docs/box_world_store.md section 19 step 3): the bipeds' motion
+    # stages, built as bipeds.c is, whose code they replace; store_coll.c's G is under the same define
+    motionnew = ["-DPSP_TICK2_MOTIONNEW=1"] if os.environ.get("PSP_TICK2_MOTIONNEW", "") == "1" else []
     if os.environ.get("PSP_TICK2_COLLNEW", "") == "1":
         items.append((os.path.join(HERE, "psp/src/store_coll.c"),
-                      ninja_flags("build/linux/obj/source/physics/collisions.o"), []))
+                      ninja_flags("build/linux/obj/source/physics/collisions.o"), motionnew))
+    if motionnew:
+        items.append((os.path.join(HERE, "psp/src/store_motion.c"),
+                      ninja_flags("build/linux/obj/source/units/bipeds.o"), motionnew))
     items.append((os.path.join(HERE, "psp/src/psp_chupa_platform.c"),
                   ninja_flags("build/linux/obj/port/linux/src/sdl_platform.o"), compat))
     # build 108: built as pal_tags.c is, the other in-place fix of a map's tags
@@ -825,9 +831,12 @@ LTO_DIRS = [w for w in os.environ.get("PSP_LTO_UNITS", "").split(",") if w]
 # reasons to stay out holds for it: it defines no ME variable the link script
 # places by object name, no --wrap'd function and no ".set noat" assembly.
 # Task 4's piece 1 (PSP_TICK2_COLLNEW=1) moves the collision gather table out of
-# collisions.c into psp/src/store_coll.c on the same rule
+# collisions.c into psp/src/store_coll.c on the same rule, and task 5
+# (PSP_TICK2_MOTIONNEW=1) writes the bipeds' motion stages in psp/src/store_motion.c
+# in place of bipeds.c's
 LTO_LIKE_UNITS = {"psp/src/store_pose.c": "source/objects/objects.c",
-                  "psp/src/store_coll.c": "source/physics/collisions.c"}
+                  "psp/src/store_coll.c": "source/physics/collisions.c",
+                  "psp/src/store_motion.c": "source/units/bipeds.c"}
 LTO_OBJECT = "*ltrans*.o"
 LTO_OBJS = set()   # the LTO units' objects, filled in by main()
 WRAPPED = []       # the link's --wrap'd names, for lto_report()
@@ -1011,7 +1020,10 @@ def compile_one(item):
                ["-DPSP_SMALLDATA=1"] if SMALLDATA and src.endswith("psp_me.c") else []) + (
                # the switches their #if blocks test (psp_ge.c's debug tools)
                ["-DPSP_DEBUG_TOOLS=1"] if DEBUG_TOOLS else []) + (
-               ["-DPSP_TICK_STEPS=1"] if TICK_STEPS else []) + [
+               ["-DPSP_TICK_STEPS=1"] if TICK_STEPS else []) + (
+               # slice 1's task 5: G's find by place (built only under the switch, so no other build's text moves)
+               ["-DPSP_TICK2_MOTIONNEW=1"] if os.environ.get("PSP_TICK2_MOTIONNEW", "") == "1" and
+               src.endswith("psp_sweepme.c") else []) + [
                "-c", src, "-o", out]
         if src.endswith("psp_me.c"):
             # build 86: mcidclan's me-core-mapper headers (installed beside the SDK)

@@ -273,6 +273,38 @@ int psp_sweepme_find(long biped_index, const float center[3], float radius, floa
 	return k;
 }
 
+#ifdef PSP_TICK2_MOTIONNEW
+/* task 5's G finds its record at the place its intent was given (docs/box_world_store.md section 19, step 3). A
+biped is added at most once a tick, so the scan's first match is that place, and the compare and its counter are the
+scan's: the answer and the counts are psp_sweepme_find's. Built only under the switch, so no other build's text moves */
+unsigned long psp_sweepme_at[3];
+int psp_sweepme_find_at(int place, long biped_index, const float center[3], float radius, float height, float width,
+	int structure)
+{
+	const struct psp_sweepme_record *r;
+
+	if (place < 0 || !sweepme_open)
+	{
+		psp_sweepme_at[1]++;
+		return psp_sweepme_find(biped_index, center, radius, height, width, structure);
+	}
+	if (place >= sweepme_added || sweepme_biped[place] != biped_index)
+	{
+		psp_sweepme_at[2]++;
+		return psp_sweepme_find(biped_index, center, radius, height, width, structure);
+	}
+	psp_sweepme_at[0]++;
+	r = (const struct psp_sweepme_record *)sweepme_records[place];
+	if (memcmp(r->center, center, 12) || memcmp(&r->radius, &radius, 4) || memcmp(&r->height, &height, 4) ||
+		memcmp(&r->width, &width, 4) || r->structure != (structure != 0))
+	{
+		sweepme_not_found++;
+		return -1;
+	}
+	return place;
+}
+#endif
+
 int psp_sweepme_answer(int index, const void *level_planes, const void *breakable_flags, struct psp_sweepme_answer *answer)
 {
 	const struct psp_sweepme_record *r;

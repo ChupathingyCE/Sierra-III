@@ -66994,6 +66994,32 @@ def tick2_collnew_delete_cut(tree):
     return 1
 tick2_collnew_delete_cut(TREE)
 
+# PSP_TICK2_MOTIONNEW=1, slice 1's task 5 (docs/box_world_store.md section 19; the lead 2026-11-26 00:3x, 01:3x): the
+# bipeds' motion as the store's passes, I, G and M in psp/src/store_motion.c, with biped_update and the code only it
+# reaches deleted by tick2_motionnew_delete_cut at this file's end. Read as == "1", like COLLNEW; =0 off. It builds on
+# slice 1's task 4 (COLLNEW) and needs SWEEPME (I gives the ME its level half). M2 and MOTIONCROSS need the engine's
+# solve, so they're refused under it (Part 8). Step 3 writes the stages a piece at a time: until I, M and the delete
+# cut are all in, the switch refuses, so no run reads a half-written form as task 5's.
+TICK2_MOTIONNEW = os.environ.get("PSP_TICK2_MOTIONNEW", "") == "1"
+TICK2_MOTIONNEW_WRITTEN = ("the INTENT table and G",)  # step 3's pieces in; the refusal goes with the last
+def tick2_motionnew_check():
+    if not TICK2_MOTIONNEW:
+        return 0
+    if not TICK2_COLLNEW:
+        check_fail("psp_fixups: TICK2 motionnew: PSP_TICK2_MOTIONNEW=1 builds on PSP_TICK2_COLLNEW=1 (slice 1's task 5 after task 4)")
+        return 0
+    if not SWEEPME:
+        check_fail("psp_fixups: TICK2 motionnew: PSP_TICK2_MOTIONNEW=1 needs PSP_SWEEPME=1 (I hands the ME its level half)")
+        return 0
+    if TICK2_MOTIONPASS or MOTIONCROSS:
+        check_fail("psp_fixups: TICK2 motionnew: M2 needs the engine's solve: PSP_TICK2_MOTIONPASS and PSP_MOTIONCROSS "
+                   "are refused under PSP_TICK2_MOTIONNEW=1 (docs/box_world_store.md section 19 part 8)")
+        return 0
+    check_fail("psp_fixups: TICK2 motionnew: task 5's stages are being written (in: %s; still to come: I's code, M, "
+               "the delete cut); PSP_TICK2_MOTIONNEW=1 builds once they're all in" % ", ".join(TICK2_MOTIONNEW_WRITTEN))
+    return 0
+tick2_motionnew_check()
+
 # PSP_CALLTRACE=1 (the builder 2026-11-25, the lead's 19:4x (1): oldonly3397's marine e603000b parts from old-only in
 # tick 3397's choice). One object's tick, in call order. With the keep words "calltraceN" and "ctobjK" (K the object's
 # absolute index, the datum index's low 16 bits: e603000b is ctobj11), from the thinking done ahead for game time N

@@ -240,6 +240,35 @@ int store_coll_gather(long biped_index)
 	return TRUE;
 }
 
+#ifdef PSP_TICK2_MOTIONNEW
+#include "store_motion.h"
+/* task 5's G (docs/box_world_store.md section 19, step 3): staged biped k's gather from the INTENT entry I kept, in
+place of store_coll_gather's read of bipedstage3's record. The tests are store_coll_gather's in its order; the sphere
+is the entry's, made in I by the same four expressions on the same floats (Part 7); the ME's record is found at the
+place its add gave (Part 9) */
+int store_coll_gather_intent(short k)
+{
+	struct store_intent const *intent = store_intent_of(k);
+	struct store_coll_entry *entry;
+
+	if (!intent)
+		return FALSE;
+	if (intent->stop == 2 || !intent->flags || psp_bs2_slots >= PSP_BS2_SLOTS)
+		return TRUE;
+	entry = &store_coll_entries[psp_bs2_slots];
+	entry->center = intent->center;
+	entry->radius = intent->radius;
+	entry->flags = intent->flags;
+	entry->height = intent->height;
+	entry->width = intent->width;
+	psp_sweepme_pending = psp_sweepme_find_at(intent->me, intent->biped_index, &entry->center.x, entry->radius,
+		entry->height, entry->width, (intent->flags & FLAG(_collision_test_structure_bit)) != 0); /* (FIXES_SWEEPME) */
+	store_coll_pack(entry, intent->biped_index);
+	psp_sweepme_pending = -1;
+	return TRUE;
+}
+#endif
+
 /* the move's list from its entry: 1, a list (the view, or with bipedstage2copy unpacked into the caller's list); 2,
 the gather found nothing; 0, gather live. The entry is found in one read of the map; the four checks keep their order
 and their counters (no entry, flags, pill, sphere outside) */
