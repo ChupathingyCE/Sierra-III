@@ -82,6 +82,16 @@ struct store_intent const *store_intent_of(short k);
 /* after M: the tick's counts, and the log line */
 void store_intent_end(void);
 
+/* bipeds.c's helpers that I and M call and that stay (each has callers past biped_update): their static goes by
+   psp_fixups.py's tick2_motionnew_helpers_cut, so store_motion.c reaches them; LTO (LTO_LIKE_UNITS) still inlines
+   and clones them as it did */
+struct biped_datum;
+struct biped_definition;
+void biped_snap_facing_with(long biped_index, struct biped_datum *biped, struct biped_definition *definition);
+void biped_verify_object_vectors(long biped_index, char const *state);
+long biped_find_ground_surface(long biped_index, real_vector3d const *direction, real distance, real_point3d *point,
+	real_vector3d *normal);
+
 /* G (store_coll.c): staged biped k's gather from its entry. TRUE handled (gathered, or no gather wanted), FALSE no
    entry */
 int store_coll_gather_intent(short k);

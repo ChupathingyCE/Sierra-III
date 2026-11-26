@@ -67001,7 +67001,8 @@ tick2_collnew_delete_cut(TREE)
 # solve, so they're refused under it (Part 8). Step 3 writes the stages a piece at a time: until I, M and the delete
 # cut are all in, the switch refuses, so no run reads a half-written form as task 5's.
 TICK2_MOTIONNEW = os.environ.get("PSP_TICK2_MOTIONNEW", "") == "1"
-TICK2_MOTIONNEW_WRITTEN = ("the INTENT table and G", "struct biped_physics to store_motion.h and M's table")  # step 3's pieces in
+TICK2_MOTIONNEW_WRITTEN = ("the INTENT table and G", "struct biped_physics to store_motion.h and M's table",
+                           "I's head (biped_update's, to turning)")  # step 3's pieces in
 def tick2_motionnew_check():
     if not TICK2_MOTIONNEW:
         return 0
@@ -68270,14 +68271,38 @@ def lof_trace(tree):
     return 1
 lof_trace(TREE)
 
+# step 3, third piece: bipeds.c's helpers that I and M call and that stay (each has callers past biped_update) lose
+# their static, so psp/src/store_motion.c reaches them (store_motion.h declares them). At this file's end, because
+# earlier cuts anchor on these definitions' text (FIXES_UNITHOIST's 24769, the verify's 16032). Each count is the
+# fixed-up tree's: biped_snap_facing_with's prototype and body, the others' bodies. A count that differs refuses
+TICK2_MOTIONNEW_HELPERS = (("static void biped_snap_facing_with(\n", 2), ("static void biped_verify_object_vectors(\n", 1),
+                           ("static long biped_find_ground_surface(\n", 1))
+def tick2_motionnew_helpers_cut(tree):
+    if not TICK2_MOTIONNEW_OK:
+        return 0
+    bipeds_c = os.path.join(tree, "source/units/bipeds.c")
+    b = open(bipeds_c, errors="surrogateescape").read()
+    for text, count in TICK2_MOTIONNEW_HELPERS:
+        if b.count(text) != count:
+            check_fail("psp_fixups: TICK2 motionnew: bipeds.c has %r %d times, not %d (a cut or the pin changed the "
+                       "helper's text: read it and set the count)" % (text, b.count(text), count))
+            return 0
+        b = b.replace(text, text[len("static "):])
+    if not CHECK_ONLY:
+        open(bipeds_c, "w", errors="surrogateescape").write(b)
+    print("psp_fixups: TICK2 motionnew (task 5, step 3): %d bipeds.c helpers lose their static for store_motion.c (%s)"
+          % (len(TICK2_MOTIONNEW_HELPERS), ", ".join(t.split()[2].rstrip("(") for t, _ in TICK2_MOTIONNEW_HELPERS)))
+    return 1
+tick2_motionnew_helpers_cut(TREE)
+
 # PSP_TICK2_MOTIONNEW=1 while step 3 is being written: every piece's cut above has run (so a form check exercises
 # them), and the build refuses here, naming the pieces in, so no run reads a half-written form as task 5's. It goes
 # with the delete cut, the last piece
 def tick2_motionnew_written():
     if not TICK2_MOTIONNEW_OK:
         return 0
-    check_fail("psp_fixups: TICK2 motionnew: task 5's stages are being written (in: %s; still to come: I's code, M, "
-               "the delete cut); PSP_TICK2_MOTIONNEW=1 builds once they're all in" % "; ".join(TICK2_MOTIONNEW_WRITTEN))
+    check_fail("psp_fixups: TICK2 motionnew: task 5's stages are being written (in: %s; still to come: I's turning, "
+               "the physics' build to the call and the turn's driver, M, the delete cut); PSP_TICK2_MOTIONNEW=1 builds once they're all in" % "; ".join(TICK2_MOTIONNEW_WRITTEN))
     return 0
 tick2_motionnew_written()
 
