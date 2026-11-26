@@ -64025,6 +64025,9 @@ bpcount_cut(TREE)
 # counts bit tests, head loads and bit misses on a "collindex: ... bits:" line (docs/box_collision.md 12.7 (a)).
 # The keep word collindexwide puts a factor of 4 between layers in place of 2, in 4 layers (or PSP_COLLINDEX_LAYERS if
 # fewer), and logs a "collindex: ... wide:" line (docs/box_collision.md 12.7 (b)).
+# The keep word collindexcache puts a direct-mapped cache of PSP_COLLINDEX_CACHE recent cell answers (default 64, (layer,
+# cx, cy) to head) in front of the head loads, valid while the index's change count is unchanged, and counts lookups,
+# hits and stale answers on a "collindex: ... cache:" line (docs/box_collision.md 12.7 (c)).
 COLLINDEX =os.environ.get("PSP_COLLINDEX", "") == "1"
 COLLINDEX_CELL = float(os.environ.get("PSP_COLLINDEX_CELL", "2"))
 COLLINDEX_LAYERS = int(os.environ.get("PSP_COLLINDEX_LAYERS", "6"))
@@ -64035,6 +64038,9 @@ if COLLINDEX_BUCKETS & (COLLINDEX_BUCKETS - 1):
 COLLINDEX_OCC = int(os.environ.get("PSP_COLLINDEX_OCC", "4096"))
 if COLLINDEX_OCC & (COLLINDEX_OCC - 1) or COLLINDEX_OCC < 32 or COLLINDEX_OCC > COLLINDEX_BUCKETS:
     check_fail("psp_fixups: PSP_COLLINDEX_OCC must be a power of two, 32 to PSP_COLLINDEX_BUCKETS")
+COLLINDEX_CACHE = int(os.environ.get("PSP_COLLINDEX_CACHE", "64"))
+if COLLINDEX_CACHE & (COLLINDEX_CACHE - 1) or COLLINDEX_CACHE < 1 or COLLINDEX_CACHE > COLLINDEX_BUCKETS:
+    check_fail("psp_fixups: PSP_COLLINDEX_CACHE must be a power of two, 1 to PSP_COLLINDEX_BUCKETS")
 CI_CODE = r"""
 /* PSP_COLLINDEX (psp_fixups.py): the collision box's objects' index, in shadow (docs/box_collision.md section 12) */
 #define PSP_CI_CELL @CELL@f
@@ -64042,6 +64048,7 @@ CI_CODE = r"""
 #define PSP_CI_RAYSTEP @RAYSTEP@
 #define PSP_CI_LAYERS @LAYERS@ /* layer L: radii up to PSP_CI_CELL * 2^L / 2, in cells of PSP_CI_CELL * 2^L (collindexwide: 4^L, psp_ci_nl layers) */
 #define PSP_CI_OCC @OCC@ /* occupancy bits a layer (collindexbits) */
+#define PSP_CI_CACHE @CACHE@ /* recent cell answers, direct-mapped (collindexcache) */
 struct psp_ci_entry
 {
 	real_point3d c;
@@ -64054,6 +64061,24 @@ static short psp_ci_head[PSP_CI_BUCKETS], psp_ci_large = -1;
 static unsigned psp_ci_occ[PSP_CI_LAYERS][PSP_CI_OCC / 32];
 static int psp_ci_on = -1, psp_ci_ready, psp_ci_bits; /* collindexbits: the occupancy bitmap on */
 static int psp_ci_shift = 1, psp_ci_nl = PSP_CI_LAYERS; /* collindexwide: 2 and at most 4, a factor of 4 between layers */
+/* collindexcache: a cell's answer is kept with the change count it was read at, so a change voids every answer at once */
+struct psp_ci_cached
+{
+	unsigned long count;
+	short cx, cy, head;
+	unsigned char layer;
+};
+static struct psp_ci_cached psp_ci_cache[PSP_CI_CACHE];
+static int psp_ci_caching;
+static unsigned long psp_ci_changes = 1; /* the index's change count: bumped wherever a head can change; 0 is never current */
+static void psp_ci_changed(void)
+{
+	if (!++psp_ci_changes) /* wrapped: no kept answer may match */
+	{
+		memset(psp_ci_cache, 0, sizeof(psp_ci_cache));
+		psp_ci_changes = 1;
+	}
+}
 unsigned long psp_ci_me_dirty;
 /* sets made, moves across cells, removes, rebuilds, rebuilds for the ME */
 unsigned long psp_ci_upd[5];
@@ -64085,6 +64110,7 @@ static void psp_ci_unlink(short k)
 	if (*at == k)
 		*at = psp_ci[k].next;
 	psp_ci[k].in = 0;
+	psp_ci_changed();
 	if (psp_ci_bits && !psp_ci[k].large) /* its cx, cy and layer are still the old ones */
 	{
 		unsigned i = psp_ci_occ_bit(psp_ci[k].layer, psp_ci[k].cx, psp_ci[k].cy);
@@ -64151,6 +64177,7 @@ static void psp_ci_set(long object_index, real_point3d const *c, real r)
 	e->next = *psp_ci_list(e);
 	*psp_ci_list(e) = k;
 	e->in = 1;
+	psp_ci_changed();
 	if (psp_ci_bits && !large)
 	{
 		unsigned i = psp_ci_occ_bit(layer, cx, cy);
@@ -64178,6 +64205,7 @@ static void psp_ci_rebuild(void)
 		psp_ci_head[k] = -1;
 	psp_ci_large = -1;
 	memset(psp_ci_occ, 0, sizeof(psp_ci_occ));
+	psp_ci_changed();
 	for (k = 0; k < MAXIMUM_OBJECTS_PER_MAP; k++)
 		psp_ci[k].in = 0;
 	object_iterator_new(&iterator, _object_mask_all, 0);
@@ -64203,6 +64231,7 @@ static int psp_ci_live(void)
 			psp_ci_shift = 2;
 			psp_ci_nl = PSP_CI_LAYERS < 4 ? PSP_CI_LAYERS : 4;
 		}
+		psp_ci_caching = psp_ci_on && PSP_KEEP_ONCE("collindexcache") ? 1 : 0;
 	}
 	if (!psp_ci_on || psp_work_on_me())
 		return 0;
@@ -64228,6 +64257,7 @@ candidates (in the cells asked for), the large list's entries, the walk's passes
 static unsigned long psp_ci_cen[3][8];
 static unsigned long psp_ci_reach[3][9]; /* queries by their width in x or y: a sphere's diameter, a ray's extent */
 static unsigned long psp_ci_bit_n[3][3]; /* collindexbits: by site, bit tests, head loads, misses */
+static unsigned long psp_ci_cache_n[3][3]; /* collindexcache: by site, lookups, hits, stale */
 static long psp_ci_window = -1;
 static void psp_ci_report(long tick)
 {
@@ -64264,6 +64294,17 @@ static void psp_ci_report(long tick)
 	if (psp_ci_shift == 2) /* collindexwide: the layers' cells */
 		platform_psp_log("collindex: cell %.1f tick %ld wide: %d layers, a factor of 4, cells %.1f to %.1f",
 			PSP_CI_CELL, tick, psp_ci_nl, PSP_CI_CELL, psp_ci_size(psp_ci_nl - 1));
+	if (psp_ci_caching) /* collindexcache: head loads are the misses; stale must be 0 */
+	{
+		static unsigned long last_changes;
+
+		for (k = 0; k < 3; k++)
+			platform_psp_log("collindex: cell %.1f ticks %ld-%ld %s cache: lookups %lu, hits %lu, head loads %lu, stale %lu",
+				PSP_CI_CELL, tick - 300, tick - 1, names[k], psp_ci_cache_n[k][0], psp_ci_cache_n[k][1], psp_ci_bit_n[k][1], psp_ci_cache_n[k][2]);
+		platform_psp_log("collindex: cell %.1f ticks %ld-%ld cache: %d entries, changes %lu",
+			PSP_CI_CELL, tick - 300, tick - 1, PSP_CI_CACHE, psp_ci_changes - last_changes);
+		last_changes = psp_ci_changes;
+	}
 	platform_psp_log("collindex: cell %.1f ticks %ld-%ld updates: sets %lu, cell moves %lu, removes %lu, rebuilds %lu (for the ME %lu)",
 		PSP_CI_CELL, tick - 300, tick - 1, psp_ci_upd[0], psp_ci_upd[1], psp_ci_upd[2], psp_ci_upd[3], psp_ci_upd[4]);
 	{
@@ -64295,6 +64336,7 @@ static void psp_ci_report(long tick)
 	memset(psp_ci_upd, 0, sizeof(psp_ci_upd));
 	memset(psp_ci_reach, 0, sizeof(psp_ci_reach));
 	memset(psp_ci_bit_n, 0, sizeof(psp_ci_bit_n));
+	memset(psp_ci_cache_n, 0, sizeof(psp_ci_cache_n));
 }
 static void psp_ci_window_check(void)
 {
@@ -64306,6 +64348,35 @@ static void psp_ci_window_check(void)
 			psp_ci_report(window * 300);
 		psp_ci_window = window;
 	}
+}
+/* a cell's head, counted as a head load (collindexcache: a kept answer read at the current change count is a hit, not a
+load; it is checked against the table, uncounted, as the bits' misses are) */
+static short psp_ci_head_of(int site, int layer, long cx, long cy)
+{
+	unsigned h = psp_ci_hash(layer, cx, cy);
+	struct psp_ci_cached *c = &psp_ci_cache[h & (PSP_CI_CACHE - 1)];
+
+	if (psp_ci_caching)
+	{
+		psp_ci_cache_n[site][0]++;
+		if (c->count == psp_ci_changes && c->layer == layer && c->cx == cx && c->cy == cy)
+		{
+			psp_ci_cache_n[site][1]++;
+			if (c->head != psp_ci_head[h]) /* a stale answer is a bug: a head change the count didn't see */
+				psp_ci_cache_n[site][2]++;
+			return c->head;
+		}
+	}
+	psp_ci_bit_n[site][1]++;
+	if (psp_ci_caching)
+	{
+		c->count = psp_ci_changes;
+		c->layer = (unsigned char)layer;
+		c->cx = (short)cx;
+		c->cy = (short)cy;
+		c->head = psp_ci_head[h];
+	}
+	return psp_ci_head[h];
 }
 /* a query over [x0, x1] x [y0, y1]: in each layer, the cells within half a cell of it; then the large list */
 static void psp_ci_query(int site, real x0, real x1, real y0, real y1)
@@ -64342,8 +64413,7 @@ static void psp_ci_query(int site, real x0, real x1, real y0, real y1)
 					psp_ci_bit_n[site][0]++;
 					if ((psp_ci_occ[layer][i >> 5] >> (i & 31)) & 1)
 					{
-						psp_ci_bit_n[site][1]++;
-						for (k = psp_ci_head[psp_ci_hash(layer, cx, cy)]; k >= 0; k = psp_ci[k].next)
+						for (k = psp_ci_head_of(site, layer, cx, cy); k >= 0; k = psp_ci[k].next)
 						{
 							n[2]++;
 							if (psp_ci[k].layer == layer && psp_ci[k].cx == cx && psp_ci[k].cy == cy)
@@ -64357,8 +64427,7 @@ static void psp_ci_query(int site, real x0, real x1, real y0, real y1)
 				}
 				else
 				{
-					psp_ci_bit_n[site][1]++;
-					for (k = psp_ci_head[psp_ci_hash(layer, cx, cy)]; k >= 0; k = psp_ci[k].next)
+					for (k = psp_ci_head_of(site, layer, cx, cy); k >= 0; k = psp_ci[k].next)
 					{
 						n[2]++;
 						if (psp_ci[k].layer == layer && psp_ci[k].cx == cx && psp_ci[k].cy == cy)
@@ -64492,8 +64561,7 @@ static void psp_ci_ray_cells(int site, unsigned long *n, real x0, real y0, real 
 						psp_ci_bit_n[site][0]++;
 						if ((psp_ci_occ[layer][i >> 5] >> (i & 31)) & 1)
 						{
-							psp_ci_bit_n[site][1]++;
-							for (k = psp_ci_head[psp_ci_hash(layer, cx + ox, cy + oy)]; k >= 0; k = psp_ci[k].next)
+							for (k = psp_ci_head_of(site, layer, cx + ox, cy + oy); k >= 0; k = psp_ci[k].next)
 							{
 								n[2]++;
 								if (psp_ci[k].layer == layer && psp_ci[k].cx == cx + ox && psp_ci[k].cy == cy + oy)
@@ -64507,8 +64575,7 @@ static void psp_ci_ray_cells(int site, unsigned long *n, real x0, real y0, real 
 					}
 					else
 					{
-						psp_ci_bit_n[site][1]++;
-						for (k = psp_ci_head[psp_ci_hash(layer, cx + ox, cy + oy)]; k >= 0; k = psp_ci[k].next)
+						for (k = psp_ci_head_of(site, layer, cx + ox, cy + oy); k >= 0; k = psp_ci[k].next)
 						{
 							n[2]++;
 							if (psp_ci[k].layer == layer && psp_ci[k].cx == cx + ox && psp_ci[k].cy == cy + oy)
@@ -64608,7 +64675,7 @@ def collindex_cut(tree):
             return text
         i = text.index(old, start, end)
         return text[:i] + new + text[i + len(old):]
-    o = one(o, "static void tick2_cs_all(void)\n{\n", CI_CODE.replace("@CELL@", repr(COLLINDEX_CELL)).replace("@LAYERS@", str(COLLINDEX_LAYERS)).replace("@RAYSTEP@", "1" if COLLINDEX_RAYSTEP else "0").replace("@BUCKETS@", str(COLLINDEX_BUCKETS)).replace("@OCC@", str(COLLINDEX_OCC)) + "static void tick2_cs_all(void)\n{\n", "the stamps' head")
+    o = one(o, "static void tick2_cs_all(void)\n{\n", CI_CODE.replace("@CELL@", repr(COLLINDEX_CELL)).replace("@LAYERS@", str(COLLINDEX_LAYERS)).replace("@RAYSTEP@", "1" if COLLINDEX_RAYSTEP else "0").replace("@BUCKETS@", str(COLLINDEX_BUCKETS)).replace("@OCC@", str(COLLINDEX_OCC)).replace("@CACHE@", str(COLLINDEX_CACHE)) +"static void tick2_cs_all(void)\n{\n", "the stamps' head")
     for old, new, what in (
         ("\ttick2_cs_stamp_list(tick2_cs_held.clusters, tick2_cs_held.count, tick2_cs_held.object_index);\n\ttick2_cs_held.object_index = NONE;\n\ttick2_cs_counts[3]++;\n",
          "\tif (psp_ci_on > 0)\n\t\tpsp_ci_remove(tick2_cs_held.object_index); /* PSP_COLLINDEX */\n"
