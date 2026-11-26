@@ -32,6 +32,9 @@ biped_bumped_object	motion	units/bipeds.c (static; only biped_update_moving)	5
 biped_falling_damage	motion	units/bipeds.c (static; only biped_update_moving)	5
 biped_vehicle_speech	motion	units/bipeds.c (static; only biped_update)	5
 biped_check_discard	motion	units/bipeds.c (static; only biped_update)	5
+# reached only from biped_update_dead and _airborne (box_world_store.md 19 part 8;
+# the lead 2026-11-26 00:3x (2), the lab's decisions.md)
+biped_apply_rotation	motion	units/bipeds.c (static; only biped_update_dead, biped_update_airborne)	5
 
 # the limp body (task 5); units.c (slice 3's) calls start and stop: an accessor until then
 biped_start_limp_body_physics	limp	units/bipeds.c (called from units.c)	5
@@ -75,12 +78,23 @@ psp_bipedstage3_intent	staged	units/bipeds.c (FIXES_BIPEDSTAGE; the intent's cut
 psp_bipedstage3_kept	staged	units/bipeds.c (FIXES_BIPEDSTAGE; the intent's cut, until task 5)	5
 psp_bipedstage3_call	staged	units/bipeds.c (FIXES_BIPEDSTAGE; the intent's cut, until task 5)	5
 psp_bs3_find	staged	units/bipeds.c (FIXES_BIPEDSTAGE; the intent's cut, until task 5)	5
+# the sixth: the ME's level half after each intent, which I's own end replaces
+# (the lead 2026-11-26 00:2x (1), the lab's decisions.md; box_world_store.md 19 part 7)
+psp_sweepme_after_intent	staged	physics/collisions.c (FIXES_SWEEPME; the ME's level half after each intent)	5
 # task 4's two left for task 5 (the lead 2026-11-25 15:5x (3), the lab's
 # decisions.md): the run's live flag, renamed by piece 4 and read only by the
 # task-5 halves and the gather's test, and the margin gather, whose engine
 # reads are task 5's. Listed so the map counts them present: done-when 1
 # can't pass while they stand.
 store_biped_live_until_task5	staged	objects/objects.c (static; tick2_collnew, psp_bipedstage_live renamed in piece 4)	5
+# the boundary's other three halves, store_biped_pass's calls into the old
+# intent, test and solve (box_world_store.md 19 part 8; the lead 2026-11-26 00:3x (2))
+store_biped_intent_until_task5	staged	objects/objects.c (tick2_collnew; the intent, verbatim)	5
+store_biped_alive_until_task5	staged	objects/objects.c (tick2_collnew; the run's own test)	5
+store_biped_solve_until_task5	staged	objects/objects.c (tick2_collnew; the solve, verbatim)	5
+# the margin gather is task 5's only on clause 10's branch (i), no tick over the
+# pool: if the count picks (ii), this row comes off in the same commit, unpoisoned
+# (the lead 2026-11-26 00:2x (2), 00:3x (2))
 store_coll_gather_margin	staged	psp/src/store_coll.c (the moved body but its two entry lines; the margin gather)	5
 
 # the node-matrix walk (task 3). Callers outside the tick go to
