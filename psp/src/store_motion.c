@@ -360,3 +360,268 @@ static int store_intent_head(long biped_index, struct biped_datum *biped, struct
 	biped_verify_object_vectors(biped_index, "pre-turning");
 	return 1;
 }
+
+/* I's turning, biped_update_turning (bipeds.c 4004-4295 in the ship form, on the delete list: only biped_update
+   called it), the same tests and the same float expressions in the same order. CONTROL and line 2 are looked up once
+   each where the hoist worked each out at its first use (tick2_unit_ctl_of and _bip2_of are the record's address
+   and no more: the same pointer either way), ANIM once on the ground branch, which alone reads it. The snap is
+   biped_snap_facing_with on the pair I holds: biped_snap_facing was it over biped_get and the definition's lookup,
+   the same datum and definition (FIXES_UNITHOIST's unithoistold answer). PSP_RECON's psp_unithoist_check is left
+   out: the pair here is always passed, never NULL, so there's no lookup to check against */
+static void store_intent_turning(long biped_index, struct biped_datum *biped, struct biped_definition *definition,
+	struct unit_animation_update_data *animation)
+{
+	unsigned long flags = definition->biped.flags;
+	struct tick2_unit_ctl *control = tick2_unit_ctl_of(biped->object.root);
+	struct tick2_unit_bip2 *line2 = tick2_unit_bip2_of(biped->object.root);
+
+	if (TEST_FLAG(flags, _biped_flying_bit) &&
+		!TEST_FLAG(biped->object.damage_flags, _object_dead_bit))
+	{
+		boolean nearly_stationary = FALSE;
+		real_vector3d target_facing;
+		real_vector3d turn_axis;
+		real turn_rate;
+		real target_bank;
+		real bank_blend;
+		real bank_time;
+		real_rectangle2d facing_bounds;
+		real angular_velocity_limit;
+		real angular_acceleration_limit;
+
+		if (magnitude_squared3d(&biped->object.root->translational_velocity)<0.00027777778f &&
+			magnitude_squared3d(&biped->object.root->angular_velocity)<0.0000013538552f &&
+			magnitude_squared3d(&control->throttle)<0.010000001f)
+		{
+			real stationary_turning_threshold =
+				TEST_FLAG(control->control_flags, _unit_control_exact_facing_bit) ?
+				0.99000001f : definition->biped.runtime_cosine_stationary_turning_threshold;
+
+			if (dot_product3d(&control->desired_facing_vector, &biped->object.root->forward)>stationary_turning_threshold)
+			{
+				nearly_stationary = TRUE;
+			}
+		}
+
+		if (nearly_stationary)
+		{
+			target_facing = biped->object.root->forward;
+		}
+		else
+		{
+			real pitch = definition->biped.flying_pitch_amount*control->throttle.k;
+
+			target_facing = control->desired_facing_vector;
+			if (pitch!=0.f)
+			{
+				target_facing.k += pitch;
+				if (normalize3d(&target_facing)==0.f)
+					target_facing = control->desired_facing_vector;
+			}
+		}
+
+		cross_product3d(&biped->object.root->forward, &biped->object.root->up, &turn_axis);
+		turn_rate = dot_product3d(&turn_axis, &control->desired_facing_vector)*
+			(10.f/3.f)*control->throttle.i - control->throttle.j;
+		if (turn_rate>1.5f)
+			turn_rate = 1.5f;
+
+		target_bank = definition->biped.flying_bank_amount*turn_rate;
+		if (line2->bank*target_bank>0.f)
+		{
+			real bank_ratio = line2->bank/target_bank;
+
+			if (bank_ratio>1.f)
+				bank_ratio = 1.f;
+			bank_blend = 1.f-bank_ratio;
+		}
+		else
+		{
+			bank_blend = 1.f;
+		}
+
+		bank_time = definition->biped.flying_bank_apply_time*bank_blend +
+			definition->biped.flying_bank_decay_time*(1.f-bank_blend);
+		if (bank_time>0.f)
+		{
+			line2->bank += (target_bank-line2->bank)/(bank_time*TICKS_PER_SECOND);
+		}
+		else
+		{
+			line2->bank = target_bank;
+		}
+
+		facing_bounds.x0 = -_pi;
+		facing_bounds.x1 = _pi;
+		facing_bounds.y0 = -_pi/2.f;
+		facing_bounds.y1 = _pi/2.f;
+		angular_velocity_limit =
+			definition->biped.flying_angular_velocity/TICKS_PER_SECOND;
+		angular_acceleration_limit =
+			definition->biped.flying_angular_acceleration/
+			(TICKS_PER_SECOND*TICKS_PER_SECOND);
+		if (angular_acceleration_limit==0.f)
+		{
+			biped->object.root->forward = target_facing;
+		}
+		else
+		{
+			unit_euler_aiming_update(
+				NULL,
+				&biped->object.root->forward,
+				&target_facing,
+				&biped->object.root->angular_velocity,
+				&facing_bounds,
+				angular_velocity_limit,
+				angular_acceleration_limit);
+		}
+
+		biped_snap_facing_with(biped_index, biped, definition);
+		biped_verify_object_vectors(biped_index, "post-fly-turn");
+	}
+	else
+	{
+		struct unit_animation *anim = tick2_unit_anim_of(biped->object.root);
+
+		if (anim->base_seat_index!=_unit_base_seat_asleep)
+		{
+			boolean flaming = anim->base_seat_index==_unit_base_seat_flaming;
+			real_vector3d turn_axis;
+			real turn_error;
+			real facing_alignment;
+			boolean turn_right;
+
+			if (TEST_FLAG(flags, _biped_climbs_anything_bit))
+			{
+				real_vector3d cross;
+				real_vector3d error;
+
+				cross_product3d(&biped->object.root->up, &control->desired_facing_vector, &cross);
+				cross_product3d(&cross, &biped->object.root->up, &turn_axis);
+				if (normalize3d(&turn_axis)==0.f)
+					turn_axis = biped->object.root->forward;
+
+				cross_product3d(&turn_axis, &biped->object.root->forward, &error);
+				turn_error = dot_product3d(&error, &biped->object.root->up);
+				facing_alignment = dot_product3d(&turn_axis, &biped->object.root->forward);
+			}
+			else
+			{
+				real_vector2d forward_2d;
+				real_vector2d turn_axis_2d;
+
+				turn_axis = control->desired_facing_vector;
+				turn_axis.k = 0.f;
+				turn_axis_2d.i = turn_axis.i;
+				turn_axis_2d.j = turn_axis.j;
+				if (normalize2d(&turn_axis_2d)==0.f)
+				{
+					turn_axis = biped->object.root->forward;
+				}
+				else
+				{
+					turn_axis.i = turn_axis_2d.i;
+					turn_axis.j = turn_axis_2d.j;
+				}
+				turn_axis_2d.i = turn_axis.i;
+				turn_axis_2d.j = turn_axis.j;
+
+				forward_2d.i = biped->object.root->forward.i;
+				forward_2d.j = biped->object.root->forward.j;
+				turn_error = cross_product2d(&turn_axis_2d, &forward_2d);
+				facing_alignment = dot_product2d(&turn_axis_2d, &forward_2d);
+			}
+
+			turn_right = turn_error>0.f;
+			if (facing_alignment<-0.89999998f)
+			{
+				if (anim->state==_unit_state_turn_right)
+					turn_right = TRUE;
+				else if (anim->state==_unit_state_turn_left)
+					turn_right = FALSE;
+			}
+
+			if (line2->state==biped_state_moving ||
+				TEST_FLAG(flags, _biped_turns_without_animating_bit))
+			{
+				if (!TEST_FLAG(control->control_flags, _unit_control_look_dont_turn_bit))
+				{
+					real turn_step =
+						definition->biped.moving_turning_speed/TICKS_PER_SECOND;
+					real cosine = (real)cos(turn_step);
+					real sine = (real)sin(turn_step);
+					real progress;
+
+					if (turn_right)
+						sine = -sine;
+
+					if (TEST_FLAG(flags, _biped_climbs_anything_bit))
+					{
+						real_vector3d cross;
+
+						rotate_vector_about_axis(&biped->object.root->forward, &biped->object.root->up, sine, cosine);
+						cross_product3d(&turn_axis, &biped->object.root->forward, &cross);
+						progress = dot_product3d(&cross, &biped->object.root->up);
+					}
+					else
+					{
+						real_vector2d forward_2d;
+						real_vector2d turn_axis_2d;
+
+						forward_2d.i = biped->object.root->forward.i;
+						forward_2d.j = biped->object.root->forward.j;
+						turn_axis_2d.i = turn_axis.i;
+						turn_axis_2d.j = turn_axis.j;
+						rotate_vector2d(&forward_2d, sine, cosine, &forward_2d);
+						biped->object.root->forward.i = forward_2d.i;
+						biped->object.root->forward.j = forward_2d.j;
+						progress = cross_product2d(&turn_axis_2d, &forward_2d);
+					}
+
+					if ((!turn_right || progress<0.f) &&
+						(turn_right || progress>0.f))
+					{
+						if (TEST_FLAG(flags, _biped_climbs_anything_bit))
+						{
+							real_vector3d rotation_axis;
+
+							cross_product3d(&biped->object.root->up, &turn_axis, &rotation_axis);
+							if (normalize3d(&rotation_axis)>0.f)
+							{
+								cross_product3d(&rotation_axis, &biped->object.root->up, &biped->object.root->forward);
+							}
+						}
+						else
+						{
+							biped->object.root->forward = turn_axis;
+							biped->object.root->forward.k = 0.f;
+							biped->object.root->up = *global_up3d;
+						}
+
+						normalize3d(&biped->object.root->forward);
+					}
+				}
+
+				biped_verify_object_vectors(biped_index, "post-moving-turn");
+			}
+			else if (line2->state==biped_state_idle &&
+				!flaming &&
+				!TEST_FLAG(biped->unit.flags, _unit_aim_without_turning_bit) &&
+				!TEST_FLAG(control->control_flags, _unit_control_look_dont_turn_bit))
+			{
+				real stationary_turning_threshold =
+					TEST_FLAG(control->control_flags, _unit_control_exact_facing_bit) ?
+					0.99000001f : definition->biped.runtime_cosine_stationary_turning_threshold;
+
+				if (facing_alignment<stationary_turning_threshold &&
+					!TEST_FLAG(definition->unit.flags, _unit_is_special_bit))
+				{
+					animation->state_desired = turn_right ?
+						_unit_state_turn_right : _unit_state_turn_left;
+				}
+
+				biped_verify_object_vectors(biped_index, "post-standing-turn");
+			}
+		}
+	}
+}
