@@ -64023,7 +64023,9 @@ bpcount_cut(TREE)
 # A line a site each 300 ticks. The cell size is PSP_COLLINDEX_CELL (world units, default 2).
 # The keep word collindexbits puts a bitmap of PSP_COLLINDEX_OCC bits a layer (default 4,096) in front of the heads and
 # counts bit tests, head loads and bit misses on a "collindex: ... bits:" line (docs/box_collision.md 12.7 (a)).
-COLLINDEX = os.environ.get("PSP_COLLINDEX", "") == "1"
+# The keep word collindexwide puts a factor of 4 between layers in place of 2, in 4 layers (or PSP_COLLINDEX_LAYERS if
+# fewer), and logs a "collindex: ... wide:" line (docs/box_collision.md 12.7 (b)).
+COLLINDEX =os.environ.get("PSP_COLLINDEX", "") == "1"
 COLLINDEX_CELL = float(os.environ.get("PSP_COLLINDEX_CELL", "2"))
 COLLINDEX_LAYERS = int(os.environ.get("PSP_COLLINDEX_LAYERS", "6"))
 COLLINDEX_RAYSTEP = os.environ.get("PSP_COLLINDEX_RAYSTEP", "") == "1"
@@ -64038,7 +64040,7 @@ CI_CODE = r"""
 #define PSP_CI_CELL @CELL@f
 #define PSP_CI_BUCKETS @BUCKETS@
 #define PSP_CI_RAYSTEP @RAYSTEP@
-#define PSP_CI_LAYERS @LAYERS@ /* layer L: radii up to PSP_CI_CELL * 2^L / 2, in cells of PSP_CI_CELL * 2^L */
+#define PSP_CI_LAYERS @LAYERS@ /* layer L: radii up to PSP_CI_CELL * 2^L / 2, in cells of PSP_CI_CELL * 2^L (collindexwide: 4^L, psp_ci_nl layers) */
 #define PSP_CI_OCC @OCC@ /* occupancy bits a layer (collindexbits) */
 struct psp_ci_entry
 {
@@ -64051,6 +64053,7 @@ static struct psp_ci_entry psp_ci[MAXIMUM_OBJECTS_PER_MAP];
 static short psp_ci_head[PSP_CI_BUCKETS], psp_ci_large = -1;
 static unsigned psp_ci_occ[PSP_CI_LAYERS][PSP_CI_OCC / 32];
 static int psp_ci_on = -1, psp_ci_ready, psp_ci_bits; /* collindexbits: the occupancy bitmap on */
+static int psp_ci_shift = 1, psp_ci_nl = PSP_CI_LAYERS; /* collindexwide: 2 and at most 4, a factor of 4 between layers */
 unsigned long psp_ci_me_dirty;
 /* sets made, moves across cells, removes, rebuilds, rebuilds for the ME */
 unsigned long psp_ci_upd[5];
@@ -64069,7 +64072,7 @@ static short *psp_ci_list(struct psp_ci_entry const *e)
 }
 static real psp_ci_size(int layer)
 {
-	return PSP_CI_CELL * (real)(1 << layer);
+	return PSP_CI_CELL * (real)(1 << (layer * psp_ci_shift));
 }
 /* collindexbits: the bit is cleared only when no other entry of the same layer is in a bucket that maps to it (b = low bits + j a layer) */
 static void psp_ci_unlink(short k)
@@ -64112,16 +64115,16 @@ static int psp_ci_layer_of(real r)
 {
 	int layer = 0;
 
-	while (layer < PSP_CI_LAYERS && r > psp_ci_size(layer) * 0.5f)
+	while (layer < psp_ci_nl && r > psp_ci_size(layer) * 0.5f)
 		layer++;
-	return layer; /* PSP_CI_LAYERS: the large list */
+	return layer; /* psp_ci_nl: the large list */
 }
 static void psp_ci_set(long object_index, real_point3d const *c, real r)
 {
 	short k = (short)DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index);
 	struct psp_ci_entry *e;
 	int layer = psp_ci_layer_of(r);
-	unsigned char large = layer >= PSP_CI_LAYERS;
+	unsigned char large = layer >= psp_ci_nl;
 	short cx = large ? 0 : psp_ci_cell_at(layer, c->x), cy = large ? 0 : psp_ci_cell_at(layer, c->y);
 
 	if (k < 0 || k >= MAXIMUM_OBJECTS_PER_MAP)
@@ -64195,6 +64198,11 @@ static int psp_ci_live(void)
 	{
 		psp_ci_on = PSP_KEEP_ONCE("collindexshadow") ? 1 : 0;
 		psp_ci_bits = psp_ci_on && PSP_KEEP_ONCE("collindexbits") ? 1 : 0;
+		if (psp_ci_on && PSP_KEEP_ONCE("collindexwide")) /* read before the first rebuild, so every entry is set in one form */
+		{
+			psp_ci_shift = 2;
+			psp_ci_nl = PSP_CI_LAYERS < 4 ? PSP_CI_LAYERS : 4;
+		}
 	}
 	if (!psp_ci_on || psp_work_on_me())
 		return 0;
@@ -64239,7 +64247,7 @@ static void psp_ci_report(long tick)
 		for (k = 0; k < 3; k++)
 			platform_psp_log("collindex: cell %.1f ticks %ld-%ld %s bits: bit tests %lu, head loads %lu, bit misses %lu",
 				PSP_CI_CELL, tick - 300, tick - 1, names[k], psp_ci_bit_n[k][0], psp_ci_bit_n[k][1], psp_ci_bit_n[k][2]);
-		for (a = 0; a < PSP_CI_LAYERS; a++)
+		for (a = 0; a < psp_ci_nl; a++)
 			for (b = 0; b < PSP_CI_OCC / 32; b++)
 			{
 				unsigned w = psp_ci_occ[a][b];
@@ -64251,8 +64259,11 @@ static void psp_ci_report(long tick)
 				}
 			}
 		platform_psp_log("collindex: cell %.1f tick %ld bits: set %lu of %d (%d a layer, %d layers)",
-			PSP_CI_CELL, tick, bits_set, PSP_CI_OCC * PSP_CI_LAYERS, PSP_CI_OCC, PSP_CI_LAYERS);
+			PSP_CI_CELL, tick, bits_set, PSP_CI_OCC * psp_ci_nl, PSP_CI_OCC, psp_ci_nl);
 	}
+	if (psp_ci_shift == 2) /* collindexwide: the layers' cells */
+		platform_psp_log("collindex: cell %.1f tick %ld wide: %d layers, a factor of 4, cells %.1f to %.1f",
+			PSP_CI_CELL, tick, psp_ci_nl, PSP_CI_CELL, psp_ci_size(psp_ci_nl - 1));
 	platform_psp_log("collindex: cell %.1f ticks %ld-%ld updates: sets %lu, cell moves %lu, removes %lu, rebuilds %lu (for the ME %lu)",
 		PSP_CI_CELL, tick - 300, tick - 1, psp_ci_upd[0], psp_ci_upd[1], psp_ci_upd[2], psp_ci_upd[3], psp_ci_upd[4]);
 	{
@@ -64266,12 +64277,12 @@ static void psp_ci_report(long tick)
 			{
 				real r = psp_ci[k].r, top = 0.25f;
 
-				layers[psp_ci[k].large ? PSP_CI_LAYERS : psp_ci[k].layer]++;
+				layers[psp_ci[k].large ? psp_ci_nl : psp_ci[k].layer]++;
 				for (j = 0; j < 8 && r > top; j++)
 					top *= 2.0f;
 				bins[j]++;
 			}
-		for (j = 0; j <= PSP_CI_LAYERS; j++)
+		for (j = 0; j <= psp_ci_nl; j++)
 			n += snprintf(line + n, sizeof(line) - n, " %lu", layers[j]);
 		platform_psp_log("collindex: cell %.1f tick %ld: objects by layer (cells %.1f up, the large list last):%s; by radius (<=0.25 .5 1 2 4 8 16 32 >32): %lu %lu %lu %lu %lu %lu %lu %lu %lu",
 			PSP_CI_CELL, tick, PSP_CI_CELL, line, bins[0], bins[1], bins[2], bins[3], bins[4], bins[5], bins[6], bins[7], bins[8]);
@@ -64309,7 +64320,7 @@ static void psp_ci_query(int site, real x0, real x1, real y0, real y1)
 		top *= 2.0f;
 	psp_ci_reach[site][j]++;
 	n[0]++;
-	for (layer = 0; layer < PSP_CI_LAYERS; layer++)
+	for (layer = 0; layer < psp_ci_nl; layer++)
 	{
 		real half = psp_ci_size(layer) * 0.5f;
 		short cx0 = psp_ci_cell_at(layer, x0 - half), cx1 = psp_ci_cell_at(layer, x1 + half);
@@ -64438,7 +64449,7 @@ static void psp_ci_ray_cells(int site, unsigned long *n, real x0, real y0, real 
 	static long seen[PSP_CI_SEEN];
 	int layer;
 
-	for (layer = 0; layer < PSP_CI_LAYERS; layer++)
+	for (layer = 0; layer < psp_ci_nl; layer++)
 	{
 		real size = psp_ci_size(layer);
 		long cx = psp_ci_cell_at(layer, x0), cy = psp_ci_cell_at(layer, y0);
