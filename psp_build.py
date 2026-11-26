@@ -601,8 +601,14 @@ def units():
     game = [s for s in game if not desktop_unit(s)]
     if not INTERPOLATION:
         game = [s for s in game if s != "port/linux/game/render_interpolation.c"]
+    # slice 1's task 5 (PSP_TICK2_MOTIONNEW=1; docs/box_world_store.md section 19 step 3): the switch's define, made
+    # here where the units' flags are. The engine's units get it too: psp/include's headers test it (store_coll.h's
+    # margin gather, which objects.h poisons on the on form) and the delete cut's scan reads them on its on side for
+    # every includer; collisions.c without it declared the poisoned name (motionnew4, sierra-batch 45871947411). No
+    # engine text names it (the scan refuses an #if that does), so no engine unit's code changes; the off form has none
+    motionnew = ["-DPSP_TICK2_MOTIONNEW=1"] if os.environ.get("PSP_TICK2_MOTIONNEW", "") == "1" else []
     items = [(s, ninja_flags("build/linux/obj/" + s[:-2] + ".o") +
-              (["-DHALO_GAME_BROWSER"] if MULTIPLAYER and s in ONLINE_GAMES_UNITS else []), []) for s in game]
+              (["-DHALO_GAME_BROWSER"] if MULTIPLAYER and s in ONLINE_GAMES_UNITS else []), motionnew) for s in game]
     compat = ["-include", os.path.join(HERE, "psp/include/psp_compat.h")]
     for name in PLATFORM_FILES:
         s = "port/linux/src/%s.c" % name
@@ -615,11 +621,9 @@ def units():
         items.append((s, ninja_flags("build/linux/obj/" + s[:-2] + ".o"), compat))
     items.append(("port/third_party/tomlc17/tomlc17.c", ninja_flags("build/linux/obj/port/third_party/tomlc17/tomlc17.o"), []))
     memory_flags = ninja_flags("build/linux/obj/port/linux/src/xbox_memory.o")
-    # slice 1's task 5 (PSP_TICK2_MOTIONNEW=1; docs/box_world_store.md section 19 step 3): the switch's units are
-    # given its define here, where their flags are made; psp_sweepme.c's G find by place is built only under it, so
-    # no other build's text moves (motionnew1, sierra-batch 45849583031: a define in compile_one's plain-C branch
-    # never reached this unit, which compiles through the engine's, and psp_sweepme_find_at went unlinked)
-    motionnew = ["-DPSP_TICK2_MOTIONNEW=1"] if os.environ.get("PSP_TICK2_MOTIONNEW", "") == "1" else []
+    # psp_sweepme.c's G find by place is built only under the switch's define (motionnew, above), so no other build's
+    # text moves (motionnew1, sierra-batch 45849583031: a define in compile_one's plain-C branch never reached this
+    # unit, which compiles through the engine's, and psp_sweepme_find_at went unlinked)
     for name in PSP_FILES:
         items.append((os.path.join(HERE, "psp/src/%s.c" % name), memory_flags,
                       compat + (motionnew if name == "psp_sweepme" else [])))
