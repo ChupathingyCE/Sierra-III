@@ -64038,6 +64038,11 @@ TICK2_SPAN_HOIST_SITES = [
     ("source/units/bipeds.c", "biped_update", "biped"),
     ("source/units/units.c", "unit_preprocess_node_orientations", "unit"),
 ]
+# task 5 (PSP_TICK2_MOTIONNEW=1) deletes biped_update, _moving and _turning after this cut, so the on form's list is the
+# five unit and vehicle sites (the lead 2026-11-26 00:3x (3), 10:5x (3)); they and PSP_TICK2_HOIST stay until slice 3.
+# Read from the environment: TICK2_MOTIONNEW is defined further down
+if os.environ.get("PSP_TICK2_MOTIONNEW", "") == "1":
+    TICK2_SPAN_HOIST_SITES = [site for site in TICK2_SPAN_HOIST_SITES if site[0] != "source/units/bipeds.c"]
 # BIPED lines 2 (contact) and 3 (pathfinding): the biped datum's tail (the plan's cut sheet, the builder 2026-11-24 10:4x),
 # its datum bytes kept under new names (unused) so nothing shifts, its values in the unit section's record
 TICK2_BIP2_FIELDS = (("char", "landing_recovery_counter"), ("char", "landing_recovery_time"), ("char", "state"), ("char", "elevator_ticks"),
