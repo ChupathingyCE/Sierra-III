@@ -60379,7 +60379,7 @@ unsigned long tick2_proof_hash_words[TICK2_PROOF_HASH_WORDS][2];
 last ray asked, carried named, that the sleepers' checksum skips with the whole tail; collision_bsp.c gives their
 place, from the struct */
 extern long const tick2_proof_bspr_rays_first, tick2_proof_bspr_rays_bytes;
-unsigned long tick2_proof_hash_skips[MAXIMUM_OBJECTS_PER_MAP][2];
+unsigned long tick2_proof_hash_skips[MAXIMUM_OBJECTS_PER_MAP + 1][2]; /* + 1: the objects pool's tail */
 long tick2_proof_hash_skip_count;
 static int tick2_proof_hash_order(const void *a, const void *b)
 {
@@ -60457,6 +60457,26 @@ long tick2_proof_hash_build(void)
 			tick2_proof_hash_skip_count++;
 		}
 """ + TICK2_PROOF_HASH_MORE + r"""	}
+	/* the objects pool's tail as 0 (the lead 21:1x, row pool2910_tail_residue): from the last block's end to the
+	pool's size, the free space compaction leaves stale block images in and nothing reads before writing, so the
+	objects record (and the whole hash) end at the last block: head, blocks and gaps in, the tail out; the store's
+	carve past the pool's size (0 bytes here) stays in. It is after every block, so after every range above */
+	if (object_memory_pool)
+	{
+		struct memory_pool_block const *block;
+		unsigned long last = (unsigned long)object_memory_pool->base_address,
+			carve = last + (unsigned long)object_memory_pool->size;
+
+		for (block = object_memory_pool->first_block; block; block = block->next_block)
+			if ((unsigned long)block + (unsigned long)block->size > last)
+				last = (unsigned long)block + (unsigned long)block->size;
+		if (last < carve)
+		{
+			tick2_proof_hash_skips[tick2_proof_hash_skip_count][0] = last;
+			tick2_proof_hash_skips[tick2_proof_hash_skip_count][1] = carve;
+			tick2_proof_hash_skip_count++;
+		}
+	}
 	qsort(tick2_proof_hash_words, count, sizeof(tick2_proof_hash_words[0]), tick2_proof_hash_order);
 	qsort(tick2_proof_hash_skips, tick2_proof_hash_skip_count, sizeof(tick2_proof_hash_skips[0]), tick2_proof_hash_order);
 	return count;
@@ -60665,7 +60685,9 @@ void psp_objects_pool_split(long tick, unsigned long (*hash)(const void *start, 
 	}
 	if (cursor > carve)
 		cursor = carve;
-	tail_hash = hash((const void *)cursor, (long)(carve - cursor));
+	/* raw: statecrc's hash takes the tail as 0 (the lead 21:1x), and this line still shows its bytes */
+	for (tail_hash = 2166136261UL, at = cursor; at + 4 <= carve; at += 4)
+		tail_hash = (tail_hash ^ *(unsigned long const *)at) * 16777619UL;
 	tail_nonzero = psp_pool_nonzero((const void *)cursor, (long)(carve - cursor));
 	carve_hash = hash((const void *)carve, (long)(end - carve));
 	platform_psp_log("state: pool at tick %ld: whole %08lx head %08lx datums %08lx %ld %lu other %08lx %ld %lu gaps %08lx %ld %lu %lu "
