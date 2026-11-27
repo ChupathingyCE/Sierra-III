@@ -57740,6 +57740,275 @@ def tag_memo_forgets(tree):
 
 for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_SSPR.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + list(FIXES_CHUPA090RUNS.items()) + list(FIXES_HEAPTRIM.items()) + list(FIXES_B78.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items()) + list(FIXES_AIME2A.items()) + list(FIXES_REDOSEED.items()) + (list(FIXES_STACKHOT.items()) if STACKHOT else []) + (list(FIXES_STACKHOT2.items()) if STACKHOT2 else []) + list(FIXES_PWSL.items()) + list(FIXES_SPHSL.items()) + list(FIXES_RECONLIST.items()) + list(FIXES_TP1.items()) + list(FIXES_WXDEAD.items()) + list(FIXES_AIMEMOVE.items()) + list(FIXES_PROPCRASH.items()) + list(FIXES_APCPOOL.items()) + list(FIXES_PSPTLS.items()) + list(FIXES_SNDEDRAM.items()) + list(FIXES_LIGHTFIRST.items()) + list(FIXES_DRAWPART.items()) + (list(FIXES_RECONLATE.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + list(FIXES_P2PASS.items()) + (list(FIXES_P2CENSUS.items()) if P2CENSUS else []) + list(FIXES_OBSRAY.items()) + list(FIXES_SNDWAIT.items()) + list(FIXES_FLAMEDECAL.items()) + list(FIXES_HUHINT.items()) + list(FIXES_DBLSOFT.items()) + list(FIXES_VFPUTRIG.items()) + list(FIXES_TICKCACHE.items()) + list(FIXES_STRICTALIAS.items()) + list(FIXES_SNDPERMAP.items()) + list(FIXES_RLOOP.items()) + list(FIXES_L10.items()) + list(FIXES_RLSKIP.items()) + list(FIXES_ONEWALK.items()) + (list(FIXES_POSEK.items()) if POSEK else []) + (list(FIXES_SNDSTREAM.items()) if os.environ.get("PSP_SNDSTREAM", "") == "1" else []) + list(FIXES_MOUTHCLOCK.items()) + list(FIXES_LSAME.items()) + list(FIXES_CHUPA090.items()) + list(FIXES_V091A.items()) + list(FIXES_AIDEBUGREC.items()) + (list(FIXES_AITICKOLD.items()) if AITICKOLD else []) + (list(FIXES_PADPATH.items()) if os.environ.get("PSP_PADPATH", "") == "1" else []) + list(FIXES_FARLEVEL.items()) + list(FIXES_DECALRING.items()) + list(FIXES_ARRAYFULL.items()) + (list(FIXES_DEADXBOX.items()) if DEADXBOX else []) + (list(FIXES_CAPTURE_POSING.items()) if CAPTURE == "posing" else []) + (list(FIXES_BOXPOSING.items()) if BOXPOSING else []) + (list(FIXES_ASKCENSUS.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + (list(FIXES_CAPTURE_SWEEP.items()) if CAPTURE == "sweep" else []) + (list(FIXES_BIPEDSTAGE.items()) if BIPEDSTAGE else []) + (list(FIXES_WSOLD.items()) if WSOLD else []) + (list(FIXES_SWEEPME.items()) if SWEEPME else []) + list(FIXES_B98.items()) + list(FIXES_SPEECHPAD.items()) + list(FIXES_SOUNDGAMETIME.items()) + list(FIXES_DIET1.items()) + list(FIXES_DIET2.items())):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
+# ---------- "pvscensus" (PSP_PVSCENSUS=1; the lab's draw-pvs task 1,
+# docs/pvs_census.md): the bake census, emulator only. It counts the main
+# CPU's portal walk and only reads: where each portal the walk tests ends (the
+# walk's four-way test, split into range, on the path and not in the camera
+# cluster's PVS; the hull discarded; the far-plane distance; VIS's rect test;
+# the clip empty; a step entered), the steps (roots, entered from a portal,
+# past the 160-step budget), the re-entries of a cluster already rendered on
+# the walk (split by whether its clip rect grew), and per camera cluster the
+# union of the clusters its walks rendered (its reach set) against its PVS.
+# The hooks are PSP_PVSC(call) in structure_visibility.c, which mevis_copies
+# makes nothing in the ME's copies; the counts and the log are in
+# structure_bsp_definitions.c, which mevis doesn't copy. Applied last, on
+# the text the fixups above leave. Its runs need the keep word mevislandoff,
+# so the main CPU makes every frame's visibility. Logged every 900 walks,
+# with the "portal walks" line: totals since the start
+PVSCENSUS = os.environ.get("PSP_PVSCENSUS", "") == "1"
+PVSCENSUS_C = """
+#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_PVSCENSUS, PSP_PVSCENSUS=1): the PVS census's counts.
+The main CPU's portal walk (structure_visibility.c) calls these; they only
+count and log. Every 900 walks, beside the "portal walks" line: a
+"pvscensus:" line of totals since the start, then a "pvscensus cluster" line
+for each camera cluster (a bsp's ordinal and the cluster's index) */
+void platform_psp_log(const char *format, ...);
+
+#define PSP_PVSC_CAMERAS 96
+#define PSP_PVSC_WORDS BIT_VECTOR_SIZE_IN_LONGS(MAXIMUM_CLUSTERS_PER_STRUCTURE)
+static unsigned long psp_pvsc_steps, psp_pvsc_past_budget, psp_pvsc_roots, psp_pvsc_walks, psp_pvsc_none,
+    psp_pvsc_over, psp_pvsc_tested, psp_pvsc_range, psp_pvsc_path, psp_pvsc_pvs, psp_pvsc_exits[5],
+    psp_pvsc_reentries, psp_pvsc_inside, psp_pvsc_rendered, psp_pvsc_in_pvs, psp_pvsc_outside,
+    psp_pvsc_cameras_past, psp_pvsc_walk_reentries, psp_pvsc_walk_inside;
+static int psp_pvsc_was_rendered;
+static float psp_pvsc_bounds_before[4];
+static struct structure_bsp const *psp_pvsc_bsps[8];
+static int psp_pvsc_bsp_count;
+static struct
+{
+    short bsp, cluster, pvs, clusters;
+    unsigned long walks, over, steps, reentries, inside;
+    unsigned long reach[PSP_PVSC_WORDS];
+} psp_pvsc_camera[PSP_PVSC_CAMERAS];
+static int psp_pvsc_camera_count;
+
+/* each call of the walk, before its budget check (so the same count as its
+psp_portal_steps) */
+void psp_pvsc_step(int past_budget)
+{
+    psp_pvsc_steps++;
+    if (past_budget)
+        psp_pvsc_past_budget++;
+}
+
+/* each portal out of a cluster that is a portal of the bsp's, at the walk's
+four-way test, in its order */
+void psp_pvsc_portal(int in_range, int on_path, int in_pvs)
+{
+    psp_pvsc_tested++;
+    if (!in_range)
+        psp_pvsc_range++;
+    else if (on_path)
+        psp_pvsc_path++;
+    else if (!in_pvs)
+        psp_pvsc_pvs++;
+}
+
+/* a portal past the test that ends without a step: 1 its hull discarded, 2
+beyond the far plane, 3 VIS's rect test, 4 the clip empty */
+void psp_pvsc_exit(int how)
+{
+    if (how > 0 && how < 5)
+        psp_pvsc_exits[how]++;
+}
+
+/* a step's cluster rect: when 0 or 1 (the cluster rendered already on this
+walk), before it's grown by the step's region; 2 after */
+void psp_pvsc_bounds(int when, float const *bounds)
+{
+    int k;
+
+    if (when < 2)
+    {
+        psp_pvsc_was_rendered = when;
+        for (k = 0; k < 4; k++)
+            psp_pvsc_bounds_before[k] = bounds[k];
+        return;
+    }
+    if (!psp_pvsc_was_rendered)
+        return;
+    psp_pvsc_reentries++;
+    psp_pvsc_walk_reentries++;
+    for (k = 0; k < 4 && bounds[k] == psp_pvsc_bounds_before[k]; k++)
+        ;
+    if (k == 4)
+    {
+        psp_pvsc_inside++;
+        psp_pvsc_walk_inside++;
+    }
+}
+
+static int psp_pvsc_bits(unsigned long const *bits, unsigned long const *without, long count)
+{
+    int total = 0;
+    long k;
+
+    for (k = 0; k < BIT_VECTOR_SIZE_IN_LONGS(count); k++)
+    {
+        unsigned long word = bits[k] & (without ? ~without[k] : ~0UL);
+
+        if ((k + 1) * LONG_BITS > count)
+            word &= (1UL << (count & (LONG_BITS - 1))) - 1;
+        total += __builtin_popcount(word);
+    }
+    return total;
+}
+
+/* each walk's end, before the frame falls back to the PVS: the rendered
+flags are the walk's own then */
+void psp_pvsc_walk(struct structure_bsp *structure, short camera, unsigned long const *rendered_flags,
+    long rendered_count, long steps, int over, unsigned long walks)
+{
+    long clusters = structure->clusters.count;
+    int index, bsp;
+
+    psp_pvsc_walks++;
+    if (camera < 0 || camera >= clusters)
+        psp_pvsc_none++;
+    else
+    {
+        unsigned long *pvs = structure_bsp_get_cluster_pvs(structure, camera);
+
+        psp_pvsc_roots++;
+        psp_pvsc_in_pvs += psp_pvsc_bits(pvs, NULL, clusters);
+        if (over)
+            psp_pvsc_over++;
+        else
+        {
+            psp_pvsc_rendered += rendered_count;
+            psp_pvsc_outside += psp_pvsc_bits(rendered_flags, pvs, clusters);
+        }
+        for (bsp = 0; bsp < psp_pvsc_bsp_count && psp_pvsc_bsps[bsp] != structure; bsp++)
+            ;
+        if (bsp == psp_pvsc_bsp_count && bsp < 8)
+            psp_pvsc_bsps[psp_pvsc_bsp_count++] = structure;
+        for (index = 0; index < psp_pvsc_camera_count &&
+            (psp_pvsc_camera[index].bsp != bsp || psp_pvsc_camera[index].cluster != camera); index++)
+            ;
+        if (index == psp_pvsc_camera_count)
+        {
+            if (index < PSP_PVSC_CAMERAS)
+            {
+                psp_pvsc_camera[index].bsp = (short)bsp;
+                psp_pvsc_camera[index].cluster = camera;
+                psp_pvsc_camera[index].pvs = (short)psp_pvsc_bits(pvs, NULL, clusters);
+                psp_pvsc_camera[index].clusters = (short)clusters;
+                psp_pvsc_camera_count++;
+            }
+            else
+            {
+                psp_pvsc_cameras_past++;
+                index = -1;
+            }
+        }
+        if (index >= 0)
+        {
+            long k;
+
+            psp_pvsc_camera[index].walks++;
+            psp_pvsc_camera[index].steps += steps;
+            psp_pvsc_camera[index].reentries += psp_pvsc_walk_reentries;
+            psp_pvsc_camera[index].inside += psp_pvsc_walk_inside;
+            if (over)
+                psp_pvsc_camera[index].over++;
+            else
+                for (k = 0; k < BIT_VECTOR_SIZE_IN_LONGS(clusters); k++)
+                    psp_pvsc_camera[index].reach[k] |= rendered_flags[k];
+        }
+    }
+    psp_pvsc_walk_reentries = psp_pvsc_walk_inside = 0;
+    if (walks % 900 == 0)
+    {
+        platform_psp_log("pvscensus: %lu walks (%lu with no camera cluster, %lu over budget); "
+            "%lu steps (%lu roots, %lu entered from a portal, %lu past the budget); "
+            "portals tested %lu: test %lu (range %lu, on the path %lu, not in the PVS %lu), "
+            "hull discarded %lu, distance %lu, rect %lu, clip empty %lu, step entered %lu; "
+            "re-entries %lu (rect inside %lu, widened %lu); "
+            "clusters rendered %lu over %lu walks in budget, rendered outside the PVS %lu; "
+            "in the camera's PVS %lu over %lu walks; map clusters %ld; camera clusters %d (%lu walks past the table)",
+            psp_pvsc_walks, psp_pvsc_none, psp_pvsc_over,
+            psp_pvsc_steps, psp_pvsc_roots, psp_pvsc_steps - psp_pvsc_roots, psp_pvsc_past_budget,
+            psp_pvsc_tested, psp_pvsc_range + psp_pvsc_path + psp_pvsc_pvs, psp_pvsc_range, psp_pvsc_path,
+            psp_pvsc_pvs, psp_pvsc_exits[1], psp_pvsc_exits[2], psp_pvsc_exits[3], psp_pvsc_exits[4],
+            psp_pvsc_steps - psp_pvsc_roots,
+            psp_pvsc_reentries, psp_pvsc_inside, psp_pvsc_reentries - psp_pvsc_inside,
+            psp_pvsc_rendered, psp_pvsc_roots - psp_pvsc_over, psp_pvsc_outside,
+            psp_pvsc_in_pvs, psp_pvsc_roots, clusters, psp_pvsc_camera_count, psp_pvsc_cameras_past);
+        for (index = 0; index < psp_pvsc_camera_count; index++)
+            platform_psp_log("pvscensus cluster %d.%d: %lu walks (%lu over budget), %lu steps, "
+                "%lu re-entries (%lu rect inside); reach %d, PVS %d, of %d clusters",
+                (int)psp_pvsc_camera[index].bsp, (int)psp_pvsc_camera[index].cluster,
+                psp_pvsc_camera[index].walks, psp_pvsc_camera[index].over, psp_pvsc_camera[index].steps,
+                psp_pvsc_camera[index].reentries, psp_pvsc_camera[index].inside,
+                psp_pvsc_bits(psp_pvsc_camera[index].reach, NULL, psp_pvsc_camera[index].clusters),
+                (int)psp_pvsc_camera[index].pvs, (int)psp_pvsc_camera[index].clusters);
+    }
+}
+#endif
+
+""".replace("    ", "\t")
+FIXES_PVSCENSUS = {}
+FIXES_PVSCENSUS["source/structures/structure_bsp_definitions.c#pvscensus"] = [
+("\n/* ---------- private code */\n", PVSCENSUS_C + "\n/* ---------- private code */\n"),
+]
+FIXES_PVSCENSUS["source/structures/structure_visibility.c#pvscensus"] = [
+# the hooks' prototypes and the macro (mevis_copies looks for its line)
+("#define PSP_PORTAL_STEPS 160\nstatic long psp_portal_steps = 0;\n",
+ "/* psp_fixups.py (FIXES_PVSCENSUS): the PVS census's hooks, on the main\n"
+ "CPU's walk alone (structure_bsp_definitions.c counts) */\n"
+ "void psp_pvsc_step(int past_budget);\n"
+ "void psp_pvsc_portal(int in_range, int on_path, int in_pvs);\n"
+ "void psp_pvsc_exit(int how);\n"
+ "void psp_pvsc_bounds(int when, float const *bounds);\n"
+ "void psp_pvsc_walk(struct structure_bsp *structure, short camera, unsigned long const *rendered_flags,\n"
+ "\tlong rendered_count, long steps, int over, unsigned long walks);\n"
+ "#define PSP_PVSC(call) (call)\n"
+ "#define PSP_PORTAL_STEPS 160\nstatic long psp_portal_steps = 0;\n"),
+# a step: every call of the walk, as psp_portal_steps counts them
+("#ifdef HALO_PSP\n\tif (++psp_portal_steps > PSP_PORTAL_STEPS)\n\t\treturn;\n#endif\n",
+ "#ifdef HALO_PSP\n\tPSP_PVSC(psp_pvsc_step(psp_portal_steps + 1 > PSP_PORTAL_STEPS));\n"
+ "\tif (++psp_portal_steps > PSP_PORTAL_STEPS)\n\t\treturn;\n#endif\n"),
+# a re-entry: the cluster's flag before it's set, its rect before and after
+("\tBIT_VECTOR_SET_FLAG(render.visible_cluster_flags, cluster_index, TRUE);\n"
+ "\tgrow_clipping_rectangle_by_portal_hull(\n\t\t&rendered_cluster->clip_bounds,\n\t\tvisible_region);\n",
+ "\tPSP_PVSC(psp_pvsc_bounds(BIT_VECTOR_TEST_FLAG(render.visible_cluster_flags, cluster_index) ? 1 : 0,\n"
+ "\t\t(float const *)&rendered_cluster->clip_bounds));\n"
+ "\tBIT_VECTOR_SET_FLAG(render.visible_cluster_flags, cluster_index, TRUE);\n"
+ "\tgrow_clipping_rectangle_by_portal_hull(\n\t\t&rendered_cluster->clip_bounds,\n\t\tvisible_region);\n"
+ "\tPSP_PVSC(psp_pvsc_bounds(2, (float const *)&rendered_cluster->clip_bounds));\n"),
+# the four-way test, its parts in its order
+("\t\tneighbor_cluster_index = portal->cluster_indices[direction];\n\n\t\tif (neighbor_cluster_index >= 0 &&\n",
+ "\t\tneighbor_cluster_index = portal->cluster_indices[direction];\n\n"
+ "\t\tPSP_PVSC(psp_pvsc_portal(neighbor_cluster_index >= 0 && neighbor_cluster_index < clusters->count,\n"
+ "\t\t\tneighbor_cluster_index >= 0 && neighbor_cluster_index < clusters->count &&\n"
+ "\t\t\t\tBIT_VECTOR_TEST_FLAG(structure_visibility_globals.visited_cluster_flags, neighbor_cluster_index),\n"
+ "\t\t\tneighbor_cluster_index >= 0 && neighbor_cluster_index < clusters->count &&\n"
+ "\t\t\t\tBIT_VECTOR_TEST_FLAG(cluster_pvs, neighbor_cluster_index)));\n"
+ "\t\tif (neighbor_cluster_index >= 0 &&\n"),
+# the rect test and the empty clip
+("\t\t\t\tif (psp_apart == 2 && clipped_hull.vertex_count != 0)\n\t\t\t\t\tpsp_visrect_check_kept++;\n#endif\n",
+ "\t\t\t\tif (psp_apart == 2 && clipped_hull.vertex_count != 0)\n\t\t\t\t\tpsp_visrect_check_kept++;\n"
+ "\t\t\t\tPSP_PVSC(clipped_hull.vertex_count == 0 ? psp_pvsc_exit(psp_apart == 1 ? 3 : 4) : (void)0);\n#endif\n"),
+# the hull discarded, or every point beyond the far plane
+("\t\t\t\t\terror(_error_silent, \"portal intersection failed.\");\n"
+ "\t\t\t\t\tstructure_visibility_traverse_cluster(\n\t\t\t\t\t\tneighbor_cluster_index,\n\t\t\t\t\t\tvisible_region);\n"
+ "\t\t\t\t}\n\t\t\t}\n\t\t}\n\t}\n",
+ "\t\t\t\t\terror(_error_silent, \"portal intersection failed.\");\n"
+ "\t\t\t\t\tstructure_visibility_traverse_cluster(\n\t\t\t\t\t\tneighbor_cluster_index,\n\t\t\t\t\t\tvisible_region);\n"
+ "\t\t\t\t}\n\t\t\t}\n"
+ "\t\t\telse\n"
+ "\t\t\t\tPSP_PVSC(psp_pvsc_exit(portal_result == _portal_hull_from_portal_succeeded ? 2 : 1));\n"
+ "\t\t}\n\t}\n"),
+# the walk's end, before the frame falls back to the PVS
+("\t\tif (psp_portal_steps > PSP_PORTAL_STEPS)\n\t\t\tpsp_portal_fallbacks++;\n",
+ "\t\tif (psp_portal_steps > PSP_PORTAL_STEPS)\n\t\t\tpsp_portal_fallbacks++;\n"
+ "\t\tPSP_PVSC(psp_pvsc_walk(structure, (short)render.cluster_index, render.visible_cluster_flags,\n"
+ "\t\t\trender.rendered_cluster_count, psp_portal_steps, psp_portal_steps > PSP_PORTAL_STEPS, psp_portal_walks));\n"),
+]
+if PVSCENSUS:
+    for rel, pairs in FIXES_PVSCENSUS.items():
+        FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 # PSP_FRAMEPIC (docs/frame_picture.md): game.c's perf statements are
 # stripped before its anchors are matched (PERF_STRIP), which took the tick's
 # boxes out of the frame picture (framepic1b's marks by box had no units, AI,
@@ -57902,6 +58171,12 @@ def mevis_copies(tree):
         if state.search(m.group(2)) and "(" not in m.group(1):
             macros += "#undef %s\n#define %s (%s)\n" % (m.group(1), m.group(1), convert(m.group(2)))
             restore += "#undef %s\n#define %s %s\n" % (m.group(1), m.group(1), m.group(2))
+    # the PVS census's hooks (PSP_PVSCENSUS=1, FIXES_PVSCENSUS) count the main
+    # CPU's walk alone: in the copies each is nothing, so the ME's code is the
+    # same with the census as without it
+    if "#define PSP_PVSC(call) (call)\n" in text:
+        macros += "#undef PSP_PVSC\n#define PSP_PVSC(call) ((void)0)\n"
+        restore += "#undef PSP_PVSC\n#define PSP_PVSC(call) (call)\n"
     out = ["\n#ifdef HALO_PSP\n/* mevis's copies (psp_fixups.py mevis_copies): %s */\n" % ", ".join(order)]
     out.append(MEVIS_HEAD)
     out.append(macros)
