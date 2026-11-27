@@ -68932,20 +68932,26 @@ calltrace_store_move_cut(TREE)
 
 # PSP_KTSTAMP=1 (kill test 2's stage stamps, an instrument build; Sierra-III docs/ktstamp.md, the lab's decisions.md
 # 2026-11-27 03:0x; keep word ktstamp): old-only's biped work timed on psp_object_sample's timed ticks. bupdate is
-# objects.c's biped branch (FIXES_31's split, accounts 17-19: type update, damage and export, node matrices), bphys
+# a biped's type update, damage and export and node matrices in objects.c's lean object_update (04:3x), bphys
 # bipeds.c's biped_update_physics call. New-only's fields are psp/src's own (store_coll.c's pass, store_pose.c's
 # owed), so with PSP_TICK2_MOTIONNEW=1 this cut does nothing (its biped_update_physics is deleted). Each hook is an
 # expression appended to a line already there (psp_post.h's PSP_KT_* macros): no line is added, so no function's
 # first line moves and the units' other functions keep their profiles' line checksums. Runs last, on the final text
 KTSTAMP = os.environ.get("PSP_KTSTAMP", "") == "1"
 KTSTAMP_CUTS = (
-    ("source/objects/objects.c", "the biped branch's start",
-     "\t\t\tunsigned long mark = timed ? psp_microseconds() : 0, now;\n",
-     "\t\t\tunsigned long mark = timed ? psp_microseconds() : 0, now; PSP_KT_STAMP_IF(timed == 17, 6); /* (ktstamp) */\n"),
-    ("source/objects/objects.c", "the biped branch's end",
-     "\t\t\tif (timed)\n\t\t\t\tpsp_object_account(timed + 2, psp_microseconds() - mark);\n",
-     "\t\t\tif (timed)\n\t\t\t\tpsp_object_account(timed + 2, psp_microseconds() - mark); "
-     "PSP_KT_FIELD_IF(timed == 17, PSP_KT_BUPDATE, 6); /* (ktstamp) */\n"),
+    # bupdate is the lean form's (OBJLEAN, psp_object_update_lean): play runs it under notimers, the campaign's
+    # default, so the general function's biped branch (FIXES_31's accounts 17-19) never ran on ktstamp-b30's A
+    # side and its hooks printed no line (the lab's decisions.md 2026-11-27 04:3x (2)(a)). Same three parts:
+    # the type update, damage and export, node matrices; the child recursion after them is outside the field
+    ("source/objects/objects.c", "the lean biped branch's start",
+     "\t\tpsp_pose_skipped = psp_pose_half_skips(object_index, object);\n",
+     "\t\tpsp_pose_skipped = psp_pose_half_skips(object_index, object); "
+     "PSP_KT_STAMP_IF(object->object.type == _object_type_biped, 6); /* (ktstamp) */\n"),
+    ("source/objects/objects.c", "the lean biped branch's end",
+     "\t\t\tobject_compute_node_matrices_with(object_index, object, object_definition);\n\t\t}\n\n\t\tif (elevator_sampled)\n",
+     "\t\t\tobject_compute_node_matrices_with(object_index, object, object_definition);\n\t\t} "
+     "PSP_KT_FIELD_IF(object->object.type == _object_type_biped, PSP_KT_BUPDATE, 6); /* (ktstamp) */\n\n"
+     "\t\tif (elevator_sampled)\n"),
     ("source/units/bipeds.c", "biped_update_physics's call",
      "\tbiped_update_physics(&physics);\n",
      "\tPSP_KT_STAMP(7); biped_update_physics(&physics); PSP_KT_FIELD_IF(1, PSP_KT_BPHYS, 7); /* (ktstamp) */\n"),
