@@ -187,7 +187,36 @@ Read by builder2, 2026-11-27 00:39, from `drawcensus_b30`'s two B runs (sierra-h
 
 - **Which part an item belongs to is [D].** I placed each one by its counter's name. I didn't trace which `drawsplit` part each counter's function runs under. Under `gedefer`/`geinflight`, the counters at the GE's command writes (`textured_draws`, `transparent_drawn`) may count at the replay rather than inside the part. That is the same item either way, but it isn't proof of the part. Decals and shadows could sit in world or objects rather than effects [U].
 - **A ceiling, not a price [D].** A part's time over its items is what each item would cost if none of the part's time were fixed. On the fight: effects 3.2 ms over 167 sprites is ≤ ~19 µs a sprite. Hud 2.4 over ~92 quads, characters and blips is ≤ ~26 µs each. Transparent 0.8 over 70 draws is ≤ ~11 µs. Flares 0.3 over ~3 items is ≤ ~100 µs. World 11.5 over 14 level draws is ~820 µs a draw, so world's time isn't in its draws: visibility alone is 4.85 ms a frame on b30's flight (§3.2's table). A sheet still needs its cycles an item from the code.
-- **What the counter is left with.** Transparent, flares and hud are counted, and effects' sprites, decals and contrails too. That leaves **world's triangles over a window and its visibility items, and effects' systems or emitters**. Those are the per-part item counter's only fields (§1.3, the lead's 00:2x conditions). c20's census logs are still to be read for the same table. If they count the same fields, the counter comes down to those three.
+- **What the counter is left with.** Transparent, flares and hud are counted, and effects' sprites, decals and contrails too. That leaves **world's triangles over a window and its visibility items, and effects' systems or emitters**. Those are the per-part item counter's only fields (§1.3, the lead's 00:2x conditions). c20's logs count the same fields and leave the same three (§3.3.2), so the counter comes down to those three.
+
+#### 3.3.2 What c20's census logs count [M, an exact count; a count prices nothing]
+
+Read by builder2, 2026-11-27 00:47, from `drawmain_census`'s two B runs (sierra-hw 45945230751, run2 and run4) by the lab's `toolbox/gewindow.py`, which does §3.3.1's arithmetic per `drawsplit:` window. Run on b30's run2 it gives §3.3.1's table to the second decimal, so it does the same arithmetic. The two c20 runs agree to within 0.02 a frame in every cell, and run2's figures are given. The two windows are §2.2's peak lines: `drawsplit: … (run 900)`, frames 601-900, ticks ~1033-1619, `d` 21.3; and `(run 1200)`, frames 901-1200, ticks ~1619-2196, `d` 28.2 / 28.4. b30's fight (§3.3.1) is beside them.
+
+| Part | Item | c20 ~1033-1619 | c20 ~1619-2196 | b30 fight |
+|---|---|---|---|---|
+| world | level draws, textured (flat 0) | 33.4 | 29.8 | 13.9 |
+| world | level see-through draws | 7.3 | 8.0 | 2.8 |
+| world | level draws below the fog plane, and their triangles | 0.53, 47.8 | 0.53, 44.1 | 3.9, 784 |
+| world | level triangles over a window; visibility's items | **none** | **none** | **none** |
+| objects | model part draws | 30 | 46 | 39 |
+| effects | sprites | 95.6 | 187.3 | 167.1 |
+| effects | decals | 9.2 | 45.7 | 13.7 |
+| effects | contrails, and their segments | 0.70, 3.4 | 0.70, 3.8 | 3.7, 34.9 |
+| effects | particle systems or emitters | **none** | **none** | **none** |
+| transparent | see-through draws (0 dropped) | 55.3 | 112.3 | 69.6 |
+| transparent | see-through parts to cut | 14.0 | 13.4 | 17.6 |
+| flares | widget sprites | 3.1 | 1.6 | 0.88 |
+| flares | flare occlusion tests (`occlusion_tests`, the `of M flare answers` figure, `psp_ge.c:27152`) | 29.3 | 30.3 | 2.3 |
+| hud | HUD quads | 19.1 | 19.6 | 19.4 |
+| hud | characters | 7.7 | 21.5 | 18.5 |
+| hud | motion-sensor blips | 60.1 | 129.3 | 54.1 |
+| beside them | shadow draws; light draws; flashes | 0.02; 5.8; 0.01 | 1.4; 5.2; 0.30 | 5.0; 2.1; 0.5 |
+
+- **Objects stays far under the lock cut's revive line.** c20's most is 46 parts a frame (the later line; 10-46 over the run's six windows), against the ~830 that §3.2.1's cut needs. The PSP's ~400 µs a part holds on c20 too: 8.0 ms over 46 parts is ~170 µs, and 5.3 over 30 is ~180 µs [D at the count]. Objects' time is still outside the chain.
+- **A ceiling, not a price, on c20's later line [D]**, as §3.3.1 does it: effects 3.7 ms over ~234 sprites, decals and contrails is ≤ ~16 µs an item. Hud 3.1 over ~170 quads, characters and blips is ≤ ~18 µs. Transparent 1.9 over 112 draws is ≤ ~17 µs. Flares 0.8 over ~32 items is ≤ ~25 µs. World 10.2 over ~38 level draws is ~270 µs a draw. Effects', hud's and transparent's ceilings come within ~1.5× of b30's (≤ ~19, ~26, ~11 µs). Flares' is a quarter of b30's ≤ ~100 µs, since c20 makes 13× the flare tests. World's per draw is a third of b30's (~820 µs). World's time follows neither its draws nor its triangles (c20 frame 900's own count is 5289, b30's 2497). It sits in what isn't counted: visibility, and the level's main-CPU side.
+- **Where c20 differs from b30.** On c20's later line the blips are 2.4× b30's, the see-through draws 1.6×, the decals 3.3×, the flare tests 13×. b30 has 5× the contrails and 17× the fog-plane triangles. So each small part's sheet is read on both maps' windows, and on its worst one.
+- **What the counter is left with on both maps:** world's triangles over a window and its visibility items, and effects' systems or emitters. c20 counts nothing more than b30 does.
 
 ## 4. Placement and the build cut [D]
 
