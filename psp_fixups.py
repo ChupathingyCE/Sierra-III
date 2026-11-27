@@ -69147,6 +69147,25 @@ DRAWSPLIT2_SAMPLED_MAIN = [
     (_DS2_MAIN_BEGIN, r"\1psp_drawsplit_render_begin(); /* psp_fixups.py, drawsplit sampled: d is the render's span */\n\1\2"),
     (_DS2_MAIN_END, r"\1\2\1psp_drawsplit_render_end();\n"),
 ]
+# PSP_DRAWSPLIT_DROP=<name>,... (sampled only; a build-only check, never played): the sampled form's ds2smB build
+# (lab sierra-build 45985464747, cd055e45) compiled render_model and render_frame without their counts, with no test or
+# call added to either. Each name puts one of their stores back as A has it, so builds that drop different ones show by
+# their pgo: line which store moves each function's cfg (the lab's findings/drawsplit2_2026-11-27.md 'ds2smB')
+_DS2_RF_PART = '(PSP_STEP("HALO_PERF_RENDER_PART"), HALO_PERF_RENDER_PART(_halo_perf_render_%s));\n'
+DRAWSPLIT2_DROP = {
+    # render_model's one field: its open (before if (node_matrices)) and its close (after the if/else's join)
+    "matrices_in": ("source/models/models.c", "\t\tPSP_DRAWSPLIT_IN(MATRICES);\n" + _DS2_MODELS_MATRICES,
+                    _DS2_MODELS_MATRICES),
+    "matrices_out": ("source/models/models.c", "\t\t}\n\t\tPSP_DRAWSPLIT_OUT();\n\n\t\tgeometry_detail_level_index",
+                     "\t\t}\n\n\t\tgeometry_detail_level_index"),
+    # render_frame's three level 1 stores: after the memset, in the window loop before a non-player window, after it
+    "rf_begin": ("source/render/render.c", "\t" + _DS2_RF_PART % "begin",
+                 '\t(PSP_STEP("HALO_PERF_RENDER_PART"), ((void)0));\n'),
+    "rf_window": ("source/render/render.c", "\t\t" + _DS2_RF_PART % "end" + '\t\t(PSP_STEP("render_nonplayer_frame")',
+                  '\t\t(PSP_STEP("HALO_PERF_RENDER_PART"), ((void)0));\n\t\t(PSP_STEP("render_nonplayer_frame")'),
+    "rf_end": ("source/render/render.c", "\t" + _DS2_RF_PART % "end" + '\n\t(PSP_STEP("render_interface_begin")',
+               '\t(PSP_STEP("HALO_PERF_RENDER_PART"), ((void)0));\n\n\t(PSP_STEP("render_interface_begin")'),
+}
 def drawsplit2_cut(tree):
     form = os.environ.get("PSP_DRAWSPLIT", "")
     if form not in ("1", "sampled"):
@@ -69187,7 +69206,22 @@ def drawsplit2_cut(tree):
                 return check_fail("psp_fixups: DRAWSPLIT sampled: main.c: the render's %r matches %d times, not 3"
                                   % (pattern.pattern[:60], n))
         texts[rel] = text
+    drops = [d for d in os.environ.get("PSP_DRAWSPLIT_DROP", "").split(",") if d]
+    if drops:
+        if not sampled:
+            return check_fail("psp_fixups: PSP_DRAWSPLIT_DROP is the sampled form's (PSP_DRAWSPLIT=sampled)")
+        for name in drops:
+            if name not in DRAWSPLIT2_DROP:
+                return check_fail("psp_fixups: PSP_DRAWSPLIT_DROP: %r is none of %s" % (name, ", ".join(sorted(DRAWSPLIT2_DROP))))
+            rel, old, new = DRAWSPLIT2_DROP[name]
+            if texts[rel].count(old) != 1:
+                return check_fail("psp_fixups: PSP_DRAWSPLIT_DROP %s: its site matches %d times" % (name, texts[rel].count(old)))
+            texts[rel] = texts[rel].replace(old, new, 1)
+        print("psp_fixups: DRAWSPLIT sampled: PSP_DRAWSPLIT_DROP=%s, a build to read its pgo: line, never to play"
+              " (a dropped open or close leaves the field stack unbalanced)" % ",".join(drops))
     for rel, text in texts.items():
+        if drops:
+            break
         # a sampled close past a join is a RESTORE (of a level 2 open, or of level 1's occlusion wait); each SAVE has its own
         opens = text.count("PSP_DRAWSPLIT_IN(") + text.count("HALO_PERF_BEGIN(")
         closes = text.count("PSP_DRAWSPLIT_OUT(") + text.count("PSP_DRAWSPLIT_RESTORE(") + text.count("HALO_PERF_END(")

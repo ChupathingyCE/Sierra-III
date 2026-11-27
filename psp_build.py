@@ -1099,6 +1099,13 @@ def compile_one(item):
 # (PSP_PGO_GENERATE), main logs the profile's name (PSP_PGO_PROFILE)
 PGO_MODE_DEPENDENT = {("psp_platform.c", "main"), ("psp_platform.c", "psp_tick_account")}
 
+# GCC's own words for each function above (which counter, and for a count
+# mismatch the counts expected and found), printed under its name in the
+# build log: the lab's drawsplit sampled form lost two functions' counts with
+# no branch or call added, and the name alone doesn't say whether the arcs
+# moved or their number did (findings/drawsplit2_2026-11-27.md, ds2smB)
+PGO_WHY = {}
+
 def profile_mismatches(results):
     """the functions GCC compiled without their counts: their code changed
     since the profile was counted (GCC checks each function's branches)"""
@@ -1110,6 +1117,10 @@ def profile_mismatches(results):
                 name = m.group(1) if m else line.strip()
                 if (os.path.basename(src), name) not in PGO_MODE_DEPENDENT:
                     found.append("%s: %s" % (src, name))
+                    why = line.split("warning:", 1)[-1].strip()
+                    PGO_WHY.setdefault("%s: %s" % (src, name), [])
+                    if why not in PGO_WHY["%s: %s" % (src, name)]:
+                        PGO_WHY["%s: %s" % (src, name)].append(why)
     return sorted(set(found))
 
 LIBS = ["-lpspvram", "-lpspaudio", "-lpspvfpu", "-lpspdisplay", "-lpspgum", "-lpspgu", "-lpspge",
@@ -1905,6 +1916,8 @@ def main():
               % (len(mismatched), PGO_PROFILE, ": pgo_mismatch.txt" if mismatched else ""))
         for m in mismatched[:20]:
             print("  " + m)
+            for why in PGO_WHY.get(m, [])[:3]:
+                print("    gcc: " + why)
         # PSP_PGO_STRICT=1 (a release): its profile must be counted at its own code
         if mismatched and os.environ.get("PSP_PGO_STRICT", "") == "1":
             sys.exit("not linking: PSP_PGO_STRICT=1 and the profile doesn't match the code; count it at this commit")
