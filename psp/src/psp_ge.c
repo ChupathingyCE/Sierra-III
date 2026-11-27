@@ -6882,6 +6882,18 @@ void psp_ge_window_begin(const float *position, const float *forward, const floa
 	rso_window();
 	if (!PSP_ME_WORK())
 		main_view_begin(position, forward, up, vertical_field_of_view);
+#if defined(PSP_DRAWSPLIT) && !defined(PSP_DRAWSPLIT_SAMPLED)
+	/* drawsplit's exact form: A2b (3)'s holds (the lab's briefs/draw_main.md
+	'Added 13:4x'; psp_drawsplit.c, 'A2b (3)'s holds'): this window's camera as
+	the engine gives it, on the main CPU's pass only as main_view_begin's */
+	if (!PSP_ME_WORK())
+	{
+		void psp_drawsplit_view(const float *position, const float *forward, const float *up, float field_of_view, float z_near,
+			float z_far);
+
+		psp_drawsplit_view(position, forward, up, vertical_field_of_view, z_near, z_far);
+	}
+#endif
 	/* B41: a sleep asked is carried out at a frame's first window, before
 	anything of the frame reaches the GE layer (psp_sleep.c) */
 	if (!window_main_done && !PSP_ME_WORK())

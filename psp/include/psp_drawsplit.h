@@ -193,6 +193,11 @@ void psp_drawsplit_words(const void *vertices, const void *indices, unsigned int
 list's pointer before and after psp_ge_draw_level_body, counted by class less
 the regions taken (psp_drawsplit.c, 'A2b (2)'s pass words') */
 void psp_drawsplit_level(const void *vertices, const unsigned int *begin, const unsigned int *end);
+/* A2b (3)'s holds (exact form only): psp_ge_window_begin's camera, each
+window's against its last draw: the eye's chunk at three sizes and the view
+bit for bit (psp_drawsplit.c, 'A2b (3)'s holds') */
+void psp_drawsplit_view(const float *position, const float *forward, const float *up, float field_of_view, float z_near,
+	float z_far);
 /* D2's pieces (§3.4.3 'Memory', §4.4 A2; exact form only): render_window's
 call after world's walk closes. psp_drawsplit_pieces is the engine's
 (structure_visibility.c, psp_fixups.py's DRAWSPLIT2_PIECES_C): it splits the

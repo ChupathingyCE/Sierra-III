@@ -1307,6 +1307,92 @@ static void report_level(double n)
 	memset(window_level_class, 0, sizeof(window_level_class));
 }
 
+/* A2b (3)'s holds (the lab's briefs/draw_main.md 'Added 13:4x', A2b (3);
+box_draw_main.md §3.4.3): D2b would hold the slant buckets per eye chunk,
+redone only when the eye crosses into another chunk; D2c would hold the
+classify while the view doesn't change. psp_ge_window_begin hands over each
+window's camera as the engine gives it (main CPU only). A frame's windows are
+taken in their order (up to VIEW_WINDOWS), each against the same window's last
+draw: the eye's chunk at three sizes (each coordinate's floor over the size),
+and the view bit for bit (the eye, forward, up, the field of view, the near
+and far planes). A window with none before it (the run's first) counts as a
+change. It reads no clock */
+#define VIEW_WINDOWS 4
+#define VIEW_SIZES 3
+static const float view_size[VIEW_SIZES] = { 0.25f, 1.0f, 4.0f };
+struct view_held
+{
+	int set;
+	int chunk[VIEW_SIZES][3];
+	float view[12];
+};
+static struct view_held view_held[VIEW_WINDOWS];
+static unsigned int view_window = 0;
+static unsigned long long window_views = 0, window_view_past = 0, window_view_changed = 0, window_view_turned = 0,
+	window_chunk_changed[VIEW_SIZES];
+
+void psp_drawsplit_view(const float *position, const float *forward, const float *up, float field_of_view, float z_near,
+	float z_far)
+{
+	struct view_held *held;
+	float view[12];
+	int chunk[VIEW_SIZES][3], k, s, moved, changed;
+
+	if (on <= 0)
+		return;
+	if (view_window >= VIEW_WINDOWS)
+	{
+		window_view_past++;
+		return;
+	}
+	held = &view_held[view_window++];
+	for (k = 0; k < 3; k++)
+	{
+		view[k] = position[k];
+		view[3 + k] = forward[k];
+		view[6 + k] = up[k];
+	}
+	view[9] = field_of_view;
+	view[10] = z_near;
+	view[11] = z_far;
+	for (s = 0; s < VIEW_SIZES; s++)
+		for (k = 0; k < 3; k++)
+		{
+			/* the floor, without the library's */
+			float at = position[k] / view_size[s];
+			int c = (int)at;
+
+			chunk[s][k] = (float)c > at ? c - 1 : c;
+		}
+	moved = !held->set || memcmp(view, held->view, 3 * sizeof(float)) != 0;
+	changed = !held->set || memcmp(view, held->view, sizeof(view)) != 0;
+	window_views++;
+	window_view_changed += changed;
+	window_view_turned += changed && !moved;
+	for (s = 0; s < VIEW_SIZES; s++)
+		window_chunk_changed[s] += !held->set || memcmp(chunk[s], held->chunk[s], sizeof(chunk[s])) != 0;
+	held->set = 1;
+	memcpy(held->view, view, sizeof(view));
+	memcpy(held->chunk, chunk, sizeof(chunk));
+}
+
+static void report_view(unsigned int frames)
+{
+	double v = window_views ? (double)window_views : 1.0;
+
+	if (!window_views && !window_view_past)
+		return;
+	platform_log("drawsplit2 view holds: %u frames, %llu window views compared (main CPU; %llu past the %d a frame kept); "
+		"the eye changed chunk in %llu at %g units (%.1f%% held), %llu at %g (%.1f%%), %llu at %g (%.1f%%); the view "
+		"changed in %llu (%.1f%% held), %llu of them with the eye still (the turn or the lens only)", frames, window_views,
+		window_view_past, VIEW_WINDOWS, window_chunk_changed[0], view_size[0], 100.0 * (window_views - window_chunk_changed[0]) / v,
+		window_chunk_changed[1], view_size[1], 100.0 * (window_views - window_chunk_changed[1]) / v, window_chunk_changed[2],
+		view_size[2], 100.0 * (window_views - window_chunk_changed[2]) / v, window_view_changed,
+		100.0 * (window_views - window_view_changed) / v, window_view_turned);
+	window_views = window_view_past = window_view_changed = window_view_turned = 0;
+	memset(window_chunk_changed, 0, sizeof(window_chunk_changed));
+}
+
 static int append(char *line, int size, int at, const char *format, ...);
 
 /* the kinds' lines: one of the far groups and what lies outside, then one a
@@ -1530,6 +1616,7 @@ static void report(void)
 	report_sort(n);
 	report_pieces(n);
 	report_level(n);
+	report_view(run->frames);
 #endif
 #ifdef PSP_DRAWSPLIT_SAMPLED
 	{
@@ -1610,6 +1697,7 @@ void psp_drawsplit_frame(unsigned long draw_us)
 	}
 	if (!on)
 		return;
+	view_window = 0;
 	if (!frame_open)
 	{
 		run->unfolded++;
