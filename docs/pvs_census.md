@@ -102,3 +102,36 @@ It's cut from the slice 1 tock dbc76ba0 (off EBOOT b739ef687f633bf9), not from t
   - per camera cluster, its reach set against its PVS. The reach set is the union over the route's own walks: a ceiling for a finer bake, never a conservative set.
 - **Placed growth** (`w_tgme2m1mp_tgc90`): `structure_visibility_traverse_cluster` (layout line 854) and `structure_visibility_compute` (388). The ME's copy doesn't grow. Only emulator times move, and the census reads counts.
 - **The ask:** pvscensus-emu (the lab's briefs/asks/pvscensus-emu.toml): b30_leg2 and c20_leg2 to 120 s, d20_play1 to 100 s, off against on, plus an off-against-off control on b30.
+
+### The census (the lab's sierra-batch 45990550618, read 2026-11-27 05:4x; rows pvscensus_b30, pvscensus_c20, pvscensus_d20) [E]
+
+Every check passes:
+
+- The off EBOOT is b739ef687f633bf9, and b30-off equals b30-off2.
+- On plays exactly as off: play and both seeds are equal at every tick on all three maps.
+- The six exits sum to the portals tested. Hulls worked out plus hulls reused equal the portals past the four-way test.
+- The census's steps a walk, floored, equal the `portal walks` line's.
+- Nothing is rendered outside the PVS.
+
+Figures are over 1,800 walks on each map, seed 1:
+
+| | b30_leg2 | c20_leg2 | d20_play1 |
+|---|---|---|---|
+| steps a walk | 54.0 | 5.36 | 9.57 |
+| walks over the 160-step budget | 68 (3.8%) | 0 | 0 |
+| rendered / in PVS / map clusters, a walk | 8.9 / 22.3 / 56 | 4.9 / 24.3 / 51 | 4.8 / 17.2 / 55+35 |
+| portals tested a walk | 1,237 | 18.3 | 160 |
+| exits: path / PVS / hull / rect / clip empty / step | 19.2 / 16.4 / 53.9 / 5.5 / 0.8 / 4.3% | 29.1 / 1.3 / 16.2 / 26.3 / 3.5 / 23.8% | 12.8 / 59.7 / 16.6 / 4.2 / 1.3 / 5.4% |
+| re-entries of entered steps (rect inside) | 83.6% (38.6%) | 11.3% (0) | 55.8% (22.0%) |
+
+Range and distance end 0 portals on every map.
+
+- **The reach sets sit at or near the PVS where the steps are.** This is the reach set against the PVS, by camera cluster:
+  - b30: 0.1 is 14/14 and 0.2 is 14/16; together they carry 53% of its steps.
+  - d20: BSP 1's 1.32 is 10/10. BSP 1 holds all but 28 of d20's re-entries.
+
+  The cameras that reach well under their PVS are c20's (12-15 of 22-27) and d20's BSP 0. Their walks are already the cheap ones.
+- **So a finer bake has little room, and the walk's excess is its re-entries.** The walk searches every simple path, so on b30, 84% of entered steps re-enter a cluster already rendered.
+- **Task 2 prices this [U until then].**
+
+**Counter defect:** the summary line is cut at the log's line length after `map clusters N;`, so camera clusters and walks past the table never print. No figure is lost: the per-cluster lines' walks sum to 1,800 on every map, so 0 walks are past the table.
