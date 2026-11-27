@@ -137,3 +137,60 @@ Range and distance end 0 portals on every map.
 - **Task 2 prices this [U until then].**
 
 **Counter defect:** the summary line is cut at the log's line length after `map clusters N;`, so camera clusters and walks past the table never print. No figure is lost: the per-cluster lines' walks sum to 1,800 on every map, so 0 walks are past the table.
+
+## Task 2: the cost sheet (written 2026-11-27 06:0x; the PSP price a step still open)
+
+_Two cases in one sheet (the lead 2026-11-27 05:5x): (A) the bake as briefed, a stop; (B) the walk's re-entry cut, priced as a case and not built. Engine lines are at the pin 2e5eac00 as in task 0; census figures are task 1's [E], rows pvscensus_b30/_c20/_d20. "Floor" means task 0(c)'s instruction counts at one cycle each, every load a hit: a floor, never a price (brief: counted at half if no PSP figure, never the margin). The ME runs at 333 MHz (`docs/me_programme.md:11`), so 0.5 ms is 166,500 cycles._
+
+### (A) A finer per-cluster PVS bake: a stop
+
+- **It can never prune a step [D].** Every step renders its cluster (`structure_visibility.c:1734`), so that cluster is in its camera cluster's reach set, and any bake that keeps the picture keeps its bit. A finer bake can only drop portals that end before a step (hull discarded, rect test, clip empty) into clusters the camera never reaches.
+- **Where the steps are, there is nothing to drop [E].** b30's camera clusters 0.1 (reach 14 of a PVS of 14) and 0.2 (14 of 16) carry 53% of its steps. d20's 1.32 is 10 of 10. The cameras well under their PVS are c20's (12-15 of 22-27, 18.3 portals a walk) and d20's BSP 0, the cheap walks.
+- **Its ceiling is under the gate even if every non-step exit were droppable [D on counts, E on the mix].** A dropped portal saves its cost less the 51-instruction test it still pays. On b30, a walk's 667 hull-discarded exits (~40 saved each), 68 rect exits (~259) and 9.9 empty clips (~1,319) come to ≤57k instructions, ≤0.17 ms on the ME's floor. d20's come to ≤5.5k (≤0.02 ms), and c20's are smaller still. The true share is a fraction of that: on 0.1 it's 0, since its reach is its whole PVS.
+- **To clear 0.5 ms** a stretch would need ≥~126 clipped portals (or ≥~643 rect-tested ones) a frame into clusters outside its camera's reach. b30 has 9.9 and 68 a walk of each kind in all.
+- **Old layers: no.** The stop rests on reach = PVS where the steps are, which is a property of the map's own `cluster_data` (copied through byte for byte, task 0(b)) and of the engine's walk, which tests the PVS bit before any hull (`:1782-1787`). No port layer bounds it. VIS's rect test and the hull cache only make the exits a bake could drop cheaper.
+- **PVS's `revive_if`** is filled in the lab's findings/levers/grounds.tsv from these figures.
+
+### (B) The re-entry cut: skip a sub-walk that can add nothing
+
+**Its ground** (the lab's `python3 -I toolbox/levercheck.py VIS PVS`, 2026-11-27 06:0x). The visibility ground holds no lever that cuts the walk's repeat paths. Its nearest try is VIS:
+
+> VIS [open] (visibility) Portal screen-rectangle reject before convex_polygon2d_clip_to_plane / portal_hull_from_points
+> status: built (small wins batch 2, Sierra-III research/smallwins2 d04eaf87; off words visrectold, smallwins2old; check visrectcheck): exact (play and pictures as the controls, check 0 of 78,872), merge asked
+> worth: b30 route: 88 clips a frame skipped, draw lane -0.28 ms a frame (-0.75%) [E, cache model; controls agree to 0.01 ms]
+
+VIS cuts a portal's clip. This cut would skip a whole sub-walk, its clip included. PVS's own line ("how much a PVS prunes on Halo's open maps is unknown") is answered by (A).
+
+**Exactness [D, from the code], for the unchanged-bounds share only:**
+1. **What a walk makes.** It makes `render.visible_cluster_flags` (`:1734`), the rendered clusters' order (`:1719`, set at a cluster's first entry) and each one's `clip_bounds`, grown by every entry's region (`:1735-1737`; `grow_clipping_rectangle_by_portal_hull`, `:784`, a min/max union). The visited bits are path state, cleared on leaving (`:1835-1838`). Debug hulls are drawn only under `debug_portals` (`:1742`).
+2. **The census's "rect inside" share is not exactly cuttable on its own.** A re-entry whose region leaves its cluster's `clip_bounds` unchanged adds nothing to that cluster. Its sub-walk still runs every portal (`:1758-1833`) with a different polygon and a different path, so it can reach clusters or grow bounds the first entry didn't. So the rect test alone isn't a cut. Its share is the ceiling of the exact cut's: b30 38.6% of entered steps (~20.8 a walk), d20 22.0% (~2.1), **c20 0**.
+3. **An exact test: the new region inside one of the cluster's earlier regions on this walk** (R' ⊆ R_old). A child's region is its parent's clipped by a portal (`:1810-1817`), or the parent's unchanged (`:1795-1799`). So regions only shrink along a path. The earlier entry has finished before the new one starts, since a cluster on the path is never re-entered (`:1786`). Take a path out of the new entry. If it avoids the earlier entry's path, the earlier sub-walk took it with larger regions. If it meets that path first at a cluster Y, Y was entered there with a region ⊇ R_old ⊇ the new one, and the same argument repeats from Y's entry on a shorter path. So every (cluster, region) the new sub-walk would make is covered by one already made, and the flags, the order and the bounds stay as they are. That holds in exact arithmetic. In floats, `convex_hull2d_intersect` (epsilon 0.0001) is monotone only up to rounding [U]. The build's check would be the `visdump` line equal every frame.
+4. **Two caps change what exact means.** The 160-step budget counts steps at entry and makes an over-budget walk fall back to the PVS (`psp_fixups.py:6629`, `:6654-6655` at 293bc4c5). A cut that removes steps lets some of b30's 68 over-budget walks (of 1,800) finish, and they then draw the walk's clusters instead of the PVS. So the cut is **not exact against today on those walks**, only against the uncapped walk. That's a plays-the-same class, for the lead first. The ME's copy also caps depth at 14 (task 0(c)). An earlier entry cut short there covers nothing, so on the ME the test must refuse to use it [U, a design rule].
+
+**Its pre-clip test against task 0(c)'s ~310 / ~1,370 [D on counts, U modelled]:**
+- **Rect only:** the portal hull's box (VIS's test already has it) inside an already-rendered neighbour's `clip_bounds`. It costs ~15 instructions and 2 loads, ≥20x under the 310 rect exit and ~90x under a clip. It **isn't exact** (point 2), so it can't be the cut.
+- **Exact:** the portal hull H, or the parent's region R (each ⊇ R'), inside the neighbour's stored region, tested before the clip. That's q points × p stored edge planes, ~8 instructions each, so ~130 + ~50 loop ≈ **~180 for quads**. It's paid only by portals that pass the rect test into an already-rendered neighbour: on b30 at most 63 a walk (the clip-bound exits, 5.1% of 1,237), ≤11k instructions (≤0.03 ms floor). A cut saves the clip (~1,060) plus the step and everything under it. The step alone, priced from b30's exit mix (task 1) at task 0(c)'s counts, is ~150 + 22.9 portals × ~154 ≈ **~3,680 floor**, so the test is ~26x under clip plus step, and ≥10x holds on b30 [D on counts, E on the mix]. On c20 the share is 0, so the test would be pure cost there. It belongs only behind a switch, or on maps whose census shows the share.
+
+**Saved, a walk (one a frame) [U until the PSP price]:**
+
+| | b30 fight | c20 opening |
+|---|---|---|
+| steps a walk (task 1) [E] | 54.0 | 5.36 |
+| exact cut's share, ceiling | ≤20.8 direct (rect inside); with their sub-walks ≤44 (every step but the 8.9 first entries and the root) [E] | **0** (no rect-inside re-entry) [E] |
+| its true share | [U]: needs R' ⊆ R_old counted, a census extension | 0 |
+| a step, floor (task 0(c) x task 1's mix) | ~3,680 instr, so 20.8 steps ≈ 0.23 ms and 44 ≈ 0.49 ms; at half (the brief's fallback rule) 0.12-0.24 ms [D on E] | ~1,800 instr (3.4 portals a step); saves 0 |
+| a step, measured | **open: pvswalk-b30** (mevisring's ME visibility ms over `portal walks` steps a frame, PSP-3000, asked 2026-11-27 05:58) | **open: pvswalk-c20** (its control) |
+| added | ≤0.03 ms floor (the test), plus the stored regions (fit line) | the test on every clip-bound portal into a rendered cluster, ~180 instr each |
+
+- **The two shares, at 30 fps on both cores:**
+  - **The ME's share** is priced by the main-CPU work it frees. The main CPU waits at the collect 2.8-3.8 ms a view (`docs/layout_plan.md:95`, run 40845560977 [M], an older build). ME time saved frees main-CPU time only up to that wait.
+  - **The collect wait** is counted in full when pvswalk-b30 gives its figure.
+- **The gate (~0.5 ms a frame on a measured stretch) is open.** At the code's floor at half, b30's direct ceiling is 0.12 ms and doesn't clear. Whether the measured step clears it is pvswalk-b30's answer. The floor is far under the ME's measured walk: 54 × ~3,680 ≈ 0.6 ms, against 5.4-7.3 ms on b30 (PVS's status line, [M], as of 2026-10-29). So misses dominate there, which is why the price is a PSP figure.
+- **c20 can't gain:** its census shows no rect-inside re-entry.
+
+**The fit line** (Sheepdog01 2026-11-27 02:1x):
+- **The code.** The ME's walk is `psp_mv_traverse_cluster_body` (3,492 bytes), `convex_hull2d_intersect` (420) and `convex_polygon2d_clip_to_plane` (1,484), plus `convex_polygon3d_clip_to_plane`, whose size is [U] (task 0(c)). That's ~5.4 KB + [U] against the ME's 16 KB I-cache, and the test adds ~0.2-0.4 KB [U, modelled]. No MEXEC copy is needed for its size.
+- **The data.** The stored regions take one a rendered cluster, capped at 8 points as the hull cache is (task 0(c), 0x16d2c): ~68 bytes of points + ~96 of edge planes ≈ 164 bytes. b30 renders 8.9 clusters a walk, so ~1.5 KB is live. Room for `MAXIMUM_RENDERED_CLUSTERS` (128, `render.h:26`) is ~21 KB of mevis state in main RAM. That adds to the ME's 16 KB D-cache, which mevis already overruns at 45-93 KB a call (`layout_plan.md:95`) [U]. An eDRAM slot is the alternative.
+- **The hand-over.** The regions are the walk's own and the main CPU never reads them, so they add no write-back. The flags and rendered clusters handed over are the ones mevisland already hands over [D on the design]. Bake (A) would add 0 bytes: the same words, rewritten in place (task 0(b)).
+
+**What's left for this sheet:** the price a step from pvswalk-b30/-c20, then (B)'s net against the gate. If it clears, the exact share (R' ⊆ R_old) needs counting before any build, and the 160-step walks need the lead's call (point 4).
