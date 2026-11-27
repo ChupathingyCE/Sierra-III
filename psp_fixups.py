@@ -32191,6 +32191,8 @@ int psp_me_push_points(const void *inputs, unsigned int count, void *answers, un
 	unsigned int generation, void *main_word, void *me_word, unsigned int *ticket);
 int psp_me_wait(unsigned int ticket, unsigned int *results);
 void psp_me_ring_step(unsigned int step);
+float psp_me_cycles_per_us(void);
+unsigned int sceKernelGetSystemTimeLow(void);
 
 /* the most points one hand-over lists: the ME's share is the back of the
 list, and a fight's ~100 particles a frame and a vehicle's dust fit */
@@ -32259,6 +32261,16 @@ static struct
 	unsigned long slowest_us, slowest_kind, slowest_slot;
 	real longest_reach;
 } psp_points_stats;
+/* mepoints' split (a log only; nothing reads it): this CPU's clock at the
+push and when its loops first saw the ME's word written for the job, and
+the jobs' sums (psp_points_split_note) */
+static unsigned int psp_points_push_at, psp_points_seen_at;
+static int psp_points_seen;
+static struct
+{
+	unsigned long jobs, made, seen, unseen;
+	double point_us, job_us, seen_us, unseen_us;
+} psp_points_split;
 
 /* B31: a points job that held the ME past an audio block's 40 ms deadline
 stopped the ME for the session (three runs on the PSP). On the PSP a
@@ -32457,6 +32469,11 @@ void psp_points_me_make(const unsigned int *args, unsigned int *results)
 	unsigned int control, slowest = 0, slowest_k = 0, longest_k = 0;
 	real longest = 0.0f;
 	long k;
+	/* mepoints' split (a log only; psp_points_end reads it): on the ME's
+	own counter, the job begun, its word first written and the job ended,
+	and the points' own time, the audio between them left out */
+	unsigned int begun = on_me ? psp_points_clock(1) : 0u, first_write = 0u, ended, spent = 0u;
+	int wrote = 0;
 
 	__asm__ __volatile__("cfc1 %0, $31" : "=r"(control));
 	__asm__ __volatile__("ctc1 %0, $31" : : "r"(args[4]));
@@ -32468,6 +32485,9 @@ void psp_points_me_make(const unsigned int *args, unsigned int *results)
 	{
 		PSP_POINTS_UNCACHED(me_word) = (generation << 16) | count;
 		__asm__ __volatile__("sync");
+		if (on_me)
+			first_write = psp_points_clock(1);
+		wrote = 1;
 	}
 	for (k = (long)count - 1; k >= 0; k--)
 	{
@@ -32493,6 +32513,7 @@ void psp_points_me_make(const unsigned int *args, unsigned int *results)
 			answer->result = psp_point_physics_quiet(in->definition, &location, &answer->position, &answer->velocity,
 				&answer->normal, &answer->material_type, &answer->collided, in->radius, in->dt);
 			took = psp_points_clock(clock) - start;
+			spent += took;
 			if (took > slowest)
 			{
 				slowest = took;
@@ -32513,8 +32534,12 @@ void psp_points_me_make(const unsigned int *args, unsigned int *results)
 		__asm__ __volatile__("sync");
 		PSP_POINTS_UNCACHED(me_word) = (generation << 16) | (unsigned long)k;
 		__asm__ __volatile__("sync");
+		if (!wrote && on_me)
+			first_write = psp_points_clock(1);
+		wrote = 1;
 		made++;
 	}
+	ended = on_me ? psp_points_clock(1) : 0u;
 	__asm__ __volatile__("ctc1 %0, $31" : : "r"(control));
 	results[0] = made;
 	results[1] = unserved;
@@ -32527,6 +32552,14 @@ void psp_points_me_make(const unsigned int *args, unsigned int *results)
 		bits.value = longest;
 		results[5] = bits.bits;
 	}
+	/* the split's stamps (above), in the job's results, which the ring
+	already hands back: 1 in results[10] when on the ME, 2 when its word was
+	written */
+	results[6] = begun;
+	results[7] = ended;
+	results[8] = spent;
+	results[9] = first_write;
+	results[10] = (on_me ? 1u : 0u) | (wrote ? 2u : 0u);
 }
 
 /* 1: listing for this frame. The storage on first use; off for good if
@@ -32637,6 +32670,8 @@ void psp_points_hand_over(void)
 	psp_points_cursor = (unsigned long)psp_points_generation << 16;
 	PSP_POINTS_UNCACHED(&psp_points_main_word) = psp_points_cursor;
 	__asm__ __volatile__("sync");
+	psp_points_seen = 0;
+	psp_points_push_at = sceKernelGetSystemTimeLow();
 	if (psp_me_push_points(psp_point_inputs, (unsigned int)count, psp_point_answers,
 		(unsigned int)count * sizeof(struct psp_point_answer), psp_points_generation |
 		(psp_points_clock_here ? PSP_POINTS_CLOCK_HERE : 0u) | (psp_points_claim ? PSP_POINTS_MARK_BEGUN : 0u), &psp_points_main_word,
@@ -32772,6 +32807,12 @@ unsigned long psp_point_physics(
 		{
 			unsigned long made = psp_points_out ? PSP_POINTS_UNCACHED(&psp_points_me_word) : 0;
 
+			/* the split: the job's word first seen written, so begun by now */
+			if (psp_points_out && !psp_points_seen && (made >> 16) == psp_points_generation)
+			{
+				psp_points_seen = 1;
+				psp_points_seen_at = sceKernelGetSystemTimeLow();
+			}
 			if (psp_points_out && (made >> 16) == psp_points_generation && (made & 0xFFFFu) <= (unsigned long)k)
 			{
 				struct psp_point_answer const *answer = &psp_point_answers[k];
@@ -32906,6 +32947,44 @@ static void psp_points_note_slowest(unsigned int const *results)
 	}
 }
 
+/* mepoints' split, from a job the ring handed back (its stamps:
+psp_points_me_make): the ME's time a point, its points' own time over the
+points it made (the ME's counter, in us by its measured rate), and the
+pick-up, the push to the job begun. The push is on this CPU's clock and
+the begun on the ME's, which aren't tied, so the pick-up is never their
+difference, only bounded: a job whose word the loops saw written was begun
+by then, so the push to that sighting (this clock) less the ME's begun to
+its first write (the ME's) is at least the pick-up, with the push's
+write-back and the last look in it; a job never seen in the loops has only
+the push to its answer seen here less the whole job, the loops' time in it */
+static void psp_points_split_note(unsigned int const *results, unsigned int now)
+{
+	float per_us = psp_me_cycles_per_us();
+	double job, span;
+
+	if (!(results[10] & 1u) || per_us <= 0.0f)
+		return;
+	job = (double)(results[7] - results[6]) / per_us;
+	psp_points_split.jobs++;
+	psp_points_split.made += results[0];
+	psp_points_split.point_us += (double)results[8] / per_us;
+	psp_points_split.job_us += job;
+	if ((results[10] & 2u) && psp_points_seen)
+	{
+		double lead = (double)(results[9] - results[6]) / per_us;
+
+		span = (double)(unsigned int)(psp_points_seen_at - psp_points_push_at);
+		psp_points_split.seen++;
+		psp_points_split.seen_us += span > lead ? span - lead : 0.0;
+	}
+	else
+	{
+		span = (double)(unsigned int)(now - psp_points_push_at);
+		psp_points_split.unseen++;
+		psp_points_split.unseen_us += span > job ? span - job : 0.0;
+	}
+}
+
 /* the frame's points done: the ME stopped and its job collected, so the
 list may be written again */
 void psp_points_end(void)
@@ -32930,6 +33009,7 @@ void psp_points_end(void)
 			psp_points_stats.me_made += results[0];
 			if (results[0])
 				psp_points_note_slowest(results);
+			psp_points_split_note(results, sceKernelGetSystemTimeLow());
 		}
 		else if (psp_points_failed_lines < 4)
 		{
@@ -32984,7 +33064,16 @@ void psp_points_end(void)
 				psp_points_stats.here, psp_points_stats.changed, psp_points_stats.unserved, psp_points_stats.compared,
 				psp_points_stats.differed, psp_points_stats.slowest_us, psp_points_stats.slowest_kind,
 				psp_points_stats.slowest_slot, sqrt(psp_points_stats.longest_reach));
+			if (psp_points_split.jobs)
+				platform_psp_log("mepoints: split: %lu jobs back, %lu points made: the ME's time a point %.1f us (the points' own, the audio between them out; a job %.2f ms, begun to ended on the ME's counter); the pick-up (push to the job begun) at most %.2f ms a job over the %lu the loops saw begun (push to that sighting less the ME's begun to its first write), at most %.2f ms over the %lu not seen (push to the answer at the end less the job) (same frames)",
+					psp_points_split.jobs, psp_points_split.made,
+					psp_points_split.made ? psp_points_split.point_us / psp_points_split.made : 0.0,
+					psp_points_split.job_us / 1000.0 / psp_points_split.jobs,
+					psp_points_split.seen ? psp_points_split.seen_us / 1000.0 / psp_points_split.seen : 0.0, psp_points_split.seen,
+					psp_points_split.unseen ? psp_points_split.unseen_us / 1000.0 / psp_points_split.unseen : 0.0,
+					psp_points_split.unseen);
 			memset(&psp_points_stats, 0, sizeof(psp_points_stats));
+			memset(&psp_points_split, 0, sizeof(psp_points_split));
 		}
 	}
 }
@@ -58194,6 +58283,10 @@ void psp_mevis_me_job(const unsigned int *args, unsigned int *results)
 
 	unsigned int k;
 
+	/* the job's two stamps on the ME's own counter, begun here and ended
+	below (mevisland's split): in the record's answer lines, which go back
+	with the job's output, as done does */
+	record->pad_out[1] = psp_mv_cycles();
 	/* mevisedram: the eDRAM's state cleared and its stack filled here, by the
 	ME, on the first job (and after the ME restarted: the main CPU asks) */
 	if (psp_mv_edram && record->pad_in[0])
@@ -58223,6 +58316,7 @@ void psp_mevis_me_job(const unsigned int *args, unsigned int *results)
 			low++;
 		psp_mv_handed->stack_low = low;
 	}
+	record->pad_out[2] = psp_mv_cycles();
 	results[0] = 1;
 }
 
@@ -58522,6 +58616,18 @@ static unsigned long psp_ml_depth_most = 0, psp_ml_too_deep = 0;
 static unsigned int psp_ml_ticket, psp_ml_state_bytes;
 static unsigned long psp_ml_views, psp_ml_used, psp_ml_refused, psp_ml_busy, psp_ml_late, psp_ml_failed, psp_ml_wait_us,
 	psp_ml_wait_worst, psp_ml_waited, psp_ml_differ_clusters, psp_ml_differ_objects;
+/* the split of a pushed view's time (a log line only; nothing reads it):
+the ME's job, begun to ended on its own counter (pad_out[1], [2]), and the
+pick-up, the push to the job's start. The push is on this CPU's clock and
+the start on the ME's, which aren't tied, so the pick-up is never their
+difference: a view that waited at the first reader was answered while this
+CPU looked, so push to the answer seen (this clock) less the job (the ME's,
+in us by its measured rate) is the pick-up, with the job's write-back and
+the last look in it; a view that didn't wait has only a bound, the push to
+the first reader less the job */
+static unsigned int psp_ml_push_at;
+static unsigned long psp_ml_split_jobs, psp_ml_split_waited, psp_ml_split_free;
+static double psp_ml_split_job_us, psp_ml_split_job_most, psp_ml_split_pick_us, psp_ml_split_bound_us;
 
 /* this CPU's copies of lines the ME wrote, dropped before they are read. It
 never writes the copies' state or the record after the push (the push writes
@@ -58608,6 +58714,7 @@ int psp_mevisland_push(void)
 			return 0;
 		}
 	}
+	psp_ml_push_at = sceKernelGetSystemTimeLow();
 	if (!psp_me_push_visibility_into(psp_mv_record, psp_mv_edram ? (void *)psp_mv_handed : (void *)psp_mv,
 		psp_mv_edram ? (unsigned int)sizeof(struct psp_mv_handed) : psp_ml_state_bytes, &psp_ml_ticket))
 	{
@@ -58648,6 +58755,31 @@ void psp_mevisland_collect(void)
 	psp_me_ring_collected(psp_ml_ticket);
 	psp_ml_out = 0;
 	psp_ml_drop(psp_mv_record, sizeof(*psp_mv_record));
+	{
+		/* the split (above): every answer the ring handed back in time */
+		float per_us = psp_me_cycles_per_us();
+
+		if (per_us > 0.0f)
+		{
+			double job = (double)(psp_mv_record->pad_out[2] - psp_mv_record->pad_out[1]) / per_us;
+			double cover = (double)(start - psp_ml_push_at);
+
+			psp_ml_split_jobs++;
+			psp_ml_split_job_us += job;
+			if (job > psp_ml_split_job_most)
+				psp_ml_split_job_most = job;
+			if (waited > 0)
+			{
+				psp_ml_split_waited++;
+				psp_ml_split_pick_us += cover + waited > job ? cover + waited - job : 0.0;
+			}
+			else
+			{
+				psp_ml_split_free++;
+				psp_ml_split_bound_us += cover > job ? cover - job : 0.0;
+			}
+		}
+	}
 	if (psp_mv_record->depth_most > psp_ml_depth_most)
 		psp_ml_depth_most = psp_mv_record->depth_most;
 	if (!psp_mv_record->done || psp_mv_record->too_deep)
@@ -58796,6 +58928,13 @@ void psp_mevisland_settle(void)
 			psp_ml_wait_us / 1000.0 / psp_ml_views, psp_ml_waited, psp_ml_wait_worst / 1000.0, psp_ml_depth_most,
 			low ? (PSP_MV_STACK - low * 4) / 1024 : 0, PSP_MV_STACK / 1024, psp_ml_here, psp_ml_rests, psp_ml_probes_back,
 			psp_ml_main_avg / 8000.0, psp_ml_wait_avg / 8000.0, psp_ml_always ? "; mevislandalways: every view pushed" : "");
+		if (psp_ml_split_jobs)
+			platform_psp_log("mevisland: split: %lu answers back in time: the ME's job %.2f ms a view (the most %.2f; begun to ended on the ME's counter); the pick-up (push to the job's start) %.2f ms a view over the %lu that waited at the first reader (push to the answer seen less the job; the job's write-back and the last look in it); %lu didn't wait, picked up within %.2f ms a view (push to the first reader less the job) (last 300 views)",
+				psp_ml_split_jobs, psp_ml_split_job_us / 1000.0 / psp_ml_split_jobs, psp_ml_split_job_most / 1000.0,
+				psp_ml_split_waited ? psp_ml_split_pick_us / 1000.0 / psp_ml_split_waited : 0.0, psp_ml_split_waited,
+				psp_ml_split_free, psp_ml_split_free ? psp_ml_split_bound_us / 1000.0 / psp_ml_split_free : 0.0);
+		psp_ml_split_jobs = psp_ml_split_waited = psp_ml_split_free = 0;
+		psp_ml_split_job_us = psp_ml_split_job_most = psp_ml_split_pick_us = psp_ml_split_bound_us = 0.0;
 		if (psp_ml_check)
 			platform_psp_log("mevislandcheck: differing from the main CPU's own: clusters %lu, objects %lu (last 300 views)",
 				psp_ml_differ_clusters, psp_ml_differ_objects);
