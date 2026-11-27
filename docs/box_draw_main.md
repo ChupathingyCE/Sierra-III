@@ -89,7 +89,42 @@ benchreport's frametrace `d` on both sides. No cost shows past the runs' own spr
 
 ## 3. The budget and the cuts [D]
 
-Not yet.
+Written by builder2, 2026-11-27 00:16, from §2.2's census (run 1's figures, where run 1's parts sum to its `d` of 34.4 exactly). Every figure is ms a frame. A share is a design [D] until a cut's sheet and its PSP pair back it.
+
+### 3.1 The budget: 11 ms on b30's fight, checked on c20's peak [D]
+
+`rest` is end, begin, setup and unnamed (b30 0.5, c20 whole 0.6). "Worst" is the part's highest figure in §2.2's table.
+
+| Part | b30 fight | Share in proportion to b30 | Its worst, where | Cut it needs there | Share at an equal cut on each part's worst |
+|---|---|---|---|---|---|
+| objects | 15.7 | 5.02 | 15.7, b30 fight | 68% | **4.61** |
+| world | 11.5 | 3.68 | 11.5, b30 fight (c20 10.2) | 68% | **3.38** |
+| effects | 3.2 | 1.02 | 3.7, c20 ~1619-2196 | 72% | **1.09** |
+| hud | 2.4 | 0.77 | 3.1, c20 ~1619-2196 | 75% | **0.91** |
+| transparent | 0.8 | 0.26 | 1.9, c20 both lines | 86% | **0.56** |
+| flares | 0.3 | 0.10 | 0.93, c20 whole | 89% | **0.27** |
+| rest | 0.5 | 0.15 | 0.6, c20 whole | 75% | **0.18** |
+| sum | 34.4 | 11.00 | 37.4 | | **11.00** |
+
+- **The proportional form doesn't hold on c20.** Sized on b30's fight alone (the brief's sizing case), four of its seven shares need a deeper cut on c20's later peak line than on b30. Transparent needs 86% and flares 89%, against 68% on b30, because they're larger on c20 (1.9 and 0.8) than on b30's fight.
+- **The last column is the one I propose:** every part cut by the same 70.6% on its own worst window (11 / 37.4). It still sums to 11 on b30's fight. On c20's later line each part stays at or under its share, so the line's 28.2 also comes in under 11.
+- **What the budget says [D]:** no part can be left as it is. Objects and world must give 11.1 and 8.1 ms of b30's fight, 19.2 of the 23.4 to cut. The four small parts together give ~4.2. The 0.5 ms bar a cut (the lever rules, decisions.md 2026-11-26 18:3x) is ~2% of what has to go. So this box is a rebuild of the drawing's two big parts, not a set of levers. That's the brief's own frame (REBUILD.md §3.1's "drawing's build 11"), and §4's first slice is taken from objects or world.
+
+### 3.2 The cuts, part by part [D, in progress]
+
+Each cut is written as a lever case: its ground (the stopped tries first, quoted from the lab's `toolbox/levercheck.py`), the line of `docs/cpu_cost_map.md` it attacks with that line's ceiling, and a cost sheet with three figures (cycles saved an item, cycles its bookkeeping adds an item, the items a frame). The cut is taken in this order: the work done at bake time, then every item's work made shorter, then a coarse group whose change its writer already knows, and only then a per-item skip or lookup at about 10x the check's cost.
+
+| Part | Its grounds (levercheck) | Its cost-map line, with that line's ceiling | Case |
+|---|---|---|---|
+| objects | model-walk (40 levers, 16 stopped), lighting, code-layout | `cpu_cost_map.md:88`: drawing's reuse (RSO, LIGHTREUSE, `retainedloop`) is in, and "the rest of the per-part chain (`psp_model_draw`'s locks, pretouch and records, ~15% of drawing)" is next (ceiling: lever by lever). `:89`: slice 2's census ceiling is −23% of the drawing's I-misses [E], and DRAWPART3 was rejected at +0.9-2.7% [M]. `:32`: the ME's traffic costs render objects ~0.9 ms a frame | next |
+| world | visibility, me-replay, lighting | `:94`: work moved to the ME. Visibility is 4.85 ms a frame on b30's flight [M], and B1's exact moves are ~5-8 ms a frame on b30's beach. Placement (§4) rules out a move without ME room shown at 30 fps (REBUILD.md:87) | after objects |
+| effects | effects (49 levers, 14 stopped) | `:33`: effects' drawing is 4.1 ms a frame on b40, three-quarters of it work | after world |
+| hud | hud-ui (17 levers, 3 stopped) | no line names it | after effects |
+| transparent, flares, rest | to be looked up | no line names them | last |
+
+### 3.3 What the sheets lack: the items a frame [D]
+
+A sheet's third figure is the item count a frame "from task 2's census" (the brief, task 3). The census times parts and counts no items: no models, parts, effects, hud elements or transparent records a frame. Level 2 of the stamp set (§1.3) would split `objects` and `world` but still not count items. The counts are exact in the emulator, since a count isn't a price, so one emulator batch on b30 and c20 with a per-part item counter on `drawsplit`'s lines (log-only, as §1.3) fills every sheet's third figure [E]. The lab's lead rules whether it rides the stamp set before any code.
 
 ## 4. Placement and the build cut [D]
 
