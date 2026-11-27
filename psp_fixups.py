@@ -68951,6 +68951,25 @@ _DS2_RENDER_DIFFUSE = '\t\t(PSP_STEP("structure_render_diffuse_texture"), struct
 _DS2_RENDER_DECALS = '\t\t(PSP_STEP("rasterizer_decals_begin"), rasterizer_decals_begin(_decal_layer_light));\n'
 _DS2_RENDER_SPECULAR = ('\t\t(PSP_STEP("lights_render_specular"), lights_render_specular());\n'
                         '\t\t(PSP_STEP("structure_render_specular_lightmaps"), structure_render_specular_lightmaps());\n')
+# render_window's own world calls (drawexact2_worldrest: world's residual 14-70% [E] without them)
+_DS2_RENDER_WINBEGIN = ('\t(PSP_STEP("player_effect_get_screen_flash"), player_effect_get_screen_flash(local_player_index, &parameters.screen_flash));\n'
+                        '\t(PSP_STEP("rasterizer_window_begin"), rasterizer_window_begin(&parameters));\n')
+_DS2_RENDER_REFLECT = ('\t\t(PSP_STEP("structure_render_reflection_lightmap_masks"), structure_render_reflection_lightmap_masks());\n'
+                       '\t\t(PSP_STEP("structure_render_reflection_mirrors"), structure_render_reflection_mirrors());\n'
+                       '\t\t(PSP_STEP("structure_render_reflections"), structure_render_reflections());\n')
+_DS2_RENDER_FOG = '\t\t(PSP_STEP("structure_render_fog"), structure_render_fog());\n'
+_DS2_RENDER_FOG_SCREEN = '\t\t(PSP_STEP("structure_render_fog_screen"), structure_render_fog_screen());\n'
+_DS2_RENDER_WATER = '\t\t(PSP_STEP("rasterizer_decals_begin"), rasterizer_decals_begin(_decal_layer_water));\n'
+_DS2_RENDER_DETAIL = '\t\t(PSP_STEP("structure_render_detail_objects"), structure_render_detail_objects());\n'
+_DS2_RENDER_WATER_END = '\t\t(PSP_STEP("rasterizer_decals_end"), rasterizer_decals_end());\n\n' + _DS2_RENDER_DETAIL
+_DS2_RENDER_AA = '\t\tif (stubbs_mode_active())\n'
+_DS2_RENDER_AA_END = ('\t\t\t\trasterizer_camera->viewport_bounds.y1);\n\t\t}\n'
+                      '\t\t(PSP_STEP("HALO_PERF_RENDER_PART"), HALO_PERF_RENDER_PART(_halo_perf_render_hud));\n')
+_DS2_RENDER_WINEND = ('\t(PSP_STEP("bink_playback_render"), bink_playback_render());\n'
+                      '\t(PSP_STEP("render_camera_debug_frustum"), render_camera_debug_frustum(&render.camera, &render.frustum));\n'
+                      '\t(PSP_STEP("render_debug"), render_debug());\n\t(PSP_STEP("editor_render"), editor_render());\n'
+                      '\t(PSP_STEP("rasterizer_debug_draw"), rasterizer_debug_draw());\n'
+                      '\t(PSP_STEP("rasterizer_window_end"), rasterizer_window_end());\n')
 _DS2_OBJ_COUNT = ('\t(PSP_STEP("HALO_PERF_COUNT"), HALO_PERF_COUNT(_halo_perf_objects, render_object_globals.rendered_object_count));\n')
 _DS2_OBJ_SHADOW_LIGHT = ('\t\t\tdata->lighting = object_get_cached_render_lighting(\n\t\t\t\tdata->object_index,\n'
                          '\t\t\t\t(PSP_STEP("object_get_level_of_detail_pixels"), object_get_level_of_detail_pixels(data->object_index)));\n')
@@ -69000,6 +69019,18 @@ DRAWSPLIT2_SITES = {
         (_DS2_RENDER_DIFFUSE, "\t\tPSP_DRAWSPLIT_OUT();\n" + _ds2_wrap(_DS2_RENDER_DIFFUSE, "DIFFUSE") + "\t\tPSP_DRAWSPLIT_IN(DECALS);\n"),
         (_DS2_RENDER_SPECULAR, "\t\tPSP_DRAWSPLIT_OUT();\n" + _ds2_wrap(_DS2_RENDER_SPECULAR.splitlines(True)[0], "LIGHTPASS")
          + _ds2_wrap(_DS2_RENDER_SPECULAR.splitlines(True)[1], "SPECULAR")),
+        (_DS2_RENDER_WINBEGIN, _ds2_wrap(_DS2_RENDER_WINBEGIN, "WINBEGIN", "\t")),
+        (_DS2_RENDER_REFLECT, _ds2_wrap(_DS2_RENDER_REFLECT, "REFLECT")),
+        (_DS2_RENDER_FOG, _ds2_wrap(_DS2_RENDER_FOG, "FOG")),
+        (_DS2_RENDER_FOG_SCREEN, _ds2_wrap(_DS2_RENDER_FOG_SCREEN, "FOG")),
+        # the water layer into decals, its close before the detail objects' own field
+        (_DS2_RENDER_WATER, "\t\tPSP_DRAWSPLIT_IN(DECALS);\n" + _DS2_RENDER_WATER),
+        (_DS2_RENDER_WATER_END, _DS2_RENDER_WATER_END.split("\n\n", 1)[0] + "\n\t\tPSP_DRAWSPLIT_OUT();\n\n"
+         + _ds2_wrap(_DS2_RENDER_DETAIL, "DETAIL")),
+        # Stubbs' image effect and the antialias, closed before the hud's part
+        (_DS2_RENDER_AA, "\t\tPSP_DRAWSPLIT_IN(AA);\n" + _DS2_RENDER_AA),
+        (_DS2_RENDER_AA_END, _DS2_RENDER_AA_END.replace("\t\t}\n", "\t\t}\n\t\tPSP_DRAWSPLIT_OUT();\n", 1)),
+        (_DS2_RENDER_WINEND, _ds2_wrap(_DS2_RENDER_WINEND, "WINEND", "\t")),
     ],
     "source/render/render_objects.c": [
         (_DS2_OBJ_COUNT, _DS2_OBJ_COUNT + "\tPSP_DRAWSPLIT_COUNT(OBJECTS, render_object_globals.rendered_object_count);\n"),
@@ -69051,7 +69082,7 @@ def drawsplit2_cut(tree):
     if not CHECK_ONLY:
         for rel, text in texts.items():
             open(os.path.join(tree, rel), "w", errors="surrogateescape").write(text)
-    print("psp_fixups: DRAWSPLIT level 2: %d hooks in %d files (objects' and world's fields, the items a frame)" % (hooks, len(texts)))
+    print("psp_fixups: DRAWSPLIT level 2: %d hooks in %d files (objects' and world's fields, world's window, the items a frame)" % (hooks, len(texts)))
     return 1
 drawsplit2_cut(TREE)
 

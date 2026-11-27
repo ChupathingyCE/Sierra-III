@@ -37,6 +37,17 @@ enum psp_drawsplit_field
 	PSP_DRAWSPLIT_DECALS,
 	PSP_DRAWSPLIT_DIFFUSE,
 	PSP_DRAWSPLIT_SPECULAR,
+	/* render_window's own world calls, outside the fields above: the
+	window's begin (the screen flash, rasterizer_window_begin), the three
+	reflection passes, the fog and the screen's fog, the detail objects, the
+	antialias (Stubbs' image effect with it), the window's end (bink through
+	rasterizer_window_end) */
+	PSP_DRAWSPLIT_WINBEGIN,
+	PSP_DRAWSPLIT_REFLECT,
+	PSP_DRAWSPLIT_FOG,
+	PSP_DRAWSPLIT_DETAIL,
+	PSP_DRAWSPLIT_AA,
+	PSP_DRAWSPLIT_WINEND,
 	PSP_DRAWSPLIT_FIELDS
 };
 #define PSP_DRAWSPLIT_FIRST_WHOLE PSP_DRAWSPLIT_SHADOWS

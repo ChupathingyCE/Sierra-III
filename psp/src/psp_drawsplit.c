@@ -97,6 +97,7 @@ static const char *const field_names[FIELDS] =
 {
 	"residual", "walk", "lights", "matrices", "d3d", "inst", "state", "encode", "vis",
 	"shadows", "fpw", "sound", "sky", "lightpass", "decals", "diffuse", "specular",
+	"winbegin", "reflect", "fog", "detail", "aa", "winend",
 };
 static const char *const item_names[ITEMS] = { "inst", "part", "draw", "cluster", "object" };
 
@@ -452,6 +453,12 @@ static void report(void)
 		(int)(sizeof(objects_items) / sizeof(objects_items[0])), n);
 	report_part(PART_WORLD, world_fields, (int)(sizeof(world_fields) / sizeof(world_fields[0])), world_items,
 		(int)(sizeof(world_items) / sizeof(world_items[0])), n);
+	/* world's render_window fields on a line of their own: on world's line
+	they would pass the log's 511 */
+	at = snprintf(line, sizeof(line), "drawsplit2 world's window: %u frames", run->frames);
+	for (k = PSP_DRAWSPLIT_WINBEGIN; k <= PSP_DRAWSPLIT_WINEND; k++)
+		at = append(line, sizeof(line), at, "; %s %.2f ms", field_names[k], run->window_slot_us[SLOT(PART_WORLD, k)] / n / 1000.0);
+	platform_log("%s", line);
 	if (run->unbalanced || run->unfolded)
 		platform_log("drawsplit: %u hooks unbalanced (a close with nothing open, a field left open, or past %d deep); %u frames drawn outside a render phase, not split",
 			run->unbalanced, STACK, run->unfolded);
