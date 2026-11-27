@@ -69090,10 +69090,14 @@ DRAWSPLIT2_SITES = {
 #     and is dropped (main.c's end pops the render's part a few instructions later: that tail is end's), but its
 #     breadcrumb stays: PSP_STEP is psp_step(), a call in A too, and dropping the line with it left render_frame one
 #     arc short of its profile (lab sierra-build 45988381184, ds2d0: "expected 31 and have 30")
-#   render_model: the matrices' close at the if/else's join left a block A doesn't have (A's join holds only
-#     geometry_detail_level_index's constant, a phi in SSA, so its block goes; ds2d2 45988394780 cleared render_model
-#     with that close alone dropped, ds2d1 45988387689 didn't with the open dropped), so it goes past the while that
-#     follows, before psp_sspr_level's call, a block A has (the while's few compares read as the matrices')
+#   render_model: the matrices field is dropped, its open and its close as A has them. Its close kept render_model
+#     from its counts at every site tried: at the if/else's join (ds2d2 45988394780 cleared render_model with that
+#     close alone dropped, ds2d1 45988387689 didn't with the open dropped), past the while before psp_sspr_level
+#     (ds2smC 45990291611), and after the level's call, before the assert, before the non-shadow arm's test and
+#     before the model begin breadcrumb (ds2mc1-ds2mc4 45992501527/45992506248/45992512832/45992518114, c3319e77's
+#     PSP_DRAWSPLIT_MCLOSE): each GCC's control-flow text, its counted arcs A's. ds2d0 45988381184, every store of
+#     the two functions dropped, compiled render_model with its counts. The matrices' time reads in what is open
+#     (objects' walk)
 #   interface.c's screen-effect part and xbox_texture_cache.c's texture wait also follow an arm's last call, but
 #     neither function had counts in A (neither is in B's 15 under the exact form's calls), so they stay
 # main.c gets psp_drawsplit_render_begin / _end around each render phase: uncounted (not on B's list), so d is the
@@ -69103,7 +69107,6 @@ _DS2_WIDGET_WAIT = '\t\tif (result == D3DERR_TESTINCOMPLETE)\n\t\t{\n\t\t\tHALO_
 _DS2_WIDGET_WAIT_END = '\t\t\trasterizer_spin_end();\n\t\t\tHALO_PERF_END(_halo_perf_occlusion_wait);\n\t\t}\n'
 _DS2_OBJ_LIGHT_IF = '\t\t\tif (needs_lighting)\n\t\t\t{\n'
 _DS2_OBJ_LIGHT_ELSE = '\t\t\telse\n\t\t\t{\n\t\t\t\tdata->lighting = NULL;\n\t\t\t}\n'
-_DS2_MODELS_SSPR = '\t\t\tgeometry_detail_level_index = (short)psp_sspr_level((unsigned long)model_index, level_of_detail_pixels,\n'
 # the exact form's (file, site) -> the sampled form's text; a site not here is the exact form's
 DRAWSPLIT2_SAMPLED = {
     ("source/render/render.c", '\t\t(PSP_STEP("render_objects"), render_objects());\n'): None,
@@ -69114,7 +69117,8 @@ DRAWSPLIT2_SAMPLED = {
     ("source/rasterizer/rasterizer.c", _DS2_RAST_ENV_D3D): None,
     # the field dropped: the site as A has it
     ("source/rasterizer/rasterizer.c", _DS2_RAST_ENV_ENCODE): _DS2_RAST_ENV_ENCODE,
-    # the join as A has it: the close goes past the while (DRAWSPLIT2_SAMPLED_SITES)
+    # the field dropped: its open and its close as A has them
+    ("source/models/models.c", _DS2_MODELS_MATRICES): _DS2_MODELS_MATRICES,
     ("source/models/models.c", _DS2_MODELS_MATRICES_END): _DS2_MODELS_MATRICES_END,
 }
 # the sampled form's sites past a join, each from its statement's start to its end (the exact form's site inside)
@@ -69133,10 +69137,6 @@ DRAWSPLIT2_SAMPLED_SITES = {
          '\t(PSP_STEP("rasterizer_frame_end"), rasterizer_frame_end());\n'
          '\t(PSP_STEP("HALO_PERF_RENDER_PART"), ((void)0)); /* psp_fixups.py, drawsplit sampled: HALO_PERF_RENDER_PART(NONE)'
          ' dropped (after the function\'s last call); its breadcrumb, a call as in A, kept */\n'),
-    ],
-    "source/models/models.c": [
-        (_DS2_MODELS_SSPR, "\t\t\tPSP_DRAWSPLIT_OUT(); /* psp_fixups.py, drawsplit sampled: the matrices' close, past the while */\n"
-         + _DS2_MODELS_SSPR),
     ],
     "source/render/render_objects.c": [
         (_DS2_OBJ_LIGHT_IF, "\t\t\t{\n\t\t\tPSP_DRAWSPLIT_SAVE();\n" + _DS2_OBJ_LIGHT_IF),
@@ -69167,11 +69167,7 @@ DRAWSPLIT2_SAMPLED_MAIN = [
 # their pgo: line which store moves each function's cfg (the lab's findings/drawsplit2_2026-11-27.md 'ds2smB')
 _DS2_RF_PART = '(PSP_STEP("HALO_PERF_RENDER_PART"), HALO_PERF_RENDER_PART(_halo_perf_render_%s));\n'
 DRAWSPLIT2_DROP = {
-    # render_model's one field: its open (before if (node_matrices)) and its close (past the while, before psp_sspr_level)
-    "matrices_in": ("source/models/models.c", "\t\tPSP_DRAWSPLIT_IN(MATRICES);\n" + _DS2_MODELS_MATRICES,
-                    _DS2_MODELS_MATRICES),
-    "matrices_out": ("source/models/models.c", "\t\t\tPSP_DRAWSPLIT_OUT(); /* psp_fixups.py, drawsplit sampled: the matrices'"
-                     " close, past the while */\n" + _DS2_MODELS_SSPR, _DS2_MODELS_SSPR),
+    # (render_model's matrices_in and matrices_out went with the field: it's dropped in the sampled form)
     # render_frame's three level 1 stores: after the memset, in the window loop before a non-player window, after it
     "rf_begin": ("source/render/render.c", "\t" + _DS2_RF_PART % "begin",
                  '\t(PSP_STEP("HALO_PERF_RENDER_PART"), ((void)0));\n'),
@@ -69179,26 +69175,6 @@ DRAWSPLIT2_DROP = {
                   '\t\t(PSP_STEP("HALO_PERF_RENDER_PART"), ((void)0));\n\t\t(PSP_STEP("render_nonplayer_frame")'),
     "rf_end": ("source/render/render.c", "\t" + _DS2_RF_PART % "end" + '\n\t(PSP_STEP("render_interface_begin")',
                '\t(PSP_STEP("HALO_PERF_RENDER_PART"), ((void)0));\n\n\t(PSP_STEP("render_interface_begin")'),
-}
-# PSP_DRAWSPLIT_MCLOSE=<site> (sampled only, never with PSP_DRAWSPLIT_DROP; a build-only check, never played):
-# render_model's matrices close past the while still compiled it without its counts (ds2smC, lab sierra-build
-# 45990291611 at f8370711: GCC's control flow text, no 'expected N and have M', so its counted arcs are A's and a
-# block, an uncounted edge's, is not), and the host's GCC keeps the counts at every site (the lab's
-# toolbox/cfgsum.py on probe5.c), so the site is found on the runner: each name moves the close to a later statement
-# in a block A has, builds side by side, one site each, and their pgo: lines name the site that keeps the counts.
-# The field then also holds what runs between the while and the site: the level's call, full_model_detail's test,
-# the debug LOD's and the assert's tests (level .. shadow), and the debug draws (off in play) and the model
-# parameters' stores (begin)
-_DS2_MODELS_CLOSE = "\t\t\tPSP_DRAWSPLIT_OUT(); /* psp_fixups.py, drawsplit sampled: the matrices' close, past the while */\n"
-DRAWSPLIT2_MCLOSE = {
-    # (the site, the close goes after it): after psp_sspr_level's call, the #ifdef block's last statement
-    "level": ("\t\t\tpsp_model_level = geometry_detail_level_index;\n", True),
-    # before the assert, past the debug LOD's if
-    "assert": ("\t\tmatch_assert(\n\t\t\t\"c:\\\\halo\\\\SOURCE\\\\models\\\\models.c\",\n\t\t\t169,\n", False),
-    # before the non-shadow arm's test, past the assert
-    "shadow": ("\t\tif (!TEST_FLAG(flags, _render_model_shadow_bit))\n", False),
-    # before the model begin breadcrumb, a call in A
-    "begin": ('\t\tPSP_STEP("render_model: model begin");\n', False),
 }
 def drawsplit2_cut(tree):
     form = os.environ.get("PSP_DRAWSPLIT", "")
@@ -69253,25 +69229,6 @@ def drawsplit2_cut(tree):
             texts[rel] = texts[rel].replace(old, new, 1)
         print("psp_fixups: DRAWSPLIT sampled: PSP_DRAWSPLIT_DROP=%s, a build to read its pgo: line, never to play"
               " (a dropped open or close leaves the field stack unbalanced)" % ",".join(drops))
-    mclose = os.environ.get("PSP_DRAWSPLIT_MCLOSE", "")
-    if mclose:
-        if not sampled or drops:
-            return check_fail("psp_fixups: PSP_DRAWSPLIT_MCLOSE is the sampled form's, without PSP_DRAWSPLIT_DROP")
-        if mclose not in DRAWSPLIT2_MCLOSE:
-            return check_fail("psp_fixups: PSP_DRAWSPLIT_MCLOSE: %r is none of %s" % (mclose, ", ".join(sorted(DRAWSPLIT2_MCLOSE))))
-        rel, (anchor, after) = "source/models/models.c", DRAWSPLIT2_MCLOSE[mclose]
-        text = texts[rel]
-        if text.count(_DS2_MODELS_CLOSE) != 1 or text.count(anchor) != 1:
-            return check_fail("psp_fixups: PSP_DRAWSPLIT_MCLOSE %s: the close matches %d times, the site %d"
-                              % (mclose, text.count(_DS2_MODELS_CLOSE), text.count(anchor)))
-        text = text.replace(_DS2_MODELS_CLOSE, "", 1)
-        close = "%sPSP_DRAWSPLIT_OUT(); /* psp_fixups.py, drawsplit sampled: the matrices' close, PSP_DRAWSPLIT_MCLOSE=%s */\n"
-        if after:
-            text = text.replace(anchor, anchor + close % ("\t\t\t", mclose), 1)
-        else:
-            text = text.replace(anchor, close % ("\t\t", mclose) + anchor, 1)
-        texts[rel] = text
-        print("psp_fixups: DRAWSPLIT sampled: PSP_DRAWSPLIT_MCLOSE=%s, a build to read its pgo: line, never to play" % mclose)
     for rel, text in texts.items():
         if drops:
             break
@@ -69286,7 +69243,7 @@ def drawsplit2_cut(tree):
             open(os.path.join(tree, rel), "w", errors="surrogateescape").write(text)
     if sampled:
         print("psp_fixups: DRAWSPLIT sampled: %d hooks in %d files (level 2's sites, closes past a join where a call ended "
-              "the block, the level draws' encode dropped, the occlusion wait's end past its if, main.c's render calls)"
+              "the block, the level draws' encode and render_model's matrices dropped, the occlusion wait's end past its if, main.c's render calls)"
               % (hooks, len(texts)))
     else:
         print("psp_fixups: DRAWSPLIT level 2: %d hooks in %d files (objects' and world's fields, world's window, the items a frame)" % (hooks, len(texts)))
