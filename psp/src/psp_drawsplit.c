@@ -493,6 +493,17 @@ static const void *merge_shader[MERGE_KEYS];
 static int merge_permutation[MERGE_KEYS];
 static unsigned long long window_merge_instances = 0, window_merge_parts = 0, window_merge_state = 0, window_merge_shader = 0,
 	window_merge_sharing = 0, window_merge_past = 0, window_far_form[3];
+/* D5's key (docs/box_draw_main.md §3.4.5 'Its first asks'): among the same
+near parts, across their instances, the distinct (shader, permutation) keys a
+frame, and the parts that would follow a part of their own key once the
+frame's parts are sorted by it (a part whose key the frame drew before). The
+table holds SORT_KEYS keys and is closed at psp_drawsplit_frame; a part past
+them that matches none is counted apart, so the followers are a floor */
+#define SORT_KEYS 64
+static unsigned int sort_keys = 0;
+static const void *sort_shader[SORT_KEYS];
+static int sort_permutation[SORT_KEYS];
+static unsigned long long window_sort_keys = 0, window_sort_follow = 0, window_sort_past = 0;
 
 void psp_drawsplit_far(unsigned int groups, int form)
 {
@@ -529,6 +540,20 @@ static void merge_part(const void *shader, int permutation)
 		window_merge_instances++;
 	}
 	window_merge_parts++;
+	for (k = 0; k < sort_keys; k++)
+		if (sort_shader[k] == shader && sort_permutation[k] == permutation)
+			break;
+	if (k < sort_keys)
+		window_sort_follow++;
+	else if (sort_keys < SORT_KEYS)
+	{
+		sort_shader[sort_keys] = shader;
+		sort_permutation[sort_keys] = permutation;
+		sort_keys++;
+		window_sort_keys++;
+	}
+	else
+		window_sort_past++;
 	for (k = 0; k < merge_keys && same < 2; k++)
 		if (merge_shader[k] == shader)
 			same = merge_permutation[k] == permutation ? 2 : 1;
@@ -565,6 +590,14 @@ static void report_merge(double n)
 		window_far_form[0] / n, window_far_form[1] / n, window_far_form[2] / n);
 	window_merge_instances = window_merge_parts = window_merge_state = window_merge_shader = window_merge_sharing = 0;
 	window_merge_past = window_far_form[0] = window_far_form[1] = window_far_form[2] = 0;
+}
+
+static void report_sort(double n)
+{
+	platform_log("drawsplit2 sort: the near parts' %.1f distinct (shader, permutation) keys a frame; %.1f parts a frame follow "
+		"a part of their own key in sorted order; %llu parts past the frame's %d keys",
+		window_sort_keys / n, window_sort_follow / n, window_sort_past, SORT_KEYS);
+	window_sort_keys = window_sort_follow = window_sort_past = 0;
 }
 
 /* D3's store (docs/box_draw_main.md §3.4.2 'Memory', §4.4 A2): the distinct
@@ -951,6 +984,7 @@ static void report(void)
 	report_kinds(n);
 	report_store(n);
 	report_merge(n);
+	report_sort(n);
 	report_pieces(n);
 #endif
 #ifdef PSP_DRAWSPLIT_SAMPLED
@@ -1080,6 +1114,7 @@ void psp_drawsplit_frame(unsigned long draw_us)
 	frame_stamps = 0;
 	frame_stamps2 = 0;
 	frame_open = 0;
+	sort_keys = 0;
 	run->run_frames++;
 	if (++run->frames >= WINDOW)
 		report();
