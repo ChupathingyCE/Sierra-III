@@ -75,6 +75,10 @@ static unsigned box_ws_old_check_told, box_ws_old_posed_told;
 /* the spheres of objects with pose nodes that changed with no mark: kept out
    of the 'sphere' field, the crossing's own count (store_pose.c's writers) */
 static unsigned long box_ws_old_check_posed, box_ws_old_check_posed_spheres;
+/* models the copy had as NOT_HELD at the check while the live one differs:
+   the copy's own refusal (a reader's fallback), kept out of 'model nodes' */
+static unsigned long box_ws_old_check_unheld, box_ws_old_check_unheld_roomless;
+static unsigned box_ws_old_unheld_told;
 static unsigned long box_ws_old_visits, box_ws_old_visit_parted[WSO_FIELDS], box_ws_old_visits_parted;
 static unsigned long box_ws_old_check_clusters, box_ws_old_model_visits, box_ws_old_model_visits_parted;
 
@@ -297,6 +301,10 @@ void box_ws_old_model_put(unsigned absolute, int state, const struct box_ws_old_
 		if (box_ws_old_node_fill + count > BOX_WS_OLD_NODES)
 		{
 			box_ws_old_model_unheld(absolute);
+			/* the cause, for wsoldcheck: a NOT_HELD model's count is no run
+			   (readers and the drop read it only when HELD), so the nodes
+			   it wanted say past the nodes, 0 says owed */
+			m->count = (uint8_t)count;
 			box_ws_old_models_roomless++;
 			/* a repack helps only when deleted objects' runs left room */
 			if (box_ws_old_node_fill - box_ws_old_node_live >= count)
@@ -330,8 +338,28 @@ static int box_ws_old_model_differs(unsigned absolute, int state, const struct b
 
 void box_ws_old_model_check(unsigned absolute, int state, const struct box_ws_old_node *nodes, unsigned count)
 {
+	struct box_ws_old_model const *m;
+
 	if (absolute >= BOX_WS_OLD_SLOTS || !box_ws_old_parts || !box_ws_old_model_differs(absolute, state, nodes, count))
 		return;
+	m = &box_ws_old_models[absolute];
+	/* the copy's own NOT_HELD (past the nodes, or owed and not yet made):
+	   its reader goes to the fallback, so nothing is misread and no mark
+	   was missed. Told apart, and not put back: the not-held bit retakes it
+	   at the next refresh, as in the copy unchecked */
+	if (m->state == BOX_WS_OLD_MODEL_NOT_HELD)
+	{
+		box_ws_old_check_unheld++;
+		if (m->count)
+			box_ws_old_check_unheld_roomless++;
+		if (box_ws_old_unheld_told < 8)
+		{
+			box_ws_old_unheld_told++;
+			platform_psp_log("wsoldcheck: refresh %lu: slot %u's model not held at the check (%s; live state %d, %u nodes)",
+				box_ws_old_flips, absolute, m->count ? "past the nodes" : "owed", state, count);
+		}
+		return;
+	}
 	box_ws_old_check_missed[WSO_NODES]++;
 	if (box_ws_old_check_told < 24)
 	{
@@ -477,6 +505,8 @@ static void box_ws_old_log(void)
 		box_ws_old_check_objects, box_ws_old_check_clusters, line);
 	platform_psp_log("wsoldcheck: posed objects' spheres (store_pose.c's writers): %lu of %lu posed records checked changed with no mark",
 		box_ws_old_check_posed_spheres, box_ws_old_check_posed);
+	platform_psp_log("wsoldcheck: not held at the check (the copy's own NOT_HELD, a reader's fallback, not a missed mark): %lu, %lu past the nodes and %lu owed",
+		box_ws_old_check_unheld, box_ws_old_check_unheld_roomless, box_ws_old_check_unheld - box_ws_old_check_unheld_roomless);
 	n = 0;
 	for (k = 0; k < WSO_FIELDS; k++)
 		n += snprintf(line + n, sizeof(line) - n, "%s%s %lu", k ? ", " : "", box_ws_old_field_name[k], box_ws_old_visit_parted[k]);
