@@ -631,6 +631,8 @@ loop, game_tick, main_game_render, render_frame and render_window
 call spends in calls that have steps of their own lands on those. The
 heartbeat thread writes and clears the table every 10 s */
 #define PROFILE_SLOTS 512
+/* profile.txt's tail line ("(N rows past the buffer)"), kept free in the report */
+#define PROFILE_TAIL_BYTES 160
 struct profile_slot
 {
 	const char *name;
@@ -2401,6 +2403,9 @@ static void profile_report(double seconds, unsigned long frames, unsigned long t
 	int index, used = 0;
 	SceUID file;
 	char line[160];
+	char rest_name[48];
+	int rest_rows;
+	unsigned long rest_microseconds, rest_calls;
 
 	double scale;
 
@@ -2434,18 +2439,35 @@ static void profile_report(double seconds, unsigned long frames, unsigned long t
 		"step (time until the next)", "ms/frame", "% time", "calls/s", "us/call");
 	/* the table goes to the file in one write (build 19) */
 	report_length = snprintf(report, sizeof(report), "%s", line);
-	for (index = 0; index < used && index < 60; index++)
+	/* every row the buffer holds, then one tail line for the rows past it,
+	so the printed rows always sum to the header's total (the 60-row cut
+	lifted: the lab's decisions.md 2026-11-27 14:4x, ticksplit2) */
+	rest_rows = 0;
+	rest_microseconds = rest_calls = 0;
+	for (index = 0; index < used; index++)
 	{
 		snprintf(line, sizeof(line), "%-44s %9.2f %7.1f %9.1f %9.1f\n", copy[index].name,
 			frames ? copy[index].microseconds / 1000.0 / frames : 0.0,
 			copy[index].microseconds / (seconds * 1e4), copy[index].calls / seconds,
 			copy[index].calls ? (double)copy[index].microseconds / copy[index].calls : 0.0);
-		if (report_length + (int)strlen(line) < (int)sizeof(report))
+		if (!rest_rows && report_length + (int)strlen(line) < (int)sizeof(report) - PROFILE_TAIL_BYTES)
 			report_length += snprintf(report + report_length, sizeof(report) - report_length, "%s", line);
+		else
+		{
+			rest_rows++;
+			rest_microseconds += copy[index].microseconds;
+			rest_calls += copy[index].calls;
+		}
 		if (index < 8)
 			platform_log("  %-30.30s %6.2f ms/frame %5.1f%%", copy[index].name,
 				frames ? copy[index].microseconds / 1000.0 / frames : 0.0, copy[index].microseconds / (seconds * 1e4));
 	}
+	snprintf(rest_name, sizeof(rest_name), "(%d rows past the buffer)", rest_rows);
+	snprintf(line, sizeof(line), "%-44s %9.2f %7.1f %9.1f %9.1f\n", rest_name,
+		frames ? rest_microseconds / 1000.0 / frames : 0.0,
+		rest_microseconds / (seconds * 1e4), rest_calls / seconds,
+		rest_calls ? (double)rest_microseconds / rest_calls : 0.0);
+	report_length += snprintf(report + report_length, sizeof(report) - report_length, "%s", line);
 	if (file >= 0)
 		sceIoWrite(file, report, report_length);
 	object_report(file, ticks);
