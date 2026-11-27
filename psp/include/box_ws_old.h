@@ -255,6 +255,55 @@ void box_ws_old_mark(long datum_index);
    header's type (-1: an empty slot) */
 void box_ws_old_entry(int type);
 
+/* K1-R's part clock (lever WSOLDK1R, commit 1; keep word wsoldclock2, with
+   wsoldparts or wsoldcheck; log only): the refresh's time cut at each stamp,
+   the time since the last stamp put to the part named (whole fills left out,
+   as K1's clock's). An entry's part is its class: a biped (its pill apart,
+   one more stamp before it), a kept type (vehicle, scenery, machine) with its
+   model held, one with no model or not held, every other type (K1a's dropped
+   types, links or full record), an empty slot. STAMP is one stamp's own cost,
+   the second of two back to back at each refresh's end */
+enum
+{
+	BOX_WS_OLD_PART_FENCE,
+	BOX_WS_OLD_PART_MARKED,
+	BOX_WS_OLD_PART_REACH,
+	BOX_WS_OLD_PART_BIPED,
+	BOX_WS_OLD_PART_PILL,
+	BOX_WS_OLD_PART_HELD,
+	BOX_WS_OLD_PART_BARE,
+	BOX_WS_OLD_PART_DROPPED,
+	BOX_WS_OLD_PART_EMPTY,
+	BOX_WS_OLD_PART_COUNT,
+	BOX_WS_OLD_PART_BREAKABLE,
+	BOX_WS_OLD_PART_CLUSTER_ENDS,
+	BOX_WS_OLD_PART_TAKE,
+	BOX_WS_OLD_PART_KEEP,
+	BOX_WS_OLD_PART_CHECK,
+	BOX_WS_OLD_PART_FLIP,
+	BOX_WS_OLD_PART_PUBLISH,
+	BOX_WS_OLD_PART_STAMP,
+	BOX_WS_OLD_PARTS
+};
+extern int box_ws_old_clock2;
+void box_ws_old_part(int part);
+#define BOX_WS_OLD_PART(part) do { if (box_ws_old_clock2) box_ws_old_part(part); } while (0)
+
+/* K1-R's reach count (lever WSOLDK1R, commit 1; keep word wsoldreach, with
+   wsoldparts or wsoldcheck; log only, the copy stays whole): at the refresh's
+   head, the clusters of every held biped (by its root's cluster references)
+   and their members from the copy's member runs make the reach set; a slot
+   counts by its root parent. Each marked non-biped entry out of reach is
+   counted by type and would be carried ('behind') until a refresh finds it
+   in reach; under wsoldcheck the sweep's visits to out-of-reach objects are
+   the reach misses, those to behind slots apart */
+extern int box_ws_old_reach;
+int box_ws_old_reach_biped(unsigned i);     /* held biped i's slot, -1 none */
+void box_ws_old_reach_cluster(int cluster); /* a cluster a held biped is in */
+void box_ws_old_reach_make(void);           /* the set, from the clusters given */
+void box_ws_old_reach_entry(unsigned absolute); /* after its put */
+void box_ws_old_reach_visit(long datum_index);  /* wsoldcheck: a sweep's visit */
+
 /* K1a (wsoldk1), the links form (the lab's decisions.md 2026-11-27 08:3x): a
    slot whose type no reader's mask names and whose first child is none holds
    identifier, type, next and first child only, flagged BOX_WS_OLD_FLAG_LINKS

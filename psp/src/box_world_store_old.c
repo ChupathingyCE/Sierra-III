@@ -121,6 +121,28 @@ static unsigned long box_ws_old_check_dropped, box_ws_old_check_dropped_full, bo
 	box_ws_old_visits_dropped_next, box_ws_old_visits_dropped_full, box_ws_old_visits_dropped_parted,
 	box_ws_old_check_k1b;
 
+/* K1-R's part clock (wsoldclock2) and reach count (wsoldreach), log only */
+int box_ws_old_clock2;
+static uint32_t box_ws_old_part_last;
+static unsigned long long box_ws_old_part_us[BOX_WS_OLD_PARTS];
+static unsigned long box_ws_old_part_stamps[BOX_WS_OLD_PARTS];
+static const char *const box_ws_old_part_name[BOX_WS_OLD_PARTS] = {
+	"fence", "marked list", "reach set", "biped", "pill", "kept, model held", "kept, no model or not held",
+	"dropped types", "empty", "biped count", "breakable row", "clusters begin+end", "clusters taken",
+	"clusters kept", "check", "flip", "publish", "stamp"};
+#define BOX_WS_OLD_TYPE_BIPED 0 /* _object_type_biped, box_ws_old_type_name's order */
+int box_ws_old_reach;
+static uint32_t box_ws_old_reach_clusters[BOX_WS_OLD_CLUSTERS / 32];
+static uint32_t box_ws_old_reach_bits[BOX_WS_OLD_SLOTS / 32];
+static uint32_t box_ws_old_behind_bits[BOX_WS_OLD_SLOTS / 32];
+static int box_ws_old_reach_held;
+static unsigned long box_ws_old_reach_made, box_ws_old_reach_unmade, box_ws_old_reach_in_clusters,
+	box_ws_old_reach_in_slots, box_ws_old_reach_entries, box_ws_old_reach_carried, box_ws_old_reach_late;
+static unsigned long box_ws_old_reach_out[BOX_WS_OLD_TYPES + 1];
+static unsigned long box_ws_old_reach_visits, box_ws_old_reach_visits_unmade, box_ws_old_reach_visits_out,
+	box_ws_old_reach_visits_behind;
+static unsigned long box_ws_old_reach_visits_by[BOX_WS_OLD_TYPES + 1];
+
 enum { WSO_SPHERE, WSO_FLAGS, WSO_LINKS, WSO_TYPE, WSO_DEAD, WSO_NONE, WSO_PILL, WSO_MOTION, WSO_UNIT, WSO_NODES,
 	WSO_CLUSTER, WSO_PARENT, WSO_ROOT, WSO_BREAKABLE, WSO_FIELDS };
 static const char *const box_ws_old_field_name[WSO_FIELDS] = {
@@ -233,6 +255,12 @@ int box_ws_old_begin(void)
 
 	box_ws_old_clock_start = start;
 	box_ws_old_whole = state == 2;
+	if (state && box_ws_old_clock2)
+	{
+		/* K1-R's part clock: the fence (and begin's tests) from the head */
+		box_ws_old_part_last = start;
+		box_ws_old_part(BOX_WS_OLD_PART_FENCE);
+	}
 	return state;
 }
 
@@ -252,6 +280,15 @@ static int box_ws_old_begin_state(void)
 		box_ws_old_k1 = box_ws_old_parts && psp_keep("wsoldk1");
 		if (box_ws_old_k1)
 			platform_psp_log("wsold: wsoldk1 on (lever WSOLDK1): full records for biped, vehicle, scenery and machine, every other type the links record (identifier, type, next, first child) or the full one when it has a first child; owed models taken again when their nodes are made, the not-held walk off");
+		/* K1-R, log only: the part clock and the reach count need the
+		   clusters' half (the member runs), so wsoldparts or wsoldcheck */
+		box_ws_old_clock2 = box_ws_old_parts && psp_keep("wsoldclock2");
+		box_ws_old_reach = box_ws_old_parts && psp_keep("wsoldreach");
+		if (box_ws_old_clock2)
+			platform_psp_log("wsold: wsoldclock2 on (lever WSOLDK1R, log only): the refresh's us by part, a stamp at each part's end");
+		if (box_ws_old_reach)
+			platform_psp_log("wsold: wsoldreach on (lever WSOLDK1R, log only): the held bipeds' reach set at each refresh's head, the marked entries out of it by type%s",
+				box_ws_old_checking ? ", the sweep's visits out of it" : "");
 		memset(box_ws_old_biped_of, 0xff, sizeof(box_ws_old_biped_of));
 		memset(box_ws_old_biped_owner, 0xff, sizeof(box_ws_old_biped_owner));
 		memset(box_ws_old_vehicle_of, 0xff, sizeof(box_ws_old_vehicle_of));
@@ -333,6 +370,176 @@ void box_ws_old_entry(int type)
 	if (box_ws_old_whole)
 		return;
 	box_ws_old_entries[type >= 0 && type < BOX_WS_OLD_TYPES ? type : BOX_WS_OLD_TYPES]++;
+}
+
+/* K1-R's part clock: the us since the last stamp to this part. Stamps meet
+   end to end, so the parts add to the refresh from the head to the last
+   stamp; each part's segments each carry one stamp's own cost (STAMP's) */
+void box_ws_old_part(int part)
+{
+	uint32_t now = BOX_WS_OLD_NOW();
+
+	if (!box_ws_old_whole && part >= 0 && part < BOX_WS_OLD_PARTS)
+	{
+		box_ws_old_part_us[part] += now - box_ws_old_part_last;
+		box_ws_old_part_stamps[part]++;
+	}
+	box_ws_old_part_last = now;
+}
+
+/* ---------- K1-R's reach count (wsoldreach, log only) */
+
+int box_ws_old_reach_biped(unsigned i)
+{
+	return i < BOX_WS_OLD_BIPEDS ? box_ws_old_biped_owner[i] : -1;
+}
+
+void box_ws_old_reach_cluster(int cluster)
+{
+	if (cluster >= 0 && cluster < BOX_WS_OLD_CLUSTERS)
+		box_ws_old_reach_clusters[cluster >> 5] |= 1u << (cluster & 31);
+}
+
+/* a slot counts by its root parent (the walk reaches a child through first
+   child and next, not through the clusters' lists); a parent past the slots
+   or a chain past 8 counts as in reach */
+static int box_ws_old_in_reach(unsigned absolute)
+{
+	int depth;
+
+	for (depth = 0; depth < 8; depth++)
+	{
+		int32_t parent = box_ws_old_parents[absolute];
+
+		if (parent == -1)
+			return (box_ws_old_reach_bits[absolute >> 5] >> (absolute & 31)) & 1;
+		absolute = (unsigned)parent & 0xffff;
+		if (absolute >= BOX_WS_OLD_SLOTS)
+			return 1;
+	}
+	return 1;
+}
+
+/* the set from the clusters given since the last make, by the member runs the
+   copy holds (the last refresh's lists), then every held biped; the slots
+   behind from earlier refreshes walked again: taken now if in reach. A whole
+   fill, or no lists held, makes none: every slot is taken, none behind */
+void box_ws_old_reach_make(void)
+{
+	unsigned w, k;
+
+	memset(box_ws_old_reach_bits, 0, sizeof(box_ws_old_reach_bits));
+	box_ws_old_reach_held = 0;
+	if (box_ws_old_whole || box_ws_old_cluster_all || !box_ws_old_cluster_count)
+	{
+		if (!box_ws_old_whole)
+			box_ws_old_reach_unmade++;
+		memset(box_ws_old_behind_bits, 0, sizeof(box_ws_old_behind_bits));
+		memset(box_ws_old_reach_clusters, 0, sizeof(box_ws_old_reach_clusters));
+		return;
+	}
+	box_ws_old_reach_held = 1;
+	box_ws_old_reach_made++;
+	for (w = 0; w < BOX_WS_OLD_CLUSTERS / 32; w++)
+	{
+		uint32_t bits = box_ws_old_reach_clusters[w];
+
+		while (bits)
+		{
+			unsigned cluster = w * 32 + (unsigned)__builtin_ctz(bits);
+			struct box_ws_old_cluster const *held = &box_ws_old_clusters[cluster];
+
+			bits &= bits - 1;
+			if ((int)cluster >= box_ws_old_cluster_count)
+				continue;
+			box_ws_old_reach_in_clusters++;
+			for (k = 0; k < held->count; k++)
+			{
+				unsigned absolute = (unsigned)box_ws_old_members[held->first + k] & 0xffff;
+
+				if (absolute < BOX_WS_OLD_SLOTS)
+					box_ws_old_reach_bits[absolute >> 5] |= 1u << (absolute & 31);
+			}
+		}
+	}
+	memset(box_ws_old_reach_clusters, 0, sizeof(box_ws_old_reach_clusters));
+	for (k = 0; k < BOX_WS_OLD_BIPEDS; k++)
+	{
+		int16_t owner = box_ws_old_biped_owner[k];
+
+		if (owner >= 0)
+			box_ws_old_reach_bits[owner >> 5] |= 1u << (owner & 31);
+	}
+	for (w = 0; w < BOX_WS_OLD_SLOTS / 32; w++)
+	{
+		uint32_t bits = box_ws_old_behind_bits[w];
+
+		box_ws_old_reach_in_slots += (unsigned long)__builtin_popcount(box_ws_old_reach_bits[w]);
+		while (bits)
+		{
+			unsigned bit = (unsigned)__builtin_ctz(bits);
+
+			bits &= bits - 1;
+			if (box_ws_old_in_reach(w * 32 + bit))
+			{
+				box_ws_old_behind_bits[w] &= ~(1u << bit);
+				box_ws_old_reach_late++;
+			}
+			else
+				box_ws_old_reach_carried++;
+		}
+	}
+}
+
+/* a refresh's entry, after its put: a marked non-biped slot out of reach
+   would be carried, not entered; in reach, it's taken (and no longer behind) */
+void box_ws_old_reach_entry(unsigned absolute)
+{
+	struct box_ws_old_object const *record;
+	uint32_t bit;
+
+	if (!box_ws_old_reach_held || absolute >= BOX_WS_OLD_SLOTS)
+		return;
+	record = &box_ws_old_objects[absolute];
+	bit = 1u << (absolute & 31);
+	if (!record->identifier || record->type == BOX_WS_OLD_TYPE_BIPED)
+	{
+		/* an empty slot is always put; a biped is always in reach */
+		box_ws_old_behind_bits[absolute >> 5] &= ~bit;
+		return;
+	}
+	box_ws_old_reach_entries++;
+	if (box_ws_old_in_reach(absolute))
+	{
+		box_ws_old_behind_bits[absolute >> 5] &= ~bit;
+		return;
+	}
+	box_ws_old_reach_out[record->type < BOX_WS_OLD_TYPES ? record->type : BOX_WS_OLD_TYPES]++;
+	box_ws_old_behind_bits[absolute >> 5] |= bit;
+}
+
+/* wsoldcheck: a sweep's visit (psp_wsold_visit), against the reach set its
+   tick's refresh made: out of reach is a reach miss, behind a stale record */
+void box_ws_old_reach_visit(long datum_index)
+{
+	unsigned absolute = (unsigned)datum_index & 0xffff;
+	struct box_ws_old_object const *record;
+
+	if (!box_ws_old_reach || absolute >= BOX_WS_OLD_SLOTS)
+		return;
+	box_ws_old_reach_visits++;
+	if (!box_ws_old_reach_held)
+	{
+		box_ws_old_reach_visits_unmade++;
+		return;
+	}
+	record = box_ws_old_object_of(datum_index);
+	if (!record || record->type == BOX_WS_OLD_TYPE_BIPED || box_ws_old_in_reach(absolute))
+		return;
+	box_ws_old_reach_visits_out++;
+	box_ws_old_reach_visits_by[record->type < BOX_WS_OLD_TYPES ? record->type : BOX_WS_OLD_TYPES]++;
+	if ((box_ws_old_behind_bits[absolute >> 5] >> (absolute & 31)) & 1)
+		box_ws_old_reach_visits_behind++;
 }
 
 /* K1a, the links form: the refresh's links record for a dropped type with no
@@ -851,8 +1058,48 @@ static void box_ws_old_log(void)
 	if (box_ws_old_k1)
 		platform_psp_log("wsold: wsoldk1 %lu dropped entries put as the links record (K1a), %lu of them on two D-cache lines; %lu dropped entries took the full record (a first child); %lu owed models marked when made (K1b); over %lu refreshes timed",
 			box_ws_old_k1_dropped, box_ws_old_k1_split, box_ws_old_k1_full, box_ws_old_k1_owed_marks, box_ws_old_clock_ticks);
+	if (box_ws_old_clock2)
+	{
+		/* K1-R's part clock: us in all / stamps, from the first refresh (a
+		   window is two lines' difference). An entry part's stamps are its
+		   entries, but biped's: one more before each pill (pill's stamps) */
+		n = 0;
+		for (k = BOX_WS_OLD_PART_BIPED; k <= BOX_WS_OLD_PART_EMPTY && n < (int)sizeof(line); k++)
+			n += snprintf(line + n, sizeof(line) - n, "%s%s %.0f/%lu", k > BOX_WS_OLD_PART_BIPED ? ", " : "",
+				box_ws_old_part_name[k], (double)box_ws_old_part_us[k], box_ws_old_part_stamps[k]);
+		platform_psp_log("wsold: clock2 entries, %lu refreshes timed, us/stamps: %s", box_ws_old_clock_ticks, line);
+		n = 0;
+		for (k = 0; k < BOX_WS_OLD_PARTS && n < (int)sizeof(line); k++)
+			if (k < BOX_WS_OLD_PART_BIPED || k > BOX_WS_OLD_PART_EMPTY)
+				n += snprintf(line + n, sizeof(line) - n, "%s%s %.0f/%lu", n ? ", " : "", box_ws_old_part_name[k],
+					(double)box_ws_old_part_us[k], box_ws_old_part_stamps[k]);
+		platform_psp_log("wsold: clock2 parts, us/stamps: %s", line);
+		n = 0;
+	}
+	if (box_ws_old_reach)
+	{
+		n = 0;
+		for (k = 1; k <= BOX_WS_OLD_TYPES && n < (int)sizeof(line); k++)
+			n += snprintf(line + n, sizeof(line) - n, "%s%s %lu", k > 1 ? ", " : "", box_ws_old_type_name[k],
+				box_ws_old_reach_out[k]);
+		platform_psp_log("wsold: wsoldreach %lu sets made (%lu not: no lists held), in reach %lu clusters and %lu slots in all; behind slots carried %lu, taken late %lu; %lu marked non-biped entries, out of reach: %s",
+			box_ws_old_reach_made, box_ws_old_reach_unmade, box_ws_old_reach_in_clusters, box_ws_old_reach_in_slots,
+			box_ws_old_reach_carried, box_ws_old_reach_late, box_ws_old_reach_entries, line);
+		n = 0;
+	}
 	if (!box_ws_old_checking)
 		return;
+	if (box_ws_old_reach)
+	{
+		n = 0;
+		for (k = 1; k <= BOX_WS_OLD_TYPES && n < (int)sizeof(line); k++)
+			n += snprintf(line + n, sizeof(line) - n, "%s%s %lu", k > 1 ? ", " : "", box_ws_old_type_name[k],
+				box_ws_old_reach_visits_by[k]);
+		platform_psp_log("wsoldcheck: wsoldreach the sweep's %lu visits (%lu with no set held): %lu out of reach (the reach misses), %lu of them to behind slots; out of reach by type: %s",
+			box_ws_old_reach_visits, box_ws_old_reach_visits_unmade, box_ws_old_reach_visits_out,
+			box_ws_old_reach_visits_behind, line);
+		n = 0;
+	}
 	platform_psp_log("wsoldcheck: the made word behind its refresh at %lu refreshes (0: every copy published)",
 		box_ws_old_made_behind);
 	for (k = 0; k < WSO_FIELDS; k++)
@@ -886,7 +1133,16 @@ void box_ws_old_flipped(unsigned objects, unsigned bipeds, unsigned high_water)
 		box_ws_old_most_bipeds = bipeds;
 	if (high_water > box_ws_old_high_water)
 		box_ws_old_high_water = high_water;
+	BOX_WS_OLD_PART(BOX_WS_OLD_PART_FLIP);
 	box_ws_old_publish();
+	if (box_ws_old_clock2)
+	{
+		/* the publish's write-back alone, then a stamp's own cost: two back to
+		   back, the second's segment holds nothing but the first's tail and
+		   its own head */
+		box_ws_old_part(BOX_WS_OLD_PART_PUBLISH);
+		box_ws_old_part(BOX_WS_OLD_PART_STAMP);
+	}
 	{
 		/* K1's clock stops after the publish, before the log */
 		uint32_t us = BOX_WS_OLD_NOW() - box_ws_old_clock_start;

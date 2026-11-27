@@ -56527,6 +56527,10 @@ static int psp_wsold_model_make(long object_index, struct object_datum const *ob
 	return BOX_WS_OLD_MODEL_HELD;
 }
 
+/* K1-R's part clock (wsoldclock2): set by psp_wsold_one around a refresh's
+make only, so the check's and the sweep's makes stamp nothing */
+static int psp_wsold_pill_clock;
+
 static int psp_wsold_make(long object_index, struct object_datum const *object, short type,
 	struct box_ws_old_object *record, struct box_ws_old_biped *biped_record, struct box_ws_old_rest *rest)
 {
@@ -56588,7 +56592,11 @@ static int psp_wsold_make(long object_index, struct object_datum const *object, 
 			real_point3d base;
 			real height, width;
 
+			if (psp_wsold_pill_clock)
+				box_ws_old_part(BOX_WS_OLD_PART_BIPED); /* K1-R's part clock: the pill apart */
 			biped_get_physics_pill(object_index, &base, &height, &width);
+			if (psp_wsold_pill_clock)
+				box_ws_old_part(BOX_WS_OLD_PART_PILL);
 			biped_record->pill_base[0] = base.x;
 			biped_record->pill_base[1] = base.y;
 			biped_record->pill_base[2] = base.z + height;
@@ -56638,13 +56646,16 @@ static int psp_wsold_links_split(struct object_datum const *object)
 		(((unsigned long)&object->object.first_child_object_index + 3) >> 6);
 }
 
-static void psp_wsold_one(unsigned absolute, int check)
+/* a slot's entry (check: against the copy instead); gives the entry's part
+for K1-R's part clock: empty, biped, a kept type's model held or not (no
+model, or not held), or a dropped type (K1a's, links or full record) */
+static int psp_wsold_one(unsigned absolute, int check)
 {
 	struct object_header_datum const *header;
 	struct box_ws_old_object record;
 	struct box_ws_old_biped biped_record;
 	struct box_ws_old_rest rest;
-	int is_biped;
+	int is_biped, part;
 
 	if (absolute >= (unsigned)object_header_data->count)
 	{
@@ -56653,7 +56664,7 @@ static void psp_wsold_one(unsigned absolute, int check)
 			box_ws_old_entry(-1);
 			box_ws_old_put(absolute, NULL, NULL, NULL);
 		}
-		return;
+		return BOX_WS_OLD_PART_EMPTY;
 	}
 	header = (struct object_header_datum const *)xbox_pointer(object_header_data->data) + absolute;
 	if (!header->identifier || !header->datum)
@@ -56663,7 +56674,7 @@ static void psp_wsold_one(unsigned absolute, int check)
 			box_ws_old_entry(-1);
 			box_ws_old_put(absolute, NULL, NULL, NULL);
 		}
-		return;
+		return BOX_WS_OLD_PART_EMPTY;
 	}
 	if (!check)
 		box_ws_old_entry(header->type); /* K1's clock: the entries by type */
@@ -56683,15 +56694,19 @@ static void psp_wsold_one(unsigned absolute, int check)
 			}
 			else
 				box_ws_old_links_put(absolute, &record, psp_wsold_links_split(dropped));
-			return;
+			return BOX_WS_OLD_PART_DROPPED;
 		}
 		if (check)
 			box_ws_old_dropped_checked(1);
 		else
 			box_ws_old_dropped_full();
 	}
+	psp_wsold_pill_clock = !check && box_ws_old_clock2;
 	is_biped = psp_wsold_make(DATUM_INDEX_NEW(absolute, header->identifier), header->datum, header->type, &record, &biped_record,
 		&rest);
+	psp_wsold_pill_clock = 0;
+	part = is_biped ? BOX_WS_OLD_PART_BIPED :
+		psp_wsold_k1_kept(header->type) ? BOX_WS_OLD_PART_BARE : BOX_WS_OLD_PART_DROPPED;
 	if (check)
 	{
 		/* posed: it has pose nodes (the node count's read, in a shape slice 1's count cut knows) */
@@ -56712,7 +56727,10 @@ static void psp_wsold_one(unsigned absolute, int check)
 			box_ws_old_model_check(absolute, state, nodes, count);
 		else
 			box_ws_old_model_put(absolute, state, nodes, count);
+		if (part == BOX_WS_OLD_PART_BARE && state == BOX_WS_OLD_MODEL_HELD)
+			part = BOX_WS_OLD_PART_HELD;
 	}
+	return part;
 }
 
 /* each cluster's collideable list as the engine's accessors give it: the
@@ -56745,6 +56763,40 @@ void psp_wsold_mark_clusters(long first_cluster_reference)
 		box_ws_old_mark_cluster((int)cluster_index);
 }
 
+/* K1-R's reach count (wsoldreach, log only): each held biped's clusters, by
+its root's cluster references (a seated biped's are its vehicle's), as the
+tick begins, then the set from the copy's member runs (the store's) */
+static void psp_wsold_reach(void)
+{
+	unsigned i;
+
+	for (i = 0; i < BOX_WS_OLD_BIPEDS; i++)
+	{
+		int slot = box_ws_old_reach_biped(i);
+		struct object_header_datum const *header;
+		struct object_datum const *object;
+		long reference_index, cluster_index;
+		int depth;
+
+		if (slot < 0 || slot >= object_header_data->count)
+			continue;
+		header = (struct object_header_datum const *)xbox_pointer(object_header_data->data) + slot;
+		if (!header->identifier || !header->datum || header->type != _object_type_biped)
+			continue;
+		object = (struct object_datum const *)header->datum;
+		for (depth = 0; depth < 8 && object->object.parent_object_index != NONE; depth++)
+			object = object_get(object->object.parent_object_index);
+		if (object->object.first_cluster_reference_index == NONE)
+			continue;
+		for (cluster_index = cluster_partition_get_first_cluster(&collideable_object_cluster_partition, &reference_index,
+				object->object.first_cluster_reference_index);
+			cluster_index != NONE;
+			cluster_index = cluster_partition_get_next_cluster(&collideable_object_cluster_partition, &reference_index))
+			box_ws_old_reach_cluster((int)cluster_index);
+	}
+	box_ws_old_reach_make();
+}
+
 void psp_wsold_refresh(void)
 {
 	static uint16_t list[BOX_WS_OLD_SLOTS + BOX_WS_OLD_BIPEDS];
@@ -56761,11 +56813,25 @@ void psp_wsold_refresh(void)
 	}
 	else
 		count = (unsigned)box_ws_old_marked(list, sizeof(list) / sizeof(list[0]));
+	BOX_WS_OLD_PART(BOX_WS_OLD_PART_MARKED); /* K1-R's part clock (wsoldclock2) */
+	if (box_ws_old_reach)
+	{
+		psp_wsold_reach();
+		BOX_WS_OLD_PART(BOX_WS_OLD_PART_REACH);
+	}
 	for (i = 0; i < count; i++)
-		psp_wsold_one(list[i], 0);
+	{
+		int part = psp_wsold_one(list[i], 0);
+
+		if (box_ws_old_reach)
+			box_ws_old_reach_entry(list[i]);
+		BOX_WS_OLD_PART(part);
+	}
 	for (i = 0; i < count; i++)
 		bipeds += box_ws_old_biped_of[list[i]] >= 0;
+	BOX_WS_OLD_PART(BOX_WS_OLD_PART_COUNT);
 	box_ws_old_breakable_put(breakable_surface_flags_get());
+	BOX_WS_OLD_PART(BOX_WS_OLD_PART_BREAKABLE);
 	if (box_ws_old_parts)
 	{
 		static int32_t members[BOX_WS_OLD_MEMBERS];
@@ -56774,18 +56840,24 @@ void psp_wsold_refresh(void)
 		unsigned taken = 0, n;
 
 		box_ws_old_clusters_begin(structure_bsp, clusters);
+		BOX_WS_OLD_PART(BOX_WS_OLD_PART_CLUSTER_ENDS);
 		for (c = 0; c < clusters && c < BOX_WS_OLD_CLUSTERS; c++)
 		{
 			if (box_ws_old_cluster_marked(c))
 			{
+				/* the kept runs before it to keep's part, the take to its own */
+				BOX_WS_OLD_PART(BOX_WS_OLD_PART_KEEP);
 				n = psp_wsold_cluster_list((short)c, members);
 				box_ws_old_cluster_put(c, members, n);
 				taken++;
+				BOX_WS_OLD_PART(BOX_WS_OLD_PART_TAKE);
 			}
 			else
 				box_ws_old_cluster_keep(c);
 		}
+		BOX_WS_OLD_PART(BOX_WS_OLD_PART_KEEP);
 		box_ws_old_clusters_end(taken);
+		BOX_WS_OLD_PART(BOX_WS_OLD_PART_CLUSTER_ENDS);
 		if (box_ws_old_checking)
 		{
 			for (c = 0; c < clusters && c < BOX_WS_OLD_CLUSTERS; c++)
@@ -56793,6 +56865,7 @@ void psp_wsold_refresh(void)
 				n = psp_wsold_cluster_list((short)c, members);
 				box_ws_old_cluster_check(c, members, n);
 			}
+			BOX_WS_OLD_PART(BOX_WS_OLD_PART_CHECK);
 		}
 	}
 	if (box_ws_old_checking)
@@ -56801,6 +56874,7 @@ void psp_wsold_refresh(void)
 
 		for (i = 0; i < live && i < BOX_WS_OLD_SLOTS; i++)
 			psp_wsold_one(i, 1);
+		BOX_WS_OLD_PART(BOX_WS_OLD_PART_CHECK);
 	}
 	box_ws_old_flipped(count, bipeds, (unsigned)object_header_data->count);
 }
@@ -56815,6 +56889,7 @@ void psp_wsold_visit(long object_index, struct object_datum const *object)
 
 	struct box_ws_old_object const *held;
 
+	box_ws_old_reach_visit(object_index); /* K1-R's reach misses (wsoldreach) */
 	if (box_ws_old_k1 && !psp_wsold_k1_kept(header->type))
 	{
 		/* K1a: a dropped type against its links record, or its full one with a
