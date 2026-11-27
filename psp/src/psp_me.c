@@ -1091,14 +1091,25 @@ struct aicol_stats
 	unsigned int audio_cycles, audio_mixes;   /* audio blocks mixed in the AI's yields */
 	unsigned int ring_cycles, ring_drains;    /* the ring drained there (audio mixed inside a drain included) */
 	unsigned int render_cycles, render_jobs;  /* render jobs served there (menestrender) */
+#if PSP_AICALLER
+	/* aicaller (briefs/me_aicol.md task 4): of the ring's, the drains at
+	psp_me_yield_inner, printed apart (the lab's decisions 2026-11-27 04:4x (3)) */
+	unsigned int inner_cycles, inner_drains;
+	unsigned int pad[8];
+#else
 	unsigned int pad[10];
+#endif
 } __attribute__((aligned(64)));
 static struct aicol_stats aicol PSP_AIME_ME_SIDE = { 0 };
 
 /* the main CPU's side, at each AI job's collection: the job's nested share
 is the counters' growth since the last one, so its own time less nested and
 the worsts are a job's, never a window's */
+#if PSP_AICALLER
+#define AICOL_KINDS 8 /* aicol_stats' eight counters, in its order (6-7 a part of 2-3) */
+#else
 #define AICOL_KINDS 6 /* aicol_stats' six counters, in its order */
+#endif
 static struct
 {
 	unsigned int seen[AICOL_KINDS], whole_worst, less_worst, nested_worst;
@@ -3824,19 +3835,34 @@ void psp_me_yield_inner(int ring)
 		psp_aime_step(7);
 	popped = p->ring_popped;
 	last_look = p->ring_last_look;
-#if PSP_MEAICOL
+#if PSP_MEAICOL || PSP_AICALLER
 	now = me_cycles();
 #endif
 	p->ring_popped = me_ring_drain(popped, &last_look, &SLOT(ME_SLOT_AI)->args[ME_JOB_ARGS - 1]);
 	p->ring_last_look = last_look;
 	INNER_STATS->ring_jobs += p->ring_popped - popped;
+#if PSP_AICALLER
+	/* aicaller (the lab's decisions 2026-11-27 04:1x (2), 04:4x (3)): the
+	drain's cycles are nested in the AI job's, as psp_me_yield's drain
+	counts them, so the busy share takes them off once; without the switch
+	it counts them twice. Its audio, above, stays out, as psp_me_yield's does */
+	now = me_cycles() - now;
+	nested_cycles_total += now;
+#endif
 #if PSP_MEAICOL
-	/* not in nested_cycles_total on the head: the busy share counts this
-	drain twice (said to the lead, not changed here) */
+	/* not in nested_cycles_total without PSP_AICALLER: the busy share counts
+	this drain twice there */
 	if (aime_now)
 	{
+#if PSP_AICALLER
+		aicol.ring_cycles += now;
+		aicol.ring_drains++;
+		aicol.inner_cycles += now;
+		aicol.inner_drains++;
+#else
 		aicol.ring_cycles += me_cycles() - now;
 		aicol.ring_drains++;
+#endif
 	}
 #endif
 	psp_aime_job_now[0] = aime_now;
@@ -6079,6 +6105,14 @@ void psp_me_report(void)
 				(unsigned long)((float)aicol_main.kind[4] / rate / jobs), (unsigned long)aicol_main.kind[5],
 				(unsigned long)(aicol_main.wait_us / aicol_main.jobs), aicol_main.wait_worst_us,
 				(unsigned long)aicol_main.wait_us, (double)window / 1e6);
+#if PSP_AICALLER
+			/* aicaller: the ring's time above, by yield: the inner yield's drains
+			(in nested_cycles_total only with this switch) against the rest */
+			platform_log("ME: aicol: ring by yield: inner %lu us a job (%lu drains), the rest %lu us a job (%lu drains); the inner drains are in the busy share's nested time (aicaller)",
+				(unsigned long)((float)aicol_main.kind[6] / rate / jobs), (unsigned long)aicol_main.kind[7],
+				(unsigned long)((float)(aicol_main.kind[2] - aicol_main.kind[6]) / rate / jobs),
+				(unsigned long)(aicol_main.kind[3] - aicol_main.kind[7]));
+#endif
 		}
 		else
 			platform_log("ME: aicol: no AI job collected with the ME's clock in this window (%lu ai jobs in the slot's count)",

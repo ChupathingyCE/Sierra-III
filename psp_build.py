@@ -189,6 +189,12 @@ MEPROBE = os.environ.get("PSP_MEPROBE", "") == "1"
 # yields, by kind, with the main CPU's wait for it. Log only, psp_me.c only;
 # its counters sit in the AI's yields, so a default build leaves it out
 MEAICOL = os.environ.get("PSP_MEAICOL", "") == "1"
+# PSP_AICALLER=1: "aicaller" (briefs/me_aicol.md task 4): the main CPU's AI
+# by caller (ai_update a tick, the inline think pass a tick and a pass, ticks
+# a frame; psp_fixups.py's aicaller_cut reads the same switch from the
+# environment) and the inner yield's drain into nested_cycles_total with its
+# ring printed apart (psp_me.c). Log only
+AICALLER = os.environ.get("PSP_AICALLER", "") == "1"
 # build 105: PSP_DEBUG_TOOLS=1 keeps the developer instruments that cost
 # memory and that the game itself never needs (so far: the Media Engine
 # measure job "meclassify", 68 KB of buffers; the game's render-debug cache
@@ -1039,6 +1045,7 @@ def compile_one(item):
                ["-DPSP_FRAMEPIC=1"] if FRAMEPIC else []) + (
                ["-DPSP_MEPROBE=1"] if MEPROBE else []) + (
                ["-DPSP_MEAICOL=1"] if MEAICOL and src.endswith("psp_me.c") else []) + (
+               ["-DPSP_AICALLER=1"] if AICALLER and src.endswith("psp_me.c") else []) + (
                ["-DPSP_WALKAPART=1"] if WALKAPART else []) + (
                ["-DPSP_MEXEC=1"] + MEXEC_DEFINES if MEXEC and src.endswith("psp_me.c") else []) + (
                ["-DPSP_MEVISLAND=1"] if MEVISLAND else []) + (

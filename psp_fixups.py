@@ -68930,6 +68930,198 @@ def calltrace_store_move_cut(tree):
     return 1
 calltrace_store_move_cut(TREE)
 
+# PSP_AICALLER=1, keep word "aicaller" (the lab's briefs/me_aicol.md task 4; decisions 2026-11-27 04:1x, 04:4x (3)):
+# the main CPU's AI split by caller, log only. Two clock reads round game_tick's ai_update call (game.c) and round
+# the inline think pass psp_aime2a_tick_begin runs on a frame's non-last ticks (actors.c), at the call sites so
+# neither callee's placed text moves; the tick ends at ai_update's, the frame at psp_aime2a_frame_end (once a frame,
+# before game_frame). An 'aicaller:' line beside each 'aime:' line, the window since the one before. psp_build.py
+# passes the same switch to psp_me.c (the inner yield's drain into nested_cycles_total, its ring printed apart).
+# Last in the file: it reads the fixed-up text of FIXES_AIME2A, PSP_FRAMEPIC and FIXES_AITICKOLD
+AICALLER = os.environ.get("PSP_AICALLER", "") == "1"
+AICALLER_C = r"""/* psp_fixups.py (aicaller_cut, PSP_AICALLER; keep word "aicaller"): the
+main CPU's AI by caller, log only. ai_update's time a tick (its call in
+game_tick, game.c), the inline think pass's time a tick and a pass and its
+passes a tick (psp_aime2a_tick_begin's owed branch, below), ticks a frame
+(psp_aime2a_frame_end), as mean and peak over the window between two 'aime:'
+lines. The heartbeat's clock (us), which notimers leaves on */
+unsigned long psp_heartbeat_clock(void);
+int psp_keep(const char *name);
+static int psp_aicaller_on = -1;
+struct psp_aicaller_window
+{
+	unsigned long ticks, ai_peak_us, passes, pass_peak_us, tick_inline_us, tick_inline_peak_us;
+	unsigned long tick_passes, tick_passes_peak, frames, frame_ticks, closed_ticks, frame_ticks_peak;
+	unsigned long long ai_us, inline_us;
+};
+static struct psp_aicaller_window psp_aicaller;
+
+unsigned long psp_aicaller_begin(
+	void)
+{
+	if (psp_aicaller_on < 0)
+		psp_aicaller_on = psp_keep("aicaller") != 0;
+	return psp_aicaller_on > 0 ? psp_heartbeat_clock() : 0;
+}
+
+/* the inline pass, at the tick's start: closed into the tick at ai_update's end */
+void psp_aicaller_inline_end(
+	unsigned long begun)
+{
+	unsigned long us;
+
+	if (psp_aicaller_on <= 0)
+		return;
+	us = psp_heartbeat_clock() - begun;
+	psp_aicaller.inline_us += us;
+	psp_aicaller.passes++;
+	psp_aicaller.tick_inline_us += us;
+	psp_aicaller.tick_passes++;
+	if (us > psp_aicaller.pass_peak_us)
+		psp_aicaller.pass_peak_us = us;
+}
+
+void psp_aicaller_ai_end(
+	unsigned long begun)
+{
+	unsigned long us;
+
+	if (psp_aicaller_on <= 0)
+		return;
+	us = psp_heartbeat_clock() - begun;
+	psp_aicaller.ai_us += us;
+	if (us > psp_aicaller.ai_peak_us)
+		psp_aicaller.ai_peak_us = us;
+	psp_aicaller.ticks++;
+	psp_aicaller.frame_ticks++;
+	if (psp_aicaller.tick_inline_us > psp_aicaller.tick_inline_peak_us)
+		psp_aicaller.tick_inline_peak_us = psp_aicaller.tick_inline_us;
+	if (psp_aicaller.tick_passes > psp_aicaller.tick_passes_peak)
+		psp_aicaller.tick_passes_peak = psp_aicaller.tick_passes;
+	psp_aicaller.tick_inline_us = 0;
+	psp_aicaller.tick_passes = 0;
+}
+
+void psp_aicaller_frame(
+	void)
+{
+	if (psp_aicaller_on <= 0)
+		return;
+	psp_aicaller.frames++;
+	psp_aicaller.closed_ticks += psp_aicaller.frame_ticks;
+	if (psp_aicaller.frame_ticks > psp_aicaller.frame_ticks_peak)
+		psp_aicaller.frame_ticks_peak = psp_aicaller.frame_ticks;
+	psp_aicaller.frame_ticks = 0;
+}
+
+/* at each 'aime:' line (psp_aime_log_due): the window's line, then a new window */
+static void psp_aicaller_log(
+	long now,
+	int print)
+{
+	static const struct psp_aicaller_window none = { 0 };
+	unsigned long ticks, frames, open_ticks, open_passes, open_us;
+
+	if (psp_aicaller_on <= 0)
+		return;
+	ticks = psp_aicaller.ticks ? psp_aicaller.ticks : 1;
+	frames = psp_aicaller.frames ? psp_aicaller.frames : 1;
+	if (print)
+		platform_psp_log("aicaller: game time %ld | ai_update %lu us a tick (peak %lu) over %lu ticks | the inline think pass %lu us a tick (peak %lu), %lu us a pass (peak %lu), %lu passes, %lu.%02lu a tick (peak %lu) | ticks a frame %lu.%02lu (peak %lu) over %lu frames",
+			now, (unsigned long)(psp_aicaller.ai_us / ticks), psp_aicaller.ai_peak_us, psp_aicaller.ticks,
+			(unsigned long)(psp_aicaller.inline_us / ticks), psp_aicaller.tick_inline_peak_us,
+			(unsigned long)(psp_aicaller.inline_us / (psp_aicaller.passes ? psp_aicaller.passes : 1)), psp_aicaller.pass_peak_us,
+			psp_aicaller.passes, psp_aicaller.passes / ticks, psp_aicaller.passes * 100 / ticks % 100, psp_aicaller.tick_passes_peak,
+			psp_aicaller.closed_ticks / frames, psp_aicaller.closed_ticks * 100 / frames % 100, psp_aicaller.frame_ticks_peak,
+			psp_aicaller.frames);
+	/* the open tick's pass and the open frame's ticks carry into the next window */
+	open_ticks = psp_aicaller.frame_ticks;
+	open_passes = psp_aicaller.tick_passes;
+	open_us = psp_aicaller.tick_inline_us;
+	psp_aicaller = none;
+	psp_aicaller.frame_ticks = open_ticks;
+	psp_aicaller.tick_passes = open_passes;
+	psp_aicaller.tick_inline_us = open_us;
+}
+
+"""
+def aicaller_cut(tree):
+    if not AICALLER:
+        return 0
+    edits = {
+        # PSP_STEP's cut wraps both calls as (PSP_STEP("ai_update"), ai_update()); without it they're bare
+        "source/game/game.c": [(
+            "game_tick's ai_update call",
+            [("""	if (!network_game_distributed_client())
+	{
+#ifdef HALO_PSP
+		if (!(psp_bench_skip & PSP_SKIP_AI))
+#endif
+		%s;
+	}
+	else
+		%s;
+""" % (call, drive)) for call, drive in (
+                ('(PSP_STEP("ai_update"), ai_update())', '(PSP_STEP("network_actors_drive"), network_actors_drive())'),
+                ("ai_update()", "network_actors_drive()"))],
+            """#if defined(HALO_PSP) && !defined(PSP_MULTIPLAYER)
+	{
+	/* psp_fixups.py (aicaller_cut, PSP_AICALLER): ai_update's time a tick (actors.c) */
+	extern unsigned long psp_aicaller_begin(void);
+	extern void psp_aicaller_ai_end(unsigned long begun);
+	unsigned long psp_aicaller_begun = psp_aicaller_begin();
+
+#endif
+%s#if defined(HALO_PSP) && !defined(PSP_MULTIPLAYER)
+	psp_aicaller_ai_end(psp_aicaller_begun);
+	}
+#endif
+""")],
+        "source/ai/actors.c": [(
+            "psp_aime_log_due's head",
+            "static void psp_aime_log_due(\n\tlong now)\n{\n",
+            AICALLER_C + "static void psp_aime_log_due(\n\tlong now)\n{\n"), (
+            "psp_aime_log_due's window",
+            "\t\t\tpsp_aime_formats_log(now);\n\t\tpsp_aime_logged = now;\n",
+            "\t\t\tpsp_aime_formats_log(now);\n\t\tpsp_aicaller_log(now, psp_aime_logged != NONE);\n\t\tpsp_aime_logged = now;\n"), (
+            "psp_aime2a_frame_end's head",
+            "void psp_aime2a_frame_end(\n\tvoid)\n{\n\tunsigned int args[1] = { 0 };\n\n",
+            "void psp_aime2a_frame_end(\n\tvoid)\n{\n\tunsigned int args[1] = { 0 };\n\n\tpsp_aicaller_frame();\n"), (
+            "the inline think pass",
+            "\t\t\tpsp_aime2a_stats.inline_passes++;\n\t\t\tpsp_aime_think();\n",
+            """			psp_aime2a_stats.inline_passes++;
+			{
+				unsigned long psp_aicaller_begun = psp_aicaller_begin();
+
+				psp_aime_think();
+				psp_aicaller_inline_end(psp_aicaller_begun);
+			}
+""")],
+    }
+    texts = {}
+    for rel, items in edits.items():
+        t = open(os.path.join(tree, rel), errors="surrogateescape").read()
+        for name, old, new in items:
+            if isinstance(old, list):
+                # one form of the text, met once; the new text wraps it whole
+                found = [o for o in old if t.count(o) == 1]
+                if len(found) != 1 or any(t.count(o) > 1 for o in old):
+                    check_fail("psp_fixups: AICALLER: %s matches %s times in %s"
+                               % (name, "/".join(str(t.count(o)) for o in old), rel))
+                    return 0
+                old, new = found[0], new % found[0]
+            if t.count(old) != 1:
+                check_fail("psp_fixups: AICALLER: %s matches %d times in %s" % (name, t.count(old), rel))
+                return 0
+            t = t.replace(old, new)
+        texts[rel] = t
+    if not CHECK_ONLY:
+        for rel, t in texts.items():
+            open(os.path.join(tree, rel), "w", errors="surrogateescape").write(t)
+    print("psp_fixups: AICALLER: ai_update and the inline think pass timed at their calls, ticks a frame counted "
+          "(keep word aicaller)")
+    return 1
+aicaller_cut(TREE)
+
 if CHECK_ONLY:
     for message in count_failures:
         print(message)
