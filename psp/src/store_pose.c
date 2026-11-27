@@ -1020,7 +1020,7 @@ __attribute__((noinline)) void store_pose_make_skipped(long object_index, void *
 	long absolute = DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index);
 
 	if (absolute < MAXIMUM_OBJECTS_PER_MAP && psp_nms_waits(absolute))
-		store_pose_make_skipped_at(absolute, 0);
+		{ unsigned long psp_kt_mark_ = PSP_KT_MARK(); store_pose_make_skipped_at(absolute, 0); PSP_KT_OWED(site, psp_kt_mark_); } /* (ktstamp's owed) */
 }
 
 /* the objects' loop is over: on the frame's last tick, what is left is made */

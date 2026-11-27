@@ -146,6 +146,28 @@ void psp_meprobe_report(void);
 #define PSP_MEPROBE_REPORT() 0
 #endif
 
+/* "ktstamp" (PSP_KTSTAMP=1, an instrument build; docs/ktstamp.md): kill test 2's stage stamps, each an
+expression on a line already there. Compiled out otherwise: the hooks are nothing, a tick's scale passes
+through, and a make's mark is a plain 0 the compiler drops */
+#ifdef PSP_KTSTAMP
+#include "psp/include/psp_ktstamp.h"
+#define PSP_KT_STAMP(k) (psp_kt_on ? (void)(psp_kt_marks[k] = psp_kt_clock()) : (void)0)
+#define PSP_KT_STAMP_IF(test, k) ((test) && psp_kt_on ? (void)(psp_kt_marks[k] = psp_kt_clock()) : (void)0)
+#define PSP_KT_FIELD_IF(test, field, k) ((test) && psp_kt_on ? psp_kt_add((field), psp_kt_marks[k]) : (void)0)
+#define PSP_KT_PASS() (psp_kt_on ? psp_kt_pass() : (void)0)
+#define PSP_KT_MARK() (psp_kt_on && !psp_work_on_me() ? psp_kt_clock() : 0ul)
+#define PSP_KT_OWED(site, mark) (psp_kt_count && !psp_work_on_me() ? psp_kt_owed((site), (mark)) : (void)0)
+#define PSP_KT_TICK(scale) psp_kt_tick(scale)
+#else
+#define PSP_KT_STAMP(k) ((void)0)
+#define PSP_KT_STAMP_IF(test, k) ((void)0)
+#define PSP_KT_FIELD_IF(test, field, k) ((void)0)
+#define PSP_KT_PASS() ((void)0)
+#define PSP_KT_MARK() 0ul
+#define PSP_KT_OWED(site, mark) ((void)(mark))
+#define PSP_KT_TICK(scale) (scale)
+#endif
+
 /* datum fields the port reads from files that can't see their structures: units.c makes them from the structures (psp_fixups.py), so they move with a datum's layout */
 extern const long psp_datum_unit_timer, psp_datum_item_owned, psp_datum_biped_bytes;
 /* the datum's visit stamp (object.magic_number), which the sleep's sums and checks pass over */

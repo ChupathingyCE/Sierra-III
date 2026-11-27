@@ -31110,7 +31110,7 @@ __attribute__((noinline)) void psp_nms_settle(long object_index, void *site)
 	long absolute = DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index);
 
 	if (absolute < MAXIMUM_OBJECTS_PER_MAP && psp_nms_waits(absolute))
-		psp_nms_settle_absolute(absolute, 0);
+		{ unsigned long psp_kt_mark_ = PSP_KT_MARK(); psp_nms_settle_absolute(absolute, 0); PSP_KT_OWED(site, psp_kt_mark_); } /* (ktstamp's owed) */
 }
 
 /* the objects' loop is over: on the frame's last tick, what is left is made */
@@ -68929,6 +68929,54 @@ def calltrace_store_move_cut(tree):
           "(collision_move_pill)")
     return 1
 calltrace_store_move_cut(TREE)
+
+# PSP_KTSTAMP=1 (kill test 2's stage stamps, an instrument build; Sierra-III docs/ktstamp.md, the lab's decisions.md
+# 2026-11-27 03:0x; keep word ktstamp): old-only's biped work timed on psp_object_sample's timed ticks. bupdate is
+# objects.c's biped branch (FIXES_31's split, accounts 17-19: type update, damage and export, node matrices), bphys
+# bipeds.c's biped_update_physics call. New-only's fields are psp/src's own (store_coll.c's pass, store_pose.c's
+# owed), so with PSP_TICK2_MOTIONNEW=1 this cut does nothing (its biped_update_physics is deleted). Each hook is an
+# expression appended to a line already there (psp_post.h's PSP_KT_* macros): no line is added, so no function's
+# first line moves and the units' other functions keep their profiles' line checksums. Runs last, on the final text
+KTSTAMP = os.environ.get("PSP_KTSTAMP", "") == "1"
+KTSTAMP_CUTS = (
+    ("source/objects/objects.c", "the biped branch's start",
+     "\t\t\tunsigned long mark = timed ? psp_microseconds() : 0, now;\n",
+     "\t\t\tunsigned long mark = timed ? psp_microseconds() : 0, now; PSP_KT_STAMP_IF(timed == 17, 6); /* (ktstamp) */\n"),
+    ("source/objects/objects.c", "the biped branch's end",
+     "\t\t\tif (timed)\n\t\t\t\tpsp_object_account(timed + 2, psp_microseconds() - mark);\n",
+     "\t\t\tif (timed)\n\t\t\t\tpsp_object_account(timed + 2, psp_microseconds() - mark); "
+     "PSP_KT_FIELD_IF(timed == 17, PSP_KT_BUPDATE, 6); /* (ktstamp) */\n"),
+    ("source/units/bipeds.c", "biped_update_physics's call",
+     "\tbiped_update_physics(&physics);\n",
+     "\tPSP_KT_STAMP(7); biped_update_physics(&physics); PSP_KT_FIELD_IF(1, PSP_KT_BPHYS, 7); /* (ktstamp) */\n"),
+)
+def ktstamp_cut(tree):
+    if not KTSTAMP or TICK2_MOTIONNEW:
+        return 0
+    texts, made = {}, []
+    for rel, what, old, new in KTSTAMP_CUTS:
+        if rel not in texts:
+            texts[rel] = open(os.path.join(tree, rel), errors="surrogateescape").read()
+        n = texts[rel].count(old)
+        # objects.c's branch may stand in more than one form of object_update; each is the branch in that form
+        if n < 1 or (n > 1 and rel != "source/objects/objects.c"):
+            check_fail("psp_fixups: KTSTAMP: %s (%s) matches %d times" % (what, rel, n))
+            return 0
+        texts[rel] = texts[rel].replace(old, new)
+        made.append("%s x%d" % (what, n))
+    starts, ends = (texts["source/objects/objects.c"].count(KTSTAMP_CUTS[k][3]) for k in (0, 1))
+    if starts != ends:
+        check_fail("psp_fixups: KTSTAMP: objects.c's biped branch has %d starts and %d ends" % (starts, ends))
+        return 0
+    for rel, text in texts.items():
+        if text.count("\n") != open(os.path.join(tree, rel), errors="surrogateescape").read().count("\n"):
+            check_fail("psp_fixups: KTSTAMP: %s's line count moved" % rel)
+            return 0
+        if not CHECK_ONLY:
+            open(os.path.join(tree, rel), "w", errors="surrogateescape").write(text)
+    print("psp_fixups: KTSTAMP: old-only's biped stamps (keep word ktstamp): %s" % ", ".join(made))
+    return len(made)
+ktstamp_cut(TREE)
 
 if CHECK_ONLY:
     for message in count_failures:

@@ -387,10 +387,10 @@ void store_biped_pass(void)
 	int count, dead;
 	short k;
 
-	count = store_biped_units();
+	PSP_KT_STAMP(0); count = store_biped_units(); /* (ktstamp's stage edges 0-5: docs/ktstamp.md) */
 	if (!count)
 		return;
-	store_intent_begin();
+	PSP_KT_STAMP(1); store_intent_begin();
 	psp_sweepme_tick_begin(); /* (FIXES_SWEEPME) */
 	for (k = 0; k < count; k++)
 	{
@@ -398,7 +398,7 @@ void store_biped_pass(void)
 		if (biped_index != NONE && !dead)
 			store_intent_run(k, biped_index);
 	}
-	psp_sweepme_close(); /* (FIXES_SWEEPME) */
+	psp_sweepme_close(); PSP_KT_STAMP(2); /* (FIXES_SWEEPME) */
 	/* slice 2: every living biped's move gathered as one pass, from the
 	world as it stands before any biped moves */
 	if (store_coll_begin())
@@ -410,7 +410,7 @@ void store_biped_pass(void)
 				store_coll_gather_intent(k);
 		}
 	}
-	psp_sweepme_end(); /* (FIXES_SWEEPME) */
+	psp_sweepme_end(); PSP_KT_STAMP(3); /* (FIXES_SWEEPME) */
 	for (k = 0; k < count; k++)
 	{
 		biped_index = store_biped_at(k, &dead);
@@ -420,9 +420,9 @@ void store_biped_pass(void)
 		store_biped_update(k, dead && !store_intent_of(k) ? 0 : 4);
 		store_motion_cur = -1;
 	}
-	store_biped_settle();
+	PSP_KT_STAMP(4); store_biped_settle();
 	store_coll_end();
-	store_intent_end();
+	store_intent_end(); PSP_KT_PASS();
 }
 #else
 /* piece 2: the store's biped pass, in place of psp_bipedstage_run at the walk's end (psp_fixups.py

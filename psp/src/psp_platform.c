@@ -920,8 +920,8 @@ unsigned long psp_object_sample(void)
 	if (every_tick < 0)
 		every_tick = psp_keep("objecttimeall") != 0;
 	if (every_tick)
-		return object_scale_now = 1;
-	return object_scale_now = (tick++ % OBJECT_SAMPLE) == 0 ? OBJECT_SAMPLE : 0;
+		return object_scale_now = PSP_KT_TICK(1);
+	return object_scale_now = PSP_KT_TICK((tick++ % OBJECT_SAMPLE) == 0 ? OBJECT_SAMPLE : 0);
 }
 
 #if PSP_DEBUG_TOOLS
