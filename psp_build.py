@@ -1238,30 +1238,63 @@ def link(objs, stubs):
     # texture levels stay resident, and with them R's pictures (mehotgr2:
     # 549 of 677 frames differed against a build 8 KB larger, play and seeds
     # identical). Only addresses move
+    def set_offset(name):
+        """the offset PSP_<name>_SET asks for: None unset, "keep", or a
+        multiple of 64 below the 8 KB way"""
+        target = os.environ.get("PSP_%s_SET" % name, "")
+        if not target or target == "keep":
+            return target or None
+        t = int(target, 0)
+        if t % 64 or not 0 <= t < 0x2000:
+            sys.exit("psp_build: PSP_%s_SET=%s: keep, or a multiple of 64 below 0x2000" % (name, target))
+        return t
+
+    # ld adds the section's start to an absolute value given to "." inside
+    # a section (f31660a's "+=" form put 3.5 MB in .data and the build
+    # faulted at boot), so each pad sets "." from ALIGN, which ld takes as
+    # an address: the next address at the wanted offset in the 8 KB way
+    def at_offset(off):
+        return ("    . = ALIGN(0x2000) + %s - ((ALIGN(0x2000) + %s - ABSOLUTE(.)) >= 0x2000 ? 0x2000 : 0);\n"
+                % (off, off))
+
+    # the pads before and after a block that put its start at offset t of
+    # the 8 KB way and add up to 8 KB ("keep": 8 KB after it, the block
+    # where it falls); blk names the block's symbols (<blk>_start, <blk>_end),
+    # pad the pads' own (<pad>_set_pad, <pad>_set_to)
+    def set_pad(where, t, blk, pad):
+        if t == "keep":
+            return "" if where == "before" else "    . = . + 0x2000;\n"
+        if where == "before":
+            return "    %s_set_pad = ABSOLUTE(.);\n" % pad + at_offset("0x%x" % t)
+        return ("    %s_set_to = ABSOLUTE((%s_set_pad + ABSOLUTE(%s_end)"
+                " - ABSOLUTE(%s_start)) & 0x1fff);\n" % (pad, pad, blk, blk) + at_offset("%s_set_to" % pad) +
+                # a block already at the offset takes its 8 KB after it
+                "    . = . + (ABSOLUTE(.) == ABSOLUTE(%s_end) ? 0x2000 : 0);\n" % blk)
+
     def me_set_pad(where):
-        target = os.environ.get("PSP_ME_DATA_SET", "")
-        if not target:
+        t = set_offset("ME_DATA")
+        if t is None:
             return ""
         if os.environ.get("PSP_ME_DATA_LAYOUT", "") in ("", "none"):
             sys.exit("psp_build: PSP_ME_DATA_SET places the block PSP_ME_DATA_LAYOUT packs; set both")
-        if target == "keep":
-            return "" if where == "before" else "    . = . + 0x2000;\n"
-        t = int(target, 0)
-        if t % 64 or not 0 <= t < 0x2000:
-            sys.exit("psp_build: PSP_ME_DATA_SET=%s: keep, or a multiple of 64 below 0x2000" % target)
-        # ld adds the section's start to an absolute value given to "." inside
-        # a section (f31660a's "+=" form put 3.5 MB in .data and the build
-        # faulted at boot), so each pad sets "." from ALIGN, which ld takes as
-        # an address: the next address at the wanted offset in the 8 KB way
-        def at_offset(off):
-            return ("    . = ALIGN(0x2000) + %s - ((ALIGN(0x2000) + %s - ABSOLUTE(.)) >= 0x2000 ? 0x2000 : 0);\n"
-                    % (off, off))
-        if where == "before":
-            return "    __psp_me_set_pad = ABSOLUTE(.);\n" + at_offset("0x%x" % t)
-        return ("    __psp_me_set_to = ABSOLUTE((__psp_me_set_pad + ABSOLUTE(__psp_me_data_end)"
-                " - ABSOLUTE(__psp_me_data_start)) & 0x1fff);\n" + at_offset("__psp_me_set_to") +
-                # a block already at the offset takes its 8 KB after it
-                "    . = . + (ABSOLUTE(.) == ABSOLUTE(__psp_me_data_end) ? 0x2000 : 0);\n")
+        return set_pad(where, t, "__psp_me_data", "__psp_me")
+
+    # PSP_HOTG_SET=<offset>|keep (with PSP_DATA_LAYOUT; sp_profout task 4,
+    # the lab's decisions 2026-11-27 09:1x) does the same for the main CPU's
+    # hot run (HOTG's block): its start at that offset in the 8 KB way, so a
+    # code change that slides .data (or .sdata) no longer moves the run's
+    # cache sets (spprof2-b30: hotg091rb +512 B, tick +1.15 ms on b30's
+    # fight). Under PSP_SMALLDATA the pads sit in .sdata: 8 KB more of $gp's
+    # 64 KB (smalldata's line says if it's past reach). "keep" adds the same
+    # 8 KB after the block, the other side of its A/B. Only addresses move
+    def hotg_set_pad(block):
+        t = set_offset("HOTG")
+        if t is None:
+            return block
+        if not block:
+            sys.exit("psp_build: PSP_HOTG_SET places the block PSP_DATA_LAYOUT packs; set a layout")
+        return (set_pad("before", t, "__psp_hot_data", "__psp_hotg") + block +
+                set_pad("after", t, "__psp_hot_data", "__psp_hotg"))
 
     linkfile = SDK + "/lib/linkfile.prx"
     text = open(linkfile).read()
@@ -1323,7 +1356,7 @@ def link(objs, stubs):
         music_objects = ("*libmu_vorbisidec.a:*", "*libogg.a:*")
         music_data = "".join("    %s(.data .data.*)\n" % o for o in music_objects) + "    . = ALIGN(64);\n"
         music_bss = "".join("   %s(.bss .bss.* COMMON)\n" % o for o in music_objects) + "   . = ALIGN(64);\n"
-    hot_block = hot_data_block(me_objects)
+    hot_block = hotg_set_pad(hot_data_block(me_objects))
     text = text.replace(old_data, "    _fdata = . ;\n"
                         "    . = ALIGN(64);\n    __psp_main_side_start = .;\n    KEEP(*(.data.psp_main_side))\n"
                         "    . = ALIGN(64);\n    __psp_main_side_end = .;\n"
@@ -1459,6 +1492,17 @@ def smalldata_report(r):
           (SMALLDATA, gp, gp - 0x8000, gp + 0x7fff, lo, hi, hi - lo,
            ", ".join("%s %d" % (s, outs[s][1]) for s in (".got", ".sdata", ".lit8", ".lit4", ".sbss") if s in outs),
            "" if hi - 1 <= gp + 0x7fff else ": PAST $gp's reach"))
+    # the hot run's place (PSP_HOTG_SET's check: its start's offset in the
+    # data cache's 8 KB way)
+    hot = {}
+    for line in lines:
+        m = re.match(r"^\s+0x([0-9a-f]+)\s+__psp_hot_data_(start|end) = ", line)
+        if m and m.group(2) not in hot:
+            hot[m.group(2)] = int(m.group(1), 16)
+    if len(hot) == 2:
+        print("smalldata: hot run 0x%08x-0x%08x, %d bytes, at way offset 0x%04x (PSP_HOTG_SET=%s)" %
+              (hot["start"], hot["end"], hot["end"] - hot["start"], hot["start"] & 0x1fff,
+               os.environ.get("PSP_HOTG_SET", "") or "unset"))
     by_file = {}
     for s, a, n, f in map_sections(path):
         if lo <= a < hi and n:
