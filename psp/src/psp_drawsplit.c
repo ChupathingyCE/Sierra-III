@@ -571,6 +571,82 @@ static void report_store(double n)
 	store_window++;
 }
 
+/* D2's pieces (docs/box_draw_main.md §3.4.3 'Memory', §4.4 A2): the engine's
+psp_drawsplit_pieces (structure_visibility.c, psp_fixups.py DRAWSPLIT2_PIECES_C)
+splits a BSP's surfaces into (cluster, material) pieces, the lists D2 would
+bake, and hands this file the map's counts once a BSP and each window's visible
+pieces. The index bytes are the pieces' triangles at 6 B (three 16-bit
+indices), measured from the BSP; the passes' words beside them are the page's
+~1,300 a draw today (box_draw_list.md §12.1), printed as [D], never a measured
+byte. It reads no clock */
+static struct psp_drawsplit_pieces_map pieces_map;
+static int pieces_maps = 0;
+static unsigned long long window_pieces[10];
+static unsigned int window_pieces_calls = 0;
+
+int psp_drawsplit_pieces_on(void)
+{
+	return on > 0;
+}
+
+void *psp_drawsplit_pieces_alloc(unsigned long bytes)
+{
+	void *block = malloc(bytes ? bytes : 1);
+
+	if (!block)
+		platform_log("drawsplit2 pieces: no room for %lu KB; not counted", (bytes + 1023) / 1024);
+	return block;
+}
+
+void psp_drawsplit_pieces_free(void *block)
+{
+	free(block);
+}
+
+void psp_drawsplit_pieces_map(const struct psp_drawsplit_pieces_map *map)
+{
+	pieces_map = *map;
+	pieces_maps++;
+	platform_log("drawsplit2 pieces map %d: %ld surfaces in %ld clusters and %ld materials -> %ld (cluster, material) pieces "
+		"holding %ld triangles, the largest %ld; %ld KB of indices at 6 B a triangle [M]; passes' words ~%ld KB at a draw's "
+		"~1,300 words a piece [D]; %ld surfaces in no cluster, %ld listings past a surface's first cluster, %ld vertex indices past their material's",
+		pieces_maps, map->surfaces, map->clusters, map->materials, map->pieces, map->triangles, map->largest,
+		(map->triangles * 6 + 1023) / 1024, (map->pieces * 1300 * 4 + 1023) / 1024, map->unclustered, map->shared,
+		map->bad_vertices);
+}
+
+void psp_drawsplit_pieces_window(const struct psp_drawsplit_pieces_window *window)
+{
+	window_pieces[0] += (unsigned long)window->visible;
+	window_pieces[1] += (unsigned long)window->triangles;
+	window_pieces[2] += (unsigned long)window->unpieced;
+	window_pieces[3] += (unsigned long)window->outside;
+	window_pieces[4] += (unsigned long)window->inside;
+	window_pieces[5] += (unsigned long)window->near_plane;
+	window_pieces[6] += (unsigned long)window->far_plane;
+	window_pieces[7] += (unsigned long)window->fog_on;
+	window_pieces[8] += (unsigned long)window->fog_cross;
+	window_pieces[9] += (unsigned long)window->fog_below;
+	window_pieces_calls++;
+}
+
+static void report_pieces(double n)
+{
+	int k;
+
+	if (!window_pieces_calls)
+		return;
+	platform_log("drawsplit2 pieces: %u windows; %.1f visible pieces a frame (%.1f wholly inside the view, %.1f crossing the near plane, "
+		"%.1f the far, %.1f outside it), %.1f visible triangles a frame, %.1f in no piece; planar fog in %llu windows: "
+		"%.1f pieces a frame crossing its plane, %.1f wholly below it, the eye above",
+		window_pieces_calls, window_pieces[0] / n, window_pieces[4] / n, window_pieces[5] / n, window_pieces[6] / n,
+		window_pieces[3] / n, window_pieces[1] / n, window_pieces[2] / n, window_pieces[7], window_pieces[8] / n,
+		window_pieces[9] / n);
+	for (k = 0; k < 10; k++)
+		window_pieces[k] = 0;
+	window_pieces_calls = 0;
+}
+
 static int append(char *line, int size, int at, const char *format, ...);
 
 /* the kinds' lines: one of the far groups and what lies outside, then one a
@@ -788,6 +864,7 @@ static void report(void)
 #ifndef PSP_DRAWSPLIT_SAMPLED
 	report_kinds(n);
 	report_store(n);
+	report_pieces(n);
 #endif
 #ifdef PSP_DRAWSPLIT_SAMPLED
 	{

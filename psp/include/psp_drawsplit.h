@@ -153,6 +153,7 @@ void psp_drawsplit_render_end(void);
 #define PSP_DRAWSPLIT_OBJECT_IN() ((void)0)
 #define PSP_DRAWSPLIT_OBJECT_OUT() ((void)0)
 #define PSP_DRAWSPLIT_STORE(drawn, triangles, vertices, shader, permutation) ((void)0)
+#define PSP_DRAWSPLIT_PIECES() ((void)0)
 #elif defined(PSP_DRAWSPLIT)
 void psp_drawsplit_in(int field);
 void psp_drawsplit_out(void);
@@ -176,10 +177,32 @@ counted by its key (psp_drawsplit.c, 'D3's store') */
 void psp_drawsplit_store(int drawn, const void *triangles, const void *vertices, const void *shader, int permutation);
 #define PSP_DRAWSPLIT_STORE(drawn, triangles, vertices, shader, permutation) \
 	psp_drawsplit_store((int)(drawn), (triangles), (vertices), (shader), (int)(permutation))
+/* D2's pieces (§3.4.3 'Memory', §4.4 A2; exact form only): render_window's
+call after world's walk closes. psp_drawsplit_pieces is the engine's
+(structure_visibility.c, psp_fixups.py's DRAWSPLIT2_PIECES_C): it splits the
+level's surfaces into (cluster, material) pieces once a BSP and classifies each
+window's visible pieces against the view and the planar fog's plane, handing
+psp_drawsplit.c the counts, which prints them with the window's lines */
+struct psp_drawsplit_pieces_map
+{
+	long surfaces, clusters, materials, pieces, triangles, unclustered, shared, largest, bad_vertices;
+};
+struct psp_drawsplit_pieces_window
+{
+	long visible, triangles, unpieced, outside, inside, near_plane, far_plane, fog_on, fog_cross, fog_below;
+};
+void psp_drawsplit_pieces(void);
+int psp_drawsplit_pieces_on(void);
+void *psp_drawsplit_pieces_alloc(unsigned long bytes);
+void psp_drawsplit_pieces_free(void *block);
+void psp_drawsplit_pieces_map(const struct psp_drawsplit_pieces_map *map);
+void psp_drawsplit_pieces_window(const struct psp_drawsplit_pieces_window *window);
+#define PSP_DRAWSPLIT_PIECES() psp_drawsplit_pieces()
 #else
 #define PSP_DRAWSPLIT_OBJECT_IN() ((void)0)
 #define PSP_DRAWSPLIT_OBJECT_OUT() ((void)0)
 #define PSP_DRAWSPLIT_STORE(drawn, triangles, vertices, shader, permutation) ((void)0)
+#define PSP_DRAWSPLIT_PIECES() ((void)0)
 #define PSP_DRAWSPLIT_SAVE() ((void)0)
 #define PSP_DRAWSPLIT_RESTORE() ((void)0)
 #define PSP_DRAWSPLIT_IN(field) ((void)0)

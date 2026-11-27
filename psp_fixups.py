@@ -69006,6 +69006,299 @@ _DS2_RAST_ENCODE = ('\t\t\tpsp_model_draw_us[0] += psp_now - psp_mark;\n\t\t\tps
                     '\t\t\t\t\tbase_key, u_scale, v_scale, alpha_tested);\n')
 # D3's store (box_draw_main.md §4.4 A2; exact form only): the drawn part's key, after the encode's count
 _DS2_RAST_STORE = '\t\t\tpsp_model_draw_us[2]++;\n'
+# D2's pieces (box_draw_main.md §3.4.3 'Memory', §4.4 A2; exact form only): after world's walk closes, so its time
+# reads in world's residual, not in D2's group (walk, state, encode, d3d); the sampled form keeps the site as A has it
+_DS2_RENDER_PIECES = '\t\t(PSP_STEP("structure_render_lightmaps"), structure_render_lightmaps());\n\t\tPSP_DRAWSPLIT_OUT();\n'
+# the walker, appended to structure_visibility.c in the exact form only (it has the BSP's readers, PSP_BSP_READERS)
+DRAWSPLIT2_PIECES_C = r"""
+#if defined(HALO_PSP) && defined(PSP_DRAWSPLIT) && !defined(PSP_DRAWSPLIT_SAMPLED)
+/* psp_fixups.py, drawsplit exact (DRAWSPLIT2_PIECES_C; docs/box_draw_main.md
+3.4.3 'Memory', 4.4 A2): D2's pieces. A piece is one cluster's surfaces of one
+material, the list D2 would bake. Once a BSP: each surface's cluster from the
+clusters' subcluster lists (then a cluster's own list for a surface in none; a
+surface listed in two clusters goes to the first, the second listing counted),
+then each material's surfaces, the lightmaps' materials in the order
+structure_render_pass walks them, split by cluster, each piece's box from its
+vertices. Each window, after world's walk: the visible surfaces
+(render.environment_surface_indices, as structure_render_lightmaps draws them)
+give the visible pieces, each classed by its box against the window's frustum
+(wholly inside, crossing the near or the far plane, outside it) and, when the
+window has planar fog with the eye above its plane (the GE's submerged pass's
+case), against that plane (crossing it, wholly below). Counts only: it reads
+no clock */
+#include "psp_drawsplit.h"
+
+struct psp_ds2_piece
+{
+	real_rectangle3d bounds;
+	long triangles;
+	unsigned long frame;
+};
+static struct structure_bsp *psp_ds2_pieces_structure = NULL;
+static unsigned short *psp_ds2_pieces_of = NULL;
+static struct psp_ds2_piece *psp_ds2_pieces = NULL;
+static long psp_ds2_pieces_surfaces = 0;
+static unsigned long psp_ds2_pieces_frame = 0;
+
+/* the least and the most of n.x - d over a box's corners */
+static void psp_ds2_box_span(real_plane3d const *plane, real_rectangle3d const *box, real *low, real *high)
+{
+	real lo = -plane->d, hi = -plane->d;
+
+	if (plane->n.i > 0.0f) { lo += plane->n.i * box->x0; hi += plane->n.i * box->x1; }
+	else { lo += plane->n.i * box->x1; hi += plane->n.i * box->x0; }
+	if (plane->n.j > 0.0f) { lo += plane->n.j * box->y0; hi += plane->n.j * box->y1; }
+	else { lo += plane->n.j * box->y1; hi += plane->n.j * box->y0; }
+	if (plane->n.k > 0.0f) { lo += plane->n.k * box->z0; hi += plane->n.k * box->z1; }
+	else { lo += plane->n.k * box->z1; hi += plane->n.k * box->z0; }
+	*low = lo;
+	*high = hi;
+}
+
+static void psp_ds2_pieces_build(struct structure_bsp *structure)
+{
+	struct psp_drawsplit_pieces_map map;
+	long surface_count = structure->surfaces.count, cluster_count = structure->clusters.count;
+	unsigned short *cluster_of = NULL, *last = NULL;
+	long *stamp = NULL;
+	long s, k, pass, cluster_index;
+
+	psp_drawsplit_pieces_free(psp_ds2_pieces_of);
+	psp_drawsplit_pieces_free(psp_ds2_pieces);
+	psp_ds2_pieces_of = NULL;
+	psp_ds2_pieces = NULL;
+	psp_ds2_pieces_surfaces = 0;
+	psp_ds2_pieces_structure = structure;
+	csmemset(&map, 0, sizeof(map));
+	map.surfaces = surface_count;
+	map.clusters = cluster_count;
+	if (surface_count > 0 && cluster_count > 0 && cluster_count < 0xFFFF)
+	{
+		cluster_of = psp_drawsplit_pieces_alloc(surface_count * sizeof(*cluster_of));
+		stamp = psp_drawsplit_pieces_alloc(cluster_count * sizeof(*stamp));
+		last = psp_drawsplit_pieces_alloc(cluster_count * sizeof(*last));
+		psp_ds2_pieces_of = psp_drawsplit_pieces_alloc(surface_count * sizeof(*psp_ds2_pieces_of));
+	}
+	if (cluster_of && stamp && last && psp_ds2_pieces_of)
+	{
+		for (s = 0; s < surface_count; s++)
+			cluster_of[s] = psp_ds2_pieces_of[s] = 0xFFFF;
+		/* each surface's cluster: the subclusters' lists, then the clusters' own */
+		for (pass = 0; pass < 2; pass++)
+			for (cluster_index = 0; cluster_index < cluster_count; cluster_index++)
+			{
+				struct structure_visibility_cluster *cluster = TAG_BLOCK_GET_ELEMENT(&structure->clusters, cluster_index,
+					struct structure_visibility_cluster);
+				short subcluster_index;
+
+				if (pass == 1)
+				{
+					for (k = 0; k < cluster->surface_indices.count; k++)
+					{
+						s = PSP_SURFACE_INDEX(&cluster->surface_indices, k);
+						if ((unsigned long)s < (unsigned long)surface_count && cluster_of[s] == 0xFFFF)
+							cluster_of[s] = (unsigned short)cluster_index;
+					}
+					continue;
+				}
+				for (subcluster_index = 0; subcluster_index < cluster->subclusters.count; subcluster_index++)
+				{
+					struct structure_visibility_subcluster *subcluster = TAG_BLOCK_GET_ELEMENT(&cluster->subclusters,
+						subcluster_index, struct structure_visibility_subcluster);
+
+					for (k = 0; k < subcluster->surface_indices.count; k++)
+					{
+						s = PSP_SURFACE_INDEX(&subcluster->surface_indices, k);
+						if ((unsigned long)s >= (unsigned long)surface_count)
+							continue;
+						if (cluster_of[s] == 0xFFFF)
+							cluster_of[s] = (unsigned short)cluster_index;
+						else if (cluster_of[s] != cluster_index)
+							map.shared++;
+					}
+				}
+			}
+		/* the pieces: counted, then made with their boxes */
+		for (pass = 0; pass < 2; pass++)
+		{
+			long ordinal = 0;
+			short lightmap_index;
+
+			if (pass == 1)
+			{
+				if (map.pieces <= 0 || map.pieces >= 0xFFFF)
+					break;
+				psp_ds2_pieces = psp_drawsplit_pieces_alloc(map.pieces * sizeof(*psp_ds2_pieces));
+				if (!psp_ds2_pieces)
+					break;
+				map.pieces = map.triangles = map.unclustered = 0;
+			}
+			for (k = 0; k < cluster_count; k++)
+				stamp[k] = -1;
+			for (lightmap_index = 0; lightmap_index < structure->lightmaps.count; lightmap_index++)
+			{
+				struct structure_lightmap *lightmap = TAG_BLOCK_GET_ELEMENT(&structure->lightmaps, lightmap_index,
+					struct structure_lightmap);
+				short material_index;
+
+				for (material_index = 0; material_index < lightmap->materials.count; material_index++, ordinal++)
+				{
+					struct structure_material *material = TAG_BLOCK_GET_ELEMENT(&lightmap->materials, material_index,
+						struct structure_material);
+					long first = material->first_surface_index < 0 ? 0 : material->first_surface_index;
+					long end = material->first_surface_index + material->surface_count;
+
+					if (end > surface_count)
+						end = surface_count;
+					for (s = first; s < end; s++)
+					{
+						long c = cluster_of[s];
+						struct psp_ds2_piece *piece;
+						struct structure_visibility_surface const *surface;
+						int v;
+
+						if (c == 0xFFFF)
+						{
+							map.unclustered++;
+							continue;
+						}
+						if (stamp[c] != ordinal)
+						{
+							stamp[c] = ordinal;
+							last[c] = (unsigned short)map.pieces;
+							if (pass == 1)
+							{
+								piece = &psp_ds2_pieces[map.pieces];
+								piece->frame = 0;
+								piece->triangles = 0;
+								piece->bounds.x0 = piece->bounds.y0 = piece->bounds.z0 = 3.0e38f;
+								piece->bounds.x1 = piece->bounds.y1 = piece->bounds.z1 = -3.0e38f;
+							}
+							map.pieces++;
+						}
+						map.triangles++;
+						if (pass == 0)
+							continue;
+						piece = &psp_ds2_pieces[last[c]];
+						psp_ds2_pieces_of[s] = last[c];
+						if (++piece->triangles > map.largest)
+							map.largest = piece->triangles;
+						surface = TAG_BLOCK_GET_ELEMENT(&structure->surfaces, s, struct structure_visibility_surface);
+						for (v = 0; v < 3; v++)
+						{
+							real_point3d point;
+
+							if ((long)surface->vertex_indices[v] >= material->vertices.count)
+							{
+								map.bad_vertices++;
+								continue;
+							}
+							psp_material_vertex_point(material, surface->vertex_indices[v], &point);
+							if (point.x < piece->bounds.x0) piece->bounds.x0 = point.x;
+							if (point.x > piece->bounds.x1) piece->bounds.x1 = point.x;
+							if (point.y < piece->bounds.y0) piece->bounds.y0 = point.y;
+							if (point.y > piece->bounds.y1) piece->bounds.y1 = point.y;
+							if (point.z < piece->bounds.z0) piece->bounds.z0 = point.z;
+							if (point.z > piece->bounds.z1) piece->bounds.z1 = point.z;
+						}
+					}
+				}
+			}
+			map.materials = ordinal;
+		}
+		if (psp_ds2_pieces)
+			psp_ds2_pieces_surfaces = surface_count;
+	}
+	psp_drawsplit_pieces_free(cluster_of);
+	psp_drawsplit_pieces_free(stamp);
+	psp_drawsplit_pieces_free(last);
+	if (!psp_ds2_pieces)
+	{
+		psp_drawsplit_pieces_free(psp_ds2_pieces_of);
+		psp_ds2_pieces_of = NULL;
+	}
+	psp_drawsplit_pieces_map(&map);
+}
+
+void psp_drawsplit_pieces(void)
+{
+	struct structure_bsp *structure;
+	struct psp_drawsplit_pieces_window window;
+	real_plane3d const *fog_plane = &render.fog.plane;
+	int fog;
+	long i;
+
+	if (!psp_drawsplit_pieces_on())
+		return;
+	structure = global_structure_bsp_get();
+	if (!structure)
+		return;
+	if (structure != psp_ds2_pieces_structure)
+		psp_ds2_pieces_build(structure);
+	if (!psp_ds2_pieces)
+		return;
+	csmemset(&window, 0, sizeof(window));
+	psp_ds2_pieces_frame++;
+	/* planar fog as psp_ge_fog_submerged takes it (FIXES_OCEAN), the eye above its plane */
+	fog = render.fog.planar_mode == 1 && render.fog.planar_maximum_density > 0.001f &&
+		render.fog.planar_maximum_depth > 0.0f && render.fog.planar_maximum_distance > 0.0f &&
+		fog_plane->n.i * render.camera.position.x + fog_plane->n.j * render.camera.position.y +
+		fog_plane->n.k * render.camera.position.z - fog_plane->d >= 0.0f;
+	window.fog_on = fog;
+	for (i = 0; i < render.environment_surface_count; i++)
+	{
+		long s = render.environment_surface_indices[i];
+		struct psp_ds2_piece *piece;
+		real low, high;
+		int plane, out = 0, inside = 1, near_plane = 0, far_plane = 0;
+
+		if ((unsigned long)s >= (unsigned long)psp_ds2_pieces_surfaces || psp_ds2_pieces_of[s] == 0xFFFF)
+		{
+			window.unpieced++;
+			continue;
+		}
+		window.triangles++;
+		piece = &psp_ds2_pieces[psp_ds2_pieces_of[s]];
+		if (piece->frame == psp_ds2_pieces_frame)
+			continue;
+		piece->frame = psp_ds2_pieces_frame;
+		window.visible++;
+		/* the frustum's planes face out (render_cameras.c): left, right, bottom, top, near, far */
+		for (plane = 0; plane < 6; plane++)
+		{
+			psp_ds2_box_span(&render.frustum.world_planes[plane], &piece->bounds, &low, &high);
+			if (low > 0.0f)
+				out = 1;
+			if (high > 0.0f)
+			{
+				inside = 0;
+				if (plane == 4)
+					near_plane = 1;
+				else if (plane == 5)
+					far_plane = 1;
+			}
+		}
+		if (out)
+		{
+			window.outside++;
+			continue;
+		}
+		window.inside += inside;
+		window.near_plane += near_plane;
+		window.far_plane += far_plane;
+		if (fog)
+		{
+			psp_ds2_box_span(fog_plane, &piece->bounds, &low, &high);
+			if (high <= 0.0f)
+				window.fog_below++;
+			else if (low < 0.0f)
+				window.fog_cross++;
+		}
+	}
+	psp_drawsplit_pieces_window(&window);
+}
+#endif
+"""
 _DS2_RAST_END = '\t_rasterizer_model_end();\n#ifdef HALO_PSP\n'
 _DS2_RAST_ENV_D3D = ('\t_rasterizer_environment_lightmap_draw(shader, bitmap_index, dynamic_triangle_buffer_index, first_triangle_index, '
                      'triangle_count, vertex_buffer);\n')
@@ -69028,6 +69321,7 @@ DRAWSPLIT2_SITES = {
         # under psp_bench_skip's one-statement ifs
         ('\t\t(PSP_STEP("render_objects"), render_objects());\n', _ds2_comma('(PSP_STEP("render_objects"), render_objects())', "WALK")),
         (_DS2_RENDER_WALK, _ds2_wrap(_DS2_RENDER_WALK, "WALK")),
+        (_DS2_RENDER_PIECES, _DS2_RENDER_PIECES + "\t\tPSP_DRAWSPLIT_PIECES();\n"),
         ('\t\t(PSP_STEP("render_object_shadows"), render_object_shadows());\n',
          _ds2_comma('(PSP_STEP("render_object_shadows"), render_object_shadows())', "SHADOWS")),
         ('\t\t(PSP_STEP("lights_render_diffuse"), lights_render_diffuse());\n',
@@ -69135,6 +69429,8 @@ DRAWSPLIT2_SAMPLED = {
     ("source/render/render_objects.c", _DS2_OBJ_KIND_OUT): _DS2_OBJ_KIND_OUT,
     # D3's store is the exact form's too
     ("source/rasterizer/rasterizer.c", _DS2_RAST_STORE): _DS2_RAST_STORE,
+    # and D2's pieces
+    ("source/render/render.c", _DS2_RENDER_PIECES): _DS2_RENDER_PIECES,
 }
 # the sampled form's sites past a join, each from its statement's start to its end (the exact form's site inside)
 DRAWSPLIT2_SAMPLED_SITES = {
@@ -69253,6 +69549,13 @@ def drawsplit2_cut(tree):
         if opens != closes or text.count("PSP_DRAWSPLIT_SAVE(") != text.count("PSP_DRAWSPLIT_RESTORE("):
             return check_fail("psp_fixups: DRAWSPLIT level 2: %s: %d opens against %d closes, %d saves against %d restores"
                               % (rel, opens, closes, text.count("PSP_DRAWSPLIT_SAVE("), text.count("PSP_DRAWSPLIT_RESTORE(")))
+    if not sampled:
+        # D2's pieces' walker, where the BSP's readers are (exact form only)
+        rel = "source/structures/structure_visibility.c"
+        text = open(os.path.join(tree, rel), errors="surrogateescape").read()
+        if "static void psp_material_vertex_point(" not in text or text.count("#define PSP_SURFACE_INDEX(") != 1:
+            return check_fail("psp_fixups: DRAWSPLIT level 2: %s lacks the BSP's readers (PSP_BSP_READERS) D2's pieces read" % rel)
+        texts[rel] = text + DRAWSPLIT2_PIECES_C
     if not CHECK_ONLY:
         for rel, text in texts.items():
             open(os.path.join(tree, rel), "w", errors="surrogateescape").write(text)
