@@ -58194,6 +58194,10 @@ void psp_mevis_me_job(const unsigned int *args, unsigned int *results)
 
 	unsigned int k;
 
+	/* the job's two stamps on the ME's own counter, begun here and ended
+	below (mevisland's split): in the record's answer lines, which go back
+	with the job's output, as done does */
+	record->pad_out[1] = psp_mv_cycles();
 	/* mevisedram: the eDRAM's state cleared and its stack filled here, by the
 	ME, on the first job (and after the ME restarted: the main CPU asks) */
 	if (psp_mv_edram && record->pad_in[0])
@@ -58223,6 +58227,7 @@ void psp_mevis_me_job(const unsigned int *args, unsigned int *results)
 			low++;
 		psp_mv_handed->stack_low = low;
 	}
+	record->pad_out[2] = psp_mv_cycles();
 	results[0] = 1;
 }
 
@@ -58522,6 +58527,18 @@ static unsigned long psp_ml_depth_most = 0, psp_ml_too_deep = 0;
 static unsigned int psp_ml_ticket, psp_ml_state_bytes;
 static unsigned long psp_ml_views, psp_ml_used, psp_ml_refused, psp_ml_busy, psp_ml_late, psp_ml_failed, psp_ml_wait_us,
 	psp_ml_wait_worst, psp_ml_waited, psp_ml_differ_clusters, psp_ml_differ_objects;
+/* the split of a pushed view's time (a log line only; nothing reads it):
+the ME's job, begun to ended on its own counter (pad_out[1], [2]), and the
+pick-up, the push to the job's start. The push is on this CPU's clock and
+the start on the ME's, which aren't tied, so the pick-up is never their
+difference: a view that waited at the first reader was answered while this
+CPU looked, so push to the answer seen (this clock) less the job (the ME's,
+in us by its measured rate) is the pick-up, with the job's write-back and
+the last look in it; a view that didn't wait has only a bound, the push to
+the first reader less the job */
+static unsigned int psp_ml_push_at;
+static unsigned long psp_ml_split_jobs, psp_ml_split_waited, psp_ml_split_free;
+static double psp_ml_split_job_us, psp_ml_split_job_most, psp_ml_split_pick_us, psp_ml_split_bound_us;
 
 /* this CPU's copies of lines the ME wrote, dropped before they are read. It
 never writes the copies' state or the record after the push (the push writes
@@ -58608,6 +58625,7 @@ int psp_mevisland_push(void)
 			return 0;
 		}
 	}
+	psp_ml_push_at = sceKernelGetSystemTimeLow();
 	if (!psp_me_push_visibility_into(psp_mv_record, psp_mv_edram ? (void *)psp_mv_handed : (void *)psp_mv,
 		psp_mv_edram ? (unsigned int)sizeof(struct psp_mv_handed) : psp_ml_state_bytes, &psp_ml_ticket))
 	{
@@ -58648,6 +58666,31 @@ void psp_mevisland_collect(void)
 	psp_me_ring_collected(psp_ml_ticket);
 	psp_ml_out = 0;
 	psp_ml_drop(psp_mv_record, sizeof(*psp_mv_record));
+	{
+		/* the split (above): every answer the ring handed back in time */
+		float per_us = psp_me_cycles_per_us();
+
+		if (per_us > 0.0f)
+		{
+			double job = (double)(psp_mv_record->pad_out[2] - psp_mv_record->pad_out[1]) / per_us;
+			double cover = (double)(start - psp_ml_push_at);
+
+			psp_ml_split_jobs++;
+			psp_ml_split_job_us += job;
+			if (job > psp_ml_split_job_most)
+				psp_ml_split_job_most = job;
+			if (waited > 0)
+			{
+				psp_ml_split_waited++;
+				psp_ml_split_pick_us += cover + waited > job ? cover + waited - job : 0.0;
+			}
+			else
+			{
+				psp_ml_split_free++;
+				psp_ml_split_bound_us += cover > job ? cover - job : 0.0;
+			}
+		}
+	}
 	if (psp_mv_record->depth_most > psp_ml_depth_most)
 		psp_ml_depth_most = psp_mv_record->depth_most;
 	if (!psp_mv_record->done || psp_mv_record->too_deep)
@@ -58796,6 +58839,13 @@ void psp_mevisland_settle(void)
 			psp_ml_wait_us / 1000.0 / psp_ml_views, psp_ml_waited, psp_ml_wait_worst / 1000.0, psp_ml_depth_most,
 			low ? (PSP_MV_STACK - low * 4) / 1024 : 0, PSP_MV_STACK / 1024, psp_ml_here, psp_ml_rests, psp_ml_probes_back,
 			psp_ml_main_avg / 8000.0, psp_ml_wait_avg / 8000.0, psp_ml_always ? "; mevislandalways: every view pushed" : "");
+		if (psp_ml_split_jobs)
+			platform_psp_log("mevisland: split: %lu answers back in time: the ME's job %.2f ms a view (the most %.2f; begun to ended on the ME's counter); the pick-up (push to the job's start) %.2f ms a view over the %lu that waited at the first reader (push to the answer seen less the job; the job's write-back and the last look in it); %lu didn't wait, picked up within %.2f ms a view (push to the first reader less the job) (last 300 views)",
+				psp_ml_split_jobs, psp_ml_split_job_us / 1000.0 / psp_ml_split_jobs, psp_ml_split_job_most / 1000.0,
+				psp_ml_split_waited ? psp_ml_split_pick_us / 1000.0 / psp_ml_split_waited : 0.0, psp_ml_split_waited,
+				psp_ml_split_free, psp_ml_split_free ? psp_ml_split_bound_us / 1000.0 / psp_ml_split_free : 0.0);
+		psp_ml_split_jobs = psp_ml_split_waited = psp_ml_split_free = 0;
+		psp_ml_split_job_us = psp_ml_split_job_most = psp_ml_split_pick_us = psp_ml_split_bound_us = 0.0;
 		if (psp_ml_check)
 			platform_psp_log("mevislandcheck: differing from the main CPU's own: clusters %lu, objects %lu (last 300 views)",
 				psp_ml_differ_clusters, psp_ml_differ_objects);
