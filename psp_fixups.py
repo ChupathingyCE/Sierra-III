@@ -56339,16 +56339,30 @@ WSOLD = os.environ.get("PSP_WSOLD", "") == "1"
 _WSOLD_MARK = "{ void box_ws_old_mark(long datum_index); box_ws_old_mark(%s); } /* (FIXES_WSOLD) written since the copy */"
 FIXES_WSOLD = {
 "source/objects/objects.c#wsold": [
-# the walk's own updates (children are updated through here too)
-("""static boolean object_update(
-	long object_index)
-{
+# the walk's own updates. FIXES_WSOLD runs after FIXES_DIET1, whose short form
+# (psp_object_update_lean, every object with the timers off, the campaign's
+# default) updates children by calling itself, never object_update: so one
+# mark at the short form's head, and one in the general function after the
+# short form's branch, where children are updated through object_update.
+# Every object's update is marked once on either path
+("""	if (psp_timers_off && PSP_KEEP_ONCE("objlean"))
+		return psp_object_update_lean(object_index);
+#endif
 	struct object_header_datum *header = object_header_get(object_index);
 """,
- """static boolean object_update(
+ """	if (psp_timers_off && PSP_KEEP_ONCE("objlean"))
+		return psp_object_update_lean(object_index);
+#endif
+	struct object_header_datum *header = object_header_get(object_index);
+	""" + _WSOLD_MARK % "object_index" + """
+"""),
+("""static boolean psp_object_update_lean(
 	long object_index)
 {
-	struct object_header_datum *header = object_header_get(object_index);
+""",
+ """static boolean psp_object_update_lean(
+	long object_index)
+{
 	""" + _WSOLD_MARK % "object_index" + """
 """),
 # the sleep's wake marks: every writer outside an object's own update that
@@ -56382,13 +56396,11 @@ FIXES_WSOLD = {
 {
 	""" + _WSOLD_MARK % "object_index" + """
 """),
-("""static void psp_nms_make(long object_index, struct psp_nms_entry const *entry)
-{
-""",
- """static void psp_nms_make(long object_index, struct psp_nms_entry const *entry)
-{
-	""" + _WSOLD_MARK % "object_index" + """
-"""),
+# psp_nms_make's sphere (and the kept-sphere restore) is slice 1's step 5's,
+# moved to psp/src/store_pose.c (:923, :998-999) and checked against the
+# file's copy, so its mark isn't made here: a request to the builder (the
+# lab's decisions.md 2026-11-26 21:4x (3)). Until it lands, a sphere written
+# there goes unmarked, and wsoldcheck's mismatches on it are the crossing's
 # the child lists: the parent's first child and the siblings' next links
 ("""		object_remove_from_list(&object_get(object->object.parent_object_index)->object.first_child_object_index, object_index);
 """,
@@ -56577,6 +56589,38 @@ void psp_wsold_visit(long object_index, struct object_datum const *object)
 			if (box_ws_old_checking && object_index != ignore_object_index)
 				psp_wsold_visit(object_index, object);
 		}
+"""),
+],
+# the walk's writes into bipeds (docs/box_world_store.md, tc-copy part 3): a
+# vehicle's push of a biped it hits and an elevator's carry of its riders.
+# Today's order runs them before the sweep, so they're marks only: the take
+# refuses the biped and gathers it live. In the parallel phase they're inputs
+# to M, tc-tick's to order (held to the serial phase, or asked at the join)
+"source/physics/physics.c#wsold": [
+("""		biped_accelerate(biped_index, &acceleration);
+
+		base.x += acceleration.i*2.0f;
+""",
+ """		""" + _WSOLD_MARK % "biped_index" + """
+		biped_accelerate(biped_index, &acceleration);
+
+		base.x += acceleration.i*2.0f;
+"""),
+("""			new_position.z -= width;
+			object_translate(biped_index, &new_position, NULL);
+""",
+ """			new_position.z -= width;
+			""" + _WSOLD_MARK % "biped_index" + """
+			object_translate(biped_index, &new_position, NULL);
+"""),
+],
+"source/devices/device_machines.c#wsold": [
+("""					object_translate(biped_index, &new_position, NULL);
+				}
+""",
+ """					""" + _WSOLD_MARK % "biped_index" + """
+					object_translate(biped_index, &new_position, NULL);
+				}
 """),
 ],
 }
@@ -57738,7 +57782,7 @@ def tag_memo_forgets(tree):
     return count
 
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_SSPR.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + list(FIXES_CHUPA090RUNS.items()) + list(FIXES_HEAPTRIM.items()) + list(FIXES_B78.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items()) + list(FIXES_AIME2A.items()) + list(FIXES_REDOSEED.items()) + (list(FIXES_STACKHOT.items()) if STACKHOT else []) + (list(FIXES_STACKHOT2.items()) if STACKHOT2 else []) + list(FIXES_PWSL.items()) + list(FIXES_SPHSL.items()) + list(FIXES_RECONLIST.items()) + list(FIXES_TP1.items()) + list(FIXES_WXDEAD.items()) + list(FIXES_AIMEMOVE.items()) + list(FIXES_PROPCRASH.items()) + list(FIXES_APCPOOL.items()) + list(FIXES_PSPTLS.items()) + list(FIXES_SNDEDRAM.items()) + list(FIXES_LIGHTFIRST.items()) + list(FIXES_DRAWPART.items()) + (list(FIXES_RECONLATE.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + list(FIXES_P2PASS.items()) + (list(FIXES_P2CENSUS.items()) if P2CENSUS else []) + list(FIXES_OBSRAY.items()) + list(FIXES_SNDWAIT.items()) + list(FIXES_FLAMEDECAL.items()) + list(FIXES_HUHINT.items()) + list(FIXES_DBLSOFT.items()) + list(FIXES_VFPUTRIG.items()) + list(FIXES_TICKCACHE.items()) + list(FIXES_STRICTALIAS.items()) + list(FIXES_SNDPERMAP.items()) + list(FIXES_RLOOP.items()) + list(FIXES_L10.items()) + list(FIXES_RLSKIP.items()) + list(FIXES_ONEWALK.items()) + (list(FIXES_POSEK.items()) if POSEK else []) + (list(FIXES_SNDSTREAM.items()) if os.environ.get("PSP_SNDSTREAM", "") == "1" else []) + list(FIXES_MOUTHCLOCK.items()) + list(FIXES_LSAME.items()) + list(FIXES_CHUPA090.items()) + list(FIXES_V091A.items()) + list(FIXES_AIDEBUGREC.items()) + (list(FIXES_AITICKOLD.items()) if AITICKOLD else []) + (list(FIXES_PADPATH.items()) if os.environ.get("PSP_PADPATH", "") == "1" else []) + list(FIXES_FARLEVEL.items()) + list(FIXES_DECALRING.items()) + list(FIXES_ARRAYFULL.items()) + (list(FIXES_DEADXBOX.items()) if DEADXBOX else []) + (list(FIXES_CAPTURE_POSING.items()) if CAPTURE == "posing" else []) + (list(FIXES_BOXPOSING.items()) if BOXPOSING else []) + (list(FIXES_ASKCENSUS.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + (list(FIXES_CAPTURE_SWEEP.items()) if CAPTURE == "sweep" else []) + (list(FIXES_BIPEDSTAGE.items()) if BIPEDSTAGE else []) + (list(FIXES_WSOLD.items()) if WSOLD else []) + (list(FIXES_SWEEPME.items()) if SWEEPME else []) + list(FIXES_B98.items()) + list(FIXES_SPEECHPAD.items()) + list(FIXES_SOUNDGAMETIME.items()) + list(FIXES_DIET1.items()) + list(FIXES_DIET2.items())):
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_SSPR.items()) + list(FIXES_AICAD.items()) + list(FIXES_AIFAR.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_POSEFPU.items()) + list(FIXES_PSC.items()) + list(FIXES_FX15.items()) + list(FIXES_FISSION.items()) + list(FIXES_CHUPA090RUNS.items()) + list(FIXES_HEAPTRIM.items()) + list(FIXES_B78.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items())) + list(FIXES_AIME.items()) + list(FIXES_AIME1B.items()) + list(FIXES_AIME2A.items()) + list(FIXES_REDOSEED.items()) + (list(FIXES_STACKHOT.items()) if STACKHOT else []) + (list(FIXES_STACKHOT2.items()) if STACKHOT2 else []) + list(FIXES_PWSL.items()) + list(FIXES_SPHSL.items()) + list(FIXES_RECONLIST.items()) + list(FIXES_TP1.items()) + list(FIXES_WXDEAD.items()) + list(FIXES_AIMEMOVE.items()) + list(FIXES_PROPCRASH.items()) + list(FIXES_APCPOOL.items()) + list(FIXES_PSPTLS.items()) + list(FIXES_SNDEDRAM.items()) + list(FIXES_LIGHTFIRST.items()) + list(FIXES_DRAWPART.items()) + (list(FIXES_RECONLATE.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + list(FIXES_P2PASS.items()) + (list(FIXES_P2CENSUS.items()) if P2CENSUS else []) + list(FIXES_OBSRAY.items()) + list(FIXES_SNDWAIT.items()) + list(FIXES_FLAMEDECAL.items()) + list(FIXES_HUHINT.items()) + list(FIXES_DBLSOFT.items()) + list(FIXES_VFPUTRIG.items()) + list(FIXES_TICKCACHE.items()) + list(FIXES_STRICTALIAS.items()) + list(FIXES_SNDPERMAP.items()) + list(FIXES_RLOOP.items()) + list(FIXES_L10.items()) + list(FIXES_RLSKIP.items()) + list(FIXES_ONEWALK.items()) + (list(FIXES_POSEK.items()) if POSEK else []) + (list(FIXES_SNDSTREAM.items()) if os.environ.get("PSP_SNDSTREAM", "") == "1" else []) + list(FIXES_MOUTHCLOCK.items()) + list(FIXES_LSAME.items()) + list(FIXES_CHUPA090.items()) + list(FIXES_V091A.items()) + list(FIXES_AIDEBUGREC.items()) + (list(FIXES_AITICKOLD.items()) if AITICKOLD else []) + (list(FIXES_PADPATH.items()) if os.environ.get("PSP_PADPATH", "") == "1" else []) + list(FIXES_FARLEVEL.items()) + list(FIXES_DECALRING.items()) + list(FIXES_ARRAYFULL.items()) + (list(FIXES_DEADXBOX.items()) if DEADXBOX else []) + (list(FIXES_CAPTURE_POSING.items()) if CAPTURE == "posing" else []) + (list(FIXES_BOXPOSING.items()) if BOXPOSING else []) + (list(FIXES_ASKCENSUS.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + (list(FIXES_CAPTURE_SWEEP.items()) if CAPTURE == "sweep" else []) + (list(FIXES_BIPEDSTAGE.items()) if BIPEDSTAGE else []) + (list(FIXES_SWEEPME.items()) if SWEEPME else []) + list(FIXES_B98.items()) + list(FIXES_SPEECHPAD.items()) + list(FIXES_SOUNDGAMETIME.items()) + list(FIXES_DIET1.items()) + list(FIXES_DIET2.items()) + (list(FIXES_WSOLD.items()) if WSOLD else [])):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 # PSP_FRAMEPIC (docs/frame_picture.md): game.c's perf statements are
 # stripped before its anchors are matched (PERF_STRIP), which took the tick's
