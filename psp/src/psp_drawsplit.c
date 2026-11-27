@@ -482,6 +482,95 @@ void psp_drawsplit_far(unsigned int groups)
 	window_far_groups += groups;
 }
 
+/* D3's store (docs/box_draw_main.md §3.4.2 'Memory', §4.4 A2): the distinct
+model parts the GE drew (rasterizer_model_draw's psp_model_draw returning
+TRUE), keyed as D3 would bake a list: the part's triangle and vertex buffers (a
+model's part at an LOD has its own), its shader and the shader's permutation.
+Counted from the run's start, so a map's count is what its run drew: a floor of
+the map's store. A key's first draw is named objects' own (outside a whole
+field) or elsewhere (the first person weapon's and the sky's whole fields,
+another part). A list's ~1 KB (~250 words with 2-4 passes, ge_audit M6) is the
+page's design size, printed beside the count as [D], never a measured byte.
+The table holds STORE_FULL keys; a draw of a key past them is counted as
+missed, and the count is then a floor again. It reads no clock */
+#define STORE_KEYS 2048
+#define STORE_FULL (STORE_KEYS * 3 / 4)
+struct store_key
+{
+	const void *triangles, *vertices, *shader;
+	int permutation;
+	unsigned int window;
+};
+static struct store_key *store = NULL;
+static int store_failed = 0;
+static unsigned int store_keys = 0, store_objects = 0, store_missed = 0, store_window = 1;
+static unsigned long long window_store_parts = 0, window_store_seen = 0, window_store_new = 0;
+
+void psp_drawsplit_store(int drawn, const void *triangles, const void *vertices, const void *shader, int permutation)
+{
+	unsigned int h;
+	struct store_key *key;
+
+	if (on <= 0 || !drawn || !triangles)
+		return;
+	if (!store)
+	{
+		if (store_failed)
+			return;
+		store = calloc(STORE_KEYS, sizeof(*store));
+		if (!store)
+		{
+			store_failed = 1;
+			platform_log("drawsplit2 store: no room for its %u KB; not counted", (unsigned)(STORE_KEYS * sizeof(*store) / 1024));
+			return;
+		}
+	}
+	window_store_parts++;
+	h = (unsigned int)((unsigned long)triangles >> 2) * 2654435761u ^ (unsigned int)((unsigned long)vertices >> 2) * 2246822519u
+		^ (unsigned int)((unsigned long)shader >> 2) * 3266489917u ^ (unsigned int)permutation;
+	for (h &= STORE_KEYS - 1; store[h].triangles; h = (h + 1) & (STORE_KEYS - 1))
+	{
+		key = &store[h];
+		if (key->triangles == triangles && key->vertices == vertices && key->shader == shader && key->permutation == permutation)
+		{
+			if (key->window != store_window)
+			{
+				key->window = store_window;
+				window_store_seen++;
+			}
+			return;
+		}
+	}
+	if (store_keys >= STORE_FULL)
+	{
+		store_missed++;
+		return;
+	}
+	key = &store[h];
+	key->triangles = triangles;
+	key->vertices = vertices;
+	key->shader = shader;
+	key->permutation = permutation;
+	key->window = store_window;
+	store_keys++;
+	if (!whole_open && PART_OF(current) == PART_OBJECTS)
+		store_objects++;
+	window_store_seen++;
+	window_store_new++;
+}
+
+static void report_store(double n)
+{
+	if (!store)
+		return;
+	platform_log("drawsplit2 store: %u distinct parts drawn since the run's start (%u first in objects' own, %u elsewhere), "
+		"~%u KB at ~1 KB a list [D]; this window %.1f parts drawn a frame, %llu distinct, %llu new; %u draws past the table's %u keys",
+		store_keys, store_objects, store_keys - store_objects, store_keys, window_store_parts / n, window_store_seen,
+		window_store_new, store_missed, STORE_FULL);
+	window_store_parts = window_store_seen = window_store_new = 0;
+	store_window++;
+}
+
 static int append(char *line, int size, int at, const char *format, ...);
 
 /* the kinds' lines: one of the far groups and what lies outside, then one a
@@ -698,6 +787,7 @@ static void report(void)
 	platform_log("%s", line);
 #ifndef PSP_DRAWSPLIT_SAMPLED
 	report_kinds(n);
+	report_store(n);
 #endif
 #ifdef PSP_DRAWSPLIT_SAMPLED
 	{

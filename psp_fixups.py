@@ -69004,6 +69004,8 @@ _DS2_RAST_ENCODE = ('\t\t\tpsp_model_draw_us[0] += psp_now - psp_mark;\n\t\t\tps
                     '\t\t\tdrawn = psp_ge_active() && dynamic_triangle_buffer_index == NONE && dynamic_vertex_buffer_index == NONE &&\n'
                     '\t\t\t\tpsp_model_draw(triangle_buffer, triangle_count, vertex_buffer, 0xFF000000 | (b << 16) | (g << 8) | r,\n'
                     '\t\t\t\t\tbase_key, u_scale, v_scale, alpha_tested);\n')
+# D3's store (box_draw_main.md §4.4 A2; exact form only): the drawn part's key, after the encode's count
+_DS2_RAST_STORE = '\t\t\tpsp_model_draw_us[2]++;\n'
 _DS2_RAST_END = '\t_rasterizer_model_end();\n#ifdef HALO_PSP\n'
 _DS2_RAST_ENV_D3D = ('\t_rasterizer_environment_lightmap_draw(shader, bitmap_index, dynamic_triangle_buffer_index, first_triangle_index, '
                      'triangle_count, vertex_buffer);\n')
@@ -69067,6 +69069,8 @@ DRAWSPLIT2_SITES = {
         (_DS2_RAST_STATE, _DS2_RAST_STATE.replace("\n\n", "\n\n\t\tPSP_DRAWSPLIT_IN(STATE);\n", 1)),
         (_DS2_RAST_ENCODE, "\t\t\tPSP_DRAWSPLIT_OUT();\n" + "".join(_DS2_RAST_ENCODE.splitlines(True)[:2]) + "\t\t\tPSP_DRAWSPLIT_IN(ENCODE);\n"
          + "".join(_DS2_RAST_ENCODE.splitlines(True)[2:]) + "\t\t\tPSP_DRAWSPLIT_OUT();\n\t\t\tPSP_DRAWSPLIT_COUNT(PARTS_DRAWN, drawn);\n"),
+        (_DS2_RAST_STORE, _DS2_RAST_STORE
+         + "\t\t\tPSP_DRAWSPLIT_STORE(drawn, triangle_buffer, vertex_buffer, shader, shader_permutation_index);\n"),
         (_DS2_RAST_END, _ds2_wrap("\t_rasterizer_model_end();\n", "D3D", "\t") + "#ifdef HALO_PSP\n"),
         # under the GE's one-statement if: it runs only when the GE doesn't draw, so 0 is a measurement
         (_DS2_RAST_ENV_D3D, _ds2_comma(_DS2_RAST_ENV_D3D, "D3D", "\t")),
@@ -69129,6 +69133,8 @@ DRAWSPLIT2_SAMPLED = {
     # X1's split by kind is the exact form's: the sites as A has them
     ("source/render/render_objects.c", _DS2_OBJ_KIND_IN): _DS2_OBJ_KIND_IN,
     ("source/render/render_objects.c", _DS2_OBJ_KIND_OUT): _DS2_OBJ_KIND_OUT,
+    # D3's store is the exact form's too
+    ("source/rasterizer/rasterizer.c", _DS2_RAST_STORE): _DS2_RAST_STORE,
 }
 # the sampled form's sites past a join, each from its statement's start to its end (the exact form's site inside)
 DRAWSPLIT2_SAMPLED_SITES = {

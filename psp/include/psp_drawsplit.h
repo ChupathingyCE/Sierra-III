@@ -152,6 +152,7 @@ void psp_drawsplit_render_begin(void);
 void psp_drawsplit_render_end(void);
 #define PSP_DRAWSPLIT_OBJECT_IN() ((void)0)
 #define PSP_DRAWSPLIT_OBJECT_OUT() ((void)0)
+#define PSP_DRAWSPLIT_STORE(drawn, triangles, vertices, shader, permutation) ((void)0)
 #elif defined(PSP_DRAWSPLIT)
 void psp_drawsplit_in(int field);
 void psp_drawsplit_out(void);
@@ -170,9 +171,15 @@ void psp_drawsplit_object_out(void);
 void psp_drawsplit_far(unsigned int groups);
 #define PSP_DRAWSPLIT_OBJECT_IN() psp_drawsplit_object_in()
 #define PSP_DRAWSPLIT_OBJECT_OUT() psp_drawsplit_object_out()
+/* D3's store (§4.4 A2; exact form only): rasterizer_model_draw's drawn part,
+counted by its key (psp_drawsplit.c, 'D3's store') */
+void psp_drawsplit_store(int drawn, const void *triangles, const void *vertices, const void *shader, int permutation);
+#define PSP_DRAWSPLIT_STORE(drawn, triangles, vertices, shader, permutation) \
+	psp_drawsplit_store((int)(drawn), (triangles), (vertices), (shader), (int)(permutation))
 #else
 #define PSP_DRAWSPLIT_OBJECT_IN() ((void)0)
 #define PSP_DRAWSPLIT_OBJECT_OUT() ((void)0)
+#define PSP_DRAWSPLIT_STORE(drawn, triangles, vertices, shader, permutation) ((void)0)
 #define PSP_DRAWSPLIT_SAVE() ((void)0)
 #define PSP_DRAWSPLIT_RESTORE() ((void)0)
 #define PSP_DRAWSPLIT_IN(field) ((void)0)
