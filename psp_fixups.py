@@ -68932,6 +68932,129 @@ def calltrace_store_move_cut(tree):
     return 1
 calltrace_store_move_cut(TREE)
 
+# PSP_DRAWSPLIT=1, level 2 (docs/box_draw_main.md §1.5; the lab's briefs/draw_main.md task 1b; psp/include/psp_drawsplit.h,
+# psp/src/psp_drawsplit.c): the fields inside objects and world, and the items a frame. The last cut, so it reads the
+# text every other cut left and no later anchor spans its hooks; off, it adds nothing, so the off tree is level 1's. An
+# item field is IN before and OUT after its call or block; a call under a one-statement if takes the comma form,
+# as the step breadcrumbs do. Each edited file includes psp_drawsplit.h after its cseries.h
+def _ds2_wrap(line, field, indent="\t\t"):
+    return "%sPSP_DRAWSPLIT_IN(%s);\n%s%sPSP_DRAWSPLIT_OUT();\n" % (indent, field, line, indent)
+def _ds2_comma(line, field, indent="\t\t"):
+    return "%s(PSP_DRAWSPLIT_IN(%s), %s, PSP_DRAWSPLIT_OUT());\n" % (indent, field, line.strip().rstrip(";"))
+_DS2_RENDER_VIS = ('\t\tif (!psp_mevisland_push())\n\t\t\t(PSP_STEP("structure_visibility_compute"), structure_visibility_compute());\n')
+_DS2_RENDER_SOUND = '\t\t(PSP_STEP("psp_mevispush_sound"), psp_mevispush_sound(1));\n'
+_DS2_RENDER_COLLECT = '\t\t\t(PSP_STEP("psp_mevisland_collect"), psp_mevisland_collect());\n'
+_DS2_RENDER_WALK = ('\t\t(PSP_STEP("structure_render_preprocess"), structure_render_preprocess());\n#ifdef HALO_PSP\n'
+                    '\t\tif (!(psp_bench_skip & PSP_SKIP_LEVEL))\n#endif\n'
+                    '\t\t(PSP_STEP("structure_render_lightmaps"), structure_render_lightmaps());\n')
+_DS2_RENDER_DIFFUSE = '\t\t(PSP_STEP("structure_render_diffuse_texture"), structure_render_diffuse_texture());\n'
+_DS2_RENDER_DECALS = '\t\t(PSP_STEP("rasterizer_decals_begin"), rasterizer_decals_begin(_decal_layer_light));\n'
+_DS2_RENDER_SPECULAR = ('\t\t(PSP_STEP("lights_render_specular"), lights_render_specular());\n'
+                        '\t\t(PSP_STEP("structure_render_specular_lightmaps"), structure_render_specular_lightmaps());\n')
+_DS2_OBJ_COUNT = ('\t(PSP_STEP("HALO_PERF_COUNT"), HALO_PERF_COUNT(_halo_perf_objects, render_object_globals.rendered_object_count));\n')
+_DS2_OBJ_SHADOW_LIGHT = ('\t\t\tdata->lighting = object_get_cached_render_lighting(\n\t\t\t\tdata->object_index,\n'
+                         '\t\t\t\t(PSP_STEP("object_get_level_of_detail_pixels"), object_get_level_of_detail_pixels(data->object_index)));\n')
+_DS2_OBJ_LIGHT = ('#ifdef HALO_PSP\n\t\t\t\tdata->lighting = psp_walk_lighting(data->object_index);\n\t\t\t\tif (!data->lighting)\n#endif\n'
+                  '\t\t\t\tdata->lighting = object_get_cached_render_lighting(\n\t\t\t\t\tdata->object_index,\n'
+                  '\t\t\t\t\t(PSP_STEP("object_get_level_of_detail_pixels"), object_get_level_of_detail_pixels(data->object_index)));\n')
+_DS2_OBJ_WALK_LIGHT = '\t\t\tobject_get_cached_render_lighting(object_index, pixels);\n'
+_DS2_MODELS_MATRICES = '\t\tPSP_STEP("render_model: relative node matrices");\n\t\tif (node_matrices)\n'
+_DS2_MODELS_MATRICES_END = ('\t\t\t\trelative_node_matrices[node_index] = render.frustum.world_to_view;\n\t\t\t}\n\t\t}\n'
+                            '\n\t\tgeometry_detail_level_index = NUMBER_OF_DETAIL_LEVELS_PER_MODEL-1;\n')
+_DS2_RAST_BEGIN = '\t_rasterizer_model_begin(parameters, is_dynamic);\n#ifdef HALO_PSP\n\t{\n\t\t/* the model\'s node matrices, for the GE'
+_DS2_RAST_BEGIN_END = ('\t\t\tcsmemcpy(psp_change_colors, parameters->animation.colors, sizeof(psp_change_colors));\n\t}\n#endif\n'
+                       '\treturn;\n}\n\nvoid rasterizer_model_draw(\n')
+_DS2_RAST_STATE = '\t\tint alpha_tested = 0;\n\n\t\t/* a model shader (soso): its base map'
+_DS2_RAST_ENCODE = ('\t\t\tpsp_model_draw_us[0] += psp_now - psp_mark;\n\t\t\tpsp_mark = psp_now;\n'
+                    '\t\t\tdrawn = psp_ge_active() && dynamic_triangle_buffer_index == NONE && dynamic_vertex_buffer_index == NONE &&\n'
+                    '\t\t\t\tpsp_model_draw(triangle_buffer, triangle_count, vertex_buffer, 0xFF000000 | (b << 16) | (g << 8) | r,\n'
+                    '\t\t\t\t\tbase_key, u_scale, v_scale, alpha_tested);\n')
+_DS2_RAST_END = '\t_rasterizer_model_end();\n#ifdef HALO_PSP\n'
+_DS2_RAST_ENV_D3D = ('\t_rasterizer_environment_lightmap_draw(shader, bitmap_index, dynamic_triangle_buffer_index, first_triangle_index, '
+                     'triangle_count, vertex_buffer);\n')
+_DS2_RAST_ENV_STATE = '\t\tint alpha_tested = 0;\n\n\t\t/* an environment shader (senv): its base map'
+_DS2_RAST_ENV_STATE_END = '\t\t\tlive = lit;\n\t\t}\n'
+_DS2_RAST_ENV_ENCODE = ('\t\tpsp_environment_draw(dynamic_triangle_buffer_index, first_triangle_index, triangle_count, vertex_buffer,\n'
+                        '\t\t\t0xFF000000 | (b << 16) | (g << 8) | r, base_key, psp_lightmap_key, alpha_tested);\n')
+_DS2_PRIM_LEVEL = '\tpsp_ge_draw_level(vertices, lightmap_vertices, vertex_buffer->count,\n'
+DRAWSPLIT2_SITES = {
+    "source/render/render.c": [
+        (_DS2_RENDER_VIS, _ds2_wrap(_DS2_RENDER_VIS, "VIS")),
+        (_DS2_RENDER_SOUND, _ds2_wrap(_DS2_RENDER_SOUND, "SOUND")),
+        (_DS2_RENDER_COLLECT, _ds2_wrap(_DS2_RENDER_COLLECT, "VIS", "\t\t\t")
+         + "\t\t\tPSP_DRAWSPLIT_COUNT(CLUSTERS, render.rendered_cluster_count);\n"),
+        ('\t\t(PSP_STEP("render_sky"), render_sky());\n', _ds2_wrap('\t\t(PSP_STEP("render_sky"), render_sky());\n', "SKY")),
+        ('\t\t(PSP_STEP("first_person_weapon_render_update"), first_person_weapon_render_update());\n',
+         _ds2_wrap('\t\t(PSP_STEP("first_person_weapon_render_update"), first_person_weapon_render_update());\n', "FPW")),
+        ('\t\t(PSP_STEP("lights_preprocess_scene"), lights_preprocess_scene());\n',
+         _ds2_wrap('\t\t(PSP_STEP("lights_preprocess_scene"), lights_preprocess_scene());\n', "LIGHTS")),
+        # under psp_bench_skip's one-statement ifs
+        ('\t\t(PSP_STEP("render_objects"), render_objects());\n', _ds2_comma('(PSP_STEP("render_objects"), render_objects())', "WALK")),
+        (_DS2_RENDER_WALK, _ds2_wrap(_DS2_RENDER_WALK, "WALK")),
+        ('\t\t(PSP_STEP("render_object_shadows"), render_object_shadows());\n',
+         _ds2_comma('(PSP_STEP("render_object_shadows"), render_object_shadows())', "SHADOWS")),
+        ('\t\t(PSP_STEP("lights_render_diffuse"), lights_render_diffuse());\n',
+         _ds2_wrap('\t\t(PSP_STEP("lights_render_diffuse"), lights_render_diffuse());\n', "LIGHTPASS")),
+        # the four decal layers one field, the diffuse texture between them its own
+        (_DS2_RENDER_DECALS, "\t\tPSP_DRAWSPLIT_IN(DECALS);\n" + _DS2_RENDER_DECALS),
+        (_DS2_RENDER_DIFFUSE, "\t\tPSP_DRAWSPLIT_OUT();\n" + _ds2_wrap(_DS2_RENDER_DIFFUSE, "DIFFUSE") + "\t\tPSP_DRAWSPLIT_IN(DECALS);\n"),
+        (_DS2_RENDER_SPECULAR, "\t\tPSP_DRAWSPLIT_OUT();\n" + _ds2_wrap(_DS2_RENDER_SPECULAR.splitlines(True)[0], "LIGHTPASS")
+         + _ds2_wrap(_DS2_RENDER_SPECULAR.splitlines(True)[1], "SPECULAR")),
+    ],
+    "source/render/render_objects.c": [
+        (_DS2_OBJ_COUNT, _DS2_OBJ_COUNT + "\tPSP_DRAWSPLIT_COUNT(OBJECTS, render_object_globals.rendered_object_count);\n"),
+        (_DS2_OBJ_SHADOW_LIGHT, _ds2_wrap(_DS2_OBJ_SHADOW_LIGHT, "LIGHTS", "\t\t\t")),
+        (_DS2_OBJ_LIGHT, _ds2_wrap(_DS2_OBJ_LIGHT, "LIGHTS", "\t\t\t\t")),
+        (_DS2_OBJ_WALK_LIGHT, _ds2_wrap(_DS2_OBJ_WALK_LIGHT, "LIGHTS", "\t\t\t")),
+    ],
+    "source/models/models.c": [
+        (_DS2_MODELS_MATRICES, "\t\tPSP_DRAWSPLIT_IN(MATRICES);\n" + _DS2_MODELS_MATRICES),
+        (_DS2_MODELS_MATRICES_END, _DS2_MODELS_MATRICES_END.replace("\t\t}\n\n", "\t\t}\n\t\tPSP_DRAWSPLIT_OUT();\n\n", 1)),
+    ],
+    "source/rasterizer/rasterizer.c": [
+        (_DS2_RAST_BEGIN, "\tPSP_DRAWSPLIT_COUNT(INSTANCES, 1);\n" + _ds2_wrap("\t_rasterizer_model_begin(parameters, is_dynamic);\n", "D3D", "\t")
+         + "#ifdef HALO_PSP\n\tPSP_DRAWSPLIT_IN(INST);\n" + _DS2_RAST_BEGIN.split("#ifdef HALO_PSP\n", 1)[1]),
+        (_DS2_RAST_BEGIN_END, _DS2_RAST_BEGIN_END.replace("\t}\n#endif\n", "\t}\n\tPSP_DRAWSPLIT_OUT();\n#endif\n", 1)),
+        (_DS2_RAST_STATE, _DS2_RAST_STATE.replace("\n\n", "\n\n\t\tPSP_DRAWSPLIT_IN(STATE);\n", 1)),
+        (_DS2_RAST_ENCODE, "\t\t\tPSP_DRAWSPLIT_OUT();\n" + "".join(_DS2_RAST_ENCODE.splitlines(True)[:2]) + "\t\t\tPSP_DRAWSPLIT_IN(ENCODE);\n"
+         + "".join(_DS2_RAST_ENCODE.splitlines(True)[2:]) + "\t\t\tPSP_DRAWSPLIT_OUT();\n\t\t\tPSP_DRAWSPLIT_COUNT(PARTS_DRAWN, drawn);\n"),
+        (_DS2_RAST_END, _ds2_wrap("\t_rasterizer_model_end();\n", "D3D", "\t") + "#ifdef HALO_PSP\n"),
+        # under the GE's one-statement if: it runs only when the GE doesn't draw, so 0 is a measurement
+        (_DS2_RAST_ENV_D3D, _ds2_comma(_DS2_RAST_ENV_D3D, "D3D", "\t")),
+        (_DS2_RAST_ENV_STATE, _DS2_RAST_ENV_STATE.replace("\n\n", "\n\n\t\tPSP_DRAWSPLIT_IN(STATE);\n", 1)),
+        (_DS2_RAST_ENV_STATE_END, _DS2_RAST_ENV_STATE_END + "\t\tPSP_DRAWSPLIT_OUT();\n"),
+        (_DS2_RAST_ENV_ENCODE, _ds2_wrap(_DS2_RAST_ENV_ENCODE, "ENCODE")),
+    ],
+    "source/rasterizer/xbox/rasterizer_xbox_draw_primitives.c": [
+        (_DS2_PRIM_LEVEL, "\tPSP_DRAWSPLIT_COUNT(LEVEL_DRAWS, 1);\n" + _DS2_PRIM_LEVEL),
+    ],
+}
+def drawsplit2_cut(tree):
+    if os.environ.get("PSP_DRAWSPLIT", "") != "1":
+        return 0
+    texts, hooks = {}, 0
+    for rel, pairs in DRAWSPLIT2_SITES.items():
+        text = open(os.path.join(tree, rel), errors="surrogateescape").read()
+        include = '#include "cseries.h"\n'
+        if text.count(include) != 1:
+            return check_fail("psp_fixups: DRAWSPLIT level 2: %s's cseries.h include matches %d times" % (rel, text.count(include)))
+        text = text.replace(include, include + '#include "psp_drawsplit.h" /* psp_fixups.py: drawsplit level 2 (box_draw_main.md 1.5) */\n', 1)
+        for old, new in pairs:
+            if text.count(old) != 1:
+                return check_fail("psp_fixups: DRAWSPLIT level 2: %s: a site matches %d times: %r" % (rel, text.count(old), old[:90]))
+            text = text.replace(old, new, 1)
+            hooks += new.count("PSP_DRAWSPLIT_") - old.count("PSP_DRAWSPLIT_")
+        if text.count("PSP_DRAWSPLIT_IN(") != text.count("PSP_DRAWSPLIT_OUT("):
+            return check_fail("psp_fixups: DRAWSPLIT level 2: %s: %d opens against %d closes"
+                              % (rel, text.count("PSP_DRAWSPLIT_IN("), text.count("PSP_DRAWSPLIT_OUT(")))
+        texts[rel] = text
+    if not CHECK_ONLY:
+        for rel, text in texts.items():
+            open(os.path.join(tree, rel), "w", errors="surrogateescape").write(text)
+    print("psp_fixups: DRAWSPLIT level 2: %d hooks in %d files (objects' and world's fields, the items a frame)" % (hooks, len(texts)))
+    return 1
+drawsplit2_cut(TREE)
+
 if CHECK_ONLY:
     for message in count_failures:
         print(message)
