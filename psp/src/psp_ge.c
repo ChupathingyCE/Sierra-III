@@ -18183,11 +18183,34 @@ int psp_far_draw(unsigned long model, float pixels, const char *permutations, in
 	}
 #if defined(PSP_DRAWSPLIT) && !defined(PSP_DRAWSPLIT_SAMPLED)
 	/* drawsplit's exact form: X1's split by kind and D1's shown groups a
-	frame (docs/box_draw_main.md §4.4 A2; psp_drawsplit.c, 'by kind') */
+	frame (docs/box_draw_main.md §4.4 A2; psp_drawsplit.c, 'by kind'), and
+	D4's form of them (§3.4.4: 0 a skinned group shown, 1 several nodes and
+	none skinned, 2 one node), from the groups the mask shows and
+	psp_ge_draw_far draws (vertices, 3 or more indices; the sprite block left
+	out); a skinned batch's word 11 is its bone count, not a node */
 	{
-		void psp_drawsplit_far(unsigned int groups);
+		void psp_drawsplit_far(unsigned int groups, int form);
+		const unsigned char *at = block;
+		unsigned int g = 0, node = 0, shown = 0;
+		int form = 2;
 
-		psp_drawsplit_far((unsigned int)__builtin_popcount(mask[0]) + (unsigned int)__builtin_popcount(mask[1]));
+		while (at && g < 64)
+		{
+			const unsigned int *head = (const unsigned int *)at;
+
+			if (((mask[g >> 5] >> (g & 31)) & 1u) && head[2] && head[4] >= 3 && !(head[1] & 0x40000u))
+			{
+				if (head[1] & 0x20000u)
+					form = 0;
+				else if (!shown++)
+					node = head[11];
+				else if (head[11] != node && form)
+					form = 1;
+			}
+			g++;
+			at = head[14] ? at + head[14] : NULL;
+		}
+		psp_drawsplit_far((unsigned int)__builtin_popcount(mask[0]) + (unsigned int)__builtin_popcount(mask[1]), form);
 	}
 #endif
 	far_drawn++;

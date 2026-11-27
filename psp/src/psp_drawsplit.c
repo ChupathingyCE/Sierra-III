@@ -473,13 +473,98 @@ void psp_drawsplit_object_out(void)
 	window_kind_far[kind] += far;
 }
 
-void psp_drawsplit_far(unsigned int groups)
+/* D4's two (docs/box_draw_main.md §3.4.4 'Its items', §4.4 A2): (a)'s merges,
+the near parts an instance draws in objects' own (outside a whole field) whose
+shader and permutation an earlier part of the same instance drew (one baked
+part could hold both), and those sharing the shader alone (another permutation);
+an instance is the objects' instance count at the part, in its frame, and one
+that drew its far level (psp_drawsplit_far since its begin) is left out, its
+decal and transparent parts with it. An instance keys its first MERGE_KEYS
+(shader, permutation) pairs; a part past them is counted apart and, unless it
+matches one of them, as no merge, so the merges are a floor. (b)'s far models,
+by what psp_far_draw shows: a skinned group (its pose moves, so folding freezes
+it), several nodes and no skinned group (rigid if those nodes don't move, which
+the block doesn't say), or one node (one matrix today: nothing to fold). It
+reads no clock */
+#define MERGE_KEYS 16
+static unsigned int merge_frame = 0, merge_instance = 0, merge_keys = 0, merge_far_frame = 0, merge_far_instance = 0;
+static int merge_sharing = 0;
+static const void *merge_shader[MERGE_KEYS];
+static int merge_permutation[MERGE_KEYS];
+static unsigned long long window_merge_instances = 0, window_merge_parts = 0, window_merge_state = 0, window_merge_shader = 0,
+	window_merge_sharing = 0, window_merge_past = 0, window_far_form[3];
+
+void psp_drawsplit_far(unsigned int groups, int form)
 {
 	if (on <= 0)
 		return;
 	far_instances++;
 	window_far++;
 	window_far_groups += groups;
+	if (form >= 0 && form < 3)
+		window_far_form[form]++;
+	if (!whole_open && PART_OF(current) == PART_OBJECTS)
+	{
+		merge_far_frame = run->run_frames;
+		merge_far_instance = frame_items[PART_OBJECTS][PSP_DRAWSPLIT_INSTANCES][0];
+	}
+}
+
+static void merge_part(const void *shader, int permutation)
+{
+	unsigned int instance, k;
+	int same = 0;
+
+	if (whole_open || PART_OF(current) != PART_OBJECTS)
+		return;
+	instance = frame_items[PART_OBJECTS][PSP_DRAWSPLIT_INSTANCES][0];
+	if (!instance || (merge_far_frame == run->run_frames && merge_far_instance == instance))
+		return;
+	if (merge_frame != run->run_frames || merge_instance != instance)
+	{
+		merge_frame = run->run_frames;
+		merge_instance = instance;
+		merge_keys = 0;
+		merge_sharing = 0;
+		window_merge_instances++;
+	}
+	window_merge_parts++;
+	for (k = 0; k < merge_keys && same < 2; k++)
+		if (merge_shader[k] == shader)
+			same = merge_permutation[k] == permutation ? 2 : 1;
+	if (same == 2)
+		window_merge_state++;
+	else
+	{
+		if (same)
+			window_merge_shader++;
+		if (merge_keys < MERGE_KEYS)
+		{
+			merge_shader[merge_keys] = shader;
+			merge_permutation[merge_keys] = permutation;
+			merge_keys++;
+		}
+		else
+			window_merge_past++;
+	}
+	if (same && !merge_sharing)
+	{
+		merge_sharing = 1;
+		window_merge_sharing++;
+	}
+}
+
+static void report_merge(double n)
+{
+	platform_log("drawsplit2 merge: %.1f near instances a frame drew %.1f parts in objects' own; %.1f a frame share an earlier "
+		"part's shader and permutation in their instance, %.1f its shader alone; %.1f instances a frame with one or more; "
+		"%llu parts past an instance's %d keys; far models %.1f a frame: %.1f with a skinned group shown, %.1f on several "
+		"nodes and none skinned, %.1f on one node",
+		window_merge_instances / n, window_merge_parts / n, window_merge_state / n, window_merge_shader / n,
+		window_merge_sharing / n, window_merge_past, MERGE_KEYS, (window_far_form[0] + window_far_form[1] + window_far_form[2]) / n,
+		window_far_form[0] / n, window_far_form[1] / n, window_far_form[2] / n);
+	window_merge_instances = window_merge_parts = window_merge_state = window_merge_shader = window_merge_sharing = 0;
+	window_merge_past = window_far_form[0] = window_far_form[1] = window_far_form[2] = 0;
 }
 
 /* D3's store (docs/box_draw_main.md §3.4.2 'Memory', §4.4 A2): the distinct
@@ -513,6 +598,7 @@ void psp_drawsplit_store(int drawn, const void *triangles, const void *vertices,
 
 	if (on <= 0 || !drawn || !triangles)
 		return;
+	merge_part(shader, permutation);
 	if (!store)
 	{
 		if (store_failed)
@@ -864,6 +950,7 @@ static void report(void)
 #ifndef PSP_DRAWSPLIT_SAMPLED
 	report_kinds(n);
 	report_store(n);
+	report_merge(n);
 	report_pieces(n);
 #endif
 #ifdef PSP_DRAWSPLIT_SAMPLED

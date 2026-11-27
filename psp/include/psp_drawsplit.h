@@ -166,10 +166,11 @@ void psp_drawsplit_count(int item, unsigned int n);
 /* X1's split (docs/box_draw_main.md §4.4 A2; exact form only): around
 render_object's drawn branch, so objects' time inside each object is charged
 to the kind its instances were drawn as (psp_drawsplit.c, 'by kind');
-psp_ge.c's psp_far_draw calls psp_drawsplit_far with the groups it shows */
+psp_ge.c's psp_far_draw calls psp_drawsplit_far with the groups it shows and
+D4's form of them (0 a skinned group shown, 1 several nodes, 2 one node) */
 void psp_drawsplit_object_in(void);
 void psp_drawsplit_object_out(void);
-void psp_drawsplit_far(unsigned int groups);
+void psp_drawsplit_far(unsigned int groups, int form);
 #define PSP_DRAWSPLIT_OBJECT_IN() psp_drawsplit_object_in()
 #define PSP_DRAWSPLIT_OBJECT_OUT() psp_drawsplit_object_out()
 /* D3's store (§4.4 A2; exact form only): rasterizer_model_draw's drawn part,
