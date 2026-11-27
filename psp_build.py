@@ -1358,12 +1358,19 @@ def link(objs, stubs):
         ex = "EXCLUDE_FILE(%s) " % " ".join(later)
         first = "    *(%s)\n" % " ".join(ex + p for p in (".text", ".stub", ".text.*", ".gnu.linkonce.t.*"))
         text = text.replace(cat, first + slide_pad("text", t_text, keep) + cat)
-        ro = re.findall(r"\n([ \t]*)\*\(\.rodata \.rodata\.\* \.gnu\.linkonce\.r\.\*\)\n", text)
+        # the SDK writes .rodata on one line, "  .rodata : { *(...) }"
+        # (slideset2-b30, sierra-hw 46039430576, stopped here when this
+        # looked for the statement on a line of its own): it becomes a block,
+        # crt0_prx.o's .rodata first, then the pads around the rest
+        pat = r"\n([ \t]*)\.rodata([ \t]*):[ \t]*\{[ \t]*\*\(\.rodata \.rodata\.\* \.gnu\.linkonce\.r\.\*\)[ \t]*\}\n"
+        ro = re.findall(pat, text)
         if len(ro) != 1:
             sys.exit("psp_build: the SDK's linkfile.prx has changed; PSP_SLIDE_SET can't split .rodata")
-        line = "%s*(.rodata .rodata.* .gnu.linkonce.r.*)\n" % ro[0]
-        text = text.replace("\n" + line, "\n%s*crt0_prx.o(.rodata .rodata.* .gnu.linkonce.r.*)\n" % ro[0] +
-                            slide_pad("str", t_str, keep) + line + slide_pad("end", t_end, keep))
+        ind, sp = ro[0]
+        line = "    *(.rodata .rodata.* .gnu.linkonce.r.*)\n"
+        text = re.sub(pat, lambda _: "\n%s.rodata%s:\n%s{\n    *crt0_prx.o(.rodata .rodata.* .gnu.linkonce.r.*)\n"
+                      % (ind, sp, ind) + slide_pad("str", t_str, keep) + line + slide_pad("end", t_end, keep) +
+                      "%s}\n" % ind, text)
         com = re.findall(r"\n([ \t]*)\*\(COMMON\)\n", text)
         if len(com) != 1:
             sys.exit("psp_build: the SDK's linkfile.prx has changed; PSP_SLIDE_SET can't find .bss's COMMON")
