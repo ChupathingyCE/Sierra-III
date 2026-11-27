@@ -242,6 +242,10 @@ void box_ws_old_refused(const unsigned refused[BOX_WS_OLD_REFUSALS]);
 /* the writers' mark: the object changed since the copy was taken */
 void box_ws_old_mark(long datum_index);
 
+/* K1's clock (lever WSOLDK1, log only): an entry the refresh puts, by the
+   header's type (-1: an empty slot) */
+void box_ws_old_entry(int type);
+
 /* the engine's side (psp_fixups.py FIXES_WSOLD, objects.c) makes a record
    from a datum; the store keeps or compares it. rest: the record's rest,
    given with every object (NULL only with object NULL) */

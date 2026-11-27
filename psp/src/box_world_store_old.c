@@ -88,6 +88,30 @@ static unsigned long box_ws_old_models_put, box_ws_old_nodes_put, box_ws_old_mod
 	box_ws_old_repacks, box_ws_old_unheld_taken;
 static unsigned box_ws_old_nodes_most;
 
+/* K1's clock (lever WSOLDK1, commit 1; log only, in every mode the copy runs
+   in): the refresh's own time from box_ws_old_begin's head to the publish's
+   end, the entries by the header's type and by the list's set each came from,
+   and box_ws_old_mark's calls. A whole fill (the first, another world, a
+   repack: begin's state 2) is counted apart and kept out of the rest. The
+   totals run from the first refresh, so a window is two lines' difference */
+#if defined(__psp__)
+#define BOX_WS_OLD_NOW() ((uint32_t)sceKernelGetSystemTimeLow())
+#else
+#define BOX_WS_OLD_NOW() 0u
+#endif
+#define BOX_WS_OLD_TYPES 12 /* NUMBER_OF_OBJECT_TYPES, biped .. sound scenery; past it, an empty slot */
+static const char *const box_ws_old_type_name[BOX_WS_OLD_TYPES + 1] = {
+	"biped", "vehicle", "weapon", "equipment", "garbage", "projectile", "scenery", "machine", "control", "light",
+	"placeholder", "soundscenery", "empty"};
+static uint32_t box_ws_old_clock_start, box_ws_old_clock_worst, box_ws_old_clock_window_worst;
+static int box_ws_old_whole;
+/* integer sums: a double is soft-float on the PSP, too dear a tick */
+static unsigned long long box_ws_old_clock_us, box_ws_old_clock_whole_us, box_ws_old_clock_window_us;
+static unsigned long box_ws_old_clock_ticks, box_ws_old_clock_wholes, box_ws_old_clock_window_ticks;
+static unsigned long box_ws_old_entries[BOX_WS_OLD_TYPES + 1];
+static unsigned long box_ws_old_from_marked, box_ws_old_from_bipeds, box_ws_old_from_unheld;
+static unsigned long box_ws_old_mark_calls, box_ws_old_mark_new;
+
 enum { WSO_SPHERE, WSO_FLAGS, WSO_LINKS, WSO_TYPE, WSO_DEAD, WSO_NONE, WSO_PILL, WSO_MOTION, WSO_UNIT, WSO_NODES,
 	WSO_CLUSTER, WSO_PARENT, WSO_ROOT, WSO_BREAKABLE, WSO_FIELDS };
 static const char *const box_ws_old_field_name[WSO_FIELDS] = {
@@ -188,7 +212,20 @@ static void box_ws_old_publish(void)
 	sceKernelDcacheWritebackRange((const void *)box_ws_old_made, sizeof(box_ws_old_made));
 }
 
+static int box_ws_old_begin_state(void);
+
+/* K1's clock starts at the head, before the fence */
 int box_ws_old_begin(void)
+{
+	uint32_t start = BOX_WS_OLD_NOW();
+	int state = box_ws_old_begin_state();
+
+	box_ws_old_clock_start = start;
+	box_ws_old_whole = state == 2;
+	return state;
+}
+
+static int box_ws_old_begin_state(void)
 {
 	if (box_ws_old_on > 0)
 		box_ws_old_fence();
@@ -261,6 +298,7 @@ void box_ws_old_mark(long datum_index)
 
 	if (box_ws_old_on <= 0)
 		return;
+	box_ws_old_mark_calls++;
 	if (absolute >= BOX_WS_OLD_SLOTS)
 	{
 		box_ws_old_past_slots++;
@@ -270,14 +308,25 @@ void box_ws_old_mark(long datum_index)
 		return;
 	box_ws_old_bits[absolute >> 5] |= 1u << (absolute & 31);
 	box_ws_old_list[box_ws_old_listed++] = (uint16_t)absolute;
+	box_ws_old_mark_new++;
+}
+
+/* K1's clock: an entry psp_wsold_one puts (not a check's), by the header's
+   type, -1 for an empty slot; a whole fill's are left out */
+void box_ws_old_entry(int type)
+{
+	if (box_ws_old_whole)
+		return;
+	box_ws_old_entries[type >= 0 && type < BOX_WS_OLD_TYPES ? type : BOX_WS_OLD_TYPES]++;
 }
 
 int box_ws_old_marked(uint16_t *absolute, unsigned capacity)
 {
-	unsigned n = 0, i;
+	unsigned n = 0, i, marked, bipeds;
 
 	for (i = 0; i < box_ws_old_listed && n < capacity; i++)
 		absolute[n++] = box_ws_old_list[i];
+	marked = n;
 	for (i = 0; i < BOX_WS_OLD_BIPEDS && n < capacity; i++)
 	{
 		int16_t owner = box_ws_old_biped_owner[i];
@@ -285,6 +334,7 @@ int box_ws_old_marked(uint16_t *absolute, unsigned capacity)
 		if (owner >= 0 && !(box_ws_old_bits[owner >> 5] & (1u << (owner & 31))))
 			absolute[n++] = (uint16_t)owner;
 	}
+	bipeds = n - marked;
 	/* a model not held, not marked: none is a biped's (the models are
 	   vehicles, scenery, machines and controls), so the three sets are
 	   disjoint slots and fit the list */
@@ -300,6 +350,12 @@ int box_ws_old_marked(uint16_t *absolute, unsigned capacity)
 			absolute[n++] = (uint16_t)(i * 32 + bit);
 			box_ws_old_unheld_taken++;
 		}
+	}
+	if (!box_ws_old_whole)
+	{
+		box_ws_old_from_marked += marked;
+		box_ws_old_from_bipeds += bipeds;
+		box_ws_old_from_unheld += n - marked - bipeds;
 	}
 	box_ws_old_listed = 0;
 	memset(box_ws_old_bits, 0, sizeof(box_ws_old_bits));
@@ -690,6 +746,25 @@ static void box_ws_old_log(void)
 		box_ws_old_refusals[BOX_WS_OLD_NO_RECORD], box_ws_old_refusals[BOX_WS_OLD_MARKED],
 		box_ws_old_refusals[BOX_WS_OLD_NO_BIPED], box_ws_old_refusals[BOX_WS_OLD_PAST_NODES],
 		box_ws_old_refusals[BOX_WS_OLD_OWED], box_ws_old_refusals[BOX_WS_OLD_PAST_UNITS]);
+	{
+		double ticks = box_ws_old_clock_ticks ? (double)box_ws_old_clock_ticks : 1.0;
+		double window = box_ws_old_clock_window_ticks ? (double)box_ws_old_clock_window_ticks : 1.0;
+
+		platform_psp_log("wsold: clock %lu refreshes timed, %.0f us in all (mean %.1f us, worst %u); the last %lu: mean %.1f us, worst %u; %lu whole fills apart (%.0f us); %lu mark calls (%lu new); entries from the marks %lu, unmarked bipeds %lu, owed models %lu",
+			box_ws_old_clock_ticks, (double)box_ws_old_clock_us, (double)box_ws_old_clock_us / ticks,
+			(unsigned)box_ws_old_clock_worst, box_ws_old_clock_window_ticks, (double)box_ws_old_clock_window_us / window,
+			(unsigned)box_ws_old_clock_window_worst, box_ws_old_clock_wholes, (double)box_ws_old_clock_whole_us,
+			box_ws_old_mark_calls, box_ws_old_mark_new,
+			box_ws_old_from_marked, box_ws_old_from_bipeds, box_ws_old_from_unheld);
+		box_ws_old_clock_window_ticks = 0;
+		box_ws_old_clock_window_us = 0;
+		box_ws_old_clock_window_worst = 0;
+		n = 0;
+		for (k = 0; k <= BOX_WS_OLD_TYPES; k++)
+			n += snprintf(line + n, sizeof(line) - n, "%s%s %lu", k ? ", " : "", box_ws_old_type_name[k], box_ws_old_entries[k]);
+		platform_psp_log("wsold: clock entries by type, %lu refreshes: %s", box_ws_old_clock_ticks, line);
+		n = 0;
+	}
 	if (!box_ws_old_checking)
 		return;
 	platform_psp_log("wsoldcheck: the made word behind its refresh at %lu refreshes (0: every copy published)",
@@ -721,6 +796,28 @@ void box_ws_old_flipped(unsigned objects, unsigned bipeds, unsigned high_water)
 	if (high_water > box_ws_old_high_water)
 		box_ws_old_high_water = high_water;
 	box_ws_old_publish();
+	{
+		/* K1's clock stops after the publish, before the log */
+		uint32_t us = BOX_WS_OLD_NOW() - box_ws_old_clock_start;
+
+		if (box_ws_old_whole)
+		{
+			box_ws_old_clock_wholes++;
+			box_ws_old_clock_whole_us += us;
+		}
+		else
+		{
+			box_ws_old_clock_ticks++;
+			box_ws_old_clock_us += us;
+			box_ws_old_clock_window_ticks++;
+			box_ws_old_clock_window_us += us;
+			if (us > box_ws_old_clock_worst)
+				box_ws_old_clock_worst = us;
+			if (us > box_ws_old_clock_window_worst)
+				box_ws_old_clock_window_worst = us;
+		}
+		box_ws_old_whole = 0;
+	}
 	if (box_ws_old_flips % 300 == 0)
 		box_ws_old_log();
 }

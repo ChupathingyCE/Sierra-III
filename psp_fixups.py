@@ -56611,16 +56611,24 @@ static void psp_wsold_one(unsigned absolute, int check)
 	if (absolute >= (unsigned)object_header_data->count)
 	{
 		if (!check)
+		{
+			box_ws_old_entry(-1);
 			box_ws_old_put(absolute, NULL, NULL, NULL);
+		}
 		return;
 	}
 	header = (struct object_header_datum const *)xbox_pointer(object_header_data->data) + absolute;
 	if (!header->identifier || !header->datum)
 	{
 		if (!check)
+		{
+			box_ws_old_entry(-1);
 			box_ws_old_put(absolute, NULL, NULL, NULL);
+		}
 		return;
 	}
+	if (!check)
+		box_ws_old_entry(header->type); /* K1's clock: the entries by type */
 	is_biped = psp_wsold_make(DATUM_INDEX_NEW(absolute, header->identifier), header->datum, header->type, &record, &biped_record,
 		&rest);
 	if (check)
