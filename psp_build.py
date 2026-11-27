@@ -1296,7 +1296,7 @@ def link(objs, stubs):
         return (set_pad("before", t, "__psp_hot_data", "__psp_hotg") + block +
                 set_pad("after", t, "__psp_hot_data", "__psp_hotg"))
 
-    # PSP_SLIDE_SET=[keep:]<unit>@<text>,<strings>,<rodata end> (sp_profout
+    # PSP_SLIDE_SET=[keep,]<unit>,<text>,<strings>,<rodata end> (sp_profout
     # task 5, the lab's decisions 2026-11-27 10:3x) puts back on the parent's
     # cache sets everything a code change slid, not the hot run alone
     # (PSP_HOTG_SET's pair priced that inside its spread): 33ecf4a7 grew
@@ -1313,17 +1313,21 @@ def link(objs, stubs):
     # where the parent's did, mod 8 KB (the merged strings and a few small
     # string runs after them stay off by their growth). The offsets are read
     # from the parent's link map (the lab's toolbox/slidepoint.py) and are
-    # re-derived for each pair of layouts. "keep:" splits the same
+    # re-derived for each pair of layouts. <unit> is the object's file name
+    # (one object of the link) or its path under obj/. "keep," splits the same
     # statements, sets no pad and adds what the three would have been after
     # .bss's COMMON, so both sides have the same heap. Only addresses move
     def slide_set():
         v = os.environ.get("PSP_SLIDE_SET", "")
         if not v:
             return None
+        # commas only, and the unit by its file name: the lab's workflows take
+        # a switch's value in [-A-Za-z0-9_.,=] alone (slideset-b30's first
+        # run, sierra-hw 46037331482, was refused at "keep:" and "@" and "/")
         num = r"(0x[0-9a-fA-F]+|[0-9]+)"
-        m = re.match(r"^(keep:)?([^@]+)@%s,%s,%s$" % (num, num, num), v)
+        m = re.match(r"^(keep,)?([^,]+),%s,%s,%s$" % (num, num, num), v)
         if not m:
-            sys.exit("psp_build: PSP_SLIDE_SET=%s: [keep:]<unit>@<text>,<strings>,<rodata end>" % v)
+            sys.exit("psp_build: PSP_SLIDE_SET=%s: [keep,]<unit>,<text>,<strings>,<rodata end>" % v)
         offs = [int(x, 0) for x in m.group(3, 4, 5)]
         if not all(0 <= t < 0x2000 for t in offs):
             sys.exit("psp_build: PSP_SLIDE_SET=%s: each offset below 0x2000" % v)
@@ -1338,9 +1342,10 @@ def link(objs, stubs):
     def slide_script(text, slide):
         keep, unit, (t_text, t_str, t_end) = slide
         rel = lambda o: os.path.relpath(o, OBJ) if o.startswith(OBJ + os.sep) else None
-        at = [i for i, o in enumerate(objs) if rel(o) == unit]
+        at = [i for i, o in enumerate(objs) if rel(o) is not None and unit in (rel(o), os.path.basename(rel(o)))]
         if len(at) != 1:
-            sys.exit("psp_build: PSP_SLIDE_SET: %s is not one of the link's objects (a path under obj/)" % unit)
+            sys.exit("psp_build: PSP_SLIDE_SET: %s names %d of the link's objects, not one (a file name, or a path "
+                     "under obj/)" % (unit, len(at)))
         # every input the link reads after <unit>: the objects after it, the
         # generated ones objs.rsp lists last, prxexports.o, and the archives
         # and crtend/crtn the specs add at the end
