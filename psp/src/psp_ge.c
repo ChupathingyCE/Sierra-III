@@ -5127,7 +5127,9 @@ static void ge_initialize(void)
 	}
 	{
 		/* the level BSP's top nodes first (psp_scratch.c; "noscratchbsp" off): the
-		profiler's tables keep their room, the cut corners go to the heap */
+		profiler's room is held (sp-plan (3): its tables come from the heap
+		under "timerson" only, here with "profscratch"), the cut corners go to
+		the heap */
 		extern void psp_scratch_bsp_take(void);
 
 		psp_scratch_bsp_take();

@@ -23,6 +23,10 @@ On by default ("noscratchbsp" off): the level collision BSP's top nodes take the
 corners' room (below, psp_scratchbsp.h): the census by misses per byte puts
 them first in the tick, and the cut corners last.
 
+sp-plan (3) (form D, the lead 2026-11-27 08:0x): the profiler's 6,656 bytes
+are held, untaken (SCRATCH_HELD_BYTES below); its tables come from the heap
+under "timerson" only. "profscratch": back here, as before.
+
 keep.txt "noscratch": every piece comes from the heap instead, for the
 hardware A/B (the same code, the same data, only its place differs). */
 #include <pspkernel.h>
@@ -353,9 +357,12 @@ BSP is set (a map's first and every switch) and dropped as a map's tags
 load, all on the game thread, the walks' only reader of it */
 #include "psp_scratchbsp.h"
 
-/* the profiler's slots and front table (psp_platform.c: 512 of 12 bytes and
-64 of 8), taken after this piece */
-#define SCRATCH_PROFILER_BYTES 6656u
+/* sp-plan (3) (Sheepdog01 2026-11-27 02:1x; form D, the lead 08:0x): room
+this piece leaves and nothing takes, held for the passes' budgets, not given
+to more nodes. It was the profiler's slots and front table (psp_platform.c:
+512 of 12 bytes and 64 of 8), which now come from the heap, and only under
+"timerson"; "profscratch" puts them back here, after this piece */
+#define SCRATCH_HELD_BYTES 6656u
 
 struct psp_sb_slot *psp_sb_slots = NULL;
 void const *psp_sb_tree = NULL;
@@ -377,12 +384,12 @@ void psp_scratch_bsp_take(void)
 	platform_log("scratchbsp: left out in a PSP_MAP_CHECKS build");
 	return;
 #endif
-	if (psp_keep("noscratch") || at + SCRATCH_PROFILER_BYTES + 64 * sizeof(struct psp_sb_slot) > SCRATCH_BYTES)
+	if (psp_keep("noscratch") || at + SCRATCH_HELD_BYTES + 64 * sizeof(struct psp_sb_slot) > SCRATCH_BYTES)
 	{
 		platform_log("scratchbsp: no room in the scratchpad: the walks read the tag data");
 		return;
 	}
-	bytes = (SCRATCH_BYTES - SCRATCH_PROFILER_BYTES - at) / sizeof(struct psp_sb_slot) * sizeof(struct psp_sb_slot);
+	bytes = (SCRATCH_BYTES - SCRATCH_HELD_BYTES - at) / sizeof(struct psp_sb_slot) * sizeof(struct psp_sb_slot);
 	pointer = psp_scratch_take(bytes, "the level BSP's top nodes");
 	if (!psp_scratch_holds(pointer))
 		return;
@@ -396,6 +403,39 @@ void psp_scratch_bsp_forget(void)
 {
 	psp_sb_tree = NULL;
 	sb_level = NULL;
+}
+
+/* sp-plan (3): the room left untaken where the profiler's tables were (form
+D), logged as held once the renderer's pieces are taken, so the start-up's
+piece list shows it. Called by psp_profile_tables_take, unless "profscratch" */
+void psp_scratch_held_log(void)
+{
+	unsigned int at = (scratch_used + 15) & ~15u;
+
+	if (scratch_off < 0)
+		scratch_off = psp_keep("noscratch");
+	if (scratch_off || at >= SCRATCH_BYTES)
+	{
+		platform_log("scratchpad: none held (%s)", scratch_off ? "noscratch" : "the scratchpad is full");
+		return;
+	}
+	platform_log("scratchpad: %u bytes held at %08x, for the passes' budgets (SCRATCH_HELD_BYTES %u; %u of %u used)",
+		SCRATCH_BYTES - at, SCRATCH_BASE + at, SCRATCH_HELD_BYTES, scratch_used, SCRATCH_BYTES);
+}
+
+/* bytes from the heap, never the scratchpad (16-byte aligned, zeroed, never
+freed): the profiler's tables under "timerson" (form D). Named for the cache
+map (tools/cachemap.py) as the scratchpad's heap pieces are */
+void *psp_heap_take(unsigned int bytes, const char *what)
+{
+	void *pointer = memalign(16, bytes);
+
+	if (pointer)
+		memset(pointer, 0, bytes);
+	platform_log("scratchpad: %u bytes for %s from the heap (the scratchpad's room is held)", bytes, what);
+	if (pointer)
+		platform_log("scratch span: %08x %u piece: %s", (unsigned int)pointer, bytes, what);
+	return pointer;
 }
 
 void psp_scratch_bsp_fill(const void *collision_bsp)
