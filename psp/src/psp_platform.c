@@ -4001,6 +4001,15 @@ void psp_frame_account(unsigned long microseconds)
 	extern void psp_crash_stop_if_crashed(void);
 	unsigned long ticks = ticks_since_frame, end_start;
 
+#ifdef PSP_DRAWSPLIT
+	{
+		/* "drawsplit" (psp_drawsplit.c): the drawing's parts closed with d,
+		before anything of the frame's end runs */
+		extern void psp_drawsplit_frame(unsigned long draw_us);
+
+		psp_drawsplit_frame(microseconds);
+	}
+#endif
 	/* build 102: another thread crashed: the report stays on the screen */
 	psp_crash_stop_if_crashed();
 	if (log_frame_flush)

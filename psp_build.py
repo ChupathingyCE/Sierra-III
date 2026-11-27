@@ -229,6 +229,18 @@ PADPATH = os.environ.get("PSP_PADPATH", "") == "1"
 FRAMEPIC = os.environ.get("PSP_FRAMEPIC", "") == "1"
 if FRAMEPIC:
     PSP_FILES.append("psp_framepic")
+# PSP_DRAWSPLIT=1: the drawing's split (docs/box_draw_main.md §1.3;
+# psp_drawsplit.c, keep word drawsplit). The engine's perf phases compiled in
+# for the drawing's files only (DRAWSPLIT_UNITS), never the tick's, so the
+# tick is the build's own; off, nothing is added
+DRAWSPLIT = os.environ.get("PSP_DRAWSPLIT", "") == "1"
+DRAWSPLIT_UNITS = ("source/render/render.c", "source/main/main.c", "source/interface/interface.c",
+                   "source/cache/xbox_texture_cache.c", "source/rasterizer/xbox/rasterizer_xbox_widgets.c",
+                   "psp/src/psp_drawsplit.c")
+if DRAWSPLIT and FRAMEPIC:
+    sys.exit("psp_build: PSP_DRAWSPLIT and PSP_FRAMEPIC both define the engine's halo_perf_* functions: one at a time")
+if DRAWSPLIT:
+    PSP_FILES.append("psp_drawsplit")
 # PSP_MUSIC=1 builds in the music path (psp/src/psp_music.c, Tremor and libogg,
 # FIXES_MUSIC, psp_dsound.c's music marks; keep word musicstream). The decoder
 # and its buffers take about 110 KB of program, which comes off the heap, and
@@ -550,7 +562,7 @@ PSP = ["psp-gcc", "-G%d" % SMALLDATA, GAME_OPT, "-march=allegrex", "-ffp-contrac
        # consoles (halo_port_features.h): the PSP's tests drive psp_pad.c
        "-DHALO_CONSOLE_NO_TEST_GAMEPADS=1",
        ] + (["-DPSP_NO_INTERPOLATION=1"] if not INTERPOLATION else []) + [
-       ] + (["-DPSP_MULTIPLAYER=1"] if MULTIPLAYER else []) + (["-DPSP_CONFIGFILE=1"] if os.environ.get("PSP_CONFIGFILE", "") == "1" else []) + (["-DPSP_MUSIC=1"] if MUSIC else []) + (["-DPSP_PADPATH=1"] if PADPATH else []) + (["-DPSP_FRAMEPIC=1"] if FRAMEPIC else []) + (["-DPSP_SNDSTREAM=1"] if SNDSTREAM else []) + (["-DPSP_CLAIMFILL=1"] if CLAIMFILL else []) + CAPTURE_DEFINES + (["-DPSP_MP_COOP=1"] if MULTIPLAYER and MP_COOP else []) + (["-DPSP_MP_HOST=1"] if MULTIPLAYER and MP_HOST else []) + (["-DPSP_MAP_CHECKS=1"] if MAP_CHECKS else []) + (["-DPSP_POOLS_XBOX=1"] if POOLS_XBOX else []) + (["-DPSP_RECON_64MB=1"] if BIG_RAM else []) + (["-DPSP_DEBUG_TOOLS=1"] if DEBUG_TOOLS else []) + (["-DHALO_CONSOLE_NO_DEBUG_TOOLS=1"] if DEADDEBUG else []) + (["-DPSP_TICK_STEPS=1"] if TICK_STEPS else []) + (["-DPSP_RECON=1"] if RECON else []) + (["-DPSP_MEPROBE=1"] if MEPROBE else []) + (["-DPSP_METRICS=1"] if METRICS else []) + (["-DPSP_STACKHOT=2"] if os.environ.get("PSP_STACKHOT", "2") == "2" else []) + (["-DPSP_PGO_GENERATE=1"] if PGO == "generate" else []) + os.environ.get("PSP_CFLAGS", "").split() + [
+       ] + (["-DPSP_MULTIPLAYER=1"] if MULTIPLAYER else []) + (["-DPSP_CONFIGFILE=1"] if os.environ.get("PSP_CONFIGFILE", "") == "1" else []) + (["-DPSP_MUSIC=1"] if MUSIC else []) + (["-DPSP_PADPATH=1"] if PADPATH else []) + (["-DPSP_FRAMEPIC=1"] if FRAMEPIC else []) + (["-DPSP_DRAWSPLIT=1"] if DRAWSPLIT else []) + (["-DPSP_SNDSTREAM=1"] if SNDSTREAM else []) + (["-DPSP_CLAIMFILL=1"] if CLAIMFILL else []) + CAPTURE_DEFINES + (["-DPSP_MP_COOP=1"] if MULTIPLAYER and MP_COOP else []) + (["-DPSP_MP_HOST=1"] if MULTIPLAYER and MP_HOST else []) + (["-DPSP_MAP_CHECKS=1"] if MAP_CHECKS else []) + (["-DPSP_POOLS_XBOX=1"] if POOLS_XBOX else []) + (["-DPSP_RECON_64MB=1"] if BIG_RAM else []) + (["-DPSP_DEBUG_TOOLS=1"] if DEBUG_TOOLS else []) + (["-DHALO_CONSOLE_NO_DEBUG_TOOLS=1"] if DEADDEBUG else []) + (["-DPSP_TICK_STEPS=1"] if TICK_STEPS else []) + (["-DPSP_RECON=1"] if RECON else []) + (["-DPSP_MEPROBE=1"] if MEPROBE else []) + (["-DPSP_METRICS=1"] if METRICS else []) + (["-DPSP_STACKHOT=2"] if os.environ.get("PSP_STACKHOT", "2") == "2" else []) + (["-DPSP_PGO_GENERATE=1"] if PGO == "generate" else []) + os.environ.get("PSP_CFLAGS", "").split() + [
        # The fatal asserts are compiled out, unevaluated (X10): their checks
        # and messages fill the 16 KB instruction cache, so with them gone b30's
        # tick is 6.6% shorter on the PSP-3000 [M], and play is identical. The
@@ -1007,6 +1019,8 @@ def compile_one(item):
     # the statements and their include, and objects.c's own HALO_PERF_LOG
     # block would then name phases it can't see)
     if FRAMEPIC and not rel.replace("\\", "/").endswith(("source/objects/objects.c", "source/physics/physics.c")):
+        extra = extra + ["-DHALO_PERF_LOG=1"]
+    if DRAWSPLIT and rel.replace("\\", "/").endswith(DRAWSPLIT_UNITS):
         extra = extra + ["-DHALO_PERF_LOG=1"]
     cmd = PSP + flags + extra + defines + ["-include", os.path.join(HERE, "psp_post.h"), "-c", src, "-o", out]
     if src.endswith(("psp_sdl.c", "psp_libc.c", "psp_ge.c", "psp_tex.c", "psp_vfpu.c", "psp_vfpu_quat.c", "psp_vfputrig.c", "psp_menu.c", "psp_geo.c", "psp_anim.c",
