@@ -155,7 +155,39 @@ The case is for the per-part chain's lookups. It is a slice of `objects`' 15.7 m
 
 ### 3.3 What the sheets lack: the items a frame [D]
 
-A sheet's third figure is the item count a frame "from task 2's census" (the brief, task 3). The census times parts and counts no items: no models, parts, effects, hud elements or transparent records a frame. Level 2 of the stamp set (§1.3) would split `objects` and `world` but still not count items. The counts are exact in the emulator, since a count isn't a price, so one emulator batch on b30 and c20 with a per-part item counter on `drawsplit`'s lines (log-only, as §1.3) fills every sheet's third figure [E]. The lab's lead rules whether it rides the stamp set before any code.
+A sheet's third figure is the item count a frame "from task 2's census" (the brief, task 3). The census times parts and counts no items: no models, parts, effects, hud elements or transparent records a frame. Level 2 of the stamp set (§1.3) would split `objects` and `world` but still not count items. The counts are exact in the emulator, since a count isn't a price, so one emulator batch on b30 and c20 with a per-part item counter on `drawsplit`'s lines (log-only, as §1.3) fills every sheet's third figure [E]. The lab's lead said yes to that counter on four conditions (lab decisions.md 2026-11-27 00:2x (4)), and only for the parts the census's own logs don't already count. This section reads those logs first.
+
+#### 3.3.1 What b30's census logs already count [M, an exact count; a count prices nothing]
+
+Read by builder2, 2026-11-27 00:39, from `drawcensus_b30`'s two B runs (sierra-hw 45943027708, run2 and run4; both runs give the same figure in every cell). Each window is the `drawsplit:` line's own 300 frames: the opening is frames 301-600 and the fight is frames 601-900 (ticks ~1108-1732, the window where §2.2 has objects at 15.7 ms).
+
+- **How a figure is made.** The GE's counters in the `GE: sky drawn N times` line (`psp_ge.c:26887`) and `textured_draws` (`:10196`) are cumulative since boot. Their declarations are their only `= 0`, and `sky drawn` reads 300 / 600 / 900 at frames 300 / 600 / 900. So a window's count is the counter at its last frame less the counter at its first, over 300. Lines marked "last 300 frames" are already per window, and I divide those by 300.
+- **What can't be used.** The `GE: frame N, … level draws, … triangles` figures (`:27136`) are frame N's own (`draws_this_frame`, reset each frame at `:6795`), one frame and not a window mean. The `sky drawn` line passes the log's 512 characters and is cut inside its last field (`models at the near plane` reads 2343, then 2). Its earlier fields are whole.
+
+| Part | Item (the log's words; counter) | Opening a frame | Fight a frame | Source lines (run2; run4 is the same less 1 line) |
+|---|---|---|---|---|
+| world | level draws, textured (`textured_draws`, `psp_ge.c:11555`; flat 0) | 11.6 | 13.9 | `GE: frame 300 / 600 / 900` :975, :1337, :1715 (4196, 7674, 11858) |
+| world | level triangles | — | — | **none over a window**: only frame 600's 3377 and frame 900's 2497 |
+| world | level draws below the fog plane, and their triangles (a subset) | 3.6, 727 | 3.9, 784 | `ocean fog, last 300 frames` :1334, :1712 |
+| world | level see-through draws | 3.0 | 2.8 | `sky drawn` :954, :1315, :1692 |
+| world | visibility's items (clusters, portals, the ME's island jobs) | — | — | **none** |
+| objects | model part draws | 59 | 39 | `N part draws a frame` :1347, :1725 (§3.2.1) |
+| effects | sprites (`sprites_queued`, `:18266`, a sprite a particle) | 39.8 | 167.1 | `sky drawn` (11951, 62093) |
+| effects | decals | 4.4 | 13.7 | `sky drawn` (208, 1517, 5618) |
+| effects | contrails, and their segments | 1.2, 15.0 | 3.7, 34.9 | `contrails, last 300 frames` :1336, :1714 |
+| effects | particle systems or emitters | — | — | **none** |
+| transparent | see-through draws (`transparent_drawn`, `:21027`), 0 dropped | 50.0 | 69.6 | `sky drawn` (10328, 25314, 46198) |
+| transparent | see-through parts to cut | 38.1 | 17.6 | `see-through parts to cut, last 300 frames` :1331, :1709 |
+| flares | widget sprites (`widget_sprites`, `:18610`) | 0.06 | 0.88 | `GE: widget sprites` :979, :1341, :1719 (774, 791, 1056) |
+| flares | flare occlusion tests (`occlusion_tests`, `:18510`) | 8.2 | 2.3 | the same lines (3849, 6296, 6991) |
+| hud | HUD quads (`hud_quads`, `:21836`, `:21914`) | 3.0 | 19.4 | `sky drawn` (600, 1489, 7299) |
+| hud | characters | 0 | 18.5 | `sky drawn` (3612, 3612, 9156) |
+| hud | motion-sensor blips | 1.2 | 54.1 | `sky drawn` (0, 359, 16580) |
+| beside them | shadow draws; light draws; flashes | 2.5; 0.2; 0 | 5.0; 2.1; 0.5 | `sky drawn` |
+
+- **Which part an item belongs to is [D].** I placed each one by its counter's name. I didn't trace which `drawsplit` part each counter's function runs under. Under `gedefer`/`geinflight`, the counters at the GE's command writes (`textured_draws`, `transparent_drawn`) may count at the replay rather than inside the part. That is the same item either way, but it isn't proof of the part. Decals and shadows could sit in world or objects rather than effects [U].
+- **A ceiling, not a price [D].** A part's time over its items is what each item would cost if none of the part's time were fixed. On the fight: effects 3.2 ms over 167 sprites is ≤ ~19 µs a sprite. Hud 2.4 over ~92 quads, characters and blips is ≤ ~26 µs each. Transparent 0.8 over 70 draws is ≤ ~11 µs. Flares 0.3 over ~3 items is ≤ ~100 µs. World 11.5 over 14 level draws is ~820 µs a draw, so world's time isn't in its draws: visibility alone is 4.85 ms a frame on b30's flight (§3.2's table). A sheet still needs its cycles an item from the code.
+- **What the counter is left with.** Transparent, flares and hud are counted, and effects' sprites, decals and contrails too. That leaves **world's triangles over a window and its visibility items, and effects' systems or emitters**. Those are the per-part item counter's only fields (§1.3, the lead's 00:2x conditions). c20's census logs are still to be read for the same table. If they count the same fields, the counter comes down to those three.
 
 ## 4. Placement and the build cut [D]
 
