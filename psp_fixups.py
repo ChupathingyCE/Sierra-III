@@ -56599,7 +56599,12 @@ static void psp_wsold_one(unsigned absolute, int check)
 	}
 	is_biped = psp_wsold_make(DATUM_INDEX_NEW(absolute, header->identifier), header->datum, header->type, &record, &biped_record);
 	if (check)
-		box_ws_old_check(absolute, &record, is_biped ? &biped_record : NULL);
+	{
+		/* posed: it has pose nodes (the node count's read, in a shape slice 1's count cut knows) */
+		struct object_datum const *object = (struct object_datum const *)header->datum;
+
+		box_ws_old_check(absolute, &record, is_biped ? &biped_record : NULL, object->object.node_matrices.size > 0);
+	}
 	else
 		box_ws_old_put(absolute, &record, is_biped ? &biped_record : NULL);
 	if (box_ws_old_parts)

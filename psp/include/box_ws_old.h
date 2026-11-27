@@ -124,8 +124,11 @@ int box_ws_old_begin(void);
 int box_ws_old_marked(uint16_t *absolute, unsigned capacity);
 void box_ws_old_flipped(unsigned objects, unsigned bipeds, unsigned high_water);
 /* wsoldcheck: a fresh record of a live object against the copy, after the
-   refresh (a change no mark caught) */
-void box_ws_old_check(unsigned absolute, struct box_ws_old_object const *object, struct box_ws_old_biped const *biped);
+   refresh (a change no mark caught). posed: the object has pose nodes, so
+   its sphere is store_pose.c's to write (the crossing's marks), and a sphere
+   that changed unmarked counts on its own, apart from the other fields */
+void box_ws_old_check(unsigned absolute, struct box_ws_old_object const *object, struct box_ws_old_biped const *biped,
+	int posed);
 /* wsoldcheck: at each object the engine's sweep visits, the copy against
    what the engine reads now (the one-tick-old world's reach) */
 void box_ws_old_visit(long datum_index, struct box_ws_old_object const *now, struct box_ws_old_biped const *biped_now);

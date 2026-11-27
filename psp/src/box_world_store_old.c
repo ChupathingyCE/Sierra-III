@@ -71,7 +71,10 @@ static const char *const box_ws_old_field_name[WSO_FIELDS] = {
 	"model nodes", "cluster list"
 };
 static unsigned long box_ws_old_check_objects, box_ws_old_check_missed[WSO_FIELDS];
-static unsigned box_ws_old_check_told;
+static unsigned box_ws_old_check_told, box_ws_old_posed_told;
+/* the spheres of objects with pose nodes that changed with no mark: kept out
+   of the 'sphere' field, the crossing's own count (store_pose.c's writers) */
+static unsigned long box_ws_old_check_posed, box_ws_old_check_posed_spheres;
 static unsigned long box_ws_old_visits, box_ws_old_visit_parted[WSO_FIELDS], box_ws_old_visits_parted;
 static unsigned long box_ws_old_check_clusters, box_ws_old_model_visits, box_ws_old_model_visits_parted;
 
@@ -472,6 +475,8 @@ static void box_ws_old_log(void)
 		n += snprintf(line + n, sizeof(line) - n, "%s%s %lu", k ? ", " : "", box_ws_old_field_name[k], box_ws_old_check_missed[k]);
 	platform_psp_log("wsoldcheck: %lu live records and %lu cluster lists checked after the refresh; changes no mark caught: %s",
 		box_ws_old_check_objects, box_ws_old_check_clusters, line);
+	platform_psp_log("wsoldcheck: posed objects' spheres (store_pose.c's writers): %lu of %lu posed records checked changed with no mark",
+		box_ws_old_check_posed_spheres, box_ws_old_check_posed);
 	n = 0;
 	for (k = 0; k < WSO_FIELDS; k++)
 		n += snprintf(line + n, sizeof(line) - n, "%s%s %lu", k ? ", " : "", box_ws_old_field_name[k], box_ws_old_visit_parted[k]);
@@ -526,7 +531,8 @@ static unsigned box_ws_old_biped_differ(struct box_ws_old_biped const *a, struct
 	return bits;
 }
 
-void box_ws_old_check(unsigned absolute, struct box_ws_old_object const *object, struct box_ws_old_biped const *biped)
+void box_ws_old_check(unsigned absolute, struct box_ws_old_object const *object, struct box_ws_old_biped const *biped,
+	int posed)
 {
 	struct box_ws_old_object const *held;
 	unsigned bits = 0, k;
@@ -534,6 +540,8 @@ void box_ws_old_check(unsigned absolute, struct box_ws_old_object const *object,
 	if (absolute >= BOX_WS_OLD_SLOTS)
 		return;
 	box_ws_old_check_objects++;
+	if (posed)
+		box_ws_old_check_posed++;
 	held = &box_ws_old_objects[absolute];
 	if (held->identifier != object->identifier)
 		bits = 1u << WSO_NONE;
@@ -550,14 +558,26 @@ void box_ws_old_check(unsigned absolute, struct box_ws_old_object const *object,
 	}
 	if (!bits)
 		return;
+	if (posed && (bits & (1u << WSO_SPHERE)))
+	{
+		/* the crossing's own count; the record's other fields count as ever */
+		box_ws_old_check_posed_spheres++;
+		bits &= ~(1u << WSO_SPHERE);
+		if (!bits && box_ws_old_posed_told < 8)
+		{
+			box_ws_old_posed_told++;
+			platform_psp_log("wsoldcheck: refresh %lu: slot %u (type %u), posed, its sphere changed with no mark",
+				box_ws_old_flips, absolute, (unsigned)object->type);
+		}
+	}
 	for (k = 0; k < WSO_FIELDS; k++)
 		if (bits & (1u << k))
 			box_ws_old_check_missed[k]++;
-	if (box_ws_old_check_told < 24)
+	if (bits && box_ws_old_check_told < 24)
 	{
 		box_ws_old_check_told++;
-		platform_psp_log("wsoldcheck: refresh %lu: slot %u (type %u) changed with no mark (fields %x)",
-			box_ws_old_flips, absolute, (unsigned)object->type, bits);
+		platform_psp_log("wsoldcheck: refresh %lu: slot %u (type %u)%s changed with no mark (fields %x)",
+			box_ws_old_flips, absolute, (unsigned)object->type, posed ? ", posed," : "", bits);
 	}
 	/* kept true from here, so one missed writer counts once a tick, not on */
 	box_ws_old_put(absolute, object, biped);
