@@ -2183,14 +2183,26 @@ STEPS = {
 # hooks have to be expressions as their off form ((void)0) is, not do-while
 # statements. PSP_DRAWSPLIT (docs/box_draw_main.md §1.3) compiles the same
 # hooks into the drawing's files, render.c's breadcrumbs among them, so it
-# takes the same form
-if os.environ.get("PSP_FRAMEPIC", "") == "1" or os.environ.get("PSP_DRAWSPLIT", "") == "1":
+# takes the same form. PSP_DRAWSPLIT=sampled (psp_drawsplit.h's sampled form; the lab's
+# findings/drawsplit2_2026-11-27.md 'The thinner cut, design (a)' item 2, decisions 2026-11-27 04:0x (a)): the hooks
+# are psp_drawsplit.h's level 1 stores, and the count is unconditional, so no hooked function gains a test or a call
+# and the 15 draw functions keep the branches A's profile was counted on; the exact form's text is unchanged
+_DS_SAMPLED_L1 = """#if defined(PSP_DRAWSPLIT_SAMPLED)
+/* psp_fixups.py: the drawing's sampled split (psp_drawsplit.h): loads and
+stores only, no test and no call, so a hooked function keeps its profile */
+#include "psp_drawsplit.h"
+#define HALO_PERF_BEGIN(phase) PSP_DRAWSPLIT_L1_BEGIN(phase)
+#define HALO_PERF_END(phase) PSP_DRAWSPLIT_L1_END(phase)
+#define HALO_PERF_RENDER_PART(phase) PSP_DRAWSPLIT_L1_RENDER_PART(phase)
+#define HALO_PERF_COUNT(counter, count) ((void)(halo_perf_counters[counter] += (count)))
+#elif""" if os.environ.get("PSP_DRAWSPLIT", "") == "sampled" else "#if"
+if os.environ.get("PSP_FRAMEPIC", "") == "1" or os.environ.get("PSP_DRAWSPLIT", "") in ("1", "sampled"):
     FIXES["port/linux/include/halo_perf_log.h"] = [
 ("""#define HALO_PERF_BEGIN(phase) do { if (halo_perf_log_on) halo_perf_begin(phase); } while (0)
 #define HALO_PERF_END(phase) do { if (halo_perf_log_on) halo_perf_end(phase); } while (0)
 #define HALO_PERF_RENDER_PART(phase) do { if (halo_perf_log_on) halo_perf_render_part(phase); } while (0)
 #define HALO_PERF_COUNT(counter, count) do { if (halo_perf_log_on) halo_perf_counters[counter] += (count); } while (0)""",
-"""#if defined(PSP_FRAMEPIC) || defined(PSP_DRAWSPLIT)
+_DS_SAMPLED_L1 + """ defined(PSP_FRAMEPIC) || defined(PSP_DRAWSPLIT)
 /* psp_fixups.py: expressions, as the off form is (the step breadcrumbs
 write a hook as one operand of a comma expression) */
 #define HALO_PERF_BEGIN(phase) ((void)(halo_perf_log_on && (halo_perf_begin(phase), 1)))
@@ -69060,9 +69072,86 @@ DRAWSPLIT2_SITES = {
         (_DS2_PRIM_LEVEL, "\tPSP_DRAWSPLIT_COUNT(LEVEL_DRAWS, 1);\n" + _DS2_PRIM_LEVEL),
     ],
 }
+# PSP_DRAWSPLIT=sampled (the lab's findings/drawsplit2_2026-11-27.md 'The thinner cut, design (a)' and 'The hooks,
+# built'): the same sites, with one more rule. Under -fprofile-arcs GCC splits a block after every call that isn't its
+# last statement, so a store right after a call that ends its block in A (an if's arm, a function's end, or a join A
+# doesn't have) moves the cfg checksum and drops the function's counts. There the close goes past the join instead:
+# PSP_DRAWSPLIT_SAVE() before the statement, _RESTORE() after it, braced so each has its own saved index; a site with no
+# join past it drops its field. Every site's close read against the off tree's text (ship form, 2e5eac00):
+#   render_window: render_objects and render_object_shadows under psp_bench_skip's ifs (the comma form's close ended
+#     the arm) go past the join; every other close is followed in A by a call or a load in its own block
+#   render_object: the lighting's close ended needs_lighting's arm after the walk lighting's if, whose join A doesn't
+#     have, so it goes past the whole if/else
+#   rasterizer_environment_lightmap_draw: d3d under the GE's if goes past the join; the encode's close follows the
+#     function's last call (psp_environment_draw) and nothing is past it, so the field is dropped: the level draws'
+#     encode reads in what is open (world's walk); objects' encode (rasterizer_model_draw) keeps its field
+#   level 1: _rasterizer_widget_get_occlusion_test_result's wait ends after rasterizer_spin_end(), the arm's last call,
+#     so it goes past the if; render_frame's HALO_PERF_RENDER_PART(NONE) follows its last call (rasterizer_frame_end)
+#     and is dropped (main.c's end pops the render's part a few instructions later: that tail is end's)
+#   interface.c's screen-effect part and xbox_texture_cache.c's texture wait also follow an arm's last call, but
+#     neither function had counts in A (neither is in B's 15 under the exact form's calls), so they stay
+# main.c gets psp_drawsplit_render_begin / _end around each render phase: uncounted (not on B's list), so d is the
+# render's span
+_DS2_SKIP_MODELS = '#ifdef HALO_PSP\n\t\tif (!(psp_bench_skip & PSP_SKIP_MODELS))\n#endif\n'
+_DS2_WIDGET_WAIT = '\t\tif (result == D3DERR_TESTINCOMPLETE)\n\t\t{\n\t\t\tHALO_PERF_BEGIN(_halo_perf_occlusion_wait);\n'
+_DS2_WIDGET_WAIT_END = '\t\t\trasterizer_spin_end();\n\t\t\tHALO_PERF_END(_halo_perf_occlusion_wait);\n\t\t}\n'
+_DS2_OBJ_LIGHT_IF = '\t\t\tif (needs_lighting)\n\t\t\t{\n'
+_DS2_OBJ_LIGHT_ELSE = '\t\t\telse\n\t\t\t{\n\t\t\t\tdata->lighting = NULL;\n\t\t\t}\n'
+# the exact form's (file, site) -> the sampled form's text; a site not here is the exact form's
+DRAWSPLIT2_SAMPLED = {
+    ("source/render/render.c", '\t\t(PSP_STEP("render_objects"), render_objects());\n'): None,
+    ("source/render/render.c", '\t\t(PSP_STEP("render_object_shadows"), render_object_shadows());\n'): None,
+    # its close is the RESTORE past the if/else (DRAWSPLIT2_SAMPLED_SITES)
+    ("source/render/render_objects.c", _DS2_OBJ_LIGHT):
+        "\t\t\t\tPSP_DRAWSPLIT_IN(LIGHTS);\n" + _DS2_OBJ_LIGHT,
+    ("source/rasterizer/rasterizer.c", _DS2_RAST_ENV_D3D): None,
+    # the field dropped: the site as A has it
+    ("source/rasterizer/rasterizer.c", _DS2_RAST_ENV_ENCODE): _DS2_RAST_ENV_ENCODE,
+}
+# the sampled form's sites past a join, each from its statement's start to its end (the exact form's site inside)
+DRAWSPLIT2_SAMPLED_SITES = {
+    "source/render/render.c": [
+        (_DS2_SKIP_MODELS + '\t\t(PSP_STEP("render_objects"), render_objects());\n',
+         "\t\t{\n\t\tPSP_DRAWSPLIT_SAVE();\n" + _DS2_SKIP_MODELS
+         + '\t\t(PSP_DRAWSPLIT_IN(WALK), (PSP_STEP("render_objects"), render_objects()));\n'
+         + "\t\tPSP_DRAWSPLIT_RESTORE();\n\t\t}\n"),
+        (_DS2_SKIP_MODELS + '\t\t(PSP_STEP("render_object_shadows"), render_object_shadows());\n',
+         "\t\t{\n\t\tPSP_DRAWSPLIT_SAVE();\n" + _DS2_SKIP_MODELS
+         + '\t\t(PSP_DRAWSPLIT_IN(SHADOWS), (PSP_STEP("render_object_shadows"), render_object_shadows()));\n'
+         + "\t\tPSP_DRAWSPLIT_RESTORE();\n\t\t}\n"),
+        ('\t(PSP_STEP("rasterizer_frame_end"), rasterizer_frame_end());\n'
+         '\t(PSP_STEP("HALO_PERF_RENDER_PART"), HALO_PERF_RENDER_PART(NONE));\n',
+         '\t(PSP_STEP("rasterizer_frame_end"), rasterizer_frame_end());\n'
+         '\t/* psp_fixups.py, drawsplit sampled: HALO_PERF_RENDER_PART(NONE) dropped (after the function\'s last call) */\n'),
+    ],
+    "source/render/render_objects.c": [
+        (_DS2_OBJ_LIGHT_IF, "\t\t\t{\n\t\t\tPSP_DRAWSPLIT_SAVE();\n" + _DS2_OBJ_LIGHT_IF),
+        (_DS2_OBJ_LIGHT_ELSE, _DS2_OBJ_LIGHT_ELSE + "\t\t\tPSP_DRAWSPLIT_RESTORE();\n\t\t\t}\n"),
+    ],
+    "source/rasterizer/rasterizer.c": [
+        ("\tif (!psp_ge_active())\n#endif\n" + _DS2_RAST_ENV_D3D,
+         "\t{\n\tPSP_DRAWSPLIT_SAVE();\n\tif (!psp_ge_active())\n#endif\n"
+         + "\t(PSP_DRAWSPLIT_IN(D3D), %s);\n" % _DS2_RAST_ENV_D3D.strip().rstrip(";")
+         + "#ifdef HALO_PSP\n\tPSP_DRAWSPLIT_RESTORE();\n\t}\n#endif\n"),
+    ],
+    "source/rasterizer/xbox/rasterizer_xbox_widgets.c": [
+        (_DS2_WIDGET_WAIT, "\t\t{\n\t\tPSP_DRAWSPLIT_SAVE();\n" + _DS2_WIDGET_WAIT),
+        (_DS2_WIDGET_WAIT_END, "\t\t\trasterizer_spin_end();\n\t\t}\n\t\tPSP_DRAWSPLIT_RESTORE();\n\t\t}\n"),
+    ],
+}
+# main.c's render phases (main_game_render's two, main_pregame_render's one), as the step breadcrumbs leave them:
+# render_begin before each begin, render_end after each end
+_DS2_MAIN_BEGIN = re.compile(r'^([ \t]*)(\(PSP_STEP\("HALO_PERF_BEGIN"\), HALO_PERF_BEGIN\(_halo_perf_render\)\);\n)', re.M)
+_DS2_MAIN_END = re.compile(r'^([ \t]*)(\(PSP_STEP\("HALO_PERF_END"\), HALO_PERF_END\(_halo_perf_render\)\);\n)', re.M)
+DRAWSPLIT2_SAMPLED_MAIN = [
+    (_DS2_MAIN_BEGIN, r"\1psp_drawsplit_render_begin(); /* psp_fixups.py, drawsplit sampled: d is the render's span */\n\1\2"),
+    (_DS2_MAIN_END, r"\1\2\1psp_drawsplit_render_end();\n"),
+]
 def drawsplit2_cut(tree):
-    if os.environ.get("PSP_DRAWSPLIT", "") != "1":
+    form = os.environ.get("PSP_DRAWSPLIT", "")
+    if form not in ("1", "sampled"):
         return 0
+    sampled = form == "sampled"
     texts, hooks = {}, 0
     for rel, pairs in DRAWSPLIT2_SITES.items():
         text = open(os.path.join(tree, rel), errors="surrogateescape").read()
@@ -69073,16 +69162,47 @@ def drawsplit2_cut(tree):
         for old, new in pairs:
             if text.count(old) != 1:
                 return check_fail("psp_fixups: DRAWSPLIT level 2: %s: a site matches %d times: %r" % (rel, text.count(old), old[:90]))
+            if sampled and (rel, old) in DRAWSPLIT2_SAMPLED:
+                # None: the sampled sites below take it whole
+                new = DRAWSPLIT2_SAMPLED[(rel, old)]
+                if new is None:
+                    continue
             text = text.replace(old, new, 1)
             hooks += new.count("PSP_DRAWSPLIT_") - old.count("PSP_DRAWSPLIT_")
-        if text.count("PSP_DRAWSPLIT_IN(") != text.count("PSP_DRAWSPLIT_OUT("):
-            return check_fail("psp_fixups: DRAWSPLIT level 2: %s: %d opens against %d closes"
-                              % (rel, text.count("PSP_DRAWSPLIT_IN("), text.count("PSP_DRAWSPLIT_OUT(")))
         texts[rel] = text
+    if sampled:
+        for rel, pairs in DRAWSPLIT2_SAMPLED_SITES.items():
+            text = texts[rel] if rel in texts else open(os.path.join(tree, rel), errors="surrogateescape").read()
+            for old, new in pairs:
+                if text.count(old) != 1:
+                    return check_fail("psp_fixups: DRAWSPLIT sampled: %s: a site matches %d times: %r" % (rel, text.count(old), old[:90]))
+                text = text.replace(old, new, 1)
+                hooks += new.count("PSP_DRAWSPLIT_") - old.count("PSP_DRAWSPLIT_")
+            texts[rel] = text
+        rel = "source/main/main.c"
+        text = open(os.path.join(tree, rel), errors="surrogateescape").read()
+        for pattern, new in DRAWSPLIT2_SAMPLED_MAIN:
+            text, n = pattern.subn(new, text)
+            if n != 3:
+                return check_fail("psp_fixups: DRAWSPLIT sampled: main.c: the render's %r matches %d times, not 3"
+                                  % (pattern.pattern[:60], n))
+        texts[rel] = text
+    for rel, text in texts.items():
+        # a sampled close past a join is a RESTORE (of a level 2 open, or of level 1's occlusion wait); each SAVE has its own
+        opens = text.count("PSP_DRAWSPLIT_IN(") + text.count("HALO_PERF_BEGIN(")
+        closes = text.count("PSP_DRAWSPLIT_OUT(") + text.count("PSP_DRAWSPLIT_RESTORE(") + text.count("HALO_PERF_END(")
+        if opens != closes or text.count("PSP_DRAWSPLIT_SAVE(") != text.count("PSP_DRAWSPLIT_RESTORE("):
+            return check_fail("psp_fixups: DRAWSPLIT level 2: %s: %d opens against %d closes, %d saves against %d restores"
+                              % (rel, opens, closes, text.count("PSP_DRAWSPLIT_SAVE("), text.count("PSP_DRAWSPLIT_RESTORE(")))
     if not CHECK_ONLY:
         for rel, text in texts.items():
             open(os.path.join(tree, rel), "w", errors="surrogateescape").write(text)
-    print("psp_fixups: DRAWSPLIT level 2: %d hooks in %d files (objects' and world's fields, world's window, the items a frame)" % (hooks, len(texts)))
+    if sampled:
+        print("psp_fixups: DRAWSPLIT sampled: %d hooks in %d files (level 2's sites, closes past a join where a call ended "
+              "the block, the level draws' encode dropped, the occlusion wait's end past its if, main.c's render calls)"
+              % (hooks, len(texts)))
+    else:
+        print("psp_fixups: DRAWSPLIT level 2: %d hooks in %d files (objects' and world's fields, world's window, the items a frame)" % (hooks, len(texts)))
     return 1
 drawsplit2_cut(TREE)
 

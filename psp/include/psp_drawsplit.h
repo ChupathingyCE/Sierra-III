@@ -146,6 +146,10 @@ top (the render's parts follow each other at its own depth), a count adds */
 #define PSP_DRAWSPLIT_L1_END(phase) PSP_DRAWSPLIT_OUT()
 #define PSP_DRAWSPLIT_L1_RENDER_PART(phase) ((void)(psp_drawsplit_state.stack[psp_drawsplit_state.sp & (PSP_DRAWSPLIT_STACK - 1)] \
 	= psp_drawsplit_render_code[(phase) + 1]))
+/* main.c's calls around each render phase (psp_fixups.py places them; main.c
+isn't counted), so d is the render's span */
+void psp_drawsplit_render_begin(void);
+void psp_drawsplit_render_end(void);
 #elif defined(PSP_DRAWSPLIT)
 void psp_drawsplit_in(int field);
 void psp_drawsplit_out(void);
