@@ -1529,6 +1529,58 @@ So every field the ME reads from the copy was last written in phases 2-3 of this
 
 **Held as leads until proven:** commits 2-3 stay [archive, 11-19, E] until wsoldcheck reads **0 mismatches over their fields on today's build, b30 and c20** (an emulator batch through the master, `wsoldcheck` keep word). The whole copy needs the same at commit 4. The six maps' play stays exact with nothing new reading the copy (the brief's task 5 checks). **Order conditions carried to the build (1d):** G is done before the sweep is posted, and the AI's input refresh is done before the think is posted. Both hold in today's order (G in phase 6 before M; the input refresh in phase 1). tc-tick's phase plan has to keep both in the parallel phase.
 
-### 4. Its price
+### 4. Its price (written 2026-11-26 21:34)
 
-_To come: wsold's +1.5-2.1% of the tick and sweepme2's parts' +0.7-1.3% [archive, E, §9, §12 at 778bb835] re-baselined on today's build._
+**The rule** (the lab's briefs/tc_copy.md task 4; Sheepdog01, archive 11-18 23:18: "measured on the current tock counts in full; measured on an older build counts after a re-baseline; unmeasured counts at half and never as the margin"). Nothing of wsold's has been measured on a PSP, then or now: the lab's findings/rows.tsv has no wsold or sweepme2 row, and §9 and §12 at 778bb835 price it on the cache model only. So every figure below is [E] from an older build, or [D]. It's re-baselined onto today's build three ways. A cost is taken in full, never at half, because halving it would make it the margin. The bar is **at most 0.5 ms a tick on b30's fight**, one tick a frame at 30 fps, on the main CPU.
+
+**What the archive measured** [archive, as_of 2026-11-19, E; wsoldcache2, §12 at 778bb835; the tick phase's model cycles a tick, off / wsold / wsoldparts]:
+
+| Map | off | wsold | + clusters and nodes | wsold's share | the parts' share | together |
+|---|---:|---:|---:|---:|---:|---:|
+| b30_leg2 | 5.361 M | 5.441 M | 5.511 M | +80 k (+1.49%) | +70 k (+1.31%) | +150 k (+2.80%) |
+| c20_leg2 | 6.053 M | 6.172 M | 6.217 M | +119 k (+1.97%) | +45 k (+0.74%) | +164 k (+2.71%) |
+| d20_play1 | 4.571 M | 4.665 M | 4.696 M | +94 k (+2.06%) | +31 k (+0.68%) | +125 k (+2.73%) |
+
+The cost is nearly all data. wsold on b30 adds +853 D-misses a tick and the parts add +415 more. That's the ~725 datum lines the refresh reads for ~145 objects and ~29 bipeds a tick, plus the ~100 lines it writes (§9).
+
+**Re-baselined onto b30's fight, wsold plus its parts:**
+
+| Reading | How | ms a tick |
+|---|---|---:|
+| 1. the model's cycles as cycles | 150 k at 333 MHz (1 ms = 333 k) | 0.45 |
+| 2. the misses at the PSP's price | the model prices a D-miss at 51 cycles, and Sierra-III's pages use ~73 [lead, engine_performance.md:8]: +1,268 misses × 22 = +28 k, so 178 k | 0.53 |
+| 3. the share of today's measured tick | +2.80% × 35.9 ms (b30 fight, the update's own tick, PSP-1000, 4c299ada side A, the lab's `slice1_shipck_b30` [M]); 36.6 on MOTIONNEW's side gives 1.02 | 1.01 |
+
+The readings disagree by 2.2×. The model's whole b30 tick is 16.1 ms at 333 MHz, but the PSP measures 26.5-35.9 ms over b30's stretches today. The model's tick is too fast because it prices a miss low and has no bus. The copy is all misses, so reading 3 is probably the closer one [U]. The archive's window was b30_leg2 from its start, not the fight, and the fight re-makes more objects a tick [U]. So none of the three is a floor.
+
+**What the tc-copy adds on top** [D; counts from §9's b30 lines]:
+- **The size doesn't set the price.** The copy is 2.2× wsold's bytes (§2), but the refresh's cost goes by the records it re-makes, not by the bytes it holds. The clusters and nodes are already in the parts' figures. The biped cap's 96 → 256 is static: b30 holds 28.9 bipeds either way. So 2.2× applies only to write-back choice (b) below and to the first full make. That first make happens once a map, at its first refresh (state 2): about 2,800 lines written, a spike of a few ms [U], not a cost a tick. (This corrects §2's "For part 4" line.)
+- **(i)'s missing rows: ≤ 0.04 ms.**
+  - A non-biped's parent: the datum's +204 sits on the links line the refresh already reads, so it costs one store into an 8 KB array. That's ≤ 145 lines a tick, so ≤ 10.6 k cycles.
+  - A vehicle's ROOT position, forward and up: ≤ ~19 vehicles a tick (b30's model runs are its moving vehicles, §12), each with 1-2 lines read and one written, so ≤ 4.2 k.
+  - The breakable flags: 32 B, only when marked.
+- **The write-back, §3's three choices.**
+  - (a) `sceKernelDcacheWritebackAll`: at most the cache's 256 lines of 64 B, whatever the copy's size. ≤ 256 × 73 = 18.7 k cycles, **≤ 0.06 ms**. Some of it is the engine's own dirty lines, written early rather than added. The frame already ends with one (engine_performance.md:334).
+  - (b) one range over the copy: 2,813 lines (175.8 KB) or 3,502 (218.9 KB). That's about 6-7× the ~480 lines past which a range loses to (a) [archive, hardware_facts.md, cited in §9]. **Out.**
+  - (c) a range per re-made record: ~175 calls a tick or more with the nodes' runs, each a kernel call whose cost isn't read here [U]. At ~1 µs a call, **~0.2 ms. Out**, unless the re-made records were packed into one span, which they aren't (they sit by slot).
+  - **(a) it is.**
+- **The ME's cache drop**, `psp_me_cache_refresh` at the job's start: runs on the ME, **0 on the main CPU**. The ME's job pays its 256 lines.
+- **The made word and the fence:** one word written and one line written back, plus one read of the job's state. **< 1 µs.**
+- **The reach guard's refusals: 0 added on the main CPU**, because a refused object is gathered live, which is what the serial sweep does for every object today. They take away from what the ME gains, not from the tick. Their share: at least the 1.97% of visits that parted on b30 (§9) [archive, E]. At most, in today's order, every visit to an object the walk updated, since the sweep runs in M after the walk [U]. They're counted on the `wsold:` line.
+
+**The sheet for b30's fight, the pill sweep's copy, write-back (a):**
+
+| | Reading 1 | Reading 2 | Reading 3 |
+|---|---:|---:|---:|
+| wsold and its parts | 0.45 | 0.53 | 1.01 |
+| (i)'s rows and the write-back | ≤ 0.10 | ≤ 0.10 | ≤ 0.10 |
+| **ms a tick** | **≤ 0.55** | **≤ 0.63** | **≤ 1.11** |
+| against the 0.5 bar | over by ≤ 0.05 | over by ≤ 0.13 | over by ≤ 0.61 |
+
+Against what `s1-me` moves off (4.7-5.8 ms, tick_store_biped_plan.md:119), that's 9-24%. Both jobs' copy would add (ii)'s unit rows each tick. That's priced on s1-me Part A's sheet, not here.
+
+**Read [D over E]: on paper the copy doesn't clear 0.5 ms on b30's fight.** The best reading is just over the bar and the likeliest is twice it. **By the brief's stop-the-line, no build. This goes to the lead.** Where the cost sits, and the cuts:
+- **K1, a copy only of what a sweep can meet.** On b30 the engine's sweep visited 5,026 objects over wsoldid1's run (§9; ~8 a tick if that's over its 600 ticks [U]). The refresh re-makes ~145 objects a tick, so most of its ~725 datum lines are for objects no sweep reaches. A refresh limited to the marked objects in the clusters the bipeds' pills touch (the partition is known at the copy point) would cut most of wsold's share [U, by how much]. This is a change to wsold's refresh, designed before anything is built.
+- **K2, nodes held for nothing but what the sweep meets, or not held at all:** a model the sweep meets is then `NOT_HELD` and gathered live. The archive doesn't split the parts' +1.31% on b30 between clusters and nodes. c20, with 0.1 model runs a refresh, puts the clusters at up to its +45 k.
+- **K3, a price from the PSP before cutting:** a price-only build of task 5's commits 1-3 (`PSP_WSOLD=1`, off by default, and nothing reads the copy, so play is exact), priced by one PSP-1000 pair on b30_leg2's fight, off against on. That [M] figure replaces all three readings. It's a build, so it's the lead's ruling against the stop.
+- **Recommendation: K3 with K1 designed alongside.** The readings span 0.55-1.11 ms and the bar sits at their low end, so only the PSP can say whether the cut is needed. K1 is the cut if it is.
