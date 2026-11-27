@@ -17442,7 +17442,10 @@ void psp_ge_draw_model(void *vertices, int vertex_count, int uncompressed, const
 	{
 		void psp_drawsplit_list(const void *vertices, const void *indices, unsigned int key, int sky, unsigned int before,
 			unsigned int after, unsigned long bone, unsigned long data);
+		void psp_drawsplit_words(const void *vertices, const void *indices, unsigned int key, int sky, const unsigned int *begin,
+			const unsigned int *end);
 		unsigned int list_at = sceGuCheckList();
+		const unsigned int *list_from = gu_list->current; /* A2b (1)'s words: the part's first word */
 		unsigned long loads = model_bone_loads, calls = model_bone_calls, take = model_take_bytes, sub = model_bone_sub_bytes;
 
 		psp_ge_draw_model_body(vertices, vertex_count, uncompressed, indices, index_count, strip, color, base_key, u_scale, v_scale,
@@ -17450,6 +17453,7 @@ void psp_ge_draw_model(void *vertices, int vertex_count, int uncompressed, const
 		psp_drawsplit_list(vertices, indices, base_key, in_sky, list_at, sceGuCheckList(),
 			(model_bone_loads - loads) * 52 + (model_bone_sub_bytes - sub) + (model_bone_calls - calls) * 8,
 			(model_take_bytes - take) - (model_bone_sub_bytes - sub));
+		psp_drawsplit_words(vertices, indices, base_key, in_sky, list_from, gu_list->current);
 	}
 	else
 #endif

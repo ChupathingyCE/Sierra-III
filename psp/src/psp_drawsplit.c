@@ -816,6 +816,268 @@ static void report_lists(double n)
 	list_window++;
 }
 
+/* A2b (1)'s words (the lab's briefs/draw_main.md 'Added 13:4x', A2b (1);
+box_draw_main.md §3.4.2): for a sample of D6's lists, which command words of a
+later draw differ from the list's first, by class: D3's per-frame side
+(matrices, bones, lights) or other (colours, texture, shader, state, geometry,
+the rest). psp_ge.c hands over each measured part's words as written: the
+list's pointer before and after its body. The walk follows the JUMPs over the
+regions taken (copied data, bone sub-lists) and stops at the part's end. An
+address (VADDR, IADDR, JUMP, CALL, with the BASE before it) inside the part's
+own span is kept as its offset from the part's start, so the same list written
+elsewhere in the next frame's list compares equal; one outside it (the model's
+vertices, a bone sub-list, the texture) as a 23-bit hash of itself. BASE is
+folded into the address after it and not compared. The sample is the first
+lists drawn until WORDS_FULL lists or WORDS_POOL words are held, each its first
+draw's words (at most WORDS_MAX); a later draw of a sampled list is compared
+command by command, each command's values in order against the first's, a
+value missing or extra counting as a word that differs. The sky's parts are
+left out, as the lists' are. The counts are a window's (300 frames), not a
+frame's. It reads no clock */
+#define WORDS_KEYS 512
+#define WORDS_FULL (WORDS_KEYS * 3 / 4)
+#define WORDS_POOL 32768
+#define WORDS_MAX 2048
+enum { W_MATRICES, W_BONES, W_LIGHTS, W_COLOURS, W_TEXTURE, W_SHADER, W_STATE, W_GEOMETRY, W_REST, W_CLASSES };
+#define W_FRAME ((1u << W_MATRICES) | (1u << W_BONES) | (1u << W_LIGHTS))
+static const char *const word_class_names[W_CLASSES] = { "matrices", "bones", "lights", "colours", "texture", "shader",
+	"state", "geometry", "rest" };
+struct words_key
+{
+	const void *vertices, *indices;
+	unsigned int key, at, count;
+};
+struct words_room
+{
+	struct words_key keys[WORDS_KEYS];
+	unsigned int pool[WORDS_POOL], now[WORDS_MAX], sorted[2][WORDS_MAX];
+	unsigned short counts[2][256], starts[2][256];
+};
+static struct words_room *words = NULL;
+static int words_failed = 0;
+static unsigned int words_keys = 0, words_used = 0, words_long = 0, words_past = 0;
+static unsigned long long window_words_compared = 0, window_words_unlike = 0, window_words_count = 0,
+	window_words_frame = 0, window_words_colours = 0, window_words_geometry = 0, window_words_lost = 0,
+	window_word_draws[W_CLASSES], window_word_words[W_CLASSES], window_word_command[256];
+
+/* a GE command's class (pspgu's command numbers) */
+static int word_class(unsigned int command)
+{
+	if (command >= 0x3A && command <= 0x41)
+		return W_MATRICES; /* world, view, projection, texture-generation matrices */
+	if ((command >= 0x2A && command <= 0x33) || command == 0x0A)
+		return W_BONES; /* bone matrices, morph weights, a bone sub-list's CALL */
+	if ((command >= 0x17 && command <= 0x1B) || (command >= 0x5C && command <= 0x9A))
+		return W_LIGHTS; /* lighting and light enables, ambient, the lights' types, positions, directions, colours */
+	if (command >= 0x53 && command <= 0x5B)
+		return W_COLOURS; /* the material's colours and alpha (sceGuColor: a part's tint or light level) */
+	if (command == 0x50 || command == 0xC9 || command == 0xCA || (command >= 0xCD && command <= 0xCF)
+		|| (command >= 0xD8 && command <= 0xDB) || (command >= 0xDF && command <= 0xE6))
+		return W_SHADER; /* shading, texture function and colour, fog, colour and alpha tests, blend, dither, logic op */
+	if ((command >= 0x48 && command <= 0x4B) || (command >= 0xA0 && command <= 0xD0))
+		return W_TEXTURE; /* texture scale and offset, addresses, sizes, CLUT, mode, filter, wrap, flush */
+	if ((command >= 0x1C && command <= 0x28) || (command >= 0x42 && command <= 0x47) || command == 0x4C || command == 0x4D
+		|| command == 0x51 || command == 0x9B || (command >= 0xD2 && command <= 0xD7) || (command >= 0xDC && command <= 0xDE)
+		|| (command >= 0xE7 && command <= 0xE9))
+		return W_STATE; /* enables, viewport, offset, front face, scissor, depth range and test, stencil, masks */
+	if (command <= 0x02 || command == 0x04 || command == 0x07 || command == 0x08 || command == 0x10 || command == 0x12
+		|| command == 0x13 || command == 0x14)
+		return W_GEOMETRY; /* vertex and index addresses, the draw, bounding box, jump, base, vertex type, offset, origin */
+	return W_REST;
+}
+
+/* the part's words from begin to end, its addresses as above; WORDS_MAX + 1
+when it can't be walked (longer than WORDS_MAX, a jump out of the part or back) */
+static unsigned int words_walk(const unsigned int *begin, const unsigned int *end, unsigned int *out)
+{
+	unsigned int from = (unsigned int)(unsigned long)begin & 0x0FFFFFFFu, to = (unsigned int)(unsigned long)end & 0x0FFFFFFFu;
+	unsigned int base = 0, n = 0, steps = 0;
+	const unsigned int *word = begin;
+
+	if (to < from)
+		return WORDS_MAX + 1;
+	while (word != end)
+	{
+		unsigned int w = *word, command = w >> 24, here = (unsigned int)(unsigned long)word & 0x0FFFFFFFu, at;
+
+		if (++steps > 4 * WORDS_MAX || n >= WORDS_MAX)
+			return WORDS_MAX + 1;
+		if (command == 0x10)
+		{
+			base = w;
+			word++;
+			continue;
+		}
+		if (command == 0x01 || command == 0x02 || command == 0x08 || command == 0x0A)
+		{
+			at = ((base & 0xF0000u) << 8) | (w & 0xFFFFFFu);
+			out[n++] = (command << 24) | (at >= from && at < to ? 0x800000u | (at - from) : (at * 2654435761u) >> 9);
+			if (command == 0x08)
+			{
+				if (at <= here || at > to)
+					return WORDS_MAX + 1;
+				word = (const unsigned int *)((const char *)word + (at - here));
+			}
+			else
+				word++;
+			continue;
+		}
+		out[n++] = w;
+		word++;
+	}
+	return n;
+}
+
+/* words[0..n) by command, each command's values in their order */
+static void words_sort(const unsigned int *in, unsigned int n, int side)
+{
+	unsigned short *counts = words->counts[side], *starts = words->starts[side], next[256];
+	unsigned int k, at = 0;
+
+	memset(counts, 0, sizeof(words->counts[side]));
+	for (k = 0; k < n; k++)
+		counts[in[k] >> 24]++;
+	for (k = 0; k < 256; k++)
+	{
+		starts[k] = next[k] = (unsigned short)at;
+		at += counts[k];
+	}
+	for (k = 0; k < n; k++)
+		words->sorted[side][next[in[k] >> 24]++] = in[k];
+}
+
+static void words_compare(const unsigned int *first, unsigned int first_count, unsigned int count)
+{
+	unsigned int c, k, mask = 0;
+
+	words_sort(first, first_count, 0);
+	words_sort(words->now, count, 1);
+	for (c = 0; c < 256; c++)
+	{
+		unsigned int a = words->counts[0][c], b = words->counts[1][c], common = a < b ? a : b;
+		unsigned int differ = a > b ? a - b : b - a;
+		const unsigned int *x = &words->sorted[0][words->starts[0][c]], *y = &words->sorted[1][words->starts[1][c]];
+
+		for (k = 0; k < common; k++)
+			differ += x[k] != y[k];
+		if (differ)
+		{
+			int class = word_class(c);
+
+			window_word_words[class] += differ;
+			window_word_command[c] += differ;
+			mask |= 1u << class;
+		}
+	}
+	window_words_compared++;
+	if (!mask)
+		return;
+	window_words_unlike++;
+	window_words_count += first_count != count;
+	window_words_frame += !(mask & ~W_FRAME);
+	window_words_colours += !(mask & ~(W_FRAME | (1u << W_COLOURS)));
+	window_words_geometry += !(mask & ~(W_FRAME | (1u << W_COLOURS) | (1u << W_GEOMETRY)));
+	for (c = 0; c < W_CLASSES; c++)
+		window_word_draws[c] += (mask >> c) & 1;
+}
+
+void psp_drawsplit_words(const void *vertices, const void *indices, unsigned int key, int sky, const unsigned int *begin,
+	const unsigned int *end)
+{
+	unsigned int h, count;
+	struct words_key *slot;
+
+	if (on <= 0 || sky || begin == end)
+		return;
+	if (!words)
+	{
+		if (words_failed)
+			return;
+		words = calloc(1, sizeof(*words));
+		if (!words)
+		{
+			words_failed = 1;
+			platform_log("drawsplit2 words: no room for its %u KB; not compared", (unsigned)(sizeof(*words) / 1024));
+			return;
+		}
+	}
+	h = (unsigned int)((unsigned long)vertices >> 2) * 2654435761u ^ (unsigned int)((unsigned long)indices >> 2) * 2246822519u
+		^ key * 3266489917u;
+	for (h &= WORDS_KEYS - 1; words->keys[h].vertices; h = (h + 1) & (WORDS_KEYS - 1))
+		if (words->keys[h].vertices == vertices && words->keys[h].indices == indices && words->keys[h].key == key)
+			break;
+	slot = &words->keys[h];
+	if (!slot->vertices && (words_keys >= WORDS_FULL || words_used >= WORDS_POOL))
+		return; /* the sample is full: a list first drawn now isn't held */
+	count = words_walk(begin, end, words->now);
+	if (count > WORDS_MAX)
+	{
+		window_words_lost++;
+		if (!slot->vertices)
+			words_long++;
+		return;
+	}
+	if (slot->vertices)
+	{
+		words_compare(&words->pool[slot->at], slot->count, count);
+		return;
+	}
+	if (words_used + count > WORDS_POOL)
+	{
+		words_past++;
+		return;
+	}
+	slot->vertices = vertices;
+	slot->indices = indices;
+	slot->key = key;
+	slot->at = words_used;
+	slot->count = count;
+	memcpy(&words->pool[words_used], words->now, count * sizeof(unsigned int));
+	words_used += count;
+	words_keys++;
+}
+
+static int append(char *line, int size, int at, const char *format, ...);
+
+static void report_words(void)
+{
+	char line[512];
+	int at, k, top;
+	unsigned int c;
+
+	if (!words)
+		return;
+	platform_log("drawsplit2 words: %u lists sampled, %.1f KB of their first draws' words (%u too long, %u past the "
+		"pool's %u KB); this window %llu later draws of them compared, %llu unlike their first (%llu a different count of "
+		"words): %llu only in D3's per-frame words (matrices, bones, lights), %llu only in those and colours, %llu only in "
+		"those, colours and geometry; %llu unmeasured", words_keys, words_used * 4 / 1024.0, words_long, words_past,
+		(unsigned)(WORDS_POOL * 4 / 1024), window_words_compared, window_words_unlike, window_words_count,
+		window_words_frame, window_words_colours, window_words_geometry, window_words_lost);
+	at = snprintf(line, sizeof(line), "drawsplit2 words by class (unlike draws / words differing):");
+	for (k = 0; k < W_CLASSES; k++)
+		at = append(line, sizeof(line), at, "%s %s %llu/%llu", k ? ";" : "", word_class_names[k], window_word_draws[k],
+			window_word_words[k]);
+	at = append(line, sizeof(line), at, "; most differing commands:");
+	for (top = 0; top < 6; top++)
+	{
+		unsigned int best = 256;
+
+		for (c = 0; c < 256; c++)
+			if (window_word_command[c] && (best == 256 || window_word_command[c] > window_word_command[best]))
+				best = c;
+		if (best == 256)
+			break;
+		at = append(line, sizeof(line), at, " 0x%02X %llu", best, window_word_command[best]);
+		window_word_command[best] = 0;
+	}
+	platform_log("%s", line);
+	window_words_compared = window_words_unlike = window_words_count = window_words_frame = 0;
+	window_words_colours = window_words_geometry = window_words_lost = 0;
+	memset(window_word_draws, 0, sizeof(window_word_draws));
+	memset(window_word_words, 0, sizeof(window_word_words));
+	memset(window_word_command, 0, sizeof(window_word_command));
+}
+
 /* D2's pieces (docs/box_draw_main.md §3.4.3 'Memory', §4.4 A2): the engine's
 psp_drawsplit_pieces (structure_visibility.c, psp_fixups.py DRAWSPLIT2_PIECES_C)
 splits a BSP's surfaces into (cluster, material) pieces, the lists D2 would
@@ -1110,6 +1372,7 @@ static void report(void)
 	report_kinds(n);
 	report_store(n);
 	report_lists(n);
+	report_words();
 	report_merge(n);
 	report_sort(n);
 	report_pieces(n);
