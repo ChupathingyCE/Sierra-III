@@ -69087,7 +69087,13 @@ DRAWSPLIT2_SITES = {
 #     encode reads in what is open (world's walk); objects' encode (rasterizer_model_draw) keeps its field
 #   level 1: _rasterizer_widget_get_occlusion_test_result's wait ends after rasterizer_spin_end(), the arm's last call,
 #     so it goes past the if; render_frame's HALO_PERF_RENDER_PART(NONE) follows its last call (rasterizer_frame_end)
-#     and is dropped (main.c's end pops the render's part a few instructions later: that tail is end's)
+#     and is dropped (main.c's end pops the render's part a few instructions later: that tail is end's), but its
+#     breadcrumb stays: PSP_STEP is psp_step(), a call in A too, and dropping the line with it left render_frame one
+#     arc short of its profile (lab sierra-build 45988381184, ds2d0: "expected 31 and have 30")
+#   render_model: the matrices' close at the if/else's join left a block A doesn't have (A's join holds only
+#     geometry_detail_level_index's constant, a phi in SSA, so its block goes; ds2d2 45988394780 cleared render_model
+#     with that close alone dropped, ds2d1 45988387689 didn't with the open dropped), so it goes past the while that
+#     follows, before psp_sspr_level's call, a block A has (the while's few compares read as the matrices')
 #   interface.c's screen-effect part and xbox_texture_cache.c's texture wait also follow an arm's last call, but
 #     neither function had counts in A (neither is in B's 15 under the exact form's calls), so they stay
 # main.c gets psp_drawsplit_render_begin / _end around each render phase: uncounted (not on B's list), so d is the
@@ -69097,6 +69103,7 @@ _DS2_WIDGET_WAIT = '\t\tif (result == D3DERR_TESTINCOMPLETE)\n\t\t{\n\t\t\tHALO_
 _DS2_WIDGET_WAIT_END = '\t\t\trasterizer_spin_end();\n\t\t\tHALO_PERF_END(_halo_perf_occlusion_wait);\n\t\t}\n'
 _DS2_OBJ_LIGHT_IF = '\t\t\tif (needs_lighting)\n\t\t\t{\n'
 _DS2_OBJ_LIGHT_ELSE = '\t\t\telse\n\t\t\t{\n\t\t\t\tdata->lighting = NULL;\n\t\t\t}\n'
+_DS2_MODELS_SSPR = '\t\t\tgeometry_detail_level_index = (short)psp_sspr_level((unsigned long)model_index, level_of_detail_pixels,\n'
 # the exact form's (file, site) -> the sampled form's text; a site not here is the exact form's
 DRAWSPLIT2_SAMPLED = {
     ("source/render/render.c", '\t\t(PSP_STEP("render_objects"), render_objects());\n'): None,
@@ -69107,6 +69114,8 @@ DRAWSPLIT2_SAMPLED = {
     ("source/rasterizer/rasterizer.c", _DS2_RAST_ENV_D3D): None,
     # the field dropped: the site as A has it
     ("source/rasterizer/rasterizer.c", _DS2_RAST_ENV_ENCODE): _DS2_RAST_ENV_ENCODE,
+    # the join as A has it: the close goes past the while (DRAWSPLIT2_SAMPLED_SITES)
+    ("source/models/models.c", _DS2_MODELS_MATRICES_END): _DS2_MODELS_MATRICES_END,
 }
 # the sampled form's sites past a join, each from its statement's start to its end (the exact form's site inside)
 DRAWSPLIT2_SAMPLED_SITES = {
@@ -69122,7 +69131,12 @@ DRAWSPLIT2_SAMPLED_SITES = {
         ('\t(PSP_STEP("rasterizer_frame_end"), rasterizer_frame_end());\n'
          '\t(PSP_STEP("HALO_PERF_RENDER_PART"), HALO_PERF_RENDER_PART(NONE));\n',
          '\t(PSP_STEP("rasterizer_frame_end"), rasterizer_frame_end());\n'
-         '\t/* psp_fixups.py, drawsplit sampled: HALO_PERF_RENDER_PART(NONE) dropped (after the function\'s last call) */\n'),
+         '\t(PSP_STEP("HALO_PERF_RENDER_PART"), ((void)0)); /* psp_fixups.py, drawsplit sampled: HALO_PERF_RENDER_PART(NONE)'
+         ' dropped (after the function\'s last call); its breadcrumb, a call as in A, kept */\n'),
+    ],
+    "source/models/models.c": [
+        (_DS2_MODELS_SSPR, "\t\t\tPSP_DRAWSPLIT_OUT(); /* psp_fixups.py, drawsplit sampled: the matrices' close, past the while */\n"
+         + _DS2_MODELS_SSPR),
     ],
     "source/render/render_objects.c": [
         (_DS2_OBJ_LIGHT_IF, "\t\t\t{\n\t\t\tPSP_DRAWSPLIT_SAVE();\n" + _DS2_OBJ_LIGHT_IF),
@@ -69153,11 +69167,11 @@ DRAWSPLIT2_SAMPLED_MAIN = [
 # their pgo: line which store moves each function's cfg (the lab's findings/drawsplit2_2026-11-27.md 'ds2smB')
 _DS2_RF_PART = '(PSP_STEP("HALO_PERF_RENDER_PART"), HALO_PERF_RENDER_PART(_halo_perf_render_%s));\n'
 DRAWSPLIT2_DROP = {
-    # render_model's one field: its open (before if (node_matrices)) and its close (after the if/else's join)
+    # render_model's one field: its open (before if (node_matrices)) and its close (past the while, before psp_sspr_level)
     "matrices_in": ("source/models/models.c", "\t\tPSP_DRAWSPLIT_IN(MATRICES);\n" + _DS2_MODELS_MATRICES,
                     _DS2_MODELS_MATRICES),
-    "matrices_out": ("source/models/models.c", "\t\t}\n\t\tPSP_DRAWSPLIT_OUT();\n\n\t\tgeometry_detail_level_index",
-                     "\t\t}\n\n\t\tgeometry_detail_level_index"),
+    "matrices_out": ("source/models/models.c", "\t\t\tPSP_DRAWSPLIT_OUT(); /* psp_fixups.py, drawsplit sampled: the matrices'"
+                     " close, past the while */\n" + _DS2_MODELS_SSPR, _DS2_MODELS_SSPR),
     # render_frame's three level 1 stores: after the memset, in the window loop before a non-player window, after it
     "rf_begin": ("source/render/render.c", "\t" + _DS2_RF_PART % "begin",
                  '\t(PSP_STEP("HALO_PERF_RENDER_PART"), ((void)0));\n'),
