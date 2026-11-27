@@ -77,3 +77,28 @@ What the code shows beyond the source read:
 **The cut-order check (brief task 2), answered from the code:** a finer bake's bit costs ~7 instructions and 1-2 loads, ~80 cycles even if its word misses every time. A step it skips costs at least the rect test and the clip (~1,370 instructions with 16 divides and square roots) plus the step's own ~150 and its portals. That's ~1,520 against ~80, ≥~19x, if the bit's word misses every time, and ~200x if it hits. So **≥10x holds against a skipped step** [D on counts; U on latencies, which only widen it]. Against a portal the rect test would have rejected anyway, the bit saves only ~310 - 51 ≈ 260 instructions, ~37x its own 7. A bit paid by every portal therefore pays only if it drops enough of them. With every tested portal paying ~7, it breaks even at ~3% of them dropped, if each drop saves only a rect test, or ~0.5% if each saves a clip; ≥10x needs ~10x those shares [U, a model]. If the finer bit implies the PVS bit, it replaces the PVS test instead of adding to it, and costs nothing extra a portal [U]. That's for task 2's design, not this read.
 
 **For task 1's census:** the sheet needs to know where each step's portals end (at the PVS bit, the cache, the distance test, the rect test or the clip). The counts above price each ending. The cycles a step stay open until task 2's PSP figure (`mevisring` over the steps a frame). These counts are its fallback only, at half, never as the margin (brief task 2).
+
+## Task 1: the bake census [E]
+
+### The counter (builder/pvscensus 5106e6a3, 2026-11-27 05:2x)
+
+It's cut from the slice 1 tock dbc76ba0 (off EBOOT b739ef687f633bf9), not from this branch: the census counts the tock's walk. `PSP_PVSCENSUS=1` builds it in. It's log only, emulator only, and its commit message is its review paragraph.
+
+- **The walk it counts is the main CPU's.** Every census run carries the keep word `mevislandoff`, on and off alike, so the main CPU makes every frame's visibility. The ME's copy is the same text with a depth cap of 14 (above); when it stops there, mevisland makes that frame on the main CPU, so the drawn answer is always the uncapped walk's.
+- **Hooks:** `PSP_PVSC(call)` lines in `structure_visibility_traverse_cluster` (6) and `structure_visibility_compute` (1). `mevis_copies` turns them into nothing in the ME's copies, and the counts live in `structure_bsp_definitions.c`. Without the switch, the fixed tree is the tock's byte for byte (a host form check, slice 1's on form).
+- **Where each tested portal ends, six ways** (the lead 04:5x):
+  1. the four-way test (split into range, on the path, not in the PVS);
+  2. the hull discarded;
+  3. beyond the far plane;
+  4. VIS's rect test;
+  5. the clip empty;
+  6. a step entered (the walk's calls less one root a walk).
+
+  The exits are counted in the loop and the steps at the callee, so the six summing to the portals tested checks one set of hooks against the other.
+- **Also counted:**
+  - steps (the same count as `psp_portal_steps`) and steps past the 160 budget;
+  - re-entries of a cluster already rendered on the walk, split by whether its rect grew. "Rect inside" means the cluster's clip rect is unchanged. That doesn't prove the re-entry's sub-walk adds nothing, since its region's polygon differs [U as a cut];
+  - per walk in budget, the clusters rendered and those outside the camera cluster's PVS (expected 0, from (a));
+  - per camera cluster, its reach set against its PVS. The reach set is the union over the route's own walks: a ceiling for a finer bake, never a conservative set.
+- **Placed growth** (`w_tgme2m1mp_tgc90`): `structure_visibility_traverse_cluster` (layout line 854) and `structure_visibility_compute` (388). The ME's copy doesn't grow. Only emulator times move, and the census reads counts.
+- **The ask:** pvscensus-emu (the lab's briefs/asks/pvscensus-emu.toml): b30_leg2 and c20_leg2 to 120 s, d20_play1 to 100 s, off against on, plus an off-against-off control on b30.
