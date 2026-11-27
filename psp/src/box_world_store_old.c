@@ -23,6 +23,20 @@ struct box_ws_old_biped box_ws_old_bipeds[BOX_WS_OLD_BIPEDS] __attribute__((alig
 int16_t box_ws_old_biped_of[BOX_WS_OLD_SLOTS];
 int box_ws_old_on = -1;
 int box_ws_old_checking;
+int box_ws_old_parts;
+
+/* the clusters' runs, two buffers: the refresh writes the one the readers
+   don't hold, then flips (a run of an unmarked cluster is copied across) */
+struct box_ws_old_cluster box_ws_old_clusters[BOX_WS_OLD_CLUSTERS] __attribute__((aligned(64)));
+static int32_t box_ws_old_member_runs[2][BOX_WS_OLD_MEMBERS] __attribute__((aligned(64)));
+static struct box_ws_old_cluster box_ws_old_clusters_next[BOX_WS_OLD_CLUSTERS];
+const int32_t *box_ws_old_members = box_ws_old_member_runs[0];
+int box_ws_old_cluster_count;
+const void *box_ws_old_cluster_level;
+static int box_ws_old_member_side, box_ws_old_cluster_all = 1, box_ws_old_cluster_overflow;
+static unsigned box_ws_old_member_fill;
+static uint32_t box_ws_old_cluster_bits[BOX_WS_OLD_CLUSTERS / 32];
+static int box_ws_old_forgotten;
 
 static int16_t box_ws_old_biped_owner[BOX_WS_OLD_BIPEDS];
 static uint32_t box_ws_old_bits[BOX_WS_OLD_SLOTS / 32];
@@ -33,33 +47,60 @@ static unsigned box_ws_old_listed;
 static unsigned long box_ws_old_flips, box_ws_old_refreshed, box_ws_old_refreshed_bipeds, box_ws_old_cleared;
 static unsigned long box_ws_old_past_slots, box_ws_old_bipeds_full;
 static unsigned box_ws_old_high_water, box_ws_old_most_refreshed, box_ws_old_most_bipeds;
+static unsigned long box_ws_old_clusters_taken, box_ws_old_cluster_refreshes, box_ws_old_cluster_marks;
+static unsigned box_ws_old_members_most;
 
-enum { WSO_SPHERE, WSO_FLAGS, WSO_LINKS, WSO_TYPE, WSO_DEAD, WSO_NONE, WSO_PILL, WSO_MOTION, WSO_UNIT, WSO_FIELDS };
+enum { WSO_SPHERE, WSO_FLAGS, WSO_LINKS, WSO_TYPE, WSO_DEAD, WSO_NONE, WSO_PILL, WSO_MOTION, WSO_UNIT,
+	WSO_CLUSTER, WSO_FIELDS };
 static const char *const box_ws_old_field_name[WSO_FIELDS] = {
-	"sphere", "flags", "links", "type", "dead", "no record", "pill", "position/velocity", "parent/player/seat/passes"
+	"sphere", "flags", "links", "type", "dead", "no record", "pill", "position/velocity", "parent/player/seat/passes",
+	"cluster list"
 };
 static unsigned long box_ws_old_check_objects, box_ws_old_check_missed[WSO_FIELDS];
 static unsigned box_ws_old_check_told;
 static unsigned long box_ws_old_visits, box_ws_old_visit_parted[WSO_FIELDS], box_ws_old_visits_parted;
+static unsigned long box_ws_old_check_clusters;
 
 int box_ws_old_begin(void)
 {
 	if (box_ws_old_on < 0)
 	{
 		box_ws_old_checking = psp_keep("wsoldcheck") != 0;
-		box_ws_old_on = box_ws_old_checking || psp_keep("wsold");
+		/* the clusters (a reader's, and the check proves them too) */
+		box_ws_old_parts = box_ws_old_checking || psp_keep("wsoldparts");
+		box_ws_old_on = box_ws_old_checking || box_ws_old_parts || psp_keep("wsold");
 		if (!box_ws_old_on)
 			return 0;
 		memset(box_ws_old_biped_of, 0xff, sizeof(box_ws_old_biped_of));
 		memset(box_ws_old_biped_owner, 0xff, sizeof(box_ws_old_biped_owner));
-		platform_psp_log("wsold: the one-tick-old copy on (%u object slots of %u B, %u bipeds of %u B, %u KB)%s",
+		platform_psp_log("wsold: the one-tick-old copy on (%u object slots of %u B, %u bipeds of %u B, %u KB)%s%s",
 			(unsigned)BOX_WS_OLD_SLOTS, (unsigned)sizeof(struct box_ws_old_object), (unsigned)BOX_WS_OLD_BIPEDS,
 			(unsigned)sizeof(struct box_ws_old_biped),
 			(unsigned)((sizeof(box_ws_old_objects) + sizeof(box_ws_old_bipeds) + sizeof(box_ws_old_biped_of)) / 1024),
+			box_ws_old_parts ? ", with the clusters' lists" : "",
 			box_ws_old_checking ? ", checked" : "");
+		if (box_ws_old_parts)
+			platform_psp_log("wsold: the clusters' lists %u B (%u clusters, %u members, two buffers)",
+				(unsigned)(sizeof(box_ws_old_clusters) + sizeof(box_ws_old_clusters_next) + sizeof(box_ws_old_member_runs) +
+					sizeof(box_ws_old_cluster_bits)),
+				(unsigned)BOX_WS_OLD_CLUSTERS, (unsigned)BOX_WS_OLD_MEMBERS);
+		return 2;
+	}
+	if (box_ws_old_on && box_ws_old_forgotten)
+	{
+		/* another world: every slot filled again (the first fill's path) */
+		box_ws_old_forgotten = 0;
 		return 2;
 	}
 	return box_ws_old_on;
+}
+
+void box_ws_old_forget(void)
+{
+	if (box_ws_old_on <= 0)
+		return;
+	box_ws_old_forgotten = 1;
+	box_ws_old_cluster_all = 1;
 }
 
 void box_ws_old_mark(long datum_index)
@@ -145,9 +186,104 @@ void box_ws_old_put(unsigned absolute, struct box_ws_old_object const *object, s
 	box_ws_old_refreshed_bipeds++;
 }
 
+/* ---------- the clusters' lists */
+
+void box_ws_old_mark_cluster(int cluster)
+{
+	if (box_ws_old_on <= 0 || !box_ws_old_parts || cluster < 0 || cluster >= BOX_WS_OLD_CLUSTERS)
+		return;
+	box_ws_old_cluster_bits[cluster >> 5] |= 1u << (cluster & 31);
+	box_ws_old_cluster_marks++;
+}
+
+int box_ws_old_clusters_begin(const void *level, int cluster_count)
+{
+	if (cluster_count > BOX_WS_OLD_CLUSTERS)
+		cluster_count = BOX_WS_OLD_CLUSTERS;
+	if (level != box_ws_old_cluster_level || cluster_count != box_ws_old_cluster_count)
+		box_ws_old_cluster_all = 1;
+	box_ws_old_cluster_level = level;
+	box_ws_old_cluster_count = cluster_count;
+	box_ws_old_member_fill = 0;
+	box_ws_old_cluster_overflow = 0;
+	box_ws_old_cluster_refreshes++;
+	return box_ws_old_cluster_all;
+}
+
+int box_ws_old_cluster_marked(int cluster)
+{
+	return box_ws_old_cluster_all || ((box_ws_old_cluster_bits[cluster >> 5] >> (cluster & 31)) & 1);
+}
+
+void box_ws_old_cluster_put(int cluster, const int32_t *objects, unsigned count)
+{
+	int32_t *to = box_ws_old_member_runs[!box_ws_old_member_side];
+	unsigned k;
+
+	if (box_ws_old_member_fill + count > BOX_WS_OLD_MEMBERS)
+	{
+		box_ws_old_cluster_overflow = 1;
+		count = 0;
+	}
+	box_ws_old_clusters_next[cluster].first = (uint16_t)box_ws_old_member_fill;
+	box_ws_old_clusters_next[cluster].count = (uint16_t)count;
+	for (k = 0; k < count; k++)
+		to[box_ws_old_member_fill + k] = objects[k];
+	box_ws_old_member_fill += count;
+}
+
+void box_ws_old_cluster_keep(int cluster)
+{
+	struct box_ws_old_cluster const *held = &box_ws_old_clusters[cluster];
+
+	box_ws_old_cluster_put(cluster, box_ws_old_members + held->first, held->count);
+}
+
+void box_ws_old_clusters_end(unsigned taken)
+{
+	box_ws_old_clusters_taken += taken;
+	memset(box_ws_old_cluster_bits, 0, sizeof(box_ws_old_cluster_bits));
+	if (box_ws_old_cluster_overflow)
+	{
+		/* the partition holds no more references than the members, so this
+		is a list read wrong: no clusters held, the readers take their
+		serial paths, and every list is taken again next time */
+		box_ws_old_cluster_count = 0;
+		box_ws_old_cluster_all = 1;
+		return;
+	}
+	box_ws_old_cluster_all = 0;
+	if (box_ws_old_member_fill > box_ws_old_members_most)
+		box_ws_old_members_most = box_ws_old_member_fill;
+	memcpy(box_ws_old_clusters, box_ws_old_clusters_next, sizeof(box_ws_old_clusters));
+	box_ws_old_member_side = !box_ws_old_member_side;
+	box_ws_old_members = box_ws_old_member_runs[box_ws_old_member_side];
+}
+
+void box_ws_old_cluster_check(int cluster, const int32_t *objects, unsigned count)
+{
+	struct box_ws_old_cluster const *held;
+
+	if (cluster < 0 || cluster >= box_ws_old_cluster_count)
+		return;
+	box_ws_old_check_clusters++;
+	held = &box_ws_old_clusters[cluster];
+	if (held->count == count && !memcmp(box_ws_old_members + held->first, objects, count * sizeof(*objects)))
+		return;
+	box_ws_old_check_missed[WSO_CLUSTER]++;
+	if (box_ws_old_check_told < 24)
+	{
+		box_ws_old_check_told++;
+		platform_psp_log("wsoldcheck: refresh %lu: cluster %d's list changed with no mark (%u objects, held %u)",
+			box_ws_old_flips, cluster, count, (unsigned)held->count);
+	}
+	/* taken again next time, so one missed writer counts once a tick */
+	box_ws_old_cluster_bits[cluster >> 5] |= 1u << (cluster & 31);
+}
+
 static void box_ws_old_log(void)
 {
-	char line[300];
+	char line[420];
 	int n = 0, k;
 	double flips = box_ws_old_flips ? (double)box_ws_old_flips : 1.0;
 
@@ -156,11 +292,19 @@ static void box_ws_old_log(void)
 		(box_ws_old_refreshed * sizeof(struct box_ws_old_object) + box_ws_old_refreshed_bipeds * sizeof(struct box_ws_old_biped)) / flips,
 		box_ws_old_most_refreshed, box_ws_old_most_bipeds, box_ws_old_cleared, box_ws_old_high_water,
 		(unsigned)BOX_WS_OLD_SLOTS, box_ws_old_past_slots, box_ws_old_bipeds_full);
+	if (box_ws_old_parts)
+	{
+		double refreshes = box_ws_old_cluster_refreshes ? (double)box_ws_old_cluster_refreshes : 1.0;
+
+		platform_psp_log("wsold: clusters %.1f lists taken a refresh (%lu marks), members most %u of %u",
+			box_ws_old_clusters_taken / refreshes, box_ws_old_cluster_marks, box_ws_old_members_most, (unsigned)BOX_WS_OLD_MEMBERS);
+	}
 	if (!box_ws_old_checking)
 		return;
 	for (k = 0; k < WSO_FIELDS; k++)
 		n += snprintf(line + n, sizeof(line) - n, "%s%s %lu", k ? ", " : "", box_ws_old_field_name[k], box_ws_old_check_missed[k]);
-	platform_psp_log("wsoldcheck: %lu live records checked after the refresh; changes no mark caught: %s", box_ws_old_check_objects, line);
+	platform_psp_log("wsoldcheck: %lu live records and %lu cluster lists checked after the refresh; changes no mark caught: %s",
+		box_ws_old_check_objects, box_ws_old_check_clusters, line);
 	n = 0;
 	for (k = 0; k < WSO_FIELDS; k++)
 		n += snprintf(line + n, sizeof(line) - n, "%s%s %lu", k ? ", " : "", box_ws_old_field_name[k], box_ws_old_visit_parted[k]);

@@ -56445,6 +56445,8 @@ FIXES_WSOLD = {
 #include "physics/breakable_surfaces.h"
 #include "box_ws_old.h" /* (FIXES_WSOLD) */
 _Static_assert(BOX_WS_OLD_SLOTS >= MAXIMUM_OBJECTS_PER_MAP, "the one-tick-old copy holds every object slot");
+_Static_assert(BOX_WS_OLD_CLUSTERS >= MAXIMUM_CLUSTERS_PER_STRUCTURE, "the copy holds every cluster");
+_Static_assert(BOX_WS_OLD_MEMBERS >= HALO_PORT_MAXIMUM_CLUSTER_REFERENCES, "the copy's members hold the partition's references");
 
 static int psp_wsold_make(long object_index, struct object_datum const *object, short type,
 	struct box_ws_old_object *record, struct box_ws_old_biped *biped_record)
@@ -56523,6 +56525,36 @@ static void psp_wsold_one(unsigned absolute, int check)
 		box_ws_old_put(absolute, &record, is_biped ? &biped_record : NULL);
 }
 
+/* each cluster's collideable list as the engine's accessors give it: the
+order the gather's cluster walk meets them in */
+static unsigned psp_wsold_cluster_list(short cluster_index, int32_t *objects)
+{
+	long reference_index, object_index;
+	unsigned count = 0;
+
+	for (object_index = cluster_get_first_collideable_object(&reference_index, cluster_index);
+		object_index != NONE && count < BOX_WS_OLD_MEMBERS;
+		object_index = cluster_get_next_collideable_object(&reference_index))
+		objects[count++] = (int32_t)object_index;
+	return count;
+}
+
+/* the clusters an object is in, marked: before it leaves them and after it
+joins its new ones, so the lists the copy takes again are every one changed */
+void psp_wsold_mark_clusters(long first_cluster_reference)
+{
+	long reference_index;
+	long cluster_index;
+
+	if (!box_ws_old_parts || first_cluster_reference == NONE)
+		return;
+	for (cluster_index = cluster_partition_get_first_cluster(&collideable_object_cluster_partition, &reference_index,
+			first_cluster_reference);
+		cluster_index != NONE;
+		cluster_index = cluster_partition_get_next_cluster(&collideable_object_cluster_partition, &reference_index))
+		box_ws_old_mark_cluster((int)cluster_index);
+}
+
 void psp_wsold_refresh(void)
 {
 	static uint16_t list[BOX_WS_OLD_SLOTS + BOX_WS_OLD_BIPEDS];
@@ -56543,6 +56575,35 @@ void psp_wsold_refresh(void)
 		psp_wsold_one(list[i], 0);
 	for (i = 0; i < count; i++)
 		bipeds += box_ws_old_biped_of[list[i]] >= 0;
+	if (box_ws_old_parts)
+	{
+		static int32_t members[BOX_WS_OLD_MEMBERS];
+		struct structure_bsp const *structure_bsp = global_structure_bsp_get();
+		int clusters = structure_bsp ? (int)structure_bsp->clusters.count : 0, c;
+		unsigned taken = 0, n;
+
+		box_ws_old_clusters_begin(structure_bsp, clusters);
+		for (c = 0; c < clusters && c < BOX_WS_OLD_CLUSTERS; c++)
+		{
+			if (box_ws_old_cluster_marked(c))
+			{
+				n = psp_wsold_cluster_list((short)c, members);
+				box_ws_old_cluster_put(c, members, n);
+				taken++;
+			}
+			else
+				box_ws_old_cluster_keep(c);
+		}
+		box_ws_old_clusters_end(taken);
+		if (box_ws_old_checking)
+		{
+			for (c = 0; c < clusters && c < BOX_WS_OLD_CLUSTERS; c++)
+			{
+				n = psp_wsold_cluster_list((short)c, members);
+				box_ws_old_cluster_check(c, members, n);
+			}
+		}
+	}
 	if (box_ws_old_checking)
 	{
 		unsigned live = (unsigned)object_header_data->count;
@@ -56564,6 +56625,75 @@ void psp_wsold_visit(long object_index, struct object_datum const *object)
 		box_ws_old_visit(object_index, &record, &biped_record);
 	else
 		box_ws_old_visit(object_index, &record, NULL);
+}
+"""),
+# the clusters an object leaves and joins (the collideable partition's lists
+# change only here, through the disconnect and the reconnect)
+("""		if (TEST_FLAG(object->object.flags, _object_has_collision_model_bit) ||
+			!psp_p2q_disconnect(object_index, &object->object.first_cluster_reference_index))
+""",
+ """		if (TEST_FLAG(object->object.flags, _object_has_collision_model_bit))
+		{
+			void psp_wsold_mark_clusters(long first_cluster_reference);
+
+			psp_wsold_mark_clusters(object->object.first_cluster_reference_index); /* (FIXES_WSOLD) */
+		}
+		if (TEST_FLAG(object->object.flags, _object_has_collision_model_bit) ||
+			!psp_p2q_disconnect(object_index, &object->object.first_cluster_reference_index))
+"""),
+# The reconnect's mark ends the root's branch, after the automatic
+# deactivation: TICK2 stamps' cut anchors on the reconnect call and the
+# deactivation together (tick2_stamps_cut, 'the reconnect's partition step'),
+# so a29070b6's mark right after the call stopped the chain. Nothing between
+# changes the lists but a delete, whose disconnect marks the same clusters and
+# leaves the reference NONE (the mark then does nothing)
+("""				object_activate(object_index);
+			}
+		}
+	}
+
+	SET_FLAG(object->object.flags, _object_connected_to_map_bit, TRUE);
+""",
+ """				object_activate(object_index);
+			}
+		}
+		if (TEST_FLAG(object->object.flags, _object_has_collision_model_bit))
+		{
+			void psp_wsold_mark_clusters(long first_cluster_reference);
+
+			psp_wsold_mark_clusters(object->object.first_cluster_reference_index); /* (FIXES_WSOLD) */
+		}
+	}
+
+	SET_FLAG(object->object.flags, _object_connected_to_map_bit, TRUE);
+"""),
+],
+"source/saved games/game_state.c#wsold": [
+# another world: the copy's records are of the old one
+("""#ifdef HALO_PSP
+	psp_sleep_forget();
+#endif
+	game_state_data_arrays_new_map();
+""",
+ """#ifdef HALO_PSP
+	psp_sleep_forget();
+	{ void box_ws_old_forget(void); box_ws_old_forget(); } /* (FIXES_WSOLD) */
+#endif
+	game_state_data_arrays_new_map();
+"""),
+("""		psp_bspr_forget_loaded();
+	}
+#endif
+
+	return;
+}
+""",
+ """		psp_bspr_forget_loaded();
+	}
+	{ void box_ws_old_forget(void); box_ws_old_forget(); } /* (FIXES_WSOLD) */
+#endif
+
+	return;
 }
 """),
 ],

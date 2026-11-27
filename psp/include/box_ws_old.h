@@ -47,11 +47,25 @@ struct box_ws_old_biped {
 };
 _Static_assert(sizeof(struct box_ws_old_biped) == 64, "box_ws_old_biped");
 
+/* the clusters' collideable lists as the walk began (docs/box_world_store.md
+   §12): each cluster's objects in the order the engine's list held them, a
+   run of datum indices in the members array. Up to the structure's 512
+   clusters; the collideable partition holds at most 2,048 references
+   (HALO_PORT_MAXIMUM_CLUSTER_REFERENCES), so the runs always fit */
+#define BOX_WS_OLD_CLUSTERS 512
+#define BOX_WS_OLD_MEMBERS 2048
+struct box_ws_old_cluster { uint16_t first, count; };
+
 extern struct box_ws_old_object box_ws_old_objects[BOX_WS_OLD_SLOTS];
 extern struct box_ws_old_biped box_ws_old_bipeds[BOX_WS_OLD_BIPEDS];
 extern int16_t box_ws_old_biped_of[BOX_WS_OLD_SLOTS]; /* -1: none */
+extern struct box_ws_old_cluster box_ws_old_clusters[BOX_WS_OLD_CLUSTERS];
+extern const int32_t *box_ws_old_members;
+extern int box_ws_old_cluster_count; /* the level's clusters held; 0: none (a list couldn't be read) */
+extern const void *box_ws_old_cluster_level; /* the structure BSP they're of */
 extern int box_ws_old_on;
 extern int box_ws_old_checking; /* wsoldcheck */
+extern int box_ws_old_parts;    /* the clusters held too (keep word wsoldparts, or wsoldcheck) */
 
 /* the readers: the record of the object as the walk began, or NULL (made
    later, past the slots, or the copy is off) */
@@ -82,7 +96,7 @@ void box_ws_old_mark(long datum_index);
    from a datum; the store keeps or compares it */
 void box_ws_old_put(unsigned absolute, struct box_ws_old_object const *object, struct box_ws_old_biped const *biped);
 /* at the walk's start: 0 the copy is off, 1 refresh the marked, 2 fill
-   every slot (the first time) */
+   every slot (the first time, or after box_ws_old_forget) */
 int box_ws_old_begin(void);
 /* the objects to refresh: the marked ones and every biped held (their
    records are 2 KB in all, cheaper than a mark at each of their writers) */
@@ -94,3 +108,22 @@ void box_ws_old_check(unsigned absolute, struct box_ws_old_object const *object,
 /* wsoldcheck: at each object the engine's sweep visits, the copy against
    what the engine reads now (the one-tick-old world's reach) */
 void box_ws_old_visit(long datum_index, struct box_ws_old_object const *now, struct box_ws_old_biped const *biped_now);
+
+/* a map started or a game state loaded: every record is of another world,
+   so the next refresh fills every slot and every cluster again */
+void box_ws_old_forget(void);
+
+/* the clusters (with box_ws_old_parts): a reconnect or disconnect's mark on
+   each cluster its object leaves or joins; the refresh then copies the runs
+   of the unmarked and takes the marked ones' lists again */
+void box_ws_old_mark_cluster(int cluster);
+/* the refresh: 1 every cluster to be taken again (the first time, another
+   level, a revert), 0 only the marked */
+int box_ws_old_clusters_begin(const void *level, int cluster_count);
+int box_ws_old_cluster_marked(int cluster);
+/* a cluster's list as the engine holds it now (taken), or its run as held */
+void box_ws_old_cluster_put(int cluster, const int32_t *objects, unsigned count);
+void box_ws_old_cluster_keep(int cluster);
+void box_ws_old_clusters_end(unsigned taken);
+/* wsoldcheck: a cluster's held run against its list now, after the refresh */
+void box_ws_old_cluster_check(int cluster, const int32_t *objects, unsigned count);
