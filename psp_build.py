@@ -1051,6 +1051,12 @@ def compile_one(item):
                ["-DPSP_RECON=1"] if RECON else []) + (
                ["-DPSP_PADPATH=1"] if PADPATH else []) + (
                ["-DPSP_FRAMEPIC=1"] if FRAMEPIC else []) + (
+               # drawsplit's exact form: psp_far_draw's call to psp_drawsplit_far
+               # (X1's far kind, D1's shown groups); without it the call is
+               # compiled out and every far object reads as near (the lab's
+               # drawexact4, sierra-batch 46038910042). The sampled form and the
+               # off build leave psp_ge.c's text as it was
+               ["-DPSP_DRAWSPLIT=1"] if DRAWSPLIT and not DRAWSPLIT_SAMPLED and src.endswith("psp_ge.c") else []) + (
                ["-DPSP_MEPROBE=1"] if MEPROBE else []) + (
                ["-DPSP_WALKAPART=1"] if WALKAPART else []) + (
                ["-DPSP_MEXEC=1"] + MEXEC_DEFINES if MEXEC and src.endswith("psp_me.c") else []) + (
