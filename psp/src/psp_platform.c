@@ -639,10 +639,12 @@ struct profile_slot
 };
 /* build 108: in the scratchpad (psp_scratch.c), with the front table below:
 the model draws reach for them ~2,800 times a second, and in b30's beach they
-had 2.5% of the drawing's data misses (b108l, docs/overnight_b108.md). Taken
-when the renderer starts (psp_profile_tables_take, from psp_ge.c's
-ge_initialize, after keep.txt is read); steps before then are kept for the
-crash report but not timed, and no profile window has begun by then */
+had 2.5% of the drawing's data misses (b108l, docs/overnight_b108.md; counted
+with the timers on, before notimers became a default). Taken when the
+renderer starts (psp_profile_tables_take, from psp_ge.c's ge_initialize,
+after keep.txt is read); steps before then are kept for the crash report but
+not timed, and no profile window has begun by then. sp-plan (3): taken only
+under "timerson", from the heap (psp_profile_tables_take) */
 static struct profile_slot *profile_slots = NULL; /* [PROFILE_SLOTS] */
 static const char *profile_last_name = NULL;
 static unsigned int profile_last_time = 0;
@@ -674,14 +676,43 @@ static unsigned long steps_frame = 0, steps_window_frames = 0, steps_window_time
 
 void *psp_scratch_take(unsigned int bytes, const char *what);
 
+/* sp-plan (3) (Sheepdog01 2026-11-27 02:1x: "The profiler's 6.6 KB leaves
+shipped builds"; form D, the lead 08:0x): the tables are taken only when the
+step timers run ("timerson", and the multiplayer build, which has no keep
+defaults), and then from the heap. With "notimers", every campaign build's
+default, nothing reaches them: psp_step returns before its timed half,
+steps_frame_edge and objsteps_split before theirs, and profile_report leaves
+only the table's lines out. Their room in the scratchpad is held
+(psp_scratch.c SCRATCH_HELD_BYTES). "profscratch": the tables in the
+scratchpad as before, at the same addresses. psp_timers_off is set by
+keep_load, in main before the game starts, and never after; this runs from
+ge_initialize, at the first frame drawn. profile_tables_ready: the take has
+run (the heartbeat's report waits for it, as it waited for profile_slots) */
+static int profile_tables_ready = 0;
+void *psp_heap_take(unsigned int bytes, const char *what);
+void psp_scratch_held_log(void);
+
 void psp_profile_tables_take(void)
 {
-	if (profile_slots)
+	if (profile_tables_ready)
 		return;
-	profile_slots = psp_scratch_take(PROFILE_SLOTS * sizeof(*profile_slots), "the profiler's slots");
-	profile_front = psp_scratch_take(PROFILE_FRONT * sizeof(*profile_front), "the profiler's front table");
+	if (psp_keep("profscratch"))
+	{
+		profile_slots = psp_scratch_take(PROFILE_SLOTS * sizeof(*profile_slots), "the profiler's slots");
+		profile_front = psp_scratch_take(PROFILE_FRONT * sizeof(*profile_front), "the profiler's front table");
+	}
+	else
+	{
+		psp_scratch_held_log();
+		if (!psp_timers_off)
+		{
+			profile_slots = psp_heap_take(PROFILE_SLOTS * sizeof(*profile_slots), "the profiler's slots");
+			profile_front = psp_heap_take(PROFILE_FRONT * sizeof(*profile_front), "the profiler's front table");
+		}
+	}
 	if (!profile_slots || !profile_front)
 		profile_slots = NULL;
+	profile_tables_ready = 1;
 }
 
 static void profile_forget(void)
@@ -2404,13 +2435,19 @@ static void profile_report(double seconds, unsigned long frames, unsigned long t
 
 	double scale;
 
-	if (!profile_slots)
+	if (!profile_tables_ready)
 		return;
-	memcpy(copy, profile_slots, sizeof(copy));
-	for (index = 0; index < PROFILE_SLOTS; index++)
+	/* no table (form D, notimers): only its lines are left out. copy stays
+	all zeros, so no step line is written; the window's head line, the
+	objects' and the recon lines are written as they were with the table */
+	if (profile_slots)
 	{
-		profile_slots[index].microseconds = 0;
-		profile_slots[index].calls = 0;
+		memcpy(copy, profile_slots, sizeof(copy));
+		for (index = 0; index < PROFILE_SLOTS; index++)
+		{
+			profile_slots[index].microseconds = 0;
+			profile_slots[index].calls = 0;
+		}
 	}
 	/* the untimed frames' share, as the timed ones spent it */
 	scale = steps_window_timed ? (double)steps_window_frames / steps_window_timed : 1.0;
