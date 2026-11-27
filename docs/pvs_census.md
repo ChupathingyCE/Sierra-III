@@ -179,13 +179,17 @@ VIS cuts a portal's clip. This cut would skip a whole sub-walk, its clip include
 | exact cut's share, ceiling | ≤20.8 direct (rect inside); with their sub-walks ≤44 (every step but the 8.9 first entries and the root) [E] | **0** (no rect-inside re-entry) [E] |
 | its true share | [U]: needs R' ⊆ R_old counted, a census extension | 0 |
 | a step, floor (task 0(c) x task 1's mix) | ~3,680 instr, so 20.8 steps ≈ 0.23 ms and 44 ≈ 0.49 ms; at half (the brief's fallback rule) 0.12-0.24 ms [D on E] | ~1,800 instr (3.4 portals a step); saves 0 |
-| a step, measured | **open: pvswalk-b30** (mevisring's ME visibility ms over `portal walks` steps a frame, PSP-3000, asked 2026-11-27 05:58) | **open: pvswalk-c20** (its control) |
+| a step, measured | **a ceiling only: ≤118 µs** (~39,000 ME cycles at 333 MHz). That's the ME's 6.37 ms visibility job in the fight over the census's 54.0 steps [M over E, row pvswalk_b30]. The job also holds the objects' visibility, and the run printed no `portal walks` line (below), so the steps' own share is [U]. That's ~10x the floor | **open: pvswalk-c20** (its control) |
+| saved, ME ms a job | ≤20.8 × 118 µs ≈ **≤2.45 ms** direct, ≤44 × 118 µs ≈ ≤5.2 ms with sub-walks (ceilings) [U]; floor at half 0.12-0.24 ms | 0 |
+| saved, main CPU ms a frame | ≤ the collect wait: **1.13 ms a view × 0.95 views a frame ≈ ≤1.07 ms** [M, row pvswalk_b30] | 0 |
 | added | ≤0.03 ms floor (the test), plus the stored regions (fit line) | the test on every clip-bound portal into a rendered cluster, ~180 instr each |
 
 - **The two shares, at 30 fps on both cores:**
   - **The ME's share** is priced by the main-CPU work it frees. The main CPU waits at the collect 2.8-3.8 ms a view (`docs/layout_plan.md:95`, run 40845560977 [M], an older build). ME time saved frees main-CPU time only up to that wait.
-  - **The collect wait** is counted in full when pvswalk-b30 gives its figure.
-- **The gate (~0.5 ms a frame on a measured stretch) is open.** At the code's floor at half, b30's direct ceiling is 0.12 ms and doesn't clear. Whether the measured step clears it is pvswalk-b30's answer. The floor is far under the ME's measured walk: 54 × ~3,680 ≈ 0.6 ms, against 5.4-7.3 ms on b30 (PVS's status line, [M], as of 2026-10-29). So misses dominate there, which is why the price is a PSP figure.
+  - **The collect wait, measured at the ship build** (pvswalk-b30, 2026-11-27, PSP-3000, 2 runs that agree): in b30's fight the main CPU waits at the first reader **1.13 ms a view** (mevisland's 300-view line). The ME's visibility job there takes 6.37 ms, push to seen done 7.81 ms, 0.95 jobs a frame (6.04 ms a frame of the ME) [M, row pvswalk_b30]. The older 2.8-3.8 ms and posepair2a's 1.32-1.40 ms are superseded for this build. So ME time saved gives the frame **at most ~1.07 ms**.
+- **The gate (~0.5 ms a frame on a measured stretch) is not decided by pvswalk-b30.** The ceiling clears it: ≤1.07 ms a frame (the wait caps it before the step ceiling's 2.45 ms does). The floor doesn't: 0.12-0.24 ms at half. The gate lies between two unknowns:
+  1. **The steps' share of the 6.37 ms job.** The job is clusters and objects, and it can't be split from this run. The run printed no `portal walks` line: that line prints every 900 main-CPU walks (`psp_fixups.py:6774-6776`), mevisland gives the ME ~95% of views (the main CPU walked ~48 in the run), and the ME copy's counters go to a sink (`:57836-57837`). The ask's own clause sent this back to the builder; it isn't a failed run. The floor is far under the ME's job (54 × ~3,680 ≈ 0.6 ms against 6.37 ms), so either misses dominate or the objects do.
+  2. **The exact share** (R' ⊆ R_old, point 3), which only bounds it so far (≤20.8 direct of 54.0).
 - **c20 can't gain:** its census shows no rect-inside re-entry.
 
 **The fit line** (Sheepdog01 2026-11-27 02:1x):
@@ -193,4 +197,9 @@ VIS cuts a portal's clip. This cut would skip a whole sub-walk, its clip include
 - **The data.** The stored regions take one a rendered cluster, capped at 8 points as the hull cache is (task 0(c), 0x16d2c): ~68 bytes of points + ~96 of edge planes ≈ 164 bytes. b30 renders 8.9 clusters a walk, so ~1.5 KB is live. Room for `MAXIMUM_RENDERED_CLUSTERS` (128, `render.h:26`) is ~21 KB of mevis state in main RAM. That adds to the ME's 16 KB D-cache, which mevis already overruns at 45-93 KB a call (`layout_plan.md:95`) [U]. An eDRAM slot is the alternative.
 - **The hand-over.** The regions are the walk's own and the main CPU never reads them, so they add no write-back. The flags and rendered clusters handed over are the ones mevisland already hands over [D on the design]. Bake (A) would add 0 bytes: the same words, rewritten in place (task 0(b)).
 
-**What's left for this sheet:** the price a step from pvswalk-b30/-c20, then (B)'s net against the gate. If it clears, the exact share (R' ⊆ R_old) needs counting before any build, and the 160-step walks need the lead's call (point 4).
+**What's left for this sheet** (as of 2026-11-27 06:2x, after pvswalk-b30):
+- **(B) is unpriced, not stopped:** its ceiling clears the gate and its floor doesn't.
+- **Two counts would settle it,** both cheaper than a build:
+  - **(i) The exact share R' ⊆ R_old, a census extension** on the emulator. It's a count of the walk's own work under fixed play, not a stand-in for a hardware cost.
+  - **(ii) A split of the ME's job into its steps and its objects on the PSP:** the ME copy's step count wired to its line instead of the sink, or an ME stamp around the cluster walk. Either is an instrument commit, placed-block check first.
+- **The lead rules** whether to spend them, and on the 160-step walks (point 4). pvswalk-c20 is still to read, as the control.
