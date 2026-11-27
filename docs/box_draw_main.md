@@ -116,11 +116,38 @@ Each cut is written as a lever case: its ground (the stopped tries first, quoted
 
 | Part | Its grounds (levercheck) | Its cost-map line, with that line's ceiling | Case |
 |---|---|---|---|
-| objects | model-walk (40 levers, 16 stopped), lighting, code-layout | `cpu_cost_map.md:88`: drawing's reuse (RSO, LIGHTREUSE, `retainedloop`) is in, and "the rest of the per-part chain (`psp_model_draw`'s locks, pretouch and records, ~15% of drawing)" is next (ceiling: lever by lever). `:89`: slice 2's census ceiling is −23% of the drawing's I-misses [E], and DRAWPART3 was rejected at +0.9-2.7% [M]. `:32`: the ME's traffic costs render objects ~0.9 ms a frame | next |
+| objects | model-walk (40 levers, 16 stopped), lighting, code-layout | `cpu_cost_map.md:88`: drawing's reuse (RSO, LIGHTREUSE, `retainedloop`) is in, and "the rest of the per-part chain (`psp_model_draw`'s locks, pretouch and records, ~15% of drawing)" is next (ceiling: lever by lever). `:89`: slice 2's census ceiling is −23% of the drawing's I-misses [E], and DRAWPART3 was rejected at +0.9-2.7% [M]. `:32`: the ME's traffic costs render objects ~0.9 ms a frame | §3.2.1 |
 | world | visibility, me-replay, lighting | `:94`: work moved to the ME. Visibility is 4.85 ms a frame on b30's flight [M], and B1's exact moves are ~5-8 ms a frame on b30's beach. Placement (§4) rules out a move without ME room shown at 30 fps (REBUILD.md:87) | after objects |
 | effects | effects (49 levers, 14 stopped) | `:33`: effects' drawing is 4.1 ms a frame on b40, three-quarters of it work | after world |
 | hud | hud-ui (17 levers, 3 stopped) | no line names it | after effects |
 | transparent, flares, rest | to be looked up | no line names them | last |
+
+#### 3.2.1 Objects: the per-part chain's locks [D]
+
+The case is for the per-part chain's lookups. It is a slice of `objects`' 15.7 ms, not the whole of its 11.1 ms cut. Written by builder2 at 2026-11-27 00:25 from the code at this branch's 68cfdf36; the hook and its counter are the same at the census head c5ff3114.
+
+- **The ground: stopped tries first** (the lab's `python3 -I toolbox/levercheck.py psp_model_draw RSO DRAWPART retainedloop`, then `DRAWPART3 MB`, 00:2x):
+  - **DRAWPART3** (stopped, rejected as built 2026-11-04): recorded models drawn in two stages over runs of up to 32. On the PSP-3000 b30 pair it cost drawing +0.2 ms in the cinematic, +0.5 in flight and +1.2 on landing [M]. The cost map gives the reason (`:89`): "the code that still runs between parts stayed". Its `revive_if` asks for "the per-part chain itself under ~8 KB hot", among other things. This cut removes code from that chain and adds no stage.
+  - **MB** (stopped): model parts drawn in stages, with each part's decisions gathered first. Its worth is ~45 k instruction misses a frame [E]. It was class B in the 2026-11-18 cache-model audit and never had a PSP pair.
+  - **PDCCALL** (stopped): a part whose record matches last frame's is CALLed from a retained block. On c10's PSP-1000 pair the frame cost +1.2-2.3% [M]. This cut keeps every record as it is, so the ME's replay doesn't change.
+  - **In and on by default:** RSO, which re-emits a still object's records (b30 flight drawing −0.6 ms [M]); DRAWPART2 with LIGHTFIRST (the walk in two stages; b30 PSP-1000 flight drawing −3.6 ms [M]); LIGHTREUSE; `retainedloop`; and PASSSMALL. This cut sits beneath all of them. It changes how a part that still walks the chain finds its geometry, not which parts walk it.
+- **The cost-map line it attacks:** `cpu_cost_map.md:88`, "the rest of the per-part chain (`psp_model_draw`'s locks, pretouch and records, ~15% of drawing)". The line's ceiling is lever by lever. On §3.1's 34.4 ms of b30 fight drawing, 15% is ~5.2 ms [U: the line's 15% carries no build]. This case takes only the locks. Pretouch runs only while `PRETOUCHING()`, and the record is what the ME replays, so both stay.
+- **What a part does today, from the code:**
+  - The `rasterizer_model_draw` hook (`psp_fixups.py:351-600`) calls `psp_model_draw` (`psp_fixups.py:2695`).
+  - `psp_vertex_lock` (`psp/src/psp_geo.c:1918`) does one `psp_geo_lock` for the baked block. That is a hash `find` (`psp_geo.c:369`), then the state and size test, then three stores. With SSPR at a level below the top it does two more: the 32-byte directory entry and the level's block. If the level isn't resident it does a third, locking the top again (`:1943-1967`).
+  - `psp_index_lock` (`:2020`) does one more `find` when the indices are external.
+  - `psp_ge_draw_model` (`psp/src/psp_ge.c:17370`) asks `psp_geo_baked`, which calls `resident_entry` (`psp_geo.c:1095`) for the same block. That usually comes back on the `last_locked` fast path.
+  - So a part does 2-5 lookups and one `resident_entry` to resolve the same address to the same block it resolved last frame, for as long as the block stays resident.
+- **The cut, in §3.2's order:**
+  - The bake already gives each buffer its block's index (`buffer->pad`, `pcv_table`).
+  - The coarse group whose change its writer knows: the geometry cache knows when it evicts or re-reads an entry, so it bumps a generation word each time it does.
+  - A part's resolved pointers (block, level header, indices) are then kept per model key beside `retainedloop`'s kept calls. A part checks them with one compare against the generation word and goes straight to `psp_ge_draw_model_body`'s inputs.
+  - It's exact by construction: the same pointers are drawn whenever the generation hasn't moved, and otherwise the chain runs as today. The emulator's GE lists prove it.
+- **The cost sheet:**
+  - **Saved an item [D, counted from the code, not timed]:** 2-5 hash finds, each ~25-40 instructions when hot, plus `resident_entry`'s fast path and the five functions' entry checks. That's ~60-200 cycles of the data path a part. On the instruction side, `psp_vertex_lock`, `psp_geo_lock`, `psp_index_lock`, `psp_geo_baked` and `resident_entry` leave the per-part chain. In `draw_rebuild.md:15`, `psp_geo_lock` and `resident_entry` were ~1.3 M instruction misses each on b30's route [E, b113, lab 41308914906, 2026-11-01, before DRAWPART2, RSO and `retainedloop`: a lead, to be read again on today's head].
+  - **Added an item [D]:** one load of the kept entry (12-16 bytes, one data line, a miss when cold, against the 2-4 lines the finds read in `hash_head`, `hash_next` and `entries`), the generation compare and a branch: ~6-10 instructions. The cache's evict and re-read paths each gain one store.
+  - **Items a frame: open.** The build already counts them. `psp_model_draw_us[2]++` (`psp_fixups.py:597`) counts every call into the hook, and `notimers` zeroes only that counter's two times (`psp_microseconds`, `psp_platform.c:2800`), not the count. `profile_report` prints the count as `model part draws: N` in every profile window (`psp_platform.c:1124`). So the census runs' own logs (`drawcensus_b30` sierra-hw 45943027708, `drawmain_census` 45945230751) may already hold the objects sheet's third figure, with no new counter. Two things are [U] until a log is read: whether a part `retainedloop` keeps still enters the hook, and the window's frame count.
+- **What the sheet says before its count [D]:** at the data path's ~60-200 cycles alone, the cut clears the 0.5 ms bar only at ~830-2,800 parts a frame at 333 MHz. Its case rests on the instruction side, which is what DRAWPART3 lacked: code taken out of the chain, not staged around it. The count decides whether this is a lever on its own or the first slice of §4's objects rebuild.
 
 ### 3.3 What the sheets lack: the items a frame [D]
 
