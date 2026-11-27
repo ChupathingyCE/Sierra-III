@@ -185,15 +185,17 @@ static int charge_to(int slot)
 }
 
 /* a level 1 phase's close finding fields still open above it: they are
-dropped, and said so */
+dropped, and said so. A whole field open from before the phase began is
+under the phase's own entry, so it stays open: whole_open is cleared only
+when a field is dropped (a wait inside the sky kept the sky whole) */
 static void drop_fields(void)
 {
 	while (depth && (stack[depth - 1] & FIELD_MARK))
 	{
 		depth--;
 		run->unbalanced++;
+		whole_open = 0;
 	}
-	whole_open = 0;
 }
 
 void halo_perf_begin(int phase)
