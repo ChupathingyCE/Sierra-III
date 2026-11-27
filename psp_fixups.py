@@ -65651,6 +65651,21 @@ TICK2_POSENEW_NMS_FORWARD = "static void psp_nms_forget(void);\n"
 # the count's definition stays in objects.c (the lead 2026-11-25 09:0x): the file's copy declares it in its place
 TICK2_POSENEW_NMS_COUNT = ("int psp_nms_count = 0;\n",
                            "extern int psp_nms_count; /* defined in objects.c (the lead 2026-11-25 09:0x) */\n")
+# wsold's sphere marks (the lab's decisions.md 2026-11-26 21:4x (3); docs/box_world_store.md tc-copy §3, commit 1's
+# crossing): the copy's two sphere writers here, psp_nms_make (a left-out compute made late) and the check's put-back
+# of the kept sphere, mark the object for wsold's next refresh. Each is under #ifdef PSP_WSOLD, which psp_build.py
+# gives store_pose.c only with PSP_WSOLD=1, so off they're gone before the compiler sees them and the EBOOT is
+# byte-identical. They're in the file's copy whatever the switch, so the cut makes the same two insertions, each found
+# once, to the text it compares: objects.c's block never holds them (the block leaves objects.c).
+TICK2_POSENEW_NMS_WSOLD_MARK = ("#ifdef PSP_WSOLD\n\t{ void box_ws_old_mark(long datum_index); box_ws_old_mark(%s); } "
+                                "/* (wsold) %s */\n#endif\n")
+TICK2_POSENEW_NMS_WSOLD_MARKS = (
+    ("psp_nms_make's first statement", "\tunsigned int k;\n\n\tpsp_nms_inputs_get(object, &now + PSP_MEPROBE_EXPR(9));\n",
+     "\tunsigned int k;\n\n" + TICK2_POSENEW_NMS_WSOLD_MARK % ("object_index", "its nodes and sphere made since the copy") +
+     "\tpsp_nms_inputs_get(object, &now + PSP_MEPROBE_EXPR(9));\n"),
+    ("the kept sphere's put-back", "\tcsmemcpy(nodes, psp_nms_kept, size);\n\tobject->object.root->bounding_sphere_center = center;\n",
+     "\tcsmemcpy(nodes, psp_nms_kept, size);\n" + TICK2_POSENEW_NMS_WSOLD_MARK % ("entry.object_index", "the kept sphere put back") +
+     "\tobject->object.root->bounding_sphere_center = center;\n"))
 def tick2_posenew_nms_texts(c):
     """NMSKIP's block as objects.c holds it (the head comment to psp_nms_game_state_loading's closing brace), what
     objects.c keeps in its place, and the file's copy (the rest, joined, the exports' static dropped)"""
@@ -65704,6 +65719,12 @@ def tick2_posenew_nms_texts(c):
     moved = tick2_posenew_copy_reads(moved, TICK2_POSENEW_COPY_NMS_READS, "NMSKIP's tables")
     if moved is None:
         return None
+    for name, old, new in TICK2_POSENEW_NMS_WSOLD_MARKS:
+        if moved.count(old) != 1:
+            check_fail("psp_fixups: TICK2 posenew step 5 (wsold's sphere marks): %s is in NMSKIP's copy %d times, not 1"
+                       % (name, moved.count(old)))
+            return None
+        moved = moved.replace(old, new)
     return block, kept, moved
 def tick2_posenew_nms_move_cut(tree):
     if not TICK2_POSENEW or STORECOUNT:
