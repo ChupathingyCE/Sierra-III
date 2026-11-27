@@ -47,7 +47,39 @@ the items a frame, then each field's ms a frame and us an item:
 before the first); "elsewhere" is fields' time under parts other than
 objects and world (a model drawn in transparent, a hook inside a wait).
 Measurement only: nothing the game reads is written. With the word off the
-hooks are each a flag's test and nothing is allocated. */
+hooks are each a flag's test and nothing is allocated.
+
+The sampled form (PSP_DRAWSPLIT_SAMPLED; the lab's
+findings/drawsplit2_2026-11-27.md 'The thinner cut, design (a)'; decisions
+2026-11-27 04:0x, 04:1x (3)). The hooks are stores (psp_drawsplit.h): a
+(part, field) code on a 16-deep stack, level 1's through the three phase
+tables here, so no hooked function gains a call or a branch. The clock is an
+alarm's (sceKernelSetAlarm, every PERIOD us, from the first render on, the
+whole frame long): each run charges the time since its last run to the code
+on the stack's top, the same wall time the exact form's deltas charge,
+sampled. The frame: main.c's render calls, uncounted (psp_fixups.py places
+them), psp_drawsplit_render_begin before the render's begin and
+psp_drawsplit_render_end after its end, so d is the render's span and
+psp_frame_account calls nothing; the end folds the samples since the last
+end (a buffer each, swapped there, so the alarm never writes the one being
+read) and finds the stack at its bottom, else counts the frame unbalanced and
+puts it back. A part's figure is quantised by the period: the first sample
+after the render's begin charges the gap since the one before to the render,
+and the gap from the last sample to the render's end goes to the next frame's
+out, ~half a period each, roughly cancelling. Its lines are the exact form's
+without the us an item (a share isn't a count: decisions 04:1x (3)(d)) and
+with the samples' own:
+  drawsplit2 samples: N frames, every P us: M a frame, M in the drawing;
+  late mean M us, worst W us[; SHARES U: ...]
+  drawsplit2 samples objects: residual n, walk n, ...; under 100: f, ...
+(and world's, and world's window). A run's lateness is its gap past the
+period, read on the runs that land in the drawing: it equals the fire's
+lateness when the kernel counts the next delay from the handler's run [U:
+not read; from the fire's due time, it is the change in lateness], and it is
+the bias either way, since a late run charges its whole gap to what is open
+when it lands. A mean over a tenth of the period marks the shares [U]
+(04:1x (3)(b)); a field under 100 samples on the window is named, not read
+as us (3)(c). */
 
 #ifdef PSP_DRAWSPLIT
 
@@ -55,6 +87,7 @@ hooks are each a flag's test and nothing is allocated. */
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "halo_perf_log.h"
 #include "psp_drawsplit.h"
 
@@ -125,13 +158,28 @@ struct drawsplit_run
 	/* [part][item][inside a whole field] */
 	unsigned long long window_items[PARTS][ITEMS][2];
 	unsigned int frames, run_frames, unfolded, unbalanced;
+	/* sampled: the samples in the drawing, and all of them */
 	unsigned long long window_stamps, window_stamps2;
 	unsigned int stamps_most;
+#ifdef PSP_DRAWSPLIT_SAMPLED
+	unsigned long long window_samples[SLOTS];
+	/* late_us: the drawing's runs' gaps past the period; odd: runs finding
+	a code no part or field has */
+	unsigned long long window_late_us;
+	unsigned int late_most, odd;
+#endif
 };
+
+#ifdef PSP_DRAWSPLIT_SAMPLED
+/* the alarm's period, us; a field under FEW samples on the window is named */
+#define PERIOD 100
+#define FEW 100
+#endif
 
 static struct drawsplit_run *run = NULL;
 static int on = -1;
 static signed char phase_part[NUMBER_OF_HALO_PERF_PHASES];
+#ifndef PSP_DRAWSPLIT_SAMPLED
 static unsigned char phase_depth[NUMBER_OF_HALO_PERF_PHASES];
 static unsigned short stack[STACK];
 /* whole_open: 1 inside a whole field, more for the field hooks nested in it;
@@ -141,6 +189,7 @@ static int depth = 0, current = SLOT(PART_OUT, PSP_DRAWSPLIT_NONE), frame_open =
 static unsigned int last = 0, frame_stamps = 0, frame_stamps2 = 0;
 static unsigned int frame_us[SLOTS];
 static unsigned int frame_items[PARTS][ITEMS][2];
+#endif
 
 static void map_phases(void)
 {
@@ -168,6 +217,7 @@ static void map_phases(void)
 	unmapped, they read nothing */
 }
 
+#ifndef PSP_DRAWSPLIT_SAMPLED
 /* the pair charged from now on: the time since the last read goes to the one
 that was open. 1 if it read the clock */
 static int charge_to(int slot)
@@ -324,6 +374,7 @@ void psp_drawsplit_count(int item, unsigned int n)
 	else
 		frame_items[PART_OF(current)][item][whole_open ? 1 : 0] += n;
 }
+#endif
 
 static unsigned int bin(unsigned int us)
 {
@@ -404,6 +455,7 @@ static void report_part(int part, const struct line_field *fields, int count, co
 		unsigned long long us = run->window_slot_us[SLOT(part, fields[k].field)];
 
 		at = append(line, sizeof(line), at, "; %s %.2f ms", field_names[(int)fields[k].field], us / n / 1000.0);
+#ifndef PSP_DRAWSPLIT_SAMPLED
 		if (fields[k].item >= 0)
 		{
 			unsigned long long items_seen = run->window_items[part][(int)fields[k].item][0];
@@ -413,9 +465,15 @@ static void report_part(int part, const struct line_field *fields, int count, co
 			else
 				at = append(line, sizeof(line), at, " -/%s", item_names[(int)fields[k].item]);
 		}
+#endif
 	}
+#ifdef PSP_DRAWSPLIT_SAMPLED
+	if (part == PART_OBJECTS)
+		at = append(line, sizeof(line), at, "; samples %.1f a frame", run->window_stamps / n);
+#else
 	if (part == PART_OBJECTS)
 		at = append(line, sizeof(line), at, "; stamps2 %.1f a frame", run->window_stamps2 / n);
+#endif
 	else
 	{
 		unsigned long long elsewhere = 0;
@@ -429,6 +487,28 @@ static void report_part(int part, const struct line_field *fields, int count, co
 	}
 	platform_log("%s", line);
 }
+
+#ifdef PSP_DRAWSPLIT_SAMPLED
+/* one samples line: each field's samples on the window, then the fields
+under FEW named (04:1x (3)(c): not read as us) */
+static void report_samples(const char *title, int part, const signed char *fields, int count)
+{
+	char line[500];
+	int at, k, few = 0;
+
+	at = snprintf(line, sizeof(line), "drawsplit2 samples %s:", title);
+	for (k = 0; k < count; k++)
+		at = append(line, sizeof(line), at, "%s %s %u", k ? "," : "", field_names[(int)fields[k]],
+			(unsigned)run->window_samples[SLOT(part, fields[k])]);
+	at = append(line, sizeof(line), at, "; under %d:", FEW);
+	for (k = 0; k < count; k++)
+		if (run->window_samples[SLOT(part, fields[k])] < FEW)
+			at = append(line, sizeof(line), at, "%s %s", few++ ? "," : "", field_names[(int)fields[k]]);
+	if (!few)
+		at = append(line, sizeof(line), at, " none");
+	platform_log("%s", line);
+}
+#endif
 
 static void report(void)
 {
@@ -446,8 +526,13 @@ static void report(void)
 	for (part = PART_UNNAMED; part < PARTS; part++)
 		at = append(line, sizeof(line), at, "; %s %.1f/%.1f/%.1f", part_names[part], run->window_us[part] / n / 1000.0,
 			percentile(run->histogram[part], run->run_frames, 500), percentile(run->histogram[part], run->run_frames, 990));
+#ifdef PSP_DRAWSPLIT_SAMPLED
+	append(line, sizeof(line), at, "; samples %.1f a frame (most %u)%s", run->window_stamps / n, run->stamps_most,
+		run->unbalanced ? "; UNBALANCED" : "");
+#else
 	append(line, sizeof(line), at, "; stamps %.1f a frame (most %u)%s", run->window_stamps / n, run->stamps_most,
 		run->unbalanced ? "; UNBALANCED" : "");
+#endif
 	platform_log("%s", line);
 	report_part(PART_OBJECTS, objects_fields, (int)(sizeof(objects_fields) / sizeof(objects_fields[0])), objects_items,
 		(int)(sizeof(objects_items) / sizeof(objects_items[0])), n);
@@ -459,9 +544,43 @@ static void report(void)
 	for (k = PSP_DRAWSPLIT_WINBEGIN; k <= PSP_DRAWSPLIT_WINEND; k++)
 		at = append(line, sizeof(line), at, "; %s %.2f ms", field_names[k], run->window_slot_us[SLOT(PART_WORLD, k)] / n / 1000.0);
 	platform_log("%s", line);
+#ifdef PSP_DRAWSPLIT_SAMPLED
+	{
+		static const signed char objects_samples[] = { PSP_DRAWSPLIT_NONE, PSP_DRAWSPLIT_WALK, PSP_DRAWSPLIT_LIGHTS,
+			PSP_DRAWSPLIT_MATRICES, PSP_DRAWSPLIT_D3D, PSP_DRAWSPLIT_INST, PSP_DRAWSPLIT_STATE, PSP_DRAWSPLIT_ENCODE,
+			PSP_DRAWSPLIT_SHADOWS, PSP_DRAWSPLIT_FPW };
+		static const signed char world_samples[] = { PSP_DRAWSPLIT_NONE, PSP_DRAWSPLIT_VIS, PSP_DRAWSPLIT_SOUND,
+			PSP_DRAWSPLIT_LIGHTS, PSP_DRAWSPLIT_WALK, PSP_DRAWSPLIT_STATE, PSP_DRAWSPLIT_D3D, PSP_DRAWSPLIT_ENCODE,
+			PSP_DRAWSPLIT_SKY, PSP_DRAWSPLIT_LIGHTPASS, PSP_DRAWSPLIT_DECALS, PSP_DRAWSPLIT_DIFFUSE, PSP_DRAWSPLIT_SPECULAR };
+		static const signed char window_samples[] = { PSP_DRAWSPLIT_WINBEGIN, PSP_DRAWSPLIT_REFLECT, PSP_DRAWSPLIT_FOG,
+			PSP_DRAWSPLIT_DETAIL, PSP_DRAWSPLIT_AA, PSP_DRAWSPLIT_WINEND };
+		double late = run->window_stamps ? (double)run->window_late_us / run->window_stamps : 0.0;
+
+		at = snprintf(line, sizeof(line), "drawsplit2 samples: %u frames, every %d us: %.1f a frame, %.1f in the drawing; late mean %.1f us, worst %u us",
+			run->frames, PERIOD, run->window_stamps2 / n, run->window_stamps / n, late, run->late_most);
+		/* 04:1x (3)(b): a mean over a tenth of the period */
+		if (late * 10 > PERIOD)
+			at = append(line, sizeof(line), at, "; SHARES U (late mean over %d us)", PERIOD / 10);
+		if (run->odd)
+			at = append(line, sizeof(line), at, "; %u odd", run->odd);
+		platform_log("%s", line);
+		report_samples("objects", PART_OBJECTS, objects_samples, (int)sizeof(objects_samples));
+		report_samples("world", PART_WORLD, world_samples, (int)sizeof(world_samples));
+		report_samples("world's window", PART_WORLD, window_samples, (int)sizeof(window_samples));
+		if (run->unbalanced || run->unfolded)
+			platform_log("drawsplit: %u frames unbalanced (the stack not at its bottom at the render's end, put back); %u render ends with no begin, not split",
+				run->unbalanced, run->unfolded);
+		for (k = 0; k < SLOTS; k++)
+			run->window_samples[k] = 0;
+		run->window_late_us = 0;
+		run->late_most = 0;
+		run->odd = 0;
+	}
+#else
 	if (run->unbalanced || run->unfolded)
 		platform_log("drawsplit: %u hooks unbalanced (a close with nothing open, a field left open, or past %d deep); %u frames drawn outside a render phase, not split",
 			run->unbalanced, STACK, run->unfolded);
+#endif
 	for (part = 0; part < HISTS; part++)
 		run->window_us[part] = 0;
 	for (k = 0; k < SLOTS; k++)
@@ -475,6 +594,7 @@ static void report(void)
 	run->frames = 0;
 }
 
+#ifndef PSP_DRAWSPLIT_SAMPLED
 /* a frame has been drawn, from psp_frame_account (psp_platform.c), with
 frametrace's d: the parts are closed, folded and cleared */
 void psp_drawsplit_frame(unsigned long draw_us)
@@ -555,5 +675,207 @@ void psp_drawsplit_frame(unsigned long draw_us)
 	if (++run->frames >= WINDOW)
 		report();
 }
+
+#else
+/* the sampled form: the hooks' state and level 1's tables (psp_drawsplit.h) */
+volatile struct psp_drawsplit_state psp_drawsplit_state;
+unsigned short psp_drawsplit_phase_keep[NUMBER_OF_HALO_PERF_PHASES], psp_drawsplit_phase_code[NUMBER_OF_HALO_PERF_PHASES],
+	psp_drawsplit_render_code[NUMBER_OF_HALO_PERF_PHASES + 1];
+
+/* what the alarm adds between two render ends: us and samples by (part,
+field); all its runs, those in the drawing, their gaps past the period */
+struct sampled
+{
+	unsigned int us[SLOTS], samples[SLOTS];
+	unsigned int all, drawing, late_us, late_most, odd;
+};
+
+static struct sampled buffers[2];
+/* the buffer the alarm fills; swapped by the render's end */
+static volatile unsigned int filling = 0;
+static unsigned int sample_last = 0, render_start = 0;
+static int frame_open = 0;
+
+#define BARRIER() __asm__ __volatile__("" ::: "memory")
+
+/* the alarm (interrupt context): the gap since its last run to the code on
+the stack's top. The hooks store the entry before the index, so the top is
+always written */
+static SceUInt sample(void *common)
+{
+	unsigned int now = sceKernelGetSystemTimeLow(), gap = now - sample_last;
+	unsigned int code = psp_drawsplit_state.stack[psp_drawsplit_state.sp & (PSP_DRAWSPLIT_STACK - 1)];
+	unsigned int part = (code & PSP_DRAWSPLIT_PART_MASK) >> PSP_DRAWSPLIT_PART_SHIFT, field = code & PSP_DRAWSPLIT_FIELD_MASK;
+	struct sampled *b = &buffers[filling];
+
+	(void)common;
+	sample_last = now;
+	b->all++;
+	if (part != PART_OUT)
+	{
+		unsigned int late = gap > PERIOD ? gap - PERIOD : 0;
+
+		if (part < PARTS && field < FIELDS)
+		{
+			b->us[SLOT(part, field)] += gap;
+			b->samples[SLOT(part, field)]++;
+		}
+		else
+			b->odd++;
+		b->drawing++;
+		b->late_us += late;
+		if (late > b->late_most)
+			b->late_most = late;
+	}
+	return PERIOD;
+}
+
+/* level 1's tables from map_phases: a mapped phase's begin pushes its part
+(keeping the whole bit), an unmapped one copies the top; a render part is
+its phase's part, or the render's own time (NONE, or a phase no part has) */
+static void fill_tables(void)
+{
+	int k;
+
+	for (k = 0; k < NUMBER_OF_HALO_PERF_PHASES; k++)
+	{
+		psp_drawsplit_phase_keep[k] = phase_part[k] < 0 ? 0xffffu : PSP_DRAWSPLIT_WHOLE_BIT;
+		psp_drawsplit_phase_code[k] = phase_part[k] < 0 ? 0 : (unsigned short)(phase_part[k] << PSP_DRAWSPLIT_PART_SHIFT);
+		psp_drawsplit_render_code[k + 1] = (unsigned short)((phase_part[k] > PART_UNNAMED ? phase_part[k] : PART_UNNAMED)
+			<< PSP_DRAWSPLIT_PART_SHIFT);
+	}
+	psp_drawsplit_render_code[0] = PART_UNNAMED << PSP_DRAWSPLIT_PART_SHIFT;
+}
+
+/* the word read, the tables filled, the alarm started: from the first
+render's begin */
+static void start(void)
+{
+	SceUID alarm;
+
+	on = psp_keep("drawsplit");
+	if (!on)
+		return;
+	run = calloc(1, sizeof(*run));
+	if (!run)
+	{
+		platform_log("drawsplit: no room for its %u KB; off", (unsigned)(sizeof(*run) / 1024));
+		on = 0;
+		return;
+	}
+	map_phases();
+	fill_tables();
+	sample_last = sceKernelGetSystemTimeLow();
+	alarm = sceKernelSetAlarm(PERIOD, sample, NULL);
+	if (alarm < 0)
+	{
+		platform_log("drawsplit: sampled: no alarm (0x%08x); off", (unsigned)alarm);
+		on = 0;
+		return;
+	}
+	platform_log("drawsplit: on, sampled every %d us (the drawing's %d parts, the engine's perf phases in its five files; objects' and world's %d fields; a line each %d frames)",
+		PERIOD, PARTS - 1, FIELDS - 1, WINDOW);
+}
+
+/* main.c, before each HALO_PERF_BEGIN(_halo_perf_render) */
+void psp_drawsplit_render_begin(void)
+{
+	if (on < 0)
+		start();
+	if (on <= 0)
+		return;
+	render_start = sceKernelGetSystemTimeLow();
+	frame_open = 1;
+}
+
+/* main.c, after each HALO_PERF_END(_halo_perf_render): d is the render's
+span; the samples since the last end are folded and cleared */
+void psp_drawsplit_render_end(void)
+{
+	unsigned int draw_us, sum = 0, row;
+	int part, field, item;
+	struct sampled *b;
+
+	if (on <= 0)
+		return;
+	if (!frame_open)
+	{
+		run->unfolded++;
+		return;
+	}
+	draw_us = sceKernelGetSystemTimeLow() - render_start;
+	frame_open = 0;
+	/* the alarm fills the other buffer from here on; it runs to its end
+	before this thread runs again, so b is whole */
+	b = &buffers[filling];
+	filling ^= 1;
+	BARRIER();
+	if (psp_drawsplit_state.sp & (PSP_DRAWSPLIT_STACK - 1))
+	{
+		run->unbalanced++;
+		psp_drawsplit_state.stack[0] = 0;
+		psp_drawsplit_state.sp = 0;
+	}
+	for (part = PART_UNNAMED; part < PARTS; part++)
+	{
+		unsigned int part_us = 0;
+
+		for (field = 0; field < FIELDS; field++)
+		{
+			part_us += b->us[SLOT(part, field)];
+			run->window_slot_us[SLOT(part, field)] += b->us[SLOT(part, field)];
+			run->window_samples[SLOT(part, field)] += b->samples[SLOT(part, field)];
+		}
+		run->histogram[part][bin(part_us)]++;
+		run->window_us[part] += part_us;
+		sum += part_us;
+	}
+	/* the items by the code's part and whole bit; clusters and objects are
+	world's whatever is open, as the exact form counts them */
+	for (row = 0; row < PSP_DRAWSPLIT_ITEM_ROWS; row++)
+	{
+		unsigned int row_part = row & (PSP_DRAWSPLIT_PART_MASK >> PSP_DRAWSPLIT_PART_SHIFT), whole = row >> 4;
+
+		for (item = 0; item < ITEMS; item++)
+		{
+			unsigned int n = psp_drawsplit_state.items[row][item];
+
+			psp_drawsplit_state.items[row][item] = 0;
+			if (item >= PSP_DRAWSPLIT_CLUSTERS)
+				run->window_items[PART_WORLD][item][0] += n;
+			else if (row_part < PARTS)
+				run->window_items[row_part][item][whole] += n;
+		}
+	}
+	run->histogram[HIST_SUM][bin(sum)]++;
+	run->window_us[HIST_SUM] += sum;
+	run->histogram[HIST_D][bin(draw_us)]++;
+	run->window_us[HIST_D] += draw_us;
+	run->window_stamps += b->drawing;
+	run->window_stamps2 += b->all;
+	if (b->drawing > run->stamps_most)
+		run->stamps_most = b->drawing;
+	run->window_late_us += b->late_us;
+	if (b->late_most > run->late_most)
+		run->late_most = b->late_most;
+	run->odd += b->odd;
+	memset(b, 0, sizeof(*b));
+	run->run_frames++;
+	if (++run->frames >= WINDOW)
+		report();
+}
+
+/* main.c's pass end (HALO_PERF_FRAME, whether the word is on or not): the
+sampled form's fold is the render's end, so nothing here */
+void halo_perf_frame(void)
+{
+}
+
+/* (no unit of this build asks: NONE) */
+int halo_perf_render_part_now(void)
+{
+	return -1;
+}
+#endif
 
 #endif

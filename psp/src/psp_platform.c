@@ -4001,10 +4001,13 @@ void psp_frame_account(unsigned long microseconds)
 	extern void psp_crash_stop_if_crashed(void);
 	unsigned long ticks = ticks_since_frame, end_start;
 
-#ifdef PSP_DRAWSPLIT
+#if defined(PSP_DRAWSPLIT) && !defined(PSP_DRAWSPLIT_SAMPLED)
 	{
 		/* "drawsplit" (psp_drawsplit.c): the drawing's parts closed with d,
-		before anything of the frame's end runs */
+		before anything of the frame's end runs. Not in the sampled form:
+		this function is one of the 15 the call cost their profile counts
+		(the lab's findings/drawsplit2_2026-11-27.md), and main.c's render
+		calls fold the frame there */
 		extern void psp_drawsplit_frame(unsigned long draw_us);
 
 		psp_drawsplit_frame(microseconds);
