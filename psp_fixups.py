@@ -57783,6 +57783,132 @@ static struct
 } psp_pvsc_camera[PSP_PVSC_CAMERAS];
 static int psp_pvsc_camera_count;
 
+/* the exact share (the lab's draw-pvs task 2 (B) count (i), the lead
+2026-11-27 06:1x): a re-entry whose region R' lies inside a region R_old the
+same cluster was entered with earlier on this walk. Its whole sub-walk can add
+no cluster, order or bounds, so a cut would skip it: its steps (the re-entry's
+and every call under it) are the saved count. Two forms: 0 exact (every point
+of R' on R_old's inner side of each edge), 1 within the clip's 0.0001 of an
+edge. Each walk keeps the regions its steps entered, up to PSP_PVSC_POINTS
+points each, PSP_PVSC_REGIONS a walk (a step past the 160 budget enters none) */
+#define PSP_PVSC_REGIONS 176
+#define PSP_PVSC_POINTS 32
+static struct
+{
+    short cluster, count, next, pad;
+    float xy[2 * PSP_PVSC_POINTS];
+} psp_pvsc_region_pool[PSP_PVSC_REGIONS];
+static short psp_pvsc_region_head[MAXIMUM_CLUSTERS_PER_STRUCTURE];
+static unsigned long psp_pvsc_region_walk[MAXIMUM_CLUSTERS_PER_STRUCTURE];
+static int psp_pvsc_region_used, psp_pvsc_depth, psp_pvsc_skip_depth[2], psp_pvsc_last_inside;
+static unsigned long psp_pvsc_skip_start[2], psp_pvsc_walk_saved[2], psp_pvsc_contained[2], psp_pvsc_saved[2],
+    psp_pvsc_saved_over[2], psp_pvsc_over_fits[2], psp_pvsc_unstored, psp_pvsc_unbalanced,
+    psp_pvsc_inside_widened, psp_pvsc_tests, psp_pvsc_walk_serial = 1;
+
+/* is every point of (count, xy) inside the region at pool index old? form 0
+exact, 1 within 0.0001 */
+static int psp_pvsc_inside_of(int old, int count, float const *xy, int form)
+{
+    float const *o = psp_pvsc_region_pool[old].xy;
+    int n = psp_pvsc_region_pool[old].count, i, j;
+    float area = 0.0f, sign;
+
+    for (i = 0; i < n; i++)
+    {
+        j = i + 1 == n ? 0 : i + 1;
+        area += o[2 * i] * o[2 * j + 1] - o[2 * j] * o[2 * i + 1];
+    }
+    if (n < 3 || area == 0.0f)
+        return 0;
+    sign = area > 0.0f ? 1.0f : -1.0f;
+    for (i = 0; i < n; i++)
+    {
+        float ax = o[2 * i], ay = o[2 * i + 1], ex, ey, length2;
+        int p;
+
+        j = i + 1 == n ? 0 : i + 1;
+        ex = o[2 * j] - ax;
+        ey = o[2 * j + 1] - ay;
+        length2 = ex * ex + ey * ey;
+        for (p = 0; p < count; p++)
+        {
+            float c = sign * (ex * (xy[2 * p + 1] - ay) - ey * (xy[2 * p] - ax));
+
+            if (c < 0.0f && (form == 0 || c * c > 1.0e-8f * length2))
+                return 0;
+        }
+    }
+    return 1;
+}
+
+/* a step's region, before its cluster is set rendered (rendered: whether it
+was already, this walk). Called once for each step past the budget check */
+void psp_pvsc_region(short cluster, int rendered, short count, float const *xy)
+{
+    int form, slot;
+
+    psp_pvsc_depth++;
+    psp_pvsc_last_inside = 0;
+    if (cluster < 0 || cluster >= MAXIMUM_CLUSTERS_PER_STRUCTURE)
+        return;
+    if (psp_pvsc_region_walk[cluster] != psp_pvsc_walk_serial)
+    {
+        psp_pvsc_region_walk[cluster] = psp_pvsc_walk_serial;
+        psp_pvsc_region_head[cluster] = -1;
+    }
+    if (rendered)
+    {
+        for (form = 0; form < 2; form++)
+        {
+            int old, inside = 0;
+
+            if (psp_pvsc_skip_depth[form])
+                continue;
+            for (old = psp_pvsc_region_head[cluster]; old >= 0 && !inside; old = psp_pvsc_region_pool[old].next)
+            {
+                if (form == 0)
+                    psp_pvsc_tests++;
+                inside = psp_pvsc_inside_of(old, count, xy, form);
+            }
+            if (inside)
+            {
+                psp_pvsc_contained[form]++;
+                psp_pvsc_skip_depth[form] = psp_pvsc_depth;
+                psp_pvsc_skip_start[form] = psp_pvsc_steps - 1;
+                if (form == 0)
+                    psp_pvsc_last_inside = 1;
+            }
+        }
+    }
+    if (count < 1 || count > PSP_PVSC_POINTS || psp_pvsc_region_used >= PSP_PVSC_REGIONS)
+    {
+        psp_pvsc_unstored++;
+        return;
+    }
+    slot = psp_pvsc_region_used++;
+    psp_pvsc_region_pool[slot].cluster = cluster;
+    psp_pvsc_region_pool[slot].count = count;
+    psp_pvsc_region_pool[slot].next = psp_pvsc_region_head[cluster];
+    for (form = 0; form < 2 * count; form++)
+        psp_pvsc_region_pool[slot].xy[form] = xy[form];
+    psp_pvsc_region_head[cluster] = (short)slot;
+}
+
+/* a step's end (the walk's last statement before it leaves its cluster):
+a sub-walk a cut would skip ends here, its steps saved */
+void psp_pvsc_leave(void)
+{
+    int form;
+
+    for (form = 0; form < 2; form++)
+        if (psp_pvsc_skip_depth[form] == psp_pvsc_depth)
+        {
+            psp_pvsc_walk_saved[form] += psp_pvsc_steps - psp_pvsc_skip_start[form];
+            psp_pvsc_skip_depth[form] = 0;
+        }
+    psp_pvsc_depth--;
+}
+
 /* each call of the walk, before its budget check (so the same count as its
 psp_portal_steps) */
 void psp_pvsc_step(int past_budget)
@@ -57832,6 +57958,8 @@ void psp_pvsc_bounds(int when, float const *bounds)
     psp_pvsc_walk_reentries++;
     for (k = 0; k < 4 && bounds[k] == psp_pvsc_bounds_before[k]; k++)
         ;
+    if (k != 4 && psp_pvsc_last_inside)
+        psp_pvsc_inside_widened++;
     if (k == 4)
     {
         psp_pvsc_inside++;
@@ -57918,8 +58046,37 @@ void psp_pvsc_walk(struct structure_bsp *structure, short camera, unsigned long 
         }
     }
     psp_pvsc_walk_reentries = psp_pvsc_walk_inside = 0;
+    {
+        int form;
+
+        for (form = 0; form < 2; form++)
+        {
+            psp_pvsc_saved[form] += psp_pvsc_walk_saved[form];
+            if (over)
+            {
+                psp_pvsc_saved_over[form] += psp_pvsc_walk_saved[form];
+                if (steps - (long)psp_pvsc_walk_saved[form] <= 160) /* the walk's PSP_PORTAL_STEPS */
+                    psp_pvsc_over_fits[form]++;
+            }
+            psp_pvsc_walk_saved[form] = 0;
+            psp_pvsc_skip_depth[form] = 0;
+        }
+        if (psp_pvsc_depth != 0)
+            psp_pvsc_unbalanced++;
+        psp_pvsc_depth = 0;
+        psp_pvsc_region_used = 0;
+        psp_pvsc_walk_serial++;
+    }
     if (walks % 900 == 0)
     {
+        /* each a/b pair: form 0 (exact) / form 1 (within 0.0001) */
+        platform_psp_log("pvscensus exact: %lu walks, %lu steps, re-entries %lu (rect inside %lu); "
+            "inside %lu/%lu, saved %lu/%lu, saved over budget %lu/%lu, over fits %lu/%lu of %lu; "
+            "widened %lu, unstored %lu, tests %lu, unbalanced %lu",
+            psp_pvsc_walks, psp_pvsc_steps, psp_pvsc_reentries, psp_pvsc_inside,
+            psp_pvsc_contained[0], psp_pvsc_contained[1], psp_pvsc_saved[0], psp_pvsc_saved[1],
+            psp_pvsc_saved_over[0], psp_pvsc_saved_over[1], psp_pvsc_over_fits[0], psp_pvsc_over_fits[1],
+            psp_pvsc_over, psp_pvsc_inside_widened, psp_pvsc_unstored, psp_pvsc_tests, psp_pvsc_unbalanced);
         platform_psp_log("pvscensus: %lu walks (%lu with no camera cluster, %lu over budget); "
             "%lu steps (%lu roots, %lu entered from a portal, %lu past the budget); "
             "portals tested %lu: test %lu (range %lu, on the path %lu, not in the PVS %lu), "
@@ -57961,6 +58118,8 @@ FIXES_PVSCENSUS["source/structures/structure_visibility.c#pvscensus"] = [
  "void psp_pvsc_portal(int in_range, int on_path, int in_pvs);\n"
  "void psp_pvsc_exit(int how);\n"
  "void psp_pvsc_bounds(int when, float const *bounds);\n"
+ "void psp_pvsc_region(short cluster, int rendered, short count, float const *xy);\n"
+ "void psp_pvsc_leave(void);\n"
  "void psp_pvsc_walk(struct structure_bsp *structure, short camera, unsigned long const *rendered_flags,\n"
  "\tlong rendered_count, long steps, int over, unsigned long walks);\n"
  "#define PSP_PVSC(call) (call)\n"
@@ -57972,6 +58131,8 @@ FIXES_PVSCENSUS["source/structures/structure_visibility.c#pvscensus"] = [
 # a re-entry: the cluster's flag before it's set, its rect before and after
 ("\tBIT_VECTOR_SET_FLAG(render.visible_cluster_flags, cluster_index, TRUE);\n"
  "\tgrow_clipping_rectangle_by_portal_hull(\n\t\t&rendered_cluster->clip_bounds,\n\t\tvisible_region);\n",
+ "\tPSP_PVSC(psp_pvsc_region(cluster_index, BIT_VECTOR_TEST_FLAG(render.visible_cluster_flags, cluster_index) ? 1 : 0,\n"
+ "\t\tvisible_region->vertex_count, (float const *)visible_region->vertices));\n"
  "\tPSP_PVSC(psp_pvsc_bounds(BIT_VECTOR_TEST_FLAG(render.visible_cluster_flags, cluster_index) ? 1 : 0,\n"
  "\t\t(float const *)&rendered_cluster->clip_bounds));\n"
  "\tBIT_VECTOR_SET_FLAG(render.visible_cluster_flags, cluster_index, TRUE);\n"
@@ -58000,6 +58161,10 @@ FIXES_PVSCENSUS["source/structures/structure_visibility.c#pvscensus"] = [
  "\t\t\telse\n"
  "\t\t\t\tPSP_PVSC(psp_pvsc_exit(portal_result == _portal_hull_from_portal_succeeded ? 2 : 1));\n"
  "\t\t}\n\t}\n"),
+# a step's end, after its sub-walks (the exact share's saved steps)
+("\tBIT_VECTOR_SET_FLAG(\n\t\tstructure_visibility_globals.visited_cluster_flags,\n\t\tcluster_index,\n\t\tFALSE);\n\n\treturn;\n}\n",
+ "\tPSP_PVSC(psp_pvsc_leave());\n"
+ "\tBIT_VECTOR_SET_FLAG(\n\t\tstructure_visibility_globals.visited_cluster_flags,\n\t\tcluster_index,\n\t\tFALSE);\n\n\treturn;\n}\n"),
 # the walk's end, before the frame falls back to the PVS
 ("\t\tif (psp_portal_steps > PSP_PORTAL_STEPS)\n\t\t\tpsp_portal_fallbacks++;\n",
  "\t\tif (psp_portal_steps > PSP_PORTAL_STEPS)\n\t\t\tpsp_portal_fallbacks++;\n"
