@@ -110,6 +110,88 @@ static inline const struct box_ws_old_biped *box_ws_old_biped_of_index(long datu
 	return &box_ws_old_bipeds[box_ws_old_biped_of[absolute]];
 }
 
+/* the hand-over (docs/box_world_store.md §3, "If the copy isn't ready"):
+   the made word is the number of the refresh whose copy stands, written
+   after the copy's lines are written back from the main CPU's cache and
+   written back itself, last; 0 while a refresh is under way and before the
+   first. A job is posted with the number it expects (box_ws_old_refresh_
+   number) and reads the word first: any other number, and the whole job is
+   not held (the main CPU runs its serial path for that post). Word 0; the
+   other 15 fill its line, so nothing else shares its write-back */
+extern volatile uint32_t box_ws_old_made[16];
+/* the mark bits: a record marked since the refresh (the walk's writes), one
+   bit a slot, written by the main CPU while a job reads */
+extern uint32_t box_ws_old_bits[BOX_WS_OLD_SLOTS / 32];
+uint32_t box_ws_old_refresh_number(void);
+
+/* the readers' uncached reads (the ME's cache never holds a line the main
+   CPU writes while it runs) */
+static inline uint32_t box_ws_old_made_now(void)
+{
+#if defined(__psp__)
+	return *(volatile const uint32_t *)((uintptr_t)&box_ws_old_made[0] | 0x40000000u);
+#else
+	return box_ws_old_made[0];
+#endif
+}
+
+static inline int box_ws_old_marked_since(unsigned absolute)
+{
+#if defined(__psp__)
+	uint32_t word = *(volatile const uint32_t *)((uintptr_t)&box_ws_old_bits[absolute >> 5] | 0x40000000u);
+#else
+	uint32_t word = box_ws_old_bits[absolute >> 5];
+#endif
+	return (word >> (absolute & 31)) & 1;
+}
+
+/* why a reader can't answer for one object from a ready copy: each a count
+   on the wsold: line, handed back at the job's join. None changes play: the
+   object goes to the serial path. NOT_MADE is the whole job's */
+enum
+{
+	BOX_WS_OLD_TAKEN,
+	BOX_WS_OLD_NOT_MADE,      /* the made word isn't the post's: the whole job */
+	BOX_WS_OLD_PAST_SLOTS,    /* a slot past BOX_WS_OLD_SLOTS */
+	BOX_WS_OLD_NO_RECORD,     /* made since the refresh, or its slot reused */
+	BOX_WS_OLD_MARKED,        /* written since the refresh (the reach guard) */
+	BOX_WS_OLD_NO_BIPED,      /* a biped the copy has no biped record for (bipeds_full) */
+	BOX_WS_OLD_PAST_NODES,    /* a model past the nodes */
+	BOX_WS_OLD_OWED,          /* a model whose matrices weren't made */
+	BOX_WS_OLD_REFUSALS
+};
+
+/* the take's guard: BOX_WS_OLD_TAKEN, or why not. biped: the reader needs its
+   biped record; model: its nodes. The made word is the job's test, once */
+static inline int box_ws_old_why_not(long datum_index, int biped, int model)
+{
+	unsigned absolute = (unsigned)datum_index & 0xffff;
+
+	if (absolute >= BOX_WS_OLD_SLOTS)
+		return BOX_WS_OLD_PAST_SLOTS;
+	if (!box_ws_old_object_of(datum_index))
+		return BOX_WS_OLD_NO_RECORD;
+	if (box_ws_old_marked_since(absolute))
+		return BOX_WS_OLD_MARKED;
+	if (biped && box_ws_old_biped_of[absolute] < 0)
+		return BOX_WS_OLD_NO_BIPED;
+	if (model && box_ws_old_models[absolute].state == BOX_WS_OLD_MODEL_NOT_HELD)
+		return box_ws_old_models[absolute].count ? BOX_WS_OLD_PAST_NODES : BOX_WS_OLD_OWED;
+	return BOX_WS_OLD_TAKEN;
+}
+
+/* the main CPU's side of a job: hold at its post (join: the function that
+   waits for it, called by a refresh that finds the copy still held), release
+   at its join, refused its counts by reason (refused[BOX_WS_OLD_TAKEN] the
+   objects it took). The fence: a refresh never rewrites a held copy; it joins
+   the job first and counts it ('refresh while held', 0 when a run ends).
+   hold gives 0 when BOX_WS_OLD_HOLDERS jobs already hold it: that post
+   runs its serial path */
+#define BOX_WS_OLD_HOLDERS 4
+int box_ws_old_hold(void (*join)(void));
+void box_ws_old_release(void (*join)(void));
+void box_ws_old_refused(const unsigned refused[BOX_WS_OLD_REFUSALS]);
+
 /* the writers' mark: the object changed since the copy was taken */
 void box_ws_old_mark(long datum_index);
 

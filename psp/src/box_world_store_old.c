@@ -13,6 +13,13 @@
    record from its datum; this file owns where it goes. */
 #include <stdio.h>
 #include <string.h>
+#if defined(__psp__)
+#include <pspkernel.h>
+#else
+/* the host's syntax check: no cache to write back */
+#define sceKernelDcacheWritebackAll() ((void)0)
+#define sceKernelDcacheWritebackRange(p, n) ((void)(p), (void)(n))
+#endif
 #include "box_ws_old.h"
 
 void platform_psp_log(const char *format, ...);
@@ -50,7 +57,15 @@ static int box_ws_old_repack;
 static uint32_t box_ws_old_unheld_bits[BOX_WS_OLD_SLOTS / 32];
 
 static int16_t box_ws_old_biped_owner[BOX_WS_OLD_BIPEDS];
-static uint32_t box_ws_old_bits[BOX_WS_OLD_SLOTS / 32];
+uint32_t box_ws_old_bits[BOX_WS_OLD_SLOTS / 32];
+
+/* the made word on a line of its own: its write-back carries nothing else,
+   and no other variable's write-back can put an old made word back */
+volatile uint32_t box_ws_old_made[16] __attribute__((aligned(64)));
+/* the jobs holding the copy, by the function that joins each */
+static void (*box_ws_old_holders[BOX_WS_OLD_HOLDERS])(void);
+static unsigned long box_ws_old_posts, box_ws_old_holds_refused, box_ws_old_held_at_refresh, box_ws_old_made_behind;
+static unsigned long box_ws_old_refusals[BOX_WS_OLD_REFUSALS];
 static uint16_t box_ws_old_list[BOX_WS_OLD_SLOTS];
 static unsigned box_ws_old_listed;
 
@@ -85,8 +100,88 @@ static unsigned long box_ws_old_check_clusters, box_ws_old_model_visits, box_ws_
 static void box_ws_old_models_reset(void);
 static void box_ws_old_model_drop(unsigned absolute);
 
+/* ---------- the hand-over: the fence, the made word, the readers' counts */
+
+uint32_t box_ws_old_refresh_number(void)
+{
+	return (uint32_t)box_ws_old_flips;
+}
+
+int box_ws_old_hold(void (*join)(void))
+{
+	int k;
+
+	if (box_ws_old_on <= 0 || !join)
+		return 0;
+	for (k = 0; k < BOX_WS_OLD_HOLDERS; k++)
+		if (!box_ws_old_holders[k])
+		{
+			box_ws_old_holders[k] = join;
+			box_ws_old_posts++;
+			return 1;
+		}
+	box_ws_old_holds_refused++;
+	return 0;
+}
+
+void box_ws_old_release(void (*join)(void))
+{
+	int k;
+
+	for (k = 0; k < BOX_WS_OLD_HOLDERS; k++)
+		if (box_ws_old_holders[k] == join)
+		{
+			box_ws_old_holders[k] = NULL;
+			return;
+		}
+}
+
+void box_ws_old_refused(const unsigned refused[BOX_WS_OLD_REFUSALS])
+{
+	int k;
+
+	for (k = 0; k < BOX_WS_OLD_REFUSALS; k++)
+		box_ws_old_refusals[k] += refused[k];
+}
+
+/* the refresh's start: no job may still hold the copy it rewrites. One that
+   does is joined here and counted (a post the tick's order failed to join
+   first); then the made word says no copy stands until the refresh ends.
+   wsoldcheck: the word left by the last refresh is its number */
+static void box_ws_old_fence(void)
+{
+	int k;
+
+	for (k = 0; k < BOX_WS_OLD_HOLDERS; k++)
+	{
+		void (*join)(void) = box_ws_old_holders[k];
+
+		if (!join)
+			continue;
+		box_ws_old_held_at_refresh++;
+		join();
+		box_ws_old_holders[k] = NULL;
+	}
+	if (box_ws_old_checking && box_ws_old_flips && box_ws_old_made[0] != (uint32_t)box_ws_old_flips)
+		box_ws_old_made_behind++;
+	box_ws_old_made[0] = 0;
+	sceKernelDcacheWritebackRange((const void *)box_ws_old_made, sizeof(box_ws_old_made));
+}
+
+/* the refresh's end, after the check's put-backs: the copy's lines written
+   back (all of the 16 KB D-cache: at most 256 lines whatever the copy's
+   size, §4's choice (a)), then the made word, written back last */
+static void box_ws_old_publish(void)
+{
+	sceKernelDcacheWritebackAll();
+	box_ws_old_made[0] = (uint32_t)box_ws_old_flips;
+	sceKernelDcacheWritebackRange((const void *)box_ws_old_made, sizeof(box_ws_old_made));
+}
+
 int box_ws_old_begin(void)
 {
+	if (box_ws_old_on > 0)
+		box_ws_old_fence();
 	if (box_ws_old_on < 0)
 	{
 		box_ws_old_checking = psp_keep("wsoldcheck") != 0;
@@ -497,8 +592,16 @@ static void box_ws_old_log(void)
 			box_ws_old_unheld_taken / flips, box_ws_old_nodes_most, (unsigned)BOX_WS_OLD_NODES, box_ws_old_node_live,
 			box_ws_old_repacks);
 	}
+	platform_psp_log("wsold: readers %lu posts (%lu refused a hold), %lu whole not made, %lu refresh while held; objects taken %lu, not held: past the slots %lu, no record %lu, marked since %lu, no biped record %lu, model past the nodes %lu, model owed %lu",
+		box_ws_old_posts, box_ws_old_holds_refused, box_ws_old_refusals[BOX_WS_OLD_NOT_MADE], box_ws_old_held_at_refresh,
+		box_ws_old_refusals[BOX_WS_OLD_TAKEN], box_ws_old_refusals[BOX_WS_OLD_PAST_SLOTS],
+		box_ws_old_refusals[BOX_WS_OLD_NO_RECORD], box_ws_old_refusals[BOX_WS_OLD_MARKED],
+		box_ws_old_refusals[BOX_WS_OLD_NO_BIPED], box_ws_old_refusals[BOX_WS_OLD_PAST_NODES],
+		box_ws_old_refusals[BOX_WS_OLD_OWED]);
 	if (!box_ws_old_checking)
 		return;
+	platform_psp_log("wsoldcheck: the made word behind its refresh at %lu refreshes (0: every copy published)",
+		box_ws_old_made_behind);
 	for (k = 0; k < WSO_FIELDS; k++)
 		n += snprintf(line + n, sizeof(line) - n, "%s%s %lu", k ? ", " : "", box_ws_old_field_name[k], box_ws_old_check_missed[k]);
 	platform_psp_log("wsoldcheck: %lu live records and %lu cluster lists checked after the refresh; changes no mark caught: %s",
@@ -525,6 +628,7 @@ void box_ws_old_flipped(unsigned objects, unsigned bipeds, unsigned high_water)
 		box_ws_old_most_bipeds = bipeds;
 	if (high_water > box_ws_old_high_water)
 		box_ws_old_high_water = high_water;
+	box_ws_old_publish();
 	if (box_ws_old_flips % 300 == 0)
 		box_ws_old_log();
 }
