@@ -1440,9 +1440,44 @@ What is already known of (ii), from `aime_me.md` [archive form, D]:
 
 **Read [D].** 1d adds no bytes to part 2 and takes none away from 1e's lists: its fields are G's lists (by value already), the type and definition (constant over a slot's life), the map and its tags, and the actor's input under part 3's condition. Two of them set **order conditions for part 3**: G is done before the sweep is posted, and the AI's input refresh is done before the think is posted. One lead to check before the lead rules: that no tick writes the definitions the sweep reads (a grep of `source/` for writers into tag data).
 
-### 2. Its size against the heap's room
+### 2. Its size against the heap's room (written 2026-11-26 21:17)
 
-_To come: wsold's ~74 KB (§9) and sweepme2's two parts' 71 KB (§12 at 778bb835), with the fields 1e lists missing, summed against the heap room measured on today's v2 build; the stop-the-line holds if it doesn't fit (the lab's decisions.md 2026-11-26 21:0x)._
+**What's counted.** Every array the copy holds, at its cap, not at a map's live count: wsold's and sweepme2's arrays are static (BSS), so they cost the same on every map. The heap is what's left of the 32 MB after the image, so its free low drops byte for byte with the static size (the lab's findings/rows.tsv `motionplace_heap`: 7,808 B more text, 8 KB less free low). Sizes are from the headers and the store files' declarations: `psp/include/box_ws_old.h`:19-52 and `psp/src/box_world_store_old.c`:21-29 on this branch; the same two files at sweepme2's 778bb835 (header lines for `BOX_WS_OLD_CLUSTERS`, `_MEMBERS`, `_NODES`; store file :30-50). The caps: object slots 2,048 (`BOX_WS_OLD_SLOTS`, the object array's maximum); cluster references 2,048 (`HALO_PORT_MAXIMUM_CLUSTER_REFERENCES`); units 256 (`TICK2_UNIT_MOST`, psp_fixups.py:59582, the unit table's free stack; the largest map table is c40's 208, :60271-60273). Vehicles are units, so a vehicle's fields go by its unit slot. [D: arithmetic over declared sizes]
+
+| Part | Arrays (count × bytes) | Bytes |
+|---|---|---:|
+| **wsold as built** (tick2-coll) | objects 2,048 × 32 = 65,536; bipeds 96 × 64 = 6,144; biped_of 2,048 × 2 = 4,096; biped_owner 96 × 2 = 192; mark bits 64 × 4 = 256; mark list 2,048 × 2 = 4,096 | 80,320 |
+| wsold's biped cap 96 → 256 | bipeds +160 × 64 = 10,240; owner +160 × 2 = 320. 96 was set 11-19; b40's and c40's unit tables are 176 and 208, and the copy's `bipeds_full` count says when it falls short (a lead: those maps' biped share not read) | +10,560 |
+| **sweepme2's clusters** [archive, 11-19] | clusters 512 × 4 = 2,048; two member runs 2 × 2,048 × 4 = 16,384; next clusters 512 × 4 = 2,048; cluster bits 16 × 4 = 64 | 20,544 |
+| **sweepme2's models' nodes** [archive, 11-19] | models 2,048 × 4 = 8,192; nodes 768 × 56 = 43,008 | 51,200 |
+| (i)'s missing: a vehicle's ROOT position, forward, up | 256 unit slots × 36 | 9,216 |
+| (i)'s missing: a non-biped's parent | 2,048 × 4 (the object record is full) | 8,192 |
+| 1d: the breakable flags | one BSP's row | 32 |
+| **The pill sweep's copy** | | **180,064 (175.8 KB)** |
+| (ii)'s missing: the noncollideable partition | sweepme2's cluster shape again, its references assumed at the same 2,048 cap (not checked) | 20,544 |
+| (ii)'s missing: the fact block | 256 unit slots × 68 (forward, location, head, centre of mass, aim, with position and velocity for every unit, not only a biped's) | 17,408 |
+| (ii)'s missing: vitality, shield, feign-death timer, team, driver, gunner, fake encounter and squad | 256 unit slots × 24 (4 + 4 + 2 + 2 + 4 + 4 + 2 + 2); per unit, since the dead and team tests are on perceived units and props (1c(ii)) | 6,144 |
+| **Both jobs' copy** | | **224,160 (218.9 KB)** |
+| Both, double-buffered | ×2 (below: the think runs past wsold's refresh point) | 448,320 (437.8 KB) |
+
+**Two caps the table doesn't settle.** The nodes' 768 is sweepme2's first runs' high water [archive, 11-19, E], not a cap. A model past it is `NOT_HELD`, and its reader can't answer on the ME, so it has to hand that object back to the main CPU. Today's high water comes from the `wsold:` line on the first b30 and c20 runs of task 5, and c40 has the most pose nodes (4,751, :60272). The unit-indexed rows assume unit slots stay under 256. Records past the table go to overflow chunks (`TICK2_UNIT_CHUNKS`, :59581), and I haven't checked whether those slots number past 256. A slot past the copy's cap is "not held", the same as a node.
+
+**One buffer or two.** wsold is one copy, refreshed where the walk begins (`psp_wsold_refresh`). That is enough for the pill sweep: the sweep is posted after the refresh and joined before the next one. The AI's think a tick old is posted at `ai_update` (game.c:435), before the walk, and runs through the whole serial tick (1c(ii)). So a refresh at the walk's start would rewrite what the think is reading. Either the think's copy is a second buffer (the double row), or one refresh moves to the tick's start and serves both jobs. The second way gives the sweep a world older by the players' stage and the scripts (game.c:440-466), which changes play against today's order and is tc-tick's call. The record's window (1c(ii)) needs neither, and none of (ii)'s rows.
+
+**Against the room** (`motionplace_heap`, [E], emulator, B = MOTIONNEW, dbc76ba0; free low after taking the copy's static bytes away; the largest block is assumed to shrink by the same amount, which is a lead because it holds only if the heap's big block is the one at its end):
+
+| Copy | c20 free low 722 KB | c20 largest block 687 KB | d20 free low 952 KB |
+|---|---:|---:|---:|
+| the pill sweep's, 175.8 KB | 546 | 511 | 776 |
+| both jobs', 218.9 KB | 503 | 468 | 733 |
+| both, double-buffered, 437.8 KB | 284 | 249 | 514 |
+
+**Read [D over E].** **By the stop-the-line test as the brief words it, the copy fits.** At its largest, double-buffered for both jobs, it leaves c20 284 KB of free low and 249 KB of largest block. Nothing here stops the line. Three things still stand between this and a build:
+- **The room is [E], and the only hardware figure disagrees.** The archive's c20 end-of-play heap free was 89 KB [M] (the lab's briefs/tc_copy.md, "Its room", [archive, as_of 2026-11-24]), about 630 KB under today's emulator low. Even the pill sweep's 175.8 KB doesn't fit 89 KB. Today's [E] build doesn't carry the archive's build's image or heap use, so the two aren't the same measurement. But the brief asks for [E, then M], and no PSP run on today's build has filed a heap low (findings/rows.tsv has none). So **the room is a lead until a PSP run on today's build reads `metrics heap (MAP, ends)` on c20.** Task 5's first PSP pair can carry it, or the draw-main census pair can if its log prints the line. b30 and c40 have no room figure at all, and c40 has the largest unit table.
+- **The ~20 KB drop bar.** `motionplace_heap`'s bar (~20 KB of free low, the lead 20:0x) was set for a text-layout change. The pill sweep's copy alone is about 9× that, and the largest form about 22×. If the bar applies to every change, the copy fails it whatever the room. If the bar was only for that lever, the copy needs a bar of its own. **Either way it's the lead's ruling**, and the size here is what it rules on.
+- **Cuts if the room is short:** (ii)'s rows go if the think takes the record's window (−44,096 B, and no second buffer). The unit-indexed rows can be sized from the map's own unit table at map start, the way the store's unit section is (36 + 68 + 24 = 128 B a unit: c20's 68 makes 8,704 B in place of 256's 32,768). The biped cap can stay at 96 where `bipeds_full` reads 0. The pill sweep's copy at wsold's built cap with only the missing rows it needs is 169,504 B (165.5 KB).
+
+**For part 3:** the double-buffer question goes with the hand-over (where each refresh sits against each post). **For part 4:** the refresh's price covers 2.2× wsold's built bytes for the pill sweep (2.8× for both jobs), not wsold's alone. **For the lead:** the bar to rule on, and the [M] room that has to come before any build.
 
 ### 3. The hand-over
 
