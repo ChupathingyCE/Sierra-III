@@ -1238,7 +1238,7 @@ def link(objs, stubs):
                 if cold not in seen:
                     more = [cold]
             for q in [p] + more:
-                if q not in out:
+                if q not in out or q.startswith(". = "):   # a colour anchor every time
                     out.append(q)
         return out
 
@@ -1381,10 +1381,29 @@ def link(objs, stubs):
             if not os.path.isfile(layout) and os.path.isfile(os.path.join(HERE, "psp/layout", layout + ".txt")):
                 layout = os.path.join(HERE, "psp/layout", layout + ".txt")
             lines = [l.strip() for l in open(layout) if l.strip() and not l.startswith("#")]
-            if lines and all(l.startswith("*") for l in lines):
+            # a placement file's "COLOUR <hex>" line is a colour anchor: the
+            # next placement starts on the I-cache set (address mod 8 KB, one
+            # way of the 16 KB cache) that <hex> is on, a reference build's
+            # address for it. It pads 0 where the build is where the reference
+            # was, and at most 8 KB less 4 where code before it grew or shrank
+            # (task 5 step 3's motion design, the lab's
+            # findings/motiondesign_2026-11-26.md section 4: fix (a)). "." is
+            # set from ALIGN, as me_set_pad's at_offset does: ld adds the
+            # section's start to "." + an absolute pad inside .text (a host
+            # link of ". = . + ((K - ABSOLUTE(.)) & 0x1fff)" padded 0x104
+            # where 4 was due, the section starting at 0x100)
+            colour = re.compile(r"^COLOUR (0x[0-9a-fA-F]+)$")
+            def anchor(k):
+                off = "0x%x" % (int(k, 16) & 0x1fff)
+                return ". = ALIGN(0x2000) + %s - ((ALIGN(0x2000) + %s - ABSOLUTE(.)) >= 0x2000 ? 0x2000 : 0);" % (off, off)
+            if lines and all(l.startswith("*") or colour.match(l) for l in lines):
+                lines = [anchor(colour.match(l).group(1)) if colour.match(l) else l for l in lines]
                 if LTO_OBJS:
                     lto_lines = []
                     for l in lines:
+                        if l.startswith(". = "):
+                            lto_lines.append(l)
+                            continue
                         m = re.match(r"^(\S+?)\((.+)\)$", l)
                         placed = lto_placement(m.group(1), m.group(2)) if m else (None, l)
                         if placed:
