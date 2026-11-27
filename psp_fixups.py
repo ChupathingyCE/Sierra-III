@@ -68955,17 +68955,49 @@ KTSTAMP_CUTS = (
     ("source/units/bipeds.c", "biped_update_physics's call",
      "\tbiped_update_physics(&physics);\n",
      "\tPSP_KT_STAMP(7); biped_update_physics(&physics); PSP_KT_FIELD_IF(1, PSP_KT_BPHYS, 7); /* (ktstamp) */\n"),
+    # A's stage edges 0-5 in psp_bipedstage_run (the lead's 2026-11-27 04:4x (2)), at the bounds B's store_biped_pass
+    # puts them (psp/src/store_coll.c 390-425) and closed by the same psp_kt_pass, so A's pass, I, G, M and settle are
+    # B's arithmetic: 0 before the unit pass (B: before store_biped_units), 1 before bipedstage3's intents (B: before
+    # store_intent_begin), 2 after the intents' sweepme close (B: after psp_sweepme_close), 3 after psp_sweepme_end
+    # (B: the same), 4 after the last pass (B: after M's loop), the pass's sum at the function's end (B: after
+    # store_intent_end). The unit pass is pass less I, G, M and settle on both sides; A's M holds bupdate
+    # (psp_object_update's lean form, in the last pass). Edges 1-4 stand outside their if blocks, so each fires
+    # every staged tick whatever bipedstage3 and the gather's begin answer
+    ("source/objects/objects.c", "A's stage edge 0 (the unit pass)",
+     "\tpsp_bipedstage_phase = 1;\n\tfor (k = 0; k < psp_bipedstage_count; k++)\n",
+     "\tpsp_bipedstage_phase = 1; PSP_KT_STAMP(0); /* (ktstamp's A stage edges 0-5: docs/ktstamp.md) */\n"
+     "\tfor (k = 0; k < psp_bipedstage_count; k++)\n", 1),
+    ("source/objects/objects.c", "A's stage edge 1 (the intents)",
+     "\tif (psp_bs3_on)\n\t{\n\t\tpsp_bipedstage3_reset();\n",
+     "\tPSP_KT_STAMP(1); if (psp_bs3_on) /* (ktstamp) */\n\t{\n\t\tpsp_bipedstage3_reset();\n", 1),
+    ("source/objects/objects.c", "A's stage edge 2 (the gathers)",
+     "\t\tpsp_sweepme_close();\n\t}\n\t/* slice 2: every living biped's move gathered as one pass, from the\n",
+     "\t\tpsp_sweepme_close();\n\t} PSP_KT_STAMP(2); /* (ktstamp) */\n"
+     "\t/* slice 2: every living biped's move gathered as one pass, from the\n", 1),
+    ("source/objects/objects.c", "A's stage edge 3 (the last pass)",
+     "\tpsp_sweepme_end(); /* (FIXES_SWEEPME) */\n\tfor (k = 0; k < psp_bipedstage_count; k++)\n",
+     "\tpsp_sweepme_end(); PSP_KT_STAMP(3); /* (FIXES_SWEEPME; ktstamp) */\n"
+     "\tfor (k = 0; k < psp_bipedstage_count; k++)\n", 1),
+    ("source/objects/objects.c", "A's stage edge 4 (the settle)",
+     "\t}\n\t/* BIPEDMOVE 1c: a kept record whose solve didn't resume it written back */\n\tbox_ws_move_settle();\n",
+     "\t} PSP_KT_STAMP(4); /* (ktstamp) */\n"
+     "\t/* BIPEDMOVE 1c: a kept record whose solve didn't resume it written back */\n\tbox_ws_move_settle();\n", 1),
+    ("source/objects/objects.c", "A's pass sum (edge 5)",
+     "\tpsp_bipedstage2_end();\n\tpsp_bipedstage_phase = 0;\n\tpsp_bipedstage_count = 0;\n}\n",
+     "\tpsp_bipedstage2_end();\n\tpsp_bipedstage_phase = 0;\n\tpsp_bipedstage_count = 0; PSP_KT_PASS(); /* (ktstamp) */\n}\n", 1),
 )
 def ktstamp_cut(tree):
     if not KTSTAMP or TICK2_MOTIONNEW:
         return 0
     texts, made = {}, []
-    for rel, what, old, new in KTSTAMP_CUTS:
+    for cut in KTSTAMP_CUTS:
+        rel, what, old, new = cut[:4]
         if rel not in texts:
             texts[rel] = open(os.path.join(tree, rel), errors="surrogateescape").read()
         n = texts[rel].count(old)
-        # objects.c's branch may stand in more than one form of object_update; each is the branch in that form
-        if n < 1 or (n > 1 and rel != "source/objects/objects.c"):
+        # objects.c's lean branch may stand in more than one form of object_update; each is the branch in that
+        # form. A stage edge (a fifth item, 1) matches once
+        if n < 1 or (n > 1 and (rel != "source/objects/objects.c" or len(cut) > 4)):
             check_fail("psp_fixups: KTSTAMP: %s (%s) matches %d times" % (what, rel, n))
             return 0
         texts[rel] = texts[rel].replace(old, new)
