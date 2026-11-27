@@ -68989,6 +68989,10 @@ _DS2_OBJ_LIGHT = ('#ifdef HALO_PSP\n\t\t\t\tdata->lighting = psp_walk_lighting(d
                   '\t\t\t\tdata->lighting = object_get_cached_render_lighting(\n\t\t\t\t\tdata->object_index,\n'
                   '\t\t\t\t\t(PSP_STEP("object_get_level_of_detail_pixels"), object_get_level_of_detail_pixels(data->object_index)));\n')
 _DS2_OBJ_WALK_LIGHT = '\t\t\tobject_get_cached_render_lighting(object_index, pixels);\n'
+# X1's split by kind (box_draw_main.md §4.4 A2; exact form only): around render_object's drawn branch
+_DS2_OBJ_KIND_IN = '\t\tboolean needs_lighting;\n'
+_DS2_OBJ_KIND_OUT = ('\t\t\t\t(PSP_STEP("render_object_list"), render_object_list(data, &model_effect, data->object_index));\n'
+                     '\t\t\t}\n\t\t}\n\t}\n')
 _DS2_MODELS_MATRICES = '\t\tPSP_STEP("render_model: relative node matrices");\n\t\tif (node_matrices)\n'
 _DS2_MODELS_MATRICES_END = ('\t\t\t\trelative_node_matrices[node_index] = render.frustum.world_to_view;\n\t\t\t}\n\t\t}\n'
                             '\n\t\tgeometry_detail_level_index = NUMBER_OF_DETAIL_LEVELS_PER_MODEL-1;\n')
@@ -69049,6 +69053,8 @@ DRAWSPLIT2_SITES = {
         (_DS2_OBJ_SHADOW_LIGHT, _ds2_wrap(_DS2_OBJ_SHADOW_LIGHT, "LIGHTS", "\t\t\t")),
         (_DS2_OBJ_LIGHT, _ds2_wrap(_DS2_OBJ_LIGHT, "LIGHTS", "\t\t\t\t")),
         (_DS2_OBJ_WALK_LIGHT, _ds2_wrap(_DS2_OBJ_WALK_LIGHT, "LIGHTS", "\t\t\t")),
+        (_DS2_OBJ_KIND_IN, _DS2_OBJ_KIND_IN + "\t\tPSP_DRAWSPLIT_OBJECT_IN();\n"),
+        (_DS2_OBJ_KIND_OUT, _DS2_OBJ_KIND_OUT[:-len("\t}\n")] + "\t\tPSP_DRAWSPLIT_OBJECT_OUT();\n\t}\n"),
     ],
     "source/models/models.c": [
         (_DS2_MODELS_MATRICES, "\t\tPSP_DRAWSPLIT_IN(MATRICES);\n" + _DS2_MODELS_MATRICES),
@@ -69120,6 +69126,9 @@ DRAWSPLIT2_SAMPLED = {
     # the field dropped: its open and its close as A has them
     ("source/models/models.c", _DS2_MODELS_MATRICES): _DS2_MODELS_MATRICES,
     ("source/models/models.c", _DS2_MODELS_MATRICES_END): _DS2_MODELS_MATRICES_END,
+    # X1's split by kind is the exact form's: the sites as A has them
+    ("source/render/render_objects.c", _DS2_OBJ_KIND_IN): _DS2_OBJ_KIND_IN,
+    ("source/render/render_objects.c", _DS2_OBJ_KIND_OUT): _DS2_OBJ_KIND_OUT,
 }
 # the sampled form's sites past a join, each from its statement's start to its end (the exact form's site inside)
 DRAWSPLIT2_SAMPLED_SITES = {

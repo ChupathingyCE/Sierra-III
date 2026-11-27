@@ -150,6 +150,8 @@ top (the render's parts follow each other at its own depth), a count adds */
 isn't counted), so d is the render's span */
 void psp_drawsplit_render_begin(void);
 void psp_drawsplit_render_end(void);
+#define PSP_DRAWSPLIT_OBJECT_IN() ((void)0)
+#define PSP_DRAWSPLIT_OBJECT_OUT() ((void)0)
 #elif defined(PSP_DRAWSPLIT)
 void psp_drawsplit_in(int field);
 void psp_drawsplit_out(void);
@@ -159,7 +161,18 @@ void psp_drawsplit_count(int item, unsigned int n);
 #define PSP_DRAWSPLIT_COUNT(item, n) psp_drawsplit_count(PSP_DRAWSPLIT_##item, (unsigned int)(n))
 #define PSP_DRAWSPLIT_SAVE() ((void)0)
 #define PSP_DRAWSPLIT_RESTORE() ((void)0)
+/* X1's split (docs/box_draw_main.md §4.4 A2; exact form only): around
+render_object's drawn branch, so objects' time inside each object is charged
+to the kind its instances were drawn as (psp_drawsplit.c, 'by kind');
+psp_ge.c's psp_far_draw calls psp_drawsplit_far with the groups it shows */
+void psp_drawsplit_object_in(void);
+void psp_drawsplit_object_out(void);
+void psp_drawsplit_far(unsigned int groups);
+#define PSP_DRAWSPLIT_OBJECT_IN() psp_drawsplit_object_in()
+#define PSP_DRAWSPLIT_OBJECT_OUT() psp_drawsplit_object_out()
 #else
+#define PSP_DRAWSPLIT_OBJECT_IN() ((void)0)
+#define PSP_DRAWSPLIT_OBJECT_OUT() ((void)0)
 #define PSP_DRAWSPLIT_SAVE() ((void)0)
 #define PSP_DRAWSPLIT_RESTORE() ((void)0)
 #define PSP_DRAWSPLIT_IN(field) ((void)0)

@@ -196,6 +196,9 @@ static int depth = 0, current = SLOT(PART_OUT, PSP_DRAWSPLIT_NONE), frame_open =
 static unsigned int last = 0, frame_stamps = 0, frame_stamps2 = 0;
 static unsigned int frame_us[SLOTS];
 static unsigned int frame_items[PARTS][ITEMS][2];
+/* X1's split by kind (below, 'by kind'): render_object's depth, and whether
+the outer one is split */
+static unsigned int object_depth = 0, object_counted = 0;
 #endif
 
 static void map_phases(void)
@@ -324,6 +327,12 @@ void halo_perf_frame(void)
 		lost = 0;
 		current = SLOT(PART_OUT, PSP_DRAWSPLIT_NONE);
 	}
+	if (object_depth && run)
+	{
+		run->unbalanced++;
+		object_depth = 0;
+		object_counted = 0;
+	}
 }
 
 /* level 2: a field opened under the part open now */
@@ -380,6 +389,142 @@ void psp_drawsplit_count(int item, unsigned int n)
 		frame_items[PART_WORLD][item][0] += n;
 	else
 		frame_items[PART_OF(current)][item][whole_open ? 1 : 0] += n;
+}
+
+/* X1's split by kind (docs/box_draw_main.md §4.4 A2, §3.4.7; the lab's
+decisions 2026-11-27 10:4x (5): "X1's near/far split first"). Objects' time
+inside each object's render_object (its drawn branch: the lighting pick, the
+object list, render_model for it and its children) is charged to the kind its
+instances were drawn as: far when every instance it began (rasterizer_model_
+begin) was drawn as its far level (psp_far_draw returned non-zero), near when
+none was, mixed when some were, empty when it began none (widgets only). The
+time outside every render_object (finding the objects, the list, the walk's
+lighting pre-pass) is objects' part less the four: "outside". Each object
+costs two clock reads more. An object opened inside a whole field (the
+shadows') or outside objects' part isn't split. psp_far_draw also gives the
+groups it shows, D1's shown groups a frame (§3.4.1) */
+enum { KIND_NEAR, KIND_FAR, KIND_MIXED, KIND_EMPTY, KINDS };
+static const char *const kind_names[KINDS] = { "near", "far", "mixed", "empty" };
+/* [kind][field]; FIELDS: the time inside the object charged to other parts
+(level 1's waits) */
+static unsigned long long window_kind_us[KINDS][FIELDS + 1];
+static unsigned long long window_kind_objects[KINDS], window_kind_instances[KINDS], window_kind_far[KINDS];
+static unsigned long long window_far, window_far_groups;
+static unsigned int far_instances = 0;
+static unsigned int object_start, object_instances, object_far, object_field_us[FIELDS];
+
+/* the pair open now charged up to now, its pair unchanged */
+static unsigned int charge_now(void)
+{
+	unsigned int now = sceKernelGetSystemTimeLow();
+
+	if (PART_OF(current) != PART_OUT)
+		frame_us[current] += now - last;
+	last = now;
+	frame_stamps++;
+	frame_stamps2++;
+	return now;
+}
+
+void psp_drawsplit_object_in(void)
+{
+	int field;
+
+	if (on <= 0 || object_depth++)
+		return;
+	object_counted = !whole_open && PART_OF(current) == PART_OBJECTS;
+	if (!object_counted)
+		return;
+	object_start = charge_now();
+	for (field = 0; field < FIELDS; field++)
+		object_field_us[field] = frame_us[SLOT(PART_OBJECTS, field)];
+	object_instances = frame_items[PART_OBJECTS][PSP_DRAWSPLIT_INSTANCES][0];
+	object_far = far_instances;
+}
+
+void psp_drawsplit_object_out(void)
+{
+	unsigned int now, instances, far, fields_us = 0, us;
+	int field, kind;
+
+	if (on <= 0 || !object_depth || --object_depth || !object_counted)
+		return;
+	object_counted = 0;
+	/* a part change inside the object (none is expected) leaves it unsplit */
+	if (PART_OF(current) != PART_OBJECTS)
+	{
+		run->unbalanced++;
+		return;
+	}
+	now = charge_now();
+	instances = frame_items[PART_OBJECTS][PSP_DRAWSPLIT_INSTANCES][0] - object_instances;
+	far = far_instances - object_far;
+	kind = !instances ? KIND_EMPTY : !far ? KIND_NEAR : far >= instances ? KIND_FAR : KIND_MIXED;
+	for (field = 0; field < FIELDS; field++)
+	{
+		us = frame_us[SLOT(PART_OBJECTS, field)] - object_field_us[field];
+		window_kind_us[kind][field] += us;
+		fields_us += us;
+	}
+	us = now - object_start;
+	window_kind_us[kind][FIELDS] += us > fields_us ? us - fields_us : 0;
+	window_kind_objects[kind]++;
+	window_kind_instances[kind] += instances;
+	window_kind_far[kind] += far;
+}
+
+void psp_drawsplit_far(unsigned int groups)
+{
+	if (on <= 0)
+		return;
+	far_instances++;
+	window_far++;
+	window_far_groups += groups;
+}
+
+static int append(char *line, int size, int at, const char *format, ...);
+
+/* the kinds' lines: one of the far groups and what lies outside, then one a
+kind with its fields */
+static void report_kinds(double n)
+{
+	static const signed char fields[] = { PSP_DRAWSPLIT_WALK, PSP_DRAWSPLIT_LIGHTS, PSP_DRAWSPLIT_MATRICES,
+		PSP_DRAWSPLIT_D3D, PSP_DRAWSPLIT_INST, PSP_DRAWSPLIT_STATE, PSP_DRAWSPLIT_ENCODE, PSP_DRAWSPLIT_NONE };
+	char line[500];
+	int at, kind, k;
+	unsigned long long part_us = 0, inside_us = 0;
+
+	for (k = 0; k < FIELDS; k++)
+	{
+		part_us += run->window_slot_us[SLOT(PART_OBJECTS, k)];
+		for (kind = 0; kind < KINDS; kind++)
+			inside_us += window_kind_us[kind][k];
+	}
+	platform_log("drawsplit2 objects by kind: %u frames: part %.2f ms; inside render_object %.2f ms, outside %.2f ms; "
+		"far drawn %.1f a frame, their shown groups %.1f (%.2f a far draw)", run->frames, part_us / n / 1000.0,
+		inside_us / n / 1000.0, (part_us > inside_us ? part_us - inside_us : 0) / n / 1000.0, window_far / n,
+		window_far_groups / n, window_far ? (double)window_far_groups / window_far : 0.0);
+	for (kind = 0; kind < KINDS; kind++)
+	{
+		unsigned long long us = 0;
+
+		for (k = 0; k < FIELDS; k++)
+			us += window_kind_us[kind][k];
+		at = snprintf(line, sizeof(line), "drawsplit2 objects' %s: %.1f objects, %.1f inst, %.1f far a frame; %.2f ms (%.1f us an object)",
+			kind_names[kind], window_kind_objects[kind] / n, window_kind_instances[kind] / n, window_kind_far[kind] / n,
+			us / n / 1000.0, window_kind_objects[kind] ? (double)us / window_kind_objects[kind] : 0.0);
+		for (k = 0; k < (int)sizeof(fields); k++)
+			at = append(line, sizeof(line), at, "; %s %.2f", field_names[(int)fields[k]], window_kind_us[kind][(int)fields[k]] / n / 1000.0);
+		append(line, sizeof(line), at, "; waits %.2f ms", window_kind_us[kind][FIELDS] / n / 1000.0);
+		platform_log("%s", line);
+	}
+	for (kind = 0; kind < KINDS; kind++)
+	{
+		for (k = 0; k <= FIELDS; k++)
+			window_kind_us[kind][k] = 0;
+		window_kind_objects[kind] = window_kind_instances[kind] = window_kind_far[kind] = 0;
+	}
+	window_far = window_far_groups = 0;
 }
 #endif
 
@@ -551,6 +696,9 @@ static void report(void)
 	for (k = PSP_DRAWSPLIT_WINBEGIN; k <= PSP_DRAWSPLIT_WINEND; k++)
 		at = append(line, sizeof(line), at, "; %s %.2f ms", field_names[k], run->window_slot_us[SLOT(PART_WORLD, k)] / n / 1000.0);
 	platform_log("%s", line);
+#ifndef PSP_DRAWSPLIT_SAMPLED
+	report_kinds(n);
+#endif
 #ifdef PSP_DRAWSPLIT_SAMPLED
 	{
 		static const signed char objects_samples[] = { PSP_DRAWSPLIT_NONE, PSP_DRAWSPLIT_WALK, PSP_DRAWSPLIT_LIGHTS,

@@ -18181,6 +18181,15 @@ int psp_far_draw(unsigned long model, float pixels, const char *permutations, in
 		if (sprite)
 			far_sprites++;
 	}
+#if defined(PSP_DRAWSPLIT) && !defined(PSP_DRAWSPLIT_SAMPLED)
+	/* drawsplit's exact form: X1's split by kind and D1's shown groups a
+	frame (docs/box_draw_main.md §4.4 A2; psp_drawsplit.c, 'by kind') */
+	{
+		void psp_drawsplit_far(unsigned int groups);
+
+		psp_drawsplit_far((unsigned int)__builtin_popcount(mask[0]) + (unsigned int)__builtin_popcount(mask[1]));
+	}
+#endif
 	far_drawn++;
 	if (pixels < 16.0f)
 		far_small++;
