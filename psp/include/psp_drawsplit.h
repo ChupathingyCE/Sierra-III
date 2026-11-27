@@ -189,6 +189,10 @@ list's pointer before and after its body, compared for a sample of lists
 against their first draw by class (psp_drawsplit.c, 'A2b (1)'s words') */
 void psp_drawsplit_words(const void *vertices, const void *indices, unsigned int key, int sky, const unsigned int *begin,
 	const unsigned int *end);
+/* A2b (2)'s pass words (exact form only): a level draw's words as written, the
+list's pointer before and after psp_ge_draw_level_body, counted by class less
+the regions taken (psp_drawsplit.c, 'A2b (2)'s pass words') */
+void psp_drawsplit_level(const void *vertices, const unsigned int *begin, const unsigned int *end);
 /* D2's pieces (§3.4.3 'Memory', §4.4 A2; exact form only): render_window's
 call after world's walk closes. psp_drawsplit_pieces is the engine's
 (structure_visibility.c, psp_fixups.py's DRAWSPLIT2_PIECES_C): it splits the

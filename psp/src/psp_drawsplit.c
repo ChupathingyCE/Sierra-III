@@ -1083,9 +1083,8 @@ psp_drawsplit_pieces (structure_visibility.c, psp_fixups.py DRAWSPLIT2_PIECES_C)
 splits a BSP's surfaces into (cluster, material) pieces, the lists D2 would
 bake, and hands this file the map's counts once a BSP and each window's visible
 pieces. The index bytes are the pieces' triangles at 6 B (three 16-bit
-indices), measured from the BSP; the passes' words beside them are the page's
-~1,300 a draw today (box_draw_list.md §12.1), printed as [D], never a measured
-byte. It reads no clock */
+indices), measured from the BSP; the passes' words beside them are measured
+from the draws (A2b (2)'s level words, below). It reads no clock */
 static struct psp_drawsplit_pieces_map pieces_map;
 static int pieces_maps = 0;
 static unsigned long long window_pieces[10];
@@ -1115,11 +1114,10 @@ void psp_drawsplit_pieces_map(const struct psp_drawsplit_pieces_map *map)
 	pieces_map = *map;
 	pieces_maps++;
 	platform_log("drawsplit2 pieces map %d: %ld surfaces in %ld clusters and %ld materials -> %ld (cluster, material) pieces "
-		"holding %ld triangles, the largest %ld; %ld KB of indices at 6 B a triangle [M]; passes' words ~%ld KB at a draw's "
-		"~1,300 words a piece [D]; %ld surfaces in no cluster, %ld listings past a surface's first cluster, %ld vertex indices past their material's",
+		"holding %ld triangles, the largest %ld; %ld KB of indices at 6 B a triangle [M]; passes' words on the level store "
+		"line; %ld surfaces in no cluster, %ld listings past a surface's first cluster, %ld vertex indices past their material's",
 		pieces_maps, map->surfaces, map->clusters, map->materials, map->pieces, map->triangles, map->largest,
-		(map->triangles * 6 + 1023) / 1024, (map->pieces * 1300 * 4 + 1023) / 1024, map->unclustered, map->shared,
-		map->bad_vertices);
+		(map->triangles * 6 + 1023) / 1024, map->unclustered, map->shared, map->bad_vertices);
 }
 
 void psp_drawsplit_pieces_window(const struct psp_drawsplit_pieces_window *window)
@@ -1152,6 +1150,161 @@ static void report_pieces(double n)
 	for (k = 0; k < 10; k++)
 		window_pieces[k] = 0;
 	window_pieces_calls = 0;
+}
+
+/* A2b (2)'s pass words (the lab's briefs/draw_main.md 'Added 13:4x', A2b (2);
+box_draw_main.md §3.4.3): the words a level draw writes in the list, the
+measured stand-in for a (cluster, material) piece's passes, replacing the
+pieces map's ~1,300 [D]. psp_ge.c hands over each level draw's list pointer
+before and after psp_ge_draw_level_body (main CPU only, as D6's). The walk
+follows the JUMPs over the regions taken (the copied or sorted indices, the cut
+corners, the submerged pass's pieces) and counts every other word by
+word_class; a region's BASE and JUMP are its own, not counted. A draw is one
+material's visible triangles across the window's clusters, so its words are a
+piece's passes with all of that material's slant buckets: the geometry (PRIM,
+addresses) and the slopes (TSLOPE, 0xD0) are printed apart, as the part that
+grows with the buckets. Each material (its vertices) keeps its largest draw's
+words, emptied at each map's load; the store line prices the map's pieces at
+those words' mean. It reads no clock */
+#define LEVEL_KEYS 1024
+#define LEVEL_FULL (LEVEL_KEYS * 3 / 4)
+struct level_key
+{
+	const void *vertices;
+	unsigned int words;
+};
+static struct level_key *level_keys = NULL;
+static int level_failed = 0, level_map = -1;
+static unsigned int level_materials = 0, level_past = 0, window_level_largest = 0;
+static unsigned long long level_material_words = 0, window_level_draws = 0, window_level_words = 0,
+	window_level_regions = 0, window_level_prims = 0, window_level_slopes = 0, window_level_lost = 0,
+	window_level_class[W_CLASSES];
+
+void psp_drawsplit_level(const void *vertices, const unsigned int *begin, const unsigned int *end)
+{
+	unsigned int from = (unsigned int)(unsigned long)begin & 0x0FFFFFFFu, to = (unsigned int)(unsigned long)end & 0x0FFFFFFFu;
+	unsigned int base = 0, n = 0, regions = 0, prims = 0, slopes = 0, steps = 0, h, k, counts[W_CLASSES];
+	const unsigned int *word = begin;
+	int after_base = 0;
+
+	if (on <= 0 || begin == end)
+		return;
+	if (to < from)
+	{
+		window_level_lost++;
+		return;
+	}
+	memset(counts, 0, sizeof(counts));
+	while (word != end)
+	{
+		unsigned int w = *word, command = w >> 24, here = (unsigned int)(unsigned long)word & 0x0FFFFFFFu, at;
+
+		if (++steps > (1u << 18))
+		{
+			window_level_lost++;
+			return;
+		}
+		if (command == 0x08)
+		{
+			/* a region taken (sceGuGetMemory's BASE and JUMP): over it */
+			at = ((base & 0xF0000u) << 8) | (w & 0xFFFFFFu);
+			if (at <= here || at > to)
+			{
+				window_level_lost++;
+				return;
+			}
+			if (after_base)
+			{
+				counts[W_GEOMETRY]--;
+				n--;
+			}
+			regions++;
+			after_base = 0;
+			word = (const unsigned int *)((const char *)word + (at - here));
+			continue;
+		}
+		if (command == 0x10)
+			base = w;
+		after_base = command == 0x10;
+		counts[word_class(command)]++;
+		n++;
+		prims += command == 0x04;
+		slopes += command == 0xD0;
+		word++;
+	}
+	window_level_draws++;
+	window_level_words += n;
+	window_level_regions += regions;
+	window_level_prims += prims;
+	window_level_slopes += slopes;
+	for (k = 0; k < W_CLASSES; k++)
+		window_level_class[k] += counts[k];
+	if (n > window_level_largest)
+		window_level_largest = n;
+	/* the material's largest draw */
+	if (!level_keys)
+	{
+		if (level_failed)
+			return;
+		level_keys = calloc(LEVEL_KEYS, sizeof(*level_keys));
+		if (!level_keys)
+		{
+			level_failed = 1;
+			platform_log("drawsplit2 level words: no room for its %u KB; no store", (unsigned)(LEVEL_KEYS * sizeof(*level_keys) / 1024));
+			return;
+		}
+	}
+	if (level_map != pieces_maps)
+	{
+		memset(level_keys, 0, LEVEL_KEYS * sizeof(*level_keys));
+		level_map = pieces_maps;
+		level_materials = level_past = 0;
+		level_material_words = 0;
+	}
+	h = (unsigned int)((unsigned long)vertices >> 2) * 2654435761u;
+	for (h &= LEVEL_KEYS - 1; level_keys[h].vertices; h = (h + 1) & (LEVEL_KEYS - 1))
+		if (level_keys[h].vertices == vertices)
+			break;
+	if (!level_keys[h].vertices)
+	{
+		if (level_materials >= LEVEL_FULL)
+		{
+			level_past++;
+			return;
+		}
+		level_keys[h].vertices = vertices;
+		level_materials++;
+	}
+	if (n > level_keys[h].words)
+	{
+		level_material_words += n - level_keys[h].words;
+		level_keys[h].words = n;
+	}
+}
+
+static void report_level(double n)
+{
+	double draws = window_level_draws ? (double)window_level_draws : 1.0;
+	double mean = level_materials ? (double)level_material_words / level_materials : 0.0;
+
+	if (!window_level_draws && !window_level_lost)
+		return;
+	platform_log("drawsplit2 level words: %llu draws this window (%.1f a frame, main CPU), %.1f command words a draw less "
+		"the data taken (%.1f regions a draw), the largest %u: geometry %.1f (%.1f prims), texture %.1f (%.1f slopes), "
+		"shader %.1f, state %.1f, colours %.1f, matrices %.1f, the rest %.1f; %llu unmeasured", window_level_draws,
+		window_level_draws / n, window_level_words / draws, window_level_regions / draws, window_level_largest,
+		window_level_class[W_GEOMETRY] / draws, window_level_prims / draws, window_level_class[W_TEXTURE] / draws,
+		window_level_slopes / draws, window_level_class[W_SHADER] / draws, window_level_class[W_STATE] / draws,
+		window_level_class[W_COLOURS] / draws, window_level_class[W_MATRICES] / draws,
+		(window_level_class[W_REST] + window_level_class[W_BONES] + window_level_class[W_LIGHTS]) / draws, window_level_lost);
+	platform_log("drawsplit2 level store: since map %d's load %u materials drawn, their largest draws %.1f words on average, "
+		"%.1f KB once each; the map's %ld pieces at that %.1f KB [M], beside their %ld KB of indices; %u past the table's %u",
+		level_map, level_materials, mean, level_material_words * 4 / 1024.0, pieces_map.pieces,
+		pieces_map.pieces * mean * 4 / 1024.0, (pieces_map.triangles * 6 + 1023) / 1024, level_past, LEVEL_FULL);
+	window_level_draws = window_level_words = window_level_regions = window_level_prims = window_level_slopes = 0;
+	window_level_lost = 0;
+	window_level_largest = 0;
+	memset(window_level_class, 0, sizeof(window_level_class));
 }
 
 static int append(char *line, int size, int at, const char *format, ...);
@@ -1376,6 +1529,7 @@ static void report(void)
 	report_merge(n);
 	report_sort(n);
 	report_pieces(n);
+	report_level(n);
 #endif
 #ifdef PSP_DRAWSPLIT_SAMPLED
 	{

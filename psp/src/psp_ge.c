@@ -11761,6 +11761,22 @@ void psp_ge_draw_level(const void *vertices, const void *lightmap_vertices, int 
 	unsigned int start = ge_clock();
 
 	ge_category = GE_SKIP_LEVEL;
+#if defined(PSP_DRAWSPLIT) && !defined(PSP_DRAWSPLIT_SAMPLED)
+	/* drawsplit's exact form: A2b (2)'s pass words (the lab's
+	briefs/draw_main.md 'Added 13:4x'; psp_drawsplit.c, 'A2b (2)'s pass
+	words'): the words this draw writes in the list, a piece's passes as D2a
+	would bake them, read on the main CPU only as D6's lists */
+	if (!psp_on_me())
+	{
+		void psp_drawsplit_level(const void *vertices, const unsigned int *begin, const unsigned int *end);
+		const unsigned int *level_from = gu_list->current;
+
+		psp_ge_draw_level_body(vertices, lightmap_vertices, vertex_count, indices, triangle_count, color, base_key, lightmap_key,
+			alpha_tested);
+		psp_drawsplit_level(vertices, level_from, gu_list->current);
+	}
+	else
+#endif
 	psp_ge_draw_level_body(vertices, lightmap_vertices, vertex_count, indices, triangle_count, color, base_key, lightmap_key, alpha_tested);
 	ge_category = 0;
 	ge_entry_us[0] += ge_clock() - start;
