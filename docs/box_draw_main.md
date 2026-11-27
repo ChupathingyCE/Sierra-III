@@ -44,11 +44,47 @@ One split, every frame, in slice 1's on form with the tick's files untouched, of
 
 ### 1.4 The base
 
-Sierra-III `builder2/drawmain`, cut from builder2/vissplit 857c3ca4 so the census also carries the visibility and points splits. Slice 1's on form is shipck-b30's switches (lab `toolbox/fixform.py` ship form + `PSP_TICK2_MOTIONNEW=1`). At the ask (by 2026-11-28 12:00) the stamps go onto the builder's head then, said in the ask.
+Written by builder2, 2026-11-26 23:46, in place of the plan this section held (the stamps on builder2/vissplit 857c3ca4).
+
+- **The census's head.** Sierra-III `builder2/drawcensus` c5ff3114: this branch's two commits (9f39a4ef, 077ba4f3) taken onto the builder's slice 1 head dbc76ba0 (task 5 step 3 fix (a), the colour anchors; on builder/motionplace). `git range-diff 857c3ca4..077ba4f3 dbc76ba0..c5ff3114` shows both commits equal, so the stamps measured are the ones §1.3a proved exact. The census therefore does **not** carry vissplit's visibility and points splits: the visibility's wait on the ME sits inside `world`, as §1.2 says it would without level 2.
+- **Its form.** Slice 1's new form: ship form + `PSP_TICK2_MOTIONNEW=1`, `campaign-mrc6531`, `PSP_TEXT_LAYOUT=w_tgme2m1mp_tgc90` (w_tgme2m1_tgc90 plus six `COLOUR` anchors and MOTIONNEW's six motion names, 924 lines). Side A drawsplit off, side B `PSP_DRAWSPLIT=1`, two runs each, PSP-1000. A's EBOOT is b739ef687f633bf9, flipck's B's, so A is the build flipck priced [D] (the lab's row `drawmain_census`).
+- **Placement on this layout [D, from the layout's text].** The four hooked placed functions sit at w_tgme2m1mp_tgc90's lines 298-299 (`render_player_frame`), 370 (`interface_draw_screen`), 637 (`_texture_cache_bitmap_get_hardware_format`) and 794 (`main_game_render`), not §1.3a's 294-781 (that was w_tgme2m1_tgc90). Each `COLOUR` line pads the next placement back to the 8 KB way offset it had on shipck A, so B's growth moves the placed text only until the next anchor: lines 298-364 (anchor at 365), 370-483 (anchor at 484), 637-760 (anchor at 761) and 794 to the end. What moved, in bytes and I-cache sets, waits on `toolbox/placediff.py` over A's and B's `halo.nm.txt` [U: the pair keeps no nm table; a build of each side is an ask to the master].
 
 ## 2. The census [M]
 
-Not yet: one ask (b30_leg2 and c20_leg2, PSP-1000, `drawsplit` on, slice 1's on form, two runs a leg), the lab's row `drawmain_census`.
+Written by builder2, 2026-11-26 23:46, from the lab's rows `drawcensus_b30` (sierra-hw 45943027708) and `drawmain_census` (sierra-hw 45945230751), both [M], PSP-1000, at c5ff3114 (§1.4); the lab's page `findings/drawcensus_2026-11-26.md`. Every figure is ms a frame, B's mean (two runs, run 1 / run 2 where they differ), from B's `drawsplit:` lines; `d` is frametrace's drawing.
+
+### 2.1 The stamps' cost: inside the 1% bar [M]
+
+| Leg, window | A's `d` (2 runs) | B's `d` (2 runs) | B against A |
+|---|---|---|---|
+| b30_leg2, the fight | 34.4 / 34.5 | 34.3 / 34.2 | 0.6% under |
+| c20_leg2, peak 1200-1800 | 22.2 / 22.1 | 22.3 / 22.4 | 0.9% over |
+| c20_leg2, whole 0-3560 | 23.2 / 22.2 | 22.4 / 22.4 | 1.3% under (A's runs 1.0 apart) |
+
+benchreport's frametrace `d` on both sides. No cost shows past the runs' own spread, so B's lines stand as the census. The stamps: 29.0-30.7 a frame on c20, as the emulator counted (§1.3a). B's heap top is 40 KB over A's (4528 against 4488 KB), the histograms' 41 KB calloc [D].
+
+### 2.2 The census by part [M]
+
+| Part | b30 fight (ticks ~1108-1732) | b30 opening (~500-1105) | c20 whole (frames 1-1800, ticks ~0-3330) | c20 line ~1033-1619 | c20 line ~1619-2196 |
+|---|---|---|---|---|---|
+| `d` | 34.4 / 34.4 | 25.9 / 26.0 | 22.17 / 22.08 | 21.3 | 28.2 / 28.4 |
+| objects | 15.7 / 15.9 | 13.3 / 13.4 | 5.53 / 5.57 | 5.3 / 5.4 | 8.0 |
+| world | 11.5 / 11.2 | 8.6 | 9.35 / 9.37 | 9.4 | 10.2 / 10.4 |
+| effects | 3.2 | 0.8 / 0.9 | 2.15 / 2.10 | 1.7 | 3.7 |
+| hud | 2.4 | 0.3 | 1.85 / 1.82 | 1.8 | 3.1 |
+| transparent | 0.8 | 1.7 | 1.82 / 1.80 | 1.9 | 1.9 |
+| flares | 0.3 | 0.8 | 0.93 / 0.92 | 0.8 | 0.8 |
+| end, begin, setup | 0.2 / 0.1, 0.1, 0.1 | | 0.22, 0.18 / 0.17, 0.10 | | |
+| screen, sound, occlusion, texture | 0.0 each | | 0.00 each | | |
+| unnamed | 0.1 (0.3% of `d`) | | 0.10 (0.5%) | 0.1 | 0.1 |
+
+- **The windows.** A line covers 300 frames: ~620 ticks on b30's fight, ~580 on c20. None lies wholly inside b30's fight (1098-1712) or c20's peak (1200-1800). b30's fight is the line over ~1108-1732: the fight plus 20 ticks past its end. c20's peak is the two lines that straddle it, each [M] for its own span. A figure for 1200-1800 alone would be an interpolation [U] (lab `toolbox/drawsplitwin.py` gives each line's tick span).
+- **The naming bar is met on both legs** (the brief's done-when 1: parts within 3% of `d`, unnamed at 15% or under). The parts sum to `d` (100.0-100.1% on c20) by construction: drawsplit charges every clock read's interval to the part then open. The lines' `d` on c20's whole (22.1) and benchreport's (22.4) agree within 1.5%, so the stamps time the same span.
+- **The four 0.0 parts are really small here.** The four 0.0 parts read 0.0 in the emulator too (§1.3a), and with unnamed at 0.1, no time is going missing. The texture and occlusion waits don't cost the main CPU on these paths, and the render's share of sound (`sound_render`, ~2.7 ms in REBUILD.md §3.1, [archive, as_of 2026-11-15]) reads 0.0 inside `d`. So on v2's build it runs outside the drawing, where §1.3a leaves sound unmapped [D]. Level 2 (§1.3) isn't needed for naming. It would only split `world` (the visibility, its wait on the ME, the level's main-CPU side) and `objects` (the model walk, the hook, its GE lists) for the cuts.
+- **Where the drawing goes.** On b30's fight, objects and world are 27.15 of 34.4, ~79%. Effects and hud add 5.6 more. On c20's whole they're 67%, and effects, hud and transparent take 26%. As c20's fight comes in, line to line, objects goes 5.3 to 8.0, effects 1.7 to 3.7, hud 1.8 to 3.1, while world moves only 9.4 to 10.3. So world is the steady floor on both maps, and objects and effects scale with the fight. Task 3 sizes the 11 ms budget on b30's fight (the heavier, `d` 34.4) and checks it against c20's two peak lines.
+- **Beside the drawing [M].** The tick on the fight/peak: b30 A 35.8 / 35.8, B 35.4 / 35.3; c20 A 31.0 / 30.9, B 30.5 / 30.5. c20's frame by the clock on the peak: A 86.3 / 85.9, B 85.5 / 85.3. B's tick runs ~0.45 under A's on both legs, though the hooks are in the drawing's files only. It reads as the placed text moving between anchors (§1.4), not as drawing [U until placediff]. A's tick on b30's fight matches flipck-b30's 35.7 to within 0.1 (bar 0.2), so the rig held.
+- **Unread.** Every p99 of 60.0 is the 0.1 ms histogram's top bin, not a measured worst [U]. The p50s are in the lines (the lab's page) and not repeated here.
 
 ## 3. The budget and the cuts [D]
 
