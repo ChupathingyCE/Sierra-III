@@ -59,9 +59,11 @@ struct box_ws_old_cluster { uint16_t first, count; };
 /* a model's live nodes as the walk began: each node the sweep walks under the
    object's permutations (collision_model_get_features_in_sphere's test), its
    collision BSP (the tag's, read where it lies) and its matrix (scale,
-   forward, left, up, position). 768 nodes: sized from sweepme2's first runs'
-   high water (the `wsold:` line), a model past them has no nodes held */
-#define BOX_WS_OLD_NODES 768
+   forward, left, up, position). 1024 nodes (57,344 B; the lab's decisions.md
+   2026-11-26 22:4x (2)): at 768 b30's fill reached the end at refresh 1113,
+   inside its fight, with 538 live (tccopy-check), so a model past the nodes
+   was NOT_HELD where the price is read; a model past them has no nodes held */
+#define BOX_WS_OLD_NODES 1024
 struct box_ws_old_node { const void *bsp; float m[13]; };
 _Static_assert(sizeof(void *) != 4 || sizeof(struct box_ws_old_node) == 56, "box_ws_old_node");
 enum
