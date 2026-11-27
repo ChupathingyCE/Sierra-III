@@ -22,6 +22,11 @@ usage: python3 mewalk.py halo.dis [root ...] [--summary] [--each]
              name starts with one is listed with one call chain (to see which
              library code, libm's or libc's, a job reaches: the walk follows it
              like our own, so nothing flags it)
+  --dis=     name prefixes, comma-separated: every function in the disassembly
+             whose name starts with one is printed whole, each with its section
+             and size (at most 8000 lines in all): a function's instructions
+             back from a build whose disassembly stays on the runner (the
+             PVS census's cycles a step, 2026-11-27)
   --syms=    the symbol table (psp-objdump -t halo.elf): objdump starts a new
              block at every symbol, and some fall inside a function (labels the
              link keeps), which cut the function short and hid its calls; with
@@ -61,6 +66,11 @@ for f in flags:
 for f in flags:
     if f.startswith('--calls='):
         show_calls += [c for c in f[len('--calls='):].split(',') if c]
+dis_prefixes = []
+for f in flags:
+    if f.startswith('--dis='):
+        dis_prefixes += [c for c in f[len('--dis='):].split(',') if c]
+DIS_MAX_LINES = 8000
 
 STUB_SECTION = '.sceStub.text'
 funcs, starts, section_of = {}, {}, {}
@@ -204,6 +214,20 @@ for f in show_calls:
     for line in funcs.get(f, []):
         if CALL_LINE.search(line):
             print("  " + line.strip())
+    print()
+
+if dis_prefixes:
+    named = sorted((f for f in funcs if any(f.startswith(p) for p in dis_prefixes)), key=lambda n: starts[n])
+    print("disassembly (%s): %d functions" % (','.join(dis_prefixes), len(named)))
+    left = DIS_MAX_LINES
+    for f in named:
+        print("\n%08x <%s>: %s, %d bytes" % (starts[f], f, section_of[f], size_of(f)))
+        for line in funcs[f][:left]:
+            print(line)
+        left -= min(left, len(funcs[f]))
+        if not left:
+            print("dis: stopped at %d lines (DIS_MAX_LINES)" % DIS_MAX_LINES)
+            break
     print()
 
 groups = [r.split('+') for r in roots]
