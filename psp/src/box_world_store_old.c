@@ -28,6 +28,13 @@ int psp_keep(const char *name);
 struct box_ws_old_object box_ws_old_objects[BOX_WS_OLD_SLOTS] __attribute__((aligned(64)));
 struct box_ws_old_biped box_ws_old_bipeds[BOX_WS_OLD_BIPEDS] __attribute__((aligned(64)));
 int16_t box_ws_old_biped_of[BOX_WS_OLD_SLOTS];
+/* (i)'s rest: every record's parent, the vehicles' ROOTs, the breakable flags */
+int32_t box_ws_old_parents[BOX_WS_OLD_SLOTS] __attribute__((aligned(64)));
+struct box_ws_old_vehicle box_ws_old_vehicles[BOX_WS_OLD_UNITS] __attribute__((aligned(64)));
+int16_t box_ws_old_vehicle_of[BOX_WS_OLD_SLOTS];
+static int16_t box_ws_old_vehicle_owner[BOX_WS_OLD_UNITS];
+uint8_t box_ws_old_breakable[32] __attribute__((aligned(64)));
+int box_ws_old_breakable_held;
 int box_ws_old_on = -1;
 int box_ws_old_checking;
 int box_ws_old_parts;
@@ -72,6 +79,8 @@ static unsigned box_ws_old_listed;
 /* the counts behind the log line, since the first refresh */
 static unsigned long box_ws_old_flips, box_ws_old_refreshed, box_ws_old_refreshed_bipeds, box_ws_old_cleared;
 static unsigned long box_ws_old_past_slots, box_ws_old_bipeds_full;
+static unsigned long box_ws_old_refreshed_vehicles, box_ws_old_vehicles_full, box_ws_old_breakable_taken;
+static unsigned box_ws_old_vehicles_most, box_ws_old_vehicles_live;
 static unsigned box_ws_old_high_water, box_ws_old_most_refreshed, box_ws_old_most_bipeds;
 static unsigned long box_ws_old_clusters_taken, box_ws_old_cluster_refreshes, box_ws_old_cluster_marks;
 static unsigned box_ws_old_members_most;
@@ -80,10 +89,10 @@ static unsigned long box_ws_old_models_put, box_ws_old_nodes_put, box_ws_old_mod
 static unsigned box_ws_old_nodes_most;
 
 enum { WSO_SPHERE, WSO_FLAGS, WSO_LINKS, WSO_TYPE, WSO_DEAD, WSO_NONE, WSO_PILL, WSO_MOTION, WSO_UNIT, WSO_NODES,
-	WSO_CLUSTER, WSO_FIELDS };
+	WSO_CLUSTER, WSO_PARENT, WSO_ROOT, WSO_BREAKABLE, WSO_FIELDS };
 static const char *const box_ws_old_field_name[WSO_FIELDS] = {
 	"sphere", "flags", "links", "type", "dead", "no record", "pill", "position/velocity", "parent/player/seat/passes",
-	"model nodes", "cluster list"
+	"model nodes", "cluster list", "parent", "vehicle root", "breakable flags"
 };
 static unsigned long box_ws_old_check_objects, box_ws_old_check_missed[WSO_FIELDS];
 static unsigned box_ws_old_check_told, box_ws_old_posed_told;
@@ -96,6 +105,7 @@ static unsigned long box_ws_old_check_unheld, box_ws_old_check_unheld_roomless;
 static unsigned box_ws_old_unheld_told;
 static unsigned long box_ws_old_visits, box_ws_old_visit_parted[WSO_FIELDS], box_ws_old_visits_parted;
 static unsigned long box_ws_old_check_clusters, box_ws_old_model_visits, box_ws_old_model_visits_parted;
+static unsigned long box_ws_old_breakable_visits;
 
 static void box_ws_old_models_reset(void);
 static void box_ws_old_model_drop(unsigned absolute);
@@ -192,12 +202,19 @@ int box_ws_old_begin(void)
 			return 0;
 		memset(box_ws_old_biped_of, 0xff, sizeof(box_ws_old_biped_of));
 		memset(box_ws_old_biped_owner, 0xff, sizeof(box_ws_old_biped_owner));
+		memset(box_ws_old_vehicle_of, 0xff, sizeof(box_ws_old_vehicle_of));
+		memset(box_ws_old_vehicle_owner, 0xff, sizeof(box_ws_old_vehicle_owner));
+		memset(box_ws_old_parents, 0xff, sizeof(box_ws_old_parents));
 		platform_psp_log("wsold: the one-tick-old copy on (%u object slots of %u B, %u bipeds of %u B, %u KB)%s%s",
 			(unsigned)BOX_WS_OLD_SLOTS, (unsigned)sizeof(struct box_ws_old_object), (unsigned)BOX_WS_OLD_BIPEDS,
 			(unsigned)sizeof(struct box_ws_old_biped),
 			(unsigned)((sizeof(box_ws_old_objects) + sizeof(box_ws_old_bipeds) + sizeof(box_ws_old_biped_of)) / 1024),
 			box_ws_old_parts ? ", with the clusters' lists and the models' nodes" : "",
 			box_ws_old_checking ? ", checked" : "");
+		platform_psp_log("wsold: the records' rest %u B (every slot's parent, %u vehicles' ROOT of %u B, the breakable flags' %u B)",
+			(unsigned)(sizeof(box_ws_old_parents) + sizeof(box_ws_old_vehicles) + sizeof(box_ws_old_vehicle_of) +
+				sizeof(box_ws_old_vehicle_owner) + sizeof(box_ws_old_breakable)),
+			(unsigned)BOX_WS_OLD_UNITS, (unsigned)sizeof(struct box_ws_old_vehicle), (unsigned)sizeof(box_ws_old_breakable));
 		if (box_ws_old_parts)
 		{
 			platform_psp_log("wsold: the clusters' lists %u B (%u clusters, %u members, two buffers)",
@@ -300,7 +317,50 @@ static void box_ws_old_free_biped(unsigned absolute)
 	}
 }
 
-void box_ws_old_put(unsigned absolute, struct box_ws_old_object const *object, struct box_ws_old_biped const *biped)
+static void box_ws_old_free_vehicle(unsigned absolute)
+{
+	int16_t slot = box_ws_old_vehicle_of[absolute];
+
+	if (slot >= 0)
+	{
+		box_ws_old_vehicle_owner[slot] = -1;
+		box_ws_old_vehicle_of[absolute] = -1;
+		box_ws_old_vehicles_live--;
+	}
+}
+
+/* a vehicle's ROOT kept in its record, one given out if it has none; none
+   left (past the units), and it has no ROOT held: the reader's
+   BOX_WS_OLD_PAST_UNITS */
+static void box_ws_old_put_vehicle(unsigned absolute, struct box_ws_old_vehicle const *root)
+{
+	if (!root)
+	{
+		box_ws_old_free_vehicle(absolute);
+		return;
+	}
+	if (box_ws_old_vehicle_of[absolute] < 0)
+	{
+		int slot;
+
+		for (slot = 0; slot < BOX_WS_OLD_UNITS && box_ws_old_vehicle_owner[slot] >= 0; slot++)
+			;
+		if (slot == BOX_WS_OLD_UNITS)
+		{
+			box_ws_old_vehicles_full++;
+			return;
+		}
+		box_ws_old_vehicle_owner[slot] = (int16_t)absolute;
+		box_ws_old_vehicle_of[absolute] = (int16_t)slot;
+		if (++box_ws_old_vehicles_live > box_ws_old_vehicles_most)
+			box_ws_old_vehicles_most = box_ws_old_vehicles_live;
+	}
+	box_ws_old_vehicles[box_ws_old_vehicle_of[absolute]] = *root;
+	box_ws_old_refreshed_vehicles++;
+}
+
+void box_ws_old_put(unsigned absolute, struct box_ws_old_object const *object, struct box_ws_old_biped const *biped,
+	struct box_ws_old_rest const *rest)
 {
 	if (absolute >= BOX_WS_OLD_SLOTS)
 		return;
@@ -309,13 +369,17 @@ void box_ws_old_put(unsigned absolute, struct box_ws_old_object const *object, s
 		if (box_ws_old_objects[absolute].identifier)
 			box_ws_old_cleared++;
 		box_ws_old_objects[absolute].identifier = 0;
+		box_ws_old_parents[absolute] = -1;
 		box_ws_old_free_biped(absolute);
+		box_ws_old_free_vehicle(absolute);
 		if (box_ws_old_parts)
 			box_ws_old_model_drop(absolute);
 		return;
 	}
 	box_ws_old_objects[absolute] = *object;
 	box_ws_old_refreshed++;
+	box_ws_old_parents[absolute] = rest ? rest->parent : -1;
+	box_ws_old_put_vehicle(absolute, rest && rest->vehicle ? &rest->root : NULL);
 	if (!biped)
 	{
 		box_ws_old_free_biped(absolute);
@@ -570,6 +634,31 @@ void box_ws_old_cluster_check(int cluster, const int32_t *objects, unsigned coun
 	box_ws_old_cluster_bits[cluster >> 5] |= 1u << (cluster & 31);
 }
 
+/* ---------- the breakable flags */
+
+/* the refresh's: the live row's one line read, written to the copy only
+   when it changed (as cheap as a mark's test at the three writers would be,
+   and no writer can be missed) */
+void box_ws_old_breakable_put(const void *row)
+{
+	if (box_ws_old_on <= 0 || !row)
+		return;
+	if (box_ws_old_breakable_held && !memcmp(box_ws_old_breakable, row, sizeof(box_ws_old_breakable)))
+		return;
+	memcpy(box_ws_old_breakable, row, sizeof(box_ws_old_breakable));
+	box_ws_old_breakable_held = 1;
+	box_ws_old_breakable_taken++;
+}
+
+void box_ws_old_breakable_visit(const void *row)
+{
+	if (!row || !box_ws_old_breakable_held)
+		return;
+	box_ws_old_breakable_visits++;
+	if (memcmp(box_ws_old_breakable, row, sizeof(box_ws_old_breakable)))
+		box_ws_old_visit_parted[WSO_BREAKABLE]++;
+}
+
 static void box_ws_old_log(void)
 {
 	char line[420];
@@ -581,6 +670,9 @@ static void box_ws_old_log(void)
 		(box_ws_old_refreshed * sizeof(struct box_ws_old_object) + box_ws_old_refreshed_bipeds * sizeof(struct box_ws_old_biped)) / flips,
 		box_ws_old_most_refreshed, box_ws_old_most_bipeds, box_ws_old_cleared, box_ws_old_high_water,
 		(unsigned)BOX_WS_OLD_SLOTS, box_ws_old_past_slots, box_ws_old_bipeds_full);
+	platform_psp_log("wsold: vehicles %.1f ROOTs put a refresh, held most %u of %u (live %u), %lu vehicles without a record (past the units); breakable flags taken %lu times",
+		box_ws_old_refreshed_vehicles / flips, box_ws_old_vehicles_most, (unsigned)BOX_WS_OLD_UNITS, box_ws_old_vehicles_live,
+		box_ws_old_vehicles_full, box_ws_old_breakable_taken);
 	if (box_ws_old_parts)
 	{
 		double refreshes = box_ws_old_cluster_refreshes ? (double)box_ws_old_cluster_refreshes : 1.0;
@@ -592,12 +684,12 @@ static void box_ws_old_log(void)
 			box_ws_old_unheld_taken / flips, box_ws_old_nodes_most, (unsigned)BOX_WS_OLD_NODES, box_ws_old_node_live,
 			box_ws_old_repacks);
 	}
-	platform_psp_log("wsold: readers %lu posts (%lu refused a hold), %lu whole not made, %lu refresh while held; objects taken %lu, not held: past the slots %lu, no record %lu, marked since %lu, no biped record %lu, model past the nodes %lu, model owed %lu",
+	platform_psp_log("wsold: readers %lu posts (%lu refused a hold), %lu whole not made, %lu refresh while held; objects taken %lu, not held: past the slots %lu, no record %lu, marked since %lu, no biped record %lu, model past the nodes %lu, model owed %lu, vehicle past the units %lu",
 		box_ws_old_posts, box_ws_old_holds_refused, box_ws_old_refusals[BOX_WS_OLD_NOT_MADE], box_ws_old_held_at_refresh,
 		box_ws_old_refusals[BOX_WS_OLD_TAKEN], box_ws_old_refusals[BOX_WS_OLD_PAST_SLOTS],
 		box_ws_old_refusals[BOX_WS_OLD_NO_RECORD], box_ws_old_refusals[BOX_WS_OLD_MARKED],
 		box_ws_old_refusals[BOX_WS_OLD_NO_BIPED], box_ws_old_refusals[BOX_WS_OLD_PAST_NODES],
-		box_ws_old_refusals[BOX_WS_OLD_OWED]);
+		box_ws_old_refusals[BOX_WS_OLD_OWED], box_ws_old_refusals[BOX_WS_OLD_PAST_UNITS]);
 	if (!box_ws_old_checking)
 		return;
 	platform_psp_log("wsoldcheck: the made word behind its refresh at %lu refreshes (0: every copy published)",
@@ -613,10 +705,10 @@ static void box_ws_old_log(void)
 	n = 0;
 	for (k = 0; k < WSO_FIELDS; k++)
 		n += snprintf(line + n, sizeof(line) - n, "%s%s %lu", k ? ", " : "", box_ws_old_field_name[k], box_ws_old_visit_parted[k]);
-	platform_psp_log("wsoldcheck: the engine's sweep visited %lu objects; the copy parted from the live world at %lu (%.2f%%): %s; models met %lu, nodes parted at %lu",
+	platform_psp_log("wsoldcheck: the engine's sweep visited %lu objects; the copy parted from the live world at %lu (%.2f%%): %s; models met %lu, nodes parted at %lu; breakable flags met %lu (their parted count is the field's, not in the objects')",
 		box_ws_old_visits, box_ws_old_visits_parted,
 		box_ws_old_visits ? 100.0 * box_ws_old_visits_parted / box_ws_old_visits : 0.0, line,
-		box_ws_old_model_visits, box_ws_old_model_visits_parted);
+		box_ws_old_model_visits, box_ws_old_model_visits_parted, box_ws_old_breakable_visits);
 }
 
 void box_ws_old_flipped(unsigned objects, unsigned bipeds, unsigned high_water)
@@ -665,8 +757,32 @@ static unsigned box_ws_old_biped_differ(struct box_ws_old_biped const *a, struct
 	return bits;
 }
 
+/* the rest's fields that differ from what's held for the slot: the parent,
+   and a vehicle's ROOT (bit for bit, root_held with it; no record: none) */
+static unsigned box_ws_old_rest_differ(unsigned absolute, struct box_ws_old_rest const *rest)
+{
+	unsigned bits = 0;
+
+	if (!rest)
+		return 0;
+	if (box_ws_old_parents[absolute] != rest->parent)
+		bits |= 1u << WSO_PARENT;
+	if (rest->vehicle)
+	{
+		int16_t slot = box_ws_old_vehicle_of[absolute];
+
+		if (slot < 0)
+			bits |= 1u << WSO_NONE;
+		else if (memcmp(&box_ws_old_vehicles[slot], &rest->root, sizeof(rest->root)))
+			bits |= 1u << WSO_ROOT;
+	}
+	else if (box_ws_old_vehicle_of[absolute] >= 0)
+		bits |= 1u << WSO_ROOT;
+	return bits;
+}
+
 void box_ws_old_check(unsigned absolute, struct box_ws_old_object const *object, struct box_ws_old_biped const *biped,
-	int posed)
+	struct box_ws_old_rest const *rest, int posed)
 {
 	struct box_ws_old_object const *held;
 	unsigned bits = 0, k;
@@ -689,6 +805,7 @@ void box_ws_old_check(unsigned absolute, struct box_ws_old_object const *object,
 			else
 				bits |= box_ws_old_biped_differ(&box_ws_old_bipeds[box_ws_old_biped_of[absolute]], biped, 1);
 		}
+		bits |= box_ws_old_rest_differ(absolute, rest);
 	}
 	if (!bits)
 		return;
@@ -714,10 +831,11 @@ void box_ws_old_check(unsigned absolute, struct box_ws_old_object const *object,
 			box_ws_old_flips, absolute, (unsigned)object->type, posed ? ", posed," : "", bits);
 	}
 	/* kept true from here, so one missed writer counts once a tick, not on */
-	box_ws_old_put(absolute, object, biped);
+	box_ws_old_put(absolute, object, biped, rest);
 }
 
-void box_ws_old_visit(long datum_index, struct box_ws_old_object const *now, struct box_ws_old_biped const *biped_now)
+void box_ws_old_visit(long datum_index, struct box_ws_old_object const *now, struct box_ws_old_biped const *biped_now,
+	struct box_ws_old_rest const *rest_now)
 {
 	struct box_ws_old_object const *held = box_ws_old_object_of(datum_index);
 	unsigned bits, k;
@@ -734,6 +852,7 @@ void box_ws_old_visit(long datum_index, struct box_ws_old_object const *now, str
 
 			bits |= was ? box_ws_old_biped_differ(was, biped_now, 0) : 1u << WSO_NONE;
 		}
+		bits |= box_ws_old_rest_differ((unsigned)datum_index & 0xffff, rest_now);
 	}
 	if (!bits)
 		return;

@@ -56528,8 +56528,31 @@ static int psp_wsold_model_make(long object_index, struct object_datum const *ob
 }
 
 static int psp_wsold_make(long object_index, struct object_datum const *object, short type,
-	struct box_ws_old_object *record, struct box_ws_old_biped *biped_record)
+	struct box_ws_old_object *record, struct box_ws_old_biped *biped_record, struct box_ws_old_rest *rest)
 {
+	/* the rest: every object's parent; a vehicle's ROOT as physics_instance_new
+	reads it (object_get_origin, object_get_orientation) when it has no
+	parent: a child's is its parent's node's, which reading would make on
+	demand, so it's left to the serial path */
+	memset(rest, 0, sizeof(*rest));
+	rest->parent = object->object.parent_object_index;
+	if (type == _object_type_vehicle)
+	{
+		rest->vehicle = 1;
+		if (object->object.parent_object_index == NONE)
+		{
+			rest->root.position[0] = object->object.position.x;
+			rest->root.position[1] = object->object.position.y;
+			rest->root.position[2] = object->object.position.z;
+			rest->root.forward[0] = object->object.forward.i;
+			rest->root.forward[1] = object->object.forward.j;
+			rest->root.forward[2] = object->object.forward.k;
+			rest->root.up[0] = object->object.up.i;
+			rest->root.up[1] = object->object.up.j;
+			rest->root.up[2] = object->object.up.k;
+			rest->root.root_held = 1;
+		}
+	}
 	memset(record, 0, sizeof(*record));
 	record->center[0] = object->object.bounding_sphere_center.x;
 	record->center[1] = object->object.bounding_sphere_center.y;
@@ -56582,31 +56605,33 @@ static void psp_wsold_one(unsigned absolute, int check)
 	struct object_header_datum const *header;
 	struct box_ws_old_object record;
 	struct box_ws_old_biped biped_record;
+	struct box_ws_old_rest rest;
 	int is_biped;
 
 	if (absolute >= (unsigned)object_header_data->count)
 	{
 		if (!check)
-			box_ws_old_put(absolute, NULL, NULL);
+			box_ws_old_put(absolute, NULL, NULL, NULL);
 		return;
 	}
 	header = (struct object_header_datum const *)xbox_pointer(object_header_data->data) + absolute;
 	if (!header->identifier || !header->datum)
 	{
 		if (!check)
-			box_ws_old_put(absolute, NULL, NULL);
+			box_ws_old_put(absolute, NULL, NULL, NULL);
 		return;
 	}
-	is_biped = psp_wsold_make(DATUM_INDEX_NEW(absolute, header->identifier), header->datum, header->type, &record, &biped_record);
+	is_biped = psp_wsold_make(DATUM_INDEX_NEW(absolute, header->identifier), header->datum, header->type, &record, &biped_record,
+		&rest);
 	if (check)
 	{
 		/* posed: it has pose nodes (the node count's read, in a shape slice 1's count cut knows) */
 		struct object_datum const *object = (struct object_datum const *)header->datum;
 
-		box_ws_old_check(absolute, &record, is_biped ? &biped_record : NULL, object->object.node_matrices.size > 0);
+		box_ws_old_check(absolute, &record, is_biped ? &biped_record : NULL, &rest, object->object.node_matrices.size > 0);
 	}
 	else
-		box_ws_old_put(absolute, &record, is_biped ? &biped_record : NULL);
+		box_ws_old_put(absolute, &record, is_biped ? &biped_record : NULL, &rest);
 	if (box_ws_old_parts)
 	{
 		struct box_ws_old_node nodes[PSP_WSOLD_MODEL_NODES];
@@ -56671,6 +56696,7 @@ void psp_wsold_refresh(void)
 		psp_wsold_one(list[i], 0);
 	for (i = 0; i < count; i++)
 		bipeds += box_ws_old_biped_of[list[i]] >= 0;
+	box_ws_old_breakable_put(breakable_surface_flags_get());
 	if (box_ws_old_parts)
 	{
 		static int32_t members[BOX_WS_OLD_MEMBERS];
@@ -56715,12 +56741,16 @@ void psp_wsold_visit(long object_index, struct object_datum const *object)
 {
 	struct box_ws_old_object record;
 	struct box_ws_old_biped biped_record;
+	struct box_ws_old_rest rest;
 	struct object_header_datum const *header = object_header_get(object_index);
 
-	if (psp_wsold_make(object_index, object, header->type, &record, &biped_record))
-		box_ws_old_visit(object_index, &record, &biped_record);
+	if (psp_wsold_make(object_index, object, header->type, &record, &biped_record, &rest))
+		box_ws_old_visit(object_index, &record, &biped_record, &rest);
 	else
-		box_ws_old_visit(object_index, &record, NULL);
+		box_ws_old_visit(object_index, &record, NULL, &rest);
+	/* the level's half reads the breakable flags at every sweep: met here,
+	at each object it visits, against the row the copy holds */
+	box_ws_old_breakable_visit(breakable_surface_flags_get());
 	if (box_ws_old_parts && box_ws_old_object_of(object_index))
 	{
 		struct box_ws_old_node nodes[PSP_WSOLD_MODEL_NODES];

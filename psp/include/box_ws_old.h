@@ -47,6 +47,29 @@ struct box_ws_old_biped {
 };
 _Static_assert(sizeof(struct box_ws_old_biped) == 64, "box_ws_old_biped");
 
+/* (i)'s rest (docs/box_world_store.md §1e (i), §2): what the sweep reads
+   beyond the 32 B record, kept beside it. A vehicle's ROOT, as the vehicle
+   physics test makes its frame (physics_instance_new: object_get_origin and
+   object_get_orientation), for an unparented vehicle: a child's is its
+   parent's node's, made on demand, so root_held 0 and the serial path's.
+   Up to the unit table's 256 (TICK2_UNIT_MOST; vehicles are units): a vehicle
+   past them has none held (BOX_WS_OLD_PAST_UNITS), 40 B each */
+#define BOX_WS_OLD_UNITS 256
+struct box_ws_old_vehicle {
+	float position[3];     /* object.position */
+	float forward[3];      /* object.forward */
+	float up[3];           /* object.up */
+	uint8_t root_held;     /* 0 for a child */
+	uint8_t pad[3];
+};
+_Static_assert(sizeof(struct box_ws_old_vehicle) == 40, "box_ws_old_vehicle");
+/* made by the engine's side with the record, for every object */
+struct box_ws_old_rest {
+	int32_t parent;        /* object.parent_object_index: the sweep's ignore and parent tests, a non-biped's too */
+	int32_t vehicle;       /* 1: a vehicle, root is its */
+	struct box_ws_old_vehicle root;
+};
+
 /* the clusters' collideable lists as the walk began (docs/box_world_store.md
    §12): each cluster's objects in the order the engine's list held them, a
    run of datum indices in the members array. Up to the structure's 512
@@ -78,6 +101,15 @@ struct box_ws_old_model { uint16_t first; uint8_t count; uint8_t state; };
 extern struct box_ws_old_object box_ws_old_objects[BOX_WS_OLD_SLOTS];
 extern struct box_ws_old_biped box_ws_old_bipeds[BOX_WS_OLD_BIPEDS];
 extern int16_t box_ws_old_biped_of[BOX_WS_OLD_SLOTS]; /* -1: none */
+extern int32_t box_ws_old_parents[BOX_WS_OLD_SLOTS]; /* every record's parent, -1 none (8 KB: the record is full) */
+extern struct box_ws_old_vehicle box_ws_old_vehicles[BOX_WS_OLD_UNITS];
+extern int16_t box_ws_old_vehicle_of[BOX_WS_OLD_SLOTS]; /* -1: none */
+/* the level's breakable flags as the walk began (breakable_surface_flags_get:
+   the current BSP's row, 32 B), taken by value at every refresh; written by
+   a projectile's impact, area damage and a melee, the walk's in the
+   parallel phase. held 0 before the first refresh */
+extern uint8_t box_ws_old_breakable[32];
+extern int box_ws_old_breakable_held;
 extern struct box_ws_old_cluster box_ws_old_clusters[BOX_WS_OLD_CLUSTERS];
 extern const int32_t *box_ws_old_members;
 extern int box_ws_old_cluster_count; /* the level's clusters held; 0: none (a list couldn't be read) */
@@ -108,6 +140,17 @@ static inline const struct box_ws_old_biped *box_ws_old_biped_of_index(long datu
 	if (!box_ws_old_object_of(datum_index) || box_ws_old_biped_of[absolute] < 0)
 		return NULL;
 	return &box_ws_old_bipeds[box_ws_old_biped_of[absolute]];
+}
+
+/* a vehicle's ROOT as the walk began, or NULL (no record, or past the units);
+   a reader tests root_held as the sweep's tests pill_held */
+static inline const struct box_ws_old_vehicle *box_ws_old_vehicle_of_index(long datum_index)
+{
+	unsigned absolute = (unsigned)datum_index & 0xffff;
+
+	if (!box_ws_old_object_of(datum_index) || box_ws_old_vehicle_of[absolute] < 0)
+		return NULL;
+	return &box_ws_old_vehicles[box_ws_old_vehicle_of[absolute]];
 }
 
 /* the hand-over (docs/box_world_store.md §3, "If the copy isn't ready"):
@@ -158,12 +201,14 @@ enum
 	BOX_WS_OLD_NO_BIPED,      /* a biped the copy has no biped record for (bipeds_full) */
 	BOX_WS_OLD_PAST_NODES,    /* a model past the nodes */
 	BOX_WS_OLD_OWED,          /* a model whose matrices weren't made */
+	BOX_WS_OLD_PAST_UNITS,    /* a vehicle past the units: no ROOT held (vehicles_full) */
 	BOX_WS_OLD_REFUSALS
 };
 
 /* the take's guard: BOX_WS_OLD_TAKEN, or why not. biped: the reader needs its
-   biped record; model: its nodes. The made word is the job's test, once */
-static inline int box_ws_old_why_not(long datum_index, int biped, int model)
+   biped record; model: its nodes; vehicle: its ROOT (the vehicle physics
+   test). The made word is the job's test, once */
+static inline int box_ws_old_why_not(long datum_index, int biped, int model, int vehicle)
 {
 	unsigned absolute = (unsigned)datum_index & 0xffff;
 
@@ -177,6 +222,8 @@ static inline int box_ws_old_why_not(long datum_index, int biped, int model)
 		return BOX_WS_OLD_NO_BIPED;
 	if (model && box_ws_old_models[absolute].state == BOX_WS_OLD_MODEL_NOT_HELD)
 		return box_ws_old_models[absolute].count ? BOX_WS_OLD_PAST_NODES : BOX_WS_OLD_OWED;
+	if (vehicle && box_ws_old_vehicle_of[absolute] < 0)
+		return BOX_WS_OLD_PAST_UNITS;
 	return BOX_WS_OLD_TAKEN;
 }
 
@@ -196,8 +243,10 @@ void box_ws_old_refused(const unsigned refused[BOX_WS_OLD_REFUSALS]);
 void box_ws_old_mark(long datum_index);
 
 /* the engine's side (psp_fixups.py FIXES_WSOLD, objects.c) makes a record
-   from a datum; the store keeps or compares it */
-void box_ws_old_put(unsigned absolute, struct box_ws_old_object const *object, struct box_ws_old_biped const *biped);
+   from a datum; the store keeps or compares it. rest: the record's rest,
+   given with every object (NULL only with object NULL) */
+void box_ws_old_put(unsigned absolute, struct box_ws_old_object const *object, struct box_ws_old_biped const *biped,
+	struct box_ws_old_rest const *rest);
 /* at the walk's start: 0 the copy is off, 1 refresh the marked, 2 fill
    every slot (the first time, or after box_ws_old_forget) */
 int box_ws_old_begin(void);
@@ -212,10 +261,16 @@ void box_ws_old_flipped(unsigned objects, unsigned bipeds, unsigned high_water);
    its sphere is store_pose.c's to write (the crossing's marks), and a sphere
    that changed unmarked counts on its own, apart from the other fields */
 void box_ws_old_check(unsigned absolute, struct box_ws_old_object const *object, struct box_ws_old_biped const *biped,
-	int posed);
+	struct box_ws_old_rest const *rest, int posed);
 /* wsoldcheck: at each object the engine's sweep visits, the copy against
    what the engine reads now (the one-tick-old world's reach) */
-void box_ws_old_visit(long datum_index, struct box_ws_old_object const *now, struct box_ws_old_biped const *biped_now);
+void box_ws_old_visit(long datum_index, struct box_ws_old_object const *now, struct box_ws_old_biped const *biped_now,
+	struct box_ws_old_rest const *rest_now);
+/* the breakable flags: the live row taken at the refresh (written only
+   when it changed); wsoldcheck, at each object the sweep visits, the held
+   row against the live one */
+void box_ws_old_breakable_put(const void *row);
+void box_ws_old_breakable_visit(const void *row);
 
 /* a map started or a game state loaded: every record is of another world,
    so the next refresh fills every slot and every cluster again */
