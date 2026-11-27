@@ -56,6 +56,23 @@ _Static_assert(sizeof(struct box_ws_old_biped) == 64, "box_ws_old_biped");
 #define BOX_WS_OLD_MEMBERS 2048
 struct box_ws_old_cluster { uint16_t first, count; };
 
+/* a model's live nodes as the walk began: each node the sweep walks under the
+   object's permutations (collision_model_get_features_in_sphere's test), its
+   collision BSP (the tag's, read where it lies) and its matrix (scale,
+   forward, left, up, position). 768 nodes: sized from sweepme2's first runs'
+   high water (the `wsold:` line), a model past them has no nodes held */
+#define BOX_WS_OLD_NODES 768
+struct box_ws_old_node { const void *bsp; float m[13]; };
+_Static_assert(sizeof(void *) != 4 || sizeof(struct box_ws_old_node) == 56, "box_ws_old_node");
+enum
+{
+	BOX_WS_OLD_MODEL_NONE,     /* not a model the sweep walks (or no record) */
+	BOX_WS_OLD_MODEL_HELD,     /* its live nodes, first..first+count */
+	BOX_WS_OLD_MODEL_NO_MODEL, /* a vehicle, scenery, machine or control without a collision model */
+	BOX_WS_OLD_MODEL_NOT_HELD, /* owed (its matrices weren't made) or past the nodes: a reader can't answer */
+};
+struct box_ws_old_model { uint16_t first; uint8_t count; uint8_t state; };
+
 extern struct box_ws_old_object box_ws_old_objects[BOX_WS_OLD_SLOTS];
 extern struct box_ws_old_biped box_ws_old_bipeds[BOX_WS_OLD_BIPEDS];
 extern int16_t box_ws_old_biped_of[BOX_WS_OLD_SLOTS]; /* -1: none */
@@ -63,9 +80,11 @@ extern struct box_ws_old_cluster box_ws_old_clusters[BOX_WS_OLD_CLUSTERS];
 extern const int32_t *box_ws_old_members;
 extern int box_ws_old_cluster_count; /* the level's clusters held; 0: none (a list couldn't be read) */
 extern const void *box_ws_old_cluster_level; /* the structure BSP they're of */
+extern struct box_ws_old_model box_ws_old_models[BOX_WS_OLD_SLOTS];
+extern struct box_ws_old_node box_ws_old_nodes[BOX_WS_OLD_NODES];
 extern int box_ws_old_on;
 extern int box_ws_old_checking; /* wsoldcheck */
-extern int box_ws_old_parts;    /* the clusters held too (keep word wsoldparts, or wsoldcheck) */
+extern int box_ws_old_parts;    /* the clusters and the models' nodes held too (keep word wsoldparts, or wsoldcheck) */
 
 /* the readers: the record of the object as the walk began, or NULL (made
    later, past the slots, or the copy is off) */
@@ -98,8 +117,10 @@ void box_ws_old_put(unsigned absolute, struct box_ws_old_object const *object, s
 /* at the walk's start: 0 the copy is off, 1 refresh the marked, 2 fill
    every slot (the first time, or after box_ws_old_forget) */
 int box_ws_old_begin(void);
-/* the objects to refresh: the marked ones and every biped held (their
-   records are 2 KB in all, cheaper than a mark at each of their writers) */
+/* the objects to refresh: the marked ones, every biped held (their
+   records are 2 KB in all, cheaper than a mark at each of their writers),
+   and with the parts every model the copy has as NOT_HELD (means B's fill
+   of owed nodes, in store_pose.c, carries no mark) */
 int box_ws_old_marked(uint16_t *absolute, unsigned capacity);
 void box_ws_old_flipped(unsigned objects, unsigned bipeds, unsigned high_water);
 /* wsoldcheck: a fresh record of a live object against the copy, after the
@@ -112,6 +133,14 @@ void box_ws_old_visit(long datum_index, struct box_ws_old_object const *now, str
 /* a map started or a game state loaded: every record is of another world,
    so the next refresh fills every slot and every cluster again */
 void box_ws_old_forget(void);
+
+/* the models' nodes (with box_ws_old_parts): an object's run, made from its
+   datum by the engine's side (count nodes, or state NO_MODEL / NOT_HELD with
+   none). put keeps it, check compares it with what's held */
+void box_ws_old_model_put(unsigned absolute, int state, const struct box_ws_old_node *nodes, unsigned count);
+void box_ws_old_model_check(unsigned absolute, int state, const struct box_ws_old_node *nodes, unsigned count);
+/* wsoldcheck at the sweep: a model's nodes held against what it reads now */
+void box_ws_old_model_visit(unsigned absolute, int state, const struct box_ws_old_node *nodes, unsigned count);
 
 /* the clusters (with box_ws_old_parts): a reconnect or disconnect's mark on
    each cluster its object leaves or joins; the refresh then copies the runs

@@ -56447,6 +56447,85 @@ FIXES_WSOLD = {
 _Static_assert(BOX_WS_OLD_SLOTS >= MAXIMUM_OBJECTS_PER_MAP, "the one-tick-old copy holds every object slot");
 _Static_assert(BOX_WS_OLD_CLUSTERS >= MAXIMUM_CLUSTERS_PER_STRUCTURE, "the copy holds every cluster");
 _Static_assert(BOX_WS_OLD_MEMBERS >= HALO_PORT_MAXIMUM_CLUSTER_REFERENCES, "the copy's members hold the partition's references");
+_Static_assert(sizeof(real_matrix4x3) == 13 * sizeof(float), "a node's matrix as the copy holds it");
+#include "physics/collision_bsp_definitions.h" /* (FIXES_WSOLD) a model's node BSPs */
+#define PSP_WSOLD_MODEL_NODES 64 /* MAXIMUM_NODES_PER_MODEL: a collision model binds no more */
+
+/* whether a read of the object's node matrices would make them first: their
+compute left out (NMSKIP's pending set, made by psp_nms_make, which marks) or
+nodes the posing box owes (means B's slot, made by its fill, which doesn't:
+the store takes a NOT_HELD model again at every refresh until it's held) */
+static int psp_wsold_nodes_owed(long object_index)
+{
+	unsigned long absolute = (unsigned long)object_index & 0xFFFFUL;
+
+	if (absolute < MAXIMUM_OBJECTS_PER_MAP && psp_nms_count && ((psp_nms_pending[absolute >> 5] >> (absolute & 31)) & 1))
+		return 1;
+#ifdef PSP_BOX_POSING
+	if (psp_boxb_count)
+	{
+		struct psp_boxb_slot const *slot = &psp_boxb[absolute & (PSP_BOXB_SLOTS - 1)];
+
+		if (slot->object_index == object_index && (slot->all & ~slot->made))
+			return 1;
+	}
+#endif
+	return 0;
+}
+
+/* a model's live nodes for the copy: the nodes
+collision_model_get_features_in_sphere walks (a valid region, a permutation,
+a BSP with 3D nodes), its BSP and matrix each. The matrices are the pose's
+(store_pose_box_gather, the walk's pose), read raw where the pose left them
+and without making anything: an object whose matrices are owed has none held
+(a reader can't answer), so taking the copy changes no compute's time. The
+count is the one collision_model_instance_new binds: the model's nodes, no
+more than the object's matrices */
+static int psp_wsold_model_make(long object_index, struct object_datum const *object, short type,
+	struct box_ws_old_node *nodes, unsigned *count)
+{
+	struct object_definition const *definition;
+	struct collision_model const *model;
+	real_matrix4x3 const *matrices;
+	long node_count, i;
+
+	*count = 0;
+	if (type != _object_type_vehicle && type != _object_type_scenery && type != _object_type_machine &&
+		type != _object_type_control)
+		return BOX_WS_OLD_MODEL_NONE;
+	definition = object_definition_get(object->definition_index);
+	if (definition->object.collision_model.index == NONE)
+		return BOX_WS_OLD_MODEL_NO_MODEL;
+	if (psp_wsold_nodes_owed(object_index))
+		return BOX_WS_OLD_MODEL_NOT_HELD;
+	model = collision_model_definition_get(definition->object.collision_model.index);
+	matrices = (real_matrix4x3 const *)object_header_block_get(object_index, &object->object.node_matrices);
+	node_count = object->object.node_matrices.size / (long)sizeof(real_matrix4x3);
+	if (model->nodes.count < node_count)
+		node_count = model->nodes.count;
+	for (i = 0; i < node_count; i++)
+	{
+		struct collision_node const *node = TAG_BLOCK_GET_ELEMENT(&model->nodes, i, struct collision_node);
+		struct collision_bsp const *bsp;
+		short permutation;
+
+		if (node->region_index < 0 || node->region_index >= MAXIMUM_REGIONS_PER_OBJECT)
+			continue;
+		permutation = object->object.region_permutations[node->region_index];
+		if (permutation == NONE || node->bsps.count <= 0)
+			continue;
+		permutation = PIN(permutation, 0, node->bsps.count - 1);
+		bsp = TAG_BLOCK_GET_ELEMENT(&node->bsps, permutation, struct collision_bsp);
+		if (bsp->bsp3d.nodes.count <= 0)
+			continue;
+		if (*count >= PSP_WSOLD_MODEL_NODES)
+			return BOX_WS_OLD_MODEL_NOT_HELD;
+		nodes[*count].bsp = bsp;
+		memcpy(nodes[*count].m, &matrices[i], sizeof(nodes[*count].m));
+		(*count)++;
+	}
+	return BOX_WS_OLD_MODEL_HELD;
+}
 
 static int psp_wsold_make(long object_index, struct object_datum const *object, short type,
 	struct box_ws_old_object *record, struct box_ws_old_biped *biped_record)
@@ -56523,6 +56602,18 @@ static void psp_wsold_one(unsigned absolute, int check)
 		box_ws_old_check(absolute, &record, is_biped ? &biped_record : NULL);
 	else
 		box_ws_old_put(absolute, &record, is_biped ? &biped_record : NULL);
+	if (box_ws_old_parts)
+	{
+		struct box_ws_old_node nodes[PSP_WSOLD_MODEL_NODES];
+		unsigned count;
+		int state = psp_wsold_model_make(DATUM_INDEX_NEW(absolute, header->identifier), header->datum, header->type,
+			nodes, &count);
+
+		if (check)
+			box_ws_old_model_check(absolute, state, nodes, count);
+		else
+			box_ws_old_model_put(absolute, state, nodes, count);
+	}
 }
 
 /* each cluster's collideable list as the engine's accessors give it: the
@@ -56625,6 +56716,15 @@ void psp_wsold_visit(long object_index, struct object_datum const *object)
 		box_ws_old_visit(object_index, &record, &biped_record);
 	else
 		box_ws_old_visit(object_index, &record, NULL);
+	if (box_ws_old_parts && box_ws_old_object_of(object_index))
+	{
+		struct box_ws_old_node nodes[PSP_WSOLD_MODEL_NODES];
+		unsigned count;
+		int state = psp_wsold_model_make(object_index, object, header->type, nodes, &count);
+
+		if (state != BOX_WS_OLD_MODEL_NONE)
+			box_ws_old_model_visit((unsigned)DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index), state, nodes, count);
+	}
 }
 """),
 # the clusters an object leaves and joins (the collideable partition's lists
