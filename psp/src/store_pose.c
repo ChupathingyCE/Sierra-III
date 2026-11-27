@@ -930,6 +930,9 @@ static void psp_nms_make(long object_index, struct psp_nms_entry const *entry)
 	unsigned char const *p = (unsigned char const *)&entry->inputs, *a = (unsigned char const *)&after;
 	unsigned int k;
 
+#ifdef PSP_WSOLD
+	{ void box_ws_old_mark(long datum_index); box_ws_old_mark(object_index); } /* (wsold) its nodes and sphere made since the copy */
+#endif
 	psp_nms_inputs_get(object, &now + PSP_MEPROBE_EXPR(9));
 	psp_nms_inputs_put(object, &entry->inputs);
 	psp_nms_settle_time = entry->time;
@@ -995,6 +998,9 @@ __attribute__((noinline)) static void store_pose_make_skipped_at(long absolute, 
 				(unsigned long)psp_nms_reader);
 	}
 	csmemcpy(nodes, psp_nms_kept, size);
+#ifdef PSP_WSOLD
+	{ void box_ws_old_mark(long datum_index); box_ws_old_mark(entry.object_index); } /* (wsold) the kept sphere put back */
+#endif
 	object->object.root->bounding_sphere_center = center;
 	object->object.root->bounding_sphere_radius = radius;
 	if (psp_object_spheres && DATUM_INDEX_TO_ABSOLUTE_INDEX(entry.object_index) < MAXIMUM_OBJECTS_PER_MAP)

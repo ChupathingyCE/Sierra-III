@@ -665,10 +665,13 @@ def units():
     # posing code, moved out of objects.c, built as objects.c is (its flags, the fixed-up objects.h). The proof
     # form (PSP_TICK2_PROOF=1, which the fixups read to shape objects.c's text) is a define here, since the file
     # is Sierra-III's own: its accessors compare the record's node count with the datum's reference while both stand
+    # PSP_WSOLD=1 gives it -DPSP_WSOLD=1 for wsold's two sphere marks (psp_fixups.py TICK2_POSENEW_NMS_WSOLD_MARKS);
+    # off, its command is what it was
     if os.environ.get("PSP_TICK2_POSENEW", "") == "1":
         items.append((os.path.join(HERE, "psp/src/store_pose.c"),
                       ninja_flags("build/linux/obj/source/objects/objects.o"),
-                      ["-DPSP_TICK2_PROOF=1"] if os.environ.get("PSP_TICK2_PROOF", "") == "1" else []))
+                      (["-DPSP_TICK2_PROOF=1"] if os.environ.get("PSP_TICK2_PROOF", "") == "1" else []) +
+                      (["-DPSP_WSOLD=1"] if os.environ.get("PSP_WSOLD", "") == "1" else [])))
     # slice 1's task 4, piece 1 (PSP_TICK2_COLLNEW=1; psp_fixups.py tick2_collnew_move_cut): the store's collision
     # gather table, moved out of collisions.c, built as collisions.c is (its flags, the fixed-up headers; its own
     # header in psp/include, which collisions.c includes too)
