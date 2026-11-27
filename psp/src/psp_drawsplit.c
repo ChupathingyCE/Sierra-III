@@ -171,8 +171,15 @@ struct drawsplit_run
 };
 
 #ifdef PSP_DRAWSPLIT_SAMPLED
-/* the alarm's period, us; a field under FEW samples on the window is named */
-#define PERIOD 100
+/* the alarm's period, us (5000: the lab's decisions 2026-11-27 06:3x (2),
+drawsplit3-b30's alarm at 100 cost +12.3% drawing; PSP_DRAWSPLIT_PERIOD is
+the host test's, never a played build's); a field under FEW samples on the
+window is named */
+#ifdef PSP_DRAWSPLIT_PERIOD
+#define PERIOD PSP_DRAWSPLIT_PERIOD
+#else
+#define PERIOD 5000
+#endif
 #define FEW 100
 #endif
 
