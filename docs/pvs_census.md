@@ -197,7 +197,7 @@ VIS cuts a portal's clip. This cut would skip a whole sub-walk, its clip include
 - **The data.** The stored regions take one a rendered cluster, capped at 8 points as the hull cache is (task 0(c), 0x16d2c): ~68 bytes of points + ~96 of edge planes ≈ 164 bytes. b30 renders 8.9 clusters a walk, so ~1.5 KB is live. Room for `MAXIMUM_RENDERED_CLUSTERS` (128, `render.h:26`) is ~21 KB of mevis state in main RAM. That adds to the ME's 16 KB D-cache, which mevis already overruns at 45-93 KB a call (`layout_plan.md:95`) [U]. An eDRAM slot is the alternative.
 - **The hand-over.** The regions are the walk's own and the main CPU never reads them, so they add no write-back. The flags and rendered clusters handed over are the ones mevisland already hands over [D on the design]. Bake (A) would add 0 bytes: the same words, rewritten in place (task 0(b)).
 
-**What's left for this sheet** (as of 2026-11-27 06:2x, after pvswalk-b30):
+**What's left for this sheet** (as of 2026-11-27 06:1x, after pvswalk-b30):
 - **(B) is unpriced, not stopped:** its ceiling clears the gate and its floor doesn't.
 - **Two counts would settle it,** both cheaper than a build:
   - **(i) The exact share R' ⊆ R_old, a census extension** on the emulator. It's a count of the walk's own work under fixed play, not a stand-in for a hardware cost.
