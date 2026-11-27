@@ -56610,6 +56610,34 @@ static int psp_wsold_k1_kept(short type)
 		type == _object_type_machine;
 }
 
+/* K1a's links form (wsoldk1; the lab's decisions.md 2026-11-27 08:3x): a
+dropped type with no first child gets identifier and type from the header,
+next and first child from the datum (+196, +200), no other field; 0, with
+nothing made, when it has a first child (the full record's then). The walk
+reads the links whatever the type (collisions.c:1908-1923) */
+static int psp_wsold_links(long object_index, struct object_datum const *object, short type,
+	struct box_ws_old_object *record)
+{
+	if (object->object.first_child_object_index != NONE)
+		return 0;
+	memset(record, 0, sizeof(*record));
+	record->flags = BOX_WS_OLD_FLAG_LINKS;
+	record->next = object->object.next_object_index;
+	record->first_child = NONE;
+	record->identifier = (int16_t)DATUM_INDEX_TO_IDENTIFIER(object_index);
+	record->type = (uint8_t)type;
+	return 1;
+}
+
+/* the links on two D-cache lines (64 B): the datum is 4-aligned only
+(memory_pool.c:158-160, 182), so +196's line holds +200 unless the datum
+sits at 56 past a line, counted rather than assumed */
+static int psp_wsold_links_split(struct object_datum const *object)
+{
+	return ((unsigned long)&object->object.next_object_index >> 6) !=
+		(((unsigned long)&object->object.first_child_object_index + 3) >> 6);
+}
+
 static void psp_wsold_one(unsigned absolute, int check)
 {
 	struct object_header_datum const *header;
@@ -56641,15 +56669,28 @@ static void psp_wsold_one(unsigned absolute, int check)
 		box_ws_old_entry(header->type); /* K1's clock: the entries by type */
 	if (box_ws_old_k1 && !psp_wsold_k1_kept(header->type))
 	{
-		/* K1a (wsoldk1): no reader's mask names the type, so no record, from
-		the header alone: no datum line is read */
+		/* K1a (wsoldk1): no reader's mask names the type, so the links record,
+		one datum line or two read; with a first child, the full record below,
+		as every type took it before K1 */
+		struct object_datum const *dropped = (struct object_datum const *)header->datum;
+
+		if (psp_wsold_links(DATUM_INDEX_NEW(absolute, header->identifier), dropped, header->type, &record))
+		{
+			if (check)
+			{
+				box_ws_old_dropped_checked(0);
+				box_ws_old_check(absolute, &record, NULL, NULL, 0);
+			}
+			else
+				box_ws_old_links_put(absolute, &record, psp_wsold_links_split(dropped));
+			return;
+		}
 		if (check)
-			box_ws_old_dropped_check(absolute, header->identifier);
+			box_ws_old_dropped_checked(1);
 		else
-			box_ws_old_dropped_put(absolute);
-		return;
+			box_ws_old_dropped_full();
 	}
-	is_biped =psp_wsold_make(DATUM_INDEX_NEW(absolute, header->identifier), header->datum, header->type, &record, &biped_record,
+	is_biped = psp_wsold_make(DATUM_INDEX_NEW(absolute, header->identifier), header->datum, header->type, &record, &biped_record,
 		&rest);
 	if (check)
 	{
@@ -56772,8 +56813,20 @@ void psp_wsold_visit(long object_index, struct object_datum const *object)
 	struct box_ws_old_rest rest;
 	struct object_header_datum const *header = object_header_get(object_index);
 
+	struct box_ws_old_object const *held;
+
 	if (box_ws_old_k1 && !psp_wsold_k1_kept(header->type))
-		box_ws_old_visit_dropped(); /* K1a: a dropped type, counted apart, never as parted */
+	{
+		/* K1a: a dropped type against its links record, or its full one with a
+		first child, counted apart from the kept types' visits */
+		if (psp_wsold_links(object_index, object, header->type, &record))
+			box_ws_old_visit_dropped(object_index, &record, NULL);
+		else
+		{
+			psp_wsold_make(object_index, object, header->type, &record, &biped_record, &rest);
+			box_ws_old_visit_dropped(object_index, &record, &rest);
+		}
+	}
 	else if (psp_wsold_make(object_index, object, header->type, &record, &biped_record, &rest))
 		box_ws_old_visit(object_index, &record, &biped_record, &rest);
 	else
@@ -56781,7 +56834,9 @@ void psp_wsold_visit(long object_index, struct object_datum const *object)
 	/* the level's half reads the breakable flags at every sweep: met here,
 	at each object it visits, against the row the copy holds */
 	box_ws_old_breakable_visit(breakable_surface_flags_get());
-	if (box_ws_old_parts && box_ws_old_object_of(object_index))
+	/* a links record holds no model (K1a) */
+	held = box_ws_old_object_of(object_index);
+	if (box_ws_old_parts && held && !(held->flags & BOX_WS_OLD_FLAG_LINKS))
 	{
 		struct box_ws_old_node nodes[PSP_WSOLD_MODEL_NODES];
 		unsigned count;

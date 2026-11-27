@@ -31,6 +31,9 @@ struct box_ws_old_object {
 	uint8_t dead;          /* +182's dead bit */
 };
 _Static_assert(sizeof(struct box_ws_old_object) == 32, "box_ws_old_object");
+/* in flags (no engine bit: the record keeps only invisible, no collisions and
+   movie star): K1a's links record, a dropped type with no child (wsoldk1) */
+#define BOX_WS_OLD_FLAG_LINKS 0x80000000u
 
 /* a biped's: the pill the sweep tests and what the bump reads, 64 B */
 struct box_ws_old_biped {
@@ -252,12 +255,20 @@ void box_ws_old_mark(long datum_index);
    header's type (-1: an empty slot) */
 void box_ws_old_entry(int type);
 
-/* K1a (wsoldk1): a slot whose type no reader's mask names, put as no record
-   (the refresh), or checked to hold none (wsoldcheck, counted apart, never a
-   miss); a sweep's visit to one, counted apart */
-void box_ws_old_dropped_put(unsigned absolute);
-void box_ws_old_dropped_check(unsigned absolute, int identifier);
-void box_ws_old_visit_dropped(void);
+/* K1a (wsoldk1), the links form (the lab's decisions.md 2026-11-27 08:3x): a
+   slot whose type no reader's mask names and whose first child is none holds
+   identifier, type, next and first child only, flagged BOX_WS_OLD_FLAG_LINKS
+   (sphere, the three flags and dead are 0); one with a first child holds the
+   full record. A reader's walk on it is exact by collisions.c:1810-1925: its
+   type mask skips it, no child to go down to, and next is followed */
+void box_ws_old_links_put(unsigned absolute, struct box_ws_old_object const *object, int split);
+/* the refresh's dropped entry that took the full record (a first child) */
+void box_ws_old_dropped_full(void);
+/* wsoldcheck: a dropped slot checked (full: against its full record), apart */
+void box_ws_old_dropped_checked(int full);
+/* wsoldcheck: a sweep's visit to a dropped type, against its links record or
+   (rest given) its full one, counted apart from the kept types' visits */
+void box_ws_old_visit_dropped(long datum_index, struct box_ws_old_object const *now, struct box_ws_old_rest const *rest_now);
 /* K1b (wsoldk1): an owed pose's nodes all made (means B's make, store_pose.c),
    marked so the next refresh takes its model; nothing without wsoldk1 */
 void box_ws_old_mark_owed(long datum_index);

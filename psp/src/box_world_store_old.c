@@ -112,13 +112,14 @@ static unsigned long box_ws_old_clock_ticks, box_ws_old_clock_wholes, box_ws_old
 static unsigned long box_ws_old_entries[BOX_WS_OLD_TYPES + 1];
 static unsigned long box_ws_old_from_marked, box_ws_old_from_bipeds, box_ws_old_from_unheld;
 static unsigned long box_ws_old_mark_calls, box_ws_old_mark_new;
-/* K1's cut (wsoldk1): entries put as no record by type (K1a; whole fills'
-   left out, as the clock's), owed models marked when made (K1b); and the
-   check's and the sweep's dropped types, apart from the misses */
-static unsigned long box_ws_old_k1_dropped, box_ws_old_k1_owed_marks;
-static unsigned long box_ws_old_check_dropped, box_ws_old_check_dropped_held, box_ws_old_visits_dropped,
+/* K1's cut (wsoldk1): dropped entries put as the links record, those of them
+   on two D-cache lines, and those that took the full record (K1a; whole
+   fills left out, as the clock's), owed models marked when made (K1b); and
+   the check's and the sweep's dropped types, apart */
+static unsigned long box_ws_old_k1_dropped, box_ws_old_k1_full, box_ws_old_k1_split, box_ws_old_k1_owed_marks;
+static unsigned long box_ws_old_check_dropped, box_ws_old_check_dropped_full, box_ws_old_visits_dropped,
+	box_ws_old_visits_dropped_next, box_ws_old_visits_dropped_full, box_ws_old_visits_dropped_parted,
 	box_ws_old_check_k1b;
-static unsigned box_ws_old_dropped_told;
 
 enum { WSO_SPHERE, WSO_FLAGS, WSO_LINKS, WSO_TYPE, WSO_DEAD, WSO_NONE, WSO_PILL, WSO_MOTION, WSO_UNIT, WSO_NODES,
 	WSO_CLUSTER, WSO_PARENT, WSO_ROOT, WSO_BREAKABLE, WSO_FIELDS };
@@ -141,6 +142,8 @@ static unsigned long box_ws_old_breakable_visits;
 
 static void box_ws_old_models_reset(void);
 static void box_ws_old_model_drop(unsigned absolute);
+static unsigned box_ws_old_differ(struct box_ws_old_object const *a, struct box_ws_old_object const *b);
+static unsigned box_ws_old_rest_differ(unsigned absolute, struct box_ws_old_rest const *rest);
 
 /* ---------- the hand-over: the fence, the made word, the readers' counts */
 
@@ -248,7 +251,7 @@ static int box_ws_old_begin_state(void)
 		/* K1: the models' half is wsoldparts', so K1b needs it; K1a with it */
 		box_ws_old_k1 = box_ws_old_parts && psp_keep("wsoldk1");
 		if (box_ws_old_k1)
-			platform_psp_log("wsold: wsoldk1 on (lever WSOLDK1): records for biped, vehicle, scenery and machine only, every other type no record from its header; owed models taken again when their nodes are made, the not-held walk off");
+			platform_psp_log("wsold: wsoldk1 on (lever WSOLDK1): full records for biped, vehicle, scenery and machine, every other type the links record (identifier, type, next, first child) or the full one when it has a first child; owed models taken again when their nodes are made, the not-held walk off");
 		memset(box_ws_old_biped_of, 0xff, sizeof(box_ws_old_biped_of));
 		memset(box_ws_old_biped_owner, 0xff, sizeof(box_ws_old_biped_owner));
 		memset(box_ws_old_vehicle_of, 0xff, sizeof(box_ws_old_vehicle_of));
@@ -332,38 +335,57 @@ void box_ws_old_entry(int type)
 	box_ws_old_entries[type >= 0 && type < BOX_WS_OLD_TYPES ? type : BOX_WS_OLD_TYPES]++;
 }
 
-/* K1a: the refresh's no record for a dropped type, from its header alone */
-void box_ws_old_dropped_put(unsigned absolute)
-{
-	if (!box_ws_old_whole)
-		box_ws_old_k1_dropped++;
-	box_ws_old_put(absolute, NULL, NULL, NULL);
-}
-
-/* K1a under wsoldcheck: a dropped type's slot must hold no record of it.
-   Counted apart, never as a miss; one that holds its record (a fill that
-   didn't drop it) is told and cleared, so it counts once */
-void box_ws_old_dropped_check(unsigned absolute, int identifier)
+/* K1a, the links form: the refresh's links record for a dropped type with no
+   child (no parent, biped or vehicle part; its model given up, as no reader
+   takes a dropped type's). split: its next and first child on two D-cache
+   lines (the datum is 4-aligned only, memory_pool.c:158-160, 182); counted,
+   whole fills left out as the clock's */
+void box_ws_old_links_put(unsigned absolute, struct box_ws_old_object const *object, int split)
 {
 	if (absolute >= BOX_WS_OLD_SLOTS)
 		return;
-	box_ws_old_check_dropped++;
-	if (box_ws_old_objects[absolute].identifier && box_ws_old_objects[absolute].identifier == (int16_t)identifier)
+	if (!box_ws_old_whole)
 	{
-		box_ws_old_check_dropped_held++;
-		if (box_ws_old_dropped_told < 8)
-		{
-			box_ws_old_dropped_told++;
-			platform_psp_log("wsoldcheck: refresh %lu: slot %u, a dropped type (type %u), holds a record",
-				box_ws_old_flips, absolute, (unsigned)box_ws_old_objects[absolute].type);
-		}
-		box_ws_old_put(absolute, NULL, NULL, NULL);
+		box_ws_old_k1_dropped++;
+		box_ws_old_k1_split += split != 0;
 	}
+	box_ws_old_put(absolute, object, NULL, NULL);
+	if (box_ws_old_parts)
+		box_ws_old_model_drop(absolute);
 }
 
-void box_ws_old_visit_dropped(void)
+void box_ws_old_dropped_full(void)
 {
+	if (!box_ws_old_whole)
+		box_ws_old_k1_full++;
+}
+
+/* the check itself is box_ws_old_check's, so its misses count in the fields:
+   identifier ('none'), type, and next and first child ('links') */
+void box_ws_old_dropped_checked(int full)
+{
+	box_ws_old_check_dropped++;
+	box_ws_old_check_dropped_full += full != 0;
+}
+
+/* a followed next: the walk's next at :1923 is read on every path, so a
+   visit to a dropped object whose next isn't none is one followed from it */
+void box_ws_old_visit_dropped(long datum_index, struct box_ws_old_object const *now, struct box_ws_old_rest const *rest_now)
+{
+	struct box_ws_old_object const *held = box_ws_old_object_of(datum_index);
+	unsigned bits;
+
 	box_ws_old_visits_dropped++;
+	if (now->next != -1)
+		box_ws_old_visits_dropped_next++;
+	if (!(now->flags & BOX_WS_OLD_FLAG_LINKS))
+		box_ws_old_visits_dropped_full++;
+	if (!held)
+		bits = 1u << WSO_NONE;
+	else
+		bits = box_ws_old_differ(held, now) | box_ws_old_rest_differ((unsigned)datum_index & 0xffff, rest_now);
+	if (bits)
+		box_ws_old_visits_dropped_parted++;
 }
 
 /* K1b: called where means B's make completes a slot's nodes */
@@ -827,8 +849,8 @@ static void box_ws_old_log(void)
 		n = 0;
 	}
 	if (box_ws_old_k1)
-		platform_psp_log("wsold: wsoldk1 %lu entries put as no record by type (K1a), %lu owed models marked when made (K1b), over %lu refreshes timed",
-			box_ws_old_k1_dropped, box_ws_old_k1_owed_marks, box_ws_old_clock_ticks);
+		platform_psp_log("wsold: wsoldk1 %lu dropped entries put as the links record (K1a), %lu of them on two D-cache lines; %lu dropped entries took the full record (a first child); %lu owed models marked when made (K1b); over %lu refreshes timed",
+			box_ws_old_k1_dropped, box_ws_old_k1_split, box_ws_old_k1_full, box_ws_old_k1_owed_marks, box_ws_old_clock_ticks);
 	if (!box_ws_old_checking)
 		return;
 	platform_psp_log("wsoldcheck: the made word behind its refresh at %lu refreshes (0: every copy published)",
@@ -842,8 +864,10 @@ static void box_ws_old_log(void)
 	platform_psp_log("wsoldcheck: not held at the check (the copy's own NOT_HELD, a reader's fallback, not a missed mark): %lu, %lu past the nodes and %lu owed",
 		box_ws_old_check_unheld, box_ws_old_check_unheld_roomless, box_ws_old_check_unheld - box_ws_old_check_unheld_roomless);
 	if (box_ws_old_k1)
-		platform_psp_log("wsoldcheck: wsoldk1 dropped types (apart, never misses): %lu slots checked, %lu held a record; %lu sweep visits to them; owed models held live with no mark (K1b's, in 'model nodes'): %lu",
-			box_ws_old_check_dropped, box_ws_old_check_dropped_held, box_ws_old_visits_dropped, box_ws_old_check_k1b);
+		platform_psp_log("wsoldcheck: wsoldk1 dropped types (their misses in the fields above): %lu slots checked, %lu of them against the full record; %lu sweep visits to them, %lu followed their next, %lu met the full record, %lu parted from the copy; owed models held live with no mark (K1b's, in 'model nodes'): %lu",
+			box_ws_old_check_dropped, box_ws_old_check_dropped_full, box_ws_old_visits_dropped,
+			box_ws_old_visits_dropped_next, box_ws_old_visits_dropped_full, box_ws_old_visits_dropped_parted,
+			box_ws_old_check_k1b);
 	n = 0;
 	for (k = 0; k < WSO_FIELDS; k++)
 		n += snprintf(line + n, sizeof(line) - n, "%s%s %lu", k ? ", " : "", box_ws_old_field_name[k], box_ws_old_visit_parted[k]);
