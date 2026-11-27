@@ -419,6 +419,9 @@ __attribute__((noinline)) void store_pose_make_nodes(long object_index, unsigned
 	}
 	if ((slot->made & slot->all) == slot->all)
 	{
+#ifdef PSP_WSOLD
+		{ void box_ws_old_mark_owed(long datum_index); box_ws_old_mark_owed(object_index); } /* (wsold) K1b: its owed nodes all made */
+#endif
 		slot->object_index = NONE;
 		psp_boxb_count--;
 	}

@@ -38,6 +38,7 @@ int box_ws_old_breakable_held;
 int box_ws_old_on = -1;
 int box_ws_old_checking;
 int box_ws_old_parts;
+int box_ws_old_k1;
 
 /* the clusters' runs, two buffers: the refresh writes the one the readers
    don't hold, then flips (a run of an unmarked cluster is copied across) */
@@ -111,6 +112,13 @@ static unsigned long box_ws_old_clock_ticks, box_ws_old_clock_wholes, box_ws_old
 static unsigned long box_ws_old_entries[BOX_WS_OLD_TYPES + 1];
 static unsigned long box_ws_old_from_marked, box_ws_old_from_bipeds, box_ws_old_from_unheld;
 static unsigned long box_ws_old_mark_calls, box_ws_old_mark_new;
+/* K1's cut (wsoldk1): entries put as no record by type (K1a; whole fills'
+   left out, as the clock's), owed models marked when made (K1b); and the
+   check's and the sweep's dropped types, apart from the misses */
+static unsigned long box_ws_old_k1_dropped, box_ws_old_k1_owed_marks;
+static unsigned long box_ws_old_check_dropped, box_ws_old_check_dropped_held, box_ws_old_visits_dropped,
+	box_ws_old_check_k1b;
+static unsigned box_ws_old_dropped_told;
 
 enum { WSO_SPHERE, WSO_FLAGS, WSO_LINKS, WSO_TYPE, WSO_DEAD, WSO_NONE, WSO_PILL, WSO_MOTION, WSO_UNIT, WSO_NODES,
 	WSO_CLUSTER, WSO_PARENT, WSO_ROOT, WSO_BREAKABLE, WSO_FIELDS };
@@ -237,6 +245,10 @@ static int box_ws_old_begin_state(void)
 		box_ws_old_on = box_ws_old_checking || box_ws_old_parts || psp_keep("wsold");
 		if (!box_ws_old_on)
 			return 0;
+		/* K1: the models' half is wsoldparts', so K1b needs it; K1a with it */
+		box_ws_old_k1 = box_ws_old_parts && psp_keep("wsoldk1");
+		if (box_ws_old_k1)
+			platform_psp_log("wsold: wsoldk1 on (lever WSOLDK1): records for biped, vehicle, scenery and machine only, every other type no record from its header; owed models taken again when their nodes are made, the not-held walk off");
 		memset(box_ws_old_biped_of, 0xff, sizeof(box_ws_old_biped_of));
 		memset(box_ws_old_biped_owner, 0xff, sizeof(box_ws_old_biped_owner));
 		memset(box_ws_old_vehicle_of, 0xff, sizeof(box_ws_old_vehicle_of));
@@ -320,6 +332,49 @@ void box_ws_old_entry(int type)
 	box_ws_old_entries[type >= 0 && type < BOX_WS_OLD_TYPES ? type : BOX_WS_OLD_TYPES]++;
 }
 
+/* K1a: the refresh's no record for a dropped type, from its header alone */
+void box_ws_old_dropped_put(unsigned absolute)
+{
+	if (!box_ws_old_whole)
+		box_ws_old_k1_dropped++;
+	box_ws_old_put(absolute, NULL, NULL, NULL);
+}
+
+/* K1a under wsoldcheck: a dropped type's slot must hold no record of it.
+   Counted apart, never as a miss; one that holds its record (a fill that
+   didn't drop it) is told and cleared, so it counts once */
+void box_ws_old_dropped_check(unsigned absolute, int identifier)
+{
+	if (absolute >= BOX_WS_OLD_SLOTS)
+		return;
+	box_ws_old_check_dropped++;
+	if (box_ws_old_objects[absolute].identifier && box_ws_old_objects[absolute].identifier == (int16_t)identifier)
+	{
+		box_ws_old_check_dropped_held++;
+		if (box_ws_old_dropped_told < 8)
+		{
+			box_ws_old_dropped_told++;
+			platform_psp_log("wsoldcheck: refresh %lu: slot %u, a dropped type (type %u), holds a record",
+				box_ws_old_flips, absolute, (unsigned)box_ws_old_objects[absolute].type);
+		}
+		box_ws_old_put(absolute, NULL, NULL, NULL);
+	}
+}
+
+void box_ws_old_visit_dropped(void)
+{
+	box_ws_old_visits_dropped++;
+}
+
+/* K1b: called where means B's make completes a slot's nodes */
+void box_ws_old_mark_owed(long datum_index)
+{
+	if (!box_ws_old_k1)
+		return;
+	box_ws_old_k1_owed_marks++;
+	box_ws_old_mark(datum_index);
+}
+
 int box_ws_old_marked(uint16_t *absolute, unsigned capacity)
 {
 	unsigned n = 0, i, marked, bipeds;
@@ -337,8 +392,10 @@ int box_ws_old_marked(uint16_t *absolute, unsigned capacity)
 	bipeds = n - marked;
 	/* a model not held, not marked: none is a biped's (the models are
 	   vehicles, scenery, machines and controls), so the three sets are
-	   disjoint slots and fit the list */
-	for (i = 0; box_ws_old_parts && i < BOX_WS_OLD_SLOTS / 32; i++)
+	   disjoint slots and fit the list. K1b (wsoldk1): off, an owed model is
+	   marked when its nodes are made (box_ws_old_mark_owed); one past the
+	   nodes waits for a repack's whole fill, which a retake can't beat */
+	for (i = 0; box_ws_old_parts && !box_ws_old_k1 && i < BOX_WS_OLD_SLOTS / 32; i++)
 	{
 		uint32_t bits = box_ws_old_unheld_bits[i] & ~box_ws_old_bits[i];
 
@@ -561,8 +618,12 @@ void box_ws_old_model_check(unsigned absolute, int state, const struct box_ws_ol
 	/* the copy's own NOT_HELD (past the nodes, or owed and not yet made):
 	   its reader goes to the fallback, so nothing is misread and no mark
 	   was missed. Told apart, and not put back: the not-held bit retakes it
-	   at the next refresh, as in the copy unchecked */
-	if (m->state == BOX_WS_OLD_MODEL_NOT_HELD)
+	   at the next refresh, as in the copy unchecked. K1b (wsoldk1): no
+	   not-held walk, so an owed model the live world now holds is a mark
+	   K1b missed, a miss in 'model nodes', counted apart too */
+	if (m->state == BOX_WS_OLD_MODEL_NOT_HELD && box_ws_old_k1 && !m->count && state == BOX_WS_OLD_MODEL_HELD)
+		box_ws_old_check_k1b++;
+	else if (m->state == BOX_WS_OLD_MODEL_NOT_HELD)
 	{
 		box_ws_old_check_unheld++;
 		if (m->count)
@@ -765,6 +826,9 @@ static void box_ws_old_log(void)
 		platform_psp_log("wsold: clock entries by type, %lu refreshes: %s", box_ws_old_clock_ticks, line);
 		n = 0;
 	}
+	if (box_ws_old_k1)
+		platform_psp_log("wsold: wsoldk1 %lu entries put as no record by type (K1a), %lu owed models marked when made (K1b), over %lu refreshes timed",
+			box_ws_old_k1_dropped, box_ws_old_k1_owed_marks, box_ws_old_clock_ticks);
 	if (!box_ws_old_checking)
 		return;
 	platform_psp_log("wsoldcheck: the made word behind its refresh at %lu refreshes (0: every copy published)",
@@ -777,6 +841,9 @@ static void box_ws_old_log(void)
 		box_ws_old_check_posed_spheres, box_ws_old_check_posed);
 	platform_psp_log("wsoldcheck: not held at the check (the copy's own NOT_HELD, a reader's fallback, not a missed mark): %lu, %lu past the nodes and %lu owed",
 		box_ws_old_check_unheld, box_ws_old_check_unheld_roomless, box_ws_old_check_unheld - box_ws_old_check_unheld_roomless);
+	if (box_ws_old_k1)
+		platform_psp_log("wsoldcheck: wsoldk1 dropped types (apart, never misses): %lu slots checked, %lu held a record; %lu sweep visits to them; owed models held live with no mark (K1b's, in 'model nodes'): %lu",
+			box_ws_old_check_dropped, box_ws_old_check_dropped_held, box_ws_old_visits_dropped, box_ws_old_check_k1b);
 	n = 0;
 	for (k = 0; k < WSO_FIELDS; k++)
 		n += snprintf(line + n, sizeof(line) - n, "%s%s %lu", k ? ", " : "", box_ws_old_field_name[k], box_ws_old_visit_parted[k]);

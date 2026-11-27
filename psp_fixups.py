@@ -56600,6 +56600,16 @@ static int psp_wsold_make(long object_index, struct object_datum const *object, 
 	return 1;
 }
 
+/* K1a (wsoldk1): the types the readers' object masks name (the bipeds'
+sweep, collisions.h:76-78; the AI's line of sight, :75; the AI's units):
+biped, vehicle, scenery, machine. Controls are dropped (the lab's
+decisions.md 2026-11-27 07:2x (B)) */
+static int psp_wsold_k1_kept(short type)
+{
+	return type == _object_type_biped || type == _object_type_vehicle || type == _object_type_scenery ||
+		type == _object_type_machine;
+}
+
 static void psp_wsold_one(unsigned absolute, int check)
 {
 	struct object_header_datum const *header;
@@ -56629,7 +56639,17 @@ static void psp_wsold_one(unsigned absolute, int check)
 	}
 	if (!check)
 		box_ws_old_entry(header->type); /* K1's clock: the entries by type */
-	is_biped = psp_wsold_make(DATUM_INDEX_NEW(absolute, header->identifier), header->datum, header->type, &record, &biped_record,
+	if (box_ws_old_k1 && !psp_wsold_k1_kept(header->type))
+	{
+		/* K1a (wsoldk1): no reader's mask names the type, so no record, from
+		the header alone: no datum line is read */
+		if (check)
+			box_ws_old_dropped_check(absolute, header->identifier);
+		else
+			box_ws_old_dropped_put(absolute);
+		return;
+	}
+	is_biped =psp_wsold_make(DATUM_INDEX_NEW(absolute, header->identifier), header->datum, header->type, &record, &biped_record,
 		&rest);
 	if (check)
 	{
@@ -56752,7 +56772,9 @@ void psp_wsold_visit(long object_index, struct object_datum const *object)
 	struct box_ws_old_rest rest;
 	struct object_header_datum const *header = object_header_get(object_index);
 
-	if (psp_wsold_make(object_index, object, header->type, &record, &biped_record, &rest))
+	if (box_ws_old_k1 && !psp_wsold_k1_kept(header->type))
+		box_ws_old_visit_dropped(); /* K1a: a dropped type, counted apart, never as parted */
+	else if (psp_wsold_make(object_index, object, header->type, &record, &biped_record, &rest))
 		box_ws_old_visit(object_index, &record, &biped_record, &rest);
 	else
 		box_ws_old_visit(object_index, &record, NULL, &rest);
@@ -56897,6 +56919,20 @@ void psp_wsold_visit(long object_index, struct object_datum const *object)
 """),
 ],
 }
+# K1b (lever WSOLDK1) in objects.c's own form: with PSP_TICK2_POSENEW off, means B's block stays in objects.c, so its
+# make's completion is marked here (FIXES_WSOLD runs after FIXES_BOXPOSING); with it on the block moves to
+# psp/src/store_pose.c, which holds the mark (TICK2_POSENEW_BOXB_WSOLD_K1B), and objects.c's block must stay its hunk
+if BOXPOSING and os.environ.get("PSP_TICK2_POSENEW", "") != "1":
+    FIXES_WSOLD["source/objects/objects.c#wsold"].append(
+("""	if ((slot->made & slot->all) == slot->all)
+	{
+		slot->object_index = NONE;
+""",
+ """	if ((slot->made & slot->all) == slot->all)
+	{
+		{ void box_ws_old_mark_owed(long datum_index); box_ws_old_mark_owed(object_index); } /* (FIXES_WSOLD) K1b: its owed nodes all made */
+		slot->object_index = NONE;
+"""))
 # PSP_SWEEPME=1: the ME's half of the pill sweep, slice 1 (docs/box_collision.md
 # §11; psp/src/psp_sweepme.c, psp/include/psp_sweepme.h): the level's half of
 # each staged biped's gather (the BSP walk and the shapes made from it) made
@@ -65765,6 +65801,16 @@ TICK2_POSENEW_COPY_BOXB_READS = (
      "(float const *)store_pose_orientations(object->object.root),"),
     ("B's make's nodes", "(float *)object_header_block_get(object_index, &object->object.node_matrices), before,",
      "(float *)store_pose_matrices(object->object.root), before,"))
+# wsold's K1b mark (lever WSOLDK1, the lab's decisions.md 2026-11-27 07:2x (B); findings/tccopy_price_2026-11-26.md
+# 'The cut' 2): where B's make completes a slot's nodes, the object is marked for wsold's next refresh, which takes its
+# owed model then (wsoldk1 drops the refresh's walk of the not-held models). Under #ifdef PSP_WSOLD, which psp_build.py
+# gives store_pose.c only with PSP_WSOLD=1, and box_ws_old_mark_owed does nothing without keep word wsoldk1. In the
+# file's copy whatever the switch, so the cut makes the same insertion, found once, to the text it compares
+TICK2_POSENEW_BOXB_WSOLD_K1B = (
+    "\tif ((slot->made & slot->all) == slot->all)\n\t{\n\t\tslot->object_index = NONE;\n",
+    "\tif ((slot->made & slot->all) == slot->all)\n\t{\n#ifdef PSP_WSOLD\n"
+    "\t\t{ void box_ws_old_mark_owed(long datum_index); box_ws_old_mark_owed(object_index); } "
+    "/* (wsold) K1b: its owed nodes all made */\n#endif\n\t\tslot->object_index = NONE;\n")
 TICK2_POSENEW_COPY_NMS_READS = (
     ("the skip check's root", "real_matrix4x3 root = ((real_matrix4x3 *)object_header_block_get(object_index, &object->object.node_matrices))[0];",
      "real_matrix4x3 root = ((real_matrix4x3 *)store_pose_matrices(object->object.root))[0];"),
@@ -65825,6 +65871,11 @@ def tick2_posenew_boxb_texts():
     moved = tick2_posenew_copy_reads(moved, TICK2_POSENEW_COPY_BOXB_READS, "means B's slot table")
     if moved is None:
         return None
+    if moved.count(TICK2_POSENEW_BOXB_WSOLD_K1B[0]) != 1:
+        check_fail("psp_fixups: TICK2 posenew step 5 (wsold's K1b mark): B's make's completion is in means B's copy %d "
+                   "times, not 1" % moved.count(TICK2_POSENEW_BOXB_WSOLD_K1B[0]))
+        return None
+    moved = moved.replace(*TICK2_POSENEW_BOXB_WSOLD_K1B)
     return block, decl, moved
 def tick2_posenew_boxb_move_cut(tree):
     if not TICK2_POSENEW or STORECOUNT:

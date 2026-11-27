@@ -119,6 +119,12 @@ extern struct box_ws_old_node box_ws_old_nodes[BOX_WS_OLD_NODES];
 extern int box_ws_old_on;
 extern int box_ws_old_checking; /* wsoldcheck */
 extern int box_ws_old_parts;    /* the clusters and the models' nodes held too (keep word wsoldparts, or wsoldcheck) */
+/* K1 (lever WSOLDK1, keep word wsoldk1, with wsoldparts or wsoldcheck): K1a, a
+   record only for the four types the readers' masks name (biped, vehicle,
+   scenery, machine), every other type no record from the header's type;
+   K1b, an owed model taken again when its nodes are made (a mark), not at
+   every refresh */
+extern int box_ws_old_k1;
 
 /* the readers: the record of the object as the walk began, or NULL (made
    later, past the slots, or the copy is off) */
@@ -245,6 +251,16 @@ void box_ws_old_mark(long datum_index);
 /* K1's clock (lever WSOLDK1, log only): an entry the refresh puts, by the
    header's type (-1: an empty slot) */
 void box_ws_old_entry(int type);
+
+/* K1a (wsoldk1): a slot whose type no reader's mask names, put as no record
+   (the refresh), or checked to hold none (wsoldcheck, counted apart, never a
+   miss); a sweep's visit to one, counted apart */
+void box_ws_old_dropped_put(unsigned absolute);
+void box_ws_old_dropped_check(unsigned absolute, int identifier);
+void box_ws_old_visit_dropped(void);
+/* K1b (wsoldk1): an owed pose's nodes all made (means B's make, store_pose.c),
+   marked so the next refresh takes its model; nothing without wsoldk1 */
+void box_ws_old_mark_owed(long datum_index);
 
 /* the engine's side (psp_fixups.py FIXES_WSOLD, objects.c) makes a record
    from a datum; the store keeps or compares it. rest: the record's rest,
