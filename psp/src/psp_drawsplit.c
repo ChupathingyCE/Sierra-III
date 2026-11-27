@@ -690,6 +690,132 @@ static void report_store(double n)
 	store_window++;
 }
 
+/* D6's lists (docs/box_draw_main.md §3.4.6 'Its first asks': "the lists
+CALLed a frame and their bytes", beside the store's count): psp_ge.c's
+psp_ge_draw_model hands over each model part's bytes in the GE's list, read
+across its body (sceGuCheckList before and after), with the kinds' line's
+split of the models' share: bone matrices (13-word loads, sub-lists and their
+calls) and data copied in (kept indices, cut corners, palettes) are a frame's,
+and the rest, the commands and their inline data, is what a baked list would
+hold, so it is the list's size. A list is keyed by the part's GE geometry
+(vertices and indices as locked) and its base texture's key; its size is its
+first draw's commands, and a later draw whose commands differ is counted. The
+main CPU's draws only: the ME's replay counts none, so on a PSP build with the
+replay on the ME the line reads nothing. The sky's parts are counted apart; a
+draw that wrote nothing (left out for room) or whose list went backwards
+(unmeasured) is counted and not split. A frame is the run's frame count when
+the part is drawn. The table holds LIST_FULL keys; a draw of a key past them is
+counted as missed, and the distinct counts are then floors. It reads no clock */
+#define LIST_KEYS 2048
+#define LIST_FULL (LIST_KEYS * 3 / 4)
+struct list_key
+{
+	const void *vertices, *indices;
+	unsigned int key, bytes, frame, window;
+};
+static struct list_key *lists = NULL;
+static int lists_failed = 0;
+static unsigned int list_keys = 0, list_largest = 0, list_missed = 0, list_window = 1;
+static unsigned long long list_total = 0, window_list_parts = 0, window_list_bytes = 0, window_list_bone = 0,
+	window_list_data = 0, window_list_frame = 0, window_list_frame_bytes = 0, window_list_seen = 0, window_list_seen_bytes = 0,
+	window_list_varied = 0, window_list_sky = 0, window_list_empty = 0, window_list_lost = 0;
+
+void psp_drawsplit_list(const void *vertices, const void *indices, unsigned int key, int sky, unsigned int before,
+	unsigned int after, unsigned long bone, unsigned long data)
+{
+	unsigned int h, bytes, commands;
+	struct list_key *slot;
+
+	if (on <= 0)
+		return;
+	if (sky)
+	{
+		window_list_sky++;
+		return;
+	}
+	if (after < before || bone + data > (unsigned long)(after - before))
+	{
+		window_list_lost++;
+		return;
+	}
+	bytes = after - before;
+	if (!bytes)
+	{
+		window_list_empty++;
+		return;
+	}
+	commands = bytes - (unsigned int)(bone + data);
+	window_list_parts++;
+	window_list_bytes += bytes;
+	window_list_bone += bone;
+	window_list_data += data;
+	if (!lists)
+	{
+		if (lists_failed)
+			return;
+		lists = calloc(LIST_KEYS, sizeof(*lists));
+		if (!lists)
+		{
+			lists_failed = 1;
+			platform_log("drawsplit2 lists: no room for its %u KB; not keyed", (unsigned)(LIST_KEYS * sizeof(*lists) / 1024));
+			return;
+		}
+	}
+	h = (unsigned int)((unsigned long)vertices >> 2) * 2654435761u ^ (unsigned int)((unsigned long)indices >> 2) * 2246822519u
+		^ key * 3266489917u;
+	for (h &= LIST_KEYS - 1; lists[h].vertices; h = (h + 1) & (LIST_KEYS - 1))
+		if (lists[h].vertices == vertices && lists[h].indices == indices && lists[h].key == key)
+			break;
+	slot = &lists[h];
+	if (!slot->vertices)
+	{
+		if (list_keys >= LIST_FULL)
+		{
+			list_missed++;
+			return;
+		}
+		slot->vertices = vertices;
+		slot->indices = indices;
+		slot->key = key;
+		slot->bytes = commands;
+		list_keys++;
+		list_total += commands;
+		if (commands > list_largest)
+			list_largest = commands;
+	}
+	else if (slot->bytes != commands)
+		window_list_varied++;
+	if (slot->frame != run->run_frames + 1)
+	{
+		slot->frame = run->run_frames + 1;
+		window_list_frame++;
+		window_list_frame_bytes += slot->bytes;
+	}
+	if (slot->window != list_window)
+	{
+		slot->window = list_window;
+		window_list_seen++;
+		window_list_seen_bytes += slot->bytes;
+	}
+}
+
+static void report_lists(double n)
+{
+	platform_log("drawsplit2 lists: %.1f model parts a frame (main CPU) wrote %.1f KB a frame: commands %.1f KB (a baked list's), "
+		"bones %.1f, data copied in %.1f; distinct lists %.1f a frame, %.1f KB; this window %llu, %.1f KB; since the run's start "
+		"%u, %.1f KB, largest %u B; %llu draws unlike their list's first; sky %.1f a frame apart, %.1f wrote nothing, %llu "
+		"unmeasured; %u past the table's %u keys",
+		window_list_parts / n, window_list_bytes / 1024.0 / n,
+		(window_list_bytes - window_list_bone - window_list_data) / 1024.0 / n, window_list_bone / 1024.0 / n,
+		window_list_data / 1024.0 / n, window_list_frame / n, window_list_frame_bytes / 1024.0 / n, window_list_seen,
+		window_list_seen_bytes / 1024.0, list_keys, list_total / 1024.0, list_largest, window_list_varied, window_list_sky / n,
+		window_list_empty / n, window_list_lost, list_missed, LIST_FULL);
+	window_list_parts = window_list_bytes = window_list_bone = window_list_data = window_list_frame = 0;
+	window_list_frame_bytes = window_list_seen = window_list_seen_bytes = window_list_varied = 0;
+	window_list_sky = window_list_empty = window_list_lost = 0;
+	list_window++;
+}
+
 /* D2's pieces (docs/box_draw_main.md §3.4.3 'Memory', §4.4 A2): the engine's
 psp_drawsplit_pieces (structure_visibility.c, psp_fixups.py DRAWSPLIT2_PIECES_C)
 splits a BSP's surfaces into (cluster, material) pieces, the lists D2 would
@@ -983,6 +1109,7 @@ static void report(void)
 #ifndef PSP_DRAWSPLIT_SAMPLED
 	report_kinds(n);
 	report_store(n);
+	report_lists(n);
 	report_merge(n);
 	report_sort(n);
 	report_pieces(n);

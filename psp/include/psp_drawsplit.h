@@ -178,6 +178,12 @@ counted by its key (psp_drawsplit.c, 'D3's store') */
 void psp_drawsplit_store(int drawn, const void *triangles, const void *vertices, const void *shader, int permutation);
 #define PSP_DRAWSPLIT_STORE(drawn, triangles, vertices, shader, permutation) \
 	psp_drawsplit_store((int)(drawn), (triangles), (vertices), (shader), (int)(permutation))
+/* D6's lists (§3.4.6 'Its first asks'; exact form only): psp_ge.c's
+psp_ge_draw_model hands over a model part's list bytes, read across its body
+on the main CPU, with its bone matrices' and copied data's share
+(psp_drawsplit.c, 'D6's lists') */
+void psp_drawsplit_list(const void *vertices, const void *indices, unsigned int key, int sky, unsigned int before,
+	unsigned int after, unsigned long bone, unsigned long data);
 /* D2's pieces (§3.4.3 'Memory', §4.4 A2; exact form only): render_window's
 call after world's walk closes. psp_drawsplit_pieces is the engine's
 (structure_visibility.c, psp_fixups.py's DRAWSPLIT2_PIECES_C): it splits the

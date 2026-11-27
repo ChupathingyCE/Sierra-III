@@ -17432,6 +17432,27 @@ void psp_ge_draw_model(void *vertices, int vertex_count, int uncompressed, const
 
 	ge_category = GE_SKIP_MODELS;
 	model_part_calls++;
+#if defined(PSP_DRAWSPLIT) && !defined(PSP_DRAWSPLIT_SAMPLED)
+	/* drawsplit's exact form: D6's lists (docs/box_draw_main.md §3.4.6 'Its
+	first asks'; psp_drawsplit.c, 'D6's lists'): the bytes this part writes in
+	the list, as the kinds' line splits the models' (bone matrices loaded or
+	called, data copied in, the rest), read on the main CPU only (the ME's
+	replay counts nothing: it can't reach psp_drawsplit.c's tables) */
+	if (!psp_on_me())
+	{
+		void psp_drawsplit_list(const void *vertices, const void *indices, unsigned int key, int sky, unsigned int before,
+			unsigned int after, unsigned long bone, unsigned long data);
+		unsigned int list_at = sceGuCheckList();
+		unsigned long loads = model_bone_loads, calls = model_bone_calls, take = model_take_bytes, sub = model_bone_sub_bytes;
+
+		psp_ge_draw_model_body(vertices, vertex_count, uncompressed, indices, index_count, strip, color, base_key, u_scale, v_scale,
+			alpha_tested, level, level_stands);
+		psp_drawsplit_list(vertices, indices, base_key, in_sky, list_at, sceGuCheckList(),
+			(model_bone_loads - loads) * 52 + (model_bone_sub_bytes - sub) + (model_bone_calls - calls) * 8,
+			(model_take_bytes - take) - (model_bone_sub_bytes - sub));
+	}
+	else
+#endif
 	psp_ge_draw_model_body(vertices, vertex_count, uncompressed, indices, index_count, strip, color, base_key, u_scale, v_scale, alpha_tested,
 		level, level_stands);
 	ge_category = 0;
