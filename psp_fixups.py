@@ -2181,14 +2181,16 @@ STEPS = {
 # the frame picture's box marks. The step breadcrumbs (PSP_STEP) write a
 # call-like statement as "(PSP_STEP(...), call)", a comma expression, so the
 # hooks have to be expressions as their off form ((void)0) is, not do-while
-# statements
-if os.environ.get("PSP_FRAMEPIC", "") == "1":
+# statements. PSP_DRAWSPLIT (docs/box_draw_main.md §1.3) compiles the same
+# hooks into the drawing's files, render.c's breadcrumbs among them, so it
+# takes the same form
+if os.environ.get("PSP_FRAMEPIC", "") == "1" or os.environ.get("PSP_DRAWSPLIT", "") == "1":
     FIXES["port/linux/include/halo_perf_log.h"] = [
 ("""#define HALO_PERF_BEGIN(phase) do { if (halo_perf_log_on) halo_perf_begin(phase); } while (0)
 #define HALO_PERF_END(phase) do { if (halo_perf_log_on) halo_perf_end(phase); } while (0)
 #define HALO_PERF_RENDER_PART(phase) do { if (halo_perf_log_on) halo_perf_render_part(phase); } while (0)
 #define HALO_PERF_COUNT(counter, count) do { if (halo_perf_log_on) halo_perf_counters[counter] += (count); } while (0)""",
-"""#ifdef PSP_FRAMEPIC
+"""#if defined(PSP_FRAMEPIC) || defined(PSP_DRAWSPLIT)
 /* psp_fixups.py: expressions, as the off form is (the step breadcrumbs
 write a hook as one operand of a comma expression) */
 #define HALO_PERF_BEGIN(phase) ((void)(halo_perf_log_on && (halo_perf_begin(phase), 1)))
