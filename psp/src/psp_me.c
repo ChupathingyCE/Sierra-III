@@ -1077,6 +1077,65 @@ time and again in the ring's or the render slot's, so the busy share takes
 it off once (psp_me_report). Read through the uncached view, as nested_features is */
 static PSP_AIME_ME_SIDE unsigned int nested_cycles_total = 0;
 
+#if PSP_MEAICOL
+/* meaicol (briefs/me_aicol.md, log only): the AI job's own time split from
+the work nested in its yields, by kind, counted at the AI's own yield sites
+(psp_me_yield, psp_me_yield_slots, psp_me_yield_inner) only while the AI job is
+in hand, so work nested deeper (a render job's own looks inside the AI's
+yield) stays in the render's share and nothing is counted twice. The ME
+writes these in its cache; the AI job's end writes the whole cache back
+(me_serve) before it says done, so the collection reads them uncached, as
+tick_look. Cycles wrap at ~12.9 s: the readers take differences */
+struct aicol_stats
+{
+	unsigned int audio_cycles, audio_mixes;   /* audio blocks mixed in the AI's yields */
+	unsigned int ring_cycles, ring_drains;    /* the ring drained there (audio mixed inside a drain included) */
+	unsigned int render_cycles, render_jobs;  /* render jobs served there (menestrender) */
+	unsigned int pad[10];
+} __attribute__((aligned(64)));
+static struct aicol_stats aicol PSP_AIME_ME_SIDE = { 0 };
+
+/* the main CPU's side, at each AI job's collection: the job's nested share
+is the counters' growth since the last one, so its own time less nested and
+the worsts are a job's, never a window's */
+#define AICOL_KINDS 6 /* aicol_stats' six counters, in its order */
+static struct
+{
+	unsigned int seen[AICOL_KINDS], whole_worst, less_worst, nested_worst;
+	unsigned long jobs, wait_worst_us;
+	unsigned long long whole_cycles, less_cycles, wait_us, kind[AICOL_KINDS];
+} aicol_main;
+
+static void aicol_collect(unsigned int cycles, unsigned long waited)
+{
+	volatile unsigned int *a = (volatile unsigned int *)UNCACHED(&aicol);
+	unsigned int now[AICOL_KINDS], job, less;
+	int k;
+
+	for (k = 0; k < AICOL_KINDS; k++)
+	{
+		now[k] = a[k];
+		aicol_main.kind[k] += now[k] - aicol_main.seen[k];
+	}
+	job = (now[0] - aicol_main.seen[0]) + (now[2] - aicol_main.seen[2]) + (now[4] - aicol_main.seen[4]);
+	less = cycles > job ? cycles - job : 0;
+	for (k = 0; k < AICOL_KINDS; k++)
+		aicol_main.seen[k] = now[k];
+	aicol_main.jobs++;
+	aicol_main.whole_cycles += cycles;
+	aicol_main.less_cycles += less;
+	aicol_main.wait_us += waited;
+	if (cycles > aicol_main.whole_worst)
+		aicol_main.whole_worst = cycles;
+	if (less > aicol_main.less_worst)
+		aicol_main.less_worst = less;
+	if (job > aicol_main.nested_worst)
+		aicol_main.nested_worst = job;
+	if (waited > aicol_main.wait_worst_us)
+		aicol_main.wait_worst_us = waited;
+}
+#endif
+
 void psp_me_yield(void)
 {
 	volatile struct me_private *p;
@@ -1086,7 +1145,22 @@ void psp_me_yield(void)
 		return;
 	aime_now = psp_aime_job_now[0];
 	psp_aime_job_now[0] = 0;
+#if PSP_MEAICOL
+	if (aime_now)
+	{
+		unsigned int begun = me_cycles();
+
+		if (me_audio_now())
+		{
+			aicol.audio_cycles += me_cycles() - begun;
+			aicol.audio_mixes++;
+		}
+	}
+	else
+		me_audio_now();
+#else
 	me_audio_now();
+#endif
 	p = ME_PRIVATE;
 #ifdef PSP_RECON
 	/* a look that finds the ring empty is a look too */
@@ -1110,6 +1184,13 @@ void psp_me_yield(void)
 			p->ring_popped = me_ring_drain(p->ring_popped, &last_look,
 				aime_now ? &SLOT(ME_SLOT_AI)->args[ME_JOB_ARGS - 1] : NULL);
 			nested_cycles_total += me_cycles() - begun;
+#if PSP_MEAICOL
+			if (aime_now)
+			{
+				aicol.ring_cycles += me_cycles() - begun;
+				aicol.ring_drains++;
+			}
+#endif
 		}
 		p->ring_last_look = last_look;
 		if (aime_now)
@@ -1161,6 +1242,13 @@ void psp_me_yield_slots(void)
 		nested_renders++;
 		if (ran > nested_worst)
 			nested_worst = ran;
+#if PSP_MEAICOL
+		if (aime_now)
+		{
+			aicol.render_cycles += ran;
+			aicol.render_jobs++;
+		}
+#endif
 	}
 	psp_aime_job_now[0] = aime_now;
 }
@@ -3169,6 +3257,10 @@ static int me_run_slot(int which, unsigned int type, const unsigned int *args, i
 		stats[which].me_job_cycles += slot->job_cycles;
 		last_job_us[which] = me_cycles_per_us > 0.0f ? (unsigned int)((float)slot->job_cycles / me_cycles_per_us) : 0;
 		me_us = me_cycles_per_us > 0.0f ? (unsigned long)((float)slot->cycles / me_cycles_per_us) : 0;
+#if PSP_MEAICOL
+		if (which == ME_SLOT_AI)
+			aicol_collect(slot->cycles, waited);
+#endif
 	}
 	for (k = 0; k < ME_JOB_RESULTS; k++)
 		results[k] = slot->results[k];
@@ -3362,6 +3454,10 @@ static int me_finish_slot(int which, unsigned int *results)
 				stats[which].me_worst_us = me_us;
 		}
 		waited = (unsigned long)(sceKernelGetSystemTimeWide() - start);
+#if PSP_MEAICOL
+		if (which == ME_SLOT_AI)
+			aicol_collect(slot->cycles, waited);
+#endif
 	}
 	else
 		waited = last_job_us[which]; /* simulated: the job's own time, run at the hand-over */
@@ -3701,7 +3797,21 @@ void psp_me_yield_inner(int ring)
 		psp_aime_job_now[0] = 0;
 		if (aime_now)
 			psp_aime_step(7);
+#if PSP_MEAICOL
+		{
+			unsigned int begun = me_cycles();
+			int mixed = me_audio_now();
+
+			INNER_STATS->audio += mixed;
+			if (aime_now && mixed)
+			{
+				aicol.audio_cycles += me_cycles() - begun;
+				aicol.audio_mixes++;
+			}
+		}
+#else
 		INNER_STATS->audio += me_audio_now();
+#endif
 		psp_aime_job_now[0] = aime_now;
 	}
 	if (!ring || !p->ring_ready || p->in_ring || RING_PUSHED == p->ring_popped)
@@ -3714,9 +3824,21 @@ void psp_me_yield_inner(int ring)
 		psp_aime_step(7);
 	popped = p->ring_popped;
 	last_look = p->ring_last_look;
+#if PSP_MEAICOL
+	now = me_cycles();
+#endif
 	p->ring_popped = me_ring_drain(popped, &last_look, &SLOT(ME_SLOT_AI)->args[ME_JOB_ARGS - 1]);
 	p->ring_last_look = last_look;
 	INNER_STATS->ring_jobs += p->ring_popped - popped;
+#if PSP_MEAICOL
+	/* not in nested_cycles_total on the head: the busy share counts this
+	drain twice (said to the lead, not changed here) */
+	if (aime_now)
+	{
+		aicol.ring_cycles += me_cycles() - now;
+		aicol.ring_drains++;
+	}
+#endif
 	psp_aime_job_now[0] = aime_now;
 }
 
@@ -5921,6 +6043,55 @@ void psp_me_report(void)
 				platform_log("%s", out);
 		}
 	}
+#if PSP_MEAICOL
+	{
+		/* meaicol: each slot's part of the line whole, a line each, with its
+		length (job_graph.md section 6, gap 1), then the AI job's own time
+		less the work nested in its yields, by kind, and the main CPU's wait
+		for it: each a job's, summed at its collection (aicol_collect) */
+		char whole[ME_LOG_LINE + 1];
+		int p;
+
+		for (p = 0; p < parts; p++)
+		{
+			int end = p + 1 < parts ? part_at[p + 1] : length, size = end - part_at[p], at;
+
+			at = snprintf(whole, sizeof(whole), "ME slot whole (%d chars%s)", size,
+				p + 1 == parts && length >= (int)sizeof(line) - 1 ? ", cut at the report's buffer" : "");
+			if (size > ME_LOG_LINE - at)
+				size = ME_LOG_LINE - at;
+			memcpy(whole + at, line + part_at[p], size);
+			whole[at + size] = 0;
+			platform_log("%s", whole);
+		}
+		if (aicol_main.jobs && me_cycles_per_us > 0.0f)
+		{
+			float rate = me_cycles_per_us, jobs = (float)aicol_main.jobs;
+			unsigned long long nested = aicol_main.kind[0] + aicol_main.kind[2] + aicol_main.kind[4];
+
+			platform_log("ME: aicol: ai %lu jobs, the ME's own time %lu us a job whole (worst %lu), less nested %lu (worst %lu); nested in its yields %lu us a job (worst %lu): audio %lu (%lu mixes), ring %lu (%lu drains), render %lu (%lu jobs); the main CPU's wait %lu us a job (worst %lu), %lu us in all over %.1f s",
+				aicol_main.jobs, (unsigned long)((float)aicol_main.whole_cycles / rate / jobs),
+				(unsigned long)((float)aicol_main.whole_worst / rate),
+				(unsigned long)((float)aicol_main.less_cycles / rate / jobs), (unsigned long)((float)aicol_main.less_worst / rate),
+				(unsigned long)((float)nested / rate / jobs), (unsigned long)((float)aicol_main.nested_worst / rate),
+				(unsigned long)((float)aicol_main.kind[0] / rate / jobs), (unsigned long)aicol_main.kind[1],
+				(unsigned long)((float)aicol_main.kind[2] / rate / jobs), (unsigned long)aicol_main.kind[3],
+				(unsigned long)((float)aicol_main.kind[4] / rate / jobs), (unsigned long)aicol_main.kind[5],
+				(unsigned long)(aicol_main.wait_us / aicol_main.jobs), aicol_main.wait_worst_us,
+				(unsigned long)aicol_main.wait_us, (double)window / 1e6);
+		}
+		else
+			platform_log("ME: aicol: no AI job collected with the ME's clock in this window (%lu ai jobs in the slot's count)",
+				stats[ME_SLOT_AI].jobs);
+		{
+			unsigned int seen[AICOL_KINDS];
+
+			memcpy(seen, aicol_main.seen, sizeof(seen));
+			memset(&aicol_main, 0, sizeof(aicol_main));
+			memcpy(aicol_main.seen, seen, sizeof(seen));
+		}
+	}
+#endif
 	if (ring_line[0])
 		platform_log("%s", ring_line);
 	{

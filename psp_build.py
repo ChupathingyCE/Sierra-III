@@ -184,6 +184,11 @@ RECON = os.environ.get("PSP_RECON", "") == "1"
 # PSP_MEPROBE=1: the "meprobe" instrument (psp_post.h, psp_me.h): the ring's
 # main-CPU calls reached by the ME's work, noted; recon only
 MEPROBE = os.environ.get("PSP_MEPROBE", "") == "1"
+# PSP_MEAICOL=1: "meaicol" (briefs/me_aicol.md): psp_me.c's report prints each
+# slot's part whole and the AI job's own time less the work nested in its
+# yields, by kind, with the main CPU's wait for it. Log only, psp_me.c only;
+# its counters sit in the AI's yields, so a default build leaves it out
+MEAICOL = os.environ.get("PSP_MEAICOL", "") == "1"
 # build 105: PSP_DEBUG_TOOLS=1 keeps the developer instruments that cost
 # memory and that the game itself never needs (so far: the Media Engine
 # measure job "meclassify", 68 KB of buffers; the game's render-debug cache
@@ -1033,6 +1038,7 @@ def compile_one(item):
                ["-DPSP_PADPATH=1"] if PADPATH else []) + (
                ["-DPSP_FRAMEPIC=1"] if FRAMEPIC else []) + (
                ["-DPSP_MEPROBE=1"] if MEPROBE else []) + (
+               ["-DPSP_MEAICOL=1"] if MEAICOL and src.endswith("psp_me.c") else []) + (
                ["-DPSP_WALKAPART=1"] if WALKAPART else []) + (
                ["-DPSP_MEXEC=1"] + MEXEC_DEFINES if MEXEC and src.endswith("psp_me.c") else []) + (
                ["-DPSP_MEVISLAND=1"] if MEVISLAND else []) + (
