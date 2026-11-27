@@ -539,4 +539,46 @@ Written by builder2, 2026-11-27 10:30, under the same rulings as §3.4.1 (shares
 
 ## 4. Placement and the build cut [D]
 
-Not yet.
+Written by builder2, 2026-11-27 10:36, for the lab's briefs/draw_main.md task 4 (:34) and its re-cut (:55: "§4, D1 (or D2/D3 if the swap holds) as the first slice, with its prediction and kill bar"), on §3's cases under the lab's decisions 2026-11-27 07:2x (A) (order D1, D3, D2, D4-D6; a share is a lead counted at half; each slice's kill bar is its own whole-frame PSP pair). The goal's frame throughout: one tick a frame, 30 fps (33.3 ms), both cores.
+
+### 4.1 Placement at one tick a frame, 30 fps [D, on §2.2's census and box_draw_list.md §15's ME figure]
+
+| Part | b30 fight, main CPU [M, §2.2 run 1] | Placed | Why |
+|---|---|---|---|
+| objects | 15.7 | main CPU | no ME room (below); D3 and D1 move its *replay* side, not its walk |
+| world | 11.5 | main CPU | the same; B1's moves (`cpu_cost_map.md:94`, ~5-8 ms on b30's beach) wait on ME room shown at 30 fps (REBUILD.md:87) |
+| effects | 3.2 | main CPU | the same |
+| hud | 2.4 | main CPU | the same |
+| transparent, flares, rest | 1.6 | main CPU | the same |
+| the replay (all kinds) | ME: 31.2-38.6 a frame, 116% of 33.3 [M, mekinds1 45497754325, older build] | ME | it is the ME's whole job today; D1-D3 shrink it |
+| the lists' reads | GE, from main RAM (§15.4: 1.0x) | GE | D6's VRAM place skipped (§3.4.6), kept as a requirement on D1-D3's store |
+
+- **No part moves onto the ME.** On b30's fight the ME is over the frame by 116%, so it has no room at 30 fps on the heavy stretch (REBUILD.md:87), and every main-CPU part stays where it is.
+- **A slice that frees ME time is priced by the main-CPU work it lets move** (the brief's :34). D1 frees ~1.1 ms of the ME at half (§3.4.1), leaving its render job at ~30.1-37.5 ms: still over 33.3 at the fight's upper end. So **D1 lets no main-CPU work move**. Its price is ME time alone, and at the goal's frame that is frame time, because the ME binds (`cpu_cost_map.md:94`: "frame ≈ max(main CPU, ME)"). Room for a move is D3's and D2's to show, read on each one's pair, and a move is cased then, not now.
+- **World's sound stays in world** (mevispush's form; MEVISEARLY's revive figures go to the lead with this page). It moves only with the same room.
+
+### 4.2 The build cut [D, a design until built]
+
+- **Files.** `psp/src/box_draw2.c` and `psp/include/box_draw2.h`, the box's own (as `psp_anim.c` and `box_posing.c` are): D1's list builder, run once at the far region's load (the far blocks' way, §3.4.2's memory line), and the replay's emit for the new record (the matrix or bones, the material and one CALL a shown group). D1 then needs no pack change, so the pack is the same file on both forms. The lists are carved with the far region at the map's load, with a VRAM-or-RAM place a list (§3.4.6's requirement). Their bytes are one of D1's batch counts (§4.3), a few KB on b30 by §3.4.1's ~24 B a group [D].
+- **The switch, `PSP_DRAW2=1`**, in `psp_build.py` beside `PSP_DRAWSPLIT` (psp_build.py:232-243): it appends `box_draw2` to `PSP_FILES` and adds `-DPSP_DRAW2=1` to `psp/src/psp_ge.c`'s compile only. In `psp_ge.c`, under `#if PSP_DRAW2` alone: `psp_far_draw` (:18062-) writes a call record in place of its far record, and the replay's case beside `psp_ge_draw_far`'s call (:1734) calls box_draw2's emit. The emit runs on the ME, so it goes in the MEXEC list (`psp/layout/mexec_*.txt`) under the switch, and `toolbox/placedin.py` is run on the pair's layout file before the build commit.
+- **Its off form is byte-identical to its head's:** with `PSP_DRAW2` unset no file is added and `psp_ge.c`'s preprocessed text is unchanged, so the EBOOT's sha256 equals the head's. That's checked as task 1's check was, both builds' hashes in the commit.
+- **Beside the tick's build.** It builds in slice 1's on form (ship form + `PSP_TICK2_MOTIONNEW=1` and its layout, §2's form) and in the ship form with `PSP_TICK2` off. It touches none of slice 1's files (`store_*.c`, `box_posing_pass.c`, `psp_bipedmove.h`, objects.c's fixups), so a merge into the tick's line crosses nothing. No run-time keep word: the pair is the switch off against on.
+
+### 4.3 The first slice: D1, its prediction and its kill bar [D]
+
+D1 is first by the order (07:2x (2): the CALL path's smallest proof) and by its sheet (§3.4.1), the one slice whose own sheet clears 0.5 ms on b30's fight before D3's store gate.
+
+- **The prediction, from §3.4.1's sheet.** On b30's fight: **the ME's render job −~1.1 ms a frame** (at half, on 53.9 far models a frame [M, count] × 11-22's 43 µs a record [M, older build]; ceiling ≤ 2.3). **Main CPU ~0** (`psp_far_draw`'s lock, mask, tints and record stay, D1b not taken). **The frame −~1.1 at the goal's frame**, where the ME binds; on the pair's own frame, the same on the fight's lines where the ME's job is the longer core. On c20: ME ~−0.15, under the bar, read for no harm only. GE: the main-RAM words it reads a frame net [U] until D1's batch counts the shown groups.
+- **Gate 0, before the build (on paper):** the mekinds re-baseline (ask A1) must show the far kind at **≥ 1.0 ms a frame** on b30's fight on today's head (≥ 0.5 at half). Under that, D1 stops on paper with its row's revive_if, and the first slice is D3, at its store gate (§3.4.2).
+- **Gate 1, the build's emulator batch (exact):** keep word off, the EBOOT byte-identical (§4.2). On, play exact on b30 and c20, with the shown far groups a frame and the lists' bytes counted.
+- **The kill bar, its PSP-1000 pair:** b30_leg2 and c20_leg2 on the slice's head, A `PSP_DRAW2` off and B on, `timerson mekinds` on both sides, 2 runs a side, plus the looks-identical picture check on the six maps against the old build. **D1 is kept only if all of these hold:** (1) on b30's fight, B − A on the ME's render job is **≤ −0.5 ms a frame on both runs**, with the far kind's ms falling by at least that; (2) the main CPU's drawing and the tick are not up by more than A's own run-to-run range on either leg; (3) the frame is not up on either leg; (4) the pictures match. A miss on (1) stops D1. The pair's B − A is filed as the CALL path's price on today's replay, with PDCCALL's stop beside it, and its levers.tsv row's revive_if is filled. A miss on (2)-(4) stops it until the cause is named.
+- **Its lever row** (FARCALL, a new row; ground FARLEVEL, PDCCALL, X2, EM by `levercheck.py --tag`) goes in findings/levers/levers.tsv and grounds.tsv with the first build commit, once the lead takes this page.
+
+### 4.4 The asks §3 names, gathered [D, for the lead's take with §1-§4]
+
+None of these is sent before the lead takes the page (the brief's :36). Each goes through the master as a `psp-ask` line.
+
+- **A1, one PSP-1000 pair on b30's fight (b30_leg2), today's head in §2's form, no code:** both sides `timerson mekinds`, A the default, B `changesmall99999 glowsmall99999 nodetail` (§3.4.8's keep numbers), 2 runs a side. **A** is the re-baseline: the far, model-part and level kinds' ms and records a frame for D1's gate 0, D3's and D2's sheets (§3.4.1, :374, :402), and the level-parts timer if it reads on this head [U]. **B − A** is the passes' ceiling on today's build (§3.4.8 ask (1)): under 0.5 ms on the frame and the ME's job closes every fewer-passes form on [M]. mekinds' own cost sits on both sides alike [U, unpriced]. One pair serves all four cases.
+- **A2, one exact emulator batch on b30 and c20: D3's store batch.** A log-only counter build under `drawsplit`'s keep word (its fields placed by `placedin.py` before the commit), counting: D3's store (distinct baked parts a map and their bytes, :373); D2's (cluster, material) pieces a map with their index and word bytes, and per frame the visible pieces, those wholly inside the view and those crossing the near or fog plane (:401); D4's two (parts an instance sharing a shader and state; rigid far models a frame, :427); D5's one (distinct (shader, permutation) keys a frame among near parts and the parts following their own key in sorted order, STC's blend repeats riding, :451); D6's (lists CALLed a frame and their bytes, :477); X3+X6's four (lookups a frame by kind, the scene's point lights, the dynamic search's (object, cluster) pairs, shadow casters with `shadows`' instances, :507); §3.4.8's uniform parts a frame (:537 ask (2)); X1's near/far split of the instance walk (§3.4.7); and D1's shown far groups a frame (§3.4.1), so D1's gate 1 has its count on the old build to compare with.
+- **A3, D1's build pair** (§4.3's kill bar), asked only after gate 0 passes and gate 1's batch is read.
+- **Order:** A1 and A2 together (independent: a PSP pair and an emulator batch); A3 after both.
