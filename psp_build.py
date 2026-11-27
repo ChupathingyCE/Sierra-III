@@ -1296,6 +1296,84 @@ def link(objs, stubs):
         return (set_pad("before", t, "__psp_hot_data", "__psp_hotg") + block +
                 set_pad("after", t, "__psp_hot_data", "__psp_hotg"))
 
+    # PSP_SLIDE_SET=[keep:]<unit>@<text>,<strings>,<rodata end> (sp_profout
+    # task 5, the lab's decisions 2026-11-27 10:3x) puts back on the parent's
+    # cache sets everything a code change slid, not the hot run alone
+    # (PSP_HOTG_SET's pair priced that inside its spread): 33ecf4a7 grew
+    # psp_scratch.o's code by 448 B, so all the code after it, .rodata and
+    # every data section to the end of .bss sat 320-512 B off 1c7ad138's
+    # sets (spprof3-b30: tick +1.03 ms on b30's fight). Three pads, each set
+    # from ALIGN as at_offset does, put the next byte at the offset in the
+    # 8 KB way the parent's map has there: <text> after <unit>'s code (the
+    # object's path under obj/; the code's catch-all is split at it, every
+    # file after it excluded from the first half, so the order is the
+    # link's own), <strings> after the merged strings (crt0_prx.o's
+    # .rodata.str1.4, which every file's mergeable strings join), and
+    # <rodata end> at .rodata's end, so .data, .sdata, .sbss and .bss start
+    # where the parent's did, mod 8 KB (the merged strings and a few small
+    # string runs after them stay off by their growth). The offsets are read
+    # from the parent's link map (the lab's toolbox/slidepoint.py) and are
+    # re-derived for each pair of layouts. "keep:" splits the same
+    # statements, sets no pad and adds what the three would have been after
+    # .bss's COMMON, so both sides have the same heap. Only addresses move
+    def slide_set():
+        v = os.environ.get("PSP_SLIDE_SET", "")
+        if not v:
+            return None
+        num = r"(0x[0-9a-fA-F]+|[0-9]+)"
+        m = re.match(r"^(keep:)?([^@]+)@%s,%s,%s$" % (num, num, num), v)
+        if not m:
+            sys.exit("psp_build: PSP_SLIDE_SET=%s: [keep:]<unit>@<text>,<strings>,<rodata end>" % v)
+        offs = [int(x, 0) for x in m.group(3, 4, 5)]
+        if not all(0 <= t < 0x2000 for t in offs):
+            sys.exit("psp_build: PSP_SLIDE_SET=%s: each offset below 0x2000" % v)
+        return bool(m.group(1)), m.group(2), offs
+
+    def slide_pad(name, t, keep):
+        at = "    __psp_slide_%s_at = ABSOLUTE(.);\n" % name
+        if keep:
+            return at
+        return at + at_offset("0x%x" % t) + "    __psp_slide_%s_to = ABSOLUTE(.);\n" % name
+
+    def slide_script(text, slide):
+        keep, unit, (t_text, t_str, t_end) = slide
+        rel = lambda o: os.path.relpath(o, OBJ) if o.startswith(OBJ + os.sep) else None
+        at = [i for i, o in enumerate(objs) if rel(o) == unit]
+        if len(at) != 1:
+            sys.exit("psp_build: PSP_SLIDE_SET: %s is not one of the link's objects (a path under obj/)" % unit)
+        # every input the link reads after <unit>: the objects after it, the
+        # generated ones objs.rsp lists last, prxexports.o, and the archives
+        # and crtend/crtn the specs add at the end
+        later = ["*/" + (rel(o) or os.path.basename(o)).replace(" ", "?") for o in objs[at[0] + 1:]]
+        later += ["*/stubs.o", "*/halo_profile_*.o", "*/halo_claim_*.o", "*/kcall_*.o",
+                  "*prxexports.o", "*crtend.o", "*crtn.o", "*.a:*"]
+        cat = "    *(.text .stub .text.* .gnu.linkonce.t.*)\n"
+        if text.count(cat) != 1:
+            sys.exit("psp_build: the SDK's linkfile.prx has changed; PSP_SLIDE_SET can't split the code")
+        ex = "EXCLUDE_FILE(%s) " % " ".join(later)
+        first = "    *(%s)\n" % " ".join(ex + p for p in (".text", ".stub", ".text.*", ".gnu.linkonce.t.*"))
+        text = text.replace(cat, first + slide_pad("text", t_text, keep) + cat)
+        ro = re.findall(r"\n([ \t]*)\*\(\.rodata \.rodata\.\* \.gnu\.linkonce\.r\.\*\)\n", text)
+        if len(ro) != 1:
+            sys.exit("psp_build: the SDK's linkfile.prx has changed; PSP_SLIDE_SET can't split .rodata")
+        line = "%s*(.rodata .rodata.* .gnu.linkonce.r.*)\n" % ro[0]
+        text = text.replace("\n" + line, "\n%s*crt0_prx.o(.rodata .rodata.* .gnu.linkonce.r.*)\n" % ro[0] +
+                            slide_pad("str", t_str, keep) + line + slide_pad("end", t_end, keep))
+        com = re.findall(r"\n([ \t]*)\*\(COMMON\)\n", text)
+        if len(com) != 1:
+            sys.exit("psp_build: the SDK's linkfile.prx has changed; PSP_SLIDE_SET can't find .bss's COMMON")
+        if keep:
+            ind = com[0]
+            n = ("%s__psp_slide_text_n = ABSOLUTE((0x%x - ABSOLUTE(__psp_slide_text_at)) & 0x1fff);\n"
+                 "%s__psp_slide_str_n = ABSOLUTE((0x%x - ABSOLUTE(__psp_slide_str_at) - __psp_slide_text_n) & 0x1fff);\n"
+                 "%s__psp_slide_end_n = ABSOLUTE((0x%x - ABSOLUTE(__psp_slide_end_at) - __psp_slide_text_n"
+                 " - __psp_slide_str_n) & 0x1fff);\n"
+                 "%s__psp_slide_keep_at = ABSOLUTE(.);\n"
+                 "%s. = . + (__psp_slide_text_n + __psp_slide_str_n + __psp_slide_end_n);\n"
+                 "%s__psp_slide_keep_to = ABSOLUTE(.);\n" % (ind, t_text, ind, t_str, ind, t_end, ind, ind, ind))
+            text = text.replace("\n%s*(COMMON)\n" % ind, "\n%s*(COMMON)\n" % ind + n)
+        return text
+
     linkfile = SDK + "/lib/linkfile.prx"
     text = open(linkfile).read()
     layout = os.environ.get("PSP_TEXT_LAYOUT", "")
@@ -1415,6 +1493,9 @@ def link(objs, stubs):
                             "".join("%s%s(.sbss .sbss.*)\n" % (ind, o) for o in me_small) +
                             "%s__psp_me_small_end = .;\n" % ind +
                             "%sASSERT(__psp_me_small_end - __psp_me_small_start <= 64, \"pspgu's small variables outgrew their line\");" % ind)
+    slide = slide_set()
+    if slide:
+        text = slide_script(text, slide)
     linkfile = os.path.join(OUT, "linkfile_layout.prx")
     open(linkfile, "w").write(text)
     # build 107: the link map (halo.map: each function's and variable's
@@ -1463,6 +1544,38 @@ def map_sections(path):
             found.append((m.group(1) or pending, int(m.group(2), 16), int(m.group(3), 16), m.group(4).strip()))
         pending = None
     return found
+
+def slide_report():
+    """PSP_SLIDE_SET's check: each pad's place and size (keep: the bytes
+    after .bss's COMMON) and every output section's start with its offset in
+    the 8 KB way, from halo.map, to compare against the parent's map"""
+    path = os.path.join(OUT, "halo.map")
+    if not os.path.exists(path):
+        print("slide: no halo.map")
+        return
+    syms, outs = {}, []
+    for line in open(path, errors="replace"):
+        m = re.match(r"^\s+0x([0-9a-f]+)\s+(__psp_slide_\w+) = ", line)
+        if m and m.group(2) not in syms:
+            syms[m.group(2)] = int(m.group(1), 16)
+        m = re.match(r"^\s+0x([0-9a-f]+)\s+_end = \.", line)
+        if m:
+            syms["_end"] = int(m.group(1), 16)
+        m = re.match(r"^(\.\w[\w.]*|_me_section)\s+0x([0-9a-f]+)\s+0x([0-9a-f]+)", line)
+        if m and int(m.group(2), 16) and m.group(1) not in [o[0] for o in outs]:
+            outs.append((m.group(1), int(m.group(2), 16), int(m.group(3), 16)))
+    pads = []
+    for k in ("text", "str", "end", "keep"):
+        a, b = syms.get("__psp_slide_%s_at" % k), syms.get("__psp_slide_%s_to" % k)
+        if a is not None and b is not None:
+            pads.append("%s 0x%08x +%d B -> way 0x%04x" % (k, a, b - a, b & 0x1fff))
+        elif a is not None:
+            pads.append("%s at 0x%08x (way 0x%04x)" % (k, a, a & 0x1fff))
+    print("slide: PSP_SLIDE_SET=%s; %s" % (os.environ.get("PSP_SLIDE_SET"), "; ".join(pads) or "no pad symbols"))
+    print("slide: sections " + " ".join("%s 0x%08x/%04x" % (n, a, a & 0x1fff) for n, a, s in outs
+                                        if n in (".text", "_me_section", ".init", ".rodata", ".MIPS.abiflags",
+                                                 ".data", ".sdata", ".sbss", ".bss")) +
+          (" _end 0x%08x" % syms["_end"] if "_end" in syms else ""))
 
 def smalldata_report(r):
     """PSP_SMALLDATA: how much of $gp's 64 KB the small data takes, by section
@@ -1725,6 +1838,8 @@ def main():
         stubs |= missing
     if SMALLDATA:
         smalldata_report(r)
+    if os.environ.get("PSP_SLIDE_SET"):
+        slide_report()
     if r.returncode:
         print(r.stderr[-3000:])
         if LTO_OBJS:
