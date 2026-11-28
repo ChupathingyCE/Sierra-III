@@ -4014,7 +4014,9 @@ static int show3_room(unsigned int needed)
 	{
 		if (psp_on_me())
 		{
+			psp_me_replay_serve_begin(); /* mc-1i */
 			inflight_serve();
+			psp_me_replay_serve_end();
 			waited = replay_clock(1) - mark > 0x4000000u; /* ~0.4 s of the ME's count */
 		}
 		else
@@ -20778,7 +20780,13 @@ static void transparent_flush_body(void)
 		/* the frame's end is one record: its see-through draws can take
 		milliseconds, which audio and the ring mustn't wait out (geinflight) */
 		if (replay_inflight)
+		{
+			if (psp_on_me())
+				psp_me_replay_serve_begin(); /* mc-1i */
 			inflight_serve();
+			if (psp_on_me())
+				psp_me_replay_serve_end();
+		}
 
 		/* build 89: a slot whose filling never finished (see transparent_slot) */
 		if (!draw->vertices && !draw->cut_vertices)

@@ -911,9 +911,14 @@ and writes served_cycles */
 #define ME_KT_AUDIO 6 /* the audio slot's job, wherever it's served */
 /* mc-1g: the slot and ring jobs served inside the replay's serve, which the
 kind 'audio and ring served' times too; the flag is the ME's, set around the
-replay's call (psp_me_replay_serve_begin) */
+replay's call (psp_me_replay_serve_begin). mc-1i: that now covers show3_room's
+wait and the see-through flush's look too (psp_ge.c) */
 #define ME_KT_INREPLAY 7
+/* mc-1i: the AI job's time less what the nested total and the inner looks'
+drains gained while it ran */
+#define ME_KT_AI_OWN 8
 static inline __attribute__((always_inline)) void me_kt_add(int what, unsigned int cycles);
+static inline __attribute__((always_inline)) unsigned int me_kt_ai_nesting(void);
 static PSP_AIME_ME_SIDE unsigned int served_cycles = 0;
 static PSP_AIME_ME_SIDE unsigned int in_replay_serve = 0;
 
@@ -923,9 +928,12 @@ static void me_serve(volatile struct me_slot *slot, int *sums)
 {
 	volatile struct me_control *control = CONTROL;
 	unsigned int request = slot->request, start, job_start, job_end, type = slot->type, cycles;
+	unsigned int nesting = 0; /* mc-1i */
 	int ranges;
 
 	start = me_cycles();
+	if (type == ME_JOB_AIME)
+		nesting = me_kt_ai_nesting();
 	slot->begun = request;
 	me_count(STASH_SLOT_BEGUN);
 	if (control->features & ME_FEATURE_STASH)
@@ -972,6 +980,8 @@ static void me_serve(volatile struct me_slot *slot, int *sums)
 		me_kt_add(ME_KT_AUDIO, cycles);
 	if (in_replay_serve)
 		me_kt_add(ME_KT_INREPLAY, cycles); /* mc-1g */
+	if (type == ME_JOB_AIME)
+		me_kt_add(ME_KT_AI_OWN, cycles - (me_kt_ai_nesting() - nesting)); /* mc-1i */
 	control->jobs++;
 	me_count(STASH_SLOT_ENDED);
 	if (control->features & ME_FEATURE_STASH)
@@ -1123,13 +1133,19 @@ is in both */
 #define ME_KT_AI_NEST 4  /* the AI job's yields: ring drain, nested render job */
 #define ME_KT_AI_INNER 5 /* the AI job's inner looks' ring drain, which
 	nested_cycles_total leaves out */
-#define ME_KT 8          /* with ME_KT_AUDIO, ME_KT_INREPLAY (above me_serve) */
+#define ME_KT 9          /* with ME_KT_AUDIO, ME_KT_INREPLAY, ME_KT_AI_OWN (above me_serve) */
 static struct me_kt
 {
 	unsigned int cycles[ME_KT], runs[ME_KT];
-} __attribute__((aligned(64))) me_kt PSP_AIME_ME_SIDE = { { 0 }, { 0 } };
-/* one line, so me_kt_add's write-back stays one line's */
-_Static_assert(sizeof(struct me_kt) == 64, "me_kt is one 64-byte line");
+} __attribute__((aligned(128))) me_kt PSP_AIME_ME_SIDE = { { 0 }, { 0 } };
+/* two lines, its own: me_kt_add's write-back is both */
+_Static_assert(sizeof(struct me_kt) == 128, "me_kt is two 64-byte lines");
+
+/* mc-1i: what has run nested so far, for the AI job's own time (the ME's) */
+static inline __attribute__((always_inline)) unsigned int me_kt_ai_nesting(void)
+{
+	return nested_cycles_total + me_kt.cycles[ME_KT_AI_INNER];
+}
 
 static inline __attribute__((always_inline)) void me_kt_add(int what, unsigned int cycles)
 {
@@ -5578,7 +5594,7 @@ void psp_me_kinds_report(unsigned int frames)
 	static const char *const names[ME_KT] = { "perception rays (type 8)", "next tick's poses (type 9)",
 		"points (type 12)", "visibility walk (type 14, less jobs served inside)",
 		"yields' ring drains and nested render jobs", "inner looks' ring drains (not in the nested total)",
-		"audio job (slot)", "served inside the replay (in both)" };
+		"audio job (slot)", "served inside the replay (in both)", "AI job's own (less its nesting)" };
 	char text[ME_KT][112];
 	float rate = me_cycles_per_us;
 	int k;
@@ -5592,8 +5608,8 @@ void psp_me_kinds_report(unsigned int frames)
 	platform_log("ME: mekinds, the ME's jobs, us a frame over %u frames:%s%s%s%s%s%s", frames,
 		text[ME_KT_PERC], text[ME_KT_POSES], text[ME_KT_POINTS], text[ME_KT_VIS], text[ME_KT_AUDIO],
 		text[ME_KT_INREPLAY]);
-	platform_log("ME: mekinds, the AI job's own nesting, us a frame over %u frames:%s%s", frames,
-		text[ME_KT_AI_NEST], text[ME_KT_AI_INNER]);
+	platform_log("ME: mekinds, the AI job's own nesting, us a frame over %u frames:%s%s%s", frames,
+		text[ME_KT_AI_NEST], text[ME_KT_AI_INNER], text[ME_KT_AI_OWN]);
 	memset(me_kt_main.cycles, 0, sizeof(me_kt_main.cycles));
 	memset(me_kt_main.runs, 0, sizeof(me_kt_main.runs));
 	memset(me_kt_main.peak, 0, sizeof(me_kt_main.peak));
