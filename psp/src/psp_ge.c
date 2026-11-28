@@ -18274,6 +18274,23 @@ static int draw2_far(const void *block, unsigned int mask_low, unsigned int mask
 1 when the model's far level is drawn in place of its parts, 2 when in place
 of its solid pass's parts only (its decal and transparent passes still to
 draw) */
+#ifdef PSP_DRAW2
+/* FARCALL's D1b (docs/box_draw_main.md 4.2a): psp_far_draw's own first tests,
+asked ahead of the model's begin (psp_fixups.py, FIXES_FARCALL2), so a model
+that will be drawn far is begun on the GE's side only. Nonzero exactly when
+psp_far_draw gets past them; its lock may still fail, and then the caller
+makes the begin's Xbox half after all */
+int psp_far_ahead(unsigned long model, float pixels)
+{
+	unsigned int bytes;
+
+	(void)far_pixels_now();
+	if (far_pixels <= 0 || pixels >= (float)far_pixels || pixels <= 0.0f)
+		return 0;
+	return psp_far_block(model, &bytes) != 0;
+}
+#endif
+
 int psp_far_draw(unsigned long model, float pixels, const char *permutations, int permutation_count,
 	const float *change_colours)
 {
