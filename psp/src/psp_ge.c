@@ -757,9 +757,18 @@ void psp_ge_level_glow(unsigned int primary_key, float const *primary, unsigned 
 static void level_glow_set(unsigned int primary_key, unsigned int primary_color, unsigned int secondary_key,
 	unsigned int secondary_color);
 static unsigned int abgr_from_rgb(float const *rgb);
+#ifdef PSP_D2BHOLD
+/* D2b (docs/box_draw_main.md §4.3d): the run's BSP surface ids, a halfword
+a triangle (psp_fixups.py's fills), or NULL */
+#define D2B_IDS_PARAM , const unsigned short *surface_ids
+#define D2B_IDS_ARG , surface_ids
+#else
+#define D2B_IDS_PARAM
+#define D2B_IDS_ARG
+#endif
 void psp_ge_draw_level(const void *vertices, const void *lightmap_vertices, int vertex_count,
 	const unsigned short *indices, long triangle_count, unsigned int color,
-	unsigned int base_key, unsigned int lightmap_key, int alpha_tested);
+	unsigned int base_key, unsigned int lightmap_key, int alpha_tested D2B_IDS_PARAM);
 int psp_ge_contrail(void const *vertices, int vertex_count, unsigned int bitmap_key, short blend);
 void psp_ge_zoom_mask(unsigned int key, unsigned int strength);
 void psp_ge_sky(int on);
@@ -1281,9 +1290,15 @@ static unsigned int defer_bits(float value)
 
 static int defer_draw_level(const void *vertices, const void *lightmap_vertices, int vertex_count,
 	const unsigned short *indices, long triangle_count, unsigned int color,
-	unsigned int base_key, unsigned int lightmap_key, int alpha_tested)
+	unsigned int base_key, unsigned int lightmap_key, int alpha_tested D2B_IDS_PARAM)
 {
+#ifdef PSP_D2BHOLD
+	defer_word *at = defer_take(DEFER_DRAW_LEVEL, 10);
+
+	at[9].p = surface_ids;
+#else
 	defer_word *at = defer_take(DEFER_DRAW_LEVEL, 9);
+#endif
 
 	at[0].p = vertices;
 	at[1].p = lightmap_vertices;
@@ -1767,8 +1782,13 @@ static void defer_replay(const defer_word *buffer, unsigned int used, int on_me)
 			level_glow_set(w[0].u, w[1].u, w[2].u, w[3].u);
 			break;
 		case DEFER_DRAW_LEVEL:
+#ifdef PSP_D2BHOLD
+			psp_ge_draw_level(w[0].p, w[1].p, w[2].i, (const unsigned short *)w[3].p, w[4].i, w[5].u, w[6].u, w[7].u,
+				w[8].i, (const unsigned short *)w[9].p);
+#else
 			psp_ge_draw_level(w[0].p, w[1].p, w[2].i, (const unsigned short *)w[3].p, w[4].i, w[5].u, w[6].u, w[7].u,
 				w[8].i);
+#endif
 			break;
 		case DEFER_SKY:
 			psp_ge_sky(w[0].i);
@@ -11751,13 +11771,13 @@ static void level_pretouch(const void *vertices, const void *lightmap_vertices, 
 
 void psp_ge_draw_level(const void *vertices, const void *lightmap_vertices, int vertex_count,
 	const unsigned short *indices, long triangle_count, unsigned int color,
-	unsigned int base_key, unsigned int lightmap_key, int alpha_tested)
+	unsigned int base_key, unsigned int lightmap_key, int alpha_tested D2B_IDS_PARAM)
 {
 	GE_PRETOUCH(base_key, TXPT_LEVEL_BASE);
 	GE_PRETOUCH(lightmap_key, TXPT_LIGHTMAP);
 	level_pretouch(vertices, lightmap_vertices, vertex_count, base_key);
 	GE_DEFER(defer_draw_level(vertices, lightmap_vertices, vertex_count, indices, triangle_count, color, base_key,
-		lightmap_key, alpha_tested)); /* build 112: gedefer */
+		lightmap_key, alpha_tested D2B_IDS_ARG)); /* build 112: gedefer */
 	GE_BENCH_SKIP();
 	ge_kind(KIND_LEVEL); /* build 103 */
 	unsigned int start = ge_clock();

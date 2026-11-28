@@ -2464,9 +2464,16 @@ APPEND = {
 /* the GE renderer's way to the level's geometry (psp_ge.c): a material's
 visible triangles, from this frame's triangle list, over its vertex buffer
 (psp_fixups.py) */
+#ifdef PSP_D2BHOLD
+/* D2b: the run's BSP surface ids, a halfword a triangle, or NULL (§4.3d) */
+void psp_ge_draw_level(const void *vertices, const void *lightmap_vertices, int vertex_count,
+	const unsigned short *indices, long triangle_count, unsigned int color,
+	unsigned int base_key, unsigned int lightmap_key, int alpha_tested, const unsigned short *surface_ids);
+#else
 void psp_ge_draw_level(const void *vertices, const void *lightmap_vertices, int vertex_count,
 	const unsigned short *indices, long triangle_count, unsigned int color,
 	unsigned int base_key, unsigned int lightmap_key, int alpha_tested);
+#endif
 
 /* build 68: a vertex or index buffer's bytes come from the geometry cache
 when the map keeps them outside the tags (psp_geo.c), from the tags
@@ -2547,9 +2554,19 @@ void psp_environment_draw(
 		if (!vertices)
 			{ psp_geometry_missing(); return; }
 	}
+#ifdef PSP_D2BHOLD
+	/* D2b: the ids sit at the triangles' own place in the buffer; a buffer the
+	level's fill didn't write (another caller's) has none */
+	psp_ge_draw_level(vertices, lightmap_vertices, vertex_buffer->count,
+		(const unsigned short *)buffer->triangles + 3 * first_triangle_index, triangle_count, color,
+		base_key, lightmap_vertices ? lightmap_key : 0, alpha_tested,
+		psp_d2b_ided[dynamic_triangle_buffer_index] ?
+			psp_d2b_surface_ids + buffer->triangle_start_index + first_triangle_index : NULL);
+#else
 	psp_ge_draw_level(vertices, lightmap_vertices, vertex_buffer->count,
 		(const unsigned short *)buffer->triangles + 3 * first_triangle_index, triangle_count, color,
 		base_key, lightmap_vertices ? lightmap_key : 0, alpha_tested);
+#endif
 }
 
 /* the level triangles a dynamic light reaches (build 29) */
@@ -7239,6 +7256,32 @@ static long psp_ring_place(long count, long span)
 	}
 	return psp_ring_down ? RASTERIZER_MAXIMUM_DYNAMIC_TRIANGLES - span - count : span;
 }
+
+#ifdef PSP_D2BHOLD
+/* D2b (docs/box_draw_main.md §4.3d): each triangle's BSP surface index, a
+halfword at the triangle's own place in the index buffer, so a range's ids
+are where its triangles are, on either of geshow2's ends. A buffer has ids
+only once the level's fill has written them: a buffer handed out again
+(psp_dynamic_triangles_release's reuse, a new frame) loses its mark */
+unsigned short psp_d2b_surface_ids[RASTERIZER_MAXIMUM_DYNAMIC_TRIANGLES];
+static unsigned char psp_d2b_ided[RASTERIZER_MAXIMUM_DYNAMIC_TRIANGLE_BUFFERS];
+
+/* the fill's place for a buffer's ids (marked as having them), or NULL: a
+range past the array (a bigger buffer in an emulator-only build) */
+unsigned short *psp_d2b_ids_fill(long dynamic_triangle_buffer_index)
+{
+	struct dynamic_triangle_buffer *buffer;
+
+	if (dynamic_triangle_buffer_index < 0 || dynamic_triangle_buffer_index >= dynamic_triangles.buffer_count)
+		return NULL;
+	buffer = &dynamic_triangles.buffers[dynamic_triangle_buffer_index];
+	if (buffer->triangle_start_index < 0 ||
+		buffer->triangle_start_index + buffer->triangle_count > RASTERIZER_MAXIMUM_DYNAMIC_TRIANGLES)
+		return NULL;
+	psp_d2b_ided[dynamic_triangle_buffer_index] = 1;
+	return psp_d2b_surface_ids + buffer->triangle_start_index;
+}
+#endif
 #endif
 
 void rasterizer_dynamic_geometry_begin(
@@ -7269,6 +7312,9 @@ FIXES_36["source/rasterizer/xbox/rasterizer_xbox_draw_primitives.c#ring"] = [
 			/* the engine's own room test above; geshow2's two ends place the range */
 			dynamic_triangle_buffer->triangle_start_index = psp_ring_on ?
 				psp_ring_place(count, dynamic_triangles.triangle_count) : dynamic_triangles.triangle_count;
+#ifdef PSP_D2BHOLD
+			psp_d2b_ided[dynamic_triangle_buffer_index] = 0; /* D2b: no ids until the level's fill writes them */
+#endif
 #else
 			dynamic_triangle_buffer->triangle_start_index = dynamic_triangles.triangle_count;
 #endif
@@ -16739,6 +16785,40 @@ static void structure_render_dynamic_triangles_from_indices(
 #else
 	qsort_4byte(surface_indices, surface_count, compare_surface_indices);
 #endif
+"""),
+]
+# D2b commit 1 (docs/box_draw_main.md §4.3d item 1; PSP_D2BHOLD, off by
+# default): each triangle's BSP surface index written beside it, for the ME's
+# held angle byte. Both fills leave surface_indices[] in the triangles' own
+# order (the bitvector fill writes them as it writes the triangles, the
+# indices fill sorts them in place first), so one pass after either writes
+# the ids: a load and a halfword store a triangle. A BSP over 65,535
+# surfaces, or a buffer past the id array: no ids, today's loop
+FIXES_119["source/structures/structure_render.c#d2bids"] = [
+("""					triangles);
+			}
+
+			rasterizer_dynamic_triangles_unlock(dynamic_triangles_index);
+""",
+ """					triangles);
+			}
+
+#ifdef PSP_D2BHOLD
+			if (structure_bsp->surfaces.count <= 65535)
+			{
+				extern unsigned short *psp_d2b_ids_fill(long dynamic_triangle_buffer_index);
+				unsigned short *ids = psp_d2b_ids_fill(dynamic_triangles_index);
+
+				if (ids)
+				{
+					short k;
+
+					for (k = 0; k < surface_count; k++)
+						ids[k] = (unsigned short)surface_indices[k];
+				}
+			}
+#endif
+			rasterizer_dynamic_triangles_unlock(dynamic_triangles_index);
 """),
 ]
 
