@@ -904,12 +904,20 @@ static void run_job(volatile struct me_slot *slot, int *sums, int on_me)
 	}
 }
 
+/* mc-1e (mekinds, log only): me_kt's audio entry and its adder (both with
+me_kt below), and the cycles of every slot job served so far, which ring_run
+takes off a ring job's time for the ones served inside it. Only the ME reads
+and writes served_cycles */
+#define ME_KT_AUDIO 6 /* the audio slot's job, wherever it's served */
+static inline __attribute__((always_inline)) void me_kt_add(int what, unsigned int cycles);
+static PSP_AIME_ME_SIDE unsigned int served_cycles = 0;
+
 /* build 113: a slot's job run on the ME, with the cache hand-overs around it
 (meLibOnProcess's loop, and psp_me_serve_audio below) */
 static void me_serve(volatile struct me_slot *slot, int *sums)
 {
 	volatile struct me_control *control = CONTROL;
-	unsigned int request = slot->request, start, job_start, job_end, type = slot->type;
+	unsigned int request = slot->request, start, job_start, job_end, type = slot->type, cycles;
 	int ranges;
 
 	start = me_cycles();
@@ -951,8 +959,12 @@ static void me_serve(volatile struct me_slot *slot, int *sums)
 	}
 	else
 		meLibDcacheWritebackInvalidateAll();
-	slot->cycles = me_cycles() - start;
+	cycles = me_cycles() - start;
+	slot->cycles = cycles;
 	slot->job_cycles = job_end - job_start;
+	served_cycles += cycles; /* mc-1e */
+	if (type == ME_JOB_AUDIO)
+		me_kt_add(ME_KT_AUDIO, cycles);
 	control->jobs++;
 	me_count(STASH_SLOT_ENDED);
 	if (control->features & ME_FEATURE_STASH)
@@ -1092,7 +1104,7 @@ is in both */
 #define ME_KT_AI_NEST 4  /* the AI job's yields: ring drain, nested render job */
 #define ME_KT_AI_INNER 5 /* the AI job's inner looks' ring drain, which
 	nested_cycles_total leaves out */
-#define ME_KT 6
+#define ME_KT 7          /* with ME_KT_AUDIO (above me_serve) */
 static struct me_kt
 {
 	unsigned int cycles[ME_KT], runs[ME_KT];
@@ -1553,7 +1565,7 @@ static __attribute__((noinline)) void ring_run(unsigned int index, int on_me, un
 	struct me_ring_request *request = &ring_requests[index];
 	struct me_ring_result *result = &ring_results[index];
 	unsigned int args[ME_RING_ARGS], results[ME_RING_RESULTS], start = 0, job_start = 0, job_end = 0, inputs = 0;
-	unsigned int status = RING_OK, k;
+	unsigned int status = RING_OK, k, served_start = 0;
 	volatile unsigned int *sentinel;
 
 	if (on_me)
@@ -1596,6 +1608,7 @@ static __attribute__((noinline)) void ring_run(unsigned int index, int on_me, un
 	{
 		ME_PRIVATE->in_ring = 1;
 		job_start = me_cycles();
+		served_start = served_cycles;
 	}
 	switch (request->type)
 	{
@@ -1633,17 +1646,21 @@ static __attribute__((noinline)) void ring_run(unsigned int index, int on_me, un
 	}
 	if (on_me)
 	{
+		unsigned int own;
+
 		job_end = me_cycles();
 		ME_PRIVATE->in_ring = 0;
-		/* mc-1c: the job's code, as job_cycles, collected or polled alike */
+		/* mc-1c: the job's code, collected or polled alike; mc-1e: less the
+		slot jobs served in its yields, which count on their own */
+		own = job_end - job_start - (served_cycles - served_start);
 		if (request->type == ME_JOB_PERC_RAYS)
-			me_kt_add(ME_KT_PERC, job_end - job_start);
+			me_kt_add(ME_KT_PERC, own);
 		else if (request->type == ME_JOB_POSES)
-			me_kt_add(ME_KT_POSES, job_end - job_start);
+			me_kt_add(ME_KT_POSES, own);
 		else if (request->type == ME_JOB_POINTS)
-			me_kt_add(ME_KT_POINTS, job_end - job_start);
+			me_kt_add(ME_KT_POINTS, own);
 		else if (request->type == ME_JOB_VISIBILITY)
-			me_kt_add(ME_KT_VIS, job_end - job_start);
+			me_kt_add(ME_KT_VIS, own);
 	}
 	/* a job that ran past its stack allowance may have written over whatever
 	lies below it: reported, and the ring stops */
@@ -5536,8 +5553,9 @@ each of me_kt's entries; nothing where no ME runs (the emulator) */
 void psp_me_kinds_report(unsigned int frames)
 {
 	static const char *const names[ME_KT] = { "perception rays (type 8)", "next tick's poses (type 9)",
-		"points (type 12)", "visibility walk (type 14)", "yields' ring drains and nested render jobs",
-		"inner looks' ring drains (not in the nested total)" };
+		"points (type 12)", "visibility walk (type 14, less jobs served inside)",
+		"yields' ring drains and nested render jobs", "inner looks' ring drains (not in the nested total)",
+		"audio job (slot)" };
 	char text[ME_KT][112];
 	float rate = me_cycles_per_us;
 	int k;
@@ -5548,8 +5566,8 @@ void psp_me_kinds_report(unsigned int frames)
 		snprintf(text[k], sizeof(text[k]), " %s %.0f peak %.0f (%.1f a frame);", names[k],
 			(float)me_kt_main.cycles[k] / rate / frames, (float)me_kt_main.peak[k] / rate,
 			(float)me_kt_main.runs[k] / frames);
-	platform_log("ME: mekinds, the ME's jobs, us a frame over %u frames:%s%s%s%s", frames,
-		text[ME_KT_PERC], text[ME_KT_POSES], text[ME_KT_POINTS], text[ME_KT_VIS]);
+	platform_log("ME: mekinds, the ME's jobs, us a frame over %u frames:%s%s%s%s%s", frames,
+		text[ME_KT_PERC], text[ME_KT_POSES], text[ME_KT_POINTS], text[ME_KT_VIS], text[ME_KT_AUDIO]);
 	platform_log("ME: mekinds, the AI job's own nesting, us a frame over %u frames:%s%s", frames,
 		text[ME_KT_AI_NEST], text[ME_KT_AI_INNER]);
 	memset(me_kt_main.cycles, 0, sizeof(me_kt_main.cycles));
