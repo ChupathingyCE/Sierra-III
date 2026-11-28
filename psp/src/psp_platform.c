@@ -4010,6 +4010,13 @@ void psp_frame_account(unsigned long microseconds)
 		psp_drawsplit_frame(microseconds);
 	}
 #endif
+	{
+		/* "drawstamp" (psp_drawstamp.c): its line, every 300 frames; off, one
+		test */
+		extern void psp_drawstamp_frame(void);
+
+		psp_drawstamp_frame();
+	}
 	/* build 102: another thread crashed: the report stays on the screen */
 	psp_crash_stop_if_crashed();
 	if (log_frame_flush)

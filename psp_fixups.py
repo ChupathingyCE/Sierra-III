@@ -68932,6 +68932,93 @@ def calltrace_store_move_cut(tree):
     return 1
 calltrace_store_move_cut(TREE)
 
+# "drawstamp" (the lab's briefs/draw_main.md task dm-c; psp_drawstamp.c, a keep word; a log only): clock pairs on the
+# text the passes above leave. rasterizer.c's rasterizer_model_draw: from the first shader read to the last GE state
+# call and refldump's test, one pair a part (the detail block of the main menu and chiefdetail is outside).
+# structure_render.c: the from-bitvector build's one call (the other callers of build_dynamic_triangles pass no flags),
+# and structure_render_pass's cursor loop, a pair a material drawn. Last, so no later pass anchors on or splits them
+DRAWSTAMP = [
+("source/rasterizer/rasterizer.c", [
+("\t\tint alpha_tested = 0;\n\n\t\t/* a model shader (soso)",
+ "\t\tint alpha_tested = 0;\n"
+ "\t\textern int psp_drawstamp_on; /* drawstamp (a): opens */\n"
+ "\t\textern unsigned int psp_drawstamp_state_us, psp_drawstamp_parts;\n"
+ "\t\textern unsigned int sceKernelGetSystemTimeLow(void);\n"
+ "\t\tunsigned int psp_stamp = psp_drawstamp_on ? sceKernelGetSystemTimeLow() : 0;\n"
+ "\n\t\t/* a model shader (soso)"),
+("\t\t\t/* on the main menu, the detail map itself over the base that holds\n",
+ "\t\t\tif (psp_drawstamp_on) /* drawstamp (a): closes */\n"
+ "\t\t\t{\n"
+ "\t\t\t\tpsp_drawstamp_state_us += sceKernelGetSystemTimeLow() - psp_stamp;\n"
+ "\t\t\t\tpsp_drawstamp_parts++;\n"
+ "\t\t\t}\n"
+ "\t\t\t/* on the main menu, the detail map itself over the base that holds\n"),
+]),
+("source/structures/structure_render.c", [
+("\t\t\t\tstructure_render_dynamic_triangles_from_bitvector(\n"
+ "\t\t\t\t\tsurface_count,\n\t\t\t\t\tsurface_indices,\n\t\t\t\t\tsurface_flags,\n\t\t\t\t\ttriangles);\n",
+ "#ifdef HALO_PSP\n"
+ "\t\t\t\textern int psp_drawstamp_on; /* drawstamp (b) */\n"
+ "\t\t\t\textern unsigned int psp_drawstamp_build_us;\n"
+ "\t\t\t\textern void psp_drawstamp_built(long const *, int);\n"
+ "\t\t\t\textern unsigned int sceKernelGetSystemTimeLow(void);\n"
+ "\t\t\t\tunsigned int psp_stamp = psp_drawstamp_on ? sceKernelGetSystemTimeLow() : 0;\n"
+ "\n"
+ "#endif\n"
+ "\t\t\t\tstructure_render_dynamic_triangles_from_bitvector(\n"
+ "\t\t\t\t\tsurface_count,\n\t\t\t\t\tsurface_indices,\n\t\t\t\t\tsurface_flags,\n\t\t\t\t\ttriangles);\n"
+ "#ifdef HALO_PSP\n"
+ "\t\t\t\tif (psp_drawstamp_on)\n"
+ "\t\t\t\t{\n"
+ "\t\t\t\t\tpsp_drawstamp_build_us += sceKernelGetSystemTimeLow() - psp_stamp;\n"
+ "\t\t\t\t\tpsp_drawstamp_built(surface_indices, surface_count);\n"
+ "\t\t\t\t}\n"
+ "#endif\n"),
+("\t\t\tdo\n\t\t\t{\n\t\t\t\tsurface_index_cursor++;\n\t\t\t}\n"
+ "\t\t\twhile (surface_index_cursor < surface_index_end\n"
+ "\t\t\t\t&& *surface_index_cursor < material->first_surface_index + material->surface_count);\n",
+ "#ifdef HALO_PSP\n"
+ "\t\t\t{\n"
+ "\t\t\textern int psp_drawstamp_on; /* drawstamp (c) */\n"
+ "\t\t\textern unsigned int psp_drawstamp_cursor_us, psp_drawstamp_loops;\n"
+ "\t\t\textern unsigned int sceKernelGetSystemTimeLow(void);\n"
+ "\t\t\tunsigned int psp_stamp = psp_drawstamp_on ? sceKernelGetSystemTimeLow() : 0;\n"
+ "\n"
+ "#endif\n"
+ "\t\t\tdo\n\t\t\t{\n\t\t\t\tsurface_index_cursor++;\n\t\t\t}\n"
+ "\t\t\twhile (surface_index_cursor < surface_index_end\n"
+ "\t\t\t\t&& *surface_index_cursor < material->first_surface_index + material->surface_count);\n"
+ "#ifdef HALO_PSP\n"
+ "\t\t\tif (psp_drawstamp_on)\n"
+ "\t\t\t{\n"
+ "\t\t\t\tpsp_drawstamp_cursor_us += sceKernelGetSystemTimeLow() - psp_stamp;\n"
+ "\t\t\t\tpsp_drawstamp_loops++;\n"
+ "\t\t\t}\n"
+ "\t\t\t}\n"
+ "#endif\n"),
+]),
+]
+def drawstamp_cut(tree):
+    placed = 0
+    for rel, edits in DRAWSTAMP:
+        # PSP_FIXUPS_CHECK leaves the tree as it was, so rasterizer.c's anchors (an earlier pass's text) aren't there
+        if CHECK_ONLY and rel.endswith("rasterizer.c"):
+            continue
+        path = os.path.join(tree, rel)
+        text = open(path, errors="surrogateescape").read()
+        for old, new in edits:
+            n = text.count(old)
+            if n != 1:
+                check_fail("psp_fixups: drawstamp: %s: %r matches %d times" % (rel, old[:60], n))
+                return 0
+            text = text.replace(old, new)
+            placed += 1
+        if not CHECK_ONLY:
+            open(path, "w", errors="surrogateescape").write(text)
+    print("psp_fixups: drawstamp: %d clock-pair edits (the part's shader state, the level's triangle build, the passes' cursor loop)" % placed)
+    return placed
+drawstamp_cut(TREE)
+
 if CHECK_ONLY:
     for message in count_failures:
         print(message)
