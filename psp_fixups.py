@@ -68932,6 +68932,133 @@ def calltrace_store_move_cut(tree):
     return 1
 calltrace_store_move_cut(TREE)
 
+# "drawstamp2" (the lab's briefs/draw_main.md task dm-e; findings/case_dmd_2026-11-28.md section 2; psp_drawstamp2.c, a
+# keep word; a log only): clock pairs round the objects' walk (A1-A8), the shadow pass (S1-S9) and the level's
+# per-material walk (C1-C7), on the text the passes above leave. At most one pair a call of each part's parent, none a
+# triangle, vertex or surface. Last, so no later pass anchors on or splits them
+DS2_IDS = (["A%d" % k for k in range(1, 9)] + ["S%d" % k for k in range(1, 10)] + ["C%d" % k for k in range(1, 8)])
+
+def ds2_open(ident, cond="psp_ds2_on"):
+    return ("\textern int psp_ds2_on; /* drawstamp2 %s: opens */\n"
+            "\textern unsigned int sceKernelGetSystemTimeLow(void);\n"
+            "\tunsigned int psp_ds2_t_%s = %s ? sceKernelGetSystemTimeLow() : 0;\n" % (ident, ident, cond))
+
+def ds2_close(ident, cond="psp_ds2_on"):
+    return ("\tif (%s) /* drawstamp2 %s: closes */\n"
+            "\t{\n"
+            "\t\textern unsigned int psp_ds2_us[], psp_ds2_n[];\n"
+            "\n"
+            "\t\tpsp_ds2_us[%d] += sceKernelGetSystemTimeLow() - psp_ds2_t_%s;\n"
+            "\t\tpsp_ds2_n[%d]++;\n"
+            "\t}\n" % (cond, ident, DS2_IDS.index(ident), ident, DS2_IDS.index(ident)))
+
+# ("stmt", id, text before, the statement's start): the statement (to its first ";\n") and its pair in one block, so an
+# if above it governs the pair and the call together. ("open"/"close", id, anchor, cond): before the anchor.
+# ("body", id, signature): a whole function whose one return is its last line. ("swap", id, old, new)
+DS2_FP = "render_object_shadow_begin(data, darkness_fraction * size_fraction)"
+DRAWSTAMP2 = [
+("source/render/render.c", [
+    ("stmt", "A1", "if (!(psp_bench_skip & PSP_SKIP_MODELS))", '(PSP_STEP("render_objects"), render_objects());'),
+    ("stmt", "C1", '(PSP_STEP("HALO_PERF_RENDER_PART"), HALO_PERF_RENDER_PART(_halo_perf_render_world));',
+     '(PSP_STEP("structure_render_preprocess"), structure_render_preprocess());'),
+    ("stmt", "C2", "if (!(psp_bench_skip & PSP_SKIP_LEVEL))",
+     '(PSP_STEP("structure_render_lightmaps"), structure_render_lightmaps());'),
+    ("stmt", "S1", "if (!(psp_bench_skip & PSP_SKIP_MODELS))",
+     '(PSP_STEP("render_object_shadows"), render_object_shadows());'),
+]),
+("source/render/render_objects.c", [
+    ("stmt", "A8", "", '(PSP_STEP("rasterizer_models_begin"), rasterizer_models_begin(FALSE));'),
+    ("stmt", "A2", "", '(PSP_STEP("find_rendered_objects"), find_rendered_objects());'),
+    ("stmt", "A3", "", '(PSP_STEP("first_person_weapon_draw"), first_person_weapon_draw());'),
+    ("stmt", "A8", "", '(PSP_STEP("rasterizer_models_end"), rasterizer_models_end());'),
+    ("stmt", "S2", "data.shadow = TRUE;", "process_rendered_objects(&data);"),
+    ("stmt", "A4", "", "psp_reuse = psp_light_first();"),
+    ("open", "A5", "\tfor (rendered_object_index = 0;\n\t\trendered_object_index < render_object_globals.rendered_object_count;\n"
+     "\t\trendered_object_index++)\n\t{\n\t\tdata->object_index =", "psp_ds2_on && !data->shadow"),
+    ("close", "A5", "#ifdef HALO_PSP\n\tpsp_walk_root = -1;", "psp_ds2_on && !data->shadow"),
+    ("stmt", "A6", 'PSP_STEP("render_model (the object\'s model)");', "render_model("),
+    ("stmt", "A6", "psp_rso_object = record->rso_object;", "render_model("),
+    ("stmt", "S5", 'PSP_STEP("render_model (the object\'s shadow)");', "render_model("),
+    ("swap", "S3", "if (%s)" % DS2_FP,
+     "if (({\n\tboolean psp_ds2_begun;\n" + ds2_open("S3") + "\tpsp_ds2_begun = " + DS2_FP + ";\n" + ds2_close("S3") +
+     "\tpsp_ds2_begun;\n\t}))"),
+    ("stmt", "S4", "", '(PSP_STEP("render_object_list"), render_object_list(data, NULL, data->object_index));\n'
+     '\t\t\t\t\t(PSP_STEP("render_object_shadow_end")'),
+    ("stmt", "S6", "", '(PSP_STEP("render_object_shadow_end"), render_object_shadow_end(data));'),
+    ("stmt", "S7", "data->shadow_matrix.position.z;", "structure_render_shadow("),
+]),
+("source/models/models.c", [
+    ("open", "A7", "#ifdef HALO_PSP\n\t\t/* psp_fixups.py (FIXES_FARLEVEL) */", "psp_ds2_on"),
+    ("close", "A7", '\t\tPSP_STEP("render_model: model end");', "psp_ds2_on"),
+]),
+("source/structures/structure_render.c", [
+    ("stmt", "C3", "", "psp_ge_window_begin(&camera->position.x,"),
+    ("stmt", "C4", "rasterizer_environment_lightmaps_begin();", "structure_render_pass("),
+    ("stmt", "C5", "", "rasterizer_environment_lightmaps_begin();"),
+    ("stmt", "C5", "", "rasterizer_environment_lightmaps_end();"),
+    ("stmt", "S8", "", "dynamic_triangles_index = structure_render_build_dynamic_triangles(\n\t\tsurface_indices,\n"
+     "\t\tsurface_count,\n\t\tNULL);"),
+    ("stmt", "S9", "profile_enter(render_structure_shadows_draw_section);", "structure_render_pass("),
+]),
+("source/rasterizer/rasterizer.c", [
+    ("body", "C6", "void rasterizer_environment_lightmap_begin(\n"),
+    ("body", "C7", "void rasterizer_environment_lightmap_draw(\n"),
+    ("body", "C6", "void rasterizer_environment_lightmap_end(\n"),
+]),
+]
+
+def ds2_edit(text, edit):
+    """one edit on text: the new text and None, or None and why not"""
+    kind, ident = edit[0], edit[1]
+    if kind in ("open", "close", "swap"):
+        anchor = edit[2]
+        if text.count(anchor) != 1:
+            return None, "%r matches %d times" % (anchor[:60], text.count(anchor))
+        k = text.index(anchor)
+        if kind == "swap":
+            return text[:k] + edit[3] + text[k + len(anchor):], None
+        made = (ds2_open if kind == "open" else ds2_close)(ident, edit[3])
+        return text[:k] + made + text[k:], None
+    if kind == "body":
+        if text.count(edit[2]) != 1:
+            return None, "%r matches %d times" % (edit[2][:60], text.count(edit[2]))
+        a = text.index("\n{\n", text.index(edit[2])) + 3
+        b = text.index("\treturn;\n}", a)
+        if "\n}\n" in text[a:b]:
+            return None, "%r: no last return" % edit[2][:60]
+        return text[:a] + ds2_open(ident) + text[a:b] + ds2_close(ident) + text[b:], None
+    before, start = edit[2], edit[3]
+    # the statement's start, with nothing but blank and preprocessor lines between it and the text before
+    gap = r"(?:[ \t]*\n|#[^\n]*\n)*[ \t]*"
+    found = [m for m in re.finditer((re.escape(before) + gap if before else r"(?<![A-Za-z0-9_ ])[ \t]*") + "(" +
+                                    re.escape(start) + ")", text)]
+    if len(found) != 1:
+        return None, "%r after %r matches %d times" % (start[:60], before[:40], len(found))
+    k = found[0].start(1)
+    end = text.index(";\n", k) + 2
+    return (text[:k] + "{\n" + ds2_open(ident) + "\t" + text[k:end] + ds2_close(ident) + "\t}\n" + text[end:]), None
+
+def drawstamp2_cut(tree):
+    placed = 0
+    for rel, edits in DRAWSTAMP2:
+        # PSP_FIXUPS_CHECK leaves the tree as it was, so an earlier pass's text isn't there to anchor on
+        if CHECK_ONLY:
+            continue
+        path = os.path.join(tree, rel)
+        text = open(path, errors="surrogateescape").read()
+        for edit in edits:
+            made, why = ds2_edit(text, edit)
+            if made is None:
+                check_fail("psp_fixups: drawstamp2: %s %s: %s" % (rel, edit[1], why))
+                return 0
+            text = made
+            placed += 1
+        open(path, "w", errors="surrogateescape").write(text)
+    if not CHECK_ONLY:
+        print("psp_fixups: drawstamp2: %d clock-pair edits (the objects' walk, the shadow pass, the level's per-material walk)" % placed)
+    return placed
+drawstamp2_cut(TREE)
+
 if CHECK_ONLY:
     for message in count_failures:
         print(message)

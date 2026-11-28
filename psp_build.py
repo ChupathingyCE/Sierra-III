@@ -153,7 +153,7 @@ ONLINE_GAMES_UNITS = ("source/interface/ui_widget.c", "source/interface/ui_widge
 def desktop_unit(rel):
     return rel.startswith(CHUPA_DESKTOP_UNITS) and not (MULTIPLAYER and rel in CHUPA_MULTIPLAYER_KEEPS)
 
-PSP_FILES = ["psp_memory", "psp_pad", "psp_platform", "psp_sdl", "psp_libc", "psp_ge", "psp_tex", "psp_vfpu", "psp_menu", "psp_geo", "psp_anim", "psp_debug", "psp_me", "psp_trace", "psp_crash", "psp_scratch", "psp_watch", "psp_frametrace", "psp_loading", "psp_bakecheck", "psp_metrics", "psp_lanetrace", "psp_vfpu_quat", "psp_vfputrig", "psp_sleepguard", "psp_sleep", "psp_vme", "psp_rloop", "psp_askcensus"]
+PSP_FILES = ["psp_memory", "psp_pad", "psp_platform", "psp_sdl", "psp_libc", "psp_ge", "psp_tex", "psp_vfpu", "psp_menu", "psp_geo", "psp_anim", "psp_debug", "psp_me", "psp_trace", "psp_crash", "psp_scratch", "psp_watch", "psp_frametrace", "psp_loading", "psp_bakecheck", "psp_metrics", "psp_lanetrace", "psp_vfpu_quat", "psp_vfputrig", "psp_sleepguard", "psp_sleep", "psp_vme", "psp_rloop", "psp_askcensus", "psp_drawstamp2"]
 # the bake format this build reads (bake/bake.py's BAKE_FORMAT): one number
 # for the bake's stamp and the game's check (psp/src/psp_bakecheck.c)
 _bake_format = re.search(r"^BAKE_FORMAT = (\d+)$", open(os.path.join(HERE, "bake", "bake.py"), encoding="utf-8").read(), re.M)
