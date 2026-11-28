@@ -4117,6 +4117,7 @@ static struct psp_s1a_slot
 	struct psp_s1a_inputs inputs;
 } psp_s1a_slots[PSP_S1A_SLOTS];
 static struct psp_s1a_slot *psp_s1a_cur;
+static int psp_s1a_tag; /* (a)'s biped, kept: psp_s1_tag is one global the other classes' adds set too */
 static unsigned long psp_s1a_mark, psp_s1b_mark, psp_s1a_full;
 static int psp_s1b_same;
 static struct location psp_s1b_location;
@@ -4238,7 +4239,8 @@ void psp_s1a_open(long biped_index, struct biped_datum *biped)
 	}
 	if (psp_s1_on)
 	{
-		psp_s1_tag(PSP_S1_WHO(biped));
+		psp_s1a_tag = PSP_S1_WHO(biped);
+		psp_s1_tag(psp_s1a_tag);
 		psp_s1a_cur = slot;
 		psp_s1a_mark = psp_kt_clock();
 	}
@@ -4258,7 +4260,8 @@ void psp_s1a_resume(long biped_index, struct biped_datum *biped)
 
 		if (slot->biped_index == biped_index && slot->time == time)
 		{
-			psp_s1_tag(PSP_S1_WHO(biped));
+			psp_s1a_tag = PSP_S1_WHO(biped);
+			psp_s1_tag(psp_s1a_tag);
 			psp_s1a_cur = slot;
 			psp_s1a_mark = psp_kt_clock();
 			return;
@@ -4269,7 +4272,12 @@ void psp_s1a_resume(long biped_index, struct biped_datum *biped)
 void psp_s1a_close(int stage)
 {
 	if (psp_s1a_cur && psp_s1a_cur->equal)
-		psp_s1_add(PSP_S1_A, stage, psp_kt_clock() - psp_s1a_mark);
+	{
+		unsigned long cycles = psp_kt_clock() - psp_s1a_mark;
+
+		psp_s1_tag(psp_s1a_tag);
+		psp_s1_add(PSP_S1_A, stage, cycles);
+	}
 	psp_s1a_cur = NULL;
 }
 
