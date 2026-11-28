@@ -228,3 +228,18 @@ What it says for the design:
 - **Switch:** under `PSP_BOXPOSING`, keep word `posedecodemask` (off by default until proven), `posedecodecheck` decodes the whole set beside the masked one and compares every made node bit for bit, logging the first 8 differences.
 - **Proof:** `posedecodecheck` clean, then play and both seeds identical with the mask on against off, on d20_play1 (identity) and b30_leg1 (B91's X/Y rule until B91 is fixed), plus the late-make count.
 - **Price:** the posesteps pair again (the same two refs' kind, mask off and on, d20's opening), one run a side.
+
+## Scratchpad slot
+
+_sp-plan (1) (Sheepdog01 2026-11-27 02:1x: "Each box's page states its scratchpad budget, the way it states heap and eDRAM"). The builder, 2026-11-28 04:2x, on paper; file:line at cc828579. **Posing is being rewritten: this is sized on this page's design (§2, §3, §9), not on today's code.** Nothing is built and nothing is claimed as a gain; the PSP prices it, whole frame._
+
+- **Pass:** posing's pass over objects in the parallel phase (§3), main CPU only. Today posing runs inside each object's update, so no such pass exists yet to load a slot.
+- **Loads / drops:** taken at the pass's start; refilled for each object (the walk's plan kept while the definition repeats); dropped at the pass's end.
+- **Holds, one object at a time** [D]:
+  - its decoded orientations, 32 B a node (`psp/src/box_posing.h:22`): 832 B for a 26-node biped, 2,048 B at the 64-node limit (`box_posing.h:16`);
+  - its definition's walk and place, `struct psp_box_plan` (`psp/src/psp_boxposing.c:30-39`, with `box_posing.h:25-32,74-79`): 192 B;
+  - the parent's node matrix if attached, 52 B (`box_posing.h:20`).
+- **Slot:** 1,076 B for a 26-node biped, **2,292 B at 64 nodes** (the sums of the lines above) [D]. It fits the 6,656 B held (`psp/src/psp_scratch.c:365`).
+- **Left in RAM:** the node block (52 B a node, `box_posing.h:20`; 1.35 KB for 26, `docs/box_posing.md:44`) stays where the drawing reads it (§2). All 128 plans (`psp_boxposing.c:20`) are 24,576 B, more than the whole 16 KB (`psp_scratch.c:42`).
+- **Open for the ranking:** §9's decode plan per animation (median 2.8-3.2 KB, 90th percentile 6.1-7.7 KB [D], `docs/box_posing.md:196`) is a second candidate. It is not in the slot's bytes, and its large cases don't fit beside them in the held room. No misses-per-byte count is given here.
+- **What must change:** the allocator hands out fixed pieces at start-up, never shared in time (`psp_scratch.c:15-17`). §3's "nothing for the scratchpad" (`docs/box_posing.md:54`) was about shared state; this slot is for what the pass itself touches.
