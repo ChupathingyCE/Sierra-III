@@ -10630,11 +10630,119 @@ static __attribute__((noinline)) void slant_collect(unsigned int ticket, const s
 		total[b] += (long)((results[b >> 1] >> ((b & 1) * 16)) & 0xFFFFu);
 }
 
+#ifdef PSP_D2BHOLD
+/* D2b (docs/box_draw_main.md §4.3d item 2): each BSP surface's slant bucket
+held while the eye stays in one 1-unit chunk, so a held triangle costs a
+byte load in place of its three corners. A byte a surface (a halfword id
+reaches 65,535): D2B_UNFILLED, or the bucket, with D2B_FAR_KNOWN when it
+was worked out with the far test on (a draw that can't be far masks the
+far bit off; one that can and finds a byte without it works it out again).
+Touched only on the Media Engine (psp_on_me()), so the table never crosses
+the two caches: the ME's job ends writing its cache back, the next starts
+with it dropped. "d2bmain": the main CPU holds too, for an emulator's
+looks check only (on a PSP whose replay is the ME's, both caches would hold
+the table). Cleared when the eye leaves its chunk, the BSP changes
+(psp_ge_forget_level's serial) or detail_far_squared moves, over the ids
+stored since the last clear only. Not exact by design: a held bucket is the
+one its fill chose (§4.3c, the look) */
+#define D2B_SURFACES 65536
+#define D2B_UNFILLED 0xFFu
+#define D2B_FAR_KNOWN 0x80u
+static unsigned char d2b_held[D2B_SURFACES] __attribute__((aligned(64)));
+/* the kept triangles' ids, when the classify drops some (in the kept order) */
+static unsigned short d2b_kept_ids[ANGLE_TRIANGLES] __attribute__((aligned(64)));
+static struct
+{
+	int ready, chunk[3];
+	unsigned int serial;
+	float far_squared;
+	unsigned int high;
+} d2b_state __attribute__((aligned(64)));
+static PSP_MAIN_SIDE unsigned int d2b_level_serial = 0;
+static PSP_MAIN_SIDE int d2b_main = -1;
+
+/* a hold here: always on the ME; on the main CPU only with "d2bmain" */
+static inline int d2b_here(void)
+{
+	if (psp_on_me())
+		return 1;
+	if (d2b_main < 0)
+		d2b_main = psp_keep("d2bmain");
+	return d2b_main;
+}
+
+/* the eye's chunk, a whole unit, without a library call */
+static inline int d2b_unit(float x)
+{
+	int i = (int)x;
+
+	return (float)i > x ? i - 1 : i;
+}
+
+/* the table cleared if the eye, the BSP or (for a draw that can be far) the far distance moved */
+static __attribute__((noinline)) void d2b_check(int far_possible)
+{
+	int chunk[3] = { d2b_unit(camera_eye[0]), d2b_unit(camera_eye[1]), d2b_unit(camera_eye[2]) };
+
+	if (d2b_state.ready && chunk[0] == d2b_state.chunk[0] && chunk[1] == d2b_state.chunk[1] &&
+		chunk[2] == d2b_state.chunk[2] && d2b_state.serial == d2b_level_serial &&
+		(!far_possible || d2b_state.far_squared == detail_far_squared))
+		return;
+	memset(d2b_held, (int)D2B_UNFILLED, d2b_state.ready ? d2b_state.high : D2B_SURFACES);
+	d2b_state.ready = 1;
+	d2b_state.chunk[0] = chunk[0];
+	d2b_state.chunk[1] = chunk[1];
+	d2b_state.chunk[2] = chunk[2];
+	d2b_state.serial = d2b_level_serial;
+	d2b_state.far_squared = detail_far_squared;
+	d2b_state.high = 0;
+}
+
+/* angle_sort's loop over held buckets: no slant hand-over (the ME's own
+draw has none to give, and a held draw is mostly loads) */
+static __attribute__((noinline)) void d2b_loop(const struct ge_vertex *stream, const unsigned short *indices,
+	const unsigned short *ids, long count, int far_possible, long *total)
+{
+	float ex = level_eye[0], ey = level_eye[1], ez = level_eye[2];
+	unsigned int far_known = far_possible ? D2B_FAR_KNOWN : 0u, high;
+	long t;
+
+	d2b_check(far_possible);
+	high = d2b_state.high;
+	for (t = 0; t < count; t++)
+	{
+		unsigned int id = ids[t], held = d2b_held[id];
+		int bucket;
+
+		if (held == D2B_UNFILLED || (far_possible && !(held & D2B_FAR_KNOWN)))
+		{
+			bucket = angle_bucket_one(stream, indices + 3 * t, ex, ey, ez, far_possible, detail_far_squared);
+			d2b_held[id] = (unsigned char)((unsigned int)bucket | far_known);
+			if (id >= high)
+				high = id + 1;
+		}
+		else
+		{
+			bucket = (int)(held & ~D2B_FAR_KNOWN);
+			if (!far_possible && bucket >= ANGLE_BUCKETS)
+				bucket -= ANGLE_BUCKETS;
+		}
+		angle_bucket_of[t] = (unsigned char)bucket;
+		total[bucket]++;
+	}
+	d2b_state.high = high;
+}
+#define D2B_SORT_PARAM , const unsigned short *ids
+#else
+#define D2B_SORT_PARAM
+#endif
+
 /* sorts a draw's triangles by slant; returns the list to draw (the given
 one, or a copy in the display list sorted by bucket). lowest and highest:
-the draw's vertex range */
+the draw's vertex range. D2b: ids, the triangles' BSP surface ids in the
+list's order (or NULL: today's loop) */
 static const unsigned short *angle_sort(const struct ge_vertex *stream, const unsigned short *indices, long count,
-	int far_possible, unsigned int lowest, unsigned int highest)
+	int far_possible, unsigned int lowest, unsigned int highest D2B_SORT_PARAM)
 {
 	long t, total[SORT_BUCKETS];
 	int b, used = 0;
@@ -10655,6 +10763,16 @@ static const unsigned short *angle_sort(const struct ge_vertex *stream, const un
 	if (detail_all_far)
 		far_possible = 0;
 	memset(total, 0, sizeof(total));
+#ifdef PSP_D2BHOLD
+	if (ids)
+	{
+		unsigned int loop_start = ge_clock();
+
+		d2b_loop(stream, indices, ids, count, far_possible, total);
+		angle_loop_us += ge_clock() - loop_start;
+	}
+	else
+#endif
 	{
 		unsigned int loop_start = ge_clock(), ticket = 0;
 		/* off: one test a draw (me_slant is -1 until the first draw decides) */
@@ -11185,7 +11303,7 @@ static void level_glow_pass(const struct level_stream *stream, const unsigned sh
 
 static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_vertices, int vertex_count,
 	const unsigned short *indices, long triangle_count, unsigned int color,
-	unsigned int base_key, unsigned int lightmap_key, int alpha_tested)
+	unsigned int base_key, unsigned int lightmap_key, int alpha_tested D2B_IDS_PARAM)
 {
 	const unsigned short *draw = indices;
 	const unsigned short *const engine_indices = indices;
@@ -11221,8 +11339,16 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 		{
 			indices = draw = swapped;
 			vertex_count = stream->count;
+#ifdef PSP_D2BHOLD
+			surface_ids = NULL; /* the bake's pieces have no surface ids */
+#endif
 		}
 	}
+#ifdef PSP_D2BHOLD
+	/* D2b: held buckets only where angle_sort sorts and this CPU may hold */
+	if (surface_ids && (triangle_count > ANGLE_TRIANGLES || !d2b_here()))
+		surface_ids = NULL;
+#endif
 	for (index = 0; index < triangle_count * 3; index++)
 	{
 		unsigned int vertex = indices[index];
@@ -11309,6 +11435,10 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 				kept[3 * kept_count] = triangle[0];
 				kept[3 * kept_count + 1] = triangle[1];
 				kept[3 * kept_count + 2] = triangle[2];
+#ifdef PSP_D2BHOLD
+				if (surface_ids)
+					d2b_kept_ids[kept_count] = surface_ids[index];
+#endif
 			}
 			kept_count++;
 			continue;
@@ -11321,6 +11451,10 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 			if (!kept)
 				return;
 			memcpy(kept, indices, kept_count * 3 * sizeof(unsigned short));
+#ifdef PSP_D2BHOLD
+			if (surface_ids)
+				memcpy(d2b_kept_ids, surface_ids, kept_count * sizeof(unsigned short));
+#endif
 			draw = kept;
 		}
 		if (bits[0] & bits[1] & bits[2] & (CODE_PLANES | CODE_PAST))
@@ -11428,7 +11562,13 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 	{
 		unsigned int angle_start = ge_clock();
 
+#ifdef PSP_D2BHOLD
+		/* the ids in the list's order: the run's own, or the kept ones' */
+		draw = angle_sort(stream->base, draw, kept_count, far_possible, lowest, highest,
+			!surface_ids ? NULL : kept ? d2b_kept_ids : surface_ids);
+#else
 		draw = angle_sort(stream->base, draw, kept_count, far_possible, lowest, highest);
+#endif
 		angle_us += ge_clock() - angle_start;
 		/* build 89: the pieces cut at the eye are near by definition: with
 		every kept triangle past the detail fade, the detail passes were
@@ -11783,7 +11923,7 @@ void psp_ge_draw_level(const void *vertices, const void *lightmap_vertices, int 
 	unsigned int start = ge_clock();
 
 	ge_category = GE_SKIP_LEVEL;
-	psp_ge_draw_level_body(vertices, lightmap_vertices, vertex_count, indices, triangle_count, color, base_key, lightmap_key, alpha_tested);
+	psp_ge_draw_level_body(vertices, lightmap_vertices, vertex_count, indices, triangle_count, color, base_key, lightmap_key, alpha_tested D2B_IDS_ARG);
 	ge_category = 0;
 	ge_entry_us[0] += ge_clock() - start;
 }
@@ -17525,6 +17665,9 @@ void psp_ge_forget_level(void)
 	overlay_backing_forget();
 	stream_bytes = 0;
 	stream_waiting_count = 0;
+#ifdef PSP_D2BHOLD
+	d2b_level_serial++; /* D2b: the held buckets belong to the last BSP */
+#endif
 	platform_log("GE: the level's vertex copies let go (a new BSP or map)");
 }
 
