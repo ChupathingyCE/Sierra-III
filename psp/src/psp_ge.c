@@ -26914,7 +26914,12 @@ static void frame_end_show(void)
 		win_after_us += sceKernelGetSystemTimeLow() - mark;
 	}
 	if (replay_kinds_on)
+	{
+		extern void psp_me_kinds_fold(void);
+
 		replay_kinds_fold(inflight_me_out); /* mc-1b: the frame's boundary for mekinds' peaks */
+		psp_me_kinds_fold(); /* mc-1c */
+	}
 	if (++frames == 1 || frames % 300 == 0)
 	{
 		platform_log("GE: sky drawn %lu times, %lu solid parts; %lu see-through draws, %lu dropped; %lu sprites; %lu HUD quads, %lu characters, %lu blips; skinned parts %lu (%lu batches, %lu KB, %lu left rigid); level see-through %lu; decals %lu; flashes %lu; shadows %lu begun, %lu requests, %lu draws; light draws %lu (%lu with a projected cone, %lu triangles outside cones skipped, %lu split near the light, %lu pieces added); bending triangles cut at the near plane %lu (%lu pieces); two-sided parts %lu; models at the near plane %lu (%lu triangles left out)",
@@ -27204,6 +27209,12 @@ static void frame_end_show(void)
 			ge_kinds_report(); /* build 103 */
 			CENSUS(census_report());
 			replay_kinds_report(300); /* mekinds */
+			if (replay_kinds_on)
+			{
+				extern void psp_me_kinds_report(unsigned int frames);
+
+				psp_me_kinds_report(300); /* mc-1c */
+			}
 			ge_reads_report(frames); /* build 115 */
 			vm_report(); /* build 116 */
 			/* build 112: every 300 frames, with the skinning plans' heap */

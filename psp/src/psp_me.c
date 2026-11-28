@@ -204,6 +204,8 @@ being mixed at its looks: the replay's look and the AI job's look mix one
 only once it has waited AUDIO_HOLD_DUE_CYCLES (a block that would run dry
 otherwise), and the main CPU's wait for an audio job is AUDIO_HOLD_WAIT_US */
 #define ME_FEATURE_AUDIO_HOLD 131072u
+/* "mekinds": the ME times me_kt's jobs (mc-1c) */
+#define ME_FEATURE_KINDS 262144u
 
 #if PSP_MEXEC
 /* The copy's table: tools/mexec.py writes it into the linked program
@@ -1077,6 +1079,60 @@ time and again in the ring's or the render slot's, so the busy share takes
 it off once (psp_me_report). Read through the uncached view, as nested_features is */
 static PSP_AIME_ME_SIDE unsigned int nested_cycles_total = 0;
 
+/* mc-1c (mekinds, log only): the ME's time for the jobs that had no total of
+their own, and the AI job's own nesting. The ME adds to cumulative words and
+writes their line back; the main CPU only reads them, uncached, at each
+frame's end (psp_me_kinds_fold), so a job's time counts in the frame it ends
+in. The nesting overlaps the ring jobs' entries: a ring job the AI job drains
+is in both */
+#define ME_KT_PERC 0     /* ring type 8, perception's rays */
+#define ME_KT_POSES 1    /* ring type 9, the next tick's poses */
+#define ME_KT_POINTS 2   /* ring type 12, the points job */
+#define ME_KT_VIS 3      /* ring type 14, the visibility walk */
+#define ME_KT_AI_NEST 4  /* the AI job's yields: ring drain, nested render job */
+#define ME_KT_AI_INNER 5 /* the AI job's inner looks' ring drain, which
+	nested_cycles_total leaves out */
+#define ME_KT 6
+static struct me_kt
+{
+	unsigned int cycles[ME_KT], runs[ME_KT];
+} __attribute__((aligned(64))) me_kt PSP_AIME_ME_SIDE = { { 0 }, { 0 } };
+
+static inline __attribute__((always_inline)) void me_kt_add(int what, unsigned int cycles)
+{
+	if (!(CONTROL->features & ME_FEATURE_KINDS))
+		return;
+	me_kt.cycles[what] += cycles;
+	me_kt.runs[what]++;
+	lines_writeback((unsigned int)&me_kt, sizeof(me_kt));
+}
+
+/* the main CPU's side: since the last report */
+static struct
+{
+	unsigned int seen_cycles[ME_KT], seen_runs[ME_KT];
+	unsigned long long cycles[ME_KT];
+	unsigned int runs[ME_KT], peak[ME_KT];
+} me_kt_main;
+
+void psp_me_kinds_fold(void)
+{
+	volatile struct me_kt *t = UNCACHED(&me_kt);
+	int k;
+
+	for (k = 0; k < ME_KT; k++)
+	{
+		unsigned int cycles = t->cycles[k], runs = t->runs[k], spent = cycles - me_kt_main.seen_cycles[k];
+
+		me_kt_main.cycles[k] += spent;
+		me_kt_main.runs[k] += runs - me_kt_main.seen_runs[k];
+		if (spent > me_kt_main.peak[k])
+			me_kt_main.peak[k] = spent;
+		me_kt_main.seen_cycles[k] = cycles;
+		me_kt_main.seen_runs[k] = runs;
+	}
+}
+
 void psp_me_yield(void)
 {
 	volatile struct me_private *p;
@@ -1109,7 +1165,10 @@ void psp_me_yield(void)
 
 			p->ring_popped = me_ring_drain(p->ring_popped, &last_look,
 				aime_now ? &SLOT(ME_SLOT_AI)->args[ME_JOB_ARGS - 1] : NULL);
-			nested_cycles_total += me_cycles() - begun;
+			begun = me_cycles() - begun;
+			nested_cycles_total += begun;
+			if (aime_now)
+				me_kt_add(ME_KT_AI_NEST, begun); /* mc-1c */
 		}
 		p->ring_last_look = last_look;
 		if (aime_now)
@@ -1158,6 +1217,8 @@ void psp_me_yield_slots(void)
 		me_serve(slot, ME_AUDIO_SUMS);
 		ran = me_cycles() - begun;
 		nested_cycles_total += ran;
+		if (aime_now)
+			me_kt_add(ME_KT_AI_NEST, ran); /* mc-1c */
 		nested_renders++;
 		if (ran > nested_worst)
 			nested_worst = ran;
@@ -1574,6 +1635,15 @@ static __attribute__((noinline)) void ring_run(unsigned int index, int on_me, un
 	{
 		job_end = me_cycles();
 		ME_PRIVATE->in_ring = 0;
+		/* mc-1c: the job's code, as job_cycles, collected or polled alike */
+		if (request->type == ME_JOB_PERC_RAYS)
+			me_kt_add(ME_KT_PERC, job_end - job_start);
+		else if (request->type == ME_JOB_POSES)
+			me_kt_add(ME_KT_POSES, job_end - job_start);
+		else if (request->type == ME_JOB_POINTS)
+			me_kt_add(ME_KT_POINTS, job_end - job_start);
+		else if (request->type == ME_JOB_VISIBILITY)
+			me_kt_add(ME_KT_VIS, job_end - job_start);
 	}
 	/* a job that ran past its stack allowance may have written over whatever
 	lies below it: reported, and the ring stops */
@@ -3006,7 +3076,7 @@ int psp_me_start(void)
 		(psp_keep("menestrender") ? ME_FEATURE_NEST_RENDER : 0u) |
 		(psp_keep("aimevisleft") ? ME_FEATURE_AIME_VIS_LEFT : 0u) |
 		(psp_keep("aimeaudiolook") ? ME_FEATURE_AUDIO_LOOK : 0u) | (psp_keep("audiohold") ? ME_FEATURE_AUDIO_HOLD : 0u) | (me_mexec_wanted() ? ME_FEATURE_MEXEC : 0u) |
-		(psp_keep("ticksched") && ring_on ? ME_FEATURE_TICKSCHED : 0u);
+		(psp_keep("ticksched") && ring_on ? ME_FEATURE_TICKSCHED : 0u) | (psp_keep("mekinds") ? ME_FEATURE_KINDS : 0u);
 	if ((control->features & ME_FEATURE_AUDIO_HOLD) && audio_hold_flag < 0)
 		audio_hold_flag = sceKernelCreateEventFlag("audiohold", 0, 0, NULL);
 	tick_slice_set(control);
@@ -3714,7 +3784,10 @@ void psp_me_yield_inner(int ring)
 		psp_aime_step(7);
 	popped = p->ring_popped;
 	last_look = p->ring_last_look;
+	now = me_cycles();
 	p->ring_popped = me_ring_drain(popped, &last_look, &SLOT(ME_SLOT_AI)->args[ME_JOB_ARGS - 1]);
+	if (aime_now)
+		me_kt_add(ME_KT_AI_INNER, me_cycles() - now); /* mc-1c */
 	p->ring_last_look = last_look;
 	INNER_STATS->ring_jobs += p->ring_popped - popped;
 	psp_aime_job_now[0] = aime_now;
@@ -5456,6 +5529,32 @@ measured, so ME times can't be given) */
 float psp_me_cycles_per_us(void)
 {
 	return me_cycles_per_us;
+}
+
+/* mc-1c: ME us a frame (mean), the largest one frame's and jobs a frame, for
+each of me_kt's entries; nothing where no ME runs (the emulator) */
+void psp_me_kinds_report(unsigned int frames)
+{
+	static const char *const names[ME_KT] = { "perception rays (type 8)", "next tick's poses (type 9)",
+		"points (type 12)", "visibility walk (type 14)", "yields' ring drains and nested render jobs",
+		"inner looks' ring drains (not in the nested total)" };
+	char text[ME_KT][112];
+	float rate = me_cycles_per_us;
+	int k;
+
+	if (me_state != 1 || rate <= 0.0f || !frames)
+		return;
+	for (k = 0; k < ME_KT; k++)
+		snprintf(text[k], sizeof(text[k]), " %s %.0f peak %.0f (%.1f a frame);", names[k],
+			(float)me_kt_main.cycles[k] / rate / frames, (float)me_kt_main.peak[k] / rate,
+			(float)me_kt_main.runs[k] / frames);
+	platform_log("ME: mekinds, the ME's jobs, us a frame over %u frames:%s%s%s%s", frames,
+		text[ME_KT_PERC], text[ME_KT_POSES], text[ME_KT_POINTS], text[ME_KT_VIS]);
+	platform_log("ME: mekinds, the AI job's own nesting, us a frame over %u frames:%s%s", frames,
+		text[ME_KT_AI_NEST], text[ME_KT_AI_INNER]);
+	memset(me_kt_main.cycles, 0, sizeof(me_kt_main.cycles));
+	memset(me_kt_main.runs, 0, sizeof(me_kt_main.runs));
+	memset(me_kt_main.peak, 0, sizeof(me_kt_main.peak));
 }
 
 #if PSP_MUSIC
