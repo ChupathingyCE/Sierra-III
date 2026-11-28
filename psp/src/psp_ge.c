@@ -10658,6 +10658,15 @@ static struct
 	float far_squared;
 	unsigned int high;
 } d2b_state __attribute__((aligned(64)));
+/* §4.3d item 3, under "timerson" (psp_timers_off clear): the held draws, their
+triangles held and filled (a far re-fill counts as filled), and the table's
+clears since the last report. Written by the side that holds (the ME; the
+main CPU under "d2bmain") on a line of its own; read and zeroed only while
+no frame is out with the ME, as mekinds' replay_kinds */
+static struct
+{
+	unsigned long draws, held, filled, clears;
+} d2b_counts __attribute__((aligned(64)));
 static PSP_MAIN_SIDE unsigned int d2b_level_serial = 0;
 static PSP_MAIN_SIDE int d2b_main = -1;
 
@@ -10688,6 +10697,8 @@ static __attribute__((noinline)) void d2b_check(int far_possible)
 		chunk[2] == d2b_state.chunk[2] && d2b_state.serial == d2b_level_serial &&
 		(!far_possible || d2b_state.far_squared == detail_far_squared))
 		return;
+	if (!psp_timers_off)
+		d2b_counts.clears++;
 	memset(d2b_held, (int)D2B_UNFILLED, d2b_state.ready ? d2b_state.high : D2B_SURFACES);
 	d2b_state.ready = 1;
 	d2b_state.chunk[0] = chunk[0];
@@ -10704,7 +10715,7 @@ static __attribute__((noinline)) void d2b_loop(const struct ge_vertex *stream, c
 	const unsigned short *ids, long count, int far_possible, long *total)
 {
 	float ex = level_eye[0], ey = level_eye[1], ez = level_eye[2];
-	unsigned int far_known = far_possible ? D2B_FAR_KNOWN : 0u, high;
+	unsigned int far_known = far_possible ? D2B_FAR_KNOWN : 0u, high, filled = 0;
 	long t;
 
 	d2b_check(far_possible);
@@ -10720,6 +10731,7 @@ static __attribute__((noinline)) void d2b_loop(const struct ge_vertex *stream, c
 			d2b_held[id] = (unsigned char)((unsigned int)bucket | far_known);
 			if (id >= high)
 				high = id + 1;
+			filled++;
 		}
 		else
 		{
@@ -10731,8 +10743,30 @@ static __attribute__((noinline)) void d2b_loop(const struct ge_vertex *stream, c
 		total[bucket]++;
 	}
 	d2b_state.high = high;
+	if (!psp_timers_off)
+	{
+		d2b_counts.draws++;
+		d2b_counts.filled += filled;
+		d2b_counts.held += (unsigned long)count - filled;
+	}
 }
 #define D2B_SORT_PARAM , const unsigned short *ids
+
+/* the counters' line, each 300 frames (§4.3d item 3), from frame_end_show:
+out of line so the placed function grows by a call only. A window with a
+frame out keeps its counts for the next */
+static __attribute__((noinline)) void d2b_report(void)
+{
+	unsigned long seen;
+
+	if (psp_timers_off || inflight_me_out)
+		return;
+	seen = d2b_counts.held + d2b_counts.filled;
+	platform_log("GE: d2bhold: %lu held draws a frame; level triangles a frame %lu held, %lu filled (%lu%% held); the table cleared %lu times in 300 frames",
+		d2b_counts.draws / 300, d2b_counts.held / 300, d2b_counts.filled / 300,
+		seen ? d2b_counts.held * 100 / seen : 0, d2b_counts.clears);
+	memset(&d2b_counts, 0, sizeof(d2b_counts));
+}
 #else
 #define D2B_SORT_PARAM
 #endif
@@ -27483,6 +27517,9 @@ static void frame_end_show(void)
 						all ? angle_triangles[4] * 100 / all : 0, all ? angle_triangles[5] * 100 / all : 0,
 						all ? angle_triangles[6] * 100 / all : 0, overlay_wall_asks, overlay_on_walls, overlay_free, overlay_ask_us, overlay_backing_count, overlay_backing_full, nudges_asked, nudge_percent, nudges_clamped, nudges_edge_on,
 						nudge_wide > 0 ? " (nudgewide: not held)" : "");
+#ifdef PSP_D2BHOLD
+					d2b_report(); /* beside the bucket loop's time */
+#endif
 					nudges_asked = nudges_clamped = nudges_edge_on = 0;
 					if (overlay_no_room || overlay_no_room_skipped)
 						platform_log("GE: overlays without heap for their answers: %lu asks refused, %lu more not asked (overlaymemo%s), each drawn as on a wall",
