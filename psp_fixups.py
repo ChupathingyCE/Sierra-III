@@ -69019,6 +69019,33 @@ def drawstamp_cut(tree):
     return placed
 drawstamp_cut(TREE)
 
+# "shreccount" (the lab's briefs/draw_main.md task sh-1, price:SHREC; psp_shreccount.c, a keep word; a log only):
+# rasterizer.c's rasterizer_model_draw, a part's count after the reflection call and refldump's test (outside
+# drawstamp (a)'s pair, which closes just above), before the main menu's detail block. After drawstamp_cut
+SHRECCOUNT_ANCHOR = "\t\t\t/* on the main menu, the detail map itself over the base that holds\n"
+def shreccount_cut(tree):
+    # PSP_FIXUPS_CHECK leaves the tree as it was, so the anchor (an earlier pass's text) isn't there
+    if CHECK_ONLY:
+        return 0
+    path = os.path.join(tree, "source/rasterizer/rasterizer.c")
+    text = open(path, errors="surrogateescape").read()
+    n = text.count(SHRECCOUNT_ANCHOR)
+    if n != 1:
+        check_fail("psp_fixups: shreccount: rasterizer.c: %r matches %d times" % (SHRECCOUNT_ANCHOR[:60], n))
+        return 0
+    text = text.replace(SHRECCOUNT_ANCHOR,
+        "\t\t\t{\n"
+        "\t\t\t\textern int psp_shreccount_on; /* shreccount */\n"
+        "\t\t\t\textern void psp_shreccount_part(void const *, int);\n"
+        "\n"
+        "\t\t\t\tif (psp_shreccount_on)\n"
+        "\t\t\t\t\tpsp_shreccount_part(shader, model_shader);\n"
+        "\t\t\t}\n" + SHRECCOUNT_ANCHOR)
+    open(path, "w", errors="surrogateescape").write(text)
+    print("psp_fixups: shreccount: 1 count (rasterizer_model_draw's per-part shader block)")
+    return 1
+shreccount_cut(TREE)
+
 if CHECK_ONLY:
     for message in count_failures:
         print(message)
