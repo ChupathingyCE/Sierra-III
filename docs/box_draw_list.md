@@ -607,28 +607,28 @@ Builder, 2026-11-28 04:4x, desk, no run; builder2, 05:2x, the ruling applied. ms
 | Group or job | b30 | b30 peak | c20 | c20 peak | Share (ruled) | Over, b30 | Over, c20 | Rank b30 (fight) | Rank c20 (block) | Tried |
 |---|---|---|---|---|---|---|---|---|---|---|
 | level draws | 7.38 | 8.17 | 9.75 | 21.62 | 3.33 | 4.05 | 6.42 | 2 | 1 | D2B (stopped, the sort: `decisions.md` 2026-11-27 19:2x, 23:0x; the stop 2026-11-28 01:3x, `d2bpair_c20`) |
-| far level | 3.46 | 4.51 | 0.74 | 1.81 | 0.82 | 2.64 | -0.08 | 5 | 16 | none in §15 |
+| far level | 3.46 | 4.51 | 0.74 | 1.81 | 0.82 | 2.64 | -0.08 | 5 | 17 | none in §15 |
 | model part draws | 5.49 | 18.25 | 6.82 | 16.01 | 2.40 | 3.09 | 4.42 | 4 | 2 | none in §15 |
 | light draws | 0.66 | 2.46 | 3.56 | 9.07 | 0.82 | -0.16 | 2.74 | 20 | 5 | none in §15 |
 | decals | 0.93 | 2.31 | 4.19 | 11.71 | 1.00 | -0.07 | 3.19 | 19 | 4 | none in §15 |
-| sky | 0.03 | no peak | 0.02 | no peak | 0.01 | 0.02 | 0.01 | 16 | 13 | OCNV (on), SEAF, DS (measured) |
-| sprites | 0.63 | no peak | 0.55 | no peak | 0.23 | 0.40 | 0.32 | 10 | 9 | FM4, FM6 (on), WXME (paused) |
-| HUD/widget | 1.43 | no peak | 2.24 | no peak | 0.71 | 0.72 | 1.53 | 8 | 6 | §14.3's: HUDX, SMALLME, VRB1-3, FM5, HUDPIN, VFPUTRIG, RENDERTICK, RB1 |
-| text | 0.09 | no peak | 0.03 | no peak | 0.02 | 0.07 | 0.01 | 13 | 14 | none |
-| frame end | 0.01 | 0.01 | 0.01 | 0.02 | 0.00 | 0.01 | 0.01 | 17 | 15 | none in §15 |
-| see-through flush | 1.05 | 5.45 | 1.53 | 10.03 | 0.50 | 0.55 | 1.03 | 9 | 7 | none (T1, M1 are main-CPU) |
-| see-through queued | 2.12 | no peak | 5.05 | no peak | 1.39 | 0.73 | 3.66 | 7 | 3 | T1, M1, LEVELPRETOUCH, OVERLAYMEMO, fixalpha-composites |
-| model sub-records | 1.67 | no peak | 1.00 | no peak | 0.52 | 1.15 | 0.48 | 6 | 8 | PDCCALL (rejected), REPLAYPART (off), SIP, MEMEMO, PASSSMALL, RSO (on), CP, CHSB, CHSD, D3 (never built) |
-| unnamed kinds (?) | 0.08 | no peak | 0.07 | no peak | 0.03 | 0.05 | 0.04 | 14 | 12 | none in §15 |
-| shadows | 0.55 | no peak | 0.33 | no peak | 0.17 | 0.38 | 0.16 | 11 | 10 | SM, SHQ, SHADOWWALK, SR, OS |
-| level detail/glow, lights' set-up | 0.08 | no peak | 0.18 | no peak | 0.05 | 0.03 | 0.13 | 15 | 11 | DETAILNEAR (parked), DF, DS, GELF, GELC (on), LGELTOP, LIGHTKEEP, LSPLITMEMO |
+| sky | 0.03 | no peak | 0.02 | no peak | 0.01 | 0.02 | 0.01 | 16 | 14 | OCNV (on), SEAF, DS (measured) |
+| sprites | 0.63 | no peak | 0.55 | no peak | 0.23 | 0.40 | 0.32 | 11 | 9 | FM4, FM6 (on), WXME (paused) |
+| HUD/widget | 1.43 | no peak | 2.24 | no peak | 0.71 | 0.72 | 1.53 | 9 | 6 | §14.3's: HUDX, SMALLME, VRB1-3, FM5, HUDPIN, VFPUTRIG, RENDERTICK, RB1 |
+| text | 0.09 | no peak | 0.03 | no peak | 0.02 | 0.07 | 0.01 | 13 | 15 | none |
+| frame end | 0.01 | 0.01 | 0.01 | 0.02 | 0.00 | 0.01 | 0.01 | 17 | 16 | none in §15 |
+| see-through flush | 1.05 | 5.45 | 1.53 | 10.03 | 0.50 | 0.55 | 1.03 | 10 | 7 | none (T1, M1 are main-CPU) |
+| see-through queued | 2.12 | no peak | 5.05 | no peak | 1.39 | 0.73 | 3.66 | 8 | 3 | T1, M1, LEVELPRETOUCH, OVERLAYMEMO, fixalpha-composites |
+| model sub-records | 1.67 | no peak | 1.00 | no peak | 0.52 | 1.15 | 0.48 | 7 | 8 | PDCCALL (rejected), REPLAYPART (off), SIP, MEMEMO, PASSSMALL, RSO (on), CP, CHSB, CHSD, D3 (never built) |
+| unnamed kinds (?) | 0.08 | no peak | 0.07 | no peak | 0.03 | 0.05 | 0.04 | 14 | 13 | none in §15 |
+| shadows | 0.55 | no peak | 0.33 | no peak | 0.17 | 0.38 | 0.16 | 12 | 11 | SM, SHQ, SHADOWWALK, SR, OS |
+| level detail/glow, lights' set-up | 0.08 | no peak | 0.18 | no peak | 0.05 | 0.03 | 0.13 | 15 | 12 | DETAILNEAR (parked), DF, DS, GELF, GELC (on), LGELTOP, LIGHTKEEP, LSPLITMEMO |
 | **16 groups, sum** (audio's row not in it) | **25.63** |  | **36.07** |  | **12.00** |  |  |  |  |  |
-| audio (job slot + ring served, net of in-both) | 17.82 (13.60 + 6.12 - 1.9) | 30.43 slot; 11.85 served | 13.5 (10.2 + 5.4 - 2.1) | no peak slot; 15.77 served | 4 | 0.20 | -0.50 | 12 | 20 | none in §15 |
-| job: perception rays (8) | 0.20 | 0.53 | 0.07 | 0.27 | 0.2 | 0.00 | -0.13 | 18 | 17 | RBK (rejected), DRAWRAYSME (stopped) |
+| audio (job slot + ring served, net of in-both) | 17.82 (13.60 + 6.12 - 1.9) | 30.43 slot; 11.85 served | 13.5 (10.2 + 5.4 - 2.1) | no peak slot; 15.77 served | 4 | 1.60 | 0.24 | 6 | 10 | none in §15 |
+| job: perception rays (8) | 0.20 | 0.53 | 0.07 | 0.27 | 0.2 | 0.00 | -0.13 | 18 | 18 | RBK (rejected), DRAWRAYSME (stopped) |
 | job: next tick's poses (9) | 1.91 | 2.36 | 2.95 | 4.40 | 4.3 | -3.02 | -2.58 | 22 | 22 | MP, PSC (on), MEPOSE, NW, NW2 (rejected) |
 | job: points (12) | 1.04 | 1.77 | 0.66 | 1.82 | 1.5 | -0.43 | -0.82 | 21 | 21 | PT, MEPOINTSCLAIM (on), PTLIST, POINTSREST, MEPOINTSCAP, PSYSME |
-| job: visibility walk (14, net) | 5.99 | 15.35 | 1.58 | 7.45 | 2 | 3.97 | -0.42 | 3 | 19 | MEVISLAND (on), PVS, PVSRE, MEVGATHER, MEVISEARLY, MEVISPROBE, MLSPIN, AIMEVISLEFT |
-| job: AI job's own (less its nesting) | 11.71 | 33.47 | 5.85 | 21.10 | 6 | 5.71 | -0.15 | 1 | 18 | AIME (on), AICAD, AIMERINGLOOK (on), AIMEDRAM, L3, MESCHED, AITICKOLD |
+| job: visibility walk (14, net) | 5.99 | 15.35 | 1.58 | 7.45 | 2 | 3.97 | -0.42 | 3 | 20 | MEVISLAND (on), PVS, PVSRE, MEVGATHER, MEVISEARLY, MEVISPROBE, MLSPIN, AIMEVISLEFT |
+| job: AI job's own (less its nesting) | 11.71 | 33.47 | 5.85 | 21.10 | 6 | 5.71 | -0.15 | 1 | 19 | AIME (on), AICAD, AIMERINGLOOK (on), AIMEDRAM, L3, MESCHED, AITICKOLD |
 | AI job's nesting (not the job's own time) | 5.96 | 15.64 | 1.38 | 5.31 | 6 (the AI job's) | not ranked | not ranked | not ranked [U] | not ranked [U] | AIME (on); own time is the row above (`mecol6_b30`, `mecol6_c20`) |
 
 **Job lines at 30 fps, one tick a frame** (the lead, `decisions.md` 2026-11-28 05:5x, lead-20261128-055051-2879: the ME's room is read at 30 fps, so the job lines are restated before the table is taken; the 05:1x shares stand). The job rows' "over" and every rank above use these. ms [D] from rows `mecol6_b30` and `mecol6_c20` [M] (build 67217c2b, mean of 2 seeds, per shown frame at 8.9 and 9.6 fps), so a job's figure here can differ a little from its b30 / c20 cell above. Jobs a frame: run1's `mekinds` lines (sierra-hw 46140160570 `log.txt:1749-1750`, 46141188729 `:2497-2498`). Ticks a frame: 2.0, the same runs' heartbeats (ticks/s over fps, run1, b30 game time 1090-1716, c20 2157-2833) [D].
@@ -637,14 +637,18 @@ Builder, 2026-11-28 04:4x, desk, no run; builder2, 05:2x, the ruling applied. ms
 |---|---|---|---|---|---|---|---|
 | rays (8) | per shown frame | 1.0 / 0.7 | 0.20 x 1/1 = 0.20 | 0.07 x 1/1 = 0.07 | 0.2 | +0.00 | -0.13 |
 | poses (9) | per tick [U]: 2 jobs a frame, 2 ticks a frame | 2.0 / 2.0 | 2.57 x 1/2 = 1.28 | 3.43 x 1/2 = 1.72 | 4.3 | -3.02 | -2.58 |
-| points (12) | per shown frame [U]: halves if its work goes by tick | 1.0 / 1.0 | 1.07 x 1/1 = 1.07 | 0.68 x 1/1 = 0.68 | 1.5 | -0.43 | -0.82 |
+| points (12) | per shown frame (below) | 1.0 / 1.0 | 1.07 x 1/1 = 1.07 | 0.68 x 1/1 = 0.68 | 1.5 | -0.43 | -0.82 |
 | visibility walk (14, net) | per shown frame | 0.9 / 0.8 | 5.97 x 1/1 = 5.97 | 1.58 x 1/1 = 1.58 | 2 | +3.97 | -0.42 |
-| audio job (slot) | per audio period (23.22 ms of wall time) | 4.8 / 4.2 | 4.2 (quoted; this row's slot 14.67 x 8.9 / 30 = 4.35) | 3.5 (quoted; this row's slot 9.93 x 9.6 / 30 = 3.18) | 4 | +0.20 | -0.50 |
-| AI job's own (less its nesting) | per shown frame [U]: halves if its work goes by tick | 1.0 / 1.0 | 11.71 x 1/1 = 11.71 | 5.85 x 1/1 = 5.85 | 6 | +5.71 | -0.15 |
+| audio (slot + served net of in-both), as ruled 06:1x | job: per audio period (23.22 ms of wall time); served: per shown frame (below) | 4.8 / 4.2 | 4.35 + 4.2 x 8.9/30 = 5.60 (job alone 4.2; served unscaled 8.4) | 3.18 + 3.3 x 9.6/30 = 4.24 (job alone 3.5; served unscaled 6.8) | 4 | +1.60 | +0.24 |
+| AI job's own (less its nesting) | per shown frame: one job, one tick's pass (below) | 1.0 / 1.0 | 11.71 x 1/1 = 11.71 | 5.85 x 1/1 = 5.85 | 6 | +5.71 | -0.15 |
 
 - A per-shown-frame job runs once in a 30 fps frame too (x 1/1); a per-tick job is its figure over the 2 ticks the shown frame carried (x 1/2).
-- **AI job's own** is the open one [U]: 1 job a frame, but if its work goes by tick it is 5.86 and 2.92, under its 6 on both, and its b30 rank 1 falls away. Points the same way: 0.54 and 0.34, under share either way.
-- **Audio** is quoted as ruled, the job alone. The row above also holds the ring served net of in-both (4.2 and 3.3, per record, not rescaled): with it the line is 8.4 and 6.8, over 4.4 and 2.8 (`findings/case_mc3a_2026-11-28.md`), which would rank 2 on b30 and 5 on c20. The table ranks the ruled 4.2 / 3.5 [U whether the served part belongs in it].
+- **Units, read in the code** (mc-2e, builder2, 06:3x, no run; lines at builder/mecol6 67217c2b; `game_*.c` are the engine's `source/game/`).
+- **AI job's own: one tick's pass a shown frame, not halved.** Queued once a frame before `game_frame` (`psp_fixups.py:43633`, `psp_aime2a_frame_end`, called at `:44556-44558`); its body is one walk of the actors (`psp_fixups.py:42037-42045`, `psp_aime_think`). At 2 ticks a frame the other tick's pass runs on the main CPU (`:43762-43769`). At one tick a frame every pass is the frame's last, so the job stays one a frame at this size.
+- **Points: per shown frame, not halved.** Queued from `particles_update` (`psp_fixups.py:32619`, called at `:33032`), which `game_frame` runs once a frame (`game.c:1077`; `game_time.c:548`, outside the tick loop `:515-533`); its body takes each listed point once with the frame's dt (`psp_fixups.py:32451`; the list `:33001-33031`).
+- **Audio job: per audio period.** One mix a 512-sample block, the thread paced by the blocking output (`psp_dsound.c:3919-3922`, `:3968-3973`); the job pushed at `psp_me.c:5690`.
+- **Served inside the replay: per shown frame, driven by neither the audio period nor the tick.** The look runs after replay records (`psp_ge.c:1705-1718`); it mixes a block only if one waits and drains the ring's pushed jobs (`psp_me.c:1897-1954`). Job bodies it runs are netted as in-both (`psp_me.c:981-982`, `:1701-1702`); what is left is the looks, the drain's own cost and the batches made first, which call `batch_job` directly (`psp_me.c:1864-1894`): render work.
+- **So the ruled form's premise doesn't hold for the served part** (the ruling left it [U] until this read; it names only the per-tick case). The line and ranks above are the ruled x fps/30 form, 5.60 / 4.24. With served per shown frame it would be 8.4 / 6.8 [D], over by 4.4 / 2.8, ranked 2 on b30 and 5 on c20. The lead's call.
 
 Task 3's first two cases are audio and level draws; model parts (4.4) are next if either stops at its bar (`decisions.md` 2026-11-28 05:1x). On the restated job lines the audio job alone is at about its 4 (`decisions.md` 2026-11-28 05:5x).
 
