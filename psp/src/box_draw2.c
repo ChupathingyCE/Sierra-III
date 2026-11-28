@@ -9,6 +9,9 @@ of DRAW2_SET_BYTES, 36 KB. Without it every far model is drawn the old way */
 #include <stddef.h>
 #include "../include/box_draw2.h"
 
+/* the SDK's malloc.h doesn't declare it under the port's flags (farcall1's
+build 4, sierra-batch 46087213827); as psp_dsound.c does */
+void *memalign(size_t alignment, size_t size);
 void platform_log(const char *format, ...);
 
 static unsigned int *draw2_arena = NULL;
