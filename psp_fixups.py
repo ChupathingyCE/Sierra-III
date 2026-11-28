@@ -69046,6 +69046,96 @@ def shreccount_cut(tree):
     return 1
 shreccount_cut(TREE)
 
+# "shrecstay" (the lab's briefs/draw_main.md task sh-2, price:SHREC reach and added; psp_shreccount.c, a keep word; a
+# log only): in rasterizer_model_draw's per-part shader block, clock pairs (drawstamp's clock) round only what stays
+# per part under SHREC (findings/case_dmb1_2026-11-28.md section 2): the change colours, the glow's phase and function
+# and its colour mix (not its colour compare), the camera-distance fade with the lighting tint multiply, and the two
+# GE state calls, whose bitmap keys (removed under SHREC) are worked out just before their pairs. Then once a part a
+# timed look-up of the shader in shreccount's table. All inside drawstamp (a)'s pair, which stays. After shreccount_cut
+def shrecstay_open(ind):
+    return ind + "if (psp_shrecstay_on) /* shrecstay: opens */\n" + ind + "\tpsp_shs = sceKernelGetSystemTimeLow();\n"
+def shrecstay_close(ind):
+    return (ind + "if (psp_shrecstay_on) /* shrecstay: closes */\n" + ind + "{\n"
+            + ind + "\tpsp_shrecstay_us += sceKernelGetSystemTimeLow() - psp_shs;\n"
+            + ind + "\tpsp_shrecstay_pairs++;\n" + ind + "}\n")
+SHRECSTAY = [
+# the stamp, beside drawstamp (a)'s
+("\t\tunsigned int psp_stamp = psp_drawstamp_on ? sceKernelGetSystemTimeLow() : 0;\n\n\t\t/* a model shader (soso)",
+ "\t\tunsigned int psp_stamp = psp_drawstamp_on ? sceKernelGetSystemTimeLow() : 0;\n"
+ "\t\textern int psp_shrecstay_on; /* shrecstay */\n"
+ "\t\textern unsigned int psp_shrecstay_us, psp_shrecstay_pairs;\n"
+ "\t\tunsigned int psp_shs = 0;\n"
+ "\n\t\t/* a model shader (soso)"),
+# the change colours
+("\t\t\tif (source >= 1 && source <= 4 && psp_change_colors_valid)\n",
+ shrecstay_open("\t\t\t") + "\t\t\tif (source >= 1 && source <= 4 && psp_change_colors_valid)\n"),
+("\t\t\t/* and its self-illumination colour, as the Xbox works it out:\n",
+ shrecstay_close("\t\t\t") + "\t\t\t/* and its self-illumination colour, as the Xbox works it out:\n"),
+# the glow: its test, phase and function, to its colour compare
+("\t\t\tobject colour if the shader names one */\n",
+ "\t\t\tobject colour if the shader names one */\n" + shrecstay_open("\t\t\t")),
+("\t\t\t\tint channel;\n\n\t\t\t\t/* the glow follows the time only where",
+ "\t\t\t\tint channel;\n\n" + shrecstay_close("\t\t\t\t") + "\t\t\t\t/* the glow follows the time only where"),
+# the glow's colour mix, after the compare
+("\t\t\t\t\tpsp_rso_volatile |= 1;\n\t\t\t\tfor (channel = 0; channel < 3; channel++)\n\t\t\t\t\tglow[channel]",
+ "\t\t\t\t\tpsp_rso_volatile |= 1;\n" + shrecstay_open("\t\t\t\t")
+ + "\t\t\t\tfor (channel = 0; channel < 3; channel++)\n\t\t\t\t\tglow[channel]"),
+("\t\t\t\t\tglow[2] *= psp_change_colors[glow_source - 1].blue;\n\t\t\t\t}\n\t\t\t}\n",
+ "\t\t\t\t\tglow[2] *= psp_change_colors[glow_source - 1].blue;\n\t\t\t\t}\n" + shrecstay_close("\t\t\t\t")
+ + "\t\t\t}\n\t\t\telse\n\t\t\t{\n" + shrecstay_close("\t\t\t\t") + "\t\t\t}\n"),
+# the multipurpose GE state call, its key outside the pair
+("\t\t\tpsp_ge_model_multipurpose(multipurpose != NONE ? psp_tex_bitmap_key(multipurpose, 0) : 0,\n"
+ "\t\t\t\tmultipurpose != NONE ? (unsigned int)definition | 2 : 0, change, glow);\n",
+ "\t\t\t{\n"
+ "\t\t\t\tunsigned int psp_shkey = multipurpose != NONE ? psp_tex_bitmap_key(multipurpose, 0) : 0; /* shrecstay */\n\n"
+ + shrecstay_open("\t\t\t\t")
+ + "\t\t\t\tpsp_ge_model_multipurpose(psp_shkey,\n"
+ "\t\t\t\t\tmultipurpose != NONE ? (unsigned int)definition | 2 : 0, change, glow);\n"
+ + shrecstay_close("\t\t\t\t") + "\t\t\t}\n"),
+# the camera-distance fade and the lighting tint multiply
+("\t\t\t\t\tif (cutoff != 0.0f && falloff != cutoff)\n",
+ shrecstay_open("\t\t\t\t\t") + "\t\t\t\t\tif (cutoff != 0.0f && falloff != cutoff)\n"),
+("\t\t\t\t\t\treflection[channel] = brightness * 0.5f * (perpendicular[channel] + parallel[channel]) *\n"
+ "\t\t\t\t\t\t\t(&psp_reflection_tint.red)[channel];\n",
+ "\t\t\t\t\t\treflection[channel] = brightness * 0.5f * (perpendicular[channel] + parallel[channel]) *\n"
+ "\t\t\t\t\t\t\t(&psp_reflection_tint.red)[channel];\n" + shrecstay_close("\t\t\t\t\t")),
+# the reflection GE state call, its key outside the pair
+("\t\t\t\tpsp_ge_model_reflection(cube != NONE ? psp_tex_bitmap_key(cube, 0) : 0, reflection);\n",
+ "\t\t\t\t{\n"
+ "\t\t\t\t\tunsigned int psp_shkey = cube != NONE ? psp_tex_bitmap_key(cube, 0) : 0; /* shrecstay */\n\n"
+ + shrecstay_open("\t\t\t\t\t")
+ + "\t\t\t\t\tpsp_ge_model_reflection(psp_shkey, reflection);\n"
+ + shrecstay_close("\t\t\t\t\t") + "\t\t\t\t}\n"),
+# once a part, the record's look-up, timed (after drawstamp (a)'s close and shreccount's count)
+(SHRECCOUNT_ANCHOR,
+ "\t\t\tif (psp_shrecstay_on) /* shrecstay: the look-up */\n"
+ "\t\t\t{\n"
+ "\t\t\t\textern unsigned int psp_shrecstay_lookup_us;\n"
+ "\t\t\t\textern int psp_shrecstay_lookup(void const *);\n"
+ "\n"
+ "\t\t\t\tpsp_shs = sceKernelGetSystemTimeLow();\n"
+ "\t\t\t\tpsp_shrecstay_lookup(shader);\n"
+ "\t\t\t\tpsp_shrecstay_lookup_us += sceKernelGetSystemTimeLow() - psp_shs;\n"
+ "\t\t\t}\n" + SHRECCOUNT_ANCHOR),
+]
+def shrecstay_cut(tree):
+    # PSP_FIXUPS_CHECK leaves the tree as it was, so the anchors (earlier passes' text) aren't there
+    if CHECK_ONLY:
+        return 0
+    path = os.path.join(tree, "source/rasterizer/rasterizer.c")
+    text = open(path, errors="surrogateescape").read()
+    for old, new in SHRECSTAY:
+        n = text.count(old)
+        if n != 1:
+            check_fail("psp_fixups: shrecstay: rasterizer.c: %r matches %d times" % (old[:60], n))
+            return 0
+        text = text.replace(old, new)
+    open(path, "w", errors="surrogateescape").write(text)
+    print("psp_fixups: shrecstay: %d edits (6 clock pairs on what stays a part, the two GE calls' keys outside theirs, "
+          "the look-up)" % len(SHRECSTAY))
+    return len(SHRECSTAY)
+shrecstay_cut(TREE)
+
 if CHECK_ONLY:
     for message in count_failures:
         print(message)

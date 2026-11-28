@@ -19,7 +19,22 @@ TABLE_SIZE; those that don't fit are counted as over.
 
 The line, every 300 frames, a frame's mean:
   shreccount: parts P model M other O glow G fade F distinct S (over Z)
-With the word off each part is a flag's test, and the frame's end one more. */
+With the word off each part is a flag's test, and the frame's end one more.
+
+"shrecstay" (keep word; task sh-2, price:SHREC reach and added; with
+drawstamp on): what stays per part under SHREC, timed. psp_fixups.py
+shrecstay_cut puts main-CPU clock pairs (sceKernelGetSystemTimeLow, as
+drawstamp's) round only the block's work that stays: the change colours,
+the glow's phase and function and its colour mix, the camera-distance fade
+with the lighting tint multiply, and the two GE state calls (their keys
+worked out just outside the pairs). Once a part, a timed look-up of the
+part's shader pointer in the table above (the one table read SHREC adds),
+its result unused; a pointer not yet in it goes in, as a record made at
+first use would, so this table is shared with shreccount's distinct count.
+Each pair holds about one clock read of its own, so the pairs are logged.
+The line, every 300 frames, a frame's mean:
+  shrecstay: stays U us a frame (pairs N), lookup L us a frame (parts P)
+Off, each hook is a flag's test. */
 
 int psp_keep(const char *name);
 void platform_log(const char *format, ...);
@@ -33,23 +48,35 @@ static unsigned int parts, models, others, glows, fades;
 static void const *seen[TABLE_SIZE];
 static unsigned int distinct, over;
 
-static void see(void const *shader)
+int psp_shrecstay_on = 0;
+unsigned int psp_shrecstay_us, psp_shrecstay_pairs, psp_shrecstay_lookup_us, psp_shrecstay_lookups;
+
+/* the shader's slot, put in if it isn't there yet; -1 for none or a full table */
+static int see(void const *shader)
 {
 	unsigned int slot = ((unsigned int)(unsigned long)shader * 2654435761u) >> 22 & (TABLE_SIZE - 1);
 
 	while (seen[slot])
 	{
 		if (seen[slot] == shader)
-			return;
+			return (int)slot;
 		slot = (slot + 1) & (TABLE_SIZE - 1);
 	}
 	if (distinct >= TABLE_FULL)
 	{
 		over++;
-		return;
+		return -1;
 	}
 	seen[slot] = shader;
 	distinct++;
+	return (int)slot;
+}
+
+/* shrecstay's look-up, a part (timed at its call) */
+int psp_shrecstay_lookup(void const *shader)
+{
+	psp_shrecstay_lookups++;
+	return shader ? see(shader) : -1;
 }
 
 /* a part through the block: its shader, and the block's model_shader */
@@ -79,12 +106,36 @@ void psp_shreccount_part(void const *shader, int model_shader)
 }
 
 /* a frame has been drawn (psp_frame_account) */
+static void shrecstay_frame(void)
+{
+	static int word = -1;
+	static unsigned int frames = 0;
+	float n = (float)WINDOW;
+
+	if (word < 0)
+	{
+		word = psp_keep("shrecstay");
+		psp_shrecstay_on = word;
+		if (word)
+			platform_log("shrecstay: on (what stays per model part under SHREC, timed, and the record's look-up; a line each %d frames)",
+				WINDOW);
+		return;
+	}
+	if (!word || ++frames < WINDOW)
+		return;
+	platform_log("shrecstay: stays %.1f us a frame (pairs %.1f), lookup %.1f us a frame (parts %.1f)",
+		psp_shrecstay_us / n, psp_shrecstay_pairs / n, psp_shrecstay_lookup_us / n, psp_shrecstay_lookups / n);
+	frames = 0;
+	psp_shrecstay_us = psp_shrecstay_pairs = psp_shrecstay_lookup_us = psp_shrecstay_lookups = 0;
+}
+
 void psp_shreccount_frame(void)
 {
 	static int word = -1;
 	static unsigned int frames = 0;
 	float n = (float)WINDOW;
 
+	shrecstay_frame();
 	if (word < 0)
 	{
 		word = psp_keep("shreccount");
