@@ -229,10 +229,40 @@ Sierra-III `builder/ticksched2-step1` b480d399 (on master/tock162 cd1c036b). Kee
 
 The lab's `briefs/tc_tick.md` (the lead 19:5x, re-briefed 20:5x). Its "§11.1-§11.4" are this page's §12.1-§12.4, numbered after the joined page's last section (task 0). The goal's frame is one tick a frame at 30 fps on both cores (Sheepdog01 2026-11-26 19:3x). Every figure here is labelled by how it was measured. A figure from the archive or a two-tick frame is a lead, never the goal's.
 
-- **§12.1, the ME's column at 30 fps [M]:** waits on the counters' b30 PSP run being read (the brief's due date: a day after it).
+- **§12.1, the ME's column at 30 fps [M]:** below (written 2026-11-28 01:36).
 - **§12.2, the two uses side by side [D]:** on §12.1's figures.
 - **§12.3, the phase plan [D]:** below.
 - **§12.4, the split and its price [D cost sheet]:** last, on §12.1-§12.3.
+
+### 12.1 The ME's column at 30 fps [M] (written 2026-11-28 01:36)
+
+The ME's time a frame by part, on b30's fight and c20's peak, against the 33.3 ms a frame at 30 fps. Figures come only from the lab's filed rows (`findings/rows.tsv`; the pair's page `findings/d2bpair_2026-11-28.md`), never from an emulator, a two-tick frame or the archive. The render kinds and the audio/ring line are the D2B pair's **A sides**: Sierra-III master/tock162 cc828579, the tock's recipe, ME us a frame by `mekinds` kind, read with toolbox/mekindsgt.py, the mean of the two A runs' block means. The rows hold block means only, so **no frame peak is given** for these; the busiest 300-frame block stands for each map's peak.
+
+| part | b30 fight [M] | c20 peak [M] |
+|---|---|---|
+| stretch | gt ~1081 to exit (the third 300-frame block) | gt 2188-2873 / 2186-2871 (the fifth block, the busiest) |
+| row, run, PSP | `d2bpair_b30`, sierra-hw 46118602668 (A r1, r3), PSP-1000 | `d2bpair_c20`, sierra-hw 46120186164 (A r1, r3), PSP-3000 |
+| render: level draws | 7.53 ms (7526 / 7529 us) | 10.12 (10131 / 10106) |
+| render: far level | 3.06 (3069 / 3050) | 0.70 (702 / 702) |
+| render: model part draws | 5.76 (5749 / 5770) | 7.12 (7114 / 7115) |
+| render: light draws | 0.60 (544 / 646) | 3.72 (3731 / 3716) |
+| render: decals | 0.92 (908 / 932) | 4.42 (4414 / 4417) |
+| audio and ring served | 6.11 (6031 / 6197) | 5.65 (5626 / 5672) |
+| the rest (all less the six above) | 7.56 | 11.12 |
+| **all** | **31.54** (31391 / 31684) | **42.85** (42851 / 42842) |
+| against 33.3 ms | under by 1.8 | **over by 9.5** |
+
+The sums check: b30 7528 + 3060 + 5760 + 595 + 920 + 6114 = 23,977 us named, + 7,561 the rest = 31,538 = all. c20 10119 + 702 + 7115 + 3724 + 4416 + 5649 = 31,725 named, + 11,122 the rest = 42,847 = all. The rest is unsplit: whatever the ME runs outside these six kinds (the AI job, the visibility walk, the points job, if they run there in this build) [U].
+
+**The AI job (b30 only, another build) [M, a frame derived]:** row `mecol_b30_ai`, sierra-hw 45980719726, PSP-3000, Sierra-III builder/meaicol 28bf69a3 + PSP_MEAICOL=1, slice 1's env, b30's fight (the ME windows with heartbeat ~1082-1796, the same stretch as above). The job's own ME time less nested is 9.45 ms a job (worst 22.09), at 8.9 jobs a second: about **2.8 ms a frame** at 30 fps (9.45 x 8.9 / 30, derived here). Its nested 9.10 ms a job (audio 2.08, ring 7.02) is the kind the table's audio/ring line counts, so it is left out here. On the flight (`mecol_b30_ai_flight`, the same run, heartbeat 313-1082): 7.20 ms a job less nested (worst 17.13), 12.4 a second, about 3.0 ms a frame. It is from another build and another PSP model than the table's A side, so it isn't subtracted from the rest. Whether cc828579's `all` holds the AI job at all is [U].
+
+**Named gaps, no row holds them:**
+- The AI job on c20's peak: no `mecol_c20_ai` row.
+- The visibility walk's ME time, either map: no filed row on cc828579.
+- The pick-up (the main CPU's wait on an ME result) on cc828579, either map. `mecol_b30_ai`'s collection wait of 4.0 us a job is the AI job's alone, at 28bf69a3.
+- The points job's ME time, either map: no filed row.
+- A frame peak for any part: the rows hold 300-frame block means only.
+- The rest's split, both maps: 7.56 ms on b30 and 11.12 on c20 not named by kind.
 
 ### 12.3 The phase plan [D] (written 2026-11-26 22:28)
 
