@@ -657,6 +657,24 @@ D2b as ruled at 13:4x: a level triangle's slant bucket kept while the eye stays 
 
 **Heap and store:** 128 KB static (64 + 64), against b30's 1035 KB room low (`a2b_heap` [M]); c20's room is in the same row. **The look:** as §4.3c; its proof the looks check with an off-vs-off control (framecmp's floor) and Sheepdog01's look call. **The pair:** PSP-1000, b30_leg2 to 60 s, A the tock, B `PSP_D2BHOLD=1`, `timerson mekinds`; read on the level kind's ME ms, the bar ~0.5 ms at half.
 
+### 4.3e FARCALL re-priced on its reach, at full size [D, the builder, 2026-11-27 22:2x; the lab's decisions 22:0x (1)-(5)]
+
+Desk work and counts, no build or pair. Counts from farcall4 (sierra-batch 46093696275, 8ae08e9e, b30/c20_leg2, 1800 frames, [E count]) and farcall7's B logs (sierra-hw 46101761198 [M logs]); code at 8ae08e9e.
+
+- **What the built form did, from the code.** `draw2_far` runs inside `psp_far_draw` (psp_ge.c:18412-18420), which the walk calls per far part, so **the walk stays**: §4.3a's main-CPU cell took the walk and the instances (69%, −~3.85 whole); as built only the begin (D1b, instances 0.71 of 6.17 stamped) leaves, and the main CPU writes the far words the ME wrote (an 8-word record became ~300 words a model). Two systems, as Sheepdog01 read it: §4.3a's main-CPU figure is struck.
+- **Reach, b30 a frame [E count]:** far models ~60: rso sent 26.9 (791 words, 29 a model; walk already skipped by rso), rso capturing 15.5 (780 words), refused for room 7.6 (2,485 words, 326 a model), in draw2's room ~10 (≤ 3,072 words; 9.5-11.9 on the PSP). **Today's reach: ~10 of ~60 models (17%), ≤ 3,072 of ≤ ~7,100 words a frame on average.** Walked models (a begin made) are 33 of 60 but ~89% of the words. c20: rso 0, capturing 0.3, refused 1.2, so draw2 already holds most of c20's.
+- **Room at full extent:** the worst frame's old-way words 12,770 (`draw2_old_high` sums only the old-way tallies, box_draw2.c:97-104) plus the room's own 3,072: **≤ 15,842 words, ~63 KB a set** (+ ≤ ~4 KB of 64-byte line rounding), **~200 KB for the three sets** b30; c20 ≤ 4,730 + 3,072 = 7,802, ~32 KB a set, ~97 KB [E, the tally's estimate of 13 words a matrix; a sum of two highs, so an upper bound]. Against `a2b_heap`'s room low above copyreserve, ~779 KB b30 and ~700 KB c20 [M]: **it fits on both**, leaving ~580 / ~600 KB (~450 / ~475 with D2b's 128 KB beside it).
+- **Taking rso's models [D].** Capturing: the kept record keeps its `DEFER_DRAW_FAR` (block, masks, tints, sprite: psp_ge.c:1220-1232) while the live stream gets the CALL. Sent: `rso_send` (:14754) writes the sub-list from that kept record, so rso still skips the walk. Sprites stay old [U count].
+- **The saving on that reach, b30's fight:**
+
+| Reach | ME (vs 33.3) | Main CPU's drawing (vs 11) |
+|---|---|---|
+| full (all ~60, ≤ ~7,100 words avg) | far kind 3.46 whole [M, `drawbase_b30`] less ~60 CALLs (~0.18 [U rate]): **−3.28 whole, −~1.64 at half** | begins −0.64 whole (0.71 × 5.6/6.17) [M share]; the emit +0.44 to +1.64 at **0.062-0.23 µs a word** [U, back-solved from farcall7: B−A 0 to +0.5 on ≤ 3,072 words with 10 begins saved, 0.19]: **net −0.2 to +1.0 whole** |
+| walked only (rso sent left old, 89% of words) | **−~1.45 at half** | **net −0.25 to +0.8 whole** |
+
+- **Reading: undecided, and not on the old figures.** The re-priced FARCALL is a move of the far words from the ME to the main CPU: the ME's column clears (−~1.45 to −1.64 at half); the main CPU's straddles 0, and at its top (+0.8 to +1.0) it's past A's run-to-run range (~0.8, farcall7). Taking rso's sent models adds ~0.2 ms of the ME at half for 11% of the words and a change to rso_send: the cheaper cut is walked-only. **The one number that decides it is the emit's main-CPU cost a word**, and farcall7's own logs may hold both halves, no new run: the ME's far kind A vs B (mekinds, never read: the drawing bar failed first) prices the ME's side per word moved, and the main CPU's side is the 0.062-0.23 range above. At full reach the main CPU is not up if the emit's rate is ≤ ~0.09 µs a word (0.64 / 7,100), up but inside A's ~0.8 range to ~0.2, and past it above ~0.2: the sheet clears on the ME's column at the first, is the lead's call at the second, fails at the third.
+- **Run order (the lead's 21:57 ask):** the runner can't order A B B A today: `sierra-hw.yml` runs every repeat through the slots in one order (lines 313-322, A B A B). A B B A is a small change there (the slot list reversed on even repeats); with repeat=2 it cancels a linear climb like farcall7's ~0.8 ms.
+
 ### 4.4 The asks §3 names, gathered [D, for the lead's take with §1-§4]
 
 None of these is sent before the lead takes the page (the brief's :36). Each goes through the master as a `psp-ask` line.
