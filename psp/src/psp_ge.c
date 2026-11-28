@@ -584,6 +584,7 @@ CPU's words for it: publish each stall address, and serve the ring's jobs
 between records (geinflight) */
 static int replay_inflight = 0;
 static PSP_MAIN_SIDE int replay_kinds_on = 0; /* "mekinds" (see defer_replay) */
+static PSP_MAIN_SIDE int level_split2_on = 0; /* "levelsplit2", with mekinds (mc-4d; psp_ge_draw_level_body) */
 static PSP_MAIN_SIDE int light_ring_look = 0; /* "lightringlook" (psp_ge_light_draw_body; psp_me.c) */
 static PSP_MAIN_SIDE int light_view_cull = 0; /* "lviewcull" (light_split_draws_nothing) */
 /* The flashlight's piece size as keep-word numbers (LSPLITCOARSE, the lab's
@@ -912,6 +913,7 @@ static void defer_frame_begin(void)
 					platform_log("GE: texpretouch: each recorded draw's textures read in as it is written down, for the replay's binds%s",
 						pretouch_all ? " (txptall: every texture a record names)" : "");
 				replay_kinds_on = psp_keep("mekinds") != 0;
+				level_split2_on = replay_kinds_on && psp_keep("levelsplit2");
 				light_ring_look = psp_keep("lightringlook") != 0;
 				light_view_cull = psp_keep("lviewcull") != 0;
 				light_piece_factor = psp_keep_number("lightpiece", 60) / 100.0f;
@@ -1667,6 +1669,22 @@ static __attribute__((noinline)) void level_split(unsigned int next)
 	replay_kinds.level_mark = now;
 }
 
+/* mc-4d (price:level-split2), log only: on the ME under "levelsplit2", the
+pairs of findings/case_mc4c_2026-11-28.md round psp_ge_draw_level_body's
+blocks (R1..R6, C1..C6 as ticks[0..11]), each at most once a call, and the
+C3 loop's counts: vertices transformed, triangles kept, dropped and cut, and
+the calls that reach C4. calls: the calls that passed R1's first read */
+static struct level_split2_times
+{
+	unsigned long long ticks[12];
+	unsigned int calls, transformed, kept, dropped, cut, c4;
+} __attribute__((aligned(64))) level_split2; /* the ME writes it */
+
+/* the ticks since mark into pair k, mark moved on (a boundary shared) */
+#define LEVEL_SPLIT2(on, k, mark) do { if (on) { unsigned int now_ = replay_clock(1); \
+	level_split2.ticks[k] += now_ - (mark); (mark) = now_; } } while (0)
+#define LEVEL_SPLIT2_MARK(on, mark) do { if (on) (mark) = replay_clock(1); } while (0)
+
 /* mc-1b: the frame's end, on the main CPU: each kind's frame sum into its
 peak, then zeroed. The ME's side only while no frame is out with it (it
 writes those sums); else they carry into the next frame end */
@@ -1964,6 +1982,23 @@ static void level_split_report(unsigned int frames, float rate)
 		part[0], part[1], part[2], part[3], part[4], rest, kind, (float)replay_kinds.level_calls / frames);
 }
 
+/* mc-4d: the pairs and counts since the last report, a frame each */
+static void level_split2_report(unsigned int frames, float rate)
+{
+	float t[12], f = (float)frames;
+	int k;
+
+	if (!level_split2.calls || rate <= 0.0f)
+		return;
+	for (k = 0; k < 12; k++)
+		t[k] = (float)level_split2.ticks[k] / rate / f;
+	platform_log("levelsplit2: R1..R6 %.1f %.1f %.1f %.1f %.1f %.1f C1..C6 %.1f %.1f %.1f %.1f %.1f %.1f us a frame, calls %.1f, xf %.1f kept %.1f drop %.1f cut %.1f c4 %.1f",
+		t[0], t[1], t[2], t[3], t[4], t[5], t[6], t[7], t[8], t[9], t[10], t[11], (float)level_split2.calls / f,
+		(float)level_split2.transformed / f, (float)level_split2.kept / f, (float)level_split2.dropped / f,
+		(float)level_split2.cut / f, (float)level_split2.c4 / f);
+	memset(&level_split2, 0, sizeof(level_split2));
+}
+
 /* mekinds: the frames since the last report by kind, the largest first, each
 CPU apart, on as many lines as the log's limit needs. Only while no frame is
 out with the ME, which writes the counts */
@@ -2030,6 +2065,7 @@ static void replay_kinds_report(unsigned int frames)
 		platform_log("%s", line);
 	}
 	level_split_report(frames, psp_me_cycles_per_us());
+	level_split2_report(frames, psp_me_cycles_per_us()); /* mc-4d */
 	memset(&replay_kinds, 0, sizeof(replay_kinds));
 }
 
@@ -11270,7 +11306,15 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 	unsigned int cut_us = 0;
 	float base_slope = 0.0f, detail_pass_slope = 0.0f;
 	struct cut_store pieces_store;
+	/* mc-4d (levelsplit2): the pairs' mark and the C3 loop's counts */
+	const int split2 = level_split2_on && psp_on_me();
+	unsigned int split2_mark = 0, split2_xf = 0, split2_kept = 0, split2_drop = 0, split2_cut = 0, split2_c4 = 0;
 
+	if (split2)
+	{
+		level_split2.calls++;
+		split2_mark = replay_clock(1); /* R1 */
+	}
 	if (!frame_open || triangle_count <= 0 || !vertices || !indices || vertex_count <= 0 || list_full())
 		return;
 	part_start();
@@ -11283,6 +11327,8 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 	if (!stream)
 		return;
 	level_frame(stream->origin);
+	LEVEL_SPLIT2(split2, 0, split2_mark); /* mc-4d: R1 ends */
+	LEVEL_SPLIT2_MARK(split2, split2_mark); /* R2 */
 	/* build 87: the stencil bake's pieces in place of the triangles it cut */
 	if (stream->bake)
 	{
@@ -11294,6 +11340,7 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 			vertex_count = stream->count;
 		}
 	}
+	LEVEL_SPLIT2(split2, 1, split2_mark); /* mc-4d: R2 ends */
 	level_split(1); /* mc-4b: range scan */
 	for (index = 0; index < triangle_count * 3; index++)
 	{
@@ -11313,6 +11360,7 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 	triangle is kept as it is. Outdoors most draws are (the far walls); the
 	ground underfoot still gets the loop. The box's corners are tested the
 	way the vertices would be. "noboxtest": the loop for every draw */
+	LEVEL_SPLIT2_MARK(split2, split2_mark); /* mc-4d: C1 */
 	if (box_test < 0)
 		box_test = !psp_keep("noboxtest");
 	all_inside = 0;
@@ -11342,6 +11390,7 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 			far_cut_boxes++;
 		}
 	}
+	LEVEL_SPLIT2(split2, 6, split2_mark); /* mc-4d: C1 ends, C2 (shared) */
 	if (all_inside)
 	{
 		kept_count = triangle_count;
@@ -11352,6 +11401,7 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 		memset(vertex_codes + lowest, CODE_UNKNOWN, highest - lowest + 1);
 		level_draws_classified++;
 	}
+	LEVEL_SPLIT2(split2, 7, split2_mark); /* mc-4d: C2 ends, C3 (shared) */
 	/* each triangle against the camera: skipped, kept, or cut up */
 	for (index = 0; index < triangle_count && !all_inside; index++)
 	{
@@ -11369,6 +11419,7 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 				level_to_camera(&stream->base[triangle[corner]].x, point);
 				code = outside(point) | far_cut_code(point[2]);
 				vertex_codes[triangle[corner]] = (unsigned char)code;
+				split2_xf++; /* mc-4d: 3a */
 			}
 			bits[corner] = code;
 		}
@@ -11384,20 +11435,34 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 				kept[3 * kept_count + 2] = triangle[2];
 			}
 			kept_count++;
+			split2_kept++; /* mc-4d: 3b */
 			continue;
 		}
 		if (!kept)
 		{
 			/* the first triangle left out: from here the kept ones are copied
-			into the display list's memory */
+			into the display list's memory. mc-4d: C4 round it, its own mark
+			(at most once a call), so C3 is the loop less C4 */
+			unsigned int c4_mark = 0;
+
+			LEVEL_SPLIT2_MARK(split2, c4_mark);
+			split2_c4++;
 			kept = (unsigned short *)list_take((int)(triangle_count * 3 * sizeof(unsigned short) + 3) & ~3);
 			if (!kept)
 				return;
 			memcpy(kept, indices, kept_count * 3 * sizeof(unsigned short));
 			draw = kept;
+			if (split2)
+			{
+				unsigned int spent = replay_clock(1) - c4_mark;
+
+				level_split2.ticks[9] += spent;
+				split2_mark += spent; /* C3 less C4 */
+			}
 		}
 		if (bits[0] & bits[1] & bits[2] & (CODE_PLANES | CODE_PAST))
 		{
+			split2_drop++; /* mc-4d: 3d */
 			culled_this_frame++;
 			if (!(bits[0] & bits[1] & bits[2] & CODE_PLANES))
 				far_cut_dropped++;
@@ -11406,6 +11471,7 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 		{
 			float corners[3][CORNER_FLOATS] = { { 0.0f } };
 
+			split2_cut++; /* mc-4d: 3e */
 			for (corner = 0; corner < 3; corner++)
 			{
 				const struct ge_vertex *b = &stream->base[triangle[corner]];
@@ -11434,6 +11500,15 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 			}
 		}
 	}
+	if (split2)
+	{
+		LEVEL_SPLIT2(split2, 8, split2_mark); /* mc-4d: C3 ends (less C4) */
+		level_split2.transformed += split2_xf;
+		level_split2.kept += split2_kept;
+		level_split2.dropped += split2_drop;
+		level_split2.cut += split2_cut;
+		level_split2.c4 += split2_c4;
+	}
 	ge_part_us[2] += cut_us;
 	ge_part_calls[2]++;
 	part_add(1);
@@ -11451,11 +11526,14 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 	back, so it read whatever an earlier frame left there: the level's
 	triangles came and went with the view (the canyon walls, the same way
 	each time the view turned). Out of the cache first, as the meters (build 39) */
+	LEVEL_SPLIT2_MARK(split2, split2_mark); /* mc-4d: C5 */
 	if (!kept)
 		ge_writeback(indices, triangle_count * 3 * sizeof(unsigned short));
+	LEVEL_SPLIT2(split2, 10, split2_mark); /* mc-4d: C5 ends */
 	/* build 64: sorted by slant (angle_sort; the copy, if one is made, is the
 	display list's own). Build 66: with the far triangles (past DETAIL_FAR)
 	set apart, when the draw has detail maps and reaches that far */
+	LEVEL_SPLIT2_MARK(split2, split2_mark); /* mc-4d: C6 */
 	if (detail_off < 0)
 		detail_off = psp_keep("nodetail");
 	if (detail_far < 0)
@@ -11485,6 +11563,7 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 		}
 		far_possible = reach > detail_far_squared;
 	}
+	LEVEL_SPLIT2(split2, 11, split2_mark); /* mc-4d: C6 ends */
 	/* geshow2: the engine's own index list, rewritten by the next frame's
 	walk while the GE may still be drawing this one, copied into the list */
 	if (show2_copy_indices && draw == engine_indices && kept_count > 0)
@@ -11504,6 +11583,7 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 
 		draw = angle_sort(stream->base, draw, kept_count, far_possible, lowest, highest);
 		level_split(0); /* mc-4b: from here to the passes is the rest */
+		LEVEL_SPLIT2_MARK(split2, split2_mark); /* mc-4d: R3 */
 		angle_us += ge_clock() - angle_start;
 		/* build 89: the pieces cut at the eye are near by definition: with
 		every kept triangle past the detail fade, the detail passes were
@@ -11538,6 +11618,8 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 		}
 		cut_vertices_count = cut_count;
 	}
+	LEVEL_SPLIT2(split2, 2, split2_mark); /* mc-4d: R3 ends */
+	LEVEL_SPLIT2_MARK(split2, split2_mark); /* R4 */
 	level_model(stream->origin);
 
 	/* build 35: the back faces culled, as the Xbox does (D3DCULL_CCW for
@@ -11553,7 +11635,9 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 		sceGuEnable(GU_CULL_FACE);
 	}
 
+	LEVEL_SPLIT2(split2, 3, split2_mark); /* mc-4d: R4 ends, R5 (shared) */
 	textured = psp_tex_bind(base_key, &base_alpha);
+	LEVEL_SPLIT2(split2, 4, split2_mark); /* mc-4d: R5 ends, R6 (shared) */
 	/* build 79: the coordinates of the vertex nearest the eye (of every
 	eighth or so of the draw's; a near one is all that's needed, the shift
 	only has to be small where the surface is large on the screen) */
@@ -11584,6 +11668,7 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 	}
 	level_uv_us += probe_clock() - probe_mark;
 	level_probe_draws++;
+	LEVEL_SPLIT2(split2, 5, split2_mark); /* mc-4d: R6 ends */
 #ifdef PSP_DEBUG_TOOLS
 	if (sdump_wanted())
 	{
