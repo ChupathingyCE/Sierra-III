@@ -579,7 +579,7 @@ The distinction the box needs is whether a GE block can be kept and replayed whi
 
 ## 15. ME kinds: what was tried
 
-The tried-before column of the lab's brief `me_column.md` (task 2), desk read, no run. Builder, 2026-11-28. Groups are those of the lab's `findings/mecol3_prep_2026-11-28.md`. IDs and states are the lab's `findings/levers/levers.tsv`; revive_if is `grounds.tsv`, shortened, its figures left there ("-" there: none is written). Searched with `toolbox/levercheck.py` by each group's words. Where levercheck's one-word state differs from the row's own status text (AIME, AIMERINGLOOK, CP, LGELTOP), the text is followed. The two time columns below are left empty: the figures, with proposed shares, are in §15.1's table.
+The tried-before column of the lab's brief `me_column.md` (task 2), desk read, no run. Builder, 2026-11-28. Groups are those of the lab's `findings/mecol3_prep_2026-11-28.md`. IDs and states are the lab's `findings/levers/levers.tsv`; revive_if is `grounds.tsv`, shortened, its figures left there ("-" there: none is written). Searched with `toolbox/levercheck.py` by each group's words. Where levercheck's one-word state differs from the row's own status text (AIME, AIMERINGLOOK, CP, LGELTOP), the text is followed. The two time columns below are left empty: the figures, with ruled shares, are in §15.1's table.
 
 "Different now", true of every line: at one tick a frame the ME is over its frame, so ME time a cut frees counts in full, and the groups are now read by record kind with a peak (mc-1b), which most tries below never had.
 
@@ -600,43 +600,44 @@ The tried-before column of the lab's brief `me_column.md` (task 2), desk read, n
 | ME job 12, points | PT (the row says opt-in, though type 12 jobs run in the c20 logs): -. MEPOINTSCLAIM (on): -. PTLIST (not built, under the floors; a listing priced above them). POINTSREST (stopped; an earlier start or pick-up worth its bar). MEPOINTSCAP (stopped; only with a POINTSREST revival). PSYSME (rejected by count; those points worth the bar). | Those stops weighed the main CPU's gain from sending the ME more; a cut of the job's own ME time wasn't tried. | | |
 | ME job 14, visibility walk | MEVISLAND (on; it puts the walk on the ME). PVS (catalogued; a stretch whose camera reaches well under its potentially visible set). PVSRE (stopped on its ceiling; enough exact saved steps a walk, or a dearer measured step). MEVGATHER (idea): -. MEVISEARLY (stopped), MEVISPROBE (shelved; the answer ready without a wait), MLSPIN (rejected; the collect's wait growing), AIMEVISLEFT (rejected; the answer not needed early). | The walk is still not totalled at cc828579 (mecol3_prep §3); PVS and MEVGATHER, which would shorten it, were never built. | | |
 
-### 15.1 Every ME group on both stretches, with proposed shares of 30 ms
+### 15.1 Every ME group on both stretches, with ruled shares of 30 ms
 
-Builder, 2026-11-28 04:4x, desk, no run. ms a frame [M], mean of 2 seeds; peak is the higher seed's frame peak for one kind or job, "no peak" for a folded group. b30: the fight, PSP-1000, build 0892eed8. c20: its busiest block, PSP-3000, build 167ebb48. **Shares are proposed, for the lead; none is ruled and no cut is proposed.** Rank: c20's ms over share. "Tried" names the IDs; their revive_if is in the table above.
+Builder, 2026-11-28 04:4x, desk, no run; builder2, 05:2x, the ruling applied. ms a frame [M], mean of 2 seeds; peak is the higher seed's frame peak for one kind or job, "no peak" for a folded group (audio's two parts keep their own peaks: they don't add). b30: the fight, PSP-1000, build 0892eed8; its in-both 1.9 is build 5aeef1e3 (`mecol5_b30`). c20: its busiest block, PSP-3000, build 167ebb48. **Shares are ruled** (the lead, `decisions.md` 2026-11-28 05:1x, lead-20261128-051852-010a); no cut is put forward. Rank: each stretch's ms over share, by its own over. "Tried" names the IDs; their revive_if is in the table above.
 
-| Group or job | b30 | b30 peak | c20 | c20 peak | Share (proposed) | Over, b30 | Over, c20 | Rank | Tried |
-|---|---|---|---|---|---|---|---|---|---|
-| level draws | 7.38 | 8.17 | 9.75 | 21.62 | 3.33 | 4.05 | 6.42 | 2 | none in §15 |
-| far level | 3.46 | 4.51 | 0.74 | 1.81 | 0.82 | 2.64 | -0.08 | 18 | none in §15 |
-| model part draws | 5.49 | 18.25 | 6.82 | 16.01 | 2.40 | 3.09 | 4.42 | 4 | none in §15 |
-| light draws | 0.66 | 2.46 | 3.56 | 9.07 | 0.82 | -0.16 | 2.74 | 7 | none in §15 |
-| decals | 0.93 | 2.31 | 4.19 | 11.71 | 1.00 | -0.07 | 3.19 | 6 | none in §15 |
-| audio and ring served | 6.12 | 11.85 | 5.47 | 15.77 | 0 (in audio's 4) | 6.12 | 5.47 | 3 | none in §15 |
-| sky | 0.03 | no peak | 0.02 | no peak | 0.01 | 0.02 | 0.01 | 15 | OCNV (on), SEAF, DS (measured) |
-| sprites | 0.63 | no peak | 0.55 | no peak | 0.23 | 0.40 | 0.32 | 11 | FM4, FM6 (on), WXME (paused) |
-| HUD/widget | 1.43 | no peak | 2.24 | no peak | 0.71 | 0.72 | 1.53 | 8 | §14.3's: HUDX, SMALLME, VRB1-3, FM5, HUDPIN, VFPUTRIG, RENDERTICK, RB1 |
-| text | 0.09 | no peak | 0.03 | no peak | 0.02 | 0.07 | 0.01 | 16 | none |
-| frame end | 0.01 | 0.01 | 0.01 | 0.02 | 0.00 | 0.01 | 0.01 | 17 | none in §15 |
-| see-through flush | 1.05 | 5.45 | 1.53 | 10.03 | 0.50 | 0.55 | 1.03 | 9 | none (T1, M1 are main-CPU) |
-| see-through queued | 2.12 | no peak | 5.05 | no peak | 1.39 | 0.73 | 3.66 | 5 | T1, M1, LEVELPRETOUCH, OVERLAYMEMO, fixalpha-composites |
-| model sub-records | 1.67 | no peak | 1.00 | no peak | 0.52 | 1.15 | 0.48 | 10 | PDCCALL (rejected), REPLAYPART (off), SIP, MEMEMO, PASSSMALL, RSO (on), CP, CHSB, CHSD, D3 (never built) |
-| unnamed kinds (?) | 0.08 | no peak | 0.07 | no peak | 0.03 | 0.05 | 0.04 | 14 | none in §15 |
-| shadows | 0.55 | no peak | 0.33 | no peak | 0.17 | 0.38 | 0.16 | 12 | SM, SHQ, SHADOWWALK, SR, OS |
-| level detail/glow, lights' set-up | 0.08 | no peak | 0.18 | no peak | 0.05 | 0.03 | 0.13 | 13 | DETAILNEAR (parked), DF, DS, GELF, GELC (on), LGELTOP, LIGHTKEEP, LSPLITMEMO |
-| **17 groups, sum** | **31.75** | | **41.54** | | **12.00** | | | | |
-| job: perception rays (8) | 0.20 | 0.53 | 0.07 | 0.27 | 0.2 | 0.00 | -0.13 | 19 | RBK (rejected), DRAWRAYSME (stopped) |
-| job: next tick's poses (9) | 1.91 | 2.36 | 2.95 | 4.40 | 4.3 | -2.39 | -1.35 | 22 | MP, PSC (on), MEPOSE, NW, NW2 (rejected) |
-| job: points (12) | 1.04 | 1.77 | 0.66 | 1.82 | 1.5 | -0.46 | -0.84 | 21 | PT, MEPOINTSCLAIM (on), PTLIST, POINTSREST, MEPOINTSCAP, PSYSME |
-| job: visibility walk (14, net) | 5.99 | 15.35 | 1.58 | 7.45 | 2 | 3.99 | -0.42 | 20 | MEVISLAND (on), PVS, PVSRE, MEVGATHER, MEVISEARLY, MEVISPROBE, MLSPIN, AIMEVISLEFT |
-| job: audio job (slot) | 13.60 | 30.43 | ~11-13 [U] | no peak | 4 | 9.60 | ~7-9 [U] | 1 [U] | none in §15 |
-| AI job's nesting (not the job's own time) | 5.96 | 15.64 | 1.38 | 5.31 | 6 (the AI job's) | not ranked | not ranked | - | AIME (on), AICAD, AIMERINGLOOK (on), AIMEDRAM, L3, MESCHED, AITICKOLD |
+| Group or job | b30 | b30 peak | c20 | c20 peak | Share (ruled) | Over, b30 | Over, c20 | Rank b30 (fight) | Rank c20 (block) | Tried |
+|---|---|---|---|---|---|---|---|---|---|---|
+| level draws | 7.38 | 8.17 | 9.75 | 21.62 | 3.33 | 4.05 | 6.42 | 2 | 2 | D2B (stopped, the sort: `decisions.md` 2026-11-27 19:2x, 23:0x; the stop 2026-11-28 01:3x, `d2bpair_c20`) |
+| far level | 3.46 | 4.51 | 0.74 | 1.81 | 0.82 | 2.64 | -0.08 | 5 | 17 | none in §15 |
+| model part draws | 5.49 | 18.25 | 6.82 | 16.01 | 2.40 | 3.09 | 4.42 | 4 | 3 | none in §15 |
+| light draws | 0.66 | 2.46 | 3.56 | 9.07 | 0.82 | -0.16 | 2.74 | 19 | 6 | none in §15 |
+| decals | 0.93 | 2.31 | 4.19 | 11.71 | 1.00 | -0.07 | 3.19 | 18 | 5 | none in §15 |
+| sky | 0.03 | no peak | 0.02 | no peak | 0.01 | 0.02 | 0.01 | 15 | 14 | OCNV (on), SEAF, DS (measured) |
+| sprites | 0.63 | no peak | 0.55 | no peak | 0.23 | 0.40 | 0.32 | 10 | 10 | FM4, FM6 (on), WXME (paused) |
+| HUD/widget | 1.43 | no peak | 2.24 | no peak | 0.71 | 0.72 | 1.53 | 8 | 7 | §14.3's: HUDX, SMALLME, VRB1-3, FM5, HUDPIN, VFPUTRIG, RENDERTICK, RB1 |
+| text | 0.09 | no peak | 0.03 | no peak | 0.02 | 0.07 | 0.01 | 12 | 15 | none |
+| frame end | 0.01 | 0.01 | 0.01 | 0.02 | 0.00 | 0.01 | 0.01 | 16 | 16 | none in §15 |
+| see-through flush | 1.05 | 5.45 | 1.53 | 10.03 | 0.50 | 0.55 | 1.03 | 9 | 8 | none (T1, M1 are main-CPU) |
+| see-through queued | 2.12 | no peak | 5.05 | no peak | 1.39 | 0.73 | 3.66 | 7 | 4 | T1, M1, LEVELPRETOUCH, OVERLAYMEMO, fixalpha-composites |
+| model sub-records | 1.67 | no peak | 1.00 | no peak | 0.52 | 1.15 | 0.48 | 6 | 9 | PDCCALL (rejected), REPLAYPART (off), SIP, MEMEMO, PASSSMALL, RSO (on), CP, CHSB, CHSD, D3 (never built) |
+| unnamed kinds (?) | 0.08 | no peak | 0.07 | no peak | 0.03 | 0.05 | 0.04 | 13 | 13 | none in §15 |
+| shadows | 0.55 | no peak | 0.33 | no peak | 0.17 | 0.38 | 0.16 | 11 | 11 | SM, SHQ, SHADOWWALK, SR, OS |
+| level detail/glow, lights' set-up | 0.08 | no peak | 0.18 | no peak | 0.05 | 0.03 | 0.13 | 14 | 12 | DETAILNEAR (parked), DF, DS, GELF, GELC (on), LGELTOP, LIGHTKEEP, LSPLITMEMO |
+| **16 groups, sum** (audio's row not in it) | **25.63** |  | **36.07** |  | **12.00** |  |  |  |  |  |
+| audio (job slot + ring served, net of in-both) | 17.82 (13.60 + 6.12 - 1.9) | 30.43 slot; 11.85 served | [U] until mecol5-c20 nets it | no peak slot; 15.77 served | 4 | 13.82 | ~9-15 [U] | 1 | 1 [U] | none in §15 |
+| job: perception rays (8) | 0.20 | 0.53 | 0.07 | 0.27 | 0.2 | 0.00 | -0.13 | 17 | 18 | RBK (rejected), DRAWRAYSME (stopped) |
+| job: next tick's poses (9) | 1.91 | 2.36 | 2.95 | 4.40 | 4.3 | -2.39 | -1.35 | 21 | 21 | MP, PSC (on), MEPOSE, NW, NW2 (rejected) |
+| job: points (12) | 1.04 | 1.77 | 0.66 | 1.82 | 1.5 | -0.46 | -0.84 | 20 | 20 | PT, MEPOINTSCLAIM (on), PTLIST, POINTSREST, MEPOINTSCAP, PSYSME |
+| job: visibility walk (14, net) | 5.99 | 15.35 | 1.58 | 7.45 | 2 | 3.99 | -0.42 | 3 | 19 | MEVISLAND (on), PVS, PVSRE, MEVGATHER, MEVISEARLY, MEVISPROBE, MLSPIN, AIMEVISLEFT |
+| AI job's nesting (not the job's own time) | 5.96 | 15.64 | 1.38 | 5.31 | 6 (the AI job's) | not ranked | not ranked | not ranked [U] | not ranked [U] | AIME (on), AICAD, AIMERINGLOOK (on), AIMEDRAM, L3, MESCHED, AITICKOLD; own time [U] (mecol5's 9.5 ms gap) |
+
+Task 3's first two cases are audio and level draws; model parts (4.4) are next if either stops at its bar (`decisions.md` 2026-11-28 05:1x).
 
 **Against ME busy** (62.1 ms a shown frame on b30, 57.7 on c20; the nesting is not added):
 
-- b30: groups 31.75 + jobs 22.73 = 54.48, **88% named**; **78-88%** with the overlap below [U].
-- c20: groups 41.54 + the four timed jobs 5.26 = 46.80, **81% named**; with the untimed audio job's ~11-13, 100-104% [U], the excess being audio counted twice.
-- **Audio overlap** (`mecol4_b30`): audio mixed between replay records is timed in both the audio job's slot and "audio and ring served"; the share isn't split [U], so ranks 1 and 3 count some of the same time.
+- b30: 16 groups 25.63 + audio 17.82 + the other four jobs 9.13 = 52.58, **85% named**, the overlap netted (was 54.48 with 1.9 counted twice).
+- c20: 16 groups 36.07 + ring served 5.47 + the four timed jobs 5.26 = 46.80, **81% named**; with the untimed audio job's ~11-13, 100-104% [U], the overlap not yet netted.
+- **Audio overlap:** audio mixed between replay records is timed in both the audio job's slot and "audio and ring served". **Netted on b30:** 1.9 ms (mc-1g's in-both counter, `mecol5_b30`), off the one audio row; the ring's own serve cost stays in it. c20 is not netted until mecol5-c20 [U].
 
-**How the shares were made** (proposed). REBUILD §3.1 and its ME rows (the lab's `docs/rewrite/REBUILD.md` lines 66-71, 161-162): 30 ms after the 3.3 reserve; render job ~12, AI ~6, audio ~4, visibility ~2, and the tick's half takes the rest, 6. The render's 12 is split over the 16 replay groups other than "audio and ring served", each in proportion to its mean over both stretches (the same factor, 0.389, for all). The tick's 6 is split the same way over poses, points and rays, which puts them under share; with the two-core tick stopped, that 6 is the weakest part [U]. Audio's 4 sits on its job; "audio and ring served" has no line of its own there, so its ring serving is unbudgeted [U]. The AI job's own time isn't in these logs' rows, so its 6 isn't ranked.
+**How the shares were made** (ruled, `decisions.md` 2026-11-28 05:1x). REBUILD §3.1 and its ME rows (the lab's `docs/rewrite/REBUILD.md` lines 66-71, 161-162): 30 ms after the 3.3 reserve; render job ~12, AI ~6, audio ~4, visibility ~2, and the tick's half takes the rest, 6. The render's 12 is split over the 16 replay groups other than "audio and ring served", each in proportion to its mean over both stretches (the same factor, 0.389, for all). The tick's 6 is split the same way over poses, points and rays, which puts them under share; it is tick work on the ME, so it stands while tc-tick is parked. Audio is one line against its 4: the audio job's slot plus "audio and ring served", net of in-both; ring serving sits in it until a counter splits it. The AI job's own time stays unranked against its 6 until timed (mecol5's 9.5 ms gap, [U]).
 
-**Sources, for review.** b30's groups: `toolbox/mekindsgroup.py` block 3 on sierra-hw 46135235974, run1 `log.txt:1746-1753`, run2 `:1752-1758` (row `mecol4_b30`); its jobs run1 `:1754`, run2 `:1759`; nesting `:1755`, `:1760`. c20's groups: block 5 on sierra-hw 46133509859, run1 `:2489-2496`, run2 `:2486-2493` (row `mecol3_c20`); jobs `:2497`, `:2494`; nesting `:2498`, `:2495`. c20's audio job: `mecol3_c20`'s busy lines (no slot timer at 167ebb48). ME busy: those two rows. Peaks: the same lines' "peak N". Tried: §15's table above.
+**Sources, for review.** b30's groups: `toolbox/mekindsgroup.py` block 3 on sierra-hw 46135235974, run1 `log.txt:1746-1753`, run2 `:1752-1758` (row `mecol4_b30`); its jobs run1 `:1754`, run2 `:1759`; nesting `:1755`, `:1760`. c20's groups: block 5 on sierra-hw 46133509859, run1 `:2489-2496`, run2 `:2486-2493` (row `mecol3_c20`); jobs `:2497`, `:2494`; nesting `:2498`, `:2495`. c20's audio job: `mecol3_c20`'s busy lines (no slot timer at 167ebb48). In-both 1.9: row `mecol5_b30` and its page. ME busy: rows `mecol4_b30`, `mecol3_c20`. Peaks: the same lines' "peak N". Tried: §15's table above.
