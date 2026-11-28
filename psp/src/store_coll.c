@@ -34,6 +34,18 @@ Built only with PSP_TICK2_COLLNEW=1 (psp_build.py), as collisions.c is: its flag
 #include "units/bipeds.h"
 #include "psp_sweepme.h" /* the ME's gather record the exact gather names (FIXES_SWEEPME) */
 #include "store_coll.h"
+#ifdef PSP_S1COUNT
+/* s1count's class (d), first half (the lab's briefs/s1_count.md, task s1c-d; docs/ktstamp.md's s1count), log only:
+   the gather's objects met and contributing features, stage G, tagged by the biped; the cycles on the met-but-not-
+   passing and the passed count are s1c-d2's (collisions.c). The mark reads only; its helper is at the file's end. The
+   #line below keeps every later line's number, so the off form's lines and the profiles' line checksums are s1c-hdr's */
+void psp_s1d_gathered(long biped_index, int met, struct collision_feature_list const *list, boolean empty);
+#define PSP_S1D_GATHERED(index, met, list, empty) \
+	(psp_s1_on && !psp_work_on_me() ? psp_s1d_gathered((index), (met), (list), (empty)) : (void)0)
+#else
+#define PSP_S1D_GATHERED(index, met, list, empty) ((void)0)
+#endif
+#line 37
 
 /* ---- the store's gather table, written new (docs/box_world_store.md section 18, 'The gather and the take rewritten';
 its control, the moved copy, is psp/control/store_coll_moved.txt): begin ---- */
@@ -131,7 +143,7 @@ static void store_coll_pack(struct store_coll_entry *entry, long biped_index)
 		entry->sr_cluster_count = psp_sr_cluster_count;
 		if (psp_sr_cluster_count > 0)
 			memcpy(entry->sr_clusters, psp_sr_cluster_list, psp_sr_cluster_count * sizeof(short));
-		entry->sr_met = psp_sr_met;
+		entry->sr_met = psp_sr_met; PSP_S1D_GATHERED(biped_index, psp_sr_met, list, entry->empty);
 		psp_sr_slot_watch_set(position, entry->sr_clusters, psp_sr_cluster_count, biped_index, &entry->center, entry->radius); /* PSP_SR_REACH */
 		if (position < PSP_BS2_SR)
 		{
@@ -601,3 +613,22 @@ boolean store_coll_stand(unsigned long flags, real_point3d const *center, real r
 #undef features
 	return result;
 }
+
+#ifdef PSP_S1COUNT
+/* s1count's (d), first half (task s1c-d): called after the pack's query, on ktstamp's timed ticks, never on the ME.
+   Reads only: the biped's flags and parent for its tag, the gather's met (SWEEPREUSE's psp_sr_met, objects in the
+   walked clusters) and the list's counts by kind (none for an empty gather); writes only s1count's sums */
+void psp_s1d_gathered(long biped_index, int met, struct collision_feature_list const *list, boolean empty)
+{
+	struct biped_datum *biped = (struct biped_datum *)object_get(biped_index);
+	unsigned long features = 0;
+	short k;
+
+	if (!empty)
+		for (k = 0; k < NUMBER_OF_COLLISION_FEATURE_TYPES; k++)
+			features += (unsigned long)list->count[k];
+	psp_s1_tag(PSP_S1_WHO(biped));
+	psp_s1_add(PSP_S1_D_MET, PSP_S1_STAGE_G, (unsigned long)met);
+	psp_s1_add(PSP_S1_D_FEATURES, PSP_S1_STAGE_G, features);
+}
+#endif
