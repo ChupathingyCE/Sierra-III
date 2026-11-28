@@ -1585,6 +1585,12 @@ struct replay_kind_times
 	audio slot can wait on the frame's job (B62) */
 	unsigned int worst[2][REPLAY_KINDS];
 	unsigned int runs[2];
+	/* D2B's price (the lab's briefs/draw_main.md, ruled 23:1x): angle_sort's
+	bucket loop alone (the hand-over, the loop, the collect; the copy into
+	bucket order outside it), on the side's clock: its time, the draws it ran
+	in, the longest one draw's loop. Log only */
+	unsigned long long slant_loop[2];
+	unsigned int slant_draws[2], slant_worst[2];
 } __attribute__((aligned(64))); /* a line of its own: the ME writes it while the main CPU runs on */
 static struct replay_kind_times replay_kinds;
 static const char *const replay_kind_names[REPLAY_KINDS] =
@@ -1940,6 +1946,10 @@ static void replay_kinds_report(unsigned int frames)
 			length += size;
 		}
 		platform_log("%s", line);
+		if (replay_kinds.slant_draws[side])
+			platform_log("GE: mekinds, %s, slant loop (D2B): %.0f us a frame over %u frames, %.1f draws a frame, %.1f us each, worst %.0f",
+				who, (float)replay_kinds.slant_loop[side] / rate / frames, frames, (float)replay_kinds.slant_draws[side] / frames,
+				(float)replay_kinds.slant_loop[side] / rate / replay_kinds.slant_draws[side], (float)replay_kinds.slant_worst[side] / rate);
 	}
 	memset(&replay_kinds, 0, sizeof(replay_kinds));
 }
@@ -10637,6 +10647,10 @@ static const unsigned short *angle_sort(const struct ge_vertex *stream, const un
 	memset(total, 0, sizeof(total));
 	{
 		unsigned int loop_start = ge_clock(), ticket = 0;
+		/* D2B's price under mekinds: the ME's cycle counter, where ge_clock
+		reads 0 (defer_replay's test: not gemesim's simulated work) */
+		int slant_side = psp_on_me(), slant_timed = replay_kinds_on && (slant_side || !psp_me_context);
+		unsigned int slant_mark = slant_timed ? replay_clock(slant_side) : 0;
 		/* off: one test a draw (me_slant is -1 until the first draw decides) */
 		long mine = me_slant ? slant_hand_over(stream, indices, count, far_possible, lowest, highest, &ticket) : count;
 
@@ -10650,6 +10664,15 @@ static const unsigned short *angle_sort(const struct ge_vertex *stream, const un
 		if (mine < count)
 			slant_collect(ticket, stream, indices, mine, count, far_possible, total);
 		angle_loop_us += ge_clock() - loop_start;
+		if (slant_timed)
+		{
+			unsigned int spent = replay_clock(slant_side) - slant_mark;
+
+			replay_kinds.slant_loop[slant_side] += spent;
+			replay_kinds.slant_draws[slant_side]++;
+			if (spent > replay_kinds.slant_worst[slant_side])
+				replay_kinds.slant_worst[slant_side] = spent;
+		}
 	}
 	/* build 87: the ME works out the same buckets ("meclassify", measure only) */
 	me_angle_measure(stream, indices, count, far_possible);
