@@ -606,28 +606,28 @@ Builder, 2026-11-28 04:4x, desk, no run; builder2, 05:2x, the ruling applied. ms
 
 | Group or job | b30 | b30 peak | c20 | c20 peak | Share (ruled) | Over, b30 | Over, c20 | Rank b30 (fight) | Rank c20 (block) | Tried |
 |---|---|---|---|---|---|---|---|---|---|---|
-| level draws | 7.38 | 8.17 | 9.75 | 21.62 | 3.33 | 4.05 | 6.42 | 2 | 1 | D2B (stopped, the sort: `decisions.md` 2026-11-27 19:2x, 23:0x; the stop 2026-11-28 01:3x, `d2bpair_c20`) |
-| far level | 3.46 | 4.51 | 0.74 | 1.81 | 0.82 | 2.64 | -0.08 | 5 | 17 | none in §15 |
-| model part draws | 5.49 | 18.25 | 6.82 | 16.01 | 2.40 | 3.09 | 4.42 | 4 | 2 | none in §15 |
-| light draws | 0.66 | 2.46 | 3.56 | 9.07 | 0.82 | -0.16 | 2.74 | 20 | 5 | none in §15 |
+| level draws | 7.38 | 8.17 | 9.75 | 21.62 | 3.33 | 4.05 | 6.42 | 3 | 1 | D2B (stopped, the sort: `decisions.md` 2026-11-27 19:2x, 23:0x; the stop 2026-11-28 01:3x, `d2bpair_c20`) |
+| far level | 3.46 | 4.51 | 0.74 | 1.81 | 0.82 | 2.64 | -0.08 | 6 | 17 | none in §15 |
+| model part draws | 5.49 | 18.25 | 6.82 | 16.01 | 2.40 | 3.09 | 4.42 | 5 | 2 | none in §15 |
+| light draws | 0.66 | 2.46 | 3.56 | 9.07 | 0.82 | -0.16 | 2.74 | 20 | 6 | none in §15 |
 | decals | 0.93 | 2.31 | 4.19 | 11.71 | 1.00 | -0.07 | 3.19 | 19 | 4 | none in §15 |
 | sky | 0.03 | no peak | 0.02 | no peak | 0.01 | 0.02 | 0.01 | 16 | 14 | OCNV (on), SEAF, DS (measured) |
-| sprites | 0.63 | no peak | 0.55 | no peak | 0.23 | 0.40 | 0.32 | 11 | 9 | FM4, FM6 (on), WXME (paused) |
-| HUD/widget | 1.43 | no peak | 2.24 | no peak | 0.71 | 0.72 | 1.53 | 9 | 6 | §14.3's: HUDX, SMALLME, VRB1-3, FM5, HUDPIN, VFPUTRIG, RENDERTICK, RB1 |
+| sprites | 0.63 | no peak | 0.55 | no peak | 0.23 | 0.40 | 0.32 | 11 | 10 | FM4, FM6 (on), WXME (paused) |
+| HUD/widget | 1.43 | no peak | 2.24 | no peak | 0.71 | 0.72 | 1.53 | 9 | 7 | §14.3's: HUDX, SMALLME, VRB1-3, FM5, HUDPIN, VFPUTRIG, RENDERTICK, RB1 |
 | text | 0.09 | no peak | 0.03 | no peak | 0.02 | 0.07 | 0.01 | 13 | 15 | none |
 | frame end | 0.01 | 0.01 | 0.01 | 0.02 | 0.00 | 0.01 | 0.01 | 17 | 16 | none in §15 |
-| see-through flush | 1.05 | 5.45 | 1.53 | 10.03 | 0.50 | 0.55 | 1.03 | 10 | 7 | none (T1, M1 are main-CPU) |
+| see-through flush | 1.05 | 5.45 | 1.53 | 10.03 | 0.50 | 0.55 | 1.03 | 10 | 8 | none (T1, M1 are main-CPU) |
 | see-through queued | 2.12 | no peak | 5.05 | no peak | 1.39 | 0.73 | 3.66 | 8 | 3 | T1, M1, LEVELPRETOUCH, OVERLAYMEMO, fixalpha-composites |
-| model sub-records | 1.67 | no peak | 1.00 | no peak | 0.52 | 1.15 | 0.48 | 7 | 8 | PDCCALL (rejected), REPLAYPART (off), SIP, MEMEMO, PASSSMALL, RSO (on), CP, CHSB, CHSD, D3 (never built) |
+| model sub-records | 1.67 | no peak | 1.00 | no peak | 0.52 | 1.15 | 0.48 | 7 | 9 | PDCCALL (rejected), REPLAYPART (off), SIP, MEMEMO, PASSSMALL, RSO (on), CP, CHSB, CHSD, D3 (never built) |
 | unnamed kinds (?) | 0.08 | no peak | 0.07 | no peak | 0.03 | 0.05 | 0.04 | 14 | 13 | none in §15 |
 | shadows | 0.55 | no peak | 0.33 | no peak | 0.17 | 0.38 | 0.16 | 12 | 11 | SM, SHQ, SHADOWWALK, SR, OS |
 | level detail/glow, lights' set-up | 0.08 | no peak | 0.18 | no peak | 0.05 | 0.03 | 0.13 | 15 | 12 | DETAILNEAR (parked), DF, DS, GELF, GELC (on), LGELTOP, LIGHTKEEP, LSPLITMEMO |
 | **16 groups, sum** (audio's row not in it) | **25.63** |  | **36.07** |  | **12.00** |  |  |  |  |  |
-| audio (job slot + ring served, net of in-both) | 17.82 (13.60 + 6.12 - 1.9) | 30.43 slot; 11.85 served | 13.5 (10.2 + 5.4 - 2.1) | no peak slot; 15.77 served | 4 | 1.60 | 0.24 | 6 | 10 | none in §15 |
+| audio (job slot + ring served, net of in-both) | 17.82 (13.60 + 6.12 - 1.9) | 30.43 slot; 11.85 served | 13.5 (10.2 + 5.4 - 2.1) | no peak slot; 15.77 served | 4 | 4.40 | 2.80 | 2 | 5 | none in §15 |
 | job: perception rays (8) | 0.20 | 0.53 | 0.07 | 0.27 | 0.2 | 0.00 | -0.13 | 18 | 18 | RBK (rejected), DRAWRAYSME (stopped) |
 | job: next tick's poses (9) | 1.91 | 2.36 | 2.95 | 4.40 | 4.3 | -3.02 | -2.58 | 22 | 22 | MP, PSC (on), MEPOSE, NW, NW2 (rejected) |
 | job: points (12) | 1.04 | 1.77 | 0.66 | 1.82 | 1.5 | -0.43 | -0.82 | 21 | 21 | PT, MEPOINTSCLAIM (on), PTLIST, POINTSREST, MEPOINTSCAP, PSYSME |
-| job: visibility walk (14, net) | 5.99 | 15.35 | 1.58 | 7.45 | 2 | 3.97 | -0.42 | 3 | 20 | MEVISLAND (on), PVS, PVSRE, MEVGATHER, MEVISEARLY, MEVISPROBE, MLSPIN, AIMEVISLEFT |
+| job: visibility walk (14, net) | 5.99 | 15.35 | 1.58 | 7.45 | 2 | 3.97 | -0.42 | 4 | 20 | MEVISLAND (on), PVS, PVSRE, MEVGATHER, MEVISEARLY, MEVISPROBE, MLSPIN, AIMEVISLEFT |
 | job: AI job's own (less its nesting) | 11.71 | 33.47 | 5.85 | 21.10 | 6 | 5.71 | -0.15 | 1 | 19 | AIME (on), AICAD, AIMERINGLOOK (on), AIMEDRAM, L3, MESCHED, AITICKOLD |
 | AI job's nesting (not the job's own time) | 5.96 | 15.64 | 1.38 | 5.31 | 6 (the AI job's) | not ranked | not ranked | not ranked [U] | not ranked [U] | AIME (on); own time is the row above (`mecol6_b30`, `mecol6_c20`) |
 
@@ -639,7 +639,7 @@ Builder, 2026-11-28 04:4x, desk, no run; builder2, 05:2x, the ruling applied. ms
 | poses (9) | per tick [U]: 2 jobs a frame, 2 ticks a frame | 2.0 / 2.0 | 2.57 x 1/2 = 1.28 | 3.43 x 1/2 = 1.72 | 4.3 | -3.02 | -2.58 |
 | points (12) | per shown frame (below) | 1.0 / 1.0 | 1.07 x 1/1 = 1.07 | 0.68 x 1/1 = 0.68 | 1.5 | -0.43 | -0.82 |
 | visibility walk (14, net) | per shown frame | 0.9 / 0.8 | 5.97 x 1/1 = 5.97 | 1.58 x 1/1 = 1.58 | 2 | +3.97 | -0.42 |
-| audio (slot + served net of in-both), as ruled 06:1x | job: per audio period (23.22 ms of wall time); served: per shown frame (below) | 4.8 / 4.2 | 4.35 + 4.2 x 8.9/30 = 5.60 (job alone 4.2; served unscaled 8.4) | 3.18 + 3.3 x 9.6/30 = 4.24 (job alone 3.5; served unscaled 6.8) | 4 | +1.60 | +0.24 |
+| audio (slot + served net of in-both), as ruled 06:5x | job: per audio period (23.22 ms of wall time); served: per shown frame (below) | 4.8 / 4.2 | job 4.2 + served 4.2 x 1/1 = 8.4 | job 3.5 + served 3.3 x 1/1 = 6.8 | 4 | +4.40 | +2.80 |
 | AI job's own (less its nesting) | per shown frame: one job, one tick's pass (below) | 1.0 / 1.0 | 11.71 x 1/1 = 11.71 | 5.85 x 1/1 = 5.85 | 6 | +5.71 | -0.15 |
 
 - A per-shown-frame job runs once in a 30 fps frame too (x 1/1); a per-tick job is its figure over the 2 ticks the shown frame carried (x 1/2).
@@ -648,7 +648,7 @@ Builder, 2026-11-28 04:4x, desk, no run; builder2, 05:2x, the ruling applied. ms
 - **Points: per shown frame, not halved.** Queued from `particles_update` (`psp_fixups.py:32619`, called at `:33032`), which `game_frame` runs once a frame (`game.c:1077`; `game_time.c:548`, outside the tick loop `:515-533`); its body takes each listed point once with the frame's dt (`psp_fixups.py:32451`; the list `:33001-33031`).
 - **Audio job: per audio period.** One mix a 512-sample block, the thread paced by the blocking output (`psp_dsound.c:3919-3922`, `:3968-3973`); the job pushed at `psp_me.c:5690`.
 - **Served inside the replay: per shown frame, driven by neither the audio period nor the tick.** The look runs after replay records (`psp_ge.c:1705-1718`); it mixes a block only if one waits and drains the ring's pushed jobs (`psp_me.c:1897-1954`). Job bodies it runs are netted as in-both (`psp_me.c:981-982`, `:1701-1702`); what is left is the looks, the drain's own cost and the batches made first, which call `batch_job` directly (`psp_me.c:1864-1894`): render work.
-- **So the ruled form's premise doesn't hold for the served part** (the ruling left it [U] until this read; it names only the per-tick case). The line and ranks above are the ruled x fps/30 form, 5.60 / 4.24. With served per shown frame it would be 8.4 / 6.8 [D], over by 4.4 / 2.8, ranked 2 on b30 and 5 on c20. The lead's call.
+- **Audio's line, as ranked** (the lead, `decisions.md` 2026-11-28 06:5x, lead-20261128-064905-3afe): served is per shown frame, so it goes in unscaled. The audio job alone at its per-period total over 30 (4.2 b30, 3.5 c20) plus served net of in-both x 1/1 (4.2, 3.3) = **8.4 / 6.8 [D]**, over its 4 by 4.4 / 2.8: rank 2 on b30, 5 on c20.
 
 Task 3's first two cases are audio and level draws; model parts (4.4) are next if either stops at its bar (`decisions.md` 2026-11-28 05:1x). On the restated job lines the audio job alone is at about its 4 (`decisions.md` 2026-11-28 05:5x).
 
